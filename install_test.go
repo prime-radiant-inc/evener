@@ -47,7 +47,7 @@ func TestWebPreflightBootstrapsMissingFrontendDependencies(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(fixtureRoot, "Makefile"), makefile, 0o644); err != nil {
 		t.Fatalf("write Makefile: %v", err)
 	}
-	copyRepositoryFile(t, repoRoot, fixtureRoot, "scripts/web-preflight.sh", 0o755)
+	copyRepositoryFile(t, repoRoot, fixtureRoot, "scripts/web/web-preflight.sh", 0o755)
 	if err := os.WriteFile(filepath.Join(frontendDir, "package-lock.json"), []byte("{}\n"), 0o644); err != nil {
 		t.Fatalf("write package-lock.json: %v", err)
 	}
@@ -370,8 +370,8 @@ cp "$EVENER_FAKE_CURL_ARCHIVE" "$out"
 
 // TestInstallScriptWarnsAboutLegacySerf pins install.sh's completion-message
 // nudge toward evener-migrate (README.md, "Migrating from Serf"): a machine
-// with an existing ~/.serf gets told to migrate before first launch, and a
-// clean machine gets no such nudge.
+// with an existing ~/.serf or interim ~/.evener gets told to migrate before
+// first launch, and a clean machine gets no such nudge.
 func TestInstallScriptWarnsAboutLegacySerf(t *testing.T) {
 	t.Parallel()
 	if testing.Short() {
@@ -390,16 +390,23 @@ func TestInstallScriptWarnsAboutLegacySerf(t *testing.T) {
 	for _, tc := range []struct {
 		name        string
 		seedLegacy  bool
+		seedInterim bool
 		wantMessage bool
 	}{
 		{name: "legacy serf present", seedLegacy: true, wantMessage: true},
-		{name: "clean machine", seedLegacy: false, wantMessage: false},
+		{name: "interim evener present", seedInterim: true, wantMessage: true},
+		{name: "clean machine", wantMessage: false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			home := t.TempDir()
 			if tc.seedLegacy {
 				if err := os.MkdirAll(filepath.Join(home, ".serf"), 0o700); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if tc.seedInterim {
+				if err := os.MkdirAll(filepath.Join(home, ".evener"), 0o700); err != nil {
 					t.Fatal(err)
 				}
 			}
@@ -957,4 +964,32 @@ func overlayEnv(base []string, overrides map[string]string) []string {
 func exists(path string) bool {
 	_, err := os.Stat(path)
 	return err == nil
+}
+
+// installedBins returns the EVENER_INSTALL_BINS list from the Makefile — the
+// single source of truth for which binaries a release install contains, and
+// the same source install.sh's `bins` line and `make dist` are kept in sync
+// with. Reading it here, rather than hardcoding a parallel copy, is what
+// makefile_audit_test.go's TestBuildAllBuildsEveryInstalledBinary already
+// does for build-all; FuzzInstallScript reuses it so a sixth binary can't
+// silently break its fixture archive the way evener-migrate broke it
+// (Release archive did not contain evener-migrate).
+func installedBins(t testing.TB) []string {
+	t.Helper()
+
+	body, err := os.ReadFile("Makefile")
+	if err != nil {
+		t.Fatalf("read Makefile: %v", err)
+	}
+	for line := range strings.SplitSeq(string(body), "\n") {
+		if rest, ok := strings.CutPrefix(line, "EVENER_INSTALL_BINS :="); ok {
+			bins := strings.Fields(rest)
+			if len(bins) == 0 {
+				t.Fatal("EVENER_INSTALL_BINS assignment in Makefile has no binaries")
+			}
+			return bins
+		}
+	}
+	t.Fatal("EVENER_INSTALL_BINS assignment not found in Makefile")
+	return nil
 }

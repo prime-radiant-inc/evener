@@ -2,6 +2,7 @@ package agent
 
 import (
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -72,6 +73,14 @@ func fillEveryField(t *testing.T, v reflect.Value, path string) {
 		pointer := reflect.New(v.Type().Elem())
 		fillEveryField(t, pointer.Elem(), path)
 		v.Set(pointer)
+	case reflect.Interface:
+		if v.Type() == reflect.TypeFor[error]() {
+			v.Set(reflect.ValueOf(errors.New(path)))
+			return
+		}
+		// A generic `any` field (e.g. a json:"...,omitempty" structured payload)
+		// holds a JSON-serializable value.
+		v.Set(reflect.ValueOf(map[string]any{"populated": true}))
 	case reflect.Slice:
 		// A raw message must hold valid JSON; any other byte slice marshals as
 		// base64 and can hold anything.

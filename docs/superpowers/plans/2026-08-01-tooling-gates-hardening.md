@@ -4,7 +4,7 @@
 
 Goal: Make the merge gate canonical, make both generated AppWire outputs blocking, make gitleaks strict only for CI callers, and declare the root module's missing identifier dependency without changing the separate version-alignment observation.
 
-Architecture: Keep gate composition and generated-file validation in the root Makefile, missing-tool policy in scripts/gitleaks-scan.sh, CI strictness in step-local environment, and the root dependency graph in go.mod. Add deterministic fixture tests at the process and filesystem boundaries already used by the repository; do not add a general-purpose wrapper or alter test scheduling.
+Architecture: Keep gate composition and generated-file validation in the root Makefile, missing-tool policy in scripts/ops/gitleaks-scan.sh, CI strictness in step-local environment, and the root dependency graph in go.mod. Add deterministic fixture tests at the process and filesystem boundaries already used by the repository; do not add a general-purpose wrapper or alter test scheduling.
 
 Tech Stack: GNU/BSD make, Bash selftests, Go 1.25 workspace/module tooling, Go YAML tests, Git fixtures, GitHub Actions YAML.
 
@@ -28,7 +28,7 @@ Modify:
 - docs/testing.md lines 36-55: publish the canonical target and retain the explicit expansion.
 - docs/conventions/go-workspace.md lines 135-140: describe both generated outputs.
 - scripts/run-module-lint-selftest.sh: add generated-drift and real gitleaks fixtures; update the generated diff expectation after the Makefile change.
-- scripts/gitleaks-scan.sh lines 12-24: add strict missing-tool mode.
+- scripts/ops/gitleaks-scan.sh lines 12-24: add strict missing-tool mode.
 - .github/workflows/ci.yml lines 56-78: set strict mode only on the two CI scan steps.
 - lintfamily_audit_test.go: assert strict mode on every CI scan step.
 - go.mod lines 76-81: add the root identifier sibling requirement only.
@@ -182,7 +182,7 @@ Run:
 
 Files:
 
-- Modify scripts/gitleaks-scan.sh lines 12-24.
+- Modify scripts/ops/gitleaks-scan.sh lines 12-24.
 - Modify scripts/run-module-lint-selftest.sh with direct real-script cases.
 - Modify .github/workflows/ci.yml lines 56-78.
 - Modify lintfamily_audit_test.go with a structured workflow test.
@@ -214,7 +214,7 @@ Expected: the shell test reports required mode incorrectly exits zero, and the G
 
 - [ ] Step 4: Implement the strict script branch.
 
-In scripts/gitleaks-scan.sh, inside the missing-command branch, check only the literal value 1:
+In scripts/ops/gitleaks-scan.sh, inside the missing-command branch, check only the literal value 1:
 
     if [ "${EVENER_GITLEAKS_REQUIRED:-}" = 1 ]; then
             echo "error: gitleaks is required but not installed; cannot run $mode secret scan (install: https://github.com/gitleaks/gitleaks)" >&2
@@ -243,7 +243,7 @@ Expected: both pass. Also run the real script with PATH=/usr/bin:/bin and strict
 
 Remove the strict branch temporarily and rerun the shell selftest; it must fail. Restore it, then run:
 
-    git add scripts/gitleaks-scan.sh scripts/run-module-lint-selftest.sh .github/workflows/ci.yml lintfamily_audit_test.go
+    git add scripts/ops/gitleaks-scan.sh scripts/run-module-lint-selftest.sh .github/workflows/ci.yml lintfamily_audit_test.go
     git diff --cached --check
     git commit -m "ci: fail closed when required gitleaks is missing"
     kata close m716 --done --message "CI opts into fatal missing-gitleaks mode while local skip remains green." --commit "$(git rev-parse HEAD)" --evidence "optional/required fixtures and workflow test pass"

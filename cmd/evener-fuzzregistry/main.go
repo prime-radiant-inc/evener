@@ -1,4 +1,4 @@
-// Command evener-fuzzregistry audits scripts/run-fuzz.sh's target manifest against
+// Command evener-fuzzregistry audits scripts/fuzz/run-fuzz.sh's target manifest against
 // the native and explicitly marked Rapid fuzz surfaces declared in the workspace.
 package main
 
@@ -73,7 +73,7 @@ func runRegistry(args []string, stdout, stderr io.Writer) int {
 	fs := flag.NewFlagSet("evener-fuzzregistry", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	repoRoot := fs.String("repo-root", ".", "repository root containing go.work")
-	registryPath := fs.String("registry", "", "path to scripts/run-fuzz.sh --list output")
+	registryPath := fs.String("registry", "", "path to scripts/fuzz/run-fuzz.sh --list output")
 	check := fs.Bool("check", false, "fail when registered and discovered coverage targets differ")
 	emitPlan := fs.Bool("emit-plan", false, "write validated native/Rapid targets as TSV")
 	if err := fs.Parse(args); err != nil {

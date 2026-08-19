@@ -91,8 +91,8 @@ done
 echo "Installed Evener binaries to $share_bindir"
 echo "Symlinked commands into $bindir"
 
-if [ -n "${HOME:-}" ] && [ -e "$HOME/.serf" ]; then
+if [ -n "${HOME:-}" ] && { [ -e "$HOME/.serf" ] || [ -e "$HOME/.evener" ]; }; then
 	echo ""
-	echo "Found an existing ~/.serf: run 'evener-migrate' once before your first"
-	echo "Evener launch to move it to ~/.evener (see README.md, \"Migrating from Serf\")."
+	echo "Found an existing ~/.serf or ~/.evener: run 'evener-migrate' once before"
+	echo "your first Evener launch to move it into place (see README.md, \"Migrating from Serf\")."
 fi

@@ -183,11 +183,11 @@ func TestLoadClient_CorruptFile_ReturnsError(t *testing.T) {
 
 func TestLoadClient_DefaultPath_UsedWhenEnvNotSet(t *testing.T) {
 	// Clear EVENER_PROVIDERS_CONFIG so LoadClient uses the default path.
-	// Clear EVENER_STATE_DIR so DefaultStateRoot() falls back to the HOME path.
-	// Override HOME so the default state root lands in a clean temp dir.
+	// Clear XDG_CONFIG_HOME so DefaultConfigRoot() falls back to the HOME path.
+	// Override HOME so the default config root lands in a clean temp dir.
 	// The config is seeded in memory; hasConfig is true and no file is written.
 	t.Setenv("EVENER_PROVIDERS_CONFIG", "")
-	t.Setenv("EVENER_STATE_DIR", "")
+	t.Setenv("XDG_CONFIG_HOME", "")
 	t.Setenv("OPENAI_API_KEY", "sk-fake-for-test")
 
 	dir := t.TempDir()
@@ -200,8 +200,8 @@ func TestLoadClient_DefaultPath_UsedWhenEnvNotSet(t *testing.T) {
 	if !hasConfig {
 		t.Fatal("expected hasConfig=true after in-memory seed at default path")
 	}
-	if _, statErr := os.Stat(filepath.Join(dir, ".evener", "providers.toml")); !os.IsNotExist(statErr) {
-		t.Fatalf("LoadClient must not write to the default state root (stat err=%v)", statErr)
+	if _, statErr := os.Stat(filepath.Join(dir, ".config", "evener", "providers.toml")); !os.IsNotExist(statErr) {
+		t.Fatalf("LoadClient must not write to the default config root (stat err=%v)", statErr)
 	}
 }
 

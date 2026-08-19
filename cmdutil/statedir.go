@@ -9,21 +9,29 @@ import (
 	"primeradiant.com/evener/identifier"
 )
 
-// DefaultStateRoot returns the evener state root: $EVENER_STATE_DIR when set,
-// otherwise ~/.evener (or ./.evener if the home directory can't be resolved).
+// DefaultStateRoot returns evener's machine-generated state root:
+// $XDG_STATE_HOME/evener, or ~/.local/state/evener when XDG_STATE_HOME is
+// unset (or ./.local/state/evener if the home directory can't be resolved).
 //
-// It is the single knob that redirects all home-based evener state — the provider
-// config (providers.toml) and credentials. `evener run` / `evener serve`, tests,
-// sandboxed runs, and multi-instance setups all honor it, so cmd/evener and
-// cmd/evener-hub resolve the identical path.
+// It holds machine-generated, non-config state: the auth token, the past-
+// session index, the hub lock, and the daemon rendezvous/log directory. It is
+// the evener-wide counterpart to DefaultConfigRoot (user-editable config, e.g.
+// providers.toml) and to agent.RuntimeDir (per-project session state, also
+// under $XDG_STATE_HOME/evener). EVENER_STATE_DIR does NOT override this root:
+// that variable is a per-invocation project/session state override (see
+// cmd/evener/run.go, cmd/evener-hub/spawn.go), a different concept from this
+// evener-wide root, and XDG_STATE_HOME is already the standard override for
+// it.
 func DefaultStateRoot() string {
-	if dir := envvars.EVENERStateDir.Getenv(); dir != "" {
-		return dir
+	base := envvars.XDGStateHome.Getenv()
+	if base == "" {
+		home, err := os.UserHomeDir()
+		if err != nil || home == "" {
+			home = "."
+		}
+		base = filepath.Join(home, ".local", "state")
 	}
-	if home, err := os.UserHomeDir(); err == nil {
-		return filepath.Join(home, ".evener")
-	}
-	return ".evener"
+	return filepath.Join(base, "evener")
 }
 
 // ResolveStateKeyDir is retained for source compatibility with callers that

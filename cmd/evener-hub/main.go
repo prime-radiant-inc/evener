@@ -160,9 +160,11 @@ func runMain(args []string, stderr io.Writer, deps mainDeps) error {
 		return err
 	}
 
-	// flock to ensure single hub per host.
-	home, _ := os.UserHomeDir()
-	lockPath := filepath.Join(home, ".evener", "hub.lock")
+	// flock to ensure single hub per host. hub.lock lives beside the other
+	// hub-level state (auth-token, index.db, deletions/) under HubStateRoot,
+	// not a raw home-dir join, so a configured hub_state_root override moves
+	// the lock too.
+	lockPath := filepath.Join(cfg.HubStateRoot, "hub.lock")
 	release, err := deps.acquireLock(lockPath)
 	if err != nil {
 		_, _ = fmt.Fprintf(stderr, "[hub] %v\n", err)
@@ -202,20 +204,27 @@ func runMain(args []string, stderr io.Writer, deps mainDeps) error {
 		_, _ = fmt.Fprintf(stderr, "[hub] %v\n", err)
 		return err
 	}
+	// hubStateRoot holds hub-level machine state: the auth token, the
+	// deletion-fence store, hub.lock (above), and index.db (below). Provider
+	// config (providers.toml/credentials.toml) is user-editable and lives
+	// under the config root instead — see cmdutil.DefaultConfigRoot.
 	hubStateRoot := cfg.HubStateRoot
 	authToken, err := deps.loadAuthToken(hubStateRoot)
 	if err != nil {
 		_, _ = fmt.Fprintf(stderr, "[hub] auth token: %v\n", err)
 		return err
 	}
-	credsStore, err := deps.loadCredentials(filepath.Join(hubStateRoot, "credentials.toml"))
+	providersConfigPath := envvars.EVENERProvidersConfig.Getenv()
+	if providersConfigPath == "" {
+		providersConfigPath = filepath.Join(cmdutil.DefaultConfigRoot(), "providers.toml")
+	}
+	// credentials.toml is always a sibling of providers.toml, wherever
+	// EVENER_PROVIDERS_CONFIG points it — matching cmdutil.LoadProviderConfigAt's
+	// resolution so the hub and a plain `evener` client agree on the store.
+	credsStore, err := deps.loadCredentials(filepath.Join(filepath.Dir(providersConfigPath), "credentials.toml"))
 	if err != nil {
 		_, _ = fmt.Fprintf(stderr, "[hub] credentials store: %v\n", err)
 		return err
-	}
-	providersConfigPath := envvars.EVENERProvidersConfig.Getenv()
-	if providersConfigPath == "" {
-		providersConfigPath = filepath.Join(hubStateRoot, "providers.toml")
 	}
 	var loadedProviderConfig *providercfg.Config
 	if pcfg, exists, pcfgErr := deps.loadProviderConfig(providersConfigPath); pcfgErr != nil {
@@ -341,6 +350,7 @@ func runMain(args []string, stderr io.Writer, deps mainDeps) error {
 		HubAddr:             cfg.Addr,
 		AuthToken:           authToken,
 		HubStateRoot:        cfg.HubStateRoot,
+		LaunchConfigRoot:    cmdutil.DefaultConfigRoot(),
 		RunDir:              runDir,
 		PastIndexPath:       pastIndexDB,
 		Roster:              roster,

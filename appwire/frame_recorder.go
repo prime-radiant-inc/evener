@@ -87,15 +87,16 @@ func newEnvFrameRecorder() *FrameRecorder {
 	return rec
 }
 
-// recorderStateRoot mirrors cmdutil.DefaultStateRoot (EVENER_STATE_DIR, else
-// ~/.evener, else ./.evener). It is duplicated here only to keep appwire — a
-// low-level wire-codec package — free of a dependency on the cmd helper layer.
+// recorderStateRoot mirrors cmdutil.DefaultStateRoot ($XDG_STATE_HOME/evener,
+// else ~/.local/state/evener, else ./.local/state/evener). It is duplicated
+// here only to keep appwire — a low-level wire-codec package — free of a
+// dependency on the cmd helper layer.
 func recorderStateRoot() string {
-	if dir := envvars.EVENERStateDir.Getenv(); dir != "" {
-		return dir
+	if base := envvars.XDGStateHome.Getenv(); base != "" {
+		return filepath.Join(base, "evener")
 	}
 	if home, err := frameRecorderHomeDir(); err == nil {
-		return filepath.Join(home, ".evener")
+		return filepath.Join(home, ".local", "state", "evener")
 	}
-	return ".evener"
+	return filepath.Join(".local", "state", "evener")
 }

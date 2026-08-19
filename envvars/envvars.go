@@ -79,7 +79,7 @@ var (
 	EVENERRunDir                      = Var{Name: "EVENER_RUN_DIR", Summary: "Rendezvous directory passed by evener-hub to spawned daemons.", Visibility: Internal}
 	EVENERScratchDir                  = Var{Name: "EVENER_SCRATCH_DIR", Summary: "Session-scoped private scratch directory provided to agent subprocesses.", Visibility: Internal}
 	EVENERSessionOrigin               = Var{Name: "EVENER_SESSION_ORIGIN", Summary: "Marks a session's launch origin (e.g. \"test\" for agentic-testing runs).", Visibility: Public}
-	EVENERStateDir                    = Var{Name: "EVENER_STATE_DIR", Summary: "Overrides the Evener state root.", Visibility: Public}
+	EVENERStateDir                    = Var{Name: "EVENER_STATE_DIR", Summary: "Overrides the per-invocation project/session state directory (evener run --state-dir, hub-spawned daemons, evener-doctor); does not override the Evener state root (see XDG_STATE_HOME).", Visibility: Public}
 	EVENERTUILogFile                  = Var{Name: "EVENER_TUI_LOG_FILE", Summary: "Writes evener-tui startup diagnostics to this file.", Visibility: Public}
 
 	LLMModel    = Var{Name: "LLM_MODEL", Summary: "Model for llmcall when --model is unset; checked before EVENER_MODEL.", Visibility: Public}
@@ -115,7 +115,7 @@ var (
 
 	XDGCacheHome   = Var{Name: "XDG_CACHE_HOME", Summary: "Base for Evener cache data.", Visibility: Inherited}
 	XDGConfigHome  = Var{Name: "XDG_CONFIG_HOME", Summary: "Base for Evener config, skills, plugins, and MCP config discovery.", Visibility: Inherited}
-	XDGStateHome   = Var{Name: "XDG_STATE_HOME", Summary: "Base for Evener state when EVENER_STATE_DIR is unset.", Visibility: Inherited}
+	XDGStateHome   = Var{Name: "XDG_STATE_HOME", Summary: "Base for the Evener state root ($XDG_STATE_HOME/evener); also the fallback in the per-invocation state-dir override chain when EVENER_STATE_DIR is unset.", Visibility: Inherited}
 	CargoHome      = Var{Name: "CARGO_HOME", Summary: "Inherited by core-only command environments.", Visibility: Inherited}
 	Display        = Var{Name: "DISPLAY", Summary: "Used to auto-detect graphical sessions for OpenAI login.", Visibility: Inherited}
 	GoModCache     = Var{Name: "GOMODCACHE", Summary: "Inherited by core-only command environments.", Visibility: Inherited}

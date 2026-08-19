@@ -9,11 +9,15 @@ import (
 
 // TestMain isolates the entire cmd/evener test package from the developer's real
 // environment. EVENER_STATE_DIR is pointed at a throwaway directory so anything
-// resolving the evener state root (cmdutil.DefaultStateRoot — the
-// providers.toml + credentials.toml location) sees an empty fixture rather than
-// the user's real ~/.evener. EVENER_PROVIDERS_CONFIG is cleared so a stray value in
-// the dev shell cannot leak in; tests that need specific provider config set it
-// (and OPENAI_BASE_URL / provider key envs) explicitly.
+// resolving a project/session state root without an explicit --state-dir
+// (evener run/serve's EVENER_STATE_DIR precedence, cmd/evener/run.go) sees a
+// predictable, empty fixture instead of a per-project XDG path. Provider
+// config (providers.toml/credentials.toml) is governed separately by
+// XDG_CONFIG_HOME/cmdutil.DefaultConfigRoot, also redirected below into
+// envRoot, so it never touches the user's real ~/.config/evener either.
+// EVENER_PROVIDERS_CONFIG is cleared so a stray value in the dev shell cannot
+// leak in; tests that need specific provider config set it (and
+// OPENAI_BASE_URL / provider key envs) explicitly.
 func TestMain(m *testing.M) {
 	stateDir, err := os.MkdirTemp("", "evener-cli-test-state-*")
 	if err != nil {

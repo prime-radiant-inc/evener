@@ -1,7 +1,7 @@
 // Package scratch is the Go twin of the shell scratch discipline the dev
 // tooling settled on after the 2026-08-17 incident: TMPDIR-rooted, pid-named
 // scratch that the owning tool reclaims itself on its next run
-// (scripts/covscratch-lib.sh is the shell spelling; docs/testing.md holds the
+// (scripts/lib/covscratch-lib.sh is the shell spelling; docs/testing.md holds the
 // rules). There is no janitor: a directory abandoned by SIGKILL, an OOM kill,
 // or a power cut lives exactly until the same tool's next Acquire.
 //
@@ -117,7 +117,7 @@ func ReclaimOwn(prefix string, warn io.Writer) {
 	reclaimOwn(base, prefix, warn)
 }
 
-// reclaimOwn is scripts/covscratch-lib.sh's reclaim_own_scratch with two safe
+// reclaimOwn is scripts/lib/covscratch-lib.sh's reclaim_own_scratch with two safe
 // tightenings. Rule for rule: directories only, direct children only, exact
 // prefix match, symlinks never matched or followed, and the one thing that
 // must never be touched is a live run's scratch — a live pid (including our

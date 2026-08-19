@@ -67,8 +67,15 @@ describe("injectWidthMatrix", () => {
     );
   });
 
-  test("leaves the harness source untouched when the case has no widthMatrix", () => {
+  test("throws a clear error when the harness has the placeholder but the case declares no widthMatrix", () => {
     const source = `<script>\n${placeholder}\n</script>`;
+    expect(() => injectWidthMatrix(source, null, "stale-placeholder")).toThrow(
+      "stale-placeholder: harness.html has __LAYOUTGUARD_WIDTH_MATRIX__ but case.json declares no widthMatrix",
+    );
+  });
+
+  test("leaves the harness source untouched when the case has no widthMatrix and no placeholder", () => {
+    const source = `<script>\nconst fixtures = [];</script>`;
     expect(injectWidthMatrix(source, null, "no-matrix-case")).toBe(source);
   });
 });

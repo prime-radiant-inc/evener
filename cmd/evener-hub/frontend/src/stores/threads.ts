@@ -10,7 +10,7 @@
 import { useStore } from "zustand";
 import { createStore } from "zustand/vanilla";
 import { applyEvenerDelegateUpdated } from "../panes/session/transcript/tools/subagentModuleStore";
-import { mutationErrorData, WireError } from "../protocol/errors";
+import { ClientNotReadyError, mutationErrorData, WireError } from "../protocol/errors";
 import type { ThreadModel } from "../protocol/model";
 import {
   applyNotification,
@@ -340,8 +340,6 @@ let wiredClient: AppwireClientLike | null = null;
 let readyEpoch = 0;
 let unwireNotification: (() => void) | null = null;
 let unwireReady: (() => void) | null = null;
-let resolveClientReadyOrRewired: (() => void) | null = null;
-let clientReadyOrRewired: Promise<void> = Promise.resolve();
 let dispatchReadyClient: AppwireClientLike | null = null;
 let dispatchReadyEpoch = -1;
 const pinnedMutationRefs = new Set<string>();
@@ -1522,18 +1520,9 @@ function rewireClient(client: AppwireClientLike): void {
   dispatchReadyClient = null;
   dispatchReadyEpoch = -1;
   dispatchableMutationRefs.clear();
-  resolveClientReadyOrRewired?.();
-  resolveClientReadyOrRewired = null;
   unwireNotification?.();
   unwireReady?.();
   wiredClient = client;
-  if (client.state === "ready") {
-    clientReadyOrRewired = Promise.resolve();
-  } else {
-    clientReadyOrRewired = new Promise<void>((resolve) => {
-      resolveClientReadyOrRewired = resolve;
-    });
-  }
   unwireNotification = client.onNotification(handleNotification);
   unwireReady = client.onReady(() => {
     readyEpoch += 1;
@@ -1541,8 +1530,6 @@ function rewireClient(client: AppwireClientLike): void {
     dispatchReadyClient = null;
     dispatchReadyEpoch = -1;
     dispatchableMutationRefs.clear();
-    resolveClientReadyOrRewired?.();
-    resolveClientReadyOrRewired = null;
     void handleReady(client, readyEpoch);
   });
   // onReady only fires on a FUTURE transition into "ready" (AppwireClient/
@@ -1576,6 +1563,97 @@ function requireClient(): AppwireClientLike {
     throw new Error("threads store: no client connected; call useConnectionStore.getState().connect(client) first");
   }
   rewireClient(client);
+  return client;
+}
+
+// waitForReadyOrRewire resolves once EITHER `client` itself fires its own
+// onReady (the common case: the SAME client's automatic reconnect backoff
+// lands) OR connectionStore's wired client identity changes out from under
+// it (the rarer case: a manual retry - shell/ConnectionBanner.tsx - swaps in
+// a genuinely different client while this one is still waiting), or rejects
+// once `timeoutMs` elapses with neither. Always cleans up both subscriptions
+// and the timer on whichever path settles first.
+//
+// Subscribes fresh to THIS client's own onReady on every call rather than
+// sharing one module-level promise across callers: a single shared promise
+// that only ever resolves once per client would need active re-arming every
+// time the client leaves "ready" again, and a client that starts out ready
+// (the common case - ConnectionBanner's manual retry awaits connect() before
+// handing the client to connectionStore.connect()) gives that re-arming
+// nothing to trigger off of. A fresh per-call subscription needs no such
+// bookkeeping and is correct for every reconnect, not just the first.
+function waitForReadyOrRewire(client: AppwireClientLike, timeoutMs: number): Promise<void> {
+  return new Promise<void>((resolve, reject) => {
+    const timer = setTimeout(() => {
+      cleanup();
+      reject(new ClientNotReadyError(`threads store: timed out waiting for a ready client after ${timeoutMs}ms`));
+    }, timeoutMs);
+    const unwireReady = client.onReady(() => {
+      cleanup();
+      resolve();
+    });
+    const unsubscribeSwap = connectionStore.subscribe((state) => {
+      if (state.client && state.client !== client) {
+        cleanup();
+        resolve();
+      }
+    });
+    function cleanup(): void {
+      clearTimeout(timer);
+      unwireReady();
+      unsubscribeSwap();
+    }
+  });
+}
+
+// requireReadyClient waits out a reconnect rather than failing the caller
+// with AppwireClient's synchronous "cannot call ... while reconnecting"
+// rejection - the wait-and-retry shape that used to be hand-duplicated four
+// times across ensureThread/watchThread's retry loops below, extracted once
+// here and reused by both those call sites and the read-only actions
+// (listJobs, listTasks, jobOutput, listModels, loadOlderTurns) that gate on
+// it directly.
+//
+// Issue #195's RCA: transport-level queuing (in client.ts) was rejected as
+// unsafe - a queued call retried blind across a reconnect could double-fire
+// a non-idempotent mutation whose first attempt the server may already be
+// executing. Read-only calls carry no such risk, so instead of queuing at
+// the transport, callers that can safely blind-retry wait HERE for the
+// client to become ready (or be rewired to one that already is), then issue
+// one direct request() against a client already confirmed ready. Mutations
+// (setModel, rename, compact, ..., and the outbox's own
+// enqueueMutationIntent gate) deliberately do NOT call this - they keep
+// AppwireClient's synchronous rejection, so a caller retrying a mutation
+// whose first attempt may already be executing server-side can never have
+// both attempts land.
+//
+// Loops rather than waiting once: a rewire mid-wait can land on a client
+// that is ALSO not yet ready (a fresh client still mid-handshake), so this
+// re-arms the wait on whatever client is current until one is actually
+// ready or the shared deadline (not reset per iteration) elapses. Always
+// returns the CURRENT client (a fresh requireClient() read) once ready,
+// never one read before the wait.
+//
+// Bounded by timeoutMs so a genuinely-down hub cannot hang a caller forever:
+// on timeout, throws ClientNotReadyError (protocol/errors.ts) rather than
+// AppwireClient's own rejection text, so a caller can tell "gave up after
+// waiting" apart from "rejected immediately" - and so friendlyErrorMessage/
+// errorKind (protocol/errors.ts) still classify it as hub-unreachable for a
+// caller that wants the same friendly message either way (see
+// stores/activitySummary.ts's refreshRoot).
+const REQUIRE_READY_TIMEOUT_MS = 15_000;
+
+async function requireReadyClient(timeoutMs = REQUIRE_READY_TIMEOUT_MS): Promise<AppwireClientLike> {
+  const deadline = Date.now() + timeoutMs;
+  let client = requireClient();
+  while (client.state !== "ready") {
+    const remaining = deadline - Date.now();
+    if (remaining <= 0) {
+      throw new ClientNotReadyError(`threads store: timed out waiting for a ready client after ${timeoutMs}ms`);
+    }
+    await waitForReadyOrRewire(client, remaining);
+    client = requireClient();
+  }
   return client;
 }
 
@@ -1648,17 +1726,11 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
           if (lifecycleActive && threadsStore.getState().threads.has(ref)) return;
           if (wiredClient !== inflightClient || readyEpoch !== inflightEpoch) {
             if (threadsStore.getState().threads.has(ref)) return;
-            client = requireClient();
-            // Waiting for readiness can span a further swap, and startHydration
-            // stamps the hydration with the epoch it reads at capture time. A
-            // client captured before this wait would therefore be labelled with
-            // the live generation while pointing at a superseded connection, so
-            // read it again on the way out. Same shape as the re-arm below and
+            // requireReadyClient re-reads the CURRENT client on the way out,
+            // so a client captured before the wait is never stamped onto a
+            // hydration that outlived it. Same shape as the re-arm below and
             // as both of watchThread's.
-            if (client.state !== "ready") {
-              await clientReadyOrRewired;
-              client = requireClient();
-            }
+            client = await requireReadyClient();
             inflight = inflightHydrates.get(ref) ?? startHydration(client);
             continue;
           }
@@ -1680,11 +1752,7 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
         if ((refCounts.get(ref) ?? 0) <= 0) return;
         if (threadsStore.getState().threads.has(ref)) return;
 
-        client = requireClient();
-        if (client.state !== "ready") {
-          await clientReadyOrRewired;
-          client = requireClient();
-        }
+        client = await requireReadyClient();
         inflight = inflightHydrates.get(ref);
         if (!inflight) inflight = startHydration(client);
       }
@@ -1830,11 +1898,7 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
         if (wiredClient !== inflightClient || readyEpoch !== inflightEpoch) {
           if ((watchRefCounts.get(ref) ?? 0) <= 0 || (watchGenerations.get(ref) ?? 0) !== generation) return;
           if (hydrated && (!needTurns || (watchHydratedIncludeTurns.get(ref) ?? false))) return;
-          client = requireClient();
-          if (client.state !== "ready") {
-            await clientReadyOrRewired;
-            client = requireClient();
-          }
+          client = await requireReadyClient();
           inflight = inflightWatchHydrates.get(ref) ?? startHydration(client);
           continue;
         }
@@ -1853,11 +1917,7 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
       const hydrated = threadsStore.getState().watchedThreads.get(ref);
       if (hydrated && (!needTurns || (watchHydratedIncludeTurns.get(ref) ?? false))) return;
 
-      client = requireClient();
-      if (client.state !== "ready") {
-        await clientReadyOrRewired;
-        client = requireClient();
-      }
+      client = await requireReadyClient();
       inflight = inflightWatchHydrates.get(ref);
       const currentInflightHasTurns = inflightWatchIncludeTurns.get(ref) ?? false;
       if (!inflight || (needTurns && !currentInflightHasTurns)) inflight = startHydration(client);
@@ -1897,7 +1957,10 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
   },
 
   async loadOlderTurns(ref) {
-    const client = requireClient();
+    // Read-only, so it waits out a reconnect (issue #195's RCA) instead of
+    // failing with AppwireClient's synchronous "cannot call ... while
+    // reconnecting" rejection - see requireReadyClient's own comment.
+    const client = await requireReadyClient();
     const model = threadsStore.getState().threads.get(ref);
     if (!model?.olderCursor) return; // untracked, or no more history to page in
     const resp: ThreadTurnsListResponse = await client.request(
@@ -2058,13 +2121,28 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
   },
 
   async listModels(refresh) {
-    const client = requireClient();
+    // Cache/inflight hits below need no wire call at all, so they must not
+    // block on a reconnect that a warm cache makes irrelevant - check them
+    // BEFORE waiting for a ready client, unlike the other read-only actions
+    // here (which always need the wire, so the order doesn't matter).
     if (!refresh && modelsCache) return modelsCache;
     if (!refresh && inflightModelsList) return inflightModelsList;
+    // The ready-wait (issue #195's RCA - read-only, so it waits out a
+    // reconnect instead of failing with AppwireClient's synchronous "cannot
+    // call ... while reconnecting" rejection; see requireReadyClient's own
+    // comment) lives INSIDE this inner async call, not awaited directly
+    // here, so the inflightModelsList assignment right below still runs
+    // synchronously relative to a concurrent caller of this same method -
+    // two callers racing listModels() must agree on one in-flight request
+    // before either of them suspends, same as before this method waited on
+    // anything.
     // No mapConflict here: model/list is a read-only listing with no
     // turn-CAS concept (verified against every server-side handler - see
     // this file's own describe block for the exact citations).
-    const request = client.request("model/list", {});
+    const request = (async () => {
+      const client = await requireReadyClient();
+      return client.request("model/list", {});
+    })();
     if (!refresh) inflightModelsList = request;
     try {
       const resp = await request;
@@ -2076,21 +2154,30 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
   },
 
   async listTasks(ref) {
-    const client = requireClient();
+    // Read-only, so it waits out a reconnect (issue #195's RCA) instead of
+    // failing with AppwireClient's synchronous "cannot call ... while
+    // reconnecting" rejection - see requireReadyClient's own comment.
+    const client = await requireReadyClient();
     // No mapConflict here either, same reasoning as listModels above.
     const resp = await client.request("evener/tasks/list", { ref });
     return resp.data;
   },
 
   async listJobs(ref, continuation) {
-    const client = requireClient();
+    // Read-only, so it waits out a reconnect (issue #195's RCA) instead of
+    // failing with AppwireClient's synchronous "cannot call ... while
+    // reconnecting" rejection - see requireReadyClient's own comment.
+    const client = await requireReadyClient();
     // No mapConflict here either, same reasoning as listModels/listTasks above.
     const resp = await client.request("evener/jobs/list", { ref, ...(continuation ? { continuation } : {}) });
     return resp.data;
   },
 
   async jobOutput(ref, jobId, beforeBytes, maxBytes) {
-    const client = requireClient();
+    // Read-only, so it waits out a reconnect (issue #195's RCA) instead of
+    // failing with AppwireClient's synchronous "cannot call ... while
+    // reconnecting" rejection - see requireReadyClient's own comment.
+    const client = await requireReadyClient();
     const resp = await client.request("evener/jobs/output", {
       ref,
       jobId,
@@ -2201,9 +2288,6 @@ export function resetThreadsStoreForTests(): void {
   unwireReady?.();
   unwireNotification = null;
   unwireReady = null;
-  resolveClientReadyOrRewired?.();
-  resolveClientReadyOrRewired = null;
-  clientReadyOrRewired = Promise.resolve();
   wiredClient = null;
   readyEpoch = 0;
   // replace:true, rebuilt from getInitialState() rather than a partial merge

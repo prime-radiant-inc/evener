@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/spf13/afero"
+	"primeradiant.com/evener/envvars"
 )
 
 // Entry describes one live evener serve daemon.
@@ -36,17 +37,26 @@ type Entry struct {
 	SpawnedBy  string    `json:"spawned_by,omitempty"`
 }
 
-// DefaultDir returns the canonical rendezvous directory ($HOME/.evener/run).
+// DefaultDir returns the canonical rendezvous directory:
+// $XDG_STATE_HOME/evener/run, or ~/.local/state/evener/run when
+// XDG_STATE_HOME is unset. This mirrors cmdutil.DefaultStateRoot's
+// resolution; it is duplicated here (rather than imported) to keep this
+// low-level package free of a dependency on the cmd helper layer — see
+// appwire/frame_recorder.go for the same tradeoff.
 func DefaultDir() string {
 	return defaultDir(os.UserHomeDir)
 }
 
 func defaultDir(userHomeDir func() (string, error)) string {
-	home, err := userHomeDir()
-	if err != nil || home == "" {
-		home = "."
+	base := envvars.XDGStateHome.Getenv()
+	if base == "" {
+		home, err := userHomeDir()
+		if err != nil || home == "" {
+			home = "."
+		}
+		base = filepath.Join(home, ".local", "state")
 	}
-	return filepath.Join(home, ".evener", "run")
+	return filepath.Join(base, "evener", "run")
 }
 
 // Write creates dir if necessary and writes <dir>/<pid>.json atomically.

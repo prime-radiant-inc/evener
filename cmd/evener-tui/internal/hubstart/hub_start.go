@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"primeradiant.com/evener/appwire"
+	"primeradiant.com/evener/cmdutil"
 	"primeradiant.com/evener/envvars"
 	"primeradiant.com/evener/hubapi"
 	"primeradiant.com/evener/internal/binresolve"
@@ -142,13 +143,11 @@ func resolveAuthToken(explicit, stateDir string) (string, string) {
 	return "", tokenFile
 }
 
-// AuthTokenFilePath returns the path to the hub auth-token file.
+// AuthTokenFilePath returns the path to the hub auth-token file:
+// cmdutil.DefaultStateRoot()/auth-token ($XDG_STATE_HOME/evener/auth-token,
+// or ~/.local/state/evener/auth-token when XDG_STATE_HOME is unset).
 func AuthTokenFilePath(_ string) string {
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return filepath.Join(".evener", "auth-token")
-	}
-	return filepath.Join(home, ".evener", "auth-token")
+	return filepath.Join(cmdutil.DefaultStateRoot(), "auth-token")
 }
 
 // bearerTransport is an http.RoundTripper that injects an Authorization header.

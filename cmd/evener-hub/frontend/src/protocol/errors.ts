@@ -88,6 +88,24 @@ export class ConnectionClosedError extends Error {
   }
 }
 
+// ClientNotReadyError signals that a caller-side bounded wait for the
+// client to become ready (stores/threads.ts's requireReadyClient, issue
+// #195's RCA) exhausted its timeout without the client ever reaching
+// "ready". Deliberately distinct from the text AppwireClient.request()
+// throws synchronously for a non-ready call ("cannot call ... while state
+// is ...") - that text means "rejected immediately, never even waited";
+// this one only fires after genuinely waiting out the budget, so a caller
+// (or a toast) can tell "still trying" apart from "gave up". Classified as
+// "hub-unreachable" by isClientUnreachableError below: from the person
+// looking at the screen, a client that never got ready within budget IS
+// the hub being unreachable.
+export class ClientNotReadyError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "ClientNotReadyError";
+  }
+}
+
 // GENERIC_ERROR_MESSAGE is friendlyErrorMessage's last resort: anything that
 // isn't a WireError (a message the hub itself composed for a person) or a
 // recognized client-unreachable rejection gets this, never the error's own
@@ -117,7 +135,7 @@ const HUB_UNREACHABLE_MESSAGE = "Can't reach the hub right now.";
 const CLIENT_UNREACHABLE_PATTERN = /^\w*Client: (cannot call ".*"(?: while state is ".*"|; not connected)|closed)$/;
 
 function isClientUnreachableError(error: unknown): boolean {
-  if (error instanceof ConnectionClosedError) return true;
+  if (error instanceof ConnectionClosedError || error instanceof ClientNotReadyError) return true;
   if (error instanceof WireError) return false; // a server-reported error is never this family
   const message = error instanceof Error ? error.message : typeof error === "string" ? error : undefined;
   return message !== undefined && CLIENT_UNREACHABLE_PATTERN.test(message);

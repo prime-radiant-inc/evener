@@ -93,7 +93,7 @@ Oracles: (1) never panic — note `Schema.Validate(args)` is **not** `recover()`
 # seed-corpus only (fast, deterministic) — safe for the gate
 fuzz:        ; for m in $(GO_MODULES); do (cd $$m && go test -run '^Fuzz' ./...); done
 # real fuzzing campaign (nightly / manual), bounded time per target
-fuzz-nightly ; ./scripts/run-fuzz.sh --time 60s
+fuzz-nightly ; ./scripts/fuzz/run-fuzz.sh --time 60s
 ```
 `go test -run '^Fuzz'` runs each fuzz target's **seed corpus + saved crashers** as ordinary deterministic tests (no `-fuzz` = no random search) — this is what goes in `make test`/CI under `-short`. The unbounded search runs only in `fuzz-nightly`. Add `fuzz` to the `GO_MODULES` loop and the `envvars` caveat from research §10 (either add it to the gate or skip).
 

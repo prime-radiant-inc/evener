@@ -71,7 +71,7 @@ func prepareToolCall(call llm.ToolCallData, t *tool.RegisteredTool, visibleNames
 		}
 		healed, c := repair.RepairArgs(t.Definition.Parameters, args)
 		if err2 := t.Schema.Validate(healed); err2 != nil {
-			res.PrevalErr = repair.ExplainSchemaError(requestedVisible, t.Definition.Parameters, healed, offendingField(err2))
+			res.PrevalErr = repair.ExplainSchemaError(requestedVisible, t.Definition.Parameters, healed, offendingField(err2), offendingKeyword(err2))
 			return res
 		}
 		args = healed
@@ -111,4 +111,26 @@ func offendingField(err error) string {
 		ve = ve.Causes[0]
 	}
 	return strings.Trim(ve.InstanceLocation, "/")
+}
+
+// offendingKeyword extracts the failing JSON-Schema keyword's name from a
+// jsonschema validation error — the last segment of the deepest cause's
+// KeywordLocation (e.g. "maxLength" for a string that exceeded its limit, or
+// "required" for a missing required property). ExplainSchemaError uses it to
+// surface the actual constraint that rejected a present field instead of the
+// generic "wrong type or value" message. Returns "" when no keyword can be
+// pinpointed.
+func offendingKeyword(err error) string {
+	var ve *jsonschema.ValidationError
+	if !errors.As(err, &ve) {
+		return ""
+	}
+	for len(ve.Causes) > 0 {
+		ve = ve.Causes[0]
+	}
+	kw := strings.Trim(ve.KeywordLocation, "/")
+	if i := strings.LastIndex(kw, "/"); i >= 0 {
+		return kw[i+1:]
+	}
+	return kw
 }

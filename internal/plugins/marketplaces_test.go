@@ -124,6 +124,73 @@ func TestRemoveMarketplace_DirectorySourceKeepsContents(t *testing.T) {
 	}
 }
 
+func TestLoadMarketplaces_RerootsLegacyInstallLocation(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "evener", "plugins")
+	legacyRoot := filepath.Join(filepath.Dir(filepath.Dir(root)), "serf", "plugins")
+	if err := os.MkdirAll(root, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	m := NewManager(root)
+	stalePath := filepath.Join(legacyRoot, "marketplaces", "acme")
+	body := `{"acme":{"source":{"source":"github","repo":"o/acme"},"installLocation":"` +
+		filepath.ToSlash(stalePath) + `","lastUpdated":"2026-01-01T00:00:00Z"}}`
+	if err := os.WriteFile(m.marketplacesFile(), []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	mk, err := m.ListMarketplaces()
+	if err != nil {
+		t.Fatalf("ListMarketplaces: %v", err)
+	}
+	want := filepath.Join(root, "marketplaces", "acme")
+	got := mk["acme"].InstallLocation
+	if got != want {
+		t.Fatalf("InstallLocation = %q, want %q (rerooted under current plugins root)", got, want)
+	}
+}
+
+// TestRefreshMarketplace_RepairsLegacyInstallLocation reproduces the reported
+// bug directly: a known_marketplaces.json written before a Serf→Evener
+// migration still has installLocation rooted under the old .../serf/plugins
+// tree. Without rerooting at load, RefreshMarketplace would git-pull that
+// stale, now-nonexistent directory (the "chdir ...serf/plugins/marketplaces/
+// name: no such file or directory" failure). This asserts the git pull is
+// issued against the current root instead.
+func TestRefreshMarketplace_RepairsLegacyInstallLocation(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "evener", "plugins")
+	legacyRoot := filepath.Join(filepath.Dir(filepath.Dir(root)), "serf", "plugins")
+	if err := os.MkdirAll(root, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	m := NewManager(root)
+	stalePath := filepath.Join(legacyRoot, "marketplaces", "acme")
+	body := `{"acme":{"source":{"source":"github","repo":"o/acme"},"installLocation":"` +
+		filepath.ToSlash(stalePath) + `","lastUpdated":"2026-01-01T00:00:00Z"}}`
+	if err := os.WriteFile(m.marketplacesFile(), []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	origPull := marketplaceGitPull
+	var pulledDir string
+	marketplaceGitPull = func(_ context.Context, dir string) error {
+		pulledDir = dir
+		return nil
+	}
+	t.Cleanup(func() { marketplaceGitPull = origPull })
+
+	if err := m.RefreshMarketplace(context.Background(), "acme"); err != nil {
+		t.Fatalf("RefreshMarketplace: %v", err)
+	}
+	want := filepath.Join(root, "marketplaces", "acme")
+	if pulledDir != want {
+		t.Fatalf("git pull dir = %q, want %q (current root, not stale legacy path)", pulledDir, want)
+	}
+	mk, _ := m.ListMarketplaces()
+	if mk["acme"].InstallLocation != want {
+		t.Fatalf("saved InstallLocation = %q, want %q", mk["acme"].InstallLocation, want)
+	}
+}
+
 func TestRefreshMarketplace_ClonesUnfetchedSeed(t *testing.T) {
 	if !gitAvailable() {
 		t.Skip("git not available")

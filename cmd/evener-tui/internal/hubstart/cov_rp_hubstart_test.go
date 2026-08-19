@@ -18,10 +18,12 @@ func TestResolveAuthToken(t *testing.T) {
 		t.Fatalf("explicit token = %q, want explicit-tok", got)
 	}
 
-	// A token file under $HOME/.evener is read when no explicit value is given.
+	// A token file under the evener state root is read when no explicit value
+	// is given.
 	home := t.TempDir()
 	t.Setenv("HOME", home)
-	evenerDir := filepath.Join(home, ".evener")
+	t.Setenv("XDG_STATE_HOME", "")
+	evenerDir := filepath.Join(home, ".local", "state", "evener")
 	if err := os.MkdirAll(evenerDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -32,7 +34,7 @@ func TestResolveAuthToken(t *testing.T) {
 	if tok != "file-tok" {
 		t.Fatalf("resolveAuthToken file = %q, want file-tok", tok)
 	}
-	if !strings.HasSuffix(tokenFile, filepath.Join(".evener", "auth-token")) {
+	if !strings.HasSuffix(tokenFile, filepath.Join(".local", "state", "evener", "auth-token")) {
 		t.Fatalf("token file path = %q", tokenFile)
 	}
 	if got := ResolveAuthToken("", ""); got != "file-tok" {
@@ -41,8 +43,9 @@ func TestResolveAuthToken(t *testing.T) {
 }
 
 func TestResolveAuthTokenMissingWarns(t *testing.T) {
-	home := t.TempDir() // no .evener/auth-token created
+	home := t.TempDir() // no state-root auth-token created
 	t.Setenv("HOME", home)
+	t.Setenv("XDG_STATE_HOME", "")
 
 	warn := captureStderr(t, func() {
 		if got := ResolveAuthToken("", ""); got != "" {
@@ -56,8 +59,9 @@ func TestResolveAuthTokenMissingWarns(t *testing.T) {
 
 func TestAuthTokenFilePathWithoutHome(t *testing.T) {
 	t.Setenv("HOME", "")
+	t.Setenv("XDG_STATE_HOME", "")
 	// With no resolvable home dir, the path falls back to a relative location.
-	if got := AuthTokenFilePath(""); got != filepath.Join(".evener", "auth-token") {
+	if got := AuthTokenFilePath(""); got != filepath.Join(".local", "state", "evener", "auth-token") {
 		t.Fatalf("AuthTokenFilePath without HOME = %q", got)
 	}
 }

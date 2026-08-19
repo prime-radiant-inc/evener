@@ -282,7 +282,7 @@ quarantine under `--keep-values`) drops any leaking seed and fails the run.
 
 `--keep-values` (real values, never committed) is refused unless
 `EVENER_FUZZ_CAPTURE_ENV=1` marks a dedicated capture box, and is forced off for a
-personal `~/.evener` source.
+personal evener state root source.
 
 ### The opt-in recorders
 

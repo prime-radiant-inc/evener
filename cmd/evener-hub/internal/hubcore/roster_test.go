@@ -355,7 +355,8 @@ func fuzzScenarioRoster_FindMissing(t *testing.T) {
 
 func fuzzScenarioRoster_DefaultRunDir(t *testing.T) {
 	t.Setenv("HOME", "/tmp/fakehome")
-	want := filepath.Join("/tmp/fakehome", ".evener", "run") //nolint:gocritic // filepathJoin: base is a full home path; mirrors rendezvous.DefaultDir
+	t.Setenv("XDG_STATE_HOME", "")
+	want := filepath.Join("/tmp/fakehome", ".local", "state", "evener", "run") //nolint:gocritic // filepathJoin: base is a full home path; mirrors rendezvous.DefaultDir
 	if got := rendezvous.DefaultDir(); got != want {
 		t.Fatalf("DefaultDir: got %q want %q", got, want)
 	}
