@@ -33,8 +33,8 @@ curl -fsSL https://raw.githubusercontent.com/prime-radiant-inc/evener/main/insta
 ```
 
 The release installer downloads the matching GitHub release archive, installs
-`evener`, `evener-hub`, `evener-tui`, and `evener-doctor` under
-`~/.local/share/evener/bin`, and symlinks them into `~/.local/bin`.
+`evener`, `evener-hub`, `evener-tui`, `evener-doctor`, and `evener-migrate`
+under `~/.local/share/evener/bin`, and symlinks them into `~/.local/bin`.
 
 Install a specific tagged release:
 
@@ -60,9 +60,10 @@ From a source checkout:
 make install
 ```
 
-This builds `evener`, `evener-hub`, `evener-tui`, and `evener-doctor`, installs the
-binaries under `~/.local/share/evener/bin`, and symlinks them into
-`~/.local/bin`. `make install-home` is an alias for the same layout.
+This builds `evener`, `evener-hub`, `evener-tui`, `evener-doctor`, and
+`evener-migrate`, installs the binaries under `~/.local/share/evener/bin`, and
+symlinks them into `~/.local/bin`. `make install-home` is an alias for the
+same layout.
 
 System-style install:
 
@@ -118,6 +119,30 @@ or TUI credentials UI, `~/.evener/credentials.toml`, provider environment
 variables such as `OPENAI_API_KEY`, or OpenAI OAuth. See
 [docs/environment.md](docs/environment.md) for the complete environment variable
 reference.
+
+### Migrating from Serf
+
+Evener was previously named Serf. If you have an existing Serf install, run
+`evener-migrate` once, before your first Evener launch:
+
+```bash
+evener-migrate
+```
+
+It moves `~/.serf` to `~/.evener`, `${XDG_CONFIG_HOME:-~/.config}/serf` to
+`.../evener`, `${XDG_STATE_HOME:-~/.local/state}/serf` to `.../evener`, and
+any per-project `.serf` directory (in the current directory or a Git
+ancestor) to `.evener`. It refuses to overwrite a destination that already
+exists, so it's safe to run more than once. Pass `--dry-run` to preview the
+moves first, or `--verbose` to see every path it checked.
+
+If you skip this, the first Evener binary you run creates a fresh, empty
+`~/.evener` (and XDG config/state directories) — and once that empty
+directory exists, `evener-migrate` treats it as already migrated and skips
+it, leaving your old Serf data stranded with no further warning. To prevent
+that, Evener refuses to start when it finds a legacy Serf directory with no
+matching Evener directory yet, and its error names the path and points back
+to `evener-migrate`.
 
 ## Usage
 
