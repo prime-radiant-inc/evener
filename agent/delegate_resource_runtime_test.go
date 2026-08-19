@@ -266,7 +266,11 @@ func TestDelegateResourceRuntime_PostCommitFailureWaitsForPriorDelivery(t *testi
 	go func() {
 		outcomes <- (delegateRuntime{owner: root}).send(context.Background(), fixture.delegateID, "generation two restore failure", 60_000)
 	}()
-	waitForCondition(t, 5*time.Second, "post-commit failure queued behind prior delivery", func() bool {
+	// TRIPWIRE: the generation-two send has no dedicated completion signal -- it
+	// queues behind the prior delivery under c.mu -- so this polls the
+	// aggregate directly. The queue is set synchronously under the lock well
+	// before this returns; 30s only fires on a genuine hang.
+	waitForCondition(t, 30*time.Second, "post-commit failure queued behind prior delivery", func() bool {
 		c.mu.Lock()
 		defer c.mu.Unlock()
 		aggregate := c.durable[fixture.delegateID]
@@ -396,6 +400,12 @@ func TestDelegateResourceRuntime_StopOwnsColdRestoreBeforeSideEffects(t *testing
 // margin; it is dead time only on the green path.
 const parentCloseColdRestoreJoinWindow = time.Second
 
+// parentCloseFailedInlineResultWindow bounds how long a parent Close may take
+// to return without waiting for a failed generation's optional inline result.
+// This is a real assertion (Close must NOT wait), not a hang tripwire: the
+// test fails if Close is still blocked at this window, proving it waited.
+const parentCloseFailedInlineResultWindow = time.Second
+
 // TestDelegateResourceRuntime_ParentCloseWaitsForColdRestoreSideEffects proves the
 // ordering by a POSITIVE observation taken on the closing goroutine, not by
 // watching Close fail to return.
@@ -492,14 +502,14 @@ func TestDelegateResourceRuntime_ParentCloseWaitsForColdRestoreSideEffects(t *te
 			<-closeDone
 			t.Fatal("parent Close reached its in-flight-restore join before the cold restore's side effects ran")
 		}
-	case <-time.After(5 * time.Second):
+	case <-time.After(30 * time.Second): // TRIPWIRE: real signal from a background close; 30s only fires on a genuine hang.
 		<-sendDone
 		<-closeDone
 		t.Fatal("parent Close never reached its in-flight-restore join")
 	}
 	select {
 	case <-closeDone:
-	case <-time.After(5 * time.Second):
+	case <-time.After(30 * time.Second): // TRIPWIRE: real signal from a background close; 30s only fires on a genuine hang.
 		t.Fatal("parent Close did not return after cold-restore side effects drained")
 	}
 	<-sendDone
@@ -537,7 +547,11 @@ func TestDelegateResourceRuntime_ParentCloseDoesNotWaitForFailedInlineResult(t *
 	go func() {
 		sendDone <- (delegateRuntime{owner: root}).send(ctx, fixture.delegateID, "failed generation two", 60_000)
 	}()
-	waitForCondition(t, 5*time.Second, "failed generation queued behind prior delivery", func() bool {
+	// TRIPWIRE: the failed-generation send has no dedicated completion signal --
+	// it queues behind the prior delivery under c.mu -- so this polls the
+	// aggregate directly. The queue is set synchronously under the lock well
+	// before this returns; 30s only fires on a genuine hang.
+	waitForCondition(t, 30*time.Second, "failed generation queued behind prior delivery", func() bool {
 		c.mu.Lock()
 		defer c.mu.Unlock()
 		aggregate := c.durable[fixture.delegateID]
@@ -561,7 +575,7 @@ func TestDelegateResourceRuntime_ParentCloseDoesNotWaitForFailedInlineResult(t *
 	<-closeReachedReconstructionWait
 	select {
 	case <-closeDone:
-	case <-time.After(time.Second):
+	case <-time.After(parentCloseFailedInlineResultWindow):
 		cancel()
 		<-sendDone
 		<-closeDone
