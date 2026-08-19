@@ -356,11 +356,10 @@ func runCoverageFloor(args []string) int {
 		stderr: os.Stderr,
 		runGoTest: func(module, profilePath string) error {
 			dir := "."
-			pkg := module
+			pkg := "./..."
 			if module != "." {
 				if info, err := os.Stat(module); err == nil && info.IsDir() {
 					dir = module
-					pkg = "./..."
 				}
 			}
 			args := []string{"test", "-cover", "-coverprofile=" + profilePath}
