@@ -167,6 +167,13 @@ func TestDefaultConfigRootAndSubdirs(t *testing.T) {
 func TestEnsureUserConfigDirs(t *testing.T) {
 	root := t.TempDir()
 	t.Setenv(envvars.XDGConfigHome.Name, root)
+	// checkLegacyDataDirs also compares the home state root and the XDG state
+	// root; isolate both from the developer's real environment so this test
+	// exercises a clean-install fixture rather than the host machine's
+	// actual home directory.
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv(envvars.XDGStateHome.Name, t.TempDir())
+	t.Setenv(envvars.EVENERStateDir.Name, "")
 
 	if err := EnsureUserConfigDirs(); err != nil {
 		t.Fatalf("EnsureUserConfigDirs: %v", err)
@@ -187,6 +194,12 @@ func TestEnsureUserConfigDirsSurfacesMkdirError(t *testing.T) {
 		t.Fatalf("seed: %v", err)
 	}
 	t.Setenv(envvars.XDGConfigHome.Name, base)
+	// Isolate the legacy-migration guard's own inputs so this test exercises
+	// the mkdir failure it names, not an unrelated stranded-legacy-data error
+	// sourced from the developer's real home directory.
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv(envvars.XDGStateHome.Name, t.TempDir())
+	t.Setenv(envvars.EVENERStateDir.Name, "")
 	if err := EnsureUserConfigDirs(); err == nil {
 		t.Fatal("expected mkdir error under a regular file")
 	}

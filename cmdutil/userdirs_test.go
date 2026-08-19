@@ -24,6 +24,14 @@ func TestUserConfigDirsUseXDGConfigHome(t *testing.T) {
 func TestEnsureUserConfigDirsCreatesExtensionRoots(t *testing.T) {
 	root := t.TempDir()
 	t.Setenv("XDG_CONFIG_HOME", root)
+	// checkLegacyDataDirs also compares the home state root and the XDG state
+	// root; isolate both from the developer's real environment so this test
+	// exercises a clean-install fixture rather than the host machine's
+	// actual home directory (see TestEnsureUserConfigDirsRefusesStranded* in
+	// legacymigration_test.go for the guard's own coverage).
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	t.Setenv("EVENER_STATE_DIR", "")
 
 	if err := EnsureUserConfigDirs(); err != nil {
 		t.Fatalf("EnsureUserConfigDirs: %v", err)
