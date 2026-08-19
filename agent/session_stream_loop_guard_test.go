@@ -72,6 +72,31 @@ func TestStreamLoopGuard_CycleDetection_SingleCallRepeatedFiveTimes(t *testing.T
 	}
 }
 
+// TestStreamLoopGuard_SixCycle_FallsToTheCeilingNotTheCycleDetector pins
+// loopGuardCycleMaxLen's upper edge, which is otherwise unobservable: a cycle
+// longer than 5 is deliberately out of the cycle detector's reach (gemini-cli's
+// k=1..5), and the raw ceiling is what catches it instead. Widening the
+// constant would change which detector fires and how early, so the boundary is
+// a decision worth pinning rather than a number free to drift.
+func TestStreamLoopGuard_SixCycle_FallsToTheCeilingNotTheCycleDetector(t *testing.T) {
+	g := newStreamLoopGuard()
+	var trip *loopTrip
+	n := 0
+	for trip == nil {
+		trip = g.observeToolCall(distinctToolName(n%6), `{"k":`+itoaTest(n%6)+`}`)
+		n++
+		if n > 100 {
+			t.Fatal("a 6-cycle never tripped at all; the ceiling must still backstop it")
+		}
+	}
+	if trip.Kind == loopTripCycle {
+		t.Fatalf("6-cycle tripped the CYCLE detector at call %d; loopGuardCycleMaxLen is %d, so a period of 6 must fall through to the ceiling instead", n, loopGuardCycleMaxLen)
+	}
+	if n != loopGuardRawCeiling {
+		t.Fatalf("6-cycle tripped at call %d, want the ceiling at %d", n, loopGuardRawCeiling)
+	}
+}
+
 // TestStreamLoopGuard_EighteenDistinctCalls_NoTrip pins odysseus #3185's
 // false positive: a legitimate round of ~18 DISTINCT tool calls must never
 // trip, neither the cycle detector (no repetition at all) nor the raw ceiling
