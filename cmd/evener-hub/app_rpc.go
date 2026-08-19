@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"net/http"
 	"os"
-	"path/filepath"
 	"sort"
 	"strings"
 
@@ -14,6 +13,7 @@ import (
 	"primeradiant.com/evener/cmd/evener-hub/internal/appsource"
 	"primeradiant.com/evener/cmd/evener-hub/internal/fspaths"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hubcore"
+	"primeradiant.com/evener/cmdutil"
 	"primeradiant.com/evener/internal/appserver"
 	"primeradiant.com/evener/internal/plugins"
 	"primeradiant.com/evener/rendezvous"
@@ -122,6 +122,17 @@ func allowsPastFallbackAfterLiveReadFailure(source appsource.Source, params appw
 	return !requiresLiveHandoff || isDeadSessionError(err)
 }
 
+// hubLaunchConfigRoot resolves cfg.LaunchConfigRoot, falling back to
+// cmdutil.DefaultConfigRoot() when unset — the same defensive fallback
+// hubStateRoot below uses, for the same reason (a zero-value WebConfig built
+// directly, as some tests do).
+func hubLaunchConfigRoot(cfg hubcore.WebConfig) string {
+	if cfg.LaunchConfigRoot != "" {
+		return cfg.LaunchConfigRoot
+	}
+	return cmdutil.DefaultConfigRoot()
+}
+
 func newHubAppServer(cfg hubcore.WebConfig, sources *appsource.Registry) *appserver.Server {
 	server := appserver.NewServer(appserver.ServerConfig{
 		ServerName: "evener-hub",
@@ -147,11 +158,10 @@ func newHubAppServer(cfg hubcore.WebConfig, sources *appsource.Registry) *appser
 	})
 	hubStateRoot := cfg.HubStateRoot
 	if hubStateRoot == "" {
-		if home, err := os.UserHomeDir(); err == nil && home != "" {
-			hubStateRoot = filepath.Join(home, ".evener")
-		} else {
-			hubStateRoot = ".evener"
-		}
+		// Defensive only: LoadConfig's applyConfigDefaults always populates
+		// HubStateRoot, so a zero-value Config built directly (as in some
+		// tests) is the only way this branch runs.
+		hubStateRoot = cmdutil.DefaultStateRoot()
 	}
 	authController := newHubAuthControllerWithStore(hubStateRoot, cfg.CredsStore)
 	authController.providersConfigPath = cfg.ProvidersConfigPath
@@ -169,7 +179,9 @@ func newHubAppServer(cfg hubcore.WebConfig, sources *appsource.Registry) *appser
 	registerThreadHandlers(server, cfg, sources, relayFunctions)
 	registerAuthHandlers(server, authController)
 	registerInstanceHandlers(server, instancesController)
-	launchController := newHubLaunchController(hubStateRoot)
+	// launch.toml is user-editable configuration, so its root is the config
+	// root, not hubStateRoot (machine-generated state).
+	launchController := newHubLaunchController(hubLaunchConfigRoot(cfg))
 	registerLaunchHandlers(server, launchController)
 	pluginsController := newHubPluginsController(cfg.PluginRoot)
 	registerPluginHandlers(server, pluginsController)

@@ -7016,10 +7016,11 @@ func TestHubRPCThreadStartUsesGlobalLaunchDefaultModel(t *testing.T) {
 		}}},
 	}
 	hub := newHubRPCTestServer(t, hubcore.WebConfig{
-		RunDir:       runDir,
-		HubStateRoot: stateRoot,
-		Spawner:      spawner,
-		Past:         hubcore.NewPastIndex(""),
+		RunDir:           runDir,
+		HubStateRoot:     stateRoot,
+		LaunchConfigRoot: stateRoot,
+		Spawner:          spawner,
+		Past:             hubcore.NewPastIndex(""),
 	})
 	defer hub.Close()
 	client := dialHubRPC(t, hub)
