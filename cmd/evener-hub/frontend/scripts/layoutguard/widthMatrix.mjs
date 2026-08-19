@@ -46,6 +46,9 @@ const PLACEHOLDER = "__LAYOUTGUARD_WIDTH_MATRIX__";
 // declares no widthMatrix leaves the harness untouched.
 export function injectWidthMatrix(harnessSource, widthMatrix, caseName) {
   const normalized = normalizeWidthMatrix(widthMatrix, caseName);
+  if (normalized === null && harnessSource.includes(PLACEHOLDER)) {
+    throw new Error(`${caseName}: harness.html has ${PLACEHOLDER} but case.json declares no widthMatrix`);
+  }
   if (normalized === null) return harnessSource;
   if (!harnessSource.includes(PLACEHOLDER)) {
     throw new Error(`${caseName}: case.json declares widthMatrix but harness.html has no ${PLACEHOLDER} placeholder`);
