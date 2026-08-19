@@ -120,6 +120,29 @@ function signalProcessGroup(processGroupId, signal) {
   }
 }
 
+function signalProfileProcess(processIdentity, signal) {
+  try {
+    // The Crashpad helper is spawned in its own process group
+    // (POSIX_SPAWN_SETEXGROUP), so signal its group (-pid), not the bare
+    // pid. A direct pid signal intermittently gets EPERM once the helper is
+    // orphaned (reparented to launchd); a group signal to the helper's own
+    // group reliably reaches it (issue #119).
+    process.kill(-processIdentity.pid, signal);
+    return true;
+  } catch (error) {
+    if (error?.code === "ESRCH") return false;
+    throw error;
+  }
+}
+
+function killProfileProcess(processIdentity, signalProfile) {
+  try {
+    signalProfile(processIdentity, "SIGKILL");
+  } catch (error) {
+    if (error?.code !== "ESRCH") throw error;
+  }
+}
+
 function reportCleanupFailure(error) {
   console.error(error instanceof Error ? error.message : String(error));
 }
@@ -392,6 +415,7 @@ export function createBrowserProcessCleanup({
   profileProcessRunning: isProfileProcessRunning = profileProcessIdentityRunning,
   scheduleProfileProcessCheck = setImmediate,
   cancelProfileProcessCheck = clearImmediate,
+  signalProfileProcess: signalProfile = signalProfileProcess,
 }) {
   const children = [];
   let cleanupPromise = null;
@@ -427,6 +451,17 @@ export function createBrowserProcessCleanup({
     cleanupPromise = (async () => {
       try {
         const profileProcessesBeforeClose = findProfileProcesses(profileDir);
+        // The Crashpad helper (`chrome_crashpad_handler`) is spawned by Chrome in
+        // its own process group (POSIX_SPAWN_SETEXGROUP), so the group teardown
+        // `process.kill(-chromePgid)` below never reaches it. SIGKILL each escaped
+        // helper's own group NOW, while Chrome is still alive and the helper is
+        // still a descendant of this process: signaling after the group teardown
+        // intermittently gets EPERM once the helper is orphaned (reparented to
+        // launchd), and without any signal the helper is only polled then
+        // rejected, escaping cleanup ~1 run in 3 (issue #119).
+        for (const processIdentity of profileProcessesBeforeClose) {
+          killProfileProcess(processIdentity, signalProfile);
+        }
         await Promise.all(
           children.map(({ child, processGroupId, gracefulClose }) =>
             waitForChildExit(
@@ -450,6 +485,12 @@ export function createBrowserProcessCleanup({
             ]),
           ).values(),
         ];
+        // Reap any helpers that escaped DURING the group close (the late-helper
+        // path) and confirm the pre-close helpers are gone; SIGKILL is a no-op
+        // (ESRCH) on anything the pre-close pass already reaped.
+        for (const processIdentity of profileProcesses) {
+          killProfileProcess(processIdentity, signalProfile);
+        }
         await Promise.all(
           profileProcesses.map((processIdentity) =>
             waitForProfileProcessExit(
