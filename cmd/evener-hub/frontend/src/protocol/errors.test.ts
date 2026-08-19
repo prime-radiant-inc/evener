@@ -2,6 +2,7 @@
 
 import { expect, test } from "vitest";
 import {
+  ClientNotReadyError,
   ConnectionClosedError,
   errorKind,
   errorText,
@@ -113,6 +114,18 @@ test("friendlyErrorMessage maps AppwireClient's cannot-call-while-closed rejecti
   );
 });
 
+// ClientNotReadyError (stores/threads.ts's requireReadyClient, issue #195's
+// RCA) fires only after a caller-side bounded wait for a ready client is
+// exhausted - a genuinely, not just momentarily, unreachable hub. It must
+// route through the same friendly sentence as every other client-unreachable
+// shape, not leak its own "timed out waiting for a ready client after
+// 15000ms" text to a person.
+test("friendlyErrorMessage maps ClientNotReadyError to the same hub-unreachable sentence", () => {
+  expect(
+    friendlyErrorMessage(new ClientNotReadyError("threads store: timed out waiting for a ready client after 15000ms")),
+  ).toBe("Can't reach the hub right now.");
+});
+
 test("friendlyErrorMessage recognizes the same shape from FakeClient, tests' own stand-in", () => {
   expect(friendlyErrorMessage(new Error('FakeClient: cannot call "thread/start" while state is "closed"'))).toBe(
     "Can't reach the hub right now.",
@@ -143,6 +156,12 @@ test("friendlyErrorMessage gives every other unknown rejection the same generic 
 test("errorKind classifies a closed/not-yet-open socket as hub-unreachable", () => {
   expect(errorKind(new ConnectionClosedError("AppwireClient: closed"))).toBe("hub-unreachable");
   expect(errorKind(new Error('AppwireClient: cannot call "model/list" while state is "closed"'))).toBe(
+    "hub-unreachable",
+  );
+});
+
+test("errorKind classifies ClientNotReadyError's ready-wait timeout as hub-unreachable too", () => {
+  expect(errorKind(new ClientNotReadyError("threads store: timed out waiting for a ready client after 15000ms"))).toBe(
     "hub-unreachable",
   );
 });
