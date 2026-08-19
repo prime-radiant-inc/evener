@@ -15,6 +15,37 @@ func TestDefaultRoot_UsesXDGConfigHome(t *testing.T) {
 	}
 }
 
+func TestLegacyRootFor(t *testing.T) {
+	cases := []struct {
+		name string
+		root string
+		want string
+	}{
+		{
+			name: "default-shaped root swaps evener for serf",
+			root: "/x/y/evener/plugins",
+			want: "/x/y/serf/plugins",
+		},
+		{
+			name: "custom root with no evener segment has no legacy equivalent",
+			root: "/store",
+			want: "",
+		},
+		{
+			name: "root whose parent isn't evener has no legacy equivalent",
+			root: "/x/y/notevener/plugins",
+			want: "",
+		},
+	}
+	for _, tt := range cases {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := legacyRootFor(tt.root); got != tt.want {
+				t.Errorf("legacyRootFor(%q) = %q, want %q", tt.root, got, tt.want)
+			}
+		})
+	}
+}
+
 func TestManagerPaths(t *testing.T) {
 	m := NewManager("/store")
 	cases := map[string]string{
