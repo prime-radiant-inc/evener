@@ -227,6 +227,112 @@ func TestExplainSchemaError_NestedPropertyWrongTypeOrValue(t *testing.T) {
 	}
 }
 
+// TestExplainSchemaError_ConstraintClasses covers every constraint keyword
+// issue #193's RCA confirmed hits the same generic-message bug: maxLength,
+// minItems, maxItems, and enum. Each case pins the exact constraint-detail
+// sentence and asserts the misleading "Required arguments" tail is gone.
+func TestExplainSchemaError_ConstraintClasses(t *testing.T) {
+	tests := []struct {
+		name             string
+		toolName         string
+		params           map[string]any
+		args             map[string]any
+		instanceLocation string
+		keyword          string
+		want             string
+	}{
+		{
+			name:     "maxLength",
+			toolName: "ask_user",
+			params:   askUserParamsForExplain(),
+			args: map[string]any{"questions": []any{map[string]any{
+				"header": strings.Repeat("x", 20), "question": "q", "options": []any{},
+			}}},
+			instanceLocation: "questions/0/header",
+			keyword:          "maxLength",
+			want:             `ask_user: argument "questions[0].header" exceeds maxLength (12). Value "xxxxxxxxxxxxxxxxxxxx" is 20 characters.`,
+		},
+		{
+			name:             "minItems",
+			toolName:         "ask_user",
+			params:           askUserParamsForExplain(),
+			args:             map[string]any{"questions": []any{}},
+			instanceLocation: "questions",
+			keyword:          "minItems",
+			want:             `ask_user: argument "questions" is below minItems (1). Value has 0 items.`,
+		},
+		{
+			name:     "maxItems",
+			toolName: "ask_user",
+			params:   askUserParamsForExplain(),
+			args: map[string]any{"questions": []any{
+				map[string]any{}, map[string]any{}, map[string]any{}, map[string]any{}, map[string]any{},
+			}},
+			instanceLocation: "questions",
+			keyword:          "maxItems",
+			want:             `ask_user: argument "questions" exceeds maxItems (4). Value has 5 items.`,
+		},
+		{
+			name:             "enum",
+			toolName:         "task_list",
+			params:           taskListParamsForExplain(),
+			args:             map[string]any{"action": "bogus"},
+			instanceLocation: "action",
+			keyword:          "enum",
+			want:             `task_list: argument "action" is not one of the allowed values: view, append, update. Value is "bogus".`,
+		},
+		{
+			name:     "nested enum",
+			toolName: "task_list",
+			params:   taskListParamsForExplain(),
+			args: map[string]any{
+				"action":  "update",
+				"updates": []any{map[string]any{"id": float64(1), "status": "bogus"}},
+			},
+			instanceLocation: "updates/0/status",
+			keyword:          "enum",
+			want:             `task_list: argument "updates[0].status" is not one of the allowed values: open, in_progress, done, cancelled. Value is "bogus".`,
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got := ExplainSchemaError(tc.toolName, tc.params, tc.args, tc.instanceLocation, tc.keyword)
+			if got != tc.want {
+				t.Fatalf("got:\n%s\nwant:\n%s", got, tc.want)
+			}
+			if strings.Contains(got, "Required arguments") {
+				t.Fatalf("message must not include the generic required-arguments line: %q", got)
+			}
+		})
+	}
+}
+
+// TestExplainSchemaError_UnhandledKeywordFallsBackWithoutTail asserts the
+// "fall back gracefully" contract for constraint keywords with no dedicated
+// formatter (minimum, maximum, pattern, ...): the message degrades to the
+// generic "wrong type or value" sentence, but issue #193's misleading
+// "Required arguments" tail must NOT reappear just because the keyword is
+// unrecognized — the field is present either way.
+func TestExplainSchemaError_UnhandledKeywordFallsBackWithoutTail(t *testing.T) {
+	params := map[string]any{
+		"type":                 "object",
+		"additionalProperties": false,
+		"properties": map[string]any{
+			"limit": map[string]any{"type": "integer", "maximum": 100},
+		},
+		"required": []string{"limit"},
+	}
+	args := map[string]any{"limit": float64(500)}
+	got := ExplainSchemaError("list", params, args, "limit", "maximum")
+	want := "list: argument \"limit\" has the wrong type or value.\nExample: {\"limit\": 0}"
+	if got != want {
+		t.Fatalf("got:\n%s\nwant:\n%s", got, want)
+	}
+	if strings.Contains(got, "Required arguments") {
+		t.Fatalf("message must not include the generic required-arguments line: %q", got)
+	}
+}
+
 func TestExplainSchemaError_FlatTopLevelUnchanged(t *testing.T) {
 	// Regression: a single-segment instance location (today's only case)
 	// must still produce the unqualified "Required arguments:" line, with

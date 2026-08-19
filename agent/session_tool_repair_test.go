@@ -185,6 +185,24 @@ func TestPrepareToolCall_NestedSchemaErrors_NameRealFieldAndContainer(t *testing
 			t.Fatalf("PrevalErr =\n%s\nwant:\n%s", res.PrevalErr, want)
 		}
 	})
+
+	// The RCA for issue #193 confirmed enum is a second, independently
+	// affected constraint class: an invalid task_list action produced the
+	// same misleading "has the wrong type or value" + "Required arguments:
+	// action (string)." pair, even though action was present. Verify it
+	// through the real DefTaskList schema, not a hand-built fixture.
+	t.Run("task_list action bogus enum value", func(t *testing.T) {
+		call := llm.ToolCallData{ID: "c4", Name: "task_list",
+			Arguments: json.RawMessage(`{"action":"bogus"}`)}
+		res := prepareToolCall(call, reg.Get("task_list"), []string{"task_list"}, "task_list", "")
+		want := "task_list: argument \"action\" is not one of the allowed values: view, append, update. Value is \"bogus\"."
+		if res.PrevalErr != want {
+			t.Fatalf("PrevalErr =\n%s\nwant:\n%s", res.PrevalErr, want)
+		}
+		if strings.Contains(res.PrevalErr, "Required arguments") {
+			t.Fatalf("message must not include the generic required-arguments line: %q", res.PrevalErr)
+		}
+	})
 }
 
 // A non-length stop keeps the existing invalid-JSON coaching path.
