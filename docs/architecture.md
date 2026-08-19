@@ -199,10 +199,24 @@ branch never applies to a delegate.
 
 ### The repeated-call breaker
 
-Steering a stuck agent has two layers. `injectPostToolSteering`
+Steering a stuck agent has three layers. Above the other two, the **stream loop guard**
+(`agent/session_stream_loop_guard.go`) is the only one that acts *during* a response:
+`consumeModelStream` feeds it every completed tool call, and it stops the stream when
+the calls form a cycle of length 1–5 repeated five times, or when one response crosses
+50 raw calls. The others cannot see this, because both watch tool *results* and a
+runaway response never finishes a round to produce any. A trip always waits for every
+open tool call to close, so the forced finish lands on a legal boundary and never
+freezes a call's arguments mid-stream. The first trip is soft: the calls already
+streamed still dispatch, and a `stream-loop` steering turn naming what repeated lands
+after their results. A second consecutive trip ends the turn with a non-retryable error
+that is deliberately excluded from the model-fallback walk, since the runaway came from
+the request and every fallback would reproduce it. Both the streak and the pending
+nudge are scoped to one turn.
+
+Below it, `injectPostToolSteering`
 (`agent/session_tool_round.go`) watches a window of recent call signatures and, when
 `detectLoop` fires, injects steering — the structural intervention when every call in
-the window failed, today's tiered escalation otherwise. Underneath it,
+the window failed, today's tiered escalation otherwise. Underneath that,
 `Registry.ExecuteCall` (`agent/internal/tool/registry.go`) consults a ledger
 (`agent/internal/tool/breaker.go`) that every *dispatched* tool call passes through,
 native and MCP alike — a call refused before dispatch — by pre-validation, an unknown tool
