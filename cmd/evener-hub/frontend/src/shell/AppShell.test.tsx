@@ -191,11 +191,9 @@ const appShellCss = readFileSync(join(dirname(fileURLToPath(import.meta.url)), "
 
 test("keeps the desktop shell full-bleed contract in AppShell.module.css", () => {
   expect(appShellCss).not.toContain("padding: var(--space-4);");
-  // No gap at any width: the rail sits flush against the workspace, its own
-  // border-right hairline the only divider (2026-08 sidebar UX rework). A
-  // reintroduced gap: on any .content rule is exactly the regression to catch.
-  expect(appShellCss).not.toMatch(/\.content[^{]*\{[^}]*\bgap:/);
+  expect(appShellCss).toContain("gap: var(--space-3);");
   expect(appShellCss).toContain("padding: 0;");
+  expect(appShellCss).toContain("gap: 0;");
 });
 
 // Renders a route to completion so both halves of its lazy-loading cost are
@@ -1633,10 +1631,7 @@ test("mobile: the shell content frame drops its padding so the workspace is full
   const contentRule = mobile![1]!.match(/\.content \{([^}]*)\}/);
   expect(contentRule).not.toBeNull();
   expect(contentRule![1]).toContain("padding: 0");
-  // The flush sidebar is the rule at EVERY width now, so the mobile block
-  // carries no gap reset of its own; a gap: here would mean someone added
-  // one back on .content above, which the full-bleed contract test forbids.
-  expect(contentRule![1]).not.toContain("gap:");
+  expect(contentRule![1]).toContain("gap: 0");
 });
 
 test("mobile: the shared shell follows the visible viewport while retaining a vh fallback", () => {

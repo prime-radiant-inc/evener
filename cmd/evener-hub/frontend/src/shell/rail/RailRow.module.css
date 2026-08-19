@@ -53,40 +53,6 @@
   }
 }
 
-/* The right slot: ONE grid cell shared by the slot's occupant (the relative
- * timestamp, the needs-you Badge, or "Not started") and the row's
- * hover-revealed actions menu (a session row's "..." trigger, a project
- * row's "+"/"..." pair). Both children occupy the same grid area, so the
- * slot's width is the WIDER of the two - the menu borrows the timestamp's
- * space instead of claiming a slot beside it, which is what used to narrow
- * every row's title column by the menu's full width at rest as much as on
- * hover (2026-08 sidebar UX rework: the occupant's space was already there;
- * the menu now shares it rather than adding to it).
- *
- * At rest the occupant shows and .actions is opacity: 0 AND visibility:
- * hidden - visibility, not opacity alone, because opacity never disables
- * hit-testing (the invisible overlay of issue #196 ate clicks through it).
- * On reveal - row hover, treeitem focus, or the row's own menu held open -
- * the two flip: the menu covers the timestamp. The trailing disclosure
- * chevron lives in .textCol, LEFT of this slot, and the slot is a real
- * in-flow flex item, so flexbox reserves its width in every state and the
- * chevron can never be laid out, or hit-tested, underneath the revealed
- * menu at any rail width - the structural guarantee the issue #196 rework
- * established, kept. layoutguard's rail-row-chevron-actions-overlap case
- * pins all of it: disjoint boxes in both states, per-state hit-testing, and
- * the slot never wider than max(occupant, actions). */
-.rightSlot {
-  display: grid;
-  align-items: center;
-  justify-items: end;
-  flex: none;
-  margin-left: auto;
-}
-
-.rightSlot > * {
-  grid-area: 1 / 1;
-}
-
 /* Row actions (RailRow's "+"/"..." trigger buttons; both a session row's
  * single "..." and a project row's "+" pair): quiet by default -
  * transparent, borderless, invisible - revealed on row hover/focus so the
@@ -101,68 +67,55 @@
  * reverts it via Menu's own isOpen state); an ancestor selector is scoped
  * to `.actions` so an open menu on one row never reveals another's.
  *
- * The visibility timing: revealed flips visibility IMMEDIATELY (delay 0s)
- * and fades opacity in; returning to rest waits out the fade (the 120ms
- * visibility delay) before flipping, so the menu fades instead of popping
- * and is never hit-testable once invisible. */
+ * A real, in-flow flex item (issue #196) - not the absolutely-positioned,
+ * zero-width-cost overlay this used to be. That design pinned `.actions` to
+ * the row's right edge, out of flex layout entirely, so a hidden->revealed
+ * transition cost the row's own content nothing: the title column laid out
+ * as if these buttons weren't there, and the revealed buttons painted ON
+ * TOP of the timestamp/Badge instead of claiming a slot beside it. The
+ * defect that traded away: the row's trailing disclosure chevron
+ * (`.chevronButton`) trails the truncating title inside the SAME flex line,
+ * so on a long-enough title it landed under this overlay's footprint too -
+ * and CSS opacity never disables hit testing, so the overlay swallowed the
+ * chevron's clicks even at rest, invisibly. A z-index fix was tried first
+ * (raise the chevron's stacking order above the overlay) and reverted: it
+ * only moves the swallowed-click bug onto whichever control loses the
+ * stacking fight, which measured out to the "..." trigger itself losing a
+ * quarter of its own hit box to the chevron sitting on top of it - see
+ * layoutguard's rail-row-chevron-actions-overlap case. Real flex placement
+ * removes the overlap structurally instead of arbitrating it: flexbox
+ * reserves this element's actual width (a session row's one button, a
+ * project row's two) out of the row's available space, so nothing else in
+ * the row can ever be laid out, or hit-tested, underneath it. The accepted
+ * cost is the mirror of the old zero-cost property: every row's title
+ * column is now permanently narrower by `.actions`'s own reserved width,
+ * at rest as much as on hover, not just while revealed - and the
+ * timestamp/Badge, no longer ever covered, simply stays visible through
+ * the hover reveal instead of being masked out and back in. */
 .actions {
   display: inline-flex;
   align-items: center;
+  flex: none;
   gap: var(--space-1);
   opacity: 0;
-  visibility: hidden;
-  transition:
-    opacity var(--motion-duration-hover) var(--motion-easing-standard),
-    visibility 0s var(--motion-duration-hover);
+  transition: opacity 120ms var(--motion-easing-standard);
 }
 
 [role="treeitem"]:focus .actions,
 .actions:has(button[aria-expanded="true"]),
 .railRow:hover .actions {
   opacity: 1;
-  visibility: visible;
-  transition-delay: 0s;
-}
-
-/* The reveal's other half: the occupant yields the shared cell to the menu
- * (same visibility timing, mirrored: it stays hit-testable through its own
- * fade-out and returns the instant the menu starts fading back). Only on a
- * hover-capable pointer at the desktop width - on touch the actions are
- * always visible beside the occupant (below), and a sticky tap-hover must
- * never make the timestamp vanish out from under the row. */
-@media (hover: hover) and (min-width: 900px) {
-  .rightSlot > :not(.actions) {
-    transition:
-      opacity var(--motion-duration-hover) var(--motion-easing-standard),
-      visibility 0s 0s;
-  }
-
-  [role="treeitem"]:focus .rightSlot > :not(.actions),
-  .rightSlot:has(button[aria-expanded="true"]) > :not(.actions),
-  .railRow:hover .rightSlot > :not(.actions) {
-    opacity: 0;
-    visibility: hidden;
-    transition:
-      opacity var(--motion-duration-hover) var(--motion-easing-standard),
-      visibility 0s var(--motion-duration-hover);
-  }
 }
 
 /* Touch has no hover to reveal these with - stay visible below the mobile
  * breakpoint (useIsMobile.ts's own 899px threshold), matching TreeDrawer's
- * touch-first rail presentation. The slot stops being a shared cell and
- * becomes an ordinary flex row, so the occupant and the always-visible
- * actions sit side by side. */
+ * touch-first rail presentation. `.actions` is already a real flex slot at
+ * every width now, so this only needs to force the opacity open; there is
+ * no separate "static/in-flow" layout left to restore, unlike the overlay
+ * design this replaced. */
 @media (max-width: 899px) {
-  .rightSlot {
-    display: flex;
-    align-items: center;
-    gap: var(--space-1);
-  }
-
   .actions {
     opacity: 1;
-    visibility: visible;
   }
 }
 
@@ -292,26 +245,28 @@
   color: var(--danger);
 }
 
-/* Right-aligned relative timestamp - an occupant of the shared .rightSlot
- * cell (the Task-7 needs-you Badge and "Not started" are the other two;
- * RailRow.tsx renders at most one of the three, and the hover-revealed
- * .actions menu borrows the same cell). The slot owns the right alignment
- * and the occupant/menu visibility swap; this class is only the text. */
+/* Right-aligned relative timestamp - the row's OTHER right-slot occupant
+ * (the Task-7 needs-you Badge) renders in this same position; RailRow.tsx
+ * shows at most one of the two, never both. */
 .time {
+  flex: none;
+  margin-left: auto;
   color: var(--ink-low);
   font-family: var(--font-mono);
   font-size: var(--font-size-caption);
 }
 
-/* Third occupant of the shared .rightSlot cell (RailRow.tsx renders exactly
- * one of the three): the words a session that has never run shows INSTEAD
- * of an age. Set in the UI sans face rather than .time's mono,
+/* Third occupant of the same right slot as .time and the Badge (RailRow.tsx
+ * shows exactly one of the three): the words a session that has never run
+ * shows INSTEAD of an age. Set in the UI sans face rather than .time's mono,
  * because this is a sentence, not a measurement - and in --ink-mid rather than
  * .time's --ink-low, because a glanceable age can sit below the AA text floor
  * and a phrase the reader has to actually read cannot. Deliberately NOT a
  * semantic hue: a session nobody has started yet is not an error and not an
  * appeal for attention. */
 .notStarted {
+  flex: none;
+  margin-left: auto;
   white-space: nowrap;
   color: var(--ink-mid);
   font-size: var(--font-size-caption);

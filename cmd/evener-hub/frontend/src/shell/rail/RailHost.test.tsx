@@ -70,8 +70,7 @@ afterEach(() => {
 
 // The old tri-state sidebarMode (auto/pane/rail overlay drawer) was removed
 // 2026-07-24: desktop visibility is ONE persisted boolean. Docked by default;
-// ☰ hides to a top-left ☰ chip (one glyph owns the toggle both ways); the
-// chip (or ⌘B) docks it back.
+// « hides to a top-left ☰ chip; the chip (or ⌘B) docks it back.
 describe("docked by default", () => {
   test("renders the full-chrome rail with a Hide sidebar affordance, no chip", () => {
     render(<RailHost />);

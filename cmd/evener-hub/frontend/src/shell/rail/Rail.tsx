@@ -1,6 +1,5 @@
-// Rail is the workspace shell's sidebar: a header row (needs-you Badge,
-// search and hide icon buttons - no wordmark; the footer's daemon identity
-// is the rail's only branding) over a "+ New session" button,
+// Rail is the workspace shell's sidebar: a brand row (with search and hide
+// icon buttons) over a "+ New session" button as its header,
 // session tree over stores/tree.ts, and the pinned identity/settings footer.
 // It renders the SAME full chrome everywhere it appears — docked on desktop
 // (always; collapsed mode was removed 2026-07-24 at Jesse's direction) and
@@ -84,7 +83,7 @@ const CLASS = {
   rail: requireClass(styles.rail, "Rail.module.css", "rail"),
   header: requireClass(styles.header, "Rail.module.css", "header"),
   brand: requireClass(styles.brand, "Rail.module.css", "brand"),
-  brandSpacer: requireClass(styles.brandSpacer, "Rail.module.css", "brandSpacer"),
+  brandName: requireClass(styles.brandName, "Rail.module.css", "brandName"),
   newSession: requireClass(styles.newSession, "Rail.module.css", "newSession"),
   footer: requireClass(styles.footer, "Rail.module.css", "footer"),
   footerIdentity: requireClass(styles.footerIdentity, "Rail.module.css", "footerIdentity"),
@@ -218,11 +217,9 @@ function ArchivedSection({ count, open, onToggleOpen, nodes, onToggle, onActivat
 }
 
 export interface RailProps {
-  // Renders the header's ☰ "Hide sidebar" button when provided (the desktop
-  // case; RailHost wires it to the persisted sidebarHidden boolean) - the
-  // same ☰ glyph RailHost's hidden-state chip uses to dock it back, so one
-  // icon owns the toggle in both directions. The mobile drawer instance
-  // passes none — the drawer is its own show/hide.
+  // Renders the header's « "Hide sidebar" button when provided (the desktop
+  // case; RailHost wires it to the persisted sidebarHidden boolean). The
+  // mobile drawer instance passes none — the drawer is its own show/hide.
   onHide?: () => void;
   // Renders the right-edge drag-to-resize handle at this width when provided
   // (the desktop case; RailHost passes the persisted evener.prefs.sidebarWidth).
@@ -765,13 +762,8 @@ export function Rail({ onHide, width, onWidthChange, revealTarget, onRevealConsu
       )}
       <div className={CLASS.header}>
         <div data-testid="rail-brand" className={CLASS.brand}>
-          {/* No wordmark here: the footer's daemon identity is the rail's
-              only branding. This row is status + actions - the needs-you
-              Badge at the leading edge, search/hide as md icon buttons (the
-              widget's standard 32px tap target, not the dense sm) at the
-              trailing edge, split by the spacer. */}
+          <span className={CLASS.brandName}>evener</span>
           {needsYou > 0 && <Badge count={needsYou} tone="attention" />}
-          <span className={CLASS.brandSpacer} />
           {/* Search is a palette opener, never a text input, so it rides in
               the brand row as an icon button instead of claiming a row of the
               sidebar's vertical space for itself. data-search-trigger is what
@@ -790,17 +782,15 @@ export function Rail({ onHide, width, onWidthChange, revealTarget, onRevealConsu
               label="Search"
               icon={<span aria-hidden="true">{"⌕"}</span>}
               variant="quiet"
-              size="md"
+              size="sm"
             />
           </Tooltip>
           {onHide && (
-            // The same ☰ glyph RailHost's hidden-state chip uses to bring the
-            // rail back: ONE icon owns the sidebar toggle in both directions.
             <IconButton
               label="Hide sidebar"
-              icon={<span aria-hidden="true">{"☰"}</span>}
+              icon={<span aria-hidden="true">{"«"}</span>}
               variant="quiet"
-              size="md"
+              size="sm"
               onClick={onHide}
             />
           )}
@@ -903,7 +893,7 @@ export function Rail({ onHide, width, onWidthChange, revealTarget, onRevealConsu
           label="Settings"
           icon={<span aria-hidden="true">{"⚙"}</span>}
           variant="quiet"
-          size="md"
+          size="sm"
           onClick={() => navigate("/settings")}
         />
       </div>

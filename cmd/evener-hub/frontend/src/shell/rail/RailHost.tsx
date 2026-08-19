@@ -4,9 +4,8 @@
 // tri-state sidebarMode (auto/pane/rail) with its overlay-drawer "Collapsed"
 // mode was removed 2026-07-24 at Jesse's direction; hiding now just removes
 // the docked rail and leaves a top-left ☰ chip that docks it right back.
-// ⌘B (or Ctrl+B outside editable fields) toggles the same boolean; the ☰
-// button in the rail header hides it - the same glyph both directions, so
-// one icon owns the sidebar toggle. Mobile is untouched: StackHost's
+// ⌘B (or Ctrl+B outside editable fields) toggles the same boolean; the «
+// button in the rail header hides it. Mobile is untouched: StackHost's
 // TreeDrawer sheet hosts the same full-chrome Rail, and the hidden pref is
 // desktop-only (the drawer is mobile's own show/hide).
 //
