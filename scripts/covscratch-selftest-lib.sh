@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# scratch-selftest-lib.sh — shared harness for proving a long-running script
+# covscratch-selftest-lib.sh — shared harness for proving a long-running script
 # cleans up its scratch directory, sourced by the coverage runners' selftests.
 #
 # It exists for a bug that hid behind a green assertion. Each of those suites

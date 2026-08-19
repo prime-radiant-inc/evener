@@ -133,9 +133,9 @@ fi
 assert_eq "$(ls -A "$tmphome")" "" "a clean run leaves no scratch directory behind"
 
 # ...which only means something if the scratch would have landed in $tmphome at
-# all. See scratch-selftest-lib.sh: it did not, and the line above passed for as
+# all. See covscratch-selftest-lib.sh: it did not, and the line above passed for as
 # long as the bug existed.
-. "$(dirname "$0")/scratch-selftest-lib.sh"
+. "$(dirname "$0")/covscratch-selftest-lib.sh"
 start_scratch_run() {
 	set -m   # give the run its own process group, so a signal reaches the group
 	PATH="$fake_bin:$PATH" FAKE_GO_SLEEP=30 TMPDIR="$tmphome" \

@@ -346,7 +346,7 @@ var recursiveDeleteAllowedLines = map[string]int{
 	// Between-check resets of the suite's private tmphome fixture, each
 	// guarded by ${tmphome:?} so an unset or empty variable aborts the
 	// expansion instead of widening the delete.
-	"scratch-selftest-lib.sh": 4,
+	"covscratch-selftest-lib.sh": 4,
 	// POSIX sh by contract — its own test execs it via `sh`, which ignores
 	// the shebang — so the bash-only guard is unreachable. Under set -eu a
 	// failed mint aborts before the trap arms, and the trap deletes only the
