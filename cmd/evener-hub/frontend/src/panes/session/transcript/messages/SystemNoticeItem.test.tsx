@@ -337,7 +337,7 @@ test("the item_system_prompt id still classifies as scaffold when the wire carri
   render(<TurnBlock turn={turnWith([item("item_system_prompt", { text: "You are Evener." })])} />);
   expect(screen.getByTestId("system-notice-scaffold")).toBeTruthy();
   expect(screen.getByTestId("system-notice-scaffold").querySelector("summary")?.textContent).toBe(
-    "System prompt · 13 chars",
+    "System prompt · 15 chars",
   );
 });
 
