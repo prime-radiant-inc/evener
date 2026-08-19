@@ -894,6 +894,13 @@ func appThreadTreeEntries(thread appwire.Thread) (schema.SessionMeta, hubcore.Li
 		ParentSessionID: appThreadTreeParentSessionID(thread, ref),
 		IsSubagent:      thread.Evener.Kind == "subagent",
 	}
+	// Issue #152: a hub-synthesized fork (parent set, not a subagent) must
+	// stamp DivergenceTurn so the 96cp invariant (ParentSessionID != "" &&
+	// DivergenceTurn == 0 implies a spawned delegate) does not misclassify a
+	// remote fork as a delegate. Value 1 is the minimum legal fork turn.
+	if meta.ParentSessionID != "" && !meta.IsSubagent {
+		meta.DivergenceTurn = 1
+	}
 	if thread.GitInfo != nil {
 		meta.EnvInfo.GitBranch = thread.GitInfo.Branch
 		meta.EnvInfo.GitOriginURL = thread.GitInfo.OriginURL
