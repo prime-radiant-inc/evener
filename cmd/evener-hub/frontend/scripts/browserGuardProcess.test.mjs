@@ -250,6 +250,7 @@ test("keeps the profile until a captured escaped Chrome helper exits", async (co
   const profileDir = mkdtempSync(path.join(tmpdir(), "browser-helper-test-"));
   context.after(() => rmSync(profileDir, { recursive: true, force: true }));
   const helperChecks = [];
+  const signals = [];
   let announceHelperCheck;
   const helperCheckScheduled = new Promise((resolve) => {
     announceHelperCheck = resolve;
@@ -261,6 +262,10 @@ test("keeps the profile until a captured escaped Chrome helper exits", async (co
     profileDir,
     findProfileProcesses: () => [{ pid: 4444 }],
     profileProcessRunning: () => helperRunning,
+    signalProfileProcess: (identity, signal) => {
+      signals.push([identity.pid, signal]);
+      return true;
+    },
     scheduleProfileProcessCheck(callback) {
       helperChecks.push(callback);
       announceHelperCheck();
@@ -274,6 +279,13 @@ test("keeps the profile until a captured escaped Chrome helper exits", async (co
   await helperCheckScheduled;
   assert.equal(existsSync(profileDir), true);
   assert.equal(helperChecks.length, 1);
+  // The pre-close pass (before waiting on children) and the merged pass
+  // (after the second discovery scan) each signal the same still-running
+  // helper once.
+  assert.deepEqual(signals, [
+    [4444, "SIGKILL"],
+    [4444, "SIGKILL"],
+  ]);
 
   helperRunning = false;
   helperChecks.at(-1)();
@@ -285,6 +297,7 @@ test("retains the profile when an escaped Chrome helper outlives cleanup", async
   const profileDir = mkdtempSync(path.join(tmpdir(), "browser-helper-timeout-test-"));
   context.after(() => rmSync(profileDir, { recursive: true, force: true }));
   const deadlines = [];
+  const signals = [];
   let announceHelperCheck;
   const helperCheckScheduled = new Promise((resolve) => {
     announceHelperCheck = resolve;
@@ -295,6 +308,10 @@ test("retains the profile when an escaped Chrome helper outlives cleanup", async
     profileDir,
     findProfileProcesses: () => [{ pid: 4555 }],
     profileProcessRunning: () => true,
+    signalProfileProcess: (identity, signal) => {
+      signals.push([identity.pid, signal]);
+      return true;
+    },
     scheduleEscalation(callback) {
       const deadline = { callback, cancelled: false };
       deadlines.push(deadline);
@@ -313,6 +330,12 @@ test("retains the profile when an escaped Chrome helper outlives cleanup", async
 
   const cleanup = lifecycle.cleanup();
   await helperCheckScheduled;
+  // Both kill passes signal the still-running helper before the deadline
+  // that turns this into a rejection.
+  assert.deepEqual(signals, [
+    [4555, "SIGKILL"],
+    [4555, "SIGKILL"],
+  ]);
   deadlines[0].callback();
 
   await assert.rejects(cleanup, /escaped Chrome helper 4555.*retained/);
@@ -325,6 +348,7 @@ test("reports a retained-profile cleanup failure before interrupted exit", async
   const processTarget = new EventEmitter();
   const deadlines = [];
   const events = [];
+  const signals = [];
   let announceHelperCheck;
   const helperCheckScheduled = new Promise((resolve) => {
     announceHelperCheck = resolve;
@@ -337,6 +361,10 @@ test("reports a retained-profile cleanup failure before interrupted exit", async
     processTarget,
     findProfileProcesses: () => [{ pid: 4566 }],
     profileProcessRunning: () => true,
+    signalProfileProcess: (identity, signal) => {
+      signals.push([identity.pid, signal]);
+      return true;
+    },
     reportCleanupFailure: (error) => events.push({ diagnostic: error.message }),
     scheduleEscalation(callback) {
       deadlines.push(callback);
@@ -353,6 +381,11 @@ test("reports a retained-profile cleanup failure before interrupted exit", async
 
   processTarget.emit("SIGTERM");
   await helperCheckScheduled;
+  // Both kill passes signal the still-running helper before the deadline.
+  assert.deepEqual(signals, [
+    [4566, "SIGKILL"],
+    [4566, "SIGKILL"],
+  ]);
   deadlines[0]();
   await assert.rejects(lifecycle.cleanup(), /escaped Chrome helper 4566/);
   await Promise.resolve();
@@ -368,6 +401,7 @@ test("captures a Chrome helper that escapes while the browser group closes", asy
   const profileDir = mkdtempSync(path.join(tmpdir(), "browser-late-helper-test-"));
   context.after(() => rmSync(profileDir, { recursive: true, force: true }));
   const helperChecks = [];
+  const signals = [];
   let findCalls = 0;
   let announceRescan;
   const rescanned = new Promise((resolve) => {
@@ -385,6 +419,10 @@ test("captures a Chrome helper that escapes while the browser group closes", asy
       return [{ pid: 4666, databaseArg: "--database=/owned/Crashpad" }];
     },
     profileProcessRunning: () => helperRunning,
+    signalProfileProcess: (identity, signal) => {
+      signals.push([identity.pid, signal]);
+      return true;
+    },
     scheduleProfileProcessCheck(callback) {
       helperChecks.push(callback);
       return callback;
@@ -398,10 +436,63 @@ test("captures a Chrome helper that escapes while the browser group closes", asy
   assert.equal(firstCompletion, "rescan");
   assert.equal(findCalls, 2);
   assert.equal(existsSync(profileDir), true);
+  // The pre-close scan found nothing, so only the merged pass discovers and
+  // signals this late-arriving helper - exactly once.
+  assert.deepEqual(signals, [[4666, "SIGKILL"]]);
 
   helperRunning = false;
   helperChecks.at(-1)();
   await cleanup;
+  assert.equal(existsSync(profileDir), false);
+});
+
+test("never signals a discovered helper the identity check says is already gone", async (context) => {
+  const profileDir = mkdtempSync(path.join(tmpdir(), "browser-helper-not-running-test-"));
+  context.after(() => rmSync(profileDir, { recursive: true, force: true }));
+  const signals = [];
+  const child = new FakeChild("/fake/chrome");
+  child.exit();
+  const lifecycle = createBrowserProcessCleanup({
+    profileDir,
+    findProfileProcesses: () => [{ pid: 4777 }],
+    profileProcessRunning: () => false,
+    signalProfileProcess: (identity, signal) => {
+      signals.push([identity.pid, signal]);
+      return true;
+    },
+  });
+  lifecycle.addChild(child);
+
+  await lifecycle.cleanup();
+  assert.deepEqual(signals, []);
+  assert.equal(existsSync(profileDir), false);
+});
+
+test("gates each pass's signal on a fresh identity check instead of the one taken at discovery", async (context) => {
+  const profileDir = mkdtempSync(path.join(tmpdir(), "browser-helper-gate-test-"));
+  context.after(() => rmSync(profileDir, { recursive: true, force: true }));
+  const signals = [];
+  let runningChecks = 0;
+  const child = new FakeChild("/fake/chrome");
+  child.exit();
+  const lifecycle = createBrowserProcessCleanup({
+    profileDir,
+    findProfileProcesses: () => [{ pid: 4888 }],
+    // True for the pre-close pass, false for every check after: the helper
+    // exited in between, so only the first pass may signal it.
+    profileProcessRunning: () => {
+      runningChecks++;
+      return runningChecks === 1;
+    },
+    signalProfileProcess: (identity, signal) => {
+      signals.push([identity.pid, signal]);
+      return true;
+    },
+  });
+  lifecycle.addChild(child);
+
+  await lifecycle.cleanup();
+  assert.deepEqual(signals, [[4888, "SIGKILL"]]);
   assert.equal(existsSync(profileDir), false);
 });
 
@@ -411,11 +502,14 @@ test("discovers only the Crashpad helper for the exact canonical private profile
   context.after(() => rmSync(profileDir, { recursive: true, force: true }));
   const crashpadDir = path.join(realpathSync(profileDir), "Crashpad");
   const exactDatabase = `--database=${crashpadDir}`;
+  // Third column carries the pgid ps reports for each row. Real topology
+  // (issue #119): the handler's pgid is a DEAD intermediate's pid, never its
+  // own - so 300 here stands in for that intermediate, not for pid 510.
   const processList = [
-    `  510 /Applications/Google Chrome/chrome_crashpad_handler --monitor-self ${exactDatabase} --url=`,
-    `  511 /Applications/Google Chrome/chrome_crashpad_handler --database=${crashpadDir}-neighbor --url=`,
-    `  512 /Applications/Google Chrome/chrome_crashpad_handler --database=${crashpadDir}/nested --url=`,
-    `  513 /usr/bin/unrelated ${exactDatabase} --url=`,
+    `  510   300 /Applications/Google Chrome/chrome_crashpad_handler --monitor-self ${exactDatabase} --url=`,
+    `  511   301 /Applications/Google Chrome/chrome_crashpad_handler --database=${crashpadDir}-neighbor --url=`,
+    `  512   302 /Applications/Google Chrome/chrome_crashpad_handler --database=${crashpadDir}/nested --url=`,
+    `  513   303 /usr/bin/unrelated ${exactDatabase} --url=`,
   ].join("\n");
 
   assert.deepEqual(
@@ -423,7 +517,7 @@ test("discovers only the Crashpad helper for the exact canonical private profile
       platform: "darwin",
       listProcesses: () => processList,
     }),
-    [{ pid: 510, databaseArg: exactDatabase }],
+    [{ pid: 510, pgid: 300, databaseArg: exactDatabase }],
   );
 });
 
@@ -434,7 +528,7 @@ test("does not treat an unrelated process that reused a captured Crashpad PID as
     databaseArg: "--database=/private/tmp/browser-profile/Crashpad",
   };
   const reusedProcess =
-    "  510 /Applications/Google Chrome/chrome_crashpad_handler --database=/private/tmp/other-profile/Crashpad";
+    "  510   777 /Applications/Google Chrome/chrome_crashpad_handler --database=/private/tmp/other-profile/Crashpad";
   const options = {
     platform: "darwin",
     listProcesses: () => reusedProcess,
