@@ -1859,6 +1859,103 @@ func TestDelegateResourceRuntime_CancelledRunCapturesScratchPath(t *testing.T) {
 	}
 }
 
+// stoppedDelegateStartCommit builds the started-commit shape of issue #184: a
+// delegate whose durable lastOutcome records an external stop, about to have a
+// self-reported "cancelled" terminal packet applied over it.
+func stoppedDelegateStartCommit(delegateID string) delegateStartCommit {
+	return delegateStartCommit{
+		lease: delegateLease{delegateID: delegateID, generation: 2},
+		plan: delegateUpdatePlan{rows: []delegateSnapshot{{
+			id:         delegateID,
+			generation: 1,
+			resumable:  true,
+			lastOutcome: &delegatestore.Outcome{
+				Status: delegatestore.OutcomeStopped,
+				Reason: "stopped_by_parent",
+			},
+		}}},
+	}
+}
+
+// selfReportedCancelledPacket is the run loop's own terminal packet from an
+// external stop: self-reported as "cancelled" (ctx.Canceled), preserved
+// verbatim as evidence per PR #128.
+func selfReportedCancelledPacket(t *testing.T) delegatestore.TerminalPacket {
+	t.Helper()
+	rawMetadata, err := json.Marshal(delegateTerminalPacketMetadata{
+		Outcome: delegatestore.OutcomeCancelled,
+		Reason:  "cancelled",
+	})
+	if err != nil {
+		t.Fatalf("marshal metadata: %v", err)
+	}
+	rawMessage, err := json.Marshal("partial output gathered before cancellation")
+	if err != nil {
+		t.Fatalf("marshal message: %v", err)
+	}
+	return delegatestore.TerminalPacket{
+		Kind:     delegatestore.PacketTerminalError,
+		Message:  rawMessage,
+		Metadata: rawMetadata,
+	}
+}
+
+// TestDelegateResourceRuntime_StoppedSendSurvivesPacketClobber reproduces
+// issue #184 at the delivery-plan site: stableDelegateFailedSendResult
+// correctly seeds Status from the durable lastOutcome ("stopped"), but the
+// delivery-matching loop then calls populateStableDelegateSendResult, which
+// derives Status from the delegate's self-reported terminal packet
+// ("cancelled"). The durable outcome must win for Status the same way it
+// already does for Reason.
+func TestDelegateResourceRuntime_StoppedSendSurvivesPacketClobber(t *testing.T) {
+	const delegateID = "dlg_target"
+	started := stoppedDelegateStartCommit(delegateID)
+	plans := delegateMutationPlans{
+		deliveries: []delegateDeliveryPlan{{
+			delegateID: delegateID,
+			deliveryID: delegateDeliveryID(delegateID, started.lease.generation),
+			packet:     selfReportedCancelledPacket(t),
+		}},
+	}
+
+	result := stableDelegateFailedSendResult(started, plans, errors.New("construction_failed"))
+
+	if result.Status != jobstore.StatusStopped {
+		t.Fatalf("delegate_send status = %q, want %q (durable stop outcome must survive the packet-derived clobber); reason = %q",
+			result.Status, jobstore.StatusStopped, result.Reason)
+	}
+	if result.Reason != "stopped_by_parent" {
+		t.Fatalf("delegate_send reason = %q, want %q", result.Reason, "stopped_by_parent")
+	}
+}
+
+// TestDelegateResourceRuntime_StoppedSendSurvivesInlineResolutionClobber covers
+// the second clobber site from issue #184: stableSendFailureOutcomeAfterDispatch
+// applies the inline waiter's resolution packet via
+// populateStableDelegateSendResult after the durable outcome already set
+// Status/Reason, so the durable "stopped" status must survive that overwrite
+// too.
+func TestDelegateResourceRuntime_StoppedSendSurvivesInlineResolutionClobber(t *testing.T) {
+	c, _ := newDelegateControllerTestHarness(t, 1, 1)
+	owner := &Session{delegateController: c, delegateRootSessionID: "root-session"}
+	started := stoppedDelegateStartCommit("dlg_target")
+
+	packet := selfReportedCancelledPacket(t)
+	waiter := &delegateInlineWaiter{resolution: make(chan delegateInlineResolution, 1)}
+	waiter.resolution <- delegateInlineResolution{packet: &packet, commit: &delegateToolResultCommit{}}
+
+	outcome := (delegateRuntime{owner: owner}).stableSendFailureOutcomeAfterDispatch(
+		context.Background(), started, waiter, 0, delegateMutationPlans{}, errors.New("construction_failed"), nil)
+
+	if outcome.result.Status != jobstore.StatusStopped {
+		t.Fatalf("delegate_send status = %q, want %q (durable stop outcome must survive the inline-resolution clobber); reason = %q",
+			outcome.result.Status, jobstore.StatusStopped, outcome.result.Reason)
+	}
+	if outcome.result.Reason != "stopped_by_parent" {
+		t.Fatalf("delegate_send reason = %q, want %q", outcome.result.Reason, "stopped_by_parent")
+	}
+}
+
 func TestDelegateResourceRuntime_StaleGenerationCannotPublishPacket(t *testing.T) {
 	c, _ := newDelegateControllerTestHarness(t, 1, 1)
 	seedDelegateControllerRunning(t, c, "dlg_target", "")
