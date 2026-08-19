@@ -69,11 +69,23 @@ function jsonResponse(body: unknown): Response {
 // tests that deliberately trigger chunk-load failures. The errors are
 // expected; the boundary catches them. Without this, the test output is
 // polluted with React's "The above error occurred in one of your React
-// components" stack traces.
+// components" stack traces. Matched on React's own stable
+// componentDidCatch format string plus its fixed boundary-recovery
+// sentence, rather than blanket-silenced, so any *other* console.error a
+// regression here might produce still reaches real console.error and
+// stays visible in test output.
+const REACT_ERROR_BOUNDARY_FORMAT = "%o\n\n%s\n\n%s\n";
+const REACT_ERROR_BOUNDARY_PREFACE = "The above error occurred in one of your React components.";
+const realConsoleError = console.error.bind(console);
 let consoleErrorSpy: ReturnType<typeof vi.spyOn>;
 
 beforeEach(() => {
-  consoleErrorSpy = vi.spyOn(console, "error").mockImplementation((..._args: unknown[]) => {});
+  consoleErrorSpy = vi.spyOn(console, "error").mockImplementation((...args: unknown[]) => {
+    if (args[0] === REACT_ERROR_BOUNDARY_FORMAT && args[2] === REACT_ERROR_BOUNDARY_PREFACE) {
+      return;
+    }
+    realConsoleError(...args);
+  });
   connectionStore.setState({ state: "idle", serverInfo: undefined, client: null });
   resetWorkspaceStoreForTests();
   resetTreeStoreForTests();

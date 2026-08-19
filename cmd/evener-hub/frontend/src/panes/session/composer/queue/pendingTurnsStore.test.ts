@@ -68,11 +68,21 @@ async function connect(overrides: Partial<Thread> = {}): Promise<FakeClient> {
 // Suppress React's "not configured to support act(...)" warnings. These fire
 // because zustand store updates trigger async re-renders that settle after
 // act() returns in jsdom. The tests are correct; the warning is a known
-// limitation of the jsdom + zustand + testing-library interaction.
+// limitation of the jsdom + zustand + testing-library interaction. Matched
+// on its exact, stable one-arg text rather than blanket-silenced, so any
+// *other* console.error a regression here might produce still reaches real
+// console.error and stays visible in test output.
+const ACT_ENVIRONMENT_WARNING = "The current testing environment is not configured to support act(...)";
+const realConsoleError = console.error.bind(console);
 let consoleErrorSpy: ReturnType<typeof vi.spyOn>;
 
 beforeEach(() => {
-  consoleErrorSpy = vi.spyOn(console, "error").mockImplementation((..._args: unknown[]) => {});
+  consoleErrorSpy = vi.spyOn(console, "error").mockImplementation((...args: unknown[]) => {
+    if (args.length === 1 && args[0] === ACT_ENVIRONMENT_WARNING) {
+      return;
+    }
+    realConsoleError(...args);
+  });
   globalThis.indexedDB = new IDBFactory();
   connectionStore.setState({ state: "idle", client: null, serverInfo: undefined });
   resetThreadsStoreForTests();
