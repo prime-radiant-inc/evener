@@ -429,6 +429,28 @@ run_wave $WAVE2
 
 [ -n "$web_pid" ] && finish_stream web "$web_pid"
 
+# A -run pattern that matches no test name is not an error to `go test`: every
+# package reports "[no tests to run]" and exits 0, so every module reports PASS
+# and the gate proves nothing. Go's own per-package status lines are the only
+# evidence available here - a package that executed tests prints "ok <pkg>
+# <time>" with no "[no tests to run]"/"[no test files]" note. If not one
+# scheduled module has such a line, the run was a silent no-op. Checked only
+# when nothing else failed (a failure already tells the reader to look) and only
+# when Go work was actually scheduled (an explicitly web-only run has no Go
+# tests to account for).
+zero_test_run=0
+if [ "$fail" -eq 0 ] && [ -n "$WAVE1$WAVE2" ]; then
+	zero_test_run=1
+	for m in $WAVE1 $WAVE2; do
+		log="$(logpath "$m")"
+		[ -f "$log" ] || continue
+		if grep -E '^ok[[:space:]]' "$log" | grep -qv -e '\[no tests to run\]' -e '\[no test files\]'; then
+			zero_test_run=0
+			break
+		fi
+	done
+fi
+
 if [ "$fail" -ne 0 ]; then
 	echo
 	echo "=== failing module output ==="
@@ -450,6 +472,15 @@ if [ "$fail" -ne 0 ]; then
 	echo
 	echo "full logs: $logdir"
 	keep_failed_logs=1
+fi
+
+if [ "$zero_test_run" -ne 0 ]; then
+	echo
+	echo "run-module-tests.sh: the Go waves ran zero tests, so this run proves nothing."
+	echo "run-module-tests.sh: no scheduled module reported a package that executed any test."
+	echo "full logs: $logdir"
+	keep_failed_logs=1
+	fail=1
 fi
 
 normal_completion=1

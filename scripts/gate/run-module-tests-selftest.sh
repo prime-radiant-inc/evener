@@ -199,6 +199,12 @@ case " ${FAKE_TEST_FAIL:-} " in
 		;;
 esac
 [ "$module" = "." ] && : >"$FAKE_STATE/root.finished"
+# A passing `go test` prints one status line per package. FAKE_NO_TESTS_MATCH
+# replays the shape of a -run pattern that matches no test name: still exit 0,
+# with "[no tests to run]" as the only trace that nothing was proven.
+no_tests_note=""
+[ "${FAKE_NO_TESTS_MATCH:-0}" -ne 0 ] && no_tests_note=" [no tests to run]"
+printf 'ok  \tprimeradiant.com/evener/%s\t0.01s%s\n' "$module" "$no_tests_note"
 exit 0
 FAKE_GO
 	chmod +x "$bin/go"
