@@ -24,11 +24,7 @@ import (
 // reworded message beside the delete — fails the audit and forces someone to
 // re-read the delete in that diff. Keys are the line as recursiveDeleteLineText
 // normalizes it, so they carry no trailing continuation backslash.
-var makefileVariableFedDeletes = map[string]string{
-	`rm -rf "$(EVENER_DIST_BIN_DIR)" "$(EVENER_DIST_ARCHIVE)"`: "dist's own output paths, both rooted at DIST_DIR " +
-		"(default `dist`) and named for the build's GOOS/GOARCH. This is the weakest entry of the three: " +
-		"`make dist DIST_DIR=` roots both operands at `/` instead, and nothing in the recipe refuses that",
-}
+var makefileVariableFedDeletes = map[string]string{}
 
 // TestNoMakefileRecipeFeedsVariableToRecursiveDelete holds the delete-safety
 // rule over the Makefile, which is where the repository's remaining

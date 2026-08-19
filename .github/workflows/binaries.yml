@@ -12,86 +12,77 @@ permissions:
   contents: read
 
 jobs:
+  # PRs, main pushes, and manual runs prove the release build produces the
+  # exact artifacts install.sh consumes; tags publish through the release
+  # job instead.
   build:
-    name: Build ${{ matrix.name }}
+    name: Build snapshot artifacts
+    if: github.ref_type != 'tag'
     runs-on: ubuntu-latest
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - name: linux-amd64
-            goos: linux
-            goarch: amd64
-            asset: evener_linux_amd64.tar.gz
-          - name: darwin-arm64
-            goos: darwin
-            goarch: arm64
-            asset: evener_darwin_arm64.tar.gz
-
     steps:
       - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
 
       - uses: ./.github/actions/setup-toolchain
 
-      - name: Build archive
+      - name: Build snapshot
+        uses: goreleaser/goreleaser-action@v6
+        with:
+          version: "~> v2"
+          args: release --snapshot --clean
         env:
-          BUILD_CHANNEL: ${{ github.ref == 'refs/heads/main' && 'snapshot' || 'release' }}
-        run: make dist DIST_GOOS=${{ matrix.goos }} DIST_GOARCH=${{ matrix.goarch }} BUILD_CHANNEL=${BUILD_CHANNEL}
+          BUILD_CHANNEL: snapshot
 
-      - name: Inspect archive
-        run: tar -tzf dist/${{ matrix.asset }}
+      - name: Inspect archives
+        run: tar -tzf dist/*.tar.gz
 
-      - name: Upload archive
+      - name: Upload archives
         uses: actions/upload-artifact@v4
         with:
-          name: ${{ matrix.asset }}
-          path: dist/${{ matrix.asset }}
+          name: evener-snapshot-artifacts
+          path: |
+            dist/*.tar.gz
+            dist/checksums.txt
           if-no-files-found: error
 
   release:
-    name: Publish release assets
+    name: Publish release
     if: startsWith(github.ref, 'refs/tags/v')
-    needs: build
+    needs: []
     runs-on: ubuntu-latest
     permissions:
       contents: write
-
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/checkout@v6
         with:
-          path: dist
-          merge-multiple: true
+          fetch-depth: 0
 
-      - name: Create checksum file
-        run: sha256sum dist/*.tar.gz > dist/checksums.txt
+      - uses: ./.github/actions/setup-toolchain
 
-      - name: Publish GitHub release
+      - name: Publish with goreleaser
+        uses: goreleaser/goreleaser-action@v6
+        with:
+          version: "~> v2"
+          args: release --clean
         env:
-          GH_TOKEN: ${{ github.token }}
-          GH_REPO: ${{ github.repository }}
-        run: |
-          gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1 || \
-            gh release create "$GITHUB_REF_NAME" --title "$GITHUB_REF_NAME" --notes "Evener $GITHUB_REF_NAME"
-          gh release upload "$GITHUB_REF_NAME" dist/*.tar.gz dist/checksums.txt --clobber
+          BUILD_CHANNEL: release
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
+  # The snapshot channel is a mutable prerelease tracking main: the tag is
+  # force-moved and the artifacts replaced on every green main build.
   snapshot:
-    name: Publish snapshot assets
+    name: Refresh snapshot channel
     if: github.ref == 'refs/heads/main'
     needs: build
     runs-on: ubuntu-latest
     permissions:
       contents: write
-
     steps:
-      - uses: actions/checkout@v6
-
       - uses: actions/download-artifact@v4
         with:
+          name: evener-snapshot-artifacts
           path: dist
-          merge-multiple: true
-
-      - name: Create checksum file
-        run: sha256sum dist/*.tar.gz > dist/checksums.txt
 
       - name: Move snapshot tag
         run: |

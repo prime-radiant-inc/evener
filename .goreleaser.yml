@@ -1,0 +1,101 @@
+version: 2
+
+# goreleaser owns the release pipeline: the five binaries, both supported
+# targets, the archives, and the checksums. The artifact contract is
+# unchanged — evener_<os>_<arch>.tar.gz, directory-wrapped, five binaries at
+# the root — because install.sh and the snapshot channel consume it.
+
+before:
+  hooks:
+    # evener-hub embeds the SPA; the archive must never ship a stale one.
+    - make build-web
+
+builds:
+  - id: evener
+    main: ./cmd/evener/
+    binary: evener
+    env:
+      - CGO_ENABLED=0
+    goos: [linux, darwin]
+    goarch: [amd64, arm64]
+    ignore:
+      - goos: linux
+        goarch: arm64
+      - goos: darwin
+        goarch: amd64
+    ldflags:
+      - -X primeradiant.com/evener/buildinfo.GitSHA={{ .ShortCommit }} -X primeradiant.com/evener/buildinfo.GitDirty={{ .IsGitDirty }} -X primeradiant.com/evener/buildinfo.BuildTime={{ .Date }} -X primeradiant.com/evener/buildinfo.Channel={{ .Env.BUILD_CHANNEL }}
+
+  - id: evener-hub
+    main: ./cmd/evener-hub/
+    binary: evener-hub
+    env:
+      - CGO_ENABLED=0
+    goos: [linux, darwin]
+    goarch: [amd64, arm64]
+    ignore:
+      - goos: linux
+        goarch: arm64
+      - goos: darwin
+        goarch: amd64
+
+  - id: evener-tui
+    main: ./cmd/evener-tui/
+    binary: evener-tui
+    env:
+      - CGO_ENABLED=0
+    goos: [linux, darwin]
+    goarch: [amd64, arm64]
+    ignore:
+      - goos: linux
+        goarch: arm64
+      - goos: darwin
+        goarch: amd64
+
+  - id: evener-doctor
+    main: ./cmd/evener-doctor/
+    binary: evener-doctor
+    env:
+      - CGO_ENABLED=0
+    goos: [linux, darwin]
+    goarch: [amd64, arm64]
+    ignore:
+      - goos: linux
+        goarch: arm64
+      - goos: darwin
+        goarch: amd64
+
+  - id: evener-migrate
+    main: ./cmd/evener-migrate/
+    binary: evener-migrate
+    env:
+      - CGO_ENABLED=0
+    goos: [linux, darwin]
+    goarch: [amd64, arm64]
+    ignore:
+      - goos: linux
+        goarch: arm64
+      - goos: darwin
+        goarch: amd64
+
+archives:
+  - id: evener
+    formats: ["tar.gz"]
+    name_template: "evener_{{ .Os }}_{{ .Arch }}"
+    wrap_in_directory: true
+    files: []
+
+checksum:
+  name_template: "checksums.txt"
+  algorithm: sha256
+
+release:
+  github:
+    owner: prime-radiant-inc
+    name: evener
+
+snapshot:
+  # The repo's mutable "snapshot" tag is not semver, so the default
+  # incpatch template cannot parse it; the version is metadata only (the
+  # archive names carry none), so use the commit.
+  version_template: "{{ .ShortCommit }}"

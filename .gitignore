@@ -34,3 +34,6 @@ docs/experiments/dashboard.html
 docs/experiments/dashboard-session24.html
 .kata.local.toml
 /evener-doctoring-report.html
+
+# goreleaser output
+/dist/

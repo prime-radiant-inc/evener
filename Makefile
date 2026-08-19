@@ -10,13 +10,7 @@ BINDIR ?= $(PREFIX)/bin
 EVENER_SHARE_BINDIR ?= $(PREFIX)/share/evener/bin
 INSTALL_BUILD_DIR ?= .build/install
 EVENER_INSTALL_BINS := evener evener-hub evener-tui evener-doctor evener-migrate
-DIST_DIR ?= dist
-DIST_GOOS ?= $(shell go env GOOS)
-DIST_GOARCH ?= $(shell go env GOARCH)
 BUILD_CHANNEL ?=
-EVENER_DIST_NAME = evener_$(DIST_GOOS)_$(DIST_GOARCH)
-EVENER_DIST_BIN_DIR = $(DIST_DIR)/$(EVENER_DIST_NAME)
-EVENER_DIST_ARCHIVE = $(DIST_DIR)/$(EVENER_DIST_NAME).tar.gz
 
 build: build-runtime
 
@@ -84,16 +78,13 @@ build-llmcall:
 build-migrate:
 	go build -o evener-migrate ./cmd/evener-migrate/
 
-# A shipped dist archive must embed a fresh SPA, not the tracked PLACEHOLDER.
-dist: build-web
-	rm -rf "$(EVENER_DIST_BIN_DIR)" "$(EVENER_DIST_ARCHIVE)"
-	install -d "$(EVENER_DIST_BIN_DIR)"
-	CGO_ENABLED=0 GOOS=$(DIST_GOOS) GOARCH=$(DIST_GOARCH) go build -ldflags "$(LDFLAGS)" -o "$(EVENER_DIST_BIN_DIR)/evener" ./cmd/evener/
-	CGO_ENABLED=0 GOOS=$(DIST_GOOS) GOARCH=$(DIST_GOARCH) go build -o "$(EVENER_DIST_BIN_DIR)/evener-hub" ./cmd/evener-hub/
-	CGO_ENABLED=0 GOOS=$(DIST_GOOS) GOARCH=$(DIST_GOARCH) go build -o "$(EVENER_DIST_BIN_DIR)/evener-tui" ./cmd/evener-tui/
-	CGO_ENABLED=0 GOOS=$(DIST_GOOS) GOARCH=$(DIST_GOARCH) go build -o "$(EVENER_DIST_BIN_DIR)/evener-doctor" ./cmd/evener-doctor/
-	CGO_ENABLED=0 GOOS=$(DIST_GOOS) GOARCH=$(DIST_GOARCH) go build -o "$(EVENER_DIST_BIN_DIR)/evener-migrate" ./cmd/evener-migrate/
-	tar -C "$(DIST_DIR)" -czf "$(EVENER_DIST_ARCHIVE)" "$(EVENER_DIST_NAME)"
+# dist builds the release artifacts with goreleaser in snapshot mode (no tag,
+# no publish): dist/ holds evener_<os>_<arch>.tar.gz plus checksums.txt — the
+# same layout the release workflow ships and install.sh consumes. The web
+# build runs as goreleaser's before hook, so the hub binary embeds a fresh
+# SPA rather than the tracked PLACEHOLDER.
+dist:
+	goreleaser release --snapshot --clean
 
 # An installed hub must embed a fresh SPA, not the tracked PLACEHOLDER (install-home/install-system inherit via install).
 install: build-web

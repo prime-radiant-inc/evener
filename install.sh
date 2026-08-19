@@ -47,10 +47,11 @@ esac
 archive_name="evener_${os}_${arch}.tar.gz"
 archive_root="evener_${os}_${arch}"
 if [ "$version" = "latest" ]; then
-	url="$repo/releases/latest/download/$archive_name"
+	base_url="$repo/releases/latest/download"
 else
-	url="$repo/releases/download/$version/$archive_name"
+	base_url="$repo/releases/download/$version"
 fi
+url="$base_url/$archive_name"
 
 tmpdir=$(mktemp -d)
 if [ -z "$tmpdir" ] || [ ! -d "$tmpdir" ]; then
@@ -69,6 +70,23 @@ trap cleanup EXIT HUP INT TERM
 archive="$tmpdir/$archive_name"
 echo "Downloading $url"
 curl -fsSL "$url" -o "$archive"
+curl -fsSL "$base_url/checksums.txt" -o "$tmpdir/checksums.txt"
+
+# The release publishes checksums.txt; installing an unverified archive is
+# not an option. Fail closed when no sha256 tool exists.
+if command -v sha256sum >/dev/null 2>&1; then
+	sha_check="sha256sum -c -"
+elif command -v shasum >/dev/null 2>&1; then
+	sha_check="shasum -a 256 -c -"
+else
+	echo "Neither sha256sum nor shasum is available; refusing to install an unverified archive." >&2
+	exit 1
+fi
+if ! (cd "$tmpdir" && grep "  $archive_name\$" checksums.txt | $sha_check); then
+	echo "Checksum verification failed for $archive_name." >&2
+	exit 1
+fi
+
 tar -xzf "$archive" -C "$tmpdir"
 
 extract_dir="$tmpdir/$archive_root"
