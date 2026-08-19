@@ -431,7 +431,7 @@ native:agent:./plugin:FuzzParseAgent::agents.go#ParseAgent
 native:llm:./providers/difftest:FuzzCrossProviderDifferential:./providers/anthropic,./providers/google,./providers/openai,./providers/openaicompat:
 native:llm:./providers/difftest:FuzzStreamVsNonStreamDifferential:./providers/anthropic,./providers/google,./providers/openai,./providers/openaicompat:
 test:.:./appwire:TestStructuredFrameReachesDecoder
-test:agent:.:TestStructuredTranscriptReachesDeeper
+test:agent:.:TestTranscriptGenReachesDeeper
 test:llm:./providers/anthropic:TestStructuredAnthropicReachesDeeper
 test:llm:./providers/google:TestStructuredGeminiReachesDeeper
 test:llm:./providers/openai:TestStructuredResponsesReachesDeeper
