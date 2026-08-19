@@ -379,12 +379,14 @@ func runCoverageFloor(args []string) int {
 					}
 				}
 			}
+			// -count=1 is REQUIRED: cached coverage profiles report stale
+			// numbers (docs/testing.md's test-coverage-floor row).
 			args := []string{"test",
 				"-coverpkg=" + coverpkg,
 				"-coverprofile=" + profilePath,
 				"-run", gatesurface.TestRun,
 				"-skip", gatesurface.FuzzTestSkip,
-				"-short"}
+				"-short", "-count=1"}
 			args = append(args, pkg)
 			cmd := exec.Command("go", args...)
 			cmd.Dir = dir
