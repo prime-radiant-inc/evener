@@ -49,6 +49,7 @@ import (
 	"syscall"
 	"time"
 
+	"primeradiant.com/evener/internal/devtool/procgroup"
 	"primeradiant.com/evener/internal/devtool/scratch"
 )
 
@@ -122,14 +123,10 @@ func envFlag(name string) bool {
 }
 
 // interrupter tracks live shard process groups and, on the first signal,
-// explains the interruption and TERMs every group so in-flight waits return.
-//
-// The Setpgid-here, TERM-the-negated-pgid-there pair is the same two lines
-// cmd/evener-test-dev-tooling/wave_unix.go uses on its suites, spelled twice on
-// purpose: each tool is a port of a different script and is checked for
-// parity against that script, not against its sibling. Two lines of overlap
-// buy less than a shared home would cost right now; the third caller is the
-// one to build it for.
+// TERMs every group so in-flight waits return. The Setpgid/Terminate pair is
+// shared with module-lint via internal/devtool/procgroup, which this file
+// adopts as its third caller; the inline duplication it used to carry is
+// retired.
 type interrupter struct {
 	mu     sync.Mutex
 	pgids  []int
@@ -140,7 +137,7 @@ func (in *interrupter) add(pgid int) {
 	in.mu.Lock()
 	defer in.mu.Unlock()
 	if in.signal != 0 {
-		_ = syscall.Kill(-pgid, syscall.SIGTERM)
+		procgroup.Terminate(pgid)
 		return
 	}
 	in.pgids = append(in.pgids, pgid)
@@ -154,7 +151,7 @@ func (in *interrupter) interrupt(sig syscall.Signal) {
 	}
 	in.signal = sig
 	for _, pgid := range in.pgids {
-		_ = syscall.Kill(-pgid, syscall.SIGTERM)
+		procgroup.Terminate(pgid)
 	}
 }
 
@@ -338,9 +335,8 @@ func runShards(cfg shardsConfig) int {
 		cmd := exec.CommandContext(context.Background(), build, args...)
 		cmd.Dir = cfg.agentDir
 		cmd.Stdout, cmd.Stderr = log, log
-		cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 		started := time.Now()
-		err = cmd.Start()
+		err = procgroup.Start(cmd)
 		_ = log.Close()
 		if err != nil {
 			_, _ = fmt.Fprintf(cfg.stderr, "agent-shards: starting shard %d: %v\n", i, err)
@@ -436,8 +432,7 @@ func (cfg shardsConfig) runToLog(in *interrupter, logPath, dir, name string, arg
 	cmd := exec.CommandContext(context.Background(), name, args...)
 	cmd.Dir = dir
 	cmd.Stdout, cmd.Stderr = log, log
-	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
-	if err := cmd.Start(); err != nil {
+	if err := procgroup.Start(cmd); err != nil {
 		return err
 	}
 	in.add(cmd.Process.Pid)
@@ -451,8 +446,7 @@ func (cfg shardsConfig) captureChild(in *interrupter, dir, name string, args ...
 	cmd.Dir = dir
 	var out strings.Builder
 	cmd.Stdout = &out
-	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
-	if err := cmd.Start(); err != nil {
+	if err := procgroup.Start(cmd); err != nil {
 		return "", err
 	}
 	in.add(cmd.Process.Pid)
