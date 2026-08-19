@@ -17,6 +17,15 @@ import (
 // discovery are replaced at the process boundary; installation and symlink
 // creation still execute through the real install.sh implementation.
 func FuzzInstallScript(f *testing.F) {
+	// installedBins reads EVENER_INSTALL_BINS from the Makefile — the same
+	// source of truth install.sh's `bins` line and `make dist` are built
+	// from — so the fake release archive below always matches what a real
+	// install actually ships, and a future binary addition can't silently
+	// leave this fixture (and the assertions against it) behind the way
+	// evener-migrate did.
+	bins := installedBins(f)
+	missingBin := bins[len(bins)-1]
+
 	for _, seed := range [][]byte{
 		{0, 0, 0, 0, 0}, // Linux/amd64, latest, complete archive, HOME.
 		{1, 1, 1, 0, 1}, // Darwin/arm64, versioned, complete archive, PREFIX.
@@ -71,7 +80,7 @@ while [ "$#" -gt 0 ]; do
 done
 exit 2
 `)
-		writeExecutable(t, filepath.Join(fakeBin, "tar"), `#!/bin/sh
+		writeExecutable(t, filepath.Join(fakeBin, "tar"), fmt.Sprintf(`#!/bin/sh
 dest=
 while [ "$#" -gt 0 ]; do
   if [ "$1" = -C ]; then dest=$2; break; fi
@@ -80,11 +89,11 @@ done
 [ -n "$dest" ] || exit 2
 [ "$EVENER_FUZZ_ARCHIVE_MODE" != 1 ] || exit 0
 mkdir -p "$dest/$EVENER_FUZZ_ARCHIVE_ROOT"
-for bin in evener evener-hub evener-tui evener-doctor; do
-  [ "$EVENER_FUZZ_ARCHIVE_MODE:$bin" = 2:evener-doctor ] && continue
+for bin in %s; do
+  [ "$EVENER_FUZZ_ARCHIVE_MODE:$bin" = 2:%s ] && continue
   printf '#!/bin/sh\nexit 0\n' > "$dest/$EVENER_FUZZ_ARCHIVE_ROOT/$bin"
 done
-`)
+`, strings.Join(bins, " "), missingBin))
 
 		home := filepath.Join(root, "home")
 		prefix := filepath.Join(root, "prefix")
@@ -140,7 +149,7 @@ done
 		if envMode == 3 {
 			bindir, shareDir = filepath.Join(root, "commands"), filepath.Join(root, "payload")
 		}
-		for _, bin := range []string{"evener", "evener-hub", "evener-tui", "evener-doctor"} {
+		for _, bin := range bins {
 			installed := filepath.Join(shareDir, bin)
 			info, statErr := os.Stat(installed)
 			if statErr != nil || info.Mode().Perm() != 0o755 {
