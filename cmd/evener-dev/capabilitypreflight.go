@@ -27,6 +27,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"slices"
 	"strings"
 
 	"primeradiant.com/evener/internal/devtool/capabilityprobe"
@@ -70,15 +71,8 @@ func capabilityPreflight(opts preflightOptions, getenv func(string) (string, boo
 	// reprobe command the summary advertises, so it has to work as printed.
 	reportIDs := gateCapabilityIDs
 	if opts.only != "" {
-		known := false
-		for _, id := range gateCapabilityIDs {
-			if id == opts.only {
-				known = true
-				break
-			}
-		}
-		if !known {
-			fmt.Fprintf(stderr, "capability-preflight: unknown capability %q (known: %s)\n",
+		if !slices.Contains(gateCapabilityIDs, opts.only) {
+			_, _ = fmt.Fprintf(stderr, "capability-preflight: unknown capability %q (known: %s)\n",
 				opts.only, strings.Join(gateCapabilityIDs, " "))
 			return 2
 		}
@@ -90,7 +84,7 @@ func capabilityPreflight(opts preflightOptions, getenv func(string) (string, boo
 		// (space-separated) is BLOCKED with a fixed reason/rerun; every id not
 		// named is AVAILABLE.
 		blocked := make(map[string]bool)
-		for _, id := range strings.Fields(val) {
+		for id := range strings.FieldsSeq(val) {
 			blocked[id] = true
 		}
 		for _, id := range gateCapabilityIDs {
@@ -119,7 +113,7 @@ func capabilityPreflight(opts preflightOptions, getenv func(string) (string, boo
 		// internal failure.
 		for _, id := range gateCapabilityIDs {
 			if _, ok := classified[id]; !ok {
-				fmt.Fprintf(stderr, "capability-preflight: probe never classified capability %q\n", id)
+				_, _ = fmt.Fprintf(stderr, "capability-preflight: probe never classified capability %q\n", id)
 				return 1
 			}
 		}
@@ -148,23 +142,23 @@ func capabilityPreflight(opts preflightOptions, getenv func(string) (string, boo
 
 	// The skip regex goes to stdout as a single line for the Makefile to
 	// capture via `$(shell ...)`. Empty when nothing is blocked.
-	fmt.Fprintln(stdout, skipRegex)
+	_, _ = fmt.Fprintln(stdout, skipRegex)
 
 	// The human-readable summary goes to stderr, one line per capability in
 	// fixed order.
 	for _, id := range reportIDs {
 		e := classified[id]
 		if !e.blocked {
-			fmt.Fprintf(stderr, "AVAILABLE %s\n", id)
+			_, _ = fmt.Fprintf(stderr, "AVAILABLE %s\n", id)
 			continue
 		}
 		pattern := gatesurface.CapabilitySkipPattern(id)
 		if pattern != "" {
-			fmt.Fprintf(stderr,
+			_, _ = fmt.Fprintf(stderr,
 				"BLOCKED %s: %s -- skips tests matching '%s'; rerun once fixed: ROOT_FULL=1 go test ./... -run '%s' -v; reprobe: %s\n",
 				id, e.reason, pattern, pattern, e.rerun)
 		} else {
-			fmt.Fprintf(stderr,
+			_, _ = fmt.Fprintf(stderr,
 				"BLOCKED %s: %s -- no gate component currently depends on this; reprobe: %s\n",
 				id, e.reason, e.rerun)
 		}

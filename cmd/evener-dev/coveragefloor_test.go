@@ -1,10 +1,9 @@
 package main
 
-// Tests for the `coverage-floor` subcommand of evener-dev, the Go port of
-// scripts/coverage/test-coverage-floor.sh (and its companions coverage-union.sh
-// and coverage-gaps.sh). RED phase: the production coverageFloor function and
-// coverageFloorConfig type these tests drive do not exist yet, so this file
-// does not compile until the green phase adds them.
+// Tests for the `coverage-floor` subcommand of evener-dev, which replaces
+// scripts/coverage/test-coverage-floor.sh and its selftest. The shell
+// companions coverage-union.sh and coverage-gaps.sh keep their own suites and
+// are not ported.
 //
 // The shell script's contract, ported faithfully:
 //
@@ -609,7 +608,7 @@ func TestCoverageFloorFailedMeasurementKeepsLog(t *testing.T) {
 			if err := os.WriteFile(logPath, []byte("boom: undefined: Thing\n"), 0o644); err != nil {
 				return err
 			}
-			return fmt.Errorf("exit status 2")
+			return errors.New("exit status 2")
 		},
 	)
 

@@ -40,7 +40,7 @@ func StmtCounts(path string) (covered, total int, err error) {
 	if err != nil {
 		return 0, 0, err
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 	return StmtCountsReader(f)
 }
 

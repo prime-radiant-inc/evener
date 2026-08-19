@@ -34,6 +34,7 @@ package main
 
 import (
 	"bufio"
+	"context"
 	"errors"
 	"fmt"
 	"io"
@@ -120,7 +121,7 @@ func coverageFloor(cfg coverageFloorConfig) int {
 		flag := cfg.args[*i]
 		*i++
 		if *i >= len(cfg.args) {
-			fmt.Fprintf(cfg.stderr, "coverage-floor: %s needs a value\n", flag)
+			_, _ = fmt.Fprintf(cfg.stderr, "coverage-floor: %s needs a value\n", flag)
 			return "", false
 		}
 		return cfg.args[*i], true
@@ -146,7 +147,7 @@ func coverageFloor(cfg coverageFloorConfig) int {
 			}
 			parsed, err := strconv.ParseFloat(v, 64)
 			if err != nil {
-				fmt.Fprintf(cfg.stderr, "coverage-floor: --tolerance %q is not a number\n", v)
+				_, _ = fmt.Fprintf(cfg.stderr, "coverage-floor: --tolerance %q is not a number\n", v)
 				return 2
 			}
 			tolerance = parsed
@@ -155,11 +156,11 @@ func coverageFloor(cfg coverageFloorConfig) int {
 		case "--bless":
 			bless = true
 		case "-h", "--help":
-			fmt.Fprint(cfg.stdout, covFloorUsage)
+			_, _ = fmt.Fprint(cfg.stdout, covFloorUsage)
 			return 0
 		default:
-			fmt.Fprintf(cfg.stderr, "coverage-floor: unknown flag: %s\n", cfg.args[i])
-			fmt.Fprint(cfg.stderr, covFloorUsage)
+			_, _ = fmt.Fprintf(cfg.stderr, "coverage-floor: unknown flag: %s\n", cfg.args[i])
+			_, _ = fmt.Fprint(cfg.stderr, covFloorUsage)
 			return 2
 		}
 	}
@@ -168,7 +169,7 @@ func coverageFloor(cfg coverageFloorConfig) int {
 	// (measure-only with no baseline).
 	floors, floorOrder, err := readCovFloors(floorsPath)
 	if err != nil {
-		fmt.Fprintf(cfg.stderr, "coverage-floor: reading floors %q: %v\n", floorsPath, err)
+		_, _ = fmt.Fprintf(cfg.stderr, "coverage-floor: reading floors %q: %v\n", floorsPath, err)
 		return 1
 	}
 
@@ -182,7 +183,7 @@ func coverageFloor(cfg coverageFloorConfig) int {
 	}
 	scratch, err := os.MkdirTemp(tmpdir, "covfloor-*")
 	if err != nil {
-		fmt.Fprintf(cfg.stderr, "coverage-floor: creating scratch dir: %v\n", err)
+		_, _ = fmt.Fprintf(cfg.stderr, "coverage-floor: creating scratch dir: %v\n", err)
 		return 1
 	}
 	// The profile and log paths are handed to a `go test` that runs with its
@@ -193,7 +194,7 @@ func coverageFloor(cfg coverageFloorConfig) int {
 	keepScratch := false
 	defer func() {
 		if !keepScratch {
-			os.RemoveAll(scratch)
+			_ = os.RemoveAll(scratch)
 		}
 	}()
 
@@ -216,7 +217,7 @@ func coverageFloor(cfg coverageFloorConfig) int {
 			row.note = "(no module)"
 		case err != nil:
 			row.note = fmt.Sprintf("TEST FAILED (log: %s)", logPath)
-			fmt.Fprintf(cfg.stderr, "coverage-floor: %s: go test failed: %v (log: %s)\n", m, err, logPath)
+			_, _ = fmt.Fprintf(cfg.stderr, "coverage-floor: %s: go test failed: %v (log: %s)\n", m, err, logPath)
 			measureFailed = true
 			keepScratch = true
 		default:
@@ -224,7 +225,7 @@ func coverageFloor(cfg coverageFloorConfig) int {
 			switch {
 			case countErr != nil:
 				row.note = "no profile"
-				fmt.Fprintf(cfg.stderr, "coverage-floor: %s: counting statements: %v\n", m, countErr)
+				_, _ = fmt.Fprintf(cfg.stderr, "coverage-floor: %s: counting statements: %v\n", m, countErr)
 				measureFailed = true
 				keepScratch = true
 			case total <= 0:
@@ -257,7 +258,7 @@ func coverageFloor(cfg coverageFloorConfig) int {
 	}
 
 	tw := tabwriter.NewWriter(cfg.stdout, 0, 0, 2, ' ', 0)
-	fmt.Fprintln(tw, "MODULE\tCOVERED\tTOTAL\tPCT\tFLOOR\tSTATUS")
+	_, _ = fmt.Fprintln(tw, "MODULE\tCOVERED\tTOTAL\tPCT\tFLOOR\tSTATUS")
 	for _, r := range rows {
 		floor, hasFloor := floors[r.module]
 		floorStr := "-"
@@ -265,22 +266,22 @@ func coverageFloor(cfg coverageFloorConfig) int {
 			floorStr = fmt.Sprintf("%.1f", floor)
 		}
 		if !r.measured {
-			fmt.Fprintf(tw, "%s\t-\t-\t-\t%s\t%s\n", r.module, floorStr, r.note)
+			_, _ = fmt.Fprintf(tw, "%s\t-\t-\t-\t%s\t%s\n", r.module, floorStr, r.note)
 			continue
 		}
 		status := "PASS"
 		if hasFloor && r.pct < floor-tolerance {
 			status = "DROP"
 		}
-		fmt.Fprintf(tw, "%s\t%d\t%d\t%.1f\t%s\t%s\n", r.module, r.covered, r.total, r.pct, floorStr, status)
+		_, _ = fmt.Fprintf(tw, "%s\t%d\t%d\t%.1f\t%s\t%s\n", r.module, r.covered, r.total, r.pct, floorStr, status)
 	}
 	for _, m := range unenforced {
 		if reported[m] {
 			continue // already printed with its own reason
 		}
-		fmt.Fprintf(tw, "%s\t-\t-\t-\t%.1f\t%s\n", m, floors[m], "UNMEASURED")
+		_, _ = fmt.Fprintf(tw, "%s\t-\t-\t-\t%.1f\t%s\n", m, floors[m], "UNMEASURED")
 	}
-	tw.Flush()
+	_ = tw.Flush()
 
 	regressed := false
 	for _, r := range rows {
@@ -290,7 +291,7 @@ func coverageFloor(cfg coverageFloorConfig) int {
 		if floor, ok := floors[r.module]; ok && r.pct < floor-tolerance {
 			regressed = true
 			if check {
-				fmt.Fprintf(cfg.stderr,
+				_, _ = fmt.Fprintf(cfg.stderr,
 					"    REGRESSION: %s test coverage %.1f%% < floor %.1f%% (tolerance %gpp)\n",
 					r.module, r.pct, floor, tolerance)
 			}
@@ -299,13 +300,13 @@ func coverageFloor(cfg coverageFloorConfig) int {
 	switch {
 	case check:
 		for _, m := range unenforced {
-			fmt.Fprintf(cfg.stderr,
+			_, _ = fmt.Fprintf(cfg.stderr,
 				"    UNMEASURED: %s has a floor (%.1f%%) but was not measured; the floor is not being enforced\n",
 				m, floors[m])
 		}
 	case !bless:
 		for _, m := range unenforced {
-			fmt.Fprintf(cfg.stderr,
+			_, _ = fmt.Fprintf(cfg.stderr,
 				"WARNING: floor-file module %q was not measured (floor %.1f%% unenforced)\n",
 				m, floors[m])
 		}
@@ -316,14 +317,14 @@ func coverageFloor(cfg coverageFloorConfig) int {
 		// floors from a run that measured nothing turns a broken run into
 		// "floors updated", and the next --check compares against nothing.
 		if len(measured) == 0 {
-			fmt.Fprintf(cfg.stderr, "coverage-floor: --bless measured nothing; leaving %s alone\n", floorsPath)
+			_, _ = fmt.Fprintf(cfg.stderr, "coverage-floor: --bless measured nothing; leaving %s alone\n", floorsPath)
 			return 1
 		}
 		if err := blessCovFloors(floorsPath, measured); err != nil {
-			fmt.Fprintf(cfg.stderr, "coverage-floor: writing floors: %v\n", err)
+			_, _ = fmt.Fprintf(cfg.stderr, "coverage-floor: writing floors: %v\n", err)
 			return 1
 		}
-		fmt.Fprintf(cfg.stdout, "blessed floors -> %s\n", floorsPath)
+		_, _ = fmt.Fprintf(cfg.stdout, "blessed floors -> %s\n", floorsPath)
 		// What was measured is blessed upward, but a run that lost a module to
 		// a failed measurement still failed.
 		if measureFailed {
@@ -333,7 +334,7 @@ func coverageFloor(cfg coverageFloorConfig) int {
 	}
 
 	if measureFailed {
-		fmt.Fprintf(cfg.stderr, "coverage-floor: retained logs: %s\n", scratch)
+		_, _ = fmt.Fprintf(cfg.stderr, "coverage-floor: retained logs: %s\n", scratch)
 		return 1
 	}
 	if check && (regressed || len(unenforced) > 0) {
@@ -355,7 +356,7 @@ func readCovFloors(path string) (map[string]float64, []string, error) {
 		}
 		return nil, nil, err
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 	sc := bufio.NewScanner(f)
 	for sc.Scan() {
 		line := strings.TrimSpace(sc.Text())
@@ -410,7 +411,7 @@ func blessCovFloors(path string, measured map[string]covFloorRow) error {
 				if meas.pct > old {
 					old = meas.pct
 				}
-				fmt.Fprintf(&out, "%s %.1f", fields[0], old)
+				_, _ = fmt.Fprintf(&out, "%s %.1f", fields[0], old)
 				written[fields[0]] = true
 			} else {
 				out.WriteString(line)
@@ -436,7 +437,7 @@ func blessCovFloors(path string, measured map[string]covFloorRow) error {
 			out.WriteString("\n")
 		}
 		for _, m := range appended {
-			fmt.Fprintf(&out, "%s %.1f\n", m, measured[m].pct)
+			_, _ = fmt.Fprintf(&out, "%s %.1f\n", m, measured[m].pct)
 		}
 	}
 	return os.WriteFile(path, []byte(out.String()), 0o644)
@@ -468,7 +469,7 @@ func covFloorGoTestArgs(module, profilePath string, pkgs []string) []string {
 // resolves within the module, so it names this module's packages and nothing
 // else.
 func covFloorPackages(dir string) ([]string, error) {
-	cmd := exec.Command("go", "list", "./...")
+	cmd := exec.CommandContext(context.Background(), "go", "list", "./...")
 	cmd.Dir = dir
 	out, err := cmd.Output()
 	if err != nil {
@@ -501,8 +502,8 @@ func realCovFloorGoTest(module, profilePath, logPath string) error {
 	if err != nil {
 		return fmt.Errorf("creating log %s: %w", logPath, err)
 	}
-	defer log.Close()
-	cmd := exec.Command("go", covFloorGoTestArgs(module, profilePath, pkgs)...)
+	defer func() { _ = log.Close() }()
+	cmd := exec.CommandContext(context.Background(), "go", covFloorGoTestArgs(module, profilePath, pkgs)...)
 	cmd.Dir = dir
 	cmd.Stdout = log
 	cmd.Stderr = log
