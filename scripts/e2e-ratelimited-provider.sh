@@ -38,13 +38,26 @@ fixtures_dir="$repo_root/test/e2e/fake429"
 
 retry_after=8
 stop_dir=""
+
+# need_value FLAG REMAINING — a flag that takes one must have one. Without
+# this, `set -u` aborts on "$2" with a raw "line NN: $2: unbound variable",
+# which tells the operator nothing about which flag they left dangling.
+need_value() {
+	if [ "$2" -lt 2 ]; then
+		echo "e2e-ratelimited-provider: $1 needs a value" >&2
+		exit 2
+	fi
+}
+
 while [ $# -gt 0 ]; do
 	case "$1" in
 	--retry-after)
+		need_value --retry-after $#
 		retry_after="$2"
 		shift 2
 		;;
 	--stop)
+		need_value --stop $#
 		stop_dir="$2"
 		shift 2
 		;;
