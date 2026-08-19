@@ -27,7 +27,7 @@ func TestTestMainDerivesScrubListFromEnvvarsAll(t *testing.T) {
 		t.Fatalf("cmd/evener/internal/launchcheck/testmain_test.go does not derive its scrub list from envvars.All(); see issue #188")
 	}
 
-	for _, line := range strings.Split(s, "\n") {
+	for line := range strings.SplitSeq(s, "\n") {
 		if strings.Contains(line, `os.Unsetenv("EVENER_PROVIDERS_CONFIG")`) {
 			t.Fatalf("cmd/evener/internal/launchcheck/testmain_test.go hand-clears EVENER_PROVIDERS_CONFIG by name instead of deriving from envvars.All(); see issue #188\noffending line: %s", line)
 		}
