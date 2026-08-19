@@ -27,8 +27,8 @@
 # floor files. --bless always rewrites EVERY area, so unlike the Go scripts there
 # is no partial-bless footgun to undo afterward.
 #
-# EVENER_WEB_FRONTEND_DIR points this at a throwaway frontend instead of the real
-# one, which is how scripts/coverage/web-coverage-floor-selftest.sh exercises it.
+# EVENER_WEB_FRONTEND_DIR points this at a throwaway frontend instead of the
+# real one.
 set -uo pipefail
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"

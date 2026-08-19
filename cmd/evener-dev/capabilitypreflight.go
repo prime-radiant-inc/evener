@@ -46,7 +46,7 @@ type classifyFn func() []capabilityprobe.Capability
 // shell distinguishes "FAKE_GATE_PROBE_BLOCKED set to empty" (fake mode,
 // nothing blocked) from "FAKE_GATE_PROBE_BLOCKED unset" (run the real probe)
 // via `${VAR+set}`; os.Getenv collapses both to "", which would make the
-// all-available selftest indistinguishable from the real path.
+// all-available test case indistinguishable from the real path.
 func capabilityPreflight(getenv func(string) (string, bool), stdout io.Writer, stderr io.Writer, classify classifyFn) int {
 	type entry struct {
 		blocked bool

@@ -23,5 +23,4 @@ primeradiant.com/evener/test/e2e/fakellm/cmd  # the fakellm helper's binary entr
 primeradiant.com/evener/test/e2e/fake429  # e2e test helper: stands in for a rate-limited provider so the model-retry path can be driven without waiting on a real provider to throttle
 primeradiant.com/evener/cmd/evener-hub/internal/hubtest  # fixture helpers shared by cmd/evener-hub tests; test support, not shipped runtime
 primeradiant.com/evener/internal/appwirets  # code GENERATOR run via go generate to emit the AppWire TypeScript types; its output is verified up to date by TestGeneratedFileCurrent, and the generator itself is not a shipped runtime surface
-primeradiant.com/evener/cmd/evener-test-dev-tooling  # the dev-tooling selftest wave runner; tooling that tests tooling, not shipped runtime
 primeradiant.com/evener/llm/providers  # no production file exists in this package — it holds only cross-provider tests, so there is no local surface to fuzz
