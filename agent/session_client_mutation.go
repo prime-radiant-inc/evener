@@ -184,6 +184,21 @@ type clientMutationSnapshot struct {
 	// review found it drifting on three of four writers, across restarts, and on
 	// a rejected promote.
 	QueueHeld              bool                                       `json:"queue_held,omitempty"`
+	// SteeringHeld parks pending user steering after a Stop, mirroring QueueHeld
+	// (issue #174): a Stop that lands at a turn boundary is Applied, and without
+	// this gate the still-OPEN steering rail restarts the session and delivers the
+	// steer to the model anyway. The steer never moves storage -- it stays in
+	// PendingExecutions/SteeringOrder where it already durably lives, so causal
+	// provenance is never at risk by construction (issue #146, Option C — park in
+	// place). Delivery stays a steering injection ("redirect"), not a converted
+	// new instruction.
+	//
+	// Durable for the same reason QueueHeld is: a daemon that restarts must not
+	// treat the parked steer as work to resume. Cleared on the same
+	// user-initiated-run triggers that clear QueueHeld (turn/start, turn/queue,
+	// turn/drainAsSteer, turn/promoteQueuedAsSteer), and deliberately NOT cleared
+	// on cancel-queued.
+	SteeringHeld           bool                                       `json:"steering_held,omitempty"`
 	QueueRevision          uint64                                     `json:"queue_revision"`
 	NextTurnSequence       uint64                                     `json:"next_turn_sequence"`
 	NextQueueEntrySequence uint64                                     `json:"next_queue_entry_sequence"`
@@ -269,6 +284,10 @@ func (s *Session) AcceptClientMutationStart(params appwire.TurnStartParams) (app
 		// new turn runs first and the drain loop takes the parked messages after
 		// it, which is the ordinary queue behaviour they were promised (wms7).
 		snapshot.QueueHeld = false
+		// A user-initiated run releases the parked steer too: the opening turn
+		// will drain the steering queue at its boundary, so the steer the Stop
+		// parked is delivered into it (issue #174).
+		snapshot.SteeringHeld = false
 		reserveClientMutationTurnID(snapshot, record)
 		record.ExecutionState = "accepted"
 		snapshot.BudgetReservations[record.ClientMutationID] = clientMutationBudgetReservation{
@@ -527,6 +546,14 @@ func (s *Session) InterruptClientMutation(
 		// runner on its way out and the drain loop is right behind it, so holding
 		// only at finalize leaves exactly the window the restart used (wms7).
 		snapshot.QueueHeld = true
+		// Park pending user steering at the same moment, mirroring QueueHeld
+		// (issue #174). Without this gate the steering rail stays OPEN after a
+		// Stop lands at a turn boundary: wakeForPendingSteering fires
+		// unconditionally below, restarts the session, and delivers the steer to
+		// the model anyway. The steer stays in PendingExecutions/SteeringOrder
+		// -- it never moves storage, so its causal provenance is never at risk
+		// (issue #146, Option C — park in place).
+		snapshot.SteeringHeld = true
 		return nil
 	})
 	if err != nil {
@@ -728,7 +755,11 @@ func (s *Session) SetPendingUserInputWakeFunc(wake func()) {
 	s.mu.Lock()
 	s.pendingUserInputWake = wake
 	s.mu.Unlock()
-	if wake != nil && (s.QueueDepth() > 0 || s.hasPendingUserSteering()) {
+	// A steer parked by a Stop (SteeringHeld) is not work to resume: waking for
+	// it at attach would restart the session and deliver the steer the user
+	// just stopped (issue #174, #146 Option C — park in place).
+	steeringHeld := s.clientMutations != nil && s.clientMutations.steeringHeld()
+	if wake != nil && (s.QueueDepth() > 0 || (!steeringHeld && s.hasPendingUserSteering())) {
 		wake()
 	}
 }
@@ -1195,6 +1226,16 @@ func (s *clientMutationStore) queueHeld() bool {
 	s.stateMu.RLock()
 	defer s.stateMu.RUnlock()
 	return s.state.QueueHeld
+}
+
+// steeringHeld reads the parked-steering flag without cloning the snapshot,
+// mirroring queueHeld. wakeForPendingSteering and the busy-state predicates
+// consult it so a Stop with pending user steering does not restart the session
+// or read as work in progress (issue #174).
+func (s *clientMutationStore) steeringHeld() bool {
+	s.stateMu.RLock()
+	defer s.stateMu.RUnlock()
+	return s.state.SteeringHeld
 }
 
 func (s *clientMutationStore) mutate(mutate func(*clientMutationSnapshot) error) error {
