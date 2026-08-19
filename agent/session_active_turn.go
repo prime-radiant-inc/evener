@@ -317,7 +317,7 @@ func (s *Session) scheduleRunningTurnReleaseRetry(turnID string) {
 		// warning names, not a "session restart".
 		s.emit(events.EventWarning, events.WarningData{
 			Message: fmt.Sprintf(
-				"running turn %s could not be released after %d attempts; this session refuses every later turn until the daemon reloads and forgetRunningTurnNoOneOwns clears the name at load",
+				"running turn %s could not be released after %d attempts; this session refuses every later turn until the daemon restarts (the stale turn name is cleared at daemon load)",
 				turnID, runningTurnReleaseRetryLimit),
 		})
 		return
