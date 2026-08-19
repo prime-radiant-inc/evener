@@ -8,6 +8,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"unicode/utf8"
 )
 
 // ExplainSchemaError renders model-facing coaching for a call that failed
@@ -22,7 +23,16 @@ import (
 // — not a misleading top-level guess. Any segment the walk can't resolve
 // (malformed path, schema shape mismatch) falls back to treating the whole
 // original string as a single top-level field name.
-func ExplainSchemaError(toolName string, params, args map[string]any, instanceLocation string) string {
+//
+// constraintKeyword, when non-empty, is the failing JSON-Schema keyword's
+// name (the last segment of the deepest cause's KeywordLocation, e.g.
+// "maxLength"), supplied by the caller (offendingKeyword). When the field is
+// present and the keyword is a recognized value constraint (maxLength,
+// minLength, minItems, maxItems), the message names the actual constraint,
+// its limit, and the offending value/length instead of the generic "wrong
+// type or value" + required-list scaffolding — which otherwise sends the
+// caller debugging a parameter that was correctly supplied (issue #193).
+func ExplainSchemaError(toolName string, params, args map[string]any, instanceLocation, constraintKeyword string) string {
 	var b strings.Builder
 
 	containerSchema := params
@@ -40,6 +50,19 @@ func ExplainSchemaError(toolName string, params, args map[string]any, instanceLo
 			// top-level field name (today's flat behavior).
 			containerSchema, containerPath, field = params, "", instanceLocation
 			_, present = args[instanceLocation]
+		}
+	}
+
+	// When a specific value constraint failed on a present field, surface
+	// that constraint (field, constraint name, limit, actual value/length)
+	// instead of the generic "wrong type or value" + required-list scaffolding.
+	if present && constraintKeyword != "" {
+		fullPath := field
+		if containerPath != "" {
+			fullPath = containerPath + "." + field
+		}
+		if specific := constraintMessage(toolName, fullPath, containerSchema, field, constraintKeyword, args, instanceLocation); specific != "" {
+			return specific
 		}
 	}
 
@@ -68,6 +91,97 @@ func ExplainSchemaError(toolName string, params, args map[string]any, instanceLo
 	}
 	fmt.Fprintf(&b, "\nExample: %s", minimalExample(params))
 	return b.String()
+}
+
+// constraintMessage renders a specific constraint-violation message for a
+// present field whose schema rejected it: the field's display path, the
+// constraint name, its limit, and the actual value/length. Returns "" when
+// the keyword is not one of the recognized length/count constraints
+// (maxLength, minLength, minItems, maxItems) or when the schema/value shape
+// doesn't match the keyword, so the caller falls back to the generic
+// "wrong type or value" message.
+func constraintMessage(toolName, displayPath string, containerSchema map[string]any, field, keyword string, args map[string]any, instanceLocation string) string {
+	fieldSchema, _ := schemaProps(containerSchema)[field].(map[string]any)
+	if fieldSchema == nil {
+		return ""
+	}
+	value := resolveInstanceValue(args, instanceLocation)
+	switch keyword {
+	case "maxLength":
+		max, ok := schemaInt(fieldSchema["maxLength"])
+		if !ok {
+			return ""
+		}
+		s, _ := value.(string)
+		n := utf8.RuneCountInString(s)
+		return fmt.Sprintf("%s: argument %q exceeds maxLength (%d). Value %q is %d characters.", toolName, displayPath, max, s, n)
+	case "minLength":
+		min, ok := schemaInt(fieldSchema["minLength"])
+		if !ok {
+			return ""
+		}
+		s, _ := value.(string)
+		n := utf8.RuneCountInString(s)
+		return fmt.Sprintf("%s: argument %q is below minLength (%d). Value %q is %d characters.", toolName, displayPath, min, s, n)
+	case "maxItems":
+		max, ok := schemaInt(fieldSchema["maxItems"])
+		if !ok {
+			return ""
+		}
+		arr, _ := value.([]any)
+		return fmt.Sprintf("%s: argument %q exceeds maxItems (%d). Value has %d items.", toolName, displayPath, max, len(arr))
+	case "minItems":
+		min, ok := schemaInt(fieldSchema["minItems"])
+		if !ok {
+			return ""
+		}
+		arr, _ := value.([]any)
+		return fmt.Sprintf("%s: argument %q is below minItems (%d). Value has %d items.", toolName, displayPath, min, len(arr))
+	}
+	return ""
+}
+
+// resolveInstanceValue walks a JSON-Pointer-style path (e.g.
+// "questions/0/header") against the parsed args, alternating object-property
+// and array-index steps, and returns the value at that location (or nil when
+// any step can't be resolved). Mirrors the instance walk in
+// resolveSchemaErrorContainer without mutating it.
+func resolveInstanceValue(args map[string]any, path string) any {
+	if path == "" {
+		return nil
+	}
+	var cur any = args
+	for _, seg := range strings.Split(path, "/") {
+		if idx, isIdx := arrayIndex(seg); isIdx {
+			arr, ok := cur.([]any)
+			if !ok || idx < 0 || idx >= len(arr) {
+				return nil
+			}
+			cur = arr[idx]
+			continue
+		}
+		m, ok := cur.(map[string]any)
+		if !ok {
+			return nil
+		}
+		cur = m[seg]
+	}
+	return cur
+}
+
+// schemaInt extracts an integer from a JSON-Schema numeric constraint value,
+// tolerating the float64/int/int64 forms a Go map[string]any or JSON-unmarshaled
+// schema may carry.
+func schemaInt(v any) (int, bool) {
+	switch n := v.(type) {
+	case float64:
+		return int(n), true
+	case int:
+		return n, true
+	case int64:
+		return int(n), true
+	}
+	return 0, false
 }
 
 // resolveSchemaErrorContainer walks instanceLocation (split on "/") against

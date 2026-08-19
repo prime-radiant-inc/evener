@@ -23,7 +23,7 @@ func editParamsForExplain() map[string]any {
 }
 
 func TestExplainSchemaError_NamesOffendingField(t *testing.T) {
-	msg := ExplainSchemaError("edit_file", editParamsForExplain(), map[string]any{"file_path": "/x"}, "old_string")
+	msg := ExplainSchemaError("edit_file", editParamsForExplain(), map[string]any{"file_path": "/x"}, "old_string", "")
 	if !strings.Contains(msg, `edit_file`) || !strings.Contains(msg, `"old_string"`) {
 		t.Fatalf("msg = %q", msg)
 	}
@@ -33,7 +33,7 @@ func TestExplainSchemaError_NamesOffendingField(t *testing.T) {
 }
 
 func TestExplainSchemaError_FallbackWhenUnknownField(t *testing.T) {
-	msg := ExplainSchemaError("edit_file", editParamsForExplain(), map[string]any{}, "")
+	msg := ExplainSchemaError("edit_file", editParamsForExplain(), map[string]any{}, "", "")
 	// Must still list required args + example even without a pinpointed field.
 	if !strings.Contains(msg, "file_path") || !strings.Contains(msg, "Example:") {
 		t.Fatalf("msg = %q", msg)
@@ -197,7 +197,7 @@ func TestExplainSchemaError_ArrayItemMissingRequiredField(t *testing.T) {
 		"action":  "update",
 		"updates": []any{map[string]any{"id": float64(1), "notes": "x"}},
 	}
-	got := ExplainSchemaError("task_list", params, args, "updates/0")
+	got := ExplainSchemaError("task_list", params, args, "updates/0", "")
 	want := "task_list: missing required argument \"status\" in updates[0].\n" +
 		"Required arguments in updates[0]: id (integer), status (string).\n" +
 		"Example: {\"action\": \"...\"}"
@@ -215,12 +215,15 @@ func TestExplainSchemaError_NestedPropertyWrongTypeOrValue(t *testing.T) {
 			"options":  []any{},
 		}},
 	}
-	got := ExplainSchemaError("ask_user", params, args, "questions/0/header")
-	want := "ask_user: argument \"questions[0].header\" has the wrong type or value.\n" +
-		"Required arguments in questions[0]: question (string), options (array).\n" +
-		"Example: {\"questions\": []}"
+	got := ExplainSchemaError("ask_user", params, args, "questions/0/header", "maxLength")
+	want := "ask_user: argument \"questions[0].header\" exceeds maxLength (12). Value \"xxxxxxxxxxxxxxxxxxxx\" is 20 characters."
 	if got != want {
 		t.Fatalf("got:\n%s\nwant:\n%s", got, want)
+	}
+	// The misleading "Required arguments" scaffolding must be gone — the
+	// actual constraint (maxLength) and value/length are surfaced instead.
+	if strings.Contains(got, "Required arguments") {
+		t.Fatalf("message must not include the generic required-arguments line: %q", got)
 	}
 }
 
@@ -228,7 +231,7 @@ func TestExplainSchemaError_FlatTopLevelUnchanged(t *testing.T) {
 	// Regression: a single-segment instance location (today's only case)
 	// must still produce the unqualified "Required arguments:" line, with
 	// no "in <container>" text anywhere.
-	msg := ExplainSchemaError("edit_file", editParamsForExplain(), map[string]any{"file_path": "/x"}, "old_string")
+	msg := ExplainSchemaError("edit_file", editParamsForExplain(), map[string]any{"file_path": "/x"}, "old_string", "")
 	want := "edit_file: missing required argument \"old_string\".\n" +
 		"Required arguments: file_path (string), old_string (string), new_string (string).\n" +
 		"Example: {\"file_path\": \"...\", \"new_string\": \"...\", \"old_string\": \"...\"}"
@@ -245,8 +248,8 @@ func TestExplainSchemaError_DoesNotMutateStringRequired(t *testing.T) {
 	params := editParamsForExplain()
 	params["required"] = required
 
-	first := ExplainSchemaError("edit_file", params, map[string]any{}, "")
-	second := ExplainSchemaError("edit_file", params, map[string]any{}, "")
+	first := ExplainSchemaError("edit_file", params, map[string]any{}, "", "")
+	second := ExplainSchemaError("edit_file", params, map[string]any{}, "", "")
 	if first != second {
 		t.Fatalf("explanation changed across calls:\nfirst:  %q\nsecond: %q", first, second)
 	}
