@@ -59,6 +59,15 @@ type attemptObservation struct {
 // the two readers must not drift.
 const modelRetryFailFastAfter = 4
 
+// maxToolCallsPerResponse is the in-stream per-response backstop for GitHub
+// issue #94: the maximum number of complete tool calls a single streamed
+// assistant response may carry before consumeModelStream stops it. See the
+// bound's comment in the event loop for the full rationale. Legitimate
+// agent operation rarely exceeds 10-20 tool calls per response; 40 is
+// high enough to never trip in normal use and low enough to stop a runaway
+// (the captured incident streamed 228) before it streams indefinitely.
+const maxToolCallsPerResponse = 40
+
 // emitModelRetry builds the RetryPolicy.OnRetry hook that reports each retry of
 // req on the session event bus. Attempt counts retries (the first retry is 1);
 // MaxAttempts is the full budget including the initial try, so a consumer can
@@ -242,6 +251,10 @@ func (s *Session) consumeModelStream(ctx context.Context, req llm.Request, st ll
 	assistantStarted := false
 	finished := false
 
+	// toolCallsInResponse counts complete tool calls emitted in this single
+	// streamed response. It backs the per-response runaway bound below.
+	toolCallsInResponse := 0
+
 	// firstContent/lastContent bound the content-event window — text, tool-arg
 	// (delta or end), and reasoning content only, never wall-clock attempt
 	// duration (spec: SSE keep-alives reset the read timer, so a stalled
@@ -387,6 +400,25 @@ func (s *Session) consumeModelStream(ctx context.Context, req llm.Request, st ll
 			}
 			if toolNames[ev.ToolCall.ID] == s.resultToolName() {
 				emitCommunicatePreview(ev.ToolCall.ID)
+			}
+			// Per-response tool-call bound (GitHub issue #94): the four
+			// existing runaway guards all watch between rounds or for
+			// silence/failure. A loud never-terminating response — the
+			// model streams an unbounded number of tool calls without
+			// completing a round — touches none of them. This bound is
+			// the in-stream backstop the prior-art survey (issue #94)
+			// identified: when a single response exceeds
+			// maxToolCallsPerResponse complete tool calls, stop the stream
+			// with a non-retryable error so the retry loop does not
+			// re-stream the same runaway. 40 is well above any legitimate
+			// multi-tool response (10-20 is typical) and well below the
+			// 228-call incident that motivated the bound.
+			toolCallsInResponse++
+			if toolCallsInResponse > maxToolCallsPerResponse {
+				err := llm.NewPermanentStreamError(req.Provider,
+					"per-response tool-call bound exceeded: "+strconv.Itoa(toolCallsInResponse)+
+						" tool calls in one response (limit "+strconv.Itoa(maxToolCallsPerResponse)+")", nil)
+				return sessionModelResponse{}, observe(err), err
 			}
 		case llm.StreamEventFinish:
 			finished = true

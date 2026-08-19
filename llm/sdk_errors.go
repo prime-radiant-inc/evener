@@ -97,6 +97,25 @@ func NewStreamError(provider, message string, cause error) error {
 	}}
 }
 
+// NewPermanentStreamError reports a streaming failure that must not be
+// retried: the stream was stopped for a reason re-running it cannot fix,
+// such as a per-response runaway bound tripping mid-stream (the model
+// emitted an unbounded number of tool calls in one response and would do
+// so again on retry). cause is exposed via Unwrap; pass nil when none
+// applies. It carries the same StreamError type as NewStreamError so
+// existing errors.As(err, &StreamError) and errors.As(err, &llm.Error)
+// handling apply, but Retryable() returns false, so Classify() reports
+// ErrorClassPermanent and the retry loop short-circuits rather than
+// re-streaming the same runaway.
+func NewPermanentStreamError(provider, message string, cause error) error {
+	return &StreamError{nonHTTPBaseError{
+		provider:  provider,
+		message:   message,
+		retryable: false,
+		cause:     cause,
+	}}
+}
+
 // NewNoObjectGeneratedError reports that no valid object could be produced from
 // the model output. cause is the underlying parse/validation error, exposed via
 // Unwrap; pass nil when none applies.
