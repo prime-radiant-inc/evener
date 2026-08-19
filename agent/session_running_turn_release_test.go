@@ -2,6 +2,7 @@ package agent
 
 import (
 	"errors"
+	"fmt"
 	"testing"
 )
 
@@ -100,6 +101,19 @@ func TestReleaseRunningTurnIDGivesUpLoudlyWhenTheStoreNeverRecovers(t *testing.T
 	}
 	if got := h.warningsMatching("could not be released"); got != 1 {
 		t.Fatalf("terminal release warnings = %d, want exactly 1: exhausting the budget is one event, and it fires the user's Notification hook", got)
+	}
+	// The message has to report what actually happened (the real attempt
+	// count, not a placeholder) and name the daemon reload -- the only thing
+	// that clears a stranded name -- rather than a "session restart", which
+	// isn't a real operation on a session.
+	if got := h.warningsMatching(fmt.Sprintf("could not be released after %d attempts", runningTurnReleaseRetryLimit)); got != 1 {
+		t.Fatalf("terminal warning with the true attempt count %d = %d matches, want exactly 1", runningTurnReleaseRetryLimit, got)
+	}
+	if got := h.warningsMatching("until it restarts"); got != 0 {
+		t.Fatalf("terminal warning still claims a bare session restart clears the name; only the daemon reloading (forgetRunningTurnNoOneOwns, at load) does")
+	}
+	if got := h.warningsMatching("daemon"); got != 1 {
+		t.Fatalf("terminal warning does not mention the daemon reload/load path that actually clears the stranded name")
 	}
 	// The per-failure diagnostic is latched to the store's unhealthy episode,
 	// like mint's. Warning per re-attempt would cost a hook subprocess apiece.
