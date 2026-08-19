@@ -19,7 +19,7 @@ commit.
 | Custom lint programs | Convert where a standard equivalent holds; internalcheck stays |
 | Release pipeline | Adopt goreleaser |
 | Coverage | No external service; consolidate the floor family to one local script + one floor file (F1b) |
-| Audit test framework | Delete (all 16 root `*_audit_test.go` plus `workflow_test.go`) |
+| Audit test framework | Delete 14 of 16 root `*_audit_test.go` plus `workflow_test.go`; KEEP `scriptmktemp_audit_test.go` and the delete-safety half of `makefile_audit_test.go` (the kata 5hs2 tripwires) |
 | capability-preflight | Delete; affected tests gain per-test self-detection (`t.Skip`) |
 | MEMCAP | Delete |
 | merge-into-branch | Delete |
@@ -193,16 +193,30 @@ when the host lacks the capability. Apply the helpers to exactly the tests
 the deleted skip patterns covered — implementation maps the gatesurface
 patterns to the concrete test list and touches no others.
 
-### 8. Audit framework deletion
+### 8. Audit framework deletion (with two survivors)
 
-Delete the 16 root `*_audit_test.go` files and `workflow_test.go`.
-Enforcement that ends (accepted): scratch-safety pinning, lint-family
-drift pinning, scenario-card rules, envvar-registry doc sync, sha256
-call-site inventory, binaries.yml shape pinning. The audited *mechanisms*
-being replaced in this PR (exact recipe texts, the lint list in CI, the
-workflow shape) need no successor; the mechanisms that remain
-(scratch-lib, scenario cards, envvars registry) continue by convention.
-`docs/testing.md` sections that document the audits are rewritten.
+Delete 14 root `*_audit_test.go` files and `workflow_test.go`. Keep two
+safety tripwires tied to the kata 5hs2 incident (a cleanup script deleted a
+home directory):
+
+- `scriptmktemp_audit_test.go` stays whole (scratch-lib discipline and the
+  count-pinned list of variable-fed recursive deletes in scripts).
+- `makefile_audit_test.go` is stripped to
+  `TestNoMakefileRecipeFeedsVariableToRecursiveDelete` and its helpers and
+  allowlist; its build-all/install parity test dies.
+
+Because these two survive, the lockstep rule survives with them: any commit
+that rewords a pinned delete recipe (the test-web extraction in particular)
+updates the allowlist in the same commit, and new scripts keep using
+scratch-lib.
+
+Enforcement that ends (accepted): lint-family drift pinning, scenario-card
+rules, envvar-registry doc sync, sha256 call-site inventory, binaries.yml
+shape pinning. The audited *mechanisms* being replaced in this PR (exact
+recipe texts, the lint list in CI, the workflow shape) need no successor;
+the mechanisms that remain (scratch-lib, scenario cards, envvars registry)
+continue by convention. `docs/testing.md` sections that document the deleted
+audits are rewritten.
 
 ### 9. dependabot
 
@@ -228,8 +242,10 @@ commit catches strays.
 
 ## Commit plan (atomic, each leaves the gates green)
 
-1. Delete the audit test framework (16 files + workflow_test.go) — first,
-   because its exact-text pins would otherwise fail every later commit.
+1. Delete 14 audit files + `workflow_test.go`; strip
+   `makefile_audit_test.go` to the delete-safety test. First, because the
+   deleted exact-text pins would otherwise fail every later commit. The two
+   surviving safety audits keep their lockstep rule.
 2. tagliatelle replaces namingcheck-Go; namingcheck shrinks to
    evener-tomlcheck; `build-namingcheck` dies.
 3. revive `exported` replaces docscheck; `lint-docs` dies.
