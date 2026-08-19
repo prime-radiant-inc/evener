@@ -840,11 +840,13 @@ does slip through shows up on the hub's stderr:
 ## A Disposable Hub Needs Its Own HOME
 
 The hub is a host singleton guarded by an exclusive flock on
-`$HOME/.evener/hub.lock`, and that path is deliberately not overridable
-(kata av1j): the lock, the run dir, the state root, and the auth token
-all derive from `os.UserHomeDir()`, so they only stay coherent when they
-move **together**. The blessed way to run a second, disposable hub — an
-e2e harness, a scratch verification hub — is a fresh HOME:
+`$XDG_STATE_HOME/evener/hub.lock` (`$HOME/.local/state/evener/hub.lock` when
+`XDG_STATE_HOME` is unset), and that path is deliberately not independently
+overridable (kata av1j): the lock, the run dir, the state root, and the auth
+token all derive from `cmdutil.DefaultStateRoot()` (XDG_STATE_HOME, else
+`os.UserHomeDir()`), so they only stay coherent when they move **together**.
+The blessed way to run a second, disposable hub — an e2e harness, a scratch
+verification hub — is a fresh HOME:
 
 ```sh
 HOME=$(mktemp -d) ./evener-hub -addr 127.0.0.1:0 -evener ./evener
@@ -853,7 +855,7 @@ HOME=$(mktemp -d) ./evener-hub -addr 127.0.0.1:0 -evener ./evener
 Never point a test hub at the real HOME "just for a quick check": if the
 real hub happens to be running you collide (the flock error names the
 lock file it lost); if it happens to be **stopped**, the test hub
-silently claims the real `~/.evener` and state root — the dangerous case,
+silently claims the real `~/.local/state/evener` — the dangerous case,
 because nothing fails. A lock-path-only override was considered and
 rejected for exactly that reason: it would unbundle the singleton guard
 from the state it guards.

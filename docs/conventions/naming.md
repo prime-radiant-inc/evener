@@ -45,11 +45,11 @@ outnumber codex. This rev backs off.
 | Codex AppWire protocol | `internal/appwire/`, `internal/appsource/`, `internal/appserver/`, `server/appwire_*.go` | camelCase (codex requirement) |
 | Provider request/response shapes | `llm/providers/*/` | per provider (snake_case for OpenAI/Anthropic/Ollama/OpenRouter; camelCase for Google) |
 | Hub REST/SSE JSON | `cmd/evener-hub/`, `internal/hubapi/`, `server/` | snake_case |
-| Rendezvous files (`~/.evener/run/*.json`) | `rendezvous/` | snake_case |
+| Rendezvous files (`~/.local/state/evener/run/*.json`) | `rendezvous/` | snake_case |
 | Session save files | `agent/session.go`, `agent/transcript.go` | snake_case |
-| Hub config (`~/.evener/hub.toml`) | `cmd/evener-hub/config.go` | snake_case |
-| Launch config (`~/.evener/launch.toml`, `.evener/launch.toml`) | `internal/launchconfig/` | snake_case |
-| Project meta (`~/.evener/projects/<id>/meta.toml`) | `internal/launchconfig/` | snake_case |
+| Hub config (`~/.config/evener/hub.toml`) | `cmd/evener-hub/config.go` | snake_case |
+| Launch config (`~/.config/evener/launch.toml`, `.evener/launch.toml`) | `internal/launchconfig/` | snake_case |
+| Project meta (`~/.config/evener/projects/<id>/meta.toml`) | `internal/launchconfig/` | snake_case |
 | `evener` CLI flags | `cmd/evener/`, `cmd/evener-hub/`, `cmd/evener-tui/`, `cmd/llmcall/`, `cmd/evenereval/` | kebab-case |
 
 Go struct tags follow the rule directly: `json:"snake_case"` and

@@ -94,5 +94,5 @@ echo "Symlinked commands into $bindir"
 if [ -n "${HOME:-}" ] && [ -e "$HOME/.serf" ]; then
 	echo ""
 	echo "Found an existing ~/.serf: run 'evener-migrate' once before your first"
-	echo "Evener launch to move it to ~/.evener (see README.md, \"Migrating from Serf\")."
+	echo "Evener launch to move it into place (see README.md, \"Migrating from Serf\")."
 fi

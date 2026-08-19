@@ -40,10 +40,11 @@ sudo make install-system
 The installer does not create runtime/config directories. Evener creates them on
 first use.
 
-- `~/.evener/run` is runtime rendezvous state for live daemons.
+- `~/.local/state/evener/run` is runtime rendezvous state (and per-daemon
+  logs) for live daemons.
 - `~/.local/state/evener/projects/*` is durable per-project Evener state and saved
   transcripts.
-- `~/.evener/index.db` is Hub's SQLite search index.
+- `~/.local/state/evener/index.db` is Hub's SQLite search index.
 - `~/.config/evener/skills` and `~/.config/evener/plugins` are user extension
   roots created by Evener startup.
 
@@ -53,23 +54,25 @@ launch config, or pass the equivalent CLI flags for a single launch.
 
 ## Hub Config
 
-`~/.evener/hub.toml` is optional. If it is absent, Hub uses defaults:
-`hub_state_root = ~/.evener`, `run_dir` from the rendezvous default,
-`state_glob = ~/.local/state/evener/projects/*`, and `past_index_db =
-~/.evener/index.db`. Missing config does not create a default launch stanza;
-launch defaults still come from the layered launch files described below.
+`~/.config/evener/hub.toml` is optional. If it is absent, Hub uses defaults:
+`hub_state_root = ~/.local/state/evener`, `run_dir` from the rendezvous
+default, `state_glob = ~/.local/state/evener/projects/*`, and `past_index_db
+= ~/.local/state/evener/index.db`. Missing config does not create a default
+launch stanza; launch defaults still come from the layered launch files
+described below.
 
-Create `~/.evener/hub.toml` when you need to override those paths or configure
-Codex app-server sources/launches. This command expands `$HOME` before writing
-the file; TOML itself does not expand shell variables.
+Create `~/.config/evener/hub.toml` when you need to override those paths or
+configure Codex app-server sources/launches. This command expands `$HOME`
+before writing the file; TOML itself does not expand shell variables.
 
 ```bash
-cat > "$HOME/.evener/hub.toml" <<EOF
+mkdir -p "$HOME/.config/evener"
+cat > "$HOME/.config/evener/hub.toml" <<EOF
 addr = "127.0.0.1:9180"
-hub_state_root = "$HOME/.evener"
-run_dir = "$HOME/.evener/run"
+hub_state_root = "$HOME/.local/state/evener"
+run_dir = "$HOME/.local/state/evener/run"
 state_glob = "$HOME/.local/state/evener/projects/*"
-past_index_db = "$HOME/.evener/index.db"
+past_index_db = "$HOME/.local/state/evener/index.db"
 spawn_timeout = "30s"
 past_index_rebuild_interval = "60s"
 past_results_per_page = 50
@@ -85,7 +88,7 @@ timeout = "30s"
 CODEX_HOME = "$HOME/.codex"
 EOF
 
-chmod 600 "$HOME/.evener/hub.toml"
+chmod 600 "$HOME/.config/evener/hub.toml"
 ```
 
 Use `codex_launches` when Hub should own the Codex app-server lifecycle. Use
@@ -102,17 +105,17 @@ bearer_token_file = "/run/secrets/codex-token"
 
 Hub-spawned `evener serve` daemons get their flags from a layered config:
 
-- **Global**: `~/.evener/launch.toml` — hub-wide defaults (model, agent,
-  reasoning effort, skills/plugin dirs, MCP servers, etc.). Editable from
-  the Hub UI's Launch settings tab or by hand.
+- **Global**: `~/.config/evener/launch.toml` — hub-wide defaults (model,
+  agent, reasoning effort, skills/plugin dirs, MCP servers, etc.). Editable
+  from the Hub UI's Launch settings tab or by hand.
 - **In-repo**: `<cwd>/.evener/launch.toml` — per-project config shipped in
   the working directory. Trust-on-first-use: the Hub UI prompts to review
   and approve before applying. Untrusted in-repo files are skipped.
 - **Local per-project**: `<cwd>/.evener/launch.local.toml` — personal
   per-project defaults. Keep this file out of version control; this repo's
   `.gitignore` ignores it while still allowing shared `.evener/launch.toml`.
-  Existing `~/.evener/projects/<id>/launch.toml` files are read as a fallback
-  until the project layer is saved in the new location.
+  Existing `~/.config/evener/projects/<id>/launch.toml` files are read as a
+  fallback until the project layer is saved in the new location.
 - **Per-launch overrides**: `launchOverrides` on `ThreadStart` — applied to
   a single spawn only.
 
@@ -133,8 +136,8 @@ for the full schema and semantics.
 > [`docs/llm-provider-config-and-launch.md`](../../docs/llm-provider-config-and-launch.md)
 > (credentials, OAuth, and the hub launch/spawn model).
 
-Hub-managed at `~/.evener/credentials.toml` (chmod 600). The file's format
-is a small TOML document:
+Hub-managed at `~/.config/evener/credentials.toml` (chmod 600). The file's
+format is a small TOML document:
 
 ```toml
 schema = 1
@@ -159,7 +162,8 @@ who prefer external secret management.
 
 OpenAI supports both an API key (stored in `credentials.toml` like any other
 provider, or via `OPENAI_API_KEY`) and OAuth (sign in via
-`evener/auth/login/start`; state stored in `~/.evener/auth/openai.json`).
+`evener/auth/login/start`; state stored in
+`~/.local/state/evener/auth/openai.json`).
 
 The effective credential is resolved by precedence:
 
@@ -178,22 +182,23 @@ interchangeable credentials for one endpoint.
 Foreground run with logs:
 
 ```bash
-mkdir -p "$HOME/.evener/log"
-"$HOME/.local/bin/evener-hub" 2>&1 | tee -a "$HOME/.evener/log/hub.log"
+mkdir -p "$HOME/.local/state/evener/log"
+"$HOME/.local/bin/evener-hub" 2>&1 | tee -a "$HOME/.local/state/evener/log/hub.log"
 ```
 
 If you manage credentials via environment variables rather than
-`~/.evener/credentials.toml`, source your env file before starting:
+`~/.config/evener/credentials.toml`, source your env file before starting:
 
 ```bash
-set -a; source "$HOME/.evener/hub.env"; set +a
+set -a; source "$HOME/.config/evener/hub.env"; set +a
 ```
 
 Production deployments should run the same command under a supervisor and
 capture stdout/stderr. Hub logs config errors, past-index rebuild errors, roster
 watch errors, and child-process launch diagnostics there.
 
-Only one Hub process can run per host user because Hub takes `~/.evener/hub.lock`.
+Only one Hub process can run per host user because Hub takes
+`~/.local/state/evener/hub.lock`.
 
 ## Browser And TUI
 
