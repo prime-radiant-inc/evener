@@ -2818,6 +2818,7 @@ func TestSession_ToolNameMapping_EventsUseCanonicalName(t *testing.T) {
 
 	mu.Lock()
 	defer mu.Unlock()
+	sawCanonical := false
 	for _, ev := range evs {
 		var name string
 		switch d := ev.Data.(type) {
@@ -2834,6 +2835,10 @@ func TestSession_ToolNameMapping_EventsUseCanonicalName(t *testing.T) {
 		if name != "grep" {
 			continue // other tools (from other events)
 		}
+		sawCanonical = true
+	}
+	if !sawCanonical {
+		t.Fatal("expected at least one event with canonical tool name 'grep', but none was observed (canonicalization may have returned an empty string on miss)")
 	}
 }
 
