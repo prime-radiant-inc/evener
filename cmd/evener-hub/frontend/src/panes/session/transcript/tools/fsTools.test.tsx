@@ -55,27 +55,23 @@ test("read_file: body renders the output text", () => {
 });
 
 // --- read_file body: image/document marker (kata 1nr4) --------------------
-// agent/internal/tool/registry.go's ParseImageResult cuts a ReadFile image
-// response at its first "\n", keeping only the header
-// ("[image: png, N bytes, base64 data follows]") as the tool result's own
-// Output text - the base64 itself goes into a separate ImageData field that
-// never reaches item.output. So the base64 never actually "follows" in the
-// transcript text a reader sees; that phrase is left over from the
-// agent-internal string this was cut from. The thumbnail this now renders
-// alongside (ToolCallItem's <ImageGallery images={item.outputImages} />)
-// carries the real image; the body just needs to stop promising more text.
+// An image read's body renders nothing: the image displays below via
+// ToolCallItem's ImageGallery at read_file's up-to-600px size, so the
+// "[image: png, N bytes]" header is noise. A PDF read keeps its header
+// (minus the stale "base64 data follows" phrase - registry.go's
+// ParseImageResult routes the payload elsewhere) since no in-transcript
+// PDF preview duplicates it.
 
-test("read_file: an image read's body shows the header without the misleading 'base64 data follows' phrase", () => {
+test("read_file: an image read's body renders nothing - the gallery carries the image, so the '[image: png, N bytes]' header is noise", () => {
   const d = toolRendererFor("read_file");
   const Body = d.body!;
-  render(
+  const { container } = render(
     <Body
       item={item({ toolName: "read_file", output: "[image: png, 178337 bytes, base64 data follows]" })}
       live={false}
     />,
   );
-  expect(screen.getByText("[image: png, 178337 bytes]")).toBeTruthy();
-  expect(screen.queryByText(/base64 data follows/)).toBeNull();
+  expect(container.textContent).toBe("");
 });
 
 test("read_file: a document (PDF) read's body is cleaned up the same way", () => {
@@ -94,14 +90,13 @@ test("read_file: a document (PDF) read's body is cleaned up the same way", () =>
 test("read_file: a base64 payload that DID make it into output (older daemon, or the pre-parse shape) is still dropped, not dumped as text", () => {
   const d = toolRendererFor("read_file");
   const Body = d.body!;
-  render(
+  const { container } = render(
     <Body
       item={item({ toolName: "read_file", output: "[image: png, 3 bytes, base64 data follows]\nQUJD" })}
       live={false}
     />,
   );
-  expect(screen.getByText("[image: png, 3 bytes]")).toBeTruthy();
-  expect(screen.queryByText(/QUJD/)).toBeNull();
+  expect(container.textContent).toBe("");
 });
 
 test("read_file: plain text output (not the image/document marker) renders exactly as before, unfolded and unclipped", () => {

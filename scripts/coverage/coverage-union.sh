@@ -3,7 +3,7 @@
 # deterministic tests: the union of the test track and the fuzz track.
 #
 # Neither existing ratchet answers that question, and both understate it on their
-# own. scripts/coverage/test-coverage-floor.sh measures what `ROOT_FULL=1 make test`
+# own. `evener-dev coverage-floor` measures what `ROOT_FULL=1 make test`
 # proves, whose -run '^(Test|Example)' filter deliberately excludes every fuzz
 # target. scripts/fuzz/fuzz-coverage-global.sh measures only what the fuzz corpus
 # replays. The gap between them is not small and it is not noise: this repo keeps
@@ -62,8 +62,9 @@ measured_for() { awk -v m="$1" '$1==m {print $2}' "$measured_file" 2>/dev/null; 
 pct_of() { awk -v c="$1" -v t="$2" 'BEGIN{printf "%.1f", (t > 0 ? 100 * c / t : 0)}'; }
 
 # check_measurable MODULE WHY — a floored module that cannot be measured is an
-# unenforced ratchet, not a skippable row; see test-coverage-floor.sh for the
-# failure mode this closes. A module nobody floored keeps its advisory skip.
+# unenforced ratchet, not a skippable row; see cmd/evener-dev/coveragefloor.go
+# for the failure mode this closes. A module nobody floored keeps its advisory
+# skip.
 check_measurable() {
 	$check || return 0
 	local floor
@@ -83,7 +84,7 @@ tmpbase=${TMPDIR:-/tmp}
 # scratch on purpose. Nothing else sweeps either. See covscratch-lib.sh.
 reclaim_own_scratch "$tmpbase" evener-covunion
 # The name is chosen and the trap armed BEFORE the directory exists; see
-# test-coverage-floor.sh for the signal window this closes. $$ is unique among
+# covscratch-lib.sh for the signal window this closes. $$ is unique among
 # live processes, so concurrent runs cannot collide. A failed mkdir means a
 # stale same-pid leftover this run does not own, so the trap is disarmed before
 # exiting rather than deleting it.

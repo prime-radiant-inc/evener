@@ -708,6 +708,7 @@ var daemonPIDPattern = regexp.MustCompile(`\bdaemon session=\S+ pid=(\d+)\b`)
 
 func reapDaemons(t *testing.T, hubLog string) {
 	t.Helper()
+	var procs []*os.Process
 	for _, match := range daemonPIDPattern.FindAllStringSubmatch(hubLog, -1) {
 		pid, err := strconv.Atoi(match[1])
 		if err != nil {
@@ -718,7 +719,43 @@ func reapDaemons(t *testing.T, hubLog string) {
 			continue
 		}
 		_ = proc.Signal(syscall.SIGTERM)
+		procs = append(procs, proc)
 	}
+	// SIGTERM only *asks* each daemon to shut down; the flush-and-close of its
+	// session state is asynchronous. Returning before the process exits leaves
+	// it writing under state/evener/projects/<project>/sessions while
+	// t.TempDir's RemoveAll runs, which is exactly the 'unlinkat ...:
+	// directory not empty' teardown race of #249. Join every daemon here:
+	// graceful exit first (serve's own shutdown drain budget is 30s), then
+	// SIGKILL the laggards. A process that is gone can no longer write, so
+	// RemoveAll after this point cannot lose the race.
+	for _, proc := range procs {
+		if waitForProcessExit(proc, 35*time.Second) {
+			continue
+		}
+		t.Logf("daemon pid %d ignored SIGTERM; escalating to SIGKILL", proc.Pid)
+		_ = proc.Signal(syscall.SIGKILL)
+		if !waitForProcessExit(proc, 5*time.Second) {
+			t.Logf("daemon pid %d still present after SIGKILL; it may be a zombie awaiting init's reap, which holds no writable fds", proc.Pid)
+		}
+	}
+}
+
+// waitForProcessExit polls until proc is gone or the timeout expires.
+// os.Process.Wait is unavailable here: daemons are the hub's children, not
+// the test binary's, so the test cannot reap them — after the hub's SIGKILL
+// they are reparented to init, which reaps. Signal 0 probes existence
+// without disturbing the process; a zombie still "exists", which is fine —
+// a zombie has already closed its fds and cannot write.
+func waitForProcessExit(proc *os.Process, timeout time.Duration) bool {
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		if err := proc.Signal(syscall.Signal(0)); err != nil {
+			return true
+		}
+		time.Sleep(25 * time.Millisecond)
+	}
+	return false
 }
 
 func awaitHubReady(t *testing.T, addr string) {

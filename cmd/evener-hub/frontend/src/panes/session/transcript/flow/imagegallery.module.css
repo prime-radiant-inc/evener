@@ -34,6 +34,23 @@
   object-fit: cover;
 }
 
+/* size="large" (read_file image reads): the image whole at up to 600px
+   square instead of a 96px cover crop. These rules must follow their base
+   classes in this file - equal-specificity single-class selectors, so only
+   source order overrides the fixed 96px box. */
+.thumbLarge {
+  /* Hug the capped image; never escape the strip in a narrow pane. */
+  width: auto;
+  max-width: 100%;
+}
+
+.thumbImgLarge {
+  width: auto;
+  height: auto;
+  max-width: 600px;
+  max-height: 600px;
+}
+
 .caption {
   display: block;
   padding: 2px var(--space-1);

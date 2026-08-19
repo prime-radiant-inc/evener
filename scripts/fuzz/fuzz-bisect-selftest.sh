@@ -100,7 +100,9 @@ if printf '%s' "$out" | grep -q "$culprit_sha"; then
 else
 	bad "bisect did not name the introducing commit ($culprit_sha)"
 fi
-if printf '%s' "$out" | grep -qi "is the first bad commit"; then
+# git ≥2.55 quotes the bisect term ("is the first 'bad' commit", git.git
+# 0c0f93e7fa); older gits print "is the first bad commit". Match both.
+if printf '%s' "$out" | grep -qiE "is the first '?bad'? commit"; then
 	ok "bisect converged to a first bad commit"
 else
 	bad "bisect did not converge"

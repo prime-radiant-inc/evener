@@ -3,6 +3,7 @@ import userEvent from "@testing-library/user-event";
 import { afterEach, expect, test, vi } from "vitest";
 import dialogStyles from "../../../../widgets/dialog/dialog.module.css";
 import { ImageGallery } from "./ImageGallery";
+import styles from "./imagegallery.module.css";
 
 afterEach(() => {
   cleanup();
@@ -42,6 +43,24 @@ test("each thumbnail's <img> src is the resolved URL passed in, with distinguish
 test("no lightbox is open before any thumbnail is clicked", () => {
   render(<ImageGallery images={[{ src: "/s/ref/images/aaa" }]} />);
   expect(screen.queryByRole("dialog")).toBeNull();
+});
+
+// --- size="large" (read_file image reads: the image displays at up to
+// 600px square instead of the default 96px thumbnail) ---------------------
+
+test('size="large" renders the large (up-to-600px) thumb variant classes on the button and its img', () => {
+  render(<ImageGallery images={[{ src: "/s/ref/images/aaa" }]} size="large" />);
+  const thumb = screen.getByTestId("image-gallery-thumb");
+  expect(thumb.className.split(/\s+/)).toContain(styles.thumbLarge);
+  expect(thumb.querySelector("img")!.className.split(/\s+/)).toContain(styles.thumbImgLarge);
+});
+
+test("the default size keeps the plain 96px thumbnail classes, not the large variant", () => {
+  render(<ImageGallery images={[{ src: "/s/ref/images/aaa" }]} />);
+  const thumb = screen.getByTestId("image-gallery-thumb");
+  expect(thumb.className.split(/\s+/)).toContain(styles.thumb);
+  expect(thumb.className.split(/\s+/)).not.toContain(styles.thumbLarge);
+  expect(thumb.querySelector("img")!.className.split(/\s+/)).not.toContain(styles.thumbImgLarge);
 });
 
 test("clicking a thumbnail opens the lightbox showing that image", () => {

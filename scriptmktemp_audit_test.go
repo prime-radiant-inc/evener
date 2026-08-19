@@ -23,7 +23,7 @@ import (
 // The consequence is not cosmetic. The dev-tooling wave gives each suite its own
 // TMPDIR and fails a suite that leaves anything behind, so a script whose scratch
 // escapes to the Darwin directory sits outside BOTH the isolation and the leak
-// check. scripts/test-coverage-floor.sh leaked one directory per run that way —
+// check. The coverage floor ratchet leaked one directory per run that way —
 // including one per run of its own selftest, which asserted `ls -A "$tmphome"`
 // was empty and passed by inspecting a directory the scratch never entered. 56
 // abandoned directories holding 1.5GB accumulated before anyone looked.
@@ -345,7 +345,6 @@ var recursiveDeleteAllowedLines = map[string]int{
 	// parses the pid out of the basename, which a random mktemp suffix would
 	// turn into a permanent no-op. Each delete targets the name the script
 	// composed from its own $$ before anything else ran.
-	"test-coverage-floor.sh":  1,
 	"coverage-union.sh":       1,
 	"fuzz-coverage.sh":        1,
 	"fuzz-coverage-global.sh": 1,

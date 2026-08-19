@@ -3,6 +3,7 @@
 import { act, cleanup, fireEvent, render, screen, within } from "@testing-library/react";
 import { afterEach, expect, test, vi } from "vitest";
 import { resetDisclosureStoreForTests } from "../../../widgets/disclosure/disclosureStore";
+import galleryStyles from "./flow/imagegallery.module.css";
 import { ToolCallItem } from "./ToolCallItem";
 import { registerToolRenderer, type ToolRenderProps } from "./toolRenderers";
 import { ignoringTurn, itemRendererFor } from "./types";
@@ -330,6 +331,38 @@ test("a tool call's outputImages render as gallery thumbnails", () => {
   );
   expandRow();
   expect(screen.getAllByTestId("image-gallery-thumb")).toHaveLength(2);
+});
+
+test("a read_file image read renders its output image at the large (up-to-600px) size, not a 96px thumbnail", () => {
+  render(
+    <ToolCallItem
+      item={item({
+        toolName: "read_file",
+        argumentsJSON: JSON.stringify({ file_path: "shot.png" }),
+        output: "[image: png, 3 bytes, base64 data follows]",
+        outputImages: [{ src: "/doc/image?session=s&path=shot.png", name: "shot.png" }],
+      })}
+      turn={turn}
+      live={false}
+    />,
+  );
+  expandRow();
+  const thumb = screen.getByTestId("image-gallery-thumb");
+  expect(thumb.className.split(/\s+/)).toContain(galleryStyles.thumbLarge);
+});
+
+test("other tools' outputImages keep the default 96px thumbnail size", () => {
+  registerToolRenderer({ match: "tci_images_default_size", summary: () => "s", body: () => <div>body</div> });
+  render(
+    <ToolCallItem
+      item={item({ toolName: "tci_images_default_size", outputImages: [{ src: "a" }] })}
+      turn={turn}
+      live={false}
+    />,
+  );
+  expandRow();
+  const thumb = screen.getByTestId("image-gallery-thumb");
+  expect(thumb.className.split(/\s+/)).not.toContain(galleryStyles.thumbLarge);
 });
 
 test("an empty outputImages array renders no gallery thumbnails", () => {
