@@ -334,10 +334,6 @@ var recursiveDeleteAllowedLines = map[string]int{
 	// Per-scenario corpus scratch reclaimed inside the provider loop; the
 	// suite-level guard cannot express "remove this one, keep the rest".
 	"fuzz-drive.sh": 2,
-	// Fixture rebuild/removal of paths built under guard-minted scratch,
-	// mid-suite, where the no-argument delete would take the suite's whole
-	// scratch with it.
-	"e2e-webui-turn-controls-selftest.sh": 1,
 	// The coverage runners keep the pid-suffixed name-first/trap-first/mkdir
 	// pattern instead of scratch_dir: the trap exists before the directory
 	// can, so a signal in the window abandons nothing (measured 0/150 leaks
@@ -345,23 +341,12 @@ var recursiveDeleteAllowedLines = map[string]int{
 	// parses the pid out of the basename, which a random mktemp suffix would
 	// turn into a permanent no-op. Each delete targets the name the script
 	// composed from its own $$ before anything else ran.
-	"test-coverage-floor.sh":  1,
-	"coverage-union.sh":       1,
 	"fuzz-coverage.sh":        1,
-	"fuzz-coverage-global.sh": 1,
-	// test-cost adopts the same pid-suffixed pattern as the runners above,
-	// for the same reasons; before this it minted with `mktemp -t` (outside
-	// any TMPDIR a caller set) and never deleted its scratch at all.
-	"test-cost.sh": 1,
 	// Owner-side reclamation of the coverage runners' own abandoned scratch:
 	// the delete IS the job. Targets come from a prefix glob walked with
 	// existence and symlink guards, scoped to basenames whose pid suffix no
 	// longer answers kill -0 — never from a caller's variable.
 	"covscratch-lib.sh": 1,
-	// Between-check resets of the suite's private tmphome fixture, each
-	// guarded by ${tmphome:?} so an unset or empty variable aborts the
-	// expansion instead of widening the delete.
-	"covscratch-selftest-lib.sh": 4,
 	// POSIX sh by contract — its own test execs it via `sh`, which ignores
 	// the shebang — so the bash-only guard is unreachable. Under set -eu a
 	// failed mint aborts before the trap arms, and the trap deletes only the

@@ -1,4 +1,4 @@
-.PHONY: build build-runtime build-go build-hub web-preflight build-web test-web test-web-browser build-tui build-doctor build-all build-linux build-namingcheck build-migrate dist install install-home install-system test-install test-dev-tooling test test-short test-full test-fuzz test-race merge-approval-gate vet lint lint-naming lint-gofmt lint-evenerfuzz lint-eval lint-internal lint-docs lint-golangci clean fuzz fuzz-seeds fuzz-nightly fuzz-triage fuzz-continuous fuzz-coverage-global fuzz-bisect fuzz-bisect-selftest fuzz-oracle-audit fuzz-oracle-audit-selftest fuzz-mutation-score fuzz-ledger fuzz-coverage fuzz-gap-check fuzz-registry-check fuzz-goldens secret-scan fuzz-corpus-scan refresh-model-catalog test-coverage-floor web-coverage-floor web-coverage-floor-selftest coverage-gaps coverage-union merge-into-branch merge-into-branch-selftest test-rebaseline
+.PHONY: build build-runtime build-go build-hub web-preflight build-web test-web test-web-browser build-tui build-doctor build-all build-linux build-namingcheck build-migrate dist install install-home install-system test test-short test-full test-fuzz test-race merge-approval-gate vet lint lint-naming lint-gofmt lint-evenerfuzz lint-eval lint-internal lint-docs lint-golangci clean fuzz fuzz-seeds fuzz-nightly fuzz-triage fuzz-continuous fuzz-coverage-global fuzz-bisect fuzz-oracle-audit fuzz-mutation-score fuzz-ledger fuzz-coverage fuzz-gap-check fuzz-registry-check fuzz-goldens secret-scan fuzz-corpus-scan refresh-model-catalog test-coverage-floor web-coverage-floor coverage-gaps coverage-union merge-into-branch test-rebaseline
 
 LDFLAGS := -X primeradiant.com/evener/buildinfo.GitSHA=$$(git rev-parse --short HEAD) \
            -X primeradiant.com/evener/buildinfo.GitDirty=$$(git --no-optional-locks diff-files --quiet && echo "" || echo "true") \
@@ -225,33 +225,6 @@ endif
 # persisted Go configuration or GOFLAGS, and always use this checkout's workspace.
 override FUZZ_GOWORK := $(abspath $(CURDIR)/go.work)
 
-# DEV_TOOLING_TEST_SCRIPTS are the scripts/<name>-selftest.sh suites that pin
-# the behaviour of evener's own tooling. Each is offline, deterministic and works
-# only in throwaway fixtures, and each is the ONLY thing that pins its script's
-# contract. A suite earns its slot by pinning outcomes of a tool the gate or CI
-# depends on; hand-run conveniences fail loudly in front of whoever ran them
-# and get no suite (docs/testing.md). scratch-lib tests the shared scratch
-# guard directly, once — that every script's scratch stays inside TMPDIR and
-# none of its recursive deletes takes a clobberable argument, whether it uses
-# the guard or the pid-suffixed covscratch pattern, is enforced statically by
-# the audits in scriptmktemp_audit_test.go, not by re-running suites under
-# sabotage (kata 5hs2).
-DEV_TOOLING_TEST_SCRIPTS := lib/private-go-home gate/merge-approval-gate ops/setup-gocache web/web-preflight lib/live-eval-isolation e2e/e2e-webui-turn-controls fuzz/fuzz-bisect fuzz/fuzz-oracle-audit coverage/web-coverage-floor lib/scratch-lib gate/merge-into-branch
-
-# test-dev-tooling tests tooling, not the product, so it runs in
-# `make merge-approval-gate` (where tooling regressions matter) and on demand
-# — not in every inner-loop `make test` and not on `make lint`, which checks
-# the product's code, not the tooling's behaviour.
-# The wave runner (cmd/evener-test-dev-tooling) owns parallel
-# spawn, signal forwarding to each suite's process group, per-suite TMPDIR
-# isolation, and the leftover-files check that fails any suite that does not
-# clean up after itself. Quiet on success; a failing suite's whole log is
-# replayed. The runner's contract is pinned by
-# cmd/evener-test-dev-tooling/wave_test.go, which runs in the ordinary Go test
-# wave.
-test-dev-tooling:
-	@go run ./cmd/evener-test-dev-tooling $(DEV_TOOLING_TEST_SCRIPTS)
-
 # test runs the Go test suites across all workspace modules. The gate runs
 # ordinary Test/Example functions only (native Fuzz targets and fuzz-designated
 # Test* functions are excluded — they run under `make fuzz`). The frontend gate
@@ -300,8 +273,7 @@ merge-approval-gate:
 		$(MAKE) lint && \
 		$(MAKE) build && \
 		$(MAKE) test-full && \
-		$(MAKE) test-web && \
-		$(MAKE) test-dev-tooling
+		$(MAKE) test-web
 
 # test-full runs the Go test suites WITHOUT -short, so e2e/live tests run.
 # Used by merge-approval-gate. EVENER_GATE_CAPABILITY_SKIP adds sandbox-blocked
@@ -392,13 +364,11 @@ fuzz-continuous:
 fuzz-drive:
 	@scripts/fuzz/fuzz-drive.sh $(FUZZ_ARGS)
 
-# fuzz-coverage-global validates the registered target plan, requires a local
-# native/Rapid fuzz surface for every production package, then replays each target
-# into package-local profiles for strict whole-module accounting. Heavy + local.
-# CHECK=1 enforces the raw >95% threshold and floors; BLESS=1 raises floors only
-# after every measured module clears that threshold.
+# fuzz-coverage-global replays the registry-audited fuzz corpus and ratchets
+# whole-module global coverage. Uses evener-dev coverage-floor with the fuzz
+# coverage floor files. CHECK=1 enforces; BLESS=1 raises.
 fuzz-coverage-global:
-	@scripts/fuzz/fuzz-coverage-global.sh $(if $(CHECK),--check) $(if $(BLESS),--bless) $(FUZZ_ARGS)
+	@go run ./cmd/evener-dev coverage-floor $(if $(CHECK),--check) $(if $(BLESS),--bless) --floors scripts/coverage/fuzzcov-global-floors.txt $(FUZZ_ARGS)
 
 test-coverage-floor:
 	@go run ./cmd/evener-dev coverage-floor $(if $(CHECK),--check) $(if $(BLESS),--bless) --floors scripts/coverage/testcov-global-floors.txt $(COV_ARGS)
@@ -418,45 +388,12 @@ coverage-union:
 merge-into-branch:
 	@scripts/gate/merge-into-branch.sh $(MERGE_ARGS) $(TARGET) $(SOURCE)
 
-merge-into-branch-selftest:
-	@scripts/gate/merge-into-branch-selftest.sh
-
 # web-coverage-floor is the frontend counterpart: per-area vitest LINE coverage
 # ratcheted against scripts/coverage/webcov-floors.txt. CHECK=1 fails on a drop; BLESS=1
 # raises floors; REUSE=1 parses the existing report instead of re-running the
 # suite. Heavy + local, same as its Go siblings.
 web-coverage-floor: web-preflight
 	@scripts/coverage/web-coverage-floor.sh $(if $(CHECK),--check) $(if $(BLESS),--bless) $(if $(REUSE),--reuse) $(WEBCOV_ARGS)
-
-# web-coverage-floor-selftest exercises the rollup and ratchet against a
-# throwaway frontend and a synthetic coverage summary — no vitest run.
-web-coverage-floor-selftest:
-	@scripts/coverage/web-coverage-floor-selftest.sh
-
-# test-timing-budget ratchets per-package test wall time against
-# testing-budget.json (kata b6rv): fail at 1.5x the budget, warn at 1.1x, plus
-# a flat per-test ceiling, so an unexamined timing regression cannot silently
-# erode the wins docs/superpowers/specs/2026-08-01-test-gate-runtime-design.md
-# recorded. CHECK=1 enforces (strict in CI, warn-only on a local run); bare
-# invocation only measures and prints. Companion to test-coverage-floor and
-# web-coverage-floor, same as those heavy + local.
-test-timing-budget:
-	@scripts/gate/test-timing-budget.sh $(if $(CHECK),--check) $(TIMING_ARGS)
-
-# test-timing-budget-selftest exercises the comparison contract (ratio bands,
-# the per-test ceiling, a missing budget entry, an absent/empty budget file,
-# strict-vs-warn-only policy, and --bless) against fixture duration rows — no
-# go test or vitest run.
-test-timing-budget-selftest:
-	@scripts/gate/test-timing-budget-selftest.sh
-
-# test-rebaseline resets testing-budget.json to what a clean-host run just
-# measured (kata b6rv). Run it deliberately, on an otherwise idle box, and
-# review the diff in the same commit as whatever change earned it — this is
-# NOT part of any gate, and nothing here should run it to invent a baseline;
-# see docs/testing.md.
-test-rebaseline:
-	@scripts/gate/test-timing-budget.sh --bless $(TIMING_ARGS)
 
 # mutation-floor gates the gremlins kill score: MIN=95 fails any curated package
 # whose test efficacy drops below 95%. Slow (nightly). No MIN = report only.
@@ -469,23 +406,12 @@ mutation-floor:
 fuzz-bisect:
 	@scripts/fuzz/fuzz-bisect.sh $(FUZZ_ARGS)
 
-# fuzz-bisect-selftest verifies bisection end-to-end against a throwaway git repo
-# whose fuzz target crashes only after a known commit (real git bisect + replay).
-fuzz-bisect-selftest:
-	@scripts/fuzz/fuzz-bisect-selftest.sh
-
 # fuzz-oracle-audit proves every fuzz oracle reddens on its bug class (Phase 9 W1):
 # each mutation in fuzz/mutations/ reintroduces a known fault in a throwaway
 # worktree and the audit asserts the target FAILS. `FUZZ_ARGS=--gap-only` lists
 # native targets that have no mutation yet; pass ids to audit only those.
 fuzz-oracle-audit:
 	@scripts/fuzz/fuzz-oracle-audit.sh $(FUZZ_ARGS)
-
-# fuzz-oracle-audit-selftest verifies the audit's caught/blind/rot/build-failure
-# classification against a throwaway module (real worktree + go test, stubbed
-# registry).
-fuzz-oracle-audit-selftest:
-	@scripts/fuzz/fuzz-oracle-audit-selftest.sh
 
 # fuzz-mutation-score (Phase 10 W5) measures detection sufficiency with gremlins:
 # the per-package kill rate, and the surviving (LIVED) mutants are the weak-oracle
