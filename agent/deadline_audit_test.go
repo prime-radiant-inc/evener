@@ -342,12 +342,10 @@ var deadlineAuditTimeUnits = map[string]bool{
 // wave removes a file's entry once every bound in it is either replaced by
 // its real completion signal or carries a "// TRIPWIRE:" marker; it must
 // never gain a new entry, because that is exactly the regression this audit
-// exists to catch. agent/delegate_resource_runtime_test.go stays on this list
-// deliberately: another kata is redesigning a test in that file on a separate
-// branch (kata ww3g's partition holds it back rather than touching it here).
-var deadlineAuditAllowlist = map[string]bool{
-	"delegate_resource_runtime_test.go": true,
-}
+// exists to catch. The list is now empty: every file's bare bounds have been
+// converted (TRIPWIRE comment or named constant), and the audit catches any
+// new bare wall-clock bound in any agent test file.
+var deadlineAuditAllowlist = map[string]bool{}
 
 // deadlineAuditFindings scans the non-recursive *_test.go files directly in
 // dir and returns one finding per bare wall-clock bound, skipping any file
