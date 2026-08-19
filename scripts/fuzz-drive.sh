@@ -50,8 +50,7 @@ set -uo pipefail
 
 repo_root="$(cd "$(dirname "$0")/.." && pwd)"
 
-providers_default="kimi-anthropic/kimi-for-coding openai/gpt-5.4-mini"
-providers="${EVENER_FUZZ_DRIVE_PROVIDERS:-$providers_default}"
+providers="${EVENER_FUZZ_DRIVE_PROVIDERS:-kimi-anthropic/kimi-for-coding openai/gpt-5.4-mini}"
 tasks_dir="$repo_root/fuzz/drive-tasks"
 runs_cap=0
 max_rounds=30
