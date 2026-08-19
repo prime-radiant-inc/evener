@@ -1,0 +1,35 @@
+{
+  "name": "rail-row-chevron-actions-overlap",
+  "description": "rail: a branch row's trailing disclosure chevron must stay clickable over the hover-revealed '...'/'+' actions overlay - the chevron's hit box must not be swallowed by .actions at the sidebar's min (200px) and default (280px) widths, for both a session row (1 action button) and a project row (2), with and without a right-slot occupant (timestamp/badge) bounding the title column's growth (issue #196)",
+  "cssFiles": [
+    "styles/global.css",
+    "styles/tokens.css",
+    "shell/rail/RailRow.module.css",
+    "widgets/menu/menu.module.css",
+    "widgets/button/button.module.css",
+    "widgets/iconbutton/iconbutton.module.css",
+    "widgets/badge/badge.module.css"
+  ],
+  "viewport": {
+    "width": 1000,
+    "height": 900,
+    "deviceScaleFactor": 1,
+    "mobile": false
+  },
+  "forcePseudoStates": [
+    { "selector": "#row-s200ts", "pseudoClasses": ["hover"] },
+    { "selector": "#row-s200nt", "pseudoClasses": ["hover"] },
+    { "selector": "#row-s280ts", "pseudoClasses": ["hover"] },
+    { "selector": "#row-s280nt", "pseudoClasses": ["hover"] },
+    { "selector": "#row-p200b", "pseudoClasses": ["hover"] },
+    { "selector": "#row-p200nb", "pseudoClasses": ["hover"] },
+    { "selector": "#row-p280b", "pseudoClasses": ["hover"] },
+    { "selector": "#row-p280nb", "pseudoClasses": ["hover"] }
+  ],
+  "mutation": {
+    "declaration": "RailRow.module.css: .chevronButton { position: relative; z-index: var(--z-raised); } (both lines deleted, reverting the row's own #206 fix back to a statically-positioned chevron under the position:absolute .actions overlay)",
+    "verified": "2026-08-18",
+    "expect": "fail",
+    "note": "With the two declarations removed, .actions (position:absolute) paints above the statically-positioned .chevronButton regardless of DOM order, so document.elementFromPoint() at every chevron/actions overlap resolves to the actions trigger (or its wrapping .actions/.root), not the chevron, in all 8 fixtures - reproducing issue #196 exactly. Restoring the two declarations returns every fixture to PASS."
+  }
+}
