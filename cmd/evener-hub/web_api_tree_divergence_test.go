@@ -15,8 +15,8 @@ import (
 // applying the invariant.
 func TestAppThreadTreeEntries_ForkedRemoteThreadStampsDivergenceTurn(t *testing.T) {
 	thread := appwire.Thread{
-		Source:   "remote",
-		ID:       "child-thread-1",
+		Source:    "remote",
+		ID:        "child-thread-1",
 		SessionID: "child-session-1",
 		Evener: appwire.EvenerThread{
 			Ref:       "remote:child-thread-1",
@@ -36,6 +36,42 @@ func TestAppThreadTreeEntries_ForkedRemoteThreadStampsDivergenceTurn(t *testing.
 			"is violated. A hub-synthesized meta with a parent and zero divergence would be "+
 			"misclassified as a delegate by any consumer applying the invariant.", meta.ParentSessionID)
 	}
+	if meta.DivergenceTurn != 1 {
+		t.Fatalf("DivergenceTurn=%d; the stamp must be exactly 1 — the true divergence turn is "+
+			"unknowable from remote thread metadata, so 1 (the minimum legal fork turn) is the "+
+			"deliberate marker value, and any other value would masquerade as real turn data",
+			meta.DivergenceTurn)
+	}
+}
+
+// TestAppThreadTreeEntries_SubagentKeepsDivergenceTurnZero pins the stamp's
+// gate: a remote delegate (Kind "subagent") keeps DivergenceTurn 0 even though
+// its ParentRef sets ParentSessionID. Parent-set-with-zero-divergence IS the
+// delegate signal the 96cp invariant encodes; stamping a delegate would
+// misclassify it as a fork — the same bug issue #152 fixes, mirrored.
+func TestAppThreadTreeEntries_SubagentKeepsDivergenceTurnZero(t *testing.T) {
+	thread := appwire.Thread{
+		Source:    "remote",
+		ID:        "delegate-thread-1",
+		SessionID: "delegate-session-1",
+		Evener: appwire.EvenerThread{
+			Ref:       "remote:delegate-thread-1",
+			ParentRef: "remote:parent-thread-1",
+			Kind:      "subagent",
+		},
+	}
+	meta, _, ok := appThreadTreeEntries(thread)
+	if !ok {
+		t.Fatalf("appThreadTreeEntries returned ok=false for a thread with a valid ref")
+	}
+	if !meta.IsSubagent || meta.ParentSessionID == "" {
+		t.Fatalf("setup error: want a subagent with a parent, got IsSubagent=%v ParentSessionID=%q",
+			meta.IsSubagent, meta.ParentSessionID)
+	}
+	if meta.DivergenceTurn != 0 {
+		t.Fatalf("DivergenceTurn=%d on a delegate; must stay 0 — a stamped delegate would be "+
+			"misclassified as a fork by any consumer applying the 96cp invariant", meta.DivergenceTurn)
+	}
 }
 
 // TestAppThreadTreeEntries_NoParentLeavesDivergenceTurnZero pins the flip
@@ -43,8 +79,8 @@ func TestAppThreadTreeEntries_ForkedRemoteThreadStampsDivergenceTurn(t *testing.
 // a fork).
 func TestAppThreadTreeEntries_NoParentLeavesDivergenceTurnZero(t *testing.T) {
 	thread := appwire.Thread{
-		Source:   "remote",
-		ID:       "standalone-thread",
+		Source:    "remote",
+		ID:        "standalone-thread",
 		SessionID: "standalone-session",
 		Evener: appwire.EvenerThread{
 			Ref: "remote:standalone-thread",
