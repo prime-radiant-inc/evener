@@ -136,6 +136,16 @@ ancestor) to `.evener`. It refuses to overwrite a destination that already
 exists, so it's safe to run more than once. Pass `--dry-run` to preview the
 moves first, or `--verbose` to see every path it checked.
 
+Re-running it is also how you repair a machine that migrated before a fix
+landed: after moving each root (or finding it already moved), `evener-migrate`
+walks the destination and rewrites any leftover absolute references to the
+old `serf` path it finds inside text files there — for example a plugin
+marketplace registry that still points `git pull` at
+`.../config/serf/plugins/marketplaces/<name>`. It skips binaries and
+anything inside a Git working tree (a plugin marketplace clone, or a nested
+project checkout), so it's safe to run against a live install; files with
+nothing to rewrite are left untouched.
+
 If you skip this, the first Evener binary you run creates a fresh, empty
 `~/.evener` (and XDG config/state directories) — and once that empty
 directory exists, `evener-migrate` treats it as already migrated and skips

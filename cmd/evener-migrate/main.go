@@ -140,27 +140,46 @@ func execute(opts options, stdout, stderr io.Writer) int {
 // returns statusSkipped. If src does not exist it returns statusSkipped
 // silently (or prints a message when verbose). When dryRun is true it reports
 // what would happen without moving.
+//
+// Whenever dst ends up existing after this call — whether because it was
+// just moved into place, it already existed, or a prior run already moved it
+// — migrate rewrites any leftover occurrences of src (the legacy absolute
+// path) inside dst's files to dst (see rewriteLegacyPaths). This is what
+// makes a re-run repair a machine that migrated before this rewrite existed:
+// the source is long gone, but stale absolute paths recorded inside the
+// already-migrated tree (e.g. a plugin marketplace registry's
+// installLocation) still get fixed.
 func migrate(m migration, dryRun, verbose bool, stdout, stderr io.Writer) status {
 	_, srcErr := os.Lstat(m.src)
-	if errors.Is(srcErr, os.ErrNotExist) {
-		if verbose {
-			_, _ = fmt.Fprintf(stdout, "skip  %s (source does not exist)\n", m.src)
-		}
-		return statusSkipped
-	}
-	if srcErr != nil {
+	srcMissing := errors.Is(srcErr, os.ErrNotExist)
+	if srcErr != nil && !srcMissing {
 		_, _ = fmt.Fprintf(stderr, "evener-migrate: stat %s: %v\n", m.src, srcErr)
 		return statusFailed
 	}
 
 	_, dstErr := os.Lstat(m.dst)
-	if dstErr == nil {
-		_, _ = fmt.Fprintf(stdout, "skip  %s -> %s (destination already exists)\n", m.src, m.dst)
-		return statusSkipped
-	}
-	if !errors.Is(dstErr, os.ErrNotExist) {
+	dstExists := dstErr == nil
+	if dstErr != nil && !errors.Is(dstErr, os.ErrNotExist) {
 		_, _ = fmt.Fprintf(stderr, "evener-migrate: stat %s: %v\n", m.dst, dstErr)
 		return statusFailed
+	}
+
+	if srcMissing {
+		if verbose {
+			_, _ = fmt.Fprintf(stdout, "skip  %s (source does not exist)\n", m.src)
+		}
+		if dstExists && !dryRun {
+			repairLegacyPaths(m, stdout, stderr)
+		}
+		return statusSkipped
+	}
+
+	if dstExists {
+		_, _ = fmt.Fprintf(stdout, "skip  %s -> %s (destination already exists)\n", m.src, m.dst)
+		if !dryRun {
+			repairLegacyPaths(m, stdout, stderr)
+		}
+		return statusSkipped
 	}
 
 	if dryRun {
@@ -173,7 +192,18 @@ func migrate(m migration, dryRun, verbose bool, stdout, stderr io.Writer) status
 		return statusFailed
 	}
 	_, _ = fmt.Fprintf(stdout, "moved  %s -> %s\n", m.src, m.dst)
+	repairLegacyPaths(m, stdout, stderr)
 	return statusMoved
+}
+
+// repairLegacyPaths rewrites any leftover references to m.src inside m.dst's
+// files. Errors are reported but non-fatal: the move itself already
+// succeeded, and a content-rewrite failure (e.g. a permission error on one
+// file) shouldn't be reported as a failed migration.
+func repairLegacyPaths(m migration, stdout, stderr io.Writer) {
+	if err := rewriteLegacyPaths(m.dst, m.src, m.dst, stdout); err != nil {
+		_, _ = fmt.Fprintf(stderr, "evener-migrate: rewriting legacy paths under %s: %v\n", m.dst, err)
+	}
 }
 
 // discoverProjectMigrations scans the current directory and ancestor git roots
