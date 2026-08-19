@@ -86,9 +86,8 @@ func TestNpmShimRejectsUnsupportedCommand(t *testing.T) {
 		t.Fatal("npm shim PATH was not configured")
 	}
 
-	cmd := exec.Command(npmPath, "install")
-	cmd.Env = env
-	if _, err := cmd.CombinedOutput(); err == nil {
+	_, err := combinedOutputRetryingETXTBSY("", env, npmPath, "install")
+	if err == nil {
 		t.Fatal("npm shim accepted unsupported command")
 	} else {
 		var exitErr *exec.ExitError
@@ -809,13 +808,50 @@ func copyTrackedWorkingTree(t *testing.T, repoRoot string) string {
 func runCommand(t *testing.T, dir string, env []string, name string, args ...string) {
 	t.Helper()
 
-	cmd := exec.Command(name, args...)
-	cmd.Dir = dir
-	cmd.Env = env
-	out, err := cmd.CombinedOutput()
+	out, err := combinedOutputRetryingETXTBSY(dir, env, name, args...)
 	if err != nil {
 		t.Fatalf("%s %s failed: %v\n%s", name, strings.Join(args, " "), err, out)
 	}
+}
+
+// combinedOutputRetryingETXTBSY runs the command and returns its combined
+// output, retrying while the exec fails with ETXTBSY. Tests in this package
+// exec binaries they wrote moments earlier (the npm shim, and scripts the
+// shim writes); any forked child of the test binary inherits the whole
+// descriptor table, so a sibling forked between our write and close briefly
+// holds a writable fd to the freshly written file and the kernel refuses to
+// exec it — golang/go#22315. The condition clears as soon as that child
+// reaches its own execve, so a short bounded retry (the same treatment
+// cmd/go gives test binaries) keeps the exec honest: non-ETXTBSY failures
+// return immediately and the caller still sees a real exec failure.
+//
+// The grandchild case is matched textually: when the freshly written file is
+// exec'd by a shell spawned by make, the ETXTBSY surfaces only as the shell's
+// "Text file busy" diagnostic in the combined output, never as the errno.
+func combinedOutputRetryingETXTBSY(dir string, env []string, name string, args ...string) ([]byte, error) {
+	var out []byte
+	var err error
+	for attempt := 0; attempt < 50; attempt++ {
+		cmd := exec.Command(name, args...)
+		cmd.Dir = dir
+		cmd.Env = env
+		out, err = cmd.CombinedOutput()
+		if !isETXTBSYExecFailure(err, out) {
+			return out, err
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	return out, err
+}
+
+func isETXTBSYExecFailure(err error, out []byte) bool {
+	if err == nil {
+		return false
+	}
+	if errors.Is(err, syscall.ETXTBSY) {
+		return true
+	}
+	return bytes.Contains(bytes.ToLower(out), []byte("text file busy"))
 }
 
 // npmShimEnv prepends a fake-bin directory containing a network-free npm to
