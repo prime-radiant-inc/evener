@@ -34,18 +34,21 @@ function readLineRange(args: Record<string, unknown>, output: string): string {
 // result's own Output, routing the decoded bytes through a separate field -
 // so "base64 data follows" is stale/misleading by the time a reader sees it
 // (kata 1nr4): nothing ever follows it here. BINARY_PAYLOAD_HEADER detects
-// that shape so ReadFileOutputBody, below, can show just the honest header
-// (dropping that phrase, and dropping any payload that DID make it into
-// output - an older daemon, say - rather than ever rendering it as text).
-// The real image renders as a thumbnail alongside, via ToolCallItem's
-// <ImageGallery images={item.outputImages} />, once the file resolves as a
-// supported image (output_images.go's read_file case).
-const BINARY_PAYLOAD_HEADER = /^\[(?:image|document): [^\]]+, base64 data follows\]/;
+// that shape so ReadFileOutputBody, below, can keep any payload that DID
+// make it into output (an older daemon, say) from ever rendering as text.
+// An IMAGE read's body then renders nothing at all: the image itself
+// displays via ToolCallItem's <ImageGallery images={item.outputImages} /> at
+// this descriptor's outputImageSize ("large" - up to 600px square), so the
+// header - byte-count parenthetical included - is noise next to the picture.
+// A DOCUMENT (PDF) read has no in-transcript preview, so its body keeps the
+// honest header (dropping the stale "base64 data follows" phrase).
+const BINARY_PAYLOAD_HEADER = /^\[(image|document): [^\]]+, base64 data follows\]/;
 
 function ReadFileOutputBody({ item, live }: ToolRenderProps) {
   const output = item.output ?? "";
   const match = BINARY_PAYLOAD_HEADER.exec(output);
   if (match === null) return <TailFoldedOutputBody item={item} live={live} />;
+  if (match[1] === "image") return null;
   return <CodeBlock text={match[0].replace(", base64 data follows]", "]")} copyLabel="Copy output" />;
 }
 
@@ -64,6 +67,11 @@ function readFileTarget(item: ItemModel): string {
 registerToolRenderer({
   match: "read_file",
   icon: "file",
+  // A read that resolves to a supported image (output_images.go's read_file
+  // case) displays the image itself at up to 600px square - the picture IS
+  // this call's output, not a thumbnail of it. ToolCallItem hands this to
+  // the outputImages ImageGallery as its size prop.
+  outputImageSize: "large",
   summary(item: ItemModel) {
     const args = parseArgs(item.argumentsJSON);
     return `Read ${readFileTarget(item)} · ${readLineRange(args, item.output ?? "")}`;
