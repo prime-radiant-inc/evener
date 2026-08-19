@@ -90,7 +90,7 @@ safety boundary before any PR; a leak aborts with non-zero exit and no PR.
 
 **Status: A1, A2, and a first A3 validation run landed on `wip/fuzzing-toolkit`.**
 A1 = `EVENER_FUZZ_RECORD` master switch (`envvars.RecorderEnabled`, `e1c43b9b`).
-A2 = `scripts/fuzz-drive.sh` + 24-task corpus + offline self-test (`8c2e008b`).
+A2 = `scripts/fuzz/fuzz-drive.sh` + 24-task corpus + offline self-test (`8c2e008b`).
 A3 = drove 6 tasks live through **gpt-5.4-mini** (6/6 ok) → 45 scrubbed seeds
 (`871c52e8` windowing fix, `0bebd959` seeds); `decodeResponsesStream` replay
 coverage 85.9%→89.4%, clean through the metamorphic oracle.
@@ -101,7 +101,7 @@ A3 findings (carried forward):
   windows each stream into bounded sub-streams of whole SSE events.
 - **kimi (and the other providers) need their keys.** Only `openai` authenticated
   in the dev session here; a box with `KIMI_CODING_API_KEY` etc. must run
-  `scripts/fuzz-drive.sh` to seed the anthropic/gemini/openaicompat/chat decoders.
+  `scripts/fuzz/fuzz-drive.sh` to seed the anthropic/gemini/openaicompat/chat decoders.
 - **appwire/http frames need a hub-mode driver.** The one-shot CLI doesn't use the
   WS transport, so `appwire-frames.jsonl`/`hub-http.jsonl` stayed empty — a Phase A
   follow-on that drives a `evener serve` + hub client to record those surfaces.
@@ -118,7 +118,7 @@ three recorders' enable checks (`appwire/frame_recorder.go`, `cmd/evener-hub/htt
 Document in dev onboarding. Gitignore `./.evener/`. *~40 LoC + tests asserting off-by-default
 when master unset.*
 
-**A2 — The driver (`cmd/evener-fuzz-drive`, or `scripts/fuzz-drive.sh`).** Runs a corpus of
+**A2 — The driver (`cmd/evener-fuzz-drive`, or `scripts/fuzz/fuzz-drive.sh`).** Runs a corpus of
 varied coding tasks headless against each configured provider, recorders on, in throwaway
 sandboxed workdirs, then invokes the harvester. Requirements:
 - **Task corpus**: a directory of prompt files spanning the tool/behavior surface — file
@@ -132,7 +132,7 @@ sandboxed workdirs, then invokes the harvester. Requirements:
   capped; per-provider rate-limit backoff; a cost ceiling (mini is cheap — surface est. token
   spend from `--verbose` events).
 - **Pipeline**: after the batch, run `evener-fuzz-harvest` (shape-scrub default) → gitleaks gate
-  → stage seeds (D3). Wrap under `scripts/run-capped.sh`.
+  → stage seeds (D3). Wrap under `scripts/fuzz/run-capped.sh`.
 - *~250–400 LoC. This is the one genuinely new build in Phase A; do it serial/first.*
 
 **A3 — First harvest + measure.** Run A2 against kimi + gpt-5.4-mini; harvest; commit the
@@ -148,7 +148,7 @@ measured coverage lift on provider + tool-arg targets.
 
 ## Phase B — Promote decode-only targets to behavioral (parallel fan-out)
 
-Lever #2. The shallow tail (`scripts/fuzzcov-floors.txt`, all <50%). For each: feed the
+Lever #2. The shallow tail (`scripts/coverage/fuzzcov-floors.txt`, all <50%). For each: feed the
 decoded value into the production logic that consumes it. Worklist (verified file:symbol):
 
 | Target (floor) | Decoded type | Drive into | Seam |
@@ -181,7 +181,7 @@ provider target re-seeded in A gets a differential or internal invariant:
 - **Dispatch promotions** (B `FuzzWireTypes`/`FuzzMethodParams`): internal invariants under
   `evenerfuzz` on handler post-conditions (no partial mutation on error, response frame shape).
 - **Config promotions** (B): round-trip + resolve-is-deterministic + no-path-escape invariants.
-- Audit each new oracle with `scripts/fuzz-oracle-audit.sh` (prove it reddens on its bug
+- Audit each new oracle with `scripts/fuzz/fuzz-oracle-audit.sh` (prove it reddens on its bug
   class) before declaring it done.
 
 ---
@@ -189,10 +189,10 @@ provider target re-seeded in A gets a differential or internal invariant:
 ## Phase D — Whole-codebase coverage measurement + global ratchet (parallel, infra)
 
 Lever #4 — makes "the entire codebase" measurable instead of a hand-picked focus set. Today
-`cmd/evener-fuzzcov` + `scripts/fuzzcov-floors.txt` track a focus set per target. Add:
+`cmd/evener-fuzzcov` + `scripts/coverage/fuzzcov-floors.txt` track a focus set per target. Add:
 - A **global fuzz-reachable coverage number**: run the full seed corpus (`go test -run '^Fuzz'`)
   with `-coverpkg=./...` per module, merge profiles, report total % per module + repo.
-- A **global ratchet** (`scripts/fuzzcov-floors.txt` sibling) that fails CI if the global
+- A **global ratchet** (`scripts/coverage/fuzzcov-floors.txt` sibling) that fails CI if the global
   number drops — so new code without a target visibly lowers it.
 - A **gap report by reachable-but-uncovered package**, so the next promotion worklist
   generates itself. Honest accounting: log what's excluded (TUI render, CLI glue) and why.
@@ -201,7 +201,7 @@ Lever #4 — makes "the entire codebase" measurable instead of a hand-picked foc
 
 ## Phase E — Keep the corpus fresh (continuous, local)
 
-Fold the A2 driver into the existing local loop: `scripts/fuzz-continuous.sh` gains a
+Fold the A2 driver into the existing local loop: `scripts/fuzz/fuzz-continuous.sh` gains a
 periodic "drive providers → harvest → dedup-merge new seeds" turn (on-demand, not scheduled
 CI). Crashers route through `fuzz-triage.sh` (flake-guard + dedup + PR) as today. This is
 what turns Phase A from a one-shot into a standing corpus refresh.
@@ -231,7 +231,7 @@ an uncommitted file; verify each lane scoped while siblings still edit.**
 
   Note most B targets live in the **root module** — parallelism there is by disjoint
   *package* (different dirs, no shared file), with the parent serializing every
-  `scripts/run-fuzz.sh` and `go.mod` edit.
+  `scripts/fuzz/run-fuzz.sh` and `go.mod` edit.
 - **Batch 2 (serial):** E (continuous refresh wiring) once the corpus + targets are in.
 
 Per-batch gate: `make fuzz` / `test` / `lint` / `fuzz-gap-check` (capped, `-tags evenerfuzz`),
@@ -254,10 +254,10 @@ then `--no-ff` merge → push.
 - Recorders: `appwire/frame_recorder.go`, `cmd/evener-hub/http_recorder.go`,
   `llm/apilog.go` (`EnableRawLogging`, `rawHTTPLogEnabled`), `envvars/envvars.go`.
 - Harvest: `cmd/evener-fuzz-harvest/{main.go,raw.go,sanitize.go,discover.go,emit.go}`,
-  `scripts/gitleaks-scan.sh`, `.gitleaks.toml`.
+  `scripts/ops/gitleaks-scan.sh`, `.gitleaks.toml`.
 - Driving: `cmd/evener/main.go:166-195` (flags), `:111` (prompt), `cmd/evener/run.go`.
-- Targets/coverage: `scripts/run-fuzz.sh` (registry), `scripts/fuzzcov-floors.txt`,
-  `cmd/evener-fuzzcov`, `scripts/fuzz-mutation-score.sh` (coverage-artifact caveat).
+- Targets/coverage: `scripts/fuzz/run-fuzz.sh` (registry), `scripts/coverage/fuzzcov-floors.txt`,
+  `cmd/evener-fuzzcov`, `scripts/fuzz/fuzz-mutation-score.sh` (coverage-artifact caveat).
 - Promotion consumers: `internal/appserver/router.go:Dispatch`, `cmd/evener-hub/app_rpc.go`,
   `cmd/evener-hub/internal/launchconfig/resolver.go:Resolve`, `agent/mcpconfig/config.go:LoadFile`,
   `server/appwire_turns.go:appTurnsFromNotifications`.

@@ -16,7 +16,7 @@ import (
 // TestE2E_HubAndDaemon pins the discovery half of the hub: a daemon the hub did
 // NOT spawn, started by hand the way a user starts one, must appear in the
 // roster. That is the only coverage of the rendezvous path
-// (<HOME>/.evener/run/<pid>.json -> hubcore.Roster.Refresh -> the "local"
+// ($XDG_STATE_HOME/evener/run/<pid>.json -> hubcore.Roster.Refresh -> the "local"
 // LocalDaemonSource), and every other e2e in this package goes the other way,
 // asking the hub to spawn the daemon itself.
 //
@@ -45,9 +45,9 @@ func TestE2E_HubAndDaemon(t *testing.T) {
 
 	stack := startHubStack(t, provider)
 
-	// A daemon of our own, on the hub's HOME so they share
-	// <HOME>/.evener/run, started exactly as a user would. The hub knows
-	// nothing about it beyond what the daemon writes there.
+	// A daemon of our own, on the hub's HOME/XDG_STATE_HOME so they share
+	// $XDG_STATE_HOME/evener/run, started exactly as a user would. The hub
+	// knows nothing about it beyond what the daemon writes there.
 	daemonDir := t.TempDir()
 	daemon := exec.Command(filepath.Join(stack.binDir, "evener"), "serve",
 		"--model", stack.model,

@@ -72,7 +72,7 @@ Both failures are deterministic in this worktree (not load flakes — the first 
 **Filer's correction (verbatim, later comment — this narrows the scope):**
 
 > 1. 'No gate watches that tag' is FALSE. lint-evenerfuzz is a member of LINT_TARGETS (Makefile:607), and 'lint: $(LINT_TARGETS)' is step 1 of merge-approval-gate.
-> 2. These two tests are EXCLUDED FROM THE GATE BY NAME, deliberately. scripts/gate-surface-lib.sh:17 sets GATE_FUZZ_TEST_SKIP, which contains both 'TranscriptReadersAgreeSanity' and 'Structured.*Reach'. Their absence from the gate is by design, not an oversight, and they are expected to run only under make fuzz / make test-fuzz.
+> 2. These two tests are EXCLUDED FROM THE GATE BY NAME, deliberately. scripts/lib/gate-surface-lib.sh:17 sets GATE_FUZZ_TEST_SKIP, which contains both 'TranscriptReadersAgreeSanity' and 'Structured.*Reach'. Their absence from the gate is by design, not an oversight, and they are expected to run only under make fuzz / make test-fuzz.
 > 3. Kata 9e6r ALREADY OBSERVED BOTH OF THESE RED, with file and line.
 >
 > What SURVIVES as a real question: do these two pass under 'make fuzz' / 'cd agent && go test -tags evenerfuzz'? If they do not, that is a defect in a test family the gate deliberately does not run, which is a legitimate thing to fix - but it is a fuzz-family failure, not an unwatched-tag problem.

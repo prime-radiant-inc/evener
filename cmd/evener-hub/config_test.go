@@ -10,6 +10,10 @@ import (
 func TestLoadConfig_DefaultsWhenMissing(t *testing.T) {
 	dir := t.TempDir()
 	t.Setenv("HOME", filepath.Join(dir, "home"))
+	// TestMain (testmain_test.go) already points XDG_STATE_HOME at its own
+	// throwaway root; clear it here so HubStateRoot exercises the HOME
+	// fallback this test asserts on.
+	t.Setenv("XDG_STATE_HOME", "")
 	cfg, err := LoadConfig(filepath.Join(dir, "nope.toml"))
 	if err != nil {
 		t.Fatalf("LoadConfig missing: %v", err)
@@ -23,7 +27,7 @@ func TestLoadConfig_DefaultsWhenMissing(t *testing.T) {
 	if cfg.PastResultsPerPage != 50 {
 		t.Errorf("PastResultsPerPage default: got %d", cfg.PastResultsPerPage)
 	}
-	wantHubStateRoot := filepath.Join(dir, "home", ".evener")
+	wantHubStateRoot := filepath.Join(dir, "home", ".local", "state", "evener")
 	if cfg.HubStateRoot != wantHubStateRoot {
 		t.Errorf("HubStateRoot default: got %q, want %q", cfg.HubStateRoot, wantHubStateRoot)
 	}
@@ -115,6 +119,7 @@ func TestLoadConfig_PluginAutoUpgradeIntervalGuardsAgainstBadValues(t *testing.T
 func TestLoadConfig_DefaultsHubStateRootWhenOmitted(t *testing.T) {
 	dir := t.TempDir()
 	t.Setenv("HOME", filepath.Join(dir, "home"))
+	t.Setenv("XDG_STATE_HOME", "")
 	path := filepath.Join(dir, "hub.toml")
 	if err := os.WriteFile(path, []byte(`addr = "127.0.0.1:9191"`), 0o644); err != nil {
 		t.Fatal(err)
@@ -123,7 +128,7 @@ func TestLoadConfig_DefaultsHubStateRootWhenOmitted(t *testing.T) {
 	if err != nil {
 		t.Fatalf("LoadConfig: %v", err)
 	}
-	want := filepath.Join(dir, "home", ".evener")
+	want := filepath.Join(dir, "home", ".local", "state", "evener")
 	if cfg.HubStateRoot != want {
 		t.Fatalf("HubStateRoot = %q, want %q", cfg.HubStateRoot, want)
 	}
@@ -226,8 +231,9 @@ CODEX_HOME = "/tmp/codex-home"
 
 func TestDefaultConfigPath_RespectsHome(t *testing.T) {
 	t.Setenv("HOME", "/tmp/fakehome")
+	t.Setenv("XDG_CONFIG_HOME", "")
 	got := DefaultConfigPath()
-	want := "/tmp/fakehome/.evener/hub.toml"
+	want := "/tmp/fakehome/.config/evener/hub.toml"
 	if got != want {
 		t.Fatalf("DefaultConfigPath: got %q, want %q", got, want)
 	}
@@ -245,8 +251,9 @@ func TestDefaultStateGlob_RespectsXDGStateHome(t *testing.T) {
 
 func TestDefaultPastIndexDBPath_RespectsHome(t *testing.T) {
 	t.Setenv("HOME", "/tmp/fakehome")
+	t.Setenv("XDG_STATE_HOME", "")
 	got := DefaultPastIndexDBPath()
-	want := "/tmp/fakehome/.evener/index.db"
+	want := "/tmp/fakehome/.local/state/evener/index.db"
 	if got != want {
 		t.Fatalf("DefaultPastIndexDBPath: got %q, want %q", got, want)
 	}

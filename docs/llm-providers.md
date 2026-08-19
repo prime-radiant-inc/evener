@@ -83,8 +83,8 @@ shared vocabulary:
 - `NameToTag(cfg) map[string]string` (`:43`) — instance name → tag, populated from
   a loaded `providers.toml` and pushed into the client via `SetNameToTag` (below).
 - `Config`/`InstanceConfig` (`:27`/`:18`) + `Load`/`LoadFile` (`load.go:35,113`) —
-  the `providers.toml` parser/validator; `DefaultStateRoot()` (`:53`) resolves
-  `~/.evener`. See "Config-driven instances" below.
+  the `providers.toml` parser/validator; `cmdutil.DefaultConfigRoot()` resolves
+  its default location, `~/.config/evener`. See "Config-driven instances" below.
 
 The set of behavior tags is exactly the old set of distinct provider behaviors:
 `openai`, `openai-compatible`, `anthropic`, `google`, `openrouter`,

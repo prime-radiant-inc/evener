@@ -1,7 +1,7 @@
 # 8.7 — Local fuzz campaign + triage tooling — implementation plan
 
 **Status:** PLANNED. **Date:** 2026-06-28. **Branch:** `wip/fuzzing-toolkit`.
-**Charter:** [`fuzzing-toolkit-design.md`](../fuzzing-toolkit-design.md) §8.7 (and §3 promoter, §7 open decisions). **Builds on:** the BUILT promoter (`fuzz/promoter/*.go`), the campaign runner (`scripts/run-fuzz.sh`), the `fuzz` / `fuzz-nightly` Makefile targets, and (optionally) coverage measurement (8.6).
+**Charter:** [`fuzzing-toolkit-design.md`](../fuzzing-toolkit-design.md) §8.7 (and §3 promoter, §7 open decisions). **Builds on:** the BUILT promoter (`fuzz/promoter/*.go`), the campaign runner (`scripts/fuzz/run-fuzz.sh`), the `fuzz` / `fuzz-nightly` Makefile targets, and (optionally) coverage measurement (8.6).
 
 This item is reframed from "nightly CI automation" to **local, on-demand tooling**. There is no scheduler, no bot, and no elevated CI credentials. A developer runs a single local command at a time of their choosing; it searches each surface on a budget, and — when it finds a *deterministic* crash — opens exactly one human-reviewable PR (via the developer's own `gh` auth) carrying the crasher, a replaying regression test, and a reproducer, while a triage ledger records what has been found / fixed / quarantined. Nothing auto-merges. The only standing CI change is one fast seed-replay step in the existing PR gate.
 
@@ -19,7 +19,7 @@ This item is reframed from "nightly CI automation" to **local, on-demand tooling
 
 **No `schedule:` trigger exists anywhere in the repo, and this item adds none.** Everything below is a local command a developer runs on demand.
 
-**The campaign runner.** `scripts/run-fuzz.sh` already does the per-target bounded search. Its `TARGETS` array (`run-fuzz.sh:22-33`, verified) is the source of truth — 10 entries, each `module:package-relpath:FuzzName`. It accepts `--time DURATION` (default `60s`, verified) and an optional target allow-list, and a crash is auto-saved by the Go toolchain to that target's `testdata/fuzz/<FuzzName>/`. The Makefile wraps it as `fuzz-nightly: scripts/run-fuzz.sh $(FUZZ_ARGS)` and the gate-safe seed replay as `fuzz:` running `go test -run '^Fuzz' ./...` across every `GO_MODULES` module (`Makefile:96-107`, verified). Budgets are advisory; `--time` is the only knob and it already exists.
+**The campaign runner.** `scripts/fuzz/run-fuzz.sh` already does the per-target bounded search. Its `TARGETS` array (`run-fuzz.sh:22-33`, verified) is the source of truth — 10 entries, each `module:package-relpath:FuzzName`. It accepts `--time DURATION` (default `60s`, verified) and an optional target allow-list, and a crash is auto-saved by the Go toolchain to that target's `testdata/fuzz/<FuzzName>/`. The Makefile wraps it as `fuzz-nightly: scripts/fuzz/run-fuzz.sh $(FUZZ_ARGS)` and the gate-safe seed replay as `fuzz:` running `go test -run '^Fuzz' ./...` across every `GO_MODULES` module (`Makefile:96-107`, verified). Budgets are advisory; `--time` is the only knob and it already exists.
 
 **The promoter (`fuzz/promoter/`), and the two distinct crasher paths.** This is load-bearing for the triage design:
 
@@ -35,7 +35,7 @@ Promoter API the triage relies on (all present, verified against `fuzz/promoter/
 There is **no workflow file** for the campaign. The developer runs the local tool directly:
 
 ```
-scripts/fuzz-triage.sh [--time DUR] [--dry-run] [--no-pr] [target ...]
+scripts/fuzz/fuzz-triage.sh [--time DUR] [--dry-run] [--no-pr] [target ...]
 ```
 
 - `--time DUR` is the per-target budget passed straight through to `run-fuzz.sh` (default inherits `run-fuzz.sh`'s `60s`; pass e.g. `--time 5m` for a longer hunt). Budgets are advisory — there is no per-target budget map and no required value; a developer who wants the rapid state machine to get more time just runs that one target with a bigger `--time`.
@@ -47,7 +47,7 @@ scripts/fuzz-triage.sh [--time DUR] [--dry-run] [--no-pr] [target ...]
 
 ## 3. Auto-triage → reviewable PR (local `gh`)
 
-Driven by **`scripts/fuzz-triage.sh`**. Pseudostructure:
+Driven by **`scripts/fuzz/fuzz-triage.sh`**. Pseudostructure:
 
 ```
 fuzz-triage.sh [--time DUR] [target ...]
@@ -128,8 +128,8 @@ The signature key is the promoter `Signature.String()` (`"<oracle>:<key>"`). For
 | # | File | Change | LoC |
 |---|------|--------|-----|
 | 0 | `.github/workflows/ci.yml` | add a `make fuzz` step to the gate — the ONLY CI change; makes auto-filed PRs go red until fixed. No new perms, no new workflow. | ~3 |
-| 1 | `scripts/fuzz-triage.sh` | NEW local orchestrator: reconcile ledger, run campaign, discover crashers, flake-guard (Go-native), dedup, open PR via local `gh`, update ledger, promote corpus. Flags `--time/--dry-run/--no-pr`. | ~200–300 |
-| 2 | `scripts/run-fuzz.sh` | honor `EVENER_FUZZ_PERSIST` passthrough (export to the `go test` env) | ~10 |
+| 1 | `scripts/fuzz/fuzz-triage.sh` | NEW local orchestrator: reconcile ledger, run campaign, discover crashers, flake-guard (Go-native), dedup, open PR via local `gh`, update ledger, promote corpus. Flags `--time/--dry-run/--no-pr`. | ~200–300 |
+| 2 | `scripts/fuzz/run-fuzz.sh` | honor `EVENER_FUZZ_PERSIST` passthrough (export to the `go test` env) | ~10 |
 | 3 | `fuzz/promoter/persist.go` | NEW `PersistPaths(pkgDir)` env helper (emitDir + buckets path + persist bool); stdlib-only | ~30 |
 | 4 | `agent/registry_schemafuzz_test.go`, `internal/appserver/router_seqfuzz_test.go` | use `PersistPaths` instead of inline `t.TempDir()`; aggregate `Quarantine` into the ledger path | ~20 |
 | 5 | `fuzz/state/` (`buckets.json` seed, `ledger.json` seed) + optional `Makefile` `fuzz-ledger` pretty-printer | committed shared bucket store path; empty ledger | ~10 |
@@ -142,7 +142,7 @@ The signature key is the promoter `Signature.String()` (`"<oracle>:<key>"`). For
 
 **Dependencies.**
 - `fuzz/promoter` (Adapter/Promote/BucketStore/WriteGoTest/ShortHash) — present and BUILT (verified).
-- `scripts/run-fuzz.sh` + its `TARGETS` — present; reused as the search engine and the target source of truth.
+- `scripts/fuzz/run-fuzz.sh` + its `TARGETS` — present; reused as the search engine and the target source of truth.
 - A developer-local, authenticated `gh` CLI — the only auth surface. No tokens stored, no CI secrets.
 - **8.6 coverage measurement (optional).** If landed, the tool can additionally print a per-surface coverage summary after a run. Not a hard dependency.
 
@@ -154,7 +154,7 @@ The signature key is the promoter `Signature.String()` (`"<oracle>:<key>"`). For
 - *Stale buckets vs. deleted tests.* If a human deletes a generated regression test without clearing its bucket, the bug could silently never refile. The reconciliation step (§4) that replays `found` entries catches the inverse (fixed); a periodic `make fuzz-ledger --verify` that warns on bucket→missing-test entries is a cheap add (folded into #1/#5).
 - *Corpus bloat.* §3.5's diversity cap + Go corpus minimization bound how many new seeds a run commits.
 
-**Acceptance.** (run the local tool — `scripts/fuzz-triage.sh` — in each scenario)
+**Acceptance.** (run the local tool — `scripts/fuzz/fuzz-triage.sh` — in each scenario)
 1. **Seeded deterministic crash → exactly one local PR.** Inject a deterministic bug into one fuzzed seam (e.g. a panic on a known input), run `fuzz-triage.sh` against that target: it discovers the crasher, the flake-guard fails all K, a single PR `fuzz/crash-<sig12>` is opened *via local `gh`* carrying the crasher + a **replaying** regression test + reproducer command, durable artifacts (`fuzz/state/buckets.json`, `ledger.json`, the emitted test) are committed to the branch, and the ledger gains one `found` entry. The committed test/seed is red on `main`.
 2. **Re-run dedups.** Run `fuzz-triage.sh` again against the same target with the bug still present: the bucket store / Go corpus / `gh pr list` dedup short-circuits — **no second PR**, ledger `last_seen` refreshed only.
 3. **Flaky failure → no PR.** Point the harness at a non-deterministic failure (fails ~50% of replays): the flake-guard quarantines it, no test is emitted/committed, no PR is opened, and the ledger records it `quarantined` with `survivedRuns`.

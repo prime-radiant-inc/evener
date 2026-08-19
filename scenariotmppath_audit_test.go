@@ -60,7 +60,7 @@ var scenarioFixedTmpPathAllowedMentions = map[string][]string{
 		// point is that the string contains a `/`, and nothing creates it.
 		"a literal `/tmp/foo/AGENTS.md` containing",
 	},
-	"scripts/gate-surface-lib.sh": {
+	"scripts/lib/gate-surface-lib.sh": {
 		// A comment naming where the fixed path actually lives —
 		// cmd/evener-gate-probe's own default — to explain why the git-cache
 		// skip pattern is empty (kata 5gvk's capability preflight). This
@@ -70,7 +70,7 @@ var scenarioFixedTmpPathAllowedMentions = map[string][]string{
 	// scripts/*.sh, added to this audit by kata qw8e. Only one row, because a
 	// script has no prose to warn in: this is a script ABOUT the debris in
 	// /tmp rather than a script that puts any there.
-	"scripts/report-tmp-debris.sh": {
+	"scripts/ops/report-tmp-debris.sh": {
 		// A dated measurement in the header — what 120 `/tmp/evener*` entries
 		// weighed on 2026-07-30. This script reports and never writes.
 		"8.4G across 120 `/tmp/evener*`",

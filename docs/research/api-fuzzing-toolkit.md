@@ -73,7 +73,7 @@ here — see §3.
 Test infrastructure I'd integrate with (surveyed):
 - **No Go native fuzzing exists today** — `grep "func Fuzz"` / `testing.F` / `testdata/fuzz` are all empty across the tree. Greenfield, no conflicting convention.
 - **No property-based libs** — no `rapid`/`gopter`/`testing/quick` in any `go.mod`/`go.sum`.
-- `make test` → `scripts/run-module-tests.sh -count=1` over modules **`.` `agent` `llm` `auth`** (two-wave: root alone, then `agent llm auth` concurrent). `envvars` is in `go.work` but *not* in the gate. CI runs `make test-race` (`-short`). go.work means `go test ./...` does **not** span modules — fuzz targets are picked up per-module automatically.
+- `make test` → `scripts/gate/run-module-tests.sh -count=1` over modules **`.` `agent` `llm` `auth`** (two-wave: root alone, then `agent llm auth` concurrent). `envvars` is in `go.work` but *not* in the gate. CI runs `make test-race` (`-short`). go.work means `go test ./...` does **not** span modules — fuzz targets are picked up per-module automatically.
 - **jstest** (`cmd/evener-hub/jstest/`): ~100 plain-Node JSDOM scripts that eval the hub renderer bundle and assert on DOM. Run by `run-all.sh`; **not wired into Go tests, Makefile, or CI** (manual/agent-run).
 - **92 scenario cards** (`test/scenarios/*.md`): English e2e cards executed by an agent (browser/tmux/Bash), guarded only by a stale-string lint (`scenario_docs_test.go`).
 - Golden tests are hand-frozen (`agent/snapshot_golden_test.go`, `cmd/evener-tui/tui_samples_test.go`); no `-update`/`goldie`/`cupaloy` convention.

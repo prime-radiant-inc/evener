@@ -32,24 +32,27 @@ func productEvenerEnvVars() []envvars.Var {
 }
 
 // TestMain isolates the launchcheck test package from the developer's real
-// environment. EVENER_STATE_DIR is pointed at a throwaway directory so anything
-// resolving the evener state root (cmdutil.DefaultStateRoot — the
+// environment. XDG_CONFIG_HOME is pointed at a throwaway directory so anything
+// resolving the evener config root (cmdutil.DefaultConfigRoot — the
 // providers.toml + credentials.toml location) sees an empty fixture rather than
-// the user's real ~/.evener. Tests that need specific provider config set it
-// (and OPENAI_BASE_URL / provider key envs) explicitly.
+// the user's real ~/.config/evener. Tests that need specific provider config
+// set it (and OPENAI_BASE_URL / provider key envs) explicitly.
 func TestMain(m *testing.M) {
-	stateDir, err := os.MkdirTemp("", "evener-launchcheck-test-state-*")
+	envRoot, err := os.MkdirTemp("", "evener-launchcheck-test-env-*")
 	if err != nil {
 		panic(err)
 	}
-	// Clear every EVENER_* product variable (including EVENER_STATE_DIR) BEFORE
-	// pinning EVENER_STATE_DIR to the throwaway below. Deriving from
+	// Clear every EVENER_* product variable (including EVENER_PROVIDERS_CONFIG
+	// and EVENER_STATE_DIR, the project/session state override). Deriving from
 	// envvars.All() keeps this list current with the product. Mirrors the hub.
 	for _, v := range productEvenerEnvVars() {
 		_ = os.Unsetenv(v.Name)
 	}
-	os.Setenv("EVENER_STATE_DIR", stateDir)
+	os.Setenv("HOME", envRoot)
+	os.Setenv("XDG_CONFIG_HOME", envRoot+"/config")
+	os.Setenv("XDG_STATE_HOME", envRoot+"/state")
+	os.Setenv("XDG_CACHE_HOME", envRoot+"/cache")
 	code := m.Run()
-	os.RemoveAll(stateDir)
+	os.RemoveAll(envRoot)
 	os.Exit(code)
 }

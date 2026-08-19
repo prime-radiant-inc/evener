@@ -188,17 +188,17 @@ func coverFailureBranches(t *testing.T) {
 
 	t.Setenv(envvars.EVENERRecordAppwire.Name, "1")
 	root := t.TempDir()
-	t.Setenv(envvars.EVENERStateDir.Name, root)
+	t.Setenv(envvars.XDGStateHome.Name, root)
 	rec := newEnvFrameRecorder()
 	if rec != nil {
 		_ = rec.Close()
 	}
 	badRoot := filepath.Join(t.TempDir(), "file")
 	_ = os.WriteFile(badRoot, []byte("x"), 0o600)
-	t.Setenv(envvars.EVENERStateDir.Name, badRoot)
+	t.Setenv(envvars.XDGStateHome.Name, badRoot)
 	_ = newEnvFrameRecorder()
 	oldHome := frameRecorderHomeDir
-	t.Setenv(envvars.EVENERStateDir.Name, "")
+	t.Setenv(envvars.XDGStateHome.Name, "")
 	frameRecorderHomeDir = func() (string, error) { return "", errors.New("home") }
 	_ = recorderStateRoot()
 	frameRecorderHomeDir = oldHome

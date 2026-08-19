@@ -1,7 +1,7 @@
 # Manual dev-box checklist
 
 Checks in this file run against **your own real dev hub and real
-`~/.evener` / `~/.local/state/evener` session history** — not an isolated,
+`~/.local/state/evener` session history** — not an isolated,
 agent-runnable checkout the way every card under `test/scenarios/` is.
 An agent asked to "run the scenario sweep" should skip this file
 entirely: its Pre-state cannot be satisfied in a fresh, isolated `$HOME`
@@ -49,7 +49,7 @@ Validates that:
 3. For each project, count the listed sessions and confirm it
    matches the count badge.
 4. Cross-check live count:
-   `ls /home/jesse/.evener/run/*.json | wc -l` — minus orphans
+   `ls /home/jesse/.local/state/evener/run/*.json | wc -l` — minus orphans
    (rendezvous files whose PID isn't actually running). The
    sidebar's Live count should match the actual count of running
    evener-daemon processes.
@@ -74,7 +74,7 @@ Validates that:
 ## Sharp edges
 
 - The Live count is computed from the in-memory roster of daemon
-  sources. Rendezvous files in `~/.evener/run/` are the source of
+  sources. Rendezvous files in `~/.local/state/evener/run/` are the source of
   truth; orphan files (daemon dead, file lingers) inflate the
   count until the hub reaps. Worth filing a kata if you see a
   persistent stale count after a clean kill.

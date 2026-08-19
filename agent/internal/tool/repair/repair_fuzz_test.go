@@ -159,8 +159,8 @@ func FuzzRepairDiagnostics(f *testing.F) {
 			offendingField = ""
 		}
 
-		schemaMessage := ExplainSchemaError(toolName, params, args, offendingField)
-		if schemaMessage != ExplainSchemaError(toolName, params, args, offendingField) {
+		schemaMessage := ExplainSchemaError(toolName, params, args, offendingField, "")
+		if schemaMessage != ExplainSchemaError(toolName, params, args, offendingField, "") {
 			t.Fatalf("schema explanation was not deterministic: %q", schemaMessage)
 		}
 		if !strings.Contains(schemaMessage, "Example:") {

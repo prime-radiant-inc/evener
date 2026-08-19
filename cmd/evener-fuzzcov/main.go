@@ -4,18 +4,18 @@
 //
 // For each fuzz target it computes a FOCUS-SET coverage % — the line coverage
 // the corpus drives into the specific decode/parse seam the target is meant to
-// fuzz (declared as the trailing `focus` field of scripts/run-fuzz.sh's TARGETS)
+// fuzz (declared as the trailing `focus` field of scripts/fuzz/run-fuzz.sh's TARGETS)
 // — plus the whole-package % as a secondary visibility number. It enforces a
-// no-regression ratchet against scripts/fuzzcov-floors.txt and emits a GAP MAP:
+// no-regression ratchet against scripts/coverage/fuzzcov-floors.txt and emits a GAP MAP:
 // every decode/parse package across the workspace that has zero fuzz coverage.
 //
-// It does not run any tests; scripts/fuzz-coverage.sh produces the profiles and
+// It does not run any tests; scripts/fuzz/fuzz-coverage.sh produces the profiles and
 // the target manifest, then invokes this reporter. Run it via:
 //
 //	make fuzz-coverage           # advisory: print the report, always exit 0
 //	make fuzz-coverage CHECK=1   # ratchet + gap floor: exit non-zero on a breach
 //
-// The --bless mode raises each floor in scripts/fuzzcov-floors.txt upward to the
+// The --bless mode raises each floor in scripts/coverage/fuzzcov-floors.txt upward to the
 // current measured focus % (it never lowers a floor), locking in corpus gains.
 package main
 
@@ -40,7 +40,7 @@ import (
 var exitProcess = os.Exit
 
 // target is one fuzz target plus the metadata the reporter needs to attribute
-// its profile. The first five fields mirror scripts/run-fuzz.sh's TARGETS entry;
+// its profile. The first five fields mirror scripts/fuzz/run-fuzz.sh's TARGETS entry;
 // profile is the path to that target's replayed -coverprofile.
 type target struct {
 	tag      string // "native" (testing.F) or "rapid" (rapid.Check Test func)
@@ -89,20 +89,20 @@ func runCLI(args []string, stdout, stderr *os.File) (int, error) {
 	flags := flag.NewFlagSet("evener-fuzzcov", flag.ContinueOnError)
 	flags.SetOutput(stderr)
 	manifest := flags.String("manifest", "", "path to the target manifest written by fuzz-coverage.sh (required)")
-	floorsPath := flags.String("floors", "scripts/fuzzcov-floors.txt", "ratchet floors file")
+	floorsPath := flags.String("floors", "scripts/coverage/fuzzcov-floors.txt", "ratchet floors file")
 	globalManifest := flags.String("global-manifest", "", "path to module/package/profile TSV emitted by fuzz-coverage-global.sh")
-	globalExclusions := flags.String("global-exclusions", "scripts/fuzzcov-global-exclusions.txt", "reviewed whole-file global coverage exclusions")
-	globalFloors := flags.String("global-floors", "scripts/fuzzcov-global-floors.txt", "whole-module global coverage floors")
+	globalExclusions := flags.String("global-exclusions", "scripts/coverage/fuzzcov-global-exclusions.txt", "reviewed whole-file global coverage exclusions")
+	globalFloors := flags.String("global-floors", "scripts/coverage/fuzzcov-global-floors.txt", "whole-module global coverage floors")
 	globalMinimum := flags.Float64("global-minimum", 95.0, "strict raw whole-module coverage threshold")
 	globalJSON := flags.Bool("global-json", false, "emit the global coverage report as JSON")
-	ignorePath := flags.String("ignore", "scripts/fuzzcov-ignore.txt", "gap-map ignore-list")
+	ignorePath := flags.String("ignore", "scripts/coverage/fuzzcov-ignore.txt", "gap-map ignore-list")
 	repoRoot := flags.String("repo-root", ".", "repository root")
 	modulesArg := flags.String("modules", "", "space-separated go.work module dirs to scan for the gap map (default: derived from go.work)")
 	check := flags.Bool("check", false, "exit non-zero on a focus-set regression or a gap breach")
 	bless := flags.Bool("bless", false, "raise each floor upward to the current measured focus %")
 	tolerance := flags.Float64("tolerance", 0.5, "ratchet tolerance band (percentage points) absorbing nondeterministic wobble")
 	gapOnly := flags.Bool("gap-only", false, "STATIC gap gate: derive the fuzzed set from the registry (no coverage replay) and exit non-zero on any unfuzzed, unignored parse package")
-	registry := flags.String("registry", "", "path to scripts/run-fuzz.sh --list output (required with -gap-only)")
+	registry := flags.String("registry", "", "path to scripts/fuzz/run-fuzz.sh --list output (required with -gap-only)")
 	if err := flags.Parse(args); err != nil {
 		return 2, err
 	}
@@ -230,7 +230,7 @@ func runGapOnly(registryPath, repoRoot string, modules []string, ignorePath stri
 
 func runGapOnlyE(registryPath, repoRoot string, modules []string, ignorePath string) (int, error) {
 	if registryPath == "" {
-		return 2, errors.New("-gap-only requires -registry (the scripts/run-fuzz.sh --list output)")
+		return 2, errors.New("-gap-only requires -registry (the scripts/fuzz/run-fuzz.sh --list output)")
 	}
 	targets, err := readRegistry(registryPath)
 	if err != nil {
@@ -572,7 +572,7 @@ func readManifest(p string) ([]target, error) {
 	return out, sc.Err()
 }
 
-// readRegistry parses scripts/run-fuzz.sh --list output: one colon-separated
+// readRegistry parses scripts/fuzz/run-fuzz.sh --list output: one colon-separated
 // "tag:module:pkg:name[:coverpkg[:focus]]" entry per line. Comments and blank
 // lines are skipped. Profiles are not part of a registry entry.
 func readRegistry(p string) ([]target, error) {

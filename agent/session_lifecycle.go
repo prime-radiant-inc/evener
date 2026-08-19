@@ -166,6 +166,11 @@ func (s *Session) close(ctx context.Context, cleanupEnv bool) {
 		// disposal runs, so the two never race on the same lane's git ops.
 		s.disposeWG.Wait()
 		s.sweepWG.Wait()
+		// testOnly seam: observation point exactly after both joins returned. See
+		// testConfig.closeAfterDisposeSweepJoin. Nil in production.
+		if s.cfg.testOnly.closeAfterDisposeSweepJoin != nil {
+			s.cfg.testOnly.closeAfterDisposeSweepJoin()
+		}
 
 		// The root-owned stable controller is the shutdown authority for its
 		// delegate tree. Persist and join recursive stop before generic Session

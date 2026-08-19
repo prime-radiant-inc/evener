@@ -270,20 +270,7 @@ func TestNoMakefileRecipeFeedsVariableToRecursiveDelete(t *testing.T) {
 // output flag, so it holds no opinion about staging directories or -ldflags.
 func TestBuildAllBuildsEveryInstalledBinary(t *testing.T) {
 	t.Parallel()
-	body, err := os.ReadFile("Makefile")
-	if err != nil {
-		t.Fatalf("read Makefile: %v", err)
-	}
-	var bins []string
-	for line := range strings.SplitSeq(string(body), "\n") {
-		if rest, ok := strings.CutPrefix(line, "EVENER_INSTALL_BINS :="); ok {
-			bins = strings.Fields(rest)
-			break
-		}
-	}
-	if len(bins) == 0 {
-		t.Fatal("EVENER_INSTALL_BINS assignment not found in Makefile")
-	}
+	bins := installedBins(t)
 	out, err := exec.Command("make", "-n", "build-all").CombinedOutput()
 	if err != nil {
 		t.Fatalf("make -n build-all: %v\n%s", err, out)

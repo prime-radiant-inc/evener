@@ -487,8 +487,12 @@ func TestP3Timer_CancelledByStopDoesNotFire(t *testing.T) {
 	r.s.stopLaneResidueSweepTimer()
 	clk.Advance(2 * laneSweepDelay)
 
-	// Give any (incorrectly) fired goroutine a chance to run before asserting.
-	time.Sleep(50 * time.Millisecond)
+	// AfterFunc dispatches via `go fn()`, so Advance returns before a wrongly-
+	// fired callback runs. Drain waits for any dispatched AfterFunc goroutine to
+	// finish — deterministically, with no wall-clock sleep — so a callback that
+	// (incorrectly) fired has fully run its registry mutation before we assert the
+	// lane is still present.
+	clk.Drain()
 	if !obs.lanePresent(path) {
 		t.Error("stopped open-pass timer still collected the lane")
 	}
