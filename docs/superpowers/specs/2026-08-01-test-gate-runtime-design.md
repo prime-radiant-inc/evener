@@ -60,7 +60,7 @@ ROOT_FULL=1 make test
 
 ### Full non-fuzz root suite
 
-Add `ROOT_FULL`, defaulting to disabled, to `scripts/run-module-tests.sh`.
+Add `ROOT_FULL`, defaulting to disabled, to `scripts/gate/run-module-tests.sh`.
 When `ROOT_FULL=1`, the runner removes the exact `-short` argument only from
 the root module's `go test` invocation. All other flags and all non-root module
 invocations are unchanged. Direct runner callers and ordinary `make test`
@@ -77,7 +77,7 @@ moved into that wave. The existing concurrent frontend stream is unchanged.
 
 ### Self-test stream
 
-Add `SELFTEST`, defaulting to disabled, to `scripts/run-module-tests.sh`.
+Add `SELFTEST`, defaulting to disabled, to `scripts/gate/run-module-tests.sh`.
 When enabled, the runner starts `${MAKE:-make} selftest` after wave one has
 fully joined and immediately before wave two starts. It joins the self-test
 stream after wave two and reports one `PASS` or `FAIL` verdict with its wall

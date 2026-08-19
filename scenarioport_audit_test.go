@@ -1,10 +1,10 @@
 package evener_test
 
 import (
+	"io/fs"
 	"os"
 	"path/filepath"
 	"regexp"
-	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -397,20 +397,23 @@ var auditedShellScriptDirs = []string{"scripts", "test"}
 // It fatals on an empty list rather than returning one, because the file set is
 // the half of a corpus audit that can die with every needle still intact:
 // rename the directories or change the extension and the audit passes forever
-// having read nothing.
+// having read nothing. scripts/ is walked recursively because it is organized
+// into subdirectories (lib/, gate/, coverage/, fuzz/, e2e/, ops/, web/).
 func auditedShellScripts(t *testing.T) []string {
 	t.Helper()
 	var files []string
 	for _, dir := range auditedShellScriptDirs {
-		entries, err := os.ReadDir(dir)
-		if err != nil {
-			t.Fatalf("reading %s: %v", dir, err)
-		}
-		for _, e := range entries {
-			if e.IsDir() || filepath.Ext(e.Name()) != ".sh" {
-				continue
+		if err := filepath.WalkDir(dir, func(path string, d fs.DirEntry, err error) error {
+			if err != nil {
+				return err
 			}
-			files = append(files, filepath.Join(dir, e.Name()))
+			if d.IsDir() || filepath.Ext(path) != ".sh" {
+				return nil
+			}
+			files = append(files, path)
+			return nil
+		}); err != nil {
+			t.Fatalf("walking %s: %v", dir, err)
 		}
 	}
 	if len(files) == 0 {
@@ -422,7 +425,13 @@ func auditedShellScripts(t *testing.T) []string {
 }
 
 func isAuditedShellScript(path string) bool {
-	return slices.Contains(auditedShellScriptDirs, filepath.Dir(path))
+	dir := filepath.Dir(path)
+	for _, base := range auditedShellScriptDirs {
+		if dir == base || strings.HasPrefix(dir, base+string(filepath.Separator)) {
+			return true
+		}
+	}
+	return false
 }
 
 // containsWholePort9180 reports whether line contains the digits 9180 as a

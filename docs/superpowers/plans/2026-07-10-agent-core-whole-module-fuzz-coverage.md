@@ -17,7 +17,7 @@
 - Every production package needs a local registered fuzz surface before the final gate. Do not omit packages or fabricate zero profiles.
 - Global profiles are package-local self-coverage profiles. Never use a cross-package -coverpkg=./... merge.
 - Exclusions are whole-file only and limited to generated or unavailable-platform source. No business, orchestration, package, directory, or function exclusions.
-- The controller serializes edits to scripts/run-fuzz.sh, scripts/fuzz-coverage-global.sh, scripts/fuzzcov-global-floors.txt, Makefile, and cmd/evener-fuzzcov.
+- The controller serializes edits to scripts/fuzz/run-fuzz.sh, scripts/fuzz/fuzz-coverage-global.sh, scripts/fuzzcov-global-floors.txt, Makefile, and cmd/evener-fuzzcov.
 - Do not bless floors until raw coverage already exceeds 95.0%. Floors never decrease.
 - Read docs/testing.md before changing tests. Use TDD: focused red, smallest green change, scoped verification, then the package gate.
 
@@ -34,9 +34,9 @@
 | cmd/evener-fuzzregistry/main_test.go | Synthetic workspace and registry validation tests |
 | cmd/evener-fuzzcov/global.go | Package-profile union, file exclusions, raw threshold accounting |
 | cmd/evener-fuzzcov/global_test.go | Global accounting and exclusion validation tests |
-| scripts/run-fuzz.sh | Authoritative native and rapid target manifest |
+| scripts/fuzz/run-fuzz.sh | Authoritative native and rapid target manifest |
 | scripts/fuzz-registry-check.sh | Thin wrapper around evener-fuzzregistry |
-| scripts/fuzz-coverage-global.sh | Replay validated local targets and emit package profiles |
+| scripts/fuzz/fuzz-coverage-global.sh | Replay validated local targets and emit package profiles |
 | scripts/fuzz-coverage-global-selftest.sh | Stubbed deterministic runner tests |
 | scripts/fuzzcov-global-exclusions.txt | Initially empty file-only exclusion manifest |
 | agent/lifecycle_covfuzz_test.go | Native mutation bridge for real offline Session sequences |
@@ -108,7 +108,7 @@ git commit -m "fix(agent): make fork persistence failures deterministic"
 **Files:**
 - Create: cmd/evener-fuzzregistry/main.go, cmd/evener-fuzzregistry/main_test.go
 - Create: scripts/fuzz-registry-check.sh
-- Modify: go.mod, scripts/run-fuzz.sh, Makefile
+- Modify: go.mod, scripts/fuzz/run-fuzz.sh, Makefile
 - Modify: agent/registry_schemafuzz_test.go, agent/lifecycle_seqfuzz_test.go,
   agent/watch_seqfuzz_test.go, agent/delegate_seqfuzz_test.go,
   agent/jobs_fc2_seqfuzz_test.go, agent/internal/jobstore/seqfuzz_test.go,
@@ -179,7 +179,7 @@ metadata; Task 4 consumes this exact four-column schema.
 Run:
 ~~~sh
 make fuzz-registry-check
-git add go.mod go.sum cmd/evener-fuzzregistry scripts/fuzz-registry-check.sh scripts/run-fuzz.sh Makefile agent internal/appserver
+git add go.mod go.sum cmd/evener-fuzzregistry scripts/fuzz-registry-check.sh scripts/fuzz/run-fuzz.sh Makefile agent internal/appserver
 git commit -m "test(fuzz): audit registered fuzz targets"
 ~~~
 
@@ -242,7 +242,7 @@ Expected: raw 95.0% fails and no normal production code can be excluded.
 ### Task 4: Replay Every Local Fuzz Surface Across the Workspace
 
 **Files:**
-- Modify: scripts/fuzz-coverage-global.sh, scripts/fuzz-coverage-global-selftest.sh
+- Modify: scripts/fuzz/fuzz-coverage-global.sh, scripts/fuzz-coverage-global-selftest.sh
 - Modify: Makefile, docs/fuzzing.md
 
 **Consumes:** Validated targets from Task 2 and profile accounting from Task 3.
@@ -289,7 +289,7 @@ Run:
 scripts/fuzz-coverage-global-selftest.sh
 make fuzz-registry-check
 make fuzz-coverage-global
-git add scripts/fuzz-coverage-global.sh scripts/fuzz-coverage-global-selftest.sh Makefile docs/fuzzing.md
+git add scripts/fuzz/fuzz-coverage-global.sh scripts/fuzz-coverage-global-selftest.sh Makefile docs/fuzzing.md
 git commit -m "test(fuzz): measure all workspace modules deterministically"
 ~~~
 
@@ -298,7 +298,7 @@ Expected: self-test/check pass. The real command may fail only with explicit mis
 ### Task 5: Register Existing Agent Targets And Add Missing Local Surfaces
 
 **Files:**
-- Modify: scripts/run-fuzz.sh
+- Modify: scripts/fuzz/run-fuzz.sh
 - Create local fuzz tests in agent/command, agent/events, agent/internal/agenttest, agent/internal/clock, agent/internal/diagnostic, agent/internal/goal, agent/internal/installid, agent/internal/promptpath, agent/internal/tool/repair, agent/internal/toolname, and agent/mcpprobe
 
 **Consumes:** Task 2 audit and Task 4 missing-surface report.
@@ -356,7 +356,7 @@ Run:
 ~~~sh
 (cd agent && go test -tags evenerfuzz -run '^Fuzz' ./command ./events ./internal/agenttest ./internal/clock ./internal/diagnostic ./internal/goal ./internal/installid ./internal/promptpath ./internal/tool/repair ./internal/toolname ./mcpprobe)
 make fuzz-coverage-global FUZZ_ARGS='--modules agent'
-git add scripts/run-fuzz.sh agent
+git add scripts/fuzz/run-fuzz.sh agent
 git commit -m "test(agent): register and cover local fuzz surfaces"
 ~~~
 
@@ -478,7 +478,7 @@ Expected: no credential/network/live-provider requirement and covered * 100 > 95
 Use the documented bless path only after Step 3 passes. Restore non-agent floor rows if a partial bless rewrites them, then add exact covered/total output to docs/fuzzing.md.
 
 ~~~sh
-git add agent scripts/run-fuzz.sh scripts/fuzzcov-global-floors.txt docs/fuzzing.md
+git add agent scripts/fuzz/run-fuzz.sh scripts/fuzzcov-global-floors.txt docs/fuzzing.md
 git commit -m "test(agent): require over 95 percent fuzz reachability"
 ~~~
 

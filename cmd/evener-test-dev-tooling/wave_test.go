@@ -16,6 +16,9 @@ import (
 func writeSuite(t *testing.T, dir, name, body string) {
 	t.Helper()
 	path := filepath.Join(dir, name+"-selftest.sh")
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatal(err)
+	}
 	if err := os.WriteFile(path, []byte("#!/bin/sh\n"+body), 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -102,6 +105,23 @@ func TestSuiteGetsPrivateTmpdir(t *testing.T) {
 	}
 	if _, err := os.Stat(oneTmp); !os.IsNotExist(err) {
 		t.Fatalf("run dir should be removed after the wave, %s still exists", oneTmp)
+	}
+}
+
+// TestSuiteWithSlashInNameHandlesSubdirPaths proves the wave runner correctly
+// handles suite names containing slashes (subdir-prefixed, e.g.
+// "gate/run-module-tests"). The MkdirAll in runSuite creates the parent
+// directory for both the tmp dir and the log file.
+func TestSuiteWithSlashInNameHandlesSubdirPaths(t *testing.T) {
+	dir := t.TempDir()
+	writeSuite(t, dir, "group/suite", "exit 0\n")
+	var out bytes.Buffer
+	code := runWave(waveConfig{ScriptsDir: dir, Suites: []string{"group/suite"}, KillGrace: time.Second, Out: &out})
+	if code != 0 {
+		t.Fatalf("exit %d, output:\n%s", code, out.String())
+	}
+	if !strings.Contains(out.String(), "PASS  group/suite") {
+		t.Fatalf("missing PASS group/suite:\n%s", out.String())
 	}
 }
 

@@ -3,7 +3,7 @@
 // test components depend on (loopback binds, a Chrome/Chromium binary for
 // CDP-driven checks, process inspection via `ps`, and a writable external git
 // cache directory). It never guesses: a probe that cannot decide in time
-// classifies as blocked, never available. scripts/gate-capability-preflight.sh
+// classifies as blocked, never available. scripts/gate/gate-capability-preflight.sh
 // is the only intended caller.
 package main
 
@@ -21,7 +21,7 @@ import (
 )
 
 // Capability ids. Renaming one means updating the matching skip-registry row
-// in scripts/gate-surface-lib.sh, which keys off these exact strings.
+// in scripts/lib/gate-surface-lib.sh, which keys off these exact strings.
 const (
 	CapabilityLoopbackBind   = "loopback-bind"
 	CapabilityChromeCDP      = "chrome-cdp"
@@ -51,7 +51,7 @@ type Capability struct {
 // bounded" from the kata's own acceptance criteria.
 const probeTimeout = 5 * time.Second
 
-// chromeCandidates mirrors scripts/agent-chrome.sh's CHROME_CANDIDATES search
+// chromeCandidates mirrors scripts/ops/agent-chrome.sh's CHROME_CANDIDATES search
 // order, so the two tools agree about what "a Chrome is available" means.
 var chromeCandidates = []string{
 	"/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",

@@ -7,7 +7,7 @@
 
 **Goal:** Make `make lint` run every existing non-fuzz Go module lint check with bounded concurrency, print only compact status when fully healthy while preserving the existing degraded missing-gitleaks warning, and replay every failed check's complete log followed by one deterministic summary.
 
-**Architecture:** Add one Bash runner modeled on `scripts/run-module-tests.sh`: it receives the canonical module list through `MODULES`, executes `golangci-lint run ./...` in fixed-size waves controlled by `LINT_PARALLEL`, records statuses separately from private logs, and replays failures in input order. Keep lint-family ownership in the Makefile; a reusable Make recipe wrapper captures routine output from the non-module checks, discards it only after success, preserves the existing successful-but-degraded missing-gitleaks warning, and replays complete output unchanged on failure.
+**Architecture:** Add one Bash runner modeled on `scripts/gate/run-module-tests.sh`: it receives the canonical module list through `MODULES`, executes `golangci-lint run ./...` in fixed-size waves controlled by `LINT_PARALLEL`, records statuses separately from private logs, and replays failures in input order. Keep lint-family ownership in the Makefile; a reusable Make recipe wrapper captures routine output from the non-module checks, discards it only after success, preserves the existing successful-but-degraded missing-gitleaks warning, and replays complete output unchanged on failure.
 
 **Tech Stack:** GNU Make, macOS-compatible Bash (no associative arrays or `wait -n`), POSIX command-line utilities, `golangci-lint`, deterministic shell self-tests with fake executables and temporary module trees.
 
@@ -484,7 +484,7 @@ Expected: the commit contains only the two new executable scripts. Do not bypass
 - Modify: `Makefile:284-329`
 
 **Interfaces:**
-- Consumes: `GO_MODULES := . agent llm auth envvars invariant identifier` exactly as already defined at `Makefile:79`; existing commands `go run ./cmd/evener-namingcheck`, `go run ./cmd/evener-internalcheck`, `go run ./cmd/evener-docscheck`, `golangci-lint run ./...`, `go generate ./appwire/...`, `git diff --exit-code -- docs/appwire-protocol.md`, and `scripts/gitleaks-scan.sh repo` with unchanged arguments.
+- Consumes: `GO_MODULES := . agent llm auth envvars invariant identifier` exactly as already defined at `Makefile:79`; existing commands `go run ./cmd/evener-namingcheck`, `go run ./cmd/evener-internalcheck`, `go run ./cmd/evener-docscheck`, `golangci-lint run ./...`, `go generate ./appwire/...`, `git diff --exit-code -- docs/appwire-protocol.md`, and `scripts/ops/gitleaks-scan.sh repo` with unchanged arguments.
 - Produces: `lint-golangci` invokes `MODULES="$(GO_MODULES)" scripts/run-module-lint.sh`; `lint` retains the exact dependency families `lint-naming lint-internal lint-docs lint-golangci lint-generated secret-scan`.
 - Quiet-check contract: `run_quiet_lint` redirects a check's combined stdout/stderr to one private log, removes the log on success, and prints it in full before returning the original nonzero status on failure. Its optional second argument, `preserve-gitleaks-warning`, replays the existing `warning: gitleaks not installed; ...` line on a successful skipped scan, because that warning is policy-relevant rather than routine green chatter.
 
@@ -527,7 +527,7 @@ module="$(basename "$PWD")"
 printf '%s\t%s\n' "$module" "$*" >>"$FAKE_STATE/modules"
 printf 'golangci-success-chatter\n'
 FAKE_MAKE_LINT
-cat >"$repo/scripts/gitleaks-scan.sh" <<'FAKE_SECRET_SCAN'
+cat >"$repo/scripts/ops/gitleaks-scan.sh" <<'FAKE_SECRET_SCAN'
 #!/usr/bin/env bash
 printf 'secret-scan %s\n' "$*" >>"$FAKE_STATE/families"
 if [ "${FAKE_GITLEAKS_MISSING:-0}" = 1 ]; then
@@ -536,7 +536,7 @@ if [ "${FAKE_GITLEAKS_MISSING:-0}" = 1 ]; then
 fi
 printf 'secret-success-chatter\n'
 FAKE_SECRET_SCAN
-chmod +x "$bin/go" "$bin/git" "$bin/golangci-lint" "$repo/scripts/gitleaks-scan.sh"
+chmod +x "$bin/go" "$bin/git" "$bin/golangci-lint" "$repo/scripts/ops/gitleaks-scan.sh"
 
 out="$case_dir/make-lint.out"
 if (
@@ -651,7 +651,7 @@ At the existing `secret-scan` target under its existing comment, change only its
 
 ```make
 secret-scan:
-	$(call run_quiet_lint,scripts/gitleaks-scan.sh repo,preserve-gitleaks-warning)
+	$(call run_quiet_lint,scripts/ops/gitleaks-scan.sh repo,preserve-gitleaks-warning)
 ```
 
 Keep the existing comments above `lint-naming` and `secret-scan` in place. Do not duplicate or move the `secret-scan` target, change `fuzz-corpus-scan`, reorder/add/remove `lint` prerequisites, or touch `.PHONY`: this plan creates or renames no Make targets, so it must preserve the current declarations exactly even though `generate` and `lint-generated` are not currently listed there.

@@ -857,9 +857,9 @@ func newBuildWebFixture(t *testing.T) runtimeBuildFixture {
 	fixture := newRuntimeBuildFixture(t)
 	installFrontendToolchainStubs(t, fixture)
 	copyRepositoryFile(t, fixture.repoRoot, fixture.root, "Makefile", 0o644)
-	copyRepositoryFile(t, fixture.repoRoot, fixture.root, "scripts/build-runtime-pair.sh", 0o755)
-	copyRepositoryFile(t, fixture.repoRoot, fixture.root, "scripts/private-go-home.sh", 0o644)
-	copyRepositoryFile(t, fixture.repoRoot, fixture.root, "scripts/web-preflight.sh", 0o755)
+	copyRepositoryFile(t, fixture.repoRoot, fixture.root, "scripts/ops/build-runtime-pair.sh", 0o755)
+	copyRepositoryFile(t, fixture.repoRoot, fixture.root, "scripts/lib/private-go-home.sh", 0o644)
+	copyRepositoryFile(t, fixture.repoRoot, fixture.root, "scripts/web/web-preflight.sh", 0o755)
 	return fixture
 }
 
@@ -1164,7 +1164,7 @@ func cleanupHeldBrowserFixture(command *exec.Cmd, waitDone <-chan error, makeWai
 }
 
 func runRuntimePairBuild(fixture runtimeBuildFixture, failPackage string) ([]byte, error) {
-	command := exec.Command("sh", filepath.Join(fixture.repoRoot, "scripts", "build-runtime-pair.sh"))
+	command := exec.Command("sh", filepath.Join(fixture.repoRoot, "scripts", "ops", "build-runtime-pair.sh"))
 	command.Dir = fixture.root
 	command.Env = fixture.environment(failPackage)
 	return command.CombinedOutput()
