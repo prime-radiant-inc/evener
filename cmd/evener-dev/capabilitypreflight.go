@@ -1,50 +1,44 @@
 //go:build linux || darwin
 
 // Package main is the home of evener-dev's subcommands. This file implements
-// `capability-preflight`, the Go port of scripts/gate/gate-capability-preflight.sh.
+// `capability-preflight`, formerly scripts/gate/gate-capability-preflight.sh.
 //
-// The port keeps the shell's contract verbatim: FAKE_GATE_PROBE_BLOCKED (when
-// SET, even to the empty string) short-circuits the real probe; otherwise the
-// real probe (here the injectable probeOutput) is run and its tab-delimited
-// lines are parsed. Each BLOCKED capability's skip pattern is looked up via
-// internal/devtool/gatesurface.CapabilitySkipPattern and unioned into one
-// pipe-separated skip regex WITHOUT deduplication, exactly as the shell's
-// `${skip_regex}|${pattern}` accumulation produces. The skip regex goes to
-// stdout (one line, empty when nothing is blocked) for the Makefile to
-// capture; the human-readable summary goes to stderr, one line per
-// capability in fixed order. Exit 0 on a successful classification, 1 on an
-// internal failure (probe could not run, unrecognized status, or a known
-// capability the probe never classified).
+// The preflight classifies the sandbox-sensitive host capabilities the gate's
+// live/e2e test components depend on (loopback binds, Chrome/CDP, process
+// inspection, git cache) via internal/devtool/capabilityprobe, then builds a
+// combined skip regex from internal/devtool/gatesurface's skip patterns for
+// each BLOCKED capability. The skip regex goes to stdout (one line, empty
+// when nothing is blocked) for the Makefile to capture; the human-readable
+// summary goes to stderr, one line per capability in fixed order.
+//
+// FAKE_GATE_PROBE_BLOCKED (when SET, even to the empty string) short-circuits
+// the real probe: every id named in the value (space-separated) is BLOCKED
+// with a fixed reason, every id not named is AVAILABLE. This is the test
+// path; the real path calls capabilityprobe.Classify.
+//
+// Exit 0 on a successful classification, 1 on an internal failure.
 package main
 
 import (
-	"bufio"
-	"bytes"
+	"context"
 	"fmt"
 	"io"
 	"os"
-	"os/exec"
 	"strings"
 
+	"primeradiant.com/evener/internal/devtool/capabilityprobe"
 	"primeradiant.com/evener/internal/devtool/gatesurface"
 )
 
-// gateCapabilityIDs is the fixed capability order the probe reports,
-// matching cmd/evener-gate-probe.AllCapabilityIDs and the shell's
-// capability_ids. Output (summary and skip-regex accumulation) follows this
-// order so two runs classify identically.
-var gateCapabilityIDs = []string{
-	"loopback-bind",
-	"chrome-cdp",
-	"process-inspect",
-	"git-cache",
-}
+// gateCapabilityIDs is the fixed capability order the preflight reports.
+// Output (summary and skip-regex accumulation) follows this order so two
+// runs classify identically. Matches capabilityprobe.AllCapabilityIDs.
+var gateCapabilityIDs = capabilityprobe.AllCapabilityIDs
 
-// probeOutput is the shape of the real probe call: it returns the probe's
-// tab-delimited stdout (id\tstatus\treason\trerun, one per line) or an error
-// when the probe itself could not run. Injected so tests can drive the
-// parse path without spawning `go run`.
-type probeOutput func() (string, error)
+// classifyFn is the shape of the real probe call: it returns one Capability
+// per gateCapabilityIDs entry, in that fixed order. Injected so tests can
+// drive the parse path without running real probes.
+type classifyFn func() []capabilityprobe.Capability
 
 // capabilityPreflight is the port of scripts/gate/gate-capability-preflight.sh.
 //
@@ -53,7 +47,7 @@ type probeOutput func() (string, error)
 // nothing blocked) from "FAKE_GATE_PROBE_BLOCKED unset" (run the real probe)
 // via `${VAR+set}`; os.Getenv collapses both to "", which would make the
 // all-available selftest indistinguishable from the real path.
-func capabilityPreflight(getenv func(string) (string, bool), stdout io.Writer, stderr io.Writer, probe probeOutput) int {
+func capabilityPreflight(getenv func(string) (string, bool), stdout io.Writer, stderr io.Writer, classify classifyFn) int {
 	type entry struct {
 		blocked bool
 		reason  string // empty when available
@@ -73,59 +67,26 @@ func capabilityPreflight(getenv func(string) (string, bool), stdout io.Writer, s
 			if blocked[id] {
 				classified[id] = entry{
 					blocked: true,
-					reason:  "forced blocked via FAKE_GATE_PROBE_BLOCKED (selftest)",
-					rerun:   "go run ./cmd/evener-gate-probe -only=" + id,
+					reason:  "forced blocked via FAKE_GATE_PROBE_BLOCKED (test)",
+					rerun:   "go run ./cmd/evener-dev capability-preflight -only=" + id,
 				}
 			} else {
 				classified[id] = entry{blocked: false}
 			}
 		}
 	} else {
-		// Real probe path.
-		out, err := probe()
-		if err != nil {
-			// Mirror the shell's emit_fatal, which includes the probe's own
-			// captured output ($lines) so the diagnostic carries the real
-			// tool's error text rather than just a generic wrapper.
-			fmt.Fprintf(stderr, "capability-preflight: probe failed: %v: %s\n", err, strings.TrimRight(out, "\n"))
-			return 1
-		}
-		sc := bufio.NewScanner(strings.NewReader(out))
-		for sc.Scan() {
-			line := sc.Text()
-			if line == "" {
-				continue
-			}
-			fields := strings.Split(line, "\t")
-			id := fields[0]
-			status := ""
-			if len(fields) > 1 {
-				status = fields[1]
-			}
-			reason := ""
-			if len(fields) > 2 {
-				reason = fields[2]
-			}
-			// `read -r id status reason rerun` puts the remainder of the line
-			// (everything after the third tab) into the last variable, so a
-			// rerun containing a tab would be preserved; join reproduces that.
-			rerun := ""
-			if len(fields) > 3 {
-				rerun = strings.Join(fields[3:], "\t")
-			}
-			switch status {
-			case "AVAILABLE":
-				classified[id] = entry{blocked: false}
-			case "BLOCKED":
-				classified[id] = entry{blocked: true, reason: reason, rerun: rerun}
-			default:
-				fmt.Fprintf(stderr, "capability-preflight: unrecognized status %q for capability %q in probe output: %q\n", status, id, line)
-				return 1
+		// Real probe path: call the injected classify function (in production,
+		// capabilityprobe.Classify).
+		caps := classify()
+		for _, c := range caps {
+			classified[c.ID] = entry{
+				blocked: !c.Available,
+				reason:  c.Reason,
+				rerun:   c.Rerun,
 			}
 		}
 		// The probe must classify every known capability. A missing one is an
-		// internal failure, mirroring the shell's "the probe never classified
-		// $id" fatal.
+		// internal failure.
 		for _, id := range gateCapabilityIDs {
 			if _, ok := classified[id]; !ok {
 				fmt.Fprintf(stderr, "capability-preflight: probe never classified capability %q\n", id)
@@ -183,16 +144,10 @@ func capabilityPreflight(getenv func(string) (string, bool), stdout io.Writer, s
 }
 
 // runCapabilityPreflight is the subcommand entry: it wires capabilityPreflight
-// to the real environment and a probeOutput that runs `go run
-// ./cmd/evener-gate-probe` from the repo root, exactly as the shell did.
+// to the real environment and capabilityprobe.Classify.
 func runCapabilityPreflight(args []string) int {
-	probe := func() (string, error) {
-		cmd := exec.Command("go", "run", "./cmd/evener-gate-probe")
-		var out bytes.Buffer
-		cmd.Stdout = &out
-		cmd.Stderr = os.Stderr
-		err := cmd.Run()
-		return out.String(), err
+	classify := func() []capabilityprobe.Capability {
+		return capabilityprobe.Classify(context.Background())
 	}
-	return capabilityPreflight(os.LookupEnv, os.Stdout, os.Stderr, probe)
+	return capabilityPreflight(os.LookupEnv, os.Stdout, os.Stderr, classify)
 }

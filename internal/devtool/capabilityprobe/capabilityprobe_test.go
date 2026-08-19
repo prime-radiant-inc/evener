@@ -1,4 +1,4 @@
-package main
+package capabilityprobe
 
 import (
 	"context"
@@ -13,8 +13,6 @@ import (
 
 // --- runProbe: bounded execution -------------------------------------------------
 
-// TestRunProbe_ReturnsAvailableFromFunc proves the happy path: a probe that
-// finishes well inside its timeout reports whatever it decided, unmodified.
 func TestRunProbe_ReturnsAvailableFromFunc(t *testing.T) {
 	got := runProbe(context.Background(), "widget", "rerun widget", time.Second, func(ctx context.Context) (bool, string) {
 		return true, ""
@@ -24,8 +22,6 @@ func TestRunProbe_ReturnsAvailableFromFunc(t *testing.T) {
 	}
 }
 
-// TestRunProbe_ReturnsBlockedFromFunc proves a probe's own blocked verdict
-// (not a timeout) passes through with its reason intact.
 func TestRunProbe_ReturnsBlockedFromFunc(t *testing.T) {
 	got := runProbe(context.Background(), "widget", "rerun widget", time.Second, func(ctx context.Context) (bool, string) {
 		return false, "denied by policy"
@@ -35,14 +31,9 @@ func TestRunProbe_ReturnsBlockedFromFunc(t *testing.T) {
 	}
 }
 
-// TestRunProbe_BoundedByTimeout proves the mutation this whole tool exists to
-// prevent: a probe stuck on a stalled resource must classify as blocked
-// promptly, not hang the gate. The injected func blocks on a channel that is
-// never sent to; runProbe must still return within its timeout, not wait for
-// the goroutine.
 func TestRunProbe_BoundedByTimeout(t *testing.T) {
 	block := make(chan struct{})
-	defer close(block) // let the leaked goroutine exit after the test observes the result
+	defer close(block)
 
 	start := time.Now()
 	got := runProbe(context.Background(), "widget", "rerun widget", 20*time.Millisecond, func(ctx context.Context) (bool, string) {
@@ -57,10 +48,8 @@ func TestRunProbe_BoundedByTimeout(t *testing.T) {
 	if !strings.Contains(got.Reason, "did not complete") {
 		t.Fatalf("reason %q does not say the probe timed out", got.Reason)
 	}
-	// Generous margin over the 20ms timeout: this only needs to prove runProbe
-	// did not wait for the full second the outer test timeout would allow.
 	if elapsed > 500*time.Millisecond {
-		t.Fatalf("runProbe took %s, want well under 500ms (it must not wait for the blocked goroutine)", elapsed)
+		t.Fatalf("runProbe took %s, want well under 500ms", elapsed)
 	}
 }
 
@@ -87,11 +76,6 @@ func TestProbeLoopbackBindWith_Blocked(t *testing.T) {
 	}
 }
 
-// TestProbeLoopbackBind_RealSocket smoke-tests the real, uninjected wrapper
-// against an actual loopback bind. This is the one deliberately real-boundary
-// case: on any host that can run this repo's test suite at all, binding
-// 127.0.0.1:0 is expected to work, so this pins the wrapper's plumbing
-// (Listen + Close + error formatting) against the genuine syscall once.
 func TestProbeLoopbackBind_RealSocket(t *testing.T) {
 	ok, reason := probeLoopbackBind(context.Background())
 	if !ok {
@@ -126,9 +110,6 @@ func TestProbeChromeCDPWith_BlockedWhenNoCandidateExists(t *testing.T) {
 }
 
 func TestProbeChromeCDPWith_SkipsNonExecutableCandidate(t *testing.T) {
-	// A candidate that exists but is not executable (mode 0o644) must not
-	// count as available - a stale, unexecutable file at that path is not a
-	// working Chrome.
 	stat := func(path string) (fs.FileInfo, error) {
 		if path == "/candidate/one" {
 			return fakeFileInfo{mode: 0o644}, nil
@@ -162,9 +143,6 @@ func TestProbeProcessInspectWith_Blocked(t *testing.T) {
 	}
 }
 
-// TestProbeProcessInspect_RealPS smoke-tests the real wrapper's plumbing
-// against the actual `ps` binary, the same real-boundary reasoning as
-// TestProbeLoopbackBind_RealSocket.
 func TestProbeProcessInspect_RealPS(t *testing.T) {
 	ok, reason := probeProcessInspect(context.Background())
 	if !ok {
@@ -233,10 +211,6 @@ func TestProbeGitCacheWith_BlockedOnWriteFailure(t *testing.T) {
 
 // --- Classify: end-to-end shape -------------------------------------------------
 
-// TestClassify_ReportsAllFourCapabilitiesInOrder pins the contract every
-// downstream shell consumer relies on: Classify always reports exactly the
-// four named capabilities, in a fixed order, never fewer (a probe that
-// cannot decide still returns a blocked verdict, never omits itself).
 func TestClassify_ReportsAllFourCapabilitiesInOrder(t *testing.T) {
 	got := Classify(context.Background())
 	want := []string{CapabilityLoopbackBind, CapabilityChromeCDP, CapabilityProcessInspect, CapabilityGitCache}

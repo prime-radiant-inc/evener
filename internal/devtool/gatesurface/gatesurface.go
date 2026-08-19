@@ -47,8 +47,8 @@ var TestRun = `^(Test|Example)`
 //   - chrome-cdp, git-cache: no test file anywhere in this tree consumes
 //     either today. test-web-browser needs Chrome but is a separate, non-gate
 //     target; the only thing in the tree that names the fixed /tmp/git-cache
-//     path is cmd/evener-gate-probe's own default, which the probe creates in
-//     order to prove it is writable. Both are still probed and reported for
+//     path is internal/devtool/capabilityprobe's own default, which the probe
+//     creates in order to prove it is writable. Both are still probed and reported for
 //     completeness and honesty; the pattern is empty because nothing is
 //     skipped yet.
 //

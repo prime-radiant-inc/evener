@@ -62,9 +62,10 @@ var scenarioFixedTmpPathAllowedMentions = map[string][]string{
 	},
 	"internal/devtool/gatesurface/gatesurface.go": {
 		// A comment naming where the fixed path actually lives —
-		// cmd/evener-gate-probe's own default — to explain why the git-cache
-		// skip pattern is empty (kata 5gvk's capability preflight). This
-		// file neither names the path for a run to use nor creates it.
+		// internal/devtool/capabilityprobe's own default — to explain why
+		// the git-cache skip pattern is empty (kata 5gvk's capability
+		// preflight). This file neither names the path for a run to use nor
+		// creates it.
 		"/tmp/git-cache",
 	},
 	// scripts/*.sh, added to this audit by kata qw8e. Only one row, because a
