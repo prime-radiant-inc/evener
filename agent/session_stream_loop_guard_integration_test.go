@@ -57,6 +57,11 @@ func runConsumeModelStream(t *testing.T, sess *Session, req llm.Request, st llm.
 	select {
 	case o := <-done:
 		return o.resp, o.obs, o.err
+	// TRIPWIRE: every fixture here is in-memory and returns in single-digit
+	// milliseconds, so 5s is three orders of magnitude of headroom. It is not
+	// the correctness signal — the assertions after the select are — but a
+	// guard that fails to stop an unbounded stream hangs forever with no other
+	// signal to await, which is the failure this bound exists to report.
 	case <-time.After(5 * time.Second):
 		t.Fatal("consumeModelStream did not return; the guard did not stop the stream")
 		return sessionModelResponse{}, attemptObservation{}, nil
@@ -199,6 +204,43 @@ func TestConsumeModelStream_LoopGuard_EighteenDistinctCalls_NoTrip(t *testing.T)
 	}
 	if streak != 0 {
 		t.Fatalf("streamLoopTripStreak = %d, want 0", streak)
+	}
+}
+
+// TestConsumeModelStream_LoopGuard_StateDoesNotCarryAcrossResponses pins the
+// guard's scope: one instance per consumeModelStream attempt, never shared.
+// The hole it closes is specifically that nothing bounds ONE response, so
+// counting across responses would re-invent the between-responses blindness it
+// exists to fix -- two legitimate 30-call rounds in one session would trip the
+// ceiling on the second, having never come near it within either.
+func TestConsumeModelStream_LoopGuard_StateDoesNotCarryAcrossResponses(t *testing.T) {
+	sess := newSession(t)
+	req := llm.Request{Provider: "openai", Model: "gpt-5.2"}
+	const perRound = 30 // comfortably under the 50 ceiling alone, over it combined
+	feedDistinct := func(st *llm.ChanStream, round int) func() {
+		return func() {
+			for i := range perRound {
+				sendToolCall(st, callID(round*perRound+i), distinctToolName(i), `{"round":`+itoaTest(round)+`,"n":`+itoaTest(i)+`}`)
+			}
+			st.Send(llm.StreamEvent{Type: llm.StreamEventFinish, FinishReason: &llm.FinishReason{Reason: llm.FinishReasonToolCalls}})
+			st.CloseSend()
+		}
+	}
+	for round := range 2 {
+		st := llm.NewChanStream(nil)
+		resp, _, err := runConsumeModelStream(t, sess, req, st, feedDistinct(st, round))
+		if err != nil {
+			t.Fatalf("round %d: err = %v, want nil", round, err)
+		}
+		if got := len(resp.Response.ToolCalls()); got != perRound {
+			t.Fatalf("round %d: got %d tool calls, want %d (nothing truncated)", round, got, perRound)
+		}
+		sess.mu.Lock()
+		nudge := sess.pendingStreamLoopNudge
+		sess.mu.Unlock()
+		if nudge != "" {
+			t.Fatalf("round %d: pendingStreamLoopNudge = %q, want empty: %d distinct calls is well under the ceiling, and the guard must not be counting the previous response's calls", round, nudge, perRound)
+		}
 	}
 }
 
