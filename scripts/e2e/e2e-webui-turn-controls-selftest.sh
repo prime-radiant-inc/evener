@@ -37,12 +37,14 @@ cleanup() {
 		for pidfile in "$dir"/*.pid; do
 			[ -f "$pidfile" ] || continue
 			kill "$(cat "$pidfile")" 2>/dev/null
+			wait_dead "$pidfile"
 		done
 		rm -rf "$dir"
 	done
 	for pidfile in "$work"/sleeper-*.pid "$state"/*.pid; do
 		[ -f "$pidfile" ] || continue
 		kill "$(cat "$pidfile")" 2>/dev/null
+		wait_dead "$pidfile"
 	done
 	scratch_rm
 }
@@ -64,6 +66,23 @@ spawn_sleeper() {
 
 alive() { kill -0 "$(cat "$1")" 2>/dev/null; }
 
+# wait_dead PIDFILE — after signalling a process, do not let the suite exit
+# while it is still dying in the suite's process group: kill is only a request
+# until the pid is gone, and the wave runner fails any suite that exits with a
+# live process left in its group (issue #161). Bounded, because a process that
+# refuses to die belongs to the wave's loud failure, not to an unbounded wait
+# here.
+wait_dead() {
+	_wd_pid="$(cat "$1" 2>/dev/null)"
+	[ -n "$_wd_pid" ] || return 0
+	_wd_tries=0
+	while [ "$_wd_tries" -lt 100 ]; do
+		kill -0 "$_wd_pid" 2>/dev/null || return 0
+		_wd_tries=$((_wd_tries + 1))
+		sleep 0.05
+	done
+}
+
 # --- the fixture toolchain --------------------------------------------------
 # `go build -o <out> <pkg>` copies a throwaway shell binary named after <out>.
 # Everything else is refused loudly: a new build in the script must be taught
@@ -71,6 +90,14 @@ alive() { kill -0 "$(cat "$1")" 2>/dev/null; }
 fakebin="$work/bin"
 fixtures="$work/fixtures"
 mkdir -p "$fakebin" "$fixtures"
+
+# Fixtures park on a blocking FIFO read, never a `sleep 1` loop: a signalled
+# sleep-loop fixture leaves its in-flight sleep orphaned in the suite's
+# process group for up to a second past its own death, and the wave runner
+# fails any suite that exits with a live process left in its group (issue
+# #161). A FIFO read parks inside the fixture shell itself — no child process
+# at all — so a signalled fixture leaves nothing behind.
+mkfifo "$fixtures/hold"
 
 cat >"$fakebin/go" <<'FAKE_GO'
 #!/usr/bin/env bash
@@ -121,7 +148,7 @@ cat >"$fixtures/fakellm" <<'FAKE_FAKELLM'
 #!/usr/bin/env bash
 "$FAKE_FIXTURES/report-env" "$FAKE_STATE/fakellm.env"
 echo "fakellm listening on 127.0.0.1:14001 (base_url http://127.0.0.1:14001/v1)" >&2
-while :; do sleep 1; done
+read _ <"$FAKE_FIXTURES/hold"
 FAKE_FAKELLM
 
 cat >"$fixtures/evener-hub" <<'FAKE_HUB'
@@ -144,7 +171,7 @@ echo "evener-hub listening on 127.0.0.1:14002" >&2
 run_dir="$(dirname "$0")"
 ("$run_dir/evener" serve --session s-fixture >/dev/null 2>&1 & printf '%s' "$!" >"$FAKE_STATE/daemon.pid")
 echo "daemon session=s-fixture pid=$(cat "$FAKE_STATE/daemon.pid")" >&2
-while :; do sleep 1; done
+read _ <"$FAKE_FIXTURES/hold"
 FAKE_HUB
 
 # The daemon binary the hub is pointed at. It parks like a real daemon so the
@@ -152,7 +179,7 @@ FAKE_HUB
 # as the real one does -- which is what --stop's ownership check reads.
 cat >"$fixtures/evener" <<'FAKE_EVENER'
 #!/usr/bin/env bash
-while :; do sleep 1; done
+read _ <"$FAKE_FIXTURES/hold"
 FAKE_EVENER
 chmod +x "$fakebin"/* "$fixtures"/*
 

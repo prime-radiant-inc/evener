@@ -203,6 +203,35 @@ func runSuite(cfg waveConfig, runDir, name string, shutdown <-chan struct{}) sui
 	mu.Unlock()
 	close(reaped)
 	seconds := int(time.Since(start).Round(time.Second).Seconds())
+
+	// Sweep the suite's process group for survivors on every exit path, green
+	// or red (issue #161): cmd.Wait() reaps only the direct child, so a
+	// descendant the suite orphaned — reparented to pid 1 but still a member
+	// of this suite's process group — would outlive the run as a live
+	// process. Probing before killing keeps a routine exit from firing
+	// SIGKILL at a possibly-recycled pgid, and sweeping before the leak check
+	// keeps a lingering descendant from writing to the private TMPDIR between
+	// the suite's exit and the check.
+	survivors := suiteGroupSurvivors(pgid)
+	if len(survivors) > 0 {
+		select {
+		case <-shutdown:
+			// The watcher already TERMed the group; give descendants the
+			// grace period to finish their TERM traps (one can legitimately
+			// still be writing its shutdown event here) before escalating to
+			// KILL, mirroring the watcher's own TERM-then-KILL escalation.
+			deadline := time.Now().Add(cfg.KillGrace)
+			for len(survivors) > 0 && time.Now().Before(deadline) {
+				time.Sleep(25 * time.Millisecond)
+				survivors = suiteGroupSurvivors(pgid)
+			}
+			if len(survivors) > 0 {
+				killSuiteGroup(pgid)
+			}
+		default:
+			killSuiteGroup(pgid)
+		}
+	}
 	if err != nil {
 		code := cmd.ProcessState.ExitCode()
 		if code < 0 {
@@ -215,6 +244,17 @@ func runSuite(cfg waveConfig, runDir, name string, shutdown <-chan struct{}) sui
 			}
 		}
 		return suiteResult{exitCode: code, seconds: seconds}
+	}
+	// A suite that exits green while leaving live processes in its group has
+	// a cleanup bug; the sweep above killed them, and this failure is what
+	// keeps that bug visible — the process counterpart of the temp-file leak
+	// check below.
+	if len(survivors) > 0 {
+		return suiteResult{
+			failure: fmt.Sprintf("evener-test-dev-tooling: %s passed but left process(es) alive in its process group: %s",
+				name, strings.Join(survivors, "; ")),
+			seconds: seconds,
+		}
 	}
 	// Leak check is post-reap bookkeeping that could block on a wedged
 	// filesystem. Run it with a timeout so it doesn't block the wave's
