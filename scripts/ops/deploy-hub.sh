@@ -23,7 +23,7 @@
 #                     hub), and record the old PID.
 #   2. Build       — `make build-hub`, which builds the frontend then the
 #                     evener/evener-hub pair into a temp dir and `mv`s them into
-#                     place only on success (scripts/build-runtime-pair.sh).
+#                     place only on success (scripts/ops/build-runtime-pair.sh).
 #                     A failed build never touches the binary that's
 #                     currently running — launchd/macOS keeps executing the
 #                     old file's inode regardless of what happens to the
@@ -45,8 +45,8 @@
 # reports the failure clearly and stops rather than guessing further.
 #
 # Usage:
-#   scripts/deploy-hub.sh [--label LABEL] [--addr HOST:PORT] [--timeout N]
-#   scripts/deploy-hub.sh --help
+#   scripts/ops/deploy-hub.sh [--label LABEL] [--addr HOST:PORT] [--timeout N]
+#   scripts/ops/deploy-hub.sh --help
 #
 #   --label LABEL     Skip launchd auto-discovery and use this label
 #                      directly (gui/$(id -u)/LABEL). Required if more than

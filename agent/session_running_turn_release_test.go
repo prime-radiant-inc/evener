@@ -2,6 +2,7 @@ package agent
 
 import (
 	"errors"
+	"fmt"
 	"testing"
 )
 
@@ -101,6 +102,19 @@ func TestReleaseRunningTurnIDGivesUpLoudlyWhenTheStoreNeverRecovers(t *testing.T
 	if got := h.warningsMatching("could not be released"); got != 1 {
 		t.Fatalf("terminal release warnings = %d, want exactly 1: exhausting the budget is one event, and it fires the user's Notification hook", got)
 	}
+	// The message has to report what actually happened (the real attempt
+	// count, not a placeholder) and name the daemon reload -- the only thing
+	// that clears a stranded name -- rather than a "session restart", which
+	// isn't a real operation on a session.
+	if got := h.warningsMatching(fmt.Sprintf("could not be released after %d attempts", runningTurnReleaseRetryLimit)); got != 1 {
+		t.Fatalf("terminal warning with the true attempt count %d = %d matches, want exactly 1", runningTurnReleaseRetryLimit, got)
+	}
+	if got := h.warningsMatching("until it restarts"); got != 0 {
+		t.Fatalf("terminal warning still claims a bare session restart clears the name; only the daemon reloading (forgetRunningTurnNoOneOwns, at load) does")
+	}
+	if got := h.warningsMatching("daemon"); got != 1 {
+		t.Fatalf("terminal warning does not mention the daemon reload/load path that actually clears the stranded name")
+	}
 	// The per-failure diagnostic is latched to the store's unhealthy episode,
 	// like mint's. Warning per re-attempt would cost a hook subprocess apiece.
 	if got := h.warningsMatching("release running turn failed"); got != 1 {
@@ -111,5 +125,86 @@ func TestReleaseRunningTurnIDGivesUpLoudlyWhenTheStoreNeverRecovers(t *testing.T
 	// otherwise: nothing but a restart clears a write the store never took.
 	if got := h.sess.clientMutations.snapshot().ActiveTurnID; got != turnID {
 		t.Fatalf("ActiveTurnID = %q, want the unreleasable %q: the in-memory slot must not diverge from what the store holds", got, turnID)
+	}
+}
+
+// TestReleaseRunningTurnIDResetsRetryBudgetOnExhaustion is issue #150's first
+// residual. The exhaustion branch used to leave runningTurnReleaseRetry at its
+// limit, so a later episode -- the slot cleared by the interrupt path (or any
+// path that lands a write), then a new turn's release hits a failing store --
+// inherited the prior episode's exhaustion: zero retries and an immediate
+// terminal warning whose text was then inaccurate. The exhaustion branch now
+// resets the budget, so the next episode gets its full retry count.
+//
+// Deleting the reset makes this test red: the second episode arms no retry and
+// fires the terminal warning immediately.
+func TestReleaseRunningTurnIDResetsRetryBudgetOnExhaustion(t *testing.T) {
+	h := newStandDownHarness(t)
+	turnID, refusal := h.sess.mintRunningTurnID()
+	if refusal != turnNameMinted || turnID == "" {
+		t.Fatalf("mintRunningTurnID = (%q, %v), want a name for this turn to release", turnID, refusal)
+	}
+
+	// Episode 1: exhaust the budget against a store that never recovers.
+	injected := errors.New("injected client mutation write failure")
+	writes := make(chan struct{}, 64)
+	h.sess.clientMutations.faults.BeforeEffectSnapshotRename = func() error {
+		writes <- struct{}{}
+		return injected
+	}
+	timersBefore := h.clock.BlockedCount()
+	if got := h.sess.releaseRunningTurnID(turnID); got != turnNameReleaseStoreFailed {
+		t.Fatalf("release against a store refusing writes = %v, want turnNameReleaseStoreFailed", got)
+	}
+	<-writes
+	for range runningTurnReleaseRetryLimit {
+		h.clock.BlockUntil(timersBefore + 1)
+		h.clock.Advance(jobNotificationRetryMaxDelay)
+		<-writes
+	}
+	h.awaitWarning(t, "could not be released")
+	if got := h.warningsMatching("could not be released"); got != 1 {
+		t.Fatalf("episode 1 terminal warnings = %d, want 1", got)
+	}
+	if got := h.clock.BlockedCount(); got != timersBefore {
+		t.Fatalf("armed timers after episode 1 exhaustion = %d, want the baseline %d", got, timersBefore)
+	}
+
+	// The store recovers, and the slot is cleared -- the interrupt path lands a
+	// write that drops ActiveTurnID, the same thing forgetRunningTurnNoOneOwns
+	// does at load. Modelled directly: the point is the slot is free again.
+	h.sess.clientMutations.faults.BeforeEffectSnapshotRename = nil
+	if err := h.sess.clientMutations.mutate(func(snapshot *clientMutationSnapshot) error {
+		snapshot.ActiveTurnID = ""
+		return nil
+	}); err != nil {
+		t.Fatalf("clear the stranded slot after the store recovered: %v", err)
+	}
+
+	// A new turn is named from the now-free slot.
+	next, refusal := h.sess.mintRunningTurnID()
+	if refusal != turnNameMinted || next == "" {
+		t.Fatalf("mintRunningTurnID after the slot cleared = (%q, %v), want a fresh name", next, refusal)
+	}
+
+	// Episode 2: the store fails again, and the new turn's release hits it.
+	h.sess.clientMutations.faults.BeforeEffectSnapshotRename = func() error { return injected }
+
+	timersBefore2 := h.clock.BlockedCount()
+	if got := h.sess.releaseRunningTurnID(next); got != turnNameReleaseStoreFailed {
+		t.Fatalf("episode 2 release against a failing store = %v, want turnNameReleaseStoreFailed", got)
+	}
+
+	// The reset is what this test is for: episode 2 gets its full retry budget,
+	// not the zero retries of an inherited exhaustion. A single retry is armed
+	// (the baseline plus one), and no terminal warning fires yet -- the budget
+	// is nowhere near spent.
+	if got := h.clock.BlockedCount(); got != timersBefore2+1 {
+		t.Fatalf("episode 2 armed %d retries, want the baseline %d plus exactly one: the budget was not reset after episode 1's exhaustion, so a later release inherited a spent budget and got zero retries",
+			got, timersBefore2)
+	}
+	if got := h.warningsMatching("could not be released"); got != 1 {
+		t.Fatalf("terminal warnings after episode 2's first failure = %d, want 1 (only episode 1's): an unreset budget emits the exhaustion warning immediately on the first failure of the next episode",
+			got)
 	}
 }

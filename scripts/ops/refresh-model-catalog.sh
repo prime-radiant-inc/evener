@@ -10,8 +10,8 @@
 # sanctioned way to change the vendored file.
 #
 # Usage:
-#   scripts/refresh-model-catalog.sh --check   # dry run: report the delta, write nothing
-#   scripts/refresh-model-catalog.sh           # refresh the snapshot in place
+#   scripts/ops/refresh-model-catalog.sh --check   # dry run: report the delta, write nothing
+#   scripts/ops/refresh-model-catalog.sh           # refresh the snapshot in place
 #
 # After a real refresh: review `git diff --stat llm/data/`, run the full gate,
 # and eyeball the removed-models list below — entries that vanish upstream can

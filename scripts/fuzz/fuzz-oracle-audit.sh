@@ -10,13 +10,13 @@
 # worktree, so a reintroduced bug can never be left behind.
 #
 # Usage:
-#   scripts/fuzz-oracle-audit.sh [--gap-only] [mutation-id ...]
+#   scripts/fuzz/fuzz-oracle-audit.sh [--gap-only] [mutation-id ...]
 #     --gap-only   skip the runs; just list native targets that have no mutation.
 #     mutation-id  audit only these ids (default: every mutation in the manifest).
 #
 # Env seams (defaults are production; used by the self-test):
 #   EVENER_FUZZ_REPO_ROOT  repo root (default: the parent of this script's dir)
-#   EVENER_FUZZ_RUNNER     the registry source (default: scripts/run-fuzz.sh)
+#   EVENER_FUZZ_RUNNER     the registry source (default: scripts/fuzz/run-fuzz.sh)
 #   EVENER_FUZZ_GO         the go toolchain (default: go)
 #   EVENER_FUZZ_TAGS       build tags for the replay (default: evenerfuzz)
 set -uo pipefail

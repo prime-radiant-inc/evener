@@ -1,4 +1,5 @@
 import { describe, expect, test } from "vitest";
+import { ClientNotReadyError } from "../protocol/errors";
 import { resetWorkspaceStoreForTests } from "../shell/workspace";
 import { activityPanelStore } from "./activityPanel";
 import { activitySummaryStore, resetActivitySummaryStoreForTests } from "./activitySummary";
@@ -317,6 +318,88 @@ describe("activitySummaryStore", () => {
 
     expect(firstFailure).toEqual([]);
     expect(queuedFailure).toHaveLength(1);
+  });
+
+  // Issue #195's RCA / friendly-error routing (ConnectionBanner's own
+  // "reconnecting is silent, self-healing" design): with the caller-side
+  // ready-gate in stores/threads.ts (requireReadyClient), a read issued
+  // during an ordinary reconnect doesn't reject at all - its promise simply
+  // stays pending until the client is ready again. So a routine reconnect
+  // reaches neither onFailure nor a "failed" load state here; there is
+  // nothing yet to fail on.
+  test("a fetch still pending mid-reconnect calls neither onFailure nor flips to failed - the routine, self-healing case", async () => {
+    resetActivitySummaryStoreForTests();
+    activityPanelStore.getState().resetForTests();
+    const failures: string[] = [];
+    let resolvePending!: (value: unknown) => void;
+    const pending = new Promise<unknown>((resolve) => {
+      resolvePending = resolve;
+    });
+
+    activitySummaryStore.getState().refreshRoot(
+      "ref_a",
+      1,
+      () => pending,
+      (sentence) => failures.push(sentence),
+    );
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(failures).toEqual([]);
+    expect(activitySummaryStore.getState().entries.get("ref_a")?.loading).toBe(true);
+    expect(activityPanelStore.getState().entries.get("ref_a")?.load?.kind).not.toBe("failed");
+
+    resolvePending({
+      revision: 1,
+      root: {
+        kind: "session",
+        sessionId: "sess_a",
+        ref: "ref_a",
+        label: "A",
+        aggregate: "running",
+        counts: { active: 1, failed: 0, completed: 0, complete: true },
+        entries: [],
+        branch: {},
+      },
+    });
+    await Promise.resolve();
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(failures).toEqual([]);
+    expect(activitySummaryStore.getState().entries.get("ref_a")?.loading).toBe(false);
+  });
+
+  // The genuine counterpart to the above: requireReadyClient's OWN bounded
+  // wait exhausted (ClientNotReadyError, protocol/errors.ts) - the hub is
+  // actually, not just momentarily, unreachable. This must route through
+  // friendlyErrorMessage/errorKind (protocol/errors.ts), the same
+  // classification every other user-facing surface uses, rather than
+  // leaking "threads store: timed out waiting for a ready client after
+  // 15000ms" verbatim into the toast.
+  test("a genuinely hub-unreachable rejection shows the friendly sentence, not raw error text", async () => {
+    resetActivitySummaryStoreForTests();
+    activityPanelStore.getState().resetForTests();
+    const failures: string[] = [];
+    const err = new ClientNotReadyError("threads store: timed out waiting for a ready client after 15000ms");
+
+    activitySummaryStore.getState().refreshRoot(
+      "ref_a",
+      1,
+      () => Promise.reject(err),
+      (sentence) => failures.push(sentence),
+    );
+    await Promise.resolve();
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(failures).toEqual(["Couldn't load activity: Can't reach the hub right now."]);
+    expect(activityPanelStore.getState().entries.get("ref_a")?.load).toMatchObject({
+      kind: "failed",
+      error: {
+        headline: "Couldn't load activity",
+        detail: "Can't reach the hub right now.",
+        sentence: "Couldn't load activity: Can't reach the hub right now.",
+      },
+    });
   });
 
   test("a completion from before eviction cannot publish into a recreated entry", async () => {

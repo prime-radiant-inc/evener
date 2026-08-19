@@ -5,9 +5,9 @@
 # pinpoint the first bad commit, replaying that one corpus entry at each step.
 #
 # Usage:
-#   scripts/fuzz-bisect.sh --target MODULE:FUZZNAME --crasher FILE --good REF [--bad REF]
+#   scripts/fuzz/fuzz-bisect.sh --target MODULE:FUZZNAME --crasher FILE --good REF [--bad REF]
 #     --target   the registry entry "module:FuzzName" whose corpus entry crashes
-#                (one of `scripts/run-fuzz.sh --list`, native targets only).
+#                (one of `scripts/fuzz/run-fuzz.sh --list`, native targets only).
 #     --crasher  path to the Go fuzz corpus file (begins "go test fuzz v1") that
 #                reproduces the crash — typically the file the toolchain saved
 #                under testdata/fuzz/<FuzzName>/ when it found the crasher.
@@ -21,7 +21,7 @@
 #
 # Env seams (defaults are production; used by the self-test):
 #   EVENER_FUZZ_REPO_ROOT  repo root (default: the parent of this script's dir)
-#   EVENER_FUZZ_RUNNER     the registry source (default: scripts/run-fuzz.sh)
+#   EVENER_FUZZ_RUNNER     the registry source (default: scripts/fuzz/run-fuzz.sh)
 #   EVENER_FUZZ_GO         the go toolchain     (default: go)
 #   EVENER_FUZZ_TAGS       build tags for replay (default: evenerfuzz)
 set -uo pipefail

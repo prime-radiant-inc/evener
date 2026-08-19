@@ -162,6 +162,119 @@ func TestExecuteDryRunMakesNoChanges(t *testing.T) {
 	}
 }
 
+func TestExecuteRewritesLegacyPathsAfterMove(t *testing.T) {
+	home := t.TempDir()
+	configBase := filepath.Join(home, ".config")
+	configSrc := filepath.Join(configBase, "serf")
+	pluginsDir := filepath.Join(configSrc, "plugins")
+	if err := os.MkdirAll(pluginsDir, 0o755); err != nil {
+		t.Fatalf("mkdir plugins dir: %v", err)
+	}
+	legacyMarketplaceDir := filepath.Join(configSrc, "plugins", "marketplaces", "acme")
+	registry := `{"acme":{"installLocation":"` + legacyMarketplaceDir + `"}}`
+	if err := os.WriteFile(filepath.Join(pluginsDir, "known_marketplaces.json"), []byte(registry), 0o600); err != nil {
+		t.Fatalf("write known_marketplaces.json: %v", err)
+	}
+
+	var stdout, stderr bytes.Buffer
+	code := execute(baseOpts(home, t.TempDir()), &stdout, &stderr)
+	if code != 0 {
+		t.Fatalf("code = %d, want 0; stderr = %q", code, stderr.String())
+	}
+
+	dstFile := filepath.Join(configBase, "evener", "plugins", "known_marketplaces.json")
+	got, err := os.ReadFile(dstFile)
+	if err != nil {
+		t.Fatalf("reading migrated registry: %v", err)
+	}
+	wantMarketplaceDir := filepath.Join(configBase, "evener", "plugins", "marketplaces", "acme")
+	want := `{"acme":{"installLocation":"` + wantMarketplaceDir + `"}}`
+	if string(got) != want {
+		t.Fatalf("migrated registry = %q, want %q", got, want)
+	}
+	if !strings.Contains(stdout.String(), "rewrote 1 path reference(s) in "+dstFile) {
+		t.Fatalf("stdout = %q, want a rewrite logged for %s", stdout.String(), dstFile)
+	}
+}
+
+func TestExecuteRerunRepairsAlreadyMigratedTree(t *testing.T) {
+	home := t.TempDir()
+	configBase := filepath.Join(home, ".config")
+	// Simulate a machine that already ran evener-migrate: .config/evener
+	// exists (so migrate() will skip the move), but the registry inside it
+	// still has the stale .config/serf path from before that first run.
+	pluginsDir := filepath.Join(configBase, "evener", "plugins")
+	if err := os.MkdirAll(pluginsDir, 0o755); err != nil {
+		t.Fatalf("mkdir plugins dir: %v", err)
+	}
+	legacyMarketplaceDir := filepath.Join(configBase, "serf", "plugins", "marketplaces", "acme")
+	registry := `{"acme":{"installLocation":"` + legacyMarketplaceDir + `"}}`
+	regFile := filepath.Join(pluginsDir, "known_marketplaces.json")
+	if err := os.WriteFile(regFile, []byte(registry), 0o600); err != nil {
+		t.Fatalf("write known_marketplaces.json: %v", err)
+	}
+
+	var stdout, stderr bytes.Buffer
+	code := execute(baseOpts(home, t.TempDir()), &stdout, &stderr)
+	if code != 0 {
+		t.Fatalf("code = %d, want 0; stderr = %q", code, stderr.String())
+	}
+
+	got, err := os.ReadFile(regFile)
+	if err != nil {
+		t.Fatalf("reading registry: %v", err)
+	}
+	wantMarketplaceDir := filepath.Join(configBase, "evener", "plugins", "marketplaces", "acme")
+	want := `{"acme":{"installLocation":"` + wantMarketplaceDir + `"}}`
+	if string(got) != want {
+		t.Fatalf("registry after re-run = %q, want %q (repaired in place)", got, want)
+	}
+	if !strings.Contains(stdout.String(), "rewrote 1 path reference(s) in "+regFile) {
+		t.Fatalf("stdout = %q, want a rewrite logged for %s", stdout.String(), regFile)
+	}
+
+	// Re-running again must be idempotent: no further rewrites reported.
+	var stdout2, stderr2 bytes.Buffer
+	code2 := execute(baseOpts(home, t.TempDir()), &stdout2, &stderr2)
+	if code2 != 0 {
+		t.Fatalf("second re-run code = %d, want 0; stderr = %q", code2, stderr2.String())
+	}
+	if strings.Contains(stdout2.String(), "rewrote") {
+		t.Fatalf("second re-run stdout = %q, want no further rewrites", stdout2.String())
+	}
+}
+
+func TestExecuteDryRunDoesNotRewriteContent(t *testing.T) {
+	home := t.TempDir()
+	configBase := filepath.Join(home, ".config")
+	configSrc := filepath.Join(configBase, "serf", "plugins")
+	if err := os.MkdirAll(configSrc, 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	legacyMarketplaceDir := filepath.Join(configBase, "serf", "plugins", "marketplaces", "acme")
+	registry := `{"acme":{"installLocation":"` + legacyMarketplaceDir + `"}}`
+	regFile := filepath.Join(configSrc, "known_marketplaces.json")
+	if err := os.WriteFile(regFile, []byte(registry), 0o600); err != nil {
+		t.Fatalf("write known_marketplaces.json: %v", err)
+	}
+
+	opts := baseOpts(home, t.TempDir())
+	opts.dryRun = true
+	var stdout, stderr bytes.Buffer
+	code := execute(opts, &stdout, &stderr)
+	if code != 0 {
+		t.Fatalf("code = %d, want 0; stderr = %q", code, stderr.String())
+	}
+
+	got, err := os.ReadFile(regFile)
+	if err != nil {
+		t.Fatalf("reading registry: %v", err)
+	}
+	if string(got) != registry {
+		t.Fatalf("dry-run modified content: got %q, want unchanged %q", got, registry)
+	}
+}
+
 func TestExecuteMigratesXDGConfigAndState(t *testing.T) {
 	home := t.TempDir()
 	configBase := filepath.Join(home, ".config")

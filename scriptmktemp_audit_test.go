@@ -23,7 +23,8 @@ import (
 // The consequence is not cosmetic. The dev-tooling wave gives each suite its own
 // TMPDIR and fails a suite that leaves anything behind, so a script whose scratch
 // escapes to the Darwin directory sits outside BOTH the isolation and the leak
-// check. scripts/test-coverage-floor.sh leaked one directory per run that way —
+// check. scripts/coverage/test-coverage-floor.sh (now deleted, replaced by
+// evener-dev coverage-floor) leaked one directory per run that way —
 // including one per run of its own selftest, which asserted `ls -A "$tmphome"`
 // was empty and passed by inspecting a directory the scratch never entered. 56
 // abandoned directories holding 1.5GB accumulated before anyone looked.
@@ -60,10 +61,10 @@ func mktempEscapesTMPDIR(call string) bool {
 var mktempAllowedScripts = map[string]bool{
 	"e2e-cover.sh":           true,
 	"fuzz-bisect.sh":         true,
-	"fuzz-gap-check.sh":           true,
-	"fuzz-oracle-audit.sh":        true,
-	"fuzz-registry-check.sh":      true,
-	"fuzz-triage.sh":              true,
+	"fuzz-gap-check.sh":      true,
+	"fuzz-oracle-audit.sh":   true,
+	"fuzz-registry-check.sh": true,
+	"fuzz-triage.sh":         true,
 }
 
 // scriptShellFiles returns every .sh file under scripts/, recursively. The

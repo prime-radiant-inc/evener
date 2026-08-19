@@ -19,9 +19,9 @@
 # talk to it over CDP on the port it prints.
 #
 # Usage:
-#   eval "$(scripts/agent-chrome.sh <name>)"   # exports AGENT_CHROME_PORT
-#   scripts/agent-chrome.sh <name> --port-only # just print the port
-#   scripts/agent-chrome.sh --kill <name>      # shut yours down
+#   eval "$(scripts/ops/agent-chrome.sh <name>)"   # exports AGENT_CHROME_PORT
+#   scripts/ops/agent-chrome.sh <name> --port-only # just print the port
+#   scripts/ops/agent-chrome.sh --kill <name>      # shut yours down
 #
 # <name> should be your worktree or branch name. git guarantees it is unique,
 # which is the whole point — a name derived from a shared wave prefix is how

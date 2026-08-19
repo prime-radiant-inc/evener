@@ -14,11 +14,11 @@
 # real provider credentials) under the same GOCOVERDIR.
 #
 # USAGE:
-#   scripts/e2e-cover.sh                 # CLI battery, print cmd/* coverage
-#   scripts/e2e-cover.sh --merge-unit    # also run unit tests, print COMBINED %
-#   scripts/e2e-cover.sh --tui           # also run the tmux TUI battery (slow)
-#   scripts/e2e-cover.sh --html OUT.html # write an HTML coverage report
-#   EVENER_E2E_LIVE=1 scripts/e2e-cover.sh # additionally run live provider scripts
+#   scripts/coverage/e2e-cover.sh                 # CLI battery, print cmd/* coverage
+#   scripts/coverage/e2e-cover.sh --merge-unit    # also run unit tests, print COMBINED %
+#   scripts/coverage/e2e-cover.sh --tui           # also run the tmux TUI battery (slow)
+#   scripts/coverage/e2e-cover.sh --html OUT.html # write an HTML coverage report
+#   EVENER_E2E_LIVE=1 scripts/coverage/e2e-cover.sh # additionally run live provider scripts
 #
 # OUTPUT: a merged textfmt profile (path printed) + a per-package cmd/* summary.
 # The profile is combinable with the unit profile (union) via --merge-unit.
