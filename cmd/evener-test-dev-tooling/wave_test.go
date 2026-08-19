@@ -567,50 +567,34 @@ func TestReadFifoLineGraceFollowsTheTestDeadline(t *testing.T) {
 	}
 }
 
-// TestGreenWaveReapsForkedDescendant is a RED test for issue #161.
-//
-// runSuite only sends TERM/KILL to the suite's process group on the
-// interruption (shutdown) path. On a green exit it reaps only the direct
-// child via cmd.Wait() and never touches the group, so a descendant that
-// outlives the suite shell — reparented to pid 1 but still a member of the
-// suite's process group — survives the wave as an orphan. Under concurrent
-// selftest load this leaks real `go test` processes and `sleep` fixtures.
-//
-// This test is deterministic (not load-dependent): the suite forks a
-// long-lived descendant, records its pid, and exits 0. The wave completes
-// green, and the test asserts the descendant is gone. With the current code
-// the descendant is still alive, so this test FAILS (red). A fix that
-// group-kills on green exit too turns it green.
-func TestGreenWaveReapsForkedDescendant(t *testing.T) {
-	dir := t.TempDir()
-	pidFile := filepath.Join(dir, "descendant.pid")
+// forkSurvivorSuite writes a suite whose subshell forks a long-lived
+// descendant and records its pid, then exits with the given status. The
+// subshell exits immediately, so `sleep` is reparented to pid 1 but remains
+// in the suite's process group. The pid lands outside the suite's private
+// TMPDIR so the temp-file leak check plays no part in these tests.
+func forkSurvivorSuite(t *testing.T, dir, name, pidFile, exit string) {
+	t.Helper()
+	writeSuite(t, dir, name, "( sleep 120 & echo $! >"+pidFile+" )\nexit "+exit+"\n")
+}
 
-	// The suite forks a long-lived descendant that outlives the suite
-	// shell: the subshell exits immediately, `sleep` is reparented to pid
-	// 1 but remains in the suite's process group. The suite then exits 0
-	// (green). The pid is recorded outside the suite's private TMPDIR so
-	// the leak check never sees it and the wave stays green.
-	body := "( sleep 120 & echo $! >" + pidFile + " )\nexit 0\n"
-	writeSuite(t, dir, "orphan", body)
-
-	var out bytes.Buffer
-	code := runWave(waveConfig{ScriptsDir: dir, Suites: []string{"orphan"}, KillGrace: time.Second, Out: &out})
-	if code != 0 {
-		t.Fatalf("wave exited %d, want 0 (green); output:\n%s", code, out.String())
-	}
-
+// recordedSurvivorPid reads the pid a forkSurvivorSuite fixture recorded and
+// registers a cleanup KILL so a red run of the test never leaves a
+// two-minute sleep behind in CI.
+func recordedSurvivorPid(t *testing.T, pidFile string) int {
+	t.Helper()
 	pidStr := readTrimmed(t, pidFile)
 	pid, err := strconv.Atoi(pidStr)
 	if err != nil {
 		t.Fatalf("descendant did not record a numeric pid (got %q): %v", pidStr, err)
 	}
-
-	// Always clean up the leaked descendant so a red run does not leave a
-	// two-minute sleep behind in CI.
 	t.Cleanup(func() { _ = syscall.Kill(pid, syscall.SIGKILL) })
+	return pid
+}
 
-	// Give the OS a brief window in which a fix that group-kills on green
-	// exit would have reaped the descendant, then assert it is gone.
+// requireReaped asserts the descendant is gone (fully reaped, so no orphan at
+// ppid 1 either), giving the OS a brief window to finish the kill.
+func requireReaped(t *testing.T, pid int, out *bytes.Buffer) {
+	t.Helper()
 	deadline := time.Now().Add(3 * time.Second)
 	for {
 		if err := syscall.Kill(pid, 0); err == syscall.ESRCH {
@@ -623,7 +607,56 @@ func TestGreenWaveReapsForkedDescendant(t *testing.T) {
 		}
 		time.Sleep(50 * time.Millisecond)
 	}
-
-	t.Fatalf("issue #161: green wave leaked an orphaned descendant (pid %d) still alive after runWave returned 0; wave output:\n%s",
+	t.Fatalf("issue #161: wave leaked an orphaned descendant (pid %d) still alive after runWave returned; wave output:\n%s",
 		pid, out.String())
+}
+
+// TestGreenWaveReapsForkedDescendant pins both halves of issue #161's
+// done-when for a green exit: a suite that exits 0 but leaves a live process
+// in its process group must have that process killed AND must fail the wave
+// loudly — the process-group counterpart of the leaked-temp-files check.
+// Killing silently would leave the leaking suite's bug invisible forever.
+func TestGreenWaveReapsForkedDescendant(t *testing.T) {
+	dir := t.TempDir()
+	pidFile := filepath.Join(dir, "descendant.pid")
+	forkSurvivorSuite(t, dir, "orphan", pidFile, "0")
+
+	var out bytes.Buffer
+	code := runWave(waveConfig{ScriptsDir: dir, Suites: []string{"orphan"}, KillGrace: time.Second, Out: &out})
+	pid := recordedSurvivorPid(t, pidFile)
+
+	if code != 1 {
+		t.Fatalf("wave exited %d, want 1: a suite that leaks a live process must fail the wave; output:\n%s",
+			code, out.String())
+	}
+	if !strings.Contains(out.String(), "FAIL  orphan") {
+		t.Fatalf("leaking suite must be reported FAIL:\n%s", out.String())
+	}
+	if !strings.Contains(out.String(), "orphan passed but left process(es) alive in its process group") {
+		t.Fatalf("loud process-leak diagnosis naming the suite is missing:\n%s", out.String())
+	}
+	requireReaped(t, pid, &out)
+}
+
+// TestRedWaveReapsForkedDescendant pins the other exit path of issue #161: a
+// suite that fails on its own (nonzero exit, no shutdown signal) must still
+// have its process group swept — the done-when says no process rooted in any
+// run's tree survives its run's exit, not only green ones. The suite is
+// already red on its own exit code; the sweep just guarantees no survivor.
+func TestRedWaveReapsForkedDescendant(t *testing.T) {
+	dir := t.TempDir()
+	pidFile := filepath.Join(dir, "descendant.pid")
+	forkSurvivorSuite(t, dir, "redleak", pidFile, "1")
+
+	var out bytes.Buffer
+	code := runWave(waveConfig{ScriptsDir: dir, Suites: []string{"redleak"}, KillGrace: time.Second, Out: &out})
+	pid := recordedSurvivorPid(t, pidFile)
+
+	if code != 1 {
+		t.Fatalf("wave exited %d, want 1; output:\n%s", code, out.String())
+	}
+	if !strings.Contains(out.String(), "FAIL  redleak") {
+		t.Fatalf("missing FAIL redleak:\n%s", out.String())
+	}
+	requireReaped(t, pid, &out)
 }

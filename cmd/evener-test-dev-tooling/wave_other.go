@@ -24,3 +24,7 @@ func killSuiteGroup(pgid int) {
 		_ = proc.Kill()
 	}
 }
+
+// suiteGroupSurvivors has no group to probe on this platform; the direct
+// child is all there is, and cmd.Wait() already reaped it.
+func suiteGroupSurvivors(int) []string { return nil }
