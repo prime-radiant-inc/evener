@@ -1,4 +1,4 @@
-.PHONY: build build-runtime build-go build-hub web-preflight build-web test-web test-web-browser build-tui build-doctor build-all build-linux build-namingcheck build-migrate dist install install-home install-system test test-short test-full test-fuzz test-race merge-approval-gate vet lint lint-naming lint-gofmt lint-evenerfuzz lint-eval lint-internal lint-docs lint-golangci clean fuzz fuzz-seeds fuzz-nightly fuzz-triage fuzz-continuous fuzz-coverage-global fuzz-bisect fuzz-oracle-audit fuzz-mutation-score fuzz-ledger fuzz-coverage fuzz-gap-check fuzz-registry-check fuzz-goldens secret-scan fuzz-corpus-scan refresh-model-catalog test-coverage-floor web-coverage-floor coverage-gaps coverage-union merge-into-branch test-rebaseline
+.PHONY: build build-runtime build-go build-hub web-preflight build-web test-web test-web-browser build-tui build-doctor build-all build-linux build-namingcheck build-llmcall build-migrate dist install install-home install-system test test-full test-fuzz test-race merge-approval-gate vet lint lint-naming lint-gofmt lint-evenerfuzz lint-eval lint-internal lint-docs lint-golangci lint-generated generate clean fuzz fuzz-seeds fuzz-nightly fuzz-triage fuzz-continuous fuzz-coverage-global fuzz-bisect fuzz-oracle-audit fuzz-mutation-score mutation-floor fuzz-ledger fuzz-coverage fuzz-gap-check fuzz-registry-check fuzz-goldens secret-scan fuzz-corpus-scan refresh-model-catalog test-coverage-floor test-install web-coverage-floor coverage-gaps coverage-union merge-into-branch
 
 LDFLAGS := -X primeradiant.com/evener/buildinfo.GitSHA=$$(git rev-parse --short HEAD) \
            -X primeradiant.com/evener/buildinfo.GitDirty=$$(git --no-optional-locks diff-files --quiet && echo "" || echo "true") \
@@ -39,8 +39,6 @@ build-hub: build-runtime
 
 # web-preflight owns the frontend node_modules install for every web target,
 # so build-web and test-web share one definition of "the install is ready".
-# The install rules and the two guards they exist for live in the script;
-# scripts/web/web-preflight-selftest.sh exercises them against throwaway trees.
 web-preflight:
 	@NODE_DISABLE_COMPILE_CACHE=1 scripts/web/web-preflight.sh
 
@@ -225,12 +223,13 @@ endif
 # persisted Go configuration or GOFLAGS, and always use this checkout's workspace.
 override FUZZ_GOWORK := $(abspath $(CURDIR)/go.work)
 
-# test runs the Go test suites across all workspace modules. The gate runs
-# ordinary Test/Example functions only (native Fuzz targets and fuzz-designated
-# Test* functions are excluded — they run under `make fuzz`). The frontend gate
-# is separate (`make test-web`); the merge-approval-gate runs both.
+# test runs the Go test suites across all workspace modules with -short. The
+# gate runs ordinary Test/Example functions only (native Fuzz targets and
+# fuzz-designated Test* functions are excluded — they run under `make fuzz`).
+# The frontend gate is separate (`make test-web`); merge-approval-gate runs
+# both.
 #
-# ROOT_FULL=1 drops -short so the e2e/live tests in cmd/evener-hub and
+# test-full drops -short so the e2e/live tests in cmd/evener-hub and
 # cmd/evener-tui run (they gate on testing.Short()). EVENER_GATE_CAPABILITY_SKIP,
 # when set by the capability preflight, adds sandbox-blocked test patterns to
 # the root module's -skip.
@@ -240,9 +239,6 @@ GATE_SKIP := \(SeqFuzz\|SchemaFuzz\|Structured.*Reach\|LifecycleAdapter\|ToolArg
 
 test:
 	@go test -run '$(GATE_RUN)' -skip '$(GATE_SKIP)' -short -count=1 $(GO_TEST_MODULES)
-
-test-short:
-	@$(MAKE) test
 
 test-race:
 	@go test -race -run '$(GATE_RUN)' -skip '$(GATE_SKIP)' -short -count=1 $(GO_TEST_MODULES)
@@ -265,7 +261,7 @@ test-fuzz:
 #
 # The capability preflight (evener-dev capability-preflight) classifies
 # sandbox-sensitive host capabilities ONCE, before any phase runs, and
-# exports EVENER_GATE_CAPABILITY_SKIP so ROOT_FULL=1 make test skips exactly
+# exports EVENER_GATE_CAPABILITY_SKIP so make test-full skips exactly
 # the known-infeasible live/e2e tests instead of repeatedly failing into
 # them.
 merge-approval-gate:
@@ -552,4 +548,4 @@ LINT_TARGETS := lint-naming lint-gofmt lint-evenerfuzz lint-eval lint-internal l
 lint: $(LINT_TARGETS)
 
 clean:
-	rm -f evener evener-hub evener-tui evener-doctor llmcall evener-namingcheck evener-internalcheck evener-fuzzcov evener-migrate
+	rm -f evener evener-hub evener-tui evener-doctor evener-migrate llmcall evener-namingcheck evener-linux-amd64
