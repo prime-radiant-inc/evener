@@ -33,11 +33,11 @@ type MutationReport struct {
 	InputQueue    []QueuedInputView    `json:"input_queue"`
 	// QueueHeld reports a queue parked by a Stop: the entries above are real and
 	// nothing will claim them until the user asks (kata wms7).
-	QueueHeld         bool                   `json:"queue_held"`
+	QueueHeld bool `json:"queue_held"`
 	// SteeringHeld reports pending user steering parked by a Stop: the steer
 	// stays in pending executions and nothing delivers it until the user asks
 	// (issue #174, #146 Option C — park in place).
-	SteeringHeld       bool                   `json:"steering_held"`
+	SteeringHeld      bool                   `json:"steering_held"`
 	PendingExecutions []PendingExecutionView `json:"pending_executions"`
 }
 

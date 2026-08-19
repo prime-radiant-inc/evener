@@ -183,7 +183,7 @@ type clientMutationSnapshot struct {
 	// process-local mirror -- the first attempt at this kata had one and the
 	// review found it drifting on three of four writers, across restarts, and on
 	// a rejected promote.
-	QueueHeld              bool                                       `json:"queue_held,omitempty"`
+	QueueHeld bool `json:"queue_held,omitempty"`
 	// SteeringHeld parks pending user steering after a Stop, mirroring QueueHeld
 	// (issue #174): a Stop that lands at a turn boundary is Applied, and without
 	// this gate the still-OPEN steering rail restarts the session and delivers the
