@@ -17,6 +17,25 @@ const WIDTHS = [390, 899, 900];
 // measured at the widest the product allows it to get.
 const STAGED_ATTACHMENTS = 8;
 const TILE_PX = 80;
+// tokens.css's --tap-min, the platform touch floor the widgets' own phone
+// blocks apply (2026-07-30-mobile-session-layout-design.md, decision 4).
+const TAP_MIN_PX = 44;
+
+// Sub-pixel layout rounding, not a fudge factor - the same 1px slack every
+// other geometric comparison in this file already allows.
+function contains(parent, child) {
+  return (
+    child.left >= parent.left - 1 &&
+    child.top >= parent.top - 1 &&
+    child.right <= parent.right + 1 &&
+    child.bottom <= parent.bottom + 1
+  );
+}
+
+function describeBox(box) {
+  if (box === null) return "missing";
+  return `${box.left.toFixed(1)},${box.top.toFixed(1)} ${box.width.toFixed(1)}x${box.height.toFixed(1)}`;
+}
 
 async function measureAt(cdpPort, vitePort, width) {
   const page = await connectPage(cdpPort);
@@ -78,16 +97,76 @@ function assertResult(result, expectedWidth) {
   if (visible(result.mobileIntro) !== mobile)
     failures.push(`prompt orientation visibility is wrong at ${expectedWidth}px`);
 
+  // Issue #198: the prompt card is the composer, so its control row holds the
+  // composer's controls in the composer's place - at EVERY width, which is why
+  // this block is outside the mobile branch. The pane used to pass PromptCard a
+  // class that spawn.module.css turned into `position: fixed; bottom: 0` inside
+  // its 899px block: the row left the card and became a page-level band with the
+  // attach button stranded at the foot of the screen, nowhere near the prompt.
+  const card = result.promptCard;
+  if (card.card === null || card.controls === null) {
+    failures.push(`the prompt card or its control row is missing: ${JSON.stringify(card)}`);
+  } else {
+    if (card.controls.position === "fixed") {
+      failures.push(`the control row is position: fixed at ${expectedWidth}px - a viewport band, not the card's row`);
+    }
+    for (const [name, box] of [
+      ["control row", card.controls],
+      ["attach button", card.attach],
+      ["Start button", card.submit],
+    ]) {
+      if (box === null) {
+        failures.push(`the ${name} is not in the measured tree`);
+      } else if (!contains(card.card, box)) {
+        failures.push(`the ${name} (${describeBox(box)}) is outside the prompt card (${describeBox(card.card)})`);
+      }
+    }
+    // The attach button belongs in the row BENEATH the writing surface, not
+    // overlaid on its corner where typed text runs under it - the placement
+    // PR #242 tried and this pane rejected.
+    if (card.attach !== null && card.field !== null && card.attach.top < card.field.bottom - 1) {
+      failures.push(
+        `the attach button (${describeBox(card.attach)}) overlaps the prompt field (${describeBox(card.field)})`,
+      );
+    }
+    // The card's model trigger is the PHONE's Model field: desktop sets the
+    // model in the configuration row below, so an in-card trigger there would
+    // be a second control for one setting.
+    if (visible(card.modelSlot) !== mobile) {
+      failures.push(`the card's model trigger visibility is wrong at ${expectedWidth}px`);
+    }
+    if (mobile) {
+      if (card.modelTrigger === null) {
+        failures.push("the card's model trigger is not in the measured tree at a mobile width");
+      } else if (!contains(card.card, card.modelTrigger)) {
+        failures.push(
+          `the card's model trigger (${describeBox(card.modelTrigger)}) is outside the prompt card (${describeBox(card.card)})`,
+        );
+      }
+    }
+  }
+
   if (mobile) {
-    const action = result.actionBand;
-    if (action.position !== "fixed") failures.push(`action band position is ${action.position}, expected fixed`);
-    if (Math.abs(action.left) > 1 || Math.abs(action.bottom) > 1 || Math.abs(action.right - expectedWidth) > 1) {
-      failures.push(`action band is not viewport-pinned: ${JSON.stringify(action)}`);
+    // The tap floor the deleted action band used to hard-code now comes from
+    // the widgets' own phone blocks (button.module.css / iconbutton.module.css,
+    // both keyed to --tap-min). Measured, not assumed: that is the whole reason
+    // deleting the band was safe.
+    for (const [name, box] of [
+      ["attach button", card.attach],
+      ["Start button", card.submit],
+    ]) {
+      if (box !== null && box.height < TAP_MIN_PX - 0.5) {
+        failures.push(`the ${name} is ${box.height}px tall, below the ${TAP_MIN_PX}px touch floor`);
+      }
     }
-    if (action.width < expectedWidth - 1 || Number.parseFloat(action.minHeight) < 76 || action.height < 76) {
-      failures.push(`action band geometry is too small: ${JSON.stringify(action)}`);
+    if (card.attach !== null && card.attach.width < TAP_MIN_PX - 0.5) {
+      failures.push(`the attach button is ${card.attach.width}px wide, below the ${TAP_MIN_PX}px touch floor`);
     }
-    if (result.rows.length !== 6) failures.push(`expected 6 mobile setting rows, found ${result.rows.length}`);
+    // Model left this list for the card (issue #198), so five rows, not six.
+    if (result.rows.length !== 5) failures.push(`expected 5 mobile setting rows, found ${result.rows.length}`);
+    if (result.rows.some((row) => row.label === "Model")) {
+      failures.push("the mobile setting rows still carry a Model row - the prompt card owns that setting now");
+    }
     for (const row of result.rows) {
       if (row.minHeight !== "48px" || row.height < 48)
         failures.push(`row ${row.label} is below 48px: ${JSON.stringify(row)}`);
@@ -105,8 +184,6 @@ function assertResult(result, expectedWidth) {
     ) {
       failures.push(`prompt orientation is not persistently accessible: ${JSON.stringify(prompt)}`);
     }
-  } else {
-    if (result.actionBand.position === "fixed") failures.push("desktop action band unexpectedly remains fixed");
   }
 
   // Staged attachments (kata 289v). The harness stages them through the
@@ -201,7 +278,7 @@ async function main() {
       const failures = assertResult(result, width);
       if (failures.length === 0) {
         console.log(
-          `${width}px ... PASS - Spawn breakpoint, action band, rows, accessibility, ${STAGED_ATTACHMENTS} staged attachment tiles, and overflow`,
+          `${width}px ... PASS - Spawn breakpoint, in-card control row, rows, accessibility, ${STAGED_ATTACHMENTS} staged attachment tiles, and overflow`,
         );
       } else {
         failed++;

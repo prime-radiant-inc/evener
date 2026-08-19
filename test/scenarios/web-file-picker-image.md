@@ -195,7 +195,7 @@ combobox, as a real gesture.
   (`SID` is a 22-character UUIDv7 base62 payload). Falsify: it stays on
   `/new` with an error toast in
   `section[aria-live="polite"][aria-label="Notifications"]` — most
-  usefully `Image attachment is still processing.` (`Spawn.tsx:613`,
+  usefully `Image attachment is still processing.` (`Spawn.tsx:615`,
   the `hasPending` submit gate) or a `Spawn failed: …` line.
 - **Step 6 (composer staging)**: `view` is `View red.png`, `remove` is
   `Remove red.png`, `thumbSrc` starts `data:image/png;base64,`

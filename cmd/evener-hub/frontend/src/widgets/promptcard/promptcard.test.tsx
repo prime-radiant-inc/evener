@@ -7,6 +7,7 @@ import { useState } from "react";
 import { afterEach, expect, test } from "vitest";
 import { Textarea } from "../textarea";
 import { PromptCard } from "./index";
+import promptCardStyles from "./promptcard.module.css";
 
 afterEach(cleanup);
 
@@ -20,7 +21,6 @@ function LiveCard(props: {
   leading?: React.ReactNode;
   actions?: React.ReactNode;
   hidden?: boolean;
-  controlsClassName?: string;
   controlsTestId?: string;
 }) {
   const [value, setValue] = useState("");
@@ -28,7 +28,6 @@ function LiveCard(props: {
     <PromptCard
       data-testid="card"
       hidden={props.hidden}
-      controlsClassName={props.controlsClassName}
       controlsTestId={props.controlsTestId}
       leading={props.leading}
       actions={props.actions}
@@ -75,17 +74,20 @@ test("renders the caller's leading and action controls", () => {
   expect(screen.getByRole("button", { name: "Send" })).toBeTruthy();
 });
 
+// The control row is the card's own, and only the card styles it: a caller
+// hook that let one reach in and restyle the row is how spawn turned it into a
+// fixed viewport band on a phone, stranding the attach button at the bottom of
+// the screen (issue #198). Callers get a testid and their own controls.
 test("forwards the caller's control-row hook without changing its child order", () => {
   render(
     <LiveCard
-      controlsClassName="mobile-action-band"
       controlsTestId="controls"
       leading={<button type="button">Attach</button>}
       actions={<button type="button">Send</button>}
     />,
   );
 
-  expect(screen.getByTestId("controls").className).toContain("mobile-action-band");
+  expect(screen.getByTestId("controls").className).toBe(promptCardStyles.controls);
   expect(screen.getByTestId("controls").querySelectorAll("button")).toHaveLength(2);
 });
 

@@ -636,11 +636,20 @@ facts (`status-row-effort`, `status-row-context`, `status-row-cost`,
 `[data-testid="model-switch-trigger"]` / `[data-testid="model-switch-value"]`,
 `[data-testid="goal-popover"]`, `[data-testid="task-row"]`.
 
-**Spawn** (`panes/spawn/Spawn.tsx`): `[data-testid="spawn-prompt-card"]`,
+**Spawn** (`panes/spawn/Spawn.tsx`): `[data-testid="spawn-prompt-card"]`
+and its control row `[data-testid="spawn-controls"]`,
 `[data-testid="spawn-submit"]`, `[data-testid="spawn-attach"]`,
-`[data-testid="spawn-branch"]`. The model picker is the shared ARIA
-combobox in `widgets/modelCatalog/` — `role="option"` rows, not the
-legacy `.chip-picker-*` classes.
+`[data-testid="spawn-branch"]`. Two model controls, and only one of them
+is ever on screen: `[data-testid="spawn-desktop-model"]` wraps the
+desktop Model field's `ModelCatalog` trigger, while
+`[data-testid="spawn-model-trigger"]` (readout
+`[data-testid="spawn-model-value"]`) is the prompt card's own
+`ModelSwitchTrigger`, which the phone uses and a desktop width hides
+behind `[data-testid="spawn-model-slot"]`. Both carry the `— change
+model` screen-reader suffix, so address them by testid or filter on
+`offsetParent`. The picker itself is the shared ARIA combobox in
+`widgets/modelCatalog/` — `role="option"` rows, not the legacy
+`.chip-picker-*` classes.
 
 **Toasts** are the error channel for actions that fail without a
 dedicated surface: `section[aria-live="polite"][aria-label="Notifications"]`
