@@ -4,7 +4,7 @@
 # bounded search turn, round after round, until a total budget elapses or you
 # Ctrl-C. There is no scheduled CI: you start it when you want and stop it when
 # you want. Each turn delegates the actual search + crash triage to
-# scripts/fuzz-triage.sh, so a new DETERMINISTIC crash is flake-guarded,
+# scripts/fuzz/fuzz-triage.sh, so a new DETERMINISTIC crash is flake-guarded,
 # deduped, and turned into exactly one human-reviewable PR — the same pipeline
 # as a one-shot triage, just driven continuously.
 #
@@ -14,7 +14,7 @@
 # target progressing instead of spending the whole budget on the first one.
 #
 # Usage:
-#   scripts/fuzz-continuous.sh [--total DUR] [--time DUR] [--sweep]
+#   scripts/fuzz/fuzz-continuous.sh [--total DUR] [--time DUR] [--sweep]
 #                              [--max-turns N] [--dry-run] [--no-pr] [target ...]
 #     --total DUR    total wall-clock budget for the whole session (e.g. 2h, 90m,
 #                    3600s). Default: unlimited — runs until interrupted.
@@ -28,7 +28,7 @@
 #                    writes and no PR.
 #     --no-pr        pass through to fuzz-triage (and fuzz-drive): commit to a
 #                    local branch but do not push / open a PR.
-#     --drive-every N  every N turns, run scripts/fuzz-drive.sh to refresh the
+#     --drive-every N  every N turns, run scripts/fuzz/fuzz-drive.sh to refresh the
 #                    seed corpus from real provider traffic (LIVE, paid calls;
 #                    default off). Honors --no-pr (inspect-first) and --dry-run
 #                    (record without harvesting).
@@ -44,16 +44,16 @@
 # corpus), and the loop prints a session summary before exiting.
 #
 # Real-traffic corpus refresh (Plan 12 Phase E): with --drive-every N, every N
-# turns the loop runs scripts/fuzz-drive.sh to drive the real evener CLI against a
+# turns the loop runs scripts/fuzz/fuzz-drive.sh to drive the real evener CLI against a
 # provider, harvest the recorded traffic into seeds, and (unless --no-pr) open a
 # corpus PR — so the seed corpus keeps deepening from real provider shapes, not
 # just coverage-guided mutation. Default off (driving makes live, paid calls).
 #
 # Env seams (defaults are the production values; used by the self-test):
 #   EVENER_FUZZ_REPO_ROOT  repo root (default: the parent of this script's dir)
-#   EVENER_FUZZ_RUNNER     the registry source (default: scripts/run-fuzz.sh)
-#   EVENER_FUZZ_TRIAGE     the per-turn engine  (default: scripts/fuzz-triage.sh)
-#   EVENER_FUZZ_DRIVE      the corpus driver    (default: scripts/fuzz-drive.sh)
+#   EVENER_FUZZ_RUNNER     the registry source (default: scripts/fuzz/run-fuzz.sh)
+#   EVENER_FUZZ_TRIAGE     the per-turn engine  (default: scripts/fuzz/fuzz-triage.sh)
+#   EVENER_FUZZ_DRIVE      the corpus driver    (default: scripts/fuzz/fuzz-drive.sh)
 set -uo pipefail
 
 repo_root="${EVENER_FUZZ_REPO_ROOT:-$(cd "$(dirname "$0")/../.." && pwd)}"

@@ -24,13 +24,13 @@
 # in a log whose path is printed, rather than discarding it.
 #
 # Usage:
-#   scripts/test-coverage-floor.sh                     # measure + print (all modules)
-#   scripts/test-coverage-floor.sh --check             # ratchet: exit non-zero on a drop
-#   scripts/test-coverage-floor.sh --bless             # raise floors to current %
-#   scripts/test-coverage-floor.sh --modules "agent llm"
-#   scripts/test-coverage-floor.sh --tolerance 0.5     # wobble band (default 0.5pp)
+#   scripts/coverage/test-coverage-floor.sh                     # measure + print (all modules)
+#   scripts/coverage/test-coverage-floor.sh --check             # ratchet: exit non-zero on a drop
+#   scripts/coverage/test-coverage-floor.sh --bless             # raise floors to current %
+#   scripts/coverage/test-coverage-floor.sh --modules "agent llm"
+#   scripts/coverage/test-coverage-floor.sh --tolerance 0.5     # wobble band (default 0.5pp)
 #
-# Floors live in scripts/testcov-global-floors.txt ("<module> <pct>" per line).
+# Floors live in scripts/coverage/testcov-global-floors.txt ("<module> <pct>" per line).
 # Raised upward only by --bless; a deliberate downward reset (a denominator change,
 # not a coverage regression) is a hand edit with a comment, exactly like the fuzz
 # floor file. Local/CI gate — heavier than `make test` (whole-module -coverpkg).
@@ -177,7 +177,7 @@ if $bless; then
 			awk '/^#/{print; next} {exit}' "$floors_file"
 		else
 			echo "# Full-suite (unit+integration) whole-module statement-coverage floors."
-			echo "# Managed by scripts/test-coverage-floor.sh --bless. Raised upward only;"
+			echo "# Managed by scripts/coverage/test-coverage-floor.sh --bless. Raised upward only;"
 			echo "# a downward reset (denominator change, not a regression) is a hand edit."
 		fi
 		# Bless the union of what was measured and what the file already holds, so

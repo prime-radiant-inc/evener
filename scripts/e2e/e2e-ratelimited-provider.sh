@@ -19,16 +19,16 @@
 # a terminal (tmux) and is the caller's next step.
 #
 # USAGE:
-#   scripts/e2e-ratelimited-provider.sh                  # start; print the
+#   scripts/e2e/e2e-ratelimited-provider.sh                  # start; print the
 #                                                         # evener-tui command
-#   scripts/e2e-ratelimited-provider.sh --retry-after 3  # tune the 429
+#   scripts/e2e/e2e-ratelimited-provider.sh --retry-after 3  # tune the 429
 #                                                         # Retry-After (default 8)
-#   scripts/e2e-ratelimited-provider.sh --stop RUN_DIR   # kill fake429 + hub
+#   scripts/e2e/e2e-ratelimited-provider.sh --stop RUN_DIR   # kill fake429 + hub
 #                                                         # from a prior run
 #                                                         # and remove RUN_DIR
 #
 # OUTPUT: fake429 and the hub keep running in the background after this
-# script exits (like scripts/agent-chrome.sh) — that is the point, so a
+# script exits (like scripts/ops/agent-chrome.sh) — that is the point, so a
 # follow-up evener-tui or REST call has something to attach to. Nothing here
 # needs, reads, or sets a real provider credential.
 set -euo pipefail

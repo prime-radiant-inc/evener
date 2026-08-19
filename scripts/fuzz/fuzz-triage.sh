@@ -8,7 +8,7 @@
 # auto-merges; the only standing CI change is the fast `make fuzz` seed replay.
 #
 # Usage:
-#   scripts/fuzz-triage.sh [--time DUR] [--dry-run] [--no-pr] [--no-corpus] [target ...]
+#   scripts/fuzz/fuzz-triage.sh [--time DUR] [--dry-run] [--no-pr] [--no-corpus] [target ...]
 #     --time DUR     per-target search budget, passed through to run-fuzz.sh
 #                    (default inherits run-fuzz.sh's 60s; e.g. --time 5m).
 #     --dry-run      discover, flake-guard, and dedup, but write nothing and open
@@ -25,7 +25,7 @@
 # port-on-touch moment. The following env vars exist for advanced use;
 # defaults are the production values:
 #   EVENER_FUZZ_REPO_ROOT  repo root (default: the parent of this script's dir)
-#   EVENER_FUZZ_RUNNER     the search engine    (default: scripts/run-fuzz.sh)
+#   EVENER_FUZZ_RUNNER     the search engine    (default: scripts/fuzz/run-fuzz.sh)
 #   EVENER_FUZZ_GH         the gh binary        (default: gh)
 #   EVENER_FUZZ_K          flake-guard replays  (default: 5)
 #   EVENER_FUZZ_MAX_SEEDS  corpus diversity cap (default: 8 per target per run)
@@ -258,7 +258,7 @@ open_pr() { # sig12, sigkey, surface, oracle, detail, kind, pkg, run, test_path,
 	msg="$(cat <<EOF
 test(fuzz): regression for $surface/$oracle $sig12
 
-Auto-filed by scripts/fuzz-triage.sh. The committed regression test is red on
+Auto-filed by scripts/fuzz/fuzz-triage.sh. The committed regression test is red on
 main until the bug is fixed; $detail.
 EOF
 	)"

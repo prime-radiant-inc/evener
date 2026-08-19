@@ -6,21 +6,21 @@
 # becomes a permanent regression seed that `make fuzz` replays forever.
 #
 # Usage:
-#   scripts/run-fuzz.sh [--time DURATION] [target ...]
+#   scripts/fuzz/run-fuzz.sh [--time DURATION] [target ...]
 #     --time DURATION   per-target fuzz budget (default 60s; any go -fuzztime value)
 #     target            one or more "module:FuzzName" to restrict the run;
 #                       default is every known target below.
 #
 # Examples:
-#   scripts/run-fuzz.sh                       # all targets, 60s each
-#   scripts/run-fuzz.sh --time 5m            # all targets, 5 minutes each
-#   scripts/run-fuzz.sh llm:FuzzParseSSE     # just the SSE target, 60s
+#   scripts/fuzz/run-fuzz.sh                       # all targets, 60s each
+#   scripts/fuzz/run-fuzz.sh --time 5m            # all targets, 5 minutes each
+#   scripts/fuzz/run-fuzz.sh llm:FuzzParseSSE     # just the SSE target, 60s
 set -uo pipefail
 
-# The fuzz target registry lives in scripts/fuzz-targets.txt — one colon-delimited
+# The fuzz target registry lives in scripts/fuzz/fuzz-targets.txt — one colon-delimited
 # entry per line (tag:module:package-relpath:name[:coverpkg[:focus]]); see that file
 # for the field documentation. This script loads it and emits the list verbatim via
-# `--list`, consumed by scripts/fuzz-coverage.sh, scripts/fuzz-triage.sh, and the
+# `--list`, consumed by scripts/fuzz/fuzz-coverage.sh, scripts/fuzz/fuzz-triage.sh, and the
 # static gap gate (cmd/evener-fuzzcov -gap-only). Comment lines (beginning with '#')
 # and blank lines in the data file are skipped, so `--list` yields only real entries.
 # (macOS bash 3.2 lacks mapfile; this while-read loop is the portable equivalent of

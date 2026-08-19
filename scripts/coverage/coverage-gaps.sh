@@ -7,19 +7,19 @@
 # ranking sends you to the former every time.
 #
 # Usage:
-#   scripts/coverage-gaps.sh PROFILE                  # top packages by uncovered stmts
-#   scripts/coverage-gaps.sh PROFILE --by file        # ...by file
-#   scripts/coverage-gaps.sh PROFILE --top 40
-#   scripts/coverage-gaps.sh PROFILE --by file --zero # only wholly-uncovered units
-#   scripts/coverage-gaps.sh PROFILE --in session.go  # uncovered blocks IN a file
+#   scripts/coverage/coverage-gaps.sh PROFILE                  # top packages by uncovered stmts
+#   scripts/coverage/coverage-gaps.sh PROFILE --by file        # ...by file
+#   scripts/coverage/coverage-gaps.sh PROFILE --top 40
+#   scripts/coverage/coverage-gaps.sh PROFILE --by file --zero # only wholly-uncovered units
+#   scripts/coverage/coverage-gaps.sh PROFILE --in session.go  # uncovered blocks IN a file
 #
 # PROFILE is a `go test -coverprofile` file. Generate one with, e.g.
 #   prof="$(mktemp "${TMPDIR:-/tmp}/evener-cov.XXXXXX")"
 #   go test -count=1 -short -coverpkg="$(go list ./... | paste -sd, -)" \
 #     -coverprofile="$prof" -run "$GATE_TEST_RUN" -skip "$GATE_FUZZ_TEST_SKIP" ./...
-#   scripts/coverage-gaps.sh "$prof"
-# (the same selection and module scoping scripts/test-coverage-floor.sh
-# measures; see scripts/gate-surface-lib.sh).
+#   scripts/coverage/coverage-gaps.sh "$prof"
+# (the same selection and module scoping scripts/coverage/test-coverage-floor.sh
+# measures; see scripts/lib/gate-surface-lib.sh).
 #
 # Duplicate blocks from -coverpkg are deduped by position, a block counting as
 # covered if ANY test hit it — the same accounting test-coverage-floor.sh and

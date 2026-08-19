@@ -19,7 +19,7 @@
 # cost. That is slow by construction — it is a profiling tool, not a gate.
 #
 # USAGE:
-#   scripts/test-cost.sh --dir agent [--top 40] [--run REGEX] [--min-ms 50]
+#   scripts/coverage/test-cost.sh --dir agent [--top 40] [--run REGEX] [--min-ms 50]
 #
 #   --dir DIR       package directory to profile (required)
 #   --run REGEX     only profile tests matching this (default: all Test*)

@@ -27,9 +27,9 @@
 # time, not the whole worktrees tree at once.
 #
 # Usage:
-#   scripts/report-orphaned-worktrees.sh              # report, human-readable
-#   scripts/report-orphaned-worktrees.sh --paths-only  # one path per line, for scripting
-#   scripts/report-orphaned-worktrees.sh --help
+#   scripts/ops/report-orphaned-worktrees.sh              # report, human-readable
+#   scripts/ops/report-orphaned-worktrees.sh --paths-only  # one path per line, for scripting
+#   scripts/ops/report-orphaned-worktrees.sh --help
 #
 # Removal is deliberately NOT built into this script: doing it safely needs
 # git's own merge/dirty checks, and for these directories git has no idea
@@ -143,4 +143,4 @@ echo
 echo "git cannot answer whether any of these are dirty or hold unmerged commits"
 echo "(that's what 'git-resolvable: no' above means) — the usual safety check is"
 echo "unavailable. Nothing here was deleted. To review and remove by hand, see:"
-echo "  scripts/report-orphaned-worktrees.sh --help"
+echo "  scripts/ops/report-orphaned-worktrees.sh --help"

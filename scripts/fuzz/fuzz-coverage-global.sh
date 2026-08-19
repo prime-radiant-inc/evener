@@ -15,17 +15,17 @@
 # or a missing/malformed profile is fatal; no result is fabricated or omitted.
 #
 # Usage:
-#   scripts/fuzz-coverage-global.sh
-#   scripts/fuzz-coverage-global.sh --check
-#   scripts/fuzz-coverage-global.sh --bless
-#   scripts/fuzz-coverage-global.sh --modules agent
-#   scripts/fuzz-coverage-global.sh --format json
+#   scripts/fuzz/fuzz-coverage-global.sh
+#   scripts/fuzz/fuzz-coverage-global.sh --check
+#   scripts/fuzz/fuzz-coverage-global.sh --bless
+#   scripts/fuzz/fuzz-coverage-global.sh --modules agent
+#   scripts/fuzz/fuzz-coverage-global.sh --format json
 #
 # Test seams:
 #   EVENER_FUZZ_GO              go executable (default: go)
-#   EVENER_FUZZ_CAPPED          command wrapper (default: scripts/run-capped.sh)
+#   EVENER_FUZZ_CAPPED          command wrapper (default: scripts/fuzz/run-capped.sh)
 #   EVENER_FUZZ_REGISTRY_CHECK  executable registry checker (default:
-#                             scripts/fuzz-registry-check.sh)
+#                             scripts/fuzz/fuzz-registry-check.sh)
 set -euo pipefail
 
 repo_root="$(cd "$(dirname "$0")/../.." && pwd -P)"
@@ -38,7 +38,7 @@ registry_check="${EVENER_FUZZ_REGISTRY_CHECK:-$repo_root/scripts/fuzz/fuzz-regis
 exclusions_file="$repo_root/scripts/coverage/fuzzcov-global-exclusions.txt"
 floors_file="$repo_root/scripts/coverage/fuzzcov-global-floors.txt"
 # The gap map's reasoned ignore-list, shared rather than duplicated: a package
-# declared out of fuzz scope for scripts/fuzz-gap-check.sh must not be mandatory
+# declared out of fuzz scope for scripts/fuzz/fuzz-gap-check.sh must not be mandatory
 # here. Entries are "<import-path>  # <reason>"; the reason is required there and
 # reviewed like code, so this consumer needs only the path.
 ignore_file="${EVENER_FUZZCOV_IGNORE:-$repo_root/scripts/coverage/fuzzcov-ignore.txt}"
@@ -387,7 +387,7 @@ for module in "${selected_modules[@]}"; do
 			production_package_list="$production_package_list$module$tab$pkg"$'\n'
 		fi
 		# A package the gap map already reasons out of fuzz scope is not REQUIRED
-		# to carry a surface — by the same list scripts/fuzz-gap-check.sh reads,
+		# to carry a surface — by the same list scripts/fuzz/fuzz-gap-check.sh reads,
 		# so a package cannot be out of scope for one gate and mandatory for the
 		# other. It stays a production package either way: several ignored
 		# packages do carry registered targets, and dropping them from the

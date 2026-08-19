@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # web-coverage-floor.sh — a no-regression ratchet on the frontend's line coverage,
-# the web counterpart to scripts/test-coverage-floor.sh (Go full-suite) and
-# scripts/fuzz-coverage-global.sh (Go fuzz-reachable). It guards the coverage the
+# the web counterpart to scripts/coverage/test-coverage-floor.sh (Go full-suite) and
+# scripts/fuzz/fuzz-coverage-global.sh (Go fuzz-reachable). It guards the coverage the
 # vitest suite drives, so a PR that deletes tests or adds untested UI fails the
 # gate instead of silently eroding the number.
 #
@@ -15,20 +15,20 @@
 # test ever loads counts as 0% instead of vanishing from the report.
 #
 # Usage:
-#   scripts/web-coverage-floor.sh                  # measure + print
-#   scripts/web-coverage-floor.sh --check          # ratchet: exit non-zero on a drop
-#   scripts/web-coverage-floor.sh --bless          # raise floors to current %
-#   scripts/web-coverage-floor.sh --reuse          # parse the existing report, no re-run
-#   scripts/web-coverage-floor.sh --tolerance 0.5  # wobble band (default 0.5pp)
+#   scripts/coverage/web-coverage-floor.sh                  # measure + print
+#   scripts/coverage/web-coverage-floor.sh --check          # ratchet: exit non-zero on a drop
+#   scripts/coverage/web-coverage-floor.sh --bless          # raise floors to current %
+#   scripts/coverage/web-coverage-floor.sh --reuse          # parse the existing report, no re-run
+#   scripts/coverage/web-coverage-floor.sh --tolerance 0.5  # wobble band (default 0.5pp)
 #
-# Floors live in scripts/webcov-floors.txt ("<area> <pct>" per line). Raised
+# Floors live in scripts/coverage/webcov-floors.txt ("<area> <pct>" per line). Raised
 # upward only by --bless; a deliberate downward reset (a denominator change, not
 # a coverage regression) is a hand edit with a comment, exactly like the two Go
 # floor files. --bless always rewrites EVERY area, so unlike the Go scripts there
 # is no partial-bless footgun to undo afterward.
 #
 # EVENER_WEB_FRONTEND_DIR points this at a throwaway frontend instead of the real
-# one, which is how scripts/web-coverage-floor-selftest.sh exercises it.
+# one, which is how scripts/coverage/web-coverage-floor-selftest.sh exercises it.
 set -uo pipefail
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
@@ -155,7 +155,7 @@ if $bless; then
 			awk '/^#/{print; next} {exit}' "$floors_file"
 		else
 			echo "# Frontend (vitest) per-area LINE coverage floors."
-			echo "# Managed by scripts/web-coverage-floor.sh --bless. Raised upward only;"
+			echo "# Managed by scripts/coverage/web-coverage-floor.sh --bless. Raised upward only;"
 			echo "# a downward reset (denominator change, not a regression) is a hand edit."
 		fi
 		while read -r area c t pct; do

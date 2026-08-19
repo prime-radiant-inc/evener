@@ -15,12 +15,12 @@
 # experiment, and a live session may still be writing to one. Deletion here
 # needs a human, and the bulk sweep needs authorization (kata gmpr). Keeping
 # that decision out of a script whose siblings DO delete is deliberate — see
-# scripts/report-orphaned-worktrees.sh, which exists for the same reason.
+# scripts/ops/report-orphaned-worktrees.sh, which exists for the same reason.
 #
 # Usage:
-#   scripts/report-tmp-debris.sh              # report, human-readable
-#   scripts/report-tmp-debris.sh --paths-only # one path per line, biggest first
-#   scripts/report-tmp-debris.sh --help
+#   scripts/ops/report-tmp-debris.sh              # report, human-readable
+#   scripts/ops/report-tmp-debris.sh --paths-only # one path per line, biggest first
+#   scripts/ops/report-tmp-debris.sh --help
 #
 # EVENER_TMP_DEBRIS_ROOT overrides the directory scanned (default /tmp), so a
 # caller can point this at a throwaway tree instead of the real /tmp.
@@ -58,7 +58,7 @@ root=${EVENER_TMP_DEBRIS_ROOT:-/tmp}
 	exit 1
 }
 
-# Human-readable from KB, matching scripts/report-orphaned-worktrees.sh so the
+# Human-readable from KB, matching scripts/ops/report-orphaned-worktrees.sh so the
 # two reports read as one set of numbers.
 human_kb() {
 	awk -v kb="$1" 'BEGIN { printf (kb>=1048576) ? "%.1fG" : (kb>=1024) ? "%.0fM" : "%dK", (kb>=1048576) ? kb/1048576 : (kb>=1024) ? kb/1024 : kb }'

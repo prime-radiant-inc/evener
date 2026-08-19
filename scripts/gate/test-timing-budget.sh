@@ -29,18 +29,18 @@
 # (`make test-rebaseline`), never fail on a budget nobody has measured yet.
 #
 # Usage:
-#   scripts/test-timing-budget.sh                # measure + print, never fails
-#   scripts/test-timing-budget.sh --check         # also enforce (see policy below)
-#   scripts/test-timing-budget.sh --bless         # make test-rebaseline: overwrite
+#   scripts/gate/test-timing-budget.sh                # measure + print, never fails
+#   scripts/gate/test-timing-budget.sh --check         # also enforce (see policy below)
+#   scripts/gate/test-timing-budget.sh --bless         # make test-rebaseline: overwrite
 #                                                  # every measured package's budget
 #                                                  # with what this run just measured
-#   scripts/test-timing-budget.sh --modules "..."  # override the Go module list
-#   scripts/test-timing-budget.sh --budget FILE    # override the budget file path
-#   scripts/test-timing-budget.sh --web-dir DIR    # override the frontend directory
-#   scripts/test-timing-budget.sh --no-web         # skip the frontend measurement
-#   scripts/test-timing-budget.sh --strict         # force CI's fail-on-1.5x policy
-#   scripts/test-timing-budget.sh --local          # force the warn-only policy
-#   scripts/test-timing-budget.sh --measured FILE  # skip go test/vitest entirely
+#   scripts/gate/test-timing-budget.sh --modules "..."  # override the Go module list
+#   scripts/gate/test-timing-budget.sh --budget FILE    # override the budget file path
+#   scripts/gate/test-timing-budget.sh --web-dir DIR    # override the frontend directory
+#   scripts/gate/test-timing-budget.sh --no-web         # skip the frontend measurement
+#   scripts/gate/test-timing-budget.sh --strict         # force CI's fail-on-1.5x policy
+#   scripts/gate/test-timing-budget.sh --local          # force the warn-only policy
+#   scripts/gate/test-timing-budget.sh --measured FILE  # skip go test/vitest entirely
 #                                                   # and compare FILE's already-
 #                                                   # measured "SUM\t<pkg>\t<secs>" /
 #                                                   # "TEST\t<pkg>\t<name>\t<secs>"

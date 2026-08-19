@@ -3,9 +3,9 @@
 # deterministic tests: the union of the test track and the fuzz track.
 #
 # Neither existing ratchet answers that question, and both understate it on their
-# own. scripts/test-coverage-floor.sh measures what `ROOT_FULL=1 make test`
+# own. scripts/coverage/test-coverage-floor.sh measures what `ROOT_FULL=1 make test`
 # proves, whose -run '^(Test|Example)' filter deliberately excludes every fuzz
-# target. scripts/fuzz-coverage-global.sh measures only what the fuzz corpus
+# target. scripts/fuzz/fuzz-coverage-global.sh measures only what the fuzz corpus
 # replays. The gap between them is not small and it is not noise: this repo keeps
 # whole families of behavioural checks in `check*` functions that only a
 # evenerfuzz-tagged "program" fuzz target calls, so the packages using that pattern
@@ -22,13 +22,13 @@
 # a block covered by either track counts once — see covstmt-lib.sh.
 #
 # Usage:
-#   scripts/coverage-union.sh                     # measure + print
-#   scripts/coverage-union.sh --check             # ratchet: non-zero on a drop
-#   scripts/coverage-union.sh --bless             # raise floors to current %
-#   scripts/coverage-union.sh --modules "agent llm"
-#   scripts/coverage-union.sh --tolerance 0.5     # wobble band (default 0.5pp)
+#   scripts/coverage/coverage-union.sh                     # measure + print
+#   scripts/coverage/coverage-union.sh --check             # ratchet: non-zero on a drop
+#   scripts/coverage/coverage-union.sh --bless             # raise floors to current %
+#   scripts/coverage/coverage-union.sh --modules "agent llm"
+#   scripts/coverage/coverage-union.sh --tolerance 0.5     # wobble band (default 0.5pp)
 #
-# Floors live in scripts/covunion-floors.txt ("<module> <pct>" per line), raised
+# Floors live in scripts/coverage/covunion-floors.txt ("<module> <pct>" per line), raised
 # upward only. A partial --bless preserves every other module's floor, and the
 # comment header is carried through so a hand-written note survives.
 set -uo pipefail
@@ -175,7 +175,7 @@ if $bless; then
 			awk '/^#/{print; next} {exit}' "$floors_file"
 		else
 			echo "# Union (test track + fuzz track) whole-module statement-coverage floors."
-			echo "# Managed by scripts/coverage-union.sh --bless. Raised upward only;"
+			echo "# Managed by scripts/coverage/coverage-union.sh --bless. Raised upward only;"
 			echo "# a downward reset (basis change, not a regression) is a hand edit."
 		fi
 		{ printf '%s\n' $modules; awk '!/^#/ && NF {print $1}' "$floors_file" 2>/dev/null; } | sort -u | while read -r m; do

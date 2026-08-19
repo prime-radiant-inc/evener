@@ -26,7 +26,7 @@
 # is touched in either the success or the failure path.
 #
 # Usage:
-#   scripts/merge-into-branch.sh [--repo PATH] [--ff-only|--no-ff] [-m MESSAGE] TARGET SOURCE
+#   scripts/gate/merge-into-branch.sh [--repo PATH] [--ff-only|--no-ff] [-m MESSAGE] TARGET SOURCE
 #
 #     TARGET    a local branch name; the ref merged into is refs/heads/TARGET.
 #     SOURCE    any commit-ish to merge in (branch, tag, SHA, refs/remotes/...).

@@ -21,17 +21,17 @@
 # prints the browser auth URL plus a ready-made spawn call.
 #
 # USAGE:
-#   scripts/e2e-webui-turn-controls.sh                # start; print the auth URL
-#   scripts/e2e-webui-turn-controls.sh --hold 30      # seconds per model round
-#   scripts/e2e-webui-turn-controls.sh --rounds 40    # rounds per turn, per session
-#   scripts/e2e-webui-turn-controls.sh --background-job  # every session spawned
+#   scripts/e2e/e2e-webui-turn-controls.sh                # start; print the auth URL
+#   scripts/e2e/e2e-webui-turn-controls.sh --hold 30      # seconds per model round
+#   scripts/e2e/e2e-webui-turn-controls.sh --rounds 40    # rounds per turn, per session
+#   scripts/e2e/e2e-webui-turn-controls.sh --background-job  # every session spawned
 #                                                       # goes idle holding a
 #                                                       # background job; touch
 #                                                       # $run/release-the-job to
 #                                                       # wake them with a
 #                                                       # notification turn
-#   scripts/e2e-webui-turn-controls.sh --skip-web     # reuse an existing dist
-#   scripts/e2e-webui-turn-controls.sh --stop RUN_DIR # kill a prior run, remove RUN_DIR
+#   scripts/e2e/e2e-webui-turn-controls.sh --skip-web     # reuse an existing dist
+#   scripts/e2e/e2e-webui-turn-controls.sh --stop RUN_DIR # kill a prior run, remove RUN_DIR
 #
 # OUTPUT: fakellm and the hub keep running in the background after this
 # script exits — that is the point, so a browser or a follow-up REST call has

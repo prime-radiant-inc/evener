@@ -433,7 +433,7 @@ Daemons are loopback-only. Each writes a private rendezvous file to `~/.evener/r
 
 - **Daemons keep the binary they were spawned from.** Rebuilding `evener` does not update already-running daemons; live sessions continue to run the old code until they shut down. To pick up changes mid-session, end the session (which terminates its daemon), rebuild, and resume — resume reads the new binary. This matches typical daemonized-server behavior and is the same model as restarting a long-lived service after a deploy.
 - **Remote hosts**: see `docs/evener-hub-remote-operations.md` for the current deployment runbook, including credential handling, state directories, browser/TUI access, health checks, and Codex app-server sources.
-- **Rebuild and restart a launchd-managed hub**: `scripts/deploy-hub.sh` builds this worktree's `evener-hub` and `kickstart -k`s its launchd job, never stopping the old process until the new one is built and healthy — see `scripts/deploy-hub.sh --help`.
+- **Rebuild and restart a launchd-managed hub**: `scripts/ops/deploy-hub.sh` builds this worktree's `evener-hub` and `kickstart -k`s its launchd job, never stopping the old process until the new one is built and healthy — see `scripts/ops/deploy-hub.sh --help`.
 
 Design spec, plans, and notes live under `docs/superpowers/`.
 
