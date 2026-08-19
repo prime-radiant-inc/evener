@@ -57,9 +57,8 @@ func mktempEscapesTMPDIR(call string) bool {
 // of work. Removing an entry after fixing its script is the intended lifecycle —
 // the list should only ever get shorter.
 var mktempAllowedScripts = map[string]bool{
-	"e2e-cover.sh":                true,
-	"e2e-ratelimited-provider.sh": true,
-	"fuzz-bisect.sh":              true,
+	"e2e-cover.sh":           true,
+	"fuzz-bisect.sh":         true,
 	"fuzz-gap-check.sh":           true,
 	"fuzz-oracle-audit.sh":        true,
 	"fuzz-registry-check.sh":      true,
@@ -301,11 +300,13 @@ var recursiveDeleteAllowedLines = map[string]int{
 	// The one blessed delete: scratch_rm removing only what scratch_dir
 	// minted, validated, and registered. Everything else defers here.
 	"scratch-lib.sh": 1,
-	// --stop reaps a run directory only after finding the marker file the
+	// e2e_stop_run reaps a run directory only after finding the marker file the
 	// start wrote there; an emptied or clobbered argument fails the marker
-	// check and exits 2 without deleting.
-	"e2e-webui-turn-controls.sh":  1,
-	"e2e-ratelimited-provider.sh": 1,
+	// check and exits 2 without deleting. The two e2e harness scripts used to
+	// each carry their own copy of this delete; centralising it in e2e-lib.sh
+	// moved the one delete and its guard into a single sourced library, which
+	// is why the per-script entries for the harnesses are gone.
+	"e2e-lib.sh": 1,
 	// Printed operator guidance, not a delete. The heredoc is unquoted — the
 	// scanned root has to interpolate — so this line escapes its own
 	// expansion (`rm -rf "\$dir"`) to reach the reader verbatim. Nothing

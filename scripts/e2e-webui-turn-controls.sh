@@ -40,6 +40,8 @@
 # END-USAGE (--help prints everything above this line)
 set -euo pipefail
 
+SCRIPT_NAME="e2e-webui-turn-controls"
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/e2e-lib.sh"
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
 hold=15
@@ -48,54 +50,15 @@ background_job=0
 skip_web=0
 stop_dir=""
 
-# need_value FLAG REMAINING — a flag that takes one must have one. Without
-# this, `set -u` aborts on "$2" with a raw "line NN: $2: unbound variable",
-# which tells the operator nothing about which flag they left dangling.
-need_value() {
-	if [ "$2" -lt 2 ]; then
-		echo "e2e-webui-turn-controls: $1 needs a value" >&2
-		exit 2
-	fi
-}
-
-# stop_owned_pid PID LABEL RUN_TAG — signal PID, but only while it is still
-# one of this run's own processes.
-#
-# `kill -0` answers "is anything alive at this pid", which is the wrong
-# question by the time --stop is typed. hub.log accumulates one
-# `daemon session=<id> pid=<n>` line per session for the whole life of a run
-# this script advertises as lasting tens of minutes, and a pid belonging to a
-# session that finished an hour ago may since have been recycled by anything
-# on the machine. Same for fakellm.pid and hub.pid after a crash.
-#
-# The run directory's name is the ownership proof: mktemp made it unique, and
-# every process this script starts carries it in argv — fakellm and the hub
-# because they are exec'd from it, and each daemon because the hub execs the
-# `-evener` binary out of it. Matching the basename rather than the path keeps
-# it working where the two differ (macOS hands out /var/... and reports
-# /private/var/...).
-stop_owned_pid() {
-	pid="$1"
-	label="$2"
-	tag="$3"
-	kill -0 "$pid" 2>/dev/null || return 0
-	if ! ps -o args= -p "$pid" 2>/dev/null | grep -qF -- "$tag"; then
-		echo "e2e-webui-turn-controls: pid $pid is alive but is not this run's $label (recycled pid); leaving it alone" >&2
-		return 0
-	fi
-	kill "$pid"
-	echo "e2e-webui-turn-controls: stopped $label (pid $pid)" >&2
-}
-
 while [ $# -gt 0 ]; do
 	case "$1" in
 	--hold)
-		need_value --hold $#
+		e2e_need_value --hold $#
 		hold="$2"
 		shift 2
 		;;
 	--rounds)
-		need_value --rounds $#
+		e2e_need_value --rounds $#
 		rounds="$2"
 		shift 2
 		;;
@@ -108,14 +71,14 @@ while [ $# -gt 0 ]; do
 		shift
 		;;
 	--stop)
-		need_value --stop $#
+		e2e_need_value --stop $#
 		stop_dir="$2"
 		# An empty path is how `--stop "$dir"` fails when $dir was never set.
 		# Falling through to the start path would have a teardown command
 		# build binaries and stand up a stack, which is the opposite of the
 		# one thing it was asked to do.
 		if [ -z "$stop_dir" ]; then
-			echo "e2e-webui-turn-controls: --stop needs a run directory, got an empty path" >&2
+			echo "$SCRIPT_NAME: --stop needs a run directory, got an empty path" >&2
 			exit 2
 		fi
 		shift 2
@@ -129,7 +92,7 @@ while [ $# -gt 0 ]; do
 		exit 0
 		;;
 	*)
-		echo "e2e-webui-turn-controls: unknown flag: $1" >&2
+		echo "$SCRIPT_NAME: unknown flag: $1" >&2
 		exit 2
 		;;
 	esac
@@ -139,76 +102,19 @@ done
 # directory. PIDs are read from files this script wrote at start time, so
 # --stop works from a fresh invocation with no shared shell state.
 if [ -n "$stop_dir" ]; then
-	# The marker is checked FIRST, before a single file is read or a single
-	# signal is sent. --stop takes a path from the caller, and the marker is
-	# the one thing that distinguishes "a run of ours" from a typo pointing at
-	# something that matters — so a mistyped path that happens to hold a
-	# hub.pid, a fakellm.pid or a hub.log must lose nothing at all, not just
-	# escape the deletion at the end.
-	if [ ! -f "$stop_dir/.e2e-webui-turn-controls" ]; then
-		echo "e2e-webui-turn-controls: $stop_dir is not one of this script's run directories (no .e2e-webui-turn-controls marker); not touching it" >&2
-		exit 2
-	fi
-	# Daemons are grandchildren the hub deliberately outlives, so killing the
-	# hub alone leaves one evener process per spawned session behind. The hub
-	# announces each one's pid in its log; reap those too.
-	if [ -f "$stop_dir/hub.log" ]; then
-		while read -r pid; do
-			[ -n "$pid" ] || continue
-			stop_owned_pid "$pid" daemon "$(basename "$stop_dir")"
-		done < <(grep -oE 'daemon session=[^ ]+ pid=[0-9]+' "$stop_dir/hub.log" | grep -oE '[0-9]+$')
-	fi
-	for pidfile in "$stop_dir/fakellm.pid" "$stop_dir/hub.pid"; do
-		[ -f "$pidfile" ] || continue
-		stop_owned_pid "$(cat "$pidfile")" "$(basename "$pidfile" .pid)" "$(basename "$stop_dir")"
-	done
-	rm -rf "$stop_dir"
-	echo "e2e-webui-turn-controls: removed $stop_dir" >&2
-	exit 0
+	e2e_stop_run "$stop_dir" ".e2e-webui-turn-controls" \
+		"$stop_dir/fakellm.pid" "$stop_dir/hub.pid"
 fi
 
 for value in "$hold" "$rounds"; do
 	if ! [[ "$value" =~ ^[0-9]+$ ]]; then
-		echo "e2e-webui-turn-controls: --hold and --rounds must be non-negative integers, got '$value'" >&2
+		echo "$SCRIPT_NAME: --hold and --rounds must be non-negative integers, got '$value'" >&2
 		exit 2
 	fi
 done
 
-# An explicit template, not `mktemp -t`: macOS's mktemp ignores TMPDIR for -t
-# and uses the Darwin per-user temp directory instead, which puts the run
-# directory outside the dev-tooling wave's per-suite TMPDIR isolation — and so
-# outside the leftover check that is supposed to catch exactly this.
-tmpbase=${TMPDIR:-/tmp}
-if ! run="$(mktemp -d "${tmpbase%/}/evener-e2e-webui.XXXXXX")"; then
-	echo "e2e-webui-turn-controls: cannot create a run directory under ${tmpbase%/}" >&2
-	exit 1
-fi
-touch "$run/.e2e-webui-turn-controls" # the marker --stop refuses to delete without
-echo "e2e-webui-turn-controls: run directory $run" >&2
-
-# Nothing below here may leave a half-built stack behind. Every failure
-# between this line and the "Ready" banner is a bare exit, and the operator
-# who just read "build evener-hub failed" is the least likely person to go
-# looking for a fakellm still running or a run directory still on disk. The
-# directory itself is deliberately NOT removed — its logs are the only record
-# of what failed — so the reaper prints the one command that removes it.
-# Armed here rather than at the first background process so a failed build,
-# which starts nothing but still leaves a directory, says the same thing.
-# Disarmed at Ready, the state this script's contract says the processes are
-# deliberately left alive in.
-started_ready=0
-on_failed_start() {
-	[ "$started_ready" -eq 1 ] && return 0
-	started_ready=1 # never run twice: INT runs this, then so does EXIT
-	for pidfile in "$run/fakellm.pid" "$run/hub.pid"; do
-		[ -f "$pidfile" ] || continue
-		stop_owned_pid "$(cat "$pidfile")" "$(basename "$pidfile" .pid)" "$(basename "$run")"
-	done
-	echo "e2e-webui-turn-controls: startup failed; its logs are in $run. Remove it with" >&2
-	echo "    $repo_root/scripts/e2e-webui-turn-controls.sh --stop \"$run\"" >&2
-}
-trap on_failed_start EXIT
-trap 'on_failed_start; exit 130' INT TERM
+e2e_make_run_dir "evener-e2e-webui" ".e2e-webui-turn-controls"
+e2e_setup_reaper "$run" "$SCRIPT_NAME" "$repo_root"
 
 if [ "$skip_web" -eq 0 ]; then
 	echo "==> building the SPA (make build-web)" >&2
@@ -219,40 +125,15 @@ if [ "$skip_web" -eq 0 ]; then
 	}
 fi
 
-echo "==> building fakellm, evener, evener-hub" >&2
 # From the repo root: `go build` resolves the module (and go.work) from its own
 # working directory, so an absolute package path is not enough when the script
 # is invoked from outside the checkout.
 cd "$repo_root"
-go build -o "$run/fakellm" "$repo_root/test/e2e/fakellm/cmd" || {
-	echo "build fakellm failed" >&2
-	exit 1
-}
-go build -o "$run/evener" "$repo_root/cmd/evener" || {
-	echo "build evener failed" >&2
-	exit 1
-}
-go build -o "$run/evener-hub" "$repo_root/cmd/evener-hub" || {
-	echo "build evener-hub failed" >&2
-	exit 1
-}
+e2e_build_binary fakellm "$run/fakellm" "$repo_root/test/e2e/fakellm/cmd"
+e2e_build_binary evener "$run/evener" "$repo_root/cmd/evener"
+e2e_build_binary evener-hub "$run/evener-hub" "$repo_root/cmd/evener-hub"
 
-# Isolate. A throwaway $HOME keeps auth-token, credentials.toml,
-# providers.toml, hub.lock, and session history off the real ~/.evener and
-# ~/.local/state/evener entirely (kata av1j).
-export HOME="$run/home"
-mkdir -p "$HOME/.evener"
-# Everything that can redirect evener away from the throwaway $HOME, not just
-# the state dir: an operator with any of these exported would otherwise have
-# this hub read or write their real config, cache, run dir or hub token while
-# the header above promises isolation. EVENER_PROVIDERS_CONFIG belongs in this
-# list above all: it outranks $HOME/.evener/providers.toml (cmd/evener-hub/main.go,
-# cmd/evener-hub/internal/launchconfig/env.go), so leaving it set would load the
-# operator's real providers instead of fakellm — a network call and a paid
-# request out of a fixture whose whole point is that neither happens.
-unset XDG_STATE_HOME XDG_CONFIG_HOME XDG_CACHE_HOME
-unset EVENER_STATE_DIR EVENER_RUN_DIR EVENER_HUB_TOKEN EVENER_HUB_ADDR EVENER_HUB_SPAWNED
-unset EVENER_PROVIDERS_CONFIG
+e2e_isolate_home "$run"
 
 workspace="$run/workspace"
 mkdir -p "$workspace"
@@ -273,31 +154,8 @@ fi
 fakellm_pid=$!
 echo "$fakellm_pid" >"$run/fakellm.pid"
 
-# Read the real port back from fakellm's own startup log line — never a fixed
-# port (kata 68fm). Poll rather than sleep a guessed interval.
-#
-# The ceiling only has to be impossible for a healthy run to exhaust: the
-# poll exits the moment the line appears, and the liveness arm below catches a
-# dead child immediately, so a long ceiling costs nothing when things work.
-# The old six-second guess fired twice in one day on gate runs where the
-# dev-tooling wave had the machine saturated, false-redding this suite's
-# selftest; 60s is past anything a busy-but-healthy machine has shown.
-fakellm_port=""
-for _ in $(seq 1 600); do
-	fakellm_port="$(grep -oE 'listening on 127\.0\.0\.1:[0-9]+' "$run/fakellm.log" 2>/dev/null | grep -oE '[0-9]+$')" || true
-	[ -n "$fakellm_port" ] && break
-	kill -0 "$fakellm_pid" 2>/dev/null || {
-		echo "fakellm exited before it started listening:" >&2
-		cat "$run/fakellm.log" >&2
-		exit 1
-	}
-	sleep 0.1
-done
-[ -n "$fakellm_port" ] || {
-	echo "fakellm never logged a listening port" >&2
-	exit 1
-}
-echo "e2e-webui-turn-controls: fakellm up at 127.0.0.1:$fakellm_port (pid $fakellm_pid)" >&2
+e2e_wait_for_port "$run/fakellm.log" "$fakellm_pid" fakellm
+fakellm_port="$e2e_port"
 
 cat >"$HOME/.evener/providers.toml" <<EOF
 schema = 1
@@ -316,32 +174,14 @@ echo "==> starting evener-hub" >&2
 hub_pid=$!
 echo "$hub_pid" >"$run/hub.pid"
 
-hub_port=""
-# Same ceiling reasoning as the fakellm poll above: long is free when healthy.
-for _ in $(seq 1 600); do
-	hub_port="$(grep -oE 'listening on 127\.0\.0\.1:[0-9]+' "$run/hub.log" 2>/dev/null | grep -oE '[0-9]+$')" || true
-	[ -n "$hub_port" ] && break
-	kill -0 "$hub_pid" 2>/dev/null || {
-		echo "hub exited before it started listening:" >&2
-		cat "$run/hub.log" >&2
-		exit 1
-	}
-	sleep 0.1
-done
-[ -n "$hub_port" ] || {
-	echo "hub never logged a listening port" >&2
-	exit 1
-}
+e2e_wait_for_port "$run/hub.log" "$hub_pid" hub
+hub_port="$e2e_port"
 hub_addr="http://127.0.0.1:$hub_port"
-curl -s -o /dev/null "$hub_addr/" || {
-	echo "hub did not answer at $hub_addr" >&2
-	exit 1
-}
+e2e_health_check "$hub_addr"
 token="$(cat "$HOME/.evener/auth-token")"
 
 # Ready: the stack is up, so the processes stay up too. Disarm the reaper.
-started_ready=1
-trap - EXIT INT TERM
+e2e_disarm_reaper
 
 if [ "$background_job" -eq 1 ]; then
 	mode_line="Every session you spawn launches a background job on its first
@@ -385,5 +225,5 @@ Ready. $mode_line
     tail -f $run/hub.log
 
   When done:
-    $repo_root/scripts/e2e-webui-turn-controls.sh --stop "$run"
+    $repo_root/scripts/$SCRIPT_NAME.sh --stop "$run"
 EOF

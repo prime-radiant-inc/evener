@@ -33,6 +33,8 @@
 # needs, reads, or sets a real provider credential.
 set -euo pipefail
 
+SCRIPT_NAME="e2e-ratelimited-provider"
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/e2e-lib.sh"
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 fixtures_dir="$repo_root/test/e2e/fake429"
 
@@ -41,11 +43,21 @@ stop_dir=""
 while [ $# -gt 0 ]; do
 	case "$1" in
 	--retry-after)
+		e2e_need_value --retry-after $#
 		retry_after="$2"
 		shift 2
 		;;
 	--stop)
+		e2e_need_value --stop $#
 		stop_dir="$2"
+		# An empty path is how `--stop "$dir"` fails when $dir was never set.
+		# Falling through to the start path would have a teardown command
+		# build binaries and stand up a stack, which is the opposite of the
+		# one thing it was asked to do.
+		if [ -z "$stop_dir" ]; then
+			echo "$SCRIPT_NAME: --stop needs a run directory, got an empty path" >&2
+			exit 2
+		fi
 		shift 2
 		;;
 	-h | --help)
@@ -53,42 +65,22 @@ while [ $# -gt 0 ]; do
 		exit 0
 		;;
 	*)
-		echo "e2e-ratelimited-provider: unknown flag: $1" >&2
+		echo "$SCRIPT_NAME: unknown flag: $1" >&2
 		exit 2
 		;;
 	esac
 done
 
-# --stop: kill a previous run's processes (if still alive) and remove its
-# run directory. PIDs are read from files this script wrote at start time,
-# not re-derived, so --stop works from a fresh invocation with no shared
-# shell state.
+# --stop: kill a previous run's processes (if still alive) and remove its run
+# directory. PIDs are read from files this script wrote at start time, so
+# --stop works from a fresh invocation with no shared shell state.
 if [ -n "$stop_dir" ]; then
-	# The marker is checked FIRST, before a single file is read or a single
-	# signal is sent. --stop takes a path from the caller, and the marker is
-	# the one thing that distinguishes "a run of ours" from a typo pointing
-	# at something that matters — so a mistyped path that happens to hold a
-	# fake429.pid or a hub.pid must lose nothing at all, not just escape the
-	# deletion at the end.
-	if [ ! -f "$stop_dir/.e2e-ratelimited-provider" ]; then
-		echo "e2e-ratelimited-provider: $stop_dir is not one of this script's run directories (no .e2e-ratelimited-provider marker); not touching it" >&2
-		exit 2
-	fi
-	for pidfile in "$stop_dir/fake429.pid" "$stop_dir/hub.pid"; do
-		[ -f "$pidfile" ] || continue
-		pid="$(cat "$pidfile")"
-		if kill -0 "$pid" 2>/dev/null; then
-			kill "$pid"
-			echo "e2e-ratelimited-provider: stopped $(basename "$pidfile" .pid) (pid $pid)" >&2
-		fi
-	done
-	rm -rf "$stop_dir"
-	echo "e2e-ratelimited-provider: removed $stop_dir" >&2
-	exit 0
+	e2e_stop_run "$stop_dir" ".e2e-ratelimited-provider" \
+		"$stop_dir/fake429.pid" "$stop_dir/hub.pid"
 fi
 
 if ! [[ "$retry_after" =~ ^[0-9]+$ ]]; then
-	echo "e2e-ratelimited-provider: --retry-after must be a non-negative integer, got '$retry_after'" >&2
+	echo "$SCRIPT_NAME: --retry-after must be a non-negative integer, got '$retry_after'" >&2
 	exit 2
 fi
 
@@ -96,60 +88,27 @@ fi
 # all live under it, so two concurrent runs (two agents, or two calls of
 # this script) cannot collide with each other or with a real hub — the same
 # reasoning docs/agentic-testing.md's setup checklist uses.
-run="$(mktemp -d -t evener-e2e-fake429.XXXXXX)"
-touch "$run/.e2e-ratelimited-provider" # the marker --stop refuses to delete without
-echo "e2e-ratelimited-provider: run directory $run" >&2
+e2e_make_run_dir "evener-e2e-fake429" ".e2e-ratelimited-provider"
+e2e_setup_reaper "$run" "$SCRIPT_NAME" "$repo_root"
 
-echo "==> building fake429, evener, evener-hub, evener-tui" >&2
-go build -o "$run/fake429" "$repo_root/test/e2e/fake429" || {
-	echo "build fake429 failed" >&2
-	exit 1
-}
-go build -o "$run/evener" "$repo_root/cmd/evener" || {
-	echo "build evener failed" >&2
-	exit 1
-}
-go build -o "$run/evener-hub" "$repo_root/cmd/evener-hub" || {
-	echo "build evener-hub failed" >&2
-	exit 1
-}
-go build -o "$run/evener-tui" "$repo_root/cmd/evener-tui" || {
-	echo "build evener-tui failed" >&2
-	exit 1
-}
+# From the repo root: `go build` resolves the module (and go.work) from its
+# own working directory, so an absolute package path is not enough when the
+# script is invoked from outside the checkout.
+cd "$repo_root"
+e2e_build_binary fake429 "$run/fake429" "$repo_root/test/e2e/fake429"
+e2e_build_binary evener "$run/evener" "$repo_root/cmd/evener"
+e2e_build_binary evener-hub "$run/evener-hub" "$repo_root/cmd/evener-hub"
+e2e_build_binary evener-tui "$run/evener-tui" "$repo_root/cmd/evener-tui"
 
-# Isolate. A throwaway $HOME keeps auth-token, credentials.toml,
-# providers.toml, hub.lock, and session history off the real ~/.evener and
-# ~/.local/state/evener entirely (kata av1j: those paths are not overridable
-# individually, so the only safe way to run a second hub is a fresh $HOME).
-export HOME="$run/home"
-mkdir -p "$HOME/.evener"
-unset XDG_STATE_HOME
+e2e_isolate_home "$run"
 
 echo "==> starting fake429 (retry-after=${retry_after}s)" >&2
 "$run/fake429" 127.0.0.1:0 "$retry_after" >"$run/fake429.log" 2>&1 &
 fake429_pid=$!
 echo "$fake429_pid" >"$run/fake429.pid"
 
-# Read the real port back from fake429's own startup log line — never a
-# fixed port (kata 68fm). Poll rather than sleep a guessed interval.
-fake429_port=""
-for _ in $(seq 1 50); do
-	fake429_port="$(grep -oE 'listening on 127\.0\.0\.1:[0-9]+' "$run/fake429.log" 2>/dev/null | grep -oE '[0-9]+$')" || true
-	[ -n "$fake429_port" ] && break
-	kill -0 "$fake429_pid" 2>/dev/null || {
-		echo "fake429 exited before it started listening:" >&2
-		cat "$run/fake429.log" >&2
-		exit 1
-	}
-	sleep 0.1
-done
-[ -n "$fake429_port" ] || {
-	echo "fake429 never logged a listening port" >&2
-	exit 1
-}
-fake429_addr="127.0.0.1:$fake429_port"
-echo "e2e-ratelimited-provider: fake429 up at $fake429_addr (pid $fake429_pid)" >&2
+e2e_wait_for_port "$run/fake429.log" "$fake429_pid" fake429
+fake429_addr="127.0.0.1:$e2e_port"
 
 # Wire providers.toml at fake429's real address, into the isolated hub's own
 # $HOME/.evener — a copy, not a pointer back into the repo tree, so nothing
@@ -161,36 +120,17 @@ echo "==> starting evener-hub" >&2
 hub_pid=$!
 echo "$hub_pid" >"$run/hub.pid"
 
-hub_port=""
-for _ in $(seq 1 50); do
-	hub_port="$(grep -oE 'listening on 127\.0\.0\.1:[0-9]+' "$run/hub.log" 2>/dev/null | grep -oE '[0-9]+$')" || true
-	[ -n "$hub_port" ] && break
-	kill -0 "$hub_pid" 2>/dev/null || {
-		echo "hub exited before it started listening:" >&2
-		cat "$run/hub.log" >&2
-		exit 1
-	}
-	sleep 0.1
-done
-[ -n "$hub_port" ] || {
-	echo "hub never logged a listening port" >&2
-	exit 1
-}
+e2e_wait_for_port "$run/hub.log" "$hub_pid" hub
+hub_port="$e2e_port"
 hub_addr="http://127.0.0.1:$hub_port"
-
-# Confirm this hub (this PID) is the one that answered $hub_port, not some
-# unrelated process already on it.
-kill -0 "$hub_pid" || {
-	echo "hub failed to start on $hub_port" >&2
-	exit 1
-}
-curl -s -o /dev/null "$hub_addr/" || {
-	echo "hub did not answer at $hub_addr" >&2
-	exit 1
-}
+e2e_health_check "$hub_addr"
 token="$(cat "$HOME/.evener/auth-token")"
 
-echo "e2e-ratelimited-provider: hub up at $hub_addr (pid $hub_pid)" >&2
+echo "$SCRIPT_NAME: hub up at $hub_addr (pid $hub_pid)" >&2
+
+# Ready: the stack is up, so the processes stay up too. Disarm the reaper.
+e2e_disarm_reaper
+
 cat >&2 <<EOF
 
 Ready. Every completion call through this hub will 429 after ${retry_after}s
@@ -203,5 +143,5 @@ Retry-After; /v1/models still resolves so launch-check succeeds.
     curl -H "Authorization: Bearer $token" "$hub_addr/api/..."
 
   When done:
-    $repo_root/scripts/e2e-ratelimited-provider.sh --stop "$run"
+    $repo_root/scripts/$SCRIPT_NAME.sh --stop "$run"
 EOF
