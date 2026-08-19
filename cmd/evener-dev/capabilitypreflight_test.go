@@ -82,7 +82,7 @@ func fixtureClassify(caps []capabilityprobe.Capability) classifyFn {
 // string means fake mode is active and nothing is blocked.
 func TestCapabilityPreflightAllAvailable(t *testing.T) {
 	var stdout, stderr strings.Builder
-	code := capabilityPreflight(fakeEnv("", true), &stdout, &stderr, mustNotCallClassify(t))
+	code := capabilityPreflight(preflightOptions{}, fakeEnv("", true), &stdout, &stderr, mustNotCallClassify(t))
 
 	if code != 0 {
 		t.Fatalf("exit code = %d, want 0; stderr:\n%s", code, stderr.String())
@@ -102,7 +102,7 @@ func TestCapabilityPreflightAllAvailable(t *testing.T) {
 // non-empty skip pattern.
 func TestCapabilityPreflightLoopbackBlocked(t *testing.T) {
 	var stdout, stderr strings.Builder
-	code := capabilityPreflight(fakeEnv("loopback-bind", true), &stdout, &stderr, mustNotCallClassify(t))
+	code := capabilityPreflight(preflightOptions{}, fakeEnv("loopback-bind", true), &stdout, &stderr, mustNotCallClassify(t))
 
 	if code != 0 {
 		t.Fatalf("exit code = %d, want 0; stderr:\n%s", code, stderr.String())
@@ -134,7 +134,7 @@ func TestCapabilityPreflightLoopbackBlocked(t *testing.T) {
 // (no deduplication, matching the shell's accumulation).
 func TestCapabilityPreflightMultipleBlockedDuplicatesPattern(t *testing.T) {
 	var stdout, stderr strings.Builder
-	code := capabilityPreflight(
+	code := capabilityPreflight(preflightOptions{},
 		fakeEnv("loopback-bind process-inspect", true),
 		&stdout, &stderr, mustNotCallClassify(t),
 	)
@@ -163,7 +163,7 @@ func TestCapabilityPreflightMultipleBlockedDuplicatesPattern(t *testing.T) {
 // has no gate consumer, so CapabilitySkipPattern returns "".
 func TestCapabilityPreflightChromeCDPBlockedNoPattern(t *testing.T) {
 	var stdout, stderr strings.Builder
-	code := capabilityPreflight(fakeEnv("chrome-cdp", true), &stdout, &stderr, mustNotCallClassify(t))
+	code := capabilityPreflight(preflightOptions{}, fakeEnv("chrome-cdp", true), &stdout, &stderr, mustNotCallClassify(t))
 
 	if code != 0 {
 		t.Fatalf("exit code = %d, want 0; stderr:\n%s", code, stderr.String())
@@ -192,7 +192,7 @@ func TestCapabilityPreflightChromeCDPBlockedNoPattern(t *testing.T) {
 // summary, exit 0.
 func TestCapabilityPreflightRealProbeAllAvailable(t *testing.T) {
 	var stdout, stderr strings.Builder
-	code := capabilityPreflight(fakeEnv("", false), &stdout, &stderr, allAvailableClassify())
+	code := capabilityPreflight(preflightOptions{}, fakeEnv("", false), &stdout, &stderr, allAvailableClassify())
 
 	if code != 0 {
 		t.Fatalf("exit code = %d, want 0; stderr:\n%s", code, stderr.String())
@@ -217,7 +217,7 @@ func TestCapabilityPreflightRealProbeLoopbackBlocked(t *testing.T) {
 		{ID: "git-cache", Available: true},
 	}
 	var stdout, stderr strings.Builder
-	code := capabilityPreflight(fakeEnv("", false), &stdout, &stderr, fixtureClassify(caps))
+	code := capabilityPreflight(preflightOptions{}, fakeEnv("", false), &stdout, &stderr, fixtureClassify(caps))
 
 	if code != 0 {
 		t.Fatalf("exit code = %d, want 0; stderr:\n%s", code, stderr.String())
@@ -238,6 +238,77 @@ func TestCapabilityPreflightRealProbeLoopbackBlocked(t *testing.T) {
 	}
 }
 
+// TestCapabilityPreflightOnlyRestrictsToOneCapability: -only=<id> is the
+// advertised reprobe interface (every rerun string the tool prints names it),
+// so it must actually restrict the run: only that capability's verdict appears
+// in the summary, and the skip regex reflects only that capability.
+func TestCapabilityPreflightOnlyRestrictsToOneCapability(t *testing.T) {
+	var stdout, stderr strings.Builder
+	code := capabilityPreflight(preflightOptions{only: "loopback-bind"},
+		fakeEnv("loopback-bind git-cache", true), &stdout, &stderr, mustNotCallClassify(t))
+
+	if code != 0 {
+		t.Fatalf("exit code = %d, want 0; stderr:\n%s", code, stderr.String())
+	}
+	if got := strings.TrimRight(stdout.String(), "\n"); got != wantLoopbackSkipPattern {
+		t.Errorf("skip regex = %q, want %q (only loopback-bind's contribution)", got, wantLoopbackSkipPattern)
+	}
+	if !strings.Contains(stderr.String(), "BLOCKED loopback-bind:") {
+		t.Errorf("stderr missing BLOCKED loopback-bind; got:\n%s", stderr.String())
+	}
+	for _, unwanted := range []string{"chrome-cdp", "process-inspect", "git-cache"} {
+		if strings.Contains(stderr.String(), unwanted) {
+			t.Errorf("stderr mentions %s despite -only=loopback-bind; got:\n%s", unwanted, stderr.String())
+		}
+	}
+}
+
+// TestCapabilityPreflightOnlyAvailableCapability: -only on an available
+// capability reports AVAILABLE and an empty skip regex.
+func TestCapabilityPreflightOnlyAvailableCapability(t *testing.T) {
+	var stdout, stderr strings.Builder
+	code := capabilityPreflight(preflightOptions{only: "chrome-cdp"},
+		fakeEnv("loopback-bind", true), &stdout, &stderr, mustNotCallClassify(t))
+
+	if code != 0 {
+		t.Fatalf("exit code = %d, want 0; stderr:\n%s", code, stderr.String())
+	}
+	if got := strings.TrimRight(stdout.String(), "\n"); got != "" {
+		t.Errorf("skip regex = %q, want empty (chrome-cdp has no skip pattern)", got)
+	}
+	if !strings.Contains(stderr.String(), "AVAILABLE chrome-cdp") {
+		t.Errorf("stderr missing AVAILABLE chrome-cdp; got:\n%s", stderr.String())
+	}
+	if strings.Contains(stderr.String(), "loopback-bind") {
+		t.Errorf("stderr mentions loopback-bind despite -only=chrome-cdp; got:\n%s", stderr.String())
+	}
+}
+
+// TestCapabilityPreflightOnlyUnknownCapabilityExitsTwo: an unknown -only id is
+// a usage error, exit 2, naming the id — the retired gate-probe's contract. A
+// diagnostic that silently ignores its flag is worse than none.
+func TestCapabilityPreflightOnlyUnknownCapabilityExitsTwo(t *testing.T) {
+	var stdout, stderr strings.Builder
+	code := capabilityPreflight(preflightOptions{only: "does-not-exist"},
+		fakeEnv("", true), &stdout, &stderr, mustNotCallClassify(t))
+
+	if code != 2 {
+		t.Fatalf("exit code = %d, want 2 (unknown capability id); stderr:\n%s", code, stderr.String())
+	}
+	if !strings.Contains(stderr.String(), "does-not-exist") {
+		t.Errorf("stderr should name the unknown capability id; got:\n%s", stderr.String())
+	}
+}
+
+// TestRunCapabilityPreflightRejectsUnknownFlag: the arg parser must reject
+// unknown flags loudly (exit 2) rather than running a full preflight the
+// caller did not ask for.
+func TestRunCapabilityPreflightRejectsUnknownFlag(t *testing.T) {
+	if code := runCapabilityPreflight([]string{"-bogus"}); code != 2 {
+		t.Fatalf("runCapabilityPreflight(-bogus) = %d, want 2", code)
+	}
+}
+
 // TestCapabilityPreflightMissingCapabilityExitsOne: the probe must classify
 // every known capability. If one is missing from probe output, the preflight
 // treats it as an internal failure and exits 1.
@@ -249,7 +320,7 @@ func TestCapabilityPreflightMissingCapabilityExitsOne(t *testing.T) {
 		{ID: "process-inspect", Available: true},
 	}
 	var stdout, stderr strings.Builder
-	code := capabilityPreflight(fakeEnv("", false), &stdout, &stderr, fixtureClassify(caps))
+	code := capabilityPreflight(preflightOptions{}, fakeEnv("", false), &stdout, &stderr, fixtureClassify(caps))
 
 	if code != 1 {
 		t.Fatalf("exit code = %d, want 1 (missing capability); stderr:\n%s", code, stderr.String())

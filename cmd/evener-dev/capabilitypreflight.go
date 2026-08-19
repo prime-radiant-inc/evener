@@ -14,11 +14,16 @@
 // with a fixed reason, every id not named is AVAILABLE. This is the test
 // path; the real path calls capabilityprobe.Classify.
 //
-// Exit 0 on a successful classification, 1 on an internal failure.
+// -only=<id> restricts the run to one capability — the exact reprobe command
+// every BLOCKED summary line advertises.
+//
+// Exit 0 on a successful classification, 1 on an internal failure, 2 on a
+// usage error (unknown flag or capability id).
 package main
 
 import (
 	"context"
+	"flag"
 	"fmt"
 	"io"
 	"os"
@@ -38,6 +43,13 @@ var gateCapabilityIDs = capabilityprobe.AllCapabilityIDs
 // drive the parse path without running real probes.
 type classifyFn func() []capabilityprobe.Capability
 
+// preflightOptions carries the parsed subcommand flags. only, when non-empty,
+// restricts the reported classification (summary and skip regex) to that one
+// capability id — the reprobe interface every rerun string advertises.
+type preflightOptions struct {
+	only string
+}
+
 // capabilityPreflight is the port of scripts/gate/gate-capability-preflight.sh.
 //
 // getenv is LookupEnv-style (value, set) rather than Getenv-style because the
@@ -45,13 +57,33 @@ type classifyFn func() []capabilityprobe.Capability
 // nothing blocked) from "FAKE_GATE_PROBE_BLOCKED unset" (run the real probe)
 // via `${VAR+set}`; os.Getenv collapses both to "", which would make the
 // all-available test case indistinguishable from the real path.
-func capabilityPreflight(getenv func(string) (string, bool), stdout io.Writer, stderr io.Writer, classify classifyFn) int {
+func capabilityPreflight(opts preflightOptions, getenv func(string) (string, bool), stdout io.Writer, stderr io.Writer, classify classifyFn) int {
 	type entry struct {
 		blocked bool
 		reason  string // empty when available
 		rerun   string // exact command to re-probe just this capability
 	}
 	classified := make(map[string]entry, len(gateCapabilityIDs))
+
+	// -only restricts the report to one capability id. An unknown id is a
+	// usage error (exit 2), never silently ignored: this flag is the exact
+	// reprobe command the summary advertises, so it has to work as printed.
+	reportIDs := gateCapabilityIDs
+	if opts.only != "" {
+		known := false
+		for _, id := range gateCapabilityIDs {
+			if id == opts.only {
+				known = true
+				break
+			}
+		}
+		if !known {
+			fmt.Fprintf(stderr, "capability-preflight: unknown capability %q (known: %s)\n",
+				opts.only, strings.Join(gateCapabilityIDs, " "))
+			return 2
+		}
+		reportIDs = []string{opts.only}
+	}
 
 	if val, set := getenv("FAKE_GATE_PROBE_BLOCKED"); set {
 		// Fake mode: the real probe is never invoked. Every id named in val
@@ -98,7 +130,7 @@ func capabilityPreflight(getenv func(string) (string, bool), stdout io.Writer, s
 	// emits `pattern|pattern` when two blocked capabilities share a pattern,
 	// and the port matches that for fidelity.
 	skipRegex := ""
-	for _, id := range gateCapabilityIDs {
+	for _, id := range reportIDs {
 		e := classified[id]
 		if !e.blocked {
 			continue
@@ -120,7 +152,7 @@ func capabilityPreflight(getenv func(string) (string, bool), stdout io.Writer, s
 
 	// The human-readable summary goes to stderr, one line per capability in
 	// fixed order.
-	for _, id := range gateCapabilityIDs {
+	for _, id := range reportIDs {
 		e := classified[id]
 		if !e.blocked {
 			fmt.Fprintf(stderr, "AVAILABLE %s\n", id)
@@ -141,11 +173,18 @@ func capabilityPreflight(getenv func(string) (string, bool), stdout io.Writer, s
 	return 0
 }
 
-// runCapabilityPreflight is the subcommand entry: it wires capabilityPreflight
-// to the real environment and capabilityprobe.Classify.
+// runCapabilityPreflight is the subcommand entry: it parses the subcommand
+// flags and wires capabilityPreflight to the real environment and
+// capabilityprobe.Classify.
 func runCapabilityPreflight(args []string) int {
+	fs := flag.NewFlagSet("capability-preflight", flag.ContinueOnError)
+	fs.SetOutput(os.Stderr)
+	only := fs.String("only", "", "probe only this capability id (for reproducing one classification); default probes all")
+	if err := fs.Parse(args); err != nil {
+		return 2
+	}
 	classify := func() []capabilityprobe.Capability {
 		return capabilityprobe.Classify(context.Background())
 	}
-	return capabilityPreflight(os.LookupEnv, os.Stdout, os.Stderr, classify)
+	return capabilityPreflight(preflightOptions{only: *only}, os.LookupEnv, os.Stdout, os.Stderr, classify)
 }
