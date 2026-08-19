@@ -283,7 +283,7 @@ describe("AppwireClient reconnect", () => {
     expect(sentFrames(socketAt(sockets, 1)).map((f) => f.method)).toEqual(["initialize", "initialized"]);
   });
 
-  test("requests attempted while reconnecting are queued, then delivered once reconnected, rather than rejected", async () => {
+  test("requests attempted while reconnecting are rejected synchronously, not queued for replay", async () => {
     const { factory, sockets } = dialer();
     const client = new AppwireClient({ url: "ws://x/rpc", socketFactory: factory });
     await connectReady(sockets, client);
@@ -291,129 +291,13 @@ describe("AppwireClient reconnect", () => {
     socketAt(sockets, 0).closeFromServer(1006);
     expect(client.state).toBe("reconnecting");
 
-    // A call made mid-reconnect must NOT reject with the old "cannot call ...
-    // while reconnecting" error. It returns a pending promise that resolves
-    // once the re-handshake lands and the queue is flushed onto the new socket.
-    const listPromise = client.request("thread/list", { limit: 1 });
-    // No rejection waiting in the wings: let microtasks settle and confirm it
-    // is still pending (the reconnect backoff hasn't fired yet, so the call is
-    // still queued, never sent).
-    await flushUntil(() => false, 5);
-    expect(client.state).toBe("reconnecting");
-    expect(sentFrames(socketAt(sockets, 0)).filter((f) => f.method === "thread/list")).toHaveLength(0);
-    expect(sockets).toHaveLength(1); // not yet redialed
+    await expect(client.request("thread/list", { limit: 1 })).rejects.toThrow(/thread\/list/);
 
-    // Let the backoff fire and the new socket open. The queued call must be
-    // flushed onto the new socket — its frame appears on socket #2, not #1.
     await vi.advanceTimersByTimeAsync(RECONNECT_BASE_MS);
-    expect(sockets).toHaveLength(2);
     socketAt(sockets, 1).open();
     await flushUntil(() => client.state === "ready");
 
-    // The queued call's frame rode the new socket, after the handshake.
-    const newFrames = sentFrames(socketAt(sockets, 1)).map((f) => f.method);
-    expect(newFrames).toEqual(["initialize", "initialized", "thread/list"]);
-
-    // Script the server reply and confirm the originally-queued promise resolves.
-    const listFrame = sentFrames(socketAt(sockets, 1)).find((f) => f.method === "thread/list");
-    if (!listFrame?.id) throw new Error("expected a thread/list request on the new socket");
-    socketAt(sockets, 1).receive({ id: listFrame.id, result: { data: [] } });
-
-    await expect(listPromise).resolves.toEqual({ data: [] });
-  });
-
-  test("queued requests survive a failed reconnect attempt and resolve on the one that succeeds", async () => {
-    const { factory, sockets } = dialer();
-    const client = new AppwireClient({ url: "ws://x/rpc", socketFactory: factory });
-    await connectReady(sockets, client);
-
-    socketAt(sockets, 0).closeFromServer(1006);
-    expect(client.state).toBe("reconnecting");
-
-    const listPromise = client.request("thread/list", { limit: 1 });
-    await flushUntil(() => false, 3);
-
-    // First reconnect attempt fails before ever reaching ready: a queued call
-    // must NOT be rejected here (it never reached a socket), only in-flight
-    // calls on the dropped socket are.
-    await vi.advanceTimersByTimeAsync(RECONNECT_BASE_MS);
-    expect(sockets).toHaveLength(2);
-    socketAt(sockets, 1).closeFromServer(1006); // fails immediately on open
-    await flushUntil(() => vi.getTimerCount() > 0); // next backoff arms
-    expect(client.state).toBe("reconnecting");
-
-    // The queued promise is still pending, not rejected.
-    let rejected = false;
-    listPromise.catch(() => {
-      rejected = true;
-    });
-    await flushUntil(() => false, 3);
-    expect(rejected).toBe(false);
-
-    // Second attempt succeeds: the queued call finally rides this socket.
-    await vi.advanceTimersByTimeAsync(RECONNECT_BASE_MS * 2);
-    expect(sockets).toHaveLength(3);
-    socketAt(sockets, 2).open();
-    await flushUntil(() => client.state === "ready");
-
-    const listFrame = sentFrames(socketAt(sockets, 2)).find((f) => f.method === "thread/list");
-    if (!listFrame?.id) throw new Error("expected a thread/list request on the new socket");
-    socketAt(sockets, 2).receive({ id: listFrame.id, result: { data: [] } });
-
-    await expect(listPromise).resolves.toEqual({ data: [] });
-  });
-
-  test("a queued request's own timeout rejects it if reconnection takes longer than its deadline", async () => {
-    const { factory, sockets } = dialer();
-    const client = new AppwireClient({ url: "ws://x/rpc", socketFactory: factory });
-    await connectReady(sockets, client);
-
-    socketAt(sockets, 0).closeFromServer(1006);
-    expect(client.state).toBe("reconnecting");
-
-    // A short deadline so the queued call times out while still waiting on
-    // reconnect, proving the queue does not extend a call's lifetime forever.
-    const listPromise = client.request("thread/list", { limit: 1 }, { timeoutMs: 500 });
-    // Derive a result promise and await it: the timeout fires inside
-    // advanceTimersByTimeAsync, so attaching handlers afterward via
-    // `await expect().rejects` would race the rejection and report an unhandled
-    // rejection. Awaiting a .then-derived promise yields a discriminated union
-    // TS narrows correctly (closure-mutated `let` sentinels don't).
-    const resultPromise = listPromise.then(
-      () => ({ ok: true as const, value: undefined }),
-      (err: Error) => ({ ok: false as const, err }),
-    );
-    await flushUntil(() => false, 3);
-
-    await vi.advanceTimersByTimeAsync(500);
-    const result = await resultPromise;
-    expect(result.ok).toBe(false);
-    if (result.ok) throw new Error("expected rejection");
-    expect(result.err.name).toBe("RequestTimeoutError");
-    expect(result.err.message).toMatch(/"thread\/list" timed out/);
-
-    // The timed-out call must not be replayed when reconnection eventually lands.
-    await vi.advanceTimersByTimeAsync(RECONNECT_BASE_MS);
-    expect(sockets).toHaveLength(2);
-    socketAt(sockets, 1).open();
-    await flushUntil(() => client.state === "ready");
     expect(sentFrames(socketAt(sockets, 1)).map((f) => f.method)).toEqual(["initialize", "initialized"]);
-  });
-
-  test("close() rejects queued requests with ConnectionClosedError without sending them", async () => {
-    const { factory, sockets } = dialer();
-    const client = new AppwireClient({ url: "ws://x/rpc", socketFactory: factory });
-    await connectReady(sockets, client);
-
-    socketAt(sockets, 0).closeFromServer(1006);
-    expect(client.state).toBe("reconnecting");
-
-    const listPromise = client.request("thread/list", { limit: 1 });
-    await flushUntil(() => false, 3);
-
-    client.close();
-    await expect(listPromise).rejects.toBeInstanceOf(ConnectionClosedError);
-    expect(client.state).toBe("closed");
   });
 });
 

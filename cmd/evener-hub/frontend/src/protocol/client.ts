@@ -98,31 +98,6 @@ interface PendingRequest {
   timer: ReturnType<typeof setTimeout>;
 }
 
-// A call made while "reconnecting" was never sent — the socket is gone — so it
-// is safe to hold and deliver on the fresh socket once the re-handshake lands,
-// rather than failing the caller with a user-visible "cannot call ... while
-// reconnecting" error. queuedSends holds the full call (payload plus its
-// resolve/reject/timer) until the re-handshake reaches "ready", at which point
-// flushQueuedSends() moves each entry into `pending` and sends it. This is
-// deliberately distinct from a call that was ALREADY in flight when the socket
-// dropped: that one was sent, the server may already be executing it, and
-// replaying it blind could double-fire a non-idempotent method (turn/start).
-// Those failAllPending rejects, exactly once, and they are never replayed.
-//
-// Crucially, a queued call lives ONLY in queuedSends, not in `pending`, until
-// it is flushed. That is what keeps a failed reconnect attempt's
-// handleSocketLoss -> failAllPending from rejecting it: the queue is a call
-// the server never saw, so it must survive every reconnect attempt that fails
-// short of "ready" and finally resolve on the one that succeeds.
-interface QueuedSend {
-  id: number;
-  method: MethodName;
-  params: unknown;
-  resolve: (result: unknown) => void;
-  reject: (err: Error) => void;
-  timer: ReturnType<typeof setTimeout>;
-}
-
 export class AppwireClient {
   private readonly url: string;
   private readonly socketFactory: (url: string) => WebSocketLike;
@@ -137,15 +112,6 @@ export class AppwireClient {
   private connectionState: ConnectionState = "idle";
   private nextId = 1;
   private readonly pending = new Map<number, PendingRequest>();
-  // Calls made while "reconnecting": held here until the re-handshake reaches
-  // "ready", then flushed onto the new socket by flushQueuedSends(). Each entry
-  // is paired with a PendingRequest in `pending` keyed by its id, so the
-  // ordinary timeout/handleMessage path settles it. Cap-bounded so a long
-  // outage can't grow it without bound; on overflow the newest calls reject
-  // rather than absorb a queue the connection has no near-term hope of
-  // draining.
-  private readonly queuedSends: QueuedSend[] = [];
-  private static readonly QUEUED_SENDS_MAX = 256;
   // Set only while waitForOpen() is in flight (before the socket has opened
   // or failed). Lets close() abort a handshake that's stuck waiting for a
   // socket event, the same way `pending` lets it abort in-flight RPCs. Reused
@@ -238,11 +204,6 @@ export class AppwireClient {
     this.disarmHeartbeat();
     this.disarmReconnect();
     this.failAllPending(new ConnectionClosedError("AppwireClient: closed"));
-    // Queued calls never reached `pending`, so failAllPending didn't touch
-    // them. Reject them with the same ConnectionClosedError an in-flight call
-    // gets: the caller never observed a socket, and "closed" is the real
-    // reason their call can never be delivered.
-    this.failAllQueued(new ConnectionClosedError("AppwireClient: closed"));
     this.setState("closed");
   }
 
@@ -252,15 +213,6 @@ export class AppwireClient {
     opts?: { timeoutMs?: number },
   ): Promise<MethodTypes[M]["result"]> {
     if (this.connectionState !== "ready" && !READY_EXEMPT_METHODS.has(method)) {
-      // A call made while "reconnecting" was never sent — the socket is gone —
-      // so queue it for the fresh socket rather than failing the caller with a
-      // user-visible "cannot call ... while reconnecting" error. The heartbeat
-      // (exempt) bypasses this; "connecting"/"closed" still reject as before,
-      // since a never-connected client has no prior ready to fall back to and a
-      // closed one never will.
-      if (this.connectionState === "reconnecting") {
-        return this.queueRequest(method, params, opts);
-      }
       return Promise.reject(
         new Error(`AppwireClient: cannot call "${method}" while state is "${this.connectionState}"`),
       );
@@ -277,90 +229,14 @@ export class AppwireClient {
         reject(new RequestTimeoutError(`AppwireClient: "${method}" timed out after ${timeoutMs}ms`));
       }, timeoutMs);
       this.pending.set(id, { resolve: resolve as (result: unknown) => void, reject, timer });
-      this.sendRequestFrame(socket, id, method, params, timer, reject);
+      try {
+        socket.send(JSON.stringify({ id, method, params }));
+      } catch (err) {
+        clearTimeout(timer);
+        this.pending.delete(id);
+        reject(err instanceof Error ? err : new Error(String(err)));
+      }
     });
-  }
-
-  // queueRequest holds a call made while "reconnecting": it records the unsent
-  // frame plus its resolve/reject/timer in queuedSends (NOT in `pending`), to
-  // be flushed onto the fresh socket by flushQueuedSends() once the
-  // re-handshake lands. The timeout fires whether or not the call has been
-  // flushed, so a re-handshake slower than the call's deadline rejects it
-  // exactly as an in-flight timeout would.
-  private queueRequest<M extends MethodName>(
-    method: M,
-    params: MethodTypes[M]["params"],
-    opts?: { timeoutMs?: number },
-  ): Promise<MethodTypes[M]["result"]> {
-    if (this.queuedSends.length >= AppwireClient.QUEUED_SENDS_MAX) {
-      return Promise.reject(new Error(`AppwireClient: reconnect queue full; cannot call "${method}"`));
-    }
-    const timeoutMs = opts?.timeoutMs ?? DEFAULT_REQUEST_TIMEOUT_MS;
-    const id = this.nextId++;
-    return new Promise<MethodTypes[M]["result"]>((resolve, reject) => {
-      const timer = setTimeout(() => {
-        // Remove from whichever structure currently owns this call: still
-        // queued (never sent), or already flushed into `pending` (sent).
-        const idx = this.queuedSends.findIndex((q) => q.id === id);
-        if (idx >= 0) {
-          this.queuedSends.splice(idx, 1);
-        } else {
-          this.pending.delete(id);
-        }
-        reject(new RequestTimeoutError(`AppwireClient: "${method}" timed out after ${timeoutMs}ms`));
-      }, timeoutMs);
-      this.queuedSends.push({
-        id,
-        method,
-        params,
-        resolve: resolve as (result: unknown) => void,
-        reject,
-        timer,
-      });
-    });
-  }
-
-  // flushQueuedSends drains the reconnect queue onto a freshly-ready socket.
-  // Called from setState's "ready" transition (which is also reached on the
-  // initial connect), so on a normal first connect it runs over an empty
-  // queue and is a no-op. Each entry moves from queuedSends into `pending`
-  // (so handleMessage owns it from here on) and is then sent on the wire.
-  // The original per-call timer keeps running unchanged: the call's deadline
-  // is measured from when it was made, not from when the connection came back,
-  // so a slow reconnect can still time a queued call out (and a fast one
-  // preserves most of its budget) — matching how an in-flight call's own
-  // timeout behaves across a reconnect.
-  private flushQueuedSends(): void {
-    if (this.queuedSends.length === 0) return;
-    const socket = this.socket;
-    if (!socket) return;
-    const queued = this.queuedSends.splice(0);
-    for (const entry of queued) {
-      const { id, method, params, resolve, reject, timer } = entry;
-      this.pending.set(id, { resolve, reject, timer });
-      this.sendRequestFrame(socket, id, method, params, timer, reject);
-    }
-  }
-
-  // sendRequestFrame serializes and sends one RPC frame on `socket`, and on a
-  // synchronous send failure tears down the matching PendingRequest the same
-  // way request()/flushQueuedSends set it up. Shared by the immediate send
-  // path and the reconnect flush.
-  private sendRequestFrame(
-    socket: WebSocketLike,
-    id: number,
-    method: MethodName,
-    params: unknown,
-    timer: ReturnType<typeof setTimeout>,
-    reject: (err: Error) => void,
-  ): void {
-    try {
-      socket.send(JSON.stringify({ id, method, params }));
-    } catch (err) {
-      clearTimeout(timer);
-      this.pending.delete(id);
-      reject(err instanceof Error ? err : new Error(String(err)));
-    }
   }
 
   onNotification(cb: (n: AnyNotification) => void): () => void {
@@ -709,18 +585,6 @@ export class AppwireClient {
     this.pending.clear();
   }
 
-  // failAllQueued rejects every call still waiting in the reconnect queue
-  // (never sent, so not in `pending`) — used by close(). Distinct from
-  // failAllPending so handleSocketLoss can reject in-flight calls without
-  // touching the queue, which must survive failed reconnect attempts.
-  private failAllQueued(err: Error): void {
-    for (const entry of this.queuedSends) {
-      clearTimeout(entry.timer);
-      entry.reject(err);
-    }
-    this.queuedSends.length = 0;
-  }
-
   private setState(next: ConnectionState): void {
     if (this.connectionState === next) return;
     this.connectionState = next;
@@ -735,11 +599,6 @@ export class AppwireClient {
       }
     }
     if (next === "ready") {
-      // Flush calls that queued while "reconnecting" onto the new socket
-      // before firing onReady subscribers, so a subscriber that itself calls
-      // request() sees the queue already drained (no double-send ordering
-      // hazard between its own call and a queued one).
-      this.flushQueuedSends();
       for (const cb of Array.from(this.readyHandlers)) {
         try {
           cb();
