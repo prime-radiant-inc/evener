@@ -7,6 +7,7 @@ import type { ItemModel, TurnModel } from "../../../../protocol/model";
 import { prefsStore, resetPrefsStoreForTests } from "../../../../stores/prefs";
 import { resetDisclosureStoreForTests } from "../../../../widgets/disclosure/disclosureStore";
 import { TurnBlock } from "../TurnBlock";
+import { SYSTEM_PROMPT_ITEM_ID } from "../transcriptVisibility";
 import { itemRendererFor } from "../types";
 import { formatCharCount } from "./format";
 import { SystemNoticeItem } from "./SystemNoticeItem";
@@ -327,6 +328,23 @@ test("a failure adjacent to a group that does collapse is left outside it, and u
   expect(screen.getByTestId("system-notice-failure")).toBeTruthy();
   const summary = screen.getByTestId("system-notice-group").querySelector("summary");
   expect(summary?.textContent).toBe("3 system events · notice a");
+});
+
+// The stable item_system_prompt id remains a narrow fallback for a system
+// prompt projected by an older daemon that predates the typed eventKind, so a
+// heterogeneous-version relay still collapses it correctly.
+test("the item_system_prompt id still classifies as scaffold when the wire carries no eventKind (old-daemon fallback)", () => {
+  showSystemPrompt();
+  render(<TurnBlock turn={turnWith([item(SYSTEM_PROMPT_ITEM_ID, { text: "You are Evener." })])} />);
+  // The fallback disclosure, not a plain quiet line: this is the behavior an
+  // older daemon's untyped item depends on, not a count of its characters.
+  expect(screen.getByTestId("system-notice-scaffold")).toBeTruthy();
+  expect(screen.queryByTestId("system-notice-line")).toBeNull();
+  // scaffoldLabel's own id-based fallback names it "System prompt", the same
+  // as the typed eventKind path - never a snippet of the prompt text.
+  expect(screen.getByTestId("system-notice-scaffold").querySelector("summary")?.textContent).toMatch(
+    /^System prompt · /,
+  );
 });
 
 // --- round timings redesign (kata 7zkv) ------------------------------------
