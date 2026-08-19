@@ -20,14 +20,14 @@
 - TDD per superpowers:test-driven-development. Test output must be pristine to pass; expected errors are captured and asserted.
 - Run only the tests you wrote or directly affected, plus the narrowest package run that covers your change. The controller runs the full suites centrally. Never launch `make merge-approval-gate` or other long gates.
 - Mutation-list contract: for every test you write or repair, report the exact one-line source change that must make it fail, and state which of those mutations you actually ran. A test whose mutation was never executed is a test nobody has shown can fail.
-- serffuzz-tagged tests only run under `-tags serffuzz`; `make test` filters `-run '^(Test|Example)'` and never sees `check*` families. Before concluding a thing is untested, remember the other build tag exists.
+- evenerfuzz-tagged tests only run under `-tags evenerfuzz`; `make test` filters `-run '^(Test|Example)'` and never sees `check*` families. Before concluding a thing is untested, remember the other build tag exists.
 - Decision records are normative. If your fix would contradict `docs/testing.md`, `docs/job-control.md`, or a `docs/superpowers/specs/*-design.md`, stop and report BLOCKED with the citation instead of "fixing" it.
 - If you find a kata premise wrong, say so in your report with evidence — the correction is the most valuable output. Do not silently work around it.
 - Commit frequently, conventional-commit style (`fix(agent): …`, `test(fakellm): …`), each commit scoped to one coherent change, staged by explicit path.
 
 ---
 
-### Task 1: Kata 72k9 — two fuzz-family transcript tests fail under `-tags serffuzz`
+### Task 1: Kata 72k9 — two fuzz-family transcript tests fail under `-tags evenerfuzz`
 
 **Files:**
 - Investigate: `agent/transcript_read_differential_fuzz_test.go` (failure at :112), `agent/transcript_structured_fuzz_test.go` (failures at :639-648), and whatever transcript code the diagnosis implicates.
@@ -38,7 +38,7 @@
 **Controller-verified baseline (2026-08-17, this worktree, commit 9c6a6f1e4):**
 
 ```
-$ cd agent && go test -tags serffuzz -run 'TestTranscriptReadersAgreeSanity|TestStructuredTranscriptReachesDeeper' -count=1 .
+$ cd agent && go test -tags evenerfuzz -run 'TestTranscriptReadersAgreeSanity|TestStructuredTranscriptReachesDeeper' -count=1 .
 --- FAIL: TestTranscriptReadersAgreeSanity (0.00s)
     transcript_read_differential_fuzz_test.go:112: clean transcript reported skips: readTranscript=1 full=1 strict=1
 --- FAIL: TestStructuredTranscriptReachesDeeper (0.36s)
@@ -52,7 +52,7 @@ Both failures are deterministic in this worktree (not load flakes — the first 
 
 **Kata body (verbatim):**
 
-> Two serffuzz-tagged tests in ./agent/ fail on main and nobody has noticed, because the default gate never runs that tag.
+> Two evenerfuzz-tagged tests in ./agent/ fail on main and nobody has noticed, because the default gate never runs that tag.
 >
 >   TestTranscriptReadersAgreeSanity
 >   TestStructuredTranscriptReachesDeeper
@@ -61,30 +61,30 @@ Both failures are deterministic in this worktree (not load flakes — the first 
 >
 > ## What is NOT known
 >
-> Nobody has diagnosed either failure. So this kata begins at zero: no root cause, no reproduction beyond "run the agent package with -tags serffuzz", no judgement on whether the tests or the code are wrong.
+> Nobody has diagnosed either failure. So this kata begins at zero: no root cause, no reproduction beyond "run the agent package with -tags evenerfuzz", no judgement on whether the tests or the code are wrong.
 >
 > Both names suggest transcript decoding agreement - one that two readers agree, one that a structured reader reaches deeper than a plain one. A plausible first question is whether a transcript format change landed without updating them, but that is a guess and should be treated as one.
 >
 > ## Stop condition
 >
-> Both tests pass under `-tags serffuzz`, or they are shown to be asserting something no longer true and are corrected with the reasoning recorded. Do not close by deleting or skipping them without establishing which side is wrong.
+> Both tests pass under `-tags evenerfuzz`, or they are shown to be asserting something no longer true and are corrected with the reasoning recorded. Do not close by deleting or skipping them without establishing which side is wrong.
 
 **Filer's correction (verbatim, later comment — this narrows the scope):**
 
-> 1. 'No gate watches that tag' is FALSE. lint-serffuzz is a member of LINT_TARGETS (Makefile:607), and 'lint: $(LINT_TARGETS)' is step 1 of merge-approval-gate.
+> 1. 'No gate watches that tag' is FALSE. lint-evenerfuzz is a member of LINT_TARGETS (Makefile:607), and 'lint: $(LINT_TARGETS)' is step 1 of merge-approval-gate.
 > 2. These two tests are EXCLUDED FROM THE GATE BY NAME, deliberately. scripts/gate-surface-lib.sh:17 sets GATE_FUZZ_TEST_SKIP, which contains both 'TranscriptReadersAgreeSanity' and 'Structured.*Reach'. Their absence from the gate is by design, not an oversight, and they are expected to run only under make fuzz / make test-fuzz.
 > 3. Kata 9e6r ALREADY OBSERVED BOTH OF THESE RED, with file and line.
 >
-> What SURVIVES as a real question: do these two pass under 'make fuzz' / 'cd agent && go test -tags serffuzz'? If they do not, that is a defect in a test family the gate deliberately does not run, which is a legitimate thing to fix - but it is a fuzz-family failure, not an unwatched-tag problem.
+> What SURVIVES as a real question: do these two pass under 'make fuzz' / 'cd agent && go test -tags evenerfuzz'? If they do not, that is a defect in a test family the gate deliberately does not run, which is a legitimate thing to fix - but it is a fuzz-family failure, not an unwatched-tag problem.
 >
-> The second question I posed - 'should anything watch the serffuzz tag' - is ANSWERED and should not be re-derived.
+> The second question I posed - 'should anything watch the evenerfuzz tag' - is ANSWERED and should not be re-derived.
 
-**Constraints specific to this task:** Do NOT remove the tests from `GATE_FUZZ_TEST_SKIP` — the skip is a recorded Jesse ruling (no fuzz-family test belongs in the default suite). Do NOT answer the "should anything watch the tag" question — it is answered. The deliverable is: both tests green under `-tags serffuzz`, with the diagnosis recorded (which side was wrong and why).
+**Constraints specific to this task:** Do NOT remove the tests from `GATE_FUZZ_TEST_SKIP` — the skip is a recorded Jesse ruling (no fuzz-family test belongs in the default suite). Do NOT answer the "should anything watch the tag" question — it is answered. The deliverable is: both tests green under `-tags evenerfuzz`, with the diagnosis recorded (which side was wrong and why).
 
 - [ ] **Step 1:** Reproduce both failures with the command above; confirm determinism (run twice).
 - [ ] **Step 2:** Diagnose using superpowers:systematic-debugging. `git log --oneline -- agent/transcript*.go` and the failing assertions' own history are the obvious first probes. Establish which side is wrong: the tests' expectations or the transcript code.
 - [ ] **Step 3:** Fix the wrong side. If the tests are stale, correct their expectations with the reasoning in a comment ONLY where the code cannot say it; if the code regressed, TDD the fix (failing test exists already — these two).
-- [ ] **Step 4:** `cd agent && go test -tags serffuzz -run 'TestTranscriptReadersAgreeSanity|TestStructuredTranscriptReachesDeeper' -count=2 .` → PASS. Also run the narrowest untagged package tests covering any production file you touched.
+- [ ] **Step 4:** `cd agent && go test -tags evenerfuzz -run 'TestTranscriptReadersAgreeSanity|TestStructuredTranscriptReachesDeeper' -count=2 .` → PASS. Also run the narrowest untagged package tests covering any production file you touched.
 - [ ] **Step 5:** Report the mutation list (for changed assertions: the one-line change that must make each red again; state which you ran).
 - [ ] **Step 6:** Commit by explicit path.
 

@@ -1248,7 +1248,7 @@ Confirm `spawnConfig` has the new `communicateOutputSchema` field, `spawnAgent` 
 Run: `cd /Users/jesse/prime-radiant/toil-suite/evener && make test && make lint`
 Expected: all modules PASS; lint clean (golangci ×4 + `evener-namingcheck`/`internalcheck`/`docscheck`). Fix any fallout. Likely touch points: the `spawnAgent` signature change may ripple to other tests that call it (update them to pass `nil`); the new `delegate`/`job_send_message` tools may appear in tool-count/parity/snapshot tests (update the expected tool inventory to include them — they are additive, alongside the legacy subagent tools).
 
-- [ ] **Step 3: Live smoke** (per `reference_serf_live_run` recipe — build a standalone binary, do NOT touch a running serve):
+- [ ] **Step 3: Live smoke** (per `reference_evener_live_run` recipe — build a standalone binary, do NOT touch a running serve):
 
 ```bash
 cd /Users/jesse/prime-radiant/toil-suite/evener

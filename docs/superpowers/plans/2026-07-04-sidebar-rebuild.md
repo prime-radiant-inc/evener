@@ -2187,7 +2187,7 @@ git commit -m "feat(hub): project delete endpoint (path-validated, live-refusing
 Add `Origin string` to `schema.SessionMeta`, fed from `EVENER_SESSION_ORIGIN` through the shared `agent.NewSession` path (both `evener serve` and one-shot `evener run`), preserved on resume; then classify a project into "Test runs" when it has ≥1 session and *every* session carries `Origin=="test"` (TestRuns precedence over ArchivedProjects — round-2 B6). NOTE: this coordinates with WS2's `SessionMeta` fields — regenerate `goldenMetaJSON` from live marshal output, do not hand-edit assuming other WS2 keys landed.
 
 **Files:**
-- Modify: `agent/schema/snapshot.go` (`Origin`), `agent/session.go` (`origin` field), `agent/session_state.go` (`Meta` stamp), `agent/session_init.go` (set from env + restore from meta), `envvars/envvars.go` (`SERFSessionOrigin`), `docs/environment.md`
+- Modify: `agent/schema/snapshot.go` (`Origin`), `agent/session.go` (`origin` field), `agent/session_state.go` (`Meta` stamp), `agent/session_init.go` (set from env + restore from meta), `envvars/envvars.go` (`EVENERSessionOrigin`), `docs/environment.md`
 - Modify: `cmd/evener-hub/internal/hubcore/tree.go` (`IsTestRun`), `cmd/evener-hub/web_api_tree.go` (TestRuns routing)
 - Test: `agent/snapshot_golden_test.go` (regenerate), `agent/session_origin_test.go` (create), `cmd/evener-hub/internal/hubcore/tree_test.go` (append)
 
@@ -2206,7 +2206,7 @@ import (
 )
 
 func TestSessionOriginFromEnv(t *testing.T) {
-	t.Setenv(envvars.SERFSessionOrigin.Name, "test")
+	t.Setenv(envvars.EVENERSessionOrigin.Name, "test")
 	sess := newTestSession(t) // existing agent_test helper that calls agent.NewSession
 	defer sess.Close()
 	if got := sess.Meta().Origin; got != "test" {
@@ -2248,7 +2248,7 @@ func TestAllTestSessionsClassifyAsTestRun(t *testing.T) {
 - [ ] **Step 2: Run tests to verify they fail**
 
 Run: `cd agent && go test . -run TestSessionOriginFromEnv -v` and `go test ./cmd/evener-hub/internal/hubcore/ -run TestAllTestSessionsClassifyAsTestRun -v`
-Expected: FAIL — `Origin`, `SERFSessionOrigin`, `IsTestRun` undefined.
+Expected: FAIL — `Origin`, `EVENERSessionOrigin`, `IsTestRun` undefined.
 
 - [ ] **Step 3: Add `Origin` to the schema + `Session`**
 
@@ -2266,7 +2266,7 @@ In `agent/session.go`, add an `origin string` field to the `Session` struct (nea
 In `agent/session_init.go`, in the fresh-create path (`initSessionState`, called from `NewSession`), set:
 
 ```go
-	s.origin = envvars.SERFSessionOrigin.Getenv()
+	s.origin = envvars.EVENERSessionOrigin.Getenv()
 ```
 
 and in the restore-from-meta path (where naming is seeded from `meta` at session_init.go:366-371), add:
@@ -2285,13 +2285,13 @@ In `agent/session_state.go`, in the `Meta()` return literal, add:
 
 - [ ] **Step 4: Declare the env var**
 
-In `envvars/envvars.go`, add to the `var (...)` block (near `SERFStateDir`):
+In `envvars/envvars.go`, add to the `var (...)` block (near `EVENERStateDir`):
 
 ```go
-	SERFSessionOrigin = Var{Name: "EVENER_SESSION_ORIGIN", Summary: "Marks a session's launch origin (e.g. \"test\" for agentic-testing runs).", Visibility: Public}
+	EVENERSessionOrigin = Var{Name: "EVENER_SESSION_ORIGIN", Summary: "Marks a session's launch origin (e.g. \"test\" for agentic-testing runs).", Visibility: Public}
 ```
 
-and add `SERFSessionOrigin,` to the `allVars` slice (else it is invisible to `All()`/`Find()` and the audit). Add a row to `docs/environment.md` under `## Evener Commands`:
+and add `EVENERSessionOrigin,` to the `allVars` slice (else it is invisible to `All()`/`Find()` and the audit). Add a row to `docs/environment.md` under `## Evener Commands`:
 
 ```
 | `EVENER_SESSION_ORIGIN` | Marks a session's launch origin (e.g. `test`) so the hub groups agentic-test runs. |

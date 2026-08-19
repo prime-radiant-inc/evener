@@ -8,7 +8,7 @@
 # target. scripts/fuzz-coverage-global.sh measures only what the fuzz corpus
 # replays. The gap between them is not small and it is not noise: this repo keeps
 # whole families of behavioural checks in `check*` functions that only a
-# serffuzz-tagged "program" fuzz target calls, so the packages using that pattern
+# evenerfuzz-tagged "program" fuzz target calls, so the packages using that pattern
 # read far lower on the test track than they really are (cmd/evener-hub/internal/
 # appsource: 66.4% on the test track, 83.1% under its program target).
 #
@@ -122,7 +122,7 @@ for m in $modules; do
 	# The fuzz track replays committed seed corpora only: `go test` without
 	# -fuzz runs each target's seeds as ordinary subtests, which is deterministic
 	# and is what make fuzz gates on.
-	if ! ( cd "$repo_root/$m" && go test -tags serffuzz -count=1 -coverpkg="$pkgs" -coverprofile="$base.fuzz.cov" \
+	if ! ( cd "$repo_root/$m" && go test -tags evenerfuzz -count=1 -coverpkg="$pkgs" -coverprofile="$base.fuzz.cov" \
 		-run '^Fuzz' ./... ) >"$base.fuzz.log" 2>&1; then
 		printf '%-10s %s\n' "$m" "FUZZ TRACK FAILED (log: $base.fuzz.log)"
 		fail=1; continue
@@ -138,7 +138,7 @@ for m in $modules; do
 
 	# A union denominator above both tracks means some block was counted twice
 	# because the two builds split it differently. A handful is expected and
-	# harmless: under -tags serffuzz invariant.Hold becomes a real call, which
+	# harmless: under -tags evenerfuzz invariant.Hold becomes a real call, which
 	# re-splits the blocks around it (8 statements in 33141 for the root module).
 	# A MATERIAL divergence is a different basis, and its percentage would be
 	# meaningless, so that still fails rather than being quietly reported.

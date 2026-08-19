@@ -1010,7 +1010,7 @@ Expected: obsolete environment/config fields are still present.
 
 - [ ] **Step 3: Delete the obsolete controls and update live docs.**
 
-Remove the environment variable from `SERFFuzzRecord`'s override prose as well as its standalone row. Remove `RawHTTPLogging` from launch merge/wire/schema paths. Update live docs and examples; do not add an ignored compatibility field.
+Remove the environment variable from `EVENERFuzzRecord`'s override prose as well as its standalone row. Remove `RawHTTPLogging` from launch merge/wire/schema paths. Update live docs and examples; do not add an ignored compatibility field.
 
 - [ ] **Step 4: Prove no current code or live documentation describes the old split.**
 

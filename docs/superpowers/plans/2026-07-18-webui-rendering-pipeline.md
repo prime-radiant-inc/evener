@@ -1599,8 +1599,8 @@ Expected: FAIL — methods don't exist; handler runs per event.
 Replace the scroll listener in `bindScrollAffordance`:
 
 ```js
-      if (!el.__serfScrollPillBound) {
-        el.__serfScrollPillBound = true;
+      if (!el.__evenerScrollPillBound) {
+        el.__evenerScrollPillBound = true;
         el.addEventListener("scroll", () => {
           if (this.scrollAffordanceTick) return;
           this.scrollAffordanceTick = true;

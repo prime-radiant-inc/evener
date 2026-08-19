@@ -565,7 +565,7 @@ Run:
 
 ```bash
 go test ./agent -run 'Test(SpawnAgent|PrepareSubagentRun)'
-go test -tags=serffuzz ./agent -run '^$'
+go test -tags=evenerfuzz ./agent -run '^$'
 go test -race ./agent -run 'TestSpawnAgent_(UnavailablePluginModelUsesExplicitFallback|AvailablePluginAliasWins)'
 ```
 
@@ -783,7 +783,7 @@ Run:
 ```bash
 gofmt -w agent/subagent_model_selection.go agent/subagent_model_selection_test.go agent/subagents.go agent/plugin_agents_integration_test.go agent/subagents_fuzz_test.go agent/job_delegate.go agent/job_delegate_model_selection_test.go agent/job_delegate_isolation_test.go llm/model_catalog.go llm/model_catalog_embedded.go llm/model_catalog_test.go
 go test ./llm ./agent
-go test -tags=serffuzz ./agent -run '^$'
+go test -tags=evenerfuzz ./agent -run '^$'
 go test ./...
 git diff --check
 git status --short

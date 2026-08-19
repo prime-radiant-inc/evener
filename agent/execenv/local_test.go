@@ -688,7 +688,7 @@ func TestExecCommand_AddsVenvBinToPATH_WhenPresent(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	cmdName := "_serf_venv_marker_cmd"
+	cmdName := "_evener_venv_marker_cmd"
 	scriptPath := filepath.Join(venvBin, cmdName)
 	if err := os.WriteFile(scriptPath, []byte("#!/bin/sh\necho venv_ok\n"), 0o755); err != nil {
 		t.Fatal(err)
@@ -718,7 +718,7 @@ func TestExecCommand_DoesNotInventVenvBinPATH_WhenAbsent(t *testing.T) {
 	dir := t.TempDir()
 	env := NewLocalExecutionEnvironment(dir)
 
-	cmdName := "_serf_nonexistent_venv_cmd"
+	cmdName := "_evener_nonexistent_venv_cmd"
 	res, err := env.ExecCommand(context.Background(), cmdName, 30_000, "", nil)
 	if err == nil {
 		t.Fatalf("expected error (stdout=%q stderr=%q)", res.Stdout, res.Stderr)

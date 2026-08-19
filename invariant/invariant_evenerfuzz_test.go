@@ -1,4 +1,4 @@
-//go:build serffuzz
+//go:build evenerfuzz
 
 package invariant
 
@@ -8,12 +8,12 @@ import (
 	"testing"
 )
 
-// Under -tags serffuzz invariants are live: Enabled is true, a satisfied
+// Under -tags evenerfuzz invariants are live: Enabled is true, a satisfied
 // invariant is a no-op, and a violated one panics with the formatted message so
 // the never-panic fuzz oracle catches it.
 func TestFuzzBuildEnforces(t *testing.T) {
 	if !Enabled {
-		t.Fatal("Enabled must be true under -tags serffuzz")
+		t.Fatal("Enabled must be true under -tags evenerfuzz")
 	}
 
 	// A true condition does not panic.
@@ -31,7 +31,7 @@ func TestFuzzBuildEnforces(t *testing.T) {
 	defer func() {
 		r := recover()
 		if r == nil {
-			t.Fatal("Hold(false) did not panic under serffuzz")
+			t.Fatal("Hold(false) did not panic under evenerfuzz")
 		}
 		msg, ok := r.(string)
 		if !ok {

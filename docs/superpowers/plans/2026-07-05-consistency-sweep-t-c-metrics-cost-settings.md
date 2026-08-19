@@ -1513,7 +1513,7 @@ adds the toggle control and the CSS gate.
 
 Use the e2e-scenario-testing skill. Build fresh binaries
 (`go build -o /tmp/evener ./cmd/evener`, `evener-hub`, `evener-tui`), run a live model per
-`reference_serf_live_run`, author falsifiable scenario cards:
+`reference_evener_live_run`, author falsifiable scenario cards:
 
 - [ ] **Card: cost estimate appears and is gateable.** Start a session, send one prompt to
   completion; assert the web status row shows `~$` next to tokens; toggle Show-cost off in

@@ -12,7 +12,7 @@
 
 ## File Structure
 
-- `envvars/envvars.go`: add `SERFOpenAIResponsesContinuation` and include it in `allVars`.
+- `envvars/envvars.go`: add `EVENEROpenAIResponsesContinuation` and include it in `allVars`.
 - `cmd/evener/run.go`: resolve `--openai-responses-continuation` over `EVENER_OPENAI_RESPONSES_CONTINUATION`.
 - `cmd/evener/serve.go`: resolve the serve flag over `EVENER_OPENAI_RESPONSES_CONTINUATION`.
 - `cmd/evener/openai_responses_continuation_config.go` (or nearby existing file): add a tiny resolver helper if needed to avoid duplicating precedence logic.
@@ -68,7 +68,7 @@ Expected: FAIL because the env var row/resolver/help entries do not exist yet.
 Add:
 
 ```go
-SERFOpenAIResponsesContinuation = Var{
+EVENEROpenAIResponsesContinuation = Var{
 	Name: "EVENER_OPENAI_RESPONSES_CONTINUATION",
 	Summary: "Default OpenAI Responses continuation mode: off|auto. CLI and launch config override it.",
 	Visibility: Public,
@@ -86,7 +86,7 @@ func resolveOpenAIResponsesContinuation(flagValue string, getenv func(string) st
 	if trimmed := strings.TrimSpace(flagValue); trimmed != "" {
 		return trimmed
 	}
-	return envvars.SERFOpenAIResponsesContinuation.FromTrimmed(getenv)
+	return envvars.EVENEROpenAIResponsesContinuation.FromTrimmed(getenv)
 }
 ```
 
@@ -94,7 +94,7 @@ Use it from both `run.go` and `serve.go` so fresh sessions and resumed sessions 
 
 - [ ] **Step 4: Wire help env lists**
 
-Add `envvars.SERFOpenAIResponsesContinuation` to both `printRunEnvVars` and `printServeEnvVars`.
+Add `envvars.EVENEROpenAIResponsesContinuation` to both `printRunEnvVars` and `printServeEnvVars`.
 
 ### Task 2: Hub Schema and User Docs
 
@@ -109,8 +109,8 @@ Add `envvars.SERFOpenAIResponsesContinuation` to both `printRunEnvVars` and `pri
 Extend `TestLaunchOptionSchema_OpenAIResponsesContinuation` to assert:
 
 ```go
-if opt.EnvFallback == nil || opt.EnvFallback.Name != envvars.SERFOpenAIResponsesContinuation.Name || opt.EnvFallback.Secret {
-	t.Fatalf("EnvFallback = %+v, want public %s", opt.EnvFallback, envvars.SERFOpenAIResponsesContinuation.Name)
+if opt.EnvFallback == nil || opt.EnvFallback.Name != envvars.EVENEROpenAIResponsesContinuation.Name || opt.EnvFallback.Secret {
+	t.Fatalf("EnvFallback = %+v, want public %s", opt.EnvFallback, envvars.EVENEROpenAIResponsesContinuation.Name)
 }
 ```
 

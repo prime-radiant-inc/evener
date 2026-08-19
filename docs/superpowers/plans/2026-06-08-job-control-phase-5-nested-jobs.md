@@ -1083,7 +1083,7 @@ make test && make lint
 ```
 Expected: all modules PASS; lint clean (golangci ×4 + `evener-namingcheck`/`internalcheck`/`docscheck`). Fix any fallout. Likely touch points: the new `spawnConfig` fields (ensure they do not break the converter/round-trip tests — they are `json:"-"`, so they should not appear in `schema.ConfigSnapshot`; if a snapshot/parity test enumerates `spawnConfig`, it should still pass since these are runtime-only); any nested-visibility change to `job_list`'s projected shape (update the expected JSON in Phase 2's `job_list` tests if `parent_job_id` projection changed).
 
-- [ ] **Step 4: Live smoke** (per `reference_serf_live_run` recipe — build a standalone binary, do NOT touch a running serve):
+- [ ] **Step 4: Live smoke** (per `reference_evener_live_run` recipe — build a standalone binary, do NOT touch a running serve):
 
 ```bash
 cd /Users/jesse/prime-radiant/toil-suite/evener

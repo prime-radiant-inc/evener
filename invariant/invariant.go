@@ -1,4 +1,4 @@
-//go:build !serffuzz
+//go:build !evenerfuzz
 
 // Package invariant provides build-tag-gated internal consistency assertions:
 // cheap checks placed at the point a subsystem's logic could first go wrong, so
@@ -11,7 +11,7 @@
 // disassembly: a Hold call in a hot function compiles to no instructions — no
 // boxing of the variadic args, no evaluation of the condition.)
 //
-// Built with -tags serffuzz (the build the fuzz targets use), a violated
+// Built with -tags evenerfuzz (the build the fuzz targets use), a violated
 // invariant panics with the formatted message, so the existing never-panic fuzz
 // oracle reports it for free at the point the logic first went wrong.
 //
@@ -24,9 +24,9 @@ package invariant
 
 // Enabled reports whether invariants are live. It is an untyped constant, so
 // `if invariant.Enabled { ... }` is dead-code-eliminated in a production build
-// and compiled in under -tags serffuzz.
+// and compiled in under -tags evenerfuzz.
 const Enabled = false
 
 // Hold asserts cond is true. This is the production no-op form; see the package
-// doc. Under -tags serffuzz it panics when cond is false.
+// doc. Under -tags evenerfuzz it panics when cond is false.
 func Hold(cond bool, format string, args ...any) {}

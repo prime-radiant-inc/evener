@@ -923,14 +923,14 @@ func validateResolvedExclusion(exclusion Exclusion) error {
 			return fmt.Errorf("evaluate platform constraints for %s: %w", exclusion.SourcePath, err)
 		}
 		if matched {
-			return fmt.Errorf("source file %s is available on %s/%s with serffuzz; platform exclusions require an unavailable build-constrained file", exclusion.SourcePath, coverageBuild.GOOS, coverageBuild.GOARCH)
+			return fmt.Errorf("source file %s is available on %s/%s with evenerfuzz; platform exclusions require an unavailable build-constrained file", exclusion.SourcePath, coverageBuild.GOOS, coverageBuild.GOARCH)
 		}
 		platformDerived, err := hasPlatformDerivedUnavailability(exclusion.SourcePath, exclusion.File, coverageBuild)
 		if err != nil {
 			return err
 		}
 		if !platformDerived {
-			return fmt.Errorf("source file %s is unavailable with serffuzz but not because of a GOOS/GOARCH filename suffix or platform-only build constraint", exclusion.SourcePath)
+			return fmt.Errorf("source file %s is unavailable with evenerfuzz but not because of a GOOS/GOARCH filename suffix or platform-only build constraint", exclusion.SourcePath)
 		}
 	default:
 		return fmt.Errorf("kind %q must be generated or platform", exclusion.Kind)
@@ -944,13 +944,13 @@ func validateResolvedExclusion(exclusion Exclusion) error {
 func globalCoverageBuildContext() build.Context {
 	ctx := build.Default
 	ctx.BuildTags = append([]string(nil), ctx.BuildTags...)
-	ctx.BuildTags = append(ctx.BuildTags, "serffuzz")
+	ctx.BuildTags = append(ctx.BuildTags, "evenerfuzz")
 	return ctx
 }
 
 // globalPlatformBuildTags mirrors go/build's unexported historical GOOS and
 // GOARCH tag lists as of Go 1.25. It deliberately excludes synthetic and
-// feature tags such as unix, cgo, compiler, go1.N, serffuzz, and arbitrary
+// feature tags such as unix, cgo, compiler, go1.N, evenerfuzz, and arbitrary
 // user tags: those tags cannot justify excluding ordinary production source.
 var globalPlatformBuildTags = map[string]struct{}{
 	"aix": {}, "android": {}, "darwin": {}, "dragonfly": {}, "freebsd": {}, "hurd": {}, "illumos": {}, "ios": {}, "js": {}, "linux": {}, "nacl": {}, "netbsd": {}, "openbsd": {}, "plan9": {}, "solaris": {}, "wasip1": {}, "windows": {}, "zos": {},
@@ -959,7 +959,7 @@ var globalPlatformBuildTags = map[string]struct{}{
 
 // hasPlatformDerivedUnavailability proves that an unavailable replay source is
 // unavailable for a real platform reason. MatchFile alone is not sufficient:
-// a file hidden by !serffuzz, cgo, a release tag, or an arbitrary feature tag
+// a file hidden by !evenerfuzz, cgo, a release tag, or an arbitrary feature tag
 // is still ordinary production source and must remain in the denominator.
 func hasPlatformDerivedUnavailability(sourcePath, file string, coverageBuild build.Context) (bool, error) {
 	expressions, err := leadingBuildConstraintExpressions(sourcePath)
@@ -992,7 +992,7 @@ func isGlobalPlatformBuildTag(tag string) bool {
 // hasUnavailablePlatformFilenameSuffix asks go/build to evaluate the source
 // filename against the replay context while replacing its contents with a
 // neutral package declaration. This retains Go's exact suffix and compatibility
-// rules without letting !serffuzz or another source build constraint masquerade
+// rules without letting !evenerfuzz or another source build constraint masquerade
 // as the filename's platform reason.
 func hasUnavailablePlatformFilenameSuffix(sourcePath, file string, coverageBuild build.Context) bool {
 	if !hasGlobalPlatformFilenameSuffix(file) {

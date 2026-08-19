@@ -503,7 +503,7 @@ make build && make test && make lint
 
 Expected: all modules build; all tests PASS (pristine output); `make lint` clean (golangci ×4 modules + `evener-namingcheck` + `evener-internalcheck` + `evener-docscheck`). A clean grep is necessary but NOT sufficient — the build/test catch renamed-symbol consumers a token list misses (§13). Fix any fallout and re-run until green.
 
-- [ ] **Step 7: Live e2e smoke** (per `reference_serf_live_run`; build a standalone binary, do NOT touch a running serve). Confirm the cutover didn't break the live surface — both the agent tools and the web client:
+- [ ] **Step 7: Live e2e smoke** (per `reference_evener_live_run`; build a standalone binary, do NOT touch a running serve). Confirm the cutover didn't break the live surface — both the agent tools and the web client:
 
 ```bash
 cd /Users/jesse/prime-radiant/toil-suite/evener

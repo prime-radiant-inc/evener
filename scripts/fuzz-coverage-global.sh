@@ -368,7 +368,7 @@ for module in "${selected_modules[@]}"; do
 	module_dir="$(map_get "$module" "$workspace_module_dirs")" || module_dir=""
 	[ -n "$logical_module_dir" ] && [ -n "$module_dir" ] || die "missing module directory mapping: $module"
 	list_file="$work/packages-${module//\//_}.txt"
-	if ! (cd "$logical_module_dir" && "$go_bin" list -tags serffuzz -f '{{.Dir}}'$'\t''{{.ImportPath}}' ./...) >"$list_file"; then
+	if ! (cd "$logical_module_dir" && "$go_bin" list -tags evenerfuzz -f '{{.Dir}}'$'\t''{{.ImportPath}}' ./...) >"$list_file"; then
 		die "go list failed for module: $module"
 	fi
 	while IFS="$tab" read -r package_dir import_path; do
@@ -563,12 +563,12 @@ replay_target() {
 		# zero-count profile as coverage.
 		if ! (cd "$logical_module_dir" && \
 			env -u RAPID_FAILFILE EVENER_FUZZ_TESTS=1 RAPID_SEED="$seed" RAPID_CHECKS="$rapid_checks" RAPID_STEPS="$rapid_steps" RAPID_NOFAILFILE="$rapid_nofailfile" RAPID_LOG="$rapid_log" RAPID_V="$rapid_verbose" RAPID_DEBUG="$rapid_debug" RAPID_DEBUGVIS="$rapid_debugvis" RAPID_SHRINKTIME="$rapid_shrinktime" \
-			"$capped" "$go_bin" test -tags serffuzz -run "^$name\$" -count=1 -coverprofile="$profile" "$pkg") >&2; then
+			"$capped" "$go_bin" test -tags evenerfuzz -run "^$name\$" -count=1 -coverprofile="$profile" "$pkg") >&2; then
 			die "replay failed: $label"
 		fi
 	else
 		if ! (cd "$logical_module_dir" && \
-			"$capped" "$go_bin" test -tags serffuzz -run "^$name\$" -count=1 -coverprofile="$profile" "$pkg") >&2; then
+			"$capped" "$go_bin" test -tags evenerfuzz -run "^$name\$" -count=1 -coverprofile="$profile" "$pkg") >&2; then
 			die "replay failed: $label"
 		fi
 	fi

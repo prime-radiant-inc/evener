@@ -134,7 +134,7 @@ func TestSession_OpenAIResponsesContinuationPhase12PublicLiveProof(t *testing.T)
 		Provider:           "openai",
 		Model:              model,
 		Messages:           []llm.Message{llm.User("This invalid anchor request should fail clearly.")},
-		PreviousResponseID: "resp_serf_invalid_" + runID,
+		PreviousResponseID: "resp_evener_invalid_" + runID,
 		Store:              &store,
 	}
 	if _, err := adapter.Complete(ctx, invalidReq); err == nil {

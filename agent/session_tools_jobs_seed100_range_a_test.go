@@ -1,4 +1,4 @@
-//go:build serffuzz
+//go:build evenerfuzz
 
 package agent
 
@@ -11,7 +11,7 @@ import (
 
 // seed100ToolsRangeA replays deterministic fixtures for the front half of the
 // job-tool surface. The registered job-manager fuzz target calls this helper;
-// keeping the fixtures behind serffuzz preserves the ordinary test boundary.
+// keeping the fixtures behind evenerfuzz preserves the ordinary test boundary.
 func seed100ToolsRangeA(t *testing.T) {
 	t.Helper()
 

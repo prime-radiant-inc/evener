@@ -1010,7 +1010,7 @@ git commit -m "test(agent): observer-sidecar composition (frame delivery + alias
 Run: `cd /Users/jesse/prime-radiant/toil-suite/evener && make test && make lint`
 Expected: all modules PASS; lint clean (golangci ×4 + `evener-namingcheck`/`evener-internalcheck`/`docscheck`). Fix any fallout. The new `DefJobWatch` adds a tool to the root profile, so the profile/parity/snapshot tests (`agent/provider/profile_test.go`, any `ToolDefinitions()` golden) may need the `job_watch` entry added — update them to the new expected tool set, do not delete assertions.
 
-- [ ] **Step 2: Live e2e scenario** (spec §14 "an observer sidecar commenting back through `job_send_message`"). Per `reference_serf_live_run`: build a standalone binary; do **not** touch a running serve.
+- [ ] **Step 2: Live e2e scenario** (spec §14 "an observer sidecar commenting back through `job_send_message`"). Per `reference_evener_live_run`: build a standalone binary; do **not** touch a running serve.
 
 ```bash
 cd /Users/jesse/prime-radiant/toil-suite/evener

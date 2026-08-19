@@ -33,7 +33,7 @@ verified 2026-08-06; trust symbol names.
   never touches an unmanaged worktree.
 - TDD; real git worktrees in tests (the package's existing fixtures), no
   mocks; multi-module gates per commit, exit codes only. Gates must include
-  `make lint` — build+test alone does not compile `//go:build serffuzz`
+  `make lint` — build+test alone does not compile `//go:build evenerfuzz`
   sources, and a broken compile floor once survived a full review round.
 
 ---

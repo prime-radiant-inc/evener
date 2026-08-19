@@ -179,7 +179,7 @@ provider target re-seeded in A gets a differential or internal invariant:
   new shapes don't diverge, and add a golden-conformance fixture (`make fuzz-goldens`) for any
   new SSE shape kimi/gpt-5.4-mini produce that we don't already pin.
 - **Dispatch promotions** (B `FuzzWireTypes`/`FuzzMethodParams`): internal invariants under
-  `serffuzz` on handler post-conditions (no partial mutation on error, response frame shape).
+  `evenerfuzz` on handler post-conditions (no partial mutation on error, response frame shape).
 - **Config promotions** (B): round-trip + resolve-is-deterministic + no-path-escape invariants.
 - Audit each new oracle with `scripts/fuzz-oracle-audit.sh` (prove it reddens on its bug
   class) before declaring it done.
@@ -234,7 +234,7 @@ an uncommitted file; verify each lane scoped while siblings still edit.**
   `scripts/run-fuzz.sh` and `go.mod` edit.
 - **Batch 2 (serial):** E (continuous refresh wiring) once the corpus + targets are in.
 
-Per-batch gate: `make fuzz` / `test` / `lint` / `fuzz-gap-check` (capped, `-tags serffuzz`),
+Per-batch gate: `make fuzz` / `test` / `lint` / `fuzz-gap-check` (capped, `-tags evenerfuzz`),
 then `--no-ff` merge → push.
 
 ## Risks / honest caveats

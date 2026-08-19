@@ -945,7 +945,7 @@ guard, suppress-at-drain set)."
 
 ## Task 4: Live re-check + PAUSE
 
-**This task is driven in the main session (not a code subagent)** — it requires a live API key and a running evener. Per `reference_serf_live_run`: build `go build -o /tmp/evener ./cmd/evener`, source the repo `.env` (`. "$PWD/.env"`), and use the **`openai/` instance** (NOT `oai-work`).
+**This task is driven in the main session (not a code subagent)** — it requires a live API key and a running evener. Per `reference_evener_live_run`: build `go build -o /tmp/evener ./cmd/evener`, source the repo `.env` (`. "$PWD/.env"`), and use the **`openai/` instance** (NOT `oai-work`).
 
 - [ ] **Step 4.1: Build + smoke.** `go build -o /tmp/evener ./cmd/evener` and confirm it starts.
 

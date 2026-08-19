@@ -23,13 +23,13 @@
 #   EVENER_FUZZ_REPO_ROOT  repo root (default: the parent of this script's dir)
 #   EVENER_FUZZ_RUNNER     the registry source (default: scripts/run-fuzz.sh)
 #   EVENER_FUZZ_GO         the go toolchain     (default: go)
-#   EVENER_FUZZ_TAGS       build tags for replay (default: serffuzz)
+#   EVENER_FUZZ_TAGS       build tags for replay (default: evenerfuzz)
 set -uo pipefail
 
 repo_root="${EVENER_FUZZ_REPO_ROOT:-$(cd "$(dirname "$0")/.." && pwd)}"
 runner="${EVENER_FUZZ_RUNNER:-$repo_root/scripts/run-fuzz.sh}"
 go_bin="${EVENER_FUZZ_GO:-go}"
-tags="${EVENER_FUZZ_TAGS:-serffuzz}"
+tags="${EVENER_FUZZ_TAGS:-evenerfuzz}"
 
 target=""
 crasher=""

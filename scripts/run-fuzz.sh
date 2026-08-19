@@ -240,7 +240,7 @@ TARGETS=(
 	"native:auth:./openai:FuzzParseIDTokenClaims::claims.go#ParseIDTokenClaims"
 	"native:auth:./openai:FuzzResolveRuntimeCredentials::service.go#ResolveRuntimeCredentials"
 	"native:auth:./openai:FuzzTokenEndpointResponse::tokens.go"
-	"native:invariant:.:FuzzInvariantHold::invariant_serffuzz.go#Hold"
+	"native:invariant:.:FuzzInvariantHold::invariant_evenerfuzz.go#Hold"
 	"native:envvars:.:FuzzEnvvarsSurface::envvars.go;providers.go"
 	"native:fuzz:./edgeseeds:FuzzSeedRegeneration::edgeseeds.go"
 	"native:fuzz:./oracle:FuzzOracleCombinators::oracle.go"
@@ -769,16 +769,16 @@ for t in "${TARGETS[@]}"; do
 	case "$tag" in
 		native)
 			echo "=== fuzzing $module:$name for $duration ==="
-			# -tags serffuzz makes the internal/invariant assertions live so a
+			# -tags evenerfuzz makes the internal/invariant assertions live so a
 			# tripped invariant is found as a crasher (see docs/fuzzing.md).
 			# run-capped.sh gives each target its own memory ceiling so a leaky
 			# search OOMs that one target's scope, never the host. The targets run
 			# sequentially, so a per-target cap is the tightest safe bound.
-			( cd "$repo_root/$module" && "$repo_root/scripts/run-capped.sh" go test -tags serffuzz -run '^$' -fuzz "^${name}\$" -fuzztime "$duration" "$pkg" ) || fail=1
+			( cd "$repo_root/$module" && "$repo_root/scripts/run-capped.sh" go test -tags evenerfuzz -run '^$' -fuzz "^${name}\$" -fuzztime "$duration" "$pkg" ) || fail=1
 			;;
 			test)
 				echo "=== fuzz-test $module:$name ==="
-				( cd "$repo_root/$module" && "$repo_root/scripts/run-capped.sh" go test -tags serffuzz -run "^${name}\$" -count=1 "$pkg" ) || fail=1
+				( cd "$repo_root/$module" && "$repo_root/scripts/run-capped.sh" go test -tags evenerfuzz -run "^${name}\$" -count=1 "$pkg" ) || fail=1
 				;;
 
 			rapid)
@@ -790,7 +790,7 @@ for t in "${TARGETS[@]}"; do
 				# EVENER_FUZZ_TESTS=1: the seqfuzz/schemafuzz family t.Skip()s under a
 				# plain `go test` (moved out of `make test` per the fuzz-family
 				# ruling); this campaign must still drive them.
-				( cd "$repo_root/$module" && EVENER_FUZZ_TESTS=1 RAPID_CHECKS="${RAPID_CHECKS:-100}" "$repo_root/scripts/run-capped.sh" go test -tags serffuzz -run "^${name}\$" -count=1 "$pkg" ) || fail=1
+				( cd "$repo_root/$module" && EVENER_FUZZ_TESTS=1 RAPID_CHECKS="${RAPID_CHECKS:-100}" "$repo_root/scripts/run-capped.sh" go test -tags evenerfuzz -run "^${name}\$" -count=1 "$pkg" ) || fail=1
 				;;
 
 			*)

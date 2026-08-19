@@ -36,13 +36,13 @@ targets** from crash-finders into logic-bug-finders.
 **8.1.0 — the assertion mechanism (prerequisite, single agent, build FIRST).**
 A tiny package (propose `internal/invariant`, evener-wide importable) exposing
 `invariant.Hold(cond bool, format string, args ...any)`:
-- **Zero-cost in production.** Gate the body behind a build tag (`//go:build serffuzz`) so
+- **Zero-cost in production.** Gate the body behind a build tag (`//go:build evenerfuzz`) so
   a normal build compiles it to an empty inlinable no-op — verify with a disassembly/bench
   that the production path carries no overhead and no behavior change. (A runtime bool is
   the fallback if the build-tag split proves too invasive; build tag is preferred.)
-- **Loud under fuzz.** When built `-tags serffuzz`, a violated invariant panics with the
+- **Loud under fuzz.** When built `-tags evenerfuzz`, a violated invariant panics with the
   message + the offending value, so the existing no-panic oracle catches it for free.
-- Wire `-tags serffuzz` into the fuzz Makefile targets (`make fuzz`, `run-fuzz.sh`,
+- Wire `-tags evenerfuzz` into the fuzz Makefile targets (`make fuzz`, `run-fuzz.sh`,
   `fuzz-coverage`) so every target runs with invariants live; the production build and the
   non-fuzz test gate stay tag-free (unchanged).
 - Acceptance: a deliberately-violated invariant is caught by a fuzz target; `go build ./...`
@@ -156,5 +156,5 @@ prove materially higher focus coverage + that it reaches inputs the raw-byte tar
 - **Wave 3:** 8.5 supporting.
 
 Every wave: parent runs the full gate (`make fuzz`/`test`/`lint`/`fuzz-gap-check` +
-`-race` on rapid targets) with `-tags serffuzz` on the fuzz path, and confirms the
+`-race` on rapid targets) with `-tags evenerfuzz` on the fuzz path, and confirms the
 production build is unchanged, before moving on.

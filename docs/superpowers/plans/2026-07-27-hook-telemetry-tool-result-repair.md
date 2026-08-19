@@ -352,7 +352,7 @@ Update `fc1AssertNoOrphanedCall` to fail unless `fc1LaterResultCount(history[i+1
 Run:
 
 ```bash
-go test -tags serffuzz ./agent -run '^FuzzFc1RepairOrphanedToolResults$' -count=1
+go test -tags evenerfuzz ./agent -run '^FuzzFc1RepairOrphanedToolResults$' -count=1
 ```
 
 Expected: FAIL on the new seed because repair produces two later results for the call separated from its real result by `HOOK_COMPLETED`.
@@ -391,7 +391,7 @@ Run:
 
 ```bash
 go test ./agent -run '^(TestRepairOrphanedToolResultsPreservesHookBeforeRealResult|TestPreToolUseHookDoesNotDuplicateResultInNextModelRequest)$' -count=1
-go test -tags serffuzz ./agent -run '^FuzzFc1RepairOrphanedToolResults$' -count=1
+go test -tags evenerfuzz ./agent -run '^FuzzFc1RepairOrphanedToolResults$' -count=1
 ```
 
 Expected: PASS. The lifecycle request contains one successful result for `call_with_pre_tool_hook`, and the transcript still orders assistant → hook → result.

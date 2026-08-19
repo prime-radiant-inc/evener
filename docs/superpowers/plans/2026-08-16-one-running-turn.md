@@ -117,7 +117,7 @@ invariant, which is what this plan builds:
   Nothing that is a turn may carry one.
 - **Every production line added must be killed by a named test**, verified by
   reverting the line and watching a specific test fail. Note that
-  `invariant.Hold` is a **no-op** outside `-tags serffuzz`
+  `invariant.Hold` is a **no-op** outside `-tags evenerfuzz`
   (`invariant/invariant.go:23-32`), so an invariant is never a substitute for a
   test.
 - **Live-stack proof for the user-visible claim.** Unit tests do not demonstrate
@@ -419,7 +419,7 @@ Preserved from the superseded plan and extended, so none is re-proposed.
 | Capability gating (hide Stop/Steer while unnamed) | Reverses `c2ty`'s premise and picks the "button that is not there". Note the earlier claim that it leaves "nothing actionable" was overstated: with `statusType === "active"` the composer is in queue-mode, so Queue stays live. |
 | Split `ActiveTurnID` into "running" and "claimed" | The accept-time write is load-bearing: it makes a turn steerable the instant the client is told it exists. Removing it moves the window. |
 | Eager reservation in the serve loop (superseded Task 1) | Scoped to a message; identity is scoped to a turn. Strands the drain loop's inline turns. Its central mechanism also published nothing. |
-| `switch` + `invariant.Hold` default for `EntryKind` | `invariant.Hold` is a no-op outside `-tags serffuzz`; the test cannot fail and the switch is weaker than the audit it replaces. |
+| `switch` + `invariant.Hold` default for `EntryKind` | `invariant.Hold` is a no-op outside `-tags evenerfuzz`; the test cannot fail and the switch is weaker than the audit it replaces. |
 | A cheap pre-check before taking the name | The wake's own accounting enqueues work before the count is taken, so a pre-check would sometimes see zero and drop a real wake. |
 
 ## Known limits

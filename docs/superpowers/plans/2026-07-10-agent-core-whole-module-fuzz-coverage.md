@@ -251,7 +251,7 @@ Expected: raw 95.0% fails and no normal production code can be excluded.
 
 - [ ] **Step 1: Extend the shell self-test first**
 
-Use a fake go executable and a manifest containing one native and one Rapid row. Assert exact run names, serffuzz build tag, all seven default modules, fixed RAPID_SEED=1,2,3,5,8, fixed RAPID_CHECKS, and failure for a package with no local fuzz surface.
+Use a fake go executable and a manifest containing one native and one Rapid row. Assert exact run names, evenerfuzz build tag, all seven default modules, fixed RAPID_SEED=1,2,3,5,8, fixed RAPID_CHECKS, and failure for a package with no local fuzz surface.
 
 Run:
 ~~~sh
@@ -265,7 +265,7 @@ Expected before implementation: the new assertions fail.
 For each module in go.work, group validated rows by module/package. Invoke each name as:
 
 ~~~sh
-go test -tags serffuzz -run "^Name$" -coverprofile="$profile" "$pkg"
+go test -tags evenerfuzz -run "^Name$" -coverprofile="$profile" "$pkg"
 ~~~
 
 Run native targets once in seed-replay mode. Run Rapid targets once per fixed seed. Concatenate only profiles from one package and pass module/package/profile rows to evener-fuzzcov global accounting.
@@ -354,7 +354,7 @@ the process, transport, or filesystem boundary named above.
 
 Run:
 ~~~sh
-(cd agent && go test -tags serffuzz -run '^Fuzz' ./command ./events ./internal/agenttest ./internal/clock ./internal/diagnostic ./internal/goal ./internal/installid ./internal/promptpath ./internal/tool/repair ./internal/toolname ./mcpprobe)
+(cd agent && go test -tags evenerfuzz -run '^Fuzz' ./command ./events ./internal/agenttest ./internal/clock ./internal/diagnostic ./internal/goal ./internal/installid ./internal/promptpath ./internal/tool/repair ./internal/toolname ./mcpprobe)
 make fuzz-coverage-global FUZZ_ARGS='--modules agent'
 git add scripts/run-fuzz.sh agent
 git commit -m "test(agent): register and cover local fuzz surfaces"
@@ -402,7 +402,7 @@ Use the fake clock; do not use sleeps or polling races.
 
 Run:
 ~~~sh
-(cd agent && go test -tags serffuzz -run '^(FuzzLifecycleSeq|FuzzLifecycleSequence|TestLifecycleSeqFuzz|TestWatchSeqFuzz|TestDelegateSeqFuzz)$' . -count=1)
+(cd agent && go test -tags evenerfuzz -run '^(FuzzLifecycleSeq|FuzzLifecycleSequence|TestLifecycleSeqFuzz|TestWatchSeqFuzz|TestDelegateSeqFuzz)$' . -count=1)
 git add agent/lifecycle_covfuzz_test.go agent/lifecycle_seqfuzz_test.go agent/job_watch_delegate_fuzz_test.go agent/delegate_seqfuzz_test.go agent/watch_seqfuzz_test.go agent/jobs.go agent/job_watch.go agent/job_delegate.go agent/session_lifecycle.go agent/session_queue.go
 git commit -m "test(agent): fuzz durable job and watch lifecycles"
 ~~~
@@ -430,7 +430,7 @@ Use a function field or minimal discovered runner interface at the command launc
 
 Run:
 ~~~sh
-(cd agent && go test -tags serffuzz -run '^(Fuzz.*Worktree|FuzzSecurePathResolve|FuzzMainRootFromGitdirPointer|FuzzResolve|FuzzReRoot|FuzzSeatbeltPolicyNoInterpolation)$' ./ ./execenv ./sandbox ./internal/worktree -count=1)
+(cd agent && go test -tags evenerfuzz -run '^(Fuzz.*Worktree|FuzzSecurePathResolve|FuzzMainRootFromGitdirPointer|FuzzResolve|FuzzReRoot|FuzzSeatbeltPolicyNoInterpolation)$' ./ ./execenv ./sandbox ./internal/worktree -count=1)
 git add agent/session_tools_worktree.go agent/session_tools_worktree_fuzz_test.go agent/session_tools_dispatch_fuzz_test.go agent/execenv agent/sandbox
 git commit -m "test(agent): fuzz worktree and sandbox boundaries"
 ~~~
@@ -466,7 +466,7 @@ Add a codec fixed point, persistence differential, bounded-rendering property, o
 Run:
 ~~~sh
 (cd agent && go test ./... -count=1)
-(cd agent && go test -tags serffuzz -run '^Fuzz' ./... -count=1)
+(cd agent && go test -tags evenerfuzz -run '^Fuzz' ./... -count=1)
 make fuzz-registry-check
 make fuzz-coverage-global CHECK=1 FUZZ_ARGS='--modules agent --minimum 95'
 ~~~

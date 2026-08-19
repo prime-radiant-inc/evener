@@ -256,7 +256,7 @@ var identifierSHA256Inventory = map[string]map[string]map[string]bool{
 		"anchorAt":                        {"Sum256(data[:n])": true},
 		"anchorsMatchObserved":            {"Sum256(data[:n])": true},
 		"extendPrefixStamp":               {"New()": true, "Size": true},
-		"initialPrefixStamp":              {"Sum256([]byte(\"serf-apptranscript-prefix-v1\"))": true},
+		"initialPrefixStamp":              {"Sum256([]byte(\"evener-apptranscript-prefix-v1\"))": true},
 		"turnIndexIntegrityStampObserved": {"Sum256(data)": true},
 		"turnIndexJournalStampObserved":   {"Sum256(data)": true},
 	},

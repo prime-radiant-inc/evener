@@ -22,7 +22,7 @@ import (
 // schemaValidator is the tool-argument schema behavior both this suite and the
 // tagged tool_args fuzz harness depend on: validating a decoded argument map.
 // It lives here (untagged) so the plain `go test` unit gate keeps compiling
-// after the fuzz harnesses moved behind the serffuzz build tag.
+// after the fuzz harnesses moved behind the evenerfuzz build tag.
 type schemaValidator interface {
 	Validate(v any) error
 }

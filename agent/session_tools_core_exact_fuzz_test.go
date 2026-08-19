@@ -1,4 +1,4 @@
-//go:build serffuzz
+//go:build evenerfuzz
 
 package agent
 
@@ -106,8 +106,8 @@ func stceFileTools(t *testing.T) {
 	// TestADocumentResultIsNotAnnouncedAsAnImage and
 	// TestReadFile_RealPDF_DetectedByItsBytes. Its job is to say the quiet part
 	// at the exact fixture that implied it for years without ever asserting it
-	// -- and note this file is //go:build serffuzz, outside `make test`, so the
-	// contract is only read in the fuzz lane (`-tags serffuzz`).
+	// -- and note this file is //go:build evenerfuzz, outside `make test`, so the
+	// contract is only read in the fuzz lane (`-tags evenerfuzz`).
 	exemptDoc := "[document: bad.pdf]\n" + base64.StdEncoding.EncodeToString(notRaster)
 	if res := exec(&stceFileEnv{DenyEnv: &agenttest.DenyEnv{WorkDir: root}, readOutput: exemptDoc}, "read-exempt-doc", "read_file", map[string]any{"file_path": "bad.pdf"}); res.IsError || res.ImageMediaType != "application/pdf" || !bytes.Equal(res.ImageData, notRaster) {
 		t.Fatalf("document payloads are exempt from raster decoding, but the exempt read = %#v", res)

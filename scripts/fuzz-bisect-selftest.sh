@@ -88,7 +88,7 @@ STUB
 chmod +x "$runner"
 
 # Run the bisect. EVENER_FUZZ_TAGS is emptied: the throwaway module has no build
-# tags, and the real default (serffuzz) would still build, but empty keeps the
+# tags, and the real default (evenerfuzz) would still build, but empty keeps the
 # test independent of that tag.
 out="$(EVENER_FUZZ_REPO_ROOT="$repo" EVENER_FUZZ_RUNNER="$runner" EVENER_FUZZ_TAGS="" \
 	bash "$bisect" --target .:FuzzBoom --crasher "$crasher" --good "$good_sha" --bad HEAD 2>&1)"

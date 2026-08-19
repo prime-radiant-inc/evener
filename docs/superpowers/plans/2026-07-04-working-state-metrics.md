@@ -398,7 +398,7 @@ Adds the sealed event + payload the boundary emits (A4 references it; land the t
 
 ### Task C2 — End-to-end scenario cards
 
-Use the e2e-scenario-testing skill. Build fresh binaries (`go build -o /tmp/evener ./cmd/evener`, `evener-hub`, `evener-tui`), run a live model per `reference_serf_live_run` (`--model oai-work/<model>`), and author falsifiable scenario cards:
+Use the e2e-scenario-testing skill. Build fresh binaries (`go build -o /tmp/evener ./cmd/evener`, `evener-hub`, `evener-tui`), run a live model per `reference_evener_live_run` (`--model oai-work/<model>`), and author falsifiable scenario cards:
 
 - [ ] **Card: turn completes → metrics advance across surfaces.** Start a session, send one prompt to completion; assert the web status row and the TUI show a non-zero work time and non-zero `↑/↓` tokens that increased from before the turn.
 - [ ] **Card: interrupt → work time advances.** Start a long turn, interrupt it; assert work time increased (interrupted turns count) and the turn renders `interrupted` (not `completed`) — validates the A6 status-preservation refinement.

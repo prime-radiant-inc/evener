@@ -1417,7 +1417,7 @@ Run:
 
 ```bash
 go test ./... -count=1
-go test -tags=serffuzz ./agent -run 'Fuzz(Safz_PrepareSubagentRun|DelegateCreationRestoreConfigProgram)' -count=1
+go test -tags=evenerfuzz ./agent -run 'Fuzz(Safz_PrepareSubagentRun|DelegateCreationRestoreConfigProgram)' -count=1
 ```
 
 Expected: PASS without provider credentials, network access, quota, or paid completions; tagged seed corpora use their explicit fake enumeration hooks.

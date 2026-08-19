@@ -1,4 +1,4 @@
-//go:build serffuzz && linux
+//go:build evenerfuzz && linux
 
 package execenv
 

@@ -78,7 +78,7 @@ a reference search, and do not trust an editor's "unused" analyzer.
 Go type inference hides qualified references from a text search, and
 build-tagged files are invisible to both grep and a default build. A
 recent audit listed five unreferenced declarations; two were live,
-referenced from a `-tags serffuzz` test file. Deleting them on the
+referenced from a `-tags evenerfuzz` test file. Deleting them on the
 strength of that list would have removed working code, and every tool
 short of the compiler agreed the list was right.
 
@@ -89,13 +89,13 @@ go build ./... && go vet ./...
 ```
 
 Remember that a build tag hides a whole compilation unit. `make lint`
-now type-checks the two tagged trees for you — `lint-serffuzz` and
+now type-checks the two tagged trees for you — `lint-evenerfuzz` and
 `lint-eval` each run `go vet -tags <tag> ./...` across every module — so
 a rename that strands a tagged call site fails the gate.
 
-**`make lint-serffuzz` is part of the standard per-commit gate set**
+**`make lint-evenerfuzz` is part of the standard per-commit gate set**
 (Jesse, 2026-08-07), alongside the per-module build and test runs. Two
-workstreams in one night shipped changes whose serffuzz tree no longer
+workstreams in one night shipped changes whose evenerfuzz tree no longer
 compiled — user-visible string changes and signature changes drift the
 tagged tests, and build+test alone never notices. A controller or
 implementer gating a commit that touches `agent` runs it; it is cheap
@@ -110,11 +110,11 @@ six weeks.
 `evener-dev module-lint` runs a bare `golangci-lint run ./...` per
 module and `.golangci.yml` sets no `build-tags`, so the lint rules
 proper — unused, staticcheck, the rest — never see a `//go:build
-serffuzz` or `//go:build eval` source. The floors are type-checking, not
+evenerfuzz` or `//go:build eval` source. The floors are type-checking, not
 linting. When a tagged file needs the full treatment, run it by hand:
 
 ```
-golangci-lint run --build-tags serffuzz ./...
+golangci-lint run --build-tags evenerfuzz ./...
 ```
 
 ## Platform-specific code gets a seam, never a blanket build tag

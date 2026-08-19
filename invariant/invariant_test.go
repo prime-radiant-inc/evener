@@ -1,15 +1,15 @@
-//go:build !serffuzz
+//go:build !evenerfuzz
 
 package invariant
 
 import "testing"
 
-// In a normal build (no serffuzz tag) invariants are compiled out: Enabled is
+// In a normal build (no evenerfuzz tag) invariants are compiled out: Enabled is
 // false and Hold never panics, even on a false condition. This is the build
 // `make test` and `go build ./...` use, so the assertions must be inert.
 func TestProductionBuildIsInert(t *testing.T) {
 	if Enabled {
-		t.Fatal("Enabled must be false in a non-serffuzz build")
+		t.Fatal("Enabled must be false in a non-evenerfuzz build")
 	}
 	// A violated invariant must NOT panic without the tag; if this recovers a
 	// value the no-op contract is broken.

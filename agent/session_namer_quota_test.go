@@ -142,7 +142,7 @@ func (h *namerQuotaHarness) namerIdle() bool {
 // That is a different mechanism, and it makes these tests measure the wrong
 // thing in both directions: the quota tests would pass even without the
 // suppression fix, and the transient test would fail even with it. Observed
-// once as exactly that failure under -tags serffuzz. It is load-dependent, so
+// once as exactly that failure under -tags evenerfuzz. It is load-dependent, so
 // the proof of record is a mutation: inject a delay between those two lines and
 // an advisory-only wait fails while this one holds.
 //

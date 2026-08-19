@@ -112,7 +112,7 @@ make fuzz-coverage-global BLESS=1            # only after every measured module 
 
 The runner first obtains the exact four-column native/Rapid plan from
 `make fuzz-registry-check`. It then lists every production package with
-`-tags serffuzz`; a package without a registered **local** fuzz surface fails
+`-tags evenerfuzz`; a package without a registered **local** fuzz surface fails
 before any replay with `missing local fuzz surface: <module>:<package>`.
 Each native target runs once. Each Rapid target runs with
 `RAPID_SEED=1,2,3,5,8`, `RAPID_CHECKS=100`, `RAPID_STEPS=30`,
@@ -231,12 +231,12 @@ without crashing. Pick the strongest oracle the surface admits:
 | a codec (decode↔encode) | **round-trip / fixed point** — decode→encode→decode is stable | `FuzzMessageDecode`, `FuzzSessionMetaRoundTrip` |
 | a parser with a semantics-preserving transform | **metamorphic** — re-chunking / whitespace / reordering must not change the result | `FuzzParseSSE`, `FuzzOpenAIResponsesMetamorphic` |
 | a state machine / replayed log | **external invariant / monotonicity** (rapid sequences) — status only advances, history doesn't shrink, no orphaned state | `FuzzJobEventLogReplay`, `TestRouterSeqFuzz`, `TestLifecycleSeqFuzz`, `TestJobstoreSeqFuzz`, `TestCompactionSeqFuzz`, `TestHubMultiSessionSeqFuzz` |
-| any subsystem with a load-bearing internal assumption | **internal invariant** — `invariant.Hold()` asserts it at the point logic could first go wrong; live only under `-tags serffuzz`, so the never-panic oracle catches it (see [Internal invariants under serffuzz](#internal-invariants-under-serffuzz)) | the `invariant.Hold` sites in `appprojector`, `apptranscript`, `appwire`, `jobstore`, the llm decoders |
+| any subsystem with a load-bearing internal assumption | **internal invariant** — `invariant.Hold()` asserts it at the point logic could first go wrong; live only under `-tags evenerfuzz`, so the never-panic oracle catches it (see [Internal invariants under evenerfuzz](#internal-invariants-under-evenerfuzz)) | the `invariant.Hold` sites in `appprojector`, `apptranscript`, `appwire`, `jobstore`, the llm decoders |
 | an HTTP / RPC handler | **never 5xx**, **never wedge**, **never escape** the sandbox FS | `FuzzWebHandler`, `FuzzWebMutatingHandler`, `FuzzAppWireDispatch` |
 | a decoder whose output must not silently drift | **golden / snapshot differential** — the decoded corpus output, canonically re-encoded and pinned; a refactor that changes it (no panic, round-trip still holds) fails the gate | `appwire/golden_test.go` |
 | two code paths that must compute the same thing | **differential** — drive both from one input, assert they agree modulo an allow-list (the strongest class; it found both real decoder bugs) | `FuzzCrossProviderDifferential`, `FuzzStreamVsNonStreamDifferential`, `FuzzTranscriptReadersAgree`, `FuzzTurnPagingEquivalence` |
 
-## Internal invariants under serffuzz
+## Internal invariants under evenerfuzz
 
 External oracles (round-trip, no-panic) only see a bug once it reaches a surface.
 Internal invariants catch a *logic* bug at the point it first happens. The
@@ -244,12 +244,12 @@ Internal invariants catch a *logic* bug at the point it first happens. The
 
 ```go
 invariant.Hold(cond bool, format string, args ...any)  // assert cond; else panic with the message
-invariant.Enabled                                      // untyped const: false in prod, true under serffuzz
+invariant.Enabled                                      // untyped const: false in prod, true under evenerfuzz
 ```
 
 `Hold` is **zero-cost in a normal build**: the no-op form is inlined away — the
 condition is not evaluated and the args are not boxed (verified by disassembly), so
-production binaries are byte-unchanged. Built with **`-tags serffuzz`** a violated
+production binaries are byte-unchanged. Built with **`-tags evenerfuzz`** a violated
 invariant panics, so the existing never-panic oracle reports it for free. The whole
 fuzz path (`make fuzz`, `run-fuzz.sh`, `fuzz-coverage`, `fuzz-triage`) builds with
 that tag automatically; `make test` and `go build` stay tag-free.

@@ -48,7 +48,7 @@ import (
 // system could emit — not arbitrary bytes (that is FuzzJobEventLogReplay's job).
 //
 // Run hard with: EVENER_FUZZ_TESTS=1 go test -run '^TestJobstoreSeqFuzz$' -rapid.checks=5000 .
-// Under -tags serffuzz the reducer's own invariant.Hold assertions are live too,
+// Under -tags evenerfuzz the reducer's own invariant.Hold assertions are live too,
 // so a generated sequence that tripped the in-reducer monotonicity guard would
 // surface as a panic.
 // evener:fuzz rapid

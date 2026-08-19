@@ -1,4 +1,4 @@
-//go:build serffuzz || plugincov
+//go:build evenerfuzz || plugincov
 
 package main
 

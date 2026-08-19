@@ -117,7 +117,7 @@ no router (reserved).
 | `evener/projects/recent` | hub | `ProjectsRecentParams` | `ProjectsRecentResponse` | Lists the most recently used project working directories (session creation path-dropdown options; default cap 15). |
 | `evener/path/validate` | hub | `PathValidateParams` | `PathValidateResponse` | Validates a launch path. |
 | `evener/harnesses/list` | hub | `HarnessListParams` | `HarnessListResponse` | Lists available harness descriptors. |
-| `evener/upgrade` | hub | `UpgradeParams` | `UpgradeResponse` | Performs or reports an evener binary upgrade. |
+| `evener/upgrade` | hub | `UpgradeParams` | `UpgradeResponse` | Performs or reports a evener binary upgrade. |
 | `evener/auth/status` | hub | `AuthStatusParams` | `AuthStatusResponse` | Reports auth/credential status for a provider. |
 | `evener/auth/test` | hub | `AuthTestParams` | `AuthTestResponse` | Tests the effective credentials for one configured provider instance without starting a session. |
 | `evener/auth/login/start` | hub | `AuthLoginStartParams` | `AuthLoginStartResponse` | Begins an OAuth login flow; returns a flow ID and URL. |

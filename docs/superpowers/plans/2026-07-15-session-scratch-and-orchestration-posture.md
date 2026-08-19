@@ -164,7 +164,7 @@ func (s *SessionScratch) Cleanup() error
 func ApplySessionScratchEnv(env []string, scratchDir string) []string
 
 // envvars/envvars.go
-var SERFScratchDir = Var{
+var EVENERScratchDir = Var{
     Name:       "EVENER_SCRATCH_DIR",
     Summary:    "Session-scoped private scratch directory provided to agent subprocesses.",
     Visibility: Internal,
@@ -260,7 +260,7 @@ GOCACHE=/tmp/evener-gocache go test ./agent/sandbox ./envvars \
   -run 'TestSessionScratch|TestApplySessionScratchEnv|TestAll' -count=1 -v
 ```
 
-Expected: compile failure because `SessionScratch`, the workspace-aware allocator/lease helpers, `ApplySessionScratchEnv`, and `envvars.SERFScratchDir` do not exist after the test rename.
+Expected: compile failure because `SessionScratch`, the workspace-aware allocator/lease helpers, `ApplySessionScratchEnv`, and `envvars.EVENERScratchDir` do not exist after the test rename.
 
 - [ ] **Step 3: Implement the renamed allocator and shared environment override**
 
@@ -362,7 +362,7 @@ func ApplySessionScratchEnv(env []string, scratchDir string) []string {
     out := make([]string, 0, len(env)+2)
     for _, kv := range env {
         name, _, ok := strings.Cut(kv, "=")
-        if ok && (name == envvars.TmpDir.Name || name == envvars.SERFScratchDir.Name) {
+        if ok && (name == envvars.TmpDir.Name || name == envvars.EVENERScratchDir.Name) {
             continue
         }
         out = append(out, kv)
@@ -370,7 +370,7 @@ func ApplySessionScratchEnv(env []string, scratchDir string) []string {
     if scratchDir != "" {
         out = append(out,
             envvars.TmpDir.Assignment(scratchDir),
-            envvars.SERFScratchDir.Assignment(scratchDir),
+            envvars.EVENERScratchDir.Assignment(scratchDir),
         )
     }
     return out
@@ -383,7 +383,7 @@ Preserve `ApplyEnvFloor`'s current `floorDrops`, external-`KUBECONFIG`, and cach
 
 - [ ] **Step 4: Register and document `EVENER_SCRATCH_DIR`**
 
-Add `SERFScratchDir` to `allVars` beside the other internal Evener variables. Add this row to the internal/provided-variable table in `docs/environment.md`:
+Add `EVENERScratchDir` to `allVars` beside the other internal Evener variables. Add this row to the internal/provided-variable table in `docs/environment.md`:
 
 ```markdown
 | `EVENER_SCRATCH_DIR` | Evener-provided private scratch directory for one live session. It may be deleted when the session closes or Evener restarts; move durable artifacts into the workspace or another durable location. |
@@ -734,7 +734,7 @@ GOCACHE=/tmp/evener-gocache go test ./agent/execenv \
 GOCACHE=/tmp/evener-gocache go test ./agent \
   -run 'TestSessionScratch|TestPrepareSubagentRun.*Scratch|TestParentClose.*Scratch|Test.*Restore.*Scratch|TestDiscardRestoredCandidate.*Scratch|TestSessionCloseWithoutScratchProvider|TestDiscardRestoredCandidateWithoutScratchProvider' \
   -count=1 -v
-GOCACHE=/tmp/evener-gocache go test -tags=serffuzz ./agent/execenv \
+GOCACHE=/tmp/evener-gocache go test -tags=evenerfuzz ./agent/execenv \
   -run 'FuzzSandboxLifecycleProgram|FuzzProcessRuntimeProgram' -count=1
 ```
 
@@ -1432,7 +1432,7 @@ Expected:
 
 - `protected_paths` appears only in approved explanatory prompt/test text stating that no parameter is added.
 - No production path automatically requests worktree isolation, blocks a shared delegate, persists scratch, redirects `HOME`, terminates cycles, or calls compaction at task boundaries.
-- `EVENER_SCRATCH_DIR` is sourced from `envvars.SERFScratchDir`, not duplicated raw throughout production Go code.
+- `EVENER_SCRATCH_DIR` is sourced from `envvars.EVENERScratchDir`, not duplicated raw throughout production Go code.
 - The scratch sweep requires both age and an acquirable OS lease; no old live directory can be removed merely because its mtime crossed 24 hours.
 - Base selection rejects lexical and canonical paths inside the active workspace and uses only an outside OS temp/cache candidate.
 - Candidate OS temp/cache and caller-provided base directories retain their original modes; only the `MkdirTemp`-created Evener scratch child is chmodded to `0700`.

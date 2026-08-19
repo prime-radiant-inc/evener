@@ -62,7 +62,7 @@ func applyEditFieldIndex(field string) (int, bool) {
 	return 0, false
 }
 
-// fuzzApplyEditCoverage is installed by the serffuzz-only coverage union.
+// fuzzApplyEditCoverage is installed by the evenerfuzz-only coverage union.
 // Normal tests and active fuzzing otherwise keep the hook as a no-op.
 var fuzzApplyEditCoverage = func(*testing.T) {}
 

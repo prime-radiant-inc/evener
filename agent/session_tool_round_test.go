@@ -31,7 +31,7 @@ import (
 
 // TestApplyNoToolCallsDecision_PersistsNoToolCallsKind drives the dec.Retry
 // branch directly (the same seam session_tool_round_tail_coverage_fuzz_test.go
-// uses under the serffuzz tag) rather than through a full model round.
+// uses under the evenerfuzz tag) rather than through a full model round.
 func TestApplyNoToolCallsDecision_PersistsNoToolCallsKind(t *testing.T) {
 	t.Parallel()
 	s := newTestSession(t)

@@ -649,7 +649,7 @@ git commit -m "feat(agent): job_read_output/job_list/job_stop tools"
 Run: `cd /Users/jesse/prime-radiant/toil-suite/evener && make test && make lint`
 Expected: all modules PASS; lint clean (golangci ×4 + namingcheck/internalcheck/docscheck). Fix any fallout (the `DefShell` param change and the new capability may touch parity/snapshot tests — update them to the new shell shape).
 
-- [ ] **Step 2: Live smoke** (per `reference_serf_live_run` recipe — build a standalone binary, do NOT touch a running serve):
+- [ ] **Step 2: Live smoke** (per `reference_evener_live_run` recipe — build a standalone binary, do NOT touch a running serve):
 
 ```bash
 cd /Users/jesse/prime-radiant/toil-suite/evener

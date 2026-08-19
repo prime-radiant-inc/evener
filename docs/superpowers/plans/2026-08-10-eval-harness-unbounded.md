@@ -26,7 +26,7 @@
 ### Task 2: Make Harbor Evener rounds unlimited
 
 **Files:**
-- Modify: `tests/test_serf_agent.py`
+- Modify: `tests/test_evener_agent.py`
 - Modify: `src/harbor_runner/evener_agent.py`
 - Modify: `src/harbor_runner/cli.py`
 

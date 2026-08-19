@@ -36,7 +36,7 @@ scripts/run-fuzz.sh --list               # the target list (single source of tru
 
 Two cross-cutting facts about every run above:
 
-- **`-tags serffuzz` is on automatically.** The whole fuzz path builds with it so
+- **`-tags evenerfuzz` is on automatically.** The whole fuzz path builds with it so
   the internal `invariant.Hold()` assertions (`primeradiant.com/evener/invariant`)
   are live — a tripped invariant panics and the never-panic oracle catches it.
   `make test` / `go build` stay tag-free and byte-unchanged. See
@@ -212,7 +212,7 @@ for advanced use; the stub-driven selftest that used them is gone
 target, a saved Go corpus file (`--crasher`, begins `go test fuzz v1`), and a
 known-good ref (`--good`; `--bad` defaults to `HEAD`), it confirms the crash
 reproduces at `--bad` and not at `--good`, then drives `git bisect run`, replaying
-that one corpus entry at each step under `-tags serffuzz`. A commit where the
+that one corpus entry at each step under `-tags evenerfuzz`. A commit where the
 target does not build or does not yet exist is **skipped** (exit 125), not
 misjudged; the working tree is restored on exit. Seams `EVENER_FUZZ_GO` and
 `EVENER_FUZZ_TAGS` (plus `EVENER_FUZZ_RUNNER`) back the self-test
@@ -230,7 +230,7 @@ only after a known commit — real `git bisect`, no stubbed search.
   execute tools (shell/web/job are non-deterministic and unsandboxable by a
   temp-dir env).
 - **Internal invariants** — `invariant.Hold()` assertions in production code, live
-  under `-tags serffuzz`, caught by the no-panic oracle (the `…SeqFuzz` rapid
+  under `-tags evenerfuzz`, caught by the no-panic oracle (the `…SeqFuzz` rapid
   models also assert sequence invariants externally).
 - **Differential** — two paths that must agree: cross-provider, stream-vs-non-stream,
   golden/snapshot, and two-path equivalence. This class found both real decoder

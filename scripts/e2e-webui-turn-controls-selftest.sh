@@ -150,10 +150,10 @@ FAKE_HUB
 # The daemon binary the hub is pointed at. It parks like a real daemon so the
 # reap can be observed, and it carries the run directory in its argv exactly
 # as the real one does -- which is what --stop's ownership check reads.
-cat >"$fixtures/evener" <<'FAKE_SERF'
+cat >"$fixtures/evener" <<'FAKE_EVENER'
 #!/usr/bin/env bash
 while :; do sleep 1; done
-FAKE_SERF
+FAKE_EVENER
 chmod +x "$fakebin"/* "$fixtures"/*
 
 # run_script ARGS... — run the script under test with the fixture toolchain

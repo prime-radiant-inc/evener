@@ -601,7 +601,7 @@ Delete the child callback and assignment, the granted resolution arm, grant-awar
 
 ~~~bash
 go test ./agent -run 'TestStructuredJobNotification|TestSessionWatch|TestJobStatus' -count=1
-go test -tags serffuzz ./agent -run '^$'
+go test -tags evenerfuzz ./agent -run '^$'
 ~~~
 
 - [ ] **Step 6: Delete durable grant events and folds**
@@ -620,7 +620,7 @@ Expected: no output and exit 1.
 go test ./agent/schema -run 'TestSaveSessionMetaPreservesObservedBy|TestAppendSessionObservedByPreservesFieldsAndDeduplicates|TestSessionMetaWritesSerializeObserverAppend' -count=1
 go test ./agent/internal/jobstore -count=1
 go test ./agent -run 'Test.*Watch|Test.*ObservedBy|TestReadTranscript|TestJobStatus' -count=1
-go test -tags serffuzz ./agent -run '^$'
+go test -tags evenerfuzz ./agent -run '^$'
 ~~~
 
 Temporarily skip the frame annotation, the whole-save ObservedBy merge, the install stamp, and the post-settlement schedule one at a time. Each focused test must fail; restore every mutation. Temporarily execute the metadata closure inline before send and confirm the delivery-order test fails; restore it. Remove the lock from each SessionMeta write path in turn and confirm the deterministic interleaving test fails at the lock assertion or final state; restore it after each mutation.
@@ -706,7 +706,7 @@ Any failure is a product defect to root-cause. Do not weaken assertions or add w
 - [ ] **Step 3: Run compile and vocabulary audits**
 
 ~~~bash
-go test -tags serffuzz ./agent -run '^$'
+go test -tags evenerfuzz ./agent -run '^$'
 go test -tags eval ./agent -run '^$'
 rg -n 'watch_read_grant|EventWatchReadGrant|ObserverSessionID|FoldGrants|LoadGrants|LoadSessionObserverGrants|parentGrantedJobRead|grantedJobRead|lookupGrantedJobRead|jobStatusDeniedError|appendWatchReadGrant|mintWatchSendReadGrant|watchReadGrantObserver|watchGrantableJob|appendWatchFrameGrantedRead|grantsMinted|watchGrantKey' agent cmd/evener-hub --glob '*.go'
 rg -n 'NewJobID\(\)|MustNewJobID\(\)' --glob '*.go'

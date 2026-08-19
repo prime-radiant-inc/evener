@@ -518,7 +518,7 @@ func runResponsesContinuationDiscovery(t *testing.T, a *Adapter, model, endpoint
 		Model:              model,
 		Messages:           []llm.Message{llm.User("Reply exactly: evener continuation discovery co-present")},
 		PreviousResponseID: anchor.ID,
-		ConversationID:     "conv_serf_discovery_" + id,
+		ConversationID:     "conv_evener_discovery_" + id,
 		Store:              &store,
 	})
 	copresentStatus := "accepted"
@@ -534,7 +534,7 @@ func runResponsesContinuationDiscovery(t *testing.T, a *Adapter, model, endpoint
 	_, invalidErr := a.Complete(ctx, llm.Request{
 		Model:              model,
 		Messages:           []llm.Message{llm.User("This invalid anchor request should fail clearly.")},
-		PreviousResponseID: "resp_serf_invalid_" + id,
+		PreviousResponseID: "resp_evener_invalid_" + id,
 		Store:              &store,
 	})
 	if invalidErr == nil {

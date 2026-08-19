@@ -97,7 +97,7 @@
 - Tools: `agent/internal/tool/definitions.go`, `session_tools_jobs.go`, `session_outline.go`, `job_transcript_read.go`, `session_tools_transcript.go`.
 - Persistence deletion: `agent/internal/jobstore/{event,record,fold,store}.go` becomes shell/watch-only after consumers move.
 - Projection: `agent/events/{events,payloads}.go`, `jobs_activity.go`, `jobs_activity_past.go`, `historical_jobs.go`, `internal/appprojector/appwire_projection.go`, `appwire/types.go`, `appwire/protocol.go`, `server/appwire_runtime.go`, `cmd/evener-hub/app_jobs.go`; plus the stable live/reconnect status bridge `agent/{status.go,status_test.go,status_support_program_fuzz_test.go}`, `cmd/evener/{serve.go,serve_test.go,serve_coverage_fuzz_test.go}`, and `server/{server.go,server_test.go,server_surface_fuzz_test.go}`.
-- Clients: `cmd/evener-hub/internal/hubcore/{prober.go,prober_test.go,prober_wire_test.go,scenarios_fuzz_test.go}`; `cmd/evener-tui/internal/transcript/{job_notification.go,reducer.go,types.go,reducer_test.go,cov_rtui_transcript_test.go,reducer_fuzz_test.go,fuzz_coverage_union_test.go}`; `cmd/evener-tui/{hub_notifications.go,hub_notifications_test.go,hub_notifications_fuzz_test.go,model_misc_serffuzz_test.go}`; `cmd/evener/{run_drain_test.go,run_drain_nested_test.go}`; and the exact Hub frontend activity/transcript/store, notification, fixture, and overflow-harness files named in Task 11.
+- Clients: `cmd/evener-hub/internal/hubcore/{prober.go,prober_test.go,prober_wire_test.go,scenarios_fuzz_test.go}`; `cmd/evener-tui/internal/transcript/{job_notification.go,reducer.go,types.go,reducer_test.go,cov_rtui_transcript_test.go,reducer_fuzz_test.go,fuzz_coverage_union_test.go}`; `cmd/evener-tui/{hub_notifications.go,hub_notifications_test.go,hub_notifications_fuzz_test.go,model_misc_evenerfuzz_test.go}`; `cmd/evener/{run_drain_test.go,run_drain_nested_test.go}`; and the exact Hub frontend activity/transcript/store, notification, fixture, and overflow-harness files named in Task 11.
 - Operations: `agent/doctor`, `cmd/evener-doctor`, worktree/disposal helpers, bundled doctor references, prompts, and evergreen docs.
 
 ## Established foundation interfaces
@@ -388,7 +388,7 @@ Run:
 gofmt -w agent/internal/delegatestore/*.go
 go test ./agent/internal/delegatestore -count=20
 go test -race ./agent/internal/delegatestore -count=20
-EVENER_FUZZ_TESTS=1 go test -tags serffuzz ./agent/internal/delegatestore -run '^(Test|Fuzz)' -count=1
+EVENER_FUZZ_TESTS=1 go test -tags evenerfuzz ./agent/internal/delegatestore -run '^(Test|Fuzz)' -count=1
 make fuzz-registry-check
 git diff --check
 git status --short
@@ -530,7 +530,7 @@ Run:
 gofmt -w agent/delegate_tree_controller.go agent/delegate_tree_start.go agent/delegate_tree_controller_test.go agent/delegate_tree_start_test.go agent/delegate_tree_controller_fuzz_test.go
 go test ./agent -run '^TestDelegateController' -count=20
 go test -race ./agent -run '^TestDelegateController' -count=20
-EVENER_FUZZ_TESTS=1 go test -tags serffuzz ./agent -run '^FuzzDelegateControllerTransitions$' -count=1
+EVENER_FUZZ_TESTS=1 go test -tags evenerfuzz ./agent -run '^FuzzDelegateControllerTransitions$' -count=1
 make fuzz-registry-check
 git diff --check
 git status --short
@@ -662,7 +662,7 @@ Run:
 gofmt -w agent/delegate_tree_steer.go agent/delegate_tree_finish.go agent/delegate_delivery.go agent/delegate_tree_steer_test.go agent/delegate_tree_finish_test.go agent/delegate_delivery_test.go agent/delegate_conversation_fuzz_test.go
 go test ./agent -run '^TestDelegateController' -count=20
 go test -race ./agent -run '^TestDelegateController' -count=20
-EVENER_FUZZ_TESTS=1 go test -tags serffuzz ./agent -run '^FuzzDelegateConversationTransitions$' -count=1
+EVENER_FUZZ_TESTS=1 go test -tags evenerfuzz ./agent -run '^FuzzDelegateConversationTransitions$' -count=1
 make fuzz-registry-check
 git diff --check
 git status --short
@@ -814,7 +814,7 @@ Run:
 gofmt -w agent/delegate_tree_work.go agent/delegate_tree_stop.go agent/delegate_tree_restore.go agent/delegate_shell_repair.go agent/delegate_delivery.go agent/delegate_tree_work_test.go agent/delegate_tree_stop_test.go agent/delegate_tree_restore_test.go agent/delegate_shell_repair_test.go agent/delegate_delivery_test.go agent/delegate_tree_restart_fuzz_test.go
 go test ./agent -run '^TestDelegate(Controller|ShellRepair)' -count=20
 go test -race ./agent -run '^TestDelegate(Controller|ShellRepair)' -count=20
-EVENER_FUZZ_TESTS=1 go test -tags serffuzz ./agent -run '^FuzzDelegateRestartEquivalence$' -count=1
+EVENER_FUZZ_TESTS=1 go test -tags evenerfuzz ./agent -run '^FuzzDelegateRestartEquivalence$' -count=1
 make fuzz-registry-check
 git diff --check
 git status --short
@@ -1192,7 +1192,7 @@ func TestDelegateAttention_RestartReplaysCallerDeliveryCommitWithoutDuplicateToo
 func FuzzDelegateAttentionFold(f *testing.F)
 ~~~
 
-Put this target and the Step 2 watch-delivery target in session_attention_fuzz_test.go under the serffuzz build tag. Register `native:agent:.:FuzzDelegateAttentionFold::session_attention.go` in scripts/run-fuzz.sh in this task.
+Put this target and the Step 2 watch-delivery target in session_attention_fuzz_test.go under the evenerfuzz build tag. Register `native:agent:.:FuzzDelegateAttentionFold::session_attention.go` in scripts/run-fuzz.sh in this task.
 
 Immediately before adding the turn/helper implementation, run:
 
@@ -1287,7 +1287,7 @@ Run task GREEN and broader gates:
 gofmt -w agent/session_attention.go agent/session_attention_test.go agent/session_attention_fuzz_test.go agent/delegate_resource_watch_test.go agent/delegate_resource_shell_test.go agent/schema/turn.go agent/transcript_read.go agent/history_repair.go agent/internal/contextmgr/context_manager.go agent/internal/contextmgr/context_manager_test.go agent/delegate_shell_repair.go agent/delegate_shell_repair_test.go agent/delegate_delivery.go agent/delegate_tree_controller.go agent/delegate_tree_finish.go agent/delegate_tree_restore.go agent/delegate_tree_stop.go agent/delegate_tree_work.go agent/internal/delegatestore/record.go agent/internal/delegatestore/fold_test.go agent/internal/delegatestore/store_test.go agent/internal/delegatestore/fuzz_test.go agent/job_watch.go agent/job_notify.go agent/job_shell.go agent/jobs.go agent/jobs_nested.go agent/session_jobtree_drain.go agent/internal/jobstore/watch.go agent/internal/jobstore/event.go agent/internal/jobstore/record.go agent/internal/jobstore/fold.go agent/session_tools_jobs.go agent/session_tools_jobs_watch_test.go agent/job_watch_parent_test.go agent/job_watch_observer_test.go agent/job_watch_restore_end_notice_test.go agent/job_watch_restore_lost_notice_test.go agent/job_watch_end_notice_test.go agent/root_watch_tree_program_fuzz_test.go agent/job_watch_delegate_fuzz_test.go agent/watch_seqfuzz_test.go agent/watch_observer_fuzz_test.go agent/watch_pending_frame_program_fuzz_test.go agent/watch_restore_clear_history_program_fuzz_test.go agent/watch_attach_terminal_program_fuzz_test.go agent/watch_config_validation_program_fuzz_test.go
 go test ./agent -run '^(TestDelegateAttention_|TestStableDelegateWatch_|TestStableDelegateObserver_|TestStableDelegateAttention_|TestStableDelegateShell_)' -count=20
 go test -race ./agent -run '^(TestDelegateAttention_|TestStableDelegateWatch_|TestStableDelegateObserver_|TestStableDelegateAttention_|TestStableDelegateShell_)' -count=20
-EVENER_FUZZ_TESTS=1 go test -tags serffuzz ./agent -run '^(FuzzDelegateAttentionFold|FuzzStableDelegateWatchDelivery)$' -count=1
+EVENER_FUZZ_TESTS=1 go test -tags evenerfuzz ./agent -run '^(FuzzDelegateAttentionFold|FuzzStableDelegateWatchDelivery)$' -count=1
 go test ./agent/internal/jobstore -run 'Watch' -count=1
 make fuzz-registry-check
 git diff --check
@@ -1345,7 +1345,7 @@ func TestDelegateRuntimeReclaim_NoTimerUnloadEventOrStableDataDeletion(t *testin
 func FuzzDelegateReclaimStopRestart(f *testing.F)
 ~~~
 
-Put the target in agent/delegate_tree_reclaim_fuzz_test.go under the serffuzz build tag. Register `native:agent:.:FuzzDelegateReclaimStopRestart::delegate_tree_reclaim.go;delegate_tree_stop.go;delegate_tree_restore.go` in scripts/run-fuzz.sh in this task.
+Put the target in agent/delegate_tree_reclaim_fuzz_test.go under the evenerfuzz build tag. Register `native:agent:.:FuzzDelegateReclaimStopRestart::delegate_tree_reclaim.go;delegate_tree_stop.go;delegate_tree_restore.go` in scripts/run-fuzz.sh in this task.
 
 Immediately before reclamation implementation, run:
 
@@ -1428,7 +1428,7 @@ Run task GREEN and broader gates:
 gofmt -w agent/delegate_tree_reclaim.go agent/delegate_tree_reclaim_test.go agent/delegate_tree_reclaim_fuzz_test.go agent/delegate_resource_retention_stop_test.go agent/delegate_resource_worktree_test.go agent/delegate_tree_controller.go agent/delegate_tree_start.go agent/delegate_tree_stop.go agent/delegate_tree_restore.go agent/delegate_tree_work.go agent/delegate_runtime.go agent/session.go agent/session_config.go agent/session_lifecycle.go agent/tree_counter.go agent/job_shell.go agent/jobs.go agent/session_jobtree_drain.go agent/sandbox_delegate.go agent/session_tools_worktree.go agent/session_tools_worktree_dispose.go agent/session_worktree_close.go agent/session_worktree_relock.go agent/session_worktree_resume.go agent/session_worktree_sweep.go agent/delegate_disposal_hint_test.go agent/session_tools_worktree_livework_test.go agent/session_tools_worktree_dispose_test.go agent/session_worktree_close_test.go
 go test ./agent -run '^(TestDelegateRuntimeReclaim_|TestDelegateResourceStop_|TestStableDelegateWorktree_)' -count=20
 go test -race ./agent -run '^(TestDelegateRuntimeReclaim_|TestDelegateResourceStop_|TestStableDelegateWorktree_)' -count=20
-EVENER_FUZZ_TESTS=1 go test -tags serffuzz ./agent -run '^FuzzDelegateReclaimStopRestart$' -count=1
+EVENER_FUZZ_TESTS=1 go test -tags evenerfuzz ./agent -run '^FuzzDelegateReclaimStopRestart$' -count=1
 go test ./agent/internal/worktree -count=1
 make fuzz-registry-check
 git diff --check
@@ -1591,7 +1591,7 @@ git commit -m "feat: project stable delegates without mutation" -m "Cut stable t
 - Modify: server/server.go, server/server_test.go, server/server_surface_fuzz_test.go, server/appwire_runtime.go, server/appwire_runtime_test.go, server/thread_envelope.go, server/thread_envelope_test.go.
 - Modify: cmd/evener/serve.go, cmd/evener/serve_test.go, cmd/evener/serve_coverage_fuzz_test.go, cmd/evener/run_drain_test.go, cmd/evener/run_drain_nested_test.go.
 - Modify: cmd/evener-hub/app_jobs.go, cmd/evener-hub/app_jobs_test.go, cmd/evener-hub/app_threadread.go, cmd/evener-hub/app_threadread_test.go.
-- Modify: cmd/evener-tui/hub_notifications.go, cmd/evener-tui/hub_notifications_test.go, cmd/evener-tui/hub_notifications_fuzz_test.go, cmd/evener-tui/model_misc_serffuzz_test.go.
+- Modify: cmd/evener-tui/hub_notifications.go, cmd/evener-tui/hub_notifications_test.go, cmd/evener-tui/hub_notifications_fuzz_test.go, cmd/evener-tui/model_misc_evenerfuzz_test.go.
 - Modify: cmd/evener-tui/internal/transcript/job_notification.go, cmd/evener-tui/internal/transcript/reducer.go, cmd/evener-tui/internal/transcript/types.go, cmd/evener-tui/internal/transcript/reducer_test.go, cmd/evener-tui/internal/transcript/cov_rtui_transcript_test.go, cmd/evener-tui/internal/transcript/reducer_fuzz_test.go, cmd/evener-tui/internal/transcript/fuzz_coverage_union_test.go.
 - Modify: cmd/evener-tui/internal/msgrender/tool_bodies.go, cmd/evener-tui/internal/msgrender/tool_bodies_test.go, cmd/evener-tui/internal/msgrender/tool_renderers.go, cmd/evener-tui/internal/msgrender/tool_renderers_test.go, cmd/evener-tui/internal/msgrender/tool_renderers_fuzz_test.go, cmd/evener-tui/internal/msgrender/cov_rtui_msgrender_test.go.
 - Modify: cmd/evener-tui/internal/toolsummary/tool_summary.go, cmd/evener-tui/internal/toolsummary/tool_summary_test.go, cmd/evener-tui/internal/toolsummary/tool_summary_fuzz_test.go, cmd/evener-tui/internal/toolsummary/fuzz_coverage_union_test.go.
@@ -1699,7 +1699,7 @@ From the repository root, run make generate. Then implement the stores and compo
 - [ ] **Step 4: Run cutover gates and commit**
 
 ~~~bash
-gofmt -w internal/appprojector/delegate_projection_test.go agent/events/events.go agent/events/payloads.go agent/events/eventdata.go agent/events/events_test.go agent/events/events_fuzz_test.go agent/events/payloads_test.go agent/events/eventdata_program_fuzz_test.go agent/status.go agent/status_test.go agent/status_support_program_fuzz_test.go agent/jobs_activity.go agent/jobs_activity_past.go agent/tree_counter.go internal/appprojector/appwire_projection.go internal/appprojector/appwire_projection_test.go appwire/types.go appwire/protocol.go appwire/types_test.go appwire/protocol_test.go server/server.go server/server_test.go server/server_surface_fuzz_test.go server/appwire_runtime.go server/appwire_runtime_test.go server/thread_envelope.go server/thread_envelope_test.go cmd/evener/serve.go cmd/evener/serve_test.go cmd/evener/serve_coverage_fuzz_test.go cmd/evener/run_drain_test.go cmd/evener/run_drain_nested_test.go cmd/evener-hub/app_jobs.go cmd/evener-hub/app_jobs_test.go cmd/evener-hub/app_threadread.go cmd/evener-hub/app_threadread_test.go cmd/evener-tui/hub_notifications.go cmd/evener-tui/hub_notifications_test.go cmd/evener-tui/hub_notifications_fuzz_test.go cmd/evener-tui/model_misc_serffuzz_test.go cmd/evener-tui/internal/transcript/job_notification.go cmd/evener-tui/internal/transcript/reducer.go cmd/evener-tui/internal/transcript/types.go cmd/evener-tui/internal/transcript/reducer_test.go cmd/evener-tui/internal/transcript/cov_rtui_transcript_test.go cmd/evener-tui/internal/transcript/reducer_fuzz_test.go cmd/evener-tui/internal/transcript/fuzz_coverage_union_test.go cmd/evener-tui/internal/msgrender/tool_bodies.go cmd/evener-tui/internal/msgrender/tool_bodies_test.go cmd/evener-tui/internal/msgrender/tool_renderers.go cmd/evener-tui/internal/msgrender/tool_renderers_test.go cmd/evener-tui/internal/msgrender/tool_renderers_fuzz_test.go cmd/evener-tui/internal/msgrender/cov_rtui_msgrender_test.go cmd/evener-tui/internal/toolsummary/tool_summary.go cmd/evener-tui/internal/toolsummary/tool_summary_test.go cmd/evener-tui/internal/toolsummary/tool_summary_fuzz_test.go cmd/evener-tui/internal/toolsummary/fuzz_coverage_union_test.go
+gofmt -w internal/appprojector/delegate_projection_test.go agent/events/events.go agent/events/payloads.go agent/events/eventdata.go agent/events/events_test.go agent/events/events_fuzz_test.go agent/events/payloads_test.go agent/events/eventdata_program_fuzz_test.go agent/status.go agent/status_test.go agent/status_support_program_fuzz_test.go agent/jobs_activity.go agent/jobs_activity_past.go agent/tree_counter.go internal/appprojector/appwire_projection.go internal/appprojector/appwire_projection_test.go appwire/types.go appwire/protocol.go appwire/types_test.go appwire/protocol_test.go server/server.go server/server_test.go server/server_surface_fuzz_test.go server/appwire_runtime.go server/appwire_runtime_test.go server/thread_envelope.go server/thread_envelope_test.go cmd/evener/serve.go cmd/evener/serve_test.go cmd/evener/serve_coverage_fuzz_test.go cmd/evener/run_drain_test.go cmd/evener/run_drain_nested_test.go cmd/evener-hub/app_jobs.go cmd/evener-hub/app_jobs_test.go cmd/evener-hub/app_threadread.go cmd/evener-hub/app_threadread_test.go cmd/evener-tui/hub_notifications.go cmd/evener-tui/hub_notifications_test.go cmd/evener-tui/hub_notifications_fuzz_test.go cmd/evener-tui/model_misc_evenerfuzz_test.go cmd/evener-tui/internal/transcript/job_notification.go cmd/evener-tui/internal/transcript/reducer.go cmd/evener-tui/internal/transcript/types.go cmd/evener-tui/internal/transcript/reducer_test.go cmd/evener-tui/internal/transcript/cov_rtui_transcript_test.go cmd/evener-tui/internal/transcript/reducer_fuzz_test.go cmd/evener-tui/internal/transcript/fuzz_coverage_union_test.go cmd/evener-tui/internal/msgrender/tool_bodies.go cmd/evener-tui/internal/msgrender/tool_bodies_test.go cmd/evener-tui/internal/msgrender/tool_renderers.go cmd/evener-tui/internal/msgrender/tool_renderers_test.go cmd/evener-tui/internal/msgrender/tool_renderers_fuzz_test.go cmd/evener-tui/internal/msgrender/cov_rtui_msgrender_test.go cmd/evener-tui/internal/toolsummary/tool_summary.go cmd/evener-tui/internal/toolsummary/tool_summary_test.go cmd/evener-tui/internal/toolsummary/tool_summary_fuzz_test.go cmd/evener-tui/internal/toolsummary/fuzz_coverage_union_test.go
 make generate
 cd cmd/evener-hub/frontend
 npx biome check --write src/stores/threads.ts src/stores/threads.test.ts src/stores/activityPanel.ts src/stores/activityPanel.test.ts src/protocol/model.ts src/protocol/reducer.ts src/protocol/reducer.test.ts src/panes/session/chrome/activityData.ts src/panes/session/chrome/activityData.test.ts src/panes/session/chrome/activityRows.ts src/panes/session/chrome/activityRows.test.ts src/panes/session/chrome/ActivityTree.tsx src/panes/session/chrome/ActivityTree.test.tsx src/panes/session/transcript/ToolCallItem.tsx src/panes/session/transcript/ToolCallItem.test.tsx src/panes/session/transcript/tools/jobTools.tsx src/panes/session/transcript/tools/jobTools.test.tsx src/panes/session/transcript/tools/subagentModule.tsx src/panes/session/transcript/tools/subagentModule.test.tsx src/panes/session/transcript/tools/subagentModuleStore.ts src/panes/session/transcript/tools/subagentModuleStore.test.ts src/panes/session/transcript/messages/steeringClassify.ts src/panes/session/transcript/messages/steeringClassify.test.ts src/panes/session/transcript/messages/NotificationCard.tsx src/panes/session/transcript/messages/NotificationCard.test.tsx src/panes/session/transcript/messages/SteeringItem.tsx src/panes/session/transcript/messages/SteeringItem.test.tsx src/dev/overflowharness-entry.tsx
@@ -1731,7 +1731,7 @@ git add -- internal/appprojector/delegate_projection_test.go internal/appproject
 git add -- agent/events/events.go agent/events/payloads.go agent/events/eventdata.go agent/events/events_test.go agent/events/events_fuzz_test.go agent/events/payloads_test.go agent/events/eventdata_program_fuzz_test.go agent/status.go agent/status_test.go agent/status_support_program_fuzz_test.go agent/jobs_activity.go agent/jobs_activity_past.go agent/tree_counter.go
 git add -- appwire/types.go appwire/protocol.go appwire/types_test.go appwire/protocol_test.go server/server.go server/server_test.go server/server_surface_fuzz_test.go server/appwire_runtime.go server/appwire_runtime_test.go server/thread_envelope.go server/thread_envelope_test.go
 git add -- cmd/evener/serve.go cmd/evener/serve_test.go cmd/evener/serve_coverage_fuzz_test.go cmd/evener/run_drain_test.go cmd/evener/run_drain_nested_test.go cmd/evener-hub/app_jobs.go cmd/evener-hub/app_jobs_test.go cmd/evener-hub/app_threadread.go cmd/evener-hub/app_threadread_test.go
-git add -- cmd/evener-tui/hub_notifications.go cmd/evener-tui/hub_notifications_test.go cmd/evener-tui/hub_notifications_fuzz_test.go cmd/evener-tui/model_misc_serffuzz_test.go
+git add -- cmd/evener-tui/hub_notifications.go cmd/evener-tui/hub_notifications_test.go cmd/evener-tui/hub_notifications_fuzz_test.go cmd/evener-tui/model_misc_evenerfuzz_test.go
 git add -- cmd/evener-tui/internal/transcript/job_notification.go cmd/evener-tui/internal/transcript/reducer.go cmd/evener-tui/internal/transcript/types.go cmd/evener-tui/internal/transcript/reducer_test.go cmd/evener-tui/internal/transcript/cov_rtui_transcript_test.go cmd/evener-tui/internal/transcript/reducer_fuzz_test.go cmd/evener-tui/internal/transcript/fuzz_coverage_union_test.go
 git add -- cmd/evener-tui/internal/msgrender/tool_bodies.go cmd/evener-tui/internal/msgrender/tool_bodies_test.go cmd/evener-tui/internal/msgrender/tool_renderers.go cmd/evener-tui/internal/msgrender/tool_renderers_test.go cmd/evener-tui/internal/msgrender/tool_renderers_fuzz_test.go cmd/evener-tui/internal/msgrender/cov_rtui_msgrender_test.go
 git add -- cmd/evener-tui/internal/toolsummary/tool_summary.go cmd/evener-tui/internal/toolsummary/tool_summary_test.go cmd/evener-tui/internal/toolsummary/tool_summary_fuzz_test.go cmd/evener-tui/internal/toolsummary/fuzz_coverage_union_test.go
@@ -1826,7 +1826,7 @@ go test -race ./agent -run '^TestDelegateLegacyDormancy_' -count=20
 go test ./agent/internal/jobstore -count=1
 go test ./agent -run '^(TestStableDelegateWatch_|TestDelegateResourceSupervision_|TestDelegateRuntimeReclaim_|TestStableDelegateShell_|TestStableDelegateReadOnly_)' -count=20
 go test -race ./agent -run '^(TestStableDelegateWatch_|TestDelegateResourceSupervision_|TestDelegateRuntimeReclaim_|TestStableDelegateShell_|TestStableDelegateReadOnly_)' -count=20
-EVENER_FUZZ_TESTS=1 go test -tags serffuzz ./agent -run '^(FuzzDelegateAttentionFold|FuzzStableDelegateWatchDelivery|FuzzDelegateReclaimStopRestart)$' -count=1
+EVENER_FUZZ_TESTS=1 go test -tags evenerfuzz ./agent -run '^(FuzzDelegateAttentionFold|FuzzStableDelegateWatchDelivery|FuzzDelegateReclaimStopRestart)$' -count=1
 make fuzz
 make fuzz-registry-check
 git diff --check
@@ -1991,8 +1991,8 @@ A selector that passes under its matching mutation is inadequate: restore first,
 ~~~bash
 make fuzz-registry-check
 make fuzz
-EVENER_FUZZ_TESTS=1 go test -tags serffuzz ./agent -run '^(FuzzDelegateControllerTransitions|FuzzDelegateConversationTransitions|FuzzDelegateRestartEquivalence|FuzzDelegateAttentionFold|FuzzStableDelegateWatchDelivery|FuzzDelegateReclaimStopRestart)$' -count=1
-EVENER_FUZZ_TESTS=1 go test -tags serffuzz ./agent/internal/delegatestore -run '^Fuzz(Fold|StoreReplay|ReadEvents)$' -count=1
+EVENER_FUZZ_TESTS=1 go test -tags evenerfuzz ./agent -run '^(FuzzDelegateControllerTransitions|FuzzDelegateConversationTransitions|FuzzDelegateRestartEquivalence|FuzzDelegateAttentionFold|FuzzStableDelegateWatchDelivery|FuzzDelegateReclaimStopRestart)$' -count=1
+EVENER_FUZZ_TESTS=1 go test -tags evenerfuzz ./agent/internal/delegatestore -run '^Fuzz(Fold|StoreReplay|ReadEvents)$' -count=1
 go test ./agent/internal/jobstore -run '^FuzzOutputMatcher$' -count=1
 ~~~
 

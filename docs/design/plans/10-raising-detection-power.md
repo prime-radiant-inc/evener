@@ -60,7 +60,7 @@ git patch, **paired with a corpus seed that reaches the fault** (for a
 fuzzer-found bug, the regression seed the toolchain already saved; otherwise a
 seed shipped with the mutation). The audit applies each patch in a *throwaway git
 worktree at HEAD*, runs the corresponding target's seed corpus under
-`-tags serffuzz`, and asserts the run **fails** (the oracle caught the fault). A
+`-tags evenerfuzz`, and asserts the run **fails** (the oracle caught the fault). A
 clean HEAD must pass (sanity). On authoring, each mutation is confirmed to flip
 its seed clean→failing, which proves both that the seed reaches the fault and
 that the oracle fires — without that pairing, a seed-only run could leave a
@@ -87,7 +87,7 @@ we want. Re-deriving is cheap: it is the inverse of a known fix.
 - `scripts/fuzz-oracle-audit.sh` — the harness (mirrors `fuzz-triage.sh`/
   `fuzz-bisect.sh` conventions: env seams `EVENER_FUZZ_RUNNER`, throwaway worktree,
   honest reporting). For each mutation: worktree-at-HEAD → `git apply` (loud on
-  failure) → `go test -tags serffuzz -run '^<FuzzName>$' <pkg>` → assert non-zero
+  failure) → `go test -tags evenerfuzz -run '^<FuzzName>$' <pkg>` → assert non-zero
   → clean up. Then a **gap report**: every native target in `run-fuzz.sh --list`
   with no mutation is flagged "unaudited oracle" (informational at first; a soft
   gate later, like `fuzz-gap-check`).
@@ -166,7 +166,7 @@ refactor could silently break either.
      declared tool.
 2. **Strengthened fuzz oracles** in `requestbuild_fuzz_test.go`: parse the output
    map and assert the same contracts directly (so the contract is checked even in
-   a non-serffuzz run, and the invariant is checked under serffuzz). The fuzzer
+   a non-evenerfuzz run, and the invariant is checked under evenerfuzz). The fuzzer
    already varies `llm.Request` (`llm/types.go:241` — `ReasoningEffort`,
    `ToolChoice`, `MaxTokens`, `Tools`, `ResponseFormat`); widen the generated
    space to drive every guard arm.

@@ -27,7 +27,7 @@ import (
 
 const (
 	rapidMarker  = "evener:fuzz rapid"
-	fuzzBuildTag = "serffuzz"
+	fuzzBuildTag = "evenerfuzz"
 )
 
 // Target is a coverage-replay identity. Module and Package are paths relative to
@@ -529,7 +529,7 @@ func skipDirectory(name string) bool {
 
 // fuzzBuildContext matches the explicit build configuration used by run-fuzz
 // and coverage replay. build.Default supplies the current target platform,
-// architecture, cgo state, and toolchain tags; this adds only serffuzz.
+// architecture, cgo state, and toolchain tags; this adds only evenerfuzz.
 func fuzzBuildContext() build.Context {
 	context := build.Default
 	context.BuildTags = append(append([]string(nil), context.BuildTags...), fuzzBuildTag)

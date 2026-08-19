@@ -148,7 +148,7 @@ until it produces a genuinely failing test.**
   stated reason*, implement the minimum, watch it pass. A step that cannot be
   made to fail first is not a test — say so and redesign it.
 - **No test may be tautological.** `invariant.Hold` is a **no-op** outside
-  `-tags serffuzz` (`invariant/invariant.go:28,32`, `const Enabled = false`), so
+  `-tags evenerfuzz` (`invariant/invariant.go:28,32`, `const Enabled = false`), so
   an invariant is never a test. A length assertion against a literal is not a
   completeness check.
 - **One minter of live turn ids.** `reserveClientMutationTurnID`. Kata `eptj` is

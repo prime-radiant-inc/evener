@@ -1,4 +1,4 @@
-//go:build serffuzz
+//go:build evenerfuzz
 
 package invariant
 
@@ -9,7 +9,7 @@ import "fmt"
 const Enabled = true
 
 // Hold panics when cond is false, reporting the formatted message. The fuzz
-// targets build with -tags serffuzz, so a tripped invariant surfaces through the
+// targets build with -tags evenerfuzz, so a tripped invariant surfaces through the
 // never-panic oracle at the point the logic first went wrong.
 func Hold(cond bool, format string, args ...any) {
 	if !cond {

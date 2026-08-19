@@ -1,4 +1,4 @@
-.PHONY: build build-runtime build-go build-hub web-preflight build-web test-web test-web-browser build-tui build-doctor build-all build-linux build-namingcheck build-migrate dist install install-home install-system test-install test-dev-tooling test test-short test-fuzz test-race merge-approval-gate vet lint lint-naming lint-gofmt lint-serffuzz lint-eval lint-internal lint-docs lint-golangci clean fuzz fuzz-seeds fuzz-nightly fuzz-triage fuzz-continuous fuzz-coverage-global fuzz-bisect fuzz-bisect-selftest fuzz-oracle-audit fuzz-oracle-audit-selftest fuzz-mutation-score fuzz-ledger fuzz-coverage fuzz-gap-check fuzz-registry-check fuzz-goldens secret-scan fuzz-corpus-scan refresh-model-catalog test-coverage-floor test-coverage-floor-selftest web-coverage-floor web-coverage-floor-selftest coverage-gaps coverage-gaps-selftest coverage-union coverage-union-selftest merge-into-branch merge-into-branch-selftest test-timing-budget test-timing-budget-selftest test-rebaseline
+.PHONY: build build-runtime build-go build-hub web-preflight build-web test-web test-web-browser build-tui build-doctor build-all build-linux build-namingcheck build-migrate dist install install-home install-system test-install test-dev-tooling test test-short test-fuzz test-race merge-approval-gate vet lint lint-naming lint-gofmt lint-evenerfuzz lint-eval lint-internal lint-docs lint-golangci clean fuzz fuzz-seeds fuzz-nightly fuzz-triage fuzz-continuous fuzz-coverage-global fuzz-bisect fuzz-bisect-selftest fuzz-oracle-audit fuzz-oracle-audit-selftest fuzz-mutation-score fuzz-ledger fuzz-coverage fuzz-gap-check fuzz-registry-check fuzz-goldens secret-scan fuzz-corpus-scan refresh-model-catalog test-coverage-floor test-coverage-floor-selftest web-coverage-floor web-coverage-floor-selftest coverage-gaps coverage-gaps-selftest coverage-union coverage-union-selftest merge-into-branch merge-into-branch-selftest test-timing-budget test-timing-budget-selftest test-rebaseline
 
 LDFLAGS := -X primeradiant.com/evener/buildinfo.GitSHA=$$(git rev-parse --short HEAD) \
            -X primeradiant.com/evener/buildinfo.GitDirty=$$(git --no-optional-locks diff-files --quiet && echo "" || echo "true") \
@@ -312,15 +312,15 @@ vet:
 	@for m in $(GO_MODULES); do (cd $$m && go vet ./...) || exit 1; done
 
 # FUZZ_SEED_REPLAY replays every module's COMMITTED seed corpus (and saved
-# crashers) under the serffuzz tag. `go test -run '^Fuzz'` with no `-fuzz` does
+# crashers) under the evenerfuzz tag. `go test -run '^Fuzz'` with no `-fuzz` does
 # not search, so this is deterministic. `make fuzz` runs it as one of its steps;
 # fuzz-seeds is the same work on its own.
-FUZZ_SEED_REPLAY = for m in $(FUZZ_GO_MODULES); do (GOENV=off GOFLAGS= GOWORK="$(FUZZ_GOWORK)" $(MEMCAP) sh -c "cd $$m && go test -run '^Fuzz' -tags serffuzz -count=1 ./...") || exit 1; done
+FUZZ_SEED_REPLAY = for m in $(FUZZ_GO_MODULES); do (GOENV=off GOFLAGS= GOWORK="$(FUZZ_GOWORK)" $(MEMCAP) sh -c "cd $$m && go test -run '^Fuzz' -tags evenerfuzz -count=1 ./...") || exit 1; done
 
 # fuzz-seeds is the RUNTIME half of the tagged-source gate whose compile half is
-# `make lint-serffuzz`. It stays out of `make test` on measured cost: 144s
+# `make lint-evenerfuzz`. It stays out of `make test` on measured cost: 144s
 # across the workspace (the root module ~39s and agent ~65s of that) against a
-# ~70s `make test`, for a class `make fuzz` and CI already replay. lint-serffuzz
+# ~70s `make test`, for a class `make fuzz` and CI already replay. lint-evenerfuzz
 # catches a tagged call site stranded by a signature change in ~4s; this catches
 # the rest — a tagged seed that still compiles but no longer passes.
 fuzz-seeds:
@@ -332,17 +332,17 @@ fuzz-seeds:
 # the fixed coverage seed bank. It is still fuzz coverage, so it stays out of
 # the regular test gate and runs through this explicit entry point.
 #
-# Everything here builds with -tags serffuzz so the internal/invariant assertions
+# Everything here builds with -tags evenerfuzz so the internal/invariant assertions
 # (primeradiant.com/evener/invariant) are live: a tripped invariant panics and the
 # never-panic oracle catches it. The first step verifies the mechanism itself
 # fires under the tag; production builds and `make test` stay tag-free.
 fuzz:
-	@GOENV=off GOFLAGS= GOWORK="$(FUZZ_GOWORK)" $(MEMCAP) sh -c 'cd agent && go test -run "^$$" -tags serffuzz -count=1 ./...'
-	@GOENV=off GOFLAGS= GOWORK="$(FUZZ_GOWORK)" $(MEMCAP) sh -c 'cd invariant && go test -tags serffuzz ./...'
-	@GOENV=off GOFLAGS= GOWORK="$(FUZZ_GOWORK)" $(MEMCAP) sh -c 'cd fuzz && go test -tags serffuzz ./...'
+	@GOENV=off GOFLAGS= GOWORK="$(FUZZ_GOWORK)" $(MEMCAP) sh -c 'cd agent && go test -run "^$$" -tags evenerfuzz -count=1 ./...'
+	@GOENV=off GOFLAGS= GOWORK="$(FUZZ_GOWORK)" $(MEMCAP) sh -c 'cd invariant && go test -tags evenerfuzz ./...'
+	@GOENV=off GOFLAGS= GOWORK="$(FUZZ_GOWORK)" $(MEMCAP) sh -c 'cd fuzz && go test -tags evenerfuzz ./...'
 	@GOENV=off GOFLAGS= GOWORK="$(FUZZ_GOWORK)" $(MEMCAP) sh -c 'go test ./cmd/evener-fuzzcov ./cmd/evener-fuzz-harvest'
 	@$(FUZZ_SEED_REPLAY)
-	@set -eu; cap="$(MEMCAP)"; if [ -n "$$cap" ]; then cap="$$(pwd)/$$cap"; fi; go_work="$(FUZZ_GOWORK)"; for target in $$(scripts/run-fuzz.sh --list | awk -F: '$$1 == "rapid" { print $$2 ":" $$3 ":" $$4 }'); do module=$${target%%:*}; rest=$${target#*:}; pkg=$${rest%%:*}; name=$${rest#*:}; for seed in 1 2 3 5 8; do echo "=== rapid replay $$module:$$name seed $$seed ==="; (cd "$$module" && GOENV=off GOFLAGS= GOWORK="$$go_work" env -u RAPID_FAILFILE EVENER_FUZZ_TESTS=1 RAPID_SEED="$$seed" RAPID_CHECKS=100 RAPID_STEPS=30 RAPID_NOFAILFILE=true RAPID_LOG=false RAPID_V=false RAPID_DEBUG=false RAPID_DEBUGVIS=false RAPID_SHRINKTIME=30s $${cap:+"$$cap"} go test -tags serffuzz -run "^$${name}\$$" -count=1 "$$pkg"); done; done
+	@set -eu; cap="$(MEMCAP)"; if [ -n "$$cap" ]; then cap="$$(pwd)/$$cap"; fi; go_work="$(FUZZ_GOWORK)"; for target in $$(scripts/run-fuzz.sh --list | awk -F: '$$1 == "rapid" { print $$2 ":" $$3 ":" $$4 }'); do module=$${target%%:*}; rest=$${target#*:}; pkg=$${rest%%:*}; name=$${rest#*:}; for seed in 1 2 3 5 8; do echo "=== rapid replay $$module:$$name seed $$seed ==="; (cd "$$module" && GOENV=off GOFLAGS= GOWORK="$$go_work" env -u RAPID_FAILFILE EVENER_FUZZ_TESTS=1 RAPID_SEED="$$seed" RAPID_CHECKS=100 RAPID_STEPS=30 RAPID_NOFAILFILE=true RAPID_LOG=false RAPID_V=false RAPID_DEBUG=false RAPID_DEBUGVIS=false RAPID_SHRINKTIME=30s $${cap:+"$$cap"} go test -tags evenerfuzz -run "^$${name}\$$" -count=1 "$$pkg"); done; done
 	@GOENV=off GOFLAGS= GOWORK="$(FUZZ_GOWORK)" $(MEMCAP) sh -c "go test -run '^Test.*Golden\$$' ./appwire"
 
 # fuzz-goldens regenerates the decode SNAPSHOT goldens — evener's differential
@@ -415,7 +415,7 @@ coverage-gaps-selftest:
 # the union of the test track (test-coverage-floor) and the fuzz track
 # (fuzz-coverage-global). Both understate on their own — the -run '^(Test|Example)'
 # filter excludes fuzz targets, and this repo keeps whole families of behavioural
-# checks in `check*` functions only a serffuzz "program" target calls. CHECK=1
+# checks in `check*` functions only a evenerfuzz "program" target calls. CHECK=1
 # gates, BLESS=1 raises. Heaviest of the three: two full runs per module.
 coverage-union:
 	@scripts/coverage-union.sh $(if $(CHECK),--check) $(if $(BLESS),--bless) $(UNION_ARGS)
@@ -583,7 +583,7 @@ lint-naming:
 lint-gofmt:
 	$(call run_quiet_lint,files="$$(git ls-files -z -- '*.go' | xargs -0 gofmt -l)"; status=$$?; if [ "$$status" -ne 0 ]; then if [ -n "$$files" ]; then printf '%s\n' "$$files"; fi; exit "$$status"; fi; if [ -n "$$files" ]; then printf '%s\n' "$$files"; exit 1; fi)
 
-# lint-serffuzz is the compile floor for the //go:build serffuzz sources. Every
+# lint-evenerfuzz is the compile floor for the //go:build evenerfuzz sources. Every
 # other gate is tag-free — `make test`, `make lint`, `make vet` and
 # `go build ./...` never compile those 250 files — so a production signature
 # change that strands a tagged call site rots there until someone runs
@@ -591,8 +591,8 @@ lint-gofmt:
 # the tag, which is what catches a stranded call site. Running the corpora
 # themselves is 144s and stays in `make fuzz` / `make fuzz-seeds`; this pass is
 # ~4s warm across the workspace, which is why it can sit in the gate.
-lint-serffuzz:
-	$(call run_quiet_lint,for m in $(FUZZ_GO_MODULES); do (cd $$m && go vet -tags serffuzz ./...) || exit 1; done)
+lint-evenerfuzz:
+	$(call run_quiet_lint,for m in $(FUZZ_GO_MODULES); do (cd $$m && go vet -tags evenerfuzz ./...) || exit 1; done)
 
 # lint-eval is the same compile floor for the //go:build eval sources: the
 # live-provider eval suites (context-compaction quality, forced notes). This tag
@@ -602,7 +602,7 @@ lint-serffuzz:
 # spend real money against a real provider, so compilation is the whole gate.
 # FUZZ_GO_MODULES is the full workspace list, and the floor wants all of it: eval
 # sources sit only under agent/ today, and a floor is worth nothing in the module
-# where the next one lands. ~3.5s warm, the same order as the serffuzz pass.
+# where the next one lands. ~3.5s warm, the same order as the evenerfuzz pass.
 lint-eval:
 	$(call run_quiet_lint,for m in $(FUZZ_GO_MODULES); do (cd $$m && go vet -tags eval ./...) || exit 1; done)
 
@@ -635,7 +635,7 @@ generate:
 lint-generated:
 	$(call run_quiet_lint,go generate ./appwire/... && { git diff --exit-code -- docs/appwire-protocol.md cmd/evener-hub/frontend/src/protocol/types.gen.ts || { echo "generated AppWire outputs are stale; run 'make generate' and commit."; exit 1; }; })
 
-LINT_TARGETS := lint-naming lint-gofmt lint-serffuzz lint-eval lint-internal lint-docs lint-golangci lint-generated secret-scan
+LINT_TARGETS := lint-naming lint-gofmt lint-evenerfuzz lint-eval lint-internal lint-docs lint-golangci lint-generated secret-scan
 
 lint: $(LINT_TARGETS)
 

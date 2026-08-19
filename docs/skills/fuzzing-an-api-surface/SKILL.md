@@ -120,10 +120,10 @@ evener target:
 - **Never wedge** (`Wedge`). A call that should return makes no progress. Spot it
   on synchronous seams that could hang: `TestRouterSeqFuzz` runs each dispatch
   under a bounded context in a goroutine and reports a wedge on timeout.
-- **Internal invariant** (`Panic`, under `-tags serffuzz`). A load-bearing
+- **Internal invariant** (`Panic`, under `-tags evenerfuzz`). A load-bearing
   assumption asserted *inside* production code with `invariant.Hold()` so a logic
   bug trips at its origin, not at a distant surface. Zero-cost in a normal build;
-  panics under `-tags serffuzz` (the fuzz build), so it surfaces via the Panic
+  panics under `-tags evenerfuzz` (the fuzz build), so it surfaces via the Panic
   oracle. Spot it wherever a subsystem relies on a property a reader assumes —
   e.g. a folded job status never leaves a terminal state; an emitted item carries
   its turn id. Conditions must be side-effect-free; verify the invariant is TRUE

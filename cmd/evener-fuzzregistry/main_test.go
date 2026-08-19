@@ -129,7 +129,7 @@ import "testing"
 func FuzzRoot(f *testing.F) {}
 `,
 		"nested/go.mod": "module example.test/nested\n\ngo 1.25.0\n",
-		"nested/alias_fuzz_test.go": `//go:build serffuzz
+		"nested/alias_fuzz_test.go": `//go:build evenerfuzz
 
 package nested
 
@@ -245,7 +245,7 @@ func scenarioDiscoverWorkspaceHonorsGoBuildTestFileSelection(t *testing.T) {
 	files := map[string]string{
 		"go.work": "go 1.25.0\n\nuse .\n",
 		"go.mod":  "module example.test/root\n\ngo 1.25.0\n",
-		"active_fuzz_test.go": `//go:build serffuzz
+		"active_fuzz_test.go": `//go:build evenerfuzz
 
 package root
 

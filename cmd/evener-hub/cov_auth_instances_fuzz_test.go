@@ -57,7 +57,7 @@ func FuzzAuthInstancesFactories(f *testing.F) {
 
 		// Pure status/projection helpers: assert against independently written
 		// expected values instead of discarding the result (docs/testing.md's
-		// executed-vs-tested note on the serffuzz cov_* driver family).
+		// executed-vs-tested note on the evenerfuzz cov_* driver family).
 		if got := effectiveHubAuthEnv(map[string]string{"COV_AUTH": "1"}); got["COV_AUTH"] != "1" {
 			t.Fatalf("effectiveHubAuthEnv: COV_AUTH = %q, want \"1\"", got["COV_AUTH"])
 		}

@@ -15,7 +15,7 @@ const (
 
 // TestCIRunsEveryFamilyOfTheLintGate keeps the Makefile the only list of lint
 // families. CI used to re-type the families one step at a time, and a family
-// added to the local gate (`lint-serffuzz`, `lint-generated`) silently never
+// added to the local gate (`lint-evenerfuzz`, `lint-generated`) silently never
 // ran on a pull request — no error, no annotation, nothing to notice. The
 // audit passes as soon as CI invokes the aggregate `make lint`, which is what
 // the fix does; it still accepts a CI that names every family individually

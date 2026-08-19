@@ -403,10 +403,10 @@ func TestPlatformExclusionMustBeUnavailableAndExclusionsRejectInvalidRows(t *tes
 		t.Fatal("available platform source must not be excluded")
 	}
 
-	evenerFuzzSource := "//go:build serffuzz\n\npackage pkg\n\nfunc ReplayOnly() {}\n"
-	evenerFuzzRepo, _ := globalExclusionFixture(t, "serffuzz.go", evenerFuzzSource)
-	if _, err := ReadGlobalExclusions(evenerFuzzRepo, strings.NewReader("m\t./pkg\tserffuzz.go\tplatform\tcompiled by coverage replay\n")); err == nil {
-		t.Fatal("source compiled by serffuzz coverage replay must not be excluded as platform")
+	evenerFuzzSource := "//go:build evenerfuzz\n\npackage pkg\n\nfunc ReplayOnly() {}\n"
+	evenerFuzzRepo, _ := globalExclusionFixture(t, "evenerfuzz.go", evenerFuzzSource)
+	if _, err := ReadGlobalExclusions(evenerFuzzRepo, strings.NewReader("m\t./pkg\tevenerfuzz.go\tplatform\tcompiled by coverage replay\n")); err == nil {
+		t.Fatal("source compiled by evenerfuzz coverage replay must not be excluded as platform")
 	}
 
 	for _, tagged := range []struct {
@@ -416,8 +416,8 @@ func TestPlatformExclusionMustBeUnavailableAndExclusionsRejectInvalidRows(t *tes
 	}{
 		{
 			name:   "replay tag only",
-			file:   "not_serffuzz.go",
-			source: "//go:build !serffuzz\n\npackage pkg\n\nfunc NotReplay() {}\n",
+			file:   "not_evenerfuzz.go",
+			source: "//go:build !evenerfuzz\n\npackage pkg\n\nfunc NotReplay() {}\n",
 		},
 		{
 			name:   "arbitrary feature tag only",
@@ -449,7 +449,7 @@ func TestPlatformExclusionMustBeUnavailableAndExclusionsRejectInvalidRows(t *tes
 	}{
 		{
 			name:   "replay tag",
-			source: "//go:build !serffuzz\n\npackage pkg\n\nfunc NotReplay() {}\n",
+			source: "//go:build !evenerfuzz\n\npackage pkg\n\nfunc NotReplay() {}\n",
 		},
 		{
 			name:   "cgo condition",
@@ -476,12 +476,12 @@ func TestPlatformExclusionMustBeUnavailableAndExclusionsRejectInvalidRows(t *tes
 	}
 
 	currentSuffixFile := "platform_" + runtime.GOOS + ".go"
-	currentSuffixRepo, _ := globalExclusionFixture(t, currentSuffixFile, "//go:build !serffuzz\n\npackage pkg\n\nfunc CurrentPlatformReplayOnly() {}\n")
+	currentSuffixRepo, _ := globalExclusionFixture(t, currentSuffixFile, "//go:build !evenerfuzz\n\npackage pkg\n\nfunc CurrentPlatformReplayOnly() {}\n")
 	if _, err := ReadGlobalExclusions(currentSuffixRepo, strings.NewReader("m\t./pkg\t"+currentSuffixFile+"\tplatform\tavailable GOOS suffix hidden only by replay tag\n")); err == nil {
 		t.Fatal("an available GOOS filename suffix must not hide replay-tag-only source")
 	}
 
-	legacyMixedRepo, _ := globalExclusionFixture(t, "legacy_mixed.go", "// +build !"+runtime.GOOS+"\n// +build !serffuzz\n\npackage pkg\n\nfunc LegacyMixed() {}\n")
+	legacyMixedRepo, _ := globalExclusionFixture(t, "legacy_mixed.go", "// +build !"+runtime.GOOS+"\n// +build !evenerfuzz\n\npackage pkg\n\nfunc LegacyMixed() {}\n")
 	if _, err := ReadGlobalExclusions(legacyMixedRepo, strings.NewReader("m\t./pkg\tlegacy_mixed.go\tplatform\tmixed platform and replay constraints\n")); err == nil {
 		t.Fatal("a mixed legacy platform/replay constraint must not become excludable")
 	}

@@ -207,7 +207,7 @@ Run:
 ```bash
 gofmt -w agent/session_model_call.go agent/session_model_test.go agent/session_provenance_test.go agent/fuzz_mc_classify_model_error_test.go agent/lifecycle_seqfuzz_test.go agent/session_goal.go
 go test ./agent -run 'TestSession_NonRetryableProviderErrorLeavesSessionIdle|TestSession_ProvideErrorReturnsErrorToCaller|TestProviderErrorEmitsStructuredCause|TestNonRetryableModelErrorClearsActiveProvenanceAtIdleBoundary|TestGoalErrorBlockIsPersisted' -count=1
-go test -tags serffuzz ./agent -run '^FuzzMcClassifyModelError$' -count=1
+go test -tags evenerfuzz ./agent -run '^FuzzMcClassifyModelError$' -count=1
 ```
 
 Expected: PASS; the regression observes exactly one request before the failure, the active goal is blocked, the session is idle, and a second operation succeeds.

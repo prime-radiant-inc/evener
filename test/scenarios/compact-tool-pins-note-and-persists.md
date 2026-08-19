@@ -25,12 +25,12 @@ compaction runs.
   run=$(mktemp -d -t evener-e2e-compact-XXXXXX)
   go build -o "$run/evener-hub" ./cmd/evener-hub
   go build -o "$run/evener"     ./cmd/evener
-  REALSERF=~/.evener
+  REALEVENER=~/.evener
   TH="$run/home"                               # isolated HOME
   mkdir -p "$TH/.evener/run" "$TH/.local/state/evener/projects"
   # Symlink read-only creds + config that DON'T carry absolute state paths:
   for f in credentials.toml providers.toml auth-token launch.toml; do
-    ln -s "$REALSERF/$f" "$TH/.evener/$f"; done
+    ln -s "$REALEVENER/$f" "$TH/.evener/$f"; done
   # DO NOT `cp` the real hub.toml — it hardcodes absolute paths under `~/.evener`
   # (hub_state_root, run_dir, state_glob, past_index_db) and the test hub will
   # then read/write REAL state. WRITE a fresh one pointed entirely at $TH:
