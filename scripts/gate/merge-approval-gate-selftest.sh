@@ -26,7 +26,7 @@ cat >"$fake_make" <<'FAKE_MAKE'
 #!/usr/bin/env bash
 set -u
 target="${!#}"
-printf '%s\t%s\n' "$target" "${ROOT_FULL:-}" >>"$FAKE_STATE/calls"
+printf '%s\t%s\n' "$target" "" >>"$FAKE_STATE/calls"
 printf 'recursive stdout: %s\n' "$target"
 printf 'recursive stderr: %s\n' "$target" >&2
 if [ "${FAKE_FAIL_TARGET:-}" = "$target" ]; then
@@ -51,12 +51,12 @@ run_gate() {
 
 run_gate "" "$work/success.out"
 assert_eq "$gate_rc" "0" "successful gate exits zero"
-expected_calls=$(printf 'lint\t\nbuild\t\ntest\t1\ntest-dev-tooling\t\n')
+expected_calls=$(printf 'lint\t\nbuild\t\ntest-full\t\ntest-web\t\ntest-dev-tooling\t\n')
 actual_calls="$(cat "$work/calls" 2>/dev/null || :)"
-assert_eq "$actual_calls" "$expected_calls" "success runs lint, build, test, then test-dev-tooling"
+assert_eq "$actual_calls" "$expected_calls" "success runs lint, build, test-full, test-web, then test-dev-tooling"
 assert_has "$work/success.out" "recursive stdout: lint" "child stdout is visible"
-assert_has "$work/success.out" "recursive stderr: test" "child stderr is visible"
-assert_before "$work/calls" "test	" "test-dev-tooling	" "test-dev-tooling is invoked after test"
+assert_has "$work/success.out" "recursive stderr: test-full" "child stderr is visible"
+assert_before "$work/calls" "test-full	" "test-dev-tooling	" "test-dev-tooling is invoked after test-full"
 
 run_gate lint "$work/lint-failure.out"
 if [ "$gate_rc" -ne 0 ]; then
@@ -110,7 +110,7 @@ assert_not_has "$work/all-available.out" "BLOCKED" "the all-available green path
 
 run_gate_blocked "loopback-bind" "" "$work/blocked-loopback.out"
 assert_eq "$gate_rc" "0" "a blocked capability alone does not fail the gate"
-expected_calls=$(printf 'lint\t\nbuild\t\ntest\t1\ntest-dev-tooling\t\n')
+expected_calls=$(printf 'lint\t\nbuild\t\ntest-full\t\ntest-web\t\ntest-dev-tooling\t\n')
 actual_calls="$(cat "$work/calls" 2>/dev/null || :)"
 assert_eq "$actual_calls" "$expected_calls" "a blocked capability still runs every feasible phase, in order"
 assert_has "$work/blocked-loopback.out" "BLOCKED loopback-bind" "the blocked capability is named in the structured summary"

@@ -1,4 +1,4 @@
-.PHONY: build build-runtime build-go build-hub web-preflight build-web test-web test-web-browser build-tui build-doctor build-all build-linux build-namingcheck build-migrate dist install install-home install-system test-install test-dev-tooling test test-short test-fuzz test-race merge-approval-gate vet lint lint-naming lint-gofmt lint-evenerfuzz lint-eval lint-internal lint-docs lint-golangci clean fuzz fuzz-seeds fuzz-nightly fuzz-triage fuzz-continuous fuzz-coverage-global fuzz-bisect fuzz-bisect-selftest fuzz-oracle-audit fuzz-oracle-audit-selftest fuzz-mutation-score fuzz-ledger fuzz-coverage fuzz-gap-check fuzz-registry-check fuzz-goldens secret-scan fuzz-corpus-scan refresh-model-catalog test-coverage-floor test-coverage-floor-selftest web-coverage-floor web-coverage-floor-selftest coverage-gaps coverage-gaps-selftest coverage-union coverage-union-selftest merge-into-branch merge-into-branch-selftest test-timing-budget test-timing-budget-selftest test-rebaseline
+.PHONY: build build-runtime build-go build-hub web-preflight build-web test-web test-web-browser build-tui build-doctor build-all build-linux build-namingcheck build-migrate dist install install-home install-system test-install test-dev-tooling test test-short test-full test-fuzz test-race merge-approval-gate vet lint lint-naming lint-gofmt lint-evenerfuzz lint-eval lint-internal lint-docs lint-golangci clean fuzz fuzz-seeds fuzz-nightly fuzz-triage fuzz-continuous fuzz-coverage-global fuzz-bisect fuzz-bisect-selftest fuzz-oracle-audit fuzz-oracle-audit-selftest fuzz-mutation-score fuzz-ledger fuzz-coverage fuzz-gap-check fuzz-registry-check fuzz-goldens secret-scan fuzz-corpus-scan refresh-model-catalog test-coverage-floor test-coverage-floor-selftest web-coverage-floor web-coverage-floor-selftest coverage-gaps coverage-gaps-selftest coverage-union coverage-union-selftest merge-into-branch merge-into-branch-selftest test-rebaseline
 
 LDFLAGS := -X primeradiant.com/evener/buildinfo.GitSHA=$$(git rev-parse --short HEAD) \
            -X primeradiant.com/evener/buildinfo.GitDirty=$$(git --no-optional-locks diff-files --quiet && echo "" || echo "true") \
@@ -236,7 +236,7 @@ override FUZZ_GOWORK := $(abspath $(CURDIR)/go.work)
 # the guard or the pid-suffixed covscratch pattern, is enforced statically by
 # the audits in scriptmktemp_audit_test.go, not by re-running suites under
 # sabotage (kata 5hs2).
-DEV_TOOLING_TEST_SCRIPTS := gate/run-module-tests lib/private-go-home gate/merge-approval-gate ops/setup-gocache web/web-preflight lib/live-eval-isolation e2e/e2e-webui-turn-controls fuzz/fuzz-bisect fuzz/fuzz-oracle-audit coverage/test-coverage-floor coverage/web-coverage-floor coverage/coverage-gaps coverage/coverage-union gate/test-timing-budget lib/scratch-lib gate/merge-into-branch
+DEV_TOOLING_TEST_SCRIPTS := lib/private-go-home gate/merge-approval-gate ops/setup-gocache web/web-preflight lib/live-eval-isolation e2e/e2e-webui-turn-controls fuzz/fuzz-bisect fuzz/fuzz-oracle-audit coverage/test-coverage-floor coverage/web-coverage-floor coverage/coverage-gaps coverage/coverage-union lib/scratch-lib gate/merge-into-branch
 
 # test-dev-tooling tests tooling, not the product, so it runs in
 # `make merge-approval-gate` (where tooling regressions matter) and on demand
@@ -252,15 +252,27 @@ DEV_TOOLING_TEST_SCRIPTS := gate/run-module-tests lib/private-go-home gate/merge
 test-dev-tooling:
 	@go run ./cmd/evener-test-dev-tooling $(DEV_TOOLING_TEST_SCRIPTS)
 
-# test covers the Go modules AND the frontend. The frontend gate runs as a third
-# concurrent stream inside run-module-tests.sh (MAKE is passed through so it can
-# re-enter this Makefile's test-web target); it is node work, so it overlaps the
-# Go waves instead of adding its runtime on the end. WEB=0 skips it.
+# test runs the Go test suites across all workspace modules. The gate runs
+# ordinary Test/Example functions only (native Fuzz targets and fuzz-designated
+# Test* functions are excluded — they run under `make fuzz`). The frontend gate
+# is separate (`make test-web`); the merge-approval-gate runs both.
+#
+# ROOT_FULL=1 drops -short so the e2e/live tests in cmd/evener-hub and
+# cmd/evener-tui run (they gate on testing.Short()). EVENER_GATE_CAPABILITY_SKIP,
+# when set by the capability preflight, adds sandbox-blocked test patterns to
+# the root module's -skip.
+GO_TEST_MODULES := ./... ./agent/... ./auth/... ./llm/... ./envvars/... ./invariant/... ./identifier/...
+GATE_RUN := ^\(Test\|Example\)
+GATE_SKIP := \(SeqFuzz\|SchemaFuzz\|Structured.*Reach\|LifecycleAdapter\|ToolArgsAdapter\|SeqAdapter\|TurnPagingEquivalenceSanity\|WireTypeRegistryCoverage\|LineWindowExtractorsSanity\|TranscriptReadersAgreeSanity\|WriteListRoundTrip\|LaunchConfigThreeStateRoundTrip\|DifferentialSanity\|StreamVsNonStreamSanity\|FuzzBuildEnforces\)
+
 test:
-	@MODULES="$(GO_MODULES)" MAKE="$(MAKE)" $(MEMCAP) scripts/gate/run-module-tests.sh -short -count=1
+	@go test -run '$(GATE_RUN)' -skip '$(GATE_SKIP)' -short -count=1 $(GO_TEST_MODULES)
 
 test-short:
 	@$(MAKE) test
+
+test-race:
+	@go test -race -run '$(GATE_RUN)' -skip '$(GATE_SKIP)' -short -count=1 $(GO_TEST_MODULES)
 
 # test-fuzz runs the seqfuzz/schemafuzz stateful rapid.Check family (delegate,
 # watch, lifecycle, jobs descendant-merge, tool-args schema, jobstore, context
@@ -276,31 +288,26 @@ test-fuzz:
 	@cd agent && EVENER_FUZZ_TESTS=1 go test . ./internal/contextmgr ./internal/jobstore -run 'SeqFuzz|ToolArgsSchemaFuzz' -count=1 -v
 	@EVENER_FUZZ_TESTS=1 go test ./internal/appserver -run 'SeqFuzz' -count=1 -v
 
-# merge-approval-gate is the canonical serial post-merge gate. Keep the
-# explicit expansion in docs/testing.md for diagnosis and evidence.
+# merge-approval-gate is the canonical serial post-merge gate.
 #
-# The capability preflight (scripts/gate/gate-capability-preflight.sh) classifies
+# The capability preflight (evener-dev capability-preflight) classifies
 # sandbox-sensitive host capabilities ONCE, before any phase runs, and
 # exports EVENER_GATE_CAPABILITY_SKIP so ROOT_FULL=1 make test skips exactly
 # the known-infeasible live/e2e tests instead of repeatedly failing into
-# them, and reports what it found blocked with exact rerun commands. All four
-# steps now run in ONE shell (chained with && instead of four separate
-# `@$(MAKE)` lines) so that export reaches every phase; the gate still stops
-# at the first failing phase either way, same as before.
+# them.
 merge-approval-gate:
-	@eval "$$(scripts/gate/gate-capability-preflight.sh)" && \
+	@export EVENER_GATE_CAPABILITY_SKIP=$$(go run ./cmd/evener-dev capability-preflight) && \
 		$(MAKE) lint && \
 		$(MAKE) build && \
-		ROOT_FULL=1 $(MAKE) test && \
+		$(MAKE) test-full && \
+		$(MAKE) test-web && \
 		$(MAKE) test-dev-tooling
 
-# The permanent -race gate (CI), across every non-fuzz module. AGENT_PARALLEL=
-# leaves the agent wave at GOMAXPROCS: under -race (~10x slower) extra
-# parallelism just oversubscribes few-core CI and starves real per-test work past
-# its timeouts. WEB=0: -race is a Go-toolchain gate, and the frontend suite is
-# unaffected by it, so `make test` owns the web stream instead of paying it twice.
-test-race:
-	@MODULES="$(GO_MODULES)" WEB=0 AGENT_SHARDS=0 AGENT_PARALLEL= $(MEMCAP) scripts/gate/run-module-tests.sh -race -short -count=1
+# test-full runs the Go test suites WITHOUT -short, so e2e/live tests run.
+# Used by merge-approval-gate. EVENER_GATE_CAPABILITY_SKIP adds sandbox-blocked
+# test patterns to the root module's -skip.
+test-full:
+	@go test -run '$(GATE_RUN)' -skip '$(GATE_SKIP)$${EVENER_GATE_CAPABILITY_SKIP:+|$$EVENER_GATE_CAPABILITY_SKIP}' -count=1 $(GO_TEST_MODULES)
 
 # e2e-cover measures END-TO-END coverage of the real evener/evener-tui binaries via
 # `go build -cover` + GOCOVERDIR — the main()/CLI/dispatch/serve paths unit tests
