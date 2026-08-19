@@ -578,6 +578,21 @@ type Session struct {
 	// stuck detection
 	loopDetectionCount int // how many times loop detection has fired
 
+	// stream loop guard (issue #94): tracks whether the response
+	// consumeModelStream most recently returned was force-stopped mid-stream
+	// by the in-band loop guard (session_stream_loop_guard.go), so a SECOND
+	// consecutive trip escalates to a hard stop instead of nudging forever.
+	// streamLoopTripStreak resets to 0 on any response that completes
+	// without tripping, and at the start of every turn (processOneInput), so
+	// a hard stop -- which returns before the clean-completion reset can run
+	// -- cannot leave the session permanently one trip from another hard
+	// stop. pendingStreamLoopNudge holds the steering text for a tier-1 trip
+	// until injectPostToolSteering delivers it as a steering turn and clears
+	// it; it is dropped rather than carried at turn start, since a nudge that
+	// missed its own turn would land out of context in an unrelated one.
+	streamLoopTripStreak   int
+	pendingStreamLoopNudge string
+
 	// transcript writer (nil when StateDir is empty, or when opening it failed)
 	transcript *transcript.Writer
 	// attentionMu serializes transcript-backed attention resolution for this

@@ -311,6 +311,7 @@ const (
 	SteeringKindImageDescription  = "image-description"
 	SteeringKindNoToolCalls       = "no-tool-calls"
 	SteeringKindLoopDetected      = "loop-detected"
+	SteeringKindStreamLoop        = "stream-loop"
 	SteeringKindTasksDone         = "tasks-done"
 	SteeringKindTaskNudge         = "task-nudge"
 	SteeringKindTaskInactive      = "task-inactive"
@@ -336,6 +337,7 @@ var AllSteeringKinds = []string{
 	SteeringKindImageDescription,
 	SteeringKindNoToolCalls,
 	SteeringKindLoopDetected,
+	SteeringKindStreamLoop,
 	SteeringKindTasksDone,
 	SteeringKindTaskNudge,
 	SteeringKindTaskInactive,

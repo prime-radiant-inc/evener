@@ -101,6 +101,7 @@ func TestSteeringKindConstants(t *testing.T) {
 		"image-description":  SteeringKindImageDescription,
 		"no-tool-calls":      SteeringKindNoToolCalls,
 		"loop-detected":      SteeringKindLoopDetected,
+		"stream-loop":        SteeringKindStreamLoop,
 		"tasks-done":         SteeringKindTasksDone,
 		"task-nudge":         SteeringKindTaskNudge,
 		"task-inactive":      SteeringKindTaskInactive,
