@@ -43,7 +43,9 @@ const PLACEHOLDER = "__LAYOUTGUARD_WIDTH_MATRIX__";
 // Splices the normalized matrix into harness source as a JSON array literal,
 // replacing PLACEHOLDER wherever the harness's own fixture-building script
 // declares it (see cases/compact-session-footer/harness.html). A case that
-// declares no widthMatrix leaves the harness untouched.
+// declares no widthMatrix leaves the harness untouched - unless the harness
+// still carries the placeholder, which would ship the literal token into its
+// JS, so that mismatch is an error in both directions.
 export function injectWidthMatrix(harnessSource, widthMatrix, caseName) {
   const normalized = normalizeWidthMatrix(widthMatrix, caseName);
   if (normalized === null && harnessSource.includes(PLACEHOLDER)) {
