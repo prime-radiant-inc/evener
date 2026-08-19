@@ -1,4 +1,4 @@
-.PHONY: build build-runtime build-go build-hub web-preflight build-web test-web test-web-browser build-tui build-doctor build-all build-linux build-namingcheck build-migrate dist install install-home install-system test-install test-dev-tooling test test-short test-full test-fuzz test-race merge-approval-gate vet lint lint-naming lint-gofmt lint-evenerfuzz lint-eval lint-internal lint-docs lint-golangci clean fuzz fuzz-seeds fuzz-nightly fuzz-triage fuzz-continuous fuzz-coverage-global fuzz-bisect fuzz-bisect-selftest fuzz-oracle-audit fuzz-oracle-audit-selftest fuzz-mutation-score fuzz-ledger fuzz-coverage fuzz-gap-check fuzz-registry-check fuzz-goldens secret-scan fuzz-corpus-scan refresh-model-catalog test-coverage-floor test-coverage-floor-selftest web-coverage-floor web-coverage-floor-selftest coverage-gaps coverage-gaps-selftest coverage-union coverage-union-selftest merge-into-branch merge-into-branch-selftest test-rebaseline
+.PHONY: build build-runtime build-go build-hub web-preflight build-web test-web test-web-browser build-tui build-doctor build-all build-linux build-namingcheck build-migrate dist install install-home install-system test-install test-dev-tooling test test-short test-full test-fuzz test-race merge-approval-gate vet lint lint-naming lint-gofmt lint-evenerfuzz lint-eval lint-internal lint-docs lint-golangci clean fuzz fuzz-seeds fuzz-nightly fuzz-triage fuzz-continuous fuzz-coverage-global fuzz-bisect fuzz-bisect-selftest fuzz-oracle-audit fuzz-oracle-audit-selftest fuzz-mutation-score fuzz-ledger fuzz-coverage fuzz-gap-check fuzz-registry-check fuzz-goldens secret-scan fuzz-corpus-scan refresh-model-catalog test-coverage-floor web-coverage-floor web-coverage-floor-selftest coverage-gaps coverage-union merge-into-branch merge-into-branch-selftest test-rebaseline
 
 LDFLAGS := -X primeradiant.com/evener/buildinfo.GitSHA=$$(git rev-parse --short HEAD) \
            -X primeradiant.com/evener/buildinfo.GitDirty=$$(git --no-optional-locks diff-files --quiet && echo "" || echo "true") \
@@ -236,7 +236,7 @@ override FUZZ_GOWORK := $(abspath $(CURDIR)/go.work)
 # the guard or the pid-suffixed covscratch pattern, is enforced statically by
 # the audits in scriptmktemp_audit_test.go, not by re-running suites under
 # sabotage (kata 5hs2).
-DEV_TOOLING_TEST_SCRIPTS := lib/private-go-home gate/merge-approval-gate ops/setup-gocache web/web-preflight lib/live-eval-isolation e2e/e2e-webui-turn-controls fuzz/fuzz-bisect fuzz/fuzz-oracle-audit coverage/test-coverage-floor coverage/web-coverage-floor coverage/coverage-gaps coverage/coverage-union lib/scratch-lib gate/merge-into-branch
+DEV_TOOLING_TEST_SCRIPTS := lib/private-go-home gate/merge-approval-gate ops/setup-gocache web/web-preflight lib/live-eval-isolation e2e/e2e-webui-turn-controls fuzz/fuzz-bisect fuzz/fuzz-oracle-audit coverage/web-coverage-floor lib/scratch-lib gate/merge-into-branch
 
 # test-dev-tooling tests tooling, not the product, so it runs in
 # `make merge-approval-gate` (where tooling regressions matter) and on demand
@@ -400,37 +400,14 @@ fuzz-drive:
 fuzz-coverage-global:
 	@scripts/fuzz/fuzz-coverage-global.sh $(if $(CHECK),--check) $(if $(BLESS),--bless) $(FUZZ_ARGS)
 
-# test-coverage-floor ratchets whole-module FULL-SUITE (unit+integration) coverage
-# against scripts/coverage/testcov-global-floors.txt — the companion to fuzz-coverage-global
-# (fuzz-reachable). CHECK=1 fails on a drop; BLESS=1 raises floors. Heavy + local.
 test-coverage-floor:
-	@scripts/coverage/test-coverage-floor.sh $(if $(CHECK),--check) $(if $(BLESS),--bless) $(COV_ARGS)
+	@go run ./cmd/evener-dev coverage-floor $(if $(CHECK),--check) $(if $(BLESS),--bless) --floors scripts/coverage/testcov-global-floors.txt $(COV_ARGS)
 
-# test-coverage-floor-selftest exercises the rollup and ratchet against a
-# throwaway repo and a fake `go` — no compilation, no real suite.
-test-coverage-floor-selftest:
-	@scripts/coverage/test-coverage-floor-selftest.sh
-
-# coverage-gaps ranks where a coverage profile's UNCOVERED statements are, by
-# count rather than percentage, so coverage work targets the largest real gaps.
-# Takes a profile: `make coverage-gaps PROFILE=path/to.cov GAP_ARGS="--by file"`.
 coverage-gaps:
-	@scripts/coverage/coverage-gaps.sh $(PROFILE) $(GAP_ARGS)
+	@go tool cover -func=$(PROFILE) | sort -t$$'\t' -k3 -n | tail -30
 
-coverage-gaps-selftest:
-	@scripts/coverage/coverage-gaps-selftest.sh
-
-# coverage-union reports how much of each module ANY deterministic test reaches:
-# the union of the test track (test-coverage-floor) and the fuzz track
-# (fuzz-coverage-global). Both understate on their own — the -run '^(Test|Example)'
-# filter excludes fuzz targets, and this repo keeps whole families of behavioural
-# checks in `check*` functions only a evenerfuzz "program" target calls. CHECK=1
-# gates, BLESS=1 raises. Heaviest of the three: two full runs per module.
 coverage-union:
-	@scripts/coverage/coverage-union.sh $(if $(CHECK),--check) $(if $(BLESS),--bless) $(UNION_ARGS)
-
-coverage-union-selftest:
-	@scripts/coverage/coverage-union-selftest.sh
+	@go run ./cmd/evener-dev coverage-floor $(if $(CHECK),--check) $(if $(BLESS),--bless) --floors scripts/coverage/covunion-floors.txt $(UNION_ARGS)
 
 # merge-into-branch merges SOURCE into TARGET by ref (refs/heads/TARGET),
 # never through a live checkout: it builds the merge in a private disposable
