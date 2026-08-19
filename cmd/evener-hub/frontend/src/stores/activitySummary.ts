@@ -3,7 +3,13 @@ import { createStore } from "zustand/vanilla";
 import type { ActivityCounts } from "../panes/session/chrome/activityData";
 import { parseActivityTree } from "../panes/session/chrome/activityData";
 import { isActionUnavailable, isThreadNotFound } from "../panes/session/chrome/sessionErrors";
-import { errorText, sessionActionError, sessionActionHeadline } from "../protocol/errors";
+import {
+  errorKind,
+  errorText,
+  friendlyErrorMessage,
+  sessionActionError,
+  sessionActionHeadline,
+} from "../protocol/errors";
 import { type ActivityFetchResult, activityPanelStore } from "./activityPanel";
 import { registerPanelStoreEvictor } from "./panelStoreEviction";
 
@@ -64,7 +70,24 @@ function entryFor(entries: Map<string, ActivitySummaryEntry>, ref: string): Acti
 // previous life could still complete with (publish/fail match on requestID).
 let nextRequestID = 0;
 
+// A "hub-unreachable" rejection here is, with the caller-side ready-gate in
+// stores/threads.ts (issue #195's RCA), either requireReadyClient's own
+// ClientNotReadyError (waited out the bounded timeout - the hub is
+// genuinely, not just momentarily, unreachable) or a residual
+// CLIENT_UNREACHABLE_PATTERN rejection from a request that raced a state
+// change right after the wait. Neither is meaningful as raw text - route it
+// through friendlyErrorMessage the same way every other user-facing surface
+// does, instead of showing "AppwireClient: cannot call ..." or "... timed
+// out after 15000ms" verbatim. An ordinary reconnect never reaches this
+// function at all: requireReadyClient makes the caller's promise wait
+// rather than reject, so there is nothing to fail on - consistent with
+// ConnectionBanner's own "reconnecting is silent, self-healing" design.
 function failureFor(err: unknown): { headline: string; detail?: string; sentence: string } {
+  if (errorKind(err) === "hub-unreachable") {
+    const headline = "Couldn't load activity";
+    const detail = friendlyErrorMessage(err);
+    return { headline, detail, sentence: `${headline}: ${detail}` };
+  }
   const headline = sessionActionHeadline("Couldn't load activity", err);
   const sentence = sessionActionError("Couldn't load activity", err);
   const detail = errorText(err).trim();
