@@ -1221,3 +1221,220 @@ func TestRetentionDoesNotReclaimSubagentDrainingOwnedWork(t *testing.T) {
 	fixture.releaseAndWait(t)
 	fixture.requireHandledResult(t, 3, "owned shell handled")
 }
+
+// TestSubagentFinalizationDrainReenqueueRaceDeterministic reproduces issue #140
+// deterministically. The root cause is the non-atomic NotifyPending→NotifyDelivered
+// transition in armFinalizedJob: between appending the NotifyPending event and
+// persistStableShellAttention marking the record NotifyDelivered, the drain loop's
+// rematerializeDurablePendings (run on every 250ms recheck kick) observes the still-
+// NotifyPending record and re-enqueues it onto the child's notification queue. The
+// drain then sees peekNotifications > 0 and runs a provider turn during finalization
+// where none is expected.
+//
+// The existing TestSubagentFinalizationRefusesResumeAndDriveUntilCallbackRestored
+// catches this only intermittently because the race window is scheduler-dependent.
+// This test forces the window open with the testOnlyAfterNotifyPendingAppend hook
+// (which fires exactly between the NotifyPending append and the NotifyDelivered
+// transition) and invokes rematerializeDurablePendings directly, then asserts the
+// re-enqueue must NOT happen: the durable pending must not be re-materializable
+// while the finalizing job's NotifyDelivered transition is still in flight. Under
+// the current (buggy) code rematerializeDurablePendings re-enqueues the record, so
+// peekNotifications becomes > 0 and the assertion fails red.
+func TestSubagentFinalizationDrainReenqueueRaceDeterministic(t *testing.T) {
+	fixture := newOwnedJobDrainFixture(t)
+
+	hookFired := make(chan struct{})
+	hookRelease := make(chan struct{})
+	var hookReleaseOnce sync.Once
+	t.Cleanup(func() { hookReleaseOnce.Do(func() { close(hookRelease) }) })
+
+	// Snapshot captured inside the race window, after rematerializeDurablePendings
+	// has been forced to run against the still-NotifyPending record.
+	type windowSnapshot struct {
+		peekAfterRematerialize int
+		requestsAtWindow       int
+	}
+	windowResult := make(chan windowSnapshot, 1)
+
+	var hookOnce sync.Once
+	fixture.child.sess.jobManager.testOnlyAfterNotifyPendingAppend = func(jobID string) {
+		hookOnce.Do(func() {
+			// We are now inside armFinalizedJob, AFTER the NotifyPending event was
+			// appended and the terminal marked notification-pending, but BEFORE
+			// persistStableShellAttention transitions the record to NotifyDelivered.
+			// This is the exact race window the 250ms drain recheck exploits.
+			if jobID != fixture.shellJobID {
+				t.Errorf("after-notify-pending hook jobID = %q, want owned shell %q", jobID, fixture.shellJobID)
+			}
+			// Simulate the drain loop's kick() → rematerializeDurablePendings() that
+			// races in during the 250ms recheck window. The queue should be empty here
+			// (the stable path does not enqueue on the child's own rail), so the
+			// rematerialize path is the one that can strand a re-enqueue.
+			childSess := fixture.child.sess
+			if err := childSess.rematerializeDurablePendings(); err != nil {
+				t.Errorf("rematerializeDurablePendings during finalization window: %v", err)
+			}
+			peek := childSess.peekNotifications()
+			requests := len(fixture.adapter.Requests())
+			windowResult <- windowSnapshot{
+				peekAfterRematerialize: peek,
+				requestsAtWindow:       requests,
+			}
+			close(hookFired)
+			// Hold the window open until the test has inspected the snapshot, so the
+			// NotifyDelivered transition cannot race back in and mask the leak.
+			<-hookRelease
+		})
+	}
+
+	// Release the owned shell so it completes and armFinalizedJob enters the window.
+	fixture.env.releaseJob()
+	select {
+	case <-hookFired:
+	case <-time.After(30 * time.Second): // TRIPWIRE: real signal from a background goroutine/job; 30s only fires on a genuine hang.
+		t.Fatal("after-notify-pending hook did not fire during owned shell finalization")
+	}
+
+	snap := <-windowResult
+	// The invariant the fix must enforce: a job whose NotifyPending→NotifyDelivered
+	// transition is in flight must not be re-materializable onto the notification
+	// queue. rematerializeDurablePendings must observe the in-flight finalization
+	// (or the NotifyDelivered transition must be atomic with the NotifyPending
+	// append) and leave the queue empty. Under the buggy code the record is still
+	// NotifyPending, so it is re-enqueued and peekNotifications becomes 1.
+	if snap.peekAfterRematerialize != 0 {
+		t.Fatalf("rematerializeDurablePendings re-enqueued during finalization: peekNotifications = %d, want 0 (NotifyPending→NotifyDelivered transition is non-atomic; issue #140)", snap.peekAfterRematerialize)
+	}
+	// No provider turn should have fired from the re-enqueue during the window.
+	// The two legitimate requests are the shell launch and the idle report; the
+	// re-enqueued pending would drive a third (the CI count=3 failure).
+	if snap.requestsAtWindow != 2 {
+		t.Fatalf("provider requests at finalization window = %d, want 2 (shell launch + idle); a third means the re-enqueue drove a turn", snap.requestsAtWindow)
+	}
+
+	// Release armFinalizedJob and let finalization complete normally.
+	hookReleaseOnce.Do(func() { close(hookRelease) })
+	fixture.releaseAndWait(t)
+	fixture.requireHandledResult(t, 3, "owned shell handled")
+}
+
+// TestSubagentFinalizationRematerializeLoadSnapshotStraddle pins the discipline
+// documented on outstandingDrainJobIDs: the durable snapshot and the running-map
+// read that rematerializeDurablePendings bases its re-enqueue decision on must be
+// taken under the SAME jm.mu hold. A pass that loads the durable records first
+// and snapshots the running map afterwards can straddle a finalization: the load
+// observes the still-NotifyPending record, armFinalizedJob then appends
+// NotifyDelivered and deletes the run, and the late snapshot no longer shows the
+// job as live — so the stale pending is re-enqueued after its delivery, driving
+// the same extra finalization provider turn as issue #140 through a narrower
+// window. The test parks armFinalizedJob in its notify-pending window, parks a
+// rematerialize pass on its already-loaded durable snapshot, lets finalization
+// complete, releases the pass, and asserts nothing was re-enqueued.
+func TestSubagentFinalizationRematerializeLoadSnapshotStraddle(t *testing.T) {
+	fixture := newOwnedJobDrainFixture(t)
+	childSess := fixture.child.sess
+	jm := childSess.jobManager
+
+	windowOpen := make(chan struct{})
+	windowRelease := make(chan struct{})
+	var windowReleaseOnce sync.Once
+	t.Cleanup(func() { windowReleaseOnce.Do(func() { close(windowRelease) }) })
+	var windowOnce sync.Once
+	jm.testOnlyAfterNotifyPendingAppend = func(string) {
+		windowOnce.Do(func() {
+			close(windowOpen)
+			<-windowRelease
+		})
+	}
+
+	loaded := make(chan struct{})
+	loadRelease := make(chan struct{})
+	var loadReleaseOnce sync.Once
+	t.Cleanup(func() { loadReleaseOnce.Do(func() { close(loadRelease) }) })
+	var loadOnce sync.Once
+
+	// Complete the owned shell; armFinalizedJob parks with the record durably
+	// NotifyPending and the run still in the running map.
+	fixture.env.releaseJob()
+	select {
+	case <-windowOpen:
+	case <-time.After(30 * time.Second): // TRIPWIRE: real signal from a background goroutine/job; 30s only fires on a genuine hang.
+		t.Fatal("after-notify-pending hook did not fire during owned shell finalization")
+	}
+
+	jm.mu.Lock()
+	jm.testOnlyAfterRematerializeDurableLoad = func() {
+		loadOnce.Do(func() {
+			close(loaded)
+			<-loadRelease
+		})
+	}
+	jm.mu.Unlock()
+
+	// Start a rematerialize pass and park it on its already-loaded durable
+	// snapshot, which still shows the shell record NotifyPending.
+	remDone := make(chan error, 1)
+	go func() { remDone <- childSess.rematerializeDurablePendings() }()
+	select {
+	case <-loaded:
+	case <-time.After(30 * time.Second): // TRIPWIRE: real signal from a background goroutine/job; 30s only fires on a genuine hang.
+		t.Fatal("rematerialize pass did not reach its durable-load hook")
+	}
+
+	// Let finalization run to completion: NotifyDelivered is appended and the run
+	// leaves the running map while the rematerialize pass is still parked.
+	windowReleaseOnce.Do(func() { close(windowRelease) })
+	waitForOwnedShellFinalized(t, jm, fixture.shellJobID)
+
+	// Release the parked pass. Its durable snapshot is stale (NotifyPending), so
+	// only a running-map view taken under the same jm.mu hold as the load can
+	// tell it armFinalizedJob owned — and has since delivered — that notification.
+	loadReleaseOnce.Do(func() { close(loadRelease) })
+	select {
+	case err := <-remDone:
+		if err != nil {
+			t.Fatalf("rematerializeDurablePendings: %v", err)
+		}
+	case <-time.After(30 * time.Second): // TRIPWIRE: real signal from a background goroutine/job; 30s only fires on a genuine hang.
+		t.Fatal("rematerialize pass did not finish")
+	}
+	if n := childSess.peekNotifications(); n != 0 {
+		t.Fatalf("straddling rematerialize re-enqueued a delivered notification: peekNotifications = %d, want 0", n)
+	}
+
+	// The delivered notification must reach the child exactly once, via the
+	// stable-attention drive: three provider turns total, ending on the owned
+	// shell result. A duplicate child-rail delivery would add a fourth turn and
+	// leave the child on the fresh-notification response instead.
+	fixture.releaseAndWait(t)
+	fixture.requireHandledResult(t, 3, "owned shell handled")
+}
+
+// waitForOwnedShellFinalized waits until armFinalizedJob has finished the owned
+// shell's finalization: the run has left the running map (which happens strictly
+// after the stable path appends NotifyDelivered) and the durable record reads
+// NotifyDelivered.
+func waitForOwnedShellFinalized(t *testing.T, jm *jobManager, jobID string) {
+	t.Helper()
+	deadline := time.Now().Add(30 * time.Second) // TRIPWIRE: real signal from a background goroutine/job; 30s only fires on a genuine hang.
+	for {
+		jm.mu.Lock()
+		_, live := jm.running[jobID]
+		jm.mu.Unlock()
+		if !live {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("owned shell %s did not leave the running map after its finalization window was released", jobID)
+		}
+		time.Sleep(2 * time.Millisecond)
+	}
+	recs, err := jm.store.Load()
+	if err != nil {
+		t.Fatalf("load job store after finalization: %v", err)
+	}
+	rec := recs[jobID]
+	if rec == nil || rec.NotifyState != jobstore.NotifyDelivered {
+		t.Fatalf("owned shell %s record = %+v, want NotifyDelivered after finalization", jobID, rec)
+	}
+}
