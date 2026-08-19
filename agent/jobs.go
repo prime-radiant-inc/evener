@@ -158,6 +158,21 @@ type jobManager struct {
 	// receive and its timeout-flag check.
 	shellBeforeWaitTimeoutDecision  func(*atomic.Bool)
 	shellBeforeBlockTimeoutDecision func(*atomic.Bool)
+	// testOnlyAfterNotifyPendingAppend fires after armFinalizedJob has appended
+	// the NotifyPending event and marked the terminal notification-pending, but
+	// BEFORE persistStableShellAttention transitions NotifyPending→NotifyDelivered.
+	// It is nil in production; deterministic tests use it to force open the race
+	// window where rematerializeDurablePendings observes a NotifyPending record
+	// (still durable, not yet Delivered) and re-enqueues it during the drain's
+	// 250ms recheck, reproducing the issue-#140 finalization provider-request leak.
+	testOnlyAfterNotifyPendingAppend func(jobID string)
+	// testOnlyAfterRematerializeDurableLoad fires inside rematerializeDurablePendings
+	// after it has read the durable records, before it decides what to re-enqueue.
+	// It is nil in production; deterministic tests use it to hold a rematerialize
+	// pass on its already-loaded durable snapshot while a finalization completes,
+	// proving the pass cannot re-enqueue a record whose NotifyPending state is
+	// stale. Read and written under jm.mu.
+	testOnlyAfterRematerializeDurableLoad func()
 	// stopReceiptBeforeWait observes the fatal-finalization-only join boundary.
 	// It is nil in production and exists so concurrency tests can release an
 	// asynchronously terminating shell only after the exact receipt is awaited.
@@ -1932,6 +1947,10 @@ func (jm *jobManager) armFinalizedJob(run *runningJob, terminal *terminalJob) er
 			terminal.notificationPendingAppended = true
 		}
 		jm.mu.Unlock()
+	}
+
+	if hook := jm.testOnlyAfterNotifyPendingAppend; hook != nil && terminal.notificationPendingAppended {
+		hook(run.rec.JobID)
 	}
 
 	if err := jm.forwardPendingJobNotification(run, terminal); err != nil {

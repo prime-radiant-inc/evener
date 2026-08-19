@@ -1,0 +1,24 @@
+{
+  "name": "welcome-resume-candidate-overflow",
+  "description": "Welcome pane (issue #197): a 200-rune resume-candidate title, forced to white-space:nowrap by button.module.css, must not inflate the centered .actions column past the pane body - PaneScaffold's overflow-x:clip would slice it into a marker-less mid-string fragment and stretch the .examples buttons past the viewport. The wrapped title must also fit INSIDE the button box vertically (no fixed-height spill), and the example buttons keep their deliberate left alignment.",
+  "viewport": {
+    "width": 390,
+    "height": 844,
+    "deviceScaleFactor": 2,
+    "mobile": true
+  },
+  "cssFiles": [
+    "styles/global.css",
+    "styles/tokens.css",
+    "widgets/panescaffold/panescaffold.module.css",
+    "widgets/emptystate/emptystate.module.css",
+    "widgets/button/button.module.css",
+    "panes/welcome/welcome.module.css"
+  ],
+  "widthMatrix": [{ "width": 320 }, { "width": 360 }, { "width": 390 }],
+  "mutation": {
+    "declaration": "panes/welcome/welcome.module.css: .actions button { white-space: normal } (deleted - fails with the full #197 shape: resume button 1163px wide, symmetric double-ended clip, examples stretched to 576px); .actions button { height: auto } (deleted - fails with the wrapped label spilling 19-27px out of its fixed-height box)",
+    "verified": "2026-08-19",
+    "expect": "fail"
+  }
+}

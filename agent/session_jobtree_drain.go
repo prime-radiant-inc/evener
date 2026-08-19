@@ -482,15 +482,48 @@ func (s *Session) rematerializeDurablePendings() error {
 		return nil
 	}
 	jm := s.jobManager
+	// A job still in the running map is mid-finalization in armFinalizedJob:
+	// its NotifyPending record is the transient state between the
+	// EventJobNotificationPending append and the NotifyPending→NotifyDelivered
+	// transition (persistStableShellAttention) or the plain owner enqueue, both
+	// of which run before the job is deleted from the running map. Re-enqueuing
+	// such a record during that window double-delivers (issue #140):
+	// armFinalizedJob still owns its notification. rematerialize is for pendings
+	// that survive ONLY in the durable store after the run is gone, so skip any
+	// record whose run is still live.
+	//
+	// The durable load and the running-map snapshot are taken under the SAME
+	// jm.mu hold, for the reason documented on outstandingDrainJobIDs: a
+	// finalizing job is either still in the running map (its delete under jm.mu
+	// is blocked) or its NotifyDelivered append — which precedes that delete —
+	// is already visible to Load. Loading outside the lock would let a
+	// finalization complete between the load and the snapshot, and the stale
+	// NotifyPending record would be re-enqueued after its delivery — the same
+	// extra finalization turn through a narrower window. jm.mu -> store.mu is
+	// the established order; the store never acquires jm.mu.
+	jm.mu.Lock()
 	recs, err := jm.store.Load()
 	if err != nil {
+		jm.mu.Unlock()
 		return err
+	}
+	liveRunning := make(map[string]struct{}, len(jm.running))
+	for id := range jm.running {
+		liveRunning[id] = struct{}{}
+	}
+	hook := jm.testOnlyAfterRematerializeDurableLoad
+	jm.mu.Unlock()
+	if hook != nil {
+		hook()
 	}
 	for _, rec := range recs {
 		if !isOwnedDrainJob(rec, jm.sessionID) {
 			continue
 		}
 		if rec.NotifyState != jobstore.NotifyPending || rec.TerminalGen == "" {
+			continue
+		}
+		if _, live := liveRunning[rec.JobID]; live {
 			continue
 		}
 		if jm.enqueue != nil {

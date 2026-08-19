@@ -3,8 +3,8 @@
 // This deliberately renders Spawn with the production widgets, CSS modules,
 // and client boundary. The scripted client keeps the page deterministic while
 // leaving the browser to answer the questions jsdom cannot: which branch of
-// the breakpoint won, where the fixed action band landed, and whether any
-// rendered box escaped the viewport.
+// the breakpoint won, where the prompt card's control row and everything in it
+// actually landed, and whether any rendered box escaped the viewport.
 import { createRoot } from "react-dom/client";
 import Spawn from "../panes/spawn/Spawn";
 import { FakeClient } from "../protocol/testing/fakeClient";
@@ -203,10 +203,36 @@ function measureAttachments() {
   };
 }
 
+// The prompt card and everything in its control row. Issue #198: attach, the
+// model trigger and Start belong INSIDE the card at every width, the way the
+// session composer has always had them - this pane used to hand the row a
+// class that turned it into a `position: fixed` viewport band on a phone, so
+// the paperclip sat at the foot of the screen instead of under the prompt.
+// Every reading here is a box the guard compares against the card's own.
+function measurePromptCard() {
+  const card = document.querySelector<HTMLElement>('[data-testid="spawn-prompt-card"]');
+  const controls = document.querySelector<HTMLElement>('[data-testid="spawn-controls"]');
+  const field = document.querySelector<HTMLElement>('[data-testid="spawn-prompt-card"] textarea');
+  const attach = document.querySelector<HTMLElement>('[data-testid="spawn-attach"]');
+  const submit = document.querySelector<HTMLElement>('[data-testid="spawn-submit"]');
+  const modelTrigger = document.querySelector<HTMLElement>('[data-testid="spawn-model-trigger"]');
+  const modelSlot = document.querySelector<HTMLElement>('[data-testid="spawn-model-slot"]');
+  return {
+    card: card ? boxOf(card) : null,
+    controls: controls ? { ...boxOf(controls), position: getComputedStyle(controls).position } : null,
+    field: field ? boxOf(field) : null,
+    attach: attach ? boxOf(attach) : null,
+    submit: submit ? boxOf(submit) : null,
+    modelTrigger: modelTrigger ? boxOf(modelTrigger) : null,
+    // The breakpoint switches the SLOT, and a button under a display:none
+    // ancestor keeps its own computed display while only its box collapses
+    // (kata bsq9) - so the verdict is read from the slot, by the same shared
+    // predicate every other reading here uses.
+    modelSlot: readVisibility(modelSlot, "spawn model slot"),
+  };
+}
+
 function measureSpawn() {
-  const actionBand = document.querySelector<HTMLElement>('[data-testid="spawn-mobile-actions"]');
-  const actionBox = actionBand?.getBoundingClientRect();
-  const actionStyle = actionBand ? getComputedStyle(actionBand) : null;
   const mobileConfigElement = document.querySelector<HTMLElement>('[data-testid="spawn-mobile-config"]');
   const desktopConfigElement = mobileConfigElement?.previousElementSibling as HTMLElement | null;
   const rows = Array.from(document.querySelectorAll<HTMLElement>('[data-testid="mobile-spawn-row"]')).map((row) => {
@@ -231,15 +257,7 @@ function measureSpawn() {
     mobileIntro: visibility('[data-testid="spawn-mobile-prompt-intro"]'),
     desktopTitle: visibility('[data-testid="pane-title-desktop"]'),
     mobileTitle: visibility('[data-testid="pane-title-mobile"]'),
-    actionBand: {
-      position: actionStyle?.position ?? "missing",
-      left: actionBox?.left ?? null,
-      right: actionBox?.right ?? null,
-      bottom: actionBox ? window.innerHeight - actionBox.bottom : null,
-      width: actionBox?.width ?? null,
-      minHeight: actionStyle?.minHeight ?? "",
-      height: actionBox?.height ?? null,
-    },
+    promptCard: measurePromptCard(),
     rows,
     attachments: measureAttachments(),
     accessiblePrompt: {

@@ -308,7 +308,7 @@ func TestEmbeddedModelCatalog_Claude5RequestShape(t *testing.T) {
 	if cat == nil {
 		t.Fatal("embedded catalog nil")
 	}
-	for _, id := range []string{"claude-sonnet-5", "claude-fable-5", "claude-opus-5"} {
+	for _, id := range []string{"claude-sonnet-5", "claude-fable-5", "claude-opus-5", "claude-opus-4-7", "claude-opus-4-8"} {
 		mi := cat.GetModelInfo(id)
 		if mi == nil {
 			t.Fatalf("%s not found in embedded catalog", id)
@@ -317,7 +317,7 @@ func TestEmbeddedModelCatalog_Claude5RequestShape(t *testing.T) {
 			t.Errorf("%s Claude5RequestShape = false, want true", id)
 		}
 	}
-	for _, id := range []string{"claude-opus-4-6", "claude-opus-4-7", "claude-sonnet-4-5"} {
+	for _, id := range []string{"claude-opus-4-6", "claude-sonnet-4-5"} {
 		mi := cat.GetModelInfo(id)
 		if mi == nil {
 			t.Fatalf("%s not found in embedded catalog", id)

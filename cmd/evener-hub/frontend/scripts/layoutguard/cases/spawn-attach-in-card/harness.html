@@ -1,0 +1,88 @@
+<!doctype html>
+<html lang="en" data-theme="dark">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=390, initial-scale=1">
+<title>spawn attach-in-card layoutguard harness</title>
+<link rel="stylesheet" href="tokens.css">
+<link rel="stylesheet" href="resolved.css">
+<style>
+  * { transition: none !important; animation: none !important; }
+  /* PaneScaffold's content slot around the form. Only the inset matters here:
+     it is what makes "inside the card" a claim about the card rather than
+     about the viewport edge. */
+  body { margin: 0; padding: var(--space-3); }
+
+  /* IconButton renders button.module.css's base + variant classes plus
+     iconbutton.module.css's OWN .xs square, and BOTH files define `.xs`. CSS
+     Modules keeps those distinct in production; a raw-stylesheet harness
+     cannot, so iconbutton's rule is spelled here under a name of its own
+     (the same dodge compact-session-footer's .attachmentControl documents),
+     phone tap floor included - that floor is what now carries the touch
+     target the deleted action band used to hard-code. */
+  .attachmentControl { width: 24px; height: 24px; padding: 0; }
+  @media (max-width: 899px) {
+    .attachmentControl { min-width: var(--tap-min); min-height: var(--tap-min); }
+  }
+
+  /* Same collision, other direction: widgets/popover and modelswitch both own
+     a local `.trigger`. popover.module.css's whole rule is one declaration
+     (`display: inline-flex`, popover.module.css:6-8), so the wrapper span it
+     renders around the trigger carries it here under its own name and
+     popover.module.css stays out of cssFiles. */
+  .popoverTrigger { display: inline-flex; }
+</style>
+</head>
+<body>
+<!-- panes/spawn/Spawn.tsx's prompt card, verbatim against the real class
+     names: PromptCard's .card wrapping a seamless autoGrow Textarea over its
+     .controls row, with the attach IconButton and the ModelSwitchTrigger in
+     the leading slot and the Start Button in .actions.
+
+     The textarea carries the --textarea-min-lines: 6 inline custom property
+     the widget sets from minLines={6}, because that floor is the card's
+     height at rest here: nothing in this harness runs autoGrow's measuring
+     effect, and a card sized by an unmeasured field would be a card the
+     product never renders. -->
+<div class="form">
+  <div class="card" data-card>
+    <textarea class="textarea seamless" data-field aria-label="Prompt" style="--textarea-min-lines: 6" placeholder="What should the agent work on? Leave blank to start it dormant."></textarea>
+    <div class="controls" data-controls>
+      <div class="leading">
+        <button class="button quiet xs attachmentControl" data-attach type="button" aria-label="Attach image"><span class="icon">+</span></button>
+        <span class="modelTrigger" data-model-gate><span class="popoverTrigger"><button class="trigger" data-model-trigger type="button" title="(default)"><span class="value">(default)</span><span class="chevron">v</span> <span class="srOnly">&mdash; change model</span></button></span></span>
+      </div>
+      <div class="actions">
+        <span class="wrapper"><button class="button primary xs" data-start type="button" aria-label="Start"><span class="icon">&gt;</span><span class="submitLabel">Start</span></button></span>
+      </div>
+    </div>
+  </div>
+</div>
+<script>
+window.measure = () => {
+  const box = (selector) => {
+    const el = document.querySelector(selector);
+    if (!el) return null;
+    const r = el.getBoundingClientRect();
+    return { left: r.left, top: r.top, right: r.right, bottom: r.bottom, width: r.width, height: r.height };
+  };
+  const controls = document.querySelector("[data-controls]");
+  const gate = document.querySelector("[data-model-gate]");
+  return {
+    viewport: { width: window.innerWidth, height: window.innerHeight },
+    card: box("[data-card]"),
+    field: box("[data-field]"),
+    controls: controls === null ? null : { ...box("[data-controls]"), position: getComputedStyle(controls).position },
+    attach: box("[data-attach]"),
+    start: box("[data-start]"),
+    modelTrigger: box("[data-model-trigger]"),
+    // Read from the gating wrapper, not the button: it is the wrapper that
+    // spawn.module.css switches on at the breakpoint, and a button under a
+    // display:none ancestor keeps its own computed display while its box
+    // collapses (kata bsq9).
+    modelGateDisplay: gate === null ? "missing" : getComputedStyle(gate).display,
+  };
+};
+</script>
+</body>
+</html>

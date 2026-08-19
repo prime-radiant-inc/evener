@@ -1,6 +1,14 @@
+// The phone's configuration list for the spawn pane: one tappable row per
+// setting, each opening a bottom Sheet.
+//
+// Model is deliberately NOT here. It is set from the prompt card itself, by
+// the same ModelSwitchTrigger the session composer carries (issue #198) - so
+// the one act of choosing a model looks and behaves the same wherever it
+// happens, instead of being a bespoke sheet on this surface and a popover
+// picker on every other.
 import { useEffect, useRef, useState } from "react";
-import type { ModelCatalog, ModelCatalogEntry, PathFieldPanelProps } from "../../widgets";
-import { ModelCatalogPanel, PathFieldPanel, Sheet } from "../../widgets";
+import type { PathFieldPanelProps } from "../../widgets";
+import { PathFieldPanel, Sheet } from "../../widgets";
 import { requireClass } from "../../widgets/internal/requireClass";
 import styles from "./MobileSettingRows.module.css";
 
@@ -13,11 +21,6 @@ export interface MobileSettingRowsProps {
   harness: string;
   harnessOptions: MobilePickerOption[];
   onHarnessChange: (value: string) => void;
-  model: string;
-  modelDisplay: string;
-  modelRequired: boolean;
-  loadCatalog: () => Promise<ModelCatalog>;
-  onModelChange: (value: string) => void;
   cwd: string;
   onCwdChange: (value: string) => void;
   complete: PathFieldPanelProps["complete"];
@@ -34,7 +37,7 @@ export interface MobileSettingRowsProps {
   onAccessChange: (value: string) => void;
 }
 
-type PickerName = "Harness" | "Model" | "Working directory" | "Reasoning effort" | "Access mode";
+type PickerName = "Harness" | "Working directory" | "Reasoning effort" | "Access mode";
 
 const CLASS = {
   config: requireClass(styles.config, "MobileSettingRows.module.css", "config"),
@@ -49,7 +52,6 @@ const CLASS = {
   option: requireClass(styles.option, "MobileSettingRows.module.css", "option"),
   optionSelected: requireClass(styles.optionSelected, "MobileSettingRows.module.css", "optionSelected"),
   selection: requireClass(styles.selection, "MobileSettingRows.module.css", "selection"),
-  modelPanel: requireClass(styles.modelPanel, "MobileSettingRows.module.css", "modelPanel"),
 };
 
 interface MobileSettingRowProps {
@@ -147,11 +149,6 @@ export function MobileSettingRows({
   harness,
   harnessOptions,
   onHarnessChange,
-  model,
-  modelDisplay,
-  modelRequired,
-  loadCatalog,
-  onModelChange,
   cwd,
   onCwdChange,
   complete,
@@ -168,37 +165,12 @@ export function MobileSettingRows({
   onAccessChange,
 }: MobileSettingRowsProps) {
   const [openPicker, setOpenPicker] = useState<PickerName | null>(null);
-  const [catalog, setCatalog] = useState<ModelCatalog | null>(null);
-  const [catalogError, setCatalogError] = useState<string | null>(null);
-  const [catalogLoading, setCatalogLoading] = useState(false);
   const lastTriggerRef = useRef<HTMLButtonElement | null>(null);
 
   useEffect(() => {
     if (openPicker !== null || lastTriggerRef.current === null) return;
     lastTriggerRef.current.focus();
   }, [openPicker]);
-
-  useEffect(() => {
-    if (openPicker !== "Model") return;
-    let active = true;
-    setCatalogLoading(true);
-    setCatalogError(null);
-    loadCatalog().then(
-      (next) => {
-        if (!active) return;
-        setCatalog(next);
-        setCatalogLoading(false);
-      },
-      (error: unknown) => {
-        if (!active) return;
-        setCatalogError(error instanceof Error ? error.message : String(error));
-        setCatalogLoading(false);
-      },
-    );
-    return () => {
-      active = false;
-    };
-  }, [loadCatalog, openPicker]);
 
   function closePicker(committedCwd = cwd): void {
     if (openPicker === "Working directory") onCwdPanelClose(committedCwd);
@@ -209,11 +181,6 @@ export function MobileSettingRows({
     const active = document.activeElement;
     if (active instanceof HTMLButtonElement) lastTriggerRef.current = active;
     setOpenPicker(name);
-  }
-
-  function changeModel(entry: ModelCatalogEntry): void {
-    onModelChange(`${entry.provider}/${entry.model}`);
-    setOpenPicker(null);
   }
 
   const harnessLabel = harnessOptions.find((option) => option.value === harness)?.label ?? harness;
@@ -228,12 +195,6 @@ export function MobileSettingRows({
           value={harnessLabel}
           onClick={() => open("Harness")}
           expanded={openPicker === "Harness"}
-        />
-        <MobileSettingRow
-          label="Model"
-          value={modelDisplay}
-          onClick={() => open("Model")}
-          expanded={openPicker === "Model"}
         />
         <MobileSettingRow
           label="Working directory"
@@ -281,34 +242,6 @@ export function MobileSettingRows({
         onClose={closePicker}
         onChange={onAccessChange}
       />
-
-      <Sheet open={openPicker === "Model"} side="bottom" onClose={closePicker} title="Choose model">
-        <div className={CLASS.sheetBody}>
-          {!modelRequired && (
-            <button
-              type="button"
-              className={CLASS.option}
-              aria-pressed={model === ""}
-              onClick={() => {
-                onModelChange("");
-                closePicker();
-              }}
-            >
-              <span>Use default</span>
-              {model === "" && <span className={CLASS.selection}>Selected</span>}
-            </button>
-          )}
-          <div className={CLASS.modelPanel}>
-            <ModelCatalogPanel
-              loading={catalogLoading}
-              error={catalogError}
-              catalog={catalog}
-              value={model}
-              onPick={changeModel}
-            />
-          </div>
-        </div>
-      </Sheet>
 
       <Sheet
         open={openPicker === "Working directory"}

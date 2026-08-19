@@ -3,7 +3,6 @@
 package agent
 
 import (
-	"bytes"
 	"encoding/json"
 	"os"
 	"path/filepath"
@@ -14,15 +13,6 @@ import (
 	"primeradiant.com/evener/agent/transcript"
 )
 
-// turnsOf extracts the Turn payloads from transcript entries.
-func turnsOf(entries []transcript.Entry) []schema.Turn {
-	turns := make([]schema.Turn, len(entries))
-	for i, e := range entries {
-		turns[i] = e.Turn
-	}
-	return turns
-}
-
 // entriesOf wraps turns back into transcript entries, so a resumed history can be
 // fed through ResumeHistory a second time for the idempotence check.
 func entriesOf(turns []schema.Turn) []transcript.Entry {
@@ -31,23 +21,6 @@ func entriesOf(turns []schema.Turn) []transcript.Entry {
 		entries[i] = transcript.Entry{Kind: "entry", Seq: i, Turn: turn}
 	}
 	return entries
-}
-
-// jsonEqual reports whether a and b marshal to identical JSON. schema.Turn
-// carries `any` (ToolResult.Content) and json.RawMessage fields, so a JSON
-// compare (not reflect.DeepEqual) is the right equality after a write/read or
-// resume round-trip; both sides are post-decode values.
-func jsonEqual(t *testing.T, a, b any) (bool, []byte, []byte) {
-	t.Helper()
-	ab, err := json.Marshal(a)
-	if err != nil {
-		t.Fatalf("marshal lhs: %v", err)
-	}
-	bb, err := json.Marshal(b)
-	if err != nil {
-		t.Fatalf("marshal rhs: %v", err)
-	}
-	return bytes.Equal(ab, bb), ab, bb
 }
 
 // FuzzTranscriptReplay drives the transcript write/read and resume-replay seam

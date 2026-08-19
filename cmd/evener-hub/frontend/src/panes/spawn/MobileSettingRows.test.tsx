@@ -1,26 +1,13 @@
 import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { cleanup, render, screen, waitFor, within } from "@testing-library/react";
+import { cleanup, render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, expect, test, vi } from "vitest";
-import type { ModelCatalog } from "../../widgets";
 import { MobileSettingRows, type MobileSettingRowsProps } from "./MobileSettingRows";
 import { GLOBAL_LAST_WORKING_DIR_KEY, setGlobalLastWorkingDir } from "./spawnDefaults";
 
 afterEach(cleanup);
-
-const catalog: ModelCatalog = {
-  models: [
-    {
-      provider: "anthropic",
-      model: "claude-sonnet-4-5",
-      displayName: "Fast model",
-      supportsTools: true,
-    },
-  ],
-  recent: [],
-};
 
 function props(overrides: Partial<MobileSettingRowsProps> = {}): MobileSettingRowsProps {
   return {
@@ -30,11 +17,6 @@ function props(overrides: Partial<MobileSettingRowsProps> = {}): MobileSettingRo
       { value: "codex-cli", label: "codex-cli" },
     ],
     onHarnessChange: vi.fn(),
-    model: "",
-    modelDisplay: "(default)",
-    modelRequired: false,
-    loadCatalog: vi.fn(async () => catalog),
-    onModelChange: vi.fn(),
     cwd: "/tmp/project",
     onCwdChange: vi.fn(),
     complete: vi.fn(async () => []),
@@ -69,14 +51,31 @@ test("renders all Treatment A rows in order with full-row controls", () => {
   const rows = within(screen.getByTestId("mobile-spawn-config")).getAllByTestId("mobile-spawn-row");
   expect(rows.map((row) => row.getAttribute("data-label"))).toEqual([
     "Harness",
-    "Model",
     "Working directory",
     "Branch",
     "Reasoning effort",
     "Access mode",
   ]);
   expect(within(rows[0]!).getByRole("button", { name: /harness/i })).toBeTruthy();
-  expect(within(rows[3]!).queryByRole("button")).toBeNull();
+  // Branch is a read-only readout, not a picker.
+  expect(within(rows[2]!).queryByRole("button")).toBeNull();
+});
+
+// Issue #198: choosing a model is one act, so it uses one control everywhere -
+// the prompt card's ModelSwitchTrigger, the same one the session composer
+// carries. This list renders no model row and opens no model sheet, and the
+// bespoke "Use default" row that sheet used to carry went with it ("(default)"
+// is the trigger's own resting label).
+test("no model row and no model sheet - the prompt card owns that setting now", () => {
+  renderRows();
+
+  const labels = within(screen.getByTestId("mobile-spawn-config"))
+    .getAllByTestId("mobile-spawn-row")
+    .map((row) => row.getAttribute("data-label"));
+  expect(labels).not.toContain("Model");
+  expect(screen.queryByRole("button", { name: /^Model:/ })).toBeNull();
+  expect(screen.queryByRole("dialog", { name: "Choose model" })).toBeNull();
+  expect(screen.queryByText("Use default")).toBeNull();
 });
 
 test("option sheets commit a selection and return focus to the row", async () => {
@@ -93,20 +92,6 @@ test("option sheets commit a selection and return focus to the row", async () =>
   expect(onHarnessChange).toHaveBeenCalledWith("codex-cli");
   expect(screen.queryByRole("dialog", { name: "Choose harness" })).toBeNull();
   expect(document.activeElement).toBe(within(row).getByRole("button"));
-});
-
-test("the model sheet uses the existing searchable catalog panel", async () => {
-  const user = userEvent.setup();
-  const onModelChange = vi.fn();
-  renderRows({ onModelChange });
-
-  await user.click(screen.getByRole("button", { name: "Model: (default)" }));
-  const dialog = await screen.findByRole("dialog", { name: "Choose model" });
-  expect(within(dialog).getByRole("combobox", { name: "Model" })).toBeTruthy();
-  await user.click(within(dialog).getByRole("option", { name: /Fast model/ }));
-
-  expect(onModelChange).toHaveBeenCalledWith("anthropic/claude-sonnet-4-5");
-  await waitFor(() => expect(screen.queryByRole("dialog", { name: "Choose model" })).toBeNull());
 });
 
 test("the working-directory sheet uses the existing path panel and closes with Escape", async () => {
