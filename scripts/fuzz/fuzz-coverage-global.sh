@@ -281,7 +281,7 @@ tmpbase=${TMPDIR:-/tmp}
 # leave. See covscratch-lib.sh for the pid rules.
 reclaim_own_scratch "$tmpbase" evener-fuzzcov-global
 # The name is chosen and the trap armed BEFORE the directory exists; see
-# test-coverage-floor.sh for the signal window this closes. $$ is unique among
+# covscratch-lib.sh for the signal window this closes. $$ is unique among
 # live processes, so concurrent runs cannot collide. A failed mkdir means a
 # stale same-pid leftover this run does not own, so the trap is disarmed
 # before exiting rather than deleting it.

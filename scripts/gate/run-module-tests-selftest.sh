@@ -471,7 +471,7 @@ assert_has_word "$root_args" "-count=1" "full-root mode preserves root's other f
 assert_has_word "$agent_args" "-short" "full-root mode keeps -short on non-root modules"
 assert_has_word "$agent_args" "-count=1" "full-root mode preserves non-root flags"
 
-# kata 5gvk: scripts/gate-capability-preflight.sh exports
+# kata 5gvk: evener-dev capability-preflight exports
 # EVENER_GATE_CAPABILITY_SKIP when it classified a sandbox capability as
 # blocked. The runner must union that pattern into root's -skip so the
 # known-infeasible TestE2E_/TestTUITmuxE2E_ family is skipped instead of

@@ -116,7 +116,7 @@ fi
 . "$(dirname "${BASH_SOURCE[0]}")/../lib/gate-surface-lib.sh"
 fuzz_test_skip="$GATE_FUZZ_TEST_SKIP"
 
-# EVENER_GATE_CAPABILITY_SKIP is exported by scripts/gate-capability-preflight.sh
+# EVENER_GATE_CAPABILITY_SKIP is exported by evener-dev capability-preflight
 # (merge-approval-gate's preflight) when it classified a sandbox capability as
 # blocked. Applied to the ROOT module ONLY: the known test-name patterns
 # (TestE2E_, TestTUITmuxE2E_) live entirely in cmd/evener-hub and cmd/evener-tui,

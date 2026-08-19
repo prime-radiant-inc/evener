@@ -1,5 +1,5 @@
 # Full-suite (unit+integration) whole-module statement-coverage floors.
-# Managed by scripts/test-coverage-floor.sh --bless. Raised upward only;
+# Managed by `make test-coverage-floor BLESS=1`. Raised upward only;
 # a downward reset (denominator change, not a regression) is a hand edit.
 # A partial --bless (--modules X) now PRESERVES every other module's floor, and
 # --bless carries this comment header through, so a reset's reason survives.

@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # gate-surface-lib.sh — the single definition of WHICH tests the deterministic
 # non-fuzz gate runs, shared by the gate itself (run-module-tests.sh) and by the
-# coverage ratchet that must measure the same surface (test-coverage-floor.sh).
+# ratchets that must measure the same surface (evener-dev coverage-floor,
+# test-timing-budget.sh).
 #
 # Sourced, never executed. Deliberately pure declaration: it sets variables
 # and defines pure lookup functions and does nothing else (no file writes, no
@@ -24,7 +25,7 @@ GATE_TEST_RUN='^(Test|Example)'
 
 # --- sandbox capability skip registry (kata 5gvk) ---------------------------
 #
-# scripts/gate-capability-preflight.sh classifies four sandbox-sensitive host
+# evener-dev capability-preflight classifies four sandbox-sensitive host
 # capabilities ONCE, up front: loopback binds, a Chrome/Chromium binary,
 # process inspection via `ps`, and a writable external git cache directory.
 # Any it finds blocked feeds this registry to decide which KNOWN test-name
@@ -42,8 +43,8 @@ GATE_TEST_RUN='^(Test|Example)'
 #   - chrome-cdp, git-cache: no test file anywhere in this tree consumes
 #     either today. test-web-browser needs Chrome but is a separate,
 #     non-gate target; the only thing in the tree that names the fixed
-#     /tmp/git-cache path is cmd/evener-gate-probe's own default, which the
-#     probe creates in order to prove it is writable. Both are still probed
+#     /tmp/git-cache path is internal/devtool/capabilityprobe's own default,
+#     which the probe creates in order to prove it is writable. Both are probed
 #     and reported for completeness and honesty; the pattern is empty because
 #     nothing is skipped yet.
 #

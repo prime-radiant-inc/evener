@@ -29,7 +29,7 @@ var TestRun = `^(Test|Example)`
 // given sandbox capability id, or "" when that capability has no known
 // consumer (nothing is skipped).
 //
-// scripts/gate-capability-preflight.sh classifies four sandbox-sensitive host
+// evener-dev capability-preflight classifies four sandbox-sensitive host
 // capabilities ONCE, up front: loopback binds, a Chrome/Chromium binary,
 // process inspection via `ps`, and a writable external git cache directory. Any
 // it finds blocked feeds this registry to decide which KNOWN test-name pattern
