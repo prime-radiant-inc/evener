@@ -88,11 +88,7 @@ func (f *FakeClock) AfterFunc(d time.Duration, fn func()) clock.Timer {
 	defer f.mu.Unlock()
 	w := &fakeWaiter{until: f.now.Add(d), fn: fn}
 	if d <= 0 {
-		f.dispatchWG.Add(1)
-		go func() {
-			defer f.dispatchWG.Done()
-			fn()
-		}()
+		f.dispatchWG.Go(fn)
 		return &fakeTimer{f: f, w: w}
 	}
 	f.addWaiterLocked(w)
@@ -208,11 +204,7 @@ func (f *FakeClock) addWaiterLocked(w *fakeWaiter) {
 
 func (f *FakeClock) fireLocked(w *fakeWaiter) {
 	if w.fn != nil {
-		f.dispatchWG.Add(1)
-		go func() {
-			defer f.dispatchWG.Done()
-			w.fn()
-		}()
+		f.dispatchWG.Go(w.fn)
 		return
 	}
 	select {
