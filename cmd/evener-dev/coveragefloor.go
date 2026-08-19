@@ -37,6 +37,7 @@ import (
 	"strings"
 	"text/tabwriter"
 
+	"primeradiant.com/evener/envvars"
 	"primeradiant.com/evener/internal/devtool/covstmt"
 	"primeradiant.com/evener/internal/devtool/gatesurface"
 )
@@ -102,8 +103,8 @@ func coverageFloor(cfg coverageFloorConfig) int {
 
 	// Scratch directory for per-module coverage profiles. The test stub
 	// creates the profile directory itself, but the real runGoTest relies on
-	// this existing;TMPDIR is read via getenv for hermeticity.
-	tmpdir := cfg.getenv("TMPDIR")
+	// this existing; TMPDIR is read via getenv for hermeticity.
+	tmpdir := cfg.getenv(envvars.TmpDir.Name)
 	if tmpdir == "" {
 		tmpdir = os.TempDir()
 	}
