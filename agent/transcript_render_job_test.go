@@ -2,10 +2,14 @@ package agent
 
 import (
 	"encoding/json"
+	"reflect"
 	"strings"
 	"testing"
 
+	"primeradiant.com/evener/agent/internal/jobstore"
+	"primeradiant.com/evener/agent/internal/tool"
 	"primeradiant.com/evener/agent/transcript"
+	"primeradiant.com/evener/llm"
 )
 
 // renderToolCardForResult builds a one-round transcript (assistant call + paired
@@ -20,68 +24,74 @@ func renderToolCardForResult(toolName, callID string, content any) string {
 	return renderMarkdown(transcript.Header{}, entries, 0, renderOpts{})
 }
 
+// delegateSendToolResult marshals res via the REAL delegate_send marshaler
+// (marshalDelegateSendResult) and shapes a ToolResultData exactly like
+// production: ToolState carries the JSON state
+// (agent/internal/tool/registry.go's StateResult handling — json.Marshal(State)
+// — is what session_tool_round.go actually persists), Content carries the
+// LLM-facing footer text. toolResultStateOrContent (agent/session_outline.go)
+// prefers ToolState, so this is the shape the renderers actually see.
+func delegateSendToolResult(t *testing.T, callID string, res sendMessageResult, maxChars int) *llm.ToolResultData {
+	t.Helper()
+	value, err := marshalDelegateSendResult(res, maxChars)
+	if err != nil {
+		t.Fatalf("marshalDelegateSendResult: %v", err)
+	}
+	sr, ok := value.(tool.StateResult)
+	if !ok {
+		t.Fatalf("marshalDelegateSendResult returned %T, want tool.StateResult", value)
+	}
+	state, err := json.Marshal(sr.State)
+	if err != nil {
+		t.Fatalf("marshal delegate_send state: %v", err)
+	}
+	r := result(callID, "delegate_send", sr.Output, false)
+	r.ToolState = state
+	return r
+}
+
 // TestRenderMarkdown_JobDelegateResult is the headline lifecycle case: a
-// delegate result whose job body carries a multi-line output renders legibly: a
-// status line surfacing status and the transcript_ref before the output, then
-// the output with real newlines.
+// delegate create result — the real stable-delegate wire shape produced by
+// marshalStableDelegateCreateResult (issue #194) — renders as the condensed
+// status line (job identity via the delegate_id fallback, status, and
+// transcript_ref), not a raw JSON dump.
 func TestRenderMarkdown_JobDelegateResult(t *testing.T) {
 	t.Parallel()
 	childRef := "local:01CHILDJOB000000000000"
-	output := "First line of the report.\nSECOND_LINE_NEEDLE summarizing findings.\nThird line with a conclusion."
-	body, err := json.Marshal(map[string]any{
-		"job_id":                "job_delegate_1",
-		"type":                  "delegate",
-		"status":                "completed",
-		"running_in_background": false,
-		"timed_out":             false,
-		"transcript_ref":        childRef,
-		"output":                output,
-		"truncated":             false,
-	})
+	body, err := marshalStableDelegateCreateResult(stableDelegateCreateResult{
+		DelegateID:    "dlg_delegate_1",
+		Type:          "delegate",
+		Status:        "completed",
+		TranscriptRef: childRef,
+		Resumable:     boolPtr(true),
+	}, 0)
 	if err != nil {
-		t.Fatalf("marshal job result: %v", err)
+		t.Fatalf("marshalStableDelegateCreateResult: %v", err)
 	}
 
-	out := renderToolCardForResult("delegate", "call_delegate", string(body))
+	out := renderToolCardForResult("delegate", "call_delegate", body)
 
 	// The status line surfaces status and job identity without a legacy success field.
 	if !strings.Contains(out, "status=completed") {
 		t.Errorf("expected status=completed on the status line, got:\n%s", out)
 	}
-	if !strings.Contains(out, "job_id=job_delegate_1") {
-		t.Errorf("expected job_id on the status line, got:\n%s", out)
+	// A stable-delegate create result carries no job_id family — the status line
+	// must fall back to delegate_id (jobResult.effectiveJobID, session_outline.go).
+	if !strings.Contains(out, "job_id=dlg_delegate_1") {
+		t.Errorf("expected job_id=dlg_delegate_1 (delegate_id fallback), got:\n%s", out)
 	}
 	if strings.Contains(out, "success=") {
 		t.Errorf("job result must not render legacy success field, got:\n%s", out)
 	}
-
-	// The transcript_ref is present before the output body.
-	if !strings.Contains(out, childRef) {
-		t.Errorf("expected transcript_ref %q in output, got:\n%s", childRef, out)
-	}
-	refIdx := strings.Index(out, childRef)
-	outputIdx := strings.Index(out, "SECOND_LINE_NEEDLE")
-	if refIdx < 0 || outputIdx < 0 {
-		t.Fatalf("missing content: refIdx=%d outputIdx=%d\n%s", refIdx, outputIdx, out)
-	}
-	if refIdx > outputIdx {
-		t.Errorf("transcript_ref (%d) must appear BEFORE the output body (%d):\n%s", refIdx, outputIdx, out)
+	if !strings.Contains(out, "transcript_ref="+childRef) {
+		t.Errorf("expected transcript_ref=%s on the status line, got:\n%s", childRef, out)
 	}
 
-	// The output renders with real newlines: the known second line appears on its
-	// own line (preceded by a newline, not glued to the first line).
-	if !strings.Contains(out, "\nSECOND_LINE_NEEDLE summarizing findings.") &&
-		!strings.Contains(out, "  SECOND_LINE_NEEDLE summarizing findings.") {
-		t.Errorf("output second line must appear on its own line with real newlines, got:\n%s", out)
-	}
-
-	// The backslash-escaped form must be gone: no literal \n escape, no JSON-quoted
-	// output field dumped verbatim.
-	if strings.Contains(out, `\n`) {
-		t.Errorf("escaped \\n must not appear (output must be de-escaped), got:\n%s", out)
-	}
-	if strings.Contains(out, `"output":`) {
-		t.Errorf("raw JSON job result must not be dumped verbatim, got:\n%s", out)
+	// NOT a raw JSON dump: the issue #194 regression was exactly this — an
+	// allowlist-unknown top-level key (e.g. child_session_id, model) made
+	// jobResultBody bail to prettyJSON instead of the condensed status line.
+	if strings.Contains(out, `"delegate_id":`) {
+		t.Errorf("delegate create result rendered as a raw JSON dump instead of the condensed status line, got:\n%s", out)
 	}
 }
 
@@ -130,42 +140,57 @@ func TestRenderMarkdown_JobSendMessageResult(t *testing.T) {
 	}
 }
 
+// TestRenderMarkdown_DelegateSendResult drives the real delegate_send
+// marshaler (marshalDelegateSendResult) so the fixture matches production's
+// actual wire shape: sendMessageResult has no job_id family at all (only
+// delegate_id), so the status line's job identity depends entirely on the
+// delegate_id fallback (agent/session_outline.go effectiveJobID).
 func TestRenderMarkdown_DelegateSendResult(t *testing.T) {
 	t.Parallel()
 	childRef := "local:01DELEGATESEND000000"
-	body, err := json.Marshal(map[string]any{
-		"delegate_id":           "dlg_01J",
-		"started_job_id":        "job_new",
-		"current_job_id":        "job_new",
-		"latest_job_id":         "job_new",
-		"type":                  "delegate",
-		"status":                "completed",
-		"running_in_background": false,
-		"timed_out":             false,
-		"action":                "started",
-		"transcript_ref":        childRef,
-		"output":                "done",
-		"truncated":             false,
-	})
-	if err != nil {
-		t.Fatalf("marshal delegate_send result: %v", err)
-	}
+	output := "First line of the report.\nSECOND_LINE_NEEDLE summarizing findings.\nThird line with a conclusion."
+	res := delegateSendToolResult(t, "call_send", sendMessageResult{
+		DelegateID:    "dlg_01J",
+		Type:          "delegate",
+		Status:        jobstore.StatusCompleted,
+		Action:        "started",
+		TranscriptRef: childRef,
+		Output:        output,
+	}, 0)
 
-	out := renderToolCardForResult("delegate_send", "call_send", string(body))
+	entries := []transcript.Entry{
+		toolCallEntry(call("call_send", "delegate_send", `{}`)),
+		toolResultEntry(res),
+	}
+	out := renderMarkdown(transcript.Header{}, entries, 0, renderOpts{})
 
 	for _, want := range []string{
-		"job_id=job_new",
+		"job_id=dlg_01J",
 		"status=completed",
 		"transcript_ref=" + childRef,
-		"delegate_id=dlg_01J",
-		"started_job_id=job_new",
-		"current_job_id=job_new",
 		"action=started",
-		"done",
 	} {
 		if !strings.Contains(out, want) {
 			t.Fatalf("delegate_send render missing %q:\n%s", want, out)
 		}
+	}
+
+	// The transcript_ref precedes the output, and the output de-escapes to real
+	// newlines (the pre-#194 pin, replayed against the real marshaler).
+	refIdx := strings.Index(out, childRef)
+	outputIdx := strings.Index(out, "SECOND_LINE_NEEDLE")
+	if refIdx < 0 || outputIdx < 0 || refIdx > outputIdx {
+		t.Fatalf("transcript_ref (%d) must appear BEFORE the output body (%d):\n%s", refIdx, outputIdx, out)
+	}
+	if strings.Contains(out, `\n`) {
+		t.Errorf("escaped \\n must not appear (output must be de-escaped), got:\n%s", out)
+	}
+
+	// NOT a raw JSON dump: delegate_send's new fields (task, description,
+	// agent_type, ...) used to be allowlist-unknown, forcing the same fallback
+	// via toolResultStateOrContent.
+	if strings.Contains(out, `"delegate_id":`) {
+		t.Errorf("delegate_send result rendered as a raw JSON dump instead of the condensed status line, got:\n%s", out)
 	}
 }
 
@@ -436,10 +461,21 @@ func TestDecodeJobResult(t *testing.T) {
 	})
 }
 
+// TestRenderOutline_JobLifecycleBrackets drives the real stable-delegate create
+// marshaler so the fixture matches production's wire shape (issue #194): no
+// job_id family, only delegate_id.
 func TestRenderOutline_JobLifecycleBrackets(t *testing.T) {
 	t.Parallel()
 	childRef := "local:01OUTLINEJOB000000000"
-	body := `{"job_id":"job_outline","type":"delegate","status":"completed","running_in_background":false,"timed_out":false,"transcript_ref":"` + childRef + `","output":"done","truncated":false}`
+	body, err := marshalStableDelegateCreateResult(stableDelegateCreateResult{
+		DelegateID:    "dlg_outline",
+		Type:          "delegate",
+		Status:        "completed",
+		TranscriptRef: childRef,
+	}, 0)
+	if err != nil {
+		t.Fatalf("marshalStableDelegateCreateResult: %v", err)
+	}
 	entries := []transcript.Entry{
 		toolCallEntry(call("call_delegate", "delegate", `{}`)),
 		toolResultEntry(result("call_delegate", "delegate", body, false)),
@@ -456,13 +492,23 @@ func TestRenderOutline_JobLifecycleBrackets(t *testing.T) {
 	}
 }
 
+// TestRenderOutline_DelegateSendLifecycleBrackets drives the real
+// delegate_send marshaler (marshalDelegateSendResult), via the same
+// ToolState-carrying shape production actually emits.
 func TestRenderOutline_DelegateSendLifecycleBrackets(t *testing.T) {
 	t.Parallel()
 	childRef := "local:01OUTLINEDELEGATESEND"
-	body := `{"delegate_id":"dlg_outline","started_job_id":"job_started","current_job_id":"job_started","latest_job_id":"job_started","type":"delegate","status":"running","running_in_background":true,"timed_out":false,"action":"started","transcript_ref":"` + childRef + `","truncated":false}`
+	res := delegateSendToolResult(t, "call_send", sendMessageResult{
+		DelegateID:          "dlg_outline",
+		Type:                "delegate",
+		Status:              jobstore.StatusRunning,
+		Action:              "started",
+		RunningInBackground: true,
+		TranscriptRef:       childRef,
+	}, 0)
 	entries := []transcript.Entry{
 		toolCallEntry(call("call_send", "delegate_send", `{}`)),
-		toolResultEntry(result("call_send", "delegate_send", body, false)),
+		toolResultEntry(res),
 	}
 
 	out, _, _ := renderOutline(entries, 0, len(entries)-1)
@@ -512,5 +558,130 @@ func TestPrettyJSON_NoHTMLEscaping(t *testing.T) {
 	}
 	if !strings.Contains(out, ">") {
 		t.Errorf("expected literal > in output (not \\u003e), got:\n%s", out)
+	}
+}
+
+// TestJobResultKnownKeysCoversLiveDelegateShapes is the schema-drift guard
+// (issue #194 RCA fix plan item 3): it walks the REAL marshaled output of the
+// two live result marshalers that feed jobResultBody/extractJobResult —
+// marshalStableDelegateCreateResult (the "delegate" create tool) and
+// marshalDelegateSendResult (the "delegate_send" tool, via the same
+// tool.StateResult path session_tool_round.go actually persists) — and asserts
+// every top-level key either marshaler ever emits is present in
+// jobResultKnownKeys. fillEveryField (agent/session_client_mutation_doctor_drift_test.go)
+// sets every field to a non-zero value via reflection, so a field added to
+// either struct tomorrow is populated and checked with no edit to this test —
+// the next drift fails CI, named, instead of silently degrading rendering to a
+// raw JSON dump.
+func TestJobResultKnownKeysCoversLiveDelegateShapes(t *testing.T) {
+	t.Parallel()
+
+	t.Run("stableDelegateCreateResult via marshalStableDelegateCreateResult", func(t *testing.T) {
+		var out stableDelegateCreateResult
+		fillEveryField(t, reflect.ValueOf(&out).Elem(), "stableDelegateCreateResult")
+		// maxChars<=0 is unbounded (marshalBoundedJSON), so the fit-downgrade
+		// path never drops a field out of the fully-populated fixture.
+		wire, err := marshalStableDelegateCreateResult(out, 0)
+		if err != nil {
+			t.Fatalf("marshalStableDelegateCreateResult: %v", err)
+		}
+		assertKeysKnownToJobResult(t, wire, "stableDelegateCreateResult")
+	})
+
+	t.Run("delegate_send result via marshalDelegateSendResult", func(t *testing.T) {
+		var res sendMessageResult
+		fillEveryField(t, reflect.ValueOf(&res).Elem(), "sendMessageResult")
+		value, err := marshalDelegateSendResult(res, 0)
+		if err != nil {
+			t.Fatalf("marshalDelegateSendResult: %v", err)
+		}
+		sr, ok := value.(tool.StateResult)
+		if !ok {
+			t.Fatalf("marshalDelegateSendResult returned %T, want tool.StateResult", value)
+		}
+		// json.Marshal(State) is exactly what agent/internal/tool/registry.go
+		// persists into ToolResultData.ToolState (the wire toolResultStateOrContent
+		// hands to jobResultBody).
+		wire, err := json.Marshal(sr.State)
+		if err != nil {
+			t.Fatalf("marshal delegate_send state: %v", err)
+		}
+		assertKeysKnownToJobResult(t, string(wire), "delegate_send result")
+	})
+}
+
+// assertKeysKnownToJobResult fails, naming the offending key, if wire (a JSON
+// object) carries a top-level key absent from jobResultKnownKeys
+// (agent/transcript_render.go) — the same allowlist hasNonJobResultKeys checks
+// before jobResultBody renders the condensed status line.
+func assertKeysKnownToJobResult(t *testing.T, wire, label string) {
+	t.Helper()
+	var m map[string]json.RawMessage
+	if err := json.Unmarshal([]byte(wire), &m); err != nil {
+		t.Fatalf("%s: unmarshal wire output: %v\n%s", label, err, wire)
+	}
+	for k := range m {
+		if !jobResultKnownKeys[k] {
+			t.Errorf("%s: emits key %q, which jobResultKnownKeys (agent/transcript_render.go) does not know — "+
+				"add it to the allowlist or the condensed status line silently degrades to a raw JSON dump", label, k)
+		}
+	}
+}
+
+// TestJobResult_EffectiveJobIDDelegateIDFallback pins jobResult.effectiveJobID's
+// priority order (agent/session_outline.go): the legacy job_id family first
+// (JobID, CurrentJobID, StartedJobID, LatestJobID, in that order), DelegateID as
+// the fallback for the stable-delegate shape (issue #194 RCA fix plan item 2,
+// which carries no job_id family at all), empty when nothing is set.
+func TestJobResult_EffectiveJobIDDelegateIDFallback(t *testing.T) {
+	t.Parallel()
+
+	t.Run("delegate_id used when no job_id family is present", func(t *testing.T) {
+		r := jobResult{DelegateID: "dlg_only"}
+		if got := r.effectiveJobID(); got != "dlg_only" {
+			t.Errorf("effectiveJobID() = %q, want dlg_only (delegate_id fallback)", got)
+		}
+	})
+
+	t.Run("job_id family takes priority over delegate_id", func(t *testing.T) {
+		r := jobResult{DelegateID: "dlg_low_priority", CurrentJobID: "job_wins"}
+		if got := r.effectiveJobID(); got != "job_wins" {
+			t.Errorf("effectiveJobID() = %q, want job_wins (job_id family before delegate_id)", got)
+		}
+	})
+
+	t.Run("empty when nothing set", func(t *testing.T) {
+		r := jobResult{}
+		if got := r.effectiveJobID(); got != "" {
+			t.Errorf("effectiveJobID() = %q, want empty", got)
+		}
+	})
+}
+
+// TestRenderMarkdown_DelegateCreateErrorSurfaces guards against a narrower
+// version of the issue #194 regression: once "error" is added to
+// jobResultKnownKeys so a failed-but-identified delegate create no longer dumps
+// raw JSON, the StartError text itself must still be visible in the condensed
+// rendering (via jobResultMetadataKeys) — not silently dropped now that the
+// dump-with-full-evidence fallback no longer fires for it.
+func TestRenderMarkdown_DelegateCreateErrorSurfaces(t *testing.T) {
+	t.Parallel()
+	body, err := marshalStableDelegateCreateResult(stableDelegateCreateResult{
+		DelegateID: "dlg_partial_fail",
+		Type:       "delegate",
+		Status:     "failed",
+		StartError: "sandbox denied: escalation beyond parent floor",
+	}, 0)
+	if err != nil {
+		t.Fatalf("marshalStableDelegateCreateResult: %v", err)
+	}
+
+	out := renderToolCardForResult("delegate", "call_delegate", body)
+
+	if !strings.Contains(out, "sandbox denied: escalation beyond parent floor") {
+		t.Errorf("StartError must remain visible in the condensed rendering, got:\n%s", out)
+	}
+	if strings.Contains(out, `"delegate_id":`) {
+		t.Errorf("delegate create result rendered as a raw JSON dump instead of the condensed status line, got:\n%s", out)
 	}
 }

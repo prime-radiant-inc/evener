@@ -1933,6 +1933,206 @@ func TestRenderMarkdown_LongResultLineClamped(t *testing.T) {
 	})
 }
 
+// delegateCreateBody marshals a stable-delegate create result via the REAL
+// production marshaler (marshalStableDelegateCreateResult), so these fixtures
+// carry exactly the wire shape stableDelegateCreateTool emits — the shape that
+// exposed the issue #194 regression (an allowlist-unknown key like
+// child_session_id silently downgraded the render to a raw JSON dump).
+func delegateCreateBody(t *testing.T, out stableDelegateCreateResult) string {
+	t.Helper()
+	body, err := marshalStableDelegateCreateResult(out, 0)
+	if err != nil {
+		t.Fatalf("marshalStableDelegateCreateResult: %v", err)
+	}
+	return body
+}
+
+// TestRenderMarkdown_DelegateToolCallAppears verifies that a delegate tool call
+// and its paired result render in the session transcript markdown, so spawned
+// subagents stay auditable in the parent transcript (issue #194). Critically,
+// the result must render as the condensed status line, NOT a raw pretty-printed
+// JSON dump — the actual regression: an unknown top-level key (child_session_id)
+// used to make jobResultBody bail to prettyJSON.
+func TestRenderMarkdown_DelegateToolCallAppears(t *testing.T) {
+	t.Parallel()
+	childRef := "local:01CHILDSESS000000000"
+	body := delegateCreateBody(t, stableDelegateCreateResult{
+		DelegateID:     "dlg_01",
+		ChildSessionID: "sess_01",
+		Type:           "delegate",
+		Status:         "running",
+		TranscriptRef:  childRef,
+	})
+	entries := []transcript.Entry{
+		// seq 0: assistant turn issuing a delegate call.
+		toolCallEntry(call("call_delegate", "delegate", `{"task":"investigate the render path","agent_type":"explorer"}`)),
+		// seq 1: the paired delegate result.
+		toolResultEntry(result("call_delegate", "delegate", body, false)),
+	}
+	out := renderMarkdown(transcript.Header{}, entries, 0, renderOpts{})
+
+	// The delegate tool call must appear as a tool card, not be dropped.
+	if !strings.Contains(out, "[ok] `delegate`") {
+		t.Errorf("expected [ok] delegate card, got:\n%s", out)
+	}
+	// The delegate's task argument must surface in the input summary so a reader
+	// can audit what the subagent was asked to do.
+	if !strings.Contains(out, "investigate the render path") {
+		t.Errorf("delegate task argument missing from rendered card, got:\n%s", out)
+	}
+	// The condensed status line: job identity (via the delegate_id fallback),
+	// status, and the child transcript_ref so the parent can pivot to the child
+	// session.
+	if !strings.Contains(out, "job_id=dlg_01") {
+		t.Errorf("expected condensed job_id=dlg_01 (delegate_id fallback), got:\n%s", out)
+	}
+	if !strings.Contains(out, "status=running") {
+		t.Errorf("expected condensed status=running, got:\n%s", out)
+	}
+	if !strings.Contains(out, "transcript_ref="+childRef) {
+		t.Errorf("expected condensed transcript_ref=%s, got:\n%s", childRef, out)
+	}
+	// The delegate call must render under the assistant heading, not as an
+	// orphaned "call not shown" result.
+	if strings.Contains(out, "Tool results without a shown call") {
+		t.Errorf("paired delegate result must not appear as call-not-shown, got:\n%s", out)
+	}
+	// NOT a raw JSON dump: the pretty-printed "key": value signature (unique to
+	// prettyJSON's fallback) must be absent from the condensed rendering.
+	if strings.Contains(out, `"delegate_id":`) {
+		t.Errorf("delegate result rendered as a raw JSON dump instead of the condensed status line, got:\n%s", out)
+	}
+}
+
+// TestRenderMarkdown_BatchedDelegateToolCallsAppear is the batched sibling of
+// TestRenderMarkdown_DelegateToolCallAppears: several delegate calls issued in
+// one assistant turn (issue #194's original repro shape) must each render as
+// their own condensed status line, not a raw JSON dump.
+func TestRenderMarkdown_BatchedDelegateToolCallsAppear(t *testing.T) {
+	t.Parallel()
+	type spec struct {
+		callID, delegateID, childRef string
+	}
+	specs := []spec{
+		{"call_delegate_0", "dlg_batch_0", "local:01BATCH0000000000000"},
+		{"call_delegate_1", "dlg_batch_1", "local:01BATCH0000000000001"},
+		{"call_delegate_2", "dlg_batch_2", "local:01BATCH0000000000002"},
+	}
+
+	calls := make([]*llm.ToolCallData, len(specs))
+	results := make([]*llm.ToolResultData, len(specs))
+	for i, sp := range specs {
+		calls[i] = call(sp.callID, "delegate", fmt.Sprintf(`{"task":"batched research task %d"}`, i))
+		body := delegateCreateBody(t, stableDelegateCreateResult{
+			DelegateID:    sp.delegateID,
+			Type:          "delegate",
+			Status:        "running",
+			TranscriptRef: sp.childRef,
+		})
+		results[i] = result(sp.callID, "delegate", body, false)
+	}
+	entries := []transcript.Entry{
+		toolCallEntry(calls...),
+		toolResultEntry(results...),
+	}
+	out := renderMarkdown(transcript.Header{}, entries, 0, renderOpts{})
+
+	if got := strings.Count(out, "[ok] `delegate`"); got != len(specs) {
+		t.Errorf("expected %d [ok] delegate cards, got %d:\n%s", len(specs), got, out)
+	}
+	for i, sp := range specs {
+		if !strings.Contains(out, fmt.Sprintf("batched research task %d", i)) {
+			t.Errorf("call %d: task argument missing, got:\n%s", i, out)
+		}
+		if !strings.Contains(out, "job_id="+sp.delegateID) {
+			t.Errorf("call %d: expected condensed job_id=%s, got:\n%s", i, sp.delegateID, out)
+		}
+		if !strings.Contains(out, "transcript_ref="+sp.childRef) {
+			t.Errorf("call %d: expected condensed transcript_ref=%s, got:\n%s", i, sp.childRef, out)
+		}
+	}
+	// NOT a raw JSON dump for any of the batched results.
+	if strings.Contains(out, `"delegate_id":`) {
+		t.Errorf("a batched delegate result rendered as a raw JSON dump instead of the condensed status line, got:\n%s", out)
+	}
+}
+
+// TestRenderOutline_DelegateToolCallAppears verifies the delegate tool call
+// surfaces in the outline (turn map) view too, so the audit pivot works in both
+// render formats (issue #194).
+func TestRenderOutline_DelegateToolCallAppears(t *testing.T) {
+	t.Parallel()
+	childRef := "local:01OUTLINEDELEGATE00000000"
+	body := delegateCreateBody(t, stableDelegateCreateResult{
+		DelegateID:    "dlg_out",
+		Type:          "delegate",
+		Status:        "completed",
+		TranscriptRef: childRef,
+	})
+	entries := []transcript.Entry{
+		toolCallEntry(call("call_del", "delegate", `{"task":"map the render path"}`)),
+		toolResultEntry(result("call_del", "delegate", body, false)),
+	}
+	out, _, _ := renderOutline(entries, 0, len(entries)-1)
+
+	// The outline line must name the delegate tool.
+	if !strings.Contains(out, "delegate") {
+		t.Errorf("outline missing delegate tool name, got:\n%s", out)
+	}
+	// The job lifecycle bracket must surface the child transcript_ref so the
+	// parent can pivot to the child session.
+	wantBracket := "delegate[status=completed child=" + childRef + "]"
+	if !strings.Contains(out, wantBracket) {
+		t.Errorf("outline missing delegate lifecycle bracket %q, got:\n%s", wantBracket, out)
+	}
+	if strings.Contains(out, `"delegate_id":`) {
+		t.Errorf("outline must never contain raw JSON, got:\n%s", out)
+	}
+}
+
+// TestRenderOutline_BatchedDelegateToolCallsAppear is the batched sibling of
+// TestRenderOutline_DelegateToolCallAppears: each delegate call in a batched
+// round gets its own lifecycle bracket.
+func TestRenderOutline_BatchedDelegateToolCallsAppear(t *testing.T) {
+	t.Parallel()
+	type spec struct {
+		callID, delegateID, childRef, status string
+	}
+	specs := []spec{
+		{"call_delegate_0", "dlg_out_0", "local:01OUTBATCH000000000000", "running"},
+		{"call_delegate_1", "dlg_out_1", "local:01OUTBATCH000000000001", "completed"},
+		{"call_delegate_2", "dlg_out_2", "local:01OUTBATCH000000000002", "running"},
+	}
+
+	calls := make([]*llm.ToolCallData, len(specs))
+	results := make([]*llm.ToolResultData, len(specs))
+	for i, sp := range specs {
+		calls[i] = call(sp.callID, "delegate", fmt.Sprintf(`{"task":"outline batch task %d"}`, i))
+		body := delegateCreateBody(t, stableDelegateCreateResult{
+			DelegateID:    sp.delegateID,
+			Type:          "delegate",
+			Status:        sp.status,
+			TranscriptRef: sp.childRef,
+		})
+		results[i] = result(sp.callID, "delegate", body, false)
+	}
+	entries := []transcript.Entry{
+		toolCallEntry(calls...),
+		toolResultEntry(results...),
+	}
+	out, _, _ := renderOutline(entries, 0, len(entries)-1)
+
+	for _, sp := range specs {
+		want := "delegate[status=" + sp.status + " child=" + sp.childRef + "]"
+		if !strings.Contains(out, want) {
+			t.Errorf("outline missing bracket %q, got:\n%s", want, out)
+		}
+	}
+	if strings.Contains(out, `"delegate_id":`) {
+		t.Errorf("outline must never contain raw JSON, got:\n%s", out)
+	}
+}
+
 // firstLines returns the first n lines of s, for compact error output.
 func firstLines(s string, n int) string {
 	lines := strings.SplitN(s, "\n", n+1)
