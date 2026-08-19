@@ -4,8 +4,9 @@
 // spawn.module.css turned into `position: fixed; bottom: 0` inside its 899px
 // media block, so the card's own control row detached from the card and became
 // a page-level band. Measured in this same harness on the pre-fix CSS at
-// 390x844: the card spans y=8..205 while the control row (and the attach
-// button inside it) sits at y=768..844.
+// 390x844: the card is 12,12 366x106 while the control row is 0,767 390x77,
+// with the attach button at 16,784 44x44 - two thirds of a phone screen away
+// from the prompt it attaches to.
 //
 // The session composer has never had this problem - it keeps attach, the model
 // trigger and the send verb inside the card's control row at every width
