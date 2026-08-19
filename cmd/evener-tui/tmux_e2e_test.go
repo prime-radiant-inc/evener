@@ -30,7 +30,7 @@ func canonicalTUIE2EProjectDir() string {
 	if canonical, err := filepath.EvalSymlinks(tmp); err == nil {
 		tmp = canonical
 	}
-	return filepath.Join(tmp, "evener-tui-e2e", "evener")
+	return filepath.Join(tmp, "evener-e2e", "evener")
 }
 
 // Generous backstop, not a target: WaitFor returns the instant the expected text
@@ -50,7 +50,7 @@ var tuiE2EDeadCheckInterval = 100 * time.Millisecond
 var tmuxSessionCounter atomic.Int64
 
 func uniqueTmuxSessionName() string {
-	return fmt.Sprintf("evener-tui-e2e-%d-%d", time.Now().UnixNano(), tmuxSessionCounter.Add(1))
+	return fmt.Sprintf("evener-e2e-%d-%d", time.Now().UnixNano(), tmuxSessionCounter.Add(1))
 }
 
 // tmuxSessionSlots bounds how many tmux+TUI sessions run concurrently. The TUI
@@ -115,14 +115,14 @@ func TestTUITmuxE2E_DashboardProjectAndSpawn(t *testing.T) {
 	app.SendKeys("n")
 	app.WaitFor("evener / new session", "Dir:      "+tuiE2EProjectDir, "Prompt (optional):")
 	app.SendKeys("Tab", "Tab", "Tab", "C-u")
-	app.TypeText("/tmp/evener-tui-e2e/custom")
-	app.WaitFor("Dir:      /tmp/evener-tui-e2e/custom")
+	app.TypeText("/tmp/evener-e2e/custom")
+	app.WaitFor("Dir:      /tmp/evener-e2e/custom")
 	app.SendKeys("Enter")
 	app.TypeLine("spawn from dashboard")
 	app.WaitFor("evener / session / spawned session 1")
 	spawns := hub.WaitForSpawns(t, 1)
-	if spawns[0].CWD != "/tmp/evener-tui-e2e/custom" {
-		t.Fatalf("dashboard spawn cwd=%q, want /tmp/evener-tui-e2e/custom", spawns[0].CWD)
+	if spawns[0].CWD != "/tmp/evener-e2e/custom" {
+		t.Fatalf("dashboard spawn cwd=%q, want /tmp/evener-e2e/custom", spawns[0].CWD)
 	}
 	if testInputText(spawns[0].Input) != "spawn from dashboard" {
 		t.Fatalf("dashboard spawn prompt=%q, want spawn from dashboard", testInputText(spawns[0].Input))
@@ -1086,7 +1086,7 @@ func buildTUIBinary(t *testing.T) string {
 			errTUIBinary = err
 			return
 		}
-		dir, err := os.MkdirTemp("", "evener-tui-e2e-bin-")
+		dir, err := os.MkdirTemp("", "evener-e2e-bin-")
 		if err != nil {
 			errTUIBinary = err
 			return
@@ -1756,7 +1756,7 @@ func newTUIE2EHub(t *testing.T) *tuiE2EHub {
 		Title:        "ops task",
 		State:        appwire.ThreadStatusIdle,
 		Project:      "ops",
-		WorkingDir:   "/tmp/evener-tui-e2e/ops",
+		WorkingDir:   "/tmp/evener-e2e/ops",
 		Model:        "gpt-5",
 		Live:         true,
 		CreatedAt:    80,
