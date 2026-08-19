@@ -12,14 +12,14 @@ import (
 	"testing"
 	"time"
 
-	"primeradiant.com/serf/agent"
-	"primeradiant.com/serf/agent/events"
-	"primeradiant.com/serf/agent/schema"
-	"primeradiant.com/serf/agent/transcript"
-	"primeradiant.com/serf/appwire"
-	"primeradiant.com/serf/internal/appprojector"
-	"primeradiant.com/serf/internal/appserver"
-	"primeradiant.com/serf/llm"
+	"primeradiant.com/evener/agent"
+	"primeradiant.com/evener/agent/events"
+	"primeradiant.com/evener/agent/schema"
+	"primeradiant.com/evener/agent/transcript"
+	"primeradiant.com/evener/appwire"
+	"primeradiant.com/evener/internal/appprojector"
+	"primeradiant.com/evener/internal/appserver"
+	"primeradiant.com/evener/llm"
 )
 
 func TestAtomicProjectionCommitPreservesProducerOrderAcrossSequenceAllocation(t *testing.T) {
@@ -119,10 +119,10 @@ func TestAtomicRejoinProjectsDurablePendingMutationsAndQueueRevision(t *testing.
 	if err != nil {
 		t.Fatalf("thread/read: %v", err)
 	}
-	if response.Thread.Serf.Queue.Revision != 1 {
-		t.Fatalf("queue revision = %d, want durable revision 1", response.Thread.Serf.Queue.Revision)
+	if response.Thread.Evener.Queue.Revision != 1 {
+		t.Fatalf("queue revision = %d, want durable revision 1", response.Thread.Evener.Queue.Revision)
 	}
-	for _, pending := range response.Thread.Serf.PendingMutations {
+	for _, pending := range response.Thread.Evener.PendingMutations {
 		if pending.ClientMutationID == queueParams.ClientMutationID {
 			if len(pending.Input) != 1 || pending.Input[0].Text != "durable queued input" {
 				t.Fatalf("pending queue payload = %#v", pending.Input)
@@ -130,7 +130,7 @@ func TestAtomicRejoinProjectsDurablePendingMutationsAndQueueRevision(t *testing.
 			return
 		}
 	}
-	t.Fatalf("pending mutations = %#v, want %q", response.Thread.Serf.PendingMutations, queueParams.ClientMutationID)
+	t.Fatalf("pending mutations = %#v, want %q", response.Thread.Evener.PendingMutations, queueParams.ClientMutationID)
 }
 
 func TestAtomicRejoinExcludesTranscriptIncorporatedMutationsFromPending(t *testing.T) {
@@ -220,12 +220,12 @@ func assertMutationIdentityInTranscriptNotPending(
 	for _, turn := range response.Thread.Turns {
 		for _, item := range turn.Items {
 			if item.ClientMutationID == mutationID {
-				for _, pending := range response.Thread.Serf.PendingMutations {
+				for _, pending := range response.Thread.Evener.PendingMutations {
 					if pending.ClientMutationID == mutationID {
 						t.Fatalf(
 							"mutation %q appears in transcript identity and pending mutations: %#v",
 							mutationID,
-							response.Thread.Serf.PendingMutations,
+							response.Thread.Evener.PendingMutations,
 						)
 					}
 				}
@@ -583,7 +583,7 @@ func TestServerAppWireReadCutTakesTheSnapshotInsideTheSubscription(t *testing.T)
 	// envelope sampled before the commit would report no active turn while
 	// listing the turn it opened, and nothing after the cut would ever say
 	// otherwise.
-	if got := outcome.response.Thread.Serf.ActiveTurnID; got != "turn_1" {
+	if got := outcome.response.Thread.Evener.ActiveTurnID; got != "turn_1" {
 		t.Fatalf("response activeTurnId = %q, want turn_1: the snapshot is not on the cut's side of the commit", got)
 	}
 	if turns := outcome.response.Thread.Turns; len(turns) != 1 || turns[0].ID != "turn_1" {

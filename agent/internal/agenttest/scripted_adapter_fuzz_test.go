@@ -1,4 +1,4 @@
-//go:build serffuzz
+//go:build evenerfuzz
 
 package agenttest
 
@@ -6,7 +6,7 @@ import (
 	"context"
 	"testing"
 
-	"primeradiant.com/serf/llm"
+	"primeradiant.com/evener/llm"
 )
 
 func FuzzScriptedAdapterReplay(f *testing.F) {

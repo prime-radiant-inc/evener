@@ -3,8 +3,8 @@ package provider
 import (
 	"testing"
 
-	"primeradiant.com/serf/llm"
-	"primeradiant.com/serf/llm/providercfg"
+	"primeradiant.com/evener/llm"
+	"primeradiant.com/evener/llm/providercfg"
 )
 
 // Instance config wins over the catalog; catalog covers unconfigured models;

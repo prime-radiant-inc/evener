@@ -7,15 +7,15 @@ import (
 	"testing"
 	"time"
 
-	"primeradiant.com/serf/agent/events"
-	"primeradiant.com/serf/agent/plugin"
-	"primeradiant.com/serf/llm"
+	"primeradiant.com/evener/agent/events"
+	"primeradiant.com/evener/agent/plugin"
+	"primeradiant.com/evener/llm"
 )
 
 // TestInput_PromptFieldMarshalsAlongsideUserPrompt verifies that a
 // UserPromptSubmit-style Input carries the official Claude "prompt" field as well
 // as the legacy "user_prompt" alias, with the same value. A Claude-style hook
-// reads "prompt"; before this fix serf sent only "user_prompt" (Fix 5).
+// reads "prompt"; before this fix evener sent only "user_prompt" (Fix 5).
 func TestInput_PromptFieldMarshalsAlongsideUserPrompt(t *testing.T) {
 	in := Input{
 		HookEventName: "UserPromptSubmit",
@@ -168,7 +168,7 @@ func TestExecuteCommandHook_Environment(t *testing.T) {
 // TestExecuteCommandHook_OfficialEnv verifies that CLAUDE_EFFORT is set from
 // input.Effort and that the existing CLAUDE_PLUGIN_ROOT / PLUGIN_ROOT aliases
 // are still present. CLAUDE_CODE_REMOTE is intentionally not set here.
-// Tier: CLAUDE_EFFORT = claude-compatible-subset; PLUGIN_ROOT = serf-native.
+// Tier: CLAUDE_EFFORT = claude-compatible-subset; PLUGIN_ROOT = evener-native.
 func TestExecuteCommandHook_OfficialEnv(t *testing.T) {
 	hook := plugin.RegisteredHook{
 		Type:      "command",
@@ -191,7 +191,7 @@ func TestExecuteCommandHook_OfficialEnv(t *testing.T) {
 // TestExecuteCommandHook_OfficialEnv_NoEffort verifies that CLAUDE_EFFORT is
 // not set (empty) when input.Effort is empty.
 func TestExecuteCommandHook_OfficialEnv_NoEffort(t *testing.T) {
-	// Simulate serf itself running under an agent that exports CLAUDE_EFFORT:
+	// Simulate evener itself running under an agent that exports CLAUDE_EFFORT:
 	// the parent's value must not leak into hooks when the session has none.
 	t.Setenv("CLAUDE_EFFORT", "high")
 	hook := plugin.RegisteredHook{
@@ -525,23 +525,23 @@ func TestHookRunner_ToolNameMapping(t *testing.T) {
 		Timeout: 5,
 	})
 
-	// Pass serf tool name "write_file" — should match after conversion to "Write"
+	// Pass evener tool name "write_file" — should match after conversion to "Write"
 	matched := runner.MatchHooks(plugin.HookPreToolUse, "Write")
 	if len(matched) != 1 {
 		t.Fatalf("expected 1 match for Claude name Write, got %d", len(matched))
 	}
 
-	// RunPreToolUse must convert the serf tool name "write_file" to "Write" before
+	// RunPreToolUse must convert the evener tool name "write_file" to "Write" before
 	// matching, so the hook registered for "Write" actually fires. The hook's stdout
 	// "matched" routes to UserMessages for non-context PreToolUse events.
 	input := Input{
 		CWD:           "/tmp",
 		HookEventName: "PreToolUse",
-		ToolName:      "write_file", // serf name; must be converted to "Write" for matching
+		ToolName:      "write_file", // evener name; must be converted to "Write" for matching
 	}
 	result := runner.RunPreToolUse(context.Background(), input)
 	if len(result.UserMessages) == 0 || !strings.Contains(result.UserMessages[0], "matched") {
-		t.Errorf("RunPreToolUse with serf tool name 'write_file' should have matched the 'Write' hook and run it; got UserMessages=%v", result.UserMessages)
+		t.Errorf("RunPreToolUse with evener tool name 'write_file' should have matched the 'Write' hook and run it; got UserMessages=%v", result.UserMessages)
 	}
 }
 
@@ -917,7 +917,7 @@ func TestRunPreToolUse_AskProceeds(t *testing.T) {
 	})
 	r := runner.RunPreToolUse(context.Background(), Input{CWD: "/tmp", HookEventName: "PreToolUse", ToolName: "Bash"})
 	if r.Denied {
-		t.Fatal("ask must not deny (serf has no permission prompt)")
+		t.Fatal("ask must not deny (evener has no permission prompt)")
 	}
 	// The unsupported decision must surface a user-visible diagnostic.
 	if len(r.UserMessages) != 1 || !strings.Contains(r.UserMessages[0], "ask") {

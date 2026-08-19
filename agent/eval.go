@@ -3,8 +3,8 @@ package agent
 import (
 	"sync"
 
-	"primeradiant.com/serf/agent/events"
-	"primeradiant.com/serf/llm"
+	"primeradiant.com/evener/agent/events"
+	"primeradiant.com/evener/llm"
 )
 
 // evalMetrics holds metrics collected during an evaluation run.

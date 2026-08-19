@@ -910,7 +910,7 @@ Replace the entire coordinator.md with the new version. Keep the YAML tasks from
 
 - [ ] **Step 2: Verify binary embeds correctly**
 
-Run: `make build-linux && strings serf-linux-amd64 | grep "Your task list defines"`
+Run: `make build-linux && strings evener-linux-amd64 | grep "Your task list defines"`
 Expected: The new coordinator prompt text appears in the binary.
 
 - [ ] **Step 3: Commit**
@@ -933,7 +933,7 @@ Add the 4 default tasks (understand, implement w/ parent_tasks placeholder, veri
 
 - [ ] **Step 2: Verify binary embeds correctly**
 
-Run: `make build-linux && strings serf-linux-amd64 | grep "insert: parent_tasks"`
+Run: `make build-linux && strings evener-linux-amd64 | grep "insert: parent_tasks"`
 Expected: Appears in binary.
 
 - [ ] **Step 3: Commit**
@@ -1008,10 +1008,10 @@ git commit -m "task_list: update tool description and reminders for reasoning_ef
 
 ---
 
-### Task 12: Revert serf_agent.py to reasoning_effort="low"
+### Task 12: Revert evener_agent.py to reasoning_effort="low"
 
 **Files:**
-- Modify: `tools/serf_agent.py:36`
+- Modify: `tools/evener_agent.py:36`
 
 - [ ] **Step 1: Change default back to "low"**
 
@@ -1024,8 +1024,8 @@ The coordinator's Plan and Verify tasks now declare `xhigh` in their task defini
 - [ ] **Step 2: Commit**
 
 ```bash
-git add tools/serf_agent.py
-git commit -m "serf_agent: revert to reasoning_effort=low (tasks control effort)"
+git add tools/evener_agent.py
+git commit -m "evener_agent: revert to reasoning_effort=low (tasks control effort)"
 ```
 
 ---

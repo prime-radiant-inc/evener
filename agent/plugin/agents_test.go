@@ -235,7 +235,7 @@ Body.
 		t.Error("AllTools should be false")
 	}
 	if len(agent.Tools) != 2 || agent.Tools[0] != "read_file" || agent.Tools[1] != "shell" {
-		t.Errorf("Tools = %v, want [read_file shell] (Claude names mapped to serf canonical)", agent.Tools)
+		t.Errorf("Tools = %v, want [read_file shell] (Claude names mapped to evener canonical)", agent.Tools)
 	}
 }
 
@@ -256,7 +256,7 @@ Body.
 	if agent.AllTools {
 		t.Error("AllTools should be false")
 	}
-	// Names without a serf canonical equivalent ("Skill", mcp__*) pass through unchanged.
+	// Names without a evener canonical equivalent ("Skill", mcp__*) pass through unchanged.
 	want := []string{"read_file", "grep", "glob", "Skill", "mcp__plugin_superpowers-chrome_chrome__use_browser"}
 	if len(agent.Tools) != len(want) {
 		t.Fatalf("Tools = %v, want %v", agent.Tools, want)

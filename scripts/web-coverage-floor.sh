@@ -27,13 +27,13 @@
 # floor files. --bless always rewrites EVERY area, so unlike the Go scripts there
 # is no partial-bless footgun to undo afterward.
 #
-# SERF_WEB_FRONTEND_DIR points this at a throwaway frontend instead of the real
+# EVENER_WEB_FRONTEND_DIR points this at a throwaway frontend instead of the real
 # one, which is how scripts/web-coverage-floor-selftest.sh exercises it.
 set -uo pipefail
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-floors_file="${SERF_WEBCOV_FLOORS:-$repo_root/scripts/webcov-floors.txt}"
-frontend="${SERF_WEB_FRONTEND_DIR:-$repo_root/cmd/serf-hub/frontend}"
+floors_file="${EVENER_WEBCOV_FLOORS:-$repo_root/scripts/webcov-floors.txt}"
+frontend="${EVENER_WEB_FRONTEND_DIR:-$repo_root/cmd/evener-hub/frontend}"
 tolerance="0.5"
 check=false
 bless=false
@@ -109,7 +109,7 @@ PY
 # the dev-tooling wave's per-suite isolation — and so outside the leftover check
 # the trap below is written to satisfy.
 tmpbase=${TMPDIR:-/tmp}
-rollup_file="$(mktemp "${tmpbase%/}/serf-webcov.XXXXXX")"
+rollup_file="$(mktemp "${tmpbase%/}/evener-webcov.XXXXXX")"
 # Removed on every exit path, not just the happy one: the dev-tooling wave fails
 # a suite that leaves anything behind, and this script runs inside one.
 trap 'rm -f "$rollup_file"' EXIT
@@ -144,7 +144,7 @@ if $suite_failed; then
 fi
 
 if $bless; then
-	tmp="$(mktemp "${TMPDIR:-/tmp}/serf-floors.XXXXXX")"
+	tmp="$(mktemp "${TMPDIR:-/tmp}/evener-floors.XXXXXX")"
 	{
 		# Carry the file's existing comment header through instead of restating a
 		# fixed one, exactly like the two Go floor scripts: a downward reset is a

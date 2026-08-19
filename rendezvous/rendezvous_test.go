@@ -50,7 +50,7 @@ func TestEntryRoundTripIncludesAppWireEndpoint(t *testing.T) {
 	dir := t.TempDir()
 	entry := Entry{
 		PID:       123,
-		Protocol:  "serf-appwire-v1",
+		Protocol:  "evener-appwire-v1",
 		Endpoint:  "ws://127.0.0.1:49152/rpc",
 		SourceID:  "local",
 		ThreadID:  "th_1",
@@ -184,7 +184,7 @@ func TestList_SkipsCorruptFiles(t *testing.T) {
 func TestDefaultDir_RespectsHome(t *testing.T) {
 	t.Setenv("HOME", "/tmp/fakehome")
 	got := DefaultDir()
-	want := "/tmp/fakehome/.serf/run"
+	want := "/tmp/fakehome/.evener/run"
 	if got != want {
 		t.Fatalf("DefaultDir: got %q, want %q", got, want)
 	}

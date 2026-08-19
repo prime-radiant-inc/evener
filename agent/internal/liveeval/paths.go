@@ -5,12 +5,12 @@ import (
 	"path/filepath"
 	"strings"
 
-	"primeradiant.com/serf/envvars"
+	"primeradiant.com/evener/envvars"
 )
 
 // OptInEnv is the environment variable that explicitly enables provider-backed
 // evals. Build tags select the eval sources; this variable permits live calls.
-const OptInEnv = "SERF_LIVE_TESTS"
+const OptInEnv = "EVENER_LIVE_TESTS"
 
 // Enabled reports whether a caller explicitly opted into live provider calls.
 func Enabled(value string) bool {
@@ -20,9 +20,9 @@ func Enabled(value string) bool {
 // Paths resolves the state-home and provider-config roots used by live evals.
 // A configured state home wins; otherwise it follows the user's home rather
 // than naming one developer's machine. Provider configuration follows the
-// runtime precedence: SERF_PROVIDERS_CONFIG, SERF_STATE_DIR/providers.toml,
-// then ~/.serf/providers.toml. The returned state path is the XDG base, not
-// the child "serf" directory that the auth layer appends.
+// runtime precedence: EVENER_PROVIDERS_CONFIG, EVENER_STATE_DIR/providers.toml,
+// then ~/.evener/providers.toml. The returned state path is the XDG base, not
+// the child "evener" directory that the auth layer appends.
 func Paths(stateHome, userHome string) (string, string) {
 	stateHome = strings.TrimSpace(stateHome)
 	userHome = strings.TrimSpace(userHome)
@@ -30,11 +30,11 @@ func Paths(stateHome, userHome string) (string, string) {
 		stateHome = filepath.Join(userHome, ".local", "state")
 	}
 
-	providerPath := envvars.SERFProvidersConfig.Trimmed()
+	providerPath := envvars.EVENERProvidersConfig.Trimmed()
 	if providerPath == "" {
-		stateRoot := envvars.SERFStateDir.Trimmed()
+		stateRoot := envvars.EVENERStateDir.Trimmed()
 		if stateRoot == "" {
-			stateRoot = filepath.Join(userHome, ".serf")
+			stateRoot = filepath.Join(userHome, ".evener")
 		}
 		providerPath = filepath.Join(stateRoot, "providers.toml")
 	}

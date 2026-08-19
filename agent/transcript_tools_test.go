@@ -10,10 +10,10 @@ import (
 	"testing"
 	"time"
 
-	"primeradiant.com/serf/agent/schema"
-	"primeradiant.com/serf/agent/transcript"
-	"primeradiant.com/serf/identifier"
-	"primeradiant.com/serf/llm"
+	"primeradiant.com/evener/agent/schema"
+	"primeradiant.com/evener/agent/transcript"
+	"primeradiant.com/evener/identifier"
+	"primeradiant.com/evener/llm"
 )
 
 func TestReadTranscriptReadsShellJobRef(t *testing.T) {
@@ -302,7 +302,7 @@ func TestFormatSessionFindings(t *testing.T) {
 				Title:         "Investigate parser test",
 				UpdatedAt:     time.Date(2026, 6, 14, 15, 4, 0, 0, time.UTC),
 				ApproxTurns:   12,
-				Project:       "serf",
+				Project:       "evener",
 				Snippets:      []snippet{{Seq: 9, Role: "assistant", Snippet: "the lexer drops trailing newlines"}},
 			},
 		},

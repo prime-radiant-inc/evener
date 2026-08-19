@@ -9,9 +9,9 @@ import (
 	"testing"
 	"time"
 
-	"primeradiant.com/serf/agent/doctor"
-	"primeradiant.com/serf/agent/schema"
-	"primeradiant.com/serf/llm"
+	"primeradiant.com/evener/agent/doctor"
+	"primeradiant.com/evener/agent/schema"
+	"primeradiant.com/evener/llm"
 )
 
 // This file replays the incident the provider-failure-feedback spec was written
@@ -103,7 +103,7 @@ func midStreamDeath() error {
 }
 
 // transcriptOutline renders the session's transcript the way
-// `serf-doctor transcript --format outline` does — through the doctor package
+// `evener-doctor transcript --format outline` does — through the doctor package
 // itself, so what these tests assert is what an operator actually reads.
 func transcriptOutline(t *testing.T, s *Session) string {
 	t.Helper()

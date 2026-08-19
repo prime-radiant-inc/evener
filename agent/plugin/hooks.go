@@ -49,7 +49,7 @@ const (
 	SessionStartKindCompact SessionStartKind = "compact"
 )
 
-// validHookEvents is the set of event names that serf fires today.
+// validHookEvents is the set of event names that evener fires today.
 // An event in recognizedClaudeEvents but not here is "recognized but unsupported."
 var validHookEvents = map[HookEvent]bool{
 	HookPreToolUse:       true,
@@ -65,10 +65,10 @@ var validHookEvents = map[HookEvent]bool{
 
 // recognizedClaudeEvents is the full set of event names documented by Claude Code
 // (https://code.claude.com/docs/en/hooks). Events here that are not in validHookEvents
-// are reserved-placeholder: parsed and diagnosed, but never fired by serf.
-// Tier: serf-native (the recognition and classification machinery).
+// are reserved-placeholder: parsed and diagnosed, but never fired by evener.
+// Tier: evener-native (the recognition and classification machinery).
 var recognizedClaudeEvents = map[HookEvent]bool{
-	// Implemented by serf (also in validHookEvents):
+	// Implemented by evener (also in validHookEvents):
 	HookPreToolUse:       true,
 	HookPostToolUse:      true,
 	HookStop:             true,
@@ -78,7 +78,7 @@ var recognizedClaudeEvents = map[HookEvent]bool{
 	HookSessionEnd:       true,
 	HookPreCompact:       true,
 	HookNotification:     true,
-	// reserved-placeholder: recognized but not yet fired by serf:
+	// reserved-placeholder: recognized but not yet fired by evener:
 	"Setup":               true,
 	"InstructionsLoaded":  true,
 	"UserPromptExpansion": true,
@@ -103,9 +103,9 @@ var recognizedClaudeEvents = map[HookEvent]bool{
 }
 
 // hookEventTier maps each known event to its compatibility tier.
-// Events in validHookEvents are "claude-compatible-subset" (serf fires them);
+// Events in validHookEvents are "claude-compatible-subset" (evener fires them);
 // recognized-but-unsupported Claude events are "reserved-placeholder."
-// Tier: serf-native (the tier registry itself).
+// Tier: evener-native (the tier registry itself).
 var hookEventTier = func() map[HookEvent]string {
 	m := make(map[HookEvent]string, len(recognizedClaudeEvents))
 	for e := range recognizedClaudeEvents {
@@ -119,10 +119,10 @@ var hookEventTier = func() map[HookEvent]string {
 }()
 
 // EventTier returns the compatibility tier label for a hook event.
-// Events serf currently fires return "claude-compatible-subset";
-// Claude-documented events not yet fired by serf return "reserved-placeholder";
+// Events evener currently fires return "claude-compatible-subset";
+// Claude-documented events not yet fired by evener return "reserved-placeholder";
 // unknown events return an empty string.
-// Tier: serf-native.
+// Tier: evener-native.
 func EventTier(e HookEvent) string {
 	return hookEventTier[e]
 }
@@ -158,7 +158,7 @@ type RegisteredHook struct {
 	// surfacing deferred).
 	StatusMessage string
 
-	// serf-native: source metadata threaded by the parser for diagnostics.
+	// evener-native: source metadata threaded by the parser for diagnostics.
 	// SourcePath is the resolved file path for file-based hooks; empty for inline configs.
 	SourcePath string
 	// Event is the hook event this handler belongs to.
@@ -194,9 +194,9 @@ type hookSpec struct {
 	Shell   string   `json:"shell,omitempty"`
 	If      string   `json:"if,omitempty"`
 	Async   bool     `json:"async,omitempty"`
-	// serf:naming-ignore
+	// evener:naming-ignore
 	AsyncRewake bool `json:"asyncRewake,omitempty"` // Claude wire format: camelCase required
-	// serf:naming-ignore
+	// evener:naming-ignore
 	StatusMessage string `json:"statusMessage,omitempty"` // Claude wire format: camelCase required
 }
 
@@ -226,14 +226,14 @@ func parsePluginHooks(data []byte, pluginDir, pluginName string) (map[HookEvent]
 //
 // The sourcePath parameter is threaded into each RegisteredHook for diagnostics;
 // pass the resolved file path for file-based hooks, empty for inline configs.
-// Tier: serf-native (classification machinery); claude-compatible-subset (field parsing).
+// Tier: evener-native (classification machinery); claude-compatible-subset (field parsing).
 func parsePluginHooksDiag(data []byte, pluginDir, pluginName string) (hooks map[HookEvent][]RegisteredHook, unsupported map[HookEvent]bool, unknown map[string]bool, err error) {
 	return parsePluginHooksDiagWithSource(data, pluginDir, pluginName, "")
 }
 
 // dropHookMetaKeys removes non-event meta keys from a decoded events map so they
 // are not misclassified as unknown event names: "description" plus any key with a
-// "$" prefix (e.g. "$schema", "$comment"). Recognized Claude/serf event names are
+// "$" prefix (e.g. "$schema", "$comment"). Recognized Claude/evener event names are
 // always kept, even in the unlikely event one were "$"-prefixed.
 func dropHookMetaKeys(eventsRaw map[string]json.RawMessage) {
 	for k := range eventsRaw {

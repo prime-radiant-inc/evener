@@ -5,7 +5,7 @@ import (
 	"sync"
 	"time"
 
-	"primeradiant.com/serf/appwire"
+	"primeradiant.com/evener/appwire"
 )
 
 const defaultTurnCacheSize = 32

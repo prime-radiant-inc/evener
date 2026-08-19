@@ -1,6 +1,6 @@
 # Behavior contracts: sidebar, search/palette, settings, credentials/device-flow, notifications, panes
 
-Mined from `cmd/serf-hub/jstest/`. Each line is a behavior a new Vitest suite must
+Mined from `cmd/evener-hub/jstest/`. Each line is a behavior a new Vitest suite must
 re-cover, tagged with the jstest file it currently comes from. CSS/token-only files
 (no runtime/DOM-interaction behavior, just regex assertions over `style.css`) are
 listed by name only, per instructions, in the final section.
@@ -60,7 +60,7 @@ bottom of each group where relevant.
 - on desktop (no phone media match) the menu keeps its pre-existing behavior unchanged: popover styling, no scrim, appended to `<body>`, anchored under the button, background stays interactive, Escape closes and refocuses the anchor (test-sidebar-menu-mobile.js)
 
 ### test-sidebar-menu.js
-- the ⋯ menu shows "Rename" only when the row's node carries `node.rename`; choosing "Favorite" calls `SerfSidebar.favorite`; Escape and removing the anchor row both close the menu (test-sidebar-menu.js)
+- the ⋯ menu shows "Rename" only when the row's node carries `node.rename`; choosing "Favorite" calls `EvenerSidebar.favorite`; Escape and removing the anchor row both close the menu (test-sidebar-menu.js)
 - an archived test-run project's menu offers "Unarchive" (not "Archive") (test-sidebar-menu.js)
 
 ### test-sidebar-migration.js
@@ -151,7 +151,7 @@ bottom of each group where relevant.
 - running an argless command adds/promotes it into a "Recent" section shown above the Commands section on the next open, and the choice persists across opens (test-search-commands.js)
 - commands requiring an active turn (e.g. `/steer`) refuse to POST when there is no active turn: the dialog stays open, shows an inline "no active turn" palette error, and preserves the user's typed args text (test-search-commands.js)
 - `openWith(query)` opens the dialog pre-seeded with the given query, and a query starting with `/` opens it directly into command-filter mode (test-search-commands.js)
-- global navigation commands (New session, Settings, Search-clear, Home) navigate via `SerfRenderer.navigateTo` rather than a hard link; a "/new `<prompt>`" variant navigates to `/new` with the prompt encoded in the query string (test-search-commands.js)
+- global navigation commands (New session, Settings, Search-clear, Home) navigate via `EvenerRenderer.navigateTo` rather than a hard link; a "/new `<prompt>`" variant navigates to `/new` with the prompt encoded in the query string (test-search-commands.js)
 - the theme command flips `body`'s light/dark theme class and persists the choice to localStorage (test-search-commands.js)
 - the Help command's rendered content includes a "Keyboard shortcuts" section mentioning ⌘K (test-search-commands.js)
 - Interrupt/Clear/Shutdown/Queue/Drain-as-steer commands each POST their own REST endpoint with the session id; a REST failure for any of them keeps the error inline in the palette rather than throwing or closing the dialog; Shutdown does not go through a native `confirm()` dialog (test-search-commands.js)
@@ -168,7 +168,7 @@ bottom of each group where relevant.
 
 ### test-settings-appearance.js
 - setting theme=dark applies `data-theme` on `<body>`, persists to localStorage, and toasts the new value; theme=system removes `data-theme` and clears the stored preference (test-settings-appearance.js)
-- phone-density and sidebar-mode choices persist and apply immediately: phone-density writes directly to the body dataset; sidebar-mode="rail"/"auto" delegate to `SerfSidebar.applySidebarMode` rather than writing localStorage directly (sidebar.js owns that key), while "pane" falls back to writing localStorage only when `SerfSidebar` isn't present (test-settings-appearance.js)
+- phone-density and sidebar-mode choices persist and apply immediately: phone-density writes directly to the body dataset; sidebar-mode="rail"/"auto" delegate to `EvenerSidebar.applySidebarMode` rather than writing localStorage directly (sidebar.js owns that key), while "pane" falls back to writing localStorage only when `EvenerSidebar` isn't present (test-settings-appearance.js)
 - on restore (page load) the theme/phone-density/sidebar-mode radios reflect the stored preference, defaulting sidebar-mode to "auto" when nothing is stored (test-settings-appearance.js)
 - phone-density applies on script load, before `DOMContentLoaded` fires; sidebar-mode no longer writes the rail attribute itself on load (ownership moved to sidebar.js) (test-settings-appearance.js)
 
@@ -179,7 +179,7 @@ bottom of each group where relevant.
 - the dedicated dir-picker button (as opposed to the inline input) opens the shared `.chip-picker-dir` popover listing children of its sibling text input's current value; browsing rows there doesn't touch the sibling input until Accept, which writes the browsed path and fires exactly one input and one change event (test-settings-dir-picker.js)
 
 ### test-settings-loudscope.js
-- the loudScope setting is a 2-option radio (asks default / all) wired through the same `data-notif-form` change delegate as the notification checkboxes; selecting "all" persists `loudScope=all`, dispatches `serf-hub:notifications-changed`, and toasts success (test-settings-loudscope.js)
+- the loudScope setting is a 2-option radio (asks default / all) wired through the same `data-notif-form` change delegate as the notification checkboxes; selecting "all" persists `loudScope=all`, dispatches `evener-hub:notifications-changed`, and toasts success (test-settings-loudscope.js)
 - on restore, the stored loudScope radio is checked and the other unchecked; an unset/default preference reflects to the "asks" radio (test-settings-loudscope.js)
 
 ### test-settings-mcp-status.js
@@ -190,7 +190,7 @@ bottom of each group where relevant.
 - the settings model picker fetches the diagnostics-envelope endpoint (`diagnostics=1`); its "Recent" tab is pinned first among providers, is active by default, and shows the most recent model with the same prettified-name+badge treatment as other provider tabs (test-settings-model-picker.js)
 
 ### test-settings-notifications.js
-- toggling the title-count preference persists it, flips its ON/OFF label, dispatches `serf-hub:notifications-changed`, and a committed change toasts success (test-settings-notifications.js)
+- toggling the title-count preference persists it, flips its ON/OFF label, dispatches `evener-hub:notifications-changed`, and a committed change toasts success (test-settings-notifications.js)
 - toggling OS notifications on requests permission; once granted the checkbox stays checked and its label reflects "granted"; if permission is denied instead, the checkbox reverts to unchecked, its label reverts to OFF, it is not persisted as on, and a warning toast explains why (test-settings-notifications.js)
 - on restore, a previously-saved toggle is checked and an unset one stays unchecked (test-settings-notifications.js)
 
@@ -222,11 +222,11 @@ bottom of each group where relevant.
 
 ### test-notifications-attention.js
 - on boot, the baseline `/api/tree` summary populates the document title's leading `"(N) "` count from `attentionSummary.needsYou` immediately (test-notifications-attention.js)
-- a `serf/attention/changed` broadcast updates the title count from its own summary and fires exactly one OS notification when a session transitions INTO needs_you/error — not merely because it reports that level (test-notifications-attention.js)
+- a `evener/attention/changed` broadcast updates the title count from its own summary and fires exactly one OS notification when a session transitions INTO needs_you/error — not merely because it reports that level (test-notifications-attention.js)
 - when the tab is focused (`document.hasFocus()` true), an into-transition still updates counts but suppresses the OS notification (test-notifications-attention.js)
 - a broadcast that arrives before the baseline fetch has resolved must not fire an OS notification (no baseline yet → no edge firing) (test-notifications-attention.js)
 - the sound preference plays a tone (via `AudioContext`) on the same into-transition that would trigger an OS notification (test-notifications-attention.js)
-- dispatching `serf-hub:notifications-changed` re-reads prefs and re-applies the title immediately in both directions (title off strips the `"(N)"` prefix, title on restores it from the current summary); an `htmx:afterSettle` on body re-applies the title if a swap clobbered it (test-notifications-attention.js)
+- dispatching `evener-hub:notifications-changed` re-reads prefs and re-applies the title immediately in both directions (title off strips the `"(N)"` prefix, title on restores it from the current summary); an `htmx:afterSettle` on body re-applies the title if a swap clobbered it (test-notifications-attention.js)
 
 ### test-notifications-loudscope.js
 - an existing v2 prefs blob with no `loudScope` key backfills `loudScope` to `"asks"` (not "off") on load and bumps the stored version to `"3"` so the migration doesn't re-run; a fresh install with no stored blob at all also defaults straight to `loudScope="asks"` (test-notifications-loudscope.js)
@@ -243,7 +243,7 @@ bottom of each group where relevant.
 - `notifications.js`'s `STATE_COLORS` constants match the design system: working is blue (dark `--state-working`/`--accent`), needs_you is amber (dark `--state-awaiting`/`--attention`), and error is left unchanged (test-notifications-palette.js)
 
 ### test-toast.js
-- `window.SerfToast.show(message, kind)` inserts a `.toast` element (carrying the kind class) into `#toast-region` and returns a handle; `#toast-region` itself carries `aria-live="polite"` (test-toast.js)
+- `window.EvenerToast.show(message, kind)` inserts a `.toast` element (carrying the kind class) into `#toast-region` and returns a handle; `#toast-region` itself carries `aria-live="polite"` (test-toast.js)
 - a shown toast auto-dismisses after its configured timeout, and the returned handle can dismiss it early on demand (test-toast.js)
 - an unrecognized kind falls back to the `toast-info` styling class (test-toast.js)
 - calling `show()` when `#toast-region` doesn't exist in the DOM returns `null` and appends nothing, without throwing (test-toast.js)
@@ -279,23 +279,23 @@ bottom of each group where relevant.
 - a doc-pane href carrying its own query string round-trips correctly through the `pane=` URL encoding; legacy `/s`-style pane hrefs found in the URL are normalized to `/thread/` form on restore; `MAX_SIDE_PANES` is enforced when restoring from a URL with more `pane=` params than the cap (test-panes-url.js)
 
 ### test-doc-pane-open-beside.js
-- an IMAGE transcript card whose src is a sha-addressed `/s/<id>/images/<sha>` URL gains an ⇲ button that calls `SerfPanes.open()` with that URL and the filename, without also opening the image's lightbox; a `data:` URL image (no stable, iframe-safe URL) gets no ⇲ button at all (test-doc-pane-open-beside.js)
+- an IMAGE transcript card whose src is a sha-addressed `/s/<id>/images/<sha>` URL gains an ⇲ button that calls `EvenerPanes.open()` with that URL and the filename, without also opening the image's lightbox; a `data:` URL image (no stable, iframe-safe URL) gets no ⇲ button at all (test-doc-pane-open-beside.js)
 - a file-referencing TOOL card (`read_file`/`edit_file`/`write_file`) gains an ⇲ button, positioned right of the filename, that opens `/doc/file?session=..&path=..` with the path relativized against the session's cwd; clicking the filename itself opens the same doc pane; a non-file tool (e.g. grep) gets no ⇲ button (test-doc-pane-open-beside.js)
-- both the image and file ⇲ buttons are omitted entirely when `window.SerfPanes` is not present (framed/iframe guard) (test-doc-pane-open-beside.js)
+- both the image and file ⇲ buttons are omitted entirely when `window.EvenerPanes` is not present (framed/iframe guard) (test-doc-pane-open-beside.js)
 
 ### test-observer-autoopen.js
-- when `#conversation` carries `data-observers="<ref>[,...]"`, the renderer's init auto-opens each listed LIVE observer beside the worker via `SerfPanes.open("/thread/<ref>")`, for one or many observer refs; with no `data-observers` attribute, nothing is auto-opened (test-observer-autoopen.js)
+- when `#conversation` carries `data-observers="<ref>[,...]"`, the renderer's init auto-opens each listed LIVE observer beside the worker via `EvenerPanes.open("/thread/<ref>")`, for one or many observer refs; with no `data-observers` attribute, nothing is auto-opened (test-observer-autoopen.js)
 - an observer the user has manually closed stays closed across a later re-init (suppression is remembered, keyed by the normalized `/thread/` href); a subsequent explicit manual open of that same observer clears its suppression so future re-inits will auto-open it again (test-observer-autoopen.js)
-- when `window.SerfPanes` is absent (already inside a pane iframe), auto-open silently does nothing rather than erroring (test-observer-autoopen.js)
+- when `window.EvenerPanes` is absent (already inside a pane iframe), auto-open silently does nothing rather than erroring (test-observer-autoopen.js)
 
 ### test-thread-document-bridge.js
-- a host window's `SerfPanes` exposes a bridge so a known child (paned) frame can request opening another pane via `postMessage`, inserted at the requested (normalized) `afterHref` position (test-thread-document-bridge.js)
+- a host window's `EvenerPanes` exposes a bridge so a known child (paned) frame can request opening another pane via `postMessage`, inserted at the requested (normalized) `afterHref` position (test-thread-document-bridge.js)
 - the host bridge rejects a request whose href is cross-origin, and rejects a request whose source window isn't a currently-open child pane's `contentWindow` (unknown/untrusted source) (test-thread-document-bridge.js)
-- a framed child with no local pane host (itself running inside a pane) reports no local `SerfPanes` and instead posts its `open()` calls up to the host bridge; a thread breadcrumb "back to parent" click is likewise canceled and re-routed through the host bridge when framed, but proceeds as normal href navigation when standalone (test-thread-document-bridge.js)
+- a framed child with no local pane host (itself running inside a pane) reports no local `EvenerPanes` and instead posts its `open()` calls up to the host bridge; a thread breadcrumb "back to parent" click is likewise canceled and re-routed through the host bridge when framed, but proceeds as normal href navigation when standalone (test-thread-document-bridge.js)
 
 ### Deliberately excluded / overlap notes
-- `test-renderer-open-beside.js` and `test-renderer-pane-compact.js` are **not** re-covered here even though they exercise `SerfPanes` — `contracts-transcript-scroll-liveness.md` claims "all 49 `test-renderer*.js` files, in full" and already mines both (subagent-row open-beside affordance; `pane-compact` body class + `[data-compact]` cheap-tool clustering when framed). Re-reading them here would just duplicate those entries.
-- `test-panels.js`, `test-panel-history-teardown.js`, `test-tasks-panel.js`, `test-task-updated-subscription.js` are a *different* system (the tasks/details slide-over panel, implemented in `renderer.js`) from `SerfPanes`/`panes.js` (side iframe document panes). None of that cluster is "panes" in this document's sense — see the `test-sidebar.js` naming-trap note above. Neither sibling doc claims this cluster either; it appears to be a genuine gap in the overall split, not something to silently absorb here.
+- `test-renderer-open-beside.js` and `test-renderer-pane-compact.js` are **not** re-covered here even though they exercise `EvenerPanes` — `contracts-transcript-scroll-liveness.md` claims "all 49 `test-renderer*.js` files, in full" and already mines both (subagent-row open-beside affordance; `pane-compact` body class + `[data-compact]` cheap-tool clustering when framed). Re-reading them here would just duplicate those entries.
+- `test-panels.js`, `test-panel-history-teardown.js`, `test-tasks-panel.js`, `test-task-updated-subscription.js` are a *different* system (the tasks/details slide-over panel, implemented in `renderer.js`) from `EvenerPanes`/`panes.js` (side iframe document panes). None of that cluster is "panes" in this document's sense — see the `test-sidebar.js` naming-trap note above. Neither sibling doc claims this cluster either; it appears to be a genuine gap in the overall split, not something to silently absorb here.
 
 ## CSS-token-only tests (name only, no runtime behavior to port)
 

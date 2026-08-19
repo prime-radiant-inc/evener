@@ -14,19 +14,19 @@ import (
 	"testing"
 	"time"
 
-	"primeradiant.com/serf/llm"
+	"primeradiant.com/evener/llm"
 
 	// Blank imports to register provider factories.
-	_ "primeradiant.com/serf/llm/providers/anthropic"
-	_ "primeradiant.com/serf/llm/providers/glm"
-	_ "primeradiant.com/serf/llm/providers/google"
-	_ "primeradiant.com/serf/llm/providers/kimi"
-	_ "primeradiant.com/serf/llm/providers/kimi_anthropic"
-	_ "primeradiant.com/serf/llm/providers/minimax"
-	_ "primeradiant.com/serf/llm/providers/openai"
-	_ "primeradiant.com/serf/llm/providers/openaicompat"
-	_ "primeradiant.com/serf/llm/providers/openrouter"
-	_ "primeradiant.com/serf/llm/providers/openrouter_anthropic"
+	_ "primeradiant.com/evener/llm/providers/anthropic"
+	_ "primeradiant.com/evener/llm/providers/glm"
+	_ "primeradiant.com/evener/llm/providers/google"
+	_ "primeradiant.com/evener/llm/providers/kimi"
+	_ "primeradiant.com/evener/llm/providers/kimi_anthropic"
+	_ "primeradiant.com/evener/llm/providers/minimax"
+	_ "primeradiant.com/evener/llm/providers/openai"
+	_ "primeradiant.com/evener/llm/providers/openaicompat"
+	_ "primeradiant.com/evener/llm/providers/openrouter"
+	_ "primeradiant.com/evener/llm/providers/openrouter_anthropic"
 )
 
 // providerConfig holds a test model and the env keys that gate the provider.
@@ -61,8 +61,8 @@ func (p providerConfig) available() bool {
 
 func skipIfNoProviders(t *testing.T) {
 	t.Helper()
-	if os.Getenv("SERF_LIVE_TESTS") != "1" {
-		t.Skip("set SERF_LIVE_TESTS=1 to run live LLM integration tests")
+	if os.Getenv("EVENER_LIVE_TESTS") != "1" {
+		t.Skip("set EVENER_LIVE_TESTS=1 to run live LLM integration tests")
 	}
 	for _, p := range providers {
 		if p.available() {
@@ -74,8 +74,8 @@ func skipIfNoProviders(t *testing.T) {
 
 func skipIfNoImageProviders(t *testing.T) {
 	t.Helper()
-	if os.Getenv("SERF_LIVE_TESTS") != "1" {
-		t.Skip("set SERF_LIVE_TESTS=1 to run live LLM integration tests")
+	if os.Getenv("EVENER_LIVE_TESTS") != "1" {
+		t.Skip("set EVENER_LIVE_TESTS=1 to run live LLM integration tests")
 	}
 	for _, p := range imageProviders {
 		if p.available() {

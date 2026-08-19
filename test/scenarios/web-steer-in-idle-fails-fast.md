@@ -10,7 +10,7 @@ card exists to catch is a *silent* one: text that disappears, a chip that
 spins forever, or a steer quietly accepted against an idle session.
 
 The card used to assert a `.optimistic-failed` chip carrying a Retry link,
-driven by calling `window.SerfAppwire.steer(...)` directly. Both are gone —
+driven by calling `window.EvenerAppwire.steer(...)` directly. Both are gone —
 the vanilla frontend was deleted at `660376f78` and there is no global to
 call. The two refusals themselves are alive, and are what this card now
 drives.
@@ -24,18 +24,18 @@ which Part A uses.
 
 - Hub running on an isolated `$HOME` and free port (never `9180`,
   Jesse's real one — see the Setup checklist in
-  `docs/agentic-testing.md`) with `--serf` resolvable.
+  `docs/agentic-testing.md`) with `--evener` resolvable.
 - A provider credential good enough to run one trivial turn. Anthropic Haiku
   is enough; no OAuth is required.
-- `$HOME/.serf/auth-token` readable (that isolated `$HOME`).
+- `$HOME/.evener/auth-token` readable (that isolated `$HOME`).
 - Part B only: the SPA must be built (`make build-web`) before the hub, or
   the browser gets a placeholder.
 
 ## Steps
 
 ```bash
-tmpdir=$(mktemp -d -t serf-e2e-steer-idle-XXXXX)
-TOKEN=$(cat "$HOME/.serf/auth-token")
+tmpdir=$(mktemp -d -t evener-e2e-steer-idle-XXXXX)
+TOKEN=$(cat "$HOME/.evener/auth-token")
 HUB=http://127.0.0.1:$PORT
 ```
 
@@ -44,7 +44,7 @@ HUB=http://127.0.0.1:$PORT
    ```bash
    resp=$(curl -s -X POST -H "Content-Type: application/json" \
      -H "Authorization: Bearer $TOKEN" \
-     -d "{\"prompt\":\"please run \\\"echo hello\\\" via exec_command then stop\",\"model\":\"anthropic/claude-haiku-4-5-20251001\",\"working_dir\":\"$tmpdir\",\"harness\":\"serf\",\"branch\":\"\",\"access_mode\":\"full\",\"agent\":\"default\",\"launch_overrides\":{}}" \
+     -d "{\"prompt\":\"please run \\\"echo hello\\\" via exec_command then stop\",\"model\":\"anthropic/claude-haiku-4-5-20251001\",\"working_dir\":\"$tmpdir\",\"harness\":\"evener\",\"branch\":\"\",\"access_mode\":\"full\",\"agent\":\"default\",\"launch_overrides\":{}}" \
      $HUB/api/spawn)
    SID=$(echo "$resp" | jq -r '.session_id')
    for i in $(seq 1 60); do
@@ -59,7 +59,7 @@ HUB=http://127.0.0.1:$PORT
 ### Part A — the daemon's refusal (no browser)
 
 > **KNOWN-STALE — Part A asserts the pre-v3 contract; do not trust it as
-> written.** It is built on `expectedTurnId`, which **serf-appwire-v3
+> written.** It is built on `expectedTurnId`, which **evener-appwire-v3
 > removed** from `turn/steer`, `turn/queue`, `turn/interrupt`,
 > `turn/drainAsSteer` and `turn/promoteQueuedAsSteer` — control is
 > session-scoped and names no turn (`appwire/types.go`, the
@@ -145,7 +145,7 @@ HUB=http://127.0.0.1:$PORT
   omitted-`expectedTurnId` request is
   rejected with `InvalidParams` (code `-32602`) and the exact message
   `expectedTurnId is required` — refused twice on the way down, once by the
-  hub (`cmd/serf-hub/app_rpc.go:381-383`) and once by the daemon
+  hub (`cmd/evener-hub/app_rpc.go:381-383`) and once by the daemon
   (`server/appwire_runtime.go:597-599`). The stale-`expectedTurnId` request
   is rejected with `Conflict` (code `-32013`) and a message *containing*
   `turn is not active` (`agent/session_client_mutation_queue.go:325-328`,
@@ -182,7 +182,7 @@ rm -rf "$tmpdir"
 
 - **Part A WAS the exact half; it is KNOWN-STALE now, so Part B is the
   runnable one.** Part A needed no browser and pinned both refusal messages
-  verbatim — but serf-appwire-v3 removed the `expectedTurnId` those refusals
+  verbatim — but evener-appwire-v3 removed the `expectedTurnId` those refusals
   answered, and neither message exists any more (see the Part A note; kata
   `pt6k` owns re-deriving what a v3 daemon refuses). Until that lands, Chrome
   is required rather than optional: Part B pins the human-visible half, which
@@ -194,7 +194,7 @@ rm -rf "$tmpdir"
   looks like a connection problem, not a malformed request. Frames are
   `{"id":N,"method":"…","params":{…}}`.
 - **Shift+Enter is only the Steer chord while `enterToSend` is off** — with
-  the `serf.prefs.enterToSend` preference on, Shift+Enter inserts a literal
+  the `evener.prefs.enterToSend` preference on, Shift+Enter inserts a literal
   newline instead, to avoid doubling up on that preference's own
   Enter-submits meaning (`Composer.tsx:1028-1030`). Leave the preference at its
   default, or seed it to `"0"` before the first page load.

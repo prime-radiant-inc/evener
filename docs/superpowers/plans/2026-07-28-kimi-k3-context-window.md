@@ -4,7 +4,7 @@
 
 **Goal:** Give Kimi K3 its documented 1,048,576-token context window without changing the 256K Kimi models.
 
-**Architecture:** The embedded Serf override catalog remains the single source of model-specific Kimi metadata. The `kimi-anthropic` profile constructor and Web UI live-model enrichment consume that metadata, falling back only when a model or field is absent.
+**Architecture:** The embedded Evener override catalog remains the single source of model-specific Kimi metadata. The `kimi-anthropic` profile constructor and Web UI live-model enrichment consume that metadata, falling back only when a model or field is absent.
 
 **Tech Stack:** Go, embedded JSON model catalog, deterministic Go tests.
 
@@ -23,10 +23,10 @@
 **Files:**
 - Modify: `agent/provider/resolve_test.go`
 - Modify: `llm/model_catalog_test.go`
-- Modify: `cmd/serf-hub/app_models_test.go`
-- Modify: `llm/data/serf_model_catalog_overrides.json`
+- Modify: `cmd/evener-hub/app_models_test.go`
+- Modify: `llm/data/evener_model_catalog_overrides.json`
 - Modify: `agent/provider/profile.go`
-- Modify: `cmd/serf-hub/web_spawn.go`
+- Modify: `cmd/evener-hub/web_spawn.go`
 
 **Interfaces:**
 - Consumes: `llm.EmbeddedModelCatalog().GetModelInfo(modelID)`
@@ -52,7 +52,7 @@ Run:
 ```bash
 go test ./agent/provider -run 'TestResolveProfileFromConfig_KimiAnthropic' -count=1
 go test ./llm -run 'TestEmbeddedCatalog_Kimi' -count=1
-go test ./cmd/serf-hub -run 'TestFetchLiveModels_KimiContextWindow' -count=1
+go test ./cmd/evener-hub -run 'TestFetchLiveModels_KimiContextWindow' -count=1
 ```
 
 Expected: behavioral assertion failures showing 262,144 or a missing
@@ -60,7 +60,7 @@ Expected: behavioral assertion failures showing 262,144 or a missing
 
 - [ ] **Step 4: Materialize Kimi model metadata**
 
-Add complete Serf-only catalog entries for `k3`, `k3-256k`, and
+Add complete Evener-only catalog entries for `k3`, `k3-256k`, and
 `kimi-for-coding-highspeed`; keep the existing `kimi-for-coding` entry at
 262,144. Use Kimi's documented model IDs and context sizes.
 
@@ -81,7 +81,7 @@ context window into the response entry. Do not replace a live value.
 Run:
 
 ```bash
-go test ./agent/provider ./llm ./cmd/serf-hub
+go test ./agent/provider ./llm ./cmd/evener-hub
 ```
 
 Expected: all packages pass.

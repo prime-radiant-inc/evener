@@ -10,12 +10,12 @@ import (
 	"testing"
 	"time"
 
-	"primeradiant.com/serf/agent/events"
-	"primeradiant.com/serf/agent/execenv"
-	"primeradiant.com/serf/agent/internal/goal"
-	"primeradiant.com/serf/agent/internal/jobstore"
-	"primeradiant.com/serf/agent/schema"
-	"primeradiant.com/serf/llm"
+	"primeradiant.com/evener/agent/events"
+	"primeradiant.com/evener/agent/execenv"
+	"primeradiant.com/evener/agent/internal/goal"
+	"primeradiant.com/evener/agent/internal/jobstore"
+	"primeradiant.com/evener/agent/schema"
+	"primeradiant.com/evener/llm"
 )
 
 // requestsContain reports whether any text content part across any recorded
@@ -648,7 +648,7 @@ func TestNotification_BreakerFiresUnderSustainedNotifications(t *testing.T) {
 }
 
 // TestNotification_GoalContinuesInlineWithoutKickFunc is the IMPORTANT regression
-// guard for the kickFunc-nil stranding bug. A one-shot `serf run` (cmd/serf) never
+// guard for the kickFunc-nil stranding bug. A one-shot `evener run` (cmd/evener) never
 // wires a kickFunc, yet a restored session can carry an active goal and the model
 // can spawn a subagent (depth 1 by default). If a notification preempts the gate
 // and the design relied on settleGoalOnIdle to re-kick the goal, settleGoalOnIdle
@@ -694,7 +694,7 @@ func TestNotification_GoalContinuesInlineWithoutKickFunc(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)
 	}
-	// Deliberately do NOT call SetKickFunc: kickFunc stays nil, modelling `serf run`.
+	// Deliberately do NOT call SetKickFunc: kickFunc stays nil, modelling `evener run`.
 	collect := drainEvents(sess)
 
 	sess.getOrCreateGoalStore().Set("inline objective", time.Now())

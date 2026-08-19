@@ -7,7 +7,7 @@ import (
 	"io"
 	"strconv"
 
-	"primeradiant.com/serf/agent/execenv"
+	"primeradiant.com/evener/agent/execenv"
 )
 
 // DenyEnv is an execenv.ExecutionEnvironment for fuzzing tool-handler execution

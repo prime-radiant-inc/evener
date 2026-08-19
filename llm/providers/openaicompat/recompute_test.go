@@ -3,7 +3,7 @@ package openaicompat
 import (
 	"testing"
 
-	"primeradiant.com/serf/llm"
+	"primeradiant.com/evener/llm"
 )
 
 // TestExtractRecordedResponse_JSON pins that recompute reuses

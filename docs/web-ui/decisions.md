@@ -12,7 +12,7 @@ ever annotated with what shipped.
 
 Then the whole app was rewritten. The `renderer.js` / `style.css` hub those
 decisions shipped into was deleted and rebuilt as the React SPA under
-`cmd/serf-hub/frontend/src`. **The rewrite did not port the decisions.** It
+`cmd/evener-hub/frontend/src`. **The rewrite did not port the decisions.** It
 authored a fresh visual direction from
 `docs/superpowers/plans/2026-07-20-webui-rewrite-wave2-design-system.md`
 §Direction, and nobody diffed the two. `design-system.md` says so plainly: the
@@ -581,7 +581,7 @@ Rejected implicitly by not being on the table: another from-scratch
 candidate-palette bake-off in the 07-31 style. The decision was to stop
 generating original palettes and adopt an external, complete design
 language wholesale — attributed per its MIT license
-(`cmd/serf-hub/frontend/LICENSES/beautiful-ui.txt`, Copyright (c) 2026 Shane
+(`cmd/evener-hub/frontend/LICENSES/beautiful-ui.txt`, Copyright (c) 2026 Shane
 Levine) rather than reinterpreted as an in-house original.
 
 ## 2026-08-14 title-count notification default flips to ON
@@ -624,7 +624,7 @@ aside rather than another call to action.
 ## 2026-08-14 launch-error presentation: pass-through by default
 
 `friendlyLaunchErrorMessage` initially mapped the whole hubLaunch family to
-"no daemon — run serf" guidance. A live repro (credentialed daemon,
+"no daemon — run evener" guidance. A live repro (credentialed daemon,
 uncredentialed default provider) showed that masks the family's config half
 with actively wrong advice, and review showed it also destroyed the daemon's
 own propagated stderr — a diagnosis the hub has a dedicated Go test to

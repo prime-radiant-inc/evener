@@ -7,14 +7,14 @@ import (
 	"strings"
 	"testing"
 
-	"primeradiant.com/serf/agent/internal/worktree"
+	"primeradiant.com/evener/agent/internal/worktree"
 )
 
 // These are REAL-git integration tests for the unmanaged-visibility half of
 // `list` and for the `adopt` operation (spec §5 list; §6 "Metadata sidecar":
 // a worktree without a sidecar inside the managed dir is provenance-unknown
 // and is never auto-adopted). Their subject IS git's observable behavior — a
-// hand-made `git worktree add` under the managed root, and what serf may then
+// hand-made `git worktree add` under the managed root, and what evener may then
 // do with it — so they run on the real-git harness defined in
 // session_tools_worktree_create_test.go / _switch_test.go.
 
@@ -40,7 +40,7 @@ func (r *wtRepo) adoptOp(t *testing.T, args map[string]any) (map[string]any, err
 
 // addUnmanagedWorktreeFixture places a worktree under the managed root by
 // hand — a raw `git worktree add`, no sidecar — which is exactly the stray
-// serf must surface but never adopt on its own.
+// evener must surface but never adopt on its own.
 func (r *wtRepo) addUnmanagedWorktreeFixture(t *testing.T, name, branch string) string {
 	t.Helper()
 	path := r.managedPath(t, r.canonicalMain(t), name)
@@ -183,7 +183,7 @@ func TestWorktreeAdopt_RoundTripMakesItManaged(t *testing.T) {
 
 // TestWorktreeAdopt_RefusesOutsideTheManagedRoot covers brief step 1(c): a
 // registered worktree that lives outside the managed root is refused. Spec §4
-// by-path step 4 keeps those switchable and exitable but never serf's to
+// by-path step 4 keeps those switchable and exitable but never evener's to
 // remove or prune, and adoption is the only thing that would change that.
 func TestWorktreeAdopt_RefusesOutsideTheManagedRoot(t *testing.T) {
 	t.Parallel()
@@ -260,7 +260,7 @@ func TestWorktreeAdopt_RefusesForeignLockedWorktree(t *testing.T) {
 	t.Parallel()
 	r := newWorktreeRepo(t)
 	strayPath := r.addUnmanagedWorktreeFixture(t, "stray-lane", "stray-lane")
-	wtGit(t, r.mainRoot, "worktree", "lock", "--reason", "serf:some-other-session", strayPath)
+	wtGit(t, r.mainRoot, "worktree", "lock", "--reason", "evener:some-other-session", strayPath)
 
 	_, err := r.adoptOp(t, map[string]any{"path": strayPath})
 	if err == nil {
@@ -297,7 +297,7 @@ func TestWorktreeAdopt_RefusesBranchNameMismatch(t *testing.T) {
 }
 
 // TestWorktreeAdopt_RefusesAlreadyManagedWorktree keeps adopt from rewriting
-// provenance serf already holds: a second adopt must not relabel an existing
+// provenance evener already holds: a second adopt must not relabel an existing
 // lane's creator.
 func TestWorktreeAdopt_RefusesAlreadyManagedWorktree(t *testing.T) {
 	t.Parallel()

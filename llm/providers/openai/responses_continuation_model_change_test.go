@@ -8,7 +8,7 @@ package openai
 import (
 	"testing"
 
-	"primeradiant.com/serf/llm"
+	"primeradiant.com/evener/llm"
 )
 
 func TestResponsesRequestFingerprint_ModelChangeInvalidatesAnchor(t *testing.T) {

@@ -1,4 +1,4 @@
-//go:build serffuzz
+//go:build evenerfuzz
 
 package agent
 
@@ -11,13 +11,13 @@ import (
 	"strings"
 	"testing"
 
-	"primeradiant.com/serf/agent/execenv"
-	"primeradiant.com/serf/agent/internal/agenttest"
-	"primeradiant.com/serf/agent/internal/clock"
-	"primeradiant.com/serf/agent/internal/jobstore"
-	"primeradiant.com/serf/agent/internal/worktree"
-	"primeradiant.com/serf/agent/schema"
-	"primeradiant.com/serf/llm"
+	"primeradiant.com/evener/agent/execenv"
+	"primeradiant.com/evener/agent/internal/agenttest"
+	"primeradiant.com/evener/agent/internal/clock"
+	"primeradiant.com/evener/agent/internal/jobstore"
+	"primeradiant.com/evener/agent/internal/worktree"
+	"primeradiant.com/evener/agent/schema"
+	"primeradiant.com/evener/llm"
 )
 
 // FuzzSessionRestoreCloseStatusProgram drives the restore, managed-worktree
@@ -131,7 +131,7 @@ func srspRestoreWorktree(t *testing.T, mode byte) {
 		entry.lockReason = worktree.FormatSessionMarker(h.s.ID())
 	case 5:
 		meta.WorktreeManaged = true
-		entry.lockReason = "serf:another-session"
+		entry.lockReason = "evener:another-session"
 		wantReentry = false
 	case 6:
 		meta.WorktreeManaged = true
@@ -165,7 +165,7 @@ func srspRestoreWorktree(t *testing.T, mode byte) {
 	case 11:
 		meta.WorktreeManaged = true
 		meta.WorktreeRestoreRoot = ""
-		entry.lockReason = "serf:another-session"
+		entry.lockReason = "evener:another-session"
 		wantReentry = false
 	}
 
@@ -260,7 +260,7 @@ func srspInitWorktree(t *testing.T, mode byte) {
 	case 5:
 		entry.lockReason = worktree.FormatSessionMarker(h.s.id)
 	case 6:
-		entry.lockReason = "serf:another-session"
+		entry.lockReason = "evener:another-session"
 	case 7:
 		h.s.worktreeCurrentPath = path
 	}

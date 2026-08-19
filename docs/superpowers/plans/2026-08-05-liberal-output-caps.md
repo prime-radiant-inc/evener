@@ -6,7 +6,7 @@
 
 **Architecture:** A catalog-lookup method on `llm.ModelCatalog` is the shared resolution primitive. The anthropic adapter uses it to replace its hardcoded 4096 default (fallback 32000 when the catalog is silent). The agent layer independently fills `Request.MaxTokens` from instance config then catalog (defense in depth). Separately, the round's finish reason is threaded into tool prevalidation so a `length`-stopped turn with unparseable tool args produces a truncation-specific error and never attempts JSON repair.
 
-**Tech Stack:** Go. Repo is a go workspace (`go.work`); run builds/tests from the repo root `/Users/jesse/prime-radiant/toil-suite/serf`.
+**Tech Stack:** Go. Repo is a go workspace (`go.work`); run builds/tests from the repo root `/Users/jesse/prime-radiant/toil-suite/evener`.
 
 **Spec:** `docs/superpowers/specs/2026-08-05-liberal-output-caps-design.md`
 
@@ -32,7 +32,7 @@
 
 - [ ] **Step 1: Write the failing test**
 
-Append to `llm/model_catalog_test.go` (the file already uses `parseLiteLLMCatalog` to build fixture catalogs — see `TestApplyOverrides_MaterializesSerfOnlyModel` around line 839 for the pattern):
+Append to `llm/model_catalog_test.go` (the file already uses `parseLiteLLMCatalog` to build fixture catalogs — see `TestApplyOverrides_MaterializesEvenerOnlyModel` around line 839 for the pattern):
 
 ```go
 func TestMaxOutputTokensFor(t *testing.T) {
@@ -132,7 +132,7 @@ package anthropic
 import (
 	"testing"
 
-	"primeradiant.com/serf/llm"
+	"primeradiant.com/evener/llm"
 )
 
 func buildBodyForModel(t *testing.T, model string, maxTokens *int) map[string]any {
@@ -290,8 +290,8 @@ package provider
 import (
 	"testing"
 
-	"primeradiant.com/serf/llm"
-	"primeradiant.com/serf/llm/providercfg"
+	"primeradiant.com/evener/llm"
+	"primeradiant.com/evener/llm/providercfg"
 )
 
 // Instance config wins over the catalog; catalog covers unconfigured models;

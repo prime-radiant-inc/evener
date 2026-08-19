@@ -8,7 +8,7 @@ import (
 	"strings"
 	"testing"
 
-	"primeradiant.com/serf/agent/sandbox"
+	"primeradiant.com/evener/agent/sandbox"
 )
 
 // asDenied reports whether err is (or wraps) a *sandbox.DeniedError, binding it
@@ -198,7 +198,7 @@ func TestWriteFilePrimitiveConfinedAndAtomic(t *testing.T) {
 	// No stray temp file left beside it.
 	ents, _ := os.ReadDir(filepath.Dir(target))
 	for _, e := range ents {
-		if strings.HasPrefix(e.Name(), ".serf-sbtmp-") {
+		if strings.HasPrefix(e.Name(), ".evener-sbtmp-") {
 			t.Errorf("stray temp file left behind: %s", e.Name())
 		}
 	}

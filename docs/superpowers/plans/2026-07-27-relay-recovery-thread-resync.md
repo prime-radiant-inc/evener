@@ -12,7 +12,7 @@
 
 - Implement kata `mz8j` and the approved design in `docs/superpowers/specs/2026-07-27-relay-recovery-thread-resync-design.md`.
 - Emit the resync hint only after a recovery subscription succeeds, never on initial attachment or failed retries.
-- Refresh only the affected tracked ref; do not react to broad `serf/tree/changed`.
+- Refresh only the affected tracked ref; do not react to broad `evener/tree/changed`.
 - Reuse the existing buffered hydration and generation/client guards.
 - Keep refresh failure best-effort: retain the stale model and continue relaying notifications.
 - Tests must be deterministic and perform no live provider calls.
@@ -26,16 +26,16 @@
 
 - Modify: `appwire/types.go`
 - Modify: `appwire/protocol.go`
-- Generate: `cmd/serf-hub/frontend/src/protocol/types.gen.ts`
-- Modify: `cmd/serf-hub/app_relay.go`
-- Test: `cmd/serf-hub/app_rpc_test.go`
-- Modify: `cmd/serf-hub/frontend/src/stores/threads.ts`
-- Test: `cmd/serf-hub/frontend/src/stores/threads.test.ts`
-- Test: `cmd/serf-hub/frontend/src/panes/session/composer/Composer.integration.test.tsx`
+- Generate: `cmd/evener-hub/frontend/src/protocol/types.gen.ts`
+- Modify: `cmd/evener-hub/app_relay.go`
+- Test: `cmd/evener-hub/app_rpc_test.go`
+- Modify: `cmd/evener-hub/frontend/src/stores/threads.ts`
+- Test: `cmd/evener-hub/frontend/src/stores/threads.test.ts`
+- Test: `cmd/evener-hub/frontend/src/panes/session/composer/Composer.integration.test.tsx`
 
 **Interfaces:**
 
-- Produces: `appwire.NotifySerfThreadResync = "serf/thread/resync"`.
+- Produces: `appwire.NotifyEvenerThreadResync = "evener/thread/resync"`.
 - Produces:
 
   ```go
@@ -49,7 +49,7 @@
 
   ```ts
   {
-    method: "serf/thread/resync";
+    method: "evener/thread/resync";
     params: { threadId: string; ref: string };
   }
   ```
@@ -61,14 +61,14 @@
 - [ ] **Step 1: Add a failing hub relay-recovery test**
 
   Extend the existing scripted relay-recovery harness in
-  `cmd/serf-hub/app_rpc_test.go`. Establish the initial relay and assert that
+  `cmd/evener-hub/app_rpc_test.go`. Establish the initial relay and assert that
   no resync hint is emitted. Close the initial notification channel, script a
   failed retry followed by a successful replacement channel, and assert that
   the subscribed hub client receives exactly one:
 
   ```go
   appwire.Notification{
-      Method: appwire.NotifySerfThreadResync,
+      Method: appwire.NotifyEvenerThreadResync,
       Params: ThreadResyncParams{
           ThreadID: threadID,
           Ref:      "codex:" + threadID,
@@ -84,10 +84,10 @@
   Run:
 
   ```bash
-  go test ./cmd/serf-hub -run 'TestHubRelay.*Resync' -count=1
+  go test ./cmd/evener-hub -run 'TestHubRelay.*Resync' -count=1
   ```
 
-  Expected: compilation fails because `NotifySerfThreadResync` and
+  Expected: compilation fails because `NotifyEvenerThreadResync` and
   `ThreadResyncParams` do not exist.
 
 - [ ] **Step 3: Add the typed AppWire notification**
@@ -113,7 +113,7 @@
   replacement-channel notification is forwarded, broadcast:
 
   ```go
-  server.Broadcast(relayKey, appwire.NotifySerfThreadResync, appwire.ThreadResyncParams{
+  server.Broadcast(relayKey, appwire.NotifyEvenerThreadResync, appwire.ThreadResyncParams{
       ThreadID: threadID,
       Ref:      subscribeParams.Ref,
   })
@@ -127,7 +127,7 @@
   Run:
 
   ```bash
-  go test ./cmd/serf-hub -run 'TestHubRelay.*Resync' -count=1
+  go test ./cmd/evener-hub -run 'TestHubRelay.*Resync' -count=1
   go test ./internal/appwirets ./appwire -count=1
   ```
 
@@ -137,7 +137,7 @@
 
   In `threads.test.ts`, hydrate `ref_a` with an active model whose snapshot
   explicitly has `capabilities.queue === false`. Emit
-  `serf/thread/resync` for `ref_a`, hold the replacement `thread/read`
+  `evener/thread/resync` for `ref_a`, hold the replacement `thread/read`
   response pending, emit a matching live notification during the read, then
   resolve an authoritative active snapshot with `capabilities.queue === true`.
   Assert:
@@ -152,7 +152,7 @@
 
 - [ ] **Step 7: Run the frontend store tests and verify RED**
 
-  From `cmd/serf-hub/frontend`, run:
+  From `cmd/evener-hub/frontend`, run:
 
   ```bash
   npm test -- src/stores/threads.test.ts
@@ -165,7 +165,7 @@
 
   In `threads.ts`, generalize the current ready/reconnect rehydrate helper to
   accept an optional target ref. Preserve its existing full-set behavior for
-  `onReady`; when a `serf/thread/resync` notification arrives, invoke it with
+  `onReady`; when a `evener/thread/resync` notification arrives, invoke it with
   only `n.params.ref` and return without folding the hint through the
   incremental reducer.
 
@@ -179,7 +179,7 @@
 
 - [ ] **Step 9: Run frontend store tests and verify GREEN**
 
-  From `cmd/serf-hub/frontend`, run:
+  From `cmd/evener-hub/frontend`, run:
 
   ```bash
   npm test -- src/stores/threads.test.ts
@@ -192,13 +192,13 @@
   In `Composer.integration.test.tsx`, mount against a stale active snapshot
   whose explicit queue capability is false. Before resync, submit content and
   assert the client-side unavailable toast appears with no turn mutation.
-  Emit `serf/thread/resync`, return a fresh active snapshot with queue true,
+  Emit `evener/thread/resync`, return a fresh active snapshot with queue true,
   submit again, and assert the composer calls `turn/queue` without remounting
   or reconnecting the FakeClient.
 
 - [ ] **Step 11: Run the composer regression and verify it passes**
 
-  From `cmd/serf-hub/frontend`, run:
+  From `cmd/evener-hub/frontend`, run:
 
   ```bash
   npm test -- src/panes/session/composer/Composer.integration.test.tsx
@@ -212,9 +212,9 @@
   Run:
 
   ```bash
-  gofmt -w appwire/types.go appwire/protocol.go cmd/serf-hub/app_relay.go cmd/serf-hub/app_rpc_test.go
-  go test ./cmd/serf-hub ./appwire ./internal/appwirets -count=1
-  cd cmd/serf-hub/frontend
+  gofmt -w appwire/types.go appwire/protocol.go cmd/evener-hub/app_relay.go cmd/evener-hub/app_rpc_test.go
+  go test ./cmd/evener-hub ./appwire ./internal/appwirets -count=1
+  cd cmd/evener-hub/frontend
   npm test -- src/stores/threads.test.ts src/panes/session/composer/Composer.integration.test.tsx
   npm run typecheck
   npm run lint

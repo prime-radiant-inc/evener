@@ -11,7 +11,7 @@ Phase 0A recorded `reservation required: yes`; Phase 4C implements the reservati
 ## Evidence
 
 ```sh
-GOCACHE=/tmp/serf-gocache go test ./agent -run 'TestResponsesContinuationHistoryReservation|TestResponsesContinuationAnchorCandidate' -count=1 -v
+GOCACHE=/tmp/evener-gocache go test ./agent -run 'TestResponsesContinuationHistoryReservation|TestResponsesContinuationAnchorCandidate' -count=1 -v
 ```
 
 Result: pass.

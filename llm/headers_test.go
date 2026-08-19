@@ -5,7 +5,7 @@ import (
 	"reflect"
 	"testing"
 
-	"primeradiant.com/serf/llm/providercfg"
+	"primeradiant.com/evener/llm/providercfg"
 )
 
 func TestMergeHeaders(t *testing.T) {
@@ -14,7 +14,7 @@ func TestMergeHeaders(t *testing.T) {
 	}
 	// Override wins on collision; base survives when not overridden.
 	got := MergeHeaders(
-		map[string]string{"User-Agent": "serf-default", "X-Base": "b"},
+		map[string]string{"User-Agent": "evener-default", "X-Base": "b"},
 		map[string]string{"User-Agent": "user-set"},
 	)
 	want := map[string]string{"User-Agent": "user-set", "X-Base": "b"}
@@ -73,14 +73,14 @@ func captureHeadersFactory(t *testing.T, captured map[string]capturedProviderHea
 }
 
 func TestNewFromProviders_ResolvesHeaderEnvRefs(t *testing.T) {
-	t.Setenv("SERF_TEST_HDR_TOKEN", "resolved-secret")
+	t.Setenv("EVENER_TEST_HDR_TOKEN", "resolved-secret")
 	captured := map[string]capturedProviderHeaders{}
 	captureHeadersFactory(t, captured)
 
 	cfg := providercfg.Config{Default: "ant", Instances: []providercfg.InstanceConfig{
 		{Name: "ant", Type: "anthropic", Headers: map[string]string{
 			"X-Gateway":     "portkey",
-			"Authorization": "Bearer $SERF_TEST_HDR_TOKEN",
+			"Authorization": "Bearer $EVENER_TEST_HDR_TOKEN",
 		}},
 	}}
 	if _, err := NewFromProviders(cfg); err != nil {
@@ -100,7 +100,7 @@ func TestNewFromProviders_MissingHeaderVar_FailsInstance(t *testing.T) {
 	captureHeadersFactory(t, captured)
 
 	cfg := providercfg.Config{Default: "ant", Instances: []providercfg.InstanceConfig{
-		{Name: "ant", Type: "anthropic", Headers: map[string]string{"X-Key": "$SERF_TEST_HDR_ABSENT"}},
+		{Name: "ant", Type: "anthropic", Headers: map[string]string{"X-Key": "$EVENER_TEST_HDR_ABSENT"}},
 		{Name: "kimi", Type: "kimi"},
 	}}
 
@@ -124,7 +124,7 @@ func TestNewFromProviders_MissingHeaderVar_FailsInstance(t *testing.T) {
 }
 
 func TestNewFromProviders_ResolvesCredentialHeadersSeparately(t *testing.T) {
-	t.Setenv("SERF_TEST_GATEWAY_KEY", "secret-sentinel")
+	t.Setenv("EVENER_TEST_GATEWAY_KEY", "secret-sentinel")
 	captured := map[string]capturedProviderHeaders{}
 	captureHeadersFactory(t, captured)
 
@@ -136,7 +136,7 @@ func TestNewFromProviders_ResolvesCredentialHeadersSeparately(t *testing.T) {
 				"X-Trace-Label": "team-a",
 			},
 			CredentialHeaders: map[string]string{
-				"X-Gateway-Key": "Bearer $SERF_TEST_GATEWAY_KEY",
+				"X-Gateway-Key": "Bearer $EVENER_TEST_GATEWAY_KEY",
 			},
 		},
 	}}
@@ -162,7 +162,7 @@ func TestNewFromProviders_MissingCredentialHeaderVarFailsInstance(t *testing.T) 
 	captured := map[string]capturedProviderHeaders{}
 	captureHeadersFactory(t, captured)
 	cfg := providercfg.Config{Default: "ant", Instances: []providercfg.InstanceConfig{
-		{Name: "ant", Type: "anthropic", CredentialHeaders: map[string]string{"X-Gateway-Key": "$SERF_TEST_CREDENTIAL_HEADER_ABSENT"}},
+		{Name: "ant", Type: "anthropic", CredentialHeaders: map[string]string{"X-Gateway-Key": "$EVENER_TEST_CREDENTIAL_HEADER_ABSENT"}},
 		{Name: "kimi", Type: "kimi"},
 	}}
 	if _, err := NewFromProviders(cfg); err == nil {

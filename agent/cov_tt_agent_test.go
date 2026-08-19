@@ -5,7 +5,7 @@ import (
 	"testing"
 	"time"
 
-	"primeradiant.com/serf/agent/events"
+	"primeradiant.com/evener/agent/events"
 )
 
 // TestStartOnlyContextDelegatesDeadlineAndValue covers the Deadline and Value

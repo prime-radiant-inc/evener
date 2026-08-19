@@ -12,7 +12,7 @@
 
 - Do not change `src/shell/rail/**` or any `Steering*` renderer/behavior.
 - Do not make `updates[].status` optional in the model-facing tool schema; report that alternative only in the handoff.
-- Read and follow `docs/testing.md`; default tests remain deterministic and use real Serf code below any external boundary.
+- Read and follow `docs/testing.md`; default tests remain deterministic and use real Evener code below any external boundary.
 - Write each regression test first, run it red for the intended reason, then implement the smallest change and run it green.
 - Preserve the existing task store single-`in_progress` validation and batch atomicity.
 - Do not hand-edit generated files; this kata has no generated-file change.
@@ -92,10 +92,10 @@
 ### Task 2: Make the frontend task card honor the Go transition marker
 
 **Files:**
-- Modify: `cmd/serf-hub/frontend/src/panes/session/chrome/taskData.ts:15-70`
-- Modify: `cmd/serf-hub/frontend/src/panes/session/transcript/tools/taskCard.tsx:85-135`
-- Modify: `cmd/serf-hub/frontend/src/panes/session/transcript/tools/taskCard.test.tsx:85-230`
-- Modify: `cmd/serf-hub/frontend/src/panes/session/chrome/taskData.test.ts:1-100`
+- Modify: `cmd/evener-hub/frontend/src/panes/session/chrome/taskData.ts:15-70`
+- Modify: `cmd/evener-hub/frontend/src/panes/session/transcript/tools/taskCard.tsx:85-135`
+- Modify: `cmd/evener-hub/frontend/src/panes/session/transcript/tools/taskCard.test.tsx:85-230`
+- Modify: `cmd/evener-hub/frontend/src/panes/session/chrome/taskData.test.ts:1-100`
 
 **Interfaces:**
 - Consumes: the additive `started` boolean on updated task-state entries emitted by the Go tool; old array state without the marker remains parseable for transcript readability.
@@ -116,7 +116,7 @@
   Run:
 
   ```bash
-  cd cmd/serf-hub/frontend
+  cd cmd/evener-hub/frontend
   npm run test -- src/panes/session/chrome/taskData.test.ts src/panes/session/transcript/tools/taskCard.test.tsx
   ```
 
@@ -139,7 +139,7 @@
 - [ ] **Step 5: Commit the frontend fix**
 
   ```bash
-  git add cmd/serf-hub/frontend/src/panes/session/chrome/taskData.ts cmd/serf-hub/frontend/src/panes/session/chrome/taskData.test.ts cmd/serf-hub/frontend/src/panes/session/transcript/tools/taskCard.tsx cmd/serf-hub/frontend/src/panes/session/transcript/tools/taskCard.test.tsx
+  git add cmd/evener-hub/frontend/src/panes/session/chrome/taskData.ts cmd/evener-hub/frontend/src/panes/session/chrome/taskData.test.ts cmd/evener-hub/frontend/src/panes/session/transcript/tools/taskCard.tsx cmd/evener-hub/frontend/src/panes/session/transcript/tools/taskCard.test.tsx
   git commit -m "fix(webui): hide task starts on status reassertions"
   ```
 

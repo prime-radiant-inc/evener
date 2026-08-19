@@ -10,7 +10,7 @@ import (
 	"sort"
 
 	"golang.org/x/sys/unix"
-	"primeradiant.com/serf/agent/sandbox"
+	"primeradiant.com/evener/agent/sandbox"
 )
 
 // This file holds sandboxFS's fd-anchored enforcement operations — everything

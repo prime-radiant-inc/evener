@@ -29,7 +29,7 @@
 
 - Create `docs/web-ui/mockups/23-subagent-sidebar.html`: owns fixture data, visual structure, recursive sidebar rendering, inactive disclosure state, pane ordering, lifecycle scenarios, accessibility behavior, and embedded self-checks.
 - Reuse `docs/web-ui/mockups/tokens.css`: supplies the existing mockup color, typography, spacing, and status token vocabulary. Do not modify it.
-- Create `/tmp/serf-subagent-sidebar-check.js` only as an ephemeral jsdom harness during verification; remove it before completion.
+- Create `/tmp/evener-subagent-sidebar-check.js` only as an ephemeral jsdom harness during verification; remove it before completion.
 
 ## Shared Interfaces
 
@@ -108,7 +108,7 @@ Add this top-level structure:
 
   <section class="app-frame" aria-label="Subagent sidebar and pane workspace">
     <aside class="prototype-sidebar" aria-label="Sessions">
-      <div class="sidebar-project"><span aria-hidden="true">⌄</span><span>serf</span></div>
+      <div class="sidebar-project"><span aria-hidden="true">⌄</span><span>evener</span></div>
       <nav id="session-tree" aria-label="Session tree"></nav>
     </aside>
     <section id="pane-strip" class="pane-strip" aria-label="Open agent sessions"></section>
@@ -693,14 +693,14 @@ Keep the main session visually dominant through weight and selected treatment. D
 
 - [ ] **Step 7: Create the temporary jsdom harness**
 
-If `/tmp/serf-jstest-jsdom/node_modules/jsdom` is absent, install it outside the repository:
+If `/tmp/evener-jstest-jsdom/node_modules/jsdom` is absent, install it outside the repository:
 
 ```bash
-mkdir -p /tmp/serf-jstest-jsdom
-npm install --prefix /tmp/serf-jstest-jsdom jsdom@26
+mkdir -p /tmp/evener-jstest-jsdom
+npm install --prefix /tmp/evener-jstest-jsdom jsdom@26
 ```
 
-Create `/tmp/serf-subagent-sidebar-check.js` with:
+Create `/tmp/evener-subagent-sidebar-check.js` with:
 
 ```javascript
 "use strict";
@@ -748,8 +748,8 @@ The test harness is temporary and must never be staged.
 Run:
 
 ```bash
-NODE_PATH=/tmp/serf-jstest-jsdom/node_modules \
-  node /tmp/serf-subagent-sidebar-check.js \
+NODE_PATH=/tmp/evener-jstest-jsdom/node_modules \
+  node /tmp/evener-subagent-sidebar-check.js \
   docs/web-ui/mockups/23-subagent-sidebar.html
 ```
 
@@ -789,9 +789,9 @@ Resize to approximately 390×844 CSS pixels and verify the sidebar remains usabl
 - [ ] **Step 10: Remove temporary artifacts and confirm the production diff is empty**
 
 ```bash
-rm -f /tmp/serf-subagent-sidebar-check.js
-git diff --name-only HEAD~2..HEAD -- cmd/serf-hub agent internal hubapi appwire
-test -z "$(git diff --name-only HEAD~2..HEAD -- cmd/serf-hub agent internal hubapi appwire)"
+rm -f /tmp/evener-subagent-sidebar-check.js
+git diff --name-only HEAD~2..HEAD -- cmd/evener-hub agent internal hubapi appwire
+test -z "$(git diff --name-only HEAD~2..HEAD -- cmd/evener-hub agent internal hubapi appwire)"
 ```
 
 Expected: the production-path diff is empty.
@@ -806,8 +806,8 @@ git commit -m "mockup(web): exercise subagent lifecycle states"
 - [ ] **Step 12: Run final branch verification**
 
 ```bash
-NODE_PATH=/tmp/serf-jstest-jsdom/node_modules \
-  node /tmp/serf-subagent-sidebar-check.js \
+NODE_PATH=/tmp/evener-jstest-jsdom/node_modules \
+  node /tmp/evener-subagent-sidebar-check.js \
   docs/web-ui/mockups/23-subagent-sidebar.html
 ```
 

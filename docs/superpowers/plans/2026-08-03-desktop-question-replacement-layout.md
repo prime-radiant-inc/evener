@@ -21,12 +21,12 @@
 ### Task 1: Establish the replacement-slot layout contract
 
 **Files:**
-- Read: `cmd/serf-hub/frontend/src/panes/session/composer/Composer.tsx`
-- Read: `cmd/serf-hub/frontend/src/panes/session/composer/composer.module.css`
-- Read: `cmd/serf-hub/frontend/src/panes/session/composer/askDock/AskDock.tsx`
-- Modify: `cmd/serf-hub/frontend/src/panes/session/composer/composer.module.css`
-- Test: `cmd/serf-hub/frontend/src/panes/session/composer/Composer.test.tsx`
-- Test: `cmd/serf-hub/frontend/src/panes/session/composer/askDock/AskDock.test.tsx`
+- Read: `cmd/evener-hub/frontend/src/panes/session/composer/Composer.tsx`
+- Read: `cmd/evener-hub/frontend/src/panes/session/composer/composer.module.css`
+- Read: `cmd/evener-hub/frontend/src/panes/session/composer/askDock/AskDock.tsx`
+- Modify: `cmd/evener-hub/frontend/src/panes/session/composer/composer.module.css`
+- Test: `cmd/evener-hub/frontend/src/panes/session/composer/Composer.test.tsx`
+- Test: `cmd/evener-hub/frontend/src/panes/session/composer/askDock/AskDock.test.tsx`
 
 **Interfaces:**
 - Consumes: existing `Composer` conditional rendering and `AskDock` component.
@@ -37,7 +37,7 @@
 Run:
 ```bash
 sed -n '1,180p' docs/testing.md
-grep -n -C 5 "AskDock\|askPending\|composer" cmd/serf-hub/frontend/src/panes/session/composer/Composer.test.tsx cmd/serf-hub/frontend/src/panes/session/composer/askDock/AskDock.test.tsx
+grep -n -C 5 "AskDock\|askPending\|composer" cmd/evener-hub/frontend/src/panes/session/composer/Composer.test.tsx cmd/evener-hub/frontend/src/panes/session/composer/askDock/AskDock.test.tsx
 ```
 
 Record the existing test harness and any layout-contract conventions before editing.
@@ -57,7 +57,7 @@ Add a CSS-source contract assertion only if the repository’s existing layout t
 
 Run:
 ```bash
-cd cmd/serf-hub/frontend
+cd cmd/evener-hub/frontend
 npx vitest run src/panes/session/composer/Composer.test.tsx src/panes/session/composer/askDock/AskDock.test.tsx
 ```
 
@@ -73,11 +73,11 @@ The change must preserve the current AskDock scroll boundary (`overflow-y: auto`
 
 Run:
 ```bash
-cd cmd/serf-hub/frontend
+cd cmd/evener-hub/frontend
 npx vitest run src/panes/session/composer/Composer.test.tsx src/panes/session/composer/askDock/AskDock.test.tsx
 
 git diff --check
-git diff -- cmd/serf-hub/frontend/src/panes/session/composer/composer.module.css cmd/serf-hub/frontend/src/panes/session/composer/Composer.test.tsx cmd/serf-hub/frontend/src/panes/session/composer/askDock/AskDock.test.tsx
+git diff -- cmd/evener-hub/frontend/src/panes/session/composer/composer.module.css cmd/evener-hub/frontend/src/panes/session/composer/Composer.test.tsx cmd/evener-hub/frontend/src/panes/session/composer/askDock/AskDock.test.tsx
 ```
 
 Expected: focused tests pass and the diff contains only the replacement-slot layout/test changes.
@@ -85,7 +85,7 @@ Expected: focused tests pass and the diff contains only the replacement-slot lay
 - [ ] **Step 6: Commit the focused implementation**
 
 ```bash
-git add cmd/serf-hub/frontend/src/panes/session/composer/composer.module.css cmd/serf-hub/frontend/src/panes/session/composer/Composer.test.tsx cmd/serf-hub/frontend/src/panes/session/composer/askDock/AskDock.test.tsx
+git add cmd/evener-hub/frontend/src/panes/session/composer/composer.module.css cmd/evener-hub/frontend/src/panes/session/composer/Composer.test.tsx cmd/evener-hub/frontend/src/panes/session/composer/askDock/AskDock.test.tsx
 git commit -m "fix(webui): bottom-anchor desktop question replacement"
 ```
 
@@ -94,8 +94,8 @@ git commit -m "fix(webui): bottom-anchor desktop question replacement"
 ### Task 2: Verify responsive layout and web gates
 
 **Files:**
-- Read: `cmd/serf-hub/frontend/src/styles/global.css`
-- Read: `cmd/serf-hub/frontend/src/panes/session/composer/askDock/askdock.module.css`
+- Read: `cmd/evener-hub/frontend/src/styles/global.css`
+- Read: `cmd/evener-hub/frontend/src/panes/session/composer/askDock/askdock.module.css`
 - Modify: only if Task 1 reveals a focused mobile regression
 - Test: existing focused and responsive layout tests
 
@@ -107,7 +107,7 @@ git commit -m "fix(webui): bottom-anchor desktop question replacement"
 
 Run:
 ```bash
-cd cmd/serf-hub/frontend
+cd cmd/evener-hub/frontend
 npm test -- --run
 ```
 

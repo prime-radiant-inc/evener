@@ -10,7 +10,7 @@ import (
 // large enough to overflow a naive recursive descent — must come back as a
 // bounded "exceeded max depth" error rather than a panic or stack overflow,
 // and leave the zero Manifest. encoding/json caps nesting at 10000 (the Go
-// security fix for unbounded recursion); this guards that serf's wrapper does
+// security fix for unbounded recursion); this guards that evener's wrapper does
 // not bypass it. Gated behind -short because the inputs are ~100 KB.
 func TestParseManifestSurvivesDeepNesting(t *testing.T) {
 	if testing.Short() {

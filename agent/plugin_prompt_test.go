@@ -7,11 +7,11 @@ import (
 	"testing"
 	"time"
 
-	"primeradiant.com/serf/agent/execenv"
-	"primeradiant.com/serf/agent/plugin"
-	"primeradiant.com/serf/agent/task"
-	"primeradiant.com/serf/internal/bundled"
-	"primeradiant.com/serf/llm"
+	"primeradiant.com/evener/agent/execenv"
+	"primeradiant.com/evener/agent/plugin"
+	"primeradiant.com/evener/agent/task"
+	"primeradiant.com/evener/internal/bundled"
+	"primeradiant.com/evener/llm"
 )
 
 func renderAvailableAgentsSectionForTest(t *testing.T, agents map[string]plugin.Agent) string {

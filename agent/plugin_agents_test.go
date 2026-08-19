@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"primeradiant.com/serf/agent/plugin"
+	"primeradiant.com/evener/agent/plugin"
 )
 
 func TestParsePluginAgent(t *testing.T) {
@@ -45,7 +45,7 @@ You are a code review specialist.
 	if agent.PluginName != "my-plugin" {
 		t.Errorf("PluginName = %q", agent.PluginName)
 	}
-	// Tools should be mapped to serf names
+	// Tools should be mapped to evener names
 	wantTools := []string{"read_file", "grep", "shell"}
 	if len(agent.Tools) != len(wantTools) {
 		t.Fatalf("Tools = %v, want %v", agent.Tools, wantTools)

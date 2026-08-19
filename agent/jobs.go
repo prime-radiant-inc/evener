@@ -19,13 +19,13 @@ import (
 
 	"github.com/santhosh-tekuri/jsonschema/v5"
 
-	"primeradiant.com/serf/agent/events"
-	"primeradiant.com/serf/agent/internal/clock"
-	"primeradiant.com/serf/agent/internal/jobstore"
-	"primeradiant.com/serf/agent/internal/runetrim"
-	"primeradiant.com/serf/agent/provenance"
-	"primeradiant.com/serf/agent/schema"
-	"primeradiant.com/serf/identifier"
+	"primeradiant.com/evener/agent/events"
+	"primeradiant.com/evener/agent/internal/clock"
+	"primeradiant.com/evener/agent/internal/jobstore"
+	"primeradiant.com/evener/agent/internal/runetrim"
+	"primeradiant.com/evener/agent/provenance"
+	"primeradiant.com/evener/agent/schema"
+	"primeradiant.com/evener/identifier"
 )
 
 var errJobManagerClosing = errors.New("job manager is closing")
@@ -516,7 +516,7 @@ type listFilter struct {
 // jobsDir returns the per-session job directory: <stateDir>/sessions/<id>.
 func jobsDir(stateDir, sessionID string) string {
 	if strings.TrimSpace(stateDir) == "" {
-		return filepath.Join(os.TempDir(), "serf-jobs", sessionID)
+		return filepath.Join(os.TempDir(), "evener-jobs", sessionID)
 	}
 	return filepath.Join(stateDir, "sessions", sessionID)
 }
@@ -1157,7 +1157,7 @@ type jobOutputWindow struct {
 
 // readOutputWindow reads up to maxBytes of jobID's output ending at lifetime
 // offset beforeBytes (exclusive); beforeBytes <= 0 reads the tail. It backs
-// serf/jobs/output paging for both the live output store and terminal logs.
+// evener/jobs/output paging for both the live output store and terminal logs.
 func (jm *jobManager) readOutputWindow(jobID string, beforeBytes, maxBytes int64) (jobOutputWindow, error) {
 	jm.mu.Lock()
 	run := jm.running[jobID]
@@ -1834,7 +1834,7 @@ func validateStructuredResultWithAddResource(value any, resultSchema any, addRes
 		return err
 	}
 	c := jsonschema.NewCompiler()
-	const schemaURI = "urn:serf:delegate-result-schema"
+	const schemaURI = "urn:evener:delegate-result-schema"
 	if err := addResource(c, schemaURI, bytes.NewReader(b)); err != nil {
 		return err
 	}

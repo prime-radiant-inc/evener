@@ -91,8 +91,8 @@ suite green; a live smoke (dev hub) showing raw streaming text in the real pane.
   a sanctioned threads-store `watchThread(ref)` helper); ask_user question cards (from
   toolCall items, questions parsed from argumentsJSON, answered via the composer in Wave 5 —
   render read-only cards with a "answer in composer (wave 5)" note this wave); sandbox
-  escalation cards (serf/sandbox/escalation/requested → resolve via
-  `serf/sandbox/escalation/resolve` — THIS one is fully interactive this wave: approve/deny
+  escalation cards (evener/sandbox/escalation/requested → resolve via
+  `evener/sandbox/escalation/resolve` — THIS one is fully interactive this wave: approve/deny
   buttons calling the wire method; TDD with fakeClient).
 - **T4 flow: scroll/liveness/paging/media** (`transcript/flow/**` + SessionPane edits by
   manifest): stick-to-bottom only when at bottom before mutation; "↓ N new" pill (Badge) with

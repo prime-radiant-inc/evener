@@ -2,7 +2,7 @@
 
 ## Purpose
 
-Move Serf's input-token estimation into `llm/` so every caller uses the same request-aware logic. The implementation must keep normal context-pressure checks deterministic, while exposing exact provider counters for callers that explicitly want a network preflight.
+Move Evener's input-token estimation into `llm/` so every caller uses the same request-aware logic. The implementation must keep normal context-pressure checks deterministic, while exposing exact provider counters for callers that explicitly want a network preflight.
 
 ## Requirements
 

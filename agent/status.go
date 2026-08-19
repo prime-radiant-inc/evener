@@ -5,13 +5,13 @@ import (
 	"sort"
 	"time"
 
-	"primeradiant.com/serf/agent/events"
-	"primeradiant.com/serf/agent/internal/jobstore"
-	"primeradiant.com/serf/agent/mcpconfig"
-	"primeradiant.com/serf/agent/plugin"
-	"primeradiant.com/serf/agent/schema"
-	"primeradiant.com/serf/agent/skill"
-	"primeradiant.com/serf/appwire"
+	"primeradiant.com/evener/agent/events"
+	"primeradiant.com/evener/agent/internal/jobstore"
+	"primeradiant.com/evener/agent/mcpconfig"
+	"primeradiant.com/evener/agent/plugin"
+	"primeradiant.com/evener/agent/schema"
+	"primeradiant.com/evener/agent/skill"
+	"primeradiant.com/evener/appwire"
 )
 
 var detailedStatusMCPServers = func(s *Session) []mcpconfig.ServerInfo { return s.mcpMgr.Servers() }
@@ -48,7 +48,7 @@ type JobStatusInfo struct {
 
 // DelegateStatusInfo is the stable delegate read model exposed by DetailedStatus.
 // Its JSON names follow the daemon /status convention; AppWire maps the same
-// values into SerfDelegateInfo without deriving them from Jobs.
+// values into EvenerDelegateInfo without deriving them from Jobs.
 type DelegateStatusInfo struct {
 	DelegateID          string                       `json:"delegate_id"`
 	OwnerSessionID      string                       `json:"owner_session_id"`
@@ -95,14 +95,14 @@ type DelegateStatusInfo struct {
 	ExhaustionResumable *bool                        `json:"exhaustion_resumable,omitempty"`
 	DelegationAllowance int                          `json:"delegation_allowance,omitempty"`
 	ParentWatchGranted  bool                         `json:"parent_watch_granted,omitempty"`
-	Usage               *appwire.SerfUsage           `json:"usage,omitempty"`
+	Usage               *appwire.EvenerUsage         `json:"usage,omitempty"`
 	Worktree            *appwire.JobActivityWorktree `json:"worktree,omitempty"`
 }
 
 // HookEventStatus describes a single hook event's registration state and
 // compatibility tier for the /status endpoint.
 // Tier: Supported=true events are "claude-compatible-subset";
-// Supported=false events are "reserved-placeholder" (recognized by serf but
+// Supported=false events are "reserved-placeholder" (recognized by evener but
 // not yet fired). The Tier field carries the exact label from plugin.EventTier.
 type HookEventStatus struct {
 	Event     plugin.HookEvent `json:"event"`
@@ -206,7 +206,7 @@ func (s *Session) DetailedStatus() DetailedStatus {
 		}
 	}
 	// Append recognized-but-unsupported events (declared by plugins but not
-	// fired by serf). These have Count=0 and Tier="reserved-placeholder".
+	// fired by evener). These have Count=0 and Tier="reserved-placeholder".
 	for event := range s.unsupportedPluginHookEvents {
 		ds.HookEvents = append(ds.HookEvents, HookEventStatus{
 			Event:     event,

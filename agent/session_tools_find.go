@@ -9,11 +9,11 @@ import (
 	"strings"
 	"time"
 
-	"primeradiant.com/serf/agent/execenv"
-	"primeradiant.com/serf/agent/internal/tool"
-	"primeradiant.com/serf/agent/schema"
-	"primeradiant.com/serf/identifier"
-	"primeradiant.com/serf/llm"
+	"primeradiant.com/evener/agent/execenv"
+	"primeradiant.com/evener/agent/internal/tool"
+	"primeradiant.com/evener/agent/schema"
+	"primeradiant.com/evener/identifier"
+	"primeradiant.com/evener/llm"
 )
 
 // findLimitDefault and findLimitMax bound the number of matches returned. Spec
@@ -515,7 +515,7 @@ func sessionKind(m schema.SessionMeta) string {
 
 // projectName is the display project string: basename of EnvInfo.GitOriginURL
 // when present, else basename of EnvInfo.WorkingDir.
-// A trailing ".git" is stripped so "…/serf.git" displays as "serf".
+// A trailing ".git" is stripped so "…/evener.git" displays as "evener".
 func projectName(m schema.SessionMeta) string {
 	if origin := strings.TrimSpace(m.EnvInfo.GitOriginURL); origin != "" {
 		return repoBasename(origin)

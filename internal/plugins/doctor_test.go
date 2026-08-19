@@ -168,7 +168,7 @@ func TestDoctor_VersionMatch_NoWarning(t *testing.T) {
 
 // TestDoctor_VersionMismatch_DirectorySource_HonestRemediation reproduces the
 // Important finding where a directory (or Rel) source's version-mismatch WARN
-// pointed at `serf plugin upgrade`, which Manager.Upgrade always no-ops for
+// pointed at `evener plugin upgrade`, which Manager.Upgrade always no-ops for
 // such a source (sourceCannotUpgrade): following the remediation could never
 // clear the warning. The remediation must instead be honest about that.
 func TestDoctor_VersionMismatch_DirectorySource_HonestRemediation(t *testing.T) {
@@ -187,7 +187,7 @@ func TestDoctor_VersionMismatch_DirectorySource_HonestRemediation(t *testing.T) 
 		t.Fatalf("Doctor: %v", err)
 	}
 	f := findFinding(t, findings, "does not match")
-	if strings.Contains(f.Remediation, "serf plugin upgrade") {
+	if strings.Contains(f.Remediation, "evener plugin upgrade") {
 		t.Errorf("directory-source version mismatch must not point at the no-op upgrade command: %q", f.Remediation)
 	}
 	if !strings.Contains(f.Remediation, "directory") {
@@ -197,7 +197,7 @@ func TestDoctor_VersionMismatch_DirectorySource_HonestRemediation(t *testing.T) 
 
 // TestDoctor_VersionMismatch_GitSource_PointsAtUpgrade confirms the git-backed
 // case (where Manager.Upgrade can actually resync the version) keeps pointing
-// at `serf plugin upgrade` — only sources that can never upgrade get the
+// at `evener plugin upgrade` — only sources that can never upgrade get the
 // honest alternative text.
 func TestDoctor_VersionMismatch_GitSource_PointsAtUpgrade(t *testing.T) {
 	m := NewManager(t.TempDir())
@@ -218,7 +218,7 @@ func TestDoctor_VersionMismatch_GitSource_PointsAtUpgrade(t *testing.T) {
 		t.Fatalf("Doctor: %v", err)
 	}
 	f := findFinding(t, findings, "does not match")
-	if !strings.Contains(f.Remediation, "serf plugin upgrade widget@acme") {
+	if !strings.Contains(f.Remediation, "evener plugin upgrade widget@acme") {
 		t.Errorf("git-backed version mismatch should still point at upgrade: %q", f.Remediation)
 	}
 }

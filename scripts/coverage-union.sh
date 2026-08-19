@@ -8,8 +8,8 @@
 # target. scripts/fuzz-coverage-global.sh measures only what the fuzz corpus
 # replays. The gap between them is not small and it is not noise: this repo keeps
 # whole families of behavioural checks in `check*` functions that only a
-# serffuzz-tagged "program" fuzz target calls, so the packages using that pattern
-# read far lower on the test track than they really are (cmd/serf-hub/internal/
+# evenerfuzz-tagged "program" fuzz target calls, so the packages using that pattern
+# read far lower on the test track than they really are (cmd/evener-hub/internal/
 # appsource: 66.4% on the test track, 83.1% under its program target).
 #
 # Reading one track alone therefore either credits work that is not there or
@@ -34,7 +34,7 @@
 set -uo pipefail
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-floors_file="${SERF_COVUNION_FLOORS:-$repo_root/scripts/covunion-floors.txt}"
+floors_file="${EVENER_COVUNION_FLOORS:-$repo_root/scripts/covunion-floors.txt}"
 modules=". agent llm auth envvars invariant identifier fuzz"
 tolerance="0.5"
 check=false
@@ -81,13 +81,13 @@ tmpbase=${TMPDIR:-/tmp}
 # Reclaim what earlier runs of THIS script abandoned here, before taking a name
 # of our own: a SIGKILLed run never reached its trap, and a failed run kept its
 # scratch on purpose. Nothing else sweeps either. See covscratch-lib.sh.
-reclaim_own_scratch "$tmpbase" serf-covunion
+reclaim_own_scratch "$tmpbase" evener-covunion
 # The name is chosen and the trap armed BEFORE the directory exists; see
 # test-coverage-floor.sh for the signal window this closes. $$ is unique among
 # live processes, so concurrent runs cannot collide. A failed mkdir means a
 # stale same-pid leftover this run does not own, so the trap is disarmed before
 # exiting rather than deleting it.
-work_dir="${tmpbase%/}/serf-covunion.$$"
+work_dir="${tmpbase%/}/evener-covunion.$$"
 fail=0
 # A clean run leaves nothing behind; a failed one keeps the profiles and logs,
 # because the failure line printed their path.
@@ -122,7 +122,7 @@ for m in $modules; do
 	# The fuzz track replays committed seed corpora only: `go test` without
 	# -fuzz runs each target's seeds as ordinary subtests, which is deterministic
 	# and is what make fuzz gates on.
-	if ! ( cd "$repo_root/$m" && go test -tags serffuzz -count=1 -coverpkg="$pkgs" -coverprofile="$base.fuzz.cov" \
+	if ! ( cd "$repo_root/$m" && go test -tags evenerfuzz -count=1 -coverpkg="$pkgs" -coverprofile="$base.fuzz.cov" \
 		-run '^Fuzz' ./... ) >"$base.fuzz.log" 2>&1; then
 		printf '%-10s %s\n' "$m" "FUZZ TRACK FAILED (log: $base.fuzz.log)"
 		fail=1; continue
@@ -138,7 +138,7 @@ for m in $modules; do
 
 	# A union denominator above both tracks means some block was counted twice
 	# because the two builds split it differently. A handful is expected and
-	# harmless: under -tags serffuzz invariant.Hold becomes a real call, which
+	# harmless: under -tags evenerfuzz invariant.Hold becomes a real call, which
 	# re-splits the blocks around it (8 statements in 33141 for the root module).
 	# A MATERIAL divergence is a different basis, and its percentage would be
 	# meaningless, so that still fails rather than being quietly reported.
@@ -169,7 +169,7 @@ for m in $modules; do
 done
 
 if $bless; then
-	tmp="$(mktemp "${TMPDIR:-/tmp}/serf-floors.XXXXXX")"
+	tmp="$(mktemp "${TMPDIR:-/tmp}/evener-floors.XXXXXX")"
 	{
 		if grep -q '^#' "$floors_file" 2>/dev/null; then
 			awk '/^#/{print; next} {exit}' "$floors_file"

@@ -1,9 +1,9 @@
-# tui-model-switch: serf-tui `/model` switches live, updates the header, and shows the switch marker after reload
+# tui-model-switch: evener-tui `/model` switches live, updates the header, and shows the switch marker after reload
 
 **What this covers**: spec Acceptance criteria 5 (transcript shows the
 switch marker after reload) and part of criterion 6 (both surfaces display
 the current model for a cold-attached client) via the TUI path. Exercises
-`/model` (`cmd/serf-tui/hub_command_registry.go:321-346`), the `(active)` tag fix in
+`/model` (`cmd/evener-tui/hub_command_registry.go:321-346`), the `(active)` tag fix in
 the picker (item ids `provider/model` normalized against bare
 `detail.Model`), the live header refresh from `thread/model/changed`
 (`hub_session_view.go:51`'s `model` part), and the dashboard row Model
@@ -12,7 +12,7 @@ cell (`hub_dashboard_view.go:338`; the details drawer's `Model:` line is
 
 ## Pre-state
 
-- Hub + serf-tui running against a real hub, tmux session attached (pattern:
+- Hub + evener-tui running against a real hub, tmux session attached (pattern:
   `tui-workspace-navigation.md`).
 - A session spawned on model A (e.g. `openai/gpt-5.5`), idle.
 
@@ -28,7 +28,7 @@ cell (`hub_dashboard_view.go:338`; the details drawer's `Model:` line is
    confirm the header's `model` part now reads model B **without**
    re-attaching or re-opening the session.
 5. Check the dashboard (session list) view for this session's Model column.
-6. Detach and re-attach the TUI to the session (or restart serf-tui) — a
+6. Detach and re-attach the TUI to the session (or restart evener-tui) — a
    cold attach with no prior notification.
 7. Scroll/read the transcript for the switch marker line.
 
@@ -37,7 +37,7 @@ cell (`hub_dashboard_view.go:338`; the details drawer's `Model:` line is
 - Step 2: exactly one row is tagged `(active)` and it is model A's — the
   fixed normalization comparing `provider/model` ids consistently
   (`modelIDMatchesActive`,
-  `cmd/serf-tui/internal/tuipick/model_picker.go:171,207-218` — the picker
+  `cmd/evener-tui/internal/tuipick/model_picker.go:171,207-218` — the picker
   moved into the `tuipick` subpackage), not the pre-fix bug where
   `activeModel` never
   matched because item ids were `provider/model` while `detail.Model` was
@@ -74,5 +74,5 @@ cell (`hub_dashboard_view.go:338`; the details drawer's `Model:` line is
   (`:902-908`), so match the first line rather than the whole entry.
 - Step 6's "cold attach" must be a genuinely fresh client path (new
   `thread/read`/subscribe), not a resumed in-memory picker state — restart
-  serf-tui or navigate away and back if detach/reattach doesn't force a
+  evener-tui or navigate away and back if detach/reattach doesn't force a
   re-hydration.

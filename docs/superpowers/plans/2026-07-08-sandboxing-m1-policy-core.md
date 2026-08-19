@@ -1,4 +1,4 @@
-# Serf Sandboxing — M1: Policy Core + Cross-Backend Contract Tests
+# Evener Sandboxing — M1: Policy Core + Cross-Backend Contract Tests
 
 > **For agentic workers:** Implement with superpowers:subagent-driven-development,
 > task-by-task, red→green→adversarial-verify→commit. Follow the SDD protocol in
@@ -41,8 +41,8 @@ fuzzes heavily — see `docs/fuzzing.md`).
   methods that must carry the new fields.
 - `agent/subagents.go:226`/`:243` `localEnvPolicyName`/`localEnvPolicyFromName`
   (mirror this name↔enum round-trip for the sandbox mode).
-- `cmd/serf/run.go:177` env construction + `:180` config build;
-  `cmd/serf/serve.go:203`/`:204` same.
+- `cmd/evener/run.go:177` env construction + `:180` config build;
+  `cmd/evener/serve.go:203`/`:204` same.
 
 ## Global Constraints
 
@@ -58,7 +58,7 @@ fuzzes heavily — see `docs/fuzzing.md`).
   per-mode grants exactly. M2/M3/M6 import and satisfy it. Treat its correctness
   as the milestone's primary output.
 - **snake_case** for any JSON/config/flag key that hits the wire or a config
-  file. `make lint` (serf-namingcheck) is a gate.
+  file. `make lint` (evener-namingcheck) is a gate.
 - Never `git add -A` without a prior `git status`. Stage exact paths.
 
 ## File Structure
@@ -98,7 +98,7 @@ fuzzes heavily — see `docs/fuzzing.md`).
   normalize/copy methods (`:365-445`).
 - `agent/subagents.go` (modify, small) — add `sandboxModeName`/`sandboxModeFromName`
   mirroring the env-policy helpers (`:226`/`:243`).
-- `cmd/serf/run.go` + `cmd/serf/serve.go` (modify) — add `--sandbox <mode>`
+- `cmd/evener/run.go` + `cmd/evener/serve.go` (modify) — add `--sandbox <mode>`
   (default `off`) and `--sandbox-net <on|off>` flags; parse into `SessionConfig`;
   resolve to a `ResolvedPolicy` via `sandbox.Resolve` at env construction
   (`run.go:177`, `serve.go:203`) and store it inert on the env. On a
@@ -187,7 +187,7 @@ fuzzes heavily — see `docs/fuzzing.md`).
 ## Task 6 — Inert carrier plumbing (execenv + config + flags)
 
 **Files:** `agent/execenv/local.go`, `agent/session_config.go`,
-`agent/subagents.go`, `cmd/serf/run.go`, `cmd/serf/serve.go` (all modify);
+`agent/subagents.go`, `cmd/evener/run.go`, `cmd/evener/serve.go` (all modify);
 `agent/sandbox/plumbing_test.go` or extend existing config tests.
 
 - [ ] **Failing test:** `--sandbox restricted --sandbox-net off` parses into

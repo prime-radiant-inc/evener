@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"primeradiant.com/serf/llm"
+	"primeradiant.com/evener/llm"
 )
 
 // This file drives consumeModelStream's phase/stats classification directly,

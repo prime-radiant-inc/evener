@@ -8,9 +8,9 @@ import (
 	"sync"
 	"testing"
 
-	"primeradiant.com/serf/agent/events"
-	"primeradiant.com/serf/agent/schema"
-	"primeradiant.com/serf/appwire"
+	"primeradiant.com/evener/agent/events"
+	"primeradiant.com/evener/agent/schema"
+	"primeradiant.com/evener/appwire"
 )
 
 // feedBridge runs the real Bridge over evs and returns when it has drained
@@ -84,11 +84,11 @@ func TestThreadEnvelopeFacetsRefreshOnTheEventsThatMoveThem(t *testing.T) {
 				// — it is what a turn OPENING moves, and nothing else announces
 				// it. Assert it directly rather than inferring it from a
 				// sibling in the same facet.
-				if thread.Serf.ActiveTurnStartedAt != 1750000000 {
-					t.Fatalf("activeTurnStartedAt = %d, want the moment the session recorded; an active thread whose turn started at zero is what this row prevents", thread.Serf.ActiveTurnStartedAt)
+				if thread.Evener.ActiveTurnStartedAt != 1750000000 {
+					t.Fatalf("activeTurnStartedAt = %d, want the moment the session recorded; an active thread whose turn started at zero is what this row prevents", thread.Evener.ActiveTurnStartedAt)
 				}
-				if thread.Serf.WorkMillis != 4200 {
-					t.Fatalf("workMillis = %d, want the figure the session moved to", thread.Serf.WorkMillis)
+				if thread.Evener.WorkMillis != 4200 {
+					t.Fatalf("workMillis = %d, want the figure the session moved to", thread.Evener.WorkMillis)
 				}
 			},
 		},
@@ -99,8 +99,8 @@ func TestThreadEnvelopeFacetsRefreshOnTheEventsThatMoveThem(t *testing.T) {
 			},
 			event: events.SessionEvent{Kind: events.EventQueueChanged, SessionID: "th_1", Data: events.QueueChangedData{Depth: 2}},
 			want: func(t *testing.T, thread appwire.Thread) {
-				if thread.Serf.Queue.Depth != 2 || thread.Serf.Queue.Revision != 5 {
-					t.Fatalf("queue = %+v, want the depth/revision the session moved to", thread.Serf.Queue)
+				if thread.Evener.Queue.Depth != 2 || thread.Evener.Queue.Revision != 5 {
+					t.Fatalf("queue = %+v, want the depth/revision the session moved to", thread.Evener.Queue)
 				}
 			},
 		},
@@ -111,8 +111,8 @@ func TestThreadEnvelopeFacetsRefreshOnTheEventsThatMoveThem(t *testing.T) {
 			},
 			event: events.SessionEvent{Kind: events.EventTaskUpdated, SessionID: "th_1", Data: events.TaskUpdatedData{Total: 4, Done: 3}},
 			want: func(t *testing.T, thread appwire.Thread) {
-				if thread.Serf.Tasks == nil || thread.Serf.Tasks.Total != 4 || thread.Serf.Tasks.Done != 3 {
-					t.Fatalf("tasks = %+v, want 4/3", thread.Serf.Tasks)
+				if thread.Evener.Tasks == nil || thread.Evener.Tasks.Total != 4 || thread.Evener.Tasks.Done != 3 {
+					t.Fatalf("tasks = %+v, want 4/3", thread.Evener.Tasks)
 				}
 			},
 		},
@@ -126,7 +126,7 @@ func TestThreadEnvelopeFacetsRefreshOnTheEventsThatMoveThem(t *testing.T) {
 				Data: events.SandboxEscalationRequestedData{EscalationID: "esc_1", DeniedPath: "/x"},
 			},
 			want: func(t *testing.T, thread appwire.Thread) {
-				got := thread.Serf.PendingEscalations
+				got := thread.Evener.PendingEscalations
 				if len(got) != 1 || got[0].EscalationID != "esc_1" {
 					t.Fatalf("pendingEscalations = %+v, want the blocked card", got)
 				}
@@ -164,9 +164,9 @@ func TestThreadEnvelopeFacetsRefreshOnTheEventsThatMoveThem(t *testing.T) {
 				Data: events.ModelChangedData{NewModel: "m2", SupportsReasoning: true},
 			},
 			want: func(t *testing.T, thread appwire.Thread) {
-				if thread.Serf.ReasoningEffort != "high" || !thread.Serf.SupportsReasoning {
+				if thread.Evener.ReasoningEffort != "high" || !thread.Evener.SupportsReasoning {
 					t.Fatalf("reasoning = (%q, %v), want the new profile's settings",
-						thread.Serf.ReasoningEffort, thread.Serf.SupportsReasoning)
+						thread.Evener.ReasoningEffort, thread.Evener.SupportsReasoning)
 				}
 			},
 		},
@@ -178,8 +178,8 @@ func TestThreadEnvelopeFacetsRefreshOnTheEventsThatMoveThem(t *testing.T) {
 				Data: events.ReasoningEffortChangedData{ReasoningEffort: "minimal"},
 			},
 			want: func(t *testing.T, thread appwire.Thread) {
-				if thread.Serf.ReasoningEffort != "minimal" {
-					t.Fatalf("reasoningEffort = %q, want minimal", thread.Serf.ReasoningEffort)
+				if thread.Evener.ReasoningEffort != "minimal" {
+					t.Fatalf("reasoningEffort = %q, want minimal", thread.Evener.ReasoningEffort)
 				}
 			},
 		},
@@ -190,8 +190,8 @@ func TestThreadEnvelopeFacetsRefreshOnTheEventsThatMoveThem(t *testing.T) {
 			},
 			event: events.SessionEvent{Kind: events.EventGoalEnded, SessionID: "th_1", Data: events.GoalEndedData{}},
 			want: func(t *testing.T, thread appwire.Thread) {
-				if thread.Serf.Goal == nil || thread.Serf.Goal.Status != "completed" || thread.Serf.Goal.Iterations != 3 {
-					t.Fatalf("goal = %+v, want completed/3", thread.Serf.Goal)
+				if thread.Evener.Goal == nil || thread.Evener.Goal.Status != "completed" || thread.Evener.Goal.Iterations != 3 {
+					t.Fatalf("goal = %+v, want completed/3", thread.Evener.Goal)
 				}
 			},
 		},
@@ -205,8 +205,8 @@ func TestThreadEnvelopeFacetsRefreshOnTheEventsThatMoveThem(t *testing.T) {
 				Data: events.ToolCallEndData{CallID: "call_1", ToolName: "shell"},
 			},
 			want: func(t *testing.T, thread appwire.Thread) {
-				if thread.Serf.FailedToolCalls == nil || *thread.Serf.FailedToolCalls != measured {
-					t.Fatalf("failedToolCalls = %v, want %d", thread.Serf.FailedToolCalls, measured)
+				if thread.Evener.FailedToolCalls == nil || *thread.Evener.FailedToolCalls != measured {
+					t.Fatalf("failedToolCalls = %v, want %d", thread.Evener.FailedToolCalls, measured)
 				}
 			},
 		},
@@ -215,8 +215,8 @@ func TestThreadEnvelopeFacetsRefreshOnTheEventsThatMoveThem(t *testing.T) {
 			move:  func(e *stubThreadEnvelopeSource) { e.detailedStatus = DetailedStatus{Agents: []string{"scout"}} },
 			event: events.SessionEvent{Kind: events.EventJobStarted, SessionID: "th_1", Data: events.JobStartedData{JobID: "job_1"}},
 			want: func(t *testing.T, thread appwire.Thread) {
-				if thread.Serf.Diagnostics == nil || len(thread.Serf.Diagnostics.Agents) != 1 {
-					t.Fatalf("diagnostics = %+v, want the job-bearing status", thread.Serf.Diagnostics)
+				if thread.Evener.Diagnostics == nil || len(thread.Evener.Diagnostics.Agents) != 1 {
+					t.Fatalf("diagnostics = %+v, want the job-bearing status", thread.Evener.Diagnostics)
 				}
 			},
 		},
@@ -229,8 +229,8 @@ func TestThreadEnvelopeFacetsRefreshOnTheEventsThatMoveThem(t *testing.T) {
 				DelegateID: "dlg_1", OwnerSessionID: "th_1", ProjectionRevision: 3,
 			}},
 			want: func(t *testing.T, thread appwire.Thread) {
-				if thread.Serf.Diagnostics == nil || len(thread.Serf.Diagnostics.Delegates) != 1 || thread.Serf.Diagnostics.Delegates[0].DelegateID != "dlg_1" {
-					t.Fatalf("diagnostics = %+v, want the stable delegate status", thread.Serf.Diagnostics)
+				if thread.Evener.Diagnostics == nil || len(thread.Evener.Diagnostics.Delegates) != 1 || thread.Evener.Diagnostics.Delegates[0].DelegateID != "dlg_1" {
+					t.Fatalf("diagnostics = %+v, want the stable delegate status", thread.Evener.Diagnostics)
 				}
 			},
 		},
@@ -245,9 +245,9 @@ func TestThreadEnvelopeFacetsRefreshOnTheEventsThatMoveThem(t *testing.T) {
 				Data: events.AssistantTextEndData{Text: "done"},
 			},
 			want: func(t *testing.T, thread appwire.Thread) {
-				if thread.Serf.ContextPressure != 0.75 || thread.Serf.ContextUsed != 75 {
+				if thread.Evener.ContextPressure != 0.75 || thread.Evener.ContextUsed != 75 {
 					t.Fatalf("context = (%v, %d), want the post-response figures",
-						thread.Serf.ContextPressure, thread.Serf.ContextUsed)
+						thread.Evener.ContextPressure, thread.Evener.ContextUsed)
 				}
 			},
 		},
@@ -255,13 +255,13 @@ func TestThreadEnvelopeFacetsRefreshOnTheEventsThatMoveThem(t *testing.T) {
 			name: "work metrics on TURN_ENDED",
 			move: func(e *stubThreadEnvelopeSource) {
 				e.workMillis = 9000
-				e.usage = &appwire.SerfUsage{InputTokens: 10, OutputTokens: 20, TotalTokens: 30}
+				e.usage = &appwire.EvenerUsage{InputTokens: 10, OutputTokens: 20, TotalTokens: 30}
 			},
 			event: events.SessionEvent{Kind: events.EventTurnEnded, SessionID: "th_1", Data: events.TurnEndedData{}},
 			want: func(t *testing.T, thread appwire.Thread) {
-				if thread.Serf.WorkMillis != 9000 || thread.Serf.Usage == nil || thread.Serf.Usage.TotalTokens != 30 {
+				if thread.Evener.WorkMillis != 9000 || thread.Evener.Usage == nil || thread.Evener.Usage.TotalTokens != 30 {
 					t.Fatalf("work = (%d, %+v), want the turn's accumulated figures",
-						thread.Serf.WorkMillis, thread.Serf.Usage)
+						thread.Evener.WorkMillis, thread.Evener.Usage)
 				}
 			},
 		},
@@ -270,7 +270,7 @@ func TestThreadEnvelopeFacetsRefreshOnTheEventsThatMoveThem(t *testing.T) {
 			move:  func(e *stubThreadEnvelopeSource) { e.askPending = true },
 			event: events.SessionEvent{Kind: events.EventSteeringInjected, SessionID: "th_1", Data: events.SteeringInjectedData{Text: "answer"}},
 			want: func(t *testing.T, thread appwire.Thread) {
-				if !thread.Serf.AskPending {
+				if !thread.Evener.AskPending {
 					t.Fatal("askPending = false, want true once the session is blocked on a question")
 				}
 			},
@@ -285,9 +285,9 @@ func TestThreadEnvelopeFacetsRefreshOnTheEventsThatMoveThem(t *testing.T) {
 			},
 			event: events.SessionEvent{Kind: events.EventSteeringInjected, SessionID: "th_1", Data: events.SteeringInjectedData{Text: "answer"}},
 			want: func(t *testing.T, thread appwire.Thread) {
-				if thread.Serf.ContextPressure != 0.4 || thread.Serf.ContextUsed != 40 {
+				if thread.Evener.ContextPressure != 0.4 || thread.Evener.ContextUsed != 40 {
 					t.Fatalf("context = (%v, %d), want the figures the injected steering moved to",
-						thread.Serf.ContextPressure, thread.Serf.ContextUsed)
+						thread.Evener.ContextPressure, thread.Evener.ContextUsed)
 				}
 			},
 		},
@@ -395,8 +395,8 @@ func TestReplacingTheIdentityReplacesTheEnvelope(t *testing.T) {
 		escalations:      []appwire.SandboxEscalationRequested{{EscalationID: "esc_old"}},
 	})
 	before := readThreadOverWire(t, srv, "local:th_1")
-	if before.Name != "the retired session" || before.Serf.Queue.Depth != 3 {
-		t.Fatalf("fixture did not publish the outgoing session's envelope: %+v", before.Serf)
+	if before.Name != "the retired session" || before.Evener.Queue.Depth != 3 {
+		t.Fatalf("fixture did not publish the outgoing session's envelope: %+v", before.Evener)
 	}
 
 	// The daemon's session is replaced. Nothing has published the replacement's
@@ -407,16 +407,16 @@ func TestReplacingTheIdentityReplacesTheEnvelope(t *testing.T) {
 	if after.Name != "" {
 		t.Fatalf("thread.Name = %q on the replacement thread, want the retired session's title gone", after.Name)
 	}
-	if after.Serf.Queue.Depth != 0 || after.Serf.Queue.Revision != 0 {
-		t.Fatalf("queue = %+v on the replacement thread, want the retired session's queue gone", after.Serf.Queue)
+	if after.Evener.Queue.Depth != 0 || after.Evener.Queue.Revision != 0 {
+		t.Fatalf("queue = %+v on the replacement thread, want the retired session's queue gone", after.Evener.Queue)
 	}
-	if after.Serf.FailedToolCalls != nil {
+	if after.Evener.FailedToolCalls != nil {
 		t.Fatalf("failedToolCalls = %d on the replacement thread, want absent: nobody has counted this session",
-			*after.Serf.FailedToolCalls)
+			*after.Evener.FailedToolCalls)
 	}
-	if len(after.Serf.PendingEscalations) != 0 {
+	if len(after.Evener.PendingEscalations) != 0 {
 		t.Fatalf("pendingEscalations = %+v on the replacement thread, want the retired session's cards gone",
-			after.Serf.PendingEscalations)
+			after.Evener.PendingEscalations)
 	}
 }
 
@@ -492,10 +492,10 @@ func TestEnvelopeCommittedBeforeTheCutIsInTheResponse(t *testing.T) {
 	// before the gate would report no failures while the notification that
 	// announced them is discarded as pre-cut, leaving the pane permanently
 	// wrong with nothing left to correct it.
-	if got.response.Thread.Serf.FailedToolCalls == nil {
+	if got.response.Thread.Evener.FailedToolCalls == nil {
 		t.Fatal("response carried no failure count: the envelope is not on the cut's side of the commit")
 	}
-	if n := *got.response.Thread.Serf.FailedToolCalls; n != 5 {
+	if n := *got.response.Thread.Evener.FailedToolCalls; n != 5 {
 		t.Fatalf("response failedToolCalls = %d, want 5: the envelope was sampled before the commit", n)
 	}
 }
@@ -589,7 +589,7 @@ func TestStatusServesTheEnvelopesFailureCountAndEscalationBit(t *testing.T) {
 // literal wire key names statusOverWire cannot. That helper decodes into
 // StatusInfo, the same struct the handler filled in, so a JSON tag renamed or
 // dropped on StatusInfo is invisible to it -- encode and decode move
-// together. cmd/serf-hub/internal/hubcore/prober.go separately re-declares
+// together. cmd/evener-hub/internal/hubcore/prober.go separately re-declares
 // these same two tags to read them cross-process, so a silent rename here is
 // a silent break there (the hub's needs-you badge for pending_escalation).
 // Decoding into an untyped map instead means a renamed or dropped tag surfaces
@@ -713,7 +713,7 @@ func (c *countingThreadEnvelopeSource) ReasoningInfo() (string, []string, bool) 
 	c.hit()
 	return "", nil, false
 }
-func (c *countingThreadEnvelopeSource) WorkMetrics() (int64, *appwire.SerfUsage, int64) {
+func (c *countingThreadEnvelopeSource) WorkMetrics() (int64, *appwire.EvenerUsage, int64) {
 	c.hit()
 	return 0, nil, 0
 }
@@ -757,7 +757,7 @@ func TestClearingTheGoalClearsItOnTheWire(t *testing.T) {
 		return true, nil
 	})
 
-	if got := readThreadOverWire(t, srv, "local:th_1").Serf.Goal; got == nil || got.Status != "active" {
+	if got := readThreadOverWire(t, srv, "local:th_1").Evener.Goal; got == nil || got.Status != "active" {
 		t.Fatalf("fixture did not publish a goal to clear: %+v", got)
 	}
 
@@ -785,7 +785,7 @@ func TestClearingTheGoalClearsItOnTheWire(t *testing.T) {
 		events.SessionEvent{Kind: events.EventQueueChanged, SessionID: "th_1", Data: events.QueueChangedData{}},
 	)
 
-	if got := readThreadOverWire(t, srv, "local:th_1").Serf.Goal; got != nil {
+	if got := readThreadOverWire(t, srv, "local:th_1").Evener.Goal; got != nil {
 		t.Fatalf("thread/read still carries goal %+v after goal/set cleared it", got)
 	}
 }
@@ -844,14 +844,14 @@ func TestSampleLandingAfterAnIdentityReplacementIsDropped(t *testing.T) {
 	if thread.Name != "" {
 		t.Fatalf("thread.Name = %q on th_2: a sample of the retired session landed after the replacement", thread.Name)
 	}
-	if thread.Serf.Queue.Depth != 0 {
-		t.Fatalf("queue = %+v on th_2, want the retired session's queue dropped", thread.Serf.Queue)
+	if thread.Evener.Queue.Depth != 0 {
+		t.Fatalf("queue = %+v on th_2, want the retired session's queue dropped", thread.Evener.Queue)
 	}
-	if thread.Serf.FailedToolCalls != nil {
-		t.Fatalf("failedToolCalls = %d on th_2, want absent: that count belongs to th_1", *thread.Serf.FailedToolCalls)
+	if thread.Evener.FailedToolCalls != nil {
+		t.Fatalf("failedToolCalls = %d on th_2, want absent: that count belongs to th_1", *thread.Evener.FailedToolCalls)
 	}
-	if len(thread.Serf.PendingEscalations) != 0 {
-		t.Fatalf("pendingEscalations = %+v on th_2, want th_1's cards dropped", thread.Serf.PendingEscalations)
+	if len(thread.Evener.PendingEscalations) != 0 {
+		t.Fatalf("pendingEscalations = %+v on th_2, want th_1's cards dropped", thread.Evener.PendingEscalations)
 	}
 }
 
@@ -1037,7 +1037,7 @@ func TestEveryMutationHandlerPublishesItsQueueChange(t *testing.T) {
 				t.Fatalf("%s: callback did not record the intent; the case proves nothing", tc.method)
 			}
 
-			got := readThreadOverWire(t, srv, "local:th_1").Serf.PendingMutations
+			got := readThreadOverWire(t, srv, "local:th_1").Evener.PendingMutations
 			if len(got) != 1 || got[0].ClientMutationID != tc.mutationID {
 				t.Fatalf("pendingMutations = %+v after %s, want the accepted intent %q on the wire",
 					got, tc.method, tc.mutationID)

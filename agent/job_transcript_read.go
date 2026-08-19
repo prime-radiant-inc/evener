@@ -8,8 +8,8 @@ import (
 	"os"
 	"path/filepath"
 
-	"primeradiant.com/serf/agent/internal/jobstore"
-	"primeradiant.com/serf/identifier"
+	"primeradiant.com/evener/agent/internal/jobstore"
+	"primeradiant.com/evener/identifier"
 )
 
 const localJobProjectLookupLimit = 256
@@ -54,7 +54,7 @@ func locateLocalJob(currentStateDir, jobID string) (localJobLocation, error) {
 	if stateHome == "" {
 		return localJobLocation{}, errJobNotFound(jobID)
 	}
-	projectsPath := filepath.Join(stateHome, "serf", "projects")
+	projectsPath := filepath.Join(stateHome, "evener", "projects")
 	dir, err := openLocalJobProjectDirectory(projectsPath)
 	if err != nil {
 		return localJobLocation{}, fmt.Errorf("open local projects for job %q: %w", jobID, err)

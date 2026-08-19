@@ -7,7 +7,7 @@ package agent
 import (
 	"testing"
 
-	"primeradiant.com/serf/agent/events"
+	"primeradiant.com/evener/agent/events"
 )
 
 // TestSetModel_EmitsModelChangedEvent verifies that a successful SetModel

@@ -4,24 +4,24 @@ import (
 	"os"
 	"path/filepath"
 
-	"primeradiant.com/serf/envvars"
+	"primeradiant.com/evener/envvars"
 )
 
 var doctorUserHomeDir = os.UserHomeDir
 
-// ResolveStateBase resolves the doctor's state base with serf's session-state
-// precedence: the --state-dir flag › SERF_STATE_DIR env › $XDG_STATE_HOME ›
+// ResolveStateBase resolves the doctor's state base with evener's session-state
+// precedence: the --state-dir flag › EVENER_STATE_DIR env › $XDG_STATE_HOME ›
 // ~/.local/state. Locate (and the subcommands built on it) then auto-detect
-// whether the base is an XDG state home (it holds serf/projects/* buckets) or is
+// whether the base is an XDG state home (it holds evener/projects/* buckets) or is
 // itself a single override / scratch bucket (sessions/ directly under it).
 //
-// Note SERF_STATE_HOME does not exist — it was never read by serf; the real env
-// knob is SERF_STATE_DIR.
+// Note EVENER_STATE_HOME does not exist — it was never read by evener; the real env
+// knob is EVENER_STATE_DIR.
 func ResolveStateBase(flagStateDir string) string {
 	if flagStateDir != "" {
 		return flagStateDir
 	}
-	if v := envvars.SERFStateDir.Getenv(); v != "" {
+	if v := envvars.EVENERStateDir.Getenv(); v != "" {
 		return v
 	}
 	if v := envvars.XDGStateHome.Getenv(); v != "" {

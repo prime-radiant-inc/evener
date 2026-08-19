@@ -5,7 +5,7 @@ Status: Evergreen guide to the shipped `manage_worktree` tool and delegate workt
 ## Summary
 
 A worktree is a second checkout of the same repository, on its own branch, sharing
-history with the main checkout but with its own working files. Serf gives agents a
+history with the main checkout but with its own working files. Evener gives agents a
 single tool, `manage_worktree`, to create, enter, leave, inspect, and clean up
 worktrees — instead of the agent hand-rolling `git worktree add` and `cd`. The same
 mechanism backs **delegate worktree isolation**: a delegate spawned with
@@ -50,7 +50,7 @@ loop is: `create` → work → commit → `exit` → review/merge from the main 
 ## Lock semantics
 
 While a session (or an isolated delegate) is sitting inside a managed worktree, it
-holds a lock on it. The lock is git's own `git worktree lock`, not a bespoke serf
+holds a lock on it. The lock is git's own `git worktree lock`, not a bespoke evener
 registry, so it's enforced everywhere — another session's `switch` or `remove`
 against a locked worktree is refused, and a bare `git worktree remove` run by a human
 would refuse too. `list` shows who's locked into what.
@@ -119,13 +119,13 @@ Two safety rules worth knowing:
 
 - **Dirty or unmerged worktrees are never silently destroyed.** Both `remove` (without
   `force`) and `prune` leave them alone and tell you why.
-- **A branch someone kept building on is never collected**, even if serf once tracked
+- **A branch someone kept building on is never collected**, even if evener once tracked
   it as "removed, pending merge." If you (or another agent) later check that branch
-  out again and add commits, serf treats it as adopted and drops its own claim on it —
-  `prune` will never delete a branch out from under work that continued after serf
+  out again and add commits, evener treats it as adopted and drops its own claim on it —
+  `prune` will never delete a branch out from under work that continued after evener
   stopped tracking it.
 
-One honest gap: if a lane's work lands via a **multi-commit squash merge**, serf can't
+One honest gap: if a lane's work lands via a **multi-commit squash merge**, evener can't
 prove the merge happened (the squash commit is the sum of several lane commits, so
 there's no single commit to match against). Such lanes are reported `unmerged` even
 though the work is safely merged, and the automatic collectors leave them alone. Once
@@ -196,7 +196,7 @@ These are documented trade-offs, not bugs:
   lock is keyed by session id; if the same session is somehow resumed by two processes
   at once, both look like the legitimate owner, and either one exiting will release
   the lock out from under the other. This is an existing "don't do that" case for
-  serf sessions generally, not something specific to worktrees.
+  evener sessions generally, not something specific to worktrees.
 - **A hard crash leaves the lane locked.** There's no automatic recovery from a
   session or delegate dying without a clean shutdown — the lock stays until a human
   or agent verifies the owner is really gone and runs `git worktree unlock`, after

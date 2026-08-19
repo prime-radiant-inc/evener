@@ -46,7 +46,7 @@ card names only `spawn-prompt-card`, `spawn-submit`, the picker's ARIA
 roles (`role="combobox"` with `aria-label="Model"`, `role="listbox"`,
 `role="option"`), and the trigger's own screen-reader text
 (`— change model`, `modelCatalog/index.tsx:405`). Anything else, grep
-`data-testid` in `cmd/serf-hub/frontend/src` rather than inventing one.
+`data-testid` in `cmd/evener-hub/frontend/src` rather than inventing one.
 
 ## Pre-state
 
@@ -74,7 +74,7 @@ roles (`role="combobox"` with `aria-label="Model"`, `role="listbox"`,
    implicitly submit, and that the one form the pane can reach is the
    Advanced-options add row and nothing else:
    ```bash
-   cd cmd/serf-hub/frontend/src
+   cd cmd/evener-hub/frontend/src
    # (a) the two files this card drives own no form and no submit handler
    grep -n "<form\|onSubmit" panes/spawn/Spawn.tsx widgets/modelCatalog/index.tsx
    # (b) nothing under either directory renders a <form> of its own
@@ -197,7 +197,7 @@ roles (`role="combobox"` with `aria-label="Model"`, `role="listbox"`,
 - `POST $HUB/api/sessions/local:$SID/shutdown` for the session step 8
   spawned. The old `$HUB/s/$SID/shutdown` shim is gone and 404s
   silently, leaving the daemon running.
-- Kill the hub by the PID you captured — never `pkill -f serf-hub`,
+- Kill the hub by the PID you captured — never `pkill -f evener-hub`,
   which also kills every concurrent agent's test hub — and `rm -rf` your
   own `$run` directory.
 

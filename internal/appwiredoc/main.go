@@ -21,7 +21,7 @@ import (
 	"strings"
 	"text/template"
 
-	"primeradiant.com/serf/appwire"
+	"primeradiant.com/evener/appwire"
 )
 
 //go:embed protocol.md.tmpl
@@ -113,7 +113,7 @@ func build() docData {
 	for _, v := range appwire.AllJobActivityTypes {
 		register(v)
 	}
-	register(appwire.SerfDelegateInfo{})
+	register(appwire.EvenerDelegateInfo{})
 
 	for _, m := range appwire.Methods {
 		d.Methods = append(d.Methods, methodView{

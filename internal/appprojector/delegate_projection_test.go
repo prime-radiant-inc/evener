@@ -7,8 +7,8 @@ import (
 	"testing"
 	"time"
 
-	"primeradiant.com/serf/agent/events"
-	"primeradiant.com/serf/appwire"
+	"primeradiant.com/evener/agent/events"
+	"primeradiant.com/evener/appwire"
 )
 
 func TestDelegateProjection_DescendantOrdinaryEventsReachRootTransport(t *testing.T) {
@@ -134,10 +134,10 @@ func TestDelegateProjection_ShellUsesParentDelegateID(t *testing.T) {
 	out := p.Project(events.SessionEvent{Kind: events.EventJobStarted, SessionID: "child", Data: events.JobStartedData{
 		JobID: "job_shell", JobType: "shell", Status: "running", ParentDelegateID: "dlg_parent",
 	}})
-	if len(out) != 1 || out[0].Method != appwire.NotifySerfJobStarted {
+	if len(out) != 1 || out[0].Method != appwire.NotifyEvenerJobStarted {
 		t.Fatalf("shell projection = %+v", out)
 	}
-	params, ok := out[0].Params.(appwire.SerfJobParams)
+	params, ok := out[0].Params.(appwire.EvenerJobParams)
 	if !ok || params.Job.ParentDelegateID != "dlg_parent" || params.Job.DelegateID != "" {
 		t.Fatalf("shell parent projection = %#v", out[0].Params)
 	}
@@ -173,12 +173,12 @@ func delegateProjectionEvent(sessionID string, data events.DelegateUpdatedData) 
 	return events.SessionEvent{Kind: events.EventDelegateUpdated, SessionID: sessionID, Timestamp: time.Unix(1, 0).UTC(), Data: data}
 }
 
-func requireDelegateProjection(t testing.TB, out []AppNotification) appwire.SerfDelegateParams {
+func requireDelegateProjection(t testing.TB, out []AppNotification) appwire.EvenerDelegateParams {
 	t.Helper()
-	if len(out) != 1 || out[0].Method != appwire.NotifySerfDelegateUpdated {
-		t.Fatalf("delegate notifications = %+v, want one %s", out, appwire.NotifySerfDelegateUpdated)
+	if len(out) != 1 || out[0].Method != appwire.NotifyEvenerDelegateUpdated {
+		t.Fatalf("delegate notifications = %+v, want one %s", out, appwire.NotifyEvenerDelegateUpdated)
 	}
-	params, ok := out[0].Params.(appwire.SerfDelegateParams)
+	params, ok := out[0].Params.(appwire.EvenerDelegateParams)
 	if !ok {
 		t.Fatalf("delegate params type = %T", out[0].Params)
 	}

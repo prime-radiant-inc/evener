@@ -7,10 +7,10 @@ import (
 	"testing"
 	"time"
 
-	"primeradiant.com/serf/agent/events"
-	"primeradiant.com/serf/agent/schema"
-	"primeradiant.com/serf/appwire"
-	"primeradiant.com/serf/llm"
+	"primeradiant.com/evener/agent/events"
+	"primeradiant.com/evener/agent/schema"
+	"primeradiant.com/evener/appwire"
+	"primeradiant.com/evener/llm"
 )
 
 func TestAppEventProjectorProjectsAssistantDelta(t *testing.T) {
@@ -158,8 +158,8 @@ func TestProject_TaskUpdated(t *testing.T) {
 		Kind: events.EventTaskUpdated,
 		Data: events.TaskUpdatedData{Total: 3, Done: 1},
 	})
-	if len(out) != 1 || out[0].Method != appwire.NotifySerfTaskUpdated {
-		t.Fatalf("want one serf/task/updated notification, got %+v", out)
+	if len(out) != 1 || out[0].Method != appwire.NotifyEvenerTaskUpdated {
+		t.Fatalf("want one evener/task/updated notification, got %+v", out)
 	}
 	params, ok := out[0].Params.(appwire.TaskUpdatedParams)
 	if !ok || params.Total != 3 || params.Done != 1 {
@@ -167,7 +167,7 @@ func TestProject_TaskUpdated(t *testing.T) {
 	}
 }
 
-// A job lifecycle event projects ONE notification, not two. serf/job/started
+// A job lifecycle event projects ONE notification, not two. evener/job/started
 // already carries the (jobId, status) pair a jobs-panel client refetches on,
 // so a second lightweight notification at the same instant would duplicate a
 // stream every client already receives (kata j7y6).
@@ -177,12 +177,12 @@ func TestProject_JobStartedIsTheOnlyStartNotification(t *testing.T) {
 		Kind: events.EventJobStarted,
 		Data: events.JobStartedData{JobID: "job_1", JobType: "shell", Status: "running"},
 	})
-	if len(out) != 1 || out[0].Method != appwire.NotifySerfJobStarted {
-		t.Fatalf("want exactly one serf/job/started notification, got %+v", out)
+	if len(out) != 1 || out[0].Method != appwire.NotifyEvenerJobStarted {
+		t.Fatalf("want exactly one evener/job/started notification, got %+v", out)
 	}
-	params, ok := out[0].Params.(appwire.SerfJobParams)
+	params, ok := out[0].Params.(appwire.EvenerJobParams)
 	if !ok {
-		t.Fatalf("params type = %T, want appwire.SerfJobParams", out[0].Params)
+		t.Fatalf("params type = %T, want appwire.EvenerJobParams", out[0].Params)
 	}
 	if params.ThreadID != "th1" || params.Ref != "local:th1" || params.Job.JobID != "job_1" || params.Job.Status != "running" {
 		t.Fatalf("params = %+v", params)
@@ -195,12 +195,12 @@ func TestProject_JobFinishedIsTheOnlyFinishNotification(t *testing.T) {
 		Kind: events.EventJobFinished,
 		Data: events.JobFinishedData{JobID: "job_1", JobType: "shell", Status: "completed"},
 	})
-	if len(out) != 1 || out[0].Method != appwire.NotifySerfJobFinished {
-		t.Fatalf("want exactly one serf/job/finished notification, got %+v", out)
+	if len(out) != 1 || out[0].Method != appwire.NotifyEvenerJobFinished {
+		t.Fatalf("want exactly one evener/job/finished notification, got %+v", out)
 	}
-	params, ok := out[0].Params.(appwire.SerfJobParams)
+	params, ok := out[0].Params.(appwire.EvenerJobParams)
 	if !ok {
-		t.Fatalf("params type = %T, want appwire.SerfJobParams", out[0].Params)
+		t.Fatalf("params type = %T, want appwire.EvenerJobParams", out[0].Params)
 	}
 	if params.ThreadID != "th1" || params.Ref != "local:th1" || params.Job.JobID != "job_1" || params.Job.Status != "completed" {
 		t.Fatalf("params = %+v", params)
@@ -222,10 +222,10 @@ func TestProject_JobStartedAlsoEmitsJobsTreeUpdated(t *testing.T) {
 	if len(out) != 2 {
 		t.Fatalf("want job started + jobs tree updated notifications, got %+v", out)
 	}
-	if !hasAppNotification(out, appwire.NotifySerfJobStarted) {
-		t.Fatalf("missing %q in %+v", appwire.NotifySerfJobStarted, out)
+	if !hasAppNotification(out, appwire.NotifyEvenerJobStarted) {
+		t.Fatalf("missing %q in %+v", appwire.NotifyEvenerJobStarted, out)
 	}
-	params := notificationParams[appwire.JobsTreeUpdatedParams](t, out, appwire.NotifySerfJobsTreeUpdated)
+	params := notificationParams[appwire.JobsTreeUpdatedParams](t, out, appwire.NotifyEvenerJobsTreeUpdated)
 	if params.ThreadID != "root" || params.Ref != "local:root" || params.Revision != 9 {
 		t.Fatalf("params=%+v", params)
 	}
@@ -247,10 +247,10 @@ func TestProject_JobFinishedAlsoEmitsJobsTreeUpdated(t *testing.T) {
 	if len(out) != 2 {
 		t.Fatalf("want job finished + jobs tree updated notifications, got %+v", out)
 	}
-	if !hasAppNotification(out, appwire.NotifySerfJobFinished) {
-		t.Fatalf("missing %q in %+v", appwire.NotifySerfJobFinished, out)
+	if !hasAppNotification(out, appwire.NotifyEvenerJobFinished) {
+		t.Fatalf("missing %q in %+v", appwire.NotifyEvenerJobFinished, out)
 	}
-	params := notificationParams[appwire.JobsTreeUpdatedParams](t, out, appwire.NotifySerfJobsTreeUpdated)
+	params := notificationParams[appwire.JobsTreeUpdatedParams](t, out, appwire.NotifyEvenerJobsTreeUpdated)
 	if params.ThreadID != "root" || params.Ref != "local:root" || params.Revision != 9 {
 		t.Fatalf("params=%+v", params)
 	}
@@ -264,7 +264,7 @@ func TestProject_JobsTreeUpdatedOmittedForLegacyJobFixtures(t *testing.T) {
 	for _, event := range tests {
 		p := NewAppEventProjector("th1", "local:th1")
 		out := p.Project(event)
-		if hasAppNotification(out, appwire.NotifySerfJobsTreeUpdated) {
+		if hasAppNotification(out, appwire.NotifyEvenerJobsTreeUpdated) {
 			t.Fatalf("legacy fixture unexpectedly emitted jobs tree update: %+v", out)
 		}
 	}
@@ -282,8 +282,8 @@ func TestProject_SandboxEscalationRequested(t *testing.T) {
 			DeniedPath:   "/etc/hosts", // full path for informed consent (set at the session)
 		},
 	})
-	if len(out) != 1 || out[0].Method != appwire.NotifySerfSandboxEscalationRequested {
-		t.Fatalf("want one serf/sandbox/escalation/requested notification, got %+v", out)
+	if len(out) != 1 || out[0].Method != appwire.NotifyEvenerSandboxEscalationRequested {
+		t.Fatalf("want one evener/sandbox/escalation/requested notification, got %+v", out)
 	}
 	params, ok := out[0].Params.(appwire.SandboxEscalationRequested)
 	if !ok {
@@ -302,7 +302,7 @@ func TestProject_SandboxEscalationRequested(t *testing.T) {
 // TestProject_SandboxEscalationResolved (wire-honesty spec Part B) mirrors
 // TestProject_SandboxEscalationRequested above for the pair notification: the
 // projector maps EventSandboxEscalationResolved to
-// serf/sandbox/escalation/resolved, carrying only threadId/ref/escalationId
+// evener/sandbox/escalation/resolved, carrying only threadId/ref/escalationId
 // (no reason or approved — a review decision the spec's doc comments explain).
 func TestProject_SandboxEscalationResolved(t *testing.T) {
 	p := NewAppEventProjector("th1", "local:th1")
@@ -310,8 +310,8 @@ func TestProject_SandboxEscalationResolved(t *testing.T) {
 		Kind: events.EventSandboxEscalationResolved,
 		Data: events.SandboxEscalationResolvedData{EscalationID: "esc_1"},
 	})
-	if len(out) != 1 || out[0].Method != appwire.NotifySerfSandboxEscalationResolved {
-		t.Fatalf("want one serf/sandbox/escalation/resolved notification, got %+v", out)
+	if len(out) != 1 || out[0].Method != appwire.NotifyEvenerSandboxEscalationResolved {
+		t.Fatalf("want one evener/sandbox/escalation/resolved notification, got %+v", out)
 	}
 	params, ok := out[0].Params.(appwire.SandboxEscalationResolved)
 	if !ok {
@@ -332,7 +332,7 @@ func TestProject_SandboxEscalationResolved(t *testing.T) {
 // emits exactly its own notification and touches no turn/item state, so the
 // model can neither observe nor replay either one. This also stands in for
 // the spec's demoted unknown-notification-tolerance check: an older client
-// that does not yet recognize serf/sandbox/escalation/resolved sees no
+// that does not yet recognize evener/sandbox/escalation/resolved sees no
 // item/turn notification riding alongside it to react to badly — it drops the
 // unrecognized notification exactly like any other, the established norm in
 // the TUI and legacy web.
@@ -629,10 +629,10 @@ func TestAppEventProjectorProjectsThreadLifecycle(t *testing.T) {
 	})
 
 	thread := notificationThread(t, started, appwire.NotifyThreadStarted)
-	if thread.ID != "th_1" || thread.SessionID != "th_1" || thread.Serf.Ref != "local:th_1" {
+	if thread.ID != "th_1" || thread.SessionID != "th_1" || thread.Evener.Ref != "local:th_1" {
 		t.Fatalf("started thread identity=%+v", thread)
 	}
-	if thread.Serf.Profile != "openai" || thread.ModelProvider != "gpt-5" {
+	if thread.Evener.Profile != "openai" || thread.ModelProvider != "gpt-5" {
 		t.Fatalf("started thread model/profile=%+v", thread)
 	}
 	if status := notificationThreadStatus(t, started, appwire.NotifyThreadStatusChanged); status.Type != appwire.ThreadStatusIdle {
@@ -1125,10 +1125,10 @@ func TestAppEventProjectorProjectsJobEvents(t *testing.T) {
 			OriginItemID:     "item_shell",
 		},
 	})
-	if len(started) != 1 || started[0].Method != appwire.NotifySerfJobStarted {
+	if len(started) != 1 || started[0].Method != appwire.NotifyEvenerJobStarted {
 		t.Fatalf("started=%+v", started)
 	}
-	startedParams, ok := started[0].Params.(appwire.SerfJobParams)
+	startedParams, ok := started[0].Params.(appwire.EvenerJobParams)
 	if !ok {
 		t.Fatalf("started params=%T", started[0].Params)
 	}
@@ -1158,10 +1158,10 @@ func TestAppEventProjectorProjectsJobEvents(t *testing.T) {
 			OriginItemID:     "item_shell",
 		},
 	})
-	if len(finished) != 1 || finished[0].Method != appwire.NotifySerfJobFinished {
+	if len(finished) != 1 || finished[0].Method != appwire.NotifyEvenerJobFinished {
 		t.Fatalf("finished=%+v", finished)
 	}
-	finishedParams, ok := finished[0].Params.(appwire.SerfJobParams)
+	finishedParams, ok := finished[0].Params.(appwire.EvenerJobParams)
 	if !ok {
 		t.Fatalf("finished params=%T", finished[0].Params)
 	}
@@ -1172,7 +1172,7 @@ func TestAppEventProjectorProjectsJobEvents(t *testing.T) {
 		finishedJob.OriginTurnID != "turn_parent" || finishedJob.OriginToolCallID != "call_shell" || finishedJob.OriginItemID != "item_shell" {
 		t.Fatalf("finished job=%+v", finishedJob)
 	}
-	finishedJSON := string(notificationParamsJSON(t, finished, appwire.NotifySerfJobFinished))
+	finishedJSON := string(notificationParamsJSON(t, finished, appwire.NotifyEvenerJobFinished))
 	if !strings.Contains(finishedJSON, `"outputBytes":0`) {
 		t.Fatalf("finished notification json=%s missing zero outputBytes", finishedJSON)
 	}
@@ -1194,10 +1194,10 @@ func TestProjectJobFinished_ExhaustionMetadata(t *testing.T) {
 			Resumable:        &resumable,
 		},
 	})
-	if len(finished) != 1 || finished[0].Method != appwire.NotifySerfJobFinished {
+	if len(finished) != 1 || finished[0].Method != appwire.NotifyEvenerJobFinished {
 		t.Fatalf("finished = %+v", finished)
 	}
-	params, ok := finished[0].Params.(appwire.SerfJobParams)
+	params, ok := finished[0].Params.(appwire.EvenerJobParams)
 	if !ok {
 		t.Fatalf("finished params = %T", finished[0].Params)
 	}
@@ -1209,8 +1209,8 @@ func TestProjectJobFinished_ExhaustionMetadata(t *testing.T) {
 	}
 }
 
-func TestSerfJobInfoDelegateFieldsAreOptional(t *testing.T) {
-	payload, err := json.Marshal(appwire.SerfJobInfo{
+func TestEvenerJobInfoDelegateFieldsAreOptional(t *testing.T) {
+	payload, err := json.Marshal(appwire.EvenerJobInfo{
 		JobID:       "job_shell",
 		JobType:     "shell",
 		Status:      "running",
@@ -1267,7 +1267,7 @@ func TestAppEventProjectorProjectsSteeringInjected(t *testing.T) {
 		SessionID: "th_1",
 		Data:      events.SteeringInjectedData{Text: "stay focused"},
 	})
-	if len(out) != 1 || out[0].Method != appwire.NotifySerfSteeringInjected {
+	if len(out) != 1 || out[0].Method != appwire.NotifyEvenerSteeringInjected {
 		t.Fatalf("out=%+v", out)
 	}
 	params, ok := out[0].Params.(map[string]any)
@@ -1290,7 +1290,7 @@ func TestAppEventProjectorProjectsSteeringInjectedUserSource(t *testing.T) {
 		SessionID: "th_1",
 		Data:      events.SteeringInjectedData{Text: "focus on the tests", Source: events.SteeringSourceUser},
 	})
-	if len(out) != 1 || out[0].Method != appwire.NotifySerfSteeringInjected {
+	if len(out) != 1 || out[0].Method != appwire.NotifyEvenerSteeringInjected {
 		t.Fatalf("out=%+v", out)
 	}
 	params, ok := out[0].Params.(map[string]any)
@@ -2132,7 +2132,7 @@ func TestAppEventProjectorProjectsImageOnlySteeringInjected(t *testing.T) {
 			Name:      "shot.png",
 		}}},
 	})
-	if len(out) != 1 || out[0].Method != appwire.NotifySerfSteeringInjected {
+	if len(out) != 1 || out[0].Method != appwire.NotifyEvenerSteeringInjected {
 		t.Fatalf("out=%+v", out)
 	}
 	params, ok := out[0].Params.(map[string]any)
@@ -2159,7 +2159,7 @@ func TestAppEventProjectorProjectsSteeringInjectedKind(t *testing.T) {
 		SessionID: "th_1",
 		Data:      events.SteeringInjectedData{Text: "done", Kind: events.SteeringKindTasksDone},
 	})
-	if len(out) != 1 || out[0].Method != appwire.NotifySerfSteeringInjected {
+	if len(out) != 1 || out[0].Method != appwire.NotifyEvenerSteeringInjected {
 		t.Fatalf("out=%+v", out)
 	}
 	params, ok := out[0].Params.(map[string]any)
@@ -2182,7 +2182,7 @@ func TestAppEventProjectorOmitsSteeringInjectedEmptyKind(t *testing.T) {
 		SessionID: "th_1",
 		Data:      events.SteeringInjectedData{Text: "mystery"},
 	})
-	if len(out) != 1 || out[0].Method != appwire.NotifySerfSteeringInjected {
+	if len(out) != 1 || out[0].Method != appwire.NotifyEvenerSteeringInjected {
 		t.Fatalf("out=%+v", out)
 	}
 	params, ok := out[0].Params.(map[string]any)
@@ -2863,7 +2863,7 @@ func TestProjectModelRetryEmitsThreadScopedNotice(t *testing.T) {
 
 	var got *appwire.ThreadModelRetryParams
 	for i := range out {
-		if out[i].Method == appwire.NotifySerfThreadModelRetry {
+		if out[i].Method == appwire.NotifyEvenerThreadModelRetry {
 			pp, ok := out[i].Params.(appwire.ThreadModelRetryParams)
 			if !ok {
 				t.Fatalf("retry params=%T", out[i].Params)
@@ -2872,7 +2872,7 @@ func TestProjectModelRetryEmitsThreadScopedNotice(t *testing.T) {
 		}
 	}
 	if got == nil {
-		t.Fatalf("model retry did not emit NotifySerfThreadModelRetry: %+v", out)
+		t.Fatalf("model retry did not emit NotifyEvenerThreadModelRetry: %+v", out)
 		return
 	}
 	if got.ThreadID != "th_1" {

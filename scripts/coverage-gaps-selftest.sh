@@ -7,7 +7,7 @@ set -uo pipefail
 script="$(cd "$(dirname "$0")" && pwd)/coverage-gaps.sh"
 . "$(dirname "$0")/selftest-lib.sh"
 
-scratch_dir work serf-covgaps-selftest
+scratch_dir work evener-covgaps-selftest
 trap 'scratch_rm' EXIT
 
 profile="$work/p.cov"

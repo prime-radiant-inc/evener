@@ -1,4 +1,4 @@
-//go:build serffuzz
+//go:build evenerfuzz
 
 package diagnostic
 
@@ -12,9 +12,9 @@ func FuzzPackageUnion(f *testing.F) {
 
 	f.Fuzz(func(t *testing.T, _ uint8) {
 
-		t.Run("TestClassifyUnknownProviderAsSerfConfiguration", TestClassifyUnknownProviderAsSerfConfiguration)
+		t.Run("TestClassifyUnknownProviderAsEvenerConfiguration", TestClassifyUnknownProviderAsEvenerConfiguration)
 		t.Run("TestDefaultForEverySource", TestDefaultForEverySource)
-		t.Run("TestDefaultForSerfConfiguration", TestDefaultForSerfConfiguration)
+		t.Run("TestDefaultForEvenerConfiguration", TestDefaultForEvenerConfiguration)
 		t.Run("TestClassifyProviderHTTPFailureAsProvider", TestClassifyProviderHTTPFailureAsProvider)
 		t.Run("TestClassifySpawnFailureAsHub", TestClassifySpawnFailureAsHub)
 		t.Run("TestFromError_StructuredLLMError_IsProvider", TestFromError_StructuredLLMError_IsProvider)
@@ -22,8 +22,8 @@ func FuzzPackageUnion(f *testing.F) {
 		t.Run("TestFromError_ProviderOnlyNoStatusCode_IsProvider", TestFromError_ProviderOnlyNoStatusCode_IsProvider)
 		t.Run("TestFromError_ErrorCodeOnlyNoProviderNoStatus_IsProvider", TestFromError_ErrorCodeOnlyNoProviderNoStatus_IsProvider)
 		t.Run("TestClassifyStreamTruncationAsProvider", TestClassifyStreamTruncationAsProvider)
-		t.Run("TestFromError_Nil_IsSerfFailure", TestFromError_Nil_IsSerfFailure)
-		t.Run("TestFromError_ConfigurationError_IsSerfConfiguration", TestFromError_ConfigurationError_IsSerfConfiguration)
+		t.Run("TestFromError_Nil_IsEvenerFailure", TestFromError_Nil_IsEvenerFailure)
+		t.Run("TestFromError_ConfigurationError_IsEvenerConfiguration", TestFromError_ConfigurationError_IsEvenerConfiguration)
 		t.Run("TestFromError_PlainError_FallsThroughToClassify", TestFromError_PlainError_FallsThroughToClassify)
 		t.Run("TestFromFields_SourceOverridesClassify", TestFromFields_SourceOverridesClassify)
 		t.Run("TestFromFields_UnknownSourceFallsBackToClassify", TestFromFields_UnknownSourceFallsBackToClassify)

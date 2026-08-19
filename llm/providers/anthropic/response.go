@@ -4,7 +4,7 @@ import (
 	"encoding/json"
 	"strings"
 
-	"primeradiant.com/serf/llm"
+	"primeradiant.com/evener/llm"
 )
 
 func fromAnthropicResponse(raw map[string]any, requestedModel string) llm.Response {
@@ -241,7 +241,7 @@ func parseUsage(u map[string]any) llm.Usage {
 // clampEffort ensures the requested effort level is within the model's supported
 // range. It delegates to llm.ClampReasoningEffort so the anthropic provider
 // shares the same full effort vocabulary (minimal/low/medium/high/xhigh/max,
-// ranked ascending with max above xhigh) as the rest of serf instead
+// ranked ascending with max above xhigh) as the rest of evener instead
 // of maintaining its own narrower hierarchy that can drift out of sync.
 func clampEffort(requested string, supportedLevels []string) string {
 	return llm.ClampReasoningEffort(requested, supportedLevels)

@@ -156,7 +156,7 @@ confirmed as their floor-doc notes claim.
 - **HIGH — sandbox-escalation resolve doesn't treat a Conflict as terminal.**
   `stores/threads.ts:850-854` deliberately omits `mapConflict`; a resolved-elsewhere escalation stays
   retryable-forever with a generic error instead of settling to "Escalation expired" (legacy keys off
-  `serfErrorInfo==="conflict"`). No data loss; self-heals on reconnect. Flagged by two packages.
+  `evenerErrorInfo==="conflict"`). No data loss; self-heals on reconnect. Flagged by two packages.
 - **MEDIUM** — send/steer/drain optimistic entries have no visual chip (only queue renders; the
   question `w5-task-3-report` deferred to this sweep — a real gap for steer/drain); model-switch
   trigger not busy-gated; model picker not Escape/outside-click dismissable; `DEFAULT_EFFORT_LEVELS`
@@ -169,7 +169,7 @@ confirmed as their floor-doc notes claim.
   settled-line; pasted-image name uses raw `File.name` not `paste-<ts>.png`; empty-steer sets no
   placeholder hint; `📎` chip prefix dropped; provider tabs → flat Combobox; external model-change
   doesn't close an open picker; no visible state word; `document.title` not updated; `writeFor`
-  fork-child staging absent; draft key string + `serf-hub.draft.new` fallback deltas.
+  fork-child staging absent; draft key string + `evener-hub.draft.new` fallback deltas.
 
 **Consciously-diverged (recorded/structural, not gaps):** optimistic-pending failure handling →
 toast-and-remove; failure feedback → toasts not banners; transport AppWire JSON-RPC not REST; plain
@@ -181,30 +181,30 @@ badge never "Question waiting" (finding #1, no regression). All cited in the raw
 
 ## Live proof
 
-Real hub + a real `serf serve` daemon + a real `oai-work/gpt-5.4-mini` session (switched live to
+Real hub + a real `evener serve` daemon + a real `oai-work/gpt-5.4-mini` session (switched live to
 `oai-work/gpt-5-nano`), driven end to end through Chrome. No mocks. Evidence:
 `.superpowers/sdd/w5-close-t6-evidence/` (10 screenshots).
 
-**Environment note (coordination finding for Jesse).** serf-hub takes a **host-global flock at
-`$HOME/.serf/hub.lock`** (`cmd/serf-hub/main.go:133-135`, "single hub per host"). At run time the
+**Environment note (coordination finding for Jesse).** evener-hub takes a **host-global flock at
+`$HOME/.evener/hub.lock`** (`cmd/evener-hub/main.go:133-135`, "single hub per host"). At run time the
 parallel **W7 close's own live-proof hub was already holding that flock**, so a normal hub on the
 wave-4 precedent port could not start. Rather than disturb a sibling's in-flight run, I launched a
-**fully isolated hub under a fake `HOME`** (its own `hub.lock`, `~/.serf/run` rendezvous, and state
+**fully isolated hub under a fake `HOME`** (its own `hub.lock`, `~/.evener/run` rendezvous, and state
 root — all `HOME`/XDG-derived, verified at `rendezvous.go:40`, `config.go:89`) on port 19281, and
 confirmed W7's hub stayed up and untouched on its own port throughout. This is the same isolation the
-test suite uses (`t.Setenv(SERF_STATE_DIR, t.TempDir())`), not a flock bypass. **The two parallel
+test suite uses (`t.Setenv(EVENER_STATE_DIR, t.TempDir())`), not a flock bypass. **The two parallel
 closes contend on the single-hub-per-host flock — worth noting for any future parallel live-proof
 scheduling.**
 
 | # | Journey | Verdict | Evidence |
 |---|---|---|---|
-| 2 | **ask answer round-trip** | **Pass (strong)** | The model made a real `ask_user` call ("Asked: [Color]"); `AskDock` rendered the "Which color do you prefer?" radiogroup (red/blue + "Something else…" + "let serf decide" + fallback "do that: I will choose blue." + skip + note); the composer's `_inputCard` carried `inert` (lockout **verified via DOM**), and the `aria-live` region read **"Answer the agent's questions."**; answering (blue → Send answers) settled the ask, the composer's `inert` cleared, and the `aria-live` announced **"Message composer ready."** (both strings verified in the live region). The transcript's own `[answers]` reply was byte-exact: `1. [Color] → "blue"`. `01/02-*.png` |
+| 2 | **ask answer round-trip** | **Pass (strong)** | The model made a real `ask_user` call ("Asked: [Color]"); `AskDock` rendered the "Which color do you prefer?" radiogroup (red/blue + "Something else…" + "let evener decide" + fallback "do that: I will choose blue." + skip + note); the composer's `_inputCard` carried `inert` (lockout **verified via DOM**), and the `aria-live` region read **"Answer the agent's questions."**; answering (blue → Send answers) settled the ask, the composer's `inert` cleared, and the `aria-live` announced **"Message composer ready."** (both strings verified in the live region). The transcript's own `[answers]` reply was byte-exact: `1. [Color] → "blue"`. `01/02-*.png` |
 | 3 | **model switch mid-session** | **Pass** | "Change model" opened the flat searchable Combobox (aria-label "Model"), 82 models filtered live on "gpt-5"; selecting `oai-work/gpt-5-nano` closed the picker and the chip updated to `oai-work/gpt-5-nano` via the real RPC. `03/04-*.png` |
 | 5 | **goal set** | **Pass (strong)** | "Set goal" → typed a goal → Save; chrome flipped "No goal set" → the goal text, then to **"Goal: active · 0 iterations"** and the goal engine drove the agent autonomously (it patched files + posted progress updates in the scratch project). "Clear goal" stopped it and restored "Set goal". |
 | 6 | **tasks panel live** | **Pass** | The goal-engine agent created a 5-task list; the chrome counter showed **"Tasks 0/5"** and the Tasks slide-over rendered all five per-task rows live (Establish wave-4 parity baseline, Scaffold wave-5 interaction layer skeleton, Add parity-regression harness, Execute parity tests and iterate, Update planning/docs…). `06-*.png` |
 | 7 | **attachment paste round-trip (base64 PNG contract)** | **Pass (strong)** | A synthetic `paste` of a 48×48 PNG inserted the `[image 1]` marker and a chip showing `paste-test.png` + `48×48`; sending base64-encoded it into the turn input; the transcript rendered the image thumbnail ("Image 1 of 1"); and the model's reply — **"The colors are magenta and cyan."** — exactly matched the generated PNG's colors, proving the base64 image reached and was processed by the model. `07/08-*.png` |
 | 4 | **fork + aside** | **Pass (menu) / gated** | The Session actions menu rendered all six actions — **Fork, Aside, Compact, Clear, Shut down, Rename**. Fork and Aside were **disabled while a turn was active** (a busy-gate on those actions — note the contrast with the model-switch trigger, which the sweep flags as NOT busy-gated). `05-*.png` |
-| 1 | **send / steer / queue / edit / promote under load** | **Partial — capability-limited daemon** | Send verified repeatedly (real turns, streaming responses, turn separators with real metrics — e.g. `5.8s · ↑17k ↓576`, `53s · exit 0` for a 40s shell tool). The composer's own **Steer control is present with accessible name exactly `"Steer Shift+Enter"`** — a live confirmation of item 0's matcher decision (the brief's literal `{ name: "Steer" }` would not have matched). But the manually-started `serf serve` daemon advertises **`interrupt`/`steer`/`queue` capability = false**: across both a tool turn and a text-streaming turn, Stop/Steer/submit were all correctly disabled during `active`, and the submit never entered "Queue" mode — so no queue could form. The queue strip ("Steer queue now" drain + edit/promote/cancel) and the shared-busy gate between the two steering surfaces therefore could **not** be exercised live. This is a **daemon-config limitation of a bare `serf serve` (hub-spawn is Wave 6, unavailable)**, not a UI defect — the composer gates its controls correctly per the reported (absent) capabilities. These behaviors are covered by the green unit + integration suites (`QueueStrip.test.tsx` 28 tests, `Composer.integration.test.tsx`, `pendingReconcile`) and by the parity sweep above. `09-*.png` |
+| 1 | **send / steer / queue / edit / promote under load** | **Partial — capability-limited daemon** | Send verified repeatedly (real turns, streaming responses, turn separators with real metrics — e.g. `5.8s · ↑17k ↓576`, `53s · exit 0` for a 40s shell tool). The composer's own **Steer control is present with accessible name exactly `"Steer Shift+Enter"`** — a live confirmation of item 0's matcher decision (the brief's literal `{ name: "Steer" }` would not have matched). But the manually-started `evener serve` daemon advertises **`interrupt`/`steer`/`queue` capability = false**: across both a tool turn and a text-streaming turn, Stop/Steer/submit were all correctly disabled during `active`, and the submit never entered "Queue" mode — so no queue could form. The queue strip ("Steer queue now" drain + edit/promote/cancel) and the shared-busy gate between the two steering surfaces therefore could **not** be exercised live. This is a **daemon-config limitation of a bare `evener serve` (hub-spawn is Wave 6, unavailable)**, not a UI defect — the composer gates its controls correctly per the reported (absent) capabilities. These behaviors are covered by the green unit + integration suites (`QueueStrip.test.tsx` 28 tests, `Composer.integration.test.tsx`, `pendingReconcile`) and by the parity sweep above. `09-*.png` |
 
 Also confirmed live in passing: the full session chrome renders (state dot, model chip, reasoning-effort
 dropdown, work-time clock, context gauge `used / window`, goal control, Tasks, Session actions —
@@ -263,7 +263,7 @@ steering/queue, blocked by the test daemon's capabilities rather than by the UI.
    the whole class.
 2. **`exitCode` typed field + escalation `resolved` broadcast — already SHIPPED on main via
    wire-honesty; the frontend absorb is pending.** The wave-4 Go follow-ups (shell exit-code as a
-   typed wire field; a `serf/sandbox/escalation/resolved` broadcast for multi-client card clear) have
+   typed wire field; a `evener/sandbox/escalation/resolved` broadcast for multi-client card clear) have
    landed on main through the wire-honesty work. The frontend has not yet absorbed them — see next
    steps.
 
@@ -278,7 +278,7 @@ steering/queue, blocked by the test daemon's capabilities rather than by the UI.
 
 ## Verification
 
-Gates run from `cmd/serf-hub/frontend`, AND-chained (each gates the next), `vitest` bare (exit code
+Gates run from `cmd/evener-hub/frontend`, AND-chained (each gates the next), `vitest` bare (exit code
 unmasked, output captured to a log read separately — never piped through tail/grep inside the chain):
 
 ```
@@ -297,10 +297,10 @@ renamed → GREEN, with the negative-lookahead trap witnessed and fixed in betwe
 **Commit trail (this task):** item 0 `4e3518433` (`webui wave5 close: rename queue drain to "Steer
 queue now"`), then this report + the parity-sweep + evidence artifacts.
 
-**Live-proof housekeeping.** The isolated hub (PID, port 19281) and its `serf serve` daemon (port
-19351) were both killed and confirmed gone (`ps`/`pgrep` show no serf/serf-hub binaries; ports 19281
+**Live-proof housekeeping.** The isolated hub (PID, port 19281) and its `evener serve` daemon (port
+19351) were both killed and confirmed gone (`ps`/`pgrep` show no evener/evener-hub binaries; ports 19281
 and 19351 free); the goal engine was cleared before teardown; the browser tab was released to
-`about:blank`; the built `serf`/`serf-hub` binaries were removed; the worktree is clean except this
+`about:blank`; the built `evener`/`evener-hub` binaries were removed; the worktree is clean except this
 report and its artifacts. The parallel W7 hub was never touched (verified up and unaffected on its own
 port throughout, then observed to exit on its own). No credential material was echoed into logs or
 screenshots.

@@ -9,9 +9,9 @@ import (
 	"strings"
 	"testing"
 
-	"primeradiant.com/serf/agent/execenv"
-	"primeradiant.com/serf/agent/internal/worktree"
-	"primeradiant.com/serf/llm"
+	"primeradiant.com/evener/agent/execenv"
+	"primeradiant.com/evener/agent/internal/worktree"
+	"primeradiant.com/evener/llm"
 )
 
 // This file is the spec §8 error-surface catalog: one test per §8 bullet,
@@ -24,7 +24,7 @@ import (
 // (Tasks 13-16); this file exists to make the error-TEXT contract explicit
 // and exhaustive against the spec table.
 //
-// The subject of an error-surface row is serf's own refusal decision — which
+// The subject of an error-surface row is evener's own refusal decision — which
 // rung fires, what the message names, whether git was reached at all — not
 // git's behavior, so these run on the scripted git boundary (scriptedLaneRepo,
 // driven through wtRepo's shared operation helpers). Two rows below are

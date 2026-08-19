@@ -1,11 +1,11 @@
-//go:build serffuzz
+//go:build evenerfuzz
 
 package agent
 
 import (
 	"testing"
 
-	"primeradiant.com/serf/llm"
+	"primeradiant.com/evener/llm"
 )
 
 // clampTokens maps a fuzzed int to [0, 1<<40) so the three-way sum inside the core

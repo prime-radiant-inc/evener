@@ -6,7 +6,7 @@
 
 **Architecture:** Event observation (jobManager) becomes persist-only + wake; the only delivery executors are loop-owned drains and the notification-accept path. `jm.send` (the jobManager→Session delivery closure) is deleted. Caller-targeted sends ride the notification queue as render-by-key wake tokens. Spec: `docs/superpowers/specs/2026-06-11-job-control-watch-mailbox-design.md` (read it first; §3 is the invariant every task serves).
 
-**Tech Stack:** Go (module `primeradiant.com/serf/agent`), table-driven tests + `agenttest`, `make test` / `make lint` at repo root gate every phase.
+**Tech Stack:** Go (module `primeradiant.com/evener/agent`), table-driven tests + `agenttest`, `make test` / `make lint` at repo root gate every phase.
 
 **Branch:** `job-control-spec`, rolling forward. No worktree.
 
@@ -849,7 +849,7 @@ func (m *OutputMatcher) Feed(chunk []byte, endOffset int64) []string {
 
 ### Task 5.2: Live validation
 
-- [ ] **Step 1: Build + run live** per the recipe in the project memory (`go build -o /tmp/serf ./cmd/serf`; source `.env`; `--model oai-work/<model>`): drive the incident smoke shape — background shell job, sidecar observer with an events watch, `output_match` watch attached AFTER the token printed, `job_read_output(block, grep)` — and confirm: no wedge, observer receives a frame and reads the watched job, catch-up fires, blocking grep returns on match.
+- [ ] **Step 1: Build + run live** per the recipe in the project memory (`go build -o /tmp/evener ./cmd/evener`; source `.env`; `--model oai-work/<model>`): drive the incident smoke shape — background shell job, sidecar observer with an events watch, `output_match` watch attached AFTER the token printed, `job_read_output(block, grep)` — and confirm: no wedge, observer receives a frame and reads the watched job, catch-up fires, blocking grep returns on match.
 - [ ] **Step 2: Capture the transcript refs in the final commit message.** Commit any fixes uncovered, each with its own test first.
 
 ---

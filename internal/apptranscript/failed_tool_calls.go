@@ -5,8 +5,8 @@ import (
 	"fmt"
 	"os"
 
-	"primeradiant.com/serf/agent/transcript"
-	"primeradiant.com/serf/llm"
+	"primeradiant.com/evener/agent/transcript"
+	"primeradiant.com/evener/llm"
 )
 
 // ShellToolNames are the tool names whose result carries a process exit code

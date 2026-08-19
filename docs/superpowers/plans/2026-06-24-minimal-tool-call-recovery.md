@@ -4,9 +4,9 @@
 
 **Goal:** Prove the original failed-tool-call recovery path end to end: malformed model tool-call arguments are retained in local session history, converted into an error tool result, and serialized safely when replayed to OpenAI Responses.
 
-**Architecture:** Keep the existing recovery model: tool-call parsing fails at Serf's tool execution boundary and produces a normal error tool result. Keep provider-safe argument rewriting in OpenAI-family replay serialization only, so raw local history remains useful for forensics while provider validation cannot reject full-history replay before the model sees the error result.
+**Architecture:** Keep the existing recovery model: tool-call parsing fails at Evener's tool execution boundary and produces a normal error tool result. Keep provider-safe argument rewriting in OpenAI-family replay serialization only, so raw local history remains useful for forensics while provider validation cannot reject full-history replay before the model sees the error result.
 
-**Tech Stack:** Go tests, `httptest`, real Serf `agent.Session`, real `llm/providers/openai.Adapter`, fake OpenAI Responses SSE server.
+**Tech Stack:** Go tests, `httptest`, real Evener `agent.Session`, real `llm/providers/openai.Adapter`, fake OpenAI Responses SSE server.
 
 ---
 
@@ -78,10 +78,10 @@ import (
 	"testing"
 	"time"
 
-	"primeradiant.com/serf/agent/execenv"
-	"primeradiant.com/serf/agent/schema"
-	"primeradiant.com/serf/llm"
-	"primeradiant.com/serf/llm/providers/openai"
+	"primeradiant.com/evener/agent/execenv"
+	"primeradiant.com/evener/agent/schema"
+	"primeradiant.com/evener/llm"
+	"primeradiant.com/evener/llm/providers/openai"
 )
 
 func TestSession_OpenAIResponsesMalformedToolCallRecoveryUsesSafeReplay(t *testing.T) {
@@ -344,7 +344,7 @@ func findToolCallInHistory(history []schema.Turn, callID string) (*llm.ToolCallD
 Run:
 
 ```sh
-GOCACHE=/tmp/serf-gocache go test ./agent -run TestSession_OpenAIResponsesMalformedToolCallRecoveryUsesSafeReplay -count=1 -v
+GOCACHE=/tmp/evener-gocache go test ./agent -run TestSession_OpenAIResponsesMalformedToolCallRecoveryUsesSafeReplay -count=1 -v
 ```
 
 Expected before implementation review:
@@ -385,9 +385,9 @@ If raw local persistence is the failing part, do not sanitize `resp.Message` bef
 Run:
 
 ```sh
-GOCACHE=/tmp/serf-gocache go test ./agent -run 'TestSession_OpenAIResponsesMalformedToolCallRecoveryUsesSafeReplay|TestSession_ProcessInputRepairsOrphanedAssistantToolCallsBeforeModelRequest|TestResumeHistoryRepairsOrphanedAssistantToolCallsBeforeLaterUserInput' -count=1 -v
-GOCACHE=/tmp/serf-gocache go test ./llm/providers/openai -run 'TestToResponsesInput_SanitizesMalformedHistoricalToolCallArguments|TestBuildChatCompletionsBody_SanitizesMalformedHistoricalToolCallArguments' -count=1 -v
-GOCACHE=/tmp/serf-gocache go test ./llm/providers/internal/openaichat -run TestToolArgumentsString -count=1 -v
+GOCACHE=/tmp/evener-gocache go test ./agent -run 'TestSession_OpenAIResponsesMalformedToolCallRecoveryUsesSafeReplay|TestSession_ProcessInputRepairsOrphanedAssistantToolCallsBeforeModelRequest|TestResumeHistoryRepairsOrphanedAssistantToolCallsBeforeLaterUserInput' -count=1 -v
+GOCACHE=/tmp/evener-gocache go test ./llm/providers/openai -run 'TestToResponsesInput_SanitizesMalformedHistoricalToolCallArguments|TestBuildChatCompletionsBody_SanitizesMalformedHistoricalToolCallArguments' -count=1 -v
+GOCACHE=/tmp/evener-gocache go test ./llm/providers/internal/openaichat -run TestToolArgumentsString -count=1 -v
 ```
 
 Expected: all selected tests pass.
@@ -397,8 +397,8 @@ Expected: all selected tests pass.
 Run:
 
 ```sh
-GOCACHE=/tmp/serf-gocache go test ./llm -run 'TestProviderHTTPErrorRawLogging|TestAPILoggerWrapStreamWritesRawLogOnFinish' -count=1 -v
-GOCACHE=/tmp/serf-gocache go test ./llm/providers/internal/transport -run 'TestRun_IncompleteErrorCarriesRawBodiesWhenEnabled|TestRun_TeeOnlyWhenRawBodyEnabled' -count=1 -v
+GOCACHE=/tmp/evener-gocache go test ./llm -run 'TestProviderHTTPErrorRawLogging|TestAPILoggerWrapStreamWritesRawLogOnFinish' -count=1 -v
+GOCACHE=/tmp/evener-gocache go test ./llm/providers/internal/transport -run 'TestRun_IncompleteErrorCarriesRawBodiesWhenEnabled|TestRun_TeeOnlyWhenRawBodyEnabled' -count=1 -v
 ```
 
 Expected: all selected tests pass.
@@ -411,7 +411,7 @@ Run:
 gofmt -w agent/session_openai_malformed_tool_call_test.go
 git status --short
 git add agent/session_openai_malformed_tool_call_test.go
-git commit -m "test(agent): prove malformed tool-call recovery over OpenAI Responses" -m "Add a deterministic session-level regression that drives the real OpenAI Responses adapter through a local httptest SSE server. The test preserves the raw malformed assistant tool-call arguments in local session history, verifies Serf records an error tool result without executing the tool, and asserts the next Responses wire request replays that historical function call with provider-safe {} arguments plus a linked function_call_output error. This locks down the minimal recovery behavior before any Responses continuation work begins."
+git commit -m "test(agent): prove malformed tool-call recovery over OpenAI Responses" -m "Add a deterministic session-level regression that drives the real OpenAI Responses adapter through a local httptest SSE server. The test preserves the raw malformed assistant tool-call arguments in local session history, verifies Evener records an error tool result without executing the tool, and asserts the next Responses wire request replays that historical function call with provider-safe {} arguments plus a linked function_call_output error. This locks down the minimal recovery behavior before any Responses continuation work begins."
 ```
 
 Expected: commit succeeds and `git status --short` does not show uncommitted changes from this task.
@@ -423,11 +423,11 @@ Expected: commit succeeds and `git status --short` does not show uncommitted cha
 Run after all tasks in this plan:
 
 ```sh
-GOCACHE=/tmp/serf-gocache go test ./agent -run 'TestSession_OpenAIResponsesMalformedToolCallRecoveryUsesSafeReplay|TestSession_ProcessInputRepairsOrphanedAssistantToolCallsBeforeModelRequest|TestResumeHistoryRepairsOrphanedAssistantToolCallsBeforeLaterUserInput' -count=1 -v
-GOCACHE=/tmp/serf-gocache go test ./llm/providers/openai -run 'TestToResponsesInput_SanitizesMalformedHistoricalToolCallArguments|TestBuildChatCompletionsBody_SanitizesMalformedHistoricalToolCallArguments' -count=1 -v
-GOCACHE=/tmp/serf-gocache go test ./llm/providers/internal/openaichat -run TestToolArgumentsString -count=1 -v
-GOCACHE=/tmp/serf-gocache go test ./llm -run 'TestProviderHTTPErrorRawLogging|TestAPILoggerWrapStreamWritesRawLogOnFinish' -count=1 -v
-GOCACHE=/tmp/serf-gocache go test ./llm/providers/internal/transport -run 'TestRun_IncompleteErrorCarriesRawBodiesWhenEnabled|TestRun_TeeOnlyWhenRawBodyEnabled' -count=1 -v
+GOCACHE=/tmp/evener-gocache go test ./agent -run 'TestSession_OpenAIResponsesMalformedToolCallRecoveryUsesSafeReplay|TestSession_ProcessInputRepairsOrphanedAssistantToolCallsBeforeModelRequest|TestResumeHistoryRepairsOrphanedAssistantToolCallsBeforeLaterUserInput' -count=1 -v
+GOCACHE=/tmp/evener-gocache go test ./llm/providers/openai -run 'TestToResponsesInput_SanitizesMalformedHistoricalToolCallArguments|TestBuildChatCompletionsBody_SanitizesMalformedHistoricalToolCallArguments' -count=1 -v
+GOCACHE=/tmp/evener-gocache go test ./llm/providers/internal/openaichat -run TestToolArgumentsString -count=1 -v
+GOCACHE=/tmp/evener-gocache go test ./llm -run 'TestProviderHTTPErrorRawLogging|TestAPILoggerWrapStreamWritesRawLogOnFinish' -count=1 -v
+GOCACHE=/tmp/evener-gocache go test ./llm/providers/internal/transport -run 'TestRun_IncompleteErrorCarriesRawBodiesWhenEnabled|TestRun_TeeOnlyWhenRawBodyEnabled' -count=1 -v
 git diff --check HEAD~1..HEAD
 ```
 

@@ -8,7 +8,7 @@ import (
 	"sync"
 	"testing"
 
-	"primeradiant.com/serf/agent/internal/jobstore"
+	"primeradiant.com/evener/agent/internal/jobstore"
 )
 
 // notificationWakeLog records what the session's notification queue held at

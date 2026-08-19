@@ -16,8 +16,8 @@ import (
 	"testing"
 	"time"
 
-	"primeradiant.com/serf/agent/events"
-	"primeradiant.com/serf/appwire"
+	"primeradiant.com/evener/agent/events"
+	"primeradiant.com/evener/appwire"
 )
 
 func TestEmitStruct(t *testing.T) {
@@ -253,7 +253,7 @@ func TestTypeExprThreadItemEventKind(t *testing.T) {
 func TestDeriveName(t *testing.T) {
 	cases := []struct{ wire, suffix, want string }{
 		{"thread/started", "Payload", "ThreadStartedPayload"},
-		{"serf/steering/injected", "Payload", "SerfSteeringInjectedPayload"},
+		{"evener/steering/injected", "Payload", "EvenerSteeringInjectedPayload"},
 		{"warning", "Payload", "WarningPayload"},
 		{"ping", "Params", "PingParams"},
 		{"/leading/slash", "Payload", "LeadingSlashPayload"},
@@ -639,7 +639,7 @@ func TestEmitCatalogEmitsRuntimeNotificationNames(t *testing.T) {
 // `make lint-generated`.
 func TestGeneratedFileCurrent(t *testing.T) {
 	want := EmitCatalog()
-	got, err := os.ReadFile("../../cmd/serf-hub/frontend/src/protocol/types.gen.ts")
+	got, err := os.ReadFile("../../cmd/evener-hub/frontend/src/protocol/types.gen.ts")
 	if err != nil || string(got) != want {
 		t.Fatal("types.gen.ts stale: run `make generate`")
 	}

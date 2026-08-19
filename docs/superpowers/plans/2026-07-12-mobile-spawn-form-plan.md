@@ -6,7 +6,7 @@
 
 **Architecture:** Add a parallel, mobile-only row UI in the spawn template, show/hide it with CSS, restyle the mobile form via the existing `≤767px` media query, add a small auto-expand behavior to `spawn.js`, and cover the changes with JSDOM/CSS unit tests.
 
-**Tech Stack:** Go templates (`cmd/serf-hub/templates/partials/spawn.html`), CSS (`cmd/serf-hub/assets/style.css`), vanilla JS (`cmd/serf-hub/assets/spawn.js`), JSDOM tests (`cmd/serf-hub/jstest/test-spawn.js`, `cmd/serf-hub/jstest/test-mobile-css.js`).
+**Tech Stack:** Go templates (`cmd/evener-hub/templates/partials/spawn.html`), CSS (`cmd/evener-hub/assets/style.css`), vanilla JS (`cmd/evener-hub/assets/spawn.js`), JSDOM tests (`cmd/evener-hub/jstest/test-spawn.js`, `cmd/evener-hub/jstest/test-mobile-css.js`).
 
 ## Global Constraints
 
@@ -23,7 +23,7 @@
 ## Task 1: Restructure `spawn.html` for mobile rows
 
 **Files:**
-- Modify: `cmd/serf-hub/templates/partials/spawn.html`
+- Modify: `cmd/evener-hub/templates/partials/spawn.html`
 
 **Interfaces:**
 - Consumes: existing template data (`DefaultHarness`, `DefaultModel`, `DefaultWorkingDir`, `DefaultBranch`, `DefaultAccessMode`, etc.).
@@ -93,10 +93,10 @@
 
 - [ ] **Step 4: Verify the template still renders**
 
-  Run the existing template assertions in `cmd/serf-hub/jstest/test-spawn.js` by checking the file still passes its static string checks.
+  Run the existing template assertions in `cmd/evener-hub/jstest/test-spawn.js` by checking the file still passes its static string checks.
 
   ```bash
-  cd cmd/serf-hub/jstest
+  cd cmd/evener-hub/jstest
   node test-spawn.js
   ```
 
@@ -105,7 +105,7 @@
 - [ ] **Step 5: Commit**
 
   ```bash
-  git add cmd/serf-hub/templates/partials/spawn.html
+  git add cmd/evener-hub/templates/partials/spawn.html
   git commit -m "spawn(mobile): add mobile row markup"
   ```
 
@@ -114,7 +114,7 @@
 ## Task 2: Add mobile row styles in `style.css`
 
 **Files:**
-- Modify: `cmd/serf-hub/assets/style.css`
+- Modify: `cmd/evener-hub/assets/style.css`
 
 **Interfaces:**
 - Consumes: the new classes from Task 1 (`.spawn-mobile-rows`, `.spawn-row`, `.spawn-row-label`, `.spawn-row-value`, `.spawn-row-caret`, `.spawn-advanced-summary`).
@@ -232,7 +232,7 @@
 - [ ] **Step 6: Run the mobile CSS test**
 
   ```bash
-  cd cmd/serf-hub/jstest
+  cd cmd/evener-hub/jstest
   node test-mobile-css.js
   ```
 
@@ -241,7 +241,7 @@
 - [ ] **Step 7: Commit**
 
   ```bash
-  git add cmd/serf-hub/assets/style.css
+  git add cmd/evener-hub/assets/style.css
   git commit -m "spawn(mobile): style mobile rows, textarea, and advanced summary"
   ```
 
@@ -250,7 +250,7 @@
 ## Task 3: Auto-expanding textarea in `spawn.js`
 
 **Files:**
-- Modify: `cmd/serf-hub/assets/spawn.js`
+- Modify: `cmd/evener-hub/assets/spawn.js`
 
 **Interfaces:**
 - Consumes: the existing `init()` function and the `textarea[name=prompt]` element.
@@ -288,7 +288,7 @@
 - [ ] **Step 3: Verify the JS still loads**
 
   ```bash
-  cd cmd/serf-hub/jstest
+  cd cmd/evener-hub/jstest
   node test-spawn.js
   ```
 
@@ -297,7 +297,7 @@
 - [ ] **Step 4: Commit**
 
   ```bash
-  git add cmd/serf-hub/assets/spawn.js
+  git add cmd/evener-hub/assets/spawn.js
   git commit -m "spawn(mobile): auto-expand prompt textarea"
   ```
 
@@ -306,8 +306,8 @@
 ## Task 4: Add tests
 
 **Files:**
-- Modify: `cmd/serf-hub/jstest/test-spawn.js`
-- Modify: `cmd/serf-hub/jstest/test-mobile-css.js`
+- Modify: `cmd/evener-hub/jstest/test-spawn.js`
+- Modify: `cmd/evener-hub/jstest/test-mobile-css.js`
 
 **Interfaces:**
 - Consumes: the updated template, CSS, and JS from Tasks 1–3.
@@ -341,7 +341,7 @@ assert(spawnTemplateSrc.indexOf('data-spawn-advanced-toggle') !== -1, "spawn tem
     <form data-spawn-form>
       <textarea class="spawn-input" name="prompt" style="min-height:96px;max-height:320px;"></textarea>
       <button class="btn btn-primary spawn-btn" type="submit">spawn</button>
-      <input type="hidden" name="harness" value="serf">
+      <input type="hidden" name="harness" value="evener">
       <input type="hidden" name="model" value="openai/gpt-5.5">
       <input type="hidden" name="working_dir" value="/tmp/expand">
       <input type="hidden" name="branch" value="">
@@ -385,7 +385,7 @@ pass(/\.spawn-advanced:not\(\.is-open\)\s+\.spawn-advanced-body\s*\{[^}]*display
 - [ ] **Step 4: Run the test files**
 
   ```bash
-  cd cmd/serf-hub/jstest
+  cd cmd/evener-hub/jstest
   node test-spawn.js
   node test-mobile-css.js
   ```
@@ -395,8 +395,8 @@ pass(/\.spawn-advanced:not\(\.is-open\)\s+\.spawn-advanced-body\s*\{[^}]*display
 - [ ] **Step 5: Commit**
 
   ```bash
-  git add cmd/serf-hub/jstest/test-spawn.js
-  git add cmd/serf-hub/jstest/test-mobile-css.js
+  git add cmd/evener-hub/jstest/test-spawn.js
+  git add cmd/evener-hub/jstest/test-mobile-css.js
   git commit -m "test(spawn): cover mobile rows, structure, and textarea auto-expand"
   ```
 
@@ -409,7 +409,7 @@ pass(/\.spawn-advanced:not\(\.is-open\)\s+\.spawn-advanced-body\s*\{[^}]*display
 - [ ] **Step 1: Run the Go hub tests**
 
   ```bash
-  go test -short ./cmd/serf-hub/...
+  go test -short ./cmd/evener-hub/...
   ```
 
   Expected: all packages pass.
@@ -417,7 +417,7 @@ pass(/\.spawn-advanced:not\(\.is-open\)\s+\.spawn-advanced-body\s*\{[^}]*display
 - [ ] **Step 2: Run the full JS test suite**
 
   ```bash
-  cd cmd/serf-hub/jstest
+  cd cmd/evener-hub/jstest
   ./run-all.sh
   ```
 

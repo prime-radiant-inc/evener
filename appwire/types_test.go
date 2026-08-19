@@ -72,12 +72,12 @@ func TestDiagnosticCauseJSONRoundTrip(t *testing.T) {
 	}
 }
 
-// TestSerfDiagnosticsJobsJSONRoundTrip verifies the job-control diagnostics
+// TestEvenerDiagnosticsJobsJSONRoundTrip verifies the job-control diagnostics
 // wire shape uses the job surface, not the legacy subagent one.
-func TestSerfDiagnosticsJobsJSONRoundTrip(t *testing.T) {
+func TestEvenerDiagnosticsJobsJSONRoundTrip(t *testing.T) {
 	exitCode := 2
-	in := SerfDiagnostics{
-		Jobs: []SerfJobInfo{
+	in := EvenerDiagnostics{
+		Jobs: []EvenerJobInfo{
 			{
 				JobID:            "job_1",
 				JobType:          "shell",
@@ -117,7 +117,7 @@ func TestSerfDiagnosticsJobsJSONRoundTrip(t *testing.T) {
 			t.Fatalf("marshal=%s should not contain %s", got, banned)
 		}
 	}
-	var out SerfDiagnostics
+	var out EvenerDiagnostics
 	if err := json.Unmarshal(raw, &out); err != nil {
 		t.Fatalf("unmarshal: %v", err)
 	}
@@ -132,21 +132,21 @@ func TestSerfDiagnosticsJobsJSONRoundTrip(t *testing.T) {
 	}
 }
 
-func TestSerfDiagnosticsDelegatesJSONRoundTrip(t *testing.T) {
+func TestEvenerDiagnosticsDelegatesJSONRoundTrip(t *testing.T) {
 	valid := true
 	exhaustionResumable := false
 	runningForMS := int64(1200)
-	in := SerfDiagnostics{
-		Delegates: []SerfDelegateInfo{{
+	in := EvenerDiagnostics{
+		Delegates: []EvenerDelegateInfo{{
 			DelegateID: "dlg_1", OwnerSessionID: "owner", RootSessionID: "root", ChildSessionID: "child", TranscriptRef: "local:child",
 			ParentDelegateID: "dlg_parent", Type: "delegate", Lifecycle: "idle", Phase: "idle", Status: "idle", Resumable: true,
 			ProjectionRevision: 9, Message: json.RawMessage("null"), StructuredResult: json.RawMessage("null"), StructuredValid: &valid,
 			StructuredReason: "valid null", ExhaustionBudget: "max_tool_rounds_per_input", ExhaustionLimit: 4,
 			ExhaustionResumable: &exhaustionResumable, RunningForMS: &runningForMS, Warnings: []string{"warning"}, Diagnostics: []string{"diagnostic"},
-			Usage:    &SerfUsage{InputTokens: 3, OutputTokens: 2, CacheReadTokens: 1, TotalTokens: 5},
+			Usage:    &EvenerUsage{InputTokens: 3, OutputTokens: 2, CacheReadTokens: 1, TotalTokens: 5},
 			Worktree: &JobActivityWorktree{Path: "/tmp/lane", Branch: "delegate/lane", HeadSHA: "abc", Ahead: 2, Dirty: true},
 		}},
-		TurnSlots: &SerfTurnSlots{InUse: 2, Cap: 50, Jobs: 1, Drives: 1},
+		TurnSlots: &EvenerTurnSlots{InUse: 2, Cap: 50, Jobs: 1, Drives: 1},
 	}
 	raw, err := json.Marshal(in)
 	if err != nil {
@@ -162,7 +162,7 @@ func TestSerfDiagnosticsDelegatesJSONRoundTrip(t *testing.T) {
 			t.Fatalf("stable delegate diagnostics leaked %s: %s", forbidden, raw)
 		}
 	}
-	var out SerfDiagnostics
+	var out EvenerDiagnostics
 	if err := json.Unmarshal(raw, &out); err != nil {
 		t.Fatalf("unmarshal delegates diagnostics: %v", err)
 	}
@@ -173,9 +173,9 @@ func TestSerfDiagnosticsDelegatesJSONRoundTrip(t *testing.T) {
 	}
 }
 
-func TestSerfJobInfo_ExhaustionFields(t *testing.T) {
+func TestEvenerJobInfo_ExhaustionFields(t *testing.T) {
 	resumable := true
-	in := SerfJobInfo{
+	in := EvenerJobInfo{
 		JobID:            "job_exhausted",
 		JobType:          "delegate",
 		Status:           "exhausted",
@@ -206,7 +206,7 @@ func TestSerfJobInfo_ExhaustionFields(t *testing.T) {
 		}
 	}
 
-	var out SerfJobInfo
+	var out EvenerJobInfo
 	if err := json.Unmarshal(raw, &out); err != nil {
 		t.Fatalf("unmarshal: %v", err)
 	}
@@ -327,12 +327,12 @@ func TestDiagnosticCauseOmitEmpty(t *testing.T) {
 	}
 }
 
-// TestSerfThreadMetricsJSONRoundTrip (WS2 A7) verifies the wire shape of the
-// live working-state/token metrics on SerfThread: camelCase JSON tags and a
+// TestEvenerThreadMetricsJSONRoundTrip (WS2 A7) verifies the wire shape of the
+// live working-state/token metrics on EvenerThread: camelCase JSON tags and a
 // correct round trip for a populated set of values.
-func TestSerfThreadMetricsJSONRoundTrip(t *testing.T) {
-	in := SerfThread{
-		Usage:               &SerfUsage{InputTokens: 1},
+func TestEvenerThreadMetricsJSONRoundTrip(t *testing.T) {
+	in := EvenerThread{
+		Usage:               &EvenerUsage{InputTokens: 1},
 		WorkMillis:          2,
 		ActiveTurnStartedAt: 3,
 	}
@@ -350,7 +350,7 @@ func TestSerfThreadMetricsJSONRoundTrip(t *testing.T) {
 			t.Fatalf("marshal=%s missing %s", got, want)
 		}
 	}
-	var out SerfThread
+	var out EvenerThread
 	if err := json.Unmarshal(raw, &out); err != nil {
 		t.Fatalf("unmarshal: %v", err)
 	}
@@ -363,12 +363,12 @@ func TestSerfThreadMetricsJSONRoundTrip(t *testing.T) {
 	}
 }
 
-// TestSerfThreadMetricsOmitEmpty (WS2 A7) verifies that a zero-value
-// SerfThread omits usage, workMillis, and activeTurnStartedAt entirely — a
-// nil Usage pointer (rather than a rendered zero SerfUsage) and the omitempty
+// TestEvenerThreadMetricsOmitEmpty (WS2 A7) verifies that a zero-value
+// EvenerThread omits usage, workMillis, and activeTurnStartedAt entirely — a
+// nil Usage pointer (rather than a rendered zero EvenerUsage) and the omitempty
 // scalars both drop out, so fresh/old-daemon/codex threads don't render ↑0 ↓0.
-func TestSerfThreadMetricsOmitEmpty(t *testing.T) {
-	raw, err := json.Marshal(SerfThread{})
+func TestEvenerThreadMetricsOmitEmpty(t *testing.T) {
+	raw, err := json.Marshal(EvenerThread{})
 	if err != nil {
 		t.Fatalf("marshal: %v", err)
 	}
@@ -380,12 +380,12 @@ func TestSerfThreadMetricsOmitEmpty(t *testing.T) {
 	}
 }
 
-// TestSerfThreadCostJSONRoundTrip verifies SerfThread.Cost is the
+// TestEvenerThreadCostJSONRoundTrip verifies EvenerThread.Cost is the
 // session-level estimated dollar total that rides the thread snapshot in
 // camelCase, exactly like the per-turn Turn.Cost string — same "~$X.XX"
 // shape, same omit-when-absent honesty.
-func TestSerfThreadCostJSONRoundTrip(t *testing.T) {
-	in := SerfThread{Usage: &SerfUsage{InputTokens: 1}, Cost: "~$0.42"}
+func TestEvenerThreadCostJSONRoundTrip(t *testing.T) {
+	in := EvenerThread{Usage: &EvenerUsage{InputTokens: 1}, Cost: "~$0.42"}
 	raw, err := json.Marshal(in)
 	if err != nil {
 		t.Fatalf("marshal: %v", err)
@@ -394,7 +394,7 @@ func TestSerfThreadCostJSONRoundTrip(t *testing.T) {
 	if !strings.Contains(got, `"cost":"~$0.42"`) {
 		t.Fatalf("marshal=%s missing cost", got)
 	}
-	var out SerfThread
+	var out EvenerThread
 	if err := json.Unmarshal(raw, &out); err != nil {
 		t.Fatalf("unmarshal: %v", err)
 	}
@@ -441,8 +441,8 @@ func TestModelListResponseRecentOmitEmpty(t *testing.T) {
 	}
 }
 
-func TestSerfThread_AskPendingRoundTrips(t *testing.T) {
-	th := SerfThread{Ref: "local:01A", AskPending: true}
+func TestEvenerThread_AskPendingRoundTrips(t *testing.T) {
+	th := EvenerThread{Ref: "local:01A", AskPending: true}
 	data, err := json.Marshal(th)
 	if err != nil {
 		t.Fatal(err)
@@ -456,7 +456,7 @@ func TestSerfThread_AskPendingRoundTrips(t *testing.T) {
 // (not cumulative-session) fields that round-trip on the wire in camelCase,
 // matching appwire's own JSON convention.
 func TestTurnUsageCostJSONRoundTrip(t *testing.T) {
-	in := Turn{Usage: &SerfUsage{InputTokens: 1}, Cost: "~$0.01"}
+	in := Turn{Usage: &EvenerUsage{InputTokens: 1}, Cost: "~$0.01"}
 	raw, err := json.Marshal(in)
 	if err != nil {
 		t.Fatalf("marshal: %v", err)
@@ -471,7 +471,7 @@ func TestTurnUsageCostJSONRoundTrip(t *testing.T) {
 }
 
 // TestTurnUsageCostOmitEmpty verifies a zero-value Turn omits usage and cost
-// entirely (mirrors TestSerfThreadMetricsOmitEmpty's pattern) — a turn with
+// entirely (mirrors TestEvenerThreadMetricsOmitEmpty's pattern) — a turn with
 // no computable usage/cost shouldn't render an empty cluster.
 func TestTurnUsageCostOmitEmpty(t *testing.T) {
 	raw, err := json.Marshal(Turn{})

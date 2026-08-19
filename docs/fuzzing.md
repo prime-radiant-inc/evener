@@ -1,6 +1,6 @@
-# Fuzzing serf — a developer's guide
+# Fuzzing evener — a developer's guide
 
-This is the front door to serf's fuzzing toolkit: a large set of `testing.F`
+This is the front door to evener's fuzzing toolkit: a large set of `testing.F`
 ("native") and `rapid.Check` ("stateful") targets that exercise every package
 that decodes untrusted/model-generated input and every API surface, plus the
 tooling that measures coverage, gates completeness, and turns any failure into a
@@ -58,14 +58,14 @@ So every heavy target runs under a hard memory ceiling, enforced by cgroup-v2 vi
 `scripts/run-fuzz.sh` itself, so even a **direct** `scripts/run-fuzz.sh` is
 protected. There are two ceilings:
 
-- **per run** (`SERF_MEM_MAX`, default 16G) — one runaway is OOM-killed alone;
-- **shared total** (`SERF_MEM_TOTAL`, default 32G) — all concurrent serf runs
+- **per run** (`EVENER_MEM_MAX`, default 16G) — one runaway is OOM-killed alone;
+- **shared total** (`EVENER_MEM_TOTAL`, default 32G) — all concurrent evener runs
   join one slice, so launching several at once still can't exhaust the host.
 
 A runaway now shows up as a *scope/slice* OOM in `journalctl --user`, never
 `global_oom`, and `tailscale`/SSH stay up throughout. Tune the ceilings for a
-bigger box (`SERF_MEM_MAX=24G make fuzz-nightly`) or disable entirely with
-`SERF_MEM_MAX=0`. Where systemd user scopes aren't available (some CI
+bigger box (`EVENER_MEM_MAX=24G make fuzz-nightly`) or disable entirely with
+`EVENER_MEM_MAX=0`. Where systemd user scopes aren't available (some CI
 containers) the wrapper prints a warning and runs uncapped — CI runners impose
 their own cgroup limit.
 
@@ -112,14 +112,14 @@ make fuzz-coverage-global BLESS=1            # only after every measured module 
 
 The runner first obtains the exact four-column native/Rapid plan from
 `make fuzz-registry-check`. It then lists every production package with
-`-tags serffuzz`; a package without a registered **local** fuzz surface fails
+`-tags evenerfuzz`; a package without a registered **local** fuzz surface fails
 before any replay with `missing local fuzz surface: <module>:<package>`.
 Each native target runs once. Each Rapid target runs with
 `RAPID_SEED=1,2,3,5,8`, `RAPID_CHECKS=100`, `RAPID_STEPS=30`,
 `RAPID_NOFAILFILE=true`, `RAPID_LOG=false`, `RAPID_V=false`,
 `RAPID_DEBUG=false`, `RAPID_DEBUGVIS=false`, and `RAPID_SHRINKTIME=30s`;
 `RAPID_FAILFILE` is explicitly unset. Their coverage profiles are unioned only
-within the owning package, then passed to `serf-fuzzcov` for the strict raw
+within the owning package, then passed to `evener-fuzzcov` for the strict raw
 threshold, reviewed file-only exclusions, and upward-only floors. There is no
 `-coverpkg` cross-package instrumentation.
 
@@ -127,7 +127,7 @@ The runner exports `GOWORK=<repository>/go.work` and derives its canonical,
 repo-relative module labels from that file at invocation, so it does not depend
 on an ambient workspace setting or a stale hard-coded list. `--modules` accepts
 only those derived labels. `--format json` reserves stdout for the final
-`serf-fuzzcov` JSON document; runner progress and replay output go to stderr.
+`evener-fuzzcov` JSON document; runner progress and replay output go to stderr.
 Any registry, listing, replay, profile, or accounting failure is fatal; the
 command never turns a failed target into an omitted or synthetic zero profile.
 
@@ -165,7 +165,7 @@ comment, so the finding stays visible.
 For an on-demand campaign that triages for you, `make fuzz-triage` runs the search,
 applies a flake-guard (a failure must reproduce K times to count), dedups against
 prior findings, and opens a PR by default carrying the generated regression test.
-See [`fuzz/README.md`](../fuzz/README.md) for its flags and `SERF_FUZZ_PERSIST`.
+See [`fuzz/README.md`](../fuzz/README.md) for its flags and `EVENER_FUZZ_PERSIST`.
 
 ## Continuous fuzzing (local, on-demand)
 
@@ -231,25 +231,25 @@ without crashing. Pick the strongest oracle the surface admits:
 | a codec (decode↔encode) | **round-trip / fixed point** — decode→encode→decode is stable | `FuzzMessageDecode`, `FuzzSessionMetaRoundTrip` |
 | a parser with a semantics-preserving transform | **metamorphic** — re-chunking / whitespace / reordering must not change the result | `FuzzParseSSE`, `FuzzOpenAIResponsesMetamorphic` |
 | a state machine / replayed log | **external invariant / monotonicity** (rapid sequences) — status only advances, history doesn't shrink, no orphaned state | `FuzzJobEventLogReplay`, `TestRouterSeqFuzz`, `TestLifecycleSeqFuzz`, `TestJobstoreSeqFuzz`, `TestCompactionSeqFuzz`, `TestHubMultiSessionSeqFuzz` |
-| any subsystem with a load-bearing internal assumption | **internal invariant** — `invariant.Hold()` asserts it at the point logic could first go wrong; live only under `-tags serffuzz`, so the never-panic oracle catches it (see [Internal invariants under serffuzz](#internal-invariants-under-serffuzz)) | the `invariant.Hold` sites in `appprojector`, `apptranscript`, `appwire`, `jobstore`, the llm decoders |
+| any subsystem with a load-bearing internal assumption | **internal invariant** — `invariant.Hold()` asserts it at the point logic could first go wrong; live only under `-tags evenerfuzz`, so the never-panic oracle catches it (see [Internal invariants under evenerfuzz](#internal-invariants-under-evenerfuzz)) | the `invariant.Hold` sites in `appprojector`, `apptranscript`, `appwire`, `jobstore`, the llm decoders |
 | an HTTP / RPC handler | **never 5xx**, **never wedge**, **never escape** the sandbox FS | `FuzzWebHandler`, `FuzzWebMutatingHandler`, `FuzzAppWireDispatch` |
 | a decoder whose output must not silently drift | **golden / snapshot differential** — the decoded corpus output, canonically re-encoded and pinned; a refactor that changes it (no panic, round-trip still holds) fails the gate | `appwire/golden_test.go` |
 | two code paths that must compute the same thing | **differential** — drive both from one input, assert they agree modulo an allow-list (the strongest class; it found both real decoder bugs) | `FuzzCrossProviderDifferential`, `FuzzStreamVsNonStreamDifferential`, `FuzzTranscriptReadersAgree`, `FuzzTurnPagingEquivalence` |
 
-## Internal invariants under serffuzz
+## Internal invariants under evenerfuzz
 
 External oracles (round-trip, no-panic) only see a bug once it reaches a surface.
 Internal invariants catch a *logic* bug at the point it first happens. The
-`primeradiant.com/serf/invariant` module exposes:
+`primeradiant.com/evener/invariant` module exposes:
 
 ```go
 invariant.Hold(cond bool, format string, args ...any)  // assert cond; else panic with the message
-invariant.Enabled                                      // untyped const: false in prod, true under serffuzz
+invariant.Enabled                                      // untyped const: false in prod, true under evenerfuzz
 ```
 
 `Hold` is **zero-cost in a normal build**: the no-op form is inlined away — the
 condition is not evaluated and the args are not boxed (verified by disassembly), so
-production binaries are byte-unchanged. Built with **`-tags serffuzz`** a violated
+production binaries are byte-unchanged. Built with **`-tags evenerfuzz`** a violated
 invariant panics, so the existing never-panic oracle reports it for free. The whole
 fuzz path (`make fuzz`, `run-fuzz.sh`, `fuzz-coverage`, `fuzz-triage`) builds with
 that tag automatically; `make test` and `go build` stay tag-free.
@@ -266,7 +266,7 @@ trip it, restore).
 ## Differential oracles
 
 The strongest class: drive two things that must agree from one input and assert
-they match. serf has several flavors — both real decoder bugs this codebase has
+they match. evener has several flavors — both real decoder bugs this codebase has
 found came from here:
 
 - **golden / snapshot** — a decoder vs a committed picture of its own past output
@@ -327,7 +327,7 @@ flagging a real behavior change.
 
 ## Secret scanning & corpus harvesting
 
-The seed corpora include shape-scrubbed real traffic (`cmd/serf-fuzz-harvest`
+The seed corpora include shape-scrubbed real traffic (`cmd/evener-fuzz-harvest`
 sanitizes recorded sessions into seeds), so two gitleaks scans guard against a
 real secret slipping in:
 

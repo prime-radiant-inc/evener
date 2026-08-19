@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"strings"
 
-	"primeradiant.com/serf/identifier"
+	"primeradiant.com/evener/identifier"
 )
 
 // selector is a parsed session selector. projectID is non-empty only for a proj:

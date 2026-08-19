@@ -55,7 +55,7 @@ forces every present and future `EntryKind` to declare how its turn opens.
 closed and opened, but not advertised as active. See `8d9767d9e`.)
 
 **Tech Stack:** Go 1.25 multi-module workspace (`agent` module, root module's
-`internal/appprojector` / `server` / `cmd/serf-hub`), `appwire` JSON-RPC.
+`internal/appprojector` / `server` / `cmd/evener-hub`), `appwire` JSON-RPC.
 
 **Spec:** this document.
 
@@ -80,7 +80,7 @@ the data-loss precedent for two minters sharing a turn-id namespace.
   `agent/session_client_mutation_turn_namespace_test.go` pins only that
   reserved ids stay outside the transcript entry-index namespace.)
 - **Nothing names a turn out of band.** The projector consumes events on its
-  own goroutine (`agent/session_events.go:95`, `cmd/serf/serve.go:190-195`),
+  own goroutine (`agent/session_events.go:95`, `cmd/evener/serve.go:190-195`),
   so a side-channel announcement races the stream.
 - **Every minted id must be released on every path.** The mint writes durable
   state that gates all later turns; a leak wedges the session for the life of
@@ -88,7 +88,7 @@ the data-loss precedent for two minters sharing a turn-id namespace.
 - **Every production line this plan adds must be killed by a test.** Each task
   names its mutations; apply each, watch the test fail, revert.
 - Gates: `make lint`, `make build`, `go test ./...`, the seven module suites
-  (`go test primeradiant.com/serf/<mod>/...` for agent, auth, envvars, fuzz,
+  (`go test primeradiant.com/evener/<mod>/...` for agent, auth, envvars, fuzz,
   identifier, invariant, llm), `make test-web`.
 - Never `git stash`; never `git checkout <file>` to undo.
 
@@ -135,7 +135,7 @@ entry kinds (`:388-408`):
 
 `acceptNotificationInput` (`:1527`) emits `EventSteeringInjected` for its
 reminder (`:1575`), and that projector case (`appwire_projection.go:733-773`)
-never calls `ensureTurn` — it only produces `serf/steering/injected`. The
+never calls `ensureTurn` — it only produces `evener/steering/injected`. The
 pending-steering path emits `EventSteeringInjected` too, via
 `injectDrainedSteering` → `consumeSteeringMessage` (`agent/session_queue.go:843,852`).
 Neither opens a turn.
@@ -143,7 +143,7 @@ Neither opens a turn.
 Three live defects:
 
 **1. Idle wake → an id no client can name.** `SubmitNotification`
-(`server/server.go:755`) wakes an idle session. `cmd/serf/serve.go:1014` calls
+(`server/server.go:755`) wakes an idle session. `cmd/evener/serve.go:1014` calls
 `srv.SetProcessing(true)`, and `setProcessingLocked` reserves `turn_<n>` and
 publishes it as `appActiveTurnID` **before the session goroutine runs**
 (`server/server.go:712-716`); `startTurn` then consumes that reservation
@@ -161,7 +161,7 @@ design (`server/appwire_runtime.go:396-406`: "a client applying both fields of
 one notification can never hold a status and a capability set that
 disagree"), so the client keeps `steer:false, interrupt:false`. The composer
 gates on it — `isTurnActive` requires `statusType === "active"`
-(`cmd/serf-hub/frontend/src/panes/session/composer/submitRouting.ts:47-49`),
+(`cmd/evener-hub/frontend/src/panes/session/composer/submitRouting.ts:47-49`),
 and `showSteer`/`showStop` require `busy`
 (`.../composer/Composer.tsx:516,531-532`). **Stop and Steer are not even
 rendered.** Naming the turn without fixing this delivers nothing.
@@ -299,7 +299,7 @@ Task 5 must wait past it rather than pretend it is closed.
 | `internal/appprojector/turn_boundary_test.go` (create) | Boundary coverage. |
 | `server/thread_envelope.go` (modify) | Facet row. |
 | `server/thread_envelope_test.go` (modify) | The freshness case for that row. |
-| `cmd/serf-hub/e2e_turn_control_test.go` (modify) | Live-stack regression. |
+| `cmd/evener-hub/e2e_turn_control_test.go` (modify) | Live-stack regression. |
 
 ---
 
@@ -324,7 +324,7 @@ func TestTurnStartedDataBindsItsKind(t *testing.T) {
 }
 ```
 
-- [x] **Step 2: watch it fail** — `go test primeradiant.com/serf/agent/events/ -run TestTurnStartedDataBindsItsKind -v`.
+- [x] **Step 2: watch it fail** — `go test primeradiant.com/evener/agent/events/ -run TestTurnStartedDataBindsItsKind -v`.
 - [x] **Step 3: implement**
 
 ```go
@@ -360,7 +360,7 @@ line. (That list is documentation, not a gate — a payload with the method
 satisfies the interface either way; the real binding is `events.New`
 (`eventdata.go:25-31`), which the test above pins.)
 
-- [x] **Step 4: watch it pass**, then `go test primeradiant.com/serf/agent/events/...`.
+- [x] **Step 4: watch it pass**, then `go test primeradiant.com/evener/agent/events/...`.
 - [x] **Step 5: commit.**
 
 ---
@@ -462,7 +462,7 @@ boundary.
         event.
       A mutation that does not fail its test means the test is not pinning the
       line. Fix the test before continuing.
-- [x] **Step 5:** `go test primeradiant.com/serf/agent/...`; update the stale
+- [x] **Step 5:** `go test primeradiant.com/evener/agent/...`; update the stale
       comment at `:1035-1040` and the `ActiveTurnID` doc at
       `session_client_mutation.go:128-135`; commit.
 
@@ -487,7 +487,7 @@ boundary.
    `EventTurnStarted{TurnID:"turn_m2"}` → `EventSteeringInjected` → assistant
    text. Assert the second assistant item's `TurnID` is `turn_m2`, and that
    `turn_m1` completed. **Assert on the assistant item, not the steering
-   notification** — `NotifySerfSteeringInjected`'s params
+   notification** — `NotifyEvenerSteeringInjected`'s params
    (`appwire_projection.go:753-773`) carry no turn id.
 
 - [x] **Step 2: watch them fail.**
@@ -508,7 +508,7 @@ boundary.
 - [x] **Step 4: watch them pass. Mutations:** drop the `reservedTurnID`
       assignment → test 1 fails; drop `threadStatus` → test 2 fails; drop
       `closeActiveTurn` → tests 3 and 4 fail.
-- [x] **Step 5:** `go test ./internal/appprojector/ ./server/ ./cmd/serf/`.
+- [x] **Step 5:** `go test ./internal/appprojector/ ./server/ ./cmd/evener/`.
       The `closeActiveTurn` factoring must change no existing test; if one
       moves, the factoring changed behaviour — stop and say so.
 - [x] **Step 6: facet row.** `server/thread_envelope.go:149-162` calls turn
@@ -574,7 +574,7 @@ func TestEveryEntryKindDeclaresHowItsTurnOpens(t *testing.T) {
 
 ### Task 5: Live-stack regression
 
-**Files:** `cmd/serf-hub/e2e_turn_control_test.go`.
+**Files:** `cmd/evener-hub/e2e_turn_control_test.go`.
 
 - [x] **Step 1: failing test**, `TestE2E_TurnControlReachesANotificationTurn`.
 
@@ -622,7 +622,7 @@ func TestEveryEntryKindDeclaresHowItsTurnOpens(t *testing.T) {
       **Stop and Steer actually render** — defect 2 means a fix that names the
       turn but leaves the thread idle would pass every Go test and still fail
       here. Drive both, then confirm the run's mutation journal
-      (`$run/home/.local/state/serf/projects/*/mutations/<SID>.json`) records
+      (`$run/home/.local/state/evener/projects/*/mutations/<SID>.json`) records
       them `terminal`, not `rejected`. Stop the stack with `--stop`.
 - [x] **Step 3: close kata `7vmd`** with typed evidence: the e2e test name and
       the journal result.

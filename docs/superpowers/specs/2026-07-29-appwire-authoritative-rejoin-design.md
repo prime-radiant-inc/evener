@@ -4,7 +4,7 @@
 
 **Date:** 2026-07-29
 
-**Scope:** Serf daemon AppWire snapshot authority, atomic subscription
+**Scope:** Evener daemon AppWire snapshot authority, atomic subscription
 hydration, frontend retry ownership, retry-safe mutation projection, session
 identity replacement, and the remaining reviewed RelaySession/Codex cut fixes.
 
@@ -171,7 +171,7 @@ The reducer keeps all currently handled lifecycle messages and adds the two
 missing state-bearing cases:
 
 - `item/agentMessage/reset` removes the named partial assistant item; and
-- `serf/steering/injected` appends the steering item to the active turn using
+- `evener/steering/injected` appends the steering item to the active turn using
   the same per-turn count-based identity and fields as the frontend reducer.
 
 Warnings remain ephemeral because they have no transcript representation.
@@ -396,7 +396,7 @@ wire fields or timers.
 
 The last limitation was conscious, and its stated justification no longer
 holds. The browser trusts ordered WebSocket delivery plus explicit
-`serf/thread/resync`. Downstream of the projection that is still true: a
+`evener/thread/resync`. Downstream of the projection that is still true: a
 subscriber that cannot keep up is disconnected rather than skipped
 (`Connection.enqueue` in `internal/appserver/server.go` refuses on a full
 send queue and the connection is unregistered), so no frame is silently
@@ -410,14 +410,14 @@ disk. It is not harmless now: this design made the in-memory snapshot the
 sole authority, and the materialized thread envelope extended that to the
 whole envelope, so a dropped event is permanently absent from every
 `thread/read` for the life of the identity. No daemon code produces
-`serf/thread/resync`, so nothing repairs it and a page reload does not.
+`evener/thread/resync`, so nothing repairs it and a page reload does not.
 
 That was the proven producer gap the paragraph above said did not exist, and
 for the daemon it is now CLOSED. Delivery discipline became a property of the
 consumer rather than of the channel: `Session.ConsumeEventsLossless` marks the
 session and starts the drain in one call, and is the only writer of that mark,
 so an attached authoritative consumer waits instead of dropping and "lossless
-with nobody reading" cannot be expressed. `cmd/serf/serve.go`'s bridge is the
+with nobody reading" cannot be expressed. `cmd/evener/serve.go`'s bridge is the
 single caller.
 
 The drop remains for everything else, and correctly: the same channel is a
@@ -433,7 +433,7 @@ What remains, precisely:
   `NewSession`, so nothing can be attached yet. They are buffered rather than
   lost, and a regression test asserts construction stays well inside the
   buffer, but the margin is a measured fact rather than a guarantee.
-- **`serf run` and the dev tools are unchanged**, deliberately: nothing there
+- **`evener run` and the dev tools are unchanged**, deliberately: nothing there
   keeps authoritative state.
 - **A wedged consumer now stalls the session instead of corrupting it.** The
   emitter blocks holding `eventsMu.RLock`, which also blocks `Session.Close`,
@@ -485,7 +485,7 @@ What remains, precisely:
   `queuePersistMu`, `responseSideEffectsMu` (`TOOL_CALL_END` and its
   output-delta chunk loop) and `subagent.mu`. They used to be safe only because
   `liveThreadEnvelopeSource` does not take them, which was a property of one
-  file in `cmd/serf` rather than of `agent`. The envelope source now reaches the
+  file in `cmd/evener` rather than of `agent`. The envelope source now reaches the
   session as `agent.EnvelopeSampling`, so a facet cannot sample anything that
   interface does not declare, and `agent/session_envelope_sampling_test.go`
   calls every method it *does* declare while each of those locks is held — and
@@ -502,7 +502,7 @@ What remains, precisely:
   hazard through a primitive no test can hold from outside (kata cb1k verified
   that neither reachable `Once` body emits).
 
-`serf/thread/resync` still has no producer. It is not needed for the daemon's
+`evener/thread/resync` still has no producer. It is not needed for the daemon's
 own feed any more, but it remains the only repair path if a future consumer is
 added that can legitimately miss frames.
 

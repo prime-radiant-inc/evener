@@ -5,8 +5,8 @@ import (
 	"path/filepath"
 	"testing"
 
-	"primeradiant.com/serf/agent/internal/frontmatter"
-	"primeradiant.com/serf/fuzz/edgeseeds"
+	"primeradiant.com/evener/agent/internal/frontmatter"
+	"primeradiant.com/evener/fuzz/edgeseeds"
 )
 
 // FuzzApSkillFileParse drives the SKILL.md discovery path — ScanSkillsDir →

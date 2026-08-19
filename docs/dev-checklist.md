@@ -1,7 +1,7 @@
 # Manual dev-box checklist
 
 Checks in this file run against **your own real dev hub and real
-`~/.serf` / `~/.local/state/serf` session history** — not an isolated,
+`~/.evener` / `~/.local/state/evener` session history** — not an isolated,
 agent-runnable checkout the way every card under `test/scenarios/` is.
 An agent asked to "run the scenario sweep" should skip this file
 entirely: its Pre-state cannot be satisfied in a fresh, isolated `$HOME`
@@ -34,7 +34,7 @@ Validates that:
 ## Pre-state
 
 - Hub running. At least one project with at least one past
-  session under `~/.local/state/serf/projects/`. On this dev box
+  session under `~/.local/state/evener/projects/`. On this dev box
   there's plenty.
 - Browser authed.
 
@@ -49,10 +49,10 @@ Validates that:
 3. For each project, count the listed sessions and confirm it
    matches the count badge.
 4. Cross-check live count:
-   `ls /home/jesse/.serf/run/*.json | wc -l` — minus orphans
+   `ls /home/jesse/.evener/run/*.json | wc -l` — minus orphans
    (rendezvous files whose PID isn't actually running). The
    sidebar's Live count should match the actual count of running
-   serf-daemon processes.
+   evener-daemon processes.
 5. Click into a session in the sidebar. Confirm the URL becomes
    `/s/<id>` and the workspace loads.
 6. Click `＋ new` in the nav. Confirm URL is `/new` and the spawn
@@ -74,7 +74,7 @@ Validates that:
 ## Sharp edges
 
 - The Live count is computed from the in-memory roster of daemon
-  sources. Rendezvous files in `~/.serf/run/` are the source of
+  sources. Rendezvous files in `~/.evener/run/` are the source of
   truth; orphan files (daemon dead, file lingers) inflate the
   count until the hub reaps. Worth filing a kata if you see a
   persistent stale count after a clean kill.

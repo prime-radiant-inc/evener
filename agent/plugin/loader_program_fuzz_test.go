@@ -1,4 +1,4 @@
-//go:build serffuzz
+//go:build evenerfuzz
 
 package plugin
 
@@ -14,7 +14,7 @@ import (
 	"strings"
 	"testing"
 
-	"primeradiant.com/serf/agent/mcpconfig"
+	"primeradiant.com/evener/agent/mcpconfig"
 )
 
 // FuzzPluginLoaderProgram builds a bounded set of real plugin trees and drives

@@ -8,8 +8,8 @@ import (
 	"testing"
 	"time"
 
-	"primeradiant.com/serf/agent/internal/agenttest"
-	"primeradiant.com/serf/llm"
+	"primeradiant.com/evener/agent/internal/agenttest"
+	"primeradiant.com/evener/llm"
 )
 
 // TestSubagentSeesFailingInputExcerpt drives the real delegate path with a

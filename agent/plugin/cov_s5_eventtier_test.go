@@ -2,7 +2,7 @@ package plugin
 
 import "testing"
 
-// EventTier labels events serf fires as claude-compatible-subset and unknown
+// EventTier labels events evener fires as claude-compatible-subset and unknown
 // events as the empty string.
 func TestCov_EventTier(t *testing.T) {
 	if got := EventTier(HookPreToolUse); got != "claude-compatible-subset" {

@@ -5,7 +5,7 @@ plus the resumable follow-up path through `delegate_send`.
 
 ## Steps
 
-1. Start a real Serf run with a fresh scenario state dir.
+1. Start a real Evener run with a fresh scenario state dir.
 2. Ask the parent:
 
    > Call `delegate` (max_wait_ms unset — creation always returns

@@ -28,7 +28,7 @@ The load-bearing toolchain fact (verified, this worktree):
 
 ```
 $ go test -run '^FuzzMessageDecode$' -coverpkg=./appwire -coverprofile=cov.out ./appwire
-ok  primeradiant.com/serf/appwire  coverage: 14.6% of statements in ./appwire
+ok  primeradiant.com/evener/appwire  coverage: 14.6% of statements in ./appwire
 $ head -1 cov.out
 mode: set
 ```
@@ -50,7 +50,7 @@ mode: set
 | `llm` | `./providers/anthropic` | `FuzzAnthropicStreamMetamorphic` | `-coverpkg=./providers/anthropic` |
 | `llm` | `./providers/google` | `FuzzGeminiStreamMetamorphic` | `-coverpkg=./providers/google` |
 | `llm` | `./providers/openaicompat` | `FuzzOpenAICompatStreamMetamorphic` | `-coverpkg=./providers/openaicompat` |
-| `.` | `./cmd/serf-hub` | `FuzzWebHandler` | `go test -run '^FuzzWebHandler$' -coverpkg=./cmd/serf-hub -coverprofile=P ./cmd/serf-hub` |
+| `.` | `./cmd/evener-hub` | `FuzzWebHandler` | `go test -run '^FuzzWebHandler$' -coverpkg=./cmd/evener-hub -coverprofile=P ./cmd/evener-hub` |
 
 (`P` = a per-target profile path in a temp dir, e.g. `$out/llm__FuzzParseSSE.cov`.)
 
@@ -58,10 +58,10 @@ mode: set
 
 ### 2.1 Where the tooling lives
 
-Two pieces, mirroring the existing "small Go lint tool driven by a Makefile target" pattern (`cmd/serf-namingcheck`, `cmd/serf-internalcheck`, `cmd/serf-docscheck`):
+Two pieces, mirroring the existing "small Go lint tool driven by a Makefile target" pattern (`cmd/evener-namingcheck`, `cmd/evener-internalcheck`, `cmd/evener-docscheck`):
 
 - **`scripts/fuzz-coverage.sh`** — orchestrator. Enumerates targets, runs each module's coverage command into a temp profile dir, then invokes the reporter. ~60–90 LoC.
-- **`cmd/serf-fuzzcov/main.go`** (root module) — reporter. Parses the per-target profiles, computes each target's **focus-set %** and its whole-package %, runs the gap-map scan, enforces the **ratchet** against the committed floors file, prints the report, and (with `--check`) exits non-zero on a regression / gap breach. ~140–200 LoC (larger than the original estimate because the focus-set machinery and ratchet are now built, not deferred).
+- **`cmd/evener-fuzzcov/main.go`** (root module) — reporter. Parses the per-target profiles, computes each target's **focus-set %** and its whole-package %, runs the gap-map scan, enforces the **ratchet** against the committed floors file, prints the report, and (with `--check`) exits non-zero on a regression / gap breach. ~140–200 LoC (larger than the original estimate because the focus-set machinery and ratchet are now built, not deferred).
 
 A Go reporter (not awk) because it has to parse `mode: set` blocks, resolve focus functions to line ranges via `go/parser`, roll statements up, and walk the source tree for the gap scan — all tedious and error-prone in shell, and the repo already standardises on Go for this class of check.
 
@@ -79,7 +79,7 @@ This keeps the campaign runner and the coverage runner reading the identical tar
 
 ### 2.3 Merging profiles across modules (for the secondary number and the gap map)
 
-Each profile is full-import-path qualified (`primeradiant.com/serf/appwire/jsonrpc.go:113.x,…` vs `primeradiant.com/serf/llm/sse.go:…`) and all use `mode: set`. Merging is therefore concatenation with one header, deduping identical blocks and taking the **union** of covered statements (a block is covered if *any* target's corpus hit it; under `mode: set` count is 0/1, so union = max). No `gocovmerge`/`go tool covdata` dependency is needed — those target binary (`GOCOVERDIR`) coverage, not text profiles. The reporter must assert every profile's first line is `mode: set` and refuse to merge mixed modes.
+Each profile is full-import-path qualified (`primeradiant.com/evener/appwire/jsonrpc.go:113.x,…` vs `primeradiant.com/evener/llm/sse.go:…`) and all use `mode: set`. Merging is therefore concatenation with one header, deduping identical blocks and taking the **union** of covered statements (a block is covered if *any* target's corpus hit it; under `mode: set` count is 0/1, so union = max). No `gocovmerge`/`go tool covdata` dependency is needed — those target binary (`GOCOVERDIR`) coverage, not text profiles. The reporter must assert every profile's first line is `mode: set` and refuse to merge mixed modes.
 
 The reporter groups blocks by package (the import path up to the last `/<file>.go`) and reports the **merged** per-package number (the union across all targets — "is this package fuzzed at all, and how much") for the gap map and the secondary visibility column.
 
@@ -103,8 +103,8 @@ FUZZ SURFACE COVERAGE  (committed corpus, deterministic replay — goal: 100%)
   (↑ above floor — ratchet will rise; = at floor; FOCUS % < FLOOR fails --check)
 
 GAP MAP — decode/parse packages with ZERO fuzz coverage
-  primeradiant.com/serf/agent/schema          (Unmarshal/Decode found, no fuzz target)
-  primeradiant.com/serf/providercfg           (providers.toml decode, no fuzz target)
+  primeradiant.com/evener/agent/schema          (Unmarshal/Decode found, no fuzz target)
+  primeradiant.com/evener/providercfg           (providers.toml decode, no fuzz target)
   …
 ```
 
@@ -133,7 +133,7 @@ fuzz-coverage:
 	@scripts/fuzz-coverage.sh $(FUZZCOV_ARGS)
 ```
 
-Mirrors the existing `fuzz-nightly` wiring (`Makefile:106-107`, `fuzz-nightly: ; @scripts/run-fuzz.sh $(FUZZ_ARGS)`). Add `fuzz-coverage` to the `.PHONY` line (`Makefile:1`). It is **not** added to `make test`/`test-race` initially — it runs on demand locally. The `cmd/serf-fuzzcov` binary, being a normal package under the root module, is already gated by `make test`/`vet`/`lint` like the other `cmd/serf-*check` tools.
+Mirrors the existing `fuzz-nightly` wiring (`Makefile:106-107`, `fuzz-nightly: ; @scripts/run-fuzz.sh $(FUZZ_ARGS)`). Add `fuzz-coverage` to the `.PHONY` line (`Makefile:1`). It is **not** added to `make test`/`test-race` initially — it runs on demand locally. The `cmd/evener-fuzzcov` binary, being a normal package under the root module, is already gated by `make test`/`vet`/`lint` like the other `cmd/evener-*check` tools.
 
 ## 4. Gating — ratchet + gap floor; advisory now, blocking via `ci.yml` later
 
@@ -144,7 +144,7 @@ Per decision 4 there is **no nightly**; enforcement is the local tool now and th
 
 **Per-target absolute focus % stays advisory** (decision 1/4): the report shows it climbing to 100, but no fixed threshold blocks. The *ratchet* (it may not go down) and the *gap floor* are the blocking conditions.
 
-**Where blocking lives (decision 4).** When promoted to blocking, the gap floor (and, once floors are trustworthy, the ratchet) is added as a step to the **existing `.github/workflows/ci.yml`** PR gate — modeled on the existing `serf-*check` steps (`ci.yml:28-35`), e.g. a `make fuzz-coverage CHECK=1` step after the lint steps. There is **no** nightly/`schedule:` workflow to put it in (verified: none exists in `.github/workflows/`). Roll-out: ship advisory (local only); once the floors and gap map are stable, add the `CHECK=1` step to `ci.yml`.
+**Where blocking lives (decision 4).** When promoted to blocking, the gap floor (and, once floors are trustworthy, the ratchet) is added as a step to the **existing `.github/workflows/ci.yml`** PR gate — modeled on the existing `evener-*check` steps (`ci.yml:28-35`), e.g. a `make fuzz-coverage CHECK=1` step after the lint steps. There is **no** nightly/`schedule:` workflow to put it in (verified: none exists in `.github/workflows/`). Roll-out: ship advisory (local only); once the floors and gap map are stable, add the `CHECK=1` step to `ci.yml`.
 
 ## 5. The decoder-vs-package precision problem — resolved by the focus set
 
@@ -163,10 +163,10 @@ All four prior open questions are settled by Jesse's decisions (top of file). Re
 
 ### 7.1 Build steps (suggested order)
 1. `run-fuzz.sh`: add the optional trailing `coverpkg` and `focus` fields to `TARGETS` (only `FuzzToolArgsValidate` sets `coverpkg`; set a sensible `focus` per target) and a `--list` flag. (~20 LoC; verify `make fuzz-nightly` still runs unchanged — the extra fields are ignored by the 3-field consumers.)
-2. `cmd/serf-fuzzcov/main.go`: profile parser + `mode: set` merge (union) + per-package rollup + report printer (focus %, floor, pkg %). (~80 LoC)
-3. `cmd/serf-fuzzcov`: focus-set machinery — parse `focus` specs, resolve `file.go#Func` to line ranges via `go/parser`, compute per-target focus %. (~40–60 LoC)
-4. `cmd/serf-fuzzcov`: ratchet (`scripts/fuzzcov-floors.txt` read + `--bless` upward-only rewrite) + gap-map scan (signature grep → package set; subtract fuzzed set; apply reason-required ignore-list) + `--check` exit logic. (~70–100 LoC)
-5. `scripts/fuzz-coverage.sh`: consume `run-fuzz.sh --list`, run each module's coverage command into a temp dir, call `serf-fuzzcov`. (~60–90 LoC)
+2. `cmd/evener-fuzzcov/main.go`: profile parser + `mode: set` merge (union) + per-package rollup + report printer (focus %, floor, pkg %). (~80 LoC)
+3. `cmd/evener-fuzzcov`: focus-set machinery — parse `focus` specs, resolve `file.go#Func` to line ranges via `go/parser`, compute per-target focus %. (~40–60 LoC)
+4. `cmd/evener-fuzzcov`: ratchet (`scripts/fuzzcov-floors.txt` read + `--bless` upward-only rewrite) + gap-map scan (signature grep → package set; subtract fuzzed set; apply reason-required ignore-list) + `--check` exit logic. (~70–100 LoC)
+5. `scripts/fuzz-coverage.sh`: consume `run-fuzz.sh --list`, run each module's coverage command into a temp dir, call `evener-fuzzcov`. (~60–90 LoC)
 6. `Makefile`: `fuzz-coverage` target + `.PHONY` (`Makefile:1`).
 7. `fuzz/README.md`: document `make fuzz-coverage`, the focus-set/ratchet model, and `--bless`, next to `make fuzz` / `fuzz-nightly`.
 8. Commit the initial `scripts/fuzzcov-floors.txt` (measured current focus %s as the starting ratchet) and `scripts/fuzzcov-ignore.txt`.

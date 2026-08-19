@@ -6,7 +6,7 @@ Status: approved high-level architecture; sub-specs to follow
 
 ## Goal
 
-Make serf a drop-in host for Claude Code plugins. Any plugin published in a Claude Code marketplace must run under serf with no edits to the plugin's source. Hooks, MCP servers, skills, agents, and user-config prompts must behave per Claude Code's documented schemas.
+Make evener a drop-in host for Claude Code plugins. Any plugin published in a Claude Code marketplace must run under evener with no edits to the plugin's source. Hooks, MCP servers, skills, agents, and user-config prompts must behave per Claude Code's documented schemas.
 
 We achieve compatibility for the things *plugins use* (hooks, MCPs, skills, agents, manifest fields). We defer the operational *tooling around plugins* (marketplaces, install/update, permissions enforcement) and replace marketplace/install work with an agent-driven skill — the LLM clones marketplaces and stages plugins into known directories using its existing Bash/Read/Write/WebFetch tools.
 
@@ -14,27 +14,27 @@ This document is the architectural plan. Each numbered sub-project below gets it
 
 ## Non-Goals
 
-- Mirror Claude Code's filesystem layout. Serf keeps its own paths.
+- Mirror Claude Code's filesystem layout. Evener keeps its own paths.
 - Read Claude Code's own `~/.claude/` files. Strict separation.
 - Reach feature parity with Claude Code's UI-only components (themes, output styles, status lines).
 - Implement Language Server Protocol integration. Defer.
 - Wire slash command invocation. Plugins' `commands/` directories load but do not invoke. Defer.
 - Build a Go-side marketplace client, plugin installer, version resolver, or trust-prompt UI. Replaced by SP-B (manage-plugins skill). The agent does this work.
-- Enforce Claude Code permission patterns at runtime. Defer; serf trusts the user.
+- Enforce Claude Code permission patterns at runtime. Defer; evener trusts the user.
 
 ## Storage Layout
 
 ```
-~/.config/serf/
-├── config.json                    (NEW: global serf config — hooks + mcpServers)
+~/.config/evener/
+├── config.json                    (NEW: global evener config — hooks + mcpServers)
 ├── mcp.json                       (existing: mcp-only; still works)
 └── plugins/
     └── <plugin-name>/             (NEW: per-user plugin directory; auto-loaded)
         └── .claude-plugin/plugin.json
         └── ...
 
-.serf/
-├── config.json                    (NEW: project serf config)
+.evener/
+├── config.json                    (NEW: project evener config)
 ├── mcp.json                       (existing: project mcp-only; still works)
 └── plugins/<plugin-name>/         (NEW: per-project plugin directory; auto-loaded)
 ```
@@ -64,7 +64,7 @@ Three other top-level fields are recognized but produce a warning that they are 
 |---|---|
 | Hooks | global config.json → project config.json → `--config <path>` → plugin-provided |
 | MCP servers | global config.json → global mcp.json → project config.json → project mcp.json → `--mcp-config` → `--mcp` → plugin-provided |
-| Plugin loading | global `~/.config/serf/plugins/*/` → project `.serf/plugins/*/` → `--plugin-dir <path>` |
+| Plugin loading | global `~/.config/evener/plugins/*/` → project `.evener/plugins/*/` → `--plugin-dir <path>` |
 
 Merge semantics: hooks arrays concatenate; `mcpServers` map entries replace by key; later plugin-dir paths shadow earlier ones by plugin name.
 
@@ -88,7 +88,7 @@ Three new environment variables: `CLAUDE_PLUGIN_DATA`, `CLAUDE_EFFORT`, `CLAUDE_
 
 Matcher dual-mode semantics: patterns containing only `[a-zA-Z0-9_|]` parse as exact-or-pipe-list; anything else parses as a JavaScript regex.
 
-Note: `PermissionRequest` and `PermissionDenied` still fire as lifecycle events because plugins may listen for them, but serf does not yet *enforce* a permission decision — the events fire with `default-allow` semantics until permissions enforcement lands as a follow-up.
+Note: `PermissionRequest` and `PermissionDenied` still fire as lifecycle events because plugins may listen for them, but evener does not yet *enforce* a permission decision — the events fire with `default-allow` semantics until permissions enforcement lands as a follow-up.
 
 ### MCP Parity — A-tier (unchanged)
 
@@ -99,7 +99,7 @@ Note: `PermissionRequest` and `PermissionDenied` still fire as lifecycle events 
 ### Plugin Manifest Extensions — A-tier (unchanged surface; simpler trigger)
 
 - `userConfig` field: prompts user **on first load** (no install flow, so first-load is the trigger), persists values, exposes `${user_config.KEY}` substitution and `CLAUDE_PLUGIN_OPTION_*` environment variables
-- `sensitive: true` values stored in OS keychain, fallback to `~/.config/serf/credentials.json` (mode 0600)
+- `sensitive: true` values stored in OS keychain, fallback to `~/.config/evener/credentials.json` (mode 0600)
 - `bin/` directory auto-added to Bash tool PATH while plugin is enabled (scoped per-Bash-invocation)
 - Plugin-root `settings.json` honored for the `agent` default
 - `skills` custom paths (additive, alongside default `skills/`)
@@ -107,8 +107,8 @@ Note: `PermissionRequest` and `PermissionDenied` still fire as lifecycle events 
 
 ### Plugin Auto-Discovery — NEW
 
-- Walk `~/.config/serf/plugins/*/` for user-level plugins
-- Walk `<project>/.serf/plugins/*/` for project-level plugins
+- Walk `~/.config/evener/plugins/*/` for user-level plugins
+- Walk `<project>/.evener/plugins/*/` for project-level plugins
 - Each subdirectory containing `.claude-plugin/plugin.json` loads as a plugin (existing `LoadPlugin` logic)
 - Symlinks are followed
 - Plus existing `--plugin-dir <path>` (repeatable) for ad-hoc loading
@@ -121,9 +121,9 @@ A builtin skill `agent/skills/manage-plugins/SKILL.md` documents how the agent i
 When a user asks "install plugin X from marketplace Y," the agent:
 1. Fetches `marketplace.json` from Y (Bash + git, or WebFetch)
 2. Locates plugin X's source entry
-3. Clones or downloads the plugin into `~/.config/serf/plugins/<X>/` (or `.serf/plugins/<X>/` if project-scoped)
+3. Clones or downloads the plugin into `~/.config/evener/plugins/<X>/` (or `.evener/plugins/<X>/` if project-scoped)
 4. Verifies `.claude-plugin/plugin.json` exists
-5. Reports the install path and asks the user to reload serf
+5. Reports the install path and asks the user to reload evener
 
 Updates: re-clone or `git pull` in place. Uninstall: `rm -rf` the directory.
 
@@ -132,8 +132,8 @@ This is one skill file (markdown). No Go code, no new CLI surface.
 ### Deferred (not in this release)
 
 - **Permissions enforcement** (was SP2). `permissions` field parsed but ignored. Add when there's user demand. Specs and plan committed for future use.
-- **Marketplace tooling** (was SP3). Go-side marketplace client + `serf plugin marketplace` subcommands. Replaced by SP-B in this release. Spec and plan committed for future use.
-- **Plugin install/uninstall tooling** (was SP4). Go-side `serf plugin install|uninstall|update`. Replaced by SP-B. Specs and plan committed for future use.
+- **Marketplace tooling** (was SP3). Go-side marketplace client + `evener plugin marketplace` subcommands. Replaced by SP-B in this release. Spec and plan committed for future use.
+- **Plugin install/uninstall tooling** (was SP4). Go-side `evener plugin install|uninstall|update`. Replaced by SP-B. Specs and plan committed for future use.
 - **B-tier / C-tier hook events, OAuth MCP, npm sources, dependencies, channels, monitors, output styles, themes, LSP servers.** Unchanged from original design.
 
 ## Sub-Project Breakdown
@@ -148,7 +148,7 @@ In-scope sub-projects:
 
 **SP7 — Plugin manifest extensions.** `userConfig` prompt-on-first-load, secure storage, `CLAUDE_PLUGIN_OPTION_*` env injection, `${user_config.KEY}` substitution, `bin/` PATH, plugin-root `settings.json`, additive `skills` custom paths, warn-once-on-unsupported.
 
-**SP-A — Filesystem plugin discovery.** Walk `~/.config/serf/plugins/*/` and `<project>/.serf/plugins/*/` at session startup. Load each as a plugin. Resolve collisions with `--plugin-dir`. Symlink-friendly.
+**SP-A — Filesystem plugin discovery.** Walk `~/.config/evener/plugins/*/` and `<project>/.evener/plugins/*/` at session startup. Load each as a plugin. Resolve collisions with `--plugin-dir`. Symlink-friendly.
 
 **SP-B — Manage-plugins agent skill.** Builtin skill documenting plugin install/update/remove via the agent's existing tools. Markdown only.
 
@@ -190,7 +190,7 @@ TDD is the constraint. Each sub-spec lands tests before implementation.
 | SP7 | Unit + integration | `userConfig` schema validation, sensitive-vs-plain storage, env injection, `bin/` PATH visible to Bash tool, plugin settings.json default-agent activation, warn-on-unsupported fires exactly once per field |
 | SP-A | Unit + integration | Walks each known directory, follows symlinks, surfaces correct collision precedence, empty / missing directories OK |
 | SP-B | Skill validation only | The skill file exists, parses as frontmatter+markdown, is registered in builtin_skills.go, and is selectable via the existing skill loader |
-| SP8 | End-to-end | Drop a plugin in `~/.config/serf/plugins/foo/`, start a session, send a tool call, observe its hook fires with the expected new fields |
+| SP8 | End-to-end | Drop a plugin in `~/.config/evener/plugins/foo/`, start a session, send a tool call, observe its hook fires with the expected new fields |
 
 Cross-cutting fixtures live under `agent/testdata/plugins/<scenario>/`. Conventions are unchanged from the original design: real filesystem via `t.TempDir()`; no mocked LLM beyond the existing `llm` stub; `httptest.NewServer` for HTTP hooks; existing MCP stub for `mcp_tool` hooks.
 
@@ -198,11 +198,11 @@ Cross-cutting fixtures live under `agent/testdata/plugins/<scenario>/`. Conventi
 
 ### Security
 
-`userConfig.sensitive: true` values live in the OS keychain; fallback `~/.config/serf/credentials.json` mode 0600. Sensitive values never appear in `config.json` or anywhere on disk in plaintext.
+`userConfig.sensitive: true` values live in the OS keychain; fallback `~/.config/evener/credentials.json` mode 0600. Sensitive values never appear in `config.json` or anywhere on disk in plaintext.
 
 Plugin `bin/` PATH injection is scoped to Bash tool invocations only. Not exported to the parent process or other tools.
 
-Hook commands run with serf's full privileges. No sandboxing. This matches Claude Code.
+Hook commands run with evener's full privileges. No sandboxing. This matches Claude Code.
 
 Marketplace cloning happens through the SP-B skill, which means **the user reads the marketplace source URL before approving the agent's `git clone`** — natural trust gate without a registry-and-prompt system.
 
@@ -228,18 +228,18 @@ Existing files touched, additive only:
 - `agent/mcp_config.go` — streamable-http alias, expansion additions
 - `agent/mcp_manager.go` — `CLAUDE_PROJECT_DIR` env injection on stdio
 - `agent/builtin_skills.go` — register SP-B
-- `cmd/serf/main.go`, `cmd/serf-tui/embedded.go`, `cmd/serf-hub/web.go`, `cmd/serfeval/main.go` — config loading + auto-discovery at session init
+- `cmd/evener/main.go`, `cmd/evener-tui/embedded.go`, `cmd/evener-hub/web.go`, `cmd/evenereval/main.go` — config loading + auto-discovery at session init
 - `agent/session.go` (or equivalent bootstrap) — fire new lifecycle events at correct integration points
 
 ## Open Questions
 
 1. **Hook ordering across config tiers.** When global, project, and CLI all declare `PreToolUse` matchers for the same tool, what order do they execute in? Settled in SP1: global → project → CLI → plugin-provided.
-2. **`userConfig` UX surfaces.** CLI prompts inline. `serf-tui` prompts inline. `serf-hub` web form. For non-interactive runs, `--plugin-option <plugin>.<key>=<value>` flag or refuse-with-clear-error. (SP7)
-3. **Project-vs-user plugin precedence.** When the same plugin name exists in both `~/.config/serf/plugins/foo/` and `<project>/.serf/plugins/foo/`, the project copy wins. `--plugin-dir` wins over both. (SP-A)
+2. **`userConfig` UX surfaces.** CLI prompts inline. `evener-tui` prompts inline. `evener-hub` web form. For non-interactive runs, `--plugin-option <plugin>.<key>=<value>` flag or refuse-with-clear-error. (SP7)
+3. **Project-vs-user plugin precedence.** When the same plugin name exists in both `~/.config/evener/plugins/foo/` and `<project>/.evener/plugins/foo/`, the project copy wins. `--plugin-dir` wins over both. (SP-A)
 
 ## Rollout
 
-All changes additive. No existing path, file, or flag is removed. Existing `.serf/mcp.json`, `~/.config/serf/mcp.json`, `--mcp-config`, `--mcp`, and `--plugin-dir` keep working. Existing serf users see no breakage.
+All changes additive. No existing path, file, or flag is removed. Existing `.evener/mcp.json`, `~/.config/evener/mcp.json`, `--mcp-config`, `--mcp`, and `--plugin-dir` keep working. Existing evener users see no breakage.
 
 ## Deferred Work — Reference Material
 

@@ -10,13 +10,13 @@ import (
 
 	"github.com/oklog/ulid/v2"
 
-	"primeradiant.com/serf/llm"
+	"primeradiant.com/evener/llm"
 )
 
 func codexE2EAdapter(t *testing.T) (*Adapter, string) {
 	t.Helper()
-	if os.Getenv("SERF_OPENAI_CODEX_E2E") != "1" {
-		t.Skip("set SERF_OPENAI_CODEX_E2E=1 to run live Codex backend e2e tests")
+	if os.Getenv("EVENER_OPENAI_CODEX_E2E") != "1" {
+		t.Skip("set EVENER_OPENAI_CODEX_E2E=1 to run live Codex backend e2e tests")
 	}
 	if testing.Short() {
 		t.Skip("skipping live Codex backend e2e test in short mode")
@@ -28,7 +28,7 @@ func codexE2EAdapter(t *testing.T) (*Adapter, string) {
 	if !a.usesCodexBackend() {
 		t.Skip("OpenAI env did not resolve to stored OAuth/Codex backend credentials")
 	}
-	model := strings.TrimSpace(os.Getenv("SERF_OPENAI_CODEX_E2E_MODEL"))
+	model := strings.TrimSpace(os.Getenv("EVENER_OPENAI_CODEX_E2E_MODEL"))
 	if model == "" {
 		model = "gpt-5.2"
 	}
@@ -44,13 +44,13 @@ func TestAdapter_E2E_CodexResponsesTransportAndReasoningState(t *testing.T) {
 	id := ulid.Make().String()
 	resp, err := a.Complete(ctx, llm.Request{
 		Model:           model,
-		Messages:        []llm.Message{llm.User("Reply with exactly: serf codex e2e ok")},
+		Messages:        []llm.Message{llm.User("Reply with exactly: evener codex e2e ok")},
 		ReasoningEffort: &effort,
-		PromptCacheKey:  "serf-e2e-" + id,
-		SessionID:       "serf-e2e-session-" + id,
-		ThreadID:        "serf-e2e-thread-" + id,
+		PromptCacheKey:  "evener-e2e-" + id,
+		SessionID:       "evener-e2e-session-" + id,
+		ThreadID:        "evener-e2e-thread-" + id,
 		ClientMetadata: map[string]string{
-			"x-codex-installation-id": "serf-e2e-install-" + id,
+			"x-codex-installation-id": "evener-e2e-install-" + id,
 		},
 	})
 	if err != nil {
@@ -93,9 +93,9 @@ func TestAdapter_E2E_CodexEncryptedReasoningRoundTripWithTool(t *testing.T) {
 		Tools:           []llm.ToolDefinition{tool},
 		ToolChoice:      &llm.ToolChoice{Mode: "required"},
 		ReasoningEffort: &effort,
-		PromptCacheKey:  "serf-e2e-tool-" + id,
-		SessionID:       "serf-e2e-session-" + id,
-		ThreadID:        "serf-e2e-thread-" + id,
+		PromptCacheKey:  "evener-e2e-tool-" + id,
+		SessionID:       "evener-e2e-session-" + id,
+		ThreadID:        "evener-e2e-thread-" + id,
 	})
 	if err != nil {
 		t.Fatalf("first Complete: %v", err)
@@ -119,9 +119,9 @@ func TestAdapter_E2E_CodexEncryptedReasoningRoundTripWithTool(t *testing.T) {
 		Model:           model,
 		Messages:        secondMessages,
 		ReasoningEffort: &effort,
-		PromptCacheKey:  "serf-e2e-tool-" + id,
-		SessionID:       "serf-e2e-session-" + id,
-		ThreadID:        "serf-e2e-thread-" + id,
+		PromptCacheKey:  "evener-e2e-tool-" + id,
+		SessionID:       "evener-e2e-session-" + id,
+		ThreadID:        "evener-e2e-thread-" + id,
 	})
 	if err != nil {
 		t.Fatalf("second Complete with replayed encrypted reasoning: %v", err)
@@ -148,7 +148,7 @@ func TestAdapter_E2E_CodexResponsesControlCompatibility(t *testing.T) {
 		{
 			name: "safety_identifier",
 			req: llm.Request{
-				SafetyIdentifier: "serf-e2e-user-" + id,
+				SafetyIdentifier: "evener-e2e-user-" + id,
 			},
 		},
 		{
@@ -194,9 +194,9 @@ func TestAdapter_E2E_CodexResponsesControlCompatibility(t *testing.T) {
 			req := tc.req
 			req.Model = model
 			req.Messages = []llm.Message{llm.User(fmt.Sprintf("Reply with exactly: %s ok", tc.name))}
-			req.PromptCacheKey = "serf-e2e-controls-" + id
-			req.SessionID = "serf-e2e-session-" + id
-			req.ThreadID = "serf-e2e-thread-" + id
+			req.PromptCacheKey = "evener-e2e-controls-" + id
+			req.SessionID = "evener-e2e-session-" + id
+			req.ThreadID = "evener-e2e-thread-" + id
 			resp, err := a.Complete(ctx, req)
 			if err != nil {
 				if isCodexUnsupportedControlError(err) {

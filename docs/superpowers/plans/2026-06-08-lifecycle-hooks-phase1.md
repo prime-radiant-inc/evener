@@ -2,18 +2,18 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking. Dispatch a fresh subagent per task plus a review pass.
 
-**Goal:** Close the highest-impact Claude hook compatibility gaps in serf's existing plugin-hook subsystem **without** introducing a new event bus, schema framework, or any new package. Phase 1 is "make current hooks correctly compatible" (spec 07 §"Phase A", scoped down): Claude-compatible matcher semantics, command `args` exec-form, the official common/tool input fields, separate routing of `additionalContext` from user-visible `systemMessage`, a central event-specific exit-code table for the events serf already fires, and the official command env vars. Every change is additive and tier-labeled; the nine currently-recognized events must keep loading and running exactly as today.
+**Goal:** Close the highest-impact Claude hook compatibility gaps in evener's existing plugin-hook subsystem **without** introducing a new event bus, schema framework, or any new package. Phase 1 is "make current hooks correctly compatible" (spec 07 §"Phase A", scoped down): Claude-compatible matcher semantics, command `args` exec-form, the official common/tool input fields, separate routing of `additionalContext` from user-visible `systemMessage`, a central event-specific exit-code table for the events evener already fires, and the official command env vars. Every change is additive and tier-labeled; the nine currently-recognized events must keep loading and running exactly as today.
 
 **Architecture:** All work lives next to the existing hook code — `agent/plugin/hooks.go` (parser + `RegisteredHook` + event enum) and `agent/internal/hooks/hooks.go` (runner: matcher, command/prompt exec, output parser, aggregation, env). One new tiny same-package file `agent/internal/hooks/matcher.go` holds the shared matcher helper; one new same-package file `agent/internal/hooks/exitcode.go` holds the exit-code table. No new packages, no new top-level dependency. Integration call sites in `agent/` (`session_tools.go`, `session_events.go`, `session_init.go`) are touched only to pass the new official input fields where the values are already in hand; their behavior does not otherwise change.
 
-**Tech Stack:** Go (go.work multi-module; the `agent` and `llm` modules). Tests are standard `go test` table tests alongside the code: `agent/internal/hooks/*_test.go` and `agent/plugin/*_test.go`. Both test files already exist and are extended, not replaced. Gates: `make test` and `make lint` (golangci across all modules, plus `serf-namingcheck`/`serf-internalcheck`/`serf-docscheck`).
+**Tech Stack:** Go (go.work multi-module; the `agent` and `llm` modules). Tests are standard `go test` table tests alongside the code: `agent/internal/hooks/*_test.go` and `agent/plugin/*_test.go`. Both test files already exist and are extended, not replaced. Gates: `make test` and `make lint` (golangci across all modules, plus `evener-namingcheck`/`evener-internalcheck`/`evener-docscheck`).
 
 **Read before starting:**
 - `docs/subagent-management/07-lifecycle-hooks-claude-compat.md` — the contract. Where this plan says "per 07 §X" the spec holds the exhaustive list.
-- `docs/subagent-management/10-runtime-contracts.md` §"Contract 4: compatibility tiers" — the tier vocabulary (`serf-native`, `claude-compatible-subset`, `reserved-placeholder`, `experimental`) every feature must be labeled with.
+- `docs/subagent-management/10-runtime-contracts.md` §"Contract 4: compatibility tiers" — the tier vocabulary (`evener-native`, `claude-compatible-subset`, `reserved-placeholder`, `experimental`) every feature must be labeled with.
 - Official source: <https://code.claude.com/docs/en/hooks> — matcher table, exit-code table, default timeouts. The spec transcribes these; the page is authoritative if they diverge.
 
-**Compatibility-tier discipline (applies to every task):** Each behavior added or changed here is labeled in a doc comment on the symbol AND in the task's commit body with exactly one tier. Phase 1 ships only `claude-compatible-subset` and `serf-native` behavior. Anything Claude documents that this phase does NOT implement is left as `reserved-placeholder` (parsed/diagnosed predictably, never advertised as working). No `experimental` behavior is introduced in Phase 1.
+**Compatibility-tier discipline (applies to every task):** Each behavior added or changed here is labeled in a doc comment on the symbol AND in the task's commit body with exactly one tier. Phase 1 ships only `claude-compatible-subset` and `evener-native` behavior. Anything Claude documents that this phase does NOT implement is left as `reserved-placeholder` (parsed/diagnosed predictably, never advertised as working). No `experimental` behavior is introduced in Phase 1.
 
 **Conventions for every task:** run the single new test with `go test ./agent/internal/hooks/ -run <TestName> -v` (or `./agent/plugin/`); before each commit run `go build ./...` and `go test ./agent/internal/hooks/... ./agent/plugin/...`; commit only the files the task names. Do not run `git add -A`. Do not commit until the task's test is green and `go build ./...` is clean.
 
@@ -26,19 +26,19 @@
 | Characterization test of current hook behavior (parser + matcher + output + env + integration field-passing) | n/a (safety net) | Locks today's bytes so nothing below regresses. Front-loaded. |
 | Claude-compatible matcher: empty/`*` = all, `[A-Za-z0-9_\|]+` = exact / pipe-list, else regex; invalid regex skips + diagnoses | `claude-compatible-subset` | **Highest impact.** Today `Bash` regex-substring-matches `BashOutput`; `mcp__memory` wrongly matches `mcp__memory__search`. This changes *which hooks fire* and breaks real configs. 07 calls it a "Phase A requirement." |
 | Command `args` exec-form (spawn directly, no shell) + `shell` (`bash` default, reject unknown) | `claude-compatible-subset` | Lets plugin authors stop wrapping every path-with-spaces in `bash -c`. Self-contained, deterministic. |
-| Parser captures `Args`, `Shell`, `If`, `Async`, `AsyncRewake`, `StatusMessage` + source/event/group-index/handler-index metadata + unknown-field capture | `claude-compatible-subset` (fields) / `serf-native` (metadata) | Prereq for exec-form + diagnostics; preserves harmless future fields instead of dropping them. |
+| Parser captures `Args`, `Shell`, `If`, `Async`, `AsyncRewake`, `StatusMessage` + source/event/group-index/handler-index metadata + unknown-field capture | `claude-compatible-subset` (fields) / `evener-native` (metadata) | Prereq for exec-form + diagnostics; preserves harmless future fields instead of dropping them. |
 | Official common + tool input fields on `Input` (`transcript_path`, `permission_mode`, `tool_use_id`, `tool_response`, `agent_id`, `agent_type`), keep `user_prompt`/`tool_result` aliases | `claude-compatible-subset` | Real hooks read these. Additive; old aliases stay during migration. Only populated where the value is already in hand. |
 | Split aggregation: route `additionalContext` (model context) separately from `systemMessage` (user-visible). Add `AdditionalContext` + `TerminalSequence` to results | `claude-compatible-subset` | 07 acceptance criterion: "`additionalContext` is routed separately from user-visible `systemMessage`." Today they are folded together (hooks.go:314-321). |
-| Central exit-code table for the **events serf already fires** (`PreToolUse`, `PostToolUse`, `Stop`, `SubagentStop`, `UserPromptSubmit`, `SessionStart`, `SessionEnd`, `PreCompact`, `Notification`) | `claude-compatible-subset` | 07 acceptance: "Exit-code-2 behavior is event-specific and table-driven … Do not treat every exit-code-2 hook as generic denial." JSON parsed only on exit 0. |
-| Official command env vars where known (`CLAUDE_EFFORT`, `CLAUDE_CODE_REMOTE`), keep `PLUGIN_ROOT` alias | `claude-compatible-subset` (official) / `serf-native` (`PLUGIN_ROOT`) | Cheap, high-compat. Only set vars whose values serf actually has. |
-| Tier labeling surfaced in `/status` hook diagnostics + a doc-comment tier on each event const | `serf-native` (the surfacing) | 07: "Every hook feature must be labeled with exactly one tier in docs, status output, diagnostics, and tests." |
+| Central exit-code table for the **events evener already fires** (`PreToolUse`, `PostToolUse`, `Stop`, `SubagentStop`, `UserPromptSubmit`, `SessionStart`, `SessionEnd`, `PreCompact`, `Notification`) | `claude-compatible-subset` | 07 acceptance: "Exit-code-2 behavior is event-specific and table-driven … Do not treat every exit-code-2 hook as generic denial." JSON parsed only on exit 0. |
+| Official command env vars where known (`CLAUDE_EFFORT`, `CLAUDE_CODE_REMOTE`), keep `PLUGIN_ROOT` alias | `claude-compatible-subset` (official) / `evener-native` (`PLUGIN_ROOT`) | Cheap, high-compat. Only set vars whose values evener actually has. |
+| Tier labeling surfaced in `/status` hook diagnostics + a doc-comment tier on each event const | `evener-native` (the surfacing) | 07: "Every hook feature must be labeled with exactly one tier in docs, status output, diagnostics, and tests." |
 
 ## What is DEFERRED (and to which tier/phase)
 
 - **New events** — `PostToolUseFailure`, `PostToolBatch`, `SubagentStart`, `PostCompact`, `PermissionRequest`, `PermissionDenied`, `ConfigChange`, `UserPromptExpansion`, `StopFailure`, and all of `Setup`/`InstructionsLoaded`/`MessageDisplay`/`CwdChanged`/`FileChanged`/`TaskCreated`/`TaskCompleted`/`TeammateIdle`/`WorktreeCreate`/`WorktreeRemove`/`Elicitation`/`ElicitationResult` → **`reserved-placeholder`**, spec 07 Phase B/D. Phase 1 makes them *parse-and-diagnose as recognized-but-unsupported* (Task 2) but does not fire them.
 - **`http`, `mcp_tool`, `agent` handler types** → Phase C. `http`/`mcp_tool` are `reserved-placeholder` until implemented; `agent` is `experimental` per 07. Phase 1 makes them parse and show as unsupported/skipped, never silently dropped.
 - **`PreToolUse` preferred output schema** (`allow|deny|ask|defer`, `permissionDecisionReason`, deprecated `approve`/`block` mapping, revalidation after `updatedInput`) → Phase B. Phase 1 keeps the *current* `deny`-only behavior (already tested) but routes it through the new exit-code table so the deny path is unchanged.
-- **`PermissionRequest` decision object, `PermissionDenied.retry`, `updatedPermissions`** → Phase B, gated on a real serf approval boundary.
+- **`PermissionRequest` decision object, `PermissionDenied.retry`, `updatedPermissions`** → Phase B, gated on a real evener approval boundary.
 - **`async`/`asyncRewake` execution** → Phase C (parse-only in Phase 1; recognized field, not executed).
 - **`if` permission-rule evaluation** → Phase B (parse-only in Phase 1; captured, not evaluated; diagnosed as recognized-but-not-enforced).
 - **`once`, `statusMessage` behavior** → reserved/cosmetic; captured, not acted on.
@@ -152,7 +152,7 @@ git commit -m "test(hooks): characterize current matcher/output/input/parser beh
 
 ## Task 2: Parser — capture official fields, metadata, and recognized-but-unsupported events
 
-**Spec:** 07 §"Phase A" steps 1-2, §"Formal config shape", §"Compatibility tiers". Tier: command/common fields = `claude-compatible-subset`; source metadata + recognized-but-unsupported registry = `serf-native`.
+**Spec:** 07 §"Phase A" steps 1-2, §"Formal config shape", §"Compatibility tiers". Tier: command/common fields = `claude-compatible-subset`; source metadata + recognized-but-unsupported registry = `evener-native`.
 
 **Files:**
 - Modify: `agent/plugin/hooks.go` (`RegisteredHook`, `hookSpec`, `parsePluginHooks`, new tier/recognized maps)
@@ -190,9 +190,9 @@ func TestParsePluginHooks_RecognizedButUnsupportedEvent(t *testing.T) {
 ```
 
 - [ ] **Step 3: Implement.** In `agent/plugin/hooks.go`:
-  - Add to `RegisteredHook` (additive, after existing fields): `Args []string`, `Shell string`, `If string`, `Async bool`, `AsyncRewake bool`, `StatusMessage string`, and `serf-native` metadata `SourcePath string`, `Event HookEvent`, `GroupIndex int`, `HandlerIndex int`, plus `UnknownFields map[string]json.RawMessage` for harmless future fields. Doc-comment the field block with its tier.
+  - Add to `RegisteredHook` (additive, after existing fields): `Args []string`, `Shell string`, `If string`, `Async bool`, `AsyncRewake bool`, `StatusMessage string`, and `evener-native` metadata `SourcePath string`, `Event HookEvent`, `GroupIndex int`, `HandlerIndex int`, plus `UnknownFields map[string]json.RawMessage` for harmless future fields. Doc-comment the field block with its tier.
   - Add to `hookSpec`: `Args []string`, `Shell string`, `If string`, `Async bool`, `AsyncRewake bool`, `StatusMessage string` with json tags matching 07 §"Formal config shape".
-  - Add a `recognizedClaudeEvents` set (07 §"Event set" table — every Claude event name) and keep `validHookEvents` as the *serf-fires-these* set. An event in `recognizedClaudeEvents` but not `validHookEvents` is "recognized but unsupported."
+  - Add a `recognizedClaudeEvents` set (07 §"Event set" table — every Claude event name) and keep `validHookEvents` as the *evener-fires-these* set. An event in `recognizedClaudeEvents` but not `validHookEvents` is "recognized but unsupported."
   - Add `var hookEventTier = map[HookEvent]string{...}` mapping each `validHookEvents` entry to `"claude-compatible-subset"` (these fire) and recognized-but-unsupported to `"reserved-placeholder"`. Expose `func EventTier(e HookEvent) string`.
   - Add `parsePluginHooksDiag(data, dir, name) (map[HookEvent][]RegisteredHook, unsupported map[HookEvent]bool, unknown map[string]bool, error)`. Make `parsePluginHooks` a thin wrapper returning just the map+err (existing callers unchanged). Thread `SourcePath` (the file path when known; empty for inline), `Event`, `GroupIndex`, `HandlerIndex` into each `RegisteredHook`. Capture unknown handler keys into `UnknownFields` by re-unmarshalling each handler into `map[string]json.RawMessage` and removing known keys.
   - `discoverPluginHooks` passes the resolved file path as `sourcePath` so file-based hooks carry it.
@@ -356,9 +356,9 @@ func TestParseHookOutput_AdditionalContextSeparate(t *testing.T) {
 
 - [ ] **Step 4: Implement output split.** Add `AdditionalContext string` and `TerminalSequence string` to `parsedHookOutput`. In `parseHookOutput`, extract `hookSpecificOutput.additionalContext` into `result.AdditionalContext` (NOT folded into `SystemMessage`) and top-level `terminalSequence` into `result.TerminalSequence`. Add `AdditionalContext []string` and `TerminalSequences []string` to `RunResult`, `PreToolUseResult`, `StopResult`; populate them in the runner aggregation loops alongside `SystemMessages`. Update `collectSystemMessages` to also collect additionalContext/terminalSequence (rename internally if clearer, but keep `RunResult.SystemMessages` populated for existing callers).
 
-- [ ] **Step 5: Route additionalContext at integration sites.** The existing call sites `s.Steer(msg)` user-visible system messages. Keep that for `SystemMessages`. For `AdditionalContext`, also `s.Steer(...)` for now (serf has one steering channel today) BUT add a `// TODO(phase-B): additionalContext is model-context; route distinctly from user-visible systemMessage once a context channel exists` and keep them as separate slices so the data is not lost. **Key:** the split is in the *data model* now (acceptance criterion met); the distinct *delivery channel* is Phase B. Confirm with Jesse if a separate channel is wanted in Phase 1 (see Open Questions).
+- [ ] **Step 5: Route additionalContext at integration sites.** The existing call sites `s.Steer(msg)` user-visible system messages. Keep that for `SystemMessages`. For `AdditionalContext`, also `s.Steer(...)` for now (evener has one steering channel today) BUT add a `// TODO(phase-B): additionalContext is model-context; route distinctly from user-visible systemMessage once a context channel exists` and keep them as separate slices so the data is not lost. **Key:** the split is in the *data model* now (acceptance criterion met); the distinct *delivery channel* is Phase B. Confirm with Jesse if a separate channel is wanted in Phase 1 (see Open Questions).
 
-- [ ] **Step 6: Populate official fields where values are in hand.** In `agent/session_events.go` `hookInput`: set `TranscriptPath` from `s.TranscriptPath()` (exists at `agent/session.go:544`; may be empty when persistence is off — fine). Set `Effort` from `s.cfg.ReasoningEffort` (reachable, see `agent/session_model_call.go:115`) when non-empty. Leave `PermissionMode` UNSET — serf has no permission-mode field on `Session` today; do not invent one (deferred, Open Question 2). In `agent/session_tools.go` `execTool`: set `hi.ToolUseID = call.ID` for PreToolUse and PostToolUse, and `hi.ToolResponse = res.FullOutput` for PostToolUse (alongside the existing `ToolResult`). No behavior change — these are additive fields the hook may read.
+- [ ] **Step 6: Populate official fields where values are in hand.** In `agent/session_events.go` `hookInput`: set `TranscriptPath` from `s.TranscriptPath()` (exists at `agent/session.go:544`; may be empty when persistence is off — fine). Set `Effort` from `s.cfg.ReasoningEffort` (reachable, see `agent/session_model_call.go:115`) when non-empty. Leave `PermissionMode` UNSET — evener has no permission-mode field on `Session` today; do not invent one (deferred, Open Question 2). In `agent/session_tools.go` `execTool`: set `hi.ToolUseID = call.ID` for PreToolUse and PostToolUse, and `hi.ToolResponse = res.FullOutput` for PostToolUse (alongside the existing `ToolResult`). No behavior change — these are additive fields the hook may read.
 
 - [ ] **Step 7: Update the Task-1 characterization** `TestParseHookOutput_CurrentContracts_Characterization` — the additionalContext-folding assertion now flips to "separate"; update it in this commit (delete the folding sub-assertion, point to the new test).
 
@@ -382,7 +382,7 @@ git commit -m "feat(hooks): official input fields + route additionalContext sepa
 - Modify: `agent/internal/hooks/hooks.go` (`runHook` consults the table; command JSON parsed only on exit 0)
 - Test: `agent/internal/hooks/hooks_test.go`
 
-- [ ] **Step 1: Failing test — the table classifies exit 2 per event.** Only the events serf fires are in scope.
+- [ ] **Step 1: Failing test — the table classifies exit 2 per event.** Only the events evener fires are in scope.
 
 ```go
 func TestExitBehavior_PerEvent(t *testing.T) {
@@ -416,7 +416,7 @@ func TestRunHook_CommandJSONOnlyOnExit0(t *testing.T) {
 
 ```go
 // eventExitPolicy is the exit-code contract for one event (07 §Exit-code semantics).
-// Phase 1 covers only events serf currently fires; everything else defaults to
+// Phase 1 covers only events evener currently fires; everything else defaults to
 // non-blocking (reserved-placeholder) so an unimplemented event never blocks.
 type eventExitPolicy struct {
 	BlockOnExit2 bool // exit 2 blocks the action (else stderr shown to user only)
@@ -433,7 +433,7 @@ func exitBehavior(e plugin.HookEvent) eventExitPolicy {
 }
 ```
 
-  Doc-comment the tier and that the full Claude table (07 §Exit-code semantics) is the source; Phase 1 implements the serf-fired subset.
+  Doc-comment the tier and that the full Claude table (07 §Exit-code semantics) is the source; Phase 1 implements the evener-fired subset.
 
 - [ ] **Step 4: Thread the policy into the runner.** `runHook` currently parses on every exit code. Change `parseHookOutput` (or `runHook`) so that for **command** hooks JSON is parsed only when `ExitCode == 0`; on `ExitCode == 2`, set `IsError`, use stderr (existing behavior), and DO NOT attempt JSON parse. `runHook` needs the event to consult `exitBehavior`; pass `event` into `runHook`/`runAll` (it already has `event` in `runAll`). The PreToolUse deny-on-exit-2 (today `RunPreToolUse` checks `o.RawExitCode == 2`) is preserved because `PreToolUse.BlockOnExit2 == true`; keep `RunPreToolUse`/`runStopEvent` mapping but source the "is this a block" decision from `exitBehavior(event).BlockOnExit2` rather than a hard-coded `== 2`. Net effect: PostToolUse exit 2 no longer accidentally behaves like a deny; PreToolUse/Stop unchanged.
 
@@ -452,7 +452,7 @@ git commit -m "feat(hooks): central exit-code table; command JSON parsed only on
 
 ## Task 7: Official command env vars + tier-labeled hook diagnostics in /status
 
-**Spec:** 07 §"Phase A" step 6, §"Common environment variables for command hooks", §"Diagnostics and status", §"Compatibility tiers" ("labeled … in status output, diagnostics"). Tier: official env = `claude-compatible-subset`; `PLUGIN_ROOT` + the status surfacing = `serf-native`.
+**Spec:** 07 §"Phase A" step 6, §"Common environment variables for command hooks", §"Diagnostics and status", §"Compatibility tiers" ("labeled … in status output, diagnostics"). Tier: official env = `claude-compatible-subset`; `PLUGIN_ROOT` + the status surfacing = `evener-native`.
 
 **Files:**
 - Modify: `agent/internal/hooks/hooks.go` (`executeCommandHook` env)
@@ -475,9 +475,9 @@ func TestExecuteCommandHook_OfficialEnv(t *testing.T) {
 }
 ```
 
-  (This requires an `Effort string` field on `Input`, json `effort` per 07 — add it additively; 07 models `effort` as `{level}` but serf may carry a flat string. If serf has no effort value at the hook site, set the env only when non-empty and have the test pass `Effort: "high"` directly.)
+  (This requires an `Effort string` field on `Input`, json `effort` per 07 — add it additively; 07 models `effort` as `{level}` but evener may carry a flat string. If evener has no effort value at the hook site, set the env only when non-empty and have the test pass `Effort: "high"` directly.)
 
-- [ ] **Step 2: Implement env additions** in `executeCommandHook`: append `CLAUDE_EFFORT` (when `input.Effort != ""` — the value is threaded from `s.cfg.ReasoningEffort` via Task 5 step 6). Do NOT set `CLAUDE_CODE_REMOTE` in Phase 1: serf has no remote/serve signal reachable at the hook exec site, and 07/Diagnostics forbid fabrication — leave it deferred (note in the commit). Keep `CLAUDE_PLUGIN_ROOT`, `PLUGIN_ROOT`, `CLAUDE_PROJECT_DIR` exactly as today. Do not set `CLAUDE_PLUGIN_DATA`/`CLAUDE_ENV_FILE` (those belong to deferred features — 07 reserved). **Never** put secrets in env diagnostics (07 §Diagnostics).
+- [ ] **Step 2: Implement env additions** in `executeCommandHook`: append `CLAUDE_EFFORT` (when `input.Effort != ""` — the value is threaded from `s.cfg.ReasoningEffort` via Task 5 step 6). Do NOT set `CLAUDE_CODE_REMOTE` in Phase 1: evener has no remote/serve signal reachable at the hook exec site, and 07/Diagnostics forbid fabrication — leave it deferred (note in the commit). Keep `CLAUDE_PLUGIN_ROOT`, `PLUGIN_ROOT`, `CLAUDE_PROJECT_DIR` exactly as today. Do not set `CLAUDE_PLUGIN_DATA`/`CLAUDE_ENV_FILE` (those belong to deferred features — 07 reserved). **Never** put secrets in env diagnostics (07 §Diagnostics).
 
 - [ ] **Step 3: Failing test — /status reports tier + unsupported counts.** Build a `DetailedStatus` from a session whose plugin registered a supported hook and a recognized-but-unsupported one; assert the supported event shows tier `claude-compatible-subset` and the unsupported event is listed as reserved/unsupported (not as an active hook). (Model on however `DetailedStatus` is currently tested; if there is no test, add a minimal one constructing the runner + status directly.)
 
@@ -489,7 +489,7 @@ func TestExecuteCommandHook_OfficialEnv(t *testing.T) {
 
 ```bash
 git add agent/internal/hooks/hooks.go agent/internal/hooks/hooks_test.go agent/status.go agent/session_init.go
-git commit -m "feat(hooks): official command env vars; tier-labeled hook diagnostics in /status [claude-compatible-subset/serf-native]"
+git commit -m "feat(hooks): official command env vars; tier-labeled hook diagnostics in /status [claude-compatible-subset/evener-native]"
 ```
 
 ---
@@ -503,7 +503,7 @@ git commit -m "feat(hooks): official command env vars; tier-labeled hook diagnos
 
 - [ ] **Step 1: Update 07** — in the §"Compatibility tiers" "Near-term subset targets" list and the §"Event set" table, mark as **implemented (`claude-compatible-subset`)**: Claude-compatible matcher semantics, command `args` exec-form, official common input fields, the additionalContext/systemMessage split, the event-specific exit-code table (for fired events), and official command env vars. Leave `http`/`mcp_tool`/`agent`, new events, and `PreToolUse` preferred output schema explicitly marked deferred to Phase B/C with their tiers. Add one line under §Caveats confirming the Go RE2 matcher is the active implementation with the documented JS-regex caveat.
 
-- [ ] **Step 2: Verify** `make lint` (`serf-docscheck`) passes on the edited doc. Do NOT change line-reference anchors that other docs depend on unless they are now wrong.
+- [ ] **Step 2: Verify** `make lint` (`evener-docscheck`) passes on the edited doc. Do NOT change line-reference anchors that other docs depend on unless they are now wrong.
 
 - [ ] **Step 3: Commit.**
 
@@ -538,10 +538,10 @@ git commit -m "docs(hooks): mark phase-1 Claude-compat items shipped; record RE2
 
 - Phase B: new events (`PostToolUseFailure`, `PostToolBatch`, `SubagentStart`, `PostCompact`, `PermissionRequest`, `PermissionDenied`, `ConfigChange`, `UserPromptExpansion`, `StopFailure`); `PreToolUse` preferred output schema (`allow|deny|ask|defer`, deprecated mapping, revalidation); `PermissionRequest`/`PermissionDenied` decision objects; top-level `decision:block` for the broader event set; `if` permission-rule evaluation; distinct model-context delivery channel for `additionalContext`.
 - Phase C: `http`, `mcp_tool`, `agent` handler types; `prompt` `$ARGUMENTS` + `{ok,reason}`; async/asyncRewake execution.
-- Phase D: lifecycle/watch/team events gated on real serf boundaries.
+- Phase D: lifecycle/watch/team events gated on real evener boundaries.
 - Phase E: typed SDK lifecycle hooks.
 
 ## Open questions for Jesse (resolve before/within Task 5 and Task 7)
 
 1. **additionalContext delivery (Task 5 step 5):** Phase 1 splits additionalContext from systemMessage in the *data model* (meets the acceptance criterion) but still delivers both via the single `Steer` channel. Is a distinct model-context delivery path wanted in Phase 1, or is the data-model split sufficient until Phase B? (Recommendation: data-model split now, distinct channel in Phase B — keeps Phase 1 additive and low-risk.)
-2. **Fields serf cannot source today (Tasks 5, 7):** `transcript_path` and `effort` ARE reachable (`s.TranscriptPath()`, `s.cfg.ReasoningEffort`) and will be populated. `permission_mode` and `CLAUDE_CODE_REMOTE` have NO reachable value on `Session` today, so Phase 1 omits them (never fabricates) rather than threading new session plumbing. Confirm "omit when unknown, plumb later in Phase B" is acceptable. (Recommendation: omit now — serf's permission model is not Claude's, and inventing a `permission_mode` value would be a lie the hook reads.)
+2. **Fields evener cannot source today (Tasks 5, 7):** `transcript_path` and `effort` ARE reachable (`s.TranscriptPath()`, `s.cfg.ReasoningEffort`) and will be populated. `permission_mode` and `CLAUDE_CODE_REMOTE` have NO reachable value on `Session` today, so Phase 1 omits them (never fabricates) rather than threading new session plumbing. Confirm "omit when unknown, plumb later in Phase B" is acceptable. (Recommendation: omit now — evener's permission model is not Claude's, and inventing a `permission_mode` value would be a lie the hook reads.)

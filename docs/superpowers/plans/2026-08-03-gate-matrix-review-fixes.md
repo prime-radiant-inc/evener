@@ -68,11 +68,11 @@ Run `make build-go`, `git diff --check`, and `rg -n "build-go|Build runtime pair
 ### Task 2: Make browser startup cleanup-safe and port-safe
 
 **Files:**
-- Create: `cmd/serf-hub/frontend/scripts/browserGuardProcess.mjs` for Chrome discovery, OS-backed port allocation, child startup, and cleanup.
-- Create: `cmd/serf-hub/frontend/scripts/browserGuardProcess.test.mjs` for lifecycle and port behavior.
-- Modify: `cmd/serf-hub/frontend/scripts/overflowguard/run.mjs` to use the shared lifecycle.
-- Modify: `cmd/serf-hub/frontend/scripts/spawnguard/run.mjs` to use the shared lifecycle.
-- Modify: `cmd/serf-hub/frontend/package.json` so `npm test` runs the focused Node lifecycle test after Vitest.
+- Create: `cmd/evener-hub/frontend/scripts/browserGuardProcess.mjs` for Chrome discovery, OS-backed port allocation, child startup, and cleanup.
+- Create: `cmd/evener-hub/frontend/scripts/browserGuardProcess.test.mjs` for lifecycle and port behavior.
+- Modify: `cmd/evener-hub/frontend/scripts/overflowguard/run.mjs` to use the shared lifecycle.
+- Modify: `cmd/evener-hub/frontend/scripts/spawnguard/run.mjs` to use the shared lifecycle.
+- Modify: `cmd/evener-hub/frontend/package.json` so `npm test` runs the focused Node lifecycle test after Vitest.
 
 **Interfaces:**
 - `findAvailablePort(excludedPorts)` returns a kernel-selected local port not present in `excludedPorts`.
@@ -130,7 +130,7 @@ Run the focused lifecycle tests, `make test-web`, `make test-web-browser`, and `
 ### Task 3: Final verification and commit
 
 **Files:**
-- Verify: `Makefile`, `.github/workflows/ci.yml`, `docs/testing.md`, `cmd/serf-hub/frontend/package.json`, the new helper/test, and both browser runners.
+- Verify: `Makefile`, `.github/workflows/ci.yml`, `docs/testing.md`, `cmd/evener-hub/frontend/package.json`, the new helper/test, and both browser runners.
 
 - [x] **Step 1: Run the affected build and test gates.**
 

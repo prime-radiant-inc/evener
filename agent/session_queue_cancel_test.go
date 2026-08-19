@@ -16,7 +16,7 @@ import (
 	"strings"
 	"testing"
 
-	"primeradiant.com/serf/agent/events"
+	"primeradiant.com/evener/agent/events"
 )
 
 func TestSession_CancelQueued_RemovesOnlyThatEntry(t *testing.T) {

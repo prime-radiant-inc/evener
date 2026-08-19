@@ -6,7 +6,7 @@ import (
 	"encoding/json"
 	"strings"
 
-	"primeradiant.com/serf/llm"
+	"primeradiant.com/evener/llm"
 )
 
 // Typed event payload structs. JSON tags match the map keys used previously.
@@ -207,7 +207,7 @@ func ToolResultOutputImage(name string, data []byte, mediaType string) (OutputIm
 	}, true
 }
 
-// imageSHA is the content address every sha-addressed image route in serf keys
+// imageSHA is the content address every sha-addressed image route in evener keys
 // on: lowercase hex sha256 of the raw bytes.
 func imageSHA(data []byte) string {
 	sum := sha256.Sum256(data)

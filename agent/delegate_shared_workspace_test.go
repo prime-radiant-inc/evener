@@ -8,8 +8,8 @@ import (
 	"testing"
 	"time"
 
-	"primeradiant.com/serf/agent/internal/delegatestore"
-	"primeradiant.com/serf/llm"
+	"primeradiant.com/evener/agent/internal/delegatestore"
+	"primeradiant.com/evener/llm"
 )
 
 // sharedWorkspaceBarrierAdapter parks every model request until it is released,

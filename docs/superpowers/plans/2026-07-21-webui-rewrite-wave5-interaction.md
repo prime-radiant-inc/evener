@@ -12,7 +12,7 @@ answering, and the session chrome (status row, model switch, session actions, ta
 **Parity floors:** `docs/web-ui/parity/parity-m5-composer.md` + `docs/web-ui/parity/contracts-composer-queue-pending.md`.
 The session-chrome floor is thin by both docs' own admission: chrome tasks build from the design
 doc's §Composer/§Session-chrome bullets (spec lines 89-97) with beyond-parity license; reviewers
-get `cmd/serf-hub/assets/renderer.js` pointers for behavior spot-checks instead of a row checklist.
+get `cmd/evener-hub/assets/renderer.js` pointers for behavior spot-checks instead of a row checklist.
 
 **Prereqs:** Wave 4 merged (integration `0f3bcaff2`+). Executes on wave worktree `webui-w5-interaction`
 off integration; sub-streams branch off the wave branch after T1. Runs CONCURRENTLY with Wave 7
@@ -101,7 +101,7 @@ real message through the new store path.
   gauge via Meter, cost), mid-session model switch (Combobox off reasoningEffortLevels/models),
   session actions (fork/aside via forkFromTurn, compact, clear, shutdown, rename) with
   destructive-action confirmation via Dialog, goal display/set (snapshot + optimistic local
-  update; live push = wire-candidate), tasks panel — FIRST STEP: investigate `serf/tasks/list`'s
+  update; live push = wire-candidate), tasks panel — FIRST STEP: investigate `evener/tasks/list`'s
   real daemon response shape (the catalog types it `any`) and pin it with a wire-true fixture
   before building; steering classification (task-nudge/full-list suppression) lands here WITH the
   tasks panel since the panel owns that surface — NOTE: touches `transcript/messages/SteeringItem.tsx`

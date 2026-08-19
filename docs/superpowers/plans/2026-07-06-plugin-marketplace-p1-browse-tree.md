@@ -4,20 +4,20 @@
 
 **Goal:** Turn the web plugins pane's "Browse" section from a single-marketplace `<select>` dropdown into a client-side tree of every registered marketplace — collapsible marketplace nodes, lazy-loaded plugin catalogs cached in memory, inline install-state per plugin row exactly as today — plus a debounced filter box above the tree that searches across all marketplaces' catalogs, lazy-loading any not-yet-expanded ones on first use.
 
-**Architecture:** All the work lives in one file: the inline `<script>` inside `cmd/serf-hub/templates/partials/settings/plugins-manager.html`. The single-selection state (`browseName`/`browseCatalog`/`browseError`) is replaced by two structures — `expandedMarketplaces` (a `Set` of marketplace names currently expanded) and `browseCatalogs` (a plain object mapping marketplace name to `{loading:true}` / `{error}` / `{plugins}`, populated lazily and never cleared except on an explicit marketplace refresh/removal or a full pane reload). `renderBrowseSection` renders one `renderMarketplaceNode` per registered marketplace; a node's own plugin rows reuse the existing `renderBrowseRow`, now carrying `data-plugin`/`data-marketplace` on the `<li>` (mirroring `installedRow`'s convention) so install no longer depends on a single globally-selected marketplace. The expand toggle is a plain `<button aria-expanded>` with a `›` chevron rotated by CSS — the same idiom `sidebar.js`'s `.sb-children-toggle`/`.cluster-header` already use — which gets keyboard support for free (a native `<button>` fires `click` on Enter/Space) and needs none of `sidebar.js`'s custom keydown handling (that handling exists there only because its toggle is nested inside a navigating `<a>`; this tree has no such conflict). The filter box reuses `search.js`'s tiny local `debounce` helper (duplicated inline, matching the codebase's existing precedent of small deliberate duplication) and, because a naive full `render()` on every keystroke would blow away the filter `<input>`'s focus and cursor, `render()` gains a small save/restore of the input's identity and `selectionStart`/`selectionEnd` around the `innerHTML` replace. No backend or wire change: all three tasks reuse `serf/marketplace/list`, `serf/marketplace/browse`, `serf/plugin/list`, and `serf/plugin/install` exactly as `cmd/serf-hub/assets/plugins.js`'s existing `pluginsAdmin` wrappers already expose them.
+**Architecture:** All the work lives in one file: the inline `<script>` inside `cmd/evener-hub/templates/partials/settings/plugins-manager.html`. The single-selection state (`browseName`/`browseCatalog`/`browseError`) is replaced by two structures — `expandedMarketplaces` (a `Set` of marketplace names currently expanded) and `browseCatalogs` (a plain object mapping marketplace name to `{loading:true}` / `{error}` / `{plugins}`, populated lazily and never cleared except on an explicit marketplace refresh/removal or a full pane reload). `renderBrowseSection` renders one `renderMarketplaceNode` per registered marketplace; a node's own plugin rows reuse the existing `renderBrowseRow`, now carrying `data-plugin`/`data-marketplace` on the `<li>` (mirroring `installedRow`'s convention) so install no longer depends on a single globally-selected marketplace. The expand toggle is a plain `<button aria-expanded>` with a `›` chevron rotated by CSS — the same idiom `sidebar.js`'s `.sb-children-toggle`/`.cluster-header` already use — which gets keyboard support for free (a native `<button>` fires `click` on Enter/Space) and needs none of `sidebar.js`'s custom keydown handling (that handling exists there only because its toggle is nested inside a navigating `<a>`; this tree has no such conflict). The filter box reuses `search.js`'s tiny local `debounce` helper (duplicated inline, matching the codebase's existing precedent of small deliberate duplication) and, because a naive full `render()` on every keystroke would blow away the filter `<input>`'s focus and cursor, `render()` gains a small save/restore of the input's identity and `selectionStart`/`selectionEnd` around the `innerHTML` replace. No backend or wire change: all three tasks reuse `evener/marketplace/list`, `evener/marketplace/browse`, `evener/plugin/list`, and `evener/plugin/install` exactly as `cmd/evener-hub/assets/plugins.js`'s existing `pluginsAdmin` wrappers already expose them.
 
-**Tech Stack:** Vanilla JS (no bundler) inside a Go `html/template` partial, CSS (`cmd/serf-hub/assets/style.css`), JSDOM jstest (`cmd/serf-hub/jstest`, agent-run). No Go changes in this part.
+**Tech Stack:** Vanilla JS (no bundler) inside a Go `html/template` partial, CSS (`cmd/evener-hub/assets/style.css`), JSDOM jstest (`cmd/evener-hub/jstest`, agent-run). No Go changes in this part.
 
-**Anchors verified** 2026-07-06 against this worktree (`plugin-marketplace-improvements`, `/Users/jesse/git/prime-radiant-inc/serf/.worktrees/plugin-marketplace`): every line-numbered citation below was re-read from the live file, not assumed from the design doc. No drift was found — the design doc's own anchors (`renderBrowseSection` 133-157, `isInstalled` 39-41, `renderBrowseRow` 117-131, `refreshBrowse` 230-239, the delegated `change` listener 278-287, the install click handler 307-319, `render()`'s section-composition line 204, `plugins.js`'s RPC wrappers 8-23) all matched exactly.
+**Anchors verified** 2026-07-06 against this worktree (`plugin-marketplace-improvements`, `/Users/jesse/git/prime-radiant-inc/evener/.worktrees/plugin-marketplace`): every line-numbered citation below was re-read from the live file, not assumed from the design doc. No drift was found — the design doc's own anchors (`renderBrowseSection` 133-157, `isInstalled` 39-41, `renderBrowseRow` 117-131, `refreshBrowse` 230-239, the delegated `change` listener 278-287, the install click handler 307-319, `render()`'s section-composition line 204, `plugins.js`'s RPC wrappers 8-23) all matched exactly.
 
 ## Global Constraints
 
-- **Client-side only.** No backend/wire change for Part 1 (verbatim from the design doc: "No backend change for Part 1 — it reuses the existing `serf/marketplace/list`, `serf/marketplace/browse`, `serf/plugin/list`, `serf/plugin/install` RPCs"). `cmd/serf-hub/assets/plugins.js` is not modified.
+- **Client-side only.** No backend/wire change for Part 1 (verbatim from the design doc: "No backend change for Part 1 — it reuses the existing `evener/marketplace/list`, `evener/marketplace/browse`, `evener/plugin/list`, `evener/plugin/install` RPCs"). `cmd/evener-hub/assets/plugins.js` is not modified.
 - **Tree shape is flat marketplace → plugin** (Jesse's explicit decision) — not category- or component-type-grouped. Do not invent additional grouping levels.
 - **The Marketplaces (add/remove/refresh) and Installed (enable/disable/upgrade/remove) sections stay unchanged** — this plan touches only the Browse section's rendering and the two handlers (`mkt-refresh`, `mkt-remove`) that must stop referencing the removed single-selection state.
-- **Filter debounce is ~150ms** (verbatim from the design doc). Use the same real-timer debounce idiom already in `cmd/serf-hub/assets/search.js` (`function debounce(fn, ms) { let t; return (...args) => { clearTimeout(t); t = setTimeout(() => fn(...args), ms); }; }`), duplicated locally rather than imported (the design doc's sibling plan documents this exact kind of small, deliberate duplication for private per-file helpers).
-- jstest is agent-run, not part of `make`/CI: from `cmd/serf-hub/jstest`, run a single test with `NODE_PATH=/tmp/serf-jstest-jsdom/node_modules node <file>.js`, or the full suite with `NODE_PATH=/tmp/serf-jstest-jsdom/node_modules sh run-all.sh`.
-- `make lint` runs `serf-namingcheck` (JSON keys must be snake_case). This part adds no new JSON wire fields, so the check is not expected to fire — but run it once at the end as a regression gate anyway.
+- **Filter debounce is ~150ms** (verbatim from the design doc). Use the same real-timer debounce idiom already in `cmd/evener-hub/assets/search.js` (`function debounce(fn, ms) { let t; return (...args) => { clearTimeout(t); t = setTimeout(() => fn(...args), ms); }; }`), duplicated locally rather than imported (the design doc's sibling plan documents this exact kind of small, deliberate duplication for private per-file helpers).
+- jstest is agent-run, not part of `make`/CI: from `cmd/evener-hub/jstest`, run a single test with `NODE_PATH=/tmp/evener-jstest-jsdom/node_modules node <file>.js`, or the full suite with `NODE_PATH=/tmp/evener-jstest-jsdom/node_modules sh run-all.sh`.
+- `make lint` runs `evener-namingcheck` (JSON keys must be snake_case). This part adds no new JSON wire fields, so the check is not expected to fire — but run it once at the end as a regression gate anyway.
 - Never `git add -A`; stage only the exact paths listed in each task's commit step (after a `git status`).
 - **Out of scope for Part 1** (verbatim from the design doc): category- or component-type-grouped tree; folding Marketplaces/Installed into the tree; surfacing `SkippedPlugins` in the browse tree; per-plugin version/source in the browse row (the browse payload doesn't carry them today); and all of Part 2 (manifest-less plugin backend support), which is a separate, independent plan.
 
@@ -25,29 +25,29 @@
 
 ## File Structure
 
-- `cmd/serf-hub/templates/partials/settings/plugins-manager.html` — the entire feature. State (`expandedMarketplaces`, `browseCatalogs` replace `browseName`/`browseCatalog`/`browseError`); `renderBrowseRow` gains `data-plugin`/`data-marketplace` on its `<li>`; a new `renderMarketplaceNode` renders one collapsible tree node; `renderBrowseSection` is rewritten around the tree (Task 1), then gains the filter `<input>` and empty/loading states (Task 2), then gains lazy-load-on-filter (Task 3); new functions `loadMarketplaceCatalog`, `toggleMarketplaceExpanded` (Task 1), `pluginMatchesFilter`, `applyFilter`, `debounce` (Task 2), `ensureAllCatalogsLoadedForFilter` (Task 3); `render()` gains filter-input focus/cursor preservation (Task 2); the `change` listener drops its `browse-marketplace-select` branch (Task 1); the click listener gains a `toggle-browse-marketplace` branch and the `install`/`mkt-refresh`/`mkt-remove` branches are updated to stop referencing the removed single-selection state (Task 1); a new `input` listener drives the filter (Task 2).
-- `cmd/serf-hub/assets/style.css` — a new self-contained block (`.browse-marketplace-toggle`/`.browse-marketplace-chevron`/`.browse-marketplace-count`/`.browse-marketplace-plugins`/`.browse-filter`) appended after the existing `.settings-collection-add .row-error[hidden]` rule (line 3670), reusing `.settings-collection`/`.settings-collection-row`/`.settings-collection-empty`/`.settings-collection-add` for everything else.
-- `cmd/serf-hub/jstest/test-plugins-manager-browse-tree.js` (new, Task 1) — tree render, lazy-load-once-cached, per-node loading/error, inline install, marketplace-refresh cache invalidation, zero-marketplaces empty state.
-- `cmd/serf-hub/jstest/test-plugins-manager-browse-filter.js` (new, Task 2) — filtering already-loaded catalogs, auto-expand/collapse, empty-result message, clear-restores-collapsed, focus/cursor preservation across the debounced re-render.
-- `cmd/serf-hub/jstest/test-plugins-manager-browse-filter-lazyload.js` (new, Task 3) — first-keystroke lazy-load of not-yet-cached marketplaces, the loading affordance while pending, no re-fetch on later keystrokes.
-- Not modified: `cmd/serf-hub/assets/plugins.js` (RPC wrappers are reused as-is), any Go file, any wire type.
+- `cmd/evener-hub/templates/partials/settings/plugins-manager.html` — the entire feature. State (`expandedMarketplaces`, `browseCatalogs` replace `browseName`/`browseCatalog`/`browseError`); `renderBrowseRow` gains `data-plugin`/`data-marketplace` on its `<li>`; a new `renderMarketplaceNode` renders one collapsible tree node; `renderBrowseSection` is rewritten around the tree (Task 1), then gains the filter `<input>` and empty/loading states (Task 2), then gains lazy-load-on-filter (Task 3); new functions `loadMarketplaceCatalog`, `toggleMarketplaceExpanded` (Task 1), `pluginMatchesFilter`, `applyFilter`, `debounce` (Task 2), `ensureAllCatalogsLoadedForFilter` (Task 3); `render()` gains filter-input focus/cursor preservation (Task 2); the `change` listener drops its `browse-marketplace-select` branch (Task 1); the click listener gains a `toggle-browse-marketplace` branch and the `install`/`mkt-refresh`/`mkt-remove` branches are updated to stop referencing the removed single-selection state (Task 1); a new `input` listener drives the filter (Task 2).
+- `cmd/evener-hub/assets/style.css` — a new self-contained block (`.browse-marketplace-toggle`/`.browse-marketplace-chevron`/`.browse-marketplace-count`/`.browse-marketplace-plugins`/`.browse-filter`) appended after the existing `.settings-collection-add .row-error[hidden]` rule (line 3670), reusing `.settings-collection`/`.settings-collection-row`/`.settings-collection-empty`/`.settings-collection-add` for everything else.
+- `cmd/evener-hub/jstest/test-plugins-manager-browse-tree.js` (new, Task 1) — tree render, lazy-load-once-cached, per-node loading/error, inline install, marketplace-refresh cache invalidation, zero-marketplaces empty state.
+- `cmd/evener-hub/jstest/test-plugins-manager-browse-filter.js` (new, Task 2) — filtering already-loaded catalogs, auto-expand/collapse, empty-result message, clear-restores-collapsed, focus/cursor preservation across the debounced re-render.
+- `cmd/evener-hub/jstest/test-plugins-manager-browse-filter-lazyload.js` (new, Task 3) — first-keystroke lazy-load of not-yet-cached marketplaces, the loading affordance while pending, no re-fetch on later keystrokes.
+- Not modified: `cmd/evener-hub/assets/plugins.js` (RPC wrappers are reused as-is), any Go file, any wire type.
 
 ---
 
-**Cache invalidation on `serf/marketplace/updated` needs no new code.** The design doc requires the Browse cache to be invalidated "on the `serf/marketplace/updated` notification (re-fetch on next expand)" in addition to an explicit refresh. `cmd/serf-hub/assets/notifications.js:415-430` already handles this today for the whole pane: on `serf/marketplace/updated` (or `serf/plugin/updated`), if `/settings/plugins-manager` is the active settings tab, it does a full `htmx.ajax` reload of the partial, which re-evaluates the inline `<script>` from scratch — wiping `browseCatalogs`/`expandedMarketplaces` back to empty. So a mutation from another tab already forces a full re-render with a cold cache; the next expand re-fetches for free. No task below needs to touch `notifications.js`.
+**Cache invalidation on `evener/marketplace/updated` needs no new code.** The design doc requires the Browse cache to be invalidated "on the `evener/marketplace/updated` notification (re-fetch on next expand)" in addition to an explicit refresh. `cmd/evener-hub/assets/notifications.js:415-430` already handles this today for the whole pane: on `evener/marketplace/updated` (or `evener/plugin/updated`), if `/settings/plugins-manager` is the active settings tab, it does a full `htmx.ajax` reload of the partial, which re-evaluates the inline `<script>` from scratch — wiping `browseCatalogs`/`expandedMarketplaces` back to empty. So a mutation from another tab already forces a full re-render with a cold cache; the next expand re-fetches for free. No task below needs to touch `notifications.js`.
 
 ## Task 1 — Browse becomes a collapsible marketplace → plugin tree
 
 **Files:**
-- Modify: `cmd/serf-hub/templates/partials/settings/plugins-manager.html` (state ~33-35, `renderBrowseRow` ~117-131, `renderBrowseSection` ~133-157, `refreshBrowse` ~230-239, `change` listener ~278-287, click listener's `install`/`mkt-refresh`/`mkt-remove` branches ~307-352)
-- Modify: `cmd/serf-hub/assets/style.css` (new block after line 3670)
-- Test: `cmd/serf-hub/jstest/test-plugins-manager-browse-tree.js` (new)
+- Modify: `cmd/evener-hub/templates/partials/settings/plugins-manager.html` (state ~33-35, `renderBrowseRow` ~117-131, `renderBrowseSection` ~133-157, `refreshBrowse` ~230-239, `change` listener ~278-287, click listener's `install`/`mkt-refresh`/`mkt-remove` branches ~307-352)
+- Modify: `cmd/evener-hub/assets/style.css` (new block after line 3670)
+- Test: `cmd/evener-hub/jstest/test-plugins-manager-browse-tree.js` (new)
 
 **Interfaces:**
-- Consumes: `pluginsAdmin.marketplaceList()`, `pluginsAdmin.pluginList()`, `pluginsAdmin.marketplaceBrowse(name)`, `pluginsAdmin.pluginInstall(plugin, marketplace)`, `pluginsAdmin.marketplaceRefresh(name)`, `pluginsAdmin.marketplaceRemove(name)` (all existing, `cmd/serf-hub/assets/plugins.js:8-23`, unchanged).
+- Consumes: `pluginsAdmin.marketplaceList()`, `pluginsAdmin.pluginList()`, `pluginsAdmin.marketplaceBrowse(name)`, `pluginsAdmin.pluginInstall(plugin, marketplace)`, `pluginsAdmin.marketplaceRefresh(name)`, `pluginsAdmin.marketplaceRemove(name)` (all existing, `cmd/evener-hub/assets/plugins.js:8-23`, unchanged).
 - Produces: `expandedMarketplaces` (`Set<string>`), `browseCatalogs` (`{[name]: {loading:true} | {error:string} | {plugins:MarketplaceCatalogPlugin[]}}`), `loadMarketplaceCatalog(name)`, `toggleMarketplaceExpanded(name)`, `renderMarketplaceNode(m)` — all consumed by Task 2 and Task 3.
 
-- [ ] **Failing test** — create `cmd/serf-hub/jstest/test-plugins-manager-browse-tree.js`:
+- [ ] **Failing test** — create `cmd/evener-hub/jstest/test-plugins-manager-browse-tree.js`:
 ```js
 // Loads the inline <script> from templates/partials/settings/plugins-manager.html
 // into JSDOM, mocks window.pluginsAdmin, and exercises the Browse tree (Part 1
@@ -231,15 +231,15 @@ async function waitLoaded(dom) {
 })().catch((e) => { console.error(e && e.stack ? e.stack : e); process.exit(1); });
 ```
 
-- [ ] **Run** `cd cmd/serf-hub/jstest && NODE_PATH=/tmp/serf-jstest-jsdom/node_modules node test-plugins-manager-browse-tree.js` → expect FAIL (`#browse-marketplace-select` still exists; no `.browse-marketplace-node`/`.browse-marketplace-toggle` elements; `pluginsAdmin.marketplaceBrowse` is never called since nothing drives it without a selection).
+- [ ] **Run** `cd cmd/evener-hub/jstest && NODE_PATH=/tmp/evener-jstest-jsdom/node_modules node test-plugins-manager-browse-tree.js` → expect FAIL (`#browse-marketplace-select` still exists; no `.browse-marketplace-node`/`.browse-marketplace-toggle` elements; `pluginsAdmin.marketplaceBrowse` is never called since nothing drives it without a selection).
 
-- [ ] **Implement — state, row, and tree render.** In `cmd/serf-hub/templates/partials/settings/plugins-manager.html`, replace the state block:
+- [ ] **Implement — state, row, and tree render.** In `cmd/evener-hub/templates/partials/settings/plugins-manager.html`, replace the state block:
 ```js
     // ---- state ----
-    let marketplaces = [];   // last serf/marketplace/list result
-    let installed = [];      // last serf/plugin/list result
+    let marketplaces = [];   // last evener/marketplace/list result
+    let installed = [];      // last evener/plugin/list result
     let browseName = "";     // marketplace currently selected in Browse, "" = none
-    let browseCatalog = null; // last serf/marketplace/browse result for browseName
+    let browseCatalog = null; // last evener/marketplace/browse result for browseName
     let browseError = "";
     let addMarketplaceOpen = false;
     let loadError = "";
@@ -247,11 +247,11 @@ async function waitLoaded(dom) {
 with:
 ```js
     // ---- state ----
-    let marketplaces = [];   // last serf/marketplace/list result
-    let installed = [];      // last serf/plugin/list result
+    let marketplaces = [];   // last evener/marketplace/list result
+    let installed = [];      // last evener/plugin/list result
     // Browse is a tree: every registered marketplace is a node, expanded
     // on demand. expandedMarketplaces tracks which nodes are open;
-    // browseCatalogs caches each marketplace's serf/marketplace/browse
+    // browseCatalogs caches each marketplace's evener/marketplace/browse
     // result (or its loading/error state) so re-expanding never re-fetches.
     let expandedMarketplaces = new Set();
     let browseCatalogs = {}; // marketplace name -> {loading:true} | {error} | {plugins}
@@ -401,7 +401,7 @@ Replace the `install` branch (it no longer takes the plugin name off the button,
             await pluginsAdmin.pluginInstall(btn.dataset.plugin, browseName);
             await refreshInstalled();
             render();
-            if (window.SerfToast) window.SerfToast.show("Installed " + btn.dataset.plugin, "success");
+            if (window.EvenerToast) window.EvenerToast.show("Installed " + btn.dataset.plugin, "success");
           } catch (err) {
             toastError("Install", err);
           }
@@ -420,7 +420,7 @@ becomes:
             await pluginsAdmin.pluginInstall(plugin, marketplace);
             await refreshInstalled();
             render();
-            if (window.SerfToast) window.SerfToast.show("Installed " + plugin, "success");
+            if (window.EvenerToast) window.EvenerToast.show("Installed " + plugin, "success");
           } catch (err) {
             toastError("Install", err);
           }
@@ -438,7 +438,7 @@ Replace the `mkt-refresh` branch (invalidates that marketplace's Browse cache; r
             await refreshMarketplaces();
             if (name === browseName) await refreshBrowse();
             render();
-            if (window.SerfToast) window.SerfToast.show("Refreshed " + name, "success");
+            if (window.EvenerToast) window.EvenerToast.show("Refreshed " + name, "success");
           } catch (err) {
             toastError("Refresh", err);
           }
@@ -461,7 +461,7 @@ becomes:
             } else {
               render();
             }
-            if (window.SerfToast) window.SerfToast.show("Refreshed " + name, "success");
+            if (window.EvenerToast) window.EvenerToast.show("Refreshed " + name, "success");
           } catch (err) {
             toastError("Refresh", err);
           }
@@ -480,7 +480,7 @@ Replace the `mkt-remove` branch (drops the removed `browseName`/`browseCatalog`/
             if (name === browseName) { browseName = ""; browseCatalog = null; browseError = ""; }
             await refreshMarketplaces();
             render();
-            if (window.SerfToast) window.SerfToast.show("Removed marketplace " + name, "success");
+            if (window.EvenerToast) window.EvenerToast.show("Removed marketplace " + name, "success");
           } catch (err) {
             toastError("Remove marketplace", err);
           }
@@ -500,7 +500,7 @@ becomes:
             expandedMarketplaces.delete(name);
             await refreshMarketplaces();
             render();
-            if (window.SerfToast) window.SerfToast.show("Removed marketplace " + name, "success");
+            if (window.EvenerToast) window.EvenerToast.show("Removed marketplace " + name, "success");
           } catch (err) {
             toastError("Remove marketplace", err);
           }
@@ -509,7 +509,7 @@ becomes:
       }
 ```
 
-- [ ] **Implement CSS.** In `cmd/serf-hub/assets/style.css`, immediately after the existing `.settings-collection-add .row-error[hidden] { display: none; }` rule (line 3670), add:
+- [ ] **Implement CSS.** In `cmd/evener-hub/assets/style.css`, immediately after the existing `.settings-collection-add .row-error[hidden] { display: none; }` rule (line 3670), add:
 ```css
 
 /* ── Browse tree (marketplace → plugin, plugin-marketplace-improvements Part 1) ── */
@@ -537,24 +537,24 @@ becomes:
 .browse-marketplace-plugins { padding-left: var(--space-5); }
 ```
 
-- [ ] **Run** `cd cmd/serf-hub/jstest && NODE_PATH=/tmp/serf-jstest-jsdom/node_modules node test-plugins-manager-browse-tree.js` → PASS.
-- [ ] **Run** `cd cmd/serf-hub/jstest && NODE_PATH=/tmp/serf-jstest-jsdom/node_modules sh run-all.sh` (full suite — confirm no other test referenced `#browse-marketplace-select` or the old single-selection Browse shape) → all green.
-- [ ] **Commit** — `git add cmd/serf-hub/templates/partials/settings/plugins-manager.html cmd/serf-hub/assets/style.css cmd/serf-hub/jstest/test-plugins-manager-browse-tree.js` → `feat(plugins-ui): Browse becomes a lazy-loaded marketplace → plugin tree`.
+- [ ] **Run** `cd cmd/evener-hub/jstest && NODE_PATH=/tmp/evener-jstest-jsdom/node_modules node test-plugins-manager-browse-tree.js` → PASS.
+- [ ] **Run** `cd cmd/evener-hub/jstest && NODE_PATH=/tmp/evener-jstest-jsdom/node_modules sh run-all.sh` (full suite — confirm no other test referenced `#browse-marketplace-select` or the old single-selection Browse shape) → all green.
+- [ ] **Commit** — `git add cmd/evener-hub/templates/partials/settings/plugins-manager.html cmd/evener-hub/assets/style.css cmd/evener-hub/jstest/test-plugins-manager-browse-tree.js` → `feat(plugins-ui): Browse becomes a lazy-loaded marketplace → plugin tree`.
 
 ---
 
 ## Task 2 — Filter box: search already-loaded catalogs
 
 **Files:**
-- Modify: `cmd/serf-hub/templates/partials/settings/plugins-manager.html` (`renderBrowseSection`, `render()`, add `input` listener)
-- Modify: `cmd/serf-hub/assets/style.css` (append `.browse-filter`)
-- Test: `cmd/serf-hub/jstest/test-plugins-manager-browse-filter.js` (new)
+- Modify: `cmd/evener-hub/templates/partials/settings/plugins-manager.html` (`renderBrowseSection`, `render()`, add `input` listener)
+- Modify: `cmd/evener-hub/assets/style.css` (append `.browse-filter`)
+- Test: `cmd/evener-hub/jstest/test-plugins-manager-browse-filter.js` (new)
 
 **Interfaces:**
 - Consumes: `browseCatalogs`, `expandedMarketplaces`, `renderMarketplaceNode` (Task 1).
 - Produces: `filterQuery` (`string`), `pluginMatchesFilter(p, query)`, `applyFilter()`, module-local `debounce(fn, ms)` — `applyFilter` and `filterQuery` are extended by Task 3.
 
-- [ ] **Failing test** — create `cmd/serf-hub/jstest/test-plugins-manager-browse-filter.js`:
+- [ ] **Failing test** — create `cmd/evener-hub/jstest/test-plugins-manager-browse-filter.js`:
 ```js
 // Loads the inline <script> from templates/partials/settings/plugins-manager.html
 // into JSDOM and exercises the Browse tree's filter box (Part 1 of the
@@ -680,9 +680,9 @@ function typeInFilter(doc, dom, value) {
 })().catch((e) => { console.error(e && e.stack ? e.stack : e); process.exit(1); });
 ```
 
-- [ ] **Run** `cd cmd/serf-hub/jstest && NODE_PATH=/tmp/serf-jstest-jsdom/node_modules node test-plugins-manager-browse-filter.js` → expect FAIL (no `#browse-filter-input` exists yet).
+- [ ] **Run** `cd cmd/evener-hub/jstest && NODE_PATH=/tmp/evener-jstest-jsdom/node_modules node test-plugins-manager-browse-filter.js` → expect FAIL (no `#browse-filter-input` exists yet).
 
-- [ ] **Implement — filter state, matching, and render.** In `cmd/serf-hub/templates/partials/settings/plugins-manager.html`, add to the state block (right after `browseCatalogs`):
+- [ ] **Implement — filter state, matching, and render.** In `cmd/evener-hub/templates/partials/settings/plugins-manager.html`, add to the state block (right after `browseCatalogs`):
 ```js
     let filterQuery = ""; // Browse tree filter box's current value
 ```
@@ -824,28 +824,28 @@ Add a new `input` listener (alongside the existing `change`/`click`/`submit` lis
     });
 ```
 
-- [ ] **Implement CSS.** In `cmd/serf-hub/assets/style.css`, immediately after the `.browse-marketplace-plugins` rule added in Task 1, add:
+- [ ] **Implement CSS.** In `cmd/evener-hub/assets/style.css`, immediately after the `.browse-marketplace-plugins` rule added in Task 1, add:
 ```css
 .browse-filter { border-top: none; padding-top: 0; }
 ```
 
-- [ ] **Run** `cd cmd/serf-hub/jstest && NODE_PATH=/tmp/serf-jstest-jsdom/node_modules node test-plugins-manager-browse-filter.js` → PASS.
-- [ ] **Run** `cd cmd/serf-hub/jstest && NODE_PATH=/tmp/serf-jstest-jsdom/node_modules node test-plugins-manager-browse-tree.js` (Task 1's test — no regression) then `sh run-all.sh` (full suite) → all green.
-- [ ] **Commit** — `git add cmd/serf-hub/templates/partials/settings/plugins-manager.html cmd/serf-hub/assets/style.css cmd/serf-hub/jstest/test-plugins-manager-browse-filter.js` → `feat(plugins-ui): filter the Browse tree across already-loaded marketplace catalogs`.
+- [ ] **Run** `cd cmd/evener-hub/jstest && NODE_PATH=/tmp/evener-jstest-jsdom/node_modules node test-plugins-manager-browse-filter.js` → PASS.
+- [ ] **Run** `cd cmd/evener-hub/jstest && NODE_PATH=/tmp/evener-jstest-jsdom/node_modules node test-plugins-manager-browse-tree.js` (Task 1's test — no regression) then `sh run-all.sh` (full suite) → all green.
+- [ ] **Commit** — `git add cmd/evener-hub/templates/partials/settings/plugins-manager.html cmd/evener-hub/assets/style.css cmd/evener-hub/jstest/test-plugins-manager-browse-filter.js` → `feat(plugins-ui): filter the Browse tree across already-loaded marketplace catalogs`.
 
 ---
 
 ## Task 3 — Filter lazy-loads not-yet-loaded catalogs on first keystroke
 
 **Files:**
-- Modify: `cmd/serf-hub/templates/partials/settings/plugins-manager.html` (`renderBrowseSection`, the `input` listener's debounced callback)
-- Test: `cmd/serf-hub/jstest/test-plugins-manager-browse-filter-lazyload.js` (new)
+- Modify: `cmd/evener-hub/templates/partials/settings/plugins-manager.html` (`renderBrowseSection`, the `input` listener's debounced callback)
+- Test: `cmd/evener-hub/jstest/test-plugins-manager-browse-filter-lazyload.js` (new)
 
 **Interfaces:**
 - Consumes: `browseCatalogs`, `marketplaces`, `pluginsAdmin.marketplaceBrowse` (Task 1); `applyFilter`, `filterQuery` (Task 2).
 - Produces: `filterLoading` (`boolean`), `ensureAllCatalogsLoadedForFilter()`.
 
-- [ ] **Failing test** — create `cmd/serf-hub/jstest/test-plugins-manager-browse-filter-lazyload.js`:
+- [ ] **Failing test** — create `cmd/evener-hub/jstest/test-plugins-manager-browse-filter-lazyload.js`:
 ```js
 // Loads the inline <script> from templates/partials/settings/plugins-manager.html
 // into JSDOM and exercises the Browse filter's lazy-load-on-first-keystroke
@@ -972,9 +972,9 @@ function typeInFilter(doc, dom, value) {
 })().catch((e) => { console.error(e && e.stack ? e.stack : e); process.exit(1); });
 ```
 
-- [ ] **Run** `cd cmd/serf-hub/jstest && NODE_PATH=/tmp/serf-jstest-jsdom/node_modules node test-plugins-manager-browse-filter-lazyload.js` → expect FAIL (typing never calls `marketplaceBrowse` for uncached marketplaces; no "Loading marketplaces…" text exists).
+- [ ] **Run** `cd cmd/evener-hub/jstest && NODE_PATH=/tmp/evener-jstest-jsdom/node_modules node test-plugins-manager-browse-filter-lazyload.js` → expect FAIL (typing never calls `marketplaceBrowse` for uncached marketplaces; no "Loading marketplaces…" text exists).
 
-- [ ] **Implement.** In `cmd/serf-hub/templates/partials/settings/plugins-manager.html`, add to the state block (right after `filterQuery`):
+- [ ] **Implement.** In `cmd/evener-hub/templates/partials/settings/plugins-manager.html`, add to the state block (right after `filterQuery`):
 ```js
     let filterLoading = false; // true while the filter's first-keystroke lazy-load is in flight
 ```
@@ -1035,16 +1035,16 @@ becomes:
       }
 ```
 
-- [ ] **Run** `cd cmd/serf-hub/jstest && NODE_PATH=/tmp/serf-jstest-jsdom/node_modules node test-plugins-manager-browse-filter-lazyload.js` → PASS.
-- [ ] **Run** `cd cmd/serf-hub/jstest && NODE_PATH=/tmp/serf-jstest-jsdom/node_modules sh run-all.sh` (full suite, including Task 1's and Task 2's plugins-manager tests — no regression) → all green.
-- [ ] **Run** `make lint` from the repo root → 0 issues (no new JSON wire fields were added in Part 1, so `serf-namingcheck` is not expected to flag anything; this is a regression gate).
-- [ ] **Commit** — `git add cmd/serf-hub/templates/partials/settings/plugins-manager.html cmd/serf-hub/jstest/test-plugins-manager-browse-filter-lazyload.js` → `feat(plugins-ui): the Browse filter lazy-loads uncached marketplace catalogs on first use`.
+- [ ] **Run** `cd cmd/evener-hub/jstest && NODE_PATH=/tmp/evener-jstest-jsdom/node_modules node test-plugins-manager-browse-filter-lazyload.js` → PASS.
+- [ ] **Run** `cd cmd/evener-hub/jstest && NODE_PATH=/tmp/evener-jstest-jsdom/node_modules sh run-all.sh` (full suite, including Task 1's and Task 2's plugins-manager tests — no regression) → all green.
+- [ ] **Run** `make lint` from the repo root → 0 issues (no new JSON wire fields were added in Part 1, so `evener-namingcheck` is not expected to flag anything; this is a regression gate).
+- [ ] **Commit** — `git add cmd/evener-hub/templates/partials/settings/plugins-manager.html cmd/evener-hub/jstest/test-plugins-manager-browse-filter-lazyload.js` → `feat(plugins-ui): the Browse filter lazy-loads uncached marketplace catalogs on first use`.
 
 ---
 
 ## Testing (shared, Part 1 scope)
 
-Per the design doc's Testing section, Part 1's coverage is entirely jstest (`cmd/serf-hub/jstest`): tree render from `serf/marketplace/list`, expand → plugins from `serf/marketplace/browse`; lazy-load (browse called only on first expand, cached after); per-node loading + error states; install-state badge vs. Install button (against a mocked `serf/plugin/list`); inline install flips the row; the filter (matches across marketplaces by name/description, auto-expand, empty-result, clear restores collapsed). All three new test files mock the RPC layer via `window.pluginsAdmin`, matching the existing pattern in `cmd/serf-hub/jstest/test-credentials.js` (load the partial's inline `<script>`, mock the admin object it calls into, eval into JSDOM). No Go tests are needed for Part 1 — there is no Go change.
+Per the design doc's Testing section, Part 1's coverage is entirely jstest (`cmd/evener-hub/jstest`): tree render from `evener/marketplace/list`, expand → plugins from `evener/marketplace/browse`; lazy-load (browse called only on first expand, cached after); per-node loading + error states; install-state badge vs. Install button (against a mocked `evener/plugin/list`); inline install flips the row; the filter (matches across marketplaces by name/description, auto-expand, empty-result, clear restores collapsed). All three new test files mock the RPC layer via `window.pluginsAdmin`, matching the existing pattern in `cmd/evener-hub/jstest/test-credentials.js` (load the partial's inline `<script>`, mock the admin object it calls into, eval into JSDOM). No Go tests are needed for Part 1 — there is no Go change.
 
 ## Out of scope (Part 1, verbatim from the design doc)
 

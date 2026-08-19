@@ -11,9 +11,9 @@ import (
 	"testing"
 	"time"
 
-	"primeradiant.com/serf/agent/events"
-	"primeradiant.com/serf/agent/schema"
-	"primeradiant.com/serf/llm"
+	"primeradiant.com/evener/agent/events"
+	"primeradiant.com/evener/agent/schema"
+	"primeradiant.com/evener/llm"
 
 	"pgregory.net/rapid"
 )
@@ -67,7 +67,7 @@ import (
 // call/result turns, end_turn communicate replies), so generated histories are
 // always legal shapes, not arbitrary bytes.
 //
-// Run hard with: SERF_FUZZ_TESTS=1 go test -run '^TestCompactionSeqFuzz$' -rapid.checks=5000 .
+// Run hard with: EVENER_FUZZ_TESTS=1 go test -run '^TestCompactionSeqFuzz$' -rapid.checks=5000 .
 // Steps are bounded and tokens kept small so the checkpoint's char budget never
 // sheds content (which would otherwise be a legitimate, by-design loss the
 // survival invariant must not mistake for a bug).
@@ -77,10 +77,10 @@ import (
 // cannot be asserted at the unit level without mocking the very logic under
 // test. The deterministic checkpoint layer IS the state-preserving surface and
 // is exercised through its real ForceCompact entry point.
-// serf:fuzz rapid
+// evener:fuzz rapid
 func TestCompactionSeqFuzz(t *testing.T) {
-	if os.Getenv("SERF_FUZZ_TESTS") != "1" {
-		t.Skip("fuzz: skipped by default; run `make test-fuzz`, or SERF_FUZZ_TESTS=1 go test ./agent/internal/contextmgr -run TestCompactionSeqFuzz -count=1 -v")
+	if os.Getenv("EVENER_FUZZ_TESTS") != "1" {
+		t.Skip("fuzz: skipped by default; run `make test-fuzz`, or EVENER_FUZZ_TESTS=1 go test ./agent/internal/contextmgr -run TestCompactionSeqFuzz -count=1 -v")
 	}
 	rapid.Check(t, func(rt *rapid.T) {
 		m := newCompactionModel(rapid.IntRange(1, 4).Draw(rt, "preserveRecent"))

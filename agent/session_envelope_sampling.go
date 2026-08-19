@@ -1,12 +1,12 @@
 package agent
 
 import (
-	"primeradiant.com/serf/agent/events"
-	"primeradiant.com/serf/agent/provider"
-	"primeradiant.com/serf/agent/schema"
-	"primeradiant.com/serf/agent/task"
-	"primeradiant.com/serf/appwire"
-	"primeradiant.com/serf/llm"
+	"primeradiant.com/evener/agent/events"
+	"primeradiant.com/evener/agent/provider"
+	"primeradiant.com/evener/agent/schema"
+	"primeradiant.com/evener/agent/task"
+	"primeradiant.com/evener/appwire"
+	"primeradiant.com/evener/llm"
 )
 
 // EnvelopeSampling is every Session read the daemon's AUTHORITATIVE event
@@ -14,7 +14,7 @@ import (
 //
 // The daemon materializes its thread envelope by sampling live session state at
 // the moment an event says it moved (server/thread_envelope.go's facetsByEvent,
-// implemented by cmd/serf's liveThreadEnvelopeSource). That sampling runs ON THE
+// implemented by cmd/evener's liveThreadEnvelopeSource). That sampling runs ON THE
 // DRAIN GOROUTINE, inside the same call that is consuming the session's event
 // stream.
 //
@@ -42,7 +42,7 @@ import (
 //
 // WHY THIS IS A NAMED INTERFACE and not just *Session. The rule constrains a
 // call graph inside agent, but the person who breaks it is adding an envelope
-// facet in server/ and cmd/serf/, where none of the above is visible. Typing the
+// facet in server/ and cmd/evener/, where none of the above is visible. Typing the
 // daemon's window as this interface means a new facet cannot sample anything new
 // without adding a method HERE — in the file that states the rule, next to
 // session_envelope_sampling_test.go, which proves it for every method the

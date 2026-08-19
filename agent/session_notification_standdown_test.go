@@ -7,9 +7,9 @@ import (
 	"sync"
 	"testing"
 
-	"primeradiant.com/serf/agent/events"
-	"primeradiant.com/serf/agent/internal/agenttest"
-	"primeradiant.com/serf/appwire"
+	"primeradiant.com/evener/agent/events"
+	"primeradiant.com/evener/agent/internal/agenttest"
+	"primeradiant.com/evener/appwire"
 )
 
 // standDownHarness is a served session on a fake clock with a notify counter,

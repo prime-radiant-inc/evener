@@ -28,12 +28,12 @@
 
 **Execution status (2026-08-14):** Task 6 is complete at immutable commit `5df4ad5f487f3674f4016f40eeb82d3cf49b7aa4`; Task 7 is complete at immutable commit `521a4892d977927154f34636343d84e8dda15508`. The recovery branch remains an intentionally nondeployable flag-day checkpoint. Tasks 8–14, final integration verification, merge, and deployment remain incomplete.
 
-**Tech Stack:** Go, append-only JSONL with fsync, Serf Session/transcript/provider seams, deterministic channel barriers, Rapid/native fuzz replay, AppWire Go/TypeScript generation, React/Vitest/Biome, Kata, and repository Make gates.
+**Tech Stack:** Go, append-only JSONL with fsync, Evener Session/transcript/provider seams, deterministic channel barriers, Rapid/native fuzz replay, AppWire Go/TypeScript generation, React/Vitest/Biome, Kata, and repository Make gates.
 
 ## Global Constraints
 
 - Jesse is the human partner. The authoritative target is `docs/subagent-management/11-delegate-resource-model.md`; this dated file is an execution plan, not a second product specification.
-- Execute Tasks 6–14 only in `/Users/jesse/prime-radiant/toil-suite/serf/.worktrees/delegate-resource-task6-clean` on `wip/delegate-resource-task6-clean`, starting from completed Task 5 commit `2da9863390e3e064fc015afe79a54fe8a8ce1d8f`. Before each task, verify the branch, expected prior task commit, and clean tracked porcelain. Never merge, rebase, cherry-pick, reset, clean, stash, switch branches, or push while executing this plan.
+- Execute Tasks 6–14 only in `/Users/jesse/prime-radiant/toil-suite/evener/.worktrees/delegate-resource-task6-clean` on `wip/delegate-resource-task6-clean`, starting from completed Task 5 commit `2da9863390e3e064fc015afe79a54fe8a8ce1d8f`. Before each task, verify the branch, expected prior task commit, and clean tracked porcelain. Never merge, rebase, cherry-pick, reset, clean, stash, switch branches, or push while executing this plan.
 - Do not copy lifecycle code from `delegate-identity-integration`. Pure DTO/rendering ideas and still-valid behavioral tests must be re-derived against `main`.
 - There is one stable public delegate identity (`dlg_...`), one root-owned controller, one durable delegate fold, one current private `uint64` generation per delegate, and one lifecycle mutex per root tree.
 - A delegate generation is never a JobRecord, job ID, output file, independent reducer, query target, notification rail, or public row.
@@ -96,9 +96,9 @@
 - Shell jobs: `agent/job_shell.go`, `jobs.go`, `jobs_nested.go`, `job_notify.go`, `job_watch.go`, `session_jobtree_drain.go`.
 - Tools: `agent/internal/tool/definitions.go`, `session_tools_jobs.go`, `session_outline.go`, `job_transcript_read.go`, `session_tools_transcript.go`.
 - Persistence deletion: `agent/internal/jobstore/{event,record,fold,store}.go` becomes shell/watch-only after consumers move.
-- Projection: `agent/events/{events,payloads}.go`, `jobs_activity.go`, `jobs_activity_past.go`, `historical_jobs.go`, `internal/appprojector/appwire_projection.go`, `appwire/types.go`, `appwire/protocol.go`, `server/appwire_runtime.go`, `cmd/serf-hub/app_jobs.go`; plus the stable live/reconnect status bridge `agent/{status.go,status_test.go,status_support_program_fuzz_test.go}`, `cmd/serf/{serve.go,serve_test.go,serve_coverage_fuzz_test.go}`, and `server/{server.go,server_test.go,server_surface_fuzz_test.go}`.
-- Clients: `cmd/serf-hub/internal/hubcore/{prober.go,prober_test.go,prober_wire_test.go,scenarios_fuzz_test.go}`; `cmd/serf-tui/internal/transcript/{job_notification.go,reducer.go,types.go,reducer_test.go,cov_rtui_transcript_test.go,reducer_fuzz_test.go,fuzz_coverage_union_test.go}`; `cmd/serf-tui/{hub_notifications.go,hub_notifications_test.go,hub_notifications_fuzz_test.go,model_misc_serffuzz_test.go}`; `cmd/serf/{run_drain_test.go,run_drain_nested_test.go}`; and the exact Hub frontend activity/transcript/store, notification, fixture, and overflow-harness files named in Task 11.
-- Operations: `agent/doctor`, `cmd/serf-doctor`, worktree/disposal helpers, bundled doctor references, prompts, and evergreen docs.
+- Projection: `agent/events/{events,payloads}.go`, `jobs_activity.go`, `jobs_activity_past.go`, `historical_jobs.go`, `internal/appprojector/appwire_projection.go`, `appwire/types.go`, `appwire/protocol.go`, `server/appwire_runtime.go`, `cmd/evener-hub/app_jobs.go`; plus the stable live/reconnect status bridge `agent/{status.go,status_test.go,status_support_program_fuzz_test.go}`, `cmd/evener/{serve.go,serve_test.go,serve_coverage_fuzz_test.go}`, and `server/{server.go,server_test.go,server_surface_fuzz_test.go}`.
+- Clients: `cmd/evener-hub/internal/hubcore/{prober.go,prober_test.go,prober_wire_test.go,scenarios_fuzz_test.go}`; `cmd/evener-tui/internal/transcript/{job_notification.go,reducer.go,types.go,reducer_test.go,cov_rtui_transcript_test.go,reducer_fuzz_test.go,fuzz_coverage_union_test.go}`; `cmd/evener-tui/{hub_notifications.go,hub_notifications_test.go,hub_notifications_fuzz_test.go,model_misc_evenerfuzz_test.go}`; `cmd/evener/{run_drain_test.go,run_drain_nested_test.go}`; and the exact Hub frontend activity/transcript/store, notification, fixture, and overflow-harness files named in Task 11.
+- Operations: `agent/doctor`, `cmd/evener-doctor`, worktree/disposal helpers, bundled doctor references, prompts, and evergreen docs.
 
 ## Established foundation interfaces
 
@@ -388,7 +388,7 @@ Run:
 gofmt -w agent/internal/delegatestore/*.go
 go test ./agent/internal/delegatestore -count=20
 go test -race ./agent/internal/delegatestore -count=20
-SERF_FUZZ_TESTS=1 go test -tags serffuzz ./agent/internal/delegatestore -run '^(Test|Fuzz)' -count=1
+EVENER_FUZZ_TESTS=1 go test -tags evenerfuzz ./agent/internal/delegatestore -run '^(Test|Fuzz)' -count=1
 make fuzz-registry-check
 git diff --check
 git status --short
@@ -530,7 +530,7 @@ Run:
 gofmt -w agent/delegate_tree_controller.go agent/delegate_tree_start.go agent/delegate_tree_controller_test.go agent/delegate_tree_start_test.go agent/delegate_tree_controller_fuzz_test.go
 go test ./agent -run '^TestDelegateController' -count=20
 go test -race ./agent -run '^TestDelegateController' -count=20
-SERF_FUZZ_TESTS=1 go test -tags serffuzz ./agent -run '^FuzzDelegateControllerTransitions$' -count=1
+EVENER_FUZZ_TESTS=1 go test -tags evenerfuzz ./agent -run '^FuzzDelegateControllerTransitions$' -count=1
 make fuzz-registry-check
 git diff --check
 git status --short
@@ -662,7 +662,7 @@ Run:
 gofmt -w agent/delegate_tree_steer.go agent/delegate_tree_finish.go agent/delegate_delivery.go agent/delegate_tree_steer_test.go agent/delegate_tree_finish_test.go agent/delegate_delivery_test.go agent/delegate_conversation_fuzz_test.go
 go test ./agent -run '^TestDelegateController' -count=20
 go test -race ./agent -run '^TestDelegateController' -count=20
-SERF_FUZZ_TESTS=1 go test -tags serffuzz ./agent -run '^FuzzDelegateConversationTransitions$' -count=1
+EVENER_FUZZ_TESTS=1 go test -tags evenerfuzz ./agent -run '^FuzzDelegateConversationTransitions$' -count=1
 make fuzz-registry-check
 git diff --check
 git status --short
@@ -814,7 +814,7 @@ Run:
 gofmt -w agent/delegate_tree_work.go agent/delegate_tree_stop.go agent/delegate_tree_restore.go agent/delegate_shell_repair.go agent/delegate_delivery.go agent/delegate_tree_work_test.go agent/delegate_tree_stop_test.go agent/delegate_tree_restore_test.go agent/delegate_shell_repair_test.go agent/delegate_delivery_test.go agent/delegate_tree_restart_fuzz_test.go
 go test ./agent -run '^TestDelegate(Controller|ShellRepair)' -count=20
 go test -race ./agent -run '^TestDelegate(Controller|ShellRepair)' -count=20
-SERF_FUZZ_TESTS=1 go test -tags serffuzz ./agent -run '^FuzzDelegateRestartEquivalence$' -count=1
+EVENER_FUZZ_TESTS=1 go test -tags evenerfuzz ./agent -run '^FuzzDelegateRestartEquivalence$' -count=1
 make fuzz-registry-check
 git diff --check
 git status --short
@@ -1192,7 +1192,7 @@ func TestDelegateAttention_RestartReplaysCallerDeliveryCommitWithoutDuplicateToo
 func FuzzDelegateAttentionFold(f *testing.F)
 ~~~
 
-Put this target and the Step 2 watch-delivery target in session_attention_fuzz_test.go under the serffuzz build tag. Register `native:agent:.:FuzzDelegateAttentionFold::session_attention.go` in scripts/run-fuzz.sh in this task.
+Put this target and the Step 2 watch-delivery target in session_attention_fuzz_test.go under the evenerfuzz build tag. Register `native:agent:.:FuzzDelegateAttentionFold::session_attention.go` in scripts/run-fuzz.sh in this task.
 
 Immediately before adding the turn/helper implementation, run:
 
@@ -1287,7 +1287,7 @@ Run task GREEN and broader gates:
 gofmt -w agent/session_attention.go agent/session_attention_test.go agent/session_attention_fuzz_test.go agent/delegate_resource_watch_test.go agent/delegate_resource_shell_test.go agent/schema/turn.go agent/transcript_read.go agent/history_repair.go agent/internal/contextmgr/context_manager.go agent/internal/contextmgr/context_manager_test.go agent/delegate_shell_repair.go agent/delegate_shell_repair_test.go agent/delegate_delivery.go agent/delegate_tree_controller.go agent/delegate_tree_finish.go agent/delegate_tree_restore.go agent/delegate_tree_stop.go agent/delegate_tree_work.go agent/internal/delegatestore/record.go agent/internal/delegatestore/fold_test.go agent/internal/delegatestore/store_test.go agent/internal/delegatestore/fuzz_test.go agent/job_watch.go agent/job_notify.go agent/job_shell.go agent/jobs.go agent/jobs_nested.go agent/session_jobtree_drain.go agent/internal/jobstore/watch.go agent/internal/jobstore/event.go agent/internal/jobstore/record.go agent/internal/jobstore/fold.go agent/session_tools_jobs.go agent/session_tools_jobs_watch_test.go agent/job_watch_parent_test.go agent/job_watch_observer_test.go agent/job_watch_restore_end_notice_test.go agent/job_watch_restore_lost_notice_test.go agent/job_watch_end_notice_test.go agent/root_watch_tree_program_fuzz_test.go agent/job_watch_delegate_fuzz_test.go agent/watch_seqfuzz_test.go agent/watch_observer_fuzz_test.go agent/watch_pending_frame_program_fuzz_test.go agent/watch_restore_clear_history_program_fuzz_test.go agent/watch_attach_terminal_program_fuzz_test.go agent/watch_config_validation_program_fuzz_test.go
 go test ./agent -run '^(TestDelegateAttention_|TestStableDelegateWatch_|TestStableDelegateObserver_|TestStableDelegateAttention_|TestStableDelegateShell_)' -count=20
 go test -race ./agent -run '^(TestDelegateAttention_|TestStableDelegateWatch_|TestStableDelegateObserver_|TestStableDelegateAttention_|TestStableDelegateShell_)' -count=20
-SERF_FUZZ_TESTS=1 go test -tags serffuzz ./agent -run '^(FuzzDelegateAttentionFold|FuzzStableDelegateWatchDelivery)$' -count=1
+EVENER_FUZZ_TESTS=1 go test -tags evenerfuzz ./agent -run '^(FuzzDelegateAttentionFold|FuzzStableDelegateWatchDelivery)$' -count=1
 go test ./agent/internal/jobstore -run 'Watch' -count=1
 make fuzz-registry-check
 git diff --check
@@ -1345,7 +1345,7 @@ func TestDelegateRuntimeReclaim_NoTimerUnloadEventOrStableDataDeletion(t *testin
 func FuzzDelegateReclaimStopRestart(f *testing.F)
 ~~~
 
-Put the target in agent/delegate_tree_reclaim_fuzz_test.go under the serffuzz build tag. Register `native:agent:.:FuzzDelegateReclaimStopRestart::delegate_tree_reclaim.go;delegate_tree_stop.go;delegate_tree_restore.go` in scripts/run-fuzz.sh in this task.
+Put the target in agent/delegate_tree_reclaim_fuzz_test.go under the evenerfuzz build tag. Register `native:agent:.:FuzzDelegateReclaimStopRestart::delegate_tree_reclaim.go;delegate_tree_stop.go;delegate_tree_restore.go` in scripts/run-fuzz.sh in this task.
 
 Immediately before reclamation implementation, run:
 
@@ -1428,7 +1428,7 @@ Run task GREEN and broader gates:
 gofmt -w agent/delegate_tree_reclaim.go agent/delegate_tree_reclaim_test.go agent/delegate_tree_reclaim_fuzz_test.go agent/delegate_resource_retention_stop_test.go agent/delegate_resource_worktree_test.go agent/delegate_tree_controller.go agent/delegate_tree_start.go agent/delegate_tree_stop.go agent/delegate_tree_restore.go agent/delegate_tree_work.go agent/delegate_runtime.go agent/session.go agent/session_config.go agent/session_lifecycle.go agent/tree_counter.go agent/job_shell.go agent/jobs.go agent/session_jobtree_drain.go agent/sandbox_delegate.go agent/session_tools_worktree.go agent/session_tools_worktree_dispose.go agent/session_worktree_close.go agent/session_worktree_relock.go agent/session_worktree_resume.go agent/session_worktree_sweep.go agent/delegate_disposal_hint_test.go agent/session_tools_worktree_livework_test.go agent/session_tools_worktree_dispose_test.go agent/session_worktree_close_test.go
 go test ./agent -run '^(TestDelegateRuntimeReclaim_|TestDelegateResourceStop_|TestStableDelegateWorktree_)' -count=20
 go test -race ./agent -run '^(TestDelegateRuntimeReclaim_|TestDelegateResourceStop_|TestStableDelegateWorktree_)' -count=20
-SERF_FUZZ_TESTS=1 go test -tags serffuzz ./agent -run '^FuzzDelegateReclaimStopRestart$' -count=1
+EVENER_FUZZ_TESTS=1 go test -tags evenerfuzz ./agent -run '^FuzzDelegateReclaimStopRestart$' -count=1
 go test ./agent/internal/worktree -count=1
 make fuzz-registry-check
 git diff --check
@@ -1461,9 +1461,9 @@ git commit -m "feat: preserve delegate retention and cleanup" -m "Rehome max_ret
 - Modify: agent/events/events.go, agent/events/payloads.go, agent/events/eventdata.go.
 - Modify: agent/internal/delegatestore/read_events.go, agent/internal/delegatestore/read_events_test.go.
 - Modify: agent/doctor/doctor.go, agent/doctor/audit.go, agent/doctor/jobs.go, agent/doctor/tree.go, agent/doctor/sessions.go, agent/doctor/watches.go, agent/doctor/audit_test.go, agent/doctor/jobs_test.go, agent/doctor/tree_test.go, agent/doctor/sessions_test.go, agent/doctor/watches_test.go.
-- Modify: cmd/serf-doctor/main.go, cmd/serf-doctor/main_test.go, cmd/serf-doctor/README.md.
-- Modify: cmd/serf-hub/internal/hubcore/prober.go, cmd/serf-hub/internal/hubcore/prober_test.go, cmd/serf-hub/internal/hubcore/prober_wire_test.go, cmd/serf-hub/internal/hubcore/scenarios_fuzz_test.go.
-- Modify: cmd/serf-hub/app_threadread.go, cmd/serf-hub/app_threadread_test.go.
+- Modify: cmd/evener-doctor/main.go, cmd/evener-doctor/main_test.go, cmd/evener-doctor/README.md.
+- Modify: cmd/evener-hub/internal/hubcore/prober.go, cmd/evener-hub/internal/hubcore/prober_test.go, cmd/evener-hub/internal/hubcore/prober_wire_test.go, cmd/evener-hub/internal/hubcore/scenarios_fuzz_test.go.
+- Modify: cmd/evener-hub/app_threadread.go, cmd/evener-hub/app_threadread_test.go.
 
 **Interfaces:**
 
@@ -1536,8 +1536,8 @@ Immediately before operational reader changes, run:
 
 ~~~bash
 go test ./agent/doctor -run '^TestDoctorStableDelegate' -count=1
-go test ./cmd/serf-hub -run '^TestHubThreadReadStableDelegate' -count=1
-go test ./cmd/serf-hub/internal/hubcore -run '^TestHubProberStableDelegate' -count=1
+go test ./cmd/evener-hub -run '^TestHubThreadReadStableDelegate' -count=1
+go test ./cmd/evener-hub/internal/hubcore -run '^TestHubProberStableDelegate' -count=1
 ~~~
 
 Doctor reports both fail-closed legacy classes without attempting migration. Hub probing uses descendant_session_ids/descendant_states only. Thread read and prober never call writable Open.
@@ -1545,16 +1545,16 @@ Doctor reports both fail-closed legacy classes without attempting migration. Hub
 Run task GREEN and broader gates:
 
 ~~~bash
-gofmt -w agent/delegate_resource_tools_test.go agent/delegate_resource_readonly_test.go agent/internal/tool/definitions.go agent/internal/tool/definitions_test.go agent/internal/tool/definitions_program_fuzz_test.go agent/session_tools_jobs.go agent/session_tools_jobs_test.go agent/session_tools_jobs_list_test.go agent/session_tools_jobs_stop_delegate_test.go agent/session_tools_jobs_watch_test.go agent/delegate_schema_test.go agent/fuzz_ar_delegate_test.go agent/registry_schemafuzz_test.go agent/session_tools_jobs_contract_program_fuzz_test.go agent/session_tools_jobs_lifecycle_fuzz_test.go agent/session_outline.go agent/job_transcript_read.go agent/session_tools_transcript.go agent/transcript_render.go agent/transcript_render_test.go agent/transcript_render_job_test.go agent/jobs_activity.go agent/jobs_activity_past.go agent/historical_jobs.go agent/status.go agent/events/events.go agent/events/payloads.go agent/events/eventdata.go agent/internal/delegatestore/read_events.go agent/internal/delegatestore/read_events_test.go agent/doctor/doctor.go agent/doctor/audit.go agent/doctor/jobs.go agent/doctor/tree.go agent/doctor/sessions.go agent/doctor/watches.go agent/doctor/audit_test.go agent/doctor/jobs_test.go agent/doctor/tree_test.go agent/doctor/sessions_test.go agent/doctor/watches_test.go cmd/serf-doctor/main.go cmd/serf-doctor/main_test.go cmd/serf-hub/internal/hubcore/prober.go cmd/serf-hub/internal/hubcore/prober_test.go cmd/serf-hub/internal/hubcore/prober_wire_test.go cmd/serf-hub/internal/hubcore/scenarios_fuzz_test.go cmd/serf-hub/app_threadread.go cmd/serf-hub/app_threadread_test.go
+gofmt -w agent/delegate_resource_tools_test.go agent/delegate_resource_readonly_test.go agent/internal/tool/definitions.go agent/internal/tool/definitions_test.go agent/internal/tool/definitions_program_fuzz_test.go agent/session_tools_jobs.go agent/session_tools_jobs_test.go agent/session_tools_jobs_list_test.go agent/session_tools_jobs_stop_delegate_test.go agent/session_tools_jobs_watch_test.go agent/delegate_schema_test.go agent/fuzz_ar_delegate_test.go agent/registry_schemafuzz_test.go agent/session_tools_jobs_contract_program_fuzz_test.go agent/session_tools_jobs_lifecycle_fuzz_test.go agent/session_outline.go agent/job_transcript_read.go agent/session_tools_transcript.go agent/transcript_render.go agent/transcript_render_test.go agent/transcript_render_job_test.go agent/jobs_activity.go agent/jobs_activity_past.go agent/historical_jobs.go agent/status.go agent/events/events.go agent/events/payloads.go agent/events/eventdata.go agent/internal/delegatestore/read_events.go agent/internal/delegatestore/read_events_test.go agent/doctor/doctor.go agent/doctor/audit.go agent/doctor/jobs.go agent/doctor/tree.go agent/doctor/sessions.go agent/doctor/watches.go agent/doctor/audit_test.go agent/doctor/jobs_test.go agent/doctor/tree_test.go agent/doctor/sessions_test.go agent/doctor/watches_test.go cmd/evener-doctor/main.go cmd/evener-doctor/main_test.go cmd/evener-hub/internal/hubcore/prober.go cmd/evener-hub/internal/hubcore/prober_test.go cmd/evener-hub/internal/hubcore/prober_wire_test.go cmd/evener-hub/internal/hubcore/scenarios_fuzz_test.go cmd/evener-hub/app_threadread.go cmd/evener-hub/app_threadread_test.go
 go test ./agent -run '^(TestStableDelegateTools_|TestStableDelegateReadOnly_)' -count=20
 go test -race ./agent -run '^(TestStableDelegateTools_|TestStableDelegateReadOnly_)' -count=20
 go test ./agent/doctor -run '^TestDoctorStableDelegate' -count=20
 go test -race ./agent/doctor -run '^TestDoctorStableDelegate' -count=20
-go test ./cmd/serf-hub -run '^TestHubThreadReadStableDelegate' -count=20
-go test -race ./cmd/serf-hub -run '^TestHubThreadReadStableDelegate' -count=20
-go test ./cmd/serf-hub/internal/hubcore -run '^TestHubProberStableDelegate' -count=20
-go test -race ./cmd/serf-hub/internal/hubcore -run '^TestHubProberStableDelegate' -count=20
-go test ./cmd/serf-doctor -count=1
+go test ./cmd/evener-hub -run '^TestHubThreadReadStableDelegate' -count=20
+go test -race ./cmd/evener-hub -run '^TestHubThreadReadStableDelegate' -count=20
+go test ./cmd/evener-hub/internal/hubcore -run '^TestHubProberStableDelegate' -count=20
+go test -race ./cmd/evener-hub/internal/hubcore -run '^TestHubProberStableDelegate' -count=20
+go test ./cmd/evener-doctor -count=1
 make fuzz
 make fuzz-registry-check
 git diff --check
@@ -1572,7 +1572,7 @@ git add -- agent/session_outline.go agent/job_transcript_read.go agent/session_t
 git add -- agent/jobs_activity.go agent/jobs_activity_past.go agent/historical_jobs.go agent/status.go agent/events/events.go agent/events/payloads.go agent/events/eventdata.go
 git add -- agent/internal/delegatestore/read_events.go agent/internal/delegatestore/read_events_test.go
 git add -- agent/doctor/doctor.go agent/doctor/audit.go agent/doctor/jobs.go agent/doctor/tree.go agent/doctor/sessions.go agent/doctor/watches.go agent/doctor/audit_test.go agent/doctor/jobs_test.go agent/doctor/tree_test.go agent/doctor/sessions_test.go agent/doctor/watches_test.go
-git add -- cmd/serf-doctor/main.go cmd/serf-doctor/main_test.go cmd/serf-doctor/README.md cmd/serf-hub/internal/hubcore/prober.go cmd/serf-hub/internal/hubcore/prober_test.go cmd/serf-hub/internal/hubcore/prober_wire_test.go cmd/serf-hub/internal/hubcore/scenarios_fuzz_test.go cmd/serf-hub/app_threadread.go cmd/serf-hub/app_threadread_test.go
+git add -- cmd/evener-doctor/main.go cmd/evener-doctor/main_test.go cmd/evener-doctor/README.md cmd/evener-hub/internal/hubcore/prober.go cmd/evener-hub/internal/hubcore/prober_test.go cmd/evener-hub/internal/hubcore/prober_wire_test.go cmd/evener-hub/internal/hubcore/scenarios_fuzz_test.go cmd/evener-hub/app_threadread.go cmd/evener-hub/app_threadread_test.go
 git commit -m "feat: project stable delegates without mutation" -m "Cut stable tool, list, status, activity, history, doctor, prober, and Hub thread-read surfaces to the delegate aggregate while preserving paging and fidelity. Cold readers now use pure ReadEvents/Fold paths and status remains metadata-only and non-acknowledging."
 ~~~
 
@@ -1589,27 +1589,27 @@ git commit -m "feat: project stable delegates without mutation" -m "Cut stable t
 - Modify: internal/appprojector/appwire_projection.go, internal/appprojector/appwire_projection_test.go.
 - Modify: appwire/types.go, appwire/protocol.go, appwire/types_test.go, appwire/protocol_test.go.
 - Modify: server/server.go, server/server_test.go, server/server_surface_fuzz_test.go, server/appwire_runtime.go, server/appwire_runtime_test.go, server/thread_envelope.go, server/thread_envelope_test.go.
-- Modify: cmd/serf/serve.go, cmd/serf/serve_test.go, cmd/serf/serve_coverage_fuzz_test.go, cmd/serf/run_drain_test.go, cmd/serf/run_drain_nested_test.go.
-- Modify: cmd/serf-hub/app_jobs.go, cmd/serf-hub/app_jobs_test.go, cmd/serf-hub/app_threadread.go, cmd/serf-hub/app_threadread_test.go.
-- Modify: cmd/serf-tui/hub_notifications.go, cmd/serf-tui/hub_notifications_test.go, cmd/serf-tui/hub_notifications_fuzz_test.go, cmd/serf-tui/model_misc_serffuzz_test.go.
-- Modify: cmd/serf-tui/internal/transcript/job_notification.go, cmd/serf-tui/internal/transcript/reducer.go, cmd/serf-tui/internal/transcript/types.go, cmd/serf-tui/internal/transcript/reducer_test.go, cmd/serf-tui/internal/transcript/cov_rtui_transcript_test.go, cmd/serf-tui/internal/transcript/reducer_fuzz_test.go, cmd/serf-tui/internal/transcript/fuzz_coverage_union_test.go.
-- Modify: cmd/serf-tui/internal/msgrender/tool_bodies.go, cmd/serf-tui/internal/msgrender/tool_bodies_test.go, cmd/serf-tui/internal/msgrender/tool_renderers.go, cmd/serf-tui/internal/msgrender/tool_renderers_test.go, cmd/serf-tui/internal/msgrender/tool_renderers_fuzz_test.go, cmd/serf-tui/internal/msgrender/cov_rtui_msgrender_test.go.
-- Modify: cmd/serf-tui/internal/toolsummary/tool_summary.go, cmd/serf-tui/internal/toolsummary/tool_summary_test.go, cmd/serf-tui/internal/toolsummary/tool_summary_fuzz_test.go, cmd/serf-tui/internal/toolsummary/fuzz_coverage_union_test.go.
+- Modify: cmd/evener/serve.go, cmd/evener/serve_test.go, cmd/evener/serve_coverage_fuzz_test.go, cmd/evener/run_drain_test.go, cmd/evener/run_drain_nested_test.go.
+- Modify: cmd/evener-hub/app_jobs.go, cmd/evener-hub/app_jobs_test.go, cmd/evener-hub/app_threadread.go, cmd/evener-hub/app_threadread_test.go.
+- Modify: cmd/evener-tui/hub_notifications.go, cmd/evener-tui/hub_notifications_test.go, cmd/evener-tui/hub_notifications_fuzz_test.go, cmd/evener-tui/model_misc_evenerfuzz_test.go.
+- Modify: cmd/evener-tui/internal/transcript/job_notification.go, cmd/evener-tui/internal/transcript/reducer.go, cmd/evener-tui/internal/transcript/types.go, cmd/evener-tui/internal/transcript/reducer_test.go, cmd/evener-tui/internal/transcript/cov_rtui_transcript_test.go, cmd/evener-tui/internal/transcript/reducer_fuzz_test.go, cmd/evener-tui/internal/transcript/fuzz_coverage_union_test.go.
+- Modify: cmd/evener-tui/internal/msgrender/tool_bodies.go, cmd/evener-tui/internal/msgrender/tool_bodies_test.go, cmd/evener-tui/internal/msgrender/tool_renderers.go, cmd/evener-tui/internal/msgrender/tool_renderers_test.go, cmd/evener-tui/internal/msgrender/tool_renderers_fuzz_test.go, cmd/evener-tui/internal/msgrender/cov_rtui_msgrender_test.go.
+- Modify: cmd/evener-tui/internal/toolsummary/tool_summary.go, cmd/evener-tui/internal/toolsummary/tool_summary_test.go, cmd/evener-tui/internal/toolsummary/tool_summary_fuzz_test.go, cmd/evener-tui/internal/toolsummary/fuzz_coverage_union_test.go.
 
 **Files — generated and web:**
 
-- Generate through make generate: cmd/serf-hub/frontend/src/protocol/types.gen.ts and docs/appwire-protocol.md.
-- Modify: cmd/serf-hub/frontend/src/stores/threads.ts, cmd/serf-hub/frontend/src/stores/threads.test.ts, cmd/serf-hub/frontend/src/stores/activityPanel.ts, cmd/serf-hub/frontend/src/stores/activityPanel.test.ts.
-- Modify: cmd/serf-hub/frontend/src/protocol/model.ts, cmd/serf-hub/frontend/src/protocol/reducer.ts, cmd/serf-hub/frontend/src/protocol/reducer.test.ts.
-- Modify: cmd/serf-hub/frontend/src/panes/session/chrome/activityData.ts, cmd/serf-hub/frontend/src/panes/session/chrome/activityData.test.ts, cmd/serf-hub/frontend/src/panes/session/chrome/activityRows.ts, cmd/serf-hub/frontend/src/panes/session/chrome/activityRows.test.ts, cmd/serf-hub/frontend/src/panes/session/chrome/ActivityTree.tsx, cmd/serf-hub/frontend/src/panes/session/chrome/ActivityTree.test.tsx.
-- Modify: cmd/serf-hub/frontend/src/panes/session/transcript/ToolCallItem.tsx, cmd/serf-hub/frontend/src/panes/session/transcript/ToolCallItem.test.tsx, cmd/serf-hub/frontend/src/panes/session/transcript/tools/jobTools.tsx, cmd/serf-hub/frontend/src/panes/session/transcript/tools/jobTools.test.tsx, cmd/serf-hub/frontend/src/panes/session/transcript/tools/subagentModule.tsx, cmd/serf-hub/frontend/src/panes/session/transcript/tools/subagentModule.test.tsx, cmd/serf-hub/frontend/src/panes/session/transcript/tools/subagentModuleStore.ts, cmd/serf-hub/frontend/src/panes/session/transcript/tools/subagentModuleStore.test.ts.
-- Modify: cmd/serf-hub/frontend/src/panes/session/transcript/messages/steeringClassify.ts, cmd/serf-hub/frontend/src/panes/session/transcript/messages/steeringClassify.test.ts, cmd/serf-hub/frontend/src/panes/session/transcript/messages/NotificationCard.tsx, cmd/serf-hub/frontend/src/panes/session/transcript/messages/NotificationCard.test.tsx, cmd/serf-hub/frontend/src/panes/session/transcript/messages/SteeringItem.tsx, cmd/serf-hub/frontend/src/panes/session/transcript/messages/SteeringItem.test.tsx.
-- Modify: cmd/serf-hub/frontend/src/protocol/fixtures/tool-and-jobs.jsonl, cmd/serf-hub/frontend/src/dev/overflowharness-entry.tsx.
+- Generate through make generate: cmd/evener-hub/frontend/src/protocol/types.gen.ts and docs/appwire-protocol.md.
+- Modify: cmd/evener-hub/frontend/src/stores/threads.ts, cmd/evener-hub/frontend/src/stores/threads.test.ts, cmd/evener-hub/frontend/src/stores/activityPanel.ts, cmd/evener-hub/frontend/src/stores/activityPanel.test.ts.
+- Modify: cmd/evener-hub/frontend/src/protocol/model.ts, cmd/evener-hub/frontend/src/protocol/reducer.ts, cmd/evener-hub/frontend/src/protocol/reducer.test.ts.
+- Modify: cmd/evener-hub/frontend/src/panes/session/chrome/activityData.ts, cmd/evener-hub/frontend/src/panes/session/chrome/activityData.test.ts, cmd/evener-hub/frontend/src/panes/session/chrome/activityRows.ts, cmd/evener-hub/frontend/src/panes/session/chrome/activityRows.test.ts, cmd/evener-hub/frontend/src/panes/session/chrome/ActivityTree.tsx, cmd/evener-hub/frontend/src/panes/session/chrome/ActivityTree.test.tsx.
+- Modify: cmd/evener-hub/frontend/src/panes/session/transcript/ToolCallItem.tsx, cmd/evener-hub/frontend/src/panes/session/transcript/ToolCallItem.test.tsx, cmd/evener-hub/frontend/src/panes/session/transcript/tools/jobTools.tsx, cmd/evener-hub/frontend/src/panes/session/transcript/tools/jobTools.test.tsx, cmd/evener-hub/frontend/src/panes/session/transcript/tools/subagentModule.tsx, cmd/evener-hub/frontend/src/panes/session/transcript/tools/subagentModule.test.tsx, cmd/evener-hub/frontend/src/panes/session/transcript/tools/subagentModuleStore.ts, cmd/evener-hub/frontend/src/panes/session/transcript/tools/subagentModuleStore.test.ts.
+- Modify: cmd/evener-hub/frontend/src/panes/session/transcript/messages/steeringClassify.ts, cmd/evener-hub/frontend/src/panes/session/transcript/messages/steeringClassify.test.ts, cmd/evener-hub/frontend/src/panes/session/transcript/messages/NotificationCard.tsx, cmd/evener-hub/frontend/src/panes/session/transcript/messages/NotificationCard.test.tsx, cmd/evener-hub/frontend/src/panes/session/transcript/messages/SteeringItem.tsx, cmd/evener-hub/frontend/src/panes/session/transcript/messages/SteeringItem.test.tsx.
+- Modify: cmd/evener-hub/frontend/src/protocol/fixtures/tool-and-jobs.jsonl, cmd/evener-hub/frontend/src/dev/overflowharness-entry.tsx.
 
 **Interfaces:**
 
 - Consume lossless stable snapshots, canonical packets, descendant event callbacks, ParentDelegateID shells, typed watches, and per-delegate monotonic projection revision.
-- Produce DELEGATE_UPDATED internally and serf/delegate/updated on AppWire, carrying one immutable stable snapshot. SerfDelegateInfo and SerfDiagnostics.Delegates carry the same stable fields through live, reconnect, and cold thread-read. Neither stable type carries call-scoped wait_ignored_reason; delegate_send results and their transcript/UI transport carry it separately. Projection revision fences rendering only; it is not a control identity.
+- Produce DELEGATE_UPDATED internally and evener/delegate/updated on AppWire, carrying one immutable stable snapshot. EvenerDelegateInfo and EvenerDiagnostics.Delegates carry the same stable fields through live, reconnect, and cold thread-read. Neither stable type carries call-scoped wait_ignored_reason; delegate_send results and their transcript/UI transport carry it separately. Projection revision fences rendering only; it is not a control identity.
 - Replace address-derived tree-clock sharing with one explicitly inherited *jobActivityClock for projection ordering only. It carries no lifecycle, generation, capacity, authorization, phase, or stop state.
 - Remove activation cards and legacy Detailed.Jobs discovery without removing send/stop/status/watch/observer/navigation capability.
 
@@ -1638,9 +1638,9 @@ Immediately before event/DTO implementation, run:
 ~~~bash
 go test ./internal/appprojector -run '^TestDelegateProjection_' -count=1
 go test ./agent -run '^TestSession_DetailedStatus_DelegatesMatchControllerFoldAfterReopen$' -count=1
-go test ./cmd/serf -run '^TestAgentToServerDetailedStatus_DelegatesLossless$' -count=1
+go test ./cmd/evener -run '^TestAgentToServerDetailedStatus_DelegatesLossless$' -count=1
 go test ./server -run '^(TestStatusEndpoint_DetailedStatusIncludesStableDelegates|TestAppDiagnosticsFromDetailedStatus_DelegatesLossless)$' -count=1
-go test ./cmd/serf-hub -run '^TestAppThreadReadColdDelegatesMatchReconnectedDetailedStatus$' -count=1
+go test ./cmd/evener-hub -run '^TestAppThreadReadColdDelegatesMatchReconnectedDetailedStatus$' -count=1
 ~~~
 
 Keep the root-installed descendant callback installed on child spawn. DELEGATE_UPDATED carries projection_revision and refreshes facetDiagnostics in the thread freshness table. JOB_STARTED/JOB_FINISHED are shell-only. Carry all stable fidelity fields explicitly through agent events, status, app projector, AppWire, server, Hub, and TUI types, while omitting call-scoped wait_ignored_reason from those snapshots. Carry that field only on delegate_send result DTOs and their transcript/UI rendering. Latest activity is max-merged independently of revision. Do not reconstruct packets or infer structured-result presence from decoded value. Run GREEN count 20/race.
@@ -1660,14 +1660,14 @@ func TestTUIStableDelegateWatchAndObserverNoticesRemainVisible(t *testing.T)
 Immediately before TUI changes, run:
 
 ~~~bash
-go test ./cmd/serf-tui/... -run '^TestTUIStableDelegate' -count=1
+go test ./cmd/evener-tui/... -run '^TestTUIStableDelegate' -count=1
 ~~~
 
 Render the resource label as Delegate and control it by dlg_. Retain shell job markup and stable watch/observer notices. Run GREEN and race before continuing:
 
 ~~~bash
-go test ./cmd/serf-tui/... -run '^TestTUIStableDelegate' -count=20
-go test -race ./cmd/serf-tui/... -run '^TestTUIStableDelegate' -count=20
+go test ./cmd/evener-tui/... -run '^TestTUIStableDelegate' -count=20
+go test -race ./cmd/evener-tui/... -run '^TestTUIStableDelegate' -count=20
 ~~~
 
 - [ ] **Step 3: Prove web stores, activity tree, and transcript controls**
@@ -1687,7 +1687,7 @@ Immediately before web implementation, run:
 
 ~~~bash
 scripts/web-preflight.sh
-cd cmd/serf-hub/frontend
+cd cmd/evener-hub/frontend
 npx vitest run --maxWorkers=4 src/stores/threads.test.ts src/stores/activityPanel.test.ts src/protocol/reducer.test.ts src/panes/session/chrome/activityData.test.ts src/panes/session/chrome/activityRows.test.ts src/panes/session/chrome/ActivityTree.test.tsx src/panes/session/transcript/ToolCallItem.test.tsx src/panes/session/transcript/tools/jobTools.test.tsx src/panes/session/transcript/tools/subagentModule.test.tsx src/panes/session/transcript/tools/subagentModuleStore.test.ts src/panes/session/transcript/messages/steeringClassify.test.ts src/panes/session/transcript/messages/NotificationCard.test.tsx src/panes/session/transcript/messages/SteeringItem.test.tsx
 cd ../../..
 ~~~
@@ -1699,22 +1699,22 @@ From the repository root, run make generate. Then implement the stores and compo
 - [ ] **Step 4: Run cutover gates and commit**
 
 ~~~bash
-gofmt -w internal/appprojector/delegate_projection_test.go agent/events/events.go agent/events/payloads.go agent/events/eventdata.go agent/events/events_test.go agent/events/events_fuzz_test.go agent/events/payloads_test.go agent/events/eventdata_program_fuzz_test.go agent/status.go agent/status_test.go agent/status_support_program_fuzz_test.go agent/jobs_activity.go agent/jobs_activity_past.go agent/tree_counter.go internal/appprojector/appwire_projection.go internal/appprojector/appwire_projection_test.go appwire/types.go appwire/protocol.go appwire/types_test.go appwire/protocol_test.go server/server.go server/server_test.go server/server_surface_fuzz_test.go server/appwire_runtime.go server/appwire_runtime_test.go server/thread_envelope.go server/thread_envelope_test.go cmd/serf/serve.go cmd/serf/serve_test.go cmd/serf/serve_coverage_fuzz_test.go cmd/serf/run_drain_test.go cmd/serf/run_drain_nested_test.go cmd/serf-hub/app_jobs.go cmd/serf-hub/app_jobs_test.go cmd/serf-hub/app_threadread.go cmd/serf-hub/app_threadread_test.go cmd/serf-tui/hub_notifications.go cmd/serf-tui/hub_notifications_test.go cmd/serf-tui/hub_notifications_fuzz_test.go cmd/serf-tui/model_misc_serffuzz_test.go cmd/serf-tui/internal/transcript/job_notification.go cmd/serf-tui/internal/transcript/reducer.go cmd/serf-tui/internal/transcript/types.go cmd/serf-tui/internal/transcript/reducer_test.go cmd/serf-tui/internal/transcript/cov_rtui_transcript_test.go cmd/serf-tui/internal/transcript/reducer_fuzz_test.go cmd/serf-tui/internal/transcript/fuzz_coverage_union_test.go cmd/serf-tui/internal/msgrender/tool_bodies.go cmd/serf-tui/internal/msgrender/tool_bodies_test.go cmd/serf-tui/internal/msgrender/tool_renderers.go cmd/serf-tui/internal/msgrender/tool_renderers_test.go cmd/serf-tui/internal/msgrender/tool_renderers_fuzz_test.go cmd/serf-tui/internal/msgrender/cov_rtui_msgrender_test.go cmd/serf-tui/internal/toolsummary/tool_summary.go cmd/serf-tui/internal/toolsummary/tool_summary_test.go cmd/serf-tui/internal/toolsummary/tool_summary_fuzz_test.go cmd/serf-tui/internal/toolsummary/fuzz_coverage_union_test.go
+gofmt -w internal/appprojector/delegate_projection_test.go agent/events/events.go agent/events/payloads.go agent/events/eventdata.go agent/events/events_test.go agent/events/events_fuzz_test.go agent/events/payloads_test.go agent/events/eventdata_program_fuzz_test.go agent/status.go agent/status_test.go agent/status_support_program_fuzz_test.go agent/jobs_activity.go agent/jobs_activity_past.go agent/tree_counter.go internal/appprojector/appwire_projection.go internal/appprojector/appwire_projection_test.go appwire/types.go appwire/protocol.go appwire/types_test.go appwire/protocol_test.go server/server.go server/server_test.go server/server_surface_fuzz_test.go server/appwire_runtime.go server/appwire_runtime_test.go server/thread_envelope.go server/thread_envelope_test.go cmd/evener/serve.go cmd/evener/serve_test.go cmd/evener/serve_coverage_fuzz_test.go cmd/evener/run_drain_test.go cmd/evener/run_drain_nested_test.go cmd/evener-hub/app_jobs.go cmd/evener-hub/app_jobs_test.go cmd/evener-hub/app_threadread.go cmd/evener-hub/app_threadread_test.go cmd/evener-tui/hub_notifications.go cmd/evener-tui/hub_notifications_test.go cmd/evener-tui/hub_notifications_fuzz_test.go cmd/evener-tui/model_misc_evenerfuzz_test.go cmd/evener-tui/internal/transcript/job_notification.go cmd/evener-tui/internal/transcript/reducer.go cmd/evener-tui/internal/transcript/types.go cmd/evener-tui/internal/transcript/reducer_test.go cmd/evener-tui/internal/transcript/cov_rtui_transcript_test.go cmd/evener-tui/internal/transcript/reducer_fuzz_test.go cmd/evener-tui/internal/transcript/fuzz_coverage_union_test.go cmd/evener-tui/internal/msgrender/tool_bodies.go cmd/evener-tui/internal/msgrender/tool_bodies_test.go cmd/evener-tui/internal/msgrender/tool_renderers.go cmd/evener-tui/internal/msgrender/tool_renderers_test.go cmd/evener-tui/internal/msgrender/tool_renderers_fuzz_test.go cmd/evener-tui/internal/msgrender/cov_rtui_msgrender_test.go cmd/evener-tui/internal/toolsummary/tool_summary.go cmd/evener-tui/internal/toolsummary/tool_summary_test.go cmd/evener-tui/internal/toolsummary/tool_summary_fuzz_test.go cmd/evener-tui/internal/toolsummary/fuzz_coverage_union_test.go
 make generate
-cd cmd/serf-hub/frontend
+cd cmd/evener-hub/frontend
 npx biome check --write src/stores/threads.ts src/stores/threads.test.ts src/stores/activityPanel.ts src/stores/activityPanel.test.ts src/protocol/model.ts src/protocol/reducer.ts src/protocol/reducer.test.ts src/panes/session/chrome/activityData.ts src/panes/session/chrome/activityData.test.ts src/panes/session/chrome/activityRows.ts src/panes/session/chrome/activityRows.test.ts src/panes/session/chrome/ActivityTree.tsx src/panes/session/chrome/ActivityTree.test.tsx src/panes/session/transcript/ToolCallItem.tsx src/panes/session/transcript/ToolCallItem.test.tsx src/panes/session/transcript/tools/jobTools.tsx src/panes/session/transcript/tools/jobTools.test.tsx src/panes/session/transcript/tools/subagentModule.tsx src/panes/session/transcript/tools/subagentModule.test.tsx src/panes/session/transcript/tools/subagentModuleStore.ts src/panes/session/transcript/tools/subagentModuleStore.test.ts src/panes/session/transcript/messages/steeringClassify.ts src/panes/session/transcript/messages/steeringClassify.test.ts src/panes/session/transcript/messages/NotificationCard.tsx src/panes/session/transcript/messages/NotificationCard.test.tsx src/panes/session/transcript/messages/SteeringItem.tsx src/panes/session/transcript/messages/SteeringItem.test.tsx src/dev/overflowharness-entry.tsx
 npx vitest run --maxWorkers=4 src/stores/threads.test.ts src/stores/activityPanel.test.ts src/protocol/reducer.test.ts src/panes/session/chrome/activityData.test.ts src/panes/session/chrome/activityRows.test.ts src/panes/session/chrome/ActivityTree.test.tsx src/panes/session/transcript/ToolCallItem.test.tsx src/panes/session/transcript/tools/jobTools.test.tsx src/panes/session/transcript/tools/subagentModule.test.tsx src/panes/session/transcript/tools/subagentModuleStore.test.ts src/panes/session/transcript/messages/steeringClassify.test.ts src/panes/session/transcript/messages/NotificationCard.test.tsx src/panes/session/transcript/messages/SteeringItem.test.tsx
 cd ../../..
 make test-web
-go test ./internal/appprojector ./appwire ./server ./cmd/serf ./cmd/serf-hub ./cmd/serf-tui/... -count=1
+go test ./internal/appprojector ./appwire ./server ./cmd/evener ./cmd/evener-hub ./cmd/evener-tui/... -count=1
 go test ./agent -run '^TestSession_DetailedStatus_DelegatesMatchControllerFoldAfterReopen$' -count=20
 go test -race ./agent -run '^TestSession_DetailedStatus_DelegatesMatchControllerFoldAfterReopen$' -count=20
-go test ./cmd/serf -run '^TestAgentToServerDetailedStatus_DelegatesLossless$' -count=20
-go test -race ./cmd/serf -run '^TestAgentToServerDetailedStatus_DelegatesLossless$' -count=20
+go test ./cmd/evener -run '^TestAgentToServerDetailedStatus_DelegatesLossless$' -count=20
+go test -race ./cmd/evener -run '^TestAgentToServerDetailedStatus_DelegatesLossless$' -count=20
 go test ./server -run '^(TestStatusEndpoint_DetailedStatusIncludesStableDelegates|TestAppDiagnosticsFromDetailedStatus_DelegatesLossless)$' -count=20
 go test -race ./server -run '^(TestStatusEndpoint_DetailedStatusIncludesStableDelegates|TestAppDiagnosticsFromDetailedStatus_DelegatesLossless)$' -count=20
-go test ./cmd/serf-hub -run '^TestAppThreadReadColdDelegatesMatchReconnectedDetailedStatus$' -count=20
-go test -race ./cmd/serf-hub -run '^TestAppThreadReadColdDelegatesMatchReconnectedDetailedStatus$' -count=20
+go test ./cmd/evener-hub -run '^TestAppThreadReadColdDelegatesMatchReconnectedDetailedStatus$' -count=20
+go test -race ./cmd/evener-hub -run '^TestAppThreadReadColdDelegatesMatchReconnectedDetailedStatus$' -count=20
 go test ./internal/appprojector -run '^TestDelegateProjection_' -count=20
 go test -race ./internal/appprojector -run '^TestDelegateProjection_' -count=20
 make lint-generated
@@ -1730,16 +1730,16 @@ Stage only:
 git add -- internal/appprojector/delegate_projection_test.go internal/appprojector/appwire_projection.go internal/appprojector/appwire_projection_test.go
 git add -- agent/events/events.go agent/events/payloads.go agent/events/eventdata.go agent/events/events_test.go agent/events/events_fuzz_test.go agent/events/payloads_test.go agent/events/eventdata_program_fuzz_test.go agent/status.go agent/status_test.go agent/status_support_program_fuzz_test.go agent/jobs_activity.go agent/jobs_activity_past.go agent/tree_counter.go
 git add -- appwire/types.go appwire/protocol.go appwire/types_test.go appwire/protocol_test.go server/server.go server/server_test.go server/server_surface_fuzz_test.go server/appwire_runtime.go server/appwire_runtime_test.go server/thread_envelope.go server/thread_envelope_test.go
-git add -- cmd/serf/serve.go cmd/serf/serve_test.go cmd/serf/serve_coverage_fuzz_test.go cmd/serf/run_drain_test.go cmd/serf/run_drain_nested_test.go cmd/serf-hub/app_jobs.go cmd/serf-hub/app_jobs_test.go cmd/serf-hub/app_threadread.go cmd/serf-hub/app_threadread_test.go
-git add -- cmd/serf-tui/hub_notifications.go cmd/serf-tui/hub_notifications_test.go cmd/serf-tui/hub_notifications_fuzz_test.go cmd/serf-tui/model_misc_serffuzz_test.go
-git add -- cmd/serf-tui/internal/transcript/job_notification.go cmd/serf-tui/internal/transcript/reducer.go cmd/serf-tui/internal/transcript/types.go cmd/serf-tui/internal/transcript/reducer_test.go cmd/serf-tui/internal/transcript/cov_rtui_transcript_test.go cmd/serf-tui/internal/transcript/reducer_fuzz_test.go cmd/serf-tui/internal/transcript/fuzz_coverage_union_test.go
-git add -- cmd/serf-tui/internal/msgrender/tool_bodies.go cmd/serf-tui/internal/msgrender/tool_bodies_test.go cmd/serf-tui/internal/msgrender/tool_renderers.go cmd/serf-tui/internal/msgrender/tool_renderers_test.go cmd/serf-tui/internal/msgrender/tool_renderers_fuzz_test.go cmd/serf-tui/internal/msgrender/cov_rtui_msgrender_test.go
-git add -- cmd/serf-tui/internal/toolsummary/tool_summary.go cmd/serf-tui/internal/toolsummary/tool_summary_test.go cmd/serf-tui/internal/toolsummary/tool_summary_fuzz_test.go cmd/serf-tui/internal/toolsummary/fuzz_coverage_union_test.go
-git add -- cmd/serf-hub/frontend/src/protocol/types.gen.ts docs/appwire-protocol.md
-git add -- cmd/serf-hub/frontend/src/stores/threads.ts cmd/serf-hub/frontend/src/stores/threads.test.ts cmd/serf-hub/frontend/src/stores/activityPanel.ts cmd/serf-hub/frontend/src/stores/activityPanel.test.ts cmd/serf-hub/frontend/src/protocol/model.ts cmd/serf-hub/frontend/src/protocol/reducer.ts cmd/serf-hub/frontend/src/protocol/reducer.test.ts
-git add -- cmd/serf-hub/frontend/src/panes/session/chrome/activityData.ts cmd/serf-hub/frontend/src/panes/session/chrome/activityData.test.ts cmd/serf-hub/frontend/src/panes/session/chrome/activityRows.ts cmd/serf-hub/frontend/src/panes/session/chrome/activityRows.test.ts cmd/serf-hub/frontend/src/panes/session/chrome/ActivityTree.tsx cmd/serf-hub/frontend/src/panes/session/chrome/ActivityTree.test.tsx
-git add -- cmd/serf-hub/frontend/src/panes/session/transcript/ToolCallItem.tsx cmd/serf-hub/frontend/src/panes/session/transcript/ToolCallItem.test.tsx cmd/serf-hub/frontend/src/panes/session/transcript/tools/jobTools.tsx cmd/serf-hub/frontend/src/panes/session/transcript/tools/jobTools.test.tsx cmd/serf-hub/frontend/src/panes/session/transcript/tools/subagentModule.tsx cmd/serf-hub/frontend/src/panes/session/transcript/tools/subagentModule.test.tsx cmd/serf-hub/frontend/src/panes/session/transcript/tools/subagentModuleStore.ts cmd/serf-hub/frontend/src/panes/session/transcript/tools/subagentModuleStore.test.ts
-git add -- cmd/serf-hub/frontend/src/panes/session/transcript/messages/steeringClassify.ts cmd/serf-hub/frontend/src/panes/session/transcript/messages/steeringClassify.test.ts cmd/serf-hub/frontend/src/panes/session/transcript/messages/NotificationCard.tsx cmd/serf-hub/frontend/src/panes/session/transcript/messages/NotificationCard.test.tsx cmd/serf-hub/frontend/src/panes/session/transcript/messages/SteeringItem.tsx cmd/serf-hub/frontend/src/panes/session/transcript/messages/SteeringItem.test.tsx cmd/serf-hub/frontend/src/protocol/fixtures/tool-and-jobs.jsonl cmd/serf-hub/frontend/src/dev/overflowharness-entry.tsx
+git add -- cmd/evener/serve.go cmd/evener/serve_test.go cmd/evener/serve_coverage_fuzz_test.go cmd/evener/run_drain_test.go cmd/evener/run_drain_nested_test.go cmd/evener-hub/app_jobs.go cmd/evener-hub/app_jobs_test.go cmd/evener-hub/app_threadread.go cmd/evener-hub/app_threadread_test.go
+git add -- cmd/evener-tui/hub_notifications.go cmd/evener-tui/hub_notifications_test.go cmd/evener-tui/hub_notifications_fuzz_test.go cmd/evener-tui/model_misc_evenerfuzz_test.go
+git add -- cmd/evener-tui/internal/transcript/job_notification.go cmd/evener-tui/internal/transcript/reducer.go cmd/evener-tui/internal/transcript/types.go cmd/evener-tui/internal/transcript/reducer_test.go cmd/evener-tui/internal/transcript/cov_rtui_transcript_test.go cmd/evener-tui/internal/transcript/reducer_fuzz_test.go cmd/evener-tui/internal/transcript/fuzz_coverage_union_test.go
+git add -- cmd/evener-tui/internal/msgrender/tool_bodies.go cmd/evener-tui/internal/msgrender/tool_bodies_test.go cmd/evener-tui/internal/msgrender/tool_renderers.go cmd/evener-tui/internal/msgrender/tool_renderers_test.go cmd/evener-tui/internal/msgrender/tool_renderers_fuzz_test.go cmd/evener-tui/internal/msgrender/cov_rtui_msgrender_test.go
+git add -- cmd/evener-tui/internal/toolsummary/tool_summary.go cmd/evener-tui/internal/toolsummary/tool_summary_test.go cmd/evener-tui/internal/toolsummary/tool_summary_fuzz_test.go cmd/evener-tui/internal/toolsummary/fuzz_coverage_union_test.go
+git add -- cmd/evener-hub/frontend/src/protocol/types.gen.ts docs/appwire-protocol.md
+git add -- cmd/evener-hub/frontend/src/stores/threads.ts cmd/evener-hub/frontend/src/stores/threads.test.ts cmd/evener-hub/frontend/src/stores/activityPanel.ts cmd/evener-hub/frontend/src/stores/activityPanel.test.ts cmd/evener-hub/frontend/src/protocol/model.ts cmd/evener-hub/frontend/src/protocol/reducer.ts cmd/evener-hub/frontend/src/protocol/reducer.test.ts
+git add -- cmd/evener-hub/frontend/src/panes/session/chrome/activityData.ts cmd/evener-hub/frontend/src/panes/session/chrome/activityData.test.ts cmd/evener-hub/frontend/src/panes/session/chrome/activityRows.ts cmd/evener-hub/frontend/src/panes/session/chrome/activityRows.test.ts cmd/evener-hub/frontend/src/panes/session/chrome/ActivityTree.tsx cmd/evener-hub/frontend/src/panes/session/chrome/ActivityTree.test.tsx
+git add -- cmd/evener-hub/frontend/src/panes/session/transcript/ToolCallItem.tsx cmd/evener-hub/frontend/src/panes/session/transcript/ToolCallItem.test.tsx cmd/evener-hub/frontend/src/panes/session/transcript/tools/jobTools.tsx cmd/evener-hub/frontend/src/panes/session/transcript/tools/jobTools.test.tsx cmd/evener-hub/frontend/src/panes/session/transcript/tools/subagentModule.tsx cmd/evener-hub/frontend/src/panes/session/transcript/tools/subagentModule.test.tsx cmd/evener-hub/frontend/src/panes/session/transcript/tools/subagentModuleStore.ts cmd/evener-hub/frontend/src/panes/session/transcript/tools/subagentModuleStore.test.ts
+git add -- cmd/evener-hub/frontend/src/panes/session/transcript/messages/steeringClassify.ts cmd/evener-hub/frontend/src/panes/session/transcript/messages/steeringClassify.test.ts cmd/evener-hub/frontend/src/panes/session/transcript/messages/NotificationCard.tsx cmd/evener-hub/frontend/src/panes/session/transcript/messages/NotificationCard.test.tsx cmd/evener-hub/frontend/src/panes/session/transcript/messages/SteeringItem.tsx cmd/evener-hub/frontend/src/panes/session/transcript/messages/SteeringItem.test.tsx cmd/evener-hub/frontend/src/protocol/fixtures/tool-and-jobs.jsonl cmd/evener-hub/frontend/src/dev/overflowharness-entry.tsx
 git commit -m "feat: cut clients to stable delegates" -m "Carry stable delegate events and lossless lifecycle metadata through AppWire, Hub, TUI, and web while preserving descendant events, navigation, watches, observers, shells, timing, usage, quiet, and worktree evidence. Remove activation cards and Detailed.Jobs discovery without removing stable control capability."
 ~~~
 
@@ -1811,7 +1811,7 @@ Run these inventories before and after deletion. Before deletion, at least one c
 rg -n 'JobTypeDelegate|JobDelegate|job_type.*delegate|DelegateJobID|CurrentJobID|LatestJobID|DelegateGeneration|StopGateClosed|findRunningDelegateByTranscriptRef|resumeOrFindRunningDelegate|relinkDelegateChildToJob|attachDelegateJob|finalizeDelegateOnce|ReceiverDelegateID|receiverDelegateID|applyReceiverWatchSend|installParentSourceWatchForChild|clearParentSourceWatchForChild|attachDelegateJobFromWatch|runFromWatch|staleDelegateWatchSend|delegateStoppedAfterWatchSendPending|delegate failure record' agent identifier --glob '*.go'
 rg -n 'ParentJobID' agent --glob '*.go'
 rg -n 'activation.*(status|output|history|watch|stop)|unsupported_delegate_watch' agent cmd internal appwire --glob '*.{go,ts,tsx,md}'
-rg -n 'Detailed\.Jobs' cmd/serf-hub internal appwire --glob '*.{go,ts,tsx}'
+rg -n 'Detailed\.Jobs' cmd/evener-hub internal appwire --glob '*.{go,ts,tsx}'
 ~~~
 
 ParentJobID remains legal only for shell-to-shell ancestry; it must not encode delegate lineage. Detailed.Jobs remains legal only for real jobs, never delegate discovery.
@@ -1826,7 +1826,7 @@ go test -race ./agent -run '^TestDelegateLegacyDormancy_' -count=20
 go test ./agent/internal/jobstore -count=1
 go test ./agent -run '^(TestStableDelegateWatch_|TestDelegateResourceSupervision_|TestDelegateRuntimeReclaim_|TestStableDelegateShell_|TestStableDelegateReadOnly_)' -count=20
 go test -race ./agent -run '^(TestStableDelegateWatch_|TestDelegateResourceSupervision_|TestDelegateRuntimeReclaim_|TestStableDelegateShell_|TestStableDelegateReadOnly_)' -count=20
-SERF_FUZZ_TESTS=1 go test -tags serffuzz ./agent -run '^(FuzzDelegateAttentionFold|FuzzStableDelegateWatchDelivery|FuzzDelegateReclaimStopRestart)$' -count=1
+EVENER_FUZZ_TESTS=1 go test -tags evenerfuzz ./agent -run '^(FuzzDelegateAttentionFold|FuzzStableDelegateWatchDelivery|FuzzDelegateReclaimStopRestart)$' -count=1
 make fuzz
 make fuzz-registry-check
 git diff --check
@@ -1862,7 +1862,7 @@ git commit -m "refactor: delete dormant delegate job schema" -m "Delete the now-
 - Modify: docs/architecture.md, docs/job-control.md, docs/subagent-runtime-contracts.md, docs/tools/transcripts.md, docs/hooks.md.
 - Modify: agent/prompts/sections/delegation.md, agent/prompts/sections/background-jobs.md, agent/prompts/templates/subagent.md.tmpl.
 - Modify: internal/bundled/agents/subagent.md, internal/bundled/plugins/coordinator-workflow/agents/coordinator.md.
-- Modify: internal/bundled/skills/doctoring-serf/references/data-model.md, internal/bundled/skills/doctoring-serf/references/failure-modes.md, internal/bundled/skills/doctoring-serf/references/finding-contract.md, internal/bundled/skills/doctoring-serf/references/repair-guardrails.md, internal/bundled/skills/doctoring-serf/references/writing-runbooks.md.
+- Modify: internal/bundled/skills/doctoring-evener/references/data-model.md, internal/bundled/skills/doctoring-evener/references/failure-modes.md, internal/bundled/skills/doctoring-evener/references/finding-contract.md, internal/bundled/skills/doctoring-evener/references/repair-guardrails.md, internal/bundled/skills/doctoring-evener/references/writing-runbooks.md.
 - Modify: agent/bundled_prompt_tool_mentions_test.go, internal/bundled/bundled_test.go.
 
 **Interfaces:**
@@ -1920,7 +1920,7 @@ Review every documentation diff for retained behavior. Stage only:
 git add -- docs/subagent-management/11-delegate-resource-model.md docs/architecture.md docs/job-control.md docs/subagent-runtime-contracts.md docs/tools/transcripts.md docs/hooks.md
 git add -- agent/prompts/sections/delegation.md agent/prompts/sections/background-jobs.md agent/prompts/templates/subagent.md.tmpl
 git add -- internal/bundled/agents/subagent.md internal/bundled/plugins/coordinator-workflow/agents/coordinator.md
-git add -- internal/bundled/skills/doctoring-serf/references/data-model.md internal/bundled/skills/doctoring-serf/references/failure-modes.md internal/bundled/skills/doctoring-serf/references/finding-contract.md internal/bundled/skills/doctoring-serf/references/repair-guardrails.md internal/bundled/skills/doctoring-serf/references/writing-runbooks.md
+git add -- internal/bundled/skills/doctoring-evener/references/data-model.md internal/bundled/skills/doctoring-evener/references/failure-modes.md internal/bundled/skills/doctoring-evener/references/finding-contract.md internal/bundled/skills/doctoring-evener/references/repair-guardrails.md internal/bundled/skills/doctoring-evener/references/writing-runbooks.md
 git add -- agent/bundled_prompt_tool_mentions_test.go internal/bundled/bundled_test.go
 git commit -m "docs: teach stable delegate resources" -m "Update shipped architecture, job-control, transcript, hook, doctor, subagent, and coordinator guidance to use dlg_ control identities while preserving watches, observers, supervision, reclamation, shells, worktrees, recovery, and historical read behavior."
 ~~~
@@ -1951,18 +1951,18 @@ go test ./internal/appprojector -run '^TestDelegateProjection_' -count=20
 go test -race ./internal/appprojector -run '^TestDelegateProjection_' -count=20
 go test ./internal/bundled -run '^TestBundledCoordinatorUsesStable' -count=20
 go test -race ./internal/bundled -run '^TestBundledCoordinatorUsesStable' -count=20
-go test ./cmd/serf-tui/... -run '^TestTUIStableDelegate' -count=20
-go test -race ./cmd/serf-tui/... -run '^TestTUIStableDelegate' -count=20
-go test ./cmd/serf -run '^TestAgentToServerDetailedStatus_DelegatesLossless$' -count=20
-go test -race ./cmd/serf -run '^TestAgentToServerDetailedStatus_DelegatesLossless$' -count=20
+go test ./cmd/evener-tui/... -run '^TestTUIStableDelegate' -count=20
+go test -race ./cmd/evener-tui/... -run '^TestTUIStableDelegate' -count=20
+go test ./cmd/evener -run '^TestAgentToServerDetailedStatus_DelegatesLossless$' -count=20
+go test -race ./cmd/evener -run '^TestAgentToServerDetailedStatus_DelegatesLossless$' -count=20
 go test ./server -run '^(TestStatusEndpoint_DetailedStatusIncludesStableDelegates|TestAppDiagnosticsFromDetailedStatus_DelegatesLossless)$' -count=20
 go test -race ./server -run '^(TestStatusEndpoint_DetailedStatusIncludesStableDelegates|TestAppDiagnosticsFromDetailedStatus_DelegatesLossless)$' -count=20
-go test ./cmd/serf-hub -run '^TestAppThreadReadColdDelegatesMatchReconnectedDetailedStatus$' -count=20
-go test -race ./cmd/serf-hub -run '^TestAppThreadReadColdDelegatesMatchReconnectedDetailedStatus$' -count=20
-go test ./cmd/serf-hub/internal/hubcore -run '^TestHubProberStableDelegate' -count=20
-go test -race ./cmd/serf-hub/internal/hubcore -run '^TestHubProberStableDelegate' -count=20
+go test ./cmd/evener-hub -run '^TestAppThreadReadColdDelegatesMatchReconnectedDetailedStatus$' -count=20
+go test -race ./cmd/evener-hub -run '^TestAppThreadReadColdDelegatesMatchReconnectedDetailedStatus$' -count=20
+go test ./cmd/evener-hub/internal/hubcore -run '^TestHubProberStableDelegate' -count=20
+go test -race ./cmd/evener-hub/internal/hubcore -run '^TestHubProberStableDelegate' -count=20
 scripts/web-preflight.sh
-cd cmd/serf-hub/frontend
+cd cmd/evener-hub/frontend
 npx vitest run --maxWorkers=4 src/stores/threads.test.ts src/stores/activityPanel.test.ts src/protocol/reducer.test.ts src/panes/session/chrome/activityData.test.ts src/panes/session/chrome/activityRows.test.ts src/panes/session/chrome/ActivityTree.test.tsx src/panes/session/transcript/ToolCallItem.test.tsx src/panes/session/transcript/tools/jobTools.test.tsx src/panes/session/transcript/tools/subagentModule.test.tsx src/panes/session/transcript/tools/subagentModuleStore.test.ts src/panes/session/transcript/messages/steeringClassify.test.ts src/panes/session/transcript/messages/NotificationCard.test.tsx src/panes/session/transcript/messages/SteeringItem.test.tsx
 cd ../../..
 ~~~
@@ -1991,8 +1991,8 @@ A selector that passes under its matching mutation is inadequate: restore first,
 ~~~bash
 make fuzz-registry-check
 make fuzz
-SERF_FUZZ_TESTS=1 go test -tags serffuzz ./agent -run '^(FuzzDelegateControllerTransitions|FuzzDelegateConversationTransitions|FuzzDelegateRestartEquivalence|FuzzDelegateAttentionFold|FuzzStableDelegateWatchDelivery|FuzzDelegateReclaimStopRestart)$' -count=1
-SERF_FUZZ_TESTS=1 go test -tags serffuzz ./agent/internal/delegatestore -run '^Fuzz(Fold|StoreReplay|ReadEvents)$' -count=1
+EVENER_FUZZ_TESTS=1 go test -tags evenerfuzz ./agent -run '^(FuzzDelegateControllerTransitions|FuzzDelegateConversationTransitions|FuzzDelegateRestartEquivalence|FuzzDelegateAttentionFold|FuzzStableDelegateWatchDelivery|FuzzDelegateReclaimStopRestart)$' -count=1
+EVENER_FUZZ_TESTS=1 go test -tags evenerfuzz ./agent/internal/delegatestore -run '^Fuzz(Fold|StoreReplay|ReadEvents)$' -count=1
 go test ./agent/internal/jobstore -run '^FuzzOutputMatcher$' -count=1
 ~~~
 
@@ -2012,9 +2012,9 @@ Use fresh temporary state directories. Assert no provider, Session, timer, hook,
 ~~~bash
 rg -n 'JobTypeDelegate|JobDelegate|DelegateJobID|CurrentJobID|LatestJobID|delegate failure record' agent --glob '*.go'
 rg -n 'unsupported_delegate_watch|activation.*(status|output|history|watch|stop)' agent cmd internal appwire --glob '*.{go,ts,tsx,md}'
-rg -n 'Detailed\.Jobs' cmd/serf-hub internal appwire --glob '*.{go,ts,tsx}'
+rg -n 'Detailed\.Jobs' cmd/evener-hub internal appwire --glob '*.{go,ts,tsx}'
 rg -n 'time\.(NewTicker|AfterFunc)|go func' agent/delegate_*.go agent/session_attention.go
-rg -n 'delegatestore\.Open|jobstore\.Open' agent/historical_jobs.go agent/jobs_activity_past.go agent/doctor cmd/serf-hub/app_threadread.go cmd/serf-hub/internal/hubcore/prober.go
+rg -n 'delegatestore\.Open|jobstore\.Open' agent/historical_jobs.go agent/jobs_activity_past.go agent/doctor cmd/evener-hub/app_threadread.go cmd/evener-hub/internal/hubcore/prober.go
 rg -n 'queues/|queue.*attention|attention.*queue' agent/delegate_*.go agent/session_attention.go
 ~~~
 

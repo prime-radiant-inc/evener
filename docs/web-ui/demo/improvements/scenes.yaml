@@ -20,7 +20,7 @@ scenes:
     kind: image
     src: shots/card-title.png
     narration: >-
-      This is a tour of serf's web U I after the redesign. Everything you are
+      This is a tour of evener's web U I after the redesign. Everything you are
       about to see is the real product, driven live. The interactive scenes
       are also end to end tests. Their assertions passed while the camera
       rolled.

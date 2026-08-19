@@ -4,9 +4,9 @@ import (
 	"maps"
 	"strings"
 
-	"primeradiant.com/serf/agent/internal/tool"
-	"primeradiant.com/serf/llm"
-	"primeradiant.com/serf/llm/providercfg"
+	"primeradiant.com/evener/agent/internal/tool"
+	"primeradiant.com/evener/llm"
+	"primeradiant.com/evener/llm/providercfg"
 )
 
 // resolveEffortLevels returns reasoning effort levels for the given model.
@@ -407,7 +407,7 @@ func (p *Profile) CheapModelRef() (provider, model string) {
 // CheapModelRefString returns the configured cheap model as a WithCheapModel ref
 // ("provider/model" when cross-provider, else the bare model), or "" when no
 // cheap model is configured. It is the persistable form: feeding the result back
-// to WithCheapModel reproduces the routing, so it survives serf resume. Unlike
+// to WithCheapModel reproduces the routing, so it survives evener resume. Unlike
 // CheapModelRef it does NOT fall back to a provider default — an empty result
 // means "not configured", matching ConfiguredCheapModel.
 func (p *Profile) CheapModelRefString() string {
@@ -584,7 +584,7 @@ const (
 //   - openrouter / openrouter-anthropic (by behaviorTag): prefix == instanceName → strip
 //     (canonical wire model is the bare upstream form, e.g. "anthropic/claude-3"
 //     after stripping "openrouter/"). Switch when the prefix is an
-//     unambiguous Serf-internal provider that OpenRouter does NOT
+//     unambiguous Evener-internal provider that OpenRouter does NOT
 //     route to as an upstream (ollama, kimi, glm, the other
 //     openrouter* mode). All other prefixes (anthropic, openai,
 //     google, gemini, minimax, deepseek, ...) are upstream model
@@ -604,7 +604,7 @@ func decidePrefixAction(behaviorTag, instanceName, prefix string) prefixAction {
 		if prefix == instanceName {
 			return prefixActionStrip
 		}
-		// Unambiguous Serf-internal provider switches are allowed even
+		// Unambiguous Evener-internal provider switches are allowed even
 		// from meta-provider sessions. Everything else is an upstream
 		// namespace.
 		switch prefix {
@@ -691,7 +691,7 @@ func (p *Profile) WithCommunicateOverridesFrom(original *Profile) *Profile {
 	}
 	if !replaced {
 		// Rebuilt provider's defaults don't include communicate (unusual
-		// for Serf profiles but possible for custom callers); append it.
+		// for Evener profiles but possible for custom callers); append it.
 		defs = append(defs, *origCommunicate)
 	}
 	p.toolDefs = defs
@@ -1104,7 +1104,7 @@ func newOpenRouterAnthropicProfile(model string) *Profile {
 	//   - "<upstream-stripped>" — the model with a single leading
 	//     "<upstream>/" segment removed (e.g. "anthropic/claude-sonnet-4-5"
 	//     → "claude-sonnet-4-5"). Used as a final fallback to pick up
-	//     serf-shipped effort overrides keyed under the bare upstream
+	//     evener-shipped effort overrides keyed under the bare upstream
 	//     form. Treat as positive-only — generic upstream entries shouldn't
 	//     override a default OFF based on a missing field.
 	contextWindow := 128_000
@@ -1125,7 +1125,7 @@ func newOpenRouterAnthropicProfile(model string) *Profile {
 	// Anthropic profile. The GetModelInfo-based resolver above can't see it (the
 	// suffix isn't a catalog key), so set the window AND the beta header
 	// explicitly for a qualified/dated "[1m]" ref like
-	// "anthropic/claude-opus-4-5-20251101[1m]" — otherwise Serf budgets 1M but
+	// "anthropic/claude-opus-4-5-20251101[1m]" — otherwise Evener budgets 1M but
 	// never requests it.
 	has1M := strings.HasSuffix(model, anthropicSuffix1M)
 	if has1M {

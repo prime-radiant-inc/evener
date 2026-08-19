@@ -21,25 +21,25 @@
 
 ## File Map
 
-- Modify `cmd/serf-hub/frontend/src/panes/session/transcript/messages/steeringClassify.ts`: retain semantic job attributes, validate `transcript_ref`, and expose parsed status/output fields.
-- Modify `cmd/serf-hub/frontend/src/panes/session/transcript/messages/steeringClassify.test.ts`: prove local, remote, malformed, missing, and semantic parsing contracts.
-- Create `cmd/serf-hub/frontend/src/panes/session/transcript/openTranscript.tsx`: own the shared transcript-pane opener and the exact quiet open action used by delegate rows and notification cards.
-- Modify `cmd/serf-hub/frontend/src/panes/session/transcript/tools/subagentModule.tsx`: replace its private opener/button markup with the shared action without changing delegate behavior.
-- Modify `cmd/serf-hub/frontend/src/panes/session/transcript/tools/subagentModule.test.tsx`: retain a real behavior assertion that the shared action opens the transcript pane with the expected child identity.
-- Modify `cmd/serf-hub/frontend/src/panes/session/transcript/messages/SteeringItem.tsx`: thread its existing `sessionRef` through to notification cards without changing steering classification/routing.
-- Modify `cmd/serf-hub/frontend/src/panes/session/transcript/messages/SteeringItem.test.tsx`: prove an unrelated focused main session is replaced by the owning session before the child transcript opens beside it.
-- Modify `cmd/serf-hub/frontend/src/panes/session/transcript/messages/NotificationCard.tsx`: render semantic fields, conditionally expose the shared open-subagent action with the owning session as `parentRef`, and keep one raw disclosure.
-- Modify `cmd/serf-hub/frontend/src/panes/session/transcript/messages/notificationcard.module.css`: make raw content a block/full-width row and style compact metadata/action content with existing tokens.
-- Modify `cmd/serf-hub/frontend/src/panes/session/transcript/messages/NotificationCard.test.tsx`: cover real action/navigation identity, fallback behavior, semantic rendering, raw-row structure, and accessibility/disclosure contracts.
-- Modify `cmd/serf-hub/frontend/src/panes/session/transcript/messages/SystemNoticeItem.tsx` and `systemnoticeitem.module.css`: preserve the existing system-prompt disclosure behavior while stacking its summary and Markdown body as full-width rows.
-- Modify `cmd/serf-hub/frontend/src/panes/session/transcript/messages/SystemNoticeItem.test.tsx`: cover character count, one disclosure level, full-width summary/body structure, and readable expanded content.
-- Modify `cmd/serf-hub/frontend/src/dev/overflowharness-entry.tsx`: add a long system-prompt fixture so the existing 390px-to-desktop overflow sweep exercises ftex in a real browser.
+- Modify `cmd/evener-hub/frontend/src/panes/session/transcript/messages/steeringClassify.ts`: retain semantic job attributes, validate `transcript_ref`, and expose parsed status/output fields.
+- Modify `cmd/evener-hub/frontend/src/panes/session/transcript/messages/steeringClassify.test.ts`: prove local, remote, malformed, missing, and semantic parsing contracts.
+- Create `cmd/evener-hub/frontend/src/panes/session/transcript/openTranscript.tsx`: own the shared transcript-pane opener and the exact quiet open action used by delegate rows and notification cards.
+- Modify `cmd/evener-hub/frontend/src/panes/session/transcript/tools/subagentModule.tsx`: replace its private opener/button markup with the shared action without changing delegate behavior.
+- Modify `cmd/evener-hub/frontend/src/panes/session/transcript/tools/subagentModule.test.tsx`: retain a real behavior assertion that the shared action opens the transcript pane with the expected child identity.
+- Modify `cmd/evener-hub/frontend/src/panes/session/transcript/messages/SteeringItem.tsx`: thread its existing `sessionRef` through to notification cards without changing steering classification/routing.
+- Modify `cmd/evener-hub/frontend/src/panes/session/transcript/messages/SteeringItem.test.tsx`: prove an unrelated focused main session is replaced by the owning session before the child transcript opens beside it.
+- Modify `cmd/evener-hub/frontend/src/panes/session/transcript/messages/NotificationCard.tsx`: render semantic fields, conditionally expose the shared open-subagent action with the owning session as `parentRef`, and keep one raw disclosure.
+- Modify `cmd/evener-hub/frontend/src/panes/session/transcript/messages/notificationcard.module.css`: make raw content a block/full-width row and style compact metadata/action content with existing tokens.
+- Modify `cmd/evener-hub/frontend/src/panes/session/transcript/messages/NotificationCard.test.tsx`: cover real action/navigation identity, fallback behavior, semantic rendering, raw-row structure, and accessibility/disclosure contracts.
+- Modify `cmd/evener-hub/frontend/src/panes/session/transcript/messages/SystemNoticeItem.tsx` and `systemnoticeitem.module.css`: preserve the existing system-prompt disclosure behavior while stacking its summary and Markdown body as full-width rows.
+- Modify `cmd/evener-hub/frontend/src/panes/session/transcript/messages/SystemNoticeItem.test.tsx`: cover character count, one disclosure level, full-width summary/body structure, and readable expanded content.
+- Modify `cmd/evener-hub/frontend/src/dev/overflowharness-entry.tsx`: add a long system-prompt fixture so the existing 390px-to-desktop overflow sweep exercises ftex in a real browser.
 
 ### Task 1: Extend the parser with a safe child reference and semantic fields
 
 **Files:**
-- Modify: `cmd/serf-hub/frontend/src/panes/session/transcript/messages/steeringClassify.test.ts`
-- Modify: `cmd/serf-hub/frontend/src/panes/session/transcript/messages/steeringClassify.ts`
+- Modify: `cmd/evener-hub/frontend/src/panes/session/transcript/messages/steeringClassify.test.ts`
+- Modify: `cmd/evener-hub/frontend/src/panes/session/transcript/messages/steeringClassify.ts`
 
 **Interfaces:**
 - Produces `ParsedNotification.transcriptRef?: string`, plus parsed `jobId`, `jobType`, `status`, `reason`, `outputBytes`, and `exitCode` fields for the card.
@@ -54,7 +54,7 @@
   Run:
 
   ```bash
-  cd cmd/serf-hub/frontend && npm exec vitest -- run src/panes/session/transcript/messages/steeringClassify.test.ts
+  cd cmd/evener-hub/frontend && npm exec vitest -- run src/panes/session/transcript/messages/steeringClassify.test.ts
   ```
 
   Expected: the new assertions fail because the current parser drops attributes and `ParsedNotification` has no semantic reference/field properties. If dependencies are absent, install/use the repository’s documented frontend dependency path before continuing and record the exact command/result.
@@ -70,16 +70,16 @@
 - [ ] **Step 5: Commit the parser slice.**
 
   ```bash
-  git add cmd/serf-hub/frontend/src/panes/session/transcript/messages/steeringClassify.ts cmd/serf-hub/frontend/src/panes/session/transcript/messages/steeringClassify.test.ts
+  git add cmd/evener-hub/frontend/src/panes/session/transcript/messages/steeringClassify.ts cmd/evener-hub/frontend/src/panes/session/transcript/messages/steeringClassify.test.ts
   git commit -m "feat(web): retain job notification metadata"
   ```
 
 ### Task 2: Centralize the existing open-subagent action
 
 **Files:**
-- Create: `cmd/serf-hub/frontend/src/panes/session/transcript/openTranscript.tsx`
-- Modify: `cmd/serf-hub/frontend/src/panes/session/transcript/tools/subagentModule.tsx`
-- Modify: `cmd/serf-hub/frontend/src/panes/session/transcript/tools/subagentModule.test.tsx`
+- Create: `cmd/evener-hub/frontend/src/panes/session/transcript/openTranscript.tsx`
+- Modify: `cmd/evener-hub/frontend/src/panes/session/transcript/tools/subagentModule.tsx`
+- Modify: `cmd/evener-hub/frontend/src/panes/session/transcript/tools/subagentModule.test.tsx`
 
 **Interfaces:**
 - `openTranscript(ref: string, parentRef?: string): void` calls `paneActions.openBeside` with `{ type: "transcript", params: { ref, parentRef? } }`.
@@ -94,7 +94,7 @@
   Run:
 
   ```bash
-  cd cmd/serf-hub/frontend && npm exec vitest -- run src/panes/session/transcript/tools/subagentModule.test.tsx
+  cd cmd/evener-hub/frontend && npm exec vitest -- run src/panes/session/transcript/tools/subagentModule.test.tsx
   ```
 
   Expected: the new shared-module seam does not exist yet, so the test either fails to compile or fails to observe the intended shared component/action.
@@ -110,16 +110,16 @@
 - [ ] **Step 5: Commit the shared action slice.**
 
   ```bash
-  git add cmd/serf-hub/frontend/src/panes/session/transcript/openTranscript.tsx cmd/serf-hub/frontend/src/panes/session/transcript/tools/subagentModule.tsx cmd/serf-hub/frontend/src/panes/session/transcript/tools/subagentModule.test.tsx
+  git add cmd/evener-hub/frontend/src/panes/session/transcript/openTranscript.tsx cmd/evener-hub/frontend/src/panes/session/transcript/tools/subagentModule.tsx cmd/evener-hub/frontend/src/panes/session/transcript/tools/subagentModule.test.tsx
   git commit -m "refactor(web): share transcript opening action"
   ```
 
 ### Task 3: Render the notification card as semantic, accessible transcript UI
 
 **Files:**
-- Modify: `cmd/serf-hub/frontend/src/panes/session/transcript/messages/NotificationCard.test.tsx`
-- Modify: `cmd/serf-hub/frontend/src/panes/session/transcript/messages/NotificationCard.tsx`
-- Modify: `cmd/serf-hub/frontend/src/panes/session/transcript/messages/notificationcard.module.css`
+- Modify: `cmd/evener-hub/frontend/src/panes/session/transcript/messages/NotificationCard.test.tsx`
+- Modify: `cmd/evener-hub/frontend/src/panes/session/transcript/messages/NotificationCard.tsx`
+- Modify: `cmd/evener-hub/frontend/src/panes/session/transcript/messages/notificationcard.module.css`
 
 **Interfaces:**
 - `NotificationCard` consumes the expanded `ParsedNotification` and uses `OpenTranscriptButton` only when `transcriptRef` is valid.
@@ -140,7 +140,7 @@
   Run:
 
   ```bash
-  cd cmd/serf-hub/frontend && npm exec vitest -- run src/panes/session/transcript/messages/NotificationCard.test.tsx
+  cd cmd/evener-hub/frontend && npm exec vitest -- run src/panes/session/transcript/messages/NotificationCard.test.tsx
   ```
 
   Expected: the current card has no action, no semantic fields, and two disclosures for long excerpts; the new assertions fail for those missing contracts.
@@ -154,7 +154,7 @@
   Run:
 
   ```bash
-  cd cmd/serf-hub/frontend && npm exec vitest -- run src/panes/session/transcript/messages/NotificationCard.test.tsx src/panes/session/transcript/messages/steeringClassify.test.ts src/panes/session/transcript/tools/subagentModule.test.tsx
+  cd cmd/evener-hub/frontend && npm exec vitest -- run src/panes/session/transcript/messages/NotificationCard.test.tsx src/panes/session/transcript/messages/steeringClassify.test.ts src/panes/session/transcript/tools/subagentModule.test.tsx
   ```
 
   Confirm all assertions pass, including the unrelated-focused-session parent restoration behavior, and no existing notification/delegate behavior regresses.
@@ -162,16 +162,16 @@
 - [ ] **Step 5: Commit the card slice.**
 
   ```bash
-  git add cmd/serf-hub/frontend/src/panes/session/transcript/messages/NotificationCard.tsx cmd/serf-hub/frontend/src/panes/session/transcript/messages/NotificationCard.test.tsx cmd/serf-hub/frontend/src/panes/session/transcript/messages/notificationcard.module.css
+  git add cmd/evener-hub/frontend/src/panes/session/transcript/messages/NotificationCard.tsx cmd/evener-hub/frontend/src/panes/session/transcript/messages/NotificationCard.test.tsx cmd/evener-hub/frontend/src/panes/session/transcript/messages/notificationcard.module.css
   git commit -m "fix(web): link job notifications to subagents"
   ```
 
 ### Task 4: Stack system-prompt disclosure rows without changing its semantic contract (red-green)
 
 **Files:**
-- Modify: `cmd/serf-hub/frontend/src/panes/session/transcript/messages/SystemNoticeItem.test.tsx`
-- Modify: `cmd/serf-hub/frontend/src/panes/session/transcript/messages/systemnoticeitem.module.css`
-- Modify: `cmd/serf-hub/frontend/src/dev/overflowharness-entry.tsx`
+- Modify: `cmd/evener-hub/frontend/src/panes/session/transcript/messages/SystemNoticeItem.test.tsx`
+- Modify: `cmd/evener-hub/frontend/src/panes/session/transcript/messages/systemnoticeitem.module.css`
+- Modify: `cmd/evener-hub/frontend/src/dev/overflowharness-entry.tsx`
 
 - [ ] **Step 1: Add the failing system-prompt component tests.**
 
@@ -182,7 +182,7 @@
   Run:
 
   ```bash
-  cd cmd/serf-hub/frontend && npm exec vitest -- run src/panes/session/transcript/messages/SystemNoticeItem.test.tsx
+  cd cmd/evener-hub/frontend && npm exec vitest -- run src/panes/session/transcript/messages/SystemNoticeItem.test.tsx
   ```
 
   Expected: the existing scaffold is a flex row, so the new full-width row contract fails.
@@ -198,7 +198,7 @@
 - [ ] **Step 5: Commit the system-prompt slice.**
 
   ```bash
-  git add cmd/serf-hub/frontend/src/panes/session/transcript/messages/SystemNoticeItem.test.tsx cmd/serf-hub/frontend/src/panes/session/transcript/messages/systemnoticeitem.module.css cmd/serf-hub/frontend/src/dev/overflowharness-entry.tsx
+  git add cmd/evener-hub/frontend/src/panes/session/transcript/messages/SystemNoticeItem.test.tsx cmd/evener-hub/frontend/src/panes/session/transcript/messages/systemnoticeitem.module.css cmd/evener-hub/frontend/src/dev/overflowharness-entry.tsx
   git commit -m "fix(web): stack system prompt disclosure content"
   ```
 

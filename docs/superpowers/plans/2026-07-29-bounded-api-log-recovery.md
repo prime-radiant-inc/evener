@@ -23,7 +23,7 @@ deterministic sparse test readers, existing Unix target-file locking.
 
 - The API log is forensic evidence, not session replay state.
 - Open-time recovery validates the append boundary and possible torn tail, not
-  every historical record. `serf doctor` owns explicit whole-history structural
+  every historical record. `evener doctor` owns explicit whole-history structural
   validation under follow-up kata `7x84`; this slice does not implement it.
 - Other explicit API-log readers validate every record they consume.
 - Recovery work is bounded by the 128 MiB canonical record limit and is
@@ -141,10 +141,10 @@ deterministic sparse test readers, existing Unix target-file locking.
   Run:
 
   ```bash
-  go test ./llm/apilog ./llm ./cmdutil ./cmd/serf -count=1
+  go test ./llm/apilog ./llm ./cmdutil ./cmd/evener -count=1
   go test -race ./llm/apilog ./llm -count=1
-  go vet ./llm/apilog ./llm ./cmdutil ./cmd/serf
-  golangci-lint run ./llm/apilog ./llm ./cmdutil ./cmd/serf
+  go vet ./llm/apilog ./llm ./cmdutil ./cmd/evener
+  golangci-lint run ./llm/apilog ./llm ./cmdutil ./cmd/evener
   make build
   ```
 

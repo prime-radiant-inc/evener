@@ -7,10 +7,10 @@ import (
 	"testing"
 	"time"
 
-	"primeradiant.com/serf/agent/schema"
-	"primeradiant.com/serf/agent/transcript"
-	"primeradiant.com/serf/appwire"
-	"primeradiant.com/serf/llm"
+	"primeradiant.com/evener/agent/schema"
+	"primeradiant.com/evener/agent/transcript"
+	"primeradiant.com/evener/appwire"
+	"primeradiant.com/evener/llm"
 )
 
 // writeUsageTranscript writes a transcript whose Nth entry carries the Nth
@@ -59,7 +59,7 @@ func usage(in, out, total, cacheRead int) *llm.Usage {
 	return &u
 }
 
-func requireUsageTotalFromFile(t testing.TB, cache *TurnCache, path string, maxLineBytes, fromEntryOrdinal int) *appwire.SerfUsage {
+func requireUsageTotalFromFile(t testing.TB, cache *TurnCache, path string, maxLineBytes, fromEntryOrdinal int) *appwire.EvenerUsage {
 	t.Helper()
 	got, err := cache.UsageTotalFromFile(path, maxLineBytes, fromEntryOrdinal)
 	if err != nil {
@@ -80,7 +80,7 @@ func TestUsageTotalFromFileSumsEveryEntryInTheTranscript(t *testing.T) {
 	})
 
 	got := requireUsageTotalFromFile(t, NewTurnCache(), path, testMaxLineBytes, 0)
-	want := &appwire.SerfUsage{InputTokens: 600, OutputTokens: 60, TotalTokens: 660, CacheReadTokens: 120}
+	want := &appwire.EvenerUsage{InputTokens: 600, OutputTokens: 60, TotalTokens: 660, CacheReadTokens: 120}
 	if got == nil || *got != *want {
 		t.Fatalf("usage total = %+v, want %+v", got, want)
 	}
@@ -100,7 +100,7 @@ func TestUsageTotalFromFileSkipsTheInheritedForkPrefix(t *testing.T) {
 	})
 
 	got := requireUsageTotalFromFile(t, NewTurnCache(), path, testMaxLineBytes, 3)
-	want := &appwire.SerfUsage{InputTokens: 300, OutputTokens: 30, TotalTokens: 330, CacheReadTokens: 16}
+	want := &appwire.EvenerUsage{InputTokens: 300, OutputTokens: 30, TotalTokens: 330, CacheReadTokens: 16}
 	if got == nil || *got != *want {
 		t.Fatalf("post-divergence total = %+v, want %+v (never the parent's prefix)", got, want)
 	}
@@ -122,8 +122,8 @@ func TestUsageTotalFromFileReportsAbsentForAnEmptyOwnSpan(t *testing.T) {
 }
 
 // A transcript whose entries carry no usage at all (every provider field
-// unset) reports absent rather than an all-zero SerfUsage, matching
-// appwire.SerfUsageFromLLM's own absent-vs-zero rule.
+// unset) reports absent rather than an all-zero EvenerUsage, matching
+// appwire.EvenerUsageFromLLM's own absent-vs-zero rule.
 func TestUsageTotalFromFileReportsAbsentWhenNoEntryCarriesUsage(t *testing.T) {
 	path := writeUsageTranscript(t, []*llm.Usage{nil, nil, nil})
 
@@ -190,7 +190,7 @@ func TestUsageTotalFromFileRescansAfterTheTranscriptGrows(t *testing.T) {
 	// identity gate keys on size too, so this is deterministic.
 
 	after := requireUsageTotalFromFile(t, cache, path, testMaxLineBytes, 0)
-	want := &appwire.SerfUsage{InputTokens: 500, OutputTokens: 50, TotalTokens: 550}
+	want := &appwire.EvenerUsage{InputTokens: 500, OutputTokens: 50, TotalTokens: 550}
 	if after == nil || *after != *want {
 		t.Fatalf("total after append = %+v, want %+v", after, want)
 	}

@@ -6,7 +6,7 @@ import (
 	"net/http"
 	"testing"
 
-	"primeradiant.com/serf/llm"
+	"primeradiant.com/evener/llm"
 )
 
 // declaredKindStatusCases covers every branch of ErrorFromHTTPStatus that

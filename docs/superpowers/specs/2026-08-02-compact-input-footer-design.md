@@ -96,14 +96,14 @@ The redesign preserves native and existing widget behavior:
 
 Primary files:
 
-- `cmd/serf-hub/frontend/src/panes/session/chrome/SessionChrome.tsx`
-- `cmd/serf-hub/frontend/src/panes/session/chrome/sessionchrome.module.css`
-- `cmd/serf-hub/frontend/src/panes/session/chrome/SessionChrome.test.tsx`
-- `cmd/serf-hub/frontend/src/panes/session/chrome/StatusRow.tsx`
-- `cmd/serf-hub/frontend/src/panes/session/chrome/statusrow.module.css`
-- `cmd/serf-hub/frontend/src/panes/session/chrome/StatusRow.test.tsx`
-- `cmd/serf-hub/frontend/src/panes/session/chrome/ModelSwitch.tsx`
-- `cmd/serf-hub/frontend/src/panes/session/chrome/modelswitch.module.css`
+- `cmd/evener-hub/frontend/src/panes/session/chrome/SessionChrome.tsx`
+- `cmd/evener-hub/frontend/src/panes/session/chrome/sessionchrome.module.css`
+- `cmd/evener-hub/frontend/src/panes/session/chrome/SessionChrome.test.tsx`
+- `cmd/evener-hub/frontend/src/panes/session/chrome/StatusRow.tsx`
+- `cmd/evener-hub/frontend/src/panes/session/chrome/statusrow.module.css`
+- `cmd/evener-hub/frontend/src/panes/session/chrome/StatusRow.test.tsx`
+- `cmd/evener-hub/frontend/src/panes/session/chrome/ModelSwitch.tsx`
+- `cmd/evener-hub/frontend/src/panes/session/chrome/modelswitch.module.css`
 - the owning model-switch tests
 - goal-control styles or tests only if required to hide the chip at the defined threshold
 
@@ -137,7 +137,7 @@ Add a layout-guard case that renders long model and goal values, measured contex
 Run:
 
 1. Focused tests for `StatusRow`, `ModelSwitch`, and `SessionChrome`.
-2. `cd cmd/serf-hub/frontend && npm run layoutguard`.
+2. `cd cmd/evener-hub/frontend && npm run layoutguard`.
 3. Repository-root `make test-web`.
 
 ## Non-goals

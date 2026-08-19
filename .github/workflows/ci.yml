@@ -19,7 +19,7 @@ jobs:
         with:
           node-version: "22"
           cache: npm
-          cache-dependency-path: cmd/serf-hub/frontend/package-lock.json
+          cache-dependency-path: cmd/evener-hub/frontend/package-lock.json
 
       - name: Test, build, and browser guards
         run: make test-web && make build-web && make test-web-browser
@@ -37,7 +37,7 @@ jobs:
         with:
           node-version: "22"
           cache: npm
-          cache-dependency-path: cmd/serf-hub/frontend/package-lock.json
+          cache-dependency-path: cmd/evener-hub/frontend/package-lock.json
 
       - name: Build runtime pair and all Go workspace packages
         run: make build && make build-go
@@ -52,7 +52,7 @@ jobs:
       # and a zero exit when gitleaks is missing.
       - name: Lint (make lint — every family of the local gate, all go.work modules)
         env:
-          SERF_GITLEAKS_REQUIRED: "1"
+          EVENER_GITLEAKS_REQUIRED: "1"
         run: |
           curl -sSfL https://raw.githubusercontent.com/golangci/golangci-lint/HEAD/install.sh | sh -s -- -b "$(go env GOPATH)/bin" v2.12.2
           go install github.com/zricethezav/gitleaks/v8@v8.30.1
@@ -65,7 +65,7 @@ jobs:
       - name: Deterministic tests (full root suite; frontend covered by web job)
         run: ROOT_FULL=1 WEB=0 make test
 
-      # test-dev-tooling pins serf's own scripts/*-selftest.sh suites. It tests
+      # test-dev-tooling pins evener's own scripts/*-selftest.sh suites. It tests
       # tooling, not the product, so it is not part of make test above — it
       # needs only Go, bash, and git; suites stub everything else themselves.
       - name: Dev-tooling self-test wave (scripts/*-selftest.sh — tooling, not the product)
@@ -81,7 +81,7 @@ jobs:
       # corpus-scoped pass, which is not.
       - name: Secret scan (gitleaks — committed fuzz corpora)
         env:
-          SERF_GITLEAKS_REQUIRED: "1"
+          EVENER_GITLEAKS_REQUIRED: "1"
         run: |
           go install github.com/zricethezav/gitleaks/v8@v8.30.1
           export PATH="$(go env GOPATH)/bin:$PATH"

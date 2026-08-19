@@ -8,8 +8,8 @@ import (
 
 	"github.com/spf13/afero"
 
-	"primeradiant.com/serf/agent/events"
-	"primeradiant.com/serf/appwire"
+	"primeradiant.com/evener/agent/events"
+	"primeradiant.com/evener/appwire"
 )
 
 // serveSession marks the session as one a daemon is actually draining, which

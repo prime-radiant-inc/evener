@@ -11,7 +11,7 @@ These gestures can move or refresh the browser surface when a user reaches a pan
 
 ## Design
 
-In `cmd/serf-hub/frontend/src/styles/global.css`, add `overscroll-behavior: none` to `html` inside the existing `@media (max-width: 899px)` rule.
+In `cmd/evener-hub/frontend/src/styles/global.css`, add `overscroll-behavior: none` to `html` inside the existing `@media (max-width: 899px)` rule.
 
 Keep the existing `overflow: hidden` declarations on `html, body`. Keep pane scroll containers unchanged.
 

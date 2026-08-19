@@ -13,7 +13,7 @@ const (
 	// IssuerBaseURL is the OpenAI OAuth issuer. The authorize and token
 	// endpoints are derived from it (e.g. IssuerBaseURL + "/oauth/authorize").
 	IssuerBaseURL = "https://auth.openai.com"
-	// ClientID is the public OAuth client identifier Serf registers as with
+	// ClientID is the public OAuth client identifier Evener registers as with
 	// OpenAI. It is sent on the authorize, token-exchange, and refresh requests.
 	ClientID = "app_EMoamEEZ73f0CkXaXp7hrann"
 	// RedirectPath is the path component of the localhost redirect URI that the
@@ -39,7 +39,7 @@ const (
 	FallbackCallbackPort = 1457
 )
 
-// Config contains the stable OpenAI OAuth settings owned by Serf.
+// Config contains the stable OpenAI OAuth settings owned by Evener.
 type Config struct {
 	IssuerBaseURL   string
 	ClientID        string
@@ -66,7 +66,7 @@ type AuthorizeURLOptions struct {
 	OpenBrowser bool
 }
 
-// DefaultConfig returns the standard Serf-owned OpenAI OAuth configuration: the
+// DefaultConfig returns the standard Evener-owned OpenAI OAuth configuration: the
 // public issuer, client ID, redirect path, default scopes, and the HTTP and
 // callback timeouts used by NewService when the caller does not override them.
 func DefaultConfig() Config {

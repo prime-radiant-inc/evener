@@ -6,9 +6,9 @@ import (
 	"testing"
 	"time"
 
-	"primeradiant.com/serf/agent/schema"
-	"primeradiant.com/serf/agent/transcript"
-	"primeradiant.com/serf/llm"
+	"primeradiant.com/evener/agent/schema"
+	"primeradiant.com/evener/agent/transcript"
+	"primeradiant.com/evener/llm"
 )
 
 func TestConvertToATIF_SimpleConversation(t *testing.T) {
@@ -59,8 +59,8 @@ func TestConvertToATIF_SimpleConversation(t *testing.T) {
 	}
 
 	// --- Agent fields ---
-	if traj.Agent.Name != "serf" {
-		t.Errorf("Agent.Name = %q, want %q", traj.Agent.Name, "serf")
+	if traj.Agent.Name != "evener" {
+		t.Errorf("Agent.Name = %q, want %q", traj.Agent.Name, "evener")
 	}
 	if traj.Agent.Version != "v0.1.0-abc1234" {
 		t.Errorf("Agent.Version = %q, want %q", traj.Agent.Version, "v0.1.0-abc1234")
@@ -675,8 +675,8 @@ func TestConvertToATIF_CheckpointAndSummary(t *testing.T) {
 	if cp.Source != "system" {
 		t.Errorf("checkpoint Source = %q, want %q", cp.Source, "system")
 	}
-	if cp.Extra["serf_kind"] != "checkpoint" {
-		t.Errorf("checkpoint Extra[serf_kind] = %v, want %q", cp.Extra["serf_kind"], "checkpoint")
+	if cp.Extra["evener_kind"] != "checkpoint" {
+		t.Errorf("checkpoint Extra[evener_kind] = %v, want %q", cp.Extra["evener_kind"], "checkpoint")
 	}
 	if cp.Message != "Checkpoint: 5 tool calls executed, 3 files modified." {
 		t.Errorf("checkpoint Message = %q, want checkpoint text", cp.Message)
@@ -690,8 +690,8 @@ func TestConvertToATIF_CheckpointAndSummary(t *testing.T) {
 	if sm.Source != "system" {
 		t.Errorf("summary Source = %q, want %q", sm.Source, "system")
 	}
-	if sm.Extra["serf_kind"] != "summary" {
-		t.Errorf("summary Extra[serf_kind] = %v, want %q", sm.Extra["serf_kind"], "summary")
+	if sm.Extra["evener_kind"] != "summary" {
+		t.Errorf("summary Extra[evener_kind] = %v, want %q", sm.Extra["evener_kind"], "summary")
 	}
 	if sm.Message != "Summary: The agent refactored the auth module." {
 		t.Errorf("summary Message = %q, want summary text", sm.Message)
@@ -733,8 +733,8 @@ func TestConvertToATIF_ModelSwitch(t *testing.T) {
 	if step.Source != "system" {
 		t.Errorf("model-switch Source = %q, want %q", step.Source, "system")
 	}
-	if step.Extra["serf_kind"] != "model_switch" {
-		t.Errorf("model-switch Extra[serf_kind] = %v, want %q", step.Extra["serf_kind"], "model_switch")
+	if step.Extra["evener_kind"] != "model_switch" {
+		t.Errorf("model-switch Extra[evener_kind] = %v, want %q", step.Extra["evener_kind"], "model_switch")
 	}
 	if step.Message != "Switched model: anthropic/claude-opus-4-6 → openai/gpt-5.5" {
 		t.Errorf("model-switch Message = %q, want marker text", step.Message)
@@ -841,9 +841,9 @@ func TestConvertToATIF_SteeringTurn(t *testing.T) {
 	if step.Timestamp != "2026-03-01T10:00:00Z" {
 		t.Errorf("Timestamp = %q, want %q", step.Timestamp, "2026-03-01T10:00:00Z")
 	}
-	// Steering turns should NOT have serf_kind (unlike checkpoint/summary)
-	if _, has := step.Extra["serf_kind"]; has {
-		t.Errorf("Extra[serf_kind] = %v, steering turns should not have serf_kind", step.Extra["serf_kind"])
+	// Steering turns should NOT have evener_kind (unlike checkpoint/summary)
+	if _, has := step.Extra["evener_kind"]; has {
+		t.Errorf("Extra[evener_kind] = %v, steering turns should not have evener_kind", step.Extra["evener_kind"])
 	}
 }
 
@@ -900,8 +900,8 @@ func TestConvertToATIF_OrphanedToolResults(t *testing.T) {
 	if step.Source != "agent" {
 		t.Errorf("Source = %q, want %q", step.Source, "agent")
 	}
-	if step.Extra["serf_kind"] != "orphaned_tool_results" {
-		t.Errorf("Extra[serf_kind] = %v, want %q", step.Extra["serf_kind"], "orphaned_tool_results")
+	if step.Extra["evener_kind"] != "orphaned_tool_results" {
+		t.Errorf("Extra[evener_kind] = %v, want %q", step.Extra["evener_kind"], "orphaned_tool_results")
 	}
 	if step.Observation == nil {
 		t.Fatal("Observation is nil")
@@ -1402,8 +1402,8 @@ func TestConvertToATIF_TurnFailure(t *testing.T) {
 	if step.Source != "system" {
 		t.Errorf("Source = %q, want %q", step.Source, "system")
 	}
-	if step.Extra["serf_kind"] != "turn_failure" {
-		t.Errorf("Extra[serf_kind] = %v, want %q", step.Extra["serf_kind"], "turn_failure")
+	if step.Extra["evener_kind"] != "turn_failure" {
+		t.Errorf("Extra[evener_kind] = %v, want %q", step.Extra["evener_kind"], "turn_failure")
 	}
 	if step.Message != "provider error (status=529): overloaded" {
 		t.Errorf("Message = %q, want the failure text", step.Message)
@@ -1474,8 +1474,8 @@ func TestConvertToATIF_HookCompleted(t *testing.T) {
 	if step.Source != "system" {
 		t.Errorf("Source = %q, want %q", step.Source, "system")
 	}
-	if step.Extra["serf_kind"] != "hook_completed" {
-		t.Errorf("Extra[serf_kind] = %v, want %q", step.Extra["serf_kind"], "hook_completed")
+	if step.Extra["evener_kind"] != "hook_completed" {
+		t.Errorf("Extra[evener_kind] = %v, want %q", step.Extra["evener_kind"], "hook_completed")
 	}
 	hook, ok := step.Extra["hook"].(*schema.HookInfo)
 	if !ok {
@@ -1527,8 +1527,8 @@ func TestConvertToATIF_UnknownTurnKind(t *testing.T) {
 	if step.Source != "system" {
 		t.Errorf("Source = %q, want %q", step.Source, "system")
 	}
-	if step.Extra["serf_kind"] != "some_future_kind" {
-		t.Errorf("Extra[serf_kind] = %v, want the kind itself so a reader can tell what it was", step.Extra["serf_kind"])
+	if step.Extra["evener_kind"] != "some_future_kind" {
+		t.Errorf("Extra[evener_kind] = %v, want the kind itself so a reader can tell what it was", step.Extra["evener_kind"])
 	}
 	if step.Message != "a kind this exporter has never heard of" {
 		t.Errorf("Message = %q, want the turn text", step.Message)

@@ -37,7 +37,7 @@ for it to read. Two consequences, both live today:
 - Scope is the **system voice family**, not steering alone — steering is the
   directive member of a family that already includes lifecycle facts, failures
   and scaffolding.
-- The reader's job is **auditing serf itself**: which kind fired, and when. The
+- The reader's job is **auditing evener itself**: which kind fired, and when. The
   kind is the payload; the family mark is secondary.
 - Mark: **gutter glyph ◇**, text `System steered: $kind`, **disclosure chevron
   after** the text.

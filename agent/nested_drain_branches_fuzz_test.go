@@ -1,4 +1,4 @@
-//go:build serffuzz
+//go:build evenerfuzz
 
 package agent
 
@@ -7,14 +7,14 @@ import (
 	"testing"
 	"time"
 
-	"primeradiant.com/serf/agent/internal/jobstore"
+	"primeradiant.com/evener/agent/internal/jobstore"
 )
 
 // FuzzNdbNestedDrainBranches complements the end-to-end nested lifecycle
 // program with the state combinations that do not require a model turn. The
 // fixture uses only in-memory session state and durable temp-dir stores; drain
 // rechecks are injected directly, so replay and fuzzing never wait on a clock.
-// serf:fuzz native
+// evener:fuzz native
 func FuzzNdbNestedDrainBranches(f *testing.F) {
 	for _, seed := range []uint8{0, 1, 2, 3, 7, 255} {
 		f.Add(seed)

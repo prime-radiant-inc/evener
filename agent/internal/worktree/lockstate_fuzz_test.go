@@ -24,12 +24,12 @@ func FuzzDecideTotal(f *testing.F) {
 // FuzzClassifyReason asserts ClassifyReason never panics on arbitrary reason /
 // id strings and always returns a valid LockState.
 func FuzzClassifyReason(f *testing.F) {
-	f.Add("serf:01HXYZ", "01HXYZ", "")
-	f.Add("serf:dlg:dlg_1:01HXYZ", "01HXYZ", "dlg_1")
+	f.Add("evener:01HXYZ", "01HXYZ", "")
+	f.Add("evener:dlg:dlg_1:01HXYZ", "01HXYZ", "dlg_1")
 	f.Add("", "", "")
-	f.Add("serf:dlg::", "sid", "dlg")
+	f.Add("evener:dlg::", "sid", "dlg")
 	f.Add("held by hand", "sid", "dlg")
-	f.Add("serf:a:b:c:d", "sid", "dlg")
+	f.Add("evener:a:b:c:d", "sid", "dlg")
 
 	f.Fuzz(func(t *testing.T, reason, ownSID, ownDlgID string) {
 		got := ClassifyReason(reason, ownSID, ownDlgID)

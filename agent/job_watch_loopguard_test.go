@@ -4,10 +4,10 @@ import (
 	"strings"
 	"testing"
 
-	"primeradiant.com/serf/agent/events"
-	"primeradiant.com/serf/agent/internal/jobstore"
-	tooldefs "primeradiant.com/serf/agent/internal/tool"
-	"primeradiant.com/serf/agent/provenance"
+	"primeradiant.com/evener/agent/events"
+	"primeradiant.com/evener/agent/internal/jobstore"
+	tooldefs "primeradiant.com/evener/agent/internal/tool"
+	"primeradiant.com/evener/agent/provenance"
 )
 
 // TestSelfDeliveryWatchShapesInstall covers the self-delivery watch shapes the

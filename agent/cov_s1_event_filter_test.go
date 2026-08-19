@@ -3,7 +3,7 @@ package agent
 import (
 	"testing"
 
-	"primeradiant.com/serf/agent/events"
+	"primeradiant.com/evener/agent/events"
 )
 
 func TestS1Cov_watchEventFilterMatches(t *testing.T) {

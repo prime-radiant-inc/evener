@@ -27,4 +27,4 @@ jobs:
           token: ${{ steps.app-token.outputs.token }}
           repository: prime-radiant-inc/sen-deploy
           event-type: build
-          client-payload: '{"repo": "serf", "sha": "${{ github.sha }}", "sha_short": "${{ steps.sha.outputs.short }}"}'
+          client-payload: '{"repo": "evener", "sha": "${{ github.sha }}", "sha_short": "${{ steps.sha.outputs.short }}"}'

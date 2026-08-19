@@ -71,7 +71,7 @@ The design borrows four useful ideas from Codex App Server:
 - mutation acceptance is distinct from later agent incorporation; and
 - a client-provided message identity is echoed on the eventual user item.
 
-Serf adds the guarantee Codex's current open-source implementation does not
+Evener adds the guarantee Codex's current open-source implementation does not
 provide: the client identity is an idempotency key backed by durable acceptance,
 not correlation metadata alone.
 
@@ -241,7 +241,7 @@ Every error response to an in-scope mutation carries:
 
 ```json
 {
-  "serfErrorInfo": "conflict",
+  "evenerErrorInfo": "conflict",
   "clientMutationId": "9e03…",
   "mutationOutcome": "notAccepted",
   "retryDisposition": "none"
@@ -256,7 +256,7 @@ Every error response to an in-scope mutation carries:
 - `targetDeleted` when authoritative deletion irrevocably fenced the target,
   so replay must stop without claiming the mutation never applied.
 
-`unknown` uses `serfErrorInfo: "mutationOutcomeUnknown"` and is never rendered
+`unknown` uses `evenerErrorInfo: "mutationOutcomeUnknown"` and is never rendered
 as a mutation failure. The outbox retains the original record and retries it
 with the same ID. Terminal rejection replay returns the original error with
 `mutationOutcome: "notAccepted"`.
@@ -270,7 +270,7 @@ incorporated it.
 
 `retryDisposition` is `automatic`, `blocked`, or `none`. Transport loss uses
 `automatic`. A daemon journal write failure uses `blocked` with
-`serfErrorInfo: "mutationOutcomeUnknown"` and
+`evenerErrorInfo: "mutationOutcomeUnknown"` and
 `cause: "persistenceUnavailable"`; elapsed time never changes one disposition
 into another. Terminal rejection and target deletion use `none`.
 
@@ -286,7 +286,7 @@ same turn ID, removed text, image count, and affected queue entry IDs.
 
 ### Pending mutation projection
 
-`SerfThread` gains `pendingMutations`. It contains every accepted or claimed
+`EvenerThread` gains `pendingMutations`. It contains every accepted or claimed
 message-producing mutation that is not yet represented by a durable transcript
 item, including its client mutation ID, method, complete input, execution
 state, turn ID when assigned, and queue entry IDs. Queue entries also remain in
@@ -309,7 +309,7 @@ mutations:
 
 - user-message `ThreadItem`;
 - human steering `ThreadItem`;
-- `serf/steering/injected`;
+- `evener/steering/injected`;
 - persisted user and steering turns; and
 - each input-queue entry and its `QueueState` projection.
 
@@ -444,7 +444,7 @@ held only by the failed handler. A different method or payload cannot reuse an
 in-flight ID.
 
 The Hub performs syntax, authentication, source resolution, and static
-source-method support checks. For a Serf daemon source it does not reject an
+source-method support checks. For a Evener daemon source it does not reject an
 ID-bearing retry from a fresh thread snapshot's dynamic capabilities; it
 forwards the request so the daemon can replay its journal before evaluating
 current state.
@@ -716,7 +716,7 @@ replace the actor's canonical upstream stream. A late response or notification
 from a superseded connection epoch or hydration generation cannot publish over
 the current model.
 
-The existing `serf/thread/resync` hint continues to request this operation
+The existing `evener/thread/resync` hint continues to request this operation
 after a Hub-to-daemon relay recovers. A failed rejoin retries with reconnect
 backoff while leaving the last model visible. It does not warn the user that
 the view failed to update.
@@ -889,16 +889,16 @@ and request deadlines remain transport mechanisms.
 ## Flag-Day Cutover
 
 This is an end-to-end protocol replacement, not a negotiated feature. The
-browser, Hub, and Serf daemon ship as one release unit. There is no
+browser, Hub, and Evener daemon ship as one release unit. There is no
 `retrySafeMutations` capability, no legacy request shape, no mutation fallback,
 and no mixed-version UI.
 
-Set `appwire.ProtocolVersion` to `serf-appwire-v2` and add required
-`protocolVersion` to the Serf `InitializeParams`. The Serf browser, Hub, and
-Serf daemon send that exact version, each Serf server rejects a mismatch before
-accepting any other request, and each Serf client verifies the response version
+Set `appwire.ProtocolVersion` to `evener-appwire-v2` and add required
+`protocolVersion` to the Evener `InitializeParams`. The Evener browser, Hub, and
+Evener daemon send that exact version, each Evener server rejects a mismatch before
+accepting any other request, and each Evener client verifies the response version
 before sending `initialized`. The Hub likewise ignores or rejects rendezvous
-entries from a Serf daemon with a different protocol version and never relays
+entries from a Evener daemon with a different protocol version and never relays
 to them.
 
 A protocol mismatch is a terminal deployment error for that connection, not a
@@ -906,14 +906,14 @@ per-thread disabled control and not a reconnectable transport failure. The
 client must not enter an automatic reconnect loop against a known-incompatible
 peer.
 
-Deployment replaces the Hub and WebUI assets together and restarts active Serf
+Deployment replaces the Hub and WebUI assets together and restarts active Evener
 daemons under the new binary. Persisted sessions remain resumable as data, but
 an old daemon process cannot remain attached to a new Hub and an old browser
 asset cannot operate a new Hub. Active pages running old assets must load the
 new application as part of the cutover.
 
 The generic JSON-RPC transport and codec may still be shared with source
-adapters, but Serf v2 initialization is not sent to an upstream Codex App
+adapters, but Evener v2 initialization is not sent to an upstream Codex App
 Server or any other adapter-native protocol. Those adapters retain their native
 handshake.
 
@@ -944,7 +944,7 @@ atomicity the upstream protocol does not provide.
 `thread/clear` replaces the session identity underneath a stable workspace ref.
 That replacement is unsafe while any old-identity browser outbox record or
 daemon operation can still settle. The first v2 implementation therefore sets
-the Serf clear capability false and rejects direct `thread/clear` calls as
+the Evener clear capability false and rejects direct `thread/clear` calls as
 unsupported. Restoring clear requires its separate design to durably fence the
 old identity and return an authoritative disposition for every unresolved
 mutation; a browser-local empty-outbox check is insufficient across tabs.
@@ -972,7 +972,7 @@ The first implementation includes:
   reconciliation;
 - reconnect, reload, resync, and silence-triggered automatic recovery;
 - Codex mutation-capability removal and full-state streaming convergence;
-- Serf `thread/clear` capability removal until retry-safe replacement is
+- Evener `thread/clear` capability removal until retry-safe replacement is
   specified;
 - removal of confirmation timeout warnings; and
 - generated TypeScript/AppWire documentation updates.
@@ -1059,7 +1059,7 @@ Script the real Hub relay/request paths to prove:
   rejected mutation;
 - a dropped daemon response becomes `mutationOutcomeUnknown`, never a
   not-accepted rejection;
-- the browser sends `serf-appwire-v2` and rejects a different initialize
+- the browser sends `evener-appwire-v2` and rejects a different initialize
   response version;
 - the Hub rejects an initialize request with a missing or different protocol
   version;
@@ -1074,7 +1074,7 @@ Script the real Hub relay/request paths to prove:
 - every resolve, resume, launch, relay, and mutation path rejects a
   host-authoritative `deleting` target, and interrupted deletion cleanup resumes
   idempotently after each fallible step;
-- Serf exposes no clear capability and rejects direct `thread/clear` calls;
+- Evener exposes no clear capability and rejects direct `thread/clear` calls;
 - `thread/read` subscribes before snapshot capture;
 - append-only deltas at or before the snapshot cut are discarded from the
   buffer, while deltas after the cut are delivered once;

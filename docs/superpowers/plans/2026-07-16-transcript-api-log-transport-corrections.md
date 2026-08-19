@@ -114,7 +114,7 @@ Task 4 consumes Task 3's `bodyEvidenceSnapshot` and `APIAttemptCapture.Complete`
 | OpenAI fallback | `llm/providers/openai/adapter.go`, `llm/providers/openai/responses.go` | `llm/providers/openai/adapter_test.go`, `llm/providers/openai/wire_capture_test.go`, `llm/providers/openai/response_header_timeout_test.go` |
 | OpenAI-compatible streaming | `llm/providers/openaicompat/adapter.go` | `llm/providers/openaicompat/adapter_test.go`, `llm/providers/openaicompat/wire_capture_test.go` |
 | Model listing | each provider's `models.go` | each provider's `models_fuzz_test.go` and `adapter_test.go` |
-| Hub credentials | `cmd/serf-hub/spawn.go` | `cmd/serf-hub/spawn_test.go` |
+| Hub credentials | `cmd/evener-hub/spawn.go` | `cmd/evener-hub/spawn_test.go` |
 | Endpoint provenance | `llm/apilog.go`, core adapter files, `agent/session_model_call.go` | adapter wire-capture tests, `agent/session_model_test.go`, `agent/atif_test.go` |
 | Anthropic ordering tests | none | `llm/providers/anthropic/wire_capture_test.go` |
 
@@ -214,7 +214,7 @@ Lifecycle rules:
 
 Wrap both the initial `Request.Body` and `Request.GetBody` results so every standard-transport replay feeds bytes to the active cycle rather than sharing one outer recorder.
 
-Do not change Go's retry eligibility or add Serf retry policy. This task only observes retries already performed by `*http.Transport`.
+Do not change Go's retry eligibility or add Evener retry policy. This task only observes retries already performed by `*http.Transport`.
 
 - [ ] **Step 3: Preserve one-attempt behavior for nonstandard transports**
 
@@ -442,7 +442,7 @@ Delete both drain paths rather than bounding them:
 - Remove the decode-failure `responseDrain`/`io.Copy` from `APIAttemptCapture.Complete`.
 - Remove the redirect/unclaimed-response `io.Copy` from `apiAttemptResponseBody.Close`.
 
-The standard client's own redirect handling may perform its normal bounded slurp. Serf instrumentation must not add another drain.
+The standard client's own redirect handling may perform its normal bounded slurp. Evener instrumentation must not add another drain.
 
 For request evidence, replace readiness waits with a lock-protected snapshot. Exactness comes from the Tasks 1-2 per-cycle write result; an incomplete, errored, active, or opaque write is inexact.
 
@@ -573,7 +573,7 @@ The opaque wrapper must transform or decompress the response body before returni
 - Direct `*http.Transport` body evidence can be exact when byte completeness is proven.
 - The declared-transparent wrapper recursively reaches the same standard transport and retains raw exactness.
 - The opaque wrapper's request and response evidence is inexact even if its returned body reaches EOF.
-- Unknown wrappers do not receive Serf-owned standard gzip injection or decompression.
+- Unknown wrappers do not receive Evener-owned standard gzip injection or decompression.
 - A nil underlying transport is rejected without panic.
 - A wrapper whose `APIAttemptUnderlyingTransport` returns itself is rejected without recursion or panic.
 - Two or more wrappers forming a cycle are rejected without recursion or panic.
@@ -640,7 +640,7 @@ func (t *responseHeaderTimeoutTransport) APIAttemptUnderlyingTransport() http.Ro
 
 Delete `standardCompressionOwner`, `APILogTransportUsesStandardCompression`, and every implementation or test of that old method. Do not preserve a compatibility alias.
 
-The capability has two linked meanings: the wrapper promises not to transform wire bodies, and it exposes the next transport so Serf can prove the chain terminates in the standard transport. A wrapper that changes request or response bytes must not implement it.
+The capability has two linked meanings: the wrapper promises not to transform wire bodies, and it exposes the next transport so Evener can prove the chain terminates in the standard transport. A wrapper that changes request or response bytes must not implement it.
 
 - [ ] **Step 3: Make opaque evidence conservative**
 
@@ -733,7 +733,7 @@ decorator evidence inexact without adding compatibility aliases."
 
 - [ ] **Step 1: Add deterministic sequential and concurrent oracles**
 
-Add table-driven sequential tests for the Go 1.25 behavior Serf mirrors:
+Add table-driven sequential tests for the Go 1.25 behavior Evener mirrors:
 
 | Protocol mode | Read after close must return |
 |---|---|
@@ -828,16 +828,16 @@ Run the same method/header cases against local HTTP/1.1 and HTTP/2 servers throu
 | HEAD; no `Accept-Encoding`, no `Range` | suppress gzip | suppress gzip |
 | HEAD; explicit-empty `Accept-Encoding` and `Range` entries | suppress gzip | suppress gzip |
 
-For every case, assert both what the server receives and whether Serf decodes the final gzip response while retaining compressed raw response evidence. These are behavior tests, not assertions over a generated command or script.
+For every case, assert both what the server receives and whether Evener decodes the final gzip response while retaining compressed raw response evidence. These are behavior tests, not assertions over a generated command or script.
 
 Add `TestStandardCompression_DisableCompressionByProtocolAndWrapper` with this four-case matrix:
 
 | Protocol | Transport chain | Required behavior |
 |---|---|---|
-| HTTP/1.1 | direct `*http.Transport` with `DisableCompression: true` | no injected `Accept-Encoding`; no Serf decode |
-| HTTP/1.1 | `responseHeaderTimeoutTransport` transparently wrapping that disabled standard transport | no injected `Accept-Encoding`; no Serf decode |
-| HTTP/2 | direct `*http.Transport` with `DisableCompression: true` | no injected `Accept-Encoding`; no Serf decode |
-| HTTP/2 | `responseHeaderTimeoutTransport` transparently wrapping that disabled standard transport | no injected `Accept-Encoding`; no Serf decode |
+| HTTP/1.1 | direct `*http.Transport` with `DisableCompression: true` | no injected `Accept-Encoding`; no Evener decode |
+| HTTP/1.1 | `responseHeaderTimeoutTransport` transparently wrapping that disabled standard transport | no injected `Accept-Encoding`; no Evener decode |
+| HTTP/2 | direct `*http.Transport` with `DisableCompression: true` | no injected `Accept-Encoding`; no Evener decode |
+| HTTP/2 | `responseHeaderTimeoutTransport` transparently wrapping that disabled standard transport | no injected `Accept-Encoding`; no Evener decode |
 
 Build the transparent wrapper through `llm.ClientWithAdapterTimeout` with a nonzero request timeout so the test exercises the production Task 4 contract. For each case, have the local server return a gzip-encoded body even though the request did not advertise gzip. Assert the server sees no added `Accept-Encoding`, the adapter reads the still-compressed bytes, `response.Uncompressed` remains false, `Content-Encoding: gzip` remains present, and the API-log response body contains the same compressed bytes. For the wrapped cases, also assert `APIAttemptUnderlyingTransport` resolves to the standard transport whose `DisableCompression` remains true.
 
@@ -879,7 +879,7 @@ func shouldOwnStandardGzip(standard *http.Transport, method string, h http.Heade
 }
 ```
 
-The outer `!standard.DisableCompression` conjunction is binding for direct standard transports and every transparent wrapper chain resolved by Task 4. When the combined predicate is true, set `Accept-Encoding: gzip` before the standard transport writes request headers and mark only that active wire cycle as owning gzip decoding. When false, leave the caller's header presence and values untouched and do not wrap the response for Serf gzip decoding.
+The outer `!standard.DisableCompression` conjunction is binding for direct standard transports and every transparent wrapper chain resolved by Task 4. When the combined predicate is true, set `Accept-Encoding: gzip` before the standard transport writes request headers and mark only that active wire cycle as owning gzip decoding. When false, leave the caller's header presence and values untouched and do not wrap the response for Evener gzip decoding.
 
 Do not move this decision back before `RoundTrip`: the negotiated protocol is required to preserve the explicit-empty difference. Do not normalize explicit-empty headers.
 
@@ -896,7 +896,7 @@ Expected: PASS.
 
 - [ ] **Step 4: Fresh review and commit**
 
-The reviewer must compare the two protocol predicates against the Go 1.25 standard-library sources and verify the tests cover `method != HEAD`, `!standard.DisableCompression`, header absence, and a present empty slice value independently for both protocols. The enabled response-header-timeout wrapper must retain raw compressed API-log evidence plus decoded adapter bytes, while a disabled standard transport beneath that same wrapper must perform neither Serf injection nor decode.
+The reviewer must compare the two protocol predicates against the Go 1.25 standard-library sources and verify the tests cover `method != HEAD`, `!standard.DisableCompression`, header absence, and a present empty slice value independently for both protocols. The enabled response-header-timeout wrapper must retain raw compressed API-log evidence plus decoded adapter bytes, while a disabled standard transport beneath that same wrapper must perform neither Evener injection nor decode.
 
 ```bash
 git status --short
@@ -907,7 +907,7 @@ git add llm/providers/internal/transport/http_attempts.go \
   llm/providers/internal/transport/wire_fidelity_test.go
 git commit -m "fix: preserve protocol gzip header semantics
 
-Choose Serf-owned standard gzip handling after connection protocol negotiation.
+Choose Evener-owned standard gzip handling after connection protocol negotiation.
 Mirror Go 1.25's HTTP/1.1 Header.Get predicate and HTTP/2 header-entry
 predicate, including their intentional difference for explicit-empty headers."
 ```
@@ -1171,8 +1171,8 @@ leave complete versus inexact raw evidence to the shared transport capture."
 
 **Files:**
 
-- Modify: `cmd/serf-hub/spawn.go`
-- Test: `cmd/serf-hub/spawn_test.go`
+- Modify: `cmd/evener-hub/spawn.go`
+- Test: `cmd/evener-hub/spawn_test.go`
 
 **Fresh roles:** Assign a fresh implementer and a different fresh reviewer.
 
@@ -1190,7 +1190,7 @@ Extend `validateProviderCredentials` tests with these exact cases:
 Retain existing cases for API key, OAuth, configured environment credentials, and credential-free endpoints.
 
 ```bash
-go test ./cmd/serf-hub -run 'TestValidateProviderCredentials' -count=1
+go test ./cmd/evener-hub -run 'TestValidateProviderCredentials' -count=1
 ```
 
 Expected: FAIL because `CredentialHeaders` is currently ignored.
@@ -1206,8 +1206,8 @@ Do not change command-line credential parsing or unrelated `cmdutil` behavior.
 - [ ] **Step 3: Run focused and Hub tests**
 
 ```bash
-go test ./cmd/serf-hub -run 'TestValidateProviderCredentials' -count=1
-go test ./cmd/serf-hub -count=1
+go test ./cmd/evener-hub -run 'TestValidateProviderCredentials' -count=1
+go test ./cmd/evener-hub -count=1
 ```
 
 Expected: PASS.
@@ -1216,7 +1216,7 @@ Expected: PASS.
 
 ```bash
 git status --short
-git add cmd/serf-hub/spawn.go cmd/serf-hub/spawn_test.go
+git add cmd/evener-hub/spawn.go cmd/evener-hub/spawn_test.go
 git commit -m "fix: recognize Hub credential headers
 
 Treat a nonempty declared CredentialHeaders value as a valid provider
@@ -1463,7 +1463,7 @@ rg -n 'responseDrain|io\.Copy\(io\.Discard, resp\.Body\)' \
   llm/providers/internal/transport \
   llm/providers/{openai,openaicompat,anthropic,google}/models.go
 rg -n 'TODO|TBD|placeholder|implement later' \
-  llm/providers/internal/transport llm/providers agent cmd/serf-hub
+  llm/providers/internal/transport llm/providers agent cmd/evener-hub
 ```
 
 Expected:
@@ -1478,7 +1478,7 @@ Expected:
 go test ./llm/providers/internal/transport -count=1
 go test ./llm/providers/openai ./llm/providers/openaicompat \
   ./llm/providers/anthropic ./llm/providers/google -count=1
-go test ./llm ./agent ./cmd/serf-hub -count=1
+go test ./llm ./agent ./cmd/evener-hub -count=1
 ```
 
 Expected: PASS with no live credentials or external network.

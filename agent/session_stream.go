@@ -8,9 +8,9 @@ import (
 	"time"
 	"unicode/utf16"
 
-	"primeradiant.com/serf/agent/events"
-	"primeradiant.com/serf/agent/provider"
-	"primeradiant.com/serf/llm"
+	"primeradiant.com/evener/agent/events"
+	"primeradiant.com/evener/agent/provider"
+	"primeradiant.com/evener/llm"
 )
 
 type sessionStreamAccumulator interface {

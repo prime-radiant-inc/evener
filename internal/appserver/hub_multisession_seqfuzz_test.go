@@ -14,7 +14,7 @@ import (
 // lifecycle, this models the hub's MULTI-SESSION fan-out fabric: the
 // appserver.Server's connection registry plus its Subscriptions index, which is
 // how the live hub multiplexes many sessions (threads) over many clients
-// (connections). The hub's relay machinery (cmd/serf-hub/app_rpc.go) drives this
+// (connections). The hub's relay machinery (cmd/evener-hub/app_rpc.go) drives this
 // exact fabric: startRelay calls appserver.Subscribe / server.Broadcast /
 // server.SubscriberCount, and the websocket lifecycle calls registerConnection /
 // unregisterConnection. So driving those seams directly exercises the real
@@ -79,10 +79,10 @@ import (
 // cross-check — the only shared fabric they feed is this subscription index,
 // which is keyed by an opaque "<sourceID>:<threadID>" relay key and so is already
 // exercised by the thread pool here (the keys are opaque strings to the fabric).
-// serf:fuzz rapid
+// evener:fuzz rapid
 func TestHubMultiSessionSeqFuzz(t *testing.T) {
-	if os.Getenv("SERF_FUZZ_TESTS") != "1" {
-		t.Skip("fuzz: skipped by default; run `make test-fuzz`, or SERF_FUZZ_TESTS=1 go test ./internal/appserver -run TestHubMultiSessionSeqFuzz -count=1 -v")
+	if os.Getenv("EVENER_FUZZ_TESTS") != "1" {
+		t.Skip("fuzz: skipped by default; run `make test-fuzz`, or EVENER_FUZZ_TESTS=1 go test ./internal/appserver -run TestHubMultiSessionSeqFuzz -count=1 -v")
 	}
 	rapid.Check(t, func(rt *rapid.T) {
 		ops := rapid.SliceOfN(drawMSOp, 1, 64).Draw(rt, "ops")
@@ -167,7 +167,7 @@ type msHarness struct {
 
 func newMSHarness() *msHarness {
 	return &msHarness{
-		server:      NewServer(ServerConfig{ServerName: "serf-hub", Version: "test", SourceID: "local"}),
+		server:      NewServer(ServerConfig{ServerName: "evener-hub", Version: "test", SourceID: "local"}),
 		live:        map[string]*Connection{},
 		model:       map[string]map[string]bool{},
 		threadsSeen: map[string]bool{},

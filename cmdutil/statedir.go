@@ -4,26 +4,26 @@ import (
 	"os"
 	"path/filepath"
 
-	"primeradiant.com/serf/agent"
-	"primeradiant.com/serf/envvars"
-	"primeradiant.com/serf/identifier"
+	"primeradiant.com/evener/agent"
+	"primeradiant.com/evener/envvars"
+	"primeradiant.com/evener/identifier"
 )
 
-// DefaultStateRoot returns the serf state root: $SERF_STATE_DIR when set,
-// otherwise ~/.serf (or ./.serf if the home directory can't be resolved).
+// DefaultStateRoot returns the evener state root: $EVENER_STATE_DIR when set,
+// otherwise ~/.evener (or ./.evener if the home directory can't be resolved).
 //
-// It is the single knob that redirects all home-based serf state — the provider
-// config (providers.toml) and credentials. `serf run` / `serf serve`, tests,
-// sandboxed runs, and multi-instance setups all honor it, so cmd/serf and
-// cmd/serf-hub resolve the identical path.
+// It is the single knob that redirects all home-based evener state — the provider
+// config (providers.toml) and credentials. `evener run` / `evener serve`, tests,
+// sandboxed runs, and multi-instance setups all honor it, so cmd/evener and
+// cmd/evener-hub resolve the identical path.
 func DefaultStateRoot() string {
-	if dir := envvars.SERFStateDir.Getenv(); dir != "" {
+	if dir := envvars.EVENERStateDir.Getenv(); dir != "" {
 		return dir
 	}
 	if home, err := os.UserHomeDir(); err == nil {
-		return filepath.Join(home, ".serf")
+		return filepath.Join(home, ".evener")
 	}
-	return ".serf"
+	return ".evener"
 }
 
 // ResolveStateKeyDir is retained for source compatibility with callers that
@@ -39,7 +39,7 @@ func ResolveStateKeyDir(workDir string) string {
 
 // DefaultProjectStateDir computes the default per-project runtime state
 // directory for workDir, for use when no explicit --state-dir flag or
-// SERF_STATE_DIR override is set: $XDG_STATE_HOME/serf/projects/<Project.ID>/.
+// EVENER_STATE_DIR override is set: $XDG_STATE_HOME/evener/projects/<Project.ID>/.
 func DefaultProjectStateDir(workDir string) (identifier.Project, string, error) {
 	return agent.RuntimeDir(workDir, "")
 }

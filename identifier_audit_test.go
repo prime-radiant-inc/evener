@@ -1,4 +1,4 @@
-package serf_test
+package evener_test
 
 import (
 	"bytes"
@@ -239,24 +239,24 @@ var identifierSHA256Inventory = map[string]map[string]map[string]bool{
 	// Survey-cache key: the identity of the agent module's sorted test list,
 	// so a changed test set re-surveys exactly once. No identifier is
 	// derived from the digest.
-	"cmd/serf-dev/shardplan.go":     {"testSetKey": {"Sum256([]byte(payload))": true}},
-	"cmd/serf-fuzz-harvest/emit.go": {"write": {"Sum256(encoded)": true}},
+	"cmd/evener-dev/shardplan.go":     {"testSetKey": {"Sum256([]byte(payload))": true}},
+	"cmd/evener-fuzz-harvest/emit.go": {"write": {"Sum256(encoded)": true}},
 	// Frontend distribution build artifact fingerprint. No identifier is derived from it.
-	"cmd/serf-hub/frontend_hash.go": {"frontendDistHash": {"New()": true}},
-	"cmd/serf-hub/image_serve.go": {"findImageInTranscript": {
+	"cmd/evener-hub/frontend_hash.go": {"frontendDistHash": {"New()": true}},
+	"cmd/evener-hub/image_serve.go": {"findImageInTranscript": {
 		"Sum256(p.Image.Data)": true, "Sum256(p.ToolResult.ImageData)": true,
 	}, "imageSha": {"Sum256(data)": true}},
-	"cmd/serf-hub/internal/hubcore/tree.go": {
+	"cmd/evener-hub/internal/hubcore/tree.go": {
 		"clusterID": {"Sum256([]byte(project + \"\\x00\" + title))": true},
 	},
-	"cmd/serf-hub/internal/launchconfig/trust.go": {"canonicalHashTOML": {"Sum256(buf.Bytes())": true}},
-	"cmd/serf-hub/output_images.go":               {"outputImageSHA": {"Sum256(data)": true}},
-	"fuzz/promoter/emit_go.go":                    {"ShortHash": {"New()": true}},
+	"cmd/evener-hub/internal/launchconfig/trust.go": {"canonicalHashTOML": {"Sum256(buf.Bytes())": true}},
+	"cmd/evener-hub/output_images.go":               {"outputImageSHA": {"Sum256(data)": true}},
+	"fuzz/promoter/emit_go.go":                      {"ShortHash": {"New()": true}},
 	"internal/apptranscript/turn_index.go": {
 		"anchorAt":                        {"Sum256(data[:n])": true},
 		"anchorsMatchObserved":            {"Sum256(data[:n])": true},
 		"extendPrefixStamp":               {"New()": true, "Size": true},
-		"initialPrefixStamp":              {"Sum256([]byte(\"serf-apptranscript-prefix-v1\"))": true},
+		"initialPrefixStamp":              {"Sum256([]byte(\"evener-apptranscript-prefix-v1\"))": true},
 		"turnIndexIntegrityStampObserved": {"Sum256(data)": true},
 		"turnIndexJournalStampObserved":   {"Sum256(data)": true},
 	},

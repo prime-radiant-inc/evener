@@ -1,0 +1,162 @@
+package main
+
+import (
+	"sync"
+	"time"
+
+	"primeradiant.com/evener/appwire"
+	"primeradiant.com/evener/hubapi"
+)
+
+// searchResult is one item in the /api/search response. Ref carries the
+// qualified session ref (e.g. "local:abc") in the same shape apiTreeNode
+// produces for /api/tree — SPA clients open sessions only by qualified ref
+// (appwire.ParseRef rejects bare ids), so the bare ID field alone cannot be
+// used to open a hit.
+type searchResult struct {
+	ID      string `json:"id"`
+	Title   string `json:"title"`
+	Project string `json:"project"`
+	State   string `json:"state"`
+	Age     string `json:"age"`
+	Ref     string `json:"ref"`
+}
+
+// searchResponse is the JSON envelope returned by /api/search.
+type searchResponse struct {
+	Live []searchResult `json:"live"`
+	Past []searchResult `json:"past"`
+}
+
+// spawnRequest is the JSON body for POST /api/spawn. Items
+// carries optional attachments (e.g. image bytes) that the composer wants
+// to include with the initial user turn (kata t5j6).
+type spawnRequest struct {
+	Prompt          string                     `json:"prompt"`
+	Harness         string                     `json:"harness"`
+	Model           string                     `json:"model"`
+	WorkingDir      string                     `json:"working_dir"`
+	Branch          string                     `json:"branch"`
+	AccessMode      string                     `json:"access_mode"`
+	Agent           string                     `json:"agent"`
+	ReasoningEffort string                     `json:"reasoning_effort"`
+	NonInteractive  *bool                      `json:"non_interactive,omitempty"`
+	LaunchOverrides *appwire.LaunchConfigLayer `json:"launch_overrides,omitempty"`
+	Items           []appwire.InputItem        `json:"items,omitempty"`
+}
+
+// modelsCache is a per-WebServer TTL cache of the RAW live model list (all
+// providers' ListModels results, un-overlaid — see overlayLiveEntries).
+// Provider /models calls are cheap but not free.
+type modelsCache struct {
+	mu      sync.Mutex
+	expires time.Time
+	models  []map[string]any
+}
+
+const liveModelsTTL = 5 * time.Minute
+
+// WorkspaceData is the template data for the workspace partial.
+type WorkspaceData struct {
+	ID          string
+	SourceLabel string
+	Title       string
+	// OOBTitle, when true, makes the input_status partial also emit an
+	// out-of-band swap of the header's #workspace-session-title span. Only the
+	// polled /state response sets this true; the inline workspace render
+	// leaves it at its zero value so the title renders exactly once.
+	OOBTitle              bool
+	Branch                string
+	WorkingDir            string
+	Worktree              string
+	HomeDir               string
+	State                 string
+	StateLabel            string
+	TurnCount             int
+	Model                 string
+	ContextWindow         int
+	ContextPercent        int
+	ContextNumbers        string
+	CompactContextNumbers string
+	Cost                  string
+	ActiveTurnID          string
+	RunningFor            string
+	// WorkMillis, Usage, and ActiveTurnStartedAt mirror appwire.EvenerThread's
+	// working-state/token metrics (WS2). Usage is nil when no token data is
+	// available (fresh session, old daemon, or a Codex thread).
+	WorkMillis          int64
+	Usage               *appwire.EvenerUsage
+	ActiveTurnStartedAt int64
+	ShowSidebarToggle   bool
+	ThreadDocumentMode  bool
+	// GoalStatus/GoalIterations mirror appwire.GoalState for the live goal
+	// status pill in the input strip. Empty/zero when no goal is set (e.g. past
+	// sessions). There is no iteration cap, so only status and turn count show.
+	GoalStatus     string
+	GoalIterations int
+	Capabilities   hubapi.SessionCapabilities
+	// Fork lineage for the preserved-original side of a fork. Non-empty
+	// only when this session's meta carries ForkLabel — i.e., it's the
+	// dim, snapshotted original. ForkOfTitle is the title of the new
+	// branch (the session whose ParentSessionID == this.ID); empty if the
+	// new branch is not in the past index.
+	ForkLabel      string
+	ForkOfTitle    string
+	DivergenceTurn int
+	// Subagent lineage for the breadcrumb banner (mockup #9). Non-empty only
+	// when this session is a subagent with a known parent. ParentRouteID is the
+	// /s/<id> route to the parent's workspace; ParentTitle is its display name.
+	// The banner gives a subagent a way back to its parent — without it,
+	// "view →" was a one-way hard nav with no back-out.
+	ParentRouteID string
+	ParentTitle   string
+	// ObserverRouteIDs are the /s/<id> route ids of this worker's LIVE observer
+	// subagents (sessions running a job_watch sidecar on this one). The agent
+	// stamps them on the worker's meta at watch-install time (SessionMeta.
+	// ObservedBy); workspaceData filters that to the live set. The template
+	// renders them as data-observers on #conversation so the renderer can
+	// auto-open each observer beside this worker. Local sources only — remote/
+	// codex threads have no jobstore and so never carry observers.
+	ObserverRouteIDs []string
+}
+
+// sendRequest is the JSON body accepted by POST /s/<id>/send. Items carries
+// Codex-style input parts; image entries carry their bytes as a base64-encoded
+// `data` field that Go's json unmarshals into `[]byte` automatically.
+type sendRequest struct {
+	Text  string              `json:"text"`
+	Items []appwire.InputItem `json:"items,omitempty"`
+}
+
+type sessionActionRequest struct {
+	TurnID string `json:"turn_id"`
+}
+
+type forkRequest struct {
+	Turn          int    `json:"turn"`
+	EditedMessage string `json:"edited_message"`
+	Label         string `json:"label"`
+	// DeferInput forks at the turn WITHOUT appending a replacement message:
+	// the child holds only the prefix, and the response carries the original
+	// input text so the client can stage it in the composer (issue #42).
+	DeferInput bool `json:"defer_input"`
+}
+
+// daemonStatus is the subset of /status fields the hub cares about.
+type daemonStatus struct {
+	SessionID        string  `json:"session_id"`
+	Model            string  `json:"model"`
+	Profile          string  `json:"profile"`
+	State            string  `json:"state"`
+	Turns            int     `json:"turns"`
+	WorkingDir       string  `json:"working_dir,omitempty"`
+	ContextPressure  float64 `json:"context_pressure"`
+	ContextUsed      int     `json:"context_used,omitempty"`
+	ContextWindow    int     `json:"context_window,omitempty"`
+	ContextRemaining int     `json:"context_remaining,omitempty"`
+	// Usage, WorkMillis, and ActiveTurnStartedAt mirror server.StatusInfo's
+	// WS2 working-state/token metrics fields.
+	WorkMillis          int64                `json:"work_millis,omitempty"`
+	Usage               *appwire.EvenerUsage `json:"usage,omitempty"`
+	ActiveTurnStartedAt int64                `json:"active_turn_started_at,omitempty"`
+}

@@ -1,4 +1,4 @@
-# War-game: a flat session scheduler for serf
+# War-game: a flat session scheduler for evener
 
 Adversarial design exploration. Design-only; no code was changed.
 Baseline: branch `job-control-spec`, HEAD `5f3c2e7d` ("feat(recursion): drive-down delivery").
@@ -6,13 +6,13 @@ Author posture: skeptic of this design. The job is to bend it until it breaks, n
 
 ---
 
-## 0. The problem, stated in serf's terms
+## 0. The problem, stated in evener's terms
 
 A session takes a "turn" (an LLM call via `Session.ProcessInputKind`, `agent/session_lifecycle.go:260`) only while a goroutine is executing that method. Notifications are durable (`pendingJobNotifs`, `agent/session.go:124`) and a wake (`notify()`, `:290`) is just a kick; the *delivery* happens inside the next `ProcessInputKind(..., EntryNotification)` turn. So a session can only "hear" its inbox while something is running its loop.
 
 Two asymmetric owners exist today:
 
-- **Root.** `serve.go` is a permanent, long-lived owner. The input loop at `cmd/serf/serve.go:376-414` parks on `srv.InputCh()` and runs `sess.ProcessInputKind` whenever a message arrives. The wake is wired by `SetNotifyFunc(func() { srv.SubmitNotification() })` (`serve.go:304`), which pushes a text-less `EntryNotification` onto the 1-slot `inputCh` (`server/server.go:490`). The root is therefore genuinely inbox-driven: its inbox wakes its own permanent loop.
+- **Root.** `serve.go` is a permanent, long-lived owner. The input loop at `cmd/evener/serve.go:376-414` parks on `srv.InputCh()` and runs `sess.ProcessInputKind` whenever a message arrives. The wake is wired by `SetNotifyFunc(func() { srv.SubmitNotification() })` (`serve.go:304`), which pushes a text-less `EntryNotification` onto the 1-slot `inputCh` (`server/server.go:490`). The root is therefore genuinely inbox-driven: its inbox wakes its own permanent loop.
 
 - **Subagents.** A child has **no** long-lived loop. It is spawned (`launchSubagentRun`, `agent/subagents.go:709`), `sub.run` calls `ProcessInput` to completion (`:761`), the goroutine exits, the child goes idle. An idle child cannot hear its own inbox.
 
@@ -48,7 +48,7 @@ A central `scheduler` holds a queue of `(sessionID, EntryKind)` wake-tickets. A 
 
 **(a) parked-loop-per-live-non-terminal-session**, not the worker pool — *if* the flat scheduler is built at all (see §8, where the recommendation is "don't, yet").
 
-Justification: serf's turn engine is already written around "one goroutine owns this session's loop." Shape (a) preserves that ownership model exactly and changes only the *wake target*. Shape (b) is a genuine actor runtime — the mailbox design explicitly lists "No full actor/mailbox runtime conversion. The session loop, serve.go driver, and lock model stay" as a **non-goal** (`docs/.../2026-06-11-job-control-watch-mailbox-design.md:39`). Shape (b) violates that non-goal head-on; shape (a) honors it. The goroutine-cost objection to (a) is real but is solved by the "park only non-terminal sessions" rule, which also happens to be *correct* (terminal sessions have no live inbox).
+Justification: evener's turn engine is already written around "one goroutine owns this session's loop." Shape (a) preserves that ownership model exactly and changes only the *wake target*. Shape (b) is a genuine actor runtime — the mailbox design explicitly lists "No full actor/mailbox runtime conversion. The session loop, serve.go driver, and lock model stay" as a **non-goal** (`docs/.../2026-06-11-job-control-watch-mailbox-design.md:39`). Shape (b) violates that non-goal head-on; shape (a) honors it. The goroutine-cost objection to (a) is real but is solved by the "park only non-terminal sessions" rule, which also happens to be *correct* (terminal sessions have no live inbox).
 
 The honest caveat: shape (a) re-introduces a long-lived goroutine per child, and a long-lived goroutine needs a clean park/unpark/teardown protocol — which is exactly the hard part (§3). Drive-down avoids that entirely by being **edge-triggered and stateless**: there is no parked goroutine to leak, because the goroutine is created on demand and exits when the turn ends.
 
@@ -67,7 +67,7 @@ So "fold the root in" really means: **the root's loop is the prototype the child
 
 A flat scheduler unifies these: every session's `notify` kicks *its own* inbox/loop. The child wiring at `subagents.go:533` would change from "call parent.drive" to "push onto my own inbox," and the parent's `driveChildrenWithUndeliveredAttention` (`job_watch.go:2606`) would be **deleted** — the child no longer needs anyone to drive it.
 
-But note the subtlety that makes "fold the root in" not free: the root's loop lives in `cmd/serf` and uses `server`. The agent module **must not import server** (stated repeatedly: `serve.go:298`, `session.go:197`, `:273`). So the child's per-session loop must live *inside* package `agent` and must be wired with callbacks, not direct server calls. You cannot literally reuse `serve.go`'s loop; you reimplement its shape in `agent`, which means re-deriving the per-turn cancellable-context dance (`serve.go:386-407`) and the `EntryContinuation` kick handling inside the agent module. That is net-new agent-module code that today does not exist, and it duplicates logic that currently lives correctly in `cmd/serf`.
+But note the subtlety that makes "fold the root in" not free: the root's loop lives in `cmd/evener` and uses `server`. The agent module **must not import server** (stated repeatedly: `serve.go:298`, `session.go:197`, `:273`). So the child's per-session loop must live *inside* package `agent` and must be wired with callbacks, not direct server calls. You cannot literally reuse `serve.go`'s loop; you reimplement its shape in `agent`, which means re-deriving the per-turn cancellable-context dance (`serve.go:386-407`) and the `EntryContinuation` kick handling inside the agent module. That is net-new agent-module code that today does not exist, and it duplicates logic that currently lives correctly in `cmd/evener`.
 
 ---
 
@@ -201,8 +201,8 @@ Where the flat design breaks:
 - `agent/session_lifecycle.go` `close()` (the teardown handshake — **the dangerous one**) — heavy.
 - `agent/subagent_manager.go` (close/quiesce coordination with the scheduler) — heavy.
 - New: `agent/scheduler.go` (the scheduler itself) — net-new, moderate (shape a) to heavy (shape b).
-- New per-session loop in `agent` reproducing `serve.go:376-414`'s per-turn context dance — net-new, moderate, and a **duplication** of correct cmd/serf code.
-- `cmd/serf/serve.go` — light (root may keep its loop or delegate to the scheduler).
+- New per-session loop in `agent` reproducing `serve.go:376-414`'s per-turn context dance — net-new, moderate, and a **duplication** of correct cmd/evener code.
+- `cmd/evener/serve.go` — light (root may keep its loop or delegate to the scheduler).
 - Restore path (`agent/session_init.go`) — re-derive scheduler tickets from durable inboxes — moderate, and a new correctness-critical step.
 - Tests: the entire drive-down test suite (`job_delegate_drivedown_test.go`, `job_watch_deadlock_test.go`, `job_supervision_test.go`, `job_nested_test.go`, the depth-3 agenttest trees from spec §9) must be re-anchored. Many assert "parent drives child" semantics that are deleted.
 
@@ -232,7 +232,7 @@ Reasoning:
 
 - **Trigger A — deep idle trees with latency-sensitive notifications.** If recursion ships and real coordinator trees run deep (depth ≥ 3) with long-idle middles, drive-down's depth-by-depth, loop-boundary-cadence delivery imposes serial wake latency: a leaf's notification must wait for root→mid→…→leaf drives to ripple down, each gated on the prior level's loop boundary. If measured end-to-end notification latency on deep trees becomes a complaint, the flat scheduler's direct wake is the fix. *Measure first.*
 
-- **Trigger B — persistent / cross-process children.** The mailbox non-goals name "no cross-process owners, no persistent child sessions (future work; this design must not block them)" (`:41`). If serf grows persistent child sessions (a child that outlives a single tasked run and accumulates work over time, e.g. a long-lived specialist), drive-down's "parent must be looping to drive me" model breaks down — a persistent child *is* a session that needs its own scheduling. That is the natural trigger, and it is exactly the spec's framing ("a persistent child is one whose parent drives it continuously" → just give it its own loop).
+- **Trigger B — persistent / cross-process children.** The mailbox non-goals name "no cross-process owners, no persistent child sessions (future work; this design must not block them)" (`:41`). If evener grows persistent child sessions (a child that outlives a single tasked run and accumulates work over time, e.g. a long-lived specialist), drive-down's "parent must be looping to drive me" model breaks down — a persistent child *is* a session that needs its own scheduling. That is the natural trigger, and it is exactly the spec's framing ("a persistent child is one whose parent drives it continuously" → just give it its own loop).
 
 - **Trigger C — the parent-cadence coupling causes a correctness bug, not just latency.** If a real scenario surfaces where a child must take a turn *while its parent is blocked in a long LLM call* (the parent's loop boundary is the only drive point, and it won't arrive for minutes), and `job_send_message`/steering can't paper over it, that is a behavioral break drive-down cannot fix without the scheduler.
 
@@ -242,7 +242,7 @@ Until A, B, or C is concretely observed: keep drive-down, ship recursion dark be
 
 ## Appendix: key symbols cited
 
-- Root loop & wake: `cmd/serf/serve.go:304` (`SetNotifyFunc`→`SubmitNotification`), `:376-414` (input loop + per-turn ctx).
+- Root loop & wake: `cmd/evener/serve.go:304` (`SetNotifyFunc`→`SubmitNotification`), `:376-414` (input loop + per-turn ctx).
 - Server wake sends: `server/server.go:477` (`SubmitContinuation`), `:490` (`SubmitNotification`, 1-slot drop-if-full).
 - Turn engine: `agent/session_lifecycle.go:260` (`ProcessInputKind`), `:295-471` (drain-loop gate), `:821` (`acceptNotificationInput`).
 - Inbox substrate: `agent/session.go:124` (`pendingJobNotifs`), `:232-297` (enqueue/notify/SetNotifyFunc), `:253` (`drainJobNotifications` FIFO), `:265` (`peekNotifications`).

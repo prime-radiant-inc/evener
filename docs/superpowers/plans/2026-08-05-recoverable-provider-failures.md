@@ -2,7 +2,7 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Keep a Serf session open and model-switchable after a terminal provider failure, including a non-retryable quota response.
+**Goal:** Keep a Evener session open and model-switchable after a terminal provider failure, including a non-retryable quota response.
 
 **Architecture:** Make provider errors terminal to the current turn and any active goal, but not to the session. Preserve the existing failed-turn and idle-boundary event flow so AppWire derives `changeModel=true`; prove the real daemon path and existing web control consume that recovery without production protocol or frontend changes.
 
@@ -27,9 +27,9 @@
 - Modify `agent/fuzz_mc_classify_model_error_test.go`: remove the obsolete non-retryable/close input and assert that the pure classifier only chooses cancel, content-filter recovery, warning, or terminal-turn outcomes.
 - Modify `agent/lifecycle_seqfuzz_test.go`: update the auth-fault lifecycle model and comments so provider failures no longer predict a closed session.
 - Modify `agent/session_goal.go`: correct the lifecycle comment to describe provider failures as goal-terminal rather than session-terminal.
-- Modify `cmd/serf/scripted_provider_test.go`: extend the external provider test double with error-returning steps and a multi-provider installer while preserving all existing response-only fixtures.
-- Modify `cmd/serf/serve_model_switch_test.go`: add a real daemon/AppWire regression covering failed turn, idle capabilities, `thread/read`, model switch, and a next turn on the switched model.
-- Modify `cmd/serf-hub/frontend/src/panes/session/chrome/ModelSwitch.test.tsx`: prove rerendering from unavailable to restored `changeModel` re-enables the existing picker and sends the qualified model-set request.
+- Modify `cmd/evener/scripted_provider_test.go`: extend the external provider test double with error-returning steps and a multi-provider installer while preserving all existing response-only fixtures.
+- Modify `cmd/evener/serve_model_switch_test.go`: add a real daemon/AppWire regression covering failed turn, idle capabilities, `thread/read`, model switch, and a next turn on the switched model.
+- Modify `cmd/evener-hub/frontend/src/panes/session/chrome/ModelSwitch.test.tsx`: prove rerendering from unavailable to restored `changeModel` re-enables the existing picker and sends the qualified model-set request.
 
 ---
 
@@ -207,7 +207,7 @@ Run:
 ```bash
 gofmt -w agent/session_model_call.go agent/session_model_test.go agent/session_provenance_test.go agent/fuzz_mc_classify_model_error_test.go agent/lifecycle_seqfuzz_test.go agent/session_goal.go
 go test ./agent -run 'TestSession_NonRetryableProviderErrorLeavesSessionIdle|TestSession_ProvideErrorReturnsErrorToCaller|TestProviderErrorEmitsStructuredCause|TestNonRetryableModelErrorClearsActiveProvenanceAtIdleBoundary|TestGoalErrorBlockIsPersisted' -count=1
-go test -tags serffuzz ./agent -run '^FuzzMcClassifyModelError$' -count=1
+go test -tags evenerfuzz ./agent -run '^FuzzMcClassifyModelError$' -count=1
 ```
 
 Expected: PASS; the regression observes exactly one request before the failure, the active goal is blocked, the session is idle, and a second operation succeeds.
@@ -222,8 +222,8 @@ git commit -m "fix: keep sessions open after provider failures"
 ### Task 2: Prove AppWire restores model switching end to end
 
 **Files:**
-- Modify: `cmd/serf/scripted_provider_test.go:26-68`
-- Modify: `cmd/serf/serve_model_switch_test.go:1-121`
+- Modify: `cmd/evener/scripted_provider_test.go:26-68`
+- Modify: `cmd/evener/serve_model_switch_test.go:1-121`
 
 **Interfaces:**
 - Consumes: Task 1's provider-failure contract, `appwire.Client.TurnStart`, `Client.Notifications`, `Client.ThreadRead`, and `Client.ThreadModelSet`.
@@ -251,7 +251,7 @@ Add `installServeScriptedProviders(t, adapters...)` that registers every adapter
 
 - [ ] **Step 2: Write the failing real-daemon regression**
 
-Add `TestServeModelSwitch_ProviderFailureRestoresCapability` to `cmd/serf/serve_model_switch_test.go`. Install two scripted instances: `kimi-anthropic` returns the 403, and `openai` returns `scriptedCommunicate("switched provider recovered")`. Start the daemon with `--model kimi-anthropic/k3`:
+Add `TestServeModelSwitch_ProviderFailureRestoresCapability` to `cmd/evener/serve_model_switch_test.go`. Install two scripted instances: `kimi-anthropic` returns the 403, and `openai` returns `scriptedCommunicate("switched provider recovered")`. Start the daemon with `--model kimi-anthropic/k3`:
 
 ```go
 installServeScriptedProviders(t,
@@ -303,7 +303,7 @@ After receiving the failed-turn and idle-capability milestones, assert:
 ```go
 read, err := client.ThreadRead(ctx, appwire.ThreadReadParams{Ref: ref})
 // read.Thread.Status.Type == appwire.ThreadStatusIdle
-// read.Thread.Serf.Capabilities.ChangeModel == true
+// read.Thread.Evener.Capabilities.ChangeModel == true
 
 err = client.ThreadModelSet(ctx, appwire.ThreadModelSetParams{
     Ref: ref, ModelProvider: "openai", Model: "gpt-5.6-sol",
@@ -317,7 +317,7 @@ Start a second turn and wait for its successful `turn/completed`. Assert the scr
 Before landing Task 1's implementation (or by temporarily restoring the old close block for mutation verification), run:
 
 ```bash
-go test ./cmd/serf -run '^TestServeModelSwitch_ProviderFailureRestoresCapability$' -count=1
+go test ./cmd/evener -run '^TestServeModelSwitch_ProviderFailureRestoresCapability$' -count=1
 ```
 
 Expected under old behavior: FAIL because the status/capability path closes the session and `thread/model/set` cannot execute. Restore Task 1 immediately after this mutation check.
@@ -327,8 +327,8 @@ Expected under old behavior: FAIL because the status/capability path closes the 
 Run:
 
 ```bash
-gofmt -w cmd/serf/scripted_provider_test.go cmd/serf/serve_model_switch_test.go
-go test ./cmd/serf -run '^TestServeModelSwitch_' -count=1
+gofmt -w cmd/evener/scripted_provider_test.go cmd/evener/serve_model_switch_test.go
+go test ./cmd/evener -run '^TestServeModelSwitch_' -count=1
 ```
 
 Expected: PASS; no production server/AppWire code changes are present.
@@ -336,14 +336,14 @@ Expected: PASS; no production server/AppWire code changes are present.
 - [ ] **Step 6: Commit the daemon proof**
 
 ```bash
-git add cmd/serf/scripted_provider_test.go cmd/serf/serve_model_switch_test.go
+git add cmd/evener/scripted_provider_test.go cmd/evener/serve_model_switch_test.go
 git commit -m "test: cover model switch after provider failure"
 ```
 
 ### Task 3: Prove the web control re-enables and sends the switch
 
 **Files:**
-- Modify: `cmd/serf-hub/frontend/src/panes/session/chrome/ModelSwitch.test.tsx:127-201`
+- Modify: `cmd/evener-hub/frontend/src/panes/session/chrome/ModelSwitch.test.tsx:127-201`
 
 **Interfaces:**
 - Consumes: existing `ModelSwitch` props, `ThreadModel.capabilities.changeModel`, `FakeClient`, and the existing `model/list` and `thread/model/set` calls.
@@ -405,7 +405,7 @@ If `ThreadModel.activeTurnId` requires `null` rather than `undefined`, use the r
 - [ ] **Step 2: Run formatting on the touched frontend test**
 
 ```bash
-cd cmd/serf-hub/frontend
+cd cmd/evener-hub/frontend
 npx biome check --write src/panes/session/chrome/ModelSwitch.test.tsx
 ```
 
@@ -414,7 +414,7 @@ Expected: exit 0; review any formatter changes before proceeding.
 - [ ] **Step 3: Run the focused Vitest file**
 
 ```bash
-cd cmd/serf-hub/frontend
+cd cmd/evener-hub/frontend
 npx vitest run src/panes/session/chrome/ModelSwitch.test.tsx
 ```
 
@@ -423,7 +423,7 @@ Expected: PASS, including the new disabled-to-enabled rerender and qualified `th
 - [ ] **Step 4: Commit the web regression**
 
 ```bash
-git add cmd/serf-hub/frontend/src/panes/session/chrome/ModelSwitch.test.tsx
+git add cmd/evener-hub/frontend/src/panes/session/chrome/ModelSwitch.test.tsx
 git commit -m "test: cover model switch recovery in web"
 ```
 
@@ -441,7 +441,7 @@ git commit -m "test: cover model switch recovery in web"
 ```bash
 git status --short
 git diff --check
-git diff HEAD~3 -- agent cmd/serf cmd/serf-hub/frontend/src/panes/session/chrome/ModelSwitch.test.tsx
+git diff HEAD~3 -- agent cmd/evener cmd/evener-hub/frontend/src/panes/session/chrome/ModelSwitch.test.tsx
 ```
 
 Expected: only the planned agent production change and planned tests/helpers; the pre-existing untracked review report remains unmodified.
@@ -449,7 +449,7 @@ Expected: only the planned agent production change and planned tests/helpers; th
 - [ ] **Step 2: Run focused Go packages**
 
 ```bash
-go test ./agent ./server ./cmd/serf -count=1
+go test ./agent ./server ./cmd/evener -count=1
 ```
 
 Expected: PASS.

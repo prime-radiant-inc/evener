@@ -108,13 +108,13 @@ selector lives in `cmdutil`/`agent` (no `llm` import cycle).
 ## D. Config / storage precision
 
 11. **[SERIOUS] The config path is unpinned/contradictory.** Spec says
-    `~/.serf/providers.toml` & `~/.serf/credentials.toml`, but the hub derives
+    `~/.evener/providers.toml` & `~/.evener/credentials.toml`, but the hub derives
     credentials as `filepath.Dir(stateDir)/credentials.toml` where `stateDir =
-    DefaultStateDir = $XDG_STATE_HOME/serf` (`app_auth.go:57`,
+    DefaultStateDir = $XDG_STATE_HOME/evener` (`app_auth.go:57`,
     `storage.go:48-61`) — i.e. `~/.local/state/credentials.toml`, while
-    `app_rpc.go:103` uses `hubStateRoot = ~/.serf`. **v6 must verify and pin the
+    `app_rpc.go:103` uses `hubStateRoot = ~/.evener`. **v6 must verify and pin the
     one canonical path** both hub and standalone read, and reconcile with the OAuth
-    root (`$XDG_STATE_HOME/serf`). *(B; needs code re-verification.)*
+    root (`$XDG_STATE_HOME/evener`). *(B; needs code re-verification.)*
 
 12. **[SERIOUS] `adapterRecipe` must select quirks/baseURL/label by TYPE, not
     instance name.** `QuirksPreset` switches on literals (`openaicompat:49-77`);
@@ -150,7 +150,7 @@ selector lives in `cmdutil`/`agent` (no `llm` import cycle).
 ## Verified-resolved (no score)
 
 Both reviewers confirmed at the package-graph level: `llm` imports **zero**
-`primeradiant.com/serf/*` packages (`go list -deps ./llm`), so the
+`primeradiant.com/evener/*` packages (`go list -deps ./llm`), so the
 `internal/providerconfig` leaf imported by both `llm` and `agent`/`cmdutil`
 creates **no cycle** (finding A#1's *structural* fix is sound — the selector lives
 in `cmdutil`). `BehaviorTag` as a plain string compiles fine. Catalog-by-tag works

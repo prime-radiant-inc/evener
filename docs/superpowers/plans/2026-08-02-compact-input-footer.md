@@ -28,22 +28,22 @@
 
 ### Files to modify
 
-- `cmd/serf-hub/frontend/src/panes/session/chrome/StatusRow.tsx` — status facts, model/effort cluster, context semantics, live/ended rendering, queue variants.
-- `cmd/serf-hub/frontend/src/panes/session/chrome/statusrow.module.css` — status-row flex behavior and 560/480/400 px container-query variants.
-- `cmd/serf-hub/frontend/src/panes/session/chrome/StatusRow.test.tsx` — status content, accessibility, and ended-state contracts.
-- `cmd/serf-hub/frontend/src/panes/session/chrome/ModelSwitch.tsx` — full-model tooltip on a visibly truncated trigger.
-- `cmd/serf-hub/frontend/src/panes/session/chrome/modelswitch.module.css` — shrinkable trigger and ellipsized model value.
-- `cmd/serf-hub/frontend/src/panes/session/chrome/ModelSwitch.test.tsx` — tooltip and accessible-name preservation.
-- `cmd/serf-hub/frontend/src/panes/session/chrome/sessionchrome.module.css` — non-wrapping complete footer and `.body` query container.
-- `cmd/serf-hub/frontend/src/panes/session/chrome/SessionChrome.test.tsx` — footer composition, no-wrap, container ownership, and preserved trailing controls.
-- `cmd/serf-hub/frontend/src/panes/session/chrome/goalcontrol.module.css` — hide only the inline goal anchor below 560 px.
-- `cmd/serf-hub/frontend/src/panes/session/chrome/GoalControl.test.tsx` — source-level check for the container-query rule; existing behavioral tests remain authoritative.
+- `cmd/evener-hub/frontend/src/panes/session/chrome/StatusRow.tsx` — status facts, model/effort cluster, context semantics, live/ended rendering, queue variants.
+- `cmd/evener-hub/frontend/src/panes/session/chrome/statusrow.module.css` — status-row flex behavior and 560/480/400 px container-query variants.
+- `cmd/evener-hub/frontend/src/panes/session/chrome/StatusRow.test.tsx` — status content, accessibility, and ended-state contracts.
+- `cmd/evener-hub/frontend/src/panes/session/chrome/ModelSwitch.tsx` — full-model tooltip on a visibly truncated trigger.
+- `cmd/evener-hub/frontend/src/panes/session/chrome/modelswitch.module.css` — shrinkable trigger and ellipsized model value.
+- `cmd/evener-hub/frontend/src/panes/session/chrome/ModelSwitch.test.tsx` — tooltip and accessible-name preservation.
+- `cmd/evener-hub/frontend/src/panes/session/chrome/sessionchrome.module.css` — non-wrapping complete footer and `.body` query container.
+- `cmd/evener-hub/frontend/src/panes/session/chrome/SessionChrome.test.tsx` — footer composition, no-wrap, container ownership, and preserved trailing controls.
+- `cmd/evener-hub/frontend/src/panes/session/chrome/goalcontrol.module.css` — hide only the inline goal anchor below 560 px.
+- `cmd/evener-hub/frontend/src/panes/session/chrome/GoalControl.test.tsx` — source-level check for the container-query rule; existing behavioral tests remain authoritative.
 
 ### Files to create
 
-- `cmd/serf-hub/frontend/scripts/layoutguard/cases/compact-session-footer/case.json` — real stylesheet and forced-state manifest.
-- `cmd/serf-hub/frontend/scripts/layoutguard/cases/compact-session-footer/harness.html` — representative footer markup at all required widths.
-- `cmd/serf-hub/frontend/scripts/layoutguard/cases/compact-session-footer/assert.mjs` — one-line, containment, visibility, truncation, and threshold assertions.
+- `cmd/evener-hub/frontend/scripts/layoutguard/cases/compact-session-footer/case.json` — real stylesheet and forced-state manifest.
+- `cmd/evener-hub/frontend/scripts/layoutguard/cases/compact-session-footer/harness.html` — representative footer markup at all required widths.
+- `cmd/evener-hub/frontend/scripts/layoutguard/cases/compact-session-footer/assert.mjs` — one-line, containment, visibility, truncation, and threshold assertions.
 
 No production component should be split or newly created. The existing boundaries already match the design.
 
@@ -52,8 +52,8 @@ No production component should be split or newly created. The existing boundarie
 ### Task 1: Simplify and Restructure Status Facts
 
 **Files:**
-- Modify: `cmd/serf-hub/frontend/src/panes/session/chrome/StatusRow.test.tsx:84-812`
-- Modify: `cmd/serf-hub/frontend/src/panes/session/chrome/StatusRow.tsx:1-360`
+- Modify: `cmd/evener-hub/frontend/src/panes/session/chrome/StatusRow.test.tsx:84-812`
+- Modify: `cmd/evener-hub/frontend/src/panes/session/chrome/StatusRow.tsx:1-360`
 
 **Interfaces:**
 - Consumes: existing `StatusRowProps`, `ModelSwitch`, `Meter`, `ThreadModel`, `formatTokenCount`, `formatWorkDuration`, `totalWorkMillis`, and `contextTone`.
@@ -169,7 +169,7 @@ test("a queued count supplies full and compact visuals through one accessible it
 Run:
 
 ```bash
-cd cmd/serf-hub/frontend
+cd cmd/evener-hub/frontend
 npm test -- src/panes/session/chrome/StatusRow.test.tsx
 ```
 
@@ -262,7 +262,7 @@ At the start of `ReasoningEffortControl`'s visible children, render:
 Run:
 
 ```bash
-cd cmd/serf-hub/frontend
+cd cmd/evener-hub/frontend
 npm test -- src/panes/session/chrome/StatusRow.test.tsx
 ```
 
@@ -272,8 +272,8 @@ Expected: PASS. If an old test still requires failures, cost, or the ended summa
 
 ```bash
 git add -- \
-  cmd/serf-hub/frontend/src/panes/session/chrome/StatusRow.tsx \
-  cmd/serf-hub/frontend/src/panes/session/chrome/StatusRow.test.tsx
+  cmd/evener-hub/frontend/src/panes/session/chrome/StatusRow.tsx \
+  cmd/evener-hub/frontend/src/panes/session/chrome/StatusRow.test.tsx
 git commit -m "refactor(webui): simplify session footer facts"
 ```
 
@@ -282,14 +282,14 @@ git commit -m "refactor(webui): simplify session footer facts"
 ### Task 2: Implement the Responsive Single-Line Layout
 
 **Files:**
-- Modify: `cmd/serf-hub/frontend/src/panes/session/chrome/ModelSwitch.test.tsx`
-- Modify: `cmd/serf-hub/frontend/src/panes/session/chrome/ModelSwitch.tsx`
-- Modify: `cmd/serf-hub/frontend/src/panes/session/chrome/modelswitch.module.css`
-- Modify: `cmd/serf-hub/frontend/src/panes/session/chrome/statusrow.module.css`
-- Modify: `cmd/serf-hub/frontend/src/panes/session/chrome/SessionChrome.test.tsx:430-488`
-- Modify: `cmd/serf-hub/frontend/src/panes/session/chrome/sessionchrome.module.css`
-- Modify: `cmd/serf-hub/frontend/src/panes/session/chrome/GoalControl.test.tsx`
-- Modify: `cmd/serf-hub/frontend/src/panes/session/chrome/goalcontrol.module.css`
+- Modify: `cmd/evener-hub/frontend/src/panes/session/chrome/ModelSwitch.test.tsx`
+- Modify: `cmd/evener-hub/frontend/src/panes/session/chrome/ModelSwitch.tsx`
+- Modify: `cmd/evener-hub/frontend/src/panes/session/chrome/modelswitch.module.css`
+- Modify: `cmd/evener-hub/frontend/src/panes/session/chrome/statusrow.module.css`
+- Modify: `cmd/evener-hub/frontend/src/panes/session/chrome/SessionChrome.test.tsx:430-488`
+- Modify: `cmd/evener-hub/frontend/src/panes/session/chrome/sessionchrome.module.css`
+- Modify: `cmd/evener-hub/frontend/src/panes/session/chrome/GoalControl.test.tsx`
+- Modify: `cmd/evener-hub/frontend/src/panes/session/chrome/goalcontrol.module.css`
 
 **Interfaces:**
 - Consumes: Task 1's identity, context, work-time, and queue test IDs/classes; existing `SessionChrome` `.body` and `.right` structure; existing 640 px `useNarrowerThan` behavior.
@@ -311,7 +311,7 @@ test("the trigger exposes the full model label when its visible value truncates"
 Run:
 
 ```bash
-cd cmd/serf-hub/frontend
+cd cmd/evener-hub/frontend
 npm test -- src/panes/session/chrome/ModelSwitch.test.tsx
 ```
 
@@ -381,7 +381,7 @@ Import `readFileSync`, `join`, and `fileURLToPath` following the existing `Sessi
 Run:
 
 ```bash
-cd cmd/serf-hub/frontend
+cd cmd/evener-hub/frontend
 npm test -- \
   src/panes/session/chrome/SessionChrome.test.tsx \
   src/panes/session/chrome/StatusRow.test.tsx \
@@ -580,7 +580,7 @@ Do not hide the goal dialog or remove “Set goal…” from `SessionActionsMenu
 Run:
 
 ```bash
-cd cmd/serf-hub/frontend
+cd cmd/evener-hub/frontend
 npm test -- \
   src/panes/session/chrome/StatusRow.test.tsx \
   src/panes/session/chrome/ModelSwitch.test.tsx \
@@ -594,16 +594,16 @@ Expected: PASS. Also verify that existing `SessionChrome` tests still prove Deta
 
 ```bash
 git add -- \
-  cmd/serf-hub/frontend/src/panes/session/chrome/ModelSwitch.tsx \
-  cmd/serf-hub/frontend/src/panes/session/chrome/ModelSwitch.test.tsx \
-  cmd/serf-hub/frontend/src/panes/session/chrome/modelswitch.module.css \
-  cmd/serf-hub/frontend/src/panes/session/chrome/StatusRow.test.tsx \
-  cmd/serf-hub/frontend/src/panes/session/chrome/statusrow.module.css \
-  cmd/serf-hub/frontend/src/panes/session/chrome/SessionChrome.tsx \
-  cmd/serf-hub/frontend/src/panes/session/chrome/SessionChrome.test.tsx \
-  cmd/serf-hub/frontend/src/panes/session/chrome/sessionchrome.module.css \
-  cmd/serf-hub/frontend/src/panes/session/chrome/GoalControl.test.tsx \
-  cmd/serf-hub/frontend/src/panes/session/chrome/goalcontrol.module.css
+  cmd/evener-hub/frontend/src/panes/session/chrome/ModelSwitch.tsx \
+  cmd/evener-hub/frontend/src/panes/session/chrome/ModelSwitch.test.tsx \
+  cmd/evener-hub/frontend/src/panes/session/chrome/modelswitch.module.css \
+  cmd/evener-hub/frontend/src/panes/session/chrome/StatusRow.test.tsx \
+  cmd/evener-hub/frontend/src/panes/session/chrome/statusrow.module.css \
+  cmd/evener-hub/frontend/src/panes/session/chrome/SessionChrome.tsx \
+  cmd/evener-hub/frontend/src/panes/session/chrome/SessionChrome.test.tsx \
+  cmd/evener-hub/frontend/src/panes/session/chrome/sessionchrome.module.css \
+  cmd/evener-hub/frontend/src/panes/session/chrome/GoalControl.test.tsx \
+  cmd/evener-hub/frontend/src/panes/session/chrome/goalcontrol.module.css
 git commit -m "feat(webui): keep session footer on one line"
 ```
 
@@ -612,9 +612,9 @@ git commit -m "feat(webui): keep session footer on one line"
 ### Task 3: Add Real-Browser Geometry Coverage
 
 **Files:**
-- Create: `cmd/serf-hub/frontend/scripts/layoutguard/cases/compact-session-footer/case.json`
-- Create: `cmd/serf-hub/frontend/scripts/layoutguard/cases/compact-session-footer/harness.html`
-- Create: `cmd/serf-hub/frontend/scripts/layoutguard/cases/compact-session-footer/assert.mjs`
+- Create: `cmd/evener-hub/frontend/scripts/layoutguard/cases/compact-session-footer/case.json`
+- Create: `cmd/evener-hub/frontend/scripts/layoutguard/cases/compact-session-footer/harness.html`
+- Create: `cmd/evener-hub/frontend/scripts/layoutguard/cases/compact-session-footer/assert.mjs`
 
 **Interfaces:**
 - Consumes: Task 2's real CSS class names and query thresholds.
@@ -727,7 +727,7 @@ Return `{ pass: true, reason: "footer stays on one line and follows every compre
 Run:
 
 ```bash
-cd cmd/serf-hub/frontend
+cd cmd/evener-hub/frontend
 node scripts/layoutguard/run.mjs compact-session-footer
 ```
 
@@ -738,7 +738,7 @@ Expected: PASS.
 Temporarily change `.body` from `flex-wrap: nowrap` to `flex-wrap: wrap` in `sessionchrome.module.css` and rerun:
 
 ```bash
-cd cmd/serf-hub/frontend
+cd cmd/evener-hub/frontend
 node scripts/layoutguard/run.mjs compact-session-footer
 ```
 
@@ -747,7 +747,7 @@ Expected: FAIL at one or more narrow widths with a second-line or containment me
 - [ ] **Step 6: Run the full layoutguard suite**
 
 ```bash
-cd cmd/serf-hub/frontend
+cd cmd/evener-hub/frontend
 npm run layoutguard
 ```
 
@@ -756,7 +756,7 @@ Expected: every case PASS. Investigate and fix any existing case affected by the
 - [ ] **Step 7: Commit the browser regression case**
 
 ```bash
-git add -- cmd/serf-hub/frontend/scripts/layoutguard/cases/compact-session-footer
+git add -- cmd/evener-hub/frontend/scripts/layoutguard/cases/compact-session-footer
 git commit -m "test(webui): guard compact session footer layout"
 ```
 
@@ -774,7 +774,7 @@ git commit -m "test(webui): guard compact session footer layout"
 - [ ] **Step 1: Run all owning component tests together**
 
 ```bash
-cd cmd/serf-hub/frontend
+cd cmd/evener-hub/frontend
 npm test -- \
   src/panes/session/chrome/StatusRow.test.tsx \
   src/panes/session/chrome/ModelSwitch.test.tsx \
@@ -789,7 +789,7 @@ Expected: PASS with no warnings or unhandled errors.
 The static layoutguard proves the CSS thresholds. The real-session overflowguard proves that the actual React tree and reducer do not create a sideways scroll container:
 
 ```bash
-cd cmd/serf-hub/frontend
+cd cmd/evener-hub/frontend
 npm run layoutguard
 node scripts/overflowguard/run.mjs 320 360 400 479 480 559 560 900
 ```
@@ -826,7 +826,7 @@ Expected:
 If Steps 1–4 required a correction, stage only its owning files and commit with a message that names the root cause, for example:
 
 ```bash
-git add -- cmd/serf-hub/frontend/src/panes/session/chrome/statusrow.module.css cmd/serf-hub/frontend/src/panes/session/chrome/StatusRow.test.tsx
+git add -- cmd/evener-hub/frontend/src/panes/session/chrome/statusrow.module.css cmd/evener-hub/frontend/src/panes/session/chrome/StatusRow.test.tsx
 git commit -m "fix(webui): preserve compact footer containment"
 ```
 

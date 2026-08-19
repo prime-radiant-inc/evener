@@ -9,12 +9,12 @@ import (
 	"testing"
 	"time"
 
-	"primeradiant.com/serf/agent/internal/jobstore"
-	"primeradiant.com/serf/agent/provenance"
-	"primeradiant.com/serf/fuzz/oracle"
-	"primeradiant.com/serf/identifier"
-	"primeradiant.com/serf/llm"
-	"primeradiant.com/serf/llm/apilog"
+	"primeradiant.com/evener/agent/internal/jobstore"
+	"primeradiant.com/evener/agent/provenance"
+	"primeradiant.com/evener/fuzz/oracle"
+	"primeradiant.com/evener/identifier"
+	"primeradiant.com/evener/llm"
+	"primeradiant.com/evener/llm/apilog"
 )
 
 // This lane fuzzes the doctor READ/BUILD path — the functions that reconstruct a

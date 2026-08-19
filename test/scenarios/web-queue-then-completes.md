@@ -21,16 +21,16 @@ REST surface, and what is no longer on it".
 
 - Hub running on an isolated `$HOME` and free port (never `9180`,
   Jesse's real one — see the Setup checklist in
-  `docs/agentic-testing.md`) with `--serf` resolvable.
+  `docs/agentic-testing.md`) with `--evener` resolvable.
 - A provider credential good enough for one slow multi-tool turn.
-- `$HOME/.serf/auth-token` readable (that isolated `$HOME`).
+- `$HOME/.evener/auth-token` readable (that isolated `$HOME`).
 - The SPA built (`make build-web`) **before** the hub binary.
 
 ## Steps
 
 ```bash
-tmpdir=$(mktemp -d -t serf-e2e-queue-XXXXX)
-TOKEN=$(cat "$HOME/.serf/auth-token")
+tmpdir=$(mktemp -d -t evener-e2e-queue-XXXXX)
+TOKEN=$(cat "$HOME/.evener/auth-token")
 HUB=http://127.0.0.1:$PORT
 ```
 
@@ -44,7 +44,7 @@ HUB=http://127.0.0.1:$PORT
 3. Open `/auth?token=$TOKEN&next=/s/local:$SID` and wait for
    `[data-testid="composer-submit"]`.
 4. **Queue a message.** Type `then: write a haiku about Go testing` and press
-   the submit chord — `Enter` when the `serf.prefs.enterToSend` preference is
+   the submit chord — `Enter` when the `evener.prefs.enterToSend` preference is
    on, `⌘/Ctrl+Enter` otherwise (`Composer.tsx:389`) — or just click
    `[data-testid="composer-submit"]`. Then read the strip:
    ```javascript
@@ -63,7 +63,7 @@ HUB=http://127.0.0.1:$PORT
    `turn_count`.
 6. **Read the durable record**:
    ```bash
-   go run ./cmd/serf-doctor transcript "$SID" --format outline --range last:30
+   go run ./cmd/evener-doctor transcript "$SID" --format outline --range last:30
    ```
 
 ## Expected
@@ -73,7 +73,7 @@ HUB=http://127.0.0.1:$PORT
   Queue on "a turn in flight" (`server/appwire_runtime.go:1046,1055`).
   Falsify: `queue:false` while active — either the harness wired no queue or
   `Capabilities.Queue` stopped being threaded through
-  `hubCapabilitiesFromAppwire` (`cmd/serf-hub/web_api_tree.go#hubCapabilitiesFromAppwire`), and
+  `hubCapabilitiesFromAppwire` (`cmd/evener-hub/web_api_tree.go#hubCapabilitiesFromAppwire`), and
   every browser assertion below is moot.
 - **Step 4 (queue submit)**: the strip appears with heading
   `Queued messages (1)` (`composer/queue/QueueStrip.tsx:302`) and one row

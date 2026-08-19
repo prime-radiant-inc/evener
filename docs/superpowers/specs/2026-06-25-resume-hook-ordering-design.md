@@ -4,7 +4,7 @@ Date: 2026-06-25
 
 ## Context
 
-Serf resumes an existing session through `RestoreSessionFromMetaWithConfig`. The restore path currently sets `SessionStartKindResume`, initializes session state, initializes plugins, and runs `SessionStart` hooks during restore. Hook results can inject model context and user messages before any new post-resume user prompt exists.
+Evener resumes an existing session through `RestoreSessionFromMetaWithConfig`. The restore path currently sets `SessionStartKindResume`, initializes session state, initializes plugins, and runs `SessionStart` hooks during restore. Hook results can inject model context and user messages before any new post-resume user prompt exists.
 
 A restored session can also re-arm durable terminal job notifications. Those notification wakes are autonomous `EntryNotification` turns, not user prompts. If resume hook output is injected during restore, or if a notification turn observes newly injected resume context before the user's new task, the model can continue stale work instead of responding to the new post-resume prompt.
 
@@ -29,9 +29,9 @@ Make resume `SessionStart` hook output inert until the first real post-resume us
 - Do not change durable job notification semantics in this design.
 - Do not change transcript storage format beyond whatever existing turn recording naturally does when the first user turn drains pending hook output.
 
-## Current Serf behavior
+## Current Evener behavior
 
-Relevant Serf path:
+Relevant Evener path:
 
 1. `RestoreSessionFromMetaWithConfig` sets `cfg.SessionStartKind = plugin.SessionStartKindResume`.
 2. `initSessionState` restores transcript/session state and arms pending terminal job notifications.
@@ -120,7 +120,7 @@ Important edge cases:
 
 ## Testing
 
-Tests should use deterministic scripted providers and real Serf plumbing below the LLM boundary, consistent with `docs/testing.md`.
+Tests should use deterministic scripted providers and real Evener plumbing below the LLM boundary, consistent with `docs/testing.md`.
 
 Add regression coverage for these cases:
 

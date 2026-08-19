@@ -21,7 +21,7 @@ already covered by subagent-list-and-output.md.
 
 - Fresh binaries from the branch under test; an isolated hub
   (`docs/agentic-testing.md` setup checklist); credentialed model.
-- `tmpdir=$(mktemp -d -t serf-e2e-jlist-XXXXX)`.
+- `tmpdir=$(mktemp -d -t evener-e2e-jlist-XXXXX)`.
 
 ## Steps
 
@@ -59,7 +59,7 @@ already covered by subagent-list-and-output.md.
    > 3. Call job_list with no filters and report J5's status verbatim.
    > 4. Say REORIENTED and end your turn.
 4. Read the transcript
-   (`find ~/.local/state/serf/projects -name "$SID.transcript.jsonl"`)
+   (`find ~/.local/state/evener/projects -name "$SID.transcript.jsonl"`)
    and check entry ordering around turn 2.
 
 ## Expected

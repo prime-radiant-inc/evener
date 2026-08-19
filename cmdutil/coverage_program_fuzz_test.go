@@ -1,4 +1,4 @@
-//go:build serffuzz
+//go:build evenerfuzz
 
 package cmdutil
 
@@ -12,10 +12,10 @@ import (
 	"strings"
 	"testing"
 
-	"primeradiant.com/serf/envvars"
-	"primeradiant.com/serf/internal/credentials"
-	"primeradiant.com/serf/llm"
-	"primeradiant.com/serf/llm/providercfg"
+	"primeradiant.com/evener/envvars"
+	"primeradiant.com/evener/internal/credentials"
+	"primeradiant.com/evener/llm"
+	"primeradiant.com/evener/llm/providercfg"
 )
 
 type coverageRoundTripper func(*http.Request) (*http.Response, error)
@@ -116,7 +116,7 @@ func FuzzCmdutilCoverage(f *testing.F) {
 		if err := os.WriteFile(badState, []byte("x"), 0o600); err != nil {
 			t.Fatal(err)
 		}
-		t.Setenv(envvars.SERFStateDir.Name, badState)
+		t.Setenv(envvars.EVENERStateDir.Name, badState)
 		_, _ = seedConfigFromEnv()
 		_, _ = MaterializeProvidersConfig(filepath.Join(badState, "providers.toml"))
 		_, _, _ = LoadProviderConfig()
@@ -124,7 +124,7 @@ func FuzzCmdutilCoverage(f *testing.F) {
 		newClientFromEnv = func(...llm.EnvOption) (*llm.Client, error) { return nil, errors.New("factory failed") }
 		_, _ = seedConfigFromEnv()
 		_, _ = MaterializeProvidersConfig(filepath.Join(t.TempDir(), "providers.toml"))
-		t.Setenv(envvars.SERFProvidersConfig.Name, filepath.Join(t.TempDir(), "absent.toml"))
+		t.Setenv(envvars.EVENERProvidersConfig.Name, filepath.Join(t.TempDir(), "absent.toml"))
 		_, _, _ = LoadProviderConfig()
 		newClientFromEnv = oldFromEnv
 		newClientFromAvailableProviders = func(providercfg.Config, ...llm.EnvOption) (*llm.Client, []error, error) {
@@ -134,7 +134,7 @@ func FuzzCmdutilCoverage(f *testing.F) {
 		newClientFromAvailableProviders = oldAvailable
 
 		validRoot := t.TempDir()
-		t.Setenv(envvars.SERFStateDir.Name, validRoot)
+		t.Setenv(envvars.EVENERStateDir.Name, validRoot)
 		t.Setenv(envvars.OllamaBaseURL.Name, "http://ollama.invalid")
 		t.Setenv(envvars.OllamaHost.Name, "http://host.invalid")
 		_, _ = seedConfigFromEnv()
@@ -146,7 +146,7 @@ func FuzzCmdutilCoverage(f *testing.F) {
 		if err := os.WriteFile(invalidConfig, []byte("["), 0o600); err != nil {
 			t.Fatal(err)
 		}
-		t.Setenv(envvars.SERFProvidersConfig.Name, invalidConfig)
+		t.Setenv(envvars.EVENERProvidersConfig.Name, invalidConfig)
 		_, _, _ = LoadProviderConfig()
 		_, _, _, _ = LoadClient()
 
@@ -165,7 +165,7 @@ func FuzzCmdutilCoverage(f *testing.F) {
 		_, _ = StartTrace(filepath.Join(t.TempDir(), "second-trace"))
 		stopTrace()
 
-		t.Setenv(envvars.SERFStateDir.Name, "")
+		t.Setenv(envvars.EVENERStateDir.Name, "")
 		t.Setenv(envvars.XDGConfigHome.Name, "")
 		t.Setenv("HOME", "")
 		_ = DefaultStateRoot()
@@ -189,7 +189,7 @@ func FuzzCmdutilCoverage(f *testing.F) {
 		if err := os.WriteFile(filepath.Join(credentialDir, "credentials.toml"), []byte("["), 0o600); err != nil {
 			t.Fatal(err)
 		}
-		t.Setenv(envvars.SERFProvidersConfig.Name, credentialConfig)
+		t.Setenv(envvars.EVENERProvidersConfig.Name, credentialConfig)
 		loadCredentialStore = func(string) (*credentials.Store, error) { return nil, errors.New("load failed") }
 		_, _, _ = LoadProviderConfig()
 		_, _, _, _ = LoadClient()

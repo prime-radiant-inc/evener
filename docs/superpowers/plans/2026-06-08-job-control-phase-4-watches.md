@@ -6,11 +6,11 @@
 
 **Architecture:** The seam from spec §8 is mandatory. The pure `output_match` matcher lives in `agent/internal/jobstore/watch.go` — RE2 over the append stream, line-buffered so a match in bytes appended while the watch is active is **never** missed by preview eviction; it imports only stdlib + `regexp` and **cannot** see session event kinds. The `events`/`trigger` event-frame gating, the periodic timer, the watch registry keyed `(visible_session_id, target, send.to)`, and delivery all live in the **JobManager** (package `agent`), because event kinds are `agent/events` concepts a `Session`-free package cannot name. The JobManager taps the one event choke point — `Session.emit` (`agent/session_events.go:45`) — to feed the event-frame matcher, wraps the per-job output writer to feed the `output_match` matcher, and owns the Nth-event counter for `trigger.every`. The `job_watch` tool registers alongside the legacy subagent tools (Phase 6 removes the legacy surface).
 
-**Tech Stack:** Go, `agent/internal/jobstore` (Phase 1), the `JobManager` + `jobNotification` queue (Phase 2), `job_send_message` (Phase 3), `agent/events` (`EventKind` constants), the tool registry (`tool.RegisteredTool`/`Exec`). Module: `primeradiant.com/serf/agent`.
+**Tech Stack:** Go, `agent/internal/jobstore` (Phase 1), the `JobManager` + `jobNotification` queue (Phase 2), `job_send_message` (Phase 3), `agent/events` (`EventKind` constants), the tool registry (`tool.RegisteredTool`/`Exec`). Module: `primeradiant.com/evener/agent`.
 
 This is **Phase 4 of 6**, implementing spec `docs/superpowers/specs/2026-06-08-job-control-design.md` §5.9 (`job_watch`), §8 (watches internals — the seam split), §9 (observer/sidecar composition), §5.10 (errors). It depends on Phase 1 (`agent/internal/jobstore`), Phase 2 (`JobManager`, `pendingJobNotifs`), and Phase 3 (`job_send_message`) being merged.
 
-**Conventions:** run Go commands from `/Users/jesse/prime-radiant/toil-suite/serf/agent`; package tests with `cd agent && go test ./... -run <name>`. Pure-matcher tests: `cd agent && go test ./internal/jobstore/ -run <name> -v`. Commit per task. Full `make test` + `make lint` from repo root before the final task.
+**Conventions:** run Go commands from `/Users/jesse/prime-radiant/toil-suite/evener/agent`; package tests with `cd agent && go test ./... -run <name>`. Pure-matcher tests: `cd agent && go test ./internal/jobstore/ -run <name> -v`. Commit per task. Full `make test` + `make lint` from repo root before the final task.
 
 ---
 
@@ -266,7 +266,7 @@ func (m *OutputMatcher) Flush() []string {
 - [ ] **Step 5: Commit**
 
 ```bash
-cd /Users/jesse/prime-radiant/toil-suite/serf
+cd /Users/jesse/prime-radiant/toil-suite/evener
 git add agent/internal/jobstore/watch.go agent/internal/jobstore/watch_test.go
 git commit -m "feat(jobstore): pure output_match matcher (no silent miss)"
 ```
@@ -379,7 +379,7 @@ Confirm `strings` is already imported in `definitions.go` (it is, used by other 
 - [ ] **Step 5: Commit**
 
 ```bash
-cd /Users/jesse/prime-radiant/toil-suite/serf
+cd /Users/jesse/prime-radiant/toil-suite/evener
 git add agent/internal/tool/definitions.go agent/internal/tool/definitions_test.go
 git commit -m "feat(tool): DefJobWatch tool definition with event-kind interpolation"
 ```
@@ -403,7 +403,7 @@ package agent
 import (
 	"testing"
 
-	"primeradiant.com/serf/agent/internal/jobstore"
+	"primeradiant.com/evener/agent/internal/jobstore"
 )
 
 func TestConfigureWatchRequiresCondition(t *testing.T) {
@@ -484,7 +484,7 @@ var _ = jobstore.JobShell // keep the import if the file does not otherwise use 
 - [ ] **Step 5: Commit**
 
 ```bash
-cd /Users/jesse/prime-radiant/toil-suite/serf
+cd /Users/jesse/prime-radiant/toil-suite/evener
 git add agent/jobs.go agent/job_watch.go agent/job_watch_test.go
 git commit -m "feat(agent): job_watch registry (configure/clear/key dedupe)"
 ```
@@ -533,7 +533,7 @@ Keep `modelEventKinds`'s key set exactly equal to `WatchEventKindNames` (a `_tes
 - [ ] **Step 1: Write the failing test** — append to `agent/job_watch_test.go`:
 
 ```go
-import "primeradiant.com/serf/agent/events" // add to the existing import block
+import "primeradiant.com/evener/agent/events" // add to the existing import block
 
 func TestEventWatchFiresAndNotifiesCaller(t *testing.T) {
 	jm := newTestJM(t)
@@ -610,7 +610,7 @@ func TestEventWatchIgnoresUnwatchedKind(t *testing.T) {
 - [ ] **Step 5: Commit**
 
 ```bash
-cd /Users/jesse/prime-radiant/toil-suite/serf
+cd /Users/jesse/prime-radiant/toil-suite/evener
 git add agent/job_watch.go agent/session_events.go agent/job_watch_test.go
 git commit -m "feat(agent): event-frame watch gating via Session.emit tap"
 ```
@@ -679,7 +679,7 @@ func TestProgressTimerFiresPeriodically(t *testing.T) {
 - [ ] **Step 5: Commit**
 
 ```bash
-cd /Users/jesse/prime-radiant/toil-suite/serf
+cd /Users/jesse/prime-radiant/toil-suite/evener
 git add agent/job_watch.go agent/jobs.go agent/job_shell.go agent/job_watch_test.go
 git commit -m "feat(agent): output_match output tap + progress_interval timer"
 ```
@@ -747,7 +747,7 @@ func TestWatchSendDeliversFrameToTarget(t *testing.T) {
 - [ ] **Step 5: Commit**
 
 ```bash
-cd /Users/jesse/prime-radiant/toil-suite/serf
+cd /Users/jesse/prime-radiant/toil-suite/evener
 git add agent/job_watch.go agent/job_watch_test.go
 git commit -m "feat(agent): job_watch send delivery via job_send_message + bounded frames"
 ```
@@ -805,7 +805,7 @@ func TestSessionWatchSurvivesAJobTerminal(t *testing.T) {
 - [ ] **Step 5: Commit**
 
 ```bash
-cd /Users/jesse/prime-radiant/toil-suite/serf
+cd /Users/jesse/prime-radiant/toil-suite/evener
 git add agent/job_watch.go agent/jobs.go agent/job_watch_test.go
 git commit -m "feat(agent): expire concrete-job watches on terminal (flush-then-notify ordering)"
 ```
@@ -923,7 +923,7 @@ _ = reg.Register(tool.RegisteredTool{
 - [ ] **Step 5: Commit**
 
 ```bash
-cd /Users/jesse/prime-radiant/toil-suite/serf
+cd /Users/jesse/prime-radiant/toil-suite/evener
 git add agent/session_tools_jobs.go agent/provider/profile.go agent/session_tools_jobs_test.go
 git commit -m "feat(agent): register job_watch tool (root-only presence)"
 ```
@@ -994,7 +994,7 @@ func TestObserverSidecarReceivesFrameAndAdvisesBack(t *testing.T) {
 - [ ] **Step 3: Commit**
 
 ```bash
-cd /Users/jesse/prime-radiant/toil-suite/serf
+cd /Users/jesse/prime-radiant/toil-suite/evener
 git add agent/job_watch_observer_test.go
 git commit -m "test(agent): observer-sidecar composition (frame delivery + alias advise)"
 ```
@@ -1007,14 +1007,14 @@ git commit -m "test(agent): observer-sidecar composition (frame delivery + alias
 
 - [ ] **Step 1: Run the full module test + lint**
 
-Run: `cd /Users/jesse/prime-radiant/toil-suite/serf && make test && make lint`
-Expected: all modules PASS; lint clean (golangci ×4 + `serf-namingcheck`/`serf-internalcheck`/`docscheck`). Fix any fallout. The new `DefJobWatch` adds a tool to the root profile, so the profile/parity/snapshot tests (`agent/provider/profile_test.go`, any `ToolDefinitions()` golden) may need the `job_watch` entry added — update them to the new expected tool set, do not delete assertions.
+Run: `cd /Users/jesse/prime-radiant/toil-suite/evener && make test && make lint`
+Expected: all modules PASS; lint clean (golangci ×4 + `evener-namingcheck`/`evener-internalcheck`/`docscheck`). Fix any fallout. The new `DefJobWatch` adds a tool to the root profile, so the profile/parity/snapshot tests (`agent/provider/profile_test.go`, any `ToolDefinitions()` golden) may need the `job_watch` entry added — update them to the new expected tool set, do not delete assertions.
 
-- [ ] **Step 2: Live e2e scenario** (spec §14 "an observer sidecar commenting back through `job_send_message`"). Per `reference_serf_live_run`: build a standalone binary; do **not** touch a running serve.
+- [ ] **Step 2: Live e2e scenario** (spec §14 "an observer sidecar commenting back through `job_send_message`"). Per `reference_evener_live_run`: build a standalone binary; do **not** touch a running serve.
 
 ```bash
-cd /Users/jesse/prime-radiant/toil-suite/serf
-go build -o /tmp/serf ./cmd/serf
+cd /Users/jesse/prime-radiant/toil-suite/evener
+go build -o /tmp/evener ./cmd/evener
 . "$PWD/.env"
 # In a scratch dir, with --model oai-work/<model>:
 #  1. Start a background shell job that will print a "ready" line.
@@ -1030,7 +1030,7 @@ Use the `e2e-scenario-testing` skill to write falsifiable scenario cards. Expect
 - [ ] **Step 3: Commit any test/lint fixups**
 
 ```bash
-cd /Users/jesse/prime-radiant/toil-suite/serf
+cd /Users/jesse/prime-radiant/toil-suite/evener
 git status   # review first
 git add -A
 git commit -m "test(job-control): phase 4 watches suite + profile fixups green"

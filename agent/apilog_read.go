@@ -12,7 +12,7 @@ import (
 	"time"
 	"unicode/utf8"
 
-	"primeradiant.com/serf/llm/apilog"
+	"primeradiant.com/evener/llm/apilog"
 )
 
 const (

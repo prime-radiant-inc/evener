@@ -19,13 +19,13 @@
 - Do not show aggregate `N done`, aggregate `N up next`, unchanged neighboring tasks, `show all`, `more`, or any full-plan disclosure.
 - Do not change task state, task ordering, sidebar behavior, or the `task_list` tool contract.
 - Use the returned authoritative task snapshot for final row data and auto-activation; degraded replay must not invent transitions.
-- Run JavaScript renderer tests from `cmd/serf-hub/jstest` with `NODE_PATH=/tmp/serf-jstest-jsdom/node_modules`.
+- Run JavaScript renderer tests from `cmd/evener-hub/jstest` with `NODE_PATH=/tmp/evener-jstest-jsdom/node_modules`.
 
 ## File Structure
 
-- Modify `cmd/serf-hub/jstest/test-renderer-plan.js`: replace living-plan scenarios with the inline per-mutation DOM contract.
-- Modify `cmd/serf-hub/assets/renderer.js`: route successful calls to per-update rendering, select only established changes, and delete the living-plan renderer.
-- Modify `cmd/serf-hub/assets/style.css`: retain shared card/header/row styles and remove disclosure-only living-plan styles.
+- Modify `cmd/evener-hub/jstest/test-renderer-plan.js`: replace living-plan scenarios with the inline per-mutation DOM contract.
+- Modify `cmd/evener-hub/assets/renderer.js`: route successful calls to per-update rendering, select only established changes, and delete the living-plan renderer.
+- Modify `cmd/evener-hub/assets/style.css`: retain shared card/header/row styles and remove disclosure-only living-plan styles.
 - Modify `docs/web-ui/design-system.md`: describe per-tool-call change cards instead of one persistent plan card.
 
 ---
@@ -33,8 +33,8 @@
 ### Task 1: Render one changes-only card per successful mutation
 
 **Files:**
-- Modify: `cmd/serf-hub/jstest/test-renderer-plan.js:1-296`
-- Modify: `cmd/serf-hub/assets/renderer.js:1193-1209,1235-1255,4038-4331`
+- Modify: `cmd/evener-hub/jstest/test-renderer-plan.js:1-296`
+- Modify: `cmd/evener-hub/assets/renderer.js:1193-1209,1235-1255,4038-4331`
 
 **Interfaces:**
 - Consumes: `pendingTaskCalls: Map<callID, {args: object, priorIds: Set<number>}>`, `parseToolState(data.tool_state)`, `buildTaskRowLine(task)`, `touchKind(status)`, and the tool result's task array.
@@ -95,8 +95,8 @@ For the completion scenario, use this event shape to prove that auto-activation 
 Run:
 
 ```bash
-cd cmd/serf-hub/jstest
-NODE_PATH=/tmp/serf-jstest-jsdom/node_modules node test-renderer-plan.js
+cd cmd/evener-hub/jstest
+NODE_PATH=/tmp/evener-jstest-jsdom/node_modules node test-renderer-plan.js
 ```
 
 Expected: FAIL because repeated mutations still reuse one living card, the card still contains aggregate/disclosure UI, and update-only cards are not appended independently.
@@ -199,8 +199,8 @@ Keep `appendTaskUpdateCard`, `refreshTaskBadgeSoon`, `buildTaskRowLine`, and sid
 Run:
 
 ```bash
-cd cmd/serf-hub/jstest
-NODE_PATH=/tmp/serf-jstest-jsdom/node_modules node test-renderer-plan.js
+cd cmd/evener-hub/jstest
+NODE_PATH=/tmp/evener-jstest-jsdom/node_modules node test-renderer-plan.js
 ```
 
 Expected: all scenarios print `PASS` and the process exits 0.
@@ -210,9 +210,9 @@ Expected: all scenarios print `PASS` and the process exits 0.
 Run:
 
 ```bash
-cd cmd/serf-hub/jstest
-NODE_PATH=/tmp/serf-jstest-jsdom/node_modules node test-task-updated-subscription.js
-NODE_PATH=/tmp/serf-jstest-jsdom/node_modules node test-realistic-flow.js
+cd cmd/evener-hub/jstest
+NODE_PATH=/tmp/evener-jstest-jsdom/node_modules node test-task-updated-subscription.js
+NODE_PATH=/tmp/evener-jstest-jsdom/node_modules node test-realistic-flow.js
 ```
 
 Expected: both scripts exit 0. If a test encodes the superseded living-card contract, update only that contract assertion and rerun it; do not weaken unrelated assertions.
@@ -221,7 +221,7 @@ Expected: both scripts exit 0. If a test encodes the superseded living-card cont
 
 ```bash
 git status --short
-git add cmd/serf-hub/jstest/test-renderer-plan.js cmd/serf-hub/assets/renderer.js
+git add cmd/evener-hub/jstest/test-renderer-plan.js cmd/evener-hub/assets/renderer.js
 git diff --cached --check
 git commit -m "fix(hub): show inline task changes"
 ```
@@ -233,8 +233,8 @@ Expected: one commit containing only the renderer behavior and its tests.
 ### Task 2: Remove living-plan presentation and align the design system
 
 **Files:**
-- Modify: `cmd/serf-hub/jstest/test-renderer-plan.js:39-69`
-- Modify: `cmd/serf-hub/assets/style.css:3101-3203`
+- Modify: `cmd/evener-hub/jstest/test-renderer-plan.js:39-69`
+- Modify: `cmd/evener-hub/assets/style.css:3101-3203`
 - Modify: `docs/web-ui/design-system.md:155`
 
 **Interfaces:**
@@ -265,8 +265,8 @@ Extend the synchronous CSS checks in `test-renderer-plan.js`:
 Run:
 
 ```bash
-cd cmd/serf-hub/jstest
-NODE_PATH=/tmp/serf-jstest-jsdom/node_modules node test-renderer-plan.js
+cd cmd/evener-hub/jstest
+NODE_PATH=/tmp/evener-jstest-jsdom/node_modules node test-renderer-plan.js
 ```
 
 Expected: FAIL because living-plan summary, toggle, and fold selectors still exist.
@@ -297,7 +297,7 @@ Delete selectors used only by the removed living-plan UI:
 Retain `.task-card`, header/progress/meter styles, `.task-card-note`, `.task-time`, and shared `.plan-item` status styles. Before deleting, verify each selector has no remaining JavaScript or HTML reference:
 
 ```bash
-rg -n 'task-card-(active|complete|summary-line|body|group|fold|toggle)' cmd/serf-hub --glob '!assets/style.css'
+rg -n 'task-card-(active|complete|summary-line|body|group|fold|toggle)' cmd/evener-hub --glob '!assets/style.css'
 ```
 
 Expected: no matches.
@@ -315,9 +315,9 @@ Replace the `Plan / tasks` table row in `docs/web-ui/design-system.md` with this
 Run:
 
 ```bash
-cd cmd/serf-hub/jstest
-NODE_PATH=/tmp/serf-jstest-jsdom/node_modules node test-renderer-plan.js
-NODE_PATH=/tmp/serf-jstest-jsdom/node_modules sh run-all.sh
+cd cmd/evener-hub/jstest
+NODE_PATH=/tmp/evener-jstest-jsdom/node_modules node test-renderer-plan.js
+NODE_PATH=/tmp/evener-jstest-jsdom/node_modules sh run-all.sh
 ```
 
 Expected: the focused test and every `test-*.js` script pass with no failures or timeouts.
@@ -337,7 +337,7 @@ Expected: both commands exit 0 with no warnings attributable to the change.
 
 ```bash
 git status --short
-git add cmd/serf-hub/jstest/test-renderer-plan.js cmd/serf-hub/assets/style.css docs/web-ui/design-system.md
+git add cmd/evener-hub/jstest/test-renderer-plan.js cmd/evener-hub/assets/style.css docs/web-ui/design-system.md
 git diff --cached --check
 git commit -m "docs(hub): align task change cards"
 ```
@@ -358,8 +358,8 @@ Expected: one commit containing only CSS contract cleanup, its test assertions, 
 - [ ] **Step 1: Run the complete JavaScript renderer suite from a clean shell**
 
 ```bash
-cd cmd/serf-hub/jstest
-NODE_PATH=/tmp/serf-jstest-jsdom/node_modules sh run-all.sh
+cd cmd/evener-hub/jstest
+NODE_PATH=/tmp/evener-jstest-jsdom/node_modules sh run-all.sh
 ```
 
 Expected: `jstest: all tests passed`.

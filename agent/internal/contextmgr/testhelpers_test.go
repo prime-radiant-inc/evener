@@ -6,10 +6,10 @@ import (
 	"sync"
 	"testing"
 
-	"primeradiant.com/serf/agent/internal/sessionlog"
-	"primeradiant.com/serf/agent/provider"
-	"primeradiant.com/serf/llm"
-	"primeradiant.com/serf/llm/providercfg"
+	"primeradiant.com/evener/agent/internal/sessionlog"
+	"primeradiant.com/evener/agent/provider"
+	"primeradiant.com/evener/llm"
+	"primeradiant.com/evener/llm/providercfg"
 )
 
 // communicateCall builds a communicate tool call carrying the given message and

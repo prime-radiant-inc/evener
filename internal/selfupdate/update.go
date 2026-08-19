@@ -15,9 +15,9 @@ import (
 	"strings"
 )
 
-const defaultRepoURL = "https://github.com/prime-radiant-inc/serf"
+const defaultRepoURL = "https://github.com/prime-radiant-inc/evener"
 
-var installBinaries = []string{"serf", "serf-hub", "serf-tui", "serf-doctor"}
+var installBinaries = []string{"evener", "evener-hub", "evener-tui", "evener-doctor"}
 
 var (
 	copyStream = io.Copy
@@ -92,7 +92,7 @@ func Upgrade(ctx context.Context, opts Options) (Result, error) {
 		return Result{}, err
 	}
 	binDir := firstNonEmpty(opts.BinDir, filepath.Join(prefix, "bin"))
-	shareBinDir := firstNonEmpty(opts.ShareBinDir, filepath.Join(prefix, "share", "serf", "bin"))
+	shareBinDir := firstNonEmpty(opts.ShareBinDir, filepath.Join(prefix, "share", "evener", "bin"))
 	repoURL := strings.TrimRight(firstNonEmpty(opts.RepoURL, defaultRepoURL), "/")
 	url := releaseURL(repoURL, target.Release, asset)
 	client := opts.HTTPClient
@@ -100,7 +100,7 @@ func Upgrade(ctx context.Context, opts Options) (Result, error) {
 		client = http.DefaultClient
 	}
 
-	tmpDir, err := os.MkdirTemp("", "serf-upgrade-*")
+	tmpDir, err := os.MkdirTemp("", "evener-upgrade-*")
 	if err != nil {
 		return Result{}, err
 	}
@@ -133,18 +133,18 @@ func Upgrade(ctx context.Context, opts Options) (Result, error) {
 		BinDir:         binDir,
 		ShareBinDir:    shareBinDir,
 		Installed:      installed,
-		RestartMessage: "Restart serf-tui and serf-hub to use the upgraded binaries.",
+		RestartMessage: "Restart evener-tui and evener-hub to use the upgraded binaries.",
 	}, nil
 }
 
 func releaseAsset(goos, goarch string) (asset, root string, err error) {
 	switch goos + "-" + goarch {
 	case "linux-amd64":
-		return "serf_linux_amd64.tar.gz", "serf_linux_amd64", nil
+		return "evener_linux_amd64.tar.gz", "evener_linux_amd64", nil
 	case "darwin-arm64":
-		return "serf_darwin_arm64.tar.gz", "serf_darwin_arm64", nil
+		return "evener_darwin_arm64.tar.gz", "evener_darwin_arm64", nil
 	default:
-		return "", "", fmt.Errorf("unsupported platform %s-%s: no Serf binary release is available", goos, goarch)
+		return "", "", fmt.Errorf("unsupported platform %s-%s: no Evener binary release is available", goos, goarch)
 	}
 }
 

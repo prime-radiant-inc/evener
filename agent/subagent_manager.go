@@ -7,7 +7,7 @@ import (
 	"sync"
 	"time"
 
-	"primeradiant.com/serf/agent/events"
+	"primeradiant.com/evener/agent/events"
 )
 
 // subagentManager owns the parent session's child-subagent map. It exists to

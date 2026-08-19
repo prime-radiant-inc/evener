@@ -5,9 +5,9 @@
 // fuzz target expresses its invariant in ONE line instead of hand-writing the
 // compare-and-Fatalf dance every time.
 //
-// This is the serf-agnostic core of the fuzzing toolkit: it imports only the
-// standard library and NOTHING from primeradiant.com/serf, so the boundary that
-// keeps fuzz/ portable holds (see fuzz/go.mod). A serf-side fuzz target imports
+// This is the evener-agnostic core of the fuzzing toolkit: it imports only the
+// standard library and NOTHING from primeradiant.com/evener, so the boundary that
+// keeps fuzz/ portable holds (see fuzz/go.mod). A evener-side fuzz target imports
 // this package; this package never imports back.
 //
 // # Reporter, not *testing.T

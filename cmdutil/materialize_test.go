@@ -7,10 +7,10 @@ import (
 	"testing"
 	"time"
 
-	authopenai "primeradiant.com/serf/auth/openai"
-	"primeradiant.com/serf/auth/openai/oaitest"
-	"primeradiant.com/serf/llm"
-	"primeradiant.com/serf/llm/providercfg"
+	authopenai "primeradiant.com/evener/auth/openai"
+	"primeradiant.com/evener/auth/openai/oaitest"
+	"primeradiant.com/evener/llm"
+	"primeradiant.com/evener/llm/providercfg"
 )
 
 func TestMaterializeProvidersConfig(t *testing.T) {
@@ -19,7 +19,7 @@ func TestMaterializeProvidersConfig(t *testing.T) {
 	t.Setenv("OPENAI_API_KEY", "k1")
 	t.Setenv("ANTHROPIC_API_KEY", "k2")
 	// ensure no OAuth/state interferes:
-	t.Setenv("SERF_STATE_DIR", dir)
+	t.Setenv("EVENER_STATE_DIR", dir)
 
 	cfg, err := MaterializeProvidersConfig(path, llm.WithStateDir(dir))
 	if err != nil {
@@ -63,7 +63,7 @@ func TestMaterializeProvidersConfig(t *testing.T) {
 // user's main provider.
 func TestMaterializeDetectsOpenAIOAuth(t *testing.T) {
 	// Isolate auth: clears OPENAI_API_KEY, points XDG_STATE_HOME at a temp dir,
-	// and returns the serf state dir to store the record in.
+	// and returns the evener state dir to store the record in.
 	stateDir := oaitest.IsolateOpenAIAuth(t)
 	for _, k := range []string{
 		"ANTHROPIC_API_KEY", "GEMINI_API_KEY", "GOOGLE_API_KEY",

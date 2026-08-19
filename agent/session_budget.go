@@ -4,7 +4,7 @@ import (
 	"errors"
 	"fmt"
 
-	"primeradiant.com/serf/agent/schema"
+	"primeradiant.com/evener/agent/schema"
 )
 
 type exhaustedBudget string

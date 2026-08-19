@@ -13,10 +13,10 @@ import (
 	"testing"
 	"time"
 
-	"primeradiant.com/serf/agent/schema"
-	"primeradiant.com/serf/agent/transcript"
-	"primeradiant.com/serf/appwire"
-	"primeradiant.com/serf/llm"
+	"primeradiant.com/evener/agent/schema"
+	"primeradiant.com/evener/agent/transcript"
+	"primeradiant.com/evener/appwire"
+	"primeradiant.com/evener/llm"
 )
 
 const testMaxLineBytes = 1 << 20
@@ -1408,7 +1408,7 @@ func writeBoundedFixture(t *testing.T) boundedFixture {
 		time.Unix(1_700_000_004, 0).UTC(),
 		time.Unix(1_700_000_005, 0).UTC(),
 	}
-	header := transcript.Header{Kind: "header", FormatVersion: transcript.FormatVersion, SessionID: "fixture", SystemPrompt: "You are Serf."}
+	header := transcript.Header{Kind: "header", FormatVersion: transcript.FormatVersion, SessionID: "fixture", SystemPrompt: "You are Evener."}
 	entries := []transcript.Entry{
 		{Kind: "entry", Seq: 1, Turn: schema.Turn{Kind: schema.TurnUserInput, Message: llm.User("first"), Timestamp: times[0]}},
 		{Kind: "entry", Seq: 2, Turn: schema.Turn{Kind: schema.TurnAssistant, Message: llm.Message{Content: []llm.ContentPart{{Kind: llm.ContentToolCall, ToolCall: &llm.ToolCallData{ID: "call_read", Name: "read_file", Arguments: json.RawMessage(`{"path":"README.md"}`)}}}}, Timestamp: times[1], Usage: llm.Usage{InputTokens: 11, OutputTokens: 7, TotalTokens: 18}}},

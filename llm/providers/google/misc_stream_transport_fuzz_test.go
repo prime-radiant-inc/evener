@@ -10,7 +10,7 @@ import (
 	"strings"
 	"testing"
 
-	"primeradiant.com/serf/llm"
+	"primeradiant.com/evener/llm"
 )
 
 // miscStreamRoundTripper is a fake http.RoundTripper honoring the RoundTripper

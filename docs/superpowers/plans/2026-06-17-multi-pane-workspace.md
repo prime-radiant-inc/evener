@@ -2,11 +2,11 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Let a user open a subagent's live session as one or more vertical panes beside the main session in the Serf web hub, using iframe-per-pane so the existing single-instance renderer runs unchanged in each pane.
+**Goal:** Let a user open a subagent's live session as one or more vertical panes beside the main session in the Evener web hub, using iframe-per-pane so the existing single-instance renderer runs unchanged in each pane.
 
 **Architecture:** The top page stays the host shell and renders the PRIMARY session top-level exactly as today. A new sibling region `#side-panes` (a flex-row of columns inside `body.app`, after `#workspace`) holds one `<iframe>` per side pane, each loading `/s/<id>` — so each pane is its own document and the renderer's hard-singleton state never collides. A small host module `panes.js` manages open/close/resize, caps the count, and restores open panes on reload from `localStorage`. An "open beside" affordance on subagent rows calls the host instead of the existing one-way `navigateTo`. The CSP is relaxed from `frame-ancestors 'none'` to `'self'` to permit same-origin framing.
 
-**Tech Stack:** Go (`html/template`, `net/http`, the `httpsec` CSP middleware), vanilla JS (no bundler; same IIFE style as `sidebar.js`/`appwire.js`), CSS. Tests: Go `testing`; the hub `jstest` harness (`cmd/serf-hub/jstest/run-all.sh`, run from inside that dir; tests `process.exit(0)` if a poller keeps the loop alive).
+**Tech Stack:** Go (`html/template`, `net/http`, the `httpsec` CSP middleware), vanilla JS (no bundler; same IIFE style as `sidebar.js`/`appwire.js`), CSS. Tests: Go `testing`; the hub `jstest` harness (`cmd/evener-hub/jstest/run-all.sh`, run from inside that dir; tests `process.exit(0)` if a poller keeps the loop alive).
 
 ## Global Constraints
 
@@ -19,46 +19,46 @@
 
 ## File structure
 
-- `cmd/serf-hub/internal/httpsec/httpsec.go` — relax CSP `frame-ancestors` (Task 1).
-- `cmd/serf-hub/internal/httpsec/httpsec_test.go` — update the asserted CSP (Task 1).
-- `cmd/serf-hub/templates/app.html` — add the `#side-panes` region + splitter, and load `panes.js` (Task 2, Task 3).
-- `cmd/serf-hub/assets/style.css` — side-pane layout + pane chrome + splitter styles (Task 2, Task 5).
-- `cmd/serf-hub/assets/panes.js` — NEW host module: open/close/cap/persist/resize (Tasks 3, 4, 5).
-- `cmd/serf-hub/assets/renderer.js` — "open beside" affordance on subagent rows (Task 6).
-- `cmd/serf-hub/jstest/test-panes.js` — NEW jstest for panes.js (Tasks 3, 4).
-- `cmd/serf-hub/jstest/test-renderer-open-beside.js` — NEW jstest for the hook (Task 6).
-- `cmd/serf-hub/web_test.go` — render assertions for the shell markup (Task 2).
+- `cmd/evener-hub/internal/httpsec/httpsec.go` — relax CSP `frame-ancestors` (Task 1).
+- `cmd/evener-hub/internal/httpsec/httpsec_test.go` — update the asserted CSP (Task 1).
+- `cmd/evener-hub/templates/app.html` — add the `#side-panes` region + splitter, and load `panes.js` (Task 2, Task 3).
+- `cmd/evener-hub/assets/style.css` — side-pane layout + pane chrome + splitter styles (Task 2, Task 5).
+- `cmd/evener-hub/assets/panes.js` — NEW host module: open/close/cap/persist/resize (Tasks 3, 4, 5).
+- `cmd/evener-hub/assets/renderer.js` — "open beside" affordance on subagent rows (Task 6).
+- `cmd/evener-hub/jstest/test-panes.js` — NEW jstest for panes.js (Tasks 3, 4).
+- `cmd/evener-hub/jstest/test-renderer-open-beside.js` — NEW jstest for the hook (Task 6).
+- `cmd/evener-hub/web_test.go` — render assertions for the shell markup (Task 2).
 
 ---
 
 ### Task 1: Relax CSP to allow same-origin framing
 
 **Files:**
-- Modify: `cmd/serf-hub/internal/httpsec/httpsec.go` (the `frame-ancestors` directive, ~line 35)
-- Test: `cmd/serf-hub/internal/httpsec/httpsec_test.go` (~line 41)
+- Modify: `cmd/evener-hub/internal/httpsec/httpsec.go` (the `frame-ancestors` directive, ~line 35)
+- Test: `cmd/evener-hub/internal/httpsec/httpsec_test.go` (~line 41)
 
 **Interfaces:**
 - Produces: the hub's `Content-Security-Policy` response header now contains `frame-ancestors 'self'` (was `'none'`). No new symbols.
 
-- [ ] **Step 1: Read the current directive.** `grep -n "frame-ancestors" cmd/serf-hub/internal/httpsec/httpsec.go cmd/serf-hub/internal/httpsec/httpsec_test.go` — confirm the policy string and the test's exact assertion.
+- [ ] **Step 1: Read the current directive.** `grep -n "frame-ancestors" cmd/evener-hub/internal/httpsec/httpsec.go cmd/evener-hub/internal/httpsec/httpsec_test.go` — confirm the policy string and the test's exact assertion.
 
 - [ ] **Step 2: Update the failing test first.** In `httpsec_test.go`, change the assertion that the CSP contains `frame-ancestors 'none'` to expect `frame-ancestors 'self'`. Run it:
 
-Run: `go test ./cmd/serf-hub/internal/httpsec/ -run CSP -v` (use the actual test name from Step 1)
+Run: `go test ./cmd/evener-hub/internal/httpsec/ -run CSP -v` (use the actual test name from Step 1)
 Expected: FAIL — the middleware still emits `'none'`.
 
 - [ ] **Step 3: Relax the directive.** In `httpsec.go`, change `frame-ancestors 'none'` to `frame-ancestors 'self'` in the CSP string. Change nothing else in the policy.
 
 - [ ] **Step 4: Run the test.**
 
-Run: `go test ./cmd/serf-hub/internal/httpsec/ -run CSP -v`
-Expected: PASS. Also `go test ./cmd/serf-hub/internal/httpsec/` → ok.
+Run: `go test ./cmd/evener-hub/internal/httpsec/ -run CSP -v`
+Expected: PASS. Also `go test ./cmd/evener-hub/internal/httpsec/` → ok.
 
 - [ ] **Step 5: Manual spike note (no code).** In your report, confirm by reading that no `X-Frame-Options: DENY` header is also set (grep `X-Frame-Options` in `httpsec.go`); if one exists it must become `SAMEORIGIN` or be removed, or it will override the CSP and still block framing. If present, fix it the same way and note it.
 
 - [ ] **Step 6: Commit.**
 ```bash
-git add cmd/serf-hub/internal/httpsec/httpsec.go cmd/serf-hub/internal/httpsec/httpsec_test.go
+git add cmd/evener-hub/internal/httpsec/httpsec.go cmd/evener-hub/internal/httpsec/httpsec_test.go
 git commit -m "Relax CSP frame-ancestors to 'self' for same-origin multi-pane iframes"
 ```
 
@@ -67,9 +67,9 @@ git commit -m "Relax CSP frame-ancestors to 'self' for same-origin multi-pane if
 ### Task 2: Side-pane region shell + layout CSS
 
 **Files:**
-- Modify: `cmd/serf-hub/templates/app.html` (add `#side-panes` + splitter after `#workspace`, inside `body.app`)
-- Modify: `cmd/serf-hub/assets/style.css` (layout for `#side-panes`, `.pane`, `.pane-header`, `.pane-splitter`)
-- Test: `cmd/serf-hub/web_test.go` (assert the shell renders the region)
+- Modify: `cmd/evener-hub/templates/app.html` (add `#side-panes` + splitter after `#workspace`, inside `body.app`)
+- Modify: `cmd/evener-hub/assets/style.css` (layout for `#side-panes`, `.pane`, `.pane-header`, `.pane-splitter`)
+- Test: `cmd/evener-hub/web_test.go` (assert the shell renders the region)
 
 **Interfaces:**
 - Produces: DOM contract consumed by Task 3's `panes.js`:
@@ -77,7 +77,7 @@ git commit -m "Relax CSP frame-ancestors to 'self' for same-origin multi-pane if
   - `#pane-splitter` — a drag handle between `#workspace` and `#side-panes`.
   - A pane element shape `panes.js` will create: `<section class="pane"><header class="pane-header"><span class="pane-title">…</span><button class="pane-close" aria-label="close pane">✕</button></header><iframe class="pane-frame" src="…"></iframe></section>`.
 
-- [ ] **Step 1: Read the shell.** Read `cmd/serf-hub/templates/app.html` around the `body.app` / `#workspace` region (the spec cites `app.html:29-33`) and `style.css:474-478` (`body.app` flex row; `#workspace { flex:1; min-width:0 }`). Confirm `body.app` is the flex row holding `#sidebar` + `#workspace`.
+- [ ] **Step 1: Read the shell.** Read `cmd/evener-hub/templates/app.html` around the `body.app` / `#workspace` region (the spec cites `app.html:29-33`) and `style.css:474-478` (`body.app` flex row; `#workspace { flex:1; min-width:0 }`). Confirm `body.app` is the flex row holding `#sidebar` + `#workspace`.
 
 - [ ] **Step 2: Write the failing render test.** In `web_test.go`, add a test that the app shell HTML for a session contains the side-pane region and splitter (use the existing app-shell render helper in that file — find how other tests render `/s/<id>` / the `app` template; mirror them):
 ```go
@@ -92,7 +92,7 @@ func TestWeb_AppShellHasSidePaneRegion(t *testing.T) {
 ```
 
 - [ ] **Step 3: Run it — expect FAIL** (region + script not present yet).
-Run: `go test ./cmd/serf-hub/ -run TestWeb_AppShellHasSidePaneRegion -v`
+Run: `go test ./cmd/evener-hub/ -run TestWeb_AppShellHasSidePaneRegion -v`
 
 - [ ] **Step 4: Add the markup.** In `app.html`, immediately AFTER the `<main id="workspace" ...>…</main>` element and still inside `body.app`, add:
 ```html
@@ -123,11 +123,11 @@ And in the `<head>`/scripts block where `sidebar.js` is loaded, add `<script src
 ```
 
 - [ ] **Step 6: Run the test + build.**
-Run: `go test ./cmd/serf-hub/ -run TestWeb_AppShellHasSidePaneRegion -v` → PASS; `make build-hub` → OK; `make lint` → `0 issues.`
+Run: `go test ./cmd/evener-hub/ -run TestWeb_AppShellHasSidePaneRegion -v` → PASS; `make build-hub` → OK; `make lint` → `0 issues.`
 
 - [ ] **Step 7: Commit.**
 ```bash
-git add cmd/serf-hub/templates/app.html cmd/serf-hub/assets/style.css cmd/serf-hub/web_test.go
+git add cmd/evener-hub/templates/app.html cmd/evener-hub/assets/style.css cmd/evener-hub/web_test.go
 git commit -m "Add empty side-pane region + splitter shell and pane CSS"
 ```
 
@@ -136,20 +136,20 @@ git commit -m "Add empty side-pane region + splitter shell and pane CSS"
 ### Task 3: `panes.js` — open/close panes (with cap)
 
 **Files:**
-- Create: `cmd/serf-hub/assets/panes.js`
-- Test: `cmd/serf-hub/jstest/test-panes.js`
+- Create: `cmd/evener-hub/assets/panes.js`
+- Test: `cmd/evener-hub/jstest/test-panes.js`
 
 **Interfaces:**
 - Consumes: the DOM contract from Task 2 (`#side-panes`, `#pane-splitter`).
-- Produces (global, mirroring `window.SerfRenderer`/`window.SerfAppwire`):
-  - `window.SerfPanes.open(href, title)` — opens (or focuses, if `href` already open) a side pane whose iframe `src = href`; enforces `MAX_SIDE_PANES = 3`; reveals `#side-panes` + `#pane-splitter`. Returns the pane element (or null if at cap → see Step 3 behavior).
-  - `window.SerfPanes.close(href)` — closes the pane with that href; hides the region + splitter when none remain.
-  - `window.SerfPanes.openHrefs()` — returns the array of currently-open pane hrefs (used by Task 4 persistence).
+- Produces (global, mirroring `window.EvenerRenderer`/`window.EvenerAppwire`):
+  - `window.EvenerPanes.open(href, title)` — opens (or focuses, if `href` already open) a side pane whose iframe `src = href`; enforces `MAX_SIDE_PANES = 3`; reveals `#side-panes` + `#pane-splitter`. Returns the pane element (or null if at cap → see Step 3 behavior).
+  - `window.EvenerPanes.close(href)` — closes the pane with that href; hides the region + splitter when none remain.
+  - `window.EvenerPanes.openHrefs()` — returns the array of currently-open pane hrefs (used by Task 4 persistence).
   - `MAX_SIDE_PANES = 3`.
 
-- [ ] **Step 1: Read a sibling module** (`cmd/serf-hub/assets/sidebar.js`) for the IIFE wrapper, the `window.Serf*` export style, and how it guards missing DOM. Read `cmd/serf-hub/jstest/test-sidebar-archive.js` for the jstest harness (JSDOM setup, `process.exit(0)`).
+- [ ] **Step 1: Read a sibling module** (`cmd/evener-hub/assets/sidebar.js`) for the IIFE wrapper, the `window.Evener*` export style, and how it guards missing DOM. Read `cmd/evener-hub/jstest/test-sidebar-archive.js` for the jstest harness (JSDOM setup, `process.exit(0)`).
 
-- [ ] **Step 2: Write the failing test.** `cmd/serf-hub/jstest/test-panes.js`:
+- [ ] **Step 2: Write the failing test.** `cmd/evener-hub/jstest/test-panes.js`:
 ```js
 // Sets up minimal DOM (#side-panes, #pane-splitter), loads panes.js, exercises open/close/cap.
 const { JSDOM } = require("jsdom");
@@ -164,7 +164,7 @@ const dom = new JSDOM(`<!DOCTYPE html><body class="app">
 global.window = dom.window; global.document = dom.window.document;
 
 eval(fs.readFileSync(path.join(__dirname, "..", "assets", "panes.js"), "utf8"));
-const P = dom.window.SerfPanes;
+const P = dom.window.EvenerPanes;
 
 // open one pane
 const pane = P.open("/s/sub-1", "Subagent 1");
@@ -194,8 +194,8 @@ console.log("test-panes: ok");
 process.exit(0);
 ```
 
-- [ ] **Step 3: Run it — expect FAIL** (`SerfPanes` undefined).
-Run: `cd cmd/serf-hub/jstest && node test-panes.js`
+- [ ] **Step 3: Run it — expect FAIL** (`EvenerPanes` undefined).
+Run: `cd cmd/evener-hub/jstest && node test-panes.js`
 
 - [ ] **Step 4: Implement `panes.js`.**
 ```js
@@ -273,18 +273,18 @@ Run: `cd cmd/serf-hub/jstest && node test-panes.js`
   }
 
   // persist() is defined in Task 4; declare a no-op here so Task 3 stands alone.
-  function persist() { if (window.SerfPanes && window.SerfPanes._persist) window.SerfPanes._persist(); }
+  function persist() { if (window.EvenerPanes && window.EvenerPanes._persist) window.EvenerPanes._persist(); }
 
-  window.SerfPanes = { open: open, close: close, openHrefs: openHrefs, MAX_SIDE_PANES: MAX_SIDE_PANES };
+  window.EvenerPanes = { open: open, close: close, openHrefs: openHrefs, MAX_SIDE_PANES: MAX_SIDE_PANES };
 })();
 ```
 
 - [ ] **Step 5: Run the test.**
-Run: `cd cmd/serf-hub/jstest && node test-panes.js` → `test-panes: ok`; then `bash run-all.sh` → `jstest: all tests passed`.
+Run: `cd cmd/evener-hub/jstest && node test-panes.js` → `test-panes: ok`; then `bash run-all.sh` → `jstest: all tests passed`.
 
 - [ ] **Step 6: Commit.**
 ```bash
-git add cmd/serf-hub/assets/panes.js cmd/serf-hub/jstest/test-panes.js
+git add cmd/evener-hub/assets/panes.js cmd/evener-hub/jstest/test-panes.js
 git commit -m "Add panes.js host module: open/close side panes with a cap"
 ```
 
@@ -293,18 +293,18 @@ git commit -m "Add panes.js host module: open/close side panes with a cap"
 ### Task 4: Restore open panes on reload (localStorage)
 
 **Files:**
-- Modify: `cmd/serf-hub/assets/panes.js` (add persistence + restore-on-load)
-- Test: `cmd/serf-hub/jstest/test-panes.js` (extend)
+- Modify: `cmd/evener-hub/assets/panes.js` (add persistence + restore-on-load)
+- Test: `cmd/evener-hub/jstest/test-panes.js` (extend)
 
 **Interfaces:**
 - Consumes: `open`/`openHrefs` (Task 3).
-- Produces: panes (href+title) are written to `localStorage["serf-hub.panes"]` on every open/close, and restored on load. Adds `window.SerfPanes.restore()` (idempotent) and an internal `_persist`.
+- Produces: panes (href+title) are written to `localStorage["evener-hub.panes"]` on every open/close, and restored on load. Adds `window.EvenerPanes.restore()` (idempotent) and an internal `_persist`.
 
 - [ ] **Step 1: Extend the failing test.** Append to `test-panes.js` BEFORE `process.exit(0)`:
 ```js
 // persistence: opening writes localStorage; a fresh load restores
 P.open("/s/keep-1", "Keep 1");
-const stored = JSON.parse(dom.window.localStorage.getItem("serf-hub.panes") || "[]");
+const stored = JSON.parse(dom.window.localStorage.getItem("evener-hub.panes") || "[]");
 if (!stored.some(p => p.href === "/s/keep-1")) throw new Error("open not persisted");
 
 // simulate reload: clear DOM panes, call restore()
@@ -317,11 +317,11 @@ console.log("test-panes persistence: ok");
 (Place this above the existing `console.log("test-panes: ok")` / `process.exit(0)` — or move the exit to the very end.)
 
 - [ ] **Step 2: Run it — expect FAIL** (`restore` undefined / nothing persisted).
-Run: `cd cmd/serf-hub/jstest && node test-panes.js`
+Run: `cd cmd/evener-hub/jstest && node test-panes.js`
 
 - [ ] **Step 3: Implement persistence in `panes.js`.** Replace the placeholder `persist()` and the export, and add `restore()`:
 ```js
-  var STORE_KEY = "serf-hub.panes";
+  var STORE_KEY = "evener-hub.panes";
 
   function persist() {
     var r = region();
@@ -352,11 +352,11 @@ Update the export to `{ open, close, openHrefs, restore, MAX_SIDE_PANES, _persis
 ```
 
 - [ ] **Step 4: Run the test.**
-Run: `cd cmd/serf-hub/jstest && node test-panes.js` → both `ok` lines; `bash run-all.sh` → all passed.
+Run: `cd cmd/evener-hub/jstest && node test-panes.js` → both `ok` lines; `bash run-all.sh` → all passed.
 
 - [ ] **Step 5: Commit.**
 ```bash
-git add cmd/serf-hub/assets/panes.js cmd/serf-hub/jstest/test-panes.js
+git add cmd/evener-hub/assets/panes.js cmd/evener-hub/jstest/test-panes.js
 git commit -m "Persist + restore open side panes across reload via localStorage"
 ```
 
@@ -365,30 +365,30 @@ git commit -m "Persist + restore open side panes across reload via localStorage"
 ### Task 5: Splitter resize with persisted width
 
 **Files:**
-- Modify: `cmd/serf-hub/assets/panes.js` (splitter drag → set `--pane-w`, persist width)
-- Test: `cmd/serf-hub/jstest/test-panes.js` (extend — test the width math/persistence, not real mouse drag)
+- Modify: `cmd/evener-hub/assets/panes.js` (splitter drag → set `--pane-w`, persist width)
+- Test: `cmd/evener-hub/jstest/test-panes.js` (extend — test the width math/persistence, not real mouse drag)
 
 **Interfaces:**
 - Consumes: `#pane-splitter`, the `.pane` width var `--pane-w` (Task 2 CSS).
-- Produces: `window.SerfPanes.setSidePanesWidth(px)` clamps to `[280, 900]`, applies it to the `.side-panes` width (or each `.pane` `--pane-w`), and persists to `localStorage["serf-hub.panes.width"]`; restored on load. The mousedown/mousemove/mouseup handler on `#pane-splitter` calls `setSidePanesWidth` (drag itself is verified manually).
+- Produces: `window.EvenerPanes.setSidePanesWidth(px)` clamps to `[280, 900]`, applies it to the `.side-panes` width (or each `.pane` `--pane-w`), and persists to `localStorage["evener-hub.panes.width"]`; restored on load. The mousedown/mousemove/mouseup handler on `#pane-splitter` calls `setSidePanesWidth` (drag itself is verified manually).
 
 - [ ] **Step 1: Extend the failing test.** Append before the final exit:
 ```js
 P.setSidePanesWidth(10000);
-if (parseInt(dom.window.localStorage.getItem("serf-hub.panes.width"), 10) !== 900)
+if (parseInt(dom.window.localStorage.getItem("evener-hub.panes.width"), 10) !== 900)
   throw new Error("width not clamped to max");
 P.setSidePanesWidth(10);
-if (parseInt(dom.window.localStorage.getItem("serf-hub.panes.width"), 10) !== 280)
+if (parseInt(dom.window.localStorage.getItem("evener-hub.panes.width"), 10) !== 280)
   throw new Error("width not clamped to min");
 console.log("test-panes width: ok");
 ```
 
 - [ ] **Step 2: Run it — expect FAIL** (`setSidePanesWidth` undefined).
-Run: `cd cmd/serf-hub/jstest && node test-panes.js`
+Run: `cd cmd/evener-hub/jstest && node test-panes.js`
 
 - [ ] **Step 3: Implement.** In `panes.js`:
 ```js
-  var WIDTH_KEY = "serf-hub.panes.width";
+  var WIDTH_KEY = "evener-hub.panes.width";
   function setSidePanesWidth(px) {
     var w = Math.max(280, Math.min(900, Math.round(px)));
     var r = region();
@@ -422,13 +422,13 @@ Run: `cd cmd/serf-hub/jstest && node test-panes.js`
 Have `--pane-w` apply to each `.pane` (CSS already sets `.pane { width: var(--pane-w, 420px) }`); set the var on `#side-panes` so it cascades — confirm the CSS var inherits (it does, custom properties inherit). Call `bindSplitter()` and `restoreWidth()` from the load path (alongside `restore()`), and add `setSidePanesWidth` to the export.
 
 - [ ] **Step 4: Run the test + build.**
-Run: `cd cmd/serf-hub/jstest && node test-panes.js` → width ok; `bash run-all.sh` → all passed; `make build-hub` → OK; `make lint` → `0 issues.`
+Run: `cd cmd/evener-hub/jstest && node test-panes.js` → width ok; `bash run-all.sh` → all passed; `make build-hub` → OK; `make lint` → `0 issues.`
 
 - [ ] **Step 5: Manual-verify note.** In your report, state that real splitter drag (mousedown→move→up resizing the panes) must be eyeball-verified in a browser; the unit test only covers the clamp/persist math.
 
 - [ ] **Step 6: Commit.**
 ```bash
-git add cmd/serf-hub/assets/panes.js cmd/serf-hub/jstest/test-panes.js
+git add cmd/evener-hub/assets/panes.js cmd/evener-hub/jstest/test-panes.js
 git commit -m "Add resizable side-pane splitter with clamped, persisted width"
 ```
 
@@ -437,39 +437,39 @@ git commit -m "Add resizable side-pane splitter with clamped, persisted width"
 ### Task 6: "Open beside" affordance on subagent rows
 
 **Files:**
-- Modify: `cmd/serf-hub/assets/renderer.js` (the subagent row builder + the `navigateTo`/`applyJobRefTarget` area, ~`renderer.js:2374-2386`; row builder `makeSubagentRow` ~`renderer.js:2216`)
-- Test: `cmd/serf-hub/jstest/test-renderer-open-beside.js`
+- Modify: `cmd/evener-hub/assets/renderer.js` (the subagent row builder + the `navigateTo`/`applyJobRefTarget` area, ~`renderer.js:2374-2386`; row builder `makeSubagentRow` ~`renderer.js:2216`)
+- Test: `cmd/evener-hub/jstest/test-renderer-open-beside.js`
 
 **Interfaces:**
-- Consumes: `window.SerfPanes.open(href, title)` (Task 3).
-- Produces: each subagent row gains an "open beside" control (a small button, class `open-beside-btn`, glyph `⇲` or `↔`) that calls `window.SerfPanes.open("/s/" + transcriptRef, title)` and does NOT trigger the row's `navigateTo`. The existing "view →" one-way nav is unchanged. Guard: if `window.SerfPanes` is absent (e.g. inside an iframe pane), hide/skip the button so panes don't nest.
+- Consumes: `window.EvenerPanes.open(href, title)` (Task 3).
+- Produces: each subagent row gains an "open beside" control (a small button, class `open-beside-btn`, glyph `⇲` or `↔`) that calls `window.EvenerPanes.open("/s/" + transcriptRef, title)` and does NOT trigger the row's `navigateTo`. The existing "view →" one-way nav is unchanged. Guard: if `window.EvenerPanes` is absent (e.g. inside an iframe pane), hide/skip the button so panes don't nest.
 
 - [ ] **Step 1: Read the seam.** Read `renderer.js` around `makeSubagentRow` (~2216) and `applyJobRefTarget`/`navigateTo` (~2374-2386). Confirm where `data.transcriptRef` is available and how the row's click is wired, and how the row title is obtained.
 
-- [ ] **Step 2: Write the failing test.** `cmd/serf-hub/jstest/test-renderer-open-beside.js` — load the renderer via the shared loader (mirror `test-subagent-nav.js`), render a subagent row, stub `window.SerfPanes`, click the open-beside control, assert `SerfPanes.open` was called with `/s/<transcriptRef>` and that `window.location` did NOT change. (Follow the existing renderer-jstest setup: `require("./load-renderer").evalRenderer(window)`, `await setTimeout(30)`, fire the data that produces a subagent row, then `process.exit(0)`.)
+- [ ] **Step 2: Write the failing test.** `cmd/evener-hub/jstest/test-renderer-open-beside.js` — load the renderer via the shared loader (mirror `test-subagent-nav.js`), render a subagent row, stub `window.EvenerPanes`, click the open-beside control, assert `EvenerPanes.open` was called with `/s/<transcriptRef>` and that `window.location` did NOT change. (Follow the existing renderer-jstest setup: `require("./load-renderer").evalRenderer(window)`, `await setTimeout(30)`, fire the data that produces a subagent row, then `process.exit(0)`.)
 ```js
 // skeleton — adapt to the harness in test-subagent-nav.js
 let openedWith = null;
-window.SerfPanes = { open: (href, title) => { openedWith = { href, title }; } };
+window.EvenerPanes = { open: (href, title) => { openedWith = { href, title }; } };
 // ... render a subagent row whose transcriptRef = "sub-xyz" ...
 const btn = document.querySelector(".open-beside-btn");
 if (!btn) throw new Error("no open-beside control");
 const beforeHref = window.location.href;
 btn.click();
-if (!openedWith || openedWith.href !== "/s/sub-xyz") throw new Error("did not call SerfPanes.open correctly");
+if (!openedWith || openedWith.href !== "/s/sub-xyz") throw new Error("did not call EvenerPanes.open correctly");
 if (window.location.href !== beforeHref) throw new Error("open-beside must not navigate");
 console.log("test-renderer-open-beside: ok");
 process.exit(0);
 ```
 
 - [ ] **Step 3: Run it — expect FAIL** (no `.open-beside-btn`).
-Run: `cd cmd/serf-hub/jstest && node test-renderer-open-beside.js`
+Run: `cd cmd/evener-hub/jstest && node test-renderer-open-beside.js`
 
 - [ ] **Step 4: Implement.** In `makeSubagentRow` (or wherever the row's "view →" affordance is built), add a sibling button:
 ```js
 // "Open beside" — opens the subagent in a side pane instead of navigating away.
-// Hidden when SerfPanes is unavailable (e.g. this renderer is itself inside a pane iframe).
-if (window.SerfPanes && data.transcriptRef) {
+// Hidden when EvenerPanes is unavailable (e.g. this renderer is itself inside a pane iframe).
+if (window.EvenerPanes && data.transcriptRef) {
   var beside = document.createElement("button");
   beside.type = "button";
   beside.className = "open-beside-btn";
@@ -479,7 +479,7 @@ if (window.SerfPanes && data.transcriptRef) {
   beside.addEventListener("click", function (e) {
     e.preventDefault();
     e.stopPropagation(); // do not trigger the row's navigateTo
-    window.SerfPanes.open("/s/" + encodeURIComponent(data.transcriptRef), /* title */ row.dataset.title || data.transcriptRef);
+    window.EvenerPanes.open("/s/" + encodeURIComponent(data.transcriptRef), /* title */ row.dataset.title || data.transcriptRef);
   });
   row.appendChild(beside);
 }
@@ -487,13 +487,13 @@ if (window.SerfPanes && data.transcriptRef) {
 Match the actual row-builder variable names from Step 1 (the local for the row element, and how the title is available — use the subagent's display name if the builder has it). Add a minimal `.open-beside-btn` style to `style.css` (quiet, hover-revealed, like `.archive-btn`): you may fold this one rule in here.
 
 - [ ] **Step 5: Run the test.**
-Run: `cd cmd/serf-hub/jstest && node test-renderer-open-beside.js` → ok; `bash run-all.sh` → all passed.
+Run: `cd cmd/evener-hub/jstest && node test-renderer-open-beside.js` → ok; `bash run-all.sh` → all passed.
 
-- [ ] **Step 6: Verify the renderer split is intact** (you touched renderer.js): `node --check cmd/serf-hub/assets/renderer.js`; confirm all 4 renderer files still exist and `app.html` loads all 4.
+- [ ] **Step 6: Verify the renderer split is intact** (you touched renderer.js): `node --check cmd/evener-hub/assets/renderer.js`; confirm all 4 renderer files still exist and `app.html` loads all 4.
 
 - [ ] **Step 7: Commit.**
 ```bash
-git add cmd/serf-hub/assets/renderer.js cmd/serf-hub/assets/style.css cmd/serf-hub/jstest/test-renderer-open-beside.js
+git add cmd/evener-hub/assets/renderer.js cmd/evener-hub/assets/style.css cmd/evener-hub/jstest/test-renderer-open-beside.js
 git commit -m "Add 'open beside' affordance on subagent rows -> side pane"
 ```
 
@@ -502,9 +502,9 @@ git commit -m "Add 'open beside' affordance on subagent rows -> side pane"
 ## Final verification (after all tasks)
 
 - `make build-hub` && `go build ./...`
-- `go test ./cmd/serf-hub/... ./cmd/serf-hub/internal/...`
+- `go test ./cmd/evener-hub/... ./cmd/evener-hub/internal/...`
 - `make lint` → `0 issues.` ×4
-- `cd cmd/serf-hub/jstest && bash run-all.sh` → `jstest: all tests passed`
+- `cd cmd/evener-hub/jstest && bash run-all.sh` → `jstest: all tests passed`
 - Renderer split intact: 4 `renderer*.js`; `app.html` loads all 4 + `panes.js`.
 - **Manual browser smoke (report it):** open a session with subagents; click "open beside" on a subagent row → it opens as a right-hand pane (live, interactive); open up to 3; drag the splitter; close panes; reload → panes restore.
 
@@ -520,4 +520,4 @@ git commit -m "Add 'open beside' affordance on subagent rows -> side pane"
 
 - **Scope coverage:** subagent live pane via iframe (Tasks 2–3,6); fully interactive (iframe is real `/s/<id>` — inherent); a few tiled vertical columns + cap (Task 3 `MAX_SIDE_PANES=3`, Task 2 flex-row); restore-on-reload (Task 4); CSP relax approved (Task 1); resize (Task 5). Auto-open-observer + documents + compressed rendering + shareable URLs explicitly deferred with reasons.
 - **Placeholder scan:** no TBD/"handle errors"; each code step has concrete code; the one unavoidable adapt-to-codebase points (the app-shell render helper name in web_test.go, the subagent row-builder local names) are called out as "read Step 1 / mirror existing" rather than invented.
-- **Type/name consistency:** `window.SerfPanes.{open(href,title), close(href), openHrefs(), restore(), setSidePanesWidth(px), MAX_SIDE_PANES}`, DOM ids `#side-panes`/`#pane-splitter`, classes `.pane/.pane-header/.pane-title/.pane-close/.pane-frame/.pane-splitter/.open-beside-btn`, storage keys `serf-hub.panes` + `serf-hub.panes.width` — used consistently across tasks.
+- **Type/name consistency:** `window.EvenerPanes.{open(href,title), close(href), openHrefs(), restore(), setSidePanesWidth(px), MAX_SIDE_PANES}`, DOM ids `#side-panes`/`#pane-splitter`, classes `.pane/.pane-header/.pane-title/.pane-close/.pane-frame/.pane-splitter/.open-beside-btn`, storage keys `evener-hub.panes` + `evener-hub.panes.width` — used consistently across tasks.

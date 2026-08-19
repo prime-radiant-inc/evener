@@ -7,10 +7,10 @@ is accepted as graceful-skip, not enforced.
 
 ## Problem
 
-The fast/cheap model serf uses for auxiliary "side calls" is locked to the
+The fast/cheap model evener uses for auxiliary "side calls" is locked to the
 **same provider** as the main model. Two enforcement points:
 
-1. `applyFastCheapModel` (`cmd/serf/serve.go:492`) rejects a cheap model whose
+1. `applyFastCheapModel` (`cmd/evener/serve.go:492`) rejects a cheap model whose
    provider differs from the active provider (error at `:501`). Today it also
    requires a fully-qualified `provider/model` — `cmdutil.ParseModelRef`
    (`cmdutil/cmdutil.go:113`) rejects a bare model name. So the current contract
@@ -150,7 +150,7 @@ providers**, not `ResolveProfileFromConfig`:
 
 ## Resume / persistence (must-have — feature evaporates without it)
 
-Today the cheap setting is lost on hub resume: `cmd/serf-hub/spawn.go:256-258`
+Today the cheap setting is lost on hub resume: `cmd/evener-hub/spawn.go:256-258`
 sets `resumeResolved.Effective.FastCheapModel = ""`, and `SessionMeta`
 (`agent/schema/snapshot.go`) persists only `ProfileID`/`Model`. A resumed Kimi
 session silently reverts side calls to the expensive main model.
@@ -160,7 +160,7 @@ Fix: persist the cheap ref and rebuild it on restore.
   time; on `RestoreSessionFromMetaWithConfig` (`serve.go:219`) re-apply via
   `WithCheapModel`.
 - Stop clearing `FastCheapModel` in `spawn.go` resume args (or re-pass it from
-  the persisted launch config) so the relaunched `serf serve` re-applies it.
+  the persisted launch config) so the relaunched `evener serve` re-applies it.
 - Verify which mechanism is authoritative (launch-config replay vs. SessionMeta)
   and use one; do not double-apply.
 
@@ -174,10 +174,10 @@ Fix: persist the cheap ref and rebuild it on restore.
   unchanged).
 - `agent/internal/contextmgr/context_manager.go`: `summarizationModels` ⇒
   `(provider, model)` pairs + loop routing.
-- `cmd/serf/serve.go:492` `applyFastCheapModel`: new signature + client-registered
+- `cmd/evener/serve.go:492` `applyFastCheapModel`: new signature + client-registered
   validation + relaxed provider-match; **parse** bare vs `provider/model`.
 - Resume: `SessionMeta` field + restore re-apply + `spawn.go:256-258`.
-- Tests: `cmd/serf/serve_fast_cheap_model_test.go` (the `RejectsCrossProvider`
+- Tests: `cmd/evener/serve_fast_cheap_model_test.go` (the `RejectsCrossProvider`
   test becomes `AllowsCrossProviderWhenRegistered` and needs a real client with
   the cheap provider registered; add a `RejectsCrossProviderWhenNotRegistered`);
   routing tests for a family-A site, the namer, and the summarizer pairs; a

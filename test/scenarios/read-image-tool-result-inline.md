@@ -8,7 +8,7 @@ thumbnail under that same tool row. AppWire must carry no bytes and no base64
 for it: `appwire.OutputImage` (`appwire/types.go:730-738`) has Source / Name /
 MediaType / Size / URL / SHA / Path and **no data field at all**. If
 `events.ToolResultOutputImage` (`agent/events/payloads.go#ToolResultOutputImage`), the hub's
-sha-route stamp (`cmd/serf-hub/output_images.go:169-181`), or the transcript
+sha-route stamp (`cmd/evener-hub/output_images.go:169-181`), or the transcript
 byte-serving route regresses, this catches it.
 
 **Surface**: see `docs/agentic-testing.md`, "Driving the web UI" — its selector
@@ -21,7 +21,7 @@ used to name died with the vanilla frontend (`660376f78`); the gallery is now
 
 - A freshly built hub on an isolated `$HOME` and a kernel-assigned port — see
   the Setup checklist in `docs/agentic-testing.md`. Token at
-  `$HOME/.serf/auth-token` (that isolated one).
+  `$HOME/.evener/auth-token` (that isolated one).
 - A hermetic `$WORK` containing a small valid PNG, `fixture.png`.
 - A cheap image-capable model, e.g. `anthropic/claude-haiku-4-5-20251001`.
 - For the browser step only: run `make build-web` before building the hub. A
@@ -42,7 +42,7 @@ used to name died with the vanilla frontend (`660376f78`); the gallery is now
 
 3. **Fetch the bytes (browser-free).** `curl` each descriptor's `url` with the
    same `Authorization: Bearer $TOKEN` header — the whole mux sits behind one
-   guard (`cmd/serf-hub/web.go:176,180`).
+   guard (`cmd/evener-hub/web.go:176,180`).
 
 4. **Browser (qualitative).** Navigate
    `$HUB/auth?token=$TOKEN&next=/s/local:$SID`. Find the tool row

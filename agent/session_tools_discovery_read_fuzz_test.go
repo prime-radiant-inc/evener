@@ -1,4 +1,4 @@
-//go:build serffuzz
+//go:build evenerfuzz
 
 package agent
 
@@ -13,11 +13,11 @@ import (
 	"time"
 	"unicode/utf8"
 
-	"primeradiant.com/serf/agent/internal/agenttest"
-	"primeradiant.com/serf/agent/internal/tool"
-	"primeradiant.com/serf/agent/schema"
-	"primeradiant.com/serf/agent/transcript"
-	"primeradiant.com/serf/llm"
+	"primeradiant.com/evener/agent/internal/agenttest"
+	"primeradiant.com/evener/agent/internal/tool"
+	"primeradiant.com/evener/agent/schema"
+	"primeradiant.com/evener/agent/transcript"
+	"primeradiant.com/evener/llm"
 )
 
 // FuzzTranscriptDiscoveryReadProgram drives the real archived-transcript tool
@@ -162,8 +162,8 @@ func tdrpRun(t *testing.T, program []byte) tdrpTrace {
 func tdrpFixture(t *testing.T, r *tdrpReader) (*toolDeps, *tool.Registry, *agenttest.DenyEnv, string, string, string, string) {
 	t.Helper()
 	root := t.TempDir()
-	currentDir := filepath.Join(root, "serf", "projects", trenderCurrentProject)
-	siblingDir := filepath.Join(root, "serf", "projects", trenderOtherProject)
+	currentDir := filepath.Join(root, "evener", "projects", trenderCurrentProject)
+	siblingDir := filepath.Join(root, "evener", "projects", trenderOtherProject)
 	for _, dir := range []string{currentDir, siblingDir} {
 		if err := os.MkdirAll(filepath.Join(dir, sessionsSubdir), 0o755); err != nil {
 			t.Fatalf("make transcript bucket %q: %v", dir, err)
@@ -253,7 +253,7 @@ func tdrpWriteSession(t *testing.T, bucket string, spec tdrpSessionSpec) {
 		UpdatedAt:       tdrpTime,
 		EnvInfo: schema.EnvironmentInfo{
 			WorkingDir:   "/fixture/project",
-			GitOriginURL: "git@example.test:fixture/serf.git",
+			GitOriginURL: "git@example.test:fixture/evener.git",
 		},
 	}
 	if err := schema.SaveSessionMeta(bucket, meta); err != nil {

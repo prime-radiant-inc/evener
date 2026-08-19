@@ -12,12 +12,12 @@ delegation-only tools for a coordinator.
   running, otherwise re-run its Pre-state first. The handoff is its run directory, not
   a port (`docs/agentic-testing.md`, "Handing this hub to a sibling card"):
   ```bash
-  run=${SERF_E2E_RUN:?run ask-web-answer.md's Pre-state first, then export SERF_E2E_RUN="$run"}
+  run=${EVENER_E2E_RUN:?run ask-web-answer.md's Pre-state first, then export EVENER_E2E_RUN="$run"}
   export HOME="$run/home"
   unset XDG_STATE_HOME
   PORT=$(grep -oE 'listening on 127\.0\.0\.1:[0-9]+' "$run/hub.log" | grep -oE '[0-9]+$' | tail -1)
   HUB=http://127.0.0.1:$PORT
-  TOKEN=$(cat "$HOME/.serf/auth-token")
+  TOKEN=$(cat "$HOME/.evener/auth-token")
   HUBPID=$(cat "$run/hub.pid")
   kill -0 "$HUBPID" 2>/dev/null || { echo "that hub is gone — re-run ask-web-answer.md's Pre-state" >&2; exit 1; }
   ```
@@ -32,11 +32,11 @@ delegation-only tools for a coordinator.
    `job_id` to capture, because creation returns none
    (`agent/session_tools.go#stableDelegateCreateResult`):
    ```bash
-   tmpdir=$(mktemp -d -t serf-e2e-ask-subagent-XXXXX)
+   tmpdir=$(mktemp -d -t evener-e2e-ask-subagent-XXXXX)
    prompt="Call the delegate tool exactly once, with NO max_wait_ms, and this task: \"Immediately try calling a tool named ask_user, with header Confirm, question Should we proceed, and two options Yes and No. If that tool is unavailable, unknown, or absent from your tool list, call communicate with the exact text: ASK_USER_UNAVAILABLE. If it somehow succeeds, call communicate with the exact text: ASK_USER_SUCCEEDED.\" Report the delegate_id and end your turn. When the delegate's terminal notification arrives, tell me the delegate_id and the final message from the delegate, and end your turn."
    body=$(jq -n --arg wd "$tmpdir" --arg prompt "$prompt" '{
      prompt: $prompt,
-     model: "openai/gpt-5.5", working_dir: $wd, harness: "serf", branch: "", access_mode: "full", agent: "default", launch_overrides: {}
+     model: "openai/gpt-5.5", working_dir: $wd, harness: "evener", branch: "", access_mode: "full", agent: "default", launch_overrides: {}
    }')
    SID=$(curl -s -X POST -H "Content-Type: application/json" -H "Authorization: Bearer $TOKEN" -d "$body" "$HUB/api/spawn" | jq -r '.session_id')
    for i in $(seq 1 240); do
@@ -48,14 +48,14 @@ delegation-only tools for a coordinator.
    ```
 2. Find the delegate's own session ID from the parent's job tree:
    ```bash
-   go run ./cmd/serf-doctor tree "$SID" --json | jq -r '.children[0].session_id'
-   DELEGATE_SID=$(go run ./cmd/serf-doctor tree "$SID" --json | jq -r '.children[0].session_id')
+   go run ./cmd/evener-doctor tree "$SID" --json | jq -r '.children[0].session_id'
+   DELEGATE_SID=$(go run ./cmd/evener-doctor tree "$SID" --json | jq -r '.children[0].session_id')
    echo "DELEGATE_SID=$DELEGATE_SID"
    ```
 3. Confirm the delegate's **own** transcript never advertised `ask_user` to the provider,
    and never structurally invoked it:
    ```bash
-   go run ./cmd/serf-doctor transcript "$DELEGATE_SID" --count ask_user
+   go run ./cmd/evener-doctor transcript "$DELEGATE_SID" --count ask_user
    ```
 4. Read the delegate's own final `communicate` tool-call argument directly from its own
    transcript, rather than the parent's paraphrase of it — the parent's transcript shares a
@@ -65,7 +65,7 @@ delegation-only tools for a coordinator.
    the delegate to report X" (same pattern as `tui-paste-image-from-clipboard.md`'s
    transcript cross-check):
    ```bash
-   DFILE=$(find ~/.local/state/serf/projects -name "$DELEGATE_SID.transcript.jsonl")
+   DFILE=$(find ~/.local/state/evener/projects -name "$DELEGATE_SID.transcript.jsonl")
    python3 - <<EOF
    import json
    for line in open("$DFILE"):
@@ -83,7 +83,7 @@ delegation-only tools for a coordinator.
    (`agent/internal/tool/definitions.go#DefDelegate`) — note there is no `max_wait_ms`
    either. That `additionalProperties: false` is advisory, not enforced: `DefDelegate`
    ships `Strict: &strictFalse`, so an unknown key is not rejected by schema validation —
-   what actually fires for `max_wait_ms` is serf's own `invalid_request` check in
+   what actually fires for `max_wait_ms` is evener's own `invalid_request` check in
    `agent/session_tools.go#stableDelegateCreateTool`. There is no
    `grant_tools` property, and the delegate tool's Go handler
    (`agent/session_tools.go#stableDelegateCreateTool`) never reads one from `args`. The one
@@ -126,8 +126,8 @@ rm -rf "$tmpdir"
 
 Leave the hub and `$run` alone — `ask-web-answer.md` started them and its Cleanup
 kills `$HUBPID` and removes `$run`. If you had to start the hub yourself because
-`SERF_E2E_RUN` was unset, you own it: `kill "$HUBPID"; rm -rf "$run"`. Never
-`pkill -f serf-hub`, which takes out every other concurrent agent's hub too
+`EVENER_E2E_RUN` was unset, you own it: `kill "$HUBPID"; rm -rf "$run"`. Never
+`pkill -f evener-hub`, which takes out every other concurrent agent's hub too
 (`docs/agentic-testing.md`, "Cleanup recipe").
 
 ## Sharp edges
@@ -139,7 +139,7 @@ kills `$HUBPID` and removes `$run`. If you had to start the hub yourself because
   has long since finished with a clean `communicate(end_turn=true)`. Confirmed live in this
   run: a root session whose transcript already showed a completed `delegate` round-trip and
   final `communicate` result (and whose delegate's own status read `idle` via
-  `serf-doctor tree --json`) still reported `state: "active"` at both the hub's
+  `evener-doctor tree --json`) still reported `state: "active"` at both the hub's
   `/api/sessions` and the daemon's own `/status` for several minutes, purely because the
   delegate's daemon process hadn't exited yet. Step 1's poll target (`awaiting`) is still the
   correct end state to wait for, but budget a generous timeout — settling can take
@@ -157,7 +157,7 @@ kills `$HUBPID` and removes `$run`. If you had to start the hub yourself because
   rejected — asserting a rejection error on that path would be testing a fiction). If a
   future task wires `grant_tools` into the live `delegate` schema, this step should be
   upgraded to drive it for real and the deterministic-only note removed.
-- `go run ./cmd/serf-doctor tree` lists delegate children by default (`edge: "delegate"`);
+- `go run ./cmd/evener-doctor tree` lists delegate children by default (`edge: "delegate"`);
   `--observers` is only needed for observer sidecars, not plain delegates, so it's omitted
   above.
 - The delegate's task text is built as a plain bash variable, then threaded into the JSON

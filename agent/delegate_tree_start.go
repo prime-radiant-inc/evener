@@ -9,10 +9,10 @@ import (
 	"strings"
 	"time"
 
-	"primeradiant.com/serf/agent/internal/delegatestore"
-	"primeradiant.com/serf/agent/provenance"
-	"primeradiant.com/serf/agent/task"
-	"primeradiant.com/serf/identifier"
+	"primeradiant.com/evener/agent/internal/delegatestore"
+	"primeradiant.com/evener/agent/provenance"
+	"primeradiant.com/evener/agent/task"
+	"primeradiant.com/evener/identifier"
 )
 
 type delegateCapacityKind uint8

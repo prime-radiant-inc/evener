@@ -26,16 +26,16 @@
 
 ## File and Boundary Map
 
-- `cmd/serf-hub/frontend/src/shell/paneRegistry.ts`: extend the pane-type union and retain the existing typed registration boundary.
-- `cmd/serf-hub/frontend/src/panes/sessionPanels/`: create the eager registration module, pane prop/types, shared host helpers, and three lazy pane components.
-- `cmd/serf-hub/frontend/src/shell/workspace.ts`: add ref-aware `togglePane`, `isPaneOpen`, and pending-focus state/actions without exposing `sameParams`.
-- `cmd/serf-hub/frontend/src/shell/AppShell.tsx`: eagerly import the registration module and make route-placement focus rules aware of panel panes and completed placement.
-- `cmd/serf-hub/frontend/src/shell/routing.ts`: make the exhaustive non-routed switch handle all three panel types.
-- `cmd/serf-hub/frontend/src/stores/`: add ref-keyed Tasks, Activity, and Activity-summary stores plus quiescent workspace-based eviction.
-- `cmd/serf-hub/frontend/src/panes/session/chrome/`: extract body components, retain mobile Sheet hosts, and route desktop controls through the workspace/pane APIs.
-- `cmd/serf-hub/frontend/src/shell/palette/`: derive session refs from panel panes and dispatch desktop toggles directly.
-- `cmd/serf-hub/frontend/src/widgets/panescaffold/index.tsx`: add the focusable scaffold region used by toggle-open and BackToParentAction focus transfer.
-- `cmd/serf-hub/frontend/src/shell/mobile/StackHost.tsx`: suppress the generic top-bar back path for panel panes crossing into mobile.
+- `cmd/evener-hub/frontend/src/shell/paneRegistry.ts`: extend the pane-type union and retain the existing typed registration boundary.
+- `cmd/evener-hub/frontend/src/panes/sessionPanels/`: create the eager registration module, pane prop/types, shared host helpers, and three lazy pane components.
+- `cmd/evener-hub/frontend/src/shell/workspace.ts`: add ref-aware `togglePane`, `isPaneOpen`, and pending-focus state/actions without exposing `sameParams`.
+- `cmd/evener-hub/frontend/src/shell/AppShell.tsx`: eagerly import the registration module and make route-placement focus rules aware of panel panes and completed placement.
+- `cmd/evener-hub/frontend/src/shell/routing.ts`: make the exhaustive non-routed switch handle all three panel types.
+- `cmd/evener-hub/frontend/src/stores/`: add ref-keyed Tasks, Activity, and Activity-summary stores plus quiescent workspace-based eviction.
+- `cmd/evener-hub/frontend/src/panes/session/chrome/`: extract body components, retain mobile Sheet hosts, and route desktop controls through the workspace/pane APIs.
+- `cmd/evener-hub/frontend/src/shell/palette/`: derive session refs from panel panes and dispatch desktop toggles directly.
+- `cmd/evener-hub/frontend/src/widgets/panescaffold/index.tsx`: add the focusable scaffold region used by toggle-open and BackToParentAction focus transfer.
+- `cmd/evener-hub/frontend/src/shell/mobile/StackHost.tsx`: suppress the generic top-bar back path for panel panes crossing into mobile.
 - Existing colocated tests under `shell`, `panes/session/chrome`, `stores`, `widgets/panescaffold`, and new `panes/sessionPanels` tests: pin each normative behavior in the spec.
 
 ---
@@ -43,13 +43,13 @@
 ### Task 1: Register panel pane types and create pane hosts
 
 **Files:**
-- Modify: `cmd/serf-hub/frontend/src/shell/paneRegistry.ts`
-- Modify: `cmd/serf-hub/frontend/src/shell/routing.ts`
-- Modify: `cmd/serf-hub/frontend/src/shell/AppShell.tsx`
-- Create: `cmd/serf-hub/frontend/src/panes/sessionPanels/index.ts`
-- Create: `cmd/serf-hub/frontend/src/panes/sessionPanels/SessionPanelPane.tsx`
-- Create: `cmd/serf-hub/frontend/src/panes/sessionPanels/sessionPanelPane.test.tsx`
-- Create: `cmd/serf-hub/frontend/src/panes/sessionPanels/index.test.ts`
+- Modify: `cmd/evener-hub/frontend/src/shell/paneRegistry.ts`
+- Modify: `cmd/evener-hub/frontend/src/shell/routing.ts`
+- Modify: `cmd/evener-hub/frontend/src/shell/AppShell.tsx`
+- Create: `cmd/evener-hub/frontend/src/panes/sessionPanels/index.ts`
+- Create: `cmd/evener-hub/frontend/src/panes/sessionPanels/SessionPanelPane.tsx`
+- Create: `cmd/evener-hub/frontend/src/panes/sessionPanels/sessionPanelPane.test.tsx`
+- Create: `cmd/evener-hub/frontend/src/panes/sessionPanels/index.test.ts`
 
 **Interfaces:**
 - Produces `SessionPanelParams = { ref: string }` and `SessionPanelKind = "tasks" | "activity" | "details"`.
@@ -67,7 +67,7 @@ expect(paneFor("sessionDetails").title({ ref: "ref_a" }, {})).toBe("Details · r
 - [ ] **Step 2: Run the focused tests and verify they fail** with missing IDs/descriptors or exhaustive-switch errors:
 
 ```bash
-cd cmd/serf-hub/frontend
+cd cmd/evener-hub/frontend
 npx vitest run src/shell/paneRegistry.test.ts src/shell/routing.test.ts src/shell/paneRestore.test.ts src/panes/sessionPanels/index.test.ts
 ```
 
@@ -78,10 +78,10 @@ npx vitest run src/shell/paneRegistry.test.ts src/shell/routing.test.ts src/shel
 - [ ] **Step 5: Run the focused tests and commit.**
 
 ```bash
-cd cmd/serf-hub/frontend
+cd cmd/evener-hub/frontend
 npx vitest run src/shell/paneRegistry.test.ts src/shell/routing.test.ts src/shell/paneRestore.test.ts src/panes/sessionPanels/index.test.ts src/panes/sessionPanels/sessionPanelPane.test.tsx
 cd ../../..
-git add cmd/serf-hub/frontend/src/shell/paneRegistry.ts cmd/serf-hub/frontend/src/shell/routing.ts cmd/serf-hub/frontend/src/shell/AppShell.tsx cmd/serf-hub/frontend/src/panes/sessionPanels
+git add cmd/evener-hub/frontend/src/shell/paneRegistry.ts cmd/evener-hub/frontend/src/shell/routing.ts cmd/evener-hub/frontend/src/shell/AppShell.tsx cmd/evener-hub/frontend/src/panes/sessionPanels
 git commit -m "feat(web): register session panel panes"
 ```
 
@@ -90,10 +90,10 @@ git commit -m "feat(web): register session panel panes"
 ### Task 2: Add workspace toggle, open-state, and pending-focus APIs
 
 **Files:**
-- Modify: `cmd/serf-hub/frontend/src/shell/workspace.ts`
-- Modify: `cmd/serf-hub/frontend/src/shell/paneActions.ts`
-- Modify: `cmd/serf-hub/frontend/src/shell/workspace.test.ts`
-- Modify: `cmd/serf-hub/frontend/src/shell/paneActions.test.ts`
+- Modify: `cmd/evener-hub/frontend/src/shell/workspace.ts`
+- Modify: `cmd/evener-hub/frontend/src/shell/paneActions.ts`
+- Modify: `cmd/evener-hub/frontend/src/shell/workspace.test.ts`
+- Modify: `cmd/evener-hub/frontend/src/shell/paneActions.test.ts`
 
 **Interfaces:**
 - Produces `WorkspaceStoreState.togglePane(type: PaneTypeId, params: unknown): { paneId: string; opened: boolean }`.
@@ -117,7 +117,7 @@ expect(workspaceStore.getState().focusedPaneId).toBeNull();
 - [ ] **Step 3: Run the focused tests and verify failure.**
 
 ```bash
-cd cmd/serf-hub/frontend
+cd cmd/evener-hub/frontend
 npx vitest run src/shell/workspace.test.ts src/shell/paneActions.test.ts
 ```
 
@@ -128,11 +128,11 @@ npx vitest run src/shell/workspace.test.ts src/shell/paneActions.test.ts
 - [ ] **Step 6: Run tests, format, and commit.**
 
 ```bash
-cd cmd/serf-hub/frontend
+cd cmd/evener-hub/frontend
 npx biome check --write src/shell/workspace.ts src/shell/paneActions.ts src/shell/workspace.test.ts src/shell/paneActions.test.ts
 npx vitest run src/shell/workspace.test.ts src/shell/paneActions.test.ts
 cd ../../..
-git add cmd/serf-hub/frontend/src/shell/workspace.ts cmd/serf-hub/frontend/src/shell/paneActions.ts cmd/serf-hub/frontend/src/shell/workspace.test.ts cmd/serf-hub/frontend/src/shell/paneActions.test.ts
+git add cmd/evener-hub/frontend/src/shell/workspace.ts cmd/evener-hub/frontend/src/shell/paneActions.ts cmd/evener-hub/frontend/src/shell/workspace.test.ts cmd/evener-hub/frontend/src/shell/paneActions.test.ts
 git commit -m "feat(web): add session panel pane toggles"
 ```
 
@@ -141,8 +141,8 @@ git commit -m "feat(web): add session panel pane toggles"
 ### Task 3: Make route placement tolerate focused panel panes without weakening navigation
 
 **Files:**
-- Modify: `cmd/serf-hub/frontend/src/shell/AppShell.tsx`
-- Modify: `cmd/serf-hub/frontend/src/shell/AppShell.test.tsx`
+- Modify: `cmd/evener-hub/frontend/src/shell/AppShell.tsx`
+- Modify: `cmd/evener-hub/frontend/src/shell/AppShell.test.tsx`
 
 **Interfaces:**
 - Keeps `openRouteAsPane` behavior unchanged for boot, deferred deep links, and navigation.
@@ -156,7 +156,7 @@ git commit -m "feat(web): add session panel pane toggles"
 - [ ] **Step 3: Run the focused tests and verify the current route effect re-focuses the main/child session pane.**
 
 ```bash
-cd cmd/serf-hub/frontend
+cd cmd/evener-hub/frontend
 npx vitest run src/shell/AppShell.test.tsx
 ```
 
@@ -165,11 +165,11 @@ npx vitest run src/shell/AppShell.test.tsx
 - [ ] **Step 5: Re-run route tests and commit.**
 
 ```bash
-cd cmd/serf-hub/frontend
+cd cmd/evener-hub/frontend
 npx biome check --write src/shell/AppShell.tsx src/shell/AppShell.test.tsx
 npx vitest run src/shell/AppShell.test.tsx
 cd ../../..
-git add cmd/serf-hub/frontend/src/shell/AppShell.tsx cmd/serf-hub/frontend/src/shell/AppShell.test.tsx
+git add cmd/evener-hub/frontend/src/shell/AppShell.tsx cmd/evener-hub/frontend/src/shell/AppShell.test.tsx
 git commit -m "fix(web): preserve panel focus during route placement"
 ```
 
@@ -178,15 +178,15 @@ git commit -m "fix(web): preserve panel focus during route placement"
 ### Task 4: Implement ref-keyed Tasks and Activity reader stores with eviction
 
 **Files:**
-- Create: `cmd/serf-hub/frontend/src/stores/tasksPanel.ts`
-- Create: `cmd/serf-hub/frontend/src/stores/activityPanel.ts`
-- Create: `cmd/serf-hub/frontend/src/stores/panelStoreEviction.ts`
-- Modify: `cmd/serf-hub/frontend/src/panes/session/chrome/TasksPanel.tsx`
-- Modify: `cmd/serf-hub/frontend/src/panes/session/chrome/ActivityPanel.tsx`
-- Modify: `cmd/serf-hub/frontend/src/stores/threads.ts`
-- Create: `cmd/serf-hub/frontend/src/stores/tasksPanel.test.ts`
-- Create: `cmd/serf-hub/frontend/src/stores/activityPanel.test.ts`
-- Create: `cmd/serf-hub/frontend/src/stores/panelStoreEviction.test.ts`
+- Create: `cmd/evener-hub/frontend/src/stores/tasksPanel.ts`
+- Create: `cmd/evener-hub/frontend/src/stores/activityPanel.ts`
+- Create: `cmd/evener-hub/frontend/src/stores/panelStoreEviction.ts`
+- Modify: `cmd/evener-hub/frontend/src/panes/session/chrome/TasksPanel.tsx`
+- Modify: `cmd/evener-hub/frontend/src/panes/session/chrome/ActivityPanel.tsx`
+- Modify: `cmd/evener-hub/frontend/src/stores/threads.ts`
+- Create: `cmd/evener-hub/frontend/src/stores/tasksPanel.test.ts`
+- Create: `cmd/evener-hub/frontend/src/stores/activityPanel.test.ts`
+- Create: `cmd/evener-hub/frontend/src/stores/panelStoreEviction.test.ts`
 
 **Interfaces:**
 - `tasksPanelStore` is keyed by ref and retains rows, daemon-gone state, and the last failure; its actions include `beginFetch`, `publishFetch`, `setRows`, `setFailure`, and `resetForTests`.
@@ -201,7 +201,7 @@ git commit -m "fix(web): preserve panel focus during route placement"
 - [ ] **Step 3: Run the focused store tests and verify failure.**
 
 ```bash
-cd cmd/serf-hub/frontend
+cd cmd/evener-hub/frontend
 npx vitest run src/stores/tasksPanel.test.ts src/stores/activityPanel.test.ts src/stores/panelStoreEviction.test.ts
 ```
 
@@ -212,11 +212,11 @@ npx vitest run src/stores/tasksPanel.test.ts src/stores/activityPanel.test.ts sr
 - [ ] **Step 6: Update panel tests to consume store-backed state, format, run all store and existing panel suites, and commit.**
 
 ```bash
-cd cmd/serf-hub/frontend
+cd cmd/evener-hub/frontend
 npx biome check --write src/stores src/panes/session/chrome/TasksPanel.tsx src/panes/session/chrome/ActivityPanel.tsx
 npx vitest run src/stores src/panes/session/chrome/TasksPanel.test.tsx src/panes/session/chrome/ActivityPanel.test.tsx
 cd ../../..
-git add cmd/serf-hub/frontend/src/stores cmd/serf-hub/frontend/src/panes/session/chrome/TasksPanel.tsx cmd/serf-hub/frontend/src/panes/session/chrome/ActivityPanel.tsx
+git add cmd/evener-hub/frontend/src/stores cmd/evener-hub/frontend/src/panes/session/chrome/TasksPanel.tsx cmd/evener-hub/frontend/src/panes/session/chrome/ActivityPanel.tsx
 git commit -m "feat(web): retain panel state across pane remounts"
 ```
 
@@ -225,15 +225,15 @@ git commit -m "feat(web): retain panel state across pane remounts"
 ### Task 5: Extract shared panel bodies and desktop/mobile hosts
 
 **Files:**
-- Modify: `cmd/serf-hub/frontend/src/panes/session/chrome/TasksPanel.tsx`
-- Modify: `cmd/serf-hub/frontend/src/panes/session/chrome/ActivityPanel.tsx`
-- Modify: `cmd/serf-hub/frontend/src/panes/session/chrome/DetailsPanel.tsx`
-- Modify: `cmd/serf-hub/frontend/src/panes/session/chrome/SessionChrome.tsx`
-- Modify: `cmd/serf-hub/frontend/src/panes/sessionPanels/SessionPanelPane.tsx`
-- Modify: `cmd/serf-hub/frontend/src/panes/session/chrome/TasksPanel.test.tsx`
-- Modify: `cmd/serf-hub/frontend/src/panes/session/chrome/ActivityPanel.test.tsx`
-- Modify: `cmd/serf-hub/frontend/src/panes/session/chrome/DetailsPanel.test.tsx`
-- Create: `cmd/serf-hub/frontend/src/panes/sessionPanels/SessionPanelPane.test.tsx`
+- Modify: `cmd/evener-hub/frontend/src/panes/session/chrome/TasksPanel.tsx`
+- Modify: `cmd/evener-hub/frontend/src/panes/session/chrome/ActivityPanel.tsx`
+- Modify: `cmd/evener-hub/frontend/src/panes/session/chrome/DetailsPanel.tsx`
+- Modify: `cmd/evener-hub/frontend/src/panes/session/chrome/SessionChrome.tsx`
+- Modify: `cmd/evener-hub/frontend/src/panes/sessionPanels/SessionPanelPane.tsx`
+- Modify: `cmd/evener-hub/frontend/src/panes/session/chrome/TasksPanel.test.tsx`
+- Modify: `cmd/evener-hub/frontend/src/panes/session/chrome/ActivityPanel.test.tsx`
+- Modify: `cmd/evener-hub/frontend/src/panes/session/chrome/DetailsPanel.test.tsx`
+- Create: `cmd/evener-hub/frontend/src/panes/sessionPanels/SessionPanelPane.test.tsx`
 
 **Interfaces:**
 - Each panel exports a body component that takes the hydrated `ThreadModel` and ref, but owns no durable state.
@@ -247,7 +247,7 @@ git commit -m "feat(web): retain panel state across pane remounts"
 - [ ] **Step 3: Run the existing and new panel tests before implementation to establish failures.**
 
 ```bash
-cd cmd/serf-hub/frontend
+cd cmd/evener-hub/frontend
 npx vitest run src/panes/session/chrome/TasksPanel.test.tsx src/panes/session/chrome/ActivityPanel.test.tsx src/panes/session/chrome/DetailsPanel.test.tsx src/panes/sessionPanels/SessionPanelPane.test.tsx
 ```
 
@@ -258,11 +258,11 @@ npx vitest run src/panes/session/chrome/TasksPanel.test.tsx src/panes/session/ch
 - [ ] **Step 6: Keep the mobile Sheet host behavior intact**, except that it reads the same stores and records the same mounted signal, then run the full panel suite, format, and commit.
 
 ```bash
-cd cmd/serf-hub/frontend
+cd cmd/evener-hub/frontend
 npx biome check --write src/panes/session/chrome src/panes/sessionPanels
 npx vitest run src/panes/session/chrome src/panes/sessionPanels
 cd ../../..
-git add cmd/serf-hub/frontend/src/panes/session/chrome cmd/serf-hub/frontend/src/panes/sessionPanels
+git add cmd/evener-hub/frontend/src/panes/session/chrome cmd/evener-hub/frontend/src/panes/sessionPanels
 git commit -m "feat(web): share session panel bodies across hosts"
 ```
 
@@ -271,11 +271,11 @@ git commit -m "feat(web): share session panel bodies across hosts"
 ### Task 6: Preserve Activity summary freshness and badge behavior
 
 **Files:**
-- Create: `cmd/serf-hub/frontend/src/stores/activitySummary.ts`
-- Modify: `cmd/serf-hub/frontend/src/panes/session/chrome/ActivityPanel.tsx`
-- Modify: `cmd/serf-hub/frontend/src/panes/session/chrome/SessionChrome.tsx`
-- Create: `cmd/serf-hub/frontend/src/stores/activitySummary.test.ts`
-- Modify: `cmd/serf-hub/frontend/src/panes/session/chrome/ActivityPanel.test.tsx`
+- Create: `cmd/evener-hub/frontend/src/stores/activitySummary.ts`
+- Modify: `cmd/evener-hub/frontend/src/panes/session/chrome/ActivityPanel.tsx`
+- Modify: `cmd/evener-hub/frontend/src/panes/session/chrome/SessionChrome.tsx`
+- Create: `cmd/evener-hub/frontend/src/stores/activitySummary.test.ts`
+- Modify: `cmd/evener-hub/frontend/src/panes/session/chrome/ActivityPanel.test.tsx`
 
 **Interfaces:**
 - `activitySummaryStore` is keyed by ref and exposes mounted-state, established-attempt, loading, summary counts, and `counts.complete` state.
@@ -287,7 +287,7 @@ git commit -m "feat(web): share session panel bodies across hosts"
 - [ ] **Step 2: Run the focused tests and confirm current component-local behavior cannot satisfy the store contract.**
 
 ```bash
-cd cmd/serf-hub/frontend
+cd cmd/evener-hub/frontend
 npx vitest run src/stores/activitySummary.test.ts src/panes/session/chrome/ActivityPanel.test.tsx
 ```
 
@@ -298,11 +298,11 @@ npx vitest run src/stores/activitySummary.test.ts src/panes/session/chrome/Activ
 - [ ] **Step 5: Format, run summary/activity tests, and commit.**
 
 ```bash
-cd cmd/serf-hub/frontend
+cd cmd/evener-hub/frontend
 npx biome check --write src/stores/activitySummary.ts src/stores/activitySummary.test.ts src/panes/session/chrome/ActivityPanel.tsx src/panes/session/chrome/ActivityPanel.test.tsx src/panes/session/chrome/SessionChrome.tsx
 npx vitest run src/stores/activitySummary.test.ts src/panes/session/chrome/ActivityPanel.test.tsx src/panes/session/chrome/SessionChrome.test.tsx
 cd ../../..
-git add cmd/serf-hub/frontend/src/stores/activitySummary.ts cmd/serf-hub/frontend/src/stores/activitySummary.test.ts cmd/serf-hub/frontend/src/panes/session/chrome
+git add cmd/evener-hub/frontend/src/stores/activitySummary.ts cmd/evener-hub/frontend/src/stores/activitySummary.test.ts cmd/evener-hub/frontend/src/panes/session/chrome
 git commit -m "fix(web): keep activity badge fresh across pane hosts"
 ```
 
@@ -311,14 +311,14 @@ git commit -m "fix(web): keep activity badge fresh across pane hosts"
 ### Task 7: Wire SessionChrome toggles, overflow state, and palette dispatch
 
 **Files:**
-- Modify: `cmd/serf-hub/frontend/src/panes/session/chrome/SessionChrome.tsx`
-- Modify: `cmd/serf-hub/frontend/src/shell/palette/paletteContext.ts`
-- Modify: `cmd/serf-hub/frontend/src/shell/palette/commands.ts`
-- Modify: `cmd/serf-hub/frontend/src/shell/useIsMobile.ts`
-- Modify: `cmd/serf-hub/frontend/src/panes/session/chrome/SessionChrome.test.tsx`
-- Modify: `cmd/serf-hub/frontend/src/shell/palette/paletteContext.test.ts`
-- Modify: `cmd/serf-hub/frontend/src/shell/palette/commands.test.ts`
-- Modify: `cmd/serf-hub/frontend/src/shell/useIsMobile.test.ts`
+- Modify: `cmd/evener-hub/frontend/src/panes/session/chrome/SessionChrome.tsx`
+- Modify: `cmd/evener-hub/frontend/src/shell/palette/paletteContext.ts`
+- Modify: `cmd/evener-hub/frontend/src/shell/palette/commands.ts`
+- Modify: `cmd/evener-hub/frontend/src/shell/useIsMobile.ts`
+- Modify: `cmd/evener-hub/frontend/src/panes/session/chrome/SessionChrome.test.tsx`
+- Modify: `cmd/evener-hub/frontend/src/shell/palette/paletteContext.test.ts`
+- Modify: `cmd/evener-hub/frontend/src/shell/palette/commands.test.ts`
+- Modify: `cmd/evener-hub/frontend/src/shell/useIsMobile.test.ts`
 
 **Interfaces:**
 - Desktop trigger handlers call `togglePane("sessionTasks" | "sessionActivity" | "sessionDetails", { ref })`; mobile handlers call the existing Sheet handle.
@@ -334,7 +334,7 @@ git commit -m "fix(web): keep activity badge fresh across pane hosts"
 - [ ] **Step 3: Run focused tests and verify current DOM-global commands fail in the collapsed/wrong-session cases.**
 
 ```bash
-cd cmd/serf-hub/frontend
+cd cmd/evener-hub/frontend
 npx vitest run src/panes/session/chrome/SessionChrome.test.tsx src/shell/palette/paletteContext.test.ts src/shell/palette/commands.test.ts src/shell/useIsMobile.test.ts
 ```
 
@@ -345,11 +345,11 @@ npx vitest run src/panes/session/chrome/SessionChrome.test.tsx src/shell/palette
 - [ ] **Step 6: Format, run focused tests, and commit.**
 
 ```bash
-cd cmd/serf-hub/frontend
+cd cmd/evener-hub/frontend
 npx biome check --write src/panes/session/chrome/SessionChrome.tsx src/panes/session/chrome/SessionChrome.test.tsx src/shell/palette src/shell/useIsMobile.ts src/shell/useIsMobile.test.ts
 npx vitest run src/panes/session/chrome/SessionChrome.test.tsx src/shell/palette/paletteContext.test.ts src/shell/palette/commands.test.ts src/shell/useIsMobile.test.ts
 cd ../../..
-git add cmd/serf-hub/frontend/src/panes/session/chrome/SessionChrome.tsx cmd/serf-hub/frontend/src/panes/session/chrome/SessionChrome.test.tsx cmd/serf-hub/frontend/src/shell/palette cmd/serf-hub/frontend/src/shell/useIsMobile.ts cmd/serf-hub/frontend/src/shell/useIsMobile.test.ts
+git add cmd/evener-hub/frontend/src/panes/session/chrome/SessionChrome.tsx cmd/evener-hub/frontend/src/panes/session/chrome/SessionChrome.test.tsx cmd/evener-hub/frontend/src/shell/palette cmd/evener-hub/frontend/src/shell/useIsMobile.ts cmd/evener-hub/frontend/src/shell/useIsMobile.test.ts
 git commit -m "feat(web): toggle session panels from chrome and palette"
 ```
 
@@ -358,14 +358,14 @@ git commit -m "feat(web): toggle session panels from chrome and palette"
 ### Task 8: Implement pane focus transfer, BackToParentAction, and breakpoint behavior
 
 **Files:**
-- Modify: `cmd/serf-hub/frontend/src/widgets/panescaffold/index.tsx`
-- Modify: `cmd/serf-hub/frontend/src/widgets/panescaffold/panescaffold.module.css`
-- Modify: `cmd/serf-hub/frontend/src/widgets/panescaffold/panescaffold.test.tsx`
-- Modify: `cmd/serf-hub/frontend/src/panes/sessionPanels/SessionPanelPane.tsx`
-- Modify: `cmd/serf-hub/frontend/src/shell/mobile/StackHost.tsx`
+- Modify: `cmd/evener-hub/frontend/src/widgets/panescaffold/index.tsx`
+- Modify: `cmd/evener-hub/frontend/src/widgets/panescaffold/panescaffold.module.css`
+- Modify: `cmd/evener-hub/frontend/src/widgets/panescaffold/panescaffold.test.tsx`
+- Modify: `cmd/evener-hub/frontend/src/panes/sessionPanels/SessionPanelPane.tsx`
+- Modify: `cmd/evener-hub/frontend/src/shell/mobile/StackHost.tsx`
 - Modify: the existing `BackToParentAction` implementation and colocated tests, located by symbol search before editing
-- Modify: `cmd/serf-hub/frontend/src/shell/mobile/StackHost.test.tsx`
-- Modify: `cmd/serf-hub/frontend/src/panes/sessionPanels/SessionPanelPane.test.tsx`
+- Modify: `cmd/evener-hub/frontend/src/shell/mobile/StackHost.test.tsx`
+- Modify: `cmd/evener-hub/frontend/src/panes/sessionPanels/SessionPanelPane.test.tsx`
 
 **Interfaces:**
 - `PaneScaffold` adds a `tabIndex={-1}` focusable content region and an optional stable pane-scaffold marker that `BackToParentAction` can query.
@@ -380,7 +380,7 @@ git commit -m "feat(web): toggle session panels from chrome and palette"
 - [ ] **Step 3: Run focused tests and verify the current scaffold has no focus target and StackHost exposes the generic back path.**
 
 ```bash
-cd cmd/serf-hub/frontend
+cd cmd/evener-hub/frontend
 npx vitest run src/widgets/panescaffold/panescaffold.test.tsx src/shell/mobile/StackHost.test.tsx src/panes/sessionPanels/SessionPanelPane.test.tsx
 ```
 
@@ -391,11 +391,11 @@ npx vitest run src/widgets/panescaffold/panescaffold.test.tsx src/shell/mobile/S
 - [ ] **Step 6: Suppress the generic mobile top-bar back affordance for the three panel IDs, format, run focused tests, and commit.**
 
 ```bash
-cd cmd/serf-hub/frontend
+cd cmd/evener-hub/frontend
 npx biome check --write src/widgets/panescaffold src/shell/mobile src/panes/sessionPanels
 npx vitest run src/widgets/panescaffold/panescaffold.test.tsx src/shell/mobile/StackHost.test.tsx src/panes/sessionPanels/SessionPanelPane.test.tsx
 cd ../../..
-git add cmd/serf-hub/frontend/src/widgets/panescaffold cmd/serf-hub/frontend/src/shell/mobile cmd/serf-hub/frontend/src/panes/sessionPanels
+git add cmd/evener-hub/frontend/src/widgets/panescaffold cmd/evener-hub/frontend/src/shell/mobile cmd/evener-hub/frontend/src/panes/sessionPanels
 git commit -m "feat(web): move focus into session panel panes"
 ```
 
@@ -404,13 +404,13 @@ git commit -m "feat(web): move focus into session panel panes"
 ### Task 9: Complete integration coverage, browser guard, and final verification
 
 **Files:**
-- Modify: `cmd/serf-hub/frontend/src/shell/AppShell.test.tsx`
-- Modify: `cmd/serf-hub/frontend/src/shell/paneRestore.test.ts`
-- Modify: `cmd/serf-hub/frontend/src/stores/threads.test.ts`
-- Modify: `cmd/serf-hub/frontend/src/panes/session/index.test.tsx`
-- Modify: `cmd/serf-hub/frontend/src/panes/session/chrome/*.test.tsx`
-- Modify: `cmd/serf-hub/frontend/src/widgets/panescaffold/panescaffold.test.tsx`
-- Modify: the existing `cmd/serf-hub/frontend/scripts/overflowguard` fixture/guard only if needed to cover panel-trigger collapse geometry
+- Modify: `cmd/evener-hub/frontend/src/shell/AppShell.test.tsx`
+- Modify: `cmd/evener-hub/frontend/src/shell/paneRestore.test.ts`
+- Modify: `cmd/evener-hub/frontend/src/stores/threads.test.ts`
+- Modify: `cmd/evener-hub/frontend/src/panes/session/index.test.tsx`
+- Modify: `cmd/evener-hub/frontend/src/panes/session/chrome/*.test.tsx`
+- Modify: `cmd/evener-hub/frontend/src/widgets/panescaffold/panescaffold.test.tsx`
+- Modify: the existing `cmd/evener-hub/frontend/scripts/overflowguard` fixture/guard only if needed to cover panel-trigger collapse geometry
 
 **Interfaces:**
 - No new production interface; this task closes the acceptance matrix from spec §10.
@@ -427,7 +427,7 @@ git commit -m "feat(web): move focus into session panel panes"
 - [ ] **Step 5: Run formatting and canonical gates.**
 
 ```bash
-cd cmd/serf-hub/frontend
+cd cmd/evener-hub/frontend
 npx biome check --write src
 cd ../../..
 make test-web

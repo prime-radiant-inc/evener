@@ -130,8 +130,8 @@ build" is the minimum.
 
 ## Task 4: TUI retry chip
 
-**Files:** `cmd/serf-tui/` only (`composer_render.go` and its tests; other
-`cmd/serf-tui/` files only if the chip logic lives elsewhere)
+**Files:** `cmd/evener-tui/` only (`composer_render.go` and its tests; other
+`cmd/evener-tui/` files only if the chip logic lives elsewhere)
 
 The spec (as amended by Jesse in commit 23104745c, spec line ~122) renders
 the retry chip with **em-dash** separators on both surfaces:
@@ -152,15 +152,15 @@ Three changes to the TUI chip:
    Component 1 section.
 
 Update the existing tests and add cases for the new behavior. Do not touch
-files outside `cmd/serf-tui/`.
+files outside `cmd/evener-tui/`.
 
-**Verify:** `go test ./cmd/serf-tui/... -count=1`.
+**Verify:** `go test ./cmd/evener-tui/... -count=1`.
 
 ---
 
 ## Task 5: web retry chip alignment
 
-**Files:** `cmd/serf-hub/frontend/` only
+**Files:** `cmd/evener-hub/frontend/` only
 
 The web `LivenessLine` already uses em-dashes. Verify it matches the spec's
 string **exactly** — field order, wording, and the streaming variant:
@@ -176,9 +176,9 @@ session's primary (spec Component 1).
 
 Fix every divergence you find; where it already matches, add or tighten the
 test that pins the exact string so it cannot drift. Do not touch files
-outside `cmd/serf-hub/frontend/`.
+outside `cmd/evener-hub/frontend/`.
 
-**Verify:** the frontend test command from `cmd/serf-hub/frontend/package.json`.
+**Verify:** the frontend test command from `cmd/evener-hub/frontend/package.json`.
 
 ---
 
@@ -212,7 +212,7 @@ behavior changed.
 **Files:** `agent/session_stream.go`, `agent/round_recorder.go`,
 `agent/round_recorder_test.go`, `agent/salvage.go`, `agent/salvage_test.go`,
 `agent/jobs.go`, `agent/session_events.go`,
-`cmd/serf-hub/frontend/…/reducer.test.ts`
+`cmd/evener-hub/frontend/…/reducer.test.ts`
 
 Four independent sub-items. Commit them separately.
 

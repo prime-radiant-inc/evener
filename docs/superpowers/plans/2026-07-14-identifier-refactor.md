@@ -2,9 +2,9 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Replace every project-identity implementation with one resolving API and replace every Serf-owned ULID payload with a fixed-width, 22-character base62 UUIDv7 payload.
+**Goal:** Replace every project-identity implementation with one resolving API and replace every Evener-owned ULID payload with a fixed-width, 22-character base62 UUIDv7 payload.
 
-**Architecture:** Add the leaf module `primeradiant.com/serf/identifier`. It owns project canonicalization, local Git main-checkout resolution, bounded project rendering, UUIDv7/base62 encoding, domain constructors, and validators. Root, `agent`, and `llm` depend on it; `agent/execenv` supplies an environment-backed `identifier.Resolver` without creating a reverse dependency.
+**Architecture:** Add the leaf module `primeradiant.com/evener/identifier`. It owns project canonicalization, local Git main-checkout resolution, bounded project rendering, UUIDv7/base62 encoding, domain constructors, and validators. Root, `agent`, and `llm` depend on it; `agent/execenv` supplies an environment-backed `identifier.Resolver` without creating a reverse dependency.
 
 **Tech Stack:** Go 1.25.6 workspace, `github.com/google/uuid` v1.6.0, SHA-256, Git worktrees, deterministic table/property/fuzz tests.
 
@@ -19,7 +19,7 @@
 - Existing prefixes remain `job_`, `dlg_`, `dg_`, `watch_`, `wg_`, `wd_`, `ag_`, and `call_`; sessions, installations, and terminal generations remain unprefixed.
 - External provider and thread IDs remain opaque.
 - This is a clean break: do not migrate, rename, discover through fallback, or delete old hash/ULID state. Replace only an invalid singleton installation ID.
-- Keep changes focused; do not preserve duplicate project renderers or direct Serf-owned ULID generation.
+- Keep changes focused; do not preserve duplicate project renderers or direct Evener-owned ULID generation.
 
 ## File Structure
 
@@ -43,7 +43,7 @@
 - `go.work`, `Makefile`, root `go.mod`, `agent/go.mod`, `llm/go.mod`, and corresponding sums — workspace registration and dependency direction.
 - `agent/execenv/project_resolver.go` — execution-environment adapter for `identifier.Resolver`.
 - `agent/execenv/project_resolver_test.go` — shared resolver-contract and failure tests.
-- Runtime/project consumers in `agent/runtime_dir.go`, `cmdutil/statedir.go`, `cmd/serf-hub/spawn.go`, `cmd/serf-hub/internal/launchconfig/paths.go`, `agent/session_tools_worktree.go`, `agent/session_worktree_resume.go`, and `cmd/serf-hub/internal/hubcore/tree.go`.
+- Runtime/project consumers in `agent/runtime_dir.go`, `cmdutil/statedir.go`, `cmd/evener-hub/spawn.go`, `cmd/evener-hub/internal/launchconfig/paths.go`, `agent/session_tools_worktree.go`, `agent/session_worktree_resume.go`, and `cmd/evener-hub/internal/hubcore/tree.go`.
 - Generated-ID consumers in `agent/session_init.go`, `agent/fork.go`, `agent/internal/installid/installation_id.go`, `agent/internal/jobstore/record.go`, `agent/internal/jobstore/notify.go`, `agent/session_model_call.go`, and `llm/providers/google/{adapter.go,response.go}`.
 - Clean-break lookup/validation consumers in `agent/transcript_lookup.go`, `agent/session_tools_find.go`, `agent/doctor`, and local hub route/listing paths.
 - `internal/gitpath` is deleted after all reusable logic and tests move to `identifier`.
@@ -105,7 +105,7 @@ Expected: FAIL because `identifier/go.mod` or codec symbols do not exist.
 
 - [ ] **Step 3: Add workspace/module wiring and the minimal codec**
 
-Create `identifier/go.mod` with Go 1.25.6 and `github.com/google/uuid v1.6.0`. Add `./identifier` to `go.work`, add a workspace replace for `primeradiant.com/serf/identifier v0.0.0`, and add `identifier` to `GO_MODULES` in `Makefile`.
+Create `identifier/go.mod` with Go 1.25.6 and `github.com/google/uuid v1.6.0`. Add `./identifier` to `go.work`, add a workspace replace for `primeradiant.com/evener/identifier v0.0.0`, and add `identifier` to `GO_MODULES` in `Makefile`.
 
 Implement base62 conversion with a 22-byte output initialized to `'0'`, repeated `big.Int.QuoRem`, strict alphabet lookup, strict width, and `BitLen() <= 128`. `ValidateUUIDv7Payload` must decode, then check `Version() == 7` and `Variant() == uuid.RFC4122`. Generate with `uuid.NewV7()`.
 
@@ -233,7 +233,7 @@ if got := project.ID; len(got) > 80 || !regexp.MustCompile(`^[A-Za-z0-9]+(?:-[A-
 }
 ```
 
-Compute the expected suffix in the test from the approved definition: full SHA-256 digest interpreted big-endian, modulo `62^10`, base62-encoded and left-padded. Include paths whose sanitized tails collide and a path long enough to prove left-side truncation preserves `prime-radiant-serf`.
+Compute the expected suffix in the test from the approved definition: full SHA-256 digest interpreted big-endian, modulo `62^10`, base62-encoded and left-padded. Include paths whose sanitized tails collide and a path long enough to prove left-side truncation preserves `prime-radiant-evener`.
 
 - [ ] **Step 2: Run the focused project tests and verify they fail**
 
@@ -411,12 +411,12 @@ git commit -m "refactor: use compact generated identifiers"
 - Modify: `agent/runtime_dir_test.go`
 - Modify: `cmdutil/statedir.go`
 - Modify: `cmdutil/statedir_test.go`
-- Modify: `cmd/serf/run.go`
-- Modify: `cmd/serf/serve.go`
-- Modify: `cmd/serf-hub/spawn.go`
-- Modify: `cmd/serf-hub/internal/launchconfig/paths.go`
-- Modify: `cmd/serf-hub/internal/launchconfig/paths_test.go`
-- Modify callers/tests under: `cmd/serf-hub/internal/launchconfig`
+- Modify: `cmd/evener/run.go`
+- Modify: `cmd/evener/serve.go`
+- Modify: `cmd/evener-hub/spawn.go`
+- Modify: `cmd/evener-hub/internal/launchconfig/paths.go`
+- Modify: `cmd/evener-hub/internal/launchconfig/paths_test.go`
+- Modify callers/tests under: `cmd/evener-hub/internal/launchconfig`
 
 **Interfaces:**
 - Consumes: `identifier.ResolveProject(path)`
@@ -432,7 +432,7 @@ Replace origin-URL expectations with canonical-path expectations. Assert two clo
 ```bash
 (cd agent && go test . -run 'TestRuntimeDir' -count=1)
 go test ./cmdutil -run 'TestDefaultProjectStateDir|TestResolveStateKeyDir' -count=1
-go test ./cmd/serf-hub/internal/launchconfig -run 'TestProject|TestPathsFor' -count=1
+go test ./cmd/evener-hub/internal/launchconfig -run 'TestProject|TestPathsFor' -count=1
 ```
 
 Expected: FAIL on old origin/hash behavior or unchanged no-error signatures.
@@ -451,7 +451,7 @@ Delete `launchconfig.ProjectID`. Build `<stateRoot>/projects/<Project.ID>` from 
 
 ```bash
 (cd agent && go test . -run 'TestRuntimeDir' -count=1)
-go test ./cmdutil ./cmd/serf ./cmd/serf-hub/internal/launchconfig ./cmd/serf-hub -run 'Test.*(StateDir|Spawn|Paths|Launch)' -count=1
+go test ./cmdutil ./cmd/evener ./cmd/evener-hub/internal/launchconfig ./cmd/evener-hub -run 'Test.*(StateDir|Spawn|Paths|Launch)' -count=1
 ```
 
 Expected: PASS.
@@ -459,7 +459,7 @@ Expected: PASS.
 - [ ] **Step 6: Commit runtime and launchconfig migration**
 
 ```bash
-git add agent/runtime_dir.go agent/runtime_dir_test.go cmdutil/statedir.go cmdutil/statedir_test.go cmd/serf/run.go cmd/serf/serve.go cmd/serf-hub/spawn.go cmd/serf-hub/internal/launchconfig
+git add agent/runtime_dir.go agent/runtime_dir_test.go cmdutil/statedir.go cmdutil/statedir_test.go cmd/evener/run.go cmd/evener/serve.go cmd/evener-hub/spawn.go cmd/evener-hub/internal/launchconfig
 git commit -m "refactor: unify project state identity"
 ```
 
@@ -522,14 +522,14 @@ git commit -m "refactor(worktree): use canonical project IDs"
 ### Task 8: Migrate Hub Project Grouping, Archive, Delete, and Spawn Keys
 
 **Files:**
-- Modify: `cmd/serf-hub/internal/hubcore/tree.go`
-- Modify: `cmd/serf-hub/internal/hubcore/tree_test.go`
-- Modify: `cmd/serf-hub/internal/hubcore/coverage_edges_test.go`
-- Modify: `cmd/serf-hub/web_api_tree.go`
-- Modify: `cmd/serf-hub/web_api_tree_test.go`
-- Modify: `cmd/serf-hub/web_api_project_delete.go`
-- Modify project archive/delete/spawn tests under `cmd/serf-hub`
-- Modify TUI fallback key code only if it still synthesizes project keys: `cmd/serf-tui/hub_types.go`, `cmd/serf-tui/hub_dashboard.go`
+- Modify: `cmd/evener-hub/internal/hubcore/tree.go`
+- Modify: `cmd/evener-hub/internal/hubcore/tree_test.go`
+- Modify: `cmd/evener-hub/internal/hubcore/coverage_edges_test.go`
+- Modify: `cmd/evener-hub/web_api_tree.go`
+- Modify: `cmd/evener-hub/web_api_tree_test.go`
+- Modify: `cmd/evener-hub/web_api_project_delete.go`
+- Modify project archive/delete/spawn tests under `cmd/evener-hub`
+- Modify TUI fallback key code only if it still synthesizes project keys: `cmd/evener-tui/hub_types.go`, `cmd/evener-tui/hub_dashboard.go`
 
 **Interfaces:**
 - Consumes: `identifier.ResolveProject` and `identifier.Project`
@@ -543,7 +543,7 @@ Assert a main checkout and linked worktree aggregate into one `TreeProject`, sym
 - [ ] **Step 2: Run focused hub tests and verify they fail**
 
 ```bash
-go test ./cmd/serf-hub/internal/hubcore ./cmd/serf-hub -run 'Test.*(Tree|Project|Archive|Delete|Spawn)' -count=1
+go test ./cmd/evener-hub/internal/hubcore ./cmd/evener-hub -run 'Test.*(Tree|Project|Archive|Delete|Spawn)' -count=1
 ```
 
 Expected: FAIL on old `ProjectSlug` output or duplicate grouping.
@@ -561,7 +561,7 @@ Remove `ProjectSlug`/`projectSlug`. TUI code may use the server-provided key; if
 - [ ] **Step 5: Run hub and TUI focused tests**
 
 ```bash
-go test ./cmd/serf-hub/internal/hubcore ./cmd/serf-hub ./cmd/serf-tui -run 'Test.*(Tree|Project|Archive|Delete|Spawn|Dashboard)' -count=1
+go test ./cmd/evener-hub/internal/hubcore ./cmd/evener-hub ./cmd/evener-tui -run 'Test.*(Tree|Project|Archive|Delete|Spawn|Dashboard)' -count=1
 ```
 
 Expected: PASS.
@@ -569,7 +569,7 @@ Expected: PASS.
 - [ ] **Step 6: Commit hub project-key migration**
 
 ```bash
-git add cmd/serf-hub/internal/hubcore cmd/serf-hub/web_api_tree.go cmd/serf-hub/web_api_tree_test.go cmd/serf-hub/web_api_project_delete.go cmd/serf-hub/*project* cmd/serf-tui/hub_types.go cmd/serf-tui/hub_dashboard.go
+git add cmd/evener-hub/internal/hubcore cmd/evener-hub/web_api_tree.go cmd/evener-hub/web_api_tree_test.go cmd/evener-hub/web_api_project_delete.go cmd/evener-hub/*project* cmd/evener-tui/hub_types.go cmd/evener-tui/hub_dashboard.go
 git commit -m "refactor(hub): use canonical project keys"
 ```
 
@@ -582,18 +582,18 @@ git commit -m "refactor(hub): use canonical project keys"
 - Modify: `agent/doctor/locate.go`
 - Modify: `agent/doctor/doctor.go`
 - Modify relevant tests in `agent/doctor`, transcript lookup/find tests, and hub past-index tests
-- Modify local route validation in `cmd/serf-hub/web.go` and route tests
+- Modify local route validation in `cmd/evener-hub/web.go` and route tests
 
 **Interfaces:**
 - Consumes: `ValidateProjectID` and `ValidateSessionID`
-- Preserves external ref parsing by validating only refs identified as local Serf refs
+- Preserves external ref parsing by validating only refs identified as local Evener refs
 - Removes assumptions that project bucket names are exactly 16 hex characters
 
 - [ ] **Step 1: Add old-state fixtures and untouched-file assertions**
 
 Seed:
 
-- `serf/projects/0123456789abcdef/sessions/<26-char-ulid>.transcript.jsonl`;
+- `evener/projects/0123456789abcdef/sessions/<26-char-ulid>.transcript.jsonl`;
 - a valid new project bucket containing a legacy session filename;
 - a legacy project bucket containing a syntactically new session ID;
 - valid new project/session state;
@@ -605,14 +605,14 @@ Snapshot file contents and modification times. Assert only valid new local state
 
 ```bash
 (cd agent && go test . ./doctor -run 'Test.*(Legacy|Lookup|Locate|Find|Selector)' -count=1)
-go test ./cmd/serf-hub -run 'Test.*(Legacy|LocalRoute|Past)' -count=1
+go test ./cmd/evener-hub -run 'Test.*(Legacy|LocalRoute|Past)' -count=1
 ```
 
 Expected: FAIL because old token validation accepts legacy names.
 
 - [ ] **Step 3: Apply strict validation only at local boundaries**
 
-When enumerating `serf/projects/*`, skip directories that fail `ValidateProjectID`. When enumerating local session files or accepting `local:`/`proj:` refs, require `ValidateSessionID`. Keep path-traversal checks. Do not apply these validators to external provider refs, thread IDs, or appwire source-qualified opaque IDs.
+When enumerating `evener/projects/*`, skip directories that fail `ValidateProjectID`. When enumerating local session files or accepting `local:`/`proj:` refs, require `ValidateSessionID`. Keep path-traversal checks. Do not apply these validators to external provider refs, thread IDs, or appwire source-qualified opaque IDs.
 
 - [ ] **Step 4: Update terminology from hash to project ID**
 
@@ -622,7 +622,7 @@ Rename internal fields such as `bucketHash`/`BucketHash` to `projectID`/`Project
 
 ```bash
 (cd agent && go test . ./doctor -count=1)
-go test ./cmd/serf-hub/internal/hubcore ./cmd/serf-hub -count=1
+go test ./cmd/evener-hub/internal/hubcore ./cmd/evener-hub -count=1
 ```
 
 Expected: PASS and legacy fixtures remain byte-for-byte untouched.
@@ -630,7 +630,7 @@ Expected: PASS and legacy fixtures remain byte-for-byte untouched.
 - [ ] **Step 6: Commit clean-break reader enforcement**
 
 ```bash
-git add agent/transcript_lookup.go agent/session_tools_find.go agent/doctor cmd/serf-hub/web.go cmd/serf-hub/*test.go cmd/serf-hub/internal/hubcore
+git add agent/transcript_lookup.go agent/session_tools_find.go agent/doctor cmd/evener-hub/web.go cmd/evener-hub/*test.go cmd/evener-hub/internal/hubcore
 git commit -m "refactor: enforce new local identifier formats"
 ```
 
@@ -670,7 +670,7 @@ Use the audit test's temp fixture or test seam, not a production-file edit. Run 
 
 Document:
 
-- readable project IDs under `serf/projects/<project-id>`;
+- readable project IDs under `evener/projects/<project-id>`;
 - main/linked-worktree aggregation and distinct-clone behavior;
 - 22-character session IDs and retained domain prefixes;
 - the clean break and manual removal of inert old state;
@@ -724,7 +724,7 @@ git commit -m "docs: document unified identifier formats"
 go test ./identifier/... -count=1
 (cd agent && go test ./execenv ./internal/installid ./internal/jobstore ./internal/worktree . -count=1)
 (cd llm && go test ./providers/google/... -count=1)
-go test ./cmdutil ./cmd/serf ./cmd/serf-hub/internal/launchconfig ./cmd/serf-hub/internal/hubcore ./cmd/serf-hub ./cmd/serf-tui -count=1
+go test ./cmdutil ./cmd/evener ./cmd/evener-hub/internal/launchconfig ./cmd/evener-hub/internal/hubcore ./cmd/evener-hub ./cmd/evener-tui -count=1
 ```
 
 Expected: PASS.
@@ -743,7 +743,7 @@ Expected: every command exits 0. Read and fix every warning or failure; do not m
 
 ```bash
 (cd agent && go test -race ./internal/installid ./internal/jobstore . -count=1)
-go test -race ./cmd/serf-hub/internal/hubcore ./cmd/serf-hub -count=1
+go test -race ./cmd/evener-hub/internal/hubcore ./cmd/evener-hub -count=1
 ```
 
 Expected: PASS, especially installation replacement and hub indexing.

@@ -9,11 +9,11 @@ import (
 	"sync"
 	"time"
 
-	"primeradiant.com/serf/agent/events"
-	"primeradiant.com/serf/agent/internal/toolname"
-	"primeradiant.com/serf/agent/plugin"
-	"primeradiant.com/serf/agent/sandbox"
-	"primeradiant.com/serf/llm"
+	"primeradiant.com/evener/agent/events"
+	"primeradiant.com/evener/agent/internal/toolname"
+	"primeradiant.com/evener/agent/plugin"
+	"primeradiant.com/evener/agent/sandbox"
+	"primeradiant.com/evener/llm"
 )
 
 // Input is the JSON payload piped to command hooks via stdin.
@@ -41,7 +41,7 @@ type Input struct {
 	// value as the legacy UserPrompt alias; Claude-style hooks read "prompt".
 	Prompt string `json:"prompt,omitempty"`
 
-	// Legacy Serf aliases retained during migration.
+	// Legacy Evener aliases retained during migration.
 	// tool_result = tool_response; user_prompt = prompt.
 	ToolResult string `json:"tool_result,omitempty"`
 	UserPrompt string `json:"user_prompt,omitempty"`
@@ -566,7 +566,7 @@ func firstLine(text string) string {
 
 // runAll executes all matched hooks in parallel and returns their parsed outputs.
 func (r *Runner) runAll(ctx context.Context, event plugin.HookEvent, toolName string, input Input) []parsedHookOutput {
-	claudeName := toolname.SerfToClaude(toolName)
+	claudeName := toolname.EvenerToClaude(toolName)
 	matched := r.MatchHooks(event, claudeName)
 	if len(matched) == 0 {
 		return nil
@@ -621,7 +621,7 @@ func (r *Runner) RunPreToolUse(ctx context.Context, input Input) PreToolUseResul
 		case "deny":
 			denied = true
 		case "ask", "defer":
-			// Recognized but not honored: serf has no interactive permission prompt.
+			// Recognized but not honored: evener has no interactive permission prompt.
 			// The tool proceeds; the user-visible diagnostic is added below.
 		}
 		if exitBehavior(plugin.HookPreToolUse).BlockOnExit2 && o.RawExitCode == 2 {
@@ -640,7 +640,7 @@ func (r *Runner) RunPreToolUse(ctx context.Context, input Input) PreToolUseResul
 		}
 		if o.PermissionDecision == "ask" || o.PermissionDecision == "defer" {
 			result.UserMessages = append(result.UserMessages,
-				"hook returned permissionDecision \""+o.PermissionDecision+"\" which serf does not support (no interactive permission prompt); the tool will proceed")
+				"hook returned permissionDecision \""+o.PermissionDecision+"\" which evener does not support (no interactive permission prompt); the tool will proceed")
 		}
 		// Route the output's additionalContext (-> model) and JSON systemMessage
 		// field (-> user) normally. The only thing a deny withholds is the exit-2

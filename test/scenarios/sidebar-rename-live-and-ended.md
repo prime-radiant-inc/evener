@@ -2,7 +2,7 @@
 
 **What this covers**: `POST /api/sessions/<ref>/rename` on both of its paths —
 the live-daemon path (`SetThreadName` through the source) and the ended
-meta-edit path (`cmd/serf-hub/web_api_rename.go:50-63` and `:94-124`) — the
+meta-edit path (`cmd/evener-hub/web_api_rename.go:50-63` and `:94-124`) — the
 rail's rename dialog, and the namer-suppression rule in
 `agent/session_namer.go`: once a session's name source is `"user"`, a later
 `"compaction"`-sourced suggestion must **not** overwrite it
@@ -11,7 +11,7 @@ rail's rename dialog, and the namer-suppression rule in
 **Surface**: see `docs/agentic-testing.md`, "Driving the web UI" — the selector
 map there is the single place these hooks are maintained. Rows are
 `[data-session-ref="local:<SID>"]` (`RailRow.tsx:509`); there is no `.sb-row`,
-no `.title` class, and no `window.SerfSidebar.refresh()`.
+no `.title` class, and no `window.EvenerSidebar.refresh()`.
 
 **Rename is a dialog now, not an inline edit.** `sidebar.js`'s
 `startInlineRename` / `.sb-rename-input` are gone. The flow is: the row's `⋯`
@@ -26,7 +26,7 @@ the trimmed value is empty (`Rail.tsx:639`).
 
 ## Pre-state
 
-- A freshly built `serf-hub` on an isolated `$HOME` and a kernel-assigned port
+- A freshly built `evener-hub` on an isolated `$HOME` and a kernel-assigned port
   — the Setup checklist in `docs/agentic-testing.md`. Never a real hub. Build
   the frontend (`make build-web`) before the hub for the browser half.
 - A **live** session against a real, credentialed model (step 4's compaction is
@@ -57,7 +57,7 @@ optimistic overlay.
    `GET /api/sessions/local:<SID>` until it settles, and record
    `context_used` (`hubapi/types.go:144`) before and after.
 5. Re-read the row's title in the browser. Do not force anything — a successful
-   rename broadcasts `serf/tree/changed` exactly once, either through
+   rename broadcasts `evener/tree/changed` exactly once, either through
    `PastIndex.UpdateMeta`'s composed hook or the compensating
    `notifyTreeChanged` when that hook didn't fire
    (`web_api_rename.go:112-122` and `:136-153`), and the rail refetches on a
@@ -112,7 +112,7 @@ optimistic overlay.
   that from `rowRenameable` (`web_api_tree.go:972,1308-1312`), which is just
   "does this id parse as a local ref" (`isLocalRouteID`, `web.go#isLocalRouteID`). So
   Codex-bridged rows and synthetic `cluster:` fold rows never offer it — this
-  card is about local top-level serf sessions.
+  card is about local top-level evener sessions.
 - **The ref is URL-escaped on the way out and unescaped on the way in.**
   `renameSession` posts to `/api/sessions/${encodeURIComponent(ref)}/rename`
   (`shell/rail/actions.ts:43-49`) and the dispatcher `url.PathUnescape`s the
@@ -140,7 +140,7 @@ optimistic overlay.
 - **Compaction on a short transcript can finish before your first poll.** Don't
   read "already done at poll #1" as "didn't run"; confirm via the
   `context_used` / `context_pressure` drop, or
-  `go run ./cmd/serf-doctor transcript <SID> --format outline`.
+  `go run ./cmd/evener-doctor transcript <SID> --format outline`.
 - **Don't stub `window.confirm`.** Nothing in the rail's rename or delete paths
   uses it; every confirmation is an in-app `Dialog`. A stub silently does
   nothing and makes a skipped interaction look handled.

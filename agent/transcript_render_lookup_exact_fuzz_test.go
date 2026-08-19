@@ -1,4 +1,4 @@
-//go:build serffuzz
+//go:build evenerfuzz
 
 package agent
 
@@ -11,9 +11,9 @@ import (
 	"testing"
 	"unicode/utf8"
 
-	"primeradiant.com/serf/agent/schema"
-	"primeradiant.com/serf/agent/transcript"
-	"primeradiant.com/serf/llm"
+	"primeradiant.com/evener/agent/schema"
+	"primeradiant.com/evener/agent/transcript"
+	"primeradiant.com/evener/llm"
 )
 
 // FuzzTranscriptRenderLookupExact drives finite error and boundary states that
@@ -255,7 +255,7 @@ func rleLookupEdges(t *testing.T) {
 	t.Helper()
 	rleLookupContracts(t)
 	base := t.TempDir()
-	current := filepath.Join(base, "serf", "projects", trenderCurrentProject)
+	current := filepath.Join(base, "evener", "projects", trenderCurrentProject)
 	trender_makeTranscript(t, current, trenderCurrentSession)
 	if _, _, err := resolveTranscript("local:", current, trenderCurrentSession); err == nil {
 		t.Fatal("resolveTranscript accepted an empty local session ID")
@@ -459,14 +459,14 @@ func rleRenderContracts(t *testing.T) {
 func rleLookupContracts(t *testing.T) {
 	t.Helper()
 	root := t.TempDir()
-	current := filepath.Join(root, "serf", "projects", trenderCurrentProject)
-	other := filepath.Join(root, "serf", "projects", trenderOtherProject)
+	current := filepath.Join(root, "evener", "projects", trenderCurrentProject)
+	other := filepath.Join(root, "evener", "projects", trenderOtherProject)
 	trender_makeTranscript(t, current, trenderCurrentSession)
 	trender_makeTranscript(t, current, trenderLocalSession)
 	trender_makeTranscript(t, current, trenderSharedSession)
 	trender_makeTranscript(t, other, trenderRemoteSession)
 	trender_makeTranscript(t, other, trenderSharedSession)
-	if err := os.WriteFile(filepath.Join(root, "serf", "projects", "not-a-dir"), []byte("x"), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(root, "evener", "projects", "not-a-dir"), []byte("x"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 

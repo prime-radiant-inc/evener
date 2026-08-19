@@ -15,11 +15,11 @@ import (
 	"testing"
 	"time"
 
-	"primeradiant.com/serf/agent"
-	"primeradiant.com/serf/agent/execenv"
-	"primeradiant.com/serf/agent/provider"
-	"primeradiant.com/serf/appwire"
-	"primeradiant.com/serf/llm"
+	"primeradiant.com/evener/agent"
+	"primeradiant.com/evener/agent/execenv"
+	"primeradiant.com/evener/agent/provider"
+	"primeradiant.com/evener/appwire"
+	"primeradiant.com/evener/llm"
 )
 
 func cancelRPC(conn interface {
@@ -168,7 +168,7 @@ func TestServerAppWireTurnCancelQueuedPropagatesSessionError(t *testing.T) {
 }
 
 // TestServerAppWireTurnCancelQueuedThroughSession exercises the full stack
-// the way cmd/serf serve wires it: the RPC drives the real agent session's
+// the way cmd/evener serve wires it: the RPC drives the real agent session's
 // CancelQueued, so the canceled entry leaves the queue (and is never
 // consumed) while the other queued message stays queued. The thread
 // snapshot carries the full Texts the edit affordance restores into the
@@ -222,7 +222,7 @@ func TestServerAppWireTurnCancelQueuedThroughSession(t *testing.T) {
 	if !ok {
 		t.Fatalf("thread/read result type=%T", readResp.Response.Result)
 	}
-	queue := read.Thread.Serf.Queue
+	queue := read.Thread.Evener.Queue
 	if len(queue.IDs) != 2 || queue.IDs[0] == "" || queue.IDs[1] == "" {
 		t.Fatalf("thread queue IDs = %#v, want two non-empty ids", queue.IDs)
 	}

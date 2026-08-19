@@ -2,22 +2,22 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Eliminate streaming jank in the Serf web hub transcript: frame-batched live events, coalesced markdown parsing, frozen-head/raw-tail long messages, idempotent finalization, append-only tool output, browser-native windowing, throttled scroll handling.
+**Goal:** Eliminate streaming jank in the Evener web hub transcript: frame-batched live events, coalesced markdown parsing, frozen-head/raw-tail long messages, idempotent finalization, append-only tool output, browser-native windowing, throttled scroll handling.
 
-**Architecture:** No bundler, vanilla JS modules sharing `window.SerfRendererInternal`, loaded in dependency order (see `cmd/serf-hub/jstest/load-renderer.js` and `cmd/serf-hub/templates/app.html`). Live socket events batch per frame at the single `deliverNotification` site; synchronous replay paths (hydration, prepend) bypass the queue. Spec: `docs/superpowers/specs/2026-07-18-webui-foundation-experience-design.md` (§1 + Increments 1–4). Increments 5–9 (layout/CSS/launchpad) are Plan B, written after this lands.
+**Architecture:** No bundler, vanilla JS modules sharing `window.EvenerRendererInternal`, loaded in dependency order (see `cmd/evener-hub/jstest/load-renderer.js` and `cmd/evener-hub/templates/app.html`). Live socket events batch per frame at the single `deliverNotification` site; synchronous replay paths (hydration, prepend) bypass the queue. Spec: `docs/superpowers/specs/2026-07-18-webui-foundation-experience-design.md` (§1 + Increments 1–4). Increments 5–9 (layout/CSS/launchpad) are Plan B, written after this lands.
 
-**Tech Stack:** vanilla JS, jsdom-based `jstest` harness (`cmd/serf-hub/jstest/run-all.sh`), Go templates, embedded assets (`make build-hub`).
+**Tech Stack:** vanilla JS, jsdom-based `jstest` harness (`cmd/evener-hub/jstest/run-all.sh`), Go templates, embedded assets (`make build-hub`).
 
 ## Global Constraints
 
-- Every commit leaves `make build-hub` + `cmd/serf-hub/jstest/run-all.sh` + `go test ./cmd/serf-hub` green.
+- Every commit leaves `make build-hub` + `cmd/evener-hub/jstest/run-all.sh` + `go test ./cmd/evener-hub` green.
 - TDD: failing test first, minimal implementation, commit.
 - `handleData(kind, data)` keeps its signature and stays SYNCHRONOUS for direct callers (hydration, prepend, tests). Only live socket delivery batches.
 - The reconcile invariant (`renderer.js:677-684`): `reconcilePendingFromNotification` runs once per notification, after that notification's events apply — preserved exactly under batching.
 - The streaming message element keeps `.assistant-message` + `data-turn-id` at all times.
 - New renderer module files (if any) must be added to BOTH `templates/app.html` `<script>` list and `jstest/load-renderer.js` `RENDERER_FILES`, in dependency order. This plan adds NO new module files — everything lands in existing ones.
-- jstest pattern (mirror `test-renderer-thinking.js`): JSDOM with `pretendToBeVisual: true` unless stated otherwise, `window.marked = { parse: (t) => t }`, `require("./load-renderer").evalRenderer(window)`, `window.SerfRenderer.init(conv)`, async IIFE, `process.exit(0)` at the end (renderer pollers keep the loop alive).
-- Work branch: `webui-joy` (already created). Do not touch files outside `cmd/serf-hub/` in this plan.
+- jstest pattern (mirror `test-renderer-thinking.js`): JSDOM with `pretendToBeVisual: true` unless stated otherwise, `window.marked = { parse: (t) => t }`, `require("./load-renderer").evalRenderer(window)`, `window.EvenerRenderer.init(conv)`, async IIFE, `process.exit(0)` at the end (renderer pollers keep the loop alive).
+- Work branch: `webui-joy` (already created). Do not touch files outside `cmd/evener-hub/` in this plan.
 
 ---
 
@@ -26,7 +26,7 @@
 Guards the app.html ≡ RENDERER_FILES invariant that today is enforced by convention only.
 
 **Files:**
-- Create: `cmd/serf-hub/jstest/test-renderer-file-mirror.js`
+- Create: `cmd/evener-hub/jstest/test-renderer-file-mirror.js`
 
 **Interfaces:**
 - Consumes: `require("./load-renderer").RENDERER_FILES` (array of filenames in dependency order).
@@ -59,13 +59,13 @@ console.log("PASS: app.html script order mirrors RENDERER_FILES");
 
 - [ ] **Step 2: Run it — expect PASS immediately** (the invariant holds today; this is a characterization test)
 
-Run: `cd cmd/serf-hub/jstest && node test-renderer-file-mirror.js`
+Run: `cd cmd/evener-hub/jstest && node test-renderer-file-mirror.js`
 Expected: PASS. (If it fails, the lists have already drifted — fix whichever list is wrong before continuing.)
 
 - [ ] **Step 3: Commit**
 
 ```bash
-git add cmd/serf-hub/jstest/test-renderer-file-mirror.js
+git add cmd/evener-hub/jstest/test-renderer-file-mirror.js
 git commit -m "jstest: mirror app.html script order against RENDERER_FILES"
 ```
 
@@ -76,13 +76,13 @@ git commit -m "jstest: mirror app.html script order against RENDERER_FILES"
 Plain jsdom (6 jstest files) has NO `requestAnimationFrame` — any new unguarded rAF call crashes those suites. One guarded helper now; all later tasks use it.
 
 **Files:**
-- Modify: `cmd/serf-hub/assets/renderer.js` (add methods near `bindWorkspaceViewport`, ~line 880; adopt in `bindWorkspaceViewport` at ~896)
-- Test: `cmd/serf-hub/jstest/test-renderer-schedule-frame.js`
+- Modify: `cmd/evener-hub/assets/renderer.js` (add methods near `bindWorkspaceViewport`, ~line 880; adopt in `bindWorkspaceViewport` at ~896)
+- Test: `cmd/evener-hub/jstest/test-renderer-schedule-frame.js`
 
 **Interfaces:**
 - Produces (used by Tasks 5, 6, 13, 15):
-  - `SerfRenderer.scheduleFrame(cb)` — schedules `cb` on rAF when available and document visible; else `setTimeout(cb, 16)`. Returns nothing.
-  - `SerfRenderer.cancelFrame()` — cancels the pending scheduled callback, if any.
+  - `EvenerRenderer.scheduleFrame(cb)` — schedules `cb` on rAF when available and document visible; else `setTimeout(cb, 16)`. Returns nothing.
+  - `EvenerRenderer.cancelFrame()` — cancels the pending scheduled callback, if any.
 
 - [ ] **Step 1: Write the failing test** (deliberately NO `pretendToBeVisual` → no rAF)
 
@@ -99,7 +99,7 @@ const { window } = dom;
 window.marked = { parse: (t) => t };
 window.fetch = () => Promise.resolve({ ok: true, json: () => Promise.resolve([]), text: () => Promise.resolve("") });
 require("./load-renderer").evalRenderer(window);
-const R = window.SerfRenderer;
+const R = window.EvenerRenderer;
 R.init(window.document.getElementById("conversation"));
 
 const failures = [];
@@ -125,12 +125,12 @@ const pass = (cond, msg) => { if (!cond) failures.push("FAIL: " + msg); };
 
 - [ ] **Step 2: Run test to verify it fails**
 
-Run: `cd cmd/serf-hub/jstest && node test-renderer-schedule-frame.js`
+Run: `cd cmd/evener-hub/jstest && node test-renderer-schedule-frame.js`
 Expected: FAIL — "scheduleFrame exists"
 
 - [ ] **Step 3: Implement**
 
-In `renderer.js`, add to the `SerfRenderer` object (near `bindWorkspaceViewport`):
+In `renderer.js`, add to the `EvenerRenderer` object (near `bindWorkspaceViewport`):
 
 ```js
     // scheduleFrame runs cb on the next animation frame when rAF exists and the
@@ -194,13 +194,13 @@ NOTE: `scheduleFrame` supports ONE pending callback (later calls cancel earlier 
 
 - [ ] **Step 4: Run tests**
 
-Run: `cd cmd/serf-hub/jstest && node test-renderer-schedule-frame.js && ./run-all.sh`
+Run: `cd cmd/evener-hub/jstest && node test-renderer-schedule-frame.js && ./run-all.sh`
 Expected: new test PASS; whole suite green.
 
 - [ ] **Step 5: Commit**
 
 ```bash
-git add cmd/serf-hub/assets/renderer.js cmd/serf-hub/jstest/test-renderer-schedule-frame.js
+git add cmd/evener-hub/assets/renderer.js cmd/evener-hub/jstest/test-renderer-schedule-frame.js
 git commit -m "renderer: guarded scheduleFrame/cancelFrame helpers (rAF-free environments)"
 ```
 
@@ -211,17 +211,17 @@ git commit -m "renderer: guarded scheduleFrame/cancelFrame helpers (rAF-free env
 Behavior-preserving refactor that Task 5 builds on. Also removes the per-event `JSON.stringify`→`parse` round trip (jank finding #6).
 
 **Files:**
-- Modify: `cmd/serf-hub/assets/renderer.js:1047-1068` (`handleData`, `handle`) and the post-switch settle block (~1400-1420)
+- Modify: `cmd/evener-hub/assets/renderer.js:1047-1068` (`handleData`, `handle`) and the post-switch settle block (~1400-1420)
 
 **Interfaces:**
 - Produces (used by Tasks 4, 5):
-  - `SerfRenderer.applyEvent(kind, data)` — the event switch; `data` is a parsed object. Stamps `lastFrameAt`.
-  - `SerfRenderer.handle(kind, ev)` — thin sync wrapper: buffers while `!descriptionsReady`, parses `ev.data` (string OR object), measures stick, calls `applyEvent`, settles.
-  - `SerfRenderer.handleData(kind, data)` — unchanged signature; now passes the object through (no stringify).
+  - `EvenerRenderer.applyEvent(kind, data)` — the event switch; `data` is a parsed object. Stamps `lastFrameAt`.
+  - `EvenerRenderer.handle(kind, ev)` — thin sync wrapper: buffers while `!descriptionsReady`, parses `ev.data` (string OR object), measures stick, calls `applyEvent`, settles.
+  - `EvenerRenderer.handleData(kind, data)` — unchanged signature; now passes the object through (no stringify).
 
 - [ ] **Step 1: Characterization check — no new test; the entire existing suite is the test**
 
-Run: `cd cmd/serf-hub/jstest && ./run-all.sh`
+Run: `cd cmd/evener-hub/jstest && ./run-all.sh`
 Expected: all green BEFORE the change (baseline).
 
 - [ ] **Step 2: Implement**
@@ -285,13 +285,13 @@ Check the `eventBuffer` drain site (search `eventBuffer` for where buffered even
 
 - [ ] **Step 3: Run the suite**
 
-Run: `cd cmd/serf-hub/jstest && ./run-all.sh && cd ../../.. && go test ./cmd/serf-hub`
+Run: `cd cmd/evener-hub/jstest && ./run-all.sh && cd ../../.. && go test ./cmd/evener-hub`
 Expected: all green (pure refactor).
 
 - [ ] **Step 4: Commit**
 
 ```bash
-git add cmd/serf-hub/assets/renderer.js
+git add cmd/evener-hub/assets/renderer.js
 git commit -m "renderer: split applyEvent from handle; drop per-event JSON round trip"
 ```
 
@@ -302,12 +302,12 @@ git commit -m "renderer: split applyEvent from handle; drop per-event JSON round
 Kills the O(L²)-per-token re-parse for messages ≤4KB (jank finding #1, short-message half). Live path pays off fully once Task 5 lands; sync callers (tests, hydration) still settle per `handle()` call, so behavior is unchanged there.
 
 **Files:**
-- Modify: `cmd/serf-hub/assets/renderer.js` (`appendAssistantDelta` :2212-2217, `finalizeAssistantMessage` :2236-2251)
-- Test: `cmd/serf-hub/jstest/test-renderer-delta-coalescing.js`
+- Modify: `cmd/evener-hub/assets/renderer.js` (`appendAssistantDelta` :2212-2217, `finalizeAssistantMessage` :2236-2251)
+- Test: `cmd/evener-hub/jstest/test-renderer-delta-coalescing.js`
 
 **Interfaces:**
 - Consumes: `settleFrame` dirty-set block (Task 3), `renderAssistantMessage(m, text)`.
-- Produces: `SerfRenderer.markAssistantDirty(m)` — registers `m` for one render at the next settle.
+- Produces: `EvenerRenderer.markAssistantDirty(m)` — registers `m` for one render at the next settle.
 
 - [ ] **Step 1: Write the failing test**
 
@@ -330,8 +330,8 @@ window.marked = { parse: (t) => { parses++; return t; } };
 window.fetch = () => Promise.resolve({ ok: true, json: () => Promise.resolve([]), text: () => Promise.resolve("") });
 require("./load-renderer").evalRenderer(window);
 const conv = window.document.getElementById("conversation");
-window.SerfRenderer.init(conv);
-const R = window.SerfRenderer;
+window.EvenerRenderer.init(conv);
+const R = window.EvenerRenderer;
 const failures = [];
 const pass = (cond, msg) => { if (!cond) failures.push("FAIL: " + msg); };
 
@@ -360,7 +360,7 @@ const pass = (cond, msg) => { if (!cond) failures.push("FAIL: " + msg); };
 
 - [ ] **Step 2: Run test to verify it fails**
 
-Run: `cd cmd/serf-hub/jstest && node test-renderer-delta-coalescing.js`
+Run: `cd cmd/evener-hub/jstest && node test-renderer-delta-coalescing.js`
 Expected: FAIL — today each delta parses immediately (parses === 5 before settle).
 
 - [ ] **Step 3: Implement**
@@ -389,13 +389,13 @@ In `finalizeAssistantMessage`, remove `m` from the dirty set before the final re
 
 - [ ] **Step 4: Run tests**
 
-Run: `cd cmd/serf-hub/jstest && node test-renderer-delta-coalescing.js && ./run-all.sh`
+Run: `cd cmd/evener-hub/jstest && node test-renderer-delta-coalescing.js && ./run-all.sh`
 Expected: new test PASS; suite green (existing tests call `handleData`, which settles synchronously, so they see rendered content).
 
 - [ ] **Step 5: Commit**
 
 ```bash
-git add cmd/serf-hub/assets/renderer.js cmd/serf-hub/jstest/test-renderer-delta-coalescing.js
+git add cmd/evener-hub/assets/renderer.js cmd/evener-hub/jstest/test-renderer-delta-coalescing.js
 git commit -m "renderer: coalesce assistant markdown parse to once per settle"
 ```
 
@@ -406,15 +406,15 @@ git commit -m "renderer: coalesce assistant markdown parse to once per settle"
 The core jank fix. Live socket notifications queue and apply once per frame; hydration/prepend replay stays synchronous. Queue is drained + generation-guarded on transcript reset; per-notification reconcile replay is preserved.
 
 **Files:**
-- Modify: `cmd/serf-hub/assets/renderer.js` — `deliverNotification` (~673-685), the buffered-replay loop (~841-846), `resetTranscriptReplay` (~981-1000)
-- Test: `cmd/serf-hub/jstest/test-renderer-frame-batching.js`
+- Modify: `cmd/evener-hub/assets/renderer.js` — `deliverNotification` (~673-685), the buffered-replay loop (~841-846), `resetTranscriptReplay` (~981-1000)
+- Test: `cmd/evener-hub/jstest/test-renderer-frame-batching.js`
 
 **Interfaces:**
 - Consumes: `applyEvent`, `settleFrame`, `scheduleFrame`'s rAF guard pattern.
 - Produces:
-  - `SerfRenderer.flush()` — synchronously drains the frame queue (test hook + visibilitychange handler).
-  - `SerfRenderer.scheduleFrameFlush()` — schedules one flush (rAF when visible, 250ms timer when `document.hidden`, 16ms timer when no rAF).
-  - `SerfRenderer.cancelFrameFlush()` — cancels a scheduled flush.
+  - `EvenerRenderer.flush()` — synchronously drains the frame queue (test hook + visibilitychange handler).
+  - `EvenerRenderer.scheduleFrameFlush()` — schedules one flush (rAF when visible, 250ms timer when `document.hidden`, 16ms timer when no rAF).
+  - `EvenerRenderer.cancelFrameFlush()` — cancels a scheduled flush.
   - `this.frameQueue` (array of `{method, params}`), `this.frameGeneration` (number).
 
 - [ ] **Step 1: Write the failing test**
@@ -438,7 +438,7 @@ window.marked = { parse: (t) => t };
 window.fetch = () => Promise.resolve({ ok: true, json: () => Promise.resolve([]), text: () => Promise.resolve("") });
 require("./load-renderer").evalRenderer(window);
 const conv = window.document.getElementById("conversation");
-const R = window.SerfRenderer;
+const R = window.EvenerRenderer;
 R.init(conv);
 const failures = [];
 const pass = (cond, msg) => { if (!cond) failures.push("FAIL: " + msg); };
@@ -450,8 +450,8 @@ const pass = (cond, msg) => { if (!cond) failures.push("FAIL: " + msg); };
   pass(Array.isArray(R.frameQueue), "frameQueue exists");
 
   // Simulate the live delivery path with a stubbed projector.
-  const realEvents = window.SerfAppwire.eventsFromNotification;
-  window.SerfAppwire.eventsFromNotification = (method, params) => {
+  const realEvents = window.EvenerAppwire.eventsFromNotification;
+  window.EvenerAppwire.eventsFromNotification = (method, params) => {
     if (method === "test/delta") return [["ASSISTANT_TEXT_DELTA", { delta: params.delta }]];
     return realEvents ? realEvents(method, params) : [];
   };
@@ -480,12 +480,12 @@ NOTE for the implementer: `enqueueLiveNotification(method, params)` is the extra
 
 - [ ] **Step 2: Run test to verify it fails**
 
-Run: `cd cmd/serf-hub/jstest && node test-renderer-frame-batching.js`
+Run: `cd cmd/evener-hub/jstest && node test-renderer-frame-batching.js`
 Expected: FAIL — "flush() exists"
 
 - [ ] **Step 3: Implement**
 
-Add to `SerfRenderer`:
+Add to `EvenerRenderer`:
 
 ```js
     // Frame batching — LIVE socket events only. Replay paths (initial hydration,
@@ -536,7 +536,7 @@ Add to `SerfRenderer`:
       const entriesBefore = this.conversation ? this.conversation.children.length : 0;
       for (const item of q) {
         if (gen !== this.frameGeneration) return; // transcript reset mid-flush
-        for (const [kind, data] of window.SerfAppwire.eventsFromNotification(item.method, item.params)) {
+        for (const [kind, data] of window.EvenerAppwire.eventsFromNotification(item.method, item.params)) {
           this.applyEvent(kind, data);
         }
         // Per-notification reconcile, in order, after that notification's
@@ -554,7 +554,7 @@ Change `deliverNotification` (~673):
 ```js
       const deliverNotification = (method, params) => {
         if (!this.appwireHydrated || this.replayingBufferedNotifications) {
-          for (const [kind, data] of window.SerfAppwire.eventsFromNotification(method, params)) {
+          for (const [kind, data] of window.EvenerAppwire.eventsFromNotification(method, params)) {
             this.handleData(kind, data);
           }
           if (this.pending) reconcilePendingFromNotification(this.pending, method, params);
@@ -586,7 +586,7 @@ In `resetTranscriptReplay`, add at the top:
 
 - [ ] **Step 4: Run tests**
 
-Run: `cd cmd/serf-hub/jstest && node test-renderer-frame-batching.js && ./run-all.sh`
+Run: `cd cmd/evener-hub/jstest && node test-renderer-frame-batching.js && ./run-all.sh`
 Expected: new test PASS. Suite: appwire-notification tests that assert synchronously after delivering a notification WILL FAIL now — that is expected; Task 7 migrates them. If ANY other test fails, the batching leaked into a sync path — fix before continuing. (Do not commit until Task 7 completes; run Tasks 5-7 as one commit sequence.)
 
 - [ ] **Step 5: (No commit yet — continue to Task 6/7, then commit all three)**
@@ -598,8 +598,8 @@ Expected: new test PASS. Suite: appwire-notification tests that assert synchrono
 A queued rAF never fires once the tab hides — flush pending events on hide AND on return so no batch strands.
 
 **Files:**
-- Modify: `cmd/serf-hub/assets/renderer.js` — renderer init region (near other global listener bindings; follow the cleanup pattern of `bindWorkspaceViewport`)
-- Test: `cmd/serf-hub/jstest/test-renderer-visibility-flush.js`
+- Modify: `cmd/evener-hub/assets/renderer.js` — renderer init region (near other global listener bindings; follow the cleanup pattern of `bindWorkspaceViewport`)
+- Test: `cmd/evener-hub/jstest/test-renderer-visibility-flush.js`
 
 **Interfaces:**
 - Consumes: `flush()`, `frameQueue`.
@@ -624,7 +624,7 @@ window.marked = { parse: (t) => t };
 window.fetch = () => Promise.resolve({ ok: true, json: () => Promise.resolve([]), text: () => Promise.resolve("") });
 require("./load-renderer").evalRenderer(window);
 const conv = window.document.getElementById("conversation");
-const R = window.SerfRenderer;
+const R = window.EvenerRenderer;
 R.init(conv);
 const failures = [];
 const pass = (cond, msg) => { if (!cond) failures.push("FAIL: " + msg); };
@@ -632,7 +632,7 @@ const pass = (cond, msg) => { if (!cond) failures.push("FAIL: " + msg); };
 (async () => {
   await new Promise((r) => setTimeout(r, 30));
   R.appwireHydrated = true;
-  window.SerfAppwire.eventsFromNotification = (m, p) => m === "test/delta" ? [["ASSISTANT_TEXT_DELTA", { delta: p.delta }]] : [];
+  window.EvenerAppwire.eventsFromNotification = (m, p) => m === "test/delta" ? [["ASSISTANT_TEXT_DELTA", { delta: p.delta }]] : [];
   R.handleData("TURN_STARTED", { turnId: "t1" });
   R.handleData("ASSISTANT_TEXT_START", {});
   R.enqueueLiveNotification("test/delta", { delta: "x" });
@@ -674,7 +674,7 @@ and the method:
 
 - [ ] **Step 4: Run tests**
 
-Run: `cd cmd/serf-hub/jstest && node test-renderer-visibility-flush.js && ./run-all.sh`
+Run: `cd cmd/evener-hub/jstest && node test-renderer-visibility-flush.js && ./run-all.sh`
 Expected: new test PASS.
 
 - [ ] **Step 5: (No commit yet — Task 7 next)**
@@ -686,14 +686,14 @@ Expected: new test PASS.
 Tests that deliver live notifications and assert synchronously now need one `R.flush()` (or `await` of the scheduled flush) before asserting.
 
 **Files:**
-- Modify: whichever `cmd/serf-hub/jstest/test-appwire-*.js` (and any other) files fail after Task 5
+- Modify: whichever `cmd/evener-hub/jstest/test-appwire-*.js` (and any other) files fail after Task 5
 
 **Interfaces:**
-- Consumes: `SerfRenderer.flush()`.
+- Consumes: `EvenerRenderer.flush()`.
 
 - [ ] **Step 1: Identify failures**
 
-Run: `cd cmd/serf-hub/jstest && ./run-all.sh 2>&1 | grep -E '^(FAIL|TIMEOUT)'`
+Run: `cd cmd/evener-hub/jstest && ./run-all.sh 2>&1 | grep -E '^(FAIL|TIMEOUT)'`
 Expected: a list of test files that drive the notification path.
 
 - [ ] **Step 2: Fix each failing test**
@@ -710,13 +710,13 @@ Preserve every existing assertion — this is a mechanical migration, not a rewr
 
 - [ ] **Step 3: Run the full gate**
 
-Run: `cd cmd/serf-hub/jstest && ./run-all.sh && cd ../../.. && make build-hub && go test ./cmd/serf-hub`
+Run: `cd cmd/evener-hub/jstest && ./run-all.sh && cd ../../.. && make build-hub && go test ./cmd/evener-hub`
 Expected: everything green.
 
 - [ ] **Step 4: Commit (Tasks 5+6+7 together)**
 
 ```bash
-git add cmd/serf-hub/assets/renderer.js cmd/serf-hub/jstest/
+git add cmd/evener-hub/assets/renderer.js cmd/evener-hub/jstest/
 git commit -m "renderer: frame-batch live socket events with flush-on-hide
 
 Live notifications queue and apply once per frame (single stick measure +
@@ -733,12 +733,12 @@ notification's events. jstest appwire suites migrated to the flush() hook."
 Kills the O(L²) full-buffer `textContent` replace and the O(L) regex per delta.
 
 **Files:**
-- Modify: `cmd/serf-hub/assets/renderer.js` (`appendReasoningDelta` :2328-2338)
-- Test: `cmd/serf-hub/jstest/test-renderer-reasoning-append.js`
+- Modify: `cmd/evener-hub/assets/renderer.js` (`appendReasoningDelta` :2328-2338)
+- Test: `cmd/evener-hub/jstest/test-renderer-reasoning-append.js`
 
 **Interfaces:**
 - Consumes: `settleFrame`'s `reasoningPreviewDirty` hook (Task 3).
-- Produces: `SerfRenderer.updateReasoningPreview()` — refreshes the `.pv` teleprompter tail from the last 400 chars of `reasoningBuf`.
+- Produces: `EvenerRenderer.updateReasoningPreview()` — refreshes the `.pv` teleprompter tail from the last 400 chars of `reasoningBuf`.
 
 - [ ] **Step 1: Write the failing test**
 
@@ -760,8 +760,8 @@ window.marked = { parse: (t) => t };
 window.fetch = () => Promise.resolve({ ok: true, json: () => Promise.resolve([]), text: () => Promise.resolve("") });
 require("./load-renderer").evalRenderer(window);
 const conv = window.document.getElementById("conversation");
-window.SerfRenderer.init(conv);
-const R = window.SerfRenderer;
+window.EvenerRenderer.init(conv);
+const R = window.EvenerRenderer;
 const failures = [];
 const pass = (cond, msg) => { if (!cond) failures.push("FAIL: " + msg); };
 
@@ -808,17 +808,17 @@ Expected: FAIL — today the body is a single full-buffer text node and `updateR
     },
 ```
 
-(`clip` is imported from `window.SerfRendererInternal` at the top of renderer.js — same helper the old code used.)
+(`clip` is imported from `window.EvenerRendererInternal` at the top of renderer.js — same helper the old code used.)
 
 - [ ] **Step 4: Run tests**
 
-Run: `cd cmd/serf-hub/jstest && node test-renderer-reasoning-append.js && ./run-all.sh`
+Run: `cd cmd/evener-hub/jstest && node test-renderer-reasoning-append.js && ./run-all.sh`
 Expected: PASS + suite green.
 
 - [ ] **Step 5: Commit**
 
 ```bash
-git add cmd/serf-hub/assets/renderer.js cmd/serf-hub/jstest/test-renderer-reasoning-append.js
+git add cmd/evener-hub/assets/renderer.js cmd/evener-hub/jstest/test-renderer-reasoning-append.js
 git commit -m "renderer: append-only reasoning body, bounded preview tail"
 ```
 
@@ -829,9 +829,9 @@ git commit -m "renderer: append-only reasoning body, bounded preview tail"
 Long messages stop re-parsing entirely: the parsed DOM freezes, further deltas stream as plain text in a `.streaming-tail` node, and one full parse happens at finalization. Element keeps `.assistant-message` + `data-turn-id`.
 
 **Files:**
-- Modify: `cmd/serf-hub/assets/renderer.js` (`beginAssistantMessage` ~2165-2177, `appendAssistantDelta` from Task 4)
-- Modify: `cmd/serf-hub/assets/style.css` (add `.streaming-tail` + caret rules near the `.assistant-message` block)
-- Test: `cmd/serf-hub/jstest/test-renderer-streaming-tail.js`
+- Modify: `cmd/evener-hub/assets/renderer.js` (`beginAssistantMessage` ~2165-2177, `appendAssistantDelta` from Task 4)
+- Modify: `cmd/evener-hub/assets/style.css` (add `.streaming-tail` + caret rules near the `.assistant-message` block)
+- Test: `cmd/evener-hub/jstest/test-renderer-streaming-tail.js`
 
 **Interfaces:**
 - Consumes: `markAssistantDirty` (Task 4).
@@ -858,8 +858,8 @@ window.marked = { parse: (t) => { parses++; return "<p>" + t + "</p>"; } };
 window.fetch = () => Promise.resolve({ ok: true, json: () => Promise.resolve([]), text: () => Promise.resolve("") });
 require("./load-renderer").evalRenderer(window);
 const conv = window.document.getElementById("conversation");
-window.SerfRenderer.init(conv);
-const R = window.SerfRenderer;
+window.EvenerRenderer.init(conv);
+const R = window.EvenerRenderer;
 const failures = [];
 const pass = (cond, msg) => { if (!cond) failures.push("FAIL: " + msg); };
 
@@ -943,13 +943,13 @@ In `style.css`, near the `.assistant-message` rules:
 
 - [ ] **Step 4: Run tests**
 
-Run: `cd cmd/serf-hub/jstest && node test-renderer-streaming-tail.js && ./run-all.sh`
+Run: `cd cmd/evener-hub/jstest && node test-renderer-streaming-tail.js && ./run-all.sh`
 Expected: PASS + green.
 
 - [ ] **Step 5: Commit**
 
 ```bash
-git add cmd/serf-hub/assets/renderer.js cmd/serf-hub/assets/style.css cmd/serf-hub/jstest/test-renderer-streaming-tail.js
+git add cmd/evener-hub/assets/renderer.js cmd/evener-hub/assets/style.css cmd/evener-hub/jstest/test-renderer-streaming-tail.js
 git commit -m "renderer: frozen-head/raw-tail streaming for long assistant messages"
 ```
 
@@ -957,11 +957,11 @@ git commit -m "renderer: frozen-head/raw-tail streaming for long assistant messa
 
 ### Task 10: Idempotent finalization (interrupt + codex END-after-TURN_COMPLETED)
 
-Finalization runs on `ASSISTANT_TEXT_END`, `TURN_COMPLETED`, or `SESSION_END` — whichever first — and is idempotent: a late `ASSISTANT_TEXT_END` replaces the finalized block in place, never appends a duplicate. Interrupt never emits `ASSISTANT_TEXT_END` (serf source), so without this an interrupted long message stays raw forever; the codex path emits END right after TURN_COMPLETED, which without idempotence double-renders.
+Finalization runs on `ASSISTANT_TEXT_END`, `TURN_COMPLETED`, or `SESSION_END` — whichever first — and is idempotent: a late `ASSISTANT_TEXT_END` replaces the finalized block in place, never appends a duplicate. Interrupt never emits `ASSISTANT_TEXT_END` (evener source), so without this an interrupted long message stays raw forever; the codex path emits END right after TURN_COMPLETED, which without idempotence double-renders.
 
 **Files:**
-- Modify: `cmd/serf-hub/assets/renderer.js` — `finalizeAssistantMessage` (:2236-2251), `TURN_COMPLETED` case (:1104-1106, finalize BEFORE the turn-meta block), `SESSION_END` case (~1374), `beginAssistantMessage` (clear the guard)
-- Test: `cmd/serf-hub/jstest/test-renderer-idempotent-finalize.js`
+- Modify: `cmd/evener-hub/assets/renderer.js` — `finalizeAssistantMessage` (:2236-2251), `TURN_COMPLETED` case (:1104-1106, finalize BEFORE the turn-meta block), `SESSION_END` case (~1374), `beginAssistantMessage` (clear the guard)
+- Test: `cmd/evener-hub/jstest/test-renderer-idempotent-finalize.js`
 
 **Interfaces:**
 - Consumes: `this.lastFinalizedAssistantEl` (set in Task 9's finalize edit).
@@ -988,8 +988,8 @@ window.marked = { parse: (t) => "<p>" + t + "</p>" };
 window.fetch = () => Promise.resolve({ ok: true, json: () => Promise.resolve([]), text: () => Promise.resolve("") });
 require("./load-renderer").evalRenderer(window);
 const conv = window.document.getElementById("conversation");
-window.SerfRenderer.init(conv);
-const R = window.SerfRenderer;
+window.EvenerRenderer.init(conv);
+const R = window.EvenerRenderer;
 const failures = [];
 const pass = (cond, msg) => { if (!cond) failures.push("FAIL: " + msg); };
 
@@ -1078,13 +1078,13 @@ In `beginAssistantMessage`, add `this.lastFinalizedAssistantEl = null;` (a new m
 
 - [ ] **Step 4: Run tests**
 
-Run: `cd cmd/serf-hub/jstest && node test-renderer-idempotent-finalize.js && ./run-all.sh`
+Run: `cd cmd/evener-hub/jstest && node test-renderer-idempotent-finalize.js && ./run-all.sh`
 Expected: PASS + green. If `test-renderer-thinking.js` or hydration tests break, check the finalize ordering they assumed (TURN_COMPLETED used to leave messages unfinalized).
 
 - [ ] **Step 5: Commit**
 
 ```bash
-git add cmd/serf-hub/assets/renderer.js cmd/serf-hub/jstest/test-renderer-idempotent-finalize.js
+git add cmd/evener-hub/assets/renderer.js cmd/evener-hub/jstest/test-renderer-idempotent-finalize.js
 git commit -m "renderer: idempotent assistant finalization (interrupt + codex late-END)"
 ```
 
@@ -1095,8 +1095,8 @@ git commit -m "renderer: idempotent assistant finalization (interrupt + codex la
 With a raw tail, the last message's DOM `textContent` contains literal markdown, so `lastElementIsAssistantText` misfires and a mid-stream `communicate` message appends a duplicate.
 
 **Files:**
-- Modify: `cmd/serf-hub/assets/renderer.js` (`lastElementIsAssistantText` :2195-2199)
-- Test: `cmd/serf-hub/jstest/test-renderer-communicate-dedup.js`
+- Modify: `cmd/evener-hub/assets/renderer.js` (`lastElementIsAssistantText` :2195-2199)
+- Test: `cmd/evener-hub/jstest/test-renderer-communicate-dedup.js`
 
 **Interfaces:**
 - Consumes: `activeMessages`, `currentMessageId`, `normalizedAssistantText`.
@@ -1121,8 +1121,8 @@ window.marked = { parse: (t) => "<p>" + t + "</p>" };
 window.fetch = () => Promise.resolve({ ok: true, json: () => Promise.resolve([]), text: () => Promise.resolve("") });
 require("./load-renderer").evalRenderer(window);
 const conv = window.document.getElementById("conversation");
-window.SerfRenderer.init(conv);
-const R = window.SerfRenderer;
+window.EvenerRenderer.init(conv);
+const R = window.EvenerRenderer;
 const failures = [];
 const pass = (cond, msg) => { if (!cond) failures.push("FAIL: " + msg); };
 
@@ -1162,13 +1162,13 @@ Expected: FAIL — DOM textContent (rendered head + raw tail) ≠ rendered incom
 
 - [ ] **Step 4: Run tests**
 
-Run: `cd cmd/serf-hub/jstest && node test-renderer-communicate-dedup.js && ./run-all.sh`
+Run: `cd cmd/evener-hub/jstest && node test-renderer-communicate-dedup.js && ./run-all.sh`
 Expected: PASS + green.
 
 - [ ] **Step 5: Commit**
 
 ```bash
-git add cmd/serf-hub/assets/renderer.js cmd/serf-hub/jstest/test-renderer-communicate-dedup.js
+git add cmd/evener-hub/assets/renderer.js cmd/evener-hub/jstest/test-renderer-communicate-dedup.js
 git commit -m "renderer: dedup communicate against the streaming source buffer"
 ```
 
@@ -1179,9 +1179,9 @@ git commit -m "renderer: dedup communicate against the streaming source buffer"
 Kills the per-delta fold rebuild (jank finding #4). During streaming the output is one `<pre>` updated in place, height-clamped and tail-anchored in CSS; the 5-line fold, binary detection, and error replacement happen once at `bodyEnd`.
 
 **Files:**
-- Modify: `cmd/serf-hub/assets/renderer-tools.js` (shell `bodyDelta` :528-532, `bodyEnd` :533-549; `readToolBodyDelta` :225-227, `readToolBodyEnd` :229-231)
-- Modify: `cmd/serf-hub/assets/style.css` (streaming clamp rules)
-- Test: `cmd/serf-hub/jstest/test-tool-streaming-output.js`
+- Modify: `cmd/evener-hub/assets/renderer-tools.js` (shell `bodyDelta` :528-532, `bodyEnd` :533-549; `readToolBodyDelta` :225-227, `readToolBodyEnd` :229-231)
+- Modify: `cmd/evener-hub/assets/style.css` (streaming clamp rules)
+- Test: `cmd/evener-hub/jstest/test-tool-streaming-output.js`
 
 **Interfaces:**
 - Consumes: `setExpandableOutput` (unchanged), `clip`.
@@ -1196,11 +1196,11 @@ const { JSDOM } = require("jsdom");
 const dom = new JSDOM(`<!DOCTYPE html><html><body></body></html>`, { runScripts: "outside-only", pretendToBeVisual: true });
 const { window } = dom;
 require("./load-renderer").evalRenderer(window);
-const { toolRendererFor } = window.SerfRendererInternal || {};
+const { toolRendererFor } = window.EvenerRendererInternal || {};
 const failures = [];
 const pass = (cond, msg) => { if (!cond) failures.push("FAIL: " + msg); };
 
-const shell = (window.SerfRendererInternal.toolRendererFor || window.toolRendererFor)("shell", {});
+const shell = (window.EvenerRendererInternal.toolRendererFor || window.toolRendererFor)("shell", {});
 const host = window.document.createElement("div");
 const state = { body: shell.body({ command: "make test" }, host), el: host };
 
@@ -1288,13 +1288,13 @@ In `style.css`:
 
 - [ ] **Step 4: Run tests**
 
-Run: `cd cmd/serf-hub/jstest && node test-tool-streaming-output.js && ./run-all.sh`
+Run: `cd cmd/evener-hub/jstest && node test-tool-streaming-output.js && ./run-all.sh`
 Expected: PASS + green. If `test-appwire-tool-output-stream.js` asserts the old per-delta fold, update it to the new contract (stream = plain pre; fold at end).
 
 - [ ] **Step 5: Commit**
 
 ```bash
-git add cmd/serf-hub/assets/renderer-tools.js cmd/serf-hub/assets/style.css cmd/serf-hub/jstest/
+git add cmd/evener-hub/assets/renderer-tools.js cmd/evener-hub/assets/style.css cmd/evener-hub/jstest/
 git commit -m "renderer-tools: append-only streaming tool output, fold chrome at bodyEnd"
 ```
 
@@ -1305,9 +1305,9 @@ git commit -m "renderer-tools: append-only streaming tool output, fold chrome at
 `content-visibility: auto` on every direct child of `#conversation`; prepend does a next-frame correction so estimate-based scroll restoration can't drift visibly.
 
 **Files:**
-- Modify: `cmd/serf-hub/assets/style.css` (`.conversation` block ~1592)
-- Modify: `cmd/serf-hub/assets/renderer.js` (`prependOlderTurns` :4654-4659)
-- Test: `cmd/serf-hub/jstest/test-transcript-windowing.js`
+- Modify: `cmd/evener-hub/assets/style.css` (`.conversation` block ~1592)
+- Modify: `cmd/evener-hub/assets/renderer.js` (`prependOlderTurns` :4654-4659)
+- Test: `cmd/evener-hub/jstest/test-transcript-windowing.js`
 
 **Interfaces:**
 - Consumes: `scheduleFrame` (Task 2).
@@ -1343,7 +1343,7 @@ window.marked = { parse: (t) => t };
 window.fetch = () => Promise.resolve({ ok: true, json: () => Promise.resolve([]), text: () => Promise.resolve("") });
 require("./load-renderer").evalRenderer(window);
 const conv = window.document.getElementById("conversation");
-const R = window.SerfRenderer;
+const R = window.EvenerRenderer;
 R.init(conv);
 
 (async () => {
@@ -1351,8 +1351,8 @@ R.init(conv);
   let scheduled = 0;
   const realSchedule = R.scheduleFrame.bind(R);
   R.scheduleFrame = (cb) => { scheduled++; realSchedule(cb); };
-  window.SerfAppwire = window.SerfAppwire || {};
-  window.SerfAppwire.eventsFromTurns = () => [];
+  window.EvenerAppwire = window.EvenerAppwire || {};
+  window.EvenerAppwire.eventsFromTurns = () => [];
   R.prependOlderTurns([{ id: "old1" }]);
   pass(scheduled === 1, "prepend schedules a next-frame settle correction");
   if (failures.length) { for (const f of failures) console.log(f); process.exit(1); }
@@ -1402,13 +1402,13 @@ In `prependOlderTurns`, replace the tail (:4654-4659):
 
 - [ ] **Step 4: Run tests + build**
 
-Run: `cd cmd/serf-hub/jstest && node test-transcript-windowing.js && ./run-all.sh && cd ../../.. && make build-hub`
+Run: `cd cmd/evener-hub/jstest && node test-transcript-windowing.js && ./run-all.sh && cd ../../.. && make build-hub`
 Expected: PASS + green.
 
 - [ ] **Step 5: Commit**
 
 ```bash
-git add cmd/serf-hub/assets/style.css cmd/serf-hub/assets/renderer.js cmd/serf-hub/jstest/test-transcript-windowing.js
+git add cmd/evener-hub/assets/style.css cmd/evener-hub/assets/renderer.js cmd/evener-hub/jstest/test-transcript-windowing.js
 git commit -m "renderer: content-visibility windowing + two-phase prepend settle"
 ```
 
@@ -1419,8 +1419,8 @@ git commit -m "renderer: content-visibility windowing + two-phase prepend settle
 Per-event stick measurement during the hydration replay loop is the O(N²) session-open path (jank finding #2). Suppress it; settle once at the end.
 
 **Files:**
-- Modify: `cmd/serf-hub/assets/renderer.js` — the `readThread` `.then` hydration block (~808-847)
-- Test: `cmd/serf-hub/jstest/test-renderer-hydration-settle.js`
+- Modify: `cmd/evener-hub/assets/renderer.js` — the `readThread` `.then` hydration block (~808-847)
+- Test: `cmd/evener-hub/jstest/test-renderer-hydration-settle.js`
 
 **Interfaces:**
 - Consumes: `this.suppressScrollSettle` (honored by `handle`/`settleFrame` since Task 3).
@@ -1445,7 +1445,7 @@ window.marked = { parse: (t) => t };
 window.fetch = () => Promise.resolve({ ok: true, json: () => Promise.resolve([]), text: () => Promise.resolve("") });
 require("./load-renderer").evalRenderer(window);
 const conv = window.document.getElementById("conversation");
-const R = window.SerfRenderer;
+const R = window.EvenerRenderer;
 R.init(conv);
 const failures = [];
 const pass = (cond, msg) => { if (!cond) failures.push("FAIL: " + msg); };
@@ -1473,7 +1473,7 @@ const pass = (cond, msg) => { if (!cond) failures.push("FAIL: " + msg); };
 
 - [ ] **Step 2: Run test to verify it fails**
 
-Expected: FAIL — `suppressScrollSettle` honored since Task 3 in `handle`… verify: Task 3's `handle` checks it, so the flag mechanics may already pass. The REAL failing assertion for this task is the hydration wiring — extend the test: stub `window.SerfAppwire.readThread`/`onNotification`/`refForSession` so `R.connectAppwire` (or the init path that hydrates — check the method name containing `deliverNotification`, ~line 600-860) can be driven, then assert `isNearBottom` was called at most once around a multi-event hydration. Mirror the existing hydration test's appwire stubs (`test-renderer-hydration-order.js` — READ IT FIRST and reuse its stubbing).
+Expected: FAIL — `suppressScrollSettle` honored since Task 3 in `handle`… verify: Task 3's `handle` checks it, so the flag mechanics may already pass. The REAL failing assertion for this task is the hydration wiring — extend the test: stub `window.EvenerAppwire.readThread`/`onNotification`/`refForSession` so `R.connectAppwire` (or the init path that hydrates — check the method name containing `deliverNotification`, ~line 600-860) can be driven, then assert `isNearBottom` was called at most once around a multi-event hydration. Mirror the existing hydration test's appwire stubs (`test-renderer-hydration-order.js` — READ IT FIRST and reuse its stubbing).
 
 - [ ] **Step 3: Implement**
 
@@ -1481,7 +1481,7 @@ In the `readThread(...).then` block: set the flag before the replay loop, clear 
 
 ```js
           hydratedNotificationKeys = hydrationKeysFromThread(thread);
-          const hydrationEvents = Array.from(window.SerfAppwire.eventsFromThread(thread));
+          const hydrationEvents = Array.from(window.EvenerAppwire.eventsFromThread(thread));
           this.suppressScrollSettle = true;
           try {
             for (const [kind, data] of hydrationEvents) {
@@ -1511,13 +1511,13 @@ Also reset `this.suppressScrollSettle = false` in `resetTranscriptReplay` and in
 
 - [ ] **Step 4: Run tests**
 
-Run: `cd cmd/serf-hub/jstest && node test-renderer-hydration-settle.js && ./run-all.sh`
+Run: `cd cmd/evener-hub/jstest && node test-renderer-hydration-settle.js && ./run-all.sh`
 Expected: PASS + green (especially `test-renderer-hydration-order.js`).
 
 - [ ] **Step 5: Commit**
 
 ```bash
-git add cmd/serf-hub/assets/renderer.js cmd/serf-hub/jstest/test-renderer-hydration-settle.js
+git add cmd/evener-hub/assets/renderer.js cmd/evener-hub/jstest/test-renderer-hydration-settle.js
 git commit -m "renderer: suppress per-event scroll settle during hydration replay"
 ```
 
@@ -1528,14 +1528,14 @@ git commit -m "renderer: suppress per-event scroll settle during hydration repla
 The scroll listener currently does O(transcript) `querySelectorAll` + layout reads per scroll event (jank finding #5).
 
 **Files:**
-- Modify: `cmd/serf-hub/assets/renderer.js` — `bindScrollAffordance` (:4508-4522), `pickUrgentAnchor` (:4470-4477), `TOOL_CALL_END` case in `applyEvent`, `prependOlderTurns`, `resetTranscriptReplay`
-- Test: `cmd/serf-hub/jstest/test-renderer-scroll-throttle.js`
+- Modify: `cmd/evener-hub/assets/renderer.js` — `bindScrollAffordance` (:4508-4522), `pickUrgentAnchor` (:4470-4477), `TOOL_CALL_END` case in `applyEvent`, `prependOlderTurns`, `resetTranscriptReplay`
+- Test: `cmd/evener-hub/jstest/test-renderer-scroll-throttle.js`
 
 **Interfaces:**
 - Consumes: `scheduleFrame` (Task 2).
 - Produces:
-  - `SerfRenderer.onScrollAffordance()` — the extracted scroll handler body.
-  - `SerfRenderer.errorAnchors()` — cached `Array` of `.tool-call[data-attention="error"]`; cache invalidated on `TOOL_CALL_END`, prepend, reset.
+  - `EvenerRenderer.onScrollAffordance()` — the extracted scroll handler body.
+  - `EvenerRenderer.errorAnchors()` — cached `Array` of `.tool-call[data-attention="error"]`; cache invalidated on `TOOL_CALL_END`, prepend, reset.
 
 - [ ] **Step 1: Write the failing test**
 
@@ -1557,7 +1557,7 @@ window.marked = { parse: (t) => t };
 window.fetch = () => Promise.resolve({ ok: true, json: () => Promise.resolve([]), text: () => Promise.resolve("") });
 require("./load-renderer").evalRenderer(window);
 const conv = window.document.getElementById("conversation");
-const R = window.SerfRenderer;
+const R = window.EvenerRenderer;
 R.init(conv);
 const failures = [];
 const pass = (cond, msg) => { if (!cond) failures.push("FAIL: " + msg); };
@@ -1599,8 +1599,8 @@ Expected: FAIL — methods don't exist; handler runs per event.
 Replace the scroll listener in `bindScrollAffordance`:
 
 ```js
-      if (!el.__serfScrollPillBound) {
-        el.__serfScrollPillBound = true;
+      if (!el.__evenerScrollPillBound) {
+        el.__evenerScrollPillBound = true;
         el.addEventListener("scroll", () => {
           if (this.scrollAffordanceTick) return;
           this.scrollAffordanceTick = true;
@@ -1644,13 +1644,13 @@ NOTE: `scheduleFrame` supports one pending callback — the scroll tick flag mak
 
 - [ ] **Step 4: Run the full gate**
 
-Run: `cd cmd/serf-hub/jstest && node test-renderer-scroll-throttle.js && ./run-all.sh && cd ../../.. && make build-hub && go test ./cmd/serf-hub`
+Run: `cd cmd/evener-hub/jstest && node test-renderer-scroll-throttle.js && ./run-all.sh && cd ../../.. && make build-hub && go test ./cmd/evener-hub`
 Expected: all green.
 
 - [ ] **Step 5: Commit**
 
 ```bash
-git add cmd/serf-hub/assets/renderer.js cmd/serf-hub/jstest/test-renderer-scroll-throttle.js
+git add cmd/evener-hub/assets/renderer.js cmd/evener-hub/jstest/test-renderer-scroll-throttle.js
 git commit -m "renderer: rAF-throttled scroll handler + cached error anchors"
 ```
 
@@ -1658,6 +1658,6 @@ git commit -m "renderer: rAF-throttled scroll handler + cached error anchors"
 
 ## Final verification (after Task 15)
 
-- [ ] Full gate: `make build-hub && cmd/serf-hub/jstest/run-all.sh && go test ./cmd/serf-hub`
-- [ ] Manual smoke with live assets: `SERF_HUB_ASSETS_DIR=$PWD/cmd/serf-hub ./serf-hub` (dev loop per design-system §10), open a streaming session at 1440px and 390px: streaming is smooth, long messages flip to raw tail and finalize formatted, interrupted turns finalize, scroll-up during streaming doesn't jump, session open doesn't stall.
+- [ ] Full gate: `make build-hub && cmd/evener-hub/jstest/run-all.sh && go test ./cmd/evener-hub`
+- [ ] Manual smoke with live assets: `EVENER_HUB_ASSETS_DIR=$PWD/cmd/evener-hub ./evener-hub` (dev loop per design-system §10), open a streaming session at 1440px and 390px: streaming is smooth, long messages flip to raw tail and finalize formatted, interrupted turns finalize, scroll-up during streaming doesn't jump, session open doesn't stall.
 - [ ] Playwright before/after screenshots (390/768/1100/1440/2560 × dark) archived to `/tmp/webui-study/after/` for the visual review with the product owner.

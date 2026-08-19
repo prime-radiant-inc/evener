@@ -60,7 +60,7 @@ git patch, **paired with a corpus seed that reaches the fault** (for a
 fuzzer-found bug, the regression seed the toolchain already saved; otherwise a
 seed shipped with the mutation). The audit applies each patch in a *throwaway git
 worktree at HEAD*, runs the corresponding target's seed corpus under
-`-tags serffuzz`, and asserts the run **fails** (the oracle caught the fault). A
+`-tags evenerfuzz`, and asserts the run **fails** (the oracle caught the fault). A
 clean HEAD must pass (sanity). On authoring, each mutation is confirmed to flip
 its seed clean→failing, which proves both that the seed reaches the fault and
 that the oracle fires — without that pairing, a seed-only run could leave a
@@ -74,8 +74,8 @@ if `git apply` no longer lands (the SUT was refactored), the audit errors with
 we want. Re-deriving is cheap: it is the inverse of a known fix.
 
 > Alternative considered: build-tag fault injection via a `mutate` package
-> mirroring `invariant/` (a `mutate.Active(id)` no-op under `!serfmutate`,
-> env-selected under `-tags serfmutate`). Cleaner against refactors, but it
+> mirroring `invariant/` (a `mutate.Active(id)` no-op under `!evenermutate`,
+> env-selected under `-tags evenermutate`). Cleaner against refactors, but it
 > scatters `if mutate.Active(...) { buggy } else { correct }` scaffolding through
 > production SUT files. Prefer patches; fall back to this only for a fault that
 > cannot be expressed as a stable patch.
@@ -85,9 +85,9 @@ we want. Re-deriving is cheap: it is the inverse of a known fix.
   `id <TAB> target(module:FuzzName) <TAB> patchfile <TAB> description`.
 - `fuzz/mutations/<id>.patch` — the fault.
 - `scripts/fuzz-oracle-audit.sh` — the harness (mirrors `fuzz-triage.sh`/
-  `fuzz-bisect.sh` conventions: env seams `SERF_FUZZ_RUNNER`, throwaway worktree,
+  `fuzz-bisect.sh` conventions: env seams `EVENER_FUZZ_RUNNER`, throwaway worktree,
   honest reporting). For each mutation: worktree-at-HEAD → `git apply` (loud on
-  failure) → `go test -tags serffuzz -run '^<FuzzName>$' <pkg>` → assert non-zero
+  failure) → `go test -tags evenerfuzz -run '^<FuzzName>$' <pkg>` → assert non-zero
   → clean up. Then a **gap report**: every native target in `run-fuzz.sh --list`
   with no mutation is flagged "unaudited oracle" (informational at first; a soft
   gate later, like `fuzz-gap-check`).
@@ -108,7 +108,7 @@ one-to-few-line patch reintroducing a real or plausible regression:
   of `slices.Sorted(maps.Keys(...))` (`646d…`). Target:
   `llm:FuzzOpenAIChatCompletionsMetamorphic`.
 - `instance-name-no-base` → drop `filepath.Base` from `AuthFilePath` (the
-  path-traversal `.json`-delete fix). Target: the serf/instance dispatch target.
+  path-traversal `.json`-delete fix). Target: the evener/instance dispatch target.
 - `jobstore-terminal-unsticky` → let a terminal job event be overwritten (the
   `applyEvent` terminal-sticky invariant). Target: `agent:TestJobstoreSeqFuzz`.
 - `frontmatter-determinism-naive` → revert the NaN-aware equal to
@@ -166,7 +166,7 @@ refactor could silently break either.
      declared tool.
 2. **Strengthened fuzz oracles** in `requestbuild_fuzz_test.go`: parse the output
    map and assert the same contracts directly (so the contract is checked even in
-   a non-serffuzz run, and the invariant is checked under serffuzz). The fuzzer
+   a non-evenerfuzz run, and the invariant is checked under evenerfuzz). The fuzzer
    already varies `llm.Request` (`llm/types.go:241` — `ReasoningEffort`,
    `ToolChoice`, `MaxTokens`, `Tools`, `ResponseFormat`); widen the generated
    space to drive every guard arm.
@@ -200,9 +200,9 @@ before promoting to an inline invariant.
 ## W3 — Extend the differential oracle (the proven winner)
 
 **Goal.** The differential oracle found both Phase-8 bugs; apply it where
-user-visible bugs keep recurring: the **two projection paths**. serf projects a
+user-visible bugs keep recurring: the **two projection paths**. evener projects a
 turn two ways — live (`internal/appprojector`) and on reload
-(`internal/apptranscript` + the hub replay `cmd/serf-hub` …
+(`internal/apptranscript` + the hub replay `cmd/evener-hub` …
 `app_threadread.go#replayTurnToAgentTurn`). Divergence between them is a
 *recurring* real-bug source: thinking traces vanishing on reload, web_search not
 re-projecting, communicate-echo duplicated on reload — each shipped as its own
@@ -294,7 +294,7 @@ namer lifecycle); a mistake degrades real runtime behavior. Gate on the full
    stateful layer is already broad; highest blast radius.
 
 W1–W3 are mutually independent and could be parallel lanes (disjoint modules:
-W1 = scripts + `fuzz/`, W2 = `llm/providers/*`, W3 = `cmd/serf-hub` + `appwire`),
+W1 = scripts + `fuzz/`, W2 = `llm/providers/*`, W3 = `cmd/evener-hub` + `appwire`),
 following the established fan-out discipline. W4 is sequential and serial.
 
 Each workstream is its own gate-green `--no-ff` merge. New oracles in W2/W3/W4

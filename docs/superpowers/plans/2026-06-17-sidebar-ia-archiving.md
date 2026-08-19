@@ -2,11 +2,11 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Replace the project-tier sidebar with projects ordered by recency whose sessions are tiered Current/Recent/Archived, add manual + auto-aged (2-week) archiving for sessions and projects, and remove the `serf-e2e-*` prefix bucket.
+**Goal:** Replace the project-tier sidebar with projects ordered by recency whose sessions are tiered Current/Recent/Archived, add manual + auto-aged (2-week) archiving for sessions and projects, and remove the `evener-e2e-*` prefix bucket.
 
-**Architecture:** A new sqlite-backed `ArchiveStore` (in the existing `~/.serf/index.db`) records explicit user archive/unarchive decisions. `hubcore.BuildTree` takes those decisions plus a `now` and computes each session's tier (effective-archived = user decision if present, else last-activity > 2 weeks) and each project's placement (active list vs. archived group), ordering active projects by most-recent session start. The template, sidebar JS, and CSS render the new shape; a `POST /api/archive` endpoint persists decisions.
+**Architecture:** A new sqlite-backed `ArchiveStore` (in the existing `~/.evener/index.db`) records explicit user archive/unarchive decisions. `hubcore.BuildTree` takes those decisions plus a `now` and computes each session's tier (effective-archived = user decision if present, else last-activity > 2 weeks) and each project's placement (active list vs. archived group), ordering active projects by most-recent session start. The template, sidebar JS, and CSS render the new shape; a `POST /api/archive` endpoint persists decisions.
 
-**Tech Stack:** Go (`database/sql` + `modernc.org/sqlite`), Go `html/template`, vanilla JS (no bundler), CSS. Tests: Go `testing`, the hub's `jstest` harness (`cmd/serf-hub/jstest/run-all.sh`, run from inside that dir).
+**Tech Stack:** Go (`database/sql` + `modernc.org/sqlite`), Go `html/template`, vanilla JS (no bundler), CSS. Tests: Go `testing`, the hub's `jstest` harness (`cmd/evener-hub/jstest/run-all.sh`, run from inside that dir).
 
 ## Global Constraints
 
@@ -24,8 +24,8 @@
 ### Task 1: Archive store (sqlite-backed)
 
 **Files:**
-- Create: `cmd/serf-hub/internal/hubcore/archive.go`
-- Test: `cmd/serf-hub/internal/hubcore/archive_test.go`
+- Create: `cmd/evener-hub/internal/hubcore/archive.go`
+- Test: `cmd/evener-hub/internal/hubcore/archive_test.go`
 
 **Interfaces:**
 - Produces:
@@ -87,7 +87,7 @@ func TestArchiveStoreEmptyWhenNoDB(t *testing.T) {
 
 - [ ] **Step 2: Run test to verify it fails**
 
-Run: `go test ./cmd/serf-hub/internal/hubcore/ -run TestArchiveStore -v`
+Run: `go test ./cmd/evener-hub/internal/hubcore/ -run TestArchiveStore -v`
 Expected: FAIL — `undefined: NewArchiveStore` / `ArchiveKey`.
 
 - [ ] **Step 3: Write minimal implementation**
@@ -199,13 +199,13 @@ func (s *ArchiveStore) Decisions() (map[ArchiveKey]bool, error) {
 
 - [ ] **Step 4: Run test to verify it passes**
 
-Run: `go test ./cmd/serf-hub/internal/hubcore/ -run TestArchiveStore -v`
+Run: `go test ./cmd/evener-hub/internal/hubcore/ -run TestArchiveStore -v`
 Expected: PASS.
 
 - [ ] **Step 5: Commit**
 
 ```bash
-git add cmd/serf-hub/internal/hubcore/archive.go cmd/serf-hub/internal/hubcore/archive_test.go
+git add cmd/evener-hub/internal/hubcore/archive.go cmd/evener-hub/internal/hubcore/archive_test.go
 git commit -m "Add hub-side archive store (sqlite) for session/project decisions"
 ```
 
@@ -214,8 +214,8 @@ git commit -m "Add hub-side archive store (sqlite) for session/project decisions
 ### Task 2: Tier-classification helpers (pure functions)
 
 **Files:**
-- Modify: `cmd/serf-hub/internal/hubcore/tree.go` (add helpers + windows; do not wire into BuildTree yet)
-- Test: `cmd/serf-hub/internal/hubcore/tree_test.go` (add cases; file already exists)
+- Modify: `cmd/evener-hub/internal/hubcore/tree.go` (add helpers + windows; do not wire into BuildTree yet)
+- Test: `cmd/evener-hub/internal/hubcore/tree_test.go` (add cases; file already exists)
 
 **Interfaces:**
 - Consumes: `ArchiveKey` (Task 1).
@@ -258,7 +258,7 @@ Note the boundary semantics this pins: `≤ 24h` is current, `≤ 14d` is recent
 
 - [ ] **Step 2: Run test to verify it fails**
 
-Run: `go test ./cmd/serf-hub/internal/hubcore/ -run TestClassifySession -v`
+Run: `go test ./cmd/evener-hub/internal/hubcore/ -run TestClassifySession -v`
 Expected: FAIL — `undefined: classifySession`.
 
 - [ ] **Step 3: Write minimal implementation**
@@ -291,13 +291,13 @@ func classifySession(decision *bool, lastActivity, now time.Time) string {
 
 - [ ] **Step 4: Run test to verify it passes**
 
-Run: `go test ./cmd/serf-hub/internal/hubcore/ -run TestClassifySession -v`
-Expected: PASS. Also run `go build ./cmd/serf-hub/...` — expected clean (new functions may be unused until Task 3; if `make lint` flags unused, proceed straight to Task 3 in the same review cycle, but the build must pass).
+Run: `go test ./cmd/evener-hub/internal/hubcore/ -run TestClassifySession -v`
+Expected: PASS. Also run `go build ./cmd/evener-hub/...` — expected clean (new functions may be unused until Task 3; if `make lint` flags unused, proceed straight to Task 3 in the same review cycle, but the build must pass).
 
 - [ ] **Step 5: Commit**
 
 ```bash
-git add cmd/serf-hub/internal/hubcore/tree.go cmd/serf-hub/internal/hubcore/tree_test.go
+git add cmd/evener-hub/internal/hubcore/tree.go cmd/evener-hub/internal/hubcore/tree_test.go
 git commit -m "Add session-tier classification helper (current/recent/archived)"
 ```
 
@@ -308,12 +308,12 @@ git commit -m "Add session-tier classification helper (current/recent/archived)"
 This is the core change. It must stay green: the Go data model, the `sidebar.html` template that consumes it, and the render test all change together.
 
 **Files:**
-- Modify: `cmd/serf-hub/internal/hubcore/tree.go` (Tree/TreeProject fields; rewrite BuildTree; delete old tier machinery)
-- Modify: `cmd/serf-hub/internal/hubcore/tree_test.go`
-- Modify: `cmd/serf-hub/templates/partials/sidebar.html`
-- Modify: `cmd/serf-hub/web_api_tree.go:25` (call site) — pass an empty decisions map + now for now (real wiring is Task 4)
-- Modify: any other `BuildTree(` caller (grep first: `grep -rn "BuildTree(" cmd/serf-hub`)
-- Modify: `cmd/serf-hub/web_test.go` if it asserts removed tier labels
+- Modify: `cmd/evener-hub/internal/hubcore/tree.go` (Tree/TreeProject fields; rewrite BuildTree; delete old tier machinery)
+- Modify: `cmd/evener-hub/internal/hubcore/tree_test.go`
+- Modify: `cmd/evener-hub/templates/partials/sidebar.html`
+- Modify: `cmd/evener-hub/web_api_tree.go:25` (call site) — pass an empty decisions map + now for now (real wiring is Task 4)
+- Modify: any other `BuildTree(` caller (grep first: `grep -rn "BuildTree(" cmd/evener-hub`)
+- Modify: `cmd/evener-hub/web_test.go` if it asserts removed tier labels
 
 **Interfaces:**
 - Consumes: `classifySession` (Task 2), `ArchiveKey` (Task 1).
@@ -391,7 +391,7 @@ Add a small helper if not present: `func projectNames(ps []TreeProject) []string
 
 - [ ] **Step 2: Run test to verify it fails**
 
-Run: `go test ./cmd/serf-hub/internal/hubcore/ -run TestBuildTree -v`
+Run: `go test ./cmd/evener-hub/internal/hubcore/ -run TestBuildTree -v`
 Expected: FAIL — new fields/`BuildTreeAt` undefined, or wrong shape.
 
 - [ ] **Step 3: Write minimal implementation (Go)**
@@ -405,7 +405,7 @@ In `tree.go`:
 
 - [ ] **Step 4: Rewrite the template**
 
-Rewrite `cmd/serf-hub/templates/partials/sidebar.html` to the new shape (match the file's existing markup conventions/classes — read it first; reuse `sb-row`, `status-dot`, the `sidebarProject` sub-template, etc.):
+Rewrite `cmd/evener-hub/templates/partials/sidebar.html` to the new shape (match the file's existing markup conventions/classes — read it first; reuse `sb-row`, `status-dot`, the `sidebarProject` sub-template, etc.):
 
 ```gotemplate
 <nav class="sidebar" aria-label="Sessions">
@@ -462,19 +462,19 @@ Carry over verbatim, from the old template, the needs-you row markup and the ful
 
 Update `web_api_tree.go:25` to `hubcore.BuildTree(metas, live, map[hubcore.ArchiveKey]bool{})` (real decisions arrive in Task 4). Update any other `BuildTree(` caller and any `web_test.go` assertion referencing removed tier labels (`Active`/`Recent`/`Older`/`Test runs`).
 
-Run: `go test ./cmd/serf-hub/... ./cmd/serf-hub/internal/hubcore/ -v 2>&1 | tail -20`
+Run: `go test ./cmd/evener-hub/... ./cmd/evener-hub/internal/hubcore/ -v 2>&1 | tail -20`
 Expected: PASS, including the new BuildTree tests and the existing render tests.
 
 - [ ] **Step 6: Build + lint + jstest**
 
-Run: `make build-hub && make lint && (cd cmd/serf-hub/jstest && bash run-all.sh)`
+Run: `make build-hub && make lint && (cd cmd/evener-hub/jstest && bash run-all.sh)`
 Expected: build OK; `0 issues.` ×4; `jstest: all tests passed`.
 
 - [ ] **Step 7: Commit**
 
 ```bash
-git add cmd/serf-hub/internal/hubcore/tree.go cmd/serf-hub/internal/hubcore/tree_test.go \
-        cmd/serf-hub/templates/partials/sidebar.html cmd/serf-hub/web_api_tree.go cmd/serf-hub/web_test.go
+git add cmd/evener-hub/internal/hubcore/tree.go cmd/evener-hub/internal/hubcore/tree_test.go \
+        cmd/evener-hub/templates/partials/sidebar.html cmd/evener-hub/web_api_tree.go cmd/evener-hub/web_test.go
 git commit -m "Sidebar IA v2: session tiers + project recency order + archived placement"
 ```
 
@@ -483,9 +483,9 @@ git commit -m "Sidebar IA v2: session tiers + project recency order + archived p
 ### Task 4: Wire the archive store into tree building
 
 **Files:**
-- Modify: `cmd/serf-hub/config.go` (WebConfig gains an archive store) and the hub startup that constructs `WebConfig` (grep `WebConfig{` and `NewPastIndexWithDB` to find where index.db path is known — reuse `cfg.PastIndexDB`/`DefaultPastIndexDBPath()`).
-- Modify: `cmd/serf-hub/web_api_tree.go` (`navigationTreeInputs` reads decisions; `BuildTree` call passes them)
-- Test: `cmd/serf-hub/internal/hubcore/` already covers the store; add/extend a hub test only if a natural seam exists.
+- Modify: `cmd/evener-hub/config.go` (WebConfig gains an archive store) and the hub startup that constructs `WebConfig` (grep `WebConfig{` and `NewPastIndexWithDB` to find where index.db path is known — reuse `cfg.PastIndexDB`/`DefaultPastIndexDBPath()`).
+- Modify: `cmd/evener-hub/web_api_tree.go` (`navigationTreeInputs` reads decisions; `BuildTree` call passes them)
+- Test: `cmd/evener-hub/internal/hubcore/` already covers the store; add/extend a hub test only if a natural seam exists.
 
 **Interfaces:**
 - Consumes: `NewArchiveStore` (Task 1), `BuildTree` with decisions (Task 3).
@@ -493,7 +493,7 @@ git commit -m "Sidebar IA v2: session tiers + project recency order + archived p
 
 - [ ] **Step 1: Write the failing test**
 
-Add to `cmd/serf-hub/web_api_tree_test.go` (create if absent) a test that a `WebServer` whose `cfg.Archive` has a project archived produces a tree with that project in `ArchivedProjects`. If the existing hub test harness (`newHubRPCTestServer`, see `app_auth_test.go`) makes this awkward, instead assert at the helper level: `archiveDecisions` returns the stored map.
+Add to `cmd/evener-hub/web_api_tree_test.go` (create if absent) a test that a `WebServer` whose `cfg.Archive` has a project archived produces a tree with that project in `ArchivedProjects`. If the existing hub test harness (`newHubRPCTestServer`, see `app_auth_test.go`) makes this awkward, instead assert at the helper level: `archiveDecisions` returns the stored map.
 
 ```go
 func TestArchiveDecisionsFlowIntoTree(t *testing.T) {
@@ -509,16 +509,16 @@ func TestArchiveDecisionsFlowIntoTree(t *testing.T) {
 }
 ```
 
-- [ ] **Step 2: Run it — expect FAIL** (compile error until you add the field) → Run: `go test ./cmd/serf-hub/ -run TestArchiveDecisionsFlowIntoTree -v`.
+- [ ] **Step 2: Run it — expect FAIL** (compile error until you add the field) → Run: `go test ./cmd/evener-hub/ -run TestArchiveDecisionsFlowIntoTree -v`.
 
 - [ ] **Step 3: Implement** — add `Archive *hubcore.ArchiveStore` to `WebConfig`; construct it at hub startup with the index.db path; add `func (s *WebServer) archiveDecisions() map[hubcore.ArchiveKey]bool` (nil-safe, error→empty); change the `BuildTree` call in `web_api_tree.go` to pass `s.archiveDecisions()`.
 
-- [ ] **Step 4: Run** `go test ./cmd/serf-hub/... -v 2>&1 | tail -15` → PASS.
+- [ ] **Step 4: Run** `go test ./cmd/evener-hub/... -v 2>&1 | tail -15` → PASS.
 
 - [ ] **Step 5: Commit**
 
 ```bash
-git add cmd/serf-hub/config.go cmd/serf-hub/web_api_tree.go cmd/serf-hub/web_api_tree_test.go cmd/serf-hub/*.go
+git add cmd/evener-hub/config.go cmd/evener-hub/web_api_tree.go cmd/evener-hub/web_api_tree_test.go cmd/evener-hub/*.go
 git commit -m "Wire archive store into navigation tree building"
 ```
 
@@ -528,7 +528,7 @@ git commit -m "Wire archive store into navigation tree building"
 
 **Files:**
 - Modify: the hub API registration + a handler file (grep `"/api/` and the tree endpoint registration to find the mux + auth pattern; add the handler beside it, e.g. in `web_api_tree.go` or a new `web_api_archive.go`).
-- Test: `cmd/serf-hub/web_api_archive_test.go`
+- Test: `cmd/evener-hub/web_api_archive_test.go`
 
 **Interfaces:**
 - Consumes: `WebConfig.Archive` (Task 4), `ArchiveStore.Set` (Task 1).
@@ -554,16 +554,16 @@ func TestArchiveEndpointSetsDecision(t *testing.T) {
 
 Match `newHubRPCTestServer`'s actual helper API (read `app_auth_test.go` for the exact request helper and auth injection; adapt `hub.do` to whatever exists).
 
-- [ ] **Step 2: Run — expect FAIL** (404/route missing) → `go test ./cmd/serf-hub/ -run TestArchiveEndpoint -v`.
+- [ ] **Step 2: Run — expect FAIL** (404/route missing) → `go test ./cmd/evener-hub/ -run TestArchiveEndpoint -v`.
 
 - [ ] **Step 3: Implement** the handler: decode JSON, validate `kind ∈ {session,project}` and non-empty `id`, call `s.cfg.Archive.Set(kind, id, archived, time.Now())`, write `{"ok":true}`. Register under the same auth middleware as the tree endpoint. Return 405 for non-POST.
 
-- [ ] **Step 4: Run** `go test ./cmd/serf-hub/ -run TestArchiveEndpoint -v` → PASS; then `make lint` → `0 issues.`
+- [ ] **Step 4: Run** `go test ./cmd/evener-hub/ -run TestArchiveEndpoint -v` → PASS; then `make lint` → `0 issues.`
 
 - [ ] **Step 5: Commit**
 
 ```bash
-git add cmd/serf-hub/web_api_archive*.go cmd/serf-hub/*.go
+git add cmd/evener-hub/web_api_archive*.go cmd/evener-hub/*.go
 git commit -m "Add POST /api/archive endpoint to persist archive decisions"
 ```
 
@@ -572,8 +572,8 @@ git commit -m "Add POST /api/archive endpoint to persist archive decisions"
 ### Task 6: Sidebar JS — archive control + archived disclosures
 
 **Files:**
-- Modify: `cmd/serf-hub/assets/sidebar.js`
-- Test: `cmd/serf-hub/jstest/test-sidebar-archive.js` (new; model on existing `test-sidebar-*.js`)
+- Modify: `cmd/evener-hub/assets/sidebar.js`
+- Test: `cmd/evener-hub/jstest/test-sidebar-archive.js` (new; model on existing `test-sidebar-*.js`)
 
 **Interfaces:**
 - Consumes: `POST /api/archive` (Task 5); the `.archive-btn[data-archive-kind][data-archive-id]` controls and `details.session-tier.archived` markup (Task 3).
@@ -581,16 +581,16 @@ git commit -m "Add POST /api/archive endpoint to persist archive decisions"
 
 - [ ] **Step 1: Write the failing test** — in the jstest harness, load the sidebar JS against fixture markup containing an `.archive-btn`, simulate a click, assert it issues a POST to `/api/archive` with the right body (stub `fetch`), and that an archived `<details>` is collapsed by default. Read an existing `test-sidebar-*.js` for the load/setup pattern; MUST `process.exit(0)` on success.
 
-- [ ] **Step 2: Run — expect FAIL** → `cd cmd/serf-hub/jstest && node test-sidebar-archive.js` (expect failure/throw).
+- [ ] **Step 2: Run — expect FAIL** → `cd cmd/evener-hub/jstest && node test-sidebar-archive.js` (expect failure/throw).
 
 - [ ] **Step 3: Implement** the click handler in `sidebar.js` (delegate on `.archive-btn`, read `data-archive-kind`/`data-archive-id`, `fetch("/api/archive", {method:"POST", headers, body})`, then trigger the existing refresh). Ensure archived `<details>` are not force-opened.
 
-- [ ] **Step 4: Run** `cd cmd/serf-hub/jstest && bash run-all.sh` → `jstest: all tests passed`.
+- [ ] **Step 4: Run** `cd cmd/evener-hub/jstest && bash run-all.sh` → `jstest: all tests passed`.
 
 - [ ] **Step 5: Commit**
 
 ```bash
-git add cmd/serf-hub/assets/sidebar.js cmd/serf-hub/jstest/test-sidebar-archive.js
+git add cmd/evener-hub/assets/sidebar.js cmd/evener-hub/jstest/test-sidebar-archive.js
 git commit -m "Sidebar: archive/unarchive control + collapsed archived disclosures"
 ```
 
@@ -599,7 +599,7 @@ git commit -m "Sidebar: archive/unarchive control + collapsed archived disclosur
 ### Task 7: CSS for session tiers, archived disclosures, archive control
 
 **Files:**
-- Modify: `cmd/serf-hub/assets/style.css`
+- Modify: `cmd/evener-hub/assets/style.css`
 - Test: covered by `jstest` rendering + visual check; no new unit test required, but run the suite.
 
 **Interfaces:**
@@ -607,13 +607,13 @@ git commit -m "Sidebar: archive/unarchive control + collapsed archived disclosur
 
 - [ ] **Step 1: Implement styles** matching the golden grammar (neutral, recede archived; `.session-tier-label` a quiet dim label like other section labels; `.archive-btn` a low-emphasis hover control; archived disclosures neutral). Reuse existing tokens (`--text-muted`, `--space-*`, `--text-*`). No new colors; archived content recedes (neutral), not amber/red.
 
-- [ ] **Step 2: Run** `make build-hub && (cd cmd/serf-hub/jstest && bash run-all.sh) && make lint`
+- [ ] **Step 2: Run** `make build-hub && (cd cmd/evener-hub/jstest && bash run-all.sh) && make lint`
 Expected: build OK; `jstest: all tests passed`; `0 issues.` ×4.
 
 - [ ] **Step 3: Commit**
 
 ```bash
-git add cmd/serf-hub/assets/style.css
+git add cmd/evener-hub/assets/style.css
 git commit -m "Sidebar: style session tiers + archived disclosures"
 ```
 
@@ -621,6 +621,6 @@ git commit -m "Sidebar: style session tiers + archived disclosures"
 
 ## Self-review notes (author)
 
-- **Spec coverage:** Needs-you retained (Task 3); projects-by-recency (Task 3); session tiers Current/Recent/Archived (Tasks 2–3); manual + auto-2wk archive with unarchive + provenance rule (Tasks 1–2, effective-archived in `classifySession`); index.db persistence (Task 1) + endpoint (Task 5) + wiring (Task 4); template/JS/CSS (Tasks 3,6,7); `serf-e2e-*` bucket removed (Task 3 deletes `isTestProject`/`e2eProjectPrefix`). Scale fast-follow is explicitly out of scope (Global Constraints).
+- **Spec coverage:** Needs-you retained (Task 3); projects-by-recency (Task 3); session tiers Current/Recent/Archived (Tasks 2–3); manual + auto-2wk archive with unarchive + provenance rule (Tasks 1–2, effective-archived in `classifySession`); index.db persistence (Task 1) + endpoint (Task 5) + wiring (Task 4); template/JS/CSS (Tasks 3,6,7); `evener-e2e-*` bucket removed (Task 3 deletes `isTestProject`/`e2eProjectPrefix`). Scale fast-follow is explicitly out of scope (Global Constraints).
 - **Type consistency:** `ArchiveKey{Kind,ID}`, `classifySession(decision *bool, lastActivity, now)`, `BuildTree(metas, live, decisions)` / `BuildTreeAt(..., now)`, `TreeProject.{Current,Recent,Archived,IsArchived,MostRecentStart}`, `Tree.{Projects,ArchivedProjects}` used consistently across tasks.
 - **Adapt-to-codebase flags:** Tasks 3–6 intentionally say "match existing helpers/markup/refresh path" for the template session-row, the hub test request helper, and the sidebar refresh — these must be read from the live files; the novel logic (archive store, classification, BuildTree shape, endpoint contract) is given in full.

@@ -28,7 +28,7 @@ only until M8/M9 land its replacement and M10 removes the original.
 Check an item once the new dockview/React implementation reproduces it (or the team has made a
 deliberate, documented decision not to).
 
-- **Source:** `cmd/serf-hub` in this worktree, branch `worktree-webui-workspace-shell`, commit
+- **Source:** `cmd/evener-hub` in this worktree, branch `worktree-webui-workspace-shell`, commit
   `8974a0a679d2cc8d6883650d17ee4d15186f79d4` (2026-07-20) — the 5 primary files below were last
   touched at `9bae74070cd10979c32a5545fc0426642c305f1b` (2026-07-20), an ancestor of the cited HEAD.
   File:line references are exact as of this commit; re-verify after further edits before relying on
@@ -39,62 +39,62 @@ deliberate, documented decision not to).
 ## Files read
 
 Primary (as requested), read in full:
-- `cmd/serf-hub/doc_serve.go` (241 lines)
-- `cmd/serf-hub/web_workspace.go` (746 lines — focused on `handleThreadDocument`/
+- `cmd/evener-hub/doc_serve.go` (241 lines)
+- `cmd/evener-hub/web_workspace.go` (746 lines — focused on `handleThreadDocument`/
   `renderThreadDocument` and the data-flow feeding them; the send/fork/aside/session-action POST
   handlers in the same file are named for context but not itemized here, they're M5/M10 territory)
-- `cmd/serf-hub/templates/thread.html` (55 lines)
-- `cmd/serf-hub/assets/panes.js` (461 lines)
-- `cmd/serf-hub/web.go` (445 lines)
-- `cmd/serf-hub/internal/hubedge/auth_token.go` (221 lines)
-- `cmd/serf-hub/assets/manifest.webmanifest` (17 lines)
+- `cmd/evener-hub/templates/thread.html` (55 lines)
+- `cmd/evener-hub/assets/panes.js` (461 lines)
+- `cmd/evener-hub/web.go` (445 lines)
+- `cmd/evener-hub/internal/hubedge/auth_token.go` (221 lines)
+- `cmd/evener-hub/assets/manifest.webmanifest` (17 lines)
 
 Pulled in because they're load-bearing for the requested behaviors (not optional reading — the
 primary files call straight into them, or the design doc's M8 framing depends on them):
-- `cmd/serf-hub/internal/fspaths/paths.go` (151 lines, read in full) — `ResolveInRoot`'s exact
+- `cmd/evener-hub/internal/fspaths/paths.go` (151 lines, read in full) — `ResolveInRoot`'s exact
   two-layer containment algorithm backing `doc_serve.go`'s path guards.
-- `cmd/serf-hub/output_images.go` (partial: `supportedOutputImageMedia`, `readOutputImageFile`,
+- `cmd/evener-hub/output_images.go` (partial: `supportedOutputImageMedia`, `readOutputImageFile`,
   `outputImageSHA`, `outputImageMaxBytes`, the `resolveOutputImageFile`→`/doc/image` URL builder) —
   the media-type/size gate `handleDocImage` delegates to.
-- `cmd/serf-hub/internal/httpsec/httpsec.go` (38 lines, read in full) — the CSP wrapping every route
+- `cmd/evener-hub/internal/httpsec/httpsec.go` (38 lines, read in full) — the CSP wrapping every route
   in scope, including the `frame-ancestors` rule `panes.js`'s iframes depend on.
-- `cmd/serf-hub/webnext.go` (58 lines, read in full) and `cmd/serf-hub/embed.go` (77 lines, read in
+- `cmd/evener-hub/webnext.go` (58 lines, read in full) and `cmd/evener-hub/embed.go` (77 lines, read in
   full) — `newWebEnabled()`/`serveSPAIndex` (the SPA cutover switch each route either checks or
   conspicuously doesn't) and the asset/template embed plumbing.
-- `cmd/serf-hub/templates/app.html` (127 lines, read in full) — the host shell `panes.js` and the
+- `cmd/evener-hub/templates/app.html` (127 lines, read in full) — the host shell `panes.js` and the
   full (non-thread-document) workspace render into; needed to diff `thread.html`'s script subset and
   to confirm `#side-panes`/`#pane-splitter` sit outside `#workspace`.
-- `cmd/serf-hub/templates/partials/workspace.html` (116 lines, read in full) and
-  `cmd/serf-hub/templates/partials/input_strip.html` (16 lines, read in full) — the shared partial
+- `cmd/evener-hub/templates/partials/workspace.html` (116 lines, read in full) and
+  `cmd/evener-hub/templates/partials/input_strip.html` (16 lines, read in full) — the shared partial
   both `/s/{id}` and `/thread/{ref}` render, and its `ThreadDocumentMode` conditionals.
-- `cmd/serf-hub/web_types.go` (`WorkspaceData` struct, lines ~161-223) and
-  `cmd/serf-hub/web_api_tree.go` (`apiSessionState`, lines 845-903) — the data feeding the
+- `cmd/evener-hub/web_types.go` (`WorkspaceData` struct, lines ~161-223) and
+  `cmd/evener-hub/web_api_tree.go` (`apiSessionState`, lines 845-903) — the data feeding the
   thread-document fallback and its recurring status poll.
-- `cmd/serf-hub/assets/renderer.js` (targeted reads: `isInPane`/`openBeside`/`bindPaneParentLinks`/
+- `cmd/evener-hub/assets/renderer.js` (targeted reads: `isInPane`/`openBeside`/`bindPaneParentLinks`/
   `autoOpenObservers` ~120-405; `fileOpenBesideSpec`/`attachFileOpenBeside`/`attachImageOpenBeside`
   ~2160-2292; `makeOpenBesideButton`/`applyJobRefTarget` ~3980-4032; `bindSubagentEscapeToParent`
-  ~6922-6946 — NOT read in full at 7090 lines) and `cmd/serf-hub/assets/sidebar.js` (targeted:
+  ~6922-6946 — NOT read in full at 7090 lines) and `cmd/evener-hub/assets/sidebar.js` (targeted:
   the "Open beside" context-menu item and subagent-row `open-beside-btn` handler, ~276, ~1136-1160 —
   NOT read in full at 1390 lines) — every producer that calls into the `panes.js`/`openBeside`
   contract.
-- `cmd/serf-hub/assets/theme.js` (12 lines, read in full) — to check for (and rule out) any
+- `cmd/evener-hub/assets/theme.js` (12 lines, read in full) — to check for (and rule out) any
   cross-frame theme-sync mechanism the iframe-pane model might depend on.
-- `cmd/serf-hub/jstest/test-thread-document-bridge.js` (96 lines, read in full) — the executable spec
+- `cmd/evener-hub/jstest/test-thread-document-bridge.js` (96 lines, read in full) — the executable spec
   for the postMessage bridge; corroborates §3.5 line-for-line.
-- `cmd/serf-hub/web_test.go` (targeted: every `TestWeb_ThreadDocument_*` function, lines 2461-2760)
-  and `cmd/serf-hub/doc_serve_test.go` (targeted: every `TestDoc*` function) — corroborating evidence
+- `cmd/evener-hub/web_test.go` (targeted: every `TestWeb_ThreadDocument_*` function, lines 2461-2760)
+  and `cmd/evener-hub/doc_serve_test.go` (targeted: every `TestDoc*` function) — corroborating evidence
   for §1 and §2; cited inline as "verified by `Test...`" where a specific test pins the behavior.
-- `cmd/serf-hub/internal/hubedge/auth_token_test.go` — not read in full, but its 28 `check*`
+- `cmd/evener-hub/internal/hubedge/auth_token_test.go` — not read in full, but its 28 `check*`
   function names were enumerated and cross-checked against every §5 claim (all matched).
 - `docs/superpowers/specs/2026-07-20-webui-workspace-shell-rewrite-design.md` (324 lines, read in
   full) — the M8 mandate and target-architecture context quoted above and in §3/§4's framing notes.
 
-Not read (out of scope for this pass — flag before assuming): `cmd/serf-hub/frontend/src/**` (the
+Not read (out of scope for this pass — flag before assuming): `cmd/evener-hub/frontend/src/**` (the
 in-progress new SPA itself — this checklist deliberately only describes the OLD implementation so it
-can be diffed against whatever the new pass produces); `cmd/serf-hub/assets/style.css` beyond two
+can be diffed against whatever the new pass produces); `cmd/evener-hub/assets/style.css` beyond two
 targeted greps (`--side-panes-w`/`--sidebar-w` defaults, `.subagent-parent-up` rules);
-`cmd/serf-hub/assets/renderer-tools.js` / `renderer-panels.js` (grepped for `doc/file`/`doc/image`
-hits, found none — the affordances live in `renderer.js` itself); `cmd/serf-hub/main.go` (where
+`cmd/evener-hub/assets/renderer-tools.js` / `renderer-panels.js` (grepped for `doc/file`/`doc/image`
+hits, found none — the affordances live in `renderer.js` itself); `cmd/evener-hub/main.go` (where
 `LoadOrCreateAuthToken`/`AuthURLFor` actually get called and printed); `output_images.go`'s
 `handleSessionImage` (`/s/{id}/images/{sha}` handler — named only because `panes.js`'s safe-href
 check interacts with its URL shape, §3.8).
@@ -105,7 +105,7 @@ The highest-signal, most easily-missed findings from this pass. Each also appear
 its proper section below — this is a highlight reel, not a separate obligation.
 
 1. **`/doc/file` and `/doc/image` are the only two of these five areas NOT gated behind
-   `SERF_HUB_WEB=new`.** Every other page route (`/`, `/s/{id}` bare, `/thread/{ref}`) already forks
+   `EVENER_HUB_WEB=new`.** Every other page route (`/`, `/s/{id}` bare, `/thread/{ref}`) already forks
    to `serveSPAIndex` when the new SPA is enabled; `doc_serve.go` has no `newWebEnabled()` call at
    all. If M8's dockview doc-viewer pane is meant to be live under the flag today, the routing fork
    still needs to be added. See §1.6.
@@ -122,7 +122,7 @@ its proper section below — this is a highlight reel, not a separate obligation
    would matter. See §3.8.
 4. **"Open beside" on an image can silently fail depending on where it's clicked from.** A
    sha-addressed `/s/{id}/images/{sha}` href opens fine from the un-framed top-level workspace
-   (`SerfPanes.open()` applies no href allowlist there), but the SAME control clicked from inside an
+   (`EvenerPanes.open()` applies no href allowlist there), but the SAME control clicked from inside an
    already-open pane is dropped silently by the postMessage bridge, whose `isPaneSafeHref` only
    allows `/thread/`/`/doc/` prefixes. See §3.8.
 5. **Panes are iframes with no live theme sync.** No `storage` event listener exists anywhere in the
@@ -152,7 +152,7 @@ its proper section below — this is a highlight reel, not a separate obligation
 
 ## Summary table
 
-| # | Area | Routes | Primary file(s) | Gated by `SERF_HUB_WEB=new`? |
+| # | Area | Routes | Primary file(s) | Gated by `EVENER_HUB_WEB=new`? |
 |---|---|---|---|---|
 | 1 | Doc/image viewer | `GET /doc/file`, `GET /doc/image` | `doc_serve.go` | **No** — always legacy |
 | 2 | Standalone thread doc | `GET /thread/{ref}` | `web_workspace.go`, `templates/thread.html` | Yes (`web_workspace.go:158`) |
@@ -310,7 +310,7 @@ its proper section below — this is a highlight reel, not a separate obligation
       `marked.min.js` — no htmx, no `renderer.js`, no `panes.js` — a doc pane cannot itself request
       further nested panes; "open beside" only ever originates from a `/thread/*` pane or the main
       workspace — `doc_serve.go:207-216`, `doc_serve.go:225-240` (complete script inventory)
-- [ ] `/doc/file` and `/doc/image` are NOT gated behind `SERF_HUB_WEB=new` — neither handler calls
+- [ ] `/doc/file` and `/doc/image` are NOT gated behind `EVENER_HUB_WEB=new` — neither handler calls
       `newWebEnabled()`; both always serve this legacy HTML regardless of the flag, unlike `/`,
       bare `/s/{id}`, and `/thread/{ref}` which all fork to `serveSPAIndex` —
       no `newWebEnabled()` call anywhere in `doc_serve.go`; contrast `web.go:226`,
@@ -330,7 +330,7 @@ single-pane mode needs to replicate through its own layout state.
 
 - [ ] `GET /thread/{ref}` is registered at `/thread/` (prefix match) → `handleThreadDocument` —
       `web.go:182`
-- [ ] When `SERF_HUB_WEB=new`, the route defers entirely to `serveSPAIndex` before any of the logic
+- [ ] When `EVENER_HUB_WEB=new`, the route defers entirely to `serveSPAIndex` before any of the logic
       below runs — `web_workspace.go:158-161`
 - [ ] Requires `GET`; any other method is `405 GET required` — `web_workspace.go:162-165`
 - [ ] `id` must be non-empty AND contain no further `/` — unlike `/s/{id}/{sub}`, this route has no
@@ -378,8 +378,8 @@ single-pane mode needs to replicate through its own layout state.
       `TestWeb_ThreadDocument_DirectGet_ServesChromeLessThreadDocument`
       (`web_test.go:2477-2488`: must contain `<!DOCTYPE html>`, `body.thread-document`,
       `#conversation`, `data-input-form`, `renderer.js`, `appwire.js`)
-- [ ] Title format is `"{Title} · serf thread"` when a title is set, else bare `"serf thread"` —
-      differs from `app.html`'s fixed `"serf hub"` — `templates/thread.html:7`
+- [ ] Title format is `"{Title} · evener thread"` when a title is set, else bare `"evener thread"` —
+      differs from `app.html`'s fixed `"evener hub"` — `templates/thread.html:7`
 - [ ] Own inline SVG data-URI favicon (a filled grey circle) — not the PNG touch-icon `app.html`
       uses — `templates/thread.html:8`
 - [ ] Own theme-boot IIFE — same enum-validated (`light`/`dark` only), uncaught form as `app.html`'s
@@ -393,7 +393,7 @@ single-pane mode needs to replicate through its own layout state.
 - [ ] `#workspace` wraps the exact same `{{template "workspace" .}}` partial the regular session
       route renders — content structure is fully shared; only surrounding chrome differs —
       `templates/thread.html:23-25`
-- [ ] Own `#toast-region` — `SerfToast` is self-contained per document, so a pane's toasts never
+- [ ] Own `#toast-region` — `EvenerToast` is self-contained per document, so a pane's toasts never
       appear in the parent shell — `templates/thread.html:26`
 - [ ] Forbidden markup (tested): `#sidebar`, `#search-dialog`, `[data-sidebar-toggle]`,
       `.settings-link` must NOT appear anywhere in the rendered document — verified by
@@ -532,11 +532,11 @@ to drop).
 
 ### 3.3 Persistence keys
 
-- [ ] `serf-hub.panes` (localStorage) — JSON array of `{href, title}` for every currently-open pane,
+- [ ] `evener-hub.panes` (localStorage) — JSON array of `{href, title}` for every currently-open pane,
       rewritten on every open/close — `panes.js:248`, `panes.js:410-420`
-- [ ] `serf-hub.panes.width` (localStorage) — last side-region width in px —
+- [ ] `evener-hub.panes.width` (localStorage) — last side-region width in px —
       `panes.js:249`, `panes.js:291`
-- [ ] `serf-hub.panes.closed` (localStorage) — JSON array of suppressed hrefs (see §3.4) —
+- [ ] `evener-hub.panes.closed` (localStorage) — JSON array of suppressed hrefs (see §3.4) —
       `panes.js:250`, `panes.js:255-264`
 - [ ] Restore precedence: URL `?pane=` query params, when present (even just one), COMPLETELY
       override localStorage for that load — the stored layout is not merged with URL panes, it's
@@ -554,11 +554,11 @@ to drop).
 
 - [ ] Suppression is the mechanism that keeps AUTO-OPENED panes (observers, see §3.7) from
       reappearing after a user explicitly dismisses them — a closed pane's href is added to
-      `serf-hub.panes.closed` and checked by `renderer.js`'s auto-open path before it calls
-      `SerfPanes.open()` — `panes.js:271-284` (`suppress`/`unsuppress`/`isSuppressed`),
+      `evener-hub.panes.closed` and checked by `renderer.js`'s auto-open path before it calls
+      `EvenerPanes.open()` — `panes.js:271-284` (`suppress`/`unsuppress`/`isSuppressed`),
       `renderer.js:403` (`isSuppressed` check gating `autoOpenObservers`)
 - [ ] Suppression persists across reload/re-init (it's the whole point) — it survives independently
-      of the `serf-hub.panes` open-set key, so a dismissed pane stays dismissed even though it's no
+      of the `evener-hub.panes` open-set key, so a dismissed pane stays dismissed even though it's no
       longer listed in the "currently open" set — `panes.js:255-264` vs. `panes.js:248`
 - [ ] A MANUAL `open()`/`openAfter()` call (user explicitly requesting the href again — e.g.
       re-clicking "open beside") clears suppression for that href FIRST, before checking whether
@@ -567,7 +567,7 @@ to drop).
 
 ### 3.5 Open-beside postMessage protocol
 
-- [ ] Message shape: `{type: "serf:open-beside", href, title, afterHref?}`, posted to
+- [ ] Message shape: `{type: "evener:open-beside", href, title, afterHref?}`, posted to
       `window.location.origin` (never `"*"`) — producer side `renderer.js:379`
 - [ ] The host's `onMessage` listener rejects any event whose `origin` isn't EXACTLY
       `window.location.origin` before inspecting the payload at all — `panes.js:150-151`
@@ -581,7 +581,7 @@ to drop).
       object literally has an `afterHref` own-property (`hasOwnProperty` check, not just
       truthiness) — distinguishes "insert after this specific href" from "no ordering preference" —
       `panes.js:154`, `panes.js:142-144`
-- [ ] Producer-side selection logic (`renderer.js`'s `openBeside(spec)`): try `window.SerfPanes.open()`
+- [ ] Producer-side selection logic (`renderer.js`'s `openBeside(spec)`): try `window.EvenerPanes.open()`
       directly first (only ever true in the un-framed host document, since `panes.js` is never
       loaded inside a pane — see §2.4); fall back to `window.parent.postMessage(...)` only when
       `isInPane()` is true — `renderer.js:372-383`
@@ -589,12 +589,12 @@ to drop).
       cross-origin parent (shouldn't happen here, but defensively) doesn't throw — treats any thrown
       access as "yes, framed" — `renderer.js:132-134`
 - [ ] `makeOpenBesideButton()` (the shared ⇲ control builder used by every "open beside" affordance)
-      refuses to render the control at all when NEITHER `window.SerfPanes` NOR `isInPane()` is
+      refuses to render the control at all when NEITHER `window.EvenerPanes` NOR `isInPane()` is
       available — i.e. the affordance is hidden entirely in a context that could neither open
       locally nor bridge — `renderer.js:3986-3987`
 - [ ] End-to-end protocol behavior is independently verified by a dedicated jsdom test harness:
       known-child open succeeds and the href appears in `openHrefs()`; a cross-origin href is
-      rejected; an unknown source window is rejected; a framed `SerfPanes.open()` call (no
+      rejected; an unknown source window is rejected; a framed `EvenerPanes.open()` call (no
       `#side-panes` in that document) posts the bridge message instead of opening a local pane and
       itself returns `null` — `jstest/test-thread-document-bridge.js:48-72`
 
@@ -605,7 +605,7 @@ to drop).
       file — `panes.js:322-349` and `panes.js:351-389`
 - [ ] `#pane-splitter` drag formula: width = `window.innerWidth - event.clientX` (panes grow as the
       pointer moves left), clamped to `[280, min(1200, innerWidth - 360)]`, persisted to
-      `serf-hub.panes.width` on every move — `panes.js:337-342`, `panes.js:286-293`
+      `evener-hub.panes.width` on every move — `panes.js:337-342`, `panes.js:286-293`
 - [ ] `#sidebar-resizer` drag formula: width = `event.clientX` directly, clamped to
       `[180, min(480, innerWidth * 0.45)]`, sets the `--sidebar-w` CSS custom property directly with
       NO localStorage persistence (unlike the pane-width splitter) — `panes.js:360-369`
@@ -633,7 +633,7 @@ to drop).
 - [ ] All three producers above converge on the same shared `makeOpenBesideButton()` control builder
       and the same `openBeside()`/postMessage-bridge decision logic — `renderer.js:3980-4007`
 - [ ] Sidebar's context-menu "Open beside" item and its subagent-row-wrap ⇲ button call
-      `window.SerfPanes.open()` DIRECTLY, with no `isInPane`/postMessage fallback at all — correct
+      `window.EvenerPanes.open()` DIRECTLY, with no `isInPane`/postMessage fallback at all — correct
       only because `sidebar.js` never itself runs inside a pane iframe (it's absent from
       `thread.html`'s script list, §2.4) — `sidebar.js:276`, `sidebar.js:1136-1153`
 - [ ] Auto-open: a worker session's LIVE observer subagents (`data-observers` on `#conversation`,
@@ -663,7 +663,7 @@ to drop).
       not the real template), `templates/partials/workspace.html:6-8` (actual gating)
 - [ ] Image "open beside" hrefs (`/s/{id}/images/{sha}`) are NOT on `isPaneSafeHref`'s allowlist
       (only `/thread/`/`/doc/` prefixes pass) — opening such an image works fine when the control is
-      clicked from the un-framed top-level workspace (direct `SerfPanes.open()` call applies no
+      clicked from the un-framed top-level workspace (direct `EvenerPanes.open()` call applies no
       allowlist), but the SAME control, clicked from inside an already-open pane, is silently
       dropped by the postMessage bridge. Decide whether image-open-beside should work from inside a
       nested pane (extend the allowlist, or route these through `/doc/image` instead) —
@@ -697,7 +697,7 @@ with no existing mechanism in this codebase; the only `window.open()` calls in s
 
 - [ ] `GET /manifest.webmanifest` → `handleManifest`, registered directly (not under
       `/_partials/` or gated behind auth-exemption) — `web.go:174`
-- [ ] NOT gated behind `SERF_HUB_WEB=new` — no `newWebEnabled()` call anywhere in `handleManifest`;
+- [ ] NOT gated behind `EVENER_HUB_WEB=new` — no `newWebEnabled()` call anywhere in `handleManifest`;
       served identically regardless of the SPA flag — `web.go:262-289` (complete function body)
 - [ ] Source of truth is `assets/manifest.webmanifest` (17 lines) read through `s.manifestFS`, which
       falls back to `assetsRoot()` when nil — `web.go:263-267`
@@ -778,7 +778,7 @@ matched a correspondingly-named test).
 
 ### 5.1 Credential transports
 
-- [ ] The client may present the token exactly two ways: the per-hub `serf_hub_auth_*` cookie
+- [ ] The client may present the token exactly two ways: the per-hub `evener_hub_auth_*` cookie
       (name suffixed by a hash of the hub's token so co-located hubs don't collide, `cookieName`),
       or an `Authorization: Bearer {token}` header — no other transport is recognized —
       `hubedge/auth_token.go`

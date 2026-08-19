@@ -1,4 +1,4 @@
-//go:build serffuzz
+//go:build evenerfuzz
 
 package agent
 
@@ -11,14 +11,14 @@ import (
 	"strings"
 	"testing"
 
-	"primeradiant.com/serf/agent/events"
-	"primeradiant.com/serf/agent/execenv"
-	"primeradiant.com/serf/agent/internal/agenttest"
-	"primeradiant.com/serf/agent/internal/clock"
-	"primeradiant.com/serf/agent/plugin"
-	"primeradiant.com/serf/agent/schema"
-	"primeradiant.com/serf/envvars"
-	"primeradiant.com/serf/llm"
+	"primeradiant.com/evener/agent/events"
+	"primeradiant.com/evener/agent/execenv"
+	"primeradiant.com/evener/agent/internal/agenttest"
+	"primeradiant.com/evener/agent/internal/clock"
+	"primeradiant.com/evener/agent/plugin"
+	"primeradiant.com/evener/agent/schema"
+	"primeradiant.com/evener/envvars"
+	"primeradiant.com/evener/llm"
 )
 
 // FuzzPersistentSessionInitRestoreProgram drives the persistent constructor
@@ -49,7 +49,7 @@ func FuzzPersistentSessionInitRestoreProgram(f *testing.F) {
 		program := decodePIFProgram(data)
 		root := t.TempDir()
 		t.Setenv(envvars.XDGConfigHome.Name, filepath.Join(root, "xdg"))
-		t.Setenv(envvars.SERFSessionOrigin.Name, "test")
+		t.Setenv(envvars.EVENERSessionOrigin.Name, "test")
 
 		stateDir, workspace, pluginDir, promptFile, appendFile := pifMaterializeFixture(t, root)
 		newClock := agenttest.NewFakeClock()

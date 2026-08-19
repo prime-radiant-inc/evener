@@ -3,7 +3,7 @@
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** The four evidence-backed prose fixes from the session study land in
-the prompts and the doctoring-serf skill: deliverable self-check before
+the prompts and the doctoring-evener skill: deliverable self-check before
 end_turn, tool-call batching guidance, delegate-brief staging hygiene, and
 doctor-skill updates for the shipped WS1/WS9 tooling.
 
@@ -16,7 +16,7 @@ warning.
 
 **Tech stack:** Go string constants / template files in `agent` (prompt
 sections, delegation templates, `internal/bundled`), plus the
-doctoring-serf skill markdown in-repo.
+doctoring-evener skill markdown in-repo.
 
 ## Global Constraints
 
@@ -84,19 +84,19 @@ doctoring-serf skill markdown in-repo.
 - [ ] **Step 3:** gates; commit
   (`docs(prompts): delegate briefs stage named paths, never -A`).
 
-### Task 4: doctoring-serf skill catches up to WS1/WS9
+### Task 4: doctoring-evener skill catches up to WS1/WS9
 
 **Files:**
-- Modify: the doctoring-serf skill markdown in-repo (locate via
-  `grep -rn "doctoring-serf" --include="*.md" .` from the worktree root;
+- Modify: the doctoring-evener skill markdown in-repo (locate via
+  `grep -rn "doctoring-evener" --include="*.md" .` from the worktree root;
   the WS9 work already touched its SKILL.md)
 - Reference: `docs/superpowers/plans/2026-08-06-ws9-doctor-batch.md` and
-  the merged serf-doctor subcommands (`sessions`, `transcript --health`,
+  the merged evener-doctor subcommands (`sessions`, `transcript --health`,
   `apilog --health/--recompute/--validate`, `jobs`, `mutations`,
   `watches`, `tree`, `audit`)
 
 - [ ] **Step 1:** verify each WS9 command exists on main (run
-  `go run ./cmd/serf-doctor --help` or read `agent/doctor/`) — document
+  `go run ./cmd/evener-doctor --help` or read `agent/doctor/`) — document
   only what is real.
 - [ ] **Step 2:** update the skill's tool table with the batch `audit`
   driver and any WS9 commands it lacks; add the caveat that api logs
@@ -104,7 +104,7 @@ doctoring-serf skill markdown in-repo.
   and need `--recompute` (state the exact flag).
 - [ ] **Step 3:** gates (markdown-only edit still runs them — the repo has
   doc-consistency tests); commit
-  (`docs(skill): doctoring-serf covers the audit driver and pre-WS1 recompute caveat`).
+  (`docs(skill): doctoring-evener covers the audit driver and pre-WS1 recompute caveat`).
 
 ## Acceptance (whole workstream)
 

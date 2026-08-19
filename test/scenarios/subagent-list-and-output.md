@@ -19,7 +19,7 @@ one value, `shell` (`agent/internal/jobstore/record.go#JobType`).
 
 ## Steps
 
-1. Start a real Serf run with a fresh scenario state dir.
+1. Start a real Evener run with a fresh scenario state dir.
 2. Ask the parent:
 
    > Call `delegate` with NO max_wait_ms and this task: "Using the shell

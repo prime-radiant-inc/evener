@@ -6,7 +6,7 @@
 
 **Architecture:** Add lightweight `outputImages` descriptors to AppWire `commandExecution` items. Backend resolvers validate tool-result images, structured write target paths, and conservative shell path candidates; file-backed images load through a new `/doc/image` route, while transcript-backed image bytes load through the existing sha-addressed session image route extended to tool results. The frontend passes descriptors through AppWire event conversion and reuses the existing thumbnail, sheet, lightbox, and open-beside image UI.
 
-**Tech Stack:** Go stdlib HTTP, Serf AppWire JSON structs, Serf event/projector packages, existing `fspaths.ResolveInRoot`, vanilla JavaScript renderer, JSDOM renderer tests.
+**Tech Stack:** Go stdlib HTTP, Evener AppWire JSON structs, Evener event/projector packages, existing `fspaths.ResolveInRoot`, vanilla JavaScript renderer, JSDOM renderer tests.
 
 ## Global Constraints
 
@@ -31,16 +31,16 @@
 - `internal/appprojector/appwire_projection_test.go`: live projector tests.
 - `internal/apptranscript/apptranscript.go`: project persisted tool-result image data to `ThreadItem.OutputImages` through a new resolver callback.
 - `internal/apptranscript/apptranscript_test.go`: replay projection tests.
-- `cmd/serf-hub/output_images.go`: new hub helper for output-image resolution, shell candidate extraction, media sniffing, descriptor creation, and route URL construction.
-- `cmd/serf-hub/output_images_test.go`: resolver and candidate-extraction tests.
-- `cmd/serf-hub/doc_serve.go`: add `handleDocImage` or delegate to helper in `output_images.go`.
-- `cmd/serf-hub/doc_serve_test.go`: `/doc/image` security and content-type tests.
-- `cmd/serf-hub/image_serve.go`: extend transcript sha lookup to include tool-result image bytes.
-- `cmd/serf-hub/app_threadread.go`: pass hub-specific output-image resolver into transcript projection.
-- `cmd/serf-hub/assets/appwire.js`: carry `outputImages` through commandExecution events.
-- `cmd/serf-hub/assets/renderer.js`: render tool output images under the owning tool row.
-- `cmd/serf-hub/assets/style.css`: add tool-output image wrapper styles by reusing existing user-image card rules.
-- `cmd/serf-hub/jstest/test-renderer.js`: assert one and multiple tool output images render and lightbox opens.
+- `cmd/evener-hub/output_images.go`: new hub helper for output-image resolution, shell candidate extraction, media sniffing, descriptor creation, and route URL construction.
+- `cmd/evener-hub/output_images_test.go`: resolver and candidate-extraction tests.
+- `cmd/evener-hub/doc_serve.go`: add `handleDocImage` or delegate to helper in `output_images.go`.
+- `cmd/evener-hub/doc_serve_test.go`: `/doc/image` security and content-type tests.
+- `cmd/evener-hub/image_serve.go`: extend transcript sha lookup to include tool-result image bytes.
+- `cmd/evener-hub/app_threadread.go`: pass hub-specific output-image resolver into transcript projection.
+- `cmd/evener-hub/assets/appwire.js`: carry `outputImages` through commandExecution events.
+- `cmd/evener-hub/assets/renderer.js`: render tool output images under the owning tool row.
+- `cmd/evener-hub/assets/style.css`: add tool-output image wrapper styles by reusing existing user-image card rules.
+- `cmd/evener-hub/jstest/test-renderer.js`: assert one and multiple tool output images render and lightbox opens.
 
 ---
 
@@ -214,11 +214,11 @@ git commit -m "feat(appwire): add output image descriptors"
 ### Task 2: Hub output image resolver and `/doc/image`
 
 **Files:**
-- Create: `cmd/serf-hub/output_images.go`
-- Create: `cmd/serf-hub/output_images_test.go`
-- Modify: `cmd/serf-hub/doc_serve.go`
-- Modify: `cmd/serf-hub/doc_serve_test.go`
-- Modify: `cmd/serf-hub/web.go`
+- Create: `cmd/evener-hub/output_images.go`
+- Create: `cmd/evener-hub/output_images_test.go`
+- Modify: `cmd/evener-hub/doc_serve.go`
+- Modify: `cmd/evener-hub/doc_serve_test.go`
+- Modify: `cmd/evener-hub/web.go`
 
 **Interfaces:**
 - Produces: `supportedOutputImageMedia(data []byte, name string) (string, bool)`.
@@ -229,7 +229,7 @@ git commit -m "feat(appwire): add output image descriptors"
 
 - [ ] **Step 1: Add failing candidate extraction tests**
 
-Create `cmd/serf-hub/output_images_test.go` with:
+Create `cmd/evener-hub/output_images_test.go` with:
 
 ```go
 package main
@@ -272,14 +272,14 @@ Add `strconv` import for the second test.
 Run:
 
 ```bash
-go test ./cmd/serf-hub -run 'TestShellOutputImageCandidates' -count=1
+go test ./cmd/evener-hub -run 'TestShellOutputImageCandidates' -count=1
 ```
 
 Expected: FAIL because `shellOutputImageCandidates` is undefined.
 
 - [ ] **Step 3: Implement candidate scanner and media sniffer**
 
-Create `cmd/serf-hub/output_images.go`:
+Create `cmd/evener-hub/output_images.go`:
 
 ```go
 package main
@@ -364,14 +364,14 @@ If this code needs Go version compatibility for `min`, replace `min(...)` with e
 Run:
 
 ```bash
-go test ./cmd/serf-hub -run 'TestShellOutputImageCandidates' -count=1
+go test ./cmd/evener-hub -run 'TestShellOutputImageCandidates' -count=1
 ```
 
 Expected: PASS.
 
 - [ ] **Step 5: Add failing `/doc/image` tests**
 
-Append to `cmd/serf-hub/doc_serve_test.go`:
+Append to `cmd/evener-hub/doc_serve_test.go`:
 
 ```go
 func docImageRequest(t *testing.T, web *WebServer, session, path string) *httptest.ResponseRecorder {
@@ -427,14 +427,14 @@ Add `bytes` import to `doc_serve_test.go`.
 Run:
 
 ```bash
-go test ./cmd/serf-hub -run 'TestDocImage' -count=1
+go test ./cmd/evener-hub -run 'TestDocImage' -count=1
 ```
 
 Expected: FAIL because `/doc/image` is not routed.
 
 - [ ] **Step 7: Implement `/doc/image` route**
 
-In `cmd/serf-hub/web.go`, add:
+In `cmd/evener-hub/web.go`, add:
 
 ```go
 mux.HandleFunc("/doc/image", s.handleDocImage)
@@ -442,7 +442,7 @@ mux.HandleFunc("/doc/image", s.handleDocImage)
 
 near `/doc/file`.
 
-In `cmd/serf-hub/doc_serve.go`, add:
+In `cmd/evener-hub/doc_serve.go`, add:
 
 ```go
 func (s *WebServer) handleDocImage(w http.ResponseWriter, r *http.Request) {
@@ -500,7 +500,7 @@ Ensure `doc_serve.go` imports still compile. It already imports `errors`, `net/h
 Run:
 
 ```bash
-go test ./cmd/serf-hub -run 'TestDocImage|TestShellOutputImageCandidates' -count=1
+go test ./cmd/evener-hub -run 'TestDocImage|TestShellOutputImageCandidates' -count=1
 ```
 
 Expected: PASS.
@@ -508,7 +508,7 @@ Expected: PASS.
 - [ ] **Step 9: Commit**
 
 ```bash
-git add cmd/serf-hub/output_images.go cmd/serf-hub/output_images_test.go cmd/serf-hub/doc_serve.go cmd/serf-hub/doc_serve_test.go cmd/serf-hub/web.go
+git add cmd/evener-hub/output_images.go cmd/evener-hub/output_images_test.go cmd/evener-hub/doc_serve.go cmd/evener-hub/doc_serve_test.go cmd/evener-hub/web.go
 git commit -m "feat(hub): serve validated output images"
 ```
 
@@ -521,11 +521,11 @@ git commit -m "feat(hub): serve validated output images"
 - Modify: `internal/appprojector/appwire_projection_test.go`
 - Modify: `internal/apptranscript/apptranscript.go`
 - Modify: `internal/apptranscript/apptranscript_test.go`
-- Modify: `cmd/serf-hub/app_threadread.go`
-- Modify: `cmd/serf-hub/image_serve.go`
+- Modify: `cmd/evener-hub/app_threadread.go`
+- Modify: `cmd/evener-hub/image_serve.go`
 - Test: `internal/appprojector/appwire_projection_test.go`
 - Test: `internal/apptranscript/apptranscript_test.go`
-- Test: `cmd/serf-hub/replay_fuzz_test.go` if replay helpers require field updates
+- Test: `cmd/evener-hub/replay_fuzz_test.go` if replay helpers require field updates
 
 **Interfaces:**
 - Consumes: `events.ToolCallEndData.OutputImages`.
@@ -664,18 +664,18 @@ Expected: PASS.
 
 - [ ] **Step 9: Extend transcript sha lookup for tool-result images**
 
-In `cmd/serf-hub/image_serve.go`, update `findImageInTranscript` so it scans both:
+In `cmd/evener-hub/image_serve.go`, update `findImageInTranscript` so it scans both:
 
 - `ContentImage` user-input parts as it does now;
 - `ContentToolResult` parts whose `ToolResult.ImageData` is non-empty.
 
 When a matching tool-result sha is found, return `ToolResult.ImageData` and `ToolResult.ImageMediaType`.
 
-Add or update a `cmd/serf-hub` test that writes a transcript entry with a tool result image and asserts `/s/<session>/images/<sha>` returns the bytes.
+Add or update a `cmd/evener-hub` test that writes a transcript entry with a tool result image and asserts `/s/<session>/images/<sha>` returns the bytes.
 
 - [ ] **Step 10: Wire hub replay projector**
 
-In `cmd/serf-hub/app_threadread.go`, update the `apptranscript.ProjectTurn` call to pass an `OutputImageProjector` that:
+In `cmd/evener-hub/app_threadread.go`, update the `apptranscript.ProjectTurn` call to pass an `OutputImageProjector` that:
 
 ```go
 func(result *llm.ToolResultData) []appwire.OutputImage {
@@ -703,7 +703,7 @@ Use the session id available in the surrounding `PastEntry`/`ReplayEntry` contex
 Run:
 
 ```bash
-go test ./internal/appprojector ./internal/apptranscript ./cmd/serf-hub -run 'OutputImages|SessionImage|Replay|AppItemsFromReplayTurn' -count=1
+go test ./internal/appprojector ./internal/apptranscript ./cmd/evener-hub -run 'OutputImages|SessionImage|Replay|AppItemsFromReplayTurn' -count=1
 ```
 
 Expected: PASS.
@@ -711,7 +711,7 @@ Expected: PASS.
 - [ ] **Step 12: Commit**
 
 ```bash
-git add internal/appprojector internal/apptranscript cmd/serf-hub/app_threadread.go cmd/serf-hub/image_serve.go cmd/serf-hub/*_test.go
+git add internal/appprojector internal/apptranscript cmd/evener-hub/app_threadread.go cmd/evener-hub/image_serve.go cmd/evener-hub/*_test.go
 git commit -m "feat(hub): project output image descriptors"
 ```
 
@@ -720,10 +720,10 @@ git commit -m "feat(hub): project output image descriptors"
 ### Task 4: Discover file-backed descriptors from structured tools and shell output
 
 **Files:**
-- Modify: `cmd/serf-hub/output_images.go`
-- Modify: `cmd/serf-hub/output_images_test.go`
+- Modify: `cmd/evener-hub/output_images.go`
+- Modify: `cmd/evener-hub/output_images_test.go`
 - Modify: `server/appwire_server_test.go` or `internal/appprojector/appwire_projection_test.go` only if descriptor creation belongs outside hub
-- Modify: `cmd/serf-hub/app_rpc.go` or hub replay/live bridge file if hub enriches AppWire responses
+- Modify: `cmd/evener-hub/app_rpc.go` or hub replay/live bridge file if hub enriches AppWire responses
 
 **Interfaces:**
 - Consumes: tool name, arguments JSON, output text, session id, cwd.
@@ -732,7 +732,7 @@ git commit -m "feat(hub): project output image descriptors"
 
 - [ ] **Step 1: Add failing resolver tests for structured writes**
 
-In `cmd/serf-hub/output_images_test.go`, add tests using `t.TempDir()` and a PNG file under cwd. Assert:
+In `cmd/evener-hub/output_images_test.go`, add tests using `t.TempDir()` and a PNG file under cwd. Assert:
 
 ```go
 imgs := outputImagesForToolCall("01DOC", cwd, "write_file", `{"file_path":"out.png"}`, "wrote")
@@ -757,14 +757,14 @@ Also assert only 8 images are returned when output lists more than 8 valid files
 Run:
 
 ```bash
-go test ./cmd/serf-hub -run 'TestOutputImagesForToolCall' -count=1
+go test ./cmd/evener-hub -run 'TestOutputImagesForToolCall' -count=1
 ```
 
 Expected: FAIL because the helper is undefined.
 
 - [ ] **Step 4: Implement resolver helpers**
 
-In `cmd/serf-hub/output_images.go`, add:
+In `cmd/evener-hub/output_images.go`, add:
 
 ```go
 func outputImagesForToolCall(sessionID, cwd, toolName, argumentsJSON, output string) []appwire.OutputImage {
@@ -831,7 +831,7 @@ For absolute candidate paths under cwd, convert to cwd-relative before building 
 Run:
 
 ```bash
-go test ./cmd/serf-hub -run 'TestOutputImagesForToolCall|TestShellOutputImageCandidates|TestDocImage' -count=1
+go test ./cmd/evener-hub -run 'TestOutputImagesForToolCall|TestShellOutputImageCandidates|TestDocImage' -count=1
 ```
 
 Expected: PASS.
@@ -846,18 +846,18 @@ Expected behavior:
 - For replay/past sessions, completed tool items get the same descriptors if the files still exist under cwd.
 - Tool-result byte descriptors from Task 3 remain present and are appended before file-backed descriptors.
 
-If live projection in `internal/appprojector` cannot know cwd, do not put file-backed discovery there. Enrich in `cmd/serf-hub` where local session cwd is available.
+If live projection in `internal/appprojector` cannot know cwd, do not put file-backed discovery there. Enrich in `cmd/evener-hub` where local session cwd is available.
 
 - [ ] **Step 7: Add integration test for replay descriptor enrichment**
 
-Add a `cmd/serf-hub` test that creates a past session with cwd, writes `plot.png`, creates a replay tool result for shell output `created plot.png`, reads the thread through the hub AppWire/read path, and asserts the `commandExecution` item has one `OutputImages` descriptor with `/doc/image` URL.
+Add a `cmd/evener-hub` test that creates a past session with cwd, writes `plot.png`, creates a replay tool result for shell output `created plot.png`, reads the thread through the hub AppWire/read path, and asserts the `commandExecution` item has one `OutputImages` descriptor with `/doc/image` URL.
 
 - [ ] **Step 8: Run hub integration tests**
 
 Run:
 
 ```bash
-go test ./cmd/serf-hub -run 'OutputImages|ThreadRead|AppWire' -count=1
+go test ./cmd/evener-hub -run 'OutputImages|ThreadRead|AppWire' -count=1
 ```
 
 Expected: PASS.
@@ -865,7 +865,7 @@ Expected: PASS.
 - [ ] **Step 9: Commit**
 
 ```bash
-git add cmd/serf-hub
+git add cmd/evener-hub
 git commit -m "feat(hub): discover file-backed output images"
 ```
 
@@ -874,10 +874,10 @@ git commit -m "feat(hub): discover file-backed output images"
 ### Task 5: Frontend rendering for tool output images
 
 **Files:**
-- Modify: `cmd/serf-hub/assets/appwire.js`
-- Modify: `cmd/serf-hub/assets/renderer.js`
-- Modify: `cmd/serf-hub/assets/style.css`
-- Modify: `cmd/serf-hub/jstest/test-renderer.js` or add `cmd/serf-hub/jstest/test-renderer-output-images.js`
+- Modify: `cmd/evener-hub/assets/appwire.js`
+- Modify: `cmd/evener-hub/assets/renderer.js`
+- Modify: `cmd/evener-hub/assets/style.css`
+- Modify: `cmd/evener-hub/jstest/test-renderer.js` or add `cmd/evener-hub/jstest/test-renderer-output-images.js`
 
 **Interfaces:**
 - Consumes: `item.outputImages` from AppWire commandExecution items.
@@ -886,7 +886,7 @@ git commit -m "feat(hub): discover file-backed output images"
 
 - [ ] **Step 1: Add failing JS renderer test**
 
-Create `cmd/serf-hub/jstest/test-renderer-output-images.js` based on `test-renderer.js`. Use a minimal event stream:
+Create `cmd/evener-hub/jstest/test-renderer-output-images.js` based on `test-renderer.js`. Use a minimal event stream:
 
 ```js
 const events = [
@@ -916,14 +916,14 @@ Also dispatch a click on the thumbnail card and assert `.image-lightbox` appears
 Run:
 
 ```bash
-node cmd/serf-hub/jstest/test-renderer-output-images.js
+node cmd/evener-hub/jstest/test-renderer-output-images.js
 ```
 
 Expected: FAIL because output images are ignored.
 
 - [ ] **Step 3: Pass descriptors through `appwire.js`**
 
-In commandExecution event creation in `cmd/serf-hub/assets/appwire.js`, include:
+In commandExecution event creation in `cmd/evener-hub/assets/appwire.js`, include:
 
 ```js
 output_images: item.outputImages || item.output_images || []
@@ -969,7 +969,7 @@ Keep URL acceptance same-origin relative for v1. Do not render arbitrary externa
 
 - [ ] **Step 5: Add CSS**
 
-In `cmd/serf-hub/assets/style.css`, near tool body or image styles, add:
+In `cmd/evener-hub/assets/style.css`, near tool body or image styles, add:
 
 ```css
 .tool-output-images {
@@ -995,8 +995,8 @@ Adjust spacing if existing tool body layout requires a different left indent.
 Run:
 
 ```bash
-node cmd/serf-hub/jstest/test-renderer-output-images.js
-node cmd/serf-hub/jstest/test-renderer.js
+node cmd/evener-hub/jstest/test-renderer-output-images.js
+node cmd/evener-hub/jstest/test-renderer.js
 ```
 
 Expected: PASS.
@@ -1004,7 +1004,7 @@ Expected: PASS.
 - [ ] **Step 7: Commit**
 
 ```bash
-git add cmd/serf-hub/assets/appwire.js cmd/serf-hub/assets/renderer.js cmd/serf-hub/assets/style.css cmd/serf-hub/jstest/test-renderer-output-images.js
+git add cmd/evener-hub/assets/appwire.js cmd/evener-hub/assets/renderer.js cmd/evener-hub/assets/style.css cmd/evener-hub/jstest/test-renderer-output-images.js
 git commit -m "feat(web): render tool output images inline"
 ```
 
@@ -1038,7 +1038,7 @@ If the existing repo only documents scenario cards, update the appropriate markd
 Run:
 
 ```bash
-go test ./appwire ./agent ./internal/appprojector ./internal/apptranscript ./cmd/serf-hub -run 'OutputImages|DocImage|SessionImage|Image.*ToolResult|ThreadRead|AppWire' -count=1
+go test ./appwire ./agent ./internal/appprojector ./internal/apptranscript ./cmd/evener-hub -run 'OutputImages|DocImage|SessionImage|Image.*ToolResult|ThreadRead|AppWire' -count=1
 ```
 
 Expected: PASS.
@@ -1048,9 +1048,9 @@ Expected: PASS.
 Run:
 
 ```bash
-node cmd/serf-hub/jstest/test-renderer-output-images.js
-node cmd/serf-hub/jstest/test-renderer.js
-node cmd/serf-hub/jstest/test-appwire-jsonrpc-lite.js
+node cmd/evener-hub/jstest/test-renderer-output-images.js
+node cmd/evener-hub/jstest/test-renderer.js
+node cmd/evener-hub/jstest/test-appwire-jsonrpc-lite.js
 ```
 
 Expected: PASS.
@@ -1060,7 +1060,7 @@ Expected: PASS.
 Run:
 
 ```bash
-go test ./appwire ./agent ./internal/appprojector ./internal/apptranscript ./cmd/serf-hub -count=1
+go test ./appwire ./agent ./internal/appprojector ./internal/apptranscript ./cmd/evener-hub -count=1
 ```
 
 Expected: PASS.
@@ -1070,8 +1070,8 @@ Expected: PASS.
 Run:
 
 ```bash
-gofmt -w appwire/types.go agent/events/payloads.go agent/session_model_call.go internal/appprojector/appwire_projection.go internal/apptranscript/apptranscript.go cmd/serf-hub/*.go appwire/*_test.go agent/*_test.go internal/appprojector/*_test.go internal/apptranscript/*_test.go cmd/serf-hub/*_test.go
-go test ./appwire ./agent ./internal/appprojector ./internal/apptranscript ./cmd/serf-hub -count=1
+gofmt -w appwire/types.go agent/events/payloads.go agent/session_model_call.go internal/appprojector/appwire_projection.go internal/apptranscript/apptranscript.go cmd/evener-hub/*.go appwire/*_test.go agent/*_test.go internal/appprojector/*_test.go internal/apptranscript/*_test.go cmd/evener-hub/*_test.go
+go test ./appwire ./agent ./internal/appprojector ./internal/apptranscript ./cmd/evener-hub -count=1
 ```
 
 Expected: no formatting diff remains; tests PASS.
@@ -1094,7 +1094,7 @@ If Step 1 added scenario docs/tests or Steps 2-6 required fixes, commit them:
 
 ```bash
 git status --short
-git add test/scenarios/scenario_docs_test.go test/scenarios/*.md cmd/serf-hub/*_test.go cmd/serf-hub/assets/*.js cmd/serf-hub/assets/style.css appwire/*.go agent/*.go internal/appprojector/*.go internal/apptranscript/*.go
+git add test/scenarios/scenario_docs_test.go test/scenarios/*.md cmd/evener-hub/*_test.go cmd/evener-hub/assets/*.js cmd/evener-hub/assets/style.css appwire/*.go agent/*.go internal/appprojector/*.go internal/apptranscript/*.go
 git commit -m "test(web): cover inline output image scenarios"
 ```
 

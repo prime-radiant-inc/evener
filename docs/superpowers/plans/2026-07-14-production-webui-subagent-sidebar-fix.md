@@ -28,27 +28,27 @@
 
 ## File Structure
 
-- Modify `cmd/serf-hub/internal/hubcore/prober.go`: decode running delegate transcript refs from detailed status.
-- Modify `cmd/serf-hub/internal/hubcore/roster.go`: retain, fingerprint, copy, and query running in-process subagent IDs.
-- Modify `cmd/serf-hub/internal/hubcore/tree.go`: apply effective running-child state and recursively build child nodes.
+- Modify `cmd/evener-hub/internal/hubcore/prober.go`: decode running delegate transcript refs from detailed status.
+- Modify `cmd/evener-hub/internal/hubcore/roster.go`: retain, fingerprint, copy, and query running in-process subagent IDs.
+- Modify `cmd/evener-hub/internal/hubcore/tree.go`: apply effective running-child state and recursively build child nodes.
 - Modify focused hubcore tests in `prober_test.go`, `roster_test.go`, `tree_test.go`, and `production_subagent_sidebar_regression_test.go`.
-- Modify `cmd/serf-hub/assets/sidebar.js`: recursively partition children, render inactive disclosures, stamp ancestry, and open child panes.
-- Modify `cmd/serf-hub/assets/style.css`: style nested rows and inactive disclosures without a left lineage rail.
-- Modify `cmd/serf-hub/assets/panes.js`: insert a pane after a specified parent pane while preserving focus-existing and the pane cap.
-- Modify `cmd/serf-hub/jstest/test-sidebar-children.js`: cover current/inactive recursive projection and click behavior.
-- Modify `cmd/serf-hub/jstest/test-panes.js`: cover parent-relative insertion and duplicate focus.
+- Modify `cmd/evener-hub/assets/sidebar.js`: recursively partition children, render inactive disclosures, stamp ancestry, and open child panes.
+- Modify `cmd/evener-hub/assets/style.css`: style nested rows and inactive disclosures without a left lineage rail.
+- Modify `cmd/evener-hub/assets/panes.js`: insert a pane after a specified parent pane while preserving focus-existing and the pane cap.
+- Modify `cmd/evener-hub/jstest/test-sidebar-children.js`: cover current/inactive recursive projection and click behavior.
+- Modify `cmd/evener-hub/jstest/test-panes.js`: cover parent-relative insertion and duplicate focus.
 
 ---
 
 ### Task 1: Retain running in-process subagent status
 
 **Files:**
-- Modify: `cmd/serf-hub/internal/hubcore/prober.go`
-- Modify: `cmd/serf-hub/internal/hubcore/prober_test.go`
-- Modify: `cmd/serf-hub/internal/hubcore/roster.go`
-- Modify: `cmd/serf-hub/internal/hubcore/roster_test.go`
-- Modify: `cmd/serf-hub/internal/hubcore/coverage_edges_test.go`
-- Modify only as required by changed helpers: `cmd/serf-hub/cov_session_residue_pass5_fuzz_test.go`, `cmd/serf-hub/internal/hubcore/scenarios_fuzz_test.go`, `cmd/serf-hub/testmain_test.go`, `cmd/serf-hub/web_test.go`
+- Modify: `cmd/evener-hub/internal/hubcore/prober.go`
+- Modify: `cmd/evener-hub/internal/hubcore/prober_test.go`
+- Modify: `cmd/evener-hub/internal/hubcore/roster.go`
+- Modify: `cmd/evener-hub/internal/hubcore/roster_test.go`
+- Modify: `cmd/evener-hub/internal/hubcore/coverage_edges_test.go`
+- Modify only as required by changed helpers: `cmd/evener-hub/cov_session_residue_pass5_fuzz_test.go`, `cmd/evener-hub/internal/hubcore/scenarios_fuzz_test.go`, `cmd/evener-hub/testmain_test.go`, `cmd/evener-hub/web_test.go`
 
 **Interfaces:**
 - Produce `LiveEntry.RunningSubagentIDs []string`.
@@ -79,7 +79,7 @@ Use fixture JSON shaped like:
 - [ ] **Step 2: Run the focused tests and verify RED**
 
 ```bash
-go test ./cmd/serf-hub/internal/hubcore -run 'Test(Probe|Roster).*Subagent|TestRoster.*Fingerprint' -count=1 -v
+go test ./cmd/evener-hub/internal/hubcore -run 'Test(Probe|Roster).*Subagent|TestRoster.*Fingerprint' -count=1 -v
 ```
 
 Expected: compile or assertion failures because `ProbeResult`, `LiveEntry`, and `Roster` do not retain running child IDs.
@@ -91,8 +91,8 @@ Use `e3853f1d3` as evidence. Decode only running delegate rows with valid `local
 - [ ] **Step 4: Run focused and package tests**
 
 ```bash
-go test ./cmd/serf-hub/internal/hubcore -run 'Test(Probe|Roster).*Subagent|TestRoster.*Fingerprint' -count=1 -v
-go test ./cmd/serf-hub/internal/hubcore -count=1
+go test ./cmd/evener-hub/internal/hubcore -run 'Test(Probe|Roster).*Subagent|TestRoster.*Fingerprint' -count=1 -v
+go test ./cmd/evener-hub/internal/hubcore -count=1
 ```
 
 Expected: PASS with no warnings.
@@ -100,7 +100,7 @@ Expected: PASS with no warnings.
 - [ ] **Step 5: Commit**
 
 ```bash
-git add cmd/serf-hub/internal/hubcore cmd/serf-hub/cov_session_residue_pass5_fuzz_test.go cmd/serf-hub/testmain_test.go cmd/serf-hub/web_test.go
+git add cmd/evener-hub/internal/hubcore cmd/evener-hub/cov_session_residue_pass5_fuzz_test.go cmd/evener-hub/testmain_test.go cmd/evener-hub/web_test.go
 git commit -m "fix(hub): retain running subagent roster state"
 ```
 
@@ -109,11 +109,11 @@ git commit -m "fix(hub): retain running subagent roster state"
 ### Task 2: Build recursive subagent trees with effective state
 
 **Files:**
-- Modify: `cmd/serf-hub/internal/hubcore/tree.go`
-- Modify: `cmd/serf-hub/internal/hubcore/tree_test.go`
-- Modify: `cmd/serf-hub/internal/hubcore/production_subagent_sidebar_regression_test.go`
-- Modify only if current signatures require it: `cmd/serf-hub/internal/hubcore/scenarios_fuzz_test.go`
-- Modify only for active past-child projection: `cmd/serf-hub/app_threadlist.go`, `cmd/serf-hub/app_threadread.go`, `cmd/serf-hub/app_transcripts.go` and their focused tests
+- Modify: `cmd/evener-hub/internal/hubcore/tree.go`
+- Modify: `cmd/evener-hub/internal/hubcore/tree_test.go`
+- Modify: `cmd/evener-hub/internal/hubcore/production_subagent_sidebar_regression_test.go`
+- Modify only if current signatures require it: `cmd/evener-hub/internal/hubcore/scenarios_fuzz_test.go`
+- Modify only for active past-child projection: `cmd/evener-hub/app_threadlist.go`, `cmd/evener-hub/app_threadread.go`, `cmd/evener-hub/app_transcripts.go` and their focused tests
 
 **Interfaces:**
 - Consume `LiveEntry.RunningSubagentIDs` from Task 1.
@@ -138,7 +138,7 @@ Add a cycle/orphan guard test: malformed lineage must terminate and must not dup
 - [ ] **Step 2: Verify RED**
 
 ```bash
-go test ./cmd/serf-hub/internal/hubcore -run 'TestBuildTree_(PreservesRecursiveSubagentParentage|ProjectsRunningInProcessSubagent|GuardsMalformedSubagentLineage)' -count=1 -v
+go test ./cmd/evener-hub/internal/hubcore -run 'TestBuildTree_(PreservesRecursiveSubagentParentage|ProjectsRunningInProcessSubagent|GuardsMalformedSubagentLineage)' -count=1 -v
 ```
 
 Expected: recursive-parentage and/or effective-state assertions fail against the non-recursive builder.
@@ -159,9 +159,9 @@ Compute rollup/default expansion from the completed subtree. Keep only top-level
 - [ ] **Step 4: Run focused and package tests**
 
 ```bash
-go test ./cmd/serf-hub/internal/hubcore -run 'TestBuildTree_' -count=1 -v
-go test ./cmd/serf-hub/internal/hubcore -count=1
-go test ./cmd/serf-hub -run 'Test(Subagent|Thread(Read|List)|APITree)' -count=1
+go test ./cmd/evener-hub/internal/hubcore -run 'TestBuildTree_' -count=1 -v
+go test ./cmd/evener-hub/internal/hubcore -count=1
+go test ./cmd/evener-hub -run 'Test(Subagent|Thread(Read|List)|APITree)' -count=1
 ```
 
 Expected: PASS and the two committed production RED tests turn GREEN.
@@ -169,7 +169,7 @@ Expected: PASS and the two committed production RED tests turn GREEN.
 - [ ] **Step 5: Commit**
 
 ```bash
-git add cmd/serf-hub/internal/hubcore/tree.go cmd/serf-hub/internal/hubcore/*tree*test.go cmd/serf-hub/app_threadlist.go cmd/serf-hub/app_threadread.go cmd/serf-hub/app_transcripts.go cmd/serf-hub/*thread*test.go cmd/serf-hub/app_rpc_test.go cmd/serf-hub/cov_threadread_images_fuzz_test.go
+git add cmd/evener-hub/internal/hubcore/tree.go cmd/evener-hub/internal/hubcore/*tree*test.go cmd/evener-hub/app_threadlist.go cmd/evener-hub/app_threadread.go cmd/evener-hub/app_transcripts.go cmd/evener-hub/*thread*test.go cmd/evener-hub/app_rpc_test.go cmd/evener-hub/cov_threadread_images_fuzz_test.go
 git commit -m "fix(hub): preserve recursive active subagent trees"
 ```
 
@@ -178,9 +178,9 @@ git commit -m "fix(hub): preserve recursive active subagent trees"
 ### Task 3: Render current and inactive subagent groups in the production sidebar
 
 **Files:**
-- Modify: `cmd/serf-hub/assets/sidebar.js`
-- Modify: `cmd/serf-hub/assets/style.css`
-- Modify: `cmd/serf-hub/jstest/test-sidebar-children.js`
+- Modify: `cmd/evener-hub/assets/sidebar.js`
+- Modify: `cmd/evener-hub/assets/style.css`
+- Modify: `cmd/evener-hub/jstest/test-sidebar-children.js`
 
 **Interfaces:**
 - Consume recursive API nodes with `kind`, `state`, `ref`, and `children`.
@@ -216,7 +216,7 @@ Assert before implementation:
 - [ ] **Step 2: Run and verify RED**
 
 ```bash
-NODE_PATH=/tmp/serf-jstest-jsdom/node_modules node cmd/serf-hub/jstest/test-sidebar-children.js
+NODE_PATH=/tmp/evener-jstest-jsdom/node_modules node cmd/evener-hub/jstest/test-sidebar-children.js
 ```
 
 If that external path is absent, point `NODE_PATH` at an already-installed external jsdom. Expected: current children remain hidden behind the old generic disclosure and recursive assertions fail.
@@ -237,9 +237,9 @@ Use indentation and spacing only. Do not add a lineage border or left-edge selec
 - [ ] **Step 4: Run focused sidebar tests**
 
 ```bash
-NODE_PATH=/tmp/serf-jstest-jsdom/node_modules node cmd/serf-hub/jstest/test-sidebar-children.js
-NODE_PATH=/tmp/serf-jstest-jsdom/node_modules node cmd/serf-hub/jstest/test-sidebar-aria.js
-NODE_PATH=/tmp/serf-jstest-jsdom/node_modules node cmd/serf-hub/jstest/test-sidebar-survivors.js
+NODE_PATH=/tmp/evener-jstest-jsdom/node_modules node cmd/evener-hub/jstest/test-sidebar-children.js
+NODE_PATH=/tmp/evener-jstest-jsdom/node_modules node cmd/evener-hub/jstest/test-sidebar-aria.js
+NODE_PATH=/tmp/evener-jstest-jsdom/node_modules node cmd/evener-hub/jstest/test-sidebar-survivors.js
 ```
 
 Expected: PASS with pristine output.
@@ -247,7 +247,7 @@ Expected: PASS with pristine output.
 - [ ] **Step 5: Commit**
 
 ```bash
-git add cmd/serf-hub/assets/sidebar.js cmd/serf-hub/assets/style.css cmd/serf-hub/jstest/test-sidebar-children.js
+git add cmd/evener-hub/assets/sidebar.js cmd/evener-hub/assets/style.css cmd/evener-hub/jstest/test-sidebar-children.js
 git commit -m "fix(web): separate current and inactive subagents"
 ```
 
@@ -256,13 +256,13 @@ git commit -m "fix(web): separate current and inactive subagents"
 ### Task 4: Open subagents beside their direct parent panes
 
 **Files:**
-- Modify: `cmd/serf-hub/assets/panes.js`
-- Modify: `cmd/serf-hub/assets/sidebar.js`
-- Modify: `cmd/serf-hub/jstest/test-panes.js`
-- Modify: `cmd/serf-hub/jstest/test-sidebar-children.js`
+- Modify: `cmd/evener-hub/assets/panes.js`
+- Modify: `cmd/evener-hub/assets/sidebar.js`
+- Modify: `cmd/evener-hub/jstest/test-panes.js`
+- Modify: `cmd/evener-hub/jstest/test-sidebar-children.js`
 
 **Interfaces:**
-- Produce `SerfPanes.openAfter(href, title, afterHref)`.
+- Produce `EvenerPanes.openAfter(href, title, afterHref)`.
 - `afterHref == null` inserts the pane first in `#side-panes`, immediately after the main workspace.
 - A non-null `afterHref` inserts after that normalized parent pane.
 - Existing hrefs focus and return their pane without reordering or duplication.
@@ -284,13 +284,13 @@ P.openAfter("/thread/grandchild", "grandchild", "/thread/child");
 
 Assert `MAX_SIDE_PANES` remains enforced and URL/localStorage ordering matches DOM ordering.
 
-In `test-sidebar-children.js`, stub `SerfPanes.openAfter`, click a current child and nested grandchild, and assert ancestry calls use encoded source-qualified refs in parent-to-child order. Assert ordinary main-session rows retain HTMX navigation.
+In `test-sidebar-children.js`, stub `EvenerPanes.openAfter`, click a current child and nested grandchild, and assert ancestry calls use encoded source-qualified refs in parent-to-child order. Assert ordinary main-session rows retain HTMX navigation.
 
 - [ ] **Step 2: Run and verify RED**
 
 ```bash
-NODE_PATH=/tmp/serf-jstest-jsdom/node_modules node cmd/serf-hub/jstest/test-panes.js
-NODE_PATH=/tmp/serf-jstest-jsdom/node_modules node cmd/serf-hub/jstest/test-sidebar-children.js
+NODE_PATH=/tmp/evener-jstest-jsdom/node_modules node cmd/evener-hub/jstest/test-panes.js
+NODE_PATH=/tmp/evener-jstest-jsdom/node_modules node cmd/evener-hub/jstest/test-sidebar-children.js
 ```
 
 Expected: `openAfter` is missing and child row clicks navigate rather than opening panes.
@@ -304,15 +304,15 @@ Refactor pane creation into one internal function used by `open` and `openAfter`
 - insert before the parent's next sibling, or prepend when `afterHref` is null;
 - preserve loading/error UI, persistence, URL ordering, minimum width, and restore behavior.
 
-In the sidebar, intercept activation only for rows stamped `__child` when `window.SerfPanes` exists. Prevent ordinary link navigation, open missing ancestors with `openAfter`, then open/focus the target. Keep the row menu unchanged.
+In the sidebar, intercept activation only for rows stamped `__child` when `window.EvenerPanes` exists. Prevent ordinary link navigation, open missing ancestors with `openAfter`, then open/focus the target. Keep the row menu unchanged.
 
 - [ ] **Step 4: Run focused JS tests**
 
 ```bash
-NODE_PATH=/tmp/serf-jstest-jsdom/node_modules node cmd/serf-hub/jstest/test-panes.js
-NODE_PATH=/tmp/serf-jstest-jsdom/node_modules node cmd/serf-hub/jstest/test-panes-url.js
-NODE_PATH=/tmp/serf-jstest-jsdom/node_modules node cmd/serf-hub/jstest/test-panes-error.js
-NODE_PATH=/tmp/serf-jstest-jsdom/node_modules node cmd/serf-hub/jstest/test-sidebar-children.js
+NODE_PATH=/tmp/evener-jstest-jsdom/node_modules node cmd/evener-hub/jstest/test-panes.js
+NODE_PATH=/tmp/evener-jstest-jsdom/node_modules node cmd/evener-hub/jstest/test-panes-url.js
+NODE_PATH=/tmp/evener-jstest-jsdom/node_modules node cmd/evener-hub/jstest/test-panes-error.js
+NODE_PATH=/tmp/evener-jstest-jsdom/node_modules node cmd/evener-hub/jstest/test-sidebar-children.js
 ```
 
 Expected: PASS with no warnings.
@@ -320,7 +320,7 @@ Expected: PASS with no warnings.
 - [ ] **Step 5: Commit**
 
 ```bash
-git add cmd/serf-hub/assets/panes.js cmd/serf-hub/assets/sidebar.js cmd/serf-hub/jstest/test-panes.js cmd/serf-hub/jstest/test-sidebar-children.js
+git add cmd/evener-hub/assets/panes.js cmd/evener-hub/assets/sidebar.js cmd/evener-hub/jstest/test-panes.js cmd/evener-hub/jstest/test-sidebar-children.js
 git commit -m "fix(web): open subagents beside parent panes"
 ```
 
@@ -338,8 +338,8 @@ git commit -m "fix(web): open subagents beside parent panes"
 - [ ] **Step 1: Run production backend tests**
 
 ```bash
-go test ./cmd/serf-hub/internal/hubcore -count=1
-go test ./cmd/serf-hub -run 'Test(Subagent|Thread(Read|List)|APITree|Web_.*Subagent)' -count=1
+go test ./cmd/evener-hub/internal/hubcore -count=1
+go test ./cmd/evener-hub -run 'Test(Subagent|Thread(Read|List)|APITree|Web_.*Subagent)' -count=1
 ```
 
 Expected: PASS.
@@ -347,12 +347,12 @@ Expected: PASS.
 - [ ] **Step 2: Run production frontend tests**
 
 ```bash
-NODE_PATH=/tmp/serf-jstest-jsdom/node_modules node cmd/serf-hub/jstest/test-sidebar-children.js
-NODE_PATH=/tmp/serf-jstest-jsdom/node_modules node cmd/serf-hub/jstest/test-sidebar-aria.js
-NODE_PATH=/tmp/serf-jstest-jsdom/node_modules node cmd/serf-hub/jstest/test-sidebar-survivors.js
-NODE_PATH=/tmp/serf-jstest-jsdom/node_modules node cmd/serf-hub/jstest/test-panes.js
-NODE_PATH=/tmp/serf-jstest-jsdom/node_modules node cmd/serf-hub/jstest/test-panes-url.js
-NODE_PATH=/tmp/serf-jstest-jsdom/node_modules node cmd/serf-hub/jstest/test-panes-error.js
+NODE_PATH=/tmp/evener-jstest-jsdom/node_modules node cmd/evener-hub/jstest/test-sidebar-children.js
+NODE_PATH=/tmp/evener-jstest-jsdom/node_modules node cmd/evener-hub/jstest/test-sidebar-aria.js
+NODE_PATH=/tmp/evener-jstest-jsdom/node_modules node cmd/evener-hub/jstest/test-sidebar-survivors.js
+NODE_PATH=/tmp/evener-jstest-jsdom/node_modules node cmd/evener-hub/jstest/test-panes.js
+NODE_PATH=/tmp/evener-jstest-jsdom/node_modules node cmd/evener-hub/jstest/test-panes-url.js
+NODE_PATH=/tmp/evener-jstest-jsdom/node_modules node cmd/evener-hub/jstest/test-panes-error.js
 ```
 
 Expected: PASS with pristine output.

@@ -10,7 +10,7 @@ import (
 	"sync/atomic"
 	"time"
 
-	apilog "primeradiant.com/serf/llm/apilog"
+	apilog "primeradiant.com/evener/llm/apilog"
 )
 
 // APITimeoutSource identifies the layer that owned a provider-attempt timeout.
@@ -53,7 +53,7 @@ func APITimeoutSourceForTransport(parent, attempt context.Context, transportErr 
 	if urlErr, ok := transportErr.(*url.Error); ok { //nolint:errorlint // Transport errors are untrusted; do not invoke arbitrary Unwrap methods.
 		transportCause = urlErr.Err
 	}
-	if _, ok := transportCause.(*responseHeaderTimeoutError); ok { //nolint:errorlint // Inspect only Serf's concrete inert wrapper.
+	if _, ok := transportCause.(*responseHeaderTimeoutError); ok { //nolint:errorlint // Inspect only Evener's concrete inert wrapper.
 		return APITimeoutResponseHeader
 	}
 	if netErr, ok := transportCause.(*net.OpError); ok { //nolint:errorlint // Transport errors are untrusted; do not invoke arbitrary Unwrap methods.

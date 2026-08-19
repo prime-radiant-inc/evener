@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"primeradiant.com/serf/fuzz/oracle"
+	"primeradiant.com/evener/fuzz/oracle"
 )
 
 func FuzzOracleCombinators(f *testing.F) {

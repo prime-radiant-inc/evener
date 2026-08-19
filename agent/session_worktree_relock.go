@@ -6,9 +6,9 @@ import (
 	"os"
 	"path/filepath"
 
-	"primeradiant.com/serf/agent/events"
-	"primeradiant.com/serf/agent/execenv"
-	"primeradiant.com/serf/agent/internal/worktree"
+	"primeradiant.com/evener/agent/events"
+	"primeradiant.com/evener/agent/execenv"
+	"primeradiant.com/evener/agent/internal/worktree"
 )
 
 // Resume re-lock (auto-delegate-lane-disposal spec §P3 "Session resume re-locks
@@ -16,7 +16,7 @@ import (
 // lanes; P3 (the residue sweep) collects unlocked delegate lanes on the
 // invariant "unlocked ⇒ no live owner". A resumed session with undisposed KEPT
 // lanes would therefore expose its own live lanes to another session's P3 sweep.
-// This post-init resume step restores the invariant: it re-takes the serf:dlg:
+// This post-init resume step restores the invariant: it re-takes the evener:dlg:
 // lock on each of THIS session's own, undisposed, still-present isolation lanes,
 // routing the decision through the same EvDelegateRevive lock core revival uses
 // (Unlocked→lock, OwnDelegate→adopt, foreign→leave untouched). A failed re-lock
@@ -28,7 +28,7 @@ import (
 type reLockOutcome int
 
 const (
-	// reLockDone: the lane now carries this session's serf:dlg: lock (freshly
+	// reLockDone: the lane now carries this session's evener:dlg: lock (freshly
 	// locked, or already-own-marker adopted). The P3 invariant holds for it.
 	reLockDone reLockOutcome = iota
 	// reLockSkipped: nothing to do and nothing exposed — the lane directory is
@@ -98,7 +98,7 @@ func (s *Session) undisposedOwnedLanes() []isolationLane {
 	return lanes
 }
 
-// reLockOwnLane re-takes this session's serf:dlg: lock on one own undisposed
+// reLockOwnLane re-takes this session's evener:dlg: lock on one own undisposed
 // lane, routing the decision through worktree.Decide(EvDelegateRevive, …) — the
 // SAME core delegate revival uses, so an already-re-locked lane later classifies
 // OwnDelegate→adopt there. A missing lane directory or a foreign lock is a clean

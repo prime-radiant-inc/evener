@@ -1,4 +1,4 @@
-//go:build serffuzz
+//go:build evenerfuzz
 
 package agent
 
@@ -11,10 +11,10 @@ import (
 	"testing"
 	"unicode/utf8"
 
-	"primeradiant.com/serf/agent/internal/jobstore"
-	"primeradiant.com/serf/agent/internal/tool"
-	"primeradiant.com/serf/fuzz/fault"
-	"primeradiant.com/serf/fuzz/oracle"
+	"primeradiant.com/evener/agent/internal/jobstore"
+	"primeradiant.com/evener/agent/internal/tool"
+	"primeradiant.com/evener/fuzz/fault"
+	"primeradiant.com/evener/fuzz/oracle"
 )
 
 // This file fuzzes the job-tool surface in session_tools_jobs.go — the read /

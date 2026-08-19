@@ -10,11 +10,11 @@ import (
 	"strconv"
 	"strings"
 
-	"primeradiant.com/serf/agent/execenv"
-	"primeradiant.com/serf/agent/internal/jobstore"
-	"primeradiant.com/serf/agent/internal/tool"
-	"primeradiant.com/serf/agent/schema"
-	"primeradiant.com/serf/llm"
+	"primeradiant.com/evener/agent/execenv"
+	"primeradiant.com/evener/agent/internal/jobstore"
+	"primeradiant.com/evener/agent/internal/tool"
+	"primeradiant.com/evener/agent/schema"
+	"primeradiant.com/evener/llm"
 )
 
 const (
@@ -570,7 +570,7 @@ func formatShellResult(out shellToolResult) string {
 	}
 	// runTimeout is a genuine stopped/run_timeout terminal result (job-control.md
 	// §"Defaults and timeout semantics"): the process was still running after
-	// max_runtime_ms, so serf killed it. That is not the command failing on its
+	// max_runtime_ms, so evener killed it. That is not the command failing on its
 	// own and exit_code is a sentinel for it (job-control.md:802), so the footer
 	// must not present it as an ordinary exit.
 	runTimeout := out.Status == string(jobstore.StatusStopped) && out.Reason != nil && *out.Reason == "run_timeout"
@@ -588,7 +588,7 @@ func formatShellResult(out shellToolResult) string {
 	}
 	switch {
 	case runTimeout:
-		foot = append(foot, "stopped by serf's runtime limit (max_runtime_ms) — not a command failure")
+		foot = append(foot, "stopped by evener's runtime limit (max_runtime_ms) — not a command failure")
 		if out.Output == nil || *out.Output == "" {
 			foot = append(foot, "no output before the limit — it may still have been working, e.g. compiling")
 		}

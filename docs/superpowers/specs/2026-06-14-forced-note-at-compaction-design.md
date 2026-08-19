@@ -21,8 +21,8 @@ benefit). So it must fire **late and rarely**, not eagerly.
 
 Fire the forced-note when **remaining context < a reserve**, where the reserve ≈ **2× the
 max response size** (Jesse's idea): late enough that there's room for the note-authoring
-interaction *and* the model's reply, and window-size-aware (for serf's large windows a fixed
-0.80 fraction is needlessly early). serf has no per-profile max-output value (it's a
+interaction *and* the model's reply, and window-size-aware (for evener's large windows a fixed
+0.80 fraction is needlessly early). evener has no per-profile max-output value (it's a
 per-request `MaxTokens`, usually provider-default), so introduce a configurable
 `Manager.CompactReserveTokens` (default ≈ 32k = 2× a typical 16k response). Trigger when
 `ContextWindowSize() - usedTokens < CompactReserveTokens`.
@@ -54,7 +54,7 @@ verbatim — tokens, hashes, numbers, names") and **pins the reply as the note**
   (DEPLOY token, `numShards exceeds 16`). If the elicitor captures them, pinning them prevents
   erosion by construction.
 - **A** needs a **live** long session: does the model comply with the mandate and author a
-  note that captures the eroding facts? Driven via the serf CLI across several compactions.
+  note that captures the eroding facts? Driven via the evener CLI across several compactions.
 - **Decide** on: erosion-resistance (facts kept), reliability (B is deterministic; A depends
   on compliance), and cost (both ≈ one extra LLM interaction per compaction). Keep the winner;
   the other can stay behind a config flag or be dropped.

@@ -26,7 +26,7 @@ var (
 // separate, dumb sweep that reclaims them — a snapshot diff against the
 // registry, not live-session refcounting. It is only safe to call when no
 // session could be actively starting against a dir about to be removed: on
-// hub start (before any session exists) or on demand via `serf plugin gc`
+// hub start (before any session exists) or on demand via `evener plugin gc`
 // when the user is idle. Gc itself does not enforce that; it runs under the
 // same flock as every other mutation, so it never races an install/upgrade.
 func (m *Manager) Gc() ([]string, error) {
@@ -55,7 +55,7 @@ func (m *Manager) Gc() ([]string, error) {
 		return nil, fmt.Errorf("reading %s: %w", m.cacheDir(), err)
 	}
 
-	// Non-nil even when nothing is swept: callers (cmd/serf/plugincmd.go's
+	// Non-nil even when nothing is swept: callers (cmd/evener/plugincmd.go's
 	// `gc --json`) JSON-encode this directly, and a nil slice would encode as
 	// `null` instead of `[]`.
 	removed := []string{}

@@ -9,10 +9,10 @@ import (
 	"testing"
 	"time"
 
-	"primeradiant.com/serf/agent/internal/agenttest"
-	"primeradiant.com/serf/agent/internal/tool"
-	"primeradiant.com/serf/agent/mcpconfig"
-	"primeradiant.com/serf/llm"
+	"primeradiant.com/evener/agent/internal/agenttest"
+	"primeradiant.com/evener/agent/internal/tool"
+	"primeradiant.com/evener/agent/mcpconfig"
+	"primeradiant.com/evener/llm"
 )
 
 // The everything server does not exit on stdin-EOF, so each manager teardown
@@ -29,8 +29,8 @@ func init() {
 // so these only run when explicitly requested.
 func requireRealMCPServer(t *testing.T) {
 	t.Helper()
-	if os.Getenv("SERF_MCP_E2E") != "1" && os.Getenv("SERF_LIVE_TESTS") != "1" {
-		t.Skip("set SERF_MCP_E2E=1 or SERF_LIVE_TESTS=1 to run real MCP server tests")
+	if os.Getenv("EVENER_MCP_E2E") != "1" && os.Getenv("EVENER_LIVE_TESTS") != "1" {
+		t.Skip("set EVENER_MCP_E2E=1 or EVENER_LIVE_TESTS=1 to run real MCP server tests")
 	}
 	if _, err := exec.LookPath("npx"); err != nil {
 		t.Skip("npx not found, skipping real MCP server test")
@@ -193,7 +193,7 @@ func TestRealMCP_EnvPassing(t *testing.T) {
 		Type:    "stdio",
 		Command: "npx",
 		Args:    []string{"-y", "@modelcontextprotocol/server-everything"},
-		Env:     map[string]string{"MCP_TEST_MARKER": "serf_integration_12345"},
+		Env:     map[string]string{"MCP_TEST_MARKER": "evener_integration_12345"},
 	}}, nil)
 	if err != nil {
 		t.Fatalf("NewManager: %v", err)
@@ -217,8 +217,8 @@ func TestRealMCP_EnvPassing(t *testing.T) {
 	if !strings.Contains(result.Output, "MCP_TEST_MARKER") {
 		t.Errorf("output missing MCP_TEST_MARKER key: %s", result.Output)
 	}
-	if !strings.Contains(result.Output, "serf_integration_12345") {
-		t.Errorf("output missing serf_integration_12345 value: %s", result.Output)
+	if !strings.Contains(result.Output, "evener_integration_12345") {
+		t.Errorf("output missing evener_integration_12345 value: %s", result.Output)
 	}
 }
 

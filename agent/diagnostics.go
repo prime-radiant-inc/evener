@@ -4,9 +4,9 @@ import (
 	"errors"
 	"strings"
 
-	"primeradiant.com/serf/agent/diagnostic"
-	"primeradiant.com/serf/agent/events"
-	"primeradiant.com/serf/llm"
+	"primeradiant.com/evener/agent/diagnostic"
+	"primeradiant.com/evener/agent/events"
+	"primeradiant.com/evener/llm"
 )
 
 func errorDataFromError(err error) events.ErrorData {

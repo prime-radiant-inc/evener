@@ -19,8 +19,8 @@ import (
 
 	"github.com/spf13/afero"
 
-	"primeradiant.com/serf/agent/schema"
-	"primeradiant.com/serf/agent/task"
+	"primeradiant.com/evener/agent/schema"
+	"primeradiant.com/evener/agent/task"
 )
 
 // DefaultMaxLineBytes is the maximum transcript record payload. The trailing
@@ -58,7 +58,7 @@ type Header struct {
 	Model            string    `json:"model"`                   // model name at creation
 	WorkingDir       string    `json:"working_dir,omitempty"`   // the agent's working directory
 	Depth            int       `json:"depth,omitempty"`         // subagent nesting depth (0 for root)
-	BuildVersion     string    `json:"build_version,omitempty"` // serf build version that wrote the file
+	BuildVersion     string    `json:"build_version,omitempty"` // evener build version that wrote the file
 	SystemPrompt     string    `json:"system_prompt,omitempty"` // initial system prompt
 	// AgentTasks is the full task list the agent started with (from the
 	// agent's YAML frontmatter for root sessions, or from the parent's
@@ -146,15 +146,15 @@ func decodeStrictJSON(line []byte, target any) error {
 	// transcript's records in one pass and aborts on the first error, one such
 	// record makes the ENTIRE transcript unreadable, not just the turn that
 	// carries the new field. See kata wf7e for the investigation: the failure
-	// is real and reachable (a long-running serf-hub is not restarted when the
-	// serf CLI it talks to is upgraded, and every past transcript on disk can
+	// is real and reachable (a long-running evener-hub is not restarted when the
+	// evener CLI it talks to is upgraded, and every past transcript on disk can
 	// have been written by a different historical build), but it is also
 	// self-healing (the file on disk is untouched; a version-matched reader
 	// recovers full fidelity) and, unlike kq8c, cannot be silently wrong: a
 	// build only ever fails to decode a field IT does not know about, never
 	// drops a field it does know how to decode. wf7e closed wontfix on that
 	// basis; TestPastThreadReadFailsWholeSessionOnOneUnknownTurnField in
-	// cmd/serf-hub pins the resulting behavior so a future change to it is a
+	// cmd/evener-hub pins the resulting behavior so a future change to it is a
 	// decision, not an accident.
 	decoder.DisallowUnknownFields()
 	if err := decoder.Decode(target); err != nil {
@@ -353,7 +353,7 @@ func newWriterFS(fs afero.Fs, path string, header Header, sync bool) (*Writer, e
 // happened to SessionStart hook exits in kata qm9y; kata d4es is the hazard.
 //
 // Do not add nil-checks at call sites to compensate: they cannot tell the two
-// cases apart either. Serf's agent package instead routes every write through
+// cases apart either. Evener's agent package instead routes every write through
 // Session.writeTranscript/writeTranscriptDurable, which hold turns until
 // Session.attachTranscript has settled whether a writer exists at all. Any new
 // consumer of this package that can write before it has opened its writer needs

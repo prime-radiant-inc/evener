@@ -21,17 +21,17 @@ type Registry struct {
 
 // InstallEntry is one installed plugin.
 type InstallEntry struct {
-	// serf:naming-ignore: matches Claude Code plugin/marketplace JSON schema
+	// evener:naming-ignore: matches Claude Code plugin/marketplace JSON schema
 	InstallPath string `json:"installPath"`
 	Version     string `json:"version"`
-	// serf:naming-ignore: matches Claude Code plugin/marketplace JSON schema
+	// evener:naming-ignore: matches Claude Code plugin/marketplace JSON schema
 	GitCommitSha string `json:"gitCommitSha,omitempty"`
-	// serf:naming-ignore: matches Claude Code plugin/marketplace JSON schema
+	// evener:naming-ignore: matches Claude Code plugin/marketplace JSON schema
 	InstalledAt time.Time `json:"installedAt"`
-	// serf:naming-ignore: matches Claude Code plugin/marketplace JSON schema
+	// evener:naming-ignore: matches Claude Code plugin/marketplace JSON schema
 	LastUpdated time.Time `json:"lastUpdated"`
 	Enabled     bool      `json:"enabled"`
-	// serf:naming-ignore: matches Claude Code plugin/marketplace JSON schema
+	// evener:naming-ignore: matches Claude Code plugin/marketplace JSON schema
 	AutoUpgrade bool   `json:"autoUpgrade"`
 	Source      Source `json:"source"`
 	// Note is an install-time message worth showing the user — currently

@@ -16,7 +16,7 @@ The workspace bottom area matches the mockup:
 
 [＋] [⚠ full access] [openai · gpt-5 ▾]            [steer] [send ⌘↵]
 ─────────────────────────────────────────────────────────────────
-~/git/serf/.worktrees/serf-hub · serf-hub@7c8450c    context [▓░░] 68k/200k · $0.84
+~/git/evener/.worktrees/evener-hub · evener-hub@7c8450c    context [▓░░] 68k/200k · $0.84
 ```
 
 Users can attach images by clicking `＋`, dragging onto the textarea, or pasting from the clipboard. Selected files render as small chips above the textarea with an `×` to remove. On send, attachments go through the daemon and end up in the user message as `llm.ContentImage` parts.
@@ -35,7 +35,7 @@ The tasks and details slide-over panels close on click outside (in addition to t
 ### Files
 
 - `server/server.go` — `InputRequest`, `inputCh`, `handleInput`, `InputCh`
-- `cmd/serf/serve.go` — input loop calls `ProcessInput`
+- `cmd/evener/serve.go` — input loop calls `ProcessInput`
 - `agent/session.go` — `ProcessInput` signature and message construction
 
 ### Changes
@@ -63,7 +63,7 @@ The tasks and details slide-over panels close on click outside (in addition to t
    }
    ```
    `Server.InputCh() <-chan InputMessage`. `handleInput` enqueues `InputMessage{Text: req.Text, Images: req.Images}`. Validation: at least one of Text or Images must be non-empty (currently text is required; relax to allow text-only OR image-with-empty-caption).
-4. `cmd/serf/serve.go`: read `InputMessage` from `srv.InputCh()`. Call `sess.ProcessInput(ctx, msg.Text, msg.Images)` (new signature).
+4. `cmd/evener/serve.go`: read `InputMessage` from `srv.InputCh()`. Call `sess.ProcessInput(ctx, msg.Text, msg.Images)` (new signature).
 5. `agent/session.go::ProcessInput` signature change:
    ```go
    func (s *Session) ProcessInput(ctx context.Context, input string, images []server.ImageAttachment) (string, error)
@@ -85,7 +85,7 @@ The tasks and details slide-over panels close on click outside (in addition to t
 
 ### Files
 
-- `cmd/serf-hub/web.go` — `handleSend`
+- `cmd/evener-hub/web.go` — `handleSend`
 
 ### Changes
 
@@ -99,18 +99,18 @@ The hub's `/s/<id>/send` accepts JSON. Extend it to accept either:
 
 ### Tests
 
-- `cmd/serf-hub/web_test.go`: POST `/s/<id>/send` with images forwards them to a stub daemon.
-- `cmd/serf-hub/web_test.go`: empty text + 1 image is accepted.
-- `cmd/serf-hub/web_test.go`: empty text + zero images returns 400.
+- `cmd/evener-hub/web_test.go`: POST `/s/<id>/send` with images forwards them to a stub daemon.
+- `cmd/evener-hub/web_test.go`: empty text + 1 image is accepted.
+- `cmd/evener-hub/web_test.go`: empty text + zero images returns 400.
 
 ## Step 3 — Frontend: bottom strip visual restructure
 
 ### Files
 
-- `cmd/serf-hub/templates/partials/workspace.html` — restructure
-- `cmd/serf-hub/templates/partials/input_strip.html` — restructure
-- `cmd/serf-hub/assets/style.css` — new classes
-- `cmd/serf-hub/assets/renderer.js` — auto-grow hook
+- `cmd/evener-hub/templates/partials/workspace.html` — restructure
+- `cmd/evener-hub/templates/partials/input_strip.html` — restructure
+- `cmd/evener-hub/assets/style.css` — new classes
+- `cmd/evener-hub/assets/renderer.js` — auto-grow hook
 
 ### New HTML structure (workspace.html, bottom)
 
@@ -209,18 +209,18 @@ Reset `ta.style.height = ""` after successful send so it collapses back.
 
 ### Tests
 
-- `cmd/serf-hub/web_test.go`: workspace partial includes `data-attach-trigger`, `data-drop-zone`, `mode-chip`, `controls-spacer`, `input-status`.
+- `cmd/evener-hub/web_test.go`: workspace partial includes `data-attach-trigger`, `data-drop-zone`, `mode-chip`, `controls-spacer`, `input-status`.
 - JSDOM `test-input-area.js` (new): autocompose grow on input, clamp at 50vh, reset on send.
 
 ## Step 4 — Frontend: attachment plumbing (file picker, drag-drop, paste)
 
 ### Files
 
-- `cmd/serf-hub/assets/renderer.js` — attachment queue + send pipeline
+- `cmd/evener-hub/assets/renderer.js` — attachment queue + send pipeline
 
 ### State
 
-A `pendingAttachments: ImageAttachment[]` on SerfRenderer where each item is `{name, mediaType, dataBase64, thumbnail}` (thumbnail = data URL for the chip image).
+A `pendingAttachments: ImageAttachment[]` on EvenerRenderer where each item is `{name, mediaType, dataBase64, thumbnail}` (thumbnail = data URL for the chip image).
 
 ### Triggers
 
@@ -273,7 +273,7 @@ Send rules:
 
 ### Files
 
-- `cmd/serf-hub/assets/renderer.js` — `toggleTasksPanel`, `toggleDetailsPanel`
+- `cmd/evener-hub/assets/renderer.js` — `toggleTasksPanel`, `toggleDetailsPanel`
 
 ### Approach
 
@@ -309,7 +309,7 @@ Apply to both `toggleTasksPanel` and `toggleDetailsPanel`. Take care that openin
 
 1. Wire `WorkspaceData.WorkingDir` and `WorkspaceData.Branch` from daemon `/status` (verify `git_branch` exists; if not, expose it on `StatusInfo` and have the daemon populate from `s.envInfo.GitBranch`).
 2. Run all Go tests and JSDOM tests.
-3. Rebuild `/tmp/serf-hub`, restart, screenshot two scenarios via chrome MCP:
+3. Rebuild `/tmp/evener-hub`, restart, screenshot two scenarios via chrome MCP:
    - Empty conversation showing the bottom strip per mockup
    - Drag-and-drop or attach demo with 1 chip pending
    - Click-outside dismissal
@@ -318,8 +318,8 @@ Apply to both `toggleTasksPanel` and `toggleDetailsPanel`. Take care that openin
 
 Tasks that can run in parallel as Agent dispatches, each landing one numbered step:
 
-1. **A — Daemon InputRequest + ProcessInput signature** (Step 1). Touches `server/server.go`, `agent/session.go`, `cmd/serf/serve.go`, related tests. Output: branch worktree with all tests passing.
-2. **B — Hub /send forwards attachments** (Step 2). Depends on A's `InputRequest` shape. Touches `cmd/serf-hub/web.go`, `cmd/serf-hub/web_test.go`. Wait for A.
+1. **A — Daemon InputRequest + ProcessInput signature** (Step 1). Touches `server/server.go`, `agent/session.go`, `cmd/evener/serve.go`, related tests. Output: branch worktree with all tests passing.
+2. **B — Hub /send forwards attachments** (Step 2). Depends on A's `InputRequest` shape. Touches `cmd/evener-hub/web.go`, `cmd/evener-hub/web_test.go`. Wait for A.
 3. **C — Bottom strip CSS + HTML restructure** (Step 3). Independent of A/B for CSS; needs `WorkingDir`/`Branch` plumbed in `WorkspaceData` (small change, can do in C). Touches the templates + style.css + a small chunk of renderer.js (auto-grow only).
 4. **D — Attachment UI + send pipeline** (Step 4). Depends on B (hub endpoint accepting images) AND on C (the `＋` button + chip area markup). Touches renderer.js + new JSDOM test.
 5. **E — Click-outside dismissal** (Step 5). Independent. Touches renderer.js + new JSDOM test.

@@ -8,8 +8,8 @@ import (
 	"path/filepath"
 	"strings"
 
-	"primeradiant.com/serf/agent/execenv"
-	"primeradiant.com/serf/envvars"
+	"primeradiant.com/evener/agent/execenv"
+	"primeradiant.com/evener/envvars"
 )
 
 // ServerConfig describes a single MCP server connection.
@@ -247,7 +247,7 @@ func Merge(layers ...[]ServerConfig) []ServerConfig {
 }
 
 // Discover loads MCP configs from all sources:
-// global (~/.config/serf/mcp.json) -> project (.serf/mcp.json at git root)
+// global (~/.config/evener/mcp.json) -> project (.evener/mcp.json at git root)
 // -> CLI files -> CLI inline specs. Later sources shadow earlier by name.
 //
 // A global or project config file (layers 1-2) that fails to parse or expand
@@ -272,12 +272,12 @@ func Discover(env execenv.ExecutionEnvironment, extraFiles, inlineSpecs []string
 		}
 	}
 
-	// Layer 2: Per-project config (.serf/mcp.json at git root).
+	// Layer 2: Per-project config (.evener/mcp.json at git root).
 	if env != nil {
 		cwd := env.WorkingDirectory()
 		root := execenv.GitRootOrEmpty(env, cwd)
 		if root != "" {
-			projPath := filepath.Join(root, ".serf", "mcp.json")
+			projPath := filepath.Join(root, ".evener", "mcp.json")
 			if configs, err := LoadFile(projPath); err != nil {
 				if !errors.Is(err, os.ErrNotExist) {
 					warnings = append(warnings, fmt.Sprintf("MCP config %s: %v", projPath, err))
@@ -310,15 +310,15 @@ func Discover(env execenv.ExecutionEnvironment, extraFiles, inlineSpecs []string
 }
 
 // DiscoverTrusted is Discover restricted to the layers the session's MODEL cannot
-// write: the global config (~/.config/serf/mcp.json), --mcp-config files, and
-// --mcp inline specs. The per-project layer (<git root>/.serf/mcp.json) is
+// write: the global config (~/.config/evener/mcp.json), --mcp-config files, and
+// --mcp inline specs. The per-project layer (<git root>/.evener/mcp.json) is
 // deliberately EXCLUDED because it lives inside the model's own write surface.
 //
 // Use it wherever MCP config feeds a SECURITY decision rather than a connection.
 // The sandbox policy derivation (agent.SessionInfraRoots) is the case that
 // matters: sandbox grants are resolved from it, and SandboxPolicy promises that
 // nothing the model does mid-session can widen its own box. A model that could
-// plant .serf/mcp.json and have it grant filesystem roots would break exactly
+// plant .evener/mcp.json and have it grant filesystem roots would break exactly
 // that promise. Ordinary MCP startup still uses Discover — connecting to a
 // project-declared server is the feature; granting it sandbox roots is not.
 func DiscoverTrusted(extraFiles, inlineSpecs []string) ([]ServerConfig, []string, error) {
@@ -341,5 +341,5 @@ func globalMCPConfigPathWithHome(userHomeDir func() (string, error)) string {
 		}
 		dir = filepath.Join(home, ".config")
 	}
-	return filepath.Join(dir, "serf", "mcp.json")
+	return filepath.Join(dir, "evener", "mcp.json")
 }

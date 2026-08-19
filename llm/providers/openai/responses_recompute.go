@@ -8,7 +8,7 @@ import (
 	"fmt"
 	"strings"
 
-	"primeradiant.com/serf/llm"
+	"primeradiant.com/evener/llm"
 )
 
 // ExtractRecordedResponse offline re-extracts the canonical llm.Response
@@ -16,7 +16,7 @@ import (
 // (endpoint families openai_public/openai_codex -- see
 // Adapter.responsesEndpointFamily; openaicompat's codex-continuation family
 // delegates to this same adapter, so its records carry these same values
-// too), for serf-doctor's `apilog --recompute`: historical records whose
+// too), for evener-doctor's `apilog --recompute`: historical records whose
 // TextLength/ToolCalls were recorded as zero because they predate the
 // accumulated-item settlement fix (see decodeResponsesStream /
 // settleResponsesTerminalOutput). body is the raw, decoded response body

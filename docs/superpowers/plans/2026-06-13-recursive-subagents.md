@@ -54,7 +54,7 @@ The dossier (`docs/superpowers/research/2026-06-12-recursion-dossier.md`) was ca
 
 ## Conventions for every task
 
-- Work in the `agent` Go module: run Go commands from `/home/jesse/git/prime-radiant/serf/agent`.
+- Work in the `agent` Go module: run Go commands from `/home/jesse/git/prime-radiant/evener/agent`.
 - TDD: red test first, watch it fail for the named reason, minimal implementation, watch it pass.
 - Commit style: `type(scope): subject`. Scope is `recursion` or `job-control` per task.
 - Contract amendments (spec §8) ride **in the same commit** as the code that implements them (the mailbox-design precedent, `docs/superpowers/specs/2026-06-11-job-control-watch-mailbox-design.md:203`). The carrying task is named per clause below.
@@ -515,7 +515,7 @@ delete", `2026-06-11-...-mailbox-design.md:216`) governs.
 - `docs/architecture.md` — extend the "Ownership and mailboxes" section (added by the mailbox design, `2026-06-11-...-mailbox-design.md:207`) with drive-down: a parent drives children with undelivered attention; the tree is eventually-driven level by level; the root is driven by serve.go. State the invariant holds at every depth.
 - rollout disclosure (spec §10): the counter binds existing single-level fan-out (16 concurrent root delegates fail loudly); delegate-start forwarding changes nested-store contents (invisible to default list); drive-down changes the existing nested-shell case (owner driven instead of parent's model interrupted). Recursion stays dark behind the double opt-in. **Disclose the width-counter day-one bind** where spec §10 says (the contract caps section + a note in the changelog/rollout doc).
 
-**Red/verification:** this is a docs task — the gate is `make lint-docs` (`serf-docscheck`) green + the auditing-documentation pass. Use the `auditing-documentation` skill to confirm the contract matches the landed code. No new Go test, but **assert the doc claims against the code** (grep-verify each amended clause names a real symbol/behavior).
+**Red/verification:** this is a docs task — the gate is `make lint-docs` (`evener-docscheck`) green + the auditing-documentation pass. Use the `auditing-documentation` skill to confirm the contract matches the landed code. No new Go test, but **assert the doc claims against the code** (grep-verify each amended clause names a real symbol/behavior).
 
 **Gate:** `make lint-docs`; manual auditing-documentation pass.
 **Commit:** `docs(recursion): contract §8 residue, architecture drive-down section, rollout disclosure`
@@ -524,7 +524,7 @@ delete", `2026-06-11-...-mailbox-design.md:216`) governs.
 
 ## Task 18: live e2e coordinator-pattern scenario cards (authoring only)
 
-**Implements:** spec §9 e2e ("coordinator-pattern cards — the 2026-06-11 overnight shape inside serf — with the raised config"), spec §10.
+**Implements:** spec §9 e2e ("coordinator-pattern cards — the 2026-06-11 overnight shape inside evener — with the raised config"), spec §10.
 
 **Files:**
 - `test/scenarios/recursion-coordinator-fanout.md` (new) — a root with `MaxSubagentDepth: 2+` grants a coordinator allowance 1; coordinator fans out workers; assertions: workers complete, coordinator is driven (gets its workers' completions in its own turns), root is told only when the coordinator finishes, `job_list(include_descendants=true)` shows the live tree, `job_stop` on the coordinator cascades.

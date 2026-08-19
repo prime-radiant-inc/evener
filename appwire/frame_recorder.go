@@ -6,7 +6,7 @@ import (
 	"path/filepath"
 	"sync"
 
-	"primeradiant.com/serf/envvars"
+	"primeradiant.com/evener/envvars"
 )
 
 var (
@@ -16,8 +16,8 @@ var (
 
 // FrameRecorder appends every AppWire WebSocket frame that crosses a transport
 // to a JSONL file, one frame per line. It exists solely to harvest real wire
-// traffic into fuzz seed corpora (serf-fuzz-harvest); it is opt-in via
-// SERF_RECORD_APPWIRE and default-off, so normal operation never touches it.
+// traffic into fuzz seed corpora (evener-fuzz-harvest); it is opt-in via
+// EVENER_RECORD_APPWIRE and default-off, so normal operation never touches it.
 //
 // It is side-effect-only: a failed write is swallowed, never propagated, so the
 // recorder can never alter a frame, a response, or the transport's error path.
@@ -72,12 +72,12 @@ func (r *FrameRecorder) Close() error {
 }
 
 // appwireFrameRecorder is the process-wide recorder attached to every transport.
-// It is nil (default-off) unless SERF_RECORD_APPWIRE selects recording at
+// It is nil (default-off) unless EVENER_RECORD_APPWIRE selects recording at
 // startup, so the hot path costs a single nil check per frame.
 var appwireFrameRecorder = newEnvFrameRecorder()
 
 func newEnvFrameRecorder() *FrameRecorder {
-	if !envvars.RecorderEnabled(envvars.SERFRecordAppwire) {
+	if !envvars.RecorderEnabled(envvars.EVENERRecordAppwire) {
 		return nil
 	}
 	rec, err := NewFrameRecorder(filepath.Join(recorderStateRoot(), "appwire-frames.jsonl"))
@@ -87,15 +87,15 @@ func newEnvFrameRecorder() *FrameRecorder {
 	return rec
 }
 
-// recorderStateRoot mirrors cmdutil.DefaultStateRoot (SERF_STATE_DIR, else
-// ~/.serf, else ./.serf). It is duplicated here only to keep appwire — a
+// recorderStateRoot mirrors cmdutil.DefaultStateRoot (EVENER_STATE_DIR, else
+// ~/.evener, else ./.evener). It is duplicated here only to keep appwire — a
 // low-level wire-codec package — free of a dependency on the cmd helper layer.
 func recorderStateRoot() string {
-	if dir := envvars.SERFStateDir.Getenv(); dir != "" {
+	if dir := envvars.EVENERStateDir.Getenv(); dir != "" {
 		return dir
 	}
 	if home, err := frameRecorderHomeDir(); err == nil {
-		return filepath.Join(home, ".serf")
+		return filepath.Join(home, ".evener")
 	}
-	return ".serf"
+	return ".evener"
 }

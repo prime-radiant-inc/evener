@@ -21,7 +21,7 @@ import (
 	"regexp"
 	"strings"
 
-	"primeradiant.com/serf/agent/execenv"
+	"primeradiant.com/evener/agent/execenv"
 )
 
 // maxInlineBytes bounds how much text a single !`cmd` or @file substitution
@@ -104,11 +104,11 @@ func Expand(ctx context.Context, body string, args string, env execenv.Execution
 	return out.String(), nil
 }
 
-// ExpandArgs renders a serf-wide slash command's body: $ARGUMENTS and
+// ExpandArgs renders a evener-wide slash command's body: $ARGUMENTS and
 // $1..$9 substitute as inert text over the whole body, and nothing else
 // happens. !`cmd` spans and @file references are never executed or read —
 // they remain text (substitution still applies inside them, as inert
-// text). This is the serf-wide command posture: auto-discovered templates
+// text). This is the evener-wide command posture: auto-discovered templates
 // are data, never code (docs/skills.md).
 func ExpandArgs(body, args string) string {
 	return substituteArguments(body, args)
@@ -173,7 +173,7 @@ func runInlineCommand(ctx context.Context, cmd string, env execenv.ExecutionEnvi
 }
 
 // readInlineFile reads the file at path, resolved relative to env's working
-// directory, and returns its (bounded) contents. Unlike serf's other file
+// directory, and returns its (bounded) contents. Unlike evener's other file
 // reads (e.g. the model's Read tool), which are intentionally unsandboxed,
 // @file expansion runs synchronously during argument substitution with no
 // hook or permission visibility — so path must be lexically local

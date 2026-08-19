@@ -6,13 +6,13 @@
 
 **Architecture:** Five independent tasks, one kata each, executed sequentially in one worktree. Each kata is its own spec: it states evidence and a stop condition, deliberately not a solution (per `docs/conventions/agent-fleets.md`, naming the mechanism in a brief is harmful — the implementer verifies the evidence and finds the mechanism). Tasks touch disjoint files.
 
-**Tech Stack:** Go (multi-module workspace, see `go.work`), vitest/React for `cmd/serf-hub/frontend`, bash dev-tooling under `scripts/`.
+**Tech Stack:** Go (multi-module workspace, see `go.work`), vitest/React for `cmd/evener-hub/frontend`, bash dev-tooling under `scripts/`.
 
 **Spec:** The kata ledger entries 72k9, e2wm, vxz3, yj52, qz3e (bodies reproduced verbatim in each task below). Normative decision records: `docs/testing.md`, `docs/conventions/agent-fleets.md`, `docs/conventions/go-workspace.md`.
 
 ## Global Constraints
 
-- Branch: `worktree-kata-test-truth`, worktree `/Users/jesse/prime-radiant/toil-suite/serf/.claude/worktrees/kata-test-truth`. All work happens there.
+- Branch: `worktree-kata-test-truth`, worktree `/Users/jesse/prime-radiant/toil-suite/evener/.claude/worktrees/kata-test-truth`. All work happens there.
 - FORBIDDEN: `git stash`, `git reset`, tree-wide `git checkout`, `git clean`, `git add -A`, `git add .`. Stage by explicit path only. For before/after comparisons use `cp` round-trips to scratch.
 - FORBIDDEN: `npm ci` (node_modules is one real install symlinked into the worktree; `npm ci` empties it for every worktree). FORBIDDEN: `git add` of any directory containing that symlink.
 - FORBIDDEN: any integration action — push, merge, rebase, branch deletion, cherry-pick. Naming a branch or base is context, not permission. The controller integrates.
@@ -20,14 +20,14 @@
 - TDD per superpowers:test-driven-development. Test output must be pristine to pass; expected errors are captured and asserted.
 - Run only the tests you wrote or directly affected, plus the narrowest package run that covers your change. The controller runs the full suites centrally. Never launch `make merge-approval-gate` or other long gates.
 - Mutation-list contract: for every test you write or repair, report the exact one-line source change that must make it fail, and state which of those mutations you actually ran. A test whose mutation was never executed is a test nobody has shown can fail.
-- serffuzz-tagged tests only run under `-tags serffuzz`; `make test` filters `-run '^(Test|Example)'` and never sees `check*` families. Before concluding a thing is untested, remember the other build tag exists.
+- evenerfuzz-tagged tests only run under `-tags evenerfuzz`; `make test` filters `-run '^(Test|Example)'` and never sees `check*` families. Before concluding a thing is untested, remember the other build tag exists.
 - Decision records are normative. If your fix would contradict `docs/testing.md`, `docs/job-control.md`, or a `docs/superpowers/specs/*-design.md`, stop and report BLOCKED with the citation instead of "fixing" it.
 - If you find a kata premise wrong, say so in your report with evidence — the correction is the most valuable output. Do not silently work around it.
 - Commit frequently, conventional-commit style (`fix(agent): …`, `test(fakellm): …`), each commit scoped to one coherent change, staged by explicit path.
 
 ---
 
-### Task 1: Kata 72k9 — two fuzz-family transcript tests fail under `-tags serffuzz`
+### Task 1: Kata 72k9 — two fuzz-family transcript tests fail under `-tags evenerfuzz`
 
 **Files:**
 - Investigate: `agent/transcript_read_differential_fuzz_test.go` (failure at :112), `agent/transcript_structured_fuzz_test.go` (failures at :639-648), and whatever transcript code the diagnosis implicates.
@@ -38,7 +38,7 @@
 **Controller-verified baseline (2026-08-17, this worktree, commit 9c6a6f1e4):**
 
 ```
-$ cd agent && go test -tags serffuzz -run 'TestTranscriptReadersAgreeSanity|TestStructuredTranscriptReachesDeeper' -count=1 .
+$ cd agent && go test -tags evenerfuzz -run 'TestTranscriptReadersAgreeSanity|TestStructuredTranscriptReachesDeeper' -count=1 .
 --- FAIL: TestTranscriptReadersAgreeSanity (0.00s)
     transcript_read_differential_fuzz_test.go:112: clean transcript reported skips: readTranscript=1 full=1 strict=1
 --- FAIL: TestStructuredTranscriptReachesDeeper (0.36s)
@@ -52,7 +52,7 @@ Both failures are deterministic in this worktree (not load flakes — the first 
 
 **Kata body (verbatim):**
 
-> Two serffuzz-tagged tests in ./agent/ fail on main and nobody has noticed, because the default gate never runs that tag.
+> Two evenerfuzz-tagged tests in ./agent/ fail on main and nobody has noticed, because the default gate never runs that tag.
 >
 >   TestTranscriptReadersAgreeSanity
 >   TestStructuredTranscriptReachesDeeper
@@ -61,30 +61,30 @@ Both failures are deterministic in this worktree (not load flakes — the first 
 >
 > ## What is NOT known
 >
-> Nobody has diagnosed either failure. So this kata begins at zero: no root cause, no reproduction beyond "run the agent package with -tags serffuzz", no judgement on whether the tests or the code are wrong.
+> Nobody has diagnosed either failure. So this kata begins at zero: no root cause, no reproduction beyond "run the agent package with -tags evenerfuzz", no judgement on whether the tests or the code are wrong.
 >
 > Both names suggest transcript decoding agreement - one that two readers agree, one that a structured reader reaches deeper than a plain one. A plausible first question is whether a transcript format change landed without updating them, but that is a guess and should be treated as one.
 >
 > ## Stop condition
 >
-> Both tests pass under `-tags serffuzz`, or they are shown to be asserting something no longer true and are corrected with the reasoning recorded. Do not close by deleting or skipping them without establishing which side is wrong.
+> Both tests pass under `-tags evenerfuzz`, or they are shown to be asserting something no longer true and are corrected with the reasoning recorded. Do not close by deleting or skipping them without establishing which side is wrong.
 
 **Filer's correction (verbatim, later comment — this narrows the scope):**
 
-> 1. 'No gate watches that tag' is FALSE. lint-serffuzz is a member of LINT_TARGETS (Makefile:607), and 'lint: $(LINT_TARGETS)' is step 1 of merge-approval-gate.
+> 1. 'No gate watches that tag' is FALSE. lint-evenerfuzz is a member of LINT_TARGETS (Makefile:607), and 'lint: $(LINT_TARGETS)' is step 1 of merge-approval-gate.
 > 2. These two tests are EXCLUDED FROM THE GATE BY NAME, deliberately. scripts/gate-surface-lib.sh:17 sets GATE_FUZZ_TEST_SKIP, which contains both 'TranscriptReadersAgreeSanity' and 'Structured.*Reach'. Their absence from the gate is by design, not an oversight, and they are expected to run only under make fuzz / make test-fuzz.
 > 3. Kata 9e6r ALREADY OBSERVED BOTH OF THESE RED, with file and line.
 >
-> What SURVIVES as a real question: do these two pass under 'make fuzz' / 'cd agent && go test -tags serffuzz'? If they do not, that is a defect in a test family the gate deliberately does not run, which is a legitimate thing to fix - but it is a fuzz-family failure, not an unwatched-tag problem.
+> What SURVIVES as a real question: do these two pass under 'make fuzz' / 'cd agent && go test -tags evenerfuzz'? If they do not, that is a defect in a test family the gate deliberately does not run, which is a legitimate thing to fix - but it is a fuzz-family failure, not an unwatched-tag problem.
 >
-> The second question I posed - 'should anything watch the serffuzz tag' - is ANSWERED and should not be re-derived.
+> The second question I posed - 'should anything watch the evenerfuzz tag' - is ANSWERED and should not be re-derived.
 
-**Constraints specific to this task:** Do NOT remove the tests from `GATE_FUZZ_TEST_SKIP` — the skip is a recorded Jesse ruling (no fuzz-family test belongs in the default suite). Do NOT answer the "should anything watch the tag" question — it is answered. The deliverable is: both tests green under `-tags serffuzz`, with the diagnosis recorded (which side was wrong and why).
+**Constraints specific to this task:** Do NOT remove the tests from `GATE_FUZZ_TEST_SKIP` — the skip is a recorded Jesse ruling (no fuzz-family test belongs in the default suite). Do NOT answer the "should anything watch the tag" question — it is answered. The deliverable is: both tests green under `-tags evenerfuzz`, with the diagnosis recorded (which side was wrong and why).
 
 - [ ] **Step 1:** Reproduce both failures with the command above; confirm determinism (run twice).
 - [ ] **Step 2:** Diagnose using superpowers:systematic-debugging. `git log --oneline -- agent/transcript*.go` and the failing assertions' own history are the obvious first probes. Establish which side is wrong: the tests' expectations or the transcript code.
 - [ ] **Step 3:** Fix the wrong side. If the tests are stale, correct their expectations with the reasoning in a comment ONLY where the code cannot say it; if the code regressed, TDD the fix (failing test exists already — these two).
-- [ ] **Step 4:** `cd agent && go test -tags serffuzz -run 'TestTranscriptReadersAgreeSanity|TestStructuredTranscriptReachesDeeper' -count=2 .` → PASS. Also run the narrowest untagged package tests covering any production file you touched.
+- [ ] **Step 4:** `cd agent && go test -tags evenerfuzz -run 'TestTranscriptReadersAgreeSanity|TestStructuredTranscriptReachesDeeper' -count=2 .` → PASS. Also run the narrowest untagged package tests covering any production file you touched.
 - [ ] **Step 5:** Report the mutation list (for changed assertions: the one-line change that must make each red again; state which you ran).
 - [ ] **Step 6:** Commit by explicit path.
 
@@ -179,7 +179,7 @@ Both failures are deterministic in this worktree (not load flakes — the first 
 >     the toast region contains `Steer failed: no active turn`
 >     (`Composer.tsx:641-643`)
 >
-> That string does not exist in Composer.tsx at any line. It lives in cmd/serf-hub/frontend/src/shell/palette/commands.ts:515, and it is lower-case there ('steer failed: no active turn'), so the card has the wrong file, the wrong line, and the wrong capitalisation of the literal it claims to quote.
+> That string does not exist in Composer.tsx at any line. It lives in cmd/evener-hub/frontend/src/shell/palette/commands.ts:515, and it is lower-case there ('steer failed: no active turn'), so the card has the wrong file, the wrong line, and the wrong capitalisation of the literal it claims to quote.
 >
 > THE POINT IS NOT THE STALE CITATION, IT IS THAT make lint PASSES. I ran the full nine-target lint on the rebased result and it reported PASS (7 modules, 56s) with this citation in place. So whatever audit repointed the citations in #84 does not cover this card, this file, or this shape -- which means the batch that PR just fixed can silently rot again, and there is no gate that would say so.
 >
@@ -199,7 +199,7 @@ Both failures are deterministic in this worktree (not load flakes — the first 
 ### Task 5: Kata qz3e — small test-quality cleanups from the perf-wave reviews
 
 **Files:**
-- Modify (locate each precisely): frontend `toolRowGrammar` / `linkifySummary` / `ToolCallItem.tsx` tests under `cmd/serf-hub/frontend/src/`; the make-selftest fixture under `scripts/`-adjacent test tooling; the liveeval fuzz oracle; `jm.openOutput` (jobstore/job-manager area); the delegate retry test using a 2s `time.After`.
+- Modify (locate each precisely): frontend `toolRowGrammar` / `linkifySummary` / `ToolCallItem.tsx` tests under `cmd/evener-hub/frontend/src/`; the make-selftest fixture under `scripts/`-adjacent test tooling; the liveeval fuzz oracle; `jm.openOutput` (jobstore/job-manager area); the delegate retry test using a 2s `time.After`.
 
 **Interfaces:** none consumed from or produced for other tasks.
 
@@ -228,22 +228,22 @@ Both failures are deterministic in this worktree (not load flakes — the first 
 Added mid-run at Jesse's direction: hunt and excise tautological tests, tests asserting strings match strings, and other tests that cannot fail — coverage drop explicitly authorized. A read-only hunt of the whole repo produced six findings; the four small confident ones are this task. The cov_* cluster is kata 24te (out of scope here — its own disposition forbids wholesale deletion); the borderline AppWire source-grep guard keeps its KEEP-WITH-REASON (no change).
 
 **Files:**
-- Modify: `cmd/serf-hub/app_threadread_decode_fidelity_test.go`, `docs/testing.md:317-319`
-- Modify: `cmd/serf-hub/frontend/src/panes/sessionPanels/index.test.ts`
-- Modify: `cmd/serf-hub/frontend/src/panes/session/transcript/tools/subagentModule.test.tsx`
-- Modify: `cmd/serf-hub/spawn_test.go`
+- Modify: `cmd/evener-hub/app_threadread_decode_fidelity_test.go`, `docs/testing.md:317-319`
+- Modify: `cmd/evener-hub/frontend/src/panes/sessionPanels/index.test.ts`
+- Modify: `cmd/evener-hub/frontend/src/panes/session/transcript/tools/subagentModule.test.tsx`
+- Modify: `cmd/evener-hub/spawn_test.go`
 
 **Interfaces:** none consumed from or produced for other tasks.
 
 **The findings (hunt report evidence, verified read-only at 9c6a6f1e4):**
 
-**(a) EXCISE `TestDecodeTranscriptTurnLosesNoField`** (`cmd/serf-hub/app_threadread_decode_fidelity_test.go:25`). Both sides of its `reflect.DeepEqual(got, want.Turn)` are the identical expression — `json.Unmarshal(raw, &transcript.Entry{})` then `.Turn`; production `decodeTranscriptTurn` (`app_threadread.go:554-560`) IS the test's own `want` computation. The mirror type died in commit 9eda7a46e, whose message deleted the sibling `FuzzHubReplayCarryThrough` for exactly this reason and kept this test on grounds that no longer hold. `docs/testing.md:334-336` already mandates deletion ("Delete the round-trip test when the second path dies"). Excise the test plus its now-dead apparatus: `populatedTurnEntryJSON`, `divergentTurnFields`, `fillForJSON`. **KEEP `hubDecodedTurn`** (same file, line 45) — live consumers at `app_threadread_failed_turn_test.go:23,51` and `app_threadread_hook_turn_test.go:24,47`. Then fix `docs/testing.md:317-319`, which still holds this file up as the worked example of the good technique ("verified by adding a synthetic field...") — that verification predates the mirror type's death; the doc currently teaches the pattern with a file that decayed into the failure mode the same section warns about at :334.
+**(a) EXCISE `TestDecodeTranscriptTurnLosesNoField`** (`cmd/evener-hub/app_threadread_decode_fidelity_test.go:25`). Both sides of its `reflect.DeepEqual(got, want.Turn)` are the identical expression — `json.Unmarshal(raw, &transcript.Entry{})` then `.Turn`; production `decodeTranscriptTurn` (`app_threadread.go:554-560`) IS the test's own `want` computation. The mirror type died in commit 9eda7a46e, whose message deleted the sibling `FuzzHubReplayCarryThrough` for exactly this reason and kept this test on grounds that no longer hold. `docs/testing.md:334-336` already mandates deletion ("Delete the round-trip test when the second path dies"). Excise the test plus its now-dead apparatus: `populatedTurnEntryJSON`, `divergentTurnFields`, `fillForJSON`. **KEEP `hubDecodedTurn`** (same file, line 45) — live consumers at `app_threadread_failed_turn_test.go:23,51` and `app_threadread_hook_turn_test.go:24,47`. Then fix `docs/testing.md:317-319`, which still holds this file up as the worked example of the good technique ("verified by adding a synthetic field...") — that verification predates the mirror type's death; the doc currently teaches the pattern with a file that decayed into the failure mode the same section warns about at :334.
 
-**(b) EXCISE the tautological sessionPanels title test** (`cmd/serf-hub/frontend/src/panes/sessionPanels/index.test.ts:17`, "uses the same title derivation for fallback and renamed sessions"). Its expectations are routed through `sessionPanelTitle`, which is exactly what `descriptor.title` calls (`panes/sessionPanels/index.ts:32-33`) — both sides of every assertion are the same call; no mutation of `sessionPanelTitle` can fail it. Its only sliver of teeth (registration wiring) is a strict subset of the `test.each` block at :7-16, which pins the same ids against independent hardcoded literals. Delete the tautological test only; the `test.each` block stays.
+**(b) EXCISE the tautological sessionPanels title test** (`cmd/evener-hub/frontend/src/panes/sessionPanels/index.test.ts:17`, "uses the same title derivation for fallback and renamed sessions"). Its expectations are routed through `sessionPanelTitle`, which is exactly what `descriptor.title` calls (`panes/sessionPanels/index.ts:32-33`) — both sides of every assertion are the same call; no mutation of `sessionPanelTitle` can fail it. Its only sliver of teeth (registration wiring) is a strict subset of the `test.each` block at :7-16, which pins the same ids against independent hardcoded literals. Delete the tautological test only; the `test.each` block stays.
 
-**(c) REWRITE the `resolveRowKey` self-assertion** (`cmd/serf-hub/frontend/src/panes/session/transcript/tools/subagentModule.test.tsx:112`): `expect(resolveRowKey(undefined, undefined, "call_1")).toBe(resolveRowKey(undefined, undefined, "call_1"))` — identical call both sides. Replace with a pin against the independent literal `"call:call_1"`. Also add the missing one-line anti-collision case the production comment (`subagentModuleStore.ts:278-280`) claims but nothing tests: `expect(resolveRowKey("x", undefined, "f")).not.toBe(resolveRowKey(undefined, "x", "f"))`. The other three assertions in the test are sound; leave them.
+**(c) REWRITE the `resolveRowKey` self-assertion** (`cmd/evener-hub/frontend/src/panes/session/transcript/tools/subagentModule.test.tsx:112`): `expect(resolveRowKey(undefined, undefined, "call_1")).toBe(resolveRowKey(undefined, undefined, "call_1"))` — identical call both sides. Replace with a pin against the independent literal `"call:call_1"`. Also add the missing one-line anti-collision case the production comment (`subagentModuleStore.ts:278-280`) claims but nothing tests: `expect(resolveRowKey("x", undefined, "f")).not.toBe(resolveRowKey(undefined, "x", "f"))`. The other three assertions in the test are sound; leave them.
 
-**(d) REWRITE the determinism half of `TestResolveSerfStateDirNotInRepoFallsBackToWorkDir`** (`cmd/serf-hub/spawn_test.go:1197`): `got`/`want` are two identical calls to `resolveSerfStateDir(workDir, "")` (pure path derivation) — x == x. Drop the determinism pair, keep the collision half (it has teeth), and add an assertion on the actual promised shape: the returned path is under the resolved state home and carries the project id derived from workDir (`resolveSerfStateDirWithProject` already returns the `identifier.Project`, so the oracle needs no new plumbing).
+**(d) REWRITE the determinism half of `TestResolveEvenerStateDirNotInRepoFallsBackToWorkDir`** (`cmd/evener-hub/spawn_test.go:1197`): `got`/`want` are two identical calls to `resolveEvenerStateDir(workDir, "")` (pure path derivation) — x == x. Drop the determinism pair, keep the collision half (it has teeth), and add an assertion on the actual promised shape: the returned path is under the resolved state home and carries the project id derived from workDir (`resolveEvenerStateDirWithProject` already returns the `identifier.Project`, so the oracle needs no new plumbing).
 
 **Constraints specific to this task:** These edits delete assertions on purpose; Jesse has authorized the coverage drop. If a coverage floor file (`scripts/covunion-floors.txt`, test-coverage-floor or web-coverage-floor inputs) is violated by these deletions, lower the affected floor in the same commit with a one-line comment saying why — do not restore worthless assertions to satisfy a floor. Mutation-list contract applies to every REWRITTEN assertion (the new literal pins must be shown killable).
 

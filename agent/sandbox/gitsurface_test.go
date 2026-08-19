@@ -73,7 +73,7 @@ func TestPrepareGitSurfacesCreatesCommondirForMainCheckout(t *testing.T) {
 	}
 }
 
-// The surfaces serf does NOT prepare must be left strictly alone: preparation is
+// The surfaces evener does NOT prepare must be left strictly alone: preparation is
 // a write into the user's real .git, so it is confined to the one surface whose
 // empty residue is fatal.
 func TestPrepareGitSurfacesTouchesOnlyCommondir(t *testing.T) {
@@ -94,7 +94,7 @@ func TestPrepareGitSurfacesTouchesOnlyCommondir(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, e := range entries {
-		if strings.HasPrefix(e.Name(), ".serf-sandbox-") {
+		if strings.HasPrefix(e.Name(), ".evener-sandbox-") {
 			t.Errorf("preparation left a staging file behind: %s", e.Name())
 		}
 	}

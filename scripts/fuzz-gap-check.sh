@@ -11,12 +11,12 @@
 #
 # Usage:
 #   scripts/fuzz-gap-check.sh        # exit non-zero on an un-targeted parse package
-# Any extra flags are forwarded to serf-fuzzcov.
+# Any extra flags are forwarded to evener-fuzzcov.
 set -uo pipefail
 
 repo_root="$(cd "$(dirname "$0")/.." && pwd)"
-registry="$(mktemp -t serf-fuzz-registry.XXXXXX)"
+registry="$(mktemp -t evener-fuzz-registry.XXXXXX)"
 trap 'rm -f "$registry"' EXIT
 
 bash "$repo_root/scripts/run-fuzz.sh" --list >"$registry"
-( cd "$repo_root" && go run ./cmd/serf-fuzzcov -gap-only -registry "$registry" -repo-root "$repo_root" "$@" )
+( cd "$repo_root" && go run ./cmd/evener-fuzzcov -gap-only -registry "$registry" -repo-root "$repo_root" "$@" )

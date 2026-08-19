@@ -7,7 +7,7 @@ import (
 	"strings"
 	"time"
 
-	"primeradiant.com/serf/agent/execenv"
+	"primeradiant.com/evener/agent/execenv"
 )
 
 // gitExecTimeout bounds every git subprocess exec this file runs for the
@@ -121,7 +121,7 @@ func snapshotGit(env execenv.ExecutionEnvironment, cwd string) (inRepo bool, bra
 	// %x20 for a literal space is no longer needed to survive shell
 	// word-splitting (this runs via direct argv exec now), but it's kept
 	// anyway: git parses %x20 and a literal space identically, and keeping it
-	// matches the fixed string the serffuzz workspace-prompt fixture
+	// matches the fixed string the evenerfuzz workspace-prompt fixture
 	// (workspace_prompt_program_fuzz_test.go) and git_snapshot_test.go key
 	// their scripted responses on — switching it would be pure fixture churn
 	// for no behavior change.

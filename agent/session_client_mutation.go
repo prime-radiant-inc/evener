@@ -13,7 +13,7 @@ import (
 
 	"github.com/spf13/afero"
 
-	"primeradiant.com/serf/appwire"
+	"primeradiant.com/evener/appwire"
 )
 
 var (
@@ -41,7 +41,7 @@ func NormalizeClientMutationError(clientMutationID string, err error) error {
 		Code:    appwire.CodeInternalError,
 		Message: err.Error(),
 		Data: appwire.ErrorData{
-			SerfErrorInfo:    appwire.ErrorMutationOutcomeUnknown,
+			EvenerErrorInfo:  appwire.ErrorMutationOutcomeUnknown,
 			ClientMutationID: clientMutationID,
 			MutationOutcome:  appwire.MutationOutcomeUnknown,
 			RetryDisposition: appwire.RetryDispositionBlocked,

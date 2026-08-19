@@ -4,10 +4,10 @@ import (
 	"fmt"
 	"os"
 
-	"primeradiant.com/serf/agent/execenv"
-	"primeradiant.com/serf/agent/internal/tool"
-	"primeradiant.com/serf/agent/provider"
-	"primeradiant.com/serf/llm"
+	"primeradiant.com/evener/agent/execenv"
+	"primeradiant.com/evener/agent/internal/tool"
+	"primeradiant.com/evener/agent/provider"
+	"primeradiant.com/evener/llm"
 )
 
 var (
@@ -19,14 +19,14 @@ var (
 // CoreToolNames returns the sorted names of the core tools that carry a compiled
 // argument schema — the exact ordered set FuzzToolArgsValidate indexes its table
 // by (nameIndex % len). It is the single source of truth a corpus harvester
-// (cmd/serf-fuzz-harvest) uses to map a recorded tool-call name to the fuzz
+// (cmd/evener-fuzz-harvest) uses to map a recorded tool-call name to the fuzz
 // target's index, so harvested toolargs seeds address the right tool's schema.
 //
 // It stands up a throwaway session over a temp directory (no network: an empty
 // client makes the live-model probe fall back immediately) to run the real
 // registerCoreTools wiring, then returns the registry's schema-bearing names.
 func CoreToolNames() ([]string, error) {
-	dir, err := coreToolNamesMkdirTemp("", "serf-coretools-")
+	dir, err := coreToolNamesMkdirTemp("", "evener-coretools-")
 	if err != nil {
 		return nil, fmt.Errorf("temp dir: %w", err)
 	}

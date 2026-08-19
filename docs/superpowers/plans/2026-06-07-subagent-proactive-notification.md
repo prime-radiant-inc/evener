@@ -6,11 +6,11 @@
 
 **Architecture:** A subagent, on terminal run end, enqueues a metadata-only notification on its parent and calls a `notify` closure (sibling of the existing `emit`, threaded through `subagentManager`). A new `EntryNotification` input kind has a dedicated `acceptNotificationInput` branch in `processOneInput` that drains the queue, composes one `TurnSteering` system-reminder, appends it to history, and lets the round loop drive a model request (mirroring `acceptContinuationInput`). A loop-tail hook **before the goal-continuation gate** covers the busy/mid-goal case; the server wires `notifyFunc`→`SubmitNotification` to wake an idle parent.
 
-**Tech Stack:** Go (`agent`, `server`, `cmd/serf` modules). Tests: `go test ./agent/...` and `go test ./server/...`.
+**Tech Stack:** Go (`agent`, `server`, `cmd/evener` modules). Tests: `go test ./agent/...` and `go test ./server/...`.
 
 **DEPENDS ON:** the core plan (`2026-06-07-subagent-control-plane-core.md`) must be merged first. This plan reuses `reason`, `resultConsumed`, the retained terminal records, and the `run` finalize path it established. **It also upgrades the core plan's tool descriptions** (Task 6): the core plan should teach *spawn + wait/list* until notify is live; this plan flips them to *spawn-and-be-notified*.
 
-**Read before starting:** spec §"Proactive completion notification" (the contract, incl. the 5 numbered delivery steps), and the existing goal-continuation machinery it mirrors: `acceptContinuationInput` (`agent/session_lifecycle.go:644-672`), the loop tail (`:290-314`), `armGoalContinuation` (`:310`, `agent/session_goal.go:141-162`), `SetKickFunc`/`kickFunc` (`agent/session_goal.go:14-21`, `agent/session.go:174`), `SubmitContinuation` (`server/server.go:473`), and the serve-loop dispatch (`cmd/serf/serve.go:376-398`).
+**Read before starting:** spec §"Proactive completion notification" (the contract, incl. the 5 numbered delivery steps), and the existing goal-continuation machinery it mirrors: `acceptContinuationInput` (`agent/session_lifecycle.go:644-672`), the loop tail (`:290-314`), `armGoalContinuation` (`:310`, `agent/session_goal.go:141-162`), `SetKickFunc`/`kickFunc` (`agent/session_goal.go:14-21`, `agent/session.go:174`), `SubmitContinuation` (`server/server.go:473`), and the serve-loop dispatch (`cmd/evener/serve.go:376-398`).
 
 **Conventions:** run a new test with `go test ./agent/ -run <Name> -v`; before each commit `go build ./... && make lint`; commit only named files. The verified design facts below were established across five adversarial review rounds — do not re-derive them, implement them.
 
@@ -33,7 +33,7 @@
 | `agent/session_lifecycle.go` | `EntryNotification` kind; `acceptNotificationInput`; loop-tail drain hook; `SetNotifyFunc` | Modify |
 | `agent/session_goal.go` | `armGoalContinuation` short-circuit for `EntryNotification` | Modify |
 | `server/server.go` | `SubmitNotification` | Modify |
-| `cmd/serf/serve.go` | wire `SetNotifyFunc`→`SubmitNotification` | Modify |
+| `cmd/evener/serve.go` | wire `SetNotifyFunc`→`SubmitNotification` | Modify |
 | `agent/internal/tool/definitions.go` | upgrade descriptions to spawn-and-be-notified | Modify |
 | `docs/subagent-management/00-...md` | flatten notification sections to evergreen | Modify |
 | Tests | `agent/notification_test.go` (new), `server/server_test.go` | Create/modify |
@@ -211,13 +211,13 @@ git commit -m "feat(session): suppress notifications already consumed/closed at 
 
 **Spec:** step 5(a); §"Mode applicability".
 
-**Files:** Modify `agent/session_lifecycle.go` (or `agent/session.go`) for `SetNotifyFunc`, `server/server.go`, `cmd/serf/serve.go`; Test `server/server_test.go`.
+**Files:** Modify `agent/session_lifecycle.go` (or `agent/session.go`) for `SetNotifyFunc`, `server/server.go`, `cmd/evener/serve.go`; Test `server/server_test.go`.
 
 - [ ] **Step 1: `SetNotifyFunc`.** The `notifyFunc` field was added in Task 1 (nil). Add only `func (s *Session) SetNotifyFunc(f func())` mirroring `SetKickFunc` (`agent/session_goal.go:14-21`). The Task 1 notify kick already calls `s.notifyFunc()` (best-effort) after enqueueing; wiring it here makes the kick live.
 
 - [ ] **Step 2: `SubmitNotification`.** In `server/server.go`, add a method mirroring `SubmitContinuation` (`:473-477`) that pushes `InputMessage{Kind: agent.EntryNotification}` (text-less) onto the 1-slot `inputCh` with the same non-blocking/drop-if-full semantics (a dropped kick is safe — the durable queue + tail-drain cover it).
 
-- [ ] **Step 3: Wire it.** In `cmd/serf/serve.go`, next to the `SetKickFunc` wiring (`:299`), add `sess.SetNotifyFunc(func() { srv.SubmitNotification() })`. Confirm the serve loop's dispatch (`:376-398`) already routes `msg.Kind` through `ProcessInputKind` — it passes `msg.Kind` generically, so `EntryNotification` flows without a new case.
+- [ ] **Step 3: Wire it.** In `cmd/evener/serve.go`, next to the `SetKickFunc` wiring (`:299`), add `sess.SetNotifyFunc(func() { srv.SubmitNotification() })`. Confirm the serve loop's dispatch (`:376-398`) already routes `msg.Kind` through `ProcessInputKind` — it passes `msg.Kind` generically, so `EntryNotification` flows without a new case.
 
 - [ ] **Step 4: Tests.**
 
@@ -232,12 +232,12 @@ func TestSubmitNotification_DropIfFull(t *testing.T) {
 
 Run → PASS.
 
-- [ ] **Step 5: Verify the idle-wake end to end** (serve mode): a small integration test (or manual `serf` run note) that a non-blocking spawn whose fake child finishes wakes the parent with a `<subagent-notification>` on the next turn. Confirm one-shot `serf run` (`cmd/serf/run.go:210`) wires **no** notifyFunc (so it doesn't deliver — intended).
+- [ ] **Step 5: Verify the idle-wake end to end** (serve mode): a small integration test (or manual `evener` run note) that a non-blocking spawn whose fake child finishes wakes the parent with a `<subagent-notification>` on the next turn. Confirm one-shot `evener run` (`cmd/evener/run.go:210`) wires **no** notifyFunc (so it doesn't deliver — intended).
 
 - [ ] **Step 6: Commit.**
 
 ```bash
-git add agent/session.go agent/session_goal.go server/server.go cmd/serf/serve.go server/server_test.go
+git add agent/session.go agent/session_goal.go server/server.go cmd/evener/serve.go server/server_test.go
 git commit -m "feat(server): wire SubmitNotification to wake an idle parent on child completion"
 ```
 
@@ -249,7 +249,7 @@ git commit -m "feat(server): wire SubmitNotification to wake an idle parent on c
 
 **Files:** Modify `agent/internal/tool/definitions.go`, `docs/subagent-management/00-subagent-control-plane.md`; Test `agent/builtin_agents_test.go`.
 
-- [ ] **Step 1: Flip descriptions to spawn-and-be-notified.** Now that notify is live, update `spawn_agent`/`resume_agent` descriptions from the core plan's "spawn + wait/list" wording to the spec's canonical async pattern: spawn non-blocking → return to your work → you are auto-notified (`<subagent-notification>`) → read with `wait`/`subagent_output`. Keep the named anti-patterns and the one-shot-`serf run` caveat (use `blocking`/`wait` there).
+- [ ] **Step 1: Flip descriptions to spawn-and-be-notified.** Now that notify is live, update `spawn_agent`/`resume_agent` descriptions from the core plan's "spawn + wait/list" wording to the spec's canonical async pattern: spawn non-blocking → return to your work → you are auto-notified (`<subagent-notification>`) → read with `wait`/`subagent_output`. Keep the named anti-patterns and the one-shot-`evener run` caveat (use `blocking`/`wait` there).
 
 - [ ] **Step 2: Guard test.**
 
@@ -287,7 +287,7 @@ git commit -m "docs(subagent): teach the auto-notification pattern; flatten noti
   - empty queue → no model request, no phantom `SESSION_END`;
   - consumed/closed/absent → suppressed at drain;
   - dropped kick with a turn already running still surfaces via the tail `continue` (no double-delivery, pop-once);
-  - one-shot `serf run` does not deliver.
+  - one-shot `evener run` does not deliver.
 - [ ] Goal regression suite green (`go test ./agent/ -run Goal`).
 
 ## Known cross-plan note

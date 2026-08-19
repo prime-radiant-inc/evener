@@ -22,8 +22,8 @@
 ### Task 1: Add the recursive working-count helper and tests
 
 **Files:**
-- Modify: `cmd/serf-hub/frontend/src/shell/rail/railNodes.ts`
-- Test: `cmd/serf-hub/frontend/src/shell/rail/railNodes.test.ts`
+- Modify: `cmd/evener-hub/frontend/src/shell/rail/railNodes.ts`
+- Test: `cmd/evener-hub/frontend/src/shell/rail/railNodes.test.ts`
 
 **Interfaces:**
 - Consumes: `ApiTreeNode.children` and `ApiTreeNode.state`.
@@ -59,7 +59,7 @@ Import `workingDescendantCount` from `./railNodes`.
 Run:
 
 ```bash
-cd cmd/serf-hub/frontend && npx vitest run src/shell/rail/railNodes.test.ts
+cd cmd/evener-hub/frontend && npx vitest run src/shell/rail/railNodes.test.ts
 ```
 
 Expected: FAIL because `workingDescendantCount` is not exported yet.
@@ -84,15 +84,15 @@ Run the same Vitest command. Expected: PASS.
 - [ ] **Step 5: Commit**
 
 ```bash
-git add cmd/serf-hub/frontend/src/shell/rail/railNodes.ts cmd/serf-hub/frontend/src/shell/rail/railNodes.test.ts
+git add cmd/evener-hub/frontend/src/shell/rail/railNodes.ts cmd/evener-hub/frontend/src/shell/rail/railNodes.test.ts
 git commit -m "feat(webui): count working subagent descendants"
 ```
 
 ### Task 2: Render the count in the rail activity text
 
 **Files:**
-- Modify: `cmd/serf-hub/frontend/src/shell/rail/RailRow.tsx`
-- Test: `cmd/serf-hub/frontend/src/shell/rail/RailRow.test.tsx`
+- Modify: `cmd/evener-hub/frontend/src/shell/rail/RailRow.tsx`
+- Test: `cmd/evener-hub/frontend/src/shell/rail/RailRow.test.tsx`
 
 **Interfaces:**
 - Consumes: `workingDescendantCount(node)` from `railNodes.ts`.
@@ -128,7 +128,7 @@ Add a render assertion with a working parent and two active descendants to verif
 Run:
 
 ```bash
-cd cmd/serf-hub/frontend && npx vitest run src/shell/rail/RailRow.test.tsx
+cd cmd/evener-hub/frontend && npx vitest run src/shell/rail/RailRow.test.tsx
 ```
 
 Expected: FAIL because `activityGloss` still returns `working` or does not count descendants.
@@ -152,7 +152,7 @@ Keep the existing branch append unchanged. Ensure the existing signal/second-lin
 Run:
 
 ```bash
-cd cmd/serf-hub/frontend && npx vitest run src/shell/rail/railNodes.test.ts src/shell/rail/RailRow.test.tsx
+cd cmd/evener-hub/frontend && npx vitest run src/shell/rail/railNodes.test.ts src/shell/rail/RailRow.test.tsx
 ```
 
 Expected: PASS.
@@ -162,13 +162,13 @@ Expected: PASS.
 Run:
 
 ```bash
-cd cmd/serf-hub/frontend && npx biome check --write src/shell/rail/railNodes.ts src/shell/rail/railNodes.test.ts src/shell/rail/RailRow.tsx src/shell/rail/RailRow.test.tsx
+cd cmd/evener-hub/frontend && npx biome check --write src/shell/rail/railNodes.ts src/shell/rail/railNodes.test.ts src/shell/rail/RailRow.tsx src/shell/rail/RailRow.test.tsx
 ```
 
 - [ ] **Step 6: Commit**
 
 ```bash
-git add cmd/serf-hub/frontend/src/shell/rail/RailRow.tsx cmd/serf-hub/frontend/src/shell/rail/RailRow.test.tsx cmd/serf-hub/frontend/src/shell/rail/railNodes.ts cmd/serf-hub/frontend/src/shell/rail/railNodes.test.ts
+git add cmd/evener-hub/frontend/src/shell/rail/RailRow.tsx cmd/evener-hub/frontend/src/shell/rail/RailRow.test.tsx cmd/evener-hub/frontend/src/shell/rail/railNodes.ts cmd/evener-hub/frontend/src/shell/rail/railNodes.test.ts
  git commit -m "feat(webui): show working subagent count"
 ```
 

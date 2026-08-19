@@ -67,13 +67,13 @@ to make a display line look shell-continuable.
 
 ### Web UI
 
-`cmd/serf-hub/frontend/src/panes/session/transcript/tools/shellTool.tsx`
+`cmd/evener-hub/frontend/src/panes/session/transcript/tools/shellTool.tsx`
 currently extracts `command` (falling back to `cmd`), uses it in the summary,
 and renders only the output through `CodeBlock` with ANSI support. The expanded
 body is therefore the natural place for a command block followed by the
 existing output block.
 
-`cmd/serf-hub/frontend/src/widgets/codeblock/index.tsx` owns the framed mono
+`cmd/evener-hub/frontend/src/widgets/codeblock/index.tsx` owns the framed mono
 block, copy control, line splitting, and tail folding. It currently treats
 non-ANSI text as plain source and deliberately has no syntax highlighter. The
 shell command presentation should reuse that framing, copy, and folding
@@ -81,7 +81,7 @@ behavior rather than duplicate it.
 
 ### TUI
 
-`cmd/serf-tui/internal/msgrender/tool_bodies.go` already renders shell output
+`cmd/evener-tui/internal/msgrender/tool_bodies.go` already renders shell output
 with Chroma's bash lexer. `ShellBody` currently prefixes the unformatted raw
 command with `$ ` and then appends highlighted output. The command formatter
 will sit immediately before that existing output path, and the formatted
@@ -219,7 +219,7 @@ removed. This is the invariant that catches accidental loss or normalization.
 ## Web rendering
 
 Add a small shell-command widget under
-`cmd/serf-hub/frontend/src/widgets/shellcommand/`. It will:
+`cmd/evener-hub/frontend/src/widgets/shellcommand/`. It will:
 
 1. call `formatShellCommand(raw)`;
 2. tokenize each source line without changing token text;
@@ -264,7 +264,7 @@ remain unchanged.
 ## TUI rendering
 
 Add a pure formatter in
-`cmd/serf-tui/internal/msgrender/shell_command.go` and use it from
+`cmd/evener-tui/internal/msgrender/shell_command.go` and use it from
 `ShellBody`.
 
 The renderer will:

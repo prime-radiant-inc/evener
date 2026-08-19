@@ -9,7 +9,7 @@
 <g id="graph0" class="graph" transform="scale(1 1) rotate(0) translate(4 682.71)">
 <title>agentdeps</title>
 <polygon fill="#0a0a0e" stroke="none" points="-4,4 -4,-682.71 1426.78,-682.71 1426.78,4 -4,4"/>
-<text xml:space="preserve" text-anchor="start" x="155.64" y="-655.71" font-family="Helvetica,sans-Serif" font-size="20.00" fill="#ececf0">serf `agent` package (70 files) — concern&#45;level packaging is blocked by one dependency knot</text>
+<text xml:space="preserve" text-anchor="start" x="155.64" y="-655.71" font-family="Helvetica,sans-Serif" font-size="20.00" fill="#ececf0">evener `agent` package (70 files) — concern&#45;level packaging is blocked by one dependency knot</text>
 <text xml:space="preserve" text-anchor="start" x="155.64" y="-610.71" font-family="Helvetica,sans-Serif" font-size="20.00" fill="#ececf0">13 of 14 concern&#45;clusters form a single strongly&#45;connected core. Only `events` is cleanly extractable today.</text>
 <text xml:space="preserve" text-anchor="start" x="155.64" y="-589.71" font-family="Helvetica,sans-Serif" font-size="20.00" fill="#ececf0">The knot is held shut by FOUR direct back&#45;cycles into session (red). Sever those (via interface seams) and the core falls apart.</text>
 <g id="clust1" class="cluster">

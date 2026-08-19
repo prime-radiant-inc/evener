@@ -6,8 +6,8 @@ import (
 	"reflect"
 	"testing"
 
-	"primeradiant.com/serf/agent/internal/tool"
-	"primeradiant.com/serf/llm"
+	"primeradiant.com/evener/agent/internal/tool"
+	"primeradiant.com/evener/llm"
 )
 
 func findToolDef(p *Profile, name string) *llm.ToolDefinition {
@@ -127,7 +127,7 @@ func TestAnthropicProfile_WithModelPreservesCheapModel(t *testing.T) {
 }
 
 // An openrouter-anthropic "[1m]" ref must request the 1M-context beta header, not
-// just claim the 1M window — otherwise Serf budgets 1M while the API serves 200K.
+// just claim the 1M window — otherwise Evener budgets 1M while the API serves 200K.
 func TestOpenRouterAnthropicProfile_OneMillionBetaHeader(t *testing.T) {
 	p := newOpenRouterAnthropicProfile("anthropic/claude-opus-4-5-20251101[1m]")
 	opts, _ := p.ProviderOptions()["anthropic"].(map[string]any)

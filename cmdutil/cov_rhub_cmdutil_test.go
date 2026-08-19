@@ -9,10 +9,10 @@ import (
 	"strings"
 	"testing"
 
-	"primeradiant.com/serf/agent/schema"
-	"primeradiant.com/serf/envvars"
-	"primeradiant.com/serf/llm"
-	"primeradiant.com/serf/llm/providercfg"
+	"primeradiant.com/evener/agent/schema"
+	"primeradiant.com/evener/envvars"
+	"primeradiant.com/evener/llm"
+	"primeradiant.com/evener/llm/providercfg"
 )
 
 func TestModelRefQualifiedWithMissingPart(t *testing.T) {
@@ -134,32 +134,32 @@ func TestResolveSessionMeta(t *testing.T) {
 }
 
 func TestDefaultStateRoot(t *testing.T) {
-	t.Setenv(envvars.SERFStateDir.Name, "/explicit/state")
+	t.Setenv(envvars.EVENERStateDir.Name, "/explicit/state")
 	if got := DefaultStateRoot(); got != "/explicit/state" {
 		t.Fatalf("DefaultStateRoot with env=%q", got)
 	}
-	t.Setenv(envvars.SERFStateDir.Name, "")
+	t.Setenv(envvars.EVENERStateDir.Name, "")
 	t.Setenv("HOME", "/home/tester")
-	if got := DefaultStateRoot(); got != "/home/tester/.serf" {
+	if got := DefaultStateRoot(); got != "/home/tester/.evener" {
 		t.Fatalf("DefaultStateRoot home fallback=%q", got)
 	}
 }
 
 func TestDefaultConfigRootAndSubdirs(t *testing.T) {
 	t.Setenv(envvars.XDGConfigHome.Name, "/xdg")
-	if got := DefaultConfigRoot(); got != "/xdg/serf" {
+	if got := DefaultConfigRoot(); got != "/xdg/evener" {
 		t.Fatalf("DefaultConfigRoot with XDG=%q", got)
 	}
-	if got := DefaultSkillsDir(); got != "/xdg/serf/skills" {
+	if got := DefaultSkillsDir(); got != "/xdg/evener/skills" {
 		t.Fatalf("DefaultSkillsDir=%q", got)
 	}
-	if got := DefaultPluginsRoot(); got != "/xdg/serf/plugins" {
+	if got := DefaultPluginsRoot(); got != "/xdg/evener/plugins" {
 		t.Fatalf("DefaultPluginsRoot=%q", got)
 	}
 
 	t.Setenv(envvars.XDGConfigHome.Name, "")
 	t.Setenv("HOME", "/home/tester")
-	if got := DefaultConfigRoot(); got != "/home/tester/.config/serf" {
+	if got := DefaultConfigRoot(); got != "/home/tester/.config/evener" {
 		t.Fatalf("DefaultConfigRoot home fallback=%q", got)
 	}
 }
@@ -167,6 +167,13 @@ func TestDefaultConfigRootAndSubdirs(t *testing.T) {
 func TestEnsureUserConfigDirs(t *testing.T) {
 	root := t.TempDir()
 	t.Setenv(envvars.XDGConfigHome.Name, root)
+	// checkLegacyDataDirs also compares the home state root and the XDG state
+	// root; isolate both from the developer's real environment so this test
+	// exercises a clean-install fixture rather than the host machine's
+	// actual home directory.
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv(envvars.XDGStateHome.Name, t.TempDir())
+	t.Setenv(envvars.EVENERStateDir.Name, "")
 
 	if err := EnsureUserConfigDirs(); err != nil {
 		t.Fatalf("EnsureUserConfigDirs: %v", err)
@@ -187,6 +194,12 @@ func TestEnsureUserConfigDirsSurfacesMkdirError(t *testing.T) {
 		t.Fatalf("seed: %v", err)
 	}
 	t.Setenv(envvars.XDGConfigHome.Name, base)
+	// Isolate the legacy-migration guard's own inputs so this test exercises
+	// the mkdir failure it names, not an unrelated stranded-legacy-data error
+	// sourced from the developer's real home directory.
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv(envvars.XDGStateHome.Name, t.TempDir())
+	t.Setenv(envvars.EVENERStateDir.Name, "")
 	if err := EnsureUserConfigDirs(); err == nil {
 		t.Fatal("expected mkdir error under a regular file")
 	}

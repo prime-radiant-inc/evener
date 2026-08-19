@@ -1,10 +1,10 @@
-# tui-effort-command: serf-tui `/effort` shows only the current model's levels, and both surfaces display current model + effort on a cold attach
+# tui-effort-command: evener-tui `/effort` shows only the current model's levels, and both surfaces display current model + effort on a cold attach
 
 **What this covers**: spec Acceptance criterion 6 — TUI `/effort` and the
 web effort control both show only the current model's levels, and both
 surfaces display the current model AND current effort for a cold-attached
 client (no prior notification). Exercises `/effort`
-(`cmd/serf-tui/hub_command_registry.go:354-392`), the session header's
+(`cmd/evener-tui/hub_command_registry.go:354-392`), the session header's
 `effort` part (`hub_session_view.go:51-52`'s `addPart`), and — for the web half of
 the criterion — the status strip's `ReasoningEffortControl`
 (`panes/session/chrome/StatusRow.tsx:109-165`) plus the `⌘K`
@@ -12,14 +12,14 @@ the criterion — the status strip's `ReasoningEffortControl`
 
 **Surface**: see `docs/agentic-testing.md`, "Driving the web UI" — the
 selector map there is the single place these hooks are maintained. The web
-half used to drive `window.SerfModelSwitch.effortLevels()` and read
+half used to drive `window.EvenerModelSwitch.effortLevels()` and read
 `[data-effort-display]` out of `assets/search.js` / `assets/model-switch.js`;
 all four died with the vanilla frontend (`660376f78`). There is no renderer
 handle, and the effort control is no longer read-only — see Sharp edges.
 
 ## Pre-state
 
-- Hub + serf-tui + a web client, all able to attach to the same session
+- Hub + evener-tui + a web client, all able to attach to the same session
   (isolated `$HOME`, kernel-assigned port — see the Setup checklist in
   `docs/agentic-testing.md`).
 - A session on a reasoning-capable model with a known ladder (e.g.
@@ -92,7 +92,7 @@ handle, and the effort control is no longer read-only — see Sharp edges.
   `thread/reasoning-effort/changed` (`protocol/reducer.ts:702-705`).
   `readout` shows the same word, and `options` is `[""]` followed by the
   model's own ladder minus `"none"` (`StatusRow.tsx:129`). An unset effort —
-  and serf's `"none"`, which clears to the provider default — both render as
+  and evener's `"none"`, which clears to the provider default — both render as
   the leading `(default)` option, value `""` (`:128,139,159`). The palette's
   own rows are `(default)` plus the same ladder
   (`shell/palette/commands.ts:410`). Falsification: `selectValue` is

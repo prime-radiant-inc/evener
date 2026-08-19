@@ -5,9 +5,9 @@ import (
 	"sort"
 	"strings"
 
-	"primeradiant.com/serf/agent/internal/delegatestore"
-	"primeradiant.com/serf/agent/internal/jobstore"
-	"primeradiant.com/serf/agent/schema"
+	"primeradiant.com/evener/agent/internal/delegatestore"
+	"primeradiant.com/evener/agent/internal/jobstore"
+	"primeradiant.com/evener/agent/schema"
 )
 
 const maxTreeDepth = 50
@@ -152,7 +152,7 @@ func observerChildren(stateBase string, paths Paths) []TreeNode {
 
 // RenderTree renders a session tree as an indented outline. Each node shows
 // SID (agent_type) status -> transcript_ref so you can pivot into
-// serf-doctor transcript <ref>.
+// evener-doctor transcript <ref>.
 func RenderTree(root TreeNode) string {
 	var b strings.Builder
 	renderTreeNode(&b, root, "", true)

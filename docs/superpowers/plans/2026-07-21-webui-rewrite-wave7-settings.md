@@ -18,7 +18,7 @@ CONCURRENTLY with Wave 5 (interaction): W7 must NOT touch `panes/session/**`, `p
 `stores/threads.ts`, or the `Textarea` widget (W5-owned this cycle). Shared collision surfaces and
 their discipline: `widgets/index.ts` barrel = controller-applied export lines only; `stores/prefs.ts`
 = W7-T4 CREATES it (W5 uses an interim local hook on the SAME localStorage keys — key contract:
-`serf.prefs.<name>`, e.g. `serf.prefs.enterToSend`, `serf.prefs.showCost`; W5's hook swaps to the
+`evener.prefs.<name>`, e.g. `evener.prefs.enterToSend`, `evener.prefs.showCost`; W5's hook swaps to the
 store at W7's merge, a W7-close line item); pane registry + route table = single-line appends,
 controller-merged. **Merges to integration are SERIAL: W5 first, W7 absorbs then merges.**
 
@@ -43,7 +43,7 @@ controller-merged. **Merges to integration are SERIAL: W5 first, W7 absorbs then
 
 ### T1a ∥ T1b (parallel prerequisites; zero file overlap)
 
-- **T1a — `serf/settings/overview` (Go + wire).** One new ScopeHub catalog method returning the
+- **T1a — `evener/settings/overview` (Go + wire).** One new ScopeHub catalog method returning the
   field bag six template-only sections need: hub/runtime (version, commit, listen addr, rundir,
   bearer-token age, past-index path/size/per-page/count), storage (state dir, index size, live
   session count), agent roster, codex launches, MCP discovered/probed rows (name/transport/live).
@@ -66,7 +66,7 @@ controller-merged. **Merges to integration are SERIAL: W5 first, W7 absorbs then
 - **T2 — Agents & models cluster** (`panes/settings/sections/{credentials/**,agents,launchShared/**,launchServer,launchCodex,inrepo,project}`):
   Credentials (#7 — the dominant piece: instance CRUD, API-key set, OAuth browser + device-code
   dual flow, default-instance; the shipped PRI-1880 RPCs are battle-tested — UI-only work),
-  Agents roster (#8, overview-fed), Serf launch (#9 — ports the schema-driven LaunchConfigControls
+  Agents roster (#8, overview-fed), Evener launch (#9 — ports the schema-driven LaunchConfigControls
   engine, ~90 behaviors, Appendix B), Codex launch (#10, overview-fed), In-repo trust (#11),
   Per-project override (#18 — shares #9's engine, 3-state loaded contract).
 - **T3 — Extensions cluster** (`panes/settings/sections/{marketplacesPlugins/**,dirListSetting,pluginsDirs,skillsDirs,mcp}`):
@@ -77,7 +77,7 @@ controller-merged. **Merges to integration are SERIAL: W5 first, W7 absorbs then
   editable half on the DirListSetting family, probed half on T1a's overview).
 - **T4 — Ungrouped + Daemon** (`panes/settings/sections/{general,theme,transcript,display,notifications,hub,storage}` + `src/stores/prefs.ts`):
   the seven simple sections — General/Hub/Storage from T1a's overview; Theme/Transcript/Display/
-  Notifications on the NEW `prefs.ts` store (localStorage-backed, the `serf.prefs.*` key contract
+  Notifications on the NEW `prefs.ts` store (localStorage-backed, the `evener.prefs.*` key contract
   above; resolve the notifications default-value discrepancy the floor doc flags — copy says
   title/favicon ON, code says all OFF — pick the code's behavior and note it); browser
   Notification-API permission flow.

@@ -86,17 +86,17 @@ Use existing boundaries:
 
 ### Likely files
 
-- `cmd/serf-hub/templates/partials/workspace.html`
+- `cmd/evener-hub/templates/partials/workspace.html`
   - Composer layout and button text/hotkey markup.
-- `cmd/serf-hub/assets/style.css`
+- `cmd/evener-hub/assets/style.css`
   - Composer row styling and side-pane-only title/header hiding.
-- `cmd/serf-hub/assets/renderer.js`
+- `cmd/evener-hub/assets/renderer.js`
   - Disable keyboard submit/steer shortcuts in pane iframes.
-- `cmd/serf-hub/assets/panes.js`
+- `cmd/evener-hub/assets/panes.js`
   - Fix splitter drag lifecycle.
-- `cmd/serf-hub/web_test.go`
+- `cmd/evener-hub/web_test.go`
   - Template/route assertions for composer markup and side-pane chrome.
-- `cmd/serf-hub/jstest/`
+- `cmd/evener-hub/jstest/`
   - JS regression tests for composer structure, shortcut behavior, and splitter drag behavior.
 
 ## Testing plan
@@ -130,13 +130,13 @@ Run at minimum:
 
 ```bash
 git diff --check
-go test ./cmd/serf-hub -count=1
-cd cmd/serf-hub/jstest && NODE_PATH=${NODE_PATH:-/tmp/serf-jstest-jsdom/node_modules} ./run-all.sh
+go test ./cmd/evener-hub -count=1
+cd cmd/evener-hub/jstest && NODE_PATH=${NODE_PATH:-/tmp/evener-jstest-jsdom/node_modules} ./run-all.sh
 ```
 
 ### Manual smoke
 
-Use a local `serf-hub` server and verify:
+Use a local `evener-hub` server and verify:
 
 - Full `/s/<id>` workspace still has normal title/header behavior.
 - Side-pane `/thread/<id>` iframe hides the redundant inner title row.

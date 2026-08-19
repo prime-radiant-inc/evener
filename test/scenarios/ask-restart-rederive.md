@@ -5,12 +5,12 @@
 question at the transcript tail must report `awaiting` on its **first** successful
 `/status` read after restart (never an idle-until-next-turn window), and the question must
 still render and be answerable after the restart. Mirrors
-`cmd/serf/serve_ask_test.go#TestServeAsk_RestoreReportsAwaitingImmediately` at the
+`cmd/evener/serve_ask_test.go#TestServeAsk_RestoreReportsAwaitingImmediately` at the
 live, hub-fronted level, plus `reconnect-auto-resume.md`'s daemon-kill technique.
 
 **Surface**: see `docs/agentic-testing.md` — "The REST surface, and what is no longer on
 it" and "Driving the web UI with superpowers-chrome:browsing". The answering surface is the
-composer's **ask dock** (`cmd/serf-hub/frontend/src/panes/session/composer/askDock/`); the
+composer's **ask dock** (`cmd/evener-hub/frontend/src/panes/session/composer/askDock/`); the
 `[data-ask-card]` / `.ask-question-header` / `[data-ask-option]` / `[data-ask-send-btn]`
 selectors this card used to drive died with the vanilla frontend (`660376f78`) and have no
 same-named successors. See `ask-web-answer.md` for the current answering gesture in full.
@@ -26,17 +26,17 @@ Chrome.
   its Pre-state first. The handoff is its run directory, not a port
   (`docs/agentic-testing.md`, "Handing this hub to a sibling card"):
   ```bash
-  run=${SERF_E2E_RUN:?run ask-web-answer.md's Pre-state first, then export SERF_E2E_RUN="$run"}
+  run=${EVENER_E2E_RUN:?run ask-web-answer.md's Pre-state first, then export EVENER_E2E_RUN="$run"}
   export HOME="$run/home"
   unset XDG_STATE_HOME
   PORT=$(grep -oE 'listening on 127\.0\.0\.1:[0-9]+' "$run/hub.log" | grep -oE '[0-9]+$' | tail -1)
   HUB=http://127.0.0.1:$PORT
-  TOKEN=$(cat "$HOME/.serf/auth-token")
+  TOKEN=$(cat "$HOME/.evener/auth-token")
   HUBPID=$(cat "$run/hub.pid")
   kill -0 "$HUBPID" 2>/dev/null || { echo "that hub is gone — re-run ask-web-answer.md's Pre-state" >&2; exit 1; }
   ```
   The throwaway `$HOME` matters here specifically: this card reads and writes
-  `~/.serf/run`, which under that isolation is `$run/home/.serf/run` and not any real
+  `~/.evener/run`, which under that isolation is `$run/home/.evener/run` and not any real
   hub's rendezvous directory.
 - `jq`, `ps`, `kill` available.
 
@@ -45,10 +45,10 @@ Chrome.
 1. **(browser-free)** Spawn a session whose first turn asks a question, and wait for
    `awaiting`:
    ```bash
-   tmpdir=$(mktemp -d -t serf-e2e-ask-restart-XXXXX)
+   tmpdir=$(mktemp -d -t evener-e2e-ask-restart-XXXXX)
    body=$(jq -n --arg wd "$tmpdir" '{
      prompt: "Before doing any other work, call the ask_user tool once. Ask exactly one question: header \"Rotation\", question \"Who should be on call this week?\", with exactly two options: alice (detail \"just back from PTO\") and bob (detail \"was on call last week too\"). Do not do anything else first.",
-     model: "openai/gpt-5.5", working_dir: $wd, harness: "serf", branch: "", access_mode: "full", agent: "default", launch_overrides: {}
+     model: "openai/gpt-5.5", working_dir: $wd, harness: "evener", branch: "", access_mode: "full", agent: "default", launch_overrides: {}
    }')
    SID=$(curl -s -X POST -H "Content-Type: application/json" -H "Authorization: Bearer $TOKEN" -d "$body" "$HUB/api/spawn" | jq -r '.session_id')
    for i in $(seq 1 60); do
@@ -59,11 +59,11 @@ Chrome.
    echo "SID=$SID state=$st"
    ```
 2. **(browser-free)** Find and kill the hub-spawned daemon backing this session.
-   `rendezvous.DefaultDir()` is `$HOME/.serf/run` (`rendezvous/rendezvous.go:39-42`), one
+   `rendezvous.DefaultDir()` is `$HOME/.evener/run` (`rendezvous/rendezvous.go:39-42`), one
    `<pid>.json` per live daemon (`rendezvous/rendezvous.go:1-5`):
    ```bash
    pid=""; rvfile=""
-   for f in "$HOME"/.serf/run/*.json; do
+   for f in "$HOME"/.evener/run/*.json; do
      sid=$(jq -r '.session_id // empty' "$f" 2>/dev/null)
      if [ "$sid" = "$SID" ]; then pid=$(jq -r '.pid' "$f"); rvfile="$f"; break; fi
    done
@@ -77,13 +77,13 @@ Chrome.
    daemon-level guarantee with zero caching ambiguity — the same shape as
    `TestServeAsk_RestoreReportsAwaitingImmediately`, driven live. Bind a kernel-assigned
    port and give this daemon its own `--run-dir` so the hub never adopts it; both are real
-   `serf serve` flags (`cmd/serf/serve.go:236,239,241,242`), and the daemon reports the
+   `evener serve` flags (`cmd/evener/serve.go:236,239,241,242`), and the daemon reports the
    address it actually bound in its own rendezvous entry (`rendezvous.Entry.Address`,
    `rendezvous/rendezvous.go#Address`). Do **not** pass `--state-dir`: Part A must read the
    same default state layout the hub wrote.
    ```bash
    partrun="$tmpdir/partA-run"; mkdir -p "$partrun"
-   "$run/serf" serve --addr 127.0.0.1:0 --run-dir "$partrun" \
+   "$run/evener" serve --addr 127.0.0.1:0 --run-dir "$partrun" \
      --resume "$SID" --dir "$tmpdir" --model openai/gpt-5.5 &
    DAEMON2_PID=$!
    ADDR=""
@@ -102,7 +102,7 @@ Chrome.
 4. **(browser) Part B — hub-triggered respawn, and the dock still works.** Navigate to the
    (now daemonless) session. A passive page load does **not** respawn the daemon: the hub's
    `thread/read` falls back to the on-disk past transcript when no live source answers
-   (`cmd/serf-hub/app_rpc.go:172-190`), so the question is reconstructed from the
+   (`cmd/evener-hub/app_rpc.go:172-190`), so the question is reconstructed from the
    transcript rather than from any particular daemon instance. Only an actual `turn/start`
    — here, sending the answer — resumes.
    ```
@@ -119,7 +119,7 @@ Chrome.
        header: q.textContent.slice(0, 40),
        opts: [...q.querySelectorAll('input[type="radio"][aria-label]')]
                .map((el) => el.getAttribute('aria-label'))
-               .filter((l) => l !== 'Something else…' && l !== 'let serf decide'),
+               .filter((l) => l !== 'Something else…' && l !== 'let evener decide'),
      };
    })()
    ```
@@ -145,11 +145,11 @@ Chrome.
      sleep 1
    done
    echo "final state=$st (killed pid was $pid)"
-   for f in "$HOME"/.serf/run/*.json; do
+   for f in "$HOME"/.evener/run/*.json; do
      sid=$(jq -r '.session_id // empty' "$f" 2>/dev/null)
      [ "$sid" = "$SID" ] && jq -c '{pid, session_id}' "$f"
    done
-   go run ./cmd/serf-doctor transcript "$SID" --format outline --range last:6
+   go run ./cmd/evener-doctor transcript "$SID" --format outline --range last:6
    ```
 
 ## Expected
@@ -206,7 +206,7 @@ daemons.
   between steps 2 and 4; it asserts the **daemon-level** guarantee directly in Part A,
   where there is no such ambiguity. Step 5's poll is written to skip past the past-only
   words rather than to pin one.
-- `--resume` is a flag on **both** `serf` (one-shot/resume) and `serf serve`; this card
+- `--resume` is a flag on **both** `evener` (one-shot/resume) and `evener serve`; this card
   uses `serve --resume` because it needs a long-lived daemon with its own `/status`, not a
   one-shot exit-on-completion run.
 - **`--addr 127.0.0.1:0` is only useful because the daemon publishes what it bound.** Read

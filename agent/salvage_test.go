@@ -3,7 +3,7 @@ package agent
 import (
 	"testing"
 
-	"primeradiant.com/serf/llm"
+	"primeradiant.com/evener/llm"
 )
 
 // This file pins salvageText and partialJSONStringFields: turning a partial

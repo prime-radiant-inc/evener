@@ -1,11 +1,11 @@
-// Package jobstore provides the pure, Session-free durable substrate for Serf's job-control system.
+// Package jobstore provides the pure, Session-free durable substrate for Evener's job-control system.
 package jobstore
 
 import (
 	"time"
 
-	"primeradiant.com/serf/agent/provenance"
-	"primeradiant.com/serf/identifier"
+	"primeradiant.com/evener/agent/provenance"
+	"primeradiant.com/evener/identifier"
 )
 
 // JobType identifies the runtime that owns a job.
@@ -48,7 +48,7 @@ const (
 	// terminal job_status, not by being shown the notification. The caller was
 	// told either way — which is why it settles the pending notification — but
 	// it is a separate value from NotifyDelivered so the durable ledger and
-	// serf-doctor keep saying which of the two actually happened.
+	// evener-doctor keep saying which of the two actually happened.
 	NotifyConsumed NotifyState = "consumed"
 )
 

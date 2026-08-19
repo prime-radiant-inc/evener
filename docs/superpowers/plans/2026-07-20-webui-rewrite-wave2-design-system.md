@@ -108,8 +108,8 @@ design-system.md v2 + wave gate (sequential, after merges).
 ### Task 1: Foundation — tokens, fonts, contract test, gallery scaffold, Button + Cadence exemplars
 
 **Files:**
-- Replace: `cmd/serf-hub/frontend/src/styles/tokens.css` (full token system per §Direction)
-- Modify: `cmd/serf-hub/frontend/src/styles/global.css` (font-face, base text/bg wiring)
+- Replace: `cmd/evener-hub/frontend/src/styles/tokens.css` (full token system per §Direction)
+- Modify: `cmd/evener-hub/frontend/src/styles/global.css` (font-face, base text/bg wiring)
 - Create: `src/assets/fonts/` (Plex woff2 subset: sans 400/500/600 + mono 400/500, latin),
   `src/widgets/button/{index.tsx,button.module.css,button.test.tsx}`,
   `src/widgets/cadence/{index.tsx,cadence.module.css,cadence.test.tsx}`,

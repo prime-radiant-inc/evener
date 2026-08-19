@@ -1,6 +1,6 @@
-//go:build serffuzz
+//go:build evenerfuzz
 
-package serf_test
+package evener_test
 
 import (
 	"bytes"
@@ -64,7 +64,7 @@ case "$1" in
 esac
 `, osName, archName))
 		writeExecutable(t, filepath.Join(fakeBin, "curl"), `#!/bin/sh
-printf '%s\n' "$2" > "$SERF_FUZZ_URL_FILE"
+printf '%s\n' "$2" > "$EVENER_FUZZ_URL_FILE"
 while [ "$#" -gt 0 ]; do
   if [ "$1" = -o ]; then : > "$2"; exit 0; fi
   shift
@@ -78,11 +78,11 @@ while [ "$#" -gt 0 ]; do
   shift
 done
 [ -n "$dest" ] || exit 2
-[ "$SERF_FUZZ_ARCHIVE_MODE" != 1 ] || exit 0
-mkdir -p "$dest/$SERF_FUZZ_ARCHIVE_ROOT"
-for bin in serf serf-hub serf-tui serf-doctor; do
-  [ "$SERF_FUZZ_ARCHIVE_MODE:$bin" = 2:serf-doctor ] && continue
-  printf '#!/bin/sh\nexit 0\n' > "$dest/$SERF_FUZZ_ARCHIVE_ROOT/$bin"
+[ "$EVENER_FUZZ_ARCHIVE_MODE" != 1 ] || exit 0
+mkdir -p "$dest/$EVENER_FUZZ_ARCHIVE_ROOT"
+for bin in evener evener-hub evener-tui evener-doctor; do
+  [ "$EVENER_FUZZ_ARCHIVE_MODE:$bin" = 2:evener-doctor ] && continue
+  printf '#!/bin/sh\nexit 0\n' > "$dest/$EVENER_FUZZ_ARCHIVE_ROOT/$bin"
 done
 `)
 
@@ -90,18 +90,18 @@ done
 		prefix := filepath.Join(root, "prefix")
 		urlFile := filepath.Join(root, "url")
 		env := overlayEnv(os.Environ(), map[string]string{
-			"PATH":                   fakeBin + string(os.PathListSeparator) + os.Getenv("PATH"),
-			"HOME":                   home,
-			"PREFIX":                 "",
-			"BINDIR":                 "",
-			"SERF_SHARE_BINDIR":      "",
-			"SERF_INSTALL_VERSION":   "",
-			"SERF_FUZZ_URL_FILE":     urlFile,
-			"SERF_FUZZ_ARCHIVE_MODE": fmt.Sprint(archiveMode),
-			"SERF_FUZZ_ARCHIVE_ROOT": installArchiveRoot(osName, archName),
+			"PATH":                     fakeBin + string(os.PathListSeparator) + os.Getenv("PATH"),
+			"HOME":                     home,
+			"PREFIX":                   "",
+			"BINDIR":                   "",
+			"EVENER_SHARE_BINDIR":      "",
+			"EVENER_INSTALL_VERSION":   "",
+			"EVENER_FUZZ_URL_FILE":     urlFile,
+			"EVENER_FUZZ_ARCHIVE_MODE": fmt.Sprint(archiveMode),
+			"EVENER_FUZZ_ARCHIVE_ROOT": installArchiveRoot(osName, archName),
 		})
 		if versioned {
-			env = overlayEnv(env, map[string]string{"SERF_INSTALL_VERSION": "v1.2.3"})
+			env = overlayEnv(env, map[string]string{"EVENER_INSTALL_VERSION": "v1.2.3"})
 		}
 		switch envMode {
 		case 1:
@@ -110,8 +110,8 @@ done
 			env = overlayEnv(env, map[string]string{"HOME": "", "PREFIX": ""})
 		case 3:
 			env = overlayEnv(env, map[string]string{
-				"BINDIR":            filepath.Join(root, "commands"),
-				"SERF_SHARE_BINDIR": filepath.Join(root, "payload"),
+				"BINDIR":              filepath.Join(root, "commands"),
+				"EVENER_SHARE_BINDIR": filepath.Join(root, "payload"),
 			})
 		}
 
@@ -136,11 +136,11 @@ done
 		if envMode == 1 {
 			wantPrefix = prefix
 		}
-		bindir, shareDir := filepath.Join(wantPrefix, "bin"), filepath.Join(wantPrefix, "share", "serf", "bin")
+		bindir, shareDir := filepath.Join(wantPrefix, "bin"), filepath.Join(wantPrefix, "share", "evener", "bin")
 		if envMode == 3 {
 			bindir, shareDir = filepath.Join(root, "commands"), filepath.Join(root, "payload")
 		}
-		for _, bin := range []string{"serf", "serf-hub", "serf-tui", "serf-doctor"} {
+		for _, bin := range []string{"evener", "evener-hub", "evener-tui", "evener-doctor"} {
 			installed := filepath.Join(shareDir, bin)
 			info, statErr := os.Stat(installed)
 			if statErr != nil || info.Mode().Perm() != 0o755 {
@@ -159,7 +159,7 @@ done
 		if versioned {
 			versionPath = "download/v1.2.3"
 		}
-		wantURL := fmt.Sprintf("https://github.com/prime-radiant-inc/serf/releases/%s/serf_%s_%s.tar.gz", versionPath, strings.ToLower(osName), installArch(archName))
+		wantURL := fmt.Sprintf("https://github.com/prime-radiant-inc/evener/releases/%s/evener_%s_%s.tar.gz", versionPath, strings.ToLower(osName), installArch(archName))
 		if strings.TrimSpace(string(gotURL)) != wantURL {
 			t.Fatalf("URL = %q, want %q", strings.TrimSpace(string(gotURL)), wantURL)
 		}
@@ -174,5 +174,5 @@ func installArch(arch string) string {
 }
 
 func installArchiveRoot(osName, arch string) string {
-	return "serf_" + strings.ToLower(osName) + "_" + installArch(arch)
+	return "evener_" + strings.ToLower(osName) + "_" + installArch(arch)
 }

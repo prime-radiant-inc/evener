@@ -10,7 +10,7 @@ import (
 	"strings"
 	"time"
 
-	"primeradiant.com/serf/envvars"
+	"primeradiant.com/evener/envvars"
 )
 
 // HostFacts are the backend-relevant capabilities of the host, gathered once at

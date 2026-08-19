@@ -2,12 +2,12 @@
 
 **Date:** 2026-06-17
 **Status:** approved for planning (Jesse)
-**Area:** `cmd/serf-hub` web hub sidebar (navigation tree)
+**Area:** `cmd/evener-hub` web hub sidebar (navigation tree)
 
 ## Problem
 
 The shipped sidebar tiers **projects** by recency (Active / Recent / Older) and lists a
-project's sessions as one flat list. It also collects throwaway `serf-e2e-*` projects into a
+project's sessions as one flat list. It also collects throwaway `evener-e2e-*` projects into a
 "Test runs" bucket via a **name-prefix string match**. Two problems:
 
 1. The recency axis is on the wrong level. We want projects always visible (ordered by
@@ -17,7 +17,7 @@ project's sessions as one flat list. It also collects throwaway `serf-e2e-*` pro
    way to move stale work out of the default view, the sidebar becomes unusable, and the
    tree is rebuilt by loading *all* session metadata every render.
 
-The `serf-e2e-*` prefix bucket is a fragile naming-convention hack (`strings.HasPrefix`,
+The `evener-e2e-*` prefix bucket is a fragile naming-convention hack (`strings.HasPrefix`,
 no real "disposable" signal) and is being removed in favor of the normal model + auto-archive.
 
 ## Goals
@@ -27,7 +27,7 @@ no real "disposable" signal) and is being removed in favor of the normal model +
 - **Archiving** for both sessions and projects: manual action + auto-age at 2 weeks of
   inactivity, **reversible** (unarchive). Archived items move out of the default view.
 - Keep the cross-project **Needs you** triage tier at the top.
-- Remove the `serf-e2e-*` prefix bucket; those projects flow through the normal model and
+- Remove the `evener-e2e-*` prefix bucket; those projects flow through the normal model and
   auto-archive like anything else.
 
 ## Non-goals (explicitly out of scope)
@@ -90,7 +90,7 @@ The same model applies at session granularity (keyed by session ID) and project 
 ## Persistence
 
 A hub-side archive store, in the existing **`index.db`** (already present at
-`~/.serf/index.db`, queryable, survives restarts):
+`~/.evener/index.db`, queryable, survives restarts):
 
 ```
 archive(
@@ -135,7 +135,7 @@ in-memory approach is a conscious interim choice.
 - **Go (TDD):** tier classification at the 24h / 2-week boundaries; project ordering by
   most-recent start; project placement (main list vs Archived projects) including the
   "all sessions archived" case; archive-store upsert/read; `effectiveArchived` with
-  user-decision override (both directions) vs auto rule; removal of the `serf-e2e-*` bucket
+  user-decision override (both directions) vs auto rule; removal of the `evener-e2e-*` bucket
   (e2e projects now classify by normal recency). Build from synthetic `SessionMeta` slices
   with controlled timestamps (inject `now`, as `tierFor`/`DateGroupsAt` already do).
 - **Web (jstest):** sidebar renders Needs-you → Projects(Current/Recent/Archived) → Archived
@@ -146,6 +146,6 @@ in-memory approach is a conscious interim choice.
 ## Migration / compatibility
 
 This replaces the project-tier machinery (`TierActive/Recent/Older/Test`, `tierFor`,
-`TierGroups`, the `serf-e2e-` constant and `isTestProject`). The `Needs you` tier and the
+`TierGroups`, the `evener-e2e-` constant and `isTestProject`). The `Needs you` tier and the
 `clusterRepeatedTitles` / subagent-nesting logic are retained. No on-disk session format
 changes; the only new persisted state is the `archive` table in `index.db`.

@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	"primeradiant.com/serf/envvars"
+	"primeradiant.com/evener/envvars"
 )
 
 // TestDefaultStateDirWithStateHomeFallsBackToUserHome covers the arm where
@@ -21,7 +21,7 @@ func TestDefaultStateDirWithStateHomeFallsBackToUserHome(t *testing.T) {
 	if err != nil {
 		home = os.TempDir()
 	}
-	want := filepath.Join(home, ".local", "state", "serf")
+	want := filepath.Join(home, ".local", "state", "evener")
 
 	if got := DefaultStateDirWithStateHome(""); got != want {
 		t.Fatalf("DefaultStateDirWithStateHome(\"\") = %q, want %q", got, want)

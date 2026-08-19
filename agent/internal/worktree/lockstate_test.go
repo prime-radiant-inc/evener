@@ -93,18 +93,18 @@ func TestDecideEveryCell(t *testing.T) {
 		{EvRemoveCurrent, Foreign, ActRefuse, "remove-current/foreign: — unreachable"},
 
 		// Row "delegate creation (§9)": unlocked → atomic add --lock with
-		// serf:dlg: marker; locked states are "—" (fresh delegate-id lane does
+		// evener:dlg: marker; locked states are "—" (fresh delegate-id lane does
 		// not exist yet).
-		{EvDelegateCreate, Unlocked, ActAtomicAddLock, "dlg-create/unlocked: atomic add --lock serf:dlg:"},
+		{EvDelegateCreate, Unlocked, ActAtomicAddLock, "dlg-create/unlocked: atomic add --lock evener:dlg:"},
 		{EvDelegateCreate, OwnSession, ActRefuse, "dlg-create/own: — unreachable"},
 		{EvDelegateCreate, OwnDelegate, ActRefuse, "dlg-create/own-dlg: — unreachable"},
 		{EvDelegateCreate, Foreign, ActRefuse, "dlg-create/foreign: — unreachable"},
 
 		// Row "delegate revival (delegate_send on a kept lane)": unlocked →
-		// lock (serf:dlg:); own → adopt; foreign → refuse revival. Here "own
-		// marker" is the delegate's own serf:dlg: (OwnDelegate); a plain
+		// lock (evener:dlg:); own → adopt; foreign → refuse revival. Here "own
+		// marker" is the delegate's own evener:dlg: (OwnDelegate); a plain
 		// session marker means someone switched in → foreign → refuse (§7, §9).
-		{EvDelegateRevive, Unlocked, ActLock, "dlg-revive/unlocked: lock serf:dlg:"},
+		{EvDelegateRevive, Unlocked, ActLock, "dlg-revive/unlocked: lock evener:dlg:"},
 		{EvDelegateRevive, OwnSession, ActRefuse, "dlg-revive/own-session: someone switched in → refuse"},
 		{EvDelegateRevive, OwnDelegate, ActAdopt, "dlg-revive/own-dlg: adopt our own dlg marker"},
 		{EvDelegateRevive, Foreign, ActRefuse, "dlg-revive/foreign: refuse revival"},
@@ -323,14 +323,14 @@ func TestClassifyReason(t *testing.T) {
 			want:   Foreign,
 		},
 		{
-			name:   "non-serf garbage reason",
+			name:   "non-evener garbage reason",
 			reason: "held by hand",
 			ownSID: ownSID,
 			want:   Foreign,
 		},
 		{
 			name:   "truncated delegate marker",
-			reason: "serf:dlg:x",
+			reason: "evener:dlg:x",
 			ownSID: ownSID,
 			want:   Foreign,
 		},

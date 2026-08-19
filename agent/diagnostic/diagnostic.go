@@ -15,7 +15,7 @@ import (
 	"regexp"
 	"strings"
 
-	"primeradiant.com/serf/llm"
+	"primeradiant.com/evener/llm"
 )
 
 // Source names the component a diagnostic is attributed to.
@@ -26,7 +26,7 @@ type Source string
 // the diagnostic is re-derived downstream.
 const (
 	SourceProvider Source = "provider"
-	SourceSerf     Source = "serf"
+	SourceEvener   Source = "evener"
 	SourceHub      Source = "hub"
 	SourceUI       Source = "ui"
 	SourceHook     Source = "hook"
@@ -45,8 +45,8 @@ type Info struct {
 func Classify(message string) Info {
 	lower := strings.ToLower(strings.TrimSpace(message))
 	switch {
-	case isSerfConfiguration(lower):
-		return serfConfiguration()
+	case isEvenerConfiguration(lower):
+		return evenerConfiguration()
 	case isHubFailure(lower):
 		return hubFailure()
 	// Checked ahead of the general provider case: an exhausted allowance needs
@@ -56,7 +56,7 @@ func Classify(message string) Info {
 	case isProviderFailure(lower):
 		return providerFailure()
 	default:
-		return serfFailure()
+		return evenerFailure()
 	}
 }
 
@@ -64,11 +64,11 @@ func Classify(message string) Info {
 // wording of its message.
 func FromError(err error) Info {
 	if err == nil {
-		return serfFailure()
+		return evenerFailure()
 	}
 	var cfg *llm.ConfigurationError
 	if errors.As(err, &cfg) {
-		return serfConfiguration()
+		return evenerConfiguration()
 	}
 	// The typed check comes first: an exhausted allowance is recognized from the
 	// error's own category rather than from wording that may vary by provider.
@@ -104,8 +104,8 @@ func normalizeSource(source string) Source {
 	switch Source(strings.ToLower(strings.TrimSpace(source))) {
 	case SourceProvider:
 		return SourceProvider
-	case SourceSerf:
-		return SourceSerf
+	case SourceEvener:
+		return SourceEvener
 	case SourceHub:
 		return SourceHub
 	case SourceUI:
@@ -134,11 +134,11 @@ func defaultForSource(source Source, message string) Info {
 			Title:  "UI error",
 			Hint:   "Check the browser console and UI state.",
 		}
-	case SourceSerf:
-		if isSerfConfiguration(strings.ToLower(strings.TrimSpace(message))) {
-			return serfConfiguration()
+	case SourceEvener:
+		if isEvenerConfiguration(strings.ToLower(strings.TrimSpace(message))) {
+			return evenerConfiguration()
 		}
-		return serfFailure()
+		return evenerFailure()
 	case SourceHook:
 		return Info{
 			Source: SourceHook,
@@ -152,11 +152,11 @@ func defaultForSource(source Source, message string) Info {
 	}
 }
 
-func serfConfiguration() Info {
+func evenerConfiguration() Info {
 	return Info{
-		Source: SourceSerf,
-		Title:  "Serf configuration error",
-		Hint:   "Hub launched Serf with provider configuration this Serf runtime does not recognize. Check the model/provider passed by Hub and the Serf binary Hub is using.",
+		Source: SourceEvener,
+		Title:  "Evener configuration error",
+		Hint:   "Hub launched Evener with provider configuration this Evener runtime does not recognize. Check the model/provider passed by Hub and the Evener binary Hub is using.",
 	}
 }
 
@@ -164,7 +164,7 @@ func providerFailure() Info {
 	return Info{
 		Source: SourceProvider,
 		Title:  "Provider error",
-		Hint:   "The model provider failed to complete the response. Check the selected model, credentials, account access, and rate limits. The daemon is fine — retrying the turn or switching models may help. Note: if an OpenAI model does not support the Responses API (/v1/responses), Serf automatically falls back to Chat Completions (/v1/chat/completions). If both fail, the error message names the model and both endpoints.",
+		Hint:   "The model provider failed to complete the response. Check the selected model, credentials, account access, and rate limits. The daemon is fine — retrying the turn or switching models may help. Note: if an OpenAI model does not support the Responses API (/v1/responses), Evener automatically falls back to Chat Completions (/v1/chat/completions). If both fail, the error message names the model and both endpoints.",
 	}
 }
 
@@ -233,15 +233,15 @@ func hubFailure() Info {
 	}
 }
 
-func serfFailure() Info {
+func evenerFailure() Info {
 	return Info{
-		Source: SourceSerf,
-		Title:  "Serf error",
-		Hint:   "Check the Serf session log and daemon state.",
+		Source: SourceEvener,
+		Title:  "Evener error",
+		Hint:   "Check the Evener session log and daemon state.",
 	}
 }
 
-func isSerfConfiguration(message string) bool {
+func isEvenerConfiguration(message string) bool {
 	return strings.Contains(message, "unknown provider") ||
 		strings.Contains(message, "configuration error") ||
 		strings.Contains(message, "must use provider/model") ||
@@ -257,7 +257,7 @@ func isSerfConfiguration(message string) bool {
 // "Retry" and "Reconnect & retry" on a failed turn
 // (frontend/src/panes/session/transcript/turnFailure.ts), and the two lists had
 // already drifted apart in both directions by the time anyone noticed. They are
-// held together now by TestHubFailureKeywordsMatchWebClient in cmd/serf-hub.
+// held together now by TestHubFailureKeywordsMatchWebClient in cmd/evener-hub.
 //
 // Every entry must be lowercase: isHubFailure matches against an
 // already-lowercased message, so an uppercase keyword would never fire.
@@ -301,7 +301,7 @@ func isProviderFailure(message string) bool {
 		strings.Contains(message, "token endpoint") ||
 		// Stream-truncation patterns: the LLM provider closed the stream
 		// without emitting a finish event or response. The previous
-		// classifier mislabeled these as Serf errors and told users to
+		// classifier mislabeled these as Evener errors and told users to
 		// check the daemon — but the daemon is fine; the upstream API
 		// stream is what failed.
 		strings.Contains(message, "stream ended without") ||

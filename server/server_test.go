@@ -11,9 +11,9 @@ import (
 	"testing"
 	"time"
 
-	"primeradiant.com/serf/agent"
-	"primeradiant.com/serf/agent/events"
-	"primeradiant.com/serf/appwire"
+	"primeradiant.com/evener/agent"
+	"primeradiant.com/evener/agent/events"
+	"primeradiant.com/evener/appwire"
 )
 
 // TestStatusEndpoint_DescendantStates verifies /status carries each projected
@@ -140,7 +140,7 @@ func TestStatusEndpoint_WorkMetrics(t *testing.T) {
 	})
 	setEnvelope(srv, func(e *stubThreadEnvelopeSource) {
 		e.workMillis = 9000
-		e.usage = &appwire.SerfUsage{InputTokens: 1, OutputTokens: 2, CacheReadTokens: 0, TotalTokens: 3}
+		e.usage = &appwire.EvenerUsage{InputTokens: 1, OutputTokens: 2, CacheReadTokens: 0, TotalTokens: 3}
 		e.turnStartedAt = 42
 	})
 
@@ -162,7 +162,7 @@ func TestStatusEndpoint_WorkMetrics(t *testing.T) {
 	if status.ActiveTurnStartedAt != 42 {
 		t.Errorf("active_turn_started_at: got %d, want 42", status.ActiveTurnStartedAt)
 	}
-	want := appwire.SerfUsage{InputTokens: 1, OutputTokens: 2, TotalTokens: 3}
+	want := appwire.EvenerUsage{InputTokens: 1, OutputTokens: 2, TotalTokens: 3}
 	if status.Usage == nil || *status.Usage != want {
 		t.Fatalf("usage: got %+v, want %+v", status.Usage, want)
 	}
@@ -1449,8 +1449,8 @@ func TestServerAppWireThreadList(t *testing.T) {
 	if thread.Source != "local" {
 		t.Errorf("thread Source: got %q, want local", thread.Source)
 	}
-	if thread.Serf.Ref != "local:th_1" {
-		t.Errorf("thread Serf.Ref: got %q, want local:th_1", thread.Serf.Ref)
+	if thread.Evener.Ref != "local:th_1" {
+		t.Errorf("thread Evener.Ref: got %q, want local:th_1", thread.Evener.Ref)
 	}
 }
 
@@ -1466,13 +1466,13 @@ func TestServerAppWireTasksList(t *testing.T) {
 	if init.Kind() != appwire.MessageResponse {
 		t.Fatalf("init=%v", init.Kind())
 	}
-	resp := conn.HandleMessage(context.Background(), appwire.RequestMessage(appwire.NewIntID(2), appwire.MethodSerfTasksList, appwire.TaskListParams{}))
+	resp := conn.HandleMessage(context.Background(), appwire.RequestMessage(appwire.NewIntID(2), appwire.MethodEvenerTasksList, appwire.TaskListParams{}))
 	if resp.Kind() != appwire.MessageResponse {
 		t.Fatalf("resp=%v", resp.Kind())
 	}
 	out, ok := resp.Response.Result.(appwire.TaskListResponse)
 	if !ok {
-		t.Fatalf("serf/tasks/list result=%T (%+v)", resp.Response.Result, resp)
+		t.Fatalf("evener/tasks/list result=%T (%+v)", resp.Response.Result, resp)
 	}
 	tasks, ok := out.Data.([]map[string]any)
 	if !ok {
@@ -1495,13 +1495,13 @@ func TestHandleAppJobsListNilFunc(t *testing.T) {
 	if init.Kind() != appwire.MessageResponse {
 		t.Fatalf("init=%v", init.Kind())
 	}
-	resp := conn.HandleMessage(context.Background(), appwire.RequestMessage(appwire.NewIntID(2), appwire.MethodSerfJobsList, appwire.JobsListParams{}))
+	resp := conn.HandleMessage(context.Background(), appwire.RequestMessage(appwire.NewIntID(2), appwire.MethodEvenerJobsList, appwire.JobsListParams{}))
 	if resp.Kind() != appwire.MessageResponse {
 		t.Fatalf("resp=%v (%+v)", resp.Kind(), resp.Error)
 	}
 	out, ok := resp.Response.Result.(appwire.JobsListResponse)
 	if !ok {
-		t.Fatalf("serf/jobs/list result=%T (%+v)", resp.Response.Result, resp)
+		t.Fatalf("evener/jobs/list result=%T (%+v)", resp.Response.Result, resp)
 	}
 	if out.Data != nil {
 		t.Errorf("data: got %+v, want nil", out.Data)
@@ -1523,13 +1523,13 @@ func TestHandleAppJobsList(t *testing.T) {
 	if init.Kind() != appwire.MessageResponse {
 		t.Fatalf("init=%v", init.Kind())
 	}
-	resp := conn.HandleMessage(context.Background(), appwire.RequestMessage(appwire.NewIntID(2), appwire.MethodSerfJobsList, appwire.JobsListParams{Ref: "local:root", Continuation: "next"}))
+	resp := conn.HandleMessage(context.Background(), appwire.RequestMessage(appwire.NewIntID(2), appwire.MethodEvenerJobsList, appwire.JobsListParams{Ref: "local:root", Continuation: "next"}))
 	if resp.Kind() != appwire.MessageResponse {
 		t.Fatalf("resp=%v (%+v)", resp.Kind(), resp.Error)
 	}
 	out, ok := resp.Response.Result.(appwire.JobsListResponse)
 	if !ok {
-		t.Fatalf("serf/jobs/list result=%T (%+v)", resp.Response.Result, resp)
+		t.Fatalf("evener/jobs/list result=%T (%+v)", resp.Response.Result, resp)
 	}
 	tree, ok := out.Data.(appwire.JobActivityTree)
 	if !ok {
@@ -1555,7 +1555,7 @@ func TestHandleAppJobsListSourceError(t *testing.T) {
 	if init.Kind() != appwire.MessageResponse {
 		t.Fatalf("init=%v", init.Kind())
 	}
-	resp := conn.HandleMessage(context.Background(), appwire.RequestMessage(appwire.NewIntID(2), appwire.MethodSerfJobsList, appwire.JobsListParams{}))
+	resp := conn.HandleMessage(context.Background(), appwire.RequestMessage(appwire.NewIntID(2), appwire.MethodEvenerJobsList, appwire.JobsListParams{}))
 	if resp.Kind() != appwire.MessageError {
 		t.Fatalf("resp=%v (%+v), want an error response", resp.Kind(), resp.Response)
 	}
@@ -1573,7 +1573,7 @@ func TestHandleAppJobsOutputNilFunc(t *testing.T) {
 	if init.Kind() != appwire.MessageResponse {
 		t.Fatalf("init=%v", init.Kind())
 	}
-	resp := conn.HandleMessage(context.Background(), appwire.RequestMessage(appwire.NewIntID(2), appwire.MethodSerfJobsOutput, appwire.JobsOutputParams{JobID: "job_1"}))
+	resp := conn.HandleMessage(context.Background(), appwire.RequestMessage(appwire.NewIntID(2), appwire.MethodEvenerJobsOutput, appwire.JobsOutputParams{JobID: "job_1"}))
 	if resp.Kind() != appwire.MessageError {
 		t.Fatalf("resp=%v, want error", resp.Kind())
 	}
@@ -1584,8 +1584,8 @@ func TestHandleAppJobsOutputNilFunc(t *testing.T) {
 	if !ok {
 		t.Fatalf("error data type=%T, want appwire.ErrorData", resp.Error.Error.Data)
 	}
-	if data.SerfErrorInfo != appwire.ErrorActionUnavailable {
-		t.Errorf("serfErrorInfo: got %q, want actionUnavailable", data.SerfErrorInfo)
+	if data.EvenerErrorInfo != appwire.ErrorActionUnavailable {
+		t.Errorf("evenerErrorInfo: got %q, want actionUnavailable", data.EvenerErrorInfo)
 	}
 }
 
@@ -1599,7 +1599,7 @@ func TestHandleAppJobsOutputNotFound(t *testing.T) {
 	if init.Kind() != appwire.MessageResponse {
 		t.Fatalf("init=%v", init.Kind())
 	}
-	resp := conn.HandleMessage(context.Background(), appwire.RequestMessage(appwire.NewIntID(2), appwire.MethodSerfJobsOutput, appwire.JobsOutputParams{JobID: "job_missing"}))
+	resp := conn.HandleMessage(context.Background(), appwire.RequestMessage(appwire.NewIntID(2), appwire.MethodEvenerJobsOutput, appwire.JobsOutputParams{JobID: "job_missing"}))
 	if resp.Kind() != appwire.MessageError {
 		t.Fatalf("resp=%v, want error", resp.Kind())
 	}
@@ -1632,13 +1632,13 @@ func TestHandleAppJobsOutput(t *testing.T) {
 	if init.Kind() != appwire.MessageResponse {
 		t.Fatalf("init=%v", init.Kind())
 	}
-	resp := conn.HandleMessage(context.Background(), appwire.RequestMessage(appwire.NewIntID(2), appwire.MethodSerfJobsOutput, appwire.JobsOutputParams{JobID: "job_1", BeforeBytes: 7, MaxBytes: 99}))
+	resp := conn.HandleMessage(context.Background(), appwire.RequestMessage(appwire.NewIntID(2), appwire.MethodEvenerJobsOutput, appwire.JobsOutputParams{JobID: "job_1", BeforeBytes: 7, MaxBytes: 99}))
 	if resp.Kind() != appwire.MessageResponse {
 		t.Fatalf("resp=%v (%+v)", resp.Kind(), resp.Error)
 	}
 	out, ok := resp.Response.Result.(appwire.JobsOutputResponse)
 	if !ok {
-		t.Fatalf("serf/jobs/output result=%T (%+v)", resp.Response.Result, resp)
+		t.Fatalf("evener/jobs/output result=%T (%+v)", resp.Response.Result, resp)
 	}
 	tail, ok := out.Data.(agent.JobOutputTail)
 	if !ok {

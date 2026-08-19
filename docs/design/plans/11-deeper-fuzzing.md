@@ -27,7 +27,7 @@
 
 Phases 0–9 fuzzed the **happy path's structure**: decoders over well-formed-ish
 input, stateful models with *cooperative* infrastructure, and deterministic
-single-goroutine interleavings. But every deep serf bug we have actually shipped
+single-goroutine interleavings. But every deep evener bug we have actually shipped
 a fix for lives somewhere we have deliberately *not* fuzzed:
 
 - mid-stream retry gaps and the `ASSISTANT_TEXT_RESET` continuation bug — a
@@ -57,7 +57,7 @@ Non-goals are at the end; they are the things prior phases proved don't pay.
 **Goal.** Fuzz the *recovery* paths. Our stateful models assume the LLM client
 succeeds, disk writes land, and contexts don't cancel. Inject those faults at
 fuzzer-chosen points and assert the session always recovers to a consistent
-state. This is the highest-yield workstream: failure handling is where serf's
+state. This is the highest-yield workstream: failure handling is where evener's
 real bugs have been, and it is almost entirely unfuzzed.
 
 **Mechanism.** Extend the lifecycle model (`agent/lifecycle_seqfuzz_test.go`)
@@ -162,7 +162,7 @@ provider wire-format drift the moment it ships. The decoders' deepest bugs come
 from *real* provider quirks (the anthropic finish-reason and gemini usage bugs
 were real shapes).
 
-**Mechanism.** Build on the existing harvester (`cmd/serf-fuzz-harvest/` —
+**Mechanism.** Build on the existing harvester (`cmd/evener-fuzz-harvest/` —
 `http.go`, `raw.go`, `transcript.go`, `sanitize.go`) and the recorders:
 
 - **Conformance corpus.** Capture real `(provider request, raw response)` pairs,

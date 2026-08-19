@@ -6,7 +6,7 @@
 
 **Architecture:** Keep durable facts in `agent/internal/jobstore`, keep runtime orchestration in `agent/job_delegate.go` and `agent/job_watch.go`, and keep public tool projections in `agent/session_tools_jobs.go`. Prefer typed internal state over prose error matching, and make every restore decision derive from persisted descriptors plus retained child session state.
 
-**Tech Stack:** Go, Serf agent/jobstore internals, existing `go test` package tests, `make build`, `make test`, `make lint`.
+**Tech Stack:** Go, Evener agent/jobstore internals, existing `go test` package tests, `make build`, `make test`, `make lint`.
 
 ---
 
@@ -833,7 +833,7 @@ Run:
 ```bash
 go test ./agent/internal/jobstore -run 'Test.*Delegate|Test.*Structured|Test.*Restore|Test.*WatchSend' -count=1
 go test ./agent -run 'Test.*Watch|Test.*Delegate|Test.*JobSend|Test.*Structured|Test.*Restore|Test.*RuntimeLost' -count=1
-go test ./agent ./agent/internal/jobstore ./agent/internal/tool ./appwire ./internal/appprojector ./cmd/serf-hub ./cmd/serf-tui/internal/msgrender ./cmd/serf-tui/internal/toolsummary -count=1
+go test ./agent ./agent/internal/jobstore ./agent/internal/tool ./appwire ./internal/appprojector ./cmd/evener-hub ./cmd/evener-tui/internal/msgrender ./cmd/evener-tui/internal/toolsummary -count=1
 make build
 make test
 make lint
@@ -842,7 +842,7 @@ make lint
 Run token and public-surface gates:
 
 ```bash
-rg -n 'spawn_agent|resume_agent|close_agent|cancel_agent|list_agents|subagent_output|subagent-notification|DefSpawnAgent|DefSendInput|DefWait|DefCloseAgent|DefCancelAgent|DefListAgents|DefSubagentOutput|rootOnlyAgentManagementTools|SUBAGENT_START|SUBAGENT_END|EventSubagentStart|EventSubagentEnd|SubagentStartData|SubagentEndData|NotifySerfSubagent|SerfSubagentInfo|SubagentStatusInfo' \
+rg -n 'spawn_agent|resume_agent|close_agent|cancel_agent|list_agents|subagent_output|subagent-notification|DefSpawnAgent|DefSendInput|DefWait|DefCloseAgent|DefCancelAgent|DefListAgents|DefSubagentOutput|rootOnlyAgentManagementTools|SUBAGENT_START|SUBAGENT_END|EventSubagentStart|EventSubagentEnd|SubagentStartData|SubagentEndData|NotifyEvenerSubagent|EvenerSubagentInfo|SubagentStatusInfo' \
   | rg -v 'docs/superpowers/(specs|plans)/|docs/job-control\.md|CHANGELOG|/original-attractor-specs/|/design/2026-'
 
 rg -n 'caller[[:space:]]*\|[[:space:]]*main[[:space:]]*\|[[:space:]]*watched|caller`, `main`, `watched|"?(target|to)"?[[:space:]]*[:=][[:space:]]*"main"|"main".*alias|alias.*"main"' \

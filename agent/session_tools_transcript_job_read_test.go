@@ -9,9 +9,9 @@ import (
 	"strings"
 	"testing"
 
-	"primeradiant.com/serf/agent/internal/jobstore"
-	"primeradiant.com/serf/agent/internal/tool"
-	"primeradiant.com/serf/identifier"
+	"primeradiant.com/evener/agent/internal/jobstore"
+	"primeradiant.com/evener/agent/internal/tool"
+	"primeradiant.com/evener/identifier"
 )
 
 func readLocalJobTranscriptForTest(t *testing.T, stateDir, sessionID, jobID string) (readMarkdownEnvelope, error) {
@@ -206,7 +206,7 @@ func TestReadTranscriptLocalJobRejectsOldIDBeforeIO(t *testing.T) {
 	}
 	t.Cleanup(func() { openLocalJobProjectDirectory = oldOpen })
 
-	_, err := readLocalJobTranscriptForTest(t, filepath.Join(t.TempDir(), "serf", "projects", localJobCurrentProject), identifier.MustNewSessionID(), "job_legacy")
+	_, err := readLocalJobTranscriptForTest(t, filepath.Join(t.TempDir(), "evener", "projects", localJobCurrentProject), identifier.MustNewSessionID(), "job_legacy")
 	if err == nil || !strings.Contains(err.Error(), "invalid job identifier") {
 		t.Fatalf("old job ID error = %v, want invalid job identifier", err)
 	}

@@ -3,7 +3,7 @@ package server
 import (
 	"testing"
 
-	"primeradiant.com/serf/appwire"
+	"primeradiant.com/evener/appwire"
 )
 
 // appStatus maps the daemon's raw state string (plus a live "processing" flag)

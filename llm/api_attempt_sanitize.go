@@ -8,7 +8,7 @@ import (
 	"sort"
 	"strings"
 
-	apilog "primeradiant.com/serf/llm/apilog"
+	apilog "primeradiant.com/evener/llm/apilog"
 )
 
 var commonCredentialHeaderNames = map[string]struct{}{

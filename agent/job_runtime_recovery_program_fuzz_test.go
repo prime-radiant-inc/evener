@@ -1,4 +1,4 @@
-//go:build serffuzz
+//go:build evenerfuzz
 
 package agent
 
@@ -14,10 +14,10 @@ import (
 	"testing"
 	"time"
 
-	"primeradiant.com/serf/agent/execenv"
-	"primeradiant.com/serf/agent/internal/agenttest"
-	"primeradiant.com/serf/agent/internal/jobstore"
-	tooldefs "primeradiant.com/serf/agent/internal/tool"
+	"primeradiant.com/evener/agent/execenv"
+	"primeradiant.com/evener/agent/internal/agenttest"
+	"primeradiant.com/evener/agent/internal/jobstore"
+	tooldefs "primeradiant.com/evener/agent/internal/tool"
 )
 
 // FuzzJobRuntimeRecoveryProgram drives the durable shell-job lifecycle through

@@ -33,12 +33,12 @@ Ticket: PRI-1880
 
 ## 1. Goal
 
-Turn serf's hardcoded provider registry into a **type/instance** model: provider
+Turn evener's hardcoded provider registry into a **type/instance** model: provider
 *types* that users *instantiate* into named, multi-instance, configured providers
 — including arbitrary OpenAI-compatible and Anthropic-compatible endpoints and
 multiple instances of one vendor. Replace the two duplicative web settings
 screens with one CRUD screen. Unify credential storage so the hub and standalone
-`serf` read the same provider config.
+`evener` read the same provider config.
 
 ## 2. Non-Goals
 
@@ -137,7 +137,7 @@ aren't mislabeled) and is used only by ollama.
 
 ### 3.4 Launch gate, picker, resume
 
-Launch gate is a **subprocess**: `validateSerfLaunchContract` runs `launch-check
+Launch gate is a **subprocess**: `validateEvenerLaunchContract` runs `launch-check
 --model` (no `--models`) on **every spawn** (`spawn.go:558-564`, `:141,186`),
 `--models` for the picker (`:607`). Inside: `SelectProfile` (`launch_check.go:68`)
 + `NewFromEnv` (`:94,159`). Type-literal branches over `client.ProviderNames()`:
@@ -151,18 +151,18 @@ EqualFold(provider,"openrouter-anthropic")` (`app_rpc.go:1526`, `:1518`). Resume
 ### 3.5 Credentials, OAuth, config path
 
 API keys fragmented: hub uses `cfg.CredsStore` (loaded from `hubStateRoot`,
-default `~/.serf` — `config.go:51 DefaultHubStateRoot`, `app_rpc.go:103`);
-standalone `serf` reads **only env** (`serve.go:39`/`run.go:127` → `NewFromEnv`).
+default `~/.evener` — `config.go:51 DefaultHubStateRoot`, `app_rpc.go:103`);
+standalone `evener` reads **only env** (`serve.go:39`/`run.go:127` → `NewFromEnv`).
 (A pre-existing inconsistency: the `newHubAuthController` fallback computes a
 *different*, XDG-derived `filepath.Dir(openAIStateDir)/credentials.toml` at
 `app_auth.go:57` — the unified loader supersedes it.) FIVE type→env/mode maps:
 `credentials/store.go:38,60`, `launchconfig/env.go:30`, `app_auth.go:133`,
 `cmdutil.go:266`. `openai`-literal auth branches: `app_auth.go:108,151,191,249,
-292,430,461`, `serf-tui/auth.go:26,27,80`, `spawn.go:466`, `openai_login.go:215`,
+292,430,461`, `evener-tui/auth.go:26,27,80`, `spawn.go:466`, `openai_login.go:215`,
 and `AuthRecord.Validate()` rejects `Provider != "openai"` (`storage.go:142-143`).
 
-**OAuth is machine-global** at `$XDG_STATE_HOME/serf/auth/openai.json`:
-`serf openai login`'s `resolveOpenAIStateDir` ignores workDir →
+**OAuth is machine-global** at `$XDG_STATE_HOME/evener/auth/openai.json`:
+`evener openai login`'s `resolveOpenAIStateDir` ignores workDir →
 `DefaultStateDir()` (`openai_login.go:216-220`); the adapter reads it via
 `cfg.StateHome ← XDG_STATE_HOME` (`openai/adapter.go:80`, `env_registry.go:52`).
 The per-project `RuntimeDir` (`runtime_dir.go:18`) governs transcripts only.
@@ -171,7 +171,7 @@ There is a real registered `openai-compatible` adapter (`openaicompat:122`, env
 factory `:90-110`) but `SelectProfile` has **no** case for it (already
 unselectable, `cmdutil.go:72`). `NewFromEnv` consumers: `serve.go:39`,
 `run.go:127`, `web.go:2024`, `launch_check.go:94,159`, `llmcall:220`,
-`serfeval:196`, `generate.go:158 DefaultClient()`.
+`evenereval:196`, `generate.go:158 DefaultClient()`.
 
 ## 4. Design
 
@@ -187,7 +187,7 @@ unselectable, `cmdutil.go:72`). `NewFromEnv` consumers: `serve.go:39`,
    on**. `BehaviorTag(type, apiStyle)`: openai+responses→`openai`;
    openai+chat-completions→`openai-compatible`; otherwise == type.
 
-**Package layering** (verified: `llm` imports **zero** `serf` packages, so no
+**Package layering** (verified: `llm` imports **zero** `evener` packages, so no
 cycle):
 - **`internal/providerconfig`** (leaf): `Config`, `InstanceConfig {name, type,
   apiStyle, baseURL, credential}`, the loader, `BehaviorTag(type,apiStyle)`,
@@ -200,7 +200,7 @@ cycle):
   `NameToTag` (from cfg) to key llm-layer logic.
 - **`cmdutil`**: `SelectProfile` becomes a thin wrapper over
   `agent.ResolveProfileFromConfig` + the schema/decisions wrappers (for the CLI).
-- **`cmd/serf`, `cmd/serf-hub`**: load the config once, call `NewFromProviders`,
+- **`cmd/evener`, `cmd/evener-hub`**: load the config once, call `NewFromProviders`,
   and pass the `Config` into `SessionConfig` so the session can re-resolve
   (§4.5). No closure injection; no `agent→cmdutil` cycle.
 
@@ -249,7 +249,7 @@ keys (recipe↔adapter contract — for kimi/glm/openrouter the key stays
   so every `StreamEventError` is stamped before it leaves the client. (b) covers
   both the session's `consumeModelStream` (`session.go:3493`) **and**
   `llm.StreamGenerate`'s own drain (`stream_generate.go:208`, used by
-  `llmcall`/`serfeval`) — a single chokepoint, not a per-consumer fix. Use
+  `llmcall`/`evenereval`) — a single chokepoint, not a per-consumer fix. Use
   `RewriteErrorProvider(err, req.Provider)` but **keep its empty-Provider no-op**
   (so cancellations / no-object errors stay unlabeled). Stamp the **behavior tag**
   on the error here too (from the client's `NameToTag`) so `classify.go` and
@@ -300,7 +300,7 @@ implicitly:
   (`profile.go:540`, comment `:555-559`) to carry `WithCommunicateOutputSchema` /
   `WithAllowedDecisions` across a switch. The session re-applies these after
   `ResolveProfileFromConfig` (the session knows its own `--output-schema` /
-  `SERF_ALLOWED_DECISIONS`), so a cross-instance switch doesn't silently revert
+  `EVENER_ALLOWED_DECISIONS`), so a cross-instance switch doesn't silently revert
   the communicate schema.
 - **Provider-conditional tools.** Native tools registered per behavior tag (the
   gemini `web_search` at `session.go:4785`, only set in `registerCoreTools`) must
@@ -353,14 +353,14 @@ Phase 1 (§2).
 ### 4.9 Per-instance OAuth (keyed by instance name)
 
 OAuth is keyed by **instance name** end to end (no "by behavior tag" variant):
-`AuthFilePath(stateHome, instanceName)` → `$XDG_STATE_HOME/serf/auth/
+`AuthFilePath(stateHome, instanceName)` → `$XDG_STATE_HOME/evener/auth/
 <instanceName>.json` (same global root; per-instance filename). Default `openai`
 instance keeps `auth/openai.json`. Thread instance name + `cfg.StateHome` through
 `LoadAuth`/`SaveAuth`/`DeleteAuth`, the `Service`/`ResolveRuntimeCredentials`, the
 adapter recipe (`openai/adapter.go:80`), the hub auth controller
-(`app_auth.go`'s `openai` branches), the TUI (`serf-tui/auth.go:26,27,80` —
+(`app_auth.go`'s `openai` branches), the TUI (`evener-tui/auth.go:26,27,80` —
 `authStatus` gains the tag), `validateProviderCredentials` (`spawn.go:466`), and
-**`cmd/serf/openai_login.go`** (`resolveOpenAIStateDir` gains an instance-name
+**`cmd/evener/openai_login.go`** (`resolveOpenAIStateDir` gains an instance-name
 param). **`AuthRecord.Validate()` drops the `Provider == "openai"` check**
 (`storage.go:142-143`) — it's a method on the record alone and can't see the tag;
 the per-instance filename scopes the record and OAuth is gated to behavior tag
@@ -369,18 +369,18 @@ only for tag `openai`.
 
 ### 4.10 Storage — pinned path, ephemeral env, flag day
 
-- **`$hubStateRoot/providers.toml`** (default **`~/.serf/providers.toml`**,
-  `config.go:51`; `chmod 600`), read by **both** the hub and standalone `serf`.
-  The `hubStateRoot` resolver (currently `DefaultHubStateRoot` in `cmd/serf-hub`
-  `package main`) **moves to `internal/providerconfig`** so `cmd/serf` can resolve
-  the identical path. OAuth stays under `$XDG_STATE_HOME/serf` (§3.5) — separate
+- **`$hubStateRoot/providers.toml`** (default **`~/.evener/providers.toml`**,
+  `config.go:51`; `chmod 600`), read by **both** the hub and standalone `evener`.
+  The `hubStateRoot` resolver (currently `DefaultHubStateRoot` in `cmd/evener-hub`
+  `package main`) **moves to `internal/providerconfig`** so `cmd/evener` can resolve
+  the identical path. OAuth stays under `$XDG_STATE_HOME/evener` (§3.5) — separate
   root, unchanged. Format: `schema`, `default` (instance name),
   `[instances.<name>]` with `type`, `base_url`, `api_style`, inline `api_key`
   (omitted for OAuth/none).
 - **No migration (flag day).** Old `credentials.toml`/env/`openai.json` are not
   converted (zero deployed instances).
 - **Env fallback keeps the existing path (no synthesis).** When `providers.toml`
-  is absent, serf uses the **existing** `NewFromEnv` + the existing
+  is absent, evener uses the **existing** `NewFromEnv` + the existing
   `SelectProfile`-based resolution, with **`NameToTag` = identity** (env instances
   are named after their type, which == their behavior tag; `openrouter` →
   `openrouter`, etc.). This deliberately does **not** try to synthesize a
@@ -388,7 +388,7 @@ only for tag `openai`.
   `EnvAdapterFactory` (ollama's always-on registration, the openrouter
   dual-registration, OpenAI's OAuth-first detection, the import-order default).
   `NewFromEnv` already does all of that correctly; we reuse it. Zero-config
-  `OPENAI_API_KEY=… serf run` is unchanged. The new `Config` resolver +
+  `OPENAI_API_KEY=… evener run` is unchanged. The new `Config` resolver +
   config-derived `NameToTag` apply **only** when `providers.toml` exists (the file
   is then authoritative; env is not a layer).
 - **Default:** the file's `default` field (file case); `NewFromEnv`'s existing
@@ -403,7 +403,7 @@ One load helper, two branches: **if `providers.toml` exists** →
 `cfg` (when present) is passed into `SessionConfig`/`WebConfig` so the session can
 re-resolve (§4.5), and `NameToTag` reaches the client-only picker/launch sites
 (§4.2). Converted consumers: `serve.go:39`, `run.go:127`, `web.go:2024`,
-`launch_check.go:94` **and** `:159`, `DefaultClient()`; `llmcall`/`serfeval` adopt
+`launch_check.go:94` **and** `:159`, `DefaultClient()`; `llmcall`/`evenereval` adopt
 the helper. Launch gating/credential validation read the **instance set** when a
 config exists (else the existing env-keyed maps); `validateProviderCredentials`
 resolves the instance named by `req.Provider` and checks its credential (inline
@@ -411,14 +411,14 @@ key, or OAuth by instance name §4.9).
 
 ### 4.12 Spawn plumbing
 
-The hub threads `SERF_PROVIDERS_CONFIG=<path>` into `req.Env` via
-`launchconfig.ToEnv`, reaching **both** spawned `serf serve` and the `serf
+The hub threads `EVENER_PROVIDERS_CONFIG=<path>` into `req.Env` via
+`launchconfig.ToEnv`, reaching **both** spawned `evener serve` and the `evener
 launch-check` subprocess (validate + `--models` paths). The load helper (§4.11)
-consults `SERF_PROVIDERS_CONFIG` first, then the default `$hubStateRoot` path,
+consults `EVENER_PROVIDERS_CONFIG` first, then the default `$hubStateRoot` path,
 then the env fallback — so the spawned daemon uses exactly the hub's config. The
 single-provider env injection is removed. (A `hub.toml`-customized `hubStateRoot`
-reaches spawned daemons via `SERF_PROVIDERS_CONFIG`; a *directly* invoked
-`serf run` against a custom-root hub must set `SERF_PROVIDERS_CONFIG` itself —
+reaches spawned daemons via `EVENER_PROVIDERS_CONFIG`; a *directly* invoked
+`evener run` against a custom-root hub must set `EVENER_PROVIDERS_CONFIG` itself —
 documented, §9.)
 
 ### 4.13 Unified UI (Phase 2)
@@ -511,7 +511,7 @@ not just display, so it lands with the picker work.
   instance; `openai_login`/`validateProviderCredentials` resolve it.
 - **Consumers/spawn:** standalone `run`/`serve`, both launch-check paths, web
   picker build via the helper and see custom instances; `ToEnv` sets
-  `SERF_PROVIDERS_CONFIG`; the daemon uses it.
+  `EVENER_PROVIDERS_CONFIG`; the daemon uses it.
 - **Phase 2:** RPC round-trip + JSDOM for the screen + pickers.
 
 ## 8. v6-review findings → v7 resolutions
@@ -534,8 +534,8 @@ git history. v6 **validated the architecture**; these are the folded refinements
 - **`AuthRecord.Validate` can't see the tag** → §4.9 drop the `openai` check.
 - **Provider-conditional tools not re-run on switch** (gemini `web_search`) →
   §4.5 `SetModel` re-runs the registration.
-- **`hubStateRoot` resolver unreachable from `cmd/serf`** → §4.10 move it to
-  `internal/providerconfig`; custom-root + direct `serf run` documented (§9).
+- **`hubStateRoot` resolver unreachable from `cmd/evener`** → §4.10 move it to
+  `internal/providerconfig`; custom-root + direct `evener run` documented (§9).
 - **Same-instance rebuild needs the tag** → §4.4 thread name + tag through the
   rebuild constructor.
 - **anthropic `WithModel` strip / minimax+openrouter-anthropic recipe / TUI
@@ -554,9 +554,9 @@ profile-swap-safe; finish-norm needs no change; catalog-by-tag works
   7th review.
 - **Same-tag cross-instance fallback (§4.2):** the guard now allows it (safe —
   identical surface). Confirm no caller depended on the stricter same-id rule.
-- **Custom `hubStateRoot` + direct `serf run`:** hub-spawned daemons get the right
-  config via `SERF_PROVIDERS_CONFIG`; a *directly* invoked `serf run` against a
-  hub configured with a non-default root must set `SERF_PROVIDERS_CONFIG` itself
+- **Custom `hubStateRoot` + direct `evener run`:** hub-spawned daemons get the right
+  config via `EVENER_PROVIDERS_CONFIG`; a *directly* invoked `evener run` against a
+  hub configured with a non-default root must set `EVENER_PROVIDERS_CONFIG` itself
   (it can't read `hub.toml`). Default-root setups need nothing. Documented
   limitation, not a blocker.
 - **`chat-completions` feature gap (§4.7)** and **Anthropic-compatible variance

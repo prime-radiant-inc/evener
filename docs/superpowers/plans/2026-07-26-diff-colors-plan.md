@@ -18,8 +18,8 @@
 ### Task 1: Lock the failing contracts
 
 **Files:**
-- Modify: `cmd/serf-hub/frontend/src/widgets/diffblock/diffblock.test.tsx`
-- Modify: `cmd/serf-hub/frontend/src/styles/token-contract.test.ts`
+- Modify: `cmd/evener-hub/frontend/src/widgets/diffblock/diffblock.test.tsx`
+- Modify: `cmd/evener-hub/frontend/src/styles/token-contract.test.ts`
 
 - [ ] Add a DiffBlock behavior assertion that preserves `+` and `−` as explicit marker text.
 - [ ] Add token-contract assertions for the dedicated pair, theme parity, semantic-token absence from DiffBlock, grayscale luminance separation, and contrast of real content/marker inks against both diff backgrounds and `--surface-0`.
@@ -28,9 +28,9 @@
 ### Task 2: Implement the token decision
 
 **Files:**
-- Modify: `cmd/serf-hub/frontend/src/styles/tokens.css`
-- Modify: `cmd/serf-hub/frontend/src/widgets/diffblock/diffblock.module.css`
-- Modify: `cmd/serf-hub/frontend/src/widgets/diffblock/index.tsx`
+- Modify: `cmd/evener-hub/frontend/src/styles/tokens.css`
+- Modify: `cmd/evener-hub/frontend/src/widgets/diffblock/diffblock.module.css`
+- Modify: `cmd/evener-hub/frontend/src/widgets/diffblock/index.tsx`
 
 - [ ] Add `#131A1B`/`#1D1519` to the dark theme and `#E9F3EC`/`#F5E7EB` to the light theme as the two domain tokens.
 - [ ] Replace DiffBlock's semantic background references and stale comments with the dedicated pair; keep the existing glyph channel and neutral foregrounds.

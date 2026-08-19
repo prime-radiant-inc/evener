@@ -9,7 +9,7 @@ import (
 	"testing"
 	"time"
 
-	"primeradiant.com/serf/agent/events"
+	"primeradiant.com/evener/agent/events"
 )
 
 func TestIntegration_InputToAppwire(t *testing.T) {

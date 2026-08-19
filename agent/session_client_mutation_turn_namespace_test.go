@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"testing"
 
-	"primeradiant.com/serf/appwire"
+	"primeradiant.com/evener/appwire"
 )
 
 // TestClientMutation_ReservedTurnIDsCannotNameATranscriptEntry (kata rk09)

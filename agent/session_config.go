@@ -7,22 +7,22 @@ import (
 
 	"github.com/spf13/afero"
 
-	"primeradiant.com/serf/agent/envctx"
-	"primeradiant.com/serf/agent/events"
-	"primeradiant.com/serf/agent/execenv"
-	"primeradiant.com/serf/agent/internal/clock"
-	"primeradiant.com/serf/agent/internal/contextmgr"
-	"primeradiant.com/serf/agent/internal/jobstore"
-	"primeradiant.com/serf/agent/internal/tool"
-	"primeradiant.com/serf/agent/internal/worktree"
-	"primeradiant.com/serf/agent/plugin"
-	"primeradiant.com/serf/agent/provenance"
-	"primeradiant.com/serf/agent/provider"
-	"primeradiant.com/serf/agent/sandbox"
-	"primeradiant.com/serf/agent/schema"
-	"primeradiant.com/serf/agent/task"
-	"primeradiant.com/serf/identifier"
-	"primeradiant.com/serf/llm"
+	"primeradiant.com/evener/agent/envctx"
+	"primeradiant.com/evener/agent/events"
+	"primeradiant.com/evener/agent/execenv"
+	"primeradiant.com/evener/agent/internal/clock"
+	"primeradiant.com/evener/agent/internal/contextmgr"
+	"primeradiant.com/evener/agent/internal/jobstore"
+	"primeradiant.com/evener/agent/internal/tool"
+	"primeradiant.com/evener/agent/internal/worktree"
+	"primeradiant.com/evener/agent/plugin"
+	"primeradiant.com/evener/agent/provenance"
+	"primeradiant.com/evener/agent/provider"
+	"primeradiant.com/evener/agent/sandbox"
+	"primeradiant.com/evener/agent/schema"
+	"primeradiant.com/evener/agent/task"
+	"primeradiant.com/evener/identifier"
+	"primeradiant.com/evener/llm"
 )
 
 // SessionConfig holds the configuration options for an agent session,
@@ -110,7 +110,7 @@ type SessionConfig struct {
 	// Always applied, even when SystemPromptFile is set (CLI --system-prompt-append flag).
 	SystemPromptAppend []string `json:"system_prompt_append,omitempty"`
 
-	// NoProjectPrompts suppresses loading .serf/prompts/ from the project directory.
+	// NoProjectPrompts suppresses loading .evener/prompts/ from the project directory.
 	// Useful for A/B testing to match Docker container behavior (no project prompts).
 	NoProjectPrompts bool `json:"no_project_prompts,omitempty"`
 
@@ -207,7 +207,7 @@ type SessionConfig struct {
 	SandboxNet *bool `json:"sandbox_net,omitempty"`
 
 	// ResolveProfile, when non-nil, maps a "provider/model" ref to the
-	// corresponding *provider.Profile. Injected by cmd/serf so that
+	// corresponding *provider.Profile. Injected by cmd/evener so that
 	// Session.SetModel can perform cross-provider switches without
 	// importing the provider constructors directly (which would create a
 	// cycle). When nil the session falls back to profile.WithModel which

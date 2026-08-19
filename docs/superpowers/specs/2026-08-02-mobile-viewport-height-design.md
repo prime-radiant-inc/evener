@@ -13,7 +13,7 @@ The existing Spawn browser guard passes at 390 px because it renders the Spawn p
 
 ## Design
 
-Update the shared shell height in `cmd/serf-hub/frontend/src/shell/AppShell.module.css`:
+Update the shared shell height in `cmd/evener-hub/frontend/src/shell/AppShell.module.css`:
 
 1. Keep `height: 100vh` as a fallback for browsers without dynamic viewport units.
 2. Add `height: 100dvh` after it so supported mobile browsers track the visible viewport as browser chrome expands and retracts.

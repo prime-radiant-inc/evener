@@ -9,7 +9,7 @@ import (
 	"testing"
 
 	"github.com/spf13/afero"
-	"primeradiant.com/serf/identifier"
+	"primeradiant.com/evener/identifier"
 )
 
 func TestLoadOrCreateInstallationID_ReplacesLegacyAndInvalidValues(t *testing.T) {

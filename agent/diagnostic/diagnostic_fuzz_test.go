@@ -1,4 +1,4 @@
-//go:build serffuzz
+//go:build evenerfuzz
 
 package diagnostic
 
@@ -6,7 +6,7 @@ import (
 	"errors"
 	"testing"
 
-	"primeradiant.com/serf/llm"
+	"primeradiant.com/evener/llm"
 )
 
 func FuzzDiagnosticClassification(f *testing.F) {
@@ -47,7 +47,7 @@ func FuzzDiagnosticClassification(f *testing.F) {
 func assertFuzzDiagnosticInfo(t *testing.T, operation string, info Info) {
 	t.Helper()
 	switch info.Source {
-	case SourceProvider, SourceSerf, SourceHub, SourceUI, SourceHook, SourceMCP:
+	case SourceProvider, SourceEvener, SourceHub, SourceUI, SourceHook, SourceMCP:
 	default:
 		t.Fatalf("%s returned undeclared source %q in %+v", operation, info.Source, info)
 	}

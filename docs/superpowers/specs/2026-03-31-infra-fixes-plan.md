@@ -41,7 +41,7 @@ git rebase main
 Known conflict files and resolution strategy:
 - `agent/session.go` — accept BOTH: main's `modelResponses` turn_count fix AND worktree's task-driven workflow changes (task population in NewSession, dynamic reasoning effort). The two changes touch different parts of the file.
 - `agent/subagents.go` — accept worktree's version (has task_list parameter + AgentName fix + working_dir removal). Main's prompt dedup fix should already be in worktree (was cherry-picked as commit bbd3f96).
-- `tools/serf_agent.py` — accept worktree's version (reasoning_effort="low"). Main has "xhigh" from v55 which the worktree intentionally reverted.
+- `tools/evener_agent.py` — accept worktree's version (reasoning_effort="low"). Main has "xhigh" from v55 which the worktree intentionally reverted.
 - `agent/agents/coordinator.md` — accept worktree's version (YAML tasks with h/m/m effort levels). Main has v55 prose-based planning which the worktree replaced.
 - `docs/experiments/*` — accept worktree's versions (more recent experiment data).
 
@@ -78,10 +78,10 @@ Create `/Users/jesse/prime-radiant/harbor-runner/test-sha-extraction.sh`:
 
 ```bash
 #!/bin/bash
-# Test that we can extract GitSHA from a serf binary.
+# Test that we can extract GitSHA from a evener binary.
 set -e
 
-BINARY="${1:-serf-linux-amd64}"
+BINARY="${1:-evener-linux-amd64}"
 if [[ ! -f "$BINARY" ]]; then
     echo "FAIL: binary not found: $BINARY"
     exit 1
@@ -112,7 +112,7 @@ echo "PASS: S3 path would be: $EXPECTED_PATH"
 
 ```bash
 chmod +x ~/prime-radiant/harbor-runner/test-sha-extraction.sh
-~/prime-radiant/harbor-runner/test-sha-extraction.sh ~/prime-radiant/serf/.claude/worktrees/task-driven-workflow/serf-linux-amd64
+~/prime-radiant/harbor-runner/test-sha-extraction.sh ~/prime-radiant/evener/.claude/worktrees/task-driven-workflow/evener-linux-amd64
 ```
 Expected: `PASS: extracted GitSHA=...`
 
@@ -130,8 +130,8 @@ New:
 # Include git SHA in tarball path so different binaries never collide.
 # Uses sed (not grep -P) for macOS compatibility.
 AGENT_GIT_SHA=""
-if [[ -f "$AGENT_DIR/serf-linux-amd64" ]]; then
-    AGENT_GIT_SHA=$(strings "$AGENT_DIR/serf-linux-amd64" | sed -n 's/.*GitSHA=\([a-f0-9]*\).*/\1/p' | head -1)
+if [[ -f "$AGENT_DIR/evener-linux-amd64" ]]; then
+    AGENT_GIT_SHA=$(strings "$AGENT_DIR/evener-linux-amd64" | sed -n 's/.*GitSHA=\([a-f0-9]*\).*/\1/p' | head -1)
 fi
 if [[ -z "$AGENT_GIT_SHA" ]]; then
     echo "Warning: could not extract GitSHA from binary, using 'unknown'" >&2
@@ -147,7 +147,7 @@ Note: uses `sed -n 's/.../p'` instead of `grep -oP` because macOS grep doesn't s
 
 ```bash
 # Inline test of the sed command
-strings ~/prime-radiant/serf/.claude/worktrees/task-driven-workflow/serf-linux-amd64 | sed -n 's/.*GitSHA=\([a-f0-9]*\).*/\1/p' | head -1
+strings ~/prime-radiant/evener/.claude/worktrees/task-driven-workflow/evener-linux-amd64 | sed -n 's/.*GitSHA=\([a-f0-9]*\).*/\1/p' | head -1
 ```
 Expected: outputs a 7+ character hex SHA.
 
@@ -278,7 +278,7 @@ make build-linux
 
 ```bash
 HEAD_SHA=$(git rev-parse --short HEAD)
-BINARY_SHA=$(strings serf-linux-amd64 | sed -n 's/.*GitSHA=\([a-f0-9]*\).*/\1/p' | head -1)
+BINARY_SHA=$(strings evener-linux-amd64 | sed -n 's/.*GitSHA=\([a-f0-9]*\).*/\1/p' | head -1)
 echo "HEAD: $HEAD_SHA"
 echo "Binary: $BINARY_SHA"
 if [[ "$HEAD_SHA" == "$BINARY_SHA" ]]; then
@@ -293,11 +293,11 @@ fi
 
 ```bash
 # Has implementer tasks (not just coordinator tasks)
-strings serf-linux-amd64 | grep "Understand requirements" | head -1
+strings evener-linux-amd64 | grep "Understand requirements" | head -1
 # Has coordinator YAML tasks
-strings serf-linux-amd64 | grep "title: Inventory" | head -1
+strings evener-linux-amd64 | grep "title: Inventory" | head -1
 # Has h/m/m effort levels (not xhigh)
-strings serf-linux-amd64 | grep -c "reasoning_effort: xhigh"
+strings evener-linux-amd64 | grep -c "reasoning_effort: xhigh"
 # Should be 0 (Plan was changed from xhigh to high in h/m/m config)
 ```
 
@@ -327,7 +327,7 @@ echo "SHA in S3 path: $SHA_IN_PATH"
 aws s3 cp "s3://harbor-eval-results-526275945504/agents/$RUN_ID/$SHA_IN_PATH/agent.tar.gz" /tmp/verify-tarball.tar.gz --region us-west-1
 mkdir -p /tmp/verify-tarball
 tar xzf /tmp/verify-tarball.tar.gz -C /tmp/verify-tarball/
-DEPLOYED_SHA=$(strings /tmp/verify-tarball/serf-linux-amd64 | sed -n 's/.*GitSHA=\([a-f0-9]*\).*/\1/p' | head -1)
+DEPLOYED_SHA=$(strings /tmp/verify-tarball/evener-linux-amd64 | sed -n 's/.*GitSHA=\([a-f0-9]*\).*/\1/p' | head -1)
 echo "Deployed binary SHA: $DEPLOYED_SHA"
 echo "Expected SHA: $(git rev-parse --short HEAD)"
 

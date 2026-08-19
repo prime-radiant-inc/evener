@@ -12,9 +12,9 @@ import (
 	"strings"
 	"testing"
 
-	"primeradiant.com/serf/llm"
-	"primeradiant.com/serf/llm/apilog"
-	"primeradiant.com/serf/llm/providercfg"
+	"primeradiant.com/evener/llm"
+	"primeradiant.com/evener/llm/apilog"
+	"primeradiant.com/evener/llm/providercfg"
 )
 
 type providerOperationCase struct {

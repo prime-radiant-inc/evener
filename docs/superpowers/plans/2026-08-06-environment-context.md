@@ -761,8 +761,8 @@ package agent
 import (
 	"testing"
 
-	"primeradiant.com/serf/agent/schema"
-	"primeradiant.com/serf/llm"
+	"primeradiant.com/evener/agent/schema"
+	"primeradiant.com/evener/llm"
 )
 
 func TestExpandHistoryEmitsEnvironmentTurnAsUserMessage(t *testing.T) {
@@ -805,7 +805,7 @@ In `agent/schema/turn.go`, after `TurnHookCompleted`:
 	TurnEnvironment TurnKind = "ENVIRONMENT"
 ```
 
-In `agent/schema/snapshot.go`, import `primeradiant.com/serf/agent/internal/envctx`
+In `agent/schema/snapshot.go`, import `primeradiant.com/evener/agent/internal/envctx`
 and add to `SessionMeta` after `PinnedNote`:
 
 ```go
@@ -1037,7 +1037,7 @@ git commit -m "feat(agent): inject diff-rendered environment context before user
 **Files:**
 - Modify: `agent/transcript_render.go` (the turn-kind switch, `TurnSteering` case at ~line 773)
 - Test: extend `agent/transcript_render_test.go` (follow its existing table/golden pattern)
-- Check: `cmd/serf-tui/internal/transcript/reducer.go` and the hub web
+- Check: `cmd/evener-tui/internal/transcript/reducer.go` and the hub web
   projection for turn-kind switches (grep `TurnSteering` across `cmd/`);
   add the equivalent case wherever one exists so the block renders as
   harness chrome, not user speech.

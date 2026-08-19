@@ -12,7 +12,7 @@ import (
 	"testing"
 	"time"
 
-	"primeradiant.com/serf/test/e2e/fakellm"
+	"primeradiant.com/evener/test/e2e/fakellm"
 )
 
 // The driver's two documented modes are promises about ONE session's rounds:
@@ -46,11 +46,11 @@ func startDriver(t *testing.T, hold time.Duration, rounds int, jobRelease string
 	return srv.BaseURL()
 }
 
-// session drives the fake the way a real serf session does: the whole
+// session drives the fake the way a real evener session does: the whole
 // conversation is replayed on every request, with each answered round in it
 // as an assistant message carrying the tool call and a tool message carrying
 // its result. The shape is copied from a live run of the real stack
-// (cmd/serf-hub/e2e_control_invariant_test.go): system, environment context,
+// (cmd/evener-hub/e2e_control_invariant_test.go): system, environment context,
 // prompt, then assistant/tool pairs.
 type session struct {
 	t                *testing.T
@@ -63,7 +63,7 @@ type session struct {
 func newSession(t *testing.T, baseURL, name string) *session {
 	t.Helper()
 	return &session{t: t, baseURL: baseURL, name: name, messages: []map[string]any{
-		{"role": "system", "content": "## Identity\n\nYou are serf."},
+		{"role": "system", "content": "## Identity\n\nYou are evener."},
 		{"role": "user", "content": "<environment_context>\ncwd: \"/tmp/workspace\"\n</environment_context>"},
 		// Both sessions send the same prompt: the script's spawn call is
 		// copy-pasted, so identical openings are the expected case and the
@@ -111,7 +111,7 @@ func (s *session) try(ctx context.Context) (toolCall, error) {
 		return toolCall{}, fmt.Errorf("build request: %w", err)
 	}
 	req.Header.Set("Content-Type", "application/json")
-	// Send affinity headers if configured, mimicking what serf does when send_session_affinity_headers is true.
+	// Send affinity headers if configured, mimicking what evener does when send_session_affinity_headers is true.
 	if s.affinityHeaderID != "" {
 		req.Header.Set("session_id", s.affinityHeaderID)
 		req.Header.Set("x-client-request-id", s.affinityHeaderID)
@@ -194,7 +194,7 @@ func (s *session) stopInFlightRound(ctx context.Context) {
 	s.messages = recorded
 }
 
-// compact rewrites this session's conversation the way serf's context
+// compact rewrites this session's conversation the way evener's context
 // compaction does: the older turns are folded into a user-role checkpoint and
 // the most recent messages are kept verbatim
 // (agent/internal/contextmgr/context_manager.go, PreserveRecentTurns).

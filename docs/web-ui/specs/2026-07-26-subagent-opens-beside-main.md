@@ -70,7 +70,7 @@ When an activated nested session's pane is currently in the main slot,
 Rail closes and reopens it in secondary. One-time correction per stuck
 pane, costing one transcript reload.
 
-Chosen over bumping the layout storage key (`serf.workspace.layout.v2`),
+Chosen over bumping the layout storage key (`evener.workspace.layout.v2`),
 which would fix it globally but discard every saved arrangement to
 repair a state most layouts are not in.
 
@@ -130,7 +130,7 @@ session ends up open twice side by side. Observed in a browser.
   qualified ref. A bare-id URL renders Not Found.
 - `CommandPalette` drops its `item.result.ref || item.result.id`
   fallback. The hub's own `searchResult` doc comment
-  (cmd/serf-hub/web_types.go) already states that "SPA clients open
+  (cmd/evener-hub/web_types.go) already states that "SPA clients open
   sessions only by qualified ref ... so the bare ID field alone cannot
   be used to open a hit", and `ref` ships without `omitempty` — the
   fallback contradicted the documented contract.

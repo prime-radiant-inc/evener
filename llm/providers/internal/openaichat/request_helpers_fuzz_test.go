@@ -5,7 +5,7 @@ import (
 	"encoding/json"
 	"testing"
 
-	"primeradiant.com/serf/llm"
+	"primeradiant.com/evener/llm"
 )
 
 // FuzzToChatResponseFormat drives ToChatResponseFormat, the shared helper that

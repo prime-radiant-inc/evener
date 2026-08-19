@@ -2,7 +2,7 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Preserve source-qualified AppWire identity when a user opens a Codex session from the Web UI sidebar while keeping local Serf session URLs unchanged.
+**Goal:** Preserve source-qualified AppWire identity when a user opens a Codex session from the Web UI sidebar while keeping local Evener session URLs unchanged.
 
 **Architecture:** Add one client-side route-identity helper to `sidebar.js`. Every sidebar navigation and active-row lookup derives its URL from that helper, so external refs remain qualified and local refs retain the existing short URL. Exercise the real sidebar code in a deterministic jsdom regression test; rely on existing Go tests for source-qualified workspace dispatch and Codex controls.
 
@@ -16,12 +16,12 @@
 - Preserve `/s/<session-id>` for valid `local:<session-id>` refs.
 - Missing or malformed refs fall back to the existing bare `session_id` behavior and existing not-found handling.
 - Tests must not require credentials, network access, a live Codex binary, wall-clock sleeps, or ambient developer state.
-- Do not add `package.json`, `package-lock.json`, or a checked-in jsdom dependency; use `NODE_PATH=/tmp/serf-jstest-jsdom/node_modules`.
+- Do not add `package.json`, `package-lock.json`, or a checked-in jsdom dependency; use `NODE_PATH=/tmp/evener-jstest-jsdom/node_modules`.
 
 ## File Structure
 
-- Modify `cmd/serf-hub/assets/sidebar.js`: own canonical sidebar route derivation and use it in row links, menu navigation, active-row matching, and hidden-row reveal.
-- Create `cmd/serf-hub/jstest/test-sidebar-session-routes.js`: boot the real sidebar in jsdom and lock local, external, malformed-ref, menu-target, active-row, and reveal behavior.
+- Modify `cmd/evener-hub/assets/sidebar.js`: own canonical sidebar route derivation and use it in row links, menu navigation, active-row matching, and hidden-row reveal.
+- Create `cmd/evener-hub/jstest/test-sidebar-session-routes.js`: boot the real sidebar in jsdom and lock local, external, malformed-ref, menu-target, active-row, and reveal behavior.
 - No Go production files change; existing handlers already accept source-qualified route IDs.
 
 ---
@@ -29,17 +29,17 @@
 ### Task 1: Route sidebar sessions by canonical AppWire identity
 
 **Files:**
-- Create: `cmd/serf-hub/jstest/test-sidebar-session-routes.js`
-- Modify: `cmd/serf-hub/assets/sidebar.js:14-68, 218-225, 767-839`
+- Create: `cmd/evener-hub/jstest/test-sidebar-session-routes.js`
+- Modify: `cmd/evener-hub/assets/sidebar.js:14-68, 218-225, 767-839`
 
 **Interfaces:**
 - Consumes: tree nodes shaped as `{ ref: string, session_id: string, row_id: string, ... }` from `/api/tree`.
 - Produces: `sessionRouteID(node) -> string` and `sessionHref(node) -> string`; local nodes produce `session_id`, valid non-local nodes produce `ref`, and malformed refs produce `session_id`.
-- Produces: `window.SerfSidebarInternal.sessionRouteID`, `sessionHref`, `sessionMenuItems`, and `findRevealChain` as deterministic test/inspection surfaces alongside the existing `buildRow` export.
+- Produces: `window.EvenerSidebarInternal.sessionRouteID`, `sessionHref`, `sessionMenuItems`, and `findRevealChain` as deterministic test/inspection surfaces alongside the existing `buildRow` export.
 
 - [ ] **Step 1: Create the failing jsdom regression test**
 
-Create `cmd/serf-hub/jstest/test-sidebar-session-routes.js` with:
+Create `cmd/evener-hub/jstest/test-sidebar-session-routes.js` with:
 
 ```javascript
 "use strict";
@@ -65,7 +65,7 @@ function boot(pathname) {
   const w = dom.window;
   w.fetch = () => Promise.resolve({ ok: true, json: () => Promise.resolve(emptyTree()) });
   w.htmx = { process() {} };
-  w.SerfAppwire = { onNotification() {}, onConnectionRestored() {} };
+  w.EvenerAppwire = { onNotification() {}, onConnectionRestored() {} };
   w.eval(iconsSrc);
   w.eval(sidebarSrc);
   return w;
@@ -85,7 +85,7 @@ function node(ref, sessionID, rowID) {
 }
 
 const w = boot("/s/codex-local:th_codex");
-const I = w.SerfSidebarInternal;
+const I = w.EvenerSidebarInternal;
 const local = node("local:01LOCAL", "01LOCAL", "project:p:local:01LOCAL");
 const codex = node("codex-local:th_codex", "codex-session", "project:p:codex-local:th_codex");
 const malformed = node("not a ref", "fallback-id", "project:p:local:fallback-id");
@@ -115,7 +115,7 @@ const tree = {
   projects: [{ key: "p", name: "p", working_dir: "/work/p", default_expanded: true, sessions: [codex] }],
   attentionSummary: { needsYou: 0, error: 0, working: 0 },
 };
-w.SerfSidebar.renderTree(tree);
+w.EvenerSidebar.renderTree(tree);
 const rendered = w.document.querySelector('[data-row-id="project:p:codex-local:th_codex"]');
 assert.ok(rendered, "Codex row must render");
 assert.ok(rendered.hasAttribute("data-active"), "qualified Codex URL must mark its row active");
@@ -133,18 +133,18 @@ The menu descriptor's `href` is an intentional inspectable value; its `run` call
 Run:
 
 ```bash
-NODE_PATH=/tmp/serf-jstest-jsdom/node_modules \
-  node cmd/serf-hub/jstest/test-sidebar-session-routes.js
+NODE_PATH=/tmp/evener-jstest-jsdom/node_modules \
+  node cmd/evener-hub/jstest/test-sidebar-session-routes.js
 ```
 
-Expected: FAIL because `SerfSidebarInternal.sessionRouteID` and the other new inspection surfaces do not exist; current Codex row URLs also use `/s/codex-session`.
+Expected: FAIL because `EvenerSidebarInternal.sessionRouteID` and the other new inspection surfaces do not exist; current Codex row URLs also use `/s/codex-session`.
 
 - [ ] **Step 3: Add the minimal canonical-route implementation**
 
-In `cmd/serf-hub/assets/sidebar.js`, replace the current `SerfSidebarInternal` assignment and add these helpers near `rowKey`:
+In `cmd/evener-hub/assets/sidebar.js`, replace the current `EvenerSidebarInternal` assignment and add these helpers near `rowKey`:
 
 ```javascript
-  window.SerfSidebarInternal = {
+  window.EvenerSidebarInternal = {
     buildRow: buildRow,
     stateIconKey: stateIconKey,
     stateWord: stateWord,
@@ -195,10 +195,10 @@ Update `sessionMenuItems` so **Open** exposes and uses the same computed target:
     var openHref = sessionHref(n);
     return [
       { label: "Open", href: openHref, run: function () { window.location.href = openHref; } },
-      { label: "Open beside", run: function () { if (window.SerfPanes) window.SerfPanes.open("/thread/" + encodeURIComponent(n.ref), n.title); } },
-      { label: n.favorite ? "Unfavorite" : "Favorite", run: function () { window.SerfSidebar.favorite(n.ref, !n.favorite); } },
+      { label: "Open beside", run: function () { if (window.EvenerPanes) window.EvenerPanes.open("/thread/" + encodeURIComponent(n.ref), n.title); } },
+      { label: n.favorite ? "Unfavorite" : "Favorite", run: function () { window.EvenerSidebar.favorite(n.ref, !n.favorite); } },
       { label: "Rename", hidden: !n.rename, run: function () { startInlineRename(n); } },
-      { label: n.tier === "archived" ? "Unarchive" : "Archive", run: function () { window.SerfSidebar.archive(n.ref, n.tier !== "archived"); } },
+      { label: n.tier === "archived" ? "Unarchive" : "Archive", run: function () { window.EvenerSidebar.archive(n.ref, n.tier !== "archived"); } },
     ];
   }
 ```
@@ -253,8 +253,8 @@ Update the nearby comments from `session_id`/`sessionId` terminology to `canonic
 Run:
 
 ```bash
-NODE_PATH=/tmp/serf-jstest-jsdom/node_modules \
-  node cmd/serf-hub/jstest/test-sidebar-session-routes.js
+NODE_PATH=/tmp/evener-jstest-jsdom/node_modules \
+  node cmd/evener-hub/jstest/test-sidebar-session-routes.js
 ```
 
 Expected:
@@ -268,12 +268,12 @@ PASS: sidebar session routes preserve source identity
 Run:
 
 ```bash
-NODE_PATH=/tmp/serf-jstest-jsdom/node_modules \
-  node cmd/serf-hub/jstest/test-sidebar-row-layout.js
-NODE_PATH=/tmp/serf-jstest-jsdom/node_modules \
-  node cmd/serf-hub/jstest/test-sidebar-menu.js
-NODE_PATH=/tmp/serf-jstest-jsdom/node_modules \
-  node cmd/serf-hub/jstest/test-sidebar-model.js
+NODE_PATH=/tmp/evener-jstest-jsdom/node_modules \
+  node cmd/evener-hub/jstest/test-sidebar-row-layout.js
+NODE_PATH=/tmp/evener-jstest-jsdom/node_modules \
+  node cmd/evener-hub/jstest/test-sidebar-menu.js
+NODE_PATH=/tmp/evener-jstest-jsdom/node_modules \
+  node cmd/evener-hub/jstest/test-sidebar-model.js
 ```
 
 Expected: all three exit 0. `test-sidebar-model.js` specifically preserves the existing local deep-link, HTMX, and active-row behavior while the new test covers the qualified external path.
@@ -281,8 +281,8 @@ Expected: all three exit 0. `test-sidebar-model.js` specifically preserves the e
 - [ ] **Step 6: Commit the test-first implementation**
 
 ```bash
-git add cmd/serf-hub/assets/sidebar.js \
-  cmd/serf-hub/jstest/test-sidebar-session-routes.js
+git add cmd/evener-hub/assets/sidebar.js \
+  cmd/evener-hub/jstest/test-sidebar-session-routes.js
 git commit -m "fix(web): preserve Codex sidebar session refs"
 ```
 
@@ -293,8 +293,8 @@ Expected: one commit containing only the sidebar implementation and its regressi
 ### Task 2: Verify source-qualified workspace dispatch and the full hub surface
 
 **Files:**
-- Verify only: `cmd/serf-hub/web_test.go`
-- Verify only: `cmd/serf-hub/jstest/run-all.sh`
+- Verify only: `cmd/evener-hub/web_test.go`
+- Verify only: `cmd/evener-hub/jstest/run-all.sh`
 
 **Interfaces:**
 - Consumes: Task 1's `/s/<source>:<thread-id>` and `/_partials/s/<source>:<thread-id>/workspace` URLs.
@@ -306,20 +306,20 @@ Expected: one commit containing only the sidebar implementation and its regressi
 Run:
 
 ```bash
-go test ./cmd/serf-hub \
+go test ./cmd/evener-hub \
   -run 'TestWeb_(CodexSessionRouteReadsConfiguredSource|APITreeIncludesConfiguredCodexSourceThreads|ManagedCodexLiveWorkspaceCapabilitiesEnsureSource)$' \
   -count=1
 ```
 
-Expected: `ok primeradiant.com/serf/cmd/serf-hub`.
+Expected: `ok primeradiant.com/evener/cmd/evener-hub`.
 
 - [ ] **Step 2: Run the complete JavaScript UI suite**
 
 Run:
 
 ```bash
-cd cmd/serf-hub/jstest
-NODE_PATH=/tmp/serf-jstest-jsdom/node_modules JSTEST_TIMEOUT=90 sh run-all.sh
+cd cmd/evener-hub/jstest
+NODE_PATH=/tmp/evener-jstest-jsdom/node_modules JSTEST_TIMEOUT=90 sh run-all.sh
 cd ../../..
 ```
 
@@ -330,10 +330,10 @@ Expected: every `test-*.js` row reports `OK` and the suite ends with `jstest: al
 Run:
 
 ```bash
-go test ./cmd/serf-hub -count=1
+go test ./cmd/evener-hub -count=1
 ```
 
-Expected: `ok primeradiant.com/serf/cmd/serf-hub`.
+Expected: `ok primeradiant.com/evener/cmd/evener-hub`.
 
 - [ ] **Step 4: Inspect repository state and committed diff**
 
@@ -342,11 +342,11 @@ Run:
 ```bash
 git status --short
 git show --stat --oneline HEAD
-git diff HEAD^ -- cmd/serf-hub/assets/sidebar.js \
-  cmd/serf-hub/jstest/test-sidebar-session-routes.js
+git diff HEAD^ -- cmd/evener-hub/assets/sidebar.js \
+  cmd/evener-hub/jstest/test-sidebar-session-routes.js
 ```
 
-Expected: the implementation commit touches only the two Task 1 files. Pre-existing untracked `.private-journal` files and `docs/superpowers/plans/2026-05-07-serf-daemon-prereqs.md` remain untouched.
+Expected: the implementation commit touches only the two Task 1 files. Pre-existing untracked `.private-journal` files and `docs/superpowers/plans/2026-05-07-evener-daemon-prereqs.md` remain untouched.
 
 - [ ] **Step 5: Record verification without an empty commit**
 

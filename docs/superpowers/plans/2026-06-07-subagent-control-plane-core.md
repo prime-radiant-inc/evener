@@ -359,7 +359,7 @@ func TestListAgents_IncludeClosed(t *testing.T) { /* include_closed=true surface
 
 Do **not** change `TestSubagentManager_InfosEnumeratesTracked` (it tracks running+completed, both still visible) — add the new closed-filter test instead.
 
-- [ ] **Step 6: Schema + registration.** `DefListAgents()` per spec; register; **add `"list_agents"` to `rootOnlyAgentManagementTools`**. (Note in the plan, not code: the rich fields reach `list_agents` but not `/status` unless `server.SubagentStatusInfo` + `cmd/serf/serve.go:528-534` projector are extended — out of scope here.)
+- [ ] **Step 6: Schema + registration.** `DefListAgents()` per spec; register; **add `"list_agents"` to `rootOnlyAgentManagementTools`**. (Note in the plan, not code: the rich fields reach `list_agents` but not `/status` unless `server.SubagentStatusInfo` + `cmd/evener/serve.go:528-534` projector are extended — out of scope here.)
 
 - [ ] **Step 7: Run** → PASS. `go build ./...`. `make lint`.
 
@@ -405,7 +405,7 @@ git commit -m "feat(subagent): retain terminal records; fail-loud spawn at cap w
 
 ## Task 8: Redaction helper + `subagent_output`
 
-**Spec:** §"`subagent_output`", §"Tool descriptions", plan step 8. Note: serf has **no** credential redactor today — build it first.
+**Spec:** §"`subagent_output`", §"Tool descriptions", plan step 8. Note: evener has **no** credential redactor today — build it first.
 
 **Files:** Create `agent/redact.go`, `agent/subagent_output.go`, `agent/redact_test.go`, `agent/subagent_output_test.go`; Modify `agent/internal/tool/definitions.go`, `agent/session_tools_subagent.go`.
 

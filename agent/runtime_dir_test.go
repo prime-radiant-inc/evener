@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"primeradiant.com/serf/identifier"
+	"primeradiant.com/evener/identifier"
 )
 
 func TestNonProjectHash_Deterministic(t *testing.T) {
@@ -45,7 +45,7 @@ func TestRuntimeDir_ProjectIdentity(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := filepath.Join(xdg, "serf", "projects", wantProject.ID)
+	want := filepath.Join(xdg, "evener", "projects", wantProject.ID)
 	if gotProject != wantProject || got != want {
 		t.Fatalf("RuntimeDir project/path = %#v, %q; want project and %q", gotProject, got, want)
 	}
@@ -60,7 +60,7 @@ func TestRuntimeDir_NoGit(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if project.CanonicalPath == "" || got != filepath.Join(xdg, "serf", "projects", project.ID) {
+	if project.CanonicalPath == "" || got != filepath.Join(xdg, "evener", "projects", project.ID) {
 		t.Fatalf("RuntimeDir project/path = %#v, %q", project, got)
 	}
 }
@@ -94,7 +94,7 @@ func TestRuntimeDir_XDGDefault(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	wantPrefix := filepath.Join(home, ".local", "state", "serf", "projects")
+	wantPrefix := filepath.Join(home, ".local", "state", "evener", "projects")
 	if !strings.HasPrefix(got, wantPrefix) {
 		t.Fatalf("RuntimeDir XDG default:\n  got  %q\n  want prefix %q", got, wantPrefix)
 	}
@@ -105,7 +105,7 @@ func TestCacheDir_WithXDG(t *testing.T) {
 	t.Setenv("XDG_CACHE_HOME", xdg)
 
 	got := CacheDir()
-	want := filepath.Join(xdg, "serf")
+	want := filepath.Join(xdg, "evener")
 	if got != want {
 		t.Fatalf("CacheDir with XDG:\n  got  %q\n  want %q", got, want)
 	}
@@ -120,7 +120,7 @@ func TestCacheDir_Default(t *testing.T) {
 	}
 
 	got := CacheDir()
-	want := filepath.Join(home, ".cache", "serf")
+	want := filepath.Join(home, ".cache", "evener")
 	if got != want {
 		t.Fatalf("CacheDir default:\n  got  %q\n  want %q", got, want)
 	}

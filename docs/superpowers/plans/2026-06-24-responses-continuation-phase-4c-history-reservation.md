@@ -94,7 +94,7 @@ Use existing `responsesContinuationEligibleAssistantTurn` for committed assistan
 Expected first run:
 
 ```sh
-GOCACHE=/tmp/serf-gocache go test ./agent -run 'TestResponsesContinuationHistoryReservation' -count=1 -v
+GOCACHE=/tmp/evener-gocache go test ./agent -run 'TestResponsesContinuationHistoryReservation' -count=1 -v
 ```
 
 Expected: FAIL because the reservation helper does not exist.
@@ -106,7 +106,7 @@ Add the helper to `agent/responses_continuation_eligibility.go`. Keep it private
 - [x] **Step 3: Verify Task 1**
 
 ```sh
-GOCACHE=/tmp/serf-gocache go test ./agent -run 'TestResponsesContinuationHistoryReservation|TestResponsesContinuationAnchorCandidate' -count=1 -v
+GOCACHE=/tmp/evener-gocache go test ./agent -run 'TestResponsesContinuationHistoryReservation|TestResponsesContinuationAnchorCandidate' -count=1 -v
 git diff --check
 ```
 
@@ -144,7 +144,7 @@ Phase 0A recorded `reservation required: yes`; Phase 4C implements the reservati
 ## Evidence
 
 ```sh
-GOCACHE=/tmp/serf-gocache go test ./agent -run 'TestResponsesContinuationHistoryReservation|TestResponsesContinuationAnchorCandidate' -count=1 -v
+GOCACHE=/tmp/evener-gocache go test ./agent -run 'TestResponsesContinuationHistoryReservation|TestResponsesContinuationAnchorCandidate' -count=1 -v
 ```
 
 Result: pass.
@@ -168,7 +168,7 @@ Result: pass.
 - [x] **Step 2: Run focused verification**
 
 ```sh
-GOCACHE=/tmp/serf-gocache go test ./agent -run 'TestResponsesContinuationHistoryReservation|TestResponsesContinuationAnchorCandidate' -count=1 -v
+GOCACHE=/tmp/evener-gocache go test ./agent -run 'TestResponsesContinuationHistoryReservation|TestResponsesContinuationAnchorCandidate' -count=1 -v
 git diff --check
 ```
 

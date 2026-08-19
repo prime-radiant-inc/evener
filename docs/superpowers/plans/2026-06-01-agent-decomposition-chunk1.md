@@ -38,7 +38,7 @@ modules). `goimports` available; **never** `gofmt -r` on type names.
   `agent/execenv/local_test.go`.
 - Create `agent/schema/turn.go` (from `agent/turns.go`), package `schema`.
 - `package agent` and the root-module consumers gain imports of
-  `primeradiant.com/serf/agent/execenv` and `primeradiant.com/serf/agent/schema`
+  `primeradiant.com/evener/agent/execenv` and `primeradiant.com/evener/agent/schema`
   and reference `execenv.X` / `schema.Turn`.
 
 ---
@@ -51,7 +51,7 @@ modules). `goimports` available; **never** `gofmt -r` on type names.
 - Modify: every file referencing `ExecutionEnvironment`, `LocalExecutionEnvironment`,
   `NewLocalExecutionEnvironment`, `ExecResult`, `DirEntry`, `EnvVarPolicy`,
   `EnvPolicy*` (compiler enumerates; spans `package agent` + root-module
-  `cmd/serf/run.go`, `cmd/serf/serve.go`, and others).
+  `cmd/evener/run.go`, `cmd/evener/serve.go`, and others).
 
 **The full type closure to move** (verified — env.go imports only `context`;
 env_local.go imports only stdlib + `github.com/bmatcuk/doublestar`): the
@@ -71,16 +71,16 @@ embeds `WorkspaceInfo` — out of scope).
 - [ ] **Step 3: Qualify references.** For each broken site, `ExecutionEnvironment` →
   `execenv.ExecutionEnvironment`, `NewLocalExecutionEnvironment` →
   `execenv.NewLocalExecutionEnvironment`, etc. Run `goimports -w` on touched files to
-  add `primeradiant.com/serf/agent/execenv` imports and drop unused ones. Repeat
+  add `primeradiant.com/evener/agent/execenv` imports and drop unused ones. Repeat
   build until green. Do NOT use `gofmt -r`.
 - [ ] **Step 4: Resolve test placement.** Tests that exercise ONLY the env types move
   to `agent/execenv/`. White-box `package agent` tests that USE env types stay but
   qualify `execenv.X`. Build the test binaries: `go vet ./...` per module.
 - [ ] **Step 5: Gate.** From repo root: `go build ./...`; `make vet`; `make test-race`;
   `make lint-golangci`. ALL must be green (rc 0). Investigate any failure; fix; re-run.
-- [ ] **Step 6: Verify the move is real.** `go doc primeradiant.com/serf/agent | grep -E
+- [ ] **Step 6: Verify the move is real.** `go doc primeradiant.com/evener/agent | grep -E
   'ExecutionEnvironment|LocalExecutionEnvironment|ExecResult'` returns NOTHING (they
-  left `agent`); `go doc primeradiant.com/serf/agent/execenv` lists them. Grep confirms
+  left `agent`); `go doc primeradiant.com/evener/agent/execenv` lists them. Grep confirms
   no `agent.ExecutionEnvironment` refs remain anywhere.
 - [ ] **Step 7: Commit.** `git status`; `git add` the specific moved/modified files;
   commit: `refactor(agent): carve agent/execenv foundation package` with a body
@@ -95,7 +95,7 @@ embeds `WorkspaceInfo` — out of scope).
 - Delete: `agent/turns.go` (contents moved)
 - Modify: every file referencing `Turn`, `TurnKind`, the `Turn*` kind consts, or
   `NewTurn` (compiler enumerates; ~53 in-module + ~9 cross-module consumer files —
-  `cmd/serf-hub`, `cmd/serf-tui`, `internal/apptranscript`, `server`).
+  `cmd/evener-hub`, `cmd/evener-tui`, `internal/apptranscript`, `server`).
 
 **Move** (verified — turns.go imports only `time` + `llm`): `Turn`, `TurnKind`, the
 `Turn*` kind constants, `NewTurn`, and any other decl in `turns.go`. Nothing else
@@ -104,7 +104,7 @@ transcript later; it will reference `schema.Turn`).
 
 - [ ] **Step 1: Create the package.** `mkdir -p agent/schema`. Move `agent/turns.go` →
   `agent/schema/turn.go`; change `package agent` → `package schema`. Keep its
-  `import ("time"; "primeradiant.com/serf/llm")`.
+  `import ("time"; "primeradiant.com/evener/llm")`.
 - [ ] **Step 2: Enumerate breakage.** `cd agent && go build ./...` then root
   `go build ./...`. Every `undefined: Turn`/`TurnKind`/`NewTurn`/`TurnUserInput`… is a
   site.
@@ -120,8 +120,8 @@ transcript later; it will reference `schema.Turn`).
   consumer tests (`server`, `cmd/...`) qualify `schema.Turn`. Build all test binaries.
 - [ ] **Step 5: Gate.** Root: `go build ./...`; `make vet`; `make test-race`;
   `make lint-golangci`. ALL green.
-- [ ] **Step 6: Verify.** `go doc primeradiant.com/serf/agent | grep -E '^(type Turn|func
-  NewTurn)'` returns NOTHING; `go doc primeradiant.com/serf/agent/schema` lists `Turn`,
+- [ ] **Step 6: Verify.** `go doc primeradiant.com/evener/agent | grep -E '^(type Turn|func
+  NewTurn)'` returns NOTHING; `go doc primeradiant.com/evener/agent/schema` lists `Turn`,
   `TurnKind`, `NewTurn`. No `agent.Turn`/`agent.NewTurn` refs remain (grep).
 - [ ] **Step 7: Commit.** `git status`; `git add` named files; commit:
   `refactor(agent): carve agent/schema with the Turn history atom` + body + trailer.

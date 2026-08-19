@@ -2,7 +2,7 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Add `DiscoverPluginDirs` to package `agent` so serf auto-loads plugins from `~/.config/serf/plugins/*/` and `<git-root>/.serf/plugins/*/`, unioned with `--plugin-dir` flags, with collisions resolved by precedence (user < project < CLI).
+**Goal:** Add `DiscoverPluginDirs` to package `agent` so evener auto-loads plugins from `~/.config/evener/plugins/*/` and `<git-root>/.evener/plugins/*/`, unioned with `--plugin-dir` flags, with collisions resolved by precedence (user < project < CLI).
 
 **Architecture:** One new file `agent/plugin_discovery.go` exposes `DiscoverPluginDirs(env, extraDirs) ([]string, []DiscoveryShadowedEntry, []error)`. It walks the global and project roots (using existing `gitRootOrEmpty`), filters for `.claude-plugin/plugin.json`, resolves symlinks per entry, parses each manifest just enough to learn its `name`, then merges all sources into a precedence-ordered slice. Discovery never aborts: malformed manifests, unreadable roots, and bad `--plugin-dir` paths land in the returned `[]error` so SP8 can surface them at startup.
 
@@ -221,8 +221,8 @@ Append to `agent/plugin_discovery.go`:
 // The returned slice is ordered: lowest-precedence first.
 //
 // Discovery sources (lowest to highest precedence):
-//  1. ~/.config/serf/plugins/<name>/   (per-user)
-//  2. <git-root>/.serf/plugins/<name>/ (per-project)
+//  1. ~/.config/evener/plugins/<name>/   (per-user)
+//  2. <git-root>/.evener/plugins/<name>/ (per-project)
 //  3. extraDirs                         (e.g., --plugin-dir, in order)
 //
 // A plugin directory qualifies if it contains .claude-plugin/plugin.json.
@@ -263,7 +263,7 @@ func TestGlobalPluginsRoot_XDGOverride(t *testing.T) {
 	t.Setenv("XDG_CONFIG_HOME", xdg)
 
 	got := globalPluginsRoot()
-	want := filepath.Join(xdg, "serf", "plugins")
+	want := filepath.Join(xdg, "evener", "plugins")
 	if got != want {
 		t.Errorf("globalPluginsRoot() = %q, want %q", got, want)
 	}
@@ -275,7 +275,7 @@ func TestGlobalPluginsRoot_HomeFallback(t *testing.T) {
 	t.Setenv("HOME", home)
 
 	got := globalPluginsRoot()
-	want := filepath.Join(home, ".config", "serf", "plugins")
+	want := filepath.Join(home, ".config", "evener", "plugins")
 	if got != want {
 		t.Errorf("globalPluginsRoot() = %q, want %q", got, want)
 	}
@@ -311,7 +311,7 @@ func globalPluginsRoot() string {
 		}
 		dir = filepath.Join(home, ".config")
 	}
-	return filepath.Join(dir, "serf", "plugins")
+	return filepath.Join(dir, "evener", "plugins")
 }
 ```
 
@@ -432,7 +432,7 @@ func TestDiscoverPluginDirs_GlobalOnly(t *testing.T) {
 	xdg := t.TempDir()
 	t.Setenv("XDG_CONFIG_HOME", xdg)
 
-	globalRoot := filepath.Join(xdg, "serf", "plugins")
+	globalRoot := filepath.Join(xdg, "evener", "plugins")
 	if err := os.MkdirAll(globalRoot, 0o755); err != nil {
 		t.Fatalf("MkdirAll: %v", err)
 	}
@@ -585,7 +585,7 @@ func TestDiscoverPluginDirs_ProjectOnly(t *testing.T) {
 	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
 
 	projRoot := t.TempDir()
-	pluginsDir := filepath.Join(projRoot, ".serf", "plugins")
+	pluginsDir := filepath.Join(projRoot, ".evener", "plugins")
 	if err := os.MkdirAll(pluginsDir, 0o755); err != nil {
 		t.Fatalf("MkdirAll: %v", err)
 	}
@@ -621,18 +621,18 @@ func DiscoverPluginDirs(env ExecutionEnvironment, extraDirs []string) ([]string,
 	var raw []rawEntry
 	var errs []error
 
-	// Source 1: per-user (~/.config/serf/plugins).
+	// Source 1: per-user (~/.config/evener/plugins).
 	if r, e := walkPluginsRoot(globalPluginsRoot()); len(r) > 0 || len(e) > 0 {
 		raw = append(raw, r...)
 		errs = append(errs, e...)
 	}
 
-	// Source 2: per-project (<git-root>/.serf/plugins).
+	// Source 2: per-project (<git-root>/.evener/plugins).
 	if env != nil {
 		cwd := env.WorkingDirectory()
 		if cwd != "" {
 			if root := gitRootOrEmpty(env, cwd); root != "" {
-				r, e := walkPluginsRoot(filepath.Join(root, ".serf", "plugins"))
+				r, e := walkPluginsRoot(filepath.Join(root, ".evener", "plugins"))
 				raw = append(raw, r...)
 				errs = append(errs, e...)
 			}
@@ -689,14 +689,14 @@ git commit -m "feat(agent): discover plugins under project root via gitRootOrEmp
 func TestDiscoverPluginDirs_GlobalAndProjectDistinct(t *testing.T) {
 	xdg := t.TempDir()
 	t.Setenv("XDG_CONFIG_HOME", xdg)
-	globalRoot := filepath.Join(xdg, "serf", "plugins")
+	globalRoot := filepath.Join(xdg, "evener", "plugins")
 	if err := os.MkdirAll(globalRoot, 0o755); err != nil {
 		t.Fatalf("MkdirAll: %v", err)
 	}
 	globalFoo := writePluginDir(t, globalRoot, "foo", "foo")
 
 	projRoot := t.TempDir()
-	projPlugins := filepath.Join(projRoot, ".serf", "plugins")
+	projPlugins := filepath.Join(projRoot, ".evener", "plugins")
 	if err := os.MkdirAll(projPlugins, 0o755); err != nil {
 		t.Fatalf("MkdirAll: %v", err)
 	}
@@ -750,14 +750,14 @@ git commit -m "test(agent): cover distinct global+project plugin discovery"
 func TestDiscoverPluginDirs_ProjectShadowsGlobal(t *testing.T) {
 	xdg := t.TempDir()
 	t.Setenv("XDG_CONFIG_HOME", xdg)
-	globalRoot := filepath.Join(xdg, "serf", "plugins")
+	globalRoot := filepath.Join(xdg, "evener", "plugins")
 	if err := os.MkdirAll(globalRoot, 0o755); err != nil {
 		t.Fatalf("MkdirAll: %v", err)
 	}
 	globalFoo := writePluginDir(t, globalRoot, "foo", "foo")
 
 	projRoot := t.TempDir()
-	projPlugins := filepath.Join(projRoot, ".serf", "plugins")
+	projPlugins := filepath.Join(projRoot, ".evener", "plugins")
 	if err := os.MkdirAll(projPlugins, 0o755); err != nil {
 		t.Fatalf("MkdirAll: %v", err)
 	}
@@ -808,7 +808,7 @@ git commit -m "test(agent): cover project-shadows-global precedence"
 func TestDiscoverPluginDirs_NoManifestSilentlySkipped(t *testing.T) {
 	xdg := t.TempDir()
 	t.Setenv("XDG_CONFIG_HOME", xdg)
-	globalRoot := filepath.Join(xdg, "serf", "plugins")
+	globalRoot := filepath.Join(xdg, "evener", "plugins")
 	if err := os.MkdirAll(globalRoot, 0o755); err != nil {
 		t.Fatalf("MkdirAll: %v", err)
 	}
@@ -859,7 +859,7 @@ git commit -m "test(agent): skip non-plugin entries silently"
 func TestDiscoverPluginDirs_MalformedManifestReportsError(t *testing.T) {
 	xdg := t.TempDir()
 	t.Setenv("XDG_CONFIG_HOME", xdg)
-	globalRoot := filepath.Join(xdg, "serf", "plugins")
+	globalRoot := filepath.Join(xdg, "evener", "plugins")
 	if err := os.MkdirAll(globalRoot, 0o755); err != nil {
 		t.Fatalf("MkdirAll: %v", err)
 	}
@@ -907,7 +907,7 @@ git commit -m "test(agent): report malformed manifest without aborting"
 func TestDiscoverPluginDirs_SymlinkResolves(t *testing.T) {
 	xdg := t.TempDir()
 	t.Setenv("XDG_CONFIG_HOME", xdg)
-	globalRoot := filepath.Join(xdg, "serf", "plugins")
+	globalRoot := filepath.Join(xdg, "evener", "plugins")
 	if err := os.MkdirAll(globalRoot, 0o755); err != nil {
 		t.Fatalf("MkdirAll: %v", err)
 	}
@@ -964,7 +964,7 @@ git commit -m "test(agent): symlink-to-plugin resolves to real path"
 func TestDiscoverPluginDirs_SymlinkCycleReportsError(t *testing.T) {
 	xdg := t.TempDir()
 	t.Setenv("XDG_CONFIG_HOME", xdg)
-	globalRoot := filepath.Join(xdg, "serf", "plugins")
+	globalRoot := filepath.Join(xdg, "evener", "plugins")
 	if err := os.MkdirAll(globalRoot, 0o755); err != nil {
 		t.Fatalf("MkdirAll: %v", err)
 	}
@@ -1030,7 +1030,7 @@ func TestDiscoverPluginDirs_UnreadableRoot(t *testing.T) {
 
 	xdg := t.TempDir()
 	t.Setenv("XDG_CONFIG_HOME", xdg)
-	globalRoot := filepath.Join(xdg, "serf", "plugins")
+	globalRoot := filepath.Join(xdg, "evener", "plugins")
 	if err := os.MkdirAll(globalRoot, 0o755); err != nil {
 		t.Fatalf("MkdirAll: %v", err)
 	}
@@ -1041,7 +1041,7 @@ func TestDiscoverPluginDirs_UnreadableRoot(t *testing.T) {
 	t.Cleanup(func() { _ = os.Chmod(globalRoot, 0o755) })
 
 	projRoot := t.TempDir()
-	projPlugins := filepath.Join(projRoot, ".serf", "plugins")
+	projPlugins := filepath.Join(projRoot, ".evener", "plugins")
 	if err := os.MkdirAll(projPlugins, 0o755); err != nil {
 		t.Fatalf("MkdirAll: %v", err)
 	}
@@ -1087,7 +1087,7 @@ func TestDiscoverPluginDirs_ExtraDirShadowsProject(t *testing.T) {
 	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
 
 	projRoot := t.TempDir()
-	projPlugins := filepath.Join(projRoot, ".serf", "plugins")
+	projPlugins := filepath.Join(projRoot, ".evener", "plugins")
 	if err := os.MkdirAll(projPlugins, 0o755); err != nil {
 		t.Fatalf("MkdirAll: %v", err)
 	}
@@ -1323,7 +1323,7 @@ git commit -m "test(agent): --plugin-dir with missing path is reported"
 func TestDiscoverPluginDirs_NoGitRoot(t *testing.T) {
 	xdg := t.TempDir()
 	t.Setenv("XDG_CONFIG_HOME", xdg)
-	globalRoot := filepath.Join(xdg, "serf", "plugins")
+	globalRoot := filepath.Join(xdg, "evener", "plugins")
 	if err := os.MkdirAll(globalRoot, 0o755); err != nil {
 		t.Fatalf("MkdirAll: %v", err)
 	}
@@ -1368,7 +1368,7 @@ git commit -m "test(agent): no git root means project source is skipped silently
 func TestDiscoverPluginDirs_ManifestNameDiffersFromDirname(t *testing.T) {
 	xdg := t.TempDir()
 	t.Setenv("XDG_CONFIG_HOME", xdg)
-	globalRoot := filepath.Join(xdg, "serf", "plugins")
+	globalRoot := filepath.Join(xdg, "evener", "plugins")
 	if err := os.MkdirAll(globalRoot, 0o755); err != nil {
 		t.Fatalf("MkdirAll: %v", err)
 	}
@@ -1377,7 +1377,7 @@ func TestDiscoverPluginDirs_ManifestNameDiffersFromDirname(t *testing.T) {
 
 	// Project has a plugin in dir "abc" also named "foo" -> should shadow.
 	projRoot := t.TempDir()
-	projPlugins := filepath.Join(projRoot, ".serf", "plugins")
+	projPlugins := filepath.Join(projRoot, ".evener", "plugins")
 	if err := os.MkdirAll(projPlugins, 0o755); err != nil {
 		t.Fatalf("MkdirAll: %v", err)
 	}
@@ -1423,7 +1423,7 @@ git commit -m "test(agent): plugin-name collisions key on manifest, not dirname"
 func TestDiscoverPluginDirs_EmptyExtraDirsSlice(t *testing.T) {
 	xdg := t.TempDir()
 	t.Setenv("XDG_CONFIG_HOME", xdg)
-	globalRoot := filepath.Join(xdg, "serf", "plugins")
+	globalRoot := filepath.Join(xdg, "evener", "plugins")
 	if err := os.MkdirAll(globalRoot, 0o755); err != nil {
 		t.Fatalf("MkdirAll: %v", err)
 	}
@@ -1470,7 +1470,7 @@ func TestDiscoverPluginDirs_XDGConfigHomeOverride(t *testing.T) {
 	xdg := t.TempDir()
 	t.Setenv("XDG_CONFIG_HOME", xdg)
 
-	xdgRoot := filepath.Join(xdg, "serf", "plugins")
+	xdgRoot := filepath.Join(xdg, "evener", "plugins")
 	if err := os.MkdirAll(xdgRoot, 0o755); err != nil {
 		t.Fatalf("MkdirAll: %v", err)
 	}
@@ -1507,7 +1507,7 @@ git commit -m "test(agent): XDG_CONFIG_HOME override redirects global plugins ro
 **Files:**
 - Modify: `agent/plugin_discovery_test.go`
 
-This addresses spec open question #2: a plugin in `~/.config/serf/plugins/foo/` and a `--plugin-dir` pointing to the same absolute directory must coalesce into one entry, not appear twice. After `EvalSymlinks` both routes resolve to the same `abs`, and the existing precedence loop keys on `name`, so the duplicate should appear in `shadowed` rather than as two dirs.
+This addresses spec open question #2: a plugin in `~/.config/evener/plugins/foo/` and a `--plugin-dir` pointing to the same absolute directory must coalesce into one entry, not appear twice. After `EvalSymlinks` both routes resolve to the same `abs`, and the existing precedence loop keys on `name`, so the duplicate should appear in `shadowed` rather than as two dirs.
 
 - [ ] **Step 1: Append the test**
 
@@ -1515,7 +1515,7 @@ This addresses spec open question #2: a plugin in `~/.config/serf/plugins/foo/` 
 func TestDiscoverPluginDirs_DuplicateAbsPathDeduplicates(t *testing.T) {
 	xdg := t.TempDir()
 	t.Setenv("XDG_CONFIG_HOME", xdg)
-	globalRoot := filepath.Join(xdg, "serf", "plugins")
+	globalRoot := filepath.Join(xdg, "evener", "plugins")
 	if err := os.MkdirAll(globalRoot, 0o755); err != nil {
 		t.Fatalf("MkdirAll: %v", err)
 	}
@@ -1607,7 +1607,7 @@ Open question #3 (mid-session rescan) is **not** in scope — discovery runs onc
 
 ## Out of Scope (handled by SP8)
 
-- Wiring `DiscoverPluginDirs` into `SessionConfig` and the four `cmd/` binaries (`serf`, `serf-tui`, `serf-hub`, `serfeval`).
+- Wiring `DiscoverPluginDirs` into `SessionConfig` and the four `cmd/` binaries (`evener`, `evener-tui`, `evener-hub`, `evenereval`).
 - Printing `[]error` and `[]DiscoveryShadowedEntry` to stderr at startup.
 - Calling `LoadPlugins(dirs)` on the result.
 - Lifecycle event firing.

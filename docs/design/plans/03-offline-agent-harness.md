@@ -133,7 +133,7 @@ Why not where Phase 2 lives: `router_seqfuzz_test.go` is in `internal/appserver`
 - **not `agenttest`** — it is constitutionally agent-free (cannot import `agent`). The reusable `ScriptedAdapter`, `FakeEnv`/`denyEnv`, and the `clock.Fake` live here; the rapid driver does not.
 - **not a black-box `agent_test` package** — it could call the exported API but could not read the unexported state the transcript↔state oracle needs, nor inject the clock onto the job manager.
 
-Build wiring is already in place: **`agent/go.mod` already requires `primeradiant.com/serf/fuzz`** (`agent/go.mod:14`), so the target imports `fuzz/promoter` with no new dependency — exactly as `internal/appserver` does. `fuzz` is in `go.work` and (per design §1) in the Makefile `GO_MODULES`, so the seed corpus runs under the gate.
+Build wiring is already in place: **`agent/go.mod` already requires `primeradiant.com/evener/fuzz`** (`agent/go.mod:14`), so the target imports `fuzz/promoter` with no new dependency — exactly as `internal/appserver` does. `fuzz` is in `go.work` and (per design §1) in the Makefile `GO_MODULES`, so the seed corpus runs under the gate.
 
 ### 2.2 The control surface the model drives
 

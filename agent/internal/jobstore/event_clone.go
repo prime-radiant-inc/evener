@@ -1,6 +1,6 @@
 package jobstore
 
-import "primeradiant.com/serf/agent/provenance"
+import "primeradiant.com/evener/agent/provenance"
 
 // cloneEvent returns a copy of e that shares no mutable state with it: every
 // pointer, slice and map reachable from the copy is its own.

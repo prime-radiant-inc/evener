@@ -1,4 +1,4 @@
-//go:build serffuzz
+//go:build evenerfuzz
 
 package agent
 
@@ -13,11 +13,11 @@ import (
 	"testing"
 	"unicode/utf8"
 
-	"primeradiant.com/serf/agent/execenv"
-	"primeradiant.com/serf/agent/internal/agenttest"
-	"primeradiant.com/serf/agent/internal/tool"
-	"primeradiant.com/serf/agent/schema"
-	"primeradiant.com/serf/llm"
+	"primeradiant.com/evener/agent/execenv"
+	"primeradiant.com/evener/agent/internal/agenttest"
+	"primeradiant.com/evener/agent/internal/tool"
+	"primeradiant.com/evener/agent/schema"
+	"primeradiant.com/evener/llm"
 )
 
 // FuzzShellToolsBufferedProgram drives the real registerShellTools handlers
@@ -36,7 +36,7 @@ import (
 //   - deterministic replay: the same finite program produces identical results
 //     and identical external-boundary call traces on a fresh fake environment.
 //
-// The fake is the execution-environment boundary, not a Serf-internal mock. It
+// The fake is the execution-environment boundary, not a Evener-internal mock. It
 // deliberately does not implement StreamingExecutor, keeping shell on the
 // synchronous buffered path owned by session_tools_shell.go.
 //

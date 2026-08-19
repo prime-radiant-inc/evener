@@ -367,7 +367,7 @@ func (c *Client) ThreadTurnItemsList(ctx context.Context, params ThreadTurnItems
 
 func (c *Client) ThreadTranscriptList(ctx context.Context, params ThreadTranscriptListParams) (ThreadTranscriptListResponse, error) {
 	var out ThreadTranscriptListResponse
-	err := c.request(ctx, MethodSerfThreadTranscriptsList, params, &out)
+	err := c.request(ctx, MethodEvenerThreadTranscriptsList, params, &out)
 	return out, err
 }
 
@@ -400,7 +400,7 @@ func (c *Client) ThreadModelSet(ctx context.Context, params ThreadModelSetParams
 }
 
 func (c *Client) ThreadNameSet(ctx context.Context, params ThreadNameSetParams) error {
-	return c.request(ctx, MethodSerfThreadNameSet, params, nil)
+	return c.request(ctx, MethodEvenerThreadNameSet, params, nil)
 }
 
 func (c *Client) ThreadReasoningEffortSet(ctx context.Context, params ThreadReasoningEffortSetParams) error {
@@ -509,67 +509,67 @@ func pendingTargetRef(ref, threadID string) string {
 
 func (c *Client) TasksList(ctx context.Context, params TaskListParams) (TaskListResponse, error) {
 	var out TaskListResponse
-	err := c.request(ctx, MethodSerfTasksList, params, &out)
+	err := c.request(ctx, MethodEvenerTasksList, params, &out)
 	return out, err
 }
 
 func (c *Client) JobsList(ctx context.Context, params JobsListParams) (JobsListResponse, error) {
 	var out JobsListResponse
-	err := c.request(ctx, MethodSerfJobsList, params, &out)
+	err := c.request(ctx, MethodEvenerJobsList, params, &out)
 	return out, err
 }
 
 func (c *Client) JobOutput(ctx context.Context, params JobsOutputParams) (JobsOutputResponse, error) {
 	var out JobsOutputResponse
-	err := c.request(ctx, MethodSerfJobsOutput, params, &out)
+	err := c.request(ctx, MethodEvenerJobsOutput, params, &out)
 	return out, err
 }
 
 func (c *Client) PathsComplete(ctx context.Context, params PathsCompleteParams) (PathsCompleteResponse, error) {
 	var out PathsCompleteResponse
-	err := c.request(ctx, MethodSerfPathsComplete, params, &out)
+	err := c.request(ctx, MethodEvenerPathsComplete, params, &out)
 	return out, err
 }
 
 func (c *Client) ProjectsRecent(ctx context.Context, params ProjectsRecentParams) (ProjectsRecentResponse, error) {
 	var out ProjectsRecentResponse
-	err := c.request(ctx, MethodSerfProjectsRecent, params, &out)
+	err := c.request(ctx, MethodEvenerProjectsRecent, params, &out)
 	return out, err
 }
 
 func (c *Client) HarnessList(ctx context.Context, params HarnessListParams) (HarnessListResponse, error) {
 	var out HarnessListResponse
-	err := c.request(ctx, MethodSerfHarnessesList, params, &out)
+	err := c.request(ctx, MethodEvenerHarnessesList, params, &out)
 	return out, err
 }
 
 func (c *Client) Upgrade(ctx context.Context, params UpgradeParams) (UpgradeResponse, error) {
 	var out UpgradeResponse
-	err := c.request(ctx, MethodSerfUpgrade, params, &out)
+	err := c.request(ctx, MethodEvenerUpgrade, params, &out)
 	return out, err
 }
 
 func (c *Client) AuthStatus(ctx context.Context, params AuthStatusParams) (AuthStatusResponse, error) {
 	var out AuthStatusResponse
-	err := c.request(ctx, MethodSerfAuthStatus, params, &out)
+	err := c.request(ctx, MethodEvenerAuthStatus, params, &out)
 	return out, err
 }
 
 func (c *Client) AuthLoginStart(ctx context.Context, params AuthLoginStartParams) (AuthLoginStartResponse, error) {
 	var out AuthLoginStartResponse
-	err := c.request(ctx, MethodSerfAuthLoginStart, params, &out)
+	err := c.request(ctx, MethodEvenerAuthLoginStart, params, &out)
 	return out, err
 }
 
 func (c *Client) AuthLoginComplete(ctx context.Context, params AuthLoginCompleteParams) (AuthLoginCompleteResponse, error) {
 	var out AuthLoginCompleteResponse
-	err := c.request(ctx, MethodSerfAuthLoginComplete, params, &out)
+	err := c.request(ctx, MethodEvenerAuthLoginComplete, params, &out)
 	return out, err
 }
 
 func (c *Client) AuthLogout(ctx context.Context, params AuthLogoutParams) (AuthLogoutResponse, error) {
 	var out AuthLogoutResponse
-	err := c.request(ctx, MethodSerfAuthLogout, params, &out)
+	err := c.request(ctx, MethodEvenerAuthLogout, params, &out)
 	return out, err
 }
 
@@ -581,78 +581,78 @@ func (c *Client) ModelList(ctx context.Context, params ModelListParams) (ModelLi
 
 func (c *Client) CommandList(ctx context.Context) (CommandListResponse, error) {
 	var out CommandListResponse
-	err := c.request(ctx, MethodSerfCommandList, EmptyParams{}, &out)
+	err := c.request(ctx, MethodEvenerCommandList, EmptyParams{}, &out)
 	return out, err
 }
 
 func (c *Client) MarketplaceList(ctx context.Context) (MarketplaceListResponse, error) {
 	var out MarketplaceListResponse
-	err := c.request(ctx, MethodSerfMarketplaceList, EmptyParams{}, &out)
+	err := c.request(ctx, MethodEvenerMarketplaceList, EmptyParams{}, &out)
 	return out, err
 }
 
 func (c *Client) MarketplaceAdd(ctx context.Context, params MarketplaceAddParams) (MarketplaceListResponse, error) {
 	var out MarketplaceListResponse
-	err := c.request(ctx, MethodSerfMarketplaceAdd, params, &out)
+	err := c.request(ctx, MethodEvenerMarketplaceAdd, params, &out)
 	return out, err
 }
 
 func (c *Client) MarketplaceRemove(ctx context.Context, params MarketplaceNameParams) (MarketplaceListResponse, error) {
 	var out MarketplaceListResponse
-	err := c.request(ctx, MethodSerfMarketplaceRemove, params, &out)
+	err := c.request(ctx, MethodEvenerMarketplaceRemove, params, &out)
 	return out, err
 }
 
 func (c *Client) MarketplaceRefresh(ctx context.Context, params MarketplaceNameParams) (MarketplaceListResponse, error) {
 	var out MarketplaceListResponse
-	err := c.request(ctx, MethodSerfMarketplaceRefresh, params, &out)
+	err := c.request(ctx, MethodEvenerMarketplaceRefresh, params, &out)
 	return out, err
 }
 
 func (c *Client) MarketplaceBrowse(ctx context.Context, params MarketplaceBrowseParams) (MarketplaceBrowseResponse, error) {
 	var out MarketplaceBrowseResponse
-	err := c.request(ctx, MethodSerfMarketplaceBrowse, params, &out)
+	err := c.request(ctx, MethodEvenerMarketplaceBrowse, params, &out)
 	return out, err
 }
 
 func (c *Client) PluginList(ctx context.Context) (PluginListResponse, error) {
 	var out PluginListResponse
-	err := c.request(ctx, MethodSerfPluginList, EmptyParams{}, &out)
+	err := c.request(ctx, MethodEvenerPluginList, EmptyParams{}, &out)
 	return out, err
 }
 
 func (c *Client) PluginInstall(ctx context.Context, params PluginRefParams) (PluginListResponse, error) {
 	var out PluginListResponse
-	err := c.request(ctx, MethodSerfPluginInstall, params, &out)
+	err := c.request(ctx, MethodEvenerPluginInstall, params, &out)
 	return out, err
 }
 
 func (c *Client) PluginUpgrade(ctx context.Context, params PluginRefParams) (PluginListResponse, error) {
 	var out PluginListResponse
-	err := c.request(ctx, MethodSerfPluginUpgrade, params, &out)
+	err := c.request(ctx, MethodEvenerPluginUpgrade, params, &out)
 	return out, err
 }
 
 func (c *Client) PluginRemove(ctx context.Context, params PluginRefParams) (PluginListResponse, error) {
 	var out PluginListResponse
-	err := c.request(ctx, MethodSerfPluginRemove, params, &out)
+	err := c.request(ctx, MethodEvenerPluginRemove, params, &out)
 	return out, err
 }
 
 func (c *Client) PluginEnable(ctx context.Context, params PluginRefParams) (PluginListResponse, error) {
 	var out PluginListResponse
-	err := c.request(ctx, MethodSerfPluginEnable, params, &out)
+	err := c.request(ctx, MethodEvenerPluginEnable, params, &out)
 	return out, err
 }
 
 func (c *Client) PluginDisable(ctx context.Context, params PluginRefParams) (PluginListResponse, error) {
 	var out PluginListResponse
-	err := c.request(ctx, MethodSerfPluginDisable, params, &out)
+	err := c.request(ctx, MethodEvenerPluginDisable, params, &out)
 	return out, err
 }
 
 func (c *Client) PluginSetAutoUpgrade(ctx context.Context, params PluginSetAutoUpgradeParams) (PluginListResponse, error) {
 	var out PluginListResponse
-	err := c.request(ctx, MethodSerfPluginSetAutoUpgrade, params, &out)
+	err := c.request(ctx, MethodEvenerPluginSetAutoUpgrade, params, &out)
 	return out, err
 }

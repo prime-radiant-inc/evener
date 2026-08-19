@@ -1,4 +1,4 @@
-package serf_test
+package evener_test
 
 import (
 	"fmt"
@@ -21,7 +21,7 @@ import (
 //
 // The anchor is what makes it a citation. A backticked path on its own is a
 // mention — "relocated from the deleted `security.go`", "the package was
-// extracted out of `cmd/serf-tui/pending.go`" — and naming a file that is gone
+// extracted out of `cmd/evener-tui/pending.go`" — and naming a file that is gone
 // is the whole point of those sentences, so they are not checked.
 var scenarioGoCitation = regexp.MustCompile("`([A-Za-z0-9._/-]+\\.go)(?:#([A-Za-z0-9_.]+)|:([0-9][0-9,-]*))`")
 
@@ -50,7 +50,7 @@ const scenarioSourceCitationGroups = 2
 // audit stays green.
 //
 // Cards abbreviate a path down to the part that reads well
-// (`internal/hubcore/tree.go` for `cmd/serf-hub/internal/hubcore/tree.go`), so
+// (`internal/hubcore/tree.go` for `cmd/evener-hub/internal/hubcore/tree.go`), so
 // resolution is by path SUFFIX against the tree. That still catches the failure
 // that matters — the file moved out from under the citation, or was renamed,
 // or never existed under that name.
@@ -200,7 +200,7 @@ func TestScenarioSourceCitationNeedleReadsEveryCompiledExtension(t *testing.T) {
 		}
 	}
 	// An anchorless path is a mention, not a citation — "the package was
-	// extracted out of `cmd/serf-tui/pending.go`" names a file on purpose.
+	// extracted out of `cmd/evener-tui/pending.go`" names a file on purpose.
 	for _, mention := range []string{"`Composer.tsx`", "`docs/job-control.md:940`", "`fixture.tsx.snap:12`"} {
 		if m := scenarioSourceCitation.FindStringSubmatch(mention); m != nil {
 			t.Fatalf("the source-citation needle read %s as a citation: %v", mention, m)
@@ -876,7 +876,7 @@ func scenarioGoFilesByBase(t *testing.T) map[string][]string {
 
 // scenarioResolveCitedPath returns every file whose path is, or ends with, the
 // cited path. Cards abbreviate, so `internal/hubcore/tree.go` must find
-// `cmd/serf-hub/internal/hubcore/tree.go`; a bare `main.go` legitimately finds
+// `cmd/evener-hub/internal/hubcore/tree.go`; a bare `main.go` legitimately finds
 // many, which is imprecise but not stale.
 func scenarioResolveCitedPath(byBase map[string][]string, cited string) []string {
 	var out []string

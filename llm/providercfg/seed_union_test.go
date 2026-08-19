@@ -17,8 +17,8 @@ func seedUnionEnvExpansionEdges(t *testing.T) {
 	}{
 		{"plain", "plain"},
 		{"x$", "x$"},
-		{"$$${SERF_CFG_A}", "$alpha"},
-		{"$SERF_CFG_A!", "alpha!"},
+		{"$$${EVENER_CFG_A}", "$alpha"},
+		{"$EVENER_CFG_A!", "alpha!"},
 		{"$-", "$-"},
 	} {
 		got, err := ResolveAPIKey(tc.raw)
@@ -26,12 +26,12 @@ func seedUnionEnvExpansionEdges(t *testing.T) {
 			t.Fatalf("ResolveAPIKey(%q) = %q, %v; want %q", tc.raw, got, err, tc.want)
 		}
 	}
-	for _, raw := range []string{"${}", "${1BAD}", "${BAD-NAME}", "${SERF_CFG_A"} {
+	for _, raw := range []string{"${}", "${1BAD}", "${BAD-NAME}", "${EVENER_CFG_A"} {
 		if _, err := ResolveHeaderValue("X-Test", raw); err == nil {
 			t.Fatalf("ResolveHeaderValue(%q) unexpectedly succeeded", raw)
 		}
 	}
-	if _, err := ResolveAPIKey("${SERF_CFG_UNSET}"); err == nil {
+	if _, err := ResolveAPIKey("${EVENER_CFG_UNSET}"); err == nil {
 		t.Fatal("empty braced environment variable unexpectedly resolved")
 	}
 }
@@ -250,8 +250,8 @@ func seedUnionExistingScenarios(t *testing.T) {
 // arbitrary TOML and mutation programs cannot reach: environment expansion,
 // complete compat serialization, and injected filesystem/codec failures.
 func FuzzProviderCfgSeedUnion(f *testing.F) {
-	f.Setenv("SERF_CFG_A", "alpha")
-	f.Setenv("SERF_CFG_UNSET", "")
+	f.Setenv("EVENER_CFG_A", "alpha")
+	f.Setenv("EVENER_CFG_UNSET", "")
 	for selector := range uint8(5) {
 		f.Add(selector)
 	}

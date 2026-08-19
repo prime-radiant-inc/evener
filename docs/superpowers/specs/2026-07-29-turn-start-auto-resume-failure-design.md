@@ -47,7 +47,7 @@ returns a structured `appwire.WireError` with:
 
 - the original resume error text as `message`;
 - `code: CodeInternalError`;
-- `serfErrorInfo: mutationOutcomeUnknown`;
+- `evenerErrorInfo: mutationOutcomeUnknown`;
 - the request's original `clientMutationId`;
 - `mutationOutcome: unknown`;
 - `retryDisposition: blocked`; and

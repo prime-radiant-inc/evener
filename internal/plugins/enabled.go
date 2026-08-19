@@ -3,7 +3,7 @@ package plugins
 import (
 	"fmt"
 
-	agentplugin "primeradiant.com/serf/agent/plugin"
+	agentplugin "primeradiant.com/evener/agent/plugin"
 )
 
 var enabledLoad = agentplugin.Load

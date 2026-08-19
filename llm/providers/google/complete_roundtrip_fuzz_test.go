@@ -10,7 +10,7 @@ import (
 	"net/url"
 	"testing"
 
-	"primeradiant.com/serf/llm"
+	"primeradiant.com/evener/llm"
 )
 
 // captureRoundTripper is a fake http.RoundTripper: it records the FIRST request

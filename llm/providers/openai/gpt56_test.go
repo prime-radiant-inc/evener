@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	"primeradiant.com/serf/llm"
+	"primeradiant.com/evener/llm"
 )
 
 // buildBodyForTest runs the real Responses request builder and round-trips the
@@ -88,7 +88,7 @@ func imageRequest(t testing.TB, model string) llm.Request {
 
 // GPT-5.6 runs on OpenAI's responses-lite backend, which mishandles the image
 // "detail" field; the first-party codex client strips it from every image —
-// including explicitly-set details — so serf must omit it entirely on both
+// including explicitly-set details — so evener must omit it entirely on both
 // image sites.
 func TestGPT56_ImageDetailOmitted(t *testing.T) {
 	for _, model := range []string{"gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna", "gpt-5.6"} {
@@ -220,7 +220,7 @@ func TestPromptCacheRetention_FieldCompatibility(t *testing.T) {
 	})
 }
 
-// GPT-5.6 Responses streams can interleave item types serf does not use —
+// GPT-5.6 Responses streams can interleave item types evener does not use —
 // program / program_output (programmatic tool calling), tool_search_call, and
 // compaction items. The decoder must tolerate them (ignore or pass through as
 // provider events) and still deliver the surrounding text and tool calls.

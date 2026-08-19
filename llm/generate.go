@@ -394,7 +394,7 @@ func compileSchemaUnlocked(params map[string]any) (*jsonschema.Schema, error) {
 		return nil, err
 	}
 	// Use an absolute URI so the library never calls filepath.Abs → os.Getwd().
-	const schemaURI = "urn:serf:tool-schema"
+	const schemaURI = "urn:evener:tool-schema"
 	if err := compileSchemaAddResource(c, schemaURI, bytes.NewReader(b)); err != nil {
 		return nil, err
 	}

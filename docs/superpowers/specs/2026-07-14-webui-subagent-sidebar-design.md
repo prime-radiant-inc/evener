@@ -3,7 +3,7 @@
 **Date:** 2026-07-14
 **Status:** Approved for implementation planning
 
-**Scope:** Standalone interactive mockup for the Serf web hub
+**Scope:** Standalone interactive mockup for the Evener web hub
 
 ## Problem
 

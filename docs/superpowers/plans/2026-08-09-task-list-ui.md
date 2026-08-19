@@ -4,27 +4,27 @@
 
 **Goal:** Rebuild the web UI tasks panel (`TasksPanelBody`) as status-grouped "live rows" — two-line collapsed rows with latest-update excerpts, a collapsed settled group, a dense expanded view (meta strip, timestamps, markdown prompt inline disclosure, updates timeline).
 
-**Architecture:** Presentation-only changes in `cmd/serf-hub/frontend/src/panes/session/chrome/`, plus three small pure modules (`taskTime.ts`, `taskGroups.ts`) and parser additions in `taskData.ts`. No wire, daemon, or Go changes — the parser starts carrying `created_at`/`updated_at`/`completed_at`, which the daemon already sends. Fetch/stale/error logic is untouched.
+**Architecture:** Presentation-only changes in `cmd/evener-hub/frontend/src/panes/session/chrome/`, plus three small pure modules (`taskTime.ts`, `taskGroups.ts`) and parser additions in `taskData.ts`. No wire, daemon, or Go changes — the parser starts carrying `created_at`/`updated_at`/`completed_at`, which the daemon already sends. Fetch/stale/error logic is untouched.
 
 **Tech Stack:** React 19, TypeScript, CSS Modules, Vitest + Testing Library, Biome. Spec: `docs/superpowers/specs/2026-08-09-task-list-ui-design.md`.
 
 ## Global Constraints
 
 - Read `docs/testing.md` before adding or changing tests. Default tests must be deterministic: no provider credentials, network, quota, or ambient machine state.
-- Frontend gates, in order, on every touched file: `npx biome check --write <files>` (run from `cmd/serf-hub/frontend`), then `make test-web` from the repo root; `make test-web-browser` at the end (Chrome-capable host).
+- Frontend gates, in order, on every touched file: `npx biome check --write <files>` (run from `cmd/evener-hub/frontend`), then `make test-web` from the repo root; `make test-web-browser` at the end (Chrome-capable host).
 - Biome rules that bite this code: no `noNonNullAssertion` (no `!` postfixes), no array-index keys without a scoped `biome-ignore` comment carrying a justification (the notes list keeps the existing precedent: append-only, position is stable identity).
 - Token contract (`src/styles/token-contract.test.ts`): no hex/rgb/hsl/oklch literals outside `tokens.css`; `--attention`/`--alive`/`--danger` only in allowlisted widget stylesheets or exact-path exceptions. Task 8 adds the one exception this design needs.
 - `STATUS_GLYPH` / `STATUS_TONE` mapping is unchanged: open ○ neutral, in_progress ● alive, done ✓ neutral, cancelled ✕ neutral. Cancelled is never danger-tinted.
 - Commits are named-path only: `git add` exact files, never `git add -A` or `git add .`. Do not commit `mockups-draft/` (Task 9 handles it).
-- Single-test runs from `cmd/serf-hub/frontend`: `npx vitest run src/panes/session/chrome/<file>.test.ts[x]`.
+- Single-test runs from `cmd/evener-hub/frontend`: `npx vitest run src/panes/session/chrome/<file>.test.ts[x]`.
 
 ---
 
 ### Task 1: Parser carries timestamps
 
 **Files:**
-- Modify: `cmd/serf-hub/frontend/src/panes/session/chrome/taskData.ts`
-- Test: `cmd/serf-hub/frontend/src/panes/session/chrome/taskData.test.ts`
+- Modify: `cmd/evener-hub/frontend/src/panes/session/chrome/taskData.ts`
+- Test: `cmd/evener-hub/frontend/src/panes/session/chrome/taskData.test.ts`
 
 **Interfaces:**
 - Consumes: nothing new — the wire already sends `created_at`/`updated_at`/`completed_at` (`agent/task/task_store.go`).
@@ -84,7 +84,7 @@ test("non-string timestamp values are ignored, not carried", () => {
 
 - [ ] **Step 2: Run the tests to verify they fail**
 
-Run: `cd cmd/serf-hub/frontend && npx vitest run src/panes/session/chrome/taskData.test.ts`
+Run: `cd cmd/evener-hub/frontend && npx vitest run src/panes/session/chrome/taskData.test.ts`
 Expected: FAIL — the first test's `toEqual` shows the parsed row lacks the three fields.
 
 - [ ] **Step 3: Implement**
@@ -122,18 +122,18 @@ In `taskData.ts`:
 
 - [ ] **Step 4: Run the tests to verify they pass**
 
-Run: `cd cmd/serf-hub/frontend && npx vitest run src/panes/session/chrome/taskData.test.ts`
+Run: `cd cmd/evener-hub/frontend && npx vitest run src/panes/session/chrome/taskData.test.ts`
 Expected: PASS (all existing tests too — the fields are additive).
 
 Also run the transcript-side consumer, which reuses this parser:
-Run: `cd cmd/serf-hub/frontend && npx vitest run src/panes/session/transcript/tools/taskData.test.ts src/panes/session/transcript/tools/taskCard.test.tsx`
+Run: `cd cmd/evener-hub/frontend && npx vitest run src/panes/session/transcript/tools/taskData.test.ts src/panes/session/transcript/tools/taskCard.test.tsx`
 Expected: PASS.
 
 - [ ] **Step 5: Biome, then commit**
 
 ```bash
-cd cmd/serf-hub/frontend && npx biome check --write src/panes/session/chrome/taskData.ts src/panes/session/chrome/taskData.test.ts
-cd - && git add cmd/serf-hub/frontend/src/panes/session/chrome/taskData.ts cmd/serf-hub/frontend/src/panes/session/chrome/taskData.test.ts
+cd cmd/evener-hub/frontend && npx biome check --write src/panes/session/chrome/taskData.ts src/panes/session/chrome/taskData.test.ts
+cd - && git add cmd/evener-hub/frontend/src/panes/session/chrome/taskData.ts cmd/evener-hub/frontend/src/panes/session/chrome/taskData.test.ts
 git commit -m "feat(web): carry task timestamps in tasks panel parser"
 ```
 
@@ -142,8 +142,8 @@ git commit -m "feat(web): carry task timestamps in tasks panel parser"
 ### Task 2: `taskTime.ts` — relative/absolute time formatting
 
 **Files:**
-- Create: `cmd/serf-hub/frontend/src/panes/session/chrome/taskTime.ts`
-- Test: `cmd/serf-hub/frontend/src/panes/session/chrome/taskTime.test.ts`
+- Create: `cmd/evener-hub/frontend/src/panes/session/chrome/taskTime.ts`
+- Test: `cmd/evener-hub/frontend/src/panes/session/chrome/taskTime.test.ts`
 
 **Interfaces:**
 - Consumes: ISO strings from `TaskRow.createdAt`/`updatedAt`/`completedAt`.
@@ -194,7 +194,7 @@ test("absolute renders month-day and 24-hour time", () => {
 
 - [ ] **Step 2: Run to verify failure**
 
-Run: `cd cmd/serf-hub/frontend && npx vitest run src/panes/session/chrome/taskTime.test.ts`
+Run: `cd cmd/evener-hub/frontend && npx vitest run src/panes/session/chrome/taskTime.test.ts`
 Expected: FAIL — module does not exist.
 
 - [ ] **Step 3: Implement**
@@ -234,14 +234,14 @@ export function absoluteTime(iso: string): string {
 
 - [ ] **Step 4: Run to verify pass**
 
-Run: `cd cmd/serf-hub/frontend && npx vitest run src/panes/session/chrome/taskTime.test.ts`
+Run: `cd cmd/evener-hub/frontend && npx vitest run src/panes/session/chrome/taskTime.test.ts`
 Expected: PASS. (`absoluteTime` runs in the machine's local TZ; the fixture's `-07:00` matches this host. If CI runs elsewhere, the assertion still holds because the ISO offset and the formatter agree on the host zone — do not "fix" it by pinning UTC; the panel shows local time deliberately.)
 
 - [ ] **Step 5: Biome, then commit**
 
 ```bash
-cd cmd/serf-hub/frontend && npx biome check --write src/panes/session/chrome/taskTime.ts src/panes/session/chrome/taskTime.test.ts
-cd - && git add cmd/serf-hub/frontend/src/panes/session/chrome/taskTime.ts cmd/serf-hub/frontend/src/panes/session/chrome/taskTime.test.ts
+cd cmd/evener-hub/frontend && npx biome check --write src/panes/session/chrome/taskTime.ts src/panes/session/chrome/taskTime.test.ts
+cd - && git add cmd/evener-hub/frontend/src/panes/session/chrome/taskTime.ts cmd/evener-hub/frontend/src/panes/session/chrome/taskTime.test.ts
 git commit -m "feat(web): add tasks panel time formatting helpers"
 ```
 
@@ -250,8 +250,8 @@ git commit -m "feat(web): add tasks panel time formatting helpers"
 ### Task 3: `taskGroups.ts` — status grouping
 
 **Files:**
-- Create: `cmd/serf-hub/frontend/src/panes/session/chrome/taskGroups.ts`
-- Test: `cmd/serf-hub/frontend/src/panes/session/chrome/taskGroups.test.ts`
+- Create: `cmd/evener-hub/frontend/src/panes/session/chrome/taskGroups.ts`
+- Test: `cmd/evener-hub/frontend/src/panes/session/chrome/taskGroups.test.ts`
 
 **Interfaces:**
 - Consumes: `TaskRow` from `./taskData`.
@@ -309,7 +309,7 @@ test("an empty list yields three empty groups", () => {
 
 - [ ] **Step 2: Run to verify failure**
 
-Run: `cd cmd/serf-hub/frontend && npx vitest run src/panes/session/chrome/taskGroups.test.ts`
+Run: `cd cmd/evener-hub/frontend && npx vitest run src/panes/session/chrome/taskGroups.test.ts`
 Expected: FAIL — module does not exist.
 
 - [ ] **Step 3: Implement**
@@ -345,14 +345,14 @@ export function groupTasks(rows: TaskRow[]): TaskGroups {
 
 - [ ] **Step 4: Run to verify pass**
 
-Run: `cd cmd/serf-hub/frontend && npx vitest run src/panes/session/chrome/taskGroups.test.ts`
+Run: `cd cmd/evener-hub/frontend && npx vitest run src/panes/session/chrome/taskGroups.test.ts`
 Expected: PASS.
 
 - [ ] **Step 5: Biome, then commit**
 
 ```bash
-cd cmd/serf-hub/frontend && npx biome check --write src/panes/session/chrome/taskGroups.ts src/panes/session/chrome/taskGroups.test.ts
-cd - && git add cmd/serf-hub/frontend/src/panes/session/chrome/taskGroups.ts cmd/serf-hub/frontend/src/panes/session/chrome/taskGroups.test.ts
+cd cmd/evener-hub/frontend && npx biome check --write src/panes/session/chrome/taskGroups.ts src/panes/session/chrome/taskGroups.test.ts
+cd - && git add cmd/evener-hub/frontend/src/panes/session/chrome/taskGroups.ts cmd/evener-hub/frontend/src/panes/session/chrome/taskGroups.test.ts
 git commit -m "feat(web): add tasks panel status grouping"
 ```
 
@@ -361,9 +361,9 @@ git commit -m "feat(web): add tasks panel status grouping"
 ### Task 4: Panel body header — progress meter + count
 
 **Files:**
-- Modify: `cmd/serf-hub/frontend/src/panes/session/chrome/TasksPanel.tsx`
-- Modify: `cmd/serf-hub/frontend/src/panes/session/chrome/taskspanel.module.css`
-- Test: `cmd/serf-hub/frontend/src/panes/session/chrome/TasksPanel.test.tsx`
+- Modify: `cmd/evener-hub/frontend/src/panes/session/chrome/TasksPanel.tsx`
+- Modify: `cmd/evener-hub/frontend/src/panes/session/chrome/taskspanel.module.css`
+- Test: `cmd/evener-hub/frontend/src/panes/session/chrome/TasksPanel.test.tsx`
 
 **Interfaces:**
 - Consumes: `model.tasks` (`{ total, done } | null`), the `Meter` widget (`import { Meter } from "../../../widgets"`; props `label: string, value: number, max: number, tone: "neutral"` — same call shape as `transcript/tools/taskCard.tsx`).
@@ -402,7 +402,7 @@ Note: if `Meter` does not expose `role="progressbar"`, read `src/widgets/meter/i
 
 - [ ] **Step 2: Run to verify failure**
 
-Run: `cd cmd/serf-hub/frontend && npx vitest run src/panes/session/chrome/TasksPanel.test.tsx`
+Run: `cd cmd/evener-hub/frontend && npx vitest run src/panes/session/chrome/TasksPanel.test.tsx`
 Expected: FAIL — `tasks-body-head` not found (and no other test breaks).
 
 - [ ] **Step 3: Implement**
@@ -451,14 +451,14 @@ In `taskspanel.module.css` add:
 
 - [ ] **Step 4: Run to verify pass**
 
-Run: `cd cmd/serf-hub/frontend && npx vitest run src/panes/session/chrome/TasksPanel.test.tsx`
+Run: `cd cmd/evener-hub/frontend && npx vitest run src/panes/session/chrome/TasksPanel.test.tsx`
 Expected: PASS.
 
 - [ ] **Step 5: Biome, then commit**
 
 ```bash
-cd cmd/serf-hub/frontend && npx biome check --write src/panes/session/chrome/TasksPanel.tsx src/panes/session/chrome/taskspanel.module.css src/panes/session/chrome/TasksPanel.test.tsx
-cd - && git add cmd/serf-hub/frontend/src/panes/session/chrome/TasksPanel.tsx cmd/serf-hub/frontend/src/panes/session/chrome/taskspanel.module.css cmd/serf-hub/frontend/src/panes/session/chrome/TasksPanel.test.tsx
+cd cmd/evener-hub/frontend && npx biome check --write src/panes/session/chrome/TasksPanel.tsx src/panes/session/chrome/taskspanel.module.css src/panes/session/chrome/TasksPanel.test.tsx
+cd - && git add cmd/evener-hub/frontend/src/panes/session/chrome/TasksPanel.tsx cmd/evener-hub/frontend/src/panes/session/chrome/taskspanel.module.css cmd/evener-hub/frontend/src/panes/session/chrome/TasksPanel.test.tsx
 git commit -m "feat(web): add tasks panel body progress header"
 ```
 
@@ -467,9 +467,9 @@ git commit -m "feat(web): add tasks panel body progress header"
 ### Task 5: Grouped list + collapsed live rows
 
 **Files:**
-- Modify: `cmd/serf-hub/frontend/src/panes/session/chrome/TasksPanel.tsx` (the `TaskRowView` summary and the rows branch of `renderBody`)
-- Modify: `cmd/serf-hub/frontend/src/panes/session/chrome/taskspanel.module.css`
-- Test: `cmd/serf-hub/frontend/src/panes/session/chrome/TasksPanel.test.tsx`
+- Modify: `cmd/evener-hub/frontend/src/panes/session/chrome/TasksPanel.tsx` (the `TaskRowView` summary and the rows branch of `renderBody`)
+- Modify: `cmd/evener-hub/frontend/src/panes/session/chrome/taskspanel.module.css`
+- Test: `cmd/evener-hub/frontend/src/panes/session/chrome/TasksPanel.test.tsx`
 
 **Interfaces:**
 - Consumes: `groupTasks` (Task 3), `relativeTime`/`absoluteTime` (Task 2), `TaskRow.notes`/`updatedAt` (Task 1), `Disclosure` (`widgets/disclosure`), `taskDisclosureId`.
@@ -547,7 +547,7 @@ The live-row excerpt positive case: task id 2 has no notes, so also add a note t
 
 - [ ] **Step 2: Run to verify failure**
 
-Run: `cd cmd/serf-hub/frontend && npx vitest run src/panes/session/chrome/TasksPanel.test.tsx`
+Run: `cd cmd/evener-hub/frontend && npx vitest run src/panes/session/chrome/TasksPanel.test.tsx`
 Expected: FAIL on the new/revised tests; pre-existing fetch/error tests still PASS.
 
 - [ ] **Step 3: Implement**
@@ -752,14 +752,14 @@ Note: CSS Modules `composes` works in this codebase's Vite setup; if the build r
 
 - [ ] **Step 4: Run to verify pass**
 
-Run: `cd cmd/serf-hub/frontend && npx vitest run src/panes/session/chrome/TasksPanel.test.tsx`
+Run: `cd cmd/evener-hub/frontend && npx vitest run src/panes/session/chrome/TasksPanel.test.tsx`
 Expected: PASS, including the revised ordering test. If the "a task row starts collapsed..." or "each row's expand state is independent" tests break because their fixture rows moved into groups, update their selectors (rows are still `task-row` testids; expand behavior is unchanged).
 
 - [ ] **Step 5: Biome, then commit**
 
 ```bash
-cd cmd/serf-hub/frontend && npx biome check --write src/panes/session/chrome/TasksPanel.tsx src/panes/session/chrome/taskspanel.module.css src/panes/session/chrome/TasksPanel.test.tsx
-cd - && git add cmd/serf-hub/frontend/src/panes/session/chrome/TasksPanel.tsx cmd/serf-hub/frontend/src/panes/session/chrome/taskspanel.module.css cmd/serf-hub/frontend/src/panes/session/chrome/TasksPanel.test.tsx
+cd cmd/evener-hub/frontend && npx biome check --write src/panes/session/chrome/TasksPanel.tsx src/panes/session/chrome/taskspanel.module.css src/panes/session/chrome/TasksPanel.test.tsx
+cd - && git add cmd/evener-hub/frontend/src/panes/session/chrome/TasksPanel.tsx cmd/evener-hub/frontend/src/panes/session/chrome/taskspanel.module.css cmd/evener-hub/frontend/src/panes/session/chrome/TasksPanel.test.tsx
 git commit -m "feat(web): group tasks panel rows and show latest updates inline"
 ```
 
@@ -768,9 +768,9 @@ git commit -m "feat(web): group tasks panel rows and show latest updates inline"
 ### Task 6: Expanded body — meta strip + timestamps line
 
 **Files:**
-- Modify: `cmd/serf-hub/frontend/src/panes/session/chrome/TasksPanel.tsx` (replace `TaskDetails`/`TaskDetailField`)
-- Modify: `cmd/serf-hub/frontend/src/panes/session/chrome/taskspanel.module.css` (remove `detailList`/`detailRow`/`detailLabel`/`detailValue`/`detailPrompt`; add new classes)
-- Test: `cmd/serf-hub/frontend/src/panes/session/chrome/TasksPanel.test.tsx`
+- Modify: `cmd/evener-hub/frontend/src/panes/session/chrome/TasksPanel.tsx` (replace `TaskDetails`/`TaskDetailField`)
+- Modify: `cmd/evener-hub/frontend/src/panes/session/chrome/taskspanel.module.css` (remove `detailList`/`detailRow`/`detailLabel`/`detailValue`/`detailPrompt`; add new classes)
+- Test: `cmd/evener-hub/frontend/src/panes/session/chrome/TasksPanel.test.tsx`
 
 **Interfaces:**
 - Consumes: `TaskRow` incl. timestamps (Task 1), `relativeTime`/`absoluteTime` (Task 2).
@@ -818,7 +818,7 @@ test("the timestamps line omits updated when it equals created", async () => {
 
 - [ ] **Step 2: Run to verify failure**
 
-Run: `cd cmd/serf-hub/frontend && npx vitest run src/panes/session/chrome/TasksPanel.test.tsx`
+Run: `cd cmd/evener-hub/frontend && npx vitest run src/panes/session/chrome/TasksPanel.test.tsx`
 Expected: FAIL — `task-expanded`/`task-meta`/`task-times` not found.
 
 - [ ] **Step 3: Implement**
@@ -964,14 +964,14 @@ Update `TaskRowView`'s disclosure body to `<TaskExpandedBody task={task} />`. Re
 
 - [ ] **Step 4: Run to verify pass**
 
-Run: `cd cmd/serf-hub/frontend && npx vitest run src/panes/session/chrome/TasksPanel.test.tsx`
+Run: `cd cmd/evener-hub/frontend && npx vitest run src/panes/session/chrome/TasksPanel.test.tsx`
 Expected: PASS. The "clicking its summary expands it to show the full detail fields" test likely asserts old testids (`task-detail-status` etc.) — revise it to assert `task-expanded` and `task-meta` instead.
 
 - [ ] **Step 5: Biome, then commit**
 
 ```bash
-cd cmd/serf-hub/frontend && npx biome check --write src/panes/session/chrome/TasksPanel.tsx src/panes/session/chrome/taskspanel.module.css src/panes/session/chrome/TasksPanel.test.tsx
-cd - && git add cmd/serf-hub/frontend/src/panes/session/chrome/TasksPanel.tsx cmd/serf-hub/frontend/src/panes/session/chrome/taskspanel.module.css cmd/serf-hub/frontend/src/panes/session/chrome/TasksPanel.test.tsx
+cd cmd/evener-hub/frontend && npx biome check --write src/panes/session/chrome/TasksPanel.tsx src/panes/session/chrome/taskspanel.module.css src/panes/session/chrome/TasksPanel.test.tsx
+cd - && git add cmd/evener-hub/frontend/src/panes/session/chrome/TasksPanel.tsx cmd/evener-hub/frontend/src/panes/session/chrome/taskspanel.module.css cmd/evener-hub/frontend/src/panes/session/chrome/TasksPanel.test.tsx
 git commit -m "feat(web): dense expanded task body with meta strip and timestamps"
 ```
 
@@ -980,9 +980,9 @@ git commit -m "feat(web): dense expanded task body with meta strip and timestamp
 ### Task 7: Prompt as markdown inline disclosure
 
 **Files:**
-- Modify: `cmd/serf-hub/frontend/src/panes/session/chrome/TasksPanel.tsx`
-- Modify: `cmd/serf-hub/frontend/src/panes/session/chrome/taskspanel.module.css`
-- Test: `cmd/serf-hub/frontend/src/panes/session/chrome/TasksPanel.test.tsx`
+- Modify: `cmd/evener-hub/frontend/src/panes/session/chrome/TasksPanel.tsx`
+- Modify: `cmd/evener-hub/frontend/src/panes/session/chrome/taskspanel.module.css`
+- Test: `cmd/evener-hub/frontend/src/panes/session/chrome/TasksPanel.test.tsx`
 
 **Interfaces:**
 - Consumes: `Markdown` widget (`import { Markdown } from "../../../widgets"`; props `{ source: string }` — do NOT pass `live`, that is for streaming), `isDisclosureOpen`/`toggleDisclosure` from `../../../widgets/disclosure/disclosureStore`, `taskDisclosureId`.
@@ -1014,7 +1014,7 @@ test("a task with a blank prompt renders no prompt disclosure", async () => {
 
 - [ ] **Step 2: Run to verify failure**
 
-Run: `cd cmd/serf-hub/frontend && npx vitest run src/panes/session/chrome/TasksPanel.test.tsx`
+Run: `cd cmd/evener-hub/frontend && npx vitest run src/panes/session/chrome/TasksPanel.test.tsx`
 Expected: FAIL — `task-prompt` not found.
 
 - [ ] **Step 3: Implement**
@@ -1130,14 +1130,14 @@ CSS:
 
 - [ ] **Step 4: Run to verify pass**
 
-Run: `cd cmd/serf-hub/frontend && npx vitest run src/panes/session/chrome/TasksPanel.test.tsx`
+Run: `cd cmd/evener-hub/frontend && npx vitest run src/panes/session/chrome/TasksPanel.test.tsx`
 Expected: PASS.
 
 - [ ] **Step 5: Biome, then commit**
 
 ```bash
-cd cmd/serf-hub/frontend && npx biome check --write src/panes/session/chrome/TasksPanel.tsx src/panes/session/chrome/taskspanel.module.css src/panes/session/chrome/TasksPanel.test.tsx
-cd - && git add cmd/serf-hub/frontend/src/panes/session/chrome/TasksPanel.tsx cmd/serf-hub/frontend/src/panes/session/chrome/taskspanel.module.css cmd/serf-hub/frontend/src/panes/session/chrome/TasksPanel.test.tsx
+cd cmd/evener-hub/frontend && npx biome check --write src/panes/session/chrome/TasksPanel.tsx src/panes/session/chrome/taskspanel.module.css src/panes/session/chrome/TasksPanel.test.tsx
+cd - && git add cmd/evener-hub/frontend/src/panes/session/chrome/TasksPanel.tsx cmd/evener-hub/frontend/src/panes/session/chrome/taskspanel.module.css cmd/evener-hub/frontend/src/panes/session/chrome/TasksPanel.test.tsx
 git commit -m "feat(web): render task prompt as markdown inline disclosure"
 ```
 
@@ -1146,10 +1146,10 @@ git commit -m "feat(web): render task prompt as markdown inline disclosure"
 ### Task 8: Updates timeline + token-contract exception
 
 **Files:**
-- Modify: `cmd/serf-hub/frontend/src/panes/session/chrome/TasksPanel.tsx` (`TaskNotesTimeline` becomes the rail timeline)
-- Modify: `cmd/serf-hub/frontend/src/panes/session/chrome/taskspanel.module.css`
-- Modify: `cmd/serf-hub/frontend/src/styles/token-contract.test.ts` (exact-path exception)
-- Test: `cmd/serf-hub/frontend/src/panes/session/chrome/TasksPanel.test.tsx`
+- Modify: `cmd/evener-hub/frontend/src/panes/session/chrome/TasksPanel.tsx` (`TaskNotesTimeline` becomes the rail timeline)
+- Modify: `cmd/evener-hub/frontend/src/panes/session/chrome/taskspanel.module.css`
+- Modify: `cmd/evener-hub/frontend/src/styles/token-contract.test.ts` (exact-path exception)
+- Test: `cmd/evener-hub/frontend/src/panes/session/chrome/TasksPanel.test.tsx`
 
 **Interfaces:**
 - Consumes: `TaskRow.notes`.
@@ -1181,7 +1181,7 @@ test("the taskspanel.module.css semantic-var exception is scoped to its exact pa
 
 - [ ] **Step 2: Run to verify failure**
 
-Run: `cd cmd/serf-hub/frontend && npx vitest run src/panes/session/chrome/TasksPanel.test.tsx src/styles/token-contract.test.ts`
+Run: `cd cmd/evener-hub/frontend && npx vitest run src/panes/session/chrome/TasksPanel.test.tsx src/styles/token-contract.test.ts`
 Expected: FAIL — `data-latest` missing; exception not in the set.
 
 - [ ] **Step 3: Implement**
@@ -1262,14 +1262,14 @@ and add `"panes/session/chrome/taskspanel.module.css",` to the `SEMANTIC_PATH_EX
 
 - [ ] **Step 4: Run to verify pass**
 
-Run: `cd cmd/serf-hub/frontend && npx vitest run src/panes/session/chrome/TasksPanel.test.tsx src/styles/token-contract.test.ts`
+Run: `cd cmd/evener-hub/frontend && npx vitest run src/panes/session/chrome/TasksPanel.test.tsx src/styles/token-contract.test.ts`
 Expected: PASS.
 
 - [ ] **Step 5: Biome, then commit**
 
 ```bash
-cd cmd/serf-hub/frontend && npx biome check --write src/panes/session/chrome/TasksPanel.tsx src/panes/session/chrome/taskspanel.module.css src/panes/session/chrome/TasksPanel.test.tsx src/styles/token-contract.test.ts
-cd - && git add cmd/serf-hub/frontend/src/panes/session/chrome/TasksPanel.tsx cmd/serf-hub/frontend/src/panes/session/chrome/taskspanel.module.css cmd/serf-hub/frontend/src/panes/session/chrome/TasksPanel.test.tsx cmd/serf-hub/frontend/src/styles/token-contract.test.ts
+cd cmd/evener-hub/frontend && npx biome check --write src/panes/session/chrome/TasksPanel.tsx src/panes/session/chrome/taskspanel.module.css src/panes/session/chrome/TasksPanel.test.tsx src/styles/token-contract.test.ts
+cd - && git add cmd/evener-hub/frontend/src/panes/session/chrome/TasksPanel.tsx cmd/evener-hub/frontend/src/panes/session/chrome/taskspanel.module.css cmd/evener-hub/frontend/src/panes/session/chrome/TasksPanel.test.tsx cmd/evener-hub/frontend/src/styles/token-contract.test.ts
 git commit -m "feat(web): render task notes as updates timeline"
 ```
 

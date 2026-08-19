@@ -6,7 +6,7 @@ Status: Proposed evergreen spec. This doc defines the lightweight-helper path as
 
 ## Purpose
 
-Give Serf and SDK embedders a clear, small pattern for one-off model calls used by bounded helper work: summaries, titles, lint-style checks, classification, object extraction, hook prompt handlers, and prompt transformations.
+Give Evener and SDK embedders a clear, small pattern for one-off model calls used by bounded helper work: summaries, titles, lint-style checks, classification, object extraction, hook prompt handlers, and prompt transformations.
 
 Subagents remain the right abstraction for isolated multi-turn work with tools, progress, lifecycle control, and child transcripts. Lightweight helpers are ordinary LLM calls owned by the current operation.
 

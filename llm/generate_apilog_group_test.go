@@ -11,7 +11,7 @@ import (
 	"testing"
 	"time"
 
-	apilog "primeradiant.com/serf/llm/apilog"
+	apilog "primeradiant.com/evener/llm/apilog"
 )
 
 type logicalGroupScriptedAdapter struct {

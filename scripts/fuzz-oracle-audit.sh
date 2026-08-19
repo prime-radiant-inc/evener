@@ -15,16 +15,16 @@
 #     mutation-id  audit only these ids (default: every mutation in the manifest).
 #
 # Env seams (defaults are production; used by the self-test):
-#   SERF_FUZZ_REPO_ROOT  repo root (default: the parent of this script's dir)
-#   SERF_FUZZ_RUNNER     the registry source (default: scripts/run-fuzz.sh)
-#   SERF_FUZZ_GO         the go toolchain (default: go)
-#   SERF_FUZZ_TAGS       build tags for the replay (default: serffuzz)
+#   EVENER_FUZZ_REPO_ROOT  repo root (default: the parent of this script's dir)
+#   EVENER_FUZZ_RUNNER     the registry source (default: scripts/run-fuzz.sh)
+#   EVENER_FUZZ_GO         the go toolchain (default: go)
+#   EVENER_FUZZ_TAGS       build tags for the replay (default: evenerfuzz)
 set -uo pipefail
 
-repo_root="${SERF_FUZZ_REPO_ROOT:-$(cd "$(dirname "$0")/.." && pwd)}"
-runner="${SERF_FUZZ_RUNNER:-$repo_root/scripts/run-fuzz.sh}"
-go_bin="${SERF_FUZZ_GO:-go}"
-tags="${SERF_FUZZ_TAGS:-serffuzz}"
+repo_root="${EVENER_FUZZ_REPO_ROOT:-$(cd "$(dirname "$0")/.." && pwd)}"
+runner="${EVENER_FUZZ_RUNNER:-$repo_root/scripts/run-fuzz.sh}"
+go_bin="${EVENER_FUZZ_GO:-go}"
+tags="${EVENER_FUZZ_TAGS:-evenerfuzz}"
 manifest="$repo_root/fuzz/mutations/manifest.tsv"
 
 gap_only=false
@@ -91,10 +91,10 @@ pkg_for() {
 # not compile — a mutation that fails to BUILD must score ERROR, never "caught",
 # or the audit would credit the oracle for a crash it never saw.
 run_seeds() {
-	# SERF_FUZZ_TESTS=1: the seqfuzz/schemafuzz rapid family t.Skip()s under a
+	# EVENER_FUZZ_TESTS=1: the seqfuzz/schemafuzz rapid family t.Skip()s under a
 	# plain `go test` (moved out of `make test` per the fuzz-family ruling); a
 	# skip must never be misread as an oracle failing to catch the mutation.
-	REPRO_OUT="$(cd "$wt/$1" && SERF_FUZZ_TESTS=1 "$go_bin" test ${tags:+-tags "$tags"} -run "^$3\$" -count=1 "$2" 2>&1)"
+	REPRO_OUT="$(cd "$wt/$1" && EVENER_FUZZ_TESTS=1 "$go_bin" test ${tags:+-tags "$tags"} -run "^$3\$" -count=1 "$2" 2>&1)"
 	REPRO_RC=$?
 }
 build_failed() { printf '%s' "$REPRO_OUT" | grep -qE '\[build failed\]|\[setup failed\]'; }

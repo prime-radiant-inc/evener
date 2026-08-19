@@ -5,7 +5,7 @@ import (
 	"errors"
 	"fmt"
 
-	"primeradiant.com/serf/llm"
+	"primeradiant.com/evener/llm"
 )
 
 // jsonAdapter is a minimal [llm.ProviderAdapter] that always replies with a

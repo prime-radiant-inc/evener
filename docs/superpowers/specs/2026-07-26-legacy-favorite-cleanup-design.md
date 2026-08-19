@@ -39,37 +39,37 @@ metadata/tree set so capped-away remote rows can still be written.
 
 The current implementation establishes these boundaries:
 
-- `cmd/serf-hub/internal/hubcore/favorite.go:13-136` owns the SQLite-backed
+- `cmd/evener-hub/internal/hubcore/favorite.go:13-136` owns the SQLite-backed
   `FavoriteStore`. The table is created in place with columns `kind`, `id`,
   `favorited`, and `decided_at`; `Favorites()` returns only `favorited=true`
   rows, while `Set(..., false, ...)` leaves a false decision row in storage.
-- `cmd/serf-hub/web_api_favorite.go:14-96` handles POST `/api/favorite`.
+- `cmd/evener-hub/web_api_favorite.go:14-96` handles POST `/api/favorite`.
   `topLevelFavoriteSessionID` uses the full navigation inputs and
   `hubcore.TopLevelSessionIDs`, rejects a `cluster:` request as part of the
   `ndr0` validation, and normalizes accepted local/ref aliases before writing.
-- `cmd/serf-hub/internal/hubcore/tree.go:359-410` defines the shared lineage
+- `cmd/evener-hub/internal/hubcore/tree.go:359-410` defines the shared lineage
   classification (`nestedSessionIDs` and `TopLevelSessionIDs`).
   `BuildTreeAtWithProjects` at `496-1036` builds from uncapped metadata and
   live entries, then `clusterRepeatedTitles` at `1117-1197` creates synthetic
   cluster nodes and the per-tier cap is applied at `851-856`.
-- `cmd/serf-hub/web_api_tree.go:89-223` reads favorite decisions and projects
+- `cmd/evener-hub/web_api_tree.go:89-223` reads favorite decisions and projects
   the live, project, needs-you, and pinned tiers. The current pinned loop at
   `200-220` walks only the rendered `Current` and `Recent` slices, which are
   capped presentation slices; that cap must never become validity evidence.
-- `cmd/serf-hub/web_api_tree.go:342-443` assembles local metadata, live
+- `cmd/evener-hub/web_api_tree.go:342-443` assembles local metadata, live
   entries, and remote threads. Remote list failures retain last-known-good
   data (`426-443`), so a cached read can render a tree but cannot prove that a
   missing remote row is gone now.
-- `cmd/serf-hub/web_api_project_delete.go:32-205` is the existing explicit
+- `cmd/evener-hub/web_api_project_delete.go:32-205` is the existing explicit
   project deletion path. It validates the canonical project ID and working
   directory, holds session ownership while checking liveness, removes session
   artifacts, and scrubs session/project decision rows. Its decision-row calls
   must be ordered after every required artifact-removal result; in particular,
   a later API-log removal failure must leave the row for retry.
-- `cmd/serf-hub/frontend/src/shell/rail/actions.ts:38-72`,
+- `cmd/evener-hub/frontend/src/shell/rail/actions.ts:38-72`,
   `Rail.tsx:386-487`, and `Rail.tsx:673-694` show that favorite writes and
   project deletion are explicit UI actions, with project deletion confirmed in
-  a dialog. `cmd/serf-hub/frontend/src/stores/tree.ts:257-424` retains the last
+  a dialog. `cmd/evener-hub/frontend/src/stores/tree.ts:257-424` retains the last
   successful tree on refresh failure.
 
 ## Goals
@@ -361,16 +361,16 @@ access; the boundary follows `docs/testing.md`.
 
 ### HTTP/tree contracts
 
-- Extend `cmd/serf-hub/web_api_favorite_test.go` and
-  `cmd/serf-hub/internal/hubcore/favorite_test.go` to assert that `ndr0`
+- Extend `cmd/evener-hub/web_api_favorite_test.go` and
+  `cmd/evener-hub/internal/hubcore/favorite_test.go` to assert that `ndr0`
   reject paths still perform no write and accepted capped-away/orphan targets
   still persist.
-- Add tree endpoint cases in `cmd/serf-hub/web_api_tree_test.go` for dormant,
+- Add tree endpoint cases in `cmd/evener-hub/web_api_tree_test.go` for dormant,
   confirmed-invalid, valid/offline, capped, and source-failure presentation.
   Assert structured fields (`favorite`, `favorites`, `more_*`, and node kind),
   not large rendered JSON strings.
 - Add pure tree/lineage cases in
-  `cmd/serf-hub/internal/hubcore/tree_test.go` or a focused sibling test file;
+  `cmd/evener-hub/internal/hubcore/tree_test.go` or a focused sibling test file;
   use `BuildTreeAt` with a fixed clock and verify the shared top-level/lineage
   classification.
 - Verify the favorite store row set before and after each read path, including
@@ -378,7 +378,7 @@ access; the boundary follows `docs/testing.md`.
 
 ### Explicit deletion contracts
 
-- Extend `cmd/serf-hub/web_api_project_delete_test.go` so every artifact
+- Extend `cmd/evener-hub/web_api_project_delete_test.go` so every artifact
   removal failure, including a late API-log failure, preserves the relevant
   session and project decision rows.
 - Verify successful canonical deletion removes only the rows for artifacts
@@ -386,7 +386,7 @@ access; the boundary follows `docs/testing.md`.
 - Verify ID/working-directory mismatch and live/locked targets perform no
   decision deletion.
 - Keep the existing frontend contracts in
-  `cmd/serf-hub/frontend/src/shell/rail/Rail.test.tsx`,
+  `cmd/evener-hub/frontend/src/shell/rail/Rail.test.tsx`,
   `RailRow.test.tsx`, and `stores/tree.test.ts`: cancel sends no delete, a
   skipped session is retained, a deleted session is reconciled, and refresh
   failure retains the last successful tree.
@@ -394,25 +394,25 @@ access; the boundary follows `docs/testing.md`.
 ## Short implementation plan outline
 
 1. **Add a pure in-memory authority/revalidation seam.** Keep
-   `cmd/serf-hub/internal/hubcore/favorite.go` as a persistence-only store.
+   `cmd/evener-hub/internal/hubcore/favorite.go` as a persistence-only store.
    Add the smallest focused hubcore helper (or same-package section) that
    consumes complete raw navigation inputs, reuses `nestedSessionIDs`/
    `TopLevelSessionIDs`, records source completeness, resolves exact canonical
    identities, and returns presentation decisions without any store mutation.
    Do not alter the SQLite schema or write a quarantine table.
 2. **Make tree reads use one snapshot.** Update
-   `cmd/serf-hub/web_api_tree.go` so tree construction and favorite
+   `cmd/evener-hub/web_api_tree.go` so tree construction and favorite
    revalidation share the same navigation generation. Build the authority
    before clustering/capping, exclude only confirmed-invalid/dormant rows from
    the projection, and ensure the pinned candidate source is not the capped
    tier slices. Propagate favorite-store read errors instead of treating them
    as an empty map.
 3. **Preserve the ndr0 write boundary.** Keep
-   `cmd/serf-hub/web_api_favorite.go` and its existing validation contracts
+   `cmd/evener-hub/web_api_favorite.go` and its existing validation contracts
    responsible for rejecting new non-addressable session targets before
    `FavoriteStore.Set`; add only the tests needed to prevent regression.
 4. **Tighten explicit deletion ordering.** In
-   `cmd/serf-hub/web_api_project_delete.go`, centralize or adjust the existing
+   `cmd/evener-hub/web_api_project_delete.go`, centralize or adjust the existing
    canonical deletion gate so every required artifact operation succeeds
    before the matching `FavoriteStore.Delete`. Preserve project rows on
    partial deletion and retain rows when the store delete itself fails. A
@@ -427,25 +427,25 @@ access; the boundary follows `docs/testing.md`.
 - `AGENTS.md`
 - `docs/testing.md`
 - kata records `r0yf` and `ndr0` via `kata show`
-- `cmd/serf-hub/internal/hubcore/favorite.go`
-- `cmd/serf-hub/internal/hubcore/favorite_test.go`
-- `cmd/serf-hub/internal/hubcore/tree.go`
-- `cmd/serf-hub/internal/hubcore/tree_test.go`
-- `cmd/serf-hub/internal/hubcore/remotecache.go`
-- `cmd/serf-hub/web_api_favorite.go`
-- `cmd/serf-hub/web_api_favorite_test.go`
-- `cmd/serf-hub/web_api_tree.go`
-- `cmd/serf-hub/web_api_tree_test.go`
-- `cmd/serf-hub/web_api_project_delete.go`
-- `cmd/serf-hub/web_api_project_delete_test.go`
+- `cmd/evener-hub/internal/hubcore/favorite.go`
+- `cmd/evener-hub/internal/hubcore/favorite_test.go`
+- `cmd/evener-hub/internal/hubcore/tree.go`
+- `cmd/evener-hub/internal/hubcore/tree_test.go`
+- `cmd/evener-hub/internal/hubcore/remotecache.go`
+- `cmd/evener-hub/web_api_favorite.go`
+- `cmd/evener-hub/web_api_favorite_test.go`
+- `cmd/evener-hub/web_api_tree.go`
+- `cmd/evener-hub/web_api_tree_test.go`
+- `cmd/evener-hub/web_api_project_delete.go`
+- `cmd/evener-hub/web_api_project_delete_test.go`
 - `hubapi/types.go`
-- `cmd/serf-hub/frontend/src/stores/tree.ts`
-- `cmd/serf-hub/frontend/src/stores/tree.test.ts`
-- `cmd/serf-hub/frontend/src/shell/rail/actions.ts`
-- `cmd/serf-hub/frontend/src/shell/rail/Rail.tsx`
-- `cmd/serf-hub/frontend/src/shell/rail/Rail.test.tsx`
-- `cmd/serf-hub/frontend/src/shell/rail/RailRow.tsx`
-- `cmd/serf-hub/frontend/src/shell/rail/RailRow.test.tsx`
+- `cmd/evener-hub/frontend/src/stores/tree.ts`
+- `cmd/evener-hub/frontend/src/stores/tree.test.ts`
+- `cmd/evener-hub/frontend/src/shell/rail/actions.ts`
+- `cmd/evener-hub/frontend/src/shell/rail/Rail.tsx`
+- `cmd/evener-hub/frontend/src/shell/rail/Rail.test.tsx`
+- `cmd/evener-hub/frontend/src/shell/rail/RailRow.tsx`
+- `cmd/evener-hub/frontend/src/shell/rail/RailRow.test.tsx`
 
 ## Self-review before implementation
 

@@ -23,7 +23,7 @@ Terminal-notification cardinality/format is job-notification-semantics.md.
 
 - Fresh binaries from the branch under test; an isolated hub
   (`docs/agentic-testing.md` setup checklist); credentialed model.
-- `tmpdir=$(mktemp -d -t serf-e2e-shlife-XXXXX)`.
+- `tmpdir=$(mktemp -d -t evener-e2e-shlife-XXXXX)`.
 
 ## Steps
 
@@ -68,9 +68,9 @@ Terminal-notification cardinality/format is job-notification-semantics.md.
    > 4. Call job_list with no filters and report whether any job_id from
    >    steps 1 or 3 appears. End your turn.
 5. Read the transcript
-   (`find ~/.local/state/serf/projects -name "$SID.transcript.jsonl"`)
+   (`find ~/.local/state/evener/projects -name "$SID.transcript.jsonl"`)
    and the durable log
-   (`find ~/.local/state/serf/projects -path "*sessions/$SID/jobs.jsonl"`),
+   (`find ~/.local/state/evener/projects -path "*sessions/$SID/jobs.jsonl"`),
    plus a runaway-liveness check after turn 2 that cannot match the
    checking shell itself: `ps -eo args | grep -c '^sleep 31415$'`
    (expect 0). Do NOT use `pgrep -f` — the pattern matches the

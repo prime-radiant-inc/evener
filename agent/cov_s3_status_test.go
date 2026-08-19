@@ -6,8 +6,8 @@ import (
 
 	mcpsdk "github.com/modelcontextprotocol/go-sdk/mcp"
 
-	"primeradiant.com/serf/agent/internal/mcp"
-	"primeradiant.com/serf/agent/mcpconfig"
+	"primeradiant.com/evener/agent/internal/mcp"
+	"primeradiant.com/evener/agent/mcpconfig"
 )
 
 // TestS3Cov_DetailedStatus_MCPBranch drives DetailedStatus with a real in-memory

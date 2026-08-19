@@ -9,8 +9,8 @@ import (
 	"testing"
 	"time"
 
-	"primeradiant.com/serf/agent/task"
-	"primeradiant.com/serf/hubapi"
+	"primeradiant.com/evener/agent/task"
+	"primeradiant.com/evener/hubapi"
 )
 
 func newTestClient(t *testing.T, handler http.HandlerFunc) (*hubapi.Client, *httptest.Server) {

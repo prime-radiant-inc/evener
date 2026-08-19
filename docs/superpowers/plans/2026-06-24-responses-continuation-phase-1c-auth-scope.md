@@ -52,7 +52,7 @@ type AuthScopeIdentity struct {
 Run:
 
 ```sh
-GOCACHE=/tmp/serf-gocache go test ./llm/providers/openai -run 'TestNewForInstance_ContinuationAuthScope' -count=1
+GOCACHE=/tmp/evener-gocache go test ./llm/providers/openai -run 'TestNewForInstance_ContinuationAuthScope' -count=1
 ```
 
 Expected: fails until Task 2 implementation is complete.
@@ -119,7 +119,7 @@ func TestNewForInstance_ContinuationAuthScope_APIKey(t *testing.T) {
 Run:
 
 ```sh
-GOCACHE=/tmp/serf-gocache go test ./llm/providers/openai -run 'TestNewForInstance_ContinuationAuthScope_APIKey' -count=1
+GOCACHE=/tmp/evener-gocache go test ./llm/providers/openai -run 'TestNewForInstance_ContinuationAuthScope_APIKey' -count=1
 ```
 
 Expected: FAIL because `ContinuationHasher`, `AuthScopeIdentity`, `OrgIDHash`, and `ProjectIDHash` are not wired.
@@ -177,7 +177,7 @@ In the API-key branch of `NewForInstance`, compute `authScope`, `orgHash`, and `
 Run:
 
 ```sh
-GOCACHE=/tmp/serf-gocache go test ./llm/providers/openai -run 'TestNewForInstance_ContinuationAuthScope_APIKey' -count=1 -v
+GOCACHE=/tmp/evener-gocache go test ./llm/providers/openai -run 'TestNewForInstance_ContinuationAuthScope_APIKey' -count=1 -v
 ```
 
 Expected: PASS.
@@ -268,7 +268,7 @@ func TestNewFromEnv_ContinuationAuthScope_OAuth(t *testing.T) {
 Run:
 
 ```sh
-GOCACHE=/tmp/serf-gocache go test ./llm/providers/openai -run 'TestNewFromEnv_ContinuationAuthScope_OAuth' -count=1
+GOCACHE=/tmp/evener-gocache go test ./llm/providers/openai -run 'TestNewFromEnv_ContinuationAuthScope_OAuth' -count=1
 ```
 
 Expected: FAIL because the OAuth branch does not populate `AuthScopeIdentity`.
@@ -313,7 +313,7 @@ In the OAuth branch of `NewForInstance`, preserve the existing raw bearer token 
 Run:
 
 ```sh
-GOCACHE=/tmp/serf-gocache go test ./llm/providers/openai -run 'TestNewFromEnv_ContinuationAuthScope_OAuth|TestNewFromEnv_PrefersStoredOAuthOverAPIKey|TestNewFromEnv_UsesStoredOAuthTransportWhenAPIKeyAbsent' -count=1 -v
+GOCACHE=/tmp/evener-gocache go test ./llm/providers/openai -run 'TestNewFromEnv_ContinuationAuthScope_OAuth|TestNewFromEnv_PrefersStoredOAuthOverAPIKey|TestNewFromEnv_UsesStoredOAuthTransportWhenAPIKeyAbsent' -count=1 -v
 ```
 
 Expected: PASS.
@@ -338,7 +338,7 @@ git commit -m "feat(openai): derive oauth continuation auth scope"
 Run:
 
 ```sh
-GOCACHE=/tmp/serf-gocache go test ./llm ./llm/providers/openai -run 'TestContinuation|TestNewForInstance_ContinuationAuthScope|TestNewFromEnv_ContinuationAuthScope|TestNewFromEnv_ReadsOrgAndProjectID|TestInstanceFactory_EnvTunables_APIKeyPath' -count=1 -v
+GOCACHE=/tmp/evener-gocache go test ./llm ./llm/providers/openai -run 'TestContinuation|TestNewForInstance_ContinuationAuthScope|TestNewFromEnv_ContinuationAuthScope|TestNewFromEnv_ReadsOrgAndProjectID|TestInstanceFactory_EnvTunables_APIKeyPath' -count=1 -v
 git diff --check
 ```
 
@@ -359,7 +359,7 @@ Runtime continuation remains disabled. This phase does not send `previous_respon
 
 ## Evidence
 
-- `GOCACHE=/tmp/serf-gocache go test ./llm ./llm/providers/openai -run 'TestContinuation|TestNewForInstance_ContinuationAuthScope|TestNewFromEnv_ContinuationAuthScope|TestNewFromEnv_ReadsOrgAndProjectID|TestInstanceFactory_EnvTunables_APIKeyPath' -count=1 -v`
+- `GOCACHE=/tmp/evener-gocache go test ./llm ./llm/providers/openai -run 'TestContinuation|TestNewForInstance_ContinuationAuthScope|TestNewFromEnv_ContinuationAuthScope|TestNewFromEnv_ReadsOrgAndProjectID|TestInstanceFactory_EnvTunables_APIKeyPath' -count=1 -v`
 - `git diff --check`
 
 ## Contracts Proven

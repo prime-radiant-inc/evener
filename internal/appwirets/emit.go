@@ -8,8 +8,8 @@ import (
 	"strings"
 	"time"
 
-	"primeradiant.com/serf/agent/events"
-	"primeradiant.com/serf/appwire"
+	"primeradiant.com/evener/agent/events"
+	"primeradiant.com/evener/appwire"
 )
 
 // generatedHeader marks types.gen.ts as generated so editors and reviewers
@@ -295,7 +295,7 @@ type notificationEntry struct {
 func EmitCatalog() string {
 	reg := newRegistry()
 	for _, v := range appwire.AllJobActivityTypes {
-		registerTopLevel(reg, v, deriveName("serf/jobs/tree", "Payload"))
+		registerTopLevel(reg, v, deriveName("evener/jobs/tree", "Payload"))
 	}
 
 	methods := make([]methodEntry, 0, len(appwire.Methods))

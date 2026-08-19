@@ -2,7 +2,7 @@
 
 package contextmgr
 
-// Run: SERF_LIVE_TESTS=1 go test -tags eval ./agent/internal/contextmgr/ -run TestSummarizeObedience -v
+// Run: EVENER_LIVE_TESTS=1 go test -tags eval ./agent/internal/contextmgr/ -run TestSummarizeObedience -v
 //
 // Gates the compact tool's instruction path: requires >=90% of cases honored and
 // ZERO must-keep drops. If it fails, ship note-pin-only.
@@ -17,13 +17,13 @@ import (
 	"testing"
 	"time"
 
-	"primeradiant.com/serf/agent/internal/liveeval"
-	"primeradiant.com/serf/agent/provider"
-	"primeradiant.com/serf/agent/schema"
-	"primeradiant.com/serf/llm"
-	_ "primeradiant.com/serf/llm/providers/anthropic"
-	_ "primeradiant.com/serf/llm/providers/google"
-	_ "primeradiant.com/serf/llm/providers/openai"
+	"primeradiant.com/evener/agent/internal/liveeval"
+	"primeradiant.com/evener/agent/provider"
+	"primeradiant.com/evener/agent/schema"
+	"primeradiant.com/evener/llm"
+	_ "primeradiant.com/evener/llm/providers/anthropic"
+	_ "primeradiant.com/evener/llm/providers/google"
+	_ "primeradiant.com/evener/llm/providers/openai"
 )
 
 // obedienceCase is a single eval scenario. The history contains droppable
@@ -229,7 +229,7 @@ func obedienceCases() []obedienceCase {
 		{
 			name: "coverage-report-vs-uncovered-path",
 			history: block("go test -cover output",
-				repeat("ok  \tprimeradiant.com/serf/DROPTARGET_pkg_coverage\t100.0%\n", 40),
+				repeat("ok  \tprimeradiant.com/evener/DROPTARGET_pkg_coverage\t100.0%\n", 40),
 			) + "\n" +
 				fact("Critical uncovered path: the error branch in TokenRefresher.Rotate has zero coverage"),
 			instruction: "Drop the coverage report lines; keep the critical uncovered path.",

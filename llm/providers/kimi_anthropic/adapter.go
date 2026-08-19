@@ -3,7 +3,7 @@
 // anthropic adapter pointed at the coding endpoint (https://api.kimi.com/coding).
 //
 // Both Kimi coding routes require a coding-agent User-Agent allowlist, which
-// serf supplies on every request (see kimicoding.UserAgent, sent by both this
+// evener supplies on every request (see kimicoding.UserAgent, sent by both this
 // adapter and the OpenAI-compatible "kimi" provider). This Anthropic-route
 // adapter is preferred for Claude-Code-style agents because the Anthropic
 // Messages endpoint keeps the model's native tool-use and thinking format
@@ -15,12 +15,12 @@ import (
 	"net/http"
 	"strings"
 
-	"primeradiant.com/serf/envvars"
-	"primeradiant.com/serf/llm"
-	"primeradiant.com/serf/llm/providercfg"
-	"primeradiant.com/serf/llm/providers/anthropic"
-	"primeradiant.com/serf/llm/providers/internal/providerfwd"
-	"primeradiant.com/serf/llm/providers/kimicoding"
+	"primeradiant.com/evener/envvars"
+	"primeradiant.com/evener/llm"
+	"primeradiant.com/evener/llm/providercfg"
+	"primeradiant.com/evener/llm/providers/anthropic"
+	"primeradiant.com/evener/llm/providers/internal/providerfwd"
+	"primeradiant.com/evener/llm/providers/kimicoding"
 )
 
 const defaultBaseURL = "https://api.kimi.com/coding"

@@ -14,16 +14,16 @@
 
 - Git floor: `git worktree add --lock --reason` support (git ≥ 2.33), preflight-checked once per session; clear error when too old; **no degraded mode** (spec §3 step 6).
 - Name regex: `^[A-Za-z0-9_][A-Za-z0-9_./-]*$`, max 100 bytes, plus explicit rejects: `..` anywhere, leading `-`, trailing `/`, `@{` (spec §2). Git is the final validator via `git check-ref-format --branch <name>`.
-- Lock markers: `serf:<session-id>` and `serf:dlg:<delegate-id>:<parent-session-id>`. Reasonless or unparseable reasons are **foreign**. Lock-taking is idempotent per spec §5 (unlocked→lock, own→adopt, foreign→refuse). `git worktree lock` on an already-locked tree is FATAL even with an identical reason — never call it blind.
+- Lock markers: `evener:<session-id>` and `evener:dlg:<delegate-id>:<parent-session-id>`. Reasonless or unparseable reasons are **foreign**. Lock-taking is idempotent per spec §5 (unlocked→lock, own→adopt, foreign→refuse). `git worktree lock` on an already-locked tree is FATAL even with an identical reason — never call it blind.
 - All base/HEAD resolution via `git -C <activeRoot> rev-parse --verify --quiet <ref>^{commit}`; the resolved SHA is ALWAYS passed explicitly to `git worktree add` (spec §2 "Base resolution").
-- Creation is atomic: `git worktree add --lock --reason "serf:<sid>" -b <name> -- <path> <sha>` (spec §3 step 6).
-- Branch deletion NEVER uses `git branch -d`'s built-in check; serf's merge gate first, then `-D` (spec §5 remove step 9).
+- Creation is atomic: `git worktree add --lock --reason "evener:<sid>" -b <name> -- <path> <sha>` (spec §3 step 6).
+- Branch deletion NEVER uses `git branch -d`'s built-in check; evener's merge gate first, then `-D` (spec §5 remove step 9).
 - Merged predicate: two arms (ancestry `git merge-base --is-ancestor <tip> <target-tip>`; patch-equivalence `git cherry <target-tip> <tip> <base_sha>` all-`-`), target = recorded `merge_target` local or remote-tracking tip, NEVER HEAD (spec §5 prune sweep 1).
 - Sidecar: flat `.meta/<name with / → %2F>.json`, written O_EXCL BEFORE `worktree add`, mtime-judged grace in reconciliation (spec §3 step 5, §6).
 - `s.mu` is NEVER held across a git subprocess; env swap pre-warms `GitRootOrEmpty` outside the lock (spec §7).
 - The agent package must not import `cmdutil` (spec §6).
 - Shell-escape every interpolated token via a shared helper; never hand-build command strings (spec §2).
-- Serf conventions: gofmt-clean, `golangci-lint run` clean, `make test-race` green. Test output pristine. NEVER write tests that test mocks; integration tests use real git. TDD: failing test first, then code, then green, then commit.
+- Evener conventions: gofmt-clean, `golangci-lint run` clean, `make test-race` green. Test output pristine. NEVER write tests that test mocks; integration tests use real git. TDD: failing test first, then code, then green, then commit.
 - Commit style: conventional (`feat(worktree): …`, `test(worktree): …`), each ending with the Claude-Session trailer used on this branch (copy from `git log -1 --format=%B`).
 - Gate command for every task: `gofmt -l . | grep -v vendor` (must be empty), `go vet ./...`, `golangci-lint run <changed packages>`, `go test -race -count=1 <changed packages>`.
 
@@ -33,7 +33,7 @@
 |---|---|
 | `agent/execenv/gitpath.go` (modify) | `ResolveMainRepoRoot` + kind-keyed cache |
 | `internal/gitpath/gitpath.go` (create) | `ResolveMainRepoRootLocal` for hub/CLI (no execenv dep) |
-| `cmd/serf/run.go`, `cmd/serf/serve.go` (modify) | RuntimeDir keyed off main root |
+| `cmd/evener/run.go`, `cmd/evener/serve.go` (modify) | RuntimeDir keyed off main root |
 | `agent/internal/worktree/name.go` (create) | name validation, projectid, %2F encoding |
 | `agent/internal/worktree/sidecar.go` (create) | sidecar type + O_EXCL codec + grace |
 | `agent/internal/worktree/marker.go` (create) | lock marker format/parse |
@@ -46,7 +46,7 @@
 | `agent/session.go`, `agent/session_tools.go`, etc. (modify) | `currentEnv()` accessor conversions, swap helper |
 | `agent/internal/schema` SessionMeta (modify) | worktree persistence fields |
 | `agent/session_init.go` (modify) | resume re-entry + init-inside locking |
-| `cmd/serf-hub/internal/hubcore/tree.go`, `cmd/serf-hub/app_threadlifecycle.go` (modify) | restore-root migration |
+| `cmd/evener-hub/internal/hubcore/tree.go`, `cmd/evener-hub/app_threadlifecycle.go` (modify) | restore-root migration |
 | `agent/internal/jobstore` (modify) | shell-job workdir, delegate `Isolation`, disposed flag |
 | `agent/job_delegate.go`, `agent/subagents.go` (modify) | isolation spawn/restore/revival |
 | `agent/session_lifecycle.go` (modify) | close-unlock + disposal hook |
@@ -88,7 +88,7 @@ func mainRootFromGitdirPointer(pointerContent, ancestorDir string) (string, bool
 
 ### Task 3: RuntimeDir + hub launch keying
 
-**Files:** Modify `cmd/serf/run.go` (~line 101), `cmd/serf/serve.go` (equivalent RuntimeDir call ~line 152), hub launch trust resolver (find via `grep -rn "RuntimeDir\|trust" cmd/serf-hub/internal/`); Tests beside each.
+**Files:** Modify `cmd/evener/run.go` (~line 101), `cmd/evener/serve.go` (equivalent RuntimeDir call ~line 152), hub launch trust resolver (find via `grep -rn "RuntimeDir\|trust" cmd/evener-hub/internal/`); Tests beside each.
 **Spec:** §1 "Runtime state keying at launch" + hub dual-root paragraph.
 - [ ] Failing test: origin-less repo, launch cwd inside a linked worktree → same state dir as launching from the main root (drive the run.go state-dir derivation function; extract it to a testable helper if currently inline).
 - [ ] Implement: pass `gitpath.ResolveMainRepoRootLocal(cfg.workDir)` (fallback `cfg.workDir`) as RuntimeDir's workDir arg in run.go + serve.go. Hub: trust/meta keyed off stable root, config content read from active root.
@@ -175,14 +175,14 @@ const ReconcileGrace = 15 * time.Minute
 **Interfaces (Produces):**
 ```go
 type Marker struct { SessionID, DelegateID string } // DelegateID=="" for session markers
-func FormatSessionMarker(sid string) string                 // "serf:<sid>"
-func FormatDelegateMarker(dlgID, parentSID string) string   // "serf:dlg:<dlg>:<sid>"
+func FormatSessionMarker(sid string) string                 // "evener:<sid>"
+func FormatDelegateMarker(dlgID, parentSID string) string   // "evener:dlg:<dlg>:<sid>"
 func ParseMarker(reason string) (Marker, bool)              // false => foreign (incl. empty)
 type PorcelainEntry struct { Path, Head, Branch string; Bare, Detached bool; Locked bool; LockReason string; Prunable bool; PrunableReason string }
 func ParsePorcelain(out string) []PorcelainEntry            // handles C-quoted reason payloads
 func CUnquote(s string) string
 ```
-- [ ] Failing tests: marker round-trips; `serf:` alone, `serf:dlg:x` (missing part), empty, `random text` → foreign; porcelain fixtures captured from REAL git in the test (`git worktree list --porcelain` on a temp repo with a locked-with-spaces-and-newline reason, a prunable entry (mv the dir away), detached and branch entries) — assert exact parse.
+- [ ] Failing tests: marker round-trips; `evener:` alone, `evener:dlg:x` (missing part), empty, `random text` → foreign; porcelain fixtures captured from REAL git in the test (`git worktree list --porcelain` on a temp repo with a locked-with-spaces-and-newline reason, a prunable entry (mv the dir away), detached and branch entries) — assert exact parse.
 - [ ] Implement. Fuzz: `FuzzParsePorcelain` (never panics, entries' Path non-empty), `FuzzParseMarker`, `FuzzCUnquote` (round-trip against a Go-quoting oracle for printable strings).
 - [ ] Green + gate + commit `feat(worktree): lock markers and porcelain parsing`.
 
@@ -263,7 +263,7 @@ type WorktreeResult struct { Path, Branch, BaseSHA, MainRoot string }
 
 **Files:** Extend handler; Test `agent/session_tools_worktree_remove_test.go` (REAL git).
 **Spec:** §5 remove steps 1-11 verbatim.
-- [ ] Failing tests: clean remove; dirty without force → error LISTING files, env unchanged; force removes dirty; delete_branch on merged branch → `-D` after gate passes; on UNMERGED branch → refusal with evidence, branch survives, sidecar kept with `worktree_removed:true` + `tip_sha_at_removal`; detached-HEAD-review fixture → serf gate refuses where `-d` would succeed (assert `-d` never invoked via PATH-shim recording git argv); branch checked out elsewhere → git refusal surfaced with location; foreign lock → refuse regardless of force; own-marker crash residue (lock a non-current managed wt with own marker manually) → auto-unlock + proceed; remove-current → restore + relock rules; remove-current with no safe restore env → refusal; live-work guard: background shell job with workdir under target (needs Task 20's field — use a stub recorder here and mark the cross-task wire-up ⚠️ for Task 20 to complete); cross-creator sidecar → refuse without force.
+- [ ] Failing tests: clean remove; dirty without force → error LISTING files, env unchanged; force removes dirty; delete_branch on merged branch → `-D` after gate passes; on UNMERGED branch → refusal with evidence, branch survives, sidecar kept with `worktree_removed:true` + `tip_sha_at_removal`; detached-HEAD-review fixture → evener gate refuses where `-d` would succeed (assert `-d` never invoked via PATH-shim recording git argv); branch checked out elsewhere → git refusal surfaced with location; foreign lock → refuse regardless of force; own-marker crash residue (lock a non-current managed wt with own marker manually) → auto-unlock + proceed; remove-current → restore + relock rules; remove-current with no safe restore env → refusal; live-work guard: background shell job with workdir under target (needs Task 20's field — use a stub recorder here and mark the cross-task wire-up ⚠️ for Task 20 to complete); cross-creator sidecar → refuse without force.
 - [ ] Implement.
 - [ ] Green + gate + commit `feat(agent): manage_worktree remove with merge-gate branch deletion`.
 
@@ -296,7 +296,7 @@ type WorktreeResult struct { Path, Branch, BaseSHA, MainRoot string }
 
 ### Task 19: hub consumer migration
 
-**Files:** Modify `cmd/serf-hub/internal/hubcore/tree.go` (~325-336), `cmd/serf-hub/app_threadlifecycle.go` (~246), `cmd/serf-hub/spawn.go` (~245); Tests beside each.
+**Files:** Modify `cmd/evener-hub/internal/hubcore/tree.go` (~325-336), `cmd/evener-hub/app_threadlifecycle.go` (~246), `cmd/evener-hub/spawn.go` (~245); Tests beside each.
 **Spec:** §7 "Hub consumers of the persisted working dir must migrate".
 - [ ] Failing tests: sidebar grouping uses restore root when worktree active (meta fixture with WorktreePath set → grouped under restore-root basename, not `dlg_01H…`); spawn prefill = restore root; resume args `--dir` = restore root (re-entry handles the rest).
 - [ ] Implement + green + gate + commit `feat(hub): read worktree-aware session meta via restore root`.
@@ -314,7 +314,7 @@ type WorktreeResult struct { Path, Branch, BaseSHA, MainRoot string }
 
 **Files:** Modify `agent/internal/tool/definitions.go` (DefDelegate gains `isolation` enum), `agent/internal/jobstore` restore descriptor (+`Isolation string` + fold event), `agent/job_delegate.go` (creation path ~187, revival ~444-487, restore env ~841-861), `agent/subagents.go` (deny plumbing); Tests.
 **Spec:** §9 Tool surface + Lifecycle steps 1-3 + step 2's named new plumbing (deny survives restore AND all-tools types) + §7 revival re-lock paragraph.
-- [ ] Failing tests: delegate with isolation → managed worktree named `<delegate_id>`, sidecar has delegate_id + parent sid, `serf:dlg:` lock atomic at add, child env rooted at lane, restore descriptor WorkingDir = lane + Isolation set; `manage_worktree` absent from child's tools at spawn, for an all-tools agent type, AND after restore; second job via delegate_send runs in the same lane; per-job result carries path/branch/ahead/dirty; revival on a kept (unlocked) lane re-locks; revival on a foreign-locked lane refuses with clear error; parent switch into live lane refused (foreign dlg lock).
+- [ ] Failing tests: delegate with isolation → managed worktree named `<delegate_id>`, sidecar has delegate_id + parent sid, `evener:dlg:` lock atomic at add, child env rooted at lane, restore descriptor WorkingDir = lane + Isolation set; `manage_worktree` absent from child's tools at spawn, for an all-tools agent type, AND after restore; second job via delegate_send runs in the same lane; per-job result carries path/branch/ahead/dirty; revival on a kept (unlocked) lane re-locks; revival on a foreign-locked lane refuses with clear error; parent switch into live lane refused (foreign dlg lock).
 - [ ] Implement + green + gate + commit `feat(agent): delegate worktree isolation with restore-safe deny`.
 
 ### Task 22: disposal + close-unlock + resumability stat
@@ -335,7 +335,7 @@ type WorktreeResult struct { Path, Branch, BaseSHA, MainRoot string }
 
 ### Task 24: docs + skill note
 
-**Files:** Create `docs/worktrees.md` (user-facing: operations, lock semantics, disposal, delegate isolation, limitations — distilled from spec §§2-9,11, NOT a copy); modify `docs/architecture.md` cross-link if a tools list exists there; append a short "native tool" note to the serf-side skill surface IF `docs/skills/` has a worktree skill (check; the cross-repo superpowers skill update is out of scope for this branch — record it in the final report instead).
+**Files:** Create `docs/worktrees.md` (user-facing: operations, lock semantics, disposal, delegate isolation, limitations — distilled from spec §§2-9,11, NOT a copy); modify `docs/architecture.md` cross-link if a tools list exists there; append a short "native tool" note to the evener-side skill surface IF `docs/skills/` has a worktree skill (check; the cross-repo superpowers skill update is out of scope for this branch — record it in the final report instead).
 - [ ] Write, lint prose, commit `docs(worktrees): user-facing worktree tool documentation`.
 
 ### Task 25: final whole-branch review + gate

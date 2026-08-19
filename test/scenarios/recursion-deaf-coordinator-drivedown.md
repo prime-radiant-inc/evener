@@ -39,7 +39,7 @@ IS the test, asserted on the coordinator's own transcript.
   (`docs/agentic-testing.md`; never Jesse's real hub on `9180`);
   credentialed model (the orchestrator picks the spawn model at run
   time, e.g. `openai/gpt-5.5`).
-- `tmpdir=$(mktemp -d -t serf-e2e-recdeaf-XXXXX)`.
+- `tmpdir=$(mktemp -d -t evener-e2e-recdeaf-XXXXX)`.
 - **Recursion is dark by default ("Delegation allowance" "**Double
   opt-in (dark by default).**"); arm it with the config +
   per-spawn grant.** Raise `MaxSubagentDepth` to 2 via
@@ -49,7 +49,7 @@ IS the test, asserted on the coordinator's own transcript.
 
   ```json
   {"prompt":"...","model":"openai/gpt-5.5","working_dir":"$tmpdir",
-   "harness":"serf","access_mode":"full","agent":"default",
+   "harness":"evener","access_mode":"full","agent":"default",
    "launch_overrides":{"maxSubagentDepth":2}}
   ```
 
@@ -86,9 +86,9 @@ IS the test, asserted on the coordinator's own transcript.
      `job_status(COORD)`;
    - `read_session_transcript` (or read the coordinator session's
      `*.transcript.jsonl` under
-     `$HOME/.local/state/serf/projects/.../sessions/<coord-sid>/`).
+     `$HOME/.local/state/evener/projects/.../sessions/<coord-sid>/`).
 6. Read the durable logs:
-   - root: `find $HOME/.local/state/serf/projects -path "*sessions/$SID/jobs.jsonl"`.
+   - root: `find $HOME/.local/state/evener/projects -path "*sessions/$SID/jobs.jsonl"`.
    - coordinator + workers: the `jobs.jsonl` under each child session
      dir.
 

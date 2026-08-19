@@ -4,9 +4,9 @@ set -eu
 repo_root=$(pwd)
 script_dir=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
 . "$script_dir/private-go-home.sh"
-stage=$(mktemp -d "${TMPDIR:-/tmp}/serf-runtime-build.XXXXXX")
+stage=$(mktemp -d "${TMPDIR:-/tmp}/evener-runtime-build.XXXXXX")
 trap 'rm -rf "$stage"' EXIT HUP INT TERM
-serf_prepare_private_go_home "$stage"
+evener_prepare_private_go_home "$stage"
 
 build_one() {
 	output=$1
@@ -18,8 +18,8 @@ build_one() {
 	fi
 }
 
-build_one serf ./cmd/serf/
-build_one serf-hub ./cmd/serf-hub/
+build_one evener ./cmd/evener/
+build_one evener-hub ./cmd/evener-hub/
 
-mv "$stage/serf" "$repo_root/serf"
-mv "$stage/serf-hub" "$repo_root/serf-hub"
+mv "$stage/evener" "$repo_root/evener"
+mv "$stage/evener-hub" "$repo_root/evener-hub"

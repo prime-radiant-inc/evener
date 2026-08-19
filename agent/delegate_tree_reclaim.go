@@ -6,7 +6,7 @@ import (
 	"sort"
 	"time"
 
-	"primeradiant.com/serf/agent/internal/delegatestore"
+	"primeradiant.com/evener/agent/internal/delegatestore"
 )
 
 type delegateRuntimeReclamationEntry struct {

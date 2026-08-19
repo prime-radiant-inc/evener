@@ -6,7 +6,7 @@ import (
 	"net/http/httptest"
 	"testing"
 
-	"primeradiant.com/serf/llm"
+	"primeradiant.com/evener/llm"
 )
 
 // FuzzOpenAICompatComplete drives the non-streaming Complete path (Chat

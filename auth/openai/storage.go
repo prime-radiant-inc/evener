@@ -9,7 +9,7 @@ import (
 	"strings"
 	"time"
 
-	"primeradiant.com/serf/envvars"
+	"primeradiant.com/evener/envvars"
 )
 
 type authTempFile interface {
@@ -42,7 +42,7 @@ var (
 	ErrAuthCorrupt = errors.New("openai auth is corrupt")
 )
 
-// AuthRecord is the persisted Serf-owned OpenAI auth record.
+// AuthRecord is the persisted Evener-owned OpenAI auth record.
 type AuthRecord struct {
 	Version      int       `json:"version"`
 	Provider     string    `json:"provider"`
@@ -67,23 +67,23 @@ type AuthRecord struct {
 // name carrying path separators or ".." can never escape the auth dir and have
 // a caller read/write/delete an arbitrary file. Callers validate names upstream;
 // this is the last-line guard at the filesystem sink (a missing controller-level
-// check let serf/instance/remove delete arbitrary .json files — see the
-// ValidateInstanceName fix in cmd/serf-hub/app_instances.go).
+// check let evener/instance/remove delete arbitrary .json files — see the
+// ValidateInstanceName fix in cmd/evener-hub/app_instances.go).
 func AuthFilePath(stateDir, instanceName string) string {
 	return filepath.Join(stateDir, authDirName, filepath.Base(instanceName)+".json")
 }
 
-// DefaultStateDir returns the default Serf state directory, resolving the state
+// DefaultStateDir returns the default Evener state directory, resolving the state
 // home from XDG_STATE_HOME (falling back to ~/.local/state). It is equivalent
 // to DefaultStateDirWithStateHome("").
 func DefaultStateDir() string {
 	return DefaultStateDirWithStateHome("")
 }
 
-// DefaultStateDirWithStateHome returns the Serf state directory rooted at the
+// DefaultStateDirWithStateHome returns the Evener state directory rooted at the
 // given state home. When stateHome is empty it falls back to XDG_STATE_HOME,
 // then to ~/.local/state (or the OS temp dir if the home directory cannot be
-// determined). The result is that base joined with "serf".
+// determined). The result is that base joined with "evener".
 func DefaultStateDirWithStateHome(stateHome string) string {
 	base := strings.TrimSpace(stateHome)
 	if base == "" {
@@ -96,7 +96,7 @@ func DefaultStateDirWithStateHome(stateHome string) string {
 		}
 		base = filepath.Join(home, ".local", "state")
 	}
-	return filepath.Join(base, "serf")
+	return filepath.Join(base, "evener")
 }
 
 // LoadAuth reads and validates the stored auth record for instanceName under

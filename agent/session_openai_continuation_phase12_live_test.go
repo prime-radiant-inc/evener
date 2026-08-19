@@ -15,22 +15,22 @@ import (
 
 	"github.com/oklog/ulid/v2"
 
-	"primeradiant.com/serf/agent/execenv"
-	"primeradiant.com/serf/agent/schema"
-	"primeradiant.com/serf/llm"
-	apilog "primeradiant.com/serf/llm/apilog"
-	"primeradiant.com/serf/llm/providers/openai"
+	"primeradiant.com/evener/agent/execenv"
+	"primeradiant.com/evener/agent/schema"
+	"primeradiant.com/evener/llm"
+	apilog "primeradiant.com/evener/llm/apilog"
+	"primeradiant.com/evener/llm/providers/openai"
 )
 
 func TestSession_OpenAIResponsesContinuationPhase12PublicLiveProof(t *testing.T) {
-	if os.Getenv("SERF_OPENAI_RESPONSES_PHASE12_E2E") != "1" {
-		t.Skip("set SERF_OPENAI_RESPONSES_PHASE12_E2E=1 to run live public OpenAI Responses continuation proof")
+	if os.Getenv("EVENER_OPENAI_RESPONSES_PHASE12_E2E") != "1" {
+		t.Skip("set EVENER_OPENAI_RESPONSES_PHASE12_E2E=1 to run live public OpenAI Responses continuation proof")
 	}
 	if strings.TrimSpace(os.Getenv("OPENAI_API_KEY")) == "" {
 		t.Skip("OPENAI_API_KEY is required for public OpenAI phase 12 proof")
 	}
 
-	model := strings.TrimSpace(os.Getenv("SERF_OPENAI_RESPONSES_PHASE12_MODEL"))
+	model := strings.TrimSpace(os.Getenv("EVENER_OPENAI_RESPONSES_PHASE12_MODEL"))
 	if model == "" {
 		model = "gpt-5.2"
 	}
@@ -83,7 +83,7 @@ func TestSession_OpenAIResponsesContinuationPhase12PublicLiveProof(t *testing.T)
 	drainSessionEvents(sess)
 
 	// TRIPWIRE: this is a live, opt-in proof against the real public OpenAI
-	// Responses API (skipped unless SERF_OPENAI_RESPONSES_PHASE12_E2E=1). Two
+	// Responses API (skipped unless EVENER_OPENAI_RESPONSES_PHASE12_E2E=1). Two
 	// sequential real round trips share this budget; 240s is generous
 	// headroom over normal latency and only fires on a genuine hang.
 	ctx, cancel := context.WithTimeout(context.Background(), 240*time.Second)
@@ -134,7 +134,7 @@ func TestSession_OpenAIResponsesContinuationPhase12PublicLiveProof(t *testing.T)
 		Provider:           "openai",
 		Model:              model,
 		Messages:           []llm.Message{llm.User("This invalid anchor request should fail clearly.")},
-		PreviousResponseID: "resp_serf_invalid_" + runID,
+		PreviousResponseID: "resp_evener_invalid_" + runID,
 		Store:              &store,
 	}
 	if _, err := adapter.Complete(ctx, invalidReq); err == nil {

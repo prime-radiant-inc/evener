@@ -1,4 +1,4 @@
-//go:build serffuzz
+//go:build evenerfuzz
 
 package plugins
 
@@ -12,7 +12,7 @@ import (
 	"testing"
 	"time"
 
-	agentplugin "primeradiant.com/serf/agent/plugin"
+	agentplugin "primeradiant.com/evener/agent/plugin"
 )
 
 type coverageDirEntry struct {

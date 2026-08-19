@@ -5,8 +5,8 @@ import (
 	"sort"
 	"strings"
 
-	"primeradiant.com/serf/agent/internal/jobstore"
-	"primeradiant.com/serf/agent/provenance"
+	"primeradiant.com/evener/agent/internal/jobstore"
+	"primeradiant.com/evener/agent/provenance"
 )
 
 // WatchReport is the forensic watch/delivery view of one session's jobs.jsonl.

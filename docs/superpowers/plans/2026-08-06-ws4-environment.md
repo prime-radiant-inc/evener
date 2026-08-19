@@ -48,7 +48,7 @@ Two behaviors (kata 31gh plus the scratch contract):
 - [ ] **Step 1 (failing test):** construct the exec env from a parent
   process whose PATH lacks `/opt/homebrew/bin` while the login shell
   provides it; assert the spawned command env's PATH contains the
-  login-shell entries. Second test: `SERF_SCRATCH_DIR` and `TMPDIR` are
+  login-shell entries. Second test: `EVENER_SCRATCH_DIR` and `TMPDIR` are
   present in the command env for an UNSANDBOXED session.
 - [ ] **Step 2 (implement PATH):** resolve the user's login-shell PATH once
   per daemon/session launch — `exec.Command(os.Getenv("SHELL"), "-lc",
@@ -58,9 +58,9 @@ Two behaviors (kata 31gh plus the scratch contract):
   existing filter untouched.
 - [ ] **Step 3 (implement scratch):** provision a per-session scratch dir
   unconditionally (reuse the sandbox scratch location convention) and
-  export `SERF_SCRATCH_DIR`/`TMPDIR` in `commandEnvironment` for
+  export `EVENER_SCRATCH_DIR`/`TMPDIR` in `commandEnvironment` for
   unsandboxed sessions too, matching `docs/environment.md`'s contract
-  ("Serf-provided private scratch directory for one live session" — no
+  ("Evener-provided private scratch directory for one live session" — no
   sandbox-only caveat). Sandboxed behavior unchanged.
 - [ ] **Step 4:** tests green; gates; commit
   (`feat(execenv): preserve developer PATH and always export session scratch vars`).
@@ -78,7 +78,7 @@ in a real sandbox, not by reading docs.
 change.** Rationale: the remaining artifact is one harmless stderr line, and
 every mechanism that would actually silence it (a per-session `HOME`, a
 writable grant for the Go config dir, or running `go telemetry off` on the
-user's behalf) either mutates user state serf does not own or widens the
+user's behalf) either mutates user state evener does not own or widens the
 sandbox — both worse than the noise.
 
 **Files:**
@@ -197,15 +197,15 @@ restricted mode's read roots.
 ### Task 7: GOCACHE wedge investigation (report-only unless trivially fixable)
 
 **Files:**
-- Create: report at the SDD workspace (not in docs/) summarizing findings; a plan amendment only if a serf change is warranted
+- Create: report at the SDD workspace (not in docs/) summarizing findings; a plan amendment only if a evener change is warranted
 
 - [ ] **Step 1:** for the wedged sessions (033zIWu0M97TPEmlte5j45,
-  0341OD339bdFXqO2JkqNyK, 0340x0n1NdMduPrOuCT1DS), use `serf-doctor`
+  0341OD339bdFXqO2JkqNyK, 0340x0n1NdMduPrOuCT1DS), use `evener-doctor`
   (sessions/transcript/jobs) plus their meta to classify: sandboxed or
   not, and the resolved cache strategy at the time.
 - [ ] **Step 2:** reproduce the wedge shape if possible (concurrent go
   builds against the identified cache configuration).
-- [ ] **Step 3:** report: root cause, whether any serf change is needed
+- [ ] **Step 3:** report: root cause, whether any evener change is needed
   (any proposal must preserve the never-poison invariant), or whether
   this was host configuration (external-volume GOCACHE) that the Task 6
   preamble now at least surfaces. BLOCKED-on-Jesse if a design change
@@ -217,7 +217,7 @@ restricted mode's read roots.
   commit, pristine stderr), run `go test` on a trivial module, execute its
   SessionStart hook, and read its own capability preamble stating all of
   that — with zero trial-and-error discovery.
-- `SERF_SCRATCH_DIR`/`TMPDIR` present in every session's exec env.
+- `EVENER_SCRATCH_DIR`/`TMPDIR` present in every session's exec env.
 - Config/hooks write-protection provably unchanged.
 
 ### Amendment 2026-08-07 — global git config is readable in restricted mode
@@ -278,11 +278,11 @@ Neither live bwrap test caught it — one never checks git's exit code, the othe
 expects failure — and CI never installs bubblewrap, so there is no automated
 real-bwrap coverage at all.
 
-**Peer behaviour** (for the record, none of them do what serf did): Claude
+**Peer behaviour** (for the record, none of them do what evener did): Claude
 Code's srt skips absent files, a documented gap; Codex ro-binds the whole
 existing `.git` directory; nobody materializes absent files.
 
-**Jesse ruled 2026-08-07: SHAPE C.** Serf pre-creates an absent protected
+**Jesse ruled 2026-08-07: SHAPE C.** Evener pre-creates an absent protected
 surface with **inert content** before pinning it — `.` for `commondir`, which is
 exactly what a main checkout's common dir means and is the only content git
 accepts (empty and directory are both fatal). That fixes the corruption bug and

@@ -4,8 +4,8 @@
 driving its REAL seam (not a copy), every API surface fuzzed *behaviorally* (real
 handlers, not just codecs), the deferred 8.3 harness pieces completed, and the
 gap floor flipped to BLOCKING. **No skips. No ignore-list except the fuzz toolkit's
-own packages** (`cmd/serf-fuzzcov`, `fuzz/promoter`, `fuzz/schemagen`, `fuzz/typegen`,
-`cmd/serf-fuzz-harvest`), each justified in writing.
+own packages** (`cmd/evener-fuzzcov`, `fuzz/promoter`, `fuzz/schemagen`, `fuzz/typegen`,
+`cmd/evener-fuzz-harvest`), each justified in writing.
 
 Definition of done:
 1. The 8.6 gap map is empty (every decode/parse package has a target driving its real seam).
@@ -33,14 +33,14 @@ non-zero focus coverage. Grouped into parallel module lanes:
 
 **Lane A2 — root module, protocol/server/hub-internal (10):** `frontmatter`, `hubapi`,
 `rendezvous`, `server`, `internal/appserver`, `internal/appprojector`,
-`internal/apptranscript`, `cmd/serf-hub/internal/appsource`,
-`cmd/serf-hub/internal/codexlaunch`, `cmd/serf-hub/internal/hubcore`.
+`internal/apptranscript`, `cmd/evener-hub/internal/appsource`,
+`cmd/evener-hub/internal/codexlaunch`, `cmd/evener-hub/internal/hubcore`.
 
-**Lane A3 — root module, CLI/TUI glue (12) — INCLUDED, no skips:** `cmd/serf`,
-`cmd/llmcall`, `cmdutil`, `cmd/serf-tui`, `cmd/serf-tui/internal/clipboard`,
-`cmd/serf-tui/internal/hubstart`, `cmd/serf-tui/internal/launchconfig`,
-`cmd/serf-tui/internal/msgrender`, `cmd/serf-tui/internal/toolsummary`,
-`cmd/serf-tui/internal/transcript`, `cmd/serf-tui/internal/tuitheme`. For CLI
+**Lane A3 — root module, CLI/TUI glue (12) — INCLUDED, no skips:** `cmd/evener`,
+`cmd/llmcall`, `cmdutil`, `cmd/evener-tui`, `cmd/evener-tui/internal/clipboard`,
+`cmd/evener-tui/internal/hubstart`, `cmd/evener-tui/internal/launchconfig`,
+`cmd/evener-tui/internal/msgrender`, `cmd/evener-tui/internal/toolsummary`,
+`cmd/evener-tui/internal/transcript`, `cmd/evener-tui/internal/tuitheme`. For CLI
 packages whose "parse" is flag/arg handling, fuzz the arg parser; for TUI render
 packages, fuzz the data-decode/render-input function the gap map flagged.
 
@@ -59,7 +59,7 @@ mutating handlers without touching the real machine. This is the highest-value
 missing infra; B1–B3 depend on it.
 
 **B1 — appwire API end-to-end.** Replace Phase-2's stub handlers with the REAL hub
-app handlers (`cmd/serf-hub/app_*.go`) over all 46 `appwire.Methods` through
+app handlers (`cmd/evener-hub/app_*.go`) over all 46 `appwire.Methods` through
 `Router.Dispatch`, against the B0 sandbox. Oracles: never panic/wedge, status
 monotonicity, no orphaned state.
 
@@ -102,7 +102,7 @@ and delegate timers.
 
 ## Workstream D — drive to 100 and lock it
 
-**D1** — per target, use `serf-fuzzcov`'s uncovered-line output to add seeds/oracles
+**D1** — per target, use `evener-fuzzcov`'s uncovered-line output to add seeds/oracles
 until focus-set ≈100% (or document genuinely-unreachable lines with a reason).
 **D2** — flip the gap floor to BLOCKING in `ci.yml` once Workstream A lands; ratchet
 focus-set floors upward (`BLESS=1`). **D3** — the only ignore-list entries are the

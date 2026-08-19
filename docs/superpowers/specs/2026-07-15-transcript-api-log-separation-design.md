@@ -7,11 +7,11 @@ Program order: Project 2 of 6; implement after delegate-budget truthfulness.
 
 ## Purpose
 
-Serf currently mixes conversation history and API-call diagnostics in transcript
+Evener currently mixes conversation history and API-call diagnostics in transcript
 JSONL. Exact provider bodies are optional and written to a separate raw log.
 This makes transcripts enormous, encourages agents to ingest wire payloads during
 ordinary audits, and still does not guarantee that the forensic log contains the
-exact request Serf sent.
+exact request Evener sent.
 
 The transcript becomes a semantic interaction record. The per-session API log
 becomes the complete wire-forensics record.
@@ -24,7 +24,7 @@ This is an intentional hard format break:
 - readers do not accept or translate legacy transcript `api_call` lines;
 - there is no dual writer, compatibility alias, migration, or fallback reader;
 - old sessions that require the old mixed format must be inspected with an old
-  Serf binary.
+  Evener binary.
 
 The implementation must delete obsolete compatibility paths rather than retain
 them behind flags.
@@ -35,7 +35,7 @@ A transcript records the ordered interaction and durable state visible to the
 agent or its supervisor:
 
 - user, steering, and assistant turns;
-- reasoning/message items that Serf already persists;
+- reasoning/message items that Evener already persists;
 - tool calls and tool results;
 - lifecycle and state-transition events;
 - task, delegate, compaction, and notification events needed to explain the
@@ -57,7 +57,7 @@ not transcript entries.
 ## API-Log Contract
 
 Each actual provider attempt synchronously appends one record to the session's
-canonical API log before Serf starts another attempt or returns the provider
+canonical API log before Evener starts another attempt or returns the provider
 result. Every attempt record contains:
 
 - stable, globally unique `attempt_id`;
@@ -96,11 +96,11 @@ otherwise the record uses an explicit binary encoding such as base64. The log
 schema records the encoding.
 
 The API logger captures bodies at the adapter/transport boundary. It must not
-reconstruct a request from Serf's higher-level `llm.Request` after the call.
+reconstruct a request from Evener's higher-level `llm.Request` after the call.
 
 ## Attempt Identity
 
-Serf assigns an `attempt_group_id` before the first provider call for a logical
+Evener assigns an `attempt_group_id` before the first provider call for a logical
 model request. Every actual provider invocation receives a new `attempt_id`.
 
 Retries, endpoint fallbacks, provider fallbacks, and continuation fallbacks:
@@ -111,9 +111,9 @@ Retries, endpoint fallbacks, provider fallbacks, and continuation fallbacks:
 - write a record whether they succeed or fail;
 - are appended before the retry/fallback decision can launch another attempt.
 
-After the outer logical model call settles, Serf appends one group-settlement
+After the outer logical model call settles, Evener appends one group-settlement
 record containing the final attempt ID, final attempt count, and settled
-outcome. It does not rewrite an attempt record. If Serf crashes after an attempt
+outcome. It does not rewrite an attempt record. If Evener crashes after an attempt
 append but before group settlement, the complete attempt remains readable and
 the missing settlement record truthfully marks the group as interrupted rather
 than losing or falsely finalizing the attempt.
@@ -136,7 +136,7 @@ endpoint fallback.
   opt-in.
 - Write/fsync behavior retains the existing crash-safety contract.
 
-An API-log append or sync failure is a Serf forensic/harness fault. It is made
+An API-log append or sync failure is a Evener forensic/harness fault. It is made
 observable in that owning lifecycle/error surface and marks the forensic record
 incomplete; it does not change the provider response, provider error class, or
 retry/fallback decision.
@@ -168,7 +168,7 @@ and response bodies, but never preloads them with a transcript.
 
 ## Related Surface Updates
 
-- `serf-doctor apilog` reads the canonical API-log records.
+- `evener-doctor apilog` reads the canonical API-log records.
 - Transcript find/outline/tree operations do not scan API bodies.
 - Hub and browser transcript readers reject unsupported mixed-format transcripts
   and do not retain API-bearing transcript indexes or cold-load API logs.

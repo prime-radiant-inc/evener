@@ -8,7 +8,7 @@ import (
 	"reflect"
 	"testing"
 
-	"primeradiant.com/serf/llm"
+	"primeradiant.com/evener/llm"
 )
 
 // byteAtATimeReader delivers its payload one byte per Read call, then io.EOF. It
@@ -157,7 +157,7 @@ func FuzzOpenAIResponsesMetamorphic(f *testing.F) {
 			`data: {"type":"response.output_item.done"}` + "\n\n",
 		// An unrecognized event type → the default raw-passthrough branch.
 		`data: {"type":"response.totally_unknown_event"}` + "\n\n",
-		// GPT-5.6 streams interleave item types serf does not use (program /
+		// GPT-5.6 streams interleave item types evener does not use (program /
 		// program_output / tool_search_call / compaction); the decoder must
 		// tolerate them around ordinary text and tool calls.
 		`data: {"type":"response.output_item.added","item":{"type":"program","id":"prog_1"}}` + "\n\n" +

@@ -1,7 +1,7 @@
 apiVersion: backstage.io/v1alpha1
 kind: Component
 metadata:
-  name: serf
+  name: evener
   description: "Non-interactive coding agent with native tool-calling across OpenAI, Anthropic, and Google models."
   annotations:
     backstage.io/techdocs-ref: dir:.

@@ -1,4 +1,4 @@
-package serf_test
+package evener_test
 
 import (
 	"bytes"
@@ -22,8 +22,8 @@ func TestRuntimePairBuildPublishesBothWithSameLinkerFlags(t *testing.T) {
 		t.Fatalf("build runtime pair: %v\n%s", err, output)
 	}
 
-	assertTextFile(t, filepath.Join(fixture.root, "serf"), "./cmd/serf/\n")
-	assertTextFile(t, filepath.Join(fixture.root, "serf-hub"), "./cmd/serf-hub/\n")
+	assertTextFile(t, filepath.Join(fixture.root, "evener"), "./cmd/evener/\n")
+	assertTextFile(t, filepath.Join(fixture.root, "evener-hub"), "./cmd/evener-hub/\n")
 	logData, err := os.ReadFile(fixture.logPath)
 	if err != nil {
 		t.Fatalf("read fake go log: %v", err)
@@ -79,21 +79,21 @@ func TestRuntimeBuildFixtureEnvironmentDropsAmbientHarnessControls(t *testing.T)
 		"MAKEFLAGS",
 		"MAKELEVEL",
 		"MFLAGS",
-		"SERF_TEST_NPM_FAIL_COMMAND",
-		"SERF_TEST_NPM_HOLD_COMMAND",
-		"SERF_TEST_NPM_PID",
-		"SERF_TEST_NPM_READY",
-		"SERF_TEST_NPM_TRACK_COMMAND",
-		"SERF_TEST_NPM_TRACK_PID",
-		"SERF_TEST_SHELL_KILLED_REAPED",
-		"SERF_TEST_SHELL_WAITED_REAPED",
-		"SERF_TEST_NODE_HOLD_COMMAND",
-		"SERF_TEST_NODE_FAIL_COMMAND",
-		"SERF_TEST_NODE_PID",
-		"SERF_TEST_NODE_READY",
-		"SERF_TEST_NODE_TERM",
-		"SERF_TEST_NODE_RELEASE",
-		"SERF_TEST_NODE_READY_FD",
+		"EVENER_TEST_NPM_FAIL_COMMAND",
+		"EVENER_TEST_NPM_HOLD_COMMAND",
+		"EVENER_TEST_NPM_PID",
+		"EVENER_TEST_NPM_READY",
+		"EVENER_TEST_NPM_TRACK_COMMAND",
+		"EVENER_TEST_NPM_TRACK_PID",
+		"EVENER_TEST_SHELL_KILLED_REAPED",
+		"EVENER_TEST_SHELL_WAITED_REAPED",
+		"EVENER_TEST_NODE_HOLD_COMMAND",
+		"EVENER_TEST_NODE_FAIL_COMMAND",
+		"EVENER_TEST_NODE_PID",
+		"EVENER_TEST_NODE_READY",
+		"EVENER_TEST_NODE_TERM",
+		"EVENER_TEST_NODE_RELEASE",
+		"EVENER_TEST_NODE_READY_FD",
 	}
 	for _, name := range controlNames {
 		t.Setenv(name, "ambient-value")
@@ -110,15 +110,15 @@ func TestRuntimeBuildFixtureEnvironmentDropsAmbientHarnessControls(t *testing.T)
 
 func TestRuntimePairBuildFailureLeavesExistingPairUntouched(t *testing.T) {
 	fixture := newRuntimeBuildFixture(t)
-	writeTestFile(t, filepath.Join(fixture.root, "serf"), []byte("old-serf\n"), 0o755)
-	writeTestFile(t, filepath.Join(fixture.root, "serf-hub"), []byte("old-serf-hub\n"), 0o755)
+	writeTestFile(t, filepath.Join(fixture.root, "evener"), []byte("old-evener\n"), 0o755)
+	writeTestFile(t, filepath.Join(fixture.root, "evener-hub"), []byte("old-evener-hub\n"), 0o755)
 
-	if output, err := runRuntimePairBuild(fixture, "./cmd/serf-hub/"); err == nil {
+	if output, err := runRuntimePairBuild(fixture, "./cmd/evener-hub/"); err == nil {
 		t.Fatalf("build runtime pair succeeded, want hub compiler failure; output = %q", output)
 	}
 
-	assertTextFile(t, filepath.Join(fixture.root, "serf"), "old-serf\n")
-	assertTextFile(t, filepath.Join(fixture.root, "serf-hub"), "old-serf-hub\n")
+	assertTextFile(t, filepath.Join(fixture.root, "evener"), "old-evener\n")
+	assertTextFile(t, filepath.Join(fixture.root, "evener-hub"), "old-evener-hub\n")
 }
 
 func TestMakeRuntimeAliasesBuildThePair(t *testing.T) {
@@ -133,8 +133,8 @@ func TestMakeRuntimeAliasesBuildThePair(t *testing.T) {
 				t.Fatalf("make %s: %v\n%s", target, err, output)
 			}
 
-			assertTextFile(t, filepath.Join(fixture.root, "serf"), "./cmd/serf/\n")
-			assertTextFile(t, filepath.Join(fixture.root, "serf-hub"), "./cmd/serf-hub/\n")
+			assertTextFile(t, filepath.Join(fixture.root, "evener"), "./cmd/evener/\n")
+			assertTextFile(t, filepath.Join(fixture.root, "evener-hub"), "./cmd/evener-hub/\n")
 
 			// build must build the web too: build-runtime depends on
 			// build-web (Makefile), so both aliases order the same way.
@@ -156,7 +156,7 @@ func TestMakeRuntimeAliasesBuildThePair(t *testing.T) {
 		// flake, not a fixture quirk (Jesse: root-cause flakes, never rely
 		// on timing). Backdating removes the race: node_modules is
 		// unambiguously newer the instant it's created.
-		frontendDir := filepath.Join(fixture.root, "cmd", "serf-hub", "frontend")
+		frontendDir := filepath.Join(fixture.root, "cmd", "evener-hub", "frontend")
 		writeTestFile(t, filepath.Join(frontendDir, "package-lock.json"), []byte("{}\n"), 0o644)
 		writeTestFile(t, filepath.Join(frontendDir, "package.json"), []byte("{}\n"), 0o644)
 		backdated := time.Now().Add(-1 * time.Hour)
@@ -218,7 +218,7 @@ func TestMakeRuntimeAliasesBuildThePair(t *testing.T) {
 	// green under the old unguarded recipe.
 	t.Run("build-web/refuses-npm-ci-through-a-symlink", func(t *testing.T) {
 		fixture := newBuildWebFixture(t)
-		frontendDir := filepath.Join(fixture.root, "cmd", "serf-hub", "frontend")
+		frontendDir := filepath.Join(fixture.root, "cmd", "evener-hub", "frontend")
 		writeTestFile(t, filepath.Join(frontendDir, "package-lock.json"), []byte("{}\n"), 0o644)
 
 		// A shared install standing in for another worktree's node_modules,
@@ -259,7 +259,7 @@ func TestMakeRuntimeAliasesBuildThePair(t *testing.T) {
 	// toolchain that isn't there.
 	t.Run("build-web/refuses-an-install-with-no-real-tsc", func(t *testing.T) {
 		fixture := newBuildWebFixture(t)
-		frontendDir := filepath.Join(fixture.root, "cmd", "serf-hub", "frontend")
+		frontendDir := filepath.Join(fixture.root, "cmd", "evener-hub", "frontend")
 		writeTestFile(t, filepath.Join(frontendDir, "package-lock.json"), []byte("{}\n"), 0o644)
 		if err := os.MkdirAll(filepath.Join(frontendDir, "node_modules"), 0o755); err != nil {
 			t.Fatalf("mkdir empty node_modules: %v", err)
@@ -304,7 +304,7 @@ func TestMakeRuntimeAliasesBuildThePair(t *testing.T) {
 
 func TestMakeWebCommandsContainNodeProcessState(t *testing.T) {
 	fixture := newBuildWebFixture(t)
-	frontendDir := filepath.Join(fixture.root, "cmd", "serf-hub", "frontend")
+	frontendDir := filepath.Join(fixture.root, "cmd", "evener-hub", "frontend")
 	writeTestFile(t, filepath.Join(frontendDir, "package-lock.json"), []byte("{}\n"), 0o644)
 	writeTestFile(t, filepath.Join(frontendDir, "package.json"), []byte("{}\n"), 0o644)
 
@@ -390,7 +390,7 @@ func TestMakeTestWebBrowserInterruptWaitsForNodeCleanup(t *testing.T) {
 	const hangWatchdog = 30 * time.Second
 
 	fixture := newBuildWebFixture(t)
-	frontendDir := filepath.Join(fixture.root, "cmd", "serf-hub", "frontend")
+	frontendDir := filepath.Join(fixture.root, "cmd", "evener-hub", "frontend")
 	writeTestFile(t, filepath.Join(frontendDir, "package-lock.json"), []byte("{}\n"), 0o644)
 	writeTestFile(t, filepath.Join(frontendDir, "package.json"), []byte("{}\n"), 0o644)
 	heldCommand := "scripts/layoutguard/run.mjs"
@@ -402,12 +402,12 @@ func TestMakeTestWebBrowserInterruptWaitsForNodeCleanup(t *testing.T) {
 	command := exec.Command("make", "test-web-browser")
 	command.Dir = fixture.root
 	command.Env = append(fixture.environment(""),
-		"SERF_TEST_NODE_HOLD_COMMAND="+heldCommand,
-		"SERF_TEST_NODE_READY="+readyPath,
-		"SERF_TEST_NODE_PID="+pidPath,
-		"SERF_TEST_NODE_TERM="+termPath,
-		"SERF_TEST_NODE_RELEASE="+releasePath,
-		"SERF_TEST_NODE_READY_FD=3",
+		"EVENER_TEST_NODE_HOLD_COMMAND="+heldCommand,
+		"EVENER_TEST_NODE_READY="+readyPath,
+		"EVENER_TEST_NODE_PID="+pidPath,
+		"EVENER_TEST_NODE_TERM="+termPath,
+		"EVENER_TEST_NODE_RELEASE="+releasePath,
+		"EVENER_TEST_NODE_READY_FD=3",
 	)
 	readyReader, readyWriter, err := os.Pipe()
 	if err != nil {
@@ -525,11 +525,11 @@ func TestFrontendToolchainStubHeldNodeHonorsPreexistingRelease(t *testing.T) {
 	command := exec.CommandContext(ctx, filepath.Join(fixture.fakeBin, "node"), heldCommand)
 	command.Dir = fixture.root
 	command.Env = append(fixture.environment(""),
-		"SERF_TEST_NODE_HOLD_COMMAND="+heldCommand,
-		"SERF_TEST_NODE_READY="+readyPath,
-		"SERF_TEST_NODE_PID="+pidPath,
-		"SERF_TEST_NODE_TERM="+termPath,
-		"SERF_TEST_NODE_RELEASE="+releasePath,
+		"EVENER_TEST_NODE_HOLD_COMMAND="+heldCommand,
+		"EVENER_TEST_NODE_READY="+readyPath,
+		"EVENER_TEST_NODE_PID="+pidPath,
+		"EVENER_TEST_NODE_TERM="+termPath,
+		"EVENER_TEST_NODE_RELEASE="+releasePath,
 	)
 	output, err := command.CombinedOutput()
 	if ctx.Err() != nil {
@@ -570,7 +570,7 @@ func TestHeldBrowserFixtureLifecycleWithoutNode(t *testing.T) {
 
 func TestMakeTestWebBrowserSuccessIsConciseAndRemovesEvidence(t *testing.T) {
 	fixture := newBuildWebFixture(t)
-	frontendDir := filepath.Join(fixture.root, "cmd", "serf-hub", "frontend")
+	frontendDir := filepath.Join(fixture.root, "cmd", "evener-hub", "frontend")
 	writeTestFile(t, filepath.Join(frontendDir, "package-lock.json"), []byte("{}\n"), 0o644)
 	writeTestFile(t, filepath.Join(frontendDir, "package.json"), []byte("{}\n"), 0o644)
 
@@ -599,14 +599,14 @@ func TestMakeTestWebBrowserSuccessIsConciseAndRemovesEvidence(t *testing.T) {
 
 func TestMakeTestWebBrowserFailureReplaysLogAndRetainsEvidence(t *testing.T) {
 	fixture := newBuildWebFixture(t)
-	frontendDir := filepath.Join(fixture.root, "cmd", "serf-hub", "frontend")
+	frontendDir := filepath.Join(fixture.root, "cmd", "evener-hub", "frontend")
 	writeTestFile(t, filepath.Join(frontendDir, "package-lock.json"), []byte("{}\n"), 0o644)
 	writeTestFile(t, filepath.Join(frontendDir, "package.json"), []byte("{}\n"), 0o644)
 	failedCommand := "scripts/overflowguard/run.mjs"
 
 	command := exec.Command("make", "test-web-browser")
 	command.Dir = fixture.root
-	command.Env = append(fixture.environment(""), "SERF_TEST_NODE_FAIL_COMMAND="+failedCommand)
+	command.Env = append(fixture.environment(""), "EVENER_TEST_NODE_FAIL_COMMAND="+failedCommand)
 	output, err := command.CombinedOutput()
 	if err == nil {
 		t.Fatalf("make test-web-browser succeeded despite injected guard failure; output = %s", output)
@@ -633,13 +633,13 @@ func TestMakeTestWebBrowserFailureReplaysLogAndRetainsEvidence(t *testing.T) {
 
 func TestMakeTestWebRetainsFailedProcessStateWithinTMPDIR(t *testing.T) {
 	fixture := newBuildWebFixture(t)
-	frontendDir := filepath.Join(fixture.root, "cmd", "serf-hub", "frontend")
+	frontendDir := filepath.Join(fixture.root, "cmd", "evener-hub", "frontend")
 	writeTestFile(t, filepath.Join(frontendDir, "package-lock.json"), []byte("{}\n"), 0o644)
 	writeTestFile(t, filepath.Join(frontendDir, "package.json"), []byte("{}\n"), 0o644)
 
 	command := exec.Command("make", "test-web")
 	command.Dir = fixture.root
-	command.Env = append(fixture.environment(""), "SERF_TEST_NPM_FAIL_COMMAND=run test")
+	command.Env = append(fixture.environment(""), "EVENER_TEST_NPM_FAIL_COMMAND=run test")
 	output, err := command.CombinedOutput()
 	if err == nil {
 		t.Fatalf("make test-web succeeded despite injected npm failure; output = %s", output)
@@ -661,7 +661,7 @@ func TestMakeTestWebRetainsFailedProcessStateWithinTMPDIR(t *testing.T) {
 
 func TestMakeTestWebInterruptRetainsEvidenceAndReapsChecks(t *testing.T) {
 	fixture := newBuildWebFixture(t)
-	frontendDir := filepath.Join(fixture.root, "cmd", "serf-hub", "frontend")
+	frontendDir := filepath.Join(fixture.root, "cmd", "evener-hub", "frontend")
 	writeTestFile(t, filepath.Join(frontendDir, "package-lock.json"), []byte("{}\n"), 0o644)
 	writeTestFile(t, filepath.Join(frontendDir, "package.json"), []byte("{}\n"), 0o644)
 	readyPath := filepath.Join(fixture.root, "held-npm.ready")
@@ -670,9 +670,9 @@ func TestMakeTestWebInterruptRetainsEvidenceAndReapsChecks(t *testing.T) {
 	command := exec.Command("make", "test-web")
 	command.Dir = fixture.root
 	command.Env = append(fixture.environment(""),
-		"SERF_TEST_NPM_HOLD_COMMAND=run test",
-		"SERF_TEST_NPM_READY="+readyPath,
-		"SERF_TEST_NPM_PID="+pidPath,
+		"EVENER_TEST_NPM_HOLD_COMMAND=run test",
+		"EVENER_TEST_NPM_READY="+readyPath,
+		"EVENER_TEST_NPM_PID="+pidPath,
 	)
 	var output bytes.Buffer
 	command.Stdout = &output
@@ -719,7 +719,7 @@ func TestMakeTestWebInterruptRetainsEvidenceAndReapsChecks(t *testing.T) {
 
 func TestMakeTestWebInterruptDoesNotSignalReapedCheck(t *testing.T) {
 	fixture := newBuildWebFixture(t)
-	frontendDir := filepath.Join(fixture.root, "cmd", "serf-hub", "frontend")
+	frontendDir := filepath.Join(fixture.root, "cmd", "evener-hub", "frontend")
 	writeTestFile(t, filepath.Join(frontendDir, "package-lock.json"), []byte("{}\n"), 0o644)
 	writeTestFile(t, filepath.Join(frontendDir, "package.json"), []byte("{}\n"), 0o644)
 	heldReady := filepath.Join(fixture.root, "held-npm.ready")
@@ -734,19 +734,19 @@ if [ "${1:-}" = "-c" ]; then
     wait() {
       command wait "$@"
       wait_status=$?
-      tracked_pid=$(cat "$SERF_TEST_NPM_TRACK_PID")
-      [ "${1:-}" != "$tracked_pid" ] || : > "$SERF_TEST_SHELL_WAITED_REAPED"
+      tracked_pid=$(cat "$EVENER_TEST_NPM_TRACK_PID")
+      [ "${1:-}" != "$tracked_pid" ] || : > "$EVENER_TEST_SHELL_WAITED_REAPED"
       return "$wait_status"
     }
     kill() {
-      tracked_pid=$(cat "$SERF_TEST_NPM_TRACK_PID")
+      tracked_pid=$(cat "$EVENER_TEST_NPM_TRACK_PID")
       for kill_arg in "$@"; do
-        [ "$kill_arg" != "$tracked_pid" ] || : > "$SERF_TEST_SHELL_KILLED_REAPED"
+        [ "$kill_arg" != "$tracked_pid" ] || : > "$EVENER_TEST_SHELL_KILLED_REAPED"
       done
       command kill "$@"
     }
     eval "$1"
-  ' serf-recording-shell "$2"
+  ' evener-recording-shell "$2"
 fi
 exec /bin/sh "$@"
 `), 0o755)
@@ -754,13 +754,13 @@ exec /bin/sh "$@"
 	command := exec.Command("make", "SHELL="+recordingShell, "test-web")
 	command.Dir = fixture.root
 	command.Env = append(fixture.environment(""),
-		"SERF_TEST_NPM_HOLD_COMMAND=run test",
-		"SERF_TEST_NPM_READY="+heldReady,
-		"SERF_TEST_NPM_PID="+heldPID,
-		"SERF_TEST_NPM_TRACK_COMMAND=run typecheck",
-		"SERF_TEST_NPM_TRACK_PID="+reapedPID,
-		"SERF_TEST_SHELL_WAITED_REAPED="+waitedReaped,
-		"SERF_TEST_SHELL_KILLED_REAPED="+killedReaped,
+		"EVENER_TEST_NPM_HOLD_COMMAND=run test",
+		"EVENER_TEST_NPM_READY="+heldReady,
+		"EVENER_TEST_NPM_PID="+heldPID,
+		"EVENER_TEST_NPM_TRACK_COMMAND=run typecheck",
+		"EVENER_TEST_NPM_TRACK_PID="+reapedPID,
+		"EVENER_TEST_SHELL_WAITED_REAPED="+waitedReaped,
+		"EVENER_TEST_SHELL_KILLED_REAPED="+killedReaped,
 	)
 	var output bytes.Buffer
 	command.Stdout = &output
@@ -799,14 +799,14 @@ func TestMakeBuildMetadataPreservesIndexAndTracksDirtyWorktree(t *testing.T) {
 	if err := os.Remove(filepath.Join(fixture.fakeBin, "git")); err != nil {
 		t.Fatalf("remove fake git: %v", err)
 	}
-	frontendDir := filepath.Join(fixture.root, "cmd", "serf-hub", "frontend")
+	frontendDir := filepath.Join(fixture.root, "cmd", "evener-hub", "frontend")
 	writeTestFile(t, filepath.Join(frontendDir, "package-lock.json"), []byte("{}\n"), 0o644)
 	writeTestFile(t, filepath.Join(frontendDir, "package.json"), []byte("{}\n"), 0o644)
 	marker := filepath.Join(fixture.root, "tracked-marker.txt")
 	writeTestFile(t, marker, []byte("clean\n"), 0o644)
 	runGit(t, fixture.root, "init", "-q")
 	runGit(t, fixture.root, "add", ".")
-	runGit(t, fixture.root, "-c", "user.name=Serf Test", "-c", "user.email=serf-test@example.invalid", "commit", "-qm", "fixture")
+	runGit(t, fixture.root, "-c", "user.name=Evener Test", "-c", "user.email=evener-test@example.invalid", "commit", "-qm", "fixture")
 
 	indexPath := filepath.Join(fixture.root, ".git", "index")
 	indexBefore, err := os.ReadFile(indexPath)
@@ -898,8 +898,8 @@ while [ "$#" -gt 0 ]; do
   esac
 done
 printf 'go-env\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
-  "$package" "$ldflags" "$HOME" "${XDG_CONFIG_HOME:-}" "${XDG_CACHE_HOME:-}" "${XDG_STATE_HOME:-}" "${GOPATH:-}" "${GOCACHE:-}" >> "$SERF_TEST_GO_LOG"
-if [ "${SERF_TEST_GO_FAIL_PACKAGE:-}" = "$package" ]; then
+  "$package" "$ldflags" "$HOME" "${XDG_CONFIG_HOME:-}" "${XDG_CACHE_HOME:-}" "${XDG_STATE_HOME:-}" "${GOPATH:-}" "${GOCACHE:-}" >> "$EVENER_TEST_GO_LOG"
+if [ "${EVENER_TEST_GO_FAIL_PACKAGE:-}" = "$package" ]; then
   exit 17
 fi
 printf '%s\n' "$package" > "$output"
@@ -919,7 +919,7 @@ printf '%s\n' "$package" > "$output"
 // checkout's actual git state.
 func installFrontendToolchainStubs(t *testing.T, fixture runtimeBuildFixture) {
 	t.Helper()
-	if err := os.MkdirAll(filepath.Join(fixture.root, "cmd", "serf-hub", "frontend"), 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Join(fixture.root, "cmd", "evener-hub", "frontend"), 0o755); err != nil {
 		t.Fatalf("mkdir frontend: %v", err)
 	}
 	// The fake npm ci lays down the one thing web-preflight inspects to prove
@@ -928,39 +928,39 @@ func installFrontendToolchainStubs(t *testing.T, fixture runtimeBuildFixture) {
 	// broken state the preflight exists to catch, so a stub that only mkdir'd
 	// the directory would (correctly) fail the build.
 	writeTestFile(t, filepath.Join(fixture.fakeBin, "npm"), []byte(`#!/bin/sh
-printf 'npm-env\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$*" "${NODE_DISABLE_COMPILE_CACHE:-}" "${HOME:-}" "${TMPDIR:-}" "${XDG_CONFIG_HOME:-}" "${XDG_CACHE_HOME:-}" "${XDG_STATE_HOME:-}" >> "$SERF_TEST_GO_LOG"
-printf 'npm %s\n' "$*" >> "$SERF_TEST_GO_LOG"
+printf 'npm-env\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$*" "${NODE_DISABLE_COMPILE_CACHE:-}" "${HOME:-}" "${TMPDIR:-}" "${XDG_CONFIG_HOME:-}" "${XDG_CACHE_HOME:-}" "${XDG_STATE_HOME:-}" >> "$EVENER_TEST_GO_LOG"
+printf 'npm %s\n' "$*" >> "$EVENER_TEST_GO_LOG"
 if [ "$1" = "ci" ]; then
   mkdir -p node_modules/.bin
   printf '#!/bin/sh\necho "Version 6.0.3"\n' > node_modules/.bin/tsc
   chmod +x node_modules/.bin/tsc
 fi
-[ "${SERF_TEST_NPM_HOLD_COMMAND:-}" != "$*" ] || {
-  printf '%s\n' "$$" > "$SERF_TEST_NPM_PID"
-  : > "$SERF_TEST_NPM_READY"
+[ "${EVENER_TEST_NPM_HOLD_COMMAND:-}" != "$*" ] || {
+  printf '%s\n' "$$" > "$EVENER_TEST_NPM_PID"
+  : > "$EVENER_TEST_NPM_READY"
   exec sleep 1000
 }
-[ "${SERF_TEST_NPM_TRACK_COMMAND:-}" != "$*" ] || printf '%s\n' "$$" > "$SERF_TEST_NPM_TRACK_PID"
-[ "${SERF_TEST_NPM_FAIL_COMMAND:-}" = "$*" ] && exit 17
+[ "${EVENER_TEST_NPM_TRACK_COMMAND:-}" != "$*" ] || printf '%s\n' "$$" > "$EVENER_TEST_NPM_TRACK_PID"
+[ "${EVENER_TEST_NPM_FAIL_COMMAND:-}" = "$*" ] && exit 17
 exit 0
 `), 0o755)
 	writeTestFile(t, filepath.Join(fixture.fakeBin, "node"), []byte(`#!/bin/sh
-printf 'node-env\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$*" "${NODE_DISABLE_COMPILE_CACHE:-}" "${HOME:-}" "${TMPDIR:-}" "${XDG_CONFIG_HOME:-}" "${XDG_CACHE_HOME:-}" "${XDG_STATE_HOME:-}" >> "$SERF_TEST_GO_LOG"
+printf 'node-env\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$*" "${NODE_DISABLE_COMPILE_CACHE:-}" "${HOME:-}" "${TMPDIR:-}" "${XDG_CONFIG_HOME:-}" "${XDG_CACHE_HOME:-}" "${XDG_STATE_HOME:-}" >> "$EVENER_TEST_GO_LOG"
 printf 'browser chatter: %s\n' "$*"
-[ "${SERF_TEST_NODE_HOLD_COMMAND:-}" != "$*" ] || {
+[ "${EVENER_TEST_NODE_HOLD_COMMAND:-}" != "$*" ] || {
   on_term() {
-    : > "$SERF_TEST_NODE_TERM"
-    while [ ! -f "$SERF_TEST_NODE_RELEASE" ]; do :; done
+    : > "$EVENER_TEST_NODE_TERM"
+    while [ ! -f "$EVENER_TEST_NODE_RELEASE" ]; do :; done
     exit 143
   }
   trap on_term TERM
-  printf '%s\n' "$$" > "$SERF_TEST_NODE_PID"
-  : > "$SERF_TEST_NODE_READY"
-  [ "${SERF_TEST_NODE_READY_FD:-}" != 3 ] || printf . >&3
-  while [ ! -f "$SERF_TEST_NODE_RELEASE" ]; do :; done
+  printf '%s\n' "$$" > "$EVENER_TEST_NODE_PID"
+  : > "$EVENER_TEST_NODE_READY"
+  [ "${EVENER_TEST_NODE_READY_FD:-}" != 3 ] || printf . >&3
+  while [ ! -f "$EVENER_TEST_NODE_RELEASE" ]; do :; done
   exit 143
 }
-[ "${SERF_TEST_NODE_FAIL_COMMAND:-}" = "$*" ] && {
+[ "${EVENER_TEST_NODE_FAIL_COMMAND:-}" = "$*" ] && {
   printf 'browser failure detail: %s\n' "$*" >&2
   exit 23
 }
@@ -1196,10 +1196,10 @@ func (fixture runtimeBuildFixture) environment(failPackage string) []string {
 		switch name {
 		case "PATH", "TMPDIR", "LDFLAGS", "GOPATH", "GOCACHE", "NODE_DISABLE_COMPILE_CACHE",
 			"GNUMAKEFLAGS", "MAKEFLAGS", "MAKELEVEL", "MFLAGS",
-			"SERF_TEST_GO_LOG", "SERF_TEST_GO_FAIL_PACKAGE",
-			"SERF_TEST_NPM_FAIL_COMMAND", "SERF_TEST_NPM_HOLD_COMMAND", "SERF_TEST_NPM_PID", "SERF_TEST_NPM_READY",
-			"SERF_TEST_NPM_TRACK_COMMAND", "SERF_TEST_NPM_TRACK_PID", "SERF_TEST_SHELL_KILLED_REAPED", "SERF_TEST_SHELL_WAITED_REAPED",
-			"SERF_TEST_NODE_HOLD_COMMAND", "SERF_TEST_NODE_FAIL_COMMAND", "SERF_TEST_NODE_PID", "SERF_TEST_NODE_READY", "SERF_TEST_NODE_TERM", "SERF_TEST_NODE_RELEASE", "SERF_TEST_NODE_READY_FD":
+			"EVENER_TEST_GO_LOG", "EVENER_TEST_GO_FAIL_PACKAGE",
+			"EVENER_TEST_NPM_FAIL_COMMAND", "EVENER_TEST_NPM_HOLD_COMMAND", "EVENER_TEST_NPM_PID", "EVENER_TEST_NPM_READY",
+			"EVENER_TEST_NPM_TRACK_COMMAND", "EVENER_TEST_NPM_TRACK_PID", "EVENER_TEST_SHELL_KILLED_REAPED", "EVENER_TEST_SHELL_WAITED_REAPED",
+			"EVENER_TEST_NODE_HOLD_COMMAND", "EVENER_TEST_NODE_FAIL_COMMAND", "EVENER_TEST_NODE_PID", "EVENER_TEST_NODE_READY", "EVENER_TEST_NODE_TERM", "EVENER_TEST_NODE_RELEASE", "EVENER_TEST_NODE_READY_FD":
 			continue
 		}
 		environment = append(environment, assignment)
@@ -1210,8 +1210,8 @@ func (fixture runtimeBuildFixture) environment(failPackage string) []string {
 		"LDFLAGS=same-checkout-flags",
 		"GOPATH="+filepath.Join(fixture.root, "shared-gopath"),
 		"GOCACHE="+filepath.Join(fixture.root, "shared-gocache"),
-		"SERF_TEST_GO_LOG="+fixture.logPath,
-		"SERF_TEST_GO_FAIL_PACKAGE="+failPackage,
+		"EVENER_TEST_GO_LOG="+fixture.logPath,
+		"EVENER_TEST_GO_FAIL_PACKAGE="+failPackage,
 	)
 }
 
@@ -1274,7 +1274,7 @@ func countNpmInvocations(t *testing.T, logPath string) (npmCiCount, npmBuildCoun
 }
 
 // assertNpmPrecedesHubGoBuild pins the load-bearing prerequisite order at
-// Makefile:23-29: build-web must run before build-runtime so the serf-hub
+// Makefile:23-29: build-web must run before build-runtime so the evener-hub
 // go build embeds the dist build-web just produced. It tolerates the
 // DIST_GOOS/DIST_GOARCH parse-time "go env" pollution lines that the
 // Makefile's ?= assignments trigger against the fake go shim.
@@ -1288,13 +1288,13 @@ func assertNpmPrecedesHubGoBuild(t *testing.T, logPath string) {
 
 	hubBuildLine := -1
 	for i, line := range lines {
-		if strings.HasPrefix(line, "go-env\t./cmd/serf-hub/\t") {
+		if strings.HasPrefix(line, "go-env\t./cmd/evener-hub/\t") {
 			hubBuildLine = i
 			break
 		}
 	}
 	if hubBuildLine == -1 {
-		t.Fatalf("fake go/npm log has no serf-hub go build; log = %q", logData)
+		t.Fatalf("fake go/npm log has no evener-hub go build; log = %q", logData)
 	}
 
 	sawNpm := false
@@ -1304,7 +1304,7 @@ func assertNpmPrecedesHubGoBuild(t *testing.T, logPath string) {
 		}
 		sawNpm = true
 		if i > hubBuildLine {
-			t.Fatalf("npm call %q ran after the serf-hub go build; build-web must run before build-runtime (Makefile:23-29); log = %q", line, logData)
+			t.Fatalf("npm call %q ran after the evener-hub go build; build-web must run before build-runtime (Makefile:23-29); log = %q", line, logData)
 		}
 	}
 	if !sawNpm {
@@ -1314,8 +1314,8 @@ func assertNpmPrecedesHubGoBuild(t *testing.T, logPath string) {
 
 // assertNpmBuildPrecedesHubGoBuild pins the dist/install prerequisite graph:
 // both now depend on build-web, so a `make -n` dry run must print the vite
-// build before the serf-hub go build. make -n also forces the Makefile's
-// parse-time `$(shell go env GOOS)`/GOARCH assignments (SERF_DIST_NAME's
+// build before the evener-hub go build. make -n also forces the Makefile's
+// parse-time `$(shell go env GOOS)`/GOARCH assignments (EVENER_DIST_NAME's
 // immediate `:=`) against the fake go shim, which doesn't understand the
 // `env` subcommand; the resulting noise log lines and stderr complaints are
 // expected and harmless here — this only checks relative order of the two
@@ -1329,7 +1329,7 @@ func assertNpmBuildPrecedesHubGoBuild(t *testing.T, target string, output []byte
 		if npmBuildLine == -1 && strings.Contains(line, "npm run build") {
 			npmBuildLine = i
 		}
-		if hubBuildLine == -1 && strings.Contains(line, "./cmd/serf-hub/") {
+		if hubBuildLine == -1 && strings.Contains(line, "./cmd/evener-hub/") {
 			hubBuildLine = i
 		}
 	}
@@ -1337,10 +1337,10 @@ func assertNpmBuildPrecedesHubGoBuild(t *testing.T, target string, output []byte
 		t.Fatalf("make -n %s has no npm run build line; output = %s", target, output)
 	}
 	if hubBuildLine == -1 {
-		t.Fatalf("make -n %s has no ./cmd/serf-hub/ go build line; output = %s", target, output)
+		t.Fatalf("make -n %s has no ./cmd/evener-hub/ go build line; output = %s", target, output)
 	}
 	if npmBuildLine > hubBuildLine {
-		t.Fatalf("make -n %s: npm run build (line %d) printed after the serf-hub go build (line %d); %s must build the web first; output = %s", target, npmBuildLine, hubBuildLine, target, output)
+		t.Fatalf("make -n %s: npm run build (line %d) printed after the evener-hub go build (line %d); %s must build the web first; output = %s", target, npmBuildLine, hubBuildLine, target, output)
 	}
 }
 

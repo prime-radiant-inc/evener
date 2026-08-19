@@ -44,22 +44,22 @@
 # corpus), and the loop prints a session summary before exiting.
 #
 # Real-traffic corpus refresh (Plan 12 Phase E): with --drive-every N, every N
-# turns the loop runs scripts/fuzz-drive.sh to drive the real serf CLI against a
+# turns the loop runs scripts/fuzz-drive.sh to drive the real evener CLI against a
 # provider, harvest the recorded traffic into seeds, and (unless --no-pr) open a
 # corpus PR — so the seed corpus keeps deepening from real provider shapes, not
 # just coverage-guided mutation. Default off (driving makes live, paid calls).
 #
 # Env seams (defaults are the production values; used by the self-test):
-#   SERF_FUZZ_REPO_ROOT  repo root (default: the parent of this script's dir)
-#   SERF_FUZZ_RUNNER     the registry source (default: scripts/run-fuzz.sh)
-#   SERF_FUZZ_TRIAGE     the per-turn engine  (default: scripts/fuzz-triage.sh)
-#   SERF_FUZZ_DRIVE      the corpus driver    (default: scripts/fuzz-drive.sh)
+#   EVENER_FUZZ_REPO_ROOT  repo root (default: the parent of this script's dir)
+#   EVENER_FUZZ_RUNNER     the registry source (default: scripts/run-fuzz.sh)
+#   EVENER_FUZZ_TRIAGE     the per-turn engine  (default: scripts/fuzz-triage.sh)
+#   EVENER_FUZZ_DRIVE      the corpus driver    (default: scripts/fuzz-drive.sh)
 set -uo pipefail
 
-repo_root="${SERF_FUZZ_REPO_ROOT:-$(cd "$(dirname "$0")/.." && pwd)}"
-runner="${SERF_FUZZ_RUNNER:-$repo_root/scripts/run-fuzz.sh}"
-triage="${SERF_FUZZ_TRIAGE:-$repo_root/scripts/fuzz-triage.sh}"
-drive="${SERF_FUZZ_DRIVE:-$repo_root/scripts/fuzz-drive.sh}"
+repo_root="${EVENER_FUZZ_REPO_ROOT:-$(cd "$(dirname "$0")/.." && pwd)}"
+runner="${EVENER_FUZZ_RUNNER:-$repo_root/scripts/run-fuzz.sh}"
+triage="${EVENER_FUZZ_TRIAGE:-$repo_root/scripts/fuzz-triage.sh}"
+drive="${EVENER_FUZZ_DRIVE:-$repo_root/scripts/fuzz-drive.sh}"
 ledger="$repo_root/fuzz/state/ledger.json"
 
 total=""          # total budget in seconds (empty = unlimited)

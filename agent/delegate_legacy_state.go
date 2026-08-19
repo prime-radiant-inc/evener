@@ -5,7 +5,7 @@ import (
 	"path/filepath"
 	"sort"
 
-	"primeradiant.com/serf/agent/internal/jobstore"
+	"primeradiant.com/evener/agent/internal/jobstore"
 )
 
 func rejectLegacyDelegateState(stateDir, rootSessionID string) error {

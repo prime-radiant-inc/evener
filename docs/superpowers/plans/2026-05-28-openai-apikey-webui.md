@@ -6,13 +6,13 @@
 
 **Architecture:** OpenAI's API-key layer is stored in the shared `credentials.toml` (like every other provider); OAuth stays in `openai.json` as a separate, higher-precedence sign-in. Effective precedence is `OAuth > file > env`. The store→`ToEnv`→adapter plumbing that carries a stored key to spawned sessions already exists; this plan unblocks `ApiKeySet`, makes OpenAI status layer-aware, makes `Logout` clear the effective layer, and updates the evergreen README.
 
-**Tech Stack:** Go; `cmd/serf-hub` (hub auth controller, RPC), `internal/credentials` (store), `internal/auth/openai` (OAuth state), `internal/launchconfig` (spawn env).
+**Tech Stack:** Go; `cmd/evener-hub` (hub auth controller, RPC), `internal/credentials` (store), `internal/auth/openai` (OAuth state), `internal/launchconfig` (spawn env).
 
 **Spec:** `docs/superpowers/specs/2026-05-28-openai-apikey-webui-design.md`
 **Ticket:** PRI-1877
 
 Reference (current code, do not re-derive):
-- `cmd/serf-hub/app_auth.go`: `openAIStatus` (lines ~280-326), `ApiKeySet` (~266-278), `Logout` (~222-240), `Status` openai branch (~81-90), helper `openAIStatusFromRecord` (~340).
+- `cmd/evener-hub/app_auth.go`: `openAIStatus` (lines ~280-326), `ApiKeySet` (~266-278), `Logout` (~222-240), `Status` openai branch (~81-90), helper `openAIStatusFromRecord` (~340).
 - `internal/credentials/store.go`: `Get` (file→env), `Layers(provider) (hasFile bool, envVar string)`, `Set`, `Clear`. `SourceFile == "file"`, `SourceEnv == "env"`.
 - `internal/auth/openai`: `LoadAuth`/`SaveAuth`/`DeleteAuth`, `AuthFilePath(stateDir)` = `<stateDir>/auth/openai.json`, `ErrAuthNotFound`, `ErrAuthCorrupt` (wrapped, use `errors.Is`), `AuthSourceOAuth=="oauth"`, `AuthSourceEnv=="env"`, `AuthSourceSignedOut=="signed-out"`.
 - Test helpers: `oaitest.IsolateOpenAIAuth(t)` clears `OPENAI_API_KEY` etc. and isolates the state dir; `newHubAuthControllerWithStore(stateDir, store)` builds a controller (note: it derives its OAuth `stateDir` from env, ignoring the first arg — override `c.stateDir` directly when a test needs to control it).
@@ -22,12 +22,12 @@ Reference (current code, do not re-derive):
 ### Task 1: Make OpenAI status layer-aware (file/env/oauth precedence, `HasStoredFile`, corrupt-tolerant)
 
 **Files:**
-- Modify: `cmd/serf-hub/app_auth.go` (`openAIStatus`)
-- Test: `cmd/serf-hub/app_auth_test.go`
+- Modify: `cmd/evener-hub/app_auth.go` (`openAIStatus`)
+- Test: `cmd/evener-hub/app_auth_test.go`
 
 - [ ] **Step 1: Write the failing tests**
 
-Append to `cmd/serf-hub/app_auth_test.go`:
+Append to `cmd/evener-hub/app_auth_test.go`:
 
 ```go
 func TestAuth_OpenAI_Status_ReflectsStoredFileKey(t *testing.T) {
@@ -105,12 +105,12 @@ func TestAuth_OpenAI_Status_CorruptOAuthFallsBackToFile(t *testing.T) {
 
 - [ ] **Step 2: Run the tests to verify they fail**
 
-Run: `go test ./cmd/serf-hub/ -run 'TestAuth_OpenAI_Status_' -v`
+Run: `go test ./cmd/evener-hub/ -run 'TestAuth_OpenAI_Status_' -v`
 Expected: FAIL — `ReflectsStoredFileKey` gets `ActiveSource "signed-out"`, `OAuthShadowsStoredFileKey` gets `HasStoredFile false`, `CorruptOAuthFallsBackToFile` returns a non-nil error.
 
 - [ ] **Step 3: Rewrite `openAIStatus`**
 
-Replace the entire `openAIStatus` function in `cmd/serf-hub/app_auth.go` with:
+Replace the entire `openAIStatus` function in `cmd/evener-hub/app_auth.go` with:
 
 ```go
 func (c *hubAuthController) openAIStatus() (appwire.AuthStatusResponse, error) {
@@ -176,14 +176,14 @@ func (c *hubAuthController) openAIStatus() (appwire.AuthStatusResponse, error) {
 
 - [ ] **Step 4: Run the new tests and the existing auth suite**
 
-Run: `go test ./cmd/serf-hub/ -run 'TestAuth_OpenAI_Status_|TestHubRPCAuthStatus|TestHubRPCAuthLogout' -v`
+Run: `go test ./cmd/evener-hub/ -run 'TestAuth_OpenAI_Status_|TestHubRPCAuthStatus|TestHubRPCAuthLogout' -v`
 Expected: PASS (new tests pass; existing OAuth/env status + logout tests still pass — precedence preserved).
 
 - [ ] **Step 5: Commit**
 
 ```bash
-git add cmd/serf-hub/app_auth.go cmd/serf-hub/app_auth_test.go
-git commit -m "feat(serf-hub): openai status reflects credentials.toml file layer (PRI-1877)"
+git add cmd/evener-hub/app_auth.go cmd/evener-hub/app_auth_test.go
+git commit -m "feat(evener-hub): openai status reflects credentials.toml file layer (PRI-1877)"
 ```
 
 ---
@@ -191,12 +191,12 @@ git commit -m "feat(serf-hub): openai status reflects credentials.toml file laye
 ### Task 2: Allow setting an OpenAI API key (`ApiKeySet`)
 
 **Files:**
-- Modify: `cmd/serf-hub/app_auth.go` (`ApiKeySet`)
-- Test: `cmd/serf-hub/app_auth_test.go`
+- Modify: `cmd/evener-hub/app_auth.go` (`ApiKeySet`)
+- Test: `cmd/evener-hub/app_auth_test.go`
 
 - [ ] **Step 1: Write the failing test**
 
-Append to `cmd/serf-hub/app_auth_test.go`:
+Append to `cmd/evener-hub/app_auth_test.go`:
 
 ```go
 func TestAuth_OpenAI_ApiKeySet_PersistsAndReportsFile(t *testing.T) {
@@ -224,12 +224,12 @@ func TestAuth_OpenAI_ApiKeySet_PersistsAndReportsFile(t *testing.T) {
 
 - [ ] **Step 2: Run the test to verify it fails**
 
-Run: `go test ./cmd/serf-hub/ -run TestAuth_OpenAI_ApiKeySet_PersistsAndReportsFile -v`
+Run: `go test ./cmd/evener-hub/ -run TestAuth_OpenAI_ApiKeySet_PersistsAndReportsFile -v`
 Expected: FAIL — `ApiKeySet` returns InvalidParams "openai api keys must be configured via env or hub.env…".
 
 - [ ] **Step 3: Remove the OpenAI rejection**
 
-In `cmd/serf-hub/app_auth.go`, replace the `ApiKeySet` function with:
+In `cmd/evener-hub/app_auth.go`, replace the `ApiKeySet` function with:
 
 ```go
 func (c *hubAuthController) ApiKeySet(params appwire.AuthApiKeySetParams) (appwire.AuthStatusResponse, error) {
@@ -246,14 +246,14 @@ func (c *hubAuthController) ApiKeySet(params appwire.AuthApiKeySetParams) (appwi
 
 - [ ] **Step 4: Run the test to verify it passes**
 
-Run: `go test ./cmd/serf-hub/ -run 'TestAuth_OpenAI_ApiKeySet_PersistsAndReportsFile|TestAuth_ApiKeySet_WritesAndReports' -v`
+Run: `go test ./cmd/evener-hub/ -run 'TestAuth_OpenAI_ApiKeySet_PersistsAndReportsFile|TestAuth_ApiKeySet_WritesAndReports' -v`
 Expected: PASS (openai now persists; the existing anthropic ApiKeySet test still passes).
 
 - [ ] **Step 5: Commit**
 
 ```bash
-git add cmd/serf-hub/app_auth.go cmd/serf-hub/app_auth_test.go
-git commit -m "feat(serf-hub): allow setting an OpenAI API key via credentials (PRI-1877)"
+git add cmd/evener-hub/app_auth.go cmd/evener-hub/app_auth_test.go
+git commit -m "feat(evener-hub): allow setting an OpenAI API key via credentials (PRI-1877)"
 ```
 
 ---
@@ -261,12 +261,12 @@ git commit -m "feat(serf-hub): allow setting an OpenAI API key via credentials (
 ### Task 3: Layer-aware `Logout` for OpenAI (clear the effective layer)
 
 **Files:**
-- Modify: `cmd/serf-hub/app_auth.go` (`Logout`)
-- Test: `cmd/serf-hub/app_auth_test.go`
+- Modify: `cmd/evener-hub/app_auth.go` (`Logout`)
+- Test: `cmd/evener-hub/app_auth_test.go`
 
 - [ ] **Step 1: Write the failing tests**
 
-Append to `cmd/serf-hub/app_auth_test.go`:
+Append to `cmd/evener-hub/app_auth_test.go`:
 
 ```go
 func TestAuth_OpenAI_Logout_ClearsStoredFileKey(t *testing.T) {
@@ -322,12 +322,12 @@ func TestAuth_OpenAI_Logout_OAuthRevealsStoredFileKey(t *testing.T) {
 
 - [ ] **Step 2: Run the tests to verify they fail**
 
-Run: `go test ./cmd/serf-hub/ -run 'TestAuth_OpenAI_Logout_' -v`
+Run: `go test ./cmd/evener-hub/ -run 'TestAuth_OpenAI_Logout_' -v`
 Expected: FAIL — current `Logout` calls `DeleteAuth` only; `ClearsStoredFileKey` gets `Removed false` (no OAuth file to delete) and the key is not cleared.
 
 - [ ] **Step 3: Make the OpenAI branch clear the effective layer**
 
-In `cmd/serf-hub/app_auth.go`, replace the `Logout` function with:
+In `cmd/evener-hub/app_auth.go`, replace the `Logout` function with:
 
 ```go
 func (c *hubAuthController) Logout(params appwire.AuthLogoutParams) (appwire.AuthLogoutResponse, error) {
@@ -371,14 +371,14 @@ func (c *hubAuthController) Logout(params appwire.AuthLogoutParams) (appwire.Aut
 
 - [ ] **Step 4: Run the new tests and the existing logout test**
 
-Run: `go test ./cmd/serf-hub/ -run 'TestAuth_OpenAI_Logout_|TestHubRPCAuthLogoutRemovesUserScopedOpenAIAuth' -v`
+Run: `go test ./cmd/evener-hub/ -run 'TestAuth_OpenAI_Logout_|TestHubRPCAuthLogoutRemovesUserScopedOpenAIAuth' -v`
 Expected: PASS (new tests pass; existing OAuth-only logout still reports removed + signed-out).
 
 - [ ] **Step 5: Commit**
 
 ```bash
-git add cmd/serf-hub/app_auth.go cmd/serf-hub/app_auth_test.go
-git commit -m "feat(serf-hub): openai logout clears the effective credential layer (PRI-1877)"
+git add cmd/evener-hub/app_auth.go cmd/evener-hub/app_auth_test.go
+git commit -m "feat(evener-hub): openai logout clears the effective credential layer (PRI-1877)"
 ```
 
 ---
@@ -422,14 +422,14 @@ git commit -m "test(launchconfig): guard openai stored key injection to spawns (
 
 ---
 
-### Task 5: Update the evergreen doc — `cmd/serf-hub/README.md` Provider Credentials
+### Task 5: Update the evergreen doc — `cmd/evener-hub/README.md` Provider Credentials
 
 **Files:**
-- Modify: `cmd/serf-hub/README.md`
+- Modify: `cmd/evener-hub/README.md`
 
 - [ ] **Step 1: Update the credentials section**
 
-In `cmd/serf-hub/README.md`, add `openai` to the TOML example by replacing:
+In `cmd/evener-hub/README.md`, add `openai` to the TOML example by replacing:
 
 ```toml
 [providers.anthropic]
@@ -456,9 +456,9 @@ Then replace this paragraph:
 
 ```
 The Hub UI (`/credentials`) or TUI (`:credentials`) writes this file via
-the `serf/auth/apiKey/set` RPC. OpenAI OAuth state remains in the existing
-`~/.serf/auth/openai.json` file; OAuth flows are triggered from the same
-UIs via `serf/auth/login/start`.
+the `evener/auth/apiKey/set` RPC. OpenAI OAuth state remains in the existing
+`~/.evener/auth/openai.json` file; OAuth flows are triggered from the same
+UIs via `evener/auth/login/start`.
 
 Process-env credentials (e.g., `ANTHROPIC_API_KEY` exported in the shell)
 still work as a fallback when no file entry exists for the provider —
@@ -470,7 +470,7 @@ with:
 
 ```
 The Hub UI (`/credentials`) or TUI (`:credentials`) writes this file via
-the `serf/auth/apiKey/set` RPC. Process-env credentials (e.g.,
+the `evener/auth/apiKey/set` RPC. Process-env credentials (e.g.,
 `ANTHROPIC_API_KEY` exported in the shell) still work as a fallback when no
 file entry exists for the provider — matching the `hub.env` style for users
 who prefer external secret management.
@@ -479,7 +479,7 @@ who prefer external secret management.
 
 OpenAI supports both an API key (stored in `credentials.toml` like any other
 provider, or via `OPENAI_API_KEY`) and OAuth (sign in via
-`serf/auth/login/start`; state stored in `~/.serf/auth/openai.json`).
+`evener/auth/login/start`; state stored in `~/.evener/auth/openai.json`).
 
 The effective credential is resolved by precedence:
 
@@ -497,8 +497,8 @@ interchangeable credentials for one endpoint.
 - [ ] **Step 2: Commit**
 
 ```bash
-git add cmd/serf-hub/README.md
-git commit -m "docs(serf-hub): document OpenAI API-key support and cred precedence (PRI-1877)"
+git add cmd/evener-hub/README.md
+git commit -m "docs(evener-hub): document OpenAI API-key support and cred precedence (PRI-1877)"
 ```
 
 ---
@@ -514,7 +514,7 @@ Expected: no output (success).
 
 - [ ] **Step 2: Run the affected packages' suites**
 
-Run: `go test ./cmd/serf-hub/... ./internal/launchconfig/... ./internal/credentials/... ./internal/auth/openai/... ./llm/providers/openai/...`
+Run: `go test ./cmd/evener-hub/... ./internal/launchconfig/... ./internal/credentials/... ./internal/auth/openai/... ./llm/providers/openai/...`
 Expected: all PASS. Output must be pristine — investigate any new warning or log line, don't ignore it.
 
 - [ ] **Step 3: Manual webui smoke check (optional but recommended)**
@@ -542,4 +542,4 @@ Per `primeradiant-ops:linear-ticket-lifecycle`: move PRI-1877 to **In Review** a
 
 **Placeholder scan:** none — every code/test step has complete code and exact run commands.
 
-**Type/name consistency:** `openAIStatus`, `ApiKeySet`, `Logout` signatures match `cmd/serf-hub/app_auth.go`; `credentials.SourceFile`/`SourceEnv`, `authopenai.AuthSource*`, `c.creds.Layers`, `authopenai.AuthFilePath`, `appwire.AuthStatusResponse.{HasStoredFile,EnvVar,HasStoredOAuth,StoredEmail}`, and `stubCreds{keys:...}` all verified against current source.
+**Type/name consistency:** `openAIStatus`, `ApiKeySet`, `Logout` signatures match `cmd/evener-hub/app_auth.go`; `credentials.SourceFile`/`SourceEnv`, `authopenai.AuthSource*`, `c.creds.Layers`, `authopenai.AuthFilePath`, `appwire.AuthStatusResponse.{HasStoredFile,EnvVar,HasStoredOAuth,StoredEmail}`, and `stubCreds{keys:...}` all verified against current source.

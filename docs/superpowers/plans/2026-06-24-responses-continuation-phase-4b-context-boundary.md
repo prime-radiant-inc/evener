@@ -50,8 +50,8 @@ package agent
 import (
 	"strings"
 
-	"primeradiant.com/serf/agent/schema"
-	"primeradiant.com/serf/llm"
+	"primeradiant.com/evener/agent/schema"
+	"primeradiant.com/evener/llm"
 )
 
 const responseContextMarkerV1 = "cont-ctx-v1"
@@ -151,8 +151,8 @@ import (
 	"testing"
 	"time"
 
-	"primeradiant.com/serf/agent/schema"
-	"primeradiant.com/serf/llm"
+	"primeradiant.com/evener/agent/schema"
+	"primeradiant.com/evener/llm"
 )
 
 func TestResponsesContinuationAnchorCandidateRequiresMetadata(t *testing.T) {
@@ -269,7 +269,7 @@ func responsesContinuationEligibleAssistantTurn(responseID string) schema.Turn {
 - [x] **Step 2: Run the failing tests**
 
 ```sh
-GOCACHE=/tmp/serf-gocache go test ./agent -run 'TestResponsesContinuationAnchorCandidate' -count=1 -v
+GOCACHE=/tmp/evener-gocache go test ./agent -run 'TestResponsesContinuationAnchorCandidate' -count=1 -v
 ```
 
 Expected: FAIL because `selectResponsesContinuationAnchorCandidate` and `responseContextMarkerV1` do not exist.
@@ -281,7 +281,7 @@ Create `agent/responses_continuation_eligibility.go` with the complete helper fr
 - [x] **Step 4: Verify the tests pass**
 
 ```sh
-GOCACHE=/tmp/serf-gocache go test ./agent -run 'TestResponsesContinuationAnchorCandidate' -count=1 -v
+GOCACHE=/tmp/evener-gocache go test ./agent -run 'TestResponsesContinuationAnchorCandidate' -count=1 -v
 ```
 
 Expected: PASS.
@@ -353,13 +353,13 @@ func TestResponsesContinuationAnchorCandidateUsesRestoredActiveBoundary(t *testi
 Add the missing import:
 
 ```go
-import "primeradiant.com/serf/agent/execenv"
+import "primeradiant.com/evener/agent/execenv"
 ```
 
 - [x] **Step 2: Run the restore test**
 
 ```sh
-GOCACHE=/tmp/serf-gocache go test ./agent -run 'TestResponsesContinuationAnchorCandidateUsesRestoredActiveBoundary' -count=1 -v
+GOCACHE=/tmp/evener-gocache go test ./agent -run 'TestResponsesContinuationAnchorCandidateUsesRestoredActiveBoundary' -count=1 -v
 ```
 
 Expected before Task 1 implementation: FAIL because the helper does not exist. Expected after Task 1: PASS.
@@ -396,7 +396,7 @@ Runtime continuation remains disabled. This phase does not send `previous_respon
 ## Evidence
 
 ```sh
-GOCACHE=/tmp/serf-gocache go test ./agent -run 'TestResponsesContinuationAnchorCandidate' -count=1 -v
+GOCACHE=/tmp/evener-gocache go test ./agent -run 'TestResponsesContinuationAnchorCandidate' -count=1 -v
 ```
 
 Result: pass.
@@ -419,7 +419,7 @@ Result: pass.
 - [x] **Step 2: Run focused verification**
 
 ```sh
-GOCACHE=/tmp/serf-gocache go test ./agent -run 'TestResponsesContinuationAnchorCandidate' -count=1 -v
+GOCACHE=/tmp/evener-gocache go test ./agent -run 'TestResponsesContinuationAnchorCandidate' -count=1 -v
 git diff --check
 ```
 

@@ -6,8 +6,8 @@ import (
 	"sort"
 	"time"
 
-	"primeradiant.com/serf/agent/internal/jobstore"
-	"primeradiant.com/serf/agent/provenance"
+	"primeradiant.com/evener/agent/internal/jobstore"
+	"primeradiant.com/evener/agent/provenance"
 )
 
 func (s *Session) ownerJobManagerFor(jobID string) (*jobManager, *jobstore.JobRecord) {

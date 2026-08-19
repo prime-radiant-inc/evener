@@ -1,6 +1,6 @@
 # Performance Profiling
 
-Tools for measuring and optimizing serf's per-round framework overhead.
+Tools for measuring and optimizing evener's per-round framework overhead.
 
 ## Quick Start
 
@@ -13,19 +13,19 @@ This builds two binaries (old vs current), runs each against the same task spec,
 
 ## CLI Profiling Flags
 
-The serf binary has built-in Go profiling support:
+The evener binary has built-in Go profiling support:
 
 ```bash
 # CPU profile (go tool pprof)
-serf --model openai/gpt-5.4-mini \
+evener --model openai/gpt-5.4-mini \
      --cpu-profile profile.prof \
      "your task here"
 
 # Analyze:
-go tool pprof -http=:8080 $(which serf) profile.prof
+go tool pprof -http=:8080 $(which evener) profile.prof
 
 # Execution trace (go tool trace)
-serf --model openai/gpt-5.4-mini \
+evener --model openai/gpt-5.4-mini \
      --trace trace.out \
      "your task here"
 
@@ -68,7 +68,7 @@ Profiling artifacts that inspect persisted sessions should use the canonical
 state layout:
 
 ```text
-${XDG_STATE_HOME:-~/.local/state}/serf/projects/<project-id>/sessions/<session-id>.transcript.jsonl
+${XDG_STATE_HOME:-~/.local/state}/evener/projects/<project-id>/sessions/<session-id>.transcript.jsonl
 ```
 
 `<project-id>` is a readable canonical-project ID with a 10-character base62

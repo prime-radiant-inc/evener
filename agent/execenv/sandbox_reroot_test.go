@@ -6,7 +6,7 @@ import (
 	"slices"
 	"testing"
 
-	"primeradiant.com/serf/agent/sandbox"
+	"primeradiant.com/evener/agent/sandbox"
 )
 
 // twoLanes builds a main repo with two linked worktrees and returns their

@@ -23,8 +23,8 @@
 ### Task 1: Add the argument body component and registry wiring
 
 **Files:**
-- Create: `cmd/serf-hub/frontend/src/panes/session/transcript/MCPToolArguments.tsx`
-- Modify: `cmd/serf-hub/frontend/src/panes/session/transcript/toolRenderers.ts` (`DEFAULT_DESCRIPTOR`)
+- Create: `cmd/evener-hub/frontend/src/panes/session/transcript/MCPToolArguments.tsx`
+- Modify: `cmd/evener-hub/frontend/src/panes/session/transcript/toolRenderers.ts` (`DEFAULT_DESCRIPTOR`)
 
 **Interfaces:**
 - Consumes: `ToolRenderProps` from `toolRenderers.ts`, `ItemModel.argumentsJSON`.
@@ -69,7 +69,7 @@ Keep `RawToolOutput` as the existing output child and compose `MCPToolArguments`
 Run:
 
 ```bash
-cd cmd/serf-hub/frontend
+cd cmd/evener-hub/frontend
 npx biome check --write src/panes/session/transcript/MCPToolArguments.tsx src/panes/session/transcript/toolRenderers.ts
 npx tsc --noEmit
 ```
@@ -79,15 +79,15 @@ Expected: formatting succeeds and TypeScript reports no errors.
 - [ ] **Step 4: Commit the implementation wiring**
 
 ```bash
-git add cmd/serf-hub/frontend/src/panes/session/transcript/MCPToolArguments.tsx cmd/serf-hub/frontend/src/panes/session/transcript/toolRenderers.ts
+git add cmd/evener-hub/frontend/src/panes/session/transcript/MCPToolArguments.tsx cmd/evener-hub/frontend/src/panes/session/transcript/toolRenderers.ts
 git commit -m "feat(webui): render MCP tool arguments"
 ```
 
 ### Task 2: Add focused renderer regression tests
 
 **Files:**
-- Create: `cmd/serf-hub/frontend/src/panes/session/transcript/MCPToolArguments.test.tsx`
-- Modify: `cmd/serf-hub/frontend/src/panes/session/transcript/ToolCallItem.test.tsx` only if integration coverage needs an existing fixture helper.
+- Create: `cmd/evener-hub/frontend/src/panes/session/transcript/MCPToolArguments.test.tsx`
+- Modify: `cmd/evener-hub/frontend/src/panes/session/transcript/ToolCallItem.test.tsx` only if integration coverage needs an existing fixture helper.
 
 **Interfaces:**
 - Consumes: `MCPToolArguments`, `toolRendererFor`, `ToolCallItem`.
@@ -121,7 +121,7 @@ Click `Copy arguments` with formatting-sensitive input and assert the clipboard 
 Run:
 
 ```bash
-cd cmd/serf-hub/frontend
+cd cmd/evener-hub/frontend
 npx vitest run src/panes/session/transcript/MCPToolArguments.test.tsx src/panes/session/transcript/ToolCallItem.test.tsx src/panes/session/transcript/toolRenderers.test.ts
 npx biome check --write src/panes/session/transcript/MCPToolArguments.test.tsx src/panes/session/transcript/ToolCallItem.test.tsx
 ```
@@ -129,7 +129,7 @@ npx biome check --write src/panes/session/transcript/MCPToolArguments.test.tsx s
 Expected: all focused tests pass. Commit:
 
 ```bash
-git add cmd/serf-hub/frontend/src/panes/session/transcript/MCPToolArguments.test.tsx cmd/serf-hub/frontend/src/panes/session/transcript/ToolCallItem.test.tsx
+git add cmd/evener-hub/frontend/src/panes/session/transcript/MCPToolArguments.test.tsx cmd/evener-hub/frontend/src/panes/session/transcript/ToolCallItem.test.tsx
 git commit -m "test(webui): cover MCP tool argument rendering"
 ```
 

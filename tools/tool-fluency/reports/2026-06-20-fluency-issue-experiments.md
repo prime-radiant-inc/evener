@@ -1,6 +1,6 @@
 # Tool Fluency Issue Experiments - 2026-06-20
 
-This journal tracks issue-focused experiments for the current Serf tool
+This journal tracks issue-focused experiments for the current Evener tool
 fluency work. It is intentionally separate from broad model run reports: the
 goal here is to isolate one fluency question at a time, run it against real
 tools, record artifacts, and only then decide whether the right fix is prompt,
@@ -12,8 +12,8 @@ For each experiment:
 
 1. State the smallest hypothesis.
 2. Run the smallest probe or catalog command that can falsify it.
-3. Store artifacts under a unique `/tmp/serf-fluency-issue-*` directory.
-4. Use `serf-fluency` summaries and `serf-doctor` for session forensics.
+3. Store artifacts under a unique `/tmp/evener-fluency-issue-*` directory.
+4. Use `evener-fluency` summaries and `evener-doctor` for session forensics.
 5. Classify findings using the tool-fluency categories: `schema`,
    `availability`, `selection`, `arguments`, `repair`, `interpretation`,
    `churn`, `polling`, `plain_message`, or `infra`.
@@ -23,7 +23,7 @@ For each experiment:
 
 No experiment in this file should depend on ad-hoc Python, jq, or transcript
 JSONL parsing. If an inspection is hard, improve the Go runner or
-`serf-doctor`.
+`evener-doctor`.
 
 ## Current Issue Matrix
 
@@ -55,15 +55,15 @@ targeted runs.
 Commands:
 
 ```sh
-go run ./tools/tool-fluency/cmd/serf-fluency catalog --model openai/gpt-5.4-mini
-go run ./tools/tool-fluency/cmd/serf-fluency catalog --model kimi/kimi-for-coding
+go run ./tools/tool-fluency/cmd/evener-fluency catalog --model openai/gpt-5.4-mini
+go run ./tools/tool-fluency/cmd/evener-fluency catalog --model kimi/kimi-for-coding
 ```
 
 Artifacts:
 
 - Command output captured in terminal for:
-  - `go run ./tools/tool-fluency/cmd/serf-fluency catalog --model openai/gpt-5.4-mini`
-  - `go run ./tools/tool-fluency/cmd/serf-fluency catalog --model kimi/kimi-for-coding`
+  - `go run ./tools/tool-fluency/cmd/evener-fluency catalog --model openai/gpt-5.4-mini`
+  - `go run ./tools/tool-fluency/cmd/evener-fluency catalog --model kimi/kimi-for-coding`
 - Prior broad run reports:
   - `tools/tool-fluency/reports/2026-06-20-openai-gpt-5.4-mini.md`
   - `tools/tool-fluency/reports/2026-06-20-kimi-for-coding.md`
@@ -97,26 +97,26 @@ observer is cancelled before it can call `delegate_send`.
 Commands:
 
 ```sh
-go run ./tools/tool-fluency/cmd/serf-fluency run --build --model openai/gpt-5.4-mini --fast-cheap-model openai/gpt-5.4-mini --clear-openai-api-key --probe job_watch.observer_callback --out /tmp/serf-fluency-issue-e01-openai
-go run ./tools/tool-fluency/cmd/serf-fluency run --build --model kimi/kimi-for-coding --probe job_watch.observer_callback --out /tmp/serf-fluency-issue-e01-kimi
+go run ./tools/tool-fluency/cmd/evener-fluency run --build --model openai/gpt-5.4-mini --fast-cheap-model openai/gpt-5.4-mini --clear-openai-api-key --probe job_watch.observer_callback --out /tmp/evener-fluency-issue-e01-openai
+go run ./tools/tool-fluency/cmd/evener-fluency run --build --model kimi/kimi-for-coding --probe job_watch.observer_callback --out /tmp/evener-fluency-issue-e01-kimi
 ```
 
 Artifacts:
 
 - GPT result directory:
-  `/tmp/serf-fluency-issue-e01-openai/job_watch.observer_callback/rep-01`
+  `/tmp/evener-fluency-issue-e01-openai/job_watch.observer_callback/rep-01`
 - GPT parent session: `01KVK0XEJKXYGBWBPJ1X52YBA7`
 - GPT observer session: `01KVK0Y2DQX738W7MTDR8S49ZG`
 - Kimi result directory:
-  `/tmp/serf-fluency-issue-e01-kimi/job_watch.observer_callback/rep-01`
+  `/tmp/evener-fluency-issue-e01-kimi/job_watch.observer_callback/rep-01`
 - Kimi parent session: `01KVK0YX8SZ73N7JAQ9YRBYEQ1`
 - Kimi observer session: `01KVK0Z1J7CE44M53X1WF5JDXZ`
 - Doctor commands used:
-  - `go run ./cmd/serf-doctor tree <parent> --state-dir <state> --observers`
-  - `go run ./cmd/serf-doctor watches <parent> --state-dir <state>`
-  - `go run ./cmd/serf-doctor transcript <observer> --state-dir <state> -format outline`
-  - `go run ./cmd/serf-doctor transcript <observer> --state-dir <state> -count delegate_send`
-  - `go run ./cmd/serf-doctor transcript <observer> --state-dir <state> -count communicate`
+  - `go run ./cmd/evener-doctor tree <parent> --state-dir <state> --observers`
+  - `go run ./cmd/evener-doctor watches <parent> --state-dir <state>`
+  - `go run ./cmd/evener-doctor transcript <observer> --state-dir <state> -format outline`
+  - `go run ./cmd/evener-doctor transcript <observer> --state-dir <state> -count delegate_send`
+  - `go run ./cmd/evener-doctor transcript <observer> --state-dir <state> -count communicate`
 
 Result:
 
@@ -129,7 +129,7 @@ Result:
   `RESULT_JOB_WATCH`.
 - Both parent sessions had one observer child, and both child sessions ended
   `stopped`.
-- `serf-doctor watches` showed one delivered watch frame for both models:
+- `evener-doctor watches` showed one delivered watch frame for both models:
   - GPT: `watch_01KVK0YD510J697PZ2TH92RRVZ`, one delivered frame, no self-loop.
   - Kimi: `watch_01KVK0ZCW0GTGNTNA4MWCF7E70`, one delivered frame, no self-loop.
 - Both observer transcripts had the delivered watch frame as user input, then a
@@ -154,22 +154,22 @@ teardown behavior.
 Commands:
 
 ```sh
-go run ./tools/tool-fluency/cmd/serf-fluency run --harness live --model openai/gpt-5.4-mini --fast-cheap-model openai/gpt-5.4-mini --clear-openai-api-key --probe job_watch.observer_callback --post-turn-wait 45s --out /tmp/serf-fluency-issue-e02-openai
-go run ./tools/tool-fluency/cmd/serf-fluency run --harness live --model kimi/kimi-for-coding --probe job_watch.observer_callback --post-turn-wait 45s --out /tmp/serf-fluency-issue-e02-kimi
+go run ./tools/tool-fluency/cmd/evener-fluency run --harness live --model openai/gpt-5.4-mini --fast-cheap-model openai/gpt-5.4-mini --clear-openai-api-key --probe job_watch.observer_callback --post-turn-wait 45s --out /tmp/evener-fluency-issue-e02-openai
+go run ./tools/tool-fluency/cmd/evener-fluency run --harness live --model kimi/kimi-for-coding --probe job_watch.observer_callback --post-turn-wait 45s --out /tmp/evener-fluency-issue-e02-kimi
 ```
 
 Artifacts:
 
-- Runner change: `serf-fluency run --harness live`, which hosts a session
+- Runner change: `evener-fluency run --harness live`, which hosts a session
   in-process, wires `SetNotifyFunc` and `SetKickFunc`, and keeps the session
   alive for `--post-turn-wait` instead of closing immediately after the root
   turn.
 - GPT result directory:
-  `/tmp/serf-fluency-issue-e02-openai/job_watch.observer_callback/rep-01`
+  `/tmp/evener-fluency-issue-e02-openai/job_watch.observer_callback/rep-01`
 - GPT parent session: `01KVK19XD9VQAQDGZJQWHVNDPC`
 - GPT observer session: `01KVK1A5RHFTTJ4F8GKG7D414X`
 - Kimi result directory:
-  `/tmp/serf-fluency-issue-e02-kimi/job_watch.observer_callback/rep-01`
+  `/tmp/evener-fluency-issue-e02-kimi/job_watch.observer_callback/rep-01`
 - Kimi parent session: `01KVK1F61FG97GFTRHJJ069B3F`
 - Kimi observer session: `01KVK1FCWBW8RWZFK9EM3G3YNF`
 
@@ -191,7 +191,7 @@ Result:
   - The parent sent extra `delegate_send` messages to the observer instead of
     simply installing the watch and waiting for callback delivery.
 - GPT doctor evidence:
-  - `serf-doctor watches` showed one delivered watch frame and no self-loop:
+  - `evener-doctor watches` showed one delivered watch frame and no self-loop:
     `watch_01KVK1BHGPAFFV3RZA3Z24RFKY`.
   - The observer was idle at the end, not stopped by parent teardown.
   - The parent transcript completed through `communicate`, then emitted a
@@ -220,15 +220,15 @@ the parent installed the watch.
 Commands:
 
 ```sh
-# No new model run. Analyze E02 live callback transcripts with serf-doctor.
+# No new model run. Analyze E02 live callback transcripts with evener-doctor.
 ```
 
 Artifacts:
 
 - GPT live callback result:
-  `/tmp/serf-fluency-issue-e02-openai/job_watch.observer_callback/rep-01`
+  `/tmp/evener-fluency-issue-e02-openai/job_watch.observer_callback/rep-01`
 - Kimi live callback result:
-  `/tmp/serf-fluency-issue-e02-kimi/job_watch.observer_callback/rep-01`
+  `/tmp/evener-fluency-issue-e02-kimi/job_watch.observer_callback/rep-01`
 
 Result:
 
@@ -257,16 +257,16 @@ fluency/schema affordance issue, not a runtime failure.
 Commands:
 
 ```sh
-go run ./tools/tool-fluency/cmd/serf-fluency run --build --model openai/gpt-5.4-mini --fast-cheap-model openai/gpt-5.4-mini --clear-openai-api-key --probe job_watch.observer_callback --repetitions 3 --out /tmp/serf-fluency-issue-e04-openai
-go run ./tools/tool-fluency/cmd/serf-fluency run --build --model kimi/kimi-for-coding --probe job_watch.observer_callback --repetitions 3 --out /tmp/serf-fluency-issue-e04-kimi
+go run ./tools/tool-fluency/cmd/evener-fluency run --build --model openai/gpt-5.4-mini --fast-cheap-model openai/gpt-5.4-mini --clear-openai-api-key --probe job_watch.observer_callback --repetitions 3 --out /tmp/evener-fluency-issue-e04-openai
+go run ./tools/tool-fluency/cmd/evener-fluency run --build --model kimi/kimi-for-coding --probe job_watch.observer_callback --repetitions 3 --out /tmp/evener-fluency-issue-e04-kimi
 ```
 
 Artifacts:
 
 - GPT result directory:
-  `/tmp/serf-fluency-issue-e04-openai/job_watch.observer_callback`
+  `/tmp/evener-fluency-issue-e04-openai/job_watch.observer_callback`
 - Kimi result directory:
-  `/tmp/serf-fluency-issue-e04-kimi/job_watch.observer_callback`
+  `/tmp/evener-fluency-issue-e04-kimi/job_watch.observer_callback`
 - GPT sessions:
   - rep 1: `01KVK1Q0A7FA2HTAE4T1FW2MVA`
   - rep 2: `01KVK1QSR6STQH4XTFYT44GVNH`
@@ -309,18 +309,18 @@ to wait or callback, not repeatedly inspect jobs with `job_list`,
 Commands:
 
 ```sh
-go run ./tools/tool-fluency/cmd/serf-fluency run --build --model openai/gpt-5.4-mini --fast-cheap-model openai/gpt-5.4-mini --clear-openai-api-key --probe jobs.control_lifecycle --repetitions 3 --out /tmp/serf-fluency-issue-e05-openai
-go run ./tools/tool-fluency/cmd/serf-fluency run --build --model kimi/kimi-for-coding --probe jobs.control_lifecycle --repetitions 3 --out /tmp/serf-fluency-issue-e05-kimi
+go run ./tools/tool-fluency/cmd/evener-fluency run --build --model openai/gpt-5.4-mini --fast-cheap-model openai/gpt-5.4-mini --clear-openai-api-key --probe jobs.control_lifecycle --repetitions 3 --out /tmp/evener-fluency-issue-e05-openai
+go run ./tools/tool-fluency/cmd/evener-fluency run --build --model kimi/kimi-for-coding --probe jobs.control_lifecycle --repetitions 3 --out /tmp/evener-fluency-issue-e05-kimi
 ```
 
 Artifacts:
 
 - GPT job lifecycle result directory:
-  `/tmp/serf-fluency-issue-e05-openai/jobs.control_lifecycle`
+  `/tmp/evener-fluency-issue-e05-openai/jobs.control_lifecycle`
 - Kimi job lifecycle result directory:
-  `/tmp/serf-fluency-issue-e05-kimi/jobs.control_lifecycle`
+  `/tmp/evener-fluency-issue-e05-kimi/jobs.control_lifecycle`
 - GPT live callback polling evidence from E02:
-  `/tmp/serf-fluency-issue-e02-openai/job_watch.observer_callback/rep-01`
+  `/tmp/evener-fluency-issue-e02-openai/job_watch.observer_callback/rep-01`
 
 Result:
 
@@ -351,16 +351,16 @@ behavior.
 Commands:
 
 ```sh
-go run ./tools/tool-fluency/cmd/serf-fluency run --build --model openai/gpt-5.4-mini --fast-cheap-model openai/gpt-5.4-mini --clear-openai-api-key --probe web_fetch.example --repetitions 3 --out /tmp/serf-fluency-issue-e06-openai
-go run ./tools/tool-fluency/cmd/serf-fluency run --build --model kimi/kimi-for-coding --probe web_fetch.example --repetitions 3 --out /tmp/serf-fluency-issue-e06-kimi
+go run ./tools/tool-fluency/cmd/evener-fluency run --build --model openai/gpt-5.4-mini --fast-cheap-model openai/gpt-5.4-mini --clear-openai-api-key --probe web_fetch.example --repetitions 3 --out /tmp/evener-fluency-issue-e06-openai
+go run ./tools/tool-fluency/cmd/evener-fluency run --build --model kimi/kimi-for-coding --probe web_fetch.example --repetitions 3 --out /tmp/evener-fluency-issue-e06-kimi
 ```
 
 Artifacts:
 
 - GPT result directory:
-  `/tmp/serf-fluency-issue-e06-openai/web_fetch.example`
+  `/tmp/evener-fluency-issue-e06-openai/web_fetch.example`
 - Kimi result directory:
-  `/tmp/serf-fluency-issue-e06-kimi/web_fetch.example`
+  `/tmp/evener-fluency-issue-e06-kimi/web_fetch.example`
 
 Result:
 
@@ -391,16 +391,16 @@ the `output` envelope on ordinary tasks.
 Commands:
 
 ```sh
-go run ./tools/tool-fluency/cmd/serf-fluency run --build --model openai/gpt-5.4-mini --fast-cheap-model openai/gpt-5.4-mini --clear-openai-api-key --probe communicate.final_message --repetitions 3 --out /tmp/serf-fluency-issue-e07-openai-communicate
-go run ./tools/tool-fluency/cmd/serf-fluency run --build --model kimi/kimi-for-coding --probe communicate.final_message --repetitions 3 --out /tmp/serf-fluency-issue-e07-kimi-communicate
+go run ./tools/tool-fluency/cmd/evener-fluency run --build --model openai/gpt-5.4-mini --fast-cheap-model openai/gpt-5.4-mini --clear-openai-api-key --probe communicate.final_message --repetitions 3 --out /tmp/evener-fluency-issue-e07-openai-communicate
+go run ./tools/tool-fluency/cmd/evener-fluency run --build --model kimi/kimi-for-coding --probe communicate.final_message --repetitions 3 --out /tmp/evener-fluency-issue-e07-kimi-communicate
 ```
 
 Artifacts:
 
 - GPT result directory:
-  `/tmp/serf-fluency-issue-e07-openai-communicate/communicate.final_message`
+  `/tmp/evener-fluency-issue-e07-openai-communicate/communicate.final_message`
 - Kimi result directory:
-  `/tmp/serf-fluency-issue-e07-kimi-communicate/communicate.final_message`
+  `/tmp/evener-fluency-issue-e07-kimi-communicate/communicate.final_message`
 
 Result:
 
@@ -422,18 +422,18 @@ task while still making tool fluency reports confusing.
 Commands:
 
 ```sh
-go run ./tools/tool-fluency/cmd/serf-fluency catalog --model openai/gpt-5.4-mini
-go run ./tools/tool-fluency/cmd/serf-fluency catalog --model kimi/kimi-for-coding
-go run ./tools/tool-fluency/cmd/serf-fluency run --build --model openai/gpt-5.4-mini --fast-cheap-model openai/gpt-5.4-mini --clear-openai-api-key --probe list_dir.inventory --out /tmp/serf-fluency-issue-e08-openai
-go run ./tools/tool-fluency/cmd/serf-fluency run --build --model kimi/kimi-for-coding --probe list_dir.inventory --out /tmp/serf-fluency-issue-e08-kimi
+go run ./tools/tool-fluency/cmd/evener-fluency catalog --model openai/gpt-5.4-mini
+go run ./tools/tool-fluency/cmd/evener-fluency catalog --model kimi/kimi-for-coding
+go run ./tools/tool-fluency/cmd/evener-fluency run --build --model openai/gpt-5.4-mini --fast-cheap-model openai/gpt-5.4-mini --clear-openai-api-key --probe list_dir.inventory --out /tmp/evener-fluency-issue-e08-openai
+go run ./tools/tool-fluency/cmd/evener-fluency run --build --model kimi/kimi-for-coding --probe list_dir.inventory --out /tmp/evener-fluency-issue-e08-kimi
 ```
 
 Artifacts:
 
 - GPT result directory:
-  `/tmp/serf-fluency-issue-e08-openai/list_dir.inventory`
+  `/tmp/evener-fluency-issue-e08-openai/list_dir.inventory`
 - Kimi result directory:
-  `/tmp/serf-fluency-issue-e08-kimi/list_dir.inventory`
+  `/tmp/evener-fluency-issue-e08-kimi/list_dir.inventory`
 - Catalog command output captured in terminal for both models.
 
 Result:
@@ -461,16 +461,16 @@ is churn.
 Commands:
 
 ```sh
-go run ./tools/tool-fluency/cmd/serf-fluency run --build --model openai/gpt-5.4-mini --fast-cheap-model openai/gpt-5.4-mini --clear-openai-api-key --probe task_list.plan --repetitions 3 --out /tmp/serf-fluency-issue-e09-openai
-go run ./tools/tool-fluency/cmd/serf-fluency run --build --model kimi/kimi-for-coding --probe task_list.plan --repetitions 3 --out /tmp/serf-fluency-issue-e09-kimi
+go run ./tools/tool-fluency/cmd/evener-fluency run --build --model openai/gpt-5.4-mini --fast-cheap-model openai/gpt-5.4-mini --clear-openai-api-key --probe task_list.plan --repetitions 3 --out /tmp/evener-fluency-issue-e09-openai
+go run ./tools/tool-fluency/cmd/evener-fluency run --build --model kimi/kimi-for-coding --probe task_list.plan --repetitions 3 --out /tmp/evener-fluency-issue-e09-kimi
 ```
 
 Artifacts:
 
 - GPT result directory:
-  `/tmp/serf-fluency-issue-e09-openai/task_list.plan`
+  `/tmp/evener-fluency-issue-e09-openai/task_list.plan`
 - Kimi result directory:
-  `/tmp/serf-fluency-issue-e09-kimi/task_list.plan`
+  `/tmp/evener-fluency-issue-e09-kimi/task_list.plan`
 - GPT rep 1 session: `01KVK2DEW1CJ6Z506FSYQZ23W8`
 - Kimi rep 1 session: `01KVK2FM7A8EEJWJT67R1DVMV6`
 
@@ -505,15 +505,15 @@ operations from unrelated escape hatches and redundant inspection.
 Commands:
 
 ```sh
-go run ./tools/tool-fluency/cmd/serf-fluency run --build --model openai/gpt-5.4-mini --fast-cheap-model openai/gpt-5.4-mini --clear-openai-api-key --probe jobs.control_lifecycle --repetitions 3 --out /tmp/serf-fluency-issue-e10-openai
-go run ./tools/tool-fluency/cmd/serf-fluency run --build --model kimi/kimi-for-coding --probe jobs.control_lifecycle --repetitions 3 --out /tmp/serf-fluency-issue-e10-kimi
+go run ./tools/tool-fluency/cmd/evener-fluency run --build --model openai/gpt-5.4-mini --fast-cheap-model openai/gpt-5.4-mini --clear-openai-api-key --probe jobs.control_lifecycle --repetitions 3 --out /tmp/evener-fluency-issue-e10-openai
+go run ./tools/tool-fluency/cmd/evener-fluency run --build --model kimi/kimi-for-coding --probe jobs.control_lifecycle --repetitions 3 --out /tmp/evener-fluency-issue-e10-kimi
 ```
 
 Artifacts:
 
 - Reused E05 focused job lifecycle evidence:
-  - `/tmp/serf-fluency-issue-e05-openai/jobs.control_lifecycle`
-  - `/tmp/serf-fluency-issue-e05-kimi/jobs.control_lifecycle`
+  - `/tmp/evener-fluency-issue-e05-openai/jobs.control_lifecycle`
+  - `/tmp/evener-fluency-issue-e05-kimi/jobs.control_lifecycle`
 
 Result:
 
@@ -532,22 +532,22 @@ Result:
 ### E11 - Unavailable Tool Skip Semantics
 
 Hypothesis: `web_search.current` should be `skipped_unavailable` on model
-surfaces that do not advertise Serf's `web_search`, and that skip should not
+surfaces that do not advertise Evener's `web_search`, and that skip should not
 hide a catalog exposure bug.
 
 Commands:
 
 ```sh
-go run ./tools/tool-fluency/cmd/serf-fluency run --build --model openai/gpt-5.4-mini --fast-cheap-model openai/gpt-5.4-mini --clear-openai-api-key --probe web_search.current --out /tmp/serf-fluency-issue-e11-openai
-go run ./tools/tool-fluency/cmd/serf-fluency run --build --model kimi/kimi-for-coding --probe web_search.current --out /tmp/serf-fluency-issue-e11-kimi
+go run ./tools/tool-fluency/cmd/evener-fluency run --build --model openai/gpt-5.4-mini --fast-cheap-model openai/gpt-5.4-mini --clear-openai-api-key --probe web_search.current --out /tmp/evener-fluency-issue-e11-openai
+go run ./tools/tool-fluency/cmd/evener-fluency run --build --model kimi/kimi-for-coding --probe web_search.current --out /tmp/evener-fluency-issue-e11-kimi
 ```
 
 Artifacts:
 
 - GPT result directory:
-  `/tmp/serf-fluency-issue-e11-openai/web_search.current`
+  `/tmp/evener-fluency-issue-e11-openai/web_search.current`
 - Kimi result directory:
-  `/tmp/serf-fluency-issue-e11-kimi/web_search.current`
+  `/tmp/evener-fluency-issue-e11-kimi/web_search.current`
 
 Result:
 
@@ -555,7 +555,7 @@ Result:
 - GPT status: `skipped_unavailable`, no tool calls.
 - Kimi status: `skipped_unavailable`, no tool calls.
 - Classification: healthy `availability` skip. The probe correctly reflects
-  that Serf's `web_search` function is not advertised on these model surfaces.
+  that Evener's `web_search` function is not advertised on these model surfaces.
 
 ### E12 - Full-Suite Regression
 
@@ -566,16 +566,16 @@ tool selection globally.
 Commands:
 
 ```sh
-go run ./tools/tool-fluency/cmd/serf-fluency run --build --model openai/gpt-5.4-mini --fast-cheap-model openai/gpt-5.4-mini --clear-openai-api-key --probe all --out /tmp/serf-fluency-issue-e12-openai
-go run ./tools/tool-fluency/cmd/serf-fluency run --build --model kimi/kimi-for-coding --probe all --out /tmp/serf-fluency-issue-e12-kimi
+go run ./tools/tool-fluency/cmd/evener-fluency run --build --model openai/gpt-5.4-mini --fast-cheap-model openai/gpt-5.4-mini --clear-openai-api-key --probe all --out /tmp/evener-fluency-issue-e12-openai
+go run ./tools/tool-fluency/cmd/evener-fluency run --build --model kimi/kimi-for-coding --probe all --out /tmp/evener-fluency-issue-e12-kimi
 ```
 
 Artifacts:
 
 - GPT result directory:
-  `/tmp/serf-fluency-issue-e12-openai`
+  `/tmp/evener-fluency-issue-e12-openai`
 - Kimi result directory:
-  `/tmp/serf-fluency-issue-e12-kimi`
+  `/tmp/evener-fluency-issue-e12-kimi`
 - GPT notable sessions:
   - `job_watch.observer_callback`: `01KVK38P14ZBZEYZ6MESCT8MX1`
   - `web_fetch.example`: `01KVK3D12Z6BY5WJA3TYQ21Z7K`
@@ -634,22 +634,22 @@ tool calls until it has a user-visible final result, or use `communicate` with
 Commands:
 
 ```sh
-go run ./tools/tool-fluency/cmd/serf-fluency run --harness live --model kimi/kimi-for-coding --probe job_watch.observer_callback --repetitions 3 --post-turn-wait 15s --timeout 8m --out /tmp/serf-fluency-issue-e13-kimi
-go run ./tools/tool-fluency/cmd/serf-fluency run --harness live --model openai/gpt-5.4-mini --fast-cheap-model openai/gpt-5.4-mini --clear-openai-api-key --probe job_watch.observer_callback --repetitions 3 --post-turn-wait 15s --timeout 8m --out /tmp/serf-fluency-issue-e13-openai
+go run ./tools/tool-fluency/cmd/evener-fluency run --harness live --model kimi/kimi-for-coding --probe job_watch.observer_callback --repetitions 3 --post-turn-wait 15s --timeout 8m --out /tmp/evener-fluency-issue-e13-kimi
+go run ./tools/tool-fluency/cmd/evener-fluency run --harness live --model openai/gpt-5.4-mini --fast-cheap-model openai/gpt-5.4-mini --clear-openai-api-key --probe job_watch.observer_callback --repetitions 3 --post-turn-wait 15s --timeout 8m --out /tmp/evener-fluency-issue-e13-openai
 ```
 
 Artifacts:
 
 - Initial evidence from E02 Kimi:
-  `/tmp/serf-fluency-issue-e02-kimi/job_watch.observer_callback/rep-01`
+  `/tmp/evener-fluency-issue-e02-kimi/job_watch.observer_callback/rep-01`
 - Kimi result directory:
-  `/tmp/serf-fluency-issue-e13-kimi/job_watch.observer_callback`
+  `/tmp/evener-fluency-issue-e13-kimi/job_watch.observer_callback`
 - Kimi sessions:
   - rep 1: `01KVK2M024PT37NM1RCJPASJ0Z`
   - rep 2: `01KVK2WG1KM08GQVKG6VQKFSY3`
   - rep 3: `01KVK2XAFZKEWTNSGJSCZAFDG7`
 - GPT result directory:
-  `/tmp/serf-fluency-issue-e13-openai/job_watch.observer_callback`
+  `/tmp/evener-fluency-issue-e13-openai/job_watch.observer_callback`
 - GPT sessions:
   - rep 1: `01KVK2YV9BKQNFSWXR3KG3T33A`
   - rep 2: `01KVK312KW1KAK7EZK2NYNC5D7`
@@ -714,7 +714,7 @@ Verification:
 
 ```sh
 go test ./agent/internal/tool
-go test ./tools/tool-fluency/cmd/serf-fluency
+go test ./tools/tool-fluency/cmd/evener-fluency
 go test ./agent -run 'Test(JobWatchAdvertisedDefinitionUsesCanonicalEventKinds|JobToolsDefinitions|Communicate|ApplyPatch_DescriptionIncludesCapabilities|Parity_GrepAndGlob|BuildSystemPrompt_IncludesBackgroundJobsSection|BuildSystemPrompt_DoesNotDuplicateProviderToolDescriptions)'
 git diff --check
 ```
@@ -732,8 +732,8 @@ Broad package caveat:
 Full-suite rerun:
 
 ```sh
-go run ./tools/tool-fluency/cmd/serf-fluency run --build --model openai/gpt-5.4-mini --fast-cheap-model openai/gpt-5.4-mini --clear-openai-api-key --probe all --timeout 10m --out /tmp/serf-fluency-f01-openai
-go run ./tools/tool-fluency/cmd/serf-fluency run --build --model kimi/kimi-for-coding --probe all --timeout 10m --out /tmp/serf-fluency-f01-kimi
+go run ./tools/tool-fluency/cmd/evener-fluency run --build --model openai/gpt-5.4-mini --fast-cheap-model openai/gpt-5.4-mini --clear-openai-api-key --probe all --timeout 10m --out /tmp/evener-fluency-f01-openai
+go run ./tools/tool-fluency/cmd/evener-fluency run --build --model kimi/kimi-for-coding --probe all --timeout 10m --out /tmp/evener-fluency-f01-kimi
 ```
 
 F01 full-suite result:
@@ -752,8 +752,8 @@ F01 full-suite result:
 Live sidecar rerun:
 
 ```sh
-go run ./tools/tool-fluency/cmd/serf-fluency run --harness live --model openai/gpt-5.4-mini --fast-cheap-model openai/gpt-5.4-mini --clear-openai-api-key --probe job_watch.observer_callback --repetitions 3 --post-turn-wait 15s --timeout 8m --out /tmp/serf-fluency-f01-live-openai
-go run ./tools/tool-fluency/cmd/serf-fluency run --harness live --model kimi/kimi-for-coding --probe job_watch.observer_callback --repetitions 3 --post-turn-wait 15s --timeout 8m --out /tmp/serf-fluency-f01-live-kimi
+go run ./tools/tool-fluency/cmd/evener-fluency run --harness live --model openai/gpt-5.4-mini --fast-cheap-model openai/gpt-5.4-mini --clear-openai-api-key --probe job_watch.observer_callback --repetitions 3 --post-turn-wait 15s --timeout 8m --out /tmp/evener-fluency-f01-live-openai
+go run ./tools/tool-fluency/cmd/evener-fluency run --harness live --model kimi/kimi-for-coding --probe job_watch.observer_callback --repetitions 3 --post-turn-wait 15s --timeout 8m --out /tmp/evener-fluency-f01-live-kimi
 ```
 
 F01 live result:
@@ -774,8 +774,8 @@ F02 changes:
 F02 reruns:
 
 ```sh
-go run ./tools/tool-fluency/cmd/serf-fluency run --build --model openai/gpt-5.4-mini --fast-cheap-model openai/gpt-5.4-mini --clear-openai-api-key --probe list_dir.inventory --repetitions 3 --timeout 8m --out /tmp/serf-fluency-f02-openai-listdir
-go run ./tools/tool-fluency/cmd/serf-fluency run --harness live --model openai/gpt-5.4-mini --fast-cheap-model openai/gpt-5.4-mini --clear-openai-api-key --probe job_watch.observer_callback --repetitions 3 --post-turn-wait 15s --timeout 8m --out /tmp/serf-fluency-f02-live-openai
+go run ./tools/tool-fluency/cmd/evener-fluency run --build --model openai/gpt-5.4-mini --fast-cheap-model openai/gpt-5.4-mini --clear-openai-api-key --probe list_dir.inventory --repetitions 3 --timeout 8m --out /tmp/evener-fluency-f02-openai-listdir
+go run ./tools/tool-fluency/cmd/evener-fluency run --harness live --model openai/gpt-5.4-mini --fast-cheap-model openai/gpt-5.4-mini --clear-openai-api-key --probe job_watch.observer_callback --repetitions 3 --post-turn-wait 15s --timeout 8m --out /tmp/evener-fluency-f02-live-openai
 ```
 
 F02 result:
@@ -796,8 +796,8 @@ F03 changes:
 F03 reruns:
 
 ```sh
-go run ./tools/tool-fluency/cmd/serf-fluency run --build --model openai/gpt-5.4-mini --fast-cheap-model openai/gpt-5.4-mini --clear-openai-api-key --probe list_dir.inventory --repetitions 3 --timeout 8m --out /tmp/serf-fluency-f03-openai-listdir
-go run ./tools/tool-fluency/cmd/serf-fluency run --harness live --model openai/gpt-5.4-mini --fast-cheap-model openai/gpt-5.4-mini --clear-openai-api-key --probe job_watch.observer_callback --repetitions 3 --post-turn-wait 15s --timeout 8m --out /tmp/serf-fluency-f03-live-openai
+go run ./tools/tool-fluency/cmd/evener-fluency run --build --model openai/gpt-5.4-mini --fast-cheap-model openai/gpt-5.4-mini --clear-openai-api-key --probe list_dir.inventory --repetitions 3 --timeout 8m --out /tmp/evener-fluency-f03-openai-listdir
+go run ./tools/tool-fluency/cmd/evener-fluency run --harness live --model openai/gpt-5.4-mini --fast-cheap-model openai/gpt-5.4-mini --clear-openai-api-key --probe job_watch.observer_callback --repetitions 3 --post-turn-wait 15s --timeout 8m --out /tmp/evener-fluency-f03-live-openai
 ```
 
 F03 result:
@@ -857,21 +857,21 @@ F04 changes:
   output envelope.
 - Allowed `null` for optional `job_watch` integer fields so a nullable omitted
   value reaches the existing handler path instead of failing schema validation.
-- Improved `serf-doctor transcript` to show bounded tool-result previews, so
+- Improved `evener-doctor transcript` to show bounded tool-result previews, so
   future transcript reads do not require ad hoc JSON parsing.
 
 Focused verification:
 
 ```sh
 go test ./agent/internal/tool ./agent -run 'TestDefJobWatchParamsAndKinds|TestJobWatchToolTreatsNullOptionalIntegersAsOmitted|TestConfigureWatchRejectsSessionEventWatchWithProgress|TestWatchOriginCommunicateEndTurnResumesParentOnce|TestDelegateReadyResultSurfacesWatching' -count=1
-go test ./agent/doctor ./cmd/serf-doctor -count=1
+go test ./agent/doctor ./cmd/evener-doctor -count=1
 go test ./... -count=1
 ```
 
 Live GPT rerun:
 
 ```sh
-go run ./tools/tool-fluency/cmd/serf-fluency run --build --harness live --model openai/gpt-5.4-mini --fast-cheap-model openai/gpt-5.4-mini --clear-openai-api-key --probe job_watch.observer_callback --repetitions 3 --post-turn-wait 45s --timeout 10m --out /tmp/serf-fluency-observer-final-gpt54mini
+go run ./tools/tool-fluency/cmd/evener-fluency run --build --harness live --model openai/gpt-5.4-mini --fast-cheap-model openai/gpt-5.4-mini --clear-openai-api-key --probe job_watch.observer_callback --repetitions 3 --post-turn-wait 45s --timeout 10m --out /tmp/evener-fluency-observer-final-gpt54mini
 ```
 
 F04 GPT result:
@@ -888,14 +888,14 @@ F04 GPT result:
 Live Kimi reruns:
 
 ```sh
-go run ./tools/tool-fluency/cmd/serf-fluency run --build --harness live --model kimi/kimi-for-coding --probe job_watch.observer_callback --repetitions 3 --post-turn-wait 45s --timeout 10m --out /tmp/serf-fluency-observer-final-kimi
-go run ./tools/tool-fluency/cmd/serf-fluency run --build --harness live --model kimi/kimi-for-coding --probe job_watch.observer_callback --repetitions 1 --post-turn-wait 45s --timeout 10m --out /tmp/serf-fluency-observer-final-kimi-single
+go run ./tools/tool-fluency/cmd/evener-fluency run --build --harness live --model kimi/kimi-for-coding --probe job_watch.observer_callback --repetitions 3 --post-turn-wait 45s --timeout 10m --out /tmp/evener-fluency-observer-final-kimi
+go run ./tools/tool-fluency/cmd/evener-fluency run --build --harness live --model kimi/kimi-for-coding --probe job_watch.observer_callback --repetitions 1 --post-turn-wait 45s --timeout 10m --out /tmp/evener-fluency-observer-final-kimi-single
 ```
 
 F04 Kimi result:
 
 - A prior Kimi run after the callback/evidence fix passed 3 of 3 at
-  `/tmp/serf-fluency-observer-callback-block-kimi`.
+  `/tmp/evener-fluency-observer-callback-block-kimi`.
 - The final 3-repetition Kimi run did not produce a clean sample. Rep 1 reached
   the expected final output but had an extra child-side `delegate_send`; rep 2
   derailed into inspecting the previous repetition's result files instead of

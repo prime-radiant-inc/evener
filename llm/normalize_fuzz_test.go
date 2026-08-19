@@ -17,7 +17,7 @@ var canonicalFinishReasons = map[string]bool{
 
 // FuzzNormalizeFinishReason drives NormalizeFinishReason/normalizeFinish over an
 // arbitrary provider and raw finish reason. These map provider-specific finish
-// codes to serf's canonical vocabulary for provider responses and attempt
+// codes to evener's canonical vocabulary for provider responses and attempt
 // metadata;
 // only unit tests with a handful of pairs exercised them.
 //

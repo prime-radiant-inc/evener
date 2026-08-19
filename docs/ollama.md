@@ -1,6 +1,6 @@
-# Using Serf with Ollama
+# Using Evener with Ollama
 
-[Ollama](https://ollama.com/) lets you run open-weight LLMs locally. Serf
+[Ollama](https://ollama.com/) lets you run open-weight LLMs locally. Evener
 ships with a built-in `ollama` provider that talks to Ollama's
 OpenAI-compatible Chat Completions endpoint at `/v1/chat/completions`.
 
@@ -9,7 +9,7 @@ OpenAI-compatible Chat Completions endpoint at `/v1/chat/completions`.
 1. **Install Ollama** — https://ollama.com/download
 2. **Start the daemon** (the macOS/Windows app does this automatically; on
    Linux run `ollama serve`)
-3. **Pull a model that supports tool calling** — Serf relies on native
+3. **Pull a model that supports tool calling** — Evener relies on native
    function-calling, so the model has to support it:
 
    ```bash
@@ -18,10 +18,10 @@ OpenAI-compatible Chat Completions endpoint at `/v1/chat/completions`.
    ollama pull qwen2.5-coder:7b
    ```
 
-4. **Run Serf**:
+4. **Run Evener**:
 
    ```bash
-   OLLAMA_HOST=localhost serf --model ollama/llama3.1:8b "summarize the README"
+   OLLAMA_HOST=localhost evener --model ollama/llama3.1:8b "summarize the README"
    ```
 
    No API key, no env vars, nothing else needed if Ollama is at the
@@ -29,13 +29,13 @@ OpenAI-compatible Chat Completions endpoint at `/v1/chat/completions`.
    to point at a non-default endpoint (see below).
 
    Ollama is always registered as an addressable provider, but it never
-   becomes Serf's silent default — you must address it explicitly with a
+   becomes Evener's silent default — you must address it explicitly with a
    provider-qualified model such as `--model ollama/llama3.1:8b` or
-   `SERF_MODEL=ollama/llama3.1:8b`.
+   `EVENER_MODEL=ollama/llama3.1:8b`.
 
 ## How it works
 
-The `ollama` provider is a thin wrapper around Serf's `openai-compatible`
+The `ollama` provider is a thin wrapper around Evener's `openai-compatible`
 adapter. It posts standard OpenAI Chat Completions requests to
 `<base-url>/chat/completions` and parses the streaming SSE response.
 
@@ -53,7 +53,7 @@ path.
 
 **Always registered:** the `ollama` provider is always available through
 provider-qualified model names such as `ollama/llama3.1:8b`. It is never
-auto-elected as Serf's default provider — that role goes to whichever
+auto-elected as Evener's default provider — that role goes to whichever
 conventional API-key provider you have configured (OpenAI, Anthropic,
 etc.). So leaving all OLLAMA_* env vars unset is fine; it just means
 Ollama answers on `http://localhost:11434/v1`.
@@ -73,14 +73,14 @@ Resolution order for the base URL:
 ### Local default
 
 ```bash
-OLLAMA_HOST=localhost serf --model ollama/llama3.1:8b "what does main.go do?"
+OLLAMA_HOST=localhost evener --model ollama/llama3.1:8b "what does main.go do?"
 ```
 
 ### Remote Ollama on your LAN
 
 ```bash
 OLLAMA_HOST=192.168.1.5:11434 \
-  serf --model ollama/qwen2.5-coder:7b "fix the failing test"
+  evener --model ollama/qwen2.5-coder:7b "fix the failing test"
 ```
 
 ### Ollama behind an authenticated proxy
@@ -88,7 +88,7 @@ OLLAMA_HOST=192.168.1.5:11434 \
 ```bash
 OLLAMA_BASE_URL=https://ollama.example.com/v1 \
 OLLAMA_API_KEY=$MY_PROXY_TOKEN \
-  serf --model ollama/llama3.1:70b "task"
+  evener --model ollama/llama3.1:70b "task"
 ```
 
 ### One-shot calls with `llmcall`
@@ -105,7 +105,7 @@ curl -s http://localhost:11434/v1/models | jq -r '.data[].id'
 
 ## Choosing a model
 
-Serf drives every step through native tool calling. Models without
+Evener drives every step through native tool calling. Models without
 function-calling support will fail to make progress.
 
 Models known to support tools well in Ollama include:
@@ -121,7 +121,7 @@ re-emitting the same call. For real coding-agent workloads, larger models
 
 ## Context length
 
-Ollama's `/v1/models` endpoint does not report `context_length`, so Serf
+Ollama's `/v1/models` endpoint does not report `context_length`, so Evener
 cannot auto-detect the model's window from the API. Resolution order:
 
 1. The embedded model catalog. Many common Ollama models are catalogued
@@ -131,19 +131,19 @@ cannot auto-detect the model's window from the API. Resolution order:
 
 So, for example, `--model ollama/llama3.1` or `--model
 ollama/llama3.1:8b` picks up the catalog's 8192 token window, while a
-model Serf has never heard of gets the 128K fallback. The catalog is
+model Evener has never heard of gets the 128K fallback. The catalog is
 conservative — it reflects each model family's typical default, not
 whatever you may have configured locally with `num_ctx`.
 
-**Limitation:** Serf has no way to detect your actual configured
+**Limitation:** Evener has no way to detect your actual configured
 `num_ctx`. The catalog is static. So if you bump `num_ctx` in a custom
-Modelfile, Serf will not know — and there is currently no override
+Modelfile, Evener will not know — and there is currently no override
 flag. Two failure modes:
 
-- **Catalog says 8K, you have 32K configured:** Serf compacts too
+- **Catalog says 8K, you have 32K configured:** Evener compacts too
   aggressively and you lose useful context that Ollama would have
   happily kept.
-- **Catalog says 128K (unknown model), you have 8K configured:** Serf
+- **Catalog says 128K (unknown model), you have 8K configured:** Evener
   doesn't compact; Ollama silently truncates older messages and the
   agent loses earlier turns without noticing.
 
@@ -164,7 +164,7 @@ to a different host/port. Check with `curl http://localhost:11434/api/tags`.
 **`model 'X' not found`** — pull it first: `ollama pull X`.
 
 **Bare text instead of tool calls** — the model isn't honoring tool
-schemas. Try a larger or instruction-tuned model. Serf retries up to 3
+schemas. Try a larger or instruction-tuned model. Evener retries up to 3
 times before giving up.
 
 **Truncated long conversations** — the model's `num_ctx` is smaller than
@@ -172,7 +172,7 @@ its advertised context window. See the **Context length** section above.
 
 **Slow responses** — local inference is bound by your hardware. Use a
 quantized model (`:q4_K_M` etc.), a smaller model, or run Ollama on a
-machine with a GPU and point Serf at it via `OLLAMA_HOST`.
+machine with a GPU and point Evener at it via `OLLAMA_HOST`.
 
 ## See also
 

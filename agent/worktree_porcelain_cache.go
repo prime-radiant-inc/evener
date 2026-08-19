@@ -3,7 +3,7 @@ package agent
 import (
 	"strings"
 
-	"primeradiant.com/serf/agent/internal/worktree"
+	"primeradiant.com/evener/agent/internal/worktree"
 )
 
 // worktreeReadOnlyGitCommands are the git commands that cannot change what

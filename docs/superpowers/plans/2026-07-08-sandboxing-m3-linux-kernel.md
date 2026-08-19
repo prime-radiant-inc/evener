@@ -1,4 +1,4 @@
-# Serf Sandboxing — M3: Linux Kernel Layer (flag NOT live)
+# Evener Sandboxing — M3: Linux Kernel Layer (flag NOT live)
 
 > **For agentic workers:** Implement with superpowers:subagent-driven-development,
 > task-by-task, red→green→adversarial-verify→commit. Follow the SDD protocol in
@@ -10,7 +10,7 @@
 confines *spawned processes* (shell jobs, `rg`, stdio MCP servers, hook commands
 and every descendant) to the boundary M1 resolved. bwrap-preferred with a
 Landlock worktree-restricted fallback, both driven by a single re-exec'd helper
-(`serf sandbox-exec`) that applies the sandbox to a process and then execs the
+(`evener sandbox-exec`) that applies the sandbox to a process and then execs the
 real command. After M3, an `execenv` carrying a non-nil `ResolvedPolicy` wraps
 every command it spawns with the resolved backend; the M1 contract suite runs
 green against the **real** bwrap and Landlock backends, and the adversarial
@@ -38,8 +38,8 @@ model-composed subprocess input.
 `ResolvedPolicy` into a **wrapped argv**. Two backends: `bwrapBackend`
 (namespaces + subtractive masking + `--unshare-net` + `--unshare-pid`/`--proc` +
 minimal `/dev` + overlay) and `landlockBackend` (additive allowlist,
-worktree-restricted-only). Both are reached the same way: serf re-execs **itself**
-as `serf sandbox-exec` (arg0/subcommand-dispatched, like codex's
+worktree-restricted-only). Both are reached the same way: evener re-execs **itself**
+as `evener sandbox-exec` (arg0/subcommand-dispatched, like codex's
 `codex-linux-sandbox`), passing a serialized policy; the helper either execs
 `bwrap` with the built argv, or applies a go-landlock ruleset to its own thread
 and then `execvp`s the command. The wrap site lives in `execenv` at command
@@ -104,17 +104,17 @@ contract table is imported and re-satisfied per backend.
   exec form / `:86` `bash -c` form; `:95` builds env from **`os.Environ()`
   directly** (not `filteredEnvWithPolicy` — see discrepancy #4). Reached from
   `Runner` (`:215`) / `:534`. **No policy handle today.**
-- **Subcommand dispatch:** `cmd/serf/main.go:268` `dispatchCLICommand`, `:273`
+- **Subcommand dispatch:** `cmd/evener/main.go:268` `dispatchCLICommand`, `:273`
   the `switch args[0]` (add `case "sandbox-exec"`). `:221` `printRunCommands`
   (do **not** list `sandbox-exec` — it is an internal re-exec target, not a
   user command).
-- **Env construction (inert carrier already added by M1):** `cmd/serf/run.go:177`,
-  `cmd/serf/serve.go:203`.
+- **Env construction (inert carrier already added by M1):** `cmd/evener/run.go:177`,
+  `cmd/evener/serve.go:203`.
 - **M1 deliverables consumed:** `agent/sandbox` — `ResolvedPolicy` (writable
   roots, read roots, masked paths incl. pseudo-fs, net decision, cache-strategy,
   backend-required), `Resolve`, `HostFacts`, `Prober`/`FakeProber`, `Mode`,
   `*RefusalError`, and `ContractCase`/`AssertResolve` (the golden table).
-- **Escape suite base:** `cmd/serf-hub/sandbox_test.go` (existing containment
+- **Escape suite base:** `cmd/evener-hub/sandbox_test.go` (existing containment
   invariant + above-CWD secret tripwire) — the M3 escape subset extends it.
 
 ## Global Constraints
@@ -132,13 +132,13 @@ contract table is imported and re-satisfied per backend.
 - **Adapt, do not copy codex.** Take the argv-transform + arg0 re-exec + `--argv0`
   fix-up. Do **not** port synthetic-mount targets, protected-create monitors,
   proxy routing, or seccomp. Flat roots + fixed protected subpaths.
-- **fd hygiene is load-bearing.** Every spawn: `cmd.ExtraFiles = nil`, serf's own
+- **fd hygiene is load-bearing.** Every spawn: `cmd.ExtraFiles = nil`, evener's own
   long-lived fds `O_CLOEXEC`, bwrap passes no extra fds; agent sockets never
   bind-mounted. A spawned proc inherits nothing beyond stdio.
 - **Pristine output.** Captured-and-asserted denials/errors are fine; no stray
   failures or logs. Real bwrap/Landlock in integration tests — no mocks.
 - **snake_case** for any JSON/wire/config key (the serialized policy passed to
-  `sandbox-exec` crosses a process boundary → `make lint`/serf-namingcheck gate).
+  `sandbox-exec` crosses a process boundary → `make lint`/evener-namingcheck gate).
 - Never `git add -A` without a prior `git status`. Stage exact paths.
 
 ## File Structure
@@ -146,7 +146,7 @@ contract table is imported and re-satisfied per backend.
 - `agent/sandbox/backend.go` (new) — `Backend` interface
   (`Wrap(argv []string, cwd string) ([]string, error)`), backend selection from
   `ResolvedPolicy.Backend` (`bwrap`/`landlock`/`none`), and the `Wrapper` value
-  carried on `execenv` (holds the resolved policy + serf's own helper path,
+  carried on `execenv` (holds the resolved policy + evener's own helper path,
   resolved once via `os.Executable` outside cwd — PATH-injection defense).
 - `agent/sandbox/bwrap.go` (new) — pure argv builder: writable `--bind` for each
   writable root, `--ro-bind` for each read root, `--tmpfs`/`--ro-bind /dev/null`
@@ -158,7 +158,7 @@ contract table is imported and re-satisfied per backend.
   `go-landlock` (RW worktree+tmp+gitdir-rw-subset, RO system read roots + main
   `.git/config` read; never config/hooks, never `/proc`); fail closed below the
   required ABI. Applies to the current thread, then the helper `execvp`s.
-- `cmd/serf/sandbox_exec.go` (new) — the `sandbox-exec` subcommand: deserialize
+- `cmd/evener/sandbox_exec.go` (new) — the `sandbox-exec` subcommand: deserialize
   the policy (from an inherited fd or arg), dispatch to bwrap-exec or
   landlock-apply-then-exec. `+build linux`.
 - `agent/sandbox/session_tmp.go` (new) — per-session tmp dir (writable, `TMPDIR`),
@@ -177,7 +177,7 @@ contract table is imported and re-satisfied per backend.
 - `agent/internal/mcp/manager.go`, `agent/internal/hooks/hooks.go` (modify) —
   accept and apply a `*sandbox.Wrapper` at their spawn sites (`manager.go:717`,
   `hooks.go:81/86`); route hook env through the sandbox floor.
-- `cmd/serf/main.go` (modify, small) — add `case "sandbox-exec"` to
+- `cmd/evener/main.go` (modify, small) — add `case "sandbox-exec"` to
   `dispatchCLICommand` (`:273`); **not** listed in `printRunCommands`.
 - Tests: `agent/sandbox/bwrap_test.go`, `landlock_test.go`, `backend_test.go`,
   `env_floor_test.go`, `provider_web_test.go`, `contract_backend_test.go`
@@ -188,21 +188,21 @@ contract table is imported and re-satisfied per backend.
 
 ## Task M3a — bwrap backend: FS confinement + `sandbox-exec` helper + pid-ns/`/proc`/`/dev`
 
-**Files:** `agent/sandbox/backend.go`, `bwrap.go`, `cmd/serf/sandbox_exec.go`
-(new); `bwrap_test.go`, `backend_test.go` (new); `cmd/serf/main.go` (modify).
+**Files:** `agent/sandbox/backend.go`, `bwrap.go`, `cmd/evener/sandbox_exec.go`
+(new); `bwrap_test.go`, `backend_test.go` (new); `cmd/evener/main.go` (modify).
 
 - [ ] **Failing test:** `TestBuildBwrapArgv` (pure, no exec) — from a
   `ResolvedPolicy` fixture assert the exact flag vector: one `--bind` per writable
   root, `--ro-bind` per read root, `--tmpfs`/`--ro-bind /dev/null` per masked
   path (incl. `/proc`, `/sys`, `/dev/fd`, `/dev/mem`, `/run/user`), `--proc /proc`,
   `--dev /dev`, `--unshare-pid`, `--die-with-parent`, `--new-session`, the
-  `--argv0` fix-up, and `--` before the command. `TestSandboxExecDispatch` — `serf
+  `--argv0` fix-up, and `--` before the command. `TestSandboxExecDispatch` — `evener
   sandbox-exec` is reached from `dispatchCLICommand` and is **absent** from user
   help. **Integration (bwrap-gated)** `TestBwrapConfinesAndMasks`: run a real
   command under the helper; assert a masked above-worktree secret reads as absent
   and `/proc/1/comm` is the sandbox init (host PID state invisible).
 - [ ] Implement `Backend`/`Wrapper`, the bwrap argv builder, and the
-  `sandbox-exec` subcommand (resolve serf's own path via `os.Executable`, refuse
+  `sandbox-exec` subcommand (resolve evener's own path via `os.Executable`, refuse
   a cwd-relative arg0). Wire `execPreparedCommand`/`StreamCommand` to wrap when
   `e.Sandbox != nil` (behind the non-nil gate only — no flag path).
 - [ ] **Adversarial verify:** does the masked set include every pseudo-fs the spec
@@ -212,7 +212,7 @@ contract table is imported and re-satisfied per backend.
 ## Task M3b — Landlock fallback backend (worktree-restricted only)
 
 **Files:** `agent/sandbox/landlock.go` (new), `landlock_test.go` (new);
-`cmd/serf/sandbox_exec.go`, `go.mod`/`go.sum` (modify — add `go-landlock`).
+`cmd/evener/sandbox_exec.go`, `go.mod`/`go.sum` (modify — add `go-landlock`).
 
 - [ ] **Failing test:** **Integration (landlock-ABI-gated)**
   `TestLandlockWorktreeRestricted`: apply the ruleset then exec; assert write
@@ -243,7 +243,7 @@ contract table is imported and re-satisfied per backend.
   the exact argv/env as today. `TestMCPStdioServerConfined` and
   `TestHookCommandConfined` — the MCP stdio server and a PreToolUse hook run under
   the same wrapper. `TestNoInheritedFDs` — a spawned proc cannot read an inherited
-  high fd or a `/run/user` agent socket (`ExtraFiles == nil`, serf fds
+  high fd or a `/run/user` agent socket (`ExtraFiles == nil`, evener fds
   `O_CLOEXEC`).
 - [ ] Implement the wrap at `execPreparedCommand`/`StreamCommand`; thread a
   `*sandbox.Wrapper` to `transportForConfig`/`NewManager` and to
@@ -281,7 +281,7 @@ contract table is imported and re-satisfied per backend.
 
 **Files:** `agent/sandbox/provider_web.go` (new); `agent/sandbox/bwrap.go`,
 `agent/execenv/local.go` (or the web_fetch/web_search + remote-MCP tool sites),
-`cmd/serf/run.go`/`serve.go` (startup line) (modify); tests.
+`cmd/evener/run.go`/`serve.go` (startup line) (modify); tests.
 
 - [ ] **Failing test:** **Integration (bwrap-gated)** `TestNetOffBlocksEgress` — a
   spawned proc under net=off cannot open TCP and cannot resolve DNS/UDP
@@ -303,7 +303,7 @@ contract table is imported and re-satisfied per backend.
 ## Task M3f — Adversarial escape suite (M3 subset)
 
 **Files:** `agent/sandbox/escape_test.go` (new; may extend
-`cmd/serf-hub/sandbox_test.go`'s containment invariant). All run against the
+`cmd/evener-hub/sandbox_test.go`'s containment invariant). All run against the
 **real bwrap** backend (bwrap-gated), a few also under Landlock.
 
 - [ ] **proc aliasing** — from a spawned proc, `read /proc/1/root/...`,

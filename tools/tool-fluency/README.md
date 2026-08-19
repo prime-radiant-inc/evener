@@ -1,11 +1,11 @@
 # Tool Fluency Experiments
 
-Framework for measuring whether models use Serf tools fluently. This is for
-real tools exposed by Serf now or added later. It is not a framework for testing
+Framework for measuring whether models use Evener tools fluently. This is for
+real tools exposed by Evener now or added later. It is not a framework for testing
 imaginary tools.
 
 The current implementation is a Go runner at
-`tools/tool-fluency/cmd/serf-fluency`. The operational skill for agents lives at
+`tools/tool-fluency/cmd/evener-fluency`. The operational skill for agents lives at
 `docs/skills/tool-fluency/SKILL.md`.
 
 ## Goal
@@ -21,7 +21,7 @@ runtime, and the model. A model is fluent when it:
 - avoids unrelated inspection, polling, transcript reads, or shell escapes.
 
 The framework lets us run the same probe set across models, providers, agent
-roles, and Serf revisions, then compare behavior without hand-written glue.
+roles, and Evener revisions, then compare behavior without hand-written glue.
 
 ## Non-goals
 
@@ -29,7 +29,7 @@ roles, and Serf revisions, then compare behavior without hand-written glue.
 - Do not make markdown scenario cards executable. Scenario cards remain human
   reproductions; fluency probes are structured data.
 - Do not test that prompts or docs contain particular strings.
-- Do not parse transcript JSONL with ad-hoc scripts. Use Serf's Go packages,
+- Do not parse transcript JSONL with ad-hoc scripts. Use Evener's Go packages,
   especially `agent/doctor`, or structured runtime events.
 - Do not require every future tool to invent a bespoke runner. Future tools add
   a small probe manifest and, when needed, a semantic oracle.
@@ -39,7 +39,7 @@ roles, and Serf revisions, then compare behavior without hand-written glue.
 ```text
 tools/tool-fluency/
   README.md
-  cmd/serf-fluency/        # Go runner
+  cmd/evener-fluency/        # Go runner
   probes/
     read_file.yaml
     write_file.yaml
@@ -51,7 +51,7 @@ tools/tool-fluency/
   results/                 # gitignored local run output
 ```
 
-The runner is Go. It imports Serf packages directly for cataloging and result
+The runner is Go. It imports Evener packages directly for cataloging and result
 inspection and should not force agents to write custom Python, jq pipelines, or
 one-off JSONL parsers.
 
@@ -60,19 +60,19 @@ one-off JSONL parsers.
 Catalog the model-facing tools for a provider/model:
 
 ```sh
-go run ./tools/tool-fluency/cmd/serf-fluency catalog --model openai/gpt-5.4-mini
+go run ./tools/tool-fluency/cmd/evener-fluency catalog --model openai/gpt-5.4-mini
 ```
 
-Run every current probe with a fresh `serf` binary:
+Run every current probe with a fresh `evener` binary:
 
 ```sh
-go run ./tools/tool-fluency/cmd/serf-fluency run \
+go run ./tools/tool-fluency/cmd/evener-fluency run \
   --build \
   --model openai/gpt-5.4-mini \
   --fast-cheap-model openai/gpt-5.4-mini \
   --clear-openai-api-key \
   --probe all \
-  --out /tmp/serf-fluency-openai
+  --out /tmp/evener-fluency-openai
 ```
 
 Use `--probe <id>` for a single probe; `--probe all` (the default) selects
@@ -88,11 +88,11 @@ To test prompt or tool-description improvements without editing the product
 prompt first, pass one or more append files:
 
 ```sh
-go run ./tools/tool-fluency/cmd/serf-fluency run \
+go run ./tools/tool-fluency/cmd/evener-fluency run \
   --model openai/gpt-5.4-mini \
   --probe read_file.happy_path \
   --system-prompt-append tools/tool-fluency/variants/example.md \
-  --out /tmp/serf-fluency-example
+  --out /tmp/evener-fluency-example
 ```
 
 Keep each append file atomic. A useful campaign changes one guidance surface at
@@ -100,23 +100,23 @@ a time, then reruns the same probe/model/harness that exposed the failure. Store
 reusable variants under `tools/tool-fluency/variants/`.
 
 For callback or notification workflows, use the live in-process harness. The
-default CLI harness intentionally matches one-shot `serf` behavior and closes
+default CLI harness intentionally matches one-shot `evener` behavior and closes
 the session after the root turn; that is useful for ordinary tool probes but
 cannot prove that a watch-resumed observer had time to complete callback work.
 
 ```sh
-go run ./tools/tool-fluency/cmd/serf-fluency run \
+go run ./tools/tool-fluency/cmd/evener-fluency run \
   --harness live \
   --model openai/gpt-5.4-mini \
   --fast-cheap-model openai/gpt-5.4-mini \
   --clear-openai-api-key \
   --probe job_watch.observer_callback \
   --post-turn-wait 45s \
-  --out /tmp/serf-fluency-live-job-watch
+  --out /tmp/evener-fluency-live-job-watch
 ```
 
 The live harness wires the same session notification and continuation callbacks
-that `serf serve` wires, waits on runtime kicks, and then closes the session
+that `evener serve` wires, waits on runtime kicks, and then closes the session
 after the bounded post-turn window. It is not a polling harness.
 
 ## Data model
@@ -135,7 +135,7 @@ models:
   - moonshot/kimi-k2-0905
 repetitions: 3
 launch:
-  harness: serf
+  harness: evener
   agent: default
   reasoning_effort: high
 probes:
@@ -321,11 +321,11 @@ fluency is a workflow suite, not just a `job_watch` unit.
 
 ## Current Runner Flow
 
-1. Build a fresh `serf` binary when requested.
+1. Build a fresh `evener` binary when requested.
 2. For OpenAI OAuth runs, clear inherited `OPENAI_API_KEY` when requested.
-3. For each probe repetition, create a hermetic workdir and `SERF_STATE_DIR`.
+3. For each probe repetition, create a hermetic workdir and `EVENER_STATE_DIR`.
 4. Materialize fixtures.
-5. Run noninteractive `serf --verbose` with the selected model/context.
+5. Run noninteractive `evener --verbose` with the selected model/context.
 6. Collect structured events and transcript data from the session state dir.
 7. Evaluate tool-call, artifact, final-output, and tool-error expectations.
 8. Write `result.json`, append `results.jsonl`, and store relevant transcripts
@@ -351,7 +351,7 @@ runner is the next step for full `job_watch` callback verification.
   "status": "passed",
   "semantic_verified": true,
   "session_id": "01...",
-  "state_dir": "/tmp/serf-fluency-...",
+  "state_dir": "/tmp/evener-fluency-...",
   "metrics": {
     "first_call_tool": "read_file",
     "tool_call_count": 2,
@@ -367,7 +367,7 @@ empty findings list.
 
 ## How to add coverage for a new real tool
 
-1. Add or verify the tool in Serf's runtime registry.
+1. Add or verify the tool in Evener's runtime registry.
 2. Run catalog export and confirm the tool appears in the intended contexts.
 3. Add a probe manifest under `tools/tool-fluency/probes/`.
 4. Choose an oracle. Prefer artifact or structured-state verification. Use a

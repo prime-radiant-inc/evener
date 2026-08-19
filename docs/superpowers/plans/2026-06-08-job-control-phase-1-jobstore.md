@@ -2,16 +2,16 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Build the pure, `Session`-free durable substrate for Serf's job-control system — the job record, the append-only event log, per-job output files, terminal-notification bookkeeping, and restart reconciliation — as a standalone, fully unit-tested `agent/internal/jobstore` package.
+**Goal:** Build the pure, `Session`-free durable substrate for Evener's job-control system — the job record, the append-only event log, per-job output files, terminal-notification bookkeeping, and restart reconciliation — as a standalone, fully unit-tested `agent/internal/jobstore` package.
 
 **Architecture:** A leaf package under `agent/internal/jobstore` that deals only in records, bytes, and an append-only JSONL event log. It imports only stdlib + `github.com/oklog/ulid/v2` and knows nothing about `Session`, providers, or the agent runtime — so every behavior is testable in isolation. Later phases (shell jobs, delegate jobs, watches, nested jobs) build the runtime glue in package `agent` on top of this substrate. The event log folds to `JobRecord`s the same way the existing `agent/transcript` writer appends turns.
 
-**Tech Stack:** Go 1.x, `github.com/oklog/ulid/v2` (already an `agent` dependency), `encoding/json`, `regexp` (RE2), standard `os`/`sync`. Module: `primeradiant.com/serf/agent`. Tests: `go test`.
+**Tech Stack:** Go 1.x, `github.com/oklog/ulid/v2` (already an `agent` dependency), `encoding/json`, `regexp` (RE2), standard `os`/`sync`. Module: `primeradiant.com/evener/agent`. Tests: `go test`.
 
 This is **Phase 1 of 6**. It is the design in `docs/superpowers/specs/2026-06-08-job-control-design.md` §3 (data model), §6 (notification bookkeeping), §7 (reconciliation). It produces a tested library with no wiring into the live agent yet; nothing in this phase changes model-facing behavior. The phase roadmap is at the end of this document.
 
 **Conventions for every task below:**
-- Work in the `agent` module: run Go commands from `/Users/jesse/prime-radiant/toil-suite/serf/agent` (the repo is a go.work workspace; `jobstore` lives in the `agent` module).
+- Work in the `agent` module: run Go commands from `/Users/jesse/prime-radiant/toil-suite/evener/agent` (the repo is a go.work workspace; `jobstore` lives in the `agent` module).
 - Run the package's tests with: `cd agent && go test ./internal/jobstore/ -v`
 - TDD: write the failing test first, watch it fail, write the minimal implementation, watch it pass, commit.
 - Commit messages use the repo's `type(scope): subject` style, e.g. `feat(jobstore): ...`.
@@ -100,7 +100,7 @@ Expected: FAIL to compile — `undefined: Status`, `undefined: NewJobID`, etc.
 Create `agent/internal/jobstore/record.go`:
 
 ```go
-// Package jobstore is the pure, Session-free durable substrate for Serf's
+// Package jobstore is the pure, Session-free durable substrate for Evener's
 // job-control system: the job record, an append-only event log that folds to
 // records, per-job output files, terminal-notification bookkeeping, and restart
 // reconciliation. It imports only stdlib and a ULID library; the agent runtime
@@ -194,7 +194,7 @@ Expected: PASS (both tests).
 - [ ] **Step 5: Commit**
 
 ```bash
-cd /Users/jesse/prime-radiant/toil-suite/serf
+cd /Users/jesse/prime-radiant/toil-suite/evener
 git add agent/internal/jobstore/record.go agent/internal/jobstore/record_test.go
 git commit -m "feat(jobstore): job record, status/type enums, job id minting"
 ```
@@ -344,7 +344,7 @@ Expected: PASS.
 - [ ] **Step 5: Commit**
 
 ```bash
-cd /Users/jesse/prime-radiant/toil-suite/serf
+cd /Users/jesse/prime-radiant/toil-suite/evener
 git add agent/internal/jobstore/event.go agent/internal/jobstore/event_test.go
 git commit -m "feat(jobstore): job-event envelope and kinds"
 ```
@@ -546,7 +546,7 @@ Expected: PASS (all three).
 - [ ] **Step 5: Commit**
 
 ```bash
-cd /Users/jesse/prime-radiant/toil-suite/serf
+cd /Users/jesse/prime-radiant/toil-suite/evener
 git add agent/internal/jobstore/fold.go agent/internal/jobstore/fold_test.go
 git commit -m "feat(jobstore): fold events to records (first-terminal-wins)"
 ```
@@ -759,7 +759,7 @@ Expected: PASS (all three).
 - [ ] **Step 5: Commit**
 
 ```bash
-cd /Users/jesse/prime-radiant/toil-suite/serf
+cd /Users/jesse/prime-radiant/toil-suite/evener
 git add agent/internal/jobstore/store.go agent/internal/jobstore/store_test.go
 git commit -m "feat(jobstore): append-only store with seq recovery"
 ```
@@ -985,7 +985,7 @@ Expected: PASS (all three).
 - [ ] **Step 5: Commit**
 
 ```bash
-cd /Users/jesse/prime-radiant/toil-suite/serf
+cd /Users/jesse/prime-radiant/toil-suite/evener
 git add agent/internal/jobstore/output.go agent/internal/jobstore/output_test.go
 git commit -m "feat(jobstore): bounded per-job output store (append/tail/grep)"
 ```
@@ -1095,7 +1095,7 @@ Expected: PASS (all three).
 - [ ] **Step 5: Commit**
 
 ```bash
-cd /Users/jesse/prime-radiant/toil-suite/serf
+cd /Users/jesse/prime-radiant/toil-suite/evener
 git add agent/internal/jobstore/notify.go agent/internal/jobstore/notify_test.go
 git commit -m "feat(jobstore): terminal-generation, dedupe key, deliverability"
 ```
@@ -1225,11 +1225,11 @@ Expected: PASS (both).
 Run: `cd agent && go test ./internal/jobstore/ -v`
 Expected: PASS (every test in the package).
 
-Then run the module's lint to confirm the new package is clean. Run: `cd /Users/jesse/prime-radiant/toil-suite/serf && make lint` (or, if that is slow, `cd agent && go vet ./internal/jobstore/`).
+Then run the module's lint to confirm the new package is clean. Run: `cd /Users/jesse/prime-radiant/toil-suite/evener && make lint` (or, if that is slow, `cd agent && go vet ./internal/jobstore/`).
 Expected: no new findings in `internal/jobstore`.
 
 ```bash
-cd /Users/jesse/prime-radiant/toil-suite/serf
+cd /Users/jesse/prime-radiant/toil-suite/evener
 git add agent/internal/jobstore/reconcile.go agent/internal/jobstore/reconcile_test.go
 git commit -m "feat(jobstore): restart reconciliation (running -> stopped/runtime_lost)"
 ```
@@ -1244,7 +1244,7 @@ Phase 1 (this plan) ships the tested substrate. Each later phase gets its own pl
 - **Phase 3 — Delegate jobs + `job_send_message`.** Reuse the child-session runtime under job records; `delegate` tool; the `result_schema`→`structured_result` **capture** (preserve raw `communicate.output` past `normalizeNodeOutput`; enforcement is free via the call-boundary validator); `job_send_message` (live inject / resume / alias targets, with the role-gated target rule).
 - **Phase 4 — Watches + observer sidecars.** `jobstore/watch.go` pure `output_match` matcher; JobManager-side `events`/`trigger` event-frame gating + `send` delivery; `job_watch` tool; observer-sidecar composition (alias-target `job_send_message`).
 - **Phase 5 — Nested shell jobs.** `parent_job_id` forwarding into parent-visible records; `include_nested`; parent read/stop routing; cross-store `terminal_generation` propagation.
-- **Phase 6 — Cutover (no legacy residue).** Delete the 7 legacy tool defs + handlers; repoint every consumer the spec §13 inventory names (`toolname`, `tool/registry` truncation, `contextmgr` compaction, serf-tui renderers, serf-hub JS assets, `appprojector`→`serf/subagent/*` wire, `server` snapshot, the `<subagent-notification>` formatter, the events/snapshot chain); retire `docs/subagent-management/00`; run the §13 `rg` gate + `make build`/`make test` to green.
+- **Phase 6 — Cutover (no legacy residue).** Delete the 7 legacy tool defs + handlers; repoint every consumer the spec §13 inventory names (`toolname`, `tool/registry` truncation, `contextmgr` compaction, evener-tui renderers, evener-hub JS assets, `appprojector`→`evener/subagent/*` wire, `server` snapshot, the `<subagent-notification>` formatter, the events/snapshot chain); retire `docs/subagent-management/00`; run the §13 `rg` gate + `make build`/`make test` to green.
 
 ---
 

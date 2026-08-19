@@ -23,18 +23,18 @@ clause). Companion cards: `2026-07-09-sandbox-flag-live-e2e.md` (the root
 `2026-07-09-sandbox-delegate-edge-cases.md` (the unit-backed refusal matrix).
 
 ## Pre-state
-- Build serf from the branch under test: `go build -o /tmp/serf-e2e-deleg ./cmd/serf`.
+- Build evener from the branch under test: `go build -o /tmp/evener-e2e-deleg ./cmd/evener`.
 - A model that reliably tool-calls (kimi/kimi-k2.5 used here; gemma4-local CANNOT
   tool-call). Keys from the main checkout's `.env` (gitignored — never printed):
-  `set -a; . /home/jesse/git/prime-radiant/serf/.env; set +a; export KIMI_API_KEY="${KIMI_API_KEY:-$MOONSHOT_API_KEY}"`.
+  `set -a; . /home/jesse/git/prime-radiant/evener/.env; set +a; export KIMI_API_KEY="${KIMI_API_KEY:-$MOONSHOT_API_KEY}"`.
 - Delegation with `isolation="worktree"` needs a real git repo. Per scenario:
   `WORK=$(mktemp -d); cd $WORK; git init -q; git config user.email/user.name;
-  echo hello > README.md; git add .; git commit -qm init`. Run serf with cwd=$WORK.
+  echo hello > README.md; git add .; git commit -qm init`. Run evener with cwd=$WORK.
 - Host: Linux w/ bwrap (kernel 6.8, bubblewrap 0.9.0).
 - The `delegate` tool is offered to a root session under the default
   `MaxSubagentDepth=2` (root allowance 2) — confirmed offered in every run below
   (each transcript shows a `[tool] delegate {...}` call).
-- serf invocation is `serf --model <p/m> [--sandbox <mode>] <prompt>` — there is
+- evener invocation is `evener --model <p/m> [--sandbox <mode>] <prompt>` — there is
   NO `run` subcommand; `--model` and `--sandbox` precede the prompt.
 
 ---
@@ -46,7 +46,7 @@ invariant). Parent is `--sandbox restricted`; the model is steered to delegate
 with `sandbox="off"` — a strict escalation the floor must refuse.
 
 ### Steps
-1. `cd $WORK && /tmp/serf-e2e-deleg --model kimi/kimi-k2.5 --sandbox restricted 'Use your delegate tool EXACTLY ONCE with these parameters: task="run echo hi", isolation="worktree", sandbox="off". The call will probably fail with an error. Report the EXACT verbatim error string you receive back, then end your turn. Do NOT call delegate more than once. Do NOT try a different sandbox value.'`
+1. `cd $WORK && /tmp/evener-e2e-deleg --model kimi/kimi-k2.5 --sandbox restricted 'Use your delegate tool EXACTLY ONCE with these parameters: task="run echo hi", isolation="worktree", sandbox="off". The call will probably fail with an error. Report the EXACT verbatim error string you receive back, then end your turn. Do NOT call delegate more than once. Do NOT try a different sandbox value.'`
 
 ### Expected + Falsification
 - Startup enforcement line: `sandbox: bwrap enforcing restricted (network on, secrets masked, cache private)`.
@@ -92,7 +92,7 @@ delegates a worktree-isolated `sandbox="restricted"` subagent that tries to read
 a host file outside its lane.
 
 ### Steps
-1. `cd $WORK && /tmp/serf-e2e-deleg --model kimi/kimi-k2.5 --sandbox off 'Delegate ONE worktree-isolated subagent to probe sandbox confinement. Call delegate exactly once with: isolation="worktree", sandbox="restricted", max_wait_ms=120000, and task="Use your read_file tool to read the absolute path /etc/hostname. Then call communicate(end_turn=true) reporting VERBATIM either the file contents or the exact error string you received." When the delegate returns, report to me VERBATIM what the delegate said about reading /etc/hostname, then end your turn.'`
+1. `cd $WORK && /tmp/evener-e2e-deleg --model kimi/kimi-k2.5 --sandbox off 'Delegate ONE worktree-isolated subagent to probe sandbox confinement. Call delegate exactly once with: isolation="worktree", sandbox="restricted", max_wait_ms=120000, and task="Use your read_file tool to read the absolute path /etc/hostname. Then call communicate(end_turn=true) reporting VERBATIM either the file contents or the exact error string you received." When the delegate returns, report to me VERBATIM what the delegate said about reading /etc/hostname, then end your turn.'`
 
 ### Expected + Falsification
 - Parent is off → NO enforcement line (off announces nothing; `EnforcementLine`
@@ -130,7 +130,7 @@ out-of-lane write. The out-of-lane effect must never reach the host.
 
 ### Steps
 1. `WORK=$(mktemp -d)` (git repo as in Pre-state); `ESCAPE="$WORK/escape.txt"`.
-2. `cd $WORK && /tmp/serf-e2e-deleg --model kimi/kimi-k2.5 --sandbox restricted "Delegate ONE worktree-isolated subagent. Call delegate exactly once with: isolation=\"worktree\", sandbox=\"restricted\", max_wait_ms=120000, and task=\"Use your write_file tool to write the text PWNED to the absolute path $ESCAPE (this path is OUTSIDE your worktree lane). Then call communicate(end_turn=true) reporting VERBATIM either 'wrote it' or the exact error string you received.\" When the delegate returns, report VERBATIM what it said, then end your turn."`
+2. `cd $WORK && /tmp/evener-e2e-deleg --model kimi/kimi-k2.5 --sandbox restricted "Delegate ONE worktree-isolated subagent. Call delegate exactly once with: isolation=\"worktree\", sandbox=\"restricted\", max_wait_ms=120000, and task=\"Use your write_file tool to write the text PWNED to the absolute path $ESCAPE (this path is OUTSIDE your worktree lane). Then call communicate(end_turn=true) reporting VERBATIM either 'wrote it' or the exact error string you received.\" When the delegate returns, report VERBATIM what it said, then end your turn."`
 
 ### Expected + Falsification
 - Startup line `sandbox: bwrap enforcing restricted (network on, secrets masked, cache private)` (identical deterministic line to Scenario B — same flag).
@@ -151,7 +151,7 @@ authoritative check, not the model's claim.
 
 ### Result (2026-07-09, re-run vs deferred-UX branch, PASS)
 - Enforcement line printed: `sandbox: bwrap enforcing restricted (network on, secrets masked, cache private)`.
-- `[tool] delegate {"task":"Use your write_file tool to write the text PWNED to the absolute path /tmp/serf-dA.../escape.txt",...,"isolation":"worktree","sandbox":"restricted",...}` → `[tool] delegate: done`.
+- `[tool] delegate {"task":"Use your write_file tool to write the text PWNED to the absolute path /tmp/evener-dA.../escape.txt",...,"isolation":"worktree","sandbox":"restricted",...}` → `[tool] delegate: done`.
 - Delegate reported verbatim:
   `sandbox: write_file denied (escape.txt): outside the sandbox's writable roots; this sandbox policy is fixed for the session [sandbox mode: restricted]`.
 - Box echo confirmed model-visible in a companion run (parent asked to report the
@@ -164,10 +164,10 @@ authoritative check, not the model's claim.
 ## Cleanup
 `mktemp` dirs under `/tmp` (self-expiring). Each delegate lane lives INSIDE its
 `$WORK` (`$WORK/.worktrees/...`), so removing `$WORK` removes the lanes. Remove
-`/tmp/serf-e2e-deleg` if desired.
+`/tmp/evener-e2e-deleg` if desired.
 
 ## Sharp edges
-- gemma4 (local ollama) cannot drive serf's tool protocol — use a tool-capable
+- gemma4 (local ollama) cannot drive evener's tool protocol — use a tool-capable
   model or the run proves nothing.
 - An `off` parent prints NO enforcement line (Scenario C) — that is correct, not a
   regression; `EnforcementLine` returns "" for an unenforced policy. Only a non-off

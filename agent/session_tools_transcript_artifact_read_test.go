@@ -11,8 +11,8 @@ import (
 	"strings"
 	"testing"
 
-	"primeradiant.com/serf/agent/internal/artifactstore"
-	"primeradiant.com/serf/llm"
+	"primeradiant.com/evener/agent/internal/artifactstore"
+	"primeradiant.com/evener/llm"
 )
 
 func artifactTranscriptFixture(t *testing.T, output string) (*toolDeps, string) {
@@ -176,7 +176,7 @@ func TestReadTranscriptArtifactExpiredWhenNoStoreIsAvailable(t *testing.T) {
 	}
 }
 
-const privateArtifactPathSentinel = "/Users/operator/.serf/private/artifacts/sentinel-output"
+const privateArtifactPathSentinel = "/Users/operator/.evener/private/artifacts/sentinel-output"
 
 type failingArtifactReadSeekCloser struct {
 	total int64

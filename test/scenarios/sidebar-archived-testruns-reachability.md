@@ -1,21 +1,21 @@
 # sidebar-archived-testruns-reachability: Archived and Test-runs buckets round-trip (archive, unarchive, delete)
 
 **What this covers**: the server-side project classification in
-`cmd/serf-hub/internal/hubcore/tree.go` (`TreeProject.IsArchived`/`IsTestRun`,
+`cmd/evener-hub/internal/hubcore/tree.go` (`TreeProject.IsArchived`/`IsTestRun`,
 `:126-134,939-940`) and `/api/tree`'s projection of it into
 `archived_projects[]` / `test_runs[]`, where TestRuns takes precedence over
-Archived (`navigationProjectBuckets`, `cmd/serf-hub/web_api_tree.go#navigationProjectBuckets`;
+Archived (`navigationProjectBuckets`, `cmd/evener-hub/web_api_tree.go#navigationProjectBuckets`;
 the ordered emit at `:161-176`). Covers the full archive→unarchive round trip,
-the `SERF_SESSION_ORIGIN=test` classification path (`envvars/envvars.go:81`,
+the `EVENER_SESSION_ORIGIN=test` classification path (`envvars/envvars.go:81`,
 read once at fresh-session create in `agent/session_init.go:209`), and whole-
 project delete through to on-disk removal.
 
 **Surface**: see `docs/agentic-testing.md`, "Driving the web UI" — the selector
 map there is the single place these hooks are maintained. This card used to
 drive `sidebar.js`'s `pushArchivedSection`/`pushTestRunsSection`, poke
-`window.SerfSidebar.refresh()`, and match `[data-row-id="section:test-runs"]`.
+`window.EvenerSidebar.refresh()`, and match `[data-row-id="section:test-runs"]`.
 All of that died with the vanilla frontend (`660376f78`); the rail is React
-(`cmd/serf-hub/frontend/src/shell/rail/`) and none of those handles exist.
+(`cmd/evener-hub/frontend/src/shell/rail/`) and none of those handles exist.
 
 **Two section shapes, and only one of them is a disclosure** — this is the
 biggest change from the card's old text:
@@ -33,7 +33,7 @@ biggest change from the card's old text:
 
 ## Pre-state
 
-- A freshly built `serf-hub` on an isolated `$HOME` and a kernel-assigned port
+- A freshly built `evener-hub` on an isolated `$HOME` and a kernel-assigned port
   — the Setup checklist in `docs/agentic-testing.md`. Never a real hub.
 - The frontend must be built (`make build-web`) *before* the hub for step 5+,
   or the SPA is a one-line placeholder (rebuild matrix item 3 in the runbook).
@@ -52,7 +52,7 @@ a browser, and only assert what the rail renders.
    let it finish, then `POST /api/sessions/local:$SID_A/shutdown`.
    `GET /api/tree`: `$A`'s project key is in `projects[]`.
 2. Spawn a session in `$B` with
-   `launch_overrides:{env:{SERF_SESSION_ORIGIN:"test"}}`, let it finish, then
+   `launch_overrides:{env:{EVENER_SESSION_ORIGIN:"test"}}`, let it finish, then
    `POST /api/sessions/local:$SID_B/shutdown`. `GET /api/tree`: `$B`'s key is
    in `test_runs[]` and in neither `projects[]` nor `archived_projects[]`.
 3. **Archive `$A`.** `POST /api/archive` with
@@ -71,7 +71,7 @@ a browser, and only assert what the rail renders.
    })
    ```
 6. **Archive `$A` again** (step 3's POST) and let the rail refetch on its own —
-   the archive handler broadcasts `serf/tree/changed` unconditionally
+   the archive handler broadcasts `evener/tree/changed` unconditionally
    (`web_api_archive.go:71` → `notifyMutation`, `web_api_tree.go#notifyMutation`) and
    the store refetches on a 250ms debounce
    (`stores/tree.ts:443-450,455-467`). Re-read step 5's probe,
@@ -135,7 +135,7 @@ a browser, and only assert what the rail renders.
   edges).
 - **Step 10 (exact)**: `$B`'s key absent from all three of `projects[]`,
   `archived_projects[]`, `test_runs[]`; and
-  `find "$HOME/.local/state/serf/projects" -name "$SID_B*"` returns nothing.
+  `find "$HOME/.local/state/evener/projects" -name "$SID_B*"` returns nothing.
   In the browser, the `Test runs` heading is gone (its bucket is empty and
   `RailSection` returns null at `Rail.tsx:101`). Falsify: files surviving a
   `200`, or a heading rendering for an empty bucket.
@@ -171,11 +171,11 @@ a browser, and only assert what the rail renders.
   Until that resolves the row has a single placeholder child
   (`railNodes.ts:365-367`) rendering `Loading…` with `role="status"`
   (`RailRow.tsx:663-672`), so "expanded but empty" for a beat is normal.
-- **`SERF_SESSION_ORIGIN` must travel through `launch_overrides.env`, not the
+- **`EVENER_SESSION_ORIGIN` must travel through `launch_overrides.env`, not the
   hub's own environment.** `agent/session_init.go:209` reads it from the
   *daemon's* process env at fresh-create time, which the hub controls
   per-spawn: `launchconfig.ToEnv` applies per-launch env last so it wins over
-  the inherited parent env (`cmd/serf-hub/internal/launchconfig/env.go#ToEnv`).
+  the inherited parent env (`cmd/evener-hub/internal/launchconfig/env.go#ToEnv`).
   Setting it in the hub's own environment would stamp `origin=test` onto every
   session the hub ever spawns.
 - **"Live" for the delete refusal means a registered daemon, not a running
@@ -185,7 +185,7 @@ a browser, and only assert what the rail renders.
   classification.
 - **The TestRuns-over-Archived overlap case is server-side only** and this
   card does not re-derive it live. The old text pointed at
-  `cmd/serf-hub/jstest/test-sidebar-testruns.js`; that directory no longer
+  `cmd/evener-hub/jstest/test-sidebar-testruns.js`; that directory no longer
   exists. The precedence itself is the `switch` at `web_api_tree.go:359-362`,
   and the classification feeding it is pinned by
   `internal/hubcore/tree_test.go:1730-1752`.

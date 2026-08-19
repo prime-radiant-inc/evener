@@ -5,8 +5,8 @@ import (
 	"strings"
 	"testing"
 
-	"primeradiant.com/serf/llm"
-	openaiadapter "primeradiant.com/serf/llm/providers/openai"
+	"primeradiant.com/evener/llm"
+	openaiadapter "primeradiant.com/evener/llm/providers/openai"
 )
 
 func TestOpenAIResponsesContinuationFingerprint_ProductionPromptStableWithFixedEnvironment(t *testing.T) {
@@ -34,7 +34,7 @@ func TestOpenAIResponsesContinuationFingerprint_ProductionPromptChangesWithToday
 
 func openAIContinuationPromptDataForTest(today string) promptData {
 	return promptData{
-		WorkingDir:      "/tmp/serf-continuation",
+		WorkingDir:      "/tmp/evener-continuation",
 		Platform:        "darwin",
 		OSVersion:       "15.5",
 		Today:           today,

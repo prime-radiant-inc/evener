@@ -12,19 +12,19 @@ Live end-to-end, real provider (billed).
 ## Pre-state
 
 Same harness. Before running the agent, pre-seed two managed worktrees **as
-the agent's own session would** — simplest reliable way is a first serf run
+the agent's own session would** — simplest reliable way is a first evener run
 that creates them, or (deterministic) drive the tool via a scripted prompt:
 
 1. `create untouched-lane` (leave it unchanged), then `exit`.
 2. `create work-lane`, add a line to README.md and commit inside it, then
    `exit`.
 
-Both now exist under `$SERF_STATE_DIR/worktrees/<projectid>/`, unlocked (the
+Both now exist under `$EVENER_STATE_DIR/worktrees/<projectid>/`, unlocked (the
 session exited both).
 
 ## Steps
 
-1. Fresh serf run, prompt:
+1. Fresh evener run, prompt:
    `"List the git worktrees that exist for this project. For each, tell me
    whether it has any work in it. Then clean up any worktree that has no
    committed work, but keep any that does. Report what you removed and what
@@ -53,7 +53,7 @@ Remove scratch state + demo repo (unique temp paths).
 
 - If the pre-seed uses the same session that later runs the cleanup prompt,
   the worktrees may still be locked to that session — pre-seed in a SEPARATE
-  serf invocation so they're unlocked (a dead session's lanes), matching the
+  evener invocation so they're unlocked (a dead session's lanes), matching the
   real "come back later and clean up" case `prune` targets.
 - `prune` never takes force and skips anything with committed-but-unmerged
   work — so `work-lane` (committed, unmerged) is correctly skipped by `prune`

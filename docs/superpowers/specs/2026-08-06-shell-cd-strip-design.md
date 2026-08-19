@@ -6,9 +6,9 @@ Status: approved design, pre-implementation
 ## Problem
 
 Models habitually prefix shell commands with `cd <session cwd> && ` even
-though serf already runs every command in the session's working directory
+though evener already runs every command in the session's working directory
 (execenv sets the process dir; the prefix is a trained-in habit, not a
-serf need). The prefix is pure noise in transcript displays: it repeats a
+evener need). The prefix is pure noise in transcript displays: it repeats a
 long absolute path on nearly every shell row.
 
 ## Rule (both surfaces, identical)
@@ -30,12 +30,12 @@ prefix removed.
 
 ## Implementation
 
-- **Web** (`cmd/serf-hub/frontend`): pure helper
+- **Web** (`cmd/evener-hub/frontend`): pure helper
   `stripRedundantCd(command, cwd)` beside `shellTool.tsx`; applied at
   the row summary and the expanded `ShellCommandBlock`. The session
   pane already holds `Thread.cwd`; thread it to the shell tool
   renderer.
-- **TUI** (`cmd/serf-tui`): `toolsummary.SummarizeTool` learns the
+- **TUI** (`cmd/evener-tui`): `toolsummary.SummarizeTool` learns the
   session cwd (parameter; callers plumb it from thread state) and
   applies the same rule to both desc and detail.
 

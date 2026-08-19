@@ -1,9 +1,9 @@
 package hooks
 
-import "primeradiant.com/serf/agent/plugin"
+import "primeradiant.com/evener/agent/plugin"
 
 // eventExitPolicy is the exit-code contract for one event (07 §Exit-code semantics).
-// Phase 1 covers only events serf currently fires; everything else defaults to
+// Phase 1 covers only events evener currently fires; everything else defaults to
 // non-blocking (reserved-placeholder) so an unimplemented event never blocks.
 // Tier: claude-compatible-subset (table); the full Claude table (07) is the source.
 type eventExitPolicy struct {
@@ -22,7 +22,7 @@ type eventExitPolicy struct {
 //
 // In the Claude contract, exit 2 also blocks UserPromptSubmit (erase the prompt)
 // and PreCompact (block compaction); see the full Claude table in 07
-// §"Exit-code semantics". Serf does NOT yet enforce those blocks: RunUserPromptSubmit
+// §"Exit-code semantics". Evener does NOT yet enforce those blocks: RunUserPromptSubmit
 // and RunPreCompact only aggregate output and have no block path at their dispatch
 // sites (07 marks UserPromptSubmit erase-prompt and PreCompact blocking as deferred
 // parity items). They are therefore false here rather than carrying a dead "block"

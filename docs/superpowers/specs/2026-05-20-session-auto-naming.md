@@ -4,7 +4,7 @@ Date: 2026-05-20
 
 ## Summary
 
-Serf should automatically assign concise names to sessions using a globally/project configurable fast cheap model. The naming operation is a single side LLM call, not a full agent session. The result is stored in session metadata and logged to the session log as advisory bookkeeping.
+Evener should automatically assign concise names to sessions using a globally/project configurable fast cheap model. The naming operation is a single side LLM call, not a full agent session. The result is stored in session metadata and logged to the session log as advisory bookkeeping.
 
 New launch setting:
 
@@ -15,7 +15,7 @@ fast_cheap_model = "openai/gpt-5-mini"
 New daemon flag:
 
 ```sh
-serf serve --fast-cheap-model openai/gpt-5-mini
+evener serve --fast-cheap-model openai/gpt-5-mini
 ```
 
 The setting should feed the existing cheap-model path used by compaction and other cheap side calls.
@@ -57,7 +57,7 @@ fast_cheap_model = "openai/gpt-5-mini"
 `fast_cheap_model` follows the same precedence model as `model`:
 
 1. global launch config
-2. in-repo `.serf/launch.toml`, if trusted
+2. in-repo `.evener/launch.toml`, if trusted
 3. hub project launch config
 4. per-launch overrides
 
@@ -73,7 +73,7 @@ The resolved effective value is passed to daemon launch args.
 - appwire launch config types
   - add `FastCheapModel` to the wire layer struct
 - hub launch settings UI
-  - add editable row in `cmd/serf-tui/launch_settings_panel.go`
+  - add editable row in `cmd/evener-tui/launch_settings_panel.go`
 - launch arg rendering
   - `internal/launchconfig/args.go` emits `--fast-cheap-model <value>`
 - hub daemon spawn tests
@@ -83,7 +83,7 @@ The resolved effective value is passed to daemon launch args.
 
 ### New flag
 
-Add to `serf serve`:
+Add to `evener serve`:
 
 ```sh
 --fast-cheap-model <provider/model-or-model-ref>
@@ -371,7 +371,7 @@ All session-list/history/thread display names should prefer:
 
 Likely areas:
 
-- `cmd/serf-hub/tree.go`
+- `cmd/evener-hub/tree.go`
 - past session rendering
 - appwire thread previews if metadata is available
 
@@ -381,7 +381,7 @@ Past-session search should match both generated name and original prompt.
 
 Update:
 
-- in-memory search logic in `cmd/serf-hub/past.go`
+- in-memory search logic in `cmd/evener-hub/past.go`
 - SQLite FTS schema/indexing
 
 FTS should include a `name` column. Existing FTS index can be rebuilt. If schema migration is awkward, use a versioned FTS table name.
@@ -420,7 +420,7 @@ The main session turn must continue unaffected.
 
 ### Serve/profile tests
 
-- `serf serve --fast-cheap-model ...` sets the cheap model override.
+- `evener serve --fast-cheap-model ...` sets the cheap model override.
 - existing behavior remains when flag is omitted.
 - invalid provider/model produces a clear error or diagnostic.
 
@@ -456,7 +456,7 @@ The main session turn must continue unaffected.
 ## Implementation order
 
 1. Add `fast_cheap_model` to launch config/appwire/TUI and emit `--fast-cheap-model`.
-2. Add `serf serve --fast-cheap-model` and cheap-model override support.
+2. Add `evener serve --fast-cheap-model` and cheap-model override support.
 3. Add session metadata name fields and display helper.
 4. Add advisory `SessionLogEntry.Kind` handling.
 5. Implement `agent/session_namer.go` as a single LLM call helper.

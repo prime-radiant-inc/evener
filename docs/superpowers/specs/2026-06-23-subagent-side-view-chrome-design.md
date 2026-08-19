@@ -2,7 +2,7 @@
 
 Date: 2026-06-23
 Status: Revised after adversarial review; approved design pending implementation planning
-Scope: Serf web hub (`cmd/serf-hub`)
+Scope: Evener web hub (`cmd/evener-hub`)
 
 ## Problem
 
@@ -93,16 +93,16 @@ The implementation may share a template partial for script tags with `app.html`,
 
 ## Pane Host and Nested Open-Beside
 
-Side panes should continue using iframe isolation for now because `SerfRenderer` and AppWire client state are document-global singletons. Iframes give each thread its own `window`/`document` and avoid a larger renderer refactor.
+Side panes should continue using iframe isolation for now because `EvenerRenderer` and AppWire client state are document-global singletons. Iframes give each thread its own `window`/`document` and avoid a larger renderer refactor.
 
 Nested open-beside must be supported by an explicit host bridge.
 
-Current code assumes `window.SerfPanes` is absent inside pane iframes and therefore suppresses open-beside controls. That conflicts with the desired behavior. The new contract should be:
+Current code assumes `window.EvenerPanes` is absent inside pane iframes and therefore suppresses open-beside controls. That conflicts with the desired behavior. The new contract should be:
 
-1. The top-level app shell owns the real `SerfPanes` manager.
+1. The top-level app shell owns the real `EvenerPanes` manager.
 2. The thread document exposes a small pane-client bridge when it is framed.
-3. Open-beside actions inside the thread document send a same-origin `postMessage` request to the top-level host, for example `{type: "serf:open-beside", href, title}`.
-4. The host validates message origin, source frame, and href before calling `SerfPanes.open`.
+3. Open-beside actions inside the thread document send a same-origin `postMessage` request to the top-level host, for example `{type: "evener:open-beside", href, title}`.
+4. The host validates message origin, source frame, and href before calling `EvenerPanes.open`.
 5. The new pane opens to the right of the requesting pane when possible; otherwise it follows the existing pane manager ordering rules.
 
 If the thread document is loaded top-level rather than framed, it may either omit open-beside controls or use a local fallback. The primary supported path is host-mediated panes.
@@ -192,7 +192,7 @@ Current `panes.js` primarily creates iframes and persists hrefs. It needs an err
 
 1. User clicks open-beside on a subagent row.
 2. Code builds the canonical thread-document URL for that subagent ref.
-3. Top-level `SerfPanes.open` creates an iframe for the thread document.
+3. Top-level `EvenerPanes.open` creates an iframe for the thread document.
 4. The thread document loads as a normal authenticated GET.
 5. It renders the shared thread fragment with pane/thread-document context flags.
 6. It includes required assets and boots renderer/composer/live updates.
@@ -260,7 +260,7 @@ Run a real or JSDOM-backed pane scenario that verifies:
 
 ## Non-Goals
 
-- Refactoring `SerfRenderer` into a multi-instance in-page renderer.
+- Refactoring `EvenerRenderer` into a multi-instance in-page renderer.
 - Replacing iframe-per-pane with in-page multi-session rendering.
 - Redesigning the transcript or composer UI.
 - Removing normal full-page `/s/<id>` navigation.
@@ -282,6 +282,6 @@ Pane URL persistence is not a non-goal because the current pane manager already 
 - No placeholders or TBDs remain.
 - The design now resolves the partial-vs-iframe contradiction by requiring a standalone thread document route.
 - The design explicitly preserves the existing full app route and HX-gated workspace partial.
-- The design addresses nested panes with a host bridge instead of assuming `SerfPanes` exists inside iframes.
+- The design addresses nested panes with a host bridge instead of assuming `EvenerPanes` exists inside iframes.
 - The design calls out hamburger/sidebar chrome flags, legacy pane URL migration, breadcrumb behavior, CSP/sandbox decisions, and iframe error handling.
 - Scope remains focused on side-view subagent chrome and does not require a renderer singleton refactor.

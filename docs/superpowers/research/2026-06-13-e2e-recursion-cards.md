@@ -13,7 +13,7 @@ Hub: 127.0.0.1:9180 | Date: 2026-06-13
 
 ## Card 1 — recursion-coordinator-fanout — PASS
 
-- Root SID `01KV1BVWNWF9MW80906334JMYS`, tmpdir `/tmp/serf-e2e-recfan-dJzWa`, model gpt-5.5, launch_overrides.maxSubagentDepth=2.
+- Root SID `01KV1BVWNWF9MW80906334JMYS`, tmpdir `/tmp/evener-e2e-recfan-dJzWa`, model gpt-5.5, launch_overrides.maxSubagentDepth=2.
 - **Grant ceiling (step 2.1): PASS.** `delegation_allowance=2` REJECTED verbatim: `invalid_request: delegation_allowance must be less than your own allowance (2)`. The `(2)` proves maxSubagentDepth:2 opt-in took (root allowance = 2, not 1).
 - **Grant succeeds + leaf gate (step 2.2): PASS.** allowance=1 delegate ACCEPTED -> COORD `job_01KV1BWP8XRB7K5V1SDMHX1XYM` (coord session `01KV1BWPE16RD7V53D3B0DQK59`). Coordinator (allowance 1) WAS offered the `delegate` tool; all 3 workers (allowance 0) were offered tools `[apply_patch,communicate,exec_command,grep_files,list_dir,read_file,task_list,web_fetch,write_file]` — `delegate` ABSENT. Hard leaf confirmed via the api_call tools array (not the prose system prompt).
 - **Visibility (step 3): PASS.** job_list(include_descendants=true) = exactly 4 rows: COORD depth0 owner=root; 3 workers depth1 owner=coord-session (NOT root), parent=COORD, status=running, each exactly once.
@@ -25,7 +25,7 @@ Hub: 127.0.0.1:9180 | Date: 2026-06-13
 
 ## Card 2 — recursion-deaf-coordinator-drivedown — PASS
 
-- Root SID `01KV1CC027BFJ4TPKDPK9Y1Q2G`, tmpdir `/tmp/serf-e2e-recdeaf-ceejD`, model gpt-5.5, launch_overrides.maxSubagentDepth=2.
+- Root SID `01KV1CC027BFJ4TPKDPK9Y1Q2G`, tmpdir `/tmp/evener-e2e-recdeaf-ceejD`, model gpt-5.5, launch_overrides.maxSubagentDepth=2.
 - **maxSubagentDepth:2 opt-in took:** the grant of allowance=1 was ACCEPTED -> COORD `job_01KV1CCDP46MJQYEXY86TAGXHS` (coord session `01KV1CCDVPZTN7YDRC4CP3J919`). (Without the opt-in, root allowance=1 and the grant of 1 would be rejected; it was not.)
 - **Deaf-coordinator drive-down (claim 1): PASS.** Coordinator transcript: turns[0-7] = spawn 2 workers + COORD_WORKERS communicate, then ENDED its turn. Workers (`job_01KV1CCSX6DE4RFYJ18YYGZ8Z1`, `job_01KV1CD5T7AMC1XRVE7SKVXS85`, 6s sleeps) finished while coordinator IDLE. Turn[8] = POST-IDLE STEERING notification for worker-1 completed; turn[13] = POST-IDLE notification for worker-2 completed. The coordinator's OWN model was driven/woken for its workers. (The root sent nothing during the ~15s window — genuine drive, not a same-turn poll.)
 - **Owner-scoped (claim 2): PASS.** The ONLY root-rail notification frame SUBJECT is COORD (`job_01KV1CCDP46MJQYEXY86TAGXHS`). NO worker id is a frame subject. Worker ids + W1_DONE/W2_DONE appear ONLY inside COORD's echoed output excerpt (COORD's own payload), not as a notification about a worker. Root heard only about its own delegate.
@@ -34,7 +34,7 @@ Hub: 127.0.0.1:9180 | Date: 2026-06-13
 
 ## Card 3 — job-nested-visibility (amended) — PASS
 
-- Root SID `01KV1CH8A38GY9XH15RSVVP15N`, tmpdir `/tmp/serf-e2e-jnest-E21CO`, model gpt-5.5, NO recursion opt-in (default launch_overrides) — single delegate starting a nested SHELL job, default depth-1 allowance suffices.
+- Root SID `01KV1CH8A38GY9XH15RSVVP15N`, tmpdir `/tmp/evener-e2e-jnest-E21CO`, model gpt-5.5, NO recursion opt-in (default launch_overrides) — single delegate starting a nested SHELL job, default depth-1 allowance suffices.
 - DELEGATE `job_01KV1CHMGC6DVX0YRASVFTZTKH` (child session `01KV1CHMPEV2N73XF99ZMFTXB1`); NESTED shell job `job_01KV1CHYPY85XB6Q3KY814610E`. Id equality holds (child's NESTED_JOB report == shell tool return == parent's list row) — no namespacing.
 - **Arm (a) visibility: PASS.** Step1 (no include_nested) = 1 row, the DELEGATE only (terminal completed); nested job ABSENT. Step2 (include_nested true) adds exactly 1 row: nested job type=shell, status=running, parent_job_id=DELEGATE, owner_session_id=child (NOT root), visible_to_session_id=root. Nested OUTLIVES its delegate (delegate completed, nested running).
 - **Arm (b) read: PASS.** job_read_output(nested) = status running, content "NEST_TOKEN_1\n" — read via the parent-visible id, no extra handle.
@@ -45,7 +45,7 @@ Hub: 127.0.0.1:9180 | Date: 2026-06-13
 
 ## Card 4 — job-stop-and-children (amended) — PASS
 
-- Root SID `01KV1CQFSY4J4M94CHS4EMBRD2`, tmpdir `/tmp/serf-e2e-jstop-7Qnw2`, model gpt-5.5, NO recursion opt-in.
+- Root SID `01KV1CQFSY4J4M94CHS4EMBRD2`, tmpdir `/tmp/evener-e2e-jstop-7Qnw2`, model gpt-5.5, NO recursion opt-in.
 - **Turn 1 arms (a)/(b): PASS.** Shell job `job_01KV1CRHDSYWW9SA9S9YR4WDD5`. job_stop(max_wait_ms 5000) result is TERMINAL in the result itself: status "cancelled", reason "stopped_by_parent" (no stop_pending — the wait worked). job_read_output after stop: status "cancelled", reason "stopped_by_parent", content "STOP_RETAIN_TOKEN\n" — output survived the stop.
 - **Turn 2 arm (c) include_children cascade: PASS.** DELEGATE `job_01KV1CV1FE4W0KEWNAJATGX7XF` (child session `01KV1CV1MKNHGFTYFF443KEEDX`), nested shell `job_01KV1CVDCK5NX871JQSWZ80BZC`. Before-stop (gate): BOTH live — delegate running, nested shell running with parent=DELEGATE. job_stop(DELEGATE, include_children=true, max_wait_ms 5000) result: delegate "cancelled"/"stopped_by_parent". After-stop list: BOTH terminal — delegate cancelled/stopped_by_parent AND nested shell cancelled/stopped_by_parent (still listed, still parent=DELEGATE). No child left running = no recursion hole.
 - **Owner-scoped (amendment): PASS.** Root-rail frame subjects = `job_01KV1CRHDSYWW9SA9S9YR4WDD5` (turn-1 shell, root-owned) and `job_01KV1CV1FE4W0KEWNAJATGX7XF` (DELEGATE, root's own) — both root's OWN jobs. The nested shell `job_01KV1CVDCK5NX...` is NOT a frame subject; its terminal did NOT land on the parent rail (owner-scoped to the child). Parent retains visibility via include_nested / jobs.jsonl.

@@ -17,8 +17,8 @@ surrogates). Ronacher's thesis: a harness either has to *prevent* those calls
 (strict constrained decoding, with quality tradeoffs) or *absorb* them (a
 forgiving harness that repairs the slop).
 
-**Serf's stance is provider-dependent, and that is the key correction driving
-this design.** Where serf lands on the prevent/absorb/reject spectrum depends
+**Evener's stance is provider-dependent, and that is the key correction driving
+this design.** Where evener lands on the prevent/absorb/reject spectrum depends
 entirely on the wire protocol:
 
 - **OpenAI Responses — "prevent" for the core work tools only.**
@@ -41,7 +41,7 @@ entirely on the wire protocol:
 - **Anthropic and OpenAI chat-completions — "reject."** The Anthropic adapter
   sends no strict flag; the chat-completions adapter (`ToChatTools`) sets no
   strict flag either. On these paths there is no constrained decoding, so an
-  off-distribution call reaches serf and is **hard-rejected** by local
+  off-distribution call reaches evener and is **hard-rejected** by local
   `santhosh-tekuri/jsonschema` validation in `Registry.ExecuteCall`
   (`agent/internal/tool/registry.go:446`) — nearly every tool carries
   `additionalProperties:false` plus a `required` list. This is the worst-case
@@ -54,11 +54,11 @@ no-op *only for the six strict core tools* — valid calls never reach it there 
 but it is genuinely live for `communicate` and friends. The lazy trigger means
 zero cost wherever calls are already valid, regardless of provider.
 
-### Gap analysis: Claude Code trick → serf on the non-strict (Anthropic / chat) paths
+### Gap analysis: Claude Code trick → evener on the non-strict (Anthropic / chat) paths
 
-| Claude Code trick | Serf today | Gap |
+| Claude Code trick | Evener today | Gap |
 |---|---|---|
-| Parameter aliasing (`old_str`→`old_string`, `path`→`file_path`) | Rejected — `additionalProperties:false` treats aliases as illegal extra keys | Serf is *stricter* than CC |
+| Parameter aliasing (`old_str`→`old_string`, `path`→`file_path`) | Rejected — `additionalProperties:false` treats aliases as illegal extra keys | Evener is *stricter* than CC |
 | Silent unknown-key filtering | Rejected with `additionalProperties "foo" not allowed` | Opposite behavior |
 | Unicode escape / lone-surrogate repair | None | Missing |
 | Silent type coercion | None at dispatch | Missing |
@@ -78,13 +78,13 @@ the equivalent on the primary path.
    self-healing tricks. Do **not** change any tool's `Strict` setting — in
    particular, leave OpenAI Responses' strict-by-default (`nil → true`) intact.
    Strict constrained decoding is out of scope; the article's "turn on strict"
-   fix is already in effect on the one path where serf can apply it.
+   fix is already in effect on the one path where evener can apply it.
 2. **Repair visibility: silent to the model, visible to telemetry.** A
    successfully repaired call runs and returns a normal result. The model's
    original raw arguments stay on the assistant turn in history (see Data flow);
    the model never sees the repaired args and gets no in-context note. Every
    repair emits a telemetry event so we can *measure* how often models drift off
-   serf's schema. The metric serves honesty better than hiding the repair would.
+   evener's schema. The metric serves honesty better than hiding the repair would.
 3. **Scope: three capabilities in this spec** — argument normalization (the
    core), unknown-tool "did you mean", and model-tuned error messages.
    **Leaked-markup recovery is split to a fast-follow** (see the final section):
@@ -113,7 +113,7 @@ layer:
    *pre-repair* args and then repair could change them — e.g. a hook that gates
    `edit_file` on `file_path` sees `{path: "/etc/…"}`, allows it, and repair then
    aliases `path→file_path` to a location the hook never inspected. That breaks
-   serf's invariant that hooks see the arguments that will actually run.
+   evener's invariant that hooks see the arguments that will actually run.
 2. **Provider name-map.** `ExecuteCall` lives in the `tool` package and only has
    canonical registry keys. Under name-mapping profiles (Codex maps
    `glob→list_dir`, `shell→exec_command`; Gemini maps `list_dir→list_directory`),
@@ -259,7 +259,7 @@ fires for `read_file` / `edit_file` / `write_file` (which declare `file_path` an
 not `path`) but is a silent no-op for `list_dir` / `grep` / `glob` (which declare
 `path` natively — verified in `definitions.go`). No per-tool configuration.
 
-Initial table, seeded from serf's *actual* parameter names plus Claude-Code names:
+Initial table, seeded from evener's *actual* parameter names plus Claude-Code names:
 
 | Alias | Canonical | Rationale |
 |---|---|---|
@@ -271,7 +271,7 @@ Initial table, seeded from serf's *actual* parameter names plus Claude-Code name
 | `contents` | `content` | pluralization drift |
 | `cmd` | `command` | shell short form |
 
-The table is data, extended as telemetry reveals new drift. Serf's `edit_file`
+The table is data, extended as telemetry reveals new drift. Evener's `edit_file`
 schema already matches Claude Code's exactly, so the residual edit-tool risk is
 only the short forms above.
 
@@ -399,13 +399,13 @@ emitted by `execTool` when the repair change list is non-empty:
   each `Change` encoded as `"kind:field:detail"`. Also written to the session log.
 
 This yields the metric the article implies we should want: how often, and in
-what way, models drift off serf's schema on the non-strict paths.
+what way, models drift off evener's schema on the non-strict paths.
 
 **Consumer updates required** (not just the type definition): `EventData` is a
 sealed set and several consumers switch on event kinds with a `default:` that
 silently drops unknown kinds. To surface the repair event they need a case:
 `internal/appprojector/appwire_projection.go` (the hub/TUI projection; has a
-`default:` at `:533`, so no crash, but no bubble without a case), `cmd/serf/run.go`
+`default:` at `:533`, so no crash, but no bubble without a case), `cmd/evener/run.go`
 (the CLI renderer's tool-call switch), and `tools/tool-fluency/…` (the natural
 place to *measure* the drift metric). `server/bridge.go` needs **no** change: it
 records every event via `RecordAppEvent` before its state-only switch, so the
@@ -497,7 +497,7 @@ because:
   turns whose IDs match no `tool_use` block. The next request then serializes
   `[assistant(text), tool_result(id)]`, which **both** providers reject
   (OpenAI `function_call_output` with no matching `function_call` → 400;
-  Anthropic `tool_result` with no preceding `tool_use` → 400). Serf's
+  Anthropic `tool_result` with no preceding `tool_use` → 400). Evener's
   `repairOrphanedToolResults` (`agent/history_repair.go`) only fixes the opposite
   direction and cannot save this.
 - Calls synthesized in that branch also bypass the `canonicalToolName` mapping
@@ -527,7 +527,7 @@ names to avoid false positives from prose) is the piece that carries forward.
   ValidationError tree here. Snapshot the name-map via `currentProfile()` inside
   `execTool` (NOT by locking `providerToolName` — see concurrency note).
 - `agent/events/events.go` — `EventToolCallRepaired` + `ToolCallRepairedData`.
-- `internal/appprojector/appwire_projection.go`, `cmd/serf/run.go`,
+- `internal/appprojector/appwire_projection.go`, `cmd/evener/run.go`,
   `tools/tool-fluency/…` — switch cases for the new event so it projects/renders
   and the drift metric is measurable. `server/bridge.go` needs no change.
 - Tests as above.

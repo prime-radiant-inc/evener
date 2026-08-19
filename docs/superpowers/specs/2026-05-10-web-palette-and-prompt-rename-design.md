@@ -2,7 +2,7 @@
 
 **Status:** palette v1 shipped (commits `d22615c`, `31a55f0`, `e510319`); rename plan scoped, work tracked under kata #46 / #47.
 **Date:** 2026-05-10
-**Scope:** `cmd/serf-hub` web UI, plus a cross-cutting rename touching `cmd/serf`, `agent/`, `internal/hubapi`.
+**Scope:** `cmd/evener-hub` web UI, plus a cross-cutting rename touching `cmd/evener`, `agent/`, `internal/hubapi`.
 
 This document supersedes `2026-05-10-web-slash-commands-design.md` and incorporates the post-implementation learnings, the deferred-item roadmap (kata #42–#45), and the embedded sub-spec for the `task` → `prompt` rename (kata #46 / #47).
 
@@ -73,7 +73,7 @@ args: {
 
 #### The `Nav` indirection (test hook — see kata #44)
 
-JSDOM's `Location.assign` is non-configurable, so nav-targeting tests need a seam. Production code routes navigations through a module-level `const Nav = { go: (url) => window.location.assign(url) }` exposed on `window.SerfSearch.Nav`. Tests replace `Nav.go` after init to capture targets. The seam is one line; #44 reconsiders whether it stays.
+JSDOM's `Location.assign` is non-configurable, so nav-targeting tests need a seam. Production code routes navigations through a module-level `const Nav = { go: (url) => window.location.assign(url) }` exposed on `window.EvenerSearch.Nav`. Tests replace `Nav.go` after init to capture targets. The seam is one line; #44 reconsiders whether it stays.
 
 ### Triggers and lifecycle
 
@@ -174,8 +174,8 @@ Reuses `#search-dialog` exactly as it was — native `<dialog>`, top-anchored mo
 
 ### Helpers worth knowing about
 
-- `copyToClipboard(text)` — prefers `navigator.clipboard.writeText`; falls back to textarea + `document.execCommand("copy")` for non-secure-context deployments. On both-fail, surfaces via `window.SerfRenderer.appendBanner("error", …)`.
-- `applyTheme(name)` — toggles `body.light-theme` / `body.dark-theme` and persists `localStorage["serf-hub.theme"]`. Shared between the palette and the settings page.
+- `copyToClipboard(text)` — prefers `navigator.clipboard.writeText`; falls back to textarea + `document.execCommand("copy")` for non-secure-context deployments. On both-fail, surfaces via `window.EvenerRenderer.appendBanner("error", …)`.
+- `applyTheme(name)` — toggles `body.light-theme` / `body.dark-theme` and persists `localStorage["evener-hub.theme"]`. Shared between the palette and the settings page.
 - `revealProject(ctx)` — finds the sidebar link for `ctx.sessionId`, uncollapses its enclosing `[data-project-key]` section, scrolls into view.
 - `renderHelpPanel()` — paints the keyboard-shortcut reference into the results pane; clears `items` so Enter is a no-op until the user types again.
 - `Nav.go(url)` — production calls `window.location.assign`; tests replace this function to capture nav targets.
@@ -189,16 +189,16 @@ Reuses `#search-dialog` exactly as it was — native `<dialog>`, top-anchored mo
 ### Implementation surfaces
 
 **Modified files:**
-- `cmd/serf-hub/assets/search.js` — registry, mode branching, args mode, helpers, `Nav` indirection, `window.SerfSearch.{open, close, openWith, Nav}`
-- `cmd/serf-hub/assets/style.css` — pill, command rows, args items, help-row layout
-- `cmd/serf-hub/assets/renderer.js` — `/` at start of empty textarea → `SerfSearch.openWith("/")`
-- `cmd/serf-hub/templates/app.html` — ARIA on the search dialog markup
-- `cmd/serf-hub/templates/partials/spawn.html` — textarea content pre-fill from `.DefaultTask`
-- `cmd/serf-hub/web.go` — `clear` action proxy; `handleIndex` forwards `?task`; `spawnViewData.DefaultTask`
-- `cmd/serf-hub/web_test.go` — `TestWeb_SessionAction_ClearForwards`, `TestWeb_WorkspaceSpawn_PrefillsTaskFromQuery`, `TestWeb_Index_NewRouteForwardsTaskToWorkspace`
+- `cmd/evener-hub/assets/search.js` — registry, mode branching, args mode, helpers, `Nav` indirection, `window.EvenerSearch.{open, close, openWith, Nav}`
+- `cmd/evener-hub/assets/style.css` — pill, command rows, args items, help-row layout
+- `cmd/evener-hub/assets/renderer.js` — `/` at start of empty textarea → `EvenerSearch.openWith("/")`
+- `cmd/evener-hub/templates/app.html` — ARIA on the search dialog markup
+- `cmd/evener-hub/templates/partials/spawn.html` — textarea content pre-fill from `.DefaultTask`
+- `cmd/evener-hub/web.go` — `clear` action proxy; `handleIndex` forwards `?task`; `spawnViewData.DefaultTask`
+- `cmd/evener-hub/web_test.go` — `TestWeb_SessionAction_ClearForwards`, `TestWeb_WorkspaceSpawn_PrefillsTaskFromQuery`, `TestWeb_Index_NewRouteForwardsTaskToWorkspace`
 
 **New test:**
-- `cmd/serf-hub/jstest/test-search-commands.js` — JSDOM coverage of every mode, scope filtering, the `/` textarea trigger, the args back-out, ARIA roles, and a per-command sweep covering all 18 dispatches.
+- `cmd/evener-hub/jstest/test-search-commands.js` — JSDOM coverage of every mode, scope filtering, the `/` textarea trigger, the args back-out, ARIA roles, and a per-command sweep covering all 18 dispatches.
 
 ### Test plan
 
@@ -231,7 +231,7 @@ Reuses `#search-dialog` exactly as it was — native `<dialog>`, top-anchored mo
 |---|---|---|
 | 42 | Palette mobile layout | v2 deferred |
 | 43 | Fuzzy matching + recent commands | v2 deferred |
-| 44 | Rethink `window.SerfSearch.Nav` indirection | design discussion |
+| 44 | Rethink `window.EvenerSearch.Nav` indirection | design discussion |
 | 45 | `/project` doesn't navigate — it scrolls; rename or build real route | polish |
 
 ---
@@ -258,9 +258,9 @@ Two domains share the word and only one is the rename target:
 ### Inventory (rename targets only)
 
 **Internal Go (safe — no external observers):**
-- `cmd/serf/run.go`: `runConfig.task string`, local vars
-- `cmd/serf/main.go`: usage line `<task>`, local vars
-- `cmd/serf-hub/web.go`: `spawnRequest.Task`, `RecentTasks []string`, schema entry `{Name:"task"}`, details-row label, `spawnViewData.DefaultTask`
+- `cmd/evener/run.go`: `runConfig.task string`, local vars
+- `cmd/evener/main.go`: usage line `<task>`, local vars
+- `cmd/evener-hub/web.go`: `spawnRequest.Task`, `RecentTasks []string`, schema entry `{Name:"task"}`, details-row label, `spawnViewData.DefaultTask`
 - `agent/snapshot.go`: `SessionMeta.OriginalTask` (Go field name)
 - `agent/session.go`, `agent/fork.go`, `agent/strategy_session_log.go`: `extractOriginalTask` helper, vars
 - All Go test files referencing the above
@@ -271,7 +271,7 @@ Two domains share the word and only one is the rename target:
 - README and docs
 
 **Wire / storage (deferred to #47):**
-- POST `/api/spawn` JSON field `"task"` — consumed by serf-tui via `hubapi.SpawnRequest`
+- POST `/api/spawn` JSON field `"task"` — consumed by evener-tui via `hubapi.SpawnRequest`
 - `.meta.json` field `"original_task"` — every saved session has it
 - HTML form field `<textarea name="task">` — consumed by spawn.go + spawn.js (internal-scope, but observable through DOM)
 
@@ -301,7 +301,7 @@ Two domains share the word and only one is the rename target:
 #### Kata #47 — wire migration (blocked by #46)
 
 1. `spawnRequest` accepts both `"task"` and `"prompt"` JSON keys on input; emits `"prompt"` on output. Custom `UnmarshalJSON` or paired tags.
-2. `internal/hubapi/SpawnRequest`: add `Prompt string`, deprecate `Task string`. Serf-tui updated to send `prompt`.
+2. `internal/hubapi/SpawnRequest`: add `Prompt string`, deprecate `Task string`. Evener-tui updated to send `prompt`.
 3. `agent/snapshot.go` `SessionMeta`: accept both `original_task` and `original_prompt`; write `original_prompt`. Test coverage for reading legacy meta files.
 4. After a release cycle where both names are accepted, drop `task` / `original_task`.
 

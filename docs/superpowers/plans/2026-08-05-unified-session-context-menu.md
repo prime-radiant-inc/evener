@@ -12,7 +12,7 @@
 
 - All work happens in the git worktree created for this feature (branch `unified-session-menu`), never in the main checkout.
 - Frontend gates before finishing: `npx biome check --write` on every touched file, then `make test-web`; on this Chrome-capable host also `make test-web-browser`. All from the repo root of the worktree.
-- Frontend code lives under `cmd/serf-hub/frontend/src/`. All paths below are relative to that directory unless absolute.
+- Frontend code lives under `cmd/evener-hub/frontend/src/`. All paths below are relative to that directory unless absolute.
 - Follow existing conventions verbatim: `requireClass` for CSS-module classes, `useToasts()` + `sessionActionError` for failure feedback, `Dialog`/`Button`/`Input`/`Menu` widgets from `src/widgets`, doc comments explaining *why* on every non-obvious decision (this codebase's house style).
 - Avoid Biome `noNonNullAssertion` and array-index-key violations (CI checks).
 - Menu keyboard contract (widgets/menu): roving tabindex, arrow/Home/End navigation must skip separators exactly as they skip disabled items.
@@ -83,7 +83,7 @@ test("End/Home skip separators at the edges", async () => {
 
 - [ ] **Step 2: Run tests to verify they fail**
 
-Run: `cd cmd/serf-hub/frontend && npx vitest run src/widgets/menu/menu.test.tsx`
+Run: `cd cmd/evener-hub/frontend && npx vitest run src/widgets/menu/menu.test.tsx`
 Expected: FAIL — `MenuSeparator` is not assignable to `MenuItem[]` (type error) / no `role="separator"` rendered.
 
 - [ ] **Step 3: Implement separator support**
@@ -146,13 +146,13 @@ In `widgets/index.ts:47`: `export type { MenuEntry, MenuItem, MenuProps, MenuSep
 
 - [ ] **Step 4: Run tests to verify they pass**
 
-Run: `cd cmd/serf-hub/frontend && npx vitest run src/widgets/menu/menu.test.tsx`
+Run: `cd cmd/evener-hub/frontend && npx vitest run src/widgets/menu/menu.test.tsx`
 Expected: PASS (all pre-existing tests plus the two new ones — `MenuItem[]` is assignable to `MenuEntry[]`, so no existing consumer breaks).
 
 - [ ] **Step 5: Commit**
 
 ```bash
-git add cmd/serf-hub/frontend/src/widgets/menu cmd/serf-hub/frontend/src/widgets/index.ts
+git add cmd/evener-hub/frontend/src/widgets/menu cmd/evener-hub/frontend/src/widgets/index.ts
 git commit -m "feat(web): separator items for the Menu widget"
 ```
 
@@ -201,7 +201,7 @@ test("findSessionNode returns undefined for an unknown ref", () => {
 
 - [ ] **Step 2: Run tests to verify they fail**
 
-Run: `cd cmd/serf-hub/frontend && npx vitest run src/stores/tree.test.ts`
+Run: `cd cmd/evener-hub/frontend && npx vitest run src/stores/tree.test.ts`
 Expected: FAIL — `findSessionNode is not exported`.
 
 - [ ] **Step 3: Implement**
@@ -261,13 +261,13 @@ export function findSessionNode(tree: TreeResponse, ref: string): TreeNode | und
 
 - [ ] **Step 4: Run tests to verify they pass**
 
-Run: `cd cmd/serf-hub/frontend && npx vitest run src/stores/tree.test.ts src/shell/rail`
+Run: `cd cmd/evener-hub/frontend && npx vitest run src/stores/tree.test.ts src/shell/rail`
 Expected: PASS — new tests green, and every existing rail test still passes (pure moves, no behavior change).
 
 - [ ] **Step 5: Commit**
 
 ```bash
-git add cmd/serf-hub/frontend/src
+git add cmd/evener-hub/frontend/src
 git commit -m "refactor(web): extract sessionKind, deletedSessionPanes, sessionPanelPaneType, findSessionNode"
 ```
 
@@ -428,7 +428,7 @@ test("no organization or delete items without a treeNode", async () => {
 
 - [ ] **Step 2: Run tests to verify they fail**
 
-Run: `cd cmd/serf-hub/frontend && npx vitest run src/shell/sessionMenu/SessionMenu.test.tsx`
+Run: `cd cmd/evener-hub/frontend && npx vitest run src/shell/sessionMenu/SessionMenu.test.tsx`
 Expected: FAIL — module does not exist.
 
 - [ ] **Step 3: Implement SessionMenu**
@@ -608,13 +608,13 @@ export function SessionMenu({
 
 - [ ] **Step 4: Run tests to verify they pass**
 
-Run: `cd cmd/serf-hub/frontend && npx vitest run src/shell/sessionMenu/SessionMenu.test.tsx`
+Run: `cd cmd/evener-hub/frontend && npx vitest run src/shell/sessionMenu/SessionMenu.test.tsx`
 Expected: PASS.
 
 - [ ] **Step 5: Commit**
 
 ```bash
-git add cmd/serf-hub/frontend/src/shell/sessionMenu
+git add cmd/evener-hub/frontend/src/shell/sessionMenu
 git commit -m "feat(web): SessionMenu core - panes group, rename, shutdown"
 ```
 
@@ -732,7 +732,7 @@ test("Delete… confirms before calling onDelete", async () => {
 
 - [ ] **Step 2: Run tests to verify they fail**
 
-Run: `cd cmd/serf-hub/frontend && npx vitest run src/shell/sessionMenu/SessionMenu.test.tsx`
+Run: `cd cmd/evener-hub/frontend && npx vitest run src/shell/sessionMenu/SessionMenu.test.tsx`
 Expected: FAIL — no Pin/Archive/Delete items rendered.
 
 - [ ] **Step 3: Implement**
@@ -819,13 +819,13 @@ const items: MenuEntry[] = [
 
 - [ ] **Step 4: Run tests to verify they pass**
 
-Run: `cd cmd/serf-hub/frontend && npx vitest run src/shell/sessionMenu`
+Run: `cd cmd/evener-hub/frontend && npx vitest run src/shell/sessionMenu`
 Expected: PASS.
 
 - [ ] **Step 5: Commit**
 
 ```bash
-git add cmd/serf-hub/frontend/src/shell/sessionMenu
+git add cmd/evener-hub/frontend/src/shell/sessionMenu
 git commit -m "feat(web): SessionMenu organization group and delete"
 ```
 
@@ -888,7 +888,7 @@ In `GoalControl.test.tsx`: delete every test that opens or submits the set-goal 
 
 - [ ] **Step 2: Run tests to verify they fail**
 
-Run: `cd cmd/serf-hub/frontend && npx vitest run src/panes/session/chrome/SessionChrome.test.tsx src/panes/session/chrome/GoalControl.test.tsx`
+Run: `cd cmd/evener-hub/frontend && npx vitest run src/panes/session/chrome/SessionChrome.test.tsx src/panes/session/chrome/GoalControl.test.tsx`
 Expected: FAIL — inline buttons still exist / `SessionActionsMenu` still rendered.
 
 - [ ] **Step 3: Implement**
@@ -992,13 +992,13 @@ const treeNode = tree ? findSessionNode(tree, sessionRef) : undefined;
 
 - [ ] **Step 4: Run tests to verify they pass**
 
-Run: `cd cmd/serf-hub/frontend && npx vitest run src/panes/session`
+Run: `cd cmd/evener-hub/frontend && npx vitest run src/panes/session`
 Expected: PASS — updated chrome/goal tests, all panel tests untouched.
 
 - [ ] **Step 5: Commit**
 
 ```bash
-git add cmd/serf-hub/frontend/src/panes/session
+git add cmd/evener-hub/frontend/src/panes/session
 git commit -m "feat(web): session chrome renders the shared SessionMenu; drop inline pane buttons and goal dialog"
 ```
 
@@ -1065,7 +1065,7 @@ test("rename saves through onRenameSession; shut down confirms through onShutdow
 
 - [ ] **Step 2: Run tests to verify they fail**
 
-Run: `cd cmd/serf-hub/frontend && npx vitest run src/shell/rail`
+Run: `cd cmd/evener-hub/frontend && npx vitest run src/shell/rail`
 Expected: FAIL — `RailRowActions` type mismatch, old items missing.
 
 - [ ] **Step 3: Implement**
@@ -1184,13 +1184,13 @@ onDeleteSession: async (session) => {
 
 - [ ] **Step 4: Run tests to verify they pass**
 
-Run: `cd cmd/serf-hub/frontend && npx vitest run src/shell/rail`
+Run: `cd cmd/evener-hub/frontend && npx vitest run src/shell/rail`
 Expected: PASS.
 
 - [ ] **Step 5: Commit**
 
 ```bash
-git add cmd/serf-hub/frontend/src/shell
+git add cmd/evener-hub/frontend/src/shell
 git commit -m "feat(web): rail session rows render the shared SessionMenu"
 ```
 
@@ -1202,7 +1202,7 @@ git commit -m "feat(web): rail session rows render the shared SessionMenu"
 
 - [ ] **Step 1: Biome**
 
-Run: `cd cmd/serf-hub/frontend && npx biome check --write src/widgets/menu src/shell/sessionMenu src/shell/rail src/shell/deletedSessionPanes.ts src/panes/session src/stores/tree.ts src/widgets/index.ts`
+Run: `cd cmd/evener-hub/frontend && npx biome check --write src/widgets/menu src/shell/sessionMenu src/shell/rail src/shell/deletedSessionPanes.ts src/panes/session src/stores/tree.ts src/widgets/index.ts`
 Expected: no errors; stage any formatting fixes.
 
 - [ ] **Step 2: Full frontend gate**
@@ -1226,6 +1226,6 @@ In a running hub (`make build-hub` + run, or the dev server the repo documents):
 - [ ] **Step 5: Final commit**
 
 ```bash
-git add -A cmd/serf-hub/frontend/src
+git add -A cmd/evener-hub/frontend/src
 git commit -m "chore(web): biome formatting for unified session menu" --allow-empty
 ```

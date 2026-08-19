@@ -3,7 +3,7 @@ package openai
 import (
 	"testing"
 
-	"primeradiant.com/serf/llm"
+	"primeradiant.com/evener/llm"
 )
 
 // The OpenAI Responses API and Chat Completions API use DIFFERENT wire shapes for

@@ -9,17 +9,17 @@ import (
 	"strings"
 	"testing"
 
-	"primeradiant.com/serf/agent/events"
-	"primeradiant.com/serf/agent/internal/hooks"
-	"primeradiant.com/serf/agent/internal/toolname"
-	"primeradiant.com/serf/agent/plugin"
-	"primeradiant.com/serf/agent/skill"
+	"primeradiant.com/evener/agent/events"
+	"primeradiant.com/evener/agent/internal/hooks"
+	"primeradiant.com/evener/agent/internal/toolname"
+	"primeradiant.com/evener/agent/plugin"
+	"primeradiant.com/evener/agent/skill"
 )
 
 // pluginCacheDir returns the directory where the official Anthropic plugins are cached.
-// Set SERF_PLUGIN_CACHE_DIR to override the default macOS path, e.g. in CI or on Linux.
+// Set EVENER_PLUGIN_CACHE_DIR to override the default macOS path, e.g. in CI or on Linux.
 func pluginCacheDir() string {
-	if dir := os.Getenv("SERF_PLUGIN_CACHE_DIR"); dir != "" {
+	if dir := os.Getenv("EVENER_PLUGIN_CACHE_DIR"); dir != "" {
 		return dir
 	}
 	return "/Users/jesse/.claude/plugins/cache/claude-plugins-official"
@@ -348,7 +348,7 @@ func TestRealPlugin_SecurityGuidance_HookMatching(t *testing.T) {
 	runner := newHookRunnerFromPlugin(lp)
 
 	// The matcher "Edit|Write|MultiEdit" should match these Claude Code tool names.
-	// Our runAll maps serf names → Claude names for matching, so we test with serf names.
+	// Our runAll maps evener names → Claude names for matching, so we test with evener names.
 	// edit_file → Edit (matches), write_file → Write (matches), shell → Bash (no match)
 	editMatched := runner.MatchHooks(plugin.HookPreToolUse, "Edit")
 	if len(editMatched) == 0 {
@@ -376,7 +376,7 @@ func TestRealPlugin_SecurityGuidance_HookExecution(t *testing.T) {
 	runner := newHookRunnerFromPlugin(lp)
 
 	// Use a unique session ID to avoid state file conflicts from previous runs.
-	sessionID := fmt.Sprintf("serf-test-%d", os.Getpid())
+	sessionID := fmt.Sprintf("evener-test-%d", os.Getpid())
 	t.Cleanup(func() {
 		// Clean up the state file the Python hook creates.
 		stateFile := filepath.Join(os.Getenv("HOME"), ".claude", fmt.Sprintf("security_warnings_state_%s.json", sessionID))
@@ -716,21 +716,21 @@ func TestRealPlugin_ToolNameMapping_BidirectionalComplete(t *testing.T) {
 		"NotebookEdit": "notebook_edit",
 	}
 
-	for claude, serf := range mappings {
-		if toolname.ClaudeToSerf(claude) != serf {
-			t.Errorf("ClaudeToSerf(%q) = %q, want %q", claude, toolname.ClaudeToSerf(claude), serf)
+	for claude, evener := range mappings {
+		if toolname.ClaudeToEvener(claude) != evener {
+			t.Errorf("ClaudeToEvener(%q) = %q, want %q", claude, toolname.ClaudeToEvener(claude), evener)
 		}
-		if toolname.SerfToClaude(serf) != claude {
-			t.Errorf("SerfToClaude(%q) = %q, want %q", serf, toolname.SerfToClaude(serf), claude)
+		if toolname.EvenerToClaude(evener) != claude {
+			t.Errorf("EvenerToClaude(%q) = %q, want %q", evener, toolname.EvenerToClaude(evener), claude)
 		}
 	}
 
 	// Unknown names pass through
-	if toolname.ClaudeToSerf("custom_tool") != "custom_tool" {
+	if toolname.ClaudeToEvener("custom_tool") != "custom_tool" {
 		t.Error("unknown Claude name should pass through")
 	}
-	if toolname.SerfToClaude("custom_tool") != "custom_tool" {
-		t.Error("unknown serf name should pass through")
+	if toolname.EvenerToClaude("custom_tool") != "custom_tool" {
+		t.Error("unknown evener name should pass through")
 	}
 }
 

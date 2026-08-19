@@ -2,11 +2,11 @@
 
 Status: Evergreen contract for the shipped job-control system.
 
-This document defines Serf's job-control model. It is an architecture/reference contract for the shipped system, not an implementation plan. Implementation sequencing belongs in separate ephemeral specs or plans.
+This document defines Evener's job-control model. It is an architecture/reference contract for the shipped system, not an implementation plan. Implementation sequencing belongs in separate ephemeral specs or plans.
 
 ## Summary
 
-Serf exposes one unified list/status/control view over two typed resource
+Evener exposes one unified list/status/control view over two typed resource
 families. A **shell job** is asynchronous process work owned by a session and
 identified by `job_...`. A **delegate** is a durable child conversation owned by
 the root delegate-tree controller and identified by `dlg_...`. They share
@@ -44,9 +44,9 @@ separate wait tool. Reads never wait.
 
 ## Model-facing guidance requirements
 
-This reference contract is not itself the runtime system prompt, but the following guidance **must** be reflected in the tool descriptions and in Serf's `Background jobs` system-prompt section. These bullets are normative for model-facing documentation because they shape whether agents use jobs correctly:
+This reference contract is not itself the runtime system prompt, but the following guidance **must** be reflected in the tool descriptions and in Evener's `Background jobs` system-prompt section. These bullets are normative for model-facing documentation because they shape whether agents use jobs correctly:
 
-- Shell commands run in `mode="foreground"` by default and return inline output for quick commands. Set `mode="background"` to launch-and-return as a session-owned job; foreground commands that exceed the session-default wait are promoted to durable background jobs and return a `job_id`. Set `mode="detached"` only to immediately disown a process that does not need Serf job visibility, output, notification, or stop control; it returns only a PID.
+- Shell commands run in `mode="foreground"` by default and return inline output for quick commands. Set `mode="background"` to launch-and-return as a session-owned job; foreground commands that exceed the session-default wait are promoted to durable background jobs and return a `job_id`. Set `mode="detached"` only to immediately disown a process that does not need Evener job visibility, output, notification, or stop control; it returns only a PID.
 - Delegate creation returns after one stable `delegate_id` and its initial input
   are durable. It does not accept `max_wait_ms` and does not expose a run handle.
 - Use `delegate` to start a new delegate conversation. It returns `dlg_...`,
@@ -60,7 +60,7 @@ This reference contract is not itself the runtime system prompt, but the followi
   `job_id`, `transcript_ref`, and unsupported runtime aliases.
 - When an observer readiness delegate result includes `watching:true` and `watches`, the observer is watching. Continue with the planned watched action and use the later observer `communicate(end_turn=true)` as the callback.
 - After starting a background job, continue useful work or respond to the user. Do not immediately wait, poll `job_list`, or loop on `job_status`.
-- Serf injects typed terminal attention: `<job-notification>` for owner shell
+- Evener injects typed terminal attention: `<job-notification>` for owner shell
   jobs and `<delegate-notification delegate_id="dlg_...">` for direct delegates.
   Your delegates handle their own children's attention.
 - Use `job_watch` when a condition should notify the watcher. `source` is typed:
@@ -114,7 +114,7 @@ Terminal targets differ by watch type: only an `output_match`-only `job_watch` s
 
 | Term | Meaning |
 | --- | --- |
-| Session | A durable Serf conversation with transcript state. |
+| Session | A durable Evener conversation with transcript state. |
 | Shell job | One asynchronous process unit owned by a session. |
 | `job_id` | Durable opaque shell identity (`job_...`). Use it for shell reads, control, watches, and notifications. |
 | Delegate | One stable child conversation with private run generations. |
@@ -125,8 +125,8 @@ Terminal targets differ by watch type: only an `output_match`-only `job_watch` s
 | Visible session | A session that may list/control the job because the job was forwarded, e.g. parent visibility into nested jobs. |
 | Parent job | A shell job that caused another shell job, when shell ancestry exists. |
 | Parent delegate | The `dlg_...` that owns a delegate-created shell job. |
-| Delegate session | The child Serf session owned by a stable delegate. |
-| Transcript ref | A safe reference to a Serf session transcript, e.g. `local:<sessionID>`. |
+| Delegate session | The child Evener session owned by a stable delegate. |
+| Transcript ref | A safe reference to a Evener session transcript, e.g. `local:<sessionID>`. |
 | Notification | Metadata injected into a visible session to tell the agent that a job reached a lifecycle/progress event. |
 | Output | Bounded textual/log content associated with a job. |
 
@@ -172,11 +172,11 @@ branch on `type` and `id`; only shell rows carry `job_id`.
 
 ## Job identity and visibility
 
-Serf mints globally unique-enough `job_...` values for shell jobs and stable
+Evener mints globally unique-enough `job_...` values for shell jobs and stable
 `dlg_...` values for delegates. Each identity is used unchanged across its
 typed list, status, watch, stop, notification, and transcript surfaces.
 
-The model-facing API must not expose two competing job handles such as `owner_job_id` and `parent_visible_job_id`. If an implementation internally maps child-owned IDs into parent-visible records, that mapping must be durable and invisible to the model-facing tools. The only accepted job handle is the parent-visible `job_id` returned or listed by Serf.
+The model-facing API must not expose two competing job handles such as `owner_job_id` and `parent_visible_job_id`. If an implementation internally maps child-owned IDs into parent-visible records, that mapping must be durable and invisible to the model-facing tools. The only accepted job handle is the parent-visible `job_id` returned or listed by Evener.
 
 Job-control tools accept purpose-specific handles, not `transcript_ref`.
 `delegate_send` accepts `dlg_...`; `job_status` and `job_stop` accept typed
@@ -199,8 +199,8 @@ or `idle`; its prior generation is summarized separately in `last_outcome` with
 | `completed` | shell status or delegate `last_outcome` | Work ended normally. | `exit_zero` for shell; otherwise usually `null` | typed terminal attention |
 | `failed` | shell status or delegate `last_outcome` | Created work ran or attempted to run and failed. | `exit_nonzero`, `start_failed`, `finalize_failed`, `forward_failed`, `missing_terminal`, `terminal_error`, `runtime_lost` as applicable | typed terminal attention |
 | `exhausted` | delegate `last_outcome` | A delegate generation reached its turn or tool-round budget. | `turn_budget_exhausted`, `tool_round_budget_exhausted` | delegate terminal packet |
-| `cancelled` | shell status or delegate `last_outcome` | Serf intentionally stopped work and confirmed cancellation. | `stopped_by_parent` | typed terminal attention |
-| `stopped` | shell status or delegate `last_outcome` | Work did not complete and Serf cannot attribute it to normal failure or confirmed cancellation. | `runtime_lost`, `cancelled`, `run_timeout` | typed terminal attention |
+| `cancelled` | shell status or delegate `last_outcome` | Evener intentionally stopped work and confirmed cancellation. | `stopped_by_parent` | typed terminal attention |
+| `stopped` | shell status or delegate `last_outcome` | Work did not complete and Evener cannot attribute it to normal failure or confirmed cancellation. | `runtime_lost`, `cancelled`, `run_timeout` | typed terminal attention |
 
 Validation, lookup, and routing errors are synchronous tool errors and create
 neither a shell JobRecord nor a delegate generation. Canonical codes include
@@ -215,7 +215,7 @@ consult `reason` for documented operational cases such as `runtime_lost`,
 Keep this portable vocabulary small; other diagnostics belong in free-text
 `diagnostic` or `error` fields.
 
-`cancelled` is intentional, confirmed stop. `stopped` is work Serf cannot
+`cancelled` is intentional, confirmed stop. `stopped` is work Evener cannot
 attribute to normal failure or confirmed cancellation: a runtime timeout, a
 lost runtime, or a cancellation it could not confirm. Restart reconciles a
 shell as `stopped/runtime_lost` and a lost stable delegate generation as
@@ -279,10 +279,10 @@ Defaults and timeout semantics:
 
 - `mode="foreground"` (the default): the call runs the command in the foreground and waits up to the session command timeout (120s in stock provider profiles) for it to finish.
 - A foreground shell command that completes within that wait returns inline output and is ephemeral by default: no durable `job_id` is required and it does not appear in `job_list`.
-- A foreground shell command still running at the session command timeout is promoted to a durable background job: Serf returns the current bounded output/status with a `job_id`, and the normal terminal notification remains armed for the eventual terminal state.
-- `mode="background"`: Serf starts the command and returns a `job_id` immediately without waiting. The terminal notification fires when it finishes.
-- `mode="detached"`: Serf starts a disowned process and returns only its PID immediately. It is not a job, so Serf neither retains output nor sends notifications nor offers job control for it.
-- `max_runtime_ms` is an optional process runtime limit for shell jobs. If the process is still running after `max_runtime_ms`, Serf stops it and finalizes the job as `stopped` with reason `run_timeout`. It bounds how long the process may *run*, distinct from the foreground wait.
+- A foreground shell command still running at the session command timeout is promoted to a durable background job: Evener returns the current bounded output/status with a `job_id`, and the normal terminal notification remains armed for the eventual terminal state.
+- `mode="background"`: Evener starts the command and returns a `job_id` immediately without waiting. The terminal notification fires when it finishes.
+- `mode="detached"`: Evener starts a disowned process and returns only its PID immediately. It is not a job, so Evener neither retains output nor sends notifications nor offers job control for it.
+- `max_runtime_ms` is an optional process runtime limit for shell jobs. If the process is still running after `max_runtime_ms`, Evener stops it and finalizes the job as `stopped` with reason `run_timeout`. It bounds how long the process may *run*, distinct from the foreground wait.
 - Omitted `max_runtime_ms` means implementation-defined shell runtime policy. Recommended policy: default finite runtime for foreground/promoted shell jobs, no default runtime limit for `mode="background"` shell jobs unless configured by the user/tool call.
 - A shell command that completes before the tool returns does not inject a terminal notification; the terminal result is already in the tool result. Return field `timed_out`, when present, means the foreground wait expired; it never means the process hit `max_runtime_ms`.
 - To learn when a launch-and-return command reaches a state (e.g. a server printing "ready"), use `job_watch(operation="create", source=<job_id>, output_match=...)` and continue from the notification — an output-match watch catch-up-scans a job's retained output even if it already finished.
@@ -341,7 +341,7 @@ Foreground timeout / promotion return shape:
 }
 ```
 
-Shell approval is not fully designed here. If policy requires approval before a shell command may start, Serf must not execute before approval. The shipped contract permits either:
+Shell approval is not fully designed here. If policy requires approval before a shell command may start, Evener must not execute before approval. The shipped contract permits either:
 
 1. fail job creation synchronously with reason `permission_required` if no async approval flow is available; or
 2. create a durable background job in `running` with reason `awaiting_permission`, then continue after approval or finalize as `failed`/`permission_denied`.
@@ -454,9 +454,9 @@ legacy aliases such as `main` or `watched`.
 
 Semantics:
 
-- If `to` identifies a running or currently-driven delegate, Serf injects the
+- If `to` identifies a running or currently-driven delegate, Evener injects the
   message into that exact generation. The return `action` is `steered`.
-- If `to` identifies an idle/resumable delegate, Serf starts its next private
+- If `to` identifies an idle/resumable delegate, Evener starts its next private
   generation in the same child conversation. The return `action` is `started`.
 - If `to` is `caller`, a nested delegate steers its stable parent through the
   parent's controller lifecycle admission; a top-level delegate uses the root
@@ -592,7 +592,7 @@ the date given.
 
 `job_watch` creates, lists, inspects, or clears standing triggers. A watch is
 owned by the session that creates it. Create names the observed `source`; when a
-condition matches, Serf delivers a bounded notification/frame back to that
+condition matches, Evener delivers a bounded notification/frame back to that
 watcher. There is no model-facing `send` object.
 
 Operations:
@@ -725,10 +725,10 @@ Rules:
 - Patterns are compiled in multiline mode, so `^` and `$` anchor at newlines inside the scan window without an explicit `(?m)`. They also anchor at the window's own edges, which are byte positions in the stream rather than line boundaries: `$` matches at the end of the output produced so far, so `output_match="^ready$"` fires on a job that has written `ready` and not yet written its newline, and `^` matches at the start of the window on a line longer than the window. Where those edges fall differs between the attach/catch-up scan (a fixed stride) and live output (wherever the job's writes land), so an anchored pattern can fire on one and not the other. Anchoring is a convenience over a stream that has no end; a pattern that must not fire early should match a terminator explicitly.
 - CRLF output is handled by treating the `\r` of a `\r\n` pair as a line end, so `$` works on Windows-style output. RE2 defines `^` and `$` by the same byte, so on a CRLF stream a bare `^$` also sees one empty line per line ending, and a pattern matching a literal `\r\n` cannot match. Match line content, not line terminators.
 - Invalid regexes fail synchronously at watch creation time.
-- For the retained output present at attach and for bytes successfully appended while a watch is active, Serf must not silently miss a regex match because of preview-window eviction. The no-silent-miss guarantee extends to the attach scan: a token already retained at attach, or one straddling the attach boundary, must still match. Implementations may use line-buffered append-stream matching, chunk-overlap matching, or another mechanism, but the contract is no silent miss for retained/appended watched output.
+- For the retained output present at attach and for bytes successfully appended while a watch is active, Evener must not silently miss a regex match because of preview-window eviction. The no-silent-miss guarantee extends to the attach scan: a token already retained at attach, or one straddling the attach boundary, must still match. Implementations may use line-buffered append-stream matching, chunk-overlap matching, or another mechanism, but the contract is no silent miss for retained/appended watched output.
 - Event frames and output excerpts are bounded and filtered before notification or observer delivery. Implementations may apply redaction/scrubbing for cross-session or observer delivery, but this contract does not promise perfect secret detection; callers must not treat frames as guaranteed secret-free.
 - Default `progress_interval_ms` is absent/no periodic progress wake-up. If supplied, minimum is `1000`, maximum is `3600000`, and omitted/`0` means no periodic progress notification. Negative values fail `invalid_request`. Session event watches use `events`/`event_filter` instead of combining events with periodic progress.
-- Match/event/progress notifications are batched/throttled. Multiple triggers may be coalesced. For parent-watch observer frames, coalescing is latest-frame-wins by durable key and must not turn a matched condition into silence: Serf either delivers the current pending frame, replaces it with a newer pending frame for the same key, or emits a caller-visible diagnostic for hard failure.
+- Match/event/progress notifications are batched/throttled. Multiple triggers may be coalesced. For parent-watch observer frames, coalescing is latest-frame-wins by durable key and must not turn a matched condition into silence: Evener either delivers the current pending frame, replaces it with a newer pending frame for the same key, or emits a caller-visible diagnostic for hard failure.
 - Each watch configuration has a model-facing delivery budget of 50 (watch notifications plus observer frames, the count `job_list` reports per watch). A watch that exhausts its budget is auto-cleared with one final notification telling the caller to re-arm with a tighter condition (higher `every`, narrower `output_match`, or longer `progress_interval_ms`).
 - Terminal notification ordering: flush any queued watch notification/frame for a concrete job, then deliver the terminal notification. Both are facts about the same completion, so they arrive in ONE notification turn — the watch settlement first, then the terminal — rather than waking an idle owner twice for a single ending job.
 - If no watch condition is supplied (`output_match`, `events`, or `progress_interval_ms`) for `operation="create"`, the tool fails unless the source is a granted cross-session session source such as `parent`, where the default is the bounded public frame stream.
@@ -995,7 +995,7 @@ Target shape:
 Semantics:
 
 - `max_wait_ms` unset (or `0`): the call returns promptly after the stop request is signalled, with whatever status the stop has reached. With a positive `max_wait_ms`, the tool performs one bounded wait of up to that many ms for the stop to finalize.
-- `max_wait_ms` is the caller-visible wait budget after Serf sends the stop request. It is not a runtime limit and does not delete the job if it expires. Default `max_wait_ms` for `job_stop` when positive is `5000`; minimum is `1000`; maximum is `60000`; `0` and absent mean return promptly; negative values fail `invalid_request`.
+- `max_wait_ms` is the caller-visible wait budget after Evener sends the stop request. It is not a runtime limit and does not delete the job if it expires. Default `max_wait_ms` for `job_stop` when positive is `5000`; minimum is `1000`; maximum is `60000`; `0` and absent mean return promptly; negative values fail `invalid_request`.
 - For shell jobs, signal the process/process group where supported.
 - For a delegate, fence the whole stable subtree, cancel its active run and
   descendant model/shell work, and discard queued deliveries that cannot commit
@@ -1093,9 +1093,9 @@ The v1 model-facing tool matrix is:
 | --- | --- | --- |
 | Root session | shell, `delegate`, `job_watch`, `delegate_send`, `job_status`, `job_list`, `job_stop` | Root may create delegates and watches, and message its direct delegate conversations by `delegate_id`. |
 | Delegate/subagent session | shell, `delegate_send`, `job_status`, `job_list`, `job_stop` | Delegates may start shell jobs. `delegate` and `job_watch` are allowance-gated, with the separate `watch_parent:true` grant exposing `job_watch(source="parent")` to observer leaves. Concrete `delegate_id` targets are scoped to the session's **own direct delegates** at every level — a coordinator may message its own worker delegate by `delegate_id`, but not an arbitrary descendant's delegate (which fails `not_controllable`). |
-| Root session, interactive only | `ask_user` | Not a job-control tool, but the same root/delegate split governs it: never available to a non-interactive root (`--non-interactive`, one-shot `serf <prompt>`) or to any delegate/subagent — root-only, hard-enforced; `grant_tools` rejects an explicit attempt to grant it. |
+| Root session, interactive only | `ask_user` | Not a job-control tool, but the same root/delegate split governs it: never available to a non-interactive root (`--non-interactive`, one-shot `evener <prompt>`) or to any delegate/subagent — root-only, hard-enforced; `grant_tools` rejects an explicit attempt to grant it. |
 
-Job output is not in this matrix because it is not a job tool: `read_transcript` is available to every session, including a leaf delegate, and an exact `job:<job_id>` ref reads any uniquely resolved job persisted under the local Serf state home. This does not widen `job_list`, `job_status`, `job_stop`, `job_watch`, or `delegate_send` scope.
+Job output is not in this matrix because it is not a job tool: `read_transcript` is available to every session, including a leaf delegate, and an exact `job:<job_id>` ref reads any uniquely resolved job persisted under the local Evener state home. This does not widen `job_list`, `job_status`, `job_stop`, `job_watch`, or `delegate_send` scope.
 
 While a session is `awaiting` an `ask_user` reply, its autonomous job notifications are held rather than delivered, and drain at the turn boundary that follows the user's reply.
 
@@ -1150,7 +1150,7 @@ Delegates are controlled by their stable `dlg_...` ID. Their conversations are
 read through `transcript_ref`. There is no activation-job handle, separate
 `agent_id` namespace, or model-facing close operation for child sessions.
 
-## Legacy Serf surface mapping
+## Legacy Evener surface mapping
 
 The stable resource model removes the former activation-specific control plane.
 Replacement mapping:
@@ -1207,8 +1207,8 @@ Retained output start offsets and detailed output availability may be stored wit
 
 ## Durable reconstruction invariants
 
-Serf persists shell-job history as append-only session events. The contract is
-that Serf can reconstruct:
+Evener persists shell-job history as append-only session events. The contract is
+that Evener can reconstruct:
 
 - shell-job identity and type;
 - parent/owner/visible session identity;
@@ -1248,7 +1248,7 @@ overlays in-memory state for currently running work.
 Each job has a bounded output file under the owning session's state directory. The exact path is implementation-specific, but conceptually:
 
 ```text
-.serf/sessions/<session_id>/jobs/<job_id>.log
+.evener/sessions/<session_id>/jobs/<job_id>.log
 ```
 
 Rules:
@@ -1325,7 +1325,7 @@ Rules:
   the next safe boundary. Wakes coalesce, but committed entries do not vanish.
 - Duplicate terminal attention is suppressed by its durable source identity.
 - Watch wake-ups and observer frames are opt-in through `job_watch`.
-- Serf supervises each running stable delegate with a built-in quiet watchdog.
+- Evener supervises each running stable delegate with a built-in quiet watchdog.
   Ten minutes without parent-observable activity emits one owner attention keyed
   by `delegate_id`; fresh activity re-arms it. The watchdog only reports—it
   never steers, resumes, or stops the delegate.
@@ -1350,7 +1350,7 @@ stateDiagram-v2
 
 ## Restart behavior
 
-Shell jobs and delegate generations do not auto-resume after a Serf process
+Shell jobs and delegate generations do not auto-resume after a Evener process
 restart. Reconciliation is provider-free:
 
 1. Fold the root stable-delegate journal and each shell store without creating a
@@ -1436,7 +1436,7 @@ Rules:
   descendant's children. The ancestor retains on-demand descendant visibility.
   `job_watch` remains for extra output/event/progress frames and observers.
 - Parent `job_stop` on a nested job routes to the owning session/runtime if live.
-- If routing is unavailable after restart, Serf reports terminal `stopped/runtime_lost` according to restart reconciliation.
+- If routing is unavailable after restart, Evener reports terminal `stopped/runtime_lost` according to restart reconciliation.
 - If routing fails while the owner runtime is believed live, an active control attempt may fail or finalize according to the status matrix by failing synchronously with `not_controllable`.
 - For a shell job, `job_stop` is not recursive by default; `job_stop(shell_job_id, include_children=true)` recursively stops visible active nested jobs.
 - `job_stop(target=dlg_...)` always cascades into the stable delegate subtree;
@@ -1479,12 +1479,12 @@ flowchart TD
 
 ## Observer and sidecar composition
 
-Observer sidecars are a v1 Serf composition pattern. Claude Monitor covers only the basic stream-notification profile; Serf also supports sidecars that receive bounded event/output frames and report back through the normal result surface. Serf does not need a separate observer-comment command or a Sprout-style raw handle model. The shipped composition uses existing job primitives:
+Observer sidecars are a v1 Evener composition pattern. Claude Monitor covers only the basic stream-notification profile; Evener also supports sidecars that receive bounded event/output frames and report back through the normal result surface. Evener does not need a separate observer-comment command or a Sprout-style raw handle model. The shipped composition uses existing job primitives:
 
 1. Start a sidecar with `delegate(watch_parent:true, ...)`; this creates a stable
    delegate with a durable, non-transitive parent-watch grant.
 2. Inside that child, configure `job_watch(operation="create", source="parent", ...)`.
-3. Serf delivers matching bounded event/output frames to the child that created the watch.
+3. Evener delivers matching bounded event/output frames to the child that created the watch.
 4. The sidecar responds with `communicate(end_turn=true, ...)` when it has useful commentary or advice.
 5. The caller receives that generation's `<delegate-notification>` frame carrying the observer's result packet, is woken by it, and continues from it. Follow-up `job_list`, `job_status` or `job:` transcript reads are audit/diagnostic evidence after the callback, not the callback mechanism itself.
 
@@ -1566,7 +1566,7 @@ long-running REPL stdin is outside this contract.
 
 ## Capacity and discovery requirements
 
-Serf bounds concurrent delegate generations and observer/attention work across
+Evener bounds concurrent delegate generations and observer/attention work across
 the stable tree. Shell-process concurrency remains a separate standing gap; it
 is not silently counted as delegate capacity.
 

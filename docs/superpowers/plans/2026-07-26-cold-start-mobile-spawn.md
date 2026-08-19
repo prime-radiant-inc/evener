@@ -19,15 +19,15 @@ The existing React session pane already preserves optimistic pending chips throu
 
 Add failing tests before production changes:
 
-- `cmd/serf-hub/frontend/src/panes/spawn/MobileSettingRows.test.tsx` will exercise the real mobile row/sheet component behavior: the six rows are in Treatment A order, rows expose readable button names and dialog relationships, an option sheet commits selection and closes, the model sheet uses the existing catalog panel, and the working-directory sheet uses the existing path panel. The tests will assert interaction and accessible state, not CSS/source strings.
-- `cmd/serf-hub/frontend/src/panes/spawn/Spawn.test.tsx` will add the mobile Spawn integration contract: the mobile configuration region contains full-width row hooks, the fixed-action-band hook contains the existing attach and primary controls, and the existing auto-grow textarea remains present. The existing desktop behavior tests will be updated only where the approved mobile action label supersedes the stale `Start` assertion; the spawn request, preflight, defaults, attachment, and re-entrancy tests remain unchanged.
-- `cmd/serf-hub/frontend/src/panes/session/Session.test.tsx` will add real store/component lifecycle tests for `ref_a`: an untouched empty session has no skeleton; a pending send shows the skeleton and pending chip, remains visible through `turn/started` and the user echo, and disappears on the first authoritative agent item; terminal completion/error and a session ref change remove it. The test will also assert `role="status"`, accessible `Loading`, decorative skeleton lines, and no animation through the existing static Skeleton contract. A test title will name the production break each time.
-- `cmd/serf-hub/frontend/src/panes/welcome/Welcome.test.tsx` will assert orientation copy, the three concrete example actions, and that activating an example navigates to `/new?prompt=...` so the real Spawn prefill path receives the prompt. This intentionally follows mockup 21 C and the existing `readUrlPrefill` contract; it does not bypass Spawn’s required working-directory/preflight flow with an invented direct-start request.
+- `cmd/evener-hub/frontend/src/panes/spawn/MobileSettingRows.test.tsx` will exercise the real mobile row/sheet component behavior: the six rows are in Treatment A order, rows expose readable button names and dialog relationships, an option sheet commits selection and closes, the model sheet uses the existing catalog panel, and the working-directory sheet uses the existing path panel. The tests will assert interaction and accessible state, not CSS/source strings.
+- `cmd/evener-hub/frontend/src/panes/spawn/Spawn.test.tsx` will add the mobile Spawn integration contract: the mobile configuration region contains full-width row hooks, the fixed-action-band hook contains the existing attach and primary controls, and the existing auto-grow textarea remains present. The existing desktop behavior tests will be updated only where the approved mobile action label supersedes the stale `Start` assertion; the spawn request, preflight, defaults, attachment, and re-entrancy tests remain unchanged.
+- `cmd/evener-hub/frontend/src/panes/session/Session.test.tsx` will add real store/component lifecycle tests for `ref_a`: an untouched empty session has no skeleton; a pending send shows the skeleton and pending chip, remains visible through `turn/started` and the user echo, and disappears on the first authoritative agent item; terminal completion/error and a session ref change remove it. The test will also assert `role="status"`, accessible `Loading`, decorative skeleton lines, and no animation through the existing static Skeleton contract. A test title will name the production break each time.
+- `cmd/evener-hub/frontend/src/panes/welcome/Welcome.test.tsx` will assert orientation copy, the three concrete example actions, and that activating an example navigates to `/new?prompt=...` so the real Spawn prefill path receives the prompt. This intentionally follows mockup 21 C and the existing `readUrlPrefill` contract; it does not bypass Spawn’s required working-directory/preflight flow with an invented direct-start request.
 
 Before implementation, run the focused RED commands and record each command and its non-zero result in the implementation commentary and final handoff:
 
 ```sh
-cd cmd/serf-hub/frontend
+cd cmd/evener-hub/frontend
 npm test -- src/panes/spawn/MobileSettingRows.test.tsx src/panes/spawn/Spawn.test.tsx
 npm test -- src/panes/session/Session.test.tsx -t "cold-start|first-turn skeleton|untouched empty"
 npm test -- src/panes/welcome/Welcome.test.tsx -t "orientation|example"
@@ -37,7 +37,7 @@ The expected RED is missing mobile rows/sheets/action-band hooks, missing cold-s
 
 ### Slice 2: implement Treatment A mobile Spawn surfaces
 
-Add `cmd/serf-hub/frontend/src/panes/spawn/MobileSettingRows.tsx` and `MobileSettingRows.module.css`:
+Add `cmd/evener-hub/frontend/src/panes/spawn/MobileSettingRows.tsx` and `MobileSettingRows.module.css`:
 
 - Render reusable full-width `MobileSettingRow` controls with a 48px minimum hit target, sentence-case sans labels/values, right-side truncation, separator hairlines, and a far-right caret only for interactive rows.
 - Render six rows in the approved order: Harness, Model, Working directory, Branch, Reasoning effort, Access mode. Branch uses the current HEAD value as a read-only row and has no misleading picker affordance.
@@ -45,21 +45,21 @@ Add `cmd/serf-hub/frontend/src/panes/spawn/MobileSettingRows.tsx` and `MobileSet
 - Render the model sheet with the existing `ModelCatalogPanel`, scoped through Spawn’s existing `loadCatalog` callback. Preserve the required-model state and provide the existing default value only when the daemon allows the default.
 - Render the working-directory sheet with the existing `PathFieldPanel`, forwarding completion, recents, fallback directory, validation-independent browse behavior, and last-directory stamping. Do not create a second path picker implementation.
 
-Update `cmd/serf-hub/frontend/src/panes/spawn/Spawn.tsx` and `spawn.module.css`:
+Update `cmd/evener-hub/frontend/src/panes/spawn/Spawn.tsx` and `spawn.module.css`:
 
 - Mount the mobile rows alongside the existing desktop configuration, with CSS selecting the mobile surface at the React shell’s mobile breakpoint and keeping the current desktop configuration behavior intact.
 - Add a mobile-specific action-band class to the existing PromptCard control row. Keep one attach button and one primary submit button, make the band fixed to the viewport above `env(safe-area-inset-bottom)`, give it a top edge and raised surface without a shadow, and give the primary button a 52px target and attach at least 44px. Reserve body bottom space so the band never covers the auto-growing field or rows.
 - Use the approved user-facing primary label `Spawn` and retain the existing keyboard shortcut, busy state, disabled required-model state, and `handleSpawn` path. Preserve the auto-growing textarea and its existing attachment/paste behavior.
 - Keep the existing desktop `ModelField`/`PathField`/Advanced options data flow; mobile sheets call the same callbacks and request functions rather than changing model, harness, launch-config, or thread APIs.
 
-Update `cmd/serf-hub/frontend/src/widgets/promptcard/index.tsx` and `promptcard.test.tsx` only as needed to expose a caller-supplied control-row class. The shared widget must keep its existing field, leading, action order, focus ring, hidden/inert, and no-empty-row behavior; the new prop exists solely to let Spawn pin its already-owned controls on mobile.
+Update `cmd/evener-hub/frontend/src/widgets/promptcard/index.tsx` and `promptcard.test.tsx` only as needed to expose a caller-supplied control-row class. The shared widget must keep its existing field, leading, action order, focus ring, hidden/inert, and no-empty-row behavior; the new prop exists solely to let Spawn pin its already-owned controls on mobile.
 
-The mobile rows and sheets will own their mobile touch-target styling in `cmd/serf-hub/frontend/src/panes/spawn/MobileSettingRows.module.css`; do not add new tokens or duplicate picker markup. Add no changes under `src/shell/rail/**` and no changes to any `Steering*` file.
+The mobile rows and sheets will own their mobile touch-target styling in `cmd/evener-hub/frontend/src/panes/spawn/MobileSettingRows.module.css`; do not add new tokens or duplicate picker markup. Add no changes under `src/shell/rail/**` and no changes to any `Steering*` file.
 
 Green commands for this slice:
 
 ```sh
-cd cmd/serf-hub/frontend
+cd cmd/evener-hub/frontend
 npm test -- src/widgets/promptcard/promptcard.test.tsx src/panes/spawn/MobileSettingRows.test.tsx src/panes/spawn/Spawn.test.tsx
 npm run typecheck
 npm run lint
@@ -67,7 +67,7 @@ npm run lint
 
 ### Slice 3: implement the first-turn cold-start skeleton
 
-Add `cmd/serf-hub/frontend/src/panes/session/coldStart.tsx` and focused coverage in `cmd/serf-hub/frontend/src/panes/session/Session.test.tsx`. The component/hook will derive its state from the real `usePendingTurnEntries` and `ThreadModel` store data:
+Add `cmd/evener-hub/frontend/src/panes/session/coldStart.tsx` and focused coverage in `cmd/evener-hub/frontend/src/panes/session/Session.test.tsx`. The component/hook will derive its state from the real `usePendingTurnEntries` and `ThreadModel` store data:
 
 - Gate the treatment to a cold-start session: no prior authoritative conversation history, or the one active first turn that contains only the optimistic/user input. A session with existing history will never get this first-turn treatment for a later message.
 - Show only after a send has been registered or the first turn is active and before its first non-user/system item. `turn/started` alone does not remove it, and the optimistic user echo does not remove it.
@@ -75,19 +75,19 @@ Add `cmd/serf-hub/frontend/src/panes/session/coldStart.tsx` and focused coverage
 - Remove it for failed/cancelled/completed terminal first-turn status, pending-send rejection, unmount, or `ref` change. Never show it for a genuinely untouched idle/dormant session.
 - Render a realistic three-line turn-shaped wrapper around the existing static `Skeleton`. It will carry no fabricated response text, shimmer, pulse, or live-data claim. The existing Skeleton’s `role="status"`, `aria-label="Loading"`, decorative bars, and static CSS remain the accessibility/motion contract.
 
-Update `cmd/serf-hub/frontend/src/panes/session/Session.tsx` and `session.module.css` to place the cold-start skeleton in the transcript body without disturbing `PendingChips`, the composer footer, dormant empty-state copy, VirtualList, flow overlay, or mobile transcript layout. The skeleton must be the body’s honest interim state, not a fake transcript item in the durable store.
+Update `cmd/evener-hub/frontend/src/panes/session/Session.tsx` and `session.module.css` to place the cold-start skeleton in the transcript body without disturbing `PendingChips`, the composer footer, dormant empty-state copy, VirtualList, flow overlay, or mobile transcript layout. The skeleton must be the body’s honest interim state, not a fake transcript item in the durable store.
 
 Green commands for this slice:
 
 ```sh
-cd cmd/serf-hub/frontend
+cd cmd/evener-hub/frontend
 npm test -- src/widgets/skeleton/skeleton.test.tsx src/panes/session/Session.test.tsx -t "cold-start|first-turn skeleton|untouched empty|Loading"
 npm run typecheck
 ```
 
 ### Slice 4: add welcome orientation and concrete activation
 
-Update `cmd/serf-hub/frontend/src/panes/welcome/Welcome.tsx` and `welcome.module.css`:
+Update `cmd/evener-hub/frontend/src/panes/welcome/Welcome.tsx` and `welcome.module.css`:
 
 - Keep the existing resume and New session actions.
 - Add concise user-facing orientation explaining that a session can read and edit the repository, run commands, and delegate work to helpers.
@@ -96,7 +96,7 @@ Update `cmd/serf-hub/frontend/src/panes/welcome/Welcome.tsx` and `welcome.module
 Green commands for this slice:
 
 ```sh
-cd cmd/serf-hub/frontend
+cd cmd/evener-hub/frontend
 npm test -- src/panes/welcome/Welcome.test.tsx -t "orientation|example|New session"
 npm run lint
 ```
@@ -105,7 +105,7 @@ npm run lint
 
 Add the React/mobile implementation guidance requested by the approved spec to `docs/web-ui/design-system.md`: mobile form rows, 16px editable text, 44px touch targets, pinned action surfaces, auto-growing fields, and bottom-sheet picker usage, all using existing tokens and static honest loading behavior. Do not change the approved spec’s status or add a satisfaction claim unless the browser evidence below proves the implemented React surface.
 
-Run the complete frontend verification from `cmd/serf-hub/frontend`:
+Run the complete frontend verification from `cmd/evener-hub/frontend`:
 
 ```sh
 npm test

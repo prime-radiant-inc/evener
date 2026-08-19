@@ -10,18 +10,18 @@ import (
 
 	"github.com/oklog/ulid/v2"
 
-	"primeradiant.com/serf/llm"
+	"primeradiant.com/evener/llm"
 )
 
 func TestAdapter_E2E_PublicResponsesContinuationDiscovery(t *testing.T) {
-	if os.Getenv("SERF_OPENAI_RESPONSES_DISCOVERY_E2E") != "1" {
-		t.Skip("set SERF_OPENAI_RESPONSES_DISCOVERY_E2E=1 to run live public OpenAI Responses continuation discovery")
+	if os.Getenv("EVENER_OPENAI_RESPONSES_DISCOVERY_E2E") != "1" {
+		t.Skip("set EVENER_OPENAI_RESPONSES_DISCOVERY_E2E=1 to run live public OpenAI Responses continuation discovery")
 	}
 	apiKey := strings.TrimSpace(os.Getenv("OPENAI_API_KEY"))
 	if apiKey == "" {
 		t.Skip("OPENAI_API_KEY is required for public OpenAI discovery")
 	}
-	model := strings.TrimSpace(os.Getenv("SERF_OPENAI_RESPONSES_DISCOVERY_MODEL"))
+	model := strings.TrimSpace(os.Getenv("EVENER_OPENAI_RESPONSES_DISCOVERY_MODEL"))
 	if model == "" {
 		model = "gpt-5.2"
 	}
@@ -44,8 +44,8 @@ func publicResponsesContinuationDiscoveryAdapter(apiKey string) *Adapter {
 }
 
 func TestAdapter_E2E_CodexResponsesContinuationDiscovery(t *testing.T) {
-	if os.Getenv("SERF_OPENAI_CODEX_DISCOVERY_E2E") != "1" {
-		t.Skip("set SERF_OPENAI_CODEX_DISCOVERY_E2E=1 to run live Codex Responses continuation discovery")
+	if os.Getenv("EVENER_OPENAI_CODEX_DISCOVERY_E2E") != "1" {
+		t.Skip("set EVENER_OPENAI_CODEX_DISCOVERY_E2E=1 to run live Codex Responses continuation discovery")
 	}
 	if testing.Short() {
 		t.Skip("skipping live Codex discovery in short mode")
@@ -57,7 +57,7 @@ func TestAdapter_E2E_CodexResponsesContinuationDiscovery(t *testing.T) {
 	if !a.usesCodexBackend() {
 		t.Skip("OpenAI env did not resolve to stored OAuth/Codex backend credentials")
 	}
-	model := strings.TrimSpace(os.Getenv("SERF_OPENAI_CODEX_DISCOVERY_MODEL"))
+	model := strings.TrimSpace(os.Getenv("EVENER_OPENAI_CODEX_DISCOVERY_MODEL"))
 	if model == "" {
 		model = "gpt-5.4"
 	}
@@ -73,10 +73,10 @@ func runResponsesContinuationDiscovery(t *testing.T, a *Adapter, model, endpoint
 	store := requestStore
 	anchor, err := a.Complete(ctx, llm.Request{
 		Model:    model,
-		Messages: []llm.Message{llm.User("Reply exactly: serf continuation discovery anchor")},
+		Messages: []llm.Message{llm.User("Reply exactly: evener continuation discovery anchor")},
 		Store:    &store,
 		Metadata: map[string]string{
-			"serf_discovery_id": id,
+			"evener_discovery_id": id,
 		},
 	})
 	if err != nil {
@@ -88,7 +88,7 @@ func runResponsesContinuationDiscovery(t *testing.T, a *Adapter, model, endpoint
 
 	delta, err := a.Complete(ctx, llm.Request{
 		Model:              model,
-		Messages:           []llm.Message{llm.User("Reply exactly: serf continuation discovery delta")},
+		Messages:           []llm.Message{llm.User("Reply exactly: evener continuation discovery delta")},
 		PreviousResponseID: anchor.ID,
 		Store:              &store,
 	})
@@ -101,7 +101,7 @@ func runResponsesContinuationDiscovery(t *testing.T, a *Adapter, model, endpoint
 
 	branch, err := a.Complete(ctx, llm.Request{
 		Model:              model,
-		Messages:           []llm.Message{llm.User("Reply exactly: serf continuation discovery branch")},
+		Messages:           []llm.Message{llm.User("Reply exactly: evener continuation discovery branch")},
 		PreviousResponseID: anchor.ID,
 		Store:              &store,
 	})
@@ -114,9 +114,9 @@ func runResponsesContinuationDiscovery(t *testing.T, a *Adapter, model, endpoint
 
 	copresent, copresentErr := a.Complete(ctx, llm.Request{
 		Model:              model,
-		Messages:           []llm.Message{llm.User("Reply exactly: serf continuation discovery co-present")},
+		Messages:           []llm.Message{llm.User("Reply exactly: evener continuation discovery co-present")},
 		PreviousResponseID: anchor.ID,
-		ConversationID:     "conv_serf_discovery_" + id,
+		ConversationID:     "conv_evener_discovery_" + id,
 		Store:              &store,
 	})
 	copresentStatus := "accepted"
@@ -132,7 +132,7 @@ func runResponsesContinuationDiscovery(t *testing.T, a *Adapter, model, endpoint
 	_, invalidErr := a.Complete(ctx, llm.Request{
 		Model:              model,
 		Messages:           []llm.Message{llm.User("This invalid anchor request should fail clearly.")},
-		PreviousResponseID: "resp_serf_invalid_" + id,
+		PreviousResponseID: "resp_evener_invalid_" + id,
 		Store:              &store,
 	})
 	if invalidErr == nil {

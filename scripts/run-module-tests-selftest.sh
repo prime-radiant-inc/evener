@@ -17,12 +17,12 @@ set -uo pipefail
 script_dir="$(cd "$(dirname "$0")" && pwd)"
 runner="$script_dir/run-module-tests.sh"
 runner_command=("$runner")
-if [ -n "${SERF_RUN_MODULE_TESTS_SHELL:-}" ]; then
-	runner_command=("$SERF_RUN_MODULE_TESTS_SHELL" "$runner")
+if [ -n "${EVENER_RUN_MODULE_TESTS_SHELL:-}" ]; then
+	runner_command=("$EVENER_RUN_MODULE_TESTS_SHELL" "$runner")
 fi
 . "$(dirname "$0")/selftest-lib.sh"
 
-scratch_dir work serf-module-tests-selftest
+scratch_dir work evener-module-tests-selftest
 trap 'scratch_rm' EXIT
 
 assert_has_word() {
@@ -96,9 +96,9 @@ new_case() {
 	repo="$case_dir/repo"
 	state="$case_dir/state"
 	bin="$case_dir/bin"
-	mkdir -p "$repo/scripts" "$repo/cmd/serf-hub/frontend" "$state" "$bin"
+	mkdir -p "$repo/scripts" "$repo/cmd/evener-hub/frontend" "$state" "$bin"
 	mkdir -p "$case_dir/ambient-home" "$case_dir/ambient-xdg-config/go" "$case_dir/ambient-xdg-cache" "$case_dir/ambient-xdg-state"
-	printf 'SERF_SELFTEST_GOENV=preserved\n' >"$case_dir/ambient-xdg-config/go/env"
+	printf 'EVENER_SELFTEST_GOENV=preserved\n' >"$case_dir/ambient-xdg-config/go/env"
 	write_fake_mktemp "$bin"
 	for module in agent llm auth envvars invariant identifier; do
 		mkdir -p "$repo/$module"
@@ -132,7 +132,7 @@ if [ "${GOENV:-}" != "off" ]; then
 		"$TMPDIR"/go-env) ;;
 		*) printf 'fake go GOENV %s is not an owned copy\n' "${GOENV:-}" >&2; exit 9 ;;
 	esac
-	grep -q '^SERF_SELFTEST_GOENV=preserved$' "$GOENV" || {
+	grep -q '^EVENER_SELFTEST_GOENV=preserved$' "$GOENV" || {
 		printf 'fake go GOENV copy lost ambient settings\n' >&2
 		exit 9
 	}
@@ -174,7 +174,7 @@ case "${1:-}" in
 			exit $?
 		fi
 		: >"$FAKE_STATE/root.listed"
-		printf 'primeradiant.com/serf/%s\n' "$module"
+		printf 'primeradiant.com/evener/%s\n' "$module"
 		exit 0
 		;;
 esac
@@ -194,7 +194,7 @@ esac
 case " ${FAKE_TEST_FAIL:-} " in
 	*" $module "*)
 		printf -- '--- FAIL: TestThing (0.00s)\n'
-		printf 'FAIL\tprimeradiant.com/serf/%s\t0.01s\n' "$module"
+		printf 'FAIL\tprimeradiant.com/evener/%s\t0.01s\n' "$module"
 		exit 1
 		;;
 esac
@@ -256,7 +256,7 @@ run_tests() {
 		env -u WAVE1 -u WAVE2 TMPDIR="${CASE_TMPDIR:-$case_dir}" PATH="$bin:/usr/bin:/bin" FAKE_REPO="$repo" FAKE_STATE="$state" \
 			HOME="$case_dir/ambient-home" GOENV="$case_dir/ambient-xdg-config/go/env" XDG_CONFIG_HOME="$case_dir/ambient-xdg-config" XDG_CACHE_HOME="$case_dir/ambient-xdg-cache" XDG_STATE_HOME="$case_dir/ambient-xdg-state" \
 			GOCACHE="$case_dir/gocache" GOMODCACHE="$case_dir/gomodcache" \
-			MODULES="$modules" AGENT_SHARDS=0 WEB=1 WEB_DIR="$repo/cmd/serf-hub/frontend" MAKE="$bin/make" "$@" "${runner_command[@]}" -short -count=1
+			MODULES="$modules" AGENT_SHARDS=0 WEB=1 WEB_DIR="$repo/cmd/evener-hub/frontend" MAKE="$bin/make" "$@" "${runner_command[@]}" -short -count=1
 	) >"$output" 2>&1
 }
 
@@ -277,7 +277,7 @@ run_tests_async() {
 			env -u WAVE1 -u WAVE2 TMPDIR="$case_dir" PATH="$bin:/usr/bin:/bin" FAKE_REPO="$repo" FAKE_STATE="$state" \
 				HOME="$case_dir/ambient-home" GOENV="$case_dir/ambient-xdg-config/go/env" XDG_CONFIG_HOME="$case_dir/ambient-xdg-config" XDG_CACHE_HOME="$case_dir/ambient-xdg-cache" XDG_STATE_HOME="$case_dir/ambient-xdg-state" \
 				GOCACHE="$case_dir/gocache" GOMODCACHE="$case_dir/gomodcache" \
-				MODULES="$modules" AGENT_SHARDS=0 WEB=1 WEB_DIR="$repo/cmd/serf-hub/frontend" MAKE="$bin/make" "$@" "${runner_command[@]}" -short -count=1
+				MODULES="$modules" AGENT_SHARDS=0 WEB=1 WEB_DIR="$repo/cmd/evener-hub/frontend" MAKE="$bin/make" "$@" "${runner_command[@]}" -short -count=1
 			runner_status="$?"
 			printf 'runner-exited:%s\n' "$runner_status" >"$ready_fifo"
 			exit "$runner_status"
@@ -285,7 +285,7 @@ run_tests_async() {
 		exec env -u WAVE1 -u WAVE2 TMPDIR="$case_dir" PATH="$bin:/usr/bin:/bin" FAKE_REPO="$repo" FAKE_STATE="$state" \
 			HOME="$case_dir/ambient-home" GOENV="$case_dir/ambient-xdg-config/go/env" XDG_CONFIG_HOME="$case_dir/ambient-xdg-config" XDG_CACHE_HOME="$case_dir/ambient-xdg-cache" XDG_STATE_HOME="$case_dir/ambient-xdg-state" \
 			GOCACHE="$case_dir/gocache" GOMODCACHE="$case_dir/gomodcache" \
-			MODULES="$modules" AGENT_SHARDS=0 WEB=1 WEB_DIR="$repo/cmd/serf-hub/frontend" MAKE="$bin/make" "$@" "${runner_command[@]}" -short -count=1
+			MODULES="$modules" AGENT_SHARDS=0 WEB=1 WEB_DIR="$repo/cmd/evener-hub/frontend" MAKE="$bin/make" "$@" "${runner_command[@]}" -short -count=1
 	) >"$output" 2>&1 &
 	runner_pid="$!"
 }
@@ -298,7 +298,7 @@ run_tests_default_modules() {
 		env -u MODULES -u WAVE1 -u WAVE2 TMPDIR="$case_dir" PATH="$bin:/usr/bin:/bin" FAKE_REPO="$repo" FAKE_STATE="$state" \
 			HOME="$case_dir/ambient-home" GOENV="$case_dir/ambient-xdg-config/go/env" XDG_CONFIG_HOME="$case_dir/ambient-xdg-config" XDG_CACHE_HOME="$case_dir/ambient-xdg-cache" XDG_STATE_HOME="$case_dir/ambient-xdg-state" \
 			GOCACHE="$case_dir/gocache" GOMODCACHE="$case_dir/gomodcache" \
-			AGENT_SHARDS=0 WEB=1 WEB_DIR="$repo/cmd/serf-hub/frontend" MAKE="$bin/make" "$@" "${runner_command[@]}" -short -count=1
+			AGENT_SHARDS=0 WEB=1 WEB_DIR="$repo/cmd/evener-hub/frontend" MAKE="$bin/make" "$@" "${runner_command[@]}" -short -count=1
 	) >"$output" 2>&1
 }
 
@@ -311,7 +311,7 @@ recorded_tmpdirs() {
 }
 
 runner_logdirs() {
-	find "$case_dir" -maxdepth 1 -type d -name 'serf-module-tests.*' -print
+	find "$case_dir" -maxdepth 1 -type d -name 'evener-module-tests.*' -print
 }
 
 # Both ceilings below bound a fixture process reaching a state (a marker file
@@ -430,7 +430,7 @@ out="$case_dir/root-package-discovery-stderr.out"
 if FAKE_LIST_DOWNLOAD_DIAGNOSTIC=1 run_tests "." "$out"; then rc=0; else rc=$?; fi
 assert_eq "$rc" "0" "root package-discovery stderr does not fail a successful run"
 root_args="$(arguments_for .)"
-assert_has_word "$root_args" "primeradiant.com/serf/." "root package-discovery stdout reaches go test"
+assert_has_word "$root_args" "primeradiant.com/evener/." "root package-discovery stdout reaches go test"
 assert_not_has_word "$root_args" "go: downloading example.com/dependency v1.2.3" "root package-discovery stderr never becomes a go test package"
 assert_eq "$(runner_logdirs)" "" "a successful root package-discovery removes its stdout and stderr logs"
 
@@ -466,7 +466,7 @@ assert_has_word "$agent_args" "-short" "full-root mode keeps -short on non-root 
 assert_has_word "$agent_args" "-count=1" "full-root mode preserves non-root flags"
 
 # kata 5gvk: scripts/gate-capability-preflight.sh exports
-# SERF_GATE_CAPABILITY_SKIP when it classified a sandbox capability as
+# EVENER_GATE_CAPABILITY_SKIP when it classified a sandbox capability as
 # blocked. The runner must union that pattern into root's -skip so the
 # known-infeasible TestE2E_/TestTUITmuxE2E_ family is skipped instead of
 # failing into a denied bind/exec - but ONLY for root: agent has its own,
@@ -474,7 +474,7 @@ assert_has_word "$agent_args" "-count=1" "full-root mode preserves non-root flag
 # unioning the pattern into every module would silently skip those too.
 new_case
 out="$case_dir/capability-skip.out"
-if run_tests ". agent" "$out" SERF_GATE_CAPABILITY_SKIP='^(TestE2E_|TestTUITmuxE2E_)'; then rc=0; else rc=$?; fi
+if run_tests ". agent" "$out" EVENER_GATE_CAPABILITY_SKIP='^(TestE2E_|TestTUITmuxE2E_)'; then rc=0; else rc=$?; fi
 assert_eq "$rc" "0" "a capability-driven skip pattern alone does not fail the run"
 root_args="$(arguments_for .)"
 agent_args="$(arguments_for agent)"
@@ -491,9 +491,9 @@ esac
 # preflight summary that ran before it. This script is also invoked directly
 # (ROOT_FULL=1 make test), where an inherited or hand-set value would otherwise
 # narrow the surface and still report PASS with no trace of it.
-assert_has "$out" "SERF_GATE_CAPABILITY_SKIP is set" "a capability-narrowed run names the narrowing in its own output"
+assert_has "$out" "EVENER_GATE_CAPABILITY_SKIP is set" "a capability-narrowed run names the narrowing in its own output"
 
-# The absence case: no SERF_GATE_CAPABILITY_SKIP set (the ordinary path, and
+# The absence case: no EVENER_GATE_CAPABILITY_SKIP set (the ordinary path, and
 # what an unrestricted host's preflight exports) leaves -skip exactly as
 # before - this is the "green path unchanged" half of kata 5gvk's contract.
 new_case
@@ -502,7 +502,7 @@ if run_tests "." "$out"; then rc=0; else rc=$?; fi
 assert_eq "$rc" "0" "a run with nothing capability-blocked exits zero"
 root_args="$(arguments_for .)"
 assert_not_has_word "$root_args" "TestE2E_" "root's -skip carries no capability pattern when nothing is blocked"
-assert_not_has "$out" "SERF_GATE_CAPABILITY_SKIP" "an unnarrowed run says nothing about a capability skip"
+assert_not_has "$out" "EVENER_GATE_CAPABILITY_SKIP" "an unnarrowed run says nothing about a capability skip"
 
 # kata mjzx: the frontend stream already reports and logs under the name "web",
 # so a MODULES entry of the same name gave one label two owners - two verdict
@@ -603,7 +603,7 @@ mkfifo "$ready_fifo"
 ready_keeper_pid="$!"
 exec 9<"$ready_fifo"
 # Timeout 8, not the 2 a prior pass settled on (itself raised once already
-# from a 1-second floor): SERF_ROOT_PACKAGE_LIST_TIMEOUT starts counting the
+# from a 1-second floor): EVENER_ROOT_PACKAGE_LIST_TIMEOUT starts counting the
 # instant run_root_package_list forks the fixture `go list`, before that
 # child has necessarily had its first CPU slice — under concurrent gate load,
 # forking through env -> run-module-tests.sh -> a nested subshell -> the
@@ -619,7 +619,7 @@ exec 9<"$ready_fifo"
 # It still keeps the deliberate trip an order of magnitude below the 30s
 # production default. The ready-keeper and both watchdog delays below scale
 # with it so establishment has real room before either backstop fires.
-run_tests_async "." "$out" FAKE_LIST_HOLD=1 FAKE_LIST_DOWNLOAD_DIAGNOSTIC=1 SERF_ROOT_PACKAGE_LIST_TIMEOUT=8 FAKE_READY_FIFO="$ready_fifo"
+run_tests_async "." "$out" FAKE_LIST_HOLD=1 FAKE_LIST_DOWNLOAD_DIAGNOSTIC=1 EVENER_ROOT_PACKAGE_LIST_TIMEOUT=8 FAKE_READY_FIFO="$ready_fifo"
 start_fixture_watchdog "$runner_pid" 20 "$state/root-list.watchdog" "$ready_fifo" startup-watchdog
 startup_watchdog_pid="$fixture_watchdog_pid"
 ready_signal=""

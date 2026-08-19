@@ -57,7 +57,7 @@ For checked items below, the table above is the current disposition and the item
   Cleanup: amend the running row to admit the promotion announcement, ideally as part of enumerating the notification `event` vocabulary (B7-d). Tag: **mechanical**.
 
 - [x] **A4. Vocabulary conflates Parent/Owner/Visible.**
-  Where: `## Vocabulary` ("Parent session: The Serf session that owns or can see the job") vs the Owner/Visible rows below it; `## Durable job records` never distinguishes `parent_session_id` from `visible_to_session_id` for the nested case.
+  Where: `## Vocabulary` ("Parent session: The Evener session that owns or can see the job") vs the Owner/Visible rows below it; `## Durable job records` never distinguishes `parent_session_id` from `visible_to_session_id` for the nested case.
   Cleanup: redefine "Parent session" crisply and state what each of the three record fields holds for (a) a top-level job and (b) a nested forwarded job. Tag: **mechanical** (small wording decision inside).
 
 - [x] **A5. `limit_bytes` is half-in, half-out of the canonical shape.**

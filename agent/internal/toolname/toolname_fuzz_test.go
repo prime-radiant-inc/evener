@@ -18,19 +18,19 @@ func FuzzToolNameTranslations(f *testing.F) {
 		if len(name) > 4096 {
 			return
 		}
-		for claude, serf := range claudeToSerf {
-			if got := ClaudeToSerf(claude); got != serf {
-				t.Fatalf("ClaudeToSerf(%q) = %q, want %q", claude, got, serf)
+		for claude, evener := range claudeToEvener {
+			if got := ClaudeToEvener(claude); got != evener {
+				t.Fatalf("ClaudeToEvener(%q) = %q, want %q", claude, got, evener)
 			}
-			if got := SerfToClaude(serf); got != claude {
-				t.Fatalf("SerfToClaude(ClaudeToSerf(%q)) = %q, want %q", claude, got, claude)
+			if got := EvenerToClaude(evener); got != claude {
+				t.Fatalf("EvenerToClaude(ClaudeToEvener(%q)) = %q, want %q", claude, got, claude)
 			}
 		}
-		if _, known := claudeToSerf[name]; !known && ClaudeToSerf(name) != name {
+		if _, known := claudeToEvener[name]; !known && ClaudeToEvener(name) != name {
 			t.Fatalf("unknown Claude tool %q did not pass through", name)
 		}
-		if _, known := serfToClaude[name]; !known && SerfToClaude(name) != name {
-			t.Fatalf("unknown Serf tool %q did not pass through", name)
+		if _, known := evenerToClaude[name]; !known && EvenerToClaude(name) != name {
+			t.Fatalf("unknown Evener tool %q did not pass through", name)
 		}
 	})
 }

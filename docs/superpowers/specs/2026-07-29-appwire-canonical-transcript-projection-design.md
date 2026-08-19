@@ -10,7 +10,7 @@ the existing transcript and wire identities, materializes one daemon-owned
 snapshot, and makes client hydration self-healing without adding transcript
 format v3 or public stream epochs.
 
-**Scope:** Serf daemon transcript identity, live AppWire projection, transcript
+**Scope:** Evener daemon transcript identity, live AppWire projection, transcript
 paging, and atomic subscribing hydration.
 
 ## Decision
@@ -245,7 +245,7 @@ eviction affects only reconnect replay outside the atomic snapshot contract.
 
 ## Deleted compatibility surface
 
-`cmd/serf-transcript-v2-upgrade` is removed. It cannot produce required v3
+`cmd/evener-transcript-v2-upgrade` is removed. It cannot produce required v3
 projection identity from v1 data without inventing grouping and item history,
 which would be a migration/compatibility project explicitly outside this
 flag-day change.

@@ -7,14 +7,14 @@ import (
 	"sync"
 	"testing"
 
-	"primeradiant.com/serf/llm"
-	"primeradiant.com/serf/llm/apilog"
-	"primeradiant.com/serf/llm/providercfg"
-	_ "primeradiant.com/serf/llm/providers/glm"
-	_ "primeradiant.com/serf/llm/providers/kimi"
-	_ "primeradiant.com/serf/llm/providers/ollama"
-	_ "primeradiant.com/serf/llm/providers/openrouter"
-	_ "primeradiant.com/serf/llm/providers/openrouter_anthropic"
+	"primeradiant.com/evener/llm"
+	"primeradiant.com/evener/llm/apilog"
+	"primeradiant.com/evener/llm/providercfg"
+	_ "primeradiant.com/evener/llm/providers/glm"
+	_ "primeradiant.com/evener/llm/providers/kimi"
+	_ "primeradiant.com/evener/llm/providers/ollama"
+	_ "primeradiant.com/evener/llm/providers/openrouter"
+	_ "primeradiant.com/evener/llm/providers/openrouter_anthropic"
 )
 
 type wrapperWireCaptureSink struct {

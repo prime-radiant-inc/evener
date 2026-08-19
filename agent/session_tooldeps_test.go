@@ -7,9 +7,9 @@ import (
 	"strings"
 	"testing"
 
-	"primeradiant.com/serf/agent/execenv"
-	"primeradiant.com/serf/agent/internal/tool"
-	"primeradiant.com/serf/llm"
+	"primeradiant.com/evener/agent/execenv"
+	"primeradiant.com/evener/agent/internal/tool"
+	"primeradiant.com/evener/llm"
 )
 
 // readBeforeWriteEnv is a minimal execenv.ExecutionEnvironment that reports a fixed set
@@ -151,7 +151,7 @@ func TestToolDeps_ReadBeforeWriteWarning(t *testing.T) {
 // editable via edit_file with no "not read in this session" warning. A file
 // written by some other means that bypasses write_file's handler (e.g. a shell
 // heredoc) must still trigger the warning on a subsequent edit_file call, since
-// serf genuinely doesn't know that content.
+// evener genuinely doesn't know that content.
 func TestToolDeps_WriteFileCreditsEditFile(t *testing.T) {
 	t.Parallel()
 	const written = "/work/created.txt"

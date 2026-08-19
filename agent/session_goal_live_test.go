@@ -11,8 +11,8 @@ import (
 	"testing"
 	"time"
 
-	"primeradiant.com/serf/agent/events"
-	"primeradiant.com/serf/agent/internal/goal"
+	"primeradiant.com/evener/agent/events"
+	"primeradiant.com/evener/agent/internal/goal"
 )
 
 // driveGoalToTerminal runs ProcessInput, then pumps further ProcessInput calls

@@ -10,8 +10,8 @@ import (
 
 	"github.com/spf13/afero"
 
-	"primeradiant.com/serf/agent/schema"
-	"primeradiant.com/serf/fuzz/fault"
+	"primeradiant.com/evener/agent/schema"
+	"primeradiant.com/evener/fuzz/fault"
 )
 
 // w3init_writeOversizeLine writes a transcript line beyond the fork reader's

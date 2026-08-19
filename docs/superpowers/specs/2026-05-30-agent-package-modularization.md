@@ -66,7 +66,7 @@ For each selected extraction:
    already export their used symbols, so this step is a no-op for them.
 3. Delete the original `agent/<file>.go`.
 4. `go build ./agent` now reports `undefined: X` at each site in `agent` that used a moved
-   symbol unqualified. For each: add `import "primeradiant.com/serf/agent/internal/<pkg>"`
+   symbol unqualified. For each: add `import "primeradiant.com/evener/agent/internal/<pkg>"`
    to that file and qualify `X` → `<pkg>.X`. (Only **type names, function names, and
    package-level vars/consts** need qualifying — struct *field* and *method* accesses on a
    value do not.) If the package name collides with a local variable (e.g. a `timings` var),

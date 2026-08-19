@@ -6,7 +6,7 @@
 
 **Architecture:** Keep `HOOK_COMPLETED` turns durable and in their original transcript order, but classify them as transparent while `repairOrphanedToolResults` searches for results belonging to pending assistant tool calls. Prove the behavior at three levels before changing production code: the pure repair function, a real session with a `PreToolUse` hook and scripted provider, and the existing repair fuzzer's seed corpus.
 
-**Tech Stack:** Go, Serf session history (`agent/schema.Turn`), scripted `llm.ProviderAdapter`, plugin hook runner, standard `testing`, Serf fuzz seed replay.
+**Tech Stack:** Go, Evener session history (`agent/schema.Turn`), scripted `llm.ProviderAdapter`, plugin hook runner, standard `testing`, Evener fuzz seed replay.
 
 **Tracking:** kata `jk3q` — “Do not orphan-repair tool calls across hook telemetry”
 
@@ -165,7 +165,7 @@ Expected: PASS.
 
 - [ ] **Step 4: Add the real PreToolUse lifecycle regression**
 
-Add `encoding/json`, `fmt`, and `primeradiant.com/serf/agent/internal/tool` to `agent/session_hook_turn_test.go`, then add:
+Add `encoding/json`, `fmt`, and `primeradiant.com/evener/agent/internal/tool` to `agent/session_hook_turn_test.go`, then add:
 
 ```go
 func TestPreToolUseHookDoesNotDuplicateResultInNextModelRequest(t *testing.T) {
@@ -352,7 +352,7 @@ Update `fc1AssertNoOrphanedCall` to fail unless `fc1LaterResultCount(history[i+1
 Run:
 
 ```bash
-go test -tags serffuzz ./agent -run '^FuzzFc1RepairOrphanedToolResults$' -count=1
+go test -tags evenerfuzz ./agent -run '^FuzzFc1RepairOrphanedToolResults$' -count=1
 ```
 
 Expected: FAIL on the new seed because repair produces two later results for the call separated from its real result by `HOOK_COMPLETED`.
@@ -391,7 +391,7 @@ Run:
 
 ```bash
 go test ./agent -run '^(TestRepairOrphanedToolResultsPreservesHookBeforeRealResult|TestPreToolUseHookDoesNotDuplicateResultInNextModelRequest)$' -count=1
-go test -tags serffuzz ./agent -run '^FuzzFc1RepairOrphanedToolResults$' -count=1
+go test -tags evenerfuzz ./agent -run '^FuzzFc1RepairOrphanedToolResults$' -count=1
 ```
 
 Expected: PASS. The lifecycle request contains one successful result for `call_with_pre_tool_hook`, and the transcript still orders assistant → hook → result.

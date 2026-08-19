@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# e2e-webui-turn-controls.sh — stand up a disposable serf-hub with a real web
+# e2e-webui-turn-controls.sh — stand up a disposable evener-hub with a real web
 # UI whose only provider is fakellm (test/e2e/fakellm), a fake
 # OpenAI-compatible backend that holds every model round open for a
 # configurable interval.
@@ -13,8 +13,8 @@
 # exactly what reached the model each round — so "the steer never got
 # through" is falsifiable rather than a feeling.
 #
-# WHAT IT DOES: builds fresh fakellm/serf/serf-hub binaries and the SPA into
-# a throwaway run directory, starts fakellm and a HOME-isolated serf-hub
+# WHAT IT DOES: builds fresh fakellm/evener/evener-hub binaries and the SPA into
+# a throwaway run directory, starts fakellm and a HOME-isolated evener-hub
 # (kata av1j — a second hub needs its own $HOME or it collides with, or
 # silently adopts, your real one) each on a kernel-assigned port (kata 68fm —
 # never a hardcoded one), points the hub's providers.toml at fakellm, and
@@ -71,7 +71,7 @@ need_value() {
 # The run directory's name is the ownership proof: mktemp made it unique, and
 # every process this script starts carries it in argv — fakellm and the hub
 # because they are exec'd from it, and each daemon because the hub execs the
-# `-serf` binary out of it. Matching the basename rather than the path keeps
+# `-evener` binary out of it. Matching the basename rather than the path keeps
 # it working where the two differ (macOS hands out /var/... and reports
 # /private/var/...).
 stop_owned_pid() {
@@ -150,7 +150,7 @@ if [ -n "$stop_dir" ]; then
 		exit 2
 	fi
 	# Daemons are grandchildren the hub deliberately outlives, so killing the
-	# hub alone leaves one serf process per spawned session behind. The hub
+	# hub alone leaves one evener process per spawned session behind. The hub
 	# announces each one's pid in its log; reap those too.
 	if [ -f "$stop_dir/hub.log" ]; then
 		while read -r pid; do
@@ -179,7 +179,7 @@ done
 # directory outside the dev-tooling wave's per-suite TMPDIR isolation — and so
 # outside the leftover check that is supposed to catch exactly this.
 tmpbase=${TMPDIR:-/tmp}
-if ! run="$(mktemp -d "${tmpbase%/}/serf-e2e-webui.XXXXXX")"; then
+if ! run="$(mktemp -d "${tmpbase%/}/evener-e2e-webui.XXXXXX")"; then
 	echo "e2e-webui-turn-controls: cannot create a run directory under ${tmpbase%/}" >&2
 	exit 1
 fi
@@ -188,7 +188,7 @@ echo "e2e-webui-turn-controls: run directory $run" >&2
 
 # Nothing below here may leave a half-built stack behind. Every failure
 # between this line and the "Ready" banner is a bare exit, and the operator
-# who just read "build serf-hub failed" is the least likely person to go
+# who just read "build evener-hub failed" is the least likely person to go
 # looking for a fakellm still running or a run directory still on disk. The
 # directory itself is deliberately NOT removed — its logs are the only record
 # of what failed — so the reaper prints the one command that removes it.
@@ -219,7 +219,7 @@ if [ "$skip_web" -eq 0 ]; then
 	}
 fi
 
-echo "==> building fakellm, serf, serf-hub" >&2
+echo "==> building fakellm, evener, evener-hub" >&2
 # From the repo root: `go build` resolves the module (and go.work) from its own
 # working directory, so an absolute package path is not enough when the script
 # is invoked from outside the checkout.
@@ -228,31 +228,31 @@ go build -o "$run/fakellm" "$repo_root/test/e2e/fakellm/cmd" || {
 	echo "build fakellm failed" >&2
 	exit 1
 }
-go build -o "$run/serf" "$repo_root/cmd/serf" || {
-	echo "build serf failed" >&2
+go build -o "$run/evener" "$repo_root/cmd/evener" || {
+	echo "build evener failed" >&2
 	exit 1
 }
-go build -o "$run/serf-hub" "$repo_root/cmd/serf-hub" || {
-	echo "build serf-hub failed" >&2
+go build -o "$run/evener-hub" "$repo_root/cmd/evener-hub" || {
+	echo "build evener-hub failed" >&2
 	exit 1
 }
 
 # Isolate. A throwaway $HOME keeps auth-token, credentials.toml,
-# providers.toml, hub.lock, and session history off the real ~/.serf and
-# ~/.local/state/serf entirely (kata av1j).
+# providers.toml, hub.lock, and session history off the real ~/.evener and
+# ~/.local/state/evener entirely (kata av1j).
 export HOME="$run/home"
-mkdir -p "$HOME/.serf"
-# Everything that can redirect serf away from the throwaway $HOME, not just
+mkdir -p "$HOME/.evener"
+# Everything that can redirect evener away from the throwaway $HOME, not just
 # the state dir: an operator with any of these exported would otherwise have
 # this hub read or write their real config, cache, run dir or hub token while
-# the header above promises isolation. SERF_PROVIDERS_CONFIG belongs in this
-# list above all: it outranks $HOME/.serf/providers.toml (cmd/serf-hub/main.go,
-# cmd/serf-hub/internal/launchconfig/env.go), so leaving it set would load the
+# the header above promises isolation. EVENER_PROVIDERS_CONFIG belongs in this
+# list above all: it outranks $HOME/.evener/providers.toml (cmd/evener-hub/main.go,
+# cmd/evener-hub/internal/launchconfig/env.go), so leaving it set would load the
 # operator's real providers instead of fakellm — a network call and a paid
 # request out of a fixture whose whole point is that neither happens.
 unset XDG_STATE_HOME XDG_CONFIG_HOME XDG_CACHE_HOME
-unset SERF_STATE_DIR SERF_RUN_DIR SERF_HUB_TOKEN SERF_HUB_ADDR SERF_HUB_SPAWNED
-unset SERF_PROVIDERS_CONFIG
+unset EVENER_STATE_DIR EVENER_RUN_DIR EVENER_HUB_TOKEN EVENER_HUB_ADDR EVENER_HUB_SPAWNED
+unset EVENER_PROVIDERS_CONFIG
 
 workspace="$run/workspace"
 mkdir -p "$workspace"
@@ -299,7 +299,7 @@ done
 }
 echo "e2e-webui-turn-controls: fakellm up at 127.0.0.1:$fakellm_port (pid $fakellm_pid)" >&2
 
-cat >"$HOME/.serf/providers.toml" <<EOF
+cat >"$HOME/.evener/providers.toml" <<EOF
 schema = 1
 default = "fake"
 
@@ -311,8 +311,8 @@ api_key = "fakellm-not-a-secret"
 send_session_affinity_headers = true
 EOF
 
-echo "==> starting serf-hub" >&2
-"$run/serf-hub" -addr 127.0.0.1:0 -serf "$run/serf" >"$run/hub.log" 2>&1 &
+echo "==> starting evener-hub" >&2
+"$run/evener-hub" -addr 127.0.0.1:0 -evener "$run/evener" >"$run/hub.log" 2>&1 &
 hub_pid=$!
 echo "$hub_pid" >"$run/hub.pid"
 
@@ -337,7 +337,7 @@ curl -s -o /dev/null "$hub_addr/" || {
 	echo "hub did not answer at $hub_addr" >&2
 	exit 1
 }
-token="$(cat "$HOME/.serf/auth-token")"
+token="$(cat "$HOME/.evener/auth-token")"
 
 # Ready: the stack is up, so the processes stay up too. Disarm the reaper.
 started_ready=1
@@ -368,7 +368,7 @@ Ready. $mode_line
   Spawn a session that will sit in a long turn:
     curl -s -X POST -H "Content-Type: application/json" \\
       -H "Authorization: Bearer $token" \\
-      -d '{"prompt":"read NOTES.md and keep working","model":"fake/fake-test-model","working_dir":"$workspace","harness":"serf","branch":"","access_mode":"full","agent":"default","launch_overrides":{}}' \\
+      -d '{"prompt":"read NOTES.md and keep working","model":"fake/fake-test-model","working_dir":"$workspace","harness":"evener","branch":"","access_mode":"full","agent":"default","launch_overrides":{}}' \\
       $hub_addr/api/spawn
 
   Watch what actually reached the model each round:

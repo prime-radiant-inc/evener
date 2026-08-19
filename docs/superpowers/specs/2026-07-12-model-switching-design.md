@@ -8,7 +8,7 @@ Branch: `model-switching` (worktree off main @ f4ec5267)
 
 ## Summary
 
-Serf already contains a skeleton of mid-session model switching: the engine
+Evener already contains a skeleton of mid-session model switching: the engine
 setter (`Session.SetModel`), the wire method (`thread/model/set`), a hub relay
 with a capability gate, a TUI `/model` command with a picker, a web
 command-palette entry, synchronous persistence, and a per-delegate `model`
@@ -33,7 +33,7 @@ This spec finishes the feature. Ten deltas:
    rejected up front; the RPC propagates all of it.
 2. **Change notifications.** New session events and AppWire notifications for
    model and reasoning-effort changes, so every attached client converges
-   instantly (`serf/thread/name/changed` is the template).
+   instantly (`evener/thread/name/changed` is the template).
 3. **Snapshot freshness.** A switch updates the daemon's session info
    synchronously; `thread/read` and hub hydration reflect the new model
    immediately. The thread snapshot also gains `reasoningEffort`,
@@ -72,31 +72,31 @@ This spec finishes the feature. Ten deltas:
 | Persistence | Both setters flush `meta.json` synchronously (`maybeAutoSave`) — crash-safe | `agent/session.go:690,598` |
 | Wire method | `thread/model/set` (`ThreadModelSetParams{ref, modelProvider, model}`), scope both | `appwire/protocol.go:96`, `appwire/types.go:707` |
 | Daemon handler | `handleAppThreadModelSet` validates non-empty, prefixes provider, calls hook | `server/appwire_runtime.go:382` |
-| Daemon hook | `SetModelFunc` → `getSession().SetModel(model)` | `cmd/serf/serve.go:406` |
-| Hub relay | `MethodThreadModelSet` → capability gate (`ensureThreadActionAvailable(..., "model")`) → `source.SetThreadModel` | `cmd/serf-hub/app_rpc.go:525` |
+| Daemon hook | `SetModelFunc` → `getSession().SetModel(model)` | `cmd/evener/serve.go:406` |
+| Hub relay | `MethodThreadModelSet` → capability gate (`ensureThreadActionAvailable(..., "model")`) → `source.SetThreadModel` | `cmd/evener-hub/app_rpc.go:525` |
 | Capability | `ThreadCapabilities.ChangeModel` = `modelFunc != nil && !closed`; surfaced to web + TUI | `server/appwire_runtime.go:639`, `appwire/types.go:347` |
-| TUI command | `/model` — no args opens picker (`fetchHubSessionModels` → `model/list`), arg form sends directly | `cmd/serf-tui/hub_command_registry.go:303-329` |
-| TUI picker | `tuipick.ModelPicker`, already used for spawn/live/transcript-target | `cmd/serf-tui/internal/tuipick/model_picker.go:27` |
-| Web switch | Command palette "Switch model" → `fetchModels()` (`model/list`) → `SerfAppwire.setModel` | `cmd/serf-hub/assets/search.js:337` |
-| Web chip | Header `.composer-model` renders `button[data-model-trigger]` when `ChangeModel` | `cmd/serf-hub/templates/partials/workspace.html:71-78` |
-| Model catalog on the wire | `model/list` (scope both) returns `ModelDescriptor`s; spawn path also carries `reasoning_effort_levels` | `cmd/serf-hub/web_spawn.go:382` |
+| TUI command | `/model` — no args opens picker (`fetchHubSessionModels` → `model/list`), arg form sends directly | `cmd/evener-tui/hub_command_registry.go:303-329` |
+| TUI picker | `tuipick.ModelPicker`, already used for spawn/live/transcript-target | `cmd/evener-tui/internal/tuipick/model_picker.go:27` |
+| Web switch | Command palette "Switch model" → `fetchModels()` (`model/list`) → `EvenerAppwire.setModel` | `cmd/evener-hub/assets/search.js:337` |
+| Web chip | Header `.composer-model` renders `button[data-model-trigger]` when `ChangeModel` | `cmd/evener-hub/templates/partials/workspace.html:71-78` |
+| Model catalog on the wire | `model/list` (scope both) returns `ModelDescriptor`s; spawn path also carries `reasoning_effort_levels` | `cmd/evener-hub/web_spawn.go:382` |
 | Delegate override | `delegate` tool `model` param, "default: parent model"; child inherits parent's *current* profile at spawn | `agent/internal/tool/definitions.go:128`, `agent/subagents.go:361-383` |
 | Delegate restore | Child re-resolves its own persisted `ResolvedProfileID`/`ResolvedModel`, not the parent's current | `agent/job_delegate.go:806-844`, `agent/internal/jobstore/record.go:76-78` |
-| Resume | `ResolveResumeModelRef` (persisted meta beats `SERF_MODEL`); `RestoreSessionFromMetaWithConfig` reattaches the profile resolver | `cmdutil/cmdutil.go:203`, `agent/session_init.go:309` |
+| Resume | `ResolveResumeModelRef` (persisted meta beats `EVENER_MODEL`); `RestoreSessionFromMetaWithConfig` reattaches the profile resolver | `cmdutil/cmdutil.go:203`, `agent/session_init.go:309` |
 | Cross-provider switching seam | `resolveProfileForRef` swaps profiles via resolver, preserves overrides, re-runs provider-conditional tool registration | `agent/session.go:605` (the `:1283` in `docs/llm-providers.md` has drifted) |
 
 ## Defects and gaps this spec closes
 
 | # | Defect | Evidence |
 |---|---|---|
-| G1 | No `thread/model/changed` or effort-changed notification; the only setting push is `serf/thread/name/changed` | `appwire/types.go:82`; grep of notification catalog |
-| G2 | Server session info (`status.Model`, source of `Thread.ModelProvider`) updates only on `EventSessionStart`; `SetModelFunc` never refreshes it → stale hydration for reloading clients | `server/bridge.go:28-30`, `server/appwire_runtime.go:558`, `cmd/serf/serve.go:406` |
-| G3 | Web header model chip (`data-model-trigger`) has no JS handler — a dead affordance | `workspace.html:74`; no handler in `cmd/serf-hub/assets/` |
+| G1 | No `thread/model/changed` or effort-changed notification; the only setting push is `evener/thread/name/changed` | `appwire/types.go:82`; grep of notification catalog |
+| G2 | Server session info (`status.Model`, source of `Thread.ModelProvider`) updates only on `EventSessionStart`; `SetModelFunc` never refreshes it → stale hydration for reloading clients | `server/bridge.go:28-30`, `server/appwire_runtime.go:558`, `cmd/evener/serve.go:406` |
+| G3 | Web header model chip (`data-model-trigger`) has no JS handler — a dead affordance | `workspace.html:74`; no handler in `cmd/evener-hub/assets/` |
 | G4 | Reasoning effort absent from the thread snapshot — clients cannot display the live session's effort | `server/appwire_runtime.go:545-565` |
 | G5 | A switch requested mid-turn applies at the next tool round (`prepareModelRequest` re-reads the profile each round), so a cross-provider swap can land mid-tool-loop | `agent/session_model_call.go:168-191` |
 | G6 | No transcript marker for a switch | `internal/appprojector/appwire_projection.go:852` (unused for this) |
-| G7 | No TUI `/effort` command (effort is settable from the web palette only) | `cmd/serf-tui/hub_command_registry.go` |
-| G8 | Live web effort picker hardcodes the full vocabulary instead of the model's levels (spawn form already does per-model) | `cmd/serf-hub/assets/search.js:361-369` vs `spawn.js:1609` |
+| G7 | No TUI `/effort` command (effort is settable from the web palette only) | `cmd/evener-tui/hub_command_registry.go` |
+| G8 | Live web effort picker hardcodes the full vocabulary instead of the model's levels (spawn form already does per-model) | `cmd/evener-hub/assets/search.js:361-369` vs `spawn.js:1609` |
 | G9 | `delegateResult` echoes the enforced sandbox but not the resolved model | `agent/job_delegate.go:111-149` |
 | G10 | Zero scenario/E2E coverage of mid-session switching | `test/scenarios/INDEX.md` |
 | G11 | `SetModel` swallows resolver errors and returns void; `POST /model` and `thread/model/set` report success unconditionally; an unknown bare model builds a default-shaped profile that fails only at the next API call | `agent/session.go:659-662`, `server/server_handlers.go:215-217`, `server/appwire_runtime.go:396-398` |
@@ -120,7 +120,7 @@ This spec finishes the feature. Ten deltas:
 
 ## Non-goals
 
-- **No allowed-models restriction.** No such concept exists anywhere in serf
+- **No allowed-models restriction.** No such concept exists anywhere in evener
   today (verified); inventing one is YAGNI.
 - **No agent-initiated self-switch tool.** User surfaces only.
 - **No deferred "switch after this turn" queue.** Mid-turn requests are
@@ -154,26 +154,26 @@ This spec finishes the feature. Ten deltas:
 |---|---|---|
 | What is pickable | Whatever `model/list` returns for the session (grouped by instance), plus a freeform `/model <ref>` arg | Same catalog the spawn picker trusts; server-side resolver already rejects unknown refs with a names-listing error |
 | Cross-provider switches | Allowed, turn-boundary only | `resolveProfileForRef` (`agent/session.go:605`) + `reapplyProviderSpecificTools` + per-request projection already handle the swap; the boundary rule removes the mid-loop hazard for user switches |
-| Mid-turn request | Reject with a structured error while the daemon is processing **or** holds a reserved turn (`processing \|\| appReservedTurnID != ""`, the same compound `appCapabilities` treats as active at `server/appwire_runtime.go:629`); the error names the active turn id when one exists. Clients disable the control while `Status.Type == "active"` / a non-empty `ActiveTurnID` — the signal `workspace.html:84-87` already uses. **Not** `ActiveFlags`: serf daemons never populate it (only the codex mapping does, `cmd/serf-hub/internal/appsource/codex_mapping.go:12-20`) | Matches `thread/clear` ("rejected while a turn is processing", `appwire_runtime.go:365-371`) but capability-consistent; simplest crash-safe semantics. Note: with queued input there is no reachable boundary until the queue drains — see Failure modes |
+| Mid-turn request | Reject with a structured error while the daemon is processing **or** holds a reserved turn (`processing \|\| appReservedTurnID != ""`, the same compound `appCapabilities` treats as active at `server/appwire_runtime.go:629`); the error names the active turn id when one exists. Clients disable the control while `Status.Type == "active"` / a non-empty `ActiveTurnID` — the signal `workspace.html:84-87` already uses. **Not** `ActiveFlags`: evener daemons never populate it (only the codex mapping does, `cmd/evener-hub/internal/appsource/codex_mapping.go:12-20`) | Matches `thread/clear` ("rejected while a turn is processing", `appwire_runtime.go:365-371`) but capability-consistent; simplest crash-safe semantics. Note: with queued input there is no reachable boundary until the queue drains — see Failure modes |
 | Internal switches (fallbacks) | Untouched | `model_fallbacks` are same-behavior-tag by `validateModelFallbacks` (`agent/session_init.go:775-805`) and may continue swapping the request model between rounds inside `callModelWithFallback` (`agent/session_model_call.go:797-858`). N4's provenance rule explicitly exempts them |
 | Model-fallbacks after a switch | Every successful switch re-runs fallback validation against the new profile; entries that no longer validate (cross-tag after the switch, or unresolvable) are dropped and named in the switch marker's warning line | The launch-time guarantee (`validateModelFallbacks` ran once against the launch profile) silently breaks after a cross-provider switch — a stale entry would trigger the exact mid-loop cross-provider swap N1 forbids |
 | Ref grammar (slashed model ids) | When `ThreadModelSetParams.modelProvider` is non-empty the daemon joins `modelProvider + "/" + model` **unconditionally**; the model half may itself contain slashes (openrouter vendor-prefixed ids). Clients keep splitting picker items on the first slash (instance names cannot contain `/`) | Today the daemon skips the join when the model already contains a slash (`server/appwire_runtime.go:387-388`), so picking `openrouter/anthropic/claude-x` resolves `anthropic/claude-x` — routing to the anthropic instance and silently discarding openrouter |
 | Effort across a switch | The requested level persists; per-call clamping to the new model's ladder already happens at request build (`agent/session_model_call.go:750`); UIs display the model's supported levels | Zero new clamp machinery; the user's intent survives round-trips through weaker models |
-| Change announcement | New session events → projector → new notifications `thread/model/changed`, `thread/reasoning-effort/changed`; plus synchronous `UpdateSessionInfo` so hydration agrees | `serf/thread/name/changed` is the proven template (`appwire_projection.go:652`); hydration freshness fixes G2 for clients that missed the push |
+| Change announcement | New session events → projector → new notifications `thread/model/changed`, `thread/reasoning-effort/changed`; plus synchronous `UpdateSessionInfo` so hydration agrees | `evener/thread/name/changed` is the proven template (`appwire_projection.go:652`); hydration freshness fixes G2 for clients that missed the push |
 | Transcript marker | A persisted marker turn rendered as a `systemMessage` item in both projections (mechanism: the "Marker persistence" row + N5) on successful model switch; nothing for effort | Both renderers already display `systemMessage`; effort changes are low-stakes and chip-visible — a divider per effort tweak is noise |
 | Snapshot surface | Thread snapshot gains `reasoningEffort`, `reasoningEffortLevels`, and `supportsReasoning`; `ModelProvider` stays the model field and becomes switch-fresh | Cold-attached clients must render both settings AND populate pickers with no side channel — the appwire model list carries provider+model only |
 | Web picker | Reuse the existing picker pattern (`settings-pickers.js` / `spawn.js`) wired to `data-model-trigger`; palette entry retained | The chip is where users look; the dead button is worse than no button |
 | TUI `/effort` | New command mirroring `/model`: bare form opens a level picker for the current model, arg form sends directly | Surface parity; reuses `tuipick` primitives and the existing `thread/reasoning-effort/set` method |
 | Delegate echo | `delegateResult` gains the resolved `provider/model` (mirror of the sandbox echo) | Parent-side verifiability; the restore descriptor already persists the same fields |
 | Context-window shrink | Switch succeeds; when estimated usage exceeds the new profile's compaction threshold the switch marker carries a warning line; existing context manager handles the rest next turn | `contextmgr` reads the window from the *current* profile per estimate (`SetModel` already calls `contextMgr.SetProfile`), so budgets self-correct; blocking the switch would strand users on expensive models |
-| Model validation | Reject unknown instances (resolver error). Model membership reuses the launch policy verbatim — live `client.ListModels` with the launchcheck timeout plus catalog visibility (`cmd/serf/internal/launchcheck/launchcheck.go:217`), with the behavior-tag unreported-models allowance (`cmd/serf-hub/app_models.go:143`) — with one amendment: an enumeration failure of **any** error class fails open (accept) | Today an unknown bare model "succeeds" and fails one turn later with an opaque provider error (G11). Launchcheck fails open only for an error-message allowlist; that would make dead credentials block a switch, contradicting the failure-modes row — so the switch path fails open unconditionally on enumeration errors |
+| Model validation | Reject unknown instances (resolver error). Model membership reuses the launch policy verbatim — live `client.ListModels` with the launchcheck timeout plus catalog visibility (`cmd/evener/internal/launchcheck/launchcheck.go:217`), with the behavior-tag unreported-models allowance (`cmd/evener-hub/app_models.go:143`) — with one amendment: an enumeration failure of **any** error class fails open (accept) | Today an unknown bare model "succeeds" and fails one turn later with an opaque provider error (G11). Launchcheck fails open only for an error-message allowlist; that would make dead credentials block a switch, contradicting the failure-modes row — so the switch path fails open unconditionally on enumeration errors |
 | Thinking replay provenance | A `thinking`/`redacted_thinking` block from a **completed prior turn** replays only when the outgoing request's `(req.Provider, req.Model)` — instance id + requested model — matches the producing turn's `(ResponseProvider, ResponseRequestModel)` (`agent/schema/turn.go:44-46`; fall back to catalog-canonicalized `ResponseModel` when `ResponseRequestModel` is empty). **Empty provenance (legacy transcripts) is replay-eligible.** Turns of the in-flight turn are exempt (fallback rounds), as are requests built by the fallback path itself. Per-tag scope: anthropic-family enforces exact-model; google enforces same-provider only (its builder must replay thought signatures for prior tool calls); Responses and compat targets already provider-scope thinking via their existing guards — the rule adds tests there, not behavior | The G12 risk is anthropic-family signature acceptance across models. Matching on `ResponseModel` (the provider-reported dated id) against the requested alias would strip *same-model* thinking every turn; matching in requested-model space avoids that. The intra-turn/fallback exemption keeps the "fallbacks untouched" decision true and avoids stripping the thinking Anthropic requires mid-tool-loop (`anthropic/request.go:476-483`) |
 | web_search replay provenance | Raw blocks replay verbatim only within the producing behavior-tag family; cross-tag they are dropped | The raw payload is foreign JSON to any other wire protocol (G13); translation is possible future work, silence is not |
 | Unrepresentable history | `SetModel` preflight-scans canonical history content kinds against an **explicit per-tag policy table** (not derived from builder errors): `document` and `audio` are unrepresentable for anthropic-family AND google targets (hard errors: `anthropic/request.go:512-513`, `google/request.go:280-281,328-329`) and for openai-compat targets (the compat builder silently **drops** them — `openaicompat/request.go:299-329` has no cases — and silently dropping user content counts as unrepresentable by policy); `audio` is unrepresentable for openai Responses (`responses.go:913-938`; documents are carried). Rejection names the kinds and the target | Silently dropping user content is worse than refusing; today the switch "succeeds" and every subsequent request errors (G14) — or silently loses content on compat. Real fix (document support in the builders) is a separate follow-up |
 | Error propagation | `Session.SetModel` returns `error`; the daemon handler maps it to a structured AppWire error; no partial application on any rejection path | `ResolveProfileFromConfig` already produces good errors listing configured instances; they are currently thrown away (G11) |
 | Knowledge cutoff | `SetModel` recomputes `envInfo.KnowledgeCutoff` alongside the existing prompt-cache refresh | The prompt otherwise claims the launch model's cutoff forever (G15) |
-| Stale-registry limitation | Documented, not fixed: the daemon's adapter registry and resolver closure are frozen at process start, so an instance added to `providers.toml` after launch is unreachable until restart. The picker may legitimately offer it (hub enumerates fresh); the switch then fails with the resolver's instance-listing error. Related: the daemon's own `model/list` closure is launch-pinned (`cmd/serf/serve.go:409` binds `profile.ID()` at startup), so daemon-direct listings label models with the launch instance after a switch — documented; pickers use the hub's listing | Hot-reloading `providers.toml` is its own project; a clear error is the honest v1 |
-| Effort control gating | TUI `/effort` and the web effort control gate on `ChangeModel` (documented reuse — there is no effort capability and the hub explicitly says so, `cmd/serf-hub/app_rpc.go:550-552`); no new wire capability is added | `ChangeModel` is `modelFunc set && !closed` — a session-liveness proxy with the right lifecycle; inventing `ChangeEffort` is YAGNI |
+| Stale-registry limitation | Documented, not fixed: the daemon's adapter registry and resolver closure are frozen at process start, so an instance added to `providers.toml` after launch is unreachable until restart. The picker may legitimately offer it (hub enumerates fresh); the switch then fails with the resolver's instance-listing error. Related: the daemon's own `model/list` closure is launch-pinned (`cmd/evener/serve.go:409` binds `profile.ID()` at startup), so daemon-direct listings label models with the launch instance after a switch — documented; pickers use the hub's listing | Hot-reloading `providers.toml` is its own project; a clear error is the honest v1 |
+| Effort control gating | TUI `/effort` and the web effort control gate on `ChangeModel` (documented reuse — there is no effort capability and the hub explicitly says so, `cmd/evener-hub/app_rpc.go:550-552`); no new wire capability is added | `ChangeModel` is `modelFunc set && !closed` — a session-liveness proxy with the right lifecycle; inventing `ChangeEffort` is YAGNI |
 | Current-setting visibility | Both surfaces render the current model **and** current effort from the snapshot: web shows an effort chip beside the header model chip; the TUI adds an `effort` part beside the `model` part in the session header (`hub_session_view.go:53`) | The Goals promise visibility of both; today effort renders nowhere on a live session (G4) |
 | Marker persistence | The switch marker is a **persisted turn**: a new `schema.Turn` kind (named consistently with `TurnCheckpoint`/`TurnSummary`), appended by the `SetModel` success path, projected to a `systemMessage` item by BOTH the live projector and `apptranscript.ProjectTurn`, and **excluded from `expandHistory`** (never sent to the model) | `systemAnnouncementWithRaw` alone emits a live notification backed by a bounded in-memory ring (`internal/appserver/notifier.go:15-44`); `thread/read` prefers transcript-file turns (`server/appwire_turns.go:13-24`) and the replay projection synthesizes `systemMessage` only from persisted kinds (`apptranscript.go:216-230`) — the 2026-06-26 dual-projection lesson, again |
 
@@ -193,7 +193,7 @@ model. Any rejection leaves the session byte-identical.
 
 `Session.SetModel` gains an `error` return carrying every validation and
 resolution failure; the daemon handler propagates it. The setter's sole
-production caller today is the daemon hook (`cmd/serf/serve.go:406` — the
+production caller today is the daemon hook (`cmd/evener/serve.go:406` — the
 fallback path and delegate spawn use `resolveProfileForRef` directly), but the
 turn-active gate still lives in the daemon RPC layer: the setter stays
 boundary-agnostic and reusable, and interaction policy belongs at the protocol
@@ -213,19 +213,19 @@ load) hydrates the new model from `thread/read`. The same pair of guarantees
 applies to `thread/reasoning-effort/set` via `thread/reasoning-effort/changed`.
 
 Hub-side, the relay forwards daemon notifications to subscribed clients as-is
-(verified generic broadcast, `cmd/serf-hub/app_rpc.go:225`). Index/list
+(verified generic broadcast, `cmd/evener-hub/app_rpc.go:225`). Index/list
 surfaces converge too: the web sidebar's resync whitelist
-(`cmd/serf-hub/assets/sidebar.js:914 QUALIFYING`) gains
+(`cmd/evener-hub/assets/sidebar.js:914 QUALIFYING`) gains
 `thread/model/changed`, and the TUI applies the notification to its session
 detail and dashboard row (Model column, `hub_dashboard_view.go:348`). Resume
 agreement comes from persisted meta (`detail.Model` reads it —
-`cmd/serf-hub/web_api_tree.go:765`).
+`cmd/evener-hub/web_api_tree.go:765`).
 
 ### N3. Persistence and resume
 
 A switch survives: (a) daemon crash immediately after the RPC returns
 (synchronous meta flush), (b) clean shutdown + hub resume (resume passes
-persisted `ProfileID`/`Model`; `SERF_MODEL` must not override — already the
+persisted `ProfileID`/`Model`; `EVENER_MODEL` must not override — already the
 contract per `ResolveResumeModelRef`), (c) CLI resume. Acceptance: a session
 switched from A to B, killed, and resumed starts its next turn on B with B's
 context window and effort ladder.
@@ -312,7 +312,7 @@ Additive only; no changes to existing methods or params.
   emitted by the setters; projector cases in
   `internal/appprojector/appwire_projection.go` mapping them to the
   notifications (template: `EventSessionNameChanged` at `:652`).
-- Thread snapshot: `SerfThread` gains `reasoningEffort`,
+- Thread snapshot: `EvenerThread` gains `reasoningEffort`,
   `reasoningEffortLevels`, and `supportsReasoning` — cold-attached clients
   must be able to render both settings and populate pickers with no prior
   notification (the appwire `model/list` carries provider+model only,
@@ -321,8 +321,8 @@ Additive only; no changes to existing methods or params.
   session state; `status.Model` refreshed synchronously on switch (fixes G2).
 - New persisted marker turn kind in `agent/schema` + its
   `apptranscript.ProjectTurn` and live-projector cases (N5).
-- Clients: `cmd/serf-hub/assets/appwire.js` `eventsFromNotification` maps the
-  new notifications; `cmd/serf-tui` `applyHubNotification` likewise.
+- Clients: `cmd/evener-hub/assets/appwire.js` `eventsFromNotification` maps the
+  new notifications; `cmd/evener-tui` `applyHubNotification` likewise.
 
 ## Failure modes
 
@@ -356,9 +356,9 @@ Additive only; no changes to existing methods or params.
   content kind (thinking same-model replays / cross-model drops with and
   without signatures; web_search same-tag replays / cross-tag drops;
   tool ids untouched); Responses fingerprint invalidation on model change.
-- `cmd/serf-tui`: `/effort` registry entry, picker flow, notification apply.
+- `cmd/evener-tui`: `/effort` registry entry, picker flow, notification apply.
 
-**JSDOM (`cmd/serf-hub/jstest`).**
+**JSDOM (`cmd/evener-hub/jstest`).**
 - Header chip opens picker; selection calls `thread/model/set`; chip updates
   on `thread/model/changed` without re-read; controls disable during a run;
   effort picker renders per-model levels.
@@ -368,7 +368,7 @@ Additive only; no changes to existing methods or params.
   `model-switch-resume.md` (switch → kill → resume on new model),
   `tui-effort-command.md`.
 
-**Live ladder (SERF_E2E_LIVE=1, patterned on
+**Live ladder (EVENER_E2E_LIVE=1, patterned on
 `reasoning-effort-providers.md`).**
 - One card walking anthropic → openai → kimi switches in a single session
   with a tool-using turn after each hop, asserting the turn runs on the

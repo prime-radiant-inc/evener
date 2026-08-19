@@ -4,7 +4,7 @@ import (
 	"context"
 	"testing"
 
-	"primeradiant.com/serf/appwire"
+	"primeradiant.com/evener/appwire"
 )
 
 // A message the user queued has to run even when the agent is holding an

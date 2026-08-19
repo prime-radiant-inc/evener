@@ -8,10 +8,10 @@ import (
 	"sync"
 	"testing"
 
-	"primeradiant.com/serf/agent/plugin"
-	"primeradiant.com/serf/agent/provider"
-	"primeradiant.com/serf/llm"
-	"primeradiant.com/serf/llm/providercfg"
+	"primeradiant.com/evener/agent/plugin"
+	"primeradiant.com/evener/agent/provider"
+	"primeradiant.com/evener/llm"
+	"primeradiant.com/evener/llm/providercfg"
 )
 
 type pluginModelListAdapter struct {

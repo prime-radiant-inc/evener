@@ -6,10 +6,10 @@ import (
 	"testing"
 	"time"
 
-	"primeradiant.com/serf/agent/events"
-	"primeradiant.com/serf/agent/execenv"
-	"primeradiant.com/serf/agent/internal/goal"
-	"primeradiant.com/serf/llm"
+	"primeradiant.com/evener/agent/events"
+	"primeradiant.com/evener/agent/execenv"
+	"primeradiant.com/evener/agent/internal/goal"
+	"primeradiant.com/evener/llm"
 )
 
 // newGateSession builds a session with a fake "openai" adapter and starts
@@ -253,7 +253,7 @@ func TestTerminateGoalOnErrorClassification(t *testing.T) {
 // asking whether an interrupt is a user interrupt and acting on the answer.
 //
 // The host's next-turn factory is how a drained queue head announces itself:
-// cmd/serf serve publishes processing state and registers the new turn's cancel
+// cmd/evener serve publishes processing state and registers the new turn's cancel
 // from inside it. terminateGoalOnError only wants the classification, and no
 // turn is starting when a goal decides whether to stay active — invoking the
 // factory here tells the daemon a turn began that will never run, and nothing

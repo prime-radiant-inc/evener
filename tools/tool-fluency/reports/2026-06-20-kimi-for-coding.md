@@ -4,24 +4,24 @@
 
 - Branch: `wip/tool-fluency-framework`
 - Model: `kimi/kimi-for-coding`
-- Runner: `go run ./tools/tool-fluency/cmd/serf-fluency`
-- Full result directory: `/tmp/serf-fluency-kimi-all-1`
+- Runner: `go run ./tools/tool-fluency/cmd/evener-fluency`
+- Full result directory: `/tmp/evener-fluency-kimi-all-1`
 
 Catalog command:
 
 ```sh
-go run ./tools/tool-fluency/cmd/serf-fluency catalog --model kimi/kimi-for-coding
+go run ./tools/tool-fluency/cmd/evener-fluency catalog --model kimi/kimi-for-coding
 ```
 
 Run command:
 
 ```sh
-go run ./tools/tool-fluency/cmd/serf-fluency run \
+go run ./tools/tool-fluency/cmd/evener-fluency run \
   --build \
   --model kimi/kimi-for-coding \
   --probe all \
   --timeout 10m \
-  --out /tmp/serf-fluency-kimi-all-1
+  --out /tmp/evener-fluency-kimi-all-1
 ```
 
 ## Summary
@@ -33,7 +33,7 @@ go run ./tools/tool-fluency/cmd/serf-fluency run \
 - Skipped unavailable: 1
 
 `web_search.current` was skipped because the Kimi profile does not advertise
-Serf's `web_search` function on this surface.
+Evener's `web_search` function on this surface.
 
 ## Failure
 
@@ -44,9 +44,9 @@ Status: failed.
 Evidence:
 
 - Full run session: `01KVK05XEKEXR7MFAGYSY6W7MP`
-- State dir: `/tmp/serf-fluency-kimi-all-1/job_watch.observer_callback/rep-01/state`
+- State dir: `/tmp/evener-fluency-kimi-all-1/job_watch.observer_callback/rep-01/state`
 - Calls: `delegate:1`, `job_watch:1`, `read_file:1`
-- `serf-doctor watches` showed one matching delivery, delivered, with no self-loop.
+- `evener-doctor watches` showed one matching delivery, delivered, with no self-loop.
 - The watch-delivered delegate resume was cancelled with `stopped_by_parent`
   during CLI teardown.
 - Kimi also rewrote the delegated observer task to say

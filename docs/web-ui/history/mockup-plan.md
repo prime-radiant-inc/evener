@@ -1,4 +1,4 @@
-# Serf Web Hub — Comprehensive UX Mockup Plan
+# Evener Web Hub — Comprehensive UX Mockup Plan
 
 Status: **planning** (2026-06-17). Drives the goal: extensively re-test the UX against the
 design guidelines + subagent persona review panels, mock up everything worth improving with **≥4

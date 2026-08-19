@@ -12,7 +12,7 @@
 
 Date: 2026-06-20
 Status: archived, superseded in part
-Builds on: `docs/superpowers/specs/2026-06-11-job-control-watch-mailbox-design.md`, `docs/superpowers/specs/2026-06-18-observer-watch-origin-loop-design.md`, `docs/superpowers/specs/2026-06-19-serf-doctor-unified-design.md`
+Builds on: `docs/superpowers/specs/2026-06-11-job-control-watch-mailbox-design.md`, `docs/superpowers/specs/2026-06-18-observer-watch-origin-loop-design.md`, `docs/superpowers/specs/2026-06-19-evener-doctor-unified-design.md`
 
 ## Problem
 
@@ -38,7 +38,7 @@ A later Kimi fluency run exposed a related API-shape problem: the model chose
 `events: ["assistant.message"]` when it needed result-tool messages. That was
 not a passive-observer runtime failure; it was a public vocabulary problem.
 Plain assistant prose is an internal transcript/UI event, while `communicate`
-is the explicit result/status channel models should watch. Serf should reject
+is the explicit result/status channel models should watch. Evener should reject
 `assistant.message` at `job_watch` creation with guidance rather than silently
 upgrading it to `communicate`, because auto-upgrade would hide the model's
 confused event selection.
@@ -49,7 +49,7 @@ sit next to the original passive-observer problem:
 - OpenAI strict tool schemas treated omitted optional fields as required for
   `job_watch`, `job_read_output`, and `job_list`. Those tools must be non-strict
   until their schemas can faithfully express optional object fields.
-- After Serf handed a watch trigger to an observer, the caller could continue in
+- After Evener handed a watch trigger to an observer, the caller could continue in
   the same turn and choose to poll. The caller should yield at that boundary and
   resume from the observer's `communicate(end_turn:true)` callback.
 - A callback delivered to an idle caller must wake the session even when there

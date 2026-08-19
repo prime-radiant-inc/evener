@@ -4,7 +4,7 @@
 
 **Goal:** Remove the Harbor 100-round ceiling, make the bundled explorer inherit the selected model, and rerun only the five Terminal-Bench 2.1 tasks whose failures could plausibly change.
 
-**Architecture:** Keep both changes at their configuration sources. Serf's built-in agent frontmatter controls explorer inheritance; Harbor's adapter passes Serf's existing `0` unlimited-round value. Harbor retains ownership of the outer task timeout.
+**Architecture:** Keep both changes at their configuration sources. Evener's built-in agent frontmatter controls explorer inheritance; Harbor's adapter passes Evener's existing `0` unlimited-round value. Harbor retains ownership of the outer task timeout.
 
 **Tech Stack:** Go, embedded Markdown agent definitions, Python, pytest, Harbor, Terminal-Bench 2.1.
 
@@ -21,13 +21,13 @@
 2. Run the focused test and confirm it fails because explorer is pinned.
 3. Remove the explorer `model` field and update the loader assertion.
 4. Run the focused tests and confirm they pass.
-5. Commit the Serf change.
+5. Commit the Evener change.
 
-### Task 2: Make Harbor Serf rounds unlimited
+### Task 2: Make Harbor Evener rounds unlimited
 
 **Files:**
-- Modify: `tests/test_serf_agent.py`
-- Modify: `src/harbor_runner/serf_agent.py`
+- Modify: `tests/test_evener_agent.py`
+- Modify: `src/harbor_runner/evener_agent.py`
 - Modify: `src/harbor_runner/cli.py`
 
 1. Update the adapter test to construct the default adapter and assert parsed argv contains `--max-rounds 0`.
@@ -38,9 +38,9 @@
 
 ### Task 3: Verify and deploy
 
-1. Run Serf's focused tests and repository gate.
+1. Run Evener's focused tests and repository gate.
 2. Run Harbor's full test suite.
-3. Build the exact Linux amd64 Serf binary and record its checksum and commit.
+3. Build the exact Linux amd64 Evener binary and record its checksum and commit.
 4. Deploy the tested binary and runner configuration to Magic Kingdom.
 
 ### Task 4: Run the targeted eval cohort

@@ -8,7 +8,7 @@ import (
 
 	"github.com/spf13/afero"
 
-	"primeradiant.com/serf/agent/events"
+	"primeradiant.com/evener/agent/events"
 )
 
 // queuePersistSubdir is the state-dir subdirectory holding one queue-snapshot
@@ -38,7 +38,7 @@ func queuesFilePath(stateDir, id string) string {
 // atomically (write-temp, rename), matching TaskStore.save's pattern. An
 // empty snapshot (both slices empty) removes the file instead of writing an
 // empty-array residue, so "no queued messages" is absent, not noise. A blank
-// stateDir (state persistence disabled, e.g. ephemeral `serf run`) is a no-op,
+// stateDir (state persistence disabled, e.g. ephemeral `evener run`) is a no-op,
 // matching maybeAutoSave's own convention.
 func saveQueues(stateDir, id string, steering []steeringMessage, input []queuedInput) error {
 	return saveQueuesFS(afero.NewOsFs(), stateDir, id, steering, input)

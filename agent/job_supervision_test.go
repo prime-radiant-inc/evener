@@ -8,8 +8,8 @@ import (
 	"testing"
 	"time"
 
-	"primeradiant.com/serf/agent/internal/agenttest"
-	"primeradiant.com/serf/llm"
+	"primeradiant.com/evener/agent/internal/agenttest"
+	"primeradiant.com/evener/llm"
 )
 
 func runningJobByID(t *testing.T, jm *jobManager, jobID string) *runningJob {

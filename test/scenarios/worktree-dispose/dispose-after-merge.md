@@ -13,13 +13,13 @@ This card asserts the nudge lands and the model acts on it: it runs
 collected. This is the (a) arm of the §P2 eval gate (see README).
 
 Live end-to-end, real provider (billed). Needs delegate capability (default
-`serf run` at depth ≥ 1) in a session that holds `manage_worktree` (a top-level
+`evener run` at depth ≥ 1) in a session that holds `manage_worktree` (a top-level
 or non-isolated coordinator session — an isolated delegate child does not get
 the op and must NOT be scored here).
 
 ## Pre-state
 
-- Fresh binary + hermetic repo + isolated `SERF_STATE_DIR` (config symlinked),
+- Fresh binary + hermetic repo + isolated `EVENER_STATE_DIR` (config symlinked),
   as in the other worktree cards.
 - The launch session owns `manage_worktree` with the dispose operation.
 

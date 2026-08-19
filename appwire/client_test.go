@@ -67,7 +67,7 @@ func TestClientRoutesResponsesAndNotifications(t *testing.T) {
 	}
 
 	transport.reads <- NotificationMessage(NotifyThreadStatusChanged, map[string]string{"threadId": "th_1"})
-	transport.reads <- ResponseMessage(written.Request.ID, ThreadListResponse{Data: []Thread{{ID: "th_1", Source: "serf"}}})
+	transport.reads <- ResponseMessage(written.Request.ID, ThreadListResponse{Data: []Thread{{ID: "th_1", Source: "evener"}}})
 
 	select {
 	case notif := <-client.Notifications():
@@ -171,7 +171,7 @@ func TestClientInitializeRejectsMismatchedProtocolBeforeInitialized(t *testing.T
 	}()
 
 	request := <-transport.writes
-	transport.reads <- ResponseMessage(request.Request.ID, InitializeResponse{ProtocolVersion: "serf-appwire-v1"})
+	transport.reads <- ResponseMessage(request.Request.ID, InitializeResponse{ProtocolVersion: "evener-appwire-v1"})
 	err := <-done
 	if err == nil {
 		t.Fatal("mismatched initialize response accepted")
@@ -190,8 +190,8 @@ func TestClientInitializeRejectsMismatchedProtocolBeforeInitialized(t *testing.T
 	if !errors.As(err, &mismatch) {
 		t.Fatalf("err = %v (%T), want errors.As match for ProtocolVersionMismatchError", err, err)
 	}
-	if mismatch.Got != "serf-appwire-v1" || mismatch.Want != ProtocolVersion {
-		t.Fatalf("mismatch = %+v, want Got=%q Want=%q", mismatch, "serf-appwire-v1", ProtocolVersion)
+	if mismatch.Got != "evener-appwire-v1" || mismatch.Want != ProtocolVersion {
+		t.Fatalf("mismatch = %+v, want Got=%q Want=%q", mismatch, "evener-appwire-v1", ProtocolVersion)
 	}
 }
 
@@ -220,7 +220,7 @@ func TestClientUpgradeRoundTrip(t *testing.T) {
 	case <-time.After(time.Second):
 		t.Fatal("request was not written")
 	}
-	if written.Request.Method != MethodSerfUpgrade {
+	if written.Request.Method != MethodEvenerUpgrade {
 		t.Fatalf("method=%q", written.Request.Method)
 	}
 	var params UpgradeParams
@@ -233,8 +233,8 @@ func TestClientUpgradeRoundTrip(t *testing.T) {
 
 	transport.reads <- ResponseMessage(written.Request.ID, UpgradeResponse{
 		Channel:        "snapshot",
-		Archive:        "serf_linux_amd64.tar.gz",
-		RestartMessage: "Restart serf-tui and serf-hub to use the upgraded binaries.",
+		Archive:        "evener_linux_amd64.tar.gz",
+		RestartMessage: "Restart evener-tui and evener-hub to use the upgraded binaries.",
 	})
 
 	var result struct {
@@ -249,7 +249,7 @@ func TestClientUpgradeRoundTrip(t *testing.T) {
 	if result.err != nil {
 		t.Fatalf("Upgrade: %v", result.err)
 	}
-	if result.resp.Channel != "snapshot" || result.resp.Archive != "serf_linux_amd64.tar.gz" {
+	if result.resp.Channel != "snapshot" || result.resp.Archive != "evener_linux_amd64.tar.gz" {
 		t.Fatalf("response=%+v", result.resp)
 	}
 }
@@ -295,7 +295,7 @@ func TestClientBuffersBurstLargerThanLegacyCapWithoutOverflow(t *testing.T) {
 	for i := range burst {
 		transport.reads <- NotificationMessage(NotifyAgentMessageDelta, map[string]int{"seq": i})
 	}
-	transport.reads <- ResponseMessage(written.Request.ID, ThreadListResponse{Data: []Thread{{ID: "th_burst", Source: "serf"}}})
+	transport.reads <- ResponseMessage(written.Request.ID, ThreadListResponse{Data: []Thread{{ID: "th_burst", Source: "evener"}}})
 
 	select {
 	case result := <-done:
@@ -348,7 +348,7 @@ func TestClientFailsPendingWhenNotificationsOverflow(t *testing.T) {
 	for i := 0; i < cap(client.notifications)+1; i++ {
 		transport.reads <- NotificationMessage(NotifyThreadStatusChanged, map[string]int{"seq": i})
 	}
-	transport.reads <- ResponseMessage(written.Request.ID, ThreadListResponse{Data: []Thread{{ID: "th_backpressure", Source: "serf"}}})
+	transport.reads <- ResponseMessage(written.Request.ID, ThreadListResponse{Data: []Thread{{ID: "th_backpressure", Source: "evener"}}})
 
 	select {
 	case result := <-done:

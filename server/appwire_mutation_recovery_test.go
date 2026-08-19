@@ -5,11 +5,11 @@ import (
 	"errors"
 	"testing"
 
-	"primeradiant.com/serf/agent"
-	"primeradiant.com/serf/agent/execenv"
-	"primeradiant.com/serf/agent/provider"
-	"primeradiant.com/serf/appwire"
-	"primeradiant.com/serf/llm"
+	"primeradiant.com/evener/agent"
+	"primeradiant.com/evener/agent/execenv"
+	"primeradiant.com/evener/agent/provider"
+	"primeradiant.com/evener/appwire"
+	"primeradiant.com/evener/llm"
 )
 
 func TestAppWireMutationResponseLossRetriesOnce(t *testing.T) {
@@ -404,7 +404,7 @@ func TestAppWireMutationPersistenceFailureCanRecoverInProcess(t *testing.T) {
 	}
 	data, ok := failed.Error.Error.Data.(appwire.ErrorData)
 	if !ok ||
-		data.SerfErrorInfo != appwire.ErrorMutationOutcomeUnknown ||
+		data.EvenerErrorInfo != appwire.ErrorMutationOutcomeUnknown ||
 		data.ClientMutationID != params.ClientMutationID ||
 		data.MutationOutcome != appwire.MutationOutcomeUnknown ||
 		data.RetryDisposition != appwire.RetryDispositionBlocked ||

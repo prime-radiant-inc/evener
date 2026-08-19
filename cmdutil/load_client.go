@@ -6,11 +6,11 @@ import (
 	"path/filepath"
 	"strings"
 
-	"primeradiant.com/serf/agent/provider"
-	"primeradiant.com/serf/envvars"
-	"primeradiant.com/serf/internal/credentials"
-	"primeradiant.com/serf/llm"
-	"primeradiant.com/serf/llm/providercfg"
+	"primeradiant.com/evener/agent/provider"
+	"primeradiant.com/evener/envvars"
+	"primeradiant.com/evener/internal/credentials"
+	"primeradiant.com/evener/llm"
+	"primeradiant.com/evener/llm/providercfg"
 )
 
 var newClientFromAvailableProviders = llm.NewFromAvailableProviders
@@ -19,7 +19,7 @@ var loadCredentialStore = credentials.LoadStore
 // LoadProviderConfig resolves the providers config using the same path and
 // credential injection rules as LoadClient, but does not construct adapters.
 //
-// Path resolution: if SERF_PROVIDERS_CONFIG is set, that path is used;
+// Path resolution: if EVENER_PROVIDERS_CONFIG is set, that path is used;
 // otherwise filepath.Join(DefaultStateRoot(), "providers.toml").
 //
 // Behavior:
@@ -35,7 +35,7 @@ var loadCredentialStore = credentials.LoadStore
 //
 // Always returns (cfg, true, nil) on success.
 func LoadProviderConfig(opts ...llm.EnvOption) (providercfg.Config, bool, error) {
-	path := envvars.SERFProvidersConfig.Getenv()
+	path := envvars.EVENERProvidersConfig.Getenv()
 	if path == "" {
 		path = filepath.Join(DefaultStateRoot(), "providers.toml")
 	}
@@ -117,7 +117,7 @@ func hasAuthorizationHeader(headers map[string]string) bool {
 // LoadClient constructs an LLM client that is always config-driven.
 // Always returns (client, cfg, true, nil) on success.
 func LoadClient(opts ...llm.EnvOption) (*llm.Client, providercfg.Config, bool, error) {
-	path := envvars.SERFProvidersConfig.Getenv()
+	path := envvars.EVENERProvidersConfig.Getenv()
 	if path == "" {
 		path = filepath.Join(DefaultStateRoot(), "providers.toml")
 	}

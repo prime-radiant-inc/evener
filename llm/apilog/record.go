@@ -7,7 +7,7 @@ import (
 	"strings"
 	"time"
 
-	"primeradiant.com/serf/identifier"
+	"primeradiant.com/evener/identifier"
 )
 
 const (

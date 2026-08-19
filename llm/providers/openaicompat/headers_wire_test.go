@@ -26,7 +26,7 @@ func TestNewForInstance_UserHeaderOverridesProviderDefault(t *testing.T) {
 	a := NewForInstance(OpenAICompatInstanceParams{
 		Name:            "kimi",
 		BaseURL:         "https://x/v1",
-		ProviderHeaders: map[string]string{"User-Agent": "serf-coding", "X-Provider": "keep"},
+		ProviderHeaders: map[string]string{"User-Agent": "evener-coding", "X-Provider": "keep"},
 		Headers:         map[string]string{"User-Agent": "user-wins"},
 	})
 	if a.DefaultHeaders["User-Agent"] != "user-wins" {

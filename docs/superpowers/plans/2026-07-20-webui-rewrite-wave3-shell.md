@@ -78,14 +78,14 @@ renders welcome pane standalone (no dockview yet). Gate: suite green.
 Files: `src/shell/{DockHost.tsx, DockHost.test.tsx, dockview-theme.css}`,
 `src/shell/workspace.ts(.test.ts)`. dockview-react integration: panels render registry panes;
 add/close/focus wired to useWorkspaceStore; `api.toJSON()` persisted (debounced) to
-localStorage `serf.workspace.layout.v1`, restored on boot with fallback to welcome; titles
+localStorage `evener.workspace.layout.v1`, restored on boot with fallback to welcome; titles
 live-update via PaneTitleCtx subscribed to thread names. Tests with mocked dockview boundary
 kept THIN (the real dockview renders in jsdom acceptably — prefer real; mock only what jsdom
 can't do, and say which in the report). Gate: suite green.
 
 ### Task 3 ∥ 4 ∥ 5 (parallel streams off the wave branch after Task 2):
 - **T3 tree rail + drawer**: `src/shell/rail/**` — Tree widget over the tree store (fetch
-  `/api/tree` via a thin `src/stores/tree.ts` you own; refetch on `serf/tree/changed` — NOTE:
+  `/api/tree` via a thin `src/stores/tree.ts` you own; refetch on `evener/tree/changed` — NOTE:
   that notification is Go-side Task 6 below; until it lands upstream, refetch on
   thread/started|closed + attention/changed, structured so adding the method is one line);
   attention badges via Cadence/Badge; open-session action → openPane("session",{ref});
@@ -100,13 +100,13 @@ can't do, and say which in the report). Gate: suite green.
   reserved for wave 6). Owns `src/auth.ts` helpers.
 
 ### Task 6 (Go, parallel with 3-5, integration worktree via controller or its own stream):
-`serf/tree/changed` broadcast per spec §7.3: hub broadcasts an empty notification on roster
+`evener/tree/changed` broadcast per spec §7.3: hub broadcasts an empty notification on roster
 refresh deltas, past-index change, archive/favorite/rename/project-delete. Files:
-`cmd/serf-hub/web_api_tree.go` + relevant mutation handlers + `appwire/protocol.go` catalog
+`cmd/evener-hub/web_api_tree.go` + relevant mutation handlers + `appwire/protocol.go` catalog
 entry + regenerate (docs + TS types) + Go tests (broadcast asserted via appserver test seams).
 Scope: ScopeHub notification, no params. TDD.
 
 ### Task 7 (sequential, after merges): wave gate
-Full suite + typecheck + lint + build; SERF_HUB_WEB=new manual smoke: hub serves the shell,
+Full suite + typecheck + lint + build; EVENER_HUB_WEB=new manual smoke: hub serves the shell,
 deep links open panes, layout survives reload, mobile viewport check via chrome skill
 (390px), screenshots archived to the wave worktree sdd dir; wave report; merge to integration.

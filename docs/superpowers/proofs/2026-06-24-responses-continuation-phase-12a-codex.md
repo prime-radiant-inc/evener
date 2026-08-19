@@ -13,7 +13,7 @@ Result: no-go for runtime continuation. The backend still rejects valid `previou
 ## Evidence
 
 ```sh
-SERF_OPENAI_CODEX_DISCOVERY_E2E=1 SERF_OPENAI_CODEX_DISCOVERY_MODEL=gpt-5.4 GOCACHE=/tmp/serf-gocache go test ./llm/providers/openai -run 'TestAdapter_E2E_CodexResponsesContinuationDiscovery' -count=1 -v
+EVENER_OPENAI_CODEX_DISCOVERY_E2E=1 EVENER_OPENAI_CODEX_DISCOVERY_MODEL=gpt-5.4 GOCACHE=/tmp/evener-gocache go test ./llm/providers/openai -run 'TestAdapter_E2E_CodexResponsesContinuationDiscovery' -count=1 -v
 ```
 
 Observed result:
@@ -23,7 +23,7 @@ Observed result:
     responses_continuation_discovery_e2e_test.go:64: codex_backend valid previous_response_id request failed: openai error (status=400): responses.create(stream) failed: map[detail:Unsupported parameter: previous_response_id]
 --- FAIL: TestAdapter_E2E_CodexResponsesContinuationDiscovery (1.85s)
 FAIL
-FAIL	primeradiant.com/serf/llm/providers/openai	2.039s
+FAIL	primeradiant.com/evener/llm/providers/openai	2.039s
 FAIL
 ```
 

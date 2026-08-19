@@ -6,7 +6,7 @@
 
 **Architecture:** A phase/stats-aware attempt contract in `llm.RetryStream` powers two early-stop rules that raise `llm.ProviderUnhealthyError`. An agent-side round recorder retains per-attempt stats and best partials across the round's retry groups; settlement persists the best partial as a normal assistant turn plus a steering turn composed from templates. Events keep live clients consistent; the retry chip gains honest denominators and elapsed time.
 
-**Tech Stack:** Go (daemon: `llm/`, `agent/`), TypeScript (web: `cmd/serf-hub/frontend/`), Go TUI (`cmd/serf-tui/`).
+**Tech Stack:** Go (daemon: `llm/`, `agent/`), TypeScript (web: `cmd/evener-hub/frontend/`), Go TUI (`cmd/evener-tui/`).
 
 ## Global Constraints
 
@@ -307,17 +307,17 @@ func TestRetryStream_FastRejectTransparent_AndDisabledWhenZero(t *testing.T) {
 - Modify: `agent/events/payloads.go` (`ModelRetryData` += `GroupElapsedMS int64`, `AttemptCap int`), `agent/session_stream.go` (`emitModelRetry` fills both; cap = policy budget until a consume-phase failure is recorded in the current group, then `FailFastAfter`), `internal/appprojector/appwire_projection.go` (forward both), `appwire/types.go` (`ThreadModelRetryParams` += `GroupElapsedMS`, `AttemptCap`)
 - Test: extend `agent/events` payload tests + projector tests
 
-- [ ] **Step 1: Failing tests:** `emitModelRetry` after 2 open-phase failures → `AttemptCap == policy.MaxRetries+1`; after 1 consume-phase failure → `AttemptCap == 4`; `GroupElapsedMS` monotonic. Projector forwards both fields on `serf/thread/modelRetry`.
+- [ ] **Step 1: Failing tests:** `emitModelRetry` after 2 open-phase failures → `AttemptCap == policy.MaxRetries+1`; after 1 consume-phase failure → `AttemptCap == 4`; `GroupElapsedMS` monotonic. Projector forwards both fields on `evener/thread/modelRetry`.
 - [ ] **Step 2-4: Red / implement / green (regenerate any TS types the repo generates — grep `types.gen.ts` build step). Step 5: Commit** `feat(events): honest retry chip data — GroupElapsedMS + AttemptCap`
 
 ### Task 11: TUI + web chip rendering and clearing rules
 
 **Files:**
-- Modify: `cmd/serf-tui/composer_render.go` (`composerRetryChip`: denominator = `AttemptCap`; append ` · <model>` when `retry.Model` differs from the session's primary model; append ` · <Nm> on this call` from `GroupElapsedMS`), `cmd/serf-tui/hub_notifications.go` (`clearModelRetryOnProgress`: REMOVE `NotifyAgentMessageDelta`, `NotifyReasoningSummaryDelta`, `NotifyToolOutputDelta` from the clear set; keep `NotifyTurnCompleted`, `NotifyTurnStarted`; keep `NotifyItemCompleted` ONLY for model-output items — the notification carries the item kind; systemMessage/user items must not clear), web `cmd/serf-hub/frontend/src/protocol/reducer.ts` + `LivenessLine.tsx` (same rules; render "in progress" while deltas flow instead of clearing)
+- Modify: `cmd/evener-tui/composer_render.go` (`composerRetryChip`: denominator = `AttemptCap`; append ` · <model>` when `retry.Model` differs from the session's primary model; append ` · <Nm> on this call` from `GroupElapsedMS`), `cmd/evener-tui/hub_notifications.go` (`clearModelRetryOnProgress`: REMOVE `NotifyAgentMessageDelta`, `NotifyReasoningSummaryDelta`, `NotifyToolOutputDelta` from the clear set; keep `NotifyTurnCompleted`, `NotifyTurnStarted`; keep `NotifyItemCompleted` ONLY for model-output items — the notification carries the item kind; systemMessage/user items must not clear), web `cmd/evener-hub/frontend/src/protocol/reducer.ts` + `LivenessLine.tsx` (same rules; render "in progress" while deltas flow instead of clearing)
 - Test: TUI notification tests, web reducer tests
 
 - [ ] **Step 1: Failing tests:** chip survives an assistant delta and a systemMessage item completion; clears on turn completion; renders `attempt 3/4`, model tag on fallback group, elapsed.
-- [ ] **Step 2-4: Red / implement / green (`go test ./cmd/serf-tui/... -count=1`; `npm test` per frontend README). Step 5: Commit** `feat(ui): sticky honest retry chip in TUI and web`
+- [ ] **Step 2-4: Red / implement / green (`go test ./cmd/evener-tui/... -count=1`; `npm test` per frontend README). Step 5: Commit** `feat(ui): sticky honest retry chip in TUI and web`
 
 ### Task 12: Delegate surfacing
 
@@ -335,7 +335,7 @@ func TestRetryStream_FastRejectTransparent_AndDisabledWhenZero(t *testing.T) {
 - Modify: `docs/agentic-testing.md` (append the new forensics surfaces: typed in-band errors in api.jsonl, salvaged turns in transcripts) — keep to the file's existing voice
 - Test: the new file
 
-- [ ] **Step 1: Write both incident-shape scenarios against a scripted fake provider:** (a) stall streak → settle ~4 attempts → steering persisted → resumed turn's `buildHistory` carries it; (b) cap shape (two ≥60s-window attempts with big partials) → 2-attempt stop → salvage + steering persisted → resume → history contains draft; assert the transcript outline (`serf-doctor transcript` rendering path — use the doctor package's renderer directly) shows the salvaged ASSISTANT turn and TURN_FAILURE.
+- [ ] **Step 1: Write both incident-shape scenarios against a scripted fake provider:** (a) stall streak → settle ~4 attempts → steering persisted → resumed turn's `buildHistory` carries it; (b) cap shape (two ≥60s-window attempts with big partials) → 2-attempt stop → salvage + steering persisted → resume → history contains draft; assert the transcript outline (`evener-doctor transcript` rendering path — use the doctor package's renderer directly) shows the salvaged ASSISTANT turn and TURN_FAILURE.
 - [ ] **Step 2: Green everything:** `go test ./... -count=1` (respect the repo's flake/timeout policy in `docs/` if a suite is known-slow).
 - [ ] **Step 3: Commit** `test(agent): provider-failure end-to-end scenarios + forensics doc sync`
 

@@ -9,8 +9,8 @@ import (
 	"os"
 	"slices"
 
-	"primeradiant.com/serf/agent/schema"
-	"primeradiant.com/serf/agent/transcript"
+	"primeradiant.com/evener/agent/schema"
+	"primeradiant.com/evener/agent/transcript"
 )
 
 const transcriptJSONLMaxLineBytes = 128 << 20

@@ -4,7 +4,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"primeradiant.com/serf/agent/internal/jobstore"
+	"primeradiant.com/evener/agent/internal/jobstore"
 )
 
 func TestS1Cov_validateWatchTarget_CorruptLog(t *testing.T) {

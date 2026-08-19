@@ -8,8 +8,8 @@ import (
 	"sort"
 	"testing"
 
-	"primeradiant.com/serf/llm"
-	"primeradiant.com/serf/llm/providers/openaicompat"
+	"primeradiant.com/evener/llm"
+	"primeradiant.com/evener/llm/providers/openaicompat"
 )
 
 // modelsRoundTripper is a fake http.RoundTripper: it replays fuzzer-controlled

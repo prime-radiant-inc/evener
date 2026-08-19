@@ -3,7 +3,7 @@ package provider_test
 import (
 	"testing"
 
-	"primeradiant.com/serf/agent/provider"
+	"primeradiant.com/evener/agent/provider"
 )
 
 func TestWithCheapModel_QualifiedRefSetsCheapProvider(t *testing.T) {

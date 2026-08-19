@@ -3,9 +3,9 @@ package agent
 import (
 	"context"
 
-	"primeradiant.com/serf/agent/events"
-	"primeradiant.com/serf/agent/internal/contextmgr"
-	"primeradiant.com/serf/agent/provider"
+	"primeradiant.com/evener/agent/events"
+	"primeradiant.com/evener/agent/internal/contextmgr"
+	"primeradiant.com/evener/agent/provider"
 )
 
 // ctxHost adapts a *Session to the contextmgr.Host seam. contextmgr.Host

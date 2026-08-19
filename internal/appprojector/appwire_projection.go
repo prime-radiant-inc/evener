@@ -7,13 +7,13 @@ import (
 	"strings"
 	"time"
 
-	"primeradiant.com/serf/agent/diagnostic"
-	"primeradiant.com/serf/agent/events"
-	"primeradiant.com/serf/agent/schema"
-	"primeradiant.com/serf/appwire"
-	"primeradiant.com/serf/internal/apptranscript"
-	"primeradiant.com/serf/invariant"
-	"primeradiant.com/serf/llm"
+	"primeradiant.com/evener/agent/diagnostic"
+	"primeradiant.com/evener/agent/events"
+	"primeradiant.com/evener/agent/schema"
+	"primeradiant.com/evener/appwire"
+	"primeradiant.com/evener/internal/apptranscript"
+	"primeradiant.com/evener/invariant"
+	"primeradiant.com/evener/llm"
 )
 
 type AppNotification struct {
@@ -81,7 +81,7 @@ type AppEventProjector struct {
 	// TOOL_RESULT_IMAGES_PERSISTED, or with the turn that opened them.
 	heldToolResultImages map[string]appwire.ThreadItem
 	skillCandidate       skillActivationCandidate
-	delegates            map[string]appwire.SerfDelegateInfo
+	delegates            map[string]appwire.EvenerDelegateInfo
 
 	lastAssistantTurnID string
 	lastAssistantText   string
@@ -117,7 +117,7 @@ func NewAppEventProjector(threadID, ref string) *AppEventProjector {
 		toolStartByKey:       map[string]time.Time{},
 		suppressedTools:      map[string]struct{}{},
 		heldToolResultImages: map[string]appwire.ThreadItem{},
-		delegates:            map[string]appwire.SerfDelegateInfo{},
+		delegates:            map[string]appwire.EvenerDelegateInfo{},
 	}
 }
 
@@ -185,7 +185,7 @@ func (p *AppEventProjector) Project(event events.SessionEvent) []AppNotification
 					Source:        "local",
 					ModelProvider: data.Model,
 					Status:        appwire.ThreadStatus{Type: status},
-					Serf: appwire.SerfThread{
+					Evener: appwire.EvenerThread{
 						Ref:     p.ref,
 						Profile: data.Profile,
 					},
@@ -390,7 +390,7 @@ func (p *AppEventProjector) Project(event events.SessionEvent) []AppNotification
 		// progress, not a fact worth a transcript row (see
 		// appwire.ThreadModelRetryParams on why 91 rows is the wrong answer).
 		data := eventData[events.ModelRetryData](event.Data)
-		return []AppNotification{p.notification(appwire.NotifySerfThreadModelRetry, appwire.ThreadModelRetryParams{
+		return []AppNotification{p.notification(appwire.NotifyEvenerThreadModelRetry, appwire.ThreadModelRetryParams{
 			ThreadID:       p.threadID,
 			Ref:            p.ref,
 			TurnID:         p.activeTurnID,
@@ -705,7 +705,7 @@ func (p *AppEventProjector) Project(event events.SessionEvent) []AppNotification
 		if strings.TrimSpace(text) == "" {
 			text = apptranscript.ImagePlaceholder(len(images))
 		}
-		// Still map[string]any, not appwire.SerfSteeringInjectedParams (kcb5):
+		// Still map[string]any, not appwire.EvenerSteeringInjectedParams (kcb5):
 		// images is nil whenever a steer carries no images (the common case) -
 		// this map always emits "images" anyway (as null), but Images is tagged
 		// `omitempty` on the struct, so a typed literal would drop the key
@@ -730,7 +730,7 @@ func (p *AppEventProjector) Project(event events.SessionEvent) []AppNotification
 		if data.ClientMutationID != "" {
 			params["clientMutationId"] = data.ClientMutationID
 		}
-		return []AppNotification{p.notification(appwire.NotifySerfSteeringInjected, params)}
+		return []AppNotification{p.notification(appwire.NotifyEvenerSteeringInjected, params)}
 	case events.EventCompactionTurn:
 		p.clearSkillCandidate()
 		data := eventData[events.CompactionTurnData](event.Data)
@@ -820,7 +820,7 @@ func (p *AppEventProjector) Project(event events.SessionEvent) []AppNotification
 	case events.EventTaskUpdated:
 		p.clearSkillCandidate()
 		data := eventData[events.TaskUpdatedData](event.Data)
-		return []AppNotification{p.notification(appwire.NotifySerfTaskUpdated, appwire.TaskUpdatedParams{
+		return []AppNotification{p.notification(appwire.NotifyEvenerTaskUpdated, appwire.TaskUpdatedParams{
 			ThreadID: p.threadID,
 			Ref:      p.ref,
 			Total:    data.Total,
@@ -834,7 +834,7 @@ func (p *AppEventProjector) Project(event events.SessionEvent) []AppNotification
 		// which never escalates, would degrade to "<denied>"); file contents never
 		// appear. The shell fields are reserved and empty in v1.
 		data := eventData[events.SandboxEscalationRequestedData](event.Data)
-		return []AppNotification{p.notification(appwire.NotifySerfSandboxEscalationRequested, appwire.SandboxEscalationRequested{
+		return []AppNotification{p.notification(appwire.NotifyEvenerSandboxEscalationRequested, appwire.SandboxEscalationRequested{
 			ThreadID:     p.threadID,
 			Ref:          p.ref,
 			EscalationID: data.EscalationID,
@@ -857,7 +857,7 @@ func (p *AppEventProjector) Project(event events.SessionEvent) []AppNotification
 		// cannot reliably distinguish close-cancel from interrupt anyway. Like
 		// requested, it rides the event stream only and touches no turn/item state.
 		data := eventData[events.SandboxEscalationResolvedData](event.Data)
-		return []AppNotification{p.notification(appwire.NotifySerfSandboxEscalationResolved, appwire.SandboxEscalationResolved{
+		return []AppNotification{p.notification(appwire.NotifyEvenerSandboxEscalationResolved, appwire.SandboxEscalationResolved{
 			ThreadID:     p.threadID,
 			Ref:          p.ref,
 			EscalationID: data.EscalationID,
@@ -911,10 +911,10 @@ func (p *AppEventProjector) Project(event events.SessionEvent) []AppNotification
 		if data.JobType != "shell" {
 			return nil
 		}
-		out := []AppNotification{p.notification(appwire.NotifySerfJobStarted, appwire.SerfJobParams{
+		out := []AppNotification{p.notification(appwire.NotifyEvenerJobStarted, appwire.EvenerJobParams{
 			ThreadID: p.threadID,
 			Ref:      p.ref,
-			Job: appwire.SerfJobInfo{
+			Job: appwire.EvenerJobInfo{
 				JobID:            data.JobID,
 				JobType:          data.JobType,
 				Status:           data.Status,
@@ -931,7 +931,7 @@ func (p *AppEventProjector) Project(event events.SessionEvent) []AppNotification
 			},
 		})}
 		if data.RootSessionID != "" && data.TreeRevision > 0 {
-			out = append(out, p.notification(appwire.NotifySerfJobsTreeUpdated, appwire.JobsTreeUpdatedParams{
+			out = append(out, p.notification(appwire.NotifyEvenerJobsTreeUpdated, appwire.JobsTreeUpdatedParams{
 				ThreadID: data.RootSessionID,
 				Ref:      "local:" + data.RootSessionID,
 				Revision: data.TreeRevision,
@@ -944,10 +944,10 @@ func (p *AppEventProjector) Project(event events.SessionEvent) []AppNotification
 		if data.JobType != "shell" {
 			return nil
 		}
-		out := []AppNotification{p.notification(appwire.NotifySerfJobFinished, appwire.SerfJobParams{
+		out := []AppNotification{p.notification(appwire.NotifyEvenerJobFinished, appwire.EvenerJobParams{
 			ThreadID: p.threadID,
 			Ref:      p.ref,
-			Job: appwire.SerfJobInfo{
+			Job: appwire.EvenerJobInfo{
 				JobID:            data.JobID,
 				JobType:          data.JobType,
 				Status:           data.Status,
@@ -970,7 +970,7 @@ func (p *AppEventProjector) Project(event events.SessionEvent) []AppNotification
 			},
 		})}
 		if data.RootSessionID != "" && data.TreeRevision > 0 {
-			out = append(out, p.notification(appwire.NotifySerfJobsTreeUpdated, appwire.JobsTreeUpdatedParams{
+			out = append(out, p.notification(appwire.NotifyEvenerJobsTreeUpdated, appwire.JobsTreeUpdatedParams{
 				ThreadID: data.RootSessionID,
 				Ref:      "local:" + data.RootSessionID,
 				Revision: data.TreeRevision,
@@ -989,7 +989,7 @@ func (p *AppEventProjector) Project(event events.SessionEvent) []AppNotification
 			return nil
 		}
 		p.delegates[data.DelegateID] = cloneAppwireDelegateInfo(merged)
-		return []AppNotification{p.notification(appwire.NotifySerfDelegateUpdated, appwire.SerfDelegateParams{
+		return []AppNotification{p.notification(appwire.NotifyEvenerDelegateUpdated, appwire.EvenerDelegateParams{
 			ThreadID: p.threadID,
 			Ref:      p.ref,
 			Delegate: cloneAppwireDelegateInfo(merged),
@@ -1040,8 +1040,8 @@ func (p *AppEventProjector) Project(event events.SessionEvent) []AppNotification
 	}
 }
 
-func appwireDelegateInfo(data events.DelegateUpdatedData) appwire.SerfDelegateInfo {
-	out := appwire.SerfDelegateInfo{
+func appwireDelegateInfo(data events.DelegateUpdatedData) appwire.EvenerDelegateInfo {
+	out := appwire.EvenerDelegateInfo{
 		DelegateID: data.DelegateID, OwnerSessionID: data.OwnerSessionID, RootSessionID: data.RootSessionID,
 		ChildSessionID: data.ChildSessionID, TranscriptRef: data.TranscriptRef, ParentDelegateID: data.ParentDelegateID,
 		Type: data.Type, Lifecycle: data.Lifecycle, Phase: data.Phase, Status: data.Status, Outcome: data.Outcome,
@@ -1060,7 +1060,7 @@ func appwireDelegateInfo(data events.DelegateUpdatedData) appwire.SerfDelegateIn
 		ParentWatchGranted: data.ParentWatchGranted,
 	}
 	if data.Usage != nil {
-		out.Usage = &appwire.SerfUsage{
+		out.Usage = &appwire.EvenerUsage{
 			InputTokens: data.Usage.InputTokens, OutputTokens: data.Usage.OutputTokens,
 			CacheReadTokens: data.Usage.CacheReadTokens, TotalTokens: data.Usage.TotalTokens,
 		}
@@ -1074,7 +1074,7 @@ func appwireDelegateInfo(data events.DelegateUpdatedData) appwire.SerfDelegateIn
 	return out
 }
 
-func mergeAppwireDelegateInfo(current, incoming appwire.SerfDelegateInfo) (appwire.SerfDelegateInfo, bool) {
+func mergeAppwireDelegateInfo(current, incoming appwire.EvenerDelegateInfo) (appwire.EvenerDelegateInfo, bool) {
 	if current.DelegateID == "" || incoming.ProjectionRevision > current.ProjectionRevision {
 		merged := cloneAppwireDelegateInfo(incoming)
 		if delegateActivityAfter(current.LatestActivityAt, merged.LatestActivityAt) {
@@ -1102,7 +1102,7 @@ func delegateActivityAfter(candidate, current string) bool {
 	return candidateErr == nil && currentErr == nil && candidateAt.After(currentAt)
 }
 
-func cloneAppwireDelegateInfo(value appwire.SerfDelegateInfo) appwire.SerfDelegateInfo {
+func cloneAppwireDelegateInfo(value appwire.EvenerDelegateInfo) appwire.EvenerDelegateInfo {
 	value.Message = append(json.RawMessage(nil), value.Message...)
 	value.StructuredResult = append(json.RawMessage(nil), value.StructuredResult...)
 	value.StructuredValid = cloneBoolPointer(value.StructuredValid)
@@ -1210,7 +1210,7 @@ func (p *AppEventProjector) applyPendingTiming(turnID string, turn *appwire.Turn
 // accumulator resets only in startTurn(), which the wrap-up sites call
 // AFTER building the completing Turn).
 func (p *AppEventProjector) stampTurnUsage(turn *appwire.Turn) {
-	usage := appwire.SerfUsageFromLLM(p.activeTurnUsage)
+	usage := appwire.EvenerUsageFromLLM(p.activeTurnUsage)
 	if usage == nil {
 		return
 	}

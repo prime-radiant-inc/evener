@@ -40,7 +40,7 @@ ROOT_FULL=${ROOT_FULL:-0}
 # the frontend directory is absent so this script still works in a checkout
 # without it.
 WEB=${WEB:-1}
-WEB_DIR=${WEB_DIR:-cmd/serf-hub/frontend}
+WEB_DIR=${WEB_DIR:-cmd/evener-hub/frontend}
 [ -d "$WEB_DIR" ] || WEB=0
 
 if [ -z "${WAVE1+x}" ] && [ -z "${WAVE2+x}" ]; then
@@ -92,7 +92,7 @@ done
 # user CPU, so wall time is flat from -parallel 6 up to 32 while kernel time
 # doubles in scheduler churn — and at 32 a test's reported elapsed becomes mostly
 # runqueue wait (the same suite "weighs" 451s instead of 99s), which makes any
-# cost ranking derived from it useless. See cmd/serf-dev/agentshards.go.
+# cost ranking derived from it useless. See cmd/evener-dev/agentshards.go.
 # AGENT_SHARDS=0 runs the agent module as a single `go test` invocation instead of
 # the sharded split. The -race gate uses it: under -race everything is ~10x
 # slower and CPU-bound, so two shards just oversubscribe each other.
@@ -105,9 +105,9 @@ AGENT_P=${AGENT_P-4}
 # Go caches live on a stalled volume. Keep that failure bounded without changing
 # cache configuration: the operator gets the configured cache paths and an exact
 # repair/retry command instead. This must be a positive integer in seconds.
-ROOT_PACKAGE_LIST_TIMEOUT=${SERF_ROOT_PACKAGE_LIST_TIMEOUT:-30}
+ROOT_PACKAGE_LIST_TIMEOUT=${EVENER_ROOT_PACKAGE_LIST_TIMEOUT:-30}
 if [[ ! "$ROOT_PACKAGE_LIST_TIMEOUT" =~ ^[1-9][0-9]*$ ]]; then
-	printf 'run-module-tests.sh: SERF_ROOT_PACKAGE_LIST_TIMEOUT must be a positive integer in seconds (got %q)\n' "$ROOT_PACKAGE_LIST_TIMEOUT" >&2
+	printf 'run-module-tests.sh: EVENER_ROOT_PACKAGE_LIST_TIMEOUT must be a positive integer in seconds (got %q)\n' "$ROOT_PACKAGE_LIST_TIMEOUT" >&2
 	exit 2
 fi
 
@@ -116,10 +116,10 @@ fi
 . "$(dirname "${BASH_SOURCE[0]}")/gate-surface-lib.sh"
 fuzz_test_skip="$GATE_FUZZ_TEST_SKIP"
 
-# SERF_GATE_CAPABILITY_SKIP is exported by scripts/gate-capability-preflight.sh
+# EVENER_GATE_CAPABILITY_SKIP is exported by scripts/gate-capability-preflight.sh
 # (merge-approval-gate's preflight) when it classified a sandbox capability as
 # blocked. Applied to the ROOT module ONLY: the known test-name patterns
-# (TestE2E_, TestTUITmuxE2E_) live entirely in cmd/serf-hub and cmd/serf-tui,
+# (TestE2E_, TestTUITmuxE2E_) live entirely in cmd/evener-hub and cmd/evener-tui,
 # both part of root, and agent/session_escalation_e2e_test.go has unrelated
 # TestE2E_*-named tests of its own - unioning the pattern into every module
 # would silently skip those too. See gate-surface-lib.sh's
@@ -130,10 +130,10 @@ fuzz_test_skip="$GATE_FUZZ_TEST_SKIP"
 # directly (ROOT_FULL=1 make test), where an inherited or hand-set value would
 # otherwise narrow root's surface and still report PASS with no trace of it.
 root_skip="$fuzz_test_skip"
-if [ -n "${SERF_GATE_CAPABILITY_SKIP:-}" ]; then
-	root_skip="(${fuzz_test_skip}|${SERF_GATE_CAPABILITY_SKIP})"
-	printf 'run-module-tests.sh: SERF_GATE_CAPABILITY_SKIP is set; root runs with -skip %s (capability-blocked tests are NOT proven by this run)\n' \
-		"$SERF_GATE_CAPABILITY_SKIP" >&2
+if [ -n "${EVENER_GATE_CAPABILITY_SKIP:-}" ]; then
+	root_skip="(${fuzz_test_skip}|${EVENER_GATE_CAPABILITY_SKIP})"
+	printf 'run-module-tests.sh: EVENER_GATE_CAPABILITY_SKIP is set; root runs with -skip %s (capability-blocked tests are NOT proven by this run)\n' \
+		"$EVENER_GATE_CAPABILITY_SKIP" >&2
 fi
 
 flags="$*"
@@ -242,7 +242,7 @@ trap 'interrupted 129 SIGHUP' HUP
 trap 'interrupted 130 SIGINT' INT
 trap 'interrupted 143 SIGTERM' TERM
 
-scratch_dir logdir serf-module-tests
+scratch_dir logdir evener-module-tests
 fail=0
 failed_modules=()
 
@@ -299,7 +299,7 @@ run_module() {
 		run_root_package_list "$package_list" || return $?
 		while IFS= read -r pkg; do
 			case "$pkg" in
-				primeradiant.com/serf/cmd/serf-fuzzcov|primeradiant.com/serf/cmd/serf-fuzz-harvest)
+				primeradiant.com/evener/cmd/evener-fuzzcov|primeradiant.com/evener/cmd/evener-fuzz-harvest)
 					continue
 					;;
 			esac
@@ -319,7 +319,7 @@ run_module() {
 	if [ "$m" = "agent" ] && [ "$AGENT_SHARDS" -ne 0 ]; then
 		# The agent module's wall time is dominated by its top-level package, one
 		# binary holding ~3550 tests whose git-driving and CPU-bound halves want
-		# opposite -parallel settings. serf-dev agent-shards runs those halves as
+		# opposite -parallel settings. evener-dev agent-shards runs those halves as
 		# two concurrently-scheduled invocations of one prebuilt binary (~32s ->
 		# ~26s). Its subpackages are small and already concurrent internally, but
 		# they run AFTER the shards finish, not alongside them (~22s shards then
@@ -332,11 +332,11 @@ run_module() {
 		# one as an "exit status N" line on stderr, so the runner's 129/130/143
 		# signal exits survive in the binary but not through this call. Only
 		# zero-vs-nonzero is read below, so nothing here depends on them.
-		(cd .. && go run ./cmd/serf-dev agent-shards $test_flags) || shardStatus=$?
+		(cd .. && go run ./cmd/evener-dev agent-shards $test_flags) || shardStatus=$?
 		local subpkgs=()
 		local pkg
 		while IFS= read -r pkg; do
-			[ "$pkg" = "primeradiant.com/serf/agent" ] || subpkgs+=("$pkg")
+			[ "$pkg" = "primeradiant.com/evener/agent" ] || subpkgs+=("$pkg")
 		done < <(go list ./...)
 		if [ "${#subpkgs[@]}" -gt 0 ]; then
 			/usr/bin/time -p go test $test_flags $extra -run "$GATE_TEST_RUN" -skip "$fuzz_test_skip" "${subpkgs[@]}" || shardStatus=$?
@@ -375,7 +375,7 @@ run_wave() {
 		log="$(logpath "$m")"
 		extra="$(module_extra "$m")"
 		tmp="$(tmppath "$m")"
-		( mkdir -p "$tmp" && export TMPDIR="$tmp" && serf_prepare_private_go_home "$tmp" && cd "$m" && run_module "$m" "$extra" ) >"$log" 2>&1 &
+		( mkdir -p "$tmp" && export TMPDIR="$tmp" && evener_prepare_private_go_home "$tmp" && cd "$m" && run_module "$m" "$extra" ) >"$log" 2>&1 &
 		pids+=("$!"); names+=("$m"); active_pids+=("$!")
 	done
 	local i status

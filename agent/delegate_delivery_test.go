@@ -7,7 +7,7 @@ import (
 	"sync"
 	"testing"
 
-	"primeradiant.com/serf/agent/internal/delegatestore"
+	"primeradiant.com/evener/agent/internal/delegatestore"
 )
 
 func TestDelegateControllerTwoGenerationsCanFinishBeforeFirstAck(t *testing.T) {

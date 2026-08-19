@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Serf mockups · #17 Context pressure &amp; compaction</title>
+<title>Evener mockups · #17 Context pressure &amp; compaction</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Hanken+Grotesk:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
@@ -22,7 +22,7 @@
         tell 23k from 230k at a glance, and the number never changes
         register as it approaches the wall. Context budget is arguably
         THE number for a long-session power user.
-     2. serf runs context-strategy=compact: an automatic summarization
+     2. evener runs context-strategy=compact: an automatic summarization
         event fires near the limit and SILENTLY reshapes the transcript,
         dropping detail the user may be relying on — with NO UI marker.
         The conversation just changes shape under you.
@@ -229,7 +229,7 @@ body{overflow:auto}
     <h1>#17 — Context pressure &amp; compaction</h1>
     <p>Two invisible problems. The context readout is a <b>raw mono number</b>
        (the shipped <code style="font-family:var(--mono);font-size:11.5px;color:var(--ink-3)">ctx 23k / 272k tokens</code>) with no
-       threshold semantics; and serf's <code style="font-family:var(--mono);font-size:11.5px;color:var(--ink-3)">context-strategy=compact</code> fires an
+       threshold semantics; and evener's <code style="font-family:var(--mono);font-size:11.5px;color:var(--ink-3)">context-strategy=compact</code> fires an
        automatic summarization that <b>silently reshapes the transcript</b>, dropping detail with no UI
        marker. Four directions, each pairing a pressure gauge with a compaction-lifecycle treatment.</p>
     <div class="principles">

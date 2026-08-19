@@ -21,10 +21,10 @@
 ### Task 1: Distinguish crash markers from routable daemons
 
 **Files:**
-- Modify: `cmd/serf-hub/internal/hubcore/roster.go`
-- Modify: `cmd/serf-hub/internal/hubcore/roster_test.go`
-- Modify: `cmd/serf-hub/app_rpc.go`
-- Modify: `cmd/serf-hub/app_threadlifecycle.go`
+- Modify: `cmd/evener-hub/internal/hubcore/roster.go`
+- Modify: `cmd/evener-hub/internal/hubcore/roster_test.go`
+- Modify: `cmd/evener-hub/app_rpc.go`
+- Modify: `cmd/evener-hub/app_threadlifecycle.go`
 
 **Interfaces:**
 - Consumes: `Roster.Refresh`, `Roster.List`, `newHubSourceRegistry`, and `hubThreadResume`
@@ -55,7 +55,7 @@ if live, ok := r.Find("01CRASHED"); !ok || live.Crashed {
 Run:
 
 ```bash
-go test ./cmd/serf-hub/internal/hubcore -run '^FuzzHubcoreScenarios$' -count=1
+go test ./cmd/evener-hub/internal/hubcore -run '^FuzzHubcoreScenarios$' -count=1
 ```
 
 Expected after declaring the inert field: FAIL in the watched-crash and
@@ -119,7 +119,7 @@ if le, ok := cfg.Roster.Find(sessionID); ok &&
 Run:
 
 ```bash
-go test ./cmd/serf-hub/internal/hubcore -run '^FuzzHubcoreScenarios$' -count=1
+go test ./cmd/evener-hub/internal/hubcore -run '^FuzzHubcoreScenarios$' -count=1
 ```
 
 Expected: PASS.
@@ -127,10 +127,10 @@ Expected: PASS.
 ### Task 2: Hydrate saved transcripts only when no live daemon exists
 
 **Files:**
-- Modify: `cmd/serf-hub/app_rpc.go`
-- Modify: `cmd/serf-hub/app_rpc_test.go`
-- Modify: `cmd/serf-hub/app_tasks.go`
-- Modify: `cmd/serf-hub/app_tasks_test.go`
+- Modify: `cmd/evener-hub/app_rpc.go`
+- Modify: `cmd/evener-hub/app_rpc_test.go`
+- Modify: `cmd/evener-hub/app_tasks.go`
+- Modify: `cmd/evener-hub/app_tasks_test.go`
 
 **Interfaces:**
 - Consumes: the local source's `SessionUnavailable("thread not found: ...")` error and `pastThreadReadResponse`
@@ -180,7 +180,7 @@ if response.Thread.ID != sessionID || len(response.Thread.Turns) != 3 {
 Run:
 
 ```bash
-go test ./cmd/serf-hub -run '^TestHubRPCSubscribedReadReturnsPastForCrashMarker$' -count=1
+go test ./cmd/evener-hub -run '^TestHubRPCSubscribedReadReturnsPastForCrashMarker$' -count=1
 ```
 
 Expected: FAIL. Before the routing change it reports a refused stale endpoint;
@@ -235,8 +235,8 @@ failure after a live entry was selected.
 Run:
 
 ```bash
-go test ./cmd/serf-hub -run '^(TestHubRPCSubscribedReadReturnsPastForCrashMarker|TestHubRPCSubscribedAtomicFailuresDoNotFallBackToPastAndCanRetry|TestHubRPCNonSubscribedAtomicReadFailureCanReturnPastTranscript|TestHubRPCSubscribedNonAtomicReadFailureCanReturnPastTranscript)$' -count=1
-go test ./cmd/serf-hub -run '^TestHubTasksList_' -count=1
+go test ./cmd/evener-hub -run '^(TestHubRPCSubscribedReadReturnsPastForCrashMarker|TestHubRPCSubscribedAtomicFailuresDoNotFallBackToPastAndCanRetry|TestHubRPCNonSubscribedAtomicReadFailureCanReturnPastTranscript|TestHubRPCSubscribedNonAtomicReadFailureCanReturnPastTranscript)$' -count=1
+go test ./cmd/evener-hub -run '^TestHubTasksList_' -count=1
 ```
 
 Expected: PASS.
@@ -244,9 +244,9 @@ Expected: PASS.
 ### Task 3: Verify integration and identifier-writing boundaries
 
 **Files:**
-- Verify: `cmd/serf-hub`
-- Verify: `cmd/serf-hub/internal/hubcore`
-- Verify: `cmd/serf-namingcheck`
+- Verify: `cmd/evener-hub`
+- Verify: `cmd/evener-hub/internal/hubcore`
+- Verify: `cmd/evener-namingcheck`
 - Verify: live Hub session state
 
 **Interfaces:**
@@ -258,16 +258,16 @@ Expected: PASS.
 Run:
 
 ```bash
-gofmt -w cmd/serf-hub/app_rpc.go \
-  cmd/serf-hub/app_rpc_test.go \
-  cmd/serf-hub/app_tasks.go \
-  cmd/serf-hub/app_tasks_test.go \
-  cmd/serf-hub/app_threadlifecycle.go \
-  cmd/serf-hub/internal/hubcore/roster.go \
-  cmd/serf-hub/internal/hubcore/roster_test.go
-go test ./cmd/serf-hub ./cmd/serf-hub/internal/hubcore
-go test ./cmd/serf-namingcheck
-go run ./cmd/serf-namingcheck .
+gofmt -w cmd/evener-hub/app_rpc.go \
+  cmd/evener-hub/app_rpc_test.go \
+  cmd/evener-hub/app_tasks.go \
+  cmd/evener-hub/app_tasks_test.go \
+  cmd/evener-hub/app_threadlifecycle.go \
+  cmd/evener-hub/internal/hubcore/roster.go \
+  cmd/evener-hub/internal/hubcore/roster_test.go
+go test ./cmd/evener-hub ./cmd/evener-hub/internal/hubcore
+go test ./cmd/evener-namingcheck
+go run ./cmd/evener-namingcheck .
 git diff --check
 ```
 
@@ -287,7 +287,7 @@ hydrates, and the dead endpoint is not dialed.
 
 Inspect the fresh transcript and adjacent durable state with the strict
 transcript reader and the repository naming checker. AppWire JSON remains
-camelCase by protocol; Serf-owned transcript and durable-state JSON keys remain
+camelCase by protocol; Evener-owned transcript and durable-state JSON keys remain
 snake_case.
 
 - [x] **Step 4: Commit the scoped implementation**
@@ -297,13 +297,13 @@ Review `git status` and stage only:
 ```bash
 git add docs/superpowers/specs/2026-07-30-crash-marker-transcript-hydration-design.md \
   docs/superpowers/plans/2026-07-30-crash-marker-transcript-hydration.md \
-  cmd/serf-hub/app_rpc.go \
-  cmd/serf-hub/app_rpc_test.go \
-  cmd/serf-hub/app_tasks.go \
-  cmd/serf-hub/app_tasks_test.go \
-  cmd/serf-hub/app_threadlifecycle.go \
-  cmd/serf-hub/internal/hubcore/roster.go \
-  cmd/serf-hub/internal/hubcore/roster_test.go
+  cmd/evener-hub/app_rpc.go \
+  cmd/evener-hub/app_rpc_test.go \
+  cmd/evener-hub/app_tasks.go \
+  cmd/evener-hub/app_tasks_test.go \
+  cmd/evener-hub/app_threadlifecycle.go \
+  cmd/evener-hub/internal/hubcore/roster.go \
+  cmd/evener-hub/internal/hubcore/roster_test.go
 ```
 
 Commit with a detailed message describing the dead-PID crash marker,

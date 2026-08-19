@@ -6,8 +6,8 @@ import (
 	"fmt"
 	"strings"
 
-	"primeradiant.com/serf/llm"
-	"primeradiant.com/serf/llm/providers/internal/openaichat"
+	"primeradiant.com/evener/llm"
+	"primeradiant.com/evener/llm/providers/internal/openaichat"
 )
 
 type chatCompletionResponse struct {

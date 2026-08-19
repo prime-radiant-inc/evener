@@ -4,7 +4,7 @@ import (
 	"errors"
 	"fmt"
 
-	"primeradiant.com/serf/auth/openai"
+	"primeradiant.com/evener/auth/openai"
 )
 
 // Example shows the typical entry points: build a Service from the default

@@ -10,8 +10,8 @@ import (
 	"testing"
 	"time"
 
-	"primeradiant.com/serf/agent/internal/delegatestore"
-	"primeradiant.com/serf/agent/internal/worktree"
+	"primeradiant.com/evener/agent/internal/delegatestore"
+	"primeradiant.com/evener/agent/internal/worktree"
 )
 
 func TestStableDelegateWorktree_LiveGuardUsesStableDelegateState(t *testing.T) {

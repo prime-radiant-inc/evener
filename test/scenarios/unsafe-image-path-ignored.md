@@ -5,7 +5,7 @@ card here whose value is entirely a **negative** assertion. A shell command
 prints an out-of-cwd path, a `../` traversal, an external URL, a missing file,
 a non-image, or an SVG; none of them may ever become a preview, and none of
 them may fail, blank, or error the tool row that printed them. The boundary is
-`fspaths.ResolveInRoot` (`cmd/serf-hub/internal/fspaths/paths.go#ResolveInRoot`) —
+`fspaths.ResolveInRoot` (`cmd/evener-hub/internal/fspaths/paths.go#ResolveInRoot`) —
 lexical containment *and* symlink-resolved containment, each independently
 sufficient — the same check `/doc/file` uses. Failing candidates are simply
 skipped (`output_images.go:74-77`), and a notification with nothing to add is
@@ -21,7 +21,7 @@ frontend (`660376f78`); "no thumbnail" now means no
 
 - A freshly built hub on an isolated `$HOME` and a kernel-assigned port — see
   the Setup checklist in `docs/agentic-testing.md`. Token at
-  `$HOME/.serf/auth-token` (that isolated one).
+  `$HOME/.evener/auth-token` (that isolated one).
 - A hermetic `$WORK` as the session's `working_dir`, and a sibling `$OUTSIDE`
   **not** under `$WORK` holding a valid `outside.png`.
 - Inside `$WORK`: `notes.txt` (a real file, not an image) and `vector.svg` (a
@@ -109,7 +109,7 @@ frontend (`660376f78`); "no thumbnail" now means no
 - **Nothing client-side may re-derive a preview from the text.** `ImageGallery`
   renders only `item.outputImages` and builds no URLs
   (`ImageGallery.tsx:1-16`); there is no shell-output parser in
-  `cmd/serf-hub/frontend/src`. Falsify: a thumb rendered for a path the wire
+  `cmd/evener-hub/frontend/src`. Falsify: a thumb rendered for a path the wire
   never described.
 
 ## Cleanup

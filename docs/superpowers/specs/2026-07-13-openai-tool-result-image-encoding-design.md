@@ -2,7 +2,7 @@
 
 ## Problem
 
-Serf serializes an OpenAI Responses tool result with image data as two
+Evener serializes an OpenAI Responses tool result with image data as two
 top-level input items: a `function_call_output` containing text followed by an
 `input_image`. GPT-5.6 Responses-Lite rejects the top-level `input_image`
 because image objects are content items, not top-level conversation items.
@@ -16,7 +16,7 @@ Encode a tool result's text and optional image together in the
 `function_call_output.output` field. When an image is present, `output` is a
 content array containing:
 
-1. An `input_text` item carrying the same text Serf currently sends as the
+1. An `input_text` item carrying the same text Evener currently sends as the
    string output.
 2. An `input_image` item carrying the image data URI and the model-appropriate
    detail field.

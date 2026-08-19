@@ -1,8 +1,8 @@
 #!/bin/sh
 set -eu
 
-repo="https://github.com/prime-radiant-inc/serf"
-bins="serf serf-hub serf-tui serf-doctor"
+repo="https://github.com/prime-radiant-inc/evener"
+bins="evener evener-hub evener-tui evener-doctor evener-migrate"
 
 if [ -n "${PREFIX:-}" ]; then
 	prefix=$PREFIX
@@ -15,8 +15,8 @@ else
 fi
 
 bindir=${BINDIR:-$prefix/bin}
-share_bindir=${SERF_SHARE_BINDIR:-$prefix/share/serf/bin}
-version=${SERF_INSTALL_VERSION:-latest}
+share_bindir=${EVENER_SHARE_BINDIR:-$prefix/share/evener/bin}
+version=${EVENER_INSTALL_VERSION:-latest}
 
 case "$(uname -s)" in
 	Linux) os=linux ;;
@@ -39,13 +39,13 @@ esac
 case "$os-$arch" in
 	linux-amd64 | darwin-arm64) ;;
 	*)
-		echo "No Serf binary release is available for $os-$arch." >&2
+		echo "No Evener binary release is available for $os-$arch." >&2
 		exit 1
 		;;
 esac
 
-archive_name="serf_${os}_${arch}.tar.gz"
-archive_root="serf_${os}_${arch}"
+archive_name="evener_${os}_${arch}.tar.gz"
+archive_root="evener_${os}_${arch}"
 if [ "$version" = "latest" ]; then
 	url="$repo/releases/latest/download/$archive_name"
 else
@@ -88,5 +88,11 @@ for bin in $bins; do
 	ln -sfn "$share_bindir/$bin" "$bindir/$bin"
 done
 
-echo "Installed Serf binaries to $share_bindir"
+echo "Installed Evener binaries to $share_bindir"
 echo "Symlinked commands into $bindir"
+
+if [ -n "${HOME:-}" ] && [ -e "$HOME/.serf" ]; then
+	echo ""
+	echo "Found an existing ~/.serf: run 'evener-migrate' once before your first"
+	echo "Evener launch to move it to ~/.evener (see README.md, \"Migrating from Serf\")."
+fi

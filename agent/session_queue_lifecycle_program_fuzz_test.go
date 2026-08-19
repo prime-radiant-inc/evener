@@ -1,4 +1,4 @@
-//go:build serffuzz
+//go:build evenerfuzz
 
 package agent
 
@@ -9,9 +9,9 @@ import (
 	"strings"
 	"testing"
 
-	"primeradiant.com/serf/agent/internal/agenttest"
-	"primeradiant.com/serf/agent/provenance"
-	"primeradiant.com/serf/llm"
+	"primeradiant.com/evener/agent/internal/agenttest"
+	"primeradiant.com/evener/agent/provenance"
+	"primeradiant.com/evener/llm"
 )
 
 // FuzzSessionQueueLifecycleProgram drives the small state machines surrounding

@@ -1,6 +1,6 @@
 package jobstore
 
-import "primeradiant.com/serf/identifier"
+import "primeradiant.com/evener/identifier"
 
 // NewTerminalGeneration mints the stable identity of a job's first terminal
 // event. It is minted once at finalize and copied verbatim onto the job's

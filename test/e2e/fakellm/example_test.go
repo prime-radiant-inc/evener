@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"time"
 
-	"primeradiant.com/serf/test/e2e/fakellm"
+	"primeradiant.com/evener/test/e2e/fakellm"
 )
 
 // Example is the package's own documentation for holding a turn open: the

@@ -23,7 +23,7 @@ Add `TestSession_OpenAIResponsesContinuationPhase12PublicLiveProof` in package `
 The test must skip unless:
 
 ```go
-os.Getenv("SERF_OPENAI_RESPONSES_PHASE12_E2E") == "1"
+os.Getenv("EVENER_OPENAI_RESPONSES_PHASE12_E2E") == "1"
 ```
 
 It must also skip when `OPENAI_API_KEY` is empty.
@@ -45,9 +45,9 @@ client.Use(apiLog)
 t.Cleanup(func() { _ = apiLog.Close() })
 ```
 
-Use a model from `SERF_OPENAI_RESPONSES_PHASE12_MODEL`, defaulting to the same public model used by discovery if unset.
+Use a model from `EVENER_OPENAI_RESPONSES_PHASE12_MODEL`, defaulting to the same public model used by discovery if unset.
 
-The live command must set `SERF_LOG_RAW_HTTP=1` before `go test` starts because `llm.RawBodyEnabled()` is initialized at process startup.
+The live command must set `EVENER_LOG_RAW_HTTP=1` before `go test` starts because `llm.RawBodyEnabled()` is initialized at process startup.
 
 - [x] **Step 3: Drive real Session anchor and delta**
 
@@ -98,7 +98,7 @@ Use the same public adapter to send one direct invalid `PreviousResponseID` requ
 Run:
 
 ```bash
-GOCACHE=/tmp/serf-gocache go test ./agent -run 'TestSession_OpenAIResponsesContinuationPhase12PublicLiveProof' -count=1 -v
+GOCACHE=/tmp/evener-gocache go test ./agent -run 'TestSession_OpenAIResponsesContinuationPhase12PublicLiveProof' -count=1 -v
 ```
 
 Expected: PASS with skip when opt-in env or `OPENAI_API_KEY` is absent.
@@ -125,7 +125,7 @@ Run only with explicit credentials:
 set -a
 . ../../.env
 set +a
-SERF_LOG_RAW_HTTP=1 SERF_OPENAI_RESPONSES_PHASE12_E2E=1 GOCACHE=/tmp/serf-gocache go test ./agent -run 'TestSession_OpenAIResponsesContinuationPhase12PublicLiveProof' -count=1 -v
+EVENER_LOG_RAW_HTTP=1 EVENER_OPENAI_RESPONSES_PHASE12_E2E=1 GOCACHE=/tmp/evener-gocache go test ./agent -run 'TestSession_OpenAIResponsesContinuationPhase12PublicLiveProof' -count=1 -v
 ```
 
 - [x] **Step 2: Record proof artifact**
@@ -198,7 +198,7 @@ Do not change the Codex row.
 Run:
 
 ```bash
-GOCACHE=/tmp/serf-gocache go test ./llm ./agent -run 'TestDefaultResponsesContinuationSupportRegistry|TestDecideResponsesContinuation|TestSession_OpenAIResponsesContinuationPhase9|TestSession_OpenAIResponsesContinuationPhase10' -count=1 -v
+GOCACHE=/tmp/evener-gocache go test ./llm ./agent -run 'TestDefaultResponsesContinuationSupportRegistry|TestDecideResponsesContinuation|TestSession_OpenAIResponsesContinuationPhase9|TestSession_OpenAIResponsesContinuationPhase10' -count=1 -v
 ```
 
 - [x] **Step 5: Record 12B proof and commit**
@@ -225,7 +225,7 @@ If `OPENAI_API_KEY` is absent, record that Task 2 and Task 3 are blocked and tha
 Run:
 
 ```bash
-GOCACHE=/tmp/serf-gocache go test ./agent ./llm -run 'TestSession_OpenAIResponsesContinuationPhase12PublicLiveProof|TestDefaultResponsesContinuationSupportRegistryDisabled' -count=1 -v
+GOCACHE=/tmp/evener-gocache go test ./agent ./llm -run 'TestSession_OpenAIResponsesContinuationPhase12PublicLiveProof|TestDefaultResponsesContinuationSupportRegistryDisabled' -count=1 -v
 git status --short --branch
 ```
 

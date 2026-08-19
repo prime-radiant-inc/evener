@@ -1,4 +1,4 @@
-//go:build serffuzz
+//go:build evenerfuzz
 
 package agent
 
@@ -8,7 +8,7 @@ import (
 	"sort"
 	"testing"
 
-	"primeradiant.com/serf/agent/internal/delegatestore"
+	"primeradiant.com/evener/agent/internal/delegatestore"
 )
 
 func FuzzDelegateControllerTransitions(f *testing.F) {

@@ -1,10 +1,10 @@
 # transcript-multi-session-create-find-read: Session B discovers and reconstructs Session A by content
 
 **What this covers**: THE headline capability of the new session-
-transcript tools (`docs/tools/transcripts.md`) — one serf session
-locating and reading **another** serf session it was never told about.
+transcript tools (`docs/tools/transcripts.md`) — one evener session
+locating and reading **another** evener session it was never told about.
 Session A (run in project dir X) performs a distinctive task. Session B
-(a separate serf run in the SAME dir X) uses
+(a separate evener run in the SAME dir X) uses
 `find_session_transcripts({query})` to locate A by content, gets A's
 `transcript_ref`, and `read_session_transcript`s it to reconstruct what
 A did. The non-negotiable assertion: **B had no a-priori handle on A —
@@ -16,13 +16,13 @@ cross-session find/read seam working end to end.
 - One run directory holding the binary and this run's state, so two
   agents running this card at once share nothing:
   ```bash
-  run=$(mktemp -d -t serf-e2e-xsession-XXXXXX)
-  go build -o "$run/serf" ./cmd/serf
+  run=$(mktemp -d -t evener-e2e-xsession-XXXXXX)
+  go build -o "$run/evener" ./cmd/evener
   export XDG_STATE_HOME="$run/state"
   ```
   The exported state home keeps every session this card writes out of
-  Jesse's real `~/.local/state/serf/projects` while preserving the
-  `<state-home>/serf/projects/<project-id>/sessions/` layout the card is
+  Jesse's real `~/.local/state/evener/projects` while preserving the
+  `<state-home>/evener/projects/<project-id>/sessions/` layout the card is
   actually testing (`agent.RuntimeDirWithStateHome`). Keep it exported for
   BOTH runs — A and B must resolve the same bucket.
 - Creds exported into the child env (bare `.env`; `set -a` mandatory or
@@ -37,8 +37,8 @@ cross-session find/read seam working end to end.
 ## Bucket-sharing precondition (the load-bearing setup)
 
 Sessions are stored in a per-project **bucket** under
-`$XDG_STATE_HOME/serf/projects/<project-id>/sessions/`, where
-`<project-id>` is the readable canonical project ID. **Two serf
+`$XDG_STATE_HOME/evener/projects/<project-id>/sessions/`, where
+`<project-id>` is the readable canonical project ID. **Two evener
 runs invoked with the same `--dir` land in the same bucket.** That shared
 bucket is the entire reason B's `current_project` search can see A.
 This scenario makes that explicit: A and B use one `$proj`, and we assert
@@ -48,14 +48,14 @@ both transcripts live under the same bucket before B searches.
 
 1. Create ONE project dir; both runs use it:
    ```bash
-   proj=$(mktemp -d -t serf-e2e-xsession-XXXXX)
+   proj=$(mktemp -d -t evener-e2e-xsession-XXXXX)
    ```
 
 2. **Session A — a distinctive, identifiable task.** Use a unique marker
    so B's content search is unambiguous:
    ```bash
    marker="lighthouse-$(date +%s)"
-   "$run/serf" --model oai-work/gpt-5.5 --dir "$proj" \
+   "$run/evener" --model oai-work/gpt-5.5 --dir "$proj" \
      "Create a file named beacon.txt containing exactly the line: project codename ${marker}. Then create a Python script summarize.py that reads beacon.txt and prints its contents in uppercase. Run summarize.py with python3 and let the output through. Finally report the codename and what the script printed."
    ```
    Wait for exit 0. Sanity-check A's work:
@@ -67,7 +67,7 @@ both transcripts live under the same bucket before B searches.
    and (after step 4) B's must sit under the same project ID. Capture the
    bucket that now contains A's transcript:
    ```bash
-   bucket=$(find "$XDG_STATE_HOME/serf/projects" -name "*.transcript.jsonl" \
+   bucket=$(find "$XDG_STATE_HOME/evener/projects" -name "*.transcript.jsonl" \
      -newermt "@$(( $(date +%s) - 600 ))" -path "*/sessions/*" \
      -exec grep -l "$marker" {} \; 2>/dev/null | sed -E 's#.*/projects/([^/]+)/sessions/.*#\1#' | sort -u)
    echo "A is in bucket: $bucket"   # exactly one project ID expected
@@ -76,14 +76,14 @@ both transcripts live under the same bucket before B searches.
 4. **Session B — discover and reconstruct A.** B is given the search
    term but NOT A's ref. It must find the ref, then read it:
    ```bash
-   "$run/serf" --model oai-work/gpt-5.5 --dir "$proj" \
-     "Another serf session in this project recently worked on something with the codename ${marker}. You do NOT know its transcript ref. Steps: (1) call find_session_transcripts with query '${marker}' to locate that session and report the transcript_ref you got back; (2) call read_session_transcript on that ref and reconstruct, from the conversation, exactly: the filename it created for the codename, the name of the Python script it wrote, and the uppercase line that script printed. Report all three plus the transcript_ref. Do not guess — read the transcript."
+   "$run/evener" --model oai-work/gpt-5.5 --dir "$proj" \
+     "Another evener session in this project recently worked on something with the codename ${marker}. You do NOT know its transcript ref. Steps: (1) call find_session_transcripts with query '${marker}' to locate that session and report the transcript_ref you got back; (2) call read_session_transcript on that ref and reconstruct, from the conversation, exactly: the filename it created for the codename, the name of the Python script it wrote, and the uppercase line that script printed. Report all three plus the transcript_ref. Do not guess — read the transcript."
    ```
 
 5. Confirm B's own transcript also landed in the same bucket (proving
    "same dir ⇒ same bucket", not a coincidence):
    ```bash
-   ls "$XDG_STATE_HOME/serf/projects/$bucket"/sessions/*.transcript.jsonl | wc -l   # >= 2 now (A and B, plus any others)
+   ls "$XDG_STATE_HOME/evener/projects/$bucket"/sessions/*.transcript.jsonl | wc -l   # >= 2 now (A and B, plus any others)
    ```
 
 ## Expected

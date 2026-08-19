@@ -1,13 +1,13 @@
-// Package doctor is the data plane of serf's on-demand doctoring system: a
+// Package doctor is the data plane of evener's on-demand doctoring system: a
 // read-only forensic reader over a session's settled on-disk state (transcript,
 // meta, jobs.jsonl). It lives under agent/ so it can import the internal
 // jobstore folds, and it imports ONLY the durable-format packages it reads —
 // jobstore, provenance, transcript, schema — never the agent session/runtime.
-// That keeps the serf-doctor binary a lean, type-coupled reader: a schema change
+// That keeps the evener-doctor binary a lean, type-coupled reader: a schema change
 // either flows through automatically or fails to compile. There is no second
 // implementation of the on-disk format to drift.
 //
-// The cmd/serf-doctor binary is a thin main over this package.
+// The cmd/evener-doctor binary is a thin main over this package.
 package doctor
 
 // Paths is the resolved on-disk location set for one session.
@@ -18,7 +18,7 @@ package doctor
 type Paths struct {
 	SessionID      string `json:"session_id"`
 	TranscriptRef  string `json:"transcript_ref"`  // proj:<project-id>:<sid>, or local:<sid> in an override/scratch root
-	ProjectID      string `json:"project_id"`      // project dir name under serf/projects/, else ""
+	ProjectID      string `json:"project_id"`      // project dir name under evener/projects/, else ""
 	BucketDir      string `json:"-"`               // absolute bucket dir (internal pivot for other subcommands)
 	TranscriptPath string `json:"transcript_path"` // <bucket>/sessions/<sid>.transcript.jsonl
 	APILogPath     string `json:"api_log_path"`    // <bucket>/sessions/<sid>.api.jsonl

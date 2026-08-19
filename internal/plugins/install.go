@@ -167,7 +167,7 @@ func (m *Manager) Install(ctx context.Context, plugin, marketplace string) (Inst
 // no-op: the staging clone is discarded and the live dir is never touched.
 //
 // Upgrade always upgrades once called, regardless of the plugin's AutoUpgrade
-// flag: it is the explicit-consent path (`serf plugin upgrade`, UpdateAll).
+// flag: it is the explicit-consent path (`evener plugin upgrade`, UpdateAll).
 // The auto-upgrade daemon uses upgradeAuto instead, which re-checks the flag
 // under the same lock immediately before acting — see upgradeLocked.
 func (m *Manager) Upgrade(ctx context.Context, plugin, marketplace string) (InstallEntry, error) {
@@ -323,16 +323,16 @@ type ListItem struct {
 	Marketplace string `json:"marketplace"`
 	Version     string `json:"version"`
 	Enabled     bool   `json:"enabled"`
-	// serf:naming-ignore: matches Claude Code plugin/marketplace JSON schema
+	// evener:naming-ignore: matches Claude Code plugin/marketplace JSON schema
 	AutoUpgrade bool `json:"autoUpgrade"`
 	Broken      bool `json:"broken"`
-	// serf:naming-ignore: matches Claude Code plugin/marketplace JSON schema
+	// evener:naming-ignore: matches Claude Code plugin/marketplace JSON schema
 	InstallPath string `json:"installPath"`
-	// serf:naming-ignore: matches Claude Code plugin/marketplace JSON schema
+	// evener:naming-ignore: matches Claude Code plugin/marketplace JSON schema
 	GitCommitSha string `json:"gitCommitSha"`
-	// serf:naming-ignore: matches Claude Code plugin/marketplace JSON schema
+	// evener:naming-ignore: matches Claude Code plugin/marketplace JSON schema
 	InstalledAt time.Time `json:"installedAt"`
-	// serf:naming-ignore: matches Claude Code plugin/marketplace JSON schema
+	// evener:naming-ignore: matches Claude Code plugin/marketplace JSON schema
 	LastUpdated time.Time `json:"lastUpdated"`
 }
 
@@ -348,7 +348,7 @@ func (m *Manager) List() ([]ListItem, error) {
 	if err != nil {
 		return nil, err
 	}
-	// Non-nil even when nothing is installed: callers (cmd/serf/plugincmd.go's
+	// Non-nil even when nothing is installed: callers (cmd/evener/plugincmd.go's
 	// `list --json`) JSON-encode this directly, and a nil slice would encode as
 	// `null` instead of `[]`.
 	out := []ListItem{}

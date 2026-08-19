@@ -2,7 +2,7 @@
 
 Date: 2026-08-02
 Status: approved (design), pending implementation
-Component: `cmd/serf-hub/frontend/src/panes/session/transcript/tools/taskCard.tsx`
+Component: `cmd/evener-hub/frontend/src/panes/session/transcript/tools/taskCard.tsx`
 (+ `taskcard.module.css`, `taskCard.test.tsx`)
 
 ## Problem

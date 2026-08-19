@@ -28,10 +28,10 @@ unchanged; turn it on when you want a session's blast radius contained.
 | `--sandbox` | `off`, `read-only`, `workspace-write`, `restricted` | `off` | The enforcement mode. |
 | `--sandbox-net` | `on`, `off` | `on` | Network egress for the tool plane. Only applies with a non-off mode. |
 
-Both flags are available on `serf` and `serf serve`. `--sandbox-net` is meaningful
+Both flags are available on `evener` and `evener serve`. `--sandbox-net` is meaningful
 only when a non-off `--sandbox` mode is set; with `--sandbox off` it is ignored.
 
-When a session starts sandboxed, serf prints one line to stderr stating exactly
+When a session starts sandboxed, evener prints one line to stderr stating exactly
 what is enforced on this host — the backend, the mode, the network decision, that
 credential/secret paths are masked, and how the language caches are served — for
 example:
@@ -54,7 +54,7 @@ unavailable → `private`) is reflected honestly in the line.
 The model gets the same facts in its system prompt's `<environment>` block, as a
 short capability preamble: the sandbox mode and network decision, a summary of
 the writable roots, the masked-path count, the scratch directory behind
-`$SERF_SCRATCH_DIR`/`$TMPDIR`, the cache strategy, the resolved `GOCACHE` /
+`$EVENER_SCRATCH_DIR`/`$TMPDIR`, the cache strategy, the resolved `GOCACHE` /
 `GOMODCACHE`, the toolchain residuals this doc records for the session's mode,
 and two probes (the exit status of `git config --list`, and which of `go`,
 `node`, `rg` are on PATH). An unsandboxed session gets the same block minus the
@@ -82,7 +82,7 @@ degrades only the git line.
 All sandboxed modes share a common floor: a per-session writable temp directory
 (exported as `TMPDIR`), the secrets + pseudo-filesystem denylist (masked in both
 layers), git config/hook protection, a fresh PID namespace with its own `/proc`, a
-minimal `/dev`, the environment floor, and no inherited serf file descriptors or
+minimal `/dev`, the environment floor, and no inherited evener file descriptors or
 sockets beyond stdio.
 
 | Mode | File-tool reads | File-tool writes | Spawned-process reads | Spawned-process writes |
@@ -208,7 +208,7 @@ sockets beyond stdio.
 ## The fail-closed floor
 
 A mode is either fully enforced or the session refuses to start. There is no
-"best effort" and no override flag: serf will not run a session that claims a
+"best effort" and no override flag: evener will not run a session that claims a
 sandbox mode it cannot actually enforce.
 
 | Host capability | Modes that run | Otherwise |
@@ -217,7 +217,7 @@ sandbox mode it cannot actually enforce.
 | macOS with `/usr/bin/sandbox-exec` (present on every stock install) | all modes, `--sandbox-net` on or off | — |
 | Linux without a usable bubblewrap, Windows, macOS without `sandbox-exec`, any other OS | `off` only | any non-off mode refuses to start |
 
-On Linux, "bubblewrap usable" means more than the binary being present: serf runs a
+On Linux, "bubblewrap usable" means more than the binary being present: evener runs a
 real unprivileged-user-namespace probe at startup, so a host that ships `bwrap` but
 blocks unprivileged user namespaces (for example Ubuntu 24.04 with
 `apparmor_restrict_unprivileged_userns=1`) reports *not capable* and refuses a
@@ -237,15 +237,15 @@ Every sandboxed mode masks a default set of paths in **both** layers, so neither
 file tool nor a spawned process can read them:
 
 - **Credential directories and files** (resolved against `$HOME`): `~/.ssh`,
-  `~/.aws`, `~/.config/gcloud`, `~/.netrc`, `~/.config/serf`, `~/.gnupg`,
+  `~/.aws`, `~/.config/gcloud`, `~/.netrc`, `~/.config/evener`, `~/.gnupg`,
   `~/.docker/config.json`, `~/.kube`, `~/.git-credentials`.
 - **Pseudo-filesystems and runtime sockets**: `/proc`, `/sys`, `/dev/fd`,
   `/dev/mem`, `/run/user`, and the well-known privileged daemon control sockets
   (`/run/docker.sock`, `/var/run/docker.sock`, `/run/podman/podman.sock`,
   `/run/containerd/containerd.sock`, `/run/dbus/system_bus_socket`).
 
-Masking `/proc` is load-bearing: without it a `read_file("/proc/<serf-pid>/environ")`
-would leak serf's own environment, including the provider API key. Masking the
+Masking `/proc` is load-bearing: without it a `read_file("/proc/<evener-pid>/environ")`
+would leak evener's own environment, including the provider API key. Masking the
 daemon sockets turns a `connect()` into `ECONNREFUSED`, so a session cannot drive a
 container daemon straight to host root even with `--sandbox-net off` (a read-only
 bind of `/` does not block a Unix-socket `connect()`, and `--unshare-net` does not
@@ -293,7 +293,7 @@ But every git **config and hook** surface is read-only:
 
 Denying a surface that does not exist yet is what stops it being *planted*, and on
 bubblewrap that denial is a mount, which materializes the name on the real
-filesystem and leaves it there after the session. So serf pre-creates an absent
+filesystem and leaves it there after the session. So evener pre-creates an absent
 `commondir` holding `.` before pinning it: an empty `commondir` is fatal to git
 forever after, and `.` is both the only content git accepts and exactly what a git
 dir without the file already means (it is its own common dir). No other protected
@@ -329,7 +329,7 @@ floor holds either way.
 
 ## The environment floor
 
-On top of serf's existing scrub of `*KEY*`/`*SECRET*`/`*TOKEN*`/`*PASSWORD*`/
+On top of evener's existing scrub of `*KEY*`/`*SECRET*`/`*TOKEN*`/`*PASSWORD*`/
 `*CREDENTIAL*` variables, a sandboxed session raises an additional floor on every
 spawned process:
 
@@ -358,7 +358,7 @@ than the problem warrants. Ruled 2026-08-06: accept and document the noise
 rather than ship an env var that does nothing.
 
 ssh-agent and gpg-agent Unix sockets are not bind-mounted into the sandbox, and
-spawned commands inherit no serf file descriptors beyond stdio — not serf's live
+spawned commands inherit no evener file descriptors beyond stdio — not evener's live
 LLM-API connection, not a credential fd.
 
 ## Network
@@ -377,7 +377,7 @@ tools that default to deny.)
   exception: see "Hooks and MCP under a sandbox" below — they are trusted
   infrastructure, not model-directed egress, and net=off does not sever them
   (ruled by Jesse 2026-08-07, kata 83pm).
-- Serf-process tool egress — `web_fetch` and `web_search` — is disabled with a
+- Evener-process tool egress — `web_fetch` and `web_search` — is disabled with a
   legible error. These are model-directed egress and stay refused under net=off
   regardless of the kata 83pm MCP carve-out.
 - Provider-native web egress (server-side web search or fetch the provider runs for
@@ -402,7 +402,7 @@ UI client attached (subscribed to the thread), a `read_file`, `write_file`, or
 `edit_file` denial for being outside the sandbox's roots can be escalated to a
 human-gated approval card — "Allow" / "Deny" in the web UI, `ctrl+y` / `ctrl+g` in the
 TUI hub — that blocks the tool-exec goroutine until answered
-(`serf/sandbox/escalation/requested` → `serf/sandbox/escalation/resolve`, see
+(`evener/sandbox/escalation/requested` → `evener/sandbox/escalation/resolve`, see
 [docs/appwire-protocol.md](appwire-protocol.md)). Shell/kernel denials, `apply_patch`,
 the browse tools, and a masked/git-protected/symlinked/escape denial all stay final,
 exactly as a non-interactive session. The model can never trigger, approve, or
@@ -452,7 +452,7 @@ The grant is tightly bounded:
   never loads and miss anything configured elsewhere.
 - **Only inputs the model cannot write.** MCP servers are read from the *trusted*
   layers only: the global config, `--mcp-config` files, and `--mcp` inline specs.
-  The per-project layer (`<git root>/.serf/mcp.json`) is **excluded**, because it
+  The per-project layer (`<git root>/.evener/mcp.json`) is **excluded**, because it
   sits inside the model's own write surface — a grant derived from it would let a
   session widen its own box (plant the file, spawn a delegate with
   `sandbox=restricted`, read whatever you named), breaking the rule that the policy
@@ -524,12 +524,12 @@ granted. The literal spelling is an alias, not extra reach: granting a symlink's
 name alone does not make an ungranted (or masked) target readable through it, which
 is verified against the real kernel. A live parity
 suite runs the generated profiles under the real `sandbox-exec` when
-`SERF_SEATBELT_LIVE=1` is set.
+`EVENER_SEATBELT_LIVE=1` is set.
 
 ## Related
 
 - [docs/worktrees.md](worktrees.md) — the worktree model that backs delegate
   isolation.
-- [docs/environment.md](environment.md) — the environment variables serf reads.
+- [docs/environment.md](environment.md) — the environment variables evener reads.
 - [docs/subagent-runtime-contracts.md](subagent-runtime-contracts.md) — the runtime
   contracts subagents, plugins, and hooks operate under.

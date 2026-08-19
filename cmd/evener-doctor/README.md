@@ -1,0 +1,57 @@
+# evener-doctor
+
+Read-only forensic inspector for evener sessions, jobs, watches, and the session
+tree. It reads settled on-disk state (`transcript.jsonl`, `api.jsonl`, `meta.json`,
+`jobs.jsonl`, `mutations/<sid>.json`) through the same folds and types the evener
+runtime uses, so a schema change either flows through automatically or fails to
+compile — the numbers it reports are the runtime's numbers, never hand-parsed.
+The client-mutation store is the one exception, and it is a deliberate one: the
+runtime's snapshot types are unexported, so `mutations` mirrors the persisted
+shape and refuses anything it does not recognize rather than reporting a journal
+it could not fully decode.
+
+This is the home of evener's session/transcript diagnostics. The terminal-bench eval
+scripts that used to live in `tools/` were removed (they only served the benchmark);
+the one capability worth keeping — API-call analysis — became the `apilog`
+subcommand here.
+
+Build: `make build-doctor` (or `go build ./cmd/evener-doctor`). Agent-facing usage
+and the diagnose→findings workflow live in the bundled `doctoring-evener` skill;
+design rationale is in `docs/superpowers/specs/2026-06-19-evener-doctor-unified-design.md`
+and `…/2026-06-20-evener-doctor-apilog-design.md`.
+
+## Subcommands (the tools)
+
+Every session-scoped subcommand takes a session selector first: `local:<id>`,
+`proj:<project-id>:<id>`, or a bare `<id>` (searched across buckets). The
+state-root sweeps (`turnids`) take no selector. Common flags: `--state-dir <path>`
+(state root; default `EVENER_STATE_DIR` → `XDG_STATE_HOME` → `~/.local/state`) and
+`--json`. Run `evener-doctor <subcommand> -h` for the full flag list.
+
+| Tool | What it does | Key flags |
+|---|---|---|
+| `locate <sel>` | Resolve a selector to its on-disk transcript / canonical API log / meta / jobs / client-mutation paths and bucket. A bare `<id>` found in more than one bucket is reported as ambiguous, naming every bucket it appears in. | — |
+| `transcript <sel>` | Render a session's logical turns; answer "how many real `X` calls?" structurally (calls vs. textual mentions). Turn text and tool-result previews render capped at 200 bytes, and that cap is what hides a repetition loop *inside* one response (a salvaged partial response carries its repeated calls as turn text, so no tool-call metric counts them); `--full-text` lifts the cap entirely and `--text-max N` raises it. | `--count <tool>`, `--format outline\|markdown`, `--range last:N\|start:N\|A-B`, `--text-max N`, `--full-text` |
+| `apilog <sel>` | Canonical provider-attempt diagnostics: identity, grouping, finality, settlement state, tokens/latency, empty responses, errors, cache spikes, and whole-session token spend. Reads `sessions/<sid>.api.jsonl` through the shared API-log codec. `--validate` instead runs a whole-history structural-integrity scan: strictly decode every record from offset zero through clean EOF and report every corrupt/malformed/oversized/unsupported record with its offset (explicit diagnostics, proportional to file size — not run at logger open). `--health` instead prints a one-line API-health verdict: attempts, recorded-empty count, retry-storm groups (3+ attempts), unsettled groups, and error counts by class (quota/permanent/retryable). | `--empty`, `--errors`, `--cache-spikes [--threshold N]`, `--summary`, `--validate`, `--health` |
+| `jobs <sel>` | Every job the session ran, folded from `jobs.jsonl`: status, reason, exit code, output bytes, start/end times, and the delegate/transcript/parent links to pivot on. | `--job <id>` |
+| `mutations <sel>` | Did the user's input reach the daemon? Renders `mutations/<sid>.json`: the journal of every client mutation the daemon accepted **and** every one it rejected (method / operation state / execution state / stable turn / rejection), the durable input queue, pending executions, accepted turns, and queue revision. Absence from the journal means the request never arrived. | — |
+| `watches <sel>` | Watch/delivery inspector: distinct deliveries (collapsing coalescing), provenance, lifecycle, the self-loop verdict, and the **target job's state** joined from the same `jobs.jsonl` (a target that died with no output could never match its condition). | `--watch <id>`, `--self-loops` |
+| `tree <sel>` | Parent ↔ delegate/observer session tree across buckets. | `--depth N`, `--observers` |
+| `turnids` | State-root sweep (no selector): which sessions persisted a reserved turn id inside the transcript's entry-index namespace (`turn_<digits>` rather than `turn_m<digits>`), so a reseed publishes one id for two turns. Names each session, the offending ids, the entries under them, and the turn kinds; a transcript it cannot decode is listed separately as unanswered rather than counted clean. | — |
+
+## Examples
+
+```sh
+evener-doctor locate local:01KV8MVQ7BZHX0EN8D7ZH5QDE4
+evener-doctor transcript <id> --count delegate_send       # real invocations, not mentions
+evener-doctor transcript <id> --range last:1 --full-text  # the whole turn text — is this one response repeating itself?
+evener-doctor apilog <id> --summary                       # token spend + empties + errors at a glance
+evener-doctor apilog <id> --cache-spikes --threshold 40000
+evener-doctor apilog <id> --validate                      # whole-history integrity scan; nonzero exit if any record is bad
+evener-doctor jobs <id>                                   # what jobs has this session run, and how did each end
+evener-doctor jobs <id> --job job_01KV8MVQ7BZHX0EN8D7ZH5   # what state is this one job in
+evener-doctor mutations <id>                              # did the user's message reach the daemon at all?
+evener-doctor watches <id> --self-loops
+evener-doctor turnids                                     # which sessions carry a reserved turn id that collides with an entry's position
+evener-doctor tree <id> --observers
+```

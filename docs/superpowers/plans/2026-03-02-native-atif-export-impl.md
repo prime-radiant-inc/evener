@@ -2,7 +2,7 @@
 
 > **For Claude:** REQUIRED SUB-SKILL: Use superpowers:executing-plans to implement this plan task-by-task.
 
-**Goal:** Serf writes a `trajectory.json` (ATIF v1.6) alongside its transcript when `--export-atif <path>` is passed.
+**Goal:** Evener writes a `trajectory.json` (ATIF v1.6) alongside its transcript when `--export-atif <path>` is passed.
 
 **Architecture:** Post-hoc conversion at `Session.Close()` — read the transcript JSONL back, convert to ATIF structs, marshal to JSON, write to the specified path. The converter is a pure function `ConvertToATIF(header, entries)` tested independently of Session.
 
@@ -29,7 +29,7 @@ import (
 	"testing"
 	"time"
 
-	"primeradiant.com/serf/llm"
+	"primeradiant.com/evener/llm"
 )
 
 func TestConvertToATIF_SimpleConversation(t *testing.T) {
@@ -67,8 +67,8 @@ func TestConvertToATIF_SimpleConversation(t *testing.T) {
 	if traj.SessionID != "sess-001" {
 		t.Errorf("session_id = %q, want sess-001", traj.SessionID)
 	}
-	if traj.Agent.Name != "serf" {
-		t.Errorf("agent.name = %q, want serf", traj.Agent.Name)
+	if traj.Agent.Name != "evener" {
+		t.Errorf("agent.name = %q, want evener", traj.Agent.Name)
 	}
 	if traj.Agent.Version != "v0.1.0-abc1234" {
 		t.Errorf("agent.version = %q, want v0.1.0-abc1234", traj.Agent.Version)
@@ -152,7 +152,7 @@ package agent
 import (
 	"strings"
 
-	"primeradiant.com/serf/llm"
+	"primeradiant.com/evener/llm"
 )
 
 // ATIF v1.6 types — see docs/plans/2026-03-02-native-atif-export-design.md
@@ -216,14 +216,14 @@ type ATIFFinalMetrics struct {
 	Extra                 map[string]any `json:"extra,omitempty"`
 }
 
-// ConvertToATIF converts a serf transcript (header + entries) to an ATIF v1.6 trajectory.
+// ConvertToATIF converts a evener transcript (header + entries) to an ATIF v1.6 trajectory.
 // Lossless: all internal data is preserved in extra fields.
 func ConvertToATIF(header TranscriptHeader, entries []TranscriptEntry) ATIFTrajectory {
 	traj := ATIFTrajectory{
 		SchemaVersion: "ATIF-v1.6",
 		SessionID:     header.SessionID,
 		Agent: ATIFAgent{
-			Name:      "serf",
+			Name:      "evener",
 			Version:   header.BuildVersion,
 			ModelName: header.Model,
 			Extra:     map[string]any{},
@@ -299,7 +299,7 @@ func ConvertToATIF(header TranscriptHeader, entries []TranscriptEntry) ATIFTraje
 				Source:    "system",
 				Message:   e.Turn.Message.Text(),
 				Timestamp: e.Turn.Timestamp.UTC().Format("2006-01-02T15:04:05Z"),
-				Extra:     map[string]any{"serf_kind": "checkpoint"},
+				Extra:     map[string]any{"evener_kind": "checkpoint"},
 			}
 			traj.Steps = append(traj.Steps, step)
 			stepID++
@@ -310,7 +310,7 @@ func ConvertToATIF(header TranscriptHeader, entries []TranscriptEntry) ATIFTraje
 				Source:    "system",
 				Message:   e.Turn.Message.Text(),
 				Timestamp: e.Turn.Timestamp.UTC().Format("2006-01-02T15:04:05Z"),
-				Extra:     map[string]any{"serf_kind": "summary"},
+				Extra:     map[string]any{"evener_kind": "summary"},
 			}
 			traj.Steps = append(traj.Steps, step)
 			stepID++
@@ -322,7 +322,7 @@ func ConvertToATIF(header TranscriptHeader, entries []TranscriptEntry) ATIFTraje
 				Source:    "system",
 				Message:   "(orphaned tool results)",
 				Timestamp: e.Turn.Timestamp.UTC().Format("2006-01-02T15:04:05Z"),
-				Extra:     map[string]any{"serf_kind": "orphaned_tool_results"},
+				Extra:     map[string]any{"evener_kind": "orphaned_tool_results"},
 			}
 			step.Observation = convertToolResults(e.Turn)
 			traj.Steps = append(traj.Steps, step)
@@ -677,14 +677,14 @@ func TestConvertToATIF_CheckpointAndSummary(t *testing.T) {
 	if len(traj.Steps) != 2 {
 		t.Fatalf("len(steps) = %d, want 2", len(traj.Steps))
 	}
-	if traj.Steps[0].Extra["serf_kind"] != "checkpoint" {
-		t.Errorf("step[0].extra.serf_kind = %v", traj.Steps[0].Extra["serf_kind"])
+	if traj.Steps[0].Extra["evener_kind"] != "checkpoint" {
+		t.Errorf("step[0].extra.evener_kind = %v", traj.Steps[0].Extra["evener_kind"])
 	}
 	if traj.Steps[0].Source != "system" {
 		t.Errorf("step[0].source = %q, want system", traj.Steps[0].Source)
 	}
-	if traj.Steps[1].Extra["serf_kind"] != "summary" {
-		t.Errorf("step[1].extra.serf_kind = %v", traj.Steps[1].Extra["serf_kind"])
+	if traj.Steps[1].Extra["evener_kind"] != "summary" {
+		t.Errorf("step[1].extra.evener_kind = %v", traj.Steps[1].Extra["evener_kind"])
 	}
 }
 
@@ -731,9 +731,9 @@ git commit -m "test: add ATIF converter tests for thinking, checkpoint, summary,
 **Files:**
 - Modify: `agent/session.go:59-160` (add ExportATIFPath to SessionConfig)
 - Modify: `agent/session.go:680-744` (add ATIF export to Close)
-- Modify: `cmd/serf/main.go:33-95` (add flag)
-- Modify: `cmd/serf/run.go:20-49` (add to runConfig)
-- Modify: `cmd/serf/run.go:158-178` (pass to SessionConfig)
+- Modify: `cmd/evener/main.go:33-95` (add flag)
+- Modify: `cmd/evener/run.go:20-49` (add to runConfig)
+- Modify: `cmd/evener/run.go:158-178` (pass to SessionConfig)
 
 **Step 1: Write a test that verifies ATIF export from transcript on disk**
 
@@ -849,13 +849,13 @@ Note: `s.config.Depth == 0` ensures only root sessions export (matching the desi
 
 **Step 4: Add the CLI flag**
 
-In `cmd/serf/main.go`, add after `reasoningEffort` flag (around line 46):
+In `cmd/evener/main.go`, add after `reasoningEffort` flag (around line 46):
 
 ```go
 exportATIF := flag.String("export-atif", "", "export ATIF v1.6 trajectory to this path on session close")
 ```
 
-In `cmd/serf/run.go`, add to `runConfig` struct:
+In `cmd/evener/run.go`, add to `runConfig` struct:
 
 ```go
 exportATIF string // --export-atif path
@@ -889,7 +889,7 @@ Run: `go test ./... -short` to verify nothing is broken.
 **Step 6: Commit**
 
 ```bash
-git add agent/atif.go agent/atif_test.go agent/session.go cmd/serf/main.go cmd/serf/run.go
+git add agent/atif.go agent/atif_test.go agent/session.go cmd/evener/main.go cmd/evener/run.go
 git commit -m "feat: --export-atif flag writes ATIF v1.6 trajectory at session close"
 ```
 
@@ -898,12 +898,12 @@ git commit -m "feat: --export-atif flag writes ATIF v1.6 trajectory at session c
 ### Task 5: Wire adapter and validate end-to-end
 
 **Files:**
-- Modify: `tools/serf_agent.py:109-124` (add --export-atif to command)
-- Modify: `tools/serf_agent.py:126-158` (copy trajectory from serf-state)
+- Modify: `tools/evener_agent.py:109-124` (add --export-atif to command)
+- Modify: `tools/evener_agent.py:126-158` (copy trajectory from evener-state)
 
 **Step 1: Add `--export-atif` flag to the adapter command**
 
-In `tools/serf_agent.py`, in `create_run_agent_commands()`, add the export flag.
+In `tools/evener_agent.py`, in `create_run_agent_commands()`, add the export flag.
 Insert before the command string construction (around line 109):
 
 ```python
@@ -916,7 +916,7 @@ And include it in the command string:
 return [
     ExecInput(
         command=(
-            f"serf --provider {self._provider} "
+            f"evener --provider {self._provider} "
             f"--model {self._model} "
             f"--max-rounds {self._max_rounds} "
             f"{min_result_flag}"
@@ -934,8 +934,8 @@ return [
 
 **Step 2: Copy trajectory to logs_dir in `run()`**
 
-In `tools/serf_agent.py`, in the `run()` method's `finally` block, after downloading
-serf-state and artifacts, add:
+In `tools/evener_agent.py`, in the `run()` method's `finally` block, after downloading
+evener-state and artifacts, add:
 
 ```python
 # Copy ATIF trajectory to logs_dir root for harbor viewer.
@@ -948,7 +948,7 @@ if traj_src.exists():
 **Step 3: Commit**
 
 ```bash
-git add tools/serf_agent.py
+git add tools/evener_agent.py
 git commit -m "feat: adapter passes --export-atif flag and copies trajectory for harbor viewer"
 ```
 
@@ -956,8 +956,8 @@ git commit -m "feat: adapter passes --export-atif flag and copies trajectory for
 
 ```bash
 # Build
-cd /Users/jesse/prime-radiant/serf
-GOOS=linux GOARCH=amd64 go build -ldflags "$(go run ./cmd/serf/ --version 2>&1 | head -1 || echo '')" -o /tmp/serf-linux-amd64 ./cmd/serf/
+cd /Users/jesse/prime-radiant/evener
+GOOS=linux GOARCH=amd64 go build -ldflags "$(go run ./cmd/evener/ --version 2>&1 | head -1 || echo '')" -o /tmp/evener-linux-amd64 ./cmd/evener/
 
 # Deploy updated binary + adapter to magic-kingdom
 ./tools/run_eval.py launch --task build-cython-ext --reps 1 --dry-run
@@ -973,10 +973,10 @@ After completion, verify:
 
 ```bash
 # Check trajectory exists
-ssh jesse@magic-kingdom 'find /data/serf-evals/runs/ -name "trajectory.json" -newer /tmp/check-timestamp 2>/dev/null | head -5'
+ssh jesse@magic-kingdom 'find /data/evener-evals/runs/ -name "trajectory.json" -newer /tmp/check-timestamp 2>/dev/null | head -5'
 
 # Verify it's valid JSON with ATIF structure
-ssh jesse@magic-kingdom 'cat $(find /data/serf-evals/runs/ -name "trajectory.json" | head -1) | python3 -m json.tool | head -20'
+ssh jesse@magic-kingdom 'cat $(find /data/evener-evals/runs/ -name "trajectory.json" | head -1) | python3 -m json.tool | head -20'
 ```
 
 Open harbor viewer at `http://magic-kingdom:8081`, navigate to the trial, check the Trajectory tab.
@@ -990,7 +990,7 @@ Open harbor viewer at `http://magic-kingdom:8081`, navigate to the trial, check 
 1. `go test ./agent/ -run TestConvertToATIF -v` — all converter tests pass
 2. `go test ./agent/ -run TestExportATIF -v` — file export test passes
 3. `go test ./... -short` — all Go tests pass, no regressions
-4. `go build ./cmd/serf/` — binary builds
-5. `./serf --export-atif /tmp/test-traj.json --provider openai --model gpt-5-mini-2025-08-07 -- "echo hello"` — trajectory.json written
+4. `go build ./cmd/evener/` — binary builds
+5. `./evener --export-atif /tmp/test-traj.json --provider openai --model gpt-5-mini-2025-08-07 -- "echo hello"` — trajectory.json written
 6. Single-task harbor run produces valid trajectory.json
 7. Harbor viewer at magic-kingdom:8081 renders trajectory tab with steps

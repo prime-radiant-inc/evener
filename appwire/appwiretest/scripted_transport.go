@@ -1,6 +1,6 @@
 // Package appwiretest exposes test helpers for driving appwire.Client
 // from external packages. The private memoryTransport in
-// appwire's own _test.go cannot be reused from cmd/serf-tui,
+// appwire's own _test.go cannot be reused from cmd/evener-tui,
 // so this package provides an equivalent with an exported API.
 package appwiretest
 
@@ -9,7 +9,7 @@ import (
 	"errors"
 	"sync"
 
-	"primeradiant.com/serf/appwire"
+	"primeradiant.com/evener/appwire"
 )
 
 // ScriptedTransport is a fake appwire.Transport whose Send calls are

@@ -4,7 +4,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"primeradiant.com/serf/envvars"
+	"primeradiant.com/evener/envvars"
 )
 
 func TestEnabledRequiresExplicitOptIn(t *testing.T) {
@@ -32,7 +32,7 @@ func TestPathsUseConfiguredStateAndHomeRoots(t *testing.T) {
 	if gotStateHome != stateHome {
 		t.Fatalf("Paths configured state home = %q, want %q", gotStateHome, stateHome)
 	}
-	if want := filepath.Join(userHome, ".serf", "providers.toml"); gotProviders != want {
+	if want := filepath.Join(userHome, ".evener", "providers.toml"); gotProviders != want {
 		t.Fatalf("Paths configured providers file = %q, want %q", gotProviders, want)
 	}
 }
@@ -45,7 +45,7 @@ func TestPathsDefaultStateHomeFollowsUserHome(t *testing.T) {
 	if want := filepath.Join(userHome, ".local", "state"); gotStateHome != want {
 		t.Fatalf("Paths default state home = %q, want %q", gotStateHome, want)
 	}
-	if want := filepath.Join(userHome, ".serf", "providers.toml"); gotProviders != want {
+	if want := filepath.Join(userHome, ".evener", "providers.toml"); gotProviders != want {
 		t.Fatalf("Paths default providers file = %q, want %q", gotProviders, want)
 	}
 }
@@ -54,8 +54,8 @@ func TestPathsProviderConfigEnvOverridesStateDirAndHome(t *testing.T) {
 	stateDir := filepath.Join(t.TempDir(), "state")
 	userHome := filepath.Join(t.TempDir(), "home")
 	explicit := filepath.Join(t.TempDir(), "explicit.toml")
-	t.Setenv(envvars.SERFProvidersConfig.Name, explicit)
-	t.Setenv(envvars.SERFStateDir.Name, stateDir)
+	t.Setenv(envvars.EVENERProvidersConfig.Name, explicit)
+	t.Setenv(envvars.EVENERStateDir.Name, stateDir)
 
 	_, got := Paths("", userHome)
 	if got != explicit {
@@ -66,8 +66,8 @@ func TestPathsProviderConfigEnvOverridesStateDirAndHome(t *testing.T) {
 func TestPathsProviderConfigUsesStateDirBeforeHome(t *testing.T) {
 	stateDir := filepath.Join(t.TempDir(), "state")
 	userHome := filepath.Join(t.TempDir(), "home")
-	t.Setenv(envvars.SERFProvidersConfig.Name, "")
-	t.Setenv(envvars.SERFStateDir.Name, stateDir)
+	t.Setenv(envvars.EVENERProvidersConfig.Name, "")
+	t.Setenv(envvars.EVENERStateDir.Name, stateDir)
 
 	_, got := Paths("", userHome)
 	want := filepath.Join(stateDir, "providers.toml")
@@ -78,6 +78,6 @@ func TestPathsProviderConfigUsesStateDirBeforeHome(t *testing.T) {
 
 func clearProviderPathEnv(t *testing.T) {
 	t.Helper()
-	t.Setenv(envvars.SERFProvidersConfig.Name, "")
-	t.Setenv(envvars.SERFStateDir.Name, "")
+	t.Setenv(envvars.EVENERProvidersConfig.Name, "")
+	t.Setenv(envvars.EVENERStateDir.Name, "")
 }

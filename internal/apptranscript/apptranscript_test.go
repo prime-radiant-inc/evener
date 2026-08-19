@@ -8,15 +8,15 @@ import (
 	"testing"
 	"time"
 
-	"primeradiant.com/serf/agent/events"
-	"primeradiant.com/serf/agent/schema"
-	"primeradiant.com/serf/agent/transcript"
-	"primeradiant.com/serf/appwire"
-	"primeradiant.com/serf/llm"
+	"primeradiant.com/evener/agent/events"
+	"primeradiant.com/evener/agent/schema"
+	"primeradiant.com/evener/agent/transcript"
+	"primeradiant.com/evener/appwire"
+	"primeradiant.com/evener/llm"
 )
 
 func TestPreludeTurnUsesSemanticHeaderOnly(t *testing.T) {
-	turn := PreludeTurn(transcript.Header{SystemPrompt: "You are Serf."})
+	turn := PreludeTurn(transcript.Header{SystemPrompt: "You are Evener."})
 	if turn == nil || len(turn.Items) != 1 {
 		t.Fatalf("prelude=%+v, want only system prompt", turn)
 	}
@@ -30,7 +30,7 @@ func TestPreludeTurnUsesSemanticHeaderOnly(t *testing.T) {
 // classifies it by wire type instead of guessing from the item's char count
 // (kata ckgw); ThreadItemEventKindSystemPrompt is that stable signal.
 func TestPreludeTurnTagsSystemPromptEventKind(t *testing.T) {
-	turn := PreludeTurn(transcript.Header{SystemPrompt: "You are Serf."})
+	turn := PreludeTurn(transcript.Header{SystemPrompt: "You are Evener."})
 	if turn == nil || len(turn.Items) != 1 {
 		t.Fatalf("prelude=%+v, want only system prompt", turn)
 	}
@@ -955,7 +955,7 @@ func TestScanPrelude(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "test.jsonl")
 
-	content := `{"kind":"header","format_version":2,"system_prompt":"You are Serf."}
+	content := `{"kind":"header","format_version":2,"system_prompt":"You are Evener."}
 {"kind":"entry","turn":{}}
 `
 	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
@@ -966,7 +966,7 @@ func TestScanPrelude(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ScanPrelude: %v", err)
 	}
-	if strings.TrimSpace(header.SystemPrompt) != "You are Serf." {
+	if strings.TrimSpace(header.SystemPrompt) != "You are Evener." {
 		t.Errorf("header.SystemPrompt = %q", header.SystemPrompt)
 	}
 	if _, err := ScanPrelude(filepath.Join(dir, "missing"), 1<<20); err == nil {
@@ -978,8 +978,8 @@ func TestPreludeTurn(t *testing.T) {
 	if got := PreludeTurn(transcript.Header{}); got != nil {
 		t.Errorf("empty prelude = %+v, want nil", got)
 	}
-	turn := PreludeTurn(transcript.Header{SystemPrompt: "You are Serf."})
-	if turn == nil || len(turn.Items) != 1 || turn.Items[0].Text != "You are Serf." {
+	turn := PreludeTurn(transcript.Header{SystemPrompt: "You are Evener."})
+	if turn == nil || len(turn.Items) != 1 || turn.Items[0].Text != "You are Evener." {
 		t.Errorf("system prompt only = %+v", turn)
 	}
 }
@@ -988,7 +988,7 @@ func TestTurnsFromFile(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "session.jsonl")
 
-	content := `{"kind":"header","format_version":2,"system_prompt":"You are Serf."}
+	content := `{"kind":"header","format_version":2,"system_prompt":"You are Evener."}
 {"kind":"entry","turn":{}}
 `
 	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
@@ -1035,7 +1035,7 @@ func TestTurnsFromFile_StampsUsageFromEntry(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "session.jsonl")
 
-	content := `{"kind":"header","format_version":2,"system_prompt":"You are Serf."}
+	content := `{"kind":"header","format_version":2,"system_prompt":"You are Evener."}
 {"kind":"entry","turn":{"usage":{"input_tokens":100,"output_tokens":50}}}
 `
 	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {

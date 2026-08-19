@@ -11,11 +11,11 @@ import (
 	"testing"
 	"time"
 
-	"primeradiant.com/serf/llm"
-	"primeradiant.com/serf/llm/providers/anthropic"
-	"primeradiant.com/serf/llm/providers/google"
-	"primeradiant.com/serf/llm/providers/openai"
-	"primeradiant.com/serf/llm/providers/openaicompat"
+	"primeradiant.com/evener/llm"
+	"primeradiant.com/evener/llm/providers/anthropic"
+	"primeradiant.com/evener/llm/providers/google"
+	"primeradiant.com/evener/llm/providers/openai"
+	"primeradiant.com/evener/llm/providers/openaicompat"
 )
 
 // provider couples a real adapter with the encoder that produces wire bytes its
@@ -255,7 +255,7 @@ func crossProviderDivergence(t *testing.T, ps []provider, lr logicalResponse) st
 	return ""
 }
 
-// FuzzCrossProviderDifferential is serf's first differential oracle. It
+// FuzzCrossProviderDifferential is evener's first differential oracle. It
 // generates one canonical logical response from the fuzz bytes, encodes it into
 // all four providers' SSE wire formats, decodes each back through the REAL
 // adapter's public Stream path, and asserts the decoded responses are

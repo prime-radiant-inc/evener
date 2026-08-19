@@ -1,4 +1,4 @@
-//go:build serffuzz
+//go:build evenerfuzz
 
 package apilog
 
@@ -11,7 +11,7 @@ import (
 
 // FuzzAPILogHeaderCodec drives the header codec, whose entire reason for
 // existing is that HTTP header values are BYTES and JSON strings are not.
-// Provider responses carry headers serf did not choose, and api.jsonl is
+// Provider responses carry headers evener did not choose, and api.jsonl is
 // evidence — a header that does not survive the round trip byte-for-byte is a
 // forensic record of something that never happened.
 //

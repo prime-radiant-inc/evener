@@ -11,7 +11,7 @@
 ## Global Constraints
 
 - Default tests remain deterministic and must not require provider credentials or network access.
-- Tests must exercise real Serf behavior below scripted/external boundaries and must not assert brittle large rendered strings.
+- Tests must exercise real Evener behavior below scripted/external boundaries and must not assert brittle large rendered strings.
 - Do not merge controller changes or close kata issues; add substantive ready comments naming commits and tests.
 - Make the smallest maintainable changes, commit frequently with detailed messages, and leave the worktree clean.
 

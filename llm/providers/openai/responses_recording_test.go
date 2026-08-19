@@ -9,7 +9,7 @@ import (
 	"testing"
 	"time"
 
-	"primeradiant.com/serf/llm"
+	"primeradiant.com/evener/llm"
 )
 
 // TestAdapter_Stream_SynthesizesRecordingFromAccumulatedItems covers the

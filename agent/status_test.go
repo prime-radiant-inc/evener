@@ -11,11 +11,11 @@ import (
 	"testing"
 	"time"
 
-	"primeradiant.com/serf/agent/execenv"
-	"primeradiant.com/serf/agent/internal/delegatestore"
-	"primeradiant.com/serf/agent/internal/jobstore"
-	"primeradiant.com/serf/agent/plugin"
-	"primeradiant.com/serf/llm"
+	"primeradiant.com/evener/agent/execenv"
+	"primeradiant.com/evener/agent/internal/delegatestore"
+	"primeradiant.com/evener/agent/internal/jobstore"
+	"primeradiant.com/evener/agent/plugin"
+	"primeradiant.com/evener/llm"
 )
 
 func TestSession_DetailedStatus_DelegatesMatchControllerFoldAfterReopen(t *testing.T) {
@@ -502,7 +502,7 @@ func TestDetailedStatus_HookEvents_ExcludesDeadHooks(t *testing.T) {
 func TestDetailedStatus_HookEvents(t *testing.T) {
 	t.Parallel()
 	// Build a plugin dir with PreToolUse (supported) and "Setup" (recognized but
-	// not fired by serf — reserved-placeholder).
+	// not fired by evener — reserved-placeholder).
 	pluginDir := t.TempDir()
 	metaDir := filepath.Join(pluginDir, ".claude-plugin")
 	os.MkdirAll(metaDir, 0o755)

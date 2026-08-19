@@ -8,9 +8,9 @@ import (
 	"strings"
 	"testing"
 
-	"primeradiant.com/serf/agent/execenv"
-	"primeradiant.com/serf/agent/schema"
-	"primeradiant.com/serf/llm"
+	"primeradiant.com/evener/agent/execenv"
+	"primeradiant.com/evener/agent/schema"
+	"primeradiant.com/evener/llm"
 )
 
 // The decided intervention texts, repeated verbatim here so a reworded
@@ -27,7 +27,7 @@ func wantRepetitionNudge(count int) string {
 const repetitionNudgeMarker = "and received the identical result"
 
 func wantFailurePark(toolName string) string {
-	return "serf did not execute this call: " + toolName + " with these exact arguments has now failed 3 times with the same error; it will not be executed again until you change the arguments or the approach."
+	return "evener did not execute this call: " + toolName + " with these exact arguments has now failed 3 times with the same error; it will not be executed again until you change the arguments or the approach."
 }
 
 // breakerFake is a registered tool whose executor is supplied by the test and
@@ -124,7 +124,7 @@ func TestBreakerDispatch_IdenticalFailureNudgesThenParks(t *testing.T) {
 	if fake.calls != 3 {
 		t.Errorf("different arguments must dispatch: invocations = %d, want 3", fake.calls)
 	}
-	if strings.Contains(fifth.Output, "serf did not execute this call:") {
+	if strings.Contains(fifth.Output, "evener did not execute this call:") {
 		t.Errorf("different arguments must not be parked, got %q", fifth.Output)
 	}
 }
@@ -189,7 +189,7 @@ func TestBreakerDispatch_IdenticalSuccessLoopIsNeverParked(t *testing.T) {
 		if fake.calls != i+1 {
 			t.Fatalf("call %d was refused: invocations = %d", i+1, fake.calls)
 		}
-		if strings.Contains(res.Output, "serf did not execute this call:") {
+		if strings.Contains(res.Output, "evener did not execute this call:") {
 			t.Fatalf("call %d parked: %q", i+1, res.Output)
 		}
 		if !strings.HasPrefix(res.Output, `{"accepted":true,"end_turn":true}`) {
@@ -240,7 +240,7 @@ func TestBreakerDispatch_ChangingBodyIsNeverNudgedOrParked(t *testing.T) {
 		if fake.calls != i+1 {
 			t.Fatalf("call %d was not dispatched: invocations = %d", i+1, fake.calls)
 		}
-		if strings.Contains(res.Output, "serf did not execute this call:") ||
+		if strings.Contains(res.Output, "evener did not execute this call:") ||
 			strings.Contains(res.Output, repetitionNudgeMarker) ||
 			strings.Contains(res.Output, wantFailureNudge) {
 			t.Fatalf("call %d with a changing body was judged: %q", i+1, res.Output)
@@ -271,7 +271,7 @@ func TestBreakerDispatch_DifferentFailuresThenSuccessDoesNotPark(t *testing.T) {
 		if fake.calls != i+1 {
 			t.Fatalf("call %d was not dispatched: invocations = %d", i+1, fake.calls)
 		}
-		if strings.Contains(res.Output, "serf did not execute this call:") {
+		if strings.Contains(res.Output, "evener did not execute this call:") {
 			t.Fatalf("call %d parked: %q", i+1, res.Output)
 		}
 		if strings.Contains(res.Output, wantFailureNudge) || strings.Contains(res.Output, repetitionNudgeMarker) {
@@ -304,7 +304,7 @@ func TestBreakerDispatch_CloneStartsWithAFreshLedger(t *testing.T) {
 	if fake.calls != 3 {
 		t.Errorf("a clone is a new dispatch scope and must execute: invocations = %d, want 3", fake.calls)
 	}
-	if strings.Contains(res.Output, "serf did not execute this call:") {
+	if strings.Contains(res.Output, "evener did not execute this call:") {
 		t.Errorf("clone inherited a tripped signature: %q", res.Output)
 	}
 	if clone.breaker == r.breaker {
@@ -332,7 +332,7 @@ func TestBreakerDispatch_BypassExecutesAParkedCall(t *testing.T) {
 	if fake.calls != 3 {
 		t.Errorf("a bypassed call must execute: invocations = %d, want 3", fake.calls)
 	}
-	if strings.Contains(res.Output, "serf did not execute this call:") {
+	if strings.Contains(res.Output, "evener did not execute this call:") {
 		t.Errorf("bypassed call was parked: %q", res.Output)
 	}
 }
@@ -420,7 +420,7 @@ func TestBreakerDispatch_DifferentLargeErrorsUnderTruncationDoNotPark(t *testing
 
 	for i := 1; i <= 3; i++ {
 		res := r.ExecuteCall(ctx, env, call)
-		if strings.HasPrefix(res.Output, "serf did not execute this call:") {
+		if strings.HasPrefix(res.Output, "evener did not execute this call:") {
 			t.Fatalf("call %d was parked on a truncation-banner class: %q", i, res.Output)
 		}
 	}

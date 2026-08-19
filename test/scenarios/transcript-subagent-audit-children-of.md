@@ -6,7 +6,7 @@ conversation instead of treating job output as the full transcript.
 
 ## Steps
 
-1. Start a real Serf run with a fresh scenario state dir.
+1. Start a real Evener run with a fresh scenario state dir.
 2. Ask the parent:
 
    > Use `delegate` with max_wait_ms 120000 for this task: "Create a file

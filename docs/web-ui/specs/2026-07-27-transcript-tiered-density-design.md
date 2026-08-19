@@ -2,7 +2,7 @@
 
 Date: 2026-07-27
 Status: Draft for Jesse's review. **No implementation** — this is a design doc.
-Scope: the session transcript pane only (`cmd/serf-hub/frontend/src/panes/session/transcript/**`).
+Scope: the session transcript pane only (`cmd/evener-hub/frontend/src/panes/session/transcript/**`).
 Evidence: real screenshots in `assets/2026-07-27-transcript-tiered-density/`, taken from a live
 hub serving this branch. Code citations are file:line against this worktree.
 
@@ -244,7 +244,7 @@ messages, `UserMessageItem.tsx:147-153`). No model changes.
   round-timings chrome, UserMessageItem eyebrow/actions, AgentMessageItem eyebrow.
   `requireClass` contract updates as classes are added/removed.
 - `npm run typecheck`, `npm run lint`, `npm run layoutguard`, `npm run overflowguard` pass in
-  `cmd/serf-hub/frontend`.
+  `cmd/evener-hub/frontend`.
 - Browser screenshots, both themes, before/after: a dense live session (activity tiers), an
   expanded think block (no column), a session with subagent completions (one-line
   notifications), a failed turn (compact cap). The `evidence-*` assets in this directory are

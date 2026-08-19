@@ -69,7 +69,7 @@ Use a request with `PreviousResponseID` and an empty 200 Responses stream. Asser
 - [x] **Step 5: Run RED tests**
 
 ```sh
-GOCACHE=/tmp/serf-gocache go test ./llm/providers/openai -run 'TestAdapter_ClassifyResponsesError|TestAdapter_Stream_Continuation.*Fallback|TestAdapter_Stream_ModelEndpointContinuationFallback' -count=1 -v
+GOCACHE=/tmp/evener-gocache go test ./llm/providers/openai -run 'TestAdapter_ClassifyResponsesError|TestAdapter_Stream_Continuation.*Fallback|TestAdapter_Stream_ModelEndpointContinuationFallback' -count=1 -v
 ```
 
 Expected: fail because the classifier does not exist and continuation attempts still fall back on endpoint/empty-stream paths.
@@ -101,7 +101,7 @@ When `PreviousResponseID` is present:
 - [x] **Step 4: Run focused tests**
 
 ```sh
-GOCACHE=/tmp/serf-gocache go test ./llm/providers/openai -run 'TestAdapter_ClassifyResponsesError|TestAdapter_Stream_Continuation.*Fallback|TestAdapter_Stream_ModelEndpointContinuationFallback|TestAdapter_Stream_ChatFallbackUsesFullHistoryFallbackMessages|TestAdapter_Stream_Records.*FallbackAttempts' -count=1 -v
+GOCACHE=/tmp/evener-gocache go test ./llm/providers/openai -run 'TestAdapter_ClassifyResponsesError|TestAdapter_Stream_Continuation.*Fallback|TestAdapter_Stream_ModelEndpointContinuationFallback|TestAdapter_Stream_ChatFallbackUsesFullHistoryFallbackMessages|TestAdapter_Stream_Records.*FallbackAttempts' -count=1 -v
 ```
 
 - [x] **Step 5: Commit implementation**
@@ -127,7 +127,7 @@ Record Phase 0B dependency, RED, GREEN, `git diff --check`, and remaining Phase 
 - [x] **Step 2: Run verification**
 
 ```sh
-GOCACHE=/tmp/serf-gocache go test ./llm/providers/openai -run 'TestAdapter_ClassifyResponsesError|TestAdapter_Stream_Continuation.*Fallback|TestAdapter_Stream_ModelEndpointContinuationFallback|TestAdapter_Stream_ChatFallbackUsesFullHistoryFallbackMessages|TestAdapter_Stream_Records.*FallbackAttempts' -count=1 -v
+GOCACHE=/tmp/evener-gocache go test ./llm/providers/openai -run 'TestAdapter_ClassifyResponsesError|TestAdapter_Stream_Continuation.*Fallback|TestAdapter_Stream_ModelEndpointContinuationFallback|TestAdapter_Stream_ChatFallbackUsesFullHistoryFallbackMessages|TestAdapter_Stream_Records.*FallbackAttempts' -count=1 -v
 git diff --check
 ```
 

@@ -48,19 +48,19 @@ func TestByVisibility(t *testing.T) {
 }
 
 func TestFind(t *testing.T) {
-	v, ok := Find("SERF_MODEL")
+	v, ok := Find("EVENER_MODEL")
 	if !ok {
-		t.Fatal("Find(SERF_MODEL) not found")
+		t.Fatal("Find(EVENER_MODEL) not found")
 	}
-	if v.Name != "SERF_MODEL" || v != SERFModel {
-		t.Errorf("Find(SERF_MODEL) = %+v, want %+v", v, SERFModel)
+	if v.Name != "EVENER_MODEL" || v != EVENERModel {
+		t.Errorf("Find(EVENER_MODEL) = %+v, want %+v", v, EVENERModel)
 	}
 
 	if got, ok := Find("DOES_NOT_EXIST"); ok || got != (Var{}) {
 		t.Errorf("Find(missing) = %+v, %v; want zero, false", got, ok)
 	}
 
-	if got, ok := Find("SERF_LOG_RAW_HTTP"); ok || got != (Var{}) {
+	if got, ok := Find("EVENER_LOG_RAW_HTTP"); ok || got != (Var{}) {
 		t.Errorf("Find(obsolete raw logging control) = %+v, %v; want zero, false", got, ok)
 	}
 }

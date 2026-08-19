@@ -12,26 +12,26 @@ hand it back as an observer callback. Driving mechanism:
 
 ## Pre-state
 
-- Fresh `serf` and `serf-hub` from the branch under test.
+- Fresh `evener` and `evener-hub` from the branch under test.
 - Hub running on a free port, never Jesse's real hub on `9180` (see
   the Setup checklist in `docs/agentic-testing.md`);
-  `TOKEN=$(cat "$HOME/.serf/auth-token")`.
-- `tmpdir=$(mktemp -d -t serf-e2e-approval-broker-XXXXX)`.
+  `TOKEN=$(cat "$HOME/.evener/auth-token")`.
+- `tmpdir=$(mktemp -d -t evener-e2e-approval-broker-XXXXX)`.
 - When testing Kimi fluency, spawn with `model` set to
   `kimi/kimi-for-coding`.
 - Repeat with `openai/gpt-5.4-mini` when that model is available. If an
-  inherited `OPENAI_API_KEY` is exhausted but `serf openai status` shows
+  inherited `OPENAI_API_KEY` is exhausted but `evener openai status` shows
   OAuth is signed in, start the test hub with `OPENAI_API_KEY=` and keep
   the normal XDG state home so OAuth remains visible — that means this run
-  shares Jesse's real `~/.serf/hub.lock`, auth-token, and credentials with
+  shares Jesse's real `~/.evener/hub.lock`, auth-token, and credentials with
   his real hub (it will fail to start at all while his real hub already
-  holds the flock — check `pgrep -f 'serf-hub.*:9180'` first rather than
+  holds the flock — check `pgrep -f 'evener-hub.*:9180'` first rather than
   debugging a mysterious startup failure). Session history does NOT have
   to be shared even then: export `XDG_STATE_HOME=$(mktemp -d -t
-  serf-e2e-approval-broker-state-XXXXX)` before starting the hub to keep
+  evener-e2e-approval-broker-state-XXXXX)` before starting the hub to keep
   this run's sessions out of Jesse's real
-  `~/.local/state/serf/projects` — this only relocates session storage
-  (`cmd/serf-hub/config.go`'s `DefaultStateGlob`), it has no effect on
+  `~/.local/state/evener/projects` — this only relocates session storage
+  (`cmd/evener-hub/config.go`'s `DefaultStateGlob`), it has no effect on
   the shared credentials/token/lock above. `rm -rf "$XDG_STATE_HOME"` in
   Cleanup.
 
@@ -102,14 +102,14 @@ hand it back as an observer callback. Driving mechanism:
 ## Doctor audit
 
 ```bash
-go run ./cmd/serf-doctor watches "$SID"
-go run ./cmd/serf-doctor tree "$SID" --observers
-go run ./cmd/serf-doctor transcript "$SID" --format outline --range last:30
-go run ./cmd/serf-doctor transcript "$OBSERVER_REF" --format outline --range last:30
-go run ./cmd/serf-doctor transcript "$SID" --count job_list
-go run ./cmd/serf-doctor transcript "$SID" --count job_status
-go run ./cmd/serf-doctor transcript "$OBSERVER_REF" --count communicate
-go run ./cmd/serf-doctor transcript "$OBSERVER_REF" --count delegate_send  # expect 0
+go run ./cmd/evener-doctor watches "$SID"
+go run ./cmd/evener-doctor tree "$SID" --observers
+go run ./cmd/evener-doctor transcript "$SID" --format outline --range last:30
+go run ./cmd/evener-doctor transcript "$OBSERVER_REF" --format outline --range last:30
+go run ./cmd/evener-doctor transcript "$SID" --count job_list
+go run ./cmd/evener-doctor transcript "$SID" --count job_status
+go run ./cmd/evener-doctor transcript "$OBSERVER_REF" --count communicate
+go run ./cmd/evener-doctor transcript "$OBSERVER_REF" --count delegate_send  # expect 0
 ```
 
 ## Cleanup

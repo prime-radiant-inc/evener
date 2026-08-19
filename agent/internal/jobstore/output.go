@@ -15,7 +15,7 @@ import (
 
 	"github.com/spf13/afero"
 
-	"primeradiant.com/serf/agent/internal/runetrim"
+	"primeradiant.com/evener/agent/internal/runetrim"
 )
 
 // ErrOutputPruned is returned by output reads when the durable record remains

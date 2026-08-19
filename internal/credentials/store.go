@@ -1,4 +1,4 @@
-// Package credentials owns ~/.serf/credentials.toml. Provider API keys
+// Package credentials owns ~/.evener/credentials.toml. Provider API keys
 // are stored verbatim with chmod 600; encryption-at-rest is deliberately
 // not provided (see spec §5.5 non-goals).
 package credentials
@@ -13,7 +13,7 @@ import (
 
 	"github.com/BurntSushi/toml"
 	"github.com/spf13/afero"
-	"primeradiant.com/serf/envvars"
+	"primeradiant.com/evener/envvars"
 )
 
 // Source describes where a provider's effective value came from.

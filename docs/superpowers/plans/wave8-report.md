@@ -198,11 +198,11 @@ pre-sweep low gaps are now closed**: G1 (observer prose, Item 0c), G2 (dead `mod
     wire (`StatusRow.tsx:8-16`); its proposed home (the location cluster) carries no cost number.
 
 Folded W6-close prior decisions (recorded, no W8 work): StatusRow epoch-clock → addressed by T4 (see
-punch P1 for the residue), FOUC successor, the 10 minor W6 gaps, `SERF_HUB_WEB=new` operational note.
+punch P1 for the residue), FOUC successor, the 10 minor W6 gaps, `EVENER_HUB_WEB=new` operational note.
 
 ## Live proof (real hub built from this worktree, real browser, real model — no mocks)
 
-Isolated fake `$HOME=/tmp/w8-live-home` (own `hub.lock`, real host hub untouched), `SERF_HUB_WEB=new`,
+Isolated fake `$HOME=/tmp/w8-live-home` (own `hub.lock`, real host hub untouched), `EVENER_HUB_WEB=new`,
 port 19288, repo `.env` sourced, model `oai-work/gpt-4o-mini`. Screenshots (11) in
 `.superpowers/sdd/w8-close-shots/` (`git add -f`); credential material never echoed.
 
@@ -227,7 +227,7 @@ bad cwd (no crash).
 
 - **P1 — MED/HIGH — work-time clock still shows epoch absurdity (`~495274h`), NEW live finding.**
   Root-caused from the live React fiber: `model.activeTurnStartedAt` parses to `1784774627`, which is
-  **exactly `Date.now()/1000`** — the wire's `SerfThread.ActiveTurnStartedAt` is epoch-**seconds** but
+  **exactly `Date.now()/1000`** — the wire's `EvenerThread.ActiveTurnStartedAt` is epoch-**seconds** but
   `reducer.ts`'s `epochMsToISO` reads it as epoch-**ms** → `1970` → `now − ~epoch ≈ 495274h`; and it is
   not cleared when `status.type==="awaiting"`, so the idle clock keeps ticking. The W8-T4 guard
   (`statusFormat.ts:61`) only catches `startedMs <= 0`, so a positive seconds-scaled anchor slips
@@ -245,7 +245,7 @@ bad cwd (no crash).
 ## Decisions for Jesse
 
 1. **The work-time epoch clock (P1).** Where to fix the seconds-vs-ms anchor: the Go daemon
-   (`SerfThread.ActiveTurnStartedAt` should be epoch-ms), the reducer's `epochMsToISO` coercion, or a
+   (`EvenerThread.ActiveTurnStartedAt` should be epoch-ms), the reducer's `epochMsToISO` coercion, or a
    frontend `status.type==="active"` guard on `totalWorkMillis` (also fixes the tick-while-awaiting
    half). Recommend the Go unit fix as the root cause + the frontend status guard as defense-in-depth.
 2. **Popout Go shell** — add a served same-origin blank shell route so dockview popout can work, or
@@ -271,14 +271,14 @@ and landed (MW-B `770800fe8`, MW-A `4e6936fcf`; the plan's own MW-B adjudication
 - **Controller:** the wave → integration serial merge, then integration re-absorb of any newer main;
   a focused re-review of the three controller wiring commits (`9b14e3aaf`, `6c2e51b1e`, `2e2878e3c`).
 - **M10:** deletion of the legacy machinery (`panes.js`, `thread.html`, `doc_serve.go` HTML pages, the
-  legacy JS bundle) + the `SERF_HUB_WEB` flag flip (per the adopted order).
+  legacy JS bundle) + the `EVENER_HUB_WEB` flag flip (per the adopted order).
 - **M9:** full e2e on the final artifact + the ratifications above; the M9 suites.
 - **Final** whole-branch review.
 
 ## Verification (all gates green)
 
-Frontend (from `cmd/serf-hub/frontend`): `npx tsc --noEmit` EXIT 0 → `npx vitest run` (bare) **243
+Frontend (from `cmd/evener-hub/frontend`): `npx tsc --noEmit` EXIT 0 → `npx vitest run` (bare) **243
 files / 3474 tests, 0 failed** (baseline 3475; net −1 from the micro-items: −2 `modelLabel`, +1
 observer) → `npm run lint` (biome ci) EXIT 0 → `npm run build` EXIT 0, `dist/PLACEHOLDER` restored,
-tree clean. Go (worktree root): `go build ./...` EXIT 0; `go test ./cmd/serf-hub/...` — all 11 packages
+tree clean. Go (worktree root): `go build ./...` EXIT 0; `go test ./cmd/evener-hub/...` — all 11 packages
 `ok`.

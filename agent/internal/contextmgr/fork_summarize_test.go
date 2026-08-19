@@ -6,9 +6,9 @@ import (
 	"errors"
 	"testing"
 
-	"primeradiant.com/serf/agent/internal/sessionlog"
-	"primeradiant.com/serf/agent/schema"
-	"primeradiant.com/serf/llm"
+	"primeradiant.com/evener/agent/internal/sessionlog"
+	"primeradiant.com/evener/agent/schema"
+	"primeradiant.com/evener/llm"
 )
 
 // stubSummarizeAdapter (the minimal llm provider stub) lives in

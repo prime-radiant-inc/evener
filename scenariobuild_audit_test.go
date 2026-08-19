@@ -1,4 +1,4 @@
-package serf_test
+package evener_test
 
 import (
 	"os"
@@ -7,12 +7,12 @@ import (
 )
 
 // TestSetupChecklistBuildsTheFrontendBeforeTheHub pins the one build ordering
-// the runbook's Setup checklist cannot get wrong. cmd/serf-hub/frontend/dist
+// the runbook's Setup checklist cannot get wrong. cmd/evener-hub/frontend/dist
 // is untracked except for a one-line PLACEHOLDER
-// (cmd/serf-hub/frontend/.gitignore), and cmd/serf-hub/webnext.go embeds that
+// (cmd/evener-hub/frontend/.gitignore), and cmd/evener-hub/webnext.go embeds that
 // directory at compile time (`//go:embed all:frontend/dist`), so a bare
-// `go build ./cmd/serf-hub` in a fresh checkout or worktree bakes in an empty
-// app: /api/* keeps working and every page route answers `503 serf-hub web
+// `go build ./cmd/evener-hub` in a fresh checkout or worktree bakes in an empty
+// app: /api/* keeps working and every page route answers `503 evener-hub web
 // app not built` (serveSPAIndex). Scenario cards inherit this checklist by
 // default — test/scenarios/README.md: "a card that says nothing about the hub
 // inherits that default" — so dropping the frontend build from the copyable
@@ -24,7 +24,7 @@ func TestSetupChecklistBuildsTheFrontendBeforeTheHub(t *testing.T) {
 	if err != nil {
 		t.Fatalf("reading %s: %v", runbook, err)
 	}
-	const hubBuild = `go build -o "$run/serf-hub" ./cmd/serf-hub`
+	const hubBuild = `go build -o "$run/evener-hub" ./cmd/evener-hub`
 	// Commands only: the surrounding comments name `make build-web` several
 	// times, and a comment that mentions the frontend build is exactly the
 	// state this audit exists to reject.
@@ -36,7 +36,7 @@ func TestSetupChecklistBuildsTheFrontendBeforeTheHub(t *testing.T) {
 	case web < 0:
 		t.Fatalf("%s: the Setup checklist builds the hub with %q but never runs "+
 			"`make build-web`, so the recipe produces a hub that 503s on every "+
-			"page route (cmd/serf-hub/webnext.go serveSPAIndex). Build the "+
+			"page route (cmd/evener-hub/webnext.go serveSPAIndex). Build the "+
 			"frontend in the same block, before the hub.", runbook, hubBuild)
 	case web > hub:
 		t.Fatalf("%s: the Setup checklist runs `make build-web` AFTER %q. The "+

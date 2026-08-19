@@ -11,7 +11,7 @@ import (
 	"strings"
 	"testing"
 
-	"primeradiant.com/serf/agent/internal/jobstore"
+	"primeradiant.com/evener/agent/internal/jobstore"
 )
 
 func TestReadRetainedPageReconstructsExactBytes(t *testing.T) {

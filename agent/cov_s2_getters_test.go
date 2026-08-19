@@ -3,8 +3,8 @@ package agent
 import (
 	"testing"
 
-	"primeradiant.com/serf/agent/execenv"
-	"primeradiant.com/serf/llm"
+	"primeradiant.com/evener/agent/execenv"
+	"primeradiant.com/evener/llm"
 )
 
 // s2cov_ tests for trivial session accessors and the closed-session guards on

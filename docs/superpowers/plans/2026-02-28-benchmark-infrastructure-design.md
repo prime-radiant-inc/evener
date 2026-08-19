@@ -17,7 +17,7 @@ or prove what happened.
 - **Publishable rigor**: Statistical significance, reproducibility, provable results
 - **Full trajectory capture**: Every session (parent + all subagents), every LLM call, every artifact
 - **Exact provenance**: Tie every run to a specific git SHA, with the actual binary and prompts stored
-- **Multi-agent**: Support running different agents (serf, codex-cli, others) against the same suite
+- **Multi-agent**: Support running different agents (evener, codex-cli, others) against the same suite
 - **Multi-suite**: Support different eval suites (terminal-bench, SWE-bench, custom), same archive structure
 - **magic-kingdom**: New physical server replaces flower-garden for all benchmarking
 
@@ -44,15 +44,15 @@ or prove what happened.
 ## Archive Structure
 
 ```
-/data/serf-evals/
+/data/evener-evals/
 └── runs/
     └── 2026-02-28T234024Z_full-53-reviewer_9bf4057/
         ├── manifest.json              # Complete run metadata (written at start, updated at end)
         ├── summary.json               # Machine-readable rollup (written during collect)
         ├── report.html                # Static HTML report (generated post-collect)
         ├── agent/                     # Snapshot of what actually ran
-        │   ├── serf-linux-amd64       # The actual binary
-        │   ├── install-serf.sh.j2     # Container setup template
+        │   ├── evener-linux-amd64       # The actual binary
+        │   ├── install-evener.sh.j2     # Container setup template
         │   ├── prompts/               # Embedded prompts at this SHA
         │   │   ├── base.md
         │   │   ├── system.openai.md
@@ -114,12 +114,12 @@ easy to distinguish incomplete from complete runs.
   "concurrency": 4,
 
   "agent": {
-    "name": "serf",
+    "name": "evener",
     "git_sha": "9bf4057",
     "git_branch": "main",
     "git_dirty": false,
     "build_time": "2026-02-28T23:40:00Z",
-    "adapter": "serf_agent:SerfAgent",
+    "adapter": "evener_agent:EvenerAgent",
     "kwargs": {
       "enable_reviewer_gate": true,
       "max_rounds": 100
@@ -186,8 +186,8 @@ A single `tools/run-eval.sh` replaces `eval-task.sh` and `check-eval.sh`.
 
 ```
  1. Preflight     → verify clean git tree (or --allow-dirty), check magic-kingdom reachable
- 2. Build         → cross-compile serf with ldflags (skip with --no-build)
- 3. Snapshot      → copy prompts, agents, skills, adapter, install-serf.sh.j2 from repo
+ 2. Build         → cross-compile evener with ldflags (skip with --no-build)
+ 3. Snapshot      → copy prompts, agents, skills, adapter, install-evener.sh.j2 from repo
  4. Create run    → create run directory on magic-kingdom, write manifest (status: running)
  5. Deploy        → scp binary + adapter to magic-kingdom
  6. Launch        → SSH into magic-kingdom, create tmux session, run harbor inside it
@@ -305,8 +305,8 @@ Collection is a standalone, idempotent script: `tools/collect-run.sh`.
 harbor output:                          archive:
 task__hash/                      →      tasks/task/rep-N/
   agent/command-0/stdout.txt     →        agent-stdout.txt
-  agent/serf-state/sessions/*    →        sessions/*
-  agent/serf-state/api.jsonl     →        api.jsonl
+  agent/evener-state/sessions/*    →        sessions/*
+  agent/evener-state/api.jsonl     →        api.jsonl
   agent/artifacts/*              →        artifacts/   (filtered, see below)
   verifier/test-stdout.txt       →        verifier-stdout.txt
   verifier/reward.txt            →        reward.txt
@@ -340,10 +340,10 @@ status helps distinguish "intentionally filtered" from "crashed before finishing
 Harbor has no post-verification hook. The `TrialEvent.END` fires after the container
 is already destroyed. The adapter's `run()` override is the only extraction point.
 
-### Changes to serf_agent.py
+### Changes to evener_agent.py
 
-1. **Move state dir to bind mount**: Change `--state-dir` from `/tmp/serf-state` to
-   `/logs/agent/serf-state`. Harbor bind-mounts `/logs/agent/` to the host, so
+1. **Move state dir to bind mount**: Change `--state-dir` from `/tmp/evener-state` to
+   `/logs/agent/evener-state`. Harbor bind-mounts `/logs/agent/` to the host, so
    transcripts and api.jsonl persist automatically without explicit download.
 
 2. **Extract /app artifacts with filtering**: In the adapter's `try/finally` block:
@@ -545,13 +545,13 @@ For comparisons:
 ### Directory layout
 
 ```
-/data/serf-evals/                    # Archive root (persistent storage)
+/data/evener-evals/                    # Archive root (persistent storage)
 └── runs/                            # All runs
 
 ~/eval/                              # Working directory for harbor
-├── serf-linux-amd64                 # Current binary (updated per run)
-├── serf_agent.py                    # Current adapter (updated per run)
-├── install-serf.sh.j2               # Container setup template
+├── evener-linux-amd64                 # Current binary (updated per run)
+├── evener_agent.py                    # Current adapter (updated per run)
+├── install-evener.sh.j2               # Container setup template
 ├── .env                             # API keys (chmod 600)
 └── jobs/                            # Harbor's working output (temporary)
 ```
@@ -563,7 +563,7 @@ For comparisons:
 3. `uv tool install harbor==0.1.44` (pin version)
 4. Create directory structure
 5. Copy `.env` with API keys, `chmod 600 .env`
-6. Copy `install-serf.sh.j2` and `serf_agent.py`
+6. Copy `install-evener.sh.j2` and `evener_agent.py`
 7. Test with a single task: `./tools/run-eval.sh --job smoke-test --task build-cython-ext --reps 1`
 8. Verify archive structure is correct
 
@@ -613,7 +613,7 @@ but keep summary.json, manifest.json, and reward.txt (a few KB per run).
 
 - **Harbor** remains the eval orchestrator. We wrap it, not replace it.
 - **terminal-bench@2.0** dataset stays the same
-- **serf_agent.py** adapter pattern stays the same (enhanced with artifact extraction)
+- **evener_agent.py** adapter pattern stays the same (enhanced with artifact extraction)
 - **Transcript format** (JSONL) stays the same
 - **api.jsonl format** stays the same
 - **Docker containers** per task stays the same
@@ -665,7 +665,7 @@ All issues resolved or explicitly deferred with rationale.
 | 14 | Partial rewards | Binary only for now; noted as limitation |
 | 15 | No seed control | Noted as limitation; most providers don't support for tool-use |
 | 16 | Failure categories re-derived each time | Derived once during collect; stored per-rep |
-| 17 | install-serf.sh.j2 missing from snapshot | Added to agent snapshot |
+| 17 | install-evener.sh.j2 missing from snapshot | Added to agent snapshot |
 | 18 | harbor result.json not preserved | Mapped to harbor-result.json per rep |
 
 ---

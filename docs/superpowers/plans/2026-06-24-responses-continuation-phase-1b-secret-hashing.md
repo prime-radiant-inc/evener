@@ -41,7 +41,7 @@
 - [ ] Run:
 
 ```sh
-GOCACHE=/tmp/serf-gocache go test ./llm -run 'TestContinuationSecret' -count=1 -v
+GOCACHE=/tmp/evener-gocache go test ./llm -run 'TestContinuationSecret' -count=1 -v
 git diff --check
 ```
 
@@ -71,11 +71,11 @@ git commit -m "feat(llm): add continuation local secret store" -m "Add private l
   - Format:
     - `cont-handle-v1:<kind>:<base64url(hmac(redaction_subkey, normalized_value))>`
     - `cont-scope-v1:<kind>:<base64url(hmac(scope_subkey, normalized_value))>`
-  - Derive subkeys with HMAC labels `serf-continuation-redaction-v1` and `serf-continuation-scope-v1`.
+  - Derive subkeys with HMAC labels `evener-continuation-redaction-v1` and `evener-continuation-scope-v1`.
 - [ ] Run:
 
 ```sh
-GOCACHE=/tmp/serf-gocache go test ./llm -run 'TestContinuation.*Hash|TestContinuationSecret' -count=1 -v
+GOCACHE=/tmp/evener-gocache go test ./llm -run 'TestContinuation.*Hash|TestContinuationSecret' -count=1 -v
 git diff --check
 ```
 
@@ -101,7 +101,7 @@ git commit -m "feat(llm): add continuation hmac helpers" -m "Add versioned redac
 - [ ] Run:
 
 ```sh
-GOCACHE=/tmp/serf-gocache go test ./llm -run 'TestContinuation' -count=1 -v
+GOCACHE=/tmp/evener-gocache go test ./llm -run 'TestContinuation' -count=1 -v
 rg -n 'ContinuationHasherForStateDir|HashContinuationHandle|HashContinuationScopeValue' --glob '*.go'
 git diff --check
 ```
@@ -128,7 +128,7 @@ git commit -m "feat(llm): expose continuation hasher constructor" -m "Expose a s
 - [ ] Run:
 
 ```sh
-GOCACHE=/tmp/serf-gocache go test ./llm -run 'TestContinuation' -count=1 -v
+GOCACHE=/tmp/evener-gocache go test ./llm -run 'TestContinuation' -count=1 -v
 rg -n 'DefaultResponsesContinuationSupportRegistry|ResponsesContinuationAuto|HistoryModeResponsesDelta|responses_delta' --glob '*.go'
 git diff --check
 ```

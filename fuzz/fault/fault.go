@@ -5,15 +5,15 @@
 // permission error. Those branches (the long tail of `if err != nil { ... }`)
 // are where real bugs hide and where unit tests rarely go.
 //
-// The design mirrors serf's Clock and afero seams: a nil *Schedule injects
+// The design mirrors evener's Clock and afero seams: a nil *Schedule injects
 // nothing, so a decorated seam is a byte-identical pass-through — zero cost when
 // absent, safe to leave in a default construction path. Faults come only from a
 // Schedule a test builds explicitly from fuzzer bytes, and the failure pattern
 // is a deterministic function of those bytes (no RNG), so a crash always
 // reproduces from its corpus entry.
 //
-// This package is serf-agnostic — it decorates only stdlib/third-party
-// interfaces and imports no primeradiant.com/serf package, per the fuzz module's
+// This package is evener-agnostic — it decorates only stdlib/third-party
+// interfaces and imports no primeradiant.com/evener package, per the fuzz module's
 // portability boundary.
 package fault
 

@@ -5,8 +5,8 @@ import (
 	"errors"
 	"testing"
 
-	"primeradiant.com/serf/agent/schema"
-	"primeradiant.com/serf/appwire"
+	"primeradiant.com/evener/agent/schema"
+	"primeradiant.com/evener/appwire"
 )
 
 // Kata t9kt: the steering-only carrier turn ran as an empty user turn and was
@@ -100,7 +100,7 @@ func TestSteeringOnlyCarrierDeliversAtMaxTurnsCeilingWithoutAnEmptyUserTurn(t *t
 // mutation's authority.
 //
 // Before the fix, onRunnable was never called on the steering-only branch, so
-// cmd/serf/serve.go never installed the daemon's cancellation callback for it
+// cmd/evener/serve.go never installed the daemon's cancellation callback for it
 // -- an interrupt would return Applied without cancelling anything. This test
 // drives a real in-flight model call (blockingAdapter) and a real
 // InterruptClientMutation, and checks the id ProcessPendingUserInput reports

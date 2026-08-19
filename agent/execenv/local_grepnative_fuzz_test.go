@@ -10,7 +10,7 @@ import (
 	"strings"
 	"testing"
 
-	"primeradiant.com/serf/fuzz/oracle"
+	"primeradiant.com/evener/fuzz/oracle"
 )
 
 // egrep_file is one visible file the reference scan knows about: its path

@@ -6,9 +6,9 @@
 
 **Architecture:** Five independent fixes with no shared files: a session-meta persistence bug, a provider capability-detection rewiring, a CLI double-print dedupe, a Makefile delete-safety sweep, and a durable-store release-retry mirror of an existing acquire-side fix.
 
-**Tech Stack:** Go (workspace root module `primeradiant.com/serf`), make, table-driven Go tests with fault injection.
+**Tech Stack:** Go (workspace root module `primeradiant.com/evener`), make, table-driven Go tests with fault injection.
 
-**Spec:** The five kata bodies, quoted verbatim inside each task below. Kata refs: 96cp, g422, sc17, tbqd, fbmy in the `serf` kata project.
+**Spec:** The five kata bodies, quoted verbatim inside each task below. Kata refs: 96cp, g422, sc17, tbqd, fbmy in the `evener` kata project.
 
 ## Global Constraints
 
@@ -39,7 +39,7 @@
 >
 > maybeAutoSave (agent/session.go) writes Meta() on every autosave. So resuming a delegate writes is_subagent:false back into its meta.json, and the flag is gone for every later reader and every subsequent resume. It is a one-way erasure of durable lineage.
 >
-> Impact today: anything keying on the persisted flag misclassifies a resumed delegate as a root session. serf-doctor sessions reads it; so would any future gate on "is this session someone's delegate".
+> Impact today: anything keying on the persisted flag misclassifies a resumed delegate as a root session. evener-doctor sessions reads it; so would any future gate on "is this session someone's delegate".
 >
 > Found independently by two reviewers auditing a separate design. Neither reproduced it at runtime -- this is a code reading of Meta(), isSubagentSession() and maybeAutoSave. VERIFY BY REPRODUCTION FIRST: resume a delegate with 'serve --resume', let an autosave land, and diff meta.json. If a guard elsewhere prevents the rewrite, close this with that evidence.
 >
@@ -109,13 +109,13 @@ Adjust constructor/argument details to match what the neighboring tests in this 
 > [Jesse, priority comment:] Priority 3: latent capability-detection bug - a renamed or aliased Claude 5 model silently gets the wrong request shape (sampling params, thinking config). Nothing misfires today and the fix is small, so it is below the live defects.
 
 **Files:**
-- Modify: `llm/model_catalog.go` (ModelInfo struct, lines 17-48; overlay parse if the flag is Serf-authored), `llm/model_catalog_embedded.go` (`applyOverlayFields`, lines ~146-154), `llm/data/serf_model_catalog_overrides.json` (Claude 5 entries, lines ~91-205), `llm/providers/anthropic/request.go` (isClaude5OrNewer at 246-265 and the `claude5 :=` computation at line 35)
+- Modify: `llm/model_catalog.go` (ModelInfo struct, lines 17-48; overlay parse if the flag is Evener-authored), `llm/model_catalog_embedded.go` (`applyOverlayFields`, lines ~146-154), `llm/data/evener_model_catalog_overrides.json` (Claude 5 entries, lines ~91-205), `llm/providers/anthropic/request.go` (isClaude5OrNewer at 246-265 and the `claude5 :=` computation at line 35)
 - Test: `llm/providers/anthropic/claude5_test.go`, `llm/model_catalog_test.go`
 
 **Investigation facts (verified against this tree):**
 - `buildRequestBody` already holds a full catalog entry `mi` (`request.go:135-144`, via `llm.EmbeddedModelCatalog().LookupModelInfo(apiModel)`) near the point where the three claude5 decisions apply: omit temperature/top_p (`request.go:65-69`), force adaptive thinking, add `thinking.display = "summarized"` (`request.go:146-157`). But note `claude5` is computed at line 35 and the sampling-param decisions at 65-69 run BEFORE the line-135 lookup — you will need the catalog entry earlier in the function.
 - **Trap 1:** the comment's suggested flag `thinking-always-on` already exists as `ThinkingAlwaysOn` and means something DIFFERENT and narrower: `claude-sonnet-5` is explicitly `ThinkingAlwaysOn == false` (pinned by `TestEmbeddedModelCatalog_ClaudeSonnet5AndFable5`, `llm/model_catalog_test.go:284-286`) while `isClaude5OrNewer("claude-sonnet-5") == true`. Do NOT rewire to ThinkingAlwaysOn. A new flag is needed; name it for what it means in the domain (the Claude 5+ request generation/shape), not its history.
-- **Trap 2:** the vendored upstream data (`llm/data/litellm_model_catalog.json`) carries `"supports_sampling_params": false` on the Claude 5 family — but ALSO on `claude-opus-4-7` and `claude-opus-4-8`, which `isClaude5OrNewer` deliberately returns false for today. `parseLiteLLMCatalog` never reads that key and no `SupportsSamplingParams` field exists on ModelInfo. Changing opus-4-7/4-8's request shape is OUT OF SCOPE for this kata (nothing misfires today; widening the set is a separate ruling). Recommended: a Serf-authored overlay flag on exactly the models the current helper matches, not a parse of the upstream key. Note the unconsumed upstream key in your report so it is on the record.
+- **Trap 2:** the vendored upstream data (`llm/data/litellm_model_catalog.json`) carries `"supports_sampling_params": false` on the Claude 5 family — but ALSO on `claude-opus-4-7` and `claude-opus-4-8`, which `isClaude5OrNewer` deliberately returns false for today. `parseLiteLLMCatalog` never reads that key and no `SupportsSamplingParams` field exists on ModelInfo. Changing opus-4-7/4-8's request shape is OUT OF SCOPE for this kata (nothing misfires today; widening the set is a separate ruling). Recommended: a Evener-authored overlay flag on exactly the models the current helper matches, not a parse of the upstream key. Note the unconsumed upstream key in your report so it is on the record.
 - Which entries need the flag: overrides entries exist for `claude-sonnet-5` and `claude-fable-5`; `claude-opus-5` exists only in the base catalog (you may add an overrides entry for it). Dated variants (`claude-sonnet-5-20260901` etc.) resolve through `LookupModelInfo`'s family-ID fallback (`llm/model_catalog.go:114-143`) — verify with a test rather than assuming.
 - Fallback semantics: models with no catalog entry at all (e.g. hypothetical `claude-fable-6`) currently get claude5=true via generation parsing, and `TestIsClaude5OrNewer` (`llm/providers/anthropic/claude5_test.go:15-36`) pins `claude-fable-6 → true`. Keep the generation parse as the fallback when the catalog has no entry for the model, so an unknown-but-newer model keeps the safe request shape; the catalog flag takes over whenever an entry resolves. That is what "rewired to it" can mean without regressing the pinned future-family behavior. If you find evidence this fallback is wrong, stop and report rather than deleting the pinned cases.
 - Existing request-shape tests that must stay green as-is: `TestBuildRequestBody_Claude5_AdaptiveWithDisplay`, `TestBuildRequestBody_Claude5_NoEffort_StillAdaptiveDisplay`, `TestBuildRequestBody_OlderAdaptiveModels_NoDisplayField` (opus-4-6/sonnet-4-6 byte-identical contract), `TestBuildRequestBody_Claude5_OmitsSamplingParams`, `TestBuildRequestBody_Claude5_1MSuffixStripped` (all in `llm/providers/anthropic/claude5_test.go`).
@@ -133,7 +133,7 @@ Adjust constructor/argument details to match what the neighboring tests in this 
 
 **Kata body (verbatim):**
 
-> cmd/serf/run.go's event printer has two independent print sites for the same content:
+> cmd/evener/run.go's event printer has two independent print sites for the same content:
 >
 >   EventAssistantTextEnd -> fmt.Fprintf(w, "[assistant] %s\n", d.Text)
 >   EventCommunicate      -> fmt.Fprintf(w, "[communicate:end_turn] %s\n", d.Message)
@@ -147,20 +147,20 @@ Adjust constructor/argument details to match what the neighboring tests in this 
 > Fix direction: reuse the projector's comparison rather than writing a second one, so the two surfaces cannot drift on what counts as a duplicate.
 
 **Files:**
-- Modify: `cmd/serf/run.go` (`drainEventsHuman`, lines 349-438: EventAssistantTextEnd case at 363-380, EventCommunicate case at 401-408), plus wherever the shared comparison ends up living (see below)
+- Modify: `cmd/evener/run.go` (`drainEventsHuman`, lines 349-438: EventAssistantTextEnd case at 363-380, EventCommunicate case at 401-408), plus wherever the shared comparison ends up living (see below)
 - Possibly modify: `internal/appprojector/appwire_projection.go` (matchesLastAssistantMessage, 1865-1869; recordAssistantMessage, 1856-1863), `internal/apptranscript/apptranscript.go` (the mirrored inline dedupe, 408-414 and the comparison at 472)
-- Test: `cmd/serf/run_test.go` (model on `TestDrainEventsHuman`, line 504, driven by a `testEvents()`-style slice)
+- Test: `cmd/evener/run_test.go` (model on `TestDrainEventsHuman`, line 504, driven by a `testEvents()`-style slice)
 
 **Investigation facts (verified against this tree):**
 - `drainEventsHuman` is stateless today; events carry no turn ID (`events.SessionEvent` has none, nor do the two payloads). The projector's dedupe is turn-scoped via its own `activeTurnID`; the CLI cannot be. "Last printed assistant text" tracked inside the drain loop is the achievable equivalent — same TrimSpace-equality semantics, scoped to most-recent-assistant-text, which for this stream (assistant text immediately followed by its communicate echo) is the same practical contract.
-- The comparison is three unexported members on the stateful `*AppEventProjector`; `cmd/serf` cannot call them. There is ALREADY a second hand-rolled copy: `internal/apptranscript/apptranscript.go:410-414` mirrors the dedupe with a comment pointing at matchesLastAssistantMessage, and `TestProjectTurnDedupsCommunicateEcho` (`internal/apptranscript/apptranscript_test.go:1064-1069`) pins it. So the drift the kata warns about has already happened once. Import direction: `appprojector` imports `apptranscript` (leaf); the reverse would cycle. `cmd/serf` may import either (same module, `primeradiant.com/serf/internal/...` is visible to `cmd/serf`; `cmd/serf-hub` already imports appprojector).
+- The comparison is three unexported members on the stateful `*AppEventProjector`; `cmd/evener` cannot call them. There is ALREADY a second hand-rolled copy: `internal/apptranscript/apptranscript.go:410-414` mirrors the dedupe with a comment pointing at matchesLastAssistantMessage, and `TestProjectTurnDedupsCommunicateEcho` (`internal/apptranscript/apptranscript_test.go:1064-1069`) pins it. So the drift the kata warns about has already happened once. Import direction: `appprojector` imports `apptranscript` (leaf); the reverse would cycle. `cmd/evener` may import either (same module, `primeradiant.com/evener/internal/...` is visible to `cmd/evener`; `cmd/evener-hub` already imports appprojector).
 - The right home for one shared, exported, pure comparison is therefore `internal/apptranscript` (the leaf all three surfaces can reach). Rewire all three call sites — projector, apptranscript's inline copy, and the new run.go use — through it, so there is exactly one definition of "counts as a duplicate". Keep the projector's turn-ID scoping where it is (that part is projector state, not comparison semantics).
-- Existing tests that must stay green: `TestDrainEventsHuman` (`cmd/serf/run_test.go:504`), `TestDrainEventsHuman_CommunicateAndSkillActivated` (`cmd/serf/main_test.go:795` — two communicates with DIFFERENT text from any assistant text; must still both print), `TestProjectTurnDedupsCommunicateEcho`, and the appprojector communicate tests (`TestAppEventProjectorProjectsCommunicateAsAssistantMessage`, `TestAppEventProjectorSuppressesCommunicateToolEvents`).
+- Existing tests that must stay green: `TestDrainEventsHuman` (`cmd/evener/run_test.go:504`), `TestDrainEventsHuman_CommunicateAndSkillActivated` (`cmd/evener/main_test.go:795` — two communicates with DIFFERENT text from any assistant text; must still both print), `TestProjectTurnDedupsCommunicateEcho`, and the appprojector communicate tests (`TestAppEventProjectorProjectsCommunicateAsAssistantMessage`, `TestAppEventProjectorSuppressesCommunicateToolEvents`).
 - Semantics to preserve exactly (from the projector): compare `strings.TrimSpace(text)` for equality; empty communicate messages already print nothing meaningful — mirror the projector's early-return on empty. A communicate with different text still prints. A `[communicate]` (EndTurn=false) with matching text: the projector's dedupe does not distinguish EndTurn; match its behavior and pin whichever way it lands in the test with a comment.
 
-- [ ] **Step 1:** Write the failing test in `cmd/serf/run_test.go`: feed `drainEventsHuman` an `EventAssistantTextEnd{Text: "the answer"}` followed by `EventCommunicate{Message: "the answer", EndTurn: true}`, assert the output contains `the answer` exactly once and still contains the `[usage]` line; add a companion case where the communicate text differs and both lines must appear. Run: `go test ./cmd/serf/ -run TestDrainEventsHuman -v`. Expected: FAIL (answer printed twice).
+- [ ] **Step 1:** Write the failing test in `cmd/evener/run_test.go`: feed `drainEventsHuman` an `EventAssistantTextEnd{Text: "the answer"}` followed by `EventCommunicate{Message: "the answer", EndTurn: true}`, assert the output contains `the answer` exactly once and still contains the `[usage]` line; add a companion case where the communicate text differs and both lines must appear. Run: `go test ./cmd/evener/ -run TestDrainEventsHuman -v`. Expected: FAIL (answer printed twice).
 - [ ] **Step 2:** Extract the shared comparison into `internal/apptranscript` (exported, pure, with a doc comment naming all three consumers), rewire appprojector's matchesLastAssistantMessage text comparison and apptranscript's line-472 inline comparison through it, and add last-assistant-text tracking + suppression to `drainEventsHuman`. Run the new test. Expected: PASS.
-- [ ] **Step 3:** Run all four affected packages: `go test ./cmd/serf/ ./internal/appprojector/ ./internal/apptranscript/ -count=1`. Expected: PASS.
+- [ ] **Step 3:** Run all four affected packages: `go test ./cmd/evener/ ./internal/appprojector/ ./internal/apptranscript/ -count=1`. Expected: PASS.
 - [ ] **Step 4:** Mutation checks, run each: (a) make the shared comparison always return false → your new dedupe test fails; (b) make it always return true → `TestDrainEventsHuman_CommunicateAndSkillActivated` and/or your different-text case fails. Restore.
 - [ ] **Step 5:** Commit the touched files by explicit path, message `fix(cli): suppress communicate echo of assistant text in run printer (kata sc17)`.
 
@@ -170,13 +170,13 @@ Adjust constructor/argument details to match what the neighboring tests in this 
 
 **Kata body (verbatim):**
 
-> Surfaced by the independent review of the estate-gutting commit: Makefile lines 77, 121, 163 feed variables ($$dir, $(SERF_DIST_BIN_DIR)) to rm -rf. TestNoScriptFeedsVariableToRecursiveDelete and the docs/testing.md rule are scoped to scripts/*.sh, so these are the nearest unswept weapons if the rule is to hold repo-wide. Work: either convert the recipes to safe shapes (mkdir-owned paths, guard through a script that uses scratch-lib) or extend the audit to Makefile recipe lines with the same count-pinned list. Related katas: jvpe (the audit), yns5 (the estate).
+> Surfaced by the independent review of the estate-gutting commit: Makefile lines 77, 121, 163 feed variables ($$dir, $(EVENER_DIST_BIN_DIR)) to rm -rf. TestNoScriptFeedsVariableToRecursiveDelete and the docs/testing.md rule are scoped to scripts/*.sh, so these are the nearest unswept weapons if the rule is to hold repo-wide. Work: either convert the recipes to safe shapes (mkdir-owned paths, guard through a script that uses scratch-lib) or extend the audit to Makefile recipe lines with the same count-pinned list. Related katas: jvpe (the audit), yns5 (the estate).
 
 **Files:**
 - Read first: the `TestNoScriptFeedsVariableToRecursiveDelete` audit test (locate it by grep; it is the mechanism this kata extends or satisfies), the docs/testing.md rule it enforces, and Makefile lines 60-180 for the three recipes' context.
 - Modify: `Makefile` and/or the audit test file, per the option you choose with evidence.
 
-**Verified premise:** the three sites exist exactly as described at Makefile:77 (`rm -rf "$$dir" || finish_status=1`), :121 (`rm -rf "$$dir" || { finish_status=1; ... }`), :163 (`rm -rf "$(SERF_DIST_BIN_DIR)" "$(SERF_DIST_ARCHIVE)"`).
+**Verified premise:** the three sites exist exactly as described at Makefile:77 (`rm -rf "$$dir" || finish_status=1`), :121 (`rm -rf "$$dir" || { finish_status=1; ... }`), :163 (`rm -rf "$(EVENER_DIST_BIN_DIR)" "$(EVENER_DIST_ARCHIVE)"`).
 
 **Choosing between the kata's two options:** read the audit test and docs/testing.md rule first, then pick the option that holds the rule repo-wide with the smallest honest change. Two katas' worth of history says a named mechanism can be wrong — if the audit's shape does not extend cleanly to Makefile recipe text, converting the recipes to safe shapes is equally acceptable. Whichever you choose, the stop condition is: **a variable-fed recursive delete added to the Makefile after your change is either impossible (the recipe shape doesn't take variables) or caught by a test.** A conversion that leaves the next contributor free to add a fourth unswept `rm -rf "$$var"` does not meet it.
 

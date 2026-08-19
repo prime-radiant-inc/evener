@@ -128,7 +128,7 @@ production turn kind already carries a durable `turn_m<n>` name**:
 `EntryWatchDelivery` has no production producer; `FollowUp` has no non-test
 callers. And the queued path is already proven end to end against a live hub and
 daemon: `TestE2E_TurnControlReachesTheSession`
-(`cmd/serf-hub/e2e_turn_control_test.go:118-177`) queues while busy, waits for
+(`cmd/evener-hub/e2e_turn_control_test.go:118-177`) queues while busy, waits for
 the queued message's own turn through `awaitActiveTurn` — which requires status
 `active` **and** a fresh non-empty id — and asserts `turn/interrupt` against that
 id returns `Applied`.
@@ -148,7 +148,7 @@ until it produces a genuinely failing test.**
   stated reason*, implement the minimum, watch it pass. A step that cannot be
   made to fail first is not a test — say so and redesign it.
 - **No test may be tautological.** `invariant.Hold` is a **no-op** outside
-  `-tags serffuzz` (`invariant/invariant.go:28,32`, `const Enabled = false`), so
+  `-tags evenerfuzz` (`invariant/invariant.go:28,32`, `const Enabled = false`), so
   an invariant is never a test. A length assertion against a literal is not a
   completeness check.
 - **One minter of live turn ids.** `reserveClientMutationTurnID`. Kata `eptj` is
@@ -174,14 +174,14 @@ until it produces a genuinely failing test.**
 Nothing else in this plan may start until Step 4 produces a red test.
 
 **Files:** ~~create `server/control_invariant_test.go`~~ — it shipped as
-`cmd/serf-hub/e2e_control_invariant_test.go`. Different module: the harness needs
+`cmd/evener-hub/e2e_control_invariant_test.go`. Different module: the harness needs
 a live hub and daemon, which `server/` cannot start.
 
 - [x] **Step 1: Write the harness.** A helper that returns
       `(statusType, activeTurnID)` from `thread/read`, and one that asserts the
       control invariant: *if the wire says a turn is running, a `turn/interrupt`
       aimed at the id the wire just published is accepted.* Prefer reusing
-      `awaitActiveTurn`/`awaitThread` (`cmd/serf-hub/e2e_turn_control_test.go:437-451`)
+      `awaitActiveTurn`/`awaitThread` (`cmd/evener-hub/e2e_turn_control_test.go:437-451`)
       over re-implementing them.
 - [x] **Step 2: Run it against a goal-continuation turn and a notification
       turn.** Both must PASS. If either fails, stop — a landed plan regressed and
@@ -202,7 +202,7 @@ a live hub and daemon, which `server/` cannot start.
 ### RESULT (2026-08-16): Step 4 came up GREEN. The gate fired.
 
 `TestE2E_ControlInvariantAcrossATurnBoundary`
-(`cmd/serf-hub/e2e_control_invariant_test.go`) samples `thread/read` as hard as
+(`cmd/evener-hub/e2e_control_invariant_test.go`) samples `thread/read` as hard as
 it can across a queued-message turn boundary, then issues a real `turn/interrupt`
 while turn 2 is demonstrably running. Five consecutive runs.
 
@@ -270,7 +270,7 @@ it reads the wrong object.
 
 The daemon publishes `status=active` from `srv.processing` (`appStatus()`,
 `server/appwire_runtime.go`), which is set for the whole of `ProcessInputKind`
-and cleared only after the entire drain returns (`cmd/serf/serve.go`).
+and cleared only after the entire drain returns (`cmd/evener/serve.go`).
 `InterruptClientMutation` samples `Session.WireState()`, which reads the
 SESSION. Through a turn's PRE-TURN WORK -- everything `processOneInput` does
 before `s.setStateIfOpenLocked(SessionProcessing)` at
@@ -358,7 +358,7 @@ honesty the old read carried. `serve.go`'s drain path also armed the cancel
 *after* publishing processing, unlike its two sibling sites; it now matches them.
 
 Three clients gated this session-scoped mutation on a turn id the request does
-not carry: the web composer's `showStop` (via `isTurnActive`), `serf-tui`'s
+not carry: the web composer's `showStop` (via `isTurnActive`), `evener-tui`'s
 `/interrupt`, and the command palette's `hasActiveTurn`. All three withheld Stop
 for the whole unnamed-but-working window. Steer keeps the turn gate in all
 three — it redirects a turn in flight and its handler needs the id.
@@ -531,7 +531,7 @@ no `item/started`.
 stamps `MutationOutcome = notAccepted`
 (`agent/session_client_mutation_queue.go:177-195`), it reaches the client
 (`appwire/errors.go:44-50`), the dispatcher calls `transferToRecovery`
-(`cmd/serf-hub/frontend/src/stores/mutationDispatcher.ts:137-141`), and
+(`cmd/evener-hub/frontend/src/stores/mutationDispatcher.ts:137-141`), and
 `QueueStrip` renders a row. The defects are narrower and worse:
 
 - [x] **Step 1: The reason is never persisted.** `MutationRecoveryRecord`
@@ -643,7 +643,7 @@ Each bullet is its own red-green-commit.
       description above is of the pre-fix state. Today the comment precedes its
       row (`server/thread_envelope.go:175`) and the test asserts
       `ActiveTurnStartedAt` directly.
-- [ ] **Still open.** Dedupe `cmd/serf-hub/e2e_turn_control_test.go` (700 lines):
+- [ ] **Still open.** Dedupe `cmd/evener-hub/e2e_turn_control_test.go` (700 lines):
       the `thread/start` + cleanup block appears three times, steer-and-prove
       twice, interrupt-and-prove three times. Makes visible that only one test
       covers Send-while-busy. (The file is still 700 lines.)

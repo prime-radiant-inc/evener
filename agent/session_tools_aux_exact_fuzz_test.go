@@ -1,4 +1,4 @@
-//go:build serffuzz
+//go:build evenerfuzz
 
 package agent
 
@@ -16,16 +16,16 @@ import (
 
 	jsonschema "github.com/santhosh-tekuri/jsonschema/v5"
 
-	"primeradiant.com/serf/agent/events"
-	"primeradiant.com/serf/agent/execenv"
-	"primeradiant.com/serf/agent/internal/goal"
-	"primeradiant.com/serf/agent/internal/tool"
-	"primeradiant.com/serf/agent/internal/tool/repair"
-	"primeradiant.com/serf/agent/schema"
-	"primeradiant.com/serf/agent/skill"
-	taskpkg "primeradiant.com/serf/agent/task"
-	"primeradiant.com/serf/agent/transcript"
-	"primeradiant.com/serf/llm"
+	"primeradiant.com/evener/agent/events"
+	"primeradiant.com/evener/agent/execenv"
+	"primeradiant.com/evener/agent/internal/goal"
+	"primeradiant.com/evener/agent/internal/tool"
+	"primeradiant.com/evener/agent/internal/tool/repair"
+	"primeradiant.com/evener/agent/schema"
+	"primeradiant.com/evener/agent/skill"
+	taskpkg "primeradiant.com/evener/agent/task"
+	"primeradiant.com/evener/agent/transcript"
+	"primeradiant.com/evener/llm"
 )
 
 // FuzzSessionToolsAuxExact replays finite, deterministic edge states for the
@@ -246,7 +246,7 @@ func auxFindExact(t *testing.T) {
 	// enforced by validLocalBucketDir since the identifier refactor): a readable
 	// portion plus a 10-character base62 suffix. A bare stand-in like "current"
 	// is rejected by design and would degrade the scope probe to nil buckets.
-	nested := filepath.Join(root, "home", "serf", "projects", "current-abcdefghij")
+	nested := filepath.Join(root, "home", "evener", "projects", "current-abcdefghij")
 	if buckets, scope := findBucketsWithEnumerate(nested, scopeAllProjects, func(string) ([]string, error) { return nil, errors.New("enumerate") }); len(buckets) != 1 || scope != scopeCurrentProject {
 		t.Fatalf("failed enumeration = %#v %q", buckets, scope)
 	}

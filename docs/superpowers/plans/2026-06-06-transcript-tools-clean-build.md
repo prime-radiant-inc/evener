@@ -6,7 +6,7 @@
 
 **Architecture:** The canonical contract is `docs/tools/transcripts.md` (committed on this branch — read it; it is the source of truth for every parameter, field, and response shape). The branch `transcript-tools` is rooted at `60b327bd` (clean base, before the prior "5-mode" implementation). The prior implementation lives at branch `wip/session-transcript-tools` and is the **salvage source** for engine code; its *surface* (find dispatch, read executor, tool definitions, surface tests) is discarded and rebuilt. The parse layer (`agent/transcript/`, `agent/transcript_read.go`) and `firstLineClamp`-style helpers already exist on the base via the engine files.
 
-**Tech Stack:** Go (`primeradiant.com/serf`), `go.work` workspace, standard `testing`. **No pre-commit hook** — run `make lint` and `make test` explicitly. Salvage uses `git checkout <branch> -- <paths>` and `git rm`.
+**Tech Stack:** Go (`primeradiant.com/evener`), `go.work` workspace, standard `testing`. **No pre-commit hook** — run `make lint` and `make test` explicitly. Salvage uses `git checkout <branch> -- <paths>` and `git rm`.
 
 **The one rule (from the design doc):** there is a single universal **Turn number** — shown at the start of every outline line and in every markdown `## Turn N` heading — and it is exactly what `range` and `expand_turn` accept. No second index is ever exposed.
 
@@ -74,8 +74,8 @@ git checkout $W -- \
   agent/internal/contextmgr/context_strategy.go agent/internal/contextmgr/strategy_host_test.go \
   agent/internal/contextmgr/strategy_ooda.go agent/internal/contextmgr/strategy_ooda_test.go \
   agent/internal/contextmgr/strategy_session_log.go agent/internal/contextmgr/strategy_session_log_test.go \
-  cmd/serf-hub/internal/launchconfig/schema.go cmd/serf-hub/internal/launchconfig/schema_test.go \
-  cmd/serf/main.go
+  cmd/evener-hub/internal/launchconfig/schema.go cmd/evener-hub/internal/launchconfig/schema_test.go \
+  cmd/evener/main.go
 ```
 
 - [ ] **Step 4: Verify the engine builds and its tests pass.** The two tools are NOT registered yet (base `session_tool_registry.go` and `definitions.go` are untouched), so nothing references the missing surface.
@@ -187,10 +187,10 @@ package agent
 
 import (
 	"context"
-	"primeradiant.com/serf/agent/execenv"
-	"primeradiant.com/serf/agent/internal/tool"
-	"primeradiant.com/serf/agent/schema"
-	"primeradiant.com/serf/llm"
+	"primeradiant.com/evener/agent/execenv"
+	"primeradiant.com/evener/agent/internal/tool"
+	"primeradiant.com/evener/agent/schema"
+	"primeradiant.com/evener/llm"
 )
 
 const transcriptToolMaxChars = 600_000
@@ -265,7 +265,7 @@ func parentBucketAndID(selector, currentStateDir, currentSessionID string) (buck
 		if sh == "" {
 			return "", "", "", fmt.Errorf("transcript ref %q: no project root (flat state dir)", selector)
 		}
-		return filepath.Join(sh, "serf", "projects", hash), id, scopeAllProjects, nil
+		return filepath.Join(sh, "evener", "projects", hash), id, scopeAllProjects, nil
 	}
 	if err := validIDToken(selector); err != nil {
 		return "", "", "", fmt.Errorf("invalid session selector: %w", err)

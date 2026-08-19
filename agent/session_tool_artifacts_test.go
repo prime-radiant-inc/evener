@@ -9,11 +9,11 @@ import (
 	"sync/atomic"
 	"testing"
 
-	"primeradiant.com/serf/agent/execenv"
-	"primeradiant.com/serf/agent/internal/tool"
-	"primeradiant.com/serf/agent/schema"
-	"primeradiant.com/serf/identifier"
-	"primeradiant.com/serf/llm"
+	"primeradiant.com/evener/agent/execenv"
+	"primeradiant.com/evener/agent/internal/tool"
+	"primeradiant.com/evener/agent/schema"
+	"primeradiant.com/evener/identifier"
+	"primeradiant.com/evener/llm"
 )
 
 type recordingArtifactStore struct {
@@ -157,7 +157,7 @@ func TestRetainToolArtifactUsesRecoverableOutput(t *testing.T) {
 
 func TestRetainToolArtifactFailureIsAvailabilityNeutralAndPreservesError(t *testing.T) {
 	store := newFakeArtifactStore()
-	const sensitivePath = "/Users/operator/.serf/private/session-artifacts/model-output"
+	const sensitivePath = "/Users/operator/.evener/private/session-artifacts/model-output"
 	store.putErr = &os.PathError{
 		Op:   "write",
 		Path: sensitivePath,

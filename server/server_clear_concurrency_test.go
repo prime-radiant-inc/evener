@@ -22,7 +22,7 @@ const clearConcurrencyBudget = 30 * time.Second
 // The endpoint's only gate was `processing`, which is false for the whole of a
 // clear -- so two POSTs arriving while the session is idle both ran the clear
 // callback. In the daemon that callback builds a replacement session, publishes
-// an identity for it and swaps it in (cmd/serf/serve.go's SetClearFunc), so two
+// an identity for it and swaps it in (cmd/evener/serve.go's SetClearFunc), so two
 // of them leave one replacement current and the other reachable by nothing.
 // Nothing closes it, so its env's Cleanup() never runs and the scratch
 // directory it owns outlives the daemon (kata x058 walked the same consequence

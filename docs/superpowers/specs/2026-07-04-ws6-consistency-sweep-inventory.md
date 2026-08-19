@@ -9,10 +9,10 @@ part of this list.
 
 ## Deferred display wiring (from WS2's final report)
 
-- `cmd/serf-hub/app_threadread.go` `pastEntryThread` never got metrics wiring —
+- `cmd/evener-hub/app_threadread.go` `pastEntryThread` never got metrics wiring —
   a TUI user viewing an **ended** session through the hub sees no
   work-time/tokens (web path is complete; live sessions fine).
-- `cmd/serf-tui/details_drawer.go` (the wide-terminal sidecar surface) never got
+- `cmd/evener-tui/details_drawer.go` (the wide-terminal sidecar surface) never got
   metrics. The WS2 plan's C1 said "details drawer" but its checklist only named
   `renderHubSessionStatus`/`hub_status.go` (a different, pre-existing feature of
   that name).
@@ -20,9 +20,9 @@ part of this list.
   WS2 spec; the wire now carries `Turn.CompletedAt`/`DurationMS`).
 - Dollar cost display: tokens-only shipped; `llm/pricing.go` catalog still has
   zero callers.
-- Composer action-state at rest: `cmd/serf-tui/composer_panel.go`
+- Composer action-state at rest: `cmd/evener-tui/composer_panel.go`
   `sessionTurnActionState()` treats `awaiting` like `active` (pre-existing
-  Codex-era line, activated for every rested serf session by rest=awaiting).
+  Codex-era line, activated for every rested evener session by rest=awaiting).
   Adjudicate what the composer should show at rest.
 
 ## Small correctness/comment residue (from WS3's final report)
@@ -58,7 +58,7 @@ part of this list.
 
 ## Pre-existing consistency grab-bag (from the original 2026-07-03 diagnostic)
 
-- Transport stragglers: the task-status-row 5s poller; `serf/task/updated` is
+- Transport stragglers: the task-status-row 5s poller; `evener/task/updated` is
   defined but never emitted.
 - Vocabulary: Working|Idle vs awaiting|processing|errored vs
   Current|Recent|Archived; ⟳/◆ glyph semantics (⟳N reads as "working" but means

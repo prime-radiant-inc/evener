@@ -6,8 +6,8 @@ import (
 	"strings"
 	"testing"
 
-	"primeradiant.com/serf/agent/schema"
-	"primeradiant.com/serf/identifier"
+	"primeradiant.com/evener/agent/schema"
+	"primeradiant.com/evener/identifier"
 )
 
 // TestForkSessionAtUserTurn_CopiesPrefixWithoutAppendingInput verifies the

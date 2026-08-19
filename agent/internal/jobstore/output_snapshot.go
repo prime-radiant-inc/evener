@@ -8,7 +8,7 @@ import (
 
 	"github.com/spf13/afero"
 
-	"primeradiant.com/serf/agent/internal/runetrim"
+	"primeradiant.com/evener/agent/internal/runetrim"
 )
 
 // ErrOutputChangedDuringRead is returned when both immediate attempts to read

@@ -54,11 +54,11 @@ Spec: `docs/specs/2026-05-20-session-auto-naming.md`
 
 **Files:**
 - Test: `internal/launchconfig/wire_test.go`
-- Test: `cmd/serf-tui/launch_settings_panel_test.go`
-- Test: `cmd/serf-hub/app_launch_test.go`
+- Test: `cmd/evener-tui/launch_settings_panel_test.go`
+- Test: `cmd/evener-hub/app_launch_test.go`
 - Modify: `internal/appwire/types.go`
 - Modify: `internal/launchconfig/wire.go`
-- Modify: `cmd/serf-tui/launch_settings_panel.go`
+- Modify: `cmd/evener-tui/launch_settings_panel.go`
 
 - [ ] **Red:** add wire round-trip test.
   - `launchconfig.Layer{FastCheapModel: "openai/gpt-5-mini"}` converts to `appwire.LaunchConfigLayer{FastCheapModel: ...}` and back.
@@ -84,13 +84,13 @@ Spec: `docs/specs/2026-05-20-session-auto-naming.md`
 
 - [ ] Run:
   ```sh
-  go test ./internal/launchconfig ./cmd/serf-tui ./cmd/serf-hub -run 'FastCheapModel|LaunchSettings|SetLayer' -count=1
+  go test ./internal/launchconfig ./cmd/evener-tui ./cmd/evener-hub -run 'FastCheapModel|LaunchSettings|SetLayer' -count=1
   ```
 
 ## Task 3: Pass `--fast-cheap-model` through hub daemon spawn
 
 **Files:**
-- Test: `cmd/serf-hub/spawn_test.go`
+- Test: `cmd/evener-hub/spawn_test.go`
 - Modify: likely only covered by `internal/launchconfig/args.go` unless spawn has filtering/validation logic.
 
 - [ ] **Red:** add/extend spawn arg test with resolved effective launch layer:
@@ -109,16 +109,16 @@ Spec: `docs/specs/2026-05-20-session-auto-naming.md`
 
 - [ ] Run:
   ```sh
-  go test ./cmd/serf-hub -run 'Spawn|FastCheapModel' -count=1
+  go test ./cmd/evener-hub -run 'Spawn|FastCheapModel' -count=1
   ```
 
 ## Task 4: Add serve flag and same-provider cheap model override
 
 **Files:**
 - Test: `agent/profile_test.go`
-- Test: `cmd/serf/serve_test.go` or narrow cmdutil/serve helper test if one exists
+- Test: `cmd/evener/serve_test.go` or narrow cmdutil/serve helper test if one exists
 - Modify: `agent/profile.go`
-- Modify: `cmd/serf/serve.go`
+- Modify: `cmd/evener/serve.go`
 
 Smallest YAGNI decision: support same-provider overrides first. If `--fast-cheap-model` names a different provider than `--model`, return a clear error. Do not build a cross-provider cheap client yet.
 
@@ -136,7 +136,7 @@ Smallest YAGNI decision: support same-provider overrides first. If `--fast-cheap
   - `--model openai/gpt-5.5 --fast-cheap-model openai/gpt-5-mini` resolves to active profile ID `openai` and cheap model `gpt-5-mini`.
   - Use the smallest testable helper. If `runServe` is too integration-heavy, extract a tiny helper such as `resolveFastCheapModelOverride(activeProvider, flag string) (string, error)`.
 
-- [ ] **Green:** add `fs.String("fast-cheap-model", "", ...)` in `cmd/serf/serve.go`, resolve it, and apply the override before session creation/restore.
+- [ ] **Green:** add `fs.String("fast-cheap-model", "", ...)` in `cmd/evener/serve.go`, resolve it, and apply the override before session creation/restore.
 
 - [ ] **Red:** add mismatch test.
   - `--model openai/gpt-5.5 --fast-cheap-model anthropic/claude-haiku...` returns a clear error.
@@ -145,7 +145,7 @@ Smallest YAGNI decision: support same-provider overrides first. If `--fast-cheap
 
 - [ ] Run:
   ```sh
-  go test ./agent ./cmd/serf -run 'CheapModel|FastCheapModel|Serve' -count=1
+  go test ./agent ./cmd/evener -run 'CheapModel|FastCheapModel|Serve' -count=1
   ```
 
 ## Task 5: Add session metadata name fields and display helper
@@ -177,10 +177,10 @@ Smallest YAGNI decision: support same-provider overrides first. If `--fast-cheap
 ## Task 6: Update hub display/search to prefer generated names
 
 **Files:**
-- Test: `cmd/serf-hub/past_test.go`
-- Test: tree/thread title test if present for `cmd/serf-hub/tree.go`
-- Modify: `cmd/serf-hub/past.go`
-- Modify: `cmd/serf-hub/tree.go`
+- Test: `cmd/evener-hub/past_test.go`
+- Test: tree/thread title test if present for `cmd/evener-hub/tree.go`
+- Modify: `cmd/evener-hub/past.go`
+- Modify: `cmd/evener-hub/tree.go`
 
 Smallest step: use generated name for display and in-memory search first. Only touch FTS schema if an existing test proves FTS must include it in this increment.
 
@@ -197,7 +197,7 @@ Smallest step: use generated name for display and in-memory search first. Only t
 
 - [ ] Run:
   ```sh
-  go test ./cmd/serf-hub -run 'Past|Tree|Search|DisplayName' -count=1
+  go test ./cmd/evener-hub -run 'Past|Tree|Search|DisplayName' -count=1
   ```
 
 ## Task 7: Add advisory session-log entries
@@ -326,14 +326,14 @@ YAGNI approach: add a small method that can be called synchronously in tests, th
 
 - [ ] Run focused tests:
   ```sh
-  go test ./internal/launchconfig ./internal/appwire ./cmd/serf-tui ./cmd/serf-hub ./cmd/serf ./agent -run 'FastCheapModel|SessionName|Advisory|DisplayName' -count=1
+  go test ./internal/launchconfig ./internal/appwire ./cmd/evener-tui ./cmd/evener-hub ./cmd/evener ./agent -run 'FastCheapModel|SessionName|Advisory|DisplayName' -count=1
   ```
 
 ## Task 12: Final verification
 
 - [ ] Run package tests for touched areas:
   ```sh
-  go test ./internal/launchconfig ./internal/appwire ./cmd/serf-tui ./cmd/serf-hub ./cmd/serf ./agent -count=1
+  go test ./internal/launchconfig ./internal/appwire ./cmd/evener-tui ./cmd/evener-hub ./cmd/evener ./agent -count=1
   ```
 
 - [ ] Run formatting:

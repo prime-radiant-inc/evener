@@ -35,7 +35,7 @@ process restart.
    ```bash
    kill "$HUBPID" 2>/dev/null; sleep 1
    HOME="$TH" XDG_STATE_HOME="$TH/.local/state" \
-     "$run/serf-hub" -addr 127.0.0.1:0 -serf "$run/serf" \
+     "$run/evener-hub" -addr 127.0.0.1:0 -evener "$run/evener" \
      >"$run/hub2.log" 2>&1 &
    HUBPID=$!
    echo "$HUBPID" >"$run/hub.pid"
@@ -62,9 +62,9 @@ process restart.
 4. **Assert the note survived the restart and is still exactly one verbatim
    `[NOTE TO SELF]`** in the post-restart transcript/meta:
    ```bash
-   META=$(find "$TH/.local/state/serf" "$TH/.serf" -name "$SID.meta.json" | head -1)
+   META=$(find "$TH/.local/state/evener" "$TH/.evener" -name "$SID.meta.json" | head -1)
    python3 -c "import json;d=json.load(open('$META'));print('pinned_note=',repr(d.get('pinned_note')))"
-   TR=$(find "$TH/.local/state/serf" "$TH/.serf" -name "$SID.jsonl" | head -1)
+   TR=$(find "$TH/.local/state/evener" "$TH/.evener" -name "$SID.jsonl" | head -1)
    # count NOTE TO SELF blocks AFTER the most recent compaction boundary
    grep -c "SCNOTE-RES1" "$TR"
    ```
@@ -85,8 +85,8 @@ rm -rf "$run"                 # $TH, both logs and the binaries all live under i
 ```
 
 Kill by the recorded pid, and remove `$run` by name — never `pkill -f
-'serf-hub …'` (it takes out every other concurrent agent's test hub) and never
-an `rm -rf /tmp/serf-sc-home-*` glob (it deletes every other concurrent run of
+'evener-hub …'` (it takes out every other concurrent agent's test hub) and never
+an `rm -rf /tmp/evener-sc-home-*` glob (it deletes every other concurrent run of
 this same card, kata `k2rx`).
 
 ## Sharp edges

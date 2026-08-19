@@ -18,9 +18,9 @@ import (
 
 	"github.com/santhosh-tekuri/jsonschema/v5"
 
-	"primeradiant.com/serf/agent/execenv"
-	"primeradiant.com/serf/agent/schema"
-	"primeradiant.com/serf/llm"
+	"primeradiant.com/evener/agent/execenv"
+	"primeradiant.com/evener/agent/schema"
+	"primeradiant.com/evener/llm"
 )
 
 const toolPurposeDescription = "A short verb-first gerund phrase naming what this call is doing, e.g. \"Reading the config file\" or \"Searching for the handler\". Keep it to a few words so it renders nicely as an inline activity label."
@@ -985,7 +985,7 @@ func compileSchemaWith(params map[string]any, addResource func(*jsonschema.Compi
 	// Use an absolute URI so the library never calls filepath.Abs → os.Getwd().
 	// A relative URL like "schema.json" triggers os.Getwd() which can panic
 	// in transient environments (e.g. deleted git worktrees).
-	const schemaURI = "urn:serf:tool-schema"
+	const schemaURI = "urn:evener:tool-schema"
 	if err := addResource(c, schemaURI, bytes.NewReader(b)); err != nil {
 		return nil, err
 	}

@@ -5,8 +5,8 @@ import (
 	"fmt"
 	"os"
 
-	"primeradiant.com/serf/appwire"
-	"primeradiant.com/serf/llm"
+	"primeradiant.com/evener/appwire"
+	"primeradiant.com/evener/llm"
 )
 
 // UsageTotalFromFile sums the per-turn token usage recorded across a WHOLE
@@ -34,7 +34,7 @@ import (
 // zero are different claims, and the callers render them differently. Errors
 // are surfaced rather than swallowed, so a caller reports "unknown" instead of
 // a fabricated figure.
-func (c *TurnCache) UsageTotalFromFile(path string, maxLineBytes int, fromEntryOrdinal int) (*appwire.SerfUsage, error) {
+func (c *TurnCache) UsageTotalFromFile(path string, maxLineBytes int, fromEntryOrdinal int) (*appwire.EvenerUsage, error) {
 	info, err := os.Stat(path)
 	if err != nil {
 		return nil, fmt.Errorf("stat transcript: %w", err)
@@ -52,7 +52,7 @@ func (c *TurnCache) UsageTotalFromFile(path string, maxLineBytes int, fromEntryO
 		total := entry.usageTotal.total
 		c.touch(path)
 		c.mu.Unlock()
-		return cloneSerfUsage(total), nil
+		return cloneEvenerUsage(total), nil
 	}
 	c.mu.Unlock()
 
@@ -68,14 +68,14 @@ func (c *TurnCache) UsageTotalFromFile(path string, maxLineBytes int, fromEntryO
 	c.touch(path)
 	c.evictLocked()
 	c.mu.Unlock()
-	return cloneSerfUsage(total), nil
+	return cloneEvenerUsage(total), nil
 }
 
 // scanUsageTotal reads the transcript once, decoding only each entry's usage
 // block. It reuses scanSemanticTranscript so the format gate (v1 rejection,
 // unknown-field strictness, header validation) is exactly the one every other
 // reader in this package applies.
-func scanUsageTotal(path string, maxLineBytes int, fromEntryOrdinal int) (*appwire.SerfUsage, error) {
+func scanUsageTotal(path string, maxLineBytes int, fromEntryOrdinal int) (*appwire.EvenerUsage, error) {
 	var accumulated llm.Usage
 	counted := false
 	ordinal := 0
@@ -94,7 +94,7 @@ func scanUsageTotal(path string, maxLineBytes int, fromEntryOrdinal int) (*appwi
 			// worse than reporting none, so surface it.
 			return fmt.Errorf("decode transcript entry usage: %w", err)
 		}
-		if appwire.SerfUsageFromLLM(record.Turn.Usage) == nil {
+		if appwire.EvenerUsageFromLLM(record.Turn.Usage) == nil {
 			return nil
 		}
 		accumulated = accumulated.Add(record.Turn.Usage)
@@ -107,7 +107,7 @@ func scanUsageTotal(path string, maxLineBytes int, fromEntryOrdinal int) (*appwi
 	if !counted {
 		return nil, nil
 	}
-	return appwire.SerfUsageFromLLM(accumulated), nil
+	return appwire.EvenerUsageFromLLM(accumulated), nil
 }
 
 // usageOnlyEntry decodes the one field the sum needs. scanSemanticTranscript has
@@ -135,12 +135,12 @@ type usageTotalKey struct {
 
 type usageTotalMemo struct {
 	key   usageTotalKey
-	total *appwire.SerfUsage
+	total *appwire.EvenerUsage
 }
 
-// cloneSerfUsage hands each caller its own copy, so a caller that stamps the
+// cloneEvenerUsage hands each caller its own copy, so a caller that stamps the
 // result onto a wire struct cannot mutate the memo other callers share.
-func cloneSerfUsage(u *appwire.SerfUsage) *appwire.SerfUsage {
+func cloneEvenerUsage(u *appwire.EvenerUsage) *appwire.EvenerUsage {
 	if u == nil {
 		return nil
 	}

@@ -9,7 +9,7 @@ import (
 	"reflect"
 	"strings"
 
-	"primeradiant.com/serf/identifier"
+	"primeradiant.com/evener/identifier"
 )
 
 // NewProjectResolver binds identifier's project policy to an execution

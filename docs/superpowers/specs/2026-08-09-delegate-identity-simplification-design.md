@@ -14,16 +14,16 @@ Scope: Delegate identity, job-control tools, notifications, runtime release, and
 
 ## Summary
 
-Serf will expose one public identity per kind of work:
+Evener will expose one public identity per kind of work:
 
 - `job_...` identifies one shell execution.
 - `dlg_...` identifies one durable delegate conversation.
 
-Delegate activations will no longer have public job IDs. Serf may retain private activation keys inside the supervisor, but no tool, result, notification, event, transcript rendering, UI payload, error, or prompt may expose or accept them.
+Delegate activations will no longer have public job IDs. Evener may retain private activation keys inside the supervisor, but no tool, result, notification, event, transcript rendering, UI payload, error, or prompt may expose or accept them.
 
 The existing job-control tools will control both resource types through neutral targets. `job_status`, `job_stop`, and `job_watch` will accept shell job IDs or delegate IDs where supported. `job_list` will return one unified item array, with each delegate appearing once regardless of activation count.
 
-A terminal delegate activation will persist an exact terminal result, make the delegate idle, and request automatic runtime unload. If the delegate has no active descendants, unload occurs immediately. If descendants remain active, Serf keeps the minimum existing coordinator runtime needed for routing and unloads it automatically when the subtree becomes quiescent. This deliberately avoids a new detached subtree-supervisor architecture.
+A terminal delegate activation will persist an exact terminal result, make the delegate idle, and request automatic runtime unload. If the delegate has no active descendants, unload occurs immediately. If descendants remain active, Evener keeps the minimum existing coordinator runtime needed for routing and unloads it automatically when the subtree becomes quiescent. This deliberately avoids a new detached subtree-supervisor architecture.
 
 This is a clean contract and durable-state cutover. The implementation will provide no aliases, dual schemas, legacy delegate-job lookups, state migration, or mixed-epoch loading.
 
@@ -134,7 +134,7 @@ This relation replaces `parent_job_id` in tool results, list rows, events, AppWi
 
 The child session's `transcript_ref` is the archival handle for the delegate conversation. The transcript contains every activation's messages, tool calls, terminal results, and validation metadata.
 
-Each terminal record carries its private activation tag. Before an accepted communicate returns, Serf atomically persists `terminal_prepared` under that activation with a private delivery ID and tagged locator:
+Each terminal record carries its private activation tag. Before an accepted communicate returns, Evener atomically persists `terminal_prepared` under that activation with a private delivery ID and tagged locator:
 
 - accepted communicate: transcript/session ID, stable entry sequence, and tool-call ID;
 - synthetic terminal error: transcript/session ID, stable entry sequence, and private synthetic-entry ID.
@@ -187,13 +187,13 @@ When the child successfully commits `communicate(end_turn=true)`, the result sto
 }
 ```
 
-Serf does not normalize custom output into the default envelope. `communicate` has one dedicated dispatch seam: it receives the original argument bytes and tool-call ID, enforces the fixed outer fields and 16 KiB bound, and preserves `output` as `json.RawMessage` or decodes with `UseNumber`. The generic registry does not enforce the custom `result_schema` before this handler. The handler validates custom output separately to produce metadata.
+Evener does not normalize custom output into the default envelope. `communicate` has one dedicated dispatch seam: it receives the original argument bytes and tool-call ID, enforces the fixed outer fields and 16 KiB bound, and preserves `output` as `json.RawMessage` or decodes with `UseNumber`. The generic registry does not enforce the custom `result_schema` before this handler. The handler validates custom output separately to produce metadata.
 
-A syntactically accepted, bounded terminal call therefore ends the activation even when its custom output fails validation. Serf preserves the exact raw call and reports `structured_result_validation: {"valid": false, "reason": "..."}`; it does not drop the invalid value. Raw arguments preserve JSON field presence and numeric spelling, so explicit `null` remains distinct from an omitted required `output`, which fails fixed outer validation and does not end the activation. This is a communicate-only seam, not a second general tool-dispatch API.
+A syntactically accepted, bounded terminal call therefore ends the activation even when its custom output fails validation. Evener preserves the exact raw call and reports `structured_result_validation: {"valid": false, "reason": "..."}`; it does not drop the invalid value. Raw arguments preserve JSON field presence and numeric spelling, so explicit `null` remains distinct from an omitted required `output`, which fails fixed outer validation and does not end the activation. This is a communicate-only seam, not a second general tool-dispatch API.
 
 ### Abnormal terminal result
 
-Cancellation, provider failure, model exhaustion, panic recovery, or restart reconciliation may end an activation before a terminal communicate call exists. Serf then appends a canonical synthetic terminal entry:
+Cancellation, provider failure, model exhaustion, panic recovery, or restart reconciliation may end an activation before a terminal communicate call exists. Evener then appends a canonical synthetic terminal entry:
 
 ```json
 {
@@ -212,11 +212,11 @@ Cancellation, provider failure, model exhaustion, panic recovery, or restart rec
 }
 ```
 
-The message is sanitized diagnostic prose. This envelope is explicitly Serf-generated; it must never be described as the child's communicate call.
+The message is sanitized diagnostic prose. This envelope is explicitly Evener-generated; it must never be described as the child's communicate call.
 
 ### Quiet attention-drive disposition
 
-A model-bearing notification/watch drive may successfully decide that no action is required and end without `communicate`. Serf then persists an activation-tagged private `completed_no_action` disposition. It records completion and releases the drive/unload barrier, but creates no terminal result, parent delivery intent, notification, or callback. If that activation does call terminal `communicate`, the ordinary canonical result and delivery protocol applies instead.
+A model-bearing notification/watch drive may successfully decide that no action is required and end without `communicate`. Evener then persists an activation-tagged private `completed_no_action` disposition. It records completion and releases the drive/unload barrier, but creates no terminal result, parent delivery intent, notification, or callback. If that activation does call terminal `communicate`, the ordinary canonical result and delivery protocol applies instead.
 
 ### Full-packet safety bound
 
@@ -228,7 +228,7 @@ A real terminal communicate notification is complete: no delegate-specific excer
 4. `communicate(end_turn=true)` serializes and validates the whole raw call before acceptance. An oversized call returns a typed `terminal_packet_too_large` tool error and does not end the activation; the child must retry with a smaller call or store large evidence as artifacts and reference it from the bounded call.
 5. The parent continuation builder reserves the required capacity and compacts parent history before injection. It injects at most one full delegate terminal packet per continuation; additional intents remain armed for later turns. It never drains or concatenates more packets than the measured request can fit.
 
-The same 16 KiB bound applies to default and custom-schema output. Every variable wrapper field has a canonical byte bound. Watch metadata uses a deterministic prefix whose canonical JSON is at most 2 KiB, followed by `watch_count` and `watches_truncated`; watch creation itself remains unlimited by this design. Worktree, diagnostic, model, sandbox, validation, and observer fields fit the remainder of the 8 KiB wrapper allowance. Serf-generated terminal errors use bounded sanitized diagnostics. This preserves the full-call guarantee without allowing a valid but permanently undeliverable packet. Exact larger evidence remains available through transcript or artifact references chosen by the child; Serf does not silently substitute those references.
+The same 16 KiB bound applies to default and custom-schema output. Every variable wrapper field has a canonical byte bound. Watch metadata uses a deterministic prefix whose canonical JSON is at most 2 KiB, followed by `watch_count` and `watches_truncated`; watch creation itself remains unlimited by this design. Worktree, diagnostic, model, sandbox, validation, and observer fields fit the remainder of the 8 KiB wrapper allowance. Evener-generated terminal errors use bounded sanitized diagnostics. This preserves the full-call guarantee without allowing a valid but permanently undeliverable packet. Exact larger evidence remains available through transcript or artifact references chosen by the child; Evener does not silently substitute those references.
 
 ### Inline result admission
 
@@ -236,7 +236,7 @@ A parent tool-call batch has one inline delegate-packet token. Before dispatch, 
 
 If a deferred activation has already settled by result construction, the tool returns metadata-only `status: "idle"`, `last_outcome`, transcript ref, and `result_delivery: "notification_pending"`; it omits `terminal_result`. Its durable delivery intent remains armed and later emits the full packet through ordinary notification delivery. Provider protocols therefore receive one bounded result for every tool call while at most one tool result contains a full delegate packet.
 
-After all sibling tool calls finish and before the parent tool-result turn is committed, Serf measures the complete provider-required batch: fixed prompt/tool content, output allowance, the selected delegate result, and every sibling result after each tool's existing output-limit policy. If the request still cannot fit after permitted compaction, Serf replaces the selected full delegate result with the same metadata-only deferral result and leaves its delivery intent unacknowledged and armed. It may reduce excerptable sibling results only within their existing contracts. The final persisted batch must be fit-tested as a whole.
+After all sibling tool calls finish and before the parent tool-result turn is committed, Evener measures the complete provider-required batch: fixed prompt/tool content, output allowance, the selected delegate result, and every sibling result after each tool's existing output-limit policy. If the request still cannot fit after permitted compaction, Evener replaces the selected full delegate result with the same metadata-only deferral result and leaves its delivery intent unacknowledged and armed. It may reduce excerptable sibling results only within their existing contracts. The final persisted batch must be fit-tested as a whole.
 
 The generic 20,000-character job-tool limiter must never truncate a full admitted `delegate` or `delegate_send` terminal result. Those two tools either bypass generic truncation after bounded admission or use a non-truncating limit at least as large as the maximum canonical inline serialization. Unrelated job tools retain their existing limits.
 
@@ -293,7 +293,7 @@ Inline waiting is also subject to the parent tool-batch's single packet token. A
 
 `delegate_send` accepts `to: <delegate_id>`, a message, and `max_wait_ms`.
 
-If the delegate is running, Serf delivers steering into the active activation and returns:
+If the delegate is running, Evener delivers steering into the active activation and returns:
 
 ```json
 {
@@ -307,7 +307,7 @@ If the delegate is running, Serf delivers steering into the active activation an
 
 A live steer does not wait for a reply and does not create another activation.
 
-If the delegate is idle and resumable, Serf restores it and starts one activation. A positive `max_wait_ms` applies only to the activation started by that call and may return the same canonical inline terminal result as `delegate`.
+If the delegate is idle and resumable, Evener restores it and starts one activation. A positive `max_wait_ms` applies only to the activation started by that call and may return the same canonical inline terminal result as `delegate`.
 
 That positive wait requires the same single inline-packet token. Without the token, `delegate_send` starts normally, returns the bounded deferral result, and leaves full-result delivery armed.
 
@@ -471,7 +471,7 @@ Finalization follows this order:
 5. if the descendant subtree is quiescent, unload now; otherwise retain only the existing coordinator runtime required for descendant routing and mark unload deferred;
 6. queue inline, callback, or background delivery independently.
 
-The dedicated raw-argument `communicate` handler is the linearization point for real results: it validates and bounds the original bytes, appends a dedicated activation-tagged terminal record with canonical arguments, validation, tool-call ID, and stable entry sequence through the transcript's durable/fsync path, and commits `terminal_prepared(locator, delivery_id)` before returning accepted or triggering callback state. Those writes are one durable acceptance transaction or an ordered idempotent protocol whose recovery cannot expose the transcript record without reconstructing `terminal_prepared`. Finalization only folds the prepared record. Serf must not publish a terminal result or release runtime state before the locator and delivery intent are durable.
+The dedicated raw-argument `communicate` handler is the linearization point for real results: it validates and bounds the original bytes, appends a dedicated activation-tagged terminal record with canonical arguments, validation, tool-call ID, and stable entry sequence through the transcript's durable/fsync path, and commits `terminal_prepared(locator, delivery_id)` before returning accepted or triggering callback state. Those writes are one durable acceptance transaction or an ordered idempotent protocol whose recovery cannot expose the transcript record without reconstructing `terminal_prepared`. Finalization only folds the prepared record. Evener must not publish a terminal result or release runtime state before the locator and delivery intent are durable.
 
 ### Descendant-aware runtime unload
 
@@ -484,13 +484,13 @@ This design does not detach descendants into a new supervisor. If active descend
 
 Pure durable routing, indexing, and acknowledgement do not open an activation. Any descendant notification or callback that requires model processing atomically opens a normal serial private activation, changes lifecycle to `running`, acquires the ordinary drive slot, and holds the unload barrier. That activation may steer, call tools, or communicate only under normal activation supervision and finalizes through the same terminal protocol. Pending attention after restart may restore the model runtime only through this activation path; recordless model-bearing drive turns are forbidden.
 
-The deferred ancestor may continue to block occupancy only to the extent the existing subtree or model-bearing drive activation requires it. When the last active descendant and any drive activation settle and queued attention is durably routed or acknowledged, Serf automatically completes the pending unload. No caller flag or close tool is required.
+The deferred ancestor may continue to block occupancy only to the extent the existing subtree or model-bearing drive activation requires it. When the last active descendant and any drive activation settle and queued attention is durably routed or acknowledged, Evener automatically completes the pending unload. No caller flag or close tool is required.
 
 A quiescent unload uses a dedicated `unloadDelegateRuntime` transition, not `Session.Close`. It durably flushes and closes transcript/store/provider/runtime handles, releases environment locks and occupancy, and detaches the child from the live parent manager. It deliberately skips recursive child cancellation, isolation-lane disposal, `SessionEnd` filesystem cleanup, and deletion of descriptors, watches, outcomes, or delivery state. A normal root/session close retains its existing stronger teardown semantics.
 
 ### Restart
 
-On root process restart, before lazy model restoration, Serf runs one durable post-order reconciliation pass over delegate descriptors and child session IDs. It opens child stores and transcripts without constructing model runtimes, first folds every activation-tagged `terminal_prepared` or `completed_no_action` record, then settles each remaining private activation recorded as running without a live runtime, folds descendant outcomes upward, and reapplies deferred-unload state. Specifically:
+On root process restart, before lazy model restoration, Evener runs one durable post-order reconciliation pass over delegate descriptors and child session IDs. It opens child stores and transcripts without constructing model runtimes, first folds every activation-tagged `terminal_prepared` or `completed_no_action` record, then settles each remaining private activation recorded as running without a live runtime, folds descendant outcomes upward, and reapplies deferred-unload state. Specifically:
 
 - a running activation with `terminal_prepared` completes from that exact real terminal record;
 - a quiet drive with durable `completed_no_action` settles without delivery;
@@ -530,7 +530,7 @@ A real communicate result injects one packet:
 </job-notification>
 ```
 
-The communicate arguments are complete and byte-for-byte equivalent after canonical JSON serialization. Serf performs no delegate-specific excerpting, truncation, or summarization. The byte-bounded notification wrapper also preserves applicable parent-generated operational metadata that the child cannot authoritatively report, including final isolated-worktree state and disposal hint, model/sandbox echoes, bounded observer readiness/watch projection, and structured-result validation. None of those fields may carry an activation ID.
+The communicate arguments are complete and byte-for-byte equivalent after canonical JSON serialization. Evener performs no delegate-specific excerpting, truncation, or summarization. The byte-bounded notification wrapper also preserves applicable parent-generated operational metadata that the child cannot authoritatively report, including final isolated-worktree state and disposal hint, model/sandbox echoes, bounded observer readiness/watch projection, and structured-result validation. None of those fields may carry an activation ID.
 
 An abnormal result injects the same lifecycle and operational wrapper with the canonical `kind: "terminal_error"` envelope instead of claiming a child call existed.
 
@@ -647,11 +647,11 @@ UI rows key delegates by delegate ID. Activation history appears through the chi
 
 ## Clean Cutover
 
-The new contract uses one versioned marker at the state-root/project boundary. Before any session create/restore/discovery, transcript read, mutation-store access, job-store access, hub retained-state read, or doctor read, Serf acquires a root-wide lock and validates the marker. It atomically creates the new marker only when the permitted root contains no durable Serf artifacts. An absent or different marker with any transcript, metadata, mutation, job, delegate, or session artifact is incompatible and rejected before read or mutation, including transcript-only roots and mixed per-session roots.
+The new contract uses one versioned marker at the state-root/project boundary. Before any session create/restore/discovery, transcript read, mutation-store access, job-store access, hub retained-state read, or doctor read, Evener acquires a root-wide lock and validates the marker. It atomically creates the new marker only when the permitted root contains no durable Evener artifacts. An absent or different marker with any transcript, metadata, mutation, job, delegate, or session artifact is incompatible and rejected before read or mutation, including transcript-only roots and mixed per-session roots.
 
 Deployment must stop the old process, archive or remove the old state root, and start the new runtime with fresh state. AppWire increments `ProtocolVersion`; old client/server pairs fail initialization through the existing mismatch contract.
 
-This is intentional YAGNI: Serf will not add legacy folds, control aliases, read aliases, parent-link translation, transcript rewriting, dual writes, or migration branches.
+This is intentional YAGNI: Evener will not add legacy folds, control aliases, read aliases, parent-link translation, transcript rewriting, dual writes, or migration branches.
 
 Old state and transcripts may remain operator-managed archival bytes, but the new runtime does not load or promise API access to them. Tests must prove fresh creation plus refusal of unmarked, wrong-epoch, transcript-only, metadata-only, empty-log-with-other-artifacts, mixed-session, hub fallback, doctor, and old-AppWire-client cases. Historical transcript text is never re-rendered as live new-epoch control data.
 

@@ -2,7 +2,7 @@
 
 ## Summary
 
-The web and TUI launch surfaces should expose the same launch/session behavior that `serf serve` can receive through hub launch configuration. The goal is not literal flag parity with every `serf serve` flag. The goal is semantic parity for user-facing launch behavior across:
+The web and TUI launch surfaces should expose the same launch/session behavior that `evener serve` can receive through hub launch configuration. The goal is not literal flag parity with every `evener serve` flag. The goal is semantic parity for user-facing launch behavior across:
 
 - web per-launch Advanced options
 - web launch settings defaults
@@ -31,7 +31,7 @@ Out of scope:
 
 - Hub-owned process controls: `addr`, `runDir`, `resume`, `resumeLast`, `stateDir`.
 - Other CLI-only behavior flags for this pass: `systemPromptAsUser`, `outputSchema`, `resultToolName`, `shareTaskStore`.
-- Moving the project layer from hub state to `.serf/launch.local.toml`; this is already handled by the launch-config path design.
+- Moving the project layer from hub state to `.evener/launch.local.toml`; this is already handled by the launch-config path design.
 
 Merge order remains:
 
@@ -58,7 +58,7 @@ Each option should describe:
 - whether it is valid as a per-launch override
 - whether it is debug-only
 - non-secret environment fallback metadata
-- driver support, where Serf and Codex differ
+- driver support, where Evener and Codex differ
 
 The schema should support these control kinds:
 
@@ -75,7 +75,7 @@ The schema should support these control kinds:
 - MCP server list
 - environment key/value list
 
-Expose the schema over AppWire as `serf/launch/schema`. Web should use that AppWire method; a REST wrapper may call the same backend method while the current launch page still uses HTTP endpoints.
+Expose the schema over AppWire as `evener/launch/schema`. Web should use that AppWire method; a REST wrapper may call the same backend method while the current launch page still uses HTTP endpoints.
 
 ## Data Model
 
@@ -94,7 +94,7 @@ Extend `launchconfig.Layer` and its wire/TOML conversions for the new user-facin
 
 Existing `SystemPromptAppend []string` should be migrated in behavior to the new single append source. Backward compatibility should read an existing one-entry list as `SystemPromptAppendMode=file` and `SystemPromptAppendFile=<entry>`. Multi-entry legacy append lists should preserve the first entry and report a diagnostic explaining that the UI supports one append source.
 
-`launchconfig.ToArgs` maps these fields to `serf serve` args:
+`launchconfig.ToArgs` maps these fields to `evener serve` args:
 
 - file system prompt maps to `--system-prompt <path>`
 - inline system prompt is materialized by hub into a private temporary file and maps to `--system-prompt <materialized-path>`
@@ -102,7 +102,7 @@ Existing `SystemPromptAppend []string` should be migrated in behavior to the new
 - append inline text is materialized by hub into a private temporary file and maps to `--system-prompt-append <materialized-path>`
 - debug options map to their existing flags where present
 
-Inline prompt materialization should write files under the hub-owned launch/session work area with owner-only permissions, avoid logging the prompt body, and clean up with the launch/session lifecycle. This keeps `serf serve` semantics unchanged, avoids large prompt text in argv/process listings, and lets direct CLI users keep using file-based prompt flags.
+Inline prompt materialization should write files under the hub-owned launch/session work area with owner-only permissions, avoid logging the prompt body, and clean up with the launch/session lifecycle. This keeps `evener serve` semantics unchanged, avoids large prompt text in argv/process listings, and lets direct CLI users keep using file-based prompt flags.
 
 ## Web Launch UI
 
@@ -134,12 +134,12 @@ Recommended groups:
 - Environment
 - Debug Logging
 
-Agent/driver appears first because Serf and Codex are different launch drivers and can change the available options below. Reasoning effort belongs in the Model group with the primary model. It should not be visually grouped with the fast cheap model.
+Agent/driver appears first because Evener and Codex are different launch drivers and can change the available options below. Reasoning effort belongs in the Model group with the primary model. It should not be visually grouped with the fast cheap model.
 
 System Prompt should use radio groups:
 
 - system prompt:
-  - Serf default
+  - Evener default
   - Pick a file
   - Fill in text
 - append to system prompt:
@@ -160,7 +160,7 @@ List fields should render as vertical lists, not chips. Existing values appear f
 
 Path fields use the existing path picker/autocomplete. Model fields use the existing model picker. Values are validated at add time where validation is available.
 
-Per-launch Advanced may show non-secret environment fallback values, such as `SERF_MODEL` and `SERF_REASONING_EFFORT`, because those values affect the immediate launch. Settings screens must not show environment fallback choices. API tokens and credential env values are never displayed here.
+Per-launch Advanced may show non-secret environment fallback values, such as `EVENER_MODEL` and `EVENER_REASONING_EFFORT`, because those values affect the immediate launch. Settings screens must not show environment fallback choices. API tokens and credential env values are never displayed here.
 
 ## Web Settings UI
 
@@ -212,7 +212,7 @@ At add/edit time:
 - system prompt files and append files must exist and be files
 - output paths for debug files must have writable parent directories
 
-Existing startup validation still remains the final authority. UI validation is early feedback, not a substitute for `serf serve` startup errors.
+Existing startup validation still remains the final authority. UI validation is early feedback, not a substitute for `evener serve` startup errors.
 
 Errors should be shown inline near the field that produced them. Spawn failures still surface as hub diagnostics using the detailed error propagation behavior.
 
@@ -222,7 +222,7 @@ Backend tests:
 
 - schema contains every intended `launchconfig.Layer` field
 - every schema field maps to wire and args behavior where appropriate
-- `serf serve` flag coverage is explicitly categorized as launch, debug, hub-owned, or out of scope
+- `evener serve` flag coverage is explicitly categorized as launch, debug, hub-owned, or out of scope
 - system prompt modes serialize and resolve correctly
 - legacy `system_prompt_append` list compatibility
 - path validation for system prompt files, append files, resource dirs, MCP configs, and debug output parents

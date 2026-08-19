@@ -1,4 +1,4 @@
-# Serf Sandboxing — M2: File-Tool Race-Safe In-Process Layer
+# Evener Sandboxing — M2: File-Tool Race-Safe In-Process Layer
 
 > **For agentic workers:** Implement with superpowers:subagent-driven-development,
 > task-by-task, red→green→adversarial-verify→commit. Follow the SDD protocol in
@@ -8,23 +8,23 @@
 > threat-model subsections, the file-tool rows of the Tool-surface inventory, and
 > the M2 milestone bullet.
 
-**Goal:** Make serf's own file tools enforce a resolved sandbox policy in a way
+**Goal:** Make evener's own file tools enforce a resolved sandbox policy in a way
 that is both **path-correct and race-safe (TOCTOU-proof)**, entirely in-process —
 no kernel/bwrap wrapping (that is M3). When a `LocalExecutionEnvironment` carries
 a resolved policy (`e.Sandbox != nil`, the inert field M1 added), every file
 tool — `read_file`, `write_file`, `edit_file`, `apply_patch`, `glob`, `grep`,
 `list_dir` — resolves paths through fd-anchored, symlink-refusing operations
 beneath an allowed root, refuses the secrets+pseudo-fs denylist (so
-`read_file("/proc/<serf-pid>/environ")` can't read serf's own provider key), and
+`read_file("/proc/<evener-pid>/environ")` can't read evener's own provider key), and
 denies writes outside the writable-root set. When `e.Sandbox == nil` (mode
 `off`, the shipped default), behavior is **byte-identical to today** — no new
 code path is taken.
 
 **Why this shape:** The in-process path is the *privileged* layer — a file tool
-that follows an attacker-planted symlink writes with serf's full authority
+that follows an attacker-planted symlink writes with evener's full authority
 (§Threat model layer 2). Resolve-then-open is a TOCTOU hole: a model-spawned
 background job can swap a path component for an out-of-worktree symlink between
-serf's check and its `open`/`write`/`rename`. The fix is to never re-open by
+evener's check and its `open`/`write`/`rename`. The fix is to never re-open by
 path after checking: resolve once beneath a base-root fd with symlinks refused,
 then do all I/O on the returned fd; writes are atomic temp-file-plus-`renameat`
 beneath the checked directory fd. `apply_patch` is **refactored** to route
@@ -115,7 +115,7 @@ and real concurrent symlink swaps in race tests, no mocks.
   paths) + never the file contents or a full secret path (v4 redaction
   contract).
 - **snake_case** for any audit-log JSON field or config key that hits the wire.
-  `make lint` (serf-namingcheck) is a gate.
+  `make lint` (evener-namingcheck) is a gate.
 - Never `git add -A` without a prior `git status`. Stage exact paths.
 
 ## File Structure
@@ -196,7 +196,7 @@ and real concurrent symlink swaps in race tests, no mocks.
 `:501`, `FileExists` `:492`); `agent/execenv/sandbox_tools_test.go` (new).
 
 - [ ] **Failing test:** with `e.Sandbox` set to each mode's resolved policy —
-  `read_file("/proc/<serf-pid>/environ")` is refused (the named containment
+  `read_file("/proc/<evener-pid>/environ")` is refused (the named containment
   hole); `restricted` confines reads to the worktree (a sibling-dir read is
   refused) while `read-only`/`workspace-write` allow an out-of-worktree,
   non-denylisted read; a symlink-out target is refused in every sandboxed mode;
@@ -310,13 +310,13 @@ logger — grep for the current denial/log seam first); tests in
 ## Task 7 — Adversarial escape suite + M1 contract consumption
 
 **Files:** `agent/execenv/sandbox_tools_test.go` (extend into the escape suite);
-import `primeradiant.com/serf/agent/sandbox`.
+import `primeradiant.com/evener/agent/sandbox`.
 
 - [ ] **Failing test:** drive the spec's Validation escapes through **every**
   file tool, consuming M1's exported `sandbox.ContractCase` table + `sandbox.Resolve`
   to build the per-(mode × host) envs:
   - symlink-out (read + write + apply_patch) → denied.
-  - `read_file("/proc/<serf-pid>/environ")` + `/proc/1/root` + `/proc/<pid>/root`
+  - `read_file("/proc/<evener-pid>/environ")` + `/proc/1/root` + `/proc/<pid>/root`
     aliasing → denied in every sandboxed mode.
   - TOCTOU symlink-swap race during read / write / rename / apply_patch
     (concurrent job) → never escapes.

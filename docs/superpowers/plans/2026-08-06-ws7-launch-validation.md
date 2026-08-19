@@ -29,7 +29,7 @@ billing-cycle 403 body (see Task 1).
 
 **Tech stack:** Go. Modules: `llm` (errors/types/provider adapter),
 `agent` (session init, delegate dispatch, plugin agent config), root
-(no cmd/serf changes needed — `launchcheck.go` is a separate, already-correct
+(no cmd/evener changes needed — `launchcheck.go` is a separate, already-correct
 copy of this policy at the CLI-preflight layer and is out of scope here).
 Test conventions per `docs/testing.md`.
 
@@ -111,7 +111,7 @@ at 4f5ae4a75):**
 ## Global Constraints
 
 - Smallest reasonable change; no drive-by refactors (e.g. do not touch
-  `cmdutil.ResolveReasoningEffort` or `cmd/serf/internal/launchcheck` even
+  `cmdutil.ResolveReasoningEffort` or `cmd/evener/internal/launchcheck` even
   though they duplicate small pieces of this policy — they are already
   correct and out of the spec's anchors).
 - TDD: failing test before implementation, per behavior.
@@ -288,7 +288,7 @@ at 4f5ae4a75):**
       return Agent{}, fmt.Errorf("agent task %q: %w", tt.Title, err)
   }
   ```
-  (Add the `primeradiant.com/serf/llm` import; `agent/plugin` is inside the
+  (Add the `primeradiant.com/evener/llm` import; `agent/plugin` is inside the
   `agent` Go module, which already depends on `llm` — same import path
   `agent/session_init.go` uses.)
 - [ ] **Step 7: Run `go build ./... && go test ./...`` in `llm` and `agent`;

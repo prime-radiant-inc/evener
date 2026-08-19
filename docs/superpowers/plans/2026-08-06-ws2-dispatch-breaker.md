@@ -41,16 +41,16 @@ underneath it. A registration-time opt-out flag was offered and declined —
 Jesse took the trade-off knowingly: repetition applies steering pressure, and
 only genuine repeated *failures* are ever refused.
 
-Trigger (b) exists because serf cannot rely on a tool's error signal. Verified
+Trigger (b) exists because evener cannot rely on a tool's error signal. Verified
 2026-08-06 from session `034163AU8MmLapfXKT7nMu`: all 153 identical
 `set_viewport` failures are recorded `is_error: false` with the failure as
 plain body text (`Error: set_viewport requires payload with width and
 height: {...}`), byte-identical every time. That is the chrome MCP plugin not
-setting `isError` (filed upstream as obra/superpowers-chrome#44), not a serf
+setting `isError` (filed upstream as obra/superpowers-chrome#44), not a evener
 recording bug — `ExecResult.IsError` is copied verbatim into the transcript at
-`agent/session_tool_round.go:247`. **serf must not sniff error text or special-case
+`agent/session_tool_round.go:247`. **evener must not sniff error text or special-case
 MCP** (Jesse, 2026-08-06); the generic repetition trigger catches the pattern
-without serf knowing anything about any tool's error conventions.
+without evener knowing anything about any tool's error conventions.
 
 **Tech stack:** Go, module `agent/` (`agent/internal/tool`, `agent`).
 
@@ -93,7 +93,7 @@ Decided with Jesse — **do not relitigate**:
   `You just ran the same tool twice with the same arguments and got the same failure. Consider an alternate approach`
 - Failure-trigger park sentence, verbatim (the tool name leads it, so the
   model reads which call was refused):
-  `serf did not execute this call: <tool> with these exact arguments has now failed 3 times with the same error; it will not be executed again until you change the arguments or the approach.`
+  `evener did not execute this call: <tool> with these exact arguments has now failed 3 times with the same error; it will not be executed again until you change the arguments or the approach.`
 - Park means the call is **not executed**.
 - **No session-level tool fencing.** The per-signature failure park is the
   only enforcement tier.
@@ -183,7 +183,7 @@ banner; classing on the truncated text would read two unrelated failures as
 one class and park a call that never repeated itself.
 
 **WS9 hook.** Parked results are ordinary error results whose output begins
-with the stable prefix `serf did not execute this call:`. WS9's `--health`
+with the stable prefix `evener did not execute this call:`. WS9's `--health`
 counts them by that prefix; nothing in WS2 implements health counting.
 
 ---
@@ -254,7 +254,7 @@ see the workstream ledger for shas.
 - Failure park text, exact template:
 
 ```
-serf did not execute this call: <tool> with these exact arguments has now failed 3 times with the same error; it will not be executed again until you change the arguments or the approach.
+evener did not execute this call: <tool> with these exact arguments has now failed 3 times with the same error; it will not be executed again until you change the arguments or the approach.
 
 The failures so far:
 1. <snippet 1>
@@ -366,7 +366,7 @@ Stop. Either change the arguments, or take a different approach to the goal.
 - **Replay acceptance test:** the `034163AU8MmLapfXKT7nMu` shape — a stub MCP
   server returning `IsError: false` with the byte-identical body
   `Error: set_viewport requires payload with width and height: {width,height,deviceScaleFactor?,mobile?}`
-  — carries the repetition nudge from call 2 onward, proving serf needs no
+  — carries the repetition nudge from call 2 onward, proving evener needs no
   knowledge of the plugin's error convention. Every call still executes: the
   repetition trigger never parks.
 - Docs: one paragraph stating both triggers, that the failure trigger nudges at
@@ -393,7 +393,7 @@ Stop. Either change the arguments, or take a different approach to the goal.
   and still executes every call.
 - The second occurrence's result ends with the decided nudge sentence for its
   trigger, character for character; a third identical *failure* is an error
-  result beginning `serf did not execute this call:` carrying the decided park
+  result beginning `evener did not execute this call:` carrying the decided park
   sentence.
 - `communicate` is never refused by the breaker, so a session can always reach
   its exit door; three identical successful `read_file` calls all execute.

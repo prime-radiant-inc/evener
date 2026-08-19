@@ -1,4 +1,4 @@
-# Serf Sandboxing — Master Implementation Plan (sequencing, worktrees, SDD protocol)
+# Evener Sandboxing — Master Implementation Plan (sequencing, worktrees, SDD protocol)
 
 > **For agentic workers:** This is the umbrella plan. Each milestone Mn has its
 > own `2026-07-08-sandboxing-mN-*.md` plan. Implement a milestone with
@@ -76,11 +76,11 @@ Nothing is pushed or merged to `main` in this campaign. Jesse merges to main.
 
 ## Shared conventions (all milestones)
 
-- Module `primeradiant.com/serf`, Go 1.25. `golang.org/x/sys v0.42` is a direct
+- Module `primeradiant.com/evener`, Go 1.25. `golang.org/x/sys v0.42` is a direct
   dep (use `unix.Openat2` for M2; no new dep needed there). M3 adds
   `github.com/landlock-lsm/go-landlock`.
 - Commands: `make test-short` (fast gate), `make test`, `make test-race`,
-  `make vet`, `make lint` (runs `serf-namingcheck` — **all new JSON/wire keys
+  `make vet`, `make lint` (runs `evener-namingcheck` — **all new JSON/wire keys
   MUST be snake_case**), `make build-all`.
 - New Go code matches surrounding style; JSON tags snake_case; no backward-compat
   shims without Jesse's explicit OK.
@@ -99,7 +99,7 @@ before editing — they will drift as milestones land):
 - `resolve` `:1121` (read; passes absolute paths through today — M2 tightens);
   `resolveWrite` `:1136` → `ensureUnderRoot` `:1158` (write confinement today).
 - `SessionConfig` `agent/session_config.go:20` (add `Sandbox`/`SandboxNet` — M1).
-- Env construction sites: `cmd/serf/run.go:177`, `cmd/serf/serve.go:203` (M1).
+- Env construction sites: `cmd/evener/run.go:177`, `cmd/evener/serve.go:203` (M1).
 - `apply_patch` bypasses execenv today: `agent/session_tools_shell.go:233` →
   `tool.ApplyPatch(env.WorkingDirectory(), patch)` → `os.*` in
   `agent/internal/tool/apply_patch.go` (M2 refactors this).
@@ -112,7 +112,7 @@ before editing — they will drift as milestones land):
 - [x] M4 — subagent/worktree scoping (merged `fe0dff29`; roborev fixed fail-open
   worktree-switch High + probe fork-storm + cleanup ordering; go test green)
 - [x] M5 — flag goes live on Linux (branch `wip/sandbox-m5`): FeatureGate deleted;
-  --sandbox provisions an enforced env at construction (fresh: cmd/serf run/serve;
+  --sandbox provisions an enforced env at construction (fresh: cmd/evener run/serve;
   resume: RestoreSessionFromMetaWithConfig re-resolves the persisted mode, fail-closed
   reachable); EnforcementLine emitted from the resolved policy; flags surfaced in
   help; serve /clear re-provisions the shared env; escape suite green on this host
@@ -121,7 +121,7 @@ before editing — they will drift as milestones land):
   review + live feel-test (main agent) before push to main.
 - [x] M6 — macOS Seatbelt (merged `a76d330e` + firmlink fix; Seatbelt wired into
   EnableSandbox `ab5a38b1` so --sandbox enforces via sandbox-exec). ✅ LIVE-VALIDATED
-  on paradise-park 2026-07-09: `SERF_SEATBELT_LIVE` suite (git-config-protected,
+  on paradise-park 2026-07-09: `EVENER_SEATBELT_LIVE` suite (git-config-protected,
   contract-on-host) + `seatbelt-smoke.sh` (generated-policy parity) all PASS on the
   real macOS kernel. A real-Mac run also caught + fixed a symlinked-ancestor
   write-denial bug (macos-fix merge). One pre-existing worktree parallel-load flake

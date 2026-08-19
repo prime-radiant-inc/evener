@@ -1,4 +1,4 @@
-//go:build serffuzz
+//go:build evenerfuzz
 
 package hooks
 
@@ -21,10 +21,10 @@ import (
 	"testing"
 	"time"
 
-	"primeradiant.com/serf/agent/events"
-	"primeradiant.com/serf/agent/plugin"
-	"primeradiant.com/serf/agent/sandbox"
-	"primeradiant.com/serf/llm"
+	"primeradiant.com/evener/agent/events"
+	"primeradiant.com/evener/agent/plugin"
+	"primeradiant.com/evener/agent/sandbox"
+	"primeradiant.com/evener/llm"
 )
 
 // FuzzHookRunnerProgram drives Runner through every supported event with a
@@ -704,7 +704,7 @@ func assertHookRunnerProgramPre(t *testing.T, result PreToolUseResult) {
 			t.Fatalf("PreToolUse model context = %#v, want %q", result.ModelContext, want)
 		}
 	}
-	for _, want := range []string{"pre visible", `hook returned permissionDecision "ask" which serf does not support (no interactive permission prompt); the tool will proceed`} {
+	for _, want := range []string{"pre visible", `hook returned permissionDecision "ask" which evener does not support (no interactive permission prompt); the tool will proceed`} {
 		if !containsHookRunnerProgramString(result.UserMessages, want) {
 			t.Fatalf("PreToolUse user messages = %#v, want %q", result.UserMessages, want)
 		}

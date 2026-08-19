@@ -3,7 +3,7 @@ package jobstore
 import (
 	"time"
 
-	"primeradiant.com/serf/agent/provenance"
+	"primeradiant.com/evener/agent/provenance"
 )
 
 // EventKind identifies a durable job-lifecycle event in jobs.jsonl.

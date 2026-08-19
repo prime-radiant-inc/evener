@@ -1,4 +1,4 @@
-# cli-device-code-flow: serf openai login --device round trip
+# cli-device-code-flow: evener openai login --device round trip
 
 **What this covers**: kata `p16h`. The end-to-end device-code login chain
 (`RequestDeviceCode → PollDeviceAuth → ExchangeDeviceCode → SaveAuth`)
@@ -15,10 +15,10 @@ real end-to-end check is wanted.
 
 ## Pre-state
 
-- Repo built: `./serf` exists at repo root.
+- Repo built: `./evener` exists at repo root.
 - Network reachable to `auth.openai.com`.
 - A clean shell where the test can set env vars.
-- You are not already mid-login in this shell. `pgrep -f 'serf
+- You are not already mid-login in this shell. `pgrep -f 'evener
   openai login'` may well be non-empty — it counts every agent's
   login on the box, and this card is isolated from all of them by
   its own `XDG_STATE_HOME` — so read it, don't clear it.
@@ -34,19 +34,19 @@ state.
 
 1. **Set up an isolated state dir** so a leaked successful auth (Part B
    later, or a stray browser tab) doesn't pollute the user's real
-   `~/.local/state/serf`:
+   `~/.local/state/evener`:
    ```bash
    tmpdir=$(mktemp -d)
-   export XDG_STATE_HOME="$tmpdir/serf-state"
+   export XDG_STATE_HOME="$tmpdir/evener-state"
    ```
    Note: `DefaultStateDir()` reads `XDG_STATE_HOME` and appends
-   `/serf`, so the actual auth file would land at
-   `$tmpdir/serf-state/serf/auth/openai.json`.
+   `/evener`, so the actual auth file would land at
+   `$tmpdir/evener-state/evener/auth/openai.json`.
 
 2. **Spawn the device login in the background** and capture both
    streams to files:
    ```bash
-   ./serf openai login --device \
+   ./evener openai login --device \
      > "$tmpdir/login.stdout" 2> "$tmpdir/login.stderr" &
    PID=$!
    echo "$PID" >"$tmpdir/login.pid"   # so a later shell can kill it by pid, not by pattern
@@ -103,7 +103,7 @@ state.
 8. **Confirm no auth state was written** (we never authorized, so
    nothing should have been persisted):
    ```bash
-   ls "$tmpdir/serf-state/serf/auth/openai.json" 2>&1
+   ls "$tmpdir/evener-state/evener/auth/openai.json" 2>&1
    ```
    Expect `No such file or directory`.
 
@@ -145,12 +145,12 @@ browser access AND working OpenAI credentials.
 1. Re-set the isolated state dir (do NOT skip this — see Sharp edges):
    ```bash
    tmpdir=$(mktemp -d)
-   export XDG_STATE_HOME="$tmpdir/serf-state"
+   export XDG_STATE_HOME="$tmpdir/evener-state"
    ```
 
 2. Launch the login in the foreground so you can watch it complete:
    ```bash
-   ./serf openai login --device
+   ./evener openai login --device
    ```
 
 3. Copy the printed `device_code_url=…` and open it in a browser.
@@ -158,7 +158,7 @@ browser access AND working OpenAI credentials.
 4. When prompted, paste the `device_code=…` value (without the
    `device_code=` prefix).
 
-5. Sign into the OpenAI account you want serf to use, and authorize
+5. Sign into the OpenAI account you want evener to use, and authorize
    the device.
 
 6. Watch the CLI. Within a few seconds of authorization, the poller
@@ -171,15 +171,15 @@ browser access AND working OpenAI credentials.
 7. Confirm the auth file landed in the override dir, not the user's
    home:
    ```bash
-   ls -la "$tmpdir/serf-state/serf/auth/openai.json"
+   ls -la "$tmpdir/evener-state/evener/auth/openai.json"
    ```
    File must exist, be `chmod 600`, and parse as JSON with a
    non-empty `access_token` and `refresh_token`.
 
-8. Run `serf openai status` with the same override and confirm the
+8. Run `evener openai status` with the same override and confirm the
    signed-in state matches:
    ```bash
-   ./serf openai status --state-dir "$tmpdir/serf-state/serf"
+   ./evener openai status --state-dir "$tmpdir/evener-state/evener"
    ```
    (Or keep `XDG_STATE_HOME` exported and omit `--state-dir`.)
    Expect the same `state=signed-in source=oauth email=…` line.
@@ -192,7 +192,7 @@ unset XDG_STATE_HOME
 ```
 
 This deletes the test-only auth record. The user's real
-`~/.local/state/serf/auth/openai.json` is untouched.
+`~/.local/state/evener/auth/openai.json` is untouched.
 
 ### Part B — Expected (falsification)
 
@@ -202,9 +202,9 @@ This deletes the test-only auth record. The user's real
 - CLI exits with a 4xx-ish error after authorization: token exchange
   regressed. Check `ExchangeDeviceCode` against OpenAI's current
   device-code spec.
-- `auth/openai.json` written but `serf openai status` reports
+- `auth/openai.json` written but `evener openai status` reports
   `signed-out`: storage write OK but `Status()` read path regressed.
-- `auth/openai.json` ends up under `~/.local/state/serf/` instead of
+- `auth/openai.json` ends up under `~/.local/state/evener/` instead of
   the override dir: the `XDG_STATE_HOME` plumbing regressed (or you
   forgot the export — see Sharp edges).
 
@@ -212,27 +212,27 @@ This deletes the test-only auth record. The user's real
 
 - **Device codes expire in 15 minutes**. Don't pause Part B midway
   through; if you do, re-run from Part A step 1 to get a fresh code.
-- **The `XDG_STATE_HOME` override applies to ALL subsequent `serf`
+- **The `XDG_STATE_HOME` override applies to ALL subsequent `evener`
   invocations in the same shell** — `status`, `logout`, the hub, etc.
   This is what we want during the test but it's a footgun: if you
   `unset XDG_STATE_HOME` between login and status, status will look
   at the user's real state dir and report a misleading `signed-out`.
 - **A real OAuth authorization writes to the override state dir, but
   if you forget the override, it writes to the user's real
-  `~/.local/state/serf/auth/openai.json` and overwrites whatever was
+  `~/.local/state/evener/auth/openai.json` and overwrites whatever was
   there.** Always export `XDG_STATE_HOME` BEFORE running
-  `./serf openai login` in this scenario.
+  `./evener openai login` in this scenario.
 - The polling process must be reaped explicitly (`kill $PID; wait
   $PID`). Without `wait`, the shell may show `[1]+ Terminated …`
   noise interleaved with later output.
 - The 15-minute poll cap means an abandoned poller eventually
   self-terminates, but during tight iteration you can stack up
-  background pollers. `pgrep -f 'serf openai login'` to check — it
+  background pollers. `pgrep -f 'evener openai login'` to check — it
   lists every agent's login, not just yours — and reap only the ones
   you started, by the pid step 2 recorded (`$PID`, or
   `$tmpdir/login.pid` from a later shell, the same convention the
   setup checklist's `$run/hub.pid` exists for). Never `pkill -f
-  'serf openai login'`, which would also kill a concurrent agent's
+  'evener openai login'`, which would also kill a concurrent agent's
   login flow.
 - `curl -I` on the verification URL returns a 302 redirect, not a
   200. That's the current shape (May 2026). The redirect target is

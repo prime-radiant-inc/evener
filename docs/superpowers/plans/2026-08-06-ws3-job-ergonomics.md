@@ -48,7 +48,7 @@ touch the tool-round path.
   `read_transcript(transcript_ref="job:<id>")`, completion arrives by
   notification, and "do not relaunch or poll";
   (b) genuine `stopped/run_timeout` terminal result: wording attributes
-  the stop to serf's runtime limit, not the command failing on its own;
+  the stop to evener's runtime limit, not the command failing on its own;
   (c) zero-output stop adds that the process produced no output before the
   limit (a build may still have been compiling).
 - [ ] **Step 2:** implement. Keep the machine-readable fields
@@ -107,8 +107,8 @@ Three approved fixes:
   `job_status`, then the session goes idle: no later notification turn
   for that job. The consumed state is durably recorded as its own value
   ("caller learned via status read") so the jobstore's told-the-caller
-  invariant and serf-doctor diagnostics stay truthful — extend the
-  terminal-notification-state vocabulary, and check `serf-doctor`'s
+  invariant and evener-doctor diagnostics stay truthful — extend the
+  terminal-notification-state vocabulary, and check `evener-doctor`'s
   readers tolerate the new value (loud, not confident-zero).
 - [ ] **Step 2 (failing test, coalesce):** a watched job completing
   produces ONE notification turn carrying both the watch settlement and
@@ -149,7 +149,7 @@ Three approved fixes:
 - A watched short job produces exactly one notification turn; a
   status-read job produces zero; a saturated notify channel delays
   delivery only until the slot frees.
-- `serf-doctor transcript --health` on a fresh session shows
+- `evener-doctor transcript --health` on a fresh session shows
   `stale_notifications=0` where the old code produced them.
 - No new tools, no schema changes to shell, job-control.md updated where
   wording is now sharper — and contradicted nowhere.

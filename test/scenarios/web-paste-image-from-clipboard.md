@@ -26,9 +26,9 @@ inline banner.
 
 ## Pre-state
 
-- `serf-hub` running on an isolated `$HOME` and free port
+- `evener-hub` running on an isolated `$HOME` and free port
   (never `9180`, Jesse's real one — see the Setup checklist in
-  `docs/agentic-testing.md`). Token at `$HOME/.serf/auth-token`.
+  `docs/agentic-testing.md`). Token at `$HOME/.evener/auth-token`.
 - `anthropic/claude-haiku-4-5-20251001` or `openai/gpt-5.5` reachable
   through configured credentials. Both accept image inputs (verified
   2026-05-18 against the live hub).
@@ -36,7 +36,7 @@ inline banner.
   SPA bundle — a checkout that has never run `make build-web` serves a
   one-line `frontend/dist/PLACEHOLDER` and no app at all.
 - The CSP fix from kata `1pgw` is in effect — `img-src` must include
-  `blob:` (`cmd/serf-hub/internal/httpsec/httpsec.go:40`). Otherwise every
+  `blob:` (`cmd/evener-hub/internal/httpsec/httpsec.go:40`). Otherwise every
   paste/drop/picker silently rejects images (see Sharp edges).
 
 ## Steps
@@ -124,7 +124,7 @@ inline banner.
    is where the exact assertion lives — the DOM can only hint at what
    reached the daemon:
    ```bash
-   TOKEN=$(cat "$HOME/.serf/auth-token")
+   TOKEN=$(cat "$HOME/.evener/auth-token")
    SID=…  # from step 4
    for i in $(seq 1 60); do
      state=$(curl -s -H "Authorization: Bearer $TOKEN" \
@@ -132,11 +132,11 @@ inline banner.
      [ "$state" = "idle" ] && break
      sleep 2
    done
-   go run ./cmd/serf-doctor transcript "$SID" --format outline --range last:20
+   go run ./cmd/evener-doctor transcript "$SID" --format outline --range last:20
    ```
    For the byte-level check that an image part really landed (the one case
    the runbook sanctions reading raw JSONL for), locate the file with
-   `go run ./cmd/serf-doctor locate "$SID"` and grep it for `"kind":"image"`.
+   `go run ./cmd/evener-doctor locate "$SID"` and grep it for `"kind":"image"`.
 
 ## Expected
 
@@ -170,12 +170,12 @@ inline banner.
 ## Cleanup
 
 ```bash
-TOKEN=$(cat "$HOME/.serf/auth-token")
+TOKEN=$(cat "$HOME/.evener/auth-token")
 curl -s -X POST -H "Content-Type: application/json" \
   -H "Authorization: Bearer $TOKEN" -d '{}' \
   "$HUB/api/sessions/local:$SID/shutdown" >/dev/null
 # Optional, for run-to-run hermeticity:
-# find $HOME/.local/state/serf/projects -name "$SID*" -delete
+# find $HOME/.local/state/evener/projects -name "$SID*" -delete
 ```
 
 ## Sharp edges
@@ -190,7 +190,7 @@ curl -s -X POST -H "Content-Type: application/json" \
   PNG. The message wording changed with the rewrite; the legacy
   `Not an image: <name>` text is gone. Unit tests stub the image decode, so
   only live browser verification catches this. The fix lives at
-  `cmd/serf-hub/internal/httpsec/httpsec.go:40`
+  `cmd/evener-hub/internal/httpsec/httpsec.go:40`
   (`img-src 'self' data: blob: https:;`) — `security.go` no longer exists.
 - **The attachment chip has no `data-testid`.** Address it by the Chip
   widget's remove button, whose `aria-label` is `Remove <children>`

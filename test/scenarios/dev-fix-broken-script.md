@@ -1,7 +1,7 @@
 # dev-fix-broken-script: agent reads, fixes, and re-runs a broken Python script
 
 **What this covers**: end-to-end smoke test of the "fix this bug"
-pattern — the most common real serf use case. Exercises `read_file`
+pattern — the most common real evener use case. Exercises `read_file`
 (or equivalent grep_files / list_dir), `apply_patch` (or `write_file`
 or `edit_file`), and `exec_command`. Confirms the agent loop can
 handle a multi-turn task that requires inspecting existing state
@@ -9,7 +9,7 @@ before mutating it.
 
 ## Pre-state
 
-- Hub running with `--serf` resolvable, on an isolated `$HOME` and a
+- Hub running with `--evener` resolvable, on an isolated `$HOME` and a
   free port (never Jesse's port `9180` — see the Setup checklist in
   `docs/agentic-testing.md`).
 - OAuth signed in for whichever model you pick (`openai/gpt-5.5` per
@@ -20,7 +20,7 @@ before mutating it.
 
 1. Set up a hermetic tmpdir with a deliberately-broken script:
    ```bash
-   tmpdir=$(mktemp -d -t serf-e2e-fix-XXXXX)
+   tmpdir=$(mktemp -d -t evener-e2e-fix-XXXXX)
    cat > "$tmpdir/buggy.py" <<'EOF'
    def add(a, b):
        return a + b
@@ -45,10 +45,10 @@ before mutating it.
 3. Spawn a session pointed at the tmpdir with a focused fix
    prompt:
    ```bash
-   TOKEN=$(cat "$HOME/.serf/auth-token")
+   TOKEN=$(cat "$HOME/.evener/auth-token")
    curl -s -X POST -H "Content-Type: application/json" \
         -H "Authorization: Bearer $TOKEN" \
-        -d "{\"prompt\":\"There is a Python script buggy.py in the current directory that fails with a syntax error when run. Fix the bug. Then run python3 buggy.py and confirm it prints 5 then done. Do not rewrite the whole script — only fix the syntax error.\",\"model\":\"openai/gpt-5.5\",\"working_dir\":\"$tmpdir\",\"harness\":\"serf\",\"branch\":\"\",\"access_mode\":\"full\",\"agent\":\"default\",\"launch_overrides\":{}}" \
+        -d "{\"prompt\":\"There is a Python script buggy.py in the current directory that fails with a syntax error when run. Fix the bug. Then run python3 buggy.py and confirm it prints 5 then done. Do not rewrite the whole script — only fix the syntax error.\",\"model\":\"openai/gpt-5.5\",\"working_dir\":\"$tmpdir\",\"harness\":\"evener\",\"branch\":\"\",\"access_mode\":\"full\",\"agent\":\"default\",\"launch_overrides\":{}}" \
         $HUB/api/spawn
    ```
    Capture `session_id`.
@@ -117,7 +117,7 @@ rm -rf "$tmpdir"
   patch may fail and the agent will need to read again and retry.
   Multiple read/patch cycles in the transcript are fine.
 - This scenario assumes `python3` is on PATH inside the daemon's
-  exec environment. If serf's launch is sandboxing the daemon
+  exec environment. If evener's launch is sandboxing the daemon
   away from PATH, this test will appear to fail on the agent's
   side. Check `which python3` from the daemon's working_dir in
   that case.

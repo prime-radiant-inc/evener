@@ -5,11 +5,11 @@ import (
 	"slices"
 	"strings"
 
-	"primeradiant.com/serf/envvars"
+	"primeradiant.com/evener/envvars"
 )
 
 // floorExactDrops are environment variables removed from every spawned process in
-// a sandboxed session, in addition to serf's existing *KEY*/*SECRET*/*TOKEN*/…
+// a sandboxed session, in addition to evener's existing *KEY*/*SECRET*/*TOKEN*/…
 // scrub. A live ssh-agent socket is sign-anything/exfil even with ~/.ssh masked,
 // so its handle must not survive into a spawned command.
 var floorExactDrops = []string{
@@ -32,7 +32,7 @@ var floorPrefixDrops = []string{
 }
 
 // ApplyEnvFloor raises the sandbox environment floor on top of an already-scrubbed
-// env slice (the output of serf's EnvPolicy filtering). It:
+// env slice (the output of evener's EnvPolicy filtering). It:
 //   - drops the ssh-agent handle and cloud credential vars (floorExactDrops /
 //     floorPrefixDrops),
 //   - drops a worktree-external KUBECONFIG (an absolute path outside every granted
@@ -40,7 +40,7 @@ var floorPrefixDrops = []string{
 //   - puts the resolved developer-toolchain bin directory on PATH ahead of the
 //     system directories, so a spawned `git` is the real git and not the
 //     /usr/bin xcrun shim (which is loud and slow under a sandbox),
-//   - points TMPDIR and SERF_SCRATCH_DIR at the per-session scratch, and
+//   - points TMPDIR and EVENER_SCRATCH_DIR at the per-session scratch, and
 //   - redirects the language cache vars (GOCACHE / GOMODCACHE / npm_config_cache /
 //     CARGO_HOME) into the session tmp when the cache strategy is session-private,
 //     so a sandboxed build can never poison a cache a later build consumes.
@@ -151,7 +151,7 @@ func ApplySessionScratchEnv(env []string, scratchDir string) []string {
 	out := make([]string, 0, len(env)+2)
 	for _, kv := range env {
 		name, _, ok := strings.Cut(kv, "=")
-		if ok && (name == envvars.TmpDir.Name || name == envvars.SERFScratchDir.Name) {
+		if ok && (name == envvars.TmpDir.Name || name == envvars.EVENERScratchDir.Name) {
 			continue
 		}
 		out = append(out, kv)
@@ -159,7 +159,7 @@ func ApplySessionScratchEnv(env []string, scratchDir string) []string {
 	if scratchDir != "" {
 		out = append(out,
 			envvars.TmpDir.Assignment(scratchDir),
-			envvars.SERFScratchDir.Assignment(scratchDir),
+			envvars.EVENERScratchDir.Assignment(scratchDir),
 		)
 	}
 	return out

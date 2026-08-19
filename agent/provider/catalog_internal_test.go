@@ -6,7 +6,7 @@ package provider
 import (
 	"testing"
 
-	"primeradiant.com/serf/llm"
+	"primeradiant.com/evener/llm"
 )
 
 // TestResolveOpenAICompatCatalogModel exercises the lookup precedence
@@ -201,7 +201,7 @@ func TestResolveOpenRouterAnthropicWebSearch(t *testing.T) {
 		"anthropic/m", false)
 
 	// Step 3 fills when step 2 matched but its entry has no field —
-	// useful for picking up serf overrides on bare upstream IDs.
+	// useful for picking up evener overrides on bare upstream IDs.
 	tt(t, "step 3 fills when step 2 matched but field absent",
 		map[string]*bool{"anthropic/m": nil, "m": &bFalse},
 		map[string]bool{"anthropic/m": true, "m": true},

@@ -23,7 +23,7 @@ import (
 // of two functions doing their real jobs. The daemon's consumer reaches exactly
 // two mutexes that live in package agent and that agent code can plausibly hold
 // across an emit: Session.mu and jobManager.mu (server/bridge.go's LOCK RULE
-// note; cmd/serf/serve.go's liveThreadEnvelopeSource is the whole of the
+// note; cmd/evener/serve.go's liveThreadEnvelopeSource is the whole of the
 // consumer's reach into this package). The emit path re-acquires BOTH:
 //
 //	emit                 -> activeCausalProvenance -> Session.mu

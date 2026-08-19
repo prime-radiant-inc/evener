@@ -11,11 +11,11 @@ import (
 	"testing"
 	"time"
 
-	"primeradiant.com/serf/agent/execenv"
-	"primeradiant.com/serf/agent/internal/agenttest"
-	"primeradiant.com/serf/agent/internal/clock"
-	"primeradiant.com/serf/agent/internal/worktree"
-	"primeradiant.com/serf/agent/schema"
+	"primeradiant.com/evener/agent/execenv"
+	"primeradiant.com/evener/agent/internal/agenttest"
+	"primeradiant.com/evener/agent/internal/clock"
+	"primeradiant.com/evener/agent/internal/worktree"
+	"primeradiant.com/evener/agent/schema"
 )
 
 // scriptedLaneRepo is the delegate-lane counterpart to wtRepo: the same session
@@ -23,8 +23,8 @@ import (
 // scriptedWorktreeGit standing in for the git binary.
 //
 // WHEN TO USE THIS instead of newWorktreeRepo: only for a test whose subject is
-// serf's own decision-making — which refusal rung fires, what event is emitted,
-// what serf wrote to its own metadata, control flow. A test whose subject is
+// evener's own decision-making — which refusal rung fires, what event is emitted,
+// what evener wrote to its own metadata, control flow. A test whose subject is
 // git's observable behavior (real registry effects, real ancestry or dirty
 // detection, real porcelain output, real ref rules) MUST use the real-git
 // wtRepo harness, or it would be asserting against the model in
@@ -169,7 +169,7 @@ func (r *scriptedLaneRepo) failLockRunner() (*atomic.Bool, *scriptedLaneObserver
 }
 
 // ageBeyondGrace backdates a lane's sidecar mtime past laneGrace, so a residue
-// sweep considers it collectible. The sidecar is serf's own metadata and stays a
+// sweep considers it collectible. The sidecar is evener's own metadata and stays a
 // real file under the scripted boundary; lanePath locates its meta dir the same
 // way production does.
 func (r *scriptedLaneRepo) ageBeyondGrace(t *testing.T, delegateID, lanePath string) {
@@ -269,7 +269,7 @@ func (r *scriptedLaneRepo) reportGitVersion(version string) {
 }
 
 // gitCalls returns the argv of every command the session has sent to the
-// scripted boundary, for a test whose subject is that serf refused BEFORE
+// scripted boundary, for a test whose subject is that evener refused BEFORE
 // reaching git.
 func (r *scriptedLaneRepo) gitCalls() [][]string { return r.git.calls }
 
@@ -479,7 +479,7 @@ func (o *scriptedLaneObserver) laneLocked(t *testing.T, path string) (present, l
 
 // failGitArgs makes the boundary fail one exact argv and pass everything else
 // through, the scripted counterpart of gitFailOnArgsRepoShim: the fixture for a
-// test whose subject is how serf REACTS to a single git command failing, not to
+// test whose subject is how evener REACTS to a single git command failing, not to
 // what makes it fail.
 func (r *scriptedLaneRepo) failGitArgs(failArgs ...string) {
 	r.wrapRunner(func(next worktree.GitRunner, args []string) (string, error) {

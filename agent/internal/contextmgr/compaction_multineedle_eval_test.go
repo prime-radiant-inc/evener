@@ -10,7 +10,7 @@ package contextmgr
 // is exactly where an agent-authored note (containing all the facts verbatim) earns
 // its keep.
 //
-// Run: SERF_LIVE_TESTS=1 go test -tags eval ./agent/internal/contextmgr/ -run TestCompactionMultiNeedle -v -timeout 60m
+// Run: EVENER_LIVE_TESTS=1 go test -tags eval ./agent/internal/contextmgr/ -run TestCompactionMultiNeedle -v -timeout 60m
 //
 // Arms, scored by COUNT-based retention (facts present / total facts):
 //   A baseline:       summarizeWithLLMSteered(hist, 2, "")         -> summary only
@@ -35,10 +35,10 @@ import (
 	"testing"
 	"time"
 
-	"primeradiant.com/serf/agent/provider"
-	"primeradiant.com/serf/envvars"
-	"primeradiant.com/serf/llm"
-	"primeradiant.com/serf/llm/providercfg"
+	"primeradiant.com/evener/agent/provider"
+	"primeradiant.com/evener/envvars"
+	"primeradiant.com/evener/llm"
+	"primeradiant.com/evener/llm/providercfg"
 )
 
 // mnSummarizerModel is the summarizer under test. gpt-5.5 first (the realistic
@@ -215,8 +215,8 @@ func multiNeedleCases() []multiNeedleCase {
 func oauthClientAndCfg(t *testing.T) (*llm.Client, providercfg.Config) {
 	t.Helper()
 	oauthStateHome, oauthProvidersConfig := liveEvalOAuthPaths(t)
-	if _, err := os.Stat(filepath.Join(oauthStateHome, "serf", "auth", "openai.json")); err != nil {
-		t.Skipf("no OAuth record at %s/serf/auth/openai.json: %v", oauthStateHome, err)
+	if _, err := os.Stat(filepath.Join(oauthStateHome, "evener", "auth", "openai.json")); err != nil {
+		t.Skipf("no OAuth record at %s/evener/auth/openai.json: %v", oauthStateHome, err)
 	}
 	t.Setenv(envvars.XDGStateHome.Name, oauthStateHome)
 	cfg, exists, err := providercfg.LoadFile(oauthProvidersConfig)

@@ -10,8 +10,8 @@ import (
 	"sort"
 	"strings"
 
-	"primeradiant.com/serf/llm"
-	"primeradiant.com/serf/llm/providers/internal/transport"
+	"primeradiant.com/evener/llm"
+	"primeradiant.com/evener/llm/providers/internal/transport"
 )
 
 func (a *Adapter) ListModels(ctx context.Context) ([]llm.ModelInfo, error) {

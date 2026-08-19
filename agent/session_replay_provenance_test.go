@@ -10,8 +10,8 @@ import (
 	"encoding/json"
 	"testing"
 
-	"primeradiant.com/serf/agent/schema"
-	"primeradiant.com/serf/llm"
+	"primeradiant.com/evener/agent/schema"
+	"primeradiant.com/evener/llm"
 )
 
 // assistantThinkingTurn builds a completed assistant turn carrying a signed

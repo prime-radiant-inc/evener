@@ -13,10 +13,10 @@ import (
 	"strings"
 	"time"
 
-	"primeradiant.com/serf/agent/events"
-	"primeradiant.com/serf/agent/internal/delegatestore"
-	"primeradiant.com/serf/agent/internal/jobstore"
-	"primeradiant.com/serf/agent/provenance"
+	"primeradiant.com/evener/agent/events"
+	"primeradiant.com/evener/agent/internal/delegatestore"
+	"primeradiant.com/evener/agent/internal/jobstore"
+	"primeradiant.com/evener/agent/provenance"
 )
 
 // WatchEventKindNames is the canonical, stable list of model-facing event-kind
@@ -2052,7 +2052,7 @@ func (jm *jobManager) liveWatchSummaries() []watchListEntry {
 	return entries
 }
 
-//nolint:unused // retained for the serffuzz restore/clear-history state-machine owner.
+//nolint:unused // retained for the evenerfuzz restore/clear-history state-machine owner.
 func (jm *jobManager) liveWatchSummariesForReceiver(receiverSessionID, receiverDelegateID string) []watchListEntry {
 	receiverSessionID = strings.TrimSpace(receiverSessionID)
 	receiverDelegateID = strings.TrimSpace(receiverDelegateID)
@@ -3791,7 +3791,7 @@ func (jm *jobManager) planWatchSendPending(state jobstore.WatchSendState, d watc
 // state-machine harnesses. Production persistence uses planWatchSendPending,
 // fsyncs its event, and calls commitWatchSendPendingRecord only afterward.
 //
-//nolint:unused // retained for the serffuzz watch/delegate state-machine owner.
+//nolint:unused // retained for the evenerfuzz watch/delegate state-machine owner.
 func (jm *jobManager) recordWatchSendPending(state jobstore.WatchSendState, d watchSendDelivery) watchSendPendingRecord {
 	record := jm.planWatchSendPending(state, d)
 	jm.commitWatchSendPendingRecord(record, d.allowAfterTerminalExpiry)

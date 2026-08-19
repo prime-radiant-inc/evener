@@ -1,6 +1,6 @@
 package agent
 
-import "primeradiant.com/serf/agent/plugin"
+import "primeradiant.com/evener/agent/plugin"
 
 const coordinatorWorkflowPluginName = "coordinator-workflow"
 

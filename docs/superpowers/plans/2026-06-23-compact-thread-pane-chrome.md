@@ -6,7 +6,7 @@
 
 **Architecture:** The existing `/thread/<ref>` document is the reusable side-pane surface and already has `body.thread-document`; use that boundary for compact presentation while preserving full `/s/<id>` workspace behavior. Keep server data flow unchanged unless tests require a semantic template split; favor scoped template/CSS changes and focused route assertions.
 
-**Tech Stack:** Go `net/http` server/templates, HTML templates under `cmd/serf-hub/templates`, CSS in `cmd/serf-hub/assets/style.css`, existing JS tests under `cmd/serf-hub/jstest`, Go tests in `cmd/serf-hub/web_test.go`.
+**Tech Stack:** Go `net/http` server/templates, HTML templates under `cmd/evener-hub/templates`, CSS in `cmd/evener-hub/assets/style.css`, existing JS tests under `cmd/evener-hub/jstest`, Go tests in `cmd/evener-hub/web_test.go`.
 
 ## Global Constraints
 
@@ -21,9 +21,9 @@
 ### Task 1: Compact thread-document header and footer metadata
 
 **Files:**
-- Modify: `cmd/serf-hub/templates/partials/workspace.html`
-- Modify: `cmd/serf-hub/templates/partials/input_strip.html`
-- Modify: `cmd/serf-hub/web_test.go`
+- Modify: `cmd/evener-hub/templates/partials/workspace.html`
+- Modify: `cmd/evener-hub/templates/partials/input_strip.html`
+- Modify: `cmd/evener-hub/web_test.go`
 
 **Interfaces:**
 - Consumes: `WorkspaceData.ThreadDocumentMode bool` already used in `workspace.html`.
@@ -31,7 +31,7 @@
 
 - [ ] **Step 1: Add failing Go assertions for thread compacting**
 
-In `cmd/serf-hub/web_test.go`, extend `TestWeb_ThreadDocument_DirectGet_ServesChromeLessThreadDocument` or add a focused test using existing `newWebTestServer` helpers. Assert the thread document does not render:
+In `cmd/evener-hub/web_test.go`, extend `TestWeb_ThreadDocument_DirectGet_ServesChromeLessThreadDocument` or add a focused test using existing `newWebTestServer` helpers. Assert the thread document does not render:
 
 ```go
 for _, forbidden := range []string{
@@ -71,14 +71,14 @@ if !strings.Contains(fullBody, `class="subagent-parent-banner"`) {
 Run:
 
 ```bash
-go test ./cmd/serf-hub -run 'TestWeb_ThreadDocument|TestWeb_Workspace' -count=1 -v
+go test ./cmd/evener-hub -run 'TestWeb_ThreadDocument|TestWeb_Workspace' -count=1 -v
 ```
 
 Expected: FAIL because `/thread/...` still includes the subagent parent banner and footer metadata.
 
 - [ ] **Step 3: Hide parent banner in thread documents**
 
-In `cmd/serf-hub/templates/partials/workspace.html`, change the parent banner condition from:
+In `cmd/evener-hub/templates/partials/workspace.html`, change the parent banner condition from:
 
 ```gotemplate
 {{if .ParentRouteID}}
@@ -94,7 +94,7 @@ This keeps full workspace parent navigation and removes the redundant side-pane 
 
 - [ ] **Step 4: Compact footer metadata in thread documents**
 
-In `cmd/serf-hub/templates/partials/input_strip.html`, wrap the noisy metadata with `{{if not .ThreadDocumentMode}}` while keeping status and turns always visible:
+In `cmd/evener-hub/templates/partials/input_strip.html`, wrap the noisy metadata with `{{if not .ThreadDocumentMode}}` while keeping status and turns always visible:
 
 ```gotemplate
 {{define "input_status"}}
@@ -116,7 +116,7 @@ In `cmd/serf-hub/templates/partials/input_strip.html`, wrap the noisy metadata w
 Run:
 
 ```bash
-go test ./cmd/serf-hub -run 'TestWeb_ThreadDocument|TestWeb_Workspace' -count=1 -v
+go test ./cmd/evener-hub -run 'TestWeb_ThreadDocument|TestWeb_Workspace' -count=1 -v
 ```
 
 Expected: PASS.
@@ -124,7 +124,7 @@ Expected: PASS.
 - [ ] **Step 6: Commit**
 
 ```bash
-git add cmd/serf-hub/templates/partials/workspace.html cmd/serf-hub/templates/partials/input_strip.html cmd/serf-hub/web_test.go
+git add cmd/evener-hub/templates/partials/workspace.html cmd/evener-hub/templates/partials/input_strip.html cmd/evener-hub/web_test.go
 git commit -m "fix(hub): compact thread document metadata"
 ```
 
@@ -133,10 +133,10 @@ git commit -m "fix(hub): compact thread document metadata"
 ### Task 2: Move composer controls into the input card
 
 **Files:**
-- Modify: `cmd/serf-hub/templates/partials/workspace.html`
-- Modify: `cmd/serf-hub/assets/style.css`
-- Modify: `cmd/serf-hub/jstest/test-input-area.js` or add a focused JS test under `cmd/serf-hub/jstest/`
-- Modify: `cmd/serf-hub/web_test.go` if template structure assertions are clearer in Go
+- Modify: `cmd/evener-hub/templates/partials/workspace.html`
+- Modify: `cmd/evener-hub/assets/style.css`
+- Modify: `cmd/evener-hub/jstest/test-input-area.js` or add a focused JS test under `cmd/evener-hub/jstest/`
+- Modify: `cmd/evener-hub/web_test.go` if template structure assertions are clearer in Go
 
 **Interfaces:**
 - Consumes: existing composer attributes: `data-attach-trigger`, `data-model-trigger`, `data-steer-trigger`, `data-capability-*`, `data-drop-zone`, `data-file-picker`.
@@ -167,14 +167,14 @@ if !strings.Contains(body, `class="composer-model"`) {
 Run:
 
 ```bash
-go test ./cmd/serf-hub -run 'TestWeb_ThreadDocument' -count=1 -v
+go test ./cmd/evener-hub -run 'TestWeb_ThreadDocument' -count=1 -v
 ```
 
 Expected: FAIL because `.input-controls` is currently outside `.input-card` and there is no `.composer-model` row.
 
 - [ ] **Step 3: Restructure composer markup**
 
-In `cmd/serf-hub/templates/partials/workspace.html`, move `.input-controls` inside `.input-card` after the textarea. Add a model line above the input card or at the top of the card:
+In `cmd/evener-hub/templates/partials/workspace.html`, move `.input-controls` inside `.input-card` after the textarea. Add a model line above the input card or at the top of the card:
 
 ```gotemplate
 <div class="input-card" data-drop-zone>
@@ -211,7 +211,7 @@ Remove the old model chip from `.controls-left` so model no longer consumes butt
 
 - [ ] **Step 4: Style the compact composer**
 
-In `cmd/serf-hub/assets/style.css`, update composer styling:
+In `cmd/evener-hub/assets/style.css`, update composer styling:
 
 ```css
 .input-card {
@@ -274,8 +274,8 @@ Keep selectors additive and avoid breaking full-page layouts.
 Run:
 
 ```bash
-go test ./cmd/serf-hub -run 'TestWeb_ThreadDocument' -count=1 -v
-cd cmd/serf-hub/jstest && NODE_PATH=${NODE_PATH:-/tmp/serf-jstest-jsdom/node_modules} node test-input-area.js
+go test ./cmd/evener-hub -run 'TestWeb_ThreadDocument' -count=1 -v
+cd cmd/evener-hub/jstest && NODE_PATH=${NODE_PATH:-/tmp/evener-jstest-jsdom/node_modules} node test-input-area.js
 ```
 
 Expected: PASS. If `test-input-area.js` asserts the old model chip location, update it to require the same data attributes in the new `.composer-model` element and controls inside `.input-card`.
@@ -283,7 +283,7 @@ Expected: PASS. If `test-input-area.js` asserts the old model chip location, upd
 - [ ] **Step 6: Commit**
 
 ```bash
-git add cmd/serf-hub/templates/partials/workspace.html cmd/serf-hub/assets/style.css cmd/serf-hub/jstest/test-input-area.js cmd/serf-hub/web_test.go
+git add cmd/evener-hub/templates/partials/workspace.html cmd/evener-hub/assets/style.css cmd/evener-hub/jstest/test-input-area.js cmd/evener-hub/web_test.go
 git commit -m "feat(hub): tighten thread pane composer"
 ```
 
@@ -309,7 +309,7 @@ Expected: no output and exit 0.
 - [ ] **Step 2: Run focused Go suite**
 
 ```bash
-go test ./cmd/serf-hub -count=1
+go test ./cmd/evener-hub -count=1
 ```
 
 Expected: PASS.
@@ -317,14 +317,14 @@ Expected: PASS.
 - [ ] **Step 3: Run JS suite**
 
 ```bash
-cd cmd/serf-hub/jstest && NODE_PATH=${NODE_PATH:-/tmp/serf-jstest-jsdom/node_modules} ./run-all.sh
+cd cmd/evener-hub/jstest && NODE_PATH=${NODE_PATH:-/tmp/evener-jstest-jsdom/node_modules} ./run-all.sh
 ```
 
 Expected: `jstest: all tests passed`.
 
 - [ ] **Step 4: Manual HTTP smoke test**
 
-Start a local isolated `serf-hub` binary with temporary config and fetch `/s/manual` and `/thread/manual` using the auth token. Assert:
+Start a local isolated `evener-hub` binary with temporary config and fetch `/s/manual` and `/thread/manual` using the auth token. Assert:
 
 ```text
 /s/manual includes id="sidebar"

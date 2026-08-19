@@ -13,7 +13,7 @@ boundary until it empties). Exercises the status strip's model switcher
 selector map there is the single place these hooks are maintained. The
 `[data-model-trigger]` / `[data-model-display]` selectors and
 `assets/model-switch.js` this card used to drive died with the vanilla
-frontend (`660376f78`); there is no `SerfAppwire.setModel` to call. The
+frontend (`660376f78`); there is no `EvenerAppwire.setModel` to call. The
 switcher is `[data-testid="model-switch-trigger"]` with its readout in
 `[data-testid="model-switch-value"]` (`ModelSwitch.tsx:129,137`), and the
 picker rows are the shared ARIA combobox's `role="option"` items
@@ -72,7 +72,7 @@ mid-turn, and this card previously asserted that it was.
    # Re-read the session and confirm its model did NOT move.
    curl -s -H "Authorization: Bearer $TOKEN" "$HUB/api/sessions/local:$SID" | jq .model
    ```
-   `handleAPIModel` (`cmd/serf-hub/web_api.go#handleAPIModel`) forwards
+   `handleAPIModel` (`cmd/evener-hub/web_api.go#handleAPIModel`) forwards
    `ThreadModelSetParams` to the same source the browser's RPC reaches.
 
 5. **[browser, optional] The same rejection through the UI.** Repeat step 4's
@@ -114,7 +114,7 @@ mid-turn, and this card previously asserted that it was.
   does nothing, or the model changes.
 - **Step 6**: the switch during the drain window is **also** rejected with
   the same 409 family. The daemon re-arms `SetProcessing(true)` for each
-  drained turn (`cmd/serf/serve.go:950-958`), and `ProcessInputKind` loops to
+  drained turn (`cmd/evener/serve.go:950-958`), and `ProcessInputKind` loops to
   run queued messages as further turns (`agent/session_lifecycle.go:517-524`),
   so `handleAppThreadModelSet`'s `processing || reservedTurnID != ""` guard
   (`server/appwire_runtime.go#handleAppThreadModelSet`) stays true across the whole drain.
@@ -148,7 +148,7 @@ mid-turn, and this card previously asserted that it was.
   reaches a human.
 - **`capabilities.changeModel` is true for an ENDED session too.** The hub
   advertises Send and ChangeModel for a cold exited thread and resumes it
-  behind `thread/model/set` (`cmd/serf-hub/app_model.go:11-26`'s
+  behind `thread/model/set` (`cmd/evener-hub/app_model.go:11-26`'s
   `setThreadModelWithResume`). A live-looking model chip on a finished
   session is the design. Note that the *REST* route refuses a non-live
   session earlier, with `404 session not live` (`web_api.go:309-312`) — so
@@ -156,7 +156,7 @@ mid-turn, and this card previously asserted that it was.
   a live session.
 - The busy signal the daemon reads is its own `s.processing` plus
   `s.appReservedTurnID` (`server/appwire_runtime.go:820-824`) — **not**
-  `ActiveFlags` (serf daemons never populate it; only the codex mapping
+  `ActiveFlags` (evener daemons never populate it; only the codex mapping
   does). Don't assert on `ActiveFlags`.
 - The queued-input rejection (step 6) is easy to miss if the drain is fast
   on a quick model — use a prompt with a few tool rounds, or the AGENTS.md

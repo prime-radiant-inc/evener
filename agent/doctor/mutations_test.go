@@ -50,7 +50,7 @@ const storeWithBothOutcomes = `{
         "code": -32013,
         "message": "turn is not running",
         "data": {
-          "serf_error_info": "conflict",
+          "evener_error_info": "conflict",
           "client_mutation_id": "cm-steer",
           "mutation_outcome": "notAccepted",
           "retry_disposition": "none"

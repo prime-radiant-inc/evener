@@ -10,13 +10,13 @@ import (
 	"testing"
 
 	"golang.org/x/sys/unix"
-	"primeradiant.com/serf/agent/sandbox"
+	"primeradiant.com/evener/agent/sandbox"
 )
 
 // swapper atomically exchanges the two entries name<->spare beneath dirFd in a
 // tight loop until stop is set, using RENAME_EXCHANGE (an atomic swap with no
 // window where either name is missing). It models the model-spawned background
-// job that swaps a path component for an out-of-root symlink between serf's check
+// job that swaps a path component for an out-of-root symlink between evener's check
 // and its I/O — the TOCTOU adversary the fd-anchored resolver must defeat.
 func swapper(t *testing.T, dirFd int, name, spare string, stop *atomic.Bool, wg *sync.WaitGroup) {
 	t.Helper()

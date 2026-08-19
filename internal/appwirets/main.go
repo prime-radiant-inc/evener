@@ -1,5 +1,5 @@
 // Command appwirets generates the AppWire TypeScript protocol types
-// (cmd/serf-hub/frontend/src/protocol/types.gen.ts) from the declarative
+// (cmd/evener-hub/frontend/src/protocol/types.gen.ts) from the declarative
 // catalog in package appwire (appwire.Methods and appwire.Notifications),
 // the same catalog internal/appwiredoc reflects over for the Markdown
 // protocol reference. It is run via `go generate` on the appwire package;

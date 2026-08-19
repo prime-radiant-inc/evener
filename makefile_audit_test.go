@@ -1,4 +1,4 @@
-package serf_test
+package evener_test
 
 import (
 	"fmt"
@@ -31,7 +31,7 @@ func recipeLine(line string) string {
 // it leaves rm as a bare word.
 //
 // Bare braces and parentheses are deliberately NOT separators. `${TMPDIR:-/tmp}`
-// and `$(SERF_DIST_BIN_DIR)` carry them, and splitting there would tear the
+// and `$(EVENER_DIST_BIN_DIR)` carry them, and splitting there would tear the
 // variable reference out of the very operand this audit exists to look at.
 func recipeCommands(line string) []string {
 	const sep = "\x00"
@@ -122,11 +122,11 @@ func operandComesFromVariable(operand string) bool {
 // it, so they carry no trailing continuation backslash.
 var makefileVariableFedDeletes = map[string]string{
 	`rm -rf "$$dir" || finish_status=1;`: "test-web's log directory: minted on the same recipe by a checked " +
-		`mktemp -d "${TMPDIR:-/tmp}/serf-test-web.XXXXXX" || exit 1, ` +
+		`mktemp -d "${TMPDIR:-/tmp}/evener-test-web.XXXXXX" || exit 1, ` +
 		"so $$dir is either a fresh temp directory or the recipe already exited",
 	`rm -rf "$$dir" || { finish_status=1; printf 'full logs: %s\n' "$$dir" >&2; };`: "test-web-browser's log directory: " +
-		`minted on the same recipe by a checked mktemp -d "${TMPDIR:-/tmp}/serf-test-web-browser.XXXXXX" || exit 1`,
-	`rm -rf "$(SERF_DIST_BIN_DIR)" "$(SERF_DIST_ARCHIVE)"`: "dist's own output paths, both rooted at DIST_DIR " +
+		`minted on the same recipe by a checked mktemp -d "${TMPDIR:-/tmp}/evener-test-web-browser.XXXXXX" || exit 1`,
+	`rm -rf "$(EVENER_DIST_BIN_DIR)" "$(EVENER_DIST_ARCHIVE)"`: "dist's own output paths, both rooted at DIST_DIR " +
 		"(default `dist`) and named for the build's GOOS/GOARCH. This is the weakest entry of the three: " +
 		"`make dist DIST_DIR=` roots both operands at `/` instead, and nothing in the recipe refuses that",
 }

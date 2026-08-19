@@ -2,7 +2,7 @@
 
 **What this covers**: commit `8e8994f` (daemon adapter), `f824379`
 (hub UI). Before the fix, `OPENAI_API_KEY` env var always won over a
-stored OAuth record — a user who ran `serf openai login` while also
+stored OAuth record — a user who ran `evener openai login` while also
 having the env var set silently kept getting routed through the API
 key. The fix inverts the priority: a valid OAuth record on disk wins;
 env is fallback only.
@@ -10,28 +10,28 @@ env is fallback only.
 ## Pre-state
 
 Fully hermetic — this card never reads or writes Jesse's real
-`~/.local/state/serf/auth/openai.json`. The precedence rule under test is
+`~/.local/state/evener/auth/openai.json`. The precedence rule under test is
 decided entirely from disk (`Service.Status`, `auth/openai/service.go`, and
-the hub's `openAIInstanceStatus`, `cmd/serf-hub/app_auth.go`, both make no
+the hub's `openAIInstanceStatus`, `cmd/evener-hub/app_auth.go`, both make no
 network calls), so a synthetic record with a future expiry exercises it
 exactly as a real sign-in would.
 
 ```bash
 # Isolated everything, per docs/agentic-testing.md's Setup checklist.
-run=$(mktemp -d -t serf-e2e-oauth-wins-XXXXXX)
-go build -o "$run/serf" ./cmd/serf
-go build -o "$run/serf-hub" ./cmd/serf-hub
+run=$(mktemp -d -t evener-e2e-oauth-wins-XXXXXX)
+go build -o "$run/evener" ./cmd/evener
+go build -o "$run/evener-hub" ./cmd/evener-hub
 
 export HOME="$run/home"
 mkdir -p "$HOME"
 unset XDG_STATE_HOME    # else an ambient value outranks the scratch $HOME
 
 # A fabricated OAuth record in the scratch state root — same shape
-# `serf openai login` writes (auth/openai/storage.go: AuthRecord, and
+# `evener openai login` writes (auth/openai/storage.go: AuthRecord, and
 # Validate's required fields). No login, no network, no real token.
 expiry=$(date -u -v+1d +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || date -u -d '+1 day' +%Y-%m-%dT%H:%M:%SZ)
-mkdir -p "$HOME/.local/state/serf/auth"
-cat > "$HOME/.local/state/serf/auth/openai.json" <<EOF
+mkdir -p "$HOME/.local/state/evener/auth"
+cat > "$HOME/.local/state/evener/auth/openai.json" <<EOF
 {
   "version": 1,
   "provider": "openai",
@@ -45,14 +45,14 @@ cat > "$HOME/.local/state/serf/auth/openai.json" <<EOF
   "email": "scenario@example.com"
 }
 EOF
-chmod 600 "$HOME/.local/state/serf/auth/openai.json"
+chmod 600 "$HOME/.local/state/evener/auth/openai.json"
 
 # The hub carries the bogus env key: that IS the layer OAuth must shadow,
 # and it is also what makes the hub materialize an `openai` instance in the
 # scratch providers.toml (cmdutil.MaterializeProvidersConfig seeds from the
 # environment when the file is absent).
 OPENAI_API_KEY="sk-scenario-not-a-real-key" \
-  "$run/serf-hub" -addr 127.0.0.1:0 -serf "$run/serf" 2>"$run/hub.log" &
+  "$run/evener-hub" -addr 127.0.0.1:0 -evener "$run/evener" 2>"$run/hub.log" &
 HUBPID=$!
 for i in $(seq 1 50); do
   PORT=$(grep -oE 'listening on 127\.0\.0\.1:[0-9]+' "$run/hub.log" 2>/dev/null | grep -oE '[0-9]+$') || true
@@ -62,13 +62,13 @@ for i in $(seq 1 50); do
 done
 [ -n "$PORT" ] || { echo "hub never logged a listening port" >&2; exit 1; }
 HUB=http://127.0.0.1:$PORT
-TOKEN=$(cat "$HOME/.serf/auth-token")
+TOKEN=$(cat "$HOME/.evener/auth-token")
 ```
 
 ## Steps
 
-1. `"$run/serf" openai status` — baseline. Confirm `source=oauth`.
-2. `OPENAI_API_KEY="sk-scenario-not-a-real-key" "$run/serf" openai status`
+1. `"$run/evener" openai status` — baseline. Confirm `source=oauth`.
+2. `OPENAI_API_KEY="sk-scenario-not-a-real-key" "$run/evener" openai status`
    — env var set in the test invocation.
 3. Open the isolated hub's credentials page:
    `$HUB/auth?token=$TOKEN&next=/credentials`. Confirm the OpenAI instance
@@ -111,8 +111,8 @@ rm -rf "$run"
   scenario would send both the fixture write and the lookup somewhere the
   scratch `$HOME` doesn't reach.
 - Step 3 needs the frontend built into the binary. `frontend/dist` is not
-  tracked, so a `go build ./cmd/serf-hub` in a fresh checkout embeds
-  nothing and every page route answers `503 serf-hub web app not built:
+  tracked, so a `go build ./cmd/evener-hub` in a fresh checkout embeds
+  nothing and every page route answers `503 evener-hub web app not built:
   run 'make build-web' and rebuild`. Run `make build-web` once before the
-  `go build` above (steps 1 and 2 need only the `serf` binary and are
+  `go build` above (steps 1 and 2 need only the `evener` binary and are
   unaffected).

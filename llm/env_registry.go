@@ -4,13 +4,13 @@ import (
 	"errors"
 	"sync"
 
-	"primeradiant.com/serf/envvars"
+	"primeradiant.com/evener/envvars"
 )
 
 // EnvConfig holds configuration derived from environment variables and options
 // that is passed to env adapter factories.
 type EnvConfig struct {
-	// StateDir is the Serf-specific state directory (from SERF_STATE_DIR, or
+	// StateDir is the Evener-specific state directory (from EVENER_STATE_DIR, or
 	// overridden via WithStateDir), where adapters persist their own state.
 	StateDir string
 	// StateHome is the XDG base state directory (from XDG_STATE_HOME) used by
@@ -59,7 +59,7 @@ func NewFromEnv(opts ...EnvOption) (*Client, error) {
 	envFactoriesMu.Unlock()
 
 	cfg := EnvConfig{
-		StateDir:  envvars.SERFStateDir.Getenv(),
+		StateDir:  envvars.EVENERStateDir.Getenv(),
 		StateHome: envvars.XDGStateHome.Getenv(),
 	}
 	for _, opt := range opts {

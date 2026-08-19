@@ -1,4 +1,4 @@
-# Serf Web Hub — UX Plan & Implementation Status
+# Evener Web Hub — UX Plan & Implementation Status
 
 Status: **historical** (2026-06-16). Companion to the [current design-system.md](../design-system.md).
 Implementation lives on branch `agent-liveness-and-thinking`.
@@ -7,13 +7,13 @@ Implementation lives on branch `agent-liveness-and-thinking`.
 
 ## 1. The problems (from live recon + the product owner)
 
-Driving a real gpt-5.5 (serf-harness) session through the hub surfaced these, which the redesign
+Driving a real gpt-5.5 (evener-harness) session through the hub surfaced these, which the redesign
 targets. Top priorities first.
 
 1. **Subagent visibility.** A spawned subagent rendered as one line that *stayed "● running"
    after it finished*. No completion state, duration, result preview, or link to its transcript.
    Root cause: the job-ref dot only flips on a `JOB_FINISHED` event that often never arrives.
-2. **Sidebar clutter.** Real projects buried under ~25 identical `serf-e2e-*` test folders; all
+2. **Sidebar clutter.** Real projects buried under ~25 identical `evener-e2e-*` test folders; all
    ALL-CAPS low-contrast monospace; live and ancient given equal weight.
 3. **Scroll-jump.** The transcript yanks to the bottom while you read up, because auto-scroll is
    an unconditional `scrollTop = scrollHeight` on every append (`renderer.js`).
@@ -67,7 +67,7 @@ compensation on replace/prepend.
 
 **Key finding — we do NOT need to invent a protocol.** The Codex wire protocol (vendored at
 `inspo/codex/codex-rs/protocol/src/protocol.rs`; docs at developers.openai.com/codex/app-server)
-already defines everything, and Serf's appwire layer is modeled on its lifecycle shape:
+already defines everything, and Evener's appwire layer is modeled on its lifecycle shape:
 
 - **Reasoning/thinking:** `ReasoningContentDelta` (summary) / `ReasoningRawContentDelta` (raw) /
   `AgentReasoningSectionBreak` → app-server wire `item/reasoning/summaryTextDelta` /
@@ -77,7 +77,7 @@ already defines everything, and Serf's appwire layer is modeled on its lifecycle
 - **Turn timing:** `TurnStarted.started_at`, `TurnComplete.duration_ms` already exist.
 
 The reason client-side stall detection looked unreliable was the **silent think phase** — but
-reasoning *is* frames; Serf was just discarding them. **Forwarding reasoning (which we need for
+reasoning *is* frames; Evener was just discarding them. **Forwarding reasoning (which we need for
 live thinking anyway) makes a client-side "time since last frame" timer honest.** So:
 
 1. Forward reasoning summary deltas as appwire `item/reasoning/summaryTextDelta` → **live
@@ -99,7 +99,7 @@ Each commit passed the pre-commit gate (lint/build/test); TDD throughout.
 |---|---|
 | `c3b99ad7` | `Turn.StartedAt` in the appwire projector (`startedTurn` helper) → honest turn-elapsed |
 | `db9174a0` | Reasoning → appwire `item/reasoning/summaryTextDelta`; reasoning is a first-class in-progress item (`EventReasoningSummaryDelta`, `ReasoningSummaryDeltaData`, `ReasoningSummaryDeltaParams`) |
-| `cc34e524` | Serf harness **emits** reasoning on `llm.StreamEventReasoningDelta` (was fed only to the accumulator and discarded) |
+| `cc34e524` | Evener harness **emits** reasoning on `llm.StreamEventReasoningDelta` (was fed only to the accumulator and discarded) |
 | `09f3d552` | Route renderer jstests through a shared `jstest/load-renderer.js` bundle loader (centralizes script load order) |
 | `f8e572f4` | Split `renderer.js`: extract `renderer-format.js` (stateless helpers) |
 | `1ceed61c` | Split `renderer.js`: extract `renderer-tools.js` (tool-output renderers; `toolRendererFor` public) |
@@ -111,10 +111,10 @@ Each commit passed the pre-commit gate (lint/build/test); TDD throughout.
 
 **The locked scope (thinking + liveness + elapsed, both harnesses) is complete** — see the commit
 table above; items 4–6 below are all done. The renderer is now modular (`renderer.js` 3630 →
-~2170 lines): the no-bundler modules share `window.SerfRendererInternal` and load in dependency
+~2170 lines): the no-bundler modules share `window.EvenerRendererInternal` and load in dependency
 order (`renderer-format` → `renderer-tools` → `renderer-panels` → `renderer`) in both
 `templates/app.html` and `jstest/load-renderer.js`; `renderer.js` retains the stateful
-`SerfRenderer` core + bootstrap. Detail on each delivered increment:
+`EvenerRenderer` core + bootstrap. Detail on each delivered increment:
 
 4. ~~**Codex-adapter parity:**~~ **DONE** (`ae8351ce`). `codex_source.go` `mapNotification`
    normalizes `item/reasoning/summaryTextDelta` (threadId + source-qualified ref, mirroring
@@ -137,12 +137,12 @@ order (`renderer-format` → `renderer-tools` → `renderer-panels` → `rendere
    status-dot pulse (`applyStatusDotPulse` honors `.conversation[data-stale]`). Reasoning frames
    now flow, so the clock is honest during the think phase. Test: `test-renderer-liveness.js`.
 
-Tests: JS harness `cmd/serf-hub/jstest/` (`run-all.sh`; mirror
+Tests: JS harness `cmd/evener-hub/jstest/` (`run-all.sh`; mirror
 `test-appwire-lifecycle-notifications.js` / `test-renderer.js`). Web changes need a rebuild —
 assets are embedded: `make build-hub` + restart.
 
 **Adding a renderer module:** define it as an IIFE that imports what it needs from
-`window.SerfRendererInternal` (destructured at the top, so call sites stay unchanged) and
+`window.EvenerRendererInternal` (destructured at the top, so call sites stay unchanged) and
 publishes its exports back onto the same object via `Object.assign`. Add it to the `<script>` list
 in `templates/app.html` *and* to `RENDERER_FILES` in `jstest/load-renderer.js`, both in dependency
 order before `renderer.js`. The const-import + same-name-function collision means an incomplete
@@ -159,7 +159,7 @@ gaps are tracked in [§8](../design-system.md#8-known-gaps-documented-not-fixed-
 
 ## 8. Aside (non-UI, worth a separate look)
 
-Serf gpt-5.5 sessions receive the ~6 KB superpowers "You have superpowers" preamble injected as a
+Evener gpt-5.5 sessions receive the ~6 KB superpowers "You have superpowers" preamble injected as a
 `STEERING` message at session start, causing the agent to burn a turn loading skills and merely
 *planning* before doing the actual work. Out of scope for the UI overhaul, but it degrades every
 session and is worth fixing independently.

@@ -4,7 +4,7 @@
 
 **Goal:** Compose the outputs of SP1..SP7 at session startup so a single `agent.NewSession` call produces a fully wired session whose hooks, MCP servers, permissions, skills, agents, plugin binaries, and user-config substitutions all reflect the merged Claude-Code-shaped configuration.
 
-**Architecture:** A new `agent/session_bootstrap.go` helper (`BuildSessionConfig`) owns steps 1–4 of the startup pipeline. `SessionConfig` gains typed fields that thread merged config from the four CLI binaries through `NewSession`. Fire sites for seven new lifecycle events land in `agent/session.go`, `agent/subagents.go`, and `agent/context_strategy.go`. Permission enforcement is inserted into `execTool` between `PreToolUse` and the tool call. The four binaries (`cmd/serf`, `cmd/serf-tui`, `cmd/serf-hub`, `cmd/serfeval`) call `BuildSessionConfig` and copy its fields onto their existing `SessionConfig` literals.
+**Architecture:** A new `agent/session_bootstrap.go` helper (`BuildSessionConfig`) owns steps 1–4 of the startup pipeline. `SessionConfig` gains typed fields that thread merged config from the four CLI binaries through `NewSession`. Fire sites for seven new lifecycle events land in `agent/session.go`, `agent/subagents.go`, and `agent/context_strategy.go`. Permission enforcement is inserted into `execTool` between `PreToolUse` and the tool call. The four binaries (`cmd/evener`, `cmd/evener-tui`, `cmd/evener-hub`, `cmd/evenereval`) call `BuildSessionConfig` and copy its fields onto their existing `SessionConfig` literals.
 
 **Tech Stack:** Go (existing). No new dependencies. Table-driven tests with `t.TempDir`, `t.Setenv`. Real `git`, `bash` with `t.Skip` when absent. `httptest.NewServer` for HTTP hooks.
 
@@ -26,12 +26,12 @@
 | `agent/subagents_test.go` | modify | Subagent inheritance tests |
 | `agent/context_strategy.go` | modify | `PostCompact` fire site after compaction returns |
 | `agent/context_strategy_test.go` | modify | `PostCompact` fire test |
-| `cmd/serf/main.go` | modify | Register `--config`, `--trust-marketplace`, `--plugin-option` flags |
-| `cmd/serf/run.go` | modify | Call `BuildSessionConfig`; copy returned fields into existing `SessionConfig` literal |
-| `cmd/serf/serve.go` | modify | Same for daemon-mode `SessionConfig` |
-| `cmd/serf-tui/embedded.go` | modify | Same for the three `SessionConfig` sites in TUI |
-| `cmd/serf-hub/web.go` | modify | Add `ConfigPaths` to `WebConfig`; thread merged config into the Spawner request |
-| `cmd/serfeval/main.go` | modify | Same wiring for serfeval |
+| `cmd/evener/main.go` | modify | Register `--config`, `--trust-marketplace`, `--plugin-option` flags |
+| `cmd/evener/run.go` | modify | Call `BuildSessionConfig`; copy returned fields into existing `SessionConfig` literal |
+| `cmd/evener/serve.go` | modify | Same for daemon-mode `SessionConfig` |
+| `cmd/evener-tui/embedded.go` | modify | Same for the three `SessionConfig` sites in TUI |
+| `cmd/evener-hub/web.go` | modify | Add `ConfigPaths` to `WebConfig`; thread merged config into the Spawner request |
+| `cmd/evenereval/main.go` | modify | Same wiring for evenereval |
 | `agent/integration_sp8_test.go` | create | End-to-end suite covering the 19 cases in spec §12.1 |
 | `agent/testdata/plugins/sp8-hookparity/` | create | Fixture plugin with one hook per new SP5 event |
 | `agent/testdata/marketplaces/sp8-basic/` | create | Smallest directory-source marketplace exercising the install → run → uninstall loop |
@@ -45,7 +45,7 @@
 Run from repo root:
 
 ```bash
-grep -rn 'func DiscoverSerfConfig' agent/ || echo "MISSING: SP1 DiscoverSerfConfig"
+grep -rn 'func DiscoverEvenerConfig' agent/ || echo "MISSING: SP1 DiscoverEvenerConfig"
 grep -rn 'func NewPermissionMatcher' agent/ || echo "MISSING: SP2 NewPermissionMatcher"
 grep -rn 'func.*Installer.*Lookup' internal/plugins/ || echo "MISSING: SP4 Installer.Lookup"
 grep -rn 'func ResolveUserConfig' agent/ || echo "MISSING: SP7 ResolveUserConfig"
@@ -332,7 +332,7 @@ type pluginInstaller interface {
 type trustEnforcer interface {
 	// EnforceTrustOnConfig prunes untrusted project-tier marketplaces from cfg
 	// and returns the (possibly modified) cfg. Source: SP3 §7.1.
-	EnforceTrustOnConfig(cfg SerfConfig) (SerfConfig, error)
+	EnforceTrustOnConfig(cfg EvenerConfig) (EvenerConfig, error)
 }
 ```
 
@@ -400,7 +400,7 @@ type BootstrapFlags struct {
 	PluginOptions     map[string]map[string]string // --plugin-option <plugin>.<key>=<value>
 	Prompter          UserConfigPrompter           // surface-specific prompter from SP7 §4.2
 	AskFallback       AskFallback                  // surface-specific ask resolution from SP2 §9
-	IsRemote          bool                         // serf-hub spawns set this true
+	IsRemote          bool                         // evener-hub spawns set this true
 	WatchConfig       bool                         // starts the SP5 §3.9 watcher when true
 }
 ```
@@ -499,9 +499,9 @@ Permissions PermissionsConfig
 // and no hook responds. Source: SP2 §9.
 PermissionAskFallback AskFallback
 
-// MergedConfig is the full SerfConfig from SP1's loader, carried on the
+// MergedConfig is the full EvenerConfig from SP1's loader, carried on the
 // session for ConfigChange diffing (SP5 §3.9) and observability.
-MergedConfig SerfConfig
+MergedConfig EvenerConfig
 
 // EnabledPluginPaths is the ordered (plugin, cache, version, source) tuple
 // list produced by SP8's resolver. When populated, NewSession loads from
@@ -521,7 +521,7 @@ UserConfigPrompter UserConfigPrompter
 // ConfigChange events. Source: SP5 §3.9.
 WatchConfig bool
 
-// IsRemote signals serf-hub-style embedding. SP5 reads this when setting
+// IsRemote signals evener-hub-style embedding. SP5 reads this when setting
 // CLAUDE_CODE_REMOTE on spawned hook processes.
 IsRemote bool
 ```
@@ -540,7 +540,7 @@ func (c *SessionConfig) validatePluginSources() error {
 }
 ```
 
-If `SerfConfig`, `PermissionsConfig`, `AskFallback`, `PluginConfigStore`, `SecureStore`, `UserConfigPrompter` don't yet exist (SP1/SP2/SP7 not merged), add minimum stub declarations at the bottom of `session_bootstrap.go` with `// TODO: replace with SP{N} export once merged` comments. Do not add bodies — empty structs / nil interfaces are enough for compile.
+If `EvenerConfig`, `PermissionsConfig`, `AskFallback`, `PluginConfigStore`, `SecureStore`, `UserConfigPrompter` don't yet exist (SP1/SP2/SP7 not merged), add minimum stub declarations at the bottom of `session_bootstrap.go` with `// TODO: replace with SP{N} export once merged` comments. Do not add bodies — empty structs / nil interfaces are enough for compile.
 
 - [ ] **Step 4: Run tests to verify they pass**
 
@@ -559,7 +559,7 @@ git commit -m "agent: add SP8 fields to SessionConfig with plugin-source validat
 
 ---
 
-## Task 6: `BuildSessionConfig` — DiscoverSerfConfig call (pipeline step 1)
+## Task 6: `BuildSessionConfig` — DiscoverEvenerConfig call (pipeline step 1)
 
 **Files:**
 - Modify: `agent/session_bootstrap.go`
@@ -589,11 +589,11 @@ func TestBuildSessionConfig_LoadsDiscoveredConfig(t *testing.T) {
 	flags := BootstrapFlags{ConfigPaths: []string{configPath}}
 
 	sc, err := BuildSessionConfig(env, flags, bootstrapDeps{
-		discover: func(env ExecutionEnvironment, paths []string) (SerfConfig, error) {
+		discover: func(env ExecutionEnvironment, paths []string) (EvenerConfig, error) {
 			if len(paths) != 1 || paths[0] != configPath {
 				t.Fatalf("discover got paths=%v, want [%q]", paths, configPath)
 			}
-			return SerfConfig{
+			return EvenerConfig{
 				Permissions: PermissionsConfig{Deny: []string{"Bash(rm:*)"}},
 			}, nil
 		},
@@ -611,8 +611,8 @@ func TestBuildSessionConfig_LoadsDiscoveredConfig(t *testing.T) {
 
 func TestBuildSessionConfig_DiscoverError_Fatal(t *testing.T) {
 	_, err := BuildSessionConfig(ExecutionEnvironment{}, BootstrapFlags{}, bootstrapDeps{
-		discover: func(ExecutionEnvironment, []string) (SerfConfig, error) {
-			return SerfConfig{}, fmt.Errorf("parse error in /etc/x.json: bad json")
+		discover: func(ExecutionEnvironment, []string) (EvenerConfig, error) {
+			return EvenerConfig{}, fmt.Errorf("parse error in /etc/x.json: bad json")
 		},
 	})
 	if err == nil {
@@ -640,7 +640,7 @@ Append to `agent/session_bootstrap.go`:
 // bootstrapDeps lets tests substitute the collaborator surfaces.
 // Production code uses defaultBootstrapDeps(). Each field cites its owning SP.
 type bootstrapDeps struct {
-	discover         func(ExecutionEnvironment, []string) (SerfConfig, error) // SP1
+	discover         func(ExecutionEnvironment, []string) (EvenerConfig, error) // SP1
 	installer        pluginInstaller                                          // SP4
 	trust            trustEnforcer                                            // SP3
 	newMatcher       func(PermissionsConfig, ExecutionEnvironment) (*PermissionMatcher, error) // SP2
@@ -648,7 +648,7 @@ type bootstrapDeps struct {
 
 func defaultBootstrapDeps() bootstrapDeps {
 	return bootstrapDeps{
-		discover:   DiscoverSerfConfig,
+		discover:   DiscoverEvenerConfig,
 		newMatcher: NewPermissionMatcher,
 		// installer and trust are nil here; the binary wires them.
 	}
@@ -663,10 +663,10 @@ func BuildSessionConfig(env ExecutionEnvironment, flags BootstrapFlags, deps boo
 		// Preserve any caller overrides for installer/trust/newMatcher.
 	}
 
-	// Step 1: load merged SerfConfig.
+	// Step 1: load merged EvenerConfig.
 	cfg, err := deps.discover(env, flags.ConfigPaths)
 	if err != nil {
-		return SessionConfig{}, fmt.Errorf("load serf config: %w", err)
+		return SessionConfig{}, fmt.Errorf("load evener config: %w", err)
 	}
 
 	sc := SessionConfig{
@@ -693,7 +693,7 @@ Expected: PASS.
 
 ```bash
 git add agent/session_bootstrap.go agent/session_bootstrap_test.go
-git commit -m "agent: BuildSessionConfig step 1 — load merged SerfConfig"
+git commit -m "agent: BuildSessionConfig step 1 — load merged EvenerConfig"
 ```
 
 ---
@@ -711,10 +711,10 @@ Append to `agent/session_bootstrap_test.go`:
 ```go
 type fakeTrust struct {
 	called bool
-	prune  func(SerfConfig) SerfConfig
+	prune  func(EvenerConfig) EvenerConfig
 }
 
-func (f *fakeTrust) EnforceTrustOnConfig(cfg SerfConfig) (SerfConfig, error) {
+func (f *fakeTrust) EnforceTrustOnConfig(cfg EvenerConfig) (EvenerConfig, error) {
 	f.called = true
 	if f.prune != nil {
 		cfg = f.prune(cfg)
@@ -724,14 +724,14 @@ func (f *fakeTrust) EnforceTrustOnConfig(cfg SerfConfig) (SerfConfig, error) {
 
 func TestBuildSessionConfig_RunsTrustEnforcer(t *testing.T) {
 	trust := &fakeTrust{
-		prune: func(c SerfConfig) SerfConfig {
+		prune: func(c EvenerConfig) EvenerConfig {
 			delete(c.EnabledPlugins, "untrusted@market")
 			return c
 		},
 	}
 	deps := bootstrapDeps{
-		discover: func(ExecutionEnvironment, []string) (SerfConfig, error) {
-			return SerfConfig{
+		discover: func(ExecutionEnvironment, []string) (EvenerConfig, error) {
+			return EvenerConfig{
 				EnabledPlugins: map[string]any{"untrusted@market": true, "good@market": true},
 			}, nil
 		},
@@ -782,7 +782,7 @@ Final `BuildSessionConfig` body so far:
 ```go
 func BuildSessionConfig(env ExecutionEnvironment, flags BootstrapFlags, deps bootstrapDeps) (SessionConfig, error) {
 	if deps.discover == nil {
-		deps.discover = DiscoverSerfConfig
+		deps.discover = DiscoverEvenerConfig
 	}
 	if deps.newMatcher == nil {
 		deps.newMatcher = NewPermissionMatcher
@@ -790,7 +790,7 @@ func BuildSessionConfig(env ExecutionEnvironment, flags BootstrapFlags, deps boo
 
 	cfg, err := deps.discover(env, flags.ConfigPaths)
 	if err != nil {
-		return SessionConfig{}, fmt.Errorf("load serf config: %w", err)
+		return SessionConfig{}, fmt.Errorf("load evener config: %w", err)
 	}
 
 	if deps.trust != nil {
@@ -848,8 +848,8 @@ func TestBuildSessionConfig_ResolvesEnabledPlugins(t *testing.T) {
 		},
 	}
 	deps := bootstrapDeps{
-		discover: func(ExecutionEnvironment, []string) (SerfConfig, error) {
-			return SerfConfig{
+		discover: func(ExecutionEnvironment, []string) (EvenerConfig, error) {
+			return EvenerConfig{
 				EnabledPlugins: map[string]any{
 					"foo@market": true,
 					"bar@market": true,
@@ -887,8 +887,8 @@ func TestBuildSessionConfig_NotInstalled_WarnsAndSkips(t *testing.T) {
 		},
 	}
 	deps := bootstrapDeps{
-		discover: func(ExecutionEnvironment, []string) (SerfConfig, error) {
-			return SerfConfig{
+		discover: func(ExecutionEnvironment, []string) (EvenerConfig, error) {
+			return EvenerConfig{
 				EnabledPlugins: map[string]any{
 					"missing@market": true,
 					"good@market":    true,
@@ -911,8 +911,8 @@ func TestBuildSessionConfig_NotInstalled_WarnsAndSkips(t *testing.T) {
 
 func TestBuildSessionConfig_MalformedPluginSpec_WarnsAndSkips(t *testing.T) {
 	deps := bootstrapDeps{
-		discover: func(ExecutionEnvironment, []string) (SerfConfig, error) {
-			return SerfConfig{
+		discover: func(ExecutionEnvironment, []string) (EvenerConfig, error) {
+			return EvenerConfig{
 				EnabledPlugins: map[string]any{"bare-no-at": true},
 			}, nil
 		},
@@ -952,12 +952,12 @@ In `agent/session_bootstrap.go`, before the final `return sc, nil` in `BuildSess
 		for _, spec := range keys {
 			plugin, marketplace, err := splitPluginSpec(spec)
 			if err != nil {
-				log.Printf("serf: skipping malformed enabledPlugins entry %q: %v", spec, err)
+				log.Printf("evener: skipping malformed enabledPlugins entry %q: %v", spec, err)
 				continue
 			}
 			entry, lerr := deps.installer.Lookup(plugin, marketplace)
 			if errors.Is(lerr, ErrPluginNotInstalled) {
-				log.Printf(`serf: plugin %q is enabled but not installed; run 'serf plugin install %s' to install`, spec, spec)
+				log.Printf(`evener: plugin %q is enabled but not installed; run 'evener plugin install %s' to install`, spec, spec)
 				continue
 			}
 			if lerr != nil {
@@ -1014,8 +1014,8 @@ func TestBuildSessionConfig_AppendsPluginDirs(t *testing.T) {
 	dir := t.TempDir()
 	flags := BootstrapFlags{PluginDirs: []string{filepath.Join(dir, "foo"), filepath.Join(dir, "bar")}}
 	deps := bootstrapDeps{
-		discover: func(ExecutionEnvironment, []string) (SerfConfig, error) {
-			return SerfConfig{}, nil
+		discover: func(ExecutionEnvironment, []string) (EvenerConfig, error) {
+			return EvenerConfig{}, nil
 		},
 	}
 	sc, err := BuildSessionConfig(ExecutionEnvironment{}, flags, deps)
@@ -1044,8 +1044,8 @@ func TestBuildSessionConfig_EnabledThenPluginDir_Order(t *testing.T) {
 	}
 	flags := BootstrapFlags{PluginDirs: []string{"/tmp/devplug"}}
 	deps := bootstrapDeps{
-		discover: func(ExecutionEnvironment, []string) (SerfConfig, error) {
-			return SerfConfig{EnabledPlugins: map[string]any{"a@m": true}}, nil
+		discover: func(ExecutionEnvironment, []string) (EvenerConfig, error) {
+			return EvenerConfig{EnabledPlugins: map[string]any{"a@m": true}}, nil
 		},
 		installer: installer,
 	}
@@ -1133,8 +1133,8 @@ func TestBuildSessionConfig_CarriesStoresAndPrompter(t *testing.T) {
 		Prompter: pr,
 	}
 	deps := bootstrapDeps{
-		discover: func(ExecutionEnvironment, []string) (SerfConfig, error) {
-			return SerfConfig{}, nil
+		discover: func(ExecutionEnvironment, []string) (EvenerConfig, error) {
+			return EvenerConfig{}, nil
 		},
 	}
 	// Inject stores via deps once we add them.
@@ -1321,7 +1321,7 @@ Append to `agent/session_test.go`:
 ```go
 func TestHookUnion_ConfigBeforePlugins(t *testing.T) {
 	cfg := SessionConfig{
-		MergedConfig: SerfConfig{
+		MergedConfig: EvenerConfig{
 			Hooks: map[string][]HookConfig{
 				"PreToolUse": {{Matcher: "Bash", Command: "echo CONFIG"}},
 			},
@@ -1589,7 +1589,7 @@ In `agent/session.go`'s `initPlugins`, after the existing `LoadPlugin` call for 
 		// Try prompter.
 		values, perr := s.cfg.UserConfigPrompter.PromptUserConfig(p.PluginID, lp.UserConfigOptions)
 		if perr != nil {
-			log.Printf("serf: skipping plugin %q (userConfig unresolved): %v", p.PluginID, perr)
+			log.Printf("evener: skipping plugin %q (userConfig unresolved): %v", p.PluginID, perr)
 			continue
 		}
 		resolved, err = ResolveUserConfigWithValues(p.PluginID, lp.UserConfigOptions, values, s.cfg.PluginConfigStore, s.cfg.SecureStore)
@@ -1881,7 +1881,7 @@ func TestExecTool_FiresPostToolUseFailure_OnError(t *testing.T) {
 	dir := t.TempDir()
 	sentinel := filepath.Join(dir, "fired")
 	cfg := SessionConfig{
-		MergedConfig: SerfConfig{
+		MergedConfig: EvenerConfig{
 			Hooks: map[string][]HookConfig{
 				"PostToolUseFailure": {{
 					Matcher: "Bash",
@@ -1962,7 +1962,7 @@ func TestRoundLoop_FiresPostToolBatch(t *testing.T) {
 	dir := t.TempDir()
 	sentinel := filepath.Join(dir, "batch")
 	cfg := SessionConfig{
-		MergedConfig: SerfConfig{
+		MergedConfig: EvenerConfig{
 			Hooks: map[string][]HookConfig{
 				"PostToolBatch": {{
 					Command: "bash -c 'echo batch > " + sentinel + "'",
@@ -2063,7 +2063,7 @@ func TestProcessOneInput_FiresStopFailure_OnAPIError(t *testing.T) {
 	dir := t.TempDir()
 	sentinel := filepath.Join(dir, "stop")
 	cfg := SessionConfig{
-		MergedConfig: SerfConfig{
+		MergedConfig: EvenerConfig{
 			Hooks: map[string][]HookConfig{
 				"StopFailure": {{
 					Command: "bash -c 'echo stop > " + sentinel + "'",
@@ -2179,7 +2179,7 @@ func TestSpawnAgent_FiresSubagentStart(t *testing.T) {
 	dir := t.TempDir()
 	sentinel := filepath.Join(dir, "sub")
 	cfg := SessionConfig{
-		MergedConfig: SerfConfig{
+		MergedConfig: EvenerConfig{
 			Hooks: map[string][]HookConfig{
 				"SubagentStart": {{
 					Command: "bash -c 'echo sub > " + sentinel + "'",
@@ -2261,7 +2261,7 @@ func TestProcessOneInput_FiresUserPromptExpansion_OnSkill(t *testing.T) {
 	dir := t.TempDir()
 	sentinel := filepath.Join(dir, "expand")
 	cfg := SessionConfig{
-		MergedConfig: SerfConfig{
+		MergedConfig: EvenerConfig{
 			Hooks: map[string][]HookConfig{
 				"UserPromptExpansion": {{
 					Command: "bash -c 'echo expand > " + sentinel + "'",
@@ -2335,7 +2335,7 @@ In `processOneInput`, locate where `ActivatedSkillBodies` is populated and the e
 	}
 ```
 
-Adjust field names (`activatedSkills`, `skill.Name`) to match existing serf identifiers.
+Adjust field names (`activatedSkills`, `skill.Name`) to match existing evener identifiers.
 
 - [ ] **Step 4: Run tests to verify they pass**
 
@@ -2369,7 +2369,7 @@ func TestCompactStrategy_FiresPostCompact(t *testing.T) {
 	dir := t.TempDir()
 	sentinel := filepath.Join(dir, "comp")
 	cfg := SessionConfig{
-		MergedConfig: SerfConfig{
+		MergedConfig: EvenerConfig{
 			Hooks: map[string][]HookConfig{
 				"PostCompact": {{
 					Command: "bash -c 'echo comp > " + sentinel + "'",
@@ -2657,13 +2657,13 @@ In `agent/session.go`'s `initPlugins`, replace the existing iteration with:
 	for _, p := range cfg.EnabledPluginPaths {
 		lp, err := LoadPlugin(p.CachePath)
 		if err != nil {
-			log.Printf("serf: skipping plugin at %s: %v", p.CachePath, err)
+			log.Printf("evener: skipping plugin at %s: %v", p.CachePath, err)
 			continue
 		}
 		// Name collision: --plugin-dir wins, but enabled comes first in our slice,
 		// so any later same-name entry simply overwrites. Log when overriding.
 		if existing, dup := loaded[lp.Name]; dup {
-			log.Printf("serf: --plugin-dir %s overrides enabledPlugins entry %q for this session", p.CachePath, existing.SourceID)
+			log.Printf("evener: --plugin-dir %s overrides enabledPlugins entry %q for this session", p.CachePath, existing.SourceID)
 		}
 		lp.SourceID = p.PluginID
 		lp.Version = p.Version
@@ -2691,15 +2691,15 @@ git commit -m "agent: --plugin-dir name collision shadows enabledPlugins entry"
 
 ---
 
-## Task 26: CLI wiring — `cmd/serf` flag registration
+## Task 26: CLI wiring — `cmd/evener` flag registration
 
 **Files:**
-- Modify: `cmd/serf/main.go`
-- Test: smoke test via `go build ./cmd/serf`
+- Modify: `cmd/evener/main.go`
+- Test: smoke test via `go build ./cmd/evener`
 
 - [ ] **Step 1: Locate the existing flag-registration block**
 
-Read `cmd/serf/main.go` and find where existing flags like `--plugin-dir` are registered (likely a `flag.Var` or `pflag.StringArrayVar`).
+Read `cmd/evener/main.go` and find where existing flags like `--plugin-dir` are registered (likely a `flag.Var` or `pflag.StringArrayVar`).
 
 - [ ] **Step 2: Add three new flag registrations**
 
@@ -2707,7 +2707,7 @@ Insert next to the existing `--plugin-dir` registration:
 
 ```go
 	cmd.Flags().StringArrayVar(&runFlags.ConfigPaths, "config", nil,
-		"Path to a serf config.json (repeatable; merged after global/project)")
+		"Path to a evener config.json (repeatable; merged after global/project)")
 	cmd.Flags().StringArrayVar(&runFlags.TrustMarketplaces, "trust-marketplace", nil,
 		"Trust a project-declared marketplace by name (repeatable)")
 	cmd.Flags().StringArrayVar(&runFlags.PluginOptionsRaw, "plugin-option", nil,
@@ -2722,7 +2722,7 @@ If the existing CLI uses stdlib `flag` instead of cobra, adapt accordingly:
 
 - [ ] **Step 3: Add the field declarations to runFlags struct**
 
-In `cmd/serf/run.go` (or the same file if `runFlags` lives there):
+In `cmd/evener/run.go` (or the same file if `runFlags` lives there):
 
 ```go
 type runFlags struct {
@@ -2736,7 +2736,7 @@ type runFlags struct {
 - [ ] **Step 4: Build to verify no compile errors**
 
 ```bash
-go build ./cmd/serf
+go build ./cmd/evener
 ```
 
 Expected: clean exit.
@@ -2744,21 +2744,21 @@ Expected: clean exit.
 - [ ] **Step 5: Commit**
 
 ```bash
-git add cmd/serf/main.go cmd/serf/run.go
-git commit -m "cmd/serf: register --config, --trust-marketplace, --plugin-option flags"
+git add cmd/evener/main.go cmd/evener/run.go
+git commit -m "cmd/evener: register --config, --trust-marketplace, --plugin-option flags"
 ```
 
 ---
 
-## Task 27: CLI wiring — `cmd/serf/run.go` calls `BuildSessionConfig`
+## Task 27: CLI wiring — `cmd/evener/run.go` calls `BuildSessionConfig`
 
 **Files:**
-- Modify: `cmd/serf/run.go` (function `run`, spec cites line 68)
-- Test: build + an existing serf integration test stays green
+- Modify: `cmd/evener/run.go` (function `run`, spec cites line 68)
+- Test: build + an existing evener integration test stays green
 
 - [ ] **Step 1: Add the wiring**
 
-In `cmd/serf/run.go`'s `run()`, between the env-construction block and the existing `agent.SessionConfig{...}` literal, add:
+In `cmd/evener/run.go`'s `run()`, between the env-construction block and the existing `agent.SessionConfig{...}` literal, add:
 
 ```go
 	bootstrap, err := agent.BuildSessionConfig(env, agent.BootstrapFlags{
@@ -2802,7 +2802,7 @@ func parsePluginOptions(raw []string) map[string]map[string]string {
 		dot := strings.Index(s, ".")
 		eq := strings.Index(s, "=")
 		if dot <= 0 || eq <= dot+1 {
-			fmt.Fprintf(os.Stderr, "serf: ignoring malformed --plugin-option %q\n", s)
+			fmt.Fprintf(os.Stderr, "evener: ignoring malformed --plugin-option %q\n", s)
 			continue
 		}
 		plugin := s[:dot]
@@ -2861,12 +2861,12 @@ And add an overload `BuildSessionConfigWithDeps(env, flags, BootstrapDepsExporte
 - [ ] **Step 2: Build**
 
 ```bash
-go build ./cmd/serf
+go build ./cmd/evener
 ```
 
 Expected: clean.
 
-- [ ] **Step 3: Run existing serf smoke test**
+- [ ] **Step 3: Run existing evener smoke test**
 
 ```bash
 go test ./agent/ -run TestNewSession_Basic -v
@@ -2877,16 +2877,16 @@ Expected: PASS (no regression).
 - [ ] **Step 4: Commit**
 
 ```bash
-git add cmd/serf/run.go agent/session_bootstrap.go
-git commit -m "cmd/serf: call BuildSessionConfig and thread merged fields into SessionConfig"
+git add cmd/evener/run.go agent/session_bootstrap.go
+git commit -m "cmd/evener: call BuildSessionConfig and thread merged fields into SessionConfig"
 ```
 
 ---
 
-## Task 28: CLI wiring — `cmd/serf/serve.go`
+## Task 28: CLI wiring — `cmd/evener/serve.go`
 
 **Files:**
-- Modify: `cmd/serf/serve.go` (function `serve`, spec cites line 63)
+- Modify: `cmd/evener/serve.go` (function `serve`, spec cites line 63)
 
 - [ ] **Step 1: Apply the same wiring as `run.go`**
 
@@ -2895,7 +2895,7 @@ Locate the existing `agent.SessionConfig{...}` literal in `serve.go`. Wrap it wi
 - [ ] **Step 2: Build**
 
 ```bash
-go build ./cmd/serf
+go build ./cmd/evener
 ```
 
 Expected: clean.
@@ -2903,16 +2903,16 @@ Expected: clean.
 - [ ] **Step 3: Commit**
 
 ```bash
-git add cmd/serf/serve.go
-git commit -m "cmd/serf: wire BuildSessionConfig in serve (daemon) mode"
+git add cmd/evener/serve.go
+git commit -m "cmd/evener: wire BuildSessionConfig in serve (daemon) mode"
 ```
 
 ---
 
-## Task 29: CLI wiring — `cmd/serf-tui/embedded.go`
+## Task 29: CLI wiring — `cmd/evener-tui/embedded.go`
 
 **Files:**
-- Modify: `cmd/serf-tui/embedded.go` (spec cites lines 126, 174, 325)
+- Modify: `cmd/evener-tui/embedded.go` (spec cites lines 126, 174, 325)
 
 - [ ] **Step 1: Apply the same wiring at each of the three `SessionConfig` sites**
 
@@ -2939,7 +2939,7 @@ Add `--config` flag registration to TUI's flag set if it doesn't already have on
 - [ ] **Step 2: Build**
 
 ```bash
-go build ./cmd/serf-tui
+go build ./cmd/evener-tui
 ```
 
 Expected: clean.
@@ -2947,16 +2947,16 @@ Expected: clean.
 - [ ] **Step 3: Commit**
 
 ```bash
-git add cmd/serf-tui/embedded.go
-git commit -m "cmd/serf-tui: wire BuildSessionConfig at all three session sites"
+git add cmd/evener-tui/embedded.go
+git commit -m "cmd/evener-tui: wire BuildSessionConfig at all three session sites"
 ```
 
 ---
 
-## Task 30: CLI wiring — `cmd/serf-hub/web.go`
+## Task 30: CLI wiring — `cmd/evener-hub/web.go`
 
 **Files:**
-- Modify: `cmd/serf-hub/web.go`
+- Modify: `cmd/evener-hub/web.go`
 
 - [ ] **Step 1: Extend `WebConfig`**
 
@@ -2978,12 +2978,12 @@ Locate the Spawner's `SpawnRequest` formation. Add the merged-config-derived fla
 	req.Flags = append(req.Flags, h.config.ConfigPaths...)
 ```
 
-If the Hub spawns serf as a subprocess (per spec §5.3), this is the simplest correct wiring: the spawned serf process re-runs `BuildSessionConfig` itself.
+If the Hub spawns evener as a subprocess (per spec §5.3), this is the simplest correct wiring: the spawned evener process re-runs `BuildSessionConfig` itself.
 
 - [ ] **Step 3: Build**
 
 ```bash
-go build ./cmd/serf-hub
+go build ./cmd/evener-hub
 ```
 
 Expected: clean.
@@ -2991,16 +2991,16 @@ Expected: clean.
 - [ ] **Step 4: Commit**
 
 ```bash
-git add cmd/serf-hub/web.go
-git commit -m "cmd/serf-hub: pass --config through to spawned serf processes"
+git add cmd/evener-hub/web.go
+git commit -m "cmd/evener-hub: pass --config through to spawned evener processes"
 ```
 
 ---
 
-## Task 31: CLI wiring — `cmd/serfeval/main.go`
+## Task 31: CLI wiring — `cmd/evenereval/main.go`
 
 **Files:**
-- Modify: `cmd/serfeval/main.go` (spec cites lines 206, 231)
+- Modify: `cmd/evenereval/main.go` (spec cites lines 206, 231)
 
 - [ ] **Step 1: Apply the same wiring**
 
@@ -3009,7 +3009,7 @@ Same as Task 27, but with `agent.NewNonInteractivePrompter()` and `agent.AskFall
 - [ ] **Step 2: Build**
 
 ```bash
-go build ./cmd/serfeval
+go build ./cmd/evenereval
 ```
 
 Expected: clean.
@@ -3017,8 +3017,8 @@ Expected: clean.
 - [ ] **Step 3: Commit**
 
 ```bash
-git add cmd/serfeval/main.go
-git commit -m "cmd/serfeval: wire BuildSessionConfig with non-interactive prompter"
+git add cmd/evenereval/main.go
+git commit -m "cmd/evenereval: wire BuildSessionConfig with non-interactive prompter"
 ```
 
 ---
@@ -3147,7 +3147,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/prime-radiant-inc/serf/internal/plugins"
+	"github.com/prime-radiant-inc/evener/internal/plugins"
 )
 
 func requireBash(t *testing.T) {
@@ -3179,8 +3179,8 @@ func TestSP8_MarketplaceAddInstallRunUninstall(t *testing.T) {
 	flags := BootstrapFlags{}
 	env := ExecutionEnvironment{WorkingDir: t.TempDir()}
 	sc, err := BuildSessionConfig(env, flags, bootstrapDeps{
-		discover: func(ExecutionEnvironment, []string) (SerfConfig, error) {
-			return SerfConfig{EnabledPlugins: map[string]any{"sp8-basic@sp8-basic": true}}, nil
+		discover: func(ExecutionEnvironment, []string) (EvenerConfig, error) {
+			return EvenerConfig{EnabledPlugins: map[string]any{"sp8-basic@sp8-basic": true}}, nil
 		},
 		installer: installerAdapter{inst},
 	})
@@ -3209,8 +3209,8 @@ func TestSP8_MarketplaceAddInstallRunUninstall(t *testing.T) {
 	_ = os.Remove(sentinel)
 
 	sc2, err := BuildSessionConfig(env, flags, bootstrapDeps{
-		discover: func(ExecutionEnvironment, []string) (SerfConfig, error) {
-			return SerfConfig{EnabledPlugins: map[string]any{"sp8-basic@sp8-basic": true}}, nil
+		discover: func(ExecutionEnvironment, []string) (EvenerConfig, error) {
+			return EvenerConfig{EnabledPlugins: map[string]any{"sp8-basic@sp8-basic": true}}, nil
 		},
 		installer: installerAdapter{inst},
 	})
@@ -3341,7 +3341,7 @@ Expected: PASS for each subtest after SP5 fire sites are in place (Tasks 17–22
 
 ```bash
 git add agent/integration_sp8_test.go
-git commit -m "test: SP8 each new SP5 event fires from its serf integration point"
+git commit -m "test: SP8 each new SP5 event fires from its evener integration point"
 ```
 
 ---
@@ -3357,7 +3357,7 @@ git commit -m "test: SP8 each new SP5 event fires from its serf integration poin
 func TestSP8_PermissionsEnforcedFromConfig(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("XDG_CONFIG_HOME", home)
-	cfgPath := filepath.Join(home, "serf", "config.json")
+	cfgPath := filepath.Join(home, "evener", "config.json")
 	os.MkdirAll(filepath.Dir(cfgPath), 0755)
 	os.WriteFile(cfgPath, []byte(`{"permissions":{"deny":["Bash(rm:*)"]}}`), 0644)
 
@@ -3366,7 +3366,7 @@ func TestSP8_PermissionsEnforcedFromConfig(t *testing.T) {
 
 	cfg := SessionConfig{
 		Permissions: PermissionsConfig{Deny: []string{"Bash(rm:*)"}},
-		MergedConfig: SerfConfig{
+		MergedConfig: EvenerConfig{
 			Permissions: PermissionsConfig{Deny: []string{"Bash(rm:*)"}},
 			Hooks: map[string][]HookConfig{
 				"PermissionDenied": {{Command: "bash -c 'echo denied > $SP8_DENY_HOOK'"}},
@@ -3420,7 +3420,7 @@ func TestSP8_PermissionsAskFallback_NonInteractive(t *testing.T) {
 			Ask:         []string{"Bash(*)"},
 			DefaultMode: "default",
 		},
-		MergedConfig: SerfConfig{
+		MergedConfig: EvenerConfig{
 			Hooks: map[string][]HookConfig{
 				"PermissionRequest": {{Command: "bash -c 'echo asked > $SP8_REQ_HOOK'"}},
 			},
@@ -3477,7 +3477,7 @@ func TestSP8_HookUnion_ConfigAndPlugin(t *testing.T) {
 
 	cfg := SessionConfig{
 		PluginDirs: []string{pluginDir},
-		MergedConfig: SerfConfig{
+		MergedConfig: EvenerConfig{
 			Hooks: map[string][]HookConfig{
 				"PreToolUse": {{Command: "bash -c 'echo config >> $ORDER_FILE'"}},
 			},
@@ -3529,7 +3529,7 @@ func TestSP8_MCPUnion_ConfigAndPlugin(t *testing.T) {
 
 	cfg := SessionConfig{
 		PluginDirs: []string{pluginDir},
-		MergedConfig: SerfConfig{
+		MergedConfig: EvenerConfig{
 			MCPServers: map[string]MCPServerConfig{
 				"foo": {Name: "foo", Command: "from-config", Type: "stdio"},
 			},
@@ -3820,8 +3820,8 @@ git commit -m "test: SP8 --plugin-dir shadows enabledPlugins same-name entry"
 ```go
 func TestSP8_PluginMissingWarnsNotFatal(t *testing.T) {
 	sc, err := BuildSessionConfig(ExecutionEnvironment{}, BootstrapFlags{}, bootstrapDeps{
-		discover: func(ExecutionEnvironment, []string) (SerfConfig, error) {
-			return SerfConfig{EnabledPlugins: map[string]any{"not-installed@x": true}}, nil
+		discover: func(ExecutionEnvironment, []string) (EvenerConfig, error) {
+			return EvenerConfig{EnabledPlugins: map[string]any{"not-installed@x": true}}, nil
 		},
 		installer: &fakeInstaller{}, // empty
 	})
@@ -3864,7 +3864,7 @@ func TestSP8_MalformedConfigFatal(t *testing.T) {
 
 	_, err := BuildSessionConfig(ExecutionEnvironment{WorkingDir: dir},
 		BootstrapFlags{ConfigPaths: []string{cfgPath}},
-		bootstrapDeps{discover: DiscoverSerfConfig})
+		bootstrapDeps{discover: DiscoverEvenerConfig})
 	if err == nil {
 		t.Fatal("expected fatal error on malformed config")
 	}
@@ -3906,8 +3906,8 @@ func TestSP8_TrustPrompt_ProjectMarketplace(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("XDG_CONFIG_HOME", home)
 	proj := t.TempDir()
-	os.MkdirAll(filepath.Join(proj, ".serf"), 0755)
-	os.WriteFile(filepath.Join(proj, ".serf/config.json"), []byte(`{
+	os.MkdirAll(filepath.Join(proj, ".evener"), 0755)
+	os.WriteFile(filepath.Join(proj, ".evener/config.json"), []byte(`{
 		"marketplaces":{"untrusted":{"source":{"type":"directory","path":"/tmp/x"}}}
 	}`), 0644)
 
@@ -3917,7 +3917,7 @@ func TestSP8_TrustPrompt_ProjectMarketplace(t *testing.T) {
 	sc, err := BuildSessionConfig(ExecutionEnvironment{WorkingDir: proj},
 		BootstrapFlags{},
 		bootstrapDeps{
-			discover: DiscoverSerfConfig,
+			discover: DiscoverEvenerConfig,
 			trust:    trust,
 		})
 	if err != nil {
@@ -3928,7 +3928,7 @@ func TestSP8_TrustPrompt_ProjectMarketplace(t *testing.T) {
 		t.Fatalf("prompt calls = %v, want [untrusted]", pr.calls)
 	}
 	// trusted_projects.json should have an entry.
-	data, _ := os.ReadFile(filepath.Join(home, "serf", "plugins", "trusted_projects.json"))
+	data, _ := os.ReadFile(filepath.Join(home, "evener", "plugins", "trusted_projects.json"))
 	if !strings.Contains(string(data), proj) {
 		t.Fatalf("trusted_projects.json missing %q: %s", proj, data)
 	}
@@ -4027,7 +4027,7 @@ git commit -m "test: SP8 backward compat — PluginDirs-only sessions still work
 
 ---
 
-## Task 50: E2E test 17 — Backward compat: `.serf/mcp.json` only
+## Task 50: E2E test 17 — Backward compat: `.evener/mcp.json` only
 
 **Files:**
 - Modify: `agent/integration_sp8_test.go`
@@ -4037,7 +4037,7 @@ git commit -m "test: SP8 backward compat — PluginDirs-only sessions still work
 ```go
 func TestSP8_BackwardCompat_McpJsonOnly(t *testing.T) {
 	dir := t.TempDir()
-	mcpPath := filepath.Join(dir, ".serf", "mcp.json")
+	mcpPath := filepath.Join(dir, ".evener", "mcp.json")
 	os.MkdirAll(filepath.Dir(mcpPath), 0755)
 	os.WriteFile(mcpPath, []byte(`{"mcpServers":{"legacy":{"command":"echo","type":"stdio"}}}`), 0644)
 
@@ -4060,7 +4060,7 @@ func TestSP8_BackwardCompat_McpJsonOnly(t *testing.T) {
 ```bash
 go test ./agent/ -run TestSP8_BackwardCompat_McpJsonOnly -v
 git add agent/integration_sp8_test.go
-git commit -m "test: SP8 backward compat — .serf/mcp.json still discovered"
+git commit -m "test: SP8 backward compat — .evener/mcp.json still discovered"
 ```
 
 ---
@@ -4135,7 +4135,7 @@ func TestSP8_ConfigChange_Reload(t *testing.T) {
 
 	cfg := SessionConfig{
 		WatchConfig: true,
-		MergedConfig: SerfConfig{
+		MergedConfig: EvenerConfig{
 			Sources: []string{cfgPath},
 			Hooks: map[string][]HookConfig{
 				"ConfigChange": {{Command: "bash -c 'echo cc > $CC_S'"}},
@@ -4184,7 +4184,7 @@ Expected: PASS (with any tests that require not-yet-merged SP1..SP7 surfaces app
 - [ ] **Step 2: Run the binaries' build**
 
 ```bash
-go build ./cmd/serf ./cmd/serf-tui ./cmd/serf-hub ./cmd/serfeval
+go build ./cmd/evener ./cmd/evener-tui ./cmd/evener-hub ./cmd/evenereval
 ```
 
 Expected: clean.
@@ -4225,10 +4225,10 @@ git commit -m "agent: SP8 cleanup pass — vet/fmt"
 | §3.6 enabledPlugins resolution | Tasks 8, 45 |
 | §4 SessionConfig schema | Tasks 1, 4, 5, 10 |
 | §4.1 --config vs --plugin-dir | Tasks 9, 24, 26 |
-| §5.1 cmd/serf | Tasks 26, 27, 28 |
-| §5.2 cmd/serf-tui | Task 29 |
-| §5.3 cmd/serf-hub | Task 30 |
-| §5.4 cmd/serfeval | Task 31 |
+| §5.1 cmd/evener | Tasks 26, 27, 28 |
+| §5.2 cmd/evener-tui | Task 29 |
+| §5.3 cmd/evener-hub | Task 30 |
+| §5.4 cmd/evenereval | Task 31 |
 | §5.5 shared helper BuildSessionConfig | Tasks 6–10 |
 | §6 Fire sites (9 events) | Tasks 17–22 (7 events) + Task 16 (PermReq/Denied) |
 | §7 Permission enforcement wire-in | Task 16 |
@@ -4244,7 +4244,7 @@ git commit -m "agent: SP8 cleanup pass — vet/fmt"
 
 - The plan assumes SP1..SP7 exports exist by names cited in the spec. If SP1's `PermissionsConfig.IsEmpty()` or SP7's `ResolvedUserConfig.Set/Lookup` carry different exact signatures, Tasks 11, 14, 15 will need a one-line rename. The task code shows the expected signatures in comments.
 - Two tests use small adapter helpers (`installerAdapter`, `recordingTrustPrompter`) that satisfy interface seams SP8 declares; these are test-only and don't compromise the "no mocking" rule for production code paths.
-- The Hub-side prompter for the post-install `serf plugin enable` web UI is out of scope here (per §5.3 the Hub spawns serf as a subprocess that re-runs `BuildSessionConfig` itself); a future SP can lift it inside the Hub if/when in-process plugin enable is added.
+- The Hub-side prompter for the post-install `evener plugin enable` web UI is out of scope here (per §5.3 the Hub spawns evener as a subprocess that re-runs `BuildSessionConfig` itself); a future SP can lift it inside the Hub if/when in-process plugin enable is added.
 
 **Placeholder scan.** Re-scanned the document for the forbidden patterns ("TBD", "implement later", "similar to X", "TODO" outside cited collaborator stubs). Each remaining `// TODO SP{N}` comment is a deliberate marker for the collaborator boundary, not a planning placeholder.
 

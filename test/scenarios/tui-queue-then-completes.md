@@ -2,9 +2,9 @@
 
 **What this covers**: kata `111a` (TUI surface). While a turn is in flight,
 the hub TUI's composer uses `queue` mode
-(`cmd/serf-tui/composer_panel.go#hubComposerModeQueue`). Pressing Enter follows
+(`cmd/evener-tui/composer_panel.go#hubComposerModeQueue`). Pressing Enter follows
 the queue branch in `(*hubModel).updateSessionKey`
-(`cmd/serf-tui/hub_session_keys.go#updateSessionKey`), calls `turn/queue`, and
+(`cmd/evener-tui/hub_session_keys.go#updateSessionKey`), calls `turn/queue`, and
 shows the daemon-owned queue above the composer. When the in-flight turn
 finishes cleanly, `(*Session).ProcessInput`
 (`agent/session_lifecycle.go#ProcessInput`) drains the queued input as a fresh
@@ -16,13 +16,13 @@ the same queue state.
 
 - Complete the full Setup checklist in `docs/agentic-testing.md` in the same
   Bash shell through the `TOKEN=...` step. Its single `run=$(mktemp -d ...)`
-  owns fresh `$run/serf-hub`, `$run/serf`, and `$run/serf-tui` binaries, the
+  owns fresh `$run/evener-hub`, `$run/evener`, and `$run/evener-tui` binaries, the
   isolated `$HOME=$run/home` and session state, the kernel-assigned hub port,
   and `$run/hub.log` / `$run/hub.pid`. Do not create or reuse another run root.
 - `tmux`, `curl`, and `jq` installed (`tmux` 3.4 is known to work).
 - Anthropic OAuth or an API key configured so
   `anthropic/claude-haiku-4-5-20251001` can be invoked by the isolated hub.
-- `SERF_LIVE_TESTS=1` exported explicitly for this provider-backed scenario;
+- `EVENER_LIVE_TESTS=1` exported explicitly for this provider-backed scenario;
   the card refuses to start without that opt-in.
 - Run every code block below in the same Bash shell. The setup creates one
   workdir and derives a tmux name from the driving shell's PID; all request
@@ -40,8 +40,8 @@ Use `tmux send-keys -t "$TMUX_SESSION" ...` to drive input and
    ```bash
    set -euo pipefail
 
-   if [ "${SERF_LIVE_TESTS:-}" != "1" ]; then
-     printf 'set SERF_LIVE_TESTS=1 to opt into the live provider scenario\n' >&2
+   if [ "${EVENER_LIVE_TESTS:-}" != "1" ]; then
+     printf 'set EVENER_LIVE_TESTS=1 to opt into the live provider scenario\n' >&2
      exit 1
    fi
 
@@ -91,7 +91,7 @@ Use `tmux send-keys -t "$TMUX_SESSION" ...` to drive input and
      exit 1
    fi
    case "$(basename "$RUN_ROOT")" in
-     serf-e2e-*) ;;
+     evener-e2e-*) ;;
      *) printf 'run is not a Setup checklist directory: %s\n' "$RUN_ROOT" >&2; exit 1 ;;
    esac
    if [ "${HOME:-}" != "$RUN_ROOT/home" ]; then
@@ -118,22 +118,22 @@ Use `tmux send-keys -t "$TMUX_SESSION" ...` to drive input and
    OWNED_HUBPID="$RECORDED_HUBPID"
    RUN_OWNED=1
 
-   test -x "$RUN_ROOT/serf-hub"
-   test -x "$RUN_ROOT/serf"
-   test -x "$RUN_ROOT/serf-tui"
+   test -x "$RUN_ROOT/evener-hub"
+   test -x "$RUN_ROOT/evener"
+   test -x "$RUN_ROOT/evener-tui"
    test -f "$RUN_ROOT/hub.log"
 
    WORKDIR="$RUN_ROOT/work"
    run_suffix="${RUN_ROOT##*/}"
    run_suffix="${run_suffix//[^A-Za-z0-9_-]/-}"
-   TMUX_SESSION="serf-queue-${run_suffix}-$$"
+   TMUX_SESSION="evener-queue-${run_suffix}-$$"
    if [ -z "${PORT:-}" ]; then
      printf 'PORT must name the Setup checklist hub\n' >&2
      exit 1
    fi
    HUB_ADDR="127.0.0.1:$PORT"
    test "$HUB" = "http://$HUB_ADDR"
-   RECORDED_TOKEN=$(cat "$HOME/.serf/auth-token")
+   RECORDED_TOKEN=$(cat "$HOME/.evener/auth-token")
    test "$TOKEN" = "$RECORDED_TOKEN"
 
    mkdir "$WORKDIR"
@@ -222,7 +222,7 @@ Use `tmux send-keys -t "$TMUX_SESSION" ...` to drive input and
 
    jq -n --arg prompt "$FIRST_PROMPT" --arg workdir "$WORKDIR" '{
      prompt: $prompt,
-     harness: "serf",
+     harness: "evener",
      model: "anthropic/claude-haiku-4-5-20251001",
      working_dir: $workdir,
      branch: "",
@@ -262,16 +262,16 @@ Use `tmux send-keys -t "$TMUX_SESSION" ...` to drive input and
 
 3. **Launch the first TUI process and open that exact session**. From the
    dashboard, `/` opens the command palette (`updateDashboardKey`,
-   `cmd/serf-tui/hub_keys.go#updateDashboardKey`); its session item ID contains
+   `cmd/evener-tui/hub_keys.go#updateDashboardKey`); its session item ID contains
    the full ref (`commandPaletteEntriesForRows`,
-   `cmd/serf-tui/command_palette.go#commandPaletteEntriesForRows`), and the
+   `cmd/evener-tui/command_palette.go#commandPaletteEntriesForRows`), and the
    picker filters on item IDs as well as visible labels
-   (`cmd/serf-tui/internal/tuipick/picker_panel.go#PickerPanel.filtered`):
+   (`cmd/evener-tui/internal/tuipick/picker_panel.go#PickerPanel.filtered`):
 
    ```bash
    tmux new-session -d -s "$TMUX_SESSION" -x 200 -y 50 \
-     "\"$RUN_ROOT/serf-tui\" --hub-addr \"$HUB_ADDR\" --auth-token \"$TOKEN\" --no-auto-start-hub --debug 2>\"$RUN_ROOT/tui-live.log\""
-   capture_until "$RUN_ROOT/dashboard-live-pane.txt" 'SERF LIVE'
+     "\"$RUN_ROOT/evener-tui\" --hub-addr \"$HUB_ADDR\" --auth-token \"$TOKEN\" --no-auto-start-hub --debug 2>\"$RUN_ROOT/tui-live.log\""
+   capture_until "$RUN_ROOT/dashboard-live-pane.txt" 'EVENER LIVE'
    tmux send-keys -t "$TMUX_SESSION" "/"
    capture_until "$RUN_ROOT/palette-live-pane.txt" 'Command palette'
    tmux send-keys -t "$TMUX_SESSION" -l "$SID"
@@ -316,7 +316,7 @@ Use `tmux send-keys -t "$TMUX_SESSION" ...` to drive input and
    There is no ellipsis at this width. The daemon collapses an entry to its
    first line without imposing a length bound (`agent/session_queue.go#firstQueueLine`),
    and `renderQueuePreview` truncates only beyond `width - 6`
-   (`cmd/serf-tui/composer_panel.go#renderQueuePreview`). This message is well
+   (`cmd/evener-tui/composer_panel.go#renderQueuePreview`). This message is well
    below the 194-rune limit at width 200.
 
 5. **Cold-reattach and prove snapshot authority**. Kill the first TUI process,
@@ -326,8 +326,8 @@ Use `tmux send-keys -t "$TMUX_SESSION" ...` to drive input and
    ```bash
    tmux kill-session -t "$TMUX_SESSION"
    tmux new-session -d -s "$TMUX_SESSION" -x 200 -y 50 \
-     "\"$RUN_ROOT/serf-tui\" --hub-addr \"$HUB_ADDR\" --auth-token \"$TOKEN\" --no-auto-start-hub --debug 2>\"$RUN_ROOT/tui-cold.log\""
-   capture_until "$RUN_ROOT/dashboard-cold-pane.txt" 'SERF LIVE'
+     "\"$RUN_ROOT/evener-tui\" --hub-addr \"$HUB_ADDR\" --auth-token \"$TOKEN\" --no-auto-start-hub --debug 2>\"$RUN_ROOT/tui-cold.log\""
+   capture_until "$RUN_ROOT/dashboard-cold-pane.txt" 'EVENER LIVE'
    tmux send-keys -t "$TMUX_SESSION" "/"
    capture_until "$RUN_ROOT/palette-cold-pane.txt" 'Command palette'
    tmux send-keys -t "$TMUX_SESSION" -l "$SID"
@@ -354,7 +354,7 @@ Use `tmux send-keys -t "$TMUX_SESSION" ...` to drive input and
    process's notifications. Reproducing the count and full preview therefore
    exercises the `thread/read` snapshot path: session entry clears local queue
    state and applies `detail.Queue` via `applyQueueState`
-   (`cmd/serf-tui/hub_notifications.go#applyQueueState`). Falsification: the
+   (`cmd/evener-tui/hub_notifications.go#applyQueueState`). Falsification: the
    live pane in step 4 has the queue but this cold pane does not, or the count
    or text differs. The REST assertion is deliberately repeated after the cold
    attach: a queue preview alone does not prove the first turn is still active.
@@ -364,7 +364,7 @@ Use `tmux send-keys -t "$TMUX_SESSION" ...` to drive input and
    queue has drained**:
 
    ```bash
-   TS=$(find "$HOME/.local/state/serf/projects" \
+   TS=$(find "$HOME/.local/state/evener/projects" \
      -name "$SID.transcript.jsonl" -print -quit)
    test -n "$TS"
 
@@ -453,7 +453,7 @@ Use `tmux send-keys -t "$TMUX_SESSION" ...` to drive input and
    direct-driving stable-capture rule in `docs/testing.md` (the Go harness
    equivalent is `CaptureStable`, exercised by
    `TestTUITmuxE2E_CaptureStableDuringStream` in
-   `cmd/serf-tui/tmux_e2e_test.go#TestTUITmuxE2E_CaptureStableDuringStream`).
+   `cmd/evener-tui/tmux_e2e_test.go#TestTUITmuxE2E_CaptureStableDuringStream`).
    Only that stable frame is persisted and used for the final negative
    queue-row assertion. The transcript checks above prove the queued turn's
    successful file-listing result and final response durably, rather than
@@ -508,7 +508,7 @@ function once.
 - **Do not auto-start a fallback hub.** Both TUI invocations pass
   `--no-auto-start-hub`; an unreachable test hub must fail this run rather than
   make the TUI create a second hub outside this run's ownership boundary
-  (`cmd/serf-tui/internal/hubstart/hub_start.go#ParseTUIStartupOptions`).
+  (`cmd/evener-tui/internal/hubstart/hub_start.go#ParseTUIStartupOptions`).
 - **The queue preview is authoritative.** `appwire.QueueState` carries queue
   depth and first-line preview text on both `thread/read` and
   `thread/queueChanged`. `applyQueueState` replaces the TUI's snapshot rather

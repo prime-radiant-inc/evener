@@ -1,6 +1,6 @@
 package agent
 
-import "primeradiant.com/serf/agent/schema"
+import "primeradiant.com/evener/agent/schema"
 
 // ContextMetrics describes the estimated current context size, all in tokens.
 // It is an alias for schema.ContextMetrics so the type that callers (the hub

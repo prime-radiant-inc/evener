@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	"primeradiant.com/serf/agent/transcript"
+	"primeradiant.com/evener/agent/transcript"
 )
 
 // renderToolCardForResult builds a one-round transcript (assistant call + paired
@@ -330,10 +330,10 @@ func TestPrettyJSONRejectsTrailingData(t *testing.T) {
 // result renders exactly as before: no pretty-print, no status line.
 func TestRenderMarkdown_NonJSONResultUnchanged(t *testing.T) {
 	t.Parallel()
-	plain := "ok  primeradiant.com/serf/agent  1.20s\nPASS"
+	plain := "ok  primeradiant.com/evener/agent  1.20s\nPASS"
 	out := renderToolCardForResult("shell", "call_shell", plain)
 
-	if !strings.Contains(out, "ok  primeradiant.com/serf/agent  1.20s") {
+	if !strings.Contains(out, "ok  primeradiant.com/evener/agent  1.20s") {
 		t.Errorf("plain-text result must render unchanged, got:\n%s", out)
 	}
 	if !strings.Contains(out, "PASS") {

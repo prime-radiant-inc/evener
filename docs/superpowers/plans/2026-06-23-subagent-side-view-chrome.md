@@ -6,7 +6,7 @@
 
 **Architecture:** Keep `/s/<id>` as the full app shell and keep `/_partials/s/<id>/workspace` as the HX-gated workspace fragment. Add a standalone authenticated thread document route (use `/thread/<encoded-ref>`) that renders a minimal HTML document including the shared workspace fragment and the required thread assets. Centralize pane-thread URL construction, normalize legacy `/s/<id>` pane hrefs, and bridge framed open-beside requests to the top-level pane host with validated `postMessage`.
 
-**Tech Stack:** Go `net/http` + `html/template`, embedded templates/assets, HTMX, plain JavaScript modules under `cmd/serf-hub/assets`, JSDOM tests, Go `httptest` tests.
+**Tech Stack:** Go `net/http` + `html/template`, embedded templates/assets, HTMX, plain JavaScript modules under `cmd/evener-hub/assets`, JSDOM tests, Go `httptest` tests.
 
 ## Global Constraints
 
@@ -26,57 +26,57 @@
 
 Modify/create these files:
 
-- Modify `cmd/serf-hub/web.go`
+- Modify `cmd/evener-hub/web.go`
   - Add `threadTmpl *template.Template` to `WebServer`.
   - Parse the new thread document template plus shared workspace/input templates.
   - Register `mux.HandleFunc("/thread/", s.handleThreadDocument)`.
 
-- Modify `cmd/serf-hub/web_workspace.go`
+- Modify `cmd/evener-hub/web_workspace.go`
   - Add `WorkspaceData` pane/thread-context fields if the type is in this file; otherwise modify its defining file.
   - Add `handleThreadDocument` and `renderThreadDocument` helpers.
   - Factor shared workspace-data preparation so workspace partial and thread document both set `HomeDir` consistently.
 
-- Create `cmd/serf-hub/templates/thread.html`
+- Create `cmd/evener-hub/templates/thread.html`
   - Minimal standalone thread document shell.
   - Include shared head assets and thread-required scripts.
   - Render `{{template "workspace" .}}`.
 
-- Modify `cmd/serf-hub/templates/app.html`
+- Modify `cmd/evener-hub/templates/app.html`
   - Optionally extract common asset tags to a template if that reduces duplication.
   - No behavior change for the full app shell.
 
-- Modify `cmd/serf-hub/templates/partials/workspace.html`
+- Modify `cmd/evener-hub/templates/partials/workspace.html`
   - Guard mobile sidebar hamburger behind `{{if .ShowSidebarToggle}}`.
   - In thread-document context, make parent breadcrumb pane-safe via data attributes consumed by JS.
 
-- Modify `cmd/serf-hub/assets/panes.js`
+- Modify `cmd/evener-hub/assets/panes.js`
   - Add `threadHref(ref)`, `normalizePaneHref(href)`, host message bridge, loading/error UI, and export helpers.
   - Normalize hrefs before dedupe, open, close, persist, restore, and suppression checks.
 
-- Modify `cmd/serf-hub/assets/renderer.js`
-  - Use `SerfPanes.threadHref()` or a fallback thread href builder for subagent and observer pane URLs.
+- Modify `cmd/evener-hub/assets/renderer.js`
+  - Use `EvenerPanes.threadHref()` or a fallback thread href builder for subagent and observer pane URLs.
   - Make open-beside controls available in framed thread documents through the bridge.
   - Intercept pane-context parent breadcrumb clicks.
 
-- Modify `cmd/serf-hub/assets/sidebar.js`
+- Modify `cmd/evener-hub/assets/sidebar.js`
   - Use centralized thread href builder for sidebar subagent open-beside.
 
 - Modify tests:
-  - `cmd/serf-hub/web_test.go`
-  - `cmd/serf-hub/jstest/test-renderer-open-beside.js`
-  - `cmd/serf-hub/jstest/test-panes-url.js`
-  - Add `cmd/serf-hub/jstest/test-thread-document-bridge.js`
+  - `cmd/evener-hub/web_test.go`
+  - `cmd/evener-hub/jstest/test-renderer-open-beside.js`
+  - `cmd/evener-hub/jstest/test-panes-url.js`
+  - Add `cmd/evener-hub/jstest/test-thread-document-bridge.js`
 
 ---
 
 ### Task 1: Standalone thread document route and template
 
 **Files:**
-- Create: `cmd/serf-hub/templates/thread.html`
-- Modify: `cmd/serf-hub/web.go`
-- Modify: `cmd/serf-hub/web_workspace.go`
-- Modify: `cmd/serf-hub/templates/partials/workspace.html`
-- Test: `cmd/serf-hub/web_test.go`
+- Create: `cmd/evener-hub/templates/thread.html`
+- Modify: `cmd/evener-hub/web.go`
+- Modify: `cmd/evener-hub/web_workspace.go`
+- Modify: `cmd/evener-hub/templates/partials/workspace.html`
+- Test: `cmd/evener-hub/web_test.go`
 
 **Interfaces:**
 - Consumes: existing `workspaceData(id string) WorkspaceData`, `workspaceTmpl`, `canonicalRouteID`, `appRefFromRouteID`.
@@ -87,7 +87,7 @@ Modify/create these files:
 
 - [ ] **Step 1: Add failing server tests for thread document route**
 
-Append tests to `cmd/serf-hub/web_test.go` near existing session route tests. Use exact assertions that prove `/thread/<id>` is a full document, not an app shell and not an HX partial.
+Append tests to `cmd/evener-hub/web_test.go` near existing session route tests. Use exact assertions that prove `/thread/<id>` is a full document, not an app shell and not an HX partial.
 
 ```go
 func TestWeb_ThreadDocument_DirectGet_ServesChromeLessThreadDocument(t *testing.T) {
@@ -154,7 +154,7 @@ func TestWeb_WorkspacePartial_RemainsHXGated(t *testing.T) {
 Run:
 
 ```bash
-go test ./cmd/serf-hub -run 'TestWeb_ThreadDocument_DirectGet_ServesChromeLessThreadDocument|TestWeb_WorkspacePartial_RemainsHXGated' -count=1 -v
+go test ./cmd/evener-hub -run 'TestWeb_ThreadDocument_DirectGet_ServesChromeLessThreadDocument|TestWeb_WorkspacePartial_RemainsHXGated' -count=1 -v
 ```
 
 Expected:
@@ -164,7 +164,7 @@ Expected:
 
 - [ ] **Step 3: Add thread document template**
 
-Create `cmd/serf-hub/templates/thread.html`:
+Create `cmd/evener-hub/templates/thread.html`:
 
 ```html
 {{define "thread_document"}}
@@ -173,11 +173,11 @@ Create `cmd/serf-hub/templates/thread.html`:
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>{{if .Title}}{{.Title}} · {{end}}serf thread</title>
+  <title>{{if .Title}}{{.Title}} · {{end}}evener thread</title>
   <link rel="icon" href="data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><circle cx='50' cy='50' r='40' fill='%237aa2f7'/></svg>">
   <script>
     (function () {
-      var pref = localStorage.getItem("serf-hub.theme");
+      var pref = localStorage.getItem("evener-hub.theme");
       if (pref === "light" || pref === "dark") {
         document.documentElement.setAttribute("data-theme", pref);
       }
@@ -209,12 +209,12 @@ Create `cmd/serf-hub/templates/thread.html`:
   <script src="/assets/renderer.js"></script>
   <script>
     document.body.addEventListener("htmx:responseError", function (e) {
-      if (!window.SerfToast) return;
+      if (!window.EvenerToast) return;
       var status = (e && e.detail && e.detail.xhr && e.detail.xhr.status) || 0;
-      window.SerfToast.show(status ? ("Request failed (" + status + ")") : "Request failed", "error");
+      window.EvenerToast.show(status ? ("Request failed (" + status + ")") : "Request failed", "error");
     });
     document.body.addEventListener("htmx:sendError", function () {
-      if (window.SerfToast) window.SerfToast.show("Network error", "error");
+      if (window.EvenerToast) window.EvenerToast.show("Network error", "error");
     });
   </script>
 </body>
@@ -224,7 +224,7 @@ Create `cmd/serf-hub/templates/thread.html`:
 
 - [ ] **Step 4: Parse and register the thread document template**
 
-Modify `cmd/serf-hub/web.go`:
+Modify `cmd/evener-hub/web.go`:
 
 ```go
 type WebServer struct {
@@ -281,7 +281,7 @@ mux.HandleFunc("/thread/", s.handleThreadDocument)
 Find the `WorkspaceData` type with:
 
 ```bash
-rg -n "type WorkspaceData" cmd/serf-hub
+rg -n "type WorkspaceData" cmd/evener-hub
 ```
 
 Add these fields:
@@ -295,7 +295,7 @@ Do not change existing JSON/API structs unless `WorkspaceData` already doubles a
 
 - [ ] **Step 6: Render workspace partial and thread document with explicit context**
 
-In `cmd/serf-hub/web_workspace.go`, add a helper:
+In `cmd/evener-hub/web_workspace.go`, add a helper:
 
 ```go
 func (s *WebServer) workspaceDataForRender(id string) WorkspaceData {
@@ -364,7 +364,7 @@ func (s *WebServer) renderThreadDocument(w http.ResponseWriter, r *http.Request,
 
 - [ ] **Step 7: Guard sidebar hamburger in the workspace fragment**
 
-Modify `cmd/serf-hub/templates/partials/workspace.html` around the hamburger:
+Modify `cmd/evener-hub/templates/partials/workspace.html` around the hamburger:
 
 ```html
 {{if .ShowSidebarToggle}}
@@ -377,7 +377,7 @@ Modify `cmd/serf-hub/templates/partials/workspace.html` around the hamburger:
 Run:
 
 ```bash
-go test ./cmd/serf-hub -run 'TestWeb_ThreadDocument_DirectGet_ServesChromeLessThreadDocument|TestWeb_WorkspacePartial_RemainsHXGated|TestWeb_SessionRoute_FullPage_ServesAppShell' -count=1 -v
+go test ./cmd/evener-hub -run 'TestWeb_ThreadDocument_DirectGet_ServesChromeLessThreadDocument|TestWeb_WorkspacePartial_RemainsHXGated|TestWeb_SessionRoute_FullPage_ServesAppShell' -count=1 -v
 ```
 
 Expected: all pass.
@@ -385,7 +385,7 @@ Expected: all pass.
 - [ ] **Step 9: Commit Task 1**
 
 ```bash
-git add cmd/serf-hub/web.go cmd/serf-hub/web_workspace.go cmd/serf-hub/templates/thread.html cmd/serf-hub/templates/partials/workspace.html cmd/serf-hub/web_test.go
+git add cmd/evener-hub/web.go cmd/evener-hub/web_workspace.go cmd/evener-hub/templates/thread.html cmd/evener-hub/templates/partials/workspace.html cmd/evener-hub/web_test.go
 git commit -m "feat(hub): add standalone thread document"
 ```
 
@@ -394,21 +394,21 @@ git commit -m "feat(hub): add standalone thread document"
 ### Task 2: Pane-safe thread URL builder and legacy href normalization
 
 **Files:**
-- Modify: `cmd/serf-hub/assets/panes.js`
-- Modify: `cmd/serf-hub/assets/renderer.js`
-- Modify: `cmd/serf-hub/assets/sidebar.js`
-- Test: `cmd/serf-hub/jstest/test-renderer-open-beside.js`
-- Test: `cmd/serf-hub/jstest/test-panes-url.js`
+- Modify: `cmd/evener-hub/assets/panes.js`
+- Modify: `cmd/evener-hub/assets/renderer.js`
+- Modify: `cmd/evener-hub/assets/sidebar.js`
+- Test: `cmd/evener-hub/jstest/test-renderer-open-beside.js`
+- Test: `cmd/evener-hub/jstest/test-panes-url.js`
 
 **Interfaces:**
 - Consumes: Task 1 route `/thread/<encoded-ref>`.
 - Produces JS API:
-  - `SerfPanes.threadHref(ref: string): string`
-  - `SerfPanes.normalizePaneHref(href: string): string`
+  - `EvenerPanes.threadHref(ref: string): string`
+  - `EvenerPanes.normalizePaneHref(href: string): string`
 
 - [ ] **Step 1: Add failing tests for thread href construction and restore normalization**
 
-In `cmd/serf-hub/jstest/test-renderer-open-beside.js`, change the expected URL for subagent open-beside from `/s/<ref>` to `/thread/<ref>`. Add a source-qualified ref case:
+In `cmd/evener-hub/jstest/test-renderer-open-beside.js`, change the expected URL for subagent open-beside from `/s/<ref>` to `/thread/<ref>`. Add a source-qualified ref case:
 
 ```js
 await scenario("subagent open-beside uses thread document route", { panes: true }, [
@@ -424,22 +424,22 @@ await scenario("subagent open-beside uses thread document route", { panes: true 
 });
 ```
 
-If the harness currently stubs `SerfPanes.open` without `threadHref`, update the stub:
+If the harness currently stubs `EvenerPanes.open` without `threadHref`, update the stub:
 
 ```js
-window.SerfPanes = {
+window.EvenerPanes = {
   open: (href, title) => { window.__paneOpenCalls.push({ href, title }); },
   threadHref: ref => "/thread/" + encodeURIComponent(ref),
 };
 ```
 
-In `cmd/serf-hub/jstest/test-panes-url.js`, add a restore normalization scenario:
+In `cmd/evener-hub/jstest/test-panes-url.js`, add a restore normalization scenario:
 
 ```js
 await scenario("restore normalizes legacy /s session pane hrefs to thread documents", ({ window, document }) => {
   window.history.replaceState(null, "", "/s/parent?pane=%2Fs%2Flocal%253Achild-A");
-  window.SerfPanes.restore();
-  const hrefs = window.SerfPanes.openHrefs();
+  window.EvenerPanes.restore();
+  const hrefs = window.EvenerPanes.openHrefs();
   if (hrefs.length !== 1) return { ok: false, detail: "expected one restored pane" };
   if (hrefs[0] !== "/thread/local%3Achild-A") return { ok: false, detail: "wrong restored href: " + hrefs[0] };
   return { ok: true };
@@ -453,15 +453,15 @@ Adapt to the existing `test-panes-url.js` helper style rather than adding a seco
 Run:
 
 ```bash
-cd cmd/serf-hub/jstest && NODE_PATH=${NODE_PATH:-/tmp/serf-jstest-jsdom/node_modules} node test-renderer-open-beside.js
-cd cmd/serf-hub/jstest && NODE_PATH=${NODE_PATH:-/tmp/serf-jstest-jsdom/node_modules} node test-panes-url.js
+cd cmd/evener-hub/jstest && NODE_PATH=${NODE_PATH:-/tmp/evener-jstest-jsdom/node_modules} node test-renderer-open-beside.js
+cd cmd/evener-hub/jstest && NODE_PATH=${NODE_PATH:-/tmp/evener-jstest-jsdom/node_modules} node test-panes-url.js
 ```
 
 Expected: failures show old `/s/...` hrefs or missing `threadHref`/normalization.
 
 - [ ] **Step 3: Implement URL helpers in `panes.js`**
 
-Add near the top of `cmd/serf-hub/assets/panes.js`:
+Add near the top of `cmd/evener-hub/assets/panes.js`:
 
 ```js
 function threadHref(ref) {
@@ -531,7 +531,7 @@ data.forEach(function (p) {
 Export helpers:
 
 ```js
-window.SerfPanes = {
+window.EvenerPanes = {
   open: open,
   close: close,
   openHrefs: openHrefs,
@@ -548,13 +548,13 @@ window.SerfPanes = {
 
 - [ ] **Step 4: Use thread hrefs from renderer and sidebar open-beside**
 
-In `cmd/serf-hub/assets/renderer.js`, add a helper method near navigation helpers:
+In `cmd/evener-hub/assets/renderer.js`, add a helper method near navigation helpers:
 
 ```js
 threadHref(ref) {
   ref = String(ref || "").trim();
   if (!ref) return "";
-  if (window.SerfPanes && window.SerfPanes.threadHref) return window.SerfPanes.threadHref(ref);
+  if (window.EvenerPanes && window.EvenerPanes.threadHref) return window.EvenerPanes.threadHref(ref);
   return "/thread/" + encodeURIComponent(ref);
 },
 ```
@@ -571,17 +571,17 @@ Replace observer auto-open href construction:
 var href = this.threadHref(refs[i]);
 ```
 
-In `cmd/serf-hub/assets/sidebar.js`, change:
+In `cmd/evener-hub/assets/sidebar.js`, change:
 
 ```js
-window.SerfPanes.open("/s/" + encodeURIComponent(ref), title);
+window.EvenerPanes.open("/s/" + encodeURIComponent(ref), title);
 ```
 
 to:
 
 ```js
-var href = window.SerfPanes.threadHref ? window.SerfPanes.threadHref(ref) : ("/thread/" + encodeURIComponent(ref));
-window.SerfPanes.open(href, title);
+var href = window.EvenerPanes.threadHref ? window.EvenerPanes.threadHref(ref) : ("/thread/" + encodeURIComponent(ref));
+window.EvenerPanes.open(href, title);
 ```
 
 - [ ] **Step 5: Run targeted JS tests**
@@ -589,8 +589,8 @@ window.SerfPanes.open(href, title);
 Run:
 
 ```bash
-cd cmd/serf-hub/jstest && NODE_PATH=${NODE_PATH:-/tmp/serf-jstest-jsdom/node_modules} node test-renderer-open-beside.js
-cd cmd/serf-hub/jstest && NODE_PATH=${NODE_PATH:-/tmp/serf-jstest-jsdom/node_modules} node test-panes-url.js
+cd cmd/evener-hub/jstest && NODE_PATH=${NODE_PATH:-/tmp/evener-jstest-jsdom/node_modules} node test-renderer-open-beside.js
+cd cmd/evener-hub/jstest && NODE_PATH=${NODE_PATH:-/tmp/evener-jstest-jsdom/node_modules} node test-panes-url.js
 ```
 
 Expected: both pass.
@@ -598,7 +598,7 @@ Expected: both pass.
 - [ ] **Step 6: Commit Task 2**
 
 ```bash
-git add cmd/serf-hub/assets/panes.js cmd/serf-hub/assets/renderer.js cmd/serf-hub/assets/sidebar.js cmd/serf-hub/jstest/test-renderer-open-beside.js cmd/serf-hub/jstest/test-panes-url.js
+git add cmd/evener-hub/assets/panes.js cmd/evener-hub/assets/renderer.js cmd/evener-hub/assets/sidebar.js cmd/evener-hub/jstest/test-renderer-open-beside.js cmd/evener-hub/jstest/test-panes-url.js
 git commit -m "fix(hub): route side panes to thread documents"
 ```
 
@@ -607,20 +607,20 @@ git commit -m "fix(hub): route side panes to thread documents"
 ### Task 3: Host bridge for nested open-beside from framed thread documents
 
 **Files:**
-- Modify: `cmd/serf-hub/assets/panes.js`
-- Modify: `cmd/serf-hub/assets/renderer.js`
-- Create: `cmd/serf-hub/jstest/test-thread-document-bridge.js`
+- Modify: `cmd/evener-hub/assets/panes.js`
+- Modify: `cmd/evener-hub/assets/renderer.js`
+- Create: `cmd/evener-hub/jstest/test-thread-document-bridge.js`
 
 **Interfaces:**
-- Consumes: Task 2 `SerfPanes.threadHref(ref)` and `SerfPanes.open(href, title)`.
+- Consumes: Task 2 `EvenerPanes.threadHref(ref)` and `EvenerPanes.open(href, title)`.
 - Produces:
-  - `SerfPanes.openFromChild(sourceWindow: Window, href: string, title: string): Element|null`
-  - `SerfPanes.isPaneSafeHref(href: string): boolean`
-  - Framed child fallback `window.SerfPanes.open(href, title)` that posts to parent when no local pane host exists.
+  - `EvenerPanes.openFromChild(sourceWindow: Window, href: string, title: string): Element|null`
+  - `EvenerPanes.isPaneSafeHref(href: string): boolean`
+  - Framed child fallback `window.EvenerPanes.open(href, title)` that posts to parent when no local pane host exists.
 
 - [ ] **Step 1: Add failing bridge tests**
 
-Create `cmd/serf-hub/jstest/test-thread-document-bridge.js`:
+Create `cmd/evener-hub/jstest/test-thread-document-bridge.js`:
 
 ```js
 const fs = require("fs");
@@ -649,19 +649,19 @@ function pass(ok, msg) {
 
 (function () {
   const host = newHostHarness();
-  const pane = host.SerfPanes.open("/thread/local%3Achild", "child");
+  const pane = host.EvenerPanes.open("/thread/local%3Achild", "child");
   const frame = pane && pane.querySelector("iframe");
   pass(!!frame, "host opens initial pane");
 
-  const opened = host.SerfPanes.openFromChild(frame.contentWindow, "/thread/local%3Agrandchild", "grandchild");
+  const opened = host.EvenerPanes.openFromChild(frame.contentWindow, "/thread/local%3Agrandchild", "grandchild");
   pass(!!opened, "known child frame can open a pane through host bridge");
-  pass(host.SerfPanes.openHrefs().includes("/thread/local%3Agrandchild"), "host bridge opens requested thread href");
+  pass(host.EvenerPanes.openHrefs().includes("/thread/local%3Agrandchild"), "host bridge opens requested thread href");
 
-  const rejectedExternal = host.SerfPanes.openFromChild(frame.contentWindow, "https://example.com/thread/x", "bad");
+  const rejectedExternal = host.EvenerPanes.openFromChild(frame.contentWindow, "https://example.com/thread/x", "bad");
   pass(!rejectedExternal, "host bridge rejects cross-origin hrefs");
 
   const unknown = { closed: false };
-  const rejectedUnknown = host.SerfPanes.openFromChild(unknown, "/thread/local%3Aintruder", "intruder");
+  const rejectedUnknown = host.EvenerPanes.openFromChild(unknown, "/thread/local%3Aintruder", "intruder");
   pass(!rejectedUnknown, "host bridge rejects unknown source windows");
 
   if (!allPass) process.exit(1);
@@ -674,7 +674,7 @@ function pass(ok, msg) {
 Run:
 
 ```bash
-cd cmd/serf-hub/jstest && NODE_PATH=${NODE_PATH:-/tmp/serf-jstest-jsdom/node_modules} node test-thread-document-bridge.js
+cd cmd/evener-hub/jstest && NODE_PATH=${NODE_PATH:-/tmp/evener-jstest-jsdom/node_modules} node test-thread-document-bridge.js
 ```
 
 Expected: fails because `openFromChild` does not exist.
@@ -716,7 +716,7 @@ function openFromChild(source, href, title) {
 function onMessage(e) {
   if (!e || e.origin !== window.location.origin) return;
   var data = e.data || {};
-  if (data.type !== "serf:open-beside") return;
+  if (data.type !== "evener:open-beside") return;
   openFromChild(e.source, data.href, data.title);
 }
 ```
@@ -736,19 +736,19 @@ isPaneSafeHref: isPaneSafeHref,
 
 - [ ] **Step 4: Add framed fallback in `renderer.js`**
 
-In `makeOpenBesideButton`, replace the early `return null` when `window.SerfPanes` is absent with a framed bridge fallback.
+In `makeOpenBesideButton`, replace the early `return null` when `window.EvenerPanes` is absent with a framed bridge fallback.
 
 Add a method near `isFramed`/navigation helpers if not already present:
 
 ```js
 openBeside(spec) {
   if (!spec || !spec.href) return;
-  if (window.SerfPanes && window.SerfPanes.open) {
-    window.SerfPanes.open(spec.href, spec.title);
+  if (window.EvenerPanes && window.EvenerPanes.open) {
+    window.EvenerPanes.open(spec.href, spec.title);
     return;
   }
   if (this.isFramed && this.isFramed() && window.parent) {
-    window.parent.postMessage({ type: "serf:open-beside", href: spec.href, title: spec.title || spec.href }, window.location.origin);
+    window.parent.postMessage({ type: "evener:open-beside", href: spec.href, title: spec.title || spec.href }, window.location.origin);
   }
 },
 ```
@@ -756,7 +756,7 @@ openBeside(spec) {
 Change button creation to allow framed documents:
 
 ```js
-if (!window.SerfPanes && !(this.isFramed && this.isFramed())) return null;
+if (!window.EvenerPanes && !(this.isFramed && this.isFramed())) return null;
 ```
 
 Change click handler:
@@ -782,8 +782,8 @@ function openBeside(e) {
 Run:
 
 ```bash
-cd cmd/serf-hub/jstest && NODE_PATH=${NODE_PATH:-/tmp/serf-jstest-jsdom/node_modules} node test-thread-document-bridge.js
-cd cmd/serf-hub/jstest && NODE_PATH=${NODE_PATH:-/tmp/serf-jstest-jsdom/node_modules} node test-renderer-open-beside.js
+cd cmd/evener-hub/jstest && NODE_PATH=${NODE_PATH:-/tmp/evener-jstest-jsdom/node_modules} node test-thread-document-bridge.js
+cd cmd/evener-hub/jstest && NODE_PATH=${NODE_PATH:-/tmp/evener-jstest-jsdom/node_modules} node test-renderer-open-beside.js
 ```
 
 Expected: both pass.
@@ -791,7 +791,7 @@ Expected: both pass.
 - [ ] **Step 6: Commit Task 3**
 
 ```bash
-git add cmd/serf-hub/assets/panes.js cmd/serf-hub/assets/renderer.js cmd/serf-hub/jstest/test-thread-document-bridge.js
+git add cmd/evener-hub/assets/panes.js cmd/evener-hub/assets/renderer.js cmd/evener-hub/jstest/test-thread-document-bridge.js
 git commit -m "feat(hub): bridge nested pane opens from thread documents"
 ```
 
@@ -800,18 +800,18 @@ git commit -m "feat(hub): bridge nested pane opens from thread documents"
 ### Task 4: Pane-safe parent breadcrumb behavior
 
 **Files:**
-- Modify: `cmd/serf-hub/templates/partials/workspace.html`
-- Modify: `cmd/serf-hub/assets/renderer.js`
-- Test: `cmd/serf-hub/web_test.go`
-- Test: `cmd/serf-hub/jstest/test-thread-document-bridge.js`
+- Modify: `cmd/evener-hub/templates/partials/workspace.html`
+- Modify: `cmd/evener-hub/assets/renderer.js`
+- Test: `cmd/evener-hub/web_test.go`
+- Test: `cmd/evener-hub/jstest/test-thread-document-bridge.js`
 
 **Interfaces:**
-- Consumes: `ThreadDocumentMode bool`, `ParentRouteID`, `SerfRenderer.openBeside(spec)` from Task 3.
+- Consumes: `ThreadDocumentMode bool`, `ParentRouteID`, `EvenerRenderer.openBeside(spec)` from Task 3.
 - Produces: parent breadcrumb in thread-document mode opens/focuses parent as `/thread/<parent>` via host bridge rather than navigating iframe to `/s/<parent>`.
 
 - [ ] **Step 1: Add failing server assertion for pane-safe breadcrumb markup**
 
-In `TestWeb_ThreadDocument_DirectGet_ServesChromeLessThreadDocument`, if constructing a real subagent fixture is difficult, add a new unit test around template rendering with a `WorkspaceData` value. If `WorkspaceData` is accessible in `cmd/serf-hub`, render `threadTmpl` directly:
+In `TestWeb_ThreadDocument_DirectGet_ServesChromeLessThreadDocument`, if constructing a real subagent fixture is difficult, add a new unit test around template rendering with a `WorkspaceData` value. If `WorkspaceData` is accessible in `cmd/evener-hub`, render `threadTmpl` directly:
 
 ```go
 func TestWeb_ThreadDocument_SubagentBreadcrumbUsesPaneSafeAttributes(t *testing.T) {
@@ -851,19 +851,19 @@ const childDom = new JSDOM(`<!DOCTYPE html><html><body>
 const child = childDom.window;
 let posted = null;
 child.parent = { postMessage: (msg, origin) => { posted = { msg, origin }; } };
-child.SerfRendererInternal = host.SerfRendererInternal || {};
+child.EvenerRendererInternal = host.EvenerRendererInternal || {};
 // If loading full renderer dependencies is too heavy, test a small exported handler added in renderer.js.
 ```
 
-If the full renderer dependencies make this brittle, instead add and test an exported small helper `SerfRenderer.handlePaneParentClick(e)` through the existing renderer harness.
+If the full renderer dependencies make this brittle, instead add and test an exported small helper `EvenerRenderer.handlePaneParentClick(e)` through the existing renderer harness.
 
 - [ ] **Step 3: Run tests and verify they fail**
 
 Run:
 
 ```bash
-go test ./cmd/serf-hub -run 'TestWeb_ThreadDocument_SubagentBreadcrumbUsesPaneSafeAttributes' -count=1 -v
-cd cmd/serf-hub/jstest && NODE_PATH=${NODE_PATH:-/tmp/serf-jstest-jsdom/node_modules} node test-thread-document-bridge.js
+go test ./cmd/evener-hub -run 'TestWeb_ThreadDocument_SubagentBreadcrumbUsesPaneSafeAttributes' -count=1 -v
+cd cmd/evener-hub/jstest && NODE_PATH=${NODE_PATH:-/tmp/evener-jstest-jsdom/node_modules} node test-thread-document-bridge.js
 ```
 
 Expected: server test fails because breadcrumb lacks `data-open-parent-beside`; JS test fails until click handling exists.
@@ -914,8 +914,8 @@ this.bindPaneParentLinks();
 Run:
 
 ```bash
-go test ./cmd/serf-hub -run 'TestWeb_ThreadDocument_SubagentBreadcrumbUsesPaneSafeAttributes|TestWeb_ThreadDocument_DirectGet_ServesChromeLessThreadDocument' -count=1 -v
-cd cmd/serf-hub/jstest && NODE_PATH=${NODE_PATH:-/tmp/serf-jstest-jsdom/node_modules} node test-thread-document-bridge.js
+go test ./cmd/evener-hub -run 'TestWeb_ThreadDocument_SubagentBreadcrumbUsesPaneSafeAttributes|TestWeb_ThreadDocument_DirectGet_ServesChromeLessThreadDocument' -count=1 -v
+cd cmd/evener-hub/jstest && NODE_PATH=${NODE_PATH:-/tmp/evener-jstest-jsdom/node_modules} node test-thread-document-bridge.js
 ```
 
 Expected: all pass.
@@ -923,7 +923,7 @@ Expected: all pass.
 - [ ] **Step 7: Commit Task 4**
 
 ```bash
-git add cmd/serf-hub/templates/partials/workspace.html cmd/serf-hub/assets/renderer.js cmd/serf-hub/web_test.go cmd/serf-hub/jstest/test-thread-document-bridge.js
+git add cmd/evener-hub/templates/partials/workspace.html cmd/evener-hub/assets/renderer.js cmd/evener-hub/web_test.go cmd/evener-hub/jstest/test-thread-document-bridge.js
 git commit -m "fix(hub): make pane breadcrumbs thread-safe"
 ```
 
@@ -932,12 +932,12 @@ git commit -m "fix(hub): make pane breadcrumbs thread-safe"
 ### Task 5: Pane loading and error states
 
 **Files:**
-- Modify: `cmd/serf-hub/assets/panes.js`
-- Modify: `cmd/serf-hub/assets/style.css`
-- Test: `cmd/serf-hub/jstest/test-panes-url.js` or create `cmd/serf-hub/jstest/test-panes-error.js`
+- Modify: `cmd/evener-hub/assets/panes.js`
+- Modify: `cmd/evener-hub/assets/style.css`
+- Test: `cmd/evener-hub/jstest/test-panes-url.js` or create `cmd/evener-hub/jstest/test-panes-error.js`
 
 **Interfaces:**
-- Consumes: existing `SerfPanes.open(href, title)`.
+- Consumes: existing `EvenerPanes.open(href, title)`.
 - Produces DOM contract:
   - `.pane[data-state="loading"]`
   - `.pane[data-state="ready"]`
@@ -946,7 +946,7 @@ git commit -m "fix(hub): make pane breadcrumbs thread-safe"
 
 - [ ] **Step 1: Add failing pane error/loading tests**
 
-Create `cmd/serf-hub/jstest/test-panes-error.js`:
+Create `cmd/evener-hub/jstest/test-panes-error.js`:
 
 ```js
 const fs = require("fs");
@@ -965,14 +965,14 @@ load(window, "../assets/panes.js");
 let allPass = true;
 function check(ok, msg) { console.log((ok ? "PASS" : "FAIL") + " — " + msg); if (!ok) allPass = false; }
 
-const pane = window.SerfPanes.open("/thread/local%3Achild", "child");
+const pane = window.EvenerPanes.open("/thread/local%3Achild", "child");
 check(pane && pane.dataset.state === "loading", "pane starts loading");
 const frame = pane.querySelector("iframe");
 frame.dispatchEvent(new window.Event("load"));
 check(pane.dataset.state === "ready", "pane becomes ready after iframe load");
 
-const bad = window.SerfPanes.open("/thread/local%3Amissing", "missing");
-window.SerfPanes.markError("/thread/local%3Amissing", "Thread failed to load");
+const bad = window.EvenerPanes.open("/thread/local%3Amissing", "missing");
+window.EvenerPanes.markError("/thread/local%3Amissing", "Thread failed to load");
 check(bad.dataset.state === "error", "pane can enter error state");
 check(!!bad.querySelector(".pane-error"), "error state renders pane error UI");
 check(!!bad.querySelector("[data-pane-retry]"), "error state renders retry control");
@@ -986,7 +986,7 @@ console.log("OK\ttest-panes-error.js");
 Run:
 
 ```bash
-cd cmd/serf-hub/jstest && NODE_PATH=${NODE_PATH:-/tmp/serf-jstest-jsdom/node_modules} node test-panes-error.js
+cd cmd/evener-hub/jstest && NODE_PATH=${NODE_PATH:-/tmp/evener-jstest-jsdom/node_modules} node test-panes-error.js
 ```
 
 Expected: fails because pane state and `markError` do not exist.
@@ -1081,7 +1081,7 @@ Use existing CSS variables; if names differ, inspect nearby pane styles and use 
 Run:
 
 ```bash
-cd cmd/serf-hub/jstest && NODE_PATH=${NODE_PATH:-/tmp/serf-jstest-jsdom/node_modules} node test-panes-error.js
+cd cmd/evener-hub/jstest && NODE_PATH=${NODE_PATH:-/tmp/evener-jstest-jsdom/node_modules} node test-panes-error.js
 ```
 
 Expected: pass.
@@ -1089,7 +1089,7 @@ Expected: pass.
 - [ ] **Step 6: Commit Task 5**
 
 ```bash
-git add cmd/serf-hub/assets/panes.js cmd/serf-hub/assets/style.css cmd/serf-hub/jstest/test-panes-error.js
+git add cmd/evener-hub/assets/panes.js cmd/evener-hub/assets/style.css cmd/evener-hub/jstest/test-panes-error.js
 git commit -m "feat(hub): show pane loading and error states"
 ```
 
@@ -1098,8 +1098,8 @@ git commit -m "feat(hub): show pane loading and error states"
 ### Task 6: Security, route encoding, and integration coverage
 
 **Files:**
-- Modify: `cmd/serf-hub/web_test.go`
-- Modify: `cmd/serf-hub/jstest/run-all.sh` only if needed to include new tests automatically; it already runs `test-*.js`.
+- Modify: `cmd/evener-hub/web_test.go`
+- Modify: `cmd/evener-hub/jstest/run-all.sh` only if needed to include new tests automatically; it already runs `test-*.js`.
 - No production code unless tests reveal gaps from earlier tasks.
 
 **Interfaces:**
@@ -1108,7 +1108,7 @@ git commit -m "feat(hub): show pane loading and error states"
 
 - [ ] **Step 1: Add route encoding and security tests**
 
-Add to `cmd/serf-hub/web_test.go`:
+Add to `cmd/evener-hub/web_test.go`:
 
 ```go
 func TestWeb_ThreadDocument_RouteEncoding(t *testing.T) {
@@ -1162,17 +1162,17 @@ If `anysession` can 404 in a way that skips headers, use an existing fixture/hel
 Run:
 
 ```bash
-go test ./cmd/serf-hub -run 'TestWeb_ThreadDocument' -count=1 -v
+go test ./cmd/evener-hub -run 'TestWeb_ThreadDocument' -count=1 -v
 ```
 
 Expected: pass after adjusting fixture setup if needed.
 
-- [ ] **Step 3: Run all serf-hub JS tests**
+- [ ] **Step 3: Run all evener-hub JS tests**
 
 Run:
 
 ```bash
-cd cmd/serf-hub/jstest && NODE_PATH=${NODE_PATH:-/tmp/serf-jstest-jsdom/node_modules} ./run-all.sh
+cd cmd/evener-hub/jstest && NODE_PATH=${NODE_PATH:-/tmp/evener-jstest-jsdom/node_modules} ./run-all.sh
 ```
 
 Expected: `jstest: all tests passed`.
@@ -1184,7 +1184,7 @@ If `test-renderer-compaction.js` fails once and passes alone, rerun it alone and
 Run:
 
 ```bash
-go test ./cmd/serf-hub -count=1
+go test ./cmd/evener-hub -count=1
 ```
 
 Expected: pass.
@@ -1192,7 +1192,7 @@ Expected: pass.
 - [ ] **Step 5: Commit Task 6**
 
 ```bash
-git add cmd/serf-hub/web_test.go cmd/serf-hub/jstest
+git add cmd/evener-hub/web_test.go cmd/evener-hub/jstest
 git commit -m "test(hub): cover thread document pane behavior"
 ```
 
@@ -1218,20 +1218,20 @@ Run:
 git status --short
 ```
 
-Expected: no unstaged tracked changes. Pre-existing untracked `.private-journal/...` and `docs/superpowers/plans/2026-05-07-serf-daemon-prereqs.md` may remain; do not stage them.
+Expected: no unstaged tracked changes. Pre-existing untracked `.private-journal/...` and `docs/superpowers/plans/2026-05-07-evener-daemon-prereqs.md` may remain; do not stage them.
 
 - [ ] **Step 2: Run full targeted verification**
 
 Run:
 
 ```bash
-go test ./cmd/serf-hub -count=1
-cd cmd/serf-hub/jstest && NODE_PATH=${NODE_PATH:-/tmp/serf-jstest-jsdom/node_modules} ./run-all.sh
+go test ./cmd/evener-hub -count=1
+cd cmd/evener-hub/jstest && NODE_PATH=${NODE_PATH:-/tmp/evener-jstest-jsdom/node_modules} ./run-all.sh
 ```
 
 Expected:
 
-- `go test ./cmd/serf-hub -count=1` exits 0.
+- `go test ./cmd/evener-hub -count=1` exits 0.
 - `./run-all.sh` prints `jstest: all tests passed`.
 
 - [ ] **Step 3: Inspect final diff from branch point**
@@ -1245,7 +1245,7 @@ git diff --stat HEAD~7..HEAD
 
 If the number of implementation commits differs, adjust `HEAD~7` to cover only this feature’s commits.
 
-Expected: changes are limited to `cmd/serf-hub` route/templates/assets/tests and this plan/spec if updated.
+Expected: changes are limited to `cmd/evener-hub` route/templates/assets/tests and this plan/spec if updated.
 
 - [ ] **Step 4: Final report**
 
@@ -1279,7 +1279,7 @@ Spec coverage:
 Placeholder scan:
 
 - No `TBD`, `TODO`, or “implement later” placeholders remain.
-- Where implementation choices are allowed by the spec, this plan fixes concrete choices: route `/thread/<encoded-ref>`, template fields `ShowSidebarToggle` and `ThreadDocumentMode`, and bridge message type `serf:open-beside`.
+- Where implementation choices are allowed by the spec, this plan fixes concrete choices: route `/thread/<encoded-ref>`, template fields `ShowSidebarToggle` and `ThreadDocumentMode`, and bridge message type `evener:open-beside`.
 
 Type/interface consistency:
 

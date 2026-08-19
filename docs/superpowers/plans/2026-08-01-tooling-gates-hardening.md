@@ -13,9 +13,9 @@ Tech Stack: GNU/BSD make, Bash selftests, Go 1.25 workspace/module tooling, Go Y
 - Read and follow docs/testing.md; default verification is deterministic and offline.
 - Preserve published gate coverage and ROOT_FULL=1 semantics.
 - merge-approval-gate runs lint, build, and ROOT_FULL=1 test serially and never runs fuzzing.
-- lint-generated validates both docs/appwire-protocol.md and cmd/serf-hub/frontend/src/protocol/types.gen.ts.
-- Missing gitleaks remains warning-plus-zero unless SERF_GITLEAKS_REQUIRED=1; only CI scan steps set that variable.
-- fdhx changes only the root primeradiant.com/serf/identifier v0.0.0 requirement; do not align x/sys or x/text.
+- lint-generated validates both docs/appwire-protocol.md and cmd/evener-hub/frontend/src/protocol/types.gen.ts.
+- Missing gitleaks remains warning-plus-zero unless EVENER_GITLEAKS_REQUIRED=1; only CI scan steps set that variable.
+- fdhx changes only the root primeradiant.com/evener/identifier v0.0.0 requirement; do not align x/sys or x/text.
 - Tests exercise real target behavior at external boundaries, not rendered recipe text or mock existence.
 - Every behavior change follows RED, verify failure, minimal GREEN, verify pass, then commit.
 - Do not use provider credentials, live model calls, network access, or fuzz searches in default verification.
@@ -151,7 +151,7 @@ Expected: nonzero from the new stale-TypeScript case, with the diagnostic explai
 Change lint-generated to run one git diff --exit-code over these exact paths:
 
     docs/appwire-protocol.md
-    cmd/serf-hub/frontend/src/protocol/types.gen.ts
+    cmd/evener-hub/frontend/src/protocol/types.gen.ts
 
 Use a diagnostic that names both outputs and says to run make generate and commit. Update the adjacent generate comments and docs/conventions/go-workspace.md so both outputs are described as generated and gated.
 
@@ -159,7 +159,7 @@ Use a diagnostic that names both outputs and says to run make generate and commi
 
 Change the existing run-module-lint-selftest expected family line to:
 
-    git diff --exit-code -- docs/appwire-protocol.md cmd/serf-hub/frontend/src/protocol/types.gen.ts
+    git diff --exit-code -- docs/appwire-protocol.md cmd/evener-hub/frontend/src/protocol/types.gen.ts
 
 Run scripts/run-module-lint-selftest.sh. Expected: exit 0, including the stale-TypeScript fixture, all prior lint-family assertions, and warning preservation.
 
@@ -190,18 +190,18 @@ Files:
 
 Interfaces:
 
-- SERF_GITLEAKS_REQUIRED=1 is the only strict-mode opt-in.
+- EVENER_GITLEAKS_REQUIRED=1 is the only strict-mode opt-in.
 - The aggregate repository scan and corpus scan CI steps each set that variable through step-level env.
 
 - [ ] Step 1: Add direct optional/required gitleaks tests before changing the script.
 
-Use a fake git at the external dependency boundary so the real scan script resolves a known repository root while PATH contains no gitleaks. Assert that the unset case returns zero with the existing warning. Assert that SERF_GITLEAKS_REQUIRED=1 returns nonzero and contains this future diagnostic:
+Use a fake git at the external dependency boundary so the real scan script resolves a known repository root while PATH contains no gitleaks. Assert that the unset case returns zero with the existing warning. Assert that EVENER_GITLEAKS_REQUIRED=1 returns nonzero and contains this future diagnostic:
 
     error: gitleaks is required but not installed; cannot run repo secret scan
 
 - [ ] Step 2: Add the structured CI test before changing the workflow.
 
-Add TestCISetsStrictGitleaksModeOnScanSteps to lintfamily_audit_test.go. Parse the existing workflow type and inspect step.Run only. For every step whose run block contains make lint or make fuzz-corpus-scan, require step.Env["SERF_GITLEAKS_REQUIRED"] == "1"; require exactly two scan-bearing steps. The current workflow must fail this test with a named missing environment setting.
+Add TestCISetsStrictGitleaksModeOnScanSteps to lintfamily_audit_test.go. Parse the existing workflow type and inspect step.Run only. For every step whose run block contains make lint or make fuzz-corpus-scan, require step.Env["EVENER_GITLEAKS_REQUIRED"] == "1"; require exactly two scan-bearing steps. The current workflow must fail this test with a named missing environment setting.
 
 - [ ] Step 3: Run the RED tests.
 
@@ -216,7 +216,7 @@ Expected: the shell test reports required mode incorrectly exits zero, and the G
 
 In scripts/gitleaks-scan.sh, inside the missing-command branch, check only the literal value 1:
 
-    if [ "${SERF_GITLEAKS_REQUIRED:-}" = 1 ]; then
+    if [ "${EVENER_GITLEAKS_REQUIRED:-}" = 1 ]; then
             echo "error: gitleaks is required but not installed; cannot run $mode secret scan (install: https://github.com/gitleaks/gitleaks)" >&2
             exit 1
     fi
@@ -230,7 +230,7 @@ Use the default-empty expansion safely when the variable is unset. Do not change
 Add this exact env block under both the aggregate lint step and the corpus secret-scan step:
 
     env:
-      SERF_GITLEAKS_REQUIRED: "1"
+      EVENER_GITLEAKS_REQUIRED: "1"
 
 Run:
 
@@ -267,22 +267,22 @@ Interfaces:
 From the repository root, use this exact scratch probe. The repository path is captured before changing directory, so every replacement points at the worktree rather than the consumer itself:
 
     repo_root="$(pwd -P)"
-    probe_root="$(mktemp -d -t serf-root-consumer.XXXXXX)"
+    probe_root="$(mktemp -d -t evener-root-consumer.XXXXXX)"
     trap 'rm -rf "$probe_root"' EXIT
     go list ./... >"$probe_root/root-packages"
     (
             cd "$probe_root" || exit 1
-            go mod init example.com/serf-root-consumer
-            go mod edit -require=primeradiant.com/serf@v0.0.0
+            go mod init example.com/evener-root-consumer
+            go mod edit -require=primeradiant.com/evener@v0.0.0
             go mod edit \
-                    -replace=primeradiant.com/serf@v0.0.0="$repo_root" \
-                    -replace=primeradiant.com/serf/agent@v0.0.0="$repo_root/agent" \
-                    -replace=primeradiant.com/serf/auth@v0.0.0="$repo_root/auth" \
-                    -replace=primeradiant.com/serf/envvars@v0.0.0="$repo_root/envvars" \
-                    -replace=primeradiant.com/serf/fuzz@v0.0.0="$repo_root/fuzz" \
-                    -replace=primeradiant.com/serf/identifier@v0.0.0="$repo_root/identifier" \
-                    -replace=primeradiant.com/serf/invariant@v0.0.0="$repo_root/invariant" \
-                    -replace=primeradiant.com/serf/llm@v0.0.0="$repo_root/llm"
+                    -replace=primeradiant.com/evener@v0.0.0="$repo_root" \
+                    -replace=primeradiant.com/evener/agent@v0.0.0="$repo_root/agent" \
+                    -replace=primeradiant.com/evener/auth@v0.0.0="$repo_root/auth" \
+                    -replace=primeradiant.com/evener/envvars@v0.0.0="$repo_root/envvars" \
+                    -replace=primeradiant.com/evener/fuzz@v0.0.0="$repo_root/fuzz" \
+                    -replace=primeradiant.com/evener/identifier@v0.0.0="$repo_root/identifier" \
+                    -replace=primeradiant.com/evener/invariant@v0.0.0="$repo_root/invariant" \
+                    -replace=primeradiant.com/evener/llm@v0.0.0="$repo_root/llm"
             GOWORK=off GOFLAGS=-mod=mod GOPROXY=off GOSUMDB=off go mod download all
     )
     set +e
@@ -295,11 +295,11 @@ From the repository root, use this exact scratch probe. The repository path is c
     set -e
     printf 'root consumer dependency probe exit=%s\n' "$probe_status"
 
-Expected RED: nonzero status naming primeradiant.com/serf/identifier as replaced but not required. The only -mod=mod command is inside the scratch module; never point it at the worktree.
+Expected RED: nonzero status naming primeradiant.com/evener/identifier as replaced but not required. The only -mod=mod command is inside the scratch module; never point it at the worktree.
 
 - [ ] Step 2: Add exactly the missing root requirement.
 
-Insert primeradiant.com/serf/identifier v0.0.0 in the existing sibling block between envvars and llm. Do not run go mod tidy. Do not edit go.work, go.sum, x/sys, x/text, or any sibling module.
+Insert primeradiant.com/evener/identifier v0.0.0 in the existing sibling block between envvars and llm. Do not run go mod tidy. Do not edit go.work, go.sum, x/sys, x/text, or any sibling module.
 
 - [ ] Step 3: Rerun dependency and test-package probes.
 

@@ -1,4 +1,4 @@
-//go:build serffuzz
+//go:build evenerfuzz
 
 package agent
 
@@ -6,8 +6,8 @@ import (
 	"encoding/json"
 	"testing"
 
-	"primeradiant.com/serf/agent/execenv"
-	"primeradiant.com/serf/llm"
+	"primeradiant.com/evener/agent/execenv"
+	"primeradiant.com/evener/llm"
 )
 
 // FuzzToolArgsValidate hunts panics in the tool-call argument decode+validate
@@ -131,7 +131,7 @@ func FuzzToolArgsValidate(f *testing.F) {
 // coreToolSchemas stands up a real Session over a temp dir so registerCoreTools
 // wires the full tool set, then returns each tool's name and compiled schema.
 // The name order is sourced from agent.CoreToolNames — the same ordered set the
-// corpus harvester (cmd/serf-fuzz-harvest) maps recorded tool-call names against
+// corpus harvester (cmd/evener-fuzz-harvest) maps recorded tool-call names against
 // — so the target's table index and the harvester's emitted index cannot drift.
 // The Session is built once per fuzz run and closed when the run ends.
 func coreToolSchemas(f *testing.F) ([]string, []schemaValidator) {

@@ -4,9 +4,9 @@
 
 Session `033wtttaNuBna9dXsZMO34` contains a durable tool result for
 `tool_v0T1OucHwVb5xYFsyIIfsNm3` without the assistant tool call that produced
-it. Kimi emitted malformed JSON arguments for a shell call. Serf retained the
+it. Kimi emitted malformed JSON arguments for a shell call. Evener retained the
 assistant response in live history, but transcript JSON marshaling rejected the
-invalid `json.RawMessage`. Serf treated that write failure as a warning, then
+invalid `json.RawMessage`. Evener treated that write failure as a warning, then
 durably recorded the pre-validation error result. On resume, the Anthropic
 request contained a `tool_result` without a matching `tool_use`, so Kimi
 rejected the request with HTTP 400.
@@ -32,7 +32,7 @@ every stored tool result must have its assistant call.
 - Change provider request serializers or canonical API logging.
 - Add generic reverse-orphan history repair.
 - Change transcript schemas or repair other historical sessions.
-- Change `serf-doctor`.
+- Change `evener-doctor`.
 
 ## Design
 
@@ -125,7 +125,7 @@ filesystem, as required by `docs/testing.md`.
 - `go test ./agent -count=1`.
 - `go test ./... -count=1`.
 - Relevant lint and `git diff --check`.
-- `serf-doctor transcript` confirms the repaired real session has no orphan
+- `evener-doctor transcript` confirms the repaired real session has no orphan
   result at turn 3071.
 - Resume the repaired session and send a message successfully.
 

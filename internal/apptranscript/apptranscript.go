@@ -8,12 +8,12 @@ import (
 	"os"
 	"strings"
 
-	"primeradiant.com/serf/agent/events"
-	"primeradiant.com/serf/agent/schema"
-	"primeradiant.com/serf/agent/transcript"
-	"primeradiant.com/serf/appwire"
-	"primeradiant.com/serf/invariant"
-	"primeradiant.com/serf/llm"
+	"primeradiant.com/evener/agent/events"
+	"primeradiant.com/evener/agent/schema"
+	"primeradiant.com/evener/agent/transcript"
+	"primeradiant.com/evener/appwire"
+	"primeradiant.com/evener/invariant"
+	"primeradiant.com/evener/llm"
 )
 
 // EntryProjector converts one already-decoded transcript turn into AppWire
@@ -143,7 +143,7 @@ func CommunicateMessageFromArguments(raw json.RawMessage) string {
 // surfaces that display bare assistant text: the live projector
 // (matchesLastAssistantMessage in internal/appprojector), the reload path
 // below in ProjectTurn, and the non-interactive CLI printer (drainEventsHuman
-// in cmd/serf). Turn scoping is the projector's own state, not part of this
+// in cmd/evener). Turn scoping is the projector's own state, not part of this
 // comparison.
 func EchoesAssistantText(shown, message string) bool {
 	shown = strings.TrimSpace(shown)
@@ -567,7 +567,7 @@ func ProjectTurn(turnID string, turnIndex int, turn schema.Turn, toolNames map[s
 	}
 }
 
-// webSearchRaw captures the provider-native web-search payload shapes serf's
+// webSearchRaw captures the provider-native web-search payload shapes evener's
 // adapters store in WebSearchData.Raw: OpenAI's web_search_call (action.query),
 // Anthropic's server_tool_use (input.query) and web_search_tool_result
 // (content[]), and Gemini's grounding metadata (webSearchQueries +
@@ -575,9 +575,9 @@ func ProjectTurn(turnID string, turnIndex int, turn schema.Turn, toolNames map[s
 type webSearchRaw struct {
 	Action struct{ Query string } `json:"action"`
 	Input  struct{ Query string } `json:"input"`
-	// serf:naming-ignore: Gemini grounding-metadata wire field name (camelCase, fixed by the Gemini API).
+	// evener:naming-ignore: Gemini grounding-metadata wire field name (camelCase, fixed by the Gemini API).
 	WebSearchQueries []string `json:"webSearchQueries"`
-	// serf:naming-ignore: Gemini grounding-metadata wire field name (camelCase, fixed by the Gemini API).
+	// evener:naming-ignore: Gemini grounding-metadata wire field name (camelCase, fixed by the Gemini API).
 	GroundingChunks []struct {
 		Web struct {
 			URI   string `json:"uri"`
@@ -704,7 +704,7 @@ func TurnsFromFile(path string, maxLineBytes int, project EntryProjector) ([]app
 			startedAt := entry.Turn.Timestamp.UnixMilli()
 			turn.StartedAt = &startedAt
 		}
-		if usage := appwire.SerfUsageFromLLM(entry.Turn.Usage); usage != nil {
+		if usage := appwire.EvenerUsageFromLLM(entry.Turn.Usage); usage != nil {
 			turn.Usage = usage
 		}
 		turns = append(turns, turn)

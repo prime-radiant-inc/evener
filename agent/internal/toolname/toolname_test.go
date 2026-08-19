@@ -2,7 +2,7 @@ package toolname
 
 import "testing"
 
-func TestClaudeToSerf(t *testing.T) {
+func TestClaudeToEvener(t *testing.T) {
 	tests := map[string]string{
 		"Read": "read_file", "Write": "write_file", "Edit": "edit_file",
 		"Bash": "shell", "Grep": "grep", "Glob": "glob",
@@ -12,13 +12,13 @@ func TestClaudeToSerf(t *testing.T) {
 		"mcp__server__tool": "mcp__server__tool",
 	}
 	for input, want := range tests {
-		if got := ClaudeToSerf(input); got != want {
-			t.Errorf("ClaudeToSerf(%q) = %q, want %q", input, got, want)
+		if got := ClaudeToEvener(input); got != want {
+			t.Errorf("ClaudeToEvener(%q) = %q, want %q", input, got, want)
 		}
 	}
 }
 
-func TestSerfToClaude(t *testing.T) {
+func TestEvenerToClaude(t *testing.T) {
 	tests := map[string]string{
 		"read_file": "Read", "write_file": "Write", "edit_file": "Edit",
 		"shell": "Bash", "grep": "Grep", "glob": "Glob",
@@ -28,8 +28,8 @@ func TestSerfToClaude(t *testing.T) {
 		"unknown":       "unknown",
 	}
 	for input, want := range tests {
-		if got := SerfToClaude(input); got != want {
-			t.Errorf("SerfToClaude(%q) = %q, want %q", input, got, want)
+		if got := EvenerToClaude(input); got != want {
+			t.Errorf("EvenerToClaude(%q) = %q, want %q", input, got, want)
 		}
 	}
 }

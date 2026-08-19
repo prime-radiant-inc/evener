@@ -3,16 +3,16 @@ package appwire
 import (
 	"fmt"
 
-	"primeradiant.com/serf/llm"
+	"primeradiant.com/evener/llm"
 )
 
-// SerfUsageFromLLM converts a raw llm.Usage into the wire SerfUsage shape,
+// EvenerUsageFromLLM converts a raw llm.Usage into the wire EvenerUsage shape,
 // returning nil when every total (including CacheReadTokens) is zero so
 // callers hide the usage cluster rather than render ↑0 ↓0 — the established
-// WS2 convention (mirrors cmd/serf/serve.go's serfUsageFromLLM and
-// cmd/serf-hub's serfUsageFromCumulative; this is the appwire-level home the
+// WS2 convention (mirrors cmd/evener/serve.go's evenerUsageFromLLM and
+// cmd/evener-hub's evenerUsageFromCumulative; this is the appwire-level home the
 // other two should eventually delegate to).
-func SerfUsageFromLLM(u llm.Usage) *SerfUsage {
+func EvenerUsageFromLLM(u llm.Usage) *EvenerUsage {
 	cacheRead := int64(0)
 	if u.CacheReadTokens != nil {
 		cacheRead = int64(*u.CacheReadTokens)
@@ -20,7 +20,7 @@ func SerfUsageFromLLM(u llm.Usage) *SerfUsage {
 	if u.InputTokens == 0 && u.OutputTokens == 0 && cacheRead == 0 && u.TotalTokens == 0 {
 		return nil
 	}
-	return &SerfUsage{
+	return &EvenerUsage{
 		InputTokens:     int64(u.InputTokens),
 		OutputTokens:    int64(u.OutputTokens),
 		CacheReadTokens: cacheRead,
@@ -34,7 +34,7 @@ func SerfUsageFromLLM(u llm.Usage) *SerfUsage {
 // pricing, so callers render nothing rather than a misleading "~$0.00" for
 // an uncataloged model. The "~" marks every non-empty result as an
 // estimate, not a billing-exact figure.
-func EstimateCost(model string, usage *SerfUsage) string {
+func EstimateCost(model string, usage *EvenerUsage) string {
 	if usage == nil {
 		return ""
 	}

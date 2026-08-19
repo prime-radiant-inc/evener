@@ -2,17 +2,17 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Add a Jobs panel to the serf webui session chrome listing all shell and delegate jobs for the current session, push-updated live, with lazy output tails.
+**Goal:** Add a Jobs panel to the evener webui session chrome listing all shell and delegate jobs for the current session, push-updated live, with lazy output tails.
 
-**Architecture:** Mirrors the tasks panel pipeline end to end: daemon appwire handlers (`serf/jobs/list`, `serf/jobs/output`) backed by the session's jobstore, a `serf/job/updated` push via the existing `EventJobStarted`/`EventJobFinished` projection path, hub handlers with a dead-session fallback to the durable `jobs.jsonl`, and a `JobsPanel.tsx` mirroring `TasksPanel.tsx`.
+**Architecture:** Mirrors the tasks panel pipeline end to end: daemon appwire handlers (`evener/jobs/list`, `evener/jobs/output`) backed by the session's jobstore, a `evener/job/updated` push via the existing `EventJobStarted`/`EventJobFinished` projection path, hub handlers with a dead-session fallback to the durable `jobs.jsonl`, and a `JobsPanel.tsx` mirroring `TasksPanel.tsx`.
 
-**Tech Stack:** Go (appwire, server, agent, internal/appprojector, cmd/serf-hub), React + TypeScript + CSS modules + vitest (cmd/serf-hub/frontend).
+**Tech Stack:** Go (appwire, server, agent, internal/appprojector, cmd/evener-hub), React + TypeScript + CSS modules + vitest (cmd/evener-hub/frontend).
 
 **Spec:** `docs/superpowers/specs/2026-07-31-webui-jobs-panel-design.md`
 
 **Status:** implemented and merged; superseded in places. Read the
 post-implementation addendum at the end of this file before treating any task
-below as current — `serf/job/updated` does not exist, and several task
+below as current — `evener/job/updated` does not exist, and several task
 interfaces changed shape after the branch merged. The spec has been
 reconciled in place and describes what shipped.
 
@@ -20,10 +20,10 @@ reconciled in place and describes what shipped.
 
 - Tests are deterministic: no provider credentials, no network (per `docs/testing.md` / AGENTS.md).
 - Follow the existing tasks-panel templates exactly: naming, error taxonomy, comment style.
-- Internal jobstore types (`agent/internal/jobstore`) must not leak into `cmd/serf-hub` — the hub reaches durable job data only through exported `agent` package functions (the `LoadSessionObserverGrants` pattern in `agent/observer_grants.go`).
+- Internal jobstore types (`agent/internal/jobstore`) must not leak into `cmd/evener-hub` — the hub reaches durable job data only through exported `agent` package functions (the `LoadSessionObserverGrants` pattern in `agent/observer_grants.go`).
 - Go verification: `go test -count=1 <changed packages>` per task; `go build ./...` before each commit.
-- Frontend verification: `cd cmd/serf-hub/frontend && npx vitest run <changed test files>` per task; `npm run lint` (biome) must stay clean.
-- Generated files (`docs/appwire-protocol.md`, `cmd/serf-hub/frontend/src/protocol/types.gen.ts`) are regenerated with `make generate`, never hand-edited; `make lint-generated` must pass.
+- Frontend verification: `cd cmd/evener-hub/frontend && npx vitest run <changed test files>` per task; `npm run lint` (biome) must stay clean.
+- Generated files (`docs/appwire-protocol.md`, `cmd/evener-hub/frontend/src/protocol/types.gen.ts`) are regenerated with `make generate`, never hand-edited; `make lint-generated` must pass.
 
 ---
 
@@ -33,14 +33,14 @@ reconciled in place and describes what shipped.
 - Modify: `appwire/types.go` (method constants near line 31; notification constants near line 110; params types near line 1138)
 - Modify: `appwire/protocol.go` (request catalog near line 115; notification catalog near line 236)
 - Modify: `appwire/client.go` (near `func (c *Client) TasksList`, line 442)
-- Regenerate: `docs/appwire-protocol.md`, `cmd/serf-hub/frontend/src/protocol/types.gen.ts`
-- Test: `appwire/` round-trip test (extend the existing typed-request test table; find via `rg "MethodSerfTasksList" appwire/*_test.go`)
+- Regenerate: `docs/appwire-protocol.md`, `cmd/evener-hub/frontend/src/protocol/types.gen.ts`
+- Test: `appwire/` round-trip test (extend the existing typed-request test table; find via `rg "MethodEvenerTasksList" appwire/*_test.go`)
 
 **Interfaces:**
 - Produces (everything downstream uses these exact names):
-  - `appwire.MethodSerfJobsList = "serf/jobs/list"`
-  - `appwire.MethodSerfJobsOutput = "serf/jobs/output"`
-  - `appwire.NotifySerfJobUpdated = "serf/job/updated"`
+  - `appwire.MethodEvenerJobsList = "evener/jobs/list"`
+  - `appwire.MethodEvenerJobsOutput = "evener/jobs/output"`
+  - `appwire.NotifyEvenerJobUpdated = "evener/job/updated"`
   - `appwire.JobsListParams{ Ref string }`, `appwire.JobsListResponse{ Data any }`
   - `appwire.JobsOutputParams{ Ref string; JobID string; MaxBytes int64 }`, `appwire.JobsOutputResponse{ Data any }`
   - `appwire.JobUpdatedParams{ ThreadID string; Ref string; JobID string; Status string }`
@@ -57,7 +57,7 @@ func TestJobsCatalogEntries(t *testing.T) {
 	for _, e := range RequestCatalog { // use the real catalog variable name from appwire/protocol.go
 		methods[e.Method] = true
 	}
-	for _, m := range []string{MethodSerfJobsList, MethodSerfJobsOutput} {
+	for _, m := range []string{MethodEvenerJobsList, MethodEvenerJobsOutput} {
 		if !methods[m] {
 			t.Errorf("request catalog missing %s", m)
 		}
@@ -68,21 +68,21 @@ func TestJobsCatalogEntries(t *testing.T) {
 - [ ] **Step 2: Run test to verify it fails**
 
 Run: `go test -count=1 -run TestJobsCatalogEntries ./appwire/`
-Expected: FAIL — `undefined: MethodSerfJobsList`
+Expected: FAIL — `undefined: MethodEvenerJobsList`
 
 - [ ] **Step 3: Add the wire types**
 
-In `appwire/types.go`, beside `MethodSerfTasksList` (line 31):
+In `appwire/types.go`, beside `MethodEvenerTasksList` (line 31):
 
 ```go
-MethodSerfJobsList               = "serf/jobs/list"
-MethodSerfJobsOutput             = "serf/jobs/output"
+MethodEvenerJobsList               = "evener/jobs/list"
+MethodEvenerJobsOutput             = "evener/jobs/output"
 ```
 
-Beside `NotifySerfTaskUpdated` (line 110):
+Beside `NotifyEvenerTaskUpdated` (line 110):
 
 ```go
-NotifySerfJobUpdated             = "serf/job/updated"
+NotifyEvenerJobUpdated             = "evener/job/updated"
 ```
 
 Beside `TaskListParams`/`TaskListResponse` (line 1138):
@@ -112,9 +112,9 @@ type JobsOutputResponse struct {
 Beside `TaskUpdatedParams` (line 407):
 
 ```go
-// JobUpdatedParams is the params shape for serf/job/updated: one job's
+// JobUpdatedParams is the params shape for evener/job/updated: one job's
 // lifecycle state changed, so a client with an open jobs panel re-fetches
-// serf/jobs/list event-driven instead of polling.
+// evener/jobs/list event-driven instead of polling.
 type JobUpdatedParams struct {
 	ThreadID string `json:"threadId"`
 	Ref      string `json:"ref"`
@@ -125,17 +125,17 @@ type JobUpdatedParams struct {
 
 - [ ] **Step 4: Add the protocol catalog entries**
 
-In `appwire/protocol.go` beside the `MethodSerfTasksList` entry (line 115):
+In `appwire/protocol.go` beside the `MethodEvenerTasksList` entry (line 115):
 
 ```go
-{MethodSerfJobsList, JobsListParams{}, JobsListResponse{}, ScopeBoth, "Lists the session's jobs (shell and delegate)."},
-{MethodSerfJobsOutput, JobsOutputParams{}, JobsOutputResponse{}, ScopeBoth, "Reads a byte tail of one job's output."},
+{MethodEvenerJobsList, JobsListParams{}, JobsListResponse{}, ScopeBoth, "Lists the session's jobs (shell and delegate)."},
+{MethodEvenerJobsOutput, JobsOutputParams{}, JobsOutputResponse{}, ScopeBoth, "Reads a byte tail of one job's output."},
 ```
 
-Beside the `NotifySerfTaskUpdated` entry (line 236):
+Beside the `NotifyEvenerTaskUpdated` entry (line 236):
 
 ```go
-{NotifySerfJobUpdated, JobUpdatedParams{}, "A job's lifecycle state changed (started or finished)."},
+{NotifyEvenerJobUpdated, JobUpdatedParams{}, "A job's lifecycle state changed (started or finished)."},
 ```
 
 - [ ] **Step 5: Add the client methods**
@@ -144,11 +144,11 @@ In `appwire/client.go` beside `TasksList` (line 442; read it first and mirror it
 
 ```go
 func (c *Client) JobsList(ctx context.Context, params JobsListParams) (JobsListResponse, error) {
-	// mirror TasksList's body with MethodSerfJobsList / JobsListResponse
+	// mirror TasksList's body with MethodEvenerJobsList / JobsListResponse
 }
 
 func (c *Client) JobOutput(ctx context.Context, params JobsOutputParams) (JobsOutputResponse, error) {
-	// same shape with MethodSerfJobsOutput / JobsOutputResponse
+	// same shape with MethodEvenerJobsOutput / JobsOutputResponse
 }
 ```
 
@@ -158,13 +158,13 @@ Run: `go test -count=1 ./appwire/`
 Expected: PASS
 
 Run: `make generate && make lint-generated`
-Expected: PASS; `git status` shows regenerated `docs/appwire-protocol.md` and `cmd/serf-hub/frontend/src/protocol/types.gen.ts`.
+Expected: PASS; `git status` shows regenerated `docs/appwire-protocol.md` and `cmd/evener-hub/frontend/src/protocol/types.gen.ts`.
 
 - [ ] **Step 7: Commit**
 
 ```bash
-git add appwire/ docs/appwire-protocol.md cmd/serf-hub/frontend/src/protocol/types.gen.ts
-git commit -m "appwire: serf/jobs/list, serf/jobs/output, serf/job/updated wire types"
+git add appwire/ docs/appwire-protocol.md cmd/evener-hub/frontend/src/protocol/types.gen.ts
+git commit -m "appwire: evener/jobs/list, evener/jobs/output, evener/job/updated wire types"
 ```
 
 ---
@@ -200,7 +200,7 @@ import (
 	"testing"
 	"time"
 
-	"primeradiant.com/serf/agent/internal/jobstore"
+	"primeradiant.com/evener/agent/internal/jobstore"
 )
 
 func TestSummarizeJobRecordShell(t *testing.T) {
@@ -344,11 +344,11 @@ import (
 	"path/filepath"
 	"time"
 
-	"primeradiant.com/serf/agent/internal/jobstore"
+	"primeradiant.com/evener/agent/internal/jobstore"
 )
 
 // JobSummary is the UI wire projection of one jobstore.JobRecord — the
-// shape serf/jobs/list returns and the webui jobs panel renders. Internal
+// shape evener/jobs/list returns and the webui jobs panel renders. Internal
 // fields (provenance, restore descriptors, transcript refs, working dir,
 // notify state) deliberately stay out.
 type JobSummary struct {
@@ -367,7 +367,7 @@ type JobSummary struct {
 	HasOutput   bool   `json:"hasOutput"`
 }
 
-// JobOutputTail is the serf/jobs/output payload: the last bytes of a job's
+// JobOutputTail is the evener/jobs/output payload: the last bytes of a job's
 // durable output plus the bookkeeping a client needs to say "showing last N
 // of M bytes".
 type JobOutputTail struct {
@@ -437,7 +437,7 @@ func summarizeJobRecords(ordered []*jobstore.JobRecord) []JobSummary {
 	return out
 }
 
-// JobSummaries is the live-daemon serf/jobs/list payload: every job in the
+// JobSummaries is the live-daemon evener/jobs/list payload: every job in the
 // session's durable store, in append order. A nil jobManager (a session that
 // never started job infrastructure) yields an empty, non-nil slice.
 func (s *Session) JobSummaries() []JobSummary {
@@ -451,7 +451,7 @@ func (s *Session) JobSummaries() []JobSummary {
 	return summarizeJobRecords(ordered)
 }
 
-// JobOutputTail is the live-daemon serf/jobs/output payload. found=false
+// JobOutputTail is the live-daemon evener/jobs/output payload. found=false
 // means no job with that id exists; a found job with no output file yet is
 // an empty tail, not an error.
 func (s *Session) JobOutputTail(jobID string, maxBytes int64) (JobOutputTail, bool, error) {
@@ -529,8 +529,8 @@ git commit -m "agent: job summary projection and live/past job readers for the w
 **Files:**
 - Modify: `server/server.go` (fields near `tasksFn` line 231; setters near `SetTasksFunc` line 547)
 - Modify: `server/appwire_runtime.go` (router registration line 374; handlers near `handleAppTasksList` line 827)
-- Modify: `cmd/serf/serve.go` (server interface near line 90; wiring near line 828)
-- Modify: `cmd/serf/serve_residual_fuzz_test.go` (fake server near line 87)
+- Modify: `cmd/evener/serve.go` (server interface near line 90; wiring near line 828)
+- Modify: `cmd/evener/serve_residual_fuzz_test.go` (fake server near line 87)
 - Test: `server/server_test.go` (mirror the tasks tests near lines 1120, 1384)
 
 **Interfaces:**
@@ -538,7 +538,7 @@ git commit -m "agent: job summary projection and live/past job readers for the w
 - Produces:
   - `func (s *Server) SetJobsFunc(fn func() any)`
   - `func (s *Server) SetJobOutputFunc(fn func(jobID string, maxBytes int64) (data any, found bool, err error))`
-  - Daemon answers `serf/jobs/list` and `serf/jobs/output` (Task 5's source layer calls these through the appwire client)
+  - Daemon answers `evener/jobs/list` and `evener/jobs/output` (Task 5's source layer calls these through the appwire client)
 
 **Semantics:** nil `jobsFn` → empty `JobsListResponse{}` and no error (old-daemon capability gap, same as `handleAppTasksList`). Nil `jobOutputFn` → `appwire.Unavailable("job output not available")`. `found=false` → `appwire.InvalidParams("job not found: " + jobID)`. Any other fn error propagates.
 
@@ -549,7 +549,7 @@ In `server/server_test.go`, mirroring the tasks-list tests (read the tests at li
 ```go
 func TestHandleAppJobsListNilFunc(t *testing.T) {
 	// same server fixture as the tasks nil-fn test
-	resp := conn.HandleMessage(context.Background(), appwire.RequestMessage(appwire.NewIntID(2), appwire.MethodSerfJobsList, appwire.JobsListParams{}))
+	resp := conn.HandleMessage(context.Background(), appwire.RequestMessage(appwire.NewIntID(2), appwire.MethodEvenerJobsList, appwire.JobsListParams{}))
 	// want: result response, data null, no error
 }
 
@@ -562,7 +562,7 @@ func TestHandleAppJobsList(t *testing.T) {
 
 func TestHandleAppJobsOutputNilFunc(t *testing.T) {
 	// no SetJobOutputFunc call
-	// want: error response, serfErrorInfo actionUnavailable
+	// want: error response, evenerErrorInfo actionUnavailable
 }
 
 func TestHandleAppJobsOutputNotFound(t *testing.T) {
@@ -601,7 +601,7 @@ jobOutputFn                   func(jobID string, maxBytes int64) (data any, foun
 Beside `SetTasksFunc`:
 
 ```go
-// SetJobsFunc sets the function backing serf/jobs/list. The function should
+// SetJobsFunc sets the function backing evener/jobs/list. The function should
 // return a JSON-serializable slice (typically []agent.JobSummary).
 func (s *Server) SetJobsFunc(fn func() any) {
 	s.mu.Lock()
@@ -609,7 +609,7 @@ func (s *Server) SetJobsFunc(fn func() any) {
 	s.mu.Unlock()
 }
 
-// SetJobOutputFunc sets the function backing serf/jobs/output. found=false
+// SetJobOutputFunc sets the function backing evener/jobs/output. found=false
 // maps to an invalid-params wire error (the caller guessed a job id).
 func (s *Server) SetJobOutputFunc(fn func(jobID string, maxBytes int64) (data any, found bool, err error)) {
 	s.mu.Lock()
@@ -618,11 +618,11 @@ func (s *Server) SetJobOutputFunc(fn func(jobID string, maxBytes int64) (data an
 }
 ```
 
-In `server/appwire_runtime.go` beside the `MethodSerfTasksList` router registration (line 374):
+In `server/appwire_runtime.go` beside the `MethodEvenerTasksList` router registration (line 374):
 
 ```go
-appserver.HandleTyped(router, appwire.MethodSerfJobsList, s.handleAppJobsList)
-appserver.HandleTyped(router, appwire.MethodSerfJobsOutput, s.handleAppJobsOutput)
+appserver.HandleTyped(router, appwire.MethodEvenerJobsList, s.handleAppJobsList)
+appserver.HandleTyped(router, appwire.MethodEvenerJobsOutput, s.handleAppJobsOutput)
 ```
 
 Beside `handleAppTasksList` (line 827):
@@ -656,7 +656,7 @@ func (s *Server) handleAppJobsOutput(_ context.Context, params appwire.JobsOutpu
 }
 ```
 
-- [ ] **Step 4: Wire the daemon in cmd/serf/serve.go**
+- [ ] **Step 4: Wire the daemon in cmd/evener/serve.go**
 
 The serve server interface (line 90 area) gains:
 
@@ -674,38 +674,38 @@ srv.SetJobOutputFunc(func(jobID string, maxBytes int64) (any, bool, error) {
 })
 ```
 
-Add matching methods to `residualServeServer` in `cmd/serf/serve_residual_fuzz_test.go` (line 87 area):
+Add matching methods to `residualServeServer` in `cmd/evener/serve_residual_fuzz_test.go` (line 87 area):
 
 ```go
 func (s *residualServeServer) SetJobsFunc(f func() any)                                       { s.jobs = f }
 func (s *residualServeServer) SetJobOutputFunc(f func(string, int64) (any, bool, error))      { s.jobOutput = f }
 ```
 
-(plus the two struct fields; `rg "residualServeServer struct" cmd/serf/` to find the struct.)
+(plus the two struct fields; `rg "residualServeServer struct" cmd/evener/` to find the struct.)
 
 - [ ] **Step 5: Run tests to verify they pass**
 
-Run: `go test -count=1 -run 'TestHandleAppJobs' ./server/` && `go test -count=1 -short ./server/ ./cmd/serf/` && `go build ./...`
+Run: `go test -count=1 -run 'TestHandleAppJobs' ./server/` && `go test -count=1 -short ./server/ ./cmd/evener/` && `go build ./...`
 Expected: PASS
 
 - [ ] **Step 6: Commit**
 
 ```bash
-git add server/server.go server/appwire_runtime.go server/server_test.go cmd/serf/serve.go cmd/serf/serve_residual_fuzz_test.go
-git commit -m "server: serf/jobs/list and serf/jobs/output daemon handlers"
+git add server/server.go server/appwire_runtime.go server/server_test.go cmd/evener/serve.go cmd/evener/serve_residual_fuzz_test.go
+git commit -m "server: evener/jobs/list and evener/jobs/output daemon handlers"
 ```
 
 ---
 
-### Task 4: projector serf/job/updated case
+### Task 4: projector evener/job/updated case
 
 **Files:**
 - Modify: `internal/appprojector/appwire_projection.go` (near the `EventTaskUpdated` case, line 776)
 - Test: `internal/appprojector/appwire_projection_test.go` (mirror `TestProject_TaskUpdated`, line 153)
 
 **Interfaces:**
-- Consumes: `events.EventJobStarted`/`events.EventJobFinished` with `events.JobStartedData`/`events.JobFinishedData` payloads (`agent/events/payloads.go:477-505`; both carry `JobID` and `Status`), `appwire.NotifySerfJobUpdated`/`JobUpdatedParams` (Task 1)
-- Produces: a `serf/job/updated` appwire notification per job lifecycle event; the frontend reducer (Task 7) handles it
+- Consumes: `events.EventJobStarted`/`events.EventJobFinished` with `events.JobStartedData`/`events.JobFinishedData` payloads (`agent/events/payloads.go:477-505`; both carry `JobID` and `Status`), `appwire.NotifyEvenerJobUpdated`/`JobUpdatedParams` (Task 1)
+- Produces: a `evener/job/updated` appwire notification per job lifecycle event; the frontend reducer (Task 7) handles it
 
 **Fact check before writing:** the session already emits these events on every job start/finish (`agent/jobs.go:864` and `agent/jobs.go:940`).
 
@@ -717,8 +717,8 @@ func TestProject_JobStartedUpdated(t *testing.T) {
 		Kind: events.EventJobStarted,
 		Data: events.JobStartedData{JobID: "job_1", JobType: "shell", Status: "running"},
 	})
-	if len(out) != 1 || out[0].Method != appwire.NotifySerfJobUpdated {
-		t.Fatalf("want one serf/job/updated notification, got %+v", out)
+	if len(out) != 1 || out[0].Method != appwire.NotifyEvenerJobUpdated {
+		t.Fatalf("want one evener/job/updated notification, got %+v", out)
 	}
 	params, ok := out[0].Params.(appwire.JobUpdatedParams)
 	if !ok {
@@ -749,7 +749,7 @@ Beside the `EventTaskUpdated` case (`appwire_projection.go:776`):
 case events.EventJobStarted:
 	p.clearSkillCandidate()
 	data := eventData[events.JobStartedData](event.Data)
-	return []AppNotification{p.notification(appwire.NotifySerfJobUpdated, appwire.JobUpdatedParams{
+	return []AppNotification{p.notification(appwire.NotifyEvenerJobUpdated, appwire.JobUpdatedParams{
 		ThreadID: p.threadID,
 		Ref:      p.ref,
 		JobID:    data.JobID,
@@ -758,7 +758,7 @@ case events.EventJobStarted:
 case events.EventJobFinished:
 	p.clearSkillCandidate()
 	data := eventData[events.JobFinishedData](event.Data)
-	return []AppNotification{p.notification(appwire.NotifySerfJobUpdated, appwire.JobUpdatedParams{
+	return []AppNotification{p.notification(appwire.NotifyEvenerJobUpdated, appwire.JobUpdatedParams{
 		ThreadID: p.threadID,
 		Ref:      p.ref,
 		JobID:    data.JobID,
@@ -777,7 +777,7 @@ Expected: PASS
 
 ```bash
 git add internal/appprojector/
-git commit -m "appprojector: project job lifecycle events as serf/job/updated"
+git commit -m "appprojector: project job lifecycle events as evener/job/updated"
 ```
 
 ---
@@ -785,12 +785,12 @@ git commit -m "appprojector: project job lifecycle events as serf/job/updated"
 ### Task 5: hub appsource JobsList/JobOutput
 
 **Files:**
-- Modify: `cmd/serf-hub/internal/appsource/source.go` (interface, line 33 area)
-- Modify: `cmd/serf-hub/internal/appsource/local_daemon.go` (near `ListTasks`, line 466)
-- Modify: `cmd/serf-hub/internal/appsource/codex_source.go` (near `ListTasks`, line 364)
-- Modify: `cmd/serf-hub/internal/appsource/registry_test.go` (fakeSource, line 81 area)
-- Modify: `cmd/serf-hub/internal/appsource/coverage_completion_test.go` (call-table, line 232 area) and `cov_rhub_appsource_test.go` (line 424 area) if they assert interface coverage
-- Test: extend the local-daemon source tests that cover `ListTasks` (find via `rg "ListTasks" cmd/serf-hub/internal/appsource/*_test.go`)
+- Modify: `cmd/evener-hub/internal/appsource/source.go` (interface, line 33 area)
+- Modify: `cmd/evener-hub/internal/appsource/local_daemon.go` (near `ListTasks`, line 466)
+- Modify: `cmd/evener-hub/internal/appsource/codex_source.go` (near `ListTasks`, line 364)
+- Modify: `cmd/evener-hub/internal/appsource/registry_test.go` (fakeSource, line 81 area)
+- Modify: `cmd/evener-hub/internal/appsource/coverage_completion_test.go` (call-table, line 232 area) and `cov_rhub_appsource_test.go` (line 424 area) if they assert interface coverage
+- Test: extend the local-daemon source tests that cover `ListTasks` (find via `rg "ListTasks" cmd/evener-hub/internal/appsource/*_test.go`)
 
 **Interfaces:**
 - Consumes: `client.JobsList`/`client.JobOutput` (Task 1)
@@ -818,7 +818,7 @@ func TestCodexSourceJobsUnavailable(t *testing.T) {
 
 - [ ] **Step 2: Run tests to verify they fail**
 
-Run: `go test -count=1 -run 'Jobs' ./cmd/serf-hub/internal/appsource/`
+Run: `go test -count=1 -run 'Jobs' ./cmd/evener-hub/internal/appsource/`
 Expected: FAIL — `s.ListJobs undefined`
 
 - [ ] **Step 3: Implement**
@@ -866,11 +866,11 @@ func (s *LocalDaemonSource) JobOutput(ctx context.Context, params appwire.JobsOu
 
 ```go
 func (s *CodexSource) ListJobs(context.Context, appwire.JobsListParams) (appwire.JobsListResponse, error) {
-	return appwire.JobsListResponse{}, appwire.Unavailable("codex source does not expose serf jobs")
+	return appwire.JobsListResponse{}, appwire.Unavailable("codex source does not expose evener jobs")
 }
 
 func (s *CodexSource) JobOutput(context.Context, appwire.JobsOutputParams) (appwire.JobsOutputResponse, error) {
-	return appwire.JobsOutputResponse{}, appwire.Unavailable("codex source does not expose serf jobs")
+	return appwire.JobsOutputResponse{}, appwire.Unavailable("codex source does not expose evener jobs")
 }
 ```
 
@@ -878,13 +878,13 @@ func (s *CodexSource) JobOutput(context.Context, appwire.JobsOutputParams) (appw
 
 - [ ] **Step 4: Run tests to verify they pass**
 
-Run: `go test -count=1 ./cmd/serf-hub/internal/appsource/`
+Run: `go test -count=1 ./cmd/evener-hub/internal/appsource/`
 Expected: PASS
 
 - [ ] **Step 5: Commit**
 
 ```bash
-git add cmd/serf-hub/internal/appsource/
+git add cmd/evener-hub/internal/appsource/
 git commit -m "appsource: ListJobs/JobOutput across local and codex sources"
 ```
 
@@ -893,16 +893,16 @@ git commit -m "appsource: ListJobs/JobOutput across local and codex sources"
 ### Task 6: hub handlers + dead-session fallback
 
 **Files:**
-- Create: `cmd/serf-hub/app_jobs.go`
-- Modify: `cmd/serf-hub/app_rpc.go` (registration beside `MethodSerfTasksList`, line 743)
-- Test: `cmd/serf-hub/app_jobs_test.go` (mirror `app_tasks_test.go`; shared past-fixture helpers live in `web_workspace_test.go`)
+- Create: `cmd/evener-hub/app_jobs.go`
+- Modify: `cmd/evener-hub/app_rpc.go` (registration beside `MethodEvenerTasksList`, line 743)
+- Test: `cmd/evener-hub/app_jobs_test.go` (mirror `app_tasks_test.go`; shared past-fixture helpers live in `web_workspace_test.go`)
 
 **Interfaces:**
 - Consumes: `Source.ListJobs`/`JobOutput` (Task 5); `agent.LoadSessionJobList`/`agent.LoadSessionJobOutputTail` (Task 2); `sourceForThreadWithManagedLaunch`, `isDeadSessionError`, `localPastThreadID`, `cfg.Past.Find` (all from `app_tasks.go`)
 - Produces:
   - `func hubJobsList(ctx context.Context, cfg hubcore.WebConfig, sources *appsource.Registry, params appwire.JobsListParams) (appwire.JobsListResponse, error)`
   - `func hubJobsOutput(ctx context.Context, cfg hubcore.WebConfig, sources *appsource.Registry, params appwire.JobsOutputParams) (appwire.JobsOutputResponse, error)`
-  - Hub answers `serf/jobs/list` and `serf/jobs/output` (the frontend store, Task 8, calls these)
+  - Hub answers `evener/jobs/list` and `evener/jobs/output` (the frontend store, Task 8, calls these)
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -935,10 +935,10 @@ func TestHubJobsOutputPastUnknownJob(t *testing.T) {
 
 - [ ] **Step 2: Run tests to verify they fail**
 
-Run: `go test -count=1 -run 'TestHubJobs' ./cmd/serf-hub/`
+Run: `go test -count=1 -run 'TestHubJobs' ./cmd/evener-hub/`
 Expected: FAIL — `undefined: hubJobsList`
 
-- [ ] **Step 3: Implement `cmd/serf-hub/app_jobs.go`**
+- [ ] **Step 3: Implement `cmd/evener-hub/app_jobs.go`**
 
 Mirror `app_tasks.go` (read it again before writing; the structure below is exact):
 
@@ -948,13 +948,13 @@ package main
 import (
 	"context"
 
-	"primeradiant.com/serf/agent"
-	"primeradiant.com/serf/appwire"
-	"primeradiant.com/serf/cmd/serf-hub/internal/appsource"
-	"primeradiant.com/serf/cmd/serf-hub/internal/hubcore"
+	"primeradiant.com/evener/agent"
+	"primeradiant.com/evener/appwire"
+	"primeradiant.com/evener/cmd/evener-hub/internal/appsource"
+	"primeradiant.com/evener/cmd/evener-hub/internal/hubcore"
 )
 
-// hubJobsList answers serf/jobs/list. A running daemon's jobstore is
+// hubJobsList answers evener/jobs/list. A running daemon's jobstore is
 // authoritative, so it is always tried first; only the specific dead-session
 // condition (isDeadSessionError, app_tasks.go) falls back to the persisted
 // jobs.jsonl through agent.LoadSessionJobList, behind the same past-index
@@ -1000,7 +1000,7 @@ func pastJobsListResponse(cfg hubcore.WebConfig, params appwire.JobsListParams) 
 	return appwire.JobsListResponse{Data: jobs}, true, nil
 }
 
-// hubJobsOutput answers serf/jobs/output with the same live-first /
+// hubJobsOutput answers evener/jobs/output with the same live-first /
 // dead-session-fallback split. A job id absent from the persisted store is
 // invalid params — the caller guessed.
 func hubJobsOutput(ctx context.Context, cfg hubcore.WebConfig, sources *appsource.Registry, params appwire.JobsOutputParams) (appwire.JobsOutputResponse, error) {
@@ -1040,26 +1040,26 @@ func hubJobsOutput(ctx context.Context, cfg hubcore.WebConfig, sources *appsourc
 Register in `app_rpc.go` beside the tasks registration (line 743):
 
 ```go
-appserver.HandleTyped(server.Router(), appwire.MethodSerfJobsList, func(ctx context.Context, params appwire.JobsListParams) (appwire.JobsListResponse, error) {
+appserver.HandleTyped(server.Router(), appwire.MethodEvenerJobsList, func(ctx context.Context, params appwire.JobsListParams) (appwire.JobsListResponse, error) {
 	return hubJobsList(ctx, cfg, sources, params)
 })
-appserver.HandleTyped(server.Router(), appwire.MethodSerfJobsOutput, func(ctx context.Context, params appwire.JobsOutputParams) (appwire.JobsOutputResponse, error) {
+appserver.HandleTyped(server.Router(), appwire.MethodEvenerJobsOutput, func(ctx context.Context, params appwire.JobsOutputParams) (appwire.JobsOutputResponse, error) {
 	return hubJobsOutput(ctx, cfg, sources, params)
 })
 ```
 
-No hub changes are needed for `serf/job/updated` relay — daemon notifications reach the frontend through the existing bridge (same as `serf/task/updated`).
+No hub changes are needed for `evener/job/updated` relay — daemon notifications reach the frontend through the existing bridge (same as `evener/task/updated`).
 
 - [ ] **Step 4: Run tests to verify they pass**
 
-Run: `go test -count=1 -run 'TestHubJobs' ./cmd/serf-hub/` && `go test -count=1 -short ./cmd/serf-hub/` && `go build ./...`
+Run: `go test -count=1 -run 'TestHubJobs' ./cmd/evener-hub/` && `go test -count=1 -short ./cmd/evener-hub/` && `go build ./...`
 Expected: PASS
 
 - [ ] **Step 5: Commit**
 
 ```bash
-git add cmd/serf-hub/app_jobs.go cmd/serf-hub/app_jobs_test.go cmd/serf-hub/app_rpc.go
-git commit -m "serf-hub: serf/jobs/list and serf/jobs/output handlers with past fallback"
+git add cmd/evener-hub/app_jobs.go cmd/evener-hub/app_jobs_test.go cmd/evener-hub/app_rpc.go
+git commit -m "evener-hub: evener/jobs/list and evener/jobs/output handlers with past fallback"
 ```
 
 ---
@@ -1067,31 +1067,31 @@ git commit -m "serf-hub: serf/jobs/list and serf/jobs/output handlers with past 
 ### Task 7: frontend protocol — model field + reducer case
 
 **Files:**
-- Modify: `cmd/serf-hub/frontend/src/protocol/model.ts` (`tasks` field is at line 156)
-- Modify: `cmd/serf-hub/frontend/src/protocol/reducer.ts` (beside the `serf/task/updated` case, line 696)
-- Test: `cmd/serf-hub/frontend/src/protocol/reducer.test.ts` (mirror the `serf/task/updated` case test; find via `rg "task/updated" src/protocol/reducer.test.ts`)
-- Note: `types.gen.ts` was regenerated in Task 1 and already carries the new notification's params type — if the reducer switch keys params types off generated types, use them; otherwise follow whatever the `serf/task/updated` case does.
+- Modify: `cmd/evener-hub/frontend/src/protocol/model.ts` (`tasks` field is at line 156)
+- Modify: `cmd/evener-hub/frontend/src/protocol/reducer.ts` (beside the `evener/task/updated` case, line 696)
+- Test: `cmd/evener-hub/frontend/src/protocol/reducer.test.ts` (mirror the `evener/task/updated` case test; find via `rg "task/updated" src/protocol/reducer.test.ts`)
+- Note: `types.gen.ts` was regenerated in Task 1 and already carries the new notification's params type — if the reducer switch keys params types off generated types, use them; otherwise follow whatever the `evener/task/updated` case does.
 
 **Interfaces:**
-- Produces: `ThreadModel.jobsUpdatedAt: number | null` — bumped to the frame's `now` on every `serf/job/updated` for the thread. The JobsPanel (Task 9) re-fetches when this changes.
+- Produces: `ThreadModel.jobsUpdatedAt: number | null` — bumped to the frame's `now` on every `evener/job/updated` for the thread. The JobsPanel (Task 9) re-fetches when this changes.
 
 - [ ] **Step 1: Write the failing test**
 
 ```ts
-it("serf/job/updated bumps jobsUpdatedAt for the targeted thread", () => {
-	// same fixture shape as the serf/task/updated test: reduce a notification
-	// { method: "serf/job/updated", params: { threadId, ref, jobId: "job_1", status: "running" } }
+it("evener/job/updated bumps jobsUpdatedAt for the targeted thread", () => {
+	// same fixture shape as the evener/task/updated test: reduce a notification
+	// { method: "evener/job/updated", params: { threadId, ref, jobId: "job_1", status: "running" } }
 	// want: model.jobsUpdatedAt === <the reducer's now>, model unchanged otherwise
 });
 
-it("serf/job/updated for another thread leaves the model untouched", () => {
+it("evener/job/updated for another thread leaves the model untouched", () => {
 	// notificationTargetsThread miss → same model object identity
 });
 ```
 
 - [ ] **Step 2: Run test to verify it fails**
 
-Run: `cd cmd/serf-hub/frontend && npx vitest run src/protocol/reducer.test.ts`
+Run: `cd cmd/evener-hub/frontend && npx vitest run src/protocol/reducer.test.ts`
 Expected: FAIL — `jobsUpdatedAt` undefined
 
 - [ ] **Step 3: Implement**
@@ -1099,7 +1099,7 @@ Expected: FAIL — `jobsUpdatedAt` undefined
 `model.ts` beside `tasks`:
 
 ```ts
-  // Bumped (to the reducer's frame time) by every serf/job/updated for this
+  // Bumped (to the reducer's frame time) by every evener/job/updated for this
   // thread; the jobs panel re-fetches its list when this changes. null until
   // the first push arrives.
   jobsUpdatedAt: number | null;
@@ -1107,10 +1107,10 @@ Expected: FAIL — `jobsUpdatedAt` undefined
 
 Find where `tasks: null` is initialized for a fresh model (`rg "tasks: null" src/`) and add `jobsUpdatedAt: null` there.
 
-`reducer.ts` beside the `serf/task/updated` case:
+`reducer.ts` beside the `evener/task/updated` case:
 
 ```ts
-    case "serf/job/updated": {
+    case "evener/job/updated": {
       if (!notificationTargetsThread(n, model)) return model;
       return { ...model, jobsUpdatedAt: now, lastFrameAt: now };
     }
@@ -1118,14 +1118,14 @@ Find where `tasks: null` is initialized for a fresh model (`rg "tasks: null" src
 
 - [ ] **Step 4: Run tests to verify they pass**
 
-Run: `cd cmd/serf-hub/frontend && npx vitest run src/protocol/reducer.test.ts`
+Run: `cd cmd/evener-hub/frontend && npx vitest run src/protocol/reducer.test.ts`
 Expected: PASS
 
 - [ ] **Step 5: Commit**
 
 ```bash
-git add cmd/serf-hub/frontend/src/protocol/model.ts cmd/serf-hub/frontend/src/protocol/reducer.ts cmd/serf-hub/frontend/src/protocol/reducer.test.ts
-git commit -m "webui: thread model jobsUpdatedAt + serf/job/updated reducer case"
+git add cmd/evener-hub/frontend/src/protocol/model.ts cmd/evener-hub/frontend/src/protocol/reducer.ts cmd/evener-hub/frontend/src/protocol/reducer.test.ts
+git commit -m "webui: thread model jobsUpdatedAt + evener/job/updated reducer case"
 ```
 
 ---
@@ -1133,9 +1133,9 @@ git commit -m "webui: thread model jobsUpdatedAt + serf/job/updated reducer case
 ### Task 8: frontend store methods + jobData parser
 
 **Files:**
-- Modify: `cmd/serf-hub/frontend/src/stores/threads.ts` (interface line 191 area; implementation beside `listTasks`, line 2000)
-- Create: `cmd/serf-hub/frontend/src/panes/session/chrome/jobData.ts`
-- Test: `cmd/serf-hub/frontend/src/panes/session/chrome/jobData.test.ts`; extend `cmd/serf-hub/frontend/src/stores/threads.test.ts` (mirror the listTasks test near line 3128)
+- Modify: `cmd/evener-hub/frontend/src/stores/threads.ts` (interface line 191 area; implementation beside `listTasks`, line 2000)
+- Create: `cmd/evener-hub/frontend/src/panes/session/chrome/jobData.ts`
+- Test: `cmd/evener-hub/frontend/src/panes/session/chrome/jobData.test.ts`; extend `cmd/evener-hub/frontend/src/stores/threads.test.ts` (mirror the listTasks test near line 3128)
 
 **Interfaces:**
 - Consumes: `model.jobsUpdatedAt` (Task 7); the daemon/hub wire shapes (Tasks 2, 6)
@@ -1211,11 +1211,11 @@ describe("parseJobOutputData", () => {
 });
 ```
 
-`threads.test.ts`: mirror the `listTasks` test — fake client, assert `client.request("serf/jobs/list", { ref })` / `client.request("serf/jobs/output", { ref, jobId })` and that `resp.data` is returned.
+`threads.test.ts`: mirror the `listTasks` test — fake client, assert `client.request("evener/jobs/list", { ref })` / `client.request("evener/jobs/output", { ref, jobId })` and that `resp.data` is returned.
 
 - [ ] **Step 2: Run tests to verify they fail**
 
-Run: `cd cmd/serf-hub/frontend && npx vitest run src/panes/session/chrome/jobData.test.ts`
+Run: `cd cmd/evener-hub/frontend && npx vitest run src/panes/session/chrome/jobData.test.ts`
 Expected: FAIL — module not found
 
 - [ ] **Step 3: Implement `jobData.ts`**
@@ -1312,26 +1312,26 @@ Implementation, beside `listTasks`:
   async listJobs(ref) {
     const client = requireClient();
     // No mapConflict here either, same reasoning as listModels/listTasks above.
-    const resp = await client.request("serf/jobs/list", { ref });
+    const resp = await client.request("evener/jobs/list", { ref });
     return resp.data;
   },
 
   async jobOutput(ref, jobId) {
     const client = requireClient();
-    const resp = await client.request("serf/jobs/output", { ref, jobId });
+    const resp = await client.request("evener/jobs/output", { ref, jobId });
     return resp.data;
   },
 ```
 
 - [ ] **Step 4: Run tests to verify they pass**
 
-Run: `cd cmd/serf-hub/frontend && npx vitest run src/panes/session/chrome/jobData.test.ts src/stores/threads.test.ts && npm run lint`
+Run: `cd cmd/evener-hub/frontend && npx vitest run src/panes/session/chrome/jobData.test.ts src/stores/threads.test.ts && npm run lint`
 Expected: PASS
 
 - [ ] **Step 5: Commit**
 
 ```bash
-git add cmd/serf-hub/frontend/src/stores/threads.ts cmd/serf-hub/frontend/src/stores/threads.test.ts cmd/serf-hub/frontend/src/panes/session/chrome/jobData.ts cmd/serf-hub/frontend/src/panes/session/chrome/jobData.test.ts
+git add cmd/evener-hub/frontend/src/stores/threads.ts cmd/evener-hub/frontend/src/stores/threads.test.ts cmd/evener-hub/frontend/src/panes/session/chrome/jobData.ts cmd/evener-hub/frontend/src/panes/session/chrome/jobData.test.ts
 git commit -m "webui: listJobs/jobOutput store methods and jobData wire parser"
 ```
 
@@ -1340,10 +1340,10 @@ git commit -m "webui: listJobs/jobOutput store methods and jobData wire parser"
 ### Task 9: JobsPanel component + CSS
 
 **Files:**
-- Create: `cmd/serf-hub/frontend/src/panes/session/chrome/JobsPanel.tsx`
-- Create: `cmd/serf-hub/frontend/src/panes/session/chrome/jobspanel.module.css`
-- Test: `cmd/serf-hub/frontend/src/panes/session/chrome/JobsPanel.test.tsx`
-- Template: `cmd/serf-hub/frontend/src/panes/session/chrome/TasksPanel.tsx` and `TasksPanel.test.tsx` — read both fully before writing anything; this component copies their structure (failure taxonomy, stale notice, Try again, imperative handle, `data-tasks-trigger`-style trigger hook is NOT needed — no palette command for jobs)
+- Create: `cmd/evener-hub/frontend/src/panes/session/chrome/JobsPanel.tsx`
+- Create: `cmd/evener-hub/frontend/src/panes/session/chrome/jobspanel.module.css`
+- Test: `cmd/evener-hub/frontend/src/panes/session/chrome/JobsPanel.test.tsx`
+- Template: `cmd/evener-hub/frontend/src/panes/session/chrome/TasksPanel.tsx` and `TasksPanel.test.tsx` — read both fully before writing anything; this component copies their structure (failure taxonomy, stale notice, Try again, imperative handle, `data-tasks-trigger`-style trigger hook is NOT needed — no palette command for jobs)
 
 **Interfaces:**
 - Consumes: `parseJobListData`/`parseJobOutputData`/`JobRow`/`JobOutput` (Task 8); `model.jobsUpdatedAt` (Task 7); `threadsStore.listJobs`/`jobOutput` (Task 8); widgets `Button, Chip, EmptyState, Sheet, useToasts`, `Disclosure`, `requireClass`
@@ -1386,7 +1386,7 @@ git commit -m "webui: listJobs/jobOutput store methods and jobData wire parser"
 
 - [ ] **Step 2: Run tests to verify they fail**
 
-Run: `cd cmd/serf-hub/frontend && npx vitest run src/panes/session/chrome/JobsPanel.test.tsx`
+Run: `cd cmd/evener-hub/frontend && npx vitest run src/panes/session/chrome/JobsPanel.test.tsx`
 Expected: FAIL — module not found
 
 - [ ] **Step 3: Implement `JobsPanel.tsx` + `jobspanel.module.css`**
@@ -1446,13 +1446,13 @@ function JobOutputTailView({ sessionRef, jobId }: { sessionRef: string; jobId: s
 
 - [ ] **Step 4: Run tests to verify they pass**
 
-Run: `cd cmd/serf-hub/frontend && npx vitest run src/panes/session/chrome/JobsPanel.test.tsx && npm run lint`
+Run: `cd cmd/evener-hub/frontend && npx vitest run src/panes/session/chrome/JobsPanel.test.tsx && npm run lint`
 Expected: PASS
 
 - [ ] **Step 5: Commit**
 
 ```bash
-git add cmd/serf-hub/frontend/src/panes/session/chrome/JobsPanel.tsx cmd/serf-hub/frontend/src/panes/session/chrome/JobsPanel.test.tsx cmd/serf-hub/frontend/src/panes/session/chrome/jobspanel.module.css
+git add cmd/evener-hub/frontend/src/panes/session/chrome/JobsPanel.tsx cmd/evener-hub/frontend/src/panes/session/chrome/JobsPanel.test.tsx cmd/evener-hub/frontend/src/panes/session/chrome/jobspanel.module.css
 git commit -m "webui: jobs panel component"
 ```
 
@@ -1461,8 +1461,8 @@ git commit -m "webui: jobs panel component"
 ### Task 10: SessionChrome integration + final verification
 
 **Files:**
-- Modify: `cmd/serf-hub/frontend/src/panes/session/chrome/SessionChrome.tsx` (imports lines 21-26; refs lines 112-113; overflow items lines 119-124; trailing cluster lines 138-147)
-- Test: `cmd/serf-hub/frontend/src/panes/session/chrome/SessionChrome.test.tsx` (mirror the Details/Tasks overflow tests; find via `rg "overflowItems|collapsed" src/panes/session/chrome/SessionChrome.test.tsx`)
+- Modify: `cmd/evener-hub/frontend/src/panes/session/chrome/SessionChrome.tsx` (imports lines 21-26; refs lines 112-113; overflow items lines 119-124; trailing cluster lines 138-147)
+- Test: `cmd/evener-hub/frontend/src/panes/session/chrome/SessionChrome.test.tsx` (mirror the Details/Tasks overflow tests; find via `rg "overflowItems|collapsed" src/panes/session/chrome/SessionChrome.test.tsx`)
 
 **Interfaces:**
 - Consumes: `JobsPanel`, `JobsPanelHandle` (Task 9)
@@ -1480,7 +1480,7 @@ git commit -m "webui: jobs panel component"
 
 - [ ] **Step 2: Run tests to verify they fail**
 
-Run: `cd cmd/serf-hub/frontend && npx vitest run src/panes/session/chrome/SessionChrome.test.tsx`
+Run: `cd cmd/evener-hub/frontend && npx vitest run src/panes/session/chrome/SessionChrome.test.tsx`
 Expected: FAIL — no Jobs trigger
 
 - [ ] **Step 3: Wire SessionChrome**
@@ -1519,16 +1519,16 @@ Also update the `SessionChrome` header comment ("Details, Tasks and the session 
 
 - [ ] **Step 4: Run the full verification suite**
 
-Run: `cd cmd/serf-hub/frontend && npx vitest run src/panes/session/chrome/ && npm run lint && npm run build`
+Run: `cd cmd/evener-hub/frontend && npx vitest run src/panes/session/chrome/ && npm run lint && npm run build`
 Expected: PASS (typecheck via `tsc --noEmit` runs inside `npm run build`)
 
-Run (repo root): `go build ./... && go test -count=1 -short ./appwire/ ./server/ ./agent/ ./internal/appprojector/ ./cmd/serf/ ./cmd/serf-hub/... && make lint-generated`
+Run (repo root): `go build ./... && go test -count=1 -short ./appwire/ ./server/ ./agent/ ./internal/appprojector/ ./cmd/evener/ ./cmd/evener-hub/... && make lint-generated`
 Expected: PASS
 
 - [ ] **Step 5: Commit**
 
 ```bash
-git add cmd/serf-hub/frontend/src/panes/session/chrome/SessionChrome.tsx cmd/serf-hub/frontend/src/panes/session/chrome/SessionChrome.test.tsx
+git add cmd/evener-hub/frontend/src/panes/session/chrome/SessionChrome.tsx cmd/evener-hub/frontend/src/panes/session/chrome/SessionChrome.test.tsx
 git commit -m "webui: mount the jobs panel in session chrome"
 ```
 
@@ -1537,7 +1537,7 @@ git commit -m "webui: mount the jobs panel in session chrome"
 ## Final acceptance
 
 - `go build ./...` and `go test -short ./...` clean (or no new failures vs. the pre-feature baseline).
-- `cd cmd/serf-hub/frontend && npm test && npm run lint && npm run build` clean.
+- `cd cmd/evener-hub/frontend && npm test && npm run lint && npm run build` clean.
 - `make lint-generated` clean.
 - Manual smoke: `make build-hub`, open a session, run a background shell job and a delegate; the Jobs trigger lists both, the panel refreshes on start/finish without reopening, and expanding a job shows its output tail.
 
@@ -1550,12 +1550,12 @@ This section records where the shipped code differs, after the branch merged
 (`f99baf14e`) and a night of follow-up katas landed on top of it. The design
 spec has been reconciled in place and describes what is there now.
 
-**`serf/job/updated` does not exist** — kata j7y6, `ae4ff7d9f`. Task 1's
-`NotifySerfJobUpdated`/`JobUpdatedParams` and Task 4's projection case both
+**`evener/job/updated` does not exist** — kata j7y6, `ae4ff7d9f`. Task 1's
+`NotifyEvenerJobUpdated`/`JobUpdatedParams` and Task 4's projection case both
 landed and were then folded away. The notification fired at exactly the two
-instants `serf/job/started` and `serf/job/finished` fire, from the same two
+instants `evener/job/started` and `evener/job/finished` fire, from the same two
 projector cases, to the same audience, and its payload was a strict subset of
-`SerfJobParams` — `Job.JobID` plus `Job.Status` is all a refetch trigger
+`EvenerJobParams` — `Job.JobID` plus `Job.Status` is all a refetch trigger
 reads. Task 7's reducer case now hangs off that lifecycle pair, bumping
 `model.jobsUpdatedAt` on both ends. Task 4 is empty in hindsight: both
 projector cases predate this branch, so the projector never needed a change
@@ -1615,6 +1615,6 @@ only through `agent.LoadSessionJobList`/`agent.LoadSessionJobOutputTail`.
 
 **Both hub fallbacks share one past-index gate** — kata qqf6, `383e1c89c`.
 Task 6's two open-coded `cfg.Past.Find(threadID)` sites are now the shared
-`pastEntryForRead` helper (`cmd/serf-hub/app_threadread.go`), which performs
+`pastEntryForRead` helper (`cmd/evener-hub/app_threadread.go`), which performs
 the same three steps: parse the ref, require source `local`, and require the
 past index to know the thread.

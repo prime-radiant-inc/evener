@@ -33,7 +33,7 @@ per-run residue. The cycle may update those declared outputs and caches, but it
 must not leave per-run scratch directories, temporary homes, browser profiles,
 logs, sockets, listeners, child processes, services, or undeclared files.
 
-Cleanup has two owners. Serf itself removes scratch when the application
+Cleanup has two owners. Evener itself removes scratch when the application
 lifecycle proves that ownership is over: aborted/unadopted construction,
 discarded candidates, disposed lanes, and other paths with no resumable or
 human-handoff owner. A normal session-end event alone does not prove that its
@@ -64,7 +64,7 @@ before residue can be measured on a successful cycle:
 
 - Vitest collects `scripts/layoutguard/cdp.test.mjs`, although that file uses
   `node:test` and is also executed explicitly by Node.
-- `cmd/serf-hub/frontend_hash.go` uses `crypto/sha256` without an entry in the
+- `cmd/evener-hub/frontend_hash.go` uses `crypto/sha256` without an entry in the
   repository's closed-world identifier audit.
 - `TestWaveCompletesDespiteBlockedLeakCheck` uses a wall-clock completion bound
   and flakes under load instead of awaiting the behavior it intends to prove.

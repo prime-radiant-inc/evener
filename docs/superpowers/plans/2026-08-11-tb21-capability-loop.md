@@ -2,11 +2,11 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Add one bounded OpenAI transport recovery, derive one general execution-policy improvement from trajectory evidence, and measure it only on Terminal-Bench 2.1 tasks that failed the pinned Serf run.
+**Goal:** Add one bounded OpenAI transport recovery, derive one general execution-policy improvement from trajectory evidence, and measure it only on Terminal-Bench 2.1 tasks that failed the pinned Evener run.
 
 **Architecture:** Transport recovery remains inside the OpenAI adapter and retries the same Responses request once before the existing Chat fallback. Trajectory analysis produces immutable run artifacts before any prompt change. The policy experiment builds baseline and treatment binaries from adjacent commits so the prompt is the only A/B variable.
 
-**Tech Stack:** Go 1.26, Serf's OpenAI Responses adapter, Harbor 0.20, Terminal-Bench 2.1, `kata` 0.14, shell/JSON trajectory analysis.
+**Tech Stack:** Go 1.26, Evener's OpenAI Responses adapter, Harbor 0.20, Terminal-Bench 2.1, `kata` 0.14, shell/JSON trajectory analysis.
 
 ## Global Constraints
 
@@ -14,7 +14,7 @@
 - Do not submit or upload benchmark results.
 - Never rerun a task that passed the pinned 89×1 run while debugging or A/B testing.
 - Use `openai/gpt-5.6-luna` at `max` effort and one attempt per A/B arm.
-- Keep Serf commit, runner commit, task digest, model, effort, and host identical between A/B arms; only the execution-policy commit may differ.
+- Keep Evener commit, runner commit, task digest, model, effort, and host identical between A/B arms; only the execution-policy commit may differ.
 - Do not use public task solutions. Mark comparisons unavailable when official trajectories cannot be authenticated or accessed.
 - Use Terra at low reasoning for extraction and mechanical implementation; use Sol at max reasoning for review and synthesis.
 - Tests must exercise behavior. Do not add prompt-wording, rendered-command, or large-string matching tests.
@@ -71,20 +71,20 @@ make lint
 
 Commit the production code and meaningful tests. Comment on `83fk` with the red/green evidence; close it only after the Sol-max review and full gate pass.
 
-### Task 2: Compare Codex-Pass and Serf-Fail Trajectories
+### Task 2: Compare Codex-Pass and Evener-Fail Trajectories
 
 **Files:**
-- Create run artifact: `/Users/jesse/git/prime-radiant/harbor-runner/runs/analysis/tb21-codex-serf-delta.json`
-- Create run artifact: `/Users/jesse/git/prime-radiant/harbor-runner/runs/analysis/tb21-codex-serf-delta.md`
-- Do not modify Serf production code in this task.
+- Create run artifact: `/Users/jesse/git/prime-radiant/harbor-runner/runs/analysis/tb21-codex-evener-delta.json`
+- Create run artifact: `/Users/jesse/git/prime-radiant/harbor-runner/runs/analysis/tb21-codex-evener-delta.md`
+- Do not modify Evener production code in this task.
 
 **Interfaces:**
-- Consumes: pinned run `tb21-luna-max-89-3e42802ce-20260810T224339Z`, locally retained Codex and Serf Harbor attempts, verifier rewards, exception metadata, ATIF trajectories
+- Consumes: pinned run `tb21-luna-max-89-3e42802ce-20260810T224339Z`, locally retained Codex and Evener Harbor attempts, verifier rewards, exception metadata, ATIF trajectories
 - Produces: one row per task with outcome evidence, action differences, causal classification, source paths, and contamination/access flags
 
 - [ ] **Step 1: Materialize the comparison set**
 
-Select every task for which a local Codex attempt has verifier reward `1` and the pinned Serf attempt has reward `0` or an execution exception. Exclude `gpt2-codegolf` from behavioral conclusions because its local Codex pass used a public exact solution. Record unavailable official Codex trajectories as unavailable rather than inferring their actions.
+Select every task for which a local Codex attempt has verifier reward `1` and the pinned Evener attempt has reward `0` or an execution exception. Exclude `gpt2-codegolf` from behavioral conclusions because its local Codex pass used a public exact solution. Record unavailable official Codex trajectories as unavailable rather than inferring their actions.
 
 - [ ] **Step 2: Extract structured evidence**
 

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # fuzz-coverage-global.sh replays the registry-audited deterministic fuzz corpus
 # into one canonical self-coverage profile per production package, then delegates
-# strict whole-module accounting to cmd/serf-fuzzcov.
+# strict whole-module accounting to cmd/evener-fuzzcov.
 #
 # This deliberately does not run `go test ./... -coverpkg=./...`. Every local
 # fuzz surface runs in its owning package only, so a package's profile has the
@@ -22,9 +22,9 @@
 #   scripts/fuzz-coverage-global.sh --format json
 #
 # Test seams:
-#   SERF_FUZZ_GO              go executable (default: go)
-#   SERF_FUZZ_CAPPED          command wrapper (default: scripts/run-capped.sh)
-#   SERF_FUZZ_REGISTRY_CHECK  executable registry checker (default:
+#   EVENER_FUZZ_GO              go executable (default: go)
+#   EVENER_FUZZ_CAPPED          command wrapper (default: scripts/run-capped.sh)
+#   EVENER_FUZZ_REGISTRY_CHECK  executable registry checker (default:
 #                             scripts/fuzz-registry-check.sh)
 set -euo pipefail
 
@@ -32,16 +32,16 @@ repo_root="$(cd "$(dirname "$0")/.." && pwd -P)"
 # How this run reclaims the leftovers of its own earlier runs; no janitor does.
 . "$(dirname "$0")/covscratch-lib.sh"
 go_work="$repo_root/go.work"
-go_bin="${SERF_FUZZ_GO:-go}"
-capped="${SERF_FUZZ_CAPPED:-$repo_root/scripts/run-capped.sh}"
-registry_check="${SERF_FUZZ_REGISTRY_CHECK:-$repo_root/scripts/fuzz-registry-check.sh}"
+go_bin="${EVENER_FUZZ_GO:-go}"
+capped="${EVENER_FUZZ_CAPPED:-$repo_root/scripts/run-capped.sh}"
+registry_check="${EVENER_FUZZ_REGISTRY_CHECK:-$repo_root/scripts/fuzz-registry-check.sh}"
 exclusions_file="$repo_root/scripts/fuzzcov-global-exclusions.txt"
 floors_file="$repo_root/scripts/fuzzcov-global-floors.txt"
 # The gap map's reasoned ignore-list, shared rather than duplicated: a package
 # declared out of fuzz scope for scripts/fuzz-gap-check.sh must not be mandatory
 # here. Entries are "<import-path>  # <reason>"; the reason is required there and
 # reviewed like code, so this consumer needs only the path.
-ignore_file="${SERF_FUZZCOV_IGNORE:-$repo_root/scripts/fuzzcov-ignore.txt}"
+ignore_file="${EVENER_FUZZCOV_IGNORE:-$repo_root/scripts/fuzzcov-ignore.txt}"
 
 in_ignore_list() {
 	[ -n "${1:-}" ] || return 1
@@ -279,13 +279,13 @@ tmpbase=${TMPDIR:-/tmp}
 # of our own. The trap below covers every exit a shell can observe; SIGKILL, an
 # OOM kill and a power cut are not among them, and no janitor sweeps what they
 # leave. See covscratch-lib.sh for the pid rules.
-reclaim_own_scratch "$tmpbase" serf-fuzzcov-global
+reclaim_own_scratch "$tmpbase" evener-fuzzcov-global
 # The name is chosen and the trap armed BEFORE the directory exists; see
 # test-coverage-floor.sh for the signal window this closes. $$ is unique among
 # live processes, so concurrent runs cannot collide. A failed mkdir means a
 # stale same-pid leftover this run does not own, so the trap is disarmed
 # before exiting rather than deleting it.
-work="${tmpbase%/}/serf-fuzzcov-global.$$"
+work="${tmpbase%/}/evener-fuzzcov-global.$$"
 trap 'rm -rf "$work"' EXIT
 mkdir "$work" || { trap - EXIT; die "cannot create scratch directory $work"; }
 plan="$work/targets.tsv"
@@ -294,7 +294,7 @@ global_manifest="$work/global-profiles.tsv"
 
 is_expected_global_gate_failure() {
 	local stderr_file="$1"
-	grep -Eq '^serf-fuzzcov: (RAW THRESHOLD BREACH:|REGRESSION |refusing to bless:)' "$stderr_file"
+	grep -Eq '^evener-fuzzcov: (RAW THRESHOLD BREACH:|REGRESSION |refusing to bless:)' "$stderr_file"
 }
 
 discover_workspace_modules
@@ -368,7 +368,7 @@ for module in "${selected_modules[@]}"; do
 	module_dir="$(map_get "$module" "$workspace_module_dirs")" || module_dir=""
 	[ -n "$logical_module_dir" ] && [ -n "$module_dir" ] || die "missing module directory mapping: $module"
 	list_file="$work/packages-${module//\//_}.txt"
-	if ! (cd "$logical_module_dir" && "$go_bin" list -tags serffuzz -f '{{.Dir}}'$'\t''{{.ImportPath}}' ./...) >"$list_file"; then
+	if ! (cd "$logical_module_dir" && "$go_bin" list -tags evenerfuzz -f '{{.Dir}}'$'\t''{{.ImportPath}}' ./...) >"$list_file"; then
 		die "go list failed for module: $module"
 	fi
 	while IFS="$tab" read -r package_dir import_path; do
@@ -557,18 +557,18 @@ replay_target() {
 	[ -n "$logical_module_dir" ] || die "missing module directory mapping: $module"
 	echo "fuzz-coverage-global: replay $label" >&2
 	if [ "$kind" = rapid ]; then
-		# SERF_FUZZ_TESTS=1: the seqfuzz/schemafuzz rapid family t.Skip()s under a
+		# EVENER_FUZZ_TESTS=1: the seqfuzz/schemafuzz rapid family t.Skip()s under a
 		# plain `go test` (moved out of `make test` per the fuzz-family ruling);
 		# this coverage replay must still drive them, not accept a skip's
 		# zero-count profile as coverage.
 		if ! (cd "$logical_module_dir" && \
-			env -u RAPID_FAILFILE SERF_FUZZ_TESTS=1 RAPID_SEED="$seed" RAPID_CHECKS="$rapid_checks" RAPID_STEPS="$rapid_steps" RAPID_NOFAILFILE="$rapid_nofailfile" RAPID_LOG="$rapid_log" RAPID_V="$rapid_verbose" RAPID_DEBUG="$rapid_debug" RAPID_DEBUGVIS="$rapid_debugvis" RAPID_SHRINKTIME="$rapid_shrinktime" \
-			"$capped" "$go_bin" test -tags serffuzz -run "^$name\$" -count=1 -coverprofile="$profile" "$pkg") >&2; then
+			env -u RAPID_FAILFILE EVENER_FUZZ_TESTS=1 RAPID_SEED="$seed" RAPID_CHECKS="$rapid_checks" RAPID_STEPS="$rapid_steps" RAPID_NOFAILFILE="$rapid_nofailfile" RAPID_LOG="$rapid_log" RAPID_V="$rapid_verbose" RAPID_DEBUG="$rapid_debug" RAPID_DEBUGVIS="$rapid_debugvis" RAPID_SHRINKTIME="$rapid_shrinktime" \
+			"$capped" "$go_bin" test -tags evenerfuzz -run "^$name\$" -count=1 -coverprofile="$profile" "$pkg") >&2; then
 			die "replay failed: $label"
 		fi
 	else
 		if ! (cd "$logical_module_dir" && \
-			"$capped" "$go_bin" test -tags serffuzz -run "^$name\$" -count=1 -coverprofile="$profile" "$pkg") >&2; then
+			"$capped" "$go_bin" test -tags evenerfuzz -run "^$name\$" -count=1 -coverprofile="$profile" "$pkg") >&2; then
 			die "replay failed: $label"
 		fi
 	fi
@@ -608,7 +608,7 @@ done <"$groups"
 [ -s "$global_manifest" ] || die "internal error: no package profiles were produced"
 
 fuzzcov_args=(
-	run ./cmd/serf-fuzzcov
+	run ./cmd/evener-fuzzcov
 	-global-manifest "$global_manifest"
 	-repo-root "$repo_root"
 	-global-exclusions "$exclusions_file"

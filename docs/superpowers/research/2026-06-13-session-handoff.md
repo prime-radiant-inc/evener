@@ -87,7 +87,7 @@ gate is the API vocabulary, per the max_wait spec's sweep list.
    `docs/agentic-testing.md`, plus hard-won rules in
    `docs/superpowers/research/2026-06-12-e2e-rerun-addendum.md` and the memory
    file: spawn model `openai/gpt-5.5` (OAuth `openai`, never `oai-work`); NEVER
-   `--state-dir`/`SERF_STATE_DIR`; card command text VERBATIM in spawn prompts
+   `--state-dir`/`EVENER_STATE_DIR`; card command text VERBATIM in spawn prompts
    (quote repositioning caused a false FAIL); NEVER `pgrep -f`/`pkill -f`
    (self-match killed a shell and forged a phantom orphan); sonnet runner,
    sequential, ledger after every card; runner never kills the hub.
@@ -129,10 +129,10 @@ gate is the API vocabulary, per the max_wait spec's sweep list.
 - Goal-engine v2 direction note exists
   (`2026-06-12-goal-engine-v2-design-note.md`); its incident narrative still
   needs Jesse — no record exists anywhere else.
-- The e2e scratch dirs `/tmp/serf-e2e-*` accumulate; `rm -rf` is hook-blocked
+- The e2e scratch dirs `/tmp/evener-e2e-*` accumulate; `rm -rf` is hook-blocked
   on this host — leave them or ask Jesse.
 - Session memory file (richer history + the same key facts):
-  `~/.claude/projects/-home-jesse-git-prime-radiant-serf/memory/serf-handoff-state-2026-06-12.md`.
+  `~/.claude/projects/-home-jesse-git-prime-radiant-evener/memory/evener-handoff-state-2026-06-12.md`.
 
 ## Done-means for the whole arc (unchanged)
 

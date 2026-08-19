@@ -10,7 +10,7 @@ import (
 	"testing"
 	"time"
 
-	"primeradiant.com/serf/agent/internal/worktree"
+	"primeradiant.com/evener/agent/internal/worktree"
 )
 
 // These are integration tests for the manage_worktree remove arm (spec §5
@@ -18,8 +18,8 @@ import (
 // session_tools_worktree_create_test.go and session_tools_worktree_switch_test.go.
 //
 // This file is MIXED across the two lane harnesses; see docs/testing.md for the
-// rule. A test whose subject is serf's own decision-making — which refusal rung
-// fires, its error text, the restore-state bookkeeping, what serf wrote to its
+// rule. A test whose subject is evener's own decision-making — which refusal rung
+// fires, its error text, the restore-state bookkeeping, what evener wrote to its
 // own sidecar — runs on the scripted git boundary (scriptedLaneRepo, driven
 // through wtRepo's shared operation helpers). These stay on real git because
 // their subject IS git's observable behavior:
@@ -502,7 +502,7 @@ func TestWorktreeRemove_DeleteBranchUnmergedRefusesEvidenceSidecarKept(t *testin
 		for line := range strings.SplitSeq(strings.TrimSpace(string(b)), "\n") {
 			fields := strings.Fields(line)
 			if len(fields) >= 2 && fields[0] == "branch" && fields[1] == "-d" {
-				t.Fatalf("git branch -d was invoked despite serf's merge gate: %q", line)
+				t.Fatalf("git branch -d was invoked despite evener's merge gate: %q", line)
 			}
 		}
 	}
@@ -526,11 +526,11 @@ func TestWorktreeRemove_DeleteBranchUnmergedRefusesEvidenceSidecarKept(t *testin
 	}
 }
 
-// --- 6: detached-HEAD-review fixture — serf's own gate refuses where `-d` would succeed ---
+// --- 6: detached-HEAD-review fixture — evener's own gate refuses where `-d` would succeed ---
 
 // REAL git: the trap only exists against real git — `branch -d` under a real
 // detached HEAD at the lane's tip would succeed, and the argv log that proves
-// serf never issued it comes from a real git shim.
+// evener never issued it comes from a real git shim.
 func TestWorktreeRemove_DetachedHeadReviewRefusesNeverInvokesLowercaseD(t *testing.T) {
 	t.Parallel()
 	r := newWorktreeRepo(t)
@@ -546,7 +546,7 @@ func TestWorktreeRemove_DetachedHeadReviewRefusesNeverInvokesLowercaseD(t *testi
 	// review-of-the-tip workflow this is exactly the scenario rev-6 review
 	// caught: `git branch -d feature` run from here would see feature as
 	// trivially merged into the current (detached) HEAD and succeed — but
-	// main's actual branch ref never moved, so serf's own gate (which never
+	// main's actual branch ref never moved, so evener's own gate (which never
 	// consults HEAD) must refuse.
 	wtGit(t, r.mainRoot, "checkout", "--detach", featureTip)
 
@@ -557,7 +557,7 @@ func TestWorktreeRemove_DetachedHeadReviewRefusesNeverInvokesLowercaseD(t *testi
 		t.Fatalf("remove: %v", err)
 	}
 	if out["branch_deleted"] != false {
-		t.Errorf("branch_deleted = %v, want false (serf's gate must refuse despite `-d` would succeed here)", out["branch_deleted"])
+		t.Errorf("branch_deleted = %v, want false (evener's gate must refuse despite `-d` would succeed here)", out["branch_deleted"])
 	}
 	if !branchExistsInRepo(t, r.mainRoot, "feature") {
 		t.Error("branch was deleted despite the detached-HEAD-review trap")
@@ -592,7 +592,7 @@ func TestWorktreeRemove_BranchCheckedOutElsewhereSurfacesLocation(t *testing.T) 
 
 	// A second, non-managed checkout of the SAME branch (--force bypasses
 	// git's normal one-checkout-per-branch rule) — lane is unchanged, so
-	// serf's merge gate passes trivially, and the only refusal is git's own
+	// evener's merge gate passes trivially, and the only refusal is git's own
 	// "branch checked out elsewhere" rule at the `branch -D` step.
 	otherPath := filepath.Join(t.TempDir(), "other-checkout")
 	wtGit(t, r.mainRoot, "worktree", "add", "--force", otherPath, "lane")

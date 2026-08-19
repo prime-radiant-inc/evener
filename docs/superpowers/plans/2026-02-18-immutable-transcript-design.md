@@ -2,7 +2,7 @@
 
 ## Problem
 
-Serf lacks an immutable, append-only record of conversations. The two existing
+Evener lacks an immutable, append-only record of conversations. The two existing
 persistence mechanisms serve different purposes and neither provides a complete
 transcript:
 

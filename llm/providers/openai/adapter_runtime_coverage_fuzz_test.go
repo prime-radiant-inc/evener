@@ -9,7 +9,7 @@ import (
 	"strings"
 	"testing"
 
-	"primeradiant.com/serf/llm"
+	"primeradiant.com/evener/llm"
 )
 
 type adapterRuntimeRoundTripFunc func(*http.Request) (*http.Response, error)

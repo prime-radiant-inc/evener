@@ -17,10 +17,10 @@ Follow-up design draft:
 This note records the observer/sidecar use-case inventory gathered from four
 independent systems-design lenses, plus one follow-up use case that was missing
 from the first pass: memory/context injection. The goal is to preserve the raw
-research shape before reducing it to the smallest Serf API that can make these
+research shape before reducing it to the smallest Evener API that can make these
 cases easy for agents without adding unnecessary primitives.
 
-Historical Serf baseline at the time of this research: observer sidecars were a
+Historical Evener baseline at the time of this research: observer sidecars were a
 composition of ordinary `delegate`, `job_watch`, and `delegate_send` behavior.
 The recent live Kimi
 scenario showed the key gap: caller event frames can say that a `communicate`

@@ -10,26 +10,26 @@ import (
 	"sync"
 	"time"
 
-	"primeradiant.com/serf/agent/envctx"
-	"primeradiant.com/serf/agent/events"
-	"primeradiant.com/serf/agent/execenv"
-	"primeradiant.com/serf/agent/internal/clock"
-	"primeradiant.com/serf/agent/internal/contextmgr"
-	"primeradiant.com/serf/agent/internal/goal"
-	"primeradiant.com/serf/agent/internal/hooks"
-	"primeradiant.com/serf/agent/internal/installid"
-	"primeradiant.com/serf/agent/internal/mcp"
-	"primeradiant.com/serf/agent/internal/tool"
-	"primeradiant.com/serf/agent/mcpconfig"
-	"primeradiant.com/serf/agent/plugin"
-	"primeradiant.com/serf/agent/provenance"
-	"primeradiant.com/serf/agent/provider"
-	"primeradiant.com/serf/agent/sandbox"
-	"primeradiant.com/serf/agent/schema"
-	"primeradiant.com/serf/agent/skill"
-	"primeradiant.com/serf/agent/task"
-	"primeradiant.com/serf/agent/transcript"
-	"primeradiant.com/serf/llm"
+	"primeradiant.com/evener/agent/envctx"
+	"primeradiant.com/evener/agent/events"
+	"primeradiant.com/evener/agent/execenv"
+	"primeradiant.com/evener/agent/internal/clock"
+	"primeradiant.com/evener/agent/internal/contextmgr"
+	"primeradiant.com/evener/agent/internal/goal"
+	"primeradiant.com/evener/agent/internal/hooks"
+	"primeradiant.com/evener/agent/internal/installid"
+	"primeradiant.com/evener/agent/internal/mcp"
+	"primeradiant.com/evener/agent/internal/tool"
+	"primeradiant.com/evener/agent/mcpconfig"
+	"primeradiant.com/evener/agent/plugin"
+	"primeradiant.com/evener/agent/provenance"
+	"primeradiant.com/evener/agent/provider"
+	"primeradiant.com/evener/agent/sandbox"
+	"primeradiant.com/evener/agent/schema"
+	"primeradiant.com/evener/agent/skill"
+	"primeradiant.com/evener/agent/task"
+	"primeradiant.com/evener/agent/transcript"
+	"primeradiant.com/evener/llm"
 )
 
 func (s *Session) emitWithJobTreeRevision(kind events.EventKind, data events.EventData, p *provenance.Causal) {
@@ -89,7 +89,7 @@ type Session struct {
 	stateDir   string
 	installID  string
 	// origin marks how the session was launched: "test" for agentic-testing
-	// runs (set from SERF_SESSION_ORIGIN on fresh create), empty for normal
+	// runs (set from EVENER_SESSION_ORIGIN on fresh create), empty for normal
 	// sessions. Preserved across resume from the persisted SessionMeta.Origin.
 	// Surfaced back out via Meta().Origin so the hub can classify an
 	// all-"test" project into the "Test runs" group.
@@ -196,7 +196,7 @@ type Session struct {
 	// (spec §3 step 7) and the occupancy-lock choreography.
 	//
 	// worktreeCurrentManaged is true when worktreeCurrentPath is a
-	// serf-managed worktree (entered via create, or switch by name/managed
+	// evener-managed worktree (entered via create, or switch by name/managed
 	// path) rather than a non-managed path-entered one — it gates whether the
 	// occupancy-lock rule applies and is persisted alongside worktreeCurrentPath
 	// (SessionMeta.WorktreeManaged, spec §7).
@@ -464,8 +464,8 @@ type Session struct {
 	pendingTranscriptWarnings []events.WarningData
 	hookRunner                *hooks.Runner
 	// pluginCommands is the union of every loaded plugin's slash commands
-	// (namespaced "plugin-name:command-name") and all serf-wide commands
-	// (bare-name keys from .serf/commands and the user-global config dir).
+	// (namespaced "plugin-name:command-name") and all evener-wide commands
+	// (bare-name keys from .evener/commands and the user-global config dir).
 	// Looked up by expandSlashCommand via plugin.ResolveCommand.
 	pluginCommands map[string]plugin.Command
 	// pendingSessionStartKind defers restore SessionStart hook output until the
@@ -487,7 +487,7 @@ type Session struct {
 	pluginAgents                   map[string]plugin.Agent
 	pluginMCPConfigs               []mcpconfig.ServerConfig
 	// unsupportedPluginHookEvents accumulates all Claude-recognized events
-	// declared by loaded plugins that serf does not currently fire.
+	// declared by loaded plugins that evener does not currently fire.
 	// Populated by initPlugins; used by DetailedStatus for diagnostics.
 	unsupportedPluginHookEvents map[plugin.HookEvent]bool
 
@@ -1205,7 +1205,7 @@ func (s *Session) applyModelRequestMetadata(profile *provider.Profile, req *llm.
 		req.SessionID = s.id
 		req.ThreadID = s.id
 		if openAIPromptCacheSupported && strings.TrimSpace(req.PromptCacheKey) == "" {
-			req.PromptCacheKey = "serf-session-" + s.id
+			req.PromptCacheKey = "evener-session-" + s.id
 		}
 	}
 	if openAIPromptCacheSupported && strings.TrimSpace(req.PromptCacheRetention) == "" {

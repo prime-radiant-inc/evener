@@ -3,9 +3,9 @@ package agent
 import (
 	"testing"
 
-	"primeradiant.com/serf/agent/internal/sessionlog"
-	"primeradiant.com/serf/agent/schema"
-	"primeradiant.com/serf/llm"
+	"primeradiant.com/evener/agent/internal/sessionlog"
+	"primeradiant.com/evener/agent/schema"
+	"primeradiant.com/evener/llm"
 )
 
 // mustNewSessionLog is a test helper that creates a sessionlog.SessionLog or

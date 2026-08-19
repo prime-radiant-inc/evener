@@ -6,11 +6,11 @@
 
 **Architecture:** A new `execenv.StreamingExecutor` optional interface streams a process's output to a per-job log and returns a wait/signal handle. A new `JobManager` in package `agent` holds the per-session `*jobstore.Store` plus an in-memory overlay of running jobs, and drives create/list/read/stop. Durable terminal notifications reuse the existing `EntryNotification` queue (`pendingNotifs` → `acceptNotificationInput`) with a new `<job-notification>` format and the `filterDeliverableNotifications` predicate re-keyed onto durable records. Restart reconciliation runs in `RestoreSessionFromMetaWithConfig`. The new job tools register alongside the legacy subagent tools (a temporary parallel surface; Phase 6 removes the legacy one).
 
-**Tech Stack:** Go, `agent/internal/jobstore` (Phase 1), `agent/execenv`, the existing tool registry (`tool.RegisteredTool`/`Exec`), `EntryNotification`. Module: `primeradiant.com/serf/agent`.
+**Tech Stack:** Go, `agent/internal/jobstore` (Phase 1), `agent/execenv`, the existing tool registry (`tool.RegisteredTool`/`Exec`), `EntryNotification`. Module: `primeradiant.com/evener/agent`.
 
 This is **Phase 2 of 6**, implementing spec `docs/superpowers/specs/2026-06-08-job-control-design.md` §2 (seam), §5.3 (shell), §5.6/§5.7/§5.8 (read/list/stop), §6 (notifications), §7 (reconciliation). It depends on Phase 1 (`agent/internal/jobstore`) being merged.
 
-**Conventions:** run Go commands from `/Users/jesse/prime-radiant/toil-suite/serf/agent`; package tests with `cd agent && go test ./... -run <name>`. Commit per task. Full `make test` + `make lint` from repo root before the final task.
+**Conventions:** run Go commands from `/Users/jesse/prime-radiant/toil-suite/evener/agent`; package tests with `cd agent && go test ./... -run <name>`. Commit per task. Full `make test` + `make lint` from repo root before the final task.
 
 ---
 
@@ -65,7 +65,7 @@ Helper for the per-session jobs directory (used everywhere):
 // survive restart, which the contract permits).
 func jobsDir(stateDir, sessionID string) string {
 	if strings.TrimSpace(stateDir) == "" {
-		return filepath.Join(os.TempDir(), "serf-jobs", sessionID)
+		return filepath.Join(os.TempDir(), "evener-jobs", sessionID)
 	}
 	return filepath.Join(stateDir, "sessions", sessionID)
 }
@@ -121,7 +121,7 @@ type StreamHandle struct {
 - [ ] **Step 5: Commit**
 
 ```bash
-cd /Users/jesse/prime-radiant/toil-suite/serf
+cd /Users/jesse/prime-radiant/toil-suite/evener
 git add agent/execenv/execenv.go agent/execenv/streaming_test.go
 git commit -m "feat(execenv): StreamingExecutor optional interface + handle"
 ```
@@ -228,7 +228,7 @@ NOTE for the implementer: the file is package `execenv`, so refer to `StreamHand
 - [ ] **Step 5: Commit**
 
 ```bash
-cd /Users/jesse/prime-radiant/toil-suite/serf
+cd /Users/jesse/prime-radiant/toil-suite/evener
 git add agent/execenv/local.go agent/execenv/streaming_test.go
 git commit -m "feat(execenv): LocalExecutionEnvironment.StreamCommand"
 ```
@@ -252,7 +252,7 @@ import (
 	"testing"
 	"time"
 
-	"primeradiant.com/serf/agent/internal/jobstore"
+	"primeradiant.com/evener/agent/internal/jobstore"
 )
 
 func newTestJM(t *testing.T) *jobManager {
@@ -303,7 +303,7 @@ Use the Phase 1 jobstore API exactly (`Open`, `Append`, `Load`, `OpenOutput`, `T
 - [ ] **Step 5: Commit**
 
 ```bash
-cd /Users/jesse/prime-radiant/toil-suite/serf
+cd /Users/jesse/prime-radiant/toil-suite/evener
 git add agent/jobs.go agent/jobs_test.go
 git commit -m "feat(agent): JobManager skeleton over jobstore"
 ```
@@ -327,8 +327,8 @@ import (
 	"testing"
 	"time"
 
-	"primeradiant.com/serf/agent/execenv"
-	"primeradiant.com/serf/agent/internal/jobstore"
+	"primeradiant.com/evener/agent/execenv"
+	"primeradiant.com/evener/agent/internal/jobstore"
 )
 
 func newShellTestRig(t *testing.T) (*jobManager, execenv.StreamingExecutor) {
@@ -395,7 +395,7 @@ func TestRunShellBackgroundReturnsImmediately(t *testing.T) {
 - [ ] **Step 5: Commit**
 
 ```bash
-cd /Users/jesse/prime-radiant/toil-suite/serf
+cd /Users/jesse/prime-radiant/toil-suite/evener
 git add agent/job_shell.go agent/job_shell_test.go
 git commit -m "feat(agent): shell job lifecycle (ephemeral/promotion/background)"
 ```
@@ -459,7 +459,7 @@ func TestFormatJobNotification(t *testing.T) {
 - [ ] **Step 5: Commit**
 
 ```bash
-cd /Users/jesse/prime-radiant/toil-suite/serf
+cd /Users/jesse/prime-radiant/toil-suite/evener
 git add agent/job_notify.go agent/session.go agent/session_lifecycle.go agent/job_notify_test.go
 git commit -m "feat(agent): durable job terminal-notification bridge"
 ```
@@ -482,7 +482,7 @@ import (
 	"testing"
 	"time"
 
-	"primeradiant.com/serf/agent/internal/jobstore"
+	"primeradiant.com/evener/agent/internal/jobstore"
 )
 
 func TestReconcileOnRestoreFinalizesLostJob(t *testing.T) {
@@ -530,7 +530,7 @@ and add `jobs *jobManager` to the `Session` struct (`agent/session.go`). In `New
 - [ ] **Step 5: Commit**
 
 ```bash
-cd /Users/jesse/prime-radiant/toil-suite/serf
+cd /Users/jesse/prime-radiant/toil-suite/evener
 git add agent/jobs.go agent/session.go agent/session_init.go agent/job_reconcile_test.go
 git commit -m "feat(agent): restart reconciliation wiring for jobs"
 ```
@@ -566,7 +566,7 @@ func TestDefShellHasJobParams(t *testing.T) {
 - [ ] **Step 5: Commit**
 
 ```bash
-cd /Users/jesse/prime-radiant/toil-suite/serf
+cd /Users/jesse/prime-radiant/toil-suite/evener
 git add agent/internal/tool/definitions.go agent/internal/tool/definitions_test.go
 git commit -m "feat(tool): rework DefShell for job-capable params"
 ```
@@ -602,7 +602,7 @@ func TestShellToolBackgroundReturnsJobID(t *testing.T) {
 - [ ] **Step 5: Commit**
 
 ```bash
-cd /Users/jesse/prime-radiant/toil-suite/serf
+cd /Users/jesse/prime-radiant/toil-suite/evener
 git add agent/session_tools_shell.go agent/session_tool_registry.go agent/session_tools_shell_test.go
 git commit -m "feat(agent): route shell tool through JobManager"
 ```
@@ -633,7 +633,7 @@ git commit -m "feat(agent): route shell tool through JobManager"
 - [ ] **Step 5: Commit**
 
 ```bash
-cd /Users/jesse/prime-radiant/toil-suite/serf
+cd /Users/jesse/prime-radiant/toil-suite/evener
 git add agent/internal/tool/definitions.go agent/session_tools_jobs.go agent/session_tool_registry.go agent/provider/profile.go agent/session_tools_jobs_test.go
 git commit -m "feat(agent): job_read_output/job_list/job_stop tools"
 ```
@@ -646,23 +646,23 @@ git commit -m "feat(agent): job_read_output/job_list/job_stop tools"
 
 - [ ] **Step 1: Run the full module test + lint**
 
-Run: `cd /Users/jesse/prime-radiant/toil-suite/serf && make test && make lint`
+Run: `cd /Users/jesse/prime-radiant/toil-suite/evener && make test && make lint`
 Expected: all modules PASS; lint clean (golangci ×4 + namingcheck/internalcheck/docscheck). Fix any fallout (the `DefShell` param change and the new capability may touch parity/snapshot tests — update them to the new shell shape).
 
-- [ ] **Step 2: Live smoke** (per `reference_serf_live_run` recipe — build a standalone binary, do NOT touch a running serve):
+- [ ] **Step 2: Live smoke** (per `reference_evener_live_run` recipe — build a standalone binary, do NOT touch a running serve):
 
 ```bash
-cd /Users/jesse/prime-radiant/toil-suite/serf
-go build -o /tmp/serf ./cmd/serf
+cd /Users/jesse/prime-radiant/toil-suite/evener
+go build -o /tmp/evener ./cmd/evener
 . "$PWD/.env"
-# In a scratch dir, run serf and ask it to start a background sleep, then job_list / job_read_output / job_stop.
+# In a scratch dir, run evener and ask it to start a background sleep, then job_list / job_read_output / job_stop.
 ```
 Expected: a background shell job returns a `job_id`; `job_list` shows it `running`; `job_stop` returns `cancelled`; a foreground command that exceeds a small `block_timeout_ms` emits a `<job-notification ... reason="foreground_timeout">`.
 
 - [ ] **Step 3: Commit any test/lint fixups**
 
 ```bash
-cd /Users/jesse/prime-radiant/toil-suite/serf
+cd /Users/jesse/prime-radiant/toil-suite/evener
 git add -A   # only after git status review
 git commit -m "test(job-control): phase 2 suite + parity fixups green"
 ```

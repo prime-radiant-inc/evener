@@ -1,7 +1,7 @@
 # Motion scenes for the improvements movie — driven by record.mjs, which
 # also makes each scene a live E2E: assert_* failures abort the pass, so a
 # shipped movie is a passed test. One continuous pass against the vite dev
-# server (5199) and a scratch repo at /home/jesse/tmp/serf-demo-e2e: the
+# server (5199) and a scratch repo at /home/jesse/tmp/evener-demo-e2e: the
 # session spawned in the first scene is the one deleted in the last.
 scenes:
   - id: spawn-live
@@ -14,7 +14,7 @@ scenes:
       - wait_for: 'textarea[aria-label="Prompt"]'
       - click: '#spawn-cwd'
       - wait_for: 'input[role="combobox"]'
-      - type: "/home/jesse/tmp/serf-demo-e2e"
+      - type: "/home/jesse/tmp/evener-demo-e2e"
       - key: Enter
       - pause: 0.8
       - key: Escape

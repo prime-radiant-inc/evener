@@ -4,7 +4,7 @@
 
 **Goal:** Replace the hand-rolled shell selftest wave with a small tested Go runner, delete the disk-reclaim reclamation subsystem in favor of enforced per-suite cleanup, and remove every wall-clock dependency and loaded-box tolerance from the selftest suites.
 
-**Architecture:** A new `cmd/serf-selftest` Go tool owns the parallel wave: process groups, TERM forwarding with a KILL grace, per-suite TMPDIR isolation, and a leftover-files check that FAILS any suite that does not clean up after itself. The 55-line Makefile shell recipe and its 1,100-line shell selftest (`make-selftest-selftest.sh`) are deleted; the runner's contract lives in ordinary Go tests that synchronize on FIFOs and process exits, never on sleeps. `disk-reclaim.sh` shrinks to a ~60-line `disk-preflight.sh` (free-space floor + bounded GOCACHE probe) because the check came from real disk-full incidents (kata 98x9, 6jxs); the worktree-classification/reclaim machinery and its 700-line selftest are deleted.
+**Architecture:** A new `cmd/evener-selftest` Go tool owns the parallel wave: process groups, TERM forwarding with a KILL grace, per-suite TMPDIR isolation, and a leftover-files check that FAILS any suite that does not clean up after itself. The 55-line Makefile shell recipe and its 1,100-line shell selftest (`make-selftest-selftest.sh`) are deleted; the runner's contract lives in ordinary Go tests that synchronize on FIFOs and process exits, never on sleeps. `disk-reclaim.sh` shrinks to a ~60-line `disk-preflight.sh` (free-space floor + bounded GOCACHE probe) because the check came from real disk-full incidents (kata 98x9, 6jxs); the worktree-classification/reclaim machinery and its 700-line selftest are deleted.
 
 **Tech Stack:** Go (root module, stdlib only: os/exec, syscall, os/signal), bash for the remaining suite scripts.
 
@@ -20,12 +20,12 @@
 
 ---
 
-### Task 1: `cmd/serf-selftest` runner — happy path, failure replay, leak check
+### Task 1: `cmd/evener-selftest` runner — happy path, failure replay, leak check
 
 **Files:**
-- Create: `cmd/serf-selftest/main.go`
-- Create: `cmd/serf-selftest/wave.go`
-- Test: `cmd/serf-selftest/wave_test.go`
+- Create: `cmd/evener-selftest/main.go`
+- Create: `cmd/evener-selftest/wave.go`
+- Test: `cmd/evener-selftest/wave_test.go`
 
 **Interfaces:**
 - Produces: `runWave(cfg waveConfig) int` where `waveConfig{ScriptsDir string, Suites []string, KillGrace time.Duration, Out io.Writer, Signals <-chan os.Signal}`; returns the process exit code (0 ok, 1 suite failure, 128+sig on interrupt). `main.go` is a thin flag-parsing wrapper (`-scripts-dir`, `-kill-grace`).
@@ -65,16 +65,16 @@ func TestSuiteLeavingTempFilesFails(t *testing.T)    // suite exits 0 but writes
 func TestSuiteGetsPrivateTmpdir(t *testing.T)        // suite writes "$TMPDIR" to a result file the test reads back; two suites must see different, existing dirs
 ```
 
-- [ ] **Step 2: Run to verify failure**: `go test ./cmd/serf-selftest/` → FAIL (undefined runWave).
+- [ ] **Step 2: Run to verify failure**: `go test ./cmd/evener-selftest/` → FAIL (undefined runWave).
 - [ ] **Step 3: Implement `wave.go`.** One goroutine per suite. Per suite: `os.MkdirTemp` run dir already created by runWave; suite tmp at `<run>/<name>/tmp`, log at `<run>/<name>.log`; `exec.Command(filepath.Join(cfg.ScriptsDir, name+"-selftest.sh"))` with `Env` overriding `TMPDIR`, `SysProcAttr{Setpgid: true}`, stdout+stderr to the log file. After Wait: if exit 0, leak-check the tmp dir (`os.ReadDir`; non-empty → synthesized failure listing the entries). Results collected over a channel; ordered report in `cfg.Suites` order: `PASS  %-26s %ds` / `FAIL  %-26s` + log replay. Remove the run dir before returning.
-- [ ] **Step 4:** `go test ./cmd/serf-selftest/` → PASS. `gofmt -l cmd/serf-selftest` clean.
+- [ ] **Step 4:** `go test ./cmd/evener-selftest/` → PASS. `gofmt -l cmd/evener-selftest` clean.
 - [ ] **Step 5: Commit** `feat(selftest): add Go wave runner with enforced suite cleanup`.
 
 ### Task 2: runner signal handling — TERM forwarding, KILL grace, descendant reaping
 
 **Files:**
-- Modify: `cmd/serf-selftest/wave.go`
-- Test: `cmd/serf-selftest/wave_test.go`
+- Modify: `cmd/evener-selftest/wave.go`
+- Test: `cmd/evener-selftest/wave_test.go`
 
 **Interfaces:**
 - Consumes: `runWave` from Task 1; `cfg.Signals` channel and `cfg.KillGrace` become live.
@@ -105,9 +105,9 @@ func TestSuiteGetsPrivateTmpdir(t *testing.T)        // suite writes "$TMPDIR" t
 // No assertion measures elapsed time — the only clock is the injected grace.
 ```
 
-- [ ] **Step 2:** `go test ./cmd/serf-selftest/ -run 'Interrupt|Descendant|TermIgnoring'` → FAIL.
+- [ ] **Step 2:** `go test ./cmd/evener-selftest/ -run 'Interrupt|Descendant|TermIgnoring'` → FAIL.
 - [ ] **Step 3: Implement.** Each suite goroutine owns its child: a watcher goroutine selects on `shutdown` (closed by the signal listener) vs `done`. On shutdown: per-suite mutex, if not done `syscall.Kill(-pgid, SIGTERM)`; then select done vs `time.After(cfg.KillGrace)` → `syscall.Kill(-pgid, SIGKILL)` under the same mutex/done check. The Wait side sets done under the mutex the moment Wait returns, so no signal ever targets a reaped (reusable) pgid. Signal listener records the first signal; final exit code is `128+sig` when interrupted. Interrupted suites report as FAIL without log replay flood — replay only suites that failed on their own before the interrupt.
-- [ ] **Step 4:** full `go test ./cmd/serf-selftest/` → PASS. `go vet ./cmd/serf-selftest/` clean.
+- [ ] **Step 4:** full `go test ./cmd/evener-selftest/` → PASS. `go vet ./cmd/evener-selftest/` clean.
 - [ ] **Step 5: Commit** `feat(selftest): signal-safe wave shutdown with KILL grace`.
 
 ### Task 3: wire the Makefile to the runner; delete the shell recipe and make-selftest-selftest.sh
@@ -118,7 +118,7 @@ func TestSuiteGetsPrivateTmpdir(t *testing.T)        // suite writes "$TMPDIR" t
 - Modify: `docs/testing.md` (references to the shell wave / make-selftest)
 
 **Interfaces:**
-- Consumes: `go run ./cmd/serf-selftest` CLI from Tasks 1-2.
+- Consumes: `go run ./cmd/evener-selftest` CLI from Tasks 1-2.
 - Produces: `make selftest` behavior identical from the outside (quiet PASS lines, failing log replay, nonzero exit, interrupt-safe).
 
 - [ ] **Step 1:** Replace the recipe:
@@ -126,21 +126,21 @@ func TestSuiteGetsPrivateTmpdir(t *testing.T)        // suite writes "$TMPDIR" t
 ```make
 # selftest hangs off `make test` because a script selftest is a test. It stays
 # off `make lint` because run-module-lint-selftest.sh drives a fixture `make
-# lint` of its own. The wave runner (cmd/serf-selftest) owns parallel spawn,
+# lint` of its own. The wave runner (cmd/evener-selftest) owns parallel spawn,
 # signal forwarding, per-suite TMPDIR isolation, and the leftover-files check
 # that fails any suite that does not clean up after itself; its contract is
-# pinned by cmd/serf-selftest/wave_test.go, which runs in the ordinary Go test
+# pinned by cmd/evener-selftest/wave_test.go, which runs in the ordinary Go test
 # wave rather than here.
 selftest:
-	@go run ./cmd/serf-selftest $(SELFTEST_SCRIPTS)
+	@go run ./cmd/evener-selftest $(SELFTEST_SCRIPTS)
 ```
 
 Drop `make-selftest` from `SELFTEST_SCRIPTS`. Trim the SELFTEST_SCRIPTS comment (lines 179-186) of the run-module-lint assertion count and fuzz-wave provenance only if stale; keep the "each is the ONLY thing that pins its script's contract" sentence.
 
 - [ ] **Step 2:** `git rm scripts/make-selftest-selftest.sh`.
-- [ ] **Step 3:** Update `docs/testing.md` mentions of the wave mechanics/make-selftest to point at `cmd/serf-selftest`.
-- [ ] **Step 4: Verify:** `make selftest` → all suites PASS (any suite that FAILs the new leak check gets fixed here: add the missing `trap 'rm -rf ...' EXIT` to that suite — each such fix is part of this task). Then Ctrl-C behavior: `make selftest & sleep 2; kill -INT $!` is NOT the verification (wall clock); instead run `go run ./cmd/serf-selftest tmux-read` and interrupt via the Go tests already covering it — the make-level check is just that an interrupted run leaves no `serf-selftest` temp dirs behind (`ls ${TMPDIR:-/tmp} | grep serf-selftest` empty).
-- [ ] **Step 5: Commit** `feat(make): drive the selftest wave with cmd/serf-selftest`.
+- [ ] **Step 3:** Update `docs/testing.md` mentions of the wave mechanics/make-selftest to point at `cmd/evener-selftest`.
+- [ ] **Step 4: Verify:** `make selftest` → all suites PASS (any suite that FAILs the new leak check gets fixed here: add the missing `trap 'rm -rf ...' EXIT` to that suite — each such fix is part of this task). Then Ctrl-C behavior: `make selftest & sleep 2; kill -INT $!` is NOT the verification (wall clock); instead run `go run ./cmd/evener-selftest tmux-read` and interrupt via the Go tests already covering it — the make-level check is just that an interrupted run leaves no `evener-selftest` temp dirs behind (`ls ${TMPDIR:-/tmp} | grep evener-selftest` empty).
+- [ ] **Step 5: Commit** `feat(make): drive the selftest wave with cmd/evener-selftest`.
 
 ### Task 4: remove disk-reclaim (no replacement — leaks get fixed, not tolerated)
 
@@ -173,9 +173,9 @@ Drop `make-selftest` from `SELFTEST_SCRIPTS`. Trim the SELFTEST_SCRIPTS comment 
 - Modify: `docs/testing.md`, `docs/conventions/agent-fleets.md` (disk-reclaim mentions → report tools + preflight)
 
 **Interfaces:**
-- Produces: `scripts/disk-preflight.sh` — no flags. Silent exit 0 when free space ≥ floor and GOCACHE answers. Exit 1 with a named diagnosis otherwise. Env: `SERF_DISK_MIN_FREE_GB` (default 5), `SERF_GOCACHE_PROBE_TIMEOUT` (default 10, integer seconds), `SERF_GOCACHE_PROBE_CMD` (test seam, replaces the probe command — carried over verbatim from disk-reclaim.sh:163).
+- Produces: `scripts/disk-preflight.sh` — no flags. Silent exit 0 when free space ≥ floor and GOCACHE answers. Exit 1 with a named diagnosis otherwise. Env: `EVENER_DISK_MIN_FREE_GB` (default 5), `EVENER_GOCACHE_PROBE_TIMEOUT` (default 10, integer seconds), `EVENER_GOCACHE_PROBE_CMD` (test seam, replaces the probe command — carried over verbatim from disk-reclaim.sh:163).
 
-- [ ] **Step 1: Write `disk-preflight-selftest.sh` first** (failing): scenarios (a) healthy fixture → silent, exit 0; (b) `SERF_DISK_MIN_FREE_GB=999999` → exit 1, message names the floor, the free figure, and points at `scripts/report-tmp-debris.sh` and `scripts/report-orphaned-worktrees.sh`; (c) stalled probe: `SERF_GOCACHE_PROBE_CMD` set to a script that blocks reading a FIFO no one writes, `SERF_GOCACHE_PROBE_TIMEOUT=1` → exit 1, message says STALLED and names the GOCACHE path (the 1s here is the smallest supported value of a deliberately-tripped timeout, per Global Constraints); (d) `--help` prints the header. Harness: same `ok`/`assert_eq` pattern as `scripts/setup-gocache-selftest.sh`, `mktemp -d` + `trap rm -rf EXIT`.
+- [ ] **Step 1: Write `disk-preflight-selftest.sh` first** (failing): scenarios (a) healthy fixture → silent, exit 0; (b) `EVENER_DISK_MIN_FREE_GB=999999` → exit 1, message names the floor, the free figure, and points at `scripts/report-tmp-debris.sh` and `scripts/report-orphaned-worktrees.sh`; (c) stalled probe: `EVENER_GOCACHE_PROBE_CMD` set to a script that blocks reading a FIFO no one writes, `EVENER_GOCACHE_PROBE_TIMEOUT=1` → exit 1, message says STALLED and names the GOCACHE path (the 1s here is the smallest supported value of a deliberately-tripped timeout, per Global Constraints); (d) `--help` prints the header. Harness: same `ok`/`assert_eq` pattern as `scripts/setup-gocache-selftest.sh`, `mktemp -d` + `trap rm -rf EXIT`.
 - [ ] **Step 2: Implement `disk-preflight.sh`:** free-space floor via `df -Pk .` awk column 4; GOCACHE path via `go env GOCACHE`; bounded probe lifted from `disk-reclaim.sh` `gocache_probe()` (lines 150-176: backgrounded probe + 20/s status polls capped at the timeout — the poll is a failure ceiling, not sync) with `mkdir -p "$gocache"` as the default probe command; diagnosis text carried from disk-reclaim.sh:238-246 (kata r07s wording). `--help` via the same awk header idiom.
 - [ ] **Step 3:** run the new selftest → PASS. Rewire every consumer listed above; `git rm` the two old scripts.
 - [ ] **Step 4: Verify:** `scripts/merge-approval-gate-selftest.sh` PASS, `go test . -run 'TestNoCardOrScriptPatternKills|RuntimePair' -count=1` PASS, `make selftest` PASS, `grep -rn disk-reclaim scripts/ Makefile docs/ *.go` → no hits.
@@ -184,7 +184,7 @@ Drop `make-selftest` from `SELFTEST_SCRIPTS`. Trim the SELFTEST_SCRIPTS comment 
 ### Task 5: remove remaining wall-clock waits from suites
 
 **Files:**
-- Modify: `scripts/run-module-tests-selftest.sh:531-533` (`SERF_ROOT_PACKAGE_LIST_TIMEOUT=5` → `1`; the `exec sleep 20` ready-keeper and watchdog ceilings shrink to match: keeper 6, watchdogs 10→5)
+- Modify: `scripts/run-module-tests-selftest.sh:531-533` (`EVENER_ROOT_PACKAGE_LIST_TIMEOUT=5` → `1`; the `exec sleep 20` ready-keeper and watchdog ceilings shrink to match: keeper 6, watchdogs 10→5)
 - Modify: `scripts/agent-test-shards-selftest.sh` (replace `wait_for_file` 0.01s-poll loops with FIFO reads; replace `sleep 1000` blocking children with `read _ <fifo` blocks)
 
 **Interfaces:**
@@ -217,8 +217,8 @@ Drop `make-selftest` from `SELFTEST_SCRIPTS`. Trim the SELFTEST_SCRIPTS comment 
 **Rationale (Jesse's directives):** (a) `selftest` names nothing, and `test-dev-tooling` was still too vague — the wave tests development tooling, so the target is `test-dev-tooling`. (b) The suites test tooling, not the product: they belong in the merge gate (where tooling regressions matter) and on demand, not in every inner-loop `make test`. The `SELFTEST=1` stream plumbing inside run-module-tests.sh is removed outright, not defaulted off.
 
 **Files:**
-- Rename: `cmd/serf-selftest/` → `cmd/serf-test-dev-tooling/` (`git mv`; update the doc comment in main.go; the binary name in usage text follows). Individual `scripts/X-selftest.sh` files keep their names — each is genuinely a self-test of script X.
-- Modify: `Makefile` — target `selftest:` → `test-dev-tooling:` (recipe becomes `go run ./cmd/serf-test-dev-tooling $(DEV_TOOLING_TEST_SCRIPTS)`); variable `SELFTEST_SCRIPTS` → `DEV_TOOLING_TEST_SCRIPTS`; `.PHONY` line follows; `test:` drops `SELFTEST=1 ` from the run-module-tests invocation; `merge-approval-gate:` appends `@$(MAKE) test-dev-tooling` as its final serial step; comments above the target and variable rewritten to match.
+- Rename: `cmd/evener-selftest/` → `cmd/evener-test-dev-tooling/` (`git mv`; update the doc comment in main.go; the binary name in usage text follows). Individual `scripts/X-selftest.sh` files keep their names — each is genuinely a self-test of script X.
+- Modify: `Makefile` — target `selftest:` → `test-dev-tooling:` (recipe becomes `go run ./cmd/evener-test-dev-tooling $(DEV_TOOLING_TEST_SCRIPTS)`); variable `SELFTEST_SCRIPTS` → `DEV_TOOLING_TEST_SCRIPTS`; `.PHONY` line follows; `test:` drops `SELFTEST=1 ` from the run-module-tests invocation; `merge-approval-gate:` appends `@$(MAKE) test-dev-tooling` as its final serial step; comments above the target and variable rewritten to match.
 - Modify: `scripts/run-module-tests.sh` — delete the SELFTEST stream entirely: the `SELFTEST=${SELFTEST:-0}` default (line 47), the `selftest` module-name-collision guard (lines 90-93), and the stream spawn/finish block (lines 395-404). The name `selftest` stops being special.
 - Modify: `scripts/run-module-tests-selftest.sh` — delete the scenarios that pinned the SELFTEST stream (name collision, wave order of the selftest stream, its log accounting); the remaining scenarios must still PASS.
 - Modify: `scripts/merge-approval-gate-selftest.sh` — assert the gate invokes `test-dev-tooling` after `test` (same recorded-fake-make + `assert_before` idiom the suite already uses for lint/build/test ordering).
@@ -228,7 +228,7 @@ Drop `make-selftest` from `SELFTEST_SCRIPTS`. Trim the SELFTEST_SCRIPTS comment 
 - Consumes: the wave runner from Tasks 1-3 (path changes only).
 - Produces: `make test` = product only (Go modules + frontend); `make merge-approval-gate` = lint → build → test → test-dev-tooling; `make test-dev-tooling` = the tooling wave, on demand.
 
-- [ ] **Step 1:** `git mv cmd/serf-selftest cmd/serf-test-dev-tooling`; Makefile edits above; `go test ./cmd/serf-test-dev-tooling/` PASS.
+- [ ] **Step 1:** `git mv cmd/evener-selftest cmd/evener-test-dev-tooling`; Makefile edits above; `go test ./cmd/evener-test-dev-tooling/` PASS.
 - [ ] **Step 2:** Remove the SELFTEST stream from run-module-tests.sh and its scenarios from run-module-tests-selftest.sh; run `scripts/run-module-tests-selftest.sh` → PASS.
 - [ ] **Step 3:** Update merge-approval-gate-selftest.sh; run it → PASS.
 - [ ] **Step 4:** `make test-dev-tooling` → all suites PASS. `grep -n selftest Makefile` shows only the per-suite convenience targets (fuzz-*-selftest et al) and TOOLING_TEST_SCRIPTS suite names; `make test` output contains no tooling stream.

@@ -3,7 +3,7 @@
 **What this covers**: the font-size preset system —
 `body[data-font-size="s|m|l|xl"]` selecting a `--font-scale` multiplier for
 the `--font-size-*` ramp, set via Settings → Theme and persisted to
-`localStorage` key `serf.prefs.fontSize` (documented in
+`localStorage` key `evener.prefs.fontSize` (documented in
 `docs/web-ui/parity/parity-m7-settings.md` "3. Theme").
 
 ## Pre-state
@@ -83,12 +83,12 @@ the `--font-size-*` ramp, set via Settings → Theme and persisted to
 - **This run's actual coverage**: the `claude-in-chrome` browser tool was not
   connected in this session, so the visual/screenshot verification in step 3
   was **not driven live**. Backing evidence used instead:
-  - `cmd/serf-hub/frontend/src/styles/display-gates.test.ts` checks the
+  - `cmd/evener-hub/frontend/src/styles/display-gates.test.ts` checks the
     four shipped `--font-scale` multipliers and verifies every
     `--font-size-*` ramp member routes through it. This verifies the CSS
     artifact that drives the visual change directly (not simulated), just
     not through an actual browser paint.
-  - `cmd/serf-hub/frontend/src/panes/settings/sections/theme.test.tsx`
+  - `cmd/evener-hub/frontend/src/panes/settings/sections/theme.test.tsx`
     exercises the Font size control: choosing XL updates both the preference
     and `document.body.dataset.fontSize`.
   - If re-running with a working browser: first establish the run-owned hub,

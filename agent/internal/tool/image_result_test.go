@@ -10,7 +10,7 @@ import (
 	"image/png"
 	"testing"
 
-	"primeradiant.com/serf/agent/schema"
+	"primeradiant.com/evener/agent/schema"
 )
 
 func TestDispatchedResultAcceptsReadableRasterFormats(t *testing.T) {

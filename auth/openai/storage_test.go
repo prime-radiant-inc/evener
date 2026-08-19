@@ -49,7 +49,7 @@ func TestDefaultStateDirIsUserScoped(t *testing.T) {
 	t.Setenv("XDG_STATE_HOME", xdgStateHome)
 
 	got := DefaultStateDir()
-	want := filepath.Join(xdgStateHome, "serf")
+	want := filepath.Join(xdgStateHome, "evener")
 	if got != want {
 		t.Fatalf("DefaultStateDir() = %q, want %q", got, want)
 	}
@@ -61,7 +61,7 @@ func TestDefaultStateDirWithStateHomeUsesChildEnvStateHome(t *testing.T) {
 	t.Setenv("XDG_STATE_HOME", processStateHome)
 
 	got := DefaultStateDirWithStateHome(childStateHome)
-	want := filepath.Join(childStateHome, "serf")
+	want := filepath.Join(childStateHome, "evener")
 	if got != want {
 		t.Fatalf("DefaultStateDirWithStateHome() = %q, want %q", got, want)
 	}
@@ -308,9 +308,9 @@ func TestAuthRecordValidateAcceptsEmptyProvider(t *testing.T) {
 // TestAuthFilePathContainsTraversal pins that AuthFilePath cannot be steered
 // outside the auth dir by a name carrying path separators or "..": the result
 // always sits directly under <stateDir>/auth. Defense-in-depth for the
-// serf/instance/remove traversal fix.
+// evener/instance/remove traversal fix.
 func TestAuthFilePathContainsTraversal(t *testing.T) {
-	stateDir := "/var/lib/serf"
+	stateDir := "/var/lib/evener"
 	authDir := filepath.Join(stateDir, authDirName)
 	for _, name := range []string{"../../canary", "../escape", "a/b/c", "/abs/path", "openai"} {
 		got := AuthFilePath(stateDir, name)

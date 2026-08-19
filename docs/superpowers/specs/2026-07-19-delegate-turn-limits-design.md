@@ -4,7 +4,7 @@
 **Worktree:** `subagent-limit-study`
 **Origin:** session `local:033rRr4hCSjZLuIs7XT5Nw` hit `tree_at_capacity` while
 every delegate job was terminal and every delegate idle; `job_list` was
-truncated at exactly 50 rows, producing the user-visible belief that "serf is
+truncated at exactly 50 rows, producing the user-visible belief that "evener is
 limited to 50 subagents per session no matter what."
 
 ## Problem statement
@@ -53,12 +53,12 @@ today).
   (`json:"max_concurrent_delegate_turns,omitempty"`); `applyDefaults` maps
   `<= 0` → 50. Snapshot round-trip via `schema.ConfigSnapshot` /
   `toSnapshot` / `fromSnapshot`, same as `MaxSubagentDepth`.
-- CLI: `--max-concurrent-delegates` on `serf run` and `serf serve`
+- CLI: `--max-concurrent-delegates` on `evener run` and `evener serve`
   (`-1` = default), wired exactly like `--max-subagent-depth`
-  (`cmd/serf/main.go`, `run.go`, `serve.go`).
+  (`cmd/evener/main.go`, `run.go`, `serve.go`).
 - Launch surfaces: appwire `maxConcurrentDelegateTurns *int`
   (`appwire/types.go`); hub launchconfig schema + merge
-  (`cmd/serf-hub/internal/launchconfig`); TUI launchconfig. Naming follows
+  (`cmd/evener-hub/internal/launchconfig`); TUI launchconfig. Naming follows
   `docs/conventions/naming.md` (kebab flag / snake config / camel wire).
 - `newTreeCounter(cap int64)` takes the cap; the two root mint sites
   (`agent/session_init.go:124,464`) pass `int64(cfg.MaxConcurrentDelegateTurns)`.
@@ -192,9 +192,9 @@ committable; Phase 3 changes no Phase 1/2 semantics.
 `agent/job_delegate.go`, `agent/subagent_manager.go`,
 `agent/session_tools_jobs.go`, `agent/status.go`,
 `agent/schema/config_snapshot.go`, `appwire/types.go`,
-`cmd/serf/{main,run,serve}.go`,
-`cmd/serf-hub/internal/launchconfig/{schema,merge}.go`,
-`cmd/serf-tui/internal/launchconfig/`,
+`cmd/evener/{main,run,serve}.go`,
+`cmd/evener-hub/internal/launchconfig/{schema,merge}.go`,
+`cmd/evener-tui/internal/launchconfig/`,
 `agent/internal/tool/definitions.go` (job_list offset param),
 `docs/job-control.md`, `docs/conventions/naming.md`,
 plus the test files named in item 6.

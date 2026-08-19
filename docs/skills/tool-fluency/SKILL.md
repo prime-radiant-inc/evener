@@ -1,11 +1,11 @@
 ---
 name: tool-fluency
-description: Use when designing, running, or diagnosing Serf tool-fluency experiments for a real built-in, plugin, or newly added tool. Covers probe manifests, model comparisons, semantic oracles, and interpreting fluency failures without ad-hoc transcript parsing.
+description: Use when designing, running, or diagnosing Evener tool-fluency experiments for a real built-in, plugin, or newly added tool. Covers probe manifests, model comparisons, semantic oracles, and interpreting fluency failures without ad-hoc transcript parsing.
 ---
 
 # Tool Fluency
 
-Use this skill when Jesse asks whether a model uses a Serf tool fluently, asks
+Use this skill when Jesse asks whether a model uses a Evener tool fluently, asks
 for tool-fluency scenarios, or adds a new real tool that needs model-facing
 coverage.
 
@@ -14,7 +14,7 @@ coverage.
 1. Read `tools/tool-fluency/README.md`.
 2. Read `docs/agentic-testing.md` if the Go runner cannot exercise the live
    session shape you need.
-3. For session/job/watch forensics, use `serf-doctor` or the `agent/doctor`
+3. For session/job/watch forensics, use `evener-doctor` or the `agent/doctor`
    package. Do not hand-parse transcript JSONL.
 
 ## Core rules
@@ -23,7 +23,7 @@ coverage.
 - Use structured probes and semantic oracles. Do not make assertions whose main
   claim is "the transcript contains this phrase."
 - Do not write custom Python or jq glue to count tool calls, watches, or
-  delegate sends. Improve the Go runner or `serf-doctor` when a needed
+  delegate sends. Improve the Go runner or `evener-doctor` when a needed
   inspection is missing.
 - Separate task success from fluency. A run can complete the task while still
   showing tool churn, invalid first arguments, polling, or wrong-tool recovery.
@@ -53,13 +53,13 @@ coverage.
 Catalog currently advertised tools:
 
 ```sh
-go run ./tools/tool-fluency/cmd/serf-fluency catalog --model openai/gpt-5.4-mini
+go run ./tools/tool-fluency/cmd/evener-fluency catalog --model openai/gpt-5.4-mini
 ```
 
 Run all current probes:
 
 ```sh
-go run ./tools/tool-fluency/cmd/serf-fluency run \
+go run ./tools/tool-fluency/cmd/evener-fluency run \
   --build \
   --model openai/gpt-5.4-mini \
   --fast-cheap-model openai/gpt-5.4-mini \
@@ -70,8 +70,8 @@ go run ./tools/tool-fluency/cmd/serf-fluency run \
 Run one probe with an existing binary:
 
 ```sh
-go run ./tools/tool-fluency/cmd/serf-fluency run \
-  --serf-bin /tmp/serf \
+go run ./tools/tool-fluency/cmd/evener-fluency run \
+  --evener-bin /tmp/evener \
   --model openai/gpt-5.4-mini \
   --probe read_file.happy_path
 ```
@@ -79,8 +79,8 @@ go run ./tools/tool-fluency/cmd/serf-fluency run \
 Run one probe with an experimental prompt append:
 
 ```sh
-go run ./tools/tool-fluency/cmd/serf-fluency run \
-  --serf-bin /tmp/serf \
+go run ./tools/tool-fluency/cmd/evener-fluency run \
+  --evener-bin /tmp/evener \
   --model openai/gpt-5.4-mini \
   --probe read_file.happy_path \
   --system-prompt-append tools/tool-fluency/variants/example.md
@@ -93,7 +93,7 @@ probe/model/harness as the failure you are trying to explain.
 Run a callback or notification probe with a live session harness:
 
 ```sh
-go run ./tools/tool-fluency/cmd/serf-fluency run \
+go run ./tools/tool-fluency/cmd/evener-fluency run \
   --harness live \
   --model openai/gpt-5.4-mini \
   --fast-cheap-model openai/gpt-5.4-mini \
@@ -162,14 +162,14 @@ The runner writes `result.json`, `stdout.txt`, and `stderr.ndjson` under each
 probe repetition directory. For session/job/watch inspection, prefer:
 
 ```sh
-go run ./cmd/serf-doctor transcript "$SID" --state-dir "$STATE" -format outline
-go run ./cmd/serf-doctor transcript "$SID" --state-dir "$STATE" -count communicate
-go run ./cmd/serf-doctor tree "$SID" --state-dir "$STATE" --observers
-go run ./cmd/serf-doctor watches "$SID" --state-dir "$STATE"
+go run ./cmd/evener-doctor transcript "$SID" --state-dir "$STATE" -format outline
+go run ./cmd/evener-doctor transcript "$SID" --state-dir "$STATE" -count communicate
+go run ./cmd/evener-doctor tree "$SID" --state-dir "$STATE" --observers
+go run ./cmd/evener-doctor watches "$SID" --state-dir "$STATE"
 ```
 
 If a live observer/callback scenario needs a session to remain open across
-notification turns, use `serf-fluency run --harness live`. If that harness
+notification turns, use `evener-fluency run --harness live`. If that harness
 cannot represent the needed shape, use the live scenario process in
 `docs/agentic-testing.md`, or improve the Go runner instead of accumulating
 shell glue.

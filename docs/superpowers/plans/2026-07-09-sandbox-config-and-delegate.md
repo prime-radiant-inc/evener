@@ -13,8 +13,8 @@ every behavior gets a failing test first, then the code, red→green.
   unconfined). So there is **no change to the automatic path**. The only new
   capability is an explicit per-delegate `sandbox` param (Workstream B).
 - **System default is Web/TUI-only.** It lives in launch config (global
-  `~/.serf/launch.toml`), which the hub renders into the spawned `serf serve`.
-  The bare `serf`/`serf serve` CLI keeps its own `--sandbox` flag (default off);
+  `~/.evener/launch.toml`), which the hub renders into the spawned `evener serve`.
+  The bare `evener`/`evener serve` CLI keeps its own `--sandbox` flag (default off);
   it does NOT read launch config. No new env var.
 - **No-escalation floor (security invariant).** A delegate may never request a
   *looser* box than its parent (see the lattice below). Enforced regardless of
@@ -63,7 +63,7 @@ the system default, the launch layer is the per-spawn override. One schema entry
 surfaces all four surfaces. The one load-bearing gap: `ToArgs` does not emit the
 sandbox flags today, so a launch-config choice never reaches the spawned session.
 
-Files (all under `cmd/serf-hub/internal/launchconfig/` unless noted):
+Files (all under `cmd/evener-hub/internal/launchconfig/` unless noted):
 
 1. **`types.go`** `Layer`: add `Sandbox string \`toml:"sandbox,omitempty"\`` and
    `SandboxNet *bool \`toml:"sandbox_net,omitempty"\`` (string uses ""-means-unset
@@ -82,7 +82,7 @@ Files (all under `cmd/serf-hub/internal/launchconfig/` unless noted):
 6. **`schema.go`**: add `LaunchGroupSandbox LaunchGroup = "Sandbox"` and two
    `LaunchOption`s in `LaunchOptionSchema()`:
    - `sandbox` → `LaunchControlSelect`, `Group: LaunchGroupSandbox`,
-     `DefaultableLayers: defaultLayers`, `PerLaunch: true`, `DriverSupport: serfOnly`,
+     `DefaultableLayers: defaultLayers`, `PerLaunch: true`, `DriverSupport: evenerOnly`,
      `Choices: sandboxChoices()` = `{"", "(default: off)"}, {"off","off"},
      {"read-only","read-only"}, {"workspace-write","workspace-write"},
      {"restricted","restricted"}`. Description: what each mode confines + "reads
@@ -90,11 +90,11 @@ Files (all under `cmd/serf-hub/internal/launchconfig/` unless noted):
    - `sandbox_net` → `LaunchControlBoolean`, same group/layers/PerLaunch,
      WireField `sandboxNet`. Description: "Allow network egress when sandboxed.
      Default on."
-7. **TUI** `cmd/serf-tui/internal/launchconfig/launch_schema.go` `launchOptionValue`
+7. **TUI** `cmd/evener-tui/internal/launchconfig/launch_schema.go` `launchOptionValue`
    (~line 101 switch): add `case "sandbox"` (display the string, like
    `context_strategy`) and `case "sandbox_net"` (display via `ptrBoolStr`, like
    `no_project_prompts`).
-8. **TUI** `cmd/serf-tui/internal/launchconfig/launch_settings_panel.go` `applyEdit`
+8. **TUI** `cmd/evener-tui/internal/launchconfig/launch_settings_panel.go` `applyEdit`
    (~line 324 switch): `case "sandbox"` sets `layer.Sandbox = strings.TrimSpace(value)`
    (like `context_strategy`); `case "sandbox_net"` sets `layer.SandboxNet =
    parseOptionalBool(value)` (like `no_project_prompts`). Without these two cases
@@ -188,7 +188,7 @@ create-path branch + the floor.
 ## Gates (both workstreams, before declaring done)
 
 - `go build ./...`, `go vet ./...`, `go test ./...` (incl. `-race` on the delegate
-  + escalation-adjacent packages), `serf-namingcheck`, golangci-lint on changed
+  + escalation-adjacent packages), `evener-namingcheck`, golangci-lint on changed
   files. Test output must be PRISTINE.
 - Commit incrementally (each red→green step). Update this plan's status as you go.
 - Do NOT push, do NOT merge to `wip/sandboxing` or `main`.

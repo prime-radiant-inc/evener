@@ -11,15 +11,15 @@ import (
 	"strings"
 	"time"
 
-	"primeradiant.com/serf/agent/events"
-	"primeradiant.com/serf/agent/execenv"
-	"primeradiant.com/serf/agent/internal/goal"
-	"primeradiant.com/serf/agent/internal/tool"
-	"primeradiant.com/serf/agent/internal/toolname"
-	"primeradiant.com/serf/agent/plugin"
-	"primeradiant.com/serf/agent/schema"
-	"primeradiant.com/serf/agent/task"
-	"primeradiant.com/serf/llm"
+	"primeradiant.com/evener/agent/events"
+	"primeradiant.com/evener/agent/execenv"
+	"primeradiant.com/evener/agent/internal/goal"
+	"primeradiant.com/evener/agent/internal/tool"
+	"primeradiant.com/evener/agent/internal/toolname"
+	"primeradiant.com/evener/agent/plugin"
+	"primeradiant.com/evener/agent/schema"
+	"primeradiant.com/evener/agent/task"
+	"primeradiant.com/evener/llm"
 )
 
 // ctxKey is a private type for context keys in this package.
@@ -474,7 +474,7 @@ func (s *Session) execTool(ctx context.Context, call llm.ToolCallData, finishRea
 	// PreToolUse hooks
 	if s.hookRunner != nil {
 		hi := s.hookInput(plugin.HookPreToolUse)
-		hi.ToolName = toolname.SerfToClaude(call.Name)
+		hi.ToolName = toolname.EvenerToClaude(call.Name)
 		hi.ToolUseID = call.ID
 		if len(call.Arguments) > 0 {
 			_ = json.Unmarshal(call.Arguments, &hi.ToolInput)
@@ -656,7 +656,7 @@ func (s *Session) execTool(ctx context.Context, call llm.ToolCallData, finishRea
 	// PostToolUse hooks
 	if s.hookRunner != nil {
 		hi := s.hookInput(plugin.HookPostToolUse)
-		hi.ToolName = toolname.SerfToClaude(call.Name)
+		hi.ToolName = toolname.EvenerToClaude(call.Name)
 		hi.ToolUseID = call.ID
 		hi.ToolResult = res.FullOutput   // legacy alias
 		hi.ToolResponse = res.FullOutput // official field

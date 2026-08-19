@@ -6,7 +6,7 @@ import (
 	"time"
 
 	"github.com/spf13/afero"
-	"primeradiant.com/serf/fuzz/fault"
+	"primeradiant.com/evener/fuzz/fault"
 )
 
 // FuzzTaskStoreFaultProgram drives the real TaskStore persistence boundary

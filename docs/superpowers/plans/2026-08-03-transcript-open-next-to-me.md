@@ -76,9 +76,9 @@ git commit -m "feat: expose transcript refs in activity jobs"
 ### Task 2: Parse transcript references in the frontend activity model
 
 **Files:**
-- Modify: `cmd/serf-hub/frontend/src/protocol/types.gen.ts` (`JobActivityJob`)
-- Modify: `cmd/serf-hub/frontend/src/panes/session/chrome/activityData.ts:18-36,160-220` (`ActivityJob` and `parseJob`)
-- Test: `cmd/serf-hub/frontend/src/panes/session/chrome/activityData.test.ts`
+- Modify: `cmd/evener-hub/frontend/src/protocol/types.gen.ts` (`JobActivityJob`)
+- Modify: `cmd/evener-hub/frontend/src/panes/session/chrome/activityData.ts:18-36,160-220` (`ActivityJob` and `parseJob`)
+- Test: `cmd/evener-hub/frontend/src/panes/session/chrome/activityData.test.ts`
 
 **Interfaces:**
 - Produces `ActivityJob.transcriptRef?: string` for valid non-empty wire values.
@@ -100,7 +100,7 @@ Use the existing fixture builders in `activityData.test.ts`; keep the tests pure
 
 - [ ] **Step 2: Run the focused tests and verify they fail**
 
-Run: `cd cmd/serf-hub/frontend && npx vitest run src/panes/session/chrome/activityData.test.ts`
+Run: `cd cmd/evener-hub/frontend && npx vitest run src/panes/session/chrome/activityData.test.ts`
 
 Expected: FAIL because the generated/model types and parser do not retain `transcriptRef`.
 
@@ -110,14 +110,14 @@ Add `transcriptRef?: string` to the generated frontend contract and read it with
 
 - [ ] **Step 4: Run the focused tests and verify they pass**
 
-Run: `cd cmd/serf-hub/frontend && npx vitest run src/panes/session/chrome/activityData.test.ts`
+Run: `cd cmd/evener-hub/frontend && npx vitest run src/panes/session/chrome/activityData.test.ts`
 
 Expected: PASS.
 
 - [ ] **Step 5: Commit the parser change**
 
 ```bash
-git add cmd/serf-hub/frontend/src/protocol/types.gen.ts cmd/serf-hub/frontend/src/panes/session/chrome/activityData.ts cmd/serf-hub/frontend/src/panes/session/chrome/activityData.test.ts
+git add cmd/evener-hub/frontend/src/protocol/types.gen.ts cmd/evener-hub/frontend/src/panes/session/chrome/activityData.ts cmd/evener-hub/frontend/src/panes/session/chrome/activityData.test.ts
 git commit -m "feat: parse activity transcript references"
 ```
 
@@ -126,10 +126,10 @@ git commit -m "feat: parse activity transcript references"
 ### Task 3: Add the shared activity-row open-transcript action
 
 **Files:**
-- Create: `cmd/serf-hub/frontend/src/panes/session/chrome/ActivityTranscriptAction.tsx`
-- Test: `cmd/serf-hub/frontend/src/panes/session/chrome/ActivityTranscriptAction.test.tsx`
-- Modify: `cmd/serf-hub/frontend/src/panes/session/chrome/ActivityTree.tsx:13-21,139-212,350-429`
-- Modify: `cmd/serf-hub/frontend/src/panes/session/chrome/activitypanel.module.css` only if the existing row action layout needs a focused style rule
+- Create: `cmd/evener-hub/frontend/src/panes/session/chrome/ActivityTranscriptAction.tsx`
+- Test: `cmd/evener-hub/frontend/src/panes/session/chrome/ActivityTranscriptAction.test.tsx`
+- Modify: `cmd/evener-hub/frontend/src/panes/session/chrome/ActivityTree.tsx:13-21,139-212,350-429`
+- Modify: `cmd/evener-hub/frontend/src/panes/session/chrome/activitypanel.module.css` only if the existing row action layout needs a focused style rule
 
 **Interfaces:**
 - Produces `ActivityTranscriptAction({ transcriptRef: string | undefined; parentRef?: string })`.
@@ -150,7 +150,7 @@ Also test that `undefined`, `""`, and whitespace-only refs render no button, and
 
 - [ ] **Step 2: Run the focused test and verify it fails**
 
-Run: `cd cmd/serf-hub/frontend && npx vitest run src/panes/session/chrome/ActivityTranscriptAction.test.tsx`
+Run: `cd cmd/evener-hub/frontend && npx vitest run src/panes/session/chrome/ActivityTranscriptAction.test.tsx`
 
 Expected: FAIL because the shared component does not exist.
 
@@ -177,14 +177,14 @@ Render `<ActivityTranscriptAction ... />` in the row’s trailing/meta action ar
 
 - [ ] **Step 5: Run focused component/tree tests and verify they pass**
 
-Run: `cd cmd/serf-hub/frontend && npx vitest run src/panes/session/chrome/ActivityTranscriptAction.test.tsx src/panes/session/chrome/ActivityTree.test.tsx`
+Run: `cd cmd/evener-hub/frontend && npx vitest run src/panes/session/chrome/ActivityTranscriptAction.test.tsx src/panes/session/chrome/ActivityTree.test.tsx`
 
 Expected: PASS, including representative session, delegate, and shell-job rows.
 
 - [ ] **Step 6: Commit the UI action**
 
 ```bash
-git add cmd/serf-hub/frontend/src/panes/session/chrome/ActivityTranscriptAction.tsx cmd/serf-hub/frontend/src/panes/session/chrome/ActivityTranscriptAction.test.tsx cmd/serf-hub/frontend/src/panes/session/chrome/ActivityTree.tsx cmd/serf-hub/frontend/src/panes/session/chrome/activitypanel.module.css
+git add cmd/evener-hub/frontend/src/panes/session/chrome/ActivityTranscriptAction.tsx cmd/evener-hub/frontend/src/panes/session/chrome/ActivityTranscriptAction.test.tsx cmd/evener-hub/frontend/src/panes/session/chrome/ActivityTree.tsx cmd/evener-hub/frontend/src/panes/session/chrome/activitypanel.module.css
 git commit -m "feat: add activity transcript open-beside action"
 ```
 
@@ -193,8 +193,8 @@ git commit -m "feat: add activity transcript open-beside action"
 ### Task 4: Verify desktop placement, deduplication, and the complete web contract
 
 **Files:**
-- Modify: `cmd/serf-hub/frontend/src/panes/session/chrome/ActivityTree.test.tsx` if an integration assertion needs a stable fixture adjustment
-- Modify: `cmd/serf-hub/frontend/src/panes/session/transcript/openTranscript.test.tsx` only if a missing existing regression test is needed for duplicate focusing
+- Modify: `cmd/evener-hub/frontend/src/panes/session/chrome/ActivityTree.test.tsx` if an integration assertion needs a stable fixture adjustment
+- Modify: `cmd/evener-hub/frontend/src/panes/session/transcript/openTranscript.test.tsx` only if a missing existing regression test is needed for duplicate focusing
 - Modify: `kata` issue `vvpw` through `kata comment` (not a repository file) to record mobile UX follow-up status
 
 **Interfaces:**
@@ -210,7 +210,7 @@ Use the existing workspace/open-transcript tests to assert opening the same `{ t
 Run:
 
 ```bash
-cd cmd/serf-hub/frontend
+cd cmd/evener-hub/frontend
 npm test -- --runInBand
 npm run typecheck
 npm run lint
@@ -251,6 +251,6 @@ Expected: only the design spec, implementation files, tests, and intentional com
 If Step 1 required a test-only adjustment, commit it separately:
 
 ```bash
-git add cmd/serf-hub/frontend/src/panes/session/chrome/ActivityTree.test.tsx cmd/serf-hub/frontend/src/panes/session/transcript/openTranscript.test.tsx
+git add cmd/evener-hub/frontend/src/panes/session/chrome/ActivityTree.test.tsx cmd/evener-hub/frontend/src/panes/session/transcript/openTranscript.test.tsx
 git commit -m "test: cover activity transcript pane reuse"
 ```

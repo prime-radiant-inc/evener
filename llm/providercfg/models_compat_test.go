@@ -438,8 +438,8 @@ func TestMarshalRoundTripsCompatAndModels(t *testing.T) {
 }
 
 func TestResolveAPIKey(t *testing.T) {
-	t.Setenv("SERF_TEST_KEY_A", "sk-alpha")
-	t.Setenv("SERF_TEST_KEY_B", "beta")
+	t.Setenv("EVENER_TEST_KEY_A", "sk-alpha")
+	t.Setenv("EVENER_TEST_KEY_B", "beta")
 	cases := []struct {
 		name    string
 		in      string
@@ -448,11 +448,11 @@ func TestResolveAPIKey(t *testing.T) {
 	}{
 		{name: "literal", in: "sk-plain", want: "sk-plain"},
 		{name: "empty", in: "", want: ""},
-		{name: "bare var", in: "$SERF_TEST_KEY_A", want: "sk-alpha"},
-		{name: "braced var", in: "${SERF_TEST_KEY_A}", want: "sk-alpha"},
-		{name: "concatenated", in: "pre-${SERF_TEST_KEY_B}-post", want: "pre-beta-post"},
+		{name: "bare var", in: "$EVENER_TEST_KEY_A", want: "sk-alpha"},
+		{name: "braced var", in: "${EVENER_TEST_KEY_A}", want: "sk-alpha"},
+		{name: "concatenated", in: "pre-${EVENER_TEST_KEY_B}-post", want: "pre-beta-post"},
 		{name: "escaped dollar", in: "pa$$word", want: "pa$word"},
-		{name: "missing var", in: "$SERF_TEST_KEY_MISSING", wantErr: "SERF_TEST_KEY_MISSING"},
+		{name: "missing var", in: "$EVENER_TEST_KEY_MISSING", wantErr: "EVENER_TEST_KEY_MISSING"},
 		{name: "trailing lone dollar", in: "abc$", want: "abc$"},
 	}
 	for _, tc := range cases {

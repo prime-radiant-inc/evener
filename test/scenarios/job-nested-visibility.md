@@ -29,7 +29,7 @@ grant a `job.notification` delivery mints — is covered by
 
 - Fresh binaries from the branch under test; an isolated hub
   (`docs/agentic-testing.md` setup checklist); credentialed model.
-- `tmpdir=$(mktemp -d -t serf-e2e-jnest-XXXXX)`.
+- `tmpdir=$(mktemp -d -t evener-e2e-jnest-XXXXX)`.
 
 ## Steps
 
@@ -61,7 +61,7 @@ grant a `job.notification` delivery mints — is covered by
    >    more time. Report the full JSON.
    > 6. End your turn.
 4. Read the parent's durable log
-   (`find ~/.local/state/serf/projects -path "*sessions/$SID/jobs.jsonl"`)
+   (`find ~/.local/state/evener/projects -path "*sessions/$SID/jobs.jsonl"`)
    and the transcript.
 
 ## Expected

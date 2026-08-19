@@ -7,7 +7,7 @@ import (
 	"sort"
 	"sync"
 
-	"primeradiant.com/serf/appwire"
+	"primeradiant.com/evener/appwire"
 )
 
 type ServerConfig struct {
@@ -205,7 +205,7 @@ func (s *Server) deliverNotifications(deliveries []notificationDelivery) []*Conn
 
 // BroadcastAll sends a notification to every currently-connected client,
 // regardless of thread subscription. Used for hub-wide state-change
-// notifications such as serf/auth/updated and serf/launch/updated.
+// notifications such as evener/auth/updated and evener/launch/updated.
 func (s *Server) BroadcastAll(method string, params any) {
 	msg := appwire.NotificationMessage(method, params)
 	s.mu.RLock()

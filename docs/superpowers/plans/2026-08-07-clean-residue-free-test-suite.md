@@ -19,7 +19,7 @@
 - Default tests remain deterministic, offline, and independent of provider credentials or ambient developer-machine state.
 - Do not widen or hardcode a timeout to absorb awaitable work.
 - Failure diagnostics and their owned scratch may be retained; successful runs must remove per-run scratch, temporary homes, profiles, sockets, listeners, child processes, and undeclared files.
-- Cleanup follows ownership: Serf removes scratch at application lifecycle points that prove it is disposable; normal session end alone is insufficient because sessions can resume or hand artifacts to a human. The runner removes remaining test-process-owned scratch only after green process exit.
+- Cleanup follows ownership: Evener removes scratch at application lifecycle points that prove it is disposable; normal session end alone is insufficient because sessions can resume or hand artifacts to a human. The runner removes remaining test-process-owned scratch only after green process exit.
 - Reusable Go, npm, and dependency caches and intended repository build outputs are declared state, not silently ignored state; the whole-container audit must name them.
 - Before changing tests, follow `docs/testing.md`; before completing frontend work, run `npx biome check --write` on every touched frontend file, `make test-web`, and `make test-web-browser` on this Chrome-capable host.
 - Never skip, disable, or evade pre-commit hooks.
@@ -29,9 +29,9 @@
 ### Task 1: Give Every Frontend Test One Fast, Correct Runner
 
 **Files:**
-- Modify: `cmd/serf-hub/frontend/package.json`
-- Modify: `cmd/serf-hub/frontend/scripts/layoutguard/cdp.mjs`
-- Modify: `cmd/serf-hub/frontend/scripts/layoutguard/cdp.test.mjs`
+- Modify: `cmd/evener-hub/frontend/package.json`
+- Modify: `cmd/evener-hub/frontend/scripts/layoutguard/cdp.mjs`
+- Modify: `cmd/evener-hub/frontend/scripts/layoutguard/cdp.test.mjs`
 
 **Interfaces:**
 - Consumes: `probeBrowserCapability(spawnProcess)` and the existing `npm test` script.
@@ -72,7 +72,7 @@ a one-off wrapper that calls `spawnChromeThatNeverStarts()` and emits on its
 Run:
 
 ```bash
-cd cmd/serf-hub/frontend
+cd cmd/evener-hub/frontend
 node --test --test-name-pattern='includes Chrome binary path' scripts/layoutguard/cdp.test.mjs
 ```
 
@@ -111,7 +111,7 @@ must remain in that runner.
 Run:
 
 ```bash
-cd cmd/serf-hub/frontend
+cd cmd/evener-hub/frontend
 npx biome check --write package.json scripts/layoutguard/cdp.mjs scripts/layoutguard/cdp.test.mjs
 node --test scripts/layoutguard/cdp.test.mjs
 npm test
@@ -135,7 +135,7 @@ lines and no internal debug output or stack trace.
 - [ ] **Step 7: Commit**
 
 ```bash
-git add cmd/serf-hub/frontend/package.json cmd/serf-hub/frontend/scripts/layoutguard/cdp.mjs cmd/serf-hub/frontend/scripts/layoutguard/cdp.test.mjs
+git add cmd/evener-hub/frontend/package.json cmd/evener-hub/frontend/scripts/layoutguard/cdp.mjs cmd/evener-hub/frontend/scripts/layoutguard/cdp.test.mjs
 git commit -m "fix(webtest): isolate Node tests from Vitest"
 ```
 
@@ -149,7 +149,7 @@ used to verify it.
 - Modify: `identifier_audit_test.go`
 
 **Interfaces:**
-- Consumes: `identifierSHA256Inventory` and `frontendDistHash` in `cmd/serf-hub/frontend_hash.go`.
+- Consumes: `identifierSHA256Inventory` and `frontendDistHash` in `cmd/evener-hub/frontend_hash.go`.
 - Produces: an exact closed-world audit entry for `sha256.New()` in `frontendDistHash`; no hash implementation changes.
 
 - [ ] **Step 1: Verify the existing audit is red**
@@ -160,17 +160,17 @@ Run:
 go test . -run '^TestIdentifierAudit$' -count=1
 ```
 
-Expected: FAIL naming `cmd/serf-hub/frontend_hash.go`, the `crypto/sha256`
+Expected: FAIL naming `cmd/evener-hub/frontend_hash.go`, the `crypto/sha256`
 import, and its missing closed-world inventory entry.
 
 - [ ] **Step 2: Add the reviewed inventory entry**
 
-Add this entry beside the other `cmd/serf-hub` content hashes:
+Add this entry beside the other `cmd/evener-hub` content hashes:
 
 ```go
 	// Fingerprints the complete embedded frontend distribution so operators can
 	// identify deployed assets. The digest describes content; it is not a domain identifier.
-	"cmd/serf-hub/frontend_hash.go": {"frontendDistHash": {"New()": true}},
+	"cmd/evener-hub/frontend_hash.go": {"frontendDistHash": {"New()": true}},
 ```
 
 Do not add backward compatibility or change the hash algorithm.
@@ -181,7 +181,7 @@ Run:
 
 ```bash
 go test . -run '^TestIdentifierAudit$' -count=1
-go test ./cmd/serf-hub -run '^TestFrontendDistHash' -count=1
+go test ./cmd/evener-hub -run '^TestFrontendDistHash' -count=1
 ```
 
 Expected: both commands pass.
@@ -194,12 +194,12 @@ git commit -m "test(identifier): review frontend content hash"
 ```
 
 The detailed commit body must explain why the digest is content identity rather
-than a Serf domain identifier and record the focused test evidence.
+than a Evener domain identifier and record the focused test evidence.
 
 ### Task 3: Remove the Dev-Tooling Test's Ambient Wall-Clock Assertion
 
 **Files:**
-- Modify: `cmd/serf-test-dev-tooling/wave_test.go`
+- Modify: `cmd/evener-test-dev-tooling/wave_test.go`
 
 **Interfaces:**
 - Consumes: `runWave`, injected `checkLeaksFn`, and `checkLeaksTimeout`.
@@ -210,7 +210,7 @@ than a Serf domain identifier and record the focused test evidence.
 Use the captured baseline as red evidence, then run the focused test once:
 
 ```bash
-go test ./cmd/serf-test-dev-tooling -run '^TestWaveCompletesDespiteBlockedLeakCheck$' -count=1
+go test ./cmd/evener-test-dev-tooling -run '^TestWaveCompletesDespiteBlockedLeakCheck$' -count=1
 ```
 
 The captured canonical run failed with:
@@ -243,7 +243,7 @@ assertions. Do not widen either timeout.
 Run:
 
 ```bash
-go test ./cmd/serf-test-dev-tooling -run '^TestWaveCompletesDespiteBlockedLeakCheck$' -count=50
+go test ./cmd/evener-test-dev-tooling -run '^TestWaveCompletesDespiteBlockedLeakCheck$' -count=50
 ```
 
 Expected: PASS 50 times with no wall-clock assertion.
@@ -253,7 +253,7 @@ Expected: PASS 50 times with no wall-clock assertion.
 Run:
 
 ```bash
-go test ./cmd/serf-test-dev-tooling -count=1
+go test ./cmd/evener-test-dev-tooling -count=1
 ```
 
 Expected: PASS.
@@ -261,7 +261,7 @@ Expected: PASS.
 - [ ] **Step 5: Commit**
 
 ```bash
-git add cmd/serf-test-dev-tooling/wave_test.go
+git add cmd/evener-test-dev-tooling/wave_test.go
 git commit -m "test(wave): assert blocked leak behavior directly"
 ```
 
@@ -401,7 +401,7 @@ behavior.
 Run:
 
 ```bash
-audit_tmp="$(mktemp -d -t serf-green-test-audit.XXXXXX)"
+audit_tmp="$(mktemp -d -t evener-green-test-audit.XXXXXX)"
 TMPDIR="$audit_tmp" make test
 find "$audit_tmp" -mindepth 1 -print
 rmdir "$audit_tmp"
@@ -419,7 +419,7 @@ git commit -m "fix(test): own and clean every stream temp root"
 ```
 
 The detailed commit body must record the baseline evidence (3,853 entries,
-including 3,810 `serf-sandbox-*` directories and Node compile cache), explain
+including 3,810 `evener-sandbox-*` directories and Node compile cache), explain
 green removal versus red retention, and list the selftest and canonical-gate
 evidence.
 
@@ -445,13 +445,13 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     build-essential ca-certificates git make procps python3 iproute2 \
     && rm -rf /var/lib/apt/lists/*
 ENV PATH=/usr/local/go/bin:$PATH
-WORKDIR /work/serf
+WORKDIR /work/evener
 ```
 
 Build it:
 
 ```bash
-container build --progress plain -t serf-test-audit:2026-08-07 audit
+container build --progress plain -t evener-test-audit:2026-08-07 audit
 ```
 
 - [ ] **Step 2: Start one disposable audit container from the clean image**
@@ -459,11 +459,11 @@ container build --progress plain -t serf-test-audit:2026-08-07 audit
 Create a committed-source archive and copy it into the container:
 
 ```bash
-git archive --format=tar -o "$SDD_WORKSPACE/audit/serf.tar" HEAD
-container create --name serf-test-audit --cpus 10 --memory 16G serf-test-audit:2026-08-07 sleep infinity
-container start serf-test-audit
-container copy "$SDD_WORKSPACE/audit/serf.tar" serf-test-audit:/tmp/serf.tar
-container exec serf-test-audit bash -lc 'tar -xf /tmp/serf.tar -C /work/serf && rm /tmp/serf.tar'
+git archive --format=tar -o "$SDD_WORKSPACE/audit/evener.tar" HEAD
+container create --name evener-test-audit --cpus 10 --memory 16G evener-test-audit:2026-08-07 sleep infinity
+container start evener-test-audit
+container copy "$SDD_WORKSPACE/audit/evener.tar" evener-test-audit:/tmp/evener.tar
+container exec evener-test-audit bash -lc 'tar -xf /tmp/evener.tar -C /work/evener && rm /tmp/evener.tar'
 ```
 
 The source archive contains committed files only, so the audit cannot inherit
@@ -475,12 +475,12 @@ For each filesystem snapshot, capture paths/metadata and file hashes while
 excluding only virtual kernel filesystems:
 
 ```bash
-container exec serf-test-audit bash -lc \
+container exec evener-test-audit bash -lc \
   'find / \( -path /proc -o -path /sys -o -path /dev -o -path /run \) -prune -o -printf "%y|%m|%u:%g|%p|%l\n" | LC_ALL=C sort; printf "--- SHA256 ---\n"; find / \( -path /proc -o -path /sys -o -path /dev -o -path /run \) -prune -o -type f -print0 | LC_ALL=C sort -z | xargs -0 sha256sum' \
   >"$SDD_WORKSPACE/audit/before.fs"
-container exec serf-test-audit ps -ef >"$SDD_WORKSPACE/audit/before.ps"
-container exec serf-test-audit ss -lntup >"$SDD_WORKSPACE/audit/before.listeners"
-container exec serf-test-audit bash -lc \
+container exec evener-test-audit ps -ef >"$SDD_WORKSPACE/audit/before.ps"
+container exec evener-test-audit ss -lntup >"$SDD_WORKSPACE/audit/before.listeners"
+container exec evener-test-audit bash -lc \
   'find / \( -path /proc -o -path /sys -o -path /dev -o -path /run \) -prune -o -type s -print | LC_ALL=C sort' \
   >"$SDD_WORKSPACE/audit/before.sockets"
 ```
@@ -490,7 +490,7 @@ container exec serf-test-audit bash -lc \
 Run:
 
 ```bash
-container exec -w /work/serf serf-test-audit bash -lc 'make build && make test' \
+container exec -w /work/evener evener-test-audit bash -lc 'make build && make test' \
   >"$SDD_WORKSPACE/audit/cold.output" 2>&1
 ```
 
@@ -509,10 +509,10 @@ Expected: exit zero. The only persistent cold-cycle additions are declared
 repository build/dependency outputs and reusable caches, expected under:
 
 ```text
-/work/serf/serf
-/work/serf/serf-hub
-/work/serf/cmd/serf-hub/frontend/dist
-/work/serf/cmd/serf-hub/frontend/node_modules
+/work/evener/evener
+/work/evener/evener-hub
+/work/evener/cmd/evener-hub/frontend/dist
+/work/evener/cmd/evener-hub/frontend/node_modules
 /root/.cache/go-build
 /root/.npm
 /go/pkg/mod
@@ -534,7 +534,7 @@ records:
 - that virtual kernel filesystems were the only filesystem exclusions;
 - whether the warm comparison found zero undeclared per-run paths;
 - whether process, listener, and socket state returned to the baseline; and
-- how each Serf-owned scratch finding was assigned either to an application
+- how each Evener-owned scratch finding was assigned either to an application
   lifecycle owner or to the enclosing test-process owner, including why no
   resumable session still owned anything removed; and
 - that Apple container remains diagnostic evidence rather than a local/CI gate dependency.
@@ -549,9 +549,9 @@ their findings have been recorded, and stop the Apple container system service
 because it was stopped before this work began:
 
 ```bash
-container stop serf-test-audit
-container delete serf-test-audit
-container image delete serf-test-audit:2026-08-07
+container stop evener-test-audit
+container delete evener-test-audit
+container image delete evener-test-audit:2026-08-07
 container system stop
 ```
 
@@ -568,7 +568,7 @@ runtime-state verdict, and exact image/tool versions.
 ### Task 5A: Remediate the First Whole-System Audit
 
 The first cold/warm audit passed both cycles with concise output, but its
-filesystem comparison was red. It found Go telemetry and Serf state under the
+filesystem comparison was red. It found Go telemetry and Evener state under the
 ambient user directories, Node and Biome state outside the stream `TMPDIR`, a
 WSL clipboard test-created `/mnt/t`, repeated Git index refreshes, and an audit
 image whose copied Go toolchain had lost `GOPATH=/go`. These findings may not be
@@ -616,15 +616,15 @@ handler remains, cleanup fails and retains the private profile as evidence.
 - Modify: `scripts/run-module-tests.sh`
 - Modify: `scripts/run-module-tests-selftest.sh`
 - Modify: `runtime_pair_build_test.go`
-- Modify: `cmd/serf-hub/frontend/scripts/browserGuardProcess.mjs`
-- Modify: `cmd/serf-hub/frontend/scripts/browserGuardProcess.test.mjs`
-- Modify: `cmd/serf-hub/frontend/scripts/layoutguard/cdp.mjs`
-- Modify: `cmd/serf-hub/frontend/scripts/layoutguard/cdp.test.mjs`
-- Modify: `cmd/serf-hub/frontend/scripts/layoutguard/run.mjs`
-- Modify: `cmd/serf-hub/frontend/scripts/overflowguard/run.mjs`
-- Modify: `cmd/serf-hub/frontend/scripts/spawnguard/run.mjs`
+- Modify: `cmd/evener-hub/frontend/scripts/browserGuardProcess.mjs`
+- Modify: `cmd/evener-hub/frontend/scripts/browserGuardProcess.test.mjs`
+- Modify: `cmd/evener-hub/frontend/scripts/layoutguard/cdp.mjs`
+- Modify: `cmd/evener-hub/frontend/scripts/layoutguard/cdp.test.mjs`
+- Modify: `cmd/evener-hub/frontend/scripts/layoutguard/run.mjs`
+- Modify: `cmd/evener-hub/frontend/scripts/overflowguard/run.mjs`
+- Modify: `cmd/evener-hub/frontend/scripts/spawnguard/run.mjs`
 - Modify: `cmd/llmcall/coverage_test.go`
-- Modify: `cmd/serf-tui/internal/clipboard/clipboard_paste_test.go`
+- Modify: `cmd/evener-tui/internal/clipboard/clipboard_paste_test.go`
 - Modify: `docs/testing.md`
 - Modify only in ignored audit evidence: `audit/Dockerfile`
 
@@ -722,7 +722,7 @@ manifest. Only a new comparison with zero undeclared paths may proceed to Task
 Run:
 
 ```bash
-cd cmd/serf-hub/frontend
+cd cmd/evener-hub/frontend
 npx biome check --write package.json scripts/browserGuardProcess.mjs scripts/browserGuardProcess.test.mjs scripts/layoutguard/cdp.mjs scripts/layoutguard/cdp.test.mjs scripts/layoutguard/run.mjs scripts/overflowguard/run.mjs scripts/spawnguard/run.mjs
 ```
 

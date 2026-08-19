@@ -13,7 +13,7 @@ package agent
 // a tool result" is hard-gated deterministically by
 // contextmgr.TestElicitNoteCapturesToolResult — this test is the full-loop smoke.
 //
-// Run: SERF_LIVE_TESTS=1 go test -tags eval ./agent/ -run TestForcedNoteLive -v -timeout 8m
+// Run: EVENER_LIVE_TESTS=1 go test -tags eval ./agent/ -run TestForcedNoteLive -v -timeout 8m
 //
 // SECURITY: uses the current user's real OAuth creds (authorized). Skips when
 // live evals are not explicitly enabled or the local setup is absent.
@@ -26,19 +26,19 @@ import (
 	"testing"
 	"time"
 
-	"primeradiant.com/serf/agent/events"
-	"primeradiant.com/serf/agent/execenv"
-	"primeradiant.com/serf/agent/internal/liveeval"
-	"primeradiant.com/serf/agent/provider"
-	"primeradiant.com/serf/envvars"
-	"primeradiant.com/serf/llm"
-	"primeradiant.com/serf/llm/providercfg"
+	"primeradiant.com/evener/agent/events"
+	"primeradiant.com/evener/agent/execenv"
+	"primeradiant.com/evener/agent/internal/liveeval"
+	"primeradiant.com/evener/agent/provider"
+	"primeradiant.com/evener/envvars"
+	"primeradiant.com/evener/llm"
+	"primeradiant.com/evener/llm/providercfg"
 
-	_ "primeradiant.com/serf/llm/providers/anthropic"
-	_ "primeradiant.com/serf/llm/providers/google"
-	_ "primeradiant.com/serf/llm/providers/kimi"
-	_ "primeradiant.com/serf/llm/providers/ollama"
-	_ "primeradiant.com/serf/llm/providers/openai"
+	_ "primeradiant.com/evener/llm/providers/anthropic"
+	_ "primeradiant.com/evener/llm/providers/google"
+	_ "primeradiant.com/evener/llm/providers/kimi"
+	_ "primeradiant.com/evener/llm/providers/ollama"
+	_ "primeradiant.com/evener/llm/providers/openai"
 )
 
 func TestForcedNoteLive(t *testing.T) {
@@ -50,8 +50,8 @@ func TestForcedNoteLive(t *testing.T) {
 		t.Skipf("live eval requires a resolvable user home: %v", err)
 	}
 	stateHome, providersConfig := liveeval.Paths(envvars.XDGStateHome.Trimmed(), home)
-	if _, err := os.Stat(filepath.Join(stateHome, "serf", "auth", "openai.json")); err != nil {
-		t.Skipf("no OAuth record at %s/serf/auth/openai.json: %v", stateHome, err)
+	if _, err := os.Stat(filepath.Join(stateHome, "evener", "auth", "openai.json")); err != nil {
+		t.Skipf("no OAuth record at %s/evener/auth/openai.json: %v", stateHome, err)
 	}
 	t.Setenv(envvars.XDGStateHome.Name, stateHome)
 

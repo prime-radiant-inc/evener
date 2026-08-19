@@ -20,7 +20,7 @@ import (
 	"time"
 
 	"golang.org/x/tools/go/packages"
-	"primeradiant.com/serf/agent/internal/delegatestore"
+	"primeradiant.com/evener/agent/internal/delegatestore"
 )
 
 func TestDelegateControllerDirectOwnerAuthorization(t *testing.T) {
@@ -708,7 +708,7 @@ func (*delegateToolResultCommit) Complete(bool) {}
 		Uses:       make(map[*ast.Ident]types.Object),
 		Selections: make(map[*ast.SelectorExpr]*types.Selection),
 	}
-	pkg, err := (&types.Config{}).Check("primeradiant.com/serf/agent/dormancyfixture", files, []*ast.File{prelude, file}, info)
+	pkg, err := (&types.Config{}).Check("primeradiant.com/evener/agent/dormancyfixture", files, []*ast.File{prelude, file}, info)
 	if err != nil {
 		t.Fatalf("type-check source: %v", err)
 	}

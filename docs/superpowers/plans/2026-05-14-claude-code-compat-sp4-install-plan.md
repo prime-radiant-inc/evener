@@ -2,11 +2,11 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Implement the plugin lifecycle (install / uninstall / update / list / enable / disable) for Claude Code-compatible plugins, including the `installed_plugins.json` registry, atomic IO, version resolution, file lock, and the `serf plugin` CLI subcommand tree.
+**Goal:** Implement the plugin lifecycle (install / uninstall / update / list / enable / disable) for Claude Code-compatible plugins, including the `installed_plugins.json` registry, atomic IO, version resolution, file lock, and the `evener plugin` CLI subcommand tree.
 
-**Architecture:** All install logic lives in a new `internal/plugins` package; the CLI lives in a new `cmd/serf/plugin` package. SP4 calls SP3 only through the `MarketplaceResolver` / `PluginSource` interfaces declared locally — production SP3 satisfies them later. Each registry mutation is serialized by a file lock and persisted atomically (tmp + rename). The `enabledPlugins` field of `config.json` is rewritten via a JSON round-trip that preserves unknown top-level keys, so SP4 never strands SP1's hooks/mcpServers/permissions sections.
+**Architecture:** All install logic lives in a new `internal/plugins` package; the CLI lives in a new `cmd/evener/plugin` package. SP4 calls SP3 only through the `MarketplaceResolver` / `PluginSource` interfaces declared locally — production SP3 satisfies them later. Each registry mutation is serialized by a file lock and persisted atomically (tmp + rename). The `enabledPlugins` field of `config.json` is rewritten via a JSON round-trip that preserves unknown top-level keys, so SP4 never strands SP1's hooks/mcpServers/permissions sections.
 
-**Tech Stack:** Go 1.25, `encoding/json`, `golang.org/x/sys/unix` (flock), `github.com/spf13/cobra` (already used by `cmd/serf`), `testing` with `t.TempDir()` and real files. No mocked filesystem. Optional `git` binary used only for directory-source SHA tests (`t.Skip` when absent).
+**Tech Stack:** Go 1.25, `encoding/json`, `golang.org/x/sys/unix` (flock), `github.com/spf13/cobra` (already used by `cmd/evener`), `testing` with `t.TempDir()` and real files. No mocked filesystem. Optional `git` binary used only for directory-source SHA tests (`t.Skip` when absent).
 
 Spec: `docs/superpowers/specs/2026-05-14-claude-code-compat-sp4-install-design.md`.
 
@@ -24,13 +24,13 @@ New package `internal/plugins/`:
 - `install.go` / `install_test.go` — `Installer` struct + `Install` / `Uninstall` / `Update` / `UpdateAll` / `Enable` / `Disable` / `List`.
 - `testdata/installed_plugins_v2.json`, `installed_plugins_malformed.json`, `plugin_with_version.json`, `plugin_no_version.json`, `plugin_invalid_version.json`.
 
-New package `cmd/serf/plugin/`:
+New package `cmd/evener/plugin/`:
 
 - `install.go` — Cobra commands + flag wiring.
 - `install_test.go` — flag parsing, exit codes, rendering against a stub `Installer`-shaped interface.
 - `render.go` — human + `--json` output.
 
-No existing file is modified by SP4 itself. SP8 wires `cmd/serf/plugin.NewCommand()` into the root `serf` command.
+No existing file is modified by SP4 itself. SP8 wires `cmd/evener/plugin.NewCommand()` into the root `evener` command.
 
 ---
 
@@ -44,10 +44,10 @@ No existing file is modified by SP4 itself. SP8 wires `cmd/serf/plugin.NewComman
 - [ ] **Step 1: Write the package doc**
 
 ```go
-// Package plugins implements the on-disk plugin install state for serf:
+// Package plugins implements the on-disk plugin install state for evener:
 // the installed_plugins.json registry, atomic IO, version resolution, a
 // file lock, and the Installer that exposes Install/Uninstall/Update/
-// Enable/Disable/List. The CLI in cmd/serf/plugin is a thin wrapper.
+// Enable/Disable/List. The CLI in cmd/evener/plugin is a thin wrapper.
 //
 // SP4 calls SP3 only through MarketplaceResolver / PluginSource declared
 // in resolver.go.
@@ -625,7 +625,7 @@ git commit -m "plugins: atomic SaveRegistry with sorted keys"
 func TestDefaultRegistryPath_HonorsXDG(t *testing.T) {
 	t.Setenv("XDG_CONFIG_HOME", "/x/y")
 	got := DefaultRegistryPath()
-	want := "/x/y/serf/plugins/installed_plugins.json"
+	want := "/x/y/evener/plugins/installed_plugins.json"
 	if got != want {
 		t.Errorf("got %q want %q", got, want)
 	}
@@ -635,7 +635,7 @@ func TestDefaultRegistryPath_HomeFallback(t *testing.T) {
 	t.Setenv("XDG_CONFIG_HOME", "")
 	t.Setenv("HOME", "/home/joe")
 	got := DefaultRegistryPath()
-	want := "/home/joe/.config/serf/plugins/installed_plugins.json"
+	want := "/home/joe/.config/evener/plugins/installed_plugins.json"
 	if got != want {
 		t.Errorf("got %q want %q", got, want)
 	}
@@ -652,7 +652,7 @@ Expected: FAIL.
 Append to `registry.go`:
 
 ```go
-// DefaultRegistryPath returns ~/.config/serf/plugins/installed_plugins.json
+// DefaultRegistryPath returns ~/.config/evener/plugins/installed_plugins.json
 // for the current user, honoring XDG_CONFIG_HOME.
 func DefaultRegistryPath() string {
 	dir := os.Getenv("XDG_CONFIG_HOME")
@@ -663,10 +663,10 @@ func DefaultRegistryPath() string {
 		}
 		dir = filepath.Join(home, ".config")
 	}
-	return filepath.Join(dir, "serf", "plugins", "installed_plugins.json")
+	return filepath.Join(dir, "evener", "plugins", "installed_plugins.json")
 }
 
-// DefaultCacheRoot returns ~/.config/serf/plugins/cache for the current user.
+// DefaultCacheRoot returns ~/.config/evener/plugins/cache for the current user.
 func DefaultCacheRoot() string {
 	dir := os.Getenv("XDG_CONFIG_HOME")
 	if dir == "" {
@@ -676,7 +676,7 @@ func DefaultCacheRoot() string {
 		}
 		dir = filepath.Join(home, ".config")
 	}
-	return filepath.Join(dir, "serf", "plugins", "cache")
+	return filepath.Join(dir, "evener", "plugins", "cache")
 }
 ```
 
@@ -1313,7 +1313,7 @@ func TestAcquireRegistryLock_Timeout(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected timeout error, got nil")
 	}
-	if !strings.Contains(err.Error(), "another serf plugin operation is in progress") {
+	if !strings.Contains(err.Error(), "another evener plugin operation is in progress") {
 		t.Errorf("error wording: %v", err)
 	}
 }
@@ -1369,7 +1369,7 @@ func acquireRegistryLock(lockPath string, timeout time.Duration) (release func()
 		}
 		if time.Now().After(deadline) {
 			f.Close()
-			return nil, fmt.Errorf("another serf plugin operation is in progress (locked: %s)", lockPath)
+			return nil, fmt.Errorf("another evener plugin operation is in progress (locked: %s)", lockPath)
 		}
 		time.Sleep(backoff)
 		if backoff < 200*time.Millisecond {
@@ -2014,14 +2014,14 @@ git commit -m "plugins: readPluginJSONVersion with fixtures"
 
 ```go
 func TestPathForScope(t *testing.T) {
-	i := &Installer{GlobalConfig: "/home/u/.config/serf/config.json", ProjectRoot: "/repo"}
+	i := &Installer{GlobalConfig: "/home/u/.config/evener/config.json", ProjectRoot: "/repo"}
 	cases := []struct {
 		scope    Scope
 		want     string
 		wantErr  string
 	}{
-		{ScopeUser, "/home/u/.config/serf/config.json", ""},
-		{ScopeProject, "/repo/.serf/config.json", ""},
+		{ScopeUser, "/home/u/.config/evener/config.json", ""},
+		{ScopeProject, "/repo/.evener/config.json", ""},
 		{ScopeLocal, "", "not yet supported"},
 		{ScopeManaged, "", "not yet supported"},
 		{Scope(""), "", "not yet supported"},
@@ -2072,9 +2072,9 @@ func (i *Installer) pathForScope(scope Scope) (string, error) {
 		if i.ProjectRoot == "" {
 			return "", fmt.Errorf("--scope project requires a git repository")
 		}
-		return filepath.Join(i.ProjectRoot, ".serf", "config.json"), nil
+		return filepath.Join(i.ProjectRoot, ".evener", "config.json"), nil
 	default:
-		return "", fmt.Errorf(`scope %q is not yet supported in serf`, string(scope))
+		return "", fmt.Errorf(`scope %q is not yet supported in evener`, string(scope))
 	}
 }
 ```
@@ -2386,32 +2386,32 @@ func (i *Installer) Install(ctx context.Context, req InstallRequest) (InstallRes
 		req.Scope = ScopeUser
 	}
 	if req.Scope != ScopeUser && req.Scope != ScopeProject {
-		return InstallResult{}, fmt.Errorf(`serf plugin install: scope %q is not yet supported in serf`, string(req.Scope))
+		return InstallResult{}, fmt.Errorf(`evener plugin install: scope %q is not yet supported in evener`, string(req.Scope))
 	}
 	plugin, market, err := parsePluginSpec(req.Plugin, req.Marketplace)
 	if err != nil {
-		return InstallResult{}, fmt.Errorf("serf plugin install: %w", err)
+		return InstallResult{}, fmt.Errorf("evener plugin install: %w", err)
 	}
 	if err := sanitizePathComponent(plugin); err != nil {
-		return InstallResult{}, fmt.Errorf("serf plugin install: %w", err)
+		return InstallResult{}, fmt.Errorf("evener plugin install: %w", err)
 	}
 	if err := sanitizePathComponent(market); err != nil {
-		return InstallResult{}, fmt.Errorf("serf plugin install: %w", err)
+		return InstallResult{}, fmt.Errorf("evener plugin install: %w", err)
 	}
 	configPath, err := i.pathForScope(req.Scope)
 	if err != nil {
-		return InstallResult{}, fmt.Errorf("serf plugin install: %w", err)
+		return InstallResult{}, fmt.Errorf("evener plugin install: %w", err)
 	}
 
 	release, err := acquireRegistryLock(i.RegistryPath+".lock", i.lockTimeoutOr())
 	if err != nil {
-		return InstallResult{}, fmt.Errorf("serf plugin install: %w", err)
+		return InstallResult{}, fmt.Errorf("evener plugin install: %w", err)
 	}
 	defer release()
 
 	src, err := i.Marketplaces.Resolve(ctx, plugin, market)
 	if err != nil {
-		return InstallResult{}, fmt.Errorf(`serf plugin install: plugin "%s@%s" is not in any known marketplace; run 'serf plugin marketplace add ...': %w`, plugin, market, err)
+		return InstallResult{}, fmt.Errorf(`evener plugin install: plugin "%s@%s" is not in any known marketplace; run 'evener plugin marketplace add ...': %w`, plugin, market, err)
 	}
 
 	// Pre-fetch version guess (without plugin.json): may shift to plugin.json
@@ -2419,7 +2419,7 @@ func (i *Installer) Install(ctx context.Context, req InstallRequest) (InstallRes
 	// a temporary cache dir, then rename to the final version dir afterwards.
 	tmpVersion, err := computeVersion(req.Version, src.DeclaredVersion(), src.CommitSHA(), false, nil)
 	if err != nil {
-		return InstallResult{}, fmt.Errorf("serf plugin install: %w", err)
+		return InstallResult{}, fmt.Errorf("evener plugin install: %w", err)
 	}
 
 	stagingDir := filepath.Join(i.CacheRoot, market, plugin, tmpVersion)
@@ -2428,7 +2428,7 @@ func (i *Installer) Install(ctx context.Context, req InstallRequest) (InstallRes
 	// Check if (key, scope, version) is already registered and not Force.
 	reg, err := LoadRegistry(i.RegistryPath)
 	if err != nil {
-		return InstallResult{}, fmt.Errorf("serf plugin install: %w", err)
+		return InstallResult{}, fmt.Errorf("evener plugin install: %w", err)
 	}
 	if reg.Plugins == nil {
 		reg.Plugins = map[string][]InstallEntry{}
@@ -2454,29 +2454,29 @@ func (i *Installer) Install(ctx context.Context, req InstallRequest) (InstallRes
 	}
 
 	if err := prepareCacheDir(stagingDir, req.Force, i.stderrOr()); err != nil {
-		return InstallResult{}, fmt.Errorf("serf plugin install: %w", err)
+		return InstallResult{}, fmt.Errorf("evener plugin install: %w", err)
 	}
 
 	if err := src.Fetch(ctx, stagingDir); err != nil {
 		_ = os.RemoveAll(stagingDir)
-		return InstallResult{}, fmt.Errorf(`serf plugin install: fetching "%s@%s": %w`, plugin, market, err)
+		return InstallResult{}, fmt.Errorf(`evener plugin install: fetching "%s@%s": %w`, plugin, market, err)
 	}
 
 	// Post-fetch validation.
 	entries, rerr := os.ReadDir(stagingDir)
 	if rerr != nil || len(entries) == 0 {
 		_ = os.RemoveAll(stagingDir)
-		return InstallResult{}, fmt.Errorf(`serf plugin install: validating "%s@%s": fetched cache dir is empty`, plugin, market)
+		return InstallResult{}, fmt.Errorf(`evener plugin install: validating "%s@%s": fetched cache dir is empty`, plugin, market)
 	}
 	hasPJ, pjVer, err := readPluginJSONVersion(stagingDir)
 	if err != nil {
 		_ = os.RemoveAll(stagingDir)
-		return InstallResult{}, fmt.Errorf(`serf plugin install: validating "%s@%s": %w`, plugin, market, err)
+		return InstallResult{}, fmt.Errorf(`evener plugin install: validating "%s@%s": %w`, plugin, market, err)
 	}
 	finalVersion, err := computeVersion(req.Version, src.DeclaredVersion(), src.CommitSHA(), hasPJ, pjVer)
 	if err != nil {
 		_ = os.RemoveAll(stagingDir)
-		return InstallResult{}, fmt.Errorf(`serf plugin install: validating "%s@%s": %w`, plugin, market, err)
+		return InstallResult{}, fmt.Errorf(`evener plugin install: validating "%s@%s": %w`, plugin, market, err)
 	}
 
 	// If the resolved version differs from the staging dir's name, move.
@@ -2484,7 +2484,7 @@ func (i *Installer) Install(ctx context.Context, req InstallRequest) (InstallRes
 	if finalDir != stagingDir {
 		if err := os.MkdirAll(filepath.Dir(finalDir), 0755); err != nil {
 			_ = os.RemoveAll(stagingDir)
-			return InstallResult{}, fmt.Errorf("serf plugin install: %w", err)
+			return InstallResult{}, fmt.Errorf("evener plugin install: %w", err)
 		}
 		if _, err := os.Stat(finalDir); err == nil {
 			if !req.Force {
@@ -2506,7 +2506,7 @@ func (i *Installer) Install(ctx context.Context, req InstallRequest) (InstallRes
 		}
 		if err := os.Rename(stagingDir, finalDir); err != nil {
 			_ = os.RemoveAll(stagingDir)
-			return InstallResult{}, fmt.Errorf("serf plugin install: %w", err)
+			return InstallResult{}, fmt.Errorf("evener plugin install: %w", err)
 		}
 	}
 
@@ -2522,7 +2522,7 @@ func (i *Installer) Install(ctx context.Context, req InstallRequest) (InstallRes
 	reg = upsertEntry(reg, key, entry)
 	if err := SaveRegistry(i.RegistryPath, reg); err != nil {
 		_ = os.RemoveAll(finalDir)
-		return InstallResult{}, fmt.Errorf("serf plugin install: writing installed_plugins.json: %w", err)
+		return InstallResult{}, fmt.Errorf("evener plugin install: writing installed_plugins.json: %w", err)
 	}
 
 	res := InstallResult{
@@ -2534,7 +2534,7 @@ func (i *Installer) Install(ctx context.Context, req InstallRequest) (InstallRes
 	}
 	if !req.NoEnable {
 		if err := i.writeEnable(configPath, key, finalVersion, req.Pin); err != nil {
-			return res, fmt.Errorf("serf plugin install: writing %s: %w", configPath, err)
+			return res, fmt.Errorf("evener plugin install: writing %s: %w", configPath, err)
 		}
 		res.Enabled = true
 	}
@@ -2670,7 +2670,7 @@ git add internal/plugins/install_test.go
 git commit -m "plugins: cover Install AlreadyAt and Force re-install paths"
 ```
 
-### Task 6.10: `Install` — project scope writes `.serf/config.json`
+### Task 6.10: `Install` — project scope writes `.evener/config.json`
 
 **Files:**
 - Modify: `internal/plugins/install_test.go`
@@ -2691,7 +2691,7 @@ func TestInstall_ProjectScope_WritesProjectConfig(t *testing.T) {
 	if _, err := i.Install(context.Background(), InstallRequest{Plugin: "x@m", Scope: ScopeProject}); err != nil {
 		t.Fatal(err)
 	}
-	projCfg := filepath.Join(i.ProjectRoot, ".serf", "config.json")
+	projCfg := filepath.Join(i.ProjectRoot, ".evener", "config.json")
 	cfg, err := loadRawConfig(projCfg)
 	if err != nil {
 		t.Fatal(err)
@@ -3194,34 +3194,34 @@ func (i *Installer) Uninstall(ctx context.Context, req UninstallRequest) error {
 		req.Scope = ScopeUser
 	}
 	if req.Scope != ScopeUser && req.Scope != ScopeProject {
-		return fmt.Errorf(`serf plugin uninstall: scope %q is not yet supported in serf`, string(req.Scope))
+		return fmt.Errorf(`evener plugin uninstall: scope %q is not yet supported in evener`, string(req.Scope))
 	}
 	plugin, market, err := parsePluginSpec(req.Plugin, req.Marketplace)
 	if err != nil {
-		return fmt.Errorf("serf plugin uninstall: %w", err)
+		return fmt.Errorf("evener plugin uninstall: %w", err)
 	}
 	configPath, err := i.pathForScope(req.Scope)
 	if err != nil {
-		return fmt.Errorf("serf plugin uninstall: %w", err)
+		return fmt.Errorf("evener plugin uninstall: %w", err)
 	}
 	if req.KeepData {
-		fmt.Fprintf(i.stderrOr(), "--keep-data is reserved; serf does not maintain plugin data directories yet\n")
+		fmt.Fprintf(i.stderrOr(), "--keep-data is reserved; evener does not maintain plugin data directories yet\n")
 	}
 
 	release, err := acquireRegistryLock(i.RegistryPath+".lock", i.lockTimeoutOr())
 	if err != nil {
-		return fmt.Errorf("serf plugin uninstall: %w", err)
+		return fmt.Errorf("evener plugin uninstall: %w", err)
 	}
 	defer release()
 
 	reg, err := LoadRegistry(i.RegistryPath)
 	if err != nil {
-		return fmt.Errorf("serf plugin uninstall: %w", err)
+		return fmt.Errorf("evener plugin uninstall: %w", err)
 	}
 	key := plugin + "@" + market
 	entry, ok := findEntry(reg, key, req.Scope)
 	if !ok {
-		return fmt.Errorf(`serf plugin uninstall: plugin "%s" is not installed at scope %q`, key, string(req.Scope))
+		return fmt.Errorf(`evener plugin uninstall: plugin "%s" is not installed at scope %q`, key, string(req.Scope))
 	}
 
 	// Disable in config.json (best effort; do not block uninstall).
@@ -3237,7 +3237,7 @@ func (i *Installer) Uninstall(ctx context.Context, req UninstallRequest) error {
 
 	reg, _ = removeEntry(reg, key, req.Scope)
 	if err := SaveRegistry(i.RegistryPath, reg); err != nil {
-		return fmt.Errorf("serf plugin uninstall: writing installed_plugins.json: %w", err)
+		return fmt.Errorf("evener plugin uninstall: writing installed_plugins.json: %w", err)
 	}
 
 	// GC cache dir if no other scope references it.
@@ -3424,55 +3424,55 @@ func (i *Installer) Update(ctx context.Context, req UpdateRequest) (InstallResul
 		req.Scope = ScopeUser
 	}
 	if req.Scope != ScopeUser && req.Scope != ScopeProject {
-		return InstallResult{}, fmt.Errorf(`serf plugin update: scope %q is not yet supported in serf`, string(req.Scope))
+		return InstallResult{}, fmt.Errorf(`evener plugin update: scope %q is not yet supported in evener`, string(req.Scope))
 	}
 	plugin, market, err := parsePluginSpec(req.Plugin, req.Marketplace)
 	if err != nil {
-		return InstallResult{}, fmt.Errorf("serf plugin update: %w", err)
+		return InstallResult{}, fmt.Errorf("evener plugin update: %w", err)
 	}
 	configPath, err := i.pathForScope(req.Scope)
 	if err != nil {
-		return InstallResult{}, fmt.Errorf("serf plugin update: %w", err)
+		return InstallResult{}, fmt.Errorf("evener plugin update: %w", err)
 	}
 
 	release, err := acquireRegistryLock(i.RegistryPath+".lock", i.lockTimeoutOr())
 	if err != nil {
-		return InstallResult{}, fmt.Errorf("serf plugin update: %w", err)
+		return InstallResult{}, fmt.Errorf("evener plugin update: %w", err)
 	}
 	defer release()
 
 	reg, err := LoadRegistry(i.RegistryPath)
 	if err != nil {
-		return InstallResult{}, fmt.Errorf("serf plugin update: %w", err)
+		return InstallResult{}, fmt.Errorf("evener plugin update: %w", err)
 	}
 	key := plugin + "@" + market
 	existing, ok := findEntry(reg, key, req.Scope)
 	if !ok {
-		return InstallResult{}, fmt.Errorf(`serf plugin update: plugin "%s" is not installed at scope %q`, key, string(req.Scope))
+		return InstallResult{}, fmt.Errorf(`evener plugin update: plugin "%s" is not installed at scope %q`, key, string(req.Scope))
 	}
 
 	src, err := i.Marketplaces.Resolve(ctx, plugin, market)
 	if err != nil {
-		return InstallResult{}, fmt.Errorf(`serf plugin update: resolving "%s@%s": %w`, plugin, market, err)
+		return InstallResult{}, fmt.Errorf(`evener plugin update: resolving "%s@%s": %w`, plugin, market, err)
 	}
 
 	stagingDir := filepath.Join(i.CacheRoot, market, plugin, ".staging")
 	if err := prepareCacheDir(stagingDir, true, i.stderrOr()); err != nil {
-		return InstallResult{}, fmt.Errorf("serf plugin update: %w", err)
+		return InstallResult{}, fmt.Errorf("evener plugin update: %w", err)
 	}
 	if err := src.Fetch(ctx, stagingDir); err != nil {
 		_ = os.RemoveAll(stagingDir)
-		return InstallResult{}, fmt.Errorf(`serf plugin update: fetching "%s@%s": %w`, plugin, market, err)
+		return InstallResult{}, fmt.Errorf(`evener plugin update: fetching "%s@%s": %w`, plugin, market, err)
 	}
 	hasPJ, pjVer, err := readPluginJSONVersion(stagingDir)
 	if err != nil {
 		_ = os.RemoveAll(stagingDir)
-		return InstallResult{}, fmt.Errorf(`serf plugin update: validating "%s@%s": %w`, plugin, market, err)
+		return InstallResult{}, fmt.Errorf(`evener plugin update: validating "%s@%s": %w`, plugin, market, err)
 	}
 	newVersion, err := computeVersion("", src.DeclaredVersion(), src.CommitSHA(), hasPJ, pjVer)
 	if err != nil {
 		_ = os.RemoveAll(stagingDir)
-		return InstallResult{}, fmt.Errorf(`serf plugin update: validating "%s@%s": %w`, plugin, market, err)
+		return InstallResult{}, fmt.Errorf(`evener plugin update: validating "%s@%s": %w`, plugin, market, err)
 	}
 
 	if newVersion == existing.Version && !req.Force {
@@ -3489,7 +3489,7 @@ func (i *Installer) Update(ctx context.Context, req UpdateRequest) (InstallResul
 	}
 	if err := os.Rename(stagingDir, newDir); err != nil {
 		_ = os.RemoveAll(stagingDir)
-		return InstallResult{}, fmt.Errorf("serf plugin update: %w", err)
+		return InstallResult{}, fmt.Errorf("evener plugin update: %w", err)
 	}
 
 	now := i.nowOr()
@@ -3504,7 +3504,7 @@ func (i *Installer) Update(ctx context.Context, req UpdateRequest) (InstallResul
 	reg = upsertEntry(reg, key, entry)
 	if err := SaveRegistry(i.RegistryPath, reg); err != nil {
 		_ = os.RemoveAll(newDir)
-		return InstallResult{}, fmt.Errorf("serf plugin update: writing installed_plugins.json: %w", err)
+		return InstallResult{}, fmt.Errorf("evener plugin update: writing installed_plugins.json: %w", err)
 	}
 
 	// updateEnabledIfPinned: rewrite {version: oldVer} → {version: newVer}; leave true alone.
@@ -3610,7 +3610,7 @@ func (i *Installer) UpdateAll(ctx context.Context, scope Scope) ([]InstallResult
 	}
 	reg, err := LoadRegistry(i.RegistryPath)
 	if err != nil {
-		return nil, fmt.Errorf("serf plugin update: %w", err)
+		return nil, fmt.Errorf("evener plugin update: %w", err)
 	}
 	keys := make([]string, 0, len(reg.Plugins))
 	for k, entries := range reg.Plugins {
@@ -3776,38 +3776,38 @@ func (i *Installer) Enable(ctx context.Context, req EnableRequest) error {
 		req.Scope = ScopeUser
 	}
 	if req.Scope != ScopeUser && req.Scope != ScopeProject {
-		return fmt.Errorf(`serf plugin enable: scope %q is not yet supported in serf`, string(req.Scope))
+		return fmt.Errorf(`evener plugin enable: scope %q is not yet supported in evener`, string(req.Scope))
 	}
 	plugin, market, err := parsePluginSpec(req.Plugin, req.Marketplace)
 	if err != nil {
-		return fmt.Errorf("serf plugin enable: %w", err)
+		return fmt.Errorf("evener plugin enable: %w", err)
 	}
 	configPath, err := i.pathForScope(req.Scope)
 	if err != nil {
-		return fmt.Errorf("serf plugin enable: %w", err)
+		return fmt.Errorf("evener plugin enable: %w", err)
 	}
 	release, err := acquireRegistryLock(i.RegistryPath+".lock", i.lockTimeoutOr())
 	if err != nil {
-		return fmt.Errorf("serf plugin enable: %w", err)
+		return fmt.Errorf("evener plugin enable: %w", err)
 	}
 	defer release()
 
 	reg, err := LoadRegistry(i.RegistryPath)
 	if err != nil {
-		return fmt.Errorf("serf plugin enable: %w", err)
+		return fmt.Errorf("evener plugin enable: %w", err)
 	}
 	key := plugin + "@" + market
 	e, ok := findEntry(reg, key, req.Scope)
 	if !ok {
-		return fmt.Errorf(`serf plugin enable: plugin "%s" is not installed at scope %q`, key, string(req.Scope))
+		return fmt.Errorf(`evener plugin enable: plugin "%s" is not installed at scope %q`, key, string(req.Scope))
 	}
 	cfg, err := loadRawConfig(configPath)
 	if err != nil {
-		return fmt.Errorf("serf plugin enable: %w", err)
+		return fmt.Errorf("evener plugin enable: %w", err)
 	}
 	applyEnable(&cfg, key, e.Version, req.Pin)
 	if err := writeRawConfig(configPath, cfg); err != nil {
-		return fmt.Errorf("serf plugin enable: writing %s: %w", configPath, err)
+		return fmt.Errorf("evener plugin enable: writing %s: %w", configPath, err)
 	}
 	return nil
 }
@@ -3817,30 +3817,30 @@ func (i *Installer) Disable(ctx context.Context, req DisableRequest) error {
 		req.Scope = ScopeUser
 	}
 	if req.Scope != ScopeUser && req.Scope != ScopeProject {
-		return fmt.Errorf(`serf plugin disable: scope %q is not yet supported in serf`, string(req.Scope))
+		return fmt.Errorf(`evener plugin disable: scope %q is not yet supported in evener`, string(req.Scope))
 	}
 	plugin, market, err := parsePluginSpec(req.Plugin, req.Marketplace)
 	if err != nil {
-		return fmt.Errorf("serf plugin disable: %w", err)
+		return fmt.Errorf("evener plugin disable: %w", err)
 	}
 	configPath, err := i.pathForScope(req.Scope)
 	if err != nil {
-		return fmt.Errorf("serf plugin disable: %w", err)
+		return fmt.Errorf("evener plugin disable: %w", err)
 	}
 	release, err := acquireRegistryLock(i.RegistryPath+".lock", i.lockTimeoutOr())
 	if err != nil {
-		return fmt.Errorf("serf plugin disable: %w", err)
+		return fmt.Errorf("evener plugin disable: %w", err)
 	}
 	defer release()
 
 	cfg, err := loadRawConfig(configPath)
 	if err != nil {
-		return fmt.Errorf("serf plugin disable: %w", err)
+		return fmt.Errorf("evener plugin disable: %w", err)
 	}
 	key := plugin + "@" + market
 	applyDisable(&cfg, key)
 	if err := writeRawConfig(configPath, cfg); err != nil {
-		return fmt.Errorf("serf plugin disable: writing %s: %w", configPath, err)
+		return fmt.Errorf("evener plugin disable: writing %s: %w", configPath, err)
 	}
 	return nil
 }
@@ -3938,7 +3938,7 @@ Replace stub:
 func (i *Installer) List(ctx context.Context, scope Scope) ([]ListEntry, error) {
 	reg, err := LoadRegistry(i.RegistryPath)
 	if err != nil {
-		return nil, fmt.Errorf("serf plugin list: %w", err)
+		return nil, fmt.Errorf("evener plugin list: %w", err)
 	}
 	// Pre-load per-scope enabledPlugins maps.
 	enabled := map[Scope]map[string]bool{}
@@ -4064,7 +4064,7 @@ func TestInstaller_LockTimeout(t *testing.T) {
 	r.byKey["x@m"] = &stubSource{fixtureDir: fix, declared: "1.0.0"}
 
 	_, err = i.Install(context.Background(), InstallRequest{Plugin: "x@m"})
-	if err == nil || !strings.Contains(err.Error(), "another serf plugin operation is in progress") {
+	if err == nil || !strings.Contains(err.Error(), "another evener plugin operation is in progress") {
 		t.Fatalf("err = %v", err)
 	}
 }
@@ -4109,17 +4109,17 @@ git commit -m "plugins: cover lock serialization and lock timeout"
 
 ## Phase 12 — CLI surface
 
-The CLI in `cmd/serf/plugin/` wraps `Installer` with a Cobra command tree. Existing serf binaries use Cobra; verify by reading `cmd/serf/main.go` before adding the import.
+The CLI in `cmd/evener/plugin/` wraps `Installer` with a Cobra command tree. Existing evener binaries use Cobra; verify by reading `cmd/evener/main.go` before adding the import.
 
 ### Task 12.1: Define `pluginInstaller` interface for testable CLI
 
 **Files:**
-- Create: `cmd/serf/plugin/install.go`
+- Create: `cmd/evener/plugin/install.go`
 
 - [ ] **Step 1: Write the scaffolding**
 
 ```go
-// Package plugin implements the `serf plugin` subcommand tree for installing,
+// Package plugin implements the `evener plugin` subcommand tree for installing,
 // uninstalling, updating, listing, enabling, and disabling Claude Code
 // compatible plugins.
 package plugin
@@ -4127,7 +4127,7 @@ package plugin
 import (
 	"context"
 
-	"primeradiant.com/serf/internal/plugins"
+	"primeradiant.com/evener/internal/plugins"
 )
 
 // pluginInstaller is the subset of *plugins.Installer the CLI consumes. It
@@ -4146,21 +4146,21 @@ type pluginInstaller interface {
 
 - [ ] **Step 2: Build**
 
-Run: `go build ./cmd/serf/plugin/...`
+Run: `go build ./cmd/evener/plugin/...`
 Expected: succeeds.
 
 - [ ] **Step 3: Commit**
 
 ```bash
-git add cmd/serf/plugin/install.go
+git add cmd/evener/plugin/install.go
 git commit -m "plugin cli: scaffold pluginInstaller interface"
 ```
 
 ### Task 12.2: `NewCommand` factory + install subcommand wiring
 
 **Files:**
-- Modify: `cmd/serf/plugin/install.go`
-- Create: `cmd/serf/plugin/install_test.go`
+- Modify: `cmd/evener/plugin/install.go`
+- Create: `cmd/evener/plugin/install_test.go`
 
 - [ ] **Step 1: Write the failing test**
 
@@ -4174,7 +4174,7 @@ import (
 	"strings"
 	"testing"
 
-	"primeradiant.com/serf/internal/plugins"
+	"primeradiant.com/evener/internal/plugins"
 )
 
 type fakeInstaller struct {
@@ -4219,7 +4219,7 @@ func TestInstallCommand_HappyPath(t *testing.T) {
 }
 
 func TestInstallCommand_MissingMarketplace(t *testing.T) {
-	f := &fakeInstaller{installErr: errors.New(`serf plugin install: plugin "x" requires a marketplace; pass plugin@marketplace or --marketplace <name>`)}
+	f := &fakeInstaller{installErr: errors.New(`evener plugin install: plugin "x" requires a marketplace; pass plugin@marketplace or --marketplace <name>`)}
 	var stdout, stderr bytes.Buffer
 	code := Run([]string{"install", "x"}, f, &stdout, &stderr)
 	if code != 2 {
@@ -4233,15 +4233,15 @@ func TestInstallCommand_MissingMarketplace(t *testing.T) {
 
 - [ ] **Step 2: Run — FAIL**
 
-Run: `go test ./cmd/serf/plugin/ -run TestInstallCommand -v`
+Run: `go test ./cmd/evener/plugin/ -run TestInstallCommand -v`
 Expected: FAIL — undefined `Run`.
 
 - [ ] **Step 3: Implement `Run` and the install subcommand**
 
-Replace `cmd/serf/plugin/install.go` content with:
+Replace `cmd/evener/plugin/install.go` content with:
 
 ```go
-// Package plugin implements the `serf plugin` subcommand tree for installing,
+// Package plugin implements the `evener plugin` subcommand tree for installing,
 // uninstalling, updating, listing, enabling, and disabling Claude Code
 // compatible plugins.
 package plugin
@@ -4255,7 +4255,7 @@ import (
 	"strings"
 
 	"github.com/spf13/cobra"
-	"primeradiant.com/serf/internal/plugins"
+	"primeradiant.com/evener/internal/plugins"
 )
 
 type pluginInstaller interface {
@@ -4283,8 +4283,8 @@ func Run(args []string, inst pluginInstaller, stdout, stderr io.Writer) int {
 	return 0
 }
 
-// NewCommand builds the `serf plugin` cobra root. SP8 wires this into the
-// root serf command.
+// NewCommand builds the `evener plugin` cobra root. SP8 wires this into the
+// root evener command.
 func NewCommand(inst pluginInstaller) *cobra.Command {
 	root := &cobra.Command{
 		Use:   "plugin",
@@ -4353,7 +4353,7 @@ func parseScope(s string) (plugins.Scope, error) {
 	case "project":
 		return plugins.ScopeProject, nil
 	case "local", "managed":
-		return "", fmt.Errorf(`scope %q is not yet supported in serf`, s)
+		return "", fmt.Errorf(`scope %q is not yet supported in evener`, s)
 	default:
 		return "", fmt.Errorf(`unknown scope %q (want user or project)`, s)
 	}
@@ -4389,7 +4389,7 @@ func classifyExitCode(err error) int {
 		strings.Contains(msg, "resolving "):
 		return 4
 	case strings.Contains(msg, "installed_plugins.json"),
-		strings.Contains(msg, "another serf plugin operation"):
+		strings.Contains(msg, "another evener plugin operation"):
 		return 3
 	}
 	return 1
@@ -4444,20 +4444,20 @@ func renderJSONError(w io.Writer, err error) error {
 
 - [ ] **Step 4: Run — PASS**
 
-Run: `go test ./cmd/serf/plugin/ -run TestInstallCommand -v`
+Run: `go test ./cmd/evener/plugin/ -run TestInstallCommand -v`
 Expected: PASS.
 
 - [ ] **Step 5: Commit**
 
 ```bash
-git add cmd/serf/plugin/install.go cmd/serf/plugin/install_test.go
+git add cmd/evener/plugin/install.go cmd/evener/plugin/install_test.go
 git commit -m "plugin cli: install subcommand with human and --json output"
 ```
 
 ### Task 12.3: CLI rejects `--scope managed` with exit 2
 
 **Files:**
-- Modify: `cmd/serf/plugin/install_test.go`
+- Modify: `cmd/evener/plugin/install_test.go`
 
 - [ ] **Step 1: Write the failing test**
 
@@ -4480,20 +4480,20 @@ func TestInstallCommand_RejectsManagedScope(t *testing.T) {
 
 - [ ] **Step 2: Run — should PASS**
 
-Run: `go test ./cmd/serf/plugin/ -run TestInstallCommand_RejectsManagedScope -v`
+Run: `go test ./cmd/evener/plugin/ -run TestInstallCommand_RejectsManagedScope -v`
 Expected: PASS.
 
 - [ ] **Step 3: Commit**
 
 ```bash
-git add cmd/serf/plugin/install_test.go
+git add cmd/evener/plugin/install_test.go
 git commit -m "plugin cli: cover --scope managed rejection"
 ```
 
 ### Task 12.4: CLI `--json` install output is valid JSON with `ok:true`
 
 **Files:**
-- Modify: `cmd/serf/plugin/install_test.go`
+- Modify: `cmd/evener/plugin/install_test.go`
 
 - [ ] **Step 1: Write the failing test**
 
@@ -4525,26 +4525,26 @@ Add `"encoding/json"` to test imports.
 
 - [ ] **Step 2: Run — should PASS**
 
-Run: `go test ./cmd/serf/plugin/ -run TestInstallCommand_JSON -v`
+Run: `go test ./cmd/evener/plugin/ -run TestInstallCommand_JSON -v`
 Expected: PASS.
 
 - [ ] **Step 3: Commit**
 
 ```bash
-git add cmd/serf/plugin/install_test.go
+git add cmd/evener/plugin/install_test.go
 git commit -m "plugin cli: cover install --json output"
 ```
 
 ### Task 12.5: CLI install resolver miss → exit 4
 
 **Files:**
-- Modify: `cmd/serf/plugin/install_test.go`
+- Modify: `cmd/evener/plugin/install_test.go`
 
 - [ ] **Step 1: Write the failing test**
 
 ```go
 func TestInstallCommand_ResolverMissExit4(t *testing.T) {
-	f := &fakeInstaller{installErr: errors.New(`serf plugin install: plugin "x@m" is not in any known marketplace; run 'serf plugin marketplace add ...'`)}
+	f := &fakeInstaller{installErr: errors.New(`evener plugin install: plugin "x@m" is not in any known marketplace; run 'evener plugin marketplace add ...'`)}
 	var stdout, stderr bytes.Buffer
 	code := Run([]string{"install", "x@m"}, f, &stdout, &stderr)
 	if code != 4 {
@@ -4555,20 +4555,20 @@ func TestInstallCommand_ResolverMissExit4(t *testing.T) {
 
 - [ ] **Step 2: Run — should PASS**
 
-Run: `go test ./cmd/serf/plugin/ -run TestInstallCommand_ResolverMissExit4 -v`
+Run: `go test ./cmd/evener/plugin/ -run TestInstallCommand_ResolverMissExit4 -v`
 Expected: PASS.
 
 - [ ] **Step 3: Commit**
 
 ```bash
-git add cmd/serf/plugin/install_test.go
+git add cmd/evener/plugin/install_test.go
 git commit -m "plugin cli: cover resolver-miss exit 4"
 ```
 
 ### Task 12.6: Uninstall subcommand + `--keep-data` warning + `--prune` rejection
 
 **Files:**
-- Modify: `cmd/serf/plugin/install.go`, `cmd/serf/plugin/install_test.go`
+- Modify: `cmd/evener/plugin/install.go`, `cmd/evener/plugin/install_test.go`
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -4612,7 +4612,7 @@ func TestUninstallCommand_PruneRejected(t *testing.T) {
 
 - [ ] **Step 2: Run — FAIL**
 
-Run: `go test ./cmd/serf/plugin/ -run TestUninstallCommand -v`
+Run: `go test ./cmd/evener/plugin/ -run TestUninstallCommand -v`
 Expected: FAIL.
 
 - [ ] **Step 3: Implement `uninstallCmd`**
@@ -4634,10 +4634,10 @@ func uninstallCmd(inst pluginInstaller) *cobra.Command {
 		Args:    cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if prune {
-				return usageError{err: fmt.Errorf("--prune is not supported; serf v1 does not auto-install plugin dependencies")}
+				return usageError{err: fmt.Errorf("--prune is not supported; evener v1 does not auto-install plugin dependencies")}
 			}
 			if keepData {
-				fmt.Fprintln(cmd.ErrOrStderr(), "--keep-data is reserved; serf does not maintain plugin data directories yet")
+				fmt.Fprintln(cmd.ErrOrStderr(), "--keep-data is reserved; evener does not maintain plugin data directories yet")
 			}
 			s, err := parseScope(scope)
 			if err != nil {
@@ -4676,20 +4676,20 @@ func NewCommand(inst pluginInstaller) *cobra.Command {
 
 - [ ] **Step 4: Run — PASS**
 
-Run: `go test ./cmd/serf/plugin/ -run TestUninstallCommand -v`
+Run: `go test ./cmd/evener/plugin/ -run TestUninstallCommand -v`
 Expected: PASS.
 
 - [ ] **Step 5: Commit**
 
 ```bash
-git add cmd/serf/plugin/install.go cmd/serf/plugin/install_test.go
+git add cmd/evener/plugin/install.go cmd/evener/plugin/install_test.go
 git commit -m "plugin cli: uninstall subcommand with --keep-data warn and --prune reject"
 ```
 
 ### Task 12.7: Update + update --all subcommand
 
 **Files:**
-- Modify: `cmd/serf/plugin/install.go`, `cmd/serf/plugin/install_test.go`
+- Modify: `cmd/evener/plugin/install.go`, `cmd/evener/plugin/install_test.go`
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -4740,7 +4740,7 @@ func (f *fakeUpdateAll) UpdateAll(_ context.Context, _ plugins.Scope) ([]plugins
 
 - [ ] **Step 2: Run — FAIL**
 
-Run: `go test ./cmd/serf/plugin/ -run TestUpdate -v`
+Run: `go test ./cmd/evener/plugin/ -run TestUpdate -v`
 Expected: FAIL.
 
 - [ ] **Step 3: Implement `updateCmd`**
@@ -4846,20 +4846,20 @@ Update `NewCommand`:
 
 - [ ] **Step 4: Run — PASS**
 
-Run: `go test ./cmd/serf/plugin/ -run TestUpdate -v`
+Run: `go test ./cmd/evener/plugin/ -run TestUpdate -v`
 Expected: PASS.
 
 - [ ] **Step 5: Commit**
 
 ```bash
-git add cmd/serf/plugin/install.go cmd/serf/plugin/install_test.go
+git add cmd/evener/plugin/install.go cmd/evener/plugin/install_test.go
 git commit -m "plugin cli: update and update --all with JSON output"
 ```
 
 ### Task 12.8: Enable / disable subcommands
 
 **Files:**
-- Modify: `cmd/serf/plugin/install.go`, `cmd/serf/plugin/install_test.go`
+- Modify: `cmd/evener/plugin/install.go`, `cmd/evener/plugin/install_test.go`
 
 - [ ] **Step 1: Write the failing test**
 
@@ -4885,7 +4885,7 @@ func TestEnableDisableCommands(t *testing.T) {
 
 - [ ] **Step 2: Run — FAIL**
 
-Run: `go test ./cmd/serf/plugin/ -run TestEnableDisableCommands -v`
+Run: `go test ./cmd/evener/plugin/ -run TestEnableDisableCommands -v`
 Expected: FAIL.
 
 - [ ] **Step 3: Implement and register**
@@ -4955,20 +4955,20 @@ Register:
 
 - [ ] **Step 4: Run — PASS**
 
-Run: `go test ./cmd/serf/plugin/ -run TestEnableDisableCommands -v`
+Run: `go test ./cmd/evener/plugin/ -run TestEnableDisableCommands -v`
 Expected: PASS.
 
 - [ ] **Step 5: Commit**
 
 ```bash
-git add cmd/serf/plugin/install.go cmd/serf/plugin/install_test.go
+git add cmd/evener/plugin/install.go cmd/evener/plugin/install_test.go
 git commit -m "plugin cli: enable and disable subcommands"
 ```
 
 ### Task 12.9: List subcommand + `--available` requires `--json`
 
 **Files:**
-- Modify: `cmd/serf/plugin/install.go`, `cmd/serf/plugin/install_test.go`
+- Modify: `cmd/evener/plugin/install.go`, `cmd/evener/plugin/install_test.go`
 
 - [ ] **Step 1: Write the failing test**
 
@@ -5017,7 +5017,7 @@ func (f *fakeList) List(_ context.Context, _ plugins.Scope) ([]plugins.ListEntry
 
 - [ ] **Step 2: Run — FAIL**
 
-Run: `go test ./cmd/serf/plugin/ -run TestListCommand -v`
+Run: `go test ./cmd/evener/plugin/ -run TestListCommand -v`
 Expected: FAIL.
 
 - [ ] **Step 3: Implement and register `listCmd`**
@@ -5090,13 +5090,13 @@ Register:
 
 - [ ] **Step 4: Run — PASS**
 
-Run: `go test ./cmd/serf/plugin/ -run TestListCommand -v`
+Run: `go test ./cmd/evener/plugin/ -run TestListCommand -v`
 Expected: PASS.
 
 - [ ] **Step 5: Commit**
 
 ```bash
-git add cmd/serf/plugin/install.go cmd/serf/plugin/install_test.go
+git add cmd/evener/plugin/install.go cmd/evener/plugin/install_test.go
 git commit -m "plugin cli: list subcommand with --json and --available gating"
 ```
 
@@ -5106,7 +5106,7 @@ git commit -m "plugin cli: list subcommand with --json and --available gating"
 
 - [ ] **Step 1: Run the full SP4 test suite**
 
-Run: `go test ./internal/plugins/... ./cmd/serf/plugin/...`
+Run: `go test ./internal/plugins/... ./cmd/evener/plugin/...`
 Expected: ok, all green.
 
 - [ ] **Step 2: Commit (no-op if green; otherwise fix and commit each fix as its own change)**

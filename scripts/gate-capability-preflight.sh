@@ -9,7 +9,7 @@
 #
 # This script's own stdout is not meant to be read directly - it is shell
 # code for the caller to eval. That code:
-#   - exports SERF_GATE_CAPABILITY_SKIP, a `go test -skip` regex covering
+#   - exports EVENER_GATE_CAPABILITY_SKIP, a `go test -skip` regex covering
 #     every known test-name pattern that needs a capability this preflight
 #     found blocked (empty when nothing is blocked, so run-module-tests.sh
 #     never sees an unset variable under `set -u`);
@@ -48,7 +48,7 @@ if [ "${FAKE_GATE_PROBE_BLOCKED+set}" = set ]; then
 	for id in $capability_ids; do
 		case " $FAKE_GATE_PROBE_BLOCKED " in
 			*" $id "*)
-				lines="${lines}${id}${tab}BLOCKED${tab}forced blocked via FAKE_GATE_PROBE_BLOCKED (selftest)${tab}go run ./cmd/serf-gate-probe -only=$id
+				lines="${lines}${id}${tab}BLOCKED${tab}forced blocked via FAKE_GATE_PROBE_BLOCKED (selftest)${tab}go run ./cmd/evener-gate-probe -only=$id
 "
 				;;
 			*)
@@ -58,8 +58,8 @@ if [ "${FAKE_GATE_PROBE_BLOCKED+set}" = set ]; then
 		esac
 	done
 else
-	if ! lines="$(cd "$repo_root" && go run ./cmd/serf-gate-probe 2>&1)"; then
-		emit_fatal "go run ./cmd/serf-gate-probe exited nonzero: $lines"
+	if ! lines="$(cd "$repo_root" && go run ./cmd/evener-gate-probe 2>&1)"; then
+		emit_fatal "go run ./cmd/evener-gate-probe exited nonzero: $lines"
 	fi
 fi
 
@@ -102,7 +102,7 @@ for id in $capability_ids; do
 	esac
 done
 
-printf 'export SERF_GATE_CAPABILITY_SKIP=%s\n' "$(printf '%q' "$skip_regex")"
+printf 'export EVENER_GATE_CAPABILITY_SKIP=%s\n' "$(printf '%q' "$skip_regex")"
 for line in "${summary_lines[@]}"; do
 	printf 'echo %s >&2\n' "$(printf '%q' "$line")"
 done

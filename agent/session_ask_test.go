@@ -11,13 +11,13 @@ import (
 	"testing"
 	"time"
 
-	"primeradiant.com/serf/agent/execenv"
-	"primeradiant.com/serf/agent/internal/goal"
-	"primeradiant.com/serf/agent/internal/hooks"
-	"primeradiant.com/serf/agent/plugin"
-	"primeradiant.com/serf/agent/schema"
-	"primeradiant.com/serf/agent/transcript"
-	"primeradiant.com/serf/llm"
+	"primeradiant.com/evener/agent/execenv"
+	"primeradiant.com/evener/agent/internal/goal"
+	"primeradiant.com/evener/agent/internal/hooks"
+	"primeradiant.com/evener/agent/plugin"
+	"primeradiant.com/evener/agent/schema"
+	"primeradiant.com/evener/agent/transcript"
+	"primeradiant.com/evener/llm"
 )
 
 // askUserArgsValid builds one valid ask_user question (spec §4.2's own example).
@@ -686,7 +686,7 @@ func TestAskUser_PreToolUseDenyPostsNothing(t *testing.T) {
 	sess := newSession(t, withAdapter(f))
 	runner := hooks.NewRunner(nil, "")
 	runner.Add(plugin.HookPreToolUse, plugin.RegisteredHook{
-		// Matcher scoped to ask_user's Claude-visible name (toolname.SerfToClaude)
+		// Matcher scoped to ask_user's Claude-visible name (toolname.EvenerToClaude)
 		// so the deny does not also swallow round 2's communicate call.
 		Matcher: "AskUserQuestion",
 		Type:    "command",
@@ -1037,7 +1037,7 @@ func TestAskUser_BoundaryDrainPreservesFollowUp(t *testing.T) {
 // question lives in: v1 refuses Compact while awaiting with an instructive
 // error ... and allows Clear, which dismisses the question along with the
 // history and rests idle." Compact's guard lives in the rest-time entry,
-// agent/session_compaction.go's Compact — the one cmd/serf/serve.go's
+// agent/session_compaction.go's Compact — the one cmd/evener/serve.go's
 // SetCompactFunc calls. Clear has no in-place Session method at all: /clear
 // (serve.go SetClearFunc) constructs a brand-new agent.NewSession with
 // SessionStartKind=Clear and swaps it in for the live session, Closing the
@@ -1160,7 +1160,7 @@ func TestAskUser_CompactProceedsOnPlainAwaitingRestNoPendingAsk(t *testing.T) {
 
 // TestAskUser_ClearReplacesAwaitingSessionWithFreshIdleOne reproduces spec
 // §5.3's Clear requirement at the session level, matching the ACTUAL
-// production mechanism (cmd/serf/serve.go SetClearFunc) rather than inventing
+// production mechanism (cmd/evener/serve.go SetClearFunc) rather than inventing
 // an in-place reset that does not exist: an old session is driven into
 // SessionAwaiting with a real pending question, then a replacement is built
 // exactly as SetClearFunc builds one — same client/profile/env, cfg with only

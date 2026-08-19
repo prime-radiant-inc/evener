@@ -3,7 +3,7 @@ package agent
 import (
 	"context"
 
-	"primeradiant.com/serf/agent/internal/delegatestore"
+	"primeradiant.com/evener/agent/internal/delegatestore"
 )
 
 type delegateWorkToken struct{ processID uint64 }

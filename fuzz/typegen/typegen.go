@@ -3,11 +3,11 @@
 // (mirroring encoding/json's marshalling rules), and Registry indexes many named
 // types/schemas behind one source-driven generator interface.
 //
-// Like schemagen, typegen is the serf-agnostic core of the fuzzing toolkit: it
+// Like schemagen, typegen is the evener-agnostic core of the fuzzing toolkit: it
 // imports only the standard library, pgregory.net/rapid, and its sibling
-// schemagen — NOTHING here may import any primeradiant.com/serf package. Go
+// schemagen — NOTHING here may import any primeradiant.com/evener package. Go
 // types cross that boundary as reflect.Type (a stdlib interface carrying no
-// import edge), so a serf-side test can hand its wire structs to a serf-free
+// import edge), so a evener-side test can hand its wire structs to a evener-free
 // registry. That structural boundary is the portability test.
 package typegen
 
@@ -20,7 +20,7 @@ import (
 
 	"pgregory.net/rapid"
 
-	"primeradiant.com/serf/fuzz/schemagen"
+	"primeradiant.com/evener/fuzz/schemagen"
 )
 
 var (

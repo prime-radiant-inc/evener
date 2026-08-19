@@ -1,0 +1,441 @@
+<!doctype html>
+<html lang="en" data-theme="dark">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=1600, initial-scale=1">
+<title>activity tree responsive layoutguard harness</title>
+<!-- This document is the chrome AROUND the fixtures - the three measured trees
+     live in the srcdoc iframes below, which link these same two sheets for
+     themselves. It links them too so that every document on the page declares
+     the product's @font-face rules for itself, which is what waitForFonts now
+     requires per document rather than pooled (kata e4sh): pooled, one fixture
+     frame could lose its stylesheet and be carried by its siblings.
+     Deliberately BEFORE the block below, so the outer chrome's own deliberate
+     system-ui labelling still wins on order. -->
+<link rel="stylesheet" href="tokens.css">
+<link rel="stylesheet" href="resolved.css">
+<style>
+  * { box-sizing: border-box; }
+  html, body { margin: 0; background: #10151C; }
+  body { font: 14px/1.5 system-ui, sans-serif; }
+  .fixtures {
+    display: flex;
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 32px;
+    padding: 32px;
+  }
+  .fixture {
+    display: flex;
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 8px;
+  }
+  .fixtureLabel {
+    color: #93A3B5;
+    font: 12px/1.5 ui-monospace, monospace;
+  }
+  .fixtureFrame {
+    border: 1px solid #2A3542;
+    background: #10151C;
+  }
+</style>
+</head>
+<body>
+<main class="fixtures" data-role="fixtures"></main>
+<script>
+// 2026-08-05 activity-view redesign: the card-based master-detail tree plus
+// inspector pane is gone. The Activity sheet is now a single dense tree
+// column (.panelColumn > .tree) of .denseRow / .foldRow items nested under
+// .indentGuide groups, with inline .detailStrip and continuation .rowActions
+// strips. This harness mirrors THAT markup; the clipping contracts it guards
+// are .denseName (row label) and .detailCommand (detail strip command), both
+// nowrap + ellipsis, and the continuation strip's wrap-without-scrolling.
+const LONG_COMMAND = "EVENER_SESSION_MODE=retained /usr/bin/env bash -lc 'python3 tools/trace_activity.py --session 02wMz5Txv1C3Hut0M8GCeB --delegate 8 --emit jsonl --follow --with-ancestor-chain --full-command-width --explain-overflow-contract'";
+
+function chevron(direction) {
+  const pathByDirection = {
+    right: "M6 3.5 L10.5 8 L6 12.5",
+    down: "M3.5 6 L8 10.5 L12.5 6",
+  };
+  return `
+    <svg viewBox="0 0 16 16" width="12" height="12" aria-hidden="true" focusable="false" style="display:block">
+      <path d="${pathByDirection[direction]}" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" fill="none"></path>
+    </svg>`;
+}
+
+function statusDot(family, label) {
+  return `<span role="img" aria-label="${label}" class="dot ${family}"></span>`;
+}
+
+function denseRowMarkup({ label, meta, status, statusFamily, kind = "$", live = false, labelRole = "", withDetail = false, continuation = "" }) {
+  return `
+    <div role="treeitem" aria-label="${escapeHtml(label)}" aria-expanded="false" tabIndex="0" class="denseRow">
+      <button type="button" tabIndex="-1" class="rowToggle" aria-label="Toggle details">
+        ${chevron("right")}
+      </button>
+      ${statusDot(statusFamily, status)}
+      <span class="denseKind" aria-hidden="true">${kind}</span>
+      <span class="${live ? "denseName denseNameLive" : "denseName"}"${labelRole ? ` data-role="${labelRole}"` : ""}>${escapeHtml(label)}</span>
+      <span class="denseMeta">${escapeHtml(meta)}</span>
+    </div>
+    ${withDetail ? `
+      <div class="detailStrip">
+        <code class="detailCommand" data-role="deep-detail-probe">${escapeHtml(LONG_COMMAND)}</code>
+        <span class="detailMeta">${escapeHtml(status)} 12s · 512 output bytes</span>
+      </div>` : ""}
+    ${continuation ? `
+      <div class="rowActions">
+        <span class="rowContinuation">${escapeHtml(continuation)}</span>
+        <button type="button" tabIndex="-1" class="button quiet buttonSizeXsHarness">Load more</button>
+      </div>` : ""}`;
+}
+
+function foldRowMarkup(count) {
+  return `
+    <div role="treeitem" aria-label="${count} inactive" aria-expanded="false" tabIndex="-1" class="foldRow">
+      <button type="button" tabIndex="-1" class="rowToggle" aria-label="Expand inactive entries">
+        ${chevron("right")}
+      </button>
+      <span class="denseName">${count} inactive</span>
+    </div>`;
+}
+
+// deepTreeMarkup nests .indentGuide groups eight levels deep, matching how
+// ActivityTree's renderRowBlock wraps each row's deeper-level block.
+function deepTreeMarkup(kind) {
+  let markup = denseRowMarkup({
+    label: "activity-tree-sidebar session /Users/jesse/prime-radiant-toil-suite-evener/activity-tree-sidebar",
+    meta: "4 active · 1 failed · 18 completed",
+    status: "running",
+    statusFamily: "alive",
+    live: true,
+  });
+  for (let depth = 1; depth <= 8; depth += 1) {
+    markup += '<div role="group" class="indentGuide">';
+    markup += denseRowMarkup({
+      label: `Delegate ${depth}: retained activity branch with an intentionally long mandate proving clipped deep labels at depth ${depth}`,
+      meta: depth < 8 ? "running 12s · 512b" : "needs-you · 2 failed",
+      status: depth < 8 ? "running" : "needs-you",
+      statusFamily: depth < 8 ? "alive" : "attention",
+      kind: "⌘",
+      live: depth < 8,
+      labelRole: depth === 8 ? `${kind}-deep-label` : "",
+      withDetail: depth === 8,
+      continuation: depth === 6 ? "This branch is partially retained. The continuation strip wraps its explanation instead of scrolling the tree sideways." : "",
+    });
+  }
+  markup += foldRowMarkup(12);
+  markup += "</div>".repeat(8);
+  return markup;
+}
+
+function frameDocument({ bodyMarkup, width }) {
+  return `<!doctype html>
+<html lang="en" data-theme="dark">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=${width}, initial-scale=1">
+<base href="${location.href}">
+<link rel="stylesheet" href="tokens.css">
+<link rel="stylesheet" href="resolved.css">
+<style>
+  * { transition: none !important; animation: none !important; }
+  html, body { height: 100%; margin: 0; }
+  body {
+    background: var(--surface-0);
+    color: var(--ink-hi);
+    font-family: var(--font-sans);
+    font-size: var(--font-size-body);
+    line-height: var(--line-height-body);
+  }
+  /* layoutguard flattens module CSS into one resolved.css file, so several
+     cross-module class names collide here. Keep the real loaded CSS files and
+     alias only the collided contracts the harness must distinguish: sheet
+     chassis/body/activity wrapper. */
+  .sheetPanelHarness {
+    position: relative;
+    display: flex;
+    flex-direction: column;
+    background: var(--surface-2);
+    border: 1px solid var(--edge);
+    overflow-x: hidden;
+    overflow-y: auto;
+  }
+  .sheetHeaderHarness {
+    padding: var(--space-4) var(--space-7) var(--space-3) var(--space-4);
+    border-bottom: 1px solid var(--edge);
+  }
+  .sheetTitleHarness {
+    margin: 0;
+    font-family: var(--font-sans);
+    font-size: var(--font-size-pane-title);
+    font-weight: var(--font-weight-semibold);
+    letter-spacing: var(--tracking-display);
+    line-height: var(--line-height-title);
+    color: var(--ink-hi);
+  }
+  .sheetBodyHarness {
+    padding: var(--space-4);
+    font-size: var(--font-size-body);
+    line-height: var(--line-height-body);
+    color: var(--ink-hi);
+    min-height: 0;
+    overflow-x: hidden;
+    overflow-y: auto;
+  }
+  .sheetCloseButtonHarness {
+    position: absolute;
+    top: var(--space-3);
+    right: var(--space-3);
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 24px;
+    height: 24px;
+    padding: 0;
+    border: none;
+    border-radius: var(--radius-control);
+    background: transparent;
+    color: var(--ink-mid);
+    cursor: pointer;
+  }
+  .activityPanelHarness {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-3);
+    min-height: 0;
+    min-width: 0;
+    overflow-x: hidden;
+  }
+  .buttonSizeXsHarness {
+    height: 24px;
+    padding: 0 var(--space-2);
+    font-size: var(--font-size-ui);
+  }
+</style>
+</head>
+<body data-font-size="m">
+  <div class="scrim">
+    <div class="sheetPanelHarness right wide" data-role="sheet">
+      <header class="sheetHeaderHarness">
+        <h2 class="sheetTitleHarness">Activity</h2>
+      </header>
+      <div class="sheetBodyHarness" data-role="sheet-body">
+        <div class="activityPanelHarness" data-role="activity-panel">
+          ${bodyMarkup}
+        </div>
+      </div>
+      <button type="button" class="sheetCloseButtonHarness" aria-label="Close">×</button>
+    </div>
+  </div>
+</body>
+</html>`;
+}
+
+function escapeHtml(text) {
+  return String(text)
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;")
+    .replaceAll('"', "&quot;")
+    .replaceAll("'", "&#39;");
+}
+
+function treeBodyMarkup(kind) {
+  return `
+    <div class="panelColumn" data-role="tree-pane">
+      <div class="tree" role="tree">${deepTreeMarkup(kind)}</div>
+    </div>`;
+}
+
+const fixtures = [
+  {
+    name: "desktop-tree-1440",
+    mode: "desktop",
+    width: 1440,
+    height: 900,
+    label: "desktop 1440×900 — dense tree",
+    bodyMarkup: treeBodyMarkup("desktop"),
+  },
+  {
+    name: "mobile-tree-390",
+    mode: "mobile-tree",
+    width: 390,
+    height: 844,
+    label: "mobile 390×844 — dense tree",
+    bodyMarkup: treeBodyMarkup("mobile-tree"),
+  },
+];
+
+const fixtureRoot = document.querySelector('[data-role="fixtures"]');
+const frames = [];
+for (const fixture of fixtures) {
+  const section = document.createElement("section");
+  section.className = "fixture";
+  section.setAttribute("data-fixture", fixture.name);
+
+  const label = document.createElement("div");
+  label.className = "fixtureLabel";
+  label.textContent = fixture.label;
+
+  const frame = document.createElement("iframe");
+  frame.className = "fixtureFrame";
+  frame.width = String(fixture.width);
+  frame.height = String(fixture.height);
+  frame.style.width = `${fixture.width}px`;
+  frame.style.height = `${fixture.height}px`;
+  frame.srcdoc = frameDocument(fixture);
+
+  section.append(label, frame);
+  fixtureRoot.append(section);
+  frames.push({ fixture, frame });
+}
+
+function waitForFrameReady(frame, fixture) {
+  return new Promise((resolve, reject) => {
+    const start = performance.now();
+    const deadlineMs = 1500;
+    const finish = () => {
+      const win = frame.contentWindow;
+      const doc = frame.contentDocument;
+      if (!win || !doc) {
+        reject(new Error("fixture frame missing contentWindow"));
+        return;
+      }
+      const checkReady = () => {
+        const treePane = doc.querySelector('[data-role="tree-pane"]');
+        const ready = treePane !== null && treePane.clientWidth > 0;
+        if (ready || performance.now() - start > deadlineMs) {
+          resolve();
+          return;
+        }
+        win.requestAnimationFrame(checkReady);
+      };
+      win.requestAnimationFrame(() => win.requestAnimationFrame(checkReady));
+    };
+    if (frame.contentDocument?.readyState === "complete") {
+      finish();
+      return;
+    }
+    frame.addEventListener("load", finish, { once: true });
+  });
+}
+
+function rect(el) {
+  const r = el.getBoundingClientRect();
+  return { left: r.left, right: r.right, top: r.top, bottom: r.bottom, width: r.width, height: r.height };
+}
+
+function metrics(doc, el) {
+  if (!el) return null;
+  const style = doc.defaultView.getComputedStyle(el);
+  return {
+    ...rect(el),
+    clientWidth: el.clientWidth,
+    clientHeight: el.clientHeight,
+    scrollWidth: el.scrollWidth,
+    scrollHeight: el.scrollHeight,
+    overflowX: style.overflowX,
+    overflowY: style.overflowY,
+    display: style.display,
+    whiteSpace: style.whiteSpace,
+    textOverflow: style.textOverflow,
+  };
+}
+
+function isVisible(doc, el) {
+  const style = doc.defaultView.getComputedStyle(el);
+  const r = el.getBoundingClientRect();
+  return style.display !== "none" && r.width > 1 && r.height > 1;
+}
+
+function elementHint(el) {
+  if (!el) return null;
+  const parts = [el.tagName.toLowerCase()];
+  const role = el.getAttribute("data-role");
+  if (role) parts.push(`[data-role="${role}"]`);
+  const className = typeof el.className === "string" ? el.className.trim().replace(/\s+/g, ".") : "";
+  if (className) parts.push(`.${className}`);
+  return parts.join("");
+}
+
+function widestDescendant(doc, container) {
+  if (!container) return null;
+  const containerRect = container.getBoundingClientRect();
+  let best = null;
+  for (const el of [container, ...container.querySelectorAll('*')]) {
+    const m = metrics(doc, el);
+    const overflowRight = m.right - containerRect.left;
+    const score = Math.max(overflowRight, m.scrollWidth, m.clientWidth);
+    if (!best || score > best.score) {
+      best = {
+        score,
+        hint: elementHint(el),
+        clientWidth: m.clientWidth,
+        scrollWidth: m.scrollWidth,
+        width: m.width,
+        rightFromContainerLeft: overflowRight,
+      };
+    }
+  }
+  return best;
+}
+
+function measureFrame({ fixture, frame }) {
+  const win = frame.contentWindow;
+  const doc = frame.contentDocument;
+  if (!win || !doc) throw new Error(`fixture ${fixture.name} missing frame document`);
+
+  const sheet = doc.querySelector('[data-role="sheet"]');
+  const sheetBody = doc.querySelector('[data-role="sheet-body"]');
+  const activityPanel = doc.querySelector('[data-role="activity-panel"]');
+  const treePane = doc.querySelector('[data-role="tree-pane"]');
+  const tree = doc.querySelector('[role="tree"]');
+  const deepLabel = doc.querySelector('[data-role$="deep-label"]');
+  const deepDetail = doc.querySelector('[data-role="deep-detail-probe"]');
+  const visiblePanes = [...doc.querySelectorAll('[data-role="tree-pane"]')].filter((pane) => isVisible(doc, pane));
+
+  return {
+    fixture: fixture.name,
+    mode: fixture.mode,
+    viewport: { width: win.innerWidth, height: win.innerHeight },
+    structure: {
+      sheetPresent: Boolean(sheet),
+      sheetWideClassPresent: Boolean(sheet?.classList.contains('wide')),
+      sheetBodyPresent: Boolean(sheetBody),
+      activityPanelPresent: Boolean(activityPanel),
+      treePanePresent: Boolean(treePane),
+      sheetContainsBody: Boolean(sheet && sheetBody && sheet.contains(sheetBody)),
+      bodyContainsActivity: Boolean(sheetBody && activityPanel && sheetBody.contains(activityPanel)),
+      activityContainsTreePane: Boolean(activityPanel && treePane && activityPanel.contains(treePane)),
+      treePaneContainsTree: Boolean(treePane && tree && treePane.contains(tree)),
+    },
+    visiblePaneCount: visiblePanes.length,
+    visiblePaneRoles: visiblePanes.map((pane) => pane.getAttribute("data-role")),
+    sheet: metrics(doc, sheet),
+    sheetBody: metrics(doc, sheetBody),
+    activityPanel: metrics(doc, activityPanel),
+    treePane: metrics(doc, treePane),
+    sizing: {
+      sheetPanelWidth: sheet ? rect(sheet).width : null,
+      sheetInlineSizeVar: sheet ? win.getComputedStyle(sheet).getPropertyValue('--sheet-inline-size').trim() : null,
+      sheetBodyWidth: sheetBody ? rect(sheetBody).width : null,
+      activityPanelWidth: activityPanel ? rect(activityPanel).width : null,
+      treePaneWidth: treePane ? rect(treePane).width : null,
+      rowActionsFlexWrap: doc.querySelector('.rowActions') ? win.getComputedStyle(doc.querySelector('.rowActions')).flexWrap : null,
+      rowActionsPaddingLeft: doc.querySelector('.rowActions') ? win.getComputedStyle(doc.querySelector('.rowActions')).paddingLeft : null,
+      treeWidestDescendant: widestDescendant(doc, treePane),
+    },
+    deepLabel: metrics(doc, deepLabel),
+    deepDetail: metrics(doc, deepDetail),
+  };
+}
+
+window.measure = async function () {
+  await Promise.all(frames.map(({ frame, fixture }) => waitForFrameReady(frame, fixture)));
+  return frames.map((frameInfo) => measureFrame(frameInfo));
+};
+</script>
+</body>
+</html>

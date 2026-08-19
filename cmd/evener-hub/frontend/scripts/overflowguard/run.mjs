@@ -1,0 +1,401 @@
+#!/usr/bin/env node
+// overflowguard - asserts the transcript pane never scrolls sideways, at any
+// pane width, with the real React tree rendered in a real browser.
+//
+// WHY THIS EXISTS, AND WHY IT IS NOT A layoutguard CASE
+//
+// layoutguard (../layoutguard) measures HAND-AUTHORED markup against the real
+// tokens.css and component stylesheets. That is the right shape for "does this
+// CSS rule still hold its box", and it is cheap - static files, no build.
+//
+// It is the WRONG shape for this bug. The transcript's sideways scroll came
+// from a chevron whose painted box grew when rotated: a `▸` text glyph sat in
+// a 6x18 line box, and `transform: rotate(90deg)` painted it 18px wide, 6px
+// outside its own layout box on each side. A hand-authored harness would have
+// hard-coded whichever markup was current when the case was written, so
+// swapping the glyph back would leave the guard green while the app broke.
+// The guard has to see what the app actually renders.
+//
+// So this boots the app's own Vite dev server, renders the REAL Session pane
+// through the REAL reducer (src/dev/overflowharness-entry.tsx), and asserts a
+// property no markup change can smuggle past: no scroll container inside the
+// pane has content wider than itself.
+//
+// The property matters because of a CSS detail that is easy to miss.
+// PaneScaffold's `.body` and VirtualList's `.root` both declare `overflow-y:
+// auto` and nothing for overflow-x. Per spec, when one axis is not `visible`
+// the other computes to `auto` rather than staying `visible` - so both are
+// silently horizontal scroll containers too, and a few px of escape anywhere
+// inside becomes a scrollbar across the whole pane that clips the first
+// character of every line above it.
+//
+// USAGE:
+//   npm run overflowguard              # the default width sweep
+//   node scripts/overflowguard/run.mjs 390 1400
+//
+// STATUS: a local pre-merge check and part of `make test-web-browser` in CI,
+// not wired into `make lint`, because it costs a Vite boot and a Chrome
+// launch (~10s).
+import path from "node:path";
+import { fileURLToPath } from "node:url";
+import { connectPage, evaluate, navigateTo, waitForFonts, waitForHttp } from "../browserGuardCdp.mjs";
+import { describeBrowserStartupFailure, startBrowserGuard } from "../browserGuardProcess.mjs";
+
+const FRONTEND = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
+
+// 390 is a phone; 1400 is a wide desktop pane, where the turn hits its 76rem
+// reading measure and STOPS growing - which is exactly where a few px of
+// escape at the right edge shows up. A width sweep that skipped the wide end
+// would have missed the original bug entirely.
+const DEFAULT_WIDTHS = [390, 700, 1024, 1400];
+
+async function measureAt(cdpPort, url) {
+  const page = await connectPage(cdpPort);
+  const { send } = page;
+  try {
+    await navigateTo(page, url);
+
+    const host = await evaluate(send, "location.host");
+    if (String(host).includes("9180")) throw new Error("refusing: this eval landed on the shared evener-hub port");
+
+    // The delegate module claims its turn's leadership in a layout effect and
+    // the virtualizer measures rows post-mount, so the tree settles a frame or
+    // two after load. Await that settling rather than measuring a tree that is
+    // still assembling itself.
+    await evaluate(send, "window.settled");
+    // After the origin refusal above (it must precede every other eval) and
+    // after the tree settles, because document.fonts.ready re-arms for each new
+    // face and only a mounted tree has asked for the ones being measured.
+    await waitForFonts(send);
+
+    const exceptionSafety = await evaluate(
+      send,
+      `(() => {
+        const systemPrompt = [...document.querySelectorAll('[data-testid="system-notice-scaffold"]')].find((details) =>
+          details.querySelector(':scope > summary')?.textContent?.startsWith('System prompt'),
+        );
+        const rawNotification = document.querySelector('[data-testid="notification-raw-disclosure"]');
+        const details = [systemPrompt, rawNotification].filter(Boolean);
+        const originalOpen = details.map((details) => details.open);
+        const originalGetBoundingClientRect = HTMLElement.prototype.getBoundingClientRect;
+        let threw = false;
+        HTMLElement.prototype.getBoundingClientRect = function () {
+          if (this.closest('[data-testid="system-notice-scaffold"], [data-testid="notification-raw-disclosure"]')) {
+            throw new Error("forced disclosure geometry failure");
+          }
+          return originalGetBoundingClientRect.call(this);
+        };
+        try {
+          window.measure();
+        } catch {
+          threw = true;
+        } finally {
+          HTMLElement.prototype.getBoundingClientRect = originalGetBoundingClientRect;
+        }
+        return { found: details.length, threw, originalOpen, restoredOpen: details.map((details) => details.open) };
+      })()`,
+    );
+
+    const measured = await evaluate(send, "JSON.stringify(window.measure())");
+    return { ...JSON.parse(measured), exceptionSafety };
+  } finally {
+    page.close();
+  }
+}
+
+// Unified session menu (2026-08-05-unified-session-context-menu): the chrome
+// no longer has inline Details/Tasks/Activity triggers or a narrow-collapse -
+// the shared SessionMenu ("Session actions") lists the panes at EVERY width
+// with a check adornment for open ones. This fixture therefore drives the
+// menu directly: open Tasks, wait for the dock split to squeeze the main
+// composer's inline session chrome below 640px, then re-open the menu and
+// confirm "Tasks ✓".
+async function verifyPanelCollapse(cdpPort, url) {
+  const page = await connectPage(cdpPort);
+  const { send } = page;
+  try {
+    await navigateTo(page, url);
+    await waitForFonts(page.send);
+    const runtimeState = await send("Runtime.evaluate", {
+      expression: `({ body: document.body.innerText, html: document.body.innerHTML.slice(0, 1000), errors: window.__panelGuardErrors ?? [] })`,
+      returnByValue: true,
+    });
+    const out = await send("Runtime.evaluate", {
+      expression: `(async () => {
+        const until = async (read, label) => {
+          for (let i = 0; i < 180; i++) {
+            const value = read();
+            if (value) return value;
+            await new Promise((resolve) => requestAnimationFrame(resolve));
+          }
+          throw new Error('panel collapse fixture did not settle: ' + label + '; body=' + document.body.innerText.slice(0, 500));
+        };
+        const actionsTrigger = () =>
+          [...document.querySelectorAll('button')].find((button) => button.textContent?.includes('Session actions'));
+        const actions = await until(actionsTrigger, 'session actions trigger');
+        actions.click();
+        const tasksItem = await until(
+          () => [...document.querySelectorAll('[role="menuitem"]')].find((item) => item.textContent === 'Tasks'),
+          'tasks menu item',
+        );
+        tasksItem.click();
+        const panel = await until(() => document.querySelector('[data-pane-scaffold="session-panel:tasks:overflowharness"]'), 'tasks pane');
+        const chrome = await until(
+          () => document.querySelector('[data-testid="session-chrome-inline"]'),
+          'inline session chrome',
+        );
+        await until(() => chrome.clientWidth > 0 && chrome.clientWidth < 640, 'narrowed chrome');
+        const actionsAgain = actionsTrigger();
+        if (!actionsAgain) throw new Error('session actions trigger missing');
+        actionsAgain.click();
+        const checked = await until(() => [...document.querySelectorAll('[role="menuitem"]')].find((item) => item.textContent?.includes('Tasks ✓')), 'checked menu item');
+        const pane = document.getElementById('oh-pane');
+        const horizontallyOverflowing = [...pane.querySelectorAll('*')].filter((element) => {
+          const style = getComputedStyle(element);
+          return element.clientWidth > 1 && element.scrollWidth > element.clientWidth + 1 &&
+            (style.overflowX === 'auto' || style.overflowX === 'scroll');
+        });
+        return {
+          mainWidth: chrome.clientWidth,
+          panelVisible: panel.getBoundingClientRect().width > 0,
+          checkedText: checked.textContent,
+          horizontalOverflowCount: horizontallyOverflowing.length,
+        };
+      })()`,
+      awaitPromise: true,
+      returnByValue: true,
+    });
+    if (out.result.exceptionDetails) {
+      throw new Error(
+        `panel-collapse eval threw: ${JSON.stringify(out.result.exceptionDetails)} runtime=${JSON.stringify(runtimeState.result.result.value)}`,
+      );
+    }
+    return out.result.result.value;
+  } finally {
+    page.close();
+  }
+}
+
+async function main() {
+  const widths = process.argv.slice(2).map(Number).filter(Boolean);
+  const sweep = widths.length > 0 ? widths : DEFAULT_WIDTHS;
+
+  let guard;
+  try {
+    guard = await startBrowserGuard({
+      frontend: FRONTEND,
+      profilePrefix: "overflowguard-chrome-",
+      chromeArgs: ["--window-size=1800,1000"],
+    });
+  } catch (error) {
+    // findChrome() throws from the first statement of startBrowserGuard,
+    // before any of its state exists -- 'no Chrome installed' is the
+    // commonest environment failure there is and it reached here unframed.
+    throw new Error(describeBrowserStartupFailure({ error, subsystem: "launch" }));
+  }
+  const { vitePort, cdpPort, cleanup } = guard;
+
+  let failed = 0;
+  try {
+    try {
+      await waitForHttp(
+        `http://127.0.0.1:${vitePort}/overflowharness.html`,
+        "vite dev server",
+        guard.getViteLaunchError,
+      );
+    } catch (err) {
+      throw new Error(
+        describeBrowserStartupFailure({ error: err, subsystem: "vite", viteStderr: guard.getViteError() }),
+      );
+    }
+    try {
+      await waitForHttp(
+        `http://127.0.0.1:${cdpPort}/json/version`,
+        "chrome devtools endpoint",
+        guard.getChromeLaunchError,
+      );
+    } catch (err) {
+      throw new Error(
+        describeBrowserStartupFailure({
+          error: err,
+          subsystem: "chrome",
+          chromeBinary: guard.chromeBinary,
+          chromeArgv: guard.getChromeArgv(),
+          chromeStderr: guard.getChromeError(),
+          viteStderr: guard.getViteError(),
+        }),
+      );
+    }
+
+    const panelCollapse = await verifyPanelCollapse(
+      cdpPort,
+      `http://127.0.0.1:${vitePort}/overflowharness.html?w=1024&panels=1`,
+    );
+    if (
+      panelCollapse.mainWidth >= 640 ||
+      !panelCollapse.panelVisible ||
+      panelCollapse.checkedText !== "Tasks ✓" ||
+      panelCollapse.horizontalOverflowCount !== 0
+    ) {
+      failed++;
+      console.log(`panel collapse ... FAIL - ${JSON.stringify(panelCollapse)}`);
+    } else {
+      console.log(
+        `panel collapse ... PASS - ${panelCollapse.mainWidth}px main pane, checked Tasks adornment visible, no horizontal overflow`,
+      );
+    }
+
+    for (const width of sweep) {
+      const result = await measureAt(cdpPort, `http://127.0.0.1:${vitePort}/overflowharness.html?w=${width}`);
+      let widthFailed = false;
+      if (
+        result.exceptionSafety.found !== 2 ||
+        !result.exceptionSafety.threw ||
+        JSON.stringify(result.exceptionSafety.originalOpen) !== JSON.stringify(result.exceptionSafety.restoredOpen)
+      ) {
+        widthFailed = true;
+        console.log(
+          `${width}px ... FAIL - disclosure exception safety: ` +
+            `found=${result.exceptionSafety.found}, threw=${result.exceptionSafety.threw}, ` +
+            `original=${JSON.stringify(result.exceptionSafety.originalOpen)}, ` +
+            `restored=${JSON.stringify(result.exceptionSafety.restoredOpen)}`,
+        );
+      }
+      if (result.disclosures.length !== 2) {
+        widthFailed = true;
+        console.log(
+          `${width}px ... FAIL - disclosure browser contract found ${result.disclosures.length} of 2 fixtures`,
+        );
+      }
+      // The footer checks below are only worth what the predicate behind them
+      // is worth, so the predicate is exercised against its own fixture first
+      // (kata bsq9). A fact under a display:none ancestor must read as missing;
+      // an intentionally visually-hidden one must not.
+      // One expectation per clause of the shared predicate
+      // (src/dev/guardVisibility.ts). spawnguard uses the same function and has
+      // no fixture of its own, so this is the only place either guard proves
+      // what "visible" means.
+      const probe = result.visibility;
+      const expected = {
+        rendered: true,
+        ancestorHidden: false,
+        visuallyHidden: true,
+        visibilityHiddenAncestor: false,
+        zeroArea: false,
+      };
+      const wrong = Object.entries(expected).filter(([name, want]) => probe[name] !== want);
+      if (wrong.length > 0) {
+        widthFailed = true;
+        console.log(
+          `${width}px ... FAIL - the shared visible() predicate behind the footer checks is broken: ` +
+            wrong.map(([name, want]) => `${name}=${probe[name]} (expected ${want})`).join(", "),
+        );
+      }
+      if (!result.footer.effortVisible || !result.footer.contextVisible || !result.footer.queueVisible) {
+        widthFailed = true;
+        console.log(
+          `${width}px ... FAIL - pressured footer facts missing: ` +
+            `effort=${result.footer.effortVisible}, context=${result.footer.contextVisible}, queue=${result.footer.queueVisible}`,
+        );
+      }
+      if (result.footer.queueLabel !== "12 queued") {
+        widthFailed = true;
+        console.log(
+          `${width}px ... FAIL - pressured footer queue label is ${JSON.stringify(result.footer.queueLabel)}`,
+        );
+      }
+      if (result.footer.statusScrollWidth > result.footer.statusClientWidth + 1) {
+        widthFailed = true;
+        console.log(
+          `${width}px ... FAIL - footer status facts are internally clipped: ` +
+            `${result.footer.statusScrollWidth}px in ${result.footer.statusClientWidth}px`,
+        );
+      }
+      if (result.footer.modelClientWidth <= 0) {
+        widthFailed = true;
+        console.log(`${width}px ... FAIL - pressured footer model has zero visible width`);
+      }
+      for (const disclosure of result.disclosures) {
+        if (!disclosure.openDuringOverflowScan) {
+          widthFailed = true;
+          console.log(`${width}px ... FAIL - ${disclosure.kind} body was closed during horizontal-overflow scan`);
+        }
+        if (disclosure.restoredOpen !== disclosure.originalOpen) {
+          widthFailed = true;
+          console.log(`${width}px ... FAIL - ${disclosure.kind} disclosure state was not restored after scan`);
+        }
+        if (disclosure.kind === "raw-notification" && disclosure.bodyTextLength < 12000) {
+          widthFailed = true;
+          console.log(
+            `${width}px ... FAIL - raw-notification overflow fixture body is only ${disclosure.bodyTextLength} characters`,
+          );
+        }
+        const fullWidth =
+          disclosure.summaryWidth >= disclosure.expectedWidth - 1 &&
+          disclosure.bodyWidth >= disclosure.expectedWidth - 1;
+        const stacked = disclosure.bodyTop >= disclosure.summaryBottom - 1;
+        const aligned = Math.abs(disclosure.summaryLeft - disclosure.bodyLeft) <= 1;
+        if (
+          disclosure.summaryDisplay !== "list-item" ||
+          disclosure.markerDisplay === "none" ||
+          !fullWidth ||
+          !stacked ||
+          !aligned
+        ) {
+          widthFailed = true;
+          console.log(
+            `${width}px ... FAIL - ${disclosure.kind} disclosure affordance/layout: ` +
+              `summary=${disclosure.summaryDisplay}, marker=${disclosure.markerDisplay}, ` +
+              `summary/body=${disclosure.summaryWidth.toFixed(1)}/${disclosure.bodyWidth.toFixed(1)}px, ` +
+              `expected=${disclosure.expectedWidth.toFixed(1)}px, stacked=${stacked}, aligned=${aligned}`,
+          );
+        }
+      }
+      // Never silent about what was excluded: a 1px-wide box is a
+      // visually-hidden clip container (the standard screen-reader recipe),
+      // not a pane anyone can scroll - but it is reported, not dropped.
+      if (result.ignored.length > 0) {
+        console.log(
+          `${width}px ... ignored ${result.ignored.length} visually-hidden clip box(es) (clientWidth <= 1px)`,
+        );
+      }
+      if (result.scrollers.length === 0) {
+        if (!widthFailed)
+          console.log(`${width}px ... PASS - disclosures stay native/stacked and nothing scrolls horizontally`);
+      } else {
+        widthFailed = true;
+        console.log(`${width}px ... FAIL - ${result.scrollers.length} horizontal scroll container(s):`);
+        for (const s of result.scrollers) {
+          console.log(
+            `    ${s.tag}.${s.cls}  content ${s.scrollWidth}px in a ${s.clientWidth}px box (+${s.overflowPx}px)`,
+          );
+          // Deepest first: the innermost escapee is the element actually too
+          // wide; its ancestors are only carrying that width upward.
+          for (const e of s.escapees) {
+            console.log(`      escapes by ${e.overflowPx.toFixed(1)}px: ${e.tag}.${e.cls}`);
+          }
+        }
+      }
+      if (widthFailed) failed++;
+    }
+  } finally {
+    // A rejecting teardown is a FAILING RUN, not a warning: cleanup only
+    // rejects when it has given up on an escaped Chrome helper, which means
+    // this run left a live process and its private profile directory behind on
+    // the machine. That leak (roughly 1 run in 3) is issue #119; until it is
+    // fixed, going red is the signal that keeps it visible, and downgrading it
+    // to a warning would only make the guard quietly lossy.
+    await cleanup();
+  }
+  return failed > 0 ? 1 : 0;
+}
+
+main().then(
+  (status) => {
+    if (process.exitCode === undefined) process.exitCode = status;
+  },
+  (err) => {
+    console.error(err.message);
+    if (process.exitCode === undefined) process.exitCode = 2;
+  },
+);

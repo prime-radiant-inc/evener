@@ -7,11 +7,11 @@ import (
 	"path/filepath"
 	"strings"
 
-	"primeradiant.com/serf/agent/events"
-	"primeradiant.com/serf/agent/execenv"
-	"primeradiant.com/serf/agent/internal/worktree"
-	"primeradiant.com/serf/agent/schema"
-	"primeradiant.com/serf/identifier"
+	"primeradiant.com/evener/agent/events"
+	"primeradiant.com/evener/agent/execenv"
+	"primeradiant.com/evener/agent/internal/worktree"
+	"primeradiant.com/evener/agent/schema"
+	"primeradiant.com/evener/identifier"
 )
 
 // resumeWorktreeReentry re-enters the persisted active worktree BEFORE
@@ -118,7 +118,7 @@ func (s *Session) resumeWorktreeReentry(meta schema.SessionMeta) error {
 	// table row "resume re-entry"; §7): unlocked -> lock; own marker -> adopt
 	// (crash-resume, a literal re-lock is fatal on git); foreign -> do NOT
 	// re-enter, land at the restore root with a notice. A path-entered
-	// non-managed worktree carries no serf lock at all (spec §4 by-path step
+	// non-managed worktree carries no evener lock at all (spec §4 by-path step
 	// 3), so it re-enters unconditionally.
 	if meta.WorktreeManaged {
 		// The registry check above already read the listing, and the runner
@@ -182,7 +182,7 @@ func worktreeGitEntryExists(path string) bool {
 // delegate or an ordinary subagent spawned with a cwd inside a managed
 // worktree does not take an independent lock here. Delegate lane locks are
 // owned by the parent's own §9 create/revive/dispose lifecycle, not by the
-// child session's init (spec §5: "The serf:dlg: lock on a delegate lane is
+// child session's init (spec §5: "The evener:dlg: lock on a delegate lane is
 // owned by the parent's disposal lifecycle, not the child"); an ordinary
 // (non-isolated) subagent sharing its parent's worktree must not compete for
 // the parent's own lock or emit a spurious co-occupying warning on every
@@ -198,7 +198,7 @@ func worktreeGitEntryExists(path string) bool {
 // own); §9 isolation delegates now root the CHILD env at its OWN managed
 // worktree (createDelegateWorktree, job_delegate.go createDelegate). The
 // parentSessionID != "" check above still holds unconditionally for such a
-// child — createDelegateWorktree already takes the serf:dlg: lock atomically
+// child — createDelegateWorktree already takes the evener:dlg: lock atomically
 // at `git worktree add` time on the PARENT side, before the child spawns, so
 // there is no unlocked window for this function to (mis)detect on the
 // child's own init.

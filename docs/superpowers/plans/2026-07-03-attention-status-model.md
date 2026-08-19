@@ -2,15 +2,15 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Serf daemons report `awaiting` on the existing status field whenever the ball is in the user's court, and every surface (sidebar NeedsYou tier, badges, OS notifications, TUI) lights up from that truth — plus a first-class red `errored` lane.
+**Goal:** Evener daemons report `awaiting` on the existing status field whenever the ball is in the user's court, and every surface (sidebar NeedsYou tier, badges, OS notifications, TUI) lights up from that truth — plus a first-class red `errored` lane.
 
-**Architecture:** Daemon-truth (spec v5, `docs/superpowers/specs/2026-07-03-attention-status-model-design.md` — READ IT FIRST). The agent arms `awaiting` at the drain-loop settle (only reachable on clean turn completion); a wire-state helper reports `active` while delegated children run; the hub un-collapses `systemError→errored` in `NormalizeState` and adds an attention watcher that broadcasts `serf/attention/changed`; notifications.js goes event-driven.
+**Architecture:** Daemon-truth (spec v5, `docs/superpowers/specs/2026-07-03-attention-status-model-design.md` — READ IT FIRST). The agent arms `awaiting` at the drain-loop settle (only reachable on clean turn completion); a wire-state helper reports `active` while delegated children run; the hub un-collapses `systemError→errored` in `NormalizeState` and adds an attention watcher that broadcasts `evener/attention/changed`; notifications.js goes event-driven.
 
-**Tech Stack:** Go (agent + server + hub modules under go.work), Go html/template, vanilla JS + JSDOM tests (`cmd/serf-hub/jstest`), bubbletea/lipgloss TUI.
+**Tech Stack:** Go (agent + server + hub modules under go.work), Go html/template, vanilla JS + JSDOM tests (`cmd/evener-hub/jstest`), bubbletea/lipgloss TUI.
 
 **Working rules for every task:**
 - Run Go tests per-module: `cd <module> && go test ./<pkg>/ -run <Name> -count=1` (modules: repo root `.`, `agent`). Full gates: `make test-short` and `make lint` from repo root before declaring the plan done.
-- jstest: `cd cmd/serf-hub/jstest && sh run-all.sh` (or `node test-<name>.js` for one file).
+- jstest: `cd cmd/evener-hub/jstest && sh run-all.sh` (or `node test-<name>.js` for one file).
 - Commit after every green task with the message given in the task.
 - NEVER use `git add -A`. Add the named files only.
 
@@ -144,7 +144,7 @@ func newTestSessionForState(t *testing.T) *Session {
 }
 ```
 
-Add the imports the file now needs: `"primeradiant.com/serf/llm"` and `"primeradiant.com/serf/agent/internal/..."` — copy the exact import set from `agent/session_lifecycle_test.go` for `llm` and `execenv` (it imports `primeradiant.com/serf/agent/execenv` or similar; use whatever path `session_lifecycle_test.go` uses for `execenv.NewLocalExecutionEnvironment`).
+Add the imports the file now needs: `"primeradiant.com/evener/llm"` and `"primeradiant.com/evener/agent/internal/..."` — copy the exact import set from `agent/session_lifecycle_test.go` for `llm` and `execenv` (it imports `primeradiant.com/evener/agent/execenv` or similar; use whatever path `session_lifecycle_test.go` uses for `execenv.NewLocalExecutionEnvironment`).
 
 - [ ] **Step 6: Run — fails (settleGoalOnIdle returns nothing)**
 
@@ -391,7 +391,7 @@ never reach the settle, so they stay idle by construction."
 **Files:**
 - Modify: `agent/session_state.go` (add `WireState`)
 - Modify: `agent/session_lifecycle.go` (emit wire state in the settle's `EventSessionEnd`)
-- Modify: `cmd/serf/serve.go` (mirror wire state)
+- Modify: `cmd/evener/serve.go` (mirror wire state)
 - Test: `agent/session_awaiting_test.go`, `server/server_test.go` (or a new `server/awaiting_status_test.go`)
 
 - [ ] **Step 1: Write the failing test for `WireState`**
@@ -459,7 +459,7 @@ In `agent/session_lifecycle.go`'s settle emit block, the emit currently sends `S
 
 (Note: `state := s.state` local goes away; `s.WireState()` re-reads under its own locking AFTER `s.mu.Unlock()` — do not call it while holding `s.mu`.)
 
-In `cmd/serf/serve.go`, change the post-turn mirror line:
+In `cmd/evener/serve.go`, change the post-turn mirror line:
 
 ```go
 				srv.SetState(string(sess.State()))
@@ -483,7 +483,7 @@ import (
 	"net/http/httptest"
 	"testing"
 
-	"primeradiant.com/serf/appwire"
+	"primeradiant.com/evener/appwire"
 )
 
 func TestStatusReportsAwaitingAndSendCapability(t *testing.T) {
@@ -519,7 +519,7 @@ Expected: PASS, clean builds.
 - [ ] **Step 7: Commit**
 
 ```bash
-git add agent/session_state.go agent/session_lifecycle.go cmd/serf/serve.go server/awaiting_status_test.go agent/session_awaiting_test.go
+git add agent/session_state.go agent/session_lifecycle.go cmd/evener/serve.go server/awaiting_status_test.go agent/session_awaiting_test.go
 git commit -m "feat(agent,server): WireState override — delegating parents report active
 
 EventSessionEnd and the serve-loop mirror both emit WireState, so the
@@ -627,8 +627,8 @@ git commit -m "feat(agent): restored agent-last sessions resume awaiting"
 ### Task 5: Hub — `errored` un-collapse in hubcore (NormalizeState, ranks, rollups, NeedsYou + archive filter)
 
 **Files:**
-- Modify: `cmd/serf-hub/internal/hubcore/tree.go`
-- Test: `cmd/serf-hub/internal/hubcore/tree_test.go`
+- Modify: `cmd/evener-hub/internal/hubcore/tree.go`
+- Test: `cmd/evener-hub/internal/hubcore/tree_test.go`
 
 - [ ] **Step 1: Flip the NormalizeState golden + add rank/tier tests (failing)**
 
@@ -686,7 +686,7 @@ func TestNeedsYou_ArchivedLiveAwaitingExcluded(t *testing.T) {
 
 - [ ] **Step 2: Run — fail**
 
-Run: `go test ./cmd/serf-hub/internal/hubcore/ -run 'TestNormalizeState|TestAttentionRanks_Errored|TestNeedsYou_' -count=1`
+Run: `go test ./cmd/evener-hub/internal/hubcore/ -run 'TestNormalizeState|TestAttentionRanks_Errored|TestNeedsYou_' -count=1`
 
 - [ ] **Step 3: Implement in `tree.go`**
 
@@ -732,13 +732,13 @@ with
 
 - [ ] **Step 4: Run the whole hub module test slice for tree + app_rpc golden churn**
 
-Run: `go test ./cmd/serf-hub/... -count=1 -run 'Tree|NormalizeState|Sidebar|AppRPC|Rpc'` then the full `go test ./cmd/serf-hub/... -count=1`.
+Run: `go test ./cmd/evener-hub/... -count=1 -run 'Tree|NormalizeState|Sidebar|AppRPC|Rpc'` then the full `go test ./cmd/evener-hub/... -count=1`.
 Expected: the new tests PASS. Any test iterating systemError→awaiting (`app_rpc_test.go:1108` region, sidebar goldens) fails — update those expectations to `errored` (intended churn; name them in the commit).
 
 - [ ] **Step 5: Commit**
 
 ```bash
-git add cmd/serf-hub/internal/hubcore/tree.go cmd/serf-hub/internal/hubcore/tree_test.go <other updated test files>
+git add cmd/evener-hub/internal/hubcore/tree.go cmd/evener-hub/internal/hubcore/tree_test.go <other updated test files>
 git commit -m "feat(hub): errored is a first-class normalized state; NeedsYou gains archive filter + errors-first sort"
 ```
 
@@ -747,15 +747,15 @@ git commit -m "feat(hub): errored is a first-class normalized state; NeedsYou ga
 ### Task 6: Hub — errored render lane (template, CSS, subagentDone, stateLabel)
 
 **Files:**
-- Modify: `cmd/serf-hub/templates/partials/sidebar.html` (NeedsYou block lines ~23,29; subagentRow glyph)
-- Modify: `cmd/serf-hub/web.go` (`subagentDone`)
-- Modify: `cmd/serf-hub/web_format.go` (`stateLabel`)
-- Modify: `cmd/serf-hub/assets/style.css`
-- Test: `cmd/serf-hub/web_test.go` (template render assertions — follow the existing sidebar-rendering test pattern found via `grep -n 'needs-you\|NeedsYou' cmd/serf-hub/web_test.go`)
+- Modify: `cmd/evener-hub/templates/partials/sidebar.html` (NeedsYou block lines ~23,29; subagentRow glyph)
+- Modify: `cmd/evener-hub/web.go` (`subagentDone`)
+- Modify: `cmd/evener-hub/web_format.go` (`stateLabel`)
+- Modify: `cmd/evener-hub/assets/style.css`
+- Test: `cmd/evener-hub/web_test.go` (template render assertions — follow the existing sidebar-rendering test pattern found via `grep -n 'needs-you\|NeedsYou' cmd/evener-hub/web_test.go`)
 
 - [ ] **Step 1: Failing Go tests**
 
-Add to the file where existing sidebar template tests live (create `cmd/serf-hub/web_errored_lane_test.go` if none fits):
+Add to the file where existing sidebar template tests live (create `cmd/evener-hub/web_errored_lane_test.go` if none fits):
 
 ```go
 func TestSubagentDone_ErroredIsNotDone(t *testing.T) {
@@ -778,7 +778,7 @@ func TestStateLabel_ErroredAndNeedsYou(t *testing.T) {
 }
 ```
 
-- [ ] **Step 2: Run — fail.** `go test ./cmd/serf-hub/ -run 'TestSubagentDone_Errored|TestStateLabel_Errored' -count=1`
+- [ ] **Step 2: Run — fail.** `go test ./cmd/evener-hub/ -run 'TestSubagentDone_Errored|TestStateLabel_Errored' -count=1`
 
 - [ ] **Step 3: Implement**
 
@@ -812,30 +812,30 @@ Add to the rollup-dot block (~line 671):
 ```css
 .project-rollup-dot[data-state="errored"]  { background: var(--error); }
 ```
-(Verify `--error` exists: `grep -n '\-\-error' cmd/serf-hub/assets/style.css` — it is used at :4322. If the light theme defines a variant, no extra work; the variable resolves per theme.)
+(Verify `--error` exists: `grep -n '\-\-error' cmd/evener-hub/assets/style.css` — it is used at :4322. If the light theme defines a variant, no extra work; the variable resolves per theme.)
 
 - [ ] **Step 4: Run + eyeball**
 
-`go test ./cmd/serf-hub/... -count=1` — PASS (update goldens that embed the old glyph chain or `data-state="awaiting"` literals in NeedsYou fixtures).
+`go test ./cmd/evener-hub/... -count=1` — PASS (update goldens that embed the old glyph chain or `data-state="awaiting"` literals in NeedsYou fixtures).
 
 - [ ] **Step 5: Commit**
 
 ```bash
-git add cmd/serf-hub/web.go cmd/serf-hub/web_format.go cmd/serf-hub/templates/partials/sidebar.html cmd/serf-hub/assets/style.css cmd/serf-hub/web_errored_lane_test.go <updated goldens>
+git add cmd/evener-hub/web.go cmd/evener-hub/web_format.go cmd/evener-hub/templates/partials/sidebar.html cmd/evener-hub/assets/style.css cmd/evener-hub/web_errored_lane_test.go <updated goldens>
 git commit -m "feat(hub): errored render lane — tier passthrough, row accent, triangle dot, rollup dot, labels, subagent glyph"
 ```
 
 ---
 
-### Task 7: Hub — attention derive + watcher + `serf/attention/changed` broadcast
+### Task 7: Hub — attention derive + watcher + `evener/attention/changed` broadcast
 
 **Files:**
-- Create: `cmd/serf-hub/internal/hubcore/attention.go`
-- Create: `cmd/serf-hub/internal/hubcore/attention_test.go`
+- Create: `cmd/evener-hub/internal/hubcore/attention.go`
+- Create: `cmd/evener-hub/internal/hubcore/attention_test.go`
 - Modify: `appwire/types.go` (method const), `appwire/protocol.go` (catalog entry — find the existing entries and mirror one)
-- Modify: `cmd/serf-hub/main.go` (wire the watcher loop)
-- Modify: `cmd/serf-hub/web_api_archive.go` (poke on archive change)
-- Modify: `cmd/serf-hub/web_api_tree.go` (include `attentionSummary` in the `/api/tree` JSON response)
+- Modify: `cmd/evener-hub/main.go` (wire the watcher loop)
+- Modify: `cmd/evener-hub/web_api_archive.go` (poke on archive change)
+- Modify: `cmd/evener-hub/web_api_tree.go` (include `attentionSummary` in the `/api/tree` JSON response)
 
 - [ ] **Step 1: Failing tests for derive + differ**
 
@@ -848,9 +848,9 @@ import (
 	"testing"
 	"time"
 
-	"primeradiant.com/serf/agent/schema"
-	"primeradiant.com/serf/appwire"
-	"primeradiant.com/serf/rendezvous"
+	"primeradiant.com/evener/agent/schema"
+	"primeradiant.com/evener/appwire"
+	"primeradiant.com/evener/rendezvous"
 )
 
 func TestDeriveAttention_SummaryCountsTierEligibleOnly(t *testing.T) {
@@ -911,7 +911,7 @@ func TestAttentionWatcher_DiffEmitsOncePerChangeAndSeedsSilently(t *testing.T) {
 }
 ```
 
-- [ ] **Step 2: Run — fail to compile.** `go test ./cmd/serf-hub/internal/hubcore/ -run 'TestDeriveAttention|TestAttentionWatcher' -count=1`
+- [ ] **Step 2: Run — fail to compile.** `go test ./cmd/evener-hub/internal/hubcore/ -run 'TestDeriveAttention|TestAttentionWatcher' -count=1`
 
 - [ ] **Step 3: Implement `attention.go`**
 
@@ -921,7 +921,7 @@ package hubcore
 import (
 	"time"
 
-	"primeradiant.com/serf/agent/schema"
+	"primeradiant.com/evener/agent/schema"
 )
 
 // AttentionEntry is one live session's derived attention level plus the
@@ -949,7 +949,7 @@ type AttentionChanged struct {
 	PrevLevel string `json:"prevLevel"`
 }
 
-// AttentionChangedPayload is the serf/attention/changed notification body.
+// AttentionChangedPayload is the evener/attention/changed notification body.
 type AttentionChangedPayload struct {
 	Changed []AttentionChanged `json:"changed"`
 	Summary AttentionSummary   `json:"summary"`
@@ -1074,13 +1074,13 @@ func (w *AttentionWatcher) Tick(cur map[string]AttentionEntry, sum AttentionSumm
 
 - [ ] **Step 4: Run — pass.** Then the method const + wiring.
 
-`appwire/types.go`, in the Notify const block after `NotifySerfLaunchUpdated`:
+`appwire/types.go`, in the Notify const block after `NotifyEvenerLaunchUpdated`:
 ```go
-	NotifySerfAttentionChanged  = "serf/attention/changed"
+	NotifyEvenerAttentionChanged  = "evener/attention/changed"
 ```
-`appwire/protocol.go`: find the catalog entry for `NotifySerfLaunchUpdated` (grep) and add a sibling entry for `serf/attention/changed` with a one-line description: "Hub-derived attention transitions for live sessions plus authoritative badge summary. Hub-originated; never sent by daemons." Then run `make generate` from repo root and confirm `docs/appwire-protocol.md` picked it up (`git diff --stat docs/appwire-protocol.md`).
+`appwire/protocol.go`: find the catalog entry for `NotifyEvenerLaunchUpdated` (grep) and add a sibling entry for `evener/attention/changed` with a one-line description: "Hub-derived attention transitions for live sessions plus authoritative badge summary. Hub-originated; never sent by daemons." Then run `make generate` from repo root and confirm `docs/appwire-protocol.md` picked it up (`git diff --stat docs/appwire-protocol.md`).
 
-`cmd/serf-hub/main.go` — after `archive` and the roster/past wiring (grep for `go roster.Watch(ctx)` at ~:209), add the watcher loop:
+`cmd/evener-hub/main.go` — after `archive` and the roster/past wiring (grep for `go roster.Watch(ctx)` at ~:209), add the watcher loop:
 
 ```go
 	attentionPoke := make(chan struct{}, 1)
@@ -1092,7 +1092,7 @@ func (w *AttentionWatcher) Tick(cur map[string]AttentionEntry, sum AttentionSumm
 	}
 	go func() {
 		w := hubcore.NewAttentionWatcher(func(p hubcore.AttentionChangedPayload) {
-			appRPCServer.BroadcastAll(appwire.NotifySerfAttentionChanged, p)
+			appRPCServer.BroadcastAll(appwire.NotifyEvenerAttentionChanged, p)
 		})
 		tick := time.NewTicker(5 * time.Second)
 		defer tick.Stop()
@@ -1117,19 +1117,19 @@ func (w *AttentionWatcher) Tick(cur map[string]AttentionEntry, sum AttentionSumm
 
 IMPLEMENTER NOTE: the variable names (`appRPCServer`, `past`, `roster`, `archive`, `ctx`) must match main.go's actual locals — read the surrounding wiring and adapt names only, not structure. The appserver instance with `BroadcastAll` is the one constructed for `/rpc` (`newHubAppServer` returns it or it hangs off the web config — grep `BroadcastAll` usage in `app_rpc.go:669` for how to reach it; thread `pokeAttention` into `WebConfig` if the archive handler lives behind it).
 
-`cmd/serf-hub/web_api_archive.go`: after the successful `Archive.Set(...)`, call the poke (thread it in via the server struct/config the handler hangs off — a `PokeAttention func()` field defaulting to nil, guarded `if s.cfg.PokeAttention != nil`).
+`cmd/evener-hub/web_api_archive.go`: after the successful `Archive.Set(...)`, call the poke (thread it in via the server struct/config the handler hangs off — a `PokeAttention func()` field defaulting to nil, guarded `if s.cfg.PokeAttention != nil`).
 
-`cmd/serf-hub/web_api_tree.go`: in the `/api/tree` handler, alongside building the response, compute `_, sum := hubcore.DeriveAttention(metas, live, decisions, time.Now())` from the same inputs it already gathered and add `AttentionSummary: sum` to the response struct (add the field to the response type with `json:"attentionSummary"`; if the response type lives in `hubapi`, add it there with the same tag).
+`cmd/evener-hub/web_api_tree.go`: in the `/api/tree` handler, alongside building the response, compute `_, sum := hubcore.DeriveAttention(metas, live, decisions, time.Now())` from the same inputs it already gathered and add `AttentionSummary: sum` to the response struct (add the field to the response type with `json:"attentionSummary"`; if the response type lives in `hubapi`, add it there with the same tag).
 
 - [ ] **Step 5: Run module tests + generate gate**
 
-`go test ./cmd/serf-hub/... -count=1 && make generate && git diff --exit-code docs/appwire-protocol.md || true` — the doc SHOULD show the new entry as a committed change (add it), and `make lint-generated` must pass after committing.
+`go test ./cmd/evener-hub/... -count=1 && make generate && git diff --exit-code docs/appwire-protocol.md || true` — the doc SHOULD show the new entry as a committed change (add it), and `make lint-generated` must pass after committing.
 
 - [ ] **Step 6: Commit**
 
 ```bash
-git add cmd/serf-hub/internal/hubcore/attention.go cmd/serf-hub/internal/hubcore/attention_test.go appwire/types.go appwire/protocol.go docs/appwire-protocol.md cmd/serf-hub/main.go cmd/serf-hub/web_api_archive.go cmd/serf-hub/web_api_tree.go <touched config/type files>
-git commit -m "feat(hub): attention watcher broadcasts serf/attention/changed; /api/tree carries attentionSummary"
+git add cmd/evener-hub/internal/hubcore/attention.go cmd/evener-hub/internal/hubcore/attention_test.go appwire/types.go appwire/protocol.go docs/appwire-protocol.md cmd/evener-hub/main.go cmd/evener-hub/web_api_archive.go cmd/evener-hub/web_api_tree.go <touched config/type files>
+git commit -m "feat(hub): attention watcher broadcasts evener/attention/changed; /api/tree carries attentionSummary"
 ```
 
 ---
@@ -1137,15 +1137,15 @@ git commit -m "feat(hub): attention watcher broadcasts serf/attention/changed; /
 ### Task 8: Web — notifications.js event-driven rewrite
 
 **Files:**
-- Modify: `cmd/serf-hub/assets/notifications.js` (first IIFE)
-- Modify: `cmd/serf-hub/assets/sidebar.js` (allowlist)
-- Modify: `cmd/serf-hub/assets/renderer.js` (one dispatch line in the thread-status handler)
-- Modify: `cmd/serf-hub/templates/partials/settings/notifications.html` (copy)
-- Test: `cmd/serf-hub/jstest/test-notifications-attention.js` (new), `cmd/serf-hub/jstest/test-notifications-migration.js` (new)
+- Modify: `cmd/evener-hub/assets/notifications.js` (first IIFE)
+- Modify: `cmd/evener-hub/assets/sidebar.js` (allowlist)
+- Modify: `cmd/evener-hub/assets/renderer.js` (one dispatch line in the thread-status handler)
+- Modify: `cmd/evener-hub/templates/partials/settings/notifications.html` (copy)
+- Test: `cmd/evener-hub/jstest/test-notifications-attention.js` (new), `cmd/evener-hub/jstest/test-notifications-migration.js` (new)
 
 - [ ] **Step 1: Write the failing jstests**
 
-`cmd/serf-hub/jstest/test-notifications-attention.js`:
+`cmd/evener-hub/jstest/test-notifications-attention.js`:
 
 ```js
 // Attention-driven notifications: baseline-before-edge, summary-driven
@@ -1156,13 +1156,13 @@ const { JSDOM } = require("jsdom");
 const src = fs.readFileSync("../assets/notifications.js", "utf8");
 
 function boot(opts) {
-  const dom = new JSDOM(`<!DOCTYPE html><html><head><title>serf hub</title></head><body></body></html>`, {
+  const dom = new JSDOM(`<!DOCTYPE html><html><head><title>evener hub</title></head><body></body></html>`, {
     runScripts: "outside-only", pretendToBeVisual: true, url: "http://localhost/",
   });
   const w = dom.window;
   w.document.hasFocus = () => !!(opts && opts.focused);
   let notifHandler = null;
-  w.SerfAppwire = {
+  w.EvenerAppwire = {
     onNotification(h) { notifHandler = notifHandler || h; },
     onConnectionRestored() {},
   };
@@ -1173,8 +1173,8 @@ function boot(opts) {
   w.fetch = (url) => Promise.resolve({
     json: () => Promise.resolve({ attentionSummary: (opts && opts.summary) || { needsYou: 0, error: 0, working: 0 } }),
   });
-  w.localStorage.setItem("serf-hub.notifications", JSON.stringify({ title: true, favicon: true, os: true, sound: false }));
-  w.localStorage.setItem("serf-hub.notifications.v", "2");
+  w.localStorage.setItem("evener-hub.notifications", JSON.stringify({ title: true, favicon: true, os: true, sound: false }));
+  w.localStorage.setItem("evener-hub.notifications.v", "2");
   w.eval(src);
   return { w, fireNotif: (m, p) => notifHandler && notifHandler(m, p), fired };
 }
@@ -1187,7 +1187,7 @@ function boot(opts) {
     throw new Error("title after baseline = " + a.w.document.title);
   }
   // 2) A changed event updates counts and fires OS on into-needs_you (unfocused).
-  a.fireNotif("serf/attention/changed", {
+  a.fireNotif("evener/attention/changed", {
     changed: [{ threadId: "01X", title: "T", project: "p", level: "needs_you", prevLevel: "working" }],
     summary: { needsYou: 3, error: 0, working: 0 },
   });
@@ -1197,7 +1197,7 @@ function boot(opts) {
   // 3) Focused tab suppresses OS but still counts.
   const b = boot({ focused: true, summary: { needsYou: 0, error: 0, working: 0 } });
   await new Promise((r) => setTimeout(r, 20));
-  b.fireNotif("serf/attention/changed", {
+  b.fireNotif("evener/attention/changed", {
     changed: [{ threadId: "01Y", title: "U", project: "p", level: "error", prevLevel: "working" }],
     summary: { needsYou: 0, error: 1, working: 0 },
   });
@@ -1206,7 +1206,7 @@ function boot(opts) {
   if (!b.w.document.title.startsWith("(1) ")) throw new Error("error counts in title: " + b.w.document.title);
   // 4) No baseline yet -> no edge firing (event before fetch resolves).
   const c = boot({ summary: { needsYou: 0, error: 0, working: 0 } });
-  c.fireNotif("serf/attention/changed", {
+  c.fireNotif("evener/attention/changed", {
     changed: [{ threadId: "01Z", title: "V", project: "p", level: "needs_you", prevLevel: "idle" }],
     summary: { needsYou: 1, error: 0, working: 0 },
   });
@@ -1215,7 +1215,7 @@ function boot(opts) {
 })().catch((e) => { console.error(e); process.exit(1); });
 ```
 
-`cmd/serf-hub/jstest/test-notifications-migration.js`:
+`cmd/evener-hub/jstest/test-notifications-migration.js`:
 
 ```js
 // Versioned prefs migration: absent blob -> new defaults ON (title+favicon);
@@ -1230,40 +1230,40 @@ function boot(pre) {
   });
   const w = dom.window;
   w.document.hasFocus = () => false;
-  w.SerfAppwire = { onNotification() {}, onConnectionRestored() {} };
+  w.EvenerAppwire = { onNotification() {}, onConnectionRestored() {} };
   w.fetch = () => Promise.resolve({ json: () => Promise.resolve({ attentionSummary: { needsYou: 0, error: 0, working: 0 } }) });
-  if (pre) w.localStorage.setItem("serf-hub.notifications", JSON.stringify(pre));
+  if (pre) w.localStorage.setItem("evener-hub.notifications", JSON.stringify(pre));
   w.eval(src);
   return w;
 }
 
 const fresh = boot(null);
-const freshPrefs = JSON.parse(fresh.localStorage.getItem("serf-hub.notifications"));
+const freshPrefs = JSON.parse(fresh.localStorage.getItem("evener-hub.notifications"));
 if (freshPrefs.title !== true || freshPrefs.favicon !== true || freshPrefs.os !== false || freshPrefs.sound !== false) {
   throw new Error("fresh defaults wrong: " + JSON.stringify(freshPrefs));
 }
-if (fresh.localStorage.getItem("serf-hub.notifications.v") !== "2") throw new Error("version stamp missing");
+if (fresh.localStorage.getItem("evener-hub.notifications.v") !== "2") throw new Error("version stamp missing");
 
 const legacy = boot({ os: true });
-const legacyPrefs = JSON.parse(legacy.localStorage.getItem("serf-hub.notifications"));
+const legacyPrefs = JSON.parse(legacy.localStorage.getItem("evener-hub.notifications"));
 if (legacyPrefs.title !== false || legacyPrefs.favicon !== false || legacyPrefs.os !== true) {
   throw new Error("legacy backfill wrong: " + JSON.stringify(legacyPrefs));
 }
 console.log("ok");
 ```
 
-- [ ] **Step 2: Run — both fail.** `cd cmd/serf-hub/jstest && node test-notifications-attention.js; node test-notifications-migration.js`
+- [ ] **Step 2: Run — both fail.** `cd cmd/evener-hub/jstest && node test-notifications-attention.js; node test-notifications-migration.js`
 
 - [ ] **Step 3: Rewrite the first IIFE of `notifications.js`**
 
-Keep: `PREFS_KEY`, `PLAIN_FAVICON`, `STATE_COLORS` (keyed by level now: `{error: "#f7768e", needs_you: "#e0af68", working: "#7aa2f7"}`), `SECTION_LABELS`/`activeSection`/`syncSettingsHeader`, `setFavicon`/`buildFaviconDataURI`, `fireOsNotification` (parameterize title/id from the changed entry: `new Notification("serf · " + (entry.title || entry.threadId))`, click navigates `/s/<threadId>`), `playTone`, the `serf-hub:notifications-changed` listener, the htmx:afterSettle re-apply, the second IIFE untouched.
+Keep: `PREFS_KEY`, `PLAIN_FAVICON`, `STATE_COLORS` (keyed by level now: `{error: "#f7768e", needs_you: "#e0af68", working: "#7aa2f7"}`), `SECTION_LABELS`/`activeSection`/`syncSettingsHeader`, `setFavicon`/`buildFaviconDataURI`, `fireOsNotification` (parameterize title/id from the changed entry: `new Notification("evener · " + (entry.title || entry.threadId))`, click navigates `/s/<threadId>`), `playTone`, the `evener-hub:notifications-changed` listener, the htmx:afterSettle re-apply, the second IIFE untouched.
 
 Delete: `POLL_MS`, `poll`, `startPolling`, `prevState` transition machinery, `isAlertTransition`, `detectTransitions`, `/api/search` usage.
 
 Add (structure — write it in the file's existing style):
 
 ```js
-  const PREFS_VERSION_KEY = "serf-hub.notifications.v";
+  const PREFS_VERSION_KEY = "evener-hub.notifications.v";
   const DEFAULT_PREFS = { title: true, favicon: true, os: false, sound: false };
   let summary = null; // null until baseline: no edge-firing before it (spec v5)
 
@@ -1303,7 +1303,7 @@ Add (structure — write it in the file's existing style):
     // One tab fires OS/sound. Web Locks held-lock election; localStorage
     // heartbeat fallback for environments without navigator.locks.
     if (navigator.locks && navigator.locks.request) {
-      navigator.locks.request("serf-hub-os-leader", { ifAvailable: true }, (lock) => {
+      navigator.locks.request("evener-hub-os-leader", { ifAvailable: true }, (lock) => {
         if (lock) { cb(true); return new Promise(() => {}); } // hold forever while this tab lives
         cb(false);
         return Promise.resolve();
@@ -1337,43 +1337,43 @@ Add (structure — write it in the file's existing style):
     initialized = true;
     migratePrefs();
     fetchBaseline();
-    if (window.SerfAppwire && typeof window.SerfAppwire.onNotification === "function") {
-      window.SerfAppwire.onNotification(function (method, params) {
-        if (method === "serf/attention/changed") onAttentionChanged(params);
+    if (window.EvenerAppwire && typeof window.EvenerAppwire.onNotification === "function") {
+      window.EvenerAppwire.onNotification(function (method, params) {
+        if (method === "evener/attention/changed") onAttentionChanged(params);
       });
     }
-    if (window.SerfAppwire && typeof window.SerfAppwire.onConnectionRestored === "function") {
-      window.SerfAppwire.onConnectionRestored(fetchBaseline);
+    if (window.EvenerAppwire && typeof window.EvenerAppwire.onConnectionRestored === "function") {
+      window.EvenerAppwire.onConnectionRestored(fetchBaseline);
     }
-    document.addEventListener("serf-hub:thread-status", fetchBaseline); // own-thread instant reconcile (renderer dispatches on relay status change)
+    document.addEventListener("evener-hub:thread-status", fetchBaseline); // own-thread instant reconcile (renderer dispatches on relay status change)
   }
 ```
 
-IMPLEMENTER NOTES: (a) check `appwire.js`'s `onNotification` handler invocation — if handlers receive only `method`, extend the dispatcher to pass `(method, params)` (sidebar.js's handler ignores extra args, safe); (b) keep `window.serfHubNotifications` test surface exporting `{init, _readPrefs: readPrefs}` plus `_onAttentionChanged: onAttentionChanged` for tests; (c) rewrite `applyTitle(prefs, summary)` to render `(N)` from `summary.needsYou + summary.error`, keeping the section-title logic; (d) `onPrefsChanged` keeps its permission-revert logic but ends with `applyCounts()` instead of `poll()`.
+IMPLEMENTER NOTES: (a) check `appwire.js`'s `onNotification` handler invocation — if handlers receive only `method`, extend the dispatcher to pass `(method, params)` (sidebar.js's handler ignores extra args, safe); (b) keep `window.evenerHubNotifications` test surface exporting `{init, _readPrefs: readPrefs}` plus `_onAttentionChanged: onAttentionChanged` for tests; (c) rewrite `applyTitle(prefs, summary)` to render `(N)` from `summary.needsYou + summary.error`, keeping the section-title logic; (d) `onPrefsChanged` keeps its permission-revert logic but ends with `applyCounts()` instead of `poll()`.
 
-In `cmd/serf-hub/assets/renderer.js`, find the thread-status handler (search `showConnectionBanner` neighborhood / where `THREAD_STATUS_CHANGED` events update the status pill — the handler that processes decoded `["THREAD_STATUS_CHANGED", ...]` events) and add one line after it applies the status:
+In `cmd/evener-hub/assets/renderer.js`, find the thread-status handler (search `showConnectionBanner` neighborhood / where `THREAD_STATUS_CHANGED` events update the status pill — the handler that processes decoded `["THREAD_STATUS_CHANGED", ...]` events) and add one line after it applies the status:
 
 ```js
-    document.dispatchEvent(new CustomEvent("serf-hub:thread-status", { detail: { status: status } }));
+    document.dispatchEvent(new CustomEvent("evener-hub:thread-status", { detail: { status: status } }));
 ```
 
-In `cmd/serf-hub/assets/sidebar.js`, add to `notificationAffectsSidebar`:
+In `cmd/evener-hub/assets/sidebar.js`, add to `notificationAffectsSidebar`:
 
 ```js
-      case "serf/attention/changed":
+      case "evener/attention/changed":
 ```
 
 In `templates/partials/settings/notifications.html`: change the page help line to `Title and favicon default on; OS notification and sound are opt-in. Saved per-browser.`, the OS help to `Native notification when a thread needs you or errors.`, and the sound help to `Short tone on the same transitions.` (unchanged). Title/favicon `<span class="state">` initial text can stay `OFF` — `applySettingsState()` syncs it from prefs on render.
 
 - [ ] **Step 4: Run jstests + full suite**
 
-`cd cmd/serf-hub/jstest && node test-notifications-attention.js && node test-notifications-migration.js && sh run-all.sh`
+`cd cmd/evener-hub/jstest && node test-notifications-attention.js && node test-notifications-migration.js && sh run-all.sh`
 Expected: new tests OK; fix any existing notification tests that assert the poll (update or delete them with justification in the commit — the poll is intentionally gone).
 
 - [ ] **Step 5: Commit**
 
 ```bash
-git add cmd/serf-hub/assets/notifications.js cmd/serf-hub/assets/sidebar.js cmd/serf-hub/assets/renderer.js cmd/serf-hub/templates/partials/settings/notifications.html cmd/serf-hub/jstest/test-notifications-attention.js cmd/serf-hub/jstest/test-notifications-migration.js
+git add cmd/evener-hub/assets/notifications.js cmd/evener-hub/assets/sidebar.js cmd/evener-hub/assets/renderer.js cmd/evener-hub/templates/partials/settings/notifications.html cmd/evener-hub/jstest/test-notifications-attention.js cmd/evener-hub/jstest/test-notifications-migration.js
 git commit -m "feat(web): event-driven notifications — summary-driven badges, baseline-before-edge, leader election, ON-by-default title/favicon with versioned migration"
 ```
 
@@ -1382,9 +1382,9 @@ git commit -m "feat(web): event-driven notifications — summary-driven badges, 
 ### Task 9: TUI — errored lane + needs-you count
 
 **Files:**
-- Modify: `cmd/serf-tui/internal/tuitheme/tokens.go` (StateError token, both themes)
-- Modify: `cmd/serf-tui/hub_dashboard_view.go` (stateLabel, statusDot, stateColor, attentionRankLabel, row-tint gate)
-- Test: `cmd/serf-tui/hub_dashboard_view_test.go` (append; create if absent following the package's existing test files)
+- Modify: `cmd/evener-tui/internal/tuitheme/tokens.go` (StateError token, both themes)
+- Modify: `cmd/evener-tui/hub_dashboard_view.go` (stateLabel, statusDot, stateColor, attentionRankLabel, row-tint gate)
+- Test: `cmd/evener-tui/hub_dashboard_view_test.go` (append; create if absent following the package's existing test files)
 
 - [ ] **Step 1: Failing test**
 
@@ -1405,7 +1405,7 @@ func TestErroredLane_TUI(t *testing.T) {
 }
 ```
 
-- [ ] **Step 2: Run — fail.** `go test ./cmd/serf-tui/ -run TestErroredLane_TUI -count=1`
+- [ ] **Step 2: Run — fail.** `go test ./cmd/evener-tui/ -run TestErroredLane_TUI -count=1`
 
 - [ ] **Step 3: Implement**
 
@@ -1420,12 +1420,12 @@ func TestErroredLane_TUI(t *testing.T) {
 
 Add the `◆N` needs-you count to the dashboard header: find where the dashboard renders its header/title line (grep `hubRow`/`renderDashboard` in `hub_dashboard_view.go`), count rows with `attentionRankLabel(row.state) >= 4` — wait, that includes active (3)? No: rank 4 = awaiting, 5 = errored; warning = 2. Count `stateLabel(row.state)` ∈ {awaiting, warning, errored} and render `◆N` styled with `th.StateAwaiting` when N > 0, appended to the header line. Add a test asserting the count function (extract `needsYouCount(rows []hubRow) int` as a pure function and test it directly).
 
-- [ ] **Step 4: Run.** `go test ./cmd/serf-tui/... -count=1` — PASS.
+- [ ] **Step 4: Run.** `go test ./cmd/evener-tui/... -count=1` — PASS.
 
 - [ ] **Step 5: Commit**
 
 ```bash
-git add cmd/serf-tui/internal/tuitheme/tokens.go cmd/serf-tui/hub_dashboard_view.go cmd/serf-tui/hub_dashboard_view_test.go
+git add cmd/evener-tui/internal/tuitheme/tokens.go cmd/evener-tui/hub_dashboard_view.go cmd/evener-tui/hub_dashboard_view_test.go
 git commit -m "feat(tui): errored state lane (label, dot, color, rank, tint) + needs-you count"
 ```
 
@@ -1434,9 +1434,9 @@ git commit -m "feat(tui): errored state lane (label, dot, color, rank, tint) + n
 ### Task 10: Hub — stale-wedge unification (shared helper + targeted watcher probes)
 
 **Files:**
-- Modify: `cmd/serf-hub/app_threadlist.go` (extract the heuristic's core)
-- Create: `cmd/serf-hub/internal/hubcore/wedge.go` + `wedge_test.go`
-- Modify: `cmd/serf-hub/main.go` (watcher applies it to long-active sessions)
+- Modify: `cmd/evener-hub/app_threadlist.go` (extract the heuristic's core)
+- Create: `cmd/evener-hub/internal/hubcore/wedge.go` + `wedge_test.go`
+- Modify: `cmd/evener-hub/main.go` (watcher applies it to long-active sessions)
 
 - [ ] **Step 1: Read `sanitizeStaleProcessingStatus` (app_threadlist.go:254-283) fully.** Extract its decision core — "given a transcript tail summary, is this active session actually wedged?" — into `hubcore` as:
 
@@ -1451,16 +1451,16 @@ const StallThreshold = 3 * time.Minute
 
 plus a function whose body is MOVED VERBATIM from the private helper(s) `sanitizeStaleProcessingStatus` calls (the transcript-tail read + wedge signature check), renamed `WedgedStatus(...)`, with `app_threadlist.go` re-calling it so behavior is unchanged. The exact signature follows what the existing code passes (Past lookup result + transcript path). This is a mechanical move-and-rename: no logic changes, existing `app_threadlist` tests must stay green untouched.
 
-- [ ] **Step 2: Write `wedge_test.go`** — port/duplicate the assertions the existing sanitize tests make (grep `sanitizeStaleProcessing` in `cmd/serf-hub/*_test.go`) against the moved function directly, plus one test that `StallThreshold == 3*time.Minute`.
+- [ ] **Step 2: Write `wedge_test.go`** — port/duplicate the assertions the existing sanitize tests make (grep `sanitizeStaleProcessing` in `cmd/evener-hub/*_test.go`) against the moved function directly, plus one test that `StallThreshold == 3*time.Minute`.
 
 - [ ] **Step 3: Watcher integration.** In the main.go watcher `run()` from Task 7, after deriving the map: for each entry with `Level == "working"`, if the roster has reported it active continuously past `StallThreshold` (track first-seen-active timestamps in a local map inside the loop), call the moved `WedgedStatus` probe; on wedge, override that entry's level to `"error"` before `w.Tick`. Add a unit test for the first-seen-active tracking as a pure helper (`staleActives(prevSeen map[string]time.Time, cur map[string]AttentionEntry, now time.Time) []string`).
 
-- [ ] **Step 4: Run.** `go test ./cmd/serf-hub/... -count=1` — PASS, including untouched app_threadlist tests.
+- [ ] **Step 4: Run.** `go test ./cmd/evener-hub/... -count=1` — PASS, including untouched app_threadlist tests.
 
 - [ ] **Step 5: Commit**
 
 ```bash
-git add cmd/serf-hub/internal/hubcore/wedge.go cmd/serf-hub/internal/hubcore/wedge_test.go cmd/serf-hub/app_threadlist.go cmd/serf-hub/main.go
+git add cmd/evener-hub/internal/hubcore/wedge.go cmd/evener-hub/internal/hubcore/wedge_test.go cmd/evener-hub/app_threadlist.go cmd/evener-hub/main.go
 git commit -m "refactor(hub): stale-wedge heuristic shared in hubcore; watcher probes long-active sessions"
 ```
 
@@ -1476,13 +1476,13 @@ git commit -m "refactor(hub): stale-wedge heuristic shared in hubcore; watcher p
 
 ```bash
 make test-short && make lint
-cd cmd/serf-hub/jstest && sh run-all.sh
+cd cmd/evener-hub/jstest && sh run-all.sh
 ```
 Expected: all green. Fix anything red before proceeding — test output must be pristine.
 
 - [ ] **Step 2: Write the e2e scenario card** (content; adapt the framing to the house format from docs/agentic-testing.md):
 
-> **Scenario: attention — needs-you end to end.** Build serf + serf-hub; start hub with a scratch HOME; spawn a session with prompt "Reply with exactly the word PONG." via /new (cheap model). Assert within 10s of the reply landing: (1) the session's sidebar row shows `data-state="awaiting"`; (2) the NeedsYou tier lists it; (3) the tab title gains "(1)" (title channel defaults on); all WITHOUT opening another tab or refreshing. Then reply "thanks — nothing else." in the open thread and assert the row leaves the NeedsYou tier and the title count clears (own-tab: immediately on the next status event; allow ≤6s for the broadcast reconcile). Interrupt variant: spawn a session with a long `sleep 60` prompt, interrupt it mid-run, assert the row shows idle (never awaiting). Goal variant (integration, not e2e): covered by TestProcessInput settle tests.
+> **Scenario: attention — needs-you end to end.** Build evener + evener-hub; start hub with a scratch HOME; spawn a session with prompt "Reply with exactly the word PONG." via /new (cheap model). Assert within 10s of the reply landing: (1) the session's sidebar row shows `data-state="awaiting"`; (2) the NeedsYou tier lists it; (3) the tab title gains "(1)" (title channel defaults on); all WITHOUT opening another tab or refreshing. Then reply "thanks — nothing else." in the open thread and assert the row leaves the NeedsYou tier and the title count clears (own-tab: immediately on the next status event; allow ≤6s for the broadcast reconcile). Interrupt variant: spawn a session with a long `sleep 60` prompt, interrupt it mid-run, assert the row shows idle (never awaiting). Goal variant (integration, not e2e): covered by TestProcessInput settle tests.
 
 - [ ] **Step 3: Update the spec status header and commit**
 

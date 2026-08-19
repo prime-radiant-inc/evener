@@ -11,7 +11,7 @@
 ## Global Constraints
 
 - Keep the change deterministic; do not add provider credentials, network calls, or live-model dependencies.
-- Run `npx biome check --write` on touched frontend files under `cmd/serf-hub/frontend/src/` before the frontend gate.
+- Run `npx biome check --write` on touched frontend files under `cmd/evener-hub/frontend/src/` before the frontend gate.
 - Use `make test-web` as the canonical frontend unit, typecheck, and Biome gate.
 - Run `make test-web-browser` when Chrome is available.
 - Preserve native model/effort controls, accessible names, menu actions, panel mounting, attachment behavior, and Send/Stop/Steer behavior.
@@ -21,24 +21,24 @@
 
 ## File map
 
-- Modify `cmd/serf-hub/frontend/src/panes/session/chrome/SessionChrome.tsx`: add the embedded presentation boundary while keeping session-menu panels and callbacks in one owner.
-- Modify `cmd/serf-hub/frontend/src/panes/session/chrome/sessionchrome.module.css`: define the embedded chrome/controls layout and focus/overflow rules.
-- Modify `cmd/serf-hub/frontend/src/panes/session/chrome/SessionChrome.test.tsx` (create if absent): cover the embedded control contract and existing menu/panel wiring.
-- Modify `cmd/serf-hub/frontend/src/panes/session/composer/Composer.tsx`: render embedded chrome beside the attachment control in `PromptCard.leading`.
-- Modify `cmd/serf-hub/frontend/src/panes/session/composer/composer.module.css`: add only composer-specific leading-cluster sizing needed for the embedded chrome.
-- Modify `cmd/serf-hub/frontend/src/panes/session/Session.tsx`: remove the standalone footer `SessionChrome` mount after its controls move into the composer.
-- Modify `cmd/serf-hub/frontend/src/panes/session/composer/Composer.test.tsx` and `cmd/serf-hub/frontend/src/panes/session/Session.test.tsx`: assert one control instance in the composer and no duplicate footer row.
-- Modify `cmd/serf-hub/frontend/src/panes/session/chrome/StatusRow.test.tsx` only if its old parent/layout assumptions need updated; preserve its control behavior tests.
-- Modify `cmd/serf-hub/frontend/scripts/layoutguard/cases/compact-session-footer/harness.html` and its `assert.mjs` only if the harness represents the production footer placement; update expected geometry/row selectors, not unrelated harness markup.
+- Modify `cmd/evener-hub/frontend/src/panes/session/chrome/SessionChrome.tsx`: add the embedded presentation boundary while keeping session-menu panels and callbacks in one owner.
+- Modify `cmd/evener-hub/frontend/src/panes/session/chrome/sessionchrome.module.css`: define the embedded chrome/controls layout and focus/overflow rules.
+- Modify `cmd/evener-hub/frontend/src/panes/session/chrome/SessionChrome.test.tsx` (create if absent): cover the embedded control contract and existing menu/panel wiring.
+- Modify `cmd/evener-hub/frontend/src/panes/session/composer/Composer.tsx`: render embedded chrome beside the attachment control in `PromptCard.leading`.
+- Modify `cmd/evener-hub/frontend/src/panes/session/composer/composer.module.css`: add only composer-specific leading-cluster sizing needed for the embedded chrome.
+- Modify `cmd/evener-hub/frontend/src/panes/session/Session.tsx`: remove the standalone footer `SessionChrome` mount after its controls move into the composer.
+- Modify `cmd/evener-hub/frontend/src/panes/session/composer/Composer.test.tsx` and `cmd/evener-hub/frontend/src/panes/session/Session.test.tsx`: assert one control instance in the composer and no duplicate footer row.
+- Modify `cmd/evener-hub/frontend/src/panes/session/chrome/StatusRow.test.tsx` only if its old parent/layout assumptions need updated; preserve its control behavior tests.
+- Modify `cmd/evener-hub/frontend/scripts/layoutguard/cases/compact-session-footer/harness.html` and its `assert.mjs` only if the harness represents the production footer placement; update expected geometry/row selectors, not unrelated harness markup.
 
 ---
 
 ### Task 1: Add an embedded SessionChrome presentation
 
 **Files:**
-- Modify: `cmd/serf-hub/frontend/src/panes/session/chrome/SessionChrome.tsx`
-- Modify: `cmd/serf-hub/frontend/src/panes/session/chrome/sessionchrome.module.css`
-- Test: `cmd/serf-hub/frontend/src/panes/session/chrome/SessionChrome.test.tsx`
+- Modify: `cmd/evener-hub/frontend/src/panes/session/chrome/SessionChrome.tsx`
+- Modify: `cmd/evener-hub/frontend/src/panes/session/chrome/sessionchrome.module.css`
+- Test: `cmd/evener-hub/frontend/src/panes/session/chrome/SessionChrome.test.tsx`
 
 **Interfaces:**
 - Consumes: existing `SessionChromeProps { ref: string }`, `StatusRow`, `GoalControl`, `SessionMenu`, and the existing Details/Tasks/Activity panel handles.
@@ -63,7 +63,7 @@ Also assert the standalone mode still renders `data-testid="session-chrome"` and
 Run from the repository root:
 
 ```bash
-cd cmd/serf-hub/frontend && npx vitest run src/panes/session/chrome/SessionChrome.test.tsx
+cd cmd/evener-hub/frontend && npx vitest run src/panes/session/chrome/SessionChrome.test.tsx
 ```
 
 Expected: the new embedded test fails because the embedded presentation does not yet exist.
@@ -87,7 +87,7 @@ Add CSS for the embedded cluster as a nowrap, min-width-safe flex group with the
 - [ ] **Step 4: Run the focused test and verify it passes**
 
 ```bash
-cd cmd/serf-hub/frontend && npx vitest run src/panes/session/chrome/SessionChrome.test.tsx
+cd cmd/evener-hub/frontend && npx vitest run src/panes/session/chrome/SessionChrome.test.tsx
 ```
 
 Expected: PASS, including the pre-existing standalone tests.
@@ -95,9 +95,9 @@ Expected: PASS, including the pre-existing standalone tests.
 - [ ] **Step 5: Format and commit the self-contained refactor**
 
 ```bash
-cd cmd/serf-hub/frontend && npx biome check --write src/panes/session/chrome/SessionChrome.tsx src/panes/session/chrome/sessionchrome.module.css src/panes/session/chrome/SessionChrome.test.tsx
+cd cmd/evener-hub/frontend && npx biome check --write src/panes/session/chrome/SessionChrome.tsx src/panes/session/chrome/sessionchrome.module.css src/panes/session/chrome/SessionChrome.test.tsx
 cd ../../..
-git add cmd/serf-hub/frontend/src/panes/session/chrome/SessionChrome.tsx cmd/serf-hub/frontend/src/panes/session/chrome/sessionchrome.module.css cmd/serf-hub/frontend/src/panes/session/chrome/SessionChrome.test.tsx
+git add cmd/evener-hub/frontend/src/panes/session/chrome/SessionChrome.tsx cmd/evener-hub/frontend/src/panes/session/chrome/sessionchrome.module.css cmd/evener-hub/frontend/src/panes/session/chrome/SessionChrome.test.tsx
 git commit -m "refactor: embed session chrome controls"
 ```
 
@@ -106,11 +106,11 @@ git commit -m "refactor: embed session chrome controls"
 ### Task 2: Move the control cluster into the composer
 
 **Files:**
-- Modify: `cmd/serf-hub/frontend/src/panes/session/composer/Composer.tsx`
-- Modify: `cmd/serf-hub/frontend/src/panes/session/composer/composer.module.css`
-- Modify: `cmd/serf-hub/frontend/src/panes/session/Session.tsx`
-- Modify: `cmd/serf-hub/frontend/src/panes/session/composer/Composer.test.tsx`
-- Modify: `cmd/serf-hub/frontend/src/panes/session/Session.test.tsx`
+- Modify: `cmd/evener-hub/frontend/src/panes/session/composer/Composer.tsx`
+- Modify: `cmd/evener-hub/frontend/src/panes/session/composer/composer.module.css`
+- Modify: `cmd/evener-hub/frontend/src/panes/session/Session.tsx`
+- Modify: `cmd/evener-hub/frontend/src/panes/session/composer/Composer.test.tsx`
+- Modify: `cmd/evener-hub/frontend/src/panes/session/Session.test.tsx`
 
 **Interfaces:**
 - Consumes: Task 1's embedded `SessionChrome` placement and existing `PromptCard.leading` slot.
@@ -134,7 +134,7 @@ Add a Session-level assertion that the footer no longer contains `session-chrome
 - [ ] **Step 2: Run the focused tests and verify they fail**
 
 ```bash
-cd cmd/serf-hub/frontend && npx vitest run src/panes/session/composer/Composer.test.tsx src/panes/session/Session.test.tsx
+cd cmd/evener-hub/frontend && npx vitest run src/panes/session/composer/Composer.test.tsx src/panes/session/Session.test.tsx
 ```
 
 Expected: the new placement assertions fail because `Composer` still has only the attachment leading control and `Session.tsx` still mounts the footer chrome.
@@ -150,7 +150,7 @@ Add only the CSS needed to let the leading group consume available space, shrink
 - [ ] **Step 4: Run the focused tests and verify they pass**
 
 ```bash
-cd cmd/serf-hub/frontend && npx vitest run src/panes/session/composer/Composer.test.tsx src/panes/session/Session.test.tsx src/panes/session/chrome/SessionChrome.test.tsx
+cd cmd/evener-hub/frontend && npx vitest run src/panes/session/composer/Composer.test.tsx src/panes/session/Session.test.tsx src/panes/session/chrome/SessionChrome.test.tsx
 ```
 
 Expected: PASS with exactly one status/control cluster and unchanged behavior tests.
@@ -158,9 +158,9 @@ Expected: PASS with exactly one status/control cluster and unchanged behavior te
 - [ ] **Step 5: Format and commit the integration**
 
 ```bash
-cd cmd/serf-hub/frontend && npx biome check --write src/panes/session/composer/Composer.tsx src/panes/session/composer/composer.module.css src/panes/session/Session.tsx src/panes/session/composer/Composer.test.tsx src/panes/session/Session.test.tsx
+cd cmd/evener-hub/frontend && npx biome check --write src/panes/session/composer/Composer.tsx src/panes/session/composer/composer.module.css src/panes/session/Session.tsx src/panes/session/composer/Composer.test.tsx src/panes/session/Session.test.tsx
 cd ../../..
-git add cmd/serf-hub/frontend/src/panes/session/composer/Composer.tsx cmd/serf-hub/frontend/src/panes/session/composer/composer.module.css cmd/serf-hub/frontend/src/panes/session/Session.tsx cmd/serf-hub/frontend/src/panes/session/composer/Composer.test.tsx cmd/serf-hub/frontend/src/panes/session/Session.test.tsx
+git add cmd/evener-hub/frontend/src/panes/session/composer/Composer.tsx cmd/evener-hub/frontend/src/panes/session/composer/composer.module.css cmd/evener-hub/frontend/src/panes/session/Session.tsx cmd/evener-hub/frontend/src/panes/session/composer/Composer.test.tsx cmd/evener-hub/frontend/src/panes/session/Session.test.tsx
 git commit -m "feat: move session controls into composer"
 ```
 
@@ -169,8 +169,8 @@ git commit -m "feat: move session controls into composer"
 ### Task 3: Update layout guards and run frontend gates
 
 **Files:**
-- Modify: `cmd/serf-hub/frontend/scripts/layoutguard/cases/compact-session-footer/harness.html` only if it still encodes the old production placement.
-- Modify: `cmd/serf-hub/frontend/scripts/layoutguard/cases/compact-session-footer/assert.mjs` only for assertions that intentionally target the old footer row.
+- Modify: `cmd/evener-hub/frontend/scripts/layoutguard/cases/compact-session-footer/harness.html` only if it still encodes the old production placement.
+- Modify: `cmd/evener-hub/frontend/scripts/layoutguard/cases/compact-session-footer/assert.mjs` only for assertions that intentionally target the old footer row.
 - Modify: relevant tests discovered by the focused runs only when a failure identifies an outdated placement contract.
 
 **Interfaces:**
@@ -180,7 +180,7 @@ git commit -m "feat: move session controls into composer"
 - [ ] **Step 1: Run the relevant layout guard before changing expectations**
 
 ```bash
-cd cmd/serf-hub/frontend && node scripts/layoutguard/run.mjs --case compact-session-footer
+cd cmd/evener-hub/frontend && node scripts/layoutguard/run.mjs --case compact-session-footer
 ```
 
 Record any failures and inspect the case's `harness.html` and `assert.mjs`. Do not modify the harness merely to silence unrelated accessibility or geometry failures.
@@ -192,7 +192,7 @@ Change selectors and expected row ownership so the guard verifies the attachment
 - [ ] **Step 3: Run focused tests, formatting, and the canonical frontend gate**
 
 ```bash
-cd cmd/serf-hub/frontend && npx biome check --write src/panes/session/composer/Composer.tsx src/panes/session/composer/composer.module.css src/panes/session/Session.tsx src/panes/session/composer/Composer.test.tsx src/panes/session/Session.test.tsx src/panes/session/chrome/SessionChrome.tsx src/panes/session/chrome/sessionchrome.module.css src/panes/session/chrome/SessionChrome.test.tsx
+cd cmd/evener-hub/frontend && npx biome check --write src/panes/session/composer/Composer.tsx src/panes/session/composer/composer.module.css src/panes/session/Session.tsx src/panes/session/composer/Composer.test.tsx src/panes/session/Session.test.tsx src/panes/session/chrome/SessionChrome.tsx src/panes/session/chrome/sessionchrome.module.css src/panes/session/chrome/SessionChrome.test.tsx
 cd ../../..
 make test-web
 ```
@@ -213,7 +213,7 @@ Expected: the browser guard exits 0. If Chrome is unavailable, report that limit
 git diff --check
 git status --short
 git diff --stat
-git add cmd/serf-hub/frontend/scripts/layoutguard/cases/compact-session-footer/harness.html cmd/serf-hub/frontend/scripts/layoutguard/cases/compact-session-footer/assert.mjs
+git add cmd/evener-hub/frontend/scripts/layoutguard/cases/compact-session-footer/harness.html cmd/evener-hub/frontend/scripts/layoutguard/cases/compact-session-footer/assert.mjs
 git commit -m "test: guard inline composer controls"
 ```
 

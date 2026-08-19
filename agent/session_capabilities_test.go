@@ -6,9 +6,9 @@ import (
 	"testing"
 	"time"
 
-	"primeradiant.com/serf/agent/execenv"
-	"primeradiant.com/serf/agent/sandbox"
-	"primeradiant.com/serf/internal/bundled"
+	"primeradiant.com/evener/agent/execenv"
+	"primeradiant.com/evener/agent/sandbox"
+	"primeradiant.com/evener/internal/bundled"
 )
 
 // probedFacts is the toolchain probe result the snapshots below render: both
@@ -67,7 +67,7 @@ func TestCapabilityPreambleWorkspaceWrite(t *testing.T) {
 		"Writable roots: <root>; git metadata: 8 paths",
 		"Masked paths: " + maskedCountString(policy),
 		"PATH: login shell ($SHELL -lc)",
-		"Scratch ($SERF_SCRATCH_DIR, $TMPDIR): /scratch/s1",
+		"Scratch ($EVENER_SCRATCH_DIR, $TMPDIR): /scratch/s1",
 		"Cache: overlay",
 		"Go cache: GOCACHE=/scratch/s1/gocache GOMODCACHE=/scratch/s1/gomodcache",
 		"go: telemetry writes denied (harmless stderr noise)",
@@ -94,7 +94,7 @@ func TestCapabilityPreambleRestricted(t *testing.T) {
 		"Writable roots: <root>; git metadata: 8 paths",
 		"Masked paths: " + maskedCountString(policy),
 		"PATH: login shell ($SHELL -lc)",
-		"Scratch ($SERF_SCRATCH_DIR, $TMPDIR): /scratch/s1",
+		"Scratch ($EVENER_SCRATCH_DIR, $TMPDIR): /scratch/s1",
 		"Cache: session-private",
 		"Go cache: GOCACHE=/scratch/s1/gocache GOMODCACHE=/scratch/s1/gomodcache",
 		"go: telemetry writes denied (harmless stderr noise)",
@@ -133,7 +133,7 @@ func TestCapabilityPreambleRestrictedSeatbelt(t *testing.T) {
 		"Writable roots: <root>; git metadata: 8 paths",
 		"Masked paths: " + maskedCountString(&policy),
 		"PATH: login shell ($SHELL -lc)",
-		"Scratch ($SERF_SCRATCH_DIR, $TMPDIR): /scratch/s1",
+		"Scratch ($EVENER_SCRATCH_DIR, $TMPDIR): /scratch/s1",
 		"Cache: session-private",
 		"Go cache: GOCACHE=/scratch/s1/gocache GOMODCACHE=/scratch/s1/gomodcache",
 		"go: telemetry writes denied (harmless stderr noise)",
@@ -196,7 +196,7 @@ func TestCapabilityPreambleUnsandboxed(t *testing.T) {
 
 	want := strings.Join([]string{
 		"PATH: inherited process environment",
-		"Scratch ($SERF_SCRATCH_DIR, $TMPDIR): /scratch/s1",
+		"Scratch ($EVENER_SCRATCH_DIR, $TMPDIR): /scratch/s1",
 		"Go cache: GOCACHE=/scratch/s1/gocache GOMODCACHE=/scratch/s1/gomodcache",
 		"git config read: `git config --list` exit 0",
 		"On PATH: go=yes node=yes rg=no",
@@ -221,7 +221,7 @@ func TestCapabilityPreambleUnprobed(t *testing.T) {
 		"Writable roots: <root>; git metadata: 8 paths",
 		"Masked paths: " + maskedCountString(policy),
 		"PATH: login shell ($SHELL -lc)",
-		"Scratch ($SERF_SCRATCH_DIR, $TMPDIR): /scratch/s1",
+		"Scratch ($EVENER_SCRATCH_DIR, $TMPDIR): /scratch/s1",
 		"Cache: session-private",
 		"Go cache: unprobed",
 		"git config read: unprobed",
@@ -246,7 +246,7 @@ func TestCapabilityPreambleGoAbsent(t *testing.T) {
 
 	want := strings.Join([]string{
 		"PATH: inherited process environment",
-		"Scratch ($SERF_SCRATCH_DIR, $TMPDIR): /scratch/s1",
+		"Scratch ($EVENER_SCRATCH_DIR, $TMPDIR): /scratch/s1",
 		"git config read: `git config --list` exit 0",
 		"On PATH: go=no node=yes rg=no",
 	}, "\n")
@@ -306,7 +306,7 @@ func TestCapabilityPreambleGitProbeFailsAloneKeepsToolFacts(t *testing.T) {
 
 	want := strings.Join([]string{
 		"PATH: inherited process environment",
-		"Scratch ($SERF_SCRATCH_DIR, $TMPDIR): /scratch/s1",
+		"Scratch ($EVENER_SCRATCH_DIR, $TMPDIR): /scratch/s1",
 		"Go cache: GOCACHE=/scratch/s1/gocache GOMODCACHE=/scratch/s1/gomodcache",
 		"git config read: unprobed",
 		"On PATH: go=yes node=yes rg=no",
@@ -359,7 +359,7 @@ func TestCapabilityPreambleRendersInEnvironmentSection(t *testing.T) {
 	for _, want := range []string{
 		"\nSandbox: restricted (network off) — fixed for this session\n",
 		"\nPATH: inherited process environment\n",
-		"\nScratch ($SERF_SCRATCH_DIR, $TMPDIR): /scratch/s1\n",
+		"\nScratch ($EVENER_SCRATCH_DIR, $TMPDIR): /scratch/s1\n",
 		"\nGo cache: GOCACHE=/scratch/s1/gocache GOMODCACHE=/scratch/s1/gomodcache\n",
 		"\ngit config read: `git config --list` exit 0\n",
 		"\nOn PATH: go=yes node=yes rg=no\n",

@@ -13,7 +13,7 @@ import (
 
 	htmltomarkdown "github.com/JohannesKaufmann/html-to-markdown/v2"
 
-	"primeradiant.com/serf/llm"
+	"primeradiant.com/evener/llm"
 )
 
 const (
@@ -92,7 +92,7 @@ func (s *Session) webFetchWithRuntime(ctx context.Context, rawURL string, questi
 	if err != nil {
 		return nil, fmt.Errorf("creating request: %w", err)
 	}
-	req.Header.Set("User-Agent", "serf/1.0")
+	req.Header.Set("User-Agent", "evener/1.0")
 
 	resp, err := s.webFetchClient().Do(req)
 	if err != nil {

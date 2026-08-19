@@ -5,7 +5,7 @@ import (
 	"sort"
 	"strings"
 
-	"primeradiant.com/serf/llm/providercfg"
+	"primeradiant.com/evener/llm/providercfg"
 )
 
 // ResolveProfileFromConfig maps an instance name to a *Profile using

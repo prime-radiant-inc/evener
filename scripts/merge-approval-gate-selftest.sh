@@ -7,7 +7,7 @@ repo_root="$(cd "$script_dir/.." && pwd)"
 real_make="$(command -v make)"
 . "$(dirname "$0")/selftest-lib.sh"
 
-scratch_dir work serf-merge-approval-gate-selftest
+scratch_dir work evener-merge-approval-gate-selftest
 trap 'scratch_rm' EXIT
 
 assert_before() {
@@ -103,7 +103,7 @@ run_gate_blocked() {
 # inside `make test-dev-tooling`, a merge-approval-gate phase. The gate would
 # then fail on exactly the restricted hosts kata 5gvk exists to keep it green
 # on. run_gate above still drives the REAL probe end to end, so the
-# serf-gate-probe -> preflight-parser wire contract stays covered.
+# evener-gate-probe -> preflight-parser wire contract stays covered.
 run_gate_blocked "" "" "$work/all-available.out"
 assert_eq "$gate_rc" "0" "the all-available green path exits zero"
 assert_not_has "$work/all-available.out" "BLOCKED" "the all-available green path reports nothing blocked"
@@ -114,7 +114,7 @@ expected_calls=$(printf 'lint\t\nbuild\t\ntest\t1\ntest-dev-tooling\t\n')
 actual_calls="$(cat "$work/calls" 2>/dev/null || :)"
 assert_eq "$actual_calls" "$expected_calls" "a blocked capability still runs every feasible phase, in order"
 assert_has "$work/blocked-loopback.out" "BLOCKED loopback-bind" "the blocked capability is named in the structured summary"
-assert_has "$work/blocked-loopback.out" "go run ./cmd/serf-gate-probe -only=loopback-bind" "the summary carries an exact reprobe command"
+assert_has "$work/blocked-loopback.out" "go run ./cmd/evener-gate-probe -only=loopback-bind" "the summary carries an exact reprobe command"
 assert_has "$work/blocked-loopback.out" "rerun once fixed" "the summary carries an exact rerun command for the skipped tests"
 blocked_lines="$(grep -c 'BLOCKED loopback-bind' "$work/blocked-loopback.out" 2>/dev/null || echo 0)"
 assert_eq "$blocked_lines" "1" "the capability is classified once, not once per phase"
@@ -146,13 +146,13 @@ assert_has "$work/blocked-and-failed.out" "BLOCKED loopback-bind" "the blocked-c
 # commands (go, npm, git) and the scripts it shells out to, so it proves
 # make-level target wiring — web-preflight before the frontend build, the
 # frontend build before runtime Go work, dist's default-platform discovery —
-# independent of what run-module-tests-selftest.sh and the serf-dev
+# independent of what run-module-tests-selftest.sh and the evener-dev
 # module-lint tests already cover for their own targets.
 make_case="$work/make-wiring"
 make_repo="$make_case/repo"
 make_state="$make_case/state"
 make_bin="$make_case/bin"
-mkdir -p "$make_repo/scripts" "$make_repo/cmd/serf-hub/frontend" "$make_state" "$make_bin"
+mkdir -p "$make_repo/scripts" "$make_repo/cmd/evener-hub/frontend" "$make_state" "$make_bin"
 for module in agent llm auth envvars invariant identifier fuzz; do
 	mkdir -p "$make_repo/$module"
 done

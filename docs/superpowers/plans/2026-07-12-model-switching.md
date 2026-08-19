@@ -2,7 +2,7 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Finish serf's mid-session model switching per the spec at
+**Goal:** Finish evener's mid-session model switching per the spec at
 `docs/superpowers/specs/2026-07-12-model-switching-design.md` (PRI-2574):
 validated + acknowledged switches, change notifications, snapshot freshness,
 turn-boundary gating, replay provenance rules, transcript markers, web/TUI
@@ -14,8 +14,8 @@ already exist. Every task below hardens or completes an existing seam; none
 invents a new subsystem. The spec's Design decisions and N1–N7 sections are
 normative — when this plan and the spec disagree, the spec wins.
 
-**Tech stack:** Go (agent, server, appwire, llm, cmd/serf-tui), vanilla JS +
-JSDOM tests (cmd/serf-hub/assets, jstest), Go `httptest`, scenario cards in
+**Tech stack:** Go (agent, server, appwire, llm, cmd/evener-tui), vanilla JS +
+JSDOM tests (cmd/evener-hub/assets, jstest), Go `httptest`, scenario cards in
 `test/scenarios/`.
 
 ## Global constraints
@@ -45,8 +45,8 @@ JSDOM tests (cmd/serf-hub/assets, jstest), Go `httptest`, scenario cards in
 | Daemon RPC + snapshot | `server/appwire_runtime.go`, `server/server_handlers.go`, `server/server.go`, `server/bridge.go` |
 | Protocol | `appwire/types.go`, `appwire/protocol.go`, `internal/appprojector/appwire_projection.go`, `docs/appwire-protocol.md` (generated) |
 | Replay provenance | `agent/session_model_call.go` (`expandHistory` signature change), `llm/providers/{anthropic,openai,openaicompat,google}/…` tests |
-| Web UI | `cmd/serf-hub/assets/{appwire.js,search.js,model-display.js,settings-pickers.js,sidebar.js}`, new `assets/model-switch.js` (if a new file reads cleaner), `templates/partials/workspace.html`, `cmd/serf-hub/jstest/` |
-| TUI | `cmd/serf-tui/hub_command_registry.go`, `hub_commands.go`, `hub_session_keys.go`, `hub_session_view.go`, `hub_types.go` (snapshot field mapping), `hub_dashboard_view.go`, notification apply path |
+| Web UI | `cmd/evener-hub/assets/{appwire.js,search.js,model-display.js,settings-pickers.js,sidebar.js}`, new `assets/model-switch.js` (if a new file reads cleaner), `templates/partials/workspace.html`, `cmd/evener-hub/jstest/` |
+| TUI | `cmd/evener-tui/hub_command_registry.go`, `hub_commands.go`, `hub_session_keys.go`, `hub_session_view.go`, `hub_types.go` (snapshot field mapping), `hub_dashboard_view.go`, notification apply path |
 | Delegates | `agent/job_delegate.go`, `agent/subagents.go`, `agent/internal/jobstore/record.go` |
 | Scenarios/docs | `test/scenarios/*.md`, `test/scenarios/INDEX.md`, `docs/llm-providers.md` |
 
@@ -54,7 +54,7 @@ JSDOM tests (cmd/serf-hub/assets, jstest), Go `httptest`, scenario cards in
 
 ### Task 1: `SetModel` returns an error; callers propagate
 
-**Files:** `agent/session.go:651-691`, `cmd/serf/serve.go:406`,
+**Files:** `agent/session.go:651-691`, `cmd/evener/serve.go:406`,
 `server/server.go:497` (hook type), `agent/session_set_model_test.go` (new)
 
 - [ ] **Step 1: Failing tests.** In the new test file: (a) `SetModel` with an
@@ -70,13 +70,13 @@ JSDOM tests (cmd/serf-hub/assets, jstest), Go `httptest`, scenario cards in
 - [ ] **Step 3: Implement.** Change `func (s *Session) SetModel(model string)`
   to return `error`. Replace the swallow at `session.go:659-662` with an
   error return (no state change). The sole production caller is the daemon
-  hook closure (`cmd/serf/serve.go:406`) — update it to return the error and
+  hook closure (`cmd/evener/serve.go:406`) — update it to return the error and
   adjust `SetModelFunc`'s signature (`server/server.go:497`) to
   `func(string) error`; run `grep -rn "\.SetModel(" --include="*.go"` to
   catch tests. (Fallbacks and delegate spawn do NOT call `SetModel` — they
   use `resolveProfileForRef` directly; expect no other production hits.) Do
   not change `SetReasoningEffort`'s signature.
-- [ ] **Step 4: Green.** `go test ./agent/... ./server/... ./cmd/serf/...`
+- [ ] **Step 4: Green.** `go test ./agent/... ./server/... ./cmd/evener/...`
 - [ ] **Step 5: Commit** — `feat(agent): SetModel reports resolution errors`
 
 ### Task 2: Model validation + unrepresentable-history preflight
@@ -89,10 +89,10 @@ setter, tests in `agent/session_set_model_test.go`
   (b) a non-enumerable instance accepts an unlisted model, and **an
   enumeration failure of any error class fails open (accepts)** — this keeps
   the dead-credentials failure-mode row true. Read the launch policy first
-  and reuse it: `cmd/serf/internal/launchcheck/launchcheck.go:217`
+  and reuse it: `cmd/evener/internal/launchcheck/launchcheck.go:217`
   (`validateLaunchCheckModel` — note it fails open only for an error-message
   allowlist; the switch path fails open unconditionally, per spec) and
-  `cmd/serf-hub/app_models.go:143` (`launchProviderAllowsUnreportedModels`,
+  `cmd/evener-hub/app_models.go:143` (`launchProviderAllowsUnreportedModels`,
   behavior-tag keyed); (c) history containing a `document` part → switch to
   anthropic-family, google, and openai-compat targets each rejected with the
   kind named (spec's explicit per-tag policy table — compat *silently drops*
@@ -155,7 +155,7 @@ setter, tests in `agent/session_set_model_test.go`
 package via `EventSessionNameChanged`'s definition),
 `internal/appprojector/appwire_projection.go:652` (template case),
 `appwire/types.go`, `appwire/protocol.go`, `server/appwire_runtime.go:545-565`
-(appThread), `server/server.go:278 UpdateSessionInfo`, `cmd/serf/serve.go:406`
+(appThread), `server/server.go:278 UpdateSessionInfo`, `cmd/evener/serve.go:406`
 
 - [ ] **Step 1: Failing tests.** (a) `SetModel` success emits a model-changed
   session event carrying old + new `provider/model`, the new profile's
@@ -259,11 +259,11 @@ plus `agent/` expansion tests.
 
 ### Task 7: Web — header chip picker, live updates, run-state disable
 
-**Files:** `cmd/serf-hub/templates/partials/workspace.html:71-78`,
-`cmd/serf-hub/assets/appwire.js` (notification map + `setModel`),
+**Files:** `cmd/evener-hub/templates/partials/workspace.html:71-78`,
+`cmd/evener-hub/assets/appwire.js` (notification map + `setModel`),
 `assets/search.js:337` (palette source stays), a picker module (reuse the
 pattern of `assets/settings-pickers.js:250`), `assets/model-display.js`,
-`cmd/serf-hub/jstest/` (new `test-model-switch.js`)
+`cmd/evener-hub/jstest/` (new `test-model-switch.js`)
 
 - [ ] **Step 1: Failing JSDOM tests.** (a) Clicking `[data-model-trigger]`
   opens a picker populated from `model/list` grouped by provider, current
@@ -273,7 +273,7 @@ pattern of `assets/settings-pickers.js:250`), `assets/model-display.js`,
   `[data-model-display]` without a thread re-read and re-keys the cached
   effort levels; (d) while `Status.Type == "active"` / `ActiveTurnID` is set
   (the signal `workspace.html:84-87` already uses — NOT `activeFlags`,
-  which serf daemons never populate) the trigger is disabled and the
+  which evener daemons never populate) the trigger is disabled and the
   palette action refuses with a notice; (e) an AppWire error from the set
   call renders the server message as a notice and leaves the chip
   unchanged; (f) a failed `model/list` fetch renders an error state in the
@@ -285,14 +285,14 @@ pattern of `assets/settings-pickers.js:250`), `assets/model-display.js`,
 - [ ] **Step 3: Implement.** Map the two new notifications in
   `eventsFromNotification`; wire the trigger; respect
   `ThreadCapabilities.ChangeModel`; extend QUALIFYING.
-- [ ] **Step 4: Green.** `NODE_PATH=… node cmd/serf-hub/jstest/test-model-switch.js`
-  plus `sh cmd/serf-hub/jstest/run-all.sh`.
+- [ ] **Step 4: Green.** `NODE_PATH=… node cmd/evener-hub/jstest/test-model-switch.js`
+  plus `sh cmd/evener-hub/jstest/run-all.sh`.
 - [ ] **Step 5: Commit** — `feat(webui): model switching from the header chip`
 
 ### Task 8: Web — per-model effort levels for the live session
 
-**Files:** `cmd/serf-hub/assets/search.js:356-370`, effort control module,
-`cmd/serf-hub/jstest/`
+**Files:** `cmd/evener-hub/assets/search.js:356-370`, effort control module,
+`cmd/evener-hub/jstest/`
 
 - [ ] **Step 1: Failing JSDOM tests.** (a) The live effort picker lists
   exactly the current model's levels, sourced **snapshot-first** (the Task 4
@@ -315,14 +315,14 @@ pattern of `assets/settings-pickers.js:250`), `assets/model-display.js`,
 
 ### Task 9: TUI — `/effort` command, live refresh, notices
 
-**Files:** `cmd/serf-tui/hub_command_registry.go:303-329` (`/model` as the
+**Files:** `cmd/evener-tui/hub_command_registry.go:303-329` (`/model` as the
 template), `hub_commands.go:552-566`, `hub_session_keys.go:90-108`,
 `hub_session_view.go:53`, the notification-apply path
-(`applyHubNotification`), `cmd/serf-tui` tests
+(`applyHubNotification`), `cmd/evener-tui` tests
 
 - [ ] **Step 1: Failing tests.** (a) Registry contains `/effort` gated on
   `c.ChangeModel` (documented reuse — there is NO effort capability on the
-  wire, `cmd/serf-hub/app_rpc.go:550-552`; do not invent one); (b) bare
+  wire, `cmd/evener-hub/app_rpc.go:550-552`; do not invent one); (b) bare
   `/effort` opens a picker of the current model's levels, snapshot-first
   (Task 4 fields mapped through `hub_types.go` `hubDetailFromThread`
   `:205-236`), notification-on-update; `supportsReasoning === false` means
@@ -340,7 +340,7 @@ template), `hub_commands.go:552-566`, `hub_session_keys.go:90-108`,
 - [ ] **Step 2: Verify failure.**
 - [ ] **Step 3: Implement**, reusing `tuipick` primitives; no new UI
   paradigms.
-- [ ] **Step 4: Green.** `go test ./cmd/serf-tui/...`
+- [ ] **Step 4: Green.** `go test ./cmd/evener-tui/...`
 - [ ] **Step 5: Commit** — `feat(tui): /effort command and live model chip`
 
 ### Task 10: Delegate result model echo
@@ -389,22 +389,22 @@ paragraph, `:663-666`)
 
 - [ ] **Step 1:** Author the live card following
   `test/scenarios/reasoning-effort-providers.md`'s conventions exactly: an
-  **isolated `SERF_PROVIDERS_CONFIG`** declaring the instances the ladder
+  **isolated `EVENER_PROVIDERS_CONFIG`** declaring the instances the ladder
   needs (instance NAMES are deployment-local config, not repo facts — the
-  live `~/.serf/providers.toml` on this machine has no `anthropic` instance;
+  live `~/.evener/providers.toml` on this machine has no `anthropic` instance;
   discover/declare names in the card, refs are `instanceName/model`). Ladder:
   one session, tool-using turn on the anthropic instance, switch → openai
   instance → turn → switch → the kimi coding instance → turn, plus one
   anthropic→anthropic model hop (fable-5 → sonnet-5). After each hop assert
   the persisted turn's `response_model` matches the switched model and the
   effort clamps to that model's ladder; assert the persisted markers.
-  Thinking-absence assertion: run with `SERF_LOG_RAW_HTTP=1` and inspect
+  Thinking-absence assertion: run with `EVENER_LOG_RAW_HTTP=1` and inspect
   `sessions/<id>.api-raw.jsonl` request bodies (`llm/apilog.go:176-197` —
   the default api.jsonl records metadata only, NO bodies); the
   deterministic backstop for the same rule is Task 6's unit matrix.
-- [ ] **Step 2:** Run it with `SERF_E2E_LIVE=1`. Record results in the card.
+- [ ] **Step 2:** Run it with `EVENER_E2E_LIVE=1`. Record results in the card.
 - [ ] **Step 3: Full sweep.** `go test ./... -count=1`, `cd
-  cmd/serf-hub/jstest && sh run-all.sh`, `make lint`, `git diff --check`,
+  cmd/evener-hub/jstest && sh run-all.sh`, `make lint`, `git diff --check`,
   `git status --short` (only files named by tasks — as amended during
   implementation — changed).
 - [ ] **Step 4: Commit** — `test(e2e): live model-switch ladder` (plus any

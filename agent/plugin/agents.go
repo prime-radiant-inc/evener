@@ -7,10 +7,10 @@ import (
 	"path/filepath"
 	"strings"
 
-	"primeradiant.com/serf/agent/internal/frontmatter"
-	"primeradiant.com/serf/agent/internal/toolname"
-	"primeradiant.com/serf/agent/task"
-	"primeradiant.com/serf/llm"
+	"primeradiant.com/evener/agent/internal/frontmatter"
+	"primeradiant.com/evener/agent/internal/toolname"
+	"primeradiant.com/evener/agent/task"
+	"primeradiant.com/evener/llm"
 )
 
 // Agent represents a subagent defined by a plugin.
@@ -20,7 +20,7 @@ type Agent struct {
 	Model        string              // "inherit", "sonnet", "opus", "haiku"
 	Color        string              // display color hint from frontmatter
 	AllTools     bool                // when true, the agent may use every tool (Tools is ignored)
-	Tools        []string            // serf canonical names (mapped at load time)
+	Tools        []string            // evener canonical names (mapped at load time)
 	Skills       []string            // skill names to auto-inject at dispatch time
 	Tasks        []task.TaskTemplate // default workflow tasks from YAML
 	SystemPrompt string              // markdown body
@@ -41,7 +41,7 @@ func splitCommaList(s string) []string {
 
 // ParseAgent parses a markdown file with YAML frontmatter into an Agent.
 // Required frontmatter fields: name, description.
-// Optional: model, color, tools (mapped to serf canonical names, or the scalar string "all"), skills (plain strings).
+// Optional: model, color, tools (mapped to evener canonical names, or the scalar string "all"), skills (plain strings).
 func ParseAgent(data []byte, pluginName string) (Agent, error) {
 	doc, err := frontmatter.Parse(string(data))
 	if err != nil {
@@ -115,7 +115,7 @@ func ParseAgent(data []byte, pluginName string) (Agent, error) {
 			case "":
 				// tolerate empty list entries the same way as empty comma segments
 			default:
-				tools = append(tools, toolname.ClaudeToSerf(s))
+				tools = append(tools, toolname.ClaudeToEvener(s))
 			}
 		}
 	}

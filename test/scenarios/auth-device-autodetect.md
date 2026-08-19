@@ -1,44 +1,44 @@
-# auth-device-autodetect: serf openai login auto-picks device vs browser
+# auth-device-autodetect: evener openai login auto-picks device vs browser
 
 **What this covers**: commits `4f93712` (device-code login), `8b7762c`
 (auto-detect). Verifies the `isHeadlessLoginFor` decision table:
-`SERF_LOGIN_HEADLESS` env override, `SSH_CONNECTION`/`SSH_TTY`,
+`EVENER_LOGIN_HEADLESS` env override, `SSH_CONNECTION`/`SSH_TTY`,
 platform defaults, `--device` / `--no-device` explicit flags, and the
 conflicting-flags error path.
 
 ## Pre-state
 
-- Repo built: `./serf` exists.
+- Repo built: `./evener` exists.
 - A clean shell where the test can set / unset env vars (`t.Setenv`
   equivalent: use a subshell or `env -u`).
 
 ## Steps
 
-Each step launches `./serf openai login` with a controlled environment
+Each step launches `./evener openai login` with a controlled environment
 and reads ONLY the first line of stdout (`auth_mode=...`). Use a
 2-second timeout — the command will start the login flow and block;
 we only care about the mode it announces. The device URL will leak a
 fresh device code each run; that's expected and harmless.
 
-1. **SERF_LOGIN_HEADLESS=1 forces device**:
-   `timeout 2 bash -c "SERF_LOGIN_HEADLESS=1 ./serf openai login 2>&1 | head -1"`
+1. **EVENER_LOGIN_HEADLESS=1 forces device**:
+   `timeout 2 bash -c "EVENER_LOGIN_HEADLESS=1 ./evener openai login 2>&1 | head -1"`
    Expect: `auth_mode=device auth_mode_reason=auto_no_display`
-2. **SERF_LOGIN_HEADLESS=0 forces browser**:
-   `timeout 2 bash -c "SERF_LOGIN_HEADLESS=0 ./serf openai login 2>&1 | head -1"`
+2. **EVENER_LOGIN_HEADLESS=0 forces browser**:
+   `timeout 2 bash -c "EVENER_LOGIN_HEADLESS=0 ./evener openai login 2>&1 | head -1"`
    Expect: `auth_mode=browser auth_mode_reason=auto`
 3. **--device explicit**:
-   `timeout 2 bash -c "./serf openai login --device 2>&1 | head -1"`
+   `timeout 2 bash -c "./evener openai login --device 2>&1 | head -1"`
    Expect: `auth_mode=device auth_mode_reason=forced`
 4. **--no-device explicit**:
-   `timeout 2 bash -c "./serf openai login --no-device 2>&1 | head -1"`
+   `timeout 2 bash -c "./evener openai login --no-device 2>&1 | head -1"`
    Expect: `auth_mode=browser auth_mode_reason=forced`
 5. **Conflicting flags**:
-   `./serf openai login --device --no-device; echo EXIT=$?`
-   Expect: stderr `serf openai: conflicting flags: --device and
+   `./evener openai login --device --no-device; echo EXIT=$?`
+   Expect: stderr `evener openai: conflicting flags: --device and
    --no-device cannot both be set`. EXIT=1.
 6. **No env override, default behavior on this box** (Linux,
    typically no `$DISPLAY` over SSH):
-   `timeout 2 bash -c "env -u SERF_LOGIN_HEADLESS ./serf openai login 2>&1 | head -1"`
+   `timeout 2 bash -c "env -u EVENER_LOGIN_HEADLESS ./evener openai login 2>&1 | head -1"`
    On a headless box: `auth_mode=device auth_mode_reason=auto_...`. On a graphical
    Linux: `auth_mode=browser auth_mode_reason=auto`.
 
@@ -59,10 +59,10 @@ fresh device code each run; that's expected and harmless.
 
 ## Sharp edges
 
-- Background `serf openai login` invocations may produce orphaned
+- Background `evener openai login` invocations may produce orphaned
   pollers. The 24p1 fix (concurrent-login detection) and the
   15-minute poll cap mean these self-terminate, but if you're rapid-
-  firing this scenario, check `ps aux | grep 'serf openai login'`
+  firing this scenario, check `ps aux | grep 'evener openai login'`
   and reap.
 - `SSH_CONNECTION`/`SSH_TTY` env vars override headless detection.
   If you're testing locally with these set, your "no env override"
@@ -71,9 +71,9 @@ fresh device code each run; that's expected and harmless.
   your setup. The reason string does **not** distinguish an SSH session
   from a genuinely display-less one — `chooseLoginMode` emits the single
   `auto_no_display` reason for every auto-detected headless case
-  (`cmd/serf/openai_login.go:168-179`), and `isHeadlessLoginFor` folds the
+  (`cmd/evener/openai_login.go:168-179`), and `isHeadlessLoginFor` folds the
   SSH check (`:198`) in alongside the platform/DISPLAY checks
-  (`cmd/serf/openai_login.go:189-211`). Do not expect a distinct
+  (`cmd/evener/openai_login.go:189-211`). Do not expect a distinct
   `auto_ssh` value; none exists.
 - The device flow on macOS would default to browser regardless of
   `$DISPLAY` (because `runtime.GOOS == "darwin"` falls through). The

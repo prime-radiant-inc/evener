@@ -1,6 +1,6 @@
 # LLM Provider Architecture
 
-How serf turns a `provider/model` string into an API call, and the two
+How evener turns a `provider/model` string into an API call, and the two
 identities that hold the system together. This documents the **current**
 implementation (as of 2026-05, after the PRI-1880 *Phase 1a* behavior-tag
 separation, *Phase 1b* config-driven instances, and *Phase 1c*
@@ -84,7 +84,7 @@ shared vocabulary:
   a loaded `providers.toml` and pushed into the client via `SetNameToTag` (below).
 - `Config`/`InstanceConfig` (`:27`/`:18`) + `Load`/`LoadFile` (`load.go:35,113`) —
   the `providers.toml` parser/validator; `DefaultStateRoot()` (`:53`) resolves
-  `~/.serf`. See "Config-driven instances" below.
+  `~/.evener`. See "Config-driven instances" below.
 
 The set of behavior tags is exactly the old set of distinct provider behaviors:
 `openai`, `openai-compatible`, `anthropic`, `google`, `openrouter`,
@@ -96,7 +96,7 @@ The set of behavior tags is exactly the old set of distinct provider behaviors:
 client build goes through the config path — either loading the file when it
 exists, or seeding the config in memory from the environment when it does not.
 The `providers.toml` at `<state-root>/providers.toml` holds **descriptors**,
-which is what lets `name != type` exist. Serf itself never writes credentials
+which is what lets `name != type` exist. Evener itself never writes credentials
 into it (`WriteFile` scrubs struct-held keys and restores only what the
 on-disk file already carried, so hub rewrites preserve — and never invent —
 inline keys); a hand-authored instance MAY
@@ -115,12 +115,12 @@ quirks    = "..."         # optional; selects a quirks preset (openai-compatible
                            # composable `[instances.X.compat]` / `[instances.X.models]` alternative
 # api_key = "$WORK_KEY"  # optional, hand-authored only: literal or $ENV reference;
                           # omitted → credentials store / env resolution as below.
-                          # Serf never writes this field back when rewriting the file.
+                          # Evener never writes this field back when rewriting the file.
 ```
 
 - **Load or seed** — `cmdutil.LoadClient` (`cmdutil/load_client.go:31`):
   - File present → `providerconfig.LoadFile` parses + validates it. A corrupt file
-    fails loudly. The path is `SERF_PROVIDERS_CONFIG`, else
+    fails loudly. The path is `EVENER_PROVIDERS_CONFIG`, else
     `DefaultStateRoot()/providers.toml`.
   - File absent → `cmdutil.seedConfigFromEnv` (`cmdutil/materialize.go:18`) builds
     a descriptors-only `Config` from a `NewFromEnv` detection pass; **nothing is
@@ -129,9 +129,9 @@ quirks    = "..."         # optional; selects a quirks preset (openai-compatible
     (`load_client.go:77`) always uses `ResolveProfileFromConfig`.
 - **Hub materialization** — `cmdutil.MaterializeProvidersConfig`
   (`cmdutil/materialize.go:54`) seeds and **atomically writes** `providers.toml`
-  (temp-file + rename, mode `0644`). The hub (`cmd/serf-hub/main.go:120–131`)
+  (temp-file + rename, mode `0644`). The hub (`cmd/evener-hub/main.go:120–131`)
   calls this once on startup when the file is absent, then passes the path to
-  spawned children via `SERF_PROVIDERS_CONFIG` so they load the same file instead
+  spawned children via `EVENER_PROVIDERS_CONFIG` so they load the same file instead
   of re-seeding. A failed write is a hard error.
 - **Descriptors-only seeding** — `providerconfig.Seed` builds env-derived
   instances without credentials, and `WriteFile`'s scrub/restore means the
@@ -225,7 +225,7 @@ Every field is optional; unset means "inherit from the layer below"
 | TOML key | Type | Meaning |
 |---|---|---|
 | `thinking_format` | string | wire dialect for reasoning; see the table below |
-| `supports_strict_mode` | bool | when **explicitly true**, add `strict: false` inside every tool's `function` object; `nil`/`false` sends no `strict` field (serf's default — see the Pi divergence note below) |
+| `supports_strict_mode` | bool | when **explicitly true**, add `strict: false` inside every tool's `function` object; `nil`/`false` sends no `strict` field (evener's default — see the Pi divergence note below) |
 | `chat_template_kwargs` | table (scalars) | emitted verbatim as the request's `chat_template_kwargs` when `thinking_format = "chat-template"` and an effort is set; replaces wholesale on overlay (like `finish_reason_map`) |
 | `supports_reasoning_effort` | bool | gate the `reasoning_effort` field for formats that treat it as optional (openai/deepseek/together); default follows the format (see below) |
 | `max_tokens_field` | string | `"max_tokens"` (default) or `"max_completion_tokens"` |
@@ -241,12 +241,12 @@ Every field is optional; unset means "inherit from the layer below"
 | `supports_long_cache_retention` | bool | when true, emit `prompt_cache_key` + `prompt_cache_retention: "24h"` (and, with `cache_control_format = "anthropic"`, add `ttl: "1h"` to the ephemeral markers) — see "Prompt caching through gateways" below |
 | `send_session_affinity_headers` | bool | when true and the request carries a session id, send the `session_id` / `x-client-request-id` / `x-session-affinity` request headers so a gateway can pin a conversation's turns to one backend/cache |
 | `lock_temperature` / `lock_top_p` / `lock_frequency_penalty` / `lock_presence_penalty` | bool | drop that sampling param from the request |
-| `tool_choice_auto_only` | bool | downgrade any non-`auto`/`none` `tool_choice` a caller sends down to `auto` — a gateway-side backstop; serf's own agent layer never sends a forcing `tool_choice` in the first place, see [Tool choice: serf never forces it](#tool-choice-serf-never-forces-it) |
+| `tool_choice_auto_only` | bool | downgrade any non-`auto`/`none` `tool_choice` a caller sends down to `auto` — a gateway-side backstop; evener's own agent layer never sends a forcing `tool_choice` in the first place, see [Tool choice: evener never forces it](#tool-choice-evener-never-forces-it) |
 | `max_stop_sequences` | int (≥0) | truncate the `stop` array to this length |
 | `strip_empty_content` | bool | drop empty-text content parts before sending |
 | `no_json_schema` | bool | downgrade `response_format: json_schema` to `json_object` |
 | `finish_reason_map` | table of string→string | remap raw finish reasons (replaces wholesale, not merged) |
-| `translate_max_to_xhigh` | bool | map serf's `max` wire value to `xhigh` when no `thinking_levels` map applies (OpenRouter vocabulary) |
+| `translate_max_to_xhigh` | bool | map evener's `max` wire value to `xhigh` when no `thinking_levels` map applies (OpenRouter vocabulary) |
 
 `thinking_format`, `max_tokens_field`, and `cache_control_format` are
 validated at load (`load.go:101-116`): an unrecognized value is a hard config
@@ -254,7 +254,7 @@ error, not a silent no-op.
 
 ### Prompt caching through gateways
 
-serf sets `req.SessionID` on every request and derives a stable prompt cache
+evener sets `req.SessionID` on every request and derives a stable prompt cache
 key from it. On the native OpenAI Responses path the session emits
 `prompt_cache_key` + `prompt_cache_retention` itself; the openai-compat path
 stays silent unless you opt in, because a gateway that doesn't know these fields
@@ -263,7 +263,7 @@ that does:
 
 - **`supports_long_cache_retention`** — emits `prompt_cache_key` +
   `prompt_cache_retention: "24h"` on the request. The key is `req.PromptCacheKey`
-  when set, else `"serf-session-" + req.SessionID` — the exact convention the
+  when set, else `"evener-session-" + req.SessionID` — the exact convention the
   session uses on the openai path, so a request routed either way caches on the
   same key. When there is no key material (no explicit key and no session id),
   neither field is emitted.
@@ -290,26 +290,26 @@ similar). Leave them off for a bare model server that would reject the fields.
 | `context_window` | overlays the catalog's context window for this model (must be ≥0) |
 | `max_output_tokens` | sent as the output cap when a request doesn't set one (`ModelCompat.DefaultMaxTokens`, `compat.go:20`) |
 | `reasoning` | `true`/`false` — declares whether the model accepts a reasoning-effort control at all; `false` clears the profile's effort levels entirely (`agent/provider/profile.go:1130-1135`) |
-| `thinking_levels` | map of serf effort level → wire string (see below) |
+| `thinking_levels` | map of evener effort level → wire string (see below) |
 | `compat` | per-model `CompatConfig`, overlays the instance's |
 
 ### `thinking_levels` semantics
 
 - **The map, when present, is complete authority.** The model's supported
-  effort ladder is exactly its keys, in serf rank order — that feeds
+  effort ladder is exactly its keys, in evener rank order — that feeds
   `ReasoningEffortLevels()`, the session clamp, the spawn-form effort chip, and
   the `task_list` tool's effort enum (`agent/provider/profile.go:1136-1137`,
   `orderedEffortLevels` at `:1183`). A level absent from the map is
   unsupported and gets clamped away by `llm.ClampReasoningEffort`
   (`llm/types.go:587`) before it ever reaches the adapter.
-- **Keys** are serf's canonical levels — `minimal`, `low`, `medium`, `high`,
+- **Keys** are evener's canonical levels — `minimal`, `low`, `medium`, `high`,
   `xhigh` — normalized lowercase at load; `max` is accepted as an input alias
-  and folded into `xhigh` (serf's rank table treats them as one tier).
-  `"off"` is rejected at load — serf's `none` effort clears the setting to the
+  and folded into `xhigh` (evener's rank table treats them as one tier).
+  `"off"` is rejected at load — evener's `none` effort clears the setting to the
   provider default rather than forcing an explicit disable, so there's no slot
   for an explicit "off" wire value (`llm/providercfg/load.go:149-152`).
 - **Values** are the literal wire strings sent to the provider — they need not
-  match serf's vocabulary (the lunaroute example below maps every level to
+  match evener's vocabulary (the lunaroute example below maps every level to
   `"high"` except the top tier).
 - **No map declared** → the model's effort passes through by name (today's
   backward-compatible default) and the `translate_max_to_xhigh` quirk (if set)
@@ -322,7 +322,7 @@ similar). Leave them off for a bare model server that would reject the fields.
 `applyThinkingFormat` (`llm/providers/openaicompat/request.go:141-179`) runs
 after the session's clamp and the `thinking_levels` translation. **When no
 reasoning effort is set on the request, nothing is emitted for any format** —
-serf's `none` clears the setting to the provider default rather than forcing
+evener's `none` clears the setting to the provider default rather than forcing
 an explicit disable (`request.go:147-149`). The table below is what's sent
 once an effort **is** set (`wire` = the post-clamp, post-`thinking_levels`
 value):
@@ -340,16 +340,16 @@ value):
 | `"string-thinking"` | `thinking: <wire>` (the effort string is the field's value, not an object) — unconditional |
 
 `clear_thinking: false` on the `zai` format keeps z.ai from pruning prior-turn
-reasoning server-side; serf manages thinking replay itself.
+reasoning server-side; evener manages thinking replay itself.
 
 **Divergences from Pi** (`applyThinkingFormat`,
 `llm/providers/openaicompat/request.go:152`): Pi's `convertTools` always sends
 `strict: false` and its `qwen-chat-template` always sends `enable_thinking`
-(`false` when reasoning is off). serf deliberately does neither by default —
-`supports_strict_mode` is opt-in (flipping the wire shape of every existing serf
-request is not worth the risk), and serf's `none`-clears convention means the
+(`false` when reasoning is off). evener deliberately does neither by default —
+`supports_strict_mode` is opt-in (flipping the wire shape of every existing evener
+request is not worth the risk), and evener's `none`-clears convention means the
 `qwen-chat-template`/`chat-template` bodies are emitted **only** when an effort
-is set (nothing otherwise). serf also skips Pi's per-value `$var` indirection in
+is set (nothing otherwise). evener also skips Pi's per-value `$var` indirection in
 `chat_template_kwargs` (YAGNI) — the table is sent verbatim.
 
 The built-in `glm` type's `QuirksPreset("glm-5")`
@@ -362,8 +362,8 @@ incremental tool-call argument streaming.
 ### Stock catalog defaults for z.ai GLM & DeepSeek v4 (zero config)
 
 Current z.ai GLM and DeepSeek v4 models ship their effort ladders, context
-windows, and output caps in the Serf catalog overrides
-(`llm/data/serf_model_catalog_overrides.json`), so a plain `type = "glm"` (or a
+windows, and output caps in the Evener catalog overrides
+(`llm/data/evener_model_catalog_overrides.json`), so a plain `type = "glm"` (or a
 DeepSeek openai-compat instance) gets the right shape with **no
 `[instances.X.models]` entry at all**. Two things flow from the catalog when a
 model has no instance entry:
@@ -434,7 +434,7 @@ cross-provider transcript) falls back to `reasoning_content`.
   reach the 0644 file) and each instance's key is restored from whatever the
   existing file already carried. So hub rewrites (edit/set-default/remove)
   PRESERVE a hand-authored `api_key` — literal or `$ENV` reference — and
-  serf itself never introduces one the user didn't write.
+  evener itself never introduces one the user didn't write.
 
 ### Instance request headers (all types)
 
@@ -509,7 +509,7 @@ tool_stream               = true
 ```
 
 This is `type = "openai"` with `api_style = "chat-completions"` — a plain
-gateway, not serf's `glm` type — so it routes through the openai-compat
+gateway, not evener's `glm` type — so it routes through the openai-compat
 adapter (`providercfg.CompatFamily`) but starts from the empty
 `ProviderQuirks{}`, not the `glm-5` preset; every wire behavior here comes
 from the `compat` table. `glm-5.2-nvfp4` gets a 1M-token context window and a
@@ -574,11 +574,11 @@ name.
 
 Pre-1a, `WithModel` rebuilt a fresh profile via a hardcoded vendor switch. Now
 the **session** owns cross-provider/instance switching, via a resolver injected
-at construction (cycle-free: `cmd/serf` builds the closure; `agent` just holds
+at construction (cycle-free: `cmd/evener` builds the closure; `agent` just holds
 the field):
 
 - `SessionConfig.ResolveProfile func(ref) (ProviderProfile, error)`
-  (`session.go:201`), wired in `cmd/serf/serve.go` + `run.go` to
+  (`session.go:201`), wired in `cmd/evener/serve.go` + `run.go` to
   `cmdutil.SelectProfile`.
 - `Session.resolveProfileForRef(ref)` (`session.go:1283`): if `decidePrefixAction`
   classifies the ref as a cross-provider switch **and** a resolver is set → call
@@ -665,7 +665,7 @@ instances now try `/responses` first and fall back to `/chat/completions` on
 endpoint/model mismatch; explicit `api_style="chat-completions"` remains forced
 Chat Completions.
 
-### Tool choice: serf never forces it
+### Tool choice: evener never forces it
 
 `Session.buildModelRequest` (`agent/session_model_call.go`) sends
 `ToolChoice: &llm.ToolChoice{Mode: "auto"}` on every main model call, and
@@ -674,7 +674,7 @@ regression-guarded, not an oversight the two adapter-side knobs above happen
 to compensate for.
 
 **Why.** A model that cannot honor a forcing `tool_choice` has no legal way
-to stop, and serf targets arbitrary models on arbitrary gateways where that
+to stop, and evener targets arbitrary models on arbitrary gateways where that
 capability is not knowable in advance. Measured against glm-5.2-vision (full
 system prompt, interleaved arms in one window): `auto` finished cleanly 3/3,
 one tool call, under 15s. `required` never terminated 3/3, emitting
@@ -717,7 +717,7 @@ original problem stopped mattering.
 
 One per-session knob ordered `minimal < low < medium < high < xhigh == max`
 (`xhigh` and `max` are aliases for the top tier — OpenRouter/OpenAI advertise
-`xhigh`, Anthropic and the serf catalog say `max`; `none` clears it). The
+`xhigh`, Anthropic and the evener catalog say `max`; `none` clears it). The
 vocabulary and its helpers — `ClampReasoningEffort`, `NormalizeReasoningEffort`,
 `ReasoningEffortRank`, `ReasoningBudget` — live in `llm/types.go`.
 
@@ -737,10 +737,10 @@ sonnet-4-6) send `output_config.effort`; legacy models (opus-4-5, kimi-for-codin
 map the effort to a `thinking.budget_tokens` via `llm.ReasoningBudget`. When
 thinking is enabled the Anthropic builder downgrades any non-`auto` `tool_choice`
 it is given to `auto` and keeps `max_tokens` above the thinking budget (Anthropic
-rejects both otherwise) — a defensive backstop, since serf's agent layer only
-ever sends `auto` (see [Tool choice: serf never forces it](#tool-choice-serf-never-forces-it)).
+rejects both otherwise) — a defensive backstop, since evener's agent layer only
+ever sends `auto` (see [Tool choice: evener never forces it](#tool-choice-evener-never-forces-it)).
 
-**Setting it.** Launch: `--reasoning-effort`, `SERF_REASONING_EFFORT`,
+**Setting it.** Launch: `--reasoning-effort`, `EVENER_REASONING_EFFORT`,
 `reasoning_effort` in `launch.toml`, or the spawn-form effort chip (per-model
 levels). Runtime: the `/effort` command (TUI) or the web `⌘K` "Set reasoning
 effort" command → the `thread/reasoning-effort/set` appwire method →
@@ -767,7 +767,7 @@ provider/model>`, surviving reload and daemon restart.
   in a subprocess (companion doc).
 - `resp.Provider` + error labels — stamped centrally to the instance name.
 - Resume: session meta persists `ProfileID`; the hub now **passes it through**
-  (`resumeRequestForConfig`, `cmd/serf-hub/app_rpc.go`) and errors on empty —
+  (`resumeRequestForConfig`, `cmd/evener-hub/app_rpc.go`) and errors on empty —
   the old hardcoded allowlist was removed (downstream `SelectProfile` validates).
 
 **Behavior (the TAG — `profile.BehaviorTag()`):**
@@ -784,7 +784,7 @@ provider/model>`, surviving reload and daemon restart.
   error's `BehaviorTag()` (falls back to `Provider()` when the tag is empty).
 - Provider-failure diagnostics classify on the structured `llm.Error` (provider +
   tag), not a hardcoded name list (`agent/diagnostic`,
-  `cmd/serf-hub/frontend/src/panes/session/transcript/turnFailure.ts`).
+  `cmd/evener-hub/frontend/src/panes/session/transcript/turnFailure.ts`).
 
 ## Phase 1a, 1b & 1c done / Phase 2 next
 
@@ -799,7 +799,7 @@ full-tree sweep.
 `SetNameToTag` wired from the config, per-instance OAuth (companion doc), the
 `openai` `apiStyle` recipe + custom base-URL instances + the `openai-compatible`
 fold-in, config-aware launch-check/serve, and the picker/launch **behavior**
-filters re-keyed off the tag (`launch_check.go:146`, `cmd/serf-hub/web.go:2035`,
+filters re-keyed off the tag (`launch_check.go:146`, `cmd/evener-hub/web.go:2035`,
 `app_rpc.go launchProviderAllowsUnreportedModels:1543`). The design lives in
 [`docs/superpowers/specs/2026-05-29-provider-type-instance-model-design.md`](superpowers/specs/2026-05-29-provider-type-instance-model-design.md).
 
@@ -813,7 +813,7 @@ design lives in
 
 **Phase 2 (next, terminal — no Phase 3):** one provider/instance **CRUD UI**
 replacing the duplicate Providers + Credentials screens — **in both the web hub
-and `serf-tui`** — with the model picker routing/displaying by instance name.
+and `evener-tui`** — with the model picker routing/displaying by instance name.
 Until then those settings screens stay type-based.
 
 ## Adding or changing a provider
@@ -830,8 +830,8 @@ Until then those settings screens stay type-based.
 
 - [`llm-provider-config-and-launch.md`](llm-provider-config-and-launch.md) —
   credentials store, provider env-var reference, OpenAI OAuth, and the hub →
-  `launch-check` → `serf serve` process model.
-- [`ollama.md`](ollama.md) — running serf against a local Ollama server.
+  `launch-check` → `evener serve` process model.
+- [`ollama.md`](ollama.md) — running evener against a local Ollama server.
 - [`superpowers/specs/2026-05-29-provider-type-instance-model-design.md`](superpowers/specs/2026-05-29-provider-type-instance-model-design.md)
   — the type/instance design (Phase 1a, 1b & 1c implemented; Phase 2 pending).
 - [`superpowers/specs/2026-05-29-provider-instances-phase-1c-all-config.md`](superpowers/specs/2026-05-29-provider-instances-phase-1c-all-config.md)

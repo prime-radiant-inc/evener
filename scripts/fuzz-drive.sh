@@ -2,10 +2,10 @@
 # fuzz-drive.sh — Plan 12 Phase A driver: generate REAL provider traffic and
 # harvest it into the fuzz seed corpus.
 #
-# It runs a corpus of varied coding tasks through the real `serf` one-shot CLI
+# It runs a corpus of varied coding tasks through the real `evener` one-shot CLI
 # against each configured provider, with the fuzz-corpus recorders on
-# (SERF_FUZZ_RECORD=1) and a shared staging state dir, then runs
-# serf-fuzz-harvest over that state dir to emit shape-scrubbed, gitleaks-gated
+# (EVENER_FUZZ_RECORD=1) and a shared staging state dir, then runs
+# evener-fuzz-harvest over that state dir to emit shape-scrubbed, gitleaks-gated
 # seeds. Real inputs reach decoder/tool states that random generation never will.
 #
 # Each task runs in its own throwaway working directory (so the agent's file ops
@@ -26,8 +26,8 @@
 #   --tasks-dir DIR        directory of prompt files, one task per file
 #                          (default: fuzz/drive-tasks)
 #   --runs N               cap total runs (default: every task x every provider)
-#   --max-rounds N         per-run tool-round cap passed to serf (default: 30)
-#   --effort LEVEL         reasoning effort passed to serf (default: low)
+#   --max-rounds N         per-run tool-round cap passed to evener (default: 30)
+#   --effort LEVEL         reasoning effort passed to evener (default: low)
 #   --per-task-timeout DUR wall-clock cap per run, `timeout` syntax (default: 180s)
 #   --retries N            transient-failure (rate-limit) retries per run (default: 4)
 #   --state-dir DIR        shared recording staging dir (default: a fresh mktemp)
@@ -38,10 +38,10 @@
 #   -h, --help             this help
 #
 # Binary overrides (advanced use):
-#   SERF_FUZZ_SERF_BIN     serf binary       (default: built from ./cmd/serf)
-#   SERF_FUZZ_HARVEST_BIN  harvester binary  (default: go run ./cmd/serf-fuzz-harvest)
-#   SERF_FUZZ_GH           gh binary         (default: gh)
-#   SERF_FUZZ_DRIVE_TIMEOUT timeout wrapper   (default: timeout)
+#   EVENER_FUZZ_EVENER_BIN     evener binary       (default: built from ./cmd/evener)
+#   EVENER_FUZZ_HARVEST_BIN  harvester binary  (default: go run ./cmd/evener-fuzz-harvest)
+#   EVENER_FUZZ_GH           gh binary         (default: gh)
+#   EVENER_FUZZ_DRIVE_TIMEOUT timeout wrapper   (default: timeout)
 #
 # No selftest: the old one drove this script with a stubbed toolchain, and
 # fake-toolchain selftests are banned (docs/testing.md). This header is the
@@ -51,7 +51,7 @@ set -uo pipefail
 repo_root="$(cd "$(dirname "$0")/.." && pwd)"
 
 providers_default="kimi-anthropic/kimi-for-coding openai/gpt-5.4-mini"
-providers="${SERF_FUZZ_DRIVE_PROVIDERS:-$providers_default}"
+providers="${EVENER_FUZZ_DRIVE_PROVIDERS:-$providers_default}"
 tasks_dir="$repo_root/fuzz/drive-tasks"
 runs_cap=0
 max_rounds=30
@@ -85,12 +85,12 @@ done
 # Normalize commas to spaces so --providers accepts either separator.
 providers="${providers//,/ }"
 
-serf_bin="${SERF_FUZZ_SERF_BIN:-}"
-harvest_bin="${SERF_FUZZ_HARVEST_BIN:-}"
-gh="${SERF_FUZZ_GH:-gh}"
+evener_bin="${EVENER_FUZZ_EVENER_BIN:-}"
+harvest_bin="${EVENER_FUZZ_HARVEST_BIN:-}"
+gh="${EVENER_FUZZ_GH:-gh}"
 # Backoff sleep is a seam so the self-test can make retries instant.
-sleep_cmd="${SERF_FUZZ_DRIVE_SLEEP:-sleep}"
-timeout_cmd="${SERF_FUZZ_DRIVE_TIMEOUT:-timeout}"
+sleep_cmd="${EVENER_FUZZ_DRIVE_SLEEP:-sleep}"
+timeout_cmd="${EVENER_FUZZ_DRIVE_TIMEOUT:-timeout}"
 
 # --- staging dirs ------------------------------------------------------------
 if [ -z "$state_dir" ]; then
@@ -105,11 +105,11 @@ while IFS= read -r task_path; do
 done < <(find "$tasks_dir" -maxdepth 1 -type f \( -name '*.txt' -o -name '*.md' \) | sort)
 [ "${#tasks[@]}" -gt 0 ] || die "no task files (*.txt/*.md) in $tasks_dir"
 
-# Build serf once if not provided, so every run uses current code.
-if [ -z "$serf_bin" ]; then
-	serf_bin="$state_dir/serf"
-	note "building serf -> $serf_bin"
-	( cd "$repo_root" && go build -o "$serf_bin" ./cmd/serf ) || die "go build ./cmd/serf failed"
+# Build evener once if not provided, so every run uses current code.
+if [ -z "$evener_bin" ]; then
+	evener_bin="$state_dir/evener"
+	note "building evener -> $evener_bin"
+	( cd "$repo_root" && go build -o "$evener_bin" ./cmd/evener ) || die "go build ./cmd/evener failed"
 fi
 
 # --- the drive loop ----------------------------------------------------------
@@ -145,8 +145,8 @@ for pm in $providers; do
 		attempt=0 run_ok=0
 		while :; do
 			err="$work/run.$attempt.err"
-			( cd "$work" && SERF_FUZZ_RECORD=1 SERF_STATE_DIR="$state_dir" \
-				"$timeout_cmd" "$per_task_timeout" "$serf_bin" \
+			( cd "$work" && EVENER_FUZZ_RECORD=1 EVENER_STATE_DIR="$state_dir" \
+				"$timeout_cmd" "$per_task_timeout" "$evener_bin" \
 					--model "$pm" --max-rounds "$max_rounds" \
 					--reasoning-effort "$effort" --verbose "$task" \
 					>"$work/run.$attempt.out" 2>"$err" )
@@ -207,7 +207,7 @@ harvest_log="$state_dir/harvest.log"
 if [ -n "$harvest_bin" ]; then
 	harvest_cmd=("$harvest_bin")
 else
-	harvest_cmd=(go run ./cmd/serf-fuzz-harvest)
+	harvest_cmd=(go run ./cmd/evener-fuzz-harvest)
 fi
 if ! ( cd "$repo_root" && "${harvest_cmd[@]}" \
 		--state-dir "$state_dir" --out-root "$repo_root" --log "$harvest_log" ); then
@@ -235,7 +235,7 @@ branch="fuzz/drive-corpus-$(cd "$repo_root" && git rev-parse --short HEAD)"
 
 ${#new_seeds[@]} shape-scrubbed seed(s) from live provider traffic across:
 $providers
-Gitleaks-gated by serf-fuzz-harvest. Generated by scripts/fuzz-drive.sh." )
+Gitleaks-gated by evener-fuzz-harvest. Generated by scripts/fuzz-drive.sh." )
 
 if [ "$do_pr" -eq 0 ]; then
 	note "staged ${#new_seeds[@]} seed(s) on branch $branch (inspect-first; pass --pr to push + open a PR)"

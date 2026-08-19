@@ -94,7 +94,7 @@ func (s *clientMutationStore) queueHeld() bool {
 Run: `go test ./agent/ -run TestQueueHeldIsReadableWithoutCloningTheSnapshot -count=1`
 Expected: PASS.
 
-- [ ] **Step 5: Update serf-doctor's mirror of this schema**
+- [ ] **Step 5: Update evener-doctor's mirror of this schema**
 
 `agent/doctor/mutations.go` decodes the snapshot with unknown-field rejection, so this will otherwise fail `TestClientMutationSnapshotStaysReadableByTheDoctor`. Add to `clientMutationStoreFile` after `InputQueue`:
 
@@ -564,7 +564,7 @@ git commit -m "feat(agent): a user-initiated run releases the parked queue"
 ### Task 5: Prove it end to end, and prove the tests are not vacuous
 
 **Files:**
-- Modify: `cmd/serf-hub/e2e_control_invariant_test.go` (the tail of `TestE2E_ControlInvariantDuringPreTurnWorkAtATurnBoundary`, currently asserting delivery in both directions)
+- Modify: `cmd/evener-hub/e2e_control_invariant_test.go` (the tail of `TestE2E_ControlInvariantDuringPreTurnWorkAtATurnBoundary`, currently asserting delivery in both directions)
 
 - [ ] **Step 1: Flip the boundary e2e to the parked contract**
 
@@ -594,14 +594,14 @@ The span to replace runs from the `// MEASURED, and it is the state of play rath
 		t.Fatalf("a model round followed the Stop (carries the queued text: %v): a restart rail is still open", carries)
 	}
 	awaitThread(ctx, t, client, ref, "the stopped session to settle with its message parked", func(thread appwire.Thread) bool {
-		return thread.Status.Type != string(appwire.ThreadStatusActive) && thread.Serf.Queue.Depth == 1
+		return thread.Status.Type != string(appwire.ThreadStatusActive) && thread.Evener.Queue.Depth == 1
 	})
 	t.Logf("the Stop cancelled its turn and parked the queued message (wms7)")
 ```
 
 - [ ] **Step 2: Run the four live control e2es**
 
-Run: `go test ./cmd/serf-hub/ -run 'TestE2E_ControlInvariant|TestE2E_StopIsOffered|TestE2E_PushedActive' -count=1 -v`
+Run: `go test ./cmd/evener-hub/ -run 'TestE2E_ControlInvariant|TestE2E_StopIsOffered|TestE2E_PushedActive' -count=1 -v`
 Expected: all four PASS. If the boundary one still sees a model round, a third rail exists — measure it before changing anything, the way the two known rails were found.
 
 - [ ] **Step 3: Mutation-test every new assertion**
@@ -619,7 +619,7 @@ Expected: green, except `TestForkedDescendantIsReaped` (kata `q0gj`, pre-existin
 - [ ] **Step 5: Commit and update the kata**
 
 ```bash
-git add cmd/serf-hub/e2e_control_invariant_test.go
+git add cmd/evener-hub/e2e_control_invariant_test.go
 git commit -m "test(turn-control): the boundary Stop parks its message end to end"
 ```
 

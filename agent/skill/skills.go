@@ -6,8 +6,8 @@ import (
 	"path/filepath"
 	"strings"
 
-	"primeradiant.com/serf/agent/execenv"
-	"primeradiant.com/serf/agent/internal/frontmatter"
+	"primeradiant.com/evener/agent/execenv"
+	"primeradiant.com/evener/agent/internal/frontmatter"
 )
 
 // SkillMeta holds discovery-time metadata for a single skill.

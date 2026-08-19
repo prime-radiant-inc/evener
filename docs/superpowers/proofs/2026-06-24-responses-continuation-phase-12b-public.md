@@ -55,14 +55,14 @@ That artifact records:
 ## Evidence
 
 ```sh
-GOCACHE=/tmp/serf-gocache go test ./llm ./agent -run 'TestDefaultResponsesContinuationSupportRegistry|TestDecideResponsesContinuation|TestSession_OpenAIResponsesContinuationPhase9|TestSession_OpenAIResponsesContinuationPhase10' -count=1 -v
+GOCACHE=/tmp/evener-gocache go test ./llm ./agent -run 'TestDefaultResponsesContinuationSupportRegistry|TestDecideResponsesContinuation|TestSession_OpenAIResponsesContinuationPhase9|TestSession_OpenAIResponsesContinuationPhase10' -count=1 -v
 ```
 
 Result:
 
 ```text
-ok  	primeradiant.com/serf/llm	0.328s
-ok  	primeradiant.com/serf/agent	1.567s
+ok  	primeradiant.com/evener/llm	0.328s
+ok  	primeradiant.com/evener/agent	1.567s
 ```
 
 ## Contracts Proven

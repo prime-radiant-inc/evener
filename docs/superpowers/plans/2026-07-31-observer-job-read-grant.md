@@ -54,8 +54,8 @@ premise correction.
 - `agent/` is its own module. Run tests from `agent/`, e.g.
   `cd agent && go test -count=1 -run TestX ./`.
 - Targeted runs only. `make lint` at the end covers all seven modules.
-- `//go:build serffuzz` files are not linted by `make lint` but must keep
-  compiling: verify with `cd agent && go vet -tags serffuzz ./...`.
+- `//go:build evenerfuzz` files are not linted by `make lint` but must keep
+  compiling: verify with `cd agent && go vet -tags evenerfuzz ./...`.
 - `docs/job-control.md` and `test/scenarios/` are **out of scope** — kata fd8n
   sweeps them. The spec doc may gain a short "implemented" status line.
 - Comments say WHAT and WHY, never what changed.
@@ -92,7 +92,7 @@ production caller. Deleting it also removes the one path that could grant on a
 
 Delete `mintWatchCreateReadGrant` and its call site, then:
 
-Run: `cd agent && go build ./... && go vet ./... && go vet -tags serffuzz ./...`
+Run: `cd agent && go build ./... && go vet ./... && go vet -tags evenerfuzz ./...`
 Expected: FAIL, naming exactly the three test call sites above. (This is the
 completeness net — `docs/conventions/go-workspace.md` records why grep is not.)
 
@@ -111,7 +111,7 @@ completeness net — `docs/conventions/go-workspace.md` records why grep is not.
 
 - [ ] **Step 3: Verify**
 
-Run: `cd agent && go build ./... && go vet ./... && go vet -tags serffuzz ./...`
+Run: `cd agent && go build ./... && go vet ./... && go vet -tags evenerfuzz ./...`
 Expected: PASS
 
 - [ ] **Step 4: Commit**
@@ -269,7 +269,7 @@ As specified above.
 Run: `cd agent && go test -count=1 -run 'TestJobNotificationDeliveryMints|TestNonJobEventDeliveryMints|TestWatchSendGrantSkipsReceiverOwn|TestJobNotificationFrameNames|TestTerminalCatchupSendMints|TestGrantSurvives|TestGrantedRead|TestNonGrantedRead|TestWatchPerFireGrantAppendFailure' ./`
 Expected: PASS
 
-Run: `cd agent && go vet -tags serffuzz ./...`
+Run: `cd agent && go vet -tags evenerfuzz ./...`
 Expected: PASS
 
 - [ ] **Step 6: Commit**
@@ -390,7 +390,7 @@ Expected: PASS
 Run: `cd agent && go test -count=1 -run 'TestGrantedRead|TestNonGrantedRead|TestGrantSurvives|TestJobReadOutput|TestReadJobTranscript|TestJobTranscript' ./`
 Expected: PASS (the extraction must not move `job_read_output`'s behaviour)
 
-Run: `cd agent && go vet ./... && go vet -tags serffuzz ./...`
+Run: `cd agent && go vet ./... && go vet -tags evenerfuzz ./...`
 Expected: PASS
 
 - [ ] **Step 5: Commit**
@@ -531,7 +531,7 @@ Run: `make lint`
 Expected: PASS (7 modules; the only thing that catches a break in a sibling
 module — `agent/` alone does not).
 
-Run: `cd agent && go vet -tags serffuzz ./...`
+Run: `cd agent && go vet -tags evenerfuzz ./...`
 Expected: PASS
 
 - [ ] **Step 2: Add the spec status line**

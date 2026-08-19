@@ -1,4 +1,4 @@
-//go:build serffuzz && linux
+//go:build evenerfuzz && linux
 
 package execenv
 
@@ -13,7 +13,7 @@ import (
 	"time"
 
 	"golang.org/x/sys/unix"
-	"primeradiant.com/serf/agent/sandbox"
+	"primeradiant.com/evener/agent/sandbox"
 )
 
 // FuzzRuntimeBoundaryEdges drives deterministic error paths at the process,
@@ -43,7 +43,7 @@ func FuzzRuntimeBoundaryEdges(f *testing.F) {
 		_ = shellCommand("exit 0").Args
 		shellStat = originalShellStat
 		execCommandContext = func(context.Context, string, ...string) *exec.Cmd {
-			return exec.Command("/definitely/missing/serf-fuzz-os-probe")
+			return exec.Command("/definitely/missing/evener-fuzz-os-probe")
 		}
 		for _, goos := range []string{"linux", "darwin", "windows", "plan9"} {
 			runtimeGOOS = goos

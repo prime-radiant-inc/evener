@@ -7,11 +7,11 @@ import (
 	"strings"
 	"time"
 
-	"primeradiant.com/serf/agent/internal/delegatestore"
-	"primeradiant.com/serf/agent/internal/jobstore"
-	"primeradiant.com/serf/agent/schema"
-	"primeradiant.com/serf/appwire"
-	"primeradiant.com/serf/internal/apptranscript"
+	"primeradiant.com/evener/agent/internal/delegatestore"
+	"primeradiant.com/evener/agent/internal/jobstore"
+	"primeradiant.com/evener/agent/schema"
+	"primeradiant.com/evener/appwire"
+	"primeradiant.com/evener/internal/apptranscript"
 )
 
 // activityUsageCache memoizes per-transcript cumulative usage totals (keyed by
@@ -23,7 +23,7 @@ var activityUsageCache = apptranscript.NewTurnCache()
 // transcript. nil (not zero) when the transcript carries no usage, so the wire
 // omits the field and the UI hides the token cluster rather than rendering
 // ↑0 ↓0.
-func historicalActivityUsage(stateDir, sessionID string, meta schema.SessionMeta) *appwire.SerfUsage {
+func historicalActivityUsage(stateDir, sessionID string, meta schema.SessionMeta) *appwire.EvenerUsage {
 	path := filepath.Join(stateDir, sessionsSubdir, sessionID+".transcript.jsonl")
 	total, err := activityUsageCache.UsageTotalFromFile(path, transcriptJSONLMaxLineBytes, meta.DivergenceTurn)
 	if err != nil {

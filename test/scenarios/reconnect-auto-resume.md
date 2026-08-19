@@ -4,7 +4,7 @@
 (`d2b5102`), `ws5f` (`d02d386`), `xcas` (`aecf225`). When the daemon
 backing a session has died but the session is still navigable, the
 hub should silently spawn a fresh daemon via `hubThreadResume`
-(`cmd/serf-hub/app_threadlifecycle.go#hubThreadResume`) and replay the user's turn. This
+(`cmd/evener-hub/app_threadlifecycle.go#hubThreadResume`) and replay the user's turn. This
 is the "server-side Layer 3" of the mggf design; the UI `Reconnect & retry`
 button uses the SAME path.
 
@@ -19,10 +19,10 @@ placeholder is not a stable hook at all — see step 6.
 
 ## Pre-state
 
-- An isolated hub built from the branch under test, running with `-serf` set
+- An isolated hub built from the branch under test, running with `-evener` set
   so it can spawn fresh daemons — the scratch `$HOME` and kernel-assigned
   port from the Setup checklist in `docs/agentic-testing.md`, never Jesse's
-  real hub. Every `~/.serf/run` path below is that isolated home's
+  real hub. Every `~/.evener/run` path below is that isolated home's
   rendezvous dir (`rendezvous.DefaultDir`, `rendezvous/rendezvous.go#DefaultDir`):
   step 2 globs it for a pid and step 3 kills that pid, so under a real
   `$HOME` this card kills a real daemon.
@@ -39,15 +39,15 @@ placeholder is not a stable hook at all — see step 6.
    `GET $HUB/api/sessions/local:$SID`.
 
 2. **[browser-free] Find the daemon PID.** Each daemon writes
-   `~/.serf/run/<pid>.json` on startup (`rendezvous.DefaultDir`,
+   `~/.evener/run/<pid>.json` on startup (`rendezvous.DefaultDir`,
    `rendezvous/rendezvous.go#DefaultDir`; file naming at `:52-77`), so the
    filename *is* the pid:
    ```bash
-   RFILE=$(grep -l "\"session_id\":\"$SID\"" "$HOME"/.serf/run/*.json)
+   RFILE=$(grep -l "\"session_id\":\"$SID\"" "$HOME"/.evener/run/*.json)
    PID=$(basename "$RFILE" .json)
    echo "pid=$PID rfile=$RFILE"
    ```
-   Cross-check with `ps aux | grep "serf serve.*$SID"` if the glob is
+   Cross-check with `ps aux | grep "evener serve.*$SID"` if the glob is
    ambiguous.
 
 3. **[browser-free]** `kill "$PID"`. Confirm `$RFILE` is gone and the process
@@ -70,7 +70,7 @@ placeholder is not a stable hook at all — see step 6.
    ```
    `handleSend` re-resolves the session and, finding no live daemon, spawns
    one through the same `resumeRequestFor` → `Spawner.Resume` path before
-   starting the turn (`cmd/serf-hub/web_session.go:69-171`, kata `x3hp`).
+   starting the turn (`cmd/evener-hub/web_session.go:69-171`, kata `x3hp`).
 
 6. **[browser, optional]** Repeat steps 2-3 to kill the respawned daemon,
    then drive the *other* entry point from a browser: navigate to
@@ -85,7 +85,7 @@ placeholder is not a stable hook at all — see step 6.
    `[data-testid="composer-submit"]` (or press `⌘↵`) after the text is in.
    That routes to appwire `turn/start`,
    whose hub handler retries through the same `hubThreadResume`
-   (`cmd/serf-hub/app_rpc.go:330` registers it; `:356,368` do the resume via
+   (`cmd/evener-hub/app_rpc.go:330` registers it; `:356,368` do the resume via
    the `resumeTurnStartThread` alias declared at `:58`). Note the ref form —
    a bare `/s/$SID` renders "Page not found" by design.
 
@@ -101,8 +101,8 @@ placeholder is not a stable hook at all — see step 6.
     transparent).
 - On the host:
   - A NEW daemon process exists with `serve ... --resume $SID` in its args
-    (`cmd/serf-hub/spawn.go:276`).
-  - A NEW rendezvous file at `$HOME/.serf/run/<new-pid>.json`, with a
+    (`cmd/evener-hub/spawn.go:276`).
+  - A NEW rendezvous file at `$HOME/.evener/run/<new-pid>.json`, with a
     different pid than step 2's.
 - In the browser (step 6 only): the new user turn and the assistant reply
   appear as `[data-testid="turn-block"]` entries without a reload, and no
@@ -146,7 +146,7 @@ placeholder is not a stable hook at all — see step 6.
   scenario.
 - **A live daemon speaking a different AppWire protocol version wedges the
   resume, and says so.** `resumeFailureError`
-  (`cmd/serf-hub/app_threadlifecycle.go#resumeFailureError`) re-reads the roster and
+  (`cmd/evener-hub/app_threadlifecycle.go#resumeFailureError`) re-reads the roster and
   names the blocking pid and protocol rather than returning a bare spawn
   failure. If step 5 fails, read the error text before assuming the resume
   chain regressed.

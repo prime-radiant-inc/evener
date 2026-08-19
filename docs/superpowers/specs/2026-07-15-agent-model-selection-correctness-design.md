@@ -11,9 +11,9 @@ reslice, or treat Project 4 as a prerequisite for any remaining program work.
 
 ## Purpose
 
-The agent that creates or resumes a delegate may choose the model family. Serf's
+The agent that creates or resumes a delegate may choose the model family. Evener's
 job is to make that choice work or reject it before creating partial child state.
-Serf must not impose a routing policy or silently substitute a different model.
+Evener must not impose a routing policy or silently substitute a different model.
 
 This design completes and verifies the existing delegate model-selection path.
 It does not replace the broader, already-specced user-facing mid-session model
@@ -24,7 +24,7 @@ switching work.
 ### Agent discretion
 
 The parent agent may request any provider/model reference available through the
-session's configured model catalog. Serf does not prefer a family, implement an
+session's configured model catalog. Evener does not prefer a family, implement an
 escalation ladder, or route by task risk.
 
 Omitting the delegate model retains the documented parent-model inheritance.
@@ -33,7 +33,7 @@ to inheritance.
 
 ### Validate before durable creation
 
-Serf validates an explicit delegate model before minting or persisting any:
+Evener validates an explicit delegate model before minting or persisting any:
 
 - child session;
 - delegate handle or job;
@@ -69,13 +69,13 @@ existing fallback mechanism, but are not silent child-profile substitution.
 
 ### Explicit fallbacks only
 
-Only fallbacks present in effective Serf configuration may run. Every fallback:
+Only fallbacks present in effective Evener configuration may run. Every fallback:
 
 - is recorded as a distinct API attempt in the same logical attempt group;
 - exposes requested and actual provider/model metadata;
 - preserves the terminal error when all configured options fail.
 
-Serf does not invent a same-family or cross-family fallback based on model name,
+Evener does not invent a same-family or cross-family fallback based on model name,
 price, latency, or perceived task difficulty.
 
 ### Durable provenance

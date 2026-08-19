@@ -1,4 +1,4 @@
-//go:build serffuzz
+//go:build evenerfuzz
 
 package execenv
 
@@ -246,7 +246,7 @@ func (c *processRuntimeCommand) appendTrace(root string, scratch map[string]stri
 	env := append([]string(nil), c.config.Env...)
 	for i := range env {
 		// Scratch dirs are fresh random paths per environment (commit
-		// bf79673f5: every spawn exports SERF_SCRATCH_DIR/TMPDIR), so they must
+		// bf79673f5: every spawn exports EVENER_SCRATCH_DIR/TMPDIR), so they must
 		// be normalized like root for the determinism oracle.
 		for dir, placeholder := range scratch {
 			env[i] = strings.ReplaceAll(env[i], dir, placeholder)
@@ -534,7 +534,7 @@ func runProcessRuntimeProgram(t *testing.T, program []byte) processRuntimeTrace 
 	processRuntimeCheckSystemAdapter(t)
 	factory.assertConsumed()
 	// Every spawn exports the lazily provisioned per-session scratch dir as
-	// SERF_SCRATCH_DIR and TMPDIR under every env policy (commit bf79673f5,
+	// EVENER_SCRATCH_DIR and TMPDIR under every env policy (commit bf79673f5,
 	// "feat(execenv): preserve developer PATH and always export session scratch
 	// vars"). SessionScratchDir reports it without provisioning; the spawns
 	// above already provisioned it. A WithWorkingDirectory clone does not
@@ -546,13 +546,13 @@ func runProcessRuntimeProgram(t *testing.T, program []byte) processRuntimeTrace 
 	}
 	for _, name := range []string{"argv-none", "argv-default", "argv-all", "argv-core"} {
 		processRuntimeAssertEnv(t, factory.command(name).config.Env, map[string]string{
-			"SERF_SCRATCH_DIR": scratch,
-			"TMPDIR":           scratch,
+			"EVENER_SCRATCH_DIR": scratch,
+			"TMPDIR":             scratch,
 		}, nil)
 	}
 	processRuntimeAssertEnv(t, factory.command("child-argv").config.Env, map[string]string{
-		"SERF_SCRATCH_DIR": childScratch,
-		"TMPDIR":           childScratch,
+		"EVENER_SCRATCH_DIR": childScratch,
+		"TMPDIR":             childScratch,
 	}, nil)
 	scratchPlaceholders := map[string]string{scratch: "$SCRATCH", childScratch: "$CHILD_SCRATCH"}
 	for _, command := range factory.byName {

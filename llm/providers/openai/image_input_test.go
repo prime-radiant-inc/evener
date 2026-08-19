@@ -13,7 +13,7 @@ import (
 	"strings"
 	"testing"
 
-	"primeradiant.com/serf/llm"
+	"primeradiant.com/evener/llm"
 )
 
 func TestToResponsesInputTranscodesBMPToolResultToPNG(t *testing.T) {

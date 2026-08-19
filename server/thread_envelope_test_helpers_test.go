@@ -1,14 +1,14 @@
 package server
 
 import (
-	"primeradiant.com/serf/agent"
-	"primeradiant.com/serf/agent/schema"
-	"primeradiant.com/serf/appwire"
+	"primeradiant.com/evener/agent"
+	"primeradiant.com/evener/agent/schema"
+	"primeradiant.com/evener/appwire"
 )
 
 // stubThreadEnvelopeSource is a test's stand-in for the live session behind the
 // thread envelope. It is the production seam (ThreadEnvelopeSource), not a mock
-// of anything internal: cmd/serf installs one over agent.Session, and a test
+// of anything internal: cmd/evener installs one over agent.Session, and a test
 // installs this one, so both go through the same sampler and the same store.
 //
 // Zero value reports the same thing a daemon with nothing to say reports.
@@ -23,7 +23,7 @@ type stubThreadEnvelopeSource struct {
 	goalIterations   int
 	goalSet          bool
 	workMillis       int64
-	usage            *appwire.SerfUsage
+	usage            *appwire.EvenerUsage
 	turnStartedAt    int64
 	failedToolCalls  int
 	failuresMeasured bool
@@ -59,7 +59,7 @@ func (s *stubThreadEnvelopeSource) GoalStatus() (string, int, bool) {
 	return s.goalStatus, s.goalIterations, s.goalSet
 }
 
-func (s *stubThreadEnvelopeSource) WorkMetrics() (int64, *appwire.SerfUsage, int64) {
+func (s *stubThreadEnvelopeSource) WorkMetrics() (int64, *appwire.EvenerUsage, int64) {
 	return s.workMillis, s.usage, s.turnStartedAt
 }
 

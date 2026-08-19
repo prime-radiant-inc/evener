@@ -29,11 +29,11 @@ func TestResolveTargetUnknownTarget(t *testing.T) {
 
 func TestReleaseAssetPlatforms(t *testing.T) {
 	asset, root, err := releaseAsset("darwin", "arm64")
-	if err != nil || asset != "serf_darwin_arm64.tar.gz" || root != "serf_darwin_arm64" {
+	if err != nil || asset != "evener_darwin_arm64.tar.gz" || root != "evener_darwin_arm64" {
 		t.Fatalf("darwin-arm64 asset=%q root=%q err=%v", asset, root, err)
 	}
 	asset, root, err = releaseAsset("linux", "amd64")
-	if err != nil || asset != "serf_linux_amd64.tar.gz" {
+	if err != nil || asset != "evener_linux_amd64.tar.gz" {
 		t.Fatalf("linux-amd64 asset=%q root=%q err=%v", asset, root, err)
 	}
 	if _, _, err := releaseAsset("windows", "amd64"); err == nil {
@@ -42,7 +42,7 @@ func TestReleaseAssetPlatforms(t *testing.T) {
 }
 
 func TestInstallPrefix(t *testing.T) {
-	if got, err := installPrefix("/opt/serf"); err != nil || got != "/opt/serf" {
+	if got, err := installPrefix("/opt/evener"); err != nil || got != "/opt/evener" {
 		t.Fatalf("explicit prefix=%q err=%v", got, err)
 	}
 	t.Setenv("HOME", "/home/tester")
@@ -142,7 +142,7 @@ func tarGz(t *testing.T, entries map[string][]byte, dirs map[string]bool) []byte
 }
 
 func TestExtractReleaseArchiveMissingBinary(t *testing.T) {
-	root := "serf_linux_amd64"
+	root := "evener_linux_amd64"
 	// Only the first binary present → extraction must report the first missing one.
 	entries := map[string][]byte{path.Join(root, installBinaries[0]): []byte("x")}
 	archivePath := filepath.Join(t.TempDir(), "a.tar.gz")
@@ -156,7 +156,7 @@ func TestExtractReleaseArchiveMissingBinary(t *testing.T) {
 }
 
 func TestExtractReleaseArchiveRejectsNonRegularFile(t *testing.T) {
-	root := "serf_linux_amd64"
+	root := "evener_linux_amd64"
 	entries := map[string][]byte{}
 	dirs := map[string]bool{}
 	for _, bin := range installBinaries {
@@ -252,7 +252,7 @@ func TestUpgradeStageFailures(t *testing.T) {
 		}
 	})
 	t.Run("install", func(t *testing.T) {
-		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { _, _ = w.Write(releaseArchive(t, "serf_linux_amd64")) }))
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { _, _ = w.Write(releaseArchive(t, "evener_linux_amd64")) }))
 		defer server.Close()
 		block := filepath.Join(t.TempDir(), "block")
 		if err := os.WriteFile(block, nil, 0o600); err != nil {

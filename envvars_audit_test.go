@@ -1,4 +1,4 @@
-package serf_test
+package evener_test
 
 import (
 	"go/ast"
@@ -11,7 +11,7 @@ import (
 	"strings"
 	"testing"
 
-	"primeradiant.com/serf/envvars"
+	"primeradiant.com/evener/envvars"
 )
 
 func TestSupportedEnvVarsAreDocumented(t *testing.T) {
@@ -127,8 +127,8 @@ func literalUsesEnvName(value, name string) bool {
 		return false
 	}
 	// Use a word-boundary check: the character immediately after the matched
-	// name (if any) must not be an env-name character, so that e.g. "SERF_FOO"
-	// does not spuriously match inside "SERF_FOO_BAR".
+	// name (if any) must not be an env-name character, so that e.g. "EVENER_FOO"
+	// does not spuriously match inside "EVENER_FOO_BAR".
 	for {
 		idx := strings.Index(value, name)
 		if idx < 0 {

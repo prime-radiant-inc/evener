@@ -6,7 +6,7 @@ import (
 	"sort"
 	"strings"
 
-	"primeradiant.com/serf/appwire"
+	"primeradiant.com/evener/appwire"
 )
 
 func (s *Server) handleSteer(w http.ResponseWriter, r *http.Request) {
@@ -153,7 +153,7 @@ func (s *Server) handleClear(w http.ResponseWriter, r *http.Request) {
 
 	// Deciding and claiming are ONE critical section. A clear replaces the live
 	// session: the daemon's callback builds a fresh one, publishes an identity
-	// for it and swaps it in (cmd/serf/serve.go). Two of those running at once
+	// for it and swaps it in (cmd/evener/serve.go). Two of those running at once
 	// each read the same session as the one they replace and each install their
 	// own, so one replacement ends up current and the other is reachable from
 	// nothing -- nothing closes it, so its env's Cleanup() never runs and the

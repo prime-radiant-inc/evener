@@ -13,7 +13,7 @@ import (
 
 	"github.com/spf13/afero"
 
-	"primeradiant.com/serf/fuzz/fault"
+	"primeradiant.com/evener/fuzz/fault"
 )
 
 // FuzzTask8OutputRecovery drives the OutputStore retained-tail state machine,

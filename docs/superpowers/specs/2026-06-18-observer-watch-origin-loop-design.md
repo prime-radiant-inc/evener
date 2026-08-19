@@ -10,7 +10,7 @@ Builds on: `docs/job-control.md`, `docs/superpowers/specs/2026-06-18-job-control
 
 ## Problem
 
-Observer sidecars are ordinary Serf composition: start a delegate, then create a
+Observer sidecars are ordinary Evener composition: start a delegate, then create a
 `job_watch` that sends frames to that delegate. The current composition has two
 gaps:
 
@@ -126,7 +126,7 @@ on watch-send state.
 
 ## Watch Delivery Provenance
 
-When `job_watch` fires, Serf creates a `watchDeliveryContext`:
+When `job_watch` fires, Evener creates a `watchDeliveryContext`:
 
 ```go
 type watchDeliveryContext struct {
@@ -189,7 +189,7 @@ events:
 5. At the start of each new top-level input turn, active provenance is replaced
    with that input's provenance set; for an ordinary external `USER_INPUT`, that
    set is empty. Provenance is unioned only within the currently driven turn.
-6. If steering is drained mid-turn between tool rounds, Serf unions each drained
+6. If steering is drained mid-turn between tool rounds, Evener unions each drained
    steering entry's provenance into the turn's active provenance immediately and
    leaves it active until the turn ends. This intentionally over-suppresses the
    rest of that turn if necessary; it fails safe toward no loop.
@@ -426,8 +426,8 @@ Pending watch sends must persist enough provenance to survive process restart:
 }
 ```
 
-If Serf restores a pending watch delivery and starts an observer job after
-restart, that observer job still carries the same provenance. If Serf restores a
+If Evener restores a pending watch delivery and starts an observer job after
+restart, that observer job still carries the same provenance. If Evener restores a
 running job as `stopped/runtime_lost`, the terminal lifecycle event should carry
 the job's stored provenance if known.
 

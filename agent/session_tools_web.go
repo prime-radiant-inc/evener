@@ -4,14 +4,14 @@ import (
 	"context"
 	"fmt"
 
-	"primeradiant.com/serf/agent/execenv"
-	"primeradiant.com/serf/agent/internal/tool"
-	"primeradiant.com/serf/agent/sandbox"
-	"primeradiant.com/serf/llm"
+	"primeradiant.com/evener/agent/execenv"
+	"primeradiant.com/evener/agent/internal/tool"
+	"primeradiant.com/evener/agent/sandbox"
+	"primeradiant.com/evener/llm"
 )
 
 // egressDeniedByNet returns a typed DeniedError when env is a sandboxed session
-// whose network egress is off, else nil. serf's own web egress (web_fetch,
+// whose network egress is off, else nil. evener's own web egress (web_fetch,
 // web_search) is part of the tool plane that --sandbox-net off governs; the LLM
 // inference connection is not. In a non-sandboxed session (the wrapper is nil —
 // every session until the flag goes live) this is always a no-op, so the web

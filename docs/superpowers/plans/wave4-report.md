@@ -228,7 +228,7 @@ scoped follow-up.
 
 ## Live proof
 
-Real hub (`make build-hub`, `SERF_HUB_WEB=new`, dedicated port 19280) + a freshly-built `serf` CLI
+Real hub (`make build-hub`, `EVENER_HUB_WEB=new`, dedicated port 19280) + a freshly-built `evener` CLI
 (`--model openai/gpt-5.5`, no `.env` needed) + Chrome, driven end to end. Evidence:
 `.superpowers/sdd/t5b-evidence/`.
 
@@ -287,7 +287,7 @@ STOP threshold.
    not just timestamps.
 2. **Steering as `item/completed` server-side**, so the frontend doesn't need its own live-item
    construction for steering (currently reducer-side, `src/protocol/reducer.ts`'s
-   `serf/steering/injected` case, per R1 Part B).
+   `evener/steering/injected` case, per R1 Part B).
 3. **Settled tool items should carry `ArgumentsJSON`.** `EventToolCallEnd`
    (`appwire_projection.go:414-442`) resolves `argsJSON` but only uses it to derive `Description`,
    never attaching it to the emitted `ThreadItem` — a live-settle-only gap the frontend reducer
@@ -299,7 +299,7 @@ STOP threshold.
    bad-exit styling, the MCP-namespaced error/ok marker, `cheapToolBodyEnd`'s error-preferred
    rendering). A single wire field would resolve all of them at once.
 5. **Escalation `resolved` broadcast, for multi-client card clear.** Per R3's own finding: the wire
-   has `serf/sandbox/escalation/requested` but no matching `resolved` notification, so a second
+   has `evener/sandbox/escalation/requested` but no matching `resolved` notification, so a second
    client watching the same session stays stale after another client resolves the escalation — a
    known, disclosed limitation, not a regression.
 
@@ -358,7 +358,7 @@ STOP threshold.
 ## Verification
 
 ```
-cmd/serf-hub/frontend:
+cmd/evener-hub/frontend:
   npx tsc --noEmit  → EXIT=0
   npx vitest run    → EXIT=0  (104 files / 1509 tests — baseline 103/1504 + this task's
                                 tokenFlood.test.tsx: +1 file, +5 tests; tokenFlood.bench.ts is
@@ -368,10 +368,10 @@ cmd/serf-hub/frontend:
                                 confirmed clean via `git status`)
 
 go build ./...                  → EXIT=0  (repo root)
-go test ./cmd/serf-hub/...      → EXIT=0  (11 packages, all ok)
+go test ./cmd/evener-hub/...      → EXIT=0  (11 packages, all ok)
 ```
 
-Live proof: real hub (`SERF_HUB_WEB=new`, `serf-hub -addr 127.0.0.1:19280 -serf <fresh serf
+Live proof: real hub (`EVENER_HUB_WEB=new`, `evener-hub -addr 127.0.0.1:19280 -evener <fresh evener
 binary>`) + a real `openai/gpt-5.5` session, driven via the Chrome skill. Evidence:
 `.superpowers/sdd/t5b-evidence/` (13 files). All spawned sessions shut down, hub process killed,
 scratch state directories and built binaries removed, browser tabs closed — confirmed via `pgrep`
@@ -393,7 +393,7 @@ this). Non-dynamic rows are byte-identical to before — jsdom can't lay out rea
 widget test pins the structural precondition (no inline height on the measured element in dynamic
 mode) rather than a height number; all existing `VirtualList` tests pass unmodified.
 
-Live re-verified (fresh `make build-hub`, `SERF_HUB_WEB=new`, a real `openai/gpt-5.5` session):
+Live re-verified (fresh `make build-hub`, `EVENER_HUB_WEB=new`, a real `openai/gpt-5.5` session):
 every rendered row now measures `inlineHeight: "(none)"`, `height` exactly equal to its own
 content's `scrollHeight`, and consecutive rows sit at *exactly* adjacent `top` offsets (zero gap,
 zero overlap) — checked across rows from 63px to 2798px tall, including a 1041px real streamed
@@ -464,7 +464,7 @@ against the prior run at every step (104 files/1509 tests baseline → 104/1510 
 restored via `git restore`, confirmed clean via `git status --porcelain`).
 
 **Live-proof housekeeping.** Both sessions spawned for this task's live re-verification shut down
-cleanly (`POST /s/<id>/shutdown`, 204 each, confirmed via `pgrep` that the underlying `serf serve`
+cleanly (`POST /s/<id>/shutdown`, 204 each, confirmed via `pgrep` that the underlying `evener serve`
 processes exited), hub process killed directly (confirmed via `pgrep` and a port-listen check),
 browser tabs closed (`list_tabs` confirmed empty). Evidence: `.superpowers/sdd/t5c-evidence/` (7
 files).

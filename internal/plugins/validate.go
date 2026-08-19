@@ -5,7 +5,7 @@ import (
 	"os"
 	"path/filepath"
 
-	agentplugin "primeradiant.com/serf/agent/plugin"
+	agentplugin "primeradiant.com/evener/agent/plugin"
 )
 
 // validatePluginDir returns nil iff the plugin at dir loads cleanly — manifest

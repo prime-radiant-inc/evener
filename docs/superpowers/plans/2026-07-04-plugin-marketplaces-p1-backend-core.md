@@ -2,16 +2,16 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Build the `internal/plugins` manager package — the single source of truth for serf's plugin marketplaces and installed plugins on disk — with marketplace add/remove/list/refresh/browse and plugin install/upgrade/remove/enable/disable/list/update-all, all driven by real `git` against local fixtures.
+**Goal:** Build the `internal/plugins` manager package — the single source of truth for evener's plugin marketplaces and installed plugins on disk — with marketplace add/remove/list/refresh/browse and plugin install/upgrade/remove/enable/disable/list/update-all, all driven by real `git` against local fixtures.
 
-**Architecture:** One new root-module Go package, `primeradiant.com/serf/internal/plugins`. On-disk state (Claude-Code-shaped, serf-owned) lives under `~/.config/serf/plugins/`: `known_marketplaces.json`, `installed_plugins.json`, `marketplaces/<name>/` clones, and `cache/<marketplace>/<plugin>/<sha>/` materialized plugins. A `Manager` value exposes every operation; registry mutations are serialized by a `flock` and written atomically (temp + rename). The existing `agent/plugin.Load` is reused unchanged as a dry-run validator. This plan implements the parent spec `docs/superpowers/specs/2026-07-04-plugin-marketplaces-design.md` phase **P1** (§15); P2–P7 (CLI, gating, auto-upgrade, web, TUI, slash commands, doctoring) are separate plans.
+**Architecture:** One new root-module Go package, `primeradiant.com/evener/internal/plugins`. On-disk state (Claude-Code-shaped, evener-owned) lives under `~/.config/evener/plugins/`: `known_marketplaces.json`, `installed_plugins.json`, `marketplaces/<name>/` clones, and `cache/<marketplace>/<plugin>/<sha>/` materialized plugins. A `Manager` value exposes every operation; registry mutations are serialized by a `flock` and written atomically (temp + rename). The existing `agent/plugin.Load` is reused unchanged as a dry-run validator. This plan implements the parent spec `docs/superpowers/specs/2026-07-04-plugin-marketplaces-design.md` phase **P1** (§15); P2–P7 (CLI, gating, auto-upgrade, web, TUI, slash commands, doctoring) are separate plans.
 
-**Tech Stack:** Go 1.25 (`go.work` multi-module: this package is in the root module `primeradiant.com/serf`). Stdlib `os/exec` shelling out to the system `git`. `golang.org/x/sys/unix` (already an indirect dep — promoted to direct) for `flock`. `encoding/json`. Reuses `primeradiant.com/serf/agent/plugin` (`Load`, `Manifest`, `ParseManifest`) and `primeradiant.com/serf/envvars` (`XDGConfigHome`). Tests use `t.TempDir()` and real local `git` repositories as fixtures — **no mocks, no network**; git-dependent tests `t.Skip` when `git` is absent.
+**Tech Stack:** Go 1.25 (`go.work` multi-module: this package is in the root module `primeradiant.com/evener`). Stdlib `os/exec` shelling out to the system `git`. `golang.org/x/sys/unix` (already an indirect dep — promoted to direct) for `flock`. `encoding/json`. Reuses `primeradiant.com/evener/agent/plugin` (`Load`, `Manifest`, `ParseManifest`) and `primeradiant.com/evener/envvars` (`XDGConfigHome`). Tests use `t.TempDir()` and real local `git` repositories as fixtures — **no mocks, no network**; git-dependent tests `t.Skip` when `git` is absent.
 
 ## Global Constraints
 
-- Module: package path is `primeradiant.com/serf/internal/plugins` (root module). It MAY import `primeradiant.com/serf/agent/plugin`, `primeradiant.com/serf/frontmatter`, and `primeradiant.com/serf/envvars`. It MUST NOT import anything under `primeradiant.com/serf/agent/internal/...` (Go internal rule forbids it — verified).
-- Source-type discriminator is **`url`, never `git`** (the on-disk JSON `"source"` value). `git` is accepted only as a **read-only legacy alias** for `url` on a marketplace container; serf never writes `git`.
+- Module: package path is `primeradiant.com/evener/internal/plugins` (root module). It MAY import `primeradiant.com/evener/agent/plugin`, `primeradiant.com/evener/frontmatter`, and `primeradiant.com/evener/envvars`. It MUST NOT import anything under `primeradiant.com/evener/agent/internal/...` (Go internal rule forbids it — verified).
+- Source-type discriminator is **`url`, never `git`** (the on-disk JSON `"source"` value). `git` is accepted only as a **read-only legacy alias** for `url` on a marketplace container; evener never writes `git`.
 - The install-registry (`installed_plugins.json`) JSON shape is `{"version":2,"plugins":{"<plugin>@<marketplace>":[<entry>...]}}` — the value is an array (Claude drop-in shape); v1 writes exactly one entry per plugin.
 - Cache directories are keyed by resolved commit **`<sha>`**, not by version (`cache/<marketplace>/<plugin>/<sha>/`). Plugins whose **marketplace** is a `directory` source are **referenced in place** (no cache copy, empty sha).
 - All registry/marketplace writes go through `atomicWriteFile` (temp + rename) under a `flock` on `<root>/.lock`.
@@ -56,9 +56,9 @@ All files under `internal/plugins/` (each `X.go` has a sibling `X_test.go` unles
 - [ ] **Step 1: Create the package doc**
 
 ```go
-// Package plugins is serf's manager for Claude Code-compatible plugin
+// Package plugins is evener's manager for Claude Code-compatible plugin
 // marketplaces and installed plugins. It owns the on-disk state under
-// ~/.config/serf/plugins/ (known_marketplaces.json, installed_plugins.json,
+// ~/.config/evener/plugins/ (known_marketplaces.json, installed_plugins.json,
 // cloned marketplaces, and the materialized plugin cache) and exposes a
 // Manager with marketplace and plugin lifecycle operations. It shells out to
 // git for fetching and reuses agent/plugin.Load to validate materialized
@@ -102,7 +102,7 @@ import (
 func TestDefaultRoot_UsesXDGConfigHome(t *testing.T) {
 	t.Setenv("XDG_CONFIG_HOME", "/tmp/xdgcfg")
 	got := DefaultRoot()
-	want := filepath.Join("/tmp/xdgcfg", "serf", "plugins")
+	want := filepath.Join("/tmp/xdgcfg", "evener", "plugins")
 	if got != want {
 		t.Fatalf("DefaultRoot() = %q, want %q", got, want)
 	}
@@ -142,10 +142,10 @@ import (
 	"path/filepath"
 	"time"
 
-	"primeradiant.com/serf/envvars"
+	"primeradiant.com/evener/envvars"
 )
 
-// Manager owns all on-disk plugin state under Root (~/.config/serf/plugins).
+// Manager owns all on-disk plugin state under Root (~/.config/evener/plugins).
 type Manager struct {
 	Root   string           // store root
 	Now    func() time.Time // injectable clock; defaults to time.Now
@@ -160,8 +160,8 @@ func NewManager(root string) *Manager {
 	return &Manager{Root: root, Now: time.Now, Stderr: os.Stderr}
 }
 
-// DefaultRoot is ~/.config/serf/plugins, honoring XDG_CONFIG_HOME the same way
-// the rest of serf does (envvars.XDGConfigHome).
+// DefaultRoot is ~/.config/evener/plugins, honoring XDG_CONFIG_HOME the same way
+// the rest of evener does (envvars.XDGConfigHome).
 func DefaultRoot() string {
 	dir := envvars.XDGConfigHome.Getenv()
 	if dir == "" {
@@ -171,7 +171,7 @@ func DefaultRoot() string {
 		}
 		dir = filepath.Join(home, ".config")
 	}
-	return filepath.Join(dir, "serf", "plugins")
+	return filepath.Join(dir, "evener", "plugins")
 }
 
 func (m *Manager) registryPath() string   { return filepath.Join(m.Root, "installed_plugins.json") }
@@ -426,7 +426,7 @@ func acquireLock(lockPath string, timeout time.Duration) (func(), error) {
 		}
 		if time.Now().After(deadline) {
 			f.Close()
-			return nil, fmt.Errorf("another serf plugin operation is in progress (locked: %s)", lockPath)
+			return nil, fmt.Errorf("another evener plugin operation is in progress (locked: %s)", lockPath)
 		}
 		time.Sleep(backoff)
 		backoff *= 2
@@ -626,7 +626,7 @@ git commit -m "plugins: installed_plugins.json registry load/save"
   - `func gitSparseClone(ctx context.Context, url, dir, subdir, ref, sha string) error` — blobless partial clone limited to `subdir`.
   - `func gitPull(ctx context.Context, dir string) error` — `git -C dir pull --ff-only`.
   - `func gitHeadSHA(ctx context.Context, dir string) (string, error)` — `git -C dir rev-parse HEAD`.
-- Consumes: nothing serf-specific.
+- Consumes: nothing evener-specific.
 
 - [ ] **Step 1: Write a test helper that builds a real local git repo, then the failing test**
 
@@ -1453,7 +1453,7 @@ git commit -m "plugins: computeVersion precedence"
 - Test: `internal/plugins/validate_test.go`
 
 **Interfaces:**
-- Consumes: `primeradiant.com/serf/agent/plugin` (`Load`).
+- Consumes: `primeradiant.com/evener/agent/plugin` (`Load`).
 - Produces: `func validatePluginDir(dir string) error` — returns nil iff `agent/plugin.Load(dir)` succeeds (manifest + all components parse); `func pluginManifestVersion(dir string) string` — best-effort plugin.json version for `computeVersion` (empty on any error).
 
 - [ ] **Step 1: Write the failing test**
@@ -1518,7 +1518,7 @@ import (
 	"os"
 	"path/filepath"
 
-	agentplugin "primeradiant.com/serf/agent/plugin"
+	agentplugin "primeradiant.com/evener/agent/plugin"
 )
 
 // validatePluginDir returns nil iff the plugin at dir loads cleanly — manifest
@@ -2374,7 +2374,7 @@ git commit -m "plugins: List (broken detection) + UpdateAll"
 - [ ] **Step 1: Run the whole package with the race detector**
 
 Run: `go test ./internal/plugins/ -race -count=1`
-Expected: `ok  primeradiant.com/serf/internal/plugins`. No failures. (Git-dependent tests run if `git` is present; otherwise they SKIP — a SKIP is acceptable, a FAIL is not.)
+Expected: `ok  primeradiant.com/evener/internal/plugins`. No failures. (Git-dependent tests run if `git` is present; otherwise they SKIP — a SKIP is acceptable, a FAIL is not.)
 
 - [ ] **Step 2: Vet and build the whole module**
 
@@ -2407,7 +2407,7 @@ Checked against spec `2026-07-04-plugin-marketplaces-design.md`:
 - §12 (upgrade never deletes): Task 13 asserts the old dir remains. ✓ (The `gc` sweep verb itself is P4 — noted, not in P1.)
 - §16 testing (real git fixtures, no network, `t.Skip` without git, broken-plugin detection): every git task skips without git; Task 15 tests broken detection. ✓
 
-**Deferred to later phases (correctly out of P1):** `EnabledPluginDirs`/dedup (P2), first-run seeding (P2), the `serf plugin` CLI (P2), the `gc` sweep + auto-upgrade daemon (P4), slash commands (P3), web/TUI (P5/P6), doctor (P7). The parent spec's §15 assigns these; P1 is the manager core only.
+**Deferred to later phases (correctly out of P1):** `EnabledPluginDirs`/dedup (P2), first-run seeding (P2), the `evener plugin` CLI (P2), the `gc` sweep + auto-upgrade daemon (P4), slash commands (P3), web/TUI (P5/P6), doctor (P7). The parent spec's §15 assigns these; P1 is the manager core only.
 
 **Known execution-ordering notes folded into tasks:** `Source` (Task 6) must exist before `registry.go` (Task 4) compiles; `ParseCatalog` (Task 8) before Task 7's test runs. Both are called out inline. An implementer doing strict numeric order should build 6 before 4 and 8 before 7 (or use the one-line stubs noted).
 

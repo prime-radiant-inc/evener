@@ -1,4 +1,4 @@
-package serf_test
+package evener_test
 
 import (
 	"os"
@@ -35,7 +35,7 @@ var scenarioIndexExempt = map[string]string{
 // TestScenarioIndexListsEveryCard is the "nothing is invisible" half: every
 // card on disk has an entry in INDEX.md. The check is for the backticked
 // filename rather than a bare substring on purpose — `doctor-forensics.md` is
-// a substring of `serf-doctor-forensics.md`, so a substring match would report
+// a substring of `evener-doctor-forensics.md`, so a substring match would report
 // a card as indexed when only its longer-named sibling is.
 func TestScenarioIndexListsEveryCard(t *testing.T) {
 	index := readScenarioIndex(t)

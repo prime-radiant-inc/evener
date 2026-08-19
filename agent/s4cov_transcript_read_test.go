@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"primeradiant.com/serf/agent/transcript"
+	"primeradiant.com/evener/agent/transcript"
 )
 
 // s4covWriteFile writes content to a fresh temp file and returns its path.
@@ -389,7 +389,7 @@ func TestS4covParentBucketAndID(t *testing.T) {
 		if err != nil {
 			t.Fatalf("err: %v", err)
 		}
-		want := filepath.Join(sh, "serf", "projects", "project-a-0123456789")
+		want := filepath.Join(sh, "evener", "projects", "project-a-0123456789")
 		if bucket != want {
 			t.Fatalf("bucket = %q, want %q", bucket, want)
 		}

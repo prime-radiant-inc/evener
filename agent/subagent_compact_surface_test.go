@@ -5,7 +5,7 @@ import (
 	"slices"
 	"testing"
 
-	"primeradiant.com/serf/agent/plugin"
+	"primeradiant.com/evener/agent/plugin"
 )
 
 // TestTypedSubagentPolicyKeepsCompactContext pins the policy half of the rule

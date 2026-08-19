@@ -22,8 +22,8 @@
 
 ## File Structure
 
-- Modify `cmd/serf-hub/frontend/src/panes/session/transcript/tools/jobTools.tsx`: own delegate-send response extraction, the shared correlation hook, and the dedicated expanded body.
-- Modify `cmd/serf-hub/frontend/src/panes/session/transcript/tools/jobTools.test.tsx`: prove the message/response display, fallbacks, alias behavior, unchanged summary, and unchanged correlation.
+- Modify `cmd/evener-hub/frontend/src/panes/session/transcript/tools/jobTools.tsx`: own delegate-send response extraction, the shared correlation hook, and the dedicated expanded body.
+- Modify `cmd/evener-hub/frontend/src/panes/session/transcript/tools/jobTools.test.tsx`: prove the message/response display, fallbacks, alias behavior, unchanged summary, and unchanged correlation.
 
 No new source or stylesheet files are needed. The renderer and its tests already live together, and the feature introduces no reusable cross-tool presentation primitive.
 
@@ -32,8 +32,8 @@ No new source or stylesheet files are needed. The renderer and its tests already
 ### Task 1: Render Delegate Messages and Responses
 
 **Files:**
-- Modify: `cmd/serf-hub/frontend/src/panes/session/transcript/tools/jobTools.tsx:19-57,197-228`
-- Test: `cmd/serf-hub/frontend/src/panes/session/transcript/tools/jobTools.test.tsx:149-168,255-294`
+- Modify: `cmd/evener-hub/frontend/src/panes/session/transcript/tools/jobTools.tsx:19-57,197-228`
+- Test: `cmd/evener-hub/frontend/src/panes/session/transcript/tools/jobTools.test.tsx:149-168,255-294`
 
 **Interfaces:**
 - Consumes: `ItemModel.argumentsJSON?: string`, `ItemModel.output?: string`, `ItemModel.raw?: unknown`, `ToolRenderProps`, `parseArgs()`, `str()`, `trailingBracketFooter()`, `resolveRowKey()`, `classifyJobStatus()`, `statusWordFromText()`, and `updateSubagentRowIfExists()`.
@@ -103,7 +103,7 @@ The first test proves historical/fallback parsing from the formatted output. The
 Run:
 
 ```sh
-cd cmd/serf-hub/frontend
+cd cmd/evener-hub/frontend
 npm test -- --run src/panes/session/transcript/tools/jobTools.test.tsx
 ```
 
@@ -178,7 +178,7 @@ If Testing Library reports the inline footer-only render as hard to read or lint
 Run:
 
 ```sh
-cd cmd/serf-hub/frontend
+cd cmd/evener-hub/frontend
 npm test -- --run src/panes/session/transcript/tools/jobTools.test.tsx
 ```
 
@@ -301,7 +301,7 @@ Do not change the descriptor's matcher, icon, or summary.
 Run:
 
 ```sh
-cd cmd/serf-hub/frontend
+cd cmd/evener-hub/frontend
 npm test -- --run src/panes/session/transcript/tools/jobTools.test.tsx
 ```
 
@@ -325,7 +325,7 @@ Also retain the existing summary test unchanged. It remains the regression test 
 Run each command separately so failures remain attributable:
 
 ```sh
-cd cmd/serf-hub/frontend
+cd cmd/evener-hub/frontend
 npm test -- --run src/panes/session/transcript/tools/jobTools.test.tsx
 npm run typecheck
 npm run lint
@@ -347,14 +347,14 @@ Run:
 
 ```sh
 git diff --check
-git diff -- cmd/serf-hub/frontend/src/panes/session/transcript/tools/jobTools.tsx cmd/serf-hub/frontend/src/panes/session/transcript/tools/jobTools.test.tsx
+git diff -- cmd/evener-hub/frontend/src/panes/session/transcript/tools/jobTools.tsx cmd/evener-hub/frontend/src/panes/session/transcript/tools/jobTools.test.tsx
 git status --short
 ```
 
 Confirm that only the two planned frontend files changed after the already committed design and plan documents. Then commit:
 
 ```sh
-git add cmd/serf-hub/frontend/src/panes/session/transcript/tools/jobTools.tsx cmd/serf-hub/frontend/src/panes/session/transcript/tools/jobTools.test.tsx
+git add cmd/evener-hub/frontend/src/panes/session/transcript/tools/jobTools.tsx cmd/evener-hub/frontend/src/panes/session/transcript/tools/jobTools.test.tsx
 git commit -m "feat(webui): show delegate messages and responses"
 ```
 
@@ -364,8 +364,8 @@ git commit -m "feat(webui): show delegate messages and responses"
 
 **Files:**
 - Verify: `docs/superpowers/specs/2026-08-03-delegate-message-display-design.md`
-- Verify: `cmd/serf-hub/frontend/src/panes/session/transcript/tools/jobTools.tsx`
-- Verify: `cmd/serf-hub/frontend/src/panes/session/transcript/tools/jobTools.test.tsx`
+- Verify: `cmd/evener-hub/frontend/src/panes/session/transcript/tools/jobTools.tsx`
+- Verify: `cmd/evener-hub/frontend/src/panes/session/transcript/tools/jobTools.test.tsx`
 
 **Interfaces:**
 - Consumes: the committed `DelegateSendBody` behavior and focused regression tests from Task 1.
@@ -376,7 +376,7 @@ git commit -m "feat(webui): show delegate messages and responses"
 Run:
 
 ```sh
-cd cmd/serf-hub/frontend
+cd cmd/evener-hub/frontend
 npm test -- --run src/panes/session/transcript/tools/jobTools.test.tsx
 npm run typecheck
 npm run lint

@@ -5,7 +5,7 @@
 index (no `meta.json` anywhere under the state glob), every model picker
 must show only the provider-grouped catalog and never an
 empty/degenerate "Recent" group. Three surfaces: web spawn (`/new`), web
-settings (`/settings/launch-serf`), and the TUI's `n` new-session
+settings (`/settings/launch-evener`), and the TUI's `n` new-session
 picker.
 
 The rule is enforced independently at three layers, which is what makes
@@ -13,7 +13,7 @@ it worth an e2e card at all:
 
 - **Wire**: `recent` is always present and always an array, never null —
   `writeModelsResponse` coerces nil to `[]`
-  (`cmd/serf-hub/web_spawn.go#writeModelsResponse`), and
+  (`cmd/evener-hub/web_spawn.go#writeModelsResponse`), and
   `recentModelEntriesFromDescriptors` returns nil for an empty ref list
   (`:248-251`).
 - **Web**: `buildPickerRows` emits the `Recent` group head *only* when
@@ -21,7 +21,7 @@ it worth an e2e card at all:
   (`widgets/modelCatalog/pickerRows.ts:88-97`).
 - **TUI**: `modelPickerItemsFromResponse` early-returns before building
   any Recent items when `len(resp.Recent) == 0`
-  (`cmd/serf-tui/hub_commands.go:510-512`).
+  (`cmd/evener-tui/hub_commands.go:510-512`).
 
 **Surface**: see `docs/agentic-testing.md`, "Driving the web UI" — the
 selector map. The old `button[data-chip="model"]` / `.chip-picker-group`
@@ -36,19 +36,19 @@ there is one markup to assert against, not two.
 ## Pre-state
 
 - Hermetic `$HOME`/`$XDG_STATE_HOME` scratch dirs with no prior sessions
-  (`$XDG_STATE_HOME/serf/projects` does not exist yet) and no `index.db`
-  entries — verified via `find $XDG_STATE_HOME/serf/projects` returning
+  (`$XDG_STATE_HOME/evener/projects` does not exist yet) and no `index.db`
+  entries — verified via `find $XDG_STATE_HOME/evener/projects` returning
   "no such file". This is the whole precondition: `RecentModels` reads
-  the Past index (`cmd/serf-hub/internal/hubcore/past.go#RecentModels`), and
+  the Past index (`cmd/evener-hub/internal/hubcore/past.go#RecentModels`), and
   an empty index is the only way to get an empty Recent honestly.
-- Real `providers.toml`/`credentials.toml` copied **in** from `~/.serf`
+- Real `providers.toml`/`credentials.toml` copied **in** from `~/.evener`
   so at least one provider enumerates live (`ollama` + `openai` on this
   run; `lunarouter`'s cloudflare tunnel was down for the whole session —
-  see Sharp edges). This is a one-time READ out of the real `~/.serf`
+  see Sharp edges). This is a one-time READ out of the real `~/.evener`
   into the isolated `$HOME` — the sanctioned "copy in a scratch
   credentials.toml first" recipe from `docs/agentic-testing.md`. Nothing
-  in this card ever writes to the real `~/.serf`.
-- `serf-hub` built fresh and started against that hermetic env on a
+  in this card ever writes to the real `~/.evener`.
+- `evener-hub` built fresh and started against that hermetic env on a
   kernel-assigned port (`-addr 127.0.0.1:0`, read `$PORT` back out of
   the hub's own log — Setup checklist). A frontend built with
   `make build-web` before the hub binary, or the browser steps have no
@@ -81,22 +81,22 @@ there is one markup to assert against, not two.
      optionCount: document.querySelectorAll('[role="listbox"][aria-label="Model"] li[role="option"]').length,
    })
    ```
-3. Open `/settings/launch-serf`, open its model field, run the identical
+3. Open `/settings/launch-evener`, open its model field, run the identical
    snippet. Same widget, same markup — the assertion does not change.
    The settings page renders **two** model pickers — the schema declares
    both `model` (label `Model`) and `fast_cheap_model` (label `Fast cheap
    model`) as `modelPicker` controls
-   (`cmd/serf-hub/internal/launchconfig/schema.go:85,87`). Open the one
+   (`cmd/evener-hub/internal/launchconfig/schema.go:85,87`). Open the one
    whose block label reads exactly `Model`; only one panel is open at a
    time, so the listbox query above is unambiguous once it is.
 
 ### TUI
 
-4. In a tmux session running `serf-tui --hub-addr 127.0.0.1:$PORT`, send
+4. In a tmux session running `evener-tui --hub-addr 127.0.0.1:$PORT`, send
    `n` (opens the spawn form focused on Prompt,
-   `cmd/serf-tui/hub_keys.go:95`), then `BTab BTab` to reach the Model
+   `cmd/evener-tui/hub_keys.go:95`), then `BTab BTab` to reach the Model
    field (field order Prompt/Harness/Model/Dir,
-   `cmd/serf-tui/hub_model.go:27-30`; backwards focus wraps through Dir,
+   `cmd/evener-tui/hub_model.go:27-30`; backwards focus wraps through Dir,
    `hub_spawn.go:222-230`), then `Enter` to open the picker overlay;
    `capture-pane`.
 
@@ -112,7 +112,7 @@ there is one markup to assert against, not two.
   green).
 - **Step 4**: capture-pane shows group headers `OLLAMA` and `OPENAI`
   only — uppercased by `strings.ToUpper(item.Group)`
-  (`cmd/serf-tui/internal/tuipick/model_picker.go:165-167`) — e.g.:
+  (`cmd/evener-tui/internal/tuipick/model_picker.go:165-167`) — e.g.:
   ```
   OLLAMA
   > Gemma4:e4b  ollama/gemma4:e4b  (active)
@@ -167,7 +167,7 @@ there is one markup to assert against, not two.
   not a test artifact; re-verify with `lunarouter` live if convenient.
 - The unit-level counterpart is
   `TestModelPickerItemsFromResponse_NoRecentOmitsGroup`
-  (`cmd/serf-tui/hub_model_picker_items_test.go#TestModelPickerItemsFromResponse_NoRecentOmitsGroup`) for the TUI and
+  (`cmd/evener-tui/hub_model_picker_items_test.go#TestModelPickerItemsFromResponse_NoRecentOmitsGroup`) for the TUI and
   `pickerRows.test.ts:54-55` ("no Recent group when the envelope carries
   none") for the web. If those pass and the live picker still shows a
   Recent header, the bug is in what the hub put in `recent`, not in the

@@ -1,5 +1,5 @@
 #!/bin/sh
-# web-preflight.sh — own the cmd/serf-hub/frontend node_modules install for
+# web-preflight.sh — own the cmd/evener-hub/frontend node_modules install for
 # every web target, so `make build-web` and `make test-web` share one
 # definition of "the install is ready".
 #
@@ -26,13 +26,13 @@
 #    not the TypeScript compiler — so an empty install can otherwise read as
 #    a working toolchain.
 #
-# SERF_WEB_FRONTEND_DIR exists so scripts/web-preflight-selftest.sh can point
+# EVENER_WEB_FRONTEND_DIR exists so scripts/web-preflight-selftest.sh can point
 # this at a throwaway frontend instead of the real one, whose node_modules is
 # the fleet's single shared install.
 set -eu
 
 repo_root=$(cd "$(dirname "$0")/.." && pwd)
-frontend=${SERF_WEB_FRONTEND_DIR:-$repo_root/cmd/serf-hub/frontend}
+frontend=${EVENER_WEB_FRONTEND_DIR:-$repo_root/cmd/evener-hub/frontend}
 cd "$frontend"
 
 if [ node_modules -nt package-lock.json ]; then

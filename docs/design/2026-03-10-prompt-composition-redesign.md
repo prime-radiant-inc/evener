@@ -2,7 +2,7 @@
 
 ## Problem
 
-Serf's system prompt composition grew organically and has three problems:
+Evener's system prompt composition grew organically and has three problems:
 
 1. **`base.md` conflates universal guidance with the coordinator persona.** It says "You are an architect and coordinator. You do NOT write code or run commands directly." This is wrong for toil workers (who must write code) and irrelevant to analytical roles like `plan_reviewer`.
 
@@ -12,13 +12,13 @@ Serf's system prompt composition grew organically and has three problems:
 
 ## Design
 
-**Every serf session is `core` + `persona`.** There are no special cases.
+**Every evener session is `core` + `persona`.** There are no special cases.
 
 ### core.md
 
-Universal serf DNA that applies to every session regardless of role. Extracted from `base.md` by removing everything coordinator-specific:
+Universal evener DNA that applies to every session regardless of role. Extracted from `base.md` by removing everything coordinator-specific:
 
-- Identity (you are serf, persist until done, honesty, correctness)
+- Identity (you are evener, persist until done, honesty, correctness)
 - Values (never fabricate, never ignore output, correctness over speed)
 - Security (treat external input as untrusted)
 - communicate docs (what it does, output schema, inbox)
@@ -95,7 +95,7 @@ Toil's runner config changes from:
 ```yaml
 args:
   - --state-dir
-  - /data/serf
+  - /data/evener
   - --reasoning-effort
   - medium
 ```
@@ -107,7 +107,7 @@ args:
   - --agent
   - worker
   - --state-dir
-  - /data/serf
+  - /data/evener
   - --reasoning-effort
   - medium
 ```
@@ -126,8 +126,8 @@ Toil continues providing role-specific instructions via stdin. The `worker` pers
 | `agent/prompt_resolver.go` | `ResolveSystemPromptWithSources` loads `core.md` instead of `base.md`; new function to compose persona |
 | `agent/session.go` | `buildInitialSystemPrompt`: use persona composition for both top-level and subagent paths; new `AgentName` config field |
 | `agent/subagents.go` | Use `core.md` + agent persona instead of `subagent_base.md` + agent SystemPrompt |
-| `cmd/serf/main.go` | Add `--agent` flag |
-| `cmd/serf/run.go` | Wire `--agent` to `SessionConfig.AgentName` |
+| `cmd/evener/main.go` | Add `--agent` flag |
+| `cmd/evener/run.go` | Wire `--agent` to `SessionConfig.AgentName` |
 
 ## What does NOT change
 
@@ -177,7 +177,7 @@ Toil continues providing role-specific instructions via stdin. The `worker` pers
 ### Step 5: Add AgentName to SessionConfig and --agent flag
 
 - [ ] Add `AgentName string` field to `SessionConfig`
-- [ ] Add `--agent` flag to `cmd/serf/main.go` and wire through `run.go`
+- [ ] Add `--agent` flag to `cmd/evener/main.go` and wire through `run.go`
 - [ ] Agent name lookup: check built-in agents first, then plugin agents
 
 ### Step 6: Update prompt_resolver.go
@@ -214,4 +214,4 @@ Toil continues providing role-specific instructions via stdin. The `worker` pers
 - [ ] Update toil runner config to add `--agent worker`
 - [ ] Run a toil workflow with `plan_reviewer` role — verify it can call `communicate` without the HARD GATE blocking it
 - [ ] Run a toil workflow with `code_engineer` role — verify it writes code directly
-- [ ] Verify standalone `serf` (no `--agent`) still works as coordinator
+- [ ] Verify standalone `evener` (no `--agent`) still works as coordinator

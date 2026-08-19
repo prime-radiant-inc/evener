@@ -2,18 +2,18 @@
 
 **What this covers**: Workstream A — the global/per-launch sandbox default set in
 launch config (web Settings or TUI launch panel) is merged into the effective
-launch layer and rendered into the spawned `serf serve`'s argv, so a hub-spawned
+launch layer and rendered into the spawned `evener serve`'s argv, so a hub-spawned
 session enforces the configured box. Exercises the `Sandbox`/`SandboxNet` fields
-threaded through `cmd/serf-hub/internal/launchconfig/` (`types.go`, `merge.go`,
+threaded through `cmd/evener-hub/internal/launchconfig/` (`types.go`, `merge.go`,
 `wire.go`, `args.go`, `schema.go`) plus the TUI schema/apply switches. The one
 load-bearing gap this closes: before Workstream A, `ToArgs` did NOT emit the
 sandbox flags, so a launch-config choice never reached the spawned session.
 
 **Status: card + Go backstop (live hub not stood up).** Standing up the full hub
-(server + web/TUI + a spawned `serf serve`) live is heavy relative to what it
+(server + web/TUI + a spawned `evener serve`) live is heavy relative to what it
 proves here — the model-facing surface is a *settings form*, not an agent action,
 and the enforcement itself is already live-validated by
-`2026-07-09-sandbox-flag-live-e2e.md` (a real `serf --sandbox restricted` session).
+`2026-07-09-sandbox-flag-live-e2e.md` (a real `evener --sandbox restricted` session).
 The remaining risk is purely the *plumbing* — that a form choice becomes the right
 argv — which the focused `TestToArgs_Sandbox` backstop covers deterministically.
 The card below documents the real UI path so a future live pass has an exact
@@ -30,14 +30,14 @@ script.
    layer (only the global layer treats absent as off); the explicit `off` entry is
    how a project/launch layer clears a global default. Optionally set **Sandbox
    network egress** (`sandbox_net`, a `LaunchControlBoolean`, default on).
-   - Global layer file: `<stateRoot>/launch.toml` (e.g. `~/.serf/launch.toml`),
+   - Global layer file: `<stateRoot>/launch.toml` (e.g. `~/.evener/launch.toml`),
      `[global] sandbox = "restricted"`. The sandbox options are `DefaultableLayers
      = {global, project}` and `PerLaunch: true`, so a per-launch pick can override
      the global default (including back to `off`).
 3. Start a new session from the hub. The hub resolves the layer stack
    (`resolver.go`), merges to an effective layer (`merge.go`), and renders it into
-   the spawned `serf serve` argv via `ToArgs` (`args.go`).
-4. The spawned `serf serve` parses `--sandbox restricted` (`cmd/serf/main.go:203`,
+   the spawned `evener serve` argv via `ToArgs` (`args.go`).
+4. The spawned `evener serve` parses `--sandbox restricted` (`cmd/evener/main.go:203`,
    `flags.sandbox`) and provisions the enforced env.
 
 ## Expected + Falsification (live, when a hub is stood up)
@@ -54,7 +54,7 @@ script.
 
 ## Backstop (Go, run 2026-07-09 — PASS)
 The plumbing gap this workstream closes is asserted by
-`cmd/serf-hub/internal/launchconfig/args_test.go` `TestToArgs_Sandbox`:
+`cmd/evener-hub/internal/launchconfig/args_test.go` `TestToArgs_Sandbox`:
 
 | effective layer | emitted argv |
 |---|---|
@@ -75,16 +75,16 @@ Companion backstops (all PASS):
   `select`/`boolean`, `PerLaunch:true`, and the expected choice set.
 
 ```
-$ go test ./cmd/serf-hub/internal/launchconfig/ -run 'TestToArgs_Sandbox|TestMerge_Sandbox|TestWire_SandboxRoundTrips|TestLaunchOptionSchema_Sandbox'
-ok  primeradiant.com/serf/cmd/serf-hub/internal/launchconfig
+$ go test ./cmd/evener-hub/internal/launchconfig/ -run 'TestToArgs_Sandbox|TestMerge_Sandbox|TestWire_SandboxRoundTrips|TestLaunchOptionSchema_Sandbox'
+ok  primeradiant.com/evener/cmd/evener-hub/internal/launchconfig
 ```
 
 ## Sharp edges
-- The bare `serf` / `serf serve` CLI keeps its own `--sandbox` flag (default off)
+- The bare `evener` / `evener serve` CLI keeps its own `--sandbox` flag (default off)
   and does NOT read launch config — launch config only governs HUB-spawned
   sessions. Testing the CLI flag proves the flag, not this workstream.
 - `sandbox_net` without a non-off mode is deliberately suppressed by `ToArgs`
-  (serf ignores the flag without a sandbox), and `merge.go` emits a diagnostic for
+  (evener ignores the flag without a sandbox), and `merge.go` emits a diagnostic for
   the same combination — see `2026-07-09-sandbox-delegate-edge-cases.md`.
 - A live hub pass must assert on the SPAWNED session's output (the enforcement
   line / a blocked op), not on the hub's own process — the hub itself is not

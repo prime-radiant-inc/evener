@@ -4,9 +4,9 @@
 
 **Goal:** Visually hide transcript time/runtime metadata by default while keeping it available to assistive technology, and visually reveal it only when the relevant task/tool row is hovered or keyboard-focused.
 
-**Architecture:** Keep the existing renderer output and timing-formatting helpers unchanged. Implement the behavior as CSS-only opacity rules in `cmd/serf-hub/assets/style.css`, verified by deterministic static CSS contract tests in `cmd/serf-hub/jstest/test-pane-and-sidebar-css.js`.
+**Architecture:** Keep the existing renderer output and timing-formatting helpers unchanged. Implement the behavior as CSS-only opacity rules in `cmd/evener-hub/assets/style.css`, verified by deterministic static CSS contract tests in `cmd/evener-hub/jstest/test-pane-and-sidebar-css.js`.
 
-**Tech Stack:** Serf hub static assets, CSS, Node-based CSS contract tests, Go package tests via `go test ./cmd/serf-hub`.
+**Tech Stack:** Evener hub static assets, CSS, Node-based CSS contract tests, Go package tests via `go test ./cmd/evener-hub`.
 
 ## Global Constraints
 
@@ -27,16 +27,16 @@
 
 ## File Structure
 
-- Modify `cmd/serf-hub/assets/style.css`: change `.tool-call .tool-meta` so timing metadata is hidden by default and revealed on `.tool-call:hover` and `.tool-call:focus-within`.
-- Modify `cmd/serf-hub/jstest/test-pane-and-sidebar-css.js`: add static CSS contract assertions for default-hidden and hover/focus reveal behavior.
+- Modify `cmd/evener-hub/assets/style.css`: change `.tool-call .tool-meta` so timing metadata is hidden by default and revealed on `.tool-call:hover` and `.tool-call:focus-within`.
+- Modify `cmd/evener-hub/jstest/test-pane-and-sidebar-css.js`: add static CSS contract assertions for default-hidden and hover/focus reveal behavior.
 
 ---
 
 ### Task 1: Hover/focus reveal for tool timing metadata
 
 **Files:**
-- Modify: `cmd/serf-hub/assets/style.css`
-- Test: `cmd/serf-hub/jstest/test-pane-and-sidebar-css.js`
+- Modify: `cmd/evener-hub/assets/style.css`
+- Test: `cmd/evener-hub/jstest/test-pane-and-sidebar-css.js`
 
 **Interfaces:**
 - Consumes: existing `.tool-call .tool-meta` selector and `.tool-call` row structure.
@@ -44,7 +44,7 @@
 
 - [ ] **Step 1: Write the failing CSS contract test**
 
-In `cmd/serf-hub/jstest/test-pane-and-sidebar-css.js`, add these assertions before the final `if (failures.length > 0)` block:
+In `cmd/evener-hub/jstest/test-pane-and-sidebar-css.js`, add these assertions before the final `if (failures.length > 0)` block:
 
 ```js
 // Transcript tool timing metadata should stay out of the scan path until the
@@ -69,14 +69,14 @@ pass(
 Run:
 
 ```bash
-node cmd/serf-hub/jstest/test-pane-and-sidebar-css.js
+node cmd/evener-hub/jstest/test-pane-and-sidebar-css.js
 ```
 
 Expected: FAIL with at least `FAIL: tool timing metadata should be visually hidden by default without visibility:hidden` if the CSS still uses `visibility: hidden`.
 
 - [ ] **Step 3: Implement the CSS-only reveal behavior**
 
-In `cmd/serf-hub/assets/style.css`, replace the existing single-line `.tool-call .tool-meta` rule:
+In `cmd/evener-hub/assets/style.css`, replace the existing single-line `.tool-call .tool-meta` rule:
 
 ```css
 .tool-call .tool-meta { margin-left: auto; color: var(--text-muted); font-family: var(--font-mono); font-size: var(--text-xs); white-space: nowrap; }
@@ -105,7 +105,7 @@ with these rules:
 Run:
 
 ```bash
-node cmd/serf-hub/jstest/test-pane-and-sidebar-css.js
+node cmd/evener-hub/jstest/test-pane-and-sidebar-css.js
 ```
 
 Expected: PASS with `PASS: pane compact and full-border sidebar resize CSS contracts`.
@@ -115,7 +115,7 @@ Expected: PASS with `PASS: pane compact and full-border sidebar resize CSS contr
 Run:
 
 ```bash
-go test ./cmd/serf-hub -count=1
+go test ./cmd/evener-hub -count=1
 ```
 
 Expected: PASS.
@@ -125,7 +125,7 @@ Expected: PASS.
 Run:
 
 ```bash
-git diff -- cmd/serf-hub/assets/style.css cmd/serf-hub/jstest/test-pane-and-sidebar-css.js
+git diff -- cmd/evener-hub/assets/style.css cmd/evener-hub/jstest/test-pane-and-sidebar-css.js
 ```
 
 Expected: only the CSS hover/focus reveal rules and CSS contract assertions changed.
@@ -135,7 +135,7 @@ Expected: only the CSS hover/focus reveal rules and CSS contract assertions chan
 Run:
 
 ```bash
-git add cmd/serf-hub/assets/style.css cmd/serf-hub/jstest/test-pane-and-sidebar-css.js
+git add cmd/evener-hub/assets/style.css cmd/evener-hub/jstest/test-pane-and-sidebar-css.js
 git commit -m "fix(web): reveal tool timing on hover"
 ```
 

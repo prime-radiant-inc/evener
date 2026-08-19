@@ -2,7 +2,7 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Replace serf's flat-concatenation prompt assembly with a template engine that transcludes named sections, resolved by provider and agent qualifiers.
+**Goal:** Replace evener's flat-concatenation prompt assembly with a template engine that transcludes named sections, resolved by provider and agent qualifiers.
 
 **Architecture:** A `SectionResolver` scans layered file sources (project disk, global disk, embedded FS) for section files matching `{name}[.{qualifier}][_modifier].md[.tmpl]`. Master templates (`system.md.tmpl`, `subagent.md.tmpl`) call `{{ section "name" }}` to transclude resolved content. `text/template` renders `.tmpl` files with a `PromptData` struct.
 
@@ -91,7 +91,7 @@ import (
 
 func TestDiskSource_ReadFile(t *testing.T) {
     dir := t.TempDir()
-    os.WriteFile(filepath.Join(dir, "identity.md"), []byte("I am serf"), 0o644)
+    os.WriteFile(filepath.Join(dir, "identity.md"), []byte("I am evener"), 0o644)
 
     src := diskSource{dir: dir}
 
@@ -99,8 +99,8 @@ func TestDiskSource_ReadFile(t *testing.T) {
     if !ok {
         t.Fatal("expected identity.md to exist")
     }
-    if string(data) != "I am serf" {
-        t.Errorf("got %q, want %q", string(data), "I am serf")
+    if string(data) != "I am evener" {
+        t.Errorf("got %q, want %q", string(data), "I am evener")
     }
 
     _, ok = src.ReadFile("missing.md")
@@ -308,7 +308,7 @@ git commit -m "feat: add PromptData struct for template rendering context"
 ```go
 func TestSectionResolver_BaseOnly(t *testing.T) {
     dir := t.TempDir()
-    os.WriteFile(filepath.Join(dir, "identity.md"), []byte("I am serf"), 0o644)
+    os.WriteFile(filepath.Join(dir, "identity.md"), []byte("I am evener"), 0o644)
 
     r := &SectionResolver{
         provider: "openai",
@@ -317,8 +317,8 @@ func TestSectionResolver_BaseOnly(t *testing.T) {
     }
 
     got := r.Section("identity", PromptData{})
-    if got != "I am serf" {
-        t.Errorf("got %q, want %q", got, "I am serf")
+    if got != "I am evener" {
+        t.Errorf("got %q, want %q", got, "I am evener")
     }
 }
 
@@ -594,7 +594,7 @@ git commit -m "feat: implement section resolution algorithm with provider/agent 
 ```go
 func TestSectionResolver_Render(t *testing.T) {
     dir := t.TempDir()
-    os.WriteFile(filepath.Join(dir, "identity.md"), []byte("I am serf"), 0o644)
+    os.WriteFile(filepath.Join(dir, "identity.md"), []byte("I am evener"), 0o644)
     os.WriteFile(filepath.Join(dir, "values.md"), []byte("Be honest"), 0o644)
 
     // Create a minimal template
@@ -613,7 +613,7 @@ func TestSectionResolver_Render(t *testing.T) {
     if err != nil {
         t.Fatalf("Render error: %v", err)
     }
-    want := "I am serf\n\nBe honest"
+    want := "I am evener\n\nBe honest"
     if result != want {
         t.Errorf("got %q, want %q", result, want)
     }
@@ -624,7 +624,7 @@ func TestSectionResolver_Render(t *testing.T) {
 
 func TestSectionResolver_RenderConditional(t *testing.T) {
     dir := t.TempDir()
-    os.WriteFile(filepath.Join(dir, "identity.md"), []byte("I am serf"), 0o644)
+    os.WriteFile(filepath.Join(dir, "identity.md"), []byte("I am evener"), 0o644)
     os.WriteFile(filepath.Join(dir, "non-interactive.md"), []byte("headless mode"), 0o644)
 
     tmplDir := t.TempDir()
@@ -810,7 +810,7 @@ func (r *SectionResolver) resolveRole(data PromptData) string {
 }
 ```
 
-Import `"primeradiant.com/serf/frontmatter"`.
+Import `"primeradiant.com/evener/frontmatter"`.
 
 - [ ] **Step 4: Run tests to verify they pass**
 
@@ -928,7 +928,7 @@ From `core.md` lines 1-4 + `system.openai.md` personality section (deduplicated,
 ```markdown
 ## Identity
 
-You are serf. You persist until the task is completely solved. You do not stop at partial
+You are evener. You persist until the task is completely solved. You do not stop at partial
 solutions or analysis. You do not end your turn until the deliverables are done and verified.
 
 You are a deeply pragmatic, effective software engineer. You communicate efficiently,
@@ -1833,12 +1833,12 @@ Expected: all pass
 
 - [ ] **Step 2: Build the binary**
 
-Run: `make build` (or `go build ./cmd/serf/`)
+Run: `make build` (or `go build ./cmd/evener/`)
 Expected: success
 
-- [ ] **Step 3: Run serf with a trivial task and inspect the transcript**
+- [ ] **Step 3: Run evener with a trivial task and inspect the transcript**
 
-Run serf against a simple task, then extract the `system_prompt` from the transcript header JSON. Verify it looks correct — sections in the right order, no duplicated content, provider-specific tools present.
+Run evener against a simple task, then extract the `system_prompt` from the transcript header JSON. Verify it looks correct — sections in the right order, no duplicated content, provider-specific tools present.
 
 - [ ] **Step 4: Commit any final fixes**
 

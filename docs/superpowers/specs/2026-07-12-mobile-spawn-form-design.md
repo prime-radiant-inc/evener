@@ -1,7 +1,7 @@
 # Mobile spawn form — design spec
 
 Status: **approved** (Treatment A with auto-expanding textarea).
-Scope: the `/new` session creation form in `cmd/serf-hub`.
+Scope: the `/new` session creation form in `cmd/evener-hub`.
 Date: 2026-07-12.
 Companion: [`docs/web-ui/mockups/22-mobile-spawn-treatments.html`](../../web-ui/mockups/22-mobile-spawn-treatments.html).
 
@@ -10,14 +10,14 @@ React implementation status (2026-07-26): **Treatment A satisfied**.
 The current implementation lives in these React files, which supersede the
 older server-rendered implementation notes below:
 
-- `cmd/serf-hub/frontend/src/panes/spawn/Spawn.tsx`
-- `cmd/serf-hub/frontend/src/panes/spawn/MobileSettingRows.tsx`
-- `cmd/serf-hub/frontend/src/panes/spawn/MobileSettingRows.module.css`
-- `cmd/serf-hub/frontend/src/panes/spawn/spawn.module.css`
-- `cmd/serf-hub/frontend/src/widgets/promptcard/index.tsx`
-- `cmd/serf-hub/frontend/src/panes/session/coldStart.tsx`
-- `cmd/serf-hub/frontend/src/panes/session/Session.tsx`
-- `cmd/serf-hub/frontend/src/panes/welcome/Welcome.tsx`
+- `cmd/evener-hub/frontend/src/panes/spawn/Spawn.tsx`
+- `cmd/evener-hub/frontend/src/panes/spawn/MobileSettingRows.tsx`
+- `cmd/evener-hub/frontend/src/panes/spawn/MobileSettingRows.module.css`
+- `cmd/evener-hub/frontend/src/panes/spawn/spawn.module.css`
+- `cmd/evener-hub/frontend/src/widgets/promptcard/index.tsx`
+- `cmd/evener-hub/frontend/src/panes/session/coldStart.tsx`
+- `cmd/evener-hub/frontend/src/panes/session/Session.tsx`
+- `cmd/evener-hub/frontend/src/panes/welcome/Welcome.tsx`
 
 The live 390px baseline probe against the React `/new` route showed why the
 existing surface did not satisfy this treatment: `scrollWidth` was 390px, but
@@ -127,8 +127,8 @@ The notes in this section describe the pre-rewrite server-rendered
 implementation and remain for historical context. The React files and
 evidence above are the authoritative implementation record.
 
-- Update `cmd/serf-hub/templates/partials/spawn.html` to use row markup instead of the chip pile.
-- Update `cmd/serf-hub/assets/style.css` mobile rules (`≤767px`) for `.spawn-form`, `.spawn-row`, `.spawn-actions`, and `.spawn-input`.
-- Add a small JS behavior in `cmd/serf-hub/assets/spawn.js` for auto-expanding textarea.
+- Update `cmd/evener-hub/templates/partials/spawn.html` to use row markup instead of the chip pile.
+- Update `cmd/evener-hub/assets/style.css` mobile rules (`≤767px`) for `.spawn-form`, `.spawn-row`, `.spawn-actions`, and `.spawn-input`.
+- Add a small JS behavior in `cmd/evener-hub/assets/spawn.js` for auto-expanding textarea.
 - Keep the existing desktop chip layout unchanged; this spec targets mobile only.
 - Add or update `jstest/test-spawn.js` to assert row heights, label casing, and textarea expansion.

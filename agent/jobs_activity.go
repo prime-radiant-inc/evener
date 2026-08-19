@@ -10,10 +10,10 @@ import (
 	"strings"
 	"time"
 
-	"primeradiant.com/serf/agent/internal/delegatestore"
-	"primeradiant.com/serf/agent/internal/jobstore"
-	"primeradiant.com/serf/agent/schema"
-	"primeradiant.com/serf/appwire"
+	"primeradiant.com/evener/agent/internal/delegatestore"
+	"primeradiant.com/evener/agent/internal/jobstore"
+	"primeradiant.com/evener/agent/schema"
+	"primeradiant.com/evener/appwire"
 )
 
 const (
@@ -42,7 +42,7 @@ type activitySessionSnapshot struct {
 	Jobs            []*jobstore.JobRecord
 	LiveJobs        map[string]*jobstore.JobRecord
 	StableDelegates map[string]delegateSnapshot
-	Usage           *appwire.SerfUsage // cumulative self-only tokens; nil = unknown
+	Usage           *appwire.EvenerUsage // cumulative self-only tokens; nil = unknown
 	Diagnostics     []string
 	Children        map[string]*activitySessionSnapshot // child session ID
 	Errors          map[string]error                    // child session ID
@@ -328,7 +328,7 @@ func loadLiveActivityBase(s *Session) (activityLoadedBase, error) {
 			}
 		}
 	}
-	snapshot.Usage = appwire.SerfUsageFromLLM(s.CumulativeUsageSnapshot())
+	snapshot.Usage = appwire.EvenerUsageFromLLM(s.CumulativeUsageSnapshot())
 	jm, err := sessionJobManager(s)
 	if err == nil && jm != nil && jm.store != nil {
 		ordered, err := jm.store.LoadOrdered()
@@ -780,11 +780,11 @@ func cloneInt64(value *int64) *int64 {
 	return &clone
 }
 
-func activityUsageFromCumulative(usage *schema.CumulativeUsage) *appwire.SerfUsage {
+func activityUsageFromCumulative(usage *schema.CumulativeUsage) *appwire.EvenerUsage {
 	if usage == nil || *usage == (schema.CumulativeUsage{}) {
 		return nil
 	}
-	return &appwire.SerfUsage{
+	return &appwire.EvenerUsage{
 		InputTokens: usage.InputTokens, OutputTokens: usage.OutputTokens,
 		CacheReadTokens: usage.CacheReadTokens, TotalTokens: usage.TotalTokens,
 	}

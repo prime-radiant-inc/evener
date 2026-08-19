@@ -15,7 +15,7 @@ goroutine (`ProcessInput` → `processOneInput`) while **~16 external methods**
 (`SetModel`, `SetReasoningEffort`, `SetTimeout`, `Steer`, `Enqueue`,
 `DrainAsSteer`, `Compact`, `Close`, plus the `QueueDepth`/`ContextPressure`/
 `DetailedStatus`/`Tasks`/`State`/… readers) hit it concurrently from RPC handler
-goroutines (`cmd/serf/serve.go`). Correctness rests on hand-maintained discipline:
+goroutines (`cmd/evener/serve.go`). Correctness rests on hand-maintained discipline:
 
 - `mu` guards **~25 enumerated fields**; lock order `responseSideEffectsMu > mu`,
   `queueEventsMu > mu` is documented prose.
@@ -120,7 +120,7 @@ preserved.
 **Every public method keeps its exact signature and externally observable
 behavior.** `SetModel(string)`, `Steer(string)`, `Enqueue(ctx,string) error`,
 `Close()`, `ProcessInput(...)`, all readers — unchanged. The rewrite is **internal
-to the `agent` package**; `cmd/serf/serve.go`, the server, the TUI, and all
+to the `agent` package**; `cmd/evener/serve.go`, the server, the TUI, and all
 existing tests compile and behave identically. That bounds the blast radius and
 is what makes an XL rewrite of the most delicate code defensible.
 

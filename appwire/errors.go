@@ -42,7 +42,7 @@ const (
 )
 
 type ErrorData struct {
-	SerfErrorInfo    ErrorInfo        `json:"serfErrorInfo"`
+	EvenerErrorInfo  ErrorInfo        `json:"evenerErrorInfo"`
 	ClientMutationID string           `json:"clientMutationId,omitempty"`
 	MutationOutcome  MutationOutcome  `json:"mutationOutcome,omitempty"`
 	RetryDisposition RetryDisposition `json:"retryDisposition,omitempty"`
@@ -63,7 +63,7 @@ func InvalidParams(message string) WireError {
 	return WireError{
 		Code:    CodeInvalidParams,
 		Message: message,
-		Data:    ErrorData{SerfErrorInfo: ErrorInvalidParams},
+		Data:    ErrorData{EvenerErrorInfo: ErrorInvalidParams},
 	}
 }
 
@@ -71,7 +71,7 @@ func InvalidRequest(message string) WireError {
 	return WireError{
 		Code:    CodeInvalidRequest,
 		Message: message,
-		Data:    ErrorData{SerfErrorInfo: ErrorInvalidParams},
+		Data:    ErrorData{EvenerErrorInfo: ErrorInvalidParams},
 	}
 }
 
@@ -79,7 +79,7 @@ func MethodNotFound(method string) WireError {
 	return WireError{
 		Code:    CodeMethodNotFound,
 		Message: "method not found: " + method,
-		Data:    ErrorData{SerfErrorInfo: ErrorMethodNotFound},
+		Data:    ErrorData{EvenerErrorInfo: ErrorMethodNotFound},
 	}
 }
 
@@ -87,7 +87,7 @@ func InternalError(message string) WireError {
 	return WireError{
 		Code:    CodeInternalError,
 		Message: message,
-		Data:    ErrorData{SerfErrorInfo: ErrorInternal},
+		Data:    ErrorData{EvenerErrorInfo: ErrorInternal},
 	}
 }
 
@@ -95,7 +95,7 @@ func Conflict(message string) WireError {
 	return WireError{
 		Code:    CodeConflict,
 		Message: message,
-		Data:    ErrorData{SerfErrorInfo: ErrorConflict},
+		Data:    ErrorData{EvenerErrorInfo: ErrorConflict},
 	}
 }
 
@@ -103,7 +103,7 @@ func Unavailable(message string) WireError {
 	return WireError{
 		Code:    CodeUnavailable,
 		Message: message,
-		Data:    ErrorData{SerfErrorInfo: ErrorActionUnavailable},
+		Data:    ErrorData{EvenerErrorInfo: ErrorActionUnavailable},
 	}
 }
 
@@ -111,7 +111,7 @@ func SessionUnavailable(message string) WireError {
 	return WireError{
 		Code:    CodeUnavailable,
 		Message: message,
-		Data:    ErrorData{SerfErrorInfo: ErrorSessionUnavailable},
+		Data:    ErrorData{EvenerErrorInfo: ErrorSessionUnavailable},
 	}
 }
 
@@ -119,7 +119,7 @@ func HubLaunchError(message string) WireError {
 	return WireError{
 		Code:    CodeUnavailable,
 		Message: message,
-		Data:    ErrorData{SerfErrorInfo: ErrorHubLaunch},
+		Data:    ErrorData{EvenerErrorInfo: ErrorHubLaunch},
 	}
 }
 
@@ -127,6 +127,6 @@ func QueuedDrainPartial(message string) WireError {
 	return WireError{
 		Code:    CodeConflict,
 		Message: message,
-		Data:    ErrorData{SerfErrorInfo: ErrorQueuedDrainPartial},
+		Data:    ErrorData{EvenerErrorInfo: ErrorQueuedDrainPartial},
 	}
 }

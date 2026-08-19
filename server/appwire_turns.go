@@ -7,10 +7,10 @@ import (
 	"strings"
 	"sync"
 
-	"primeradiant.com/serf/agent/schema"
-	"primeradiant.com/serf/appwire"
-	"primeradiant.com/serf/internal/appserver"
-	"primeradiant.com/serf/internal/apptranscript"
+	"primeradiant.com/evener/agent/schema"
+	"primeradiant.com/evener/appwire"
+	"primeradiant.com/evener/internal/appserver"
+	"primeradiant.com/evener/internal/apptranscript"
 )
 
 // appTranscriptMaxLineBytes bounds a single transcript line. It is the same
@@ -53,7 +53,7 @@ type appTurnSnapshot struct {
 	// remember which turn is in flight.
 	//
 	// This deliberately answers a different question from the daemon's
-	// s.appActiveTurnID, published as thread.serf.activeTurnId. That field
+	// s.appActiveTurnID, published as thread.evener.activeTurnId. That field
 	// answers "is a turn in flight or reserved?" and is set from
 	// AppEventProjector.ReserveTurnID before any turn/started notification
 	// exists, so it can name a RESERVED turn that is absent from turns
@@ -299,13 +299,13 @@ func (s *appTurnSnapshot) applyLocked(records []appserver.SequencedNotification)
 					break
 				}
 			}
-		case appwire.NotifySerfSteeringInjected:
+		case appwire.NotifyEvenerSteeringInjected:
 			// Steering carries no turn ID: the daemon only injects into the
 			// turn already in flight. With no active turn there is nowhere
 			// wire-true to put it, and inventing one would publish a turn the
 			// daemon never started -- that race is recovered by the next
 			// authoritative snapshot instead.
-			var params appwire.SerfSteeringInjectedParams
+			var params appwire.EvenerSteeringInjectedParams
 			if json.Unmarshal(record.Notification.Params, &params) != nil {
 				continue
 			}
@@ -315,7 +315,7 @@ func (s *appTurnSnapshot) applyLocked(records []appserver.SequencedNotification)
 			}
 			turn := &s.turns[idx]
 			// Index per turn, not globally, matching the frontend reducer
-			// (cmd/serf-hub/frontend/src/protocol/reducer.ts:777-790) and the
+			// (cmd/evener-hub/frontend/src/protocol/reducer.ts:777-790) and the
 			// transcript reload shape it mirrors.
 			steeringCount := 0
 			for i := range turn.Items {

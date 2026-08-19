@@ -15,9 +15,9 @@ authors), not by app consumers. "Unexport it" is WRONG for those; the right move
 is *relocate to an SPI-addressed sub-package*. Every "remove/unexport" idea must
 be backed by a repo-wide usage check, not inference.
 
-**Blast radius:** the only consumers are serf's own binaries. Session queue/steer
-API changes touch 3 app files (`cmd/serf/serve.go`, `cmd/serf-hub/app_rpc.go`,
-`cmd/serf-hub/web_session.go`) + agent internals. The llm SPI is used by
+**Blast radius:** the only consumers are evener's own binaries. Session queue/steer
+API changes touch 3 app files (`cmd/evener/serve.go`, `cmd/evener-hub/app_rpc.go`,
+`cmd/evener-hub/web_session.go`) + agent internals. The llm SPI is used by
 `llm/providers/*`. No external consumers are known (externally-consumable was
 validated structurally, not by real dependents) — so breaking changes are cheap
 to land in-repo, but still churn a surface meant to be stable.

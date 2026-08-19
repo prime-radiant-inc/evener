@@ -2,7 +2,7 @@
 
 **What this covers**: kata `2frx` (live e2e for image attachments) over
 kata `xy3t`'s pasted-path detection in
-`cmd/serf-tui/hub_model.go:handleBracketedPaste`. When the user pastes
+`cmd/evener-tui/hub_model.go:handleBracketedPaste`. When the user pastes
 TEXT into the session composer (delivered as a bubbletea
 `KeyMsg{Paste: true}`), the TUI inspects the payload with
 `NormalizePastedPath` + `IsImageFile` + an `os.Stat` existence check.
@@ -21,11 +21,11 @@ Companion scenarios: `tui-paste-image-from-clipboard.md`,
   `tmux paste-buffer -p` is the path that emits bracketed-paste
   start/end markers — required for the TUI's `KeyMsg.Paste` branch
   to fire.
-- `serf-hub` reachable on an isolated `$HOME` and free port
+- `evener-hub` reachable on an isolated `$HOME` and free port
   (never Jesse's port `9180` — see the Setup checklist in
   `docs/agentic-testing.md`). Token at
-  `$HOME/.serf/auth-token`.
-- `./serf-tui` and `./serf-hub` built in repo root.
+  `$HOME/.evener/auth-token`.
+- `./evener-tui` and `./evener-hub` built in repo root.
 - `anthropic/claude-haiku-4-5-20251001` (or `openai/gpt-5.5`)
   reachable through configured credentials.
 - The tmux session name is derived from this run's own scratch dir
@@ -40,10 +40,10 @@ Companion scenarios: `tui-paste-image-from-clipboard.md`,
 1. **Write a fixture PNG into this run's own directory.** The
    basename is stable because the chip assertion below reads it; the
    directory is this run's (the Setup checklist's `$run`), never a
-   fixed `/tmp/serf-e2e-test-image.png` that a second agent's Cleanup
+   fixed `/tmp/evener-e2e-test-image.png` that a second agent's Cleanup
    would delete out from under this one mid-paste (kata `k2rx`):
    ```bash
-   IMG="$run/serf-e2e-test-image.png"
+   IMG="$run/evener-e2e-test-image.png"
    convert -size 64x64 xc:red "$IMG"
    file "$IMG"    # PNG image data, 64 x 64
    ```
@@ -51,13 +51,13 @@ Companion scenarios: `tui-paste-image-from-clipboard.md`,
 2. **Spawn a dormant session** (single trivial first turn so we have
    `state=idle` to navigate to):
    ```bash
-   WORKDIR=$(mktemp -d -t serf-tui-imgpath-XXXX)
-   TMUX_SESSION="serf-imgpath-$(basename "$WORKDIR")"
-   TOKEN=$(cat "$HOME/.serf/auth-token")
+   WORKDIR=$(mktemp -d -t evener-tui-imgpath-XXXX)
+   TMUX_SESSION="evener-imgpath-$(basename "$WORKDIR")"
+   TOKEN=$(cat "$HOME/.evener/auth-token")
    HUB=http://127.0.0.1:$PORT
    resp=$(curl -s -X POST -H "Content-Type: application/json" \
      -H "Authorization: Bearer $TOKEN" \
-     -d "{\"prompt\":\"reply with the literal word: ready\",\"harness\":\"serf\",\"model\":\"anthropic/claude-haiku-4-5-20251001\",\"working_dir\":\"$WORKDIR\",\"branch\":\"\",\"access_mode\":\"full\",\"agent\":\"default\",\"launch_overrides\":{}}" \
+     -d "{\"prompt\":\"reply with the literal word: ready\",\"harness\":\"evener\",\"model\":\"anthropic/claude-haiku-4-5-20251001\",\"working_dir\":\"$WORKDIR\",\"branch\":\"\",\"access_mode\":\"full\",\"agent\":\"default\",\"launch_overrides\":{}}" \
      "$HUB/api/spawn")
    SID=$(echo "$resp" | python3 -c "import json,sys; print(json.load(sys.stdin)['session_id'])")
    for i in $(seq 1 30); do
@@ -69,10 +69,10 @@ Companion scenarios: `tui-paste-image-from-clipboard.md`,
    done
    ```
 
-3. **Launch serf-tui in tmux**:
+3. **Launch evener-tui in tmux**:
    ```bash
    tmux new-session -d -s "$TMUX_SESSION" -x 200 -y 50 \
-     "./serf-tui --hub-addr 127.0.0.1:$PORT --debug"
+     "./evener-tui --hub-addr 127.0.0.1:$PORT --debug"
    sleep 1
    ```
 
@@ -101,7 +101,7 @@ Companion scenarios: `tui-paste-image-from-clipboard.md`,
    The footer should now show:
    ```
    attachments  alt+backspace: drop last
-   📎 serf-e2e-test-image.png [×]
+   📎 evener-e2e-test-image.png [×]
    ```
    The textarea body should be empty — the path text was NOT
    inserted.
@@ -121,7 +121,7 @@ Companion scenarios: `tui-paste-image-from-clipboard.md`,
 ## Expected
 
 - **Step 5 (chip vs text)**: pane shows the chip
-  `📎 serf-e2e-test-image.png [×]`. The textarea body is empty.
+  `📎 evener-e2e-test-image.png [×]`. The textarea body is empty.
   Falsification:
   - Textarea contains the path from `$IMG` and NO chip:
     `handleBracketedPaste` didn't match (verify that the file
@@ -134,7 +134,7 @@ Companion scenarios: `tui-paste-image-from-clipboard.md`,
     on tmux 3.x).
 - **Step 6 (idle + reply)**: post-send pane shows the user message,
   a brief `read_file` probe at the actual workdir (e.g.
-  `read /tmp/serf-tui-imgpath-XXXX: is a directory`; a harmless
+  `read /tmp/evener-tui-imgpath-XXXX: is a directory`; a harmless
   haiku-4-5 quirk), then a `communicate` with the description.
   State returns to `idle`. Falsification: model produces
   unrelated text or refuses.
@@ -147,7 +147,7 @@ Companion scenarios: `tui-paste-image-from-clipboard.md`,
 ## Cleanup
 
 ```bash
-TOKEN=$(cat "$HOME/.serf/auth-token")
+TOKEN=$(cat "$HOME/.evener/auth-token")
 curl -s -X POST -H "Content-Type: application/json" \
   -H "Authorization: Bearer $TOKEN" -d '{}' \
   "$HUB/s/$SID/shutdown" >/dev/null
@@ -155,14 +155,14 @@ tmux kill-session -t "$TMUX_SESSION" 2>/dev/null
 rm -rf "$WORKDIR"
 rm -f "$IMG"
 # Optional, for hermeticity:
-# find $HOME/.local/state/serf/projects -name "$SID*" -delete
+# find $HOME/.local/state/evener/projects -name "$SID*" -delete
 ```
 
 ## Sharp edges
 
 - **Bracketed-paste detection lives in the SESSION composer only.**
   The handler is invoked from
-  `cmd/serf-tui/hub_model.go:handleSessionInput` (line ~1457). The
+  `cmd/evener-tui/hub_model.go:handleSessionInput` (line ~1457). The
   SPAWN form's prompt text field doesn't have a paste-path branch
   — pasting a path there inserts the literal text into the
   textarea. If you want "attach at spawn time", use the web /new
@@ -172,7 +172,7 @@ rm -f "$IMG"
   bubbletea never sets `KeyMsg.Paste=true`. `tmux send-keys -l "$IMG"`
   similarly inserts the path as text without firing the detection.
 - **Supported extensions** are pinned in
-  `cmd/serf-tui/clipboard_paste.go:IsImageFile`:
+  `cmd/evener-tui/clipboard_paste.go:IsImageFile`:
   `.png .jpg .jpeg .gif .webp`. Other extensions pass through to
   the textarea unchanged. To attach a `.heic` or `.svg` today,
   copy the file to a `.png` (Pre-state) before pasting.

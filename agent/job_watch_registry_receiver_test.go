@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	"primeradiant.com/serf/agent/internal/jobstore"
+	"primeradiant.com/evener/agent/internal/jobstore"
 )
 
 // The durable registry row names who RECEIVES a watch, not just who owns it. A
@@ -42,7 +42,7 @@ func TestWatchRegistryRowCarriesReceiverIdentity(t *testing.T) {
 	}
 }
 
-// The folded registry — what serf-doctor and the restore paths read — carries
+// The folded registry — what evener-doctor and the restore paths read — carries
 // the receiver through, so nobody has to re-parse the config snapshot to answer
 // "who is watching this".
 func TestFoldedWatchRecordCarriesReceiverIdentity(t *testing.T) {

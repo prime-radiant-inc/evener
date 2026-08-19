@@ -1,4 +1,4 @@
-//go:build serffuzz
+//go:build evenerfuzz
 
 package agent
 
@@ -12,9 +12,9 @@ import (
 	"testing"
 	"unicode/utf8"
 
-	"primeradiant.com/serf/agent/internal/agenttest"
-	"primeradiant.com/serf/fuzz/fault"
-	"primeradiant.com/serf/llm"
+	"primeradiant.com/evener/agent/internal/agenttest"
+	"primeradiant.com/evener/fuzz/fault"
+	"primeradiant.com/evener/llm"
 )
 
 // This file fuzzes the session's tool-DISPATCH surface — the plumbing that turns

@@ -13,7 +13,7 @@ Live end-to-end, real provider (billed).
 ## Pre-state
 
 Same harness: fresh binary, hermetic repo with committed `main.go`, isolated
-`SERF_STATE_DIR` with config symlinked.
+`EVENER_STATE_DIR` with config symlinked.
 
 ## Steps
 

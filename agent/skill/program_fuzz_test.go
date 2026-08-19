@@ -1,4 +1,4 @@
-//go:build serffuzz
+//go:build evenerfuzz
 
 package skill
 
@@ -11,8 +11,8 @@ import (
 	"testing"
 	"testing/fstest"
 
-	"primeradiant.com/serf/agent/internal/agenttest"
-	"primeradiant.com/serf/agent/internal/frontmatter"
+	"primeradiant.com/evener/agent/internal/agenttest"
+	"primeradiant.com/evener/agent/internal/frontmatter"
 )
 
 // FuzzSkillDiscoveryProgram drives the complete local-skill lifecycle through

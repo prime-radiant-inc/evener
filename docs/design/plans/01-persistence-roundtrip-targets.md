@@ -24,7 +24,7 @@ come from 8.4. The LoC budget is **advisory** — keep every target. Full text i
 
 ## 0. Why this surface first
 
-serf's historical bugs cluster at **reload / replay**, not at write. The dual-projection split is
+evener's historical bugs cluster at **reload / replay**, not at write. The dual-projection split is
 the recurring fault line: a turn is projected one way live (the agent's own projector) and another
 way on reload (transcript JSONL → hub replay types → `apptranscript.ProjectTurn`). When the reload
 type can't carry a content kind, that kind silently vanishes on refresh. Real instances on this
@@ -81,7 +81,7 @@ Readers are unexported in package `agent`, so the read+replay target must live i
 
 ### Seam C — jobstore event log (`agent/internal/jobstore`, module `agent`)
 On-disk: JSONL, append-only, monotonic `Seq` assigned at append, fsync per append. The folds are
-pure reducers — the strongest replay-idempotence surface in serf.
+pure reducers — the strongest replay-idempotence surface in evener.
 
 | Role | Symbol | Site |
 |---|---|---|
@@ -100,15 +100,15 @@ Written-then-read: each `Event`; the folds reconstruct `JobRecord`/`DelegateReco
 append order (load-bearing for the round-trip oracle, see §3-C). `any` (`StructuredResult`) and
 `*provenance.Causal` pointers are present — JSON-compare, not `reflect.DeepEqual`.
 
-### Seam D — hub replay projection (`cmd/serf-hub` package `main`, module `.`)
+### Seam D — hub replay projection (`cmd/evener-hub` package `main`, module `.`)
 The reload path. A transcript `Entry` (`schema.Turn`) on disk is re-decoded into the hub's own
 `ReplayEntry` shape, converted back to a `schema.Turn`, then projected for the web UI.
 
 | Role | Symbol | Site |
 |---|---|---|
-| replay types | `ReplayEntry` / `ReplayTurn` / `ReplayPart` (per-kind nullable carriers) | `cmd/serf-hub/internal/hubcore/types.go:17,21,31` |
-| **reload convert** | `replayTurnToAgentTurn(turn)` (`ReplayTurn` → `schema.Turn`) | `cmd/serf-hub/app_threadread.go:217` |
-| reload project | `appItemsFromReplayTurn(...)` | `cmd/serf-hub/app_threadread.go:200` |
+| replay types | `ReplayEntry` / `ReplayTurn` / `ReplayPart` (per-kind nullable carriers) | `cmd/evener-hub/internal/hubcore/types.go:17,21,31` |
+| **reload convert** | `replayTurnToAgentTurn(turn)` (`ReplayTurn` → `schema.Turn`) | `cmd/evener-hub/app_threadread.go:217` |
+| reload project | `appItemsFromReplayTurn(...)` | `cmd/evener-hub/app_threadread.go:200` |
 | **shared projector** | `apptranscript.ProjectTurn(turnID, idx, turn, toolNames, imageProjector)` | `internal/apptranscript/apptranscript.go:190` |
 | file driver | `apptranscript.TurnsFromFile(path, max, project)` | `internal/apptranscript/apptranscript.go:476` |
 
@@ -134,7 +134,7 @@ Four files, each next to the code it tests, in that code's module. All inputs ar
 | 1 | `agent/schema/snapshot_fuzz_test.go` | `schema` | `SessionMeta` decode + `Save`/`Load` | 80–120 |
 | 2 | `agent/internal/jobstore/fold_fuzz_test.go` | `jobstore` | event-log decode + **all six** folds + persist→reload (all folds) + `Append`==`AppendBatch` | 150–200 |
 | 3 | `agent/transcript_roundtrip_fuzz_test.go` | `agent` | transcript write/read + `ResumeHistory` + **`APICall` fixed point** | 120–160 |
-| 4 | `cmd/serf-hub/replay_fuzz_test.go` | `main` | hub replay carry-through (isolated) **+ full live-vs-reload metamorphic** | 160–220 |
+| 4 | `cmd/evener-hub/replay_fuzz_test.go` | `main` | hub replay carry-through (isolated) **+ full live-vs-reload metamorphic** | 160–220 |
 
 **LoC budget is advisory.** Keep every target and every oracle below; do not trim to a number
 (decision 5). The total lands above the ~300–500 charter sketch because the decisions added oracles
@@ -192,7 +192,7 @@ readAll → Fold`. A field that `Append` writes but `readAllLocked` or `applyEve
 `Seq`-ordering regression, or a marshal/unmarshal asymmetry on `StructuredResult any` /
 `*provenance.Causal` all diverge here — and now diverge on whichever of the six projections carries
 that field, not just job records. This is the in-memory job state a daemon restart reconstructs —
-exactly serf's reload-bug class, at its purest reducer.
+exactly evener's reload-bug class, at its purest reducer.
 
 **Determinism notes:** compare with `json.Marshal` of the folded maps, not `reflect.DeepEqual` —
 JSON normalizes `time.Time` (drops the monotonic reading) and pointer identity. Sort input by `Seq`
@@ -240,7 +240,7 @@ lines. A compaction-scan or orphan-repair regression breaks step 3's fixed point
 `repairOrphanedToolResults`); header-only; garbage. 8.4 harvests the real transcripts; the malformed
 inputs are inline bootstrap.
 
-### Target 4 — `cmd/serf-hub/replay_fuzz_test.go`, package `main` — **two fuzz functions**
+### Target 4 — `cmd/evener-hub/replay_fuzz_test.go`, package `main` — **two fuzz functions**
 The reload carry-through surface — **the first place to look.** Decision 1: build **both** the
 isolated carry-through oracle **and** the full live-vs-reload metamorphic. Both take the JSON of one
 transcript `Entry` as the `[]byte` input; they share a seed corpus and the reload-roundtrip helper.

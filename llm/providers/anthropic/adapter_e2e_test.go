@@ -8,13 +8,13 @@ import (
 	"testing"
 	"time"
 
-	"primeradiant.com/serf/llm"
+	"primeradiant.com/evener/llm"
 )
 
 func anthropicE2EAdapter(t *testing.T) (*Adapter, string) {
 	t.Helper()
-	if os.Getenv("SERF_ANTHROPIC_E2E") != "1" {
-		t.Skip("set SERF_ANTHROPIC_E2E=1 to run live Anthropic e2e tests")
+	if os.Getenv("EVENER_ANTHROPIC_E2E") != "1" {
+		t.Skip("set EVENER_ANTHROPIC_E2E=1 to run live Anthropic e2e tests")
 	}
 	if testing.Short() {
 		t.Skip("skipping live Anthropic e2e test in short mode")
@@ -26,7 +26,7 @@ func anthropicE2EAdapter(t *testing.T) (*Adapter, string) {
 	if err != nil {
 		t.Fatalf("NewFromEnv: %v", err)
 	}
-	model := strings.TrimSpace(os.Getenv("SERF_ANTHROPIC_E2E_MODEL"))
+	model := strings.TrimSpace(os.Getenv("EVENER_ANTHROPIC_E2E_MODEL"))
 	if model == "" {
 		model = "claude-sonnet-4-5-20250929"
 	}
@@ -45,7 +45,7 @@ func TestAdapter_E2E_AnthropicBasicComplete(t *testing.T) {
 
 	resp, err := a.Complete(ctx, llm.Request{
 		Model:       model,
-		Messages:    []llm.Message{llm.User("Reply with exactly: serf anthropic e2e ok")},
+		Messages:    []llm.Message{llm.User("Reply with exactly: evener anthropic e2e ok")},
 		ServiceTier: "standard_only",
 	})
 	if err != nil {
@@ -67,7 +67,7 @@ func TestAdapter_E2E_AnthropicCountInputTokens(t *testing.T) {
 
 	req := llm.Request{
 		Model:    model,
-		Messages: []llm.Message{llm.User("Count this short Serf token-counting prompt.")},
+		Messages: []llm.Message{llm.User("Count this short Evener token-counting prompt.")},
 	}
 	got, err := a.CountInputTokens(ctx, req)
 	if err != nil {
@@ -133,7 +133,7 @@ func TestAdapter_E2E_AnthropicThinkingAndRoundTrip(t *testing.T) {
 
 // TestAdapter_E2E_AnthropicStreamsReasoningDeltas verifies the live extended-
 // thinking stream emits incremental StreamEventReasoningDelta events (not just a
-// final thinking block). Gated behind SERF_ANTHROPIC_E2E=1 + ANTHROPIC_API_KEY;
+// final thinking block). Gated behind EVENER_ANTHROPIC_E2E=1 + ANTHROPIC_API_KEY;
 // skips otherwise.
 func TestAdapter_E2E_AnthropicStreamsReasoningDeltas(t *testing.T) {
 	a, model := anthropicE2EAdapter(t)

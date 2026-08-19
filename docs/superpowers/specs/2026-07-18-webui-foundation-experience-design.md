@@ -1,8 +1,8 @@
-# Serf Web Hub — Foundation + Experience Pass
+# Evener Web Hub — Foundation + Experience Pass
 
 Status: approved (2026-07-18), revised after two adversarial-review rounds (v3).
 Work branch: `webui-joy`.
-Scope: `cmd/serf-hub` frontend (`assets/`, `templates/`, and `web.go` home rendering).
+Scope: `cmd/evener-hub` frontend (`assets/`, `templates/`, and `web.go` home rendering).
 
 v2 resolved 26 round-1 findings (reviewers 1–2, 13 each, tie). v3 resolves 26
 round-2 findings (reviewer 3: 14 — round winner; reviewer 4: 12). Round-2 reports
@@ -14,7 +14,7 @@ round-1 resolutions retained from v2 are unmarked.
 
 The owner reports the hub feels "clunky, unbalanced, and not very responsive" — both
 interaction latency/jank and layout adaptiveness. Two read-only audits (2026-07-18)
-produced the findings below; line numbers refer to `cmd/serf-hub/assets/` on `main`
+produced the findings below; line numbers refer to `cmd/evener-hub/assets/` on `main`
 at `be125a62`.
 
 ### Jank findings (performance audit)
@@ -57,7 +57,7 @@ at `be125a62`.
 ## Design decisions
 
 Architecture unchanged: no bundler, no framework, embedded assets, the
-`window.SerfRendererInternal` module pattern. `docs/web-ui/design-system.md` is the
+`window.EvenerRendererInternal` module pattern. `docs/web-ui/design-system.md` is the
 north star; where shipped code contradicts it the code changes, and where this spec
 extends it the doc gets an addendum in the same commit.
 
@@ -83,7 +83,7 @@ extends it the doc gets an addendum in the same commit.
   leak or cross-match. The queue is drained and generation-guarded on
   `resetTranscriptReplay`.
 - **jstest migration.** The batching increment ships a synchronous
-  `SerfRenderer.flush()` test hook and migrates affected tests in the same
+  `EvenerRenderer.flush()` test hook and migrates affected tests in the same
   commits; the suite stays green at every commit.
 - **Streaming text [v3 — frozen head, raw tail].** Assistant deltas coalesce per
   frame. While accumulated length ≤4KB: markdown re-parse at most once per frame.
@@ -107,7 +107,7 @@ extends it the doc gets an addendum in the same commit.
   `appendAssistantBlock` a duplicate). Turn-meta is (re)appended **after** any
   (re)parse, since re-parsing destroys children. A jstest covers the
   codex-shape `TURN_COMPLETED → ASSISTANT_TEXT_END` sequence, not just the
-  serf-source shape.
+  evener-source shape.
 - **Reasoning deltas** append text nodes; the 200-char preview tail is
   recomputed at most once per frame, not per delta.
 - **Tool output.** During streaming: append-only `textContent` on a single `<pre>`
@@ -254,7 +254,7 @@ extends it the doc gets an addendum in the same commit.
   short-height (1100×600) case** × dark/light × home/session, before/after,
   reviewed by eye; deep-history prepend scroll-stability spot check.
 - Gate per increment: `make build-hub` + `jstest/run-all.sh` +
-  `go test ./cmd/serf-hub`.
+  `go test ./cmd/evener-hub`.
 
 ## Increments [v3 — dependency order]
 

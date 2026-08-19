@@ -1,4 +1,4 @@
-# tui-interrupt-live-turn: serf-tui /interrupt fires against a real mid-turn session
+# tui-interrupt-live-turn: evener-tui /interrupt fires against a real mid-turn session
 
 **What this covers**: kata `9sck`. The web title-bar interrupt is
 verified by `workspace-title-bar-actions.md` (kata `gx92` + the
@@ -19,14 +19,14 @@ palette as soon as the turn starts.
 ## Pre-state
 
 - `tmux` installed (tested on tmux 3.4).
-- `serf-hub` reachable on an isolated `$HOME` and free port
+- `evener-hub` reachable on an isolated `$HOME` and free port
   (never Jesse's port `9180` — see the Setup checklist in
   `docs/agentic-testing.md`). Token at
-  `$HOME/.serf/auth-token` (`./serf-hub` launches it; web-only auth).
-- `./serf-tui` and `./serf-hub` built and present in the repo root
-  (`go build -o serf-tui ./cmd/serf-tui && go build -o serf-hub
-  ./cmd/serf-hub`).
-- OpenAI OAuth signed in (`./serf openai status` shows
+  `$HOME/.evener/auth-token` (`./evener-hub` launches it; web-only auth).
+- `./evener-tui` and `./evener-hub` built and present in the repo root
+  (`go build -o evener-tui ./cmd/evener-tui && go build -o evener-hub
+  ./cmd/evener-hub`).
+- OpenAI OAuth signed in (`./evener openai status` shows
   `source=oauth`). The slow-turn prompt needs the model to actually
   call `exec_command`; `openai/gpt-5.4-mini` does so reliably.
 - The tmux session name is derived from this run's own scratch dir
@@ -39,10 +39,10 @@ palette as soon as the turn starts.
 Shared setup:
 
 ```bash
-TOKEN=$(cat "$HOME/.serf/auth-token")
+TOKEN=$(cat "$HOME/.evener/auth-token")
 HUB=http://127.0.0.1:$PORT
-tmpdir=$(mktemp -d -t serf-e2e-9sck-XXXXX)
-TMUX_SESSION="serf-interrupt-$(basename "$tmpdir")"
+tmpdir=$(mktemp -d -t evener-e2e-9sck-XXXXX)
+TMUX_SESSION="evener-interrupt-$(basename "$tmpdir")"
 ```
 
 1. **Spawn a fresh session** via the REST API (cleanest path: gives
@@ -50,7 +50,7 @@ TMUX_SESSION="serf-interrupt-$(basename "$tmpdir")"
    ```bash
    resp=$(curl -s -X POST -H "Content-Type: application/json" \
      -H "Authorization: Bearer $TOKEN" \
-     -d "{\"prompt\":\"reply with the word 'ready' and nothing else\",\"model\":\"openai/gpt-5.4-mini\",\"working_dir\":\"$tmpdir\",\"harness\":\"serf\",\"branch\":\"\",\"access_mode\":\"full\",\"agent\":\"default\",\"launch_overrides\":{}}" \
+     -d "{\"prompt\":\"reply with the word 'ready' and nothing else\",\"model\":\"openai/gpt-5.4-mini\",\"working_dir\":\"$tmpdir\",\"harness\":\"evener\",\"branch\":\"\",\"access_mode\":\"full\",\"agent\":\"default\",\"launch_overrides\":{}}" \
      $HUB/api/spawn)
    SID=$(echo "$resp" | python3 -c "import json,sys; print(json.load(sys.stdin)['session_id'])")
    # wait for idle
@@ -63,14 +63,14 @@ TMUX_SESSION="serf-interrupt-$(basename "$tmpdir")"
    echo "SID=$SID state=$state"
    ```
 
-2. **Launch serf-tui in tmux**:
+2. **Launch evener-tui in tmux**:
    ```bash
    tmux new-session -d -s "$TMUX_SESSION" -x 200 -y 50 \
-     "./serf-tui --hub-addr 127.0.0.1:$PORT --debug"
+     "./evener-tui --hub-addr 127.0.0.1:$PORT --debug"
    sleep 1
    tmux capture-pane -t "$TMUX_SESSION" -p | head -5
    ```
-   Header line should read `serf live ... $HUB · N live` — the
+   Header line should read `evener live ... $HUB · N live` — the
    isolated hub address from step 1, never Jesse's real `9180` — and
    the project for `$tmpdir` should be visible in the tree.
 
@@ -86,7 +86,7 @@ TMUX_SESSION="serf-interrupt-$(basename "$tmpdir")"
    tmux capture-pane -t "$TMUX_SESSION" -p | head -10
    ```
    The header should now read
-   `serf / session / reply with the word 'ready' ...` and the status
+   `evener / session / reply with the word 'ready' ...` and the status
    line shows `state: idle  model: gpt-5.4-mini`.
 
 4. **Send a slow turn**. The prompt must force a real tool call,
@@ -162,13 +162,13 @@ TMUX_SESSION="serf-interrupt-$(basename "$tmpdir")"
    active_turn_id= None
    ```
    TUI pane status line should show `state: idle` and somewhere on
-   the transcript view: `Serf error: context canceled`. The session
+   the transcript view: `Evener error: context canceled`. The session
    stays alive (kata `0ax1`); only the active turn was cancelled.
 
 9. **Verify the transcript preserved the mid-turn state plus the
    interrupt marker**:
    ```bash
-   TFILE=$(find $HOME/.local/state/serf/projects -name "$SID.transcript.jsonl")
+   TFILE=$(find $HOME/.local/state/evener/projects -name "$SID.transcript.jsonl")
    tail -4 "$TFILE" | python3 -c "
    import json, sys
    for line in sys.stdin:
@@ -227,7 +227,7 @@ TMUX_SESSION="serf-interrupt-$(basename "$tmpdir")"
 11. **Confirm the TUI did not crash**:
     ```bash
     tmux ls | grep "$TMUX_SESSION"
-    ps -ef | grep -E 'serf-tui.*--hub-addr' | grep -v grep
+    ps -ef | grep -E 'evener-tui.*--hub-addr' | grep -v grep
     ```
     Both should still report the process alive.
 
@@ -366,9 +366,9 @@ TMUX_SESSION="serf-interrupt-$(basename "$tmpdir")"
 ```bash
 tmux kill-session -t "$TMUX_SESSION" 2>/dev/null
 rm -rf "$tmpdir"
-# meta + transcript files under $HOME/.local/state/serf/projects linger
+# meta + transcript files under $HOME/.local/state/evener/projects linger
 # (harmless). Optional:
-# find $HOME/.local/state/serf/projects -name "$SID*" -delete
+# find $HOME/.local/state/evener/projects -name "$SID*" -delete
 ```
 
 ## Sharp edges

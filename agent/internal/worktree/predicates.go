@@ -300,8 +300,8 @@ func MergedAncestryLocal(run GitRunner, tipSHA, mergeTarget string) (MergedResul
 }
 
 // Adopted implements the two-SHA rule of spec §5 sweep 2: a surviving
-// branch counts as adopted (the user built on it after serf's `remove`)
-// when its tip is neither the recorded base SHA nor the tip serf recorded
+// branch counts as adopted (the user built on it after evener's `remove`)
+// when its tip is neither the recorded base SHA nor the tip evener recorded
 // at removal time. A branch reset back to baseSHA is NOT adopted — it is
 // collectible via Unchanged, exactly as if nothing had ever been committed.
 // Pure: no git access, so callers pass the SHAs already resolved.

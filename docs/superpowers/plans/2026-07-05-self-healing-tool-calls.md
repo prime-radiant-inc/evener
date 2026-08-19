@@ -39,7 +39,7 @@
 - Modify: `agent/session_tools.go:249-424` — wire `prepareToolCall` into `execTool`.
 - Create: `agent/session_tool_repair_integration_test.go` — end-to-end with a fake provider.
 - Modify: `internal/appprojector/appwire_projection.go` — case for the new event.
-- Modify: `cmd/serf/run.go` — case for the new event in the CLI tool-call switch.
+- Modify: `cmd/evener/run.go` — case for the new event in the CLI tool-call switch.
 
 ---
 
@@ -1118,9 +1118,9 @@ import (
 	"encoding/json"
 	"testing"
 
-	"primeradiant.com/serf/agent/execenv"
-	"primeradiant.com/serf/agent/internal/tool"
-	"primeradiant.com/serf/llm"
+	"primeradiant.com/evener/agent/execenv"
+	"primeradiant.com/evener/agent/internal/tool"
+	"primeradiant.com/evener/llm"
 )
 
 // regTool builds a RegisteredTool with a no-op executor so registration succeeds.
@@ -1214,9 +1214,9 @@ import (
 
 	jsonschema "github.com/santhosh-tekuri/jsonschema/v5"
 
-	"primeradiant.com/serf/agent/internal/tool"
-	"primeradiant.com/serf/agent/internal/tool/repair"
-	"primeradiant.com/serf/llm"
+	"primeradiant.com/evener/agent/internal/tool"
+	"primeradiant.com/evener/agent/internal/tool/repair"
+	"primeradiant.com/evener/llm"
 )
 
 // prepareResult is the outcome of the pre-dispatch repair step. When PrevalErr
@@ -1485,7 +1485,7 @@ git commit -m "feat(agent): wire self-healing repair into execTool before hooks"
 
 **Files:**
 - Modify: `internal/appprojector/appwire_projection.go`
-- Modify: `cmd/serf/run.go`
+- Modify: `cmd/evener/run.go`
 - Test: `internal/appprojector/appwire_projection_test.go` (if the package has one; else assert via `go build` + a projector unit test)
 
 **Interfaces:**
@@ -1511,7 +1511,7 @@ Expected: FAIL (event dropped by `default:`).
 
 In `appwire_projection.go`, add a `case events.EventToolCallRepaired:` to the top-level `switch event.Kind` (near the `EventToolCallStart`/`End` cases) that records/annotates the repair on the corresponding tool-call bubble (follow the pattern the `EventToolCallEnd` case uses to locate the bubble by `CallID`).
 
-In `cmd/serf/run.go`, add a `case events.EventToolCallRepaired:` to the CLI's tool-call event switch that prints a concise dim line (e.g. `↻ repaired edit_file: old_str→old_string`) using `ToolCallRepairedData.Changes`.
+In `cmd/evener/run.go`, add a `case events.EventToolCallRepaired:` to the CLI's tool-call event switch that prints a concise dim line (e.g. `↻ repaired edit_file: old_str→old_string`) using `ToolCallRepairedData.Changes`.
 
 - [ ] **Step 4: Run test to verify it passes**
 
@@ -1521,7 +1521,7 @@ Expected: PASS and clean build.
 - [ ] **Step 5: Commit**
 
 ```bash
-git add internal/appprojector/appwire_projection.go cmd/serf/run.go internal/appprojector/appwire_projection_test.go
+git add internal/appprojector/appwire_projection.go cmd/evener/run.go internal/appprojector/appwire_projection_test.go
 git commit -m "feat: surface EventToolCallRepaired in projector and CLI"
 ```
 
@@ -1531,7 +1531,7 @@ git commit -m "feat: surface EventToolCallRepaired in projector and CLI"
 
 - [ ] **Run the whole suite:** `go test ./...` — Expected: PASS.
 - [ ] **Vet + race on the touched packages:** `go vet ./agent/... ./internal/appprojector/... && go test -race ./agent/ -run 'Repair|PrepareToolCall'` — Expected: clean, no data races (validates the name-map-snapshot concurrency fix).
-- [ ] **Manual smoke (optional):** run `serf` against an Anthropic model on a task that reliably triggers `old_str`/`path` drift and confirm the repaired event appears in the CLI output and the tool runs.
+- [ ] **Manual smoke (optional):** run `evener` against an Anthropic model on a task that reliably triggers `old_str`/`path` drift and confirm the repaired event appears in the CLI output and the tool runs.
 
 ## Notes carried forward (out of scope this plan)
 

@@ -1,7 +1,7 @@
 # Known-failures-and-TUI fix plan
 
 Branch: `wip/known-failures-and-tui` (created off `main` at `bd37b4622`).
-Repo: `/Users/jesse/git/prime-radiant-inc/serf`.
+Repo: `/Users/jesse/git/prime-radiant-inc/evener`.
 
 Six independently known-failing tests/gaps on `main`, each with its own root
 cause. Every task must reproduce the failure first (paste the exact command
@@ -28,7 +28,7 @@ prove green repeatedly with a narrow `-run` scope.
   do not run the full suite or other packages' tests. The controller runs
   full-suite verification after merging every task.
 - **Do not touch:** `docs/superpowers/specs/**`, `.kata.toml`,
-  `serf-transcript-v2-upgrade`. These are pre-existing, unrelated, already
+  `evener-transcript-v2-upgrade`. These are pre-existing, unrelated, already
   either modified or untracked in the working tree — leave them exactly as
   found.
 - **Git hygiene:** never `git add -A`. Stage only the files the task
@@ -59,7 +59,7 @@ prove green repeatedly with a narrow `-run` scope.
 
 **Files:** `identifier_audit_test.go` (inventory map only — this file is a
 test file but the inventory itself is the audit's data, editing it is the
-intended way to review a new use), reference `cmd/serf-hub/frontend_hash.go`
+intended way to review a new use), reference `cmd/evener-hub/frontend_hash.go`
 (read-only reference, likely no change needed there).
 
 **Reproduce first:**
@@ -72,7 +72,7 @@ Confirmed failing on HEAD with://
 ```
 --- FAIL: TestIdentifierAudit (0.15s)
     identifier_audit_test.go:200: identifier audit found forbidden implementation(s):
-        cmd/serf-hub/frontend_hash.go: crypto/sha256 import is not in the closed-world inventory
+        cmd/evener-hub/frontend_hash.go: crypto/sha256 import is not in the closed-world inventory
 FAIL
 ```
 
@@ -91,7 +91,7 @@ why no identifier is derived from that digest (e.g.
 tool-failure text into a stable class key... No identifier is derived from
 it.").
 
-`cmd/serf-hub/frontend_hash.go`'s `frontendDistHash` computes a content hash
+`cmd/evener-hub/frontend_hash.go`'s `frontendDistHash` computes a content hash
 of the embedded frontend dist tree (sorted paths + file bytes) purely to
 identify which build is embedded in a running binary — it is a build
 artifact fingerprint, structurally identical in kind to
@@ -101,7 +101,7 @@ artifact fingerprint, structurally identical in kind to
 session identifier is derived from it.
 
 **Expected fix:** add one inventory entry for
-`"cmd/serf-hub/frontend_hash.go"` → function `"frontendDistHash"` →
+`"cmd/evener-hub/frontend_hash.go"` → function `"frontendDistHash"` →
 fingerprint `"New()": true` (matching the `sha256.New()` call shape — the
 subsequent `h.Sum(nil)` is a method call on the local `hash.Hash` variable
 `h`, not a `sha256.<Selector>` call, so it does not need its own fingerprint
@@ -110,10 +110,10 @@ comparing against the existing `New()`-shaped entries). Add a one-line
 comment above the entry (matching the existing style) explaining it is a
 build/frontend-dist content fingerprint with no identifier derived from it.
 Keep the map alphabetically/path-ordered consistent with its neighbors
-(the entry sorts between `cmd/serf-fuzz-harvest/emit.go` and
-`cmd/serf-hub/image_serve.go`).
+(the entry sorts between `cmd/evener-fuzz-harvest/emit.go` and
+`cmd/evener-hub/image_serve.go`).
 
-Do not change `cmd/serf-hub/frontend_hash.go` itself unless, after reading
+Do not change `cmd/evener-hub/frontend_hash.go` itself unless, after reading
 the checker logic, you find the inventory-entry fix does not actually match
 the AST fingerprint the checker computes — in that case explain why in your
 report before making an implementation change instead.
@@ -132,12 +132,12 @@ pass (`go test -run TestIdentifierAudit -count=1 .` already covers all
 
 ## Task 2: FuzzHubcoreScenarios — tree-building "session missing from Live tier"
 
-**Package:** `cmd/serf-hub/internal/hubcore`.
+**Package:** `cmd/evener-hub/internal/hubcore`.
 
 **Reproduce first:**
 
 ```
-cd cmd/serf-hub/internal/hubcore && go test -run FuzzHubcoreScenarios -count=1 .
+cd cmd/evener-hub/internal/hubcore && go test -run FuzzHubcoreScenarios -count=1 .
 ```
 
 Confirmed failing on HEAD with several seed failures, e.g.:
@@ -173,7 +173,7 @@ FAIL
 
 These are deterministic logic failures against the committed seed corpus,
 not flakes — they fail the same way every run. `FuzzHubcoreScenarios`
-(`cmd/serf-hub/internal/hubcore/scenarios_fuzz_test.go`) replays a fixed
+(`cmd/evener-hub/internal/hubcore/scenarios_fuzz_test.go`) replays a fixed
 list of `fuzzScenario*` functions selected by a `uint16` from the seed
 corpus; `seed#22`, `#23`, `#24`, `#25`, `#35` are seed-corpus entries, not
 test names — the actual failing behavioral scenarios are named by their
@@ -184,7 +184,7 @@ test names — the actual failing behavioral scenarios are named by their
 Start by reading those four assertion sites and the `fuzzScenario*`
 functions that drive them (grep each file for `fuzzScenario` to find which
 scenario function owns which assertion), then read
-`cmd/serf-hub/internal/hubcore/tree.go`'s tree-building logic (`buildTree`,
+`cmd/evener-hub/internal/hubcore/tree.go`'s tree-building logic (`buildTree`,
 `buildProjectTree`, and whatever decides a session's "Live tier"
 membership) to find why some sessions are dropping out of both the Live
 tier and the project tier ("live=false project=false" — the session is
@@ -201,16 +201,16 @@ be a finding for the task review to weigh, not a call to make alone.
 **Verify:**
 
 ```
-cd cmd/serf-hub/internal/hubcore && go test -run FuzzHubcoreScenarios -count=1 .
+cd cmd/evener-hub/internal/hubcore && go test -run FuzzHubcoreScenarios -count=1 .
 ```
 
 Must pass with no `FAIL` output, including all named seeds/subtests above.
 
 ---
 
-## Task 3: `cmd/serf-test-dev-tooling` wave_test.go:284 — load-induced timing flake
+## Task 3: `cmd/evener-test-dev-tooling` wave_test.go:284 — load-induced timing flake
 
-**File:** `cmd/serf-test-dev-tooling/wave_test.go`, test
+**File:** `cmd/evener-test-dev-tooling/wave_test.go`, test
 `TestWaveCompletesDespiteBlockedLeakCheck` (starts line 236).
 
 **Reproduce first:** this test passes in isolation; the flake is
@@ -272,7 +272,7 @@ file's own established pattern.
 **Verify:**
 
 ```
-go test -run TestWaveCompletesDespiteBlockedLeakCheck -count=1 ./cmd/serf-test-dev-tooling/
+go test -run TestWaveCompletesDespiteBlockedLeakCheck -count=1 ./cmd/evener-test-dev-tooling/
 ```
 
 Then re-run several times, and once more under artificial load if you can
@@ -283,12 +283,12 @@ happy path still passes.
 
 ## Task 4: FuzzHubStartupCoverage — real data race, `os.Process` `Wait`/`Release`
 
-**Package:** `cmd/serf-tui/internal/hubstart`.
+**Package:** `cmd/evener-tui/internal/hubstart`.
 
 **Reproduce first:**
 
 ```
-cd cmd/serf-tui/internal/hubstart && go test -race -run FuzzHubStartupCoverage -count=1 .
+cd cmd/evener-tui/internal/hubstart && go test -race -run FuzzHubStartupCoverage -count=1 .
 ```
 
 Confirmed failing deterministically on HEAD with a genuine data race (not a
@@ -299,9 +299,9 @@ WARNING: DATA RACE
 Write at 0x00c0003a0780 by goroutine 112:
   os.(*Process).Release()
       .../os/exec.go:284 +0x2c
-  primeradiant.com/serf/cmd/serf-tui/internal/hubstart.init.func1()
+  primeradiant.com/evener/cmd/evener-tui/internal/hubstart.init.func1()
       hub_start.go:208 +0x18
-  primeradiant.com/serf/cmd/serf-tui/internal/hubstart.StartLocalHub()
+  primeradiant.com/evener/cmd/evener-tui/internal/hubstart.StartLocalHub()
       hub_start.go:489 +0xc8c
   ...
 Previous read at 0x00c0003a0780 by goroutine 116:
@@ -310,12 +310,12 @@ Previous read at 0x00c0003a0780 by goroutine 116:
   ...
   os/exec.(*Cmd).Wait()
       .../os/exec/exec.go:930 +0x60
-  primeradiant.com/serf/cmd/serf-tui/internal/hubstart.StartLocalHub.func2()
+  primeradiant.com/evener/cmd/evener-tui/internal/hubstart.StartLocalHub.func2()
       hub_start.go:478 +0x30
 ```
 
 **Diagnosis to start from — this is a production bug, not test-only.**
-`StartLocalHub` in `cmd/serf-tui/internal/hubstart/hub_start.go` (read the
+`StartLocalHub` in `cmd/evener-tui/internal/hubstart/hub_start.go` (read the
 whole function, starts line 440) intentionally spawns the hub as a detached
 child. To detect an immediate failed startup, it starts a background
 goroutine (line 476-479):
@@ -349,7 +349,7 @@ lets them race.
 
 There is an existing test constraint you must preserve: `releaseHubProcess`
 is a package-level swappable var (line 208) so tests can stub it —
-`cmd/serf-tui/internal/hubstart/hub_start_fuzz_test.go:319-322` stubs it to
+`cmd/evener-tui/internal/hubstart/hub_start_fuzz_test.go:319-322` stubs it to
 return an error and (per the fuzz oracle) expects `StartLocalHub` to
 surface that error. Whatever fix you choose must keep that contract intact
 (some call to `releaseHubProcess` on the healthy-startup path, whose error
@@ -373,7 +373,7 @@ explain your reasoning in the report either way.
 **Verify:**
 
 ```
-cd cmd/serf-tui/internal/hubstart && go test -race -run FuzzHubStartupCoverage -count=1 .
+cd cmd/evener-tui/internal/hubstart && go test -race -run FuzzHubStartupCoverage -count=1 .
 ```
 
 Must pass with no `WARNING: DATA RACE`. Run it at least 5-10 times
@@ -396,7 +396,7 @@ production call site, inside `initSessionState`, called synchronously —
 need heavy load):**
 
 ```
-go test -race ./agent/ -run 'TestExpandSlashCommand_SerfwideDoesNotExecute' -count=10
+go test -race ./agent/ -run 'TestExpandSlashCommand_EvenerwideDoesNotExecute' -count=10
 ```
 
 Fails on HEAD with:
@@ -404,18 +404,18 @@ Fails on HEAD with:
 ```
 WARNING: DATA RACE
 Read at 0x00c000520040 by goroutine 37:
-  primeradiant.com/serf/agent.(*execRecordingEnv).ExecCommand()
+  primeradiant.com/evener/agent.(*execRecordingEnv).ExecCommand()
       agent/session_slash_command_test.go:194 +0x70
-  primeradiant.com/serf/agent.runProbeScript()
+  primeradiant.com/evener/agent.runProbeScript()
       agent/session_capabilities.go:344 +0xc0
-  primeradiant.com/serf/agent.probeCapabilities.func2()
+  primeradiant.com/evener/agent.probeCapabilities.func2()
       agent/session_capabilities.go:326 +0xbc
 
 Previous write at 0x00c000520040 by goroutine 36:
-  primeradiant.com/serf/agent.(*execRecordingEnv).ExecCommand()
+  primeradiant.com/evener/agent.(*execRecordingEnv).ExecCommand()
       agent/session_slash_command_test.go:194 +0x84
   ...
-  primeradiant.com/serf/agent.probeCapabilities.func1()
+  primeradiant.com/evener/agent.probeCapabilities.func1()
       agent/session_capabilities.go:320 +0xb4
 ```
 
@@ -458,7 +458,7 @@ and say why the test-fixture theory above is wrong.
 **Verify:**
 
 ```
-go test -race ./agent/ -run 'TestExpandSlashCommand_SerfwideDoesNotExecute' -count=10
+go test -race ./agent/ -run 'TestExpandSlashCommand_EvenerwideDoesNotExecute' -count=10
 ```
 
 Must pass clean, no `WARNING: DATA RACE`, all 10 iterations.
@@ -467,14 +467,14 @@ Must pass clean, no `WARNING: DATA RACE`, all 10 iterations.
 
 ## Task 6: TUI chip gaps — tick-driven flip, cross-surface cosmetics, AbortError predicate
 
-Three related but separable pieces of work. All in `cmd/serf-tui` plus a
+Three related but separable pieces of work. All in `cmd/evener-tui` plus a
 small `agent/` piece. Do all three; they can be one task with sub-steps and
 one commit series (or several commits), reviewed together.
 
 ### 6a. Tick-driven "in progress" flip (the real gap; requires new machinery)
 
 **Reference (web, already correct):**
-`cmd/serf-hub/frontend/src/panes/session/transcript/flow/LivenessLine.tsx`
+`cmd/evener-hub/frontend/src/panes/session/transcript/flow/LivenessLine.tsx`
 line 81 explicitly documents the divergence this task closes ("the
 web-only difference from the TUI half of this feature"). The web's
 `inProgress` (line 89) is computed reactively from a ticking `now`:
@@ -488,16 +488,16 @@ the retry was reported, OR the reported backoff delay has elapsed —
 whichever happens first. `now` ticks independently of deltas (Session.tsx's
 `useNowTick`), so the OR's second branch fires even with zero new deltas.
 
-**TUI's current state (the gap):** `cmd/serf-tui/hub_model.go` holds
+**TUI's current state (the gap):** `cmd/evener-tui/hub_model.go` holds
 `modelRetry *appwire.ThreadModelRetryParams` (line 193) and
 `modelRetryInProgress bool` (line 198). `modelRetryInProgress` is set
 `true` **only** by an actual delta arriving —
-`cmd/serf-tui/hub_notifications.go`'s `markModelRetryInProgress` (around
+`cmd/evener-tui/hub_notifications.go`'s `markModelRetryInProgress` (around
 line 578-592), whose own doc comment claims "Deltas drive a re-render on
 their own, so the transition needs no timer." That comment is the bug's
 premise: it covers the first half of the web's OR (delta arrived) but there
 is no second half (delay elapsed) at all, and — confirmed —
-`grep -rn "tea.Tick" cmd/serf-tui/*.go` finds **zero** matches anywhere in
+`grep -rn "tea.Tick" cmd/evener-tui/*.go` finds **zero** matches anywhere in
 this package; nothing re-renders the TUI on a timer, so once a retry is
 reported, a reader who gets no further deltas sees a stale "retrying in
 Ns" chip forever after Ns has actually elapsed, even though the daemon may
@@ -507,10 +507,10 @@ already be mid-retry.
 1. Track when each `modelRetry` was received — there is currently no
    TUI-side equivalent of the web's `retry.receivedAt` (a client-stamped
    time, not part of the wire `appwire.ThreadModelRetryParams`, see
-   `cmd/serf-hub/frontend/src/protocol/model.ts:184` for the web
+   `cmd/evener-hub/frontend/src/protocol/model.ts:184` for the web
    analog). Add a field (e.g. `modelRetryReceivedAt time.Time`) to
    `hubModel`, set alongside `m.modelRetry = &params` in
-   `hub_notifications.go`'s `NotifySerfThreadModelRetry` case (around line
+   `hub_notifications.go`'s `NotifyEvenerThreadModelRetry` case (around line
    128-136).
 2. Compute the effective in-progress state as the OR: the existing
    delta-driven `m.modelRetryInProgress` flag, OR
@@ -527,7 +527,7 @@ already be mid-retry.
    (starts line 271) alongside the existing `tea.Msg` cases, following
    this codebase's existing Bubble Tea idioms for scheduling a `tea.Cmd`
    (see how other async work already returns a `tea.Cmd`, e.g.
-   `cmd/serf-tui/hub_escalation.go`'s `resolveHeadEscalation` /
+   `cmd/evener-tui/hub_escalation.go`'s `resolveHeadEscalation` /
    `sendHubEscalationResolve`, for the return-a-`tea.Cmd` pattern this
    codebase uses — this is the first `tea.Tick` in the codebase, so there
    is no existing tick idiom to match beyond the general `tea.Cmd`
@@ -537,8 +537,8 @@ already be mid-retry.
    leaving a comment that documents the bug you just fixed.
 
 Update `composerRetryChip`'s call site
-(`cmd/serf-tui/composer_panel.go:145`) and/or `composerRetryChip` itself
-(`cmd/serf-tui/composer_render.go:326`) only if the effective-in-progress
+(`cmd/evener-tui/composer_panel.go:145`) and/or `composerRetryChip` itself
+(`cmd/evener-tui/composer_render.go:326`) only if the effective-in-progress
 computation is better centralized there rather than in `hub_model.go` —
 use your judgment on placement, but the tick must live in the `Update`
 loop since rendering (`View`) must stay a pure function of model state
@@ -548,7 +548,7 @@ break that invariant by computing time-based state inside `View`).
 ### 6b. Cross-surface cosmetics — align TUI to web's literal formatting
 
 **Reference (web, canonical):**
-`cmd/serf-hub/frontend/src/panes/session/transcript/flow/liveness.ts`:
+`cmd/evener-hub/frontend/src/panes/session/transcript/flow/liveness.ts`:
 - `formatRetryWait` (line 119-125): model tag is `` ` (${retry.model})` ``
   — parens, placed immediately after the cause, before the attempt count.
 - `formatExactGap` (line 59-65): under 60s renders as whole seconds
@@ -556,7 +556,7 @@ break that invariant by computing time-based state inside `View`).
   only when the remainder is non-zero (`"3m"` or `"3m 5s"`). Used for
   `groupElapsedMs` → `"<formatExactGap> on this call"`.
 
-**TUI's current divergence:** `cmd/serf-tui/composer_render.go`,
+**TUI's current divergence:** `cmd/evener-tui/composer_render.go`,
 `composerRetryChip` (line 326-352):
 - Model tag (line 347-349): `chip += " — " + model` — renders as
   `"— model"` (em-dash separator, no parens), appended after the wait,
@@ -580,9 +580,9 @@ formatting exactly:
 - Update `composerRetryChip`'s doc comment where it currently describes
   the old field order/formatting.
 
-Check `cmd/serf-tui/composer_render_test.go`,
-`cmd/serf-tui/composer_retry_wiring_test.go`, and
-`cmd/serf-tui/hub_model_retry_test.go` for existing assertions on the old
+Check `cmd/evener-tui/composer_render_test.go`,
+`cmd/evener-tui/composer_retry_wiring_test.go`, and
+`cmd/evener-tui/hub_model_retry_test.go` for existing assertions on the old
 `"— model"` / `"Xm on this call"` format — those are testing the bug and
 must be updated to assert the corrected format (a plan-mandated behavior
 change to a *test* file, not a case to work around).
@@ -630,7 +630,7 @@ use your judgment.
 **Verify (all of 6a/6b/6c):**
 
 ```
-go test -run 'TestComposerRetryChip|TestComposerRetry|TestHubModelRetry|TestRoundWasCancelled|TestQueuedInputDrain|TestIsTurnCancellation' -count=1 ./cmd/serf-tui/... ./agent/...
+go test -run 'TestComposerRetryChip|TestComposerRetry|TestHubModelRetry|TestRoundWasCancelled|TestQueuedInputDrain|TestIsTurnCancellation' -count=1 ./cmd/evener-tui/... ./agent/...
 ```
 
 (Adjust the `-run` pattern to the actual test names you find — this is a

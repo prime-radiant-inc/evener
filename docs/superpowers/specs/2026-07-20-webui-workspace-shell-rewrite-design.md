@@ -48,12 +48,12 @@ daemon, and TUI stay as they are, except for the small server-side items in §7.
 - No offline mode / queued-send-while-disconnected (explicit non-goal today; unchanged).
 - No visual-pixel parity with the old UI. Behavior parity, yes; look, no.
 - No SSR/Next.js. Static assets from the Go binary + WS.
-- No changes to serf-tui or the REST endpoints it uses (§7 keep-list).
+- No changes to evener-tui or the REST endpoints it uses (§7 keep-list).
 
 ## 4. Constraints and invariants
 
 - **Single binary.** Built assets embed via `go:embed`; `make build-hub` produces a self-contained
-  `serf-hub`. Node is a build-time dependency only.
+  `evener-hub`. Node is a build-time dependency only.
 - **Remote hub.** Everything works over an SSH tunnel / Tailscale with the cookie or Bearer
   capability token; no absolute-origin assumptions; WS URL derives from page origin.
 - **TUI coupling.** `hubapi.Client` consumes: `/api/health`, `/api/tree`, `/api/sessions/{ref}`
@@ -93,21 +93,21 @@ preference; interrupt.
 
 **Session chrome:** status row (state dot, model chip + mid-session model switch, reasoning
 effort, work-time clock, context gauge, cost); title (auto-generated, rename); actions: fork,
-aside, compact, clear, shutdown; tasks panel (push-driven via `serf/task/updated` + fetch on
+aside, compact, clear, shutdown; tasks panel (push-driven via `evener/task/updated` + fetch on
 open — the 2s poll dies); details panel; goal display/set (`goal/set`).
 
-**Sidebar / tree:** live sessions with attention badges (`serf/attention/changed`); needs-you
+**Sidebar / tree:** live sessions with attention badges (`evener/attention/changed`); needs-you
 tier; pinned (favorite); projects keyed by full path; archived sessions behind one disclosure
 grouped by project (#44); test-run tier; rename; archive; project delete; collapse to nothing on
 desktop (#33); deep links.
 
-**Spawn:** directory picker with recent-projects prepopulation (`serf/projects/recent`, #35);
+**Spawn:** directory picker with recent-projects prepopulation (`evener/projects/recent`, #35);
 path validation; model/harness pickers; launch overrides; `?dir=`/`?prompt=` prefill.
 
 **Search / palette:** ⌘K session search plus slash commands (steer, aside, …).
 
 **Settings:** all 16 sections — general, theme, transcript, display, notifications, agents,
-serf launch, codex launch, in-repo config, providers→credentials (instance CRUD, OAuth
+evener launch, codex launch, in-repo config, providers→credentials (instance CRUD, OAuth
 device-code and browser flows), marketplaces+plugins manager, plugins, skills, MCP servers, hub,
 storage, per-project (`?cwd=`).
 
@@ -129,7 +129,7 @@ bottom composer).
 ### 6.1 Layout
 
 ```
-cmd/serf-hub/frontend/
+cmd/evener-hub/frontend/
   package.json  package-lock.json  vite.config.ts  tsconfig.json
   index.html
   src/
@@ -169,7 +169,7 @@ Zustand stores, one concern each:
 - `threads`: `Map<ref, ThreadModel>` maintained by the reducer; per-thread hydration state;
   optimistic pending entries reconciled by server echo (port of today's pending registry).
 - `tree`: sidebar model from `GET /api/tree` (kept REST — TUI shares it), refetched on
-  tree-relevant notifications (`thread/started|closed`, `serf/attention/changed`, favorites and
+  tree-relevant notifications (`thread/started|closed`, `evener/attention/changed`, favorites and
   archive mutations) — the 60s idle poll dies; a manual refresh affordance replaces it.
 - `prefs`: theme, density, font size, Enter-to-send, notification opt-ins (localStorage-backed).
 - `layout`: dockview layout JSON ↔ localStorage; URL deep-link handling.
@@ -242,8 +242,8 @@ re-generated to the new brand tokens.
    immutable cache headers (hashing replaces the `?v=mtime` scheme). Dev mode: the Vite dev
    server proxies `/rpc` (ws), `/api`, `/auth`, `/doc`, and image routes to the hub — cookies are
    port-agnostic on localhost, so the capability-token flow works through the proxy. No Go-side
-   dev proxy; `SERF_HUB_ASSETS_DIR` dies with the old assets.
-3. Tree-change push: broadcast an empty `serf/tree/changed` notification on roster refresh
+   dev proxy; `EVENER_HUB_ASSETS_DIR` dies with the old assets.
+3. Tree-change push: broadcast an empty `evener/tree/changed` notification on roster refresh
    deltas, past-index changes, archive/favorite/rename/project-delete mutations. Client refetches
    `/api/tree` on it (debounced). This kills the sidebar poll without moving the tree off REST.
 4. CSP: drop `'unsafe-inline'` for scripts once templates are gone.
@@ -276,12 +276,12 @@ Everything else — relay, subscriptions, methods, notifications, REST keep-list
 
 ## 10. Deletion wave (the last milestone, one commit series)
 
-Delete: `cmd/serf-hub/templates/` (all), `cmd/serf-hub/assets/*.js` (all, including vendored
-htmx/marked), `assets/style.css`, `cmd/serf-hub/jstest/`, the htmx fragment routes
+Delete: `cmd/evener-hub/templates/` (all), `cmd/evener-hub/assets/*.js` (all, including vendored
+htmx/marked), `assets/style.css`, `cmd/evener-hub/jstest/`, the htmx fragment routes
 (`/_partials/*`), the `/s/{id}/send|steer|queue|drain-as-steer|promote-queued|cancel-queued`
 form-POST handlers (browser uses AppWire; `/api/sessions/{ref}/send` stays for the TUI), the
-inline-script CSP exemption, `SERF_HUB_ASSETS_DIR`, and every `web_*.go` block that existed only
-to render or serve the above. Update `docs/serf-hub-web-routing.md`, `cmd/serf-hub/README.md`,
+inline-script CSP exemption, `EVENER_HUB_ASSETS_DIR`, and every `web_*.go` block that existed only
+to render or serve the above. Update `docs/evener-hub-web-routing.md`, `cmd/evener-hub/README.md`,
 `docs/web-ui/*` to describe the new world. `git grep htmx` returns nothing when this lands.
 
 ## 11. Risks
@@ -305,7 +305,7 @@ Net: the web layer shrinks by roughly a third while gaining panes, types, and CI
 ## 13. Milestones (plan input)
 
 - **M0 foundation:** scaffold, codegen + drift test, make/CI wiring, embed + dev proxy, hello-app
-  served by hub behind `SERF_HUB_DEV_WEB`.
+  served by hub behind `EVENER_HUB_DEV_WEB`.
 - **M1 protocol core:** client.ts, reducer.ts, stores, golden fixtures, reconnect/self-heal.
 - **M2 style guide + widgets:** tokens, both themes, widget library, `/dev/widgets` gallery,
   design-system.md v2. (frontend-design skill pass.)

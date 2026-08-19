@@ -38,7 +38,7 @@ wantExtra := map[string]any{
 
 Run:
 ```bash
-GOCACHE=/tmp/serf-gocache go test ./agent/internal/atif -run 'TestConvertToATIF_ResponsesProviderHandles' -count=1 -v
+GOCACHE=/tmp/evener-gocache go test ./agent/internal/atif -run 'TestConvertToATIF_ResponsesProviderHandles' -count=1 -v
 ```
 Expected: FAIL because `Convert` currently emits raw `response_id` and does not emit the hash/metadata.
 
@@ -66,7 +66,7 @@ Make `Convert` call `ConvertWithOptions(header, entries, Options{ProviderHandles
 
 Run:
 ```bash
-GOCACHE=/tmp/serf-gocache go test ./agent/internal/atif -run 'TestConvertToATIF_ResponsesProviderHandles' -count=1 -v
+GOCACHE=/tmp/evener-gocache go test ./agent/internal/atif -run 'TestConvertToATIF_ResponsesProviderHandles' -count=1 -v
 ```
 Expected: PASS.
 
@@ -101,7 +101,7 @@ step.Extra["response_id_hash"] == "cont-handle-v1:response_id:phase11"
 
 Run:
 ```bash
-GOCACHE=/tmp/serf-gocache go test ./agent/internal/atif -run 'TestConvertToATIF_ResponsesProviderHandlesRawLocal' -count=1 -v
+GOCACHE=/tmp/evener-gocache go test ./agent/internal/atif -run 'TestConvertToATIF_ResponsesProviderHandlesRawLocal' -count=1 -v
 ```
 Expected: FAIL until raw-local mode is wired through assistant conversion.
 
@@ -121,7 +121,7 @@ opts.ProviderHandles == ProviderHandleModeRawLocal && turn.ResponseID != ""
 
 Run:
 ```bash
-GOCACHE=/tmp/serf-gocache go test ./agent/internal/atif -run 'TestConvertToATIF_ResponsesProviderHandles' -count=1 -v
+GOCACHE=/tmp/evener-gocache go test ./agent/internal/atif -run 'TestConvertToATIF_ResponsesProviderHandles' -count=1 -v
 ```
 Expected: PASS for both redacted and raw-local tests.
 
@@ -166,7 +166,7 @@ Assert the assistant step includes `previous_response_id_hash`, `conversation_id
 
 Run:
 ```bash
-GOCACHE=/tmp/serf-gocache go test ./agent/internal/atif -run 'TestConvertTranscriptToATIF_ResponsesRequestHandleHashes' -count=1 -v
+GOCACHE=/tmp/evener-gocache go test ./agent/internal/atif -run 'TestConvertTranscriptToATIF_ResponsesRequestHandleHashes' -count=1 -v
 ```
 Expected: FAIL because `Convert` ignores API calls.
 
@@ -183,7 +183,7 @@ Keep `ConvertWithOptions` delegating with `nil` API calls. While converting assi
 
 Run:
 ```bash
-GOCACHE=/tmp/serf-gocache go test ./agent/internal/atif -run 'TestConvertTranscriptToATIF_ResponsesRequestHandleHashes' -count=1 -v
+GOCACHE=/tmp/evener-gocache go test ./agent/internal/atif -run 'TestConvertTranscriptToATIF_ResponsesRequestHandleHashes' -count=1 -v
 ```
 Expected: PASS.
 
@@ -202,9 +202,9 @@ git commit -m "feat(agent): include ATIF continuation request hashes"
 - Modify: `agent/atif_test.go`
 - Modify: `agent/session_config.go`
 - Modify: `agent/session_lifecycle.go`
-- Modify: `cmd/serf/main.go`
-- Modify: `cmd/serf/run.go`
-- Modify: `cmd/serf/serve.go`
+- Modify: `cmd/evener/main.go`
+- Modify: `cmd/evener/run.go`
+- Modify: `cmd/evener/serve.go`
 - Test: `agent/atif_test.go`
 
 - [x] **Step 1: Write failing export mode test**
@@ -220,7 +220,7 @@ Assert output JSON contains `response_id`. Add a second assertion for default/re
 
 Run:
 ```bash
-GOCACHE=/tmp/serf-gocache go test ./agent -run 'TestExportATIF_ProviderHandleModes' -count=1 -v
+GOCACHE=/tmp/evener-gocache go test ./agent -run 'TestExportATIF_ProviderHandleModes' -count=1 -v
 ```
 Expected: FAIL because `exportATIF` has no mode argument and does not read API calls.
 
@@ -242,8 +242,8 @@ Add `ExportATIFProviderHandles string` to `agent.SessionConfig`, pass it from se
 
 Run:
 ```bash
-GOCACHE=/tmp/serf-gocache go test ./agent -run 'TestExportATIF_ProviderHandleModes|TestExportATIF_WritesFile' -count=1 -v
-GOCACHE=/tmp/serf-gocache go test ./cmd/serf -run 'Test' -count=1
+GOCACHE=/tmp/evener-gocache go test ./agent -run 'TestExportATIF_ProviderHandleModes|TestExportATIF_WritesFile' -count=1 -v
+GOCACHE=/tmp/evener-gocache go test ./cmd/evener -run 'Test' -count=1
 ```
 Expected: PASS.
 
@@ -251,22 +251,22 @@ Expected: PASS.
 
 ```bash
 git status --short
-git add agent/atif.go agent/atif_test.go agent/session_config.go agent/session_lifecycle.go cmd/serf/main.go cmd/serf/run.go cmd/serf/serve.go
+git add agent/atif.go agent/atif_test.go agent/session_config.go agent/session_lifecycle.go cmd/evener/main.go cmd/evener/run.go cmd/evener/serve.go
 git commit -m "feat(agent): plumb ATIF provider handle export mode"
 ```
 
 ### Task 5: Hub and TUI Launch Config Plumbing
 
 **Files:**
-- Modify: `cmd/serf-hub/internal/launchconfig/types.go`
-- Modify: `cmd/serf-hub/internal/launchconfig/schema.go`
-- Modify: `cmd/serf-hub/internal/launchconfig/args.go`
-- Modify: `cmd/serf-hub/internal/launchconfig/merge.go`
-- Modify: `cmd/serf-hub/internal/launchconfig/wire.go`
-- Modify: `cmd/serf-hub/internal/launchconfig/*_test.go`
-- Modify: `cmd/serf-tui/internal/launchconfig/launch_schema.go`
-- Modify: `cmd/serf-tui/internal/launchconfig/launch_settings_panel.go`
-- Modify: `cmd/serf-tui/internal/launchconfig/*_test.go`
+- Modify: `cmd/evener-hub/internal/launchconfig/types.go`
+- Modify: `cmd/evener-hub/internal/launchconfig/schema.go`
+- Modify: `cmd/evener-hub/internal/launchconfig/args.go`
+- Modify: `cmd/evener-hub/internal/launchconfig/merge.go`
+- Modify: `cmd/evener-hub/internal/launchconfig/wire.go`
+- Modify: `cmd/evener-hub/internal/launchconfig/*_test.go`
+- Modify: `cmd/evener-tui/internal/launchconfig/launch_schema.go`
+- Modify: `cmd/evener-tui/internal/launchconfig/launch_settings_panel.go`
+- Modify: `cmd/evener-tui/internal/launchconfig/*_test.go`
 
 - [x] **Step 1: Write failing launch config tests**
 
@@ -280,7 +280,7 @@ Add assertions that `ExportATIFProviderHandles: "raw-local"`:
 
 Run:
 ```bash
-GOCACHE=/tmp/serf-gocache go test ./cmd/serf-hub/internal/launchconfig ./cmd/serf-tui/internal/launchconfig -run 'Test.*ATIF|TestSchemaRows|TestLaunchSettingsPanel' -count=1 -v
+GOCACHE=/tmp/evener-gocache go test ./cmd/evener-hub/internal/launchconfig ./cmd/evener-tui/internal/launchconfig -run 'Test.*ATIF|TestSchemaRows|TestLaunchSettingsPanel' -count=1 -v
 ```
 Expected: FAIL until the field is wired.
 
@@ -300,7 +300,7 @@ Merge non-empty launch-layer values, include it in wire structs, emit the CLI fl
 
 Run:
 ```bash
-GOCACHE=/tmp/serf-gocache go test ./cmd/serf-hub/internal/launchconfig ./cmd/serf-tui/internal/launchconfig -run 'Test.*ATIF|TestSchemaRows|TestLaunchSettingsPanel' -count=1 -v
+GOCACHE=/tmp/evener-gocache go test ./cmd/evener-hub/internal/launchconfig ./cmd/evener-tui/internal/launchconfig -run 'Test.*ATIF|TestSchemaRows|TestLaunchSettingsPanel' -count=1 -v
 ```
 Expected: PASS.
 
@@ -308,7 +308,7 @@ Expected: PASS.
 
 ```bash
 git status --short
-git add cmd/serf-hub/internal/launchconfig cmd/serf-tui/internal/launchconfig
+git add cmd/evener-hub/internal/launchconfig cmd/evener-tui/internal/launchconfig
 git commit -m "feat(hub): expose ATIF provider handle export mode"
 ```
 
@@ -322,7 +322,7 @@ git commit -m "feat(hub): expose ATIF provider handle export mode"
 
 Run:
 ```bash
-GOCACHE=/tmp/serf-gocache go test ./agent/internal/atif ./agent ./cmd/serf ./cmd/serf-hub/internal/launchconfig ./cmd/serf-tui/internal/launchconfig -run 'Test.*ATIF|TestSchemaRows|TestLaunchSettingsPanel|TestConvertToATIF|TestConvertTranscriptToATIF' -count=1 -v
+GOCACHE=/tmp/evener-gocache go test ./agent/internal/atif ./agent ./cmd/evener ./cmd/evener-hub/internal/launchconfig ./cmd/evener-tui/internal/launchconfig -run 'Test.*ATIF|TestSchemaRows|TestLaunchSettingsPanel|TestConvertToATIF|TestConvertTranscriptToATIF' -count=1 -v
 git diff --check
 ```
 

@@ -9,7 +9,7 @@ import (
 
 // datedModelSuffix matches an Anthropic-style dated snapshot suffix
 // (e.g. "-20251101") plus an optional LiteLLM version tag ("-v1") at the end of
-// a model ID. Stripping it yields the bare family ID the Serf overrides key on.
+// a model ID. Stripping it yields the bare family ID the Evener overrides key on.
 var datedModelSuffix = regexp.MustCompile(`-\d{8}(-v\d+)?$`)
 
 // familyModelID strips a trailing dated-snapshot suffix from a model ID, yielding
@@ -19,7 +19,7 @@ func familyModelID(modelID string) string {
 	return datedModelSuffix.ReplaceAllString(modelID, "")
 }
 
-//go:embed data/litellm_model_catalog.json data/serf_model_catalog_overrides.json
+//go:embed data/litellm_model_catalog.json data/evener_model_catalog_overrides.json
 var embeddedCatalogFS embed.FS
 
 var (
@@ -28,7 +28,7 @@ var (
 )
 
 // EmbeddedModelCatalog returns the bundled model catalog. The catalog is loaded
-// lazily on first access from the embedded LiteLLM data file, with Serf-specific
+// lazily on first access from the embedded LiteLLM data file, with Evener-specific
 // overrides merged on top.
 // Returns nil if loading fails (should not happen with a valid build).
 func EmbeddedModelCatalog() *ModelCatalog {
@@ -50,7 +50,7 @@ func loadEmbeddedModelCatalog(
 	if cat == nil {
 		return nil
 	}
-	overrideData, err := readFile("data/serf_model_catalog_overrides.json")
+	overrideData, err := readFile("data/evener_model_catalog_overrides.json")
 	if err != nil {
 		return cat // Overrides file missing is not fatal.
 	}
@@ -58,11 +58,11 @@ func loadEmbeddedModelCatalog(
 	return cat
 }
 
-// applyOverrides merges Serf-specific model metadata on top of the base catalog.
+// applyOverrides merges Evener-specific model metadata on top of the base catalog.
 // An override entry that matches an existing model (by exact ID, or by dated-family
 // ID for dated snapshots) overlays it. An override entry that matches no model and
-// carries base metadata (a context window) materializes a Serf-only catalog entry —
-// this is how Serf ships models LiteLLM doesn't cover, e.g. kimi-for-coding.
+// carries base metadata (a context window) materializes a Evener-only catalog entry —
+// this is how Evener ships models LiteLLM doesn't cover, e.g. kimi-for-coding.
 // Overlay-only entries that match nothing (and the "_comment" key) are no-ops.
 func applyOverrides(cat *ModelCatalog, data []byte) {
 	var raw map[string]any
@@ -96,7 +96,7 @@ func applyOverrides(cat *ModelCatalog, data []byte) {
 		applied[key] = true
 	}
 
-	// Materialize Serf-only models: override keys that matched no existing model
+	// Materialize Evener-only models: override keys that matched no existing model
 	// and carry base metadata (a context window).
 	for id, entry := range raw {
 		if applied[id] {
@@ -131,7 +131,7 @@ func applyOverrides(cat *ModelCatalog, data []byte) {
 	// these override mutations land, so there is nothing to invalidate here.
 }
 
-// applyOverlayFields applies Serf overlay metadata onto a model. Aliases are
+// applyOverlayFields applies Evener overlay metadata onto a model. Aliases are
 // included only for exact matches and materialized entries so family overlays
 // cannot make dated snapshots claim the same alias.
 func applyOverlayFields(m *ModelInfo, ov map[string]any, includeAliases bool) {

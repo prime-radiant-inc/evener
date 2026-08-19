@@ -7,18 +7,18 @@
 
 ## Context
 
-Serf's lifecycle-hook Phase 1 is shipped (`docs/hooks.md`): the nine fired events,
+Evener's lifecycle-hook Phase 1 is shipped (`docs/hooks.md`): the nine fired events,
 the matcher, `command`/`prompt` handlers, the input fields, the exit-code table.
 The roadmap (`docs/subagent-management/07-lifecycle-hooks-claude-compat.md`)
 reserves the rest in honest tiers.
 
 This is the first slice of **Phase B**, scoped to *"fix the events we already
 fire"* — making the **output contract** of the nine fired events match Claude,
-without adding new events. Two reserved items, both for events serf already fires:
+without adding new events. Two reserved items, both for events evener already fires:
 
 1. The **`PreToolUse` preferred output schema** (`permissionDecision`,
    `permissionDecisionReason`, the deprecated top-level `approve`/`block`
-   mapping). Today serf honors only `permissionDecision: "deny"` and reads the
+   mapping). Today evener honors only `permissionDecision: "deny"` and reads the
    reason from the wrong key (`hso.reason`).
 2. A **distinct delivery channel for `additionalContext`** vs. `systemMessage`.
    Today both are delivered identically via `s.Steer(...)` — a bare `llm.User(text)`
@@ -45,7 +45,7 @@ From <https://code.claude.com/docs/en/hooks>:
   it to the user.
 - The deprecated top-level `decision: "approve"|"block"` form is documented as
   deprecated-but-supported; the exact `approve→allow`/`block→deny` mapping for
-  `PreToolUse` is serf's interpretation. Serf accepts it as a fallback; `07`
+  `PreToolUse` is evener's interpretation. Evener accepts it as a fallback; `07`
   tracks it.
 
 ## Goals
@@ -153,7 +153,7 @@ Stop/SubagentStop drop.
   `TestHookRunner_PreToolUse_ExitCode2Denies`, which asserts the exit-2 stderr in
   `DenyMessage`.) The deny reason is **not** also routed to `UserMessages`.
 - `allow` → explicit non-deny; does not override another hook's `deny` (Claude is
-  silent on cross-hook precedence; serf keeps deny-wins). A non-deny
+  silent on cross-hook precedence; evener keeps deny-wins). A non-deny
   `PermissionReason` has no Claude-defined destination and is recognized but not
   surfaced.
 - `ask`/`defer` → recognized but not honored (no permission prompt). The tool
@@ -174,7 +174,7 @@ Stop/SubagentStop drop.
   recurses; `session_events.go` documents this). The hook text goes in `Message`
   (CLI renders only `Message`). To label it without it being reclassified by
   message content, add a `SourceHook` value to `agent/internal/diagnostic`
-  (`normalizeSource`/`Classify` only recognize `provider|serf|hub|ui` today, so
+  (`normalizeSource`/`Classify` only recognize `provider|evener|hub|ui` today, so
   `Source:"hook"` would otherwise be overwritten by `enrichWarningData`).
 
 Seven of the eight sites use `Steer` (`PreToolUse`, `PostToolUse`, `Stop`,
@@ -265,11 +265,11 @@ too (so the wrapper is uniform across all events), and its `UserMessages` use
 - **Behavior change** to `systemMessage`-field / non-context plain-stdout / wrapped
   context — mitigated by updating docs + tests.
 - **Non-context plain stdout → user** diverges from Claude (which debug-logs it to
-  *neither* model nor user). Deliberate: serf has no surfaced debug-log sink, so
+  *neither* model nor user). Deliberate: evener has no surfaced debug-log sink, so
   user-visibility beats silent drop. Documented in `docs/hooks.md`.
 - **`ask`/`defer` proceed (fail-open)** — `defer` = "use the normal flow"; `ask`
   cannot be honored without a prompt; the diagnostic makes it loud.
-- **Cross-hook `allow` vs `deny`** is serf-defined (deny wins); Claude is silent.
+- **Cross-hook `allow` vs `deny`** is evener-defined (deny wins); Claude is silent.
 - **Residual (out of scope):** non-blocking exit-2 stderr for
   `Notification`/`SessionStart` still reaches the model (Claude: user only). A
   deliberate scope cut to keep the increment focused — `deliverHookUserMessage`

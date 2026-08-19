@@ -17,9 +17,9 @@ import (
 	"testing"
 	"time"
 
-	authopenai "primeradiant.com/serf/auth/openai"
-	"primeradiant.com/serf/auth/openai/oaitest"
-	"primeradiant.com/serf/llm"
+	authopenai "primeradiant.com/evener/auth/openai"
+	"primeradiant.com/evener/auth/openai/oaitest"
+	"primeradiant.com/evener/llm"
 )
 
 func TestAdapter_Complete_MapsToResponsesAPI(t *testing.T) {
@@ -249,7 +249,7 @@ func TestAdapter_Integration_CountInputTokens(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skipping live OpenAI integration test in short mode")
 	}
-	model := strings.TrimSpace(os.Getenv("SERF_OPENAI_COUNT_TOKENS_MODEL"))
+	model := strings.TrimSpace(os.Getenv("EVENER_OPENAI_COUNT_TOKENS_MODEL"))
 	if model == "" {
 		model = "gpt-5.2"
 	}
@@ -271,7 +271,7 @@ func TestAdapter_Integration_CountInputTokens(t *testing.T) {
 
 	got, err := a.CountInputTokens(ctx, llm.Request{
 		Model:    model,
-		Messages: []llm.Message{llm.System("You count inputs."), llm.User("Count these input tokens for serf.")},
+		Messages: []llm.Message{llm.System("You count inputs."), llm.User("Count these input tokens for evener.")},
 		Tools: []llm.ToolDefinition{{
 			Name:        "lookup",
 			Description: "Looks up a short value.",
@@ -2032,8 +2032,8 @@ func TestNewFromEnv_UsesStoredOAuthTransportWhenAPIKeyAbsent(t *testing.T) {
 	oaitest.IsolateOpenAIAuth(t)
 	xdgStateHome := os.Getenv("XDG_STATE_HOME")
 	userStateDir := authopenai.DefaultStateDir()
-	projectStateDir := filepath.Join(xdgStateHome, "serf", "projects", "repo")
-	t.Setenv("SERF_STATE_DIR", projectStateDir)
+	projectStateDir := filepath.Join(xdgStateHome, "evener", "projects", "repo")
+	t.Setenv("EVENER_STATE_DIR", projectStateDir)
 	if err := authopenai.SaveAuth(userStateDir, "openai", authopenai.AuthRecord{
 		Version:      1,
 		Provider:     "openai",
@@ -3101,7 +3101,7 @@ func TestAdapter_Complete_OAuthTransportUsesCodexEndpointAndAccountHeader(t *tes
 		t.Fatalf("originator = %q", gotOriginator)
 	}
 	if !strings.HasPrefix(gotUserAgent, defaultOriginator+"/") {
-		t.Fatalf("User-Agent = %q, want serf prefix", gotUserAgent)
+		t.Fatalf("User-Agent = %q, want evener prefix", gotUserAgent)
 	}
 	if gotSessionID != "sess_123" {
 		t.Fatalf("session-id = %q", gotSessionID)
@@ -5701,7 +5701,7 @@ func TestIsUnconfigured(t *testing.T) {
 		{"no-credentials sentinel", errNoCredentials, true},
 		{"wrapped no-credentials", fmt.Errorf("init openai: %w", errNoCredentials), true},
 		{"auth-not-found wrapped", fmt.Errorf("resolve OpenAI auth: %w", authopenai.ErrAuthNotFound), true},
-		{"login-required wrapping not-found", fmt.Errorf("%w: run `serf openai login`: %w", authopenai.ErrLoginRequired, authopenai.ErrAuthNotFound), true},
+		{"login-required wrapping not-found", fmt.Errorf("%w: run `evener openai login`: %w", authopenai.ErrLoginRequired, authopenai.ErrAuthNotFound), true},
 		{"unrelated", errors.New("network down"), false},
 		{"unrelated wrapped", fmt.Errorf("ctx: %w", errors.New("boom")), false},
 	}

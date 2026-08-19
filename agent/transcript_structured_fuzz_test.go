@@ -1,4 +1,4 @@
-//go:build serffuzz
+//go:build evenerfuzz
 
 package agent
 
@@ -12,9 +12,9 @@ import (
 	"strconv"
 	"testing"
 
-	"primeradiant.com/serf/agent/schema"
-	"primeradiant.com/serf/fuzz/schemagen"
-	"primeradiant.com/serf/llm"
+	"primeradiant.com/evener/agent/schema"
+	"primeradiant.com/evener/fuzz/schemagen"
+	"primeradiant.com/evener/llm"
 )
 
 // generateTranscript builds a valid-but-adversarial transcript JSONL blob from a

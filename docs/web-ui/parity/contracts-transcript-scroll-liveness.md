@@ -1,6 +1,6 @@
 # Transcript / scroll / liveness / thinking / streaming — jstest behavior contracts
 
-Mined from `cmd/serf-hub/jstest/` for a future Vitest rewrite. Each line is one observable
+Mined from `cmd/evener-hub/jstest/` for a future Vitest rewrite. Each line is one observable
 behavior a new suite must re-cover, tagged with the jstest file that currently pins it (not
 line numbers — see the sibling `parity-m4-transcript.md` for source-level file:line citations
 against `renderer.js`/`renderer-tools.js`/`renderer-format.js`; this document is derived purely
@@ -191,7 +191,7 @@ from the renderer-side glyph/open-beside contracts already covered here); `test-
 - A provider-sourced turn failure renders as a red diagnostic end-cap inside the transcript (not chrome), with a human-readable summary as the primary line and no leading "[error]" prefix. (test-renderer-turn-failure.js)
 - The raw `[error]` provider text (including any request id) is available in a mono block behind a collapsed-by-default expandable detail. (test-renderer-turn-failure.js)
 - The end-cap always offers a Retry action when the user had a turn to replay. (test-renderer-turn-failure.js)
-- The end-cap's taxonomy badge is derived from `cause.kind`, overriding a generic stored `source` (e.g. `source:"serf"` with a provider cause still badges "Provider …"). (test-renderer-turn-failure.js)
+- The end-cap's taxonomy badge is derived from `cause.kind`, overriding a generic stored `source` (e.g. `source:"evener"` with a provider cause still badges "Provider …"). (test-renderer-turn-failure.js)
 - A `turn/completed` notification maps to a `TURN_COMPLETED` event carrying both the turn id and the full turn object, not just the id. (test-turn-meta-badge.js)
 - The assistant message that closes a turn is stamped with `data-turn-id`, and gains a `.turn-meta` badge (duration, token counts, cost) once `turn/completed` lands. (test-turn-meta-badge.js)
 - The badge reuses the existing duration-format convention and renders the cost inside a nested `.cost` child span. (test-turn-meta-badge.js)
@@ -210,14 +210,14 @@ from the renderer-side glyph/open-beside contracts already covered here); `test-
 - With no submitted turn payload recorded, no recovery action is offered even for a retry-eligible error source. (test-renderer-diagnostic-actions.js)
 - A provider-source error offers a single "Retry turn" action that resubmits the original payload. (test-renderer-diagnostic-actions.js)
 - A hub-source error offers a single "Reconnect & retry" action instead of "Retry turn". (test-renderer-diagnostic-actions.js)
-- Other error sources (serf, ui) offer no action button at all, including when the local hub itself fails. (test-renderer-diagnostic-actions.js)
+- Other error sources (evener, ui) offer no action button at all, including when the local hub itself fails. (test-renderer-diagnostic-actions.js)
 - A provider failure after some partial agent work in the turn offers "Continue" (from the existing transcript) instead of replaying the original prompt/attachments. (test-renderer-diagnostic-actions.js)
 - A standalone background-job completion (e.g. a delegate/shell `JOB_FINISHED`) landing in a fresh, otherwise-empty turn must not count as "current-turn work" — the recovery for a subsequent provider failure is still "Retry turn" with the original payload, not a work-discarding "Continue". (test-renderer-diagnostic-actions.js)
 - Submitting a new turn via the optimistic local-echo path resets the per-turn "has work" flag immediately, so a provider failure racing the server round-trip recovers the new turn, not the previous one. (test-renderer-diagnostic-actions.js)
 - The submitted-turn payload is snapshotted before awaiting `startTurn`, so a provider failure arriving during that await still offers Retry with the freshly submitted payload, not a stale one. (test-renderer-diagnostic-actions.js)
-- The recovery-action onclick handler calls `SerfAppwire.startTurn` directly (never falls back to a bare fetch) with the exact ref/text/images captured at submit time. (test-renderer-diagnostic-actions.js)
+- The recovery-action onclick handler calls `EvenerAppwire.startTurn` directly (never falls back to a bare fetch) with the exact ref/text/images captured at submit time. (test-renderer-diagnostic-actions.js)
 - Retry/reconnect failure banners are worded per source ("retry failed:" vs "reconnect failed:") and carry the matching diagnostic title. (test-renderer-diagnostic-actions.js)
-- When `SerfAppwire` is unavailable at click time, the retry/reconnect path shows a diagnostic banner naming "appwire unavailable" instead of silently falling back to a legacy `/send` fetch. (test-renderer-diagnostic-actions.js)
+- When `EvenerAppwire` is unavailable at click time, the retry/reconnect path shows a diagnostic banner naming "appwire unavailable" instead of silently falling back to a legacy `/send` fetch. (test-renderer-diagnostic-actions.js)
 - Multiple diff-output deltas for one tool call landing inside a single batched flush coalesce to exactly one diff re-render at settle (last output wins), not one render per delta. (test-renderer-diff-delta-coalescing.js)
 - Coalescing is per-frame, not a one-time latch — the next frame's deltas render again. (test-renderer-diff-delta-coalescing.js)
 - A still-pending coalesced delta must never clobber `TOOL_CALL_END`'s authoritative final render when both land in the same frame. (test-renderer-diff-delta-coalescing.js)
@@ -286,7 +286,7 @@ from the renderer-side glyph/open-beside contracts already covered here); `test-
 - Every transcript message (user or assistant) carries a fork `<button type="button">` action. (test-renderer-fork-from-message.js)
 - Forking a user message forks the session at that message's transcript entry index with `defer_input:true`, stages the server-returned original text as the child session's draft, and navigates to the child without ever calling `startTurn` (no auto-run). (test-renderer-fork-from-message.js)
 - Forking an assistant message forks at the entry index of the user prompt that produced it (retry semantics), staging that prompt's text, again with `defer_input` and no auto-run. (test-renderer-fork-from-message.js)
-- `SerfDrafts.writeFor` stores a draft for an arbitrary (not-yet-visited) session id and removes the entry when written with blank content. (test-renderer-fork-from-message.js)
+- `EvenerDrafts.writeFor` stores a draft for an arbitrary (not-yet-visited) session id and removes the entry when written with blank content. (test-renderer-fork-from-message.js)
 - Opening the forked child session restores the staged draft into its composer, ready for editing, without auto-submitting it. (test-renderer-fork-from-message.js)
 - An optimistic local echo's fork button reads its transcript entry index at click time — after the server echo corrects the optimistic index, a later click forks at the corrected index, never a stale inferred one. (test-renderer-fork-from-message.js)
 - `showForkDialog` navigates using `json.ref` when present, even if `child_session_id`/`session_id` are also present (highest priority). (test-renderer-fork-ref.js)
@@ -305,8 +305,8 @@ from the renderer-side glyph/open-beside contracts already covered here); `test-
 
 ## 16. Subagent rows & affordances (renderer-side)
 
-- A completed subagent row with a transcript ref gains an "open beside" button that calls `SerfPanes.open()` with the correct pane href (including source-qualified refs) without triggering the row's own hard-navigation click handler. (test-renderer-open-beside.js)
-- The open-beside button is entirely absent from subagent rows when `window.SerfPanes` doesn't exist (e.g. an iframe guard). (test-renderer-open-beside.js)
+- A completed subagent row with a transcript ref gains an "open beside" button that calls `EvenerPanes.open()` with the correct pane href (including source-qualified refs) without triggering the row's own hard-navigation click handler. (test-renderer-open-beside.js)
+- The open-beside button is entirely absent from subagent rows when `window.EvenerPanes` doesn't exist (e.g. an iframe guard). (test-renderer-open-beside.js)
 - `subagentGlyph` returns unified SVG icon markup for `done`/`failed`/`running`, and only the literal "?" for `unknown` (not a unified-icon state). (test-renderer-subagent-glyphs.js)
 - The scroll-nudge pill (needs-you and urgent-error variants), the off-screen dock, and the ask-header glyph all render unified SVG icons, never the literal "◆"/"✕" characters. (test-renderer-needsyou-affordances.js)
 - The settled-ask summary line renders its icon and text as separate DOM nodes (not string-concatenated `innerHTML`), so raw/unescaped question-header and reply text can never be parsed as live HTML while still displaying literally (XSS-safe). (test-renderer-needsyou-affordances.js)

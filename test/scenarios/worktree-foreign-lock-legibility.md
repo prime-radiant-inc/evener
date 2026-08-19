@@ -10,11 +10,11 @@ Live end-to-end, real provider (billed).
 
 ## Pre-state
 
-Fresh binary + hermetic repo + isolated `SERF_STATE_DIR` (config symlinked).
+Fresh binary + hermetic repo + isolated `EVENER_STATE_DIR` (config symlinked).
 Pre-seed a lane `held-lane` that is **locked by a different session id**: the
 simplest deterministic way is `git worktree add` the lane under the managed
 `<worktreeRoot>/<projectid>/` dir, write a matching sidecar, then
-`git worktree lock --reason "serf:01OTHERSESSION..." -- <lanepath>` so it reads
+`git worktree lock --reason "evener:01OTHERSESSION..." -- <lanepath>` so it reads
 as foreign-owned. (This mirrors "another live session holds it.")
 
 ## Steps
@@ -28,7 +28,7 @@ as foreign-owned. (This mirrors "another live session holds it.")
 ## Expected
 
 - The `switch name=held-lane` (or `remove`) is refused with a message naming
-  the lock/owner (`locked serf:01OTHERSESSION…`) and stating force does not
+  the lock/owner (`locked evener:01OTHERSESSION…`) and stating force does not
   override a lock. **Falsify**: if the agent enters or removes the
   foreign-locked lane, the concurrency guard failed (SEV — two writers).
 - The agent's next action is coherent with the error: it reports the lane is
@@ -44,7 +44,7 @@ unnecessary — the whole tree is discarded.)
 
 ## Sharp edges
 
-- The foreign lock reason must parse as a serf marker with a DIFFERENT session
+- The foreign lock reason must parse as a evener marker with a DIFFERENT session
   id than the running session, or it'll read as this session's own crash
   residue (auto-released) rather than foreign. Use an obviously-different id.
 - `force` must NOT override the lock (spec §5); if the model reaches for

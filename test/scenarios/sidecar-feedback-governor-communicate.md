@@ -12,7 +12,7 @@ reports a concise intervention note. Driving mechanism:
 ## Pre-state
 
 - Fresh hub and daemon binaries.
-- `tmpdir=$(mktemp -d -t serf-e2e-feedback-governor-XXXXX)`.
+- `tmpdir=$(mktemp -d -t evener-e2e-feedback-governor-XXXXX)`.
 
 ## Steps
 
@@ -51,10 +51,10 @@ reports a concise intervention note. Driving mechanism:
 ## Doctor audit
 
 ```bash
-go run ./cmd/serf-doctor watches "$SID"
-go run ./cmd/serf-doctor tree "$SID" --observers
-go run ./cmd/serf-doctor transcript "$SID" --format outline --range last:30
-go run ./cmd/serf-doctor transcript "$OBSERVER_REF" --format outline --range last:30
+go run ./cmd/evener-doctor watches "$SID"
+go run ./cmd/evener-doctor tree "$SID" --observers
+go run ./cmd/evener-doctor transcript "$SID" --format outline --range last:30
+go run ./cmd/evener-doctor transcript "$OBSERVER_REF" --format outline --range last:30
 ```
 
 ## Sharp edges

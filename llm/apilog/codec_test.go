@@ -92,7 +92,7 @@ func TestAPIAttemptDecoderRejectsInteriorCorruptionWithLineAndOffset(t *testing.
 }
 
 // TestDecoderRecordOffsetAndLineTrackMostRecentAttempt proves the structured
-// getters agree with the offsets serf-doctor's whole-history validation reads
+// getters agree with the offsets evener-doctor's whole-history validation reads
 // (kata 7x84): a consumer that wants offsets programmatically must not have to
 // scrape them out of Next()'s formatted error text.
 func TestDecoderRecordOffsetAndLineTrackMostRecentAttempt(t *testing.T) {

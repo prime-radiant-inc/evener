@@ -51,8 +51,8 @@ func TestNotificationCatalogWellFormed(t *testing.T) {
 		}
 	}
 	for name, want := range map[string]any{
-		NotifySerfDelegateUpdated: SerfDelegateParams{},
-		NotifySerfJobsTreeUpdated: JobsTreeUpdatedParams{},
+		NotifyEvenerDelegateUpdated: EvenerDelegateParams{},
+		NotifyEvenerJobsTreeUpdated: JobsTreeUpdatedParams{},
 	} {
 		for _, n := range Notifications {
 			if n.Name != name {
@@ -165,12 +165,12 @@ func TestMutationExpectedQueueRevisionRequiresUnsignedInteger(t *testing.T) {
 
 func TestThreadNotificationsRequireAuthoritativeRoutingIdentity(t *testing.T) {
 	global := map[string]bool{
-		NotifySerfAuthUpdated:        true,
-		NotifySerfLaunchUpdated:      true,
-		NotifySerfAttentionChanged:   true,
-		NotifySerfMarketplaceUpdated: true,
-		NotifySerfPluginUpdated:      true,
-		NotifySerfTreeChanged:        true,
+		NotifyEvenerAuthUpdated:        true,
+		NotifyEvenerLaunchUpdated:      true,
+		NotifyEvenerAttentionChanged:   true,
+		NotifyEvenerMarketplaceUpdated: true,
+		NotifyEvenerPluginUpdated:      true,
+		NotifyEvenerTreeChanged:        true,
 	}
 	for _, notification := range Notifications {
 		if global[notification.Name] {
@@ -197,18 +197,18 @@ func TestJobsCatalogEntries(t *testing.T) {
 	for _, e := range Methods {
 		methods[e.Name] = true
 	}
-	for _, m := range []string{MethodSerfJobsList, MethodSerfJobsOutput} {
+	for _, m := range []string{MethodEvenerJobsList, MethodEvenerJobsOutput} {
 		if !methods[m] {
 			t.Errorf("request catalog missing %s", m)
 		}
 	}
-	// The panel's live refetch trigger is serf/job/started|finished, not a
+	// The panel's live refetch trigger is evener/job/started|finished, not a
 	// notification of its own (kata j7y6), so those two are all this pins.
 	notifs := map[string]bool{}
 	for _, e := range Notifications {
 		notifs[e.Name] = true
 	}
-	for _, n := range []string{NotifySerfJobStarted, NotifySerfJobFinished} {
+	for _, n := range []string{NotifyEvenerJobStarted, NotifyEvenerJobFinished} {
 		if !notifs[n] {
 			t.Errorf("notification catalog missing %s", n)
 		}

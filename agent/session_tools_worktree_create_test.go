@@ -13,8 +13,8 @@ import (
 	"testing"
 	"time"
 
-	"primeradiant.com/serf/agent/execenv"
-	"primeradiant.com/serf/agent/internal/worktree"
+	"primeradiant.com/evener/agent/execenv"
+	"primeradiant.com/evener/agent/internal/worktree"
 )
 
 // These are integration tests for the manage_worktree create arm (spec §3),
@@ -24,8 +24,8 @@ import (
 // This file also DEFINES the real-git harness (wtRepo, newWorktreeRepo, wtGit,
 // worktreeBaseRepo, addManagedWorktreeFixture, …) that the whole worktree test
 // family shares, and it is MIXED across the two lane harnesses; see
-// docs/testing.md for the rule. A test whose subject is serf's own
-// decision-making — argument validation, which refusal rung fires, what serf
+// docs/testing.md for the rule. A test whose subject is evener's own
+// decision-making — argument validation, which refusal rung fires, what evener
 // wrote to its own sidecar, the preflight — runs on the scripted git boundary.
 // These stay on real git because their subject IS git's observable behavior:
 //
@@ -68,17 +68,17 @@ func TestMain(m *testing.M) {
 	// macOS and whenever the fast path cannot be resolved safely.
 	fastGitDirForTest = prependFastGitToPath()
 
-	testHome, err := os.MkdirTemp("", "serf-agent-home-*")
+	testHome, err := os.MkdirTemp("", "evener-agent-home-*")
 	if err == nil {
 		_ = os.Setenv("HOME", testHome)
 		_ = os.Setenv("XDG_CONFIG_HOME", filepath.Join(testHome, ".config"))
 	}
-	sharedWorkspace, err := os.MkdirTemp("", "serf-agent-workspace-*")
+	sharedWorkspace, err := os.MkdirTemp("", "evener-agent-workspace-*")
 	if err == nil {
 		_ = os.Chmod(sharedWorkspace, 0o555)
 		sharedSessionWorkspace = sharedWorkspace
 	}
-	sharedTempRoot, err := os.MkdirTemp("", "serf-agent-fixtures-*")
+	sharedTempRoot, err := os.MkdirTemp("", "evener-agent-fixtures-*")
 	if err == nil {
 		sharedAgentTempRoot = sharedTempRoot
 	}
@@ -161,7 +161,7 @@ func wtGit(t *testing.T, dir string, args ...string) string {
 func worktreeBaseRepo(t *testing.T) (string, string) {
 	t.Helper()
 	wtBaseRepoOnce.Do(func() {
-		dir, err := os.MkdirTemp("", "serf-worktree-base-*")
+		dir, err := os.MkdirTemp("", "evener-worktree-base-*")
 		if err != nil {
 			errWtBaseRepo = err
 			return

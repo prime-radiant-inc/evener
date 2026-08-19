@@ -1985,17 +1985,17 @@ git commit -m "fix: RegisteredTool embeds llm.Tool, SessionEvent bridges to llm.
 
 **Priority:** P2
 
-Everything is under `internal/` so external Go modules can't import serf as a library. The fix is to move the public API surface out of `internal/`.
+Everything is under `internal/` so external Go modules can't import evener as a library. The fix is to move the public API surface out of `internal/`.
 
 **Approach:** Move `internal/agent/` to `agent/` (top-level package). This is the simplest approach — it makes the entire agent package importable. The `internal/llm/` package should also be moved to `llm/` since it's the SDK layer.
 
-This is a large but mechanical refactor. Every import path changes from `primeradiant.com/serf/internal/agent` to `primeradiant.com/serf/agent` and from `primeradiant.com/serf/internal/llm` to `primeradiant.com/serf/llm`.
+This is a large but mechanical refactor. Every import path changes from `primeradiant.com/evener/internal/agent` to `primeradiant.com/evener/agent` and from `primeradiant.com/evener/internal/llm` to `primeradiant.com/evener/llm`.
 
 **Files:**
 - Move: `internal/agent/` → `agent/`
 - Move: `internal/llm/` → `llm/`
 - Update: every `*.go` file's import paths
-- Update: `cmd/serf/main.go` imports
+- Update: `cmd/evener/main.go` imports
 - Update: all test files
 
 **Step 1: Write a test that verifies the package is importable**
@@ -2007,7 +2007,7 @@ package agent_test
 import (
 	"testing"
 
-	"primeradiant.com/serf/agent"
+	"primeradiant.com/evener/agent"
 )
 
 func TestPackageIsImportable(t *testing.T) {
@@ -2040,16 +2040,16 @@ Use `sed` or `goimports` to update every import:
 ```bash
 # Update all Go files
 find . -name '*.go' -exec sed -i '' \
-  -e 's|"primeradiant.com/serf/internal/agent"|"primeradiant.com/serf/agent"|g' \
-  -e 's|"primeradiant.com/serf/internal/llm"|"primeradiant.com/serf/llm"|g' \
-  -e 's|primeradiant.com/serf/internal/agent|primeradiant.com/serf/agent|g' \
-  -e 's|primeradiant.com/serf/internal/llm|primeradiant.com/serf/llm|g' \
+  -e 's|"primeradiant.com/evener/internal/agent"|"primeradiant.com/evener/agent"|g' \
+  -e 's|"primeradiant.com/evener/internal/llm"|"primeradiant.com/evener/llm"|g' \
+  -e 's|primeradiant.com/evener/internal/agent|primeradiant.com/evener/agent|g' \
+  -e 's|primeradiant.com/evener/internal/llm|primeradiant.com/evener/llm|g' \
   {} +
 ```
 
 Also update any references in:
 - `go.mod` (shouldn't need changes — module path stays the same)
-- `.serf/prompts/` files if they reference internal paths
+- `.evener/prompts/` files if they reference internal paths
 - `CLAUDE.md` / `AGENTS.md` if they mention internal paths
 - `coding-agent-loop-spec.md` path references
 

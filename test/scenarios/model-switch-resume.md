@@ -3,21 +3,21 @@
 **What this covers**: spec Acceptance criterion 3 ("switch → crash → resume
 runs on the switched model") and N3 ("Persistence and resume": synchronous
 meta flush on switch, `ResolveResumeModelRef` honoring persisted
-`ProfileID`/`Model` over `SERF_MODEL`). This card kills the daemon **between**
+`ProfileID`/`Model` over `EVENER_MODEL`). This card kills the daemon **between**
 the switch and the resume, per the brief — it is the only card in this set
 that proves the switch is durable across a real process death, not just a
 live-notification convergence.
 
 ## Pre-state
 
-- An isolated hub built from the branch under test, running with `-serf` set
+- An isolated hub built from the branch under test, running with `-evener` set
   so it can spawn fresh daemons on resume — the scratch `$HOME` and
   kernel-assigned port from `docs/agentic-testing.md`'s Setup checklist,
   never Jesse's real hub. The isolation is load-bearing twice over here:
   this card kills a daemon it finds by globbing the run directory, and that
   glob has to be able to name only its own daemons.
 - A session spawned on model A (e.g. `openai/gpt-5.5`), idle. Confirm no
-  `SERF_MODEL` env override is set for the daemon (would otherwise mask a
+  `EVENER_MODEL` env override is set for the daemon (would otherwise mask a
   regression per N3's "must not override" contract).
 
 ## Steps
@@ -28,9 +28,9 @@ live-notification convergence.
    or a direct RPC call) — confirm the call returns success and the marker
    turn appears in the transcript.
 3. Find and **kill** the daemon backing the session (same technique as
-   `reconnect-auto-resume.md`: `ls "$HOME"/.serf/run/*.json` for the pid —
+   `reconnect-auto-resume.md`: `ls "$HOME"/.evener/run/*.json` for the pid —
    the scratch `$HOME` from Pre-state, so the glob only ever names this
-   card's own daemons — or `ps aux | grep "serf serve.*<session_id>"`).
+   card's own daemons — or `ps aux | grep "evener serve.*<session_id>"`).
    Confirm the rendezvous file is gone and the process is dead.
 4. Trigger resume: send a new turn to the session (via the hub UI or
    `turn/start`) — the hub's auto-resume path (`hubThreadResume`) should

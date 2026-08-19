@@ -4,7 +4,7 @@ import (
 	"context"
 	"sync"
 
-	"primeradiant.com/serf/llm"
+	"primeradiant.com/evener/llm"
 )
 
 // ScriptedAdapter is a reusable llm.ProviderAdapter whose every Complete call is

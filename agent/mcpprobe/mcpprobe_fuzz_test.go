@@ -13,7 +13,7 @@ import (
 
 	mcpsdk "github.com/modelcontextprotocol/go-sdk/mcp"
 
-	"primeradiant.com/serf/agent/mcpconfig"
+	"primeradiant.com/evener/agent/mcpconfig"
 )
 
 // FuzzProbe exercises the real concurrent Probe/probeOne flow while replacing
@@ -59,14 +59,14 @@ func FuzzProbe(f *testing.F) {
 				Name:    httpName,
 				Type:    "http",
 				URL:     "http://mcpprobe.invalid/http",
-				Headers: map[string]string{"X-Serf-Probe": headerValue},
+				Headers: map[string]string{"X-Evener-Probe": headerValue},
 			},
 			{Name: missingName, Command: missingCommand}, // empty Type defaults to stdio
 			{
 				Name:    sseName,
 				Type:    "sse",
 				URL:     "http://mcpprobe.invalid/sse",
-				Headers: map[string]string{"X-Serf-Probe": headerValue},
+				Headers: map[string]string{"X-Evener-Probe": headerValue},
 			},
 			{Name: "unknown", Type: "unsupported"},
 			{Name: "missing-sse-url", Type: "sse"},
@@ -108,9 +108,9 @@ func FuzzProbe(f *testing.F) {
 		seenPaths := map[string]bool{}
 		for _, request := range requests {
 			seenPaths[request.path] = true
-			values, ok := request.headers["X-Serf-Probe"]
+			values, ok := request.headers["X-Evener-Probe"]
 			if !ok || len(values) != 1 || values[0] != headerValue {
-				t.Errorf("request %s %s header X-Serf-Probe = %q, want [%q]", request.method, request.path, values, headerValue)
+				t.Errorf("request %s %s header X-Evener-Probe = %q, want [%q]", request.method, request.path, values, headerValue)
 			}
 		}
 		if !seenPaths["/http"] || !seenPaths["/sse"] {
@@ -132,7 +132,7 @@ func assertProbeFuzzTransportConstruction(t *testing.T, headerValue string) {
 	cfg := mcpconfig.ServerConfig{
 		Type:    "http",
 		URL:     "http://mcpprobe.invalid/direct",
-		Headers: map[string]string{"X-Serf-Probe": headerValue},
+		Headers: map[string]string{"X-Evener-Probe": headerValue},
 	}
 	for _, deps := range []probeDeps{{}, {httpClient: &http.Client{}}} {
 		transport, err := transportForProbe(cfg, deps)

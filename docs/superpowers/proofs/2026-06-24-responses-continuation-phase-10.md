@@ -16,25 +16,25 @@ This phase keeps production continuation registry entries disabled. It does not 
 ## RED Evidence
 
 ```sh
-GOCACHE=/tmp/serf-gocache go test ./llm -run 'TestBuildAPILogRequest_RecordsContinuationTokenEstimates' -count=1 -v
+GOCACHE=/tmp/evener-gocache go test ./llm -run 'TestBuildAPILogRequest_RecordsContinuationTokenEstimates' -count=1 -v
 ```
 
 Initial result: failed to compile because `Request` and `APILogRequest` did not expose token-estimate or continuation diagnostic fields.
 
 ```sh
-GOCACHE=/tmp/serf-gocache go test ./agent -run 'TestSession_OpenAIResponsesContinuationPhase10DeltaCarriesFullHistoryShadowEstimate' -count=1 -v
+GOCACHE=/tmp/evener-gocache go test ./agent -run 'TestSession_OpenAIResponsesContinuationPhase10DeltaCarriesFullHistoryShadowEstimate' -count=1 -v
 ```
 
 Initial result: failed to compile because the deterministic shadow-estimate test hook did not exist. After adding the hook, the test proved the estimator sees the full-history request containing both prior and current markers while the dispatched request remains `responses_delta`.
 
 ```sh
-GOCACHE=/tmp/serf-gocache go test ./agent -run 'TestSession_OpenAIResponsesContinuationPhase10PressureUsesFullHistoryShadowWhenLarger' -count=1 -v
+GOCACHE=/tmp/evener-gocache go test ./agent -run 'TestSession_OpenAIResponsesContinuationPhase10PressureUsesFullHistoryShadowWhenLarger' -count=1 -v
 ```
 
 Initial result: failed because `LastInputTokens` was `10`, the provider-reported input usage, instead of the full-history shadow estimate `900`.
 
 ```sh
-GOCACHE=/tmp/serf-gocache go test ./agent/doctor -run 'TestAPILogContinuationCountsByEndpointFamily' -count=1 -v
+GOCACHE=/tmp/evener-gocache go test ./agent/doctor -run 'TestAPILogContinuationCountsByEndpointFamily' -count=1 -v
 ```
 
 Initial result: failed to compile because `APILogTotals` did not include continuation history-mode counts by endpoint family.
@@ -44,19 +44,19 @@ The unavailable-shadow test passed after the shadow-estimate helper was introduc
 ## GREEN Evidence
 
 ```sh
-GOCACHE=/tmp/serf-gocache go test ./llm -run 'TestBuildAPILogRequest_RecordsContinuationTokenEstimates' -count=1 -v
+GOCACHE=/tmp/evener-gocache go test ./llm -run 'TestBuildAPILogRequest_RecordsContinuationTokenEstimates' -count=1 -v
 ```
 
 Result: pass.
 
 ```sh
-GOCACHE=/tmp/serf-gocache go test ./agent -run 'TestSession_OpenAIResponsesContinuationPhase10|TestSession_OpenAIResponsesContinuationPhase9|TestFallbackChain_Continuation' -count=1 -v
+GOCACHE=/tmp/evener-gocache go test ./agent -run 'TestSession_OpenAIResponsesContinuationPhase10|TestSession_OpenAIResponsesContinuationPhase9|TestFallbackChain_Continuation' -count=1 -v
 ```
 
 Result: pass.
 
 ```sh
-GOCACHE=/tmp/serf-gocache go test ./agent/doctor -run 'TestAPILogContinuationCountsByEndpointFamily|TestAPILog' -count=1 -v
+GOCACHE=/tmp/evener-gocache go test ./agent/doctor -run 'TestAPILogContinuationCountsByEndpointFamily|TestAPILog' -count=1 -v
 ```
 
 Result: pass.

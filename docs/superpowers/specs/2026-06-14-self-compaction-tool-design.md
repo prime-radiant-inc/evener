@@ -1,6 +1,6 @@
 # Self-Compaction Tool Design
 
-An agent-invoked `compact` tool that lets serf compact its own context **by choice**
+An agent-invoked `compact` tool that lets evener compact its own context **by choice**
 at a clean task boundary — supplying the keep/clear judgment itself — layered over
 the existing automatic compactor as a safety net.
 
@@ -17,7 +17,7 @@ The subsystem it builds on is documented in
 
 ## Problem
 
-serf already auto-compacts on context pressure (default `compact` strategy:
+evener already auto-compacts on context pressure (default `compact` strategy:
 deterministic checkpoint at 0.80, cheap-model narrative summary at 0.90). The summary
 is authored *post-hoc by a cheap model* that did not do the work. This produces the
 well-documented failure modes catalogued in the prior-art note: **brevity bias**
@@ -43,7 +43,7 @@ any of that. We want to give it one.
 
 - **Not** replacing the automatic compactor. It stays as the fallback.
 - **Not** selective mid-history purging. Dropping specific old turns while keeping
-  others reintroduces the prompt-cache busting serf deliberately removed. Compaction
+  others reintroduces the prompt-cache busting evener deliberately removed. Compaction
   remains whole-prefix replacement.
 - **Not** a bet on agent timing calibration. The warning nudge and the raised
   auto-fallback together cover both "compacts too rarely" and "never compacts."
@@ -78,7 +78,7 @@ and must work with *any* strategy.
 The strategy-independent seam is **`Manager.ForceCompact`** — a `Manager` method,
 reachable regardless of which `Strategy` is active and regardless of whether that
 strategy routes through `Manager.MaybeCompact` or inlines its own layers. (Four of
-serf's seven strategies do **not** call `MaybeCompact`, so a force-flag consumed inside
+evener's seven strategies do **not** call `MaybeCompact`, so a force-flag consumed inside
 `MaybeCompact` would silently no-op for them; the `Manager` seam avoids that.)
 
 - The **trigger** (the tool), the **pinned note**, and the **warning nudge** live at the
@@ -249,7 +249,7 @@ The latch resets after any compaction. MemGPT's proven "memory-pressure warning"
   tool result can jump <0.75 → >0.80 in one round, firing the checkpoint before the agent sees
   the nudge. The nudge gives an *earlier opportunity*; the checkpoint/summary fallback is the
   guarantee.
-- **One audience for the agent; shared estimate, not a single signal.** serf already emits a
+- **One audience for the agent; shared estimate, not a single signal.** evener already emits a
   *user-facing* "context ~80%" warning (`maybeWarnContextUsage`, a char/4 estimate over
   `req.Messages`, fired post-response and latched per-input). **Decision:** the agent nudge is
   the only *agent-facing* signal; the user warning stays user-facing. Drive both off the same
@@ -273,7 +273,7 @@ Only the narrative-summary gate is raised; all three configurable.
 **Knock-on changes the raise requires (do not omit):**
 - `agent/context_strategy_test.go` scaled-defaults assertion `0.45` → `0.475` (the clamped
   sibling at the same test stays `0.20`).
-- `cmd/serf-tui/statusbar.go` hardcodes the threshold in **two** places that both must change
+- `cmd/evener-tui/statusbar.go` hardcodes the threshold in **two** places that both must change
   (and ideally be sourced from config so neither can drift again): the `const compactThreshold
   = 0.90` (line 13, consumed by `hub_status.go` for the "tokens-to-compact" figure) **and** the
   independent literal `case ratio >= 0.90:` color band (line 63). The `0.75` band on the next
@@ -312,7 +312,7 @@ worst-case single-turn growth against the smallest supported window during imple
   history-scan approach.)
 - `agent/session_tool_registry.go`: `toolDeps` forwarders; register the non-read-only `compact`
   core tool.
-- `cmd/serf-tui/statusbar.go` (+ `hub_status.go`): replace **both** hardcoded `0.90` literals
+- `cmd/evener-tui/statusbar.go` (+ `hub_status.go`): replace **both** hardcoded `0.90` literals
   (the `compactThreshold` const at line 13 and the `case ratio >= 0.90` band at line 63), and
   the `0.75` band, with config-sourced values that track `SummarizeThreshold`/`WarnThreshold`.
 - `docs/design/context.md`: document the tool, the pinned note, the nudge, the threshold

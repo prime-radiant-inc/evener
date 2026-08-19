@@ -3,8 +3,8 @@ package jobstore
 import (
 	"sort"
 
-	"primeradiant.com/serf/agent/provenance"
-	"primeradiant.com/serf/invariant"
+	"primeradiant.com/evener/agent/provenance"
+	"primeradiant.com/evener/invariant"
 )
 
 // Fold reconstructs the current JobRecord for each job by applying events in

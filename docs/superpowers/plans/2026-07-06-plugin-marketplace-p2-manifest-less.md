@@ -23,11 +23,11 @@ with no shape translation. The fallback is realized by **synthesizing a real
 before validation — not by threading the catalog entry into `Load` itself. This keeps `Load`'s
 contract exactly as it is today (dir in, `Instance` out) and means every other consumer that calls
 `Load`/`validatePluginDir` on that directory afterward — this same install's own validation, a
-later session's `EnabledPluginDirs()` load, `serf plugin list`'s `Broken` check, `serf-doctor` —
+later session's `EnabledPluginDirs()` load, `evener plugin list`'s `Broken` check, `evener-doctor` —
 sees an ordinary on-disk manifest and needs no special-casing. The synthesis only ever writes into
-a cache directory serf materialized itself (a `staged` fetch); a directory-source plugin
+a cache directory evener materialized itself (a `staged` fetch); a directory-source plugin
 referenced in place (a local-dev/test convenience) is never written into, since it is a directory
-serf does not own.
+evener does not own.
 
 **Tech Stack:** Go, root module only (`internal/plugins`); read-only import of the already-built
 `agent/plugin` package (`agentplugin.Manifest`, `agentplugin.Load`) — no `agent` module changes.
@@ -42,7 +42,7 @@ test style), no mocks.
   drifted from the design spec's `~203-232` estimate — the extra lines are the already-existing
   hooks/MCP discovery calls the spec's estimate predated, not anything this plan adds) stays
   dir-only per the Architecture note above.
-- **No appwire/UI changes.** Part 2 is pure backend; nothing in `cmd/serf-hub` or `appwire`
+- **No appwire/UI changes.** Part 2 is pure backend; nothing in `cmd/evener-hub` or `appwire`
   changes. (Part 1 — the browse tree — is a separate, independent plan.)
 - **`strict` semantics — corrected from the design spec.** The design spec
   (`docs/superpowers/specs/2026-07-06-plugin-marketplace-improvements-design.md`) frames
@@ -57,8 +57,8 @@ test style), no mocks.
   plugin.json."* Cross-checked against the real motivating example: `superpowers-marketplace`'s
   live `private-journal-mcp` entry (`https://github.com/obra/superpowers-marketplace`) is
   `"strict": true` with no embedded manifest fields at all, and the `private-journal-mcp` repo
-  itself has no `.claude-plugin/` — so today it has nothing for either Claude Code or serf to fall
-  back to; fixing serf's parsing doesn't retroactively fix that specific entry's JSON (a separate,
+  itself has no `.claude-plugin/` — so today it has nothing for either Claude Code or evener to fall
+  back to; fixing evener's parsing doesn't retroactively fix that specific entry's JSON (a separate,
   out-of-band edit to the marketplace's `marketplace.json` would be needed to actually exercise this
   end to end against the real marketplace). **Given that, and since the v1 scope is deliberately
   narrowed to the manifest-absent case only (no `strict:false`-conflicts-with-existing-plugin.json
@@ -77,8 +77,8 @@ test style), no mocks.
   `Manifest.Skills` override is a bigger, separate change touching `agent/plugin`, out of scope
   here) and is pinned by a falsifiable test (Task 4) so it doesn't silently regress or get assumed
   to work.
-- **No `// serf:naming-ignore:` comments needed for the new fields — verified, not assumed.**
-  `cmd/serf-namingcheck/main.go` (read in full during planning) enforces snake_case JSON tags, but
+- **No `// evener:naming-ignore:` comments needed for the new fields — verified, not assumed.**
+  `cmd/evener-namingcheck/main.go` (read in full during planning) enforces snake_case JSON tags, but
   `isUpstreamCamelKey` (line ~353-359) already **hardcodes `"mcpServers"` and `"enabledPlugins"`**
   as globally-exempt keys — matching `agent/plugin.Manifest.MCPServers`'s own tag, which likewise
   carries no ignore comment today. The other five new fields (`commands`, `agents`, `hooks`,
@@ -86,7 +86,7 @@ test style), no mocks.
   camelCase regexes trivially (`checkJSONTag`'s own comment: *"Pure-lowercase single-word keys...
   pass everywhere"*). So none of Task 1's six new struct fields need an ignore marker — this
   drifts from the task briefing's assumption that camelCase interop fields would need one;
-  `go run ./cmd/serf-namingcheck` (or `make lint-naming`) must still be run to confirm.
+  `go run ./cmd/evener-namingcheck` (or `make lint-naming`) must still be run to confirm.
 - **Directory-source (staged=false) plugins are not written into.** `Manager.stagePlugin`
   (`install.go` ~lines 39-57) returns `staged=false` only when the *marketplace itself* is a bare
   local directory and the plugin resolves to a `Rel`/`SourceDirectory` path in place — a
@@ -97,7 +97,7 @@ test style), no mocks.
 - Per-repo `GO_MODULES` (root, `agent`, `llm`, `auth`, `envvars`, `fuzz`, `invariant`): this plan
   touches only the **root** module (`internal/plugins`). Run
   `go test ./internal/plugins/... -run '<Name>' -count=1` from the repo root;
-  `golangci-lint run ./internal/plugins/...` for the package; `go run ./cmd/serf-namingcheck` (no
+  `golangci-lint run ./internal/plugins/...` for the package; `go run ./cmd/evener-namingcheck` (no
   `-root` flag needed — it defaults to `.`, the repo root) for the full naming sweep at the end.
 - TDD red-first; test output pristine (a skipped-when-no-`git` test via `gitAvailable()`, matching
   the package's existing convention, is not a pristine-output violation).
@@ -118,7 +118,7 @@ New/changed responsibilities, in dependency order:
   (mirrors `pluginManifestVersion`'s two-flavor directory list) and
   `ensureManifestFallback(dir string, staged bool, cp CatalogPlugin) error` (the fallback: no-op
   when a manifest exists, a clear error when neither a manifest nor usable entry fields exist,
-  and — only for a cache dir serf owns — synthesizing `.claude-plugin/plugin.json` from
+  and — only for a cache dir evener owns — synthesizing `.claude-plugin/plugin.json` from
   `agentplugin.Manifest{Name: cp.Name, Description: cp.Description, Commands: cp.Commands,
   Agents: cp.Agents, Hooks: cp.Hooks, MCPServers: cp.MCPServers}` otherwise).
 - `internal/plugins/install.go` — `Install` (~lines 80-136) and `upgradeLocked` (~lines 175-232)
@@ -272,7 +272,7 @@ type CatalogPlugin struct {
 	Strict *bool `json:"strict,omitempty"`
 }
 ```
-(No `// serf:naming-ignore:` needed on any of the six — see Global Constraints.)
+(No `// evener:naming-ignore:` needed on any of the six — see Global Constraints.)
 
 - [ ] **Run** `go test ./internal/plugins/... -run 'TestCatalogPlugin_' -count=1` → PASS.
 - [ ] **Run** `go test ./internal/plugins/... -count=1` (package-wide, no regression) and
@@ -423,7 +423,7 @@ func hasPluginManifest(dir string) bool {
   Task 5 (`Install`) and Task 6 (`upgradeLocked`).
 
 - [ ] **Failing test** — add to `internal/plugins/manifest_fallback_test.go` (add
-  `"encoding/json"`, `"strings"`, and `agentplugin "primeradiant.com/serf/agent/plugin"` to its
+  `"encoding/json"`, `"strings"`, and `agentplugin "primeradiant.com/evener/agent/plugin"` to its
   import block):
 ```go
 func TestEnsureManifestFallback_ExistingManifestIsNoop(t *testing.T) {
@@ -470,7 +470,7 @@ func TestEnsureManifestFallback_NotStaged_ClearError(t *testing.T) {
 		t.Errorf("error must not name the misleading .codex-plugin path, got: %v", err)
 	}
 	if _, statErr := os.Stat(filepath.Join(dir, ".claude-plugin", "plugin.json")); statErr == nil {
-		t.Fatal("must not write a manifest into a directory-source plugin serf does not own")
+		t.Fatal("must not write a manifest into a directory-source plugin evener does not own")
 	}
 }
 
@@ -532,11 +532,11 @@ Run: `go test ./internal/plugins/... -run 'TestEnsureManifestFallback' -count=1`
 (compile error: `ensureManifestFallback` undefined).
 
 - [ ] **Implement** — append to `internal/plugins/manifest_fallback.go` (add `"encoding/json"`,
-  `"fmt"`, and `agentplugin "primeradiant.com/serf/agent/plugin"` to its import block):
+  `"fmt"`, and `agentplugin "primeradiant.com/evener/agent/plugin"` to its import block):
 ```go
 // ensureManifestFallback makes a manifest-less plugin installable by
 // honoring its marketplace entry as a fallback manifest — the fix for
-// serf's real root cause (a bare MCP/npm-package plugin with no
+// evener's real root cause (a bare MCP/npm-package plugin with no
 // .claude-plugin/plugin.json, e.g. private-journal-mcp in
 // superpowers-marketplace, had its entry's manifest-shaped fields silently
 // dropped and could not install). See the plan's Global Constraints for why
@@ -554,15 +554,15 @@ Run: `go test ./internal/plugins/... -run 'TestEnsureManifestFallback' -count=1`
 //     this returns a clear, honest, plugin-named error — no misleading
 //     .codex-plugin path, no Load() call at all.
 //   - and the entry does declare components, and dir is a cache directory
-//     serf materialized (staged), it writes a synthesized
+//     evener materialized (staged), it writes a synthesized
 //     .claude-plugin/plugin.json built from the entry's fields, so every
 //     later Load() of dir (this install's own validation, a future
-//     session's EnabledPluginDirs(), `serf plugin list`'s Broken check,
-//     serf-doctor) finds an ordinary on-disk manifest and needs no
+//     session's EnabledPluginDirs(), `evener plugin list`'s Broken check,
+//     evener-doctor) finds an ordinary on-disk manifest and needs no
 //     special-casing.
 //   - and the entry declares components but dir is NOT a cache directory
 //     (staged=false — a directory-source plugin referenced in place, a
-//     local-dev/test convenience), it returns a distinct clear error: serf
+//     local-dev/test convenience), it returns a distinct clear error: evener
 //     will not write a generated file into a directory it does not own.
 func ensureManifestFallback(dir string, staged bool, cp CatalogPlugin) error {
 	if hasPluginManifest(dir) {
@@ -572,7 +572,7 @@ func ensureManifestFallback(dir string, staged bool, cp CatalogPlugin) error {
 		return fmt.Errorf("plugin %q: source has no plugin manifest (no .claude-plugin/plugin.json or .codex-plugin/plugin.json) and the marketplace entry declares no components (commands/agents/hooks/mcpServers)", cp.Name)
 	}
 	if !staged {
-		return fmt.Errorf("plugin %q: source has no plugin manifest; the marketplace entry declares components, but serf only synthesizes a fallback manifest into a materialized cache install, not a directory source referenced in place", cp.Name)
+		return fmt.Errorf("plugin %q: source has no plugin manifest; the marketplace entry declares components, but evener only synthesizes a fallback manifest into a materialized cache install, not a directory source referenced in place", cp.Name)
 	}
 
 	manifest := agentplugin.Manifest{
@@ -615,7 +615,7 @@ func ensureManifestFallback(dir string, staged bool, cp CatalogPlugin) error {
   components, and fails with the honest error (not the old misleading one) when it declares none.
 
 - [ ] **Failing test** — add to `internal/plugins/install_test.go` (add `"strings"` and
-  `agentplugin "primeradiant.com/serf/agent/plugin"` to its import block):
+  `agentplugin "primeradiant.com/evener/agent/plugin"` to its import block):
 ```go
 func TestInstall_ManifestLessPlugin_MCPServerRegisters(t *testing.T) {
 	if !gitAvailable() {
@@ -802,7 +802,7 @@ spec's complaint was the *misleading message*, not the cleanup — see Global Co
   install/upgrade and is untouched, per the existing never-delete-on-upgrade rule).
 
 - [ ] **Failing test** — add to `internal/plugins/upgrade_test.go` (add
-  `agentplugin "primeradiant.com/serf/agent/plugin"` to its import block; `os/exec` is already
+  `agentplugin "primeradiant.com/evener/agent/plugin"` to its import block; `os/exec` is already
   imported):
 ```go
 func TestUpgrade_ManifestLessPlugin_FallbackAppliedToNewShaDir(t *testing.T) {
@@ -897,8 +897,8 @@ invariant.)
 - [ ] **Run full package + naming + lint gates:**
   - `go test ./internal/plugins/... -count=1`
   - `golangci-lint run ./internal/plugins/...`
-  - `go run ./cmd/serf-namingcheck` (confirms none of Task 1's six new fields need a
-    `// serf:naming-ignore:` line, per Global Constraints)
+  - `go run ./cmd/evener-namingcheck` (confirms none of Task 1's six new fields need a
+    `// evener:naming-ignore:` line, per Global Constraints)
   - `go build ./...` from repo root (confirms no other root-module package broke)
 - [ ] **Commit** — `git add internal/plugins/install.go internal/plugins/upgrade_test.go` →
   `feat(plugins): Upgrade re-applies the manifest fallback to a new sha-dir`.
@@ -933,11 +933,11 @@ invariant.)
   custom `skills` paths) — a separate, `agent`-module-touching change; pinned as a known gap by
   Task 4's `TestEnsureManifestFallback_SkillsFieldNotHonored`.
 - Writing a synthesized manifest into a directory-source plugin referenced in place (`staged=false`)
-  — serf must not write generated files into a directory it does not own; such a plugin keeps
+  — evener must not write generated files into a directory it does not own; such a plugin keeps
   failing to install (with the corrected message) if it lacks its own `plugin.json`.
 - Retroactively fixing any specific live marketplace's `marketplace.json` (e.g.
   `superpowers-marketplace`'s `private-journal-mcp` entry, which today has `strict: true` and no
-  embedded fields at all) — that is a content edit to that marketplace repo, not a serf code change.
+  embedded fields at all) — that is a content edit to that marketplace repo, not a evener code change.
 - Everything under Part 1 (the browse-tree UI) — a separate, independent plan/PR.
 
 ## Estimate

@@ -14,7 +14,7 @@ message) would rewrite the system block every provider adapter hoists to the
 front of the prompt, invalidating the provider-side prompt cache for the whole
 conversation on every turn.
 
-Prompt caching is exact-prefix at every provider serf targets (Anthropic,
+Prompt caching is exact-prefix at every provider evener targets (Anthropic,
 OpenAI chat + Responses, Gemini). The only cache-safe place for mutable
 content is appended at the tail of the newest turn, and OpenAI Responses
 continuation (`previous_response_id`) additionally makes appending the *only*
@@ -108,14 +108,14 @@ Format:
 
 ```
 <environment_context>
-cwd: "/Users/jesse/prime-radiant/toil-suite/serf/.worktrees/webui-workspace-shell"
+cwd: "/Users/jesse/prime-radiant/toil-suite/evener/.worktrees/webui-workspace-shell"
 git branch: worktree-webui-workspace-shell
 memory pressure: back to normal
 </environment_context>
 ```
 
 The outer tag exists for attribution — it marks the block as harness-injected
-rather than user speech, which every model family serf targets is trained to
+rather than user speech, which every model family evener targets is trained to
 respect. Deterministic field order (struct declaration order) keeps
 transcripts and tests stable.
 

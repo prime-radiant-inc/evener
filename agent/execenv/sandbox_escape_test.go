@@ -9,7 +9,7 @@ import (
 	"strings"
 	"testing"
 
-	"primeradiant.com/serf/agent/sandbox"
+	"primeradiant.com/evener/agent/sandbox"
 )
 
 // This is the M2 adversarial escape suite. It drives the spec's Validation
@@ -78,7 +78,7 @@ func TestEscape_SymlinkOutDeniedEveryTool(t *testing.T) {
 	}
 }
 
-// TestEscape_ProcReadDeniedEveryMode: reading serf's own /proc environment and the
+// TestEscape_ProcReadDeniedEveryMode: reading evener's own /proc environment and the
 // /proc/<pid>/root aliasing paths is denied in every sandboxed mode.
 func TestEscape_ProcReadDeniedEveryMode(t *testing.T) {
 	t.Parallel()

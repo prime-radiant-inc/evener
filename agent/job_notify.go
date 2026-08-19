@@ -5,9 +5,9 @@ import (
 	"strconv"
 	"strings"
 
-	"primeradiant.com/serf/agent/events"
-	"primeradiant.com/serf/agent/internal/jobstore"
-	"primeradiant.com/serf/agent/provenance"
+	"primeradiant.com/evener/agent/events"
+	"primeradiant.com/evener/agent/internal/jobstore"
+	"primeradiant.com/evener/agent/provenance"
 )
 
 type deliverableJobNotification struct {
@@ -158,7 +158,7 @@ func notificationTranscriptRef(n jobNotification) string {
 // attribute value, close the opening tag early, terminate the block via a
 // literal </job-notification>, or forge a second block. & is escaped first so
 // the other entities are not themselves escaped a second time.
-// NotificationCard's decodeEntities (cmd/serf-hub/frontend) is the paired
+// NotificationCard's decodeEntities (cmd/evener-hub/frontend) is the paired
 // decoder.
 func escapeNotificationText(s string) string {
 	s = strings.ToValidUTF8(s, "\uFFFD")

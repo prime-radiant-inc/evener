@@ -35,7 +35,7 @@ func TestTurnKind_CheckpointAndSummary(t *testing.T) {
 
 **Step 2: Run test to verify it fails**
 
-Run: `cd /Users/jesse/prime-radiant/serf/.worktrees/rlm-context && go test ./agent/ -run TestTurnKind_CheckpointAndSummary -v`
+Run: `cd /Users/jesse/prime-radiant/evener/.worktrees/rlm-context && go test ./agent/ -run TestTurnKind_CheckpointAndSummary -v`
 Expected: FAIL — `TurnCheckpoint` undefined
 
 **Step 3: Write minimal implementation**
@@ -49,12 +49,12 @@ TurnSummary     TurnKind = "SUMMARY"    // LLM-generated summary from compaction
 
 **Step 4: Run test to verify it passes**
 
-Run: `cd /Users/jesse/prime-radiant/serf/.worktrees/rlm-context && go test ./agent/ -run TestTurnKind_CheckpointAndSummary -v`
+Run: `cd /Users/jesse/prime-radiant/evener/.worktrees/rlm-context && go test ./agent/ -run TestTurnKind_CheckpointAndSummary -v`
 Expected: PASS
 
 **Step 5: Run all existing tests to check for regressions**
 
-Run: `cd /Users/jesse/prime-radiant/serf/.worktrees/rlm-context && go test ./agent/ -short -count=1`
+Run: `cd /Users/jesse/prime-radiant/evener/.worktrees/rlm-context && go test ./agent/ -short -count=1`
 Expected: All pass (adding constants is additive)
 
 **Step 6: Commit**
@@ -96,7 +96,7 @@ Create `agent/transcript_test.go`. Tests to write (in this order):
 
 **Step 2: Run tests to verify they fail**
 
-Run: `cd /Users/jesse/prime-radiant/serf/.worktrees/rlm-context && go test ./agent/ -run TestTranscriptWriter -v`
+Run: `cd /Users/jesse/prime-radiant/evener/.worktrees/rlm-context && go test ./agent/ -run TestTranscriptWriter -v`
 Expected: FAIL — types not defined
 
 **Step 3: Implement TranscriptWriter**
@@ -143,12 +143,12 @@ Implement:
 
 **Step 4: Run tests to verify they pass**
 
-Run: `cd /Users/jesse/prime-radiant/serf/.worktrees/rlm-context && go test ./agent/ -run TestTranscriptWriter -v`
+Run: `cd /Users/jesse/prime-radiant/evener/.worktrees/rlm-context && go test ./agent/ -run TestTranscriptWriter -v`
 Expected: All PASS
 
 **Step 5: Run all tests**
 
-Run: `cd /Users/jesse/prime-radiant/serf/.worktrees/rlm-context && go test ./agent/ -short -count=1`
+Run: `cd /Users/jesse/prime-radiant/evener/.worktrees/rlm-context && go test ./agent/ -short -count=1`
 Expected: All pass
 
 **Step 6: Commit**
@@ -188,7 +188,7 @@ Add to `agent/transcript_test.go`:
 
 **Step 2: Run tests to verify they fail**
 
-Run: `cd /Users/jesse/prime-radiant/serf/.worktrees/rlm-context && go test ./agent/ -run "TestReadTranscript|TestResumeHistory" -v`
+Run: `cd /Users/jesse/prime-radiant/evener/.worktrees/rlm-context && go test ./agent/ -run "TestReadTranscript|TestResumeHistory" -v`
 Expected: FAIL
 
 **Step 3: Implement**
@@ -214,12 +214,12 @@ Implementation: scan entries backward for the last `TurnCheckpoint` or `TurnSumm
 
 **Step 4: Run tests**
 
-Run: `cd /Users/jesse/prime-radiant/serf/.worktrees/rlm-context && go test ./agent/ -run "TestReadTranscript|TestResumeHistory" -v`
+Run: `cd /Users/jesse/prime-radiant/evener/.worktrees/rlm-context && go test ./agent/ -run "TestReadTranscript|TestResumeHistory" -v`
 Expected: PASS
 
 **Step 5: Run all tests**
 
-Run: `cd /Users/jesse/prime-radiant/serf/.worktrees/rlm-context && go test ./agent/ -short -count=1`
+Run: `cd /Users/jesse/prime-radiant/evener/.worktrees/rlm-context && go test ./agent/ -short -count=1`
 Expected: All pass
 
 **Step 6: Commit**
@@ -634,7 +634,7 @@ After Task 7, some existing tests will break because checkpoint/summary turns ch
 
 **Step 1: Run all tests, catalog failures**
 
-Run: `cd /Users/jesse/prime-radiant/serf/.worktrees/rlm-context && go test ./agent/ -short -count=1 2>&1 | head -100`
+Run: `cd /Users/jesse/prime-radiant/evener/.worktrees/rlm-context && go test ./agent/ -short -count=1 2>&1 | head -100`
 
 **Step 2: Fix each failure**
 
@@ -646,7 +646,7 @@ Key things to check:
 
 **Step 3: Run all tests, verify all pass**
 
-Run: `cd /Users/jesse/prime-radiant/serf/.worktrees/rlm-context && go test ./agent/ -short -count=1`
+Run: `cd /Users/jesse/prime-radiant/evener/.worktrees/rlm-context && go test ./agent/ -short -count=1`
 Expected: All pass
 
 **Step 4: Commit**
@@ -720,17 +720,17 @@ git commit -m "test: verify sub-agent transcript persistence and parent linkage"
 
 **Step 1: Run full test suite**
 
-Run: `cd /Users/jesse/prime-radiant/serf/.worktrees/rlm-context && go test ./... -short -count=1`
+Run: `cd /Users/jesse/prime-radiant/evener/.worktrees/rlm-context && go test ./... -short -count=1`
 Expected: All pass
 
 **Step 2: Run go vet and check for issues**
 
-Run: `cd /Users/jesse/prime-radiant/serf/.worktrees/rlm-context && go vet ./...`
+Run: `cd /Users/jesse/prime-radiant/evener/.worktrees/rlm-context && go vet ./...`
 Expected: Clean
 
 **Step 3: Review changes**
 
-Run: `cd /Users/jesse/prime-radiant/serf/.worktrees/rlm-context && git diff main --stat`
+Run: `cd /Users/jesse/prime-radiant/evener/.worktrees/rlm-context && git diff main --stat`
 Review the file list and ensure no unintended changes.
 
 **Step 4: Commit any cleanup**

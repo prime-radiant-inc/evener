@@ -7,13 +7,13 @@ import (
 	"sort"
 	"strings"
 
-	"primeradiant.com/serf/identifier"
+	"primeradiant.com/evener/identifier"
 )
 
 var globProjectBuckets = filepath.Glob
 
 // bucket is a resolved project bucket directory. projectID is the directory key
-// when the bucket lives under serf/projects/, and "" for an override / scratch
+// when the bucket lives under evener/projects/, and "" for an override / scratch
 // root whose sessions/ sit directly under the state base.
 type bucket struct {
 	dir       string
@@ -25,8 +25,8 @@ type bucket struct {
 // there is no second selector dialect.
 //
 // stateBase is the already-resolved state root (the cmd layer applies the
-// --state-dir / SERF_STATE_DIR / XDG precedence). Locate auto-detects whether
-// stateBase is an XDG state home (it contains serf/projects/<project-id> buckets) or
+// --state-dir / EVENER_STATE_DIR / XDG precedence). Locate auto-detects whether
+// stateBase is an XDG state home (it contains evener/projects/<project-id> buckets) or
 // is itself a single bucket (an override / E2E scratch root with sessions/
 // directly under it). It resolves by globbing the on-disk layout — it never
 // recomputes a project ID.
@@ -58,7 +58,7 @@ func locateInBucket(stateBase string, buckets []bucket, sel selector) (Paths, er
 	}
 	// Bucket was not enumerated (e.g. addressed directly under an XDG home that
 	// has no other buckets yet); construct the path and verify it exists.
-	b := bucket{dir: filepath.Join(stateBase, "serf", "projects", sel.projectID), projectID: sel.projectID}
+	b := bucket{dir: filepath.Join(stateBase, "evener", "projects", sel.projectID), projectID: sel.projectID}
 	if sessionInBucket(b, sel.sid) {
 		return pathsFor(b, sel.sid), nil
 	}
@@ -91,10 +91,10 @@ func locateAcrossBuckets(stateBase string, buckets []bucket, sel selector) (Path
 }
 
 // resolveBuckets returns the project buckets under stateBase, auto-detecting the
-// layout: an XDG state home enumerates serf/projects/*, while an override /
+// layout: an XDG state home enumerates evener/projects/*, while an override /
 // scratch root (sessions/ directly under it) is itself the single bucket.
 func resolveBuckets(stateBase string) ([]bucket, error) {
-	projects := filepath.Join(stateBase, "serf", "projects")
+	projects := filepath.Join(stateBase, "evener", "projects")
 	if isDir(projects) {
 		matches, err := globProjectBuckets(filepath.Join(projects, "*"))
 		if err != nil {

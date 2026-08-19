@@ -4,8 +4,8 @@
 #
 # llm/data/litellm_model_catalog.json is a verbatim snapshot of LiteLLM's
 # published model_prices_and_context_window.json. It must NEVER be hand-edited:
-# serf-specific metadata (effort levels, context windows for models upstream
-# lacks, capability flags) lives in llm/data/serf_model_catalog_overrides.json,
+# evener-specific metadata (effort levels, context windows for models upstream
+# lacks, capability flags) lives in llm/data/evener_model_catalog_overrides.json,
 # which is overlaid at load time and always wins. This script is the only
 # sanctioned way to change the vendored file.
 #
@@ -15,7 +15,7 @@
 #
 # After a real refresh: review `git diff --stat llm/data/`, run the full gate,
 # and eyeball the removed-models list below — entries that vanish upstream can
-# silently drop effort levels or context windows serf relied on (the overrides
+# silently drop effort levels or context windows evener relied on (the overrides
 # layer is the fix for anything that must survive upstream churn).
 set -euo pipefail
 
@@ -35,11 +35,11 @@ case "${1:-}" in
 esac
 
 if [[ ! -f "${TARGET}" ]]; then
-  echo "error: ${TARGET} not found — run from a serf checkout" >&2
+  echo "error: ${TARGET} not found — run from a evener checkout" >&2
   exit 1
 fi
 
-tmp="$(mktemp "${TMPDIR:-/tmp}/serf-model-catalog.XXXXXX")"
+tmp="$(mktemp "${TMPDIR:-/tmp}/evener-model-catalog.XXXXXX")"
 trap 'rm -f "${tmp}"' EXIT
 
 echo "fetching ${UPSTREAM_URL}"
@@ -48,7 +48,7 @@ if ! curl -fsSL --max-time 120 "${UPSTREAM_URL}" -o "${tmp}"; then
   exit 1
 fi
 
-OVERRIDES="${ROOT}/llm/data/serf_model_catalog_overrides.json"
+OVERRIDES="${ROOT}/llm/data/evener_model_catalog_overrides.json"
 
 python3 - "${TARGET}" "${tmp}" "${MIN_KEEP_RATIO}" "${OVERRIDES}" <<'PYEOF'
 import json, sys

@@ -8,11 +8,11 @@ import (
 
 // persistEnv switches a rapid fuzz target from throwaway temp artifacts to
 // committed, durable ones. It is read directly from the process environment
-// (NOT via serf's envvars registry) because this package imports only the
-// standard library — the no-serf-deps boundary that is the toolkit's
+// (NOT via evener's envvars registry) because this package imports only the
+// standard library — the no-evener-deps boundary that is the toolkit's
 // portability guarantee. The variable is documented in fuzz/README.md and is
 // set only by scripts/fuzz-triage.sh / scripts/run-fuzz.sh during a triage run.
-const persistEnv = "SERF_FUZZ_PERSIST"
+const persistEnv = "EVENER_FUZZ_PERSIST"
 
 // PersistPaths reports where a rapid fuzz target should write its promoter
 // artifacts (the emitted regression test, and the dedup bucket store).

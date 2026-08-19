@@ -1,8 +1,8 @@
 # enter-to-send-toggle-composer: the Enter-to-send Settings toggle live-changes composer keybinding behavior
 
-**What this covers**: the Enter-to-send toggle (`cmd/serf-hub/assets/settings-display.js`,
+**What this covers**: the Enter-to-send toggle (`cmd/evener-hub/assets/settings-display.js`,
 default OFF) and its consumer in the composer's keydown handler
-(`cmd/serf-hub/assets/renderer.js` `bindInputForm`), resolving the
+(`cmd/evener-hub/assets/renderer.js` `bindInputForm`), resolving the
 Shift+Enter/steer keybind collision (commit `4510a984`).
 
 ## Pre-state
@@ -55,13 +55,13 @@ Shift+Enter/steer keybind collision (commit `4510a984`).
 - **This run's actual coverage**: the `claude-in-chrome` browser tool was not
   connected in this session, so this card's live keyboard-interaction steps
   were **not driven live**. Backing evidence used instead:
-  - `cmd/serf-hub/jstest/test-composer-shortcuts.js` loads the real
+  - `cmd/evener-hub/jstest/test-composer-shortcuts.js` loads the real
     `renderer.js` in JSDOM and drives literal `KeyboardEvent`s at the
     textarea for both toggle states. It asserts, with the toggle OFF
     (default, absent from `localStorage`): bare Enter does NOT submit
     (submit count stays at whatever Cmd/Ctrl+Enter produced), Shift+Enter
     clicks the steer trigger; and with the toggle ON
-    (`localStorage.setItem("serf-hub.composer", '{"enterToSend":true}')`):
+    (`localStorage.setItem("evener-hub.composer", '{"enterToSend":true}')`):
     bare Enter submits, Shift+Enter does NOT steer and leaves
     `defaultPrevented === false` (so the browser's native newline insertion
     proceeds) — this is the exact behavior this card describes, exercised

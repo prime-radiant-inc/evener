@@ -2,7 +2,7 @@
 
 **What this covers**: `docs/superpowers/specs/2026-07-13-codex-sidebar-session-navigation-design.md`,
 row `local-sidebar-url-stability`, retargeted onto the ref form that commit
-`8cea30ca6` ("One ref form") settled on. A local Serf session opened from the
+`8cea30ca6` ("One ref form") settled on. A local Evener session opened from the
 rail must land on `/s/local:<session-id>` — the same qualified form a Codex
 row uses, with a different host id — and clicking the same row again must not
 open a second copy of the session beside the first.
@@ -13,7 +13,7 @@ the bug, not the contract: `hubapi.ParseRef` has always required
 `<host>:<session>`, the frontend accepted a bare id anyway, and the two forms
 compare as different panes — so the same session could occupy two panes at
 once. `urlToPane` now matches a qualified ref only (`isRef`,
-`cmd/serf-hub/frontend/src/shell/routing.ts:29-32`) and the palette dropped
+`cmd/evener-hub/frontend/src/shell/routing.ts:29-32`) and the palette dropped
 its bare-id fallback. Jesse's call was no back-compat for the old form.
 
 **Surface**: see `docs/agentic-testing.md`, "Driving the web UI" — rail rows
@@ -22,11 +22,11 @@ is no `.sb-row` class and no `data-ref` attribute.
 
 ## Pre-state
 
-- Freshly built `serf-hub` on an isolated `$HOME` and a kernel-assigned port
+- Freshly built `evener-hub` on an isolated `$HOME` and a kernel-assigned port
   (Setup checklist in `docs/agentic-testing.md`). The frontend must be built
   (`make build-web`) before the hub, or the SPA is a placeholder.
 - Browser authenticated to the test hub (`/auth?token=$TOKEN&next=/`).
-- At least one local Serf session visible in the rail. Spawning one via
+- At least one local Evener session visible in the rail. Spawning one via
   `POST /api/spawn` is enough; it does not need to be live.
 
 ## Steps
@@ -62,11 +62,11 @@ is no `.sb-row` class and no `data-ref` attribute.
   for the same session opens beside the first — the precise regression
   `8cea30ca6` closed, which is what "URL stability" is protecting.
 - **Step 4**: the bare-id URL renders "Page not found" with the hint "This
-  link doesn't match anything in serf." (`shell/NotFound.tsx:16-17`) and no
+  link doesn't match anything in evener." (`shell/NotFound.tsx:16-17`) and no
   session pane. Falsify: the bare id resolves to a session pane — back-compat
   has crept back in, and step 3's double-pane bug is reachable again.
   Note this is a **client-side** 404: `/s/` serves the SPA shell for any id
-  (`cmd/serf-hub/web_workspace.go:38-39`), so `curl -o /dev/null -w '%{http_code}'`
+  (`cmd/evener-hub/web_workspace.go:38-39`), so `curl -o /dev/null -w '%{http_code}'`
   returns 200 here. Assert the rendered text, never the status code.
 
 ## Cleanup

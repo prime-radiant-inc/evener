@@ -6,7 +6,7 @@ import (
 	"sort"
 	"testing"
 
-	"primeradiant.com/serf/llm"
+	"primeradiant.com/evener/llm"
 )
 
 // FuzzGoogleListModels drives the google adapter's ListModels response-parsing

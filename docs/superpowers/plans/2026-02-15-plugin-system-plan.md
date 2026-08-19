@@ -2,7 +2,7 @@
 
 > **For Claude:** REQUIRED SUB-SKILL: Use superpowers:executing-plans to implement this plan task-by-task.
 
-**Goal:** Add 100% drop-in Claude Code plugin support to serf via `--plugin-dir <path>`.
+**Goal:** Add 100% drop-in Claude Code plugin support to evener via `--plugin-dir <path>`.
 
 **Architecture:** A PluginManager in `agent/` loads plugin directories, discovers
 skills/agents/hooks/MCP, and integrates them into the session via namespacing and a
@@ -11,7 +11,7 @@ HookRunner that dispatches at 9 lifecycle points. See `docs/plans/2026-02-15-plu
 **Tech Stack:** Go, os/exec for command hooks, existing llm.Client for prompt hooks,
 existing frontmatter package for agent/skill parsing.
 
-**Working directory:** `/Users/jesse/prime-radiant/serf/.worktrees/plugin-system/`
+**Working directory:** `/Users/jesse/prime-radiant/evener/.worktrees/plugin-system/`
 
 ---
 
@@ -100,7 +100,7 @@ func TestExpandPluginRoot(t *testing.T) {
 
 **Step 2: Run tests to verify they fail**
 
-Run: `cd /Users/jesse/prime-radiant/serf/.worktrees/plugin-system && go test ./agent/ -run TestParsePluginManifest -v`
+Run: `cd /Users/jesse/prime-radiant/evener/.worktrees/plugin-system && go test ./agent/ -run TestParsePluginManifest -v`
 Expected: compilation error (types don't exist yet)
 
 **Step 3: Write the implementation**
@@ -163,7 +163,7 @@ func expandPluginRoot(s string, pluginDir string) string {
 
 **Step 4: Run tests to verify they pass**
 
-Run: `cd /Users/jesse/prime-radiant/serf/.worktrees/plugin-system && go test ./agent/ -run "TestParsePlugin|TestValidatePlugin|TestExpandPlugin" -v`
+Run: `cd /Users/jesse/prime-radiant/evener/.worktrees/plugin-system && go test ./agent/ -run "TestParsePlugin|TestValidatePlugin|TestExpandPlugin" -v`
 Expected: PASS
 
 **Step 5: Commit**
@@ -259,10 +259,10 @@ git commit -m "feat(plugin): add plugin directory loading and duplicate detectio
 ### Task 3: CLI Flag and SessionConfig Plumbing
 
 **Files:**
-- Modify: `cmd/serf/main.go`
-- Modify: `cmd/serf/run.go`
+- Modify: `cmd/evener/main.go`
+- Modify: `cmd/evener/run.go`
 - Modify: `agent/session.go` (add PluginDirs to SessionConfig)
-- Modify: `cmd/serf/run_test.go` (if flag parsing tests exist)
+- Modify: `cmd/evener/run_test.go` (if flag parsing tests exist)
 
 **Context:** Wire `--plugin-dir` from CLI through to SessionConfig.
 
@@ -355,7 +355,7 @@ git commit -m "feat(plugin): discover and namespace skills from plugins"
 - Create: `agent/plugin_tools_test.go`
 
 **Context:** Claude Code plugins reference tools by Claude Code names (Read, Write,
-Bash, etc.). Serf uses canonical names (read_file, write_file, shell, etc.). We need
+Bash, etc.). Evener uses canonical names (read_file, write_file, shell, etc.). We need
 bidirectional mapping for: (1) agent frontmatter tool lists, (2) hook input tool names,
 (3) hook matchers.
 
@@ -378,7 +378,7 @@ func TestMapClaudeToolName(t *testing.T) {
     }
 }
 
-func TestMapSerfToolNameToClaude(t *testing.T) {
+func TestMapEvenerToolNameToClaude(t *testing.T) {
     tests := map[string]string{
         "read_file": "Read", "write_file": "Write", "edit_file": "Edit",
         "shell": "Bash", "grep": "Grep", "glob": "Glob",
@@ -386,8 +386,8 @@ func TestMapSerfToolNameToClaude(t *testing.T) {
         "unknown": "unknown", // passthrough
     }
     for input, want := range tests {
-        if got := MapSerfToolNameToClaude(input); got != want {
-            t.Errorf("MapSerfToolNameToClaude(%q) = %q, want %q", input, got, want)
+        if got := MapEvenerToolNameToClaude(input); got != want {
+            t.Errorf("MapEvenerToolNameToClaude(%q) = %q, want %q", input, got, want)
         }
     }
 }
@@ -398,14 +398,14 @@ func TestMapSerfToolNameToClaude(t *testing.T) {
 **Step 3: Implement**
 
 Two maps and two functions. `MapClaudeToolName(name) string` and
-`MapSerfToolNameToClaude(name) string`. Unknown names pass through unchanged.
+`MapEvenerToolNameToClaude(name) string`. Unknown names pass through unchanged.
 
 **Step 4: Run tests, verify pass**
 
 **Step 5: Commit**
 
 ```bash
-git commit -m "feat(plugin): add bidirectional Claude/serf tool name mapping"
+git commit -m "feat(plugin): add bidirectional Claude/evener tool name mapping"
 ```
 
 ---
@@ -418,7 +418,7 @@ git commit -m "feat(plugin): add bidirectional Claude/serf tool name mapping"
 
 **Context:** Parse `.md` files from plugin `agents/` directories. Each file has YAML
 frontmatter (name, description, model, color, tools) and a markdown body (system prompt).
-Tool names in the `tools` array are mapped from Claude Code names to serf canonical names.
+Tool names in the `tools` array are mapped from Claude Code names to evener canonical names.
 
 **Step 1: Write the failing tests**
 
@@ -443,7 +443,7 @@ You are a code review specialist.
     if err != nil { t.Fatalf("parsePluginAgent: %v", err) }
     if agent.Name != "code-reviewer" { t.Errorf("Name = %q", agent.Name) }
     if agent.Model != "inherit" { t.Errorf("Model = %q", agent.Model) }
-    // Tools should be mapped to serf names
+    // Tools should be mapped to evener names
     wantTools := []string{"read_file", "grep", "shell"}
     if !slices.Equal(agent.Tools, wantTools) {
         t.Errorf("Tools = %v, want %v", agent.Tools, wantTools)
@@ -1188,7 +1188,7 @@ git commit -m "feat(plugin): include plugin agents in system prompt"
 
 **Files:**
 - Modify: `agent/events.go`
-- Modify: `cmd/serf/run.go`
+- Modify: `cmd/evener/run.go`
 
 **Context:** Add event types for plugin lifecycle and hook execution. Update the
 human-readable event formatter.
@@ -1252,7 +1252,7 @@ func TestPlugin_EndToEnd(t *testing.T) {
         t.Error("plugin agent not found")
     }
 
-    // 3. Agent tools mapped to serf names
+    // 3. Agent tools mapped to evener names
     agent := sess.pluginAgents["e2e-plugin:helper"]
     if !slices.Contains(agent.Tools, "read_file") {
         t.Error("agent tools not mapped")
@@ -1286,7 +1286,7 @@ git commit -m "test(plugin): add end-to-end plugin integration test"
 
 **Step 1: Run all tests**
 
-Run: `cd /Users/jesse/prime-radiant/serf/.worktrees/plugin-system && go test ./... -count=1`
+Run: `cd /Users/jesse/prime-radiant/evener/.worktrees/plugin-system && go test ./... -count=1`
 Expected: All tests pass
 
 **Step 2: Fix any failures**

@@ -13,11 +13,11 @@ import (
 	"strings"
 	"time"
 
-	"primeradiant.com/serf/invariant"
-	"primeradiant.com/serf/llm"
-	"primeradiant.com/serf/llm/apilog"
-	"primeradiant.com/serf/llm/providers/internal/openaichat"
-	"primeradiant.com/serf/llm/providers/internal/transport"
+	"primeradiant.com/evener/invariant"
+	"primeradiant.com/evener/llm"
+	"primeradiant.com/evener/llm/apilog"
+	"primeradiant.com/evener/llm/providers/internal/openaichat"
+	"primeradiant.com/evener/llm/providers/internal/transport"
 )
 
 func (a *Adapter) buildRequestBody(req llm.Request) (map[string]any, error) {
@@ -1001,7 +1001,7 @@ func defaultImageDetail(model string) string {
 // support is per-model (e.g. the computer-use model only does "concise"), so we
 // cannot send "detailed" unconditionally.
 //
-// gpt-5.x exposes "detailed" plaintext summaries, which the serf live-thinking
+// gpt-5.x exposes "detailed" plaintext summaries, which the evener live-thinking
 // block depends on (verified live on gpt-5.5). For every other reasoning model
 // we send "auto": the OpenAI docs define "auto" as equivalent to "detailed" for
 // most reasoning models today while letting the API pick a supported level, so

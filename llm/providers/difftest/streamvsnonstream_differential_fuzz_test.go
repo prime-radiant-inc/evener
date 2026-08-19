@@ -7,14 +7,14 @@ import (
 	"testing"
 	"time"
 
-	"primeradiant.com/serf/llm"
-	"primeradiant.com/serf/llm/providers/anthropic"
-	"primeradiant.com/serf/llm/providers/google"
-	"primeradiant.com/serf/llm/providers/openai"
-	"primeradiant.com/serf/llm/providers/openaicompat"
+	"primeradiant.com/evener/llm"
+	"primeradiant.com/evener/llm/providers/anthropic"
+	"primeradiant.com/evener/llm/providers/google"
+	"primeradiant.com/evener/llm/providers/openai"
+	"primeradiant.com/evener/llm/providers/openaicompat"
 )
 
-// This file holds serf's per-provider STREAM-vs-NON-STREAM differential oracle.
+// This file holds evener's per-provider STREAM-vs-NON-STREAM differential oracle.
 //
 // Both real decode bugs found during the fuzzing campaign were of one shape: a
 // provider's NON-streaming decoder was correct while its STREAMING decoder was
@@ -306,7 +306,7 @@ func streamVsNonStreamDivergence(t *testing.T, ps []jsonProvider, lr logicalResp
 	return ""
 }
 
-// FuzzStreamVsNonStreamDifferential is serf's per-provider stream/non-stream
+// FuzzStreamVsNonStreamDifferential is evener's per-provider stream/non-stream
 // differential oracle. It generates one canonical logical response, encodes it
 // into each provider's SSE wire AND its single-body JSON wire, decodes each back
 // through the REAL adapter's streaming and non-streaming paths respectively, and

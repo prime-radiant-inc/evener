@@ -2,11 +2,11 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task.
 
-**Goal:** Make shell pipeline status trustworthy on every supported POSIX execution path, and make the agent guidance rely on Serf's existing durable job evidence instead of a fragile output marker.
+**Goal:** Make shell pipeline status trustworthy on every supported POSIX execution path, and make the agent guidance rely on Evener's existing durable job evidence instead of a fragile output marker.
 
 **Architecture:** The local execution environment will select only a shell that supports the explicitly requested `pipefail` option. It will never fall back to `/bin/sh` while still passing Bash-specific options; if Bash is unavailable, process startup will fail explicitly. Shell and job instructions will describe the existing automatic output retention, completion notification, exit status, and `read_transcript` path. An external `tee` artifact remains an optional user-directed escape hatch, not a completion protocol.
 
-**Tech Stack:** Go, `os/exec`, POSIX shell behavior, Serf shell/job tools, Markdown prompt sections.
+**Tech Stack:** Go, `os/exec`, POSIX shell behavior, Evener shell/job tools, Markdown prompt sections.
 
 ## Global Constraints
 
@@ -36,7 +36,7 @@
 - Remove the default `EXIT=` plus `job_watch(output_match=...)` recipe from the workflow prompt.
 - Explain that background shell jobs are automatically logged, completion notifications carry status/exit code, and retained output can be read with `read_transcript(transcript_ref="job:<job_id>")`.
 - Explain that `job_watch` is for genuine intermediate readiness conditions, not ordinary completion.
-- Keep an optional absolute-path `tee` example only for preserving an external full artifact beyond retained output; qualify `SERF_SCRATCH_DIR` because it is not present in every execution environment, recommend the delegate's scratch directory when available, and require reporting the artifact path to the parent.
+- Keep an optional absolute-path `tee` example only for preserving an external full artifact beyond retained output; qualify `EVENER_SCRATCH_DIR` because it is not present in every execution environment, recommend the delegate's scratch directory when available, and require reporting the artifact path to the parent.
 - Update the shell tool definition consistently without adding prompt-string tests.
 
 ## Task 4: Sol review gate

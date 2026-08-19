@@ -7,8 +7,8 @@ import (
 	"net/http"
 	"sort"
 
-	"primeradiant.com/serf/llm"
-	"primeradiant.com/serf/llm/providers/internal/transport"
+	"primeradiant.com/evener/llm"
+	"primeradiant.com/evener/llm/providers/internal/transport"
 )
 
 // ListModels fetches available models from the /v1/models endpoint.

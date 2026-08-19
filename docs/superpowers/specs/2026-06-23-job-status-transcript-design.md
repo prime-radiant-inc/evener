@@ -2,7 +2,7 @@
 
 Date: 2026-06-23
 Status: Draft for Jesse review
-Scope: Serf agent job-control tool surface
+Scope: Evener agent job-control tool surface
 
 ## Problem
 
@@ -78,7 +78,7 @@ Expose two public job kinds:
 
 | Kind | Meaning |
 |---|---|
-| `agent` | A Serf agent/delegate turn with a session transcript. |
+| `agent` | A Evener agent/delegate turn with a session transcript. |
 | `shell` | A shell process with stdout/stderr/process events. |
 
 Internally, existing delegate jobs map to public `kind: "agent"`. The public
@@ -124,7 +124,7 @@ Shell phases:
 | `process_running` | The process is running. |
 | `stopping` | Stop/cancel has been requested and cleanup is underway. |
 
-Avoid `model_thinking`. Serf does not observe thinking. It observes a request in
+Avoid `model_thinking`. Evener does not observe thinking. It observes a request in
 flight, stream events, tool calls, and durable transcript/log events.
 
 For terminal jobs, `phase` may be omitted. The lifecycle `status` is the useful
@@ -144,7 +144,7 @@ Use elapsed durations as the primary model-facing timing fields:
 | `last_event_at` | jobs with events | Timestamp form of the event used to compute `quiet_for_ms`. |
 
 `quiet_for_ms` is not "idle for". It does not mean the agent ended its turn, and
-it does not mean the job is doing no work. It means Serf has not observed a
+it does not mean the job is doing no work. It means Evener has not observed a
 progress event for that job for this long.
 
 Observed events:
@@ -269,7 +269,7 @@ events, for example:
 
 ```jsonl
 {"type":"process_started","time":"...","command":"go test ./..."}
-{"type":"stdout","time":"...","text":"ok primeradiant.com/serf/agent"}
+{"type":"stdout","time":"...","text":"ok primeradiant.com/evener/agent"}
 {"type":"stderr","time":"...","text":"..."}
 {"type":"process_exited","time":"...","exit_code":0}
 ```
@@ -382,7 +382,7 @@ as evidence. For agent jobs, the transcript is the evidence surface.
 | Case | Behavior |
 |---|---|
 | Unknown job id | `not_found` with a short message. |
-| Job exists but is not visible to this session | `not_found` or `permission_denied`, following current Serf visibility conventions. |
+| Job exists but is not visible to this session | `not_found` or `permission_denied`, following current Evener visibility conventions. |
 | Transcript ref unavailable for a running job | Return status plus a warning; this should be rare and should be treated as a bug to investigate. |
 | Phase cannot be determined | Omit `phase` or return `phase: "unknown"` with a warning; do not fail the whole status read. |
 
@@ -418,7 +418,7 @@ Use job_status for current state or read_transcript for evidence.
 
 Before implementation, read `docs/testing.md`.
 
-Required tests should exercise real Serf plumbing with scripted providers:
+Required tests should exercise real Evener plumbing with scripted providers:
 
 - Running agent job status returns `kind: "agent"` and a usable
   `transcript_ref`.

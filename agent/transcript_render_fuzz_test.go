@@ -1,4 +1,4 @@
-//go:build serffuzz
+//go:build evenerfuzz
 
 package agent
 
@@ -13,10 +13,10 @@ import (
 	"testing"
 	"unicode/utf8"
 
-	"primeradiant.com/serf/agent/schema"
-	"primeradiant.com/serf/agent/transcript"
-	"primeradiant.com/serf/fuzz/oracle"
-	"primeradiant.com/serf/llm"
+	"primeradiant.com/evener/agent/schema"
+	"primeradiant.com/evener/agent/transcript"
+	"primeradiant.com/evener/fuzz/oracle"
+	"primeradiant.com/evener/llm"
 )
 
 const (
@@ -914,10 +914,10 @@ func FuzzResolveTranscript(f *testing.F) {
 		base := t.TempDir()
 		// The shared session lives in both valid project buckets (ambiguous by bare
 		// ID); the local session lives only in the current bucket.
-		currentStateDir := filepath.Join(base, "serf", "projects", trenderCurrentProject)
+		currentStateDir := filepath.Join(base, "evener", "projects", trenderCurrentProject)
 		trender_makeTranscript(t, currentStateDir, trenderSharedSession)
 		trender_makeTranscript(t, currentStateDir, trenderLocalSession)
-		trender_makeTranscript(t, filepath.Join(base, "serf", "projects", trenderOtherProject), trenderSharedSession)
+		trender_makeTranscript(t, filepath.Join(base, "evener", "projects", trenderOtherProject), trenderSharedSession)
 
 		path, ref, err := resolveTranscript(selector, currentStateDir, trenderCurrentSession)
 		if err != nil {

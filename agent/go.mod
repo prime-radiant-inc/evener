@@ -1,4 +1,4 @@
-module primeradiant.com/serf/agent
+module primeradiant.com/evener/agent
 
 go 1.25.6
 
@@ -13,12 +13,12 @@ require (
 	golang.org/x/sys v0.43.0
 	gopkg.in/yaml.v3 v3.0.1
 	pgregory.net/rapid v1.3.0
-	primeradiant.com/serf v0.0.0
-	primeradiant.com/serf/auth v0.0.0
-	primeradiant.com/serf/fuzz v0.0.0
-	primeradiant.com/serf/identifier v0.0.0
-	primeradiant.com/serf/invariant v0.0.0
-	primeradiant.com/serf/llm v0.0.0
+	primeradiant.com/evener v0.0.0
+	primeradiant.com/evener/auth v0.0.0
+	primeradiant.com/evener/fuzz v0.0.0
+	primeradiant.com/evener/identifier v0.0.0
+	primeradiant.com/evener/invariant v0.0.0
+	primeradiant.com/evener/llm v0.0.0
 )
 
 require (
@@ -34,5 +34,5 @@ require (
 	golang.org/x/net v0.53.0 // indirect
 	golang.org/x/oauth2 v0.35.0 // indirect
 	golang.org/x/text v0.36.0 // indirect
-	primeradiant.com/serf/envvars v0.0.0
+	primeradiant.com/evener/envvars v0.0.0
 )

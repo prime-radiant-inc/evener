@@ -12,7 +12,7 @@
 nothing depends on the user knowing whether a session is "running".
 
 **Tech stack:** React 19, TS 6 strict (`noUncheckedIndexedAccess`), Vite 8, vitest 4 + jsdom,
-biome. Frontend root `cmd/serf-hub/frontend`.
+biome. Frontend root `cmd/evener-hub/frontend`.
 
 ## Global constraints
 
@@ -92,7 +92,7 @@ reads it, so the purpose line is silently dropped for every ordinary tool call.
 - [ ] Absent description → no placeholder, no empty element, no stray separator.
 - [ ] Do NOT duplicate `subagentModule`'s treatment; if both surfaces want the same presentation,
       that's a shared helper, not a copy (DRY).
-- [ ] Check how the legacy UI on `main` presented it (`cmd/serf-hub/assets/renderer-tools.js`)
+- [ ] Check how the legacy UI on `main` presented it (`cmd/evener-hub/assets/renderer-tools.js`)
       before designing — Jesse's "like it should" is a comparison to that.
 
 ### Task A2: a failed call is marked, and success costs no space
@@ -215,7 +215,7 @@ Jesse: *"full page reload needs to keep state on which tabs are focused and the 
 state of the sidebar, etc."*
 
 **This machinery already exists** — `DockHost.tsx:20` has `LAYOUT_STORAGE_KEY =
-"serf.workspace.layout.v1"`, `persistLayout` is called on layout change, and `restoreLayout` runs
+"evener.workspace.layout.v1"`, `persistLayout` is called on layout change, and `restoreLayout` runs
 on boot. `sidebarHidden`/`sidebarWidth` are already persisted prefs. So this is very likely a BUG,
 not a missing feature.
 
@@ -267,7 +267,7 @@ stacks, and that one shows tabs (it can hold several).
       change doesn't touch it, and say so.
 - [ ] **No migration for existing persisted layouts** (Jesse: "do not care about current local
       storage"). Bump `LAYOUT_STORAGE_KEY` (`DockHost.tsx:20`, currently
-      `"serf.workspace.layout.v1"`) to `.v2` so a pre-rule layout is simply never read — cheaper and
+      `"evener.workspace.layout.v1"`) to `.v2` so a pre-rule layout is simply never read — cheaper and
       more honest than a migration path for one user's stale value, and it leaves no code claiming to
       handle a shape it was never tested against. Going forward, what C1 persists must satisfy the
       one-pane rule; a restore that would violate it is a bug in C1, not a case to migrate.

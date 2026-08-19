@@ -14,7 +14,7 @@
 // would tax the suite. The fuzzer mutates deeper from these starting points,
 // and the memory cap bounds any runaway.
 //
-// This package imports nothing from primeradiant.com/serf — it lives in the
+// This package imports nothing from primeradiant.com/evener — it lives in the
 // portable fuzz module so any target in any module can seed from one source.
 package edgeseeds
 
@@ -53,7 +53,7 @@ func JSON() [][]byte {
 }
 
 // TOML returns generic stressors for a TOML decoder (the BurntSushi/toml
-// library serf uses): duplicate keys and tables, dotted/quoted keys, datetime
+// library evener uses): duplicate keys and tables, dotted/quoted keys, datetime
 // and number extremes, multiline strings, inline tables, arrays of tables, and
 // a BOM prefix.
 func TOML() [][]byte {

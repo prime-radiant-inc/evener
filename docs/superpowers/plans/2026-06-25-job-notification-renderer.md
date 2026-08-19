@@ -22,24 +22,24 @@
 
 ## File Structure
 
-- Modify `cmd/serf-hub/assets/renderer-format.js`
+- Modify `cmd/evener-hub/assets/renderer-format.js`
   - Add notification parsing helpers.
   - Extend `classifySteering(text)` to return `kind: "notification"` for recognized notification-shaped steering.
   - Export any helper needed by tests only if existing test style requires it; otherwise keep helpers private.
 
-- Modify `cmd/serf-hub/assets/renderer.js`
+- Modify `cmd/evener-hub/assets/renderer.js`
   - Add `appendNotificationCard(summary)`.
   - Route `summary.kind === "notification"` before generic steering fallback.
   - Keep existing task/system/unknown steering behavior unchanged.
 
-- Modify `cmd/serf-hub/assets/style.css`
+- Modify `cmd/evener-hub/assets/style.css`
   - Add `.notification-card` styles near `.steering`/`.system-line` styles.
   - Add tone classes and metadata chip styles.
 
-- Create `cmd/serf-hub/jstest/test-renderer-notifications.js`
+- Create `cmd/evener-hub/jstest/test-renderer-notifications.js`
   - Dedicated JSDOM scenarios for terminal delegate, shell failure, watch event, watch-send, observer callback, malformed fallback, and text escaping.
 
-- Modify `cmd/serf-hub/jstest/run-all.sh`
+- Modify `cmd/evener-hub/jstest/run-all.sh`
   - Add the new JS test to the local JS test runner if the file enumerates tests explicitly.
 
 ---
@@ -47,8 +47,8 @@
 ### Task 1: Parse notification-shaped steering
 
 **Files:**
-- Modify: `cmd/serf-hub/assets/renderer-format.js`
-- Test: `cmd/serf-hub/jstest/test-renderer-notifications.js`
+- Modify: `cmd/evener-hub/assets/renderer-format.js`
+- Test: `cmd/evener-hub/jstest/test-renderer-notifications.js`
 
 **Interfaces:**
 - Consumes: existing `classifySteering(text)` in `renderer-format.js`.
@@ -83,7 +83,7 @@
 
 - [ ] **Step 1: Create the failing notification parser/rendering test scaffold**
 
-Create `cmd/serf-hub/jstest/test-renderer-notifications.js` with this initial content. This deliberately asserts parser-visible rendering classes before implementation exists, so it should fail.
+Create `cmd/evener-hub/jstest/test-renderer-notifications.js` with this initial content. This deliberately asserts parser-visible rendering classes before implementation exists, so it should fail.
 
 ```js
 const { JSDOM } = require("jsdom");
@@ -107,14 +107,14 @@ function newHarness() {
   window.fetch = () => Promise.resolve({ ok: true, json: () => Promise.resolve([]), text: () => Promise.resolve("") });
   require("./load-renderer").evalRenderer(window);
   const conv = window.document.getElementById("conversation");
-  window.SerfRenderer.init(conv);
+  window.EvenerRenderer.init(conv);
   return { window, conv };
 }
 
 async function renderSteering(text) {
   const { window, conv } = newHarness();
   await new Promise(r => setTimeout(r, 30));
-  window.SerfRenderer.handleData("STEERING_INJECTED", { text });
+  window.EvenerRenderer.handleData("STEERING_INJECTED", { text });
   await new Promise(r => setTimeout(r, 10));
   return { window, conv };
 }
@@ -172,7 +172,7 @@ ${delegateEnvelope}
 Run:
 
 ```bash
-node cmd/serf-hub/jstest/test-renderer-notifications.js
+node cmd/evener-hub/jstest/test-renderer-notifications.js
 ```
 
 Expected: FAIL with `missing notification card` or equivalent because `.notification-card` does not exist yet.
@@ -311,7 +311,7 @@ Then update `classifySteering(text)` before the task-list/current-task checks or
 
 - [ ] **Step 4: Add temporary minimal renderer branch to satisfy parser test**
 
-In `cmd/serf-hub/assets/renderer.js`, add this branch in `appendSteeringMessage(text)` after the `full-list` branch and before the default generic `.steering` block:
+In `cmd/evener-hub/assets/renderer.js`, add this branch in `appendSteeringMessage(text)` after the `full-list` branch and before the default generic `.steering` block:
 
 ```js
       if (summary.kind === "notification") {
@@ -346,7 +346,7 @@ This is intentionally minimal; Task 2 replaces it with the final structured card
 Run:
 
 ```bash
-node cmd/serf-hub/jstest/test-renderer-notifications.js
+node cmd/evener-hub/jstest/test-renderer-notifications.js
 ```
 
 Expected: `PASS: notification renderer assertions`.
@@ -354,7 +354,7 @@ Expected: `PASS: notification renderer assertions`.
 - [ ] **Step 6: Commit Task 1**
 
 ```bash
-git add cmd/serf-hub/assets/renderer-format.js cmd/serf-hub/assets/renderer.js cmd/serf-hub/jstest/test-renderer-notifications.js
+git add cmd/evener-hub/assets/renderer-format.js cmd/evener-hub/assets/renderer.js cmd/evener-hub/jstest/test-renderer-notifications.js
 git commit -m "feat(web): parse notification steering"
 ```
 
@@ -363,9 +363,9 @@ git commit -m "feat(web): parse notification steering"
 ### Task 2: Render structured notification cards and styles
 
 **Files:**
-- Modify: `cmd/serf-hub/assets/renderer.js`
-- Modify: `cmd/serf-hub/assets/style.css`
-- Modify: `cmd/serf-hub/jstest/test-renderer-notifications.js`
+- Modify: `cmd/evener-hub/assets/renderer.js`
+- Modify: `cmd/evener-hub/assets/style.css`
+- Modify: `cmd/evener-hub/jstest/test-renderer-notifications.js`
 
 **Interfaces:**
 - Consumes: `summary.notification` object from Task 1.
@@ -381,7 +381,7 @@ git commit -m "feat(web): parse notification steering"
 
 - [ ] **Step 1: Extend tests for all required notification variants**
 
-Append these scenarios inside the async IIFE in `cmd/serf-hub/jstest/test-renderer-notifications.js`, before the final `if (!allPass)` block:
+Append these scenarios inside the async IIFE in `cmd/evener-hub/jstest/test-renderer-notifications.js`, before the final `if (!allPass)` block:
 
 ```js
   await scenario("shell failure notification shows failure metadata", `<job-notification job_id="job_shell" event="failed" job_type="shell" status="failed" reason="exit_nonzero" output_bytes="128" exit_code="2" transcript_ref="job:job_shell">
@@ -458,14 +458,14 @@ excerpt:
 Run:
 
 ```bash
-node cmd/serf-hub/jstest/test-renderer-notifications.js
+node cmd/evener-hub/jstest/test-renderer-notifications.js
 ```
 
 Expected: FAIL on at least metadata formatting, raw details, or missing structured classes because Task 1 used a minimal renderer.
 
 - [ ] **Step 3: Replace the minimal branch with `appendNotificationCard`**
 
-In `cmd/serf-hub/assets/renderer.js`, add helper methods near `appendSteeringMessage(text)`:
+In `cmd/evener-hub/assets/renderer.js`, add helper methods near `appendSteeringMessage(text)`:
 
 ```js
     notificationMetaRows(n) {
@@ -568,7 +568,7 @@ Then replace the minimal `summary.kind === "notification"` branch with:
 
 - [ ] **Step 4: Add CSS for notification cards**
 
-Add this block in `cmd/serf-hub/assets/style.css` near the existing `.steering` styles:
+Add this block in `cmd/evener-hub/assets/style.css` near the existing `.steering` styles:
 
 ```css
 .notification-card {
@@ -610,7 +610,7 @@ If any CSS variable name is not present in `style.css`, use an existing equivale
 Run:
 
 ```bash
-node cmd/serf-hub/jstest/test-renderer-notifications.js
+node cmd/evener-hub/jstest/test-renderer-notifications.js
 ```
 
 Expected: `PASS: notification renderer assertions`.
@@ -618,7 +618,7 @@ Expected: `PASS: notification renderer assertions`.
 - [ ] **Step 6: Commit Task 2**
 
 ```bash
-git add cmd/serf-hub/assets/renderer.js cmd/serf-hub/assets/style.css cmd/serf-hub/jstest/test-renderer-notifications.js
+git add cmd/evener-hub/assets/renderer.js cmd/evener-hub/assets/style.css cmd/evener-hub/jstest/test-renderer-notifications.js
 git commit -m "feat(web): render notification steering cards"
 ```
 
@@ -627,19 +627,19 @@ git commit -m "feat(web): render notification steering cards"
 ### Task 3: Integrate notification tests and verify regressions
 
 **Files:**
-- Test: `cmd/serf-hub/jstest/test-renderer-notifications.js`
+- Test: `cmd/evener-hub/jstest/test-renderer-notifications.js`
 - Test: existing renderer/CSS tests
 
 **Interfaces:**
 - Consumes: final notification parser and renderer from Tasks 1-2.
-- Produces: verification evidence. `cmd/serf-hub/jstest/run-all.sh` already auto-discovers `test-*.js`, so creating `test-renderer-notifications.js` is sufficient for suite integration and this task does not modify the runner.
+- Produces: verification evidence. `cmd/evener-hub/jstest/run-all.sh` already auto-discovers `test-*.js`, so creating `test-renderer-notifications.js` is sufficient for suite integration and this task does not modify the runner.
 
 - [ ] **Step 1: Confirm JS test auto-discovery**
 
 Run:
 
 ```bash
-sed -n '1,80p' cmd/serf-hub/jstest/run-all.sh
+sed -n '1,80p' cmd/evener-hub/jstest/run-all.sh
 ```
 
 Expected: output includes this loop, proving the new `test-renderer-notifications.js` file is included automatically:
@@ -656,9 +656,9 @@ Do not modify `run-all.sh` for this feature.
 Run:
 
 ```bash
-node cmd/serf-hub/jstest/test-renderer-notifications.js
-node cmd/serf-hub/jstest/test-renderer-advanced.js
-node cmd/serf-hub/jstest/test-pane-and-sidebar-css.js
+node cmd/evener-hub/jstest/test-renderer-notifications.js
+node cmd/evener-hub/jstest/test-renderer-advanced.js
+node cmd/evener-hub/jstest/test-pane-and-sidebar-css.js
 ```
 
 Expected:
@@ -674,13 +674,13 @@ and existing PASS output from the other two scripts. If an existing test fails, 
 Run:
 
 ```bash
-go test ./cmd/serf-hub -count=1
+go test ./cmd/evener-hub -count=1
 ```
 
 Expected:
 
 ```text
-ok  primeradiant.com/serf/cmd/serf-hub
+ok  primeradiant.com/evener/cmd/evener-hub
 ```
 
 The elapsed time may differ.
@@ -690,7 +690,7 @@ The elapsed time may differ.
 If `run-all.sh` changed:
 
 ```bash
-git add cmd/serf-hub/jstest/run-all.sh
+git add cmd/evener-hub/jstest/run-all.sh
 git commit -m "test(web): include notification renderer coverage"
 ```
 

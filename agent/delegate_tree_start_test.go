@@ -10,9 +10,9 @@ import (
 	"strings"
 	"testing"
 
-	"primeradiant.com/serf/agent/internal/delegatestore"
-	"primeradiant.com/serf/agent/schema"
-	taskpkg "primeradiant.com/serf/agent/task"
+	"primeradiant.com/evener/agent/internal/delegatestore"
+	"primeradiant.com/evener/agent/schema"
+	taskpkg "primeradiant.com/evener/agent/task"
 )
 
 // AdmitStartInput is the test-only callback adapter used by controller fuzz

@@ -2,11 +2,11 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Replace the shell tool's background boolean with a `foreground | background | detached` mode and implement detached commands that return a PID, create no Serf job, and survive session cleanup.
+**Goal:** Replace the shell tool's background boolean with a `foreground | background | detached` mode and implement detached commands that return a PID, create no Evener job, and survive session cleanup.
 
-**Architecture:** Keep foreground and managed-background execution on the existing `runShell` path. Add a narrow optional `execenv.DetachedExecutor` capability for immediate disownership; the shell handler dispatches `mode: "detached"` directly to that capability without touching `jobManager`. The local Unix implementation starts a new session with all standard streams connected to the null device, never enrolls the process in `runningPIDs`, and asynchronously reaps it while Serf remains alive; unsupported platforms and enforced sandboxes reject before launch.
+**Architecture:** Keep foreground and managed-background execution on the existing `runShell` path. Add a narrow optional `execenv.DetachedExecutor` capability for immediate disownership; the shell handler dispatches `mode: "detached"` directly to that capability without touching `jobManager`. The local Unix implementation starts a new session with all standard streams connected to the null device, never enrolls the process in `runningPIDs`, and asynchronously reaps it while Evener remains alive; unsupported platforms and enforced sandboxes reject before launch.
 
-**Tech Stack:** Go, `os/exec`, platform-specific `syscall.SysProcAttr`, Serf tool registry and execution-environment interfaces, scripted-provider and process-plumbing tests.
+**Tech Stack:** Go, `os/exec`, platform-specific `syscall.SysProcAttr`, Evener tool registry and execution-environment interfaces, scripted-provider and process-plumbing tests.
 
 ## Global Constraints
 
@@ -155,7 +155,7 @@ In `agent/internal/tool/definitions.go`, replace `background` with:
 "mode": map[string]any{
 	"type": "string",
 	"enum": []any{"foreground", "background", "detached"},
-	"description": "foreground (default) waits inline, background creates a session-owned job, and detached starts an unmanaged process that survives this Serf session and returns only its PID.",
+	"description": "foreground (default) waits inline, background creates a session-owned job, and detached starts an unmanaged process that survives this Evener session and returns only its PID.",
 },
 ```
 
@@ -297,7 +297,7 @@ Add `DetachCommand` beside `StreamCommand` in `agent/execenv/local.go`. It must:
 4. Return `ErrDetachUnsupported` when `e.Wrapper != nil` because the current enforced sandbox wrappers are session-lifetime infrastructure.
 5. Open `os.DevNull` with `os.O_RDWR` and use it for stdin, stdout, and stderr.
 6. Configure the shell command with the detached `SysProcAttr`, normal working directory, environment, executable policy, and no sandbox wrapper.
-7. Start the command, capture its positive PID, close the parent's null-device descriptor, and launch `go func() { _ = cmd.Wait() }()` to reap it while Serf remains alive.
+7. Start the command, capture its positive PID, close the parent's null-device descriptor, and launch `go func() { _ = cmd.Wait() }()` to reap it while Evener remains alive.
 8. Never insert the command into `e.runningPIDs`.
 
 Use this signature:
@@ -471,18 +471,18 @@ Do not stage `agent/internal/agenttest/agenttest.go` unless it actually changed.
 ### Task 4: Prove one-shot process survival and finish documentation
 
 **Files:**
-- Create: `cmd/serf/run_detached_test.go`
+- Create: `cmd/evener/run_detached_test.go`
 - Modify: `docs/job-control.md`
 - Modify: `README.md`
 - Modify: `docs/superpowers/specs/2026-08-09-detached-shell-jobs-design.md` only if implementation reveals a factual mismatch
 
 **Interfaces:**
 - Consumes: the public shell `mode` enum and detached result contract.
-- Produces: end-to-end proof that `serf run` can exit while its detached command continues.
+- Produces: end-to-end proof that `evener run` can exit while its detached command continues.
 
 - [ ] **Step 1: Write a scripted-provider CLI integration test**
 
-Use the existing scripted provider helpers and `waitForFileContent` from `cmd/serf/scripted_provider_test.go`. The provider must call shell once with a detached command that writes its PID to a caller-owned file, waits for a caller-owned release file, and then writes a completion marker; the next scripted response communicates completion of the agent task. Build the command with `fmt.Sprintf` and `strconv.Quote` exactly as in Task 2 so paths remain literal shell arguments.
+Use the existing scripted provider helpers and `waitForFileContent` from `cmd/evener/scripted_provider_test.go`. The provider must call shell once with a detached command that writes its PID to a caller-owned file, waits for a caller-owned release file, and then writes a completion marker; the next scripted response communicates completion of the agent task. Build the command with `fmt.Sprintf` and `strconv.Quote` exactly as in Task 2 so paths remain literal shell arguments.
 
 Run `run(...)` in-process and assert:
 
@@ -499,7 +499,7 @@ Do not use fixed sleeps in Go. Synchronize through the files and the existing `w
 Run:
 
 ```bash
-go test ./cmd/serf -run TestRunDetachedCommandSurvivesExit -count=1
+go test ./cmd/evener -run TestRunDetachedCommandSurvivesExit -count=1
 ```
 
 Expected: PASS.
@@ -525,10 +525,10 @@ Replace shell examples using `background: true` with `mode: "background"`. Add o
 Run:
 
 ```bash
-gofmt -w agent/internal/tool/definitions.go agent/internal/tool/definitions_test.go agent/job_shell.go agent/session_tools_shell.go agent/session_tools_shell_test.go agent/execenv/execenv.go agent/execenv/command_runtime.go agent/execenv/local.go agent/execenv/detach_unix.go agent/execenv/detach_other.go agent/execenv/command_runtime_test.go agent/execenv/detach_test.go cmd/serf/run_detached_test.go
+gofmt -w agent/internal/tool/definitions.go agent/internal/tool/definitions_test.go agent/job_shell.go agent/session_tools_shell.go agent/session_tools_shell_test.go agent/execenv/execenv.go agent/execenv/command_runtime.go agent/execenv/local.go agent/execenv/detach_unix.go agent/execenv/detach_other.go agent/execenv/command_runtime_test.go agent/execenv/detach_test.go cmd/evener/run_detached_test.go
 go test ./agent/execenv -count=1
 go test ./agent -count=1
-go test ./cmd/serf -count=1
+go test ./cmd/evener -count=1
 make lint
 make build-go
 ROOT_FULL=1 WEB=0 make test
@@ -540,7 +540,7 @@ Expected: every command exits 0. If any flake appears, stop and root-cause it un
 
 ```bash
 git status --short
-git add cmd/serf/run_detached_test.go docs/job-control.md README.md
+git add cmd/evener/run_detached_test.go docs/job-control.md README.md
 git add docs/superpowers/specs/2026-08-09-detached-shell-jobs-design.md
 git commit -m "test(shell): prove detached process survival"
 ```

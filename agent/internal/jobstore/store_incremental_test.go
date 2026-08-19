@@ -14,7 +14,7 @@ import (
 	"time"
 
 	"github.com/spf13/afero"
-	"primeradiant.com/serf/agent/provenance"
+	"primeradiant.com/evener/agent/provenance"
 )
 
 // The incremental reload path (the tail cursor in store.go) must be
@@ -533,7 +533,7 @@ func referenceFieldPaths(t reflect.Type, prefix string, seen map[reflect.Type]bo
 // test rather than as a comment, exactly how far the cursor's coherence goes: a
 // foreign rewrite that preserves the log's length AND restores its modification
 // time is indistinguishable from no rewrite, and the store keeps serving the
-// prefix it read. Nothing in serf does this — the log is append-only by contract
+// prefix it read. Nothing in evener does this — the log is append-only by contract
 // and the owning store is its only sanctioned writer, and every rewrite the test
 // suites actually perform changes the length or the mtime (see
 // TestStoreIncrementalReloadSeesOutOfBandRewrite). Detecting this case would

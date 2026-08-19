@@ -16,7 +16,7 @@ Date: 2026-06-12. Branch `job-control-spec`; code under test `0c22499d`; cards a
 | 8 | job-watch-caller-notification-delivery | **PASS** | Render-by-key tokens; coalescing 3 fires → 1 latest frame; notify+send flavors coexist |
 | 9 | job-watch-caller-send-no-deadlock | **PASS** (amended re-run 9R) | Both deadly configs rejected at create; tool-heavy turn completed with all TOOL_RESULTS persisted (the incident's lost artifact); observer received frames ×5 with matching delivery_ids |
 | 10 | job-watch-sidecar-observer | **PASS** | Frame → session-keyed grant read (incl. after resume) → caller comment, delivery_id chained end to end; watch_send pending→delivered lifecycle |
-| 11 | job-delegate-result-schema | **PASS** | Valid arm + inheritance-across-resume live; invalid arm inconclusive-by-design (provider strict enforcement masked it — serf's validator is the unit-tested backstop beneath) |
+| 11 | job-delegate-result-schema | **PASS** | Valid arm + inheritance-across-resume live; invalid arm inconclusive-by-design (provider strict enforcement masked it — evener's validator is the unit-tested backstop beneath) |
 | 12 | job-send-message-surface | **PASS** (amended re-run 12R) | Live steer landed (`action:"sent"`, marker in child transcript pre-communicate); resume/`on_finished:"fail"`/foreground_timeout arms all green |
 | 13 | job-nested-visibility | **PASS** | Hidden-by-default, cross-store read, routed stop, post-terminal retained read |
 | 14 | job-restart-durability | **PASS** | kill -9, reconciliation `stopped/runtime_lost` with stable `terminal_generation`, pre-crash output readable, exactly-once notification, second-restart dedupe |
@@ -29,7 +29,7 @@ Date: 2026-06-12. Branch `job-control-spec`; code under test `0c22499d`; cards a
 
 ## Not live-coverable (documented, with the covering layer)
 
-Per the card-authoring coverage analysis: shell approval flows (no approval policy in this harness config); `stop_unconfirmed`/`supervision_lost` (need unconfirmable-kill races); retention-pruned reads (need aged state); capacity caps (unit territory); the delegate-side invalid-`result_schema` arm on strict providers (provider enforces above serf's validator; the validator is unit-tested, contract `:294`); library-mode no-notify degradation (cards require serve mode). F1/F2/F4 supervision features are unit-covered; their live exercise rides future runs.
+Per the card-authoring coverage analysis: shell approval flows (no approval policy in this harness config); `stop_unconfirmed`/`supervision_lost` (need unconfirmable-kill races); retention-pruned reads (need aged state); capacity caps (unit territory); the delegate-side invalid-`result_schema` arm on strict providers (provider enforces above evener's validator; the validator is unit-tested, contract `:294`); library-mode no-notify degradation (cards require serve mode). F1/F2/F4 supervision features are unit-covered; their live exercise rides future runs.
 
 ## Punch list harvested from live behavior (queued, non-blocking)
 

@@ -5,8 +5,8 @@ import (
 	"sync"
 	"testing"
 
-	"primeradiant.com/serf/agent/execenv"
-	"primeradiant.com/serf/llm"
+	"primeradiant.com/evener/agent/execenv"
+	"primeradiant.com/evener/llm"
 )
 
 // hammerSetters runs SetModel/SetReasoningEffort/DetailedStatus concurrently from

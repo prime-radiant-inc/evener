@@ -2,11 +2,11 @@
 
 **Date:** 2026-02-14
 **Author:** Bot (Claude Opus 4.6)
-**Project:** Recursive Language Model — Context Management Strategies for Serf
+**Project:** Recursive Language Model — Context Management Strategies for Evener
 
 ## 1. Executive Summary
 
-We evaluated four context management strategies for Serf, an autonomous coding agent operating under LLM context window constraints. The strategies manage information retention as the agent's conversation history grows beyond the context window and must be compressed.
+We evaluated four context management strategies for Evener, an autonomous coding agent operating under LLM context window constraints. The strategies manage information retention as the agent's conversation history grows beyond the context window and must be compressed.
 
 **Key findings (updated with rigorous N=5 evaluation):**
 
@@ -42,7 +42,7 @@ Compaction fires when context usage crosses configurable thresholds (defaults: 6
 
 ### 2.3 Evaluation Harness
 
-`serfeval` runs the agent on a task, then asks retention probe questions scored by a judge model on a 0-5 scale. Retention score = mean(probe_scores) / 5.
+`evenereval` runs the agent on a task, then asks retention probe questions scored by a judge model on a 0-5 scale. Retention score = mean(probe_scores) / 5.
 
 ### 2.4 Threshold Scaling
 

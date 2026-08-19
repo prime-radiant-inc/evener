@@ -9,7 +9,7 @@ import (
 	"sort"
 	"strings"
 
-	"primeradiant.com/serf/agent/schema"
+	"primeradiant.com/evener/agent/schema"
 )
 
 const (

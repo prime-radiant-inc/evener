@@ -4,7 +4,7 @@ Date: 2026-06-25
 
 ## Context
 
-Serf job notifications currently arrive in the web UI as steering text. A typical terminal delegate notification looks like:
+Evener job notifications currently arrive in the web UI as steering text. A typical terminal delegate notification looks like:
 
 ```text
 <job-notification job_id="job_..." event="completed" job_type="delegate" status="completed" reason="" output_bytes="402" transcript_ref="local:...">
@@ -127,7 +127,7 @@ Use tone classes on the card so CSS can distinguish outcomes without changing se
 - error: `failed`, non-zero exit code, parseable failure status;
 - neutral: running/unknown or unclassified notification status.
 
-The visual treatment should remain consistent with existing Serf hub design: compact, readable, and not louder than assistant/user messages unless the notification represents failure or attention needed.
+The visual treatment should remain consistent with existing Evener hub design: compact, readable, and not louder than assistant/user messages unless the notification represents failure or attention needed.
 
 ## Parsing and data flow
 

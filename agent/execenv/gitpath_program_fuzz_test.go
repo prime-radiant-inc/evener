@@ -1,4 +1,4 @@
-//go:build serffuzz
+//go:build evenerfuzz
 
 package execenv
 
@@ -13,7 +13,7 @@ import (
 	"testing"
 	"time"
 
-	"primeradiant.com/serf/identifier"
+	"primeradiant.com/evener/identifier"
 )
 
 // FuzzGitPathResolutionProgram drives both structural and scripted-fallback

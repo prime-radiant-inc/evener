@@ -4,7 +4,7 @@
 # signals processes and deletes a directory the caller names, and the
 # isolation its header promises while the stack comes up.
 #
-# Nothing here builds serf or starts a real hub. A fixture `go` on PATH copies
+# Nothing here builds evener or starts a real hub. A fixture `go` on PATH copies
 # throwaway shell "binaries" into the run directory, so what is under test is
 # the script's own ordering, guards, and the environment it hands its
 # children — not the daemons.
@@ -104,10 +104,10 @@ FAKE_CURL
 # full of credentials that have no business in a test log.
 cat >"$fixtures/report-env" <<'REPORT_ENV'
 #!/usr/bin/env bash
-# report-env OUTFILE — one "NAME=value" line per variable serf reads to find
+# report-env OUTFILE — one "NAME=value" line per variable evener reads to find
 # its configuration, with "<unset>" where the script cleared one.
-for name in SERF_PROVIDERS_CONFIG SERF_STATE_DIR SERF_RUN_DIR SERF_HUB_TOKEN \
-	SERF_HUB_ADDR SERF_HUB_SPAWNED XDG_STATE_HOME XDG_CONFIG_HOME \
+for name in EVENER_PROVIDERS_CONFIG EVENER_STATE_DIR EVENER_RUN_DIR EVENER_HUB_TOKEN \
+	EVENER_HUB_ADDR EVENER_HUB_SPAWNED XDG_STATE_HOME XDG_CONFIG_HOME \
 	XDG_CACHE_HOME HOME; do
 	if [ -n "${!name+set}" ]; then
 		printf '%s=%s\n' "$name" "${!name}"
@@ -124,25 +124,25 @@ echo "fakellm listening on 127.0.0.1:14001 (base_url http://127.0.0.1:14001/v1)"
 while :; do sleep 1; done
 FAKE_FAKELLM
 
-cat >"$fixtures/serf-hub" <<'FAKE_HUB'
+cat >"$fixtures/evener-hub" <<'FAKE_HUB'
 #!/usr/bin/env bash
 "$FAKE_FIXTURES/report-env" "$FAKE_STATE/hub.env"
-cp "$HOME/.serf/providers.toml" "$FAKE_STATE/hub-providers.toml" 2>/dev/null
+cp "$HOME/.evener/providers.toml" "$FAKE_STATE/hub-providers.toml" 2>/dev/null
 if [ "${FAKE_HUB_MODE:-}" = "die" ]; then
 	echo "fake hub: refusing to start" >&2
 	exit 1
 fi
-printf 'fake-auth-token\n' >"$HOME/.serf/auth-token"
-echo "serf-hub listening on 127.0.0.1:14002" >&2
+printf 'fake-auth-token\n' >"$HOME/.evener/auth-token"
+echo "evener-hub listening on 127.0.0.1:14002" >&2
 
 # Stand in for a spawned session daemon, which is what makes --stop's log
 # scrape worth testing: a grandchild the hub deliberately outlives, exec'd
-# from the run directory the way the real hub execs the serf it was pointed
+# from the run directory the way the real hub execs the evener it was pointed
 # at, and announced in this log in the real hub's format
-# (cmd/serf-hub/spawn_daemonlog.go). It is a process this suite started, so
+# (cmd/evener-hub/spawn_daemonlog.go). It is a process this suite started, so
 # --stop reaping it is a real assertion and no bystander is ever at risk.
 run_dir="$(dirname "$0")"
-("$run_dir/serf" serve --session s-fixture >/dev/null 2>&1 & printf '%s' "$!" >"$FAKE_STATE/daemon.pid")
+("$run_dir/evener" serve --session s-fixture >/dev/null 2>&1 & printf '%s' "$!" >"$FAKE_STATE/daemon.pid")
 echo "daemon session=s-fixture pid=$(cat "$FAKE_STATE/daemon.pid")" >&2
 while :; do sleep 1; done
 FAKE_HUB
@@ -150,14 +150,14 @@ FAKE_HUB
 # The daemon binary the hub is pointed at. It parks like a real daemon so the
 # reap can be observed, and it carries the run directory in its argv exactly
 # as the real one does -- which is what --stop's ownership check reads.
-cat >"$fixtures/serf" <<'FAKE_SERF'
+cat >"$fixtures/evener" <<'FAKE_EVENER'
 #!/usr/bin/env bash
 while :; do sleep 1; done
-FAKE_SERF
+FAKE_EVENER
 chmod +x "$fakebin"/* "$fixtures"/*
 
 # run_script ARGS... — run the script under test with the fixture toolchain
-# first on PATH and with every redirect-serf-elsewhere variable exported. That
+# first on PATH and with every redirect-evener-elsewhere variable exported. That
 # is the operator the script's header promises isolation to: each of these has
 # to be gone from the children's environment. Output lands in $out.
 out="$work/out.txt"
@@ -166,12 +166,12 @@ printf 'schema = 1\ndefault = "expensive-real-provider"\n' >"$leaked_providers"
 run_script() {
 	env PATH="$fakebin:$PATH" \
 		FAKE_STATE="$state" FAKE_FIXTURES="${FAKE_FIXTURES:-$fixtures}" \
-		SERF_PROVIDERS_CONFIG="$leaked_providers" \
-		SERF_STATE_DIR="$work/real-state" \
-		SERF_RUN_DIR="$work/real-run" \
-		SERF_HUB_TOKEN="not-the-fixture-token" \
-		SERF_HUB_ADDR="http://127.0.0.1:1" \
-		SERF_HUB_SPAWNED=1 \
+		EVENER_PROVIDERS_CONFIG="$leaked_providers" \
+		EVENER_STATE_DIR="$work/real-state" \
+		EVENER_RUN_DIR="$work/real-run" \
+		EVENER_HUB_TOKEN="not-the-fixture-token" \
+		EVENER_HUB_ADDR="http://127.0.0.1:1" \
+		EVENER_HUB_SPAWNED=1 \
 		XDG_STATE_HOME="$work/real-xdg-state" \
 		XDG_CONFIG_HOME="$work/real-xdg-config" \
 		XDG_CACHE_HOME="$work/real-xdg-cache" \
@@ -236,9 +236,9 @@ if [ -n "$run" ] && [ -d "$run" ]; then
 else
 	bad "the start did not print a usable run directory"
 fi
-assert_has "$state/hub.env" "SERF_PROVIDERS_CONFIG=<unset>" "the hub does not inherit SERF_PROVIDERS_CONFIG"
-assert_has "$state/fakellm.env" "SERF_PROVIDERS_CONFIG=<unset>" "fakellm does not inherit SERF_PROVIDERS_CONFIG"
-for isolated in SERF_STATE_DIR SERF_RUN_DIR SERF_HUB_TOKEN SERF_HUB_ADDR SERF_HUB_SPAWNED XDG_STATE_HOME XDG_CONFIG_HOME XDG_CACHE_HOME; do
+assert_has "$state/hub.env" "EVENER_PROVIDERS_CONFIG=<unset>" "the hub does not inherit EVENER_PROVIDERS_CONFIG"
+assert_has "$state/fakellm.env" "EVENER_PROVIDERS_CONFIG=<unset>" "fakellm does not inherit EVENER_PROVIDERS_CONFIG"
+for isolated in EVENER_STATE_DIR EVENER_RUN_DIR EVENER_HUB_TOKEN EVENER_HUB_ADDR EVENER_HUB_SPAWNED XDG_STATE_HOME XDG_CONFIG_HOME XDG_CACHE_HOME; do
 	assert_has "$state/hub.env" "$isolated=<unset>" "the hub does not inherit $isolated"
 done
 assert_has "$state/hub.env" "HOME=$run/home" "the hub runs under the throwaway HOME"

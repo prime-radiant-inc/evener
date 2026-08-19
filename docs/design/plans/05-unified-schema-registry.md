@@ -1,6 +1,6 @@
 # 8.5 — Unified wire-type → generator registry — implementation plan
 
-**Status:** PLANNED (decisions locked — see §8). **Charter:** design doc §8.5 (`docs/design/fuzzing-toolkit-design.md`). **Builds on:** Phase 1 `fuzz/schemagen` (BUILT) — but first refactors it (§3.0). **Portability rule:** §5 — nothing in `fuzz/` may import a serf package. **Size:** ~500–700 LoC (the Source refactor adds ~120–180 LoC to schemagen on top of the original ~350–500). **Branch:** `wip/fuzzing-toolkit`.
+**Status:** PLANNED (decisions locked — see §8). **Charter:** design doc §8.5 (`docs/design/fuzzing-toolkit-design.md`). **Builds on:** Phase 1 `fuzz/schemagen` (BUILT) — but first refactors it (§3.0). **Portability rule:** §5 — nothing in `fuzz/` may import a evener package. **Size:** ~500–700 LoC (the Source refactor adds ~120–180 LoC to schemagen on top of the original ~350–500). **Branch:** `wip/fuzzing-toolkit`.
 
 ## 1. Problem
 
@@ -41,7 +41,7 @@ type NotificationSpec struct {
 ```
 
 - Each spec carries a **zero value** of the concrete type, expressly "so the doc generator can reflect their JSON fields" (`protocol.go:57–59`). That is the same reflection seam this registry consumes.
-- **92 (Params + Result) slots across 46 methods + 7 notification payloads**, deduping to ~70 distinct named structs: `EmptyParams{}`/`EmptyResponse{}` recur (e.g. `MethodPing`, the `ModelSet`/`EffortSet`/`Compact`/`Shutdown` methods), `InstanceListResponse{}` is the result of all five `SerfInstance*` methods, `LaunchConfigResolved{}` of three `SerfLaunch*` methods, `AuthStatusResponse{}` of two.
+- **92 (Params + Result) slots across 46 methods + 7 notification payloads**, deduping to ~70 distinct named structs: `EmptyParams{}`/`EmptyResponse{}` recur (e.g. `MethodPing`, the `ModelSet`/`EffortSet`/`Compact`/`Shutdown` methods), `InstanceListResponse{}` is the result of all five `EvenerInstance*` methods, `LaunchConfigResolved{}` of three `EvenerLaunch*` methods, `AuthStatusResponse{}` of two.
 
 ### How `params_fuzz_test.go` reflects today (what to reuse vs. replace)
 
@@ -58,7 +58,7 @@ Build order is **Source refactor (§3.0) → typegen (§3.1–3.4) → registry 
 
 **Why.** schemagen today is hard-wired to rapid: every generator pulls entropy via `*rapid.T` (`rapid.Bool().Draw(t, …)`, `rapid.IntRange(...).Draw`, `rapid.SampledFrom(...).Draw`, `rapid.Float64Range(...).Draw`, `rapid.String().Draw`), and `FromJSONSchema`/`Generator` wrap `genValue` in `rapid.Custom`. A `testing.F` harness (decision §8.6) hands the generator a **byte slice**, not a `*rapid.T`. To drive the *same generator definitions* from either entropy source, abstract the draws behind a `Source` interface.
 
-**The interface** (serf-free, schemagen-internal — still only stdlib + rapid in the package):
+**The interface** (evener-free, schemagen-internal — still only stdlib + rapid in the package):
 
 ```go
 // Source is the entropy stream a generator draws from. Two implementations exist:
@@ -102,17 +102,17 @@ func draw[T any](s Source, opts []T, label string) T  // opts[s.Intn(len(opts), 
 fuzz/typegen/                 # NEW; reflect→schema bridge + the wire-type registry
   typegen.go                  #   SchemaFromType, GeneratorForType, per-type overrides
   registry.go                 #   Registry: name → generator (valid+adjacent), source-driven
-  typegen_test.go             #   serf-free unit tests over hand-built reflect.Types
+  typegen_test.go             #   evener-free unit tests over hand-built reflect.Types
 ```
 
-`typegen` imports `schemagen` + stdlib `reflect`/`encoding/json` only. It stays in module `primeradiant.com/serf/fuzz`, whose `go.mod` (`fuzz/go.mod`) has **no serf dependency** — so the module simply will not compile if the boundary is crossed. That structural fact *is* the portability test (§5; design doc, schemagen.go:8–11).
+`typegen` imports `schemagen` + stdlib `reflect`/`encoding/json` only. It stays in module `primeradiant.com/evener/fuzz`, whose `go.mod` (`fuzz/go.mod`) has **no evener dependency** — so the module simply will not compile if the boundary is crossed. That structural fact *is* the portability test (§5; design doc, schemagen.go:8–11).
 
-### 3.2 How serf-side types reach a serf-free registry (the load-bearing seam)
+### 3.2 How evener-side types reach a evener-free registry (the load-bearing seam)
 
-The registry **never imports appwire**. Go types cross the boundary as `reflect.Type` and `map[string]any` schemas — both stdlib. The serf side (a `_test.go` in package `appwire`, which *may* import both appwire and the fuzz module) builds the registry by reflecting the catalog:
+The registry **never imports appwire**. Go types cross the boundary as `reflect.Type` and `map[string]any` schemas — both stdlib. The evener side (a `_test.go` in package `appwire`, which *may* import both appwire and the fuzz module) builds the registry by reflecting the catalog:
 
 ```go
-// appwire/wiretypes_fuzz_test.go  (package appwire — serf side, the only place
+// appwire/wiretypes_fuzz_test.go  (package appwire — evener side, the only place
 // that knows about both appwire AND typegen)
 reg := typegen.NewRegistry()
 reg.RegisterTypeSchema(reflect.TypeOf(LaunchConfigLayer{}), launchConfigLayerSchema) // hand-authored, §3.3.2
@@ -131,7 +131,7 @@ for _, n := range Notifications {
 }
 ```
 
-`reflect.TypeOf` yields a `reflect.Type` — a stdlib interface that carries **no import edge** back to appwire. `typegen` receives only `reflect.Type` values and produces generators; it has no idea the types came from serf. This is exactly how `appwire.Methods` already feeds its doc generator and `FuzzMethodParams`: reflection over zero values, never a typed dependency.
+`reflect.TypeOf` yields a `reflect.Type` — a stdlib interface that carries **no import edge** back to appwire. `typegen` receives only `reflect.Type` values and produces generators; it has no idea the types came from evener. This is exactly how `appwire.Methods` already feeds its doc generator and `FuzzMethodParams`: reflection over zero values, never a typed dependency.
 
 ### 3.3 The reflect → schema bridge (`SchemaFromType`)
 
@@ -172,7 +172,7 @@ For each **exported** field: parse the `json` tag. Skip `json:"-"`. Name = tag n
 func (r *Registry) RegisterTypeSchema(t reflect.Type, schema map[string]any) // type → hand-authored schema
 ```
 
-This is the seam for a `json.Marshaler` whose JSON shape differs from a naive struct walk. **Today the only such type is `LaunchConfigLayer`** (`appwire/types.go:946`). Its `MarshalJSON` relocates `modelFallbacks` (nils it on the aliased struct, then re-adds it when non-nil) — the *field set* is unchanged versus a plain marshal; the only observable difference is that an empty-but-non-nil `ModelFallbacks` is emitted as `"modelFallbacks":[]` rather than omitted. So the hand-authored schema mirrors the struct's 33 optional fields with `additionalProperties:false`, and the round-trip-fixed-point oracle stays **ENABLED** for it (the custom marshaler is deterministic, so decode→marshal→decode→marshal is a fixed point). This is full structured coverage, **not** a downgrade-to-no-panic. The override is registered on the serf side (it needs the concrete `reflect.Type`); the hand-authored schema literal lives in `appwire/wiretypes_fuzz_test.go`. Because `LaunchConfigLayer` is reached transitively (`LaunchConfigResolved.Effective`/`.Layers`, `LaunchConfigSetLayerParams.Config`), the override must fire at nested depth — hence keyed by type, not by registry name.
+This is the seam for a `json.Marshaler` whose JSON shape differs from a naive struct walk. **Today the only such type is `LaunchConfigLayer`** (`appwire/types.go:946`). Its `MarshalJSON` relocates `modelFallbacks` (nils it on the aliased struct, then re-adds it when non-nil) — the *field set* is unchanged versus a plain marshal; the only observable difference is that an empty-but-non-nil `ModelFallbacks` is emitted as `"modelFallbacks":[]` rather than omitted. So the hand-authored schema mirrors the struct's 33 optional fields with `additionalProperties:false`, and the round-trip-fixed-point oracle stays **ENABLED** for it (the custom marshaler is deterministic, so decode→marshal→decode→marshal is a fixed point). This is full structured coverage, **not** a downgrade-to-no-panic. The override is registered on the evener side (it needs the concrete `reflect.Type`); the hand-authored schema literal lives in `appwire/wiretypes_fuzz_test.go`. Because `LaunchConfigLayer` is reached transitively (`LaunchConfigResolved.Effective`/`.Layers`, `LaunchConfigSetLayerParams.Config`), the override must fire at nested depth — hence keyed by type, not by registry name.
 
 #### 3.3.3 Generic custom-marshaler fallback
 
@@ -185,7 +185,7 @@ appwire types form a tree but nest deeply (`Turn`→`[]ThreadItem`→`[]InputIte
 ### 3.5 The registry
 
 ```go
-// registry.go — serf-free. name → its valid+adjacent generator, drivable from any Source.
+// registry.go — evener-free. name → its valid+adjacent generator, drivable from any Source.
 type Registry struct {
 	entries   map[string]map[string]any  // name → schema
 	overrides map[reflect.Type]map[string]any // §3.3.2
@@ -229,7 +229,7 @@ func FuzzWireTypes(f *testing.F) {
 		if err != nil {
 			t.Fatalf("%s: marshal generated value: %v", name, err)
 		}
-		typ := typeFor(name)             // serf-side map name → reflect.Type
+		typ := typeFor(name)             // evener-side map name → reflect.Type
 		p := reflect.New(typ).Interface()
 		err = json.Unmarshal(raw, p)
 		// Oracle 1 (floor): no panic (decode of Adjacent input may legitimately error).
@@ -265,8 +265,8 @@ func FuzzWireTypes(f *testing.F) {
 1. **Source refactor of `fuzz/schemagen`** (~120–180 LoC; FOUNDATIONAL, §3.0): define the `Source` interface + `draw[T]` helper; add `rapidSource` and `byteSource`/`NewByteSource`; thread `Source` through `genValue` and every helper; keep `FromJSONSchema`/`Generator` as rapid-backed-Source wrappers (signatures unchanged); add the exported `Value(s, schema, mode)` byte entry point. Verify the existing `agent/registry_schemafuzz_test.go` and `schemagen_test.go` still pass; add a byte-source determinism test (same bytes → same value) mirroring `TestDeterminism`.
 2. **`fuzz/typegen/typegen.go` — `SchemaFromType`** (~160–220 LoC): the kind switch + struct walk + json-tag parsing + the per-type-override check + `json.RawMessage`/`[]byte`/`json.Marshaler`/pointer/map/interface special cases + bounded recursion. Plus `GeneratorForType(t, mode)`.
 3. **`fuzz/typegen/registry.go` — `Registry`** (~80–120 LoC): the index + `RegisterType`/`RegisterSchema`/`RegisterTypeSchema`/`Value`/`Generator`/`Schema`/`Names`.
-4. **`fuzz/typegen/typegen_test.go`** (~140–200 LoC, serf-free): hand-built `reflect.Type`s (structs with the same shapes as appwire — pointers, slices, `[]byte`, `json.RawMessage`, `map`, `any`, a custom-marshaler with and without an override) asserting (a) `SchemaFromType` produces the expected schema subset; (b) Valid-mode values round-trip through `json.Marshal`→`json.Unmarshal` into the source struct under **both** a byte Source and a rapid Source; (c) determinism (fixed seed / fixed bytes); (d) a registered per-type override is applied at nested depth; (e) no serf import (a `go list -deps` / `import`-grep guard).
-5. **`appwire/wiretypes_fuzz_test.go`** (~120–160 LoC, serf side): `buildRegistry()` over `Methods` (params+results) and `Notifications` (7 typed payloads), the hand-authored `launchConfigLayerSchema` registered via `RegisterTypeSchema`, the `FuzzWireTypes` `testing.F` harness (§3.6) with a seed corpus, the `typeFor` map name→`reflect.Type`, and the lifted round-trip-fixed-point assertion.
+4. **`fuzz/typegen/typegen_test.go`** (~140–200 LoC, evener-free): hand-built `reflect.Type`s (structs with the same shapes as appwire — pointers, slices, `[]byte`, `json.RawMessage`, `map`, `any`, a custom-marshaler with and without an override) asserting (a) `SchemaFromType` produces the expected schema subset; (b) Valid-mode values round-trip through `json.Marshal`→`json.Unmarshal` into the source struct under **both** a byte Source and a rapid Source; (c) determinism (fixed seed / fixed bytes); (d) a registered per-type override is applied at nested depth; (e) no evener import (a `go list -deps` / `import`-grep guard).
+5. **`appwire/wiretypes_fuzz_test.go`** (~120–160 LoC, evener side): `buildRegistry()` over `Methods` (params+results) and `Notifications` (7 typed payloads), the hand-authored `launchConfigLayerSchema` registered via `RegisterTypeSchema`, the `FuzzWireTypes` `testing.F` harness (§3.6) with a seed corpus, the `typeFor` map name→`reflect.Type`, and the lifted round-trip-fixed-point assertion.
 6. **Coverage knob:** the `testing.F` target is picked up by `make fuzz`'s seed-corpus run (`-run '^Fuzz'`) and by `make fuzz-nightly`'s coverage-guided search — confirm `appwire` is reached by the gate (it is, via the root module + `scripts/run-fuzz.sh`); no Makefile change expected beyond what Phase 0 wired.
 
 ## 7. Dependencies, risks, acceptance
@@ -286,12 +286,12 @@ func FuzzWireTypes(f *testing.F) {
 - `schemagen` exposes a `Source` interface with a rapid-backed and a byte-backed adapter; `FromJSONSchema`/`Generator` are unchanged in signature; a byte-source determinism test passes; `agent/registry_schemafuzz_test.go` still passes.
 - `Registry` built from `appwire.Methods` + `Notifications` exposes a generator for **all 46 methods' params, all 46 results, and the 7 typed notification payloads** (a test asserts every method name has both `#params` and `#result` entries where the type is non-nil, and every typed notification has a `#payload` entry; the 11 nil payloads are absent).
 - The single `appwire/wiretypes_fuzz_test.go` `testing.F` harness generates Valid + Adjacent values for every registered type from a byte source, marshals + decodes them into the concrete Go type with **no panic**; Valid values (round-trippable types, including the overridden `LaunchConfigLayer`) round-trip to a fixed point.
-- **Portability holds:** `fuzz/typegen` and `fuzz/schemagen` import no serf package — enforced structurally by `fuzz/go.mod` (no serf require) and asserted by an explicit import-guard test. The serf↔registry coupling lives entirely in `appwire/wiretypes_fuzz_test.go`, which passes only `reflect.Type` and hand-authored schemas across the boundary.
+- **Portability holds:** `fuzz/typegen` and `fuzz/schemagen` import no evener package — enforced structurally by `fuzz/go.mod` (no evener require) and asserted by an explicit import-guard test. The evener↔registry coupling lives entirely in `appwire/wiretypes_fuzz_test.go`, which passes only `reflect.Type` and hand-authored schemas across the boundary.
 - `make fuzz` green (seed corpus); `make fuzz-nightly` exercises `FuzzWireTypes` under coverage-guided search; a deliberately-broken type mapping (e.g. mis-handling `json.RawMessage`) turns a typegen unit test red.
 
 ## 8. Decisions (locked — Jesse)
 
-1. **Location:** sibling `fuzz/typegen`, depending on `schemagen`, serf-free (takes `reflect.Type` / JSON-schema input, no appwire import — the portability test must hold). *Resolved: sibling, not an extra file in schemagen.*
+1. **Location:** sibling `fuzz/typegen`, depending on `schemagen`, evener-free (takes `reflect.Type` / JSON-schema input, no appwire import — the portability test must hold). *Resolved: sibling, not an extra file in schemagen.*
 2. **Keep the byte-level `FuzzMethodParams`.** Complementary raw-bytes / `UnmarshalJSON` panic-hunt alongside the structured registry. *Resolved: keep both.*
 3. **Enum fidelity on the reflect path:** accept the reflect-can't-see-consts gap; add a per-field `RegisterSchema` override only where an enum is load-bearing. *Resolved: no const-scanner.*
 4. **Custom `json.Marshaler` types:** hand-author schema overrides (full structured coverage), not downgrade-to-no-panic. Today that is only `LaunchConfigLayer` (types.go:946) — author its schema to match its actual custom-`MarshalJSON` shape; keep the round-trip oracle on. *Resolved: hand-author (§3.3.2). Generic untyped `{}` remains the fallback only for future override-less marshalers.*

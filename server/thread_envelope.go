@@ -3,9 +3,9 @@ package server
 import (
 	"strings"
 
-	"primeradiant.com/serf/agent/events"
-	"primeradiant.com/serf/agent/schema"
-	"primeradiant.com/serf/appwire"
+	"primeradiant.com/evener/agent/events"
+	"primeradiant.com/evener/agent/schema"
+	"primeradiant.com/evener/appwire"
 )
 
 // threadEnvelope is the daemon's materialized view of the live session state a
@@ -46,7 +46,7 @@ type threadEnvelope struct {
 	PendingMutations      []appwire.PendingMutation
 	Tasks                 *appwire.TaskAggregate
 	Goal                  *appwire.GoalState
-	Usage                 *appwire.SerfUsage
+	Usage                 *appwire.EvenerUsage
 	WorkMillis            int64
 	ActiveTurnStartedAt   int64
 	FailedToolCalls       *int
@@ -66,7 +66,7 @@ type threadEnvelope struct {
 }
 
 // ThreadEnvelopeSource supplies the live session values the thread envelope
-// reports. cmd/serf/serve.go implements it over the running agent.Session.
+// reports. cmd/evener/serve.go implements it over the running agent.Session.
 //
 // The bridge samples it at the moments those values change -- never on a read.
 // That is the whole point of the interface: it collapses sixteen separately
@@ -78,7 +78,7 @@ type threadEnvelope struct {
 // sampling runs on the authoritative consumer's drain goroutine, so a sample
 // that waits on a lock a session emitter holds wedges both (BridgeEvent's LOCK
 // RULE note has the full argument). What stops that is the type on the other
-// side of the seam: cmd/serf's implementation reaches the session as
+// side of the seam: cmd/evener's implementation reaches the session as
 // agent.EnvelopeSampling, so a new value has to be declared there, where the
 // rule is written and where agent's own suite proves it.
 type ThreadEnvelopeSource interface {
@@ -88,7 +88,7 @@ type ThreadEnvelopeSource interface {
 	ClientMutationProjection() (appwire.QueueState, []appwire.PendingMutation)
 	TaskAggregate() *appwire.TaskAggregate
 	GoalStatus() (status string, iterations int, ok bool)
-	WorkMetrics() (workMillis int64, usage *appwire.SerfUsage, activeTurnStartedAt int64)
+	WorkMetrics() (workMillis int64, usage *appwire.EvenerUsage, activeTurnStartedAt int64)
 	FailedToolCalls() (count int, measured bool)
 	AskPending() bool
 	PendingEscalations() []appwire.SandboxEscalationRequested

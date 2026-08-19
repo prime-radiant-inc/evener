@@ -6,7 +6,7 @@ import (
 	"fmt"
 	"testing"
 
-	"primeradiant.com/serf/llm"
+	"primeradiant.com/evener/llm"
 )
 
 // FuzzClassifyResponsesError drives Adapter.ClassifyResponsesError, the pure

@@ -13,7 +13,7 @@ import (
 )
 
 // ModelInfo is the normalized model metadata entry, primarily sourced from the LiteLLM catalog
-// in serf. This is metadata-only and is not used as a provider call path.
+// in evener. This is metadata-only and is not used as a provider call path.
 type ModelInfo struct {
 	ID                       string   `json:"id"`
 	Provider                 string   `json:"provider"`
@@ -36,7 +36,7 @@ type ModelInfo struct {
 	// no sampling params (temperature/top_p/top_k), and a thinking display
 	// that defaults to "omitted" so visible reasoning must be requested. It is
 	// broader than ThinkingAlwaysOn — claude-sonnet-5 can still disable
-	// thinking. Serf-authored: LiteLLM has no equivalent field.
+	// thinking. Evener-authored: LiteLLM has no equivalent field.
 	Claude5RequestShape bool `json:"claude5_request_shape,omitempty"`
 	// SupportsWebSearch is presence-aware: nil means the catalog is silent
 	// on web-search support (caller should use its default), &true / &false

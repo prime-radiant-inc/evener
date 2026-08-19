@@ -8,7 +8,7 @@ import (
 	"os"
 	"strings"
 
-	"primeradiant.com/serf/llm"
+	"primeradiant.com/evener/llm"
 )
 
 func (a *Adapter) buildRequestBody(req llm.Request, system string, contents []map[string]any) (map[string]any, error) {

@@ -22,7 +22,7 @@ is a quality/robustness refinement to schedule after the roadmap lands.
 ## Tooling ergonomics (from item tool-efficacy notes)
 - **Shared fuzz route allowlist.** *(DONE.)* Extracted to the package
   `internal/fuzzroutes` (`ReadOnly`), now imported by both `web_fuzz_test.go` and
-  the harvester (`cmd/serf-fuzz-harvest/http.go`) instead of a duplicated test
+  the harvester (`cmd/evener-fuzz-harvest/http.go`) instead of a duplicated test
   literal.
 - **gitleaks in the dev image.** The secret-scan gate + the harvester's write-time
   barrier skip when gitleaks isn't installed; install it so the gate is exercised
@@ -40,10 +40,10 @@ is a quality/robustness refinement to schedule after the roadmap lands.
   by `rapid.Check` via `go test -run`), and is the single `--list` source of truth
   consumed by `fuzz-coverage.sh` (native-only, for the focus-set ratchet),
   `fuzz-triage.sh` (both kinds, via the runner — its hardcoded rapid list is gone),
-  and the static gap gate (`serf-fuzzcov -gap-only`). The three rapid promoter
+  and the static gap gate (`evener-fuzzcov -gap-only`). The three rapid promoter
   surfaces are registered with the `rapid` tag.
-- **`SERF_FUZZ_PERSIST` can't use the `envvars` registry.** The portability
-  boundary (the `fuzz` module imports no serf package) means `promoter.PersistPaths`
+- **`EVENER_FUZZ_PERSIST` can't use the `envvars` registry.** The portability
+  boundary (the `fuzz` module imports no evener package) means `promoter.PersistPaths`
   reads the raw env string, and the `envvars_audit_test.go` "use a registry row"
   check would actively reject registering it (the literal would then be flagged in
   non-test code). Documented in `fuzz/README.md` instead. If more toolkit-internal
@@ -60,14 +60,14 @@ is a quality/robustness refinement to schedule after the roadmap lands.
   committed set instead of dumping a raw diversity cap: content-dedup (skip bytes
   that already match a committed seed under any name), size-prefer (smallest-first
   so the cap keeps the most-reduced inputs), and a per-seed size cap
-  (`SERF_FUZZ_MAX_SEED_BYTES`, default 32 KiB). Exercised by self-test scenario 8
+  (`EVENER_FUZZ_MAX_SEED_BYTES`, default 32 KiB). Exercised by self-test scenario 8
   (stub gocache, asserts dedup + both caps).
 
 ## Pre-existing flake (surfaced during Phase 7 Wave 1, NOT caused by it)
-- `TestTUITmuxE2E_CtrlCRestoreMessageSurvivesAltScreenExit` (cmd/serf-tui) is a
+- `TestTUITmuxE2E_CtrlCRestoreMessageSurvivesAltScreenExit` (cmd/evener-tui) is a
   timing-based tmux end-to-end test that fails ~1 in 3 runs. Unrelated to the
   parse fixes in Wave 1 (it exercises Ctrl-C / alt-screen restore, no parse path).
-  *(DONE.)* Root-caused to a detached dying tmux pane dropping serf-tui's final
+  *(DONE.)* Root-caused to a detached dying tmux pane dropping evener-tui's final
   stdout under CPU starvation (not a settle race); fixed test-only by keeping the
   pane alive (`; read _`) plus polling `WaitForHistory`. 204 full-suite-under-load
   runs, 0 fails.

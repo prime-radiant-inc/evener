@@ -19,7 +19,7 @@ func testSidecar() Sidecar {
 		Branch:          "feature/foo",
 		BaseSHA:         "abc123",
 		MergeTarget:     "main",
-		OriginalRoot:    "/home/jesse/git/prime-radiant/serf",
+		OriginalRoot:    "/home/jesse/git/prime-radiant/evener",
 		CreatorSession:  "01HXYZ",
 		DelegateID:      "dlg_01HXYZ",
 		WorktreeRemoved: true,
@@ -527,7 +527,7 @@ func withTinyFileSizeLimit(t *testing.T, n uint64, fn func()) {
 // it has no -test.testlogfile of its own — confines the lowered limit (and
 // anything it clips) to a throwaway process instead of the one being scored
 // for the build cache.
-const fsizeLimitedHelperProcessEnv = "SERF_WORKTREE_FSIZE_HELPER_PROCESS"
+const fsizeLimitedHelperProcessEnv = "EVENER_WORKTREE_FSIZE_HELPER_PROCESS"
 
 // isFsizeLimitedHelperProcess reports whether the current process is the
 // subprocess spawned by runFsizeLimitedHelperProcess. Test functions guarded

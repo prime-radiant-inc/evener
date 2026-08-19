@@ -17,7 +17,7 @@ import (
 	"testing"
 	"time"
 
-	"primeradiant.com/serf/llm"
+	"primeradiant.com/evener/llm"
 )
 
 func TestAdapter_Complete_MapsToGeminiGenerateContent(t *testing.T) {
@@ -1712,7 +1712,7 @@ func TestAdapter_Integration_CountInputTokens(t *testing.T) {
 
 	req := llm.Request{
 		Model:    "gemini-2.5-flash",
-		Messages: []llm.Message{llm.User("Count this short Serf token-counting prompt.")},
+		Messages: []llm.Message{llm.User("Count this short Evener token-counting prompt.")},
 	}
 	got, err := a.CountInputTokens(ctx, req)
 	if err != nil {

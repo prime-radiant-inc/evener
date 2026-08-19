@@ -12,8 +12,8 @@ pressure display; and add three new client-side web settings (font size, Enter-t
 in the per-section settings files Track 0 creates.
 
 **Architecture:** Session-level cost is computed server-side in Go from already-wired
-`appwire.SerfThread.Usage`/`WorkspaceData.Usage`/`hubapi.SessionDetail.Usage` plus the thread's
-model id, via one new shared helper (`appwire.EstimateCost`) that both `cmd/serf-hub` and
+`appwire.EvenerThread.Usage`/`WorkspaceData.Usage`/`hubapi.SessionDetail.Usage` plus the thread's
+model id, via one new shared helper (`appwire.EstimateCost`) that both `cmd/evener-hub` and
 `internal/appprojector` call — no new pricing arithmetic duplicated per surface. Per-turn cost/
 tokens require one small piece of NEW wire plumbing the design spec undersold (flagged below):
 `appwire.Turn` gains `Usage`/`Cost` fields, populated (a) live, by accumulating
@@ -30,7 +30,7 @@ pattern: a radio/checkbox input, a `localStorage` write, a `body.dataset.*` mirr
 that reapplies it, and (for settings-pane re-sync) a hook in `applySettingsState()`.
 
 **Tech Stack:** Go (root module: `appwire`, `internal/appprojector`, `internal/apptranscript`,
-`cmd/serf-hub`, `cmd/serf-tui`, `cmd/serf`; `llm` module for pricing), htmx + vanilla JS (status
+`cmd/evener-hub`, `cmd/evener-tui`, `cmd/evener`; `llm` module for pricing), htmx + vanilla JS (status
 row, details panel, per-turn badge, settings), jstest (JSDOM), `docs/web-ui/design-system.md`.
 
 ## Global Constraints
@@ -38,7 +38,7 @@ row, details panel, per-turn badge, settings), jstest (JSDOM), `docs/web-ui/desi
 - JSON/TOML keys stay snake_case (`hubapi`/`schema` convention); **appwire's own convention is
   camelCase** (`workMillis`, `activeTurnStartedAt`, `durationMs`) — new `appwire.Turn` fields
   (`usage`, `cost`) follow appwire's existing camelCase, not the snake_case rule that applies to
-  `hubapi`/`schema`/TOML keys. `make lint` runs `serf-namingcheck`; verify it passes for both
+  `hubapi`/`schema`/TOML keys. `make lint` runs `evener-namingcheck`; verify it passes for both
   conventions on the files you touch.
 - No new `SessionMeta` field. Confirmed during research: `WorkMillis`/`CumulativeUsage` already
   exist (WS2); cost is computed on read, not persisted. If any task in this plan seems to need a
@@ -52,7 +52,7 @@ row, details panel, per-turn badge, settings), jstest (JSDOM), `docs/web-ui/desi
   StatusInfo, appwire `AttentionEntry`) or Track B's files (app_models.go, web_spawn.go models
   path, spawn.js model picker, settings-pickers.js, TUI tuipick/model_picker.go, hub_commands.go
   model-list path, past.go). `appwire/types.go` is shared with Track A (different structs,
-  `SerfThread`/`Turn` here vs `AttentionEntry` there) — expect a trivial merge, not a real
+  `EvenerThread`/`Turn` here vs `AttentionEntry` there) — expect a trivial merge, not a real
   conflict.
 - TDD red-first for every behavioral change; test output must be pristine. Per-module test
   commands (`GO_MODULES` in Makefile) — this track's Go changes are entirely in the **root**
@@ -88,7 +88,7 @@ row, details panel, per-turn badge, settings), jstest (JSDOM), `docs/web-ui/desi
    `llm/providers/anthropic/models.go:90`). `GetPrice`'s current exact-match-or-catalog-id-is-a-
    prefix-of-modelID lookup (`llm/pricing.go:30-64`) resolves none of these; `LookupModelInfo`
    (`llm/model_catalog.go:81-110`) already handles all three cases and is what
-   `cmd/serf-hub/web_spawn.go:422-446`'s `catalogModelInfo` already uses for the picker. Phase P1
+   `cmd/evener-hub/web_spawn.go:422-446`'s `catalogModelInfo` already uses for the picker. Phase P1
    fixes `GetPrice` to try `LookupModelInfo` first — a pure strengthening, zero regression risk
    (traced against every existing `pricing_test.go` case).
 4. **Cost is web-only.** Decision #9/§6 frame Show-cost as a **web setting**; there is no TUI
@@ -109,8 +109,8 @@ row, details panel, per-turn badge, settings), jstest (JSDOM), `docs/web-ui/desi
    `templates/partials/settings/display.html` + `assets/settings-display.js` + a `settingsSections`
    registration in `web.go` + a nav link + an `app.html` `<script>` tag (Task W0 builds the
    scaffold; W2/W3 add the two controls). **No task in Phase W touches `assets/settings.js` — it
-   will not exist post-Track-0.** The three controls share the `serf-hub.composer` JSON-blob pref
-   (`{enterToSend, showCost}`) that W0's scaffold establishes, plus `serf-hub.appearance.fontSize`
+   will not exist post-Track-0.** The three controls share the `evener-hub.composer` JSON-blob pref
+   (`{enterToSend, showCost}`) that W0's scaffold establishes, plus `evener-hub.appearance.fontSize`
    for font-size.
 
 ---
@@ -119,41 +119,41 @@ row, details panel, per-turn badge, settings), jstest (JSDOM), `docs/web-ui/desi
 
 - `llm/pricing.go` — strengthen `GetPrice` resolution; add `EstimateCost` pure arithmetic.
 - `llm/pricing_test.go` — new resolution + arithmetic tests.
-- `appwire/cost.go` (new) — `SerfUsageFromLLM`, `EstimateCost` (wire-level, calls `llm`).
+- `appwire/cost.go` (new) — `EvenerUsageFromLLM`, `EstimateCost` (wire-level, calls `llm`).
 - `appwire/cost_test.go` (new) — marshal/omit + arithmetic tests.
-- `appwire/types.go` — `Turn.Usage *SerfUsage`, `Turn.Cost string`.
+- `appwire/types.go` — `Turn.Usage *EvenerUsage`, `Turn.Cost string`.
 - `appwire/types_test.go` — `Turn` marshal/omit tests.
 - `internal/appprojector/appwire_projection.go` — `activeTurnUsage`/`activeTurnModel` accumulation
   + stamp at the four turn-completion sites.
 - `internal/appprojector/appwire_projection_test.go` — projector usage-accumulation tests.
 - `internal/apptranscript/apptranscript.go` — per-round `Usage` stamp in `TurnsFromFile`.
 - `internal/apptranscript/apptranscript_test.go` — usage-stamp test.
-- `cmd/serf/serve.go` — dedup `serfUsageFromLLM` onto `appwire.SerfUsageFromLLM`.
-- `cmd/serf-hub/app_threadread.go` — `pastEntryThread` gains Usage/WorkMillis/ActiveTurnStartedAt;
+- `cmd/evener/serve.go` — dedup `evenerUsageFromLLM` onto `appwire.EvenerUsageFromLLM`.
+- `cmd/evener-hub/app_threadread.go` — `pastEntryThread` gains Usage/WorkMillis/ActiveTurnStartedAt;
   `pastEntryTurns` gains a per-turn Cost post-pass.
-- `cmd/serf-hub/app_threadread_test.go` — new tests for both.
-- `cmd/serf-hub/web_workspace.go` — session-level Cost wired at both `workspaceData` branches, at
+- `cmd/evener-hub/app_threadread_test.go` — new tests for both.
+- `cmd/evener-hub/web_workspace.go` — session-level Cost wired at both `workspaceData` branches, at
   `renderInputStrip`'s map, and at `renderDetailsPanel` (context/work/tokens/cost rows, live+ended).
-- `cmd/serf-hub/web_format.go` — session-level Cost wired at `workspaceDataFromAppThread`.
-- `cmd/serf-hub/web_format_test.go`, `cmd/serf-hub/web_test.go` — new coverage.
-- `cmd/serf-hub/templates/partials/input_strip.html` — `Cost` already has a dead `{{if .Cost}}`
+- `cmd/evener-hub/web_format.go` — session-level Cost wired at `workspaceDataFromAppThread`.
+- `cmd/evener-hub/web_format_test.go`, `cmd/evener-hub/web_test.go` — new coverage.
+- `cmd/evener-hub/templates/partials/input_strip.html` — `Cost` already has a dead `{{if .Cost}}`
   block (line 12); no template change needed, only the Go-side value.
-- `cmd/serf-hub/assets/renderer.js` — stamp `turnId` on assistant-message elements; on
+- `cmd/evener-hub/assets/renderer.js` — stamp `turnId` on assistant-message elements; on
   `turn/completed`, attach/update the hover-reveal per-turn badge.
-- `cmd/serf-hub/assets/renderer-format.js` — `turnMetaParts`/`formatTurnMetaText` display helpers.
-- `cmd/serf-hub/assets/style.css` — `.assistant-message .turn-meta` hover/focus rules;
+- `cmd/evener-hub/assets/renderer-format.js` — `turnMetaParts`/`formatTurnMetaText` display helpers.
+- `cmd/evener-hub/assets/style.css` — `.assistant-message .turn-meta` hover/focus rules;
   `body[data-show-cost="false"]` gating rules; font-size preset `--text-*` overrides.
-- `cmd/serf-hub/jstest/test-turn-meta-badge.js` (new), `test-show-cost-gating.js` (new),
+- `cmd/evener-hub/jstest/test-turn-meta-badge.js` (new), `test-show-cost-gating.js` (new),
   `test-font-size-presets.js` (new), `test-composer-shortcuts.js` (extended).
-- `cmd/serf-hub/templates/partials/settings/theme.html` (Track 0's, font-size row),
+- `cmd/evener-hub/templates/partials/settings/theme.html` (Track 0's, font-size row),
   `templates/partials/settings/display.html` (NEW "Display" section, W0 creates it).
-- `cmd/serf-hub/assets/settings-appearance.js` (Track 0's — font-size handler),
-  `cmd/serf-hub/assets/settings-display.js` (NEW — Enter-to-send + Show-cost handlers, W0 creates it).
-- `cmd/serf-hub/web.go` (register `"display"` in settingsSections),
-  `cmd/serf-hub/templates/partials/settings.html` (Display nav link),
-  `cmd/serf-hub/templates/app.html` (settings-display.js `<script>` tag) — W0.
-- `cmd/serf-tui/details_drawer.go` — Work/Tokens summary line.
-- `cmd/serf-tui/details_drawer_test.go` — new test.
+- `cmd/evener-hub/assets/settings-appearance.js` (Track 0's — font-size handler),
+  `cmd/evener-hub/assets/settings-display.js` (NEW — Enter-to-send + Show-cost handlers, W0 creates it).
+- `cmd/evener-hub/web.go` (register `"display"` in settingsSections),
+  `cmd/evener-hub/templates/partials/settings.html` (Display nav link),
+  `cmd/evener-hub/templates/app.html` (settings-display.js `<script>` tag) — W0.
+- `cmd/evener-tui/details_drawer.go` — Work/Tokens summary line.
+- `cmd/evener-tui/details_drawer_test.go` — new test.
 - `docs/web-ui/design-system.md` — font-size preset documentation.
 
 ---
@@ -285,13 +285,13 @@ row, details panel, per-turn badge, settings), jstest (JSDOM), `docs/web-ui/desi
 
 ## Phase Q — Wire-level cost + usage conversion (`appwire`)
 
-### Task Q1 — `appwire.SerfUsageFromLLM` + `appwire.EstimateCost`
+### Task Q1 — `appwire.EvenerUsageFromLLM` + `appwire.EstimateCost`
 
 **Files:** New `appwire/cost.go`. Test: new `appwire/cost_test.go`.
 
 **Interfaces:**
-- Produces: `func SerfUsageFromLLM(u llm.Usage) *SerfUsage`; `func EstimateCost(model string, usage *SerfUsage) string`.
-- Consumes: `llm.DefaultPrice`, `llm.EstimateCost` (Task P2), existing `appwire.SerfUsage`.
+- Produces: `func EvenerUsageFromLLM(u llm.Usage) *EvenerUsage`; `func EstimateCost(model string, usage *EvenerUsage) string`.
+- Consumes: `llm.DefaultPrice`, `llm.EstimateCost` (Task P2), existing `appwire.EvenerUsage`.
 
 - [ ] **Failing test** — new `appwire/cost_test.go`:
   ```go
@@ -300,18 +300,18 @@ row, details panel, per-turn badge, settings), jstest (JSDOM), `docs/web-ui/desi
   import (
   	"testing"
 
-  	"primeradiant.com/serf/llm"
+  	"primeradiant.com/evener/llm"
   )
 
-  func TestSerfUsageFromLLM_NilWhenAllZero(t *testing.T) {
-  	if got := SerfUsageFromLLM(llm.Usage{}); got != nil {
+  func TestEvenerUsageFromLLM_NilWhenAllZero(t *testing.T) {
+  	if got := EvenerUsageFromLLM(llm.Usage{}); got != nil {
   		t.Errorf("got %+v, want nil for all-zero usage", got)
   	}
   }
 
-  func TestSerfUsageFromLLM_MapsFields(t *testing.T) {
+  func TestEvenerUsageFromLLM_MapsFields(t *testing.T) {
   	cacheRead := 7
-  	got := SerfUsageFromLLM(llm.Usage{InputTokens: 1, OutputTokens: 2, TotalTokens: 10, CacheReadTokens: &cacheRead})
+  	got := EvenerUsageFromLLM(llm.Usage{InputTokens: 1, OutputTokens: 2, TotalTokens: 10, CacheReadTokens: &cacheRead})
   	if got == nil || got.InputTokens != 1 || got.OutputTokens != 2 || got.TotalTokens != 10 || got.CacheReadTokens != 7 {
   		t.Errorf("got %+v, want {1 2 7 10}", got)
   	}
@@ -324,7 +324,7 @@ row, details panel, per-turn badge, settings), jstest (JSDOM), `docs/web-ui/desi
   }
 
   func TestEstimateCost_UnpricedModelReturnsEmpty(t *testing.T) {
-  	got := EstimateCost("totally-unknown-model-xyz", &SerfUsage{InputTokens: 100})
+  	got := EstimateCost("totally-unknown-model-xyz", &EvenerUsage{InputTokens: 100})
   	if got != "" {
   		t.Errorf("got %q, want empty for an unpriced model (not a misleading ~$0.00)", got)
   	}
@@ -333,14 +333,14 @@ row, details panel, per-turn badge, settings), jstest (JSDOM), `docs/web-ui/desi
   func TestEstimateCost_FormatsToCents(t *testing.T) {
   	// claude-opus-4-5: $5/$25 per million (llm/pricing_test.go's known fixture values
   	// also hold for the embedded catalog per TestDefaultPrice_WellKnownModels).
-  	got := EstimateCost("claude-opus-4-5", &SerfUsage{InputTokens: 100_000, OutputTokens: 20_000})
+  	got := EstimateCost("claude-opus-4-5", &EvenerUsage{InputTokens: 100_000, OutputTokens: 20_000})
   	// 100_000/1e6*5 + 20_000/1e6*25 = 0.5 + 0.5 = 1.00
   	if got != "~$1.00" {
   		t.Errorf("got %q, want ~$1.00", got)
   	}
   }
   ```
-  Run: `go test ./appwire/... -run 'TestSerfUsageFromLLM|TestEstimateCost' -count=1` → FAIL
+  Run: `go test ./appwire/... -run 'TestEvenerUsageFromLLM|TestEstimateCost' -count=1` → FAIL
   (undefined symbols).
 - [ ] **Implement** — new `appwire/cost.go`:
   ```go
@@ -349,16 +349,16 @@ row, details panel, per-turn badge, settings), jstest (JSDOM), `docs/web-ui/desi
   import (
   	"fmt"
 
-  	"primeradiant.com/serf/llm"
+  	"primeradiant.com/evener/llm"
   )
 
-  // SerfUsageFromLLM converts a raw llm.Usage into the wire SerfUsage shape,
+  // EvenerUsageFromLLM converts a raw llm.Usage into the wire EvenerUsage shape,
   // returning nil when every total (including CacheReadTokens) is zero so
   // callers hide the usage cluster rather than render ↑0 ↓0 — the established
-  // WS2 convention (mirrors cmd/serf/serve.go's serfUsageFromLLM and
-  // cmd/serf-hub's serfUsageFromCumulative; this is the appwire-level home the
+  // WS2 convention (mirrors cmd/evener/serve.go's evenerUsageFromLLM and
+  // cmd/evener-hub's evenerUsageFromCumulative; this is the appwire-level home the
   // other two should eventually delegate to).
-  func SerfUsageFromLLM(u llm.Usage) *SerfUsage {
+  func EvenerUsageFromLLM(u llm.Usage) *EvenerUsage {
   	cacheRead := int64(0)
   	if u.CacheReadTokens != nil {
   		cacheRead = int64(*u.CacheReadTokens)
@@ -366,7 +366,7 @@ row, details panel, per-turn badge, settings), jstest (JSDOM), `docs/web-ui/desi
   	if u.InputTokens == 0 && u.OutputTokens == 0 && cacheRead == 0 && u.TotalTokens == 0 {
   		return nil
   	}
-  	return &SerfUsage{
+  	return &EvenerUsage{
   		InputTokens:     int64(u.InputTokens),
   		OutputTokens:    int64(u.OutputTokens),
   		CacheReadTokens: cacheRead,
@@ -380,7 +380,7 @@ row, details panel, per-turn badge, settings), jstest (JSDOM), `docs/web-ui/desi
   // pricing, so callers render nothing rather than a misleading "~$0.00" for
   // an uncataloged model. The "~" marks every non-empty result as an
   // estimate, not a billing-exact figure.
-  func EstimateCost(model string, usage *SerfUsage) string {
+  func EstimateCost(model string, usage *EvenerUsage) string {
   	if usage == nil {
   		return ""
   	}
@@ -392,26 +392,26 @@ row, details panel, per-turn badge, settings), jstest (JSDOM), `docs/web-ui/desi
   	return fmt.Sprintf("~$%.2f", dollars)
   }
   ```
-- [ ] **Run** `go test ./appwire/... -run 'TestSerfUsageFromLLM|TestEstimateCost' -count=1` → pass.
+- [ ] **Run** `go test ./appwire/... -run 'TestEvenerUsageFromLLM|TestEstimateCost' -count=1` → pass.
   `golangci-lint run ./...` (root) → green.
 - [ ] **Commit** — `git add appwire/cost.go appwire/cost_test.go` →
-  `feat(appwire): SerfUsageFromLLM + EstimateCost — one cost path for session- and turn-level usage`.
+  `feat(appwire): EvenerUsageFromLLM + EstimateCost — one cost path for session- and turn-level usage`.
 
-### Task Q2 — Dedup `cmd/serf/serve.go`'s `serfUsageFromLLM` onto the shared helper
+### Task Q2 — Dedup `cmd/evener/serve.go`'s `evenerUsageFromLLM` onto the shared helper
 
-**Files:** Modify `cmd/serf/serve.go`.
+**Files:** Modify `cmd/evener/serve.go`.
 
 - [ ] **Failing test** — none needed (pure refactor of a private function to delegate; existing
-  callers/tests of `serfUsageFromLLM` in `cmd/serf` already cover its behavior). Run the existing
-  suite first to confirm current green baseline: `go test ./cmd/serf/... -run 'ServeStatus|Usage' -count=1`.
-- [ ] **Implement** — in `cmd/serf/serve.go:604`, replace the body of
-  `func serfUsageFromLLM(u llm.Usage) *appwire.SerfUsage { ... }` with
-  `return appwire.SerfUsageFromLLM(u)` (keep the function — its call sites stay unchanged — just
+  callers/tests of `evenerUsageFromLLM` in `cmd/evener` already cover its behavior). Run the existing
+  suite first to confirm current green baseline: `go test ./cmd/evener/... -run 'ServeStatus|Usage' -count=1`.
+- [ ] **Implement** — in `cmd/evener/serve.go:604`, replace the body of
+  `func evenerUsageFromLLM(u llm.Usage) *appwire.EvenerUsage { ... }` with
+  `return appwire.EvenerUsageFromLLM(u)` (keep the function — its call sites stay unchanged — just
   delegate the body).
-- [ ] **Run** `go test ./cmd/serf/... -count=1` → green (byte-identical behavior, same nil-when-
+- [ ] **Run** `go test ./cmd/evener/... -count=1` → green (byte-identical behavior, same nil-when-
   all-zero rule). `golangci-lint run ./...` → green.
-- [ ] **Commit** — `git add cmd/serf/serve.go` →
-  `refactor(serve): serfUsageFromLLM delegates to appwire.SerfUsageFromLLM (dedup)`.
+- [ ] **Commit** — `git add cmd/evener/serve.go` →
+  `refactor(serve): evenerUsageFromLLM delegates to appwire.EvenerUsageFromLLM (dedup)`.
 
 ### Task Q3 — Pricing parity: cost path (GetPrice→LookupModelInfo) equals the picker's direct ModelInfo field reads
 
@@ -420,7 +420,7 @@ reads `ModelInfo.InputCostPerMillion`/`OutputCostPerMillion` directly (`web_spaw
 `catalogModelInfo` → `ModelInfo` fields). This test pins that the two agree — including on the exact
 model-id shapes Task P1 found `GetPrice` had mishandled — so a future divergence (e.g. someone
 "optimizes" one path) fails loudly. It lives in `llm` so it can read `ModelInfo` fields directly
-(the way the picker does) without importing `cmd/serf-hub`.
+(the way the picker does) without importing `cmd/evener-hub`.
 
 **Files:** Test-only: `llm/pricing_test.go`.
 
@@ -491,7 +491,7 @@ model-id shapes Task P1 found `GetPrice` had mishandled — so a future divergen
 
 ## Phase R — Session-level cost display (the dead `Cost` field)
 
-`cmd/serf-hub/web_types.go:181`'s `WorkspaceData.Cost string` and
+`cmd/evener-hub/web_types.go:181`'s `WorkspaceData.Cost string` and
 `templates/partials/input_strip.html:12`'s `{{if .Cost}}<span class="status-item cost">…</span>{{end}}`
 already exist — a stub, always set to `""` (`web_workspace.go:500`). This phase computes the real
 value; **no template change is needed**, only the four Go call sites that build `WorkspaceData`/
@@ -499,60 +499,60 @@ value; **no template change is needed**, only the four Go call sites that build 
 
 ### Task R1 — Wire `Cost` at both `workspaceData` branches (roster-live + past-meta)
 
-**Files:** Modify `cmd/serf-hub/web_workspace.go`. Test: `cmd/serf-hub/web_test.go`.
+**Files:** Modify `cmd/evener-hub/web_workspace.go`. Test: `cmd/evener-hub/web_test.go`.
 
 **Interfaces:**
-- Consumes: `appwire.EstimateCost(model string, usage *appwire.SerfUsage) string` (Task Q1).
+- Consumes: `appwire.EstimateCost(model string, usage *appwire.EvenerUsage) string` (Task Q1).
 
-- [ ] **Failing test** — in `cmd/serf-hub/web_test.go`, add `TestWorkspaceData_LiveSessionCarriesCostEstimate`:
+- [ ] **Failing test** — in `cmd/evener-hub/web_test.go`, add `TestWorkspaceData_LiveSessionCarriesCostEstimate`:
   build a roster live entry + `fetchStatus` stub (or a fake daemon status server, matching the
   existing pattern other roster-branch tests use — grep `s.fetchStatus` test doubles in
-  `web_test.go` first) reporting `Model: "claude-opus-4-5"`, `Usage: &appwire.SerfUsage{InputTokens: 100_000, OutputTokens: 20_000}`;
+  `web_test.go` first) reporting `Model: "claude-opus-4-5"`, `Usage: &appwire.EvenerUsage{InputTokens: 100_000, OutputTokens: 20_000}`;
   call `workspaceData(id)`; assert `data.Cost == "~$1.00"`. Add
   `TestWorkspaceData_PastSessionCarriesCostEstimate`: save a `schema.SessionMeta{Model: "claude-opus-4-5", CumulativeUsage: schema.CumulativeUsage{InputTokens: 100_000, OutputTokens: 20_000}}`,
   rebuild the past index, call `workspaceData(id)` for the now-ended session; assert
   `data.Cost == "~$1.00"`. Add `TestWorkspaceData_NoCostWhenUsageNil`: a fresh past-meta session
   with zero `CumulativeUsage`; assert `data.Cost == ""`. Run:
-  `go test ./cmd/serf-hub/... -run 'TestWorkspaceData_.*Cost' -count=1` → FAIL (`Cost` unset/empty
+  `go test ./cmd/evener-hub/... -run 'TestWorkspaceData_.*Cost' -count=1` → FAIL (`Cost` unset/empty
   where a value is expected).
-- [ ] **Implement** — in `cmd/serf-hub/web_workspace.go`:
+- [ ] **Implement** — in `cmd/evener-hub/web_workspace.go`:
   - Roster-live branch (~line 296, right after `data.ActiveTurnStartedAt = status.ActiveTurnStartedAt`):
     add `data.Cost = appwire.EstimateCost(data.Model, data.Usage)`. Place it AFTER `data.Model` is
     finalized (the block already updates `data.Model` from `status.Model` a few lines above) and
     after `data.Usage` is set, so both inputs are final.
-  - Past-meta branch (~line 347, in the `WorkspaceData{...}` literal alongside `Usage: serfUsageFromCumulative(pe.Meta.CumulativeUsage)`):
+  - Past-meta branch (~line 347, in the `WorkspaceData{...}` literal alongside `Usage: evenerUsageFromCumulative(pe.Meta.CumulativeUsage)`):
     add a line right after the literal: `data.Cost = appwire.EstimateCost(data.Model, data.Usage)`
     (the literal already sets `Model: pe.Meta.Model`).
-- [ ] **Run** `go test ./cmd/serf-hub/... -run 'TestWorkspaceData_.*Cost' -count=1` → pass.
+- [ ] **Run** `go test ./cmd/evener-hub/... -run 'TestWorkspaceData_.*Cost' -count=1` → pass.
   `golangci-lint run ./...` → green.
-- [ ] **Commit** — `git add cmd/serf-hub/web_workspace.go cmd/serf-hub/web_test.go` →
+- [ ] **Commit** — `git add cmd/evener-hub/web_workspace.go cmd/evener-hub/web_test.go` →
   `feat(hub-web): compute session-level cost estimate for live and ended workspaceData`.
 
 ### Task R2 — Wire `Cost` at `workspaceDataFromAppThread` (remote/appwire path) and `renderInputStrip`
 
-**Files:** Modify `cmd/serf-hub/web_format.go`, `cmd/serf-hub/web_workspace.go`. Test:
-`cmd/serf-hub/web_format_test.go`, `cmd/serf-hub/web_test.go`.
+**Files:** Modify `cmd/evener-hub/web_format.go`, `cmd/evener-hub/web_workspace.go`. Test:
+`cmd/evener-hub/web_format_test.go`, `cmd/evener-hub/web_test.go`.
 
-- [ ] **Failing test 1** — in `cmd/serf-hub/web_format_test.go`, add
-  `TestWorkspaceDataFromAppThread_CarriesCostEstimate`: build an `appwire.Thread{ModelProvider: "claude-opus-4-5", Serf: appwire.SerfThread{Usage: &appwire.SerfUsage{InputTokens: 100_000, OutputTokens: 20_000}}}`;
+- [ ] **Failing test 1** — in `cmd/evener-hub/web_format_test.go`, add
+  `TestWorkspaceDataFromAppThread_CarriesCostEstimate`: build an `appwire.Thread{ModelProvider: "claude-opus-4-5", Evener: appwire.EvenerThread{Usage: &appwire.EvenerUsage{InputTokens: 100_000, OutputTokens: 20_000}}}`;
   call `workspaceDataFromAppThread(thread)`; assert `data.Cost == "~$1.00"`. Run:
-  `go test ./cmd/serf-hub/... -run 'TestWorkspaceDataFromAppThread_CarriesCostEstimate' -count=1` → FAIL.
-- [ ] **Implement 1** — in `cmd/serf-hub/web_format.go`'s `workspaceDataFromAppThread`, in the
-  `WorkspaceData{...}` literal (after `ActiveTurnStartedAt: thread.Serf.ActiveTurnStartedAt,`), add
+  `go test ./cmd/evener-hub/... -run 'TestWorkspaceDataFromAppThread_CarriesCostEstimate' -count=1` → FAIL.
+- [ ] **Implement 1** — in `cmd/evener-hub/web_format.go`'s `workspaceDataFromAppThread`, in the
+  `WorkspaceData{...}` literal (after `ActiveTurnStartedAt: thread.Evener.ActiveTurnStartedAt,`), add
   a line after the literal: `data.Cost = appwire.EstimateCost(data.Model, data.Usage)` (the literal
   already sets `Model: thread.ModelProvider`).
-- [ ] **Failing test 2** — in `cmd/serf-hub/web_test.go`, extend `TestWeb_State_RendersInputStatusPartial`
+- [ ] **Failing test 2** — in `cmd/evener-hub/web_test.go`, extend `TestWeb_State_RendersInputStatusPartial`
   (or add a sibling `TestWeb_State_RendersCostEstimate`): save a session meta with `Model` +
   non-zero `CumulativeUsage`; fetch `/_partials/s/<id>/state`; assert the body contains
   `class="status-item cost"` and the `~$X.XX` text. Add a negative case (zero usage) asserting the
   cost span is absent. Run → FAIL (renderInputStrip's map still hardcodes `"Cost": ""`).
-- [ ] **Implement 2** — in `cmd/serf-hub/web_workspace.go`'s `renderInputStrip`, replace
+- [ ] **Implement 2** — in `cmd/evener-hub/web_workspace.go`'s `renderInputStrip`, replace
   `"Cost": "",` in the `data := map[string]any{...}` literal with
   `"Cost": appwire.EstimateCost(detail.Model, detail.Usage),` (both already populated on `detail`,
   a `hubapi.SessionDetail`, by `apiSessionState`).
-- [ ] **Run** `go test ./cmd/serf-hub/... -run 'Cost|InputStatus|State' -count=1` → all green.
+- [ ] **Run** `go test ./cmd/evener-hub/... -run 'Cost|InputStatus|State' -count=1` → all green.
   `golangci-lint run ./...` → green.
-- [ ] **Commit** — `git add cmd/serf-hub/web_format.go cmd/serf-hub/web_workspace.go cmd/serf-hub/web_format_test.go cmd/serf-hub/web_test.go` →
+- [ ] **Commit** — `git add cmd/evener-hub/web_format.go cmd/evener-hub/web_workspace.go cmd/evener-hub/web_format_test.go cmd/evener-hub/web_test.go` →
   `feat(hub-web): cost estimate on the remote/appwire workspace path and the polled status row`.
 
 ---
@@ -564,9 +564,9 @@ value; **no template change is needed**, only the four Go call sites that build 
 **Files:** Modify `appwire/types.go`. Test: `appwire/types_test.go`.
 
 - [ ] **Failing test** — in `appwire/types_test.go`, add `TestTurnUsageCostJSONRoundTrip` (marshal
-  a `Turn{Usage: &SerfUsage{InputTokens: 1}, Cost: "~$0.01"}`, assert `"usage":{"inputTokens":1}`
+  a `Turn{Usage: &EvenerUsage{InputTokens: 1}, Cost: "~$0.01"}`, assert `"usage":{"inputTokens":1}`
   and `"cost":"~$0.01"` present) and `TestTurnUsageCostOmitEmpty` (marshal a zero-value `Turn{}`,
-  assert neither `"usage"` nor `"cost"` appears — mirrors `TestSerfThreadMetricsOmitEmpty`'s
+  assert neither `"usage"` nor `"cost"` appears — mirrors `TestEvenerThreadMetricsOmitEmpty`'s
   pattern at appwire/types_test.go:249). Run: `go test ./appwire/... -run 'TestTurnUsageCost' -count=1` → FAIL.
 - [ ] **Implement** — in `appwire/types.go`'s `Turn` struct (after `DurationMS`):
   ```go
@@ -576,7 +576,7 @@ value; **no template change is needed**, only the four Go call sites that build 
   	// summing EventAssistantTextEnd's per-round usage across the turn
   	// (internal/appprojector), and for ended sessions by reading the
   	// persisted per-round schema.Turn.Usage (internal/apptranscript).
-  	Usage *SerfUsage `json:"usage,omitempty"`
+  	Usage *EvenerUsage `json:"usage,omitempty"`
   	Cost  string      `json:"cost,omitempty"`
   ```
 - [ ] **Run** `go test ./appwire/... -run 'TestTurnUsageCost' -count=1` → pass. `golangci-lint run ./...` → green.
@@ -609,7 +609,7 @@ value; **no template change is needed**, only the four Go call sites that build 
   second turn's `Usage == nil` (the accumulator reset in `startTurn()`, not leaked from turn one).
   Run: `go test ./internal/appprojector/... -run 'TestProjectorAccumulatesPerTurnUsage|TestProjectorNewTurnResetsUsageAccumulator' -count=1` → FAIL.
 - [ ] **Implement**:
-  - Add `"primeradiant.com/serf/llm"` to `internal/appprojector/appwire_projection.go`'s imports.
+  - Add `"primeradiant.com/evener/llm"` to `internal/appprojector/appwire_projection.go`'s imports.
   - Add fields to `AppEventProjector` (beside `pendingDurationMS`):
     ```go
     	// activeTurnUsage/activeTurnModel accumulate the current turn's own
@@ -640,7 +640,7 @@ value; **no template change is needed**, only the four Go call sites that build 
     // accumulator resets only in startTurn(), which the wrap-up sites call
     // AFTER building the completing Turn).
     func (p *AppEventProjector) stampTurnUsage(turn *appwire.Turn) {
-    	usage := appwire.SerfUsageFromLLM(p.activeTurnUsage)
+    	usage := appwire.EvenerUsageFromLLM(p.activeTurnUsage)
     	if usage == nil {
     		return
     	}
@@ -661,8 +661,8 @@ value; **no template change is needed**, only the four Go call sites that build 
 
 ### Task S3 — Ended-session path: per-round `Usage` from the transcript + per-turn `Cost` post-pass
 
-**Files:** Modify `internal/apptranscript/apptranscript.go`, `cmd/serf-hub/app_threadread.go`.
-Test: `internal/apptranscript/apptranscript_test.go`, `cmd/serf-hub/app_threadread_test.go`.
+**Files:** Modify `internal/apptranscript/apptranscript.go`, `cmd/evener-hub/app_threadread.go`.
+Test: `internal/apptranscript/apptranscript_test.go`, `cmd/evener-hub/app_threadread_test.go`.
 
 - [ ] **Failing test 1** — in `internal/apptranscript/apptranscript_test.go`, add
   `TestTurnsFromFile_StampsUsageFromEntry`: write a transcript JSONL fixture whose `"entry"` line's
@@ -674,7 +674,7 @@ Test: `internal/apptranscript/apptranscript_test.go`, `cmd/serf-hub/app_threadre
 - [ ] **Implement 1** — in `internal/apptranscript/apptranscript.go`'s `TurnsFromFile`, in the
   `case "entry":` branch (~line 559-567, right after the `StartedAt` stamping block), add:
   ```go
-  				if usage := appwire.SerfUsageFromLLM(entry.Turn.Usage); usage != nil {
+  				if usage := appwire.EvenerUsageFromLLM(entry.Turn.Usage); usage != nil {
   					turn.Usage = usage
   				}
   ```
@@ -682,12 +682,12 @@ Test: `internal/apptranscript/apptranscript_test.go`, `cmd/serf-hub/app_threadre
   unmarshaled — do not re-decode).
 - [ ] **Run** `go test ./internal/apptranscript/... -count=1` → green (full package, confirm no
   regression in `TestTurnsFromFile` etc.). `golangci-lint run ./...` → green.
-- [ ] **Failing test 2** — in `cmd/serf-hub/app_threadread_test.go`, add
+- [ ] **Failing test 2** — in `cmd/evener-hub/app_threadread_test.go`, add
   `TestPastEntryTurns_StampsCostFromSessionModel`: write a transcript fixture (same shape as test 1)
   under a `hubcore.PastEntry{Meta: schema.SessionMeta{Model: "claude-opus-4-5"}, ...}`; call
   `pastEntryTurns(entry)`; assert the turn with usage carries a non-empty `Cost` starting `"~$"`.
-  Run: `go test ./cmd/serf-hub/... -run 'TestPastEntryTurns_StampsCostFromSessionModel' -count=1` → FAIL.
-- [ ] **Implement 2** — in `cmd/serf-hub/app_threadread.go`'s `pastEntryTurns` (line 189), after
+  Run: `go test ./cmd/evener-hub/... -run 'TestPastEntryTurns_StampsCostFromSessionModel' -count=1` → FAIL.
+- [ ] **Implement 2** — in `cmd/evener-hub/app_threadread.go`'s `pastEntryTurns` (line 189), after
   the `pastTranscriptCache.TurnsFromFile(...)` call returns `turns`, add a post-pass before
   returning:
   ```go
@@ -700,9 +700,9 @@ Test: `internal/apptranscript/apptranscript_test.go`, `cmd/serf-hub/app_threadre
   ```
   (adjust the existing function's control flow minimally — re-grep the current body first since it
   also does the jobstore-reconciliation dance; insert this loop right before its final `return`.)
-- [ ] **Run** `go test ./cmd/serf-hub/... -run 'PastEntryTurns|ThreadRead' -count=1` → green.
+- [ ] **Run** `go test ./cmd/evener-hub/... -run 'PastEntryTurns|ThreadRead' -count=1` → green.
   `golangci-lint run ./...` → green.
-- [ ] **Commit** — `git add internal/apptranscript/apptranscript.go internal/apptranscript/apptranscript_test.go cmd/serf-hub/app_threadread.go cmd/serf-hub/app_threadread_test.go` →
+- [ ] **Commit** — `git add internal/apptranscript/apptranscript.go internal/apptranscript/apptranscript_test.go cmd/evener-hub/app_threadread.go cmd/evener-hub/app_threadread_test.go` →
   `feat(hub-web): ended-session transcript turns carry per-round usage + cost estimate`.
 
 ---
@@ -716,8 +716,8 @@ each turn.
 
 ### Task T1 — Stamp `turnId` on assistant-message elements; attach the badge on `turn/completed`
 
-**Files:** Modify `cmd/serf-hub/assets/renderer.js`, `cmd/serf-hub/assets/renderer-format.js`. Test:
-new `cmd/serf-hub/jstest/test-turn-meta-badge.js`.
+**Files:** Modify `cmd/evener-hub/assets/renderer.js`, `cmd/evener-hub/assets/renderer-format.js`. Test:
+new `cmd/evener-hub/jstest/test-turn-meta-badge.js`.
 
 **Interfaces:**
 - Consumes: `turn.usage {inputTokens,outputTokens,cacheReadTokens,totalTokens}`, `turn.cost` (string,
@@ -727,7 +727,7 @@ new `cmd/serf-hub/jstest/test-turn-meta-badge.js`.
   summary string; `renderer.js` DOM attachment of `.turn-meta` (with a nested `.cost` child span)
   onto `.assistant-message[data-turn-id="<id>"]`.
 
-- [ ] **Failing test** — new `cmd/serf-hub/jstest/test-turn-meta-badge.js` (mirror
+- [ ] **Failing test** — new `cmd/evener-hub/jstest/test-turn-meta-badge.js` (mirror
   `test-composer-shortcuts.js`'s JSDOM harness shape): build a DOM with a conversation container,
   drive the renderer through a user input + one assistant response with a mocked
   `turn/completed` notification carrying
@@ -737,11 +737,11 @@ new `cmd/serf-hub/jstest/test-turn-meta-badge.js`.
   `formatToolDuration`/an equivalent turn-duration formatter, do not invent new duration text),
   `"150"` or `"↑100 ↓50"` (tokens), and `"~$0.01"` (cost); assert the `.turn-meta` span has
   `tabindex="0"` (the deliberate, narrowly-scoped tab stop — see Task T2's accessibility note).
-  Run: `node cmd/serf-hub/jstest/test-turn-meta-badge.js` → FAIL (no such element exists yet).
-- [ ] **Implement — stamp turnId** — in `cmd/serf-hub/assets/renderer.js`'s `beginAssistantMessage()`
+  Run: `node cmd/evener-hub/jstest/test-turn-meta-badge.js` → FAIL (no such element exists yet).
+- [ ] **Implement — stamp turnId** — in `cmd/evener-hub/assets/renderer.js`'s `beginAssistantMessage()`
   (~line 1909) and `appendAssistantBlock(text)` (~line 1922), after each `el.className = "assistant-message";` line, add
   `el.dataset.turnId = this.activeTurnId || "";`.
-- [ ] **Implement — display helper** — in `cmd/serf-hub/assets/renderer-format.js`, add beside
+- [ ] **Implement — display helper** — in `cmd/evener-hub/assets/renderer-format.js`, add beside
   `formatToolDuration`. This returns a **plain-text summary** (for the hover `title=` tooltip) and
   the individual formatted parts (for DOM construction) rather than an HTML string — renderer.js
   builds real child nodes with `textContent`, matching this codebase's general preference for DOM
@@ -766,7 +766,7 @@ new `cmd/serf-hub/jstest/test-turn-meta-badge.js`.
   ```
   Add `turnMetaParts` and `formatTurnMetaText` to the module's exports object (alongside
   `formatToolDuration` etc., ~line 699).
-- [ ] **Implement — attach on turn/completed** — in `cmd/serf-hub/assets/renderer.js`, at the
+- [ ] **Implement — attach on turn/completed** — in `cmd/evener-hub/assets/renderer.js`, at the
   `turn/completed` handling site (~line 580 inside `handleData`/the notification switch, and
   wherever the full `turn` object is available — re-grep for the exact `case "turn/completed":`
   block), after existing handling, add:
@@ -776,7 +776,7 @@ new `cmd/serf-hub/jstest/test-turn-meta-badge.js`.
           if (turn && turn.id) {
             const els = this.conversation.querySelectorAll('.assistant-message[data-turn-id="' + CSS.escape(turn.id) + '"]');
             const el = els.length ? els[els.length - 1] : null;
-            const parts = window.SerfRendererFormat.turnMetaParts(turn);
+            const parts = window.EvenerRendererFormat.turnMetaParts(turn);
             if (el && (parts.duration || parts.tokens || parts.cost)) {
               let meta = el.querySelector(".turn-meta");
               if (!meta) {
@@ -795,7 +795,7 @@ new `cmd/serf-hub/jstest/test-turn-meta-badge.js`.
                 costEl.textContent = parts.cost;
                 meta.appendChild(costEl);
               }
-              meta.title = window.SerfRendererFormat.formatTurnMetaText(turn);
+              meta.title = window.EvenerRendererFormat.formatTurnMetaText(turn);
             }
           }
         }
@@ -805,16 +805,16 @@ new `cmd/serf-hub/jstest/test-turn-meta-badge.js`.
   destructuring to match what's already in scope rather than introducing a parallel read path. The
   `.cost` child span is built here — Task W3 depends on it existing for Show-cost CSS gating; no
   further DOM change needed there.)
-- [ ] **Run** `node cmd/serf-hub/jstest/test-turn-meta-badge.js` → pass. Run the full jstest suite:
-  `cd cmd/serf-hub/jstest && NODE_PATH=/tmp/serf-jstest-jsdom/node_modules sh run-all.sh` → green
+- [ ] **Run** `node cmd/evener-hub/jstest/test-turn-meta-badge.js` → pass. Run the full jstest suite:
+  `cd cmd/evener-hub/jstest && NODE_PATH=/tmp/evener-jstest-jsdom/node_modules sh run-all.sh` → green
   (no regression in existing renderer tests).
-- [ ] **Commit** — `git add cmd/serf-hub/assets/renderer.js cmd/serf-hub/assets/renderer-format.js cmd/serf-hub/jstest/test-turn-meta-badge.js` →
+- [ ] **Commit** — `git add cmd/evener-hub/assets/renderer.js cmd/evener-hub/assets/renderer-format.js cmd/evener-hub/jstest/test-turn-meta-badge.js` →
   `feat(hub-web): per-turn duration/tokens/cost hover badge on the assistant message that closes each turn`.
 
 ### Task T2 — CSS: hover/focus reveal for `.turn-meta` (mirrors `.tool-call .tool-meta`)
 
-**Files:** Modify `cmd/serf-hub/assets/style.css`. Test: extend
-`cmd/serf-hub/jstest/test-pane-and-sidebar-css.js`.
+**Files:** Modify `cmd/evener-hub/assets/style.css`. Test: extend
+`cmd/evener-hub/jstest/test-pane-and-sidebar-css.js`.
 
 **Accessibility note:** `.assistant-message` has no other focusable descendant, so `:focus-within`
 alone would leave keyboard users with no way to see the badge at all — the narrow exception the
@@ -823,7 +823,7 @@ shows keyboard access is otherwise impossible"). `.turn-meta` itself gets `tabin
 Task T1) so it is directly focusable; CSS reveals on `:focus` of itself, not `:focus-within` of the
 parent.
 
-- [ ] **Failing test** — in `cmd/serf-hub/jstest/test-pane-and-sidebar-css.js`, add (mirroring the
+- [ ] **Failing test** — in `cmd/evener-hub/jstest/test-pane-and-sidebar-css.js`, add (mirroring the
   shipped `.tool-call .tool-meta` assertions exactly):
   ```js
   pass(
@@ -840,8 +840,8 @@ parent.
     "turn-meta badge should reveal on its own keyboard focus"
   );
   ```
-  Run: `node cmd/serf-hub/jstest/test-pane-and-sidebar-css.js` → FAIL.
-- [ ] **Implement** — in `cmd/serf-hub/assets/style.css`, add near `.tool-call .tool-meta`:
+  Run: `node cmd/evener-hub/jstest/test-pane-and-sidebar-css.js` → FAIL.
+- [ ] **Implement** — in `cmd/evener-hub/assets/style.css`, add near `.tool-call .tool-meta`:
   ```css
   .assistant-message { position: relative; }
   .assistant-message .turn-meta {
@@ -862,8 +862,8 @@ parent.
   (`--s2` per the design system's spacing scale; if `--s2` is not defined in this file, grep for
   the actual spacing-token names in use — e.g. `var(--space-2)` — and match the existing
   convention rather than inventing a new token name.)
-- [ ] **Run** `node cmd/serf-hub/jstest/test-pane-and-sidebar-css.js` → pass. `go test ./cmd/serf-hub/... -count=1` → green.
-- [ ] **Commit** — `git add cmd/serf-hub/assets/style.css cmd/serf-hub/jstest/test-pane-and-sidebar-css.js` →
+- [ ] **Run** `node cmd/evener-hub/jstest/test-pane-and-sidebar-css.js` → pass. `go test ./cmd/evener-hub/... -count=1` → green.
+- [ ] **Commit** — `git add cmd/evener-hub/assets/style.css cmd/evener-hub/jstest/test-pane-and-sidebar-css.js` →
   `feat(hub-web): hover/focus-reveal CSS for the per-turn metrics badge`.
 
 ---
@@ -872,39 +872,39 @@ parent.
 
 ### Task U1 — `pastEntryThread` carries Usage/WorkMillis/ActiveTurnStartedAt
 
-**Files:** Modify `cmd/serf-hub/app_threadread.go`. Test: `cmd/serf-hub/app_threadread_test.go`.
+**Files:** Modify `cmd/evener-hub/app_threadread.go`. Test: `cmd/evener-hub/app_threadread_test.go`.
 
-- [ ] **Failing test** — in `cmd/serf-hub/app_threadread_test.go`, add
+- [ ] **Failing test** — in `cmd/evener-hub/app_threadread_test.go`, add
   `TestPastEntryThread_CarriesWorkMetrics`: build a `hubcore.PastEntry{Meta: schema.SessionMeta{WorkMillis: 5000, CumulativeUsage: schema.CumulativeUsage{InputTokens: 100, OutputTokens: 50, TotalTokens: 150}}}`;
-  call `pastEntryThread(entry, false)`; assert `thread.Serf.WorkMillis == 5000`,
-  `thread.Serf.Usage != nil` with matching fields, and `thread.Serf.ActiveTurnStartedAt == 0`
+  call `pastEntryThread(entry, false)`; assert `thread.Evener.WorkMillis == 5000`,
+  `thread.Evener.Usage != nil` with matching fields, and `thread.Evener.ActiveTurnStartedAt == 0`
   (ended — no turn in flight). Run:
-  `go test ./cmd/serf-hub/... -run 'TestPastEntryThread_CarriesWorkMetrics' -count=1` → FAIL.
-- [ ] **Implement** — in `cmd/serf-hub/app_threadread.go`'s `pastEntryThread` (line 121), in the
-  `Serf: appwire.SerfThread{...}` literal (~line 152-163), add after `Capabilities: ...`:
+  `go test ./cmd/evener-hub/... -run 'TestPastEntryThread_CarriesWorkMetrics' -count=1` → FAIL.
+- [ ] **Implement** — in `cmd/evener-hub/app_threadread.go`'s `pastEntryThread` (line 121), in the
+  `Evener: appwire.EvenerThread{...}` literal (~line 152-163), add after `Capabilities: ...`:
   ```go
   			WorkMillis: entry.Meta.WorkMillis,
-  			Usage:      serfUsageFromCumulative(entry.Meta.CumulativeUsage),
+  			Usage:      evenerUsageFromCumulative(entry.Meta.CumulativeUsage),
   			// ActiveTurnStartedAt stays 0 — an ended session has no turn in flight.
   ```
-  (`serfUsageFromCumulative` already exists in `cmd/serf-hub/web_workspace.go:364`, same package —
+  (`evenerUsageFromCumulative` already exists in `cmd/evener-hub/web_workspace.go:364`, same package —
   no new helper needed, reuse it verbatim.)
-- [ ] **Run** `go test ./cmd/serf-hub/... -run 'PastEntryThread' -count=1` → pass. `golangci-lint run ./...` → green.
-- [ ] **Commit** — `git add cmd/serf-hub/app_threadread.go cmd/serf-hub/app_threadread_test.go` →
+- [ ] **Run** `go test ./cmd/evener-hub/... -run 'PastEntryThread' -count=1` → pass. `golangci-lint run ./...` → green.
+- [ ] **Commit** — `git add cmd/evener-hub/app_threadread.go cmd/evener-hub/app_threadread_test.go` →
   `fix(hub-web): pastEntryThread carries WorkMillis/Usage so a TUI user viewing an ended session sees metrics`.
 
 ### Task U2 — TUI details drawer: Work/Tokens summary line
 
-**Files:** Modify `cmd/serf-tui/details_drawer.go`. Test: `cmd/serf-tui/details_drawer_test.go`.
+**Files:** Modify `cmd/evener-tui/details_drawer.go`. Test: `cmd/evener-tui/details_drawer_test.go`.
 
-- [ ] **Failing test** — in `cmd/serf-tui/details_drawer_test.go`, add
+- [ ] **Failing test** — in `cmd/evener-tui/details_drawer_test.go`, add
   `TestDetailsDrawerShowsWorkTimeAndTokens`: build
-  `detailsDrawer{Detail: hubSessionDetail{WorkMillis: 4200, Usage: &appwire.SerfUsage{InputTokens: 100, OutputTokens: 50, CacheReadTokens: 10, TotalTokens: 160}}}`;
+  `detailsDrawer{Detail: hubSessionDetail{WorkMillis: 4200, Usage: &appwire.EvenerUsage{InputTokens: 100, OutputTokens: 50, CacheReadTokens: 10, TotalTokens: 160}}}`;
   assert `d.View()` contains `"Work:"` and a token line containing `"↑100"`, `"↓50"`. Add
   `TestDetailsDrawerHidesWorkTimeAndTokensWhenAbsent`: a `hubSessionDetail{}` zero value; assert
   neither `"Work:"` nor a tokens line appears. Run:
-  `go test ./cmd/serf-tui/... -run 'TestDetailsDrawerShowsWorkTimeAndTokens|TestDetailsDrawerHidesWorkTimeAndTokensWhenAbsent' -count=1` → FAIL.
-- [ ] **Implement** — in `cmd/serf-tui/details_drawer.go`'s `View()` (after the `Context:` line at
+  `go test ./cmd/evener-tui/... -run 'TestDetailsDrawerShowsWorkTimeAndTokens|TestDetailsDrawerHidesWorkTimeAndTokensWhenAbsent' -count=1` → FAIL.
+- [ ] **Implement** — in `cmd/evener-tui/details_drawer.go`'s `View()` (after the `Context:` line at
   ~line 61-63), add (mirroring `hub_status.go:30-37`'s exact formatting so the drawer and the
   status chip strip agree):
   ```go
@@ -919,29 +919,29 @@ parent.
   	}
   ```
   (`formatWorkMillis`/`formatTokens` already exist in the same `main` package —
-  `cmd/serf-tui/hub_status.go:101`, `cmd/serf-tui/statusbar.go:133` — no new helpers.)
-- [ ] **Run** `go test ./cmd/serf-tui/... -count=1` → green. `golangci-lint run ./...` → green.
-- [ ] **Commit** — `git add cmd/serf-tui/details_drawer.go cmd/serf-tui/details_drawer_test.go` →
+  `cmd/evener-tui/hub_status.go:101`, `cmd/evener-tui/statusbar.go:133` — no new helpers.)
+- [ ] **Run** `go test ./cmd/evener-tui/... -count=1` → green. `golangci-lint run ./...` → green.
+- [ ] **Commit** — `git add cmd/evener-tui/details_drawer.go cmd/evener-tui/details_drawer_test.go` →
   `feat(tui): details drawer shows work time + token totals (WS2 gap-fill)`.
 
 ---
 
 ## Phase V — Web details panel: context pressure + work/tokens/cost
 
-`cmd/serf-hub/web_workspace.go:167-224`'s `renderDetailsPanel` renders a hand-built `<dl>` via a
+`cmd/evener-hub/web_workspace.go:167-224`'s `renderDetailsPanel` renders a hand-built `<dl>` via a
 `detailsRow{Label, Value string}` slice — today it has **no** context/work/tokens/cost rows at all
 (not partial — fully absent) for either live or ended sessions.
 
 ### Task V1 — `detailsRow` gains an optional CSS class hook (for Show-cost gating)
 
-**Files:** Modify `cmd/serf-hub/web_workspace.go`. Test: `cmd/serf-hub/web_test.go`.
+**Files:** Modify `cmd/evener-hub/web_workspace.go`. Test: `cmd/evener-hub/web_test.go`.
 
-- [ ] **Failing test** — in `cmd/serf-hub/web_test.go`, add
+- [ ] **Failing test** — in `cmd/evener-hub/web_test.go`, add
   `TestDetailsPanel_CostRowCarriesDataAttributeForGating`: render `/_partials/s/<id>/details` for a
   session with a computable cost; assert the body contains `data-row="cost"` on both the `<dt>`
   and `<dd>` for that row. Run → FAIL (no such attribute exists; `detailsRow` has no class/attr
   field yet).
-- [ ] **Implement** — in `cmd/serf-hub/web_workspace.go`'s `renderDetailsPanel`:
+- [ ] **Implement** — in `cmd/evener-hub/web_workspace.go`'s `renderDetailsPanel`:
   - Change the local `type detailsRow struct{ Label, Value string }` to
     `type detailsRow struct{ Label, Value, DataRow string }`.
   - Change the render loop from
@@ -953,32 +953,32 @@ parent.
     		}
     		fmt.Fprintf(w, `<dt%s>%s</dt><dd%s>%s</dd>`, attr, htmlEscape(row.Label), attr, htmlEscape(row.Value))
     ```
-- [ ] **Run** `go test ./cmd/serf-hub/... -run 'DetailsPanel' -count=1` → pass (no visible rows use
+- [ ] **Run** `go test ./cmd/evener-hub/... -run 'DetailsPanel' -count=1` → pass (no visible rows use
   `DataRow` yet — this task alone doesn't add the cost row, Task V2/V3 do; if the test written
   above needs the cost row to exist to assert on it, sequence this task's test AFTER V2/V3 land, or
   write a narrower unit test directly against a `detailsRow{DataRow: "cost"}` literal + a small
   render-loop helper extracted for testability — prefer extracting the row-rendering line into a
   small `func renderDetailsRow(w io.Writer, row detailsRow)` so this task's test can call it
   directly without needing a full HTTP round trip).
-- [ ] **Commit** — `git add cmd/serf-hub/web_workspace.go cmd/serf-hub/web_test.go` →
+- [ ] **Commit** — `git add cmd/evener-hub/web_workspace.go cmd/evener-hub/web_test.go` →
   `refactor(hub-web): detailsRow carries an optional data-row attribute for CSS-gated rows`.
 
 ### Task V2 — Live-session rows: context pressure, work time, tokens, cost
 
-**Files:** Modify `cmd/serf-hub/web_workspace.go`. Test: `cmd/serf-hub/web_test.go`.
+**Files:** Modify `cmd/evener-hub/web_workspace.go`. Test: `cmd/evener-hub/web_test.go`.
 
-- [ ] **Failing test** — in `cmd/serf-hub/web_test.go`, add
+- [ ] **Failing test** — in `cmd/evener-hub/web_test.go`, add
   `TestDetailsPanel_LiveSessionShowsContextWorkTokensCost`: build a roster live entry + a fake
   daemon `/status` response (matching the existing `fetchStatus` test-double pattern — grep for
   how other tests stub the daemon HTTP status endpoint, e.g. via `httptest.NewServer` registered
   on the roster entry's address) reporting `ContextPressure: 0.42`, `ContextUsed`/`ContextWindow`/
   `ContextRemaining`, `Model: "claude-opus-4-5"`, `WorkMillis: 4200`,
-  `Usage: &appwire.SerfUsage{InputTokens: 100_000, OutputTokens: 20_000}`; fetch
+  `Usage: &appwire.EvenerUsage{InputTokens: 100_000, OutputTokens: 20_000}`; fetch
   `/_partials/s/<id>/details`; assert the body contains a context row (`"42%"` and the formatted
   context numbers via `formatContextNumbers`), a work-time row (`formatWorkMillis(4200)`'s output),
   a tokens row (`"↑100"`/`"↓20"` or the full token-count formatting), and a cost row containing
   `"~$1.00"` with `data-row="cost"`. Run → FAIL (none of these rows exist).
-- [ ] **Implement** — in `cmd/serf-hub/web_workspace.go`'s `renderDetailsPanel`, in the
+- [ ] **Implement** — in `cmd/evener-hub/web_workspace.go`'s `renderDetailsPanel`, in the
   `if s.cfg.Roster != nil { if le, ok := ...; ok { ... } }` branch (the roster-live block, ~line
   201-206 where `daemon`/`pid` rows are already appended), fetch status the same way
   `workspaceData` does and append rows:
@@ -1005,28 +1005,28 @@ parent.
   ```
   (Place this after the existing `daemon`/`pid` row append so ordering stays
   identity-then-runtime-then-metrics, matching the drawer's own row order in Task U2.)
-- [ ] **Run** `go test ./cmd/serf-hub/... -run 'DetailsPanel' -count=1` → pass. `golangci-lint run ./...` → green.
-- [ ] **Commit** — `git add cmd/serf-hub/web_workspace.go cmd/serf-hub/web_test.go` →
+- [ ] **Run** `go test ./cmd/evener-hub/... -run 'DetailsPanel' -count=1` → pass. `golangci-lint run ./...` → green.
+- [ ] **Commit** — `git add cmd/evener-hub/web_workspace.go cmd/evener-hub/web_test.go` →
   `feat(hub-web): live-session details panel shows context pressure, work time, tokens, cost`.
 
 ### Task V3 — Ended-session rows: work time, tokens, cost
 
-**Files:** Modify `cmd/serf-hub/web_workspace.go`. Test: `cmd/serf-hub/web_test.go`.
+**Files:** Modify `cmd/evener-hub/web_workspace.go`. Test: `cmd/evener-hub/web_test.go`.
 
-- [ ] **Failing test** — in `cmd/serf-hub/web_test.go`, add
+- [ ] **Failing test** — in `cmd/evener-hub/web_test.go`, add
   `TestDetailsPanel_EndedSessionShowsWorkTokensCostNoContext`: save a
   `schema.SessionMeta{Model: "claude-opus-4-5", WorkMillis: 4200, CumulativeUsage: schema.CumulativeUsage{InputTokens: 100_000, OutputTokens: 20_000}}`;
   fetch `/_partials/s/<id>/details`; assert work-time/tokens/cost rows are present (same content
   shape as V2) and NO context row is present (ended sessions have no live context pressure —
   mirrors the TUI drawer's `detail.ContextPressure > 0` guard, which is 0 for ended sessions since
   `pastEntryThread` never sets it, Scope note re-confirmed in Task U1's research). Run → FAIL.
-- [ ] **Implement** — in `cmd/serf-hub/web_workspace.go`'s `renderDetailsPanel`'s `addMeta(m schema.SessionMeta)`
+- [ ] **Implement** — in `cmd/evener-hub/web_workspace.go`'s `renderDetailsPanel`'s `addMeta(m schema.SessionMeta)`
   closure (~line 176-200), after the existing `last input tokens` row, add:
   ```go
   		if m.WorkMillis > 0 {
   			rows = append(rows, detailsRow{"work time", formatWorkMillis(m.WorkMillis)})
   		}
-  		if usage := serfUsageFromCumulative(m.CumulativeUsage); usage != nil {
+  		if usage := evenerUsageFromCumulative(m.CumulativeUsage); usage != nil {
   			rows = append(rows, detailsRow{"tokens", fmt.Sprintf("↑%s ↓%s · cache-read %s · total %s",
   				formatTokenCount(int(usage.InputTokens)), formatTokenCount(int(usage.OutputTokens)),
   				formatTokenCount(int(usage.CacheReadTokens)), formatTokenCount(int(usage.TotalTokens)))})
@@ -1035,8 +1035,8 @@ parent.
   			}
   		}
   ```
-- [ ] **Run** `go test ./cmd/serf-hub/... -run 'DetailsPanel' -count=1` → pass. `golangci-lint run ./...` → green.
-- [ ] **Commit** — `git add cmd/serf-hub/web_workspace.go cmd/serf-hub/web_test.go` →
+- [ ] **Run** `go test ./cmd/evener-hub/... -run 'DetailsPanel' -count=1` → pass. `golangci-lint run ./...` → green.
+- [ ] **Commit** — `git add cmd/evener-hub/web_workspace.go cmd/evener-hub/web_test.go` →
   `feat(hub-web): ended-session details panel shows work time, tokens, cost`.
 
 ---
@@ -1060,33 +1060,33 @@ would violate its byte-identical-rendering rule). So:
   registration + a nav link + an `app.html` `<script>` tag. This task creates the section scaffold
   (empty controls) so W2/W3 only add controls into a section that already routes and renders.
 
-**Files:** Create `cmd/serf-hub/templates/partials/settings/display.html`,
-`cmd/serf-hub/assets/settings-display.js`; modify `cmd/serf-hub/web.go`,
-`cmd/serf-hub/templates/partials/settings.html`, `cmd/serf-hub/templates/app.html`. Test:
-`cmd/serf-hub/web_settings_test.go`.
+**Files:** Create `cmd/evener-hub/templates/partials/settings/display.html`,
+`cmd/evener-hub/assets/settings-display.js`; modify `cmd/evener-hub/web.go`,
+`cmd/evener-hub/templates/partials/settings.html`, `cmd/evener-hub/templates/app.html`. Test:
+`cmd/evener-hub/web_settings_test.go`.
 
-- [ ] **Confirm Track 0 landed** — run `ls cmd/serf-hub/assets/settings-appearance.js cmd/serf-hub/assets/settings-display.js`
-  and `grep -n 'settingsSections' cmd/serf-hub/web.go`. Expect `settings-appearance.js` to EXIST
+- [ ] **Confirm Track 0 landed** — run `ls cmd/evener-hub/assets/settings-appearance.js cmd/evener-hub/assets/settings-display.js`
+  and `grep -n 'settingsSections' cmd/evener-hub/web.go`. Expect `settings-appearance.js` to EXIST
   (Track 0 created it — W1's target) and `settings-display.js` to NOT exist (this track's to
   create). If `settings-appearance.js` is missing, Track 0 has not merged into this worktree's base
   yet — STOP and report BLOCKED (the whole Phase W depends on the split landing first); do not
   re-derive Track 0's work here.
-- [ ] **Failing test** — in `cmd/serf-hub/web_settings_test.go`, add
+- [ ] **Failing test** — in `cmd/evener-hub/web_settings_test.go`, add
   `TestSettings_DisplaySectionRoutes`: `GET /_partials/settings/display` with the `HX-Request: true`
   header; assert `rec.Code == http.StatusOK` and the body contains the section's `<h2>` heading
   text (`"Display"`). (Mirror an existing settings-route test in this file for the exact
   `NewWebServer`/`httptest` setup; if none tests a section route directly, model it on
   `TestSettingsMCPStatus_PopulatedAndEmpty`'s server construction.) Run:
-  `go test ./cmd/serf-hub/... -run 'TestSettings_DisplaySectionRoutes' -count=1` → FAIL (404: the
+  `go test ./cmd/evener-hub/... -run 'TestSettings_DisplaySectionRoutes' -count=1` → FAIL (404: the
   `display` section isn't registered, so `settingsTmpls["display"]` is absent and `renderSettingsPartial`
   returns `http.NotFound`).
-- [ ] **Implement — register the section** — in `cmd/serf-hub/web.go`, add `"display"` to the
+- [ ] **Implement — register the section** — in `cmd/evener-hub/web.go`, add `"display"` to the
   `settingsSections := []string{...}` slice literal (~line 84 — re-grep for the exact line; place
   `"display"` beside `"transcript"` so the display-toggle sections group together). The
   `settingsTmpls` loop just below it needs no special-casing (`display` is neither `credentials`
   nor `project`, so it takes the default `templates/partials/settings/display.html` branch).
 - [ ] **Implement — the section template** — create
-  `cmd/serf-hub/templates/partials/settings/display.html` (scaffold only; W2/W3 add the controls):
+  `cmd/evener-hub/templates/partials/settings/display.html` (scaffold only; W2/W3 add the controls):
   ```html
   {{define "settings-content"}}
   <h2 class="settings-h2">Display</h2>
@@ -1095,12 +1095,12 @@ would violate its byte-identical-rendering rule). So:
   </dl>
   {{end}}
   ```
-- [ ] **Implement — nav link** — in `cmd/serf-hub/templates/partials/settings.html`, add a
+- [ ] **Implement — nav link** — in `cmd/evener-hub/templates/partials/settings.html`, add a
   `<a class="settings-nav-link {{if eq .Active "display"}}active{{end}}" href="/settings/display" hx-get="/_partials/settings/display" hx-target="#settings-content" hx-swap="innerHTML" hx-push-url="/settings/display">Display</a>`
   line immediately after the existing `transcript` nav link (line ~15 — re-grep to confirm),
   matching that entry's attribute shape exactly.
 - [ ] **Implement — settings-display.js scaffold + app.html script tag** — create
-  `cmd/serf-hub/assets/settings-display.js` with the standard delegated-listener skeleton (W2/W3
+  `cmd/evener-hub/assets/settings-display.js` with the standard delegated-listener skeleton (W2/W3
   fill in the handlers; the file must exist and load so their tests can `readFileSync` it):
   ```js
   // Settings page interactivity — Display section: Enter-to-send and Show-cost
@@ -1114,7 +1114,7 @@ would violate its byte-identical-rendering rule). So:
 
     function readComposerPrefs() {
       let parsed = {};
-      try { parsed = JSON.parse(localStorage.getItem("serf-hub.composer") || "{}") || {}; }
+      try { parsed = JSON.parse(localStorage.getItem("evener-hub.composer") || "{}") || {}; }
       catch (e) { parsed = {}; }
       // showCost defaults ON; enterToSend defaults OFF.
       return {
@@ -1123,7 +1123,7 @@ would violate its byte-identical-rendering rule). So:
       };
     }
     function writeComposerPrefs(prefs) {
-      localStorage.setItem("serf-hub.composer", JSON.stringify(prefs));
+      localStorage.setItem("evener-hub.composer", JSON.stringify(prefs));
     }
     function syncToggleState(input) {
       const span = input.parentElement.querySelector(".state");
@@ -1134,7 +1134,7 @@ would violate its byte-identical-rendering rule). So:
     // and data-composer="showCost", the applyDisplayState() restore function,
     // and the composer keybind-hint sync. Expose the pref helpers so those
     // additions and the page-load IIFEs below share one source of truth.
-    window.SerfSettingsDisplay = { readComposerPrefs, writeComposerPrefs, syncToggleState };
+    window.EvenerSettingsDisplay = { readComposerPrefs, writeComposerPrefs, syncToggleState };
 
     // Show-cost applies to <body> on every page load so the CSS gate
     // (body[data-show-cost="false"]) is correct before any settings pane opens.
@@ -1143,34 +1143,34 @@ would violate its byte-identical-rendering rule). So:
     })();
   })();
   ```
-  In `cmd/serf-hub/templates/app.html`, add `  <script src="/assets/settings-display.js{{assetv}}"></script>`
+  In `cmd/evener-hub/templates/app.html`, add `  <script src="/assets/settings-display.js{{assetv}}"></script>`
   immediately after the `settings-transcript.js` line (the by-then-current script block Track 0
   established — re-grep for `settings-transcript.js` to place it).
-- [ ] **Run** `go test ./cmd/serf-hub/... -run 'TestSettings_DisplaySectionRoutes' -count=1` → pass.
-  Run `cd cmd/serf-hub/jstest && NODE_PATH=/tmp/serf-jstest-jsdom/node_modules sh run-all.sh` →
-  green (the scaffold JS is inert; no test regression). `go test ./cmd/serf-hub/... -count=1` →
+- [ ] **Run** `go test ./cmd/evener-hub/... -run 'TestSettings_DisplaySectionRoutes' -count=1` → pass.
+  Run `cd cmd/evener-hub/jstest && NODE_PATH=/tmp/evener-jstest-jsdom/node_modules sh run-all.sh` →
+  green (the scaffold JS is inert; no test regression). `go test ./cmd/evener-hub/... -count=1` →
   green (app.html + the new template parse). `golangci-lint run ./...` → green.
-- [ ] **Commit** — `git add cmd/serf-hub/web.go cmd/serf-hub/templates/partials/settings.html cmd/serf-hub/templates/partials/settings/display.html cmd/serf-hub/assets/settings-display.js cmd/serf-hub/templates/app.html cmd/serf-hub/web_settings_test.go` →
+- [ ] **Commit** — `git add cmd/evener-hub/web.go cmd/evener-hub/templates/partials/settings.html cmd/evener-hub/templates/partials/settings/display.html cmd/evener-hub/assets/settings-display.js cmd/evener-hub/templates/app.html cmd/evener-hub/web_settings_test.go` →
   `feat(hub-web): add the Display settings section (Enter-to-send + Show-cost home) with a scaffold + pref helpers`.
 
 ### Task W1 — Font-size presets (S/M/L/XL)
 
-**Files:** Modify `cmd/serf-hub/templates/partials/settings/theme.html`,
-`cmd/serf-hub/assets/settings-appearance.js` (both created/owned by Track 0 — font-size is an
+**Files:** Modify `cmd/evener-hub/templates/partials/settings/theme.html`,
+`cmd/evener-hub/assets/settings-appearance.js` (both created/owned by Track 0 — font-size is an
 appearance/type-scale concern, same family as the existing phone-density radio, so it lands in the
-Theme section per Track 0's contract), `cmd/serf-hub/assets/style.css`. Test:
-new `cmd/serf-hub/jstest/test-font-size-presets.js`.
+Theme section per Track 0's contract), `cmd/evener-hub/assets/style.css`. Test:
+new `cmd/evener-hub/jstest/test-font-size-presets.js`.
 
-- [ ] **Failing test** — new `cmd/serf-hub/jstest/test-font-size-presets.js` (CSS-contract style,
+- [ ] **Failing test** — new `cmd/evener-hub/jstest/test-font-size-presets.js` (CSS-contract style,
   mirroring `test-pane-and-sidebar-css.js`'s `parseTopLevelBlocks`/`ruleContains` helpers — import
   or duplicate the same small parser): assert `body[data-font-size="s"]`, `="m"`, `="l"`, `="xl"`
   blocks each define all 8 `--text-*` tokens, and that within each block the values are strictly
   ascending in the same order as the base tokens (2xs < xs < sm < base < md < lg < xl < 2xl) —
   write this as a real assertion (parse each block's declarations, extract the px numbers, assert
   monotonic order) rather than hardcoding exact numbers, so a later manual tuning pass doesn't
-  break the test. Run: `node cmd/serf-hub/jstest/test-font-size-presets.js` → FAIL (no such rules
+  break the test. Run: `node cmd/evener-hub/jstest/test-font-size-presets.js` → FAIL (no such rules
   exist).
-- [ ] **Implement — CSS** — in `cmd/serf-hub/assets/style.css`, near the `:root` token block
+- [ ] **Implement — CSS** — in `cmd/evener-hub/assets/style.css`, near the `:root` token block
   (~line 69-76), add (values are a first-pass computed scale — 90/100/115/130% of the base tokens,
   rounded to the nearest px, kept strictly ascending; treat as provisional, adjust to taste on
   visual QA, not a hard requirement):
@@ -1193,7 +1193,7 @@ new `cmd/serf-hub/jstest/test-font-size-presets.js`.
   }
   ```
 - [ ] **Implement — settings control** — in
-  `cmd/serf-hub/templates/partials/settings/theme.html`, add a fourth `.row` (mirroring the
+  `cmd/evener-hub/templates/partials/settings/theme.html`, add a fourth `.row` (mirroring the
   existing phone-density/sidebar-mode radio-group markup in that same file exactly, inside the
   `<dl ... data-theme-form>`):
   ```html
@@ -1210,7 +1210,7 @@ new `cmd/serf-hub/jstest/test-font-size-presets.js`.
     <p class="help">Scales all UI text. M is the default.</p>
   </div>
   ```
-- [ ] **Implement — JS** — in `cmd/serf-hub/assets/settings-appearance.js` (Track 0's appearance
+- [ ] **Implement — JS** — in `cmd/evener-hub/assets/settings-appearance.js` (Track 0's appearance
   file — the same one that holds theme/phone-density/sidebar-mode; NOT `settings.js`, which Track 0
   deleted):
   - In its `document.body.addEventListener("change", ...)` handler, add a branch (beside the
@@ -1218,7 +1218,7 @@ new `cmd/serf-hub/jstest/test-font-size-presets.js`.
     ```js
     if (target.matches('input[name="font-size"]')) {
       const v = target.value;
-      localStorage.setItem("serf-hub.appearance.fontSize", v);
+      localStorage.setItem("evener-hub.appearance.fontSize", v);
       document.body.dataset.fontSize = v;
       return;
     }
@@ -1228,7 +1228,7 @@ new `cmd/serf-hub/jstest/test-font-size-presets.js`.
     ```js
     const fontSizeRadios = document.querySelectorAll('input[name="font-size"]');
     if (fontSizeRadios.length) {
-      const stored = localStorage.getItem("serf-hub.appearance.fontSize") || "m";
+      const stored = localStorage.getItem("evener-hub.appearance.fontSize") || "m";
       fontSizeRadios.forEach((r) => { r.checked = r.value === stored; });
     }
     ```
@@ -1236,26 +1236,26 @@ new `cmd/serf-hub/jstest/test-font-size-presets.js`.
     IIFEs already at the bottom of `settings-appearance.js`:
     ```js
     (function () {
-      const KEY = "serf-hub.appearance.fontSize";
+      const KEY = "evener-hub.appearance.fontSize";
       document.body.dataset.fontSize = localStorage.getItem(KEY) || "m";
     })();
     ```
-- [ ] **Run** `node cmd/serf-hub/jstest/test-font-size-presets.js` → pass. Run
-  `cd cmd/serf-hub/jstest && NODE_PATH=/tmp/serf-jstest-jsdom/node_modules sh run-all.sh` → green.
-  `go test ./cmd/serf-hub/... -count=1` → green (templates still parse).
-- [ ] **Commit** — `git add cmd/serf-hub/templates/partials/settings/theme.html cmd/serf-hub/assets/settings-appearance.js cmd/serf-hub/assets/style.css cmd/serf-hub/jstest/test-font-size-presets.js` →
+- [ ] **Run** `node cmd/evener-hub/jstest/test-font-size-presets.js` → pass. Run
+  `cd cmd/evener-hub/jstest && NODE_PATH=/tmp/evener-jstest-jsdom/node_modules sh run-all.sh` → green.
+  `go test ./cmd/evener-hub/... -count=1` → green (templates still parse).
+- [ ] **Commit** — `git add cmd/evener-hub/templates/partials/settings/theme.html cmd/evener-hub/assets/settings-appearance.js cmd/evener-hub/assets/style.css cmd/evener-hub/jstest/test-font-size-presets.js` →
   `feat(hub-web): font-size presets (S/M/L/XL) scaling all --text-* tokens`.
 
 ### Task W2 — Enter-to-send toggle (web-only)
 
 Lands in the **Display** section Task W0 created (`display.html` + `settings-display.js`) — NOT the
-Track-0-deleted `settings.js`. Uses the `serf-hub.composer` JSON-blob pref
-(`{enterToSend, showCost}`) and its `window.SerfSettingsDisplay.readComposerPrefs()` accessor that
+Track-0-deleted `settings.js`. Uses the `evener-hub.composer` JSON-blob pref
+(`{enterToSend, showCost}`) and its `window.EvenerSettingsDisplay.readComposerPrefs()` accessor that
 W0's scaffold established, so Enter-to-send and Show-cost share one pref object.
 
-**Files:** Modify `cmd/serf-hub/templates/partials/settings/display.html`,
-`cmd/serf-hub/assets/settings-display.js`, `cmd/serf-hub/assets/renderer.js`. Test: extend
-`cmd/serf-hub/jstest/test-composer-shortcuts.js`.
+**Files:** Modify `cmd/evener-hub/templates/partials/settings/display.html`,
+`cmd/evener-hub/assets/settings-display.js`, `cmd/evener-hub/assets/renderer.js`. Test: extend
+`cmd/evener-hub/jstest/test-composer-shortcuts.js`.
 
 **Flagged conflict (not in the design spec — found during verification):** Shift+Enter is
 *already* bound to "steer" (`renderer.js:5230-5238` — drains the queue as a steering injection,
@@ -1265,9 +1265,9 @@ enables it. **Resolution:** when Enter-to-send is ON, Shift+Enter reverts to pla
 keybind unavailable) — the steer **button** stays fully clickable, only the keybind changes. This
 is called out explicitly so a reviewer doesn't think the collision was missed.
 
-- [ ] **Failing test** — extend `cmd/serf-hub/jstest/test-composer-shortcuts.js`: add
+- [ ] **Failing test** — extend `cmd/evener-hub/jstest/test-composer-shortcuts.js`: add
   `testEnterToSendModeSubmitsOnBareEnterAndNewlinesOnShiftEnter`: set
-  `window.localStorage.setItem("serf-hub.composer", JSON.stringify({enterToSend: true}))` before
+  `window.localStorage.setItem("evener-hub.composer", JSON.stringify({enterToSend: true}))` before
   `makeDOM`; dispatch
   a bare `Enter` keydown (no modifiers) — assert `submitCount === 1`; dispatch a `Shift+Enter`
   keydown — assert `steerCount === 0` (steer did NOT fire) and that `preventDefault` was NOT called
@@ -1278,8 +1278,8 @@ is called out explicitly so a reviewer doesn't think the collision was missed.
   keydown behavior, assert `defaultPrevented === false` instead, which is the actually-testable
   contract). Add `testEnterToSendModeOffPreservesExistingBehavior`: with the pref unset (or
   `"false"`), re-run the ORIGINAL `testMainWorkspaceShortcutsStillSubmitAndSteer` assertions
-  unchanged (regression guard). Run: `node cmd/serf-hub/jstest/test-composer-shortcuts.js` → FAIL.
-- [ ] **Implement — JS behavior** — in `cmd/serf-hub/assets/renderer.js`'s `bindKeyboard()`
+  unchanged (regression guard). Run: `node cmd/evener-hub/jstest/test-composer-shortcuts.js` → FAIL.
+- [ ] **Implement — JS behavior** — in `cmd/evener-hub/assets/renderer.js`'s `bindKeyboard()`
   (~line 5213-5245):
   ```js
       bindKeyboard() {
@@ -1287,10 +1287,10 @@ is called out explicitly so a reviewer doesn't think the collision was missed.
         const ta = document.querySelector(".message-input");
         if (!ta) return;
         const suppressSubmitShortcuts = this.isInPane && this.isInPane();
-        // Reads the same serf-hub.composer JSON blob the Display settings write
+        // Reads the same evener-hub.composer JSON blob the Display settings write
         // (via settings-display.js); enterToSend defaults OFF (absent/false).
         const enterToSend = () => {
-          try { return (JSON.parse(localStorage.getItem("serf-hub.composer") || "{}") || {}).enterToSend === true; }
+          try { return (JSON.parse(localStorage.getItem("evener-hub.composer") || "{}") || {}).enterToSend === true; }
           catch (e) { return false; }
         };
         ta.addEventListener("keydown", (e) => {
@@ -1319,19 +1319,19 @@ is called out explicitly so a reviewer doesn't think the collision was missed.
             }
           }
           if (e.key === "/" && !e.metaKey && !e.ctrlKey && !e.altKey && ta.value === "") {
-            if (window.SerfSearch && typeof window.SerfSearch.openWith === "function") {
+            if (window.EvenerSearch && typeof window.EvenerSearch.openWith === "function") {
               e.preventDefault();
-              window.SerfSearch.openWith("/");
+              window.EvenerSearch.openWith("/");
             }
           }
         });
       },
   ```
 - [ ] **Implement — settings-display.js: change handler + restore + kbd hint sync** — in
-  `cmd/serf-hub/assets/settings-display.js` (the file W0 created), extend the IIFE:
+  `cmd/evener-hub/assets/settings-display.js` (the file W0 created), extend the IIFE:
   - Add a `document.body.addEventListener("change", ...)` branch for the `enterToSend` checkbox
     (following the `data-notif`/`data-transcript-status` commit pattern, but reading/writing the
-    shared `serf-hub.composer` blob via the `readComposerPrefs`/`writeComposerPrefs` helpers W0
+    shared `evener-hub.composer` blob via the `readComposerPrefs`/`writeComposerPrefs` helpers W0
     defined):
     ```js
     document.body.addEventListener("change", (e) => {
@@ -1343,7 +1343,7 @@ is called out explicitly so a reviewer doesn't think the collision was missed.
         writeComposerPrefs(prefs);
         syncToggleState(target);
         applyComposerKeybindHints();
-        if (window.SerfToast) window.SerfToast.show("Settings saved", "success");
+        if (window.EvenerToast) window.EvenerToast.show("Settings saved", "success");
         return;
       }
     });
@@ -1366,7 +1366,7 @@ is called out explicitly so a reviewer doesn't think the collision was missed.
     document.body.addEventListener("htmx:afterSwap", applyComposerKeybindHints);
     ```
 - [ ] **Implement — settings control** — in
-  `cmd/serf-hub/templates/partials/settings/display.html`, add a `.row` inside the
+  `cmd/evener-hub/templates/partials/settings/display.html`, add a `.row` inside the
   `<dl ... data-display-form>` W0 scaffolded:
   ```html
   <div class="row editable">
@@ -1380,31 +1380,31 @@ is called out explicitly so a reviewer doesn't think the collision was missed.
     <p class="help">Default off: ⌘/Ctrl-Enter sends, Enter inserts a newline. On: Enter sends, Shift-Enter inserts a newline (the steer keyboard shortcut is unavailable in this mode — the steer button still works).</p>
   </div>
   ```
-- [ ] **Run** `node cmd/serf-hub/jstest/test-composer-shortcuts.js` → pass. Run
-  `cd cmd/serf-hub/jstest && NODE_PATH=/tmp/serf-jstest-jsdom/node_modules sh run-all.sh` → green.
-  `go test ./cmd/serf-hub/... -count=1` → green.
-- [ ] **Commit** — `git add cmd/serf-hub/templates/partials/settings/display.html cmd/serf-hub/assets/settings-display.js cmd/serf-hub/assets/renderer.js cmd/serf-hub/jstest/test-composer-shortcuts.js` →
+- [ ] **Run** `node cmd/evener-hub/jstest/test-composer-shortcuts.js` → pass. Run
+  `cd cmd/evener-hub/jstest && NODE_PATH=/tmp/evener-jstest-jsdom/node_modules sh run-all.sh` → green.
+  `go test ./cmd/evener-hub/... -count=1` → green.
+- [ ] **Commit** — `git add cmd/evener-hub/templates/partials/settings/display.html cmd/evener-hub/assets/settings-display.js cmd/evener-hub/assets/renderer.js cmd/evener-hub/jstest/test-composer-shortcuts.js` →
   `feat(hub-web): Enter-to-send toggle (default off), resolving the Shift+Enter/steer keybind collision`.
 
 ### Task W3 — Show-cost toggle + CSS gating across all three cost surfaces
 
 Lands in the same **Display** section (`display.html` + `settings-display.js`) as W2, sharing the
-`serf-hub.composer` JSON blob and its `readComposerPrefs`/`writeComposerPrefs` helpers (W0). The
+`evener-hub.composer` JSON blob and its `readComposerPrefs`/`writeComposerPrefs` helpers (W0). The
 page-load body-attribute apply (`body[data-show-cost]`) already lives in W0's scaffold; this task
 adds the toggle control and the CSS gate.
 
-**Files:** Modify `cmd/serf-hub/templates/partials/settings/display.html`,
-`cmd/serf-hub/assets/settings-display.js`, `cmd/serf-hub/assets/style.css`. Test: new
-`cmd/serf-hub/jstest/test-show-cost-gating.js`.
+**Files:** Modify `cmd/evener-hub/templates/partials/settings/display.html`,
+`cmd/evener-hub/assets/settings-display.js`, `cmd/evener-hub/assets/style.css`. Test: new
+`cmd/evener-hub/jstest/test-show-cost-gating.js`.
 
-- [ ] **Failing test** — new `cmd/serf-hub/jstest/test-show-cost-gating.js` (CSS-contract style):
+- [ ] **Failing test** — new `cmd/evener-hub/jstest/test-show-cost-gating.js` (CSS-contract style):
   assert a rule exists hiding, under `body[data-show-cost="false"]`, all three cost-bearing
   selectors added in this plan: `.status-item.cost` (Phase R, input strip), `[data-row="cost"]`
   (Phase V, details panel), and `.turn-meta .cost` (Task T1 already built the per-turn badge with
   the cost portion in its own child `<span class="cost">` via real DOM nodes, specifically so
   Show-cost can hide just the `$` part without hiding duration/tokens too — no rework needed here,
-  only the CSS rule). Run: `node cmd/serf-hub/jstest/test-show-cost-gating.js` → FAIL.
-- [ ] **Implement — CSS gating** — in `cmd/serf-hub/assets/style.css`:
+  only the CSS rule). Run: `node cmd/evener-hub/jstest/test-show-cost-gating.js` → FAIL.
+- [ ] **Implement — CSS gating** — in `cmd/evener-hub/assets/style.css`:
   ```css
   body[data-show-cost="false"] .status-item.cost,
   body[data-show-cost="false"] [data-row="cost"],
@@ -1413,7 +1413,7 @@ adds the toggle control and the CSS gate.
   }
   ```
 - [ ] **Implement — settings control** — in
-  `cmd/serf-hub/templates/partials/settings/display.html`, add a `.row` inside the
+  `cmd/evener-hub/templates/partials/settings/display.html`, add a `.row` inside the
   `<dl ... data-display-form>` (after the Enter-sends row from W2):
   ```html
   <div class="row editable">
@@ -1427,7 +1427,7 @@ adds the toggle control and the CSS gate.
     <p class="help">Default on. Shows an estimated ~$ cost next to token counts, from catalog pricing — an estimate, not a billing-exact figure.</p>
   </div>
   ```
-- [ ] **Implement — JS** — in `cmd/serf-hub/assets/settings-display.js` (the same file W0/W2 build;
+- [ ] **Implement — JS** — in `cmd/evener-hub/assets/settings-display.js` (the same file W0/W2 build;
   `readComposerPrefs`/`writeComposerPrefs`/`syncToggleState` and the `body[data-show-cost]`
   page-load apply already exist from W0's scaffold — `showCost` defaults ON there via
   `parsed.showCost !== false`):
@@ -1441,18 +1441,18 @@ adds the toggle control and the CSS gate.
       writeComposerPrefs(prefs);
       syncToggleState(target);
       document.body.dataset.showCost = target.checked ? "true" : "false";
-      if (window.SerfToast) window.SerfToast.show("Settings saved", "success");
+      if (window.EvenerToast) window.EvenerToast.show("Settings saved", "success");
       return;
     }
     ```
   - In the `applyDisplayState()` restore function (added in W2), also check the `showCost` box from
     `readComposerPrefs().showCost` and `syncToggleState` it (so its `ON`/`OFF` label is correct
     when the Display pane is swapped in).
-- [ ] **Run** `node cmd/serf-hub/jstest/test-show-cost-gating.js` → pass. Run
-  `cd cmd/serf-hub/jstest && NODE_PATH=/tmp/serf-jstest-jsdom/node_modules sh run-all.sh` → green
+- [ ] **Run** `node cmd/evener-hub/jstest/test-show-cost-gating.js` → pass. Run
+  `cd cmd/evener-hub/jstest && NODE_PATH=/tmp/evener-jstest-jsdom/node_modules sh run-all.sh` → green
   (including the T1/T2 tests — confirm the per-turn badge's `.cost` child span still renders and
-  the duration/token assertions still hold). `go test ./cmd/serf-hub/... -count=1` → green.
-- [ ] **Commit** — `git add cmd/serf-hub/templates/partials/settings/display.html cmd/serf-hub/assets/settings-display.js cmd/serf-hub/assets/style.css cmd/serf-hub/jstest/test-show-cost-gating.js` →
+  the duration/token assertions still hold). `go test ./cmd/evener-hub/... -count=1` → green.
+- [ ] **Commit** — `git add cmd/evener-hub/templates/partials/settings/display.html cmd/evener-hub/assets/settings-display.js cmd/evener-hub/assets/style.css cmd/evener-hub/jstest/test-show-cost-gating.js` →
   `feat(hub-web): Show-cost toggle (default on) gates ~$ display across the status row, details panel, and per-turn badge`.
 
 ---
@@ -1482,7 +1482,7 @@ adds the toggle control and the CSS gate.
   | L | ~115% | " |
   | XL | ~130% | " |
 
-  Persisted per-browser in `localStorage` (`serf-hub.appearance.fontSize`), applied via a
+  Persisted per-browser in `localStorage` (`evener-hub.appearance.fontSize`), applied via a
   `body[data-font-size="…"]` attribute redefining the `--text-*` custom properties (they cascade
   to every descendant) — no per-element JS resize logic.
   ```
@@ -1502,18 +1502,18 @@ adds the toggle control and the CSS gate.
   `go test ./appwire/... ./internal/... ./cmd/... ./llm/... -count=1` → green.
 - [ ] `make fuzz` (confirm appwire decode goldens hold after `Turn.Usage`/`.Cost`; if `Test*Golden`
   drifts, `make fuzz-goldens` then re-verify).
-- [ ] `cd cmd/serf-hub/jstest && NODE_PATH=/tmp/serf-jstest-jsdom/node_modules sh run-all.sh` →
+- [ ] `cd cmd/evener-hub/jstest && NODE_PATH=/tmp/evener-jstest-jsdom/node_modules sh run-all.sh` →
   green (every new/extended jstest file from this plan, plus no regression in the existing suite).
 - [ ] `make lint` (naming, internal, docs, golangci, generated, secret-scan) → green — this is
   where `Turn.Usage`/`.Cost`'s camelCase tags and the new settings keys get checked against
-  `serf-namingcheck`.
+  `evener-namingcheck`.
 - [ ] **Commit** any gate-driven fixups with a focused message; do not `git add -A`.
 
 ### Task Y2 — End-to-end scenario cards
 
 Use the e2e-scenario-testing skill. Build fresh binaries
-(`go build -o /tmp/serf ./cmd/serf`, `serf-hub`, `serf-tui`), run a live model per
-`reference_serf_live_run`, author falsifiable scenario cards:
+(`go build -o /tmp/evener ./cmd/evener`, `evener-hub`, `evener-tui`), run a live model per
+`reference_evener_live_run`, author falsifiable scenario cards:
 
 - [ ] **Card: cost estimate appears and is gateable.** Start a session, send one prompt to
   completion; assert the web status row shows `~$` next to tokens; toggle Show-cost off in
@@ -1567,11 +1567,11 @@ stored model ids was found and fixed rather than assumed away.
   provider-qualified and `[1m]`-suffixed ids P1 fixed, asserting `GetPrice` cost equals a direct
   `ModelInfo`-field read.
 
-**Type/name consistency:** `appwire.SerfUsage` (existing) reused for `Turn.Usage` (no new usage
+**Type/name consistency:** `appwire.EvenerUsage` (existing) reused for `Turn.Usage` (no new usage
 shape); `appwire.EstimateCost`/`llm.EstimateCost` (two layers: wire-level convenience wrapping the
 pure arithmetic) both named `EstimateCost` deliberately (same concept, different layer, mirrors the
 `Price`/`GetPrice` naming already established); `formatWorkMillis`/`formatTokens` reused verbatim
-in the TUI drawer (Task U2) rather than reinvented; `serfUsageFromCumulative` (existing) reused
+in the TUI drawer (Task U2) rather than reinvented; `evenerUsageFromCumulative` (existing) reused
 verbatim in `pastEntryThread` (U1) and the details panel (V3) rather than duplicated.
 
 **Estimate check:** the design spec estimated Track C at ~600-850 loc. This plan's per-turn wire

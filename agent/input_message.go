@@ -1,8 +1,8 @@
 package agent
 
 import (
-	"primeradiant.com/serf/agent/events"
-	"primeradiant.com/serf/llm"
+	"primeradiant.com/evener/agent/events"
+	"primeradiant.com/evener/llm"
 )
 
 // ImageAttachment carries a single image attached to user input.

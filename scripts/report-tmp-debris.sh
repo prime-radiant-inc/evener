@@ -4,7 +4,7 @@
 #
 # Why this exists: when the repo volume hits its disk floor, the biggest single
 # pocket of reclaimable space has not been anything git can see. Measured
-# 2026-07-30, with 3G free against a 5G floor: 8.4G across 120 `/tmp/serf*`
+# 2026-07-30, with 3G free against a 5G floor: 8.4G across 120 `/tmp/evener*`
 # entries — per-session scratch CHECKOUTS (~270M each), stray per-session Go
 # build caches, chrome profiles, screenshots, DOM dumps, logs — against ~264M
 # of removable worktrees, which was the only lever the floor message named.
@@ -22,7 +22,7 @@
 #   scripts/report-tmp-debris.sh --paths-only # one path per line, biggest first
 #   scripts/report-tmp-debris.sh --help
 #
-# SERF_TMP_DEBRIS_ROOT overrides the directory scanned (default /tmp), so a
+# EVENER_TMP_DEBRIS_ROOT overrides the directory scanned (default /tmp), so a
 # caller can point this at a throwaway tree instead of the real /tmp.
 # /tmp is scanned rather than $TMPDIR because that is where the
 # debris is: on macOS $TMPDIR is a per-user /var/folders path, and the entries
@@ -52,7 +52,7 @@ for arg in "$@"; do
 	esac
 done
 
-root=${SERF_TMP_DEBRIS_ROOT:-/tmp}
+root=${EVENER_TMP_DEBRIS_ROOT:-/tmp}
 [ -d "$root" ] || {
 	echo "report-tmp-debris: no such directory: $root" >&2
 	exit 1
@@ -68,7 +68,7 @@ human_kb() {
 # that is the difference between one walk and 120 process spawns, and blocks
 # shared between entries are then counted once, the way the volume counts them.
 entries=()
-for entry in "$root"/serf*; do
+for entry in "$root"/evener*; do
 	[ -e "$entry" ] || continue # unmatched glob stays literal
 	entries+=("$entry")
 done
@@ -98,7 +98,7 @@ done
 total_h=$(human_kb "$total_kb")
 
 plural() { [ "$1" = 1 ] && echo "y" || echo "ies"; }
-echo "report-tmp-debris: ${#sized[@]} entr$(plural "${#sized[@]}") under $root match serf* (${total_h}):"
+echo "report-tmp-debris: ${#sized[@]} entr$(plural "${#sized[@]}") under $root match evener* (${total_h}):"
 echo
 
 listed=0

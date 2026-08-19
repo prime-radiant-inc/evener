@@ -11,8 +11,8 @@ import (
 	"errors"
 	"net/http"
 
-	"primeradiant.com/serf/llm"
-	"primeradiant.com/serf/llm/apilog"
+	"primeradiant.com/evener/llm"
+	"primeradiant.com/evener/llm/apilog"
 )
 
 // FatalStreamError marks an OnEvent error as the stream's terminal error in

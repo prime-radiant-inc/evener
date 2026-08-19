@@ -5,7 +5,7 @@ import (
 	"errors"
 	"testing"
 
-	"primeradiant.com/serf/appwire"
+	"primeradiant.com/evener/appwire"
 )
 
 func TestAppThread_CarriesPendingEscalationsSnapshot(t *testing.T) {
@@ -16,7 +16,7 @@ func TestAppThread_CarriesPendingEscalationsSnapshot(t *testing.T) {
 		e.escalations = []appwire.SandboxEscalationRequested{{EscalationID: "esc_1", Tool: "read_file", DeniedPath: "/x", Mode: "read-only"}}
 	})
 	thread := s.appThread()
-	got := thread.Serf.PendingEscalations
+	got := thread.Evener.PendingEscalations
 	if len(got) != 1 || got[0].EscalationID != "esc_1" || got[0].DeniedPath != "/x" {
 		t.Fatalf("appThread must carry the pending-escalation snapshot on thread/read: %+v", got)
 	}

@@ -9,7 +9,7 @@ import (
 	"strings"
 	"testing"
 
-	"primeradiant.com/serf/fuzz/schemagen"
+	"primeradiant.com/evener/fuzz/schemagen"
 )
 
 // cleanInner / cleanStruct use only round-trippable field kinds (no []byte,
@@ -499,9 +499,9 @@ func exerciseTypegenSurface(t *testing.T, data []byte) {
 	}
 }
 
-// TestNoSerfImport is the portability guard: no source file in this package may
-// import a primeradiant.com/serf package other than the fuzz module's own.
-func TestNoSerfImport(t *testing.T) {
+// TestNoEvenerImport is the portability guard: no source file in this package may
+// import a primeradiant.com/evener package other than the fuzz module's own.
+func TestNoEvenerImport(t *testing.T) {
 	fset := token.NewFileSet()
 	pkgs, err := parser.ParseDir(fset, ".", nil, parser.ImportsOnly) //nolint:staticcheck // parser.ParseDir is adequate here; build tags not relevant. go/packages migration tracked separately.
 	if err != nil {
@@ -511,9 +511,9 @@ func TestNoSerfImport(t *testing.T) {
 		for name, file := range pkg.Files {
 			for _, imp := range file.Imports {
 				path := strings.Trim(imp.Path.Value, `"`)
-				if strings.HasPrefix(path, "primeradiant.com/serf/") &&
-					!strings.HasPrefix(path, "primeradiant.com/serf/fuzz/") {
-					t.Errorf("%s imports forbidden serf package %q", name, path)
+				if strings.HasPrefix(path, "primeradiant.com/evener/") &&
+					!strings.HasPrefix(path, "primeradiant.com/evener/fuzz/") {
+					t.Errorf("%s imports forbidden evener package %q", name, path)
 				}
 			}
 		}

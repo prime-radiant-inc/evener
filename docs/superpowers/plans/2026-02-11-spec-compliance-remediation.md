@@ -470,7 +470,7 @@ To:
 if len(calls) == 0 || (stepResp.Finish.Reason != FinishReasonToolCalls && stepResp.Finish.Reason != FinishReasonPauseTurn) || !hasActiveTool || maxToolRounds == 0 || toolRoundsUsed >= maxToolRounds {
 ```
 
-Note: `pause_turn` is also included because the web search feature uses it to continue tool loops (an existing serf extension). Verify this by checking existing tests for `pause_turn` behavior.
+Note: `pause_turn` is also included because the web search feature uses it to continue tool loops (an existing evener extension). Verify this by checking existing tests for `pause_turn` behavior.
 
 **Step 4: Run test to verify it passes**
 

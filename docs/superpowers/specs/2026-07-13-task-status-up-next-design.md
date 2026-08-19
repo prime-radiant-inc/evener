@@ -25,7 +25,7 @@ Keep the expanded body unchanged. Open tasks remain ordered by task ID in the ex
 
 ## Implementation Boundary
 
-Change `renderLivePlan` in `cmd/serf-hub/assets/renderer.js` and its deterministic jsdom coverage in `cmd/serf-hub/jstest/test-renderer-plan.js`.
+Change `renderLivePlan` in `cmd/evener-hub/assets/renderer.js` and its deterministic jsdom coverage in `cmd/evener-hub/jstest/test-renderer-plan.js`.
 
 Reuse existing task-card typography where practical. Add CSS only if no existing class can present the label correctly.
 

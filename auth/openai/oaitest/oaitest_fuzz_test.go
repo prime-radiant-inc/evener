@@ -6,7 +6,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"primeradiant.com/serf/envvars"
+	"primeradiant.com/evener/envvars"
 )
 
 // FuzzIsolateOpenAIAuth drives the real test-isolation helper from arbitrary
@@ -60,7 +60,7 @@ func assertOpenAIAuthIsolated(t *testing.T, authVars []envvars.Var, stateDir str
 	}
 
 	stateHome := os.Getenv(envvars.XDGStateHome.Name)
-	if got, want := stateDir, filepath.Join(stateHome, "serf"); got != want {
+	if got, want := stateDir, filepath.Join(stateHome, "evener"); got != want {
 		t.Errorf("state directory = %q, want %q", got, want)
 	}
 }

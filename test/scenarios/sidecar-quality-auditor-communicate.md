@@ -12,7 +12,7 @@ finding without becoming a second author. Driving mechanism:
 ## Pre-state
 
 - Fresh hub and daemon binaries.
-- `tmpdir=$(mktemp -d -t serf-e2e-quality-auditor-XXXXX)`.
+- `tmpdir=$(mktemp -d -t evener-e2e-quality-auditor-XXXXX)`.
 
 ## Steps
 
@@ -56,12 +56,12 @@ finding without becoming a second author. Driving mechanism:
 ## Doctor audit
 
 ```bash
-go run ./cmd/serf-doctor watches "$SID"
-go run ./cmd/serf-doctor tree "$SID" --observers
-go run ./cmd/serf-doctor transcript "$SID" --format outline --range last:30
-go run ./cmd/serf-doctor transcript "$OBSERVER_REF" --format outline --range last:30
-go run ./cmd/serf-doctor transcript "$OBSERVER_REF" --count communicate
-go run ./cmd/serf-doctor transcript "$OBSERVER_REF" --count delegate_send  # expect 0
+go run ./cmd/evener-doctor watches "$SID"
+go run ./cmd/evener-doctor tree "$SID" --observers
+go run ./cmd/evener-doctor transcript "$SID" --format outline --range last:30
+go run ./cmd/evener-doctor transcript "$OBSERVER_REF" --format outline --range last:30
+go run ./cmd/evener-doctor transcript "$OBSERVER_REF" --count communicate
+go run ./cmd/evener-doctor transcript "$OBSERVER_REF" --count delegate_send  # expect 0
 ```
 
 ## Sharp edges

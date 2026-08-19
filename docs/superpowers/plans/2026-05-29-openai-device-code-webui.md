@@ -6,7 +6,7 @@
 
 **Architecture:** Reuse the existing `internal/auth/openai` device-code primitives. Add a non-blocking, UI-driven poll: two RPCs (`device/start`, `device/poll`) on `hubAuthController`, a single-attempt `PollDeviceAuthOnce` helper, and a "device" editor in `credentials.html` that polls until authorized.
 
-**Tech Stack:** Go (`cmd/serf-hub`, `internal/auth/openai`, `internal/appwire`), vanilla JS templates (`assets/launchconfig.js`, `templates/partials/credentials.html`), JSDOM tests (`jstest`).
+**Tech Stack:** Go (`cmd/evener-hub`, `internal/auth/openai`, `internal/appwire`), vanilla JS templates (`assets/launchconfig.js`, `templates/partials/credentials.html`), JSDOM tests (`jstest`).
 
 **Spec:** `docs/superpowers/specs/2026-05-29-openai-device-code-webui-design.md`
 **Ticket:** PRI-1878
@@ -14,11 +14,11 @@
 Reference (verified current code):
 - `internal/auth/openai/device.go`: `RequestDeviceCode` returns `DeviceCode{VerificationURL, UserCode, DeviceAuthID, Interval}`; on 404 returns a plain "not enabled" error (line ~126). `pollDeviceAuth(ctx, client, cfg, dc, opts)` is the blocking loop (lines ~176-265); per-attempt it POSTs to `<issuer>/api/accounts/deviceauth/token`, treats 403/404 as pending, 2xx decodes `devicePollResponse{authorization_code, code_challenge, code_verifier}`. `ExchangeDeviceCode(ctx, client, cfg, authCode, codeVerifier)` exists.
 - `internal/auth/openai/device_test.go`: `newDeviceMockServer(t)` with hooks `m.usercode`/`m.token`, `m.cfg()` (Config → mock URL), `writeJSON(t, w, status, map[string]any{...})`.
-- `cmd/serf-hub/app_auth.go`: `hubAuthController` has `stateDir, client, now, exchangeCode, mu, flows`. `config()`, `authRecordFromTokens(tokens)` (Source=oauth), `openAIStatus()`, `firstNonEmpty`, `normalizeAuthProvider`. `LoginComplete` shows the exchange→`ParseIDTokenClaims`→`SaveAuth` pattern. `authopenai.GenerateState() (string, error)`.
-- `cmd/serf-hub/app_rpc.go`: auth handlers registered via `appserver.HandleTyped(server.Router(), appwire.MethodSerfAuth…, fn)`; `notifyAuthUpdated(server, provider, activeSource)` after state changes.
+- `cmd/evener-hub/app_auth.go`: `hubAuthController` has `stateDir, client, now, exchangeCode, mu, flows`. `config()`, `authRecordFromTokens(tokens)` (Source=oauth), `openAIStatus()`, `firstNonEmpty`, `normalizeAuthProvider`. `LoginComplete` shows the exchange→`ParseIDTokenClaims`→`SaveAuth` pattern. `authopenai.GenerateState() (string, error)`.
+- `cmd/evener-hub/app_rpc.go`: auth handlers registered via `appserver.HandleTyped(server.Router(), appwire.MethodEvenerAuth…, fn)`; `notifyAuthUpdated(server, provider, activeSource)` after state changes.
 - `internal/appwire/types.go`: method consts ~lines 31-36; `AuthStatusResponse`, `AuthLogoutParams` etc. ~lines 520-700; `appwire.InvalidParams(msg)`.
-- `cmd/serf-hub/assets/launchconfig.js`: `request(method, params)` helper; auth wrappers end after `authLogout` (~line 30).
-- `cmd/serf-hub/templates/partials/credentials.html`: IIFE with `renderEditor(p,e)` (kinds `set`, `oauth-redirect`), the list `click` handler (actions `set`/`oauth`/`clear`/`cancel-edit`), `refresh()`, `openEditor` state.
+- `cmd/evener-hub/assets/launchconfig.js`: `request(method, params)` helper; auth wrappers end after `authLogout` (~line 30).
+- `cmd/evener-hub/templates/partials/credentials.html`: IIFE with `renderEditor(p,e)` (kinds `set`, `oauth-redirect`), the list `click` handler (actions `set`/`oauth`/`clear`/`cancel-edit`), `refresh()`, `openEditor` state.
 
 ---
 
@@ -95,7 +95,7 @@ Then change the 404 branch in `RequestDeviceCode` from:
 
 ```go
 	if resp.StatusCode == http.StatusNotFound {
-		return DeviceCode{}, errors.New("device-code login is not enabled for this OpenAI client; use the browser flow (`serf openai login`) instead")
+		return DeviceCode{}, errors.New("device-code login is not enabled for this OpenAI client; use the browser flow (`evener openai login`) instead")
 	}
 ```
 
@@ -103,7 +103,7 @@ to:
 
 ```go
 	if resp.StatusCode == http.StatusNotFound {
-		return DeviceCode{}, fmt.Errorf("%w; use the browser flow (`serf openai login`) instead", ErrDeviceCodeNotEnabled)
+		return DeviceCode{}, fmt.Errorf("%w; use the browser flow (`evener openai login`) instead", ErrDeviceCodeNotEnabled)
 	}
 ```
 
@@ -207,17 +207,17 @@ git commit -m "feat(auth/openai): PollDeviceAuthOnce + ErrDeviceCodeNotEnabled s
 **Files:**
 - Modify: `internal/appwire/types.go`
 
-- [ ] **Step 1: Add method constants.** In `internal/appwire/types.go`, alongside the other `MethodSerfAuth*` constants (after `MethodSerfAuthApiKeySet`):
+- [ ] **Step 1: Add method constants.** In `internal/appwire/types.go`, alongside the other `MethodEvenerAuth*` constants (after `MethodEvenerAuthApiKeySet`):
 
 ```go
-	MethodSerfAuthDeviceStart      = "serf/auth/device/start"
-	MethodSerfAuthDevicePoll       = "serf/auth/device/poll"
+	MethodEvenerAuthDeviceStart      = "evener/auth/device/start"
+	MethodEvenerAuthDevicePoll       = "evener/auth/device/poll"
 ```
 
 - [ ] **Step 2: Add the params/response types.** Add near the other `Auth*` types (after `AuthApiKeySetParams`):
 
 ```go
-// AuthDeviceStartParams is the params for serf/auth/device/start.
+// AuthDeviceStartParams is the params for evener/auth/device/start.
 type AuthDeviceStartParams struct {
 	Provider string `json:"provider"`
 }
@@ -234,7 +234,7 @@ type AuthDeviceStartResponse struct {
 	Fallback        bool   `json:"fallback,omitempty"`
 }
 
-// AuthDevicePollParams is the params for serf/auth/device/poll.
+// AuthDevicePollParams is the params for evener/auth/device/poll.
 type AuthDevicePollParams struct {
 	Provider string `json:"provider"`
 	FlowID   string `json:"flowId"`
@@ -265,10 +265,10 @@ git commit -m "feat(appwire): device-code auth RPC method names and types (PRI-1
 ### Task 3: controller — `DeviceStart` / `DevicePoll`
 
 **Files:**
-- Modify: `cmd/serf-hub/app_auth.go`
-- Test: `cmd/serf-hub/app_auth_test.go`
+- Modify: `cmd/evener-hub/app_auth.go`
+- Test: `cmd/evener-hub/app_auth_test.go`
 
-- [ ] **Step 1: Write the failing tests** — append to `cmd/serf-hub/app_auth_test.go`:
+- [ ] **Step 1: Write the failing tests** — append to `cmd/evener-hub/app_auth_test.go`:
 
 ```go
 func TestAuth_DeviceStart_ReturnsCodeAndStoresFlow(t *testing.T) {
@@ -358,10 +358,10 @@ func TestAuth_DevicePoll_UnknownFlowExpired(t *testing.T) {
 
 - [ ] **Step 2: Run to verify failure**
 
-Run: `go test ./cmd/serf-hub/ -run 'TestAuth_Device' -v`
+Run: `go test ./cmd/evener-hub/ -run 'TestAuth_Device' -v`
 Expected: FAIL — `DeviceStart`/`DevicePoll` and the `requestDeviceCode`/`pollDeviceOnce`/`exchangeDevice` fields are undefined (compile error).
 
-- [ ] **Step 3: Add controller fields + flow type + defaults.** In `cmd/serf-hub/app_auth.go`, add to the `hubAuthController` struct (after `exchangeCode`):
+- [ ] **Step 3: Add controller fields + flow type + defaults.** In `cmd/evener-hub/app_auth.go`, add to the `hubAuthController` struct (after `exchangeCode`):
 
 ```go
 	requestDeviceCode func(context.Context, *http.Client, authopenai.Config) (authopenai.DeviceCode, error)
@@ -390,7 +390,7 @@ In BOTH constructors (`newHubAuthController` and `newHubAuthControllerWithStore`
 		deviceFlows:       map[string]deviceFlow{},
 ```
 
-- [ ] **Step 4: Add `DeviceStart` and `DevicePoll`.** In `cmd/serf-hub/app_auth.go`, add:
+- [ ] **Step 4: Add `DeviceStart` and `DevicePoll`.** In `cmd/evener-hub/app_auth.go`, add:
 
 ```go
 func (c *hubAuthController) DeviceStart(ctx context.Context, params appwire.AuthDeviceStartParams) (appwire.AuthDeviceStartResponse, error) {
@@ -478,14 +478,14 @@ func (c *hubAuthController) DevicePoll(ctx context.Context, params appwire.AuthD
 
 - [ ] **Step 5: Run the tests**
 
-Run: `go test ./cmd/serf-hub/ -run 'TestAuth_Device|TestHubRPCAuth|TestAuth_OpenAI' -v 2>&1 | tail -25`
+Run: `go test ./cmd/evener-hub/ -run 'TestAuth_Device|TestHubRPCAuth|TestAuth_OpenAI' -v 2>&1 | tail -25`
 Expected: PASS — new device tests pass; existing auth tests still pass.
 
 - [ ] **Step 6: Commit**
 
 ```bash
-git add cmd/serf-hub/app_auth.go cmd/serf-hub/app_auth_test.go
-git commit -m "feat(serf-hub): DeviceStart/DevicePoll controller methods (PRI-1878)"
+git add cmd/evener-hub/app_auth.go cmd/evener-hub/app_auth_test.go
+git commit -m "feat(evener-hub): DeviceStart/DevicePoll controller methods (PRI-1878)"
 ```
 
 ---
@@ -493,15 +493,15 @@ git commit -m "feat(serf-hub): DeviceStart/DevicePoll controller methods (PRI-18
 ### Task 4: register the device RPCs
 
 **Files:**
-- Modify: `cmd/serf-hub/app_rpc.go`
+- Modify: `cmd/evener-hub/app_rpc.go`
 
-- [ ] **Step 1: Register the handlers.** In `cmd/serf-hub/app_rpc.go`, immediately after the `MethodSerfAuthApiKeySet` handler block, add:
+- [ ] **Step 1: Register the handlers.** In `cmd/evener-hub/app_rpc.go`, immediately after the `MethodEvenerAuthApiKeySet` handler block, add:
 
 ```go
-	appserver.HandleTyped(server.Router(), appwire.MethodSerfAuthDeviceStart, func(ctx context.Context, params appwire.AuthDeviceStartParams) (appwire.AuthDeviceStartResponse, error) {
+	appserver.HandleTyped(server.Router(), appwire.MethodEvenerAuthDeviceStart, func(ctx context.Context, params appwire.AuthDeviceStartParams) (appwire.AuthDeviceStartResponse, error) {
 		return authController.DeviceStart(ctx, params)
 	})
-	appserver.HandleTyped(server.Router(), appwire.MethodSerfAuthDevicePoll, func(ctx context.Context, params appwire.AuthDevicePollParams) (appwire.AuthDevicePollResponse, error) {
+	appserver.HandleTyped(server.Router(), appwire.MethodEvenerAuthDevicePoll, func(ctx context.Context, params appwire.AuthDevicePollParams) (appwire.AuthDevicePollResponse, error) {
 		resp, err := authController.DevicePoll(ctx, params)
 		if err == nil && resp.State == "authorized" {
 			notifyAuthUpdated(server, resp.Status.Provider, resp.Status.ActiveSource)
@@ -512,14 +512,14 @@ git commit -m "feat(serf-hub): DeviceStart/DevicePoll controller methods (PRI-18
 
 - [ ] **Step 2: Build + run the hub package tests**
 
-Run: `go build ./... && go test ./cmd/serf-hub/ 2>&1 | tail -3`
+Run: `go build ./... && go test ./cmd/evener-hub/ 2>&1 | tail -3`
 Expected: BUILD OK; package tests PASS (the new methods are wired; existing RPC tests unaffected).
 
 - [ ] **Step 3: Commit**
 
 ```bash
-git add cmd/serf-hub/app_rpc.go
-git commit -m "feat(serf-hub): wire device-code auth RPCs (PRI-1878)"
+git add cmd/evener-hub/app_rpc.go
+git commit -m "feat(evener-hub): wire device-code auth RPCs (PRI-1878)"
 ```
 
 ---
@@ -527,34 +527,34 @@ git commit -m "feat(serf-hub): wire device-code auth RPCs (PRI-1878)"
 ### Task 5: launchconfig client wrappers
 
 **Files:**
-- Modify: `cmd/serf-hub/assets/launchconfig.js`
+- Modify: `cmd/evener-hub/assets/launchconfig.js`
 
-- [ ] **Step 1: Add the wrappers.** In `cmd/serf-hub/assets/launchconfig.js`, replace:
+- [ ] **Step 1: Add the wrappers.** In `cmd/evener-hub/assets/launchconfig.js`, replace:
 
 ```js
-    authLogout: (provider) => request("serf/auth/logout", { provider }),
+    authLogout: (provider) => request("evener/auth/logout", { provider }),
   };
 ```
 
 with:
 
 ```js
-    authLogout: (provider) => request("serf/auth/logout", { provider }),
-    authDeviceStart: (provider) => request("serf/auth/device/start", { provider }),
-    authDevicePoll: (provider, flowId) => request("serf/auth/device/poll", { provider, flowId }),
+    authLogout: (provider) => request("evener/auth/logout", { provider }),
+    authDeviceStart: (provider) => request("evener/auth/device/start", { provider }),
+    authDevicePoll: (provider, flowId) => request("evener/auth/device/poll", { provider, flowId }),
   };
 ```
 
 - [ ] **Step 2: Syntax-check**
 
-Run: `node --check cmd/serf-hub/assets/launchconfig.js && echo OK`
+Run: `node --check cmd/evener-hub/assets/launchconfig.js && echo OK`
 Expected: `OK`.
 
 - [ ] **Step 3: Commit**
 
 ```bash
-git add cmd/serf-hub/assets/launchconfig.js
-git commit -m "feat(serf-hub): launchconfig authDeviceStart/authDevicePoll wrappers (PRI-1878)"
+git add cmd/evener-hub/assets/launchconfig.js
+git commit -m "feat(evener-hub): launchconfig authDeviceStart/authDevicePoll wrappers (PRI-1878)"
 ```
 
 ---
@@ -562,10 +562,10 @@ git commit -m "feat(serf-hub): launchconfig authDeviceStart/authDevicePoll wrapp
 ### Task 6: credentials page — device editor, polling, fallback + JSDOM test
 
 **Files:**
-- Modify: `cmd/serf-hub/templates/partials/credentials.html`
-- Test: `cmd/serf-hub/jstest/test-credentials-device.js`
+- Modify: `cmd/evener-hub/templates/partials/credentials.html`
+- Test: `cmd/evener-hub/jstest/test-credentials-device.js`
 
-- [ ] **Step 1: Write the failing JSDOM test** — create `cmd/serf-hub/jstest/test-credentials-device.js`:
+- [ ] **Step 1: Write the failing JSDOM test** — create `cmd/evener-hub/jstest/test-credentials-device.js`:
 
 ```js
 // Loads credentials.html's inline script into JSDOM, mocks the device-code RPC
@@ -643,10 +643,10 @@ const openaiRow = (dom) => dom.window.document.querySelector('li[data-provider="
 
 - [ ] **Step 2: Run to verify failure**
 
-Run: `cd cmd/serf-hub/jstest && NODE_PATH=/tmp/serf-jstest-jsdom/node_modules node test-credentials-device.js; echo exit=$?`
+Run: `cd cmd/evener-hub/jstest && NODE_PATH=/tmp/evener-jstest-jsdom/node_modules node test-credentials-device.js; echo exit=$?`
 Expected: FAIL (`exit=1`) — the `oauth` action still calls `authLoginStart` directly, so no `device` editor appears.
 
-- [ ] **Step 3: Add the `device` editor branch.** In `cmd/serf-hub/templates/partials/credentials.html`, inside `renderEditor(p, e)`, after the `if (e.kind === "oauth-redirect") { ... }` block and before the final `return "";`, add:
+- [ ] **Step 3: Add the `device` editor branch.** In `cmd/evener-hub/templates/partials/credentials.html`, inside `renderEditor(p, e)`, after the `if (e.kind === "oauth-redirect") { ... }` block and before the final `return "";`, add:
 
 ```js
       if (e.kind === "device") {
@@ -690,7 +690,7 @@ Expected: FAIL (`exit=1`) — the `oauth` action still calls `authLoginStart` di
         await refresh();
         startDevicePolling(provider, r.flowId, Math.max(1, r.intervalSeconds || 5) * 1000);
       } catch (err) {
-        if (window.SerfToast) window.SerfToast.show("Sign-in failed: " + (err && err.message ? err.message : err), "error");
+        if (window.EvenerToast) window.EvenerToast.show("Sign-in failed: " + (err && err.message ? err.message : err), "error");
       }
     }
     function startDevicePolling(provider, flowId, intervalMs) {
@@ -711,7 +711,7 @@ Expected: FAIL (`exit=1`) — the `oauth` action still calls `authLoginStart` di
           stopDevicePolling();
           openEditor = null;
           await refresh();
-          if (window.SerfToast) window.SerfToast.show("Signed in to " + provider, "success");
+          if (window.EvenerToast) window.EvenerToast.show("Signed in to " + provider, "success");
           return;
         }
         if (resp.state === "expired") {
@@ -755,19 +755,19 @@ to:
 
 - [ ] **Step 6: Run the new test + the existing credentials test**
 
-Run: `cd cmd/serf-hub/jstest && NODE_PATH=/tmp/serf-jstest-jsdom/node_modules node test-credentials-device.js && node test-credentials.js`
+Run: `cd cmd/evener-hub/jstest && NODE_PATH=/tmp/evener-jstest-jsdom/node_modules node test-credentials-device.js && node test-credentials.js`
 Expected: both print `OK`.
 
 - [ ] **Step 7: Run the full jstest suite + Go build (template still parses)**
 
-Run: `cd cmd/serf-hub/jstest && NODE_PATH=/tmp/serf-jstest-jsdom/node_modules sh run-all.sh >/dev/null && echo JS_OK; cd /Users/jesse/prime-radiant/toil-suite/serf && go build ./... && echo BUILD_OK`
+Run: `cd cmd/evener-hub/jstest && NODE_PATH=/tmp/evener-jstest-jsdom/node_modules sh run-all.sh >/dev/null && echo JS_OK; cd /Users/jesse/prime-radiant/toil-suite/evener && go build ./... && echo BUILD_OK`
 Expected: `JS_OK` then `BUILD_OK`.
 
 - [ ] **Step 8: Commit**
 
 ```bash
-git add cmd/serf-hub/templates/partials/credentials.html cmd/serf-hub/jstest/test-credentials-device.js
-git commit -m "feat(serf-hub): device-code sign-in UI on the credentials page (PRI-1878)"
+git add cmd/evener-hub/templates/partials/credentials.html cmd/evener-hub/jstest/test-credentials-device.js
+git commit -m "feat(evener-hub): device-code sign-in UI on the credentials page (PRI-1878)"
 ```
 
 ---
@@ -778,17 +778,17 @@ git commit -m "feat(serf-hub): device-code sign-in UI on the credentials page (P
 
 - [ ] **Step 1: Build + vet**
 
-Run: `go build ./... && go vet ./cmd/serf-hub/ ./internal/auth/openai/ ./internal/appwire/ && echo OK`
+Run: `go build ./... && go vet ./cmd/evener-hub/ ./internal/auth/openai/ ./internal/appwire/ && echo OK`
 Expected: `OK`.
 
 - [ ] **Step 2: Run affected Go suites**
 
-Run: `go test ./cmd/serf-hub/... ./internal/auth/openai/... ./internal/appwire/...`
+Run: `go test ./cmd/evener-hub/... ./internal/auth/openai/... ./internal/appwire/...`
 Expected: all PASS, pristine output.
 
 - [ ] **Step 3: Full jstest suite**
 
-Run: `cd cmd/serf-hub/jstest && NODE_PATH=/tmp/serf-jstest-jsdom/node_modules sh run-all.sh 2>&1 | tail -3`
+Run: `cd cmd/evener-hub/jstest && NODE_PATH=/tmp/evener-jstest-jsdom/node_modules sh run-all.sh 2>&1 | tail -3`
 Expected: ends cleanly, no FAIL.
 
 - [ ] **Step 4: Manual webui smoke (recommended).** Launch the hub in an isolated temp HOME (see the PRI-1877 smoke approach), open `/credentials`, click OpenAI "Sign in…", and confirm the device editor shows a user code + verification link and a "Waiting…" state. (Full authorization needs a real OpenAI account; verifying the editor renders and polls is sufficient for the smoke.)

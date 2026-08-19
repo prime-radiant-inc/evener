@@ -1,12 +1,12 @@
-# Serf Web Hub — UI/UX
+# Evener Web Hub — UI/UX
 
-Design documentation for the web hub (`cmd/serf-hub`). Started 2026-06-16.
+Design documentation for the web hub (`cmd/evener-hub`). Started 2026-06-16.
 
 ## Current
 
 - **[design-system.md](design-system.md)** — the design law as shipped: tokens,
   type, space, motion, the cadence instrument, and the widget library under
-  `cmd/serf-hub/frontend/src/widgets/`.
+  `cmd/evener-hub/frontend/src/widgets/`.
 - **[decisions.md](decisions.md)** — what we chose out of the 2026-06 visual
   brainstorm, and whether the code still does it. Read this before changing a
   transcript or navigator behaviour: it distinguishes a reasoned departure from

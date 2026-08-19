@@ -33,7 +33,7 @@ func buildBwrapArgv(rp ResolvedPolicy, sessionTmp, cwd string) []string {
 	// Hardening base. --unshare-user is requested explicitly rather than relying
 	// on bwrap's auto-enable (skipped when the caller is uid 0). --unshare-pid +
 	// a fresh --proc make host process state invisible. --die-with-parent kills
-	// the sandbox if serf exits; --new-session severs the controlling terminal
+	// the sandbox if evener exits; --new-session severs the controlling terminal
 	// (defeats TIOCSTI input injection).
 	add("--unshare-user")
 	add("--unshare-pid")

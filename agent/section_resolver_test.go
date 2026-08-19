@@ -7,14 +7,14 @@ import (
 	"testing"
 	"text/template"
 
-	"primeradiant.com/serf/agent/plugin"
-	"primeradiant.com/serf/internal/bundled"
+	"primeradiant.com/evener/agent/plugin"
+	"primeradiant.com/evener/internal/bundled"
 )
 
 func TestDiskSource_ReadFile(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
-	content := "I am serf"
+	content := "I am evener"
 	if err := os.WriteFile(filepath.Join(dir, "identity.md"), []byte(content), 0644); err != nil {
 		t.Fatalf("writing test file: %v", err)
 	}
@@ -110,11 +110,11 @@ func TestSectionResolver_ResolvesToBase(t *testing.T) {
 		{
 			name:     "BaseOnly",
 			section:  "identity.md",
-			content:  "I am serf",
+			content:  "I am evener",
 			provider: "openai",
 			agent:    "coordinator",
 			query:    "identity",
-			want:     "I am serf",
+			want:     "I am evener",
 		},
 		{
 			name:     "ProviderFallsBackToBase",
@@ -281,7 +281,7 @@ func TestSectionResolver_Render(t *testing.T) {
 	t.Parallel()
 	// Section files.
 	sectionDir := t.TempDir()
-	writeSection(t, sectionDir, "identity.md", "I am serf")
+	writeSection(t, sectionDir, "identity.md", "I am evener")
 	writeSection(t, sectionDir, "values.md", "Be honest")
 
 	// Template file.
@@ -293,7 +293,7 @@ func TestSectionResolver_Render(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Render: %v", err)
 	}
-	want := "I am serf\n\nBe honest"
+	want := "I am evener\n\nBe honest"
 	if got != want {
 		t.Errorf("got %q, want %q", got, want)
 	}
@@ -305,7 +305,7 @@ func TestSectionResolver_Render(t *testing.T) {
 func TestSectionResolver_RenderConditional(t *testing.T) {
 	t.Parallel()
 	sectionDir := t.TempDir()
-	writeSection(t, sectionDir, "identity.md", "I am serf")
+	writeSection(t, sectionDir, "identity.md", "I am evener")
 	writeSection(t, sectionDir, "non-interactive.md", "headless mode")
 
 	tmplDir := t.TempDir()
@@ -400,7 +400,7 @@ func TestSectionResolver_RoleDiskOverride(t *testing.T) {
 func TestSectionResolver_SourceTracking(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
-	writeSection(t, dir, "identity.md", "I am serf")
+	writeSection(t, dir, "identity.md", "I am evener")
 
 	r := newTestResolver(t, dir, "openai", "coordinator")
 	r.Section("identity", promptData{})
@@ -414,8 +414,8 @@ func TestSectionResolver_SourceTracking(t *testing.T) {
 	for _, s := range sources {
 		if strings.Contains(s.Label, "identity.md") {
 			found = true
-			if s.Size != len("I am serf") {
-				t.Errorf("Size=%d, want %d", s.Size, len("I am serf"))
+			if s.Size != len("I am evener") {
+				t.Errorf("Size=%d, want %d", s.Size, len("I am evener"))
 			}
 		}
 	}

@@ -131,7 +131,7 @@ func RequestDeviceCode(ctx context.Context, client *http.Client, cfg Config) (De
 	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode == http.StatusNotFound {
-		return DeviceCode{}, fmt.Errorf("%w; use the browser flow (`serf openai login`) instead", ErrDeviceCodeNotEnabled)
+		return DeviceCode{}, fmt.Errorf("%w; use the browser flow (`evener openai login`) instead", ErrDeviceCodeNotEnabled)
 	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		return DeviceCode{}, fmt.Errorf("device code request failed with status %d", resp.StatusCode)

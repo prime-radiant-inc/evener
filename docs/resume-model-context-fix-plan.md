@@ -5,7 +5,7 @@
 Session `01KTHGQ3P1HZNX5B6919W8Z0HE` showed symptoms after resume where the agent appeared to use or reason about the wrong model/context state. The investigation found two likely causes:
 
 1. Restored sessions lose runtime-only profile resolution plumbing (`SessionConfig.ResolveProfile` / `Session.resolveProfile`).
-2. Resume model selection currently allows `SERF_MODEL` to override the persisted session model, which can surprise hub/browser resumes because spawned daemons inherit environment variables.
+2. Resume model selection currently allows `EVENER_MODEL` to override the persisted session model, which can surprise hub/browser resumes because spawned daemons inherit environment variables.
 
 The fix should make resume faithfully restore the session's persisted provider/model/profile-derived context, while still allowing explicit user-requested overrides in a controlled way.
 
@@ -13,7 +13,7 @@ The fix should make resume faithfully restore the session's persisted provider/m
 
 ### Fresh sessions
 
-Fresh `serf serve` sessions build a `SessionConfig` containing:
+Fresh `evener serve` sessions build a `SessionConfig` containing:
 
 ```go
 ResolveProfile: cmdutil.BuildResolveProfile(provCfg, hasProvConfig),
@@ -21,11 +21,11 @@ ResolveProfile: cmdutil.BuildResolveProfile(provCfg, hasProvConfig),
 
 Relevant files/functions:
 
-- `cmd/serf/serve.go`
+- `cmd/evener/serve.go`
   - `buildInitialProfile(...)`
   - fresh `agent.SessionConfig{... ResolveProfile: ...}`
   - `agent.NewSession(...)`
-- `cmd/serf/run.go`
+- `cmd/evener/run.go`
   - fresh `agent.SessionConfig{... ResolveProfile: ...}`
 - `agent/session_init.go`
   - `NewSession(...)` stores `resolveProfile: cfg.ResolveProfile`
@@ -66,8 +66,8 @@ Consequence: post-resume `Session.SetModel(...)` cannot use the configured resol
    - If the restored/current profile is wrong or shallowly mutated, context metrics/compaction thresholds can be wrong even if the UI displays a model label that looks correct.
 
 3. **Initial resume can be unintentionally overridden by environment.**
-   - `cmdutil.ResolveModelRef(modelValue, envModel, resumeProvider, resumeModel)` currently prefers CLI, then `SERF_MODEL`, then resume metadata.
-   - Hub resume does not pass `--model`, but the daemon inherits env, so `SERF_MODEL` can silently override persisted resume metadata.
+   - `cmdutil.ResolveModelRef(modelValue, envModel, resumeProvider, resumeModel)` currently prefers CLI, then `EVENER_MODEL`, then resume metadata.
+   - Hub resume does not pass `--model`, but the daemon inherits env, so `EVENER_MODEL` can silently override persisted resume metadata.
 
 ## Desired behavior
 
@@ -147,13 +147,13 @@ just like `NewSession` does.
 
 Affected call sites:
 
-- `cmd/serf/serve.go`
-- `cmd/serf/run.go`
+- `cmd/evener/serve.go`
+- `cmd/evener/run.go`
 - tests that call `RestoreSessionFromMeta`
 
 ### Step 3: Wire restore call sites with runtime resolver
 
-In `cmd/serf/serve.go`, build runtime restore config from the same runtime data fresh sessions use:
+In `cmd/evener/serve.go`, build runtime restore config from the same runtime data fresh sessions use:
 
 ```go
 restoreCfg := agent.SessionConfig{
@@ -165,7 +165,7 @@ restoreCfg := agent.SessionConfig{
 
 Then call the new restore API.
 
-Do the same in `cmd/serf/run.go`.
+Do the same in `cmd/evener/run.go`.
 
 Important: do not overwrite persisted config fields wholesale with CLI defaults. Runtime config should layer only non-persisted or explicitly overridden values.
 
@@ -196,14 +196,14 @@ Relevant existing tests to mirror:
 Current `cmdutil.ResolveModelRef(...)` is used for both fresh and resumed sessions and has precedence:
 
 1. CLI `--model`
-2. `SERF_MODEL`
+2. `EVENER_MODEL`
 3. resume metadata
 
 For faithful resume, change behavior so resumed sessions use:
 
 1. explicit CLI `--model` if provided
 2. resume metadata
-3. `SERF_MODEL` only if no resume metadata exists
+3. `EVENER_MODEL` only if no resume metadata exists
 
 Options:
 
@@ -219,7 +219,7 @@ Precedence:
 2. `resumeProvider/resumeModel`
 3. `envModel`
 
-Use it only in `cmd/serf/serve.go` and `cmd/serf/run.go` when resuming.
+Use it only in `cmd/evener/serve.go` and `cmd/evener/run.go` when resuming.
 
 #### Option B: Add a mode/boolean to `ResolveModelRef`
 
@@ -229,7 +229,7 @@ Recommended: **Option A** for clarity.
 
 Add tests in `cmdutil/cmdutil_test.go`:
 
-- `ResolveResumeModelRef` uses persisted metadata when `SERF_MODEL` is set.
+- `ResolveResumeModelRef` uses persisted metadata when `EVENER_MODEL` is set.
 - explicit CLI model still overrides persisted metadata.
 - env model works when no persisted metadata is available.
 
@@ -241,7 +241,7 @@ If resume is started with an explicit model override, log it clearly:
 [serve] resumed session <id> with model override <provider/model> (was <provider/model>)
 ```
 
-Do not log this for inherited `SERF_MODEL` if the new precedence ignores it.
+Do not log this for inherited `EVENER_MODEL` if the new precedence ignores it.
 
 Optional but useful:
 
@@ -251,15 +251,15 @@ Optional but useful:
 
 Hub resume code:
 
-- `cmd/serf-hub/spawn.go`
-  - `ResumeDaemon(...)` runs `serf serve --resume <sessionID>` and does not pass `--model`.
+- `cmd/evener-hub/spawn.go`
+  - `ResumeDaemon(...)` runs `evener serve --resume <sessionID>` and does not pass `--model`.
 
-With the changed precedence, hub resume should continue the persisted model regardless of `SERF_MODEL` in env.
+With the changed precedence, hub resume should continue the persisted model regardless of `EVENER_MODEL` in env.
 
 Add/adjust tests around hub resume if practical:
 
 - Ensure `ResumeDaemon` does not pass `--model` by default.
-- Unit-test lower-level `cmd/serf/serve.go`/`cmdutil` behavior rather than spawning full daemons if full e2e is too heavy.
+- Unit-test lower-level `cmd/evener/serve.go`/`cmdutil` behavior rather than spawning full daemons if full e2e is too heavy.
 
 ### Step 8: Run verification
 
@@ -268,17 +268,17 @@ Minimum focused tests:
 ```sh
 go test ./agent -run 'Restore|ResolveProfile|ContextMetrics|LiveModelMetadata'
 go test ./cmdutil -run 'Resolve.*ModelRef|BuildResolveProfile'
-go test ./cmd/serf -run 'Resume|buildInitialProfile'
-go test ./cmd/serf-hub -run 'Resume'
+go test ./cmd/evener -run 'Resume|buildInitialProfile'
+go test ./cmd/evener-hub -run 'Resume'
 ```
 
 Then broader smoke:
 
 ```sh
-go test ./agent ./cmdutil ./cmd/serf ./cmd/serf-hub
+go test ./agent ./cmdutil ./cmd/evener ./cmd/evener-hub
 ```
 
-If full `cmd/serf-hub` has known local-environment failures, document exact failing tests and run focused coverage instead.
+If full `cmd/evener-hub` has known local-environment failures, document exact failing tests and run focused coverage instead.
 
 ## Non-goals
 
@@ -292,7 +292,7 @@ If full `cmd/serf-hub` has known local-environment failures, document exact fail
 - A restored session has a non-nil profile resolver when the caller has configured provider resolution.
 - Post-resume `SetModel("provider/model")` uses the same resolution path as fresh sessions.
 - `ContextMetrics().Window` after restore and after post-restore model switch matches the resolved profile's context window.
-- Hub/browser resume without explicit model override uses persisted `meta.ProfileID/meta.Model`, not inherited `SERF_MODEL`.
+- Hub/browser resume without explicit model override uses persisted `meta.ProfileID/meta.Model`, not inherited `EVENER_MODEL`.
 - Explicit `--model provider/model` on resume still works and is visible in logs.
 - Existing fresh-session model switching tests continue to pass.
 
@@ -300,5 +300,5 @@ If full `cmd/serf-hub` has known local-environment failures, document exact fail
 
 1. `cmdutil`: add `ResolveResumeModelRef` and tests.
 2. `agent`: extend restore API/config; set `s.resolveProfile`; add restore resolver/context tests.
-3. `cmd/serf`: update `run.go` and `serve.go` resume call sites and model precedence; add tests.
-4. Optional `cmd/serf-hub`: add a small regression test or document that hub relies on `serf serve --resume` with no model override.
+3. `cmd/evener`: update `run.go` and `serve.go` resume call sites and model precedence; add tests.
+4. Optional `cmd/evener-hub`: add a small regression test or document that hub relies on `evener serve --resume` with no model override.

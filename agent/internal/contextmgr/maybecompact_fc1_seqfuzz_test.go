@@ -9,8 +9,8 @@ import (
 
 	"pgregory.net/rapid"
 
-	"primeradiant.com/serf/agent/schema"
-	"primeradiant.com/serf/llm"
+	"primeradiant.com/evener/agent/schema"
+	"primeradiant.com/evener/llm"
 
 	"testing"
 )
@@ -43,10 +43,10 @@ import (
 //	   into the checkpoint (which re-extracts them on re-compaction).
 //	I6 (pressure bound): the estimated post-op pressure is finite and non-negative.
 //
-// serf:fuzz rapid
+// evener:fuzz rapid
 func TestFc1MaybeCompactSeqFuzz(t *testing.T) {
-	if os.Getenv("SERF_FUZZ_TESTS") != "1" {
-		t.Skip("fuzz: skipped by default; run `make test-fuzz`, or SERF_FUZZ_TESTS=1 go test ./agent/internal/contextmgr -run TestFc1MaybeCompactSeqFuzz -count=1 -v")
+	if os.Getenv("EVENER_FUZZ_TESTS") != "1" {
+		t.Skip("fuzz: skipped by default; run `make test-fuzz`, or EVENER_FUZZ_TESTS=1 go test ./agent/internal/contextmgr -run TestFc1MaybeCompactSeqFuzz -count=1 -v")
 	}
 	rapid.Check(t, func(rt *rapid.T) {
 		m := newFc1MaybeCompactModel(rapid.IntRange(1, 4).Draw(rt, "preserveRecent"))

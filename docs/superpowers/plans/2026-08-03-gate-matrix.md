@@ -1,8 +1,8 @@
-# Serf Gate Matrix Implementation Plan
+# Evener Gate Matrix Implementation Plan
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Make Serf's build and test gate ownership authoritative in `docs/testing.md`, run the existing browser guards automatically in CI, and add the missing deterministic Go test stream to the existing CI job decomposition.
+**Goal:** Make Evener's build and test gate ownership authoritative in `docs/testing.md`, run the existing browser guards automatically in CI, and add the missing deterministic Go test stream to the existing CI job decomposition.
 
 **Architecture:** Keep `make merge-approval-gate` as the serial local contract `lint -> build -> ROOT_FULL=1 make test`. Add one small `make test-web-browser` target that owns the three existing Chrome-based browser guards without folding them into the deterministic `test-web` target. Preserve the current CI jobs, run the browser target from the web job, and run `ROOT_FULL=1 WEB=0 make test` from the Go job because the web job already owns frontend unit/type/lint coverage.
 
@@ -29,7 +29,7 @@
 
 **Interfaces:**
 - Consumes: the existing `web-preflight` target and the three committed npm scripts `layoutguard`, `overflowguard`, and `spawnguard`.
-- Produces: `make test-web-browser`, which runs all three guards from `cmd/serf-hub/frontend`, reports each guard's exit status, runs every guard even if an earlier guard fails, and returns the first nonzero guard status.
+- Produces: `make test-web-browser`, which runs all three guards from `cmd/evener-hub/frontend`, reports each guard's exit status, runs every guard even if an earlier guard fails, and returns the first nonzero guard status.
 
 - [x] **Step 1: Establish the RED wiring case.**
 
@@ -51,7 +51,7 @@ Add this target after `test-web` and before the binary build targets:
 # Run every guard so one missing browser or failing case does not hide the
 # remaining guard's verdict; return the first nonzero status.
 test-web-browser: web-preflight
-	@set -u; cd cmd/serf-hub/frontend && \
+	@set -u; cd cmd/evener-hub/frontend && \
 	status=0; \
 	for guard in layoutguard overflowguard spawnguard; do \
 		if npm run $$guard; then \
@@ -105,7 +105,7 @@ Replace the separate `make build-web` and `go build ./...` steps with one named 
         run: make build && go build ./...
 ```
 
-`make build` owns `build-runtime`, which owns `build-web` and the `serf`/`serf-hub` pair script; `go build ./...` retains the existing all-package compile check.
+`make build` owns `build-runtime`, which owns `build-web` and the `evener`/`evener-hub` pair script; `go build ./...` retains the existing all-package compile check.
 
 - [x] **Step 2: Add the browser gate to the web job.**
 
@@ -161,11 +161,11 @@ Document `make test-web-browser` as a required CI browser gate using headless Ch
 
 - [x] **Step 3: Add live, release, and operational rows.**
 
-Classify provider/live/e2e commands as explicit opt-in only, including `SERF_LIVE_TESTS=1`, `SERF_MCP_E2E=1`, `SERF_OPENAI_CODEX_E2E=1`, `SERF_ANTHROPIC_E2E=1`, `SERF_E2E_LIVE=1`, and `SERF_SEATBELT_LIVE=1` where their existing commands are repository-owned. Classify `make dist` as release/distribution-only, `web-preflight` and `disk-reclaim.sh --check` as setup/operational prerequisites, and launcher/managed-service/SDD/Kata responsibilities as outside Serf.
+Classify provider/live/e2e commands as explicit opt-in only, including `EVENER_LIVE_TESTS=1`, `EVENER_MCP_E2E=1`, `EVENER_OPENAI_CODEX_E2E=1`, `EVENER_ANTHROPIC_E2E=1`, `EVENER_E2E_LIVE=1`, and `EVENER_SEATBELT_LIVE=1` where their existing commands are repository-owned. Classify `make dist` as release/distribution-only, `web-preflight` and `disk-reclaim.sh --check` as setup/operational prerequisites, and launcher/managed-service/SDD/Kata responsibilities as outside Evener.
 
 - [x] **Step 4: Record mismatches and intentional gaps.**
 
-List the current CI decomposition, browser dependency limitation, WebKit/Safari gap, and any command that remains manual or release-only. Use functional owners (`Serf CI`, `frontend`, `release`, `tooling`, or `launcher/worktree manager`) and reference existing Kata IDs only; do not create unrelated Katas during this task.
+List the current CI decomposition, browser dependency limitation, WebKit/Safari gap, and any command that remains manual or release-only. Use functional owners (`Evener CI`, `frontend`, `release`, `tooling`, or `launcher/worktree manager`) and reference existing Kata IDs only; do not create unrelated Katas during this task.
 
 - [x] **Step 5: Verify documentation/command agreement.**
 
@@ -227,7 +227,7 @@ Confirm that only the five scoped implementation files and this plan are changed
 
 ```sh
 git add Makefile .github/workflows/ci.yml docs/testing.md
-git commit -m "test: publish and wire Serf gate matrix"
+git commit -m "test: publish and wire Evener gate matrix"
 ```
 
 The commit body must explain the canonical gate, the separate browser gate, the CI decomposition, deterministic/live ownership, and the intentionally unresolved WebKit/Safari gap.

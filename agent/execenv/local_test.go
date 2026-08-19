@@ -568,7 +568,7 @@ func TestLocalExecutionEnvironment_ListDirectory_Depth(t *testing.T) {
 }
 
 func TestEnvVarPolicy_InheritNone(t *testing.T) {
-	t.Setenv("SERF_TEST_MARKER", "should_not_appear")
+	t.Setenv("EVENER_TEST_MARKER", "should_not_appear")
 
 	env := NewLocalExecutionEnvironment(t.TempDir())
 	env.EnvPolicy = EnvPolicyNone
@@ -578,7 +578,7 @@ func TestEnvVarPolicy_InheritNone(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ExecCommand: %v", err)
 	}
-	if strings.Contains(res.Stdout, "SERF_TEST_MARKER=") {
+	if strings.Contains(res.Stdout, "EVENER_TEST_MARKER=") {
 		t.Fatal("inherit-none should not pass through parent env vars")
 	}
 	// PATH won't be inherited either (bash may set its own default)
@@ -603,7 +603,7 @@ func TestEnvVarPolicy_InheritNone_AllowsExtraVars(t *testing.T) {
 }
 
 func TestEnvVarPolicy_CoreOnly(t *testing.T) {
-	t.Setenv("SERF_TEST_MARKER", "should_not_appear")
+	t.Setenv("EVENER_TEST_MARKER", "should_not_appear")
 
 	env := NewLocalExecutionEnvironment(t.TempDir())
 	env.EnvPolicy = EnvPolicyCoreOnly
@@ -620,7 +620,7 @@ func TestEnvVarPolicy_CoreOnly(t *testing.T) {
 	if !strings.Contains(out, "HOME=") {
 		t.Fatal("core-only should include HOME")
 	}
-	if strings.Contains(out, "SERF_TEST_MARKER=") {
+	if strings.Contains(out, "EVENER_TEST_MARKER=") {
 		t.Fatal("core-only should not include arbitrary parent vars")
 	}
 }
@@ -659,7 +659,7 @@ func TestEnvVarPolicy_All(t *testing.T) {
 
 func TestEnvVarPolicy_Default_FiltersSensitive(t *testing.T) {
 	t.Setenv("MY_API_KEY", "secret123")
-	t.Setenv("SERF_TEST_MARKER", "should_appear")
+	t.Setenv("EVENER_TEST_MARKER", "should_appear")
 
 	env := NewLocalExecutionEnvironment(t.TempDir())
 	// EnvPolicy zero value is EnvPolicyDefault
@@ -672,7 +672,7 @@ func TestEnvVarPolicy_Default_FiltersSensitive(t *testing.T) {
 	if strings.Contains(res.Stdout, "MY_API_KEY=") {
 		t.Fatal("default policy should filter sensitive vars")
 	}
-	if !strings.Contains(res.Stdout, "SERF_TEST_MARKER=should_appear") {
+	if !strings.Contains(res.Stdout, "EVENER_TEST_MARKER=should_appear") {
 		t.Fatal("default policy should pass through non-sensitive vars")
 	}
 }
@@ -688,7 +688,7 @@ func TestExecCommand_AddsVenvBinToPATH_WhenPresent(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	cmdName := "_serf_venv_marker_cmd"
+	cmdName := "_evener_venv_marker_cmd"
 	scriptPath := filepath.Join(venvBin, cmdName)
 	if err := os.WriteFile(scriptPath, []byte("#!/bin/sh\necho venv_ok\n"), 0o755); err != nil {
 		t.Fatal(err)
@@ -718,7 +718,7 @@ func TestExecCommand_DoesNotInventVenvBinPATH_WhenAbsent(t *testing.T) {
 	dir := t.TempDir()
 	env := NewLocalExecutionEnvironment(dir)
 
-	cmdName := "_serf_nonexistent_venv_cmd"
+	cmdName := "_evener_nonexistent_venv_cmd"
 	res, err := env.ExecCommand(context.Background(), cmdName, 30_000, "", nil)
 	if err == nil {
 		t.Fatalf("expected error (stdout=%q stderr=%q)", res.Stdout, res.Stderr)
@@ -1070,14 +1070,14 @@ func TestExecArgv_UsesInjectedLocalVenvPath(t *testing.T) {
 	if err := os.MkdirAll(bin, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	script := filepath.Join(bin, "serf-execargv-venv-fixture")
+	script := filepath.Join(bin, "evener-execargv-venv-fixture")
 	writeExecFixture(t, script, "#!/bin/sh\nprintf 'venv:<%s>\\n' \"$1\"\n")
 	env := NewLocalExecutionEnvironment(dir)
 
 	// See the comment in TestExecArgv_PreservesArgvAndExitSemantics: this test
 	// asserts venv PATH injection, not exec latency, so the timeout budget is
 	// generous and t.Context() (not the budget) is the real deadline.
-	res, err := env.ExecArgv(t.Context(), "serf-execargv-venv-fixture", []string{"value"}, 300_000, "", nil)
+	res, err := env.ExecArgv(t.Context(), "evener-execargv-venv-fixture", []string{"value"}, 300_000, "", nil)
 	if err != nil {
 		t.Fatalf("ExecArgv: %v (res=%+v)", err, res)
 	}

@@ -4,7 +4,7 @@
 
 **Goal:** manage_worktree stops failing at its own job — resumed sessions
 own their lanes, force means the sanctioned cascade, unmanaged worktrees
-get an explicit adoption path — and serf never instructs a tool the
+get an explicit adoption path — and evener never instructs a tool the
 session doesn't have.
 
 **Architecture:** Implements the WS8 section of
@@ -33,7 +33,7 @@ verified 2026-08-06; trust symbol names.
   never touches an unmanaged worktree.
 - TDD; real git worktrees in tests (the package's existing fixtures), no
   mocks; multi-module gates per commit, exit codes only. Gates must include
-  `make lint` — build+test alone does not compile `//go:build serffuzz`
+  `make lint` — build+test alone does not compile `//go:build evenerfuzz`
   sources, and a broken compile floor once survived a full review round.
 
 ---
@@ -43,7 +43,7 @@ verified 2026-08-06; trust symbol names.
 **The original task's premise was false.** It assumed resume mints a new
 session id and that lane ownership therefore breaks. It does not: resume
 preserves `meta.ID` (`agent/session_init.go`, `id: meta.ID`), and
-`cmd/serf-hub/spawn.go` documents that as load-bearing — a fresh id is
+`cmd/evener-hub/spawn.go` documents that as load-bearing — a fresh id is
 minted only by `/clear`. The ownership gate already passes for a resumed
 session, so the prescribed Step-1 failing test could not be written. The
 prescribed fix — re-stamping `ParentSessionID` on inherited descriptors —

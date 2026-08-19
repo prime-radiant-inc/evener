@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	"primeradiant.com/serf/envvars"
+	"primeradiant.com/evener/envvars"
 )
 
 // FuzzLiveEvalPaths drives the package's whole exported surface: Enabled (the
@@ -24,15 +24,15 @@ import (
 // floor, and the precedence oracle below is the real, semantic invariant.
 func FuzzLiveEvalPaths(f *testing.F) {
 	f.Add("", "", "", "", "")
-	f.Add("1", "/state", "/home/serf", "", "")
-	f.Add("0", "", "/home/serf", "", "")
-	f.Add("true", "  /state  ", "  /home/serf  ", "", "")
+	f.Add("1", "/state", "/home/evener", "", "")
+	f.Add("0", "", "/home/evener", "", "")
+	f.Add("true", "  /state  ", "  /home/evener  ", "", "")
 	// All three provider-config precedence arms, and combinations of
 	// empty/nonempty, so every arm has its own seed:
-	f.Add("1", "", "/home/serf", "/config/providers.toml", "")          // SERF_PROVIDERS_CONFIG wins outright
-	f.Add("1", "", "/home/serf", "/config/providers.toml", "/statedir") //   ...even with SERF_STATE_DIR also set
-	f.Add("1", "", "/home/serf", "", "/statedir")                       // SERF_STATE_DIR wins when config env is empty
-	f.Add("1", "", "/home/serf", "", "")                                // falls all the way through to userHome/.serf
+	f.Add("1", "", "/home/evener", "/config/providers.toml", "")          // EVENER_PROVIDERS_CONFIG wins outright
+	f.Add("1", "", "/home/evener", "/config/providers.toml", "/statedir") //   ...even with EVENER_STATE_DIR also set
+	f.Add("1", "", "/home/evener", "", "/statedir")                       // EVENER_STATE_DIR wins when config env is empty
+	f.Add("1", "", "/home/evener", "", "")                                // falls all the way through to userHome/.evener
 	f.Add("", "", "", "", "  ")
 
 	f.Fuzz(func(t *testing.T, enabledValue, stateHome, userHome, providersConfigEnv, stateDirEnv string) {
@@ -54,8 +54,8 @@ func FuzzLiveEvalPaths(f *testing.F) {
 			t.Fatalf("Enabled(%q) = %v, want %v", enabledValue, got, want)
 		}
 
-		t.Setenv(envvars.SERFProvidersConfig.Name, providersConfigEnv)
-		t.Setenv(envvars.SERFStateDir.Name, stateDirEnv)
+		t.Setenv(envvars.EVENERProvidersConfig.Name, providersConfigEnv)
+		t.Setenv(envvars.EVENERStateDir.Name, stateDirEnv)
 
 		gotStateHome, gotProviders := Paths(stateHome, userHome)
 
@@ -72,9 +72,9 @@ func FuzzLiveEvalPaths(f *testing.F) {
 			t.Fatalf("Paths(%q, %q) state home = %q, want %q", stateHome, userHome, gotStateHome, wantStateHome)
 		}
 
-		// Three-level precedence, per the doc comment: SERF_PROVIDERS_CONFIG
-		// wins outright; else SERF_STATE_DIR/providers.toml; else
-		// userHome/.serf/providers.toml.
+		// Three-level precedence, per the doc comment: EVENER_PROVIDERS_CONFIG
+		// wins outright; else EVENER_STATE_DIR/providers.toml; else
+		// userHome/.evener/providers.toml.
 		var wantProviders string
 		switch {
 		case trimmedProvidersConfigEnv != "":
@@ -82,10 +82,10 @@ func FuzzLiveEvalPaths(f *testing.F) {
 		case trimmedStateDirEnv != "":
 			wantProviders = filepath.Join(trimmedStateDirEnv, "providers.toml")
 		default:
-			wantProviders = filepath.Join(trimmedUserHome, ".serf", "providers.toml")
+			wantProviders = filepath.Join(trimmedUserHome, ".evener", "providers.toml")
 		}
 		if gotProviders != wantProviders {
-			t.Fatalf("Paths(%q, %q) with SERF_PROVIDERS_CONFIG=%q SERF_STATE_DIR=%q providers = %q, want %q",
+			t.Fatalf("Paths(%q, %q) with EVENER_PROVIDERS_CONFIG=%q EVENER_STATE_DIR=%q providers = %q, want %q",
 				stateHome, userHome, providersConfigEnv, stateDirEnv, gotProviders, wantProviders)
 		}
 	})

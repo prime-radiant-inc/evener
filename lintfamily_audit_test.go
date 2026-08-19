@@ -1,4 +1,4 @@
-package serf_test
+package evener_test
 
 import (
 	"os"
@@ -15,12 +15,12 @@ const (
 
 // TestCIRunsEveryFamilyOfTheLintGate keeps the Makefile the only list of lint
 // families. CI used to re-type the families one step at a time, and a family
-// added to the local gate (`lint-serffuzz`, `lint-generated`) silently never
+// added to the local gate (`lint-evenerfuzz`, `lint-generated`) silently never
 // ran on a pull request — no error, no annotation, nothing to notice. The
 // audit passes as soon as CI invokes the aggregate `make lint`, which is what
 // the fix does; it still accepts a CI that names every family individually
 // through make, so the shape stays free while the list stays single-sourced.
-// A family whose command CI inlines by hand (`go run ./cmd/serf-namingcheck`
+// A family whose command CI inlines by hand (`go run ./cmd/evener-namingcheck`
 // instead of `make lint-naming`) counts as missing on purpose: an inlined copy
 // is the same silent drift one layer down. Kata wcch.
 func TestCIRunsEveryFamilyOfTheLintGate(t *testing.T) {
@@ -65,8 +65,8 @@ func TestCISetsStrictGitleaksModeOnScanSteps(t *testing.T) {
 				continue
 			}
 			scanSteps++
-			if step.Env["SERF_GITLEAKS_REQUIRED"] != "1" {
-				t.Fatalf("job %s step %q runs a CI secret scan without SERF_GITLEAKS_REQUIRED=1", jobName, step.Name)
+			if step.Env["EVENER_GITLEAKS_REQUIRED"] != "1" {
+				t.Fatalf("job %s step %q runs a CI secret scan without EVENER_GITLEAKS_REQUIRED=1", jobName, step.Name)
 			}
 		}
 	}

@@ -10,13 +10,13 @@ import (
 	"testing"
 	"time"
 
-	"primeradiant.com/serf/agent/events"
-	"primeradiant.com/serf/agent/execenv"
-	"primeradiant.com/serf/agent/internal/tool"
-	"primeradiant.com/serf/agent/plugin"
-	"primeradiant.com/serf/agent/provenance"
-	"primeradiant.com/serf/agent/schema"
-	"primeradiant.com/serf/llm"
+	"primeradiant.com/evener/agent/events"
+	"primeradiant.com/evener/agent/execenv"
+	"primeradiant.com/evener/agent/internal/tool"
+	"primeradiant.com/evener/agent/plugin"
+	"primeradiant.com/evener/agent/provenance"
+	"primeradiant.com/evener/agent/schema"
+	"primeradiant.com/evener/llm"
 )
 
 // newTestSession creates a minimal *Session backed by a no-op fakeAdapter.
@@ -1019,7 +1019,7 @@ func TestGrantToolsCannotRegrantAskUser(t *testing.T) {
 
 // TestGrantToolsAskUserAliasNeverSilentlyGranted covers the Claude-style
 // spelling "AskUserQuestion". Unlike a plugin's static `tools:` frontmatter
-// (converted at load time via toolname.ClaudeToSerf, agent/plugin/agents.go),
+// (converted at load time via toolname.ClaudeToEvener, agent/plugin/agents.go),
 // grant_tools is a runtime model argument canonicalized only through the
 // provider profile's canonical->wire-name map
 // (Session.canonicalizeToolNames -> Profile.ToolNameMap), which carries

@@ -158,14 +158,14 @@ Disk exhaustion never announces itself otherwise. It surfaces as
 open errors — four test failures were once root-caused to it after being
 investigated as flakes.
 
-**`make build` builds the runtime pair only — serf and serf-hub, not
-serf-tui.** serf-tui has its own target. A live TUI check after `make
+**`make build` builds the runtime pair only — evener and evener-hub, not
+evener-tui.** evener-tui has its own target. A live TUI check after `make
 build` therefore runs a stale binary, which reproduces whatever the old
 code did while every test of the new code passes. This produced a
 "right side of the chip strip missing at 200 columns" mystery once, and
 a full re-investigation of the already-landed fix a second time (kata
 wqyx, both occurrences). Before any live TUI verification:
-`go build -o serf-tui ./cmd/serf-tui/` and check the binary's mtime.
+`go build -o evener-tui ./cmd/evener-tui/` and check the binary's mtime.
 
 **Chrome is one shared instance.** With eight browser agents up, 41 tabs
 across 13 ports accumulate and `new_tab` followed by an eval lands on
@@ -470,7 +470,7 @@ planning session proposed both a `job_wait` tool that
 `docs/job-control.md` explicitly rejects and the re-exposure of a
 parameter removed the day before, from code reading alone.
 
-Before writing a spec, plan section, or fix for any serf subsystem, find
+Before writing a spec, plan section, or fix for any evener subsystem, find
 and read its decision records (grep `docs/` and
 `docs/superpowers/specs/`) and cite them in the plan. When a proposal
 contradicts a record, that is a question for Jesse, not a fix. The audit

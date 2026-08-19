@@ -7,8 +7,8 @@ import (
 	"strings"
 	"testing"
 
-	"primeradiant.com/serf/agent/execenv"
-	"primeradiant.com/serf/agent/internal/delegatestore"
+	"primeradiant.com/evener/agent/execenv"
+	"primeradiant.com/evener/agent/internal/delegatestore"
 )
 
 // Task 20: real liveWorkUnder plumbing (spec §5 remove step 4, §7
@@ -18,8 +18,8 @@ import (
 // (session_tools_worktree_remove_test.go's stub tests cover the guard CALL
 // site only).
 //
-// The subject throughout is serf's own guard: what liveWorkUnder enumerates from
-// serf's shell jobs, stable delegate descriptors, and subagent envs, and how
+// The subject throughout is evener's own guard: what liveWorkUnder enumerates from
+// evener's shell jobs, stable delegate descriptors, and subagent envs, and how
 // remove and prune respond to it.
 // The blockers stay real (real background shell jobs, real child sessions); only
 // the lane the guard is asked about is built on the scripted git boundary

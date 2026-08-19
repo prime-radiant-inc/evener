@@ -6,9 +6,9 @@ import (
 	"slices"
 	"strings"
 
-	"primeradiant.com/serf/agent/execenv"
-	"primeradiant.com/serf/agent/mcpconfig"
-	"primeradiant.com/serf/agent/sandbox"
+	"primeradiant.com/evener/agent/execenv"
+	"primeradiant.com/evener/agent/mcpconfig"
+	"primeradiant.com/evener/agent/sandbox"
 )
 
 // SessionInfraRoots returns the session's hook and MCP-server paths: the read/
@@ -40,10 +40,10 @@ import (
 // # Only inputs the model cannot write may feed this
 //
 // MCP servers come from mcpconfig.DiscoverTrusted, NOT Discover: the per-project
-// layer (<git root>/.serf/mcp.json) sits inside the model's own write surface, and
+// layer (<git root>/.evener/mcp.json) sits inside the model's own write surface, and
 // a sandbox grant derived from a model-writable file would break SandboxPolicy's
 // core promise that nothing the model does mid-session can widen its own box. The
-// concrete escalation: plant .serf/mcp.json naming a path, spawn a delegate with
+// concrete escalation: plant .evener/mcp.json naming a path, spawn a delegate with
 // sandbox="restricted" (which re-derives these roots live), and read whatever you
 // named. A project-declared MCP server still CONNECTS normally — it just cannot
 // hand itself filesystem roots. Its program must already be reachable (inside the

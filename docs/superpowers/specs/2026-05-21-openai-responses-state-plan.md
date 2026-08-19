@@ -2,11 +2,11 @@
 
 Date: 2026-05-21
 Branch: `codex-backend-parity`
-Worktree: `/tmp/serf-codex-backend-parity`
+Worktree: `/tmp/evener-codex-backend-parity`
 
 ## Context
 
-Serf now sends Codex-shaped session metadata to the ChatGPT/Codex Responses backend:
+Evener now sends Codex-shaped session metadata to the ChatGPT/Codex Responses backend:
 
 - `prompt_cache_key`
 - install metadata in `client_metadata`
@@ -14,11 +14,11 @@ Serf now sends Codex-shaped session metadata to the ChatGPT/Codex Responses back
 - default `originator` and `User-Agent`
 - `include: ["reasoning.encrypted_content"]` when reasoning is enabled
 
-The remaining correctness gap is that requesting encrypted reasoning is not enough. OpenAI returns encrypted reasoning as response output state, and stateless clients must pass it back in later Responses API requests. Serf currently ignores `type: "reasoning"` response items, so the encrypted state is dropped before the next turn.
+The remaining correctness gap is that requesting encrypted reasoning is not enough. OpenAI returns encrypted reasoning as response output state, and stateless clients must pass it back in later Responses API requests. Evener currently ignores `type: "reasoning"` response items, so the encrypted state is dropped before the next turn.
 
 ## Goals
 
-- Round-trip OpenAI `reasoning.encrypted_content` through Serf history without displaying it as user-visible reasoning text.
+- Round-trip OpenAI `reasoning.encrypted_content` through Evener history without displaying it as user-visible reasoning text.
 - Expose easy Responses API fields in `llm.Request` and high-level generation options:
   - `previous_response_id`
   - `conversation`
@@ -29,7 +29,7 @@ The remaining correctness gap is that requesting encrypted reasoning is not enou
   - `max_tool_calls`
   - `background`
   - explicit `store`
-- Keep Serf agent sessions stateless by default. Do not enable `previous_response_id` or `conversation` automatically.
+- Keep Evener agent sessions stateless by default. Do not enable `previous_response_id` or `conversation` automatically.
 - Preserve current default `store:false` unless a caller explicitly sets `Store`.
 - Keep Chat Completions fallback tolerant by ignoring Responses-only state there.
 
@@ -128,7 +128,7 @@ In `buildRequestBody`, serialize non-empty request fields:
 
 ### Session behavior
 
-The existing session history append path already appends `resp.Message` after model responses. Once `fromResponses` preserves encrypted reasoning in the assistant message, normal Serf history and transcript persistence should carry it forward.
+The existing session history append path already appends `resp.Message` after model responses. Once `fromResponses` preserves encrypted reasoning in the assistant message, normal Evener history and transcript persistence should carry it forward.
 
 Agent sessions should not set `PreviousResponseID` or `ConversationID` by default. Those fields are explicit controls for callers that choose server-side state.
 
@@ -213,9 +213,9 @@ Tests:
 Run focused tests:
 
 ```sh
-GOCACHE=/tmp/serf-gocache go test ./llm/providers/openai -run 'EncryptedReasoning|ResponsesControls|MapsToResponsesAPI|OAuthTransport' -count=1
-GOCACHE=/tmp/serf-gocache go test ./agent -run 'EncryptedReasoning|PopulatesModelRequestMetadata|ReasoningEffort' -count=1
-GOCACHE=/tmp/serf-gocache go test ./llm -run 'Generate|StreamGenerate|ReasoningText' -count=1
+GOCACHE=/tmp/evener-gocache go test ./llm/providers/openai -run 'EncryptedReasoning|ResponsesControls|MapsToResponsesAPI|OAuthTransport' -count=1
+GOCACHE=/tmp/evener-gocache go test ./agent -run 'EncryptedReasoning|PopulatesModelRequestMetadata|ReasoningEffort' -count=1
+GOCACHE=/tmp/evener-gocache go test ./llm -run 'Generate|StreamGenerate|ReasoningText' -count=1
 git diff --check
 ```
 

@@ -1,11 +1,11 @@
-//go:build serffuzz
+//go:build evenerfuzz
 
 package events
 
 import (
 	"testing"
 
-	"primeradiant.com/serf/llm"
+	"primeradiant.com/evener/llm"
 )
 
 func FuzzSessionEventToStreamEvent(f *testing.F) {

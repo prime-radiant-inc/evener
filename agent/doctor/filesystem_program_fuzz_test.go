@@ -1,4 +1,4 @@
-//go:build serffuzz
+//go:build evenerfuzz
 
 package doctor
 
@@ -14,11 +14,11 @@ import (
 	"testing"
 	"time"
 
-	"primeradiant.com/serf/agent/internal/delegatestore"
-	"primeradiant.com/serf/agent/internal/jobstore"
-	"primeradiant.com/serf/agent/schema"
-	"primeradiant.com/serf/llm"
-	"primeradiant.com/serf/llm/apilog"
+	"primeradiant.com/evener/agent/internal/delegatestore"
+	"primeradiant.com/evener/agent/internal/jobstore"
+	"primeradiant.com/evener/agent/schema"
+	"primeradiant.com/evener/llm"
+	"primeradiant.com/evener/llm/apilog"
 )
 
 const doctorFilesystemAbsentSID = "02wLIRxqmq3AUo6vl2OW3A"
@@ -231,7 +231,7 @@ func newDoctorFilesystemProgramFixture(t *testing.T, raw []byte) doctorFilesyste
 	writeSession(t, fixture.overrideBase, fixture.overrideSID)
 	fixture.directBase = t.TempDir()
 	fixture.directHash = "Project-direct-0123456789"
-	writeSession(t, filepath.Join(fixture.directBase, "serf", "projects", fixture.directHash), fixture.rootSID)
+	writeSession(t, filepath.Join(fixture.directBase, "evener", "projects", fixture.directHash), fixture.rootSID)
 	return fixture
 }
 
@@ -277,10 +277,10 @@ func runDoctorFilesystemProgram(t *testing.T, fixture doctorFilesystemProgramFix
 	}
 	trace.Paths = append(trace.Paths, direct)
 
-	t.Setenv("SERF_STATE_DIR", fixture.base)
+	t.Setenv("EVENER_STATE_DIR", fixture.base)
 	t.Setenv("XDG_STATE_HOME", filepath.Join(fixture.base, "xdg"))
 	trace.ResolvedStateBases = append(trace.ResolvedStateBases, ResolveStateBase("flag-state"), ResolveStateBase(""))
-	t.Setenv("SERF_STATE_DIR", "")
+	t.Setenv("EVENER_STATE_DIR", "")
 	trace.ResolvedStateBases = append(trace.ResolvedStateBases, ResolveStateBase(""))
 	if trace.ResolvedStateBases[0] != "flag-state" || trace.ResolvedStateBases[1] != fixture.base || trace.ResolvedStateBases[2] != filepath.Join(fixture.base, "xdg") {
 		t.Fatalf("ResolveStateBase precedence = %#v", trace.ResolvedStateBases)

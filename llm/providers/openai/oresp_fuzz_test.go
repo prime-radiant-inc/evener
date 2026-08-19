@@ -12,7 +12,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"primeradiant.com/serf/llm"
+	"primeradiant.com/evener/llm"
 )
 
 // This file fuzzes the OpenAI Responses/ChatCompletions build+stream path:

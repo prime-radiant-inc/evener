@@ -15,13 +15,13 @@ import (
 
 	"pgregory.net/rapid"
 
-	"primeradiant.com/serf/agent/execenv"
-	"primeradiant.com/serf/agent/internal/agenttest"
-	"primeradiant.com/serf/agent/internal/clock"
-	"primeradiant.com/serf/agent/internal/tool"
-	"primeradiant.com/serf/agent/schema"
-	"primeradiant.com/serf/fuzz/promoter"
-	"primeradiant.com/serf/llm"
+	"primeradiant.com/evener/agent/execenv"
+	"primeradiant.com/evener/agent/internal/agenttest"
+	"primeradiant.com/evener/agent/internal/clock"
+	"primeradiant.com/evener/agent/internal/tool"
+	"primeradiant.com/evener/agent/schema"
+	"primeradiant.com/evener/fuzz/promoter"
+	"primeradiant.com/evener/llm"
 )
 
 // TestLifecycleSeqFuzz is roadmap item 8.3's first stateful fuzz of the agent
@@ -90,13 +90,13 @@ import (
 // A discovered failure is routed through fuzz/promoter (mirroring the Phase-2
 // appwire target): a deterministic reproduction survives the flake-guard and is
 // emitted to a temp dir as a regression test; a flaky one is quarantined.
-// serf:fuzz rapid
+// evener:fuzz rapid
 func TestLifecycleSeqFuzz(t *testing.T) {
-	if os.Getenv("SERF_FUZZ_TESTS") != "1" {
-		t.Skip("fuzz: skipped by default; run `make test-fuzz`, or SERF_FUZZ_TESTS=1 go test ./agent -run TestLifecycleSeqFuzz -count=1 -v")
+	if os.Getenv("EVENER_FUZZ_TESTS") != "1" {
+		t.Skip("fuzz: skipped by default; run `make test-fuzz`, or EVENER_FUZZ_TESTS=1 go test ./agent -run TestLifecycleSeqFuzz -count=1 -v")
 	}
 	// Default-off: PersistPaths returns the temp fallbacks (no tree writes) for
-	// every gate run; the local triage tool sets SERF_FUZZ_PERSIST to capture a
+	// every gate run; the local triage tool sets EVENER_FUZZ_PERSIST to capture a
 	// live-found crasher durably (see fuzz/promoter/persist.go).
 	pkgDir, err := os.Getwd()
 	if err != nil {
@@ -580,7 +580,7 @@ func lifecycleOracleRunInjected(art lifecycleArtifact, inj lifecycleInject) *pro
 
 const (
 	lifecycleSurface = "agent-lifecycle-seq"
-	lifecycleWorkDir = "/serf-fuzz-nonexistent-workdir"
+	lifecycleWorkDir = "/evener-fuzz-nonexistent-workdir"
 )
 
 // lifecycleOpResult carries an op's outcome: completed, panicked (recovered), or wedged.
@@ -1032,8 +1032,8 @@ func captureLifecycleStack() []string {
 	for {
 		fr, more := frames.Next()
 		fn := fr.Function
-		if i := strings.LastIndex(fn, "serf/"); i >= 0 {
-			fn = fn[i+len("serf/"):]
+		if i := strings.LastIndex(fn, "evener/"); i >= 0 {
+			fn = fn[i+len("evener/"):]
 		}
 		out = append(out, fmt.Sprintf("%s:%d", fn, fr.Line))
 		if !more || len(out) >= 8 {
@@ -1060,7 +1060,7 @@ var _ clock.Clock = (*agenttest.FakeClock)(nil)
 // second sighting dedups. This proves the four hooks wire up without depending
 // on the live fuzzer finding a real bug. The panicking tool is a fixture (it
 // locks in that ProcessInput propagates a tool-handler panic to the caller), not
-// a claim about serf production code.
+// a claim about evener production code.
 func TestLifecycleAdapter_PromotesDeterministicFailure(t *testing.T) {
 	inject := lifecycleInject{panicTool: true}
 	art := lifecycleArtifact{

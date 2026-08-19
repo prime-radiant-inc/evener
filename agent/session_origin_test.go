@@ -3,20 +3,20 @@ package agent
 import (
 	"testing"
 
-	"primeradiant.com/serf/agent/execenv"
-	"primeradiant.com/serf/agent/schema"
-	"primeradiant.com/serf/envvars"
-	"primeradiant.com/serf/llm"
+	"primeradiant.com/evener/agent/execenv"
+	"primeradiant.com/evener/agent/schema"
+	"primeradiant.com/evener/envvars"
+	"primeradiant.com/evener/llm"
 )
 
-// TestSessionOriginFromEnv proves a fresh session captures SERF_SESSION_ORIGIN
+// TestSessionOriginFromEnv proves a fresh session captures EVENER_SESSION_ORIGIN
 // at creation time, so the hub can later classify an all-"test" project into
 // the "Test runs" group (Task 15).
 func TestSessionOriginFromEnv(t *testing.T) {
-	t.Setenv(envvars.SERFSessionOrigin.Name, "test")
+	t.Setenv(envvars.EVENERSessionOrigin.Name, "test")
 	sess := newTestSession(t)
 	if got := sess.Meta().Origin; got != "test" {
-		t.Fatalf("Origin should come from SERF_SESSION_ORIGIN, got %q", got)
+		t.Fatalf("Origin should come from EVENER_SESSION_ORIGIN, got %q", got)
 	}
 }
 
@@ -48,18 +48,18 @@ func restoreSessionWithOrigin(t *testing.T, origin string) *Session {
 }
 
 // TestSessionOriginResumeNotClobberedByEnv pins the Task 15 resume-preservation
-// invariant: NewSession reads SERF_SESSION_ORIGIN itself, at a fresh-only call
+// invariant: NewSession reads EVENER_SESSION_ORIGIN itself, at a fresh-only call
 // site, rather than inside the shared initSessionState — so restoring a
 // session whose persisted meta.Origin is empty must NOT pick up whatever
-// SERF_SESSION_ORIGIN happens to be set in the ambient environment at restore
-// time (see the comment above `s.origin = envvars.SERFSessionOrigin.Getenv()`
+// EVENER_SESSION_ORIGIN happens to be set in the ambient environment at restore
+// time (see the comment above `s.origin = envvars.EVENERSessionOrigin.Getenv()`
 // in NewSession and `s.origin = meta.Origin` in RestoreSessionFromMetaWithConfig,
 // both in session_init.go).
 func TestSessionOriginResumeNotClobberedByEnv(t *testing.T) {
-	t.Setenv(envvars.SERFSessionOrigin.Name, "test")
+	t.Setenv(envvars.EVENERSessionOrigin.Name, "test")
 	restored := restoreSessionWithOrigin(t, "")
 	if got := restored.Meta().Origin; got != "" {
-		t.Fatalf("resumed Origin = %q, want \"\" (persisted empty Origin must not be clobbered by ambient SERF_SESSION_ORIGIN)", got)
+		t.Fatalf("resumed Origin = %q, want \"\" (persisted empty Origin must not be clobbered by ambient EVENER_SESSION_ORIGIN)", got)
 	}
 }
 

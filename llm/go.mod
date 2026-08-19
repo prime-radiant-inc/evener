@@ -1,4 +1,4 @@
-module primeradiant.com/serf/llm
+module primeradiant.com/evener/llm
 
 go 1.25.6
 
@@ -9,10 +9,10 @@ require (
 	github.com/spf13/afero v1.15.0
 	golang.org/x/image v0.44.0
 	golang.org/x/sys v0.43.0
-	primeradiant.com/serf/auth v0.1.0
-	primeradiant.com/serf/envvars v0.0.0
-	primeradiant.com/serf/identifier v0.0.0
-	primeradiant.com/serf/invariant v0.0.0
+	primeradiant.com/evener/auth v0.1.0
+	primeradiant.com/evener/envvars v0.0.0
+	primeradiant.com/evener/identifier v0.0.0
+	primeradiant.com/evener/invariant v0.0.0
 )
 
 require (

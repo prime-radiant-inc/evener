@@ -8,15 +8,15 @@ import (
 	"testing"
 	"time"
 
-	"primeradiant.com/serf/agent/schema"
-	"primeradiant.com/serf/llm"
+	"primeradiant.com/evener/agent/schema"
+	"primeradiant.com/evener/llm"
 )
 
 func TestS3Cov_FindBuckets_AllProjects(t *testing.T) {
 	t.Parallel()
 	home := t.TempDir()
-	// Construct the <home>/serf/projects/<hash> layout stateHomeFor recognizes.
-	projects := filepath.Join(home, "serf", "projects")
+	// Construct the <home>/evener/projects/<hash> layout stateHomeFor recognizes.
+	projects := filepath.Join(home, "evener", "projects")
 	current := filepath.Join(projects, "project-a-0123456789")
 	sibling := filepath.Join(projects, "project-b-0123456789")
 	for _, d := range []string{current, sibling} {
@@ -156,8 +156,8 @@ func TestS3Cov_SessionKind(t *testing.T) {
 func TestS3Cov_ProjectName(t *testing.T) {
 	t.Parallel()
 	m := schema.SessionMeta{}
-	m.EnvInfo.GitOriginURL = "git@github.com:owner/serf.git"
-	if got := projectName(m); got != "serf" {
+	m.EnvInfo.GitOriginURL = "git@github.com:owner/evener.git"
+	if got := projectName(m); got != "evener" {
 		t.Fatalf("origin => %q", got)
 	}
 	m2 := schema.SessionMeta{}

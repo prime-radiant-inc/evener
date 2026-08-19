@@ -4,8 +4,8 @@ import (
 	"context"
 	"testing"
 
-	"primeradiant.com/serf/agent/events"
-	"primeradiant.com/serf/agent/internal/tool"
+	"primeradiant.com/evener/agent/events"
+	"primeradiant.com/evener/agent/internal/tool"
 )
 
 func TestDefCommunicate_DefaultSchema_NoDecisionField(t *testing.T) {

@@ -1,4 +1,4 @@
-//go:build serffuzz
+//go:build evenerfuzz
 
 package agent
 
@@ -11,7 +11,7 @@ import (
 	"testing"
 	"time"
 
-	"primeradiant.com/serf/agent/internal/jobstore"
+	"primeradiant.com/evener/agent/internal/jobstore"
 )
 
 // FuzzJobManagerErrorRecoveryProgram exercises job-manager construction,
@@ -133,7 +133,7 @@ func assertJobManagerConstructionFailures(t *testing.T) {
 		t.Fatalf("constructor store failure = (%p, %v, output=%v)", jm, err, outputOpened)
 	}
 
-	if got := jobsDir("", "fallback-session"); got != filepath.Join(os.TempDir(), "serf-jobs", "fallback-session") {
+	if got := jobsDir("", "fallback-session"); got != filepath.Join(os.TempDir(), "evener-jobs", "fallback-session") {
 		t.Fatalf("fallback jobs dir = %q", got)
 	}
 	if err := (*jobManager)(nil).closeStoreOnly(); err != nil {

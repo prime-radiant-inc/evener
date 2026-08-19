@@ -11,16 +11,16 @@ behaviour this scenario originally covered — the user now presses
 When the queue is empty and the composer has text, this is the
 direct equivalent of the old "type a steer, press Enter" path —
 just bound to a different key. The wiring lives in:
-- `cmd/serf-tui/composer_panel.go:155-165` (`hubComposerModeQueue`) —
+- `cmd/evener-tui/composer_panel.go:155-165` (`hubComposerModeQueue`) —
   sets the `queue` label and `CanSteer`. The footer a live session
   actually renders comes from `composerFooterHints`
-  (`cmd/serf-tui/composer_render.go#composerFooterHints`) via `tuiprim.KbdHint`,
+  (`cmd/evener-tui/composer_render.go#composerFooterHints`) via `tuiprim.KbdHint`,
   which joins key and action with a space — `enter queue  ctrl+s steer
   …`, no colons. `composer_panel.go`'s colon'd `Keys` strings are only
   the fallback for a panel built without a `ChipContext`
   (`composer_panel.go:264-273`), i.e. unit fixtures, never a live pane.
-- `cmd/serf-tui/hub_session_keys.go#handleSessionForceSteer` (`handleSessionForceSteer`).
-- `cmd/serf-tui/queue_send.go#sendHubDrainAsSteer` (`sendHubDrainAsSteer`) — the composer
+- `cmd/evener-tui/hub_session_keys.go#handleSessionForceSteer` (`handleSessionForceSteer`).
+- `cmd/evener-tui/queue_send.go#sendHubDrainAsSteer` (`sendHubDrainAsSteer`) — the composer
   text rides directly on ONE `turn/drainAsSteer` call. There is no
   `sendHubQueueThenDrain` two-RPC chain any more.
 
@@ -30,11 +30,11 @@ For the queue-only and queue+composer drain paths, see
 ## Pre-state
 
 - `tmux` installed (tested on tmux 3.4).
-- `serf-hub` reachable on an isolated `$HOME` and free port
+- `evener-hub` reachable on an isolated `$HOME` and free port
   (never Jesse's port `9180` — see the Setup checklist in
   `docs/agentic-testing.md`). Token at
-  `$HOME/.serf/auth-token`.
-- `./serf-tui` and `./serf-hub` (or `./serf`) built in repo root.
+  `$HOME/.evener/auth-token`.
+- `./evener-tui` and `./evener-hub` (or `./evener`) built in repo root.
 - Anthropic OAuth or API key configured so the default
   `anthropic/claude-haiku-4-5-20251001` model can be invoked.
 - The tmux session name is derived from this run's own scratch dir
@@ -46,15 +46,15 @@ For the queue-only and queue+composer drain paths, see
 
 1. **Prepare a hermetic workdir with a README to read**:
    ```
-   WORKDIR=$(mktemp -d -t serf-steer-XXXX)
-   TMUX_SESSION="serf-steer-$(basename "$WORKDIR")"
+   WORKDIR=$(mktemp -d -t evener-steer-XXXX)
+   TMUX_SESSION="evener-steer-$(basename "$WORKDIR")"
    cp README.md "$WORKDIR/README.md"
    ```
 
 2. **Launch in tmux**:
    ```
    tmux new-session -d -s "$TMUX_SESSION" -x 200 -y 50 \
-     "./serf-tui --hub-addr 127.0.0.1:$PORT --debug"
+     "./evener-tui --hub-addr 127.0.0.1:$PORT --debug"
    sleep 1
    tmux capture-pane -t "$TMUX_SESSION" -p
    ```
@@ -76,7 +76,7 @@ For the queue-only and queue+composer drain paths, see
    sleep 1.5
    tmux capture-pane -t "$TMUX_SESSION" -p
    ```
-   Confirm view shows `serf / session / <session-id>`, the status row
+   Confirm view shows `evener / session / <session-id>`, the status row
    reads `state: active  model: claude-haiku-4-5-…`, the
    second status row reads
    `status: hub connected  provider: anthropic  queue: ready
@@ -101,7 +101,7 @@ For the queue-only and queue+composer drain paths, see
    tmux capture-pane -t "$TMUX_SESSION" -p
    ```
    A `Force-steer sent.` system line appears (per
-   `cmd/serf-tui/hub_update.go:233` `hubDrainAsSteerMsg` handler,
+   `cmd/evener-tui/hub_update.go:233` `hubDrainAsSteerMsg` handler,
    message text at `:272`). The
    composer clears. Because the queue was empty when Ctrl+S
    fired, `handleSessionForceSteer` took the "queue composer
@@ -121,7 +121,7 @@ For the queue-only and queue+composer drain paths, see
    ```
    SID=$(tmux capture-pane -t "$TMUX_SESSION" -p | \
      grep -oE '01[0-9A-Z]{24}' | head -1)
-   TS=$(find $HOME/.local/state/serf/projects -name "$SID.transcript.jsonl")
+   TS=$(find $HOME/.local/state/evener/projects -name "$SID.transcript.jsonl")
    grep -oE '"kind":"STEERING"' "$TS"
    ```
    At least one match. Inspect the full row:

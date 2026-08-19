@@ -7,7 +7,7 @@ Sibling specs: SP1 (`...-sp1-config-loader-design.md`)
 
 ## 1. Goal
 
-SP7 brings four A-tier plugin manifest features into serf:
+SP7 brings four A-tier plugin manifest features into evener:
 
 1. **`userConfig`** — declared in `plugin.json`, prompted on plugin enable, stored (split between plain config and a secure store), and exposed back to plugin code through two channels: `${user_config.KEY}` string substitution and `CLAUDE_PLUGIN_OPTION_<KEY>` environment variables.
 2. **`bin/`** — each enabled plugin's `bin/` directory is prepended to the Bash tool's `PATH`, scoped per `ExecCommand` invocation. No global mutation.
@@ -23,7 +23,7 @@ SP7 **provides** the resolved per-plugin user-config values and the substitution
 - Implementing `userConfig` for `channels` (`channels` itself is out of scope; SP7 only does the top-level `userConfig`).
 - Wiring `${user_config.KEY}` substitution into MCP/LSP/hook configs. That is SP5/SP6.
 - Re-implementing the plugin loader. `LoadPlugin` in `agent/plugin.go` keeps its current shape; SP7 adds three new fields to `LoadedPlugin` and a small lookup function.
-- Setting up the `agent` subagent execution path. The default-agent mechanism already exists in serf; SP7 just routes the manifest value into it.
+- Setting up the `agent` subagent execution path. The default-agent mechanism already exists in evener; SP7 just routes the manifest value into it.
 - OS keychain implementation under a build tag for first delivery. The interface is defined and stubbed; the fallback file path is the only path required to pass tests. A follow-up adds the keychain backend.
 
 ## 2. Public API Surface
@@ -96,7 +96,7 @@ type LoadedPlugin struct {
 
 // PluginWarning is one diagnostic emitted at load time. It is *not* an error.
 // Captured on LoadedPlugin so the session can print it once at startup and
-// also surface it in `serf plugin list --json`.
+// also surface it in `evener plugin list --json`.
 type PluginWarning struct {
     Field   string // e.g. "outputStyles", "settings.json:subagentStatusLine"
     Message string
@@ -130,7 +130,7 @@ func UserConfigEnvVars(r *ResolvedUserConfig) map[string]string
 
 // PluginConfigStore is the persistence layer for plain (non-sensitive)
 // user-config values. It reads and writes the pluginConfigs section of
-// the global serf config.json. Project-tier overrides are out of scope for
+// the global evener config.json. Project-tier overrides are out of scope for
 // SP7; user-config is a per-user secret-or-preference scope.
 type PluginConfigStore interface {
     // Load returns the persisted plain values for pluginID, or an empty
@@ -145,7 +145,7 @@ type PluginConfigStore interface {
 // SecureStore is the persistence layer for sensitive values. Implementations:
 //   - KeychainStore: macOS/Linux/Windows OS keychain (added under build tag
 //     in a follow-up; not delivered in SP7's first cut).
-//   - FileStore:     ~/.config/serf/credentials.json mode 0600. Default
+//   - FileStore:     ~/.config/evener/credentials.json mode 0600. Default
 //                     for SP7 v1.
 type SecureStore interface {
     Get(pluginID, key string) (string, bool, error)
@@ -169,8 +169,8 @@ func PromptForUserConfig(
     secureStore SecureStore,
 ) (*ResolvedUserConfig, error)
 
-// UserConfigPrompter is the surface-specific UX. CLI, serf-tui, and
-// serf-hub each ship their own implementation. A non-interactive
+// UserConfigPrompter is the surface-specific UX. CLI, evener-tui, and
+// evener-hub each ship their own implementation. A non-interactive
 // prompter (NonInteractivePrompter) reads from --plugin-option flags.
 type UserConfigPrompter interface {
     // Prompt is called once per option in declaration order. The prompter
@@ -196,7 +196,7 @@ func ResolveUserConfig(
 // included if non-empty. Order matches the order of plugins in the input.
 func PluginBinPATH(plugins []LoadedPlugin) string
 
-// SerfConfig (defined in SP1) gains one field:
+// EvenerConfig (defined in SP1) gains one field:
 //
 //   PluginConfigs map[string]PluginConfig `json:"pluginConfigs,omitempty"`
 //
@@ -206,7 +206,7 @@ func PluginBinPATH(plugins []LoadedPlugin) string
 // mcpServers (map replace by key at the plugin-id level).
 ```
 
-`UserConfigPrompter` is intentionally one method. Multi-field UX (forms in serf-hub) builds a form from the option list before calling `Prompt` per field, or — for richer UIs — implements `Prompt` as a no-op and runs its own loop, then constructs the `ResolvedUserConfig` directly. The interface stays small so non-interactive callers (`NonInteractivePrompter`) are trivial.
+`UserConfigPrompter` is intentionally one method. Multi-field UX (forms in evener-hub) builds a form from the option list before calling `Prompt` per field, or — for richer UIs — implements `Prompt` as a no-op and runs its own loop, then constructs the `ResolvedUserConfig` directly. The interface stays small so non-interactive callers (`NonInteractivePrompter`) are trivial.
 
 ## 3. `userConfig` Schema
 
@@ -307,9 +307,9 @@ Rules that hold across all types:
 
 Three triggers, in priority order. The first that applies for a given (plugin, key) wins:
 
-1. **`serf plugin install` and `serf plugin enable` (SP4 commands).** Interactive prompt for every declared key whose value is not yet persisted. This is the primary path.
+1. **`evener plugin install` and `evener plugin enable` (SP4 commands).** Interactive prompt for every declared key whose value is not yet persisted. This is the primary path.
 2. **Session start, `ResolveUserConfig` reports `missing` for a required key, *and* the surface is interactive.** The surface offers an inline prompt before completing session init. Skipping leaves the key empty and produces a startup warning.
-3. **Session start, non-interactive surface.** A missing required key is a hard error printed to `stderr` with the suggestion `re-run with --plugin-option <plugin>.<key>=<value> or run \`serf plugin enable <plugin>\``. Optional keys silently fall through to their defaults.
+3. **Session start, non-interactive surface.** A missing required key is a hard error printed to `stderr` with the suggestion `re-run with --plugin-option <plugin>.<key>=<value> or run \`evener plugin enable <plugin>\``. Optional keys silently fall through to their defaults.
 
 The trigger picks the prompt source. Once values are persisted, subsequent sessions skip prompting entirely.
 
@@ -317,28 +317,28 @@ The trigger picks the prompt source. Once values are persisted, subsequent sessi
 
 | Surface | Prompter implementation | Mode |
 |---|---|---|
-| `serf` CLI (interactive) | `CLIPrompter` — line-oriented `bufio.Scanner` on stdin, `golang.org/x/term.ReadPassword` for `sensitive: true` | inline, blocking |
-| `serf-tui` | `TUIPrompter` — modal form rendered by the existing tui-form widget set | inline, blocking, with masked input for sensitive fields |
-| `serf-hub` web UI | `HubPrompter` — HTTP form bound to the plugin-enable workflow; submits to a per-plugin endpoint that calls `PromptForUserConfig` server-side with a static `MapPrompter` wrapping the form payload | out-of-band; the session waits for the user to complete the form before plugin init completes |
+| `evener` CLI (interactive) | `CLIPrompter` — line-oriented `bufio.Scanner` on stdin, `golang.org/x/term.ReadPassword` for `sensitive: true` | inline, blocking |
+| `evener-tui` | `TUIPrompter` — modal form rendered by the existing tui-form widget set | inline, blocking, with masked input for sensitive fields |
+| `evener-hub` web UI | `HubPrompter` — HTTP form bound to the plugin-enable workflow; submits to a per-plugin endpoint that calls `PromptForUserConfig` server-side with a static `MapPrompter` wrapping the form payload | out-of-band; the session waits for the user to complete the form before plugin init completes |
 | Non-interactive (`-p`, piped input, scripts) | `NonInteractivePrompter` — reads from a pre-parsed `map[plugin]map[key]string` populated from `--plugin-option <plugin>.<key>=<value>` flags | no prompts; missing required keys error out |
 
 `--plugin-option` may repeat. The key form is `<plugin>.<option>=<value>` where `<plugin>` matches an `enabledPlugins` key (`<name>` or `<name>@<marketplace>`). Mismatched plugin names produce a single warning, not an error, so users can re-use a script across machines with different marketplace names.
 
 ### 4.3 Cancel and abort
 
-If the prompter returns an error wrapping `ErrPromptCanceled` (Ctrl-C in CLI, modal-close in TUI, navigation-away in Hub), `PromptForUserConfig` returns the error without persisting anything partial. The caller decides whether to skip the plugin (interactive `serf plugin enable` reports the cancel and exits non-zero) or abort startup (session-init treats it as fatal).
+If the prompter returns an error wrapping `ErrPromptCanceled` (Ctrl-C in CLI, modal-close in TUI, navigation-away in Hub), `PromptForUserConfig` returns the error without persisting anything partial. The caller decides whether to skip the plugin (interactive `evener plugin enable` reports the cancel and exits non-zero) or abort startup (session-init treats it as fatal).
 
 ### 4.4 Re-prompt on schema change
 
 When a plugin update adds a new required `userConfig` key, the persisted state lacks it, so `ResolveUserConfig` reports it as missing on next session start. The trigger sequence in §4.1 then re-fires. No special migration code is needed.
 
-A removed key keeps its persisted value indefinitely. Cleanup is out of scope for SP7 — `serf plugin uninstall` can call `PluginConfigStore.Save(pluginID, nil)` and `SecureStore.Delete` for known keys, but the housekeeping itself is SP4's job to schedule.
+A removed key keeps its persisted value indefinitely. Cleanup is out of scope for SP7 — `evener plugin uninstall` can call `PluginConfigStore.Save(pluginID, nil)` and `SecureStore.Delete` for known keys, but the housekeeping itself is SP4's job to schedule.
 
 ## 5. Storage Layout
 
 ### 5.1 Plain (non-sensitive) values
 
-Plain values live in the global serf config at `~/.config/serf/config.json`, under a new top-level field `pluginConfigs`:
+Plain values live in the global evener config at `~/.config/evener/config.json`, under a new top-level field `pluginConfigs`:
 
 ```json
 {
@@ -366,8 +366,8 @@ Sensitive keys never appear here. `PluginConfigStore.Save` filters them out befo
 
 Sensitive values live in one of two backends, picked by `NewSecureStore`:
 
-- **`KeychainStore`** (future, behind a build tag). Service name is `serf`. Account name is `<pluginID>/<key>`. Example: `serf` / `code-review@anthropics/api_token`.
-- **`FileStore`** (SP7 v1). Path is `~/.config/serf/credentials.json`, mode `0600`. Format:
+- **`KeychainStore`** (future, behind a build tag). Service name is `evener`. Account name is `<pluginID>/<key>`. Example: `evener` / `code-review@anthropics/api_token`.
+- **`FileStore`** (SP7 v1). Path is `~/.config/evener/credentials.json`, mode `0600`. Format:
 
 ```json
 {
@@ -432,7 +432,7 @@ For each resolved key, the env-var name is `CLAUDE_PLUGIN_OPTION_<KEY_UPPER>`, w
 
 `UserConfigEnvVars(r)` produces the full map. SP7 itself does not inject this map anywhere. It is the consumer's responsibility:
 
-- **MCP server subprocesses** — SP6 merges the map into the spawn `env` for each plugin-owned MCP server. The merge is additive; serf-set vars (`CLAUDE_PROJECT_DIR`, `CLAUDE_PLUGIN_ROOT`, `CLAUDE_PLUGIN_DATA`) win on collisions.
+- **MCP server subprocesses** — SP6 merges the map into the spawn `env` for each plugin-owned MCP server. The merge is additive; evener-set vars (`CLAUDE_PROJECT_DIR`, `CLAUDE_PLUGIN_ROOT`, `CLAUDE_PLUGIN_DATA`) win on collisions.
 - **`command`-type hook subprocesses** — SP5 merges the map into the env passed to `ExecCommand` for each plugin-owned hook.
 - **`agent`-type hooks** — SP5 includes them in the env exposed to the subagent's tool-call subprocesses.
 
@@ -440,9 +440,9 @@ SP7 ships the helper and the tests that verify the helper's output. SP6 and SP5 
 
 ### 7.3 Sensitive values in env vars
 
-Sensitive values flow into env vars unchanged. This matches Claude Code's behavior — a plugin needs access to its own secrets at runtime, and the env-var hop is the safest channel (it does not survive child-of-child unless re-exported, and serf does not log spawn envs).
+Sensitive values flow into env vars unchanged. This matches Claude Code's behavior — a plugin needs access to its own secrets at runtime, and the env-var hop is the safest channel (it does not survive child-of-child unless re-exported, and evener does not log spawn envs).
 
-What serf does *not* do: place sensitive values in `args` of a spawned process (visible in `ps`), or in any file other than the credentials file. The `CLAUDE_PLUGIN_OPTION_*` channel is the only egress.
+What evener does *not* do: place sensitive values in `args` of a spawned process (visible in `ps`), or in any file other than the credentials file. The `CLAUDE_PLUGIN_OPTION_*` channel is the only egress.
 
 ## 8. `bin/` PATH Injection
 
@@ -560,13 +560,13 @@ To survive session reloads (`/reload-plugins`, hot config change), warnings emit
 
 ### 11.3 Where warnings go
 
-Each warning is captured on `LoadedPlugin.Warnings` so the structured output of `serf plugin list --json` can surface them. At session startup, the session prints each plugin's new-since-last-print warnings to `stderr`, formatted as:
+Each warning is captured on `LoadedPlugin.Warnings` so the structured output of `evener plugin list --json` can surface them. At session startup, the session prints each plugin's new-since-last-print warnings to `stderr`, formatted as:
 
 ```
-serf: plugin "<plugin-id>": ignoring unsupported field "<field>"
+evener: plugin "<plugin-id>": ignoring unsupported field "<field>"
 ```
 
-The serf-hub web UI surfaces them in the plugin-detail card. The TUI surfaces them in a one-line collapsible.
+The evener-hub web UI surfaces them in the plugin-detail card. The TUI surfaces them in a one-line collapsible.
 
 ## 12. Error Contracts
 
@@ -579,7 +579,7 @@ The serf-hub web UI surfaces them in the plugin-detail card. The TUI surfaces th
 | `PromptForUserConfig` | typed-value validation fails (e.g. `number` out of bounds) | re-prompt the same key in interactive surfaces; hard error in non-interactive |
 | `PromptForUserConfig` | secure-store `Set` fails | return error; persist nothing; the partial plain values written so far are rolled back via tmp-file discard |
 | `NewSecureStore` | (future) keychain unavailable | log once, fall back to `FileStore`, return `FileStore` |
-| `NewSecureStore` | fallback file path unwritable (no `$HOME`, no `~/.config/serf/` writable) | return error; session-init reports `secure store unavailable: <err>` and refuses to enable any plugin with a `sensitive: true` userConfig key |
+| `NewSecureStore` | fallback file path unwritable (no `$HOME`, no `~/.config/evener/` writable) | return error; session-init reports `secure store unavailable: <err>` and refuses to enable any plugin with a `sensitive: true` userConfig key |
 | `ResolveUserConfig` | required key missing, non-interactive surface | populate `missing` slice; caller (session init) errors out with the §4.1 message |
 | `ResolveUserConfig` | required key missing, interactive surface | populate `missing` slice; caller re-enters prompt flow |
 | `ExpandUserConfig` | (never errors) | unknown `${user_config.<key>}` left literal + one-time warning |
@@ -599,7 +599,7 @@ New files:
 - `agent/plugin_warnings_test.go`.
 - `agent/internal/securestore/securestore.go` — `SecureStore` interface and `FileStore` implementation.
 - `agent/internal/securestore/securestore_test.go` — tests for `FileStore` (atomic write, mode-0600 assertion, missing-file tolerance, key namespacing).
-- `agent/plugin_config_store.go` — `PluginConfigStore` interface plus a `ConfigJSONStore` implementation that reads/writes the `pluginConfigs` field of `~/.config/serf/config.json`.
+- `agent/plugin_config_store.go` — `PluginConfigStore` interface plus a `ConfigJSONStore` implementation that reads/writes the `pluginConfigs` field of `~/.config/evener/config.json`.
 - `agent/plugin_config_store_test.go`.
 
 Existing files modified:
@@ -607,9 +607,9 @@ Existing files modified:
 - `agent/plugin.go` — extend `PluginManifest` with the new fields (§2), populate the new `LoadedPlugin` fields, thread the `skills` override into `discoverPluginSkills`, stat `<root>/bin`, parse `<root>/settings.json`.
 - `agent/skills.go` / the existing `discoverPluginSkills` helper — accept an override argument; default-only callers pass `nil`.
 - `agent/session.go` — wire `PluginBinPATH` into the shell tool registration; call `ResolveUserConfig` per plugin during `initPlugins`; stash resolved configs on `s.pluginUserConfigs` for SP5/SP6 to consume.
-- `agent/config.go` (SP1) — add the `PluginConfigs` field on `SerfConfig`. SP1's parser already keeps unknown JSON as `RawMessage`; this is the typed accessor.
-- `cmd/serf/plugin/install.go` (SP4) — call `PromptForUserConfig` after install/enable.
-- `cmd/serf/main.go`, `cmd/serf-tui/embedded.go`, `cmd/serf-hub/web.go` — register the surface-specific `UserConfigPrompter` with the session.
+- `agent/config.go` (SP1) — add the `PluginConfigs` field on `EvenerConfig`. SP1's parser already keeps unknown JSON as `RawMessage`; this is the typed accessor.
+- `cmd/evener/plugin/install.go` (SP4) — call `PromptForUserConfig` after install/enable.
+- `cmd/evener/main.go`, `cmd/evener-tui/embedded.go`, `cmd/evener-hub/web.go` — register the surface-specific `UserConfigPrompter` with the session.
 
 Tests live next to the code they cover; integration fixtures live under `agent/testdata/plugins/<scenario>/`. Specifically, `agent/testdata/plugins/userconfig-basic/` is the smallest plugin that exercises one of each `userConfig` type.
 
@@ -698,7 +698,7 @@ Uses a `MapPrompter` (an in-test `UserConfigPrompter` that returns canned values
 |---|---|---|---|
 | 1 | Missing file → empty | no file present | `Get` returns `("", false, nil)` |
 | 2 | Set writes file with mode 0600 | one `Set` call | file exists; `os.Stat` reports `0o600` |
-| 3 | Parent dir created with 0700 | `~/.config/serf/` absent | created with `0o700` |
+| 3 | Parent dir created with 0700 | `~/.config/evener/` absent | created with `0o700` |
 | 4 | Round-trip | `Set` then `Get` | value matches |
 | 5 | Delete | `Set` then `Delete` then `Get` | returns `("", false, nil)` |
 | 6 | Atomic write under crash | mid-write panic via injected `io.Writer` | original file intact, tmp removed |
@@ -759,9 +759,9 @@ Every exported function in §2 has at least one direct test row. Every error pat
 
 Three surfaces, three prompter implementations:
 
-- **CLI**: inline prompts, line-by-line, masked input for `sensitive: true`. Implemented in SP4's `serf plugin install/enable` flow. Default for `serf` invoked without `serf-tui` or `serf-hub`.
-- **`serf-tui`**: modal form rendered by the existing tui-form widget; submits all fields at once.
-- **`serf-hub`**: web form on a per-plugin endpoint, gated by the existing session-auth path; submission returns to the plugin-enable flow.
+- **CLI**: inline prompts, line-by-line, masked input for `sensitive: true`. Implemented in SP4's `evener plugin install/enable` flow. Default for `evener` invoked without `evener-tui` or `evener-hub`.
+- **`evener-tui`**: modal form rendered by the existing tui-form widget; submits all fields at once.
+- **`evener-hub`**: web form on a per-plugin endpoint, gated by the existing session-auth path; submission returns to the plugin-enable flow.
 
 Non-interactive sessions read from `--plugin-option <plugin>.<key>=<value>` (may repeat). Missing required keys with no flag value produce a startup error that names the plugin, the key, and the suggested command to fix it.
 
@@ -771,7 +771,7 @@ Multiple plugins each declaring `api_token` are isolated by plugin ID. Keychain 
 
 ### 15.3 Dependencies on other sub-specs (NOT resolved here)
 
-- **SP1** — must add `PluginConfigs map[string]json.RawMessage` to `SerfConfig` and merge it by-key. SP7 ships the typed accessor.
+- **SP1** — must add `PluginConfigs map[string]json.RawMessage` to `EvenerConfig` and merge it by-key. SP7 ships the typed accessor.
 - **SP4** — must call `PromptForUserConfig` at the end of `install` and `enable`. SP7 ships the function; SP4 owns the CLI surface.
 - **SP5** — must merge `UserConfigEnvVars(r)` into hook subprocess envs for the owning plugin's hooks, and pass `ExpandUserConfig(hookCmd, r)` through before exec. SP7 ships the helpers.
 - **SP6** — same as SP5 for MCP server `command`, `args`, `env`, `url`, `headers`. SP7 ships the helpers.

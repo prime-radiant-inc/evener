@@ -9,7 +9,7 @@ import (
 
 // ReadEvents reads and decodes every event from a jobs.jsonl file WITHOUT
 // opening a Store for append. It is the read-only forensic path: a caller that
-// only inspects settled state (serf-doctor) uses this instead of Open, which
+// only inspects settled state (evener-doctor) uses this instead of Open, which
 // opens read-write and creates the file. A missing file yields no events (not an
 // error). An unterminated, syntactically incomplete trailing line — an
 // in-flight append racing the read — is tolerated, but durable or definitively

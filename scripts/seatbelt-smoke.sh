@@ -1,14 +1,14 @@
 #!/usr/bin/env bash
 # seatbelt-smoke.sh — live macOS Seatbelt enforcement smoke test.
 #
-# When to use: on a Mac (paradise-park) after building M6, to confirm serf's
+# When to use: on a Mac (paradise-park) after building M6, to confirm evener's
 # generated SBPL is actually enforced by the real kernel — not just that the
-# policy text looks right. Run it from the repo root of a serf worktree.
+# policy text looks right. Run it from the repo root of a evener worktree.
 #
 # What it does:
 #   1. Sanity-checks that /usr/bin/sandbox-exec exists and enforces a trivial
-#      deny-default policy (a raw allow/deny pair, independent of serf's Go code).
-#   2. Runs serf's gated Go parity suite (SERF_SEATBELT_LIVE=1), which generates
+#      deny-default policy (a raw allow/deny pair, independent of evener's Go code).
+#   2. Runs evener's gated Go parity suite (EVENER_SEATBELT_LIVE=1), which generates
 #      real policies from ResolvedPolicy and asserts the kernel's verdict for
 #      network denial, worktree/secret confinement, and git-config protection.
 #
@@ -53,10 +53,10 @@ if ! "$SEATBELT" -p "$selfcontained" -D "W=$ROOT/allowed" -- /bin/sh -c "echo x 
 fi
 echo "PASS: raw deny-default + writable-param enforcement"
 
-echo "== stage 2: serf generated-policy parity suite =="
-if ! SERF_SEATBELT_LIVE=1 go test ./agent/sandbox/ -run TestSeatbeltLive -count=1 -v; then
-	fail "serf live parity suite (TestSeatbeltLive) failed"
+echo "== stage 2: evener generated-policy parity suite =="
+if ! EVENER_SEATBELT_LIVE=1 go test ./agent/sandbox/ -run TestSeatbeltLive -count=1 -v; then
+	fail "evener live parity suite (TestSeatbeltLive) failed"
 fi
-echo "PASS: serf generated-policy parity suite"
+echo "PASS: evener generated-policy parity suite"
 
 echo "ALL SEATBELT SMOKE CHECKS PASSED"

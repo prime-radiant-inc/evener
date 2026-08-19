@@ -5,7 +5,7 @@
 
 ## Goal
 
-Add two focused view modes to the Serf web UI while preserving the existing display as the default full view. A compact selector at the top of the viewport lets users switch among:
+Add two focused view modes to the Evener web UI while preserving the existing display as the default full view. A compact selector at the top of the viewport lets users switch among:
 
 - **Everything:** the current UI, unchanged, including tool calls and results.
 - **Conversation:** user and agent messages only. Each group of hidden tool calls appears as centered italic text, such as `3 tool calls`.

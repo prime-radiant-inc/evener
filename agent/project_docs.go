@@ -5,7 +5,7 @@ import (
 	"path/filepath"
 	"strings"
 
-	"primeradiant.com/serf/agent/execenv"
+	"primeradiant.com/evener/agent/execenv"
 )
 
 // ProjectDoc holds a single loaded project instruction file: its identifier path and raw content.

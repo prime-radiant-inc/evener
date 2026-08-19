@@ -3,7 +3,7 @@ package anthropic
 import (
 	"testing"
 
-	"primeradiant.com/serf/llm"
+	"primeradiant.com/evener/llm"
 )
 
 func buildBodyForModel(t *testing.T, model string, maxTokens *int) map[string]any {

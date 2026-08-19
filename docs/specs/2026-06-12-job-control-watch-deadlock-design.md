@@ -4,7 +4,7 @@ Date: 2026-06-12
 
 ## Purpose
 
-This note documents a real stuck Serf session, the likely root cause, and several possible solution shapes. It is intended for second-opinion review before implementation.
+This note documents a real stuck Evener session, the likely root cause, and several possible solution shapes. It is intended for second-opinion review before implementation.
 
 The central question is not just how to fix one deadlock. The design should make this class of deadlock structurally impossible, or at least hard to reintroduce.
 

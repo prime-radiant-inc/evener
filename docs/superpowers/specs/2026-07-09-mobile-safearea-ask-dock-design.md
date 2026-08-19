@@ -86,7 +86,7 @@ The existing inline interactive card is replaced by this record and the bottom d
 - The first acknowledged ask-user call creates the transcript anchor and activates dock ask mode.
 - Additional ask-user calls in the same turn append questions to the same dock form in global posting order.
 - `pendingAsk` continues to own resolutions, notes, collapsed state only if a non-destructive dock presentation affordance is retained, and send-in-flight state.
-- `sendAskAnswers` continues to compose the current byte-exact `[answers]` format and submit through the same `SerfAppwire.startTurn` path.
+- `sendAskAnswers` continues to compose the current byte-exact `[answers]` format and submit through the same `EvenerAppwire.startTurn` path.
 - On a local successful send, echoed `USER_INPUT` from any client, new turn, session change, or supersession, the ask mode settles and the normal composer returns.
 - The transcript anchor becomes the existing neutral settled history line describing the asked questions and response.
 - A start-turn conflict never auto-retries. The composed response moves into the restored normal composer exactly as it does today.
@@ -111,10 +111,10 @@ The existing inline interactive card is replaced by this record and the bottom d
 
 | File | Responsibility |
 | --- | --- |
-| `cmd/serf-hub/assets/style.css` | Workspace flex/viewport/safe-area contract; non-sticky phone dock; ask-mode dock presentation; responsive rules. |
-| `cmd/serf-hub/assets/renderer.js` | Visual viewport coordinator lifecycle; transcript ask anchor; mounting/unmounting the canonical ask response form in the dock; focus and settlement behavior. |
+| `cmd/evener-hub/assets/style.css` | Workspace flex/viewport/safe-area contract; non-sticky phone dock; ask-mode dock presentation; responsive rules. |
+| `cmd/evener-hub/assets/renderer.js` | Visual viewport coordinator lifecycle; transcript ask anchor; mounting/unmounting the canonical ask response form in the dock; focus and settlement behavior. |
 | Hub templates, only if needed | Stable semantic wrappers, dock hooks, and accessible labels. No data-flow changes. |
-| `cmd/serf-hub/jstest/*` | Deterministic renderer, ask lifecycle, visual viewport coordinator, and CSS contract tests. |
+| `cmd/evener-hub/jstest/*` | Deterministic renderer, ask lifecycle, visual viewport coordinator, and CSS contract tests. |
 
 ## Deterministic verification
 
@@ -152,10 +152,10 @@ Assert that phone rules preserve:
 Run:
 
 ```sh
-NODE_PATH=/tmp/serf-jstest-jsdom/node_modules timeout 90 node cmd/serf-hub/jstest/test-ask-compose.js
-NODE_PATH=/tmp/serf-jstest-jsdom/node_modules timeout 90 node cmd/serf-hub/jstest/test-mobile-css.js
-cd cmd/serf-hub/jstest && ./run-all.sh
-go test ./cmd/serf-hub -count=1
+NODE_PATH=/tmp/evener-jstest-jsdom/node_modules timeout 90 node cmd/evener-hub/jstest/test-ask-compose.js
+NODE_PATH=/tmp/evener-jstest-jsdom/node_modules timeout 90 node cmd/evener-hub/jstest/test-mobile-css.js
+cd cmd/evener-hub/jstest && ./run-all.sh
+go test ./cmd/evener-hub -count=1
 git diff --check
 ```
 

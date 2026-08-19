@@ -6,7 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 
-	"primeradiant.com/serf/llm"
+	"primeradiant.com/evener/llm"
 )
 
 const responsesRequestFingerprintPrefix = "cont-req-v1"

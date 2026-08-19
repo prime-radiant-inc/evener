@@ -2,7 +2,7 @@ package worktree
 
 import "strings"
 
-// Marker is the decoded form of a serf occupancy-lock reason (spec §5
+// Marker is the decoded form of a evener occupancy-lock reason (spec §5
 // "Occupancy locks"). DelegateID is empty for a plain session marker;
 // non-empty for a delegate marker, where SessionID holds the delegate's
 // parent session id (the id whose disposal lifecycle owns the lock).
@@ -14,35 +14,35 @@ type Marker struct {
 // FormatSessionMarker renders the lock reason a session takes on a managed
 // worktree it occupies directly (spec §5).
 func FormatSessionMarker(sid string) string {
-	return "serf:" + sid
+	return "evener:" + sid
 }
 
 // FormatDelegateMarker renders the lock reason for a delegate-created lane
 // (spec §5): the delegate id names the occupant, the parent session id names
 // the owner whose disposal lifecycle releases the lock.
 func FormatDelegateMarker(dlgID, parentSID string) string {
-	return "serf:dlg:" + dlgID + ":" + parentSID
+	return "evener:dlg:" + dlgID + ":" + parentSID
 }
 
 // ParseMarker decodes a lock reason into a Marker. It returns false for any
-// reason that is not a serf marker — including empty, git's own reasonless
+// reason that is not a evener marker — including empty, git's own reasonless
 // "locked" line, and anything a different tool or a human wrote (spec §5: "a
-// lock with no reason or a reason that doesn't parse as a serf marker is
+// lock with no reason or a reason that doesn't parse as a evener marker is
 // foreign").
 //
-// Parsing is strict: serf session and delegate ids never contain ':' (a
+// Parsing is strict: evener session and delegate ids never contain ':' (a
 // session id is an unprefixed fixed-width compact payload; a delegate id is
 // "dlg_" plus a compact payload — see agent/internal/jobstore/record.go's
-// NewDelegateID), so a genuine marker is exactly "serf:<sid>"
+// NewDelegateID), so a genuine marker is exactly "evener:<sid>"
 // (2 colon-separated segments) or
-// "serf:dlg:<dlg>:<sid>" (4 segments). Anything else — a truncated
-// "serf:dlg:x", an over-long "serf:dlg:a:b:c", or a segment that is present
-// but empty like "serf:dlg::" — is foreign rather than guessed at: a laxer
+// "evener:dlg:<dlg>:<sid>" (4 segments). Anything else — a truncated
+// "evener:dlg:x", an over-long "evener:dlg:a:b:c", or a segment that is present
+// but empty like "evener:dlg::" — is foreign rather than guessed at: a laxer
 // parser that filled in a default for a missing or extra segment could
 // misattribute a lock to the wrong owner.
 func ParseMarker(reason string) (Marker, bool) {
 	parts := strings.Split(reason, ":")
-	if parts[0] != "serf" {
+	if parts[0] != "evener" {
 		return Marker{}, false
 	}
 	switch len(parts) {

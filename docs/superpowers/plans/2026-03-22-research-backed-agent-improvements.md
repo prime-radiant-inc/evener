@@ -6,7 +6,7 @@
 
 ## Problem
 
-Serf's best result is 69/89 (77.5%) on terminal-bench with lace harness + gate v4. The dominant failure modes are well-characterized:
+Evener's best result is 69/89 (77.5%) on terminal-bench with lace harness + gate v4. The dominant failure modes are well-characterized:
 
 | Failure Mode | Frequency | Description |
 |---|---|---|
@@ -14,7 +14,7 @@ Serf's best result is 69/89 (77.5%) on terminal-bench with lace harness + gate v
 | Timeouts | 33% | Agent enters futile iteration loops consuming the entire budget |
 | Never-submitted | 23% | Agent works but never calls communicate |
 
-A Dec 2025 survey of 1300+ papers on code intelligence catalogs techniques that directly address each failure mode. This spec maps 10 techniques from the literature to serf's architecture, organized into three tiers by the failure mode they target.
+A Dec 2025 survey of 1300+ papers on code intelligence catalogs techniques that directly address each failure mode. This spec maps 10 techniques from the literature to evener's architecture, organized into three tiers by the failure mode they target.
 
 ## Goals
 
@@ -57,7 +57,7 @@ These improvements address timeouts and futile iteration (33% of failures).
 
 The survey (Section 5.1.2.1, p.107) presents strong evidence that **1-3 iterative refinement rounds yield the largest performance gains**, after which improvements plateau or regress due to noisy/misleading feedback. PyCapsule, Commit0, and similar systems all converge on the same finding: a small number of self-debug attempts corrects most fixable errors, and additional iterations provide diminishing or negative returns.
 
-In serf, 33% of benchmark failures are timeouts. Transcript analysis shows subagents entering test→fail→edit→test loops that consume the entire 200-round budget without converging.
+In evener, 33% of benchmark failures are timeouts. Transcript analysis shows subagents entering test→fail→edit→test loops that consume the entire 200-round budget without converging.
 
 ### Current Behavior
 
@@ -194,7 +194,7 @@ func isTestCommand(cmd string) bool {
 | `agent/repair_tracker.go` | New file |
 | `agent/session.go` | Add `repairTracker *RepairTracker` field. Initialize in `NewSession`. After `ExecuteCall` for `shell`: if `isTestCommand(cmd)`, call `RecordTestRun()`. After `edit_file`/`write_file`: call `RecordEdit()`. Before LLM call: check `SteeringNeeded()`. Add `forceSubmit bool` field. |
 | `agent/session.go` — `SessionConfig` | Add `MaxRepairCycles int` |
-| `cmd/serf/main.go` | Add `--max-repair-cycles` flag |
+| `cmd/evener/main.go` | Add `--max-repair-cycles` flag |
 
 ### Configuration
 
@@ -224,7 +224,7 @@ func isTestCommand(cmd string) bool {
 
 Reflexion (Section 5.3.2, p.135) turns trial-and-error into informed iteration by **caching past mistakes** to prevent oscillation. OpenHands (Section 5.1.2.1, p.108) improves refinement by **diversifying repair strategies instead of repeating previous fixes**. Multiple frameworks cited on p.107 explicitly cache previous attempts to prevent repeated patches.
 
-In serf, when context compaction runs (checkpoint at 80%, LLM summarize at 90%), the agent's memory of failed approaches degrades. The agent then re-discovers and re-attempts strategies it already tried.
+In evener, when context compaction runs (checkpoint at 80%, LLM summarize at 90%), the agent's memory of failed approaches degrades. The agent then re-discovers and re-attempts strategies it already tried.
 
 ### Current Behavior
 
@@ -536,7 +536,7 @@ These improvements address reviewer-approved-but-wrong (52-60% of failures).
 
 SpecRover (Section 5.1.2.1, p.121) centers on **specification inference** — integrating program structure, behavior, and tests to infer developer intent before generating patches. The key insight: patches generated without an explicit specification tend to be syntactically correct but semantically wrong.
 
-In serf, 52-60% of failures are "reviewer-approved-but-wrong." The implementer, verifier, and reviewer each independently re-interpret the task description, extracting different subsets of requirements. The configure-git-webserver failure class exemplifies this: scripts were written correctly, but nobody extracted the implicit requirement that services must be *running* at evaluation time.
+In evener, 52-60% of failures are "reviewer-approved-but-wrong." The implementer, verifier, and reviewer each independently re-interpret the task description, extracting different subsets of requirements. The configure-git-webserver failure class exemplifies this: scripts were written correctly, but nobody extracted the implicit requirement that services must be *running* at evaluation time.
 
 ### Current Behavior
 
@@ -641,11 +641,11 @@ No new configuration — always on. The specification extraction makes the Plan 
 
 HydraReviewer (Table 19, p.113) uses **parallel reviewers per dimension** (logic, readability, security). CodeAgent prevents prompt drift via QA consistency. DeputyDev scales review with expert-level agents per dimension.
 
-The key finding: single-reviewer architectures anchor on one dimension and miss others. In serf, the reviewer gate and the verifier both perform holistic review. The configure-git-webserver class shows the failure: the verifier confirmed scripts parse correctly (code dimension), the reviewer approved (general impression), but neither checked services were running (operational dimension).
+The key finding: single-reviewer architectures anchor on one dimension and miss others. In evener, the reviewer gate and the verifier both perform holistic review. The configure-git-webserver class shows the failure: the verifier confirmed scripts parse correctly (code dimension), the reviewer approved (general impression), but neither checked services were running (operational dimension).
 
 ### Current Behavior
 
-Serf has two review mechanisms:
+Evener has two review mechanisms:
 
 1. **Verifier agent** (spawned by coordinator during "Verify" task): Structured VERIFICATION REPORT with PASS/FAIL. Read-only, evidence-gathering. Coordinator reads and decides.
 2. **Reviewer gate** (`spawnReviewer`, session.go): Triggered at `communicate`. approve/reject tools. `MaxToolRoundsPerInput=30`, `MaxTurns=20`. Last line of defense.
@@ -757,8 +757,8 @@ type IsolatedWorkspace struct {
 }
 
 func CreateIsolatedWorkspace(originalDir, suffix string) (*IsolatedWorkspace, error) {
-    branchName := fmt.Sprintf("serf-attempt-%s-%d", suffix, time.Now().UnixMilli())
-    worktreeDir := filepath.Join(originalDir, ".serf-worktrees", branchName)
+    branchName := fmt.Sprintf("evener-attempt-%s-%d", suffix, time.Now().UnixMilli())
+    worktreeDir := filepath.Join(originalDir, ".evener-worktrees", branchName)
 
     cmd := exec.Command("git", "-C", originalDir, "worktree", "add",
         worktreeDir, "-b", branchName, "HEAD")
@@ -776,7 +776,7 @@ func (ws *IsolatedWorkspace) Cleanup() error {
 
 func (ws *IsolatedWorkspace) MergeBack() error {
     exec.Command("git", "-C", ws.WorktreeDir, "add", "-A").Run()
-    exec.Command("git", "-C", ws.WorktreeDir, "commit", "--allow-empty", "-m", "serf parallel attempt").Run()
+    exec.Command("git", "-C", ws.WorktreeDir, "commit", "--allow-empty", "-m", "evener parallel attempt").Run()
     sha, _ := exec.Command("git", "-C", ws.WorktreeDir, "rev-parse", "HEAD").Output()
     return exec.Command("git", "-C", ws.OriginalDir, "cherry-pick", strings.TrimSpace(string(sha))).Run()
 }
@@ -925,7 +925,7 @@ None. Always on.
 
 ### Motivation (from literature)
 
-CodexGraph (Section 5.1.2.1, p.121) and KGCompass (p.121) demonstrate that building a structural representation of the codebase improves fault localization and cross-file consistency. Serf navigates codebases purely through grep/glob/read, which is slow and incomplete.
+CodexGraph (Section 5.1.2.1, p.121) and KGCompass (p.121) demonstrate that building a structural representation of the codebase improves fault localization and cross-file consistency. Evener navigates codebases purely through grep/glob/read, which is slow and incomplete.
 
 ### Current Behavior
 

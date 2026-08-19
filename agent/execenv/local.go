@@ -22,9 +22,9 @@ import (
 
 	"github.com/bmatcuk/doublestar/v4"
 	"github.com/spf13/afero"
-	"primeradiant.com/serf/agent/internal/tool/repair"
-	"primeradiant.com/serf/agent/sandbox"
-	"primeradiant.com/serf/envvars"
+	"primeradiant.com/evener/agent/internal/tool/repair"
+	"primeradiant.com/evener/agent/sandbox"
+	"primeradiant.com/evener/envvars"
 )
 
 // EnvVarPolicy controls which environment variables are inherited by child processes.
@@ -146,7 +146,7 @@ type LocalExecutionEnvironment struct {
 	unsandboxedScratchMu sync.Mutex
 	// unsandboxedScratch is a per-session scratch dir this UNSANDBOXED env
 	// provisions on first spawn, so commandEnvironment can export
-	// SERF_SCRATCH_DIR/TMPDIR per docs/environment.md's contract, which carries
+	// EVENER_SCRATCH_DIR/TMPDIR per docs/environment.md's contract, which carries
 	// no sandbox-only caveat. It reuses the sandbox scratch location convention
 	// (sandbox.NewSessionScratch) but is entirely separate from ownedSessionTmp,
 	// which only a sandboxed env owns — a sandboxed spawn's scratch vars come
@@ -184,7 +184,7 @@ func (e *LocalExecutionEnvironment) sandbox() *sandboxFS {
 
 // sessionScratchPath returns the concrete per-session scratch directory this
 // env's kernel wrapper already grants spawned processes via $TMPDIR /
-// $SERF_SCRATCH_DIR (agent/sandbox.ApplyEnvFloor), or "" when unsandboxed. It
+// $EVENER_SCRATCH_DIR (agent/sandbox.ApplyEnvFloor), or "" when unsandboxed. It
 // reads through Wrapper rather than ownedSessionTmp because a re-rooted clone
 // (WithWorkingDirectory) shares the parent's scratch dir via the Wrapper without
 // owning it (ownedSessionTmp is nil there — see its doc comment).
@@ -196,7 +196,7 @@ func (e *LocalExecutionEnvironment) sessionScratchPath() string {
 }
 
 // SessionScratchDir reports the per-session scratch directory spawned commands
-// already receive as $SERF_SCRATCH_DIR/$TMPDIR — the sandboxed env's wrapper tmp,
+// already receive as $EVENER_SCRATCH_DIR/$TMPDIR — the sandboxed env's wrapper tmp,
 // or an unsandboxed env's own lazily provisioned dir — and "" when neither has
 // been provisioned. It deliberately never provisions one: it is a REPORTING
 // accessor (the session prompt's capability preamble), and reporting a path must
@@ -331,7 +331,7 @@ func (e *LocalExecutionEnvironment) overlaySessionEnv(extra map[string]string) m
 	if e.Wrapper == nil {
 		if scratch := e.unsandboxedScratchDir(); scratch != "" {
 			overlay[envvars.TmpDir.Name] = scratch
-			overlay[envvars.SERFScratchDir.Name] = scratch
+			overlay[envvars.EVENERScratchDir.Name] = scratch
 		}
 	}
 	if len(overlay) == 0 {
@@ -345,7 +345,7 @@ func (e *LocalExecutionEnvironment) overlaySessionEnv(extra map[string]string) m
 // unsandboxedScratchDir lazily provisions (once) and returns this
 // unsandboxed env's per-session scratch directory, or "" if provisioning
 // failed. A scratch dir is a convenience, never a launch or spawn blocker: a
-// failure silently disables the SERF_SCRATCH_DIR/TMPDIR export instead of
+// failure silently disables the EVENER_SCRATCH_DIR/TMPDIR export instead of
 // erroring the command.
 func (e *LocalExecutionEnvironment) unsandboxedScratchDir() string {
 	e.unsandboxedScratchMu.Lock()
@@ -1969,7 +1969,7 @@ func shellCommand(command string) *exec.Cmd {
 func (e *LocalExecutionEnvironment) KernelWrapper() *sandbox.Wrapper { return e.Wrapper }
 
 // wrapForSandbox applies kernel confinement to cmd when this environment is
-// sandboxed and always empties ExtraFiles so a spawned process inherits no serf
+// sandboxed and always empties ExtraFiles so a spawned process inherits no evener
 // fds beyond stdio — not the live LLM-API connection, not a credential fd, not an
 // agent socket. dir is the resolved working directory, used as the sandbox chdir.
 // When Wrapper is nil it does nothing beyond the (already-default) fd hygiene, so

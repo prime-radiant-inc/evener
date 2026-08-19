@@ -7,7 +7,7 @@ import (
 	"strings"
 	"time"
 
-	"primeradiant.com/serf/identifier"
+	"primeradiant.com/evener/identifier"
 )
 
 // gitExecTimeout bounds every git subprocess exec this file runs to resolve a

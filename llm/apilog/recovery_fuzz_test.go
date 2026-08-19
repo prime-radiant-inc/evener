@@ -1,4 +1,4 @@
-//go:build serffuzz
+//go:build evenerfuzz
 
 package apilog
 
@@ -11,7 +11,7 @@ import (
 
 // FuzzAPILogStreamRecovery drives the apilog DECODE side with arbitrary bytes:
 // a corrupt, truncated, or interleaved api.jsonl, which is exactly the file
-// state a crashed or killed serf leaves behind. FuzzCanonicalRecordCodec next
+// state a crashed or killed evener leaves behind. FuzzCanonicalRecordCodec next
 // door covers the encode path with well-formed records; nothing covered the
 // recovery path that has to make sense of the wreckage, and it was the least
 // fuzz-covered code in the module.

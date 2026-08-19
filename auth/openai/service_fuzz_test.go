@@ -20,7 +20,7 @@ const authfz_maxFuzzInput = 1 << 16
 // authfz_issuer is a syntactically valid but non-routable issuer base URL. The
 // fake RoundTripper intercepts every request, so this is never dialed; it exists
 // only so http.NewRequestWithContext can build a request without a real host.
-const authfz_issuer = "http://serf-authfz.invalid"
+const authfz_issuer = "http://evener-authfz.invalid"
 
 // authfz_instance is the instance name whose credential file the fuzz harness
 // seeds and resolves.

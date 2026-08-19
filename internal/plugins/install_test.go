@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	agentplugin "primeradiant.com/serf/agent/plugin"
+	agentplugin "primeradiant.com/evener/agent/plugin"
 )
 
 // makeInstallableMarketplace builds a git marketplace whose one plugin's source
@@ -151,7 +151,7 @@ func TestInstall_ManifestLessPlugin_MCPServerRegisters(t *testing.T) {
 // private-journal-mcp@superpowers-marketplace: a bare repo with no plugin
 // scaffolding whose marketplace entry declares no components either. Claude
 // Code installs that shape (the plugin contributes only what conventional
-// dirs auto-discover — here nothing), so serf must install it too,
+// dirs auto-discover — here nothing), so evener must install it too,
 // synthesizing a minimal name/description manifest.
 func TestInstall_ManifestLessPlugin_NoUsableFields_Installs(t *testing.T) {
 	if !gitAvailable() {

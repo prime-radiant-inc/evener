@@ -4,9 +4,9 @@ import (
 	"context"
 	"testing"
 
-	"primeradiant.com/serf/agent/execenv"
-	"primeradiant.com/serf/agent/internal/agenttest"
-	"primeradiant.com/serf/llm"
+	"primeradiant.com/evener/agent/execenv"
+	"primeradiant.com/evener/agent/internal/agenttest"
+	"primeradiant.com/evener/llm"
 )
 
 func TestOpenAIPromptCacheDefaults_RequestCapture(t *testing.T) {
@@ -33,7 +33,7 @@ func TestOpenAIPromptCacheDefaults_RequestCapture(t *testing.T) {
 		t.Fatal("requests: got 0 want at least 1")
 	}
 	req := reqs[0]
-	if got, want := req.PromptCacheKey, "serf-session-"+sess.ID(); got != want {
+	if got, want := req.PromptCacheKey, "evener-session-"+sess.ID(); got != want {
 		t.Fatalf("PromptCacheKey = %q, want %q", got, want)
 	}
 	if got, want := req.PromptCacheRetention, "24h"; got != want {

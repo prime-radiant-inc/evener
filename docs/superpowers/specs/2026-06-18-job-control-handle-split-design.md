@@ -19,7 +19,7 @@ the caller treated an observer delegate job as a resident actor, chased resumed
 job ids, installed duplicate watches, tried polling, and used an agent type that
 did not have the tools required for observation.
 
-The root issue is not that delegates complete. Serf is intentionally turn-based:
+The root issue is not that delegates complete. Evener is intentionally turn-based:
 delegates complete one job and later resume in the same delegate conversation.
 The API should make that lifecycle visible and make the wrong target type
 structurally invalid.
@@ -46,7 +46,7 @@ structurally invalid.
 
 ## Model-Facing Handles
 
-Serf exposes three control handles with distinct prefixes and meanings:
+Evener exposes three control handles with distinct prefixes and meanings:
 
 | Handle | Prefix | Meaning | Accepted by |
 | --- | --- | --- | --- |
@@ -386,7 +386,7 @@ The contract relies on sharp, actionable errors:
 
 - `delegate_send(to="job_...")`:
   `invalid_request: job_id is a job/turn handle; send messages to delegate_id dlg_...`
-  when Serf can name the associated delegate.
+  when Evener can name the associated delegate.
 - `job_read_output("dlg_...")`:
   `invalid_request: delegate_id is a conversation handle; read output from job_id`
 - `job_stop("dlg_...")`:

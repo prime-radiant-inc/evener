@@ -73,11 +73,11 @@ func TestSessionScratchCleanupRefusesUnownedPath(t *testing.T) {
 	}
 }
 
-func TestSessionScratchAgeSweepsOnlyStaleSerfDirs(t *testing.T) {
+func TestSessionScratchAgeSweepsOnlyStaleEvenerDirs(t *testing.T) {
 	base := t.TempDir()
 	stale := filepath.Join(base, sessionScratchPrefix+"crashed")
 	fresh := filepath.Join(base, sessionScratchPrefix+"fresh")
-	foreign := filepath.Join(base, "not-serf-keepme")
+	foreign := filepath.Join(base, "not-evener-keepme")
 	for _, dir := range []string{stale, fresh, foreign} {
 		if err := os.MkdirAll(dir, 0o700); err != nil {
 			t.Fatal(err)

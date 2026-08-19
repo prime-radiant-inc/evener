@@ -56,7 +56,7 @@
 #
 # Env seams (default is unset in production; used by the self-test to prove
 # the CAS deterministically, without sleeps or polling):
-#   SERF_MERGE_INTO_BRANCH_PRECAS_HOOK   if set, an executable run with no
+#   EVENER_MERGE_INTO_BRANCH_PRECAS_HOOK   if set, an executable run with no
 #     arguments after the merge commit is built but before the CAS write —
 #     the self-test's one chance to move refs/heads/TARGET and simulate the
 #     incident's concurrent branch switch.
@@ -174,8 +174,8 @@ fi
 
 # The self-test's one hook: move refs/heads/TARGET here, deterministically,
 # to reproduce the incident's window between preflight and the write below.
-if [ -n "${SERF_MERGE_INTO_BRANCH_PRECAS_HOOK:-}" ]; then
-	"$SERF_MERGE_INTO_BRANCH_PRECAS_HOOK"
+if [ -n "${EVENER_MERGE_INTO_BRANCH_PRECAS_HOOK:-}" ]; then
+	"$EVENER_MERGE_INTO_BRANCH_PRECAS_HOOK"
 fi
 
 if cas_err="$(git -C "$repo" update-ref "refs/heads/$target" "$new_sha" "$old_sha" 2>&1)"; then

@@ -3,7 +3,7 @@ package agent
 import (
 	"errors"
 
-	"primeradiant.com/serf/llm"
+	"primeradiant.com/evener/llm"
 )
 
 // isAbortError reports whether err's chain contains an *llm.AbortError — the

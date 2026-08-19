@@ -6,7 +6,7 @@ import (
 	"net/http/httptest"
 	"testing"
 
-	"primeradiant.com/serf/llm"
+	"primeradiant.com/evener/llm"
 )
 
 // FuzzAnthropicComplete drives the Anthropic non-streaming Complete path against

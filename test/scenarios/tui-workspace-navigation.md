@@ -1,7 +1,7 @@
-# tui-workspace-navigation: serf-tui dashboard + session keyboard nav
+# tui-workspace-navigation: evener-tui dashboard + session keyboard nav
 
 **What this covers**: kata `57be`. The Bubble Tea TUI in
-`cmd/serf-tui/` is fully covered by Go unit tests (`tmux_e2e_test.go`
+`cmd/evener-tui/` is fully covered by Go unit tests (`tmux_e2e_test.go`
 and friends) but has no scenario-level guard. This scenario uses
 `tmux` to drive the binary end-to-end against a real running hub and
 verifies the keyboard event loop, focus management, and the
@@ -10,13 +10,13 @@ dashboard ↔ session transitions described in the action bars.
 ## Pre-state
 
 - `tmux` installed (`which tmux` returns a path; tested on tmux 3.4).
-- `serf-hub` reachable on an isolated `$HOME` and free port
+- `evener-hub` reachable on an isolated `$HOME` and free port
   (never Jesse's port `9180` — see the Setup checklist in
   `docs/agentic-testing.md`). Token at
-  `$HOME/.serf/auth-token`.
-- `./serf-tui` built and in repo root (`go build -o serf-tui ./cmd/serf-tui`).
+  `$HOME/.evener/auth-token`.
+- `./evener-tui` built and in repo root (`go build -o evener-tui ./cmd/evener-tui`).
 - At least one live or recent session visible on the dashboard. If
-  empty, spawn one first via `~/go/bin/serf spawn ...` or accept that
+  empty, spawn one first via `~/go/bin/evener spawn ...` or accept that
   the leaf-enter step is skipped.
 - The tmux session name is derived from the driving shell's pid
   (`TMUX_SESSION`, set in step 1), so a second agent running this card
@@ -30,18 +30,18 @@ Use `tmux send-keys -t "$TMUX_SESSION" KEY ...` to drive input and
 
 1. **Launch in tmux**:
    ```
-   TMUX_SESSION="serf-nav-$$"
+   TMUX_SESSION="evener-nav-$$"
    tmux new-session -d -s "$TMUX_SESSION" -x 200 -y 50 \
-     "./serf-tui --hub-addr 127.0.0.1:$PORT --debug"
+     "./evener-tui --hub-addr 127.0.0.1:$PORT --debug"
    sleep 1
    tmux capture-pane -t "$TMUX_SESSION" -p
    ```
-   Confirm the first line shows `serf live` and the hub URL + `N live`
+   Confirm the first line shows `evener live` and the hub URL + `N live`
    counter. A row marked `> ▾ ●` or `> ▸ ●` indicates a project header;
    session rows sit under it as a flat state-bar + status-dot + label,
    with no tree-connector glyphs (see step 5). Footer reads:
    `↑↓ select  enter open  n new  / filter  ctrl+o dashboard  q quit`
-   (`dashboardFooter`, `cmd/serf-tui/hub_dashboard_view.go#dashboardFooter`).
+   (`dashboardFooter`, `cmd/evener-tui/hub_dashboard_view.go#dashboardFooter`).
 
 2. **Dashboard arrow navigation**: send `Down Down` (or `j j`); recapture
    and confirm the `>` selection marker moved two rows.
@@ -65,12 +65,12 @@ Use `tmux send-keys -t "$TMUX_SESSION" KEY ...` to drive input and
    `Enter`. Session rows are a flat colored state-bar + status-dot +
    label — they carry **no** `└─`/`├─` tree connectors, and
    `TestSessionRowsHaveNoTreeConnectors`
-   (`cmd/serf-tui/dashboard_rows_test.go#TestSessionRowsHaveNoTreeConnectors`) fails the build if any
+   (`cmd/evener-tui/dashboard_rows_test.go#TestSessionRowsHaveNoTreeConnectors`) fails the build if any
    reappear, so a literal grep for those glyphs is a false failure. The
    composer view replaces the dashboard. Confirm the footer changes to:
    `enter send  shift+enter newline  ⌘P palette  esc browse  /help`
    (`composerFooterHints`' compose arm,
-   `cmd/serf-tui/composer_render.go#composerFooterHints` — key and action joined by a
+   `cmd/evener-tui/composer_render.go#composerFooterHints` — key and action joined by a
    space, not a colon, and ⌘-glyphs not `ctrl+`), above a prompt with
    cursor (`> █`). There is **no** `message` label: default compose mode
    deliberately sets none (`composer_panel.go:175-178`, "an extra
@@ -96,7 +96,7 @@ Use `tmux send-keys -t "$TMUX_SESSION" KEY ...` to drive input and
 9. **Double-Ctrl+C exit from a session**: enter a session again
    (steps 5). Send `C-c C-c` in one `send-keys` call (so they arrive
    within the 1-second window — see `hubCtrlCQuitWindow` in
-   `cmd/serf-tui/hub_model.go`). The tmux session exits.
+   `cmd/evener-tui/hub_model.go`). The tmux session exits.
 
 10. **`q` exit from dashboard**: relaunch (step 1). Press `q`. The
     tmux session ends.
@@ -105,7 +105,7 @@ Use `tmux send-keys -t "$TMUX_SESSION" KEY ...` to drive input and
 
 ## Expected
 
-- Step 1: pane shows `serf live` header, hub URL, project tree, and
+- Step 1: pane shows `evener live` header, hub URL, project tree, and
   the dashboard footer hint. Falsification: blank pane, "connection
   refused", or no footer.
 - Step 2: `>` marker moves with each `Down`/`j`; bounded at the last
@@ -148,7 +148,7 @@ Use `tmux send-keys -t "$TMUX_SESSION" KEY ...` to drive input and
   arrow-down-arrow-down-Enter recipe is brittle: count the rows
   carefully or use the filter palette to land on the right row.
 - **Double-Ctrl+C window is 1 s.** `hubCtrlCQuitWindow = time.Second`
-  in `cmd/serf-tui/hub_model.go`. Send both keys in one
+  in `cmd/evener-tui/hub_model.go`. Send both keys in one
   `send-keys -t ... C-c C-c` call to avoid races. A `sleep 0.5`
   between separate calls is usually fine; a `sleep 1.5` is not.
 - **The `--debug` flag disables the alt-screen.** This makes

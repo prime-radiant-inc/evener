@@ -4,7 +4,7 @@ import (
 	"testing"
 	"time"
 
-	"primeradiant.com/serf/agent/internal/goal"
+	"primeradiant.com/evener/agent/internal/goal"
 )
 
 // TestGoalTerminalReportEmittedOnce pins the fix for the re-emit defect: a

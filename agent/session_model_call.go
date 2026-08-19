@@ -8,12 +8,12 @@ import (
 	"strings"
 	"time"
 
-	"primeradiant.com/serf/agent/events"
-	"primeradiant.com/serf/agent/provider"
-	"primeradiant.com/serf/agent/sandbox"
-	"primeradiant.com/serf/agent/schema"
-	"primeradiant.com/serf/identifier"
-	"primeradiant.com/serf/llm"
+	"primeradiant.com/evener/agent/events"
+	"primeradiant.com/evener/agent/provider"
+	"primeradiant.com/evener/agent/sandbox"
+	"primeradiant.com/evener/agent/schema"
+	"primeradiant.com/evener/identifier"
+	"primeradiant.com/evener/llm"
 )
 
 // ModelAttemptMetadata records continuation, endpoint, and attempt-grouping
@@ -753,7 +753,7 @@ func (s *Session) buildModelRequest(profile *provider.Profile, sys string, histo
 		Messages: messages,
 		Tools:    toolDefs,
 		// Ask for a tool call; never force one. A forcing tool_choice leaves a
-		// model that cannot honor it with no legal way to stop, and serf targets
+		// model that cannot honor it with no legal way to stop, and evener targets
 		// arbitrary gateways and models where that capability is unknowable in
 		// advance. The result-tool contract is enforced in software instead —
 		// decideNoToolCalls steers bare text back, and a delegate that ends

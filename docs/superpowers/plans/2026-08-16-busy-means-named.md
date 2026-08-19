@@ -30,7 +30,7 @@ name. Two of the three sites that mint a bucket id for a real turn are deleted;
 the third is legitimate and stays.
 
 **Tech Stack:** Go 1.25 multi-module workspace (`agent` module, root module's
-`internal/appprojector` / `server` / `cmd/serf` / `cmd/serf-hub`), `appwire`
+`internal/appprojector` / `server` / `cmd/evener` / `cmd/evener-hub`), `appwire`
 JSON-RPC, React/TypeScript frontend (read-only for this plan).
 
 **Spec:** this document.
@@ -94,7 +94,7 @@ Explicitly rejected along the way, and why, so nobody re-proposes them:
   review found three lines on this branch that no test killed; do not add more.
 - **Live-stack proof, not unit proof, for the user-visible claim.** The claim
   is "Steer and Stop work." The e2e tests in
-  `cmd/serf-hub/e2e_turn_control_test.go` are what demonstrate it.
+  `cmd/evener-hub/e2e_turn_control_test.go` are what demonstrate it.
 
 ---
 
@@ -105,7 +105,7 @@ Recorded so an executor does not redo them. Verify with
 
 | Commit | What |
 | --- | --- |
-| `457369f11` | The live-stack tests no longer leak ~118MB of Go module cache per run into a directory that cannot be deleted. Pins `GOCACHE`/`GOPATH`/`GOMODCACHE` before `TestMain` redirects `HOME`, matching `cmd/serf/testmain_test.go`. Guarded by `TestGoSubprocessesCacheOutsideTheTestRoot`. |
+| `457369f11` | The live-stack tests no longer leak ~118MB of Go module cache per run into a directory that cannot be deleted. Pins `GOCACHE`/`GOPATH`/`GOMODCACHE` before `TestMain` redirects `HOME`, matching `cmd/evener/testmain_test.go`. Guarded by `TestGoSubprocessesCacheOutsideTheTestRoot`. |
 | `ff189e7fe` | Three production lines that no test killed: the goal continuation's release, `releaseRunningTurnID`'s identity guard, and `acceptNotificationInput`'s persist-before-announce ordering. |
 | `1faaa6266` | `openTurn` — one copy of the boundary sequence instead of three. The drift between two of those copies *was* the bug this work exists to fix. |
 | `8360363c1` | A wake stands down rather than run a turn it cannot name. See below. |
@@ -174,7 +174,7 @@ it proceeds is the cheaper mistake.
 
 | File | Responsibility |
 | --- | --- |
-| `cmd/serf/serve.go` | Reserves the name for user input before flipping busy (Task 1); heals a stale name between messages (Task 4). |
+| `cmd/evener/serve.go` | Reserves the name for user input before flipping busy (Task 1); heals a stale name between messages (Task 4). |
 | `server/server.go` | `setProcessingLocked` stops minting (Task 2). |
 | `server/appwire_runtime.go` | Dead reservation machinery deleted (Task 3). |
 | `server/server_handlers.go` | Same (Task 3). |
@@ -206,9 +206,9 @@ The asymmetry is deliberate and is exactly the kind that caused the original
 bug, so Task 7 makes every `EntryKind` declare which path it uses.
 
 **Files:**
-- Modify: `cmd/serf/serve.go:1012-1017` (the `!msg.ClientMutationStart` branch)
+- Modify: `cmd/evener/serve.go:1012-1017` (the `!msg.ClientMutationStart` branch)
 - Modify: `agent/session_active_turn.go` (export the mint/release for serve.go)
-- Test: `cmd/serf/serve_turn_name_test.go` (create)
+- Test: `cmd/evener/serve_turn_name_test.go` (create)
 
 **Interfaces:**
 - Produces: `(*agent.Session).MintRunningTurnID() string` and
@@ -267,7 +267,7 @@ turn's opening event would otherwise carry no name. `EntryUserInput` must use
 the name the serve loop reserved. Take it from the queued client-mutation
 identity where one exists, and from the durable snapshot otherwise.
 
-- [ ] **Step 5: Run the test, plus `go test ./agent/ ./server/ ./cmd/serf/`**
+- [ ] **Step 5: Run the test, plus `go test ./agent/ ./server/ ./cmd/evener/`**
 
 - [ ] **Step 6: Mutation-check** — drop the `SetProcessingTurn` call and watch
   the new test fail; restore.
@@ -436,7 +436,7 @@ journal after the fact. With this landed they are verified by using the app,
 which is also how a user would report the next instance of this class.
 
 **Files:**
-- Modify: `cmd/serf-hub/frontend/src/panes/session/composer/Composer.tsx`
+- Modify: `cmd/evener-hub/frontend/src/panes/session/composer/Composer.tsx`
   (the `busyAction` dispatchers at `:814`, `:854`, `:876`)
 - Modify: the mutation dispatcher's settle path, so a rejected durable
   intent surfaces rather than settling silently
@@ -525,7 +525,7 @@ reintroduces the bug this branch exists to fix.
       (`thread_envelope_test.go:71-83`) asserts `WorkMillis` while the comment's
       whole argument is about `ActiveTurnStartedAt`; assert what the comment
       argues.
-- [ ] **Dedupe the e2e scaffolding.** `cmd/serf-hub/e2e_turn_control_test.go`
+- [ ] **Dedupe the e2e scaffolding.** `cmd/evener-hub/e2e_turn_control_test.go`
       (695 lines) repeats the `thread/start` + cleanup block three times, and
       the steer-and-prove and interrupt-and-prove blocks twice each. Two
       helpers cut ~140 lines and make the three tests read as the three turn
@@ -540,7 +540,7 @@ reintroduces the bug this branch exists to fix.
       push path and the read path, verified by test rather than by argument.
 - [ ] `make lint` (all 7 gates), `make build`, the root suite, all seven module
       suites, `make test-web`.
-- [ ] All three live-stack e2e tests in `cmd/serf-hub/e2e_turn_control_test.go`
+- [ ] All three live-stack e2e tests in `cmd/evener-hub/e2e_turn_control_test.go`
       pass, and a fourth covers a fast second message routing to `turn/queue`
       rather than bouncing.
 - [ ] Live browser check: Steer and Stop render and apply on a notification

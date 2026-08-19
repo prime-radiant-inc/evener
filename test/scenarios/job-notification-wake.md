@@ -1,12 +1,12 @@
 # job-notification-wake: a delegate completion wakes an idle parent
 
 **What this covers**: a non-blocking delegate job completes after the parent has
-ended its turn, then Serf wakes the parent with a proactive `<job-notification>`
+ended its turn, then Evener wakes the parent with a proactive `<job-notification>`
 so the parent can read the result.
 
 ## Steps
 
-1. Start `serf serve` and a hub client against a fresh scenario state dir.
+1. Start `evener serve` and a hub client against a fresh scenario state dir.
 2. In the hub, ask the parent:
 
    > Call `delegate` (max_wait_ms unset — returns job_id immediately) with this
@@ -15,7 +15,7 @@ so the parent can read the result.
    > `read_transcript`, `job_status` or `job_list`. Tell me the job has started
    > and that you will report its result when notified, then end your turn.
 
-3. Wait for the delegate to finish and for Serf to inject a notification turn.
+3. Wait for the delegate to finish and for Evener to inject a notification turn.
 4. Confirm the parent reacts to the notification by surfacing `CHILD_DONE_42`
    to the user.
 

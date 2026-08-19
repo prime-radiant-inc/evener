@@ -2,7 +2,7 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Close the three documented gaps between Claude Code's MCP behavior and serf's existing implementation: accept `streamable-http` as alias for `http`, inject `CLAUDE_PROJECT_DIR` into spawned stdio MCP servers, and extend variable-expansion to resolve `${CLAUDE_PROJECT_DIR}`, `${CLAUDE_PLUGIN_ROOT}`, `${CLAUDE_PLUGIN_DATA}`, and `${user_config.KEY}`.
+**Goal:** Close the three documented gaps between Claude Code's MCP behavior and evener's existing implementation: accept `streamable-http` as alias for `http`, inject `CLAUDE_PROJECT_DIR` into spawned stdio MCP servers, and extend variable-expansion to resolve `${CLAUDE_PROJECT_DIR}`, `${CLAUDE_PLUGIN_ROOT}`, `${CLAUDE_PLUGIN_DATA}`, and `${user_config.KEY}`.
 
 **Architecture:** All changes confined to package `agent`. Rename `expandEnvVars` → `expandVars` and thread an unexported `expansionContext` through the loaders. Add a `resolveProjectDir` helper that walks (session override → git root → cwd). Add `projectDir` parameter to `transportForConfig` and inject `CLAUDE_PROJECT_DIR` into the stdio env map. Replace `expandPluginRoot`'s string `ReplaceAll` with an `expandVars` call seeded with plugin paths.
 
@@ -22,7 +22,7 @@ Files modified by this plan:
 - `agent/session.go` — pass resolved project dir into `NewMCPManager`.
 - `agent/mcp_config_test.go`, `agent/mcp_manager_test.go`, `agent/plugin_test.go` — new tests per §10 of the spec.
 
-No new files, no new packages. Test fixtures live inline (table-driven) per existing serf style.
+No new files, no new packages. Test fixtures live inline (table-driven) per existing evener style.
 
 ---
 
@@ -1348,7 +1348,7 @@ func DiscoverMCPConfigs(env ExecutionEnvironment, extraFiles, inlineSpecs []stri
 		cwd := env.WorkingDirectory()
 		root := gitRootOrEmpty(env, cwd)
 		if root != "" {
-			projPath := filepath.Join(root, ".serf", "mcp.json")
+			projPath := filepath.Join(root, ".evener", "mcp.json")
 			if configs, err := loadMCPConfigFileWithContext(projPath, ctx); err == nil {
 				layers = append(layers, configs)
 			}
@@ -1387,10 +1387,10 @@ func TestDiscoverMCPConfigs_ExpandsProjectDir(t *testing.T) {
 
 	projDir := t.TempDir()
 	resolvedProj, _ := filepath.EvalSymlinks(projDir)
-	if err := os.MkdirAll(filepath.Join(resolvedProj, ".serf"), 0755); err != nil {
+	if err := os.MkdirAll(filepath.Join(resolvedProj, ".evener"), 0755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(resolvedProj, ".serf", "mcp.json"), []byte(`{
+	if err := os.WriteFile(filepath.Join(resolvedProj, ".evener", "mcp.json"), []byte(`{
 		"mcpServers": {
 			"x": {"command": "${CLAUDE_PROJECT_DIR}/bin/x"}
 		}
@@ -1616,7 +1616,7 @@ func NewMCPManager(ctx context.Context, configs []MCPServerConfig, transports []
 	}
 
 	client := mcp.NewClient(&mcp.Implementation{
-		Name:    "serf",
+		Name:    "evener",
 		Version: "v1",
 	}, nil)
 
@@ -1939,7 +1939,7 @@ Expected: The first test may already pass (because `expandPluginRoot` does the R
 // pluginDataDir returns the per-plugin data directory used as the value
 // for ${CLAUDE_PLUGIN_DATA}. The path lives under the same XDG_CONFIG_HOME
 // (or ~/.config) base used by globalMCPConfigPath, in
-// serf/plugins/data/<pluginName>. The directory is not created here;
+// evener/plugins/data/<pluginName>. The directory is not created here;
 // plugins create it on demand.
 func pluginDataDir(pluginName string) string {
 	dir := os.Getenv("XDG_CONFIG_HOME")
@@ -1950,7 +1950,7 @@ func pluginDataDir(pluginName string) string {
 		}
 		dir = filepath.Join(home, ".config")
 	}
-	return filepath.Join(dir, "serf", "plugins", "data", pluginName)
+	return filepath.Join(dir, "evener", "plugins", "data", pluginName)
 }
 ```
 

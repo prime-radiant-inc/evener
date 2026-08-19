@@ -9,9 +9,9 @@
 ## Infrastructure
 - **flower-garden**: Linux server at 192.168.118.101 (jesse@), 8 cores, 30GB RAM, Ubuntu + Docker
 - **Benchmark repo**: `~/git/terminal-bench/` on flower-garden
-- **Serf adapter**: `~/git/terminal-bench/serf_agent.py` — Python adapter that bridges harbor to serf binary
-- **Install template**: `~/git/terminal-bench/install-serf.sh.j2` — Jinja2 template for apt packages, python symlink, serf binary copy into container
-- **Serf binary**: `~/git/terminal-bench/serf-linux-amd64` — uploaded via scp from local build
+- **Evener adapter**: `~/git/terminal-bench/evener_agent.py` — Python adapter that bridges harbor to evener binary
+- **Install template**: `~/git/terminal-bench/install-evener.sh.j2` — Jinja2 template for apt packages, python symlink, evener binary copy into container
+- **Evener binary**: `~/git/terminal-bench/evener-linux-amd64` — uploaded via scp from local build
 - **Task cache**: `~/.cache/harbor/tasks/<hash>/<task-name>/` — task definitions, environments, verifiers
 - **Verifier source**: `~/.cache/harbor/tasks/<hash>/<task-name>/tests/` — the hidden test scripts/files
 
@@ -24,21 +24,21 @@ On flower-garden it's at `~/.local/bin/harbor` (installed via `uv tool install`)
 ```bash
 cd ~/git/terminal-bench
 harbor run \
-  --agent-import-path 'serf_agent:SerfAgent' \
+  --agent-import-path 'evener_agent:EvenerAgent' \
   -m openai/gpt-5.2-codex \
   --ak max_rounds=100 \
   -d 'terminal-bench@2.0' \
   -t <task-name> \
-  -o /tmp/serf-runN \
+  -o /tmp/evener-runN \
   -n 4 \
   --delete \
   --debug
 ```
 
 ### Key flags
-- `--agent-import-path 'serf_agent:SerfAgent'` — Python module:class for the agent adapter
-- `-m openai/gpt-5.2-codex` — model name (passed through to serf)
-- `--ak max_rounds=100` — agent kwargs (passed to SerfAgent constructor)
+- `--agent-import-path 'evener_agent:EvenerAgent'` — Python module:class for the agent adapter
+- `-m openai/gpt-5.2-codex` — model name (passed through to evener)
+- `--ak max_rounds=100` — agent kwargs (passed to EvenerAgent constructor)
 - `-d 'terminal-bench@2.0'` — dataset name and version
 - `-t <task-name>` — specific task(s) to run; omit for ALL 89 tasks; can repeat `-t` for multiple
 - `-o /tmp/output-dir` — output directory for results
@@ -48,7 +48,7 @@ harbor run \
 
 ### Output structure
 ```
-/tmp/serf-runN/
+/tmp/evener-runN/
   2026-02-23__04-19-54/          # timestamped run directory
     config.json                   # run configuration
     result.json                   # aggregate results
@@ -59,7 +59,7 @@ harbor run \
         command-0                # agent command output
         install.sh               # install script used
         setup/                   # setup artifacts
-        serf-state/
+        evener-state/
           sessions/
             <session-id>.json              # session metadata
             <session-id>.transcript.jsonl  # full transcript
@@ -97,7 +97,7 @@ Each line is a JSON object:
 ```bash
 ssh jesse@192.168.118.101 'python3 << '"'"'PYEOF'"'"'
 import json, glob
-for path in sorted(glob.glob("/tmp/serf-runN/2026-*/<task>*/agent/serf-state/sessions/*.transcript.jsonl")):
+for path in sorted(glob.glob("/tmp/evener-runN/2026-*/<task>*/agent/evener-state/sessions/*.transcript.jsonl")):
     for line in open(path):
         e = json.loads(line)
         if e.get("kind") != "entry": continue
@@ -129,13 +129,13 @@ works for embedding Python in bash over SSH.
 ## Workflow: Iterating on prompts
 
 ### 1. Edit prompt locally
-Edit `agent/prompts/base.md` in the serf repo.
+Edit `agent/prompts/base.md` in the evener repo.
 
 ### 2. Build and test locally (quick iteration)
 ```bash
-go build -o /tmp/serf-mac ./cmd/serf/
+go build -o /tmp/evener-mac ./cmd/evener/
 export $(cat .env | xargs)
-/tmp/serf-mac --model openai/gpt-5.2-codex --max-rounds 8 \
+/tmp/evener-mac --model openai/gpt-5.2-codex --max-rounds 8 \
   --state-dir /tmp/test-state -- 'task instructions here'
 ```
 - Use low --max-rounds (5-15) for quick attitude checks
@@ -144,7 +144,7 @@ export $(cat .env | xargs)
 
 ### 3. Resume to interrogate decisions
 ```bash
-/tmp/serf-mac --model openai/gpt-5.2-codex --max-rounds 3 \
+/tmp/evener-mac --model openai/gpt-5.2-codex --max-rounds 3 \
   --state-dir /tmp/test-state \
   --resume-with <SESSION_ID> \
   -- 'Why did you choose X instead of Y?'
@@ -154,22 +154,22 @@ export $(cat .env | xargs)
 
 ### 4. Build Linux binary and upload
 ```bash
-GOOS=linux GOARCH=amd64 go build -o serf-linux-amd64 ./cmd/serf/
-scp -o StrictHostKeyChecking=no serf-linux-amd64 jesse@192.168.118.101:~/git/terminal-bench/serf-linux-amd64
+GOOS=linux GOARCH=amd64 go build -o evener-linux-amd64 ./cmd/evener/
+scp -o StrictHostKeyChecking=no evener-linux-amd64 jesse@192.168.118.101:~/git/terminal-bench/evener-linux-amd64
 ```
 
 ### 5. Run on flower-garden
 
 **CRITICAL**: The harbor process must have API keys in its environment. The `.env` file
 at `~/git/terminal-bench/.env` has `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, and `GEMINI_API_KEY`.
-You MUST source it before launching harbor, otherwise serf inside the container gets no API
+You MUST source it before launching harbor, otherwise evener inside the container gets no API
 key and fails with "no LLM providers configured via environment variables".
 
 ```bash
 ssh -o StrictHostKeyChecking=no jesse@192.168.118.101 '
   export $(cat ~/git/terminal-bench/.env | xargs)
   cd ~/git/terminal-bench
-  nohup ~/.local/bin/harbor run [flags] > /tmp/serf-runN.log 2>&1 &
+  nohup ~/.local/bin/harbor run [flags] > /tmp/evener-runN.log 2>&1 &
   echo "PID=$!"
 '
 ```
@@ -181,7 +181,7 @@ to nothing locally.
 ### 6. Monitor progress
 ```bash
 # Quick status
-ssh jesse@192.168.118.101 "for d in /tmp/serf-runN/2026-*/*/; do
+ssh jesse@192.168.118.101 "for d in /tmp/evener-runN/2026-*/*/; do
   task=\$(basename \$d | sed 's/__.*//');
   if [ -f \$d/result.json ]; then
     reward=\$(python3 -c \"import json; print(json.load(open('\$d/result.json')).get('verifier_result',{}).get('rewards',{}).get('reward','?'))\");
@@ -226,10 +226,10 @@ Script at `/tmp/run-full-3x.sh` on flower-garden runs 3 sequential full-suite ru
 ```bash
 nohup /tmp/run-full-3x.sh > /tmp/full-3x.log 2>&1 &
 ```
-Output goes to `/tmp/serf-full-{1,2,3}/`. Each run takes ~4-5 hours at `-n 4`.
+Output goes to `/tmp/evener-full-{1,2,3}/`. Each run takes ~4-5 hours at `-n 4`.
 
 ## Key gotchas
-- **API keys MUST be in harbor's environment**: Source `~/git/terminal-bench/.env` before launching harbor. Without this, serf inside the container has no API key and immediately fails with "no LLM providers configured". The serf adapter reads `OPENAI_API_KEY` from `os.environ` and passes it into the container. Always use `export $(cat ~/git/terminal-bench/.env | xargs)` before `harbor run`.
+- **API keys MUST be in harbor's environment**: Source `~/git/terminal-bench/.env` before launching harbor. Without this, evener inside the container has no API key and immediately fails with "no LLM providers configured". The evener adapter reads `OPENAI_API_KEY` from `os.environ` and passes it into the container. Always use `export $(cat ~/git/terminal-bench/.env | xargs)` before `harbor run`.
 - **Harbor is `~/.local/bin/harbor`, NOT `terminal-bench`**: The `terminal-bench` package (PyPI) is a different project that installs a competing CLI. If you see a `terminal-bench` binary in a venv, that's the wrong tool. Harbor is installed via `uv tool install harbor` and lives at `~/.local/bin/harbor`.
 - **Harbor stdout is buffered under nohup**: the log file may be empty for a while. Check `docker ps` or transcript files instead.
 - **Python f-string syntax errors in SSH**: commas and colons in f-string braces cause SyntaxError on remote Python. Use % formatting.

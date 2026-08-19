@@ -11,7 +11,7 @@ badges.
 
 - Hub running.
 - Browser authed.
-- OAuth signed in for OpenAI (`./serf openai status` shows
+- OAuth signed in for OpenAI (`./evener openai status` shows
   `source=oauth`). This is the typical dev state after running
   through `auth-device-autodetect.md`.
 - **This card deliberately runs against Jesse's real `$HOME`** — the
@@ -19,10 +19,10 @@ badges.
   checklist, since OAuth state lives under the normal user state home
   and a fresh isolated `$HOME` would never have it. That means it reads
   (and, per Sharp edges below, temporarily edits) Jesse's real
-  `~/.serf/credentials.toml`. Back it up before touching it and restore
+  `~/.evener/credentials.toml`. Back it up before touching it and restore
   it in Cleanup:
   ```bash
-  cp ~/.serf/credentials.toml ~/.serf/credentials.toml.bak-$(date +%s)
+  cp ~/.evener/credentials.toml ~/.evener/credentials.toml.bak-$(date +%s)
   ```
 
 ## Steps
@@ -69,7 +69,7 @@ badges.
   subsequent scenarios see a clean page.
 - If you set up the dual-layer case in Sharp edges, restore the
   backup made in Pre-state over the real file (`mv
-  ~/.serf/credentials.toml.bak-<ts> ~/.serf/credentials.toml`) rather
+  ~/.evener/credentials.toml.bak-<ts> ~/.evener/credentials.toml`) rather
   than hand-editing the test entry back out — don't leave Jesse's real
   credentials store on a diff you can't fully account for.
 
@@ -81,7 +81,7 @@ badges.
   holds** (a bare `>` truncates the file — never do that here): back up
   the file (see Pre-state), then merge in a test entry with a TOML-aware
   edit rather than overwriting the whole file, e.g.
-  `python3 -c "import tomllib,tomli_w,os; p=os.path.expanduser('~/.serf/credentials.toml'); d=tomllib.load(open(p,'rb')); d.setdefault('providers',{})['kimi']={'api_key':'test'}; tomli_w.dump(d, open(p,'wb'))"`
+  `python3 -c "import tomllib,tomli_w,os; p=os.path.expanduser('~/.evener/credentials.toml'); d=tomllib.load(open(p,'rb')); d.setdefault('providers',{})['kimi']={'api_key':'test'}; tomli_w.dump(d, open(p,'wb'))"`
   (`tomli_w` is not stdlib — `pip install tomli-w` first if missing; mode
   stays `0600` — `chmod 600` afterward if the tool didn't preserve
   it), then set `KIMI_API_KEY=other-test`. Reload page. Should see both
@@ -96,4 +96,4 @@ badges.
   score it as one, and don't let it save the value.
 - "Refresh OAuth" for OpenAI restarts the OAuth flow. On a headless
   Linux host you'll get the device-code variant — confirm in CLI
-  via `./serf openai status` afterward.
+  via `./evener openai status` afterward.

@@ -12,8 +12,8 @@ import (
 	"testing"
 	"time"
 
-	"primeradiant.com/serf/agent/internal/delegatestore"
-	"primeradiant.com/serf/agent/internal/jobstore"
+	"primeradiant.com/evener/agent/internal/delegatestore"
+	"primeradiant.com/evener/agent/internal/jobstore"
 )
 
 func TestDoctorStableDelegateReadOnlyDoesNotMutateState(t *testing.T) {

@@ -2,7 +2,7 @@
 
 > **For Claude:** REQUIRED SUB-SKILL: Use superpowers:executing-plans to implement this plan task-by-task.
 
-**Goal:** Separate serf's monolithic base.md into a lean soul prompt + methodology skills loaded on demand.
+**Goal:** Separate evener's monolithic base.md into a lean soul prompt + methodology skills loaded on demand.
 
 **Architecture:** base.md becomes ~80 lines (identity, values, coordinator role). TDD, debugging, verification, and delegation methodology move to embedded skills. Agent types get a `skills` frontmatter field for auto-injection per the Claude Code subagent spec.
 
@@ -39,7 +39,7 @@ are **skills** that get loaded when relevant, like Neo downloading martial arts 
 Covers four things and nothing else:
 
 **Identity & Values**
-- You are serf. You persist until done. You don't lie. You don't fabricate.
+- You are evener. You persist until done. You don't lie. You don't fabricate.
 - Read errors carefully. Correctness over speed.
 - You are efficient and productive with your resources. You don't waste time, but you
   also don't hurry or rush.
@@ -75,7 +75,7 @@ thoroughness. Never fabricate results. A thorough partial result beats a sloppy 
 
 ### 3. Core Skills (embedded, loaded on demand)
 
-These ship with serf as embedded skill files. The coordinator lists them in its prompt with
+These ship with evener as embedded skill files. The coordinator lists them in its prompt with
 1-line descriptions and decides which to load or tell subagents to load.
 
 | Skill | Description | Current source |
@@ -343,7 +343,7 @@ cp agent/prompts/base.md agent/prompts/base.md.bak
 **Step 2: Write new base.md**
 
 ~80 lines covering four sections:
-1. **Identity & Values** — You are serf. Honesty. Persistence. Correctness over speed.
+1. **Identity & Values** — You are evener. Honesty. Persistence. Correctness over speed.
    Efficient and productive — don't waste time, don't rush.
 2. **Role: Coordinator** — Understand the task, break it down, dispatch subagents, verify
    their output. Accountable for outcomes. Enforce values on subagents.
@@ -524,7 +524,7 @@ Remove from system.openai.md:
 - Any content that duplicates what's in base.md or skills
 
 Keep:
-- "You are serf" identity line
+- "You are evener" identity line
 - apply_patch tool documentation and format
 - Exploration/reading files batching guidance
 - Editing constraints (ASCII default, no revert, no amend)
@@ -562,17 +562,17 @@ Expected: All PASS. Fix any failures.
 **Step 2: Build binary**
 
 ```bash
-go build ./cmd/serf/
+go build ./cmd/evener/
 ```
 
 Expected: Clean build.
 
 **Step 3: Smoke test**
 
-Run serf on a simple task locally to verify the new prompts work:
+Run evener on a simple task locally to verify the new prompts work:
 
 ```bash
-./serf --provider openai --model gpt-5-mini -- "List the files in the current directory"
+./evener --provider openai --model gpt-5-mini -- "List the files in the current directory"
 ```
 
 Verify it responds sensibly and submit_result works.
@@ -586,22 +586,22 @@ Verify it responds sensibly and submit_result works.
 **Step 1: Cross-compile for Linux**
 
 ```bash
-GOOS=linux GOARCH=amd64 go build -o serf-linux-amd64 ./cmd/serf/
+GOOS=linux GOARCH=amd64 go build -o evener-linux-amd64 ./cmd/evener/
 ```
 
 **Step 2: Deploy to flower-garden**
 
 ```bash
-scp serf-linux-amd64 192.168.118.101:~/git/terminal-bench/serf-linux-amd64
+scp evener-linux-amd64 192.168.118.101:~/git/terminal-bench/evener-linux-amd64
 ```
 
 **Step 3: Run benchmark**
 
-Run a full 89-task benchmark with the new prompts. Compare against serf-reviewer-full2
+Run a full 89-task benchmark with the new prompts. Compare against evener-reviewer-full2
 (41/89 = 46% with reviewer gate).
 
 ```bash
-ssh 192.168.118.101 "export PATH=\"\$HOME/.local/bin:\$PATH\" && cd ~/git/terminal-bench && harbor run ... --job-name serf-soul-skills-1 ..."
+ssh 192.168.118.101 "export PATH=\"\$HOME/.local/bin:\$PATH\" && cd ~/git/terminal-bench && harbor run ... --job-name evener-soul-skills-1 ..."
 ```
 
 **Step 4: Analyze results**

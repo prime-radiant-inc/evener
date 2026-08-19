@@ -7,7 +7,7 @@ with its name and provider-qualified id, carry **no** badge/cost/context
 metadata at all, stay selectable, and launch.
 
 Ollama supplies a real, no-stub example of the rule.
-`catalogModelInfo`'s ollama branch (`cmd/serf-hub/web_spawn.go#catalogModelInfo`,
+`catalogModelInfo`'s ollama branch (`cmd/evener-hub/web_spawn.go#catalogModelInfo`,
 the branch at `:506-510`) suppresses the generic bare-id
 `LookupModelInfo` fallback and requires an exact `"ollama/<id>"` catalog
 key — "local ollama models are unrelated to same-named upstream catalog
@@ -59,9 +59,9 @@ So the assertion is **absence of the element**, not an empty one.
    `openai` row) so the difference is visible rather than asserted in a
    vacuum.
 3. Launch it: `POST /api/spawn
-   {"prompt":"hi","harness":"serf","model":"ollama/gemma4:e4b","working_dir":"<dir>"}`.
+   {"prompt":"hi","harness":"evener","model":"ollama/gemma4:e4b","working_dir":"<dir>"}`.
    Poll `GET /api/sessions/local:$SID` to `state: idle`, then read the
-   transcript with `go run ./cmd/serf-doctor transcript "$SID"
+   transcript with `go run ./cmd/evener-doctor transcript "$SID"
    --state-dir "$state" --format outline --range last:30`.
 
 ### Browser
@@ -82,12 +82,12 @@ So the assertion is **absence of the element**, not an empty one.
      };
    })()
    ```
-5. Open `/settings/launch-serf` and run the identical snippet — the same
+5. Open `/settings/launch-evener` and run the identical snippet — the same
    widget, so the same expectation.
    The settings page renders **two** model pickers — the schema declares
    both `model` (label `Model`) and `fast_cheap_model` (label `Fast cheap
    model`) as `modelPicker` controls
-   (`cmd/serf-hub/internal/launchconfig/schema.go:85,87`). Open the one
+   (`cmd/evener-hub/internal/launchconfig/schema.go:85,87`). Open the one
    whose block label reads exactly `Model`; only one panel is open at a
    time, so the listbox query above is unambiguous once it is.
 6. TUI: `n` → `BTab BTab` (focus Model) → `Enter`; `capture-pane` and
@@ -102,11 +102,11 @@ So the assertion is **absence of the element**, not an empty one.
   `supports_web_search`, `context_window`, `max_output_tokens`,
   `input_cost_per_million`, `output_cost_per_million`. The display name
   is still the prettified id
-  (`prettifyModelDisplayName`, `cmd/serf-hub/web_spawn.go#prettifyModelDisplayName`) —
+  (`prettifyModelDisplayName`, `cmd/evener-hub/web_spawn.go#prettifyModelDisplayName`) —
   degradation drops facts, it does not drop the row. This exact key set
   is pinned by
   `TestModelDescriptorsToAPIModels_UncataloguedModelStillRendersWithoutBadges`
-  (`cmd/serf-hub/app_models_test.go#TestModelDescriptorsToAPIModels_UncataloguedModelStillRendersWithoutBadges`).
+  (`cmd/evener-hub/app_models_test.go#TestModelDescriptorsToAPIModels_UncataloguedModelStillRendersWithoutBadges`).
 - **Step 2**: the openai neighbour carries those keys, proving the
   absence in step 1 is about the model and not about the endpoint.
 - **Steps 4/5**: `found` is true; `text` is exactly `Gemma4:e4b`;
@@ -120,9 +120,9 @@ So the assertion is **absence of the element**, not an empty one.
   or the row is greyed/disabled.
 - **Step 6**: the TUI row reads `Gemma4:e4b  ollama/gemma4:e4b` with no
   ` · ctx · price · caps` tail — `modelInfoMetaTail` returns `""` for a
-  nil catalog entry (`cmd/serf-tui/hub_commands.go:396-399`), pinned by
+  nil catalog entry (`cmd/evener-tui/hub_commands.go:396-399`), pinned by
   `TestModelPickerItems_UncataloguedModelStillRendersEmptyMeta`
-  (`cmd/serf-tui/hub_model_picker_items_test.go#TestModelPickerItems_UncataloguedModelStillRendersEmptyMeta`). Contrast the
+  (`cmd/evener-tui/hub_model_picker_items_test.go#TestModelPickerItems_UncataloguedModelStillRendersEmptyMeta`). Contrast the
   adjacent `Gpt 5.4` row's
   `1M ctx · $2.50/$15.00 · tools,vision,reasoning`.
 - **Step 3**: the spawn returns 200 with
@@ -163,7 +163,7 @@ So the assertion is **absence of the element**, not an empty one.
 - Don't confuse "uncatalogued" with "disabled" — this model has no
   `DisabledReason` and is fully selectable and launchable. The TUI only
   sets `DisabledReason` from a provider's launch diagnostic
-  (`cmd/serf-tui/hub_commands.go:468-492`), and graceful degradation
+  (`cmd/evener-tui/hub_commands.go:468-492`), and graceful degradation
   here means *fewer rendered facts*, never a blocked action.
 - The same `gemma4:e4b` row also appears in the `Recent` group (see
   `model-picker-recent-reflects-last-5-global.md`) — Recent reuses the

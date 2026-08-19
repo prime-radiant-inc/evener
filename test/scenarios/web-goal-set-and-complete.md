@@ -11,8 +11,8 @@
   (`panes/session/chrome/GoalControl.tsx:153,165`).
 - **A6 capability gate** — `goal/set` is pre-flight gated by the `Goal`
   thread capability inside `setGoalWithResume`
-  (`cmd/serf-hub/app_session_resume.go#setGoalWithResume`, whose comment names `/par A6`);
-  a serf session must advertise the appwire `Goal` capability or the call is
+  (`cmd/evener-hub/app_session_resume.go#setGoalWithResume`, whose comment names `/par A6`);
+  a evener session must advertise the appwire `Goal` capability or the call is
   rejected.
 - **B6 compact continuation marker** — each autonomous continuation turn is
   projected as a `systemMessage` item described `Goal`
@@ -27,14 +27,14 @@
   `<status> · <N> iterations`; on completion the chip flips to `complete`.
 
 The Go layer covers the gate and persistence with unit tests
-(`cmd/serf-hub/app_rpc_test.go:5873` `TestHubRPCGoalSetGatedByCapability`,
+(`cmd/evener-hub/app_rpc_test.go:5873` `TestHubRPCGoalSetGatedByCapability`,
 `agent/session_goal_*_test.go`); this is the live web counterpart that
 proves the palette, the chip, and the marker actually render.
 
 **Surface**: see `docs/agentic-testing.md`, "Driving the web UI" — the
 selector map there is the single place these hooks are maintained. The
-`window.SerfAppwire.request("goal/set", …)` /
-`window.SerfRenderer.sessionId` route this card used to drive died with the
+`window.EvenerAppwire.request("goal/set", …)` /
+`window.EvenerRenderer.sessionId` route this card used to drive died with the
 vanilla frontend (`660376f78`), and its replacement is **not reachable from
 `eval`**: `threadsStore` is a module import with nothing on `window`. So the
 browser half must go through the real UI, and the exact assertions go to
@@ -50,25 +50,25 @@ browser half must go through the real UI, and the exact assertions go to
   deliberately does NOT export an isolated `$HOME` — the same
   documented OAuth-footgun exception as the Setup checklist's
   `OPENAI_API_KEY=` recipe. That real `$HOME` means this hub shares
-  Jesse's real `~/.serf/hub.lock`, auth-token, and credentials/providers
+  Jesse's real `~/.evener/hub.lock`, auth-token, and credentials/providers
   files for the duration of the run — **it will fail to start at all**
   while Jesse's real hub already holds that flock, so check for that
   first rather than debugging a mysterious startup failure. What it does
   NOT have to share is session history: exporting `XDG_STATE_HOME` (a
-  var independent of `$HOME` — see `cmd/serf-hub/config.go:89-99`'s
+  var independent of `$HOME` — see `cmd/evener-hub/config.go:89-99`'s
   `DefaultStateGlob`, which prefers it over `$HOME/.local/state`)
   relocates every session this hub spawns under a scratch dir instead of
-  Jesse's real `~/.local/state/serf/projects`, with no effect on the
+  Jesse's real `~/.local/state/evener/projects`, with no effect on the
   credentials/token/lock paths above:
   ```bash
-  run=$(mktemp -d -t serf-e2e-goal-XXXXXX)
-  go build -o "$run/serf-hub" ./cmd/serf-hub
-  go build -o "$run/serf" ./cmd/serf
-  pgrep -f 'serf-hub.*:9180' >/dev/null && \
-    { echo "Jesse's real hub is running on 9180 — this card cannot start until it stops (flock at ~/.serf/hub.lock)" >&2; exit 1; }
+  run=$(mktemp -d -t evener-e2e-goal-XXXXXX)
+  go build -o "$run/evener-hub" ./cmd/evener-hub
+  go build -o "$run/evener" ./cmd/evener
+  pgrep -f 'evener-hub.*:9180' >/dev/null && \
+    { echo "Jesse's real hub is running on 9180 — this card cannot start until it stops (flock at ~/.evener/hub.lock)" >&2; exit 1; }
   export XDG_STATE_HOME="$run/state"
   mkdir -p "$XDG_STATE_HOME"
-  "$run/serf-hub" -addr 127.0.0.1:0 -serf "$run/serf" 2>"$run/hub.log" &
+  "$run/evener-hub" -addr 127.0.0.1:0 -evener "$run/evener" 2>"$run/hub.log" &
   HUBPID=$!
   for i in $(seq 1 50); do
     PORT=$(grep -oE 'listening on 127\.0\.0\.1:[0-9]+' "$run/hub.log" 2>/dev/null | grep -oE '[0-9]+$') || true
@@ -78,9 +78,9 @@ browser half must go through the real UI, and the exact assertions go to
   done
   [ -n "$PORT" ] || { echo "hub never logged a listening port" >&2; exit 1; }
   HUB=http://127.0.0.1:$PORT
-  TOKEN=$(cat ~/.serf/auth-token)
+  TOKEN=$(cat ~/.evener/auth-token)
   ```
-- OpenAI usable (`OPENAI_API_KEY` in env or `~/.serf/credentials.toml`).
+- OpenAI usable (`OPENAI_API_KEY` in env or `~/.evener/credentials.toml`).
   Goal turns use a real model; `openai/gpt-5.4-mini` is enough.
 - A Chrome session that can authenticate against the test hub, and a real SPA
   bundle (`make build-web` — a checkout that has never run it serves a
@@ -88,14 +88,14 @@ browser half must go through the real UI, and the exact assertions go to
 
 ## Steps
 
-Set up a hermetic workdir and spawn a serf session. No AGENTS.md pacing
+Set up a hermetic workdir and spawn a evener session. No AGENTS.md pacing
 trick is needed — we *want* the goal to make progress quickly:
 
 ```bash
-tmpdir=$(mktemp -d -t serf-e2e-goalwd-XXXXX)
+tmpdir=$(mktemp -d -t evener-e2e-goalwd-XXXXX)
 resp=$(curl -s -X POST -H "Content-Type: application/json" \
   -H "Authorization: Bearer $TOKEN" \
-  -d "{\"prompt\":\"Say hello and stop.\",\"model\":\"openai/gpt-5.4-mini\",\"working_dir\":\"$tmpdir\",\"harness\":\"serf\",\"branch\":\"\",\"access_mode\":\"full\",\"agent\":\"default\",\"launch_overrides\":{}}" \
+  -d "{\"prompt\":\"Say hello and stop.\",\"model\":\"openai/gpt-5.4-mini\",\"working_dir\":\"$tmpdir\",\"harness\":\"evener\",\"branch\":\"\",\"access_mode\":\"full\",\"agent\":\"default\",\"launch_overrides\":{}}" \
   "$HUB/api/spawn")
 SID=$(echo "$resp" | jq -r '.session_id')
 # Wait for the spawn turn to settle to idle before setting a goal.
@@ -113,7 +113,7 @@ done
    **Expected:** `state` is `idle`. Note: the `Goal` capability lives on the
    **appwire** `ThreadCapabilities` (which the hub gate reads), NOT on the
    REST `/api/sessions` shape — `hubCapabilitiesFromAppwire`
-   (`cmd/serf-hub/web_api_tree.go#hubCapabilitiesFromAppwire`) deliberately omits it, so
+   (`cmd/evener-hub/web_api_tree.go#hubCapabilitiesFromAppwire`) deliberately omits it, so
    `capabilities.goal` over REST is always absent. A6 is proven
    positively by step 2 (the `goal/set` call succeeds because the gate read
    `appCapabilities.Goal == true`) and negatively by the unit test
@@ -138,7 +138,7 @@ done
    navigate $HUB/auth?token=<TOKEN>&next=/s/local:<SID>
    await_element [data-testid="composer-input-card"]
    ```
-   (Use the literal token from `~/.serf/auth-token`, not the path. Note the
+   (Use the literal token from `~/.evener/auth-token`, not the path. Note the
    ref form — a bare `/s/<SID>` renders "Page not found" by design.) Then
    open the ⌘K palette, run **Set session goal**, and enter the same
    objective — or use Session actions → **Set goal…**, type into the
@@ -177,7 +177,7 @@ done
    Cross-check against the daemon's authoritative record — the steering turns
    it actually sent the model:
    ```bash
-   go run ./cmd/serf-doctor transcript "$SID" --format outline --range last:40
+   go run ./cmd/evener-doctor transcript "$SID" --format outline --range last:40
    ```
    **Expected:** every entry in `goalNotices` is the short one-line marker
    `Continuing toward: Create a file seed.txt …`. It must **not** contain the
@@ -212,16 +212,16 @@ kill "$HUBPID" 2>/dev/null
 rm -rf "$tmpdir" "$run"          # $run holds the binaries, hub.log and XDG_STATE_HOME
 ```
 
-Remove `$run` and `$tmpdir` by name, never a `/tmp/serf-e2e-*` glob — a
+Remove `$run` and `$tmpdir` by name, never a `/tmp/evener-e2e-*` glob — a
 wildcard cleanup deletes every other concurrent scenario's workdir too.
-Leave Jesse's real `~/.serf` and `~/.local/state/serf` untouched; the
+Leave Jesse's real `~/.evener` and `~/.local/state/evener` untouched; the
 `XDG_STATE_HOME` export above is what keeps this run's sessions out of them.
 
 ## Sharp edges
 
 - **The web's goal setter is not callable from `eval`.** `threadsStore` is a
   module-scoped zustand store; nothing is published on `window`. An `eval`
-  that tries `window.SerfAppwire.request("goal/set", …)` throws, and one that
+  that tries `window.EvenerAppwire.request("goal/set", …)` throws, and one that
   optional-chains it **fails open** — reporting "no goal set" for what looks
   exactly like a real regression. Set the goal through `/rpc` (step 2) for the
   exact assertion and through the palette/dialog (step 3) for the UI one.
@@ -247,8 +247,8 @@ Leave Jesse's real `~/.serf` and `~/.local/state/serf` untouched; the
   Assert `active` then `complete` and `N >= 1`, never `N == k`.
 - **The goal end text's wording is owned by the projector**; grep for the
   status word, not an exact sentence.
-- **A6 negative path** (goal/set rejected on a non-serf source, e.g.
-  codex) is not reachable from a serf session here; it's covered by
+- **A6 negative path** (goal/set rejected on a non-evener source, e.g.
+  codex) is not reachable from a evener session here; it's covered by
   `TestHubRPCGoalSetGatedByCapability`. Step 2 verifies the positive side
   live.
 - **Consecutive system notices group.** `SystemNoticeItem` folds a run of

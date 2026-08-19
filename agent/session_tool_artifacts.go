@@ -3,8 +3,8 @@ package agent
 import (
 	"os"
 
-	"primeradiant.com/serf/agent/internal/artifactstore"
-	"primeradiant.com/serf/agent/internal/tool"
+	"primeradiant.com/evener/agent/internal/artifactstore"
+	"primeradiant.com/evener/agent/internal/tool"
 )
 
 type artifactStore interface {

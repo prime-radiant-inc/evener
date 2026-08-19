@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"time"
 
-	"primeradiant.com/serf/agent/events"
+	"primeradiant.com/evener/agent/events"
 )
 
 // A turn's identity has one owner: whatever opened it. A client's turn/start

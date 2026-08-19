@@ -4,7 +4,7 @@ import (
 	"errors"
 	"testing"
 
-	"primeradiant.com/serf/agent/internal/jobstore"
+	"primeradiant.com/evener/agent/internal/jobstore"
 )
 
 // createShell refuses to stand up a job on a closing manager.

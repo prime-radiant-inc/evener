@@ -4,10 +4,10 @@ import (
 	"testing"
 	"time"
 
-	"primeradiant.com/serf/agent/execenv"
-	"primeradiant.com/serf/agent/internal/agenttest"
-	"primeradiant.com/serf/agent/schema"
-	"primeradiant.com/serf/llm"
+	"primeradiant.com/evener/agent/execenv"
+	"primeradiant.com/evener/agent/internal/agenttest"
+	"primeradiant.com/evener/agent/schema"
+	"primeradiant.com/evener/llm"
 )
 
 func TestSessionAwaitingStringIsWireAwaiting(t *testing.T) {
@@ -83,7 +83,7 @@ func TestRestoreSeedsMetricsIntoMeta(t *testing.T) {
 // TestActiveTurnStartedAtMillis_MidTurnVsIdle pins the WS2 A7 accessor: an idle
 // session reports 0, while a session mid-turn (SessionProcessing with a
 // stamped turnStartedAt) reports that instant as a Unix timestamp in
-// milliseconds — the wire contract for SerfThread.ActiveTurnStartedAt, which
+// milliseconds — the wire contract for EvenerThread.ActiveTurnStartedAt, which
 // the web reducer reads as epoch-ms. Directly sets the unexported
 // state/turnStartedAt fields to simulate mid-turn without driving a real model
 // call, mirroring TestWorkMillis_CloseMidTurnCounts' established idiom in

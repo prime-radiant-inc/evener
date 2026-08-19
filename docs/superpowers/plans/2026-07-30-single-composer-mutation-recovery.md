@@ -27,9 +27,9 @@
 ### Task 1: Add atomic recovery-record edit, discard, and rerouted-resend operations
 
 **Files:**
-- Modify: `cmd/serf-hub/frontend/src/stores/mutationOutbox.ts`
-- Modify: `cmd/serf-hub/frontend/src/stores/mutationOutboxIndexedDB.ts`
-- Test: `cmd/serf-hub/frontend/src/stores/mutationOutbox.test.ts`
+- Modify: `cmd/evener-hub/frontend/src/stores/mutationOutbox.ts`
+- Modify: `cmd/evener-hub/frontend/src/stores/mutationOutboxIndexedDB.ts`
+- Test: `cmd/evener-hub/frontend/src/stores/mutationOutbox.test.ts`
 
 **Interfaces:**
 - Consumes: existing `MutationRecoveryRecord`, `MutationIntent`, `MutationAttachment`, and IndexedDB recovery store.
@@ -156,7 +156,7 @@ The break each test catches is respectively: stale recovery payload survives an 
 Run:
 
 ```bash
-cd cmd/serf-hub/frontend
+cd cmd/evener-hub/frontend
 npm run test -- src/stores/mutationOutbox.test.ts
 ```
 
@@ -197,7 +197,7 @@ const next: MutationRecoveryRecord = {
 Run:
 
 ```bash
-cd cmd/serf-hub/frontend
+cd cmd/evener-hub/frontend
 npm run test -- src/stores/mutationOutbox.test.ts
 ```
 
@@ -207,9 +207,9 @@ Expected: the storage suite passes with no warnings.
 
 ```bash
 git status --short
-git add cmd/serf-hub/frontend/src/stores/mutationOutbox.ts \
-  cmd/serf-hub/frontend/src/stores/mutationOutboxIndexedDB.ts \
-  cmd/serf-hub/frontend/src/stores/mutationOutbox.test.ts
+git add cmd/evener-hub/frontend/src/stores/mutationOutbox.ts \
+  cmd/evener-hub/frontend/src/stores/mutationOutboxIndexedDB.ts \
+  cmd/evener-hub/frontend/src/stores/mutationOutbox.test.ts
 git commit -m "webui: add atomic composer recovery operations"
 ```
 
@@ -218,10 +218,10 @@ git commit -m "webui: add atomic composer recovery operations"
 ### Task 2: Convert durable records into normal Composer text and attachment state
 
 **Files:**
-- Create: `cmd/serf-hub/frontend/src/panes/session/composer/recovery/recoveryDraft.ts`
-- Create: `cmd/serf-hub/frontend/src/panes/session/composer/recovery/recoveryDraft.test.ts`
-- Modify: `cmd/serf-hub/frontend/src/panes/session/composer/attachments/useAttachments.ts`
-- Test: `cmd/serf-hub/frontend/src/panes/session/composer/attachments/useAttachments.test.ts`
+- Create: `cmd/evener-hub/frontend/src/panes/session/composer/recovery/recoveryDraft.ts`
+- Create: `cmd/evener-hub/frontend/src/panes/session/composer/recovery/recoveryDraft.test.ts`
+- Modify: `cmd/evener-hub/frontend/src/panes/session/composer/attachments/useAttachments.ts`
+- Test: `cmd/evener-hub/frontend/src/panes/session/composer/attachments/useAttachments.test.ts`
 
 **Interfaces:**
 - Consumes: `MutationRecoveryRecord`, the text/image `InputItem` payload, and `PendingAttachment`.
@@ -295,7 +295,7 @@ The break is losing attachment bytes/markers on reload or producing two attachme
 Run:
 
 ```bash
-cd cmd/serf-hub/frontend
+cd cmd/evener-hub/frontend
 npm run test -- src/panes/session/composer/recovery/recoveryDraft.test.ts
 ```
 
@@ -350,7 +350,7 @@ test("a new attachment after recovery hydration uses the next marker", async () 
 Run:
 
 ```bash
-cd cmd/serf-hub/frontend
+cd cmd/evener-hub/frontend
 npm run test -- src/panes/session/composer/attachments/useAttachments.test.ts
 ```
 
@@ -368,7 +368,7 @@ items unchanged.
 Run:
 
 ```bash
-cd cmd/serf-hub/frontend
+cd cmd/evener-hub/frontend
 npm run test -- \
   src/panes/session/composer/recovery/recoveryDraft.test.ts \
   src/panes/session/composer/attachments/useAttachments.test.ts
@@ -380,10 +380,10 @@ Expected: both suites pass.
 
 ```bash
 git status --short
-git add cmd/serf-hub/frontend/src/panes/session/composer/recovery/recoveryDraft.ts \
-  cmd/serf-hub/frontend/src/panes/session/composer/recovery/recoveryDraft.test.ts \
-  cmd/serf-hub/frontend/src/panes/session/composer/attachments/useAttachments.ts \
-  cmd/serf-hub/frontend/src/panes/session/composer/attachments/useAttachments.test.ts
+git add cmd/evener-hub/frontend/src/panes/session/composer/recovery/recoveryDraft.ts \
+  cmd/evener-hub/frontend/src/panes/session/composer/recovery/recoveryDraft.test.ts \
+  cmd/evener-hub/frontend/src/panes/session/composer/attachments/useAttachments.ts \
+  cmd/evener-hub/frontend/src/panes/session/composer/attachments/useAttachments.test.ts
 git commit -m "webui: project recovery records into composer drafts"
 ```
 
@@ -392,10 +392,10 @@ git commit -m "webui: project recovery records into composer drafts"
 ### Task 3: Expose route-aware recovery actions through the threads projection
 
 **Files:**
-- Modify: `cmd/serf-hub/frontend/src/stores/threads.ts`
-- Test: `cmd/serf-hub/frontend/src/stores/threads.test.ts`
-- Modify: `cmd/serf-hub/frontend/src/panes/session/composer/queue/pendingTurnsStore.ts`
-- Test: `cmd/serf-hub/frontend/src/panes/session/composer/queue/pendingTurnsStore.test.ts`
+- Modify: `cmd/evener-hub/frontend/src/stores/threads.ts`
+- Test: `cmd/evener-hub/frontend/src/stores/threads.test.ts`
+- Modify: `cmd/evener-hub/frontend/src/panes/session/composer/queue/pendingTurnsStore.ts`
+- Test: `cmd/evener-hub/frontend/src/panes/session/composer/queue/pendingTurnsStore.test.ts`
 
 **Interfaces:**
 - Consumes: Task 1 storage operations and existing `buildInput`,
@@ -451,8 +451,8 @@ test("recovery resend rebuilds queue CAS values from the current thread", async 
   await storage.transferToRecovery(original.clientMutationId, "rejected");
   const fake = connectFakeClient();
   fake.on("thread/read", () => readResponse("ref_a", {
-    serf: {
-      ...testThread("ref_a").serf,
+    evener: {
+      ...testThread("ref_a").evener,
       activeTurnId: "turn-current",
       queue: { revision: 7 },
     },
@@ -493,7 +493,7 @@ test("discardRecoveryMutation removes the record and notifies its target project
 Run:
 
 ```bash
-cd cmd/serf-hub/frontend
+cd cmd/evener-hub/frontend
 npm run test -- src/stores/threads.test.ts
 ```
 
@@ -601,7 +601,7 @@ observe the durable result.
 Run:
 
 ```bash
-cd cmd/serf-hub/frontend
+cd cmd/evener-hub/frontend
 npm run test -- src/panes/session/composer/queue/pendingTurnsStore.test.ts
 ```
 
@@ -619,7 +619,7 @@ guards.
 Run:
 
 ```bash
-cd cmd/serf-hub/frontend
+cd cmd/evener-hub/frontend
 npm run test -- \
   src/stores/threads.test.ts \
   src/panes/session/composer/queue/pendingTurnsStore.test.ts
@@ -631,10 +631,10 @@ Expected: both suites pass.
 
 ```bash
 git status --short
-git add cmd/serf-hub/frontend/src/stores/threads.ts \
-  cmd/serf-hub/frontend/src/stores/threads.test.ts \
-  cmd/serf-hub/frontend/src/panes/session/composer/queue/pendingTurnsStore.ts \
-  cmd/serf-hub/frontend/src/panes/session/composer/queue/pendingTurnsStore.test.ts
+git add cmd/evener-hub/frontend/src/stores/threads.ts \
+  cmd/evener-hub/frontend/src/stores/threads.test.ts \
+  cmd/evener-hub/frontend/src/panes/session/composer/queue/pendingTurnsStore.ts \
+  cmd/evener-hub/frontend/src/panes/session/composer/queue/pendingTurnsStore.test.ts
 git commit -m "webui: route recovered drafts through current composer state"
 ```
 
@@ -643,10 +643,10 @@ git commit -m "webui: route recovered drafts through current composer state"
 ### Task 4: Present non-active recovery and blocked records in QueueStrip
 
 **Files:**
-- Modify: `cmd/serf-hub/frontend/src/panes/session/composer/queue/QueueStrip.tsx`
-- Test: `cmd/serf-hub/frontend/src/panes/session/composer/queue/QueueStrip.test.tsx`
-- Modify: `cmd/serf-hub/frontend/src/panes/session/pending/PendingChips.tsx`
-- Test: `cmd/serf-hub/frontend/src/panes/session/pending/PendingChips.test.tsx`
+- Modify: `cmd/evener-hub/frontend/src/panes/session/composer/queue/QueueStrip.tsx`
+- Test: `cmd/evener-hub/frontend/src/panes/session/composer/queue/QueueStrip.test.tsx`
+- Modify: `cmd/evener-hub/frontend/src/panes/session/pending/PendingChips.tsx`
+- Test: `cmd/evener-hub/frontend/src/panes/session/pending/PendingChips.test.tsx`
 
 **Interfaces:**
 - Consumes: `useRecoveryEntries`, `useBlockedMutationEntries`,
@@ -715,7 +715,7 @@ test("active recovery is omitted while later and orphaned records retain order",
 Run:
 
 ```bash
-cd cmd/serf-hub/frontend
+cd cmd/evener-hub/frontend
 npm run test -- src/panes/session/composer/queue/QueueStrip.test.tsx
 ```
 
@@ -749,7 +749,7 @@ test("blocked unknown is owned by QueueStrip rather than PendingChips", async ()
 Run:
 
 ```bash
-cd cmd/serf-hub/frontend
+cd cmd/evener-hub/frontend
 npm run test -- src/panes/session/pending/PendingChips.test.tsx
 ```
 
@@ -769,7 +769,7 @@ function isOptimistic(entry: PendingTurnEntry): entry is OptimisticEntry {
 Run:
 
 ```bash
-cd cmd/serf-hub/frontend
+cd cmd/evener-hub/frontend
 npm run test -- \
   src/panes/session/composer/queue/QueueStrip.test.tsx \
   src/panes/session/pending/PendingChips.test.tsx
@@ -781,10 +781,10 @@ Expected: both suites pass.
 
 ```bash
 git status --short
-git add cmd/serf-hub/frontend/src/panes/session/composer/queue/QueueStrip.tsx \
-  cmd/serf-hub/frontend/src/panes/session/composer/queue/QueueStrip.test.tsx \
-  cmd/serf-hub/frontend/src/panes/session/pending/PendingChips.tsx \
-  cmd/serf-hub/frontend/src/panes/session/pending/PendingChips.test.tsx
+git add cmd/evener-hub/frontend/src/panes/session/composer/queue/QueueStrip.tsx \
+  cmd/evener-hub/frontend/src/panes/session/composer/queue/QueueStrip.test.tsx \
+  cmd/evener-hub/frontend/src/panes/session/pending/PendingChips.tsx \
+  cmd/evener-hub/frontend/src/panes/session/pending/PendingChips.test.tsx
 git commit -m "webui: fold mutation recovery into queued messages"
 ```
 
@@ -793,9 +793,9 @@ git commit -m "webui: fold mutation recovery into queued messages"
 ### Task 5: Make Composer the sole editor for rejected mutations
 
 **Files:**
-- Modify: `cmd/serf-hub/frontend/src/panes/session/composer/Composer.tsx`
-- Test: `cmd/serf-hub/frontend/src/panes/session/composer/Composer.test.tsx`
-- Test: `cmd/serf-hub/frontend/src/panes/session/composer/Composer.integration.test.tsx`
+- Modify: `cmd/evener-hub/frontend/src/panes/session/composer/Composer.tsx`
+- Test: `cmd/evener-hub/frontend/src/panes/session/composer/Composer.test.tsx`
+- Test: `cmd/evener-hub/frontend/src/panes/session/composer/Composer.integration.test.tsx`
 
 **Interfaces:**
 - Consumes: Tasks 2-4 helpers/hooks/actions.
@@ -928,7 +928,7 @@ owns the text.
 Run:
 
 ```bash
-cd cmd/serf-hub/frontend
+cd cmd/evener-hub/frontend
 npm run test -- src/panes/session/composer/Composer.test.tsx \
   -t "an explicit rejection returns to the sole Composer textarea"
 ```
@@ -1006,7 +1006,7 @@ Use a controlled deferred FakeClient rejection rather than timers.
 Run:
 
 ```bash
-cd cmd/serf-hub/frontend
+cd cmd/evener-hub/frontend
 npm run test -- src/panes/session/composer/Composer.test.tsx \
   -t "occupied Composer|editing a rejected queue row"
 ```
@@ -1034,7 +1034,7 @@ test("sending recovered text uses current Composer routing and clears once", asy
   const user = userEvent.setup();
   const fake = await mountComposer("ref_a", {
     status: { type: "active" },
-    serf: {
+    evener: {
       ref: "ref_a",
       capabilities: FULL_CAPABILITIES,
       activeTurnId: "turn-current",
@@ -1092,7 +1092,7 @@ test("a losing cross-tab recovered send does not issue a second request", async 
 Run:
 
 ```bash
-cd cmd/serf-hub/frontend
+cd cmd/evener-hub/frontend
 npm run test -- src/panes/session/composer/Composer.test.tsx \
   -t "sending recovered text|losing cross-tab"
 ```
@@ -1151,7 +1151,7 @@ test("blanking an attachment-free recovered draft discards it durably", async ()
 Run:
 
 ```bash
-cd cmd/serf-hub/frontend
+cd cmd/evener-hub/frontend
 npm run test -- \
   src/panes/session/composer/Composer.test.tsx \
   src/panes/session/composer/Composer.integration.test.tsx
@@ -1163,9 +1163,9 @@ Expected: both suites pass with no `Recovery drafts` UI.
 
 ```bash
 git status --short
-git add cmd/serf-hub/frontend/src/panes/session/composer/Composer.tsx \
-  cmd/serf-hub/frontend/src/panes/session/composer/Composer.test.tsx \
-  cmd/serf-hub/frontend/src/panes/session/composer/Composer.integration.test.tsx
+git add cmd/evener-hub/frontend/src/panes/session/composer/Composer.tsx \
+  cmd/evener-hub/frontend/src/panes/session/composer/Composer.test.tsx \
+  cmd/evener-hub/frontend/src/panes/session/composer/Composer.integration.test.tsx
 git commit -m "webui: restore rejected mutations to the composer"
 ```
 
@@ -1174,9 +1174,9 @@ git commit -m "webui: restore rejected mutations to the composer"
 ### Task 6: Delete the second editor and run the full frontend gates
 
 **Files:**
-- Delete: `cmd/serf-hub/frontend/src/panes/session/composer/recovery/RecoveryTray.tsx`
-- Delete: `cmd/serf-hub/frontend/src/panes/session/composer/recovery/RecoveryTray.test.tsx`
-- Delete: `cmd/serf-hub/frontend/src/panes/session/composer/recovery/recoverytray.module.css`
+- Delete: `cmd/evener-hub/frontend/src/panes/session/composer/recovery/RecoveryTray.tsx`
+- Delete: `cmd/evener-hub/frontend/src/panes/session/composer/recovery/RecoveryTray.test.tsx`
+- Delete: `cmd/evener-hub/frontend/src/panes/session/composer/recovery/recoverytray.module.css`
 - Modify only if references remain: recovery imports in the frontend source tree.
 
 **Interfaces:**
@@ -1195,7 +1195,7 @@ Run:
 
 ```bash
 rg -n "RecoveryTray|Recovery drafts|Recovered message|Send recovered draft" \
-  cmd/serf-hub/frontend/src --glob '!*.test.ts' --glob '!*.test.tsx'
+  cmd/evener-hub/frontend/src --glob '!*.test.ts' --glob '!*.test.tsx'
 ```
 
 Expected: no matches.
@@ -1205,7 +1205,7 @@ Expected: no matches.
 Run:
 
 ```bash
-cd cmd/serf-hub/frontend
+cd cmd/evener-hub/frontend
 npm run test -- \
   src/stores/mutationOutbox.test.ts \
   src/stores/mutationDispatcher.test.ts \
@@ -1221,7 +1221,7 @@ Expected: all selected files pass.
 Run:
 
 ```bash
-cd cmd/serf-hub/frontend
+cd cmd/evener-hub/frontend
 npm run test
 npm run typecheck
 npm run lint
@@ -1247,9 +1247,9 @@ are staged for the final implementation commit.
 - [ ] **Step 6: Commit Task 6**
 
 ```bash
-git add cmd/serf-hub/frontend/src/panes/session/composer/recovery/RecoveryTray.tsx \
-  cmd/serf-hub/frontend/src/panes/session/composer/recovery/RecoveryTray.test.tsx \
-  cmd/serf-hub/frontend/src/panes/session/composer/recovery/recoverytray.module.css
+git add cmd/evener-hub/frontend/src/panes/session/composer/recovery/RecoveryTray.tsx \
+  cmd/evener-hub/frontend/src/panes/session/composer/recovery/RecoveryTray.test.tsx \
+  cmd/evener-hub/frontend/src/panes/session/composer/recovery/recoverytray.module.css
 git commit -m "webui: remove the recovery drafts tray"
 ```
 

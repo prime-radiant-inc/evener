@@ -1,4 +1,4 @@
-# Agent handoff notes — serf UX overhaul (written 2026-07-05, for sessions on any host)
+# Agent handoff notes — evener UX overhaul (written 2026-07-05, for sessions on any host)
 
 Context: WS1 (attention), WS2 (working state/metrics), WS3 (sidebar rebuild),
 WS5 (MCP resilience) are merged and pushed. Remaining: WS4
@@ -20,7 +20,7 @@ shipped workstreams live beside them and are the house style to imitate.
   commit. Model tiering: sonnet workers/orchestrators, opus only where
   judgment-dense, haiku for trivial tasks.
 - E2e scenario cards (test/scenarios/ has the format): run fully live with an
-  isolated fake $HOME (real ~/.serf untouched), dedicated Chrome profile;
+  isolated fake $HOME (real ~/.evener untouched), dedicated Chrome profile;
   evidence over assertion. Cards found real bugs every workstream.
 - Merge: `--no-ff` merge commits (repo sets merge.ff=only; explicit flag
   overrides), full gates on merged main before push. After any conflict
@@ -31,13 +31,13 @@ shipped workstreams live beside them and are the house style to imitate.
 
 - Modules: `GO_MODULES` in Makefile (root, agent, llm, auth, envvars, fuzz,
   invariant); run tests per module (`cd agent && go test ./...`).
-- `make lint` = golangci across modules + serf-namingcheck + internalcheck +
+- `make lint` = golangci across modules + evener-namingcheck + internalcheck +
   docscheck + codegen check. namingcheck runs ONLY here — per-task golangci
   runs miss naming violations. JSON/TOML keys are snake_case; deliberate
   camelCase (e.g. Claude Code plugin schema interop in internal/plugins/)
-  takes a `// serf:naming-ignore: <reason>` line above the field.
-- jstest (cmd/serf-hub/jstest) is agent-run, not in CI:
-  `NODE_PATH=/tmp/serf-jstest-jsdom/node_modules sh run-all.sh` (one-time
+  takes a `// evener:naming-ignore: <reason>` line above the field.
+- jstest (cmd/evener-hub/jstest) is agent-run, not in CI:
+  `NODE_PATH=/tmp/evener-jstest-jsdom/node_modules sh run-all.sh` (one-time
   jsdom setup per its README).
 - agent/snapshot_golden_test.go pins meta.json byte-exactly; adding
   SessionMeta fields means regenerating goldenMeta()/goldenMetaJSON (omitzero
@@ -46,7 +46,7 @@ shipped workstreams live beside them and are the house style to imitate.
   token (partial provider availability is tolerated; no .env needed unless
   targeting oai-work). Cheap e2e model: openai/gpt-5.4-mini. Never print .env
   contents.
-- appwire: new METHODS need catalog + BOTH routers (server + serf-hub) in ONE
+- appwire: new METHODS need catalog + BOTH routers (server + evener-hub) in ONE
   commit (bidirectional cross-check tests); new struct fields don't.
   docs/appwire-protocol.md is generated (`make generate`).
 - Known flake: TestReconnect_FailedReconnect_BackoffSuppressesImmediateRetry

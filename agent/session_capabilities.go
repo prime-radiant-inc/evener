@@ -8,9 +8,9 @@ import (
 	"sync"
 	"time"
 
-	"primeradiant.com/serf/agent/execenv"
-	"primeradiant.com/serf/agent/sandbox"
-	"primeradiant.com/serf/envvars"
+	"primeradiant.com/evener/agent/execenv"
+	"primeradiant.com/evener/agent/sandbox"
+	"primeradiant.com/evener/envvars"
 )
 
 // The capability preamble is the environment section's factual answer to "what
@@ -151,7 +151,7 @@ func capabilityPreambleLines(f capabilityFacts) []string {
 		lines = append(lines, "PATH: "+pathSource(f.loginPATH))
 	}
 	if f.scratchDir != "" {
-		lines = append(lines, "Scratch ($"+envvars.SERFScratchDir.Name+", $"+envvars.TmpDir.Name+"): "+f.scratchDir)
+		lines = append(lines, "Scratch ($"+envvars.EVENERScratchDir.Name+", $"+envvars.TmpDir.Name+"): "+f.scratchDir)
 	}
 	if f.sandboxed() {
 		lines = append(lines, "Cache: "+f.policy.CacheStrategy.String())

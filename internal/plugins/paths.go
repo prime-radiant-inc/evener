@@ -8,12 +8,12 @@ import (
 	"strings"
 	"time"
 
-	"primeradiant.com/serf/envvars"
+	"primeradiant.com/evener/envvars"
 )
 
 var pluginUserHomeDir = os.UserHomeDir
 
-// Manager owns all on-disk plugin state under Root (~/.config/serf/plugins).
+// Manager owns all on-disk plugin state under Root (~/.config/evener/plugins).
 type Manager struct {
 	Root   string           // store root
 	Now    func() time.Time // injectable clock; defaults to time.Now
@@ -28,8 +28,8 @@ func NewManager(root string) *Manager {
 	return &Manager{Root: root, Now: time.Now, Stderr: os.Stderr}
 }
 
-// DefaultRoot is ~/.config/serf/plugins, honoring XDG_CONFIG_HOME the same way
-// the rest of serf does (envvars.XDGConfigHome).
+// DefaultRoot is ~/.config/evener/plugins, honoring XDG_CONFIG_HOME the same way
+// the rest of evener does (envvars.XDGConfigHome).
 func DefaultRoot() string {
 	dir := envvars.XDGConfigHome.Getenv()
 	if dir == "" {
@@ -39,7 +39,7 @@ func DefaultRoot() string {
 		}
 		dir = filepath.Join(home, ".config")
 	}
-	return filepath.Join(dir, "serf", "plugins")
+	return filepath.Join(dir, "evener", "plugins")
 }
 
 func (m *Manager) registryPath() string { return filepath.Join(m.Root, "installed_plugins.json") }

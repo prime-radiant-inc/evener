@@ -8,7 +8,7 @@ package agent
 // crash. Each test below drives the queue through its real public mutator,
 // then reconstructs a fresh *Session from the same on-disk state dir via the
 // production resume path (RestoreSessionFromMetaWithConfig, exactly what
-// `serf serve --resume` calls per cmdutil.ResolveSessionMeta) rather than a
+// `evener serve --resume` calls per cmdutil.ResolveSessionMeta) rather than a
 // hand-rolled imitation, and asserts the restored queue matches.
 
 import (
@@ -19,9 +19,9 @@ import (
 	"reflect"
 	"testing"
 
-	"primeradiant.com/serf/agent/execenv"
-	"primeradiant.com/serf/agent/schema"
-	"primeradiant.com/serf/llm"
+	"primeradiant.com/evener/agent/execenv"
+	"primeradiant.com/evener/agent/schema"
+	"primeradiant.com/evener/llm"
 )
 
 // newQueuePersistTestSession builds a session rooted at dir for both its
@@ -41,7 +41,7 @@ func newQueuePersistTestSession(t *testing.T, dir string) *Session {
 // restoreQueuePersistTestSession reconstructs the session with id from dir the
 // way a real daemon resume does: load the persisted SessionMeta, then call
 // RestoreSessionFromMetaWithConfig (agent/session_init.go), the exact function
-// `serf serve --resume` uses.
+// `evener serve --resume` uses.
 func restoreQueuePersistTestSession(t *testing.T, dir, id string) *Session {
 	t.Helper()
 	meta, err := schema.LoadSessionMeta(dir, id)

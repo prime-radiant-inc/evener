@@ -39,7 +39,7 @@ boundaries, resolved:
   `ResumeHistory` (calls unexported `repairOrphanedToolResults`, Session/atif-wired) →
   new file `agent/transcript_read.go`, referencing `transcript.X`.
 - **Const** `transcriptJSONLMaxLineBytes` (`128<<20`): keep a trivial per-package copy
-  (matches existing convention — `cmd/serf-hub` already keeps its own).
+  (matches existing convention — `cmd/evener-hub` already keeps its own).
 - **DECISION:** 5 of 6 writer white-box tests relocate cleanly to `package transcript`.
   The 1 Session-coupled test (`TestSession_TranscriptWriteFailureEmitsWarning`) forces a
   write failure by poking the writer's unexported `file`, inaccessible once it moves.
@@ -65,7 +65,7 @@ the glue (`session_tool_registry.go`, `session_tools.go`) STAY in agent.
 
 ### plugin → `agent/internal/plugin` (after mcp)
 `hookRunner` + loader internals → internal; the public contract (`LoadedPlugin`,
-`PluginAgent`, `HookEvent`, `RegisteredHook`, `LoadPlugin(s)`) stays public (cmd/serf-hub
+`PluginAgent`, `HookEvent`, `RegisteredHook`, `LoadPlugin(s)`) stays public (cmd/evener-hub
 consumes cross-module — review C2). Depends on skill✓ + mcpconfig.
 
 ### provider → `agent/provider` + collapse `ProviderProfile` to a struct (THE big decision)

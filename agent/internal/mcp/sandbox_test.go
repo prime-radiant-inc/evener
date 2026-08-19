@@ -8,8 +8,8 @@ import (
 
 	mcpsdk "github.com/modelcontextprotocol/go-sdk/mcp"
 
-	"primeradiant.com/serf/agent/mcpconfig"
-	"primeradiant.com/serf/agent/sandbox"
+	"primeradiant.com/evener/agent/mcpconfig"
+	"primeradiant.com/evener/agent/sandbox"
 )
 
 func testWrapper(t *testing.T) *sandbox.Wrapper {
@@ -77,11 +77,11 @@ func TestMCPStdioServerConfined(t *testing.T) {
 	}
 }
 
-// A confined stdio MCP server must not inherit serf's own ambient credentials
+// A confined stdio MCP server must not inherit evener's own ambient credentials
 // (its provider API key et al.) from the parent environment, but a secret the
 // server config sets explicitly is deliberate configuration and must survive.
 func TestMCPStdioServerScrubsAmbientSecrets(t *testing.T) {
-	t.Setenv("SERF_AMBIENT_API_KEY", "sk-ambient-leak")
+	t.Setenv("EVENER_AMBIENT_API_KEY", "sk-ambient-leak")
 	cfg := mcpconfig.ServerConfig{
 		Name:    "s",
 		Type:    "stdio",
@@ -96,7 +96,7 @@ func TestMCPStdioServerScrubsAmbientSecrets(t *testing.T) {
 	ct := tr.(*mcpsdk.CommandTransport)
 	joined := strings.Join(ct.Command.Env, "\n")
 
-	if strings.Contains(joined, "SERF_AMBIENT_API_KEY=") {
+	if strings.Contains(joined, "EVENER_AMBIENT_API_KEY=") {
 		t.Errorf("an ambient API key must be scrubbed from a confined MCP server: %v", ct.Command.Env)
 	}
 	// A cfg.Env var whose NAME looks secret is explicit configuration, not an

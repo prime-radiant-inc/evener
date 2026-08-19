@@ -17,7 +17,7 @@ terminal `communicate(end_turn:true)` callbacks.
 
 - Fresh binaries from the branch under test; an isolated hub
   (`docs/agentic-testing.md` setup checklist); credentialed model.
-- `tmpdir=$(mktemp -d -t serf-e2e-passive-observer-XXXXX)`.
+- `tmpdir=$(mktemp -d -t evener-e2e-passive-observer-XXXXX)`.
 - Create the successful read target before spawning:
 
   ```bash
@@ -72,8 +72,8 @@ terminal `communicate(end_turn:true)` callbacks.
 4. Find the parent transcript, observer transcript, and parent job log:
 
    ```bash
-   find ~/.local/state/serf/projects -path "*sessions/$SID.transcript.jsonl"
-   find ~/.local/state/serf/projects -path "*sessions/$SID/jobs.jsonl"
+   find ~/.local/state/evener/projects -path "*sessions/$SID.transcript.jsonl"
+   find ~/.local/state/evener/projects -path "*sessions/$SID/jobs.jsonl"
    ```
 
    The observer transcript path is the session id in the captured
@@ -81,8 +81,8 @@ terminal `communicate(end_turn:true)` callbacks.
 5. If the filtered watch remains active after the assertions, send a
    cleanup turn through `POST /api/sessions/local:$SID/send`
    (the legacy `/s/<id>/<action>` form-POSTs are gone —
-   `cmd/serf-hub/web_workspace.go:20-22`, routes at
-   `cmd/serf-hub/web_api_tree.go:1399,1415`):
+   `cmd/evener-hub/web_workspace.go:20-22`, routes at
+   `cmd/evener-hub/web_api_tree.go:1399,1415`):
 
    ```json
    {"text":"Cleanup only. Call job_watch with operation \"clear\" and watch_id \"<filtered_watch_id>\". Then call communicate with exactly PASSIVE_CLEANUP_DONE."}
@@ -142,18 +142,18 @@ terminal `communicate(end_turn:true)` callbacks.
 
 ## Manual Inspection Recipe
 
-Use `serf-doctor` rather than a one-off transcript or jobs parser.
+Use `evener-doctor` rather than a one-off transcript or jobs parser.
 Replace the selectors with the parent session id and observer
 transcript ref from the run:
 
 ```bash
-go run ./cmd/serf-doctor watches "$SID"
-go run ./cmd/serf-doctor tree "$SID" --observers
-go run ./cmd/serf-doctor transcript "$SID" --format outline --range last:30
-go run ./cmd/serf-doctor transcript "$OBSERVER_REF" --format outline --range last:40
-go run ./cmd/serf-doctor transcript "$OBSERVER_REF" --count communicate
-go run ./cmd/serf-doctor transcript "$OBSERVER_REF" --count delegate_send  # expect 0
-go run ./cmd/serf-doctor transcript "$OBSERVER_REF" --count job_list
+go run ./cmd/evener-doctor watches "$SID"
+go run ./cmd/evener-doctor tree "$SID" --observers
+go run ./cmd/evener-doctor transcript "$SID" --format outline --range last:30
+go run ./cmd/evener-doctor transcript "$OBSERVER_REF" --format outline --range last:40
+go run ./cmd/evener-doctor transcript "$OBSERVER_REF" --count communicate
+go run ./cmd/evener-doctor transcript "$OBSERVER_REF" --count delegate_send  # expect 0
+go run ./cmd/evener-doctor transcript "$OBSERVER_REF" --count job_list
 ```
 
 The parent watch report should show the broad watch ended as

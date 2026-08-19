@@ -2,7 +2,7 @@
 
 // This platform has no process groups; the dev tooling only runs on the
 // repo's unix development machines, so these stand-ins just keep the build
-// green (mirroring cmd/serf-test-dev-tooling's wave_other.go). Both stop
+// green (mirroring cmd/evener-test-dev-tooling's wave_other.go). Both stop
 // paths collapse to a best-effort kill of the direct child.
 package procgroup
 

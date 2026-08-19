@@ -15,10 +15,10 @@ import (
 	"strings"
 	"testing"
 
-	"primeradiant.com/serf/agent/execenv"
-	"primeradiant.com/serf/agent/provider"
-	"primeradiant.com/serf/agent/schema"
-	"primeradiant.com/serf/llm"
+	"primeradiant.com/evener/agent/execenv"
+	"primeradiant.com/evener/agent/provider"
+	"primeradiant.com/evener/agent/schema"
+	"primeradiant.com/evener/llm"
 )
 
 // unknownInstanceResolver mirrors the production resolver's behavior for an
@@ -145,7 +145,7 @@ func TestSetModel_CrashRestore_SwitchedModelSurvives(t *testing.T) {
 	}
 
 	// The caller resolves the profile from the persisted meta before restoring
-	// (mirrors production: cmd/serf reconstructs the profile from meta.Model).
+	// (mirrors production: cmd/evener reconstructs the profile from meta.Model).
 	restored, err := RestoreSessionFromMetaWithConfig(c, NewOpenAIProfile(meta.Model), execenv.NewLocalExecutionEnvironment(dir), meta, RestoreSessionConfig{
 		StateDir: dir,
 	})

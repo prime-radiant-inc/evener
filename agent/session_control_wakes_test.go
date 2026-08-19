@@ -4,7 +4,7 @@ import (
 	"sync"
 	"testing"
 
-	"primeradiant.com/serf/appwire"
+	"primeradiant.com/evener/appwire"
 )
 
 // Accepting a control mutation is only half of landing it. Control is

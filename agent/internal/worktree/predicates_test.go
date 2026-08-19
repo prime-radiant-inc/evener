@@ -94,7 +94,7 @@ func initRepo(t *testing.T) (root, initialSHA string) {
 }
 
 func buildPredicateRepoTemplate() (root, initialSHA string, err error) {
-	base, err := os.MkdirTemp("", "serf-worktree-predicate-template-*")
+	base, err := os.MkdirTemp("", "evener-worktree-predicate-template-*")
 	if err != nil {
 		return "", "", err
 	}

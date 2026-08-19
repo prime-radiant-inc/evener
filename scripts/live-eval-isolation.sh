@@ -1,24 +1,24 @@
 #!/usr/bin/env bash
 
-# The live evals receive an isolated OAuth/config handoff and a built serf
+# The live evals receive an isolated OAuth/config handoff and a built evener
 # binary from the operator. Copy only those inputs into a fresh run/trial tree
 # so sessions, transcripts, answers, and results cannot cross test boundaries.
 
 live_eval_begin() {
-	: "${SERF_LIVE_ENV:?set SERF_LIVE_ENV to the live-eval environment file}"
-	: "${SERF_LIVE_BINARY:?set SERF_LIVE_BINARY to the built serf binary}"
-	if [ ! -f "$SERF_LIVE_ENV" ]; then
-		printf 'live eval environment file not found: %s\n' "$SERF_LIVE_ENV" >&2
+	: "${EVENER_LIVE_ENV:?set EVENER_LIVE_ENV to the live-eval environment file}"
+	: "${EVENER_LIVE_BINARY:?set EVENER_LIVE_BINARY to the built evener binary}"
+	if [ ! -f "$EVENER_LIVE_ENV" ]; then
+		printf 'live eval environment file not found: %s\n' "$EVENER_LIVE_ENV" >&2
 		return 1
 	fi
-	if [ ! -f "$SERF_LIVE_BINARY" ]; then
-		printf 'live eval binary not found: %s\n' "$SERF_LIVE_BINARY" >&2
+	if [ ! -f "$EVENER_LIVE_BINARY" ]; then
+		printf 'live eval binary not found: %s\n' "$EVENER_LIVE_BINARY" >&2
 		return 1
 	fi
 
-	. "$SERF_LIVE_ENV"
-	: "${ISO:?$SERF_LIVE_ENV must define ISO as the source state root}"
-	: "${HOMEISO:?$SERF_LIVE_ENV must define HOMEISO as the source home root}"
+	. "$EVENER_LIVE_ENV"
+	: "${ISO:?$EVENER_LIVE_ENV must define ISO as the source state root}"
+	: "${HOMEISO:?$EVENER_LIVE_ENV must define HOMEISO as the source home root}"
 	if [ ! -d "$ISO" ]; then
 		printf 'live eval source state root not found: %s\n' "$ISO" >&2
 		return 1
@@ -29,7 +29,7 @@ live_eval_begin() {
 	fi
 
 	# An explicit template, never -t: macOS mktemp -t ignores TMPDIR.
-	LIVE_EVAL_ROOT=$(mktemp -d "${TMPDIR:-/tmp}/serf-live-eval.XXXXXX")
+	LIVE_EVAL_ROOT=$(mktemp -d "${TMPDIR:-/tmp}/evener-live-eval.XXXXXX")
 }
 
 live_eval_prepare_trial() {
@@ -37,28 +37,28 @@ live_eval_prepare_trial() {
 	LIVE_EVAL_TRIAL_ROOT=$(mktemp -d "$LIVE_EVAL_ROOT/$1.XXXXXX")
 	LIVE_EVAL_STATE="$LIVE_EVAL_TRIAL_ROOT/state"
 	LIVE_EVAL_HOME="$LIVE_EVAL_TRIAL_ROOT/home"
-	LIVE_EVAL_SERF="$LIVE_EVAL_TRIAL_ROOT/serf"
+	LIVE_EVAL_EVENER="$LIVE_EVAL_TRIAL_ROOT/evener"
 	LIVE_EVAL_WORK="$LIVE_EVAL_TRIAL_ROOT/work"
 
 	# The state root contains credentials as input, but no prior sessions. The
 	# home root contains the provider configuration used by the live command.
-	mkdir -p "$LIVE_EVAL_STATE/serf/auth" "$LIVE_EVAL_HOME/.serf" "$LIVE_EVAL_WORK"
-	if [ ! -d "$ISO/serf/auth" ]; then
-		printf 'live eval source has no serf/auth directory: %s\n' "$ISO" >&2
+	mkdir -p "$LIVE_EVAL_STATE/evener/auth" "$LIVE_EVAL_HOME/.evener" "$LIVE_EVAL_WORK"
+	if [ ! -d "$ISO/evener/auth" ]; then
+		printf 'live eval source has no evener/auth directory: %s\n' "$ISO" >&2
 		return 1
 	fi
-	if [ ! -d "$HOMEISO/.serf" ]; then
-		printf 'live eval source has no .serf directory: %s\n' "$HOMEISO" >&2
+	if [ ! -d "$HOMEISO/.evener" ]; then
+		printf 'live eval source has no .evener directory: %s\n' "$HOMEISO" >&2
 		return 1
 	fi
-	if [ ! -f "$HOMEISO/.serf/providers.toml" ]; then
-		printf 'live eval source has no providers.toml: %s\n' "$HOMEISO/.serf" >&2
+	if [ ! -f "$HOMEISO/.evener/providers.toml" ]; then
+		printf 'live eval source has no providers.toml: %s\n' "$HOMEISO/.evener" >&2
 		return 1
 	fi
-	cp -R "$ISO/serf/auth/." "$LIVE_EVAL_STATE/serf/auth/"
-	cp -R "$HOMEISO/.serf/." "$LIVE_EVAL_HOME/.serf/"
-	cp "$SERF_LIVE_BINARY" "$LIVE_EVAL_SERF"
-	chmod +x "$LIVE_EVAL_SERF"
+	cp -R "$ISO/evener/auth/." "$LIVE_EVAL_STATE/evener/auth/"
+	cp -R "$HOMEISO/.evener/." "$LIVE_EVAL_HOME/.evener/"
+	cp "$EVENER_LIVE_BINARY" "$LIVE_EVAL_EVENER"
+	chmod +x "$LIVE_EVAL_EVENER"
 }
 
 live_eval_cleanup() {

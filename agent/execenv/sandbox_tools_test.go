@@ -12,7 +12,7 @@ import (
 
 	"golang.org/x/sys/unix"
 
-	"primeradiant.com/serf/agent/sandbox"
+	"primeradiant.com/evener/agent/sandbox"
 )
 
 // symlinkDiagRe extracts the named component and its resolved target from a
@@ -77,9 +77,9 @@ func mustDenied(t *testing.T, err error, whatf string, args ...any) {
 	}
 }
 
-// TestReadFileRefusesProcEnviron is the named containment hole: reading serf's own
+// TestReadFileRefusesProcEnviron is the named containment hole: reading evener's own
 // /proc/<pid>/environ must be denied in every sandboxed mode (it would otherwise
-// leak serf's provider API key).
+// leak evener's provider API key).
 func TestReadFileRefusesProcEnviron(t *testing.T) {
 	t.Parallel()
 	for _, mode := range sandboxedModes {
@@ -592,7 +592,7 @@ func TestWriteConfinedToWritableRoots(t *testing.T) {
 
 // TestWriteFileReachesSessionScratch: the per-session scratch directory
 // (sandbox.SessionScratch, provisioned by EnableSandbox and exported to spawned
-// processes as $TMPDIR/$SERF_SCRATCH_DIR) must also be writable AND readable back
+// processes as $TMPDIR/$EVENER_SCRATCH_DIR) must also be writable AND readable back
 // through the file tools in every enforced mode — docs/sandboxing.md documents
 // "temp only" (read-only) and "worktree + temp" (workspace-write/restricted) as
 // part of the file-tool grant, not just the kernel-wrapped spawned-process layer.

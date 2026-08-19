@@ -11,12 +11,12 @@ import (
 	"strings"
 	"time"
 
-	"primeradiant.com/serf/envvars"
-	"primeradiant.com/serf/identifier"
-	"primeradiant.com/serf/invariant"
-	"primeradiant.com/serf/llm"
-	"primeradiant.com/serf/llm/providercfg"
-	"primeradiant.com/serf/llm/providers/internal/transport"
+	"primeradiant.com/evener/envvars"
+	"primeradiant.com/evener/identifier"
+	"primeradiant.com/evener/invariant"
+	"primeradiant.com/evener/llm"
+	"primeradiant.com/evener/llm/providercfg"
+	"primeradiant.com/evener/llm/providers/internal/transport"
 )
 
 type Adapter struct {

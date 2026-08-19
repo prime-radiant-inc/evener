@@ -8,9 +8,9 @@ transcript/API-log separation.
 
 ## Purpose
 
-Serf currently exposes overlapping ways to check a job, read its output, wait for
+Evener currently exposes overlapping ways to check a job, read its output, wait for
 activity, and inspect its transcript. The overlap encourages repeated reads and
-large output replay. Serf already has the intended primitives: durable job state,
+large output replay. Evener already has the intended primitives: durable job state,
 `job_status`, transcript references, bounded transcript reading, watches, and
 terminal notifications.
 
@@ -44,7 +44,7 @@ them; the obsolete public result shape and prompt references are deleted.
 - transcript reference;
 - shell exit code when applicable;
 - resumability for delegate jobs;
-- the non-resumable reason when Serf knows it;
+- the non-resumable reason when Evener knows it;
 - exhausted status from the budget-truthfulness design when that slice has
   landed.
 
@@ -73,11 +73,11 @@ not expose provider API bodies by default.
 For every job kind:
 
 1. Runtime work ends.
-2. Serf persists the terminal job record and terminal generation.
+2. Evener persists the terminal job record and terminal generation.
 3. Output/transcript state is flushed to the durable boundary.
-4. Serf marks the terminal notification pending.
+4. Evener marks the terminal notification pending.
 5. The parent receives the notification.
-6. Serf records delivery.
+6. Evener records delivery.
 
 A notification may never be the only evidence that a job completed. A crash at
 any point replays from the durable state without rerunning completed work.
@@ -88,7 +88,7 @@ recovery path may not bypass step 3.
 ## Notification Coalescing
 
 When several terminal notifications are pending before the parent next runs,
-Serf may present them in one steering frame. Coalescing affects presentation
+Evener may present them in one steering frame. Coalescing affects presentation
 only:
 
 - each job keeps its own terminal generation and pending/delivered state;

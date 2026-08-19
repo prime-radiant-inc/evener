@@ -19,7 +19,7 @@ func TestSeatbeltWrapArgvShape(t *testing.T) {
 		Network: true,
 		Spawned: AccessScope{Read: ReadAnywhere, WriteRoots: []string{"/work/tree"}},
 	}
-	argv, err := seatbeltWrap([]string{"/bin/echo", "hi"}, rp, "/serf-session-tmp", "/work/tree")
+	argv, err := seatbeltWrap([]string{"/bin/echo", "hi"}, rp, "/evener-session-tmp", "/work/tree")
 	if err != nil {
 		t.Fatalf("seatbeltWrap: %v", err)
 	}
@@ -55,7 +55,7 @@ func TestSeatbeltWrapArgvShape(t *testing.T) {
 
 // TestConfineSetsSeatbeltDir (darwin, runs on paradise-park during make test)
 // pins the Seatbelt half of Confine: sandbox-exec has no chdir flag, so Confine
-// must set cmd.Dir to the worktree — otherwise the confined child inherits serf's
+// must set cmd.Dir to the worktree — otherwise the confined child inherits evener's
 // process cwd — AND prepend the sandbox-exec invocation to the argv.
 func TestConfineSetsSeatbeltDir(t *testing.T) {
 	t.Parallel()
@@ -66,7 +66,7 @@ func TestConfineSetsSeatbeltDir(t *testing.T) {
 		Spawned: AccessScope{Read: ReadAnywhere, WriteRoots: []string{"/work/tree"}},
 		Git:     GitLayout{WorktreeRoot: "/work/tree"},
 	}
-	w, err := NewWrapper(rp, "/usr/bin/sandbox-exec", "/serf-session-tmp")
+	w, err := NewWrapper(rp, "/usr/bin/sandbox-exec", "/evener-session-tmp")
 	if err != nil {
 		t.Fatalf("NewWrapper: %v", err)
 	}
@@ -98,7 +98,7 @@ func TestConfineTrustedInfraKeepsSeatbeltNetworkUnderNetOff(t *testing.T) {
 		Spawned: AccessScope{Read: ReadAnywhere, WriteRoots: []string{"/work/tree"}},
 		Git:     GitLayout{WorktreeRoot: "/work/tree"},
 	}
-	w, err := NewWrapper(rp, "/usr/bin/sandbox-exec", "/serf-session-tmp")
+	w, err := NewWrapper(rp, "/usr/bin/sandbox-exec", "/evener-session-tmp")
 	if err != nil {
 		t.Fatalf("NewWrapper: %v", err)
 	}

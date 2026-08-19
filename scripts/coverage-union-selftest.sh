@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # coverage-union-selftest.sh — exercises scripts/coverage-union.sh against a
 # throwaway repo and a fake `go` that emits two DIFFERENT profiles depending on
-# whether it was invoked with -tags serffuzz. No compilation, no real suite.
+# whether it was invoked with -tags evenerfuzz. No compilation, no real suite.
 #
 # The fixture is chosen so the union cannot be mistaken for either input: the
 # test track covers only block A, the fuzz track covers only block B, so a
@@ -11,7 +11,7 @@ set -uo pipefail
 real_script="$(cd "$(dirname "$0")" && pwd)/coverage-union.sh"
 . "$(dirname "$0")/selftest-lib.sh"
 
-scratch_dir work serf-covunion-selftest
+scratch_dir work evener-covunion-selftest
 trap 'scratch_rm' EXIT
 
 repo="$work/repo"
@@ -38,7 +38,7 @@ tagged=0
 for a in "$@"; do
 	case "$a" in
 		-coverprofile=*) prof="${a#-coverprofile=}" ;;
-		serffuzz) tagged=1 ;;
+		evenerfuzz) tagged=1 ;;
 	esac
 done
 [ -n "$prof" ] || { echo "fake go: no -coverprofile in: $*" >&2; exit 2; }
@@ -58,7 +58,7 @@ done
 			echo "fake/b.go:3.1,4.1 298 1"
 		fi
 		if [ -n "${FAKE_GO_TINY_VARIANCE:-}" ]; then
-			# ONE re-split block, the scale the serffuzz tag genuinely produces.
+			# ONE re-split block, the scale the evenerfuzz tag genuinely produces.
 			echo "fake/c.go:9.1,9.9 2 1"
 		else
 			echo "fake/c.go:9.1,9.5 2 1"
@@ -109,7 +109,7 @@ assert_killed_run_cleans_up HUP
 
 # The exits a trap cannot see, and the failed run that keeps its scratch on
 # purpose, are this script's own to reclaim: no janitor sweeps them.
-scratch_prefix=serf-covunion
+scratch_prefix=evener-covunion
 assert_reclaims_abandoned_scratch
 assert_keeps_concurrent_scratch
 printf 'nosuch 50.0\n' >"$floors"
@@ -150,7 +150,7 @@ PATH="$fake_bin:$PATH" TMPDIR="$tmphome" FAKE_GO_SHIFT_FUZZ_BLOCKS=1 bash "$scri
 assert_eq "$?" "1" "a boundary mismatch fails rather than reporting a nonsense percentage"
 assert_has "$out" "boundary mismatch" "the boundary mismatch is named"
 
-# A handful of re-split blocks is what the serffuzz tag genuinely produces
+# A handful of re-split blocks is what the evenerfuzz tag genuinely produces
 # (invariant.Hold becomes a real call), so it is reported, not fatal — failing
 # there would discard a whole module's measurement over 0.02%.
 PATH="$fake_bin:$PATH" TMPDIR="$tmphome" FAKE_GO_TINY_VARIANCE=1 bash "$script" --modules "agent" >"$out" 2>&1

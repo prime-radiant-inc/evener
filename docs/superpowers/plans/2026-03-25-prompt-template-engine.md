@@ -5,7 +5,7 @@
 
 ## Problem
 
-Serf's system prompts are chaotic. Content that should be organized by concern
+Evener's system prompts are chaotic. Content that should be organized by concern
 (identity, values, tools, workflow) is instead organized by provider file. The
 OpenAI prompt file is 127 lines mixing apply_patch docs with personality, git
 safety, and autonomy guidance. `core.md` duplicates identity and values with
@@ -187,8 +187,8 @@ Completely different prompt structures belong in different master templates.
 
 For each filename, check sources in order (first match wins):
 
-1. Project disk: `.serf/prompts/sections/`
-2. Global disk: `~/.config/serf/prompts/sections/`
+1. Project disk: `.evener/prompts/sections/`
+2. Global disk: `~/.config/evener/prompts/sections/`
 3. Embedded: `agent/prompts/sections/` (compiled into binary)
 
 This preserves the self-contained binary for eval/benchmark deployment while

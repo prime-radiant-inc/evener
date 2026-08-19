@@ -8,23 +8,23 @@
 > implementation because they have real design freedom.
 
 **Goal:** Eliminate the failure patterns found by the 2026-08-05 study of all
-464 serf sessions (`docs/research/2026-08-05-agentic-ux-session-study.md`),
+464 evener sessions (`docs/research/2026-08-05-agentic-ux-session-study.md`),
 fixing root causes at every layer: the defective tool, the runtime guardrail
 that should have contained the blast, and the forensic tooling that should
 have made it visible.
 
 **Architecture:** Defense in depth, same as the output-caps work. Example:
 the use_browser incident gets three independent fixes — the MCP tool's error
-is upstream (plugin), but serf's dispatch layer gains a failure-aware breaker
-so *no* tool can fail identically 300 times (WS2), and serf-doctor gains a
+is upstream (plugin), but evener's dispatch layer gains a failure-aware breaker
+so *no* tool can fail identically 300 times (WS2), and evener-doctor gains a
 mechanical loop detector so the next study finds survivors in minutes (WS9).
 
-**Tech stack:** Go (agent runtime, llm providers, serf-doctor), existing test
+**Tech stack:** Go (agent runtime, llm providers, evener-doctor), existing test
 conventions per `docs/testing.md`. All root causes below were verified against
 the code on 2026-08-06; file:line references are to current main.
 
 **Provenance:** Every symptom cites session ids from the study; re-check any
-with `serf-doctor transcript <sid>`.
+with `evener-doctor transcript <sid>`.
 
 ## Global Constraints
 
@@ -45,8 +45,8 @@ with `serf-doctor transcript <sid>`.
 
 ## WS1 — Responses-API response recording + apilog throughput
 
-**Was reported as:** "serf-doctor's apilog decoder is blind to OpenAI"
-(study §0, ~248 sessions). **Verified root cause is different:** serf-doctor
+**Was reported as:** "evener-doctor's apilog decoder is blind to OpenAI"
+(study §0, ~248 sessions). **Verified root cause is different:** evener-doctor
 never parses bodies. `text_length`/`tool_call_count` are computed once at
 call time — `llm/api_attempt.go:519-520` from `result.Response.Text()` /
 `.ToolCalls()` — and the doctor only copies them
@@ -82,7 +82,7 @@ accumulated stream; only the persisted record sees the empty terminal shape.
    `apilog.Decoder` (skip body materialization and the byte-count
    revalidation) and use it from `doctor.APILog` summarization paths;
    `--validate` keeps the strict full decode.
-4. serf-doctor forensics for historical logs: where a record has
+4. evener-doctor forensics for historical logs: where a record has
    `text_length=0 ∧ tool_call_count=0` and a stored body, `apilog` gains a
    `--recompute` flag that re-extracts via `openai.fromResponses` /
    the chat-completions parser against the stored body, so pre-fix sessions
@@ -90,7 +90,7 @@ accumulated stream; only the persisted record sees the empty terminal shape.
    disagree are labeled `recorded=0 recomputed=N`.
 
 **Acceptance:** affected fixture decodes with real counts; a fresh session on
-gpt-5.4-mini shows nonzero `tool_call_count` in `serf-doctor apilog`;
+gpt-5.4-mini shows nonzero `tool_call_count` in `evener-doctor apilog`;
 `apilog --summary` on a ≥500MB log completes in single-digit minutes;
 `--recompute` corrects a known-bad historical session (0340eCRdIZ5UJ4oIgD2Jrw:
 150 calls, currently 150 "empty").
@@ -168,10 +168,10 @@ MCP circuit breaker is transport-level reconnect, never application errors.
    `read_file` after an external change was refused though it would have
    returned new content. Parking stays exclusive to the failure trigger
    (point 3). Motivating case: the chrome MCP plugin reports failures as
-   `isError:false` with an "Error:" body (serf records them faithfully as
+   `isError:false` with an "Error:" body (evener records them faithfully as
    successes), so an IsError-only ledger missed the 300-call set_viewport
    loop; that shape now draws a persistent nudge rather than a park. The
-   plugin bug is filed upstream (obra/superpowers-chrome#44); serf's breaker
+   plugin bug is filed upstream (obra/superpowers-chrome#44); evener's breaker
    must not depend on tools signaling errors correctly.
 
 **Tests:** unit tests on the ledger (reset semantics, error-class equality);
@@ -220,7 +220,7 @@ contradicted it. Corrected scope:
    `read_transcript(transcript_ref="job:<id>")`; completion arrives by
    notification — do not relaunch or poll. For jobs that genuinely end
    `stopped/run_timeout` through remaining paths, `job_status` output
-   attributes the stop to serf's limit, not the command; zero-output cases
+   attributes the stop to evener's limit, not the command; zero-output cases
    note the process may still have been compiling.
 4. **Byte-window watch scanner (replaces the line scanner).** Today
    `output_match` scans line-by-line and silently never scans any line over
@@ -240,7 +240,7 @@ contradicted it. Corrected scope:
    (a) terminal state returned by `job_status` marks that job's pending
    owner notification consumed — with its own recorded state ("caller
    learned via status read") so the jobstore's told-the-caller invariant
-   and serf-doctor's diagnostics stay truthful;
+   and evener-doctor's diagnostics stay truthful;
    (b) coalesce in `armFinalizedJob`: build the watch-expiry and terminal
    notices together, enqueue once (today they enqueue at two moments with
    I/O between — the two-turns-per-completion bug);
@@ -278,10 +278,10 @@ two open questions ruled by Jesse the same day.**
    (`agent/execenv/local.go:257-263,1684-1743`); secret-name filtering and
    the sandbox env floor unchanged. Rejected: hardcoding /opt/homebrew/bin
    (host-specific), per-command login shells (slow, side-effectful).
-2. **Scratch dir**: `SERF_SCRATCH_DIR` is documented
+2. **Scratch dir**: `EVENER_SCRATCH_DIR` is documented
    (`docs/environment.md`) as per-session with no sandbox-only caveat; the
    unset cases were unsandboxed sessions. Provision a session scratch dir
-   and export `SERF_SCRATCH_DIR`/`TMPDIR` unconditionally — reality up to
+   and export `EVENER_SCRATCH_DIR`/`TMPDIR` unconditionally — reality up to
    the documented contract.
 3. **Go telemetry** (amended 2026-08-06, superseding same-day
    `GOTELEMETRY=off` ruling): implementation proved `GOTELEMETRY` is a
@@ -302,7 +302,7 @@ two open questions ruled by Jesse the same day.**
    (033zIWu0M97TPEmlte5j45's 5.7h hang cited GOCACHE on an external
    volume) were likely unsandboxed or host-config issues. Investigate
    first: classify each wedged session's sandbox mode and resolved cache
-   strategy; only then decide whether serf changes anything. Any change
+   strategy; only then decide whether evener changes anything. Any change
    preserves the never-poison invariant.
 5. **packed-refs.lock**: the sandbox contract explicitly promises
    packed-refs is writable (commit/add/checkout succeed) while git config
@@ -406,7 +406,7 @@ ResolvedPolicy with probe results.
     fully wrote via write_file counts as read for edit_file's staleness
     check. Locate the read-tracking set edit_file consults and add
     write_file's successful writes to it. Shell-heredoc writes stay
-    uncredited (serf can't know the resulting content), which is correct.
+    uncredited (evener can't know the resulting content), which is correct.
 
 **Tests:** table-driven glob tests (dot-dir skip, gitignore, include_ignored);
 truncation summary tests; the `--` regression; ENOENT suggestion tests;
@@ -553,18 +553,18 @@ compact_context present; nudge-gating tests for present/absent registry
 states.
 
 **Size:** ~450 loc.
-## WS9 — serf-doctor: make the next study mechanical
+## WS9 — evener-doctor: make the next study mechanical
 
 This study cost ~16M subagent tokens because agents re-derived mechanical
 facts per session. The doctor should compute those; LLM judgment then only
 reads flagged sessions. (Direct response to Jesse's ask.)
 
-1. **`serf-doctor sessions [--since DUR] [--bucket B|--all]`** — enumerate
+1. **`evener-doctor sessions [--since DUR] [--bucket B|--all]`** — enumerate
    sessions with started/ended, model(s), turn count, transcript bytes,
    outcome hint (final communicate status if present), parent/delegate
    links. The study's enumeration was `find`+`wc` by hand; this is the
    entry point every batch analysis needs. `--json` first-class.
-2. **`serf-doctor transcript <sel> --health`** — mechanical per-session
+2. **`evener-doctor transcript <sel> --health`** — mechanical per-session
    metrics, all cheap folds over existing canonical readers:
    - tool-call and tool-error counts by tool and error class;
    - longest run of consecutive identical calls (name+argshash) and whether
@@ -575,11 +575,11 @@ reads flagged sessions. (Direct response to Jesse's ask.)
    - notifications delivered after the last end_turn (staleness metric);
    - user STEERING messages that follow a completed communicate
      (the user-correction proxy).
-3. **`serf-doctor audit --runbook R --sessions <set|--since DUR>`** — batch
+3. **`evener-doctor audit --runbook R --sessions <set|--since DUR>`** — batch
    driver: run a runbook's mechanical checks across a session set, emit
    Finding JSON per the existing contract with `signature` dedup across
    sessions, and a summary table (pattern × session count). The
-   doctoring-serf skill already defines runbooks and the Finding contract;
+   doctoring-evener skill already defines runbooks and the Finding contract;
    this adds the fan-out executor so 464 sessions is one command, not 194
    subagents.
 4. **apilog fixes from WS1 land here too** (`--recompute`, metadata-only
@@ -607,7 +607,7 @@ Small, evidence-backed prompt and skill edits; each cites its pattern:
    identical review work): independent reads/greps go in one round.
 3. Delegate-brief hygiene in the delegation prompt templates: never
    `git add -A`; stage named paths (the ~1600-file staging incident).
-4. doctoring-serf skill: add WS9's commands to the tool table once they
+4. doctoring-evener skill: add WS9's commands to the tool table once they
    exist, and add the "recorded=0 vs recomputed" caveat for pre-WS1 logs.
 
 **Size:** ~80 loc of prose. Ship with, not before, the runtime fixes they

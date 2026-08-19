@@ -30,7 +30,7 @@
 
 | File | Responsibility |
 |---|---|
-| `llm/data/serf_model_catalog_overrides.json` | Curated `sonnet`, `opus`, and `haiku` alias targets. |
+| `llm/data/evener_model_catalog_overrides.json` | Curated `sonnet`, `opus`, and `haiku` alias targets. |
 | `llm/model_catalog.go` | Detect a unique alias target without silently accepting ambiguous aliases. |
 | `llm/model_catalog_embedded.go` | Apply aliases only to exact/materialized catalog entries, not dated-family descendants. |
 | `llm/model_catalog_test.go` | Catalog alias, ambiguity, production mapping, and non-inheritance regressions. |
@@ -100,7 +100,7 @@ diagnostic classifications, not public error codes.
 ### Task 1: Add Curated Catalog Aliases Without Family Leakage
 
 **Files:**
-- Modify: `llm/data/serf_model_catalog_overrides.json`
+- Modify: `llm/data/evener_model_catalog_overrides.json`
 - Modify: `llm/model_catalog.go:61-72`
 - Modify: `llm/model_catalog_embedded.go:61-199`
 - Test: `llm/model_catalog_test.go:158-205`
@@ -204,7 +204,7 @@ existing alias assignment with `if includeAliases`.
 
 - [ ] **Step 6: Add the three curated production aliases**
 
-In `serf_model_catalog_overrides.json`:
+In `evener_model_catalog_overrides.json`:
 
 - add `"aliases": ["sonnet"]` to `claude-sonnet-4-6`;
 - add an overlay-only entry for `claude-opus-4-7` with
@@ -228,7 +228,7 @@ Expected: PASS.
 
 ```bash
 git status --short
-git add llm/data/serf_model_catalog_overrides.json llm/model_catalog.go llm/model_catalog_embedded.go llm/model_catalog_test.go
+git add llm/data/evener_model_catalog_overrides.json llm/model_catalog.go llm/model_catalog_embedded.go llm/model_catalog_test.go
 git commit -m "feat: add provider model aliases
 
 Add curated Claude host aliases to the embedded model catalog, expose
@@ -565,7 +565,7 @@ Run:
 
 ```bash
 go test ./agent -run 'Test(SpawnAgent|PrepareSubagentRun)'
-go test -tags=serffuzz ./agent -run '^$'
+go test -tags=evenerfuzz ./agent -run '^$'
 go test -race ./agent -run 'TestSpawnAgent_(UnavailablePluginModelUsesExplicitFallback|AvailablePluginAliasWins)'
 ```
 
@@ -783,7 +783,7 @@ Run:
 ```bash
 gofmt -w agent/subagent_model_selection.go agent/subagent_model_selection_test.go agent/subagents.go agent/plugin_agents_integration_test.go agent/subagents_fuzz_test.go agent/job_delegate.go agent/job_delegate_model_selection_test.go agent/job_delegate_isolation_test.go llm/model_catalog.go llm/model_catalog_embedded.go llm/model_catalog_test.go
 go test ./llm ./agent
-go test -tags=serffuzz ./agent -run '^$'
+go test -tags=evenerfuzz ./agent -run '^$'
 go test ./...
 git diff --check
 git status --short

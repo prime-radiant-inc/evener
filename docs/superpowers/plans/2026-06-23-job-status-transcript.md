@@ -6,7 +6,7 @@
 
 **Architecture:** Add compact job supervision projection in `agent/session_tools_jobs.go`, with `kind/status/phase/running_for_ms/quiet_for_ms/transcript_ref` computed from live job records. Add a generic transcript reader in `agent/session_tools_transcript.go` that reads existing session transcripts and shell job output refs. Route server-readiness signals through the existing non-blocking `job_watch(output_match=...)` mechanism before removing `job_read_output` from the model-facing registry.
 
-**Tech Stack:** Go, Serf agent tool registry, jobstore event/output logs, scripted-provider tests, deterministic package tests.
+**Tech Stack:** Go, Evener agent tool registry, jobstore event/output logs, scripted-provider tests, deterministic package tests.
 
 ---
 
@@ -929,7 +929,7 @@ Expected: PASS.
 go test ./...
 ```
 
-Expected: PASS. If `cmd/serf-tui/internal/hubstart::TestStartLocalHubReportsImmediateExitOutput` fails once and passes on direct rerun, record it as the same pre-existing transient baseline observed before implementation.
+Expected: PASS. If `cmd/evener-tui/internal/hubstart::TestStartLocalHubReportsImmediateExitOutput` fails once and passes on direct rerun, record it as the same pre-existing transient baseline observed before implementation.
 
 - [ ] **Step 3: Inspect final diff**
 

@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"strings"
 
-	"primeradiant.com/serf/agent/internal/tool"
+	"primeradiant.com/evener/agent/internal/tool"
 )
 
 // failureLoopExcerptRunes bounds the failure excerpt carried by the structural
@@ -24,7 +24,7 @@ func (s *Session) stuckEscalation(count int) string {
 		case "", "low", "medium":
 			s.cfg.ReasoningEffort = "high"
 		case "high", "xhigh":
-			// "max" is the top of serf's effort lattice; the per-model clamp
+			// "max" is the top of evener's effort lattice; the per-model clamp
 			// lowers it to whatever tier the model actually tops out at.
 			s.cfg.ReasoningEffort = "max"
 		}

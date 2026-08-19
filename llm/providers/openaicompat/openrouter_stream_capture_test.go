@@ -7,7 +7,7 @@ import (
 	"os"
 	"testing"
 
-	"primeradiant.com/serf/llm"
+	"primeradiant.com/evener/llm"
 )
 
 // TestReplay_CapturedOpenRouterStream replays a REAL OpenRouter SSE response

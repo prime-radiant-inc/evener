@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Serf Mockups — #12 Test-runs bucket &amp; finding old work</title>
+<title>Evener Mockups — #12 Test-runs bucket &amp; finding old work</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Hanken+Grotesk:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
@@ -11,10 +11,10 @@
 <style>
 /* ====================================================================
    TOPIC #12 — TEST-RUNS BUCKET & FINDING OLD WORK
-   The TEST RUNS auto-bucket correctly herds ~88 disposable serf-e2e-*
+   The TEST RUNS auto-bucket correctly herds ~88 disposable evener-e2e-*
    sessions out of the way — but once you NEED a specific past run, it's
    a flat, undated, unsorted, unsearchable pile. And RECENT/OLDER give no
-   way to find "that refactor from last week in serf".
+   way to find "that refactor from last week in evener".
    Four alternatives (A/B/C/D), each a REAL rendering of the expanded
    bucket and/or a finder over RECENT/OLDER, so they compare side by side.
 
@@ -162,9 +162,9 @@ footer.note code{font-family:var(--mono);font-size:11px;color:var(--ink-2);borde
     <h1>#12 — Test-runs bucket &amp; finding old work</h1>
     <p class="lede">
       The <b style="color:var(--ink-2)">Test runs</b> auto-bucket correctly herds ~88 disposable
-      <code>serf-e2e-*</code> sessions out of the way — but the moment you actually need a specific past run,
+      <code>evener-e2e-*</code> sessions out of the way — but the moment you actually need a specific past run,
       it's a flat, undated, unsorted, unsearchable pile. And <b style="color:var(--ink-2)">Recent / Older</b>
-      give no way to answer "find that refactor from last week in serf." Each alternative below is a real
+      give no way to answer "find that refactor from last week in evener." Each alternative below is a real
       rendering of the expanded bucket and/or a finder over Recent/Older. Status follows the four-color rule:
       a <b style="color:var(--error)">failed</b> run is red (it broke); a <b>passed</b> run is the expected,
       settled state → neutral (never green); blue is reserved for live/interactive.
@@ -232,17 +232,17 @@ footer.note code{font-family:var(--mono);font-size:11px;color:var(--ink-2);borde
           <div class="tier">
             <div class="t-h"><span class="lbl">Test runs</span><span class="rule"></span><span class="n">88</span></div>
             <div class="subhead">Today<span class="c">6</span></div>
-            <button class="run"><span class="g run-live">⟳</span><span class="id">serf-e2e-job-control-9</span><span class="ago">now</span></button>
-            <button class="run fail"><span class="g fail">✕</span><span class="id">serf-e2e-effort-providers-7</span><span class="ago">2h</span></button>
-            <button class="run"><span class="g pass">✓</span><span class="id">serf-e2e-tool-matrix-4</span><span class="ago">4h</span></button>
-            <button class="run"><span class="g pass">✓</span><span class="id">serf-e2e-compaction-2</span><span class="ago">6h</span></button>
+            <button class="run"><span class="g run-live">⟳</span><span class="id">evener-e2e-job-control-9</span><span class="ago">now</span></button>
+            <button class="run fail"><span class="g fail">✕</span><span class="id">evener-e2e-effort-providers-7</span><span class="ago">2h</span></button>
+            <button class="run"><span class="g pass">✓</span><span class="id">evener-e2e-tool-matrix-4</span><span class="ago">4h</span></button>
+            <button class="run"><span class="g pass">✓</span><span class="id">evener-e2e-compaction-2</span><span class="ago">6h</span></button>
             <div class="subhead">Yesterday<span class="c">14</span></div>
-            <button class="run fail"><span class="g fail">✕</span><span class="id">serf-e2e-retry-gap-5</span><span class="ago">1d</span></button>
-            <button class="run"><span class="g pass">✓</span><span class="id">serf-e2e-effort-clamp-3</span><span class="ago">1d</span></button>
-            <button class="run"><span class="g pass">✓</span><span class="id">serf-e2e-watch-ids-8</span><span class="ago">1d</span></button>
+            <button class="run fail"><span class="g fail">✕</span><span class="id">evener-e2e-retry-gap-5</span><span class="ago">1d</span></button>
+            <button class="run"><span class="g pass">✓</span><span class="id">evener-e2e-effort-clamp-3</span><span class="ago">1d</span></button>
+            <button class="run"><span class="g pass">✓</span><span class="id">evener-e2e-watch-ids-8</span><span class="ago">1d</span></button>
             <div class="subhead">Older<span class="c">68</span></div>
-            <button class="run"><span class="g pass">✓</span><span class="id">serf-e2e-kimi-anthropic-1</span><span class="ago">3d</span></button>
-            <button class="run"><span class="g pass">✓</span><span class="id">serf-e2e-subagent-fanout-6</span><span class="ago">5d</span></button>
+            <button class="run"><span class="g pass">✓</span><span class="id">evener-e2e-kimi-anthropic-1</span><span class="ago">3d</span></button>
+            <button class="run"><span class="g pass">✓</span><span class="id">evener-e2e-subagent-fanout-6</span><span class="ago">5d</span></button>
           </div>
         </div>
       </div>
@@ -276,12 +276,12 @@ footer.note code{font-family:var(--mono);font-size:11px;color:var(--ink-2);borde
               <span class="c-chip"><span class="run-live" style="color:var(--accent)">⟳</span> Live <span class="n">1</span></span>
             </div>
             <div class="c-note">Filtered to <b>8 failed</b></div>
-            <button class="run fail"><span class="g fail">✕</span><span class="id">serf-e2e-effort-providers-7</span><span class="ago">2h</span></button>
-            <button class="run fail"><span class="g fail">✕</span><span class="id">serf-e2e-retry-gap-5</span><span class="ago">1d</span></button>
-            <button class="run fail"><span class="g fail">✕</span><span class="id">serf-e2e-image-context-3</span><span class="ago">2d</span></button>
-            <button class="run fail"><span class="g fail">✕</span><span class="id">serf-e2e-glob-nilarg-9</span><span class="ago">2d</span></button>
-            <button class="run dim"><span class="g pass">✓</span><span class="id">serf-e2e-tool-matrix-4</span><span class="ago">4h</span></button>
-            <button class="run dim"><span class="g pass">✓</span><span class="id">serf-e2e-compaction-2</span><span class="ago">6h</span></button>
+            <button class="run fail"><span class="g fail">✕</span><span class="id">evener-e2e-effort-providers-7</span><span class="ago">2h</span></button>
+            <button class="run fail"><span class="g fail">✕</span><span class="id">evener-e2e-retry-gap-5</span><span class="ago">1d</span></button>
+            <button class="run fail"><span class="g fail">✕</span><span class="id">evener-e2e-image-context-3</span><span class="ago">2d</span></button>
+            <button class="run fail"><span class="g fail">✕</span><span class="id">evener-e2e-glob-nilarg-9</span><span class="ago">2d</span></button>
+            <button class="run dim"><span class="g pass">✓</span><span class="id">evener-e2e-tool-matrix-4</span><span class="ago">4h</span></button>
+            <button class="run dim"><span class="g pass">✓</span><span class="id">evener-e2e-compaction-2</span><span class="ago">6h</span></button>
           </div>
         </div>
       </div>
@@ -308,13 +308,13 @@ footer.note code{font-family:var(--mono);font-size:11px;color:var(--ink-2);borde
         <div class="fscroll">
           <div class="tier">
             <div class="t-h"><span class="lbl">Recently viewed</span><span class="rule"></span></div>
-            <button class="d-pin"><span class="clock">↺</span><span class="st">Refactor auth token cache</span><span class="proj-tag">serf</span><span class="ago">5m</span></button>
-            <button class="d-pin"><span class="clock">↺</span><span class="st">Reasoning-effort clamp</span><span class="proj-tag">serf</span><span class="ago">2d</span></button>
+            <button class="d-pin"><span class="clock">↺</span><span class="st">Refactor auth token cache</span><span class="proj-tag">evener</span><span class="ago">5m</span></button>
+            <button class="d-pin"><span class="clock">↺</span><span class="st">Reasoning-effort clamp</span><span class="proj-tag">evener</span><span class="ago">2d</span></button>
             <button class="d-pin"><span class="clock">↺</span><span class="st">Dashboard stat panels</span><span class="proj-tag">prime-radiant</span><span class="ago">6d</span></button>
           </div>
           <div class="tier">
             <div class="t-h"><span class="lbl">Recent</span><span class="rule"></span></div>
-            <button class="proj"><span class="chev">▾</span><span class="nm">serf</span><span class="age">1d</span><span class="count">9</span></button>
+            <button class="proj"><span class="chev">▾</span><span class="nm">evener</span><span class="age">1d</span><span class="count">9</span></button>
             <div class="branch"><span class="gi">⎇</span><span class="bn">job-control-spec</span><span class="c">4</span></div>
             <div class="under-branch">
               <button class="row"><span class="dot idle"></span><span class="st">Job-control legibility</span><span class="ago">1d</span></button>
@@ -327,7 +327,7 @@ footer.note code{font-family:var(--mono);font-size:11px;color:var(--ink-2);borde
           </div>
           <div class="tier">
             <div class="t-h"><span class="lbl">Older</span><span class="rule"></span><span class="n">3</span></div>
-            <button class="proj"><span class="chev">▸</span><span class="nm">serf-docs</span><span class="age">9d</span><span class="count">3</span></button>
+            <button class="proj"><span class="chev">▸</span><span class="nm">evener-docs</span><span class="age">9d</span><span class="count">3</span></button>
           </div>
         </div>
       </div>
@@ -340,18 +340,18 @@ footer.note code{font-family:var(--mono);font-size:11px;color:var(--ink-2);borde
     <h2>For contrast — today's bucket (the problem)</h2>
     <p class="why">
       Expanding <b>Test runs</b> today drops you into a flat, undated, unsorted, unsearchable list of ~88
-      identical-looking <code>serf-e2e-*</code> ids — no outcome, no date, no way to find the one you need. It's
+      identical-looking <code>evener-e2e-*</code> ids — no outcome, no date, no way to find the one you need. It's
       a wall, not a finder.
     </p>
     <div class="pile">
-      <button class="run"><span class="g" style="width:11px"></span><span class="id">serf-e2e-job-control-9</span></button>
-      <button class="run"><span class="g" style="width:11px"></span><span class="id">serf-e2e-effort-providers-7</span></button>
-      <button class="run"><span class="g" style="width:11px"></span><span class="id">serf-e2e-tool-matrix-4</span></button>
-      <button class="run"><span class="g" style="width:11px"></span><span class="id">serf-e2e-retry-gap-5</span></button>
-      <button class="run"><span class="g" style="width:11px"></span><span class="id">serf-e2e-effort-clamp-3</span></button>
-      <button class="run"><span class="g" style="width:11px"></span><span class="id">serf-e2e-watch-ids-8</span></button>
-      <button class="run"><span class="g" style="width:11px"></span><span class="id">serf-e2e-kimi-anthropic-1</span></button>
-      <button class="run"><span class="g" style="width:11px"></span><span class="id">serf-e2e-subagent-fanout-6</span></button>
+      <button class="run"><span class="g" style="width:11px"></span><span class="id">evener-e2e-job-control-9</span></button>
+      <button class="run"><span class="g" style="width:11px"></span><span class="id">evener-e2e-effort-providers-7</span></button>
+      <button class="run"><span class="g" style="width:11px"></span><span class="id">evener-e2e-tool-matrix-4</span></button>
+      <button class="run"><span class="g" style="width:11px"></span><span class="id">evener-e2e-retry-gap-5</span></button>
+      <button class="run"><span class="g" style="width:11px"></span><span class="id">evener-e2e-effort-clamp-3</span></button>
+      <button class="run"><span class="g" style="width:11px"></span><span class="id">evener-e2e-watch-ids-8</span></button>
+      <button class="run"><span class="g" style="width:11px"></span><span class="id">evener-e2e-kimi-anthropic-1</span></button>
+      <button class="run"><span class="g" style="width:11px"></span><span class="id">evener-e2e-subagent-fanout-6</span></button>
     </div>
   </div>
 

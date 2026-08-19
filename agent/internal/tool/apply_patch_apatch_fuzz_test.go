@@ -27,7 +27,7 @@ import (
 	"strings"
 	"testing"
 
-	"primeradiant.com/serf/fuzz/oracle"
+	"primeradiant.com/evener/fuzz/oracle"
 )
 
 // apatch_seed is a (patch, base) pair for the apply fuzzer; the parse fuzzer

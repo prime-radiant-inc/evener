@@ -69,11 +69,11 @@ anchors is retired; see git history for `scenario-cite-migrate.sh`.)
 ## How to run
 
 Most scenarios assume:
-- a `serf-hub` you built and started yourself, on an isolated `$HOME`
+- a `evener-hub` you built and started yourself, on an isolated `$HOME`
   and a free port. Never Jesse's real hub or his port `9180`. See
   "Setup checklist" in `docs/agentic-testing.md` for the exact recipe —
   a card that says nothing about the hub inherits that default.
-- the auth token at `$HOME/.serf/auth-token` (that isolated `$HOME`,
+- the auth token at `$HOME/.evener/auth-token` (that isolated `$HOME`,
   never Jesse's real one)
 - the `superpowers-chrome:browsing` skill available for browser steps
 - `tmux` and the Bash tool available for CLI steps

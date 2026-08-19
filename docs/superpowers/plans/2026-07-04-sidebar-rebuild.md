@@ -6,47 +6,47 @@
 
 **Architecture:** The hub computes one memoized `Tree` (keyed on an inputs-version + 30s time bucket) and serves it as additive JSON on `/api/tree`; a rewritten `sidebar.js` holds that data as state and projects it to the DOM via hand-rolled reconciliation keyed on the server's scope-qualified `RowID`, so DOM node identity (hover, open menus, scroll) survives updates. Mutations are optimistic through a pending-ops overlay reconciled on the next resync. Project identity binds to the full working directory (a path slug), so every destructive verb is path-validated; rename is daemon-truth for live sessions and a re-check-guarded meta edit for ended ones.
 
-**Tech Stack:** Go (hub: cmd/serf-hub + internal/hubcore; agent module for Origin/rename), vanilla JS (client-rendered sidebar, no framework), SQLite (decision stores), jstest (JSDOM suites), htmx (workspace swaps only).
+**Tech Stack:** Go (hub: cmd/evener-hub + internal/hubcore; agent module for Origin/rename), vanilla JS (client-rendered sidebar, no framework), SQLite (decision stores), jstest (JSDOM suites), htmx (workspace swaps only).
 ---
 
 ## Module & gate map
 
 Two Go modules are touched (`go.work` maps `.` and `./agent`; `envvars` is its own module):
 
-- **Root module `primeradiant.com/serf`** (`.`): `cmd/serf-hub`, `hubapi`, `appwire`, `cmd/serf`, `server`, `rendezvous`.
-- **Agent module `primeradiant.com/serf/agent`** (`./agent`): `agent`, `agent/schema`.
-- **Envvars module** (`./envvars`): the `SERF_SESSION_ORIGIN` declaration only.
+- **Root module `primeradiant.com/evener`** (`.`): `cmd/evener-hub`, `hubapi`, `appwire`, `cmd/evener`, `server`, `rendezvous`.
+- **Agent module `primeradiant.com/evener/agent`** (`./agent`): `agent`, `agent/schema`.
+- **Envvars module** (`./envvars`): the `EVENER_SESSION_ORIGIN` declaration only.
 
-Per-task gates (run from repo root `/Users/jesse/prime-radiant/toil-suite/serf`):
+Per-task gates (run from repo root `/Users/jesse/prime-radiant/toil-suite/evener`):
 
-- Root Go tests for a hub change: `go test ./cmd/serf-hub/... ./hubapi/... ./appwire/...`
+- Root Go tests for a hub change: `go test ./cmd/evener-hub/... ./hubapi/... ./appwire/...`
 - Agent Go tests: `cd agent && go test ./...`
 - Root lint: `golangci-lint run ./...` (root) / `cd agent && golangci-lint run ./...` (agent).
-- jstest: `sh cmd/serf-hub/jstest/run-all.sh` (JSDOM; each `test-*.js` exits 0/1). Requires `NODE_PATH` to a jsdom install; `run-all.sh` auto-detects `./node_modules` or `/tmp/serf-jstest-jsdom/node_modules`.
+- jstest: `sh cmd/evener-hub/jstest/run-all.sh` (JSDOM; each `test-*.js` exits 0/1). Requires `NODE_PATH` to a jsdom install; `run-all.sh` auto-detects `./node_modules` or `/tmp/evener-jstest-jsdom/node_modules`.
 - AppWire doc regen: `make generate` (runs `go generate ./appwire/...` → `docs/appwire-protocol.md`); `make lint-generated` fails if stale.
-- Full gate (final task): `make lint && make test && sh cmd/serf-hub/jstest/run-all.sh`.
+- Full gate (final task): `make lint && make test && sh cmd/evener-hub/jstest/run-all.sh`.
 
 Never `git add -A`; every commit lists exact paths.
 
 ## File Structure
 
 **Created (Go, hub):**
-- `cmd/serf-hub/internal/hubcore/favorite.go` — `FavoriteStore` (clone of `ArchiveStore`, `favorite` table).
-- `cmd/serf-hub/internal/hubcore/treecache.go` — `TreeCache` (inputs-version + 30s bucket memo) and `InputsVersion` (atomic counter).
-- `cmd/serf-hub/web_api_favorite.go` — `POST /api/favorite`.
-- `cmd/serf-hub/web_api_project_delete.go` — `POST /api/project/delete`.
-- `cmd/serf-hub/web_api_rename.go` — `POST /api/sessions/{ref}/rename` handler body.
-- `cmd/serf-hub/internal/hubcore/remotecache.go` — async remote-source thread cache.
+- `cmd/evener-hub/internal/hubcore/favorite.go` — `FavoriteStore` (clone of `ArchiveStore`, `favorite` table).
+- `cmd/evener-hub/internal/hubcore/treecache.go` — `TreeCache` (inputs-version + 30s bucket memo) and `InputsVersion` (atomic counter).
+- `cmd/evener-hub/web_api_favorite.go` — `POST /api/favorite`.
+- `cmd/evener-hub/web_api_project_delete.go` — `POST /api/project/delete`.
+- `cmd/evener-hub/web_api_rename.go` — `POST /api/sessions/{ref}/rename` handler body.
+- `cmd/evener-hub/internal/hubcore/remotecache.go` — async remote-source thread cache.
 
 **Modified (Go, hub):** `internal/hubcore/tree.go`, `archive.go`, `past.go`, `roster.go`, `config.go`, `session_order.go` (none), `web_api_tree.go`, `web_api_archive.go`, `web.go`, `main.go`, `app_rpc.go`, `app_compact.go`, `app_threadread.go`, `internal/appsource/source.go`, `local_daemon.go`, `codex_source.go`; `hubapi/types.go`.
 
-**Modified (Go, agent + appwire + daemon):** `agent/schema/snapshot.go`, `agent/session.go`, `agent/session_state.go`, `agent/session_init.go`, `agent/session_namer.go`, `appwire/types.go`, `appwire/protocol.go`, `appwire/client.go`, `server/appwire_runtime.go`, `server/server.go`, `cmd/serf/serve.go`, `cmd/serf/run.go`, `envvars/envvars.go`.
+**Modified (Go, agent + appwire + daemon):** `agent/schema/snapshot.go`, `agent/session.go`, `agent/session_state.go`, `agent/session_init.go`, `agent/session_namer.go`, `appwire/types.go`, `appwire/protocol.go`, `appwire/client.go`, `server/appwire_runtime.go`, `server/server.go`, `cmd/evener/serve.go`, `cmd/evener/run.go`, `envvars/envvars.go`.
 
-**Created (client + tests):** rewritten `cmd/serf-hub/assets/sidebar.js`; new `cmd/serf-hub/jstest/test-sidebar-model.js`, `test-sidebar-reconcile.js`, `test-sidebar-overlay.js`, `test-sidebar-menu.js`, `test-sidebar-migration.js`, `test-sidebar-survivors.js`.
+**Created (client + tests):** rewritten `cmd/evener-hub/assets/sidebar.js`; new `cmd/evener-hub/jstest/test-sidebar-model.js`, `test-sidebar-reconcile.js`, `test-sidebar-overlay.js`, `test-sidebar-menu.js`, `test-sidebar-migration.js`, `test-sidebar-survivors.js`.
 
-**Modified (client + docs):** `cmd/serf-hub/templates/app.html`, `cmd/serf-hub/assets/style.css`, `docs/environment.md`, `docs/appwire-protocol.md` (generated), `docs/serf-hub-web-routing.md`.
+**Modified (client + docs):** `cmd/evener-hub/templates/app.html`, `cmd/evener-hub/assets/style.css`, `docs/environment.md`, `docs/appwire-protocol.md` (generated), `docs/evener-hub-web-routing.md`.
 
-**Deleted (final Phase B task, once the new suite is green):** `cmd/serf-hub/templates/partials/sidebar.html`, hub sidebar handlers/routes, and the subsumed `test-sidebar-*.js` files.
+**Deleted (final Phase B task, once the new suite is green):** `cmd/evener-hub/templates/partials/sidebar.html`, hub sidebar handlers/routes, and the subsumed `test-sidebar-*.js` files.
 
 ---
 
@@ -57,12 +57,12 @@ Never `git add -A`; every commit lists exact paths.
 Today `BuildTreeAt` groups sessions by `projectName(m)` = `filepath.Base(EffectiveWorkingDir(m))` (tree.go:340-341, :211-217), so `/a/foo` and `/b/foo` collapse into one node with a "first non-empty WorkingDir seen" (tree.go:349-353). This task rekeys grouping on the full path, adds `TreeProject.Key` (a path slug) and a `Worktrees` count; `Name` stays the basename for display.
 
 **Files:**
-- Modify: `cmd/serf-hub/internal/hubcore/tree.go` (grouping map, `TreeProject`, slug helper)
-- Test: `cmd/serf-hub/internal/hubcore/tree_test.go` (append)
+- Modify: `cmd/evener-hub/internal/hubcore/tree.go` (grouping map, `TreeProject`, slug helper)
+- Test: `cmd/evener-hub/internal/hubcore/tree_test.go` (append)
 
 - [ ] **Step 1: Write the failing test**
 
-Append to `cmd/serf-hub/internal/hubcore/tree_test.go`:
+Append to `cmd/evener-hub/internal/hubcore/tree_test.go`:
 
 ```go
 func TestCoBasenameProjectsAreDistinctNodes(t *testing.T) {
@@ -102,12 +102,12 @@ func TestNoProjectKeyIsStable(t *testing.T) {
 
 - [ ] **Step 2: Run test to verify it fails**
 
-Run: `go test ./cmd/serf-hub/internal/hubcore/ -run 'TestCoBasenameProjectsAreDistinctNodes|TestNoProjectKeyIsStable' -v`
+Run: `go test ./cmd/evener-hub/internal/hubcore/ -run 'TestCoBasenameProjectsAreDistinctNodes|TestNoProjectKeyIsStable' -v`
 Expected: FAIL — one merged project (`len==1`) and `TreeProject.Key` undefined (compile error), so add the field first.
 
 - [ ] **Step 3: Add `Key`/`Worktrees` to `TreeProject` and a slug helper**
 
-In `cmd/serf-hub/internal/hubcore/tree.go`, add to the `TreeProject` struct (after `Name string`):
+In `cmd/evener-hub/internal/hubcore/tree.go`, add to the `TreeProject` struct (after `Name string`):
 
 ```go
 	// Key is the stable, path-derived project identifier: a slug of the full
@@ -189,13 +189,13 @@ Update the session-node `Project:` fields (in the `sessions`, subagent, and fork
 
 - [ ] **Step 5: Run tests to verify they pass**
 
-Run: `go test ./cmd/serf-hub/internal/hubcore/ -run 'TestCoBasename|TestNoProjectKey|TestBuildTree|TestArchive' -v`
+Run: `go test ./cmd/evener-hub/internal/hubcore/ -run 'TestCoBasename|TestNoProjectKey|TestBuildTree|TestArchive' -v`
 Expected: PASS.
 
 - [ ] **Step 6: Commit**
 
 ```bash
-git add cmd/serf-hub/internal/hubcore/tree.go cmd/serf-hub/internal/hubcore/tree_test.go
+git add cmd/evener-hub/internal/hubcore/tree.go cmd/evener-hub/internal/hubcore/tree_test.go
 git commit -m "feat(hub): key projects by full working dir with a path slug"
 ```
 
@@ -206,8 +206,8 @@ git commit -m "feat(hub): key projects by full working dir with a path slug"
 Project archive placement keys on `ArchiveKey{Kind:"project", ID: pname}` (tree.go:503) — the basename. Rekey it to the path with a legacy-basename read-fallback and stated precedence: a path-keyed row always wins over a legacy basename row (round-2 B7, round-3 G3).
 
 **Files:**
-- Modify: `cmd/serf-hub/internal/hubcore/tree.go`
-- Test: `cmd/serf-hub/internal/hubcore/tree_test.go` (append)
+- Modify: `cmd/evener-hub/internal/hubcore/tree.go`
+- Test: `cmd/evener-hub/internal/hubcore/tree_test.go` (append)
 
 - [ ] **Step 1: Write the failing test**
 
@@ -234,12 +234,12 @@ func TestProjectArchiveDecisionPathKeyedWithLegacyFallback(t *testing.T) {
 
 - [ ] **Step 2: Run test to verify it fails**
 
-Run: `go test ./cmd/serf-hub/internal/hubcore/ -run TestProjectArchiveDecisionPathKeyedWithLegacyFallback -v`
+Run: `go test ./cmd/evener-hub/internal/hubcore/ -run TestProjectArchiveDecisionPathKeyedWithLegacyFallback -v`
 Expected: FAIL — the current `decisions[ArchiveKey{Kind:"project", ID: pname}]` only reads the basename and cannot express path precedence.
 
 - [ ] **Step 3: Add the resolver and use it**
 
-In `cmd/serf-hub/internal/hubcore/tree.go`, add:
+In `cmd/evener-hub/internal/hubcore/tree.go`, add:
 
 ```go
 // projectArchivedDecision resolves a project's manual archive decision. A
@@ -266,13 +266,13 @@ Replace the `isArchived` computation:
 
 - [ ] **Step 4: Run tests to verify they pass**
 
-Run: `go test ./cmd/serf-hub/internal/hubcore/ -run 'TestProjectArchiveDecision|TestArchiveDecisionsFlowIntoTree' -v`
+Run: `go test ./cmd/evener-hub/internal/hubcore/ -run 'TestProjectArchiveDecision|TestArchiveDecisionsFlowIntoTree' -v`
 Expected: PASS. (`TestArchiveDecisionsFlowIntoTree` uses a basename row `"alpha"` for path `/projects/alpha`; the fallback keeps it green.)
 
 - [ ] **Step 5: Commit**
 
 ```bash
-git add cmd/serf-hub/internal/hubcore/tree.go cmd/serf-hub/internal/hubcore/tree_test.go
+git add cmd/evener-hub/internal/hubcore/tree.go cmd/evener-hub/internal/hubcore/tree_test.go
 git commit -m "feat(hub): path-key project archive decisions with legacy fallback + precedence"
 ```
 
@@ -283,13 +283,13 @@ git commit -m "feat(hub): path-key project archive decisions with legacy fallbac
 `handleAPITree`'s orphan-live path (web_api_tree.go:70-106) groups leftover live sessions by `filepath.Base(le.WorkingDir)` with the old `projectKey(name)` slug and no worktree substitution (round-2 A10). Rewrite it onto `EffectiveWorkingDir`-equivalent rules and `projectSlug`, with a `no-project` key for pathless entries. Live entries synthesized from `appwire.Thread` carry `WorktreePath == ""`, so `EffectiveWorkingDir` reduces to `le.WorkingDir` here — group directly on `le.WorkingDir`.
 
 **Files:**
-- Modify: `cmd/serf-hub/web_api_tree.go`
-- Modify: `cmd/serf-hub/internal/hubcore/tree.go` (export `ProjectSlug`)
-- Test: `cmd/serf-hub/web_api_tree_test.go` (append)
+- Modify: `cmd/evener-hub/web_api_tree.go`
+- Modify: `cmd/evener-hub/internal/hubcore/tree.go` (export `ProjectSlug`)
+- Test: `cmd/evener-hub/web_api_tree_test.go` (append)
 
 - [ ] **Step 1: Export the slug helper for package `main`**
 
-In `cmd/serf-hub/internal/hubcore/tree.go`, add an exported wrapper (package `main` cannot call the unexported `projectSlug`):
+In `cmd/evener-hub/internal/hubcore/tree.go`, add an exported wrapper (package `main` cannot call the unexported `projectSlug`):
 
 ```go
 // ProjectSlug is the exported path-derived project key used by the hub's
@@ -318,11 +318,11 @@ func TestOrphanLiveGroupingUsesPathSlug(t *testing.T) {
 }
 ```
 
-Add imports `encoding/json`, `net/http`, `net/http/httptest`, `primeradiant.com/serf/hubapi`, `primeradiant.com/serf/rendezvous` to the test file if absent.
+Add imports `encoding/json`, `net/http`, `net/http/httptest`, `primeradiant.com/evener/hubapi`, `primeradiant.com/evener/rendezvous` to the test file if absent.
 
 - [ ] **Step 3: Run test to verify it fails**
 
-Run: `go test ./cmd/serf-hub/ -run TestOrphanLiveGroupingUsesPathSlug -v`
+Run: `go test ./cmd/evener-hub/ -run TestOrphanLiveGroupingUsesPathSlug -v`
 Expected: FAIL — key is `projectKey("foo")` == `"foo"`, not the slug.
 
 - [ ] **Step 4: Rewrite the orphan-live grouping**
@@ -368,13 +368,13 @@ Also change the main project loop's `key := projectKey(p.Name)` to `key := p.Key
 
 - [ ] **Step 5: Run tests to verify they pass**
 
-Run: `go test ./cmd/serf-hub/ -run 'TestOrphanLive|TestAPITree' -v`
+Run: `go test ./cmd/evener-hub/ -run 'TestOrphanLive|TestAPITree' -v`
 Expected: PASS.
 
 - [ ] **Step 6: Commit**
 
 ```bash
-git add cmd/serf-hub/internal/hubcore/tree.go cmd/serf-hub/web_api_tree.go cmd/serf-hub/web_api_tree_test.go
+git add cmd/evener-hub/internal/hubcore/tree.go cmd/evener-hub/web_api_tree.go cmd/evener-hub/web_api_tree_test.go
 git commit -m "feat(hub): rewrite orphan-live grouping onto the path slug + no-project key"
 ```
 
@@ -386,13 +386,13 @@ Grow `hubapi.TreeResponse`/`TreeProject`/`TreeNode` with the additive fields the
 
 **Files:**
 - Modify: `hubapi/types.go`
-- Modify: `cmd/serf-hub/web_api_tree.go`
-- Modify: `cmd/serf-hub/internal/hubcore/tree.go` (expose `Tree.NeedsYou` already exists; add `Tier` to nodes at projection time)
-- Test: `hubapi/types_test.go` (append) + `cmd/serf-hub/web_api_tree_test.go` (append)
+- Modify: `cmd/evener-hub/web_api_tree.go`
+- Modify: `cmd/evener-hub/internal/hubcore/tree.go` (expose `Tree.NeedsYou` already exists; add `Tier` to nodes at projection time)
+- Test: `hubapi/types_test.go` (append) + `cmd/evener-hub/web_api_tree_test.go` (append)
 
 - [ ] **Step 1: Write the failing test**
 
-Append to `cmd/serf-hub/web_api_tree_test.go`:
+Append to `cmd/evener-hub/web_api_tree_test.go`:
 
 ```go
 func TestTreeResponseProjectsCarryAdditiveFields(t *testing.T) {
@@ -428,7 +428,7 @@ func TestTreeResponseProjectsCarryAdditiveFields(t *testing.T) {
 
 - [ ] **Step 2: Run test to verify it fails**
 
-Run: `go test ./cmd/serf-hub/ -run TestTreeResponseProjectsCarryAdditiveFields -v`
+Run: `go test ./cmd/evener-hub/ -run TestTreeResponseProjectsCarryAdditiveFields -v`
 Expected: FAIL — `TreeResponse.TestRuns`, `TreeProject.RollupLive`, `TreeNode.Tier` undefined.
 
 - [ ] **Step 3: Add the wire fields**
@@ -445,7 +445,7 @@ type TreeResponse struct {
 	Projects         []TreeProject    `json:"projects"`
 	ArchivedProjects []TreeProject    `json:"archived_projects"`
 	TestRuns         []TreeProject    `json:"test_runs"`
-	AttentionSummary AttentionSummary `json:"attentionSummary"` // serf:naming-ignore
+	AttentionSummary AttentionSummary `json:"attentionSummary"` // evener:naming-ignore
 }
 ```
 
@@ -478,7 +478,7 @@ Add to `TreeNode` (after `Kind`):
 
 - [ ] **Step 4: Add the test helper + project the tiers**
 
-Add to a hub test helper file (`cmd/serf-hub/web_test.go` has `NewWebServer` usages; add near them) — a small seam that seeds a nil-DB past index:
+Add to a hub test helper file (`cmd/evener-hub/web_test.go` has `NewWebServer` usages; add near them) — a small seam that seeds a nil-DB past index:
 
 ```go
 // injectMetasForTest replaces the past index with one holding the given metas.
@@ -582,13 +582,13 @@ Replace the project loop and add the NeedsYou/Archived projections at the end of
 
 - [ ] **Step 5: Run tests to verify they pass**
 
-Run: `go test ./cmd/serf-hub/... ./hubapi/... -run 'TestTreeResponse|TestAPITree|TestOrphanLive' -v`
+Run: `go test ./cmd/evener-hub/... ./hubapi/... -run 'TestTreeResponse|TestAPITree|TestOrphanLive' -v`
 Expected: PASS.
 
 - [ ] **Step 6: Commit**
 
 ```bash
-git add hubapi/types.go cmd/serf-hub/web_api_tree.go cmd/serf-hub/internal/hubcore/past.go cmd/serf-hub/web_test.go
+git add hubapi/types.go cmd/evener-hub/web_api_tree.go cmd/evener-hub/internal/hubcore/past.go cmd/evener-hub/web_test.go
 git commit -m "feat(hub): additive /api/tree fields + tier projections (NeedsYou/Archived/TestRuns)"
 ```
 
@@ -599,8 +599,8 @@ git commit -m "feat(hub): additive /api/tree fields + tier projections (NeedsYou
 Cluster nodes ship with an empty `ID` (tree.go:768-777); under RowID keying every pair of clusters in a project collapses to `project:<key>:` (round-2 A7/B4; `hubapi.ParseRef("")` → `""`). Give each cluster a stable synthetic ID `cluster:<8hex sha256(title)>`, scoped by project.
 
 **Files:**
-- Modify: `cmd/serf-hub/internal/hubcore/tree.go`
-- Test: `cmd/serf-hub/internal/hubcore/tree_test.go` (append)
+- Modify: `cmd/evener-hub/internal/hubcore/tree.go`
+- Test: `cmd/evener-hub/internal/hubcore/tree_test.go` (append)
 
 - [ ] **Step 1: Write the failing test**
 
@@ -640,7 +640,7 @@ func TestTwoClustersInOneProjectGetDistinctIDs(t *testing.T) {
 
 - [ ] **Step 2: Run test to verify it fails**
 
-Run: `go test ./cmd/serf-hub/internal/hubcore/ -run TestTwoClustersInOneProjectGetDistinctIDs -v`
+Run: `go test ./cmd/evener-hub/internal/hubcore/ -run TestTwoClustersInOneProjectGetDistinctIDs -v`
 Expected: FAIL — both cluster IDs are `""`.
 
 - [ ] **Step 3: Assign the synthetic ID**
@@ -676,13 +676,13 @@ func clusterID(project, title string) string {
 
 - [ ] **Step 4: Run tests to verify they pass**
 
-Run: `go test ./cmd/serf-hub/internal/hubcore/ -run 'TestTwoClusters|TestBuildTree|TestCluster' -v`
+Run: `go test ./cmd/evener-hub/internal/hubcore/ -run 'TestTwoClusters|TestBuildTree|TestCluster' -v`
 Expected: PASS.
 
 - [ ] **Step 5: Commit**
 
 ```bash
-git add cmd/serf-hub/internal/hubcore/tree.go cmd/serf-hub/internal/hubcore/tree_test.go
+git add cmd/evener-hub/internal/hubcore/tree.go cmd/evener-hub/internal/hubcore/tree_test.go
 git commit -m "feat(hub): stable synthetic IDs for repeated-title clusters"
 ```
 
@@ -693,8 +693,8 @@ git commit -m "feat(hub): stable synthetic IDs for repeated-title clusters"
 Top-level rows are capped at `maxSidebarSessionsPerTier` (50) via `capTier`, but subagent children are appended uncapped (tree.go:427-454). Cap the subagent list the same way so a parent with hundreds of workers can't bloat a node.
 
 **Files:**
-- Modify: `cmd/serf-hub/internal/hubcore/tree.go`
-- Test: `cmd/serf-hub/internal/hubcore/tree_test.go` (append)
+- Modify: `cmd/evener-hub/internal/hubcore/tree.go`
+- Test: `cmd/evener-hub/internal/hubcore/tree_test.go` (append)
 
 - [ ] **Step 1: Write the failing test**
 
@@ -728,7 +728,7 @@ Add `"fmt"` to the test imports if absent.
 
 - [ ] **Step 2: Run test to verify it fails**
 
-Run: `go test ./cmd/serf-hub/internal/hubcore/ -run TestSubagentChildrenCappedPerTier -v`
+Run: `go test ./cmd/evener-hub/internal/hubcore/ -run TestSubagentChildrenCappedPerTier -v`
 Expected: FAIL — 60 children emitted.
 
 - [ ] **Step 3: Cap the subagent slice**
@@ -751,13 +751,13 @@ Simpler — cap the meta slice directly (it is `[]schema.SessionMeta`, already r
 
 - [ ] **Step 4: Run tests to verify they pass**
 
-Run: `go test ./cmd/serf-hub/internal/hubcore/ -run 'TestSubagentChildrenCapped|TestBuildTree' -v`
+Run: `go test ./cmd/evener-hub/internal/hubcore/ -run 'TestSubagentChildrenCapped|TestBuildTree' -v`
 Expected: PASS.
 
 - [ ] **Step 5: Commit**
 
 ```bash
-git add cmd/serf-hub/internal/hubcore/tree.go cmd/serf-hub/internal/hubcore/tree_test.go
+git add cmd/evener-hub/internal/hubcore/tree.go cmd/evener-hub/internal/hubcore/tree_test.go
 git commit -m "feat(hub): cap subagent children per tier like top-level rows"
 ```
 
@@ -765,16 +765,16 @@ git commit -m "feat(hub): cap subagent children per tier like top-level rows"
 
 ## Task 7: FavoriteStore + `Delete` on both decision stores
 
-Add a `favorite` table (clone of `ArchiveStore`'s shape) and a `Delete(kind, id)` on both stores. Both live in the same `~/.serf/index.db`.
+Add a `favorite` table (clone of `ArchiveStore`'s shape) and a `Delete(kind, id)` on both stores. Both live in the same `~/.evener/index.db`.
 
 **Files:**
-- Create: `cmd/serf-hub/internal/hubcore/favorite.go`
-- Modify: `cmd/serf-hub/internal/hubcore/archive.go` (add `Delete`)
-- Test: `cmd/serf-hub/internal/hubcore/favorite_test.go` (create), `archive_test.go` (append)
+- Create: `cmd/evener-hub/internal/hubcore/favorite.go`
+- Modify: `cmd/evener-hub/internal/hubcore/archive.go` (add `Delete`)
+- Test: `cmd/evener-hub/internal/hubcore/favorite_test.go` (create), `archive_test.go` (append)
 
 - [ ] **Step 1: Write the failing test**
 
-Create `cmd/serf-hub/internal/hubcore/favorite_test.go`:
+Create `cmd/evener-hub/internal/hubcore/favorite_test.go`:
 
 ```go
 package hubcore
@@ -825,12 +825,12 @@ func TestArchiveStoreDelete(t *testing.T) {
 
 - [ ] **Step 2: Run test to verify it fails**
 
-Run: `go test ./cmd/serf-hub/internal/hubcore/ -run 'TestFavoriteStore|TestArchiveStoreDelete' -v`
+Run: `go test ./cmd/evener-hub/internal/hubcore/ -run 'TestFavoriteStore|TestArchiveStoreDelete' -v`
 Expected: FAIL — `NewFavoriteStore` and `Delete` undefined.
 
 - [ ] **Step 3: Add `Delete` to `ArchiveStore`**
 
-In `cmd/serf-hub/internal/hubcore/archive.go`, add:
+In `cmd/evener-hub/internal/hubcore/archive.go`, add:
 
 ```go
 // Delete removes a decision row. A no-op when the DB path is empty or the row
@@ -851,7 +851,7 @@ func (s *ArchiveStore) Delete(kind, id string) error {
 
 - [ ] **Step 4: Create `FavoriteStore`**
 
-Create `cmd/serf-hub/internal/hubcore/favorite.go` mirroring `archive.go` (same `open`/`Set`/`Delete` shape, `favorite` table, `Favorites()` reader):
+Create `cmd/evener-hub/internal/hubcore/favorite.go` mirroring `archive.go` (same `open`/`Set`/`Delete` shape, `favorite` table, `Favorites()` reader):
 
 ```go
 package hubcore
@@ -971,13 +971,13 @@ func (s *FavoriteStore) Favorites() (map[ArchiveKey]bool, error) {
 
 - [ ] **Step 5: Run tests to verify they pass**
 
-Run: `go test ./cmd/serf-hub/internal/hubcore/ -run 'TestFavoriteStore|TestArchiveStoreDelete' -v`
+Run: `go test ./cmd/evener-hub/internal/hubcore/ -run 'TestFavoriteStore|TestArchiveStoreDelete' -v`
 Expected: PASS.
 
 - [ ] **Step 6: Commit**
 
 ```bash
-git add cmd/serf-hub/internal/hubcore/favorite.go cmd/serf-hub/internal/hubcore/favorite_test.go cmd/serf-hub/internal/hubcore/archive.go
+git add cmd/evener-hub/internal/hubcore/favorite.go cmd/evener-hub/internal/hubcore/favorite_test.go cmd/evener-hub/internal/hubcore/archive.go
 git commit -m "feat(hub): favorite decision store + Delete on both decision stores"
 ```
 
@@ -988,13 +988,13 @@ git commit -m "feat(hub): favorite decision store + Delete on both decision stor
 Add `POST /api/favorite` (mirror of `/api/archive`), wire `FavoriteStore` into `WebConfig`/`WebServer`, build the Pinned tier (unarchived favorited sessions, most-recent first, excluding Needs-you) into `TreeResponse.Favorites`, and add the un-archive legacy-basename lifecycle to `/api/archive`.
 
 **Files:**
-- Create: `cmd/serf-hub/web_api_favorite.go`
-- Modify: `cmd/serf-hub/internal/hubcore/config.go` (`WebConfig.Favorite`), `cmd/serf-hub/web.go` (route + `isFavorite`), `cmd/serf-hub/web_api_tree.go` (Pinned tier + real `isFavorite`), `cmd/serf-hub/web_api_archive.go` (legacy lifecycle), `cmd/serf-hub/main.go` (construct store)
-- Test: `cmd/serf-hub/web_api_favorite_test.go` (create), `web_api_archive_test.go` (append)
+- Create: `cmd/evener-hub/web_api_favorite.go`
+- Modify: `cmd/evener-hub/internal/hubcore/config.go` (`WebConfig.Favorite`), `cmd/evener-hub/web.go` (route + `isFavorite`), `cmd/evener-hub/web_api_tree.go` (Pinned tier + real `isFavorite`), `cmd/evener-hub/web_api_archive.go` (legacy lifecycle), `cmd/evener-hub/main.go` (construct store)
+- Test: `cmd/evener-hub/web_api_favorite_test.go` (create), `web_api_archive_test.go` (append)
 
 - [ ] **Step 1: Write the failing test**
 
-Create `cmd/serf-hub/web_api_favorite_test.go`:
+Create `cmd/evener-hub/web_api_favorite_test.go`:
 
 ```go
 package main
@@ -1006,7 +1006,7 @@ import (
 	"strings"
 	"testing"
 
-	"primeradiant.com/serf/cmd/serf-hub/internal/hubcore"
+	"primeradiant.com/evener/cmd/evener-hub/internal/hubcore"
 )
 
 func TestFavoriteEndpointSetsDecision(t *testing.T) {
@@ -1052,7 +1052,7 @@ Add a `timeNowForTest` helper if none exists, or reuse `time.Unix(1_700_000_000,
 
 - [ ] **Step 2: Run test to verify it fails**
 
-Run: `go test ./cmd/serf-hub/ -run 'TestFavoriteEndpoint|TestUnarchiveProjectDropsLegacy' -v`
+Run: `go test ./cmd/evener-hub/ -run 'TestFavoriteEndpoint|TestUnarchiveProjectDropsLegacy' -v`
 Expected: FAIL — no `/api/favorite` route; `WebConfig.Favorite` undefined.
 
 - [ ] **Step 3: Add `Favorite` to `WebConfig` and construct it**
@@ -1063,7 +1063,7 @@ In `internal/hubcore/config.go`, add to `WebConfig` (after `Archive *ArchiveStor
 	Favorite *FavoriteStore // favorite decision store; nil when not configured
 ```
 
-In `cmd/serf-hub/main.go`, after `archive := hubcore.NewArchiveStore(pastIndexDB)`:
+In `cmd/evener-hub/main.go`, after `archive := hubcore.NewArchiveStore(pastIndexDB)`:
 
 ```go
 	favorite := hubcore.NewFavoriteStore(pastIndexDB)
@@ -1073,7 +1073,7 @@ and add `Favorite: favorite,` to the `NewWebServer(hubcore.WebConfig{...})` lite
 
 - [ ] **Step 4: Add the endpoint + route + Pinned tier + legacy lifecycle**
 
-Create `cmd/serf-hub/web_api_favorite.go`:
+Create `cmd/evener-hub/web_api_favorite.go`:
 
 ```go
 package main
@@ -1123,7 +1123,7 @@ func (s *WebServer) handleAPIFavorite(w http.ResponseWriter, r *http.Request) {
 }
 ```
 
-In `cmd/serf-hub/web.go` `Handler()`, add after the `/api/archive` route:
+In `cmd/evener-hub/web.go` `Handler()`, add after the `/api/archive` route:
 
 ```go
 	mux.HandleFunc("/api/favorite", s.handleAPIFavorite)
@@ -1189,13 +1189,13 @@ Add `"path/filepath"` to `web_api_archive.go` imports and `"sort"` to `web_api_t
 
 - [ ] **Step 5: Run tests to verify they pass**
 
-Run: `go test ./cmd/serf-hub/ -run 'TestFavorite|TestUnarchive|TestArchive|TestAPITree' -v`
+Run: `go test ./cmd/evener-hub/ -run 'TestFavorite|TestUnarchive|TestArchive|TestAPITree' -v`
 Expected: PASS.
 
 - [ ] **Step 6: Commit**
 
 ```bash
-git add cmd/serf-hub/web_api_favorite.go cmd/serf-hub/web_api_favorite_test.go cmd/serf-hub/web.go cmd/serf-hub/web_api_tree.go cmd/serf-hub/web_api_archive.go cmd/serf-hub/internal/hubcore/config.go cmd/serf-hub/main.go
+git add cmd/evener-hub/web_api_favorite.go cmd/evener-hub/web_api_favorite_test.go cmd/evener-hub/web.go cmd/evener-hub/web_api_tree.go cmd/evener-hub/web_api_archive.go cmd/evener-hub/internal/hubcore/config.go cmd/evener-hub/main.go
 git commit -m "feat(hub): /api/favorite endpoint, Pinned tier, un-archive legacy-row lifecycle"
 ```
 
@@ -1206,13 +1206,13 @@ git commit -m "feat(hub): /api/favorite endpoint, Pinned tier, un-archive legacy
 Add a hub-level memo that computes `BuildTree` plus the attention *summary* once per `(inputs-version, 30s time bucket)`. The attention *map* is NOT cached — the watcher keeps deriving fresh (round-3 H2). `handleAPITree` reads the memo.
 
 **Files:**
-- Create: `cmd/serf-hub/internal/hubcore/treecache.go`
-- Modify: `cmd/serf-hub/internal/hubcore/config.go` (`WebConfig.Inputs`), `cmd/serf-hub/web.go` (construct cache), `cmd/serf-hub/web_api_tree.go` (use memo)
-- Test: `cmd/serf-hub/internal/hubcore/treecache_test.go` (create)
+- Create: `cmd/evener-hub/internal/hubcore/treecache.go`
+- Modify: `cmd/evener-hub/internal/hubcore/config.go` (`WebConfig.Inputs`), `cmd/evener-hub/web.go` (construct cache), `cmd/evener-hub/web_api_tree.go` (use memo)
+- Test: `cmd/evener-hub/internal/hubcore/treecache_test.go` (create)
 
 - [ ] **Step 1: Write the failing test**
 
-Create `cmd/serf-hub/internal/hubcore/treecache_test.go`:
+Create `cmd/evener-hub/internal/hubcore/treecache_test.go`:
 
 ```go
 package hubcore
@@ -1258,12 +1258,12 @@ func TestInputsVersionBump(t *testing.T) {
 
 - [ ] **Step 2: Run test to verify it fails**
 
-Run: `go test ./cmd/serf-hub/internal/hubcore/ -run 'TestTreeCache|TestInputsVersion' -v`
+Run: `go test ./cmd/evener-hub/internal/hubcore/ -run 'TestTreeCache|TestInputsVersion' -v`
 Expected: FAIL — types undefined.
 
 - [ ] **Step 3: Implement the cache and version**
 
-Create `cmd/serf-hub/internal/hubcore/treecache.go`:
+Create `cmd/evener-hub/internal/hubcore/treecache.go`:
 
 ```go
 package hubcore
@@ -1322,7 +1322,7 @@ In `internal/hubcore/config.go` `WebConfig`, add:
 	Inputs *InputsVersion // shared inputs-version counter; nil in tests (memo treats as version 0)
 ```
 
-In `cmd/serf-hub/web.go` `WebServer` struct, add a field `treeCache *hubcore.TreeCache`, and in `NewWebServer` set `web.treeCache = &hubcore.TreeCache{}`.
+In `cmd/evener-hub/web.go` `WebServer` struct, add a field `treeCache *hubcore.TreeCache`, and in `NewWebServer` set `web.treeCache = &hubcore.TreeCache{}`.
 
 In `handleAPITree`, replace the direct `tree := hubcore.BuildTree(...)` + `_, attentionSummary := hubcore.DeriveAttention(...)` with a memoized compute:
 
@@ -1340,7 +1340,7 @@ In `handleAPITree`, replace the direct `tree := hubcore.BuildTree(...)` + `_, at
 	})
 ```
 
-In `cmd/serf-hub/main.go`, create the shared counter and pass it:
+In `cmd/evener-hub/main.go`, create the shared counter and pass it:
 
 ```go
 	inputs := &hubcore.InputsVersion{}
@@ -1360,13 +1360,13 @@ add `Inputs: inputs,` to the `WebConfig` literal, and change `pokeAttention` to 
 
 - [ ] **Step 5: Run tests to verify they pass**
 
-Run: `go test ./cmd/serf-hub/... ./cmd/serf-hub/internal/hubcore/ -run 'TestTreeCache|TestInputsVersion|TestAPITree' -v`
+Run: `go test ./cmd/evener-hub/... ./cmd/evener-hub/internal/hubcore/ -run 'TestTreeCache|TestInputsVersion|TestAPITree' -v`
 Expected: PASS.
 
 - [ ] **Step 6: Commit**
 
 ```bash
-git add cmd/serf-hub/internal/hubcore/treecache.go cmd/serf-hub/internal/hubcore/treecache_test.go cmd/serf-hub/internal/hubcore/config.go cmd/serf-hub/web.go cmd/serf-hub/web_api_tree.go cmd/serf-hub/main.go
+git add cmd/evener-hub/internal/hubcore/treecache.go cmd/evener-hub/internal/hubcore/treecache_test.go cmd/evener-hub/internal/hubcore/config.go cmd/evener-hub/web.go cmd/evener-hub/web_api_tree.go cmd/evener-hub/main.go
 git commit -m "feat(hub): memoize the tree by inputs-version + 30s time bucket"
 ```
 
@@ -1377,13 +1377,13 @@ git commit -m "feat(hub): memoize the tree by inputs-version + 30s time bucket"
 Bump the inputs version on real input changes only: a `PastIndex` rebuild that observes an actual content delta (a `Find`-miss that rebuilds without new content must NOT bump — round-3 G5), a roster membership/state delta, and archive/favorite writes. Poke already bumps (Task 9).
 
 **Files:**
-- Modify: `cmd/serf-hub/internal/hubcore/past.go`, `roster.go`, `archive.go`, `favorite.go` (add `SetOnChange`)
-- Modify: `cmd/serf-hub/main.go` (wire the hooks)
-- Test: `cmd/serf-hub/internal/hubcore/past_test.go`, `roster_test.go` (append)
+- Modify: `cmd/evener-hub/internal/hubcore/past.go`, `roster.go`, `archive.go`, `favorite.go` (add `SetOnChange`)
+- Modify: `cmd/evener-hub/main.go` (wire the hooks)
+- Test: `cmd/evener-hub/internal/hubcore/past_test.go`, `roster_test.go` (append)
 
 - [ ] **Step 1: Write the failing test**
 
-Append to `cmd/serf-hub/internal/hubcore/past_test.go`:
+Append to `cmd/evener-hub/internal/hubcore/past_test.go`:
 
 ```go
 func TestPastIndexOnChangeFiresOnContentDeltaOnly(t *testing.T) {
@@ -1417,7 +1417,7 @@ func TestPastIndexOnChangeFiresOnContentDeltaOnly(t *testing.T) {
 
 - [ ] **Step 2: Run test to verify it fails**
 
-Run: `go test ./cmd/serf-hub/internal/hubcore/ -run TestPastIndexOnChangeFiresOnContentDeltaOnly -v`
+Run: `go test ./cmd/evener-hub/internal/hubcore/ -run TestPastIndexOnChangeFiresOnContentDeltaOnly -v`
 Expected: FAIL — `SetOnChange` undefined.
 
 - [ ] **Step 3: Add content-delta gating to `PastIndex`**
@@ -1524,13 +1524,13 @@ After constructing `past`, `roster`, `archive`, `favorite`, `inputs`:
 
 - [ ] **Step 6: Run tests to verify they pass**
 
-Run: `go test ./cmd/serf-hub/internal/hubcore/ -run 'TestPastIndexOnChange|TestRoster|TestArchive|TestFavorite' -v && go build ./cmd/serf-hub/...`
+Run: `go test ./cmd/evener-hub/internal/hubcore/ -run 'TestPastIndexOnChange|TestRoster|TestArchive|TestFavorite' -v && go build ./cmd/evener-hub/...`
 Expected: PASS + build OK.
 
 - [ ] **Step 7: Commit**
 
 ```bash
-git add cmd/serf-hub/internal/hubcore/past.go cmd/serf-hub/internal/hubcore/roster.go cmd/serf-hub/internal/hubcore/archive.go cmd/serf-hub/internal/hubcore/favorite.go cmd/serf-hub/internal/hubcore/past_test.go cmd/serf-hub/main.go
+git add cmd/evener-hub/internal/hubcore/past.go cmd/evener-hub/internal/hubcore/roster.go cmd/evener-hub/internal/hubcore/archive.go cmd/evener-hub/internal/hubcore/favorite.go cmd/evener-hub/internal/hubcore/past_test.go cmd/evener-hub/main.go
 git commit -m "feat(hub): content-delta-gated inputs-version hooks on index/roster/stores"
 ```
 
@@ -1541,8 +1541,8 @@ git commit -m "feat(hub): content-delta-gated inputs-version hooks on index/rost
 Replace the dying `/_partials/sidebar/project` with `GET /api/tree/project?key=<slug>`, served by indexing the memoized full tree (never a fresh full-meta scan — round-2 A4). The client resync re-requests only projects it has expanded.
 
 **Files:**
-- Modify: `cmd/serf-hub/web.go` (route), `cmd/serf-hub/web_api_tree.go` (handler)
-- Test: `cmd/serf-hub/web_api_tree_test.go` (append)
+- Modify: `cmd/evener-hub/web.go` (route), `cmd/evener-hub/web_api_tree.go` (handler)
+- Test: `cmd/evener-hub/web_api_tree_test.go` (append)
 
 - [ ] **Step 1: Write the failing test**
 
@@ -1573,7 +1573,7 @@ func TestAPITreeProjectServedFromTree(t *testing.T) {
 
 - [ ] **Step 2: Run test to verify it fails**
 
-Run: `go test ./cmd/serf-hub/ -run TestAPITreeProjectServedFromTree -v`
+Run: `go test ./cmd/evener-hub/ -run TestAPITreeProjectServedFromTree -v`
 Expected: FAIL — 404 (no route).
 
 - [ ] **Step 3: Add the handler + route**
@@ -1625,13 +1625,13 @@ Refactor `handleAPITree` to call `s.memoTree(r.Context())` instead of the inline
 
 - [ ] **Step 4: Run tests to verify they pass**
 
-Run: `go test ./cmd/serf-hub/ -run 'TestAPITreeProject|TestAPITree' -v`
+Run: `go test ./cmd/evener-hub/ -run 'TestAPITreeProject|TestAPITree' -v`
 Expected: PASS.
 
 - [ ] **Step 5: Commit**
 
 ```bash
-git add cmd/serf-hub/web.go cmd/serf-hub/web_api_tree.go cmd/serf-hub/web_api_tree_test.go
+git add cmd/evener-hub/web.go cmd/evener-hub/web_api_tree.go cmd/evener-hub/web_api_tree_test.go
 git commit -m "feat(hub): serve /api/tree/project by indexing the memoized tree"
 ```
 
@@ -1642,8 +1642,8 @@ git commit -m "feat(hub): serve /api/tree/project by indexing the memoized tree"
 Add a targeted meta upsert for rename: re-insert the entry at its new sorted position (the title is a sort-key component — session_order.go:30-33) and rewrite the FTS rows so search order stays correct (round-3 H3), without a synchronous disk `Rebuild()`. Fires the content-delta hook.
 
 **Files:**
-- Modify: `cmd/serf-hub/internal/hubcore/past.go`
-- Test: `cmd/serf-hub/internal/hubcore/past_test.go` (append)
+- Modify: `cmd/evener-hub/internal/hubcore/past.go`
+- Test: `cmd/evener-hub/internal/hubcore/past_test.go` (append)
 
 - [ ] **Step 1: Write the failing test**
 
@@ -1684,7 +1684,7 @@ func TestUpdateMetaReordersAndPreservesStateDir(t *testing.T) {
 
 - [ ] **Step 2: Run test to verify it fails**
 
-Run: `go test ./cmd/serf-hub/internal/hubcore/ -run TestUpdateMetaReordersAndPreservesStateDir -v`
+Run: `go test ./cmd/evener-hub/internal/hubcore/ -run TestUpdateMetaReordersAndPreservesStateDir -v`
 Expected: FAIL — `UpdateMeta` undefined.
 
 - [ ] **Step 3: Implement `UpdateMeta`**
@@ -1742,13 +1742,13 @@ func (i *PastIndex) UpdateMeta(id string, meta schema.SessionMeta) {
 
 - [ ] **Step 4: Run tests to verify they pass**
 
-Run: `go test ./cmd/serf-hub/internal/hubcore/ -run 'TestUpdateMeta|TestPastIndex' -v`
+Run: `go test ./cmd/evener-hub/internal/hubcore/ -run 'TestUpdateMeta|TestPastIndex' -v`
 Expected: PASS.
 
 - [ ] **Step 5: Commit**
 
 ```bash
-git add cmd/serf-hub/internal/hubcore/past.go cmd/serf-hub/internal/hubcore/past_test.go
+git add cmd/evener-hub/internal/hubcore/past.go cmd/evener-hub/internal/hubcore/past_test.go
 git commit -m "feat(hub): PastIndex.UpdateMeta targeted upsert with FTS re-rank"
 ```
 
@@ -1759,13 +1759,13 @@ git commit -m "feat(hub): PastIndex.UpdateMeta targeted upsert with FTS re-rank"
 The Codex remote source costs a synchronous network hop per render (`remoteTreeThreads`, web_api_tree.go:132-155). Move it behind an async cache refreshed on a ~30s ticker and on poke; `remoteTreeThreads` reads the cache.
 
 **Files:**
-- Create: `cmd/serf-hub/internal/hubcore/remotecache.go`
-- Modify: `cmd/serf-hub/web_api_tree.go` (read cache), `cmd/serf-hub/main.go` (start refresher)
-- Test: `cmd/serf-hub/internal/hubcore/remotecache_test.go` (create)
+- Create: `cmd/evener-hub/internal/hubcore/remotecache.go`
+- Modify: `cmd/evener-hub/web_api_tree.go` (read cache), `cmd/evener-hub/main.go` (start refresher)
+- Test: `cmd/evener-hub/internal/hubcore/remotecache_test.go` (create)
 
 - [ ] **Step 1: Write the failing test**
 
-Create `cmd/serf-hub/internal/hubcore/remotecache_test.go`:
+Create `cmd/evener-hub/internal/hubcore/remotecache_test.go`:
 
 ```go
 package hubcore
@@ -1773,7 +1773,7 @@ package hubcore
 import (
 	"testing"
 
-	"primeradiant.com/serf/appwire"
+	"primeradiant.com/evener/appwire"
 )
 
 func TestRemoteThreadCacheReadReturnsLastStored(t *testing.T) {
@@ -1797,12 +1797,12 @@ func TestRemoteThreadCacheReadReturnsLastStored(t *testing.T) {
 
 - [ ] **Step 2: Run test to verify it fails**
 
-Run: `go test ./cmd/serf-hub/internal/hubcore/ -run TestRemoteThreadCacheReadReturnsLastStored -v`
+Run: `go test ./cmd/evener-hub/internal/hubcore/ -run TestRemoteThreadCacheReadReturnsLastStored -v`
 Expected: FAIL — type undefined.
 
 - [ ] **Step 3: Implement the cache**
 
-Create `cmd/serf-hub/internal/hubcore/remotecache.go`:
+Create `cmd/evener-hub/internal/hubcore/remotecache.go`:
 
 ```go
 package hubcore
@@ -1810,7 +1810,7 @@ package hubcore
 import (
 	"sync"
 
-	"primeradiant.com/serf/appwire"
+	"primeradiant.com/evener/appwire"
 )
 
 // RemoteThreadCache holds the most recent remote-source thread list so a tree
@@ -1870,13 +1870,13 @@ When `RemoteThreadCache` is nil (tests), `remoteTreeThreads` falls back to the o
 
 - [ ] **Step 5: Run tests to verify they pass**
 
-Run: `go test ./cmd/serf-hub/... ./cmd/serf-hub/internal/hubcore/ -run 'TestRemoteThreadCache|TestAPITree' -v && go build ./cmd/serf-hub/...`
+Run: `go test ./cmd/evener-hub/... ./cmd/evener-hub/internal/hubcore/ -run 'TestRemoteThreadCache|TestAPITree' -v && go build ./cmd/evener-hub/...`
 Expected: PASS + build OK.
 
 - [ ] **Step 6: Commit**
 
 ```bash
-git add cmd/serf-hub/internal/hubcore/remotecache.go cmd/serf-hub/internal/hubcore/remotecache_test.go cmd/serf-hub/internal/hubcore/config.go cmd/serf-hub/web_api_tree.go cmd/serf-hub/main.go
+git add cmd/evener-hub/internal/hubcore/remotecache.go cmd/evener-hub/internal/hubcore/remotecache_test.go cmd/evener-hub/internal/hubcore/config.go cmd/evener-hub/web_api_tree.go cmd/evener-hub/main.go
 git commit -m "feat(hub): async remote-source thread cache (~30s + poke)"
 ```
 
@@ -1887,13 +1887,13 @@ git commit -m "feat(hub): async remote-source thread cache (~30s + poke)"
 `POST /api/project/delete {key, workingDir}` removes a project's session files and scrubs its decision rows. Resolution is from `PastIndex.All()` (carries `StateDir`; `AllMetas()` cannot — round-2 A1) filtered to the project's `EffectiveWorkingDir`. The body carries the exact working dir and the server validates it against the key's current tree entry (round-2 A11 — never invert a lossy slug on a destructive path). Per session: a probe-resolved `Roster.Find` re-check (round-2 A9), then remove `sessions/<id>.{meta.json,transcript.jsonl,log.jsonl}` and `sessions/<id>/`; scrub archive+favorite session rows. After the loop: scrub the `("project", path)` rows and the legacy `("project", basename)` rows when unambiguous (round-3 G3), rebuild, poke. `worktrees/` is never touched.
 
 **Files:**
-- Create: `cmd/serf-hub/web_api_project_delete.go`
-- Modify: `cmd/serf-hub/web.go` (route)
-- Test: `cmd/serf-hub/web_api_project_delete_test.go` (create)
+- Create: `cmd/evener-hub/web_api_project_delete.go`
+- Modify: `cmd/evener-hub/web.go` (route)
+- Test: `cmd/evener-hub/web_api_project_delete_test.go` (create)
 
 - [ ] **Step 1: Write the failing test (resolution + removal + scrub)**
 
-Create `cmd/serf-hub/web_api_project_delete_test.go`:
+Create `cmd/evener-hub/web_api_project_delete_test.go`:
 
 ```go
 package main
@@ -1907,8 +1907,8 @@ import (
 	"testing"
 	"time"
 
-	"primeradiant.com/serf/agent/schema"
-	"primeradiant.com/serf/cmd/serf-hub/internal/hubcore"
+	"primeradiant.com/evener/agent/schema"
+	"primeradiant.com/evener/cmd/evener-hub/internal/hubcore"
 )
 
 func writeSession(t *testing.T, stateDir, id, wd string) {
@@ -2013,12 +2013,12 @@ Add a `newBody` helper (`strings.NewReader`) to the test file, or use `strings.N
 
 - [ ] **Step 2: Run test to verify it fails**
 
-Run: `go test ./cmd/serf-hub/ -run TestProjectDelete -v`
+Run: `go test ./cmd/evener-hub/ -run TestProjectDelete -v`
 Expected: FAIL — 404 (no route).
 
 - [ ] **Step 3: Implement the handler**
 
-Create `cmd/serf-hub/web_api_project_delete.go`:
+Create `cmd/evener-hub/web_api_project_delete.go`:
 
 ```go
 package main
@@ -2029,7 +2029,7 @@ import (
 	"os"
 	"path/filepath"
 
-	"primeradiant.com/serf/cmd/serf-hub/internal/hubcore"
+	"primeradiant.com/evener/cmd/evener-hub/internal/hubcore"
 )
 
 type projectDeleteSkip struct {
@@ -2170,26 +2170,26 @@ Register in `web.go` `Handler()`:
 
 - [ ] **Step 4: Run tests to verify they pass**
 
-Run: `go test ./cmd/serf-hub/ -run TestProjectDelete -v`
+Run: `go test ./cmd/evener-hub/ -run TestProjectDelete -v`
 Expected: PASS.
 
 - [ ] **Step 5: Commit**
 
 ```bash
-git add cmd/serf-hub/web_api_project_delete.go cmd/serf-hub/web_api_project_delete_test.go cmd/serf-hub/web.go
+git add cmd/evener-hub/web_api_project_delete.go cmd/evener-hub/web_api_project_delete_test.go cmd/evener-hub/web.go
 git commit -m "feat(hub): project delete endpoint (path-validated, live-refusing, scrubbing)"
 ```
 
 ---
 
-## Task 15: `Origin` on `SessionMeta` + `SERF_SESSION_ORIGIN` plumb + TestRuns classification
+## Task 15: `Origin` on `SessionMeta` + `EVENER_SESSION_ORIGIN` plumb + TestRuns classification
 
-Add `Origin string` to `schema.SessionMeta`, fed from `SERF_SESSION_ORIGIN` through the shared `agent.NewSession` path (both `serf serve` and one-shot `serf run`), preserved on resume; then classify a project into "Test runs" when it has ≥1 session and *every* session carries `Origin=="test"` (TestRuns precedence over ArchivedProjects — round-2 B6). NOTE: this coordinates with WS2's `SessionMeta` fields — regenerate `goldenMetaJSON` from live marshal output, do not hand-edit assuming other WS2 keys landed.
+Add `Origin string` to `schema.SessionMeta`, fed from `EVENER_SESSION_ORIGIN` through the shared `agent.NewSession` path (both `evener serve` and one-shot `evener run`), preserved on resume; then classify a project into "Test runs" when it has ≥1 session and *every* session carries `Origin=="test"` (TestRuns precedence over ArchivedProjects — round-2 B6). NOTE: this coordinates with WS2's `SessionMeta` fields — regenerate `goldenMetaJSON` from live marshal output, do not hand-edit assuming other WS2 keys landed.
 
 **Files:**
-- Modify: `agent/schema/snapshot.go` (`Origin`), `agent/session.go` (`origin` field), `agent/session_state.go` (`Meta` stamp), `agent/session_init.go` (set from env + restore from meta), `envvars/envvars.go` (`SERFSessionOrigin`), `docs/environment.md`
-- Modify: `cmd/serf-hub/internal/hubcore/tree.go` (`IsTestRun`), `cmd/serf-hub/web_api_tree.go` (TestRuns routing)
-- Test: `agent/snapshot_golden_test.go` (regenerate), `agent/session_origin_test.go` (create), `cmd/serf-hub/internal/hubcore/tree_test.go` (append)
+- Modify: `agent/schema/snapshot.go` (`Origin`), `agent/session.go` (`origin` field), `agent/session_state.go` (`Meta` stamp), `agent/session_init.go` (set from env + restore from meta), `envvars/envvars.go` (`EVENERSessionOrigin`), `docs/environment.md`
+- Modify: `cmd/evener-hub/internal/hubcore/tree.go` (`IsTestRun`), `cmd/evener-hub/web_api_tree.go` (TestRuns routing)
+- Test: `agent/snapshot_golden_test.go` (regenerate), `agent/session_origin_test.go` (create), `cmd/evener-hub/internal/hubcore/tree_test.go` (append)
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -2201,23 +2201,23 @@ package agent_test
 import (
 	"testing"
 
-	"primeradiant.com/serf/agent"
-	"primeradiant.com/serf/envvars"
+	"primeradiant.com/evener/agent"
+	"primeradiant.com/evener/envvars"
 )
 
 func TestSessionOriginFromEnv(t *testing.T) {
-	t.Setenv(envvars.SERFSessionOrigin.Name, "test")
+	t.Setenv(envvars.EVENERSessionOrigin.Name, "test")
 	sess := newTestSession(t) // existing agent_test helper that calls agent.NewSession
 	defer sess.Close()
 	if got := sess.Meta().Origin; got != "test" {
-		t.Fatalf("Origin should come from SERF_SESSION_ORIGIN, got %q", got)
+		t.Fatalf("Origin should come from EVENER_SESSION_ORIGIN, got %q", got)
 	}
 }
 ```
 
 (Use whatever session-construction helper the agent test package already provides; grep `agent/*_test.go` for an existing `NewSession` harness and reuse it — do not introduce a new construction path.)
 
-Append to `cmd/serf-hub/internal/hubcore/tree_test.go`:
+Append to `cmd/evener-hub/internal/hubcore/tree_test.go`:
 
 ```go
 func TestAllTestSessionsClassifyAsTestRun(t *testing.T) {
@@ -2247,8 +2247,8 @@ func TestAllTestSessionsClassifyAsTestRun(t *testing.T) {
 
 - [ ] **Step 2: Run tests to verify they fail**
 
-Run: `cd agent && go test . -run TestSessionOriginFromEnv -v` and `go test ./cmd/serf-hub/internal/hubcore/ -run TestAllTestSessionsClassifyAsTestRun -v`
-Expected: FAIL — `Origin`, `SERFSessionOrigin`, `IsTestRun` undefined.
+Run: `cd agent && go test . -run TestSessionOriginFromEnv -v` and `go test ./cmd/evener-hub/internal/hubcore/ -run TestAllTestSessionsClassifyAsTestRun -v`
+Expected: FAIL — `Origin`, `EVENERSessionOrigin`, `IsTestRun` undefined.
 
 - [ ] **Step 3: Add `Origin` to the schema + `Session`**
 
@@ -2256,7 +2256,7 @@ In `agent/schema/snapshot.go`, add after the `IsSubagent` field:
 
 ```go
 	// Origin marks how the session was launched: "test" for agentic-testing
-	// runs (set via SERF_SESSION_ORIGIN), empty for normal sessions. The hub
+	// runs (set via EVENER_SESSION_ORIGIN), empty for normal sessions. The hub
 	// classifies an all-"test" project into the "Test runs" group.
 	Origin string `json:"origin,omitempty"`
 ```
@@ -2266,7 +2266,7 @@ In `agent/session.go`, add an `origin string` field to the `Session` struct (nea
 In `agent/session_init.go`, in the fresh-create path (`initSessionState`, called from `NewSession`), set:
 
 ```go
-	s.origin = envvars.SERFSessionOrigin.Getenv()
+	s.origin = envvars.EVENERSessionOrigin.Getenv()
 ```
 
 and in the restore-from-meta path (where naming is seeded from `meta` at session_init.go:366-371), add:
@@ -2275,7 +2275,7 @@ and in the restore-from-meta path (where naming is seeded from `meta` at session
 	s.origin = meta.Origin
 ```
 
-(so resume preserves the persisted origin). Add `"primeradiant.com/serf/envvars"` to `session_init.go` imports if absent.
+(so resume preserves the persisted origin). Add `"primeradiant.com/evener/envvars"` to `session_init.go` imports if absent.
 
 In `agent/session_state.go`, in the `Meta()` return literal, add:
 
@@ -2285,16 +2285,16 @@ In `agent/session_state.go`, in the `Meta()` return literal, add:
 
 - [ ] **Step 4: Declare the env var**
 
-In `envvars/envvars.go`, add to the `var (...)` block (near `SERFStateDir`):
+In `envvars/envvars.go`, add to the `var (...)` block (near `EVENERStateDir`):
 
 ```go
-	SERFSessionOrigin = Var{Name: "SERF_SESSION_ORIGIN", Summary: "Marks a session's launch origin (e.g. \"test\" for agentic-testing runs).", Visibility: Public}
+	EVENERSessionOrigin = Var{Name: "EVENER_SESSION_ORIGIN", Summary: "Marks a session's launch origin (e.g. \"test\" for agentic-testing runs).", Visibility: Public}
 ```
 
-and add `SERFSessionOrigin,` to the `allVars` slice (else it is invisible to `All()`/`Find()` and the audit). Add a row to `docs/environment.md` under `## Serf Commands`:
+and add `EVENERSessionOrigin,` to the `allVars` slice (else it is invisible to `All()`/`Find()` and the audit). Add a row to `docs/environment.md` under `## Evener Commands`:
 
 ```
-| `SERF_SESSION_ORIGIN` | Marks a session's launch origin (e.g. `test`) so the hub groups agentic-test runs. |
+| `EVENER_SESSION_ORIGIN` | Marks a session's launch origin (e.g. `test`) so the hub groups agentic-test runs. |
 ```
 
 - [ ] **Step 5: Regenerate the golden**
@@ -2346,14 +2346,14 @@ In `web_api_tree.go` `handleAPITree`, route test-run projects into `resp.TestRun
 
 - [ ] **Step 7: Run tests to verify they pass**
 
-Run: `cd agent && go test . -run 'TestSessionOrigin|TestSessionMeta_Golden' -v` and `go test ./cmd/serf-hub/... ./cmd/serf-hub/internal/hubcore/ -run 'TestAllTestSessions|TestAPITree' -v` and `cd envvars && go test ./...` and `go test ./ -run TestSupportedEnvVars` (root audit).
+Run: `cd agent && go test . -run 'TestSessionOrigin|TestSessionMeta_Golden' -v` and `go test ./cmd/evener-hub/... ./cmd/evener-hub/internal/hubcore/ -run 'TestAllTestSessions|TestAPITree' -v` and `cd envvars && go test ./...` and `go test ./ -run TestSupportedEnvVars` (root audit).
 Expected: PASS.
 
 - [ ] **Step 8: Commit**
 
 ```bash
-git add agent/schema/snapshot.go agent/session.go agent/session_init.go agent/session_state.go agent/session_origin_test.go agent/snapshot_golden_test.go envvars/envvars.go docs/environment.md cmd/serf-hub/internal/hubcore/tree.go cmd/serf-hub/internal/hubcore/tree_test.go cmd/serf-hub/web_api_tree.go
-git commit -m "feat: SessionMeta.Origin via SERF_SESSION_ORIGIN + TestRuns classification"
+git add agent/schema/snapshot.go agent/session.go agent/session_init.go agent/session_state.go agent/session_origin_test.go agent/snapshot_golden_test.go envvars/envvars.go docs/environment.md cmd/evener-hub/internal/hubcore/tree.go cmd/evener-hub/internal/hubcore/tree_test.go cmd/evener-hub/web_api_tree.go
+git commit -m "feat: SessionMeta.Origin via EVENER_SESSION_ORIGIN + TestRuns classification"
 ```
 
 ---
@@ -2376,7 +2376,7 @@ package agent_test
 import (
 	"testing"
 
-	"primeradiant.com/serf/agent/schema"
+	"primeradiant.com/evener/agent/schema"
 )
 
 func TestRenameSetsUserSourceAndSurvivesCompaction(t *testing.T) {
@@ -2458,15 +2458,15 @@ This task lands the appwire method/params/capability/client, the catalog entry, 
 
 **Files:**
 - Modify: `appwire/types.go` (constant + params + `ThreadCapabilities.Rename`), `appwire/protocol.go` (catalog entry), `appwire/client.go` (`ThreadNameSet`)
-- Modify: `server/server.go` (`nameFunc` + `SetNameFunc`), `server/appwire_runtime.go` (`handleAppThreadNameSet` + registration + `appCapabilities.Rename`), `cmd/serf/serve.go` (wire)
-- Modify: `cmd/serf-hub/internal/appsource/source.go` (interface), `local_daemon.go` (impl + caps), `codex_source.go` (stub + caps)
-- Modify: `cmd/serf-hub/app_rpc.go` (hub router), `app_compact.go` (`threadActionAvailable` "rename"), `app_threadread.go` (local caps projection)
+- Modify: `server/server.go` (`nameFunc` + `SetNameFunc`), `server/appwire_runtime.go` (`handleAppThreadNameSet` + registration + `appCapabilities.Rename`), `cmd/evener/serve.go` (wire)
+- Modify: `cmd/evener-hub/internal/appsource/source.go` (interface), `local_daemon.go` (impl + caps), `codex_source.go` (stub + caps)
+- Modify: `cmd/evener-hub/app_rpc.go` (hub router), `app_compact.go` (`threadActionAvailable` "rename"), `app_threadread.go` (local caps projection)
 - Modify (regenerated): `docs/appwire-protocol.md`
 - Test: `appwire/protocol_test.go` is exercised by `make lint-generated`; add a targeted param test in `appwire/types_test.go` if present.
 
 - [ ] **Step 1: Write the failing test**
 
-Add to `appwire` a small round-trip test (or `cmd/serf-hub/appwire_catalog_test.go` will fail once Task 18 registers the hub route). Create `appwire/rename_test.go`:
+Add to `appwire` a small round-trip test (or `cmd/evener-hub/appwire_catalog_test.go` will fail once Task 18 registers the hub route). Create `appwire/rename_test.go`:
 
 ```go
 package appwire
@@ -2476,7 +2476,7 @@ import "testing"
 func TestThreadNameSetInCatalog(t *testing.T) {
 	found := false
 	for _, m := range Methods {
-		if m.Name == MethodSerfThreadNameSet {
+		if m.Name == MethodEvenerThreadNameSet {
 			found = true
 			if m.Scope != ScopeBoth {
 				t.Fatalf("rename must be ScopeBoth, got %v", m.Scope)
@@ -2484,7 +2484,7 @@ func TestThreadNameSetInCatalog(t *testing.T) {
 		}
 	}
 	if !found {
-		t.Fatal("serf/thread/name/set missing from the catalog")
+		t.Fatal("evener/thread/name/set missing from the catalog")
 	}
 	var caps ThreadCapabilities
 	caps.Rename = true // must compile
@@ -2494,14 +2494,14 @@ func TestThreadNameSetInCatalog(t *testing.T) {
 - [ ] **Step 2: Run test to verify it fails**
 
 Run: `go test ./appwire/ -run TestThreadNameSetInCatalog -v`
-Expected: FAIL — `MethodSerfThreadNameSet`, `ThreadCapabilities.Rename` undefined.
+Expected: FAIL — `MethodEvenerThreadNameSet`, `ThreadCapabilities.Rename` undefined.
 
 - [ ] **Step 3: Add the constant, params, capability**
 
-In `appwire/types.go`, add to the method const block (near `MethodSerfThreadTranscriptsList`):
+In `appwire/types.go`, add to the method const block (near `MethodEvenerThreadTranscriptsList`):
 
 ```go
-	MethodSerfThreadNameSet = "serf/thread/name/set"
+	MethodEvenerThreadNameSet = "evener/thread/name/set"
 ```
 
 Add the params type (near `ThreadModelSetParams`, types.go:576):
@@ -2517,7 +2517,7 @@ type ThreadNameSetParams struct {
 Add to `ThreadCapabilities` (types.go:233-250), after `Goal`:
 
 ```go
-	// Rename advertises support for serf/thread/name/set. True for a live serf
+	// Rename advertises support for evener/thread/name/set. True for a live evener
 	// session (the daemon method) and for ended local sessions (the hub edits
 	// meta); false for Codex-bridged threads.
 	Rename bool `json:"rename"`
@@ -2528,14 +2528,14 @@ Add to `ThreadCapabilities` (types.go:233-250), after `Goal`:
 In `appwire/protocol.go` `var Methods`, add after the `MethodThreadModelSet` row:
 
 ```go
-	{MethodSerfThreadNameSet, ThreadNameSetParams{}, EmptyResponse{}, ScopeBoth, "Sets a user-chosen session title (rename)."},
+	{MethodEvenerThreadNameSet, ThreadNameSetParams{}, EmptyResponse{}, ScopeBoth, "Sets a user-chosen session title (rename)."},
 ```
 
 In `appwire/client.go`, add (modeled on `ThreadModelSet`, client.go:285-287):
 
 ```go
 func (c *Client) ThreadNameSet(ctx context.Context, params ThreadNameSetParams) error {
-	return c.request(ctx, MethodSerfThreadNameSet, params, nil)
+	return c.request(ctx, MethodEvenerThreadNameSet, params, nil)
 }
 ```
 
@@ -2560,7 +2560,7 @@ func (s *Server) SetNameFunc(fn func(string)) {
 In `server/appwire_runtime.go`, register in `registerAppWireHandlers` (alongside the others):
 
 ```go
-	appserver.HandleTyped(router, appwire.MethodSerfThreadNameSet, s.handleAppThreadNameSet)
+	appserver.HandleTyped(router, appwire.MethodEvenerThreadNameSet, s.handleAppThreadNameSet)
 ```
 
 Add the handler (modeled on `handleAppThreadModelSet`, appwire_runtime.go:359-375):
@@ -2588,7 +2588,7 @@ In `appCapabilities` (appwire_runtime.go:548-571), add to the returned struct:
 		Rename: s.nameFunc != nil && !closed,
 ```
 
-In `cmd/serf/serve.go`, wire the func alongside the other setters (serve.go:321-349):
+In `cmd/evener/serve.go`, wire the func alongside the other setters (serve.go:321-349):
 
 ```go
 	srv.SetNameFunc(func(name string) { getSession().Rename(name) })
@@ -2596,7 +2596,7 @@ In `cmd/serf/serve.go`, wire the func alongside the other setters (serve.go:321-
 
 - [ ] **Step 7: Extend the `Source` interface + implementations**
 
-In `cmd/serf-hub/internal/appsource/source.go`, add to the interface (after `SetThreadReasoningEffort`):
+In `cmd/evener-hub/internal/appsource/source.go`, add to the interface (after `SetThreadReasoningEffort`):
 
 ```go
 	SetThreadName(context.Context, appwire.ThreadNameSetParams) error
@@ -2628,10 +2628,10 @@ In `local_daemon.go`'s capability projection (local_daemon.go:542-553) set `Rena
 
 - [ ] **Step 8: Add the hub router case + capability gate**
 
-In `cmd/serf-hub/app_rpc.go`, register the hub router case (modeled on `MethodThreadModelSet`, app_rpc.go:494-503):
+In `cmd/evener-hub/app_rpc.go`, register the hub router case (modeled on `MethodThreadModelSet`, app_rpc.go:494-503):
 
 ```go
-	appserver.HandleTyped(server.Router(), appwire.MethodSerfThreadNameSet, func(ctx context.Context, params appwire.ThreadNameSetParams) (appwire.EmptyResponse, error) {
+	appserver.HandleTyped(server.Router(), appwire.MethodEvenerThreadNameSet, func(ctx context.Context, params appwire.ThreadNameSetParams) (appwire.EmptyResponse, error) {
 		source, err := sourceForThreadWithManagedLaunch(ctx, cfg, sources, params.Ref, "")
 		if err != nil {
 			return appwire.EmptyResponse{}, err
@@ -2643,25 +2643,25 @@ In `cmd/serf-hub/app_rpc.go`, register the hub router case (modeled on `MethodTh
 	})
 ```
 
-In `cmd/serf-hub/app_compact.go` `threadActionAvailable` (app_compact.go:70-95), add:
+In `cmd/evener-hub/app_compact.go` `threadActionAvailable` (app_compact.go:70-95), add:
 
 ```go
 	case "rename":
 		return caps.Rename
 ```
 
-In `cmd/serf-hub/app_threadread.go` local past-session capability projection (app_threadread.go:157-161), set `Rename: true` (ended local sessions are renameable via the hub path).
+In `cmd/evener-hub/app_threadread.go` local past-session capability projection (app_threadread.go:157-161), set `Rename: true` (ended local sessions are renameable via the hub path).
 
 - [ ] **Step 9: Run tests to verify they pass**
 
-Run: `go test ./appwire/ ./server/... -run 'ThreadNameSet|RouterMatchesCatalog' -v` and `go test ./cmd/serf-hub/ -run 'RouterMatchesCatalog' -v`
+Run: `go test ./appwire/ ./server/... -run 'ThreadNameSet|RouterMatchesCatalog' -v` and `go test ./cmd/evener-hub/ -run 'RouterMatchesCatalog' -v`
 Expected: PASS, both cross-checks green.
 
 - [ ] **Step 10: Commit**
 
 ```bash
-git add appwire/types.go appwire/protocol.go appwire/client.go appwire/rename_test.go docs/appwire-protocol.md server/server.go server/appwire_runtime.go cmd/serf/serve.go cmd/serf-hub/internal/appsource/source.go cmd/serf-hub/internal/appsource/local_daemon.go cmd/serf-hub/internal/appsource/codex_source.go cmd/serf-hub/app_rpc.go cmd/serf-hub/app_compact.go cmd/serf-hub/app_threadread.go
-git commit -m "feat(appwire,server,hub): serf/thread/name/set — types, catalog, daemon handler, hub relay in one atom"
+git add appwire/types.go appwire/protocol.go appwire/client.go appwire/rename_test.go docs/appwire-protocol.md server/server.go server/appwire_runtime.go cmd/evener/serve.go cmd/evener-hub/internal/appsource/source.go cmd/evener-hub/internal/appsource/local_daemon.go cmd/evener-hub/internal/appsource/codex_source.go cmd/evener-hub/app_rpc.go cmd/evener-hub/app_compact.go cmd/evener-hub/app_threadread.go
+git commit -m "feat(appwire,server,hub): evener/thread/name/set — types, catalog, daemon handler, hub relay in one atom"
 ```
 
 ---
@@ -2671,13 +2671,13 @@ git commit -m "feat(appwire,server,hub): serf/thread/name/set — types, catalog
 Add the REST endpoint with live/ended paths (both apply `UpdateMeta` + inputs bump — round-3 G1), the route dispatch from `handleAPISession`, and the source-kind-derived `hubapi.TreeNode.Rename` resolution.
 
 **Files:**
-- Create: `cmd/serf-hub/web_api_rename.go` (REST endpoint)
-- Modify: `cmd/serf-hub/web_api_tree.go` (`rowRenameable`) + `web.go`/`web_api_tree.go` route dispatch (`handleAPISession` "rename" sub-case)
-- Test: `cmd/serf-hub/web_api_rename_test.go` (create)
+- Create: `cmd/evener-hub/web_api_rename.go` (REST endpoint)
+- Modify: `cmd/evener-hub/web_api_tree.go` (`rowRenameable`) + `web.go`/`web_api_tree.go` route dispatch (`handleAPISession` "rename" sub-case)
+- Test: `cmd/evener-hub/web_api_rename_test.go` (create)
 
 - [ ] **Step 1: Write the failing test (ended path)**
 
-Create `cmd/serf-hub/web_api_rename_test.go`:
+Create `cmd/evener-hub/web_api_rename_test.go`:
 
 ```go
 package main
@@ -2690,8 +2690,8 @@ import (
 	"testing"
 	"time"
 
-	"primeradiant.com/serf/agent/schema"
-	"primeradiant.com/serf/cmd/serf-hub/internal/hubcore"
+	"primeradiant.com/evener/agent/schema"
+	"primeradiant.com/evener/cmd/evener-hub/internal/hubcore"
 )
 
 func TestRenameEndedSessionEditsMetaAndRefreshesIndex(t *testing.T) {
@@ -2726,12 +2726,12 @@ func TestRenameEndedSessionEditsMetaAndRefreshesIndex(t *testing.T) {
 
 - [ ] **Step 2: Run test to verify it fails**
 
-Run: `go test ./cmd/serf-hub/ -run TestRenameEndedSessionEditsMetaAndRefreshesIndex -v`
+Run: `go test ./cmd/evener-hub/ -run TestRenameEndedSessionEditsMetaAndRefreshesIndex -v`
 Expected: FAIL — no `/rename` sub-route.
 
 - [ ] **Step 3: Add the REST endpoint (live + ended paths)**
 
-Create `cmd/serf-hub/web_api_rename.go`:
+Create `cmd/evener-hub/web_api_rename.go`:
 
 ```go
 package main
@@ -2742,11 +2742,11 @@ import (
 	"strings"
 	"time"
 
-	"primeradiant.com/serf/agent/schema"
-	"primeradiant.com/serf/appwire"
+	"primeradiant.com/evener/agent/schema"
+	"primeradiant.com/evener/appwire"
 )
 
-// handleAPIRename renames a session. Live serf sessions route through the
+// handleAPIRename renames a session. Live evener sessions route through the
 // daemon method (daemon-truth); ended local sessions have their meta edited
 // behind a probe-resolved Roster.Find re-check. Both paths refresh the past
 // index (UpdateMeta) + bump inputs so the next resync reflects the new name
@@ -2871,37 +2871,37 @@ func (s *WebServer) rowRenameable(id string) bool {
 
 - [ ] **Step 5: Run tests to verify they pass**
 
-Run: `go test ./cmd/serf-hub/... ./server/... -run 'TestRename|MatchesCatalog|TestAPITree' -v`
+Run: `go test ./cmd/evener-hub/... ./server/... -run 'TestRename|MatchesCatalog|TestAPITree' -v`
 Expected: PASS (including the previously-red catalog cross-check tests, now that both routers register the method).
 
 - [ ] **Step 6: Commit**
 
 ```bash
-git add cmd/serf-hub/web_api_rename.go cmd/serf-hub/web_api_rename_test.go cmd/serf-hub/web_api_tree.go
+git add cmd/evener-hub/web_api_rename.go cmd/evener-hub/web_api_rename_test.go cmd/evener-hub/web_api_tree.go
 git commit -m "feat(hub): rename REST endpoint (live/ended paths) + TreeNode.Rename resolution"
 ```
 
 - [ ] **Step 7: Phase A gate**
 
-Run: `golangci-lint run ./...` (root) && `cd agent && golangci-lint run ./... && cd .. && go test ./cmd/serf-hub/... ./hubapi/... ./appwire/... ./server/... && cd agent && go test ./... && cd ../envvars && go test ./...`
+Run: `golangci-lint run ./...` (root) && `cd agent && golangci-lint run ./... && cd .. && go test ./cmd/evener-hub/... ./hubapi/... ./appwire/... ./server/... && cd agent && go test ./... && cd ../envvars && go test ./...`
 Expected: all green. Commit any lint fixups with `chore(hub): phase A lint`.
 
 # Phase B — Client (vanilla JS)
 
-The new `sidebar.js` holds `/api/tree` data as state and projects it to the DOM via keyed reconciliation on the server's `RowID`. It replaces the htmx partial entirely. The jstest harness is Node + JSDOM: each `test-*.js` reads the asset source with `fs.readFileSync`, evals it in a JSDOM window with `window.fetch`/`window.SerfAppwire` stubbed, and asserts, exiting 0/1 (see `cmd/serf-hub/jstest/run-all.sh`).
+The new `sidebar.js` holds `/api/tree` data as state and projects it to the DOM via keyed reconciliation on the server's `RowID`. It replaces the htmx partial entirely. The jstest harness is Node + JSDOM: each `test-*.js` reads the asset source with `fs.readFileSync`, evals it in a JSDOM window with `window.fetch`/`window.EvenerAppwire` stubbed, and asserts, exiting 0/1 (see `cmd/evener-hub/jstest/run-all.sh`).
 
 ## Task 19: New sidebar renderer core — model, fetch, keyed reconcile, skeleton, active-row
 
-Rewrite `cmd/serf-hub/assets/sidebar.js` around a client model (`{tree, expanded:Set, lazyCache:Map, seq, pending:Map}`), a `/api/tree` fetch, and hand-rolled reconciliation keyed on `RowID`. Type+key match patches in place, so DOM node identity (hover, scroll, open menus) survives updates. Rows stay real `<a href>` links with their htmx workspace-swap attributes; `htmx.process()` runs on created rows. Active-row marking and active-project auto-expand are driven off `htmx:afterSwap` on `#workspace`. First paint renders skeleton rows immediately.
+Rewrite `cmd/evener-hub/assets/sidebar.js` around a client model (`{tree, expanded:Set, lazyCache:Map, seq, pending:Map}`), a `/api/tree` fetch, and hand-rolled reconciliation keyed on `RowID`. Type+key match patches in place, so DOM node identity (hover, scroll, open menus) survives updates. Rows stay real `<a href>` links with their htmx workspace-swap attributes; `htmx.process()` runs on created rows. Active-row marking and active-project auto-expand are driven off `htmx:afterSwap` on `#workspace`. First paint renders skeleton rows immediately.
 
 **Files:**
-- Rewrite: `cmd/serf-hub/assets/sidebar.js` (this task builds the core; Tasks 20-22 extend the same file)
-- Modify: `cmd/serf-hub/templates/app.html` (client-rendered `#sidebar` container)
-- Test: `cmd/serf-hub/jstest/test-sidebar-model.js`, `test-sidebar-reconcile.js` (create)
+- Rewrite: `cmd/evener-hub/assets/sidebar.js` (this task builds the core; Tasks 20-22 extend the same file)
+- Modify: `cmd/evener-hub/templates/app.html` (client-rendered `#sidebar` container)
+- Test: `cmd/evener-hub/jstest/test-sidebar-model.js`, `test-sidebar-reconcile.js` (create)
 
 - [ ] **Step 1: Write the failing reconcile-identity test**
 
-Create `cmd/serf-hub/jstest/test-sidebar-reconcile.js`:
+Create `cmd/evener-hub/jstest/test-sidebar-reconcile.js`:
 
 ```js
 // Keyed reconcile: unchanged RowIDs keep DOM node identity across renders, and
@@ -2917,7 +2917,7 @@ function boot() {
   const w = dom.window;
   w.fetch = () => Promise.resolve({ ok: true, json: () => Promise.resolve(emptyTree()) });
   w.htmx = { process() {} };
-  w.SerfAppwire = { onNotification() {}, onConnectionRestored() {} };
+  w.EvenerAppwire = { onNotification() {}, onConnectionRestored() {} };
   w.eval(src);
   return w;
 }
@@ -2935,19 +2935,19 @@ tree.needs_you = [node("needsyou::local:" + sid, sid, "awaiting")];
 tree.favorites = [node("pinned::local:" + sid, sid, "awaiting")];
 tree.projects = [{ key: "p1", name: "p", working_dir: "/w/p", default_expanded: true, sessions: [node("project:p1:local:" + sid, sid, "awaiting")] }];
 
-w.SerfSidebar.renderTree(tree);
+w.EvenerSidebar.renderTree(tree);
 const rows1 = w.document.querySelectorAll(".sb-row");
 if (rows1.length !== 3) throw new Error("same session across 3 tiers must yield 3 rows, got " + rows1.length);
 // Tag the project row; a second identical render must keep the SAME node.
 const projRow = w.document.querySelector('[data-row-id="project:p1:local:' + sid + '"]');
 projRow.__probe = true;
-w.SerfSidebar.renderTree(tree);
+w.EvenerSidebar.renderTree(tree);
 const projRow2 = w.document.querySelector('[data-row-id="project:p1:local:' + sid + '"]');
 if (!projRow2 || projRow2.__probe !== true) throw new Error("unchanged RowID must keep DOM node identity");
 console.log("ok reconcile keeps identity + cross-tier duplicates");
 ```
 
-Create `cmd/serf-hub/jstest/test-sidebar-model.js`:
+Create `cmd/evener-hub/jstest/test-sidebar-model.js`:
 
 ```js
 // First paint renders skeleton immediately; /api/tree resolves into rows;
@@ -2962,7 +2962,7 @@ const dom = new JSDOM(`<!DOCTYPE html><html><body><aside id="sidebar"></aside><m
 const w = dom.window;
 let processed = 0;
 w.htmx = { process() { processed++; } };
-w.SerfAppwire = { onNotification() {}, onConnectionRestored() {} };
+w.EvenerAppwire = { onNotification() {}, onConnectionRestored() {} };
 const tree = { needs_you: [], favorites: [], archived_projects: [], test_runs: [],
   projects: [{ key: "p1", name: "p", working_dir: "/w/p", default_expanded: true,
     sessions: [{ row_id: "project:p1:local:01A", ref: "local:01A", session_id: "01A", title: "hi", state: "idle", kind: "session", tier: "current", live: false }] }],
@@ -2988,12 +2988,12 @@ setTimeout(() => {
 
 - [ ] **Step 2: Run tests to verify they fail**
 
-Run: `cd cmd/serf-hub/jstest && node test-sidebar-reconcile.js; node test-sidebar-model.js`
-Expected: FAIL — the rewritten `sidebar.js` and `SerfSidebar.renderTree` do not exist yet (the current file has no such API).
+Run: `cd cmd/evener-hub/jstest && node test-sidebar-reconcile.js; node test-sidebar-model.js`
+Expected: FAIL — the rewritten `sidebar.js` and `EvenerSidebar.renderTree` do not exist yet (the current file has no such API).
 
 - [ ] **Step 3: Rewrite `sidebar.js` core**
 
-Replace `cmd/serf-hub/assets/sidebar.js` with the client-rendered renderer. Core structure (the whole file; Tasks 20-22 add to the marked sections):
+Replace `cmd/evener-hub/assets/sidebar.js` with the client-rendered renderer. Core structure (the whole file; Tasks 20-22 add to the marked sections):
 
 ```js
 // Sidebar: client-rendered navigation tree. Data (/api/tree) is the state; the
@@ -3002,9 +3002,9 @@ Replace `cmd/serf-hub/assets/sidebar.js` with the client-rendered renderer. Core
 (function () {
   "use strict";
 
-  var EXPAND_PREFIX = "serf-hub.sidebar.expanded.";
+  var EXPAND_PREFIX = "evener-hub.sidebar.expanded.";
   var model = { tree: null, expanded: new Set(), lazyCache: new Map(), seq: 0, pending: new Map() };
-  window.SerfSidebarModel = model; // test/inspection surface
+  window.EvenerSidebarModel = model; // test/inspection surface
 
   function sidebarEl() { return document.getElementById("sidebar"); }
 
@@ -3195,7 +3195,7 @@ Replace `cmd/serf-hub/assets/sidebar.js` with the client-rendered renderer. Core
     if (e && e.target && e.target.id === "workspace") syncActiveRow();
   });
 
-  window.SerfSidebar = { renderTree: renderTree, refresh: fetchTree, close: function () {} };
+  window.EvenerSidebar = { renderTree: renderTree, refresh: fetchTree, close: function () {} };
 })();
 ```
 
@@ -3203,7 +3203,7 @@ Replace `cmd/serf-hub/assets/sidebar.js` with the client-rendered renderer. Core
 
 - [ ] **Step 4: Update the app shell**
 
-In `cmd/serf-hub/templates/app.html`, change the `#sidebar` aside from an htmx partial to a client-rendered container (keep the resizer sibling untouched):
+In `cmd/evener-hub/templates/app.html`, change the `#sidebar` aside from an htmx partial to a client-rendered container (keep the resizer sibling untouched):
 
 ```html
   <aside id="sidebar" aria-label="Sessions"></aside>
@@ -3213,13 +3213,13 @@ In `cmd/serf-hub/templates/app.html`, change the `#sidebar` aside from an htmx p
 
 - [ ] **Step 5: Run tests to verify they pass**
 
-Run: `cd cmd/serf-hub/jstest && node test-sidebar-reconcile.js && node test-sidebar-model.js`
+Run: `cd cmd/evener-hub/jstest && node test-sidebar-reconcile.js && node test-sidebar-model.js`
 Expected: both print `ok ...` and exit 0.
 
 - [ ] **Step 6: Commit**
 
 ```bash
-git add cmd/serf-hub/assets/sidebar.js cmd/serf-hub/templates/app.html cmd/serf-hub/jstest/test-sidebar-reconcile.js cmd/serf-hub/jstest/test-sidebar-model.js
+git add cmd/evener-hub/assets/sidebar.js cmd/evener-hub/templates/app.html cmd/evener-hub/jstest/test-sidebar-reconcile.js cmd/evener-hub/jstest/test-sidebar-model.js
 git commit -m "feat(web): client-rendered sidebar renderer with keyed reconcile"
 ```
 
@@ -3230,12 +3230,12 @@ git commit -m "feat(web): client-rendered sidebar renderer with keyed reconcile"
 Wire the qualifying-event allowlist, the honest instant attention path, the coalesced/sequence-guarded resync (≥2s + 60s idle), and the pending-ops overlay with per-op completion predicates, post-POST resync, and 30s eviction safety net.
 
 **Files:**
-- Modify: `cmd/serf-hub/assets/sidebar.js` (replace `applyPending`, add event wiring + mutation API)
-- Test: `cmd/serf-hub/jstest/test-sidebar-overlay.js` (create)
+- Modify: `cmd/evener-hub/assets/sidebar.js` (replace `applyPending`, add event wiring + mutation API)
+- Test: `cmd/evener-hub/jstest/test-sidebar-overlay.js` (create)
 
 - [ ] **Step 1: Write the failing overlay test**
 
-Create `cmd/serf-hub/jstest/test-sidebar-overlay.js`:
+Create `cmd/evener-hub/jstest/test-sidebar-overlay.js`:
 
 ```js
 // Overlay: a favorite (mutation-type) op stays applied across resyncs until a
@@ -3258,7 +3258,7 @@ function boot(trees) {
     return Promise.resolve({ ok: true, json: () => Promise.resolve(trees[Math.min(i++, trees.length - 1)]) });
   };
   w.htmx = { process() {} };
-  w.SerfAppwire = { onNotification() {}, onConnectionRestored() {} };
+  w.EvenerAppwire = { onNotification() {}, onConnectionRestored() {} };
   w.eval(src);
   return { w, posts };
 }
@@ -3274,7 +3274,7 @@ function tree(fav) {
   // favorite=true → op completes, no rollback.
   const { w, posts } = boot([tree(false), tree(true)]);
   await new Promise(r => setTimeout(r, 20));
-  w.SerfSidebar.favorite("local:01A", true);
+  w.EvenerSidebar.favorite("local:01A", true);
   // Optimistic: the row shows the star immediately, before any resync.
   let row = w.document.querySelector('[data-row-id="project:p1:local:01A"]');
   if (!row.hasAttribute("data-favorite")) throw new Error("optimistic favorite must apply immediately");
@@ -3289,8 +3289,8 @@ function tree(fav) {
 
 - [ ] **Step 2: Run test to verify it fails**
 
-Run: `cd cmd/serf-hub/jstest && node test-sidebar-overlay.js`
-Expected: FAIL — `SerfSidebar.favorite` / overlay undefined.
+Run: `cd cmd/evener-hub/jstest && node test-sidebar-overlay.js`
+Expected: FAIL — `EvenerSidebar.favorite` / overlay undefined.
 
 - [ ] **Step 3: Implement the overlay + resync + events**
 
@@ -3373,7 +3373,7 @@ In `sidebar.js`, replace the `applyPending` stub and add the mutation/resync mac
         return r;
       })
       .catch(function (e) {
-        if (window.SerfToast) window.SerfToast.show("Action failed", "error");
+        if (window.EvenerToast) window.EvenerToast.show("Action failed", "error");
         throw e;
       });
   }
@@ -3408,9 +3408,9 @@ Filter dropped nodes in `flatten` (skip `n.__drop`). Add the coalesced resync + 
     }).catch(function () {});
   }
 
-  var QUALIFYING = { "thread/started": 1, "thread/closed": 1, "thread/status/changed": 1, "serf/job/started": 1, "serf/job/finished": 1, "serf/attention/changed": 1 };
+  var QUALIFYING = { "thread/started": 1, "thread/closed": 1, "thread/status/changed": 1, "evener/job/started": 1, "evener/job/finished": 1, "evener/attention/changed": 1 };
   function onNotification(method, params) {
-    if (method === "serf/attention/changed") { applyAttentionInstant(params); scheduleResync(); return; }
+    if (method === "evener/attention/changed") { applyAttentionInstant(params); scheduleResync(); return; }
     if (QUALIFYING[method]) scheduleResync();
   }
   // Instant path: attention changed[] carries the coarse 4-value level and only
@@ -3422,22 +3422,22 @@ Filter dropped nodes in `flatten` (skip `n.__drop`). Add the coalesced resync + 
     });
   }
 
-  if (window.SerfAppwire && window.SerfAppwire.onNotification) window.SerfAppwire.onNotification(onNotification);
-  if (window.SerfAppwire && window.SerfAppwire.onConnectionRestored) window.SerfAppwire.onConnectionRestored(scheduleResync);
+  if (window.EvenerAppwire && window.EvenerAppwire.onNotification) window.EvenerAppwire.onNotification(onNotification);
+  if (window.EvenerAppwire && window.EvenerAppwire.onConnectionRestored) window.EvenerAppwire.onConnectionRestored(scheduleResync);
   setInterval(scheduleResync, 60000); // 60s idle resync
 ```
 
-Extend the exported surface: `window.SerfSidebar = { renderTree, refresh: fetchTree, favorite, archive, rename, close: function () {} };`
+Extend the exported surface: `window.EvenerSidebar = { renderTree, refresh: fetchTree, favorite, archive, rename, close: function () {} };`
 
 - [ ] **Step 4: Run tests to verify they pass**
 
-Run: `cd cmd/serf-hub/jstest && node test-sidebar-overlay.js && node test-sidebar-reconcile.js && node test-sidebar-model.js`
+Run: `cd cmd/evener-hub/jstest && node test-sidebar-overlay.js && node test-sidebar-reconcile.js && node test-sidebar-model.js`
 Expected: all `ok`.
 
 - [ ] **Step 5: Commit**
 
 ```bash
-git add cmd/serf-hub/assets/sidebar.js cmd/serf-hub/jstest/test-sidebar-overlay.js
+git add cmd/evener-hub/assets/sidebar.js cmd/evener-hub/jstest/test-sidebar-overlay.js
 git commit -m "feat(web): sidebar update contract + pending overlay with per-op predicates"
 ```
 
@@ -3448,17 +3448,17 @@ git commit -m "feat(web): sidebar update contract + pending overlay with per-op 
 Add the `⋯` popover (chip-picker positioning/dismiss/singleton patterns from dir-picker.js:7-72), keyboard navigation, a ≥24px reveal button, and per-row-kind items. Session rows: Open, Open beside, Favorite/Unfavorite, Rename, Archive/Unarchive. Project rows: New session, Settings, Archive/Unarchive, Delete…. Rename shows only when `node.rename` is true. If a reconcile removes the row anchoring an open menu, the menu closes and focus moves to the nearest surviving row.
 
 **Files:**
-- Modify: `cmd/serf-hub/assets/sidebar.js` (menu component + wire into `buildRow`/`buildProjectHeader`)
-- Modify: `cmd/serf-hub/assets/style.css` (menu + reveal-button styles)
-- Test: `cmd/serf-hub/jstest/test-sidebar-menu.js` (create)
+- Modify: `cmd/evener-hub/assets/sidebar.js` (menu component + wire into `buildRow`/`buildProjectHeader`)
+- Modify: `cmd/evener-hub/assets/style.css` (menu + reveal-button styles)
+- Test: `cmd/evener-hub/jstest/test-sidebar-menu.js` (create)
 
 - [ ] **Step 1: Write the failing menu test**
 
-Create `cmd/serf-hub/jstest/test-sidebar-menu.js`:
+Create `cmd/evener-hub/jstest/test-sidebar-menu.js`:
 
 ```js
 // Menu: ⋯ opens a popover; session rows show Rename only when node.rename;
-// choosing Favorite calls SerfSidebar.favorite; Escape closes; removing the
+// choosing Favorite calls EvenerSidebar.favorite; Escape closes; removing the
 // anchor row closes the menu.
 const fs = require("fs");
 const { JSDOM } = require("jsdom");
@@ -3474,7 +3474,7 @@ const dom = new JSDOM(`<!DOCTYPE html><html><body><aside id="sidebar"></aside></
 const w = dom.window;
 w.fetch = () => Promise.resolve({ ok: true, json: () => Promise.resolve(tree(true)) });
 w.htmx = { process() {} };
-w.SerfAppwire = { onNotification() {}, onConnectionRestored() {} };
+w.EvenerAppwire = { onNotification() {}, onConnectionRestored() {} };
 w.eval(src);
 setTimeout(() => {
   const row = w.document.querySelector('[data-row-id="project:p1:local:01A"]');
@@ -3486,9 +3486,9 @@ setTimeout(() => {
   const items = [].map.call(menu.querySelectorAll(".sb-menu-item"), (e) => e.textContent);
   if (!items.some((t) => /Rename/.test(t))) throw new Error("renameable row must offer Rename, got " + items);
   let favCalled = null;
-  w.SerfSidebar.favorite = (ref, on) => { favCalled = [ref, on]; };
+  w.EvenerSidebar.favorite = (ref, on) => { favCalled = [ref, on]; };
   [].find.call(menu.querySelectorAll(".sb-menu-item"), (e) => /Favorite/.test(e.textContent)).dispatchEvent(new w.MouseEvent("click", { bubbles: true }));
-  if (!favCalled || favCalled[0] !== "local:01A") throw new Error("Favorite item must call SerfSidebar.favorite");
+  if (!favCalled || favCalled[0] !== "local:01A") throw new Error("Favorite item must call EvenerSidebar.favorite");
   console.log("ok menu open + rename gating + favorite action");
   process.exit(0);
 }, 20);
@@ -3496,7 +3496,7 @@ setTimeout(() => {
 
 - [ ] **Step 2: Run test to verify it fails**
 
-Run: `cd cmd/serf-hub/jstest && node test-sidebar-menu.js`
+Run: `cd cmd/evener-hub/jstest && node test-sidebar-menu.js`
 Expected: FAIL — no `.sb-menu-btn`.
 
 - [ ] **Step 3: Implement the menu**
@@ -3559,10 +3559,10 @@ and add the menu component (chip-picker singleton/dismiss patterns):
   function sessionMenuItems(n) {
     return [
       { label: "Open", run: function () { window.location.href = "/s/" + n.session_id; } },
-      { label: "Open beside", run: function () { if (window.SerfPanes) window.SerfPanes.open("/thread/" + encodeURIComponent(n.ref), n.title); } },
-      { label: n.favorite ? "Unfavorite" : "Favorite", run: function () { window.SerfSidebar.favorite(n.ref, !n.favorite); } },
+      { label: "Open beside", run: function () { if (window.EvenerPanes) window.EvenerPanes.open("/thread/" + encodeURIComponent(n.ref), n.title); } },
+      { label: n.favorite ? "Unfavorite" : "Favorite", run: function () { window.EvenerSidebar.favorite(n.ref, !n.favorite); } },
       { label: "Rename", hidden: !n.rename, run: function () { startInlineRename(n); } },
-      { label: n.tier === "archived" ? "Unarchive" : "Archive", run: function () { window.SerfSidebar.archive(n.ref, n.tier !== "archived"); } },
+      { label: n.tier === "archived" ? "Unarchive" : "Archive", run: function () { window.EvenerSidebar.archive(n.ref, n.tier !== "archived"); } },
     ];
   }
   function projectMenuItems(p) {
@@ -3580,7 +3580,7 @@ and add the menu component (chip-picker singleton/dismiss patterns):
     var input = document.createElement("input");
     input.className = "sb-rename-input"; input.value = n.title;
     title.replaceWith(input); input.focus(); input.select();
-    function commit() { var v = input.value.trim(); if (v && v !== n.title) window.SerfSidebar.rename(n.ref, v); if (model.tree) renderTree(model.tree); }
+    function commit() { var v = input.value.trim(); if (v && v !== n.title) window.EvenerSidebar.rename(n.ref, v); if (model.tree) renderTree(model.tree); }
     input.addEventListener("keydown", function (e) { if (e.key === "Enter") { e.preventDefault(); commit(); } else if (e.key === "Escape") { e.preventDefault(); if (model.tree) renderTree(model.tree); } });
     input.addEventListener("blur", commit);
   }
@@ -3614,7 +3614,7 @@ Attach the project-header menu button in `buildProjectHeader` (append a `.sb-men
 
 - [ ] **Step 4: Add menu + reveal-button CSS**
 
-Append to `cmd/serf-hub/assets/style.css` (≥24px reveal button; menu popover; contrast per Task 24 tokens):
+Append to `cmd/evener-hub/assets/style.css` (≥24px reveal button; menu popover; contrast per Task 24 tokens):
 
 ```css
 .sb-menu-btn { min-width: 24px; min-height: 24px; opacity: 0; background: transparent; border: none; color: var(--text-muted); }
@@ -3627,13 +3627,13 @@ Append to `cmd/serf-hub/assets/style.css` (≥24px reveal button; menu popover; 
 
 - [ ] **Step 5: Run tests to verify they pass**
 
-Run: `cd cmd/serf-hub/jstest && node test-sidebar-menu.js && node test-sidebar-overlay.js && node test-sidebar-model.js && node test-sidebar-reconcile.js`
+Run: `cd cmd/evener-hub/jstest && node test-sidebar-menu.js && node test-sidebar-overlay.js && node test-sidebar-model.js && node test-sidebar-reconcile.js`
 Expected: all `ok`.
 
 - [ ] **Step 6: Commit**
 
 ```bash
-git add cmd/serf-hub/assets/sidebar.js cmd/serf-hub/assets/style.css cmd/serf-hub/jstest/test-sidebar-menu.js
+git add cmd/evener-hub/assets/sidebar.js cmd/evener-hub/assets/style.css cmd/evener-hub/jstest/test-sidebar-menu.js
 git commit -m "feat(web): row menu (session/project) with rename gating + anchor-removal close"
 ```
 
@@ -3644,12 +3644,12 @@ git commit -m "feat(web): row menu (session/project) with rename gating + anchor
 Run the one-time expansion-key migration *after the first tree render* (the old→new mapping needs each project's path, which only the first payload provides — round-3 G4; co-basename collisions copy the old value to all matching new keys). Carry the surviving contract behaviors — mobile drawer, rail mode (⌘B + persistence), open-beside, `aria-expanded` on toggles — into the rewritten module verbatim from the old `sidebar.js`.
 
 **Files:**
-- Modify: `cmd/serf-hub/assets/sidebar.js` (real `migrateExpansionKeys`; re-add drawer/rail/open-beside blocks)
-- Test: `cmd/serf-hub/jstest/test-sidebar-migration.js`, `test-sidebar-survivors.js` (create)
+- Modify: `cmd/evener-hub/assets/sidebar.js` (real `migrateExpansionKeys`; re-add drawer/rail/open-beside blocks)
+- Test: `cmd/evener-hub/jstest/test-sidebar-migration.js`, `test-sidebar-survivors.js` (create)
 
 - [ ] **Step 1: Write the failing tests**
 
-Create `cmd/serf-hub/jstest/test-sidebar-migration.js`:
+Create `cmd/evener-hub/jstest/test-sidebar-migration.js`:
 
 ```js
 // Old basename-keyed expansion entries migrate to the new path-slug keys after
@@ -3660,7 +3660,7 @@ const src = fs.readFileSync(__dirname + "/../assets/sidebar.js", "utf8");
 
 const dom = new JSDOM(`<!DOCTYPE html><html><body><aside id="sidebar"></aside></body></html>`, { runScripts: "outside-only", pretendToBeVisual: true, url: "http://localhost/" });
 const w = dom.window;
-w.localStorage.setItem("serf-hub.sidebar.expanded.foo", "true"); // legacy basename key
+w.localStorage.setItem("evener-hub.sidebar.expanded.foo", "true"); // legacy basename key
 const tree = { needs_you: [], favorites: [], archived_projects: [], test_runs: [],
   projects: [
     { key: "foo-aaaa1111", name: "foo", working_dir: "/a/foo", default_expanded: false, sessions: [] },
@@ -3668,17 +3668,17 @@ const tree = { needs_you: [], favorites: [], archived_projects: [], test_runs: [
   ], attentionSummary: { needsYou: 0, error: 0, working: 0 } };
 w.fetch = () => Promise.resolve({ ok: true, json: () => Promise.resolve(tree) });
 w.htmx = { process() {} };
-w.SerfAppwire = { onNotification() {}, onConnectionRestored() {} };
+w.EvenerAppwire = { onNotification() {}, onConnectionRestored() {} };
 w.eval(src);
 setTimeout(() => {
-  if (w.localStorage.getItem("serf-hub.sidebar.expanded.foo-aaaa1111") !== "true") throw new Error("migration must copy to first co-basename key");
-  if (w.localStorage.getItem("serf-hub.sidebar.expanded.foo-bbbb2222") !== "true") throw new Error("migration must copy to all co-basename keys");
+  if (w.localStorage.getItem("evener-hub.sidebar.expanded.foo-aaaa1111") !== "true") throw new Error("migration must copy to first co-basename key");
+  if (w.localStorage.getItem("evener-hub.sidebar.expanded.foo-bbbb2222") !== "true") throw new Error("migration must copy to all co-basename keys");
   console.log("ok expansion-key migration post-first-render + copy-to-all");
   process.exit(0);
 }, 20);
 ```
 
-Create `cmd/serf-hub/jstest/test-sidebar-survivors.js`:
+Create `cmd/evener-hub/jstest/test-sidebar-survivors.js`:
 
 ```js
 // Surviving contracts carried into the rewrite: rail toggle + persistence,
@@ -3693,19 +3693,19 @@ const dom = new JSDOM(`<!DOCTYPE html><html><body>
 const w = dom.window;
 w.fetch = () => Promise.resolve({ ok: true, json: () => Promise.resolve({ needs_you: [], favorites: [], projects: [], archived_projects: [], test_runs: [], attentionSummary: { needsYou: 0, error: 0, working: 0 } }) });
 w.htmx = { process() {} };
-w.SerfAppwire = { onNotification() {}, onConnectionRestored() {} };
+w.EvenerAppwire = { onNotification() {}, onConnectionRestored() {} };
 w.eval(src);
 w.document.querySelector("[data-sidebar-rail-toggle]").dispatchEvent(new w.MouseEvent("click", { bubbles: true }));
 if (!w.document.body.hasAttribute("data-sidebar-rail")) throw new Error("rail toggle must set body[data-sidebar-rail]");
-if (w.localStorage.getItem("serf-hub.sidebar.rail") !== "true") throw new Error("rail must persist");
-if (typeof w.SerfSidebar.close !== "function") throw new Error("drawer close API must survive");
+if (w.localStorage.getItem("evener-hub.sidebar.rail") !== "true") throw new Error("rail must persist");
+if (typeof w.EvenerSidebar.close !== "function") throw new Error("drawer close API must survive");
 console.log("ok survivors: rail toggle + persistence + close API");
 process.exit(0);
 ```
 
 - [ ] **Step 2: Run tests to verify they fail**
 
-Run: `cd cmd/serf-hub/jstest && node test-sidebar-migration.js; node test-sidebar-survivors.js`
+Run: `cd cmd/evener-hub/jstest && node test-sidebar-migration.js; node test-sidebar-survivors.js`
 Expected: FAIL — migration is a no-op and the rail block was dropped in the rewrite.
 
 - [ ] **Step 3: Implement migration + re-add survivor blocks**
@@ -3757,17 +3757,17 @@ Call `restoreExpanded(tree)` at the top of `renderTree` before `flatten`. In `sy
 
 (Stamp `data-project-key-of` on each session row in `buildRow` when it is pushed under a project in `pushProject`, or resolve the key from the preceding header during flatten — set `n.__projectKey` in `pushProject` and copy it onto the row's `data-project-key-of` attribute in `buildRow`.)
 
-Re-add, verbatim from the pre-rewrite `sidebar.js`, the blocks for: the mobile hamburger drawer (`setSidebarOpen`/`onOutsideClick`/`[data-sidebar-toggle]` handlers), rail mode (`RAIL_KEY`, `isRailEnabled`, `setRail`, `toggleRail`, the `[data-sidebar-rail-toggle]` click, the ⌘B keydown, `syncRailToggleLabel`), and open-beside on subagent rows (`onSidebarOpenBeside` + keydown). Expose `close` via `setSidebarOpen(false)` as before: `window.SerfSidebar.close = function () { setSidebarOpen(false); };`
+Re-add, verbatim from the pre-rewrite `sidebar.js`, the blocks for: the mobile hamburger drawer (`setSidebarOpen`/`onOutsideClick`/`[data-sidebar-toggle]` handlers), rail mode (`RAIL_KEY`, `isRailEnabled`, `setRail`, `toggleRail`, the `[data-sidebar-rail-toggle]` click, the ⌘B keydown, `syncRailToggleLabel`), and open-beside on subagent rows (`onSidebarOpenBeside` + keydown). Expose `close` via `setSidebarOpen(false)` as before: `window.EvenerSidebar.close = function () { setSidebarOpen(false); };`
 
 - [ ] **Step 4: Run tests to verify they pass**
 
-Run: `cd cmd/serf-hub/jstest && node test-sidebar-migration.js && node test-sidebar-survivors.js && node test-sidebar-menu.js && node test-sidebar-overlay.js && node test-sidebar-model.js && node test-sidebar-reconcile.js`
+Run: `cd cmd/evener-hub/jstest && node test-sidebar-migration.js && node test-sidebar-survivors.js && node test-sidebar-menu.js && node test-sidebar-overlay.js && node test-sidebar-model.js && node test-sidebar-reconcile.js`
 Expected: all `ok`.
 
 - [ ] **Step 5: Commit**
 
 ```bash
-git add cmd/serf-hub/assets/sidebar.js cmd/serf-hub/jstest/test-sidebar-migration.js cmd/serf-hub/jstest/test-sidebar-survivors.js
+git add cmd/evener-hub/assets/sidebar.js cmd/evener-hub/jstest/test-sidebar-migration.js cmd/evener-hub/jstest/test-sidebar-survivors.js
 git commit -m "feat(web): expansion-key migration + carry rail/drawer/open-beside survivors"
 ```
 
@@ -3778,30 +3778,30 @@ git commit -m "feat(web): expansion-key migration + carry rail/drawer/open-besid
 Now that the new suite covers the surviving contract (resizer markup is app-shell-level and untouched; rail/drawer/open-beside covered by `test-sidebar-survivors.js`; reconcile/overlay/menu/migration covered by the new tests), remove the dead server-rendered sidebar.
 
 **Files:**
-- Delete: `cmd/serf-hub/templates/partials/sidebar.html`
-- Modify: `cmd/serf-hub/web.go` (remove `handleSidebar`, `handleSidebarProject`, `/_partials/sidebar*` cases, `sidebarTmpl` field + parse + `sidebarTemplateFuncs`)
-- Delete: subsumed `cmd/serf-hub/jstest/test-sidebar-{active,appwire-refresh,archive,cluster,collapse,disclosure-preserve,lazy-children,tiers}.js`; keep `test-sidebar-resizer-markup.js` (app-shell markup, still valid) and `test-sidebar-open-beside.js` only if still asserting live markup — otherwise delete and rely on `test-sidebar-survivors.js`.
+- Delete: `cmd/evener-hub/templates/partials/sidebar.html`
+- Modify: `cmd/evener-hub/web.go` (remove `handleSidebar`, `handleSidebarProject`, `/_partials/sidebar*` cases, `sidebarTmpl` field + parse + `sidebarTemplateFuncs`)
+- Delete: subsumed `cmd/evener-hub/jstest/test-sidebar-{active,appwire-refresh,archive,cluster,collapse,disclosure-preserve,lazy-children,tiers}.js`; keep `test-sidebar-resizer-markup.js` (app-shell markup, still valid) and `test-sidebar-open-beside.js` only if still asserting live markup — otherwise delete and rely on `test-sidebar-survivors.js`.
 - Modify: Go tests referencing `/_partials/sidebar` (web_test.go) — delete or repoint the sidebar-partial assertions.
 
 - [ ] **Step 1: Confirm the new suite is green (guard before deleting)**
 
-Run: `sh cmd/serf-hub/jstest/run-all.sh`
+Run: `sh cmd/evener-hub/jstest/run-all.sh`
 Expected: PASS including all `test-sidebar-*.js`. Only proceed if green.
 
 - [ ] **Step 2: Remove the server-rendered sidebar**
 
-Delete `cmd/serf-hub/templates/partials/sidebar.html`. In `cmd/serf-hub/web.go`: delete `handleSidebar`, `handleSidebarProject`, the two `case r.URL.Path == "/_partials/sidebar..."` branches in `handleInternalPartial`, the `sidebarTmpl` field, its `template.Must(...ParseFS(...))` in `NewWebServer`, and the `sidebarTemplateFuncs` var (now unused). Delete the subsumed `test-sidebar-*.js` files listed above. In `cmd/serf-hub/web_test.go`, delete the tests that request `/_partials/sidebar` and assert its HTML (they exercised the deleted route); keep app-shell tests (`app.html` assertions) that still hold.
+Delete `cmd/evener-hub/templates/partials/sidebar.html`. In `cmd/evener-hub/web.go`: delete `handleSidebar`, `handleSidebarProject`, the two `case r.URL.Path == "/_partials/sidebar..."` branches in `handleInternalPartial`, the `sidebarTmpl` field, its `template.Must(...ParseFS(...))` in `NewWebServer`, and the `sidebarTemplateFuncs` var (now unused). Delete the subsumed `test-sidebar-*.js` files listed above. In `cmd/evener-hub/web_test.go`, delete the tests that request `/_partials/sidebar` and assert its HTML (they exercised the deleted route); keep app-shell tests (`app.html` assertions) that still hold.
 
 - [ ] **Step 3: Verify build + tests + jstest**
 
-Run: `go build ./cmd/serf-hub/... && go test ./cmd/serf-hub/... && sh cmd/serf-hub/jstest/run-all.sh`
-Expected: PASS. `grep -rn "_partials/sidebar\|sidebarTmpl\|handleSidebar" cmd/serf-hub` returns nothing.
+Run: `go build ./cmd/evener-hub/... && go test ./cmd/evener-hub/... && sh cmd/evener-hub/jstest/run-all.sh`
+Expected: PASS. `grep -rn "_partials/sidebar\|sidebarTmpl\|handleSidebar" cmd/evener-hub` returns nothing.
 
 - [ ] **Step 4: Commit**
 
 ```bash
-git rm cmd/serf-hub/templates/partials/sidebar.html cmd/serf-hub/jstest/test-sidebar-active.js cmd/serf-hub/jstest/test-sidebar-appwire-refresh.js cmd/serf-hub/jstest/test-sidebar-archive.js cmd/serf-hub/jstest/test-sidebar-cluster.js cmd/serf-hub/jstest/test-sidebar-collapse.js cmd/serf-hub/jstest/test-sidebar-disclosure-preserve.js cmd/serf-hub/jstest/test-sidebar-lazy-children.js cmd/serf-hub/jstest/test-sidebar-tiers.js
-git add cmd/serf-hub/web.go cmd/serf-hub/web_test.go
+git rm cmd/evener-hub/templates/partials/sidebar.html cmd/evener-hub/jstest/test-sidebar-active.js cmd/evener-hub/jstest/test-sidebar-appwire-refresh.js cmd/evener-hub/jstest/test-sidebar-archive.js cmd/evener-hub/jstest/test-sidebar-cluster.js cmd/evener-hub/jstest/test-sidebar-collapse.js cmd/evener-hub/jstest/test-sidebar-disclosure-preserve.js cmd/evener-hub/jstest/test-sidebar-lazy-children.js cmd/evener-hub/jstest/test-sidebar-tiers.js
+git add cmd/evener-hub/web.go cmd/evener-hub/web_test.go
 git commit -m "refactor(hub): remove server-rendered sidebar templates/routes + subsumed jstests"
 ```
 
@@ -3812,12 +3812,12 @@ git commit -m "refactor(hub): remove server-rendered sidebar templates/routes + 
 Raise the sidebar's readability floor: 11px minimum; `--text-dim` (≈2.9:1, fails AA) banned below 12px; row meta at 11px on a ≥4.5:1 pairing verified in both themes; ≥24px hit boxes on all sidebar controls at desktop; the whole project header is the toggle target (its buttons `stopPropagation`); subagent rows and any "Completed (N)" toggle ≥24px.
 
 **Files:**
-- Modify: `cmd/serf-hub/assets/style.css`
-- Test: `cmd/serf-hub/jstest/test-color-system-css.js` extension OR a new `test-sidebar-density-css.js` (create) that parses `style.css` and asserts the rules.
+- Modify: `cmd/evener-hub/assets/style.css`
+- Test: `cmd/evener-hub/jstest/test-color-system-css.js` extension OR a new `test-sidebar-density-css.js` (create) that parses `style.css` and asserts the rules.
 
 - [ ] **Step 1: Write the failing CSS assertion test**
 
-Create `cmd/serf-hub/jstest/test-sidebar-density-css.js`:
+Create `cmd/evener-hub/jstest/test-sidebar-density-css.js`:
 
 ```js
 // Sidebar density/contrast floor: row meta uses >=11px and not --text-dim;
@@ -3842,12 +3842,12 @@ process.exit(0);
 
 - [ ] **Step 2: Run test to verify it fails**
 
-Run: `cd cmd/serf-hub/jstest && node test-sidebar-density-css.js`
+Run: `cd cmd/evener-hub/jstest && node test-sidebar-density-css.js`
 Expected: FAIL — the `.sb-row .meta` rule does not exist yet in `style.css`.
 
 - [ ] **Step 3: Add the density/contrast rules**
 
-Append to `cmd/serf-hub/assets/style.css`:
+Append to `cmd/evener-hub/assets/style.css`:
 
 ```css
 /* Sidebar readability floor (design diagnostic WS3): 11px minimum; row meta on
@@ -3867,13 +3867,13 @@ Verify contrast in both themes: `--text-muted` (#7a7a86 on #0a0a0e ≈ 4.7:1 dar
 
 - [ ] **Step 4: Run test + visual check**
 
-Run: `cd cmd/serf-hub/jstest && node test-sidebar-density-css.js && node test-color-system-css.js`
+Run: `cd cmd/evener-hub/jstest && node test-sidebar-density-css.js && node test-color-system-css.js`
 Expected: PASS.
 
 - [ ] **Step 5: Commit**
 
 ```bash
-git add cmd/serf-hub/assets/style.css cmd/serf-hub/jstest/test-sidebar-density-css.js
+git add cmd/evener-hub/assets/style.css cmd/evener-hub/jstest/test-sidebar-density-css.js
 git commit -m "feat(web): sidebar typography & density floor (11px, >=4.5:1, >=24px targets)"
 ```
 
@@ -3888,7 +3888,7 @@ Prove the rebuilt surface end-to-end against a freshly built hub, per the `e2e-s
 
 - [ ] **Step 1: Invoke the skill and author the cards**
 
-Use the `e2e-scenario-testing` skill. Build the binaries: `go build -o /tmp/serf-hub ./cmd/serf-hub && go build -o /tmp/serf ./cmd/serf`. Source the repo `.env` (`. "$PWD/.env"`) and launch the hub against a scratch `SERF_STATE_DIR`. Write one card per scenario with explicit pass/fail assertions on the live DOM (e.g. via the browser skill or `curl /api/tree` + JSON assertions).
+Use the `e2e-scenario-testing` skill. Build the binaries: `go build -o /tmp/evener-hub ./cmd/evener-hub && go build -o /tmp/evener ./cmd/evener`. Source the repo `.env` (`. "$PWD/.env"`) and launch the hub against a scratch `EVENER_STATE_DIR`. Write one card per scenario with explicit pass/fail assertions on the live DOM (e.g. via the browser skill or `curl /api/tree` + JSON assertions).
 
 - [ ] **Step 2: Card — expand-non-live survives a working session**
 
@@ -3920,7 +3920,7 @@ git commit -m "test(e2e): sidebar rebuild scenario cards (expand/favorite/delete
 ## Task 26: Full-repo gates + doc regen + "what changed" note
 
 **Files:**
-- Modify: `docs/serf-hub-web-routing.md` (route changes), `docs/appwire-protocol.md` (already regenerated in Task 17 — verify fresh)
+- Modify: `docs/evener-hub-web-routing.md` (route changes), `docs/appwire-protocol.md` (already regenerated in Task 17 — verify fresh)
 - Verify: whole-repo lint + tests + jstest.
 
 - [ ] **Step 1: Regenerate + verify the appwire doc is fresh**
@@ -3930,7 +3930,7 @@ Expected: no diff (Task 17 already committed the regenerated `docs/appwire-proto
 
 - [ ] **Step 2: Update the web-routing doc**
 
-In `docs/serf-hub-web-routing.md`, replace the `/_partials/sidebar` + `/_partials/sidebar/project` entries with the new endpoints: `GET /api/tree` (now the sidebar's data source), `GET /api/tree/project?key=`, `POST /api/favorite`, `POST /api/project/delete`, `POST /api/sessions/{ref}/rename`; note the sidebar is client-rendered (no server partial). Use the `maintaining-documentation` skill to keep terminology consistent.
+In `docs/evener-hub-web-routing.md`, replace the `/_partials/sidebar` + `/_partials/sidebar/project` entries with the new endpoints: `GET /api/tree` (now the sidebar's data source), `GET /api/tree/project?key=`, `POST /api/favorite`, `POST /api/project/delete`, `POST /api/sessions/{ref}/rename`; note the sidebar is client-rendered (no server partial). Use the `maintaining-documentation` skill to keep terminology consistent.
 
 - [ ] **Step 3: Full-repo gates**
 
@@ -3938,16 +3938,16 @@ Run:
 ```bash
 make lint
 make test
-sh cmd/serf-hub/jstest/run-all.sh
+sh cmd/evener-hub/jstest/run-all.sh
 ```
 Expected: all green across every module (root, agent, llm, auth, fuzz, invariant, envvars) and the JSDOM suite.
 
 - [ ] **Step 4: "What changed" note + commit**
 
-Append a short "What changed (2026-07-04 sidebar rebuild)" section to `docs/serf-hub-web-routing.md` (or the web-ui README) summarizing: client-rendered keyed sidebar off `/api/tree`; path-based project identity + slug keys; favorites + Pinned; project delete; test-run classification; in-scope rename; the dead server-rendered sidebar removed.
+Append a short "What changed (2026-07-04 sidebar rebuild)" section to `docs/evener-hub-web-routing.md` (or the web-ui README) summarizing: client-rendered keyed sidebar off `/api/tree`; path-based project identity + slug keys; favorites + Pinned; project delete; test-run classification; in-scope rename; the dead server-rendered sidebar removed.
 
 ```bash
-git add docs/serf-hub-web-routing.md docs/appwire-protocol.md
+git add docs/evener-hub-web-routing.md docs/appwire-protocol.md
 git commit -m "docs: web-routing + appwire protocol reflect the sidebar rebuild"
 ```
 
@@ -3964,12 +3964,12 @@ Every Review-log fold and mechanism maps to a task that implements **and** tests
 - **`UpdateMeta` (A5/B1, H3):** sorted re-insert + FTS re-rank → Task 12.
 - **Remote async cache:** → Task 13.
 - **Delete:** resolution from `All()` w/ StateDir (A1), key↔workingDir validation (A11), per-session `Roster.Find` re-check (A9), `.log.jsonl` + `<id>/` removal (B2), store scrubs incl. legacy row (B7/G3), live-refusal 409, deleted/skipped → Task 14.
-- **Origin (Decision 4):** SessionMeta.Origin + `SERF_SESSION_ORIGIN` (coordinates w/ WS2 goldens), **TestRuns-over-Archived** (B6) → Task 15.
-- **Rename (Decision 2):** `serf/thread/name/set` + catalog + `ThreadCapabilities.Rename` + docs regen (B5) → Task 17; agent in-memory naming update (A8) + namer suppression → Task 16; live path UpdateMeta+bump + ended pre-write re-check (A2) + UpdateMeta+bump (G1) + legacy-daemon 404 toast, no live file-edit fallback (G2) + `TreeNode.Rename` resolution (G2) → Task 18.
+- **Origin (Decision 4):** SessionMeta.Origin + `EVENER_SESSION_ORIGIN` (coordinates w/ WS2 goldens), **TestRuns-over-Archived** (B6) → Task 15.
+- **Rename (Decision 2):** `evener/thread/name/set` + catalog + `ThreadCapabilities.Rename` + docs regen (B5) → Task 17; agent in-memory naming update (A8) + namer suppression → Task 16; live path UpdateMeta+bump + ended pre-write re-check (A2) + UpdateMeta+bump (G1) + legacy-daemon 404 toast, no live file-edit fallback (G2) + `TreeNode.Rename` resolution (G2) → Task 18.
 - **Renderer/overlay:** RowID keying incl. cross-tier duplicates (B3) → Task 19; sequence guard, instant attention path, ≥2s + 60s resync, per-op predicates, **post-POST resync** (H1), 30s eviction → Task 20; menu incl. anchor-removal close → Task 21; **migration post-first-render + copy-to-all** (G4) + survivors (H5: resizer app-shell + rail + open-beside) → Task 22; delete old only after new suite covers surviving contract → Task 23.
 - **Typography/density:** → Task 24. **e2e cards** (all four spec scenarios) → Task 25. **Final gates + doc regen** → Task 26.
 
-Type/name consistency checked across tasks: `TreeProject.Key`/`ProjectSlug`; `InputsVersion`/`TreeCache`; `PastIndex.UpdateMeta`/`SetOnChange`; `MethodSerfThreadNameSet`/`ThreadNameSetParams`/`ThreadCapabilities.Rename`/`Client.ThreadNameSet`/`Source.SetThreadName`/`Session.Rename`/`sessionNameSourceUser`; client `SerfSidebar.{renderTree,favorite,archive,rename}`; `hubapi.TreeNode.{Tier,Branch,ClusterCount,Favorite,Rename}`.
+Type/name consistency checked across tasks: `TreeProject.Key`/`ProjectSlug`; `InputsVersion`/`TreeCache`; `PastIndex.UpdateMeta`/`SetOnChange`; `MethodEvenerThreadNameSet`/`ThreadNameSetParams`/`ThreadCapabilities.Rename`/`Client.ThreadNameSet`/`Source.SetThreadName`/`Session.Rename`/`sessionNameSourceUser`; client `EvenerSidebar.{renderTree,favorite,archive,rename}`; `hubapi.TreeNode.{Tier,Branch,ClusterCount,Favorite,Rename}`.
 
 ---
 

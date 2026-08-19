@@ -53,9 +53,9 @@ Current 07ry audit, verified against the real harness at 390px and 1400px:
 
 **Files:**
 
-- Modify: `cmd/serf-hub/frontend/src/panes/session/transcript/messages/reasoningFormat.ts`
-- Modify: `cmd/serf-hub/frontend/src/panes/session/transcript/messages/ThinkBlock.tsx`
-- Modify: `cmd/serf-hub/frontend/src/panes/session/transcript/messages/thinkblock.module.css` only if the bounded context line needs an explicit flex/min-width contract
+- Modify: `cmd/evener-hub/frontend/src/panes/session/transcript/messages/reasoningFormat.ts`
+- Modify: `cmd/evener-hub/frontend/src/panes/session/transcript/messages/ThinkBlock.tsx`
+- Modify: `cmd/evener-hub/frontend/src/panes/session/transcript/messages/thinkblock.module.css` only if the bounded context line needs an explicit flex/min-width contract
 
 **Contract:**
 
@@ -70,9 +70,9 @@ Current 07ry audit, verified against the real harness at 390px and 1400px:
 
 **Files:**
 
-- Modify: `cmd/serf-hub/frontend/src/panes/session/transcript/messages/reasoningFormat.test.ts`
-- Modify: `cmd/serf-hub/frontend/src/panes/session/transcript/messages/ThinkBlock.test.tsx`
-- Modify: `cmd/serf-hub/frontend/src/panes/session/transcript/messages/format.test.ts` only if a shared formatter contract is intentionally reused
+- Modify: `cmd/evener-hub/frontend/src/panes/session/transcript/messages/reasoningFormat.test.ts`
+- Modify: `cmd/evener-hub/frontend/src/panes/session/transcript/messages/ThinkBlock.test.tsx`
+- Modify: `cmd/evener-hub/frontend/src/panes/session/transcript/messages/format.test.ts` only if a shared formatter contract is intentionally reused
 
 **Tests to add or replace:**
 
@@ -92,9 +92,9 @@ Run these tests now and record the expected red failures before implementing Tas
 
 **Files:**
 
-- Modify: `cmd/serf-hub/frontend/src/panes/session/transcript/messages/UserMessageItem.test.tsx`
-- Modify: `cmd/serf-hub/frontend/src/panes/session/transcript/messages/AgentMessageItem.test.tsx`
-- Modify: `cmd/serf-hub/frontend/src/panes/session/transcript/TurnBlock.test.tsx`
+- Modify: `cmd/evener-hub/frontend/src/panes/session/transcript/messages/UserMessageItem.test.tsx`
+- Modify: `cmd/evener-hub/frontend/src/panes/session/transcript/messages/AgentMessageItem.test.tsx`
+- Modify: `cmd/evener-hub/frontend/src/panes/session/transcript/TurnBlock.test.tsx`
 - Add or modify: the smallest existing transcript stylesheet-contract test seam, using comment-stripped CSS
 
 **Contracts:**
@@ -115,7 +115,7 @@ Run the focused component suite and confirm the new changed contracts are red be
 
 ### Task 5: Verify in proportion to the UI risk
 
-From `cmd/serf-hub/frontend`:
+From `cmd/evener-hub/frontend`:
 
 1. Focused transcript tests, including `reasoningFormat`, `ThinkBlock`, `UserMessageItem`, `AgentMessageItem`, and `TurnBlock`.
 2. Full frontend Vitest suite.

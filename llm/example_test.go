@@ -4,7 +4,7 @@ import (
 	"context"
 	"fmt"
 
-	"primeradiant.com/serf/llm"
+	"primeradiant.com/evener/llm"
 )
 
 // exampleAdapter is a minimal [llm.ProviderAdapter] used by the examples: it

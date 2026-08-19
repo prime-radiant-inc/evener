@@ -86,7 +86,7 @@ func TestResolveTargetTracksCurrentChannel(t *testing.T) {
 }
 
 func TestUpgradeInstallsReleaseArchive(t *testing.T) {
-	archive := releaseArchive(t, "serf_linux_amd64")
+	archive := releaseArchive(t, "evener_linux_amd64")
 	var gotPath string
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		gotPath = r.URL.Path
@@ -108,7 +108,7 @@ func TestUpgradeInstallsReleaseArchive(t *testing.T) {
 		t.Fatalf("Upgrade: %v", err)
 	}
 
-	if want := "/releases/download/snapshot/serf_linux_amd64.tar.gz"; gotPath != want {
+	if want := "/releases/download/snapshot/evener_linux_amd64.tar.gz"; gotPath != want {
 		t.Fatalf("download path = %q, want %q", gotPath, want)
 	}
 	if result.Channel != "snapshot" {
@@ -117,13 +117,13 @@ func TestUpgradeInstallsReleaseArchive(t *testing.T) {
 	if result.Release != "snapshot" {
 		t.Fatalf("Release = %q, want snapshot", result.Release)
 	}
-	const wantRestart = "Restart serf-tui and serf-hub to use the upgraded binaries."
+	const wantRestart = "Restart evener-tui and evener-hub to use the upgraded binaries."
 	if result.RestartMessage != wantRestart {
 		t.Fatalf("RestartMessage = %q, want %q", result.RestartMessage, wantRestart)
 	}
 
 	binDir := filepath.Join(prefix, "bin")
-	shareBinDir := filepath.Join(prefix, "share", "serf", "bin")
+	shareBinDir := filepath.Join(prefix, "share", "evener", "bin")
 	for _, bin := range installBinaries {
 		installed := filepath.Join(shareBinDir, bin)
 		info, err := os.Stat(installed)
@@ -153,7 +153,7 @@ func TestUpgradeInstallsReleaseArchive(t *testing.T) {
 }
 
 func TestUpgradeReleaseChannelUsesLatestDownloadURL(t *testing.T) {
-	archive := releaseArchive(t, "serf_linux_amd64")
+	archive := releaseArchive(t, "evener_linux_amd64")
 	var gotPath string
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		gotPath = r.URL.Path
@@ -175,7 +175,7 @@ func TestUpgradeReleaseChannelUsesLatestDownloadURL(t *testing.T) {
 		t.Fatalf("Upgrade: %v", err)
 	}
 
-	if want := "/releases/latest/download/serf_linux_amd64.tar.gz"; gotPath != want {
+	if want := "/releases/latest/download/evener_linux_amd64.tar.gz"; gotPath != want {
 		t.Fatalf("download path = %q, want %q", gotPath, want)
 	}
 	if result.Channel != "release" {
@@ -193,7 +193,7 @@ func TestUpgradeRejectsUnsupportedPlatform(t *testing.T) {
 		Prefix:         t.TempDir(),
 		GOOS:           "darwin",
 		GOARCH:         "amd64",
-		RepoURL:        "https://example.invalid/serf",
+		RepoURL:        "https://example.invalid/evener",
 	})
 	if err == nil {
 		t.Fatal("Upgrade succeeded on unsupported platform")

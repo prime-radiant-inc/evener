@@ -5,11 +5,11 @@ import (
 	"os"
 	"path/filepath"
 
-	"primeradiant.com/serf/envvars"
+	"primeradiant.com/evener/envvars"
 )
 
-// DefaultConfigRoot returns the user config root for serf:
-// $XDG_CONFIG_HOME/serf, or ~/.config/serf when XDG_CONFIG_HOME is unset.
+// DefaultConfigRoot returns the user config root for evener:
+// $XDG_CONFIG_HOME/evener, or ~/.config/evener when XDG_CONFIG_HOME is unset.
 func DefaultConfigRoot() string {
 	base := envvars.XDGConfigHome.Getenv()
 	if base == "" {
@@ -19,7 +19,7 @@ func DefaultConfigRoot() string {
 		}
 		base = filepath.Join(home, ".config")
 	}
-	return filepath.Join(base, "serf")
+	return filepath.Join(base, "evener")
 }
 
 func DefaultSkillsDir() string {
@@ -30,9 +30,17 @@ func DefaultPluginsRoot() string {
 	return filepath.Join(DefaultConfigRoot(), "plugins")
 }
 
-// EnsureUserConfigDirs creates the user-managed Serf extension directories.
+// EnsureUserConfigDirs creates the user-managed Evener extension directories.
 // Runtime state remains lazy and is created by the subsystem that writes it.
+//
+// It is the first side-effecting call in every product binary's startup
+// (cmd/evener, cmd/evener-hub, cmd/evener-tui), so checkLegacyDataDirs runs
+// here, before anything creates a directory a stranded ~/.serf could be
+// mistaken as already migrated into.
 func EnsureUserConfigDirs() error {
+	if err := checkLegacyDataDirs(); err != nil {
+		return err
+	}
 	for _, dir := range []string{
 		DefaultConfigRoot(),
 		DefaultSkillsDir(),

@@ -1,11 +1,11 @@
-//go:build serffuzz
+//go:build evenerfuzz
 
 package agent
 
 import (
 	"testing"
 
-	"primeradiant.com/serf/llm"
+	"primeradiant.com/evener/llm"
 )
 
 // FuzzMcClassifyModelError drives classifyModelError — the pure decision core

@@ -47,7 +47,7 @@ concurrent). Pre-baked AMI with all Docker images pre-pulled and caches warm.
                    ▼
             ┌─────────────┐
             │  S3 bucket  │
-            │  serf-evals │
+            │  evener-evals │
             │  /run-id/   │
             │    rep-1/   │
             │    rep-2/   │
@@ -69,7 +69,7 @@ concurrent). Pre-baked AMI with all Docker images pre-pulled and caches warm.
 
 - Image pulls: 0s (pre-baked in AMI)
 - apt installs: ~30s per container (cache hits via apt-cacher-ng)
-- Agent setup: ~60s (install.sh + serf binary)
+- Agent setup: ~60s (install.sh + evener binary)
 - Agent execution: 1-15 min (most tasks), up to 60 min (rare 3600s tasks)
 - Verifier: ~30s (uv pre-installed, pytest cached)
 - **Total wall-clock: ~20-30 min for 80% of tasks, stragglers up to 60 min**
@@ -90,34 +90,34 @@ AMI build.
 ### Warm caches
 
 **apt-cacher-ng cache** (`/var/cache/apt-cacher-ng/`):
-During AMI build, run install-serf.sh inside each of the 89 base images through
+During AMI build, run install-evener.sh inside each of the 89 base images through
 the local apt-cacher-ng proxy. This populates the cache with every package our
 install script needs (build-essential, curl, git, python3-pip, etc.) for every
 base image's package manager version.
 
-**uv binary**: Pre-installed by install-serf.sh. Since verifier test.sh runs
+**uv binary**: Pre-installed by install-evener.sh. Since verifier test.sh runs
 in the same container after the agent, `curl astral.sh/uv/... | sh` is a no-op.
 
-### Serf agent files
-- `serf-linux-amd64` binary
-- `serf_agent.py` (harbor adapter)
-- `install-serf.sh.j2` (install template)
+### Evener agent files
+- `evener-linux-amd64` binary
+- `evener_agent.py` (harbor adapter)
+- `install-evener.sh.j2` (install template)
 - `.env` — NOT baked in. API keys come from Secrets Manager at boot.
 
 ## AWS resources needed
 
-All in a dedicated "serf-eval" namespace, no overlap with sen-cluster.
+All in a dedicated "evener-eval" namespace, no overlap with sen-cluster.
 
-1. **S3 bucket**: `serf-eval-results` — stores run outputs
-2. **IAM role**: `serf-eval-instance` — S3 write, Secrets Manager read
-3. **Security group**: `serf-eval-sg` — outbound only (HTTPS for API calls, Docker Hub)
-4. **Secrets Manager secret**: `serf-eval/api-keys` — OPENAI_API_KEY, etc.
-5. **Launch template**: `serf-eval-runner` — instance type, AMI, IAM role, SG
-6. **Key pair**: reuse existing or create `serf-eval-key` for SSH debugging
+1. **S3 bucket**: `evener-eval-results` — stores run outputs
+2. **IAM role**: `evener-eval-instance` — S3 write, Secrets Manager read
+3. **Security group**: `evener-eval-sg` — outbound only (HTTPS for API calls, Docker Hub)
+4. **Secrets Manager secret**: `evener-eval/api-keys` — OPENAI_API_KEY, etc.
+5. **Launch template**: `evener-eval-runner` — instance type, AMI, IAM role, SG
+6. **Key pair**: reuse existing or create `evener-eval-key` for SSH debugging
 
-## install-serf.sh changes
+## install-evener.sh changes
 
-Add uv and common verifier deps to install-serf.sh.j2:
+Add uv and common verifier deps to install-evener.sh.j2:
 
 ```bash
 # Pre-install uv so verifier test.sh doesn't need to fetch from astral.sh
@@ -135,19 +135,19 @@ uv pip install --system pytest==8.4.1 pytest-json-ctrf==0.3.5 2>/dev/null || tru
 
 ```bash
 #!/bin/bash
-# Build the serf eval AMI.
+# Build the evener eval AMI.
 # Run on a fresh Ubuntu 24.04 instance or via Packer.
 
 # 1. Install Docker
 # 2. Install harbor: uv tool install harbor
 # 3. Install apt-cacher-ng, enable as systemd service
 # 4. Install AWS CLI v2
-# 5. Copy serf files (binary, adapter, install template)
+# 5. Copy evener files (binary, adapter, install template)
 # 6. Pull all 89 task images:
 #    harbor download -d terminal-bench@2.0
 #    (or iterate task list and docker pull each)
 # 7. Warm apt-cacher-ng cache:
-#    for each image, run install-serf.sh through proxy
+#    for each image, run install-evener.sh through proxy
 # 8. Snapshot as AMI
 ```
 
@@ -167,7 +167,7 @@ throwaway instance and then `aws ec2 create-image`.
 #   eval-aws.sh terminate --run-id <id>
 
 # launch:
-#   1. Generate run-id: serf_{model}_{effort}_{sha}_{date}
+#   1. Generate run-id: evener_{model}_{effort}_{sha}_{date}
 #   2. For each rep (1..N):
 #      - Launch spot instance from launch template
 #      - Userdata script:
@@ -175,12 +175,12 @@ throwaway instance and then `aws ec2 create-image`.
 #        b. Start apt-cacher-ng
 #        c. Run harbor:
 #           harbor run -d terminal-bench@2.0 \
-#             --agent-import-path serf_agent:SerfAgent \
+#             --agent-import-path evener_agent:EvenerAgent \
 #             -m $MODEL --ak max_rounds=100 \
 #             -k 1 -n 89 \
 #             --job-name ${RUN_ID}_rep${REP} \
 #             --jobs-dir /data/results
-#        d. Upload results to S3: aws s3 sync /data/results s3://serf-eval-results/$RUN_ID/rep-$REP/
+#        d. Upload results to S3: aws s3 sync /data/results s3://evener-eval-results/$RUN_ID/rep-$REP/
 #        e. Self-terminate: aws ec2 terminate-instances --instance-ids $(curl -s http://169.254.169.254/latest/meta-data/instance-id)
 #   3. Tag instances with run-id for tracking
 #
@@ -207,13 +207,13 @@ tools/eval-aws/
 
 ## Implementation order
 
-### Task 1: install-serf.sh changes
-Add uv pre-install and common verifier deps to install-serf.sh.j2.
+### Task 1: install-evener.sh changes
+Add uv pre-install and common verifier deps to install-evener.sh.j2.
 Test on magic-kingdom with a single task run.
 
 ### Task 2: AWS resources (Terraform or CLI)
 Create S3 bucket, IAM role, security group, secrets, launch template.
-All in us-west-1, tagged `project=serf-eval`.
+All in us-west-1, tagged `project=evener-eval`.
 
 ### Task 3: AMI build script
 Write build-ami.sh. Run on a throwaway m6i.4xlarge to build the AMI.

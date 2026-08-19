@@ -13,12 +13,12 @@ reports it honestly.
 
 ## Pre-state
 
-- Built serf binary, into this run's own directory — never a fixed
-  `/tmp/serf` that a second card running at the same time would
+- Built evener binary, into this run's own directory — never a fixed
+  `/tmp/evener` that a second card running at the same time would
   overwrite mid-run (kata `k2rx`):
   ```bash
-  run=$(mktemp -d -t serf-e2e-XXXXXX)
-  go build -o "$run/serf" ./cmd/serf
+  run=$(mktemp -d -t evener-e2e-XXXXXX)
+  go build -o "$run/evener" ./cmd/evener
   ```
 - Creds exported into the child env (bare `.env`, so `set -a` is
   mandatory):
@@ -34,7 +34,7 @@ reports it honestly.
 1. One shared project dir for all runs (same `--dir` ⇒ same bucket ⇒
    `current_project` search sees them all):
    ```bash
-   proj=$(mktemp -d -t serf-e2e-query-XXXXX)
+   proj=$(mktemp -d -t evener-e2e-query-XXXXX)
    ```
 
 2. Seed the bucket with a session containing a **rare, distinctive
@@ -42,7 +42,7 @@ reports it honestly.
    nonce so reruns don't match each other:
    ```bash
    nonce="zarquon$(date +%s)"
-   "$run/serf" --model oai-work/gpt-5.5 --dir "$proj" \
+   "$run/evener" --model oai-work/gpt-5.5 --dir "$proj" \
      "Create a file named notes.txt whose only contents are the single word ${nonce}. Then read it back with cat and report the word you wrote."
    ```
    Wait for exit 0. Sanity: `grep -q "$nonce" "$proj/notes.txt"`.
@@ -51,16 +51,16 @@ reports it honestly.
    the nonce, so a match proves content discrimination rather than
    "returns everything":
    ```bash
-   "$run/serf" --model oai-work/gpt-5.5 --dir "$proj" \
+   "$run/evener" --model oai-work/gpt-5.5 --dir "$proj" \
      "Print the current date with the date command and report it."
-   "$run/serf" --model oai-work/gpt-5.5 --dir "$proj" \
+   "$run/evener" --model oai-work/gpt-5.5 --dir "$proj" \
      "List the files in the current directory with ls and report the count."
    ```
 
-4. A final serf run searches by the nonce. It is NOT told which session
+4. A final evener run searches by the nonce. It is NOT told which session
    contains it — it must find the match by content:
    ```bash
-   "$run/serf" --model oai-work/gpt-5.5 --dir "$proj" \
+   "$run/evener" --model oai-work/gpt-5.5 --dir "$proj" \
      "Call find_session_transcripts with query set to '${nonce}'. Report: (a) how many matches came back and each match's transcript_ref, (b) the snippet text on the matching record, (c) the values of scanned and scan_truncated on the response. Do NOT read any session — just report the find result."
    ```
 

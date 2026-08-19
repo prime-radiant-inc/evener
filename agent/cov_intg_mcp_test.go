@@ -14,9 +14,9 @@ import (
 	"testing"
 	"time"
 
-	"primeradiant.com/serf/agent/execenv"
-	"primeradiant.com/serf/agent/schema"
-	"primeradiant.com/serf/llm"
+	"primeradiant.com/evener/agent/execenv"
+	"primeradiant.com/evener/agent/schema"
+	"primeradiant.com/evener/llm"
 )
 
 // These tests drive Session.initMCP against a REAL stdio MCP server subprocess
@@ -38,7 +38,7 @@ var (
 func intg_buildMCPServer(t *testing.T) string {
 	t.Helper()
 	intgMCPServerOnce.Do(func() {
-		intgMCPServerDir, errIntgMCPServer = os.MkdirTemp("", "serf-intgmcpserver-*")
+		intgMCPServerDir, errIntgMCPServer = os.MkdirTemp("", "evener-intgmcpserver-*")
 		if errIntgMCPServer != nil {
 			return
 		}
@@ -271,11 +271,11 @@ func TestIntg_InitMCP_DiscoverError(t *testing.T) {
 func TestIntg_InitMCP_GlobalConfigParseErrorSurvives(t *testing.T) {
 	globalDir := t.TempDir()
 	t.Setenv("XDG_CONFIG_HOME", globalDir)
-	serfDir := filepath.Join(globalDir, "serf")
-	if err := os.MkdirAll(serfDir, 0755); err != nil {
+	evenerDir := filepath.Join(globalDir, "evener")
+	if err := os.MkdirAll(evenerDir, 0755); err != nil {
 		t.Fatal(err)
 	}
-	mcpPath := filepath.Join(serfDir, "mcp.json")
+	mcpPath := filepath.Join(evenerDir, "mcp.json")
 	if err := os.WriteFile(mcpPath, []byte(`{invalid`), 0644); err != nil {
 		t.Fatal(err)
 	}

@@ -15,7 +15,7 @@ restricted parent) are live-validated in `2026-07-09-sandbox-delegate-live-e2e.m
 None — every case here is a pure or decode-path unit. Run the whole set:
 ```
 $ go test ./agent/ -run 'DelegateSandbox|SandboxFloor|SandboxNet|DecodeDelegateArgs|AtLeastAsConfining'
-$ go test ./cmd/serf-hub/internal/launchconfig/ -run 'Sandbox'
+$ go test ./cmd/evener-hub/internal/launchconfig/ -run 'Sandbox'
 ```
 All PASS on `wip/sandbox-config-delegate` (2026-07-09).
 
@@ -69,19 +69,19 @@ Scenario B).
 
 ### 6. Typo'd launch-config sandbox mode (settings-user visible)
 - **Why**: a typo'd mode merges cleanly and would otherwise only fail at spawn
-  (serf's `ParseMode` dies) with no launch-config pointer at the typo. The merge
+  (evener's `ParseMode` dies) with no launch-config pointer at the typo. The merge
   emits a diagnostic pointing at the offending layer; fail-loud-at-spawn remains
   the backstop.
 - **Diagnostic** (`Field: "sandbox"`): `unknown sandbox mode "<value>" (want one of: off, read-only, workspace-write, restricted)`
-- **Test**: `cmd/serf-hub/internal/launchconfig/merge_test.go` `TestMerge_UnknownSandboxModeDiagnostic`.
+- **Test**: `cmd/evener-hub/internal/launchconfig/merge_test.go` `TestMerge_UnknownSandboxModeDiagnostic`.
 
 ### 7. Launch-config `sandbox_net` set without a non-off mode (settings-user visible)
 - **Why**: `sandbox_net` only takes effect alongside a non-off mode; a merged
   effective config with net set but no (or off) mode is a silent no-op at
-  `serf serve`. `ToArgs` suppresses the flag AND `merge.go` warns (checked on the
+  `evener serve`. `ToArgs` suppresses the flag AND `merge.go` warns (checked on the
   EFFECTIVE config, since mode and net may arrive from different layers).
 - **Diagnostic** (`Field: "sandbox_net"`): `sandbox_net has no effect without a non-off sandbox mode`
-- **Tests**: `cmd/serf-hub/internal/launchconfig/merge_test.go` `TestMerge_SandboxNetWithoutModeDiagnostic`; `args_test.go` `TestToArgs_Sandbox` (the `net on, no mode` / `net off, no mode` rows emit nothing).
+- **Tests**: `cmd/evener-hub/internal/launchconfig/merge_test.go` `TestMerge_SandboxNetWithoutModeDiagnostic`; `args_test.go` `TestToArgs_Sandbox` (the `net on, no mode` / `net off, no mode` rows emit nothing).
 
 ## Sharp edges
 - Cases 1–5 are DELEGATE-tool refusals (the model sees `invalid_request` and

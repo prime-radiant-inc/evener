@@ -32,7 +32,7 @@ own `transcript_ref`, the `delegate_send` result, or `delegates.jsonl`.
 - Fresh binaries from the branch under test; an isolated hub
   (`docs/agentic-testing.md` setup checklist); credentialed model that
   follows deliberate-misbehavior test instructions.
-- `tmpdir=$(mktemp -d -t serf-e2e-jschema-XXXXX)`.
+- `tmpdir=$(mktemp -d -t evener-e2e-jschema-XXXXX)`.
 - The schema used throughout:
   `{"type":"object","properties":{"verdict":{"type":"string"},"count":{"type":"integer"}},"required":["verdict","count"]}`.
 
@@ -76,7 +76,7 @@ own `transcript_ref`, the `delegate_send` result, or `delegates.jsonl`.
    > structured tool state. Then end your turn.
 6. Read the child transcripts and the durable delegate journal — NOT
    `jobs.jsonl`, which carries no delegate generation:
-   `find ~/.local/state/serf/projects -path "*sessions/$SID/delegates.jsonl"`.
+   `find ~/.local/state/evener/projects -path "*sessions/$SID/delegates.jsonl"`.
 
 ## Expected
 
@@ -185,7 +185,7 @@ own `transcript_ref`, the `delegate_send` result, or `delegates.jsonl`.
   emphasized rather than recording a validation bug. The transcript of
   the child (its `transcript_ref`) shows what the child actually sent.
 - The schema replaces the child's communicate `output` parameter
-  schema wholesale, and serf validates at TWO layers: the tool
+  schema wholesale, and evener validates at TWO layers: the tool
   registry's call-time args-schema check
   (`agent/internal/tool/registry.go` "tool args schema validation
   failed", which rejects the invalid call with an `is_error` tool

@@ -20,8 +20,8 @@ All new symbols live in package `agent`. The function follows the `DiscoverMCPCo
 // The returned slice is ordered: lowest-precedence first.
 //
 // Discovery sources (lowest to highest precedence):
-//   1. ~/.config/serf/plugins/<name>/   (per-user)
-//   2. <git-root>/.serf/plugins/<name>/ (per-project; uses gitRootOrEmpty)
+//   1. ~/.config/evener/plugins/<name>/   (per-user)
+//   2. <git-root>/.evener/plugins/<name>/ (per-project; uses gitRootOrEmpty)
 //   3. extraDirs                          (e.g., --plugin-dir paths, in order)
 //
 // A plugin directory qualifies if it contains .claude-plugin/plugin.json.
@@ -55,12 +55,12 @@ inputs:  env (for cwd + git root), extraDirs []string
 outputs: dirs []string (absolute, in precedence order), shadowed [], errs []
 
 1. roots = []                                         # absolute parent directories
-2. globalPath = userConfigDir() + "/serf/plugins"     # ~/.config/serf/plugins
+2. globalPath = userConfigDir() + "/evener/plugins"     # ~/.config/evener/plugins
    if globalPath exists:
        roots.append(globalPath)
 3. projectRoot = gitRootOrEmpty(env, env.WorkingDirectory())
    if projectRoot != "":
-       projectPath = projectRoot + "/.serf/plugins"
+       projectPath = projectRoot + "/.evener/plugins"
        if projectPath exists:
            roots.append(projectPath)
 4. raw = []                                           # (name, absDir) tuples
@@ -99,7 +99,7 @@ The precedence-ascending walk in step 4 plus the later-wins rule in step 6 gives
 ## 4. File-Format Details
 
 - A plugin directory is identified by `<dir>/.claude-plugin/plugin.json`. No fallback file (e.g. `plugin.json` at root) is recognized — match Claude Code's documented contract.
-- Symlinks at the plugin-directory level resolve via `filepath.EvalSymlinks` so users can develop a plugin elsewhere and `ln -s` it into `~/.config/serf/plugins/foo`.
+- Symlinks at the plugin-directory level resolve via `filepath.EvalSymlinks` so users can develop a plugin elsewhere and `ln -s` it into `~/.config/evener/plugins/foo`.
 - A plugin directory whose manifest is malformed JSON or fails `ParsePluginManifest` produces one entry in `errs` and does not enter `dirs`.
 - A plugin directory whose name (per the manifest) differs from its directory basename is allowed; collisions are resolved by manifest `name`, not directory basename.
 
@@ -109,7 +109,7 @@ Beyond what `ParsePluginManifest` already validates:
 
 - Each `extraDir` (CLI) must point to a directory that contains the manifest; if not, `errs` records `"--plugin-dir <path>: no manifest"`.
 - Symlink cycles record an error per offending directory.
-- Permission errors on a parent root (e.g., `~/.config/serf/plugins` is unreadable) record one error and skip the root; do not abort.
+- Permission errors on a parent root (e.g., `~/.config/evener/plugins` is unreadable) record one error and skip the root; do not abort.
 
 ## 6. Error Contracts
 
@@ -134,8 +134,8 @@ Tests are the contract. List first, implementation second.
 | # | Name | Scenario | Expected |
 |---|---|---|---|
 | 1 | empty everywhere | No roots, no extraDirs | (nil, nil, nil) |
-| 2 | global only | One plugin in ~/.config/serf/plugins/foo/ | dirs=[foo], no shadowed, no errs |
-| 3 | project only | One plugin in <root>/.serf/plugins/bar/ | dirs=[bar] |
+| 2 | global only | One plugin in ~/.config/evener/plugins/foo/ | dirs=[foo], no shadowed, no errs |
+| 3 | project only | One plugin in <root>/.evener/plugins/bar/ | dirs=[bar] |
 | 4 | global+project distinct | foo global, bar project | dirs=[foo, bar] (global first) |
 | 5 | project shadows global | foo in both global and project | dirs=[project-foo], shadowed=[{foo, project, global}] |
 | 6 | plugin-dir shadows project | --plugin-dir foo + project foo | dirs=[--plugin-dir foo], shadowed=[{foo, --plugin-dir, project}] |
@@ -163,9 +163,9 @@ Conventions:
 ## 9. Open Questions
 
 1. **Should symlink resolution happen on the parent root, or only on each plugin entry?**
-   Recommendation: only on each plugin entry. Resolving the parent root means `~/.config/serf/plugins` could itself be a symlink to a shared team-managed directory — useful — but rarely needed. Per-entry resolution is enough for the common case (symlinking individual plugins for dev). If asked, expand later.
+   Recommendation: only on each plugin entry. Resolving the parent root means `~/.config/evener/plugins` could itself be a symlink to a shared team-managed directory — useful — but rarely needed. Per-entry resolution is enough for the common case (symlinking individual plugins for dev). If asked, expand later.
 
-2. **What happens when both `~/.config/serf/plugins/foo/` exists AND `--plugin-dir` points to a path that resolves to the same absolute directory (same plugin via two routes)?**
+2. **What happens when both `~/.config/evener/plugins/foo/` exists AND `--plugin-dir` points to a path that resolves to the same absolute directory (same plugin via two routes)?**
    Recommendation: detect duplicate abs paths after EvalSymlinks; emit a shadowed entry (not an error) and keep the higher-precedence entry once. Document this so users who symlink rather than rm see consistent behavior.
 
 3. **Does discovery rescan mid-session?**

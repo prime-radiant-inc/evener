@@ -6,7 +6,7 @@
 
 **Architecture:** Keep this phase as production-no-op plumbing. The new `llm` helper owns endpoint-family names, support registry defaults, history-mode names, and a pure decision function; session runtime is not wired to use continuation. The proof artifact records the two required audits from current code: model-call serialization and API/raw logging write shape.
 
-**Tech Stack:** Go, deterministic `httptest` OpenAI Responses fixture, existing Serf session loop, markdown proof artifact.
+**Tech Stack:** Go, deterministic `httptest` OpenAI Responses fixture, existing Evener session loop, markdown proof artifact.
 
 ---
 
@@ -164,7 +164,7 @@ func TestDecideResponsesContinuationRequiresAutoEnabledAndAnchorAge(t *testing.T
 Run:
 
 ```sh
-GOCACHE=/tmp/serf-gocache go test ./llm -run 'TestDefaultResponsesContinuationSupportRegistryDisabled|TestResponsesContinuationSupportForUnknownFamilyDisabled|TestDecideResponsesContinuationRequiresAutoEnabledAndAnchorAge' -count=1 -v
+GOCACHE=/tmp/evener-gocache go test ./llm -run 'TestDefaultResponsesContinuationSupportRegistryDisabled|TestResponsesContinuationSupportForUnknownFamilyDisabled|TestDecideResponsesContinuationRequiresAutoEnabledAndAnchorAge' -count=1 -v
 ```
 
 Expected: FAIL with undefined identifiers such as `DefaultResponsesContinuationSupportRegistry`.
@@ -263,7 +263,7 @@ func disabledResponsesContinuationSupport(family ResponsesEndpointFamily) Respon
 Run:
 
 ```sh
-GOCACHE=/tmp/serf-gocache go test ./llm -run 'TestDefaultResponsesContinuationSupportRegistryDisabled|TestResponsesContinuationSupportForUnknownFamilyDisabled|TestDecideResponsesContinuationRequiresAutoEnabledAndAnchorAge' -count=1 -v
+GOCACHE=/tmp/evener-gocache go test ./llm -run 'TestDefaultResponsesContinuationSupportRegistryDisabled|TestResponsesContinuationSupportForUnknownFamilyDisabled|TestDecideResponsesContinuationRequiresAutoEnabledAndAnchorAge' -count=1 -v
 ```
 
 Expected: PASS.
@@ -300,10 +300,10 @@ import (
 	"testing"
 	"time"
 
-	"primeradiant.com/serf/agent/execenv"
-	"primeradiant.com/serf/agent/schema"
-	"primeradiant.com/serf/llm"
-	"primeradiant.com/serf/llm/providers/openai"
+	"primeradiant.com/evener/agent/execenv"
+	"primeradiant.com/evener/agent/schema"
+	"primeradiant.com/evener/llm"
+	"primeradiant.com/evener/llm/providers/openai"
 )
 
 func TestSession_OpenAIResponsesContinuationDisabledUsesFullHistory(t *testing.T) {
@@ -475,7 +475,7 @@ func responsesInputContainsText(items []any, want string) bool {
 Run:
 
 ```sh
-GOCACHE=/tmp/serf-gocache go test ./agent -run TestSession_OpenAIResponsesContinuationDisabledUsesFullHistory -count=1 -v
+GOCACHE=/tmp/evener-gocache go test ./agent -run TestSession_OpenAIResponsesContinuationDisabledUsesFullHistory -count=1 -v
 ```
 
 Expected: PASS.
@@ -597,8 +597,8 @@ git commit -m "docs: record responses continuation phase 0a proof" -m "Record th
 Run:
 
 ```sh
-GOCACHE=/tmp/serf-gocache go test ./llm -run 'TestDefaultResponsesContinuationSupportRegistryDisabled|TestResponsesContinuationSupportForUnknownFamilyDisabled|TestDecideResponsesContinuationRequiresAutoEnabledAndAnchorAge' -count=1 -v
-GOCACHE=/tmp/serf-gocache go test ./agent -run TestSession_OpenAIResponsesContinuationDisabledUsesFullHistory -count=1 -v
+GOCACHE=/tmp/evener-gocache go test ./llm -run 'TestDefaultResponsesContinuationSupportRegistryDisabled|TestResponsesContinuationSupportForUnknownFamilyDisabled|TestDecideResponsesContinuationRequiresAutoEnabledAndAnchorAge' -count=1 -v
+GOCACHE=/tmp/evener-gocache go test ./agent -run TestSession_OpenAIResponsesContinuationDisabledUsesFullHistory -count=1 -v
 ```
 
 Expected: both commands PASS.
@@ -608,8 +608,8 @@ Expected: both commands PASS.
 Run:
 
 ```sh
-GOCACHE=/tmp/serf-gocache go test ./agent -run 'TestSession_OpenAIResponsesContinuationDisabledUsesFullHistory|TestSession_OpenAIResponsesMalformedToolCallRecoveryUsesSafeReplay|TestSession_ProcessInputRepairsOrphanedAssistantToolCallsBeforeModelRequest|TestResumeHistoryRepairsOrphanedAssistantToolCallsBeforeLaterUserInput' -count=1 -v
-GOCACHE=/tmp/serf-gocache go test ./llm/providers/openai -run 'TestToResponsesInput_SanitizesMalformedHistoricalToolCallArguments|TestBuildChatCompletionsBody_SanitizesMalformedHistoricalToolCallArguments' -count=1 -v
+GOCACHE=/tmp/evener-gocache go test ./agent -run 'TestSession_OpenAIResponsesContinuationDisabledUsesFullHistory|TestSession_OpenAIResponsesMalformedToolCallRecoveryUsesSafeReplay|TestSession_ProcessInputRepairsOrphanedAssistantToolCallsBeforeModelRequest|TestResumeHistoryRepairsOrphanedAssistantToolCallsBeforeLaterUserInput' -count=1 -v
+GOCACHE=/tmp/evener-gocache go test ./llm/providers/openai -run 'TestToResponsesInput_SanitizesMalformedHistoricalToolCallArguments|TestBuildChatCompletionsBody_SanitizesMalformedHistoricalToolCallArguments' -count=1 -v
 ```
 
 Expected: both commands PASS.

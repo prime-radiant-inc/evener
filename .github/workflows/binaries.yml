@@ -22,11 +22,11 @@ jobs:
           - name: linux-amd64
             goos: linux
             goarch: amd64
-            asset: serf_linux_amd64.tar.gz
+            asset: evener_linux_amd64.tar.gz
           - name: darwin-arm64
             goos: darwin
             goarch: arm64
-            asset: serf_darwin_arm64.tar.gz
+            asset: evener_darwin_arm64.tar.gz
 
     steps:
       - uses: actions/checkout@v6
@@ -39,7 +39,7 @@ jobs:
         with:
           node-version: "22"
           cache: npm
-          cache-dependency-path: cmd/serf-hub/frontend/package-lock.json
+          cache-dependency-path: cmd/evener-hub/frontend/package-lock.json
 
       - name: Build archive
         env:
@@ -79,7 +79,7 @@ jobs:
           GH_REPO: ${{ github.repository }}
         run: |
           gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1 || \
-            gh release create "$GITHUB_REF_NAME" --title "$GITHUB_REF_NAME" --notes "Serf $GITHUB_REF_NAME"
+            gh release create "$GITHUB_REF_NAME" --title "$GITHUB_REF_NAME" --notes "Evener $GITHUB_REF_NAME"
           gh release upload "$GITHUB_REF_NAME" dist/*.tar.gz dist/checksums.txt --clobber
 
   snapshot:
@@ -113,5 +113,5 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           gh release view "snapshot" >/dev/null 2>&1 || \
-            gh release create "snapshot" --title "Serf snapshot" --notes "Latest successful build from main." --prerelease
+            gh release create "snapshot" --title "Evener snapshot" --notes "Latest successful build from main." --prerelease
           gh release upload "snapshot" dist/*.tar.gz dist/checksums.txt --clobber

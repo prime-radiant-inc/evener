@@ -16,7 +16,7 @@ caller-event rail.
 - Fresh binaries from the branch under test; hub reachable (own hub via
   `docs/agentic-testing.md`, or an isolated `$HOME` hub on a spare
   port); credentialed model.
-- `tmpdir=$(mktemp -d -t serf-e2e-snide-observer-XXXXX)`.
+- `tmpdir=$(mktemp -d -t evener-e2e-snide-observer-XXXXX)`.
 
 ## Steps
 
@@ -47,7 +47,7 @@ caller-event rail.
    on disk by the delegate's transcript ref).
 4. Check the parent's durable job log:
    `find <state base> -path "*sessions/<SID>/jobs.jsonl"`, and read
-   `serf-doctor watches <SID> --state-dir <state base>`.
+   `evener-doctor watches <SID> --state-dir <state base>`.
 
 ## Expected
 
@@ -73,7 +73,7 @@ caller-event rail.
 - The parent's `jobs.jsonl` shows `watch_send_pending` followed by
   `watch_send_delivered` for the deliveries, and NO
   `watch_send_dropped` with `diagnostic_reason: "runaway"`.
-  `serf-doctor watches` reports bounded self-influence (no runaway);
+  `evener-doctor watches` reports bounded self-influence (no runaway);
   `--self-loops` returns no watches.
 - The parent session returns to `idle` after observer callbacks drain.
   Clear the watch before continuing a free-form conversation.

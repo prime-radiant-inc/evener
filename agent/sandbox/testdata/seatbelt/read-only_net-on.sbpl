@@ -1,6 +1,6 @@
 (version 1)
 
-; Serf Seatbelt base policy. Trimmed from Codex's seatbelt_base_policy.sbpl,
+; Evener Seatbelt base policy. Trimmed from Codex's seatbelt_base_policy.sbpl,
 ; which is itself derived from Chromium's macOS sandbox. This static base is the
 ; deny-default floor plus the platform-service allowances any spawned process
 ; needs to exec, dyld-load, and run a shell. It grants NO filesystem read/write
@@ -25,7 +25,7 @@
 ; Minimal /dev floor — the macOS analog of bwrap's minimal --dev, always present
 ; regardless of mode. The standard character devices plus the process's OWN file
 ; descriptors via /dev/fd. On macOS /dev/fd exposes only the calling process's fd
-; table (serf's fds never leak in: ExtraFiles is emptied and serf's fds are
+; table (evener's fds never leak in: ExtraFiles is emptied and evener's fds are
 ; O_CLOEXEC), so it is safe and is needed for shell process substitution
 ; (`<(cmd)` / `>(cmd)`). /dev/mem is deliberately NOT granted.
 (allow file-write-data
@@ -128,7 +128,7 @@
 ; network
 (allow network-outbound)
 (allow network-inbound)
-; Serf Seatbelt network policy. Appended (after the base) ONLY when the resolved
+; Evener Seatbelt network policy. Appended (after the base) ONLY when the resolved
 ; network decision is on. net=off is the ABSENCE of this section — the base's
 ; (deny default) blocks all TCP/UDP/DNS/AF_UNIX outbound with no explicit deny
 ; needed (fail-closed by construction). Derived from Codex's

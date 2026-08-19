@@ -7,12 +7,12 @@ import (
 	"strings"
 	"testing"
 
-	"primeradiant.com/serf/agent/execenv"
-	"primeradiant.com/serf/agent/internal/tool"
-	"primeradiant.com/serf/agent/provider"
-	"primeradiant.com/serf/agent/schema"
-	"primeradiant.com/serf/internal/bundled"
-	"primeradiant.com/serf/llm"
+	"primeradiant.com/evener/agent/execenv"
+	"primeradiant.com/evener/agent/internal/tool"
+	"primeradiant.com/evener/agent/provider"
+	"primeradiant.com/evener/agent/schema"
+	"primeradiant.com/evener/internal/bundled"
+	"primeradiant.com/evener/llm"
 )
 
 func renderPromptForTest(t *testing.T, p *provider.Profile, data promptData) string {
@@ -229,8 +229,8 @@ func TestSystemPrompt_ImplementerWarnsOnUnavailableTools(t *testing.T) {
 	if !strings.Contains(prompt, "If the task depends on tools or capabilities explicitly listed as unavailable in") {
 		t.Fatalf("implementer prompt missing unavailable-tools guidance:\n%s", prompt)
 	}
-	if !strings.Contains(prompt, "Do not try to recreate unavailable serf-native tools by shelling out to") {
-		t.Fatalf("implementer prompt missing nested-serf warning:\n%s", prompt)
+	if !strings.Contains(prompt, "Do not try to recreate unavailable evener-native tools by shelling out to") {
+		t.Fatalf("implementer prompt missing nested-evener warning:\n%s", prompt)
 	}
 }
 
@@ -732,7 +732,7 @@ func TestBaseProfile_WithModel_OpenRouterKeepsUpstreamNamespace(t *testing.T) {
 // sets supports_web_search to false, that signal is respected. This is
 // the documented MiniMax-over-OpenRouter-Anthropic path: the model
 // "minimax/minimax-m2.7" has no openrouter-prefixed catalog entry, so
-// the resolver falls back to the bare entry whose serf override
+// the resolver falls back to the bare entry whose evener override
 // explicitly disables web search.
 //
 // The fix from the previous round ("only override when explicitly true")
@@ -750,7 +750,7 @@ func TestNewOpenRouterAnthropicProfile_HonorsExplicitWebSearchFalse(t *testing.T
 
 // TestNewOpenRouterAnthropicProfile_PicksUpBareUpstreamEffortOverrides
 // verifies that effort levels resolve to the bare upstream override
-// when the prefixed catalog entry doesn't carry them. The serf
+// when the prefixed catalog entry doesn't carry them. The evener
 // override file keys overrides under bare upstream IDs (e.g.
 // "claude-sonnet-4-5" → ["low","medium","high"], no "max"). Without
 // bare-fallback resolution, openrouter-anthropic falls back to the

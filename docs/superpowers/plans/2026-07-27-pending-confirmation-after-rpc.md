@@ -23,24 +23,24 @@
 
 ## File Structure
 
-- Modify `cmd/serf-hub/frontend/src/panes/session/composer/queue/pendingTurnsStore.ts`: own the RPC/confirmation phase transition, typed timeout error, and model-release retirement.
-- Modify `cmd/serf-hub/frontend/src/panes/session/composer/queue/pendingTurnsStore.test.ts`: deterministic lifecycle RED/GREEN coverage.
-- Modify `cmd/serf-hub/frontend/src/panes/session/composer/Composer.tsx`: translate only the typed post-success timeout into warning feedback.
-- Modify `cmd/serf-hub/frontend/src/panes/session/composer/Composer.test.tsx`: exercise the real Composer -> threads store -> fake AppWire path and warning rendering.
-- Modify `cmd/serf-hub/frontend/src/panes/session/composer/queue/QueueStrip.tsx`: translate the typed timeout for drain without disturbing partial failures.
-- Modify `cmd/serf-hub/frontend/src/panes/session/composer/queue/QueueStrip.test.tsx`: pin drain warning and existing failure contracts.
+- Modify `cmd/evener-hub/frontend/src/panes/session/composer/queue/pendingTurnsStore.ts`: own the RPC/confirmation phase transition, typed timeout error, and model-release retirement.
+- Modify `cmd/evener-hub/frontend/src/panes/session/composer/queue/pendingTurnsStore.test.ts`: deterministic lifecycle RED/GREEN coverage.
+- Modify `cmd/evener-hub/frontend/src/panes/session/composer/Composer.tsx`: translate only the typed post-success timeout into warning feedback.
+- Modify `cmd/evener-hub/frontend/src/panes/session/composer/Composer.test.tsx`: exercise the real Composer -> threads store -> fake AppWire path and warning rendering.
+- Modify `cmd/evener-hub/frontend/src/panes/session/composer/queue/QueueStrip.tsx`: translate the typed timeout for drain without disturbing partial failures.
+- Modify `cmd/evener-hub/frontend/src/panes/session/composer/queue/QueueStrip.test.tsx`: pin drain warning and existing failure contracts.
 
 ---
 
 ### Task 1: Separate RPC settlement from echo confirmation
 
 **Files:**
-- Modify: `cmd/serf-hub/frontend/src/panes/session/composer/queue/pendingTurnsStore.ts`
-- Test: `cmd/serf-hub/frontend/src/panes/session/composer/queue/pendingTurnsStore.test.ts`
-- Modify: `cmd/serf-hub/frontend/src/panes/session/composer/Composer.tsx`
-- Test: `cmd/serf-hub/frontend/src/panes/session/composer/Composer.test.tsx`
-- Modify: `cmd/serf-hub/frontend/src/panes/session/composer/queue/QueueStrip.tsx`
-- Test: `cmd/serf-hub/frontend/src/panes/session/composer/queue/QueueStrip.test.tsx`
+- Modify: `cmd/evener-hub/frontend/src/panes/session/composer/queue/pendingTurnsStore.ts`
+- Test: `cmd/evener-hub/frontend/src/panes/session/composer/queue/pendingTurnsStore.test.ts`
+- Modify: `cmd/evener-hub/frontend/src/panes/session/composer/Composer.tsx`
+- Test: `cmd/evener-hub/frontend/src/panes/session/composer/Composer.test.tsx`
+- Modify: `cmd/evener-hub/frontend/src/panes/session/composer/queue/QueueStrip.tsx`
+- Test: `cmd/evener-hub/frontend/src/panes/session/composer/queue/QueueStrip.test.tsx`
 
 **Interfaces:**
 - Produces: `PendingConfirmationTimeoutError extends Error`, exported from `pendingTurnsStore.ts`.
@@ -161,7 +161,7 @@ Add a release -> remount test using an already-existing same-text historical ite
 
 - [ ] **Step 3: Run the focused store tests and capture RED**
 
-Run from `cmd/serf-hub/frontend`:
+Run from `cmd/evener-hub/frontend`:
 
 ```bash
 npx vitest run src/panes/session/composer/queue/pendingTurnsStore.test.ts
@@ -237,8 +237,8 @@ Do not commit any mutation.
 Stage only the store and its test:
 
 ```bash
-git add cmd/serf-hub/frontend/src/panes/session/composer/queue/pendingTurnsStore.ts \
-  cmd/serf-hub/frontend/src/panes/session/composer/queue/pendingTurnsStore.test.ts
+git add cmd/evener-hub/frontend/src/panes/session/composer/queue/pendingTurnsStore.ts \
+  cmd/evener-hub/frontend/src/panes/session/composer/queue/pendingTurnsStore.test.ts
 git commit -m "fix(webui): separate RPC wait from echo confirmation"
 ```
 
@@ -282,7 +282,7 @@ Retain existing tests for ordinary drain rejection and `queuedDrainPartial`; the
 
 - [ ] **Step 8: Run caller tests and capture RED**
 
-Run from `cmd/serf-hub/frontend`:
+Run from `cmd/evener-hub/frontend`:
 
 ```bash
 npx vitest run src/panes/session/composer/Composer.test.tsx \
@@ -342,10 +342,10 @@ Temporarily route `PendingConfirmationTimeoutError` through the ordinary error b
 Stage only the four caller files:
 
 ```bash
-git add cmd/serf-hub/frontend/src/panes/session/composer/Composer.tsx \
-  cmd/serf-hub/frontend/src/panes/session/composer/Composer.test.tsx \
-  cmd/serf-hub/frontend/src/panes/session/composer/queue/QueueStrip.tsx \
-  cmd/serf-hub/frontend/src/panes/session/composer/queue/QueueStrip.test.tsx
+git add cmd/evener-hub/frontend/src/panes/session/composer/Composer.tsx \
+  cmd/evener-hub/frontend/src/panes/session/composer/Composer.test.tsx \
+  cmd/evener-hub/frontend/src/panes/session/composer/queue/QueueStrip.tsx \
+  cmd/evener-hub/frontend/src/panes/session/composer/queue/QueueStrip.test.tsx
 git commit -m "fix(webui): distinguish accepted stale confirmations"
 ```
 
@@ -353,7 +353,7 @@ The commit body must explain that warning copy prevents an unsafe duplicate retr
 
 - [ ] **Step 12: Run focused and frontend verification**
 
-Run from `cmd/serf-hub/frontend`:
+Run from `cmd/evener-hub/frontend`:
 
 ```bash
 npx vitest run src/panes/session/composer/queue/pendingTurnsStore.test.ts \

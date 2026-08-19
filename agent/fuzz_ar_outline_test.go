@@ -1,4 +1,4 @@
-//go:build serffuzz
+//go:build evenerfuzz
 
 package agent
 
@@ -9,7 +9,7 @@ import (
 	"testing"
 	"unicode/utf8"
 
-	"primeradiant.com/serf/llm"
+	"primeradiant.com/evener/llm"
 )
 
 // This file fuzzes the outline text-transform surface in session_outline.go:

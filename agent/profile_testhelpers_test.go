@@ -1,8 +1,8 @@
 package agent
 
 import (
-	"primeradiant.com/serf/agent/provider"
-	"primeradiant.com/serf/llm/providercfg"
+	"primeradiant.com/evener/agent/provider"
+	"primeradiant.com/evener/llm/providercfg"
 )
 
 // Test shims for building provider profiles from package agent.

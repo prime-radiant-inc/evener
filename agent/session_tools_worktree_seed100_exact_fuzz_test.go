@@ -1,4 +1,4 @@
-//go:build serffuzz
+//go:build evenerfuzz
 
 package agent
 
@@ -9,10 +9,10 @@ import (
 	"path/filepath"
 	"testing"
 
-	"primeradiant.com/serf/agent/execenv"
-	"primeradiant.com/serf/agent/internal/worktree"
-	"primeradiant.com/serf/agent/sandbox"
-	"primeradiant.com/serf/identifier"
+	"primeradiant.com/evener/agent/execenv"
+	"primeradiant.com/evener/agent/internal/worktree"
+	"primeradiant.com/evener/agent/sandbox"
+	"primeradiant.com/evener/identifier"
 )
 
 func FuzzWorktreeSeed100ExactProgram(f *testing.F) {

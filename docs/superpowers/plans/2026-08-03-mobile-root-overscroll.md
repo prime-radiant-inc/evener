@@ -20,16 +20,16 @@
 
 ## File Structure
 
-- Modify `cmd/serf-hub/frontend/src/styles/global.css`: own the mobile document-level overscroll policy beside the existing document lock.
-- Create `cmd/serf-hub/frontend/src/styles/mobile-root-overscroll.test.ts`: pin the authored CSS contract in a Node-environment Vitest test.
+- Modify `cmd/evener-hub/frontend/src/styles/global.css`: own the mobile document-level overscroll policy beside the existing document lock.
+- Create `cmd/evener-hub/frontend/src/styles/mobile-root-overscroll.test.ts`: pin the authored CSS contract in a Node-environment Vitest test.
 
 ---
 
 ### Task 1: Add and Verify Mobile Root Overscroll Containment
 
 **Files:**
-- Modify: `cmd/serf-hub/frontend/src/styles/global.css:91-99`
-- Create: `cmd/serf-hub/frontend/src/styles/mobile-root-overscroll.test.ts`
+- Modify: `cmd/evener-hub/frontend/src/styles/global.css:91-99`
+- Create: `cmd/evener-hub/frontend/src/styles/mobile-root-overscroll.test.ts`
 
 **Interfaces:**
 - Consumes: the existing mobile `html, body { overflow: hidden; }` document-lock rule and pane-owned scroll containers.
@@ -74,7 +74,7 @@ test("desktop: root overscroll containment is not declared outside the mobile qu
 Run:
 
 ```bash
-cd cmd/serf-hub/frontend
+cd cmd/evener-hub/frontend
 npx vitest run src/styles/mobile-root-overscroll.test.ts
 ```
 
@@ -104,7 +104,7 @@ Update the existing comment to state that the document lock and overscroll conta
 Run:
 
 ```bash
-cd cmd/serf-hub/frontend
+cd cmd/evener-hub/frontend
 npx vitest run src/styles/mobile-root-overscroll.test.ts
 ```
 
@@ -115,7 +115,7 @@ Expected: both tests PASS.
 Temporarily change `overscroll-behavior: none` to `overscroll-behavior: contain`, rerun:
 
 ```bash
-cd cmd/serf-hub/frontend
+cd cmd/evener-hub/frontend
 npx vitest run src/styles/mobile-root-overscroll.test.ts
 ```
 
@@ -126,7 +126,7 @@ Expected: FAIL naming the missing `overscroll-behavior: none` contract. Restore 
 Run:
 
 ```bash
-cd cmd/serf-hub/frontend
+cd cmd/evener-hub/frontend
 npm run layoutguard -- mobile-shell-viewport-height
 npm run lint
 npm run build
@@ -141,11 +141,11 @@ Run:
 ```bash
 git diff --check
 git diff -- \
-  cmd/serf-hub/frontend/src/styles/global.css \
-  cmd/serf-hub/frontend/src/styles/mobile-root-overscroll.test.ts
+  cmd/evener-hub/frontend/src/styles/global.css \
+  cmd/evener-hub/frontend/src/styles/mobile-root-overscroll.test.ts
 git add \
-  cmd/serf-hub/frontend/src/styles/global.css \
-  cmd/serf-hub/frontend/src/styles/mobile-root-overscroll.test.ts
+  cmd/evener-hub/frontend/src/styles/global.css \
+  cmd/evener-hub/frontend/src/styles/mobile-root-overscroll.test.ts
 git commit -m "fix(webui): contain mobile root overscroll"
 ```
 

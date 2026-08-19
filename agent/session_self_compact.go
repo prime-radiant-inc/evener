@@ -5,8 +5,8 @@ import (
 	"errors"
 	"strings"
 
-	"primeradiant.com/serf/agent/events"
-	"primeradiant.com/serf/agent/schema"
+	"primeradiant.com/evener/agent/events"
+	"primeradiant.com/evener/agent/schema"
 )
 
 // maybeElicitNoteBeforeCompaction implements Variant B of the forced-note

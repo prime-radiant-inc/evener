@@ -10,7 +10,7 @@
 
 ## Global Constraints
 
-- Work only in `cmd/serf-hub/frontend/src/panes/session/transcript/tools/` and the implementation-plan/spec documentation unless tests reveal a directly related issue.
+- Work only in `cmd/evener-hub/frontend/src/panes/session/transcript/tools/` and the implementation-plan/spec documentation unless tests reveal a directly related issue.
 - Preserve `mutationRows`, `finalUpdates`, authoritative `item.raw` labels, auto-start rows, suppression, failure handling, and progress rendering.
 - Keep `ToolRendererDescriptor.summary` a plain `string`; do not widen the renderer registry contract.
 - Notes render in expanded rows only; do not add notes or progress counts to collapsed summaries.
@@ -21,9 +21,9 @@
 ### Task 1: Add failing coverage for titles, notes, and collapsed summaries
 
 **Files:**
-- Modify: `cmd/serf-hub/frontend/src/panes/session/transcript/tools/taskCard.test.tsx`
-- Read: `cmd/serf-hub/frontend/src/panes/session/transcript/tools/taskCard.tsx`
-- Read: `cmd/serf-hub/frontend/src/panes/session/transcript/ToolRow.tsx`
+- Modify: `cmd/evener-hub/frontend/src/panes/session/transcript/tools/taskCard.test.tsx`
+- Read: `cmd/evener-hub/frontend/src/panes/session/transcript/tools/taskCard.tsx`
+- Read: `cmd/evener-hub/frontend/src/panes/session/transcript/ToolRow.tsx`
 
 **Interfaces:**
 - Consumes: Existing `taskItem`, `renderItem`, `TaskCardRow`, and `ToolRow` test IDs.
@@ -71,7 +71,7 @@ expect(summary.textContent!.indexOf("fourth")).toBeLessThan(summary.textContent!
 
 - [ ] **Step 5: Run the focused tests and verify the new assertions fail.**
 
-Run from `cmd/serf-hub/frontend`:
+Run from `cmd/evener-hub/frontend`:
 
 ```bash
 npm exec vitest run src/panes/session/transcript/tools/taskCard.test.tsx
@@ -82,7 +82,7 @@ Expected: existing tests may pass, but the new `Notes:` and collapsed-summary as
 - [ ] **Step 6: Commit the failing tests.**
 
 ```bash
-git add cmd/serf-hub/frontend/src/panes/session/transcript/tools/taskCard.test.tsx
+git add cmd/evener-hub/frontend/src/panes/session/transcript/tools/taskCard.test.tsx
 git commit -m "test: specify task mutation summary titles"
 ```
 
@@ -91,9 +91,9 @@ git commit -m "test: specify task mutation summary titles"
 ### Task 2: Implement shared task-row summary and labeled notes
 
 **Files:**
-- Modify: `cmd/serf-hub/frontend/src/panes/session/transcript/tools/taskCard.tsx`
-- Modify: `cmd/serf-hub/frontend/src/panes/session/transcript/tools/taskcard.module.css` only if the existing note styling needs a targeted prefix treatment
-- Test: `cmd/serf-hub/frontend/src/panes/session/transcript/tools/taskCard.test.tsx`
+- Modify: `cmd/evener-hub/frontend/src/panes/session/transcript/tools/taskCard.tsx`
+- Modify: `cmd/evener-hub/frontend/src/panes/session/transcript/tools/taskcard.module.css` only if the existing note styling needs a targeted prefix treatment
+- Test: `cmd/evener-hub/frontend/src/panes/session/transcript/tools/taskCard.test.tsx`
 
 **Interfaces:**
 - Consumes: `TouchedRow`, `TaskTouch`, `mutationRows(item)`, `TaskCardRow`, and `ToolRendererDescriptor.summary(item): string`.
@@ -158,7 +158,7 @@ Expected: PASS, including existing suppression, failure, duplicate-ID, auto-star
 - [ ] **Step 6: Commit the implementation.**
 
 ```bash
-git add cmd/serf-hub/frontend/src/panes/session/transcript/tools/taskCard.tsx cmd/serf-hub/frontend/src/panes/session/transcript/tools/taskcard.module.css cmd/serf-hub/frontend/src/panes/session/transcript/tools/taskCard.test.tsx
+git add cmd/evener-hub/frontend/src/panes/session/transcript/tools/taskCard.tsx cmd/evener-hub/frontend/src/panes/session/transcript/tools/taskcard.module.css cmd/evener-hub/frontend/src/panes/session/transcript/tools/taskCard.test.tsx
 git commit -m "feat: show task titles in mutation summaries"
 ```
 
@@ -167,9 +167,9 @@ git commit -m "feat: show task titles in mutation summaries"
 ### Task 3: Run frontend verification and review the diff
 
 **Files:**
-- Verify: `cmd/serf-hub/frontend/src/panes/session/transcript/tools/taskCard.tsx`
-- Verify: `cmd/serf-hub/frontend/src/panes/session/transcript/tools/taskCard.test.tsx`
-- Verify: `cmd/serf-hub/frontend/src/panes/session/transcript/tools/taskcard.module.css`
+- Verify: `cmd/evener-hub/frontend/src/panes/session/transcript/tools/taskCard.tsx`
+- Verify: `cmd/evener-hub/frontend/src/panes/session/transcript/tools/taskCard.test.tsx`
+- Verify: `cmd/evener-hub/frontend/src/panes/session/transcript/tools/taskcard.module.css`
 
 **Interfaces:**
 - Consumes: Task 2's dynamic summary and expanded note rendering.
@@ -178,7 +178,7 @@ git commit -m "feat: show task titles in mutation summaries"
 - [ ] **Step 1: Run the focused task-card test file again.**
 
 ```bash
-cd cmd/serf-hub/frontend
+cd cmd/evener-hub/frontend
 npm exec vitest run src/panes/session/transcript/tools/taskCard.test.tsx
 ```
 
@@ -199,13 +199,13 @@ npm run typecheck
 npm run build
 ```
 
-Expected: both commands exit 0. If this repository's package scripts use different names, inspect `cmd/serf-hub/frontend/package.json` and run the defined type/build equivalents; do not skip type or build verification.
+Expected: both commands exit 0. If this repository's package scripts use different names, inspect `cmd/evener-hub/frontend/package.json` and run the defined type/build equivalents; do not skip type or build verification.
 
 - [ ] **Step 4: Inspect the final diff and status.**
 
 ```bash
 git diff HEAD~2 --check
-git diff HEAD~2 -- cmd/serf-hub/frontend/src/panes/session/transcript/tools/taskCard.tsx cmd/serf-hub/frontend/src/panes/session/transcript/tools/taskCard.test.tsx cmd/serf-hub/frontend/src/panes/session/transcript/tools/taskcard.module.css
+git diff HEAD~2 -- cmd/evener-hub/frontend/src/panes/session/transcript/tools/taskCard.tsx cmd/evener-hub/frontend/src/panes/session/transcript/tools/taskCard.test.tsx cmd/evener-hub/frontend/src/panes/session/transcript/tools/taskcard.module.css
 git status --short
 ```
 
@@ -216,7 +216,7 @@ Expected: no whitespace errors, only the intended renderer/test/style changes, a
 If verification requires a formatting adjustment, run the repository formatter on only the touched frontend files, rerun the focused tests, and commit:
 
 ```bash
-git add cmd/serf-hub/frontend/src/panes/session/transcript/tools/taskCard.tsx cmd/serf-hub/frontend/src/panes/session/transcript/tools/taskCard.test.tsx cmd/serf-hub/frontend/src/panes/session/transcript/tools/taskcard.module.css
+git add cmd/evener-hub/frontend/src/panes/session/transcript/tools/taskCard.tsx cmd/evener-hub/frontend/src/panes/session/transcript/tools/taskCard.test.tsx cmd/evener-hub/frontend/src/panes/session/transcript/tools/taskcard.module.css
 git commit -m "chore: format task mutation renderer"
 ```
 

@@ -8,8 +8,8 @@
 complete AppWire protocol core (generated types, client, reducer, stores) proven against a live
 hub.
 
-**Architecture:** New app lives in `cmd/serf-hub/frontend/` (Vite 8 + React 19 + TS strict),
-embedded into `serf-hub` via `go:embed all:frontend/dist` and served only when `SERF_HUB_WEB=new`;
+**Architecture:** New app lives in `cmd/evener-hub/frontend/` (Vite 8 + React 19 + TS strict),
+embedded into `evener-hub` via `go:embed all:frontend/dist` and served only when `EVENER_HUB_WEB=new`;
 the legacy UI stays untouched until the M10 deletion wave. TS wire types are generated from the
 `appwire` Go catalog with a drift test. One `AppwireClient` per browser window; one pure
 `reducer.ts` turns notifications into `ThreadModel`s; zustand stores wire them together.
@@ -26,13 +26,13 @@ jsdom, eslint, typescript-eslint.
 - TS `strict: true`; zero `any` outside `types.gen.ts`'s `unknown` mappings.
 - No inline scripts ever (CSP will drop `unsafe-inline`).
 - CSS Modules + `src/styles/tokens.css` custom properties only; no CSS-in-JS, no Tailwind.
-- The legacy UI must keep working untouched in `SERF_HUB_WEB=legacy` (default) until M10:
-  existing `cmd/serf-hub` Go tests keep passing unmodified except where a task says otherwise.
+- The legacy UI must keep working untouched in `EVENER_HUB_WEB=legacy` (default) until M10:
+  existing `cmd/evener-hub` Go tests keep passing unmodified except where a task says otherwise.
 - Snapshot recovery is the truth model: on any doubt, re-`thread/read` and rebuild; never
   patch guessed state.
 - Commit after every green test cycle. All commits on branch `worktree-webui-workspace-shell`.
 - Run Go commands from the repo root (the worktree root); frontend commands from
-  `cmd/serf-hub/frontend/`.
+  `cmd/evener-hub/frontend/`.
 
 ## Locked interfaces (later waves import these; do not rename)
 
@@ -49,7 +49,7 @@ jsdom, eslint, typescript-eslint.
 - `frontend/src/stores/threads.ts`: `useThreadsStore` with
   `{ threads: Map<string, ThreadModel>, ensureThread(ref), releaseThread(ref), send(ref, input),
   interrupt(ref), queue(ref, input), steer(ref, input) }` and `AppwireClientLike` (Task 7).
-- Go: `SERF_HUB_WEB` env var (`new` | anything-else=legacy); `/webassets/*` always serves the
+- Go: `EVENER_HUB_WEB` env var (`new` | anything-else=legacy); `/webassets/*` always serves the
   built app's hashed assets; page routes serve the SPA `index.html` only when `new`.
 
 ---
@@ -57,7 +57,7 @@ jsdom, eslint, typescript-eslint.
 ### Task 1: Frontend scaffold, Makefile targets, CI job
 
 **Files:**
-- Create: `cmd/serf-hub/frontend/package.json`, `vite.config.ts`, `tsconfig.json`,
+- Create: `cmd/evener-hub/frontend/package.json`, `vite.config.ts`, `tsconfig.json`,
   `index.html`, `src/main.tsx`, `src/App.tsx`, `src/styles/tokens.css`, `src/styles/global.css`,
   `src/App.test.tsx`, `.eslintrc.cjs` (or flat config), `frontend/.gitignore`,
   `frontend/dist/PLACEHOLDER`
@@ -69,7 +69,7 @@ jsdom, eslint, typescript-eslint.
 - Produces: `make build-web`, `make test-web`, `npm run dev|build|test|typecheck|lint` inside
   `frontend/`; `frontend/dist/` build output; CI gating.
 
-- [ ] **Step 1: Scaffold the package.** From `cmd/serf-hub/frontend/`:
+- [ ] **Step 1: Scaffold the package.** From `cmd/evener-hub/frontend/`:
 
 ```bash
 npm init -y
@@ -77,7 +77,7 @@ npm install react react-dom dockview dockview-react zustand @tanstack/react-virt
 npm install -D vite @vitejs/plugin-react typescript vitest @testing-library/react @testing-library/user-event jsdom eslint typescript-eslint @types/react @types/react-dom @types/dompurify
 ```
 
-Then edit `package.json`: set `"name": "serf-hub-frontend"`, `"private": true`,
+Then edit `package.json`: set `"name": "evener-hub-frontend"`, `"private": true`,
 `"type": "module"`, and scripts:
 
 ```json
@@ -100,10 +100,10 @@ Then edit `package.json`: set `"name": "serf-hub-frontend"`, `"private": true`,
 import { defineConfig } from "vite";
 import react from "@vitejs/plugin-react";
 
-// The dev server proxies every hub-owned route to a locally running serf-hub.
+// The dev server proxies every hub-owned route to a locally running evener-hub.
 // Cookies are port-agnostic on localhost, so the /auth?token= capability flow
 // works through the proxy unchanged.
-const hub = process.env.SERF_HUB_ADDR ?? "http://127.0.0.1:9180";
+const hub = process.env.EVENER_HUB_ADDR ?? "http://127.0.0.1:9180";
 
 export default defineConfig({
   plugins: [react()],
@@ -155,7 +155,7 @@ SPA for client routing. `bypass` returning the URL serves index.html from Vite.)
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>serf</title>
+    <title>evener</title>
     <link rel="manifest" href="/manifest.webmanifest" />
   </head>
   <body>
@@ -180,7 +180,7 @@ createRoot(document.getElementById("root")!).render(<App />);
 
 ```tsx
 export function App() {
-  return <main>serf workspace shell — wave 1</main>;
+  return <main>evener workspace shell — wave 1</main>;
 }
 ```
 
@@ -215,10 +215,10 @@ Run: `npm run test` → PASS (1 test). Run `npm run build` → emits `dist/index
 
 ```make
 build-web:
-	cd cmd/serf-hub/frontend && npm ci && npm run build
+	cd cmd/evener-hub/frontend && npm ci && npm run build
 
 test-web:
-	cd cmd/serf-hub/frontend && npm ci && npm run typecheck && npm run test && npm run lint
+	cd cmd/evener-hub/frontend && npm ci && npm run typecheck && npm run test && npm run lint
 ```
 
 and add `build-web` as a prerequisite of the existing `build-hub` target. Run `make build-web`
@@ -226,24 +226,24 @@ and `make test-web`; both must exit 0.
 
 - [ ] **Step 5: CI.** In `.github/workflows/ci.yml`, add a `web` job: checkout,
   `actions/setup-node` with `node-version: 22` and npm cache keyed on
-  `cmd/serf-hub/frontend/package-lock.json`, then `make test-web && make build-web`. Add
+  `cmd/evener-hub/frontend/package-lock.json`, then `make test-web && make build-web`. Add
   `make build-web` (with the same Node setup) before the Go build/test steps of the existing
   job(s) so `go:embed all:frontend/dist` (Task 2) always has a real build in CI.
 
 - [ ] **Step 6: Commit.**
 
 ```bash
-git add cmd/serf-hub/frontend Makefile .github/workflows/ci.yml
+git add cmd/evener-hub/frontend Makefile .github/workflows/ci.yml
 git commit -m "webui: scaffold TypeScript frontend (vite+react+vitest) with make/CI wiring"
 ```
 
 ---
 
-### Task 2: Hub serves the SPA behind SERF_HUB_WEB=new
+### Task 2: Hub serves the SPA behind EVENER_HUB_WEB=new
 
 **Files:**
-- Create: `cmd/serf-hub/webnext.go`, `cmd/serf-hub/webnext_test.go`
-- Modify: `cmd/serf-hub/web.go` (route registration only, in `Handler()`)
+- Create: `cmd/evener-hub/webnext.go`, `cmd/evener-hub/webnext_test.go`
+- Modify: `cmd/evener-hub/web.go` (route registration only, in `Handler()`)
 
 **Interfaces:**
 - Consumes: `frontend/dist` (Task 1).
@@ -255,7 +255,7 @@ git commit -m "webui: scaffold TypeScript frontend (vite+react+vitest) with make
 
 ```go
 func TestWebNextServesSPAWhenEnabled(t *testing.T) {
-	t.Setenv("SERF_HUB_WEB", "new")
+	t.Setenv("EVENER_HUB_WEB", "new")
 	s := newTestWebServer(t) // existing helper pattern in web_test.go
 	for _, path := range []string{"/", "/new", "/s/some-ref", "/settings/theme", "/thread/x"} {
 		rr := authedGet(t, s, path)
@@ -287,7 +287,7 @@ func TestWebAssetsServedWithImmutableCache(t *testing.T) {
 }
 
 func TestWebNextWithoutBuildServes503(t *testing.T) {
-	t.Setenv("SERF_HUB_WEB", "new")
+	t.Setenv("EVENER_HUB_WEB", "new")
 	// force the no-index case via the test seam below
 	s := newTestWebServerWithDist(t, fstest.MapFS{"PLACEHOLDER": &fstest.MapFile{Data: []byte("x")}})
 	rr := authedGet(t, s, "/")
@@ -297,7 +297,7 @@ func TestWebNextWithoutBuildServes503(t *testing.T) {
 }
 ```
 
-Run: `go test ./cmd/serf-hub/ -run TestWebNext -v` → FAIL (helpers/handler missing).
+Run: `go test ./cmd/evener-hub/ -run TestWebNext -v` → FAIL (helpers/handler missing).
 
 - [ ] **Step 2: Implement `webnext.go`.**
 
@@ -317,7 +317,7 @@ var frontendDistFS embed.FS
 
 // newWebEnabled reports whether the rewritten SPA serves the page routes.
 // Default is the legacy UI until the M9 cutover flips it.
-func newWebEnabled() bool { return os.Getenv("SERF_HUB_WEB") == "new" }
+func newWebEnabled() bool { return os.Getenv("EVENER_HUB_WEB") == "new" }
 
 // distFS returns the built frontend, a fs.FS seam so tests can substitute one.
 var distFS = func() fs.FS {
@@ -335,7 +335,7 @@ func serveSPAIndex(w http.ResponseWriter, r *http.Request, dist fs.FS) {
 	if err != nil {
 		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 		w.WriteHeader(http.StatusServiceUnavailable)
-		_, _ = w.Write([]byte("serf-hub web app not built: run `make build-web` and rebuild\n"))
+		_, _ = w.Write([]byte("evener-hub web app not built: run `make build-web` and rebuild\n"))
 		return
 	}
 	w.Header().Set("Cache-Control", "no-store")
@@ -376,14 +376,14 @@ if newWebEnabled() {
 
 This keeps route registration and auth-guard behavior identical between modes.
 
-- [ ] **Step 4: Green + legacy suite.** `go test ./cmd/serf-hub/ -run 'TestWebNext|TestWeb' -v`
-  → all PASS, plus a full `go test ./cmd/serf-hub/` to prove the legacy suite is untouched.
+- [ ] **Step 4: Green + legacy suite.** `go test ./cmd/evener-hub/ -run 'TestWebNext|TestWeb' -v`
+  → all PASS, plus a full `go test ./cmd/evener-hub/` to prove the legacy suite is untouched.
 
 - [ ] **Step 5: Commit.**
 
 ```bash
-git add cmd/serf-hub/webnext.go cmd/serf-hub/webnext_test.go cmd/serf-hub/web.go
-git commit -m "hub: serve rewritten SPA behind SERF_HUB_WEB=new; /webassets immutable assets"
+git add cmd/evener-hub/webnext.go cmd/evener-hub/webnext_test.go cmd/evener-hub/web.go
+git commit -m "hub: serve rewritten SPA behind EVENER_HUB_WEB=new; /webassets immutable assets"
 ```
 
 ---
@@ -393,7 +393,7 @@ git commit -m "hub: serve rewritten SPA behind SERF_HUB_WEB=new; /webassets immu
 **Files:**
 - Create: `internal/appwirets/emit.go`, `internal/appwirets/emit_test.go`,
   `internal/appwirets/main/main.go` (the `go run`-able entry),
-  `cmd/serf-hub/frontend/src/protocol/types.gen.ts` (generated, committed)
+  `cmd/evener-hub/frontend/src/protocol/types.gen.ts` (generated, committed)
 - Modify: `appwire/doc.go` (add the `go:generate` line beside the appwiredoc one)
 
 **Interfaces:**
@@ -468,7 +468,7 @@ Header line: `// Code generated by internal/appwirets; DO NOT EDIT. Run make gen
 `appwire/doc.go`, beside the existing appwiredoc directive:
 
 ```go
-//go:generate go run primeradiant.com/serf/internal/appwirets/main -out ../cmd/serf-hub/frontend/src/protocol/types.gen.ts
+//go:generate go run primeradiant.com/evener/internal/appwirets/main -out ../cmd/evener-hub/frontend/src/protocol/types.gen.ts
 ```
 
 Drift test in `emit_test.go`:
@@ -476,7 +476,7 @@ Drift test in `emit_test.go`:
 ```go
 func TestGeneratedFileCurrent(t *testing.T) {
 	want := appwirets.EmitCatalog()
-	got, err := os.ReadFile("../../cmd/serf-hub/frontend/src/protocol/types.gen.ts")
+	got, err := os.ReadFile("../../cmd/evener-hub/frontend/src/protocol/types.gen.ts")
 	if err != nil || string(got) != want {
 		t.Fatal("types.gen.ts stale: run `make generate`")
 	}
@@ -490,7 +490,7 @@ PASS.
 - [ ] **Step 5: Commit.**
 
 ```bash
-git add internal/appwirets appwire/doc.go cmd/serf-hub/frontend/src/protocol/types.gen.ts
+git add internal/appwirets appwire/doc.go cmd/evener-hub/frontend/src/protocol/types.gen.ts
 git commit -m "appwire: generate TypeScript protocol types from the catalog (drift-tested)"
 ```
 
@@ -520,7 +520,7 @@ export interface WebSocketLike {
 export function rpcURLFromLocation(loc: { protocol: string; host: string }): string; // ws(s)://host/rpc
 
 // errors.ts
-export class WireError extends Error { code: number; data?: unknown; serfErrorInfo?: string }
+export class WireError extends Error { code: number; data?: unknown; evenerErrorInfo?: string }
 export class RequestTimeoutError extends Error {}
 
 // client.ts
@@ -659,9 +659,9 @@ one prior turn → `turn/started` (inline `{threadId, ref, turn}`) → `item/sta
 (agentMessage) → three `item/agentMessage/delta` → `item/completed` → `turn/completed`.
 The other three fixtures cover: `item/agentMessage/reset` mid-stream +
 `item/reasoning/summaryTextDelta` with two summaryIndexes; a `commandExecution` item with
-`item/toolOutput/delta` + `serf/job/started`/`finished` + `serf/steering/injected`;
+`item/toolOutput/delta` + `evener/job/started`/`finished` + `evener/steering/injected`;
 `thread/queueChanged` + `thread/status/changed` + `thread/model/changed` +
-`serf/task/updated` + `serf/thread/name/changed`.
+`evener/task/updated` + `evener/thread/name/changed`.
 
 - [ ] **Step 2: Failing golden test.**
 
@@ -778,8 +778,8 @@ replaceSubscription: false, turnLimit: 40}` on ensure and on every `onReady`.
 - [ ] **Step 3: Live verification (manual, run and paste results into the task report).**
 
 ```bash
-make build-hub && SERF_HUB_WEB=new <hub binary> &  # binary path: check `make -n build-hub`; do not guess
-cd cmd/serf-hub/frontend && npm run dev            # open the printed URL, /auth?token=… first
+make build-hub && EVENER_HUB_WEB=new <hub binary> &  # binary path: check `make -n build-hub`; do not guess
+cd cmd/evener-hub/frontend && npm run dev            # open the printed URL, /auth?token=… first
 # in another terminal: spawn a real session via the CLI against the same hub and send a prompt
 ```
 
@@ -792,7 +792,7 @@ the JSON view without reload; killing the hub shows `reconnecting` then recovery
 
 ### Task 9: Wave gate
 
-- [ ] `make test-web` → 0 failures; `go test ./cmd/serf-hub/ ./internal/appwirets/` → PASS;
+- [ ] `make test-web` → 0 failures; `go test ./cmd/evener-hub/ ./internal/appwirets/` → PASS;
   `make lint && make test` (all modules) → PASS; `make build-hub` embeds a real build.
 - [ ] Re-run the legacy smoke: default (no env) hub serves the old UI; `web_test.go` untouched.
 - [ ] Commit any stragglers; write `docs/superpowers/plans/wave1-report.md` with what shipped,

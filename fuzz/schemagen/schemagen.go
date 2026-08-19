@@ -1,4 +1,4 @@
-// Package schemagen turns a JSON Schema (the subset serf's tool and protocol
+// Package schemagen turns a JSON Schema (the subset evener's tool and protocol
 // surfaces actually use: type/properties/required/enum/additionalProperties/
 // items) into generated values. It generates BOTH schema-conforming values
 // (Valid mode) and schema-adjacent ones (Adjacent mode: wrong types,
@@ -12,7 +12,7 @@
 //
 // Like the promoter, this package is the portable core of the fuzzing toolkit:
 // it imports only the standard library and pgregory.net/rapid, and NOTHING here
-// may import any primeradiant.com/serf package. That structural boundary is the
+// may import any primeradiant.com/evener package. That structural boundary is the
 // portability test — point it at any project's JSON Schema and it works.
 package schemagen
 

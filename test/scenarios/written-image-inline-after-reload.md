@@ -5,9 +5,9 @@
 thumbnail inline under its own row while the turn is live, and the SAME
 thumbnail is reconstructed after a reload — because the hub re-derives the
 file-backed descriptor from the call's own `file_path` argument on both paths:
-live via `enrichOutputImageNotification` (`cmd/serf-hub/output_images.go#enrichOutputImageNotification`)
+live via `enrichOutputImageNotification` (`cmd/evener-hub/output_images.go#enrichOutputImageNotification`)
 and on reload via `enrichThreadFileBackedOutputImages`
-(`cmd/serf-hub/app_threadread.go#enrichThreadFileBackedOutputImages`, called from `app_rpc.go:210`). If
+(`cmd/evener-hub/app_threadread.go#enrichThreadFileBackedOutputImages`, called from `app_rpc.go:210`). If
 either half regresses, the image appears once and never again — the exact
 regression this card exists for.
 
@@ -20,7 +20,7 @@ with the vanilla frontend (`660376f78`).
 
 - A freshly built hub on an isolated `$HOME` and a kernel-assigned port — see
   the Setup checklist in `docs/agentic-testing.md`. Token at
-  `$HOME/.serf/auth-token` (that isolated one).
+  `$HOME/.evener/auth-token` (that isolated one).
 - A hermetic `$WORK` as the session's `working_dir`, and a small valid PNG
   staged somewhere the model can copy or reproduce from.
 - A cheap model, e.g. `anthropic/claude-haiku-4-5-20251001`.

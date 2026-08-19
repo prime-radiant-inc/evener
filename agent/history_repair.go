@@ -5,10 +5,10 @@ import (
 	"fmt"
 	"time"
 
-	"primeradiant.com/serf/agent/events"
-	"primeradiant.com/serf/agent/schema"
-	"primeradiant.com/serf/invariant"
-	"primeradiant.com/serf/llm"
+	"primeradiant.com/evener/agent/events"
+	"primeradiant.com/evener/agent/schema"
+	"primeradiant.com/evener/invariant"
+	"primeradiant.com/evener/llm"
 )
 
 type pendingWatchSendDrainFaultKey struct{}
@@ -106,7 +106,7 @@ func syntheticToolResultsTurn(calls []llm.ToolCallData) schema.Turn {
 	parts := make([]llm.ContentPart, 0, len(calls))
 	for _, call := range calls {
 		content := fmt.Sprintf(
-			"Tool result unavailable: Serf was interrupted before recording output for tool call %s (%s). The tool was not rerun during recovery; do not assume it ran successfully. Inspect current state before continuing.",
+			"Tool result unavailable: Evener was interrupted before recording output for tool call %s (%s). The tool was not rerun during recovery; do not assume it ran successfully. Inspect current state before continuing.",
 			call.ID,
 			call.Name,
 		)

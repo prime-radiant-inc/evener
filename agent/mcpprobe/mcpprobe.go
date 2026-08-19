@@ -1,6 +1,6 @@
 // Package mcpprobe checks whether configured MCP servers currently look
 // reachable, without registering them for real use. It replaces the
-// orphaned cmd/serf-hub/internal/mcpstatus, whose http/sse probe treated any
+// orphaned cmd/evener-hub/internal/mcpstatus, whose http/sse probe treated any
 // HTTP response — even a 400 or a 200 with a garbage body — as "available"
 // because it only ever did a HEAD-then-GET, never a real MCP handshake.
 // Probe fixes exactly that: for http/sse servers it runs the actual MCP
@@ -39,7 +39,7 @@ import (
 
 	mcpsdk "github.com/modelcontextprotocol/go-sdk/mcp"
 
-	"primeradiant.com/serf/agent/mcpconfig"
+	"primeradiant.com/evener/agent/mcpconfig"
 )
 
 // probeTimeout bounds each individual server probe so one slow or hung
@@ -127,7 +127,7 @@ func probeOne(ctx context.Context, cfg mcpconfig.ServerConfig, deps probeDeps) R
 			r.Error = err.Error()
 			return r
 		}
-		client := mcpsdk.NewClient(&mcpsdk.Implementation{Name: "serf-mcpprobe", Version: "v1"}, nil)
+		client := mcpsdk.NewClient(&mcpsdk.Implementation{Name: "evener-mcpprobe", Version: "v1"}, nil)
 		session, err := client.Connect(ctx, clientTransport, nil)
 		if err != nil {
 			r.Status = "unreachable"

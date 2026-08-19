@@ -13,21 +13,21 @@ import (
 	"strings"
 	"time"
 
-	"primeradiant.com/serf/buildinfo"
-	"primeradiant.com/serf/cmdutil"
-	"primeradiant.com/serf/envvars"
-	"primeradiant.com/serf/llm"
-	_ "primeradiant.com/serf/llm/providers/anthropic"
-	_ "primeradiant.com/serf/llm/providers/glm"
-	_ "primeradiant.com/serf/llm/providers/google"
-	_ "primeradiant.com/serf/llm/providers/kimi"
-	_ "primeradiant.com/serf/llm/providers/kimi_anthropic"
-	_ "primeradiant.com/serf/llm/providers/minimax"
-	_ "primeradiant.com/serf/llm/providers/ollama"
-	openaiprovider "primeradiant.com/serf/llm/providers/openai"
-	_ "primeradiant.com/serf/llm/providers/openaicompat"
-	_ "primeradiant.com/serf/llm/providers/openrouter"
-	_ "primeradiant.com/serf/llm/providers/openrouter_anthropic"
+	"primeradiant.com/evener/buildinfo"
+	"primeradiant.com/evener/cmdutil"
+	"primeradiant.com/evener/envvars"
+	"primeradiant.com/evener/llm"
+	_ "primeradiant.com/evener/llm/providers/anthropic"
+	_ "primeradiant.com/evener/llm/providers/glm"
+	_ "primeradiant.com/evener/llm/providers/google"
+	_ "primeradiant.com/evener/llm/providers/kimi"
+	_ "primeradiant.com/evener/llm/providers/kimi_anthropic"
+	_ "primeradiant.com/evener/llm/providers/minimax"
+	_ "primeradiant.com/evener/llm/providers/ollama"
+	openaiprovider "primeradiant.com/evener/llm/providers/openai"
+	_ "primeradiant.com/evener/llm/providers/openaicompat"
+	_ "primeradiant.com/evener/llm/providers/openrouter"
+	_ "primeradiant.com/evener/llm/providers/openrouter_anthropic"
 )
 
 // llmcall is a minimal single-call CLI for the unified llm client.
@@ -96,8 +96,8 @@ func llmcallMain(args []string, stdout, stderr io.Writer) error {
 		maxTokens:   -1,
 	}
 
-	fs.StringVar(&cfg.provider, "provider", "", "LLM provider (or set "+envvars.LLMProvider.Name+" / "+envvars.SERFProvider.Name+")")
-	fs.StringVar(&cfg.model, "model", "", "LLM model identifier (or set "+envvars.LLMModel.Name+" / "+envvars.SERFModel.Name+")")
+	fs.StringVar(&cfg.provider, "provider", "", "LLM provider (or set "+envvars.LLMProvider.Name+" / "+envvars.EVENERProvider.Name+")")
+	fs.StringVar(&cfg.model, "model", "", "LLM model identifier (or set "+envvars.LLMModel.Name+" / "+envvars.EVENERModel.Name+")")
 
 	fs.StringVar(&cfg.systemText, "system", "", "system prompt text (optional)")
 	fs.StringVar(&cfg.systemFile, "system-file", "", "path to a system prompt file (optional)")
@@ -136,8 +136,8 @@ func llmcallMain(args []string, stdout, stderr io.Writer) error {
 		_, _ = fmt.Fprintf(stderr, "  - Tool calls are forbidden (tool_choice=none).\n")
 		_, _ = fmt.Fprintf(stderr, "  - No system prompt by default.\n\n")
 		_, _ = fmt.Fprintf(stderr, "Required:\n")
-		_, _ = fmt.Fprintf(stderr, "  --provider <name>        LLM provider (or %s/%s)\n", envvars.LLMProvider.Name, envvars.SERFProvider.Name)
-		_, _ = fmt.Fprintf(stderr, "  --model <id>             model identifier (or %s/%s)\n", envvars.LLMModel.Name, envvars.SERFModel.Name)
+		_, _ = fmt.Fprintf(stderr, "  --provider <name>        LLM provider (or %s/%s)\n", envvars.LLMProvider.Name, envvars.EVENERProvider.Name)
+		_, _ = fmt.Fprintf(stderr, "  --model <id>             model identifier (or %s/%s)\n", envvars.LLMModel.Name, envvars.EVENERModel.Name)
 	}
 
 	if err := fs.Parse(args); err != nil {
@@ -191,19 +191,19 @@ func llmcallMain(args []string, stdout, stderr io.Writer) error {
 		cfg.provider = envvars.LLMProvider.Getenv()
 	}
 	if cfg.provider == "" {
-		cfg.provider = envvars.SERFProvider.Getenv()
+		cfg.provider = envvars.EVENERProvider.Getenv()
 	}
 	if cfg.model == "" {
 		cfg.model = envvars.LLMModel.Getenv()
 	}
 	if cfg.model == "" {
-		cfg.model = envvars.SERFModel.Getenv()
+		cfg.model = envvars.EVENERModel.Getenv()
 	}
 	if cfg.provider == "" {
-		return fmt.Errorf("no provider specified: use --provider or set %s/%s", envvars.LLMProvider.Name, envvars.SERFProvider.Name)
+		return fmt.Errorf("no provider specified: use --provider or set %s/%s", envvars.LLMProvider.Name, envvars.EVENERProvider.Name)
 	}
 	if cfg.model == "" {
-		return fmt.Errorf("no model specified: use --model or set %s/%s", envvars.LLMModel.Name, envvars.SERFModel.Name)
+		return fmt.Errorf("no model specified: use --model or set %s/%s", envvars.LLMModel.Name, envvars.EVENERModel.Name)
 	}
 
 	cfg.systemAppend = []string(systemAppend)

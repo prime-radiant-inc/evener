@@ -36,7 +36,7 @@ func (m *Manager) upgradeAuto(ctx context.Context, plugin, marketplace string) (
 // inherently current and are always skipped, exactly like UpdateAll.
 //
 // This is the filtered sibling of UpdateAll: UpdateAll powers the explicit
-// `serf plugin upgrade --all`, which upgrades every installed plugin
+// `evener plugin upgrade --all`, which upgrades every installed plugin
 // regardless of the opt-in flag — an explicit user request overrides the
 // gate. UpdateAutoUpgrade powers the background auto-upgrade daemon (design
 // doc §9.1), which must only touch plugins a user has opted into: enabling
@@ -49,7 +49,7 @@ func (m *Manager) upgradeAuto(ctx context.Context, plugin, marketplace string) (
 // inside upgradeAuto's locked section at the moment that plugin is actually
 // processed. This matters because two overlapping calls to
 // UpdateAutoUpgrade (the periodic tick racing a manual
-// serf/plugin/checkNow, or checkNow from two clients) must not both observe
+// evener/plugin/checkNow, or checkNow from two clients) must not both observe
 // the same stale pre-sweep sha and both report the plugin as updated — and a
 // SetAutoUpgrade(false) landing mid-sweep must be honored for any plugin the
 // sweep hasn't reached yet.

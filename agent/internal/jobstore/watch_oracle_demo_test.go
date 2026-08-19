@@ -4,7 +4,7 @@ import (
 	"regexp"
 	"testing"
 
-	"primeradiant.com/serf/fuzz/oracle"
+	"primeradiant.com/evener/fuzz/oracle"
 )
 
 // TestOutputMatcherOracleDemo demonstrates the fuzz/oracle combinators against

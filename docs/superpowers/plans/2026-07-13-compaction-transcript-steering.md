@@ -6,7 +6,7 @@
 
 **Architecture:** Keep checkpoint and summary artifact handling in `handleCompactionTurn`. Move reminder ownership into the existing operation-scoped `compactionEmitFunc` closure: observe history-folding compaction events during the operation, then queue the unchanged reminder once from the single flush call. This preserves later reminders because every compaction operation creates a fresh closure.
 
-**Tech Stack:** Go, Serf session/context-manager lifecycle, scripted `llm.ProviderAdapter` tests, standard `testing` package.
+**Tech Stack:** Go, Evener session/context-manager lifecycle, scripted `llm.ProviderAdapter` tests, standard `testing` package.
 
 ## Global Constraints
 

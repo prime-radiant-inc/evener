@@ -4,7 +4,7 @@
 
 **Goal:** Make a daemon-originated steering message announce itself as one — `◇ System steered: <kind> ▸` — with the kind carried on the wire instead of guessed from prose.
 
-**Architecture:** An additive `Kind` field rides `SteeringInjectedData` (event), `schema.Turn` (persistence), `SerfSteeringInjectedParams` + `ThreadItem` (wire), reaching the frontend on both the live and reload paths. Seventeen kinds, set at eighteen injection sites. `SteeringItem.tsx` routes on that field; the prose classifier in `steeringClassify.ts` is deleted, keeping only its structured `<job-notification>` parsing. A new `design-system.md` §7 states the family rule the transcript's glyph gutter now enforces.
+**Architecture:** An additive `Kind` field rides `SteeringInjectedData` (event), `schema.Turn` (persistence), `EvenerSteeringInjectedParams` + `ThreadItem` (wire), reaching the frontend on both the live and reload paths. Seventeen kinds, set at eighteen injection sites. `SteeringItem.tsx` routes on that field; the prose classifier in `steeringClassify.ts` is deleted, keeping only its structured `<job-notification>` parsing. A new `design-system.md` §7 states the family rule the transcript's glyph gutter now enforces.
 
 **Tech Stack:** Go 1.x (multi-module workspace), React 19 + TypeScript + CSS Modules, vitest + @testing-library/react, biome.
 
@@ -18,10 +18,10 @@
 - `--ink-mid` for the whole steering row, glyph and chevron included. Not `--ink-low` (2.97:1 dark / 3.64:1 light, under the 4.5:1 AA floor).
 - No chromatic literals outside `tokens.css` (`src/styles/token-contract.test.ts` enforces). The steering glyph uses `currentColor` and needs no allowlist entry.
 - ◇ is outside the IBM Plex latin1 subset (`global.css:23-24` declares no U+25xx range at all). It MUST be inline SVG, never a text character.
-- Gates, all by exit code: **`make test` and `make lint`** from the repo root; `npm run typecheck`, `npm run lint`, `npm test` from `cmd/serf-hub/frontend`.
+- Gates, all by exit code: **`make test` and `make lint`** from the repo root; `npm run typecheck`, `npm run lint`, `npm test` from `cmd/evener-hub/frontend`.
 - **`go test ./...` from the repo root is NOT a gate.** It resolves per-module and says nothing about `agent` or `llm` — where most of this work lives (`docs/conventions/go-workspace.md:9-20`). `make test` and `make lint` loop the modules explicitly; a green `./...` is not evidence the workspace builds. If you want a fast inner-loop check while iterating, `(cd agent && go test ./...)` covers the agent module, but the gate you report is `make test`.
 - Use the frontend npm scripts, NOT `npx tsc` — `npx tsc` from the repo root resolves to a decoy `tsc@2.0.4` package and silently does not typecheck.
-- `make generate` regenerates BOTH `cmd/serf-hub/frontend/src/protocol/types.gen.ts` and `docs/appwire-protocol.md`. Commit both, or `make lint-generated` fails.
+- `make generate` regenerates BOTH `cmd/evener-hub/frontend/src/protocol/types.gen.ts` and `docs/appwire-protocol.md`. Commit both, or `make lint-generated` fails.
 - Never `git stash`, never `git checkout <file>` to undo, never `npm ci`, never `git add` a directory containing the `node_modules` symlink.
 
 ## File Structure
@@ -29,7 +29,7 @@
 **Go — field definitions**
 - `agent/events/payloads.go` — `SteeringInjectedData.Kind` + the `SteeringKind*` constants (the enum's home).
 - `agent/schema/turn.go` — `Turn.SteeringKind`, so the kind survives reload.
-- `appwire/types.go` — `SerfSteeringInjectedParams.Kind`, `ThreadItem.SteeringKind`.
+- `appwire/types.go` — `EvenerSteeringInjectedParams.Kind`, `ThreadItem.SteeringKind`.
 
 **Go — plumbing**
 - `agent/session_queue.go` — `steeringMessage.Kind`, `trySteerEnqueue`'s kind parameter, `SteerKind`, `consumeSteeringMessage`.
@@ -61,7 +61,7 @@
 
 **Interfaces:**
 - Consumes: nothing.
-- Produces: `events.SteeringKind*` string constants; `events.SteeringInjectedData.Kind`; `schema.Turn.SteeringKind`; `appwire.SerfSteeringInjectedParams.Kind`; `appwire.ThreadItem.SteeringKind`. Every later task uses these exact names.
+- Produces: `events.SteeringKind*` string constants; `events.SteeringInjectedData.Kind`; `schema.Turn.SteeringKind`; `appwire.EvenerSteeringInjectedParams.Kind`; `appwire.ThreadItem.SteeringKind`. Every later task uses these exact names.
 
 - [ ] **Step 1: Write the failing test**
 
@@ -191,7 +191,7 @@ In `agent/schema/turn.go`, after `SteeringSource` (line ~135):
 	SteeringKind string `json:"steering_kind,omitempty"`
 ```
 
-In `appwire/types.go`, add to `SerfSteeringInjectedParams` (after `Source`):
+In `appwire/types.go`, add to `EvenerSteeringInjectedParams` (after `Source`):
 
 ```go
 	Kind string `json:"kind,omitempty"`
@@ -210,13 +210,13 @@ Expected: PASS (both tests).
 
 - [ ] **Step 5: Regenerate the wire types and confirm the build**
 
-Run: `make generate && go build ./... && npx tsc --noEmit --incremental false --project cmd/serf-hub/frontend`
-Expected: exit 0. `cmd/serf-hub/frontend/src/protocol/types.gen.ts` now has `kind?: string` on `SerfSteeringInjectedParams` and `steeringKind?: string` on `ThreadItem`.
+Run: `make generate && go build ./... && npx tsc --noEmit --incremental false --project cmd/evener-hub/frontend`
+Expected: exit 0. `cmd/evener-hub/frontend/src/protocol/types.gen.ts` now has `kind?: string` on `EvenerSteeringInjectedParams` and `steeringKind?: string` on `ThreadItem`.
 
 - [ ] **Step 6: Commit**
 
 ```bash
-git add agent/events/payloads.go agent/events/payloads_test.go agent/schema/turn.go appwire/types.go cmd/serf-hub/frontend/src/protocol/types.gen.ts
+git add agent/events/payloads.go agent/events/payloads_test.go agent/schema/turn.go appwire/types.go cmd/evener-hub/frontend/src/protocol/types.gen.ts
 git commit -m "steering: add an additive Kind field and its enum
 
 The UI infers a steering label by pattern-matching prose because the event
@@ -443,7 +443,7 @@ import (
 	"strings"
 	"testing"
 
-	"serf/agent/events"
+	"evener/agent/events"
 )
 
 // Every kind in the enum must be produced by at least one non-test call site.
@@ -502,7 +502,7 @@ func TestMaybeInjectTaskReminderReturnsItsKind(t *testing.T) {
 }
 ```
 
-Adjust the import path prefix (`serf/agent/events`) to whatever this module actually uses — read the imports of a neighbouring file in `agent/`. Adjust `s.totalRounds` assignment to whatever the surrounding tests use to reach trigger 3; if they drive it through a helper, use the helper.
+Adjust the import path prefix (`evener/agent/events`) to whatever this module actually uses — read the imports of a neighbouring file in `agent/`. Adjust `s.totalRounds` assignment to whatever the surrounding tests use to reach trigger 3; if they drive it through a helper, use the helper.
 
 - [ ] **Step 2: Run test to verify it fails**
 
@@ -590,12 +590,12 @@ rather than letting the call site re-derive it from the text it just built."
 ### Task 4: Carry the kind to the frontend model
 
 **Files:**
-- Modify: `cmd/serf-hub/frontend/src/protocol/model.ts:15-45` (`ItemModel`)
-- Modify: `cmd/serf-hub/frontend/src/protocol/reducer.ts:755-784` (live path) and its `wireItemToModel` (snapshot path)
-- Test: `cmd/serf-hub/frontend/src/protocol/reducer.test.ts`
+- Modify: `cmd/evener-hub/frontend/src/protocol/model.ts:15-45` (`ItemModel`)
+- Modify: `cmd/evener-hub/frontend/src/protocol/reducer.ts:755-784` (live path) and its `wireItemToModel` (snapshot path)
+- Test: `cmd/evener-hub/frontend/src/protocol/reducer.test.ts`
 
 **Interfaces:**
-- Consumes: `types.gen.ts`'s regenerated `SerfSteeringInjectedParams.kind` and `ThreadItem.steeringKind` from Task 1.
+- Consumes: `types.gen.ts`'s regenerated `EvenerSteeringInjectedParams.kind` and `ThreadItem.steeringKind` from Task 1.
 - Produces: `ItemModel.steeringKind?: string` — Task 6 routes on it.
 
 - [ ] **Step 1: Write the failing tests**
@@ -605,7 +605,7 @@ Append to `src/protocol/reducer.test.ts`, matching the file's existing helper st
 ```ts
 test("a live steer carries its wire kind onto the item", () => {
   const model = withActiveTurn("turn_1");
-  const next = reduce(model, notification("serf/steering/injected", {
+  const next = reduce(model, notification("evener/steering/injected", {
     threadId: model.threadId,
     text: "You have completed all tasks",
     kind: "tasks-done",
@@ -617,7 +617,7 @@ test("a live steer carries its wire kind onto the item", () => {
 
 test("a live steer with no wire kind leaves steeringKind undefined", () => {
   const model = withActiveTurn("turn_1");
-  const next = reduce(model, notification("serf/steering/injected", {
+  const next = reduce(model, notification("evener/steering/injected", {
     threadId: model.threadId,
     text: "something unclassified",
   }));
@@ -640,7 +640,7 @@ Use the file's real helpers (`withActiveTurn`, `notification`, `lastItem` are il
 
 - [ ] **Step 2: Run tests to verify they fail**
 
-Run: `cd cmd/serf-hub/frontend && npm test -- src/protocol/reducer.test.ts`
+Run: `cd cmd/evener-hub/frontend && npm test -- src/protocol/reducer.test.ts`
 Expected: FAIL — `steeringKind` is undefined in all three.
 
 - [ ] **Step 3: Implement**
@@ -656,7 +656,7 @@ Expected: FAIL — `steeringKind` is undefined in all three.
   steeringKind?: string;
 ```
 
-`src/protocol/reducer.ts`, in the live `serf/steering/injected` item literal, beside `source`:
+`src/protocol/reducer.ts`, in the live `evener/steering/injected` item literal, beside `source`:
 
 ```ts
             steeringKind: params.kind,
@@ -670,13 +670,13 @@ In `wireItemToModel`, carry it the same way the existing `source`/`eventKind` fi
 
 - [ ] **Step 4: Run tests to verify they pass**
 
-Run: `cd cmd/serf-hub/frontend && npm test -- src/protocol/reducer.test.ts`
+Run: `cd cmd/evener-hub/frontend && npm test -- src/protocol/reducer.test.ts`
 Expected: PASS.
 
 - [ ] **Step 5: Commit**
 
 ```bash
-git add cmd/serf-hub/frontend/src/protocol/
+git add cmd/evener-hub/frontend/src/protocol/
 git commit -m "steering: carry the wire kind onto ItemModel on both paths
 
 Live notification and snapshot reload both populate steeringKind, so a
@@ -688,11 +688,11 @@ reloaded transcript labels a steer the way the live one did."
 ### Task 5: The SteeringGlyph widget
 
 **Files:**
-- Create: `cmd/serf-hub/frontend/src/widgets/steeringglyph/index.tsx`
-- Create: `cmd/serf-hub/frontend/src/widgets/steeringglyph/steeringglyph.module.css`
-- Create: `cmd/serf-hub/frontend/src/widgets/steeringglyph/steeringglyph.test.tsx`
-- Create: `cmd/serf-hub/frontend/src/dev/gallery-sections/steeringglyph.tsx`
-- Modify: `cmd/serf-hub/frontend/src/widgets/index.ts:30` (barrel, beside `FailureGlyph`)
+- Create: `cmd/evener-hub/frontend/src/widgets/steeringglyph/index.tsx`
+- Create: `cmd/evener-hub/frontend/src/widgets/steeringglyph/steeringglyph.module.css`
+- Create: `cmd/evener-hub/frontend/src/widgets/steeringglyph/steeringglyph.test.tsx`
+- Create: `cmd/evener-hub/frontend/src/dev/gallery-sections/steeringglyph.tsx`
+- Modify: `cmd/evener-hub/frontend/src/widgets/index.ts:30` (barrel, beside `FailureGlyph`)
 
 **Interfaces:**
 - Consumes: nothing.
@@ -737,7 +737,7 @@ test("draws SVG, never the ◇ character", () => {
 
 - [ ] **Step 2: Run test to verify it fails**
 
-Run: `cd cmd/serf-hub/frontend && npm test -- src/widgets/steeringglyph/`
+Run: `cd cmd/evener-hub/frontend && npm test -- src/widgets/steeringglyph/`
 Expected: FAIL — cannot resolve `.`.
 
 - [ ] **Step 3: Implement**
@@ -801,13 +801,13 @@ export { SteeringGlyph } from "./steeringglyph";
 
 - [ ] **Step 4: Run tests to verify they pass**
 
-Run: `cd cmd/serf-hub/frontend && npm test -- src/widgets/steeringglyph/ src/dev/WidgetGallery.test.tsx src/styles/token-contract.test.ts`
+Run: `cd cmd/evener-hub/frontend && npm test -- src/widgets/steeringglyph/ src/dev/WidgetGallery.test.tsx src/styles/token-contract.test.ts`
 Expected: PASS for all three.
 
 - [ ] **Step 5: Commit**
 
 ```bash
-git add cmd/serf-hub/frontend/src/widgets/steeringglyph/ cmd/serf-hub/frontend/src/widgets/index.ts cmd/serf-hub/frontend/src/dev/gallery-sections/steeringglyph.tsx
+git add cmd/evener-hub/frontend/src/widgets/steeringglyph/ cmd/evener-hub/frontend/src/widgets/index.ts cmd/evener-hub/frontend/src/dev/gallery-sections/steeringglyph.tsx
 git commit -m "widgets: add SteeringGlyph, the ◇ that marks a system steer
 
 SVG because U+25C7 falls in a gap in the Plex latin1 subset. Decorative,
@@ -819,9 +819,9 @@ unlike FailureGlyph - the row's text already names it."
 ### Task 6: Route on the kind and build the row
 
 **Files:**
-- Modify: `cmd/serf-hub/frontend/src/panes/session/transcript/messages/SteeringItem.tsx` (whole file)
-- Modify: `cmd/serf-hub/frontend/src/panes/session/transcript/messages/steeringitem.module.css`
-- Modify: `cmd/serf-hub/frontend/src/panes/session/transcript/messages/steeringClassify.ts` (delete the prose classifier)
+- Modify: `cmd/evener-hub/frontend/src/panes/session/transcript/messages/SteeringItem.tsx` (whole file)
+- Modify: `cmd/evener-hub/frontend/src/panes/session/transcript/messages/steeringitem.module.css`
+- Modify: `cmd/evener-hub/frontend/src/panes/session/transcript/messages/steeringClassify.ts` (delete the prose classifier)
 - Test: `SteeringItem.test.tsx`, `steeringClassify.test.ts`
 
 **Interfaces:**
@@ -905,7 +905,7 @@ test("no longer exports a prose classifier", async () => {
 
 - [ ] **Step 2: Run tests to verify they fail**
 
-Run: `cd cmd/serf-hub/frontend && npm test -- src/panes/session/transcript/messages/`
+Run: `cd cmd/evener-hub/frontend && npm test -- src/panes/session/transcript/messages/`
 Expected: FAIL on the new assertions.
 
 - [ ] **Step 3: Implement**
@@ -1069,18 +1069,18 @@ Delete the `.detail` rule — the divider no longer renders a detail suffix.
 
 - [ ] **Step 4: Run tests to verify they pass**
 
-Run: `cd cmd/serf-hub/frontend && npm test -- src/panes/session/transcript/messages/`
+Run: `cd cmd/evener-hub/frontend && npm test -- src/panes/session/transcript/messages/`
 Expected: PASS.
 
 - [ ] **Step 5: Run every frontend gate**
 
-Run: `cd cmd/serf-hub/frontend && npm run typecheck && npm run lint && npm test`
+Run: `cd cmd/evener-hub/frontend && npm run typecheck && npm run lint && npm test`
 Expected: exit 0 for all three. Deleting exports breaks any other importer — the typecheck is what catches it.
 
 - [ ] **Step 6: Commit**
 
 ```bash
-git add cmd/serf-hub/frontend/src/panes/session/transcript/messages/
+git add cmd/evener-hub/frontend/src/panes/session/transcript/messages/
 git commit -m "steering: label a steer from the wire, and mark it as one
 
 Routes on ItemModel.steeringKind and deletes the prose classifier, including
@@ -1101,7 +1101,7 @@ content-driven: <job-notification> is markup, not a prose guess."
 
 - [ ] **Step 1: Verify the implementation matches what you are about to document**
 
-Run: `cd cmd/serf-hub/frontend && grep -n "ink-mid\|space-2\|align-items" src/panes/session/transcript/messages/steeringitem.module.css`
+Run: `cd cmd/evener-hub/frontend && grep -n "ink-mid\|space-2\|align-items" src/panes/session/transcript/messages/steeringitem.module.css`
 Expected: confirms the row is `--ink-mid` with a `var(--space-2)` gutter gap. Document what is actually there; if it differs from the spec, the code is the truth and the doc follows it.
 
 - [ ] **Step 2: Write §8**
@@ -1170,8 +1170,8 @@ says "System steered: <kind>".
 Run:
 
 ```bash
-cd /Users/jesse/prime-radiant/toil-suite/serf/.claude/worktrees/kh-steering-voice
-grep -n "U+2039-203A, U+2044" cmd/serf-hub/frontend/src/styles/global.css
+cd /Users/jesse/prime-radiant/toil-suite/evener/.claude/worktrees/kh-steering-voice
+grep -n "U+2039-203A, U+2044" cmd/evener-hub/frontend/src/styles/global.css
 grep -rn "reading without writing" --include="*.go" . | grep -v _test | wc -l   # must be 0
 grep -c "SteeringKind" agent/events/payloads.go                                  # must be > 0
 ```
@@ -1196,8 +1196,8 @@ from the wire rather than from its prose."
 
 **Files:**
 - Modify: `internal/appwirets/emit.go` (add one catalog + one import)
-- Modify: `cmd/serf-hub/frontend/src/protocol/types.gen.ts` (regenerated, never hand-edited)
-- Modify: `cmd/serf-hub/frontend/src/panes/session/transcript/messages/SteeringItem.tsx`
+- Modify: `cmd/evener-hub/frontend/src/protocol/types.gen.ts` (regenerated, never hand-edited)
+- Modify: `cmd/evener-hub/frontend/src/panes/session/transcript/messages/SteeringItem.tsx`
 - Test: `internal/appwirets/emit_test.go`
 
 **Interfaces:**
@@ -1252,7 +1252,7 @@ Expected: FAIL — no `STEERING_KINDS` in the output.
 
 - [ ] **Step 3: Emit the catalog**
 
-In `internal/appwirets/emit.go`, add the import `"primeradiant.com/serf/agent/events"`
+In `internal/appwirets/emit.go`, add the import `"primeradiant.com/evener/agent/events"`
 (cross-module, already done by `internal/appprojector`), then one call beside the two
 existing catalogs at `:326`/`:332`:
 
@@ -1302,14 +1302,14 @@ existing test passing — behaviour does not change here, only its type safety.
 - [ ] **Step 6: Prove the guard actually guards**
 
 Temporarily add a kind to the Go const block and `AllSteeringKinds`, run `make generate`,
-then `npm run typecheck` from `cmd/serf-hub/frontend`. It MUST fail with a missing-key
+then `npm run typecheck` from `cmd/evener-hub/frontend`. It MUST fail with a missing-key
 error naming your new kind. Revert the Go change, regenerate, confirm green. Report the
 exact error text you saw — a guard nobody has seen fire is not a guard.
 
 - [ ] **Step 7: Commit**
 
 ```bash
-git add internal/appwirets/ cmd/serf-hub/frontend/src/protocol/types.gen.ts docs/appwire-protocol.md cmd/serf-hub/frontend/src/panes/session/transcript/messages/SteeringItem.tsx
+git add internal/appwirets/ cmd/evener-hub/frontend/src/protocol/types.gen.ts docs/appwire-protocol.md cmd/evener-hub/frontend/src/panes/session/transcript/messages/SteeringItem.tsx
 git commit -m "steering: generate the kind union so drift fails the build
 
 KIND_LABELS and the Go enum agreed by inspection and nothing kept them
@@ -1323,9 +1323,9 @@ tsc, using the catalog helper and drift test the generator already has."
 - [ ] Run every gate from the repo root:
 
 ```bash
-cd /Users/jesse/prime-radiant/toil-suite/serf/.claude/worktrees/kh-steering-voice
+cd /Users/jesse/prime-radiant/toil-suite/evener/.claude/worktrees/kh-steering-voice
 make test && make lint
-cd cmd/serf-hub/frontend && npm run typecheck && npm run lint && npm test
+cd cmd/evener-hub/frontend && npm run typecheck && npm run lint && npm test
 ```
 
 Expected: exit 0 for every command. Report the actual exit codes, not a summary of a scrolled log.

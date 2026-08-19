@@ -72,6 +72,6 @@ semantic retention that the steered, paraphrasing summary actually achieves.**
 **precisely in the multi-fact / long-context regime it is designed for** — where a single
 post-hoc summary cannot hold everything and silently drops about half the facts. On easy
 single-fact cases the note is redundant (the summarizer keeps the one fact anyway). The
-steering (`compaction_instructions`) helps quality on top of either. This is serf-specific
+steering (`compaction_instructions`) helps quality on top of either. This is evener-specific
 empirical support for shipping both the note and the instruction path — with the honest
 boundary that the value scales with how much the agent needs to carry through compaction.

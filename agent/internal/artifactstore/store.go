@@ -28,7 +28,7 @@ type Store struct {
 }
 
 func New(base string) (*Store, error) {
-	dir, err := os.MkdirTemp(base, "serf-artifacts-*")
+	dir, err := os.MkdirTemp(base, "evener-artifacts-*")
 	if err != nil {
 		return nil, err
 	}

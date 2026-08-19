@@ -5,8 +5,8 @@ import (
 	"path/filepath"
 	"testing"
 
-	"primeradiant.com/serf/agent/execenv"
-	"primeradiant.com/serf/agent/skill"
+	"primeradiant.com/evener/agent/execenv"
+	"primeradiant.com/evener/agent/skill"
 )
 
 // writeSkillDirect writes a SKILL.md directly into <dir>/<name>/SKILL.md.

@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"testing"
 
-	"primeradiant.com/serf/agent/events"
+	"primeradiant.com/evener/agent/events"
 )
 
 // FuzzWatchPendingStateProgram keeps the generic pending-state target on the

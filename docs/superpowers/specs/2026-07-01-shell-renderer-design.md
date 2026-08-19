@@ -1,14 +1,14 @@
 # Shell and Tool Renderer Design
 
 **Date:** 2026-07-01
-**Scope:** `cmd/serf-hub` web transcript renderer (`assets/renderer.js`, `assets/renderer-tools.js`, `assets/style.css`, renderer JSDOM tests)
+**Scope:** `cmd/evener-hub` web transcript renderer (`assets/renderer.js`, `assets/renderer-tools.js`, `assets/style.css`, renderer JSDOM tests)
 **Status:** Approved design; implementation plan pending.
 
 ## Goal
 
 Make shell/bash tool calls readable and intentional while improving the expandable-tool affordance across all visible tools. The shell renderer should feel like a first-class command transcript, not a generic tool row with a clipped command. The broader tool renderer should use standardized components so shell does not become a one-off widget.
 
-The redesign must keep Serf's existing transcript tone: quiet annotation tier, low chrome, clear hierarchy, and honest output states.
+The redesign must keep Evener's existing transcript tone: quiet annotation tier, low chrome, clear hierarchy, and honest output states.
 
 ## Problems to solve
 
@@ -99,8 +99,8 @@ Expanded shape:
 ```text
 ╭─ shell
 │ $ git status --short
-│  M cmd/serf-hub/assets/renderer-tools.js
-│  M cmd/serf-hub/assets/style.css
+│  M cmd/evener-hub/assets/renderer-tools.js
+│  M cmd/evener-hub/assets/style.css
 ╰─ exit 0 · 1ms
 ```
 
@@ -215,16 +215,16 @@ These retain existing special behavior and do not become normal tool cards:
 
 Likely files:
 
-- `cmd/serf-hub/assets/renderer.js`
+- `cmd/evener-hub/assets/renderer.js`
   - Tool row construction, disclosure placement, metadata placement, empty-body cleanup.
-- `cmd/serf-hub/assets/renderer-tools.js`
+- `cmd/evener-hub/assets/renderer-tools.js`
   - Shell renderer `$` identity and terminal body creation.
   - Body variant classes for preview/diff/terminal/list.
-- `cmd/serf-hub/assets/renderer-panels.js`
+- `cmd/evener-hub/assets/renderer-panels.js`
   - Existing delegated expand/collapse behavior; may need class/ARIA updates.
-- `cmd/serf-hub/assets/style.css`
+- `cmd/evener-hub/assets/style.css`
   - Shared row anatomy, inline disclosure, standardized body containers, terminal body styling, mobile adjustments.
-- `cmd/serf-hub/jstest/test-tool-renderers.js`
+- `cmd/evener-hub/jstest/test-tool-renderers.js`
   - Main renderer contract tests.
 - Existing disclosure/mobile/pane tests may need updates if they assert the old right-column caret or hover-only metadata.
 
@@ -248,10 +248,10 @@ Add or update deterministic JSDOM/CSS tests for:
 Run at minimum:
 
 ```sh
-cd cmd/serf-hub && ./jstest/run-all.sh
+cd cmd/evener-hub && ./jstest/run-all.sh
 ```
 
-If Go server/template behavior changes, also run the relevant Go tests under `cmd/serf-hub`.
+If Go server/template behavior changes, also run the relevant Go tests under `cmd/evener-hub`.
 
 ## Non-goals
 
@@ -266,5 +266,5 @@ If Go server/template behavior changes, also run the relevant Go tests under `cm
 These should be resolved in the implementation plan, not by changing the product direction:
 
 - Whether to introduce new wrapper elements (`.tool-main`) immediately or adapt existing `.tool-intent` / `.tool-command` classes with minimal DOM churn.
-- Whether terminal body rails use box-drawing characters literally or achieve the same feel with CSS borders. CSS is likely more robust, but the visual intent is a compact Serf terminal transcript.
+- Whether terminal body rails use box-drawing characters literally or achieve the same feel with CSS borders. CSS is likely more robust, but the visual intent is a compact Evener terminal transcript.
 - How much metadata remains visible in very narrow mobile panes.

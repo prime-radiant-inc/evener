@@ -50,11 +50,11 @@ func CheckGitVersion(run GitRunner) error {
 	}
 	major, minor, ok := parseGitVersion(out)
 	if !ok {
-		return fmt.Errorf("could not parse a git version from %q; serf requires git >= %d.%d for `git worktree add --lock --reason`",
+		return fmt.Errorf("could not parse a git version from %q; evener requires git >= %d.%d for `git worktree add --lock --reason`",
 			strings.TrimSpace(out), requiredGitMajor, requiredGitMinor)
 	}
 	if major < requiredGitMajor || (major == requiredGitMajor && minor < requiredGitMinor) {
-		return fmt.Errorf("git %d.%d is too old; serf requires git >= %d.%d for `git worktree add --lock --reason` (no degraded mode below this floor)",
+		return fmt.Errorf("git %d.%d is too old; evener requires git >= %d.%d for `git worktree add --lock --reason` (no degraded mode below this floor)",
 			major, minor, requiredGitMajor, requiredGitMinor)
 	}
 	return nil

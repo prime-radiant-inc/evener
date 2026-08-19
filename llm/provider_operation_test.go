@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	apilog "primeradiant.com/serf/llm/apilog"
+	apilog "primeradiant.com/evener/llm/apilog"
 )
 
 func TestProviderOperationSettlementUsesBegunAttemptState(t *testing.T) {

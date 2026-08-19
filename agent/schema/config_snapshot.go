@@ -28,7 +28,7 @@ type ConfigSnapshot struct {
 	PluginDirs                  []string                   `json:"plugin_dirs,omitempty"`                   // directories scanned for plugins
 	SystemPromptFile            string                     `json:"system_prompt_file,omitempty"`            // replacement base instruction prelude
 	SystemPromptAppend          []string                   `json:"system_prompt_append,omitempty"`          // file paths appended to the system prompt
-	NoProjectPrompts            bool                       `json:"no_project_prompts,omitempty"`            // suppress loading .serf/prompts/
+	NoProjectPrompts            bool                       `json:"no_project_prompts,omitempty"`            // suppress loading .evener/prompts/
 	NonInteractive              bool                       `json:"non_interactive,omitempty"`               // no human available for questions/confirmation
 	ContextStrategy             string                     `json:"context_strategy,omitempty"`              // context-management strategy
 	ShareTasksWithChildren      bool                       `json:"share_tasks_with_children,omitempty"`     // pass the task store to spawned children

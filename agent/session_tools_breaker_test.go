@@ -8,8 +8,8 @@ import (
 	"testing"
 	"time"
 
-	"primeradiant.com/serf/agent/sandbox"
-	"primeradiant.com/serf/llm"
+	"primeradiant.com/evener/agent/sandbox"
+	"primeradiant.com/evener/llm"
 )
 
 // A human approving a sandbox denial has just authorized this exact call, so
@@ -37,7 +37,7 @@ func TestRerunToolWithGrant_HumanApprovedRetryIsNotParked(t *testing.T) {
 	if calls != 3 {
 		t.Errorf("an approved rerun must dispatch: invocations = %d, want 3", calls)
 	}
-	if strings.Contains(res.Output, "serf did not execute this call:") {
+	if strings.Contains(res.Output, "evener did not execute this call:") {
 		t.Errorf("approved rerun was parked: %q", res.Output)
 	}
 }

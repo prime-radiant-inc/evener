@@ -6,7 +6,7 @@ import (
 	"sort"
 	"testing"
 
-	"primeradiant.com/serf/llm"
+	"primeradiant.com/evener/llm"
 )
 
 // FuzzOpenaicompatListModels drives the openai-compatible adapter's ListModels

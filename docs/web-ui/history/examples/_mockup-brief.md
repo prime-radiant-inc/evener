@@ -1,6 +1,6 @@
-# Serf — Live Session Workspace Mockup Brief (SHARED)
+# Evener — Live Session Workspace Mockup Brief (SHARED)
 
-You are designing ONE screen: the **live session workspace** of "Serf," an agentic coding tool used by external customers to watch AI agents work in real time. This brief defines the EXACT content and structure every direction must render, so three visual directions can be compared apples-to-apples. You own only the *visual register* (type, color, spacing, motifs, motion) — NOT the content or the information architecture, which are fixed below.
+You are designing ONE screen: the **live session workspace** of "Evener," an agentic coding tool used by external customers to watch AI agents work in real time. This brief defines the EXACT content and structure every direction must render, so three visual directions can be compared apples-to-apples. You own only the *visual register* (type, color, spacing, motifs, motion) — NOT the content or the information architecture, which are fixed below.
 
 The screen is a two-column app at 1440×900, **dark-first**:
 - LEFT: a sidebar (sessions navigator), ~300px.
@@ -20,11 +20,11 @@ The screen is a two-column app at 1440×900, **dark-first**:
 Top actions row: `＋ New`   `Search ⌘K`   `Settings`
 
 **LIVE (2)**
-- ● **Refactor auth token cache** — `serf` · working 1:12   ← SELECTED/active (blue/working color)
+- ● **Refactor auth token cache** — `evener` · working 1:12   ← SELECTED/active (blue/working color)
 - ● **Audit error handling** — `kimi` · needs you   ← awaiting (red/attention color)
 
 **RECENT**
-- ▾ **SERF** · 5m   *(has a live child — show a live rollup dot)*
+- ▾ **EVENER** · 5m   *(has a live child — show a live rollup dot)*
     - ● Refactor auth token cache · 1:12   *(working; this is the open one — mark as selected)*
         - ⤷ trace-callers · ✓ done   *(subagent: dim, indented, connector rail, done glyph)*
         - ⤷ find-tests · ⟳ running   *(subagent: running glyph)*
@@ -34,7 +34,7 @@ Top actions row: `＋ New`   `Search ⌘K`   `Settings`
 - ▸ **PRIME-RADIANT** · 1d
 
 **OLDER**
-- ▸ **serf-docs** · 9d
+- ▸ **evener-docs** · 9d
 
 ▸ **TEST RUNS (26)**   *(one collapsed bucket; muted)*
 

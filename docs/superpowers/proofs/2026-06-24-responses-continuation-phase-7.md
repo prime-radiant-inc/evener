@@ -18,9 +18,9 @@ This phase does not add same-Responses-endpoint full-history retry. Phase 8 owns
 Reconstructed against the parent commit (`eac5b67f`) with the Phase 7 adapter tests copied into a temporary worktree:
 
 ```sh
-cp /Users/jesse/git/prime-radiant-inc/serf/.worktrees/subagent-side-view-chrome/llm/providers/openai/adapter_test.go /tmp/serf-phase7-red/llm/providers/openai/adapter_test.go
-cd /tmp/serf-phase7-red
-GOCACHE=/tmp/serf-gocache go test ./llm/providers/openai -run 'TestAdapter_ClassifyResponsesError|TestAdapter_Stream_Continuation.*Fallback|TestAdapter_Stream_ModelEndpointContinuationFallback' -count=1 -v
+cp /Users/jesse/git/prime-radiant-inc/evener/.worktrees/subagent-side-view-chrome/llm/providers/openai/adapter_test.go /tmp/evener-phase7-red/llm/providers/openai/adapter_test.go
+cd /tmp/evener-phase7-red
+GOCACHE=/tmp/evener-gocache go test ./llm/providers/openai -run 'TestAdapter_ClassifyResponsesError|TestAdapter_Stream_Continuation.*Fallback|TestAdapter_Stream_ModelEndpointContinuationFallback' -count=1 -v
 ```
 
 Initial result: failed to build because `llm.ResponsesErrorClass`, the `ResponsesError*` constants, and `Adapter.ClassifyResponsesError` did not exist.
@@ -28,7 +28,7 @@ Initial result: failed to build because `llm.ResponsesErrorClass`, the `Response
 ## GREEN Evidence
 
 ```sh
-GOCACHE=/tmp/serf-gocache go test ./llm/providers/openai -run 'TestAdapter_ClassifyResponsesError|TestAdapter_Stream_Continuation.*Fallback|TestAdapter_Stream_ModelEndpointContinuationFallback|TestAdapter_Stream_ChatFallbackUsesFullHistoryFallbackMessages|TestAdapter_Stream_Records.*FallbackAttempts' -count=1 -v
+GOCACHE=/tmp/evener-gocache go test ./llm/providers/openai -run 'TestAdapter_ClassifyResponsesError|TestAdapter_Stream_Continuation.*Fallback|TestAdapter_Stream_ModelEndpointContinuationFallback|TestAdapter_Stream_ChatFallbackUsesFullHistoryFallbackMessages|TestAdapter_Stream_Records.*FallbackAttempts' -count=1 -v
 ```
 
 Result: pass.

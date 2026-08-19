@@ -112,8 +112,8 @@ func TestAtLeastAsConfiningMatrix(t *testing.T) {
 }
 
 // TestDefaultDenylistIncludesPseudoFS pins the spec's secrets+pseudo-fs denylist
-// exactly: the pseudo-filesystem masks (so read_file("/proc/<serf-pid>/environ")
-// can't read serf's own API key) and every credential directory. A dropped entry
+// exactly: the pseudo-filesystem masks (so read_file("/proc/<evener-pid>/environ")
+// can't read evener's own API key) and every credential directory. A dropped entry
 // here is a silent hole in the containment floor.
 func TestDefaultDenylistIncludesPseudoFS(t *testing.T) {
 	t.Parallel()
@@ -132,7 +132,7 @@ func TestDefaultDenylistIncludesPseudoFS(t *testing.T) {
 	}
 
 	wantSecrets := []string{
-		".ssh", ".aws", ".config/gcloud", ".netrc", ".config/serf",
+		".ssh", ".aws", ".config/gcloud", ".netrc", ".config/evener",
 		".gnupg", ".docker/config.json", ".kube", ".git-credentials",
 	}
 	for _, rel := range wantSecrets {
@@ -197,7 +197,7 @@ func TestPolicyDenylistAddRemove(t *testing.T) {
 		DenylistAdd: []string{"/opt/secret-vault", ".myapp/creds"},
 		// Punch a hole in a removable credential entry, and ATTEMPT to remove a
 		// pseudo-fs floor entry (which must be ignored — see below).
-		DenylistRemove: []string{".config/serf", "/proc"},
+		DenylistRemove: []string{".config/evener", "/proc"},
 	}
 
 	eff := pol.EffectiveDenylist(home)
@@ -210,12 +210,12 @@ func TestPolicyDenylistAddRemove(t *testing.T) {
 		t.Errorf("user-added home-relative path missing from effective denylist: %v", eff)
 	}
 	// Removed entry is gone even though it is in the default set.
-	removed := filepath.Join(home, ".config", "serf")
+	removed := filepath.Join(home, ".config", "evener")
 	if slices.Contains(eff, removed) {
 		t.Errorf("user-removed path %q still present in effective denylist: %v", removed, eff)
 	}
 	// The pseudo-fs floor is NON-REMOVABLE: even an explicit DenylistRemove of
-	// /proc must be ignored (masking /proc guards serf's own API key in
+	// /proc must be ignored (masking /proc guards evener's own API key in
 	// /proc/<pid>/environ — a user must not be able to punch that hole open).
 	if !slices.Contains(eff, "/proc") {
 		t.Errorf("DenylistRemove punched the non-removable /proc floor: %v", eff)

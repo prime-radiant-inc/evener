@@ -1,4 +1,4 @@
-//go:build serffuzz
+//go:build evenerfuzz
 
 package events
 
@@ -25,7 +25,7 @@ var eventKindMethodRE = regexp.MustCompile(`func \((\w+)\) eventKind\(\) EventKi
 // grows exactly when the sealed set grows.
 //
 // It is called FROM the fuzz target rather than standing as its own Test.
-// This file is behind the serffuzz tag, and the gate that builds with that tag
+// This file is behind the evenerfuzz tag, and the gate that builds with that tag
 // runs `go test -run '^Fuzz'` (Makefile FUZZ_SEED_REPLAY) -- which selects no
 // Test function at all. As a standalone test it could never fail, which is the
 // same defect it exists to prevent.

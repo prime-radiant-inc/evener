@@ -8,7 +8,7 @@ import (
 	"sync"
 	"testing"
 
-	apilog "primeradiant.com/serf/llm/apilog"
+	apilog "primeradiant.com/evener/llm/apilog"
 )
 
 func FuzzCanonicalAPILoggerAppendPrograms(f *testing.F) {

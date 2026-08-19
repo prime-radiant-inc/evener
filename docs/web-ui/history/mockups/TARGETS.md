@@ -1,4 +1,4 @@
-# Serf Web Hub — Mockup Targets (consolidated from the 6 persona panels)
+# Evener Web Hub — Mockup Targets (consolidated from the 6 persona panels)
 
 Each TOPIC below becomes one self-contained HTML mockup file showing **≥4 distinct alternatives**,
 built on the **golden example's correct `:root` tokens** (4-color system: blue=live/interactive,

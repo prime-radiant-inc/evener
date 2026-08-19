@@ -4,7 +4,7 @@ import (
 	"context"
 	"strings"
 
-	"primeradiant.com/serf/appwire"
+	"primeradiant.com/evener/appwire"
 )
 
 // installProjectedMutationCallbacksForTest keeps older projector-focused tests

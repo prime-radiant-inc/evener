@@ -13,16 +13,16 @@ import (
 
 	"pgregory.net/rapid"
 
-	"primeradiant.com/serf/agent/execenv"
-	"primeradiant.com/serf/fuzz/promoter"
-	"primeradiant.com/serf/fuzz/schemagen"
-	"primeradiant.com/serf/llm"
+	"primeradiant.com/evener/agent/execenv"
+	"primeradiant.com/evener/fuzz/promoter"
+	"primeradiant.com/evener/fuzz/schemagen"
+	"primeradiant.com/evener/llm"
 )
 
 // schemaValidator is the tool-argument schema behavior both this suite and the
 // tagged tool_args fuzz harness depend on: validating a decoded argument map.
 // It lives here (untagged) so the plain `go test` unit gate keeps compiling
-// after the fuzz harnesses moved behind the serffuzz build tag.
+// after the fuzz harnesses moved behind the evenerfuzz build tag.
 type schemaValidator interface {
 	Validate(v any) error
 }
@@ -54,10 +54,10 @@ type schemaValidator interface {
 // reproduction becomes a flake-guarded regression test (written to a temp dir;
 // promotion into the tree is the human/opt-in step). rapid shrinks to a minimal
 // failing case before the cleanup promotes it.
-// serf:fuzz rapid
+// evener:fuzz rapid
 func TestToolArgsSchemaFuzz(t *testing.T) {
-	if os.Getenv("SERF_FUZZ_TESTS") != "1" {
-		t.Skip("fuzz: skipped by default; run `make test-fuzz`, or SERF_FUZZ_TESTS=1 go test ./agent -run TestToolArgsSchemaFuzz -count=1 -v")
+	if os.Getenv("EVENER_FUZZ_TESTS") != "1" {
+		t.Skip("fuzz: skipped by default; run `make test-fuzz`, or EVENER_FUZZ_TESTS=1 go test ./agent -run TestToolArgsSchemaFuzz -count=1 -v")
 	}
 	tools := coreToolSchemaDefs(t)
 	if len(tools) == 0 {
@@ -69,7 +69,7 @@ func TestToolArgsSchemaFuzz(t *testing.T) {
 		schemas[td.name] = td.schema
 	}
 	// Default-off: PersistPaths returns the temp fallbacks (no tree writes) for
-	// every gate run. The local triage tool sets SERF_FUZZ_PERSIST so a live-found
+	// every gate run. The local triage tool sets EVENER_FUZZ_PERSIST so a live-found
 	// crasher's regression test and bucket land durably in the tree (see
 	// fuzz/promoter/persist.go).
 	pkgDir, err := os.Getwd()
@@ -329,7 +329,7 @@ type toolSchemaDef struct {
 // coreToolSchemaDefs stands up a real Session over a temp dir so registerCoreTools
 // wires the full tool set, then returns each tool's name, raw Parameters schema,
 // and compiled validator. Mirrors the Phase-0 helper but also exposes Parameters
-// so the schema-aware generator sees exactly the schema serf ships.
+// so the schema-aware generator sees exactly the schema evener ships.
 func coreToolSchemaDefs(t testing.TB) []toolSchemaDef {
 	t.Helper()
 	dir := t.TempDir()
@@ -384,8 +384,8 @@ func captureStack() []string {
 	for {
 		fr, more := frames.Next()
 		fn := fr.Function
-		if i := strings.LastIndex(fn, "serf/"); i >= 0 {
-			fn = fn[i+len("serf/"):]
+		if i := strings.LastIndex(fn, "evener/"); i >= 0 {
+			fn = fn[i+len("evener/"):]
 		}
 		out = append(out, fmt.Sprintf("%s:%d", fn, fr.Line))
 		if !more || len(out) >= 8 {

@@ -70,7 +70,7 @@ remain reachability checks and are excluded from fuzz coverage.
 `scripts/fuzz-coverage-global.sh` becomes an all-workspace runner. For each
 module/package it runs every registered native target in deterministic seed-replay
 mode and every registered rapid/stateful target using the fixed seed bank, each
-with `-tags serffuzz` and a package-local coverage profile. It unions those
+with `-tags evenerfuzz` and a package-local coverage profile. It unions those
 profiles into the package profile, then calculates raw statement counts across
 all packages in the module. A package with no registered local fuzz surface is a
 preflight error, never an omitted or fabricated zero-profile package.
@@ -114,7 +114,7 @@ monotonicity, exactly-once notification delivery, and absence of orphaned jobs.
 Worktree/file-tool behavior follows through a scripted Git/process boundary and
 an in-memory filesystem. Sandbox/execenv, MCP/plugin, context-manager, and
 transcript paths then use the same policy: inject only the external effect, keep
-the Serf behavior real, and pair broad front doors with differential or invariant
+the Evener behavior real, and pair broad front doors with differential or invariant
 oracles. Extract a pure decision core only when it removes a genuine dependency
 tangle; do not move code merely to inflate coverage.
 
@@ -141,7 +141,7 @@ behavioral fuzzers, and a verification run before its floor changes.
   classes stop at decode/validate or pass through a vetted fake boundary.
 - Seed corpora remain committed, deterministic, and secret-scanned. Any crasher
   is minimized, flake-guarded, and preserved as a regression input.
-- `invariant.Hold` assertions run under `serffuzz` only; their conditions stay
+- `invariant.Hold` assertions run under `evenerfuzz` only; their conditions stay
   side-effect-free so production behavior remains unchanged.
 - A coverage-run failure is fatal and names the exact target/package/toolchain
   prerequisite. The report never silently treats a failed target as zero or

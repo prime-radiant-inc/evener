@@ -15,34 +15,34 @@ import (
 
 	"github.com/spf13/afero"
 
-	"primeradiant.com/serf/agent/diagnostic"
-	"primeradiant.com/serf/agent/envctx"
-	"primeradiant.com/serf/agent/events"
-	"primeradiant.com/serf/agent/execenv"
-	"primeradiant.com/serf/agent/internal/clock"
-	"primeradiant.com/serf/agent/internal/contextmgr"
-	"primeradiant.com/serf/agent/internal/goal"
-	"primeradiant.com/serf/agent/internal/hooks"
-	"primeradiant.com/serf/agent/internal/installid"
-	"primeradiant.com/serf/agent/internal/mcp"
-	"primeradiant.com/serf/agent/internal/sessionlog"
-	"primeradiant.com/serf/agent/internal/tool"
-	"primeradiant.com/serf/agent/mcpconfig"
-	"primeradiant.com/serf/agent/plugin"
-	"primeradiant.com/serf/agent/provider"
-	"primeradiant.com/serf/agent/sandbox"
-	"primeradiant.com/serf/agent/schema"
-	"primeradiant.com/serf/agent/skill"
-	"primeradiant.com/serf/agent/task"
-	"primeradiant.com/serf/agent/transcript"
-	"primeradiant.com/serf/envvars"
-	"primeradiant.com/serf/identifier"
-	"primeradiant.com/serf/llm"
+	"primeradiant.com/evener/agent/diagnostic"
+	"primeradiant.com/evener/agent/envctx"
+	"primeradiant.com/evener/agent/events"
+	"primeradiant.com/evener/agent/execenv"
+	"primeradiant.com/evener/agent/internal/clock"
+	"primeradiant.com/evener/agent/internal/contextmgr"
+	"primeradiant.com/evener/agent/internal/goal"
+	"primeradiant.com/evener/agent/internal/hooks"
+	"primeradiant.com/evener/agent/internal/installid"
+	"primeradiant.com/evener/agent/internal/mcp"
+	"primeradiant.com/evener/agent/internal/sessionlog"
+	"primeradiant.com/evener/agent/internal/tool"
+	"primeradiant.com/evener/agent/mcpconfig"
+	"primeradiant.com/evener/agent/plugin"
+	"primeradiant.com/evener/agent/provider"
+	"primeradiant.com/evener/agent/sandbox"
+	"primeradiant.com/evener/agent/schema"
+	"primeradiant.com/evener/agent/skill"
+	"primeradiant.com/evener/agent/task"
+	"primeradiant.com/evener/agent/transcript"
+	"primeradiant.com/evener/envvars"
+	"primeradiant.com/evener/identifier"
+	"primeradiant.com/evener/llm"
 )
 
 // BuildVersion is recorded in each session's metadata (SessionMeta.BuildVersion).
 // It defaults to "dev"; an embedding application sets it to its build version at
-// startup (the serf binaries set it from the linker-stamped build info). Kept as
+// startup (the evener binaries set it from the linker-stamped build info). Kept as
 // a package-level setting because it is a per-process constant — the same value
 // for every session in a run — mirroring openai.ClientVersion in the llm module.
 var BuildVersion = "dev"
@@ -317,9 +317,9 @@ func NewSession(client *llm.Client, profile *provider.Profile, env execenv.Execu
 	// (which sets s.origin from the persisted meta first), so the read must
 	// happen here — a fresh-only site — rather than inside the shared
 	// function, or a resume would have its persisted origin clobbered by
-	// whatever SERF_SESSION_ORIGIN happens to be set in the ambient
+	// whatever EVENER_SESSION_ORIGIN happens to be set in the ambient
 	// environment at restore time.
-	s.origin = envvars.SERFSessionOrigin.Getenv()
+	s.origin = envvars.EVENERSessionOrigin.Getenv()
 
 	promptSources, err := s.initSessionState(cfg.SessionStartKind, true)
 	if err != nil {
@@ -804,7 +804,7 @@ func RestoreSessionFromMetaWithConfig(client *llm.Client, profile *provider.Prof
 	s.pinnedNote = meta.PinnedNote
 	// Preserve the persisted launch origin across resume (so a "test"-origin
 	// session stays classified as a test run after restart), rather than
-	// re-reading SERF_SESSION_ORIGIN — the fresh-create path's env read
+	// re-reading EVENER_SESSION_ORIGIN — the fresh-create path's env read
 	// happens once, at creation time, not on every resume.
 	s.origin = meta.Origin
 
@@ -1110,14 +1110,14 @@ func (s *Session) initSessionState(sessionStartKind plugin.SessionStartKind, run
 	if err := s.restoreSideEffect("init_plugins", func() error { return s.initPlugins(sessionStartKind, runSessionStartHooks) }); err != nil {
 		return nil, fmt.Errorf("plugin initialization: %w", err)
 	}
-	// Serf-wide commands (project .serf/commands + user-global config dir)
+	// Evener-wide commands (project .evener/commands + user-global config dir)
 	// merge with plugin commands in one place. This runs for every session,
 	// including PluginDirs == nil, so it must not live inside initPlugins
 	// (which early-returns on empty PluginDirs). Discovery is fail-soft;
 	// warnings join the same session-start queue as command frontmatter
 	// warnings.
-	serfwide, cmdWarnings := plugin.DiscoverSerfWideCommands(s.currentEnv())
-	s.pluginCommands = plugin.MergeCommands(s.plugins, serfwide)
+	evenerwide, cmdWarnings := plugin.DiscoverEvenerWideCommands(s.currentEnv())
+	s.pluginCommands = plugin.MergeCommands(s.plugins, evenerwide)
 	s.pendingHookWarnings = append(s.pendingHookWarnings, cmdWarnings...)
 	s.applyAgentRolePromptOverride()
 
@@ -1373,7 +1373,7 @@ func (s *Session) initPlugins(sessionStartKind plugin.SessionStartKind, runSessi
 
 		// Accumulate recognized-but-unsupported events for /status diagnostics and
 		// queue a loud warning per event: a plugin author who declares a hook for a
-		// reserved event serf does not fire yet gets a visible signal, not silence.
+		// reserved event evener does not fire yet gets a visible signal, not silence.
 		unsupported := make([]string, 0, len(p.UnsupportedHooks))
 		for event := range p.UnsupportedHooks {
 			if s.unsupportedPluginHookEvents == nil {
@@ -1394,7 +1394,7 @@ func (s *Session) initPlugins(sessionStartKind plugin.SessionStartKind, runSessi
 		}
 
 		// Queue a loud warning per UNKNOWN event name: not a recognized Claude or
-		// serf event (likely a typo), so the hook will never fire. This is the
+		// evener event (likely a typo), so the hook will never fire. This is the
 		// headline diagnostic — an unknown event must never fail silently.
 		unknown := make([]string, 0, len(p.UnknownHooks))
 		for event := range p.UnknownHooks {
@@ -1672,7 +1672,7 @@ func (s *Session) runSessionStartHooksWithContext(ctx context.Context, sessionSt
 
 // logPluginLoadDiag records, per loaded plugin, which manifest flavor was
 // selected (.claude-plugin vs .codex-plugin) and the exact manifest path. A
-// plugin loading from the codex flavor on serf is the signal behind the
+// plugin loading from the codex flavor on evener is the signal behind the
 // resume-reinjection bug, so it is surfaced at load time, not inferred later.
 func (s *Session) logPluginLoadDiag(p plugin.Instance) {
 	if s == nil || s.stateDir == "" {
@@ -1804,25 +1804,25 @@ func (s *Session) restoreSideEffect(point string, run func() error) error {
 }
 
 // unknownHookEventWarning builds the load-time warning text for a hook declared
-// under an event name that is neither a serf event nor a recognized Claude
+// under an event name that is neither a evener event nor a recognized Claude
 // event — almost always a typo. It names the plugin and the offending event
 // only; no hook payload or secret is included.
 func unknownHookEventWarning(pluginName, event string) string {
 	return fmt.Sprintf(
-		"plugin %q declares a hook for %q, which is not a recognized Claude or serf hook event (likely a typo); this hook will never fire",
+		"plugin %q declares a hook for %q, which is not a recognized Claude or evener hook event (likely a typo); this hook will never fire",
 		pluginName, event)
 }
 
 // unsupportedHookEventWarning builds the load-time warning text for a hook
-// declared under a recognized Claude event that serf does not yet fire
+// declared under a recognized Claude event that evener does not yet fire
 // (reserved-placeholder). It names the plugin and the reserved event only.
 func unsupportedHookEventWarning(pluginName, event string) string {
 	return fmt.Sprintf(
-		"plugin %q declares a hook for the reserved event %q, which serf does not yet fire; this hook will not run",
+		"plugin %q declares a hook for the reserved event %q, which evener does not yet fire; this hook will not run",
 		pluginName, event)
 }
 
-// supportedHookHandlerTypes is the set of handler "type" values serf actually
+// supportedHookHandlerTypes is the set of handler "type" values evener actually
 // executes. Everything else (http, mcp_tool, agent, …) is reserved and skipped.
 // Must stay in sync with the dispatch-side hooks.supportedHandlerTypes / runHook
 // type switch; both list exactly "command" and "prompt".
@@ -1862,7 +1862,7 @@ func unsupportedHandlerTypeWarnings(p plugin.Instance) []events.WarningData {
 }
 
 // unsupportedHandlerTypeWarning builds the load-time warning text for a hook
-// handler whose type serf does not execute (http/mcp_tool/agent/other). It names
+// handler whose type evener does not execute (http/mcp_tool/agent/other). It names
 // the plugin, event, and the reserved type only; no hook payload or secret.
 func unsupportedHandlerTypeWarning(pluginName, event, handlerType string) string {
 	shown := handlerType
@@ -1870,7 +1870,7 @@ func unsupportedHandlerTypeWarning(pluginName, event, handlerType string) string
 		shown = "(empty)"
 	}
 	return fmt.Sprintf(
-		"plugin %q declares a %q-type handler for %s, which is a reserved/unsupported handler type (serf runs only \"command\" and \"prompt\"); this handler will not run",
+		"plugin %q declares a %q-type handler for %s, which is a reserved/unsupported handler type (evener runs only \"command\" and \"prompt\"); this handler will not run",
 		pluginName, shown, event)
 }
 
@@ -1903,7 +1903,7 @@ func commandUnenforcedFieldWarnings(p plugin.Instance) []events.WarningData {
 		out = append(out, events.WarningData{
 			Source:     "plugin",
 			Title:      "unenforced command override",
-			Message:    fmt.Sprintf("plugin %q command %q declares %s, which serf does not yet enforce per-turn; it runs with the session's default model and tools", p.Manifest.Name, cmd.Name, strings.Join(fields, " and ")),
+			Message:    fmt.Sprintf("plugin %q command %q declares %s, which evener does not yet enforce per-turn; it runs with the session's default model and tools", p.Manifest.Name, cmd.Name, strings.Join(fields, " and ")),
 			PluginName: p.Manifest.Name,
 		})
 	}

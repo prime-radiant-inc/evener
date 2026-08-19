@@ -2,7 +2,7 @@
 
 **Status:** approved (Jesse, 2026-07-24)
 
-One `PathField` widget replaces `widgets/pathpicker` and `panes/spawn/DirField`, and fills in the five surfaces that render a bare text box for a path today. `serf/dirs/complete` is renamed `serf/paths/complete` and learns to list files, which is what unblocks those surfaces.
+One `PathField` widget replaces `widgets/pathpicker` and `panes/spawn/DirField`, and fills in the five surfaces that render a bare text box for a path today. `evener/dirs/complete` is renamed `evener/paths/complete` and learns to list files, which is what unblocks those surfaces.
 
 This is the same treatment the model picker got (`2026-07-24-model-picker-redesign-design.md`): a field-shaped trigger, a list that is already expanded when the panel opens, a pre-filled input whose first keystroke replaces the value, no Cancel button, and no dismissal on page scroll. Unlike that round, this one changes the wire.
 
@@ -18,26 +18,26 @@ Five separate implementations of "enter a path" exist:
 | `launchShared/fields.tsx` `path` kind | plain `Input` | no browse at all |
 | `pathList` add rows (spawn + settings) | plain-text add field | no browse at all |
 
-The three "no browse at all" rows are documented scope cuts from waves 7/8, and the documented reason is the wire: `completeDirs` (`cmd/serf-hub/internal/fspaths/app_paths.go:53`) hard-`continue`s on `!entry.IsDir()`, so no listing RPC can serve a `file` or `outputFile` field. The schema has five such fields — `systemPromptFile`, `systemPromptAppendFile` (`file`), `traceFile`, `cpuProfile`, `exportATIFPath` (`outputFile`) — plus one `file`-kind list, `mcpConfigs`.
+The three "no browse at all" rows are documented scope cuts from waves 7/8, and the documented reason is the wire: `completeDirs` (`cmd/evener-hub/internal/fspaths/app_paths.go:53`) hard-`continue`s on `!entry.IsDir()`, so no listing RPC can serve a `file` or `outputFile` field. The schema has five such fields — `systemPromptFile`, `systemPromptAppendFile` (`file`), `traceFile`, `cpuProfile`, `exportATIFPath` (`outputFile`) — plus one `file`-kind list, `mcpConfigs`.
 
 ## 2. Wire changes
 
 ### 2.1 Rename
 
-`serf/dirs/complete` becomes **`serf/paths/complete`**. No alias, no deprecation shim: nothing outside this repo speaks appwire.
+`evener/dirs/complete` becomes **`evener/paths/complete`**. No alias, no deprecation shim: nothing outside this repo speaks appwire.
 
 | File | Change |
 | --- | --- |
-| `appwire/types.go` | `MethodSerfDirsComplete` → `MethodSerfPathsComplete`; `DirsCompleteParams`/`DirsCompleteResponse` → `PathsCompleteParams`/`PathsCompleteResponse` |
+| `appwire/types.go` | `MethodEvenerDirsComplete` → `MethodEvenerPathsComplete`; `DirsCompleteParams`/`DirsCompleteResponse` → `PathsCompleteParams`/`PathsCompleteResponse` |
 | `appwire/client.go:403` | `(*Client).DirsComplete` → `PathsComplete` |
 | `appwire/protocol.go:112` | catalog row; description becomes "Path autocompletion for a prefix." |
-| `cmd/serf-hub/app_rpc.go:659` | handler registration |
-| `cmd/serf-hub/internal/fspaths/app_paths.go` | `CompleteDirs`/`completeDirs` → `CompletePaths`/`completePaths` |
-| `cmd/serf-hub/web_appwire_fuzz_test.go:238` | method-list entry |
+| `cmd/evener-hub/app_rpc.go:659` | handler registration |
+| `cmd/evener-hub/internal/fspaths/app_paths.go` | `CompleteDirs`/`completeDirs` → `CompletePaths`/`completePaths` |
+| `cmd/evener-hub/web_appwire_fuzz_test.go:238` | method-list entry |
 | `appwire/cov_rhub_appwire_test.go:179` | client round-trip case |
-| `docs/appwire-protocol.md`, `cmd/serf-hub/frontend/src/protocol/types.gen.ts` | regenerated via `go generate ./appwire` |
+| `docs/appwire-protocol.md`, `cmd/evener-hub/frontend/src/protocol/types.gen.ts` | regenerated via `go generate ./appwire` |
 
-`SanitizeDirPrefix` (`cmd/serf-hub/internal/fspaths/paths.go:134`) keeps its name: it sanitizes a *prefix*, and the traversal rule it enforces is unchanged by this work.
+`SanitizeDirPrefix` (`cmd/evener-hub/internal/fspaths/paths.go:134`) keeps its name: it sanitizes a *prefix*, and the traversal rule it enforces is unchanged by this work.
 
 ### 2.2 New parameter
 
@@ -73,7 +73,7 @@ Rationale: the trailing slash carries the single bit the client needs, is alread
 
 ### 2.4 Go tests
 
-New/updated in `cmd/serf-hub/internal/fspaths/paths_test.go`:
+New/updated in `cmd/evener-hub/internal/fspaths/paths_test.go`:
 
 - dirs-only mode still excludes files, and returns directories unsuffixed
 - `IncludeFiles: true` returns both files and directories
@@ -150,7 +150,7 @@ Where the panel opens:
 - `kind: "dir"` — lists the children of `value` (falling back to the last-working-directory global on the spawn field, then `""`, which the hub resolves to `$HOME`).
 - `kind: "file" | "outputFile"` — lists the children of `dirname(value)` with `includeFiles: true`.
 
-`outputFile` behaves exactly like `file`. The file being named may not exist yet, so typing is the expected path and existing files are pickable references; whether the parent directory is writable stays `serf/path/validate`'s job at submit time.
+`outputFile` behaves exactly like `file`. The file being named may not exist yet, so typing is the expected path and existing files are pickable references; whether the parent directory is writable stays `evener/path/validate`'s job at submit time.
 
 ### 3.5 Typing
 
@@ -182,7 +182,7 @@ Seven conversions:
 
 `PathListEditor` is instantiated twice — `DirListSetting` (`skillsDirs`/`pluginDirs`, dir) and `mcp.tsx` (`mcpConfigs`, file) — so it grows a `kind` prop it forwards. Both `pathList` add rows follow the `ModelListField` pattern: `renderAddField` renders the picker plus `CollectionEditor`'s own submit `Button`, and the picker's portaled panel sits outside the add `<form>`, so Enter inside the panel picks rather than submitting.
 
-Server-side validation is unchanged everywhere: `serf/path/validate` still gates every `pathList` add and every scalar `path` field at submit time.
+Server-side validation is unchanged everywhere: `evener/path/validate` still gates every `pathList` add and every scalar `path` field at submit time.
 
 `stores/extensions.ts`'s `listDirChildren(path)` becomes `completePaths(prefix, includeFiles)` — the trailing-slash normalization moves into the widget, which needs to control the prefix directly for typed-prefix filtering.
 
@@ -205,7 +205,7 @@ Not in scope: **`widgets/combobox` will have zero production consumers** once `P
 
 **`pathfield.test.tsx`** (jsdom) — input pre-filled and fully selected on open (`selectionStart`/`selectionEnd`); a directory click writes the value *and* re-lists; a file click commits and closes; `Enter` with nothing active commits the typed literal; a page scroll does **not** dismiss; focus returns to the trigger on close; the Recent group disappears on the first keystroke; a stale completion resolving after a newer one is dropped; a rejected `complete` renders the empty state rather than throwing.
 
-**Call-site tests** — updated at all seven sites: `Spawn.test.tsx`, `AdvancedOptions.test.tsx`, `fields.test.tsx` (the "path kind renders as a free-text input" test is inverted — it asserted the limitation being removed), `collectionFields.test.tsx`, `dirListSetting`/`mcp` tests, `MarketplacesSection` tests, `extensions.test.ts` (three `serf/dirs/complete` cases renamed and extended for `includeFiles`).
+**Call-site tests** — updated at all seven sites: `Spawn.test.tsx`, `AdvancedOptions.test.tsx`, `fields.test.tsx` (the "path kind renders as a free-text input" test is inverted — it asserted the limitation being removed), `collectionFields.test.tsx`, `dirListSetting`/`mcp` tests, `MarketplacesSection` tests, `extensions.test.ts` (three `evener/dirs/complete` cases renamed and extended for `includeFiles`).
 
 **Gates** — `make test-web` (tsc → vitest → biome), `make build-web`, `make test` for the Go side, `make lint`. Then live verification against a real hub across every converted surface, in both themes and at 390 px, the way the model-picker round was verified — fixtures did not catch three of that round's real defects.
 

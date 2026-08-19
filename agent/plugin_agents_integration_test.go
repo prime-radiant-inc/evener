@@ -10,12 +10,12 @@ import (
 	"testing"
 	"time"
 
-	"primeradiant.com/serf/agent/events"
-	"primeradiant.com/serf/agent/execenv"
-	"primeradiant.com/serf/agent/internal/tool"
-	"primeradiant.com/serf/agent/plugin"
-	"primeradiant.com/serf/agent/skill"
-	"primeradiant.com/serf/llm"
+	"primeradiant.com/evener/agent/events"
+	"primeradiant.com/evener/agent/execenv"
+	"primeradiant.com/evener/agent/internal/tool"
+	"primeradiant.com/evener/agent/plugin"
+	"primeradiant.com/evener/agent/skill"
+	"primeradiant.com/evener/llm"
 )
 
 func TestToolRegistry_Restrict(t *testing.T) {

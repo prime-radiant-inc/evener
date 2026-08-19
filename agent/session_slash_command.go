@@ -5,9 +5,9 @@ import (
 	"fmt"
 	"strings"
 
-	"primeradiant.com/serf/agent/command"
-	"primeradiant.com/serf/agent/events"
-	"primeradiant.com/serf/agent/plugin"
+	"primeradiant.com/evener/agent/command"
+	"primeradiant.com/evener/agent/events"
+	"primeradiant.com/evener/agent/plugin"
 )
 
 // expandSlashCommand checks whether input invokes a loaded slash command — a
@@ -31,7 +31,7 @@ func (s *Session) expandSlashCommand(ctx context.Context, input string) (string,
 		return input, false
 	}
 	if cmd.Source != "plugin" {
-		// Serf-wide commands expand inert: arguments substitute as text,
+		// Evener-wide commands expand inert: arguments substitute as text,
 		// nothing executes or reads (docs/skills.md).
 		return command.ExpandArgs(cmd.Body, strings.TrimSpace(args)), true
 	}

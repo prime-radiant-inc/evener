@@ -13,7 +13,7 @@ import (
 )
 
 // Finding is the atomic output of a doctor audit, per
-// internal/bundled/skills/doctoring-serf/references/finding-contract.md.
+// internal/bundled/skills/doctoring-evener/references/finding-contract.md.
 // The JSON field names below (including evidence's and suggestedFix's) are
 // the contract's exact spelling — camelCase, not this package's usual
 // snake_case — because the contract is a cross-tool wire format, not a
@@ -238,7 +238,7 @@ func ParseRunbook(name string, content []byte) (Runbook, error) {
 
 // parseAuditFence tries to YAML-decode a fenced block as an `audit:` list,
 // reporting whether it found one. A fence that isn't one (e.g. the INSPECT
-// section's serf-doctor invocation) either fails to decode into the wrapper
+// section's evener-doctor invocation) either fails to decode into the wrapper
 // shape or decodes with an empty list; both read as found=false, not an
 // error — ParseRunbook decides separately whether a *found* block sits in
 // the wrong section.
@@ -536,7 +536,7 @@ type AuditSummaryRow struct {
 	Sessions int    `json:"sessions"`
 }
 
-// AuditResult is one serf-doctor audit run: the runbook's mechanical checks
+// AuditResult is one evener-doctor audit run: the runbook's mechanical checks
 // evaluated over the resolved session set and deduped by Finding signature,
 // the summary table, every manual (prose/LLM-judgment) step the runbook
 // named, and every session RunAudit could not read — never silently
@@ -652,7 +652,7 @@ func RunAudit(stateBase string, runbook Runbook, opts AuditOpts) (AuditResult, e
 		check := checkBySignature[sig]
 		f.Description = fmt.Sprintf("Runbook %q check %q tripped (%s) in %d session(s): %s",
 			runbook.Name, check.Title, conditionsSummary(check.Conditions), len(f.Evidence.SessionRefs), strings.Join(f.Evidence.SessionRefs, ", "))
-		f.Evidence.DoctorCommand = fmt.Sprintf("serf-doctor audit --runbook %s --sessions %s", runbook.Name, strings.Join(f.Evidence.SessionRefs, ","))
+		f.Evidence.DoctorCommand = fmt.Sprintf("evener-doctor audit --runbook %s --sessions %s", runbook.Name, strings.Join(f.Evidence.SessionRefs, ","))
 		res.Findings = append(res.Findings, *f)
 		res.Summary = append(res.Summary, AuditSummaryRow{Title: f.Title, Severity: f.Severity, Sessions: len(f.Evidence.SessionRefs)})
 	}

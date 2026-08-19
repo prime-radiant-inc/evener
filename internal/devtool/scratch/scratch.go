@@ -17,7 +17,7 @@ import (
 	"path/filepath"
 	"strings"
 
-	"primeradiant.com/serf/envvars"
+	"primeradiant.com/evener/envvars"
 )
 
 // Dir is one acquired scratch directory.

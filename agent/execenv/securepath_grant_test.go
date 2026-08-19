@@ -8,7 +8,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"primeradiant.com/serf/agent/sandbox"
+	"primeradiant.com/evener/agent/sandbox"
 )
 
 // The M7 per-invocation grant widens ONLY root-containment for EXACTLY one path,

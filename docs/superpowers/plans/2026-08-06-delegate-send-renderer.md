@@ -4,7 +4,7 @@
 
 **Goal:** Make the `delegate_send` tool row read "Sent a message to delegate \<id\>" with an open-in-pane link, and render its expanded body as an outgoing chat message plus an incoming reply bubble.
 
-**Architecture:** Pure frontend change in `cmd/serf-hub/frontend`. A new optional `openTranscriptRef` descriptor field (mirroring `openBesidePath`) lets `ToolCallItem` slot the existing `OpenTranscriptButton` into the row's `trailing`. The expanded body reuses `UserMessageView`, lightly generalized with `speaker`/`name`/`timeIso` props. The backend already ships `transcript_ref` in `delegate_send`'s raw state (`agent/session_tools_jobs.go`'s `delegateSendResult`) — no Go changes.
+**Architecture:** Pure frontend change in `cmd/evener-hub/frontend`. A new optional `openTranscriptRef` descriptor field (mirroring `openBesidePath`) lets `ToolCallItem` slot the existing `OpenTranscriptButton` into the row's `trailing`. The expanded body reuses `UserMessageView`, lightly generalized with `speaker`/`name`/`timeIso` props. The backend already ships `transcript_ref` in `delegate_send`'s raw state (`agent/session_tools_jobs.go`'s `delegateSendResult`) — no Go changes.
 
 **Tech Stack:** React 19, TypeScript, Vitest + @testing-library/react, Biome.
 
@@ -13,8 +13,8 @@
 ## Global Constraints
 
 - Work happens in the `delegate-send-renderer` worktree, branch `delegate-send-renderer`.
-- Frontend test runner: `cd cmd/serf-hub/frontend && npx vitest run <file>` for a single file.
-- Before each commit touching frontend files: `cd cmd/serf-hub/frontend && npx biome check --write <touched files>`.
+- Frontend test runner: `cd cmd/evener-hub/frontend && npx vitest run <file>` for a single file.
+- Before each commit touching frontend files: `cd cmd/evener-hub/frontend && npx biome check --write <touched files>`.
 - Avoid Biome `noNonNullAssertion` violations — no `!` postfix; use a local variable or type guard instead.
 - Defaults on generalized components must preserve today's exact rendering for existing callers.
 - Never render a dead affordance: no `transcript_ref` → no open button.
@@ -27,7 +27,7 @@
 - `src/panes/session/transcript/tools/jobTools.tsx` — `delegate_send` descriptor: new summary wording, `openTranscriptRef` implementation, chat-bubble body, local `CopyTextButton`.
 - Tests: `messages/UserMessageItem.test.tsx`, `toolRowGrammar.test.tsx`, `tools/jobTools.test.tsx`.
 
-All paths below are relative to `cmd/serf-hub/frontend/`.
+All paths below are relative to `cmd/evener-hub/frontend/`.
 
 ---
 
@@ -74,7 +74,7 @@ Add `formatClockTime` to the imports: `import { formatClockTime } from "./format
 
 - [ ] **Step 2: Run test to verify it fails**
 
-Run: `cd cmd/serf-hub/frontend && npx vitest run src/panes/session/transcript/messages/UserMessageItem.test.tsx`
+Run: `cd cmd/evener-hub/frontend && npx vitest run src/panes/session/transcript/messages/UserMessageItem.test.tsx`
 Expected: FAIL — TS error or runtime error, `speaker`/`name`/`timeIso` are not props of `UserMessageView`.
 
 - [ ] **Step 3: Implement the props**
@@ -138,13 +138,13 @@ export function UserMessageView({
 
 - [ ] **Step 4: Run test to verify it passes**
 
-Run: `cd cmd/serf-hub/frontend && npx vitest run src/panes/session/transcript/messages/UserMessageItem.test.tsx`
+Run: `cd cmd/evener-hub/frontend && npx vitest run src/panes/session/transcript/messages/UserMessageItem.test.tsx`
 Expected: PASS (whole file — the new tests plus every pre-existing one, proving defaults are unchanged).
 
 - [ ] **Step 5: Biome + commit**
 
 ```bash
-cd cmd/serf-hub/frontend
+cd cmd/evener-hub/frontend
 npx biome check --write src/panes/session/transcript/messages/UserMessageItem.tsx src/panes/session/transcript/messages/UserMessageItem.test.tsx
 git add src/panes/session/transcript/messages/UserMessageItem.tsx src/panes/session/transcript/messages/UserMessageItem.test.tsx
 git commit -m "feat(web): generalize UserMessageView with speaker/name/timeIso props"
@@ -208,7 +208,7 @@ import { resetWorkspaceStoreForTests, workspaceStore } from "../../../shell/work
 
 - [ ] **Step 2: Run test to verify it fails**
 
-Run: `cd cmd/serf-hub/frontend && npx vitest run src/panes/session/transcript/toolRowGrammar.test.tsx`
+Run: `cd cmd/evener-hub/frontend && npx vitest run src/panes/session/transcript/toolRowGrammar.test.tsx`
 Expected: FAIL — `openTranscriptRef` is not a known descriptor property (TS error), and no "Open transcript" button renders.
 
 - [ ] **Step 3: Implement the field and threading**
@@ -259,13 +259,13 @@ Replace both `trailing={openBesideButton}` occurrences (lines 236 and 275) with 
 
 - [ ] **Step 4: Run test to verify it passes**
 
-Run: `cd cmd/serf-hub/frontend && npx vitest run src/panes/session/transcript/toolRowGrammar.test.tsx`
+Run: `cd cmd/evener-hub/frontend && npx vitest run src/panes/session/transcript/toolRowGrammar.test.tsx`
 Expected: PASS (whole file).
 
 - [ ] **Step 5: Biome + commit**
 
 ```bash
-cd cmd/serf-hub/frontend
+cd cmd/evener-hub/frontend
 npx biome check --write src/panes/session/transcript/toolRenderers.ts src/panes/session/transcript/ToolCallItem.tsx src/panes/session/transcript/toolRowGrammar.test.tsx
 git add src/panes/session/transcript/toolRenderers.ts src/panes/session/transcript/ToolCallItem.tsx src/panes/session/transcript/toolRowGrammar.test.tsx
 git commit -m "feat(web): openTranscriptRef descriptor field renders an OpenTranscriptButton in the tool row"
@@ -340,7 +340,7 @@ Update the alias test at lines 296-304: change the expected summary from `"Messa
 
 - [ ] **Step 2: Run tests to verify they fail**
 
-Run: `cd cmd/serf-hub/frontend && npx vitest run src/panes/session/transcript/tools/jobTools.test.tsx`
+Run: `cd cmd/evener-hub/frontend && npx vitest run src/panes/session/transcript/tools/jobTools.test.tsx`
 Expected: FAIL — summary still reads "Messaged …", `openTranscriptRef` unknown.
 
 - [ ] **Step 3: Implement**
@@ -411,13 +411,13 @@ registerToolRenderer({
 
 - [ ] **Step 4: Run tests to verify they pass**
 
-Run: `cd cmd/serf-hub/frontend && npx vitest run src/panes/session/transcript/tools/jobTools.test.tsx`
+Run: `cd cmd/evener-hub/frontend && npx vitest run src/panes/session/transcript/tools/jobTools.test.tsx`
 Expected: PASS. NOTE: the pre-existing body tests (lines 185-304) still pass at this point because the body is not yet rewritten — if any fail, it is because they asserted the old summary; fix only summary-related expectations here, leave body assertions for Task 4.
 
 - [ ] **Step 5: Biome + commit**
 
 ```bash
-cd cmd/serf-hub/frontend
+cd cmd/evener-hub/frontend
 npx biome check --write src/panes/session/transcript/tools/jobTools.tsx src/panes/session/transcript/tools/jobTools.test.tsx
 git add src/panes/session/transcript/tools/jobTools.tsx src/panes/session/transcript/tools/jobTools.test.tsx
 git commit -m "feat(web): delegate_send summary names the target delegate and links its transcript"
@@ -475,7 +475,7 @@ In the remaining body tests (lines 195-294), change every response/message text 
 
 - [ ] **Step 2: Run tests to verify they fail**
 
-Run: `cd cmd/serf-hub/frontend && npx vitest run src/panes/session/transcript/tools/jobTools.test.tsx`
+Run: `cd cmd/evener-hub/frontend && npx vitest run src/panes/session/transcript/tools/jobTools.test.tsx`
 Expected: FAIL — no `user-bubble` inside the sections, no "Agent → …" header, no copy buttons.
 
 - [ ] **Step 3: Rewrite DelegateSendBody**
@@ -602,13 +602,13 @@ function DelegateSendBody(props: ToolRenderProps) {
 
 - [ ] **Step 4: Run tests to verify they pass**
 
-Run: `cd cmd/serf-hub/frontend && npx vitest run src/panes/session/transcript/tools/jobTools.test.tsx`
+Run: `cd cmd/evener-hub/frontend && npx vitest run src/panes/session/transcript/tools/jobTools.test.tsx`
 Expected: PASS (whole file, including the row-correlation tests at the end).
 
 - [ ] **Step 5: Biome + commit**
 
 ```bash
-cd cmd/serf-hub/frontend
+cd cmd/evener-hub/frontend
 npx biome check --write src/panes/session/transcript/tools/jobTools.tsx src/panes/session/transcript/tools/jobTools.test.tsx
 git add src/panes/session/transcript/tools/jobTools.tsx src/panes/session/transcript/tools/jobTools.test.tsx
 git commit -m "feat(web): render delegate_send body as an outgoing chat message and reply bubble"
@@ -623,7 +623,7 @@ git commit -m "feat(web): render delegate_send body as an outgoing chat message 
 - [ ] **Step 1: Biome over every touched file**
 
 ```bash
-cd cmd/serf-hub/frontend
+cd cmd/evener-hub/frontend
 npx biome check src/panes/session/transcript/messages/UserMessageItem.tsx src/panes/session/transcript/messages/UserMessageItem.test.tsx src/panes/session/transcript/toolRenderers.ts src/panes/session/transcript/ToolCallItem.tsx src/panes/session/transcript/toolRowGrammar.test.tsx src/panes/session/transcript/tools/jobTools.tsx src/panes/session/transcript/tools/jobTools.test.tsx
 ```
 Expected: no errors, no diffs needed.

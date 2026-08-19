@@ -1,6 +1,6 @@
 # Behavior contracts: composer, queue, pending/optimistic, attachments, drafts, ask_user, escalations
 
-Mined from `cmd/serf-hub/jstest/`. Each line is a behavior a new Vitest suite must
+Mined from `cmd/evener-hub/jstest/`. Each line is a behavior a new Vitest suite must
 re-cover, tagged with the jstest file it currently comes from. CSS/template-token-only
 files (no runtime/DOM-interaction behavior, just regex assertions over `style.css` /
 `templates/`) are listed by name only, per instructions. Files matched on `ask` that
@@ -51,7 +51,7 @@ except where a line says so itself.
 - clicking steer with an empty textarea does not POST /steer — it is a focus-only action (test-input-area.js)
 - clicking steer with text POSTs to /steer and clears the textarea on success (test-input-area.js)
 - if the active turn ends while a steer request is still in flight, the steer button stays disabled once the request settles rather than re-enabling for a turn that's already gone (test-input-area.js)
-- "/" as the very first character of an empty textarea opens the command palette (SerfSearch.openWith); "/" anywhere else — mid-text, or with a modifier key held — is always literal and never opens the palette (test-input-area.js)
+- "/" as the very first character of an empty textarea opens the command palette (EvenerSearch.openWith); "/" anywhere else — mid-text, or with a modifier key held — is always literal and never opens the palette (test-input-area.js)
 
 ### CSS/template-token-only (name only, no runtime behavior to port)
 - test-composer-layout-css.js
@@ -114,7 +114,7 @@ except where a line says so itself.
 ### test-optimistic-rendering.js
 - when the daemon's `turn/steer` RPC returns a JSON-RPC error (e.g. "steer is not available"), the associated pending chip flips to `.optimistic-failed` (test-optimistic-rendering.js)
 - a successful `turn/steer` RPC response does NOT itself reconcile the pending chip — it stays `.optimistic-pending` until a later notification triggers reconciliation (test-optimistic-rendering.js)
-- with no pending registry installed, `SerfAppwire.steer()` still propagates RPC errors normally — optimistic UI is purely additive (test-optimistic-rendering.js)
+- with no pending registry installed, `EvenerAppwire.steer()` still propagates RPC errors normally — optimistic UI is purely additive (test-optimistic-rendering.js)
 - the pending chip is removed once the registry's `tryReconcile` runs with a matching `turn/steer` text (simulating the daemon's STEERING_INJECTED notification), even though RPC success alone didn't reconcile it (test-optimistic-rendering.js)
 
 ### test-appwire-queue-reconcile.js (queue-preview + turn optimistic reconciliation, driven through the renderer)
@@ -122,7 +122,7 @@ except where a line says so itself.
 - a `thread/queueChanged` notification whose string preview matches a pending queue chip's text reconciles (removes) that chip (test-appwire-queue-reconcile.js)
 - registering an image-only pending user turn (`turn/start`) shows an optimistic pending chip in the conversation (test-appwire-queue-reconcile.js)
 - an `item/completed` notification with a matching image-only authoritative user item reconciles the pending `turn/start` chip (test-appwire-queue-reconcile.js)
-- multiple pending turns registered before a frame flush accumulate multiple optimistic chips; reconciliation is deferred until `SerfRenderer.flush()`, then runs once per notification IN QUEUE ORDER within that single batched flush, resolving all matching placeholders (test-appwire-queue-reconcile.js)
+- multiple pending turns registered before a frame flush accumulate multiple optimistic chips; reconciliation is deferred until `EvenerRenderer.flush()`, then runs once per notification IN QUEUE ORDER within that single batched flush, resolving all matching placeholders (test-appwire-queue-reconcile.js)
 
 ## Attachments
 
@@ -158,7 +158,7 @@ except where a line says so itself.
 
 ### test-appwire-attachments-websearch-hydration.js
 - non-image input attachments (documents, audio) hydrate from a reloaded thread as labeled file chips, never as broken `<img>` elements (test-appwire-attachments-websearch-hydration.js)
-  - **Closed as unreachable, not built (katas `jm81`, `5pqz`):** there is nothing to hydrate. Serf cannot write the data this line is about: the only builders of a persisted user/steering message are `buildUserInputMessage` and `steeringMessageToLLM` (`agent/input_message.go:37`, `agent/session_queue.go:891`), which emit text and `ContentImage` parts only; the sole non-test `ContentDocument` construction (`agent/session_tools.go:156`) goes into a side-channel vision `llm.Request` and is never persisted; and the live event payload `events.UserInputData` has no field for an audio or document attachment at all. Staging one is impossible in the other direction too (a non-image file is refused at the picker, and a recovered draft only lifts image items). The replay projector was the last thing keeping the case alive — it appended `input_audio`/`input_document` items into the same `images` array the client resolves to a single `src` and hands to `ImageGallery`, which drops whatever the browser will not load, so such a part surfaced as nothing anyway. That append is deleted, with `TestProjectTurnKeepsNonImagePartsOutOfImages` and `TestAppItemsFromReplayTurnKeepsNonImagePartsOutOfImages` pinning that replay emits pictures and only pictures. A labeled-file rendering can be built the day a producer exists.
+  - **Closed as unreachable, not built (katas `jm81`, `5pqz`):** there is nothing to hydrate. Evener cannot write the data this line is about: the only builders of a persisted user/steering message are `buildUserInputMessage` and `steeringMessageToLLM` (`agent/input_message.go:37`, `agent/session_queue.go:891`), which emit text and `ContentImage` parts only; the sole non-test `ContentDocument` construction (`agent/session_tools.go:156`) goes into a side-channel vision `llm.Request` and is never persisted; and the live event payload `events.UserInputData` has no field for an audio or document attachment at all. Staging one is impossible in the other direction too (a non-image file is refused at the picker, and a recovered draft only lifts image items). The replay projector was the last thing keeping the case alive — it appended `input_audio`/`input_document` items into the same `images` array the client resolves to a single `src` and hands to `ImageGallery`, which drops whatever the browser will not load, so such a part surfaced as nothing anyway. That append is deleted, with `TestProjectTurnKeepsNonImagePartsOutOfImages` and `TestAppItemsFromReplayTurnKeepsNonImagePartsOutOfImages` pinning that replay emits pictures and only pictures. A labeled-file rendering can be built the day a producer exists.
 - provider-native `web_search` content hydrates through the existing web_search tool card, showing the query and its result (test-appwire-attachments-websearch-hydration.js)
 
 ### test-input-area.js (attachment-integration subset of the input-area harness)
@@ -177,10 +177,10 @@ except where a line says so itself.
 ## Drafts
 
 ### test-drafts.js
-- typing in the composer persists the draft to localStorage under a per-session key (`serf-hub.draft.<sessionId>`) on every input event (test-drafts.js)
+- typing in the composer persists the draft to localStorage under a per-session key (`evener-hub.draft.<sessionId>`) on every input event (test-drafts.js)
 - a fresh page load seeded with the same localStorage restores the draft text into the composer (test-drafts.js)
 - each session's draft is isolated: switching sessions shows an empty composer rather than another session's draft, typing in one session never touches another's stored draft, and swapping back restores the original session's draft (test-drafts.js)
-- a composer with no session id (e.g. the home/new-session view) falls back to a stable shared draft key (`serf-hub.draft.new`) that also persists and restores (test-drafts.js)
+- a composer with no session id (e.g. the home/new-session view) falls back to a stable shared draft key (`evener-hub.draft.new`) that also persists and restores (test-drafts.js)
 - a successful send clears only that session's stored draft (other sessions' drafts are untouched), and the composer stays empty after a subsequent reload (test-drafts.js)
 - a successful steer also clears the draft and empties the textarea (test-drafts.js)
 - clearing the textarea to empty removes the stored draft; whitespace-only content is likewise never persisted as a draft (test-drafts.js)
@@ -193,7 +193,7 @@ except where a line says so itself.
 - a completed-but-unanswered ask_user call leaves a compact transcript anchor (`[data-ask-anchor]`) in place of any interactive card — no retired `.ask-card` renders in the transcript (test-ask-card.js)
 - the one interactive response form renders as `[data-ask-response-dock]` owned by `form[data-input-form]`, with a shared footer that is a form-owned sibling of the dock rather than something that scrolls with the question list (test-ask-card.js)
 - while an ask is pending, the composer's normal surface and textarea are both hidden AND inert (not just visually hidden), so they can't be typed into or tabbed to (test-ask-card.js)
-- the dock renders normal answer options together with the "Something else" (free-text) and "let serf decide" alternatives as one radiogroup; the option marked `recommended` always renders FIRST regardless of input order and is visually tagged, non-recommended options are untagged (test-ask-card.js)
+- the dock renders normal answer options together with the "Something else" (free-text) and "let evener decide" alternatives as one radiogroup; the option marked `recommended` always renders FIRST regardless of input order and is visually tagged, non-recommended options are untagged (test-ask-card.js)
 - each alternative (free-text / decide-leaning) option's radio label wraps exactly its own radio control; its editor (free-text input or leaning field) is a DOM sibling in the same row, explicitly labelled via aria-labelledby pointing at that alternative's own option text (test-ask-card.js)
 - a fallback button showing the model's literal `if_unanswered` text renders only when `if_unanswered` is present; skip is always offered; the optional note field is visible immediately with no disclosure toggle (test-ask-card.js)
 - answer progress is announced through an aria-live="polite" region, and the question's `why` explanation renders verbatim in the dock (test-ask-card.js)
@@ -228,20 +228,20 @@ except where a line says so itself.
 ### test-ask-submit.js
 - if the ask was already resolved by the time a stale Send click lands (e.g. a suspended tab waking up, or another client's reply arriving first), the dock re-checks before sending and does not call `startTurn` at all (test-ask-submit.js)
 - a `turn/start` Conflict (another client's reply won the daemon's atomic reservation) is never auto-retried: the composed answer text drops into the normal composer, the pending ask and its transcript anchor are discarded rather than settled (no authoritative USER_INPUT confirmed them), and a later acknowledged ask_user call starts a completely fresh pending set instead of merging into the stale conflicted one (test-ask-submit.js)
-- sending ask answers calls the exact same `SerfAppwire.startTurn(ref, text)` function the ordinary composer uses — never a parallel ask-only RPC — with the session's real ref and the composed text verbatim (test-ask-submit.js)
+- sending ask answers calls the exact same `EvenerAppwire.startTurn(ref, text)` function the ordinary composer uses — never a parallel ask-only RPC — with the session's real ref and the composed text verbatim (test-ask-submit.js)
 - the shared Send button disables the instant a send is in flight, stays disabled even if the dock rebuilds mid-flight (a new question arrives), and re-enables once a non-terminal (retryable) send error occurs (test-ask-submit.js)
 - when two ask_user calls are pending with one send in flight, that send's success settles only its own questions in the transcript — a second, later-arrived question keeps its independently-entered answer, note draft, and focus untouched, and remains independently sendable with a payload containing only its own answers (test-ask-submit.js)
 - a late-arriving question queued after an earlier send is now in flight still gets torn down by an authoritative USER_INPUT from another client, even though it was never sent locally (test-ask-submit.js)
 - an older in-flight send settling does not spuriously re-enable a newer, still-in-flight send button for a different, later ask (test-ask-submit.js)
 
 ### test-notifications-ask-awaiting-broadcast.js
-- a genuine ask_user-produced SessionAwaiting normalizes to attention level "needs_you" exactly like any other awaiting/warning producer, reaching the browser as an ordinary `serf/attention/changed` broadcast (test-notifications-ask-awaiting-broadcast.js)
+- a genuine ask_user-produced SessionAwaiting normalizes to attention level "needs_you" exactly like any other awaiting/warning producer, reaching the browser as an ordinary `evener/attention/changed` broadcast (test-notifications-ask-awaiting-broadcast.js)
 - the default "asks" notification loudScope keys off the wire's `askPending` flag (from hubcore's DeriveAttention) rather than any ask-specific branch inside notifications.js itself (test-notifications-ask-awaiting-broadcast.js)
 
 ## Escalations
 
 ### test-sandbox-escalation.js
-- a `serf/sandbox/escalation/requested` notification maps to exactly one `SANDBOX_ESCALATION_REQUESTED` client event carrying `escalationId`, the full `deniedPath`, and the card `kind` (test-sandbox-escalation.js)
+- a `evener/sandbox/escalation/requested` notification maps to exactly one `SANDBOX_ESCALATION_REQUESTED` client event carrying `escalationId`, the full `deniedPath`, and the card `kind` (test-sandbox-escalation.js)
 - an escalation renders as a HARNESS-framed approval card (never styled as a model message), showing the full denied path and the denied tool name; a file-tool card never shows the shell "partially ran" caveat (test-sandbox-escalation.js)
 - clicking Allow posts exactly one resolve call with `{escalationId, approve:true}`; the card only settles to "Allowed once" and drops its controls after the resolve request actually succeeds, never optimistically (test-sandbox-escalation.js)
 - clicking Deny posts a resolve with `approve:false` — denial is never silently dropped (test-sandbox-escalation.js)

@@ -1,5 +1,5 @@
 # Global fuzz-reachable coverage floors (whole-module statement coverage).
-# Managed by `serf-fuzzcov -global-manifest ... -bless`. The raw gate is stricter:
+# Managed by `evener-fuzzcov -global-manifest ... -bless`. The raw gate is stricter:
 # every measured module must be above 95.0% before a floor can be raised.
 # Blessing preserves all existing module floors and never lowers an entry.
 # Legacy rows below are decimal percentages. Newly blessed rows use exact

@@ -23,14 +23,14 @@
 ### Task 1: Structured ANSI rendering in CodeBlock
 
 **Files:**
-- Modify: `cmd/serf-hub/frontend/package.json`
-- Modify: `cmd/serf-hub/frontend/package-lock.json`
-- Create: `cmd/serf-hub/frontend/src/widgets/codeblock/ansi.ts`
-- Create: `cmd/serf-hub/frontend/src/widgets/codeblock/ansiLine.tsx`
-- Modify: `cmd/serf-hub/frontend/src/widgets/codeblock/index.tsx`
-- Modify: `cmd/serf-hub/frontend/src/widgets/codeblock/codeblock.module.css`
-- Modify: `cmd/serf-hub/frontend/src/widgets/codeblock/codeblock.test.tsx`
-- Modify: `cmd/serf-hub/frontend/src/styles/tokens.css`
+- Modify: `cmd/evener-hub/frontend/package.json`
+- Modify: `cmd/evener-hub/frontend/package-lock.json`
+- Create: `cmd/evener-hub/frontend/src/widgets/codeblock/ansi.ts`
+- Create: `cmd/evener-hub/frontend/src/widgets/codeblock/ansiLine.tsx`
+- Modify: `cmd/evener-hub/frontend/src/widgets/codeblock/index.tsx`
+- Modify: `cmd/evener-hub/frontend/src/widgets/codeblock/codeblock.module.css`
+- Modify: `cmd/evener-hub/frontend/src/widgets/codeblock/codeblock.test.tsx`
+- Modify: `cmd/evener-hub/frontend/src/styles/tokens.css`
 
 **Interfaces:**
 - Produces: `CodeBlockProps.ansi?: boolean`.
@@ -58,7 +58,7 @@ This catches the current bug: removing ANSI parsing makes raw escape bytes reapp
 Run:
 
 ```bash
-cd cmd/serf-hub/frontend
+cd cmd/evener-hub/frontend
 npm test -- --no-file-parallelism src/widgets/codeblock/codeblock.test.tsx
 ```
 
@@ -69,7 +69,7 @@ Expected: FAIL because `CodeBlock` ignores `ansi` and the code element still con
 Run:
 
 ```bash
-cd cmd/serf-hub/frontend
+cd cmd/evener-hub/frontend
 npm install anser@2.3.5 ansi-regex@6.2.2
 ```
 
@@ -126,7 +126,7 @@ When false, retain the current string-line path exactly. When true, memoize `par
 Run:
 
 ```bash
-cd cmd/serf-hub/frontend
+cd cmd/evener-hub/frontend
 npm test -- --no-file-parallelism src/widgets/codeblock/codeblock.test.tsx
 ```
 
@@ -135,24 +135,24 @@ Expected: PASS with the screenshot text free of raw escape bytes and the expecte
 - [ ] **Step 7: Commit the core renderer**
 
 ```bash
-git add cmd/serf-hub/frontend/package.json \
-  cmd/serf-hub/frontend/package-lock.json \
-  cmd/serf-hub/frontend/src/widgets/codeblock/ansi.ts \
-  cmd/serf-hub/frontend/src/widgets/codeblock/ansiLine.tsx \
-  cmd/serf-hub/frontend/src/widgets/codeblock/index.tsx \
-  cmd/serf-hub/frontend/src/widgets/codeblock/codeblock.module.css \
-  cmd/serf-hub/frontend/src/widgets/codeblock/codeblock.test.tsx \
-  cmd/serf-hub/frontend/src/styles/tokens.css
+git add cmd/evener-hub/frontend/package.json \
+  cmd/evener-hub/frontend/package-lock.json \
+  cmd/evener-hub/frontend/src/widgets/codeblock/ansi.ts \
+  cmd/evener-hub/frontend/src/widgets/codeblock/ansiLine.tsx \
+  cmd/evener-hub/frontend/src/widgets/codeblock/index.tsx \
+  cmd/evener-hub/frontend/src/widgets/codeblock/codeblock.module.css \
+  cmd/evener-hub/frontend/src/widgets/codeblock/codeblock.test.tsx \
+  cmd/evener-hub/frontend/src/styles/tokens.css
 git commit -m "feat(webui): render ANSI-styled code output"
 ```
 
 ### Task 2: ANSI edge contracts and folding
 
 **Files:**
-- Create: `cmd/serf-hub/frontend/src/widgets/codeblock/ansi.test.ts`
-- Modify: `cmd/serf-hub/frontend/src/widgets/codeblock/codeblock.test.tsx`
-- Modify if a RED case requires it: `cmd/serf-hub/frontend/src/widgets/codeblock/ansi.ts`
-- Modify if a RED case requires it: `cmd/serf-hub/frontend/src/widgets/codeblock/index.tsx`
+- Create: `cmd/evener-hub/frontend/src/widgets/codeblock/ansi.test.ts`
+- Modify: `cmd/evener-hub/frontend/src/widgets/codeblock/codeblock.test.tsx`
+- Modify if a RED case requires it: `cmd/evener-hub/frontend/src/widgets/codeblock/ansi.ts`
+- Modify if a RED case requires it: `cmd/evener-hub/frontend/src/widgets/codeblock/index.tsx`
 
 **Interfaces:**
 - Consumes: `parseAnsiLines(text): AnsiLine[]`.
@@ -183,7 +183,7 @@ Construct fifteen lines where line 1 starts green and no reset occurs until line
 Run:
 
 ```bash
-cd cmd/serf-hub/frontend
+cd cmd/evener-hub/frontend
 npm test -- --no-file-parallelism src/widgets/codeblock/ansi.test.ts src/widgets/codeblock/codeblock.test.tsx
 ```
 
@@ -209,19 +209,19 @@ Run the two focused test files again and require exit 0.
 - [ ] **Step 6: Commit edge coverage**
 
 ```bash
-git add cmd/serf-hub/frontend/src/widgets/codeblock/ansi.test.ts \
-  cmd/serf-hub/frontend/src/widgets/codeblock/codeblock.test.tsx \
-  cmd/serf-hub/frontend/src/widgets/codeblock/ansi.ts \
-  cmd/serf-hub/frontend/src/widgets/codeblock/index.tsx
+git add cmd/evener-hub/frontend/src/widgets/codeblock/ansi.test.ts \
+  cmd/evener-hub/frontend/src/widgets/codeblock/codeblock.test.tsx \
+  cmd/evener-hub/frontend/src/widgets/codeblock/ansi.ts \
+  cmd/evener-hub/frontend/src/widgets/codeblock/index.tsx
 git commit -m "test(webui): cover ANSI output edge contracts"
 ```
 
 ### Task 3: Enable ANSI for bash-family tool results
 
 **Files:**
-- Modify: `cmd/serf-hub/frontend/src/panes/session/transcript/tools/shellTool.tsx`
-- Modify: `cmd/serf-hub/frontend/src/panes/session/transcript/tools/shellTool.test.tsx`
-- Test: `cmd/serf-hub/frontend/src/panes/session/transcript/rawToolOutput.test.tsx`
+- Modify: `cmd/evener-hub/frontend/src/panes/session/transcript/tools/shellTool.tsx`
+- Modify: `cmd/evener-hub/frontend/src/panes/session/transcript/tools/shellTool.test.tsx`
+- Test: `cmd/evener-hub/frontend/src/panes/session/transcript/rawToolOutput.test.tsx`
 
 **Interfaces:**
 - Consumes: `<CodeBlock ansi text={body} copyLabel="Copy output" />`.
@@ -249,7 +249,7 @@ The production change that makes this pass is adding `ansi` to the shell body's 
 Run:
 
 ```bash
-cd cmd/serf-hub/frontend
+cd cmd/evener-hub/frontend
 npm test -- --no-file-parallelism src/panes/session/transcript/tools/shellTool.test.tsx
 ```
 
@@ -270,7 +270,7 @@ Do not enable ANSI in `RawToolOutput`; its generic fallback remains byte-honest 
 Run:
 
 ```bash
-cd cmd/serf-hub/frontend
+cd cmd/evener-hub/frontend
 npm test -- --no-file-parallelism \
   src/panes/session/transcript/tools/shellTool.test.tsx \
   src/panes/session/transcript/rawToolOutput.test.tsx
@@ -281,8 +281,8 @@ Expected: both files pass.
 - [ ] **Step 5: Commit shell integration**
 
 ```bash
-git add cmd/serf-hub/frontend/src/panes/session/transcript/tools/shellTool.tsx \
-  cmd/serf-hub/frontend/src/panes/session/transcript/tools/shellTool.test.tsx
+git add cmd/evener-hub/frontend/src/panes/session/transcript/tools/shellTool.tsx \
+  cmd/evener-hub/frontend/src/panes/session/transcript/tools/shellTool.test.tsx
 git commit -m "fix(webui): interpret ANSI in shell results"
 ```
 
@@ -294,7 +294,7 @@ git commit -m "fix(webui): interpret ANSI in shell results"
 - [ ] **Step 1: Run focused transcript/widget tests**
 
 ```bash
-cd cmd/serf-hub/frontend
+cd cmd/evener-hub/frontend
 npm test -- --no-file-parallelism \
   src/widgets/codeblock/ansi.test.ts \
   src/widgets/codeblock/codeblock.test.tsx \
@@ -305,14 +305,14 @@ npm test -- --no-file-parallelism \
 - [ ] **Step 2: Run full frontend tests**
 
 ```bash
-cd cmd/serf-hub/frontend
+cd cmd/evener-hub/frontend
 npm test -- --no-file-parallelism
 ```
 
 - [ ] **Step 3: Run static and production checks**
 
 ```bash
-cd cmd/serf-hub/frontend
+cd cmd/evener-hub/frontend
 npm run lint
 npm run typecheck
 npm run build

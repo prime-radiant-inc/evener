@@ -10,7 +10,7 @@ import (
 // parseInt/parseBool/parseFloatPtr/scalePerMillion/normalizeCatalogProvider/
 // buildIndex) plus the catalog query surface (GetModelInfo, LookupModelInfo,
 // ListModels, GetLatestModel) over arbitrary LiteLLM-shaped JSON. This parser
-// turns the upstream pricing/capability dump into serf's model metadata; only a
+// turns the upstream pricing/capability dump into evener's model metadata; only a
 // few unit fixtures exercised it.
 //
 // Oracles:
@@ -23,7 +23,7 @@ import (
 //     subset all matching that provider.
 //
 // FuzzApplyCatalogOverrides drives applyOverrides/applyOverlayFields (the
-// serf_model_catalog_overrides.json merge layer, including the newer
+// evener_model_catalog_overrides.json merge layer, including the newer
 // thinking_always_on, claude5_request_shape, supports_vision, per-million
 // pricing, and aliases plumbing) over arbitrary override JSON against a small
 // fixed base catalog.

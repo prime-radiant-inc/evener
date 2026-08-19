@@ -4,17 +4,17 @@ Date: 2026-06-25
 
 ## Goal
 
-The Serf web UI workspace content should not stretch indefinitely on wide screens. When the available workspace area is wider than a sensible reading/composition width, the content column should cap its width and center itself. On narrower screens it should continue to use the available width.
+The Evener web UI workspace content should not stretch indefinitely on wide screens. When the available workspace area is wider than a sensible reading/composition width, the content column should cap its width and center itself. On narrower screens it should continue to use the available width.
 
 ## Context
 
-The hub app shell lives in `cmd/serf-hub/templates/app.html`. Its `#workspace` element is the flex item between the sidebar and optional side panes. The workspace partial in `cmd/serf-hub/templates/partials/workspace.html` renders three top-level content sections:
+The hub app shell lives in `cmd/evener-hub/templates/app.html`. Its `#workspace` element is the flex item between the sidebar and optional side panes. The workspace partial in `cmd/evener-hub/templates/partials/workspace.html` renders three top-level content sections:
 
 - `.workspace-header`
 - `.conversation`
 - `.workspace-input`
 
-Styles live in `cmd/serf-hub/assets/style.css`. Today `#workspace` fills all remaining horizontal space and each child section owns its own horizontal padding, so message content and the composer can become too wide on large displays.
+Styles live in `cmd/evener-hub/assets/style.css`. Today `#workspace` fills all remaining horizontal space and each child section owns its own horizontal padding, so message content and the composer can become too wide on large displays.
 
 ## Design
 
@@ -63,7 +63,7 @@ This keeps the layout fluid below the cap and centers the workspace content once
 ## Verification
 
 - Add or update a deterministic test only if there is an existing practical static/template test seam for the stylesheet contract.
-- Run `go test ./cmd/serf-hub` to verify hub web tests still pass.
+- Run `go test ./cmd/evener-hub` to verify hub web tests still pass.
 - Inspect the CSS diff to confirm no template or app-shell flex behavior changed unless implementation discovers a concrete need.
 
 ## Scope

@@ -8,7 +8,7 @@ Runtime continuation remains disabled. This phase does not send `previous_respon
 
 ## Evidence
 
-- `GOCACHE=/tmp/serf-gocache go test ./llm ./llm/providers/openai -run 'TestContinuation|TestNewForInstance_ContinuationAuthScope|TestNewFromEnv_ContinuationAuthScope|TestNewFromEnv_ReadsOrgAndProjectID|TestInstanceFactory_EnvTunables_APIKeyPath' -count=1 -v`
+- `GOCACHE=/tmp/evener-gocache go test ./llm ./llm/providers/openai -run 'TestContinuation|TestNewForInstance_ContinuationAuthScope|TestNewFromEnv_ContinuationAuthScope|TestNewFromEnv_ReadsOrgAndProjectID|TestInstanceFactory_EnvTunables_APIKeyPath' -count=1 -v`
 - `git diff --check`
 
 ## Contracts Proven
