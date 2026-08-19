@@ -26,18 +26,8 @@
    * row's text starts at this one x - dotted or not. 14px = 4px edge
    * breathing + 6px dot + 4px gap to the text. */
   padding-left: 14px;
-  /* Containing block for the absolutely-positioned `.actions` overlay
-   * below - without it that overlay resolves against the nearest
-   * positioned ancestor instead (the scrolling rail body, or the viewport)
-   * and detaches from its own row entirely. */
-  position: relative;
 }
 
-/* No transition here: `.actions`'s reveal mask is a linear-gradient, which
- * cannot interpolate, so it snaps between states instantly. If this wash
- * faded in over --motion-duration-hover, the mask would snap into place
- * mid-fade, visibly out of lockstep with the background it's meant to
- * match - so the wash has to be instant too. */
 .railRow:hover {
   background: var(--hover-1);
 }
@@ -77,65 +67,54 @@
  * reverts it via Menu's own isOpen state); an ancestor selector is scoped
  * to `.actions` so an open menu on one row never reveals another's.
  *
- * Out of flow and pinned to the row's right edge, so a hidden->revealed
- * transition costs the row's own content exactly zero width: the title
- * column and the timestamp/Badge lay out as if these buttons weren't
- * there, and the revealed buttons paint ON TOP of the timestamp instead of
- * claiming a slot beside it (which made every actionable row narrower for
- * its title than its neighbours). `.railRow` above is the containing block.
- *
- * The masking background is what makes overlapping legible: it always
- * matches whatever `.railRow` itself is painting underneath at that moment
- * - `--surface-canvas` (the rail's own background, `.rail`) at rest, or
- * `--hover-1` once `.railRow:hover` paints its own wash - so the overlay
- * reads as the row's own right edge rather than a floating island, and the
- * covered text can't bleed through the "⋯" glyph. It's a left-to-right
- * gradient rather than a flat fill because a hard opaque edge slices
- * whatever it covers mid-glyph (a half-rendered letter reads as a rendering
- * bug); the ramp reaches full opacity before `padding-left` ends, so the
- * buttons themselves always sit on fully-masked ground. The opacity lives
- * on the container, not the buttons, so the mask fades in and out with what
- * it's masking. */
+ * A real, in-flow flex item (issue #196) - not the absolutely-positioned,
+ * zero-width-cost overlay this used to be. That design pinned `.actions` to
+ * the row's right edge, out of flex layout entirely, so a hidden->revealed
+ * transition cost the row's own content nothing: the title column laid out
+ * as if these buttons weren't there, and the revealed buttons painted ON
+ * TOP of the timestamp/Badge instead of claiming a slot beside it. The
+ * defect that traded away: the row's trailing disclosure chevron
+ * (`.chevronButton`) trails the truncating title inside the SAME flex line,
+ * so on a long-enough title it landed under this overlay's footprint too -
+ * and CSS opacity never disables hit testing, so the overlay swallowed the
+ * chevron's clicks even at rest, invisibly. A z-index fix was tried first
+ * (raise the chevron's stacking order above the overlay) and reverted: it
+ * only moves the swallowed-click bug onto whichever control loses the
+ * stacking fight, which measured out to the "..." trigger itself losing a
+ * quarter of its own hit box to the chevron sitting on top of it - see
+ * layoutguard's rail-row-chevron-actions-overlap case. Real flex placement
+ * removes the overlap structurally instead of arbitrating it: flexbox
+ * reserves this element's actual width (a session row's one button, a
+ * project row's two) out of the row's available space, so nothing else in
+ * the row can ever be laid out, or hit-tested, underneath it. The accepted
+ * cost is the mirror of the old zero-cost property: every row's title
+ * column is now permanently narrower by `.actions`'s own reserved width,
+ * at rest as much as on hover, not just while revealed - and the
+ * timestamp/Badge, no longer ever covered, simply stays visible through
+ * the hover reveal instead of being masked out and back in. */
 .actions {
-  position: absolute;
-  right: 0;
-  top: 0;
-  bottom: 0;
   display: inline-flex;
   align-items: center;
   flex: none;
   gap: var(--space-1);
-  padding-left: var(--space-5);
-  background: linear-gradient(to right, transparent, var(--surface-canvas) var(--space-5));
   opacity: 0;
   transition: opacity 120ms var(--motion-easing-standard);
 }
 
 [role="treeitem"]:focus .actions,
-.actions:has(button[aria-expanded="true"]) {
-  opacity: 1;
-}
-
-/* The real-mouse-hover case gets its own rule, not folded into the one
- * above: `.railRow:hover` paints `--hover-1` under the row (see that rule),
- * so the mask's own background has to swap to match, on top of the same
- * opacity flip the focus/open-menu case does. */
+.actions:has(button[aria-expanded="true"]),
 .railRow:hover .actions {
   opacity: 1;
-  background: linear-gradient(to right, transparent, var(--hover-1) var(--space-5));
 }
 
 /* Touch has no hover to reveal these with - stay visible below the mobile
  * breakpoint (useIsMobile.ts's own 899px threshold), matching TreeDrawer's
- * touch-first rail presentation. Permanently visible means permanently
- * masking, so touch drops the overlay entirely and goes back to a real
- * flex slot beside the timestamp: the age stays readable, and there is no
- * hover state left for an overlay to buy zero-shift for anyway. */
+ * touch-first rail presentation. `.actions` is already a real flex slot at
+ * every width now, so this only needs to force the opacity open; there is
+ * no separate "static/in-flow" layout left to restore, unlike the overlay
+ * design this replaced. */
 @media (max-width: 899px) {
   .actions {
-    position: static;
-    padding-left: 0;
-    background: none;
     opacity: 1;
   }
 }
@@ -176,28 +155,18 @@
  * smaller than the app's default 14px icon box so it reads as part of the
  * line rather than as a separate control.
  *
- * The chevron IS the row's disclosure triangle, and it must stay clickable
- * even while the hover-revealed "⋯" actions overlay (.actions) is covering
- * the row's right edge. .actions is absolutely positioned at right:0 and
- * stays pointer-active at opacity:0 (CSS opacity never disables hit
- * testing), so a chevron it overlaps cannot be clicked at rest, let alone on
- * hover. Raising the chevron into the same stacking context (.railRow is
- * position:relative, no z-index of its own) with --z-raised (the local
- * stacking tier the token ladder reserves for "overlay controls within a
- * pane") paints it above .actions' z-index:auto in BOTH states - opacity:0
- * at rest makes .actions its own stacking context, but a context with
- * z-index:auto/0 still sorts below a positive z-index sibling; opacity:1 on
- * hover drops that context and the same ordering holds. position:relative
- * without offsets keeps the chevron in its normal flow box, so the
- * rail-row-text-align layoutguard's "chevron trails the label" geometry is
- * unchanged. */
+ * The chevron IS the row's disclosure triangle, and its clickability no
+ * longer depends on stacking order (issue #196: see `.actions`'s own
+ * comment for the z-index attempt this replaced, and why it only moved the
+ * bug instead of fixing it). `.actions` is a real in-flow flex sibling now,
+ * so flexbox itself reserves it a slot the chevron - or anything else on
+ * this line - can never be pushed underneath, at rest or on hover. Nothing
+ * here needs to arbitrate an overlap that structurally can't happen. */
 .chevronButton {
   flex: none;
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  position: relative;
-  z-index: var(--z-raised);
   padding: 0;
   border: none;
   background: transparent;

@@ -1,40 +1,56 @@
 // issue #196: the sidebar's trailing disclosure chevron (.chevronButton)
 // must stay clickable even while the hover-revealed "..."/"+" actions
-// overlay (.actions) covers the row's right edge. The contract this pins:
-// for every (width x row-kind x right-slot) fixture the harness builds, if
-// the chevron's hit box and an actions button's hit box overlap at all, a
-// click landing in that overlap must resolve to the CHEVRON
-// (document.elementFromPoint, not z-index arithmetic) - never to the
-// actions overlay swallowing it (the original bug) and never to some third
-// element neither control owns.
+// overlay (.actions) covers the row's right edge.
 //
-// This does NOT require the two hit boxes to never overlap - RailRow.tsx's
-// own #206 fix raises the chevron's stacking order above .actions rather
-// than reserving it separate flex space (see that PR's RailRow.module.css
-// comment), so an overlap can exist and still be a correct fix as long as
-// the chevron demonstrably wins every pixel of it. A regression that only
-// repaints (e.g. a z-index in the wrong direction, or pointer-events
-// swapped) still fails here because the winner comes from the browser's own
-// hit test, not from reading the stylesheet.
+// This case was first written against a z-index fix (raise .chevronButton
+// above .actions in stacking order) and accepted "the chevron demonstrably
+// wins clicks in the overlap" as green. That was too weak a bar: on the
+// z-index branch, EVERY fixture showed the chevron's full 12x12 hit box
+// sitting inside the "..." trigger's own hit box (roughly a quarter of its
+// ~47px width) - the chevron won, but only by taking a bite out of the
+// kebab trigger's own clickable area. That's the exact failure mode the
+// original RCA predicted for a stacking-order fix: it doesn't remove the
+// overlap, it just moves whichever control loses it.
+//
+// The shipped fix instead makes `.actions` a real in-flow flex item, so
+// flexbox reserves it actual space and the two controls' hit boxes can
+// never share a pixel - a structural guarantee, not a stacking outcome.
+// The bar here now matches that: every fixture must show the chevron and
+// EVERY actions button (kebab, and a project row's "+") fully disjoint
+// (zero-width intersection, not just "loser resolves elsewhere"), AND each
+// control's own center must resolve to itself via elementFromPoint - a
+// sanity check that "disjoint boxes" actually means both controls are
+// independently clickable, not that a third element is eating clicks at
+// either one's center.
 export default function assert(measurement) {
   const failures = [];
-  const notes = [];
 
   for (const f of measurement) {
-    for (const [kind, overlap, winner] of [
-      ["kebab", f.kebabOverlap, f.kebabOverlapWinner],
-      ["plus", f.plusOverlap, f.plusOverlapWinner],
+    for (const [kind, overlap] of [
+      ["kebab", f.kebabOverlap],
+      ["plus", f.plusOverlap],
     ]) {
-      if (!overlap) continue; // no shared pixels - nothing to adjudicate
-      if (winner === "chevron") {
-        notes.push(
-          `${f.id}: chevron overlaps the ${kind} button by ${overlap.width.toFixed(1)}x${overlap.height.toFixed(1)}px and wins clicks there`,
-        );
-      } else {
+      if (overlap) {
         failures.push(
-          `${f.id} (${f.label}): chevron=[${f.chevron.left.toFixed(1)},${f.chevron.right.toFixed(1)}] overlaps the ${kind} button's hit box by ${overlap.width.toFixed(1)}x${overlap.height.toFixed(1)}px, and a click there resolves to "${winner}", not the chevron - the disclosure triangle is still unclickable there`,
+          `${f.id} (${f.label}): chevron=[${f.chevron.left.toFixed(1)},${f.chevron.right.toFixed(1)}] overlaps the ${kind} button's hit box by ${overlap.width.toFixed(1)}x${overlap.height.toFixed(1)}px - the two controls must be fully disjoint, not merely "chevron wins the overlap"`,
         );
       }
+    }
+
+    if (f.chevronSelfWinner !== "chevron") {
+      failures.push(
+        `${f.id} (${f.label}): the chevron's own center resolves to "${f.chevronSelfWinner}", not the chevron itself - it isn't reliably clickable at its own position`,
+      );
+    }
+    if (f.kebabSelfWinner !== "kebab") {
+      failures.push(
+        `${f.id} (${f.label}): the kebab trigger's own center resolves to "${f.kebabSelfWinner}", not the kebab itself - it isn't reliably clickable at its own position`,
+      );
+    }
+    if (f.plus && f.plusSelfWinner !== "plus") {
+      failures.push(
+        `${f.id} (${f.label}): the "+" button's own center resolves to "${f.plusSelfWinner}", not the button itself - it isn't reliably clickable at its own position`,
+      );
     }
   }
 
@@ -44,9 +60,6 @@ export default function assert(measurement) {
 
   return {
     pass: true,
-    reason:
-      notes.length > 0
-        ? `chevron stays clickable in all ${measurement.length} fixtures (${notes.join("; ")})`
-        : `chevron's hit box never overlaps an actions button in any of the ${measurement.length} fixtures`,
+    reason: `chevron, kebab, and (where present) the "+" button are fully disjoint and each independently clickable at its own center in all ${measurement.length} fixtures`,
   };
 }

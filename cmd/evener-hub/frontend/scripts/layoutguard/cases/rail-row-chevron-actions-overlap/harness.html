@@ -185,6 +185,14 @@ window.measure = () => {
       kebabOverlapWinner: kebabOverlap ? winnerAt(kebabOverlap) : null,
       plusOverlap,
       plusOverlapWinner: plusOverlap ? winnerAt(plusOverlap) : null,
+      // Each control's OWN center must resolve to itself - a sanity check
+      // that disjoint boxes actually mean both controls are independently
+      // clickable, not just that neither happens to cover the other's
+      // corner while something else (a third element, an ancestor) eats
+      // the click at their own center.
+      chevronSelfWinner: winnerAt(chevron),
+      kebabSelfWinner: winnerAt(kebab),
+      plusSelfWinner: plus ? winnerAt(plus) : null,
     };
   });
 };

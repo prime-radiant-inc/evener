@@ -1,6 +1,6 @@
 {
   "name": "rail-row-chevron-actions-overlap",
-  "description": "rail: a branch row's trailing disclosure chevron must stay clickable over the hover-revealed '...'/'+' actions overlay - the chevron's hit box must not be swallowed by .actions at the sidebar's min (200px) and default (280px) widths, for both a session row (1 action button) and a project row (2), with and without a right-slot occupant (timestamp/badge) bounding the title column's growth (issue #196)",
+  "description": "rail: a branch row's trailing disclosure chevron and the '...'/'+' actions buttons must have fully disjoint, independently-clickable hit boxes - not merely 'the chevron wins the overlap' - at the sidebar's min (200px) and default (280px) widths, for both a session row (1 action button) and a project row (2), with and without a right-slot occupant (timestamp/badge) bounding the title column's growth (issue #196)",
   "cssFiles": [
     "styles/global.css",
     "styles/tokens.css",
@@ -27,9 +27,9 @@
     { "selector": "#row-p280nb", "pseudoClasses": ["hover"] }
   ],
   "mutation": {
-    "declaration": "RailRow.module.css: .chevronButton { position: relative; z-index: var(--z-raised); } (both lines deleted, reverting the row's own #206 fix back to a statically-positioned chevron under the position:absolute .actions overlay)",
+    "declaration": "RailRow.module.css: .actions reverted to position: absolute; right: 0; top: 0; bottom: 0; with its old padding-left/linear-gradient mask and the .railRow:hover .actions background swap restored, plus .railRow given back position: relative (its containing block) - i.e. the pre-rework, position:absolute overlay design, with .chevronButton left exactly as shipped (no z-index either)",
     "verified": "2026-08-18",
     "expect": "fail",
-    "note": "With the two declarations removed, .actions (position:absolute) paints above the statically-positioned .chevronButton regardless of DOM order, so document.elementFromPoint() at every chevron/actions overlap resolves to the actions trigger (or its wrapping .actions/.root), not the chevron, in all 8 fixtures - reproducing issue #196 exactly. Restoring the two declarations returns every fixture to PASS."
+    "note": "With .actions back to an absolutely-positioned overlay and .chevronButton carrying no stacking-order fix of its own, .actions paints above the statically-positioned chevron in all 8 fixtures: kebabOverlap is non-null (12.0x12.0px, full containment) and chevronSelfWinner resolves to \"kebab\", not \"chevron\", in every one - reproducing issue #196 exactly (a total swallow, not the z-index branch's partial one). Restoring the in-flow .actions returns every fixture to PASS with fully disjoint boxes."
   }
 }
