@@ -199,6 +199,12 @@ case " ${FAKE_TEST_FAIL:-} " in
 		;;
 esac
 [ "$module" = "." ] && : >"$FAKE_STATE/root.finished"
+# A passing `go test` prints one status line per package. FAKE_NO_TESTS_MATCH
+# replays the shape of a -run pattern that matches no test name: still exit 0,
+# with "[no tests to run]" as the only trace that nothing was proven.
+no_tests_note=""
+[ "${FAKE_NO_TESTS_MATCH:-0}" -ne 0 ] && no_tests_note=" [no tests to run]"
+printf 'ok  \tprimeradiant.com/evener/%s\t0.01s%s\n' "$module" "$no_tests_note"
 exit 0
 FAKE_GO
 	chmod +x "$bin/go"
@@ -465,7 +471,7 @@ assert_has_word "$root_args" "-count=1" "full-root mode preserves root's other f
 assert_has_word "$agent_args" "-short" "full-root mode keeps -short on non-root modules"
 assert_has_word "$agent_args" "-count=1" "full-root mode preserves non-root flags"
 
-# kata 5gvk: scripts/gate-capability-preflight.sh exports
+# kata 5gvk: evener-dev capability-preflight exports
 # EVENER_GATE_CAPABILITY_SKIP when it classified a sandbox capability as
 # blocked. The runner must union that pattern into root's -skip so the
 # known-infeasible TestE2E_/TestTUITmuxE2E_ family is skipped instead of
@@ -503,6 +509,29 @@ assert_eq "$rc" "0" "a run with nothing capability-blocked exits zero"
 root_args="$(arguments_for .)"
 assert_not_has_word "$root_args" "TestE2E_" "root's -skip carries no capability pattern when nothing is blocked"
 assert_not_has "$out" "EVENER_GATE_CAPABILITY_SKIP" "an unnarrowed run says nothing about a capability skip"
+
+# PR #222's showstopper: a -run pattern that matches no test name makes every
+# package report "[no tests to run]" and exit 0, so every verdict reads PASS
+# while the gate proves nothing. The runner must fail a run whose Go waves
+# executed zero tests.
+new_case
+out="$case_dir/zero-tests.out"
+if FAKE_NO_TESTS_MATCH=1 run_tests ". agent" "$out"; then rc=0; else rc=$?; fi
+if [ "$rc" -ne 0 ]; then
+	ok "a run whose Go waves executed zero tests fails"
+else
+	bad "a run whose Go waves executed zero tests fails (exit 0 — the gate is a silent no-op)"
+fi
+assert_has "$out" "ran zero tests" "the zero-test failure says the gate proved nothing"
+assert_has "$out" "full logs:" "the zero-test failure keeps the logs for diagnosis"
+
+# Explicitly empty Go waves (a deliberate web-only run) schedule no Go work,
+# so the zero-test tripwire stays out of their way.
+new_case
+out="$case_dir/zero-tests-empty-waves.out"
+if run_tests "agent" "$out" WAVE1= WAVE2=; then rc=0; else rc=$?; fi
+assert_eq "$rc" "0" "explicitly empty Go waves (web-only run) do not trip the zero-test tripwire"
+assert_eq "$(verdicts "$out" | tr '\n' ' ' | sed 's/ *$//')" "web" "a web-only run still reports its stream"
 
 # kata mjzx: the frontend stream already reports and logs under the name "web",
 # so a MODULES entry of the same name gave one label two owners - two verdict

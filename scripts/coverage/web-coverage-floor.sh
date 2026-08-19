@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # web-coverage-floor.sh — a no-regression ratchet on the frontend's line coverage,
-# the web counterpart to scripts/coverage/test-coverage-floor.sh (Go full-suite) and
+# the web counterpart to `evener-dev coverage-floor` (Go full-suite) and
 # scripts/fuzz/fuzz-coverage-global.sh (Go fuzz-reachable). It guards the coverage the
 # vitest suite drives, so a PR that deletes tests or adds untested UI fails the
 # gate instead of silently eroding the number.

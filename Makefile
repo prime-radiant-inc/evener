@@ -1,4 +1,4 @@
-.PHONY: build build-runtime build-go build-hub web-preflight build-web test-web test-web-browser build-tui build-doctor build-all build-linux build-namingcheck build-migrate dist install install-home install-system test-install test-dev-tooling test test-short test-fuzz test-race merge-approval-gate vet lint lint-naming lint-gofmt lint-evenerfuzz lint-eval lint-internal lint-docs lint-golangci clean fuzz fuzz-seeds fuzz-nightly fuzz-triage fuzz-continuous fuzz-coverage-global fuzz-bisect fuzz-bisect-selftest fuzz-oracle-audit fuzz-oracle-audit-selftest fuzz-mutation-score fuzz-ledger fuzz-coverage fuzz-gap-check fuzz-registry-check fuzz-goldens secret-scan fuzz-corpus-scan refresh-model-catalog test-coverage-floor test-coverage-floor-selftest web-coverage-floor web-coverage-floor-selftest coverage-gaps coverage-gaps-selftest coverage-union coverage-union-selftest merge-into-branch merge-into-branch-selftest test-timing-budget test-timing-budget-selftest test-rebaseline
+.PHONY: build build-runtime build-go build-hub web-preflight build-web test-web test-web-browser build-tui build-doctor build-all build-linux build-namingcheck build-llmcall build-migrate dist install install-home install-system test-install test-dev-tooling test test-short test-fuzz test-race merge-approval-gate vet lint lint-naming lint-gofmt lint-evenerfuzz lint-eval lint-internal lint-docs lint-golangci lint-generated generate mutation-floor clean fuzz fuzz-seeds fuzz-nightly fuzz-triage fuzz-continuous fuzz-coverage-global fuzz-bisect fuzz-bisect-selftest fuzz-oracle-audit fuzz-oracle-audit-selftest fuzz-mutation-score fuzz-ledger fuzz-coverage fuzz-gap-check fuzz-registry-check fuzz-goldens secret-scan fuzz-corpus-scan refresh-model-catalog test-coverage-floor web-coverage-floor web-coverage-floor-selftest coverage-gaps coverage-gaps-selftest coverage-union coverage-union-selftest merge-into-branch merge-into-branch-selftest test-timing-budget test-timing-budget-selftest test-rebaseline
 
 LDFLAGS := -X primeradiant.com/evener/buildinfo.GitSHA=$$(git rev-parse --short HEAD) \
            -X primeradiant.com/evener/buildinfo.GitDirty=$$(git --no-optional-locks diff-files --quiet && echo "" || echo "true") \
@@ -236,7 +236,7 @@ override FUZZ_GOWORK := $(abspath $(CURDIR)/go.work)
 # the guard or the pid-suffixed covscratch pattern, is enforced statically by
 # the audits in scriptmktemp_audit_test.go, not by re-running suites under
 # sabotage (kata 5hs2).
-DEV_TOOLING_TEST_SCRIPTS := gate/run-module-tests lib/private-go-home gate/merge-approval-gate ops/setup-gocache web/web-preflight lib/live-eval-isolation e2e/e2e-webui-turn-controls fuzz/fuzz-bisect fuzz/fuzz-oracle-audit coverage/test-coverage-floor coverage/web-coverage-floor coverage/coverage-gaps coverage/coverage-union gate/test-timing-budget lib/scratch-lib gate/merge-into-branch
+DEV_TOOLING_TEST_SCRIPTS := gate/run-module-tests lib/private-go-home gate/merge-approval-gate ops/setup-gocache web/web-preflight lib/live-eval-isolation e2e/e2e-webui-turn-controls fuzz/fuzz-bisect fuzz/fuzz-oracle-audit coverage/web-coverage-floor coverage/coverage-gaps coverage/coverage-union gate/test-timing-budget lib/scratch-lib gate/merge-into-branch
 
 # test-dev-tooling tests tooling, not the product, so it runs in
 # `make merge-approval-gate` (where tooling regressions matter) and on demand
@@ -279,24 +279,26 @@ test-fuzz:
 # merge-approval-gate is the canonical serial post-merge gate. Keep the
 # explicit expansion in docs/testing.md for diagnosis and evidence.
 #
-# The capability preflight (scripts/gate/gate-capability-preflight.sh) classifies
+# The capability preflight (evener-dev capability-preflight) classifies
 # sandbox-sensitive host capabilities ONCE, before any phase runs, and
 # exports EVENER_GATE_CAPABILITY_SKIP so ROOT_FULL=1 make test skips exactly
 # the known-infeasible live/e2e tests instead of repeatedly failing into
 # them, and reports what it found blocked with exact rerun commands. All four
-# steps now run in ONE shell (chained with && instead of four separate
+# steps run in ONE shell (chained with && instead of four separate
 # `@$(MAKE)` lines) so that export reaches every phase; the gate still stops
-# at the first failing phase either way, same as before.
+# at the first failing phase either way.
+#
+# The assignment and the export are SEPARATE statements, and the assignment's
+# own exit status is what the `if` tests. `export VAR="$$(preflight)"` would
+# fail open (issue #181): export succeeds whatever the substitution did, so a
+# preflight that never reached a verdict would run every phase with an empty or
+# inherited skip pattern and call the result a pass.
 merge-approval-gate:
-	@if [ ! -x scripts/gate/gate-capability-preflight.sh ]; then \
-		echo 'merge-approval-gate: capability preflight script missing or not executable: scripts/gate/gate-capability-preflight.sh' >&2; \
+	@if ! EVENER_GATE_CAPABILITY_SKIP="$$(go run ./cmd/evener-dev capability-preflight)"; then \
+		echo 'merge-approval-gate: capability preflight failed before emitting its verdict: go run ./cmd/evener-dev capability-preflight' >&2; \
 		exit 1; \
-	fi && \
-	preflight="$$(scripts/gate/gate-capability-preflight.sh)" || { \
-		echo 'merge-approval-gate: capability preflight script failed before emitting its verdict: scripts/gate/gate-capability-preflight.sh' >&2; \
-		exit 1; \
-	} && \
-	eval "$$preflight" && \
+	fi; \
+	export EVENER_GATE_CAPABILITY_SKIP; \
 		$(MAKE) lint && \
 		$(MAKE) build && \
 		ROOT_FULL=1 $(MAKE) test && \
@@ -404,13 +406,11 @@ fuzz-coverage-global:
 # test-coverage-floor ratchets whole-module FULL-SUITE (unit+integration) coverage
 # against scripts/coverage/testcov-global-floors.txt — the companion to fuzz-coverage-global
 # (fuzz-reachable). CHECK=1 fails on a drop; BLESS=1 raises floors. Heavy + local.
+# Its contract is pinned by cmd/evener-dev/coveragefloor_test.go, which runs in
+# the ordinary Go test wave (including an end-to-end case that measures a real
+# throwaway module), so it needs no shell selftest of its own.
 test-coverage-floor:
-	@scripts/coverage/test-coverage-floor.sh $(if $(CHECK),--check) $(if $(BLESS),--bless) $(COV_ARGS)
-
-# test-coverage-floor-selftest exercises the rollup and ratchet against a
-# throwaway repo and a fake `go` — no compilation, no real suite.
-test-coverage-floor-selftest:
-	@scripts/coverage/test-coverage-floor-selftest.sh
+	@go run ./cmd/evener-dev coverage-floor $(if $(CHECK),--check) $(if $(BLESS),--bless) $(COV_ARGS)
 
 # coverage-gaps ranks where a coverage profile's UNCOVERED statements are, by
 # count rather than percentage, so coverage work targets the largest real gaps.
@@ -650,4 +650,4 @@ LINT_TARGETS := lint-naming lint-gofmt lint-evenerfuzz lint-eval lint-internal l
 lint: $(LINT_TARGETS)
 
 clean:
-	rm -f evener evener-hub evener-tui evener-doctor llmcall evener-namingcheck evener-internalcheck evener-fuzzcov evener-migrate
+	rm -f evener evener-hub evener-tui evener-doctor llmcall evener-namingcheck evener-migrate evener-linux-amd64

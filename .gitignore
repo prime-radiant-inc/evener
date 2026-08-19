@@ -24,6 +24,9 @@
 inspo/
 .evener-launches/
 evener-linux-amd64
+# `GOOS=windows go build ./cmd/evener-dev` (the issue #182 cross-compile check,
+# run by hand) drops its output here under the default name.
+/evener-dev.exe
 node_modules/
 results/
 docs/experiments/runs/
