@@ -260,11 +260,6 @@ func (s *Session) consumeModelStream(ctx context.Context, req llm.Request, st ll
 	// pattern that had already matched, so re-detection is not guaranteed.
 	openToolCalls := map[string]bool{}
 	var pendingTrip *loopTrip
-	recordTrip := func(trip *loopTrip) {
-		if pendingTrip == nil {
-			pendingTrip = trip
-		}
-	}
 	// applyPendingTrip performs the two-tier action for pendingTrip once no
 	// tool call is in flight — the only point a forced finish is a legal
 	// boundary rather than a cut. Returns true when it acted, meaning the
@@ -455,8 +450,12 @@ streamEvents:
 			if b := toolArgs[ev.ToolCall.ID]; b != nil {
 				args = b.String()
 			}
-			if trip := loopGuard.observeToolCall(toolNames[ev.ToolCall.ID], args); trip != nil {
-				recordTrip(trip)
+			// The first trip wins: a trip already waiting on an open parallel
+			// call must not be replaced by a later one, or the message would
+			// name whatever repeated last rather than what actually stopped
+			// the response.
+			if trip := loopGuard.observeToolCall(toolNames[ev.ToolCall.ID], args); trip != nil && pendingTrip == nil {
+				pendingTrip = trip
 			}
 			if applyPendingTrip() {
 				break streamEvents
