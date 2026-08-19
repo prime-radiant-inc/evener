@@ -104,13 +104,32 @@ func TestServeModelSwitch_ThreadReadReflectsNewModelWithNoInterveningTurn(t *tes
 
 	ref := appwire.Ref{SourceID: "local", ThreadID: entry.SessionID}.String()
 
-	before, err := client.ThreadRead(ctx, appwire.ThreadReadParams{Ref: ref})
-	if err != nil {
-		t.Fatalf("ThreadRead (before): %v", err)
+	// The daemon publishes status.Model from the session-start event, which the
+	// bridge drains asynchronously with respect to the rendezvous write — the
+	// test's dial can win that race and read an empty ModelProvider (#251). The
+	// premise read must await the published state instead of assuming it. Only
+	// the premise may poll: the post-switch read below stays a single
+	// synchronous read, because immediate visibility is the G2 property under
+	// test.
+	awaitModelProvider := func(want string) {
+		t.Helper()
+		for {
+			read, err := client.ThreadRead(ctx, appwire.ThreadReadParams{Ref: ref})
+			if err != nil {
+				t.Fatalf("ThreadRead: %v", err)
+			}
+			if read.Thread.ModelProvider == want {
+				return
+			}
+			select {
+			case <-ctx.Done():
+				t.Fatalf("thread/read ModelProvider = %q, want %q (awaiting published model): %v",
+					read.Thread.ModelProvider, want, ctx.Err())
+			case <-time.After(25 * time.Millisecond):
+			}
+		}
 	}
-	if before.Thread.ModelProvider != "gpt-initial" {
-		t.Fatalf("initial thread/read ModelProvider = %q, want %q", before.Thread.ModelProvider, "gpt-initial")
-	}
+	awaitModelProvider("gpt-initial")
 
 	// Drive the switch through the REAL wired path: the thread/model/set RPC
 	// handler, which invokes serve.go's SetModelFunc closure.
