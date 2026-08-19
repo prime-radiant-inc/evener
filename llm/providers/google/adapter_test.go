@@ -1807,7 +1807,7 @@ func contentKinds(parts []llm.ContentPart) []string {
 
 func TestComplete_WrapsContextCanceled(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		time.Sleep(5 * time.Second)
+		<-r.Context().Done()
 	}))
 	t.Cleanup(srv.Close)
 

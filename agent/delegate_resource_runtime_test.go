@@ -266,7 +266,11 @@ func TestDelegateResourceRuntime_PostCommitFailureWaitsForPriorDelivery(t *testi
 	go func() {
 		outcomes <- (delegateRuntime{owner: root}).send(context.Background(), fixture.delegateID, "generation two restore failure", 60_000)
 	}()
-	waitForCondition(t, 5*time.Second, "post-commit failure queued behind prior delivery", func() bool {
+	// TRIPWIRE: the generation-two send has no dedicated completion signal -- it
+	// queues behind the prior delivery under c.mu -- so this polls the
+	// aggregate directly. The queue is set synchronously under the lock well
+	// before this returns; 30s only fires on a genuine hang.
+	waitForCondition(t, 30*time.Second, "post-commit failure queued behind prior delivery", func() bool {
 		c.mu.Lock()
 		defer c.mu.Unlock()
 		aggregate := c.durable[fixture.delegateID]
@@ -396,6 +400,12 @@ func TestDelegateResourceRuntime_StopOwnsColdRestoreBeforeSideEffects(t *testing
 // margin; it is dead time only on the green path.
 const parentCloseColdRestoreJoinWindow = time.Second
 
+// parentCloseFailedInlineResultWindow bounds how long a parent Close may take
+// to return without waiting for a failed generation's optional inline result.
+// This is a real assertion (Close must NOT wait), not a hang tripwire: the
+// test fails if Close is still blocked at this window, proving it waited.
+const parentCloseFailedInlineResultWindow = time.Second
+
 // TestDelegateResourceRuntime_ParentCloseWaitsForColdRestoreSideEffects proves the
 // ordering by a POSITIVE observation taken on the closing goroutine, not by
 // watching Close fail to return.
@@ -492,14 +502,14 @@ func TestDelegateResourceRuntime_ParentCloseWaitsForColdRestoreSideEffects(t *te
 			<-closeDone
 			t.Fatal("parent Close reached its in-flight-restore join before the cold restore's side effects ran")
 		}
-	case <-time.After(5 * time.Second):
+	case <-time.After(30 * time.Second): // TRIPWIRE: real signal from a background close; 30s only fires on a genuine hang.
 		<-sendDone
 		<-closeDone
 		t.Fatal("parent Close never reached its in-flight-restore join")
 	}
 	select {
 	case <-closeDone:
-	case <-time.After(5 * time.Second):
+	case <-time.After(30 * time.Second): // TRIPWIRE: real signal from a background close; 30s only fires on a genuine hang.
 		t.Fatal("parent Close did not return after cold-restore side effects drained")
 	}
 	<-sendDone
@@ -537,7 +547,11 @@ func TestDelegateResourceRuntime_ParentCloseDoesNotWaitForFailedInlineResult(t *
 	go func() {
 		sendDone <- (delegateRuntime{owner: root}).send(ctx, fixture.delegateID, "failed generation two", 60_000)
 	}()
-	waitForCondition(t, 5*time.Second, "failed generation queued behind prior delivery", func() bool {
+	// TRIPWIRE: the failed-generation send has no dedicated completion signal --
+	// it queues behind the prior delivery under c.mu -- so this polls the
+	// aggregate directly. The queue is set synchronously under the lock well
+	// before this returns; 30s only fires on a genuine hang.
+	waitForCondition(t, 30*time.Second, "failed generation queued behind prior delivery", func() bool {
 		c.mu.Lock()
 		defer c.mu.Unlock()
 		aggregate := c.durable[fixture.delegateID]
@@ -561,7 +575,7 @@ func TestDelegateResourceRuntime_ParentCloseDoesNotWaitForFailedInlineResult(t *
 	<-closeReachedReconstructionWait
 	select {
 	case <-closeDone:
-	case <-time.After(time.Second):
+	case <-time.After(parentCloseFailedInlineResultWindow):
 		cancel()
 		<-sendDone
 		<-closeDone
@@ -1856,6 +1870,103 @@ func TestDelegateResourceRuntime_CancelledRunCapturesScratchPath(t *testing.T) {
 	metadata := decodeDelegatePacketMetadata(t, *finish.packet)
 	if got := metadata["scratch_path"]; got != "/abs/scratch/dlg_target" {
 		t.Fatalf("cancelled run metadata[scratch_path] = %#v, want the run's scratch dir", got)
+	}
+}
+
+// stoppedDelegateStartCommit builds the started-commit shape of issue #184: a
+// delegate whose durable lastOutcome records an external stop, about to have a
+// self-reported "cancelled" terminal packet applied over it.
+func stoppedDelegateStartCommit(delegateID string) delegateStartCommit {
+	return delegateStartCommit{
+		lease: delegateLease{delegateID: delegateID, generation: 2},
+		plan: delegateUpdatePlan{rows: []delegateSnapshot{{
+			id:         delegateID,
+			generation: 1,
+			resumable:  true,
+			lastOutcome: &delegatestore.Outcome{
+				Status: delegatestore.OutcomeStopped,
+				Reason: "stopped_by_parent",
+			},
+		}}},
+	}
+}
+
+// selfReportedCancelledPacket is the run loop's own terminal packet from an
+// external stop: self-reported as "cancelled" (ctx.Canceled), preserved
+// verbatim as evidence per PR #128.
+func selfReportedCancelledPacket(t *testing.T) delegatestore.TerminalPacket {
+	t.Helper()
+	rawMetadata, err := json.Marshal(delegateTerminalPacketMetadata{
+		Outcome: delegatestore.OutcomeCancelled,
+		Reason:  "cancelled",
+	})
+	if err != nil {
+		t.Fatalf("marshal metadata: %v", err)
+	}
+	rawMessage, err := json.Marshal("partial output gathered before cancellation")
+	if err != nil {
+		t.Fatalf("marshal message: %v", err)
+	}
+	return delegatestore.TerminalPacket{
+		Kind:     delegatestore.PacketTerminalError,
+		Message:  rawMessage,
+		Metadata: rawMetadata,
+	}
+}
+
+// TestDelegateResourceRuntime_StoppedSendSurvivesPacketClobber reproduces
+// issue #184 at the delivery-plan site: stableDelegateFailedSendResult
+// correctly seeds Status from the durable lastOutcome ("stopped"), but the
+// delivery-matching loop then calls populateStableDelegateSendResult, which
+// derives Status from the delegate's self-reported terminal packet
+// ("cancelled"). The durable outcome must win for Status the same way it
+// already does for Reason.
+func TestDelegateResourceRuntime_StoppedSendSurvivesPacketClobber(t *testing.T) {
+	const delegateID = "dlg_target"
+	started := stoppedDelegateStartCommit(delegateID)
+	plans := delegateMutationPlans{
+		deliveries: []delegateDeliveryPlan{{
+			delegateID: delegateID,
+			deliveryID: delegateDeliveryID(delegateID, started.lease.generation),
+			packet:     selfReportedCancelledPacket(t),
+		}},
+	}
+
+	result := stableDelegateFailedSendResult(started, plans, errors.New("construction_failed"))
+
+	if result.Status != jobstore.StatusStopped {
+		t.Fatalf("delegate_send status = %q, want %q (durable stop outcome must survive the packet-derived clobber); reason = %q",
+			result.Status, jobstore.StatusStopped, result.Reason)
+	}
+	if result.Reason != "stopped_by_parent" {
+		t.Fatalf("delegate_send reason = %q, want %q", result.Reason, "stopped_by_parent")
+	}
+}
+
+// TestDelegateResourceRuntime_StoppedSendSurvivesInlineResolutionClobber covers
+// the second clobber site from issue #184: stableSendFailureOutcomeAfterDispatch
+// applies the inline waiter's resolution packet via
+// populateStableDelegateSendResult after the durable outcome already set
+// Status/Reason, so the durable "stopped" status must survive that overwrite
+// too.
+func TestDelegateResourceRuntime_StoppedSendSurvivesInlineResolutionClobber(t *testing.T) {
+	c, _ := newDelegateControllerTestHarness(t, 1, 1)
+	owner := &Session{delegateController: c, delegateRootSessionID: "root-session"}
+	started := stoppedDelegateStartCommit("dlg_target")
+
+	packet := selfReportedCancelledPacket(t)
+	waiter := &delegateInlineWaiter{resolution: make(chan delegateInlineResolution, 1)}
+	waiter.resolution <- delegateInlineResolution{packet: &packet, commit: &delegateToolResultCommit{}}
+
+	outcome := (delegateRuntime{owner: owner}).stableSendFailureOutcomeAfterDispatch(
+		context.Background(), started, waiter, 0, delegateMutationPlans{}, errors.New("construction_failed"), nil)
+
+	if outcome.result.Status != jobstore.StatusStopped {
+		t.Fatalf("delegate_send status = %q, want %q (durable stop outcome must survive the inline-resolution clobber); reason = %q",
+			outcome.result.Status, jobstore.StatusStopped, outcome.result.Reason)
+	}
+	if outcome.result.Reason != "stopped_by_parent" {
+		t.Fatalf("delegate_send reason = %q, want %q", outcome.result.Reason, "stopped_by_parent")
 	}
 }
 

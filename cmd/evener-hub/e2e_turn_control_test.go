@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net"
 	"net/http"
@@ -611,6 +612,14 @@ func startHubStackOnProvider(t *testing.T, providersTOML, model string) hubStack
 	if err := os.WriteFile(filepath.Join(evenerConfigDir, "providers.toml"), []byte(providersTOML), 0o600); err != nil {
 		t.Fatalf("write providers.toml: %v", err)
 	}
+	// The plugin auto-upgrade daemon (on by default) refreshes every seeded
+	// marketplace on hub start, which is a real `git clone` of external GitHub
+	// repos. Tests must not reach the network -- and the clone outlives the
+	// SIGKILL in the cleanup below, racing t.TempDir removal. The cleanup's
+	// marketplaces-dir check is the guard for this isolation.
+	if err := os.WriteFile(filepath.Join(evenerConfigDir, "hub.toml"), []byte("plugin_auto_upgrade = false\n"), 0o600); err != nil {
+		t.Fatalf("write hub.toml: %v", err)
+	}
 
 	workDir := t.TempDir()
 	readable := filepath.Join(workDir, "NOTES.md")
@@ -651,6 +660,17 @@ func startHubStackOnProvider(t *testing.T, providersTOML, model string) hubStack
 		_ = hub.Process.Kill()
 		_ = hub.Wait()
 		_ = hubLog.Close()
+		// A hub under test must never sync marketplaces: the seeded defaults
+		// point at real GitHub repos, so a sync is a network clone of an
+		// external repo -- and Kill above is SIGKILL, which orphans an
+		// in-flight `git clone` child that then races t.TempDir's RemoveAll
+		// ("unlinkat ...: directory not empty"). hub.toml above turns the
+		// auto-upgrade daemon off; this names the failure if that isolation
+		// ever regresses, instead of leaving a teardown flake to diagnose.
+		marketplacesDir := filepath.Join(evenerConfigDir, "plugins", "marketplaces")
+		if _, statErr := os.Stat(marketplacesDir); !errors.Is(statErr, os.ErrNotExist) {
+			t.Errorf("the hub under test synced marketplaces into %s: e2e hubs must not clone external marketplace repos (network in tests, and the orphaned git child races TempDir cleanup)", marketplacesDir)
+		}
 		body, readErr := os.ReadFile(logPath)
 		if readErr == nil {
 			// Daemons are grandchildren the hub deliberately outlives, and

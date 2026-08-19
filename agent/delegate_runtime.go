@@ -824,10 +824,14 @@ func (runtime delegateRuntime) stableSendFailureOutcomeAfterDispatch(ctx context
 		result.TimedOut = true
 		return stableDelegateSendOutcome{result: result}
 	}
+	durableStatus := result.Status
 	durableReason := result.Reason
 	populateStableDelegateSendResult(&result, *resolution.packet)
 	if durableReason != "" {
 		result.Reason = durableReason
+	}
+	if durableStatus != jobstore.StatusRunning {
+		result.Status = durableStatus
 	}
 	result.Action = "completed"
 	result.RunningInBackground = false
@@ -856,10 +860,14 @@ func stableDelegateFailedSendResult(started delegateStartCommit, plans delegateM
 	deliveryID := delegateDeliveryID(started.lease.delegateID, started.lease.generation)
 	for _, delivery := range plans.deliveries {
 		if delivery.delegateID == started.lease.delegateID && delivery.deliveryID == deliveryID {
+			durableStatus := result.Status
 			durableReason := result.Reason
 			populateStableDelegateSendResult(&result, delivery.packet)
 			if durableReason != "" {
 				result.Reason = durableReason
+			}
+			if durableStatus != jobstore.StatusRunning {
+				result.Status = durableStatus
 			}
 			result.Action = "completed"
 			result.RunningInBackground = false

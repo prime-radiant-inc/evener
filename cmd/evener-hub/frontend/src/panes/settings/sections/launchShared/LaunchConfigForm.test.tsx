@@ -11,10 +11,16 @@ import type {
 import { connectionStore } from "../../../../stores/connection";
 import { resetExtensionsStoreForTests } from "../../../../stores/extensions";
 import { Toast } from "../../../../widgets";
+import { resetToastStoreForTests } from "../../../../widgets/toast/store";
 import { LaunchConfigForm } from "./LaunchConfigForm";
 
 afterEach(() => {
   cleanup();
+  // handleSubmit's catch pushes "Save failed" into the module-singleton
+  // toast store regardless of whether <Toast/> is mounted; an earlier
+  // failed-save test's undisplayed toast otherwise outlives cleanup() and
+  // collides with a later test's singular getByText("Save failed").
+  resetToastStoreForTests();
   // The "status self-clear" describe block below calls vi.useFakeTimers()
   // with no per-test afterEach of its own; this file's own beforeEach calls
   // useRealTimers() before every test, but nothing restored real timers

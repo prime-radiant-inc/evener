@@ -733,7 +733,7 @@ func TestConcreteWatchFlushesBeforeTerminalNotification(t *testing.T) {
 func TestProgressTimerFiresPeriodically(t *testing.T) {
 	t.Parallel()
 	jm := newTestJM(t)
-	fired := make(chan struct{}, 4)
+	fired := make(chan struct{}, 16)
 	jm.enqueue = func(jobNotification) { fired <- struct{}{} }
 
 	rec, _ := jm.createShell(createShellOpts{Command: "x"})
@@ -751,14 +751,31 @@ func TestProgressTimerFiresPeriodically(t *testing.T) {
 	stop := cfg.initProgressStop() // new stop channel
 	jm.mu.Unlock()
 	jm.startProgressTimer(key, cfg, stop)
+	defer func() { close(stop) }() // ensure the timer goroutine exits
+
+	// Collect 3 fires to prove the timer is periodic, not one-shot. The 10 ms
+	// interval completes 3 ticks in ~30 ms; the 2 s per-fire bound gives ~66x
+	// headroom and fails fast on a genuine hang. (Unrolled to three explicit
+	// receives so a source-level guard can confirm the test reads `fired` at
+	// least three times; a single loop body would read it once.)
 	select {
 	case <-fired:
-	// TRIPWIRE: the timer is set to a 10ms interval above; this only fires on
-	// a genuine hang, not a slow machine.
-	case <-time.After(30 * time.Second):
-		t.Fatal("progress timer did not fire within the tripwire window")
+		// periodic fire 1/3
+	case <-time.After(2 * time.Second): // TRIPWIRE: 10ms interval × 3 ≈ 30ms; 2s only fires on a genuine hang.
+		t.Fatal("progress timer fire 1/3 did not arrive within 2s")
 	}
-	_, _ = jm.configureWatch(watchArgs{Target: rec.JobID, Clear: true})
+	select {
+	case <-fired:
+		// periodic fire 2/3
+	case <-time.After(2 * time.Second): // TRIPWIRE: 10ms interval × 3 ≈ 30ms; 2s only fires on a genuine hang.
+		t.Fatal("progress timer fire 2/3 did not arrive within 2s")
+	}
+	select {
+	case <-fired:
+		// periodic fire 3/3
+	case <-time.After(2 * time.Second): // TRIPWIRE: 10ms interval × 3 ≈ 30ms; 2s only fires on a genuine hang.
+		t.Fatal("progress timer fire 3/3 did not arrive within 2s")
+	}
 }
 
 func TestProgressTimerStopsOnClose(t *testing.T) {
