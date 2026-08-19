@@ -237,16 +237,16 @@ go build -o "$run/evener-hub" "$repo_root/cmd/evener-hub" || {
 	exit 1
 }
 
-# Isolate. A throwaway $HOME keeps auth-token, credentials.toml,
-# providers.toml, hub.lock, and session history off the real ~/.evener and
-# ~/.local/state/evener entirely (kata av1j).
+# Isolate. A throwaway $HOME keeps hub.lock, auth-token, and session
+# history off the real ~/.local/state/evener, and credentials.toml/
+# providers.toml off the real ~/.config/evener (kata av1j).
 export HOME="$run/home"
-mkdir -p "$HOME/.evener"
+mkdir -p "$HOME/.config/evener" "$HOME/.local/state/evener"
 # Everything that can redirect evener away from the throwaway $HOME, not just
 # the state dir: an operator with any of these exported would otherwise have
 # this hub read or write their real config, cache, run dir or hub token while
 # the header above promises isolation. EVENER_PROVIDERS_CONFIG belongs in this
-# list above all: it outranks $HOME/.evener/providers.toml (cmd/evener-hub/main.go,
+# list above all: it outranks $HOME/.config/evener/providers.toml (cmd/evener-hub/main.go,
 # cmd/evener-hub/internal/launchconfig/env.go), so leaving it set would load the
 # operator's real providers instead of fakellm — a network call and a paid
 # request out of a fixture whose whole point is that neither happens.
@@ -299,7 +299,7 @@ done
 }
 echo "e2e-webui-turn-controls: fakellm up at 127.0.0.1:$fakellm_port (pid $fakellm_pid)" >&2
 
-cat >"$HOME/.evener/providers.toml" <<EOF
+cat >"$HOME/.config/evener/providers.toml" <<EOF
 schema = 1
 default = "fake"
 
@@ -337,7 +337,7 @@ curl -s -o /dev/null "$hub_addr/" || {
 	echo "hub did not answer at $hub_addr" >&2
 	exit 1
 }
-token="$(cat "$HOME/.evener/auth-token")"
+token="$(cat "$HOME/.local/state/evener/auth-token")"
 
 # Ready: the stack is up, so the processes stay up too. Disarm the reaper.
 started_ready=1

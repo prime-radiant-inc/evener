@@ -118,13 +118,15 @@ go build -o "$run/evener-tui" "$repo_root/cmd/evener-tui" || {
 	exit 1
 }
 
-# Isolate. A throwaway $HOME keeps auth-token, credentials.toml,
-# providers.toml, hub.lock, and session history off the real ~/.evener and
-# ~/.local/state/evener entirely (kata av1j: those paths are not overridable
-# individually, so the only safe way to run a second hub is a fresh $HOME).
+# Isolate. A throwaway $HOME keeps hub.lock, auth-token, and session
+# history off the real ~/.local/state/evener, and credentials.toml/
+# providers.toml off the real ~/.config/evener (kata av1j: those paths are
+# not overridable individually, so the only safe way to run a second hub is
+# a fresh $HOME).
 export HOME="$run/home"
-mkdir -p "$HOME/.evener"
+mkdir -p "$HOME/.config/evener" "$HOME/.local/state/evener"
 unset XDG_STATE_HOME
+unset XDG_CONFIG_HOME
 
 echo "==> starting fake429 (retry-after=${retry_after}s)" >&2
 "$run/fake429" 127.0.0.1:0 "$retry_after" >"$run/fake429.log" 2>&1 &
@@ -152,9 +154,10 @@ fake429_addr="127.0.0.1:$fake429_port"
 echo "e2e-ratelimited-provider: fake429 up at $fake429_addr (pid $fake429_pid)" >&2
 
 # Wire providers.toml at fake429's real address, into the isolated hub's own
-# $HOME/.evener — a copy, not a pointer back into the repo tree, so nothing
-# here can leave the checkout dirty even if the hub later rewrites the file.
-sed "s|FAKE429_ADDR|$fake429_addr|" "$fixtures_dir/providers.toml" >"$HOME/.evener/providers.toml"
+# $HOME/.config/evener — a copy, not a pointer back into the repo tree, so
+# nothing here can leave the checkout dirty even if the hub later rewrites
+# the file.
+sed "s|FAKE429_ADDR|$fake429_addr|" "$fixtures_dir/providers.toml" >"$HOME/.config/evener/providers.toml"
 
 echo "==> starting evener-hub" >&2
 "$run/evener-hub" -addr 127.0.0.1:0 -config "$fixtures_dir/hub.toml" -evener "$run/evener" >"$run/hub.log" 2>&1 &
@@ -188,7 +191,7 @@ curl -s -o /dev/null "$hub_addr/" || {
 	echo "hub did not answer at $hub_addr" >&2
 	exit 1
 }
-token="$(cat "$HOME/.evener/auth-token")"
+token="$(cat "$HOME/.local/state/evener/auth-token")"
 
 echo "e2e-ratelimited-provider: hub up at $hub_addr (pid $hub_pid)" >&2
 cat >&2 <<EOF
