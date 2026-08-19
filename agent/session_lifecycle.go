@@ -1037,6 +1037,15 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 	// beside comm's reset, under the lock already held (not via the
 	// clearAskPending helper, which takes s.mu itself and would deadlock).
 	s.askPending = nil
+	// Stream loop guard (issue #94): both fields are scoped to a turn, and
+	// only the clean-completion path in consumeModelStream zeroes the streak
+	// — which a tier-2 hard stop returns before reaching, leaving the streak
+	// at 2 so every later trip, in every later turn, hard-stops instantly
+	// with no tier-1 chance to self-correct. The pending nudge is dropped
+	// rather than carried: it describes a response from a turn that is over,
+	// and delivering it into an unrelated one lands it out of context.
+	s.streamLoopTripStreak = 0
+	s.pendingStreamLoopNudge = ""
 	s.mu.Unlock()
 	s.delegateDeliveryMu.Unlock()
 

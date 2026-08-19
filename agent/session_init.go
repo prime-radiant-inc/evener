@@ -1282,6 +1282,15 @@ func modelFallbackEligible(err error, policy llm.RetryPolicy) bool {
 	if errors.As(err, &unhealthy) {
 		return false
 	}
+	// A loop-guard hard stop indicts the request, not the model: the runaway
+	// came from what was asked, so every fallback entry would reproduce it.
+	// Decided here for the same reason as the verdict above — the wrapped
+	// cause classifies ErrorClassPermanent, which the switch below reports
+	// eligible.
+	var loopStop *streamLoopHardStopError
+	if errors.As(err, &loopStop) {
+		return false
+	}
 	switch llm.Classify(err) {
 	case llm.ErrorClassPermanent, llm.ErrorClassFallback:
 		return true

@@ -3,6 +3,9 @@ package agent
 import (
 	"context"
 	"fmt"
+	"strings"
+
+	"primeradiant.com/evener/agent/events"
 )
 
 // streamLoopGuard detects a runaway SINGLE model response mid-stream (issue
@@ -84,46 +87,121 @@ func newStreamLoopGuard() *streamLoopGuard {
 // observeToolCall records one COMPLETED tool call (StreamEventToolCallEnd --
 // the only point a call's name and arguments are both final) and reports a
 // trip if the running sequence now shows a cycle or has crossed the raw
-// ceiling.
+// ceiling. Cycle is checked first: it is the field's dominant shape (the
+// captured incident was A,B,C x76, and every consecutive-identical detector is
+// structurally blind to it) and fires far earlier than the ceiling ever could.
+// The ceiling is checked second, as the backstop for shapes with no short
+// cycle.
 func (g *streamLoopGuard) observeToolCall(name, args string) *loopTrip {
-	_ = name
-	_ = args
+	g.sigs = append(g.sigs, name+":"+args)
+	if trip := g.checkCycle(); trip != nil {
+		return trip
+	}
+	if len(g.sigs) >= loopGuardRawCeiling {
+		return &loopTrip{
+			Kind:   loopTripCeiling,
+			Detail: fmt.Sprintf("%d tool calls in a single response, past the %d-call ceiling", len(g.sigs), loopGuardRawCeiling),
+		}
+	}
 	return nil
 }
 
 // checkCycle checks whether the most recently appended signature completes a
 // cycle of length k (1..5), repeated loopGuardCycleRepeats times
-// consecutively.
+// consecutively. For each k it looks at exactly the trailing k*R signatures
+// and asks whether they consist of R back-to-back copies of the trailing k
+// -- not "a cycle occurs somewhere in a wider window," which would fire on
+// coincidental repetition inside a long response; the last occurrence must
+// be the (r)th repeat with nothing else interleaved.
 func (g *streamLoopGuard) checkCycle() *loopTrip {
+	n := len(g.sigs)
+	for k := 1; k <= loopGuardCycleMaxLen; k++ {
+		need := k * loopGuardCycleRepeats
+		if n < need {
+			continue
+		}
+		window := g.sigs[n-need:]
+		pattern := window[:k]
+		matched := true
+		for i := k; i < need; i++ {
+			if window[i] != pattern[i%k] {
+				matched = false
+				break
+			}
+		}
+		if matched {
+			return &loopTrip{
+				Kind:   loopTripCycle,
+				Detail: describeCyclePattern(pattern),
+			}
+		}
+	}
 	return nil
 }
 
 // streamLoopNudgeText builds the tier-1 steering message for a stream-loop
-// trip.
+// trip: it names what repeated, wrapped as a SYSTEM-REMINDER to match every
+// other steering message's envelope (agent/task_reminders.go).
 func streamLoopNudgeText(trip *loopTrip) string {
-	_ = trip
-	return ""
+	var what string
+	switch trip.Kind {
+	case loopTripCycle:
+		what = fmt.Sprintf("You just repeated the same sequence of tool calls five times in a row within one response: %s. "+
+			"That response was cut off before it could repeat a sixth time.", trip.Detail)
+	case loopTripCeiling:
+		what = fmt.Sprintf("Your last response made %s. "+
+			"That response was cut off once it crossed the limit.", trip.Detail)
+	}
+	return "<SYSTEM-REMINDER>\n" + what +
+		" This is a signal you are stuck, not a punishment. Stop and think about why your current approach is not working, " +
+		"then either try something different or report what you tried and what failed.\n" +
+		"</SYSTEM-REMINDER>"
 }
 
 // streamLoopHardStopMessage builds the tier-2 error message when a second
-// consecutive response trips the guard.
+// consecutive response trips the guard: unlike the tier-1 nudge, there is no
+// next response to read it, so it explains the failure for the turn's error
+// surface (emitTurnFailure) rather than steering a model that already had
+// its one chance to self-correct.
 func streamLoopHardStopMessage(trip *loopTrip) string {
-	_ = trip
-	return ""
+	return fmt.Sprintf("loop guard: two responses in a row were cut off for the same reason (%s: %s); stopping rather than nudging indefinitely", trip.Kind, trip.Detail)
 }
 
 // describeCyclePattern names the repeated call(s) for the nudge/hard-stop
-// message.
+// message, e.g. "manage_worktree, task_list, communicate" for a k=3 cycle.
+// Signatures are "name:args"; only the name is surfaced -- the arguments are
+// often large or provider-internal and the tool name is what the model needs
+// to recognize it is repeating itself.
 func describeCyclePattern(pattern []string) string {
-	_ = pattern
-	return ""
+	names := make([]string, len(pattern))
+	for i, sig := range pattern {
+		name, _, found := strings.Cut(sig, ":")
+		if !found {
+			name = sig
+		}
+		names[i] = name
+	}
+	return strings.Join(names, ", ")
 }
 
 // deliverPendingStreamLoopNudge reads and clears s.pendingStreamLoopNudge and,
-// if one was pending, appends it as a steering turn.
+// if one was pending, appends it as a steering turn. injectPostToolSteering
+// (session_tool_round.go) is the only call site: both detectors key off
+// StreamEventToolCallEnd, so a trip is only ever possible once at least one
+// tool call has completed, which means the round always has tool calls and
+// always reaches that function. Delivering there positions the nudge after the
+// tool results, so it never lands between a tool_use turn and its tool_result
+// -- providers that require them adjacent would reject the next request.
 func (s *Session) deliverPendingStreamLoopNudge(ctx context.Context) error {
-	_ = ctx
-	return nil
+	s.mu.Lock()
+	nudge := s.pendingStreamLoopNudge
+	s.pendingStreamLoopNudge = ""
+	s.mu.Unlock()
+	if nudge == "" {
+		return nil
+	}
+	return s.withResponseSideEffects(ctx, func() {
+		s.emit(events.EventLoopDetection, events.LoopDetectionData{Message: nudge})
+		s.appendSteeringTurn(nudge, events.SteeringKindStreamLoop)
+	})
 }
-
-var _ = fmt.Sprintf

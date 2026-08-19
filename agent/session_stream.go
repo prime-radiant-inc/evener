@@ -242,6 +242,66 @@ func (s *Session) consumeModelStream(ctx context.Context, req llm.Request, st ll
 	assistantStarted := false
 	finished := false
 
+	// Stream loop guard (issue #94): bounds this one response, since nothing
+	// else in the stack does — see session_stream_loop_guard.go for the
+	// detectors. guardTripped and hardStopErr are read after the loop to
+	// decide the streak reset and the tier-2 hard-stop return respectively.
+	loopGuard := newStreamLoopGuard()
+	guardTripped := false
+	var hardStopErr error
+	// openToolCalls tracks tool-call IDs that have started but not yet
+	// ended. A trip detected while ANY call is open (e.g. real providers
+	// interleave parallel tool calls' deltas across multiple IDs) must not
+	// act immediately — forcing a finish would freeze that other call's
+	// arguments truncated into the response, exactly the "cut mid-arguments"
+	// the spec rules out. pendingTrip remembers the first trip detected
+	// until every open call closes, rather than relying on the detectors to
+	// re-trip later: a parallel call's own signature can break a cycle
+	// pattern that had already matched, so re-detection is not guaranteed.
+	openToolCalls := map[string]bool{}
+	var pendingTrip *loopTrip
+	recordTrip := func(trip *loopTrip) {
+		if pendingTrip == nil {
+			pendingTrip = trip
+		}
+	}
+	// applyPendingTrip performs the two-tier action for pendingTrip once no
+	// tool call is in flight — the only point a forced finish is a legal
+	// boundary rather than a cut. Returns true when it acted, meaning the
+	// caller must stop consuming the stream (tier 1 sets finished and expects
+	// the caller to break the labeled event loop; tier 2 leaves hardStopErr
+	// for the early return below).
+	applyPendingTrip := func() bool {
+		if pendingTrip == nil || len(openToolCalls) > 0 {
+			return false
+		}
+		trip := pendingTrip
+		guardTripped = true
+		s.mu.Lock()
+		s.streamLoopTripStreak++
+		streak := s.streamLoopTripStreak
+		s.mu.Unlock()
+		if streak >= 2 {
+			// Wrapped in streamLoopHardStopError so modelFallbackEligible can
+			// exclude it by type: the wrapped cause classifies
+			// ErrorClassPermanent, which the fallback chain otherwise reads as
+			// "try the next model" — re-running the exact request that
+			// produced the runaway against every configured fallback.
+			hardStopErr = &streamLoopHardStopError{cause: llm.NewPermanentStreamError(req.Provider, streamLoopHardStopMessage(trip), nil)}
+			return true
+		}
+		s.mu.Lock()
+		s.pendingStreamLoopNudge = streamLoopNudgeText(trip)
+		s.mu.Unlock()
+		reason := llm.FinishReasonStop
+		if len(toolArgs) > 0 {
+			reason = llm.FinishReasonToolCalls
+		}
+		acc.Process(llm.StreamEvent{Type: llm.StreamEventFinish, FinishReason: &llm.FinishReason{Reason: reason, Raw: "loop_guard:" + trip.Kind.String()}})
+		finished = true
+		return true
+	}
+
 	// firstContent/lastContent bound the content-event window — text, tool-arg
 	// (delta or end), and reasoning content only, never wall-clock attempt
 	// duration (spec: SSE keep-alives reset the read timer, so a stalled
@@ -326,6 +386,7 @@ func (s *Session) consumeModelStream(ctx context.Context, req llm.Request, st ll
 		emitAssistantDelta(message[len(prev):])
 	}
 
+streamEvents:
 	for ev := range st.Events() {
 		acc.Process(ev)
 		switch ev.Type {
@@ -353,6 +414,7 @@ func (s *Session) consumeModelStream(ctx context.Context, req llm.Request, st ll
 			if _, ok := toolArgs[ev.ToolCall.ID]; !ok {
 				toolArgs[ev.ToolCall.ID] = &strings.Builder{}
 			}
+			openToolCalls[ev.ToolCall.ID] = true
 		case llm.StreamEventToolCallDelta:
 			s.noteParentJobActivity(jobPhaseModelStreaming)
 			if ev.ToolCall == nil || ev.ToolCall.ID == "" {
@@ -388,6 +450,17 @@ func (s *Session) consumeModelStream(ctx context.Context, req llm.Request, st ll
 			if toolNames[ev.ToolCall.ID] == s.resultToolName() {
 				emitCommunicatePreview(ev.ToolCall.ID)
 			}
+			delete(openToolCalls, ev.ToolCall.ID)
+			args := ""
+			if b := toolArgs[ev.ToolCall.ID]; b != nil {
+				args = b.String()
+			}
+			if trip := loopGuard.observeToolCall(toolNames[ev.ToolCall.ID], args); trip != nil {
+				recordTrip(trip)
+			}
+			if applyPendingTrip() {
+				break streamEvents
+			}
 		case llm.StreamEventFinish:
 			finished = true
 		case llm.StreamEventError:
@@ -397,6 +470,16 @@ func (s *Session) consumeModelStream(ctx context.Context, req llm.Request, st ll
 			err := llm.NewStreamError(req.Provider, "stream error", nil)
 			return sessionModelResponse{}, observe(err), err
 		}
+	}
+
+	if hardStopErr != nil {
+		// Tier 2: a second consecutive trip. Return directly rather than
+		// falling into the normal finished-response path below — there is no
+		// well-formed response to salvage into a "success" here, only a
+		// non-retryable error that ends the turn (llm.Classify treats
+		// NewPermanentStreamError as ErrorClassPermanent, so RetryStream does
+		// not spend its budget reproducing the same runaway).
+		return sessionModelResponse{}, observe(hardStopErr), hardStopErr
 	}
 
 	if !finished {
@@ -416,6 +499,15 @@ func (s *Session) consumeModelStream(ctx context.Context, req llm.Request, st ll
 	}
 	if resp.Model == "" {
 		resp.Model = req.Model
+	}
+	if !guardTripped {
+		// A clean completion breaks the streak: two trips only escalate to a
+		// hard stop when they are consecutive — a session that occasionally
+		// loops but always recovers must not be punished for a trip two
+		// rounds ago.
+		s.mu.Lock()
+		s.streamLoopTripStreak = 0
+		s.mu.Unlock()
 	}
 	return sessionModelResponse{Response: *resp, StreamedAssistant: streamedAssistant}, observe(nil), nil
 }

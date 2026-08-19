@@ -109,16 +109,18 @@ func turnIndexOfSteeringKind(history []schema.Turn, kind string) int {
 	return -1
 }
 
-// countToolResults counts tool-result content parts across every tool-results
-// turn in history.
-func countToolResults(history []schema.Turn) int {
+// countToolResults counts tool-result content parts whose call ID carries the
+// given round prefix, across every tool-results turn in history. The prefix
+// scopes the count to one scripted round, so the recovery round's own
+// communicate result never inflates it.
+func countToolResults(history []schema.Turn, idPrefix string) int {
 	n := 0
 	for _, turn := range history {
 		if turn.Kind != schema.TurnToolResults {
 			continue
 		}
 		for _, part := range turn.Message.Content {
-			if part.Kind == llm.ContentToolResult {
+			if part.Kind == llm.ContentToolResult && part.ToolResult != nil && strings.HasPrefix(part.ToolResult.ToolCallID, idPrefix+"_") {
 				n++
 			}
 		}
@@ -154,7 +156,7 @@ func TestProcessInput_StreamLoopGuard_TripDispatchesNudgesAndRecovers(t *testing
 
 	// The 15 calls that streamed before the cut must have dispatched, not been
 	// discarded: a guard that threw the response away would leave zero.
-	if got := countToolResults(history); got != 15 {
+	if got := countToolResults(history, "r1"); got != 15 {
 		t.Fatalf("dispatched tool results = %d, want 15 (the calls streamed before the trip, all of them, and none of the 5 the fixture sent afterwards)", got)
 	}
 
@@ -162,17 +164,25 @@ func TestProcessInput_StreamLoopGuard_TripDispatchesNudgesAndRecovers(t *testing
 	if steerIdx < 0 {
 		t.Fatal("no SteeringKindStreamLoop turn in history: the trip's nudge never reached the model")
 	}
-	lastResultsIdx := -1
+	// The nudge must sit after the tripped round's OWN results, never between
+	// the tool_use turn that carried those calls and their tool_result turn:
+	// providers that require the two adjacent would reject the next request.
+	tripResultsIdx := -1
 	for i, turn := range history {
-		if turn.Kind == schema.TurnToolResults {
-			lastResultsIdx = i
+		if turn.Kind != schema.TurnToolResults {
+			continue
+		}
+		for _, part := range turn.Message.Content {
+			if part.Kind == llm.ContentToolResult && part.ToolResult != nil && strings.HasPrefix(part.ToolResult.ToolCallID, "r1_") {
+				tripResultsIdx = i
+			}
 		}
 	}
-	if lastResultsIdx < 0 {
-		t.Fatal("no TurnToolResults turn in history")
+	if tripResultsIdx < 0 {
+		t.Fatal("no TurnToolResults turn carries the tripped round's results")
 	}
-	if steerIdx < lastResultsIdx {
-		t.Fatalf("stream-loop steering turn at index %d, tool results at %d: the nudge must land AFTER the tool results, never between a tool_use turn and its tool_result", steerIdx, lastResultsIdx)
+	if steerIdx < tripResultsIdx {
+		t.Fatalf("stream-loop steering turn at index %d, tripped round's tool results at %d: the nudge must land AFTER the tool results, never between a tool_use turn and its tool_result", steerIdx, tripResultsIdx)
 	}
 
 	nudge := history[steerIdx].Message.Text()
