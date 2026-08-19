@@ -133,6 +133,35 @@ func TestFakeClockAfterFuncStop(t *testing.T) {
 	}
 }
 
+// TestFakeClockDrainWaitsForDispatchedAfterFunc pins Drain's contract: Advance
+// dispatches an AfterFunc via `go fn()`, so it returns before the callback runs;
+// Drain blocks until that goroutine has completed. Without Drain a negative
+// assertion ("the callback did not run") can only rely on a wall-clock sleep.
+func TestFakeClockDrainWaitsForDispatchedAfterFunc(t *testing.T) {
+	c := NewFakeClock()
+	done := make(chan struct{})
+	c.AfterFunc(time.Second, func() { close(done) })
+	c.Advance(time.Second)
+	// Advance has returned; the callback goroutine may not have started. Drain
+	// must block until it has completed, so the channel close is observable
+	// without any wall-clock wait.
+	c.Drain()
+	select {
+	case <-done:
+	default:
+		t.Fatal("Drain returned before the AfterFunc goroutine completed")
+	}
+}
+
+// TestFakeClockDrainNoPendingAfterFunc pins the no-op case: Drain returns
+// immediately when no AfterFunc goroutine is outstanding.
+func TestFakeClockDrainNoPendingAfterFunc(t *testing.T) {
+	c := NewFakeClock()
+	c.Drain() // must not block
+	c.Advance(5 * time.Second)
+	c.Drain() // must not block
+}
+
 func TestFakeClockBlockUntilCounts(t *testing.T) {
 	c := NewFakeClock()
 	if n := c.BlockedCount(); n != 0 {

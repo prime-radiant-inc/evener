@@ -24,8 +24,17 @@ beforeEach(() => {
 
 afterEach(() => {
   cleanup();
-  vi.useRealTimers();
+  // restoreAllMocks() before useRealTimers(), not after: "Details owns a
+  // clock after hydration" spies on globalThis.setInterval WHILE fake
+  // timers are active, so vi.restoreAllMocks() (which restores a spy to
+  // whatever it captured as "original" at spyOn time - here, the FAKE
+  // setInterval) must run before useRealTimers() gets the last word on what
+  // globalThis.setInterval actually is. Reversed, restoreAllMocks() runs
+  // last and reinstalls that stale fake implementation, so every timer
+  // registered afterward - including testing-library's own real-timer
+  // waitFor() polling - silently never fires for the rest of this file.
   vi.restoreAllMocks();
+  vi.useRealTimers();
   // The beforeEach above only resets threadsStore BEFORE each test. Several
   // tests here render SessionPanelPane against a real connected FakeClient,
   // which calls ensureThread()/the mutation runtime for real - without this,

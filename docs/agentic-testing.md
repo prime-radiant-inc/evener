@@ -151,7 +151,7 @@ authority (step 5 above reads the same line, and a second copy in a
 `hub.port` file would be a second thing to go stale), and `$run/hub.pid` is
 what lets a shell that never backgrounded the hub still tear it down by pid
 instead of by `pkill -f`. Those are the same two files
-`scripts/e2e-ratelimited-provider.sh` writes so its `--stop` works from a
+`scripts/e2e/e2e-ratelimited-provider.sh` writes so its `--stop` works from a
 fresh invocation. `tail -1` on the log matters: a hub restarted mid-run
 (rebuild matrix item 2) appends a second `listening on` line and the last one
 is the live one.
@@ -237,19 +237,19 @@ check takes. A real provider will not reliably do that on demand.
 `/v1/models` normally (so launch-check and model discovery succeed) and
 429s every completion request with a configurable `Retry-After`.
 
-`scripts/e2e-ratelimited-provider.sh` wraps it around the Setup checklist
+`scripts/e2e/e2e-ratelimited-provider.sh` wraps it around the Setup checklist
 above — same HOME isolation, same kernel-assigned ports, never a real
 provider credential — and points the isolated hub's `providers.toml` at it:
 
 ```bash
-scripts/e2e-ratelimited-provider.sh --retry-after 5
+scripts/e2e/e2e-ratelimited-provider.sh --retry-after 5
 ```
 
 prints the run directory, fake429's address, and the exact `evener-tui
 --hub-addr ... --auth-token ... --no-auto-start-hub` command to attach.
 Spawn a session with `"model":"ratelimited/fake-model"` (see "Spawning a
 session via the REST shim" below) and every completion call it makes will
-429. Tear down with `scripts/e2e-ratelimited-provider.sh --stop RUN_DIR`
+429. Tear down with `scripts/e2e/e2e-ratelimited-provider.sh --stop RUN_DIR`
 (kills fake429 and the hub, removes the run directory).
 
 ## Hermetic workdir per scenario
@@ -1058,5 +1058,5 @@ file a kata. Don't try to drive past the gate from the scenario.
 - **TUI debug stderr** (when launched with `--debug`): redirect via `tmux new-session -d -s "$TMUX_SESSION" "$run/evener-tui --hub-addr 127.0.0.1:$PORT --debug 2>$run/tui-stderr.log"`
 - **Browser console capture**: `~/.cache/superpowers/browser/<date>/<session>/<NNN>-<action>-console.txt`
 - **Kata CLI**: `~/go/bin/kata` (see `kata create --help`)
-- **Rate-limited provider for retry/liveness checks**: `scripts/e2e-ratelimited-provider.sh` — see "Testing against a rate-limited provider" above.
+- **Rate-limited provider for retry/liveness checks**: `scripts/e2e/e2e-ratelimited-provider.sh` — see "Testing against a rate-limited provider" above.
 - **Browser verification ownership**: serialize the shared browser to one designated verifier, or use a genuinely distinct browser server/process owned by the run. Never call `set_profile`; see "Driving the web UI" above and `docs/conventions/agent-fleets.md`.

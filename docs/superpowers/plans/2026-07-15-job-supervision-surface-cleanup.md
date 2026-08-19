@@ -69,7 +69,7 @@ AppWire inspection found no job-control RPC or alternate tool-dispatch surface. 
   - Persist `EventJobFinished`, flush output, and only then arm notification across live finalization, `NotifyNotArmed` restart re-arm, and runtime-lost reconciliation.
 - Modify `agent/job_output_digest.go`
   - Delete only line-window helpers used solely by `job_read_output`; retain the inline shell digest.
-- Modify `scripts/run-fuzz.sh`
+- Modify `scripts/fuzz/run-fuzz.sh`
   - Replace removed job-reader fuzz registrations with transcript/supervision targets and keep retained shell-digest coverage correctly anchored.
 - Modify `agent/prompts/sections/background-jobs.md` and `agent/prompts/sections/delegation.md`
   - Teach notification-first supervision, `job_status`, transcript refs, and bounded cursor reads.
@@ -403,7 +403,7 @@ surface the existing delegate not-resumable reason for orientation."
 - Modify: `agent/internal/tool/definitions.go`
 - Modify: `agent/session_tools_jobs.go`
 - Modify: `agent/job_output_digest.go`
-- Modify: `scripts/run-fuzz.sh`
+- Modify: `scripts/fuzz/run-fuzz.sh`
 - Modify: `agent/job_watch.go`
 - Modify: `agent/session_config.go`
 - Modify: `agent/subagents.go`
@@ -700,7 +700,7 @@ In mixed suites, remove only obsolete reader cases. Rewrite `FuzzShellDigestRead
 
 Rename `FuzzJobReadRecoveryGrant` to `FuzzJobTranscriptRecoveryGrant` in the new `agent/job_transcript_recovery_grant_fuzz_test.go`. Replace head/tail/line/grep/wait selectors with default/cursor/range/max-byte programs; retain the deterministic differential across direct-owner, durable observer-grant, live descendant, and closed-owner fallback reads. Future-match behavior remains covered by existing `job_watch` fuzz targets, not transcript grep.
 
-Update these `scripts/run-fuzz.sh` entries exactly and remove the old names:
+Update these `scripts/fuzz/run-fuzz.sh` entries exactly and remove the old names:
 
 ```bash
 "native:agent:.:FuzzJobTranscriptProjectionSeedCoverage::session_tools_transcript.go#projectJobTranscriptSnapshot"
@@ -746,7 +746,7 @@ git add -- \
   agent/cov_s1_output_digest_test.go agent/job_output_digest_seed_coverage_fuzz_test.go \
   agent/job_transcript_projection_seed_coverage_fuzz_test.go \
   agent/job_read_recovery_grant_fuzz_test.go agent/job_transcript_recovery_grant_fuzz_test.go \
-  scripts/run-fuzz.sh
+  scripts/fuzz/run-fuzz.sh
 git commit -m "feat(agent): add bounded cursor job transcript reads
 
 Route shell job evidence through read_transcript with explicit lifetime byte
@@ -1764,7 +1764,7 @@ Expected: PASS with no provider credentials, network access, quota, live model b
 ```bash
 rg -n 'DefJobReadOutput|func jobReadOutputTool|type jobReadOutputResult' agent
 rg -n 'job_read_output' agent/prompts agent/internal/tool/definitions.go internal/bundled/plugins/coordinator-workflow/agents tools/tool-fluency/probes tools/tool-fluency/README.md docs/job-control.md docs/agentic-testing.md docs/architecture.md docs/skills/tool-fluency/SKILL.md docs/subagent-management/08-standalone-llm-calls.md docs/web-ui/ux-and-implementation-plan.md test/scenarios
-rg -n 'FuzzJobOutputDigestSeedCoverage|FuzzJobtoolsExec|FuzzJobReadRecoveryGrant' scripts/run-fuzz.sh
+rg -n 'FuzzJobOutputDigestSeedCoverage|FuzzJobtoolsExec|FuzzJobReadRecoveryGrant' scripts/fuzz/run-fuzz.sh
 git diff --check
 git status --short
 ```

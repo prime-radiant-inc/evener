@@ -1,7 +1,7 @@
 # 8.6 — Coverage measurement — implementation plan
 
 **Status:** PLANNED. **Date:** 2026-06-28. **Branch:** `wip/fuzzing-toolkit`.
-**Charter:** [`fuzzing-toolkit-design.md`](../fuzzing-toolkit-design.md) §8.6 (roadmap item D). **Depends on:** Phases 0–5 (built) — specifically `scripts/run-fuzz.sh` (the `TARGETS` array, lines 22–33), the `make fuzz` / `fuzz-nightly` wiring (`Makefile:101-107`), `GO_MODULES` (`Makefile:79`), and the existing PR gate `.github/workflows/ci.yml`.
+**Charter:** [`fuzzing-toolkit-design.md`](../fuzzing-toolkit-design.md) §8.6 (roadmap item D). **Depends on:** Phases 0–5 (built) — specifically `scripts/fuzz/run-fuzz.sh` (the `TARGETS` array, lines 22–33), the `make fuzz` / `fuzz-nightly` wiring (`Makefile:101-107`), `GO_MODULES` (`Makefile:79`), and the existing PR gate `.github/workflows/ci.yml`.
 
 > **Decisions folded in (Jesse, 2026-06-28) — settled, do not re-litigate.** The eventual goal is **PERFECT (100%) coverage**; every primary metric must therefore be drivable to 100%.
 > 1. **Build the focus-set machinery now** (do *not* defer). Attribute coverage only to the decode/parse functions actually under test per target, so each surface's % is meaningful and can be driven to 100%. Whole-package % stays as a secondary visibility number only.
@@ -34,7 +34,7 @@ mode: set
 ```
 
 - **`-run '^Fuzz…$'` with NO `-fuzz`** runs the fuzz target as an ordinary test: it executes the seed corpus + saved `testdata/fuzz` entries as subtests, deterministically, and — because it is a normal test run — writes a normal `-coverprofile`. This is exactly the corpus `make fuzz` already replays (`Makefile:101-102`), now instrumented.
-- **`-fuzz '^Fuzz…$'`** is the *search* mode (`scripts/run-fuzz.sh:62`). Its coverage is libFuzzer-style internal instrumentation used to steer mutation; it is **not** emitted as a consumable per-line `-coverprofile`. We deliberately do **not** use `-fuzz` for measurement. We measure the *committed corpus*. Because discovered coverage-expanding inputs are committed into `testdata/fuzz` (decision 3, per 8.4/8.7), growing the corpus is exactly how the focus-set % is driven up toward 100 — and the gain is captured the moment those inputs are committed, reproducibly from a clean checkout.
+- **`-fuzz '^Fuzz…$'`** is the *search* mode (`scripts/fuzz/run-fuzz.sh:62`). Its coverage is libFuzzer-style internal instrumentation used to steer mutation; it is **not** emitted as a consumable per-line `-coverprofile`. We deliberately do **not** use `-fuzz` for measurement. We measure the *committed corpus*. Because discovered coverage-expanding inputs are committed into `testdata/fuzz` (decision 3, per 8.4/8.7), growing the corpus is exactly how the focus-set % is driven up toward 100 — and the gain is captured the moment those inputs are committed, reproducibly from a clean checkout.
 - **`-coverpkg`** is required because by default `go test -coverprofile` attributes coverage only to the package under test. For most targets the test lives *in* its SUT package (`package appwire`, `package llm`, `package main` for the hub), so default attribution already lands on the SUT. The exception is **`FuzzToolArgsValidate`** (`agent/tool_args_fuzz_test.go`, `package agent`), whose real SUT is the validate seam in `agent/internal/tool` (verified: that package exists — `agent/internal/tool/{definitions,registry,apply_patch}.go`); it needs `-coverpkg=./internal/tool,.` to attribute coverage to the tool package rather than to `agent` alone. The focus-set filter (§2.4) then narrows that profile to the validate function(s).
 
 **go.work does not span modules** (design §2.5; `go test ./...` is per-module). Every command therefore `cd`s into the target's go.work module before running. The 10 targets span three modules — `.` (root), `llm`, `agent` (not `auth`/`fuzz`, which hold no targets). The per-module commands, one per `run-fuzz.sh` `TARGETS` entry:
@@ -60,18 +60,18 @@ mode: set
 
 Two pieces, mirroring the existing "small Go lint tool driven by a Makefile target" pattern (`cmd/evener-namingcheck`, `cmd/evener-internalcheck`, `cmd/evener-docscheck`):
 
-- **`scripts/fuzz-coverage.sh`** — orchestrator. Enumerates targets, runs each module's coverage command into a temp profile dir, then invokes the reporter. ~60–90 LoC.
+- **`scripts/fuzz/fuzz-coverage.sh`** — orchestrator. Enumerates targets, runs each module's coverage command into a temp profile dir, then invokes the reporter. ~60–90 LoC.
 - **`cmd/evener-fuzzcov/main.go`** (root module) — reporter. Parses the per-target profiles, computes each target's **focus-set %** and its whole-package %, runs the gap-map scan, enforces the **ratchet** against the committed floors file, prints the report, and (with `--check`) exits non-zero on a regression / gap breach. ~140–200 LoC (larger than the original estimate because the focus-set machinery and ratchet are now built, not deferred).
 
 A Go reporter (not awk) because it has to parse `mode: set` blocks, resolve focus functions to line ranges via `go/parser`, roll statements up, and walk the source tree for the gap scan — all tedious and error-prone in shell, and the repo already standardises on Go for this class of check.
 
 ### 2.2 One source of truth for the target list — plus the focus set
 
-`TARGETS` lives in `scripts/run-fuzz.sh` (lines 22–33) as `"module:package-relpath:FuzzName"` (verified; the parse at line 59 is `IFS=: read -r module pkg name`). To avoid a second drifting copy (the design's anti-duplication rule), **extend that one array and re-expose it**:
+`TARGETS` lives in `scripts/fuzz/run-fuzz.sh` (lines 22–33) as `"module:package-relpath:FuzzName"` (verified; the parse at line 59 is `IFS=: read -r module pkg name`). To avoid a second drifting copy (the design's anti-duplication rule), **extend that one array and re-expose it**:
 
 1. Add two optional trailing fields: `coverpkg` and `focus` → `"module:pkg:name[:coverpkg[:focus]]"`. `run-fuzz.sh`'s parse becomes `IFS=: read -r module pkg name cover focus` — backward compatible (3-field entries leave `cover`/`focus` empty; `run-fuzz.sh` ignores both). `coverpkg` defaults to `pkg`; only `FuzzToolArgsValidate` sets it (`:./internal/tool,.`). `focus` defaults to "whole package" (every `.go` file in the SUT package) when empty.
 2. The `focus` field is a `;`-separated list of focus specs, each either a file (`jsonrpc.go`, relative to the SUT package) or a function (`jsonrpc.go#decodeMessage`). The reporter resolves function specs to line ranges with `go/parser` and filters coverage blocks to the focus files/ranges.
-3. Add a `--list` flag to `run-fuzz.sh` that prints the `TARGETS` array verbatim and exits. `fuzz-coverage.sh` consumes `scripts/run-fuzz.sh --list` instead of redefining the list.
+3. Add a `--list` flag to `run-fuzz.sh` that prints the `TARGETS` array verbatim and exits. `fuzz-coverage.sh` consumes `scripts/fuzz/run-fuzz.sh --list` instead of redefining the list.
 
 This keeps the campaign runner and the coverage runner reading the identical target set; adding a target in one place updates both. Because `:` is the field separator and `coverpkg` values can contain `,` but never `:`, no quoting hazard is introduced; the `focus` list uses `;` internally for the same reason.
 
@@ -118,7 +118,7 @@ The honest part. Build the universe of "parse surfaces" and subtract the fuzzed 
 - **Fuzzed set:** the packages that appear (with ≥1 covered statement) in the merged profile.
 - **Gap = Universe − Fuzzed.** Print each gap package with the signature that put it in the universe, so the reader can judge whether it warrants a target. This is the artifact that makes "fuzz the whole codebase" auditable: it names every parse package no corpus touches.
 
-**Ignore-list (decision 5).** The reporter reads a committed `scripts/fuzzcov-ignore.txt`. Each line is one package import path **followed by a reason comment** (`<import-path>  # <reason>`); the reporter requires the reason and errors on a bare entry, so the file is reviewed like code. Used for genuinely out-of-scope packages (test helpers, generated code). Entries keep the gap map signal, not noise.
+**Ignore-list (decision 5).** The reporter reads a committed `scripts/coverage/fuzzcov-ignore.txt`. Each line is one package import path **followed by a reason comment** (`<import-path>  # <reason>`); the reporter requires the reason and errors on a bare entry, so the file is reviewed like code. Used for genuinely out-of-scope packages (test helpers, generated code). Entries keep the gap map signal, not noise.
 
 ## 3. The `make fuzz-coverage` target
 
@@ -126,20 +126,20 @@ The honest part. Build the universe of "parse surfaces" and subtract the fuzzed 
 # fuzz-coverage replays every fuzz target's COMMITTED corpus under -coverprofile
 # (no -fuzz, so deterministic), computes each target's FOCUS-SET coverage %
 # (primary, drivable to 100%) plus its whole-package % (secondary), enforces the
-# no-regression ratchet against scripts/fuzzcov-floors.txt, and prints the gap
+# no-regression ratchet against scripts/coverage/fuzzcov-floors.txt, and prints the gap
 # map (decode/parse packages with zero fuzz coverage). Advisory by default; pass
 # CHECK=1 to fail on a ratchet regression or a gap breach (see §4).
 fuzz-coverage:
-	@scripts/fuzz-coverage.sh $(FUZZCOV_ARGS)
+	@scripts/fuzz/fuzz-coverage.sh $(FUZZCOV_ARGS)
 ```
 
-Mirrors the existing `fuzz-nightly` wiring (`Makefile:106-107`, `fuzz-nightly: ; @scripts/run-fuzz.sh $(FUZZ_ARGS)`). Add `fuzz-coverage` to the `.PHONY` line (`Makefile:1`). It is **not** added to `make test`/`test-race` initially — it runs on demand locally. The `cmd/evener-fuzzcov` binary, being a normal package under the root module, is already gated by `make test`/`vet`/`lint` like the other `cmd/evener-*check` tools.
+Mirrors the existing `fuzz-nightly` wiring (`Makefile:106-107`, `fuzz-nightly: ; @scripts/fuzz/run-fuzz.sh $(FUZZ_ARGS)`). Add `fuzz-coverage` to the `.PHONY` line (`Makefile:1`). It is **not** added to `make test`/`test-race` initially — it runs on demand locally. The `cmd/evener-fuzzcov` binary, being a normal package under the root module, is already gated by `make test`/`vet`/`lint` like the other `cmd/evener-*check` tools.
 
 ## 4. Gating — ratchet + gap floor; advisory now, blocking via `ci.yml` later
 
-Per decision 4 there is **no nightly**; enforcement is the local tool now and the existing PR gate later. Two enforceable conditions, both surfaced by `make fuzz-coverage CHECK=1` (wired as `scripts/fuzz-coverage.sh --check`, which makes the reporter exit non-zero on a breach; without it the report prints and exits 0):
+Per decision 4 there is **no nightly**; enforcement is the local tool now and the existing PR gate later. Two enforceable conditions, both surfaced by `make fuzz-coverage CHECK=1` (wired as `scripts/fuzz/fuzz-coverage.sh --check`, which makes the reporter exit non-zero on a breach; without it the report prints and exits 0):
 
-1. **No-regression ratchet on the focus-set % (decision 2).** A committed floors file `scripts/fuzzcov-floors.txt` maps each target → its current focus-set % floor. `--check` fails if any target's focus % drops below its floor. The floors are a **ratchet**: a `--bless` mode rewrites each floor *upward* to the current measured % (and refuses to lower any floor), so as the corpus grows (decision 3) and focus % climbs toward 100, the floor climbs with it and locks the gain in. Raising floors over time is the mechanism that drives the campaign to perfect coverage. The absolute focus % is always displayed next to the floor so progress toward 100 is visible.
+1. **No-regression ratchet on the focus-set % (decision 2).** A committed floors file `scripts/coverage/fuzzcov-floors.txt` maps each target → its current focus-set % floor. `--check` fails if any target's focus % drops below its floor. The floors are a **ratchet**: a `--bless` mode rewrites each floor *upward* to the current measured % (and refuses to lower any floor), so as the corpus grows (decision 3) and focus % climbs toward 100, the floor climbs with it and locks the gain in. Raising floors over time is the mechanism that drives the campaign to perfect coverage. The absolute focus % is always displayed next to the floor so progress toward 100 is visible.
 2. **Gap floor (decision 4).** Fail if any package in the gap map (minus the ignore-list) is non-empty — i.e. a new parse package landed with no fuzz target. This is the highest-value, least-ambiguous gate: "did anyone add a decoder without fuzzing it."
 
 **Per-target absolute focus % stays advisory** (decision 1/4): the report shows it climbing to 100, but no fixed threshold blocks. The *ratchet* (it may not go down) and the *gap floor* are the blocking conditions.
@@ -165,11 +165,11 @@ All four prior open questions are settled by Jesse's decisions (top of file). Re
 1. `run-fuzz.sh`: add the optional trailing `coverpkg` and `focus` fields to `TARGETS` (only `FuzzToolArgsValidate` sets `coverpkg`; set a sensible `focus` per target) and a `--list` flag. (~20 LoC; verify `make fuzz-nightly` still runs unchanged — the extra fields are ignored by the 3-field consumers.)
 2. `cmd/evener-fuzzcov/main.go`: profile parser + `mode: set` merge (union) + per-package rollup + report printer (focus %, floor, pkg %). (~80 LoC)
 3. `cmd/evener-fuzzcov`: focus-set machinery — parse `focus` specs, resolve `file.go#Func` to line ranges via `go/parser`, compute per-target focus %. (~40–60 LoC)
-4. `cmd/evener-fuzzcov`: ratchet (`scripts/fuzzcov-floors.txt` read + `--bless` upward-only rewrite) + gap-map scan (signature grep → package set; subtract fuzzed set; apply reason-required ignore-list) + `--check` exit logic. (~70–100 LoC)
-5. `scripts/fuzz-coverage.sh`: consume `run-fuzz.sh --list`, run each module's coverage command into a temp dir, call `evener-fuzzcov`. (~60–90 LoC)
+4. `cmd/evener-fuzzcov`: ratchet (`scripts/coverage/fuzzcov-floors.txt` read + `--bless` upward-only rewrite) + gap-map scan (signature grep → package set; subtract fuzzed set; apply reason-required ignore-list) + `--check` exit logic. (~70–100 LoC)
+5. `scripts/fuzz/fuzz-coverage.sh`: consume `run-fuzz.sh --list`, run each module's coverage command into a temp dir, call `evener-fuzzcov`. (~60–90 LoC)
 6. `Makefile`: `fuzz-coverage` target + `.PHONY` (`Makefile:1`).
 7. `fuzz/README.md`: document `make fuzz-coverage`, the focus-set/ratchet model, and `--bless`, next to `make fuzz` / `fuzz-nightly`.
-8. Commit the initial `scripts/fuzzcov-floors.txt` (measured current focus %s as the starting ratchet) and `scripts/fuzzcov-ignore.txt`.
+8. Commit the initial `scripts/coverage/fuzzcov-floors.txt` (measured current focus %s as the starting ratchet) and `scripts/coverage/fuzzcov-ignore.txt`.
 
 ### 7.2 Size & dependencies
 - **~280–360 LoC total** — above the charter's 150–300 band because the focus-set machinery and ratchet are built now (decision 1), not deferred. Flagged deliberately; the extra LoC is the cost of a metric drivable to 100%.
@@ -188,7 +188,7 @@ All four prior open questions are settled by Jesse's decisions (top of file). Re
 - The 10 lines correspond exactly to `run-fuzz.sh`'s `TARGETS` (no hand-maintained second list; verified by `run-fuzz.sh --list` driving the run).
 - Re-running is reproducible from a clean checkout (committed corpus only, including committed discovered corpus); the appwire decode target's whole-package number reports ~14.6% as a sanity anchor.
 - `make fuzz-coverage CHECK=1` exits non-zero when (a) any target's focus % drops below its committed ratchet floor, or (b) the gap map is non-empty beyond the reason-required ignore-list — and exits 0 otherwise. `--bless` raises floors upward only.
-- A reasonless entry in `scripts/fuzzcov-ignore.txt` makes the reporter error.
+- A reasonless entry in `scripts/coverage/fuzzcov-ignore.txt` makes the reporter error.
 - `make fuzz`, `make fuzz-nightly`, and the existing `ci.yml` gate are unchanged until the gap floor is deliberately promoted into `ci.yml`.
 </content>
 </invoke>

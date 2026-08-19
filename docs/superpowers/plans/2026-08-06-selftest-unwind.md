@@ -149,11 +149,11 @@ Drop `make-selftest` from `SELFTEST_SCRIPTS`. Trim the SELFTEST_SCRIPTS comment 
 **Files:**
 - Delete: `scripts/disk-reclaim.sh`, `scripts/disk-reclaim-selftest.sh`, and `scripts/disk-preflight.sh` + `scripts/disk-preflight-selftest.sh` if the earlier draft of this task already created them.
 - Modify: `Makefile` — delete the `cache-preflight` target (its whole body was the check), drop `cache-preflight` from `.PHONY`, from `build-runtime:`'s prerequisites (line 29), and from `$(LINT_TARGETS):` (line 520); drop `disk-reclaim` from the suite list variable.
-- Modify: `scripts/run-module-tests.sh:36-38` — delete the `disk-reclaim.sh --check` call and its comment.
+- Modify: `scripts/gate/run-module-tests.sh:36-38` — delete the `disk-reclaim.sh --check` call and its comment.
 - Modify: `scripts/merge-approval-gate-selftest.sh` — delete the fake disk-reclaim fixture (lines ~107-145) and the four cache-preflight ordering assertions (lines ~216-234).
 - Modify: `runtime_pair_build_test.go:238-242` — delete the fake `scripts/disk-reclaim.sh` stub and its comment (build-runtime no longer has a cache prerequisite).
 - Modify: `scenariopatternkill_audit_test.go` — delete the `"scripts/disk-reclaim-selftest.sh"` map entry; adjust the prose comment (~line 123) so it reads correctly as history.
-- Modify: `scripts/report-tmp-debris.sh:142`, `scripts/report-orphaned-worktrees.sh:18,36`, `scripts/setup-gocache.sh:16` — rewrite the sentences that point at disk-reclaim; the reporters now stand alone as inspection tools.
+- Modify: `scripts/ops/report-tmp-debris.sh:142`, `scripts/ops/report-orphaned-worktrees.sh:18,36`, `scripts/ops/setup-gocache.sh:16` — rewrite the sentences that point at disk-reclaim; the reporters now stand alone as inspection tools.
 - Modify: `docs/testing.md`, `docs/conventions/agent-fleets.md` — disk-reclaim mentions become "suites clean up after themselves (enforced by the wave runner); inspect with the report-* scripts".
 
 **Verify:** `scripts/merge-approval-gate-selftest.sh` PASS; `go test . -run 'TestNoCardOrScriptPatternKills|RuntimePair' -count=1` PASS; `make selftest` (or the renamed target if Task 8 landed first) all PASS; `grep -rn disk-reclaim --include='*.sh' --include='Makefile' --include='*.go' .` → no hits outside docs/superpowers/ history.
@@ -165,17 +165,17 @@ Drop `make-selftest` from `SELFTEST_SCRIPTS`. Trim the SELFTEST_SCRIPTS comment 
 - Create: `scripts/disk-preflight-selftest.sh`
 - Delete: `scripts/disk-reclaim.sh`, `scripts/disk-reclaim-selftest.sh`
 - Modify: `Makefile:159-160` (cache-preflight), `Makefile` SELFTEST_SCRIPTS (drop `disk-reclaim`, add `disk-preflight`)
-- Modify: `scripts/run-module-tests.sh:36-38`
+- Modify: `scripts/gate/run-module-tests.sh:36-38`
 - Modify: `scripts/merge-approval-gate-selftest.sh:116-234` (fake + four assertions rename to `disk-preflight`)
 - Modify: `runtime_pair_build_test.go:241` (stub filename)
 - Modify: `scenariopatternkill_audit_test.go:82-93` (delete the disk-reclaim-selftest entry and the stale prose reference at 123/155)
-- Modify: `scripts/report-tmp-debris.sh:142`, `scripts/report-orphaned-worktrees.sh:18,36`, `scripts/setup-gocache.sh:16` (message/comment pointers)
+- Modify: `scripts/ops/report-tmp-debris.sh:142`, `scripts/ops/report-orphaned-worktrees.sh:18,36`, `scripts/ops/setup-gocache.sh:16` (message/comment pointers)
 - Modify: `docs/testing.md`, `docs/conventions/agent-fleets.md` (disk-reclaim mentions → report tools + preflight)
 
 **Interfaces:**
 - Produces: `scripts/disk-preflight.sh` — no flags. Silent exit 0 when free space ≥ floor and GOCACHE answers. Exit 1 with a named diagnosis otherwise. Env: `EVENER_DISK_MIN_FREE_GB` (default 5), `EVENER_GOCACHE_PROBE_TIMEOUT` (default 10, integer seconds), `EVENER_GOCACHE_PROBE_CMD` (test seam, replaces the probe command — carried over verbatim from disk-reclaim.sh:163).
 
-- [ ] **Step 1: Write `disk-preflight-selftest.sh` first** (failing): scenarios (a) healthy fixture → silent, exit 0; (b) `EVENER_DISK_MIN_FREE_GB=999999` → exit 1, message names the floor, the free figure, and points at `scripts/report-tmp-debris.sh` and `scripts/report-orphaned-worktrees.sh`; (c) stalled probe: `EVENER_GOCACHE_PROBE_CMD` set to a script that blocks reading a FIFO no one writes, `EVENER_GOCACHE_PROBE_TIMEOUT=1` → exit 1, message says STALLED and names the GOCACHE path (the 1s here is the smallest supported value of a deliberately-tripped timeout, per Global Constraints); (d) `--help` prints the header. Harness: same `ok`/`assert_eq` pattern as `scripts/setup-gocache-selftest.sh`, `mktemp -d` + `trap rm -rf EXIT`.
+- [ ] **Step 1: Write `disk-preflight-selftest.sh` first** (failing): scenarios (a) healthy fixture → silent, exit 0; (b) `EVENER_DISK_MIN_FREE_GB=999999` → exit 1, message names the floor, the free figure, and points at `scripts/ops/report-tmp-debris.sh` and `scripts/ops/report-orphaned-worktrees.sh`; (c) stalled probe: `EVENER_GOCACHE_PROBE_CMD` set to a script that blocks reading a FIFO no one writes, `EVENER_GOCACHE_PROBE_TIMEOUT=1` → exit 1, message says STALLED and names the GOCACHE path (the 1s here is the smallest supported value of a deliberately-tripped timeout, per Global Constraints); (d) `--help` prints the header. Harness: same `ok`/`assert_eq` pattern as `scripts/setup-gocache-selftest.sh`, `mktemp -d` + `trap rm -rf EXIT`.
 - [ ] **Step 2: Implement `disk-preflight.sh`:** free-space floor via `df -Pk .` awk column 4; GOCACHE path via `go env GOCACHE`; bounded probe lifted from `disk-reclaim.sh` `gocache_probe()` (lines 150-176: backgrounded probe + 20/s status polls capped at the timeout — the poll is a failure ceiling, not sync) with `mkdir -p "$gocache"` as the default probe command; diagnosis text carried from disk-reclaim.sh:238-246 (kata r07s wording). `--help` via the same awk header idiom.
 - [ ] **Step 3:** run the new selftest → PASS. Rewire every consumer listed above; `git rm` the two old scripts.
 - [ ] **Step 4: Verify:** `scripts/merge-approval-gate-selftest.sh` PASS, `go test . -run 'TestNoCardOrScriptPatternKills|RuntimePair' -count=1` PASS, `make selftest` PASS, `grep -rn disk-reclaim scripts/ Makefile docs/ *.go` → no hits.
@@ -219,7 +219,7 @@ Drop `make-selftest` from `SELFTEST_SCRIPTS`. Trim the SELFTEST_SCRIPTS comment 
 **Files:**
 - Rename: `cmd/evener-selftest/` → `cmd/evener-test-dev-tooling/` (`git mv`; update the doc comment in main.go; the binary name in usage text follows). Individual `scripts/X-selftest.sh` files keep their names — each is genuinely a self-test of script X.
 - Modify: `Makefile` — target `selftest:` → `test-dev-tooling:` (recipe becomes `go run ./cmd/evener-test-dev-tooling $(DEV_TOOLING_TEST_SCRIPTS)`); variable `SELFTEST_SCRIPTS` → `DEV_TOOLING_TEST_SCRIPTS`; `.PHONY` line follows; `test:` drops `SELFTEST=1 ` from the run-module-tests invocation; `merge-approval-gate:` appends `@$(MAKE) test-dev-tooling` as its final serial step; comments above the target and variable rewritten to match.
-- Modify: `scripts/run-module-tests.sh` — delete the SELFTEST stream entirely: the `SELFTEST=${SELFTEST:-0}` default (line 47), the `selftest` module-name-collision guard (lines 90-93), and the stream spawn/finish block (lines 395-404). The name `selftest` stops being special.
+- Modify: `scripts/gate/run-module-tests.sh` — delete the SELFTEST stream entirely: the `SELFTEST=${SELFTEST:-0}` default (line 47), the `selftest` module-name-collision guard (lines 90-93), and the stream spawn/finish block (lines 395-404). The name `selftest` stops being special.
 - Modify: `scripts/run-module-tests-selftest.sh` — delete the scenarios that pinned the SELFTEST stream (name collision, wave order of the selftest stream, its log accounting); the remaining scenarios must still PASS.
 - Modify: `scripts/merge-approval-gate-selftest.sh` — assert the gate invokes `test-dev-tooling` after `test` (same recorded-fake-make + `assert_before` idiom the suite already uses for lint/build/test ordering).
 - Modify: `docs/testing.md` — the wave is `make test-dev-tooling`, run by `make merge-approval-gate` and on demand; no longer inside `make test`.

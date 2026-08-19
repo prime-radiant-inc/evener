@@ -23,7 +23,7 @@ func editParamsForExplain() map[string]any {
 }
 
 func TestExplainSchemaError_NamesOffendingField(t *testing.T) {
-	msg := ExplainSchemaError("edit_file", editParamsForExplain(), map[string]any{"file_path": "/x"}, "old_string")
+	msg := ExplainSchemaError("edit_file", editParamsForExplain(), map[string]any{"file_path": "/x"}, "old_string", "")
 	if !strings.Contains(msg, `edit_file`) || !strings.Contains(msg, `"old_string"`) {
 		t.Fatalf("msg = %q", msg)
 	}
@@ -33,7 +33,7 @@ func TestExplainSchemaError_NamesOffendingField(t *testing.T) {
 }
 
 func TestExplainSchemaError_FallbackWhenUnknownField(t *testing.T) {
-	msg := ExplainSchemaError("edit_file", editParamsForExplain(), map[string]any{}, "")
+	msg := ExplainSchemaError("edit_file", editParamsForExplain(), map[string]any{}, "", "")
 	// Must still list required args + example even without a pinpointed field.
 	if !strings.Contains(msg, "file_path") || !strings.Contains(msg, "Example:") {
 		t.Fatalf("msg = %q", msg)
@@ -197,7 +197,7 @@ func TestExplainSchemaError_ArrayItemMissingRequiredField(t *testing.T) {
 		"action":  "update",
 		"updates": []any{map[string]any{"id": float64(1), "notes": "x"}},
 	}
-	got := ExplainSchemaError("task_list", params, args, "updates/0")
+	got := ExplainSchemaError("task_list", params, args, "updates/0", "")
 	want := "task_list: missing required argument \"status\" in updates[0].\n" +
 		"Required arguments in updates[0]: id (integer), status (string).\n" +
 		"Example: {\"action\": \"...\"}"
@@ -215,12 +215,121 @@ func TestExplainSchemaError_NestedPropertyWrongTypeOrValue(t *testing.T) {
 			"options":  []any{},
 		}},
 	}
-	got := ExplainSchemaError("ask_user", params, args, "questions/0/header")
-	want := "ask_user: argument \"questions[0].header\" has the wrong type or value.\n" +
-		"Required arguments in questions[0]: question (string), options (array).\n" +
-		"Example: {\"questions\": []}"
+	got := ExplainSchemaError("ask_user", params, args, "questions/0/header", "maxLength")
+	want := "ask_user: argument \"questions[0].header\" exceeds maxLength (12). Value \"xxxxxxxxxxxxxxxxxxxx\" is 20 characters."
 	if got != want {
 		t.Fatalf("got:\n%s\nwant:\n%s", got, want)
+	}
+	// The misleading "Required arguments" scaffolding must be gone — the
+	// actual constraint (maxLength) and value/length are surfaced instead.
+	if strings.Contains(got, "Required arguments") {
+		t.Fatalf("message must not include the generic required-arguments line: %q", got)
+	}
+}
+
+// TestExplainSchemaError_ConstraintClasses covers every constraint keyword
+// issue #193's RCA confirmed hits the same generic-message bug: maxLength,
+// minItems, maxItems, and enum. Each case pins the exact constraint-detail
+// sentence and asserts the misleading "Required arguments" tail is gone.
+func TestExplainSchemaError_ConstraintClasses(t *testing.T) {
+	tests := []struct {
+		name             string
+		toolName         string
+		params           map[string]any
+		args             map[string]any
+		instanceLocation string
+		keyword          string
+		want             string
+	}{
+		{
+			name:     "maxLength",
+			toolName: "ask_user",
+			params:   askUserParamsForExplain(),
+			args: map[string]any{"questions": []any{map[string]any{
+				"header": strings.Repeat("x", 20), "question": "q", "options": []any{},
+			}}},
+			instanceLocation: "questions/0/header",
+			keyword:          "maxLength",
+			want:             `ask_user: argument "questions[0].header" exceeds maxLength (12). Value "xxxxxxxxxxxxxxxxxxxx" is 20 characters.`,
+		},
+		{
+			name:             "minItems",
+			toolName:         "ask_user",
+			params:           askUserParamsForExplain(),
+			args:             map[string]any{"questions": []any{}},
+			instanceLocation: "questions",
+			keyword:          "minItems",
+			want:             `ask_user: argument "questions" is below minItems (1). Value has 0 items.`,
+		},
+		{
+			name:     "maxItems",
+			toolName: "ask_user",
+			params:   askUserParamsForExplain(),
+			args: map[string]any{"questions": []any{
+				map[string]any{}, map[string]any{}, map[string]any{}, map[string]any{}, map[string]any{},
+			}},
+			instanceLocation: "questions",
+			keyword:          "maxItems",
+			want:             `ask_user: argument "questions" exceeds maxItems (4). Value has 5 items.`,
+		},
+		{
+			name:             "enum",
+			toolName:         "task_list",
+			params:           taskListParamsForExplain(),
+			args:             map[string]any{"action": "bogus"},
+			instanceLocation: "action",
+			keyword:          "enum",
+			want:             `task_list: argument "action" is not one of the allowed values: view, append, update. Value is "bogus".`,
+		},
+		{
+			name:     "nested enum",
+			toolName: "task_list",
+			params:   taskListParamsForExplain(),
+			args: map[string]any{
+				"action":  "update",
+				"updates": []any{map[string]any{"id": float64(1), "status": "bogus"}},
+			},
+			instanceLocation: "updates/0/status",
+			keyword:          "enum",
+			want:             `task_list: argument "updates[0].status" is not one of the allowed values: open, in_progress, done, cancelled. Value is "bogus".`,
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got := ExplainSchemaError(tc.toolName, tc.params, tc.args, tc.instanceLocation, tc.keyword)
+			if got != tc.want {
+				t.Fatalf("got:\n%s\nwant:\n%s", got, tc.want)
+			}
+			if strings.Contains(got, "Required arguments") {
+				t.Fatalf("message must not include the generic required-arguments line: %q", got)
+			}
+		})
+	}
+}
+
+// TestExplainSchemaError_UnhandledKeywordFallsBackWithoutTail asserts the
+// "fall back gracefully" contract for constraint keywords with no dedicated
+// formatter (minimum, maximum, pattern, ...): the message degrades to the
+// generic "wrong type or value" sentence, but issue #193's misleading
+// "Required arguments" tail must NOT reappear just because the keyword is
+// unrecognized — the field is present either way.
+func TestExplainSchemaError_UnhandledKeywordFallsBackWithoutTail(t *testing.T) {
+	params := map[string]any{
+		"type":                 "object",
+		"additionalProperties": false,
+		"properties": map[string]any{
+			"limit": map[string]any{"type": "integer", "maximum": 100},
+		},
+		"required": []string{"limit"},
+	}
+	args := map[string]any{"limit": float64(500)}
+	got := ExplainSchemaError("list", params, args, "limit", "maximum")
+	want := "list: argument \"limit\" has the wrong type or value.\nExample: {\"limit\": 0}"
+	if got != want {
+		t.Fatalf("got:\n%s\nwant:\n%s", got, want)
+	}
+	if strings.Contains(got, "Required arguments") {
+		t.Fatalf("message must not include the generic required-arguments line: %q", got)
 	}
 }
 
@@ -228,7 +337,7 @@ func TestExplainSchemaError_FlatTopLevelUnchanged(t *testing.T) {
 	// Regression: a single-segment instance location (today's only case)
 	// must still produce the unqualified "Required arguments:" line, with
 	// no "in <container>" text anywhere.
-	msg := ExplainSchemaError("edit_file", editParamsForExplain(), map[string]any{"file_path": "/x"}, "old_string")
+	msg := ExplainSchemaError("edit_file", editParamsForExplain(), map[string]any{"file_path": "/x"}, "old_string", "")
 	want := "edit_file: missing required argument \"old_string\".\n" +
 		"Required arguments: file_path (string), old_string (string), new_string (string).\n" +
 		"Example: {\"file_path\": \"...\", \"new_string\": \"...\", \"old_string\": \"...\"}"
@@ -245,8 +354,8 @@ func TestExplainSchemaError_DoesNotMutateStringRequired(t *testing.T) {
 	params := editParamsForExplain()
 	params["required"] = required
 
-	first := ExplainSchemaError("edit_file", params, map[string]any{}, "")
-	second := ExplainSchemaError("edit_file", params, map[string]any{}, "")
+	first := ExplainSchemaError("edit_file", params, map[string]any{}, "", "")
+	second := ExplainSchemaError("edit_file", params, map[string]any{}, "", "")
 	if first != second {
 		t.Fatalf("explanation changed across calls:\nfirst:  %q\nsecond: %q", first, second)
 	}

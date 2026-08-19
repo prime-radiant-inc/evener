@@ -17,7 +17,7 @@ Four small tooling contracts are currently incomplete:
    the frontend TypeScript protocol declarations, but `lint-generated` diffs
    only the Markdown output. A stale committed `types.gen.ts` is therefore
    repaired in the working tree without making the gate fail.
-3. `scripts/gitleaks-scan.sh` always turns a missing gitleaks executable into a
+3. `scripts/ops/gitleaks-scan.sh` always turns a missing gitleaks executable into a
    warning and a successful exit. CI currently depends on install-step ordering
    to keep its scans real, even though local development deliberately permits
    the missing-tool skip.
@@ -38,7 +38,7 @@ identifier is replaced but not required.
 Keep each repair at its existing ownership boundary:
 
 - The root `Makefile` owns gate composition and generated-output validation.
-- `scripts/gitleaks-scan.sh` owns missing-tool policy, while each CI scan step
+- `scripts/ops/gitleaks-scan.sh` owns missing-tool policy, while each CI scan step
   explicitly opts into the strict branch.
 - The root `go.mod` owns the root module's complete pruned dependency graph.
 
@@ -106,7 +106,7 @@ the rendered recipe.
 
 ## CI-required gitleaks (`m716`)
 
-Add one exact opt-in to `scripts/gitleaks-scan.sh`:
+Add one exact opt-in to `scripts/ops/gitleaks-scan.sh`:
 
 ```text
 EVENER_GITLEAKS_REQUIRED=1

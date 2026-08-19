@@ -38,7 +38,7 @@ A failing run:
 ## Runner Design
 
 Add a dedicated shell runner rather than expanding a large Make recipe. The
-runner follows the proven structure of `scripts/run-module-tests.sh`:
+runner follows the proven structure of `scripts/gate/run-module-tests.sh`:
 
 - module list comes from `MODULES`, defaulting to the repository's non-fuzz Go
   modules;

@@ -10,7 +10,7 @@ import {
   useSubagentRows,
 } from "../panes/session/transcript/tools/subagentModuleStore";
 import type { ConnectionState } from "../protocol/client";
-import { RequestTimeoutError, WireError } from "../protocol/errors";
+import { ClientNotReadyError, errorKind, RequestTimeoutError, WireError } from "../protocol/errors";
 import type { ThreadModel } from "../protocol/model";
 import { hydrateThread } from "../protocol/reducer";
 import { FakeClient, type RequestHandler } from "../protocol/testing/fakeClient";
@@ -3198,6 +3198,26 @@ describe("useThreadsStore.send", () => {
       ],
     });
   });
+
+  // Issue #195's RCA / PR #211's rejected transport-queuing design: a
+  // mutation whose first attempt may already be executing server-side must
+  // never blind-retry across a reconnect - it could double-fire a
+  // non-idempotent method like turn/start. Unlike the read-only actions
+  // (listJobs and siblings, gated through requireReadyClient), the mutation
+  // outbox's own enqueueMutationIntent (stores/threads.ts) checks
+  // client.state itself and rejects synchronously with no ready-wait -
+  // representative of the whole outbox family (steer/queue/interrupt/
+  // drainAsSteer/promoteQueuedAsSteer/cancelQueued all funnel through the
+  // same gate).
+  test("rejects synchronously while reconnecting, unlike the read-only actions (representative outbox mutation)", async () => {
+    const fake = connectFakeClient();
+    fake.emitStateChange("reconnecting");
+
+    await expect(threadsStore.getState().send("ref_a", "hello")).rejects.toThrow(
+      /cannot enqueue mutation while reconnecting/,
+    );
+    expect(fake.calls).toHaveLength(0); // never sent
+  });
 });
 
 // kata 1gm2: a record born from a real submit used to reach recovery carrying
@@ -3652,6 +3672,27 @@ describe("useThreadsStore session actions (setModel/setReasoningEffort/setGoal/r
 
     await expect(threadsStore.getState().setModel("ref_a", "openai", "gpt-5.5")).rejects.toBeInstanceOf(ConflictError);
   });
+
+  // Issue #195's RCA / PR #211's rejected transport-queuing design: a
+  // mutation whose first attempt may already be executing server-side must
+  // never blind-retry across a reconnect - it could double-fire a
+  // non-idempotent method. Unlike the read-only actions (listJobs and
+  // siblings, gated through requireReadyClient), every session action here
+  // calls client.request() directly with no ready-wait, so it keeps
+  // AppwireClient's synchronous "cannot call ... while reconnecting"
+  // rejection. One representative case stands in for the whole family -
+  // each wraps the identical direct client.request() call (proven above);
+  // repeating this per method would test the same rejection path over and
+  // over rather than add real coverage.
+  test("setModel rejects synchronously while reconnecting, unlike the read-only actions (representative direct-request mutation)", async () => {
+    const fake = connectFakeClient();
+    fake.emitStateChange("reconnecting");
+
+    await expect(threadsStore.getState().setModel("ref_a", "openai", "gpt-5.5")).rejects.toThrow(
+      /cannot call "thread\/model\/set" while state is "reconnecting"/,
+    );
+    expect(fake.calls).toHaveLength(0); // never sent - the real client never reaches socket.send() either
+  });
 });
 
 // listModels/listTasks (T1 addendum, sanctioned NEEDS_CONTEXT gap for the
@@ -3767,6 +3808,48 @@ describe("useThreadsStore.listModels", () => {
     fake2.on("model/list", () => modelListResponse());
     await threadsStore.getState().listModels();
     expect(fake2.calls.filter((c) => c.method === "model/list")).toHaveLength(1); // fresh fetch, not a stale cache hit
+  });
+
+  // Issue #195's RCA: read-only, so it waits out a reconnect (via
+  // requireReadyClient, stores/threads.ts) instead of failing with
+  // AppwireClient's synchronous "cannot call ... while reconnecting"
+  // rejection - contrast with the mutation re-pin tests (setModel, send),
+  // which must keep rejecting synchronously.
+  test("waits out a reconnect instead of rejecting synchronously, then resolves once ready", async () => {
+    const fake = connectFakeClient();
+    fake.on("model/list", () => modelListResponse());
+
+    fake.emitStateChange("reconnecting");
+    const pending = threadsStore.getState().listModels();
+    let settled = false;
+    pending.then(
+      () => {
+        settled = true;
+      },
+      () => {
+        settled = true;
+      },
+    );
+    await flushUntil(() => false, 5);
+    expect(settled).toBe(false); // still waiting, not rejected synchronously
+    expect(fake.calls).toHaveLength(0); // never sent while reconnecting
+
+    fake.emitReady();
+    await expect(pending).resolves.toEqual(modelListResponse());
+  });
+
+  // The ready-wait is skipped entirely for a warm cache/inflight hit (see
+  // listModels's own comment): a call that needs no wire round-trip must
+  // not block on a reconnect it has no reason to care about.
+  test("a cached response resolves immediately even while reconnecting, without waiting", async () => {
+    const fake = connectFakeClient();
+    fake.on("model/list", () => modelListResponse());
+    await threadsStore.getState().listModels(); // warms the cache
+    expect(fake.calls.filter((c) => c.method === "model/list")).toHaveLength(1);
+
+    fake.emitStateChange("reconnecting");
+    await expect(threadsStore.getState().listModels()).resolves.toEqual(modelListResponse());
+    expect(fake.calls.filter((c) => c.method === "model/list")).toHaveLength(1); // no second wire call
   });
 });
 
@@ -3982,6 +4065,34 @@ describe("useThreadsStore.listTasks", () => {
   test("throws when no client has been connected yet", async () => {
     await expect(threadsStore.getState().listTasks("ref_a")).rejects.toThrow(/no client connected/i);
   });
+
+  // Issue #195's RCA: listTasks is read-only, so it waits out a reconnect
+  // (via requireReadyClient, stores/threads.ts) instead of failing with
+  // AppwireClient's synchronous "cannot call ... while reconnecting"
+  // rejection - contrast with the mutation re-pin tests (setModel, send),
+  // which must keep rejecting synchronously.
+  test("waits out a reconnect instead of rejecting synchronously, then resolves once ready", async () => {
+    const fake = connectFakeClient();
+    fake.on("evener/tasks/list", () => ({ data: TASKS_DATA }));
+
+    fake.emitStateChange("reconnecting");
+    const pending = threadsStore.getState().listTasks("ref_a");
+    let settled = false;
+    pending.then(
+      () => {
+        settled = true;
+      },
+      () => {
+        settled = true;
+      },
+    );
+    await flushUntil(() => false, 5);
+    expect(settled).toBe(false); // still waiting, not rejected synchronously
+    expect(fake.calls).toHaveLength(0); // never sent while reconnecting
+
+    fake.emitReady();
+    await expect(pending).resolves.toEqual(TASKS_DATA);
+  });
 });
 
 describe("useThreadsStore.listJobs / jobOutput", () => {
@@ -4098,6 +4209,75 @@ describe("useThreadsStore.listJobs / jobOutput", () => {
   test("both throw when no client has been connected yet", async () => {
     await expect(threadsStore.getState().listJobs("ref_a")).rejects.toThrow(/no client connected/i);
     await expect(threadsStore.getState().jobOutput("ref_a", "job_1")).rejects.toThrow(/no client connected/i);
+  });
+
+  // Issue #195's RCA: both are read-only, so they wait out a reconnect (via
+  // requireReadyClient, stores/threads.ts) instead of failing with
+  // AppwireClient's synchronous "cannot call ... while reconnecting"
+  // rejection - contrast with the mutation re-pin tests (setModel, send),
+  // which must keep rejecting synchronously.
+  test("listJobs waits out a reconnect instead of rejecting synchronously, then resolves once ready", async () => {
+    const fake = connectFakeClient();
+    fake.on("evener/jobs/list", () => ({ data: JOBS_DATA }));
+
+    fake.emitStateChange("reconnecting");
+    const pending = threadsStore.getState().listJobs("ref_a");
+    let settled = false;
+    pending.then(
+      () => {
+        settled = true;
+      },
+      () => {
+        settled = true;
+      },
+    );
+    await flushUntil(() => false, 5);
+    expect(settled).toBe(false); // still waiting, not rejected synchronously
+    expect(fake.calls).toHaveLength(0); // never sent while reconnecting
+
+    fake.emitReady();
+    await expect(pending).resolves.toEqual(JOBS_DATA);
+  });
+
+  test("jobOutput waits out a reconnect instead of rejecting synchronously, then resolves once ready", async () => {
+    const fake = connectFakeClient();
+    fake.on("evener/jobs/output", () => ({ data: OUTPUT_DATA }));
+
+    fake.emitStateChange("reconnecting");
+    const pending = threadsStore.getState().jobOutput("ref_a", "job_1");
+    let settled = false;
+    pending.then(
+      () => {
+        settled = true;
+      },
+      () => {
+        settled = true;
+      },
+    );
+    await flushUntil(() => false, 5);
+    expect(settled).toBe(false);
+    expect(fake.calls).toHaveLength(0);
+
+    fake.emitReady();
+    await expect(pending).resolves.toEqual(OUTPUT_DATA);
+  });
+
+  // requireReadyClient always returns a FRESH requireClient() read once
+  // ready, never the client it started waiting on - a wait can span a
+  // manual retry (shell/ConnectionBanner.tsx) that swaps in a genuinely
+  // different client object while the read is still pending.
+  test("a rewire mid-wait retries against the new client, not the stale one it started waiting on", async () => {
+    const stale = connectFakeClient("reconnecting");
+    const pending = threadsStore.getState().listJobs("ref_a");
+    await flushUntil(() => false, 5);
+
+    const fresh = new FakeClient("ready");
+    fresh.on("evener/jobs/list", () => ({ data: JOBS_DATA }));
+    connectionStore.getState().connect(fresh);
+
+    await expect(pending).resolves.toEqual(JOBS_DATA);
+    expect(fresh.calls.filter((c) => c.method === "evener/jobs/list")).toHaveLength(1);
+    expect(stale.calls).toHaveLength(0); // the stale client never saw this call
   });
 });
 
@@ -5546,6 +5726,85 @@ describe("useThreadsStore.loadOlderTurns", () => {
     await loading;
 
     expect(threadsStore.getState().threads.has("ref_a")).toBe(false);
+  });
+
+  // Issue #195's RCA: read-only, so it waits out a reconnect (via
+  // requireReadyClient, stores/threads.ts) instead of failing with
+  // AppwireClient's synchronous "cannot call ... while reconnecting"
+  // rejection - contrast with the mutation re-pin tests (setModel, send),
+  // which must keep rejecting synchronously.
+  test("waits out a reconnect instead of rejecting synchronously, then resolves once ready", async () => {
+    const fake = connectFakeClient();
+    fake.on("thread/read", () => ({ thread: testThread("ref_a"), olderCursor: "cursor_1" }));
+    await threadsStore.getState().ensureThread("ref_a");
+    fake.on("thread/turns/list", () => ({
+      data: [{ id: "turn_1", status: "completed", itemsView: "full", items: [] }],
+      nextCursor: "cursor_0",
+    }));
+
+    fake.emitStateChange("reconnecting");
+    const pending = threadsStore.getState().loadOlderTurns("ref_a");
+    let settled = false;
+    pending.then(
+      () => {
+        settled = true;
+      },
+      () => {
+        settled = true;
+      },
+    );
+    await flushUntil(() => false, 5);
+    expect(settled).toBe(false); // still waiting, not rejected synchronously
+    expect(fake.calls.filter((c) => c.method === "thread/turns/list")).toHaveLength(0);
+
+    fake.emitReady();
+    await pending;
+    const model = threadsStore.getState().threads.get("ref_a");
+    expect(model?.turns.map((t) => t.id)).toEqual(["turn_1"]);
+    expect(model?.olderCursor).toBe("cursor_0");
+  });
+});
+
+// requireReadyClient's own bounded wait, exercised directly through a
+// read-only action (listJobs stands in for all five - same helper) rather
+// than duplicated five times. Real timers elsewhere in this file resolve via
+// scripted FakeClient events (emitReady, etc.), never elapsed time, so this
+// is the one describe block that needs fake timers to advance past
+// requireReadyClient's default 15s budget without the suite actually
+// waiting 15 real seconds.
+describe("useThreadsStore read-only ready-gating (requireReadyClient)", () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  test("a read call times out with a classified ClientNotReadyError if the client never becomes ready", async () => {
+    connectFakeClient("reconnecting"); // never reaches ready in this test
+    const pending = threadsStore.getState().listJobs("ref_a");
+    let outcome: { ok: true } | { ok: false; err: unknown } | undefined;
+    pending.then(
+      () => {
+        outcome = { ok: true };
+      },
+      (err: unknown) => {
+        outcome = { ok: false, err };
+      },
+    );
+
+    await vi.advanceTimersByTimeAsync(15_000);
+
+    expect(outcome?.ok).toBe(false);
+    if (outcome?.ok !== false) throw new Error("expected the read call to reject");
+    expect(outcome.err).toBeInstanceOf(ClientNotReadyError);
+    expect((outcome.err as Error).message).toMatch(/timed out waiting for a ready client after 15000ms/);
+    // Distinguishable from AppwireClient's own synchronous rejection text,
+    // but still classified as hub-unreachable so it gets the same friendly
+    // toast (see stores/activitySummary.ts's refreshRoot).
+    expect((outcome.err as Error).message).not.toMatch(/cannot call/);
+    expect(errorKind(outcome.err)).toBe("hub-unreachable");
   });
 });
 

@@ -1171,6 +1171,34 @@ var jobResultKnownKeys = map[string]bool{
 	"delivered":                true,
 	"message_type":             true,
 	"wait_ignored_reason":      true,
+	// The stable-delegate identity fields below were introduced by 31fc13ae3
+	// ("Route delegate creation through stable resources"), 731a6bf05
+	// ("Preserve stable delegate identity in bounded create results"), and
+	// 0c182da4f ("fix: preserve stable delegate tool projections") — see
+	// stableDelegateCreateResult (agent/session_tools.go) and
+	// delegateSendResult (agent/session_tools_jobs.go). Neither struct carries a
+	// job_id family member; a "delegate"/"delegate_send" result identifies
+	// itself via delegate_id alone (jobResult.effectiveJobID's fallback).
+	// TestJobResultKnownKeysCoversLiveDelegateShapes (transcript_render_job_test.go)
+	// walks both structs' real marshaled output and fails, naming the key, the
+	// next time either struct grows a field this allowlist doesn't know — issue #194.
+	"child_session_id":    true, // stableDelegateCreateResult
+	"model":               true, // stableDelegateCreateResult
+	"sandbox":             true, // stableDelegateCreateResult
+	"worktree":            true, // stableDelegateCreateResult, delegateSendResult
+	"warnings":            true, // stableDelegateCreateResult, delegateSendResult
+	"error":               true, // stableDelegateCreateResult (StartError)
+	"task":                true, // delegateSendResult
+	"description":         true, // delegateSendResult
+	"agent_type":          true, // delegateSendResult
+	"requested_model":     true, // delegateSendResult
+	"resolved_profile_id": true, // delegateSendResult
+	"resolved_model":      true, // delegateSendResult
+	"reasoning_effort":    true, // delegateSendResult
+	"run_started_at":      true, // delegateSendResult
+	"run_ended_at":        true, // delegateSendResult
+	"latest_activity_at":  true, // delegateSendResult
+	"cumulative_usage":    true, // delegateSendResult
 }
 
 var jobResultMetadataKeys = []string{
@@ -1194,6 +1222,24 @@ var jobResultMetadataKeys = []string{
 	"delivered",
 	"message_type",
 	"wait_ignored_reason",
+	// Stable-delegate identity/diagnostic scalars (see jobResultKnownKeys
+	// above). "error" belongs here, not a dedicated status-line segment like
+	// reason, because unlike reason it's specific to the create path and would
+	// otherwise become a known-but-invisible key — silently dropped evidence
+	// the moment it stops triggering the raw-JSON-dump fallback.
+	"child_session_id",
+	"model",
+	"error",
+	"task",
+	"description",
+	"agent_type",
+	"requested_model",
+	"resolved_profile_id",
+	"resolved_model",
+	"reasoning_effort",
+	"run_started_at",
+	"run_ended_at",
+	"latest_activity_at",
 }
 
 func jobResultMetadata(raw string) string {

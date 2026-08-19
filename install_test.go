@@ -47,7 +47,7 @@ func TestWebPreflightBootstrapsMissingFrontendDependencies(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(fixtureRoot, "Makefile"), makefile, 0o644); err != nil {
 		t.Fatalf("write Makefile: %v", err)
 	}
-	copyRepositoryFile(t, repoRoot, fixtureRoot, "scripts/web-preflight.sh", 0o755)
+	copyRepositoryFile(t, repoRoot, fixtureRoot, "scripts/web/web-preflight.sh", 0o755)
 	if err := os.WriteFile(filepath.Join(frontendDir, "package-lock.json"), []byte("{}\n"), 0o644); err != nil {
 		t.Fatalf("write package-lock.json: %v", err)
 	}
@@ -964,4 +964,32 @@ func overlayEnv(base []string, overrides map[string]string) []string {
 func exists(path string) bool {
 	_, err := os.Stat(path)
 	return err == nil
+}
+
+// installedBins returns the EVENER_INSTALL_BINS list from the Makefile — the
+// single source of truth for which binaries a release install contains, and
+// the same source install.sh's `bins` line and `make dist` are kept in sync
+// with. Reading it here, rather than hardcoding a parallel copy, is what
+// makefile_audit_test.go's TestBuildAllBuildsEveryInstalledBinary already
+// does for build-all; FuzzInstallScript reuses it so a sixth binary can't
+// silently break its fixture archive the way evener-migrate broke it
+// (Release archive did not contain evener-migrate).
+func installedBins(t testing.TB) []string {
+	t.Helper()
+
+	body, err := os.ReadFile("Makefile")
+	if err != nil {
+		t.Fatalf("read Makefile: %v", err)
+	}
+	for line := range strings.SplitSeq(string(body), "\n") {
+		if rest, ok := strings.CutPrefix(line, "EVENER_INSTALL_BINS :="); ok {
+			bins := strings.Fields(rest)
+			if len(bins) == 0 {
+				t.Fatal("EVENER_INSTALL_BINS assignment in Makefile has no binaries")
+			}
+			return bins
+		}
+	}
+	t.Fatal("EVENER_INSTALL_BINS assignment not found in Makefile")
+	return nil
 }
