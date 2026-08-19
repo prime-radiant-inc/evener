@@ -1449,85 +1449,86 @@ describe("row actions overlay (RailRow.module.css)", () => {
   // Block comments stripped so a class or token named only in prose can
   // never satisfy an assertion (same discipline as token-contract.test.ts).
   const CSS = RAIL_CSS.replace(/\/\*[\s\S]*?\*\//g, " ");
-  // The mask-matches-its-ground contract below spans two stylesheets: the
-  // ground (.rail's canvas background) is Rail.module.css's, while the mask
-  // (.actions) is this file's.
-  const RAIL_CHROME_CSS = readFileSync(
-    join(dirname(fileURLToPath(import.meta.url)), "Rail.module.css"),
-    "utf8",
-  ).replace(/\/\*[\s\S]*?\*\//g, " ");
 
-  function ruleIn(css: string, selector: string): string | null {
+  function ruleFor(selector: string): string | null {
     const escaped = selector.replace(/[.[\]"^$*+?()|{}\\]/g, "\\$&");
-    const match = new RegExp(`(?:^|\\})\\s*${escaped}\\s*\\{([^}]*)\\}`).exec(css);
+    const match = new RegExp(`(?:^|\\})\\s*${escaped}\\s*\\{([^}]*)\\}`).exec(CSS);
     return match ? match[1]! : null;
   }
 
-  function ruleFor(selector: string): string | null {
-    return ruleIn(CSS, selector);
-  }
-
-  test("actions are taken out of flow and pinned to the row's right edge, so revealing them shifts nothing", () => {
+  // issue #196 (reworked): the actions overlay used to be an absolutely
+  // positioned, zero-width-cost mask pinned to the row's right edge - which
+  // let the row's trailing disclosure chevron end up UNDER it on a long
+  // enough title, invisibly swallowing clicks even at rest (CSS opacity
+  // never disables hit testing). A z-index fix was tried and reverted (see
+  // git history / layoutguard's rail-row-chevron-actions-overlap case): it
+  // only moved the swallowed-click bug onto the actions trigger instead of
+  // removing the overlap. `.actions` is now a real in-flow flex item, so
+  // flexbox reserves it actual space and nothing can ever be laid out (or
+  // hit-tested) underneath it - a structural guarantee, not a stacking
+  // fight. jsdom applies no stylesheet and getBoundingClientRect() always
+  // reports zero there, so this describe block can only pin the STYLESHEET
+  // CONTRACT (same discipline as token-contract.test.ts); the actual
+  // non-overlap geometry, at real sidebar widths with a real truncating
+  // title, is what layoutguard's rail-row-chevron-actions-overlap case
+  // proves against a real browser.
+  test("actions are a real in-flow flex item, not an absolutely-positioned overlay", () => {
     const actionsRule = ruleFor(".actions");
-    expect(actionsRule).not.toBeNull();
-    expect(actionsRule).toMatch(/position:\s*absolute/);
-    expect(actionsRule).toMatch(/right:\s*0/);
-    // Absolute positioning only resolves against .railRow if .railRow is itself a
-    // containing block; without this the overlay escapes to the nearest
-    // positioned ancestor (the scrolling rail body, or the viewport).
-    expect(ruleFor(".railRow")).toMatch(/position:\s*relative/);
+    expect(actionsRule, ".actions must have a rule").not.toBeNull();
+    expect(actionsRule).not.toMatch(/position:\s*absolute/);
+    expect(actionsRule).not.toMatch(/\bright:\s*0/);
+    expect(actionsRule).toMatch(/display:\s*inline-flex/);
+    expect(actionsRule).toMatch(/flex:\s*none/);
   });
 
-  test("the reveal drives the actions container, not just its buttons - the mask has to hide too", () => {
+  test("the disclosure chevron carries no stacking-order fix - it doesn't need one", () => {
+    // The z-index approach this replaced required position:relative +
+    // z-index on .chevronButton to win a stacking fight against .actions.
+    // Neither is needed (or wanted - see the describe block's own comment)
+    // now that .actions can't ever share the chevron's pixels.
+    const chevronRule = ruleFor(".chevronButton");
+    expect(chevronRule, ".chevronButton must have a rule").not.toBeNull();
+    expect(chevronRule).not.toMatch(/position:\s*relative/);
+    expect(chevronRule).not.toMatch(/z-index:/);
+  });
+
+  test("the reveal drives the actions container, not just its buttons", () => {
     // An opacity that lives on `.actions button` alone would leave the
-    // container's own masking background painted at rest, permanently
-    // covering the timestamp it sits on top of.
+    // container invisible-but-present at rest, which is fine now that
+    // there's no mask to worry about - but the container itself still has
+    // to be what animates, since that's what the touch media query below
+    // forces open.
     expect(ruleFor(".actions")).toMatch(/opacity:\s*0/);
-    // Rules that reveal `.actions` (opacity: 1 somewhere in their body -
-    // not necessarily the only declaration, since the real-hover path also
-    // swaps the mask's background to match `.railRow:hover`'s own wash).
+
+    // Every condition that reveals `.actions` - row hover, treeitem focus,
+    // and an open menu on this row's own trigger - now folds into ONE rule
+    // (they all just set opacity: 1, with nothing left to keep separate
+    // once there's no mask background to swap in the hover case).
     const rules = [...CSS.matchAll(/([^{}]*)\{([^}]*)\}/g)]
       .map((m) => ({ selector: m[1]!.trim(), body: m[2]! }))
       .filter((r) => /opacity:\s*1\b/.test(r.body));
-
-    const hoverRule = rules.find((r) => r.selector === ".railRow:hover .actions");
-    expect(hoverRule, "row hover must reveal the actions").toBeTruthy();
-
-    // The focus/open-menu path targets `.actions` itself via a comma list -
-    // a trailing descendant (`.actions button`) would fail this, since the
-    // container - and so its mask - would stay at opacity 0.
-    const focusMenuRule = rules.find((r) => r.selector.includes('[role="treeitem"]:focus'));
-    expect(focusMenuRule, "treeitem focus / open menu must reveal the actions").toBeTruthy();
-    const targets = focusMenuRule!.selector.split(",").map((s) => s.trim());
+    const revealRule = rules.find((r) => r.selector.includes(".railRow:hover .actions"));
+    expect(revealRule, "row hover must reveal the actions").toBeTruthy();
+    const targets = revealRule!.selector.split(",").map((s) => s.trim());
     expect(targets).toEqual(
-      expect.arrayContaining(['[role="treeitem"]:focus .actions', '.actions:has(button[aria-expanded="true"])']),
+      expect.arrayContaining([
+        '[role="treeitem"]:focus .actions',
+        '.actions:has(button[aria-expanded="true"])',
+        ".railRow:hover .actions",
+      ]),
     );
   });
 
-  test("the overlay masks what it covers with the row's own current background", () => {
-    // At rest a row shows the rail's own canvas background through it (a
-    // row paints no background of its own - widgets/tree/tree.module.css
-    // sets none), so the resting mask matches that token.
-    expect(ruleIn(RAIL_CHROME_CSS, ".rail")).toMatch(/background:\s*var\(--surface-canvas\)/);
-    expect(ruleFor(".actions")).toMatch(/background:[^;]*var\(--surface-canvas\)/);
-
-    // Once `.railRow:hover` paints its own `--hover-1` wash (see that rule),
-    // the mask has to swap to match it too, or the overlay reads as a
-    // visibly different patch pasted over the row instead of its own right
-    // edge.
-    expect(ruleFor(".railRow:hover")).toMatch(/background:\s*var\(--hover-1\)/);
-    expect(ruleFor(".railRow:hover .actions")).toMatch(/background:[^;]*var\(--hover-1\)/);
-  });
-
-  test("the mask's leading edge fades in, so it never slices covered text mid-glyph", () => {
-    // A flat opaque background cuts whatever it covers at a hard vertical
-    // line - a half-rendered letter at the overlay's left edge reads as a
-    // rendering bug. A gradient ramps the mask in from transparent instead.
+  test("nothing paints a mask over .actions any more - there's nothing left for it to hide", () => {
+    // The old overlay needed a background (to match whatever it covered)
+    // and a gradient + padding-left (so its leading edge didn't slice
+    // covered text mid-glyph). A real flex item covers nothing, so none of
+    // that machinery belongs here any more - its reappearance would be a
+    // sign the overlay design crept back in.
     const actionsRule = ruleFor(".actions");
-    expect(actionsRule).toMatch(/linear-gradient\(\s*to right\s*,\s*transparent\s*,/);
-    // The buttons must sit past the ramp (padding) rather than on top of
-    // the partly-faded text the ramp exists to soften.
-    expect(actionsRule).toMatch(/padding-left:\s*var\(--space-\d\)/);
+    expect(actionsRule).not.toMatch(/background:/);
+    expect(actionsRule).not.toMatch(/linear-gradient/);
+    expect(actionsRule).not.toMatch(/padding-left:/);
   });
 
   // The signal dot keeps a FIXED width and refuses to flex: its outdent
@@ -1542,16 +1543,19 @@ describe("row actions overlay (RailRow.module.css)", () => {
     expect(rule).toMatch(/flex:\s*none|flex-shrink:\s*0/);
   });
 
-  test("touch keeps the actions in flow beside the timestamp instead of permanently masking it", () => {
-    // Below the mobile breakpoint the actions are always visible (no hover
-    // to reveal them), so an overlay there would hide the age forever.
+  test("touch keeps the actions permanently open instead of relying on a hover it doesn't have", () => {
+    // Below the mobile breakpoint there's no hover to reveal the actions
+    // with, so this block forces them open. Unlike the old overlay design,
+    // there's no separate "in-flow" layout left to restore here - the base
+    // rule above is already a real flex item at every width - so this
+    // block should do nothing BUT flip the opacity.
     const media = /@media\s*\(max-width:\s*899px\)\s*\{([\s\S]*?)\n\}/g;
     const blocks = [...CSS.matchAll(media)].map((m) => m[1]!);
     const actionsBlock = blocks.find((b) => b.includes(".actions"));
     expect(actionsBlock, "the 899px block must still address .actions").toBeTruthy();
-    expect(actionsBlock).toMatch(/position:\s*static/);
     expect(actionsBlock).toMatch(/opacity:\s*1/);
-    expect(actionsBlock).toMatch(/background:\s*none/);
+    expect(actionsBlock).not.toMatch(/position:/);
+    expect(actionsBlock).not.toMatch(/background:/);
   });
 });
 

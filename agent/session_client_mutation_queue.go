@@ -144,6 +144,8 @@ func (s *Session) clientMutationQueue(params appwire.TurnQueueParams) (appwire.T
 		}
 		// Queueing another message is re-engaging: release the wait.
 		snapshot.QueueHeld = false
+		// Re-engaging releases the parked steer too (issue #174).
+		snapshot.SteeringHeld = false
 		snapshot.InputQueue = append(snapshot.InputQueue, clientMutationQueueEntry{
 			ID:               record.StableQueueEntryIDs[0],
 			ClientMutationID: record.ClientMutationID,
@@ -279,6 +281,15 @@ func (s *Session) claimSteeringCarrierTurn() (turnID string, ok bool) {
 	}
 	if err := s.clientMutations.mutate(func(snapshot *clientMutationSnapshot) error {
 		if snapshot.InterruptFence != nil || snapshot.ActiveTurnID != "" {
+			return nil
+		}
+		// A Stop parks pending user steering until the user asks for something to
+		// run, the same way QueueHeld parks the input queue. Claiming the steering
+		// carrier here would hand the steer to a turn the Stop just ended, so it
+		// is refused -- mirroring popQueueHead's QueueHeld gate (issue #174). The
+		// steer stays in PendingExecutions/SteeringOrder; nothing moves, so its
+		// causal provenance is never at risk (issue #146, Option C).
+		if snapshot.SteeringHeld {
 			return nil
 		}
 		for _, id := range snapshot.SteeringOrder {
@@ -507,6 +518,15 @@ func (s *Session) clientMutationSteer(params appwire.TurnSteerParams) (appwire.T
 // no-ops, repeated kicks coalesce into one parked send, and a wake that cannot
 // name its turn stands down rather than running unaddressable.
 func (s *Session) wakeForPendingSteering() {
+	// A Stop parks pending user steering behind the SteeringHeld gate (issue
+	// #174). Waking here would restart the session and deliver the steer to the
+	// model anyway -- exactly the open steering rail the gate exists to close.
+	// The steer stays parked in PendingExecutions/SteeringOrder until a
+	// user-initiated run trigger clears the gate, so its causal provenance is
+	// never at risk (issue #146, Option C — park in place).
+	if s.clientMutations != nil && s.clientMutations.steeringHeld() {
+		return
+	}
 	// Only the user's own steering provokes a turn. Daemon-authored steering --
 	// the current-task reminder, hook context, a transcript pointer -- is
 	// context for whatever turn runs next, and the round loop drains it into
@@ -589,6 +609,9 @@ func (s *Session) clientMutationDrain(params appwire.TurnDrainAsSteerParams) (ap
 		// Draining IS the user asking for the queue to run. Below the effect
 		// rejection so a refused drain cannot unpark it.
 		snapshot.QueueHeld = false
+		// Draining is a user-initiated run, so the parked steer is released too
+		// (issue #174).
+		snapshot.SteeringHeld = false
 		for _, entry := range entries {
 			removeQueuedMutationSource(snapshot, entry, "transformed")
 		}
@@ -696,6 +719,9 @@ func (s *Session) clientMutationPromote(params appwire.TurnPromoteQueuedAsSteerP
 		// Promoting is the user picking one to run now. Below the effect
 		// rejection so a refused promote cannot unpark it.
 		snapshot.QueueHeld = false
+		// Promoting is a user-initiated run, so the parked steer is released too
+		// (issue #174).
+		snapshot.SteeringHeld = false
 		entry := snapshot.InputQueue[index]
 		snapshot.InputQueue = append(snapshot.InputQueue[:index], snapshot.InputQueue[index+1:]...)
 		snapshot.QueueRevision++

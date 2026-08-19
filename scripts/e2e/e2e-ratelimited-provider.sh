@@ -40,6 +40,7 @@ fixtures_dir="$repo_root/test/e2e/fake429"
 
 retry_after=8
 stop_dir=""
+
 while [ $# -gt 0 ]; do
 	case "$1" in
 	--retry-after)
