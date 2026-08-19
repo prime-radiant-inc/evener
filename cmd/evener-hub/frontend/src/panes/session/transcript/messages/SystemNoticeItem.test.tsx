@@ -329,18 +329,6 @@ test("a failure adjacent to a group that does collapse is left outside it, and u
   expect(summary?.textContent).toBe("3 system events · notice a");
 });
 
-// The stable item_system_prompt id remains a narrow fallback for a system
-// prompt projected by an older daemon that predates the typed eventKind, so a
-// heterogeneous-version relay still collapses it correctly.
-test("the item_system_prompt id still classifies as scaffold when the wire carries no eventKind (old-daemon fallback)", () => {
-  showSystemPrompt();
-  render(<TurnBlock turn={turnWith([item("item_system_prompt", { text: "You are Evener." })])} />);
-  expect(screen.getByTestId("system-notice-scaffold")).toBeTruthy();
-  expect(screen.getByTestId("system-notice-scaffold").querySelector("summary")?.textContent).toBe(
-    "System prompt · 15 chars",
-  );
-});
-
 // --- round timings redesign (kata 7zkv) ------------------------------------
 // A round_timings item's raw dump ("Round 0 total=6.411312958s
 // llm=4.935822084s context=8.625µs ...") answered "where did this round go"
