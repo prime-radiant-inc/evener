@@ -97,7 +97,11 @@ test("the dockview-theme.css naming exception is scoped to its exact path, not j
 //    `color-mix(in oklab, var(--accent) 40%, transparent)`) is normal
 //    token composition, not a new color; any raw hex/rgb/... smuggled
 //    into a color-mix() argument is still caught since this regex scans
-//    the whole file text, nesting notwithstanding.
+//    the whole file text, nesting notwithstanding. The hex branch excludes
+//    a leading "issue #"/"Issue #" - house style for citing a GitHub issue
+//    in a comment (pervasive outside src/styles too) - so a 3-hex-digit
+//    issue number (e.g. #196) doesn't false-positive as a hex color; a hex
+//    code left in a comment with no such prefix still trips it.
 // 2. NAMED_COLOR_RE - the CSS named-color keywords (red, white, black, ...;
 //    NOT transparent/currentColor, which aren't chromatic, and NOT CSS-wide
 //    keywords like inherit/initial/unset/revert/none/auto). Unlike (1),
@@ -113,7 +117,7 @@ test("the dockview-theme.css naming exception is scoped to its exact path, not j
 //    otherwise break DECLARATION_VALUE_RE's adjacency requirement and
 //    silently hide the declaration after it - see that regex's own
 //    comment for why.
-const COLOR_LITERAL_RE = /#[0-9a-fA-F]{3,8}\b|\b(?:rgba?|hsla?|oklch|oklab|lab|lch)\(/g;
+const COLOR_LITERAL_RE = /(?<!issue )(?<!Issue )#[0-9a-fA-F]{3,8}\b|\b(?:rgba?|hsla?|oklch|oklab|lab|lch)\(/g;
 
 // CSS Color Module Level 4 named colors (the full "extended color keywords"
 // list, including rebeccapurple) - https://www.w3.org/TR/css-color-4/#named-colors,
@@ -372,6 +376,25 @@ test("a comment containing a named color does not false-positive once stripped, 
 test("still catches hex/rgb/hsl/oklch literals alongside named colors", () => {
   expect(chromaticLiteralViolations(".foo { color: #ff0000; }")).toEqual(["#ff0000"]);
   expect(chromaticLiteralViolations(".foo { color: rgb(255, 0, 0); }")).toEqual(["rgb("]);
+});
+
+// An "issue #NNN"/"Issue #NNN" reference is house style for citing a GitHub
+// issue in a comment (grep any of agent/, cmd/, or this file's own siblings
+// for "issue #" - it's pervasive, predating this test). A 3-hex-digit issue
+// number (e.g. #196: 1, 9, 6 are all valid hex digits) is otherwise
+// indistinguishable from a 3-digit hex color to COLOR_LITERAL_RE, which
+// scans comment-intact text on purpose (see that regex's own comment) - so
+// without this exception, citing an issue whose number happens to look like
+// hex would trip a design-token contract that has nothing to do with the
+// citation. The exception is narrow (only the literal "issue #"/"Issue #"
+// prefix), so a hex code genuinely left in a comment - the case this
+// mechanism exists to catch - still trips it.
+test("an issue-number reference that looks like a hex literal is not a false positive", () => {
+  expect(chromaticLiteralViolations("/* a real flex item (issue #196) now */")).toEqual([]);
+  expect(chromaticLiteralViolations("/* Issue #196: see .actions above */")).toEqual([]);
+  // Not issue-prefixed: still a violation, proving the exception didn't
+  // broaden into "any #-prefixed hex-looking digits are fine".
+  expect(chromaticLiteralViolations("/* #196 alone, no issue prefix */")).toEqual(["#196"]);
 });
 
 // --- (b) the three attention-family vars stay on the allowlist ---------

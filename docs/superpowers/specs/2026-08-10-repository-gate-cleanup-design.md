@@ -11,7 +11,7 @@ The work does not add compatibility paths, new runtime configuration, or benchma
 
 ## Test-runner root cause
 
-`scripts/run-module-tests.sh` builds its owned log directory from
+`scripts/gate/run-module-tests.sh` builds its owned log directory from
 `"${TMPDIR:-/tmp}/evener-module-tests.XXXXXX"`. macOS normally exports `TMPDIR`
 with a trailing slash, so the resulting string contains `//`. The filesystem
 accepts that spelling, but Go and path helpers later return the normalized

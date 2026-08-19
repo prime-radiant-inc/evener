@@ -161,7 +161,7 @@ replace that operational precondition.
 
 ### 3. Build the runtime pair through one staging target
 
-Add a small `scripts/build-runtime-pair.sh` behavior boundary and a private
+Add a small `scripts/ops/build-runtime-pair.sh` behavior boundary and a private
 `build-runtime` Make target. The script builds both commands into a temporary
 staging directory:
 

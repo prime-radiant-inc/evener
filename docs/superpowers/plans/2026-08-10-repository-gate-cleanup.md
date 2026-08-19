@@ -18,7 +18,7 @@ shell-source or wording assertions.
 **Files:**
 
 - Modify: `scripts/run-module-tests-selftest.sh`
-- Modify: `scripts/run-module-tests.sh`
+- Modify: `scripts/gate/run-module-tests.sh`
 
 1. Add a self-test case that invokes the real runner with an existing
    trailing-slash `TMPDIR`, records the temp root received by each fake child,

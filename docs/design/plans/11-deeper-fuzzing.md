@@ -193,7 +193,7 @@ gitleaks gate is mandatory and already built; never commit un-scrubbed capture.
 proves a *curated* set of oracles fire; this measures detection across the whole
 SUT and surfaces code that has fuzz coverage but no teeth.
 
-**Mechanism.** Generalize the W1 audit harness (`scripts/fuzz-oracle-audit.sh`):
+**Mechanism.** Generalize the W1 audit harness (`scripts/fuzz/fuzz-oracle-audit.sh`):
 
 - Extend it to **rapid targets** (the known follow-up — it is native-only today),
   so the stateful oracles (lifecycle, jobstore, compaction) participate.

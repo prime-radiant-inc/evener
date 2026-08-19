@@ -32,7 +32,7 @@ test("renders State dir (from storage, not hub), Run dir (from hub), and the sta
   expect(await screen.findByText("/home/user/.evener")).toBeTruthy();
   expect(screen.getByText("/tmp/evener-run")).toBeTruthy();
   expect(screen.getByText("State dir").tagName).toBe("DT");
-  expect(screen.getByText("~/.evener/hub.toml")).toBeTruthy();
+  expect(screen.getByText("~/.config/evener/hub.toml")).toBeTruthy();
   expect(
     screen.getByText("Main configuration file. Edit it to change addresses, providers, and spawn defaults."),
   ).toBeTruthy();
@@ -44,8 +44,8 @@ test("Hub config's dd carries no 'edit to change' dim hint (unlike General's own
 
   render(<StorageSection />);
 
-  const configValue = await screen.findByText("~/.evener/hub.toml");
-  expect(configValue.textContent).toBe("~/.evener/hub.toml");
+  const configValue = await screen.findByText("~/.config/evener/hub.toml");
+  expect(configValue.textContent).toBe("~/.config/evener/hub.toml");
 });
 
 test("omits the Past index row entirely when pastIndex is absent (no configured past-session index)", async () => {
@@ -54,7 +54,7 @@ test("omits the Past index row entirely when pastIndex is absent (no configured 
 
   render(<StorageSection />);
 
-  await screen.findByText("~/.evener/hub.toml"); // wait for load to settle
+  await screen.findByText("~/.config/evener/hub.toml"); // wait for load to settle
   expect(screen.queryByText("Past index")).toBeNull();
 });
 

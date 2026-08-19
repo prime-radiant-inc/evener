@@ -130,11 +130,14 @@ func scenarioHarvestEndToEnd(t *testing.T) {
 	}
 }
 
-// A personal-source harvest with --keep-values must force shape-scrub and still
-// strip the planted secret (decision 6).
+// A non-personal-source harvest with --keep-values is allowed to keep values,
+// but the always-on secret gate must still strip the planted secret
+// (decision 6): --keep-values is not a bypass for known-secret detection.
 func scenarioHarvestPersonalSourceForcesScrub(t *testing.T) {
+	// state is an arbitrary fixture path, distinct from the personal default
+	// state root (cmdutil.DefaultStateRoot()), so isPersonalStateDir treats
+	// it as an explicit, non-personal source override.
 	state := writeFixtureState(t)
-	t.Setenv("EVENER_STATE_DIR", state) // makes this an explicit (non-personal) source override
 	t.Setenv("EVENER_FUZZ_CAPTURE_ENV", "1")
 	out := t.TempDir()
 

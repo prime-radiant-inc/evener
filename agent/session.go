@@ -798,7 +798,13 @@ func (s *Session) SetNotifyFunc(f func()) {
 	// during startup, before the user has said anything, and it is context for
 	// their first turn rather than work of its own -- so waking for it would
 	// start a turn nobody asked for, ahead of the opening prompt.
-	if pending || s.hasPendingUserSteering() || s.QueueDepth() > 0 || s.hasPendingDelegateDeliveries() || s.hasPendingRootDelegateAttention() || s.hasPendingStableDelegateAttention() || (s.jobManager != nil && s.jobManager.hasPendingStableWatchSettlementRetry()) {
+	//
+	// A steer parked by a Stop (SteeringHeld) is NOT counted: it is waiting on
+	// the user, not work in progress, and waking for it at attach would restart
+	// the session and deliver the steer the user just stopped -- the open
+	// steering rail issue #174 closes (issue #146, Option C — park in place).
+	steeringHeld := s.clientMutations != nil && s.clientMutations.steeringHeld()
+	if pending || (!steeringHeld && s.hasPendingUserSteering()) || s.QueueDepth() > 0 || s.hasPendingDelegateDeliveries() || s.hasPendingRootDelegateAttention() || s.hasPendingStableDelegateAttention() || (s.jobManager != nil && s.jobManager.hasPendingStableWatchSettlementRetry()) {
 		f()
 	}
 }

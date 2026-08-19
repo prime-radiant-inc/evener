@@ -288,7 +288,7 @@ Expected: `[no tests to run]` is acceptable only as proof the temporary file is 
 - Create: `agent/internal/delegatestore/store_test.go`
 - Create: `agent/internal/delegatestore/read_events_test.go`
 - Create: `agent/internal/delegatestore/fuzz_test.go`
-- Modify: `scripts/run-fuzz.sh`
+- Modify: `scripts/fuzz/run-fuzz.sh`
 
 **Interfaces:**
 - Consumes: durability and forensic conventions from `agent/internal/jobstore`, descriptor/sandbox inputs currently embedded in `jobstore` but without job/watch identity.
@@ -372,7 +372,7 @@ func FuzzReadEvents(f *testing.F)
 
 Assert no panic, deterministic fold, sequence/payload rejection, reopen equivalence, and no mutation by `ReadEvents`.
 
-In the same commit, register all three native targets in the authoritative `scripts/run-fuzz.sh` manifest:
+In the same commit, register all three native targets in the authoritative `scripts/fuzz/run-fuzz.sh` manifest:
 
 ```text
 native:agent:./internal/delegatestore:FuzzFold::fold.go
@@ -399,7 +399,7 @@ Explicitly stage the nine Task 2 package files plus the fuzz manifest, then comm
 ```bash
 git add -- agent/internal/delegatestore/event.go agent/internal/delegatestore/record.go agent/internal/delegatestore/fold.go agent/internal/delegatestore/store.go agent/internal/delegatestore/read_events.go
 git add -- agent/internal/delegatestore/fold_test.go agent/internal/delegatestore/store_test.go agent/internal/delegatestore/read_events_test.go agent/internal/delegatestore/fuzz_test.go
-git add -- scripts/run-fuzz.sh
+git add -- scripts/fuzz/run-fuzz.sh
 git commit -m "feat: add the stable delegate store" -m "Introduce one versioned root-tree delegate log, one pure aggregate fold, crash-atomic event batches, ordered delivery state, restart-safe stop membership, and a separate non-mutating reader for doctor and cold projection. No activation, job, epoch, unload, or compatibility model is introduced."
 ```
 
@@ -415,7 +415,7 @@ Expected: focused normal/race/fuzz tests and hooks pass.
 - Create: `agent/delegate_tree_controller_test.go`
 - Create: `agent/delegate_tree_start_test.go`
 - Create: `agent/delegate_tree_controller_fuzz_test.go`
-- Modify: `scripts/run-fuzz.sh`
+- Modify: `scripts/fuzz/run-fuzz.sh`
 
 **Interfaces:**
 - Consumes: `delegatestore.State`, append/fold API, existing delegate ID generator, existing tree turn/drive limits, and an injected clock/store fault seam.
@@ -516,7 +516,7 @@ Mutation assertions cover store bytes, fold, live map, capacity, update plans, a
 
 `FuzzDelegateControllerTransitions` generates reserve/abort/commit/finish stubs and asserts generation monotonicity, at most one exact binding, capacity equals reservations+active generations, closed resumability never reopens, persisted fold equals `c.durable`, and process IDs are never used as durable correlation.
 
-Register `native:agent:.:FuzzDelegateControllerTransitions::delegate_tree_controller.go;delegate_tree_start.go` in `scripts/run-fuzz.sh` in the same commit.
+Register `native:agent:.:FuzzDelegateControllerTransitions::delegate_tree_controller.go;delegate_tree_start.go` in `scripts/fuzz/run-fuzz.sh` in the same commit.
 
 - [ ] **Step 9: Prove the dormant controller has no active production caller**
 
@@ -540,7 +540,7 @@ Explicitly stage only the five dormant Task 3 package files plus the fuzz manife
 
 ```bash
 git add -- agent/delegate_tree_controller.go agent/delegate_tree_start.go agent/delegate_tree_controller_test.go agent/delegate_tree_start_test.go agent/delegate_tree_controller_fuzz_test.go
-git add -- scripts/run-fuzz.sh
+git add -- scripts/fuzz/run-fuzz.sh
 git commit -m "feat: add the delegate controller core" -m "Add one dormant root-tree lifecycle controller with direct-owner authorization, exact leases, process-only reservations, capacity accounting, append-before-fold mutation, immutable update plans, and an honest recovery latch for start/input double failure. The active delegate runtime remains unchanged until the vertical cutover."
 ```
 
@@ -558,7 +558,7 @@ Expected: focused normal/race/fuzz/activity tests and hooks pass.
 - Create: `agent/delegate_tree_finish_test.go`
 - Create: `agent/delegate_delivery_test.go`
 - Create: `agent/delegate_conversation_fuzz_test.go`
-- Modify: `scripts/run-fuzz.sh`
+- Modify: `scripts/fuzz/run-fuzz.sh`
 
 **Interfaces:**
 - Consumes: exact live binding, concrete child Session transcript/history methods supplied by test fixtures, `delegatestore.TerminalPacket`, ordered delivery fold, and controller update plans.
@@ -652,7 +652,7 @@ Add exact append-failure tests for `delegate_terminal_prepared`, the crash-atomi
 
 `FuzzDelegateConversationTransitions` generates steer/bind/settle/finish/ack sequences and asserts no accepted steer is lost, no entry binds twice, durable settling always has exactly one prepared packet, stale generations cannot mutate, stop precedence is monotonic, delivery IDs and waiters remain generation-keyed, and public outcomes exclude private dispositions.
 
-Register `native:agent:.:FuzzDelegateConversationTransitions::delegate_tree_steer.go;delegate_tree_finish.go;delegate_delivery.go` in `scripts/run-fuzz.sh` in the same commit.
+Register `native:agent:.:FuzzDelegateConversationTransitions::delegate_tree_steer.go;delegate_tree_finish.go;delegate_delivery.go` in `scripts/fuzz/run-fuzz.sh` in the same commit.
 
 - [ ] **Step 11: Run focused gates and commit**
 
@@ -672,7 +672,7 @@ Explicitly stage the seven Task 4 package files plus the fuzz manifest, then com
 
 ```bash
 git add -- agent/delegate_tree_steer.go agent/delegate_tree_finish.go agent/delegate_delivery.go agent/delegate_tree_steer_test.go agent/delegate_tree_finish_test.go agent/delegate_delivery_test.go agent/delegate_conversation_fuzz_test.go
-git add -- scripts/run-fuzz.sh
+git add -- scripts/fuzz/run-fuzz.sh
 git commit -m "feat: add exact delegate conversation lifecycle" -m "Add dormant durable steering, exact model/tool admission, settlement arbitration, prepared terminal state, one finish shape, deterministic ordered delivery, inline waiter ownership, and idempotent acknowledgement. Public outcomes remain independent from private attention disposition."
 ```
 
@@ -693,7 +693,7 @@ Expected: focused normal/race/fuzz tests and hooks pass.
 - Create: `agent/delegate_shell_repair_test.go`
 - Create: `agent/delegate_tree_restart_fuzz_test.go`
 - Modify: `agent/delegate_delivery.go`, `delegate_delivery_test.go` to make delivery receipts intersect stop membership and completion
-- Modify: `scripts/run-fuzz.sh`
+- Modify: `scripts/fuzz/run-fuzz.sh`
 
 **Interfaces:**
 - Consumes: stable parent graph, exact runtime bindings, starting reservations, controller capacity, deterministic stop request sequence, ordered delivery, and immutable externally collected shell evidence.
@@ -804,7 +804,7 @@ func TestDelegateShellRepairIsIdempotentAfterReopen(t *testing.T)
 
 `FuzzDelegateRestartEquivalence` compares uninterrupted controller state with store-close/read/fold/reconcile for valid generated histories, dropped process-local delivery receipts, and immutable shell evidence. It asserts no external constructor/provider callback is invoked and covered-owner delivery never survives stop completion.
 
-Register `native:agent:.:FuzzDelegateRestartEquivalence::delegate_tree_work.go;delegate_tree_stop.go;delegate_tree_restore.go;delegate_shell_repair.go` in `scripts/run-fuzz.sh` in the same commit.
+Register `native:agent:.:FuzzDelegateRestartEquivalence::delegate_tree_work.go;delegate_tree_stop.go;delegate_tree_restore.go;delegate_shell_repair.go` in `scripts/fuzz/run-fuzz.sh` in the same commit.
 
 - [ ] **Step 11: Run focused gates and commit**
 
@@ -824,7 +824,7 @@ Explicitly stage the eleven Task 5 package files plus the fuzz manifest, then co
 
 ```bash
 git add -- agent/delegate_tree_work.go agent/delegate_tree_stop.go agent/delegate_tree_restore.go agent/delegate_shell_repair.go agent/delegate_delivery.go agent/delegate_tree_work_test.go agent/delegate_tree_stop_test.go agent/delegate_tree_restore_test.go agent/delegate_shell_repair_test.go agent/delegate_delivery_test.go agent/delegate_tree_restart_fuzz_test.go
-git add -- scripts/run-fuzz.sh
+git add -- scripts/fuzz/run-fuzz.sh
 git commit -m "feat: add delegate subtree stop and restart repair" -m "Add exact shell work and delivery receipts, one globally serialized subtree stop identified by durable request sequence, immutable post-unlock cancellation, quiescent completion, provider-free shell-store repair, and restart recovery from externally collected read-only evidence."
 ```
 
@@ -1171,7 +1171,7 @@ git commit -m "feat: run delegates through stable lifecycle" -m "Route registere
 - Modify: agent/internal/jobstore/watch.go, agent/internal/jobstore/event.go, agent/internal/jobstore/record.go, agent/internal/jobstore/fold.go.
 - Modify: agent/session_tools_jobs.go, agent/session_tools_jobs_watch_test.go, agent/job_watch_parent_test.go, agent/job_watch_observer_test.go, agent/job_watch_restore_end_notice_test.go, agent/job_watch_restore_lost_notice_test.go, agent/job_watch_end_notice_test.go.
 - Modify: agent/root_watch_tree_program_fuzz_test.go, agent/job_watch_delegate_fuzz_test.go, agent/watch_seqfuzz_test.go, agent/watch_observer_fuzz_test.go, agent/watch_pending_frame_program_fuzz_test.go, agent/watch_restore_clear_history_program_fuzz_test.go, agent/watch_attach_terminal_program_fuzz_test.go, agent/watch_config_validation_program_fuzz_test.go.
-- Modify: scripts/run-fuzz.sh for FuzzDelegateAttentionFold and FuzzStableDelegateWatchDelivery.
+- Modify: scripts/fuzz/run-fuzz.sh for FuzzDelegateAttentionFold and FuzzStableDelegateWatchDelivery.
 
 **Interfaces:**
 
@@ -1192,7 +1192,7 @@ func TestDelegateAttention_RestartReplaysCallerDeliveryCommitWithoutDuplicateToo
 func FuzzDelegateAttentionFold(f *testing.F)
 ~~~
 
-Put this target and the Step 2 watch-delivery target in session_attention_fuzz_test.go under the evenerfuzz build tag. Register `native:agent:.:FuzzDelegateAttentionFold::session_attention.go` in scripts/run-fuzz.sh in this task.
+Put this target and the Step 2 watch-delivery target in session_attention_fuzz_test.go under the evenerfuzz build tag. Register `native:agent:.:FuzzDelegateAttentionFold::session_attention.go` in scripts/fuzz/run-fuzz.sh in this task.
 
 Immediately before adding the turn/helper implementation, run:
 
@@ -1228,7 +1228,7 @@ func TestStableDelegateWatch_LegacyDelegateJobRowFailsClosed(t *testing.T)
 func FuzzStableDelegateWatchDelivery(f *testing.F)
 ~~~
 
-Register `native:agent:.:FuzzStableDelegateWatchDelivery::session_attention.go;delegate_delivery.go;job_watch.go` in scripts/run-fuzz.sh. Port FuzzRootWatchTreeProgram and the watch configuration/pending/observer programs to typed stable endpoints; remove only the obsolete WatchdelDelegateResume subtarget, not WatchdelWatchOps or the existing watch-journal fuzz surfaces.
+Register `native:agent:.:FuzzStableDelegateWatchDelivery::session_attention.go;delegate_delivery.go;job_watch.go` in scripts/fuzz/run-fuzz.sh. Port FuzzRootWatchTreeProgram and the watch configuration/pending/observer programs to typed stable endpoints; remove only the obsolete WatchdelDelegateResume subtarget, not WatchdelWatchOps or the existing watch-journal fuzz surfaces.
 
 Use append-fault seams and channel barriers at each fsync/receipt boundary. Immediately before typed endpoint and receipt implementation, run:
 
@@ -1304,7 +1304,7 @@ git add -- agent/delegate_delivery.go agent/delegate_tree_controller.go agent/de
 git add -- agent/internal/delegatestore/record.go agent/internal/delegatestore/fold_test.go agent/internal/delegatestore/store_test.go agent/internal/delegatestore/fuzz_test.go
 git add -- agent/job_watch.go agent/job_notify.go agent/job_shell.go agent/jobs.go agent/jobs_nested.go agent/session_jobtree_drain.go
 git add -- agent/internal/jobstore/watch.go agent/internal/jobstore/event.go agent/internal/jobstore/record.go agent/internal/jobstore/fold.go
-git add -- agent/session_tools_jobs.go agent/session_tools_jobs_watch_test.go agent/job_watch_parent_test.go agent/job_watch_observer_test.go agent/job_watch_restore_end_notice_test.go agent/job_watch_restore_lost_notice_test.go agent/job_watch_end_notice_test.go scripts/run-fuzz.sh
+git add -- agent/session_tools_jobs.go agent/session_tools_jobs_watch_test.go agent/job_watch_parent_test.go agent/job_watch_observer_test.go agent/job_watch_restore_end_notice_test.go agent/job_watch_restore_lost_notice_test.go agent/job_watch_end_notice_test.go scripts/fuzz/run-fuzz.sh
 git add -- agent/root_watch_tree_program_fuzz_test.go agent/job_watch_delegate_fuzz_test.go agent/watch_seqfuzz_test.go agent/watch_observer_fuzz_test.go agent/watch_pending_frame_program_fuzz_test.go agent/watch_restore_clear_history_program_fuzz_test.go agent/watch_attach_terminal_program_fuzz_test.go agent/watch_config_validation_program_fuzz_test.go
 git commit -m "feat: preserve stable delegate delivery" -m "Keep the existing watch journal and shipped observer behavior while replacing delegate-job indirection with typed stable endpoints. Extend the Task 7 attention foundation with cold fold and durable resolution, then add stop-fenced watch receipts, unreachable-owner escalation, and ParentDelegateID shell routing without a second lifecycle or watch authority."
 ~~~
@@ -1321,7 +1321,7 @@ git commit -m "feat: preserve stable delegate delivery" -m "Keep the existing wa
 - Modify: agent/job_shell.go, agent/jobs.go, agent/session_jobtree_drain.go.
 - Modify: agent/sandbox_delegate.go, agent/session_tools_worktree.go, agent/session_tools_worktree_dispose.go, agent/session_worktree_close.go, agent/session_worktree_relock.go, agent/session_worktree_resume.go, agent/session_worktree_sweep.go.
 - Modify: agent/delegate_disposal_hint_test.go, agent/session_tools_worktree_livework_test.go, agent/session_tools_worktree_dispose_test.go, agent/session_worktree_close_test.go.
-- Modify: scripts/run-fuzz.sh for FuzzDelegateReclaimStopRestart.
+- Modify: scripts/fuzz/run-fuzz.sh for FuzzDelegateReclaimStopRestart.
 
 **Interfaces:**
 
@@ -1345,7 +1345,7 @@ func TestDelegateRuntimeReclaim_NoTimerUnloadEventOrStableDataDeletion(t *testin
 func FuzzDelegateReclaimStopRestart(f *testing.F)
 ~~~
 
-Put the target in agent/delegate_tree_reclaim_fuzz_test.go under the evenerfuzz build tag. Register `native:agent:.:FuzzDelegateReclaimStopRestart::delegate_tree_reclaim.go;delegate_tree_stop.go;delegate_tree_restore.go` in scripts/run-fuzz.sh in this task.
+Put the target in agent/delegate_tree_reclaim_fuzz_test.go under the evenerfuzz build tag. Register `native:agent:.:FuzzDelegateReclaimStopRestart::delegate_tree_reclaim.go;delegate_tree_stop.go;delegate_tree_restore.go` in scripts/fuzz/run-fuzz.sh in this task.
 
 Immediately before reclamation implementation, run:
 
@@ -1442,7 +1442,7 @@ git add -- agent/delegate_tree_reclaim.go agent/delegate_tree_reclaim_test.go ag
 git add -- agent/delegate_tree_controller.go agent/delegate_tree_start.go agent/delegate_tree_stop.go agent/delegate_tree_restore.go agent/delegate_tree_work.go agent/delegate_runtime.go
 git add -- agent/session.go agent/session_config.go agent/session_lifecycle.go agent/tree_counter.go agent/job_shell.go agent/jobs.go agent/session_jobtree_drain.go
 git add -- agent/sandbox_delegate.go agent/session_tools_worktree.go agent/session_tools_worktree_dispose.go agent/session_worktree_close.go agent/session_worktree_relock.go agent/session_worktree_resume.go agent/session_worktree_sweep.go
-git add -- agent/delegate_disposal_hint_test.go agent/session_tools_worktree_livework_test.go agent/session_tools_worktree_dispose_test.go agent/session_worktree_close_test.go scripts/run-fuzz.sh
+git add -- agent/delegate_disposal_hint_test.go agent/session_tools_worktree_livework_test.go agent/session_tools_worktree_dispose_test.go agent/session_worktree_close_test.go scripts/fuzz/run-fuzz.sh
 git commit -m "feat: preserve delegate retention and cleanup" -m "Rehome max_retained_terminal as admission-triggered runtime reclamation, make stable stop recursively self-driving, close exact shell receipts on timeout, and bind worktree/sandbox guards and disposal to stable delegate descriptors without adding unload lifecycle state."
 ~~~
 
@@ -1686,7 +1686,7 @@ Add exact Vitest cases in the named test files:
 Immediately before web implementation, run:
 
 ~~~bash
-scripts/web-preflight.sh
+scripts/web/web-preflight.sh
 cd cmd/evener-hub/frontend
 npx vitest run --maxWorkers=4 src/stores/threads.test.ts src/stores/activityPanel.test.ts src/protocol/reducer.test.ts src/panes/session/chrome/activityData.test.ts src/panes/session/chrome/activityRows.test.ts src/panes/session/chrome/ActivityTree.test.tsx src/panes/session/transcript/ToolCallItem.test.tsx src/panes/session/transcript/tools/jobTools.test.tsx src/panes/session/transcript/tools/subagentModule.test.tsx src/panes/session/transcript/tools/subagentModuleStore.test.ts src/panes/session/transcript/messages/steeringClassify.test.ts src/panes/session/transcript/messages/NotificationCard.test.tsx src/panes/session/transcript/messages/SteeringItem.test.tsx
 cd ../../..
@@ -1761,7 +1761,7 @@ git commit -m "feat: cut clients to stable delegates" -m "Carry stable delegate 
 - Modify: audit and rewrite or retire only non-allowlisted legacy references in these exact watch/notification owners: agent/doctor/watches_receiver_test.go, agent/fuzz_jd_keep_listed_job_row_test.go, agent/fuzz_lx_notify_test.go, agent/fuzz_wv_validate_send_target_test.go, agent/fuzz_wx_watch_test.go, agent/job_notify_consume_test.go, agent/job_notify_test.go, agent/job_watch_config_test.go, agent/job_watch_drain_render_fuzz_test.go, agent/job_watch_loopguard_test.go, agent/job_watch_pending_state_fuzz_test.go, agent/job_watch_registry_receiver_test.go, agent/job_watch_seams_fuzz_test.go, agent/job_watch_send_test.go, agent/job_watch_test.go, agent/job_watch_timers_observe_fuzz_test.go, agent/notification_test.go, agent/shell_notify_digest_program_fuzz_test.go.
 - Modify: audit and rewrite or retire only non-allowlisted legacy references in these exact job/session owners: agent/job_manager_error_recovery_fuzz_test.go, agent/job_reconcile_test.go, agent/job_shell_seed100_fuzz_test.go, agent/job_transcript_read_test.go, agent/jobs_activity_past_test.go, agent/jobs_activity_test.go, agent/jobs_nested_seed100_more_test.go, agent/jobs_seed100_fuzz_test.go, agent/jobs_seed100_more_test.go, agent/jobs_seed100_range_a_test.go, agent/jobs_test.go, agent/lifecycle_ops_test.go, agent/nested_drain_branches_fuzz_test.go, agent/session_jobtree_drain_seed100_more_test.go, agent/session_jobtree_drain_stall_test.go, agent/session_jobtree_drain_test.go, agent/session_misc_fuzz_test.go, agent/session_provenance_test.go, agent/session_restore_close_status_program_fuzz_test.go, agent/session_subagent_livetree_test.go, agent/session_tools_jobs_fuzz_test.go, agent/session_tools_jobs_seed100_final_test.go, agent/session_tools_jobs_seed100_more_test.go, agent/session_tools_jobs_seed100_range_b_test.go, agent/session_tools_jobs_seed100_range_c_test.go, agent/session_tools_jobs_seed100_range_d_test.go, agent/session_tools_transcript_job_read_test.go.
 - Modify: audit and rewrite or retire only non-allowlisted legacy references in these exact isolation/lifecycle owners: agent/sandbox_delegate_create_test.go, agent/session_init_worktree_seed100_fuzz_test.go, agent/session_lifecycle_tail_coverage_fuzz_test.go, agent/session_tools_worktree_dispose_execute_test.go, agent/session_tools_worktree_dispose_resume_test.go, agent/session_tools_worktree_remove_force_dispose_test.go. ParentJobID remains valid only in shell-to-shell fixtures; historical rendering and explicit legacy-rejection fixtures remain read-only allowlists.
-- Modify: scripts/run-fuzz.sh with the exact manifest disposition below.
+- Modify: scripts/fuzz/run-fuzz.sh with the exact manifest disposition below.
 - Do not delete or weaken: agent/job_watch.go, agent/internal/jobstore/watch.go, agent/job_shell.go, agent/salvage.go, the nudge/stop-hook implementation in agent/subagents.go, agent/delegate_tree_reclaim.go, agent/delegate_resource_supervision_test.go, agent/delegate_resource_watch_test.go, agent/delegate_resource_shell_test.go, or historical rendering in agent/transcript_render.go.
 
 **Interfaces:**
@@ -1803,7 +1803,7 @@ Do not create a separate routing commit in this task. With the gate GREEN, any r
 
 Before changing production, inventory the unreachable definitions below. Their non-allowlisted matches are the structural RED for this deletion-only task. Then delete only the branches and types that create, fold, mirror, or identify delegate JobRecords, plus their implementation-shape tests and fuzz targets. Retain shell/watch JobRecord types and every allowlisted stable or historical surface. The Step 1 GREEN gate proves public dormancy; this step proves the old authority is physically absent without changing the stable contract.
 
-In scripts/run-fuzz.sh remove the rows for FuzzLxValidateDelegateRestoreState, FuzzDelegateCreationRestoreConfigProgram, FuzzRootDelegateResumeLifecycleProgram, FuzzDelegateFinalizeReportProgram, FuzzDgfzSendDelegateMessage, FuzzWatchdelDelegateResume, FuzzJdValidateDelegateGrant, FuzzJdResolveDelegateTerminalStatus, FuzzJdClassifyDelegateSendTarget, FuzzJdrDelegateRestoreLifecycle, and every FuzzJobDelegate-prefixed target after their old functions are removed. Rewrite FuzzJobtoolsContractProgram to point only at stable tool functions. Retain FuzzWatchdelWatchOps, FuzzRootWatchTreeProgram, every generic watch-journal target, FuzzWvQuietWatchdogTick, the three Task 1–5 delegate-store/controller/restart fuzz targets, and the Task 8–9 attention/watch/reclamation targets.
+In scripts/fuzz/run-fuzz.sh remove the rows for FuzzLxValidateDelegateRestoreState, FuzzDelegateCreationRestoreConfigProgram, FuzzRootDelegateResumeLifecycleProgram, FuzzDelegateFinalizeReportProgram, FuzzDgfzSendDelegateMessage, FuzzWatchdelDelegateResume, FuzzJdValidateDelegateGrant, FuzzJdResolveDelegateTerminalStatus, FuzzJdClassifyDelegateSendTarget, FuzzJdrDelegateRestoreLifecycle, and every FuzzJobDelegate-prefixed target after their old functions are removed. Rewrite FuzzJobtoolsContractProgram to point only at stable tool functions. Retain FuzzWatchdelWatchOps, FuzzRootWatchTreeProgram, every generic watch-journal target, FuzzWvQuietWatchdogTick, the three Task 1–5 delegate-store/controller/restart fuzz targets, and the Task 8–9 attention/watch/reclamation targets.
 
 Run these inventories before and after deletion. Before deletion, at least one command must identify the unreachable legacy authority as the required structural RED; after deletion, every command must be empty or contain only an explicit historical-fixture/legacy-rejection allowlist documented in delegate_legacy_dormancy_test.go:
 
@@ -1848,7 +1848,7 @@ git add -- agent/doctor/watches_receiver_test.go agent/fuzz_jd_keep_listed_job_r
 git add -- agent/job_manager_error_recovery_fuzz_test.go agent/job_reconcile_test.go agent/job_shell_seed100_fuzz_test.go agent/job_transcript_read_test.go agent/jobs_activity_past_test.go agent/jobs_activity_test.go agent/jobs_nested_seed100_more_test.go agent/jobs_seed100_fuzz_test.go agent/jobs_seed100_more_test.go agent/jobs_seed100_range_a_test.go agent/jobs_test.go agent/lifecycle_ops_test.go agent/nested_drain_branches_fuzz_test.go agent/session_jobtree_drain_seed100_more_test.go agent/session_jobtree_drain_stall_test.go agent/session_jobtree_drain_test.go agent/session_misc_fuzz_test.go agent/session_provenance_test.go agent/session_restore_close_status_program_fuzz_test.go agent/session_subagent_livetree_test.go agent/session_tools_jobs_fuzz_test.go agent/session_tools_jobs_seed100_final_test.go agent/session_tools_jobs_seed100_more_test.go agent/session_tools_jobs_seed100_range_b_test.go agent/session_tools_jobs_seed100_range_c_test.go agent/session_tools_jobs_seed100_range_d_test.go agent/session_tools_transcript_job_read_test.go
 git add -- agent/sandbox_delegate_create_test.go agent/session_init_worktree_seed100_fuzz_test.go agent/session_lifecycle_tail_coverage_fuzz_test.go agent/session_tools_worktree_dispose_execute_test.go agent/session_tools_worktree_dispose_resume_test.go agent/session_tools_worktree_remove_force_dispose_test.go
 git add -- agent/job_delegate_attach_finalize_seed100_fuzz_test.go agent/job_delegate_exact_create_send_fuzz_test.go agent/job_delegate_exact_finalize_report_fuzz_test.go agent/job_delegate_exact_restore_fuzz_test.go agent/job_delegate_exact_running_attach_fuzz_test.go agent/job_delegate_exact_tail_create_restore_fuzz_test.go agent/job_delegate_exact_tail_finalize_fuzz_test.go agent/job_delegate_exact_tail_running_fuzz_test.go
-git add -- agent/job_delegate_git_report_seed100_fuzz_test.go agent/job_delegate_sandbox_schema_seed100_fuzz_test.go agent/job_delegate_seed100_fuzz_test.go agent/job_delegate_send_fuzz_test.go agent/job_delegate_send_seed100_fuzz_test.go agent/subagents_fuzz_test.go agent/subagents_seed100_exact_fuzz_test.go agent/nested_subagent_lifecycle_program_fuzz_test.go scripts/run-fuzz.sh
+git add -- agent/job_delegate_git_report_seed100_fuzz_test.go agent/job_delegate_sandbox_schema_seed100_fuzz_test.go agent/job_delegate_seed100_fuzz_test.go agent/job_delegate_send_fuzz_test.go agent/job_delegate_send_seed100_fuzz_test.go agent/subagents_fuzz_test.go agent/subagents_seed100_exact_fuzz_test.go agent/nested_subagent_lifecycle_program_fuzz_test.go scripts/fuzz/run-fuzz.sh
 git commit -m "refactor: delete dormant delegate job schema" -m "Delete the now-unreachable delegate JobRecord reducer branches, activation fields, helpers, identifiers, tests, and fuzz registrations after the registered route is already stable-only. Preserve the existing watch journal, shell jobs, supervision, reclamation, historical rendering, and explicit fail-closed legacy detection."
 ~~~
 
@@ -1961,7 +1961,7 @@ go test ./cmd/evener-hub -run '^TestAppThreadReadColdDelegatesMatchReconnectedDe
 go test -race ./cmd/evener-hub -run '^TestAppThreadReadColdDelegatesMatchReconnectedDetailedStatus$' -count=20
 go test ./cmd/evener-hub/internal/hubcore -run '^TestHubProberStableDelegate' -count=20
 go test -race ./cmd/evener-hub/internal/hubcore -run '^TestHubProberStableDelegate' -count=20
-scripts/web-preflight.sh
+scripts/web/web-preflight.sh
 cd cmd/evener-hub/frontend
 npx vitest run --maxWorkers=4 src/stores/threads.test.ts src/stores/activityPanel.test.ts src/protocol/reducer.test.ts src/panes/session/chrome/activityData.test.ts src/panes/session/chrome/activityRows.test.ts src/panes/session/chrome/ActivityTree.test.tsx src/panes/session/transcript/ToolCallItem.test.tsx src/panes/session/transcript/tools/jobTools.test.tsx src/panes/session/transcript/tools/subagentModule.test.tsx src/panes/session/transcript/tools/subagentModuleStore.test.ts src/panes/session/transcript/messages/steeringClassify.test.ts src/panes/session/transcript/messages/NotificationCard.test.tsx src/panes/session/transcript/messages/SteeringItem.test.tsx
 cd ../../..

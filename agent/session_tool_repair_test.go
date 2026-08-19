@@ -164,11 +164,43 @@ func TestPrepareToolCall_NestedSchemaErrors_NameRealFieldAndContainer(t *testing
 		call := llm.ToolCallData{ID: "c2", Name: "ask_user",
 			Arguments: json.RawMessage(`{"questions":[{"header":"way too long for a chip label","question":"q","options":[{"label":"a","detail":"a"},{"label":"b","detail":"b"}]}]}`)}
 		res := prepareToolCall(call, reg.Get("ask_user"), []string{"ask_user"}, "ask_user", "")
-		want := "ask_user: argument \"questions[0].header\" has the wrong type or value.\n" +
-			"Required arguments in questions[0]: question (string), options (array).\n" +
-			"Example: {\"questions\": []}"
+		want := "ask_user: argument \"questions[0].header\" exceeds maxLength (12). Value \"way too long for a chip label\" is 29 characters."
 		if res.PrevalErr != want {
 			t.Fatalf("PrevalErr =\n%s\nwant:\n%s", res.PrevalErr, want)
+		}
+		if strings.Contains(res.PrevalErr, "Required arguments") {
+			t.Fatalf("message must not include the generic required-arguments line: %q", res.PrevalErr)
+		}
+	})
+
+	// Issue #193 repro: a header exceeding the documented maxLength (12)
+	// must surface the actual constraint and value/length, not the misleading
+	// "Required arguments" message that claims question/options were missing.
+	t.Run("ask_user header Module & repo is 13 chars", func(t *testing.T) {
+		call := llm.ToolCallData{ID: "c3", Name: "ask_user",
+			Arguments: json.RawMessage(`{"questions":[{"header":"Module & repo","question":"q","options":[{"label":"a","detail":"a"},{"label":"b","detail":"b"}]}]}`)}
+		res := prepareToolCall(call, reg.Get("ask_user"), []string{"ask_user"}, "ask_user", "")
+		want := "ask_user: argument \"questions[0].header\" exceeds maxLength (12). Value \"Module & repo\" is 13 characters."
+		if res.PrevalErr != want {
+			t.Fatalf("PrevalErr =\n%s\nwant:\n%s", res.PrevalErr, want)
+		}
+	})
+
+	// The RCA for issue #193 confirmed enum is a second, independently
+	// affected constraint class: an invalid task_list action produced the
+	// same misleading "has the wrong type or value" + "Required arguments:
+	// action (string)." pair, even though action was present. Verify it
+	// through the real DefTaskList schema, not a hand-built fixture.
+	t.Run("task_list action bogus enum value", func(t *testing.T) {
+		call := llm.ToolCallData{ID: "c4", Name: "task_list",
+			Arguments: json.RawMessage(`{"action":"bogus"}`)}
+		res := prepareToolCall(call, reg.Get("task_list"), []string{"task_list"}, "task_list", "")
+		want := "task_list: argument \"action\" is not one of the allowed values: view, append, update. Value is \"bogus\"."
+		if res.PrevalErr != want {
+			t.Fatalf("PrevalErr =\n%s\nwant:\n%s", res.PrevalErr, want)
+		}
+		if strings.Contains(res.PrevalErr, "Required arguments") {
+			t.Fatalf("message must not include the generic required-arguments line: %q", res.PrevalErr)
 		}
 	})
 }

@@ -124,7 +124,7 @@ so nothing could run at all. On a machine that HAS a second volume with
 room, move `GOCACHE` there, once per machine:
 
 ```
-scripts/setup-gocache.sh /path/on/a/big/volume
+scripts/ops/setup-gocache.sh /path/on/a/big/volume
 ```
 
 There is no default target: a big volume is a per-machine fact, and the
@@ -321,13 +321,13 @@ record of what that work was.
 Two pockets are larger, and neither has ever had a removal tool, because
 for both of them git's own "is this safe" check is unavailable:
 
-- `scripts/report-tmp-debris.sh` — per-session scratch under `/tmp`,
+- `scripts/ops/report-tmp-debris.sh` — per-session scratch under `/tmp`,
   measured at 10.0G across 120 entries on the same volume as the
   checkout. Scratch checkouts at ~270M each, stray per-session build
   caches, chrome profiles, dumps. A scratch checkout can hold a
   never-pushed experiment, so review each one; the bulk sweep needs
   authorization.
-- `scripts/report-orphaned-worktrees.sh` — ~1.6G of pre-rename checkouts
+- `scripts/ops/report-orphaned-worktrees.sh` — ~1.6G of pre-rename checkouts
   `git worktree list` has no record of (kata smw0).
 
 Both remain read-only inspection tools; nothing in this repo deletes

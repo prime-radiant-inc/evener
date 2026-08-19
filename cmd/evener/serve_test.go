@@ -246,6 +246,10 @@ func TestServe_WritesAndRemovesRendezvousFile(t *testing.T) {
 
 	tmpHome := t.TempDir()
 	t.Setenv("HOME", tmpHome)
+	// TestMain already points XDG_STATE_HOME at its own package-wide throwaway
+	// root; clear it here so the rendezvous dir this test inspects resolves
+	// under tmpHome (the HOME fallback) rather than that shared root.
+	t.Setenv("XDG_STATE_HOME", "")
 
 	args := []string{
 		"--model", os.Getenv("EVENER_TEST_PROVIDER") + "/" + os.Getenv("EVENER_TEST_MODEL"),
@@ -261,7 +265,7 @@ func TestServe_WritesAndRemovesRendezvousFile(t *testing.T) {
 		done <- runServe(args)
 	}()
 
-	runDir := filepath.Join(tmpHome, ".evener", "run")
+	runDir := filepath.Join(tmpHome, ".local", "state", "evener", "run")
 	pid := os.Getpid()
 	target := filepath.Join(runDir, strconv.Itoa(pid)+".json")
 

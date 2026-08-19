@@ -29,20 +29,20 @@ func FuzzLiveEvalPaths(f *testing.F) {
 	f.Add("true", "  /state  ", "  /home/evener  ", "", "")
 	// All three provider-config precedence arms, and combinations of
 	// empty/nonempty, so every arm has its own seed:
-	f.Add("1", "", "/home/evener", "/config/providers.toml", "")          // EVENER_PROVIDERS_CONFIG wins outright
-	f.Add("1", "", "/home/evener", "/config/providers.toml", "/statedir") //   ...even with EVENER_STATE_DIR also set
-	f.Add("1", "", "/home/evener", "", "/statedir")                       // EVENER_STATE_DIR wins when config env is empty
-	f.Add("1", "", "/home/evener", "", "")                                // falls all the way through to userHome/.evener
+	f.Add("1", "", "/home/evener", "/config/providers.toml", "")            // EVENER_PROVIDERS_CONFIG wins outright
+	f.Add("1", "", "/home/evener", "/config/providers.toml", "/xdg-config") //   ...even with XDG_CONFIG_HOME also set
+	f.Add("1", "", "/home/evener", "", "/xdg-config")                       // XDG_CONFIG_HOME wins when config env is empty
+	f.Add("1", "", "/home/evener", "", "")                                  // falls all the way through to userHome/.config/evener
 	f.Add("", "", "", "", "  ")
 
-	f.Fuzz(func(t *testing.T, enabledValue, stateHome, userHome, providersConfigEnv, stateDirEnv string) {
-		if len(enabledValue) > 64 || len(stateHome) > 4096 || len(userHome) > 4096 || len(providersConfigEnv) > 4096 || len(stateDirEnv) > 4096 {
+	f.Fuzz(func(t *testing.T, enabledValue, stateHome, userHome, providersConfigEnv, configHomeEnv string) {
+		if len(enabledValue) > 64 || len(stateHome) > 4096 || len(userHome) > 4096 || len(providersConfigEnv) > 4096 || len(configHomeEnv) > 4096 {
 			return
 		}
 		// os.Setenv rejects a NUL byte (returns an error, which t.Setenv
 		// turns into a fatal failure); that is an os/exec-level restriction
 		// on environment values, not a Paths/Enabled contract to enforce.
-		if strings.ContainsRune(providersConfigEnv, 0) || strings.ContainsRune(stateDirEnv, 0) {
+		if strings.ContainsRune(providersConfigEnv, 0) || strings.ContainsRune(configHomeEnv, 0) {
 			return
 		}
 
@@ -55,14 +55,14 @@ func FuzzLiveEvalPaths(f *testing.F) {
 		}
 
 		t.Setenv(envvars.EVENERProvidersConfig.Name, providersConfigEnv)
-		t.Setenv(envvars.EVENERStateDir.Name, stateDirEnv)
+		t.Setenv(envvars.XDGConfigHome.Name, configHomeEnv)
 
 		gotStateHome, gotProviders := Paths(stateHome, userHome)
 
 		trimmedStateHome := strings.TrimSpace(stateHome)
 		trimmedUserHome := strings.TrimSpace(userHome)
 		trimmedProvidersConfigEnv := strings.TrimSpace(providersConfigEnv)
-		trimmedStateDirEnv := strings.TrimSpace(stateDirEnv)
+		trimmedConfigHomeEnv := strings.TrimSpace(configHomeEnv)
 
 		wantStateHome := trimmedStateHome
 		if wantStateHome == "" {
@@ -73,20 +73,20 @@ func FuzzLiveEvalPaths(f *testing.F) {
 		}
 
 		// Three-level precedence, per the doc comment: EVENER_PROVIDERS_CONFIG
-		// wins outright; else EVENER_STATE_DIR/providers.toml; else
-		// userHome/.evener/providers.toml.
+		// wins outright; else XDG_CONFIG_HOME/evener/providers.toml; else
+		// userHome/.config/evener/providers.toml.
 		var wantProviders string
 		switch {
 		case trimmedProvidersConfigEnv != "":
 			wantProviders = trimmedProvidersConfigEnv
-		case trimmedStateDirEnv != "":
-			wantProviders = filepath.Join(trimmedStateDirEnv, "providers.toml")
+		case trimmedConfigHomeEnv != "":
+			wantProviders = filepath.Join(trimmedConfigHomeEnv, "evener", "providers.toml")
 		default:
-			wantProviders = filepath.Join(trimmedUserHome, ".evener", "providers.toml")
+			wantProviders = filepath.Join(trimmedUserHome, ".config", "evener", "providers.toml")
 		}
 		if gotProviders != wantProviders {
-			t.Fatalf("Paths(%q, %q) with EVENER_PROVIDERS_CONFIG=%q EVENER_STATE_DIR=%q providers = %q, want %q",
-				stateHome, userHome, providersConfigEnv, stateDirEnv, gotProviders, wantProviders)
+			t.Fatalf("Paths(%q, %q) with EVENER_PROVIDERS_CONFIG=%q XDG_CONFIG_HOME=%q providers = %q, want %q",
+				stateHome, userHome, providersConfigEnv, configHomeEnv, gotProviders, wantProviders)
 		}
 	})
 }

@@ -77,7 +77,7 @@ export function StorageSection() {
         />
         <SettingsField
           label="Hub config"
-          value={<Code>~/.evener/hub.toml</Code>}
+          value={<Code>~/.config/evener/hub.toml</Code>}
           help="Main configuration file. Edit it to change addresses, providers, and spawn defaults."
         />
         {pastIndex !== undefined && (

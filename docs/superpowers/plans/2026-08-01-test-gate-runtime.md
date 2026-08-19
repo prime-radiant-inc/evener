@@ -4,7 +4,7 @@
 
 **Goal:** Run every existing post-merge test exactly once while reducing the idle-box gate median to 100 seconds or less.
 
-**Architecture:** `scripts/run-module-tests.sh` remains the single scheduler. Two opt-in inputs change scheduling without changing coverage: `ROOT_FULL=1` removes exact `-short` only from the protected root wave, and `SELFTEST=1` starts `make selftest` after that wave and joins it alongside wave two. The Makefile enables only the self-test stream for ordinary `make test`; the optimized controller gate additionally enables full-root mode and drops the duplicate standalone root command after legacy equivalence is proven.
+**Architecture:** `scripts/gate/run-module-tests.sh` remains the single scheduler. Two opt-in inputs change scheduling without changing coverage: `ROOT_FULL=1` removes exact `-short` only from the protected root wave, and `SELFTEST=1` starts `make selftest` after that wave and joins it alongside wave two. The Makefile enables only the self-test stream for ordinary `make test`; the optimized controller gate additionally enables full-root mode and drops the duplicate standalone root command after legacy equivalence is proven.
 
 **Tech Stack:** Bash 3.2-compatible shell, GNU Make, Go test runner, fixture-driven shell self-tests.
 
@@ -22,7 +22,7 @@
 
 ## File map
 
-- `scripts/run-module-tests.sh`: owns module flags, wave scheduling, concurrent auxiliary streams, aggregate verdicts, and failure-log replay.
+- `scripts/gate/run-module-tests.sh`: owns module flags, wave scheduling, concurrent auxiliary streams, aggregate verdicts, and failure-log replay.
 - `scripts/run-module-tests-selftest.sh`: owns offline behavioral coverage of runner arguments, ordering, name collisions, verdicts, and failure evidence.
 - `Makefile`: owns the public `make selftest` and `make test` entry points.
 - `docs/testing.md`: owns the durable post-merge gate command contract.
@@ -36,7 +36,7 @@
 
 **Files:**
 - Modify: `scripts/run-module-tests-selftest.sh:20-48,171-180`
-- Modify: `scripts/run-module-tests.sh:90-160`
+- Modify: `scripts/gate/run-module-tests.sh:90-160`
 
 **Interfaces:**
 - Consumes: runner arguments in the existing `flags="$*"` representation.
@@ -93,7 +93,7 @@ Expected: exit 1 with exactly the new assertion reporting that root unexpectedly
 
 - [ ] **Step 3: Implement module-specific flag selection**
 
-In `scripts/run-module-tests.sh`, define the input with the other runner controls:
+In `scripts/gate/run-module-tests.sh`, define the input with the other runner controls:
 
 ```bash
 ROOT_FULL=${ROOT_FULL:-0}
@@ -138,7 +138,7 @@ Expected: exit 0, all checks pass, and output contains no warning or failure.
 Then run:
 
 ```bash
-git diff --check -- scripts/run-module-tests.sh scripts/run-module-tests-selftest.sh
+git diff --check -- scripts/gate/run-module-tests.sh scripts/run-module-tests-selftest.sh
 ```
 
 Expected: exit 0 with no output.
@@ -146,7 +146,7 @@ Expected: exit 0 with no output.
 - [ ] **Step 5: Commit the full-root flag contract**
 
 ```bash
-git add scripts/run-module-tests.sh scripts/run-module-tests-selftest.sh
+git add scripts/gate/run-module-tests.sh scripts/run-module-tests-selftest.sh
 git commit -m "test: let the root wave run the full suite" \
   -m "Add an opt-in ROOT_FULL runner mode that removes only exact -short from the protected root module while preserving every other module and flag. Pin the behavior through the fake-go argument seam so the test exercises the command actually invoked rather than matching rendered shell source."
 ```
@@ -157,7 +157,7 @@ git commit -m "test: let the root wave run the full suite" \
 
 **Files:**
 - Modify: `scripts/run-module-tests-selftest.sh:112-149,171-247`
-- Modify: `scripts/run-module-tests.sh:40-88,184-240`
+- Modify: `scripts/gate/run-module-tests.sh:40-88,184-240`
 
 **Interfaces:**
 - Consumes: `${MAKE:-make}`, `run_wave`, `logpath`, `fail`, and `failed_modules` from the runner.
@@ -351,7 +351,7 @@ Expected: exit 0, all old and new checks pass, and output is pristine.
 Then run:
 
 ```bash
-git diff --check -- scripts/run-module-tests.sh scripts/run-module-tests-selftest.sh
+git diff --check -- scripts/gate/run-module-tests.sh scripts/run-module-tests-selftest.sh
 ```
 
 Expected: exit 0 with no output.
@@ -359,7 +359,7 @@ Expected: exit 0 with no output.
 - [ ] **Step 6: Commit the self-test stream**
 
 ```bash
-git add scripts/run-module-tests.sh scripts/run-module-tests-selftest.sh
+git add scripts/gate/run-module-tests.sh scripts/run-module-tests-selftest.sh
 git commit -m "test: overlap tooling checks with wave two" \
   -m "Start the selftest stream only after the protected root wave, join it with the existing aggregate verdict machinery, and replay complete diagnostics on failure. Behavioral fixture events pin root isolation, wave-two overlap, reserved-name refusal, and failure evidence."
 ```
@@ -381,14 +381,14 @@ Revise the self-test comment to state that the runner starts this wave after pro
 
 ```make
 test: selftest
-	@MODULES="$(GO_MODULES)" MAKE="$(MAKE)" $(MEMCAP) scripts/run-module-tests.sh -short -count=1
+	@MODULES="$(GO_MODULES)" MAKE="$(MAKE)" $(MEMCAP) scripts/gate/run-module-tests.sh -short -count=1
 ```
 
 to:
 
 ```make
 test:
-	@MODULES="$(GO_MODULES)" SELFTEST=1 MAKE="$(MAKE)" $(MEMCAP) scripts/run-module-tests.sh -short -count=1
+	@MODULES="$(GO_MODULES)" SELFTEST=1 MAKE="$(MAKE)" $(MEMCAP) scripts/gate/run-module-tests.sh -short -count=1
 ```
 
 Do not alter `selftest`, `test-short`, `test-race`, or `test-web` coverage.

@@ -100,8 +100,10 @@ the hub and uses the same channel tracking.
 
 On first use, Evener creates:
 
-- `~/.evener/run` for live daemon rendezvous files.
-- `~/.evener/auth-token` for the local Hub/TUI bearer token.
+- `${XDG_STATE_HOME:-~/.local/state}/evener/run` for live daemon rendezvous
+  files and per-daemon logs.
+- `${XDG_STATE_HOME:-~/.local/state}/evener/auth-token` for the local Hub/TUI
+  bearer token.
 - `${XDG_STATE_HOME:-~/.local/state}/evener/projects/<project-id>/` for saved
   per-project session state. The project ID is readable (derived from the
   canonical project path) and ends with a 10-character base62 suffix.
@@ -110,39 +112,60 @@ On first use, Evener creates:
 
 The user skill and plugin directories are extension roots; installing Evener
 does not automatically enable their contents. Add standalone skill paths to
-`skills_dirs` and plugin paths to `plugin_dirs` in `~/.evener/launch.toml`, or
-pass them with the corresponding CLI flags for a single run. Plugin-contained
-skills live under that plugin and become available through the plugin path.
+`skills_dirs` and plugin paths to `plugin_dirs` in
+`${XDG_CONFIG_HOME:-~/.config}/evener/launch.toml`, or pass them with the
+corresponding CLI flags for a single run. Plugin-contained skills live under
+that plugin and become available through the plugin path.
 
 Provider credentials are not created by install. Configure them through the Hub
-or TUI credentials UI, `~/.evener/credentials.toml`, provider environment
-variables such as `OPENAI_API_KEY`, or OpenAI OAuth. See
+or TUI credentials UI, `${XDG_CONFIG_HOME:-~/.config}/evener/credentials.toml`,
+provider environment variables such as `OPENAI_API_KEY`, or OpenAI OAuth. See
 [docs/environment.md](docs/environment.md) for the complete environment variable
 reference.
 
 ### Migrating from Serf
 
-Evener was previously named Serf. If you have an existing Serf install, run
-`evener-migrate` once, before your first Evener launch:
+Evener was previously named Serf, and — before that — its home-directory
+layout went through an interim `~/.evener` step that has since been
+consolidated into the XDG config/state layout described above. If you have an
+existing Serf install, or a machine still on that interim `~/.evener` layout,
+run `evener-migrate` once, before your first Evener launch:
 
 ```bash
 evener-migrate
 ```
 
-It moves `~/.serf` to `~/.evener`, `${XDG_CONFIG_HOME:-~/.config}/serf` to
-`.../evener`, `${XDG_STATE_HOME:-~/.local/state}/serf` to `.../evener`, and
-any per-project `.serf` directory (in the current directory or a Git
-ancestor) to `.evener`. It refuses to overwrite a destination that already
-exists, so it's safe to run more than once. Pass `--dry-run` to preview the
-moves first, or `--verbose` to see every path it checked.
+It moves `${XDG_CONFIG_HOME:-~/.config}/serf` to `.../evener`,
+`${XDG_STATE_HOME:-~/.local/state}/serf` to `.../evener`, and any per-project
+`.serf` directory (in the current directory or a Git ancestor) to `.evener`.
+It also retires `~/.serf` and the interim `~/.evener`: whichever one exists,
+each file they held — `providers.toml`, `credentials.toml`, `hub.toml`, and
+`launch.toml` (user config) plus `auth-token`, `index.db`, `hub.lock`,
+`run/`, and `deletions/` (machine state) — moves individually into the config
+or state root above; there is no `~/.evener` in the final layout. It refuses
+to overwrite a destination that already exists, so it's safe to run more than
+once. Pass `--dry-run` to preview the moves first, or `--verbose` to see every
+path it checked.
+
+Re-running it is also how you repair a machine that migrated before a fix
+landed: after moving each root or file (or finding it already moved),
+`evener-migrate` walks the destination and rewrites any leftover absolute
+references to the old `serf`/`~/.evener` path it finds inside text files
+there — for example a plugin marketplace registry that still points
+`git pull` at `.../config/serf/plugins/marketplaces/<name>`, or a
+hand-edited `hub.toml` whose `run_dir`/`past_index_db` still name the old
+`~/.evener` location. It skips binaries and anything inside a Git working
+tree (a plugin marketplace clone, or a nested project checkout), so it's safe
+to run against a live install; files with nothing to rewrite are left
+untouched.
 
 If you skip this, the first Evener binary you run creates a fresh, empty
-`~/.evener` (and XDG config/state directories) — and once that empty
-directory exists, `evener-migrate` treats it as already migrated and skips
-it, leaving your old Serf data stranded with no further warning. To prevent
-that, Evener refuses to start when it finds a legacy Serf directory with no
-matching Evener directory yet, and its error names the path and points back
-to `evener-migrate`.
+XDG config/state layout — and once that exists, `evener-migrate` treats the
+config and state roots as already migrated and skips them, leaving your old
+Serf data stranded with no further warning. To prevent that, Evener refuses
+to start when it finds legacy Serf or interim `~/.evener` data with no
+matching final home yet, and its error names the path and points back to
+`evener-migrate`.
 
 ## Usage
 
@@ -393,20 +416,20 @@ checks, see [`cmd/evener-hub/README.md`](cmd/evener-hub/README.md).
 
 ### Configuration
 
-`~/.evener/hub.toml` (optional):
+`${XDG_CONFIG_HOME:-~/.config}/evener/hub.toml` (optional):
 
 ```toml
 addr = "127.0.0.1:9180"
 spawn_timeout = "30s"
 past_results_per_page = 50
-# Optional; default is ~/.evener/index.db.
-past_index_db = "/Users/you/.evener/index.db"
+# Optional; default is $XDG_STATE_HOME/evener/index.db (~/.local/state/evener/index.db).
+past_index_db = "/Users/you/.local/state/evener/index.db"
 ```
 
 Hub launch model choices come from the Evener launch harness contract
 (`evener launch-check --models`), not from a static model roster in `hub.toml`.
 Launch defaults live in layered launch config files. For user-wide defaults,
-create `~/.evener/launch.toml`:
+create `${XDG_CONFIG_HOME:-~/.config}/evener/launch.toml`:
 
 ```toml
 app_replay_size = 4096
@@ -417,13 +440,13 @@ OPENAI_API_KEY = "..."
 
 ### Architecture
 
-Daemons are loopback-only. Each writes a private rendezvous file to `~/.evener/run/<pid>.json`; the hub watches the directory, probes daemons for state, and proxies AppWire/REST so the browser only ever talks to the hub origin. Hub-spawned daemons require the per-hub bearer token recorded in their rendezvous file. Daemon and Hub same-origin guards plus strict Hub CSP defend against DNS-rebinding and cross-origin attacks.
+Daemons are loopback-only. Each writes a private rendezvous file to `${XDG_STATE_HOME:-~/.local/state}/evener/run/<pid>.json`; the hub watches the directory, probes daemons for state, and proxies AppWire/REST so the browser only ever talks to the hub origin. Hub-spawned daemons require the per-hub bearer token recorded in their rendezvous file. Daemon and Hub same-origin guards plus strict Hub CSP defend against DNS-rebinding and cross-origin attacks.
 
 ### Operating notes
 
 - **Daemons keep the binary they were spawned from.** Rebuilding `evener` does not update already-running daemons; live sessions continue to run the old code until they shut down. To pick up changes mid-session, end the session (which terminates its daemon), rebuild, and resume — resume reads the new binary. This matches typical daemonized-server behavior and is the same model as restarting a long-lived service after a deploy.
 - **Remote hosts**: see `docs/evener-hub-remote-operations.md` for the current deployment runbook, including credential handling, state directories, browser/TUI access, health checks, and Codex app-server sources.
-- **Rebuild and restart a launchd-managed hub**: `scripts/deploy-hub.sh` builds this worktree's `evener-hub` and `kickstart -k`s its launchd job, never stopping the old process until the new one is built and healthy — see `scripts/deploy-hub.sh --help`.
+- **Rebuild and restart a launchd-managed hub**: `scripts/ops/deploy-hub.sh` builds this worktree's `evener-hub` and `kickstart -k`s its launchd job, never stopping the old process until the new one is built and healthy — see `scripts/ops/deploy-hub.sh --help`.
 
 Design spec, plans, and notes live under `docs/superpowers/`.
 

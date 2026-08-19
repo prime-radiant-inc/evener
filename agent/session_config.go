@@ -401,6 +401,20 @@ type testConfig struct {
 	// real host clock and git subprocess. Nil in production.
 	envProbes *envctx.Probes
 
+	// closeAfterDisposeSweepJoin observes the exact point in Close() immediately
+	// AFTER both disposeWG.Wait() and sweepWG.Wait() have returned (step 3 of the
+	// close preamble) and BEFORE closeOwnedDelegateRuntimeTree runs. It is the
+	// single observation point that proves Close joins in-flight dispose/sweep
+	// work: a test holds such work on a controlled gate, and asserts at this seam
+	// — from inside the closing goroutine — that the work had already completed
+	// before Close reached here. This is the kata 0t1y positive-observation
+	// pattern: "Close has not returned yet" is unfalsifiable when Close blocks on
+	// a join (a test that only watches Close fail to return stays green with the
+	// join deleted, because Close simply proceeds and returns); observing Close
+	// at the post-join boundary, with the work demonstrably still in flight,
+	// turns a red/green question into a positive fact. Nil in production.
+	closeAfterDisposeSweepJoin func()
+
 	// metaFS, when non-nil, replaces the real OS filesystem for every
 	// session-meta read/write the Session performs directly (maybeAutoSave's
 	// schema.SaveSessionMeta, and the ownership-reload schema.LoadSessionMeta

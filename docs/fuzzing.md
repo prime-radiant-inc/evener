@@ -13,7 +13,7 @@ permanent regression test. Start here, then follow the pointers.
 | **add** a fuzz target to a new surface (the methodology) | [`docs/skills/fuzzing-an-api-surface/SKILL.md`](skills/fuzzing-an-api-surface/SKILL.md) |
 | the architecture / why it's built this way | [`docs/design/fuzzing-toolkit-design.md`](design/fuzzing-toolkit-design.md) |
 
-`scripts/run-fuzz.sh`'s `TARGETS` array is the **single source of truth** for
+`scripts/fuzz/run-fuzz.sh`'s `TARGETS` array is the **single source of truth** for
 every target; `--list` emits it and the coverage/triage/gap tools all consume it.
 Each entry is tagged `native` (driven by `go test -fuzz`) or `rapid` (a `Test*`
 function driven by `rapid.Check` under ordinary `go test`).
@@ -30,10 +30,10 @@ make fuzz            # GATE: replay native committed seeds/crashers and every
 
 make fuzz-nightly                          # SEARCH: coverage-guided, all targets, 60s each
 make fuzz-nightly FUZZ_ARGS="--time 10m"   #   …10 minutes each (any go -fuzztime value)
-scripts/run-fuzz.sh llm:FuzzParseSSE       # SEARCH: just one target (module:FuzzName)
+scripts/fuzz/run-fuzz.sh llm:FuzzParseSSE       # SEARCH: just one target (module:FuzzName)
 ```
 
-`make fuzz-nightly` is `scripts/run-fuzz.sh`; native targets run via
+`make fuzz-nightly` is `scripts/fuzz/run-fuzz.sh`; native targets run via
 `go test -fuzz`, rapid targets via `go test -run`. Consecutive searches go
 **deeper**: Go persists the coverage-expanding corpus in `$GOCACHE/fuzz`, so each
 run starts from a richer corpus than the last. A failing input is auto-saved (see
@@ -53,9 +53,9 @@ Left unbounded, that fires the kernel's **global** OOM killer, which has twice
 taken the whole host (and its network) down, requiring a manual reboot.
 
 So every heavy target runs under a hard memory ceiling, enforced by cgroup-v2 via
-`scripts/run-capped.sh` and wired into the Makefile (`make test`, `make fuzz`,
+`scripts/fuzz/run-capped.sh` and wired into the Makefile (`make test`, `make fuzz`,
 `make fuzz-nightly`, `make fuzz-coverage`, `make fuzz-triage`) and into
-`scripts/run-fuzz.sh` itself, so even a **direct** `scripts/run-fuzz.sh` is
+`scripts/fuzz/run-fuzz.sh` itself, so even a **direct** `scripts/fuzz/run-fuzz.sh` is
 protected. There are two ceilings:
 
 - **per run** (`EVENER_MEM_MAX`, default 16G) — one runaway is OOM-killed alone;
@@ -86,9 +86,9 @@ and prints, per target, two numbers:
 
 It also prints the **gap map**: decode/parse packages with *zero* fuzz coverage
 (none should remain except the toolkit's own packages, listed with reasons in
-`scripts/fuzzcov-ignore.txt`).
+`scripts/coverage/fuzzcov-ignore.txt`).
 
-The focus % is ratcheted: floors live in `scripts/fuzzcov-floors.txt` and only go
+The focus % is ratcheted: floors live in `scripts/coverage/fuzzcov-floors.txt` and only go
 up. After legitimately raising a target's coverage, lock it in:
 
 ```sh
@@ -215,9 +215,9 @@ target**. Two ways to clear it:
 
 1. **Add a target** for the package's real decode seam — follow
    [the skill](skills/fuzzing-an-api-surface/SKILL.md) and register it in
-   `scripts/run-fuzz.sh`. This is almost always the right answer.
+   `scripts/fuzz/run-fuzz.sh`. This is almost always the right answer.
 2. If the package genuinely has no real parse surface (a generated file, pure
-   tooling), add it to `scripts/fuzzcov-ignore.txt` **with a reason** — the gate
+   tooling), add it to `scripts/coverage/fuzzcov-ignore.txt` **with a reason** — the gate
    rejects a reasonless entry, so it's reviewed like code.
 
 ## Choosing an oracle

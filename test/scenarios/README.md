@@ -47,7 +47,7 @@ at an unrelated line.
   paragraph are not anchors.
 - **Code (`.go`)** — the file path with the symbol appended after a
   `#`: `` `agent/tree_counter.go#defaultMaxConcurrentDelegateTurns` ``.
-  That is the spelling `scripts/run-fuzz.sh` already uses for the same
+  That is the spelling `scripts/fuzz/run-fuzz.sh` already uses for the same
   idea. The symbol may be a func or method, a type, a package-level or
   grouped `const`/`var`, a struct field, or an interface method. The
   path may be abbreviated to the part that reads well

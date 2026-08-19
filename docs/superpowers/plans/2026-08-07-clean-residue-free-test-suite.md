@@ -272,7 +272,7 @@ bound is ambient-machine state.
 ### Task 4: Put Every Canonical Test Stream Under One Cleanup Owner
 
 **Files:**
-- Modify: `scripts/run-module-tests.sh`
+- Modify: `scripts/gate/run-module-tests.sh`
 - Modify: `scripts/run-module-tests-selftest.sh`
 - Modify: `scripts/reclaim-test-debris.sh`
 - Modify: `docs/testing.md`
@@ -414,7 +414,7 @@ directory and root-cause the failure before proceeding.
 - [ ] **Step 7: Commit**
 
 ```bash
-git add scripts/run-module-tests.sh scripts/run-module-tests-selftest.sh scripts/reclaim-test-debris.sh docs/testing.md
+git add scripts/gate/run-module-tests.sh scripts/run-module-tests-selftest.sh scripts/reclaim-test-debris.sh docs/testing.md
 git commit -m "fix(test): own and clean every stream temp root"
 ```
 
@@ -610,10 +610,10 @@ handler remains, cleanup fails and retains the private profile as evidence.
 
 **Files:**
 - Modify: `Makefile`
-- Modify: `scripts/build-runtime-pair.sh`
+- Modify: `scripts/ops/build-runtime-pair.sh`
 - Create: `scripts/private-go-home.sh`
 - Create: `scripts/private-go-home-selftest.sh`
-- Modify: `scripts/run-module-tests.sh`
+- Modify: `scripts/gate/run-module-tests.sh`
 - Modify: `scripts/run-module-tests-selftest.sh`
 - Modify: `runtime_pair_build_test.go`
 - Modify: `cmd/evener-hub/frontend/scripts/browserGuardProcess.mjs`

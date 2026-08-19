@@ -7,7 +7,7 @@ host. It describes the current code, not a future deployment system.
 
 `evener-hub` authenticates its web edge with a long-lived random capability
 token. On startup, Hub loads or creates `auth-token` under `hub_state_root`
-(`~/.evener/auth-token` by default) and prints a browser authorization URL. A new
+(`~/.local/state/evener/auth-token` by default) and prints a browser authorization URL. A new
 token file is created with mode `0600`; Hub does not repair the mode of an
 existing file. Visiting that URL sets an HTTP-only, SameSite=Lax cookie;
 scripted clients may instead send the token as `Authorization: Bearer <token>`.
@@ -71,7 +71,7 @@ EVENER_HUB_AUTH_TOKEN='<token>' \
   evener-tui --hub-addr http://hubbox.example:9180 --no-auto-start-hub
 ```
 
-The TUI otherwise looks for the local machine's `~/.evener/auth-token`, which is
+The TUI otherwise looks for the local machine's `~/.local/state/evener/auth-token`, which is
 usually not the remote Hub's token.
 
 ### Ad hoc macOS background launch
@@ -155,7 +155,7 @@ that bucket; a distinct clone has a distinct bucket. The identifier migration
 is a clean break: Hub leaves inert old state untouched for manual removal.
 
 `past_index_db` is the SQLite FTS search index. When omitted, Hub uses
-`~/.evener/index.db`. The in-memory past index remains the source of truth; if the
+`~/.local/state/evener/index.db`. The in-memory past index remains the source of truth; if the
 SQLite index cannot be opened or rebuilt, Hub falls back to substring search
 over the loaded metadata.
 
@@ -295,7 +295,7 @@ Run Hub under a supervisor and capture stdout/stderr. Hub logs config errors,
 past-index rebuild errors, roster watch errors, and child-process launch
 diagnostics there.
 
-Hub uses `~/.evener/hub.lock` for one Hub process per host user. A second Hub for
+Hub uses `~/.local/state/evener/hub.lock` for one Hub process per host user. A second Hub for
 the same user exits instead of sharing the same run directory.
 
 Stopping Hub does not make saved transcripts disappear. Saved sessions live
@@ -315,14 +315,14 @@ skip this section. This is for a Hub that is only running — started ad hoc
 inherited from someone else's session — with no launch command written down
 anywhere.
 
-If Hub was submitted to launchd as its own job, `scripts/deploy-hub.sh`
+If Hub was submitted to launchd as its own job, `scripts/ops/deploy-hub.sh`
 automates the rebuild-and-restart sequence below for the current worktree: it
 finds the job's label, confirms its binary matches this checkout, builds
 `evener-hub` (leaving the old process running untouched if the build fails),
 `kickstart -k`s only that job, and polls `/api/health` to confirm the restart
 actually took (an interrupted `kickstart` can report failure even when the
 restart succeeded, so the health probe — not `kickstart`'s exit status — is
-the real check). Run `scripts/deploy-hub.sh --help` for details. The rest of
+the real check). Run `scripts/ops/deploy-hub.sh --help` for details. The rest of
 this section is the manual version of that recipe, and is also what a bare
 backgrounded process (no launchd job at all) needs.
 
@@ -351,8 +351,8 @@ If that comes up empty, it's a bare process. Recover it in four steps:
 pgrep -x evener-hub
 ```
 
-Hub takes an exclusive `flock` on `~/.evener/hub.lock` at startup — always under
-`$HOME`, regardless of a configured `hub_state_root` (see [Hub
+Hub takes an exclusive `flock` on `hub.lock` under `hub_state_root` at startup
+(`~/.local/state/evener/hub.lock` by default; see [Hub
 Config](#hub-config)) — so exactly one match is the healthy case; more than
 one is itself a finding worth stopping to investigate rather than restarting
 past. If nothing turns up but something is answering on the expected port,
@@ -402,7 +402,7 @@ frees the lock the instant the process is torn down. Either way, a relaunch
 that lands in the gap fails with:
 
 ```
-[hub] flock /path/to/.evener/hub.lock: resource temporarily unavailable (another evener-hub may already be running; a disposable hub needs its own HOME)
+[hub] flock /path/to/.local/state/evener/hub.lock: resource temporarily unavailable (another evener-hub may already be running; a disposable hub needs its own HOME)
 ```
 
 That's the death overlap, not corruption or a stuck lock; wait a moment and

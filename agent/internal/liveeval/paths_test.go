@@ -32,7 +32,7 @@ func TestPathsUseConfiguredStateAndHomeRoots(t *testing.T) {
 	if gotStateHome != stateHome {
 		t.Fatalf("Paths configured state home = %q, want %q", gotStateHome, stateHome)
 	}
-	if want := filepath.Join(userHome, ".evener", "providers.toml"); gotProviders != want {
+	if want := filepath.Join(userHome, ".config", "evener", "providers.toml"); gotProviders != want {
 		t.Fatalf("Paths configured providers file = %q, want %q", gotProviders, want)
 	}
 }
@@ -45,17 +45,17 @@ func TestPathsDefaultStateHomeFollowsUserHome(t *testing.T) {
 	if want := filepath.Join(userHome, ".local", "state"); gotStateHome != want {
 		t.Fatalf("Paths default state home = %q, want %q", gotStateHome, want)
 	}
-	if want := filepath.Join(userHome, ".evener", "providers.toml"); gotProviders != want {
+	if want := filepath.Join(userHome, ".config", "evener", "providers.toml"); gotProviders != want {
 		t.Fatalf("Paths default providers file = %q, want %q", gotProviders, want)
 	}
 }
 
-func TestPathsProviderConfigEnvOverridesStateDirAndHome(t *testing.T) {
-	stateDir := filepath.Join(t.TempDir(), "state")
+func TestPathsProviderConfigEnvOverridesConfigHomeAndHome(t *testing.T) {
+	configHome := filepath.Join(t.TempDir(), "config")
 	userHome := filepath.Join(t.TempDir(), "home")
 	explicit := filepath.Join(t.TempDir(), "explicit.toml")
 	t.Setenv(envvars.EVENERProvidersConfig.Name, explicit)
-	t.Setenv(envvars.EVENERStateDir.Name, stateDir)
+	t.Setenv(envvars.XDGConfigHome.Name, configHome)
 
 	_, got := Paths("", userHome)
 	if got != explicit {
@@ -63,21 +63,21 @@ func TestPathsProviderConfigEnvOverridesStateDirAndHome(t *testing.T) {
 	}
 }
 
-func TestPathsProviderConfigUsesStateDirBeforeHome(t *testing.T) {
-	stateDir := filepath.Join(t.TempDir(), "state")
+func TestPathsProviderConfigUsesXDGConfigHomeBeforeHome(t *testing.T) {
+	configHome := filepath.Join(t.TempDir(), "config")
 	userHome := filepath.Join(t.TempDir(), "home")
 	t.Setenv(envvars.EVENERProvidersConfig.Name, "")
-	t.Setenv(envvars.EVENERStateDir.Name, stateDir)
+	t.Setenv(envvars.XDGConfigHome.Name, configHome)
 
 	_, got := Paths("", userHome)
-	want := filepath.Join(stateDir, "providers.toml")
+	want := filepath.Join(configHome, "evener", "providers.toml")
 	if got != want {
-		t.Fatalf("Paths state-dir provider config = %q, want %q", got, want)
+		t.Fatalf("Paths XDG_CONFIG_HOME provider config = %q, want %q", got, want)
 	}
 }
 
 func clearProviderPathEnv(t *testing.T) {
 	t.Helper()
 	t.Setenv(envvars.EVENERProvidersConfig.Name, "")
-	t.Setenv(envvars.EVENERStateDir.Name, "")
+	t.Setenv(envvars.XDGConfigHome.Name, "")
 }

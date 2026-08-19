@@ -183,8 +183,18 @@ func TestList_SkipsCorruptFiles(t *testing.T) {
 
 func TestDefaultDir_RespectsHome(t *testing.T) {
 	t.Setenv("HOME", "/tmp/fakehome")
+	t.Setenv("XDG_STATE_HOME", "")
 	got := DefaultDir()
-	want := "/tmp/fakehome/.evener/run"
+	want := "/tmp/fakehome/.local/state/evener/run"
+	if got != want {
+		t.Fatalf("DefaultDir: got %q, want %q", got, want)
+	}
+}
+
+func TestDefaultDir_RespectsXDGStateHome(t *testing.T) {
+	t.Setenv("XDG_STATE_HOME", "/srv/evener-state")
+	got := DefaultDir()
+	want := "/srv/evener-state/evener/run"
 	if got != want {
 		t.Fatalf("DefaultDir: got %q, want %q", got, want)
 	}

@@ -18,7 +18,7 @@ help text, and tests should refer to those rows instead of hard-coding names.
 | `EVENER_PROVIDERS_CONFIG` | Path to `providers.toml`. |
 | `EVENER_REASONING_EFFORT` | Default reasoning effort: `minimal`, `low`, `medium`, `high`, `xhigh`, `max`, or `none`. |
 | `EVENER_SESSION_ORIGIN` | Marks a session's launch origin (e.g. `test`) so the hub groups agentic-test runs. |
-| `EVENER_STATE_DIR` | Overrides the Evener state root. |
+| `EVENER_STATE_DIR` | Overrides the per-invocation project/session state directory (`evener run --state-dir`, hub-spawned daemons, `evener-doctor`); does not override the Evener state root (see `XDG_STATE_HOME`). |
 | `EVENER_TUI_LOG_FILE` | Writes `evener-tui` startup diagnostics to this file. |
 | `LLM_MODEL` | Model for `llmcall` when `--model` is unset; checked before `EVENER_MODEL`. |
 | `LLM_PROVIDER` | Provider for `llmcall` when `--provider` is unset; checked before `EVENER_PROVIDER`. |
@@ -77,7 +77,7 @@ process environments.
 |---|---|
 | `XDG_CACHE_HOME` | Base for Evener cache data. |
 | `XDG_CONFIG_HOME` | Base for Evener config, skills, plugins, and MCP config discovery. |
-| `XDG_STATE_HOME` | Base for Evener state when `EVENER_STATE_DIR` is unset. |
+| `XDG_STATE_HOME` | Base for the Evener state root (`$XDG_STATE_HOME/evener`); also the fallback in the per-invocation state-dir override chain when `EVENER_STATE_DIR` is unset. |
 | `CARGO_HOME` | Inherited by core-only command environments. |
 | `DISPLAY` | Used to auto-detect graphical sessions for OpenAI login. |
 | `GOMODCACHE` | Inherited by core-only command environments; the sandbox environment floor redirects it into the session scratch directory under the session-private cache strategy (see [docs/sandboxing.md](sandboxing.md#caches-are-contained-never-poisoned)). |
@@ -107,5 +107,5 @@ process environments.
 | `EVENER_RECORD_APPWIRE` | Records raw AppWire WebSocket frames to `appwire-frames.jsonl` (under the state root) for fuzz-corpus harvesting when set to `1`, `true`, `yes`, or `on`. Default off; no behavior change when unset. |
 | `EVENER_RECORD_HTTP` | Records inbound hub HTTP requests to `hub-http.jsonl` (under the state root) for fuzz-corpus harvesting when set to `1`, `true`, `yes`, or `on`. Default off; no behavior change when unset. |
 | `EVENER_FUZZ_RECORD` | Master switch enabling the AppWire and hub HTTP fuzz-corpus recorders by default when set to `1`, `true`, `yes`, or `on`. A per-recorder variable (`EVENER_RECORD_APPWIRE`/`EVENER_RECORD_HTTP`) overrides it. Intended for local development; unset everywhere else. Provider attempts are recorded independently in each attached session API log. |
-| `EVENER_FUZZ_CAPTURE_ENV` | Marks a dedicated capture box so `evener-fuzz-harvest --keep-values` is permitted (real, unscrubbed values; local-only, never committed). Ignored for a personal `~/.evener` source. |
+| `EVENER_FUZZ_CAPTURE_ENV` | Marks a dedicated capture box so `evener-fuzz-harvest --keep-values` is permitted (real, unscrubbed values; local-only, never committed). Ignored for a personal evener state root source. |
 | `OPENAI_CHATGPT_CLIENT_ID` | OpenAI OAuth client id override for tests and development. |

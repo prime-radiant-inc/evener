@@ -598,11 +598,17 @@ func startHubStackOnProvider(t *testing.T, providersTOML, model string) hubStack
 
 	binDir := liveStackBinaries(t, repoRoot)
 
-	evenerDir := filepath.Join(home, ".evener")
-	if err := os.MkdirAll(evenerDir, 0o700); err != nil {
-		t.Fatalf("create hub state root: %v", err)
+	// XDG_CONFIG_HOME/XDG_STATE_HOME point into the stack's own isolated
+	// HOME, the same convention e2e_test.go's hand-started daemon uses, so
+	// providers.toml (config root) and auth-token (state root) land where a
+	// hub started with only HOME=home would put them.
+	configDir := filepath.Join(home, "config")
+	stateDir := filepath.Join(home, "state")
+	evenerConfigDir := filepath.Join(configDir, "evener")
+	if err := os.MkdirAll(evenerConfigDir, 0o700); err != nil {
+		t.Fatalf("create hub config root: %v", err)
 	}
-	if err := os.WriteFile(filepath.Join(evenerDir, "providers.toml"), []byte(providersTOML), 0o600); err != nil {
+	if err := os.WriteFile(filepath.Join(evenerConfigDir, "providers.toml"), []byte(providersTOML), 0o600); err != nil {
 		t.Fatalf("write providers.toml: %v", err)
 	}
 
@@ -625,7 +631,12 @@ func startHubStackOnProvider(t *testing.T, providersTOML, model string) hubStack
 	}
 
 	hub := exec.Command(filepath.Join(binDir, "evener-hub"), "--addr", hubAddr, "--evener", filepath.Join(binDir, "evener"))
-	hub.Env = append(os.Environ(), "HOME="+home)
+	hub.Env = append(os.Environ(),
+		"HOME="+home,
+		"XDG_CONFIG_HOME="+configDir,
+		"XDG_STATE_HOME="+stateDir,
+		"XDG_CACHE_HOME="+filepath.Join(home, "cache"),
+	)
 	hubLog, err := os.Create(filepath.Join(home, "hub.log"))
 	if err != nil {
 		t.Fatalf("create hub log: %v", err)
@@ -655,7 +666,7 @@ func startHubStackOnProvider(t *testing.T, providersTOML, model string) hubStack
 
 	awaitHubReady(t, hubAddr)
 
-	token, err := os.ReadFile(filepath.Join(evenerDir, "auth-token"))
+	token, err := os.ReadFile(filepath.Join(stateDir, "evener", "auth-token"))
 	if err != nil {
 		t.Fatalf("read hub auth token: %v", err)
 	}

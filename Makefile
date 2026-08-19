@@ -27,7 +27,7 @@ build: build-runtime
 # produced. No target may ship a evener-hub binary with a stale or empty
 # embedded web UI.
 build-runtime: build-web
-	LDFLAGS="$(LDFLAGS)" scripts/build-runtime-pair.sh
+	LDFLAGS="$(LDFLAGS)" scripts/ops/build-runtime-pair.sh
 
 # Cross-compile for Linux (eval deployments). Invalidates the agent package
 # cache to ensure embedded files (templates, sections, agent .md) are fresh.
@@ -40,9 +40,9 @@ build-hub: build-runtime
 # web-preflight owns the frontend node_modules install for every web target,
 # so build-web and test-web share one definition of "the install is ready".
 # The install rules and the two guards they exist for live in the script;
-# scripts/web-preflight-selftest.sh exercises them against throwaway trees.
+# scripts/web/web-preflight-selftest.sh exercises them against throwaway trees.
 web-preflight:
-	@NODE_DISABLE_COMPILE_CACHE=1 scripts/web-preflight.sh
+	@NODE_DISABLE_COMPILE_CACHE=1 scripts/web/web-preflight.sh
 
 # build-web builds the frontend TypeScript/React app (cmd/evener-hub/frontend)
 # into frontend/dist, which build-hub embeds via go:embed. The vite build
@@ -215,11 +215,11 @@ build-go:
 # Systemd user scopes are unavailable on Darwin, where the wrapper can only warn
 # before execing the same command, so recipes run directly there. Other hosts
 # retain the wrapper and its uncapped-warning fallback when scopes are unavailable.
-# See scripts/run-capped.sh and docs/fuzzing.md ("Memory safety").
+# See scripts/fuzz/run-capped.sh and docs/fuzzing.md ("Memory safety").
 ifeq ($(shell uname -s),Darwin)
 MEMCAP :=
 else
-MEMCAP := scripts/run-capped.sh
+MEMCAP := scripts/fuzz/run-capped.sh
 endif
 # Fuzz replay is a deterministic evidence gate: never inherit a developer's
 # persisted Go configuration or GOFLAGS, and always use this checkout's workspace.
@@ -236,7 +236,7 @@ override FUZZ_GOWORK := $(abspath $(CURDIR)/go.work)
 # the guard or the pid-suffixed covscratch pattern, is enforced statically by
 # the audits in scriptmktemp_audit_test.go, not by re-running suites under
 # sabotage (kata 5hs2).
-DEV_TOOLING_TEST_SCRIPTS := run-module-tests private-go-home merge-approval-gate setup-gocache web-preflight live-eval-isolation e2e-webui-turn-controls fuzz-bisect fuzz-oracle-audit test-coverage-floor web-coverage-floor coverage-gaps coverage-union test-timing-budget scratch-lib merge-into-branch
+DEV_TOOLING_TEST_SCRIPTS := gate/run-module-tests lib/private-go-home gate/merge-approval-gate ops/setup-gocache web/web-preflight lib/live-eval-isolation e2e/e2e-webui-turn-controls fuzz/fuzz-bisect fuzz/fuzz-oracle-audit coverage/test-coverage-floor coverage/web-coverage-floor coverage/coverage-gaps coverage/coverage-union gate/test-timing-budget lib/scratch-lib gate/merge-into-branch
 
 # test-dev-tooling tests tooling, not the product, so it runs in
 # `make merge-approval-gate` (where tooling regressions matter) and on demand
@@ -257,7 +257,7 @@ test-dev-tooling:
 # re-enter this Makefile's test-web target); it is node work, so it overlaps the
 # Go waves instead of adding its runtime on the end. WEB=0 skips it.
 test:
-	@MODULES="$(GO_MODULES)" MAKE="$(MAKE)" $(MEMCAP) scripts/run-module-tests.sh -short -count=1
+	@MODULES="$(GO_MODULES)" MAKE="$(MAKE)" $(MEMCAP) scripts/gate/run-module-tests.sh -short -count=1
 
 test-short:
 	@$(MAKE) test
@@ -271,7 +271,7 @@ test-short:
 # (Jesse ruling: no fuzz-family test, including smoke iterations, belongs in
 # the default suite). This is distinct from `make fuzz`, which replays native
 # FuzzXxx corpora and this SAME rapid family against a fixed coverage seed
-# bank (scripts/run-fuzz.sh) for deterministic CI coverage, not a search.
+# bank (scripts/fuzz/run-fuzz.sh) for deterministic CI coverage, not a search.
 test-fuzz:
 	@cd agent && EVENER_FUZZ_TESTS=1 go test . ./internal/contextmgr ./internal/jobstore -run 'SeqFuzz|ToolArgsSchemaFuzz' -count=1 -v
 	@EVENER_FUZZ_TESTS=1 go test ./internal/appserver -run 'SeqFuzz' -count=1 -v
@@ -279,7 +279,7 @@ test-fuzz:
 # merge-approval-gate is the canonical serial post-merge gate. Keep the
 # explicit expansion in docs/testing.md for diagnosis and evidence.
 #
-# The capability preflight (scripts/gate-capability-preflight.sh) classifies
+# The capability preflight (scripts/gate/gate-capability-preflight.sh) classifies
 # sandbox-sensitive host capabilities ONCE, before any phase runs, and
 # exports EVENER_GATE_CAPABILITY_SKIP so ROOT_FULL=1 make test skips exactly
 # the known-infeasible live/e2e tests instead of repeatedly failing into
@@ -288,11 +288,11 @@ test-fuzz:
 # `@$(MAKE)` lines) so that export reaches every phase; the gate still stops
 # at the first failing phase either way, same as before.
 merge-approval-gate:
-	@if [ ! -x scripts/gate-capability-preflight.sh ]; then \
-		echo 'merge-approval-gate: capability preflight script missing or not executable: scripts/gate-capability-preflight.sh' >&2; \
+	@if [ ! -x scripts/gate/gate-capability-preflight.sh ]; then \
+		echo 'merge-approval-gate: capability preflight script missing or not executable: scripts/gate/gate-capability-preflight.sh' >&2; \
 		exit 1; \
 	fi && \
-	eval "$$(scripts/gate-capability-preflight.sh)" && \
+	eval "$$(scripts/gate/gate-capability-preflight.sh)" && \
 		$(MAKE) lint && \
 		$(MAKE) build && \
 		ROOT_FULL=1 $(MAKE) test && \
@@ -304,7 +304,7 @@ merge-approval-gate:
 # its timeouts. WEB=0: -race is a Go-toolchain gate, and the frontend suite is
 # unaffected by it, so `make test` owns the web stream instead of paying it twice.
 test-race:
-	@MODULES="$(GO_MODULES)" WEB=0 AGENT_SHARDS=0 AGENT_PARALLEL= $(MEMCAP) scripts/run-module-tests.sh -race -short -count=1
+	@MODULES="$(GO_MODULES)" WEB=0 AGENT_SHARDS=0 AGENT_PARALLEL= $(MEMCAP) scripts/gate/run-module-tests.sh -race -short -count=1
 
 # e2e-cover measures END-TO-END coverage of the real evener/evener-tui binaries via
 # `go build -cover` + GOCOVERDIR — the main()/CLI/dispatch/serve paths unit tests
@@ -312,7 +312,7 @@ test-race:
 # combined whole-repo number; EVENER_E2E_LIVE=1 additionally runs the live provider
 # scripts (needs real credentials). Local/on-demand, not a gate.
 e2e-cover:
-	@scripts/e2e-cover.sh --merge-unit
+	@scripts/coverage/e2e-cover.sh --merge-unit
 
 vet:
 	@for m in $(GO_MODULES); do (cd $$m && go vet ./...) || exit 1; done
@@ -348,7 +348,7 @@ fuzz:
 	@GOENV=off GOFLAGS= GOWORK="$(FUZZ_GOWORK)" $(MEMCAP) sh -c 'cd fuzz && go test -tags evenerfuzz ./...'
 	@GOENV=off GOFLAGS= GOWORK="$(FUZZ_GOWORK)" $(MEMCAP) sh -c 'go test ./cmd/evener-fuzzcov ./cmd/evener-fuzz-harvest'
 	@$(FUZZ_SEED_REPLAY)
-	@set -eu; cap="$(MEMCAP)"; if [ -n "$$cap" ]; then cap="$$(pwd)/$$cap"; fi; go_work="$(FUZZ_GOWORK)"; for target in $$(scripts/run-fuzz.sh --list | awk -F: '$$1 == "rapid" { print $$2 ":" $$3 ":" $$4 }'); do module=$${target%%:*}; rest=$${target#*:}; pkg=$${rest%%:*}; name=$${rest#*:}; for seed in 1 2 3 5 8; do echo "=== rapid replay $$module:$$name seed $$seed ==="; (cd "$$module" && GOENV=off GOFLAGS= GOWORK="$$go_work" env -u RAPID_FAILFILE EVENER_FUZZ_TESTS=1 RAPID_SEED="$$seed" RAPID_CHECKS=100 RAPID_STEPS=30 RAPID_NOFAILFILE=true RAPID_LOG=false RAPID_V=false RAPID_DEBUG=false RAPID_DEBUGVIS=false RAPID_SHRINKTIME=30s $${cap:+"$$cap"} go test -tags evenerfuzz -run "^$${name}\$$" -count=1 "$$pkg"); done; done
+	@set -eu; cap="$(MEMCAP)"; if [ -n "$$cap" ]; then cap="$$(pwd)/$$cap"; fi; go_work="$(FUZZ_GOWORK)"; for target in $$(scripts/fuzz/run-fuzz.sh --list | awk -F: '$$1 == "rapid" { print $$2 ":" $$3 ":" $$4 }'); do module=$${target%%:*}; rest=$${target#*:}; pkg=$${rest%%:*}; name=$${rest#*:}; for seed in 1 2 3 5 8; do echo "=== rapid replay $$module:$$name seed $$seed ==="; (cd "$$module" && GOENV=off GOFLAGS= GOWORK="$$go_work" env -u RAPID_FAILFILE EVENER_FUZZ_TESTS=1 RAPID_SEED="$$seed" RAPID_CHECKS=100 RAPID_STEPS=30 RAPID_NOFAILFILE=true RAPID_LOG=false RAPID_V=false RAPID_DEBUG=false RAPID_DEBUGVIS=false RAPID_SHRINKTIME=30s $${cap:+"$$cap"} go test -tags evenerfuzz -run "^$${name}\$$" -count=1 "$$pkg"); done; done
 	@GOENV=off GOFLAGS= GOWORK="$(FUZZ_GOWORK)" $(MEMCAP) sh -c "go test -run '^Test.*Golden\$$' ./appwire"
 
 # fuzz-goldens regenerates the decode SNAPSHOT goldens — evener's differential
@@ -364,7 +364,7 @@ fuzz-goldens:
 # fuzz-nightly runs the unbounded coverage-guided search per target, bounded by a
 # per-target time budget. Manual / nightly only — never in the gate.
 fuzz-nightly:
-	@$(MEMCAP) scripts/run-fuzz.sh $(FUZZ_ARGS)
+	@$(MEMCAP) scripts/fuzz/run-fuzz.sh $(FUZZ_ARGS)
 
 # fuzz-triage is the local, on-demand campaign + auto-triage tool (8.7): it
 # searches each surface, flake-guards and dedups any crasher, and opens ONE
@@ -372,7 +372,7 @@ fuzz-nightly:
 # Pass flags through FUZZ_ARGS, e.g. `make fuzz-triage FUZZ_ARGS="--time 5m"`,
 # `make fuzz-triage FUZZ_ARGS=--no-pr`, or `make fuzz-triage FUZZ_ARGS=--dry-run`.
 fuzz-triage:
-	@$(MEMCAP) scripts/fuzz-triage.sh $(FUZZ_ARGS)
+	@$(MEMCAP) scripts/fuzz/fuzz-triage.sh $(FUZZ_ARGS)
 
 # fuzz-continuous is the LOCAL, on-demand continuous loop: it rotates over every
 # native target, giving each a bounded search turn round after round (the corpus
@@ -380,14 +380,14 @@ fuzz-triage:
 # fuzz-triage's flake-guard / dedup / PR pipeline. Runs until Ctrl-C or --total.
 # Pass flags through FUZZ_ARGS, e.g. `make fuzz-continuous FUZZ_ARGS="--total 2h"`.
 fuzz-continuous:
-	@scripts/fuzz-continuous.sh $(FUZZ_ARGS)
+	@scripts/fuzz/fuzz-continuous.sh $(FUZZ_ARGS)
 
 # fuzz-drive generates REAL provider traffic (varied coding tasks through the
 # evener one-shot CLI, recorders on) and harvests it into the seed corpus. Makes
 # live, paid provider calls — run on demand, not in CI. Flags via FUZZ_ARGS, e.g.
 # `make fuzz-drive FUZZ_ARGS="--providers openai/gpt-5.4-mini --runs 5"`.
 fuzz-drive:
-	@scripts/fuzz-drive.sh $(FUZZ_ARGS)
+	@scripts/fuzz/fuzz-drive.sh $(FUZZ_ARGS)
 
 # fuzz-coverage-global validates the registered target plan, requires a local
 # native/Rapid fuzz surface for every production package, then replays each target
@@ -395,27 +395,27 @@ fuzz-drive:
 # CHECK=1 enforces the raw >95% threshold and floors; BLESS=1 raises floors only
 # after every measured module clears that threshold.
 fuzz-coverage-global:
-	@scripts/fuzz-coverage-global.sh $(if $(CHECK),--check) $(if $(BLESS),--bless) $(FUZZ_ARGS)
+	@scripts/fuzz/fuzz-coverage-global.sh $(if $(CHECK),--check) $(if $(BLESS),--bless) $(FUZZ_ARGS)
 
 # test-coverage-floor ratchets whole-module FULL-SUITE (unit+integration) coverage
-# against scripts/testcov-global-floors.txt — the companion to fuzz-coverage-global
+# against scripts/coverage/testcov-global-floors.txt — the companion to fuzz-coverage-global
 # (fuzz-reachable). CHECK=1 fails on a drop; BLESS=1 raises floors. Heavy + local.
 test-coverage-floor:
-	@scripts/test-coverage-floor.sh $(if $(CHECK),--check) $(if $(BLESS),--bless) $(COV_ARGS)
+	@scripts/coverage/test-coverage-floor.sh $(if $(CHECK),--check) $(if $(BLESS),--bless) $(COV_ARGS)
 
 # test-coverage-floor-selftest exercises the rollup and ratchet against a
 # throwaway repo and a fake `go` — no compilation, no real suite.
 test-coverage-floor-selftest:
-	@scripts/test-coverage-floor-selftest.sh
+	@scripts/coverage/test-coverage-floor-selftest.sh
 
 # coverage-gaps ranks where a coverage profile's UNCOVERED statements are, by
 # count rather than percentage, so coverage work targets the largest real gaps.
 # Takes a profile: `make coverage-gaps PROFILE=path/to.cov GAP_ARGS="--by file"`.
 coverage-gaps:
-	@scripts/coverage-gaps.sh $(PROFILE) $(GAP_ARGS)
+	@scripts/coverage/coverage-gaps.sh $(PROFILE) $(GAP_ARGS)
 
 coverage-gaps-selftest:
-	@scripts/coverage-gaps-selftest.sh
+	@scripts/coverage/coverage-gaps-selftest.sh
 
 # coverage-union reports how much of each module ANY deterministic test reaches:
 # the union of the test track (test-coverage-floor) and the fuzz track
@@ -424,34 +424,34 @@ coverage-gaps-selftest:
 # checks in `check*` functions only a evenerfuzz "program" target calls. CHECK=1
 # gates, BLESS=1 raises. Heaviest of the three: two full runs per module.
 coverage-union:
-	@scripts/coverage-union.sh $(if $(CHECK),--check) $(if $(BLESS),--bless) $(UNION_ARGS)
+	@scripts/coverage/coverage-union.sh $(if $(CHECK),--check) $(if $(BLESS),--bless) $(UNION_ARGS)
 
 coverage-union-selftest:
-	@scripts/coverage-union-selftest.sh
+	@scripts/coverage/coverage-union-selftest.sh
 
 # merge-into-branch merges SOURCE into TARGET by ref (refs/heads/TARGET),
 # never through a live checkout: it builds the merge in a private disposable
 # worktree and lands it with a `git update-ref` compare-and-swap, so a
 # concurrent branch switch on a shared checkout cannot land the merge on the
 # wrong branch (kata h2tb). `make merge-into-branch TARGET=main SOURCE=feature
-# MERGE_ARGS="--no-ff"`; see scripts/merge-into-branch.sh --help for flags.
+# MERGE_ARGS="--no-ff"`; see scripts/gate/merge-into-branch.sh --help for flags.
 merge-into-branch:
-	@scripts/merge-into-branch.sh $(MERGE_ARGS) $(TARGET) $(SOURCE)
+	@scripts/gate/merge-into-branch.sh $(MERGE_ARGS) $(TARGET) $(SOURCE)
 
 merge-into-branch-selftest:
-	@scripts/merge-into-branch-selftest.sh
+	@scripts/gate/merge-into-branch-selftest.sh
 
 # web-coverage-floor is the frontend counterpart: per-area vitest LINE coverage
-# ratcheted against scripts/webcov-floors.txt. CHECK=1 fails on a drop; BLESS=1
+# ratcheted against scripts/coverage/webcov-floors.txt. CHECK=1 fails on a drop; BLESS=1
 # raises floors; REUSE=1 parses the existing report instead of re-running the
 # suite. Heavy + local, same as its Go siblings.
 web-coverage-floor: web-preflight
-	@scripts/web-coverage-floor.sh $(if $(CHECK),--check) $(if $(BLESS),--bless) $(if $(REUSE),--reuse) $(WEBCOV_ARGS)
+	@scripts/coverage/web-coverage-floor.sh $(if $(CHECK),--check) $(if $(BLESS),--bless) $(if $(REUSE),--reuse) $(WEBCOV_ARGS)
 
 # web-coverage-floor-selftest exercises the rollup and ratchet against a
 # throwaway frontend and a synthetic coverage summary — no vitest run.
 web-coverage-floor-selftest:
-	@scripts/web-coverage-floor-selftest.sh
+	@scripts/coverage/web-coverage-floor-selftest.sh
 
 # test-timing-budget ratchets per-package test wall time against
 # testing-budget.json (kata b6rv): fail at 1.5x the budget, warn at 1.1x, plus
@@ -461,14 +461,14 @@ web-coverage-floor-selftest:
 # invocation only measures and prints. Companion to test-coverage-floor and
 # web-coverage-floor, same as those heavy + local.
 test-timing-budget:
-	@scripts/test-timing-budget.sh $(if $(CHECK),--check) $(TIMING_ARGS)
+	@scripts/gate/test-timing-budget.sh $(if $(CHECK),--check) $(TIMING_ARGS)
 
 # test-timing-budget-selftest exercises the comparison contract (ratio bands,
 # the per-test ceiling, a missing budget entry, an absent/empty budget file,
 # strict-vs-warn-only policy, and --bless) against fixture duration rows — no
 # go test or vitest run.
 test-timing-budget-selftest:
-	@scripts/test-timing-budget-selftest.sh
+	@scripts/gate/test-timing-budget-selftest.sh
 
 # test-rebaseline resets testing-budget.json to what a clean-host run just
 # measured (kata b6rv). Run it deliberately, on an otherwise idle box, and
@@ -476,43 +476,43 @@ test-timing-budget-selftest:
 # NOT part of any gate, and nothing here should run it to invent a baseline;
 # see docs/testing.md.
 test-rebaseline:
-	@scripts/test-timing-budget.sh --bless $(TIMING_ARGS)
+	@scripts/gate/test-timing-budget.sh --bless $(TIMING_ARGS)
 
 # mutation-floor gates the gremlins kill score: MIN=95 fails any curated package
 # whose test efficacy drops below 95%. Slow (nightly). No MIN = report only.
 mutation-floor:
-	@scripts/fuzz-mutation-score.sh $(if $(MIN),--min-efficacy $(MIN)) $(MUT_ARGS)
+	@scripts/fuzz/fuzz-mutation-score.sh $(if $(MIN),--min-efficacy $(MIN)) $(MUT_ARGS)
 
 # fuzz-bisect pinpoints the commit that introduced a crasher via git bisect,
 # replaying one saved corpus entry per step. Supply args through FUZZ_ARGS, e.g.
 # `make fuzz-bisect FUZZ_ARGS="--target llm:FuzzParseSSE --crasher <file> --good <ref>"`.
 fuzz-bisect:
-	@scripts/fuzz-bisect.sh $(FUZZ_ARGS)
+	@scripts/fuzz/fuzz-bisect.sh $(FUZZ_ARGS)
 
 # fuzz-bisect-selftest verifies bisection end-to-end against a throwaway git repo
 # whose fuzz target crashes only after a known commit (real git bisect + replay).
 fuzz-bisect-selftest:
-	@scripts/fuzz-bisect-selftest.sh
+	@scripts/fuzz/fuzz-bisect-selftest.sh
 
 # fuzz-oracle-audit proves every fuzz oracle reddens on its bug class (Phase 9 W1):
 # each mutation in fuzz/mutations/ reintroduces a known fault in a throwaway
 # worktree and the audit asserts the target FAILS. `FUZZ_ARGS=--gap-only` lists
 # native targets that have no mutation yet; pass ids to audit only those.
 fuzz-oracle-audit:
-	@scripts/fuzz-oracle-audit.sh $(FUZZ_ARGS)
+	@scripts/fuzz/fuzz-oracle-audit.sh $(FUZZ_ARGS)
 
 # fuzz-oracle-audit-selftest verifies the audit's caught/blind/rot/build-failure
 # classification against a throwaway module (real worktree + go test, stubbed
 # registry).
 fuzz-oracle-audit-selftest:
-	@scripts/fuzz-oracle-audit-selftest.sh
+	@scripts/fuzz/fuzz-oracle-audit-selftest.sh
 
 # fuzz-mutation-score (Phase 10 W5) measures detection sufficiency with gremlins:
 # the per-package kill rate, and the surviving (LIVED) mutants are the weak-oracle
 # worklist. Nightly/manual (slow); needs gremlins installed. Pass FUZZ_ARGS to
 # score specific packages, e.g. `make fuzz-mutation-score FUZZ_ARGS="llm:./providercfg"`.
 fuzz-mutation-score:
-	@$(MEMCAP) scripts/fuzz-mutation-score.sh $(FUZZ_ARGS)
+	@$(MEMCAP) scripts/fuzz/fuzz-mutation-score.sh $(FUZZ_ARGS)
 
 # fuzz-ledger pretty-prints the triage ledger (found/fixed/quarantined counts and
 # the open-bug list) from fuzz/state/ledger.json.
@@ -527,24 +527,24 @@ FUZZCOV_ARGS := $(if $(CHECK),--check) $(if $(BLESS),--bless)
 # fuzz-coverage replays every fuzz target's COMMITTED corpus under -coverprofile
 # (no -fuzz, so deterministic), computes each target's FOCUS-SET coverage %
 # (primary, drivable to 100%) plus its whole-package % (secondary), enforces the
-# no-regression ratchet against scripts/fuzzcov-floors.txt, and prints the gap map
+# no-regression ratchet against scripts/coverage/fuzzcov-floors.txt, and prints the gap map
 # (decode/parse packages with zero fuzz coverage). Advisory by default; pass
 # CHECK=1 to fail on a ratchet regression or a gap breach, BLESS=1 to raise floors.
 fuzz-coverage:
-	@$(MEMCAP) scripts/fuzz-coverage.sh $(FUZZCOV_ARGS)
+	@$(MEMCAP) scripts/fuzz/fuzz-coverage.sh $(FUZZCOV_ARGS)
 
 # fuzz-gap-check is the FAST, STATIC gap gate (the blocking CI floor): it asserts
 # every decode/parse package has a registered fuzz target (or a reasoned ignore),
-# derived from scripts/run-fuzz.sh --list without replaying any corpus. Seconds,
+# derived from scripts/fuzz/run-fuzz.sh --list without replaying any corpus. Seconds,
 # deterministic. The slow ratchet (fuzz-coverage CHECK=1) stays local/manual.
 fuzz-gap-check:
-	@scripts/fuzz-gap-check.sh
+	@scripts/fuzz/fuzz-gap-check.sh
 
 # fuzz-registry-check compares native and explicitly marked rapid targets in the
 # authoritative manifest with AST-discovered workspace declarations. It does not
 # run ordinary tests, a fuzz search, or any network activity.
 fuzz-registry-check:
-	@scripts/fuzz-registry-check.sh
+	@scripts/fuzz/fuzz-registry-check.sh
 
 # refresh-model-catalog replaces the vendored LiteLLM model-catalog snapshot
 # with the current upstream and runs the catalog sanity tests. The vendored
@@ -552,18 +552,18 @@ fuzz-registry-check:
 # evener_model_catalog_overrides.json); use `--check` via the script directly
 # for a dry-run delta report.
 refresh-model-catalog:
-	@scripts/refresh-model-catalog.sh
+	@scripts/ops/refresh-model-catalog.sh
 
 # secret-scan runs gitleaks over the whole working tree using the committed
 # .gitleaks.toml ruleset. Part of the gate (`make lint`); skips with a warning
 # when gitleaks is not installed (required in CI).
 secret-scan:
-	$(call run_quiet_lint,scripts/gitleaks-scan.sh repo,preserve-gitleaks-warning)
+	$(call run_quiet_lint,scripts/ops/gitleaks-scan.sh repo,preserve-gitleaks-warning)
 
 # fuzz-corpus-scan runs gitleaks over only the fuzz seed corpora — the
 # corpus-scoped subset of secret-scan, for fast harvester feedback.
 fuzz-corpus-scan:
-	@scripts/gitleaks-scan.sh corpus
+	@scripts/ops/gitleaks-scan.sh corpus
 
 # lint-naming enforces JSON=snake_case, TOML=snake_case across every Go
 # struct tag and TOML file in the repo. Fast (well under a second) and
