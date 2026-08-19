@@ -64,8 +64,8 @@ export function GeneralSection() {
   return (
     <div className={CLASS.root}>
       <p className={CLASS.help}>
-        Read-only summary of the hub's runtime configuration. Edit <Code>~/.evener/hub.toml</Code> to change these
-        values.
+        Read-only summary of the hub's runtime configuration. Edit <Code>~/.config/evener/hub.toml</Code> to change
+        these values.
       </p>
       <dl className={CLASS.list}>
         <SettingsField label="Hub address" value={hub?.listenAddr ?? ""} />
@@ -114,7 +114,7 @@ export function GeneralSection() {
           label="Hub config"
           value={
             <>
-              <Code>~/.evener/hub.toml</Code> <FieldDim>edit to change</FieldDim>
+              <Code>~/.config/evener/hub.toml</Code> <FieldDim>edit to change</FieldDim>
             </>
           }
         />

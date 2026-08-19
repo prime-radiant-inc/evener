@@ -20,7 +20,7 @@ var loadCredentialStore = credentials.LoadStore
 // credential injection rules as LoadClient, but does not construct adapters.
 //
 // Path resolution: if EVENER_PROVIDERS_CONFIG is set, that path is used;
-// otherwise filepath.Join(DefaultStateRoot(), "providers.toml").
+// otherwise filepath.Join(DefaultConfigRoot(), "providers.toml").
 //
 // Behavior:
 //   - providers.toml present and valid → loaded as-is.
@@ -37,7 +37,7 @@ var loadCredentialStore = credentials.LoadStore
 func LoadProviderConfig(opts ...llm.EnvOption) (providercfg.Config, bool, error) {
 	path := envvars.EVENERProvidersConfig.Getenv()
 	if path == "" {
-		path = filepath.Join(DefaultStateRoot(), "providers.toml")
+		path = filepath.Join(DefaultConfigRoot(), "providers.toml")
 	}
 	return LoadProviderConfigAt(path, opts...)
 }
@@ -119,7 +119,7 @@ func hasAuthorizationHeader(headers map[string]string) bool {
 func LoadClient(opts ...llm.EnvOption) (*llm.Client, providercfg.Config, bool, error) {
 	path := envvars.EVENERProvidersConfig.Getenv()
 	if path == "" {
-		path = filepath.Join(DefaultStateRoot(), "providers.toml")
+		path = filepath.Join(DefaultConfigRoot(), "providers.toml")
 	}
 	return LoadClientAt(path, opts...)
 }

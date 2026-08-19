@@ -10,6 +10,7 @@ import (
 	"github.com/BurntSushi/toml"
 	"primeradiant.com/evener/cmd/evener-hub/internal/appsource"
 	"primeradiant.com/evener/cmd/evener-hub/internal/codexlaunch"
+	"primeradiant.com/evener/cmdutil"
 	"primeradiant.com/evener/envvars"
 )
 
@@ -22,7 +23,8 @@ type ProviderConfig struct {
 	Models []string `toml:"models"`
 }
 
-// Config is the hub's runtime configuration loaded from ~/.evener/hub.toml.
+// Config is the hub's runtime configuration loaded from hub.toml (see
+// DefaultConfigPath).
 type Config struct {
 	Addr               string                          `toml:"addr"`
 	HubStateRoot       string                          `toml:"hub_state_root"`
@@ -67,22 +69,20 @@ func DefaultConfig() Config {
 	}
 }
 
-// DefaultHubStateRoot returns ~/.evener.
+// DefaultHubStateRoot returns the hub's machine-generated state root
+// (cmdutil.DefaultStateRoot(): $XDG_STATE_HOME/evener, or
+// ~/.local/state/evener when XDG_STATE_HOME is unset). It holds the auth
+// token, the past-session index, the deletion-fence store, the host lock,
+// and the daemon rendezvous/log directory.
 func DefaultHubStateRoot() string {
-	home, err := configUserHomeDir()
-	if err != nil || home == "" {
-		home = "."
-	}
-	return filepath.Join(home, ".evener")
+	return cmdutil.DefaultStateRoot()
 }
 
-// DefaultConfigPath returns ~/.evener/hub.toml.
+// DefaultConfigPath returns the hub's optional config file:
+// cmdutil.DefaultConfigRoot()/hub.toml ($XDG_CONFIG_HOME/evener/hub.toml, or
+// ~/.config/evener/hub.toml when XDG_CONFIG_HOME is unset).
 func DefaultConfigPath() string {
-	home, err := configUserHomeDir()
-	if err != nil || home == "" {
-		home = "."
-	}
-	return filepath.Join(home, ".evener", "hub.toml")
+	return filepath.Join(cmdutil.DefaultConfigRoot(), "hub.toml")
 }
 
 // DefaultStateGlob returns the project state roots indexed by the hub.
@@ -98,13 +98,9 @@ func DefaultStateGlob() string {
 	return filepath.Join(base, "evener", "projects", "*")
 }
 
-// DefaultPastIndexDBPath returns ~/.evener/index.db.
+// DefaultPastIndexDBPath returns DefaultHubStateRoot()/index.db.
 func DefaultPastIndexDBPath() string {
-	home, err := configUserHomeDir()
-	if err != nil || home == "" {
-		home = "."
-	}
-	return filepath.Join(home, ".evener", "index.db")
+	return filepath.Join(DefaultHubStateRoot(), "index.db")
 }
 
 // LoadConfig reads path. A missing file returns DefaultConfig() and nil error.

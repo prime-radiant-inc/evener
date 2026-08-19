@@ -127,12 +127,12 @@ FAKE_FAKELLM
 cat >"$fixtures/evener-hub" <<'FAKE_HUB'
 #!/usr/bin/env bash
 "$FAKE_FIXTURES/report-env" "$FAKE_STATE/hub.env"
-cp "$HOME/.evener/providers.toml" "$FAKE_STATE/hub-providers.toml" 2>/dev/null
+cp "$HOME/.config/evener/providers.toml" "$FAKE_STATE/hub-providers.toml" 2>/dev/null
 if [ "${FAKE_HUB_MODE:-}" = "die" ]; then
 	echo "fake hub: refusing to start" >&2
 	exit 1
 fi
-printf 'fake-auth-token\n' >"$HOME/.evener/auth-token"
+printf 'fake-auth-token\n' >"$HOME/.local/state/evener/auth-token"
 echo "evener-hub listening on 127.0.0.1:14002" >&2
 
 # Stand in for a spawned session daemon, which is what makes --stop's log

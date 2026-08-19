@@ -116,7 +116,7 @@ func FuzzCmdutilCoverage(f *testing.F) {
 		if err := os.WriteFile(badState, []byte("x"), 0o600); err != nil {
 			t.Fatal(err)
 		}
-		t.Setenv(envvars.EVENERStateDir.Name, badState)
+		t.Setenv(envvars.XDGConfigHome.Name, badState)
 		_, _ = seedConfigFromEnv()
 		_, _ = MaterializeProvidersConfig(filepath.Join(badState, "providers.toml"))
 		_, _, _ = LoadProviderConfig()
@@ -134,7 +134,7 @@ func FuzzCmdutilCoverage(f *testing.F) {
 		newClientFromAvailableProviders = oldAvailable
 
 		validRoot := t.TempDir()
-		t.Setenv(envvars.EVENERStateDir.Name, validRoot)
+		t.Setenv(envvars.XDGConfigHome.Name, validRoot)
 		t.Setenv(envvars.OllamaBaseURL.Name, "http://ollama.invalid")
 		t.Setenv(envvars.OllamaHost.Name, "http://host.invalid")
 		_, _ = seedConfigFromEnv()
@@ -165,7 +165,7 @@ func FuzzCmdutilCoverage(f *testing.F) {
 		_, _ = StartTrace(filepath.Join(t.TempDir(), "second-trace"))
 		stopTrace()
 
-		t.Setenv(envvars.EVENERStateDir.Name, "")
+		t.Setenv(envvars.XDGStateHome.Name, "")
 		t.Setenv(envvars.XDGConfigHome.Name, "")
 		t.Setenv("HOME", "")
 		_ = DefaultStateRoot()

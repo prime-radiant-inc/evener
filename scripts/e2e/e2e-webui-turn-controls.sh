@@ -157,7 +157,7 @@ echo "$fakellm_pid" >"$run/fakellm.pid"
 e2e_wait_for_port "$run/fakellm.log" "$fakellm_pid" fakellm
 fakellm_port="$e2e_port"
 
-cat >"$HOME/.evener/providers.toml" <<EOF
+cat >"$HOME/.config/evener/providers.toml" <<EOF
 schema = 1
 default = "fake"
 
@@ -178,7 +178,7 @@ e2e_wait_for_port "$run/hub.log" "$hub_pid" hub
 hub_port="$e2e_port"
 hub_addr="http://127.0.0.1:$hub_port"
 e2e_health_check "$hub_addr"
-token="$(cat "$HOME/.evener/auth-token")"
+token="$(cat "$HOME/.local/state/evener/auth-token")"
 
 # Ready: the stack is up, so the processes stay up too. Disarm the reaper.
 e2e_disarm_reaper

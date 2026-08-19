@@ -17,15 +17,23 @@ func baseOpts(home, cwd string) options {
 	}
 }
 
-func TestExecuteMovesLegacyStateRoot(t *testing.T) {
+// TestExecuteMovesHomeRootFiles covers generation (a): a legacy ~/.serf home
+// root holding the pre-consolidation file set moves, per file, straight into
+// the final config/state roots — never through an intermediate ~/.evener.
+func TestExecuteMovesHomeRootFiles(t *testing.T) {
 	home := t.TempDir()
 	src := filepath.Join(home, ".serf")
-	dst := filepath.Join(home, ".evener")
 	if err := os.MkdirAll(filepath.Join(src, "run"), 0o755); err != nil {
 		t.Fatalf("mkdir source: %v", err)
 	}
 	if err := os.WriteFile(filepath.Join(src, "credentials.toml"), []byte("test"), 0o600); err != nil {
 		t.Fatalf("write credentials: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(src, "providers.toml"), []byte("providers"), 0o644); err != nil {
+		t.Fatalf("write providers: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(src, "index.db"), []byte("db"), 0o644); err != nil {
+		t.Fatalf("write index.db: %v", err)
 	}
 
 	var stdout, stderr bytes.Buffer
@@ -37,17 +45,135 @@ func TestExecuteMovesLegacyStateRoot(t *testing.T) {
 	if _, err := os.Stat(src); !os.IsNotExist(err) {
 		t.Fatalf("source %s should be gone", src)
 	}
-	if _, err := os.Stat(dst); err != nil {
-		t.Fatalf("dest %s should exist: %v", dst, err)
+	configEvener := filepath.Join(home, ".config", "evener")
+	stateEvener := filepath.Join(home, ".local", "state", "evener")
+	if _, err := os.Stat(filepath.Join(configEvener, "credentials.toml")); err != nil {
+		t.Fatalf("credentials.toml should be in the config root: %v", err)
 	}
-	if _, err := os.Stat(filepath.Join(dst, "credentials.toml")); err != nil {
-		t.Fatalf("credentials.toml should be in dest: %v", err)
+	if _, err := os.Stat(filepath.Join(configEvener, "providers.toml")); err != nil {
+		t.Fatalf("providers.toml should be in the config root: %v", err)
 	}
-	if _, err := os.Stat(filepath.Join(dst, "run")); err != nil {
-		t.Fatalf("run dir should be in dest: %v", err)
+	if _, err := os.Stat(filepath.Join(stateEvener, "index.db")); err != nil {
+		t.Fatalf("index.db should be in the state root: %v", err)
 	}
-	if !strings.Contains(stdout.String(), "moved=1") {
-		t.Fatalf("stdout = %q, want moved=1", stdout.String())
+	if _, err := os.Stat(filepath.Join(stateEvener, "run")); err != nil {
+		t.Fatalf("run dir should be in the state root: %v", err)
+	}
+	if !strings.Contains(stdout.String(), "moved=4") {
+		t.Fatalf("stdout = %q, want moved=4", stdout.String())
+	}
+}
+
+// TestExecuteMovesInterimEvenerFiles covers generation (b): Jesse's machine
+// — an interim ~/.evener (post-rename, pre-consolidation) holding the same
+// file set ~/.serf used to.
+func TestExecuteMovesInterimEvenerFiles(t *testing.T) {
+	home := t.TempDir()
+	src := filepath.Join(home, ".evener")
+	if err := os.MkdirAll(src, 0o755); err != nil {
+		t.Fatalf("mkdir source: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(src, "auth-token"), []byte("tok"), 0o600); err != nil {
+		t.Fatalf("write auth-token: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(src, "hub.lock"), []byte(""), 0o644); err != nil {
+		t.Fatalf("write hub.lock: %v", err)
+	}
+
+	var stdout, stderr bytes.Buffer
+	code := execute(baseOpts(home, t.TempDir()), &stdout, &stderr)
+	if code != 0 {
+		t.Fatalf("code = %d, want 0; stderr = %q", code, stderr.String())
+	}
+
+	if _, err := os.Stat(src); !os.IsNotExist(err) {
+		t.Fatalf("source %s should be gone", src)
+	}
+	stateEvener := filepath.Join(home, ".local", "state", "evener")
+	if _, err := os.Stat(filepath.Join(stateEvener, "auth-token")); err != nil {
+		t.Fatalf("auth-token should be in the state root: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(stateEvener, "hub.lock")); err != nil {
+		t.Fatalf("hub.lock should be in the state root: %v", err)
+	}
+	if !strings.Contains(stdout.String(), "moved=2") {
+		t.Fatalf("stdout = %q, want moved=2", stdout.String())
+	}
+}
+
+// TestExecuteHomeRootFilesPreservePermissions covers the 0600-class files:
+// credentials.toml and auth-token must keep their restrictive mode across
+// the move (os.Rename preserves it; MkdirAll'ing the new parent must not
+// widen it).
+func TestExecuteHomeRootFilesPreservePermissions(t *testing.T) {
+	home := t.TempDir()
+	src := filepath.Join(home, ".evener")
+	if err := os.MkdirAll(src, 0o755); err != nil {
+		t.Fatalf("mkdir source: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(src, "credentials.toml"), []byte("secret"), 0o600); err != nil {
+		t.Fatalf("write credentials: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(src, "auth-token"), []byte("tok"), 0o600); err != nil {
+		t.Fatalf("write auth-token: %v", err)
+	}
+
+	var stdout, stderr bytes.Buffer
+	if code := execute(baseOpts(home, t.TempDir()), &stdout, &stderr); code != 0 {
+		t.Fatalf("code != 0; stderr = %q", stderr.String())
+	}
+
+	credInfo, err := os.Stat(filepath.Join(home, ".config", "evener", "credentials.toml"))
+	if err != nil {
+		t.Fatalf("stat migrated credentials.toml: %v", err)
+	}
+	if credInfo.Mode().Perm() != 0o600 {
+		t.Fatalf("credentials.toml mode = %o, want 0600", credInfo.Mode().Perm())
+	}
+	tokInfo, err := os.Stat(filepath.Join(home, ".local", "state", "evener", "auth-token"))
+	if err != nil {
+		t.Fatalf("stat migrated auth-token: %v", err)
+	}
+	if tokInfo.Mode().Perm() != 0o600 {
+		t.Fatalf("auth-token mode = %o, want 0600", tokInfo.Mode().Perm())
+	}
+}
+
+// TestExecuteHomeRootFilesLegacyWinsOverInterim covers the (rare, arguably
+// impossible in practice) case where both ~/.serf and ~/.evener still hold
+// the same file: the legacy source is processed first and wins the move; the
+// interim copy is left in place untouched (refuse-don't-clobber, not merge).
+func TestExecuteHomeRootFilesLegacyWinsOverInterim(t *testing.T) {
+	home := t.TempDir()
+	legacySrc := filepath.Join(home, ".serf")
+	interimSrc := filepath.Join(home, ".evener")
+	if err := os.MkdirAll(legacySrc, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(interimSrc, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(legacySrc, "index.db"), []byte("legacy"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(interimSrc, "index.db"), []byte("interim"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	var stdout, stderr bytes.Buffer
+	if code := execute(baseOpts(home, t.TempDir()), &stdout, &stderr); code != 0 {
+		t.Fatalf("code != 0; stderr = %q", stderr.String())
+	}
+
+	got, err := os.ReadFile(filepath.Join(home, ".local", "state", "evener", "index.db"))
+	if err != nil {
+		t.Fatalf("stat migrated index.db: %v", err)
+	}
+	if string(got) != "legacy" {
+		t.Fatalf("migrated index.db = %q, want %q (legacy source wins)", got, "legacy")
+	}
+	if _, err := os.Stat(filepath.Join(interimSrc, "index.db")); err != nil {
+		t.Fatalf("interim index.db should be left in place, untouched: %v", err)
 	}
 }
 
@@ -56,6 +182,9 @@ func TestExecuteIdempotent(t *testing.T) {
 	src := filepath.Join(home, ".serf")
 	if err := os.MkdirAll(src, 0o755); err != nil {
 		t.Fatalf("mkdir source: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(src, "providers.toml"), []byte("x"), 0o644); err != nil {
+		t.Fatalf("write providers.toml: %v", err)
 	}
 	opts := baseOpts(home, t.TempDir())
 
@@ -77,10 +206,46 @@ func TestExecuteIdempotent(t *testing.T) {
 	}
 }
 
+// TestExecuteAlreadyFinalIsNoOp covers generation (c): neither home root
+// exists at all (already fully migrated, or a machine that never had one),
+// and the final config/state roots already hold real content — nothing
+// should move and nothing should be reported as skipped-with-a-source.
+func TestExecuteAlreadyFinalIsNoOp(t *testing.T) {
+	home := t.TempDir()
+	configEvener := filepath.Join(home, ".config", "evener")
+	stateEvener := filepath.Join(home, ".local", "state", "evener")
+	if err := os.MkdirAll(configEvener, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(stateEvener, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(configEvener, "providers.toml"), []byte("final"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	var stdout, stderr bytes.Buffer
+	code := execute(baseOpts(home, t.TempDir()), &stdout, &stderr)
+	if code != 0 {
+		t.Fatalf("code = %d, want 0; stderr = %q", code, stderr.String())
+	}
+	if !strings.Contains(stdout.String(), "moved=0") {
+		t.Fatalf("stdout = %q, want moved=0", stdout.String())
+	}
+	got, err := os.ReadFile(filepath.Join(configEvener, "providers.toml"))
+	if err != nil || string(got) != "final" {
+		t.Fatalf("final providers.toml should be untouched: content=%q err=%v", got, err)
+	}
+}
+
+// TestExecuteRefusesOverwriteDestExists covers the whole-directory XDG
+// config pair's refuse-don't-clobber semantics (still a directory-level move
+// — its contents were already correctly split, just under the old "serf"
+// name — unlike the per-file home-root migrations below).
 func TestExecuteRefusesOverwriteDestExists(t *testing.T) {
 	home := t.TempDir()
-	src := filepath.Join(home, ".serf")
-	dst := filepath.Join(home, ".evener")
+	src := filepath.Join(home, ".config", "serf")
+	dst := filepath.Join(home, ".config", "evener")
 	if err := os.MkdirAll(src, 0o755); err != nil {
 		t.Fatalf("mkdir source: %v", err)
 	}
@@ -111,6 +276,43 @@ func TestExecuteRefusesOverwriteDestExists(t *testing.T) {
 	}
 }
 
+// TestExecuteRefusesOverwriteHomeRootFile covers the per-file refuse-don't-
+// clobber case: a homeRootFile destination that already exists (e.g. a
+// previous partial migration) is left alone, and the source is preserved.
+func TestExecuteRefusesOverwriteHomeRootFile(t *testing.T) {
+	home := t.TempDir()
+	src := filepath.Join(home, ".evener")
+	if err := os.MkdirAll(src, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(src, "providers.toml"), []byte("old"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	configEvener := filepath.Join(home, ".config", "evener")
+	if err := os.MkdirAll(configEvener, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(configEvener, "providers.toml"), []byte("new"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	var stdout, stderr bytes.Buffer
+	code := execute(baseOpts(home, t.TempDir()), &stdout, &stderr)
+	if code != 0 {
+		t.Fatalf("code = %d, want 0; stderr = %q", code, stderr.String())
+	}
+
+	if got, err := os.ReadFile(filepath.Join(src, "providers.toml")); err != nil || string(got) != "old" {
+		t.Fatalf("source content should be preserved: content=%q err=%v", got, err)
+	}
+	if got, err := os.ReadFile(filepath.Join(configEvener, "providers.toml")); err != nil || string(got) != "new" {
+		t.Fatalf("dest content should be preserved: content=%q err=%v", got, err)
+	}
+	if !strings.Contains(stdout.String(), "destination already exists") {
+		t.Fatalf("stdout = %q, want 'destination already exists'", stdout.String())
+	}
+}
+
 func TestExecuteSkipsMissingSource(t *testing.T) {
 	home := t.TempDir()
 
@@ -131,12 +333,12 @@ func TestExecuteSkipsMissingSource(t *testing.T) {
 func TestExecuteDryRunMakesNoChanges(t *testing.T) {
 	home := t.TempDir()
 	src := filepath.Join(home, ".serf")
-	dst := filepath.Join(home, ".evener")
+	dst := filepath.Join(home, ".config", "evener", "providers.toml")
 	if err := os.MkdirAll(src, 0o755); err != nil {
 		t.Fatalf("mkdir source: %v", err)
 	}
-	if err := os.WriteFile(filepath.Join(src, "test"), []byte("data"), 0o600); err != nil {
-		t.Fatalf("write test: %v", err)
+	if err := os.WriteFile(filepath.Join(src, "providers.toml"), []byte("data"), 0o600); err != nil {
+		t.Fatalf("write providers.toml: %v", err)
 	}
 
 	opts := baseOpts(home, t.TempDir())
@@ -148,7 +350,7 @@ func TestExecuteDryRunMakesNoChanges(t *testing.T) {
 		t.Fatalf("code = %d, want 0; stderr = %q", code, stderr.String())
 	}
 
-	if _, err := os.Stat(src); err != nil {
+	if _, err := os.Stat(filepath.Join(src, "providers.toml")); err != nil {
 		t.Fatalf("source %s should still exist: %v", src, err)
 	}
 	if _, err := os.Stat(dst); !os.IsNotExist(err) {
@@ -275,6 +477,43 @@ func TestExecuteDryRunDoesNotRewriteContent(t *testing.T) {
 	}
 }
 
+// TestExecuteRewritesCrossFileHomeRootReferences covers a hand-edited
+// hub.toml (README-documented: hub_state_root/run_dir/past_index_db can
+// point at ~/.evener paths): after hub.toml itself moves to the config root
+// and index.db moves to the state root, hub.toml's OWN embedded reference to
+// the old index.db path — a sibling file, not hub.toml's own old path — must
+// be rewritten to the new one too.
+func TestExecuteRewritesCrossFileHomeRootReferences(t *testing.T) {
+	home := t.TempDir()
+	interim := filepath.Join(home, ".evener")
+	if err := os.MkdirAll(interim, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	hubToml := "past_index_db = \"" + filepath.Join(interim, "index.db") + "\"\n"
+	if err := os.WriteFile(filepath.Join(interim, "hub.toml"), []byte(hubToml), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(interim, "index.db"), []byte("db"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	var stdout, stderr bytes.Buffer
+	if code := execute(baseOpts(home, t.TempDir()), &stdout, &stderr); code != 0 {
+		t.Fatalf("code != 0; stderr = %q", stderr.String())
+	}
+
+	newHubToml := filepath.Join(home, ".config", "evener", "hub.toml")
+	newIndexDB := filepath.Join(home, ".local", "state", "evener", "index.db")
+	got, err := os.ReadFile(newHubToml)
+	if err != nil {
+		t.Fatalf("reading migrated hub.toml: %v", err)
+	}
+	want := "past_index_db = \"" + newIndexDB + "\"\n"
+	if string(got) != want {
+		t.Fatalf("migrated hub.toml = %q, want %q", got, want)
+	}
+}
+
 func TestExecuteMigratesXDGConfigAndState(t *testing.T) {
 	home := t.TempDir()
 	configBase := filepath.Join(home, ".config")
@@ -345,19 +584,28 @@ func TestExecuteMigratesProjectSerfDirectory(t *testing.T) {
 	}
 }
 
+// TestExecuteHandlesPartialMigration covers a machine mid-migration: one
+// home-root file already landed at its final destination (e.g. an earlier,
+// interrupted run) while the interim ~/.evener still holds a different,
+// unmigrated file. A single run must finish the rest without disturbing what
+// already landed.
 func TestExecuteHandlesPartialMigration(t *testing.T) {
 	home := t.TempDir()
 
-	// Legacy state root already migrated (evener exists, serf does not).
-	if err := os.MkdirAll(filepath.Join(home, ".evener"), 0o755); err != nil {
-		t.Fatalf("mkdir evener: %v", err)
+	stateEvener := filepath.Join(home, ".local", "state", "evener")
+	if err := os.MkdirAll(stateEvener, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(stateEvener, "index.db"), []byte("final"), 0o644); err != nil {
+		t.Fatal(err)
 	}
 
-	// Config root still needs migration.
-	configBase := filepath.Join(home, ".config")
-	configSrc := filepath.Join(configBase, "serf")
-	if err := os.MkdirAll(configSrc, 0o755); err != nil {
-		t.Fatalf("mkdir config source: %v", err)
+	interim := filepath.Join(home, ".evener")
+	if err := os.MkdirAll(interim, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(interim, "providers.toml"), []byte("cfg"), 0o644); err != nil {
+		t.Fatal(err)
 	}
 
 	var stdout, stderr bytes.Buffer
@@ -366,19 +614,51 @@ func TestExecuteHandlesPartialMigration(t *testing.T) {
 		t.Fatalf("code = %d, want 0; stderr = %q", code, stderr.String())
 	}
 
-	if _, err := os.Stat(configSrc); !os.IsNotExist(err) {
-		t.Fatalf("config source %s should be gone", configSrc)
+	if _, err := os.Stat(filepath.Join(home, ".config", "evener", "providers.toml")); err != nil {
+		t.Fatalf("providers.toml should now be migrated: %v", err)
 	}
-	if _, err := os.Stat(filepath.Join(configBase, "evener")); err != nil {
-		t.Fatalf("config dest should exist: %v", err)
-	}
-	// The already-migrated legacy root has no source (it was moved), so it is
-	// skipped silently; only the config root that still had a source is moved.
+	// providers.toml (interim -> config root) is the only real move; index.db
+	// is already at its final home (skip, dest exists).
 	if !strings.Contains(stdout.String(), "moved=1") {
 		t.Fatalf("stdout = %q, want moved=1", stdout.String())
 	}
-	if _, err := os.Stat(filepath.Join(home, ".evener")); err != nil {
-		t.Fatalf("already-migrated evener root should still exist: %v", err)
+	got, err := os.ReadFile(filepath.Join(stateEvener, "index.db"))
+	if err != nil || string(got) != "final" {
+		t.Fatalf("already-final index.db should be untouched: content=%q err=%v", got, err)
+	}
+	// The interim root held only providers.toml, now moved out: it should be gone.
+	if _, err := os.Stat(interim); !os.IsNotExist(err) {
+		t.Fatalf("emptied interim root %s should have been removed", interim)
+	}
+}
+
+// TestExecuteLeavesNonEmptyHomeRootInPlace covers a home root that still
+// holds content evener-migrate does not recognize (not one of
+// homeRootFiles): the known file moves, but the directory itself — and the
+// unrecognized file — are left alone rather than force-deleted.
+func TestExecuteLeavesNonEmptyHomeRootInPlace(t *testing.T) {
+	home := t.TempDir()
+	interim := filepath.Join(home, ".evener")
+	if err := os.MkdirAll(interim, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(interim, "providers.toml"), []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(interim, "unknown-file.txt"), []byte("mystery"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	var stdout, stderr bytes.Buffer
+	if code := execute(baseOpts(home, t.TempDir()), &stdout, &stderr); code != 0 {
+		t.Fatalf("code != 0; stderr = %q", stderr.String())
+	}
+
+	if _, err := os.Stat(filepath.Join(home, ".config", "evener", "providers.toml")); err != nil {
+		t.Fatalf("providers.toml should be migrated: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(interim, "unknown-file.txt")); err != nil {
+		t.Fatalf("unrecognized content should be left in place: %v", err)
 	}
 }
 

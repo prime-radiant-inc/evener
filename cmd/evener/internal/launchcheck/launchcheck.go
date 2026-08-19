@@ -41,7 +41,7 @@ var launchCheckLoadProviderConfig = cmdutil.LoadProviderConfig
 var launchCheckLoadConfig = func() (providercfg.Config, bool, error) {
 	path := envvars.EVENERProvidersConfig.Getenv()
 	if path == "" {
-		path = filepath.Join(cmdutil.DefaultStateRoot(), "providers.toml")
+		path = filepath.Join(cmdutil.DefaultConfigRoot(), "providers.toml")
 	}
 	return providercfg.LoadFile(path)
 }

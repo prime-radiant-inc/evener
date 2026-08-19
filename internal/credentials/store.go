@@ -1,6 +1,8 @@
-// Package credentials owns ~/.evener/credentials.toml. Provider API keys
-// are stored verbatim with chmod 600; encryption-at-rest is deliberately
-// not provided (see spec §5.5 non-goals).
+// Package credentials owns credentials.toml, a sibling of providers.toml
+// under the evener config root (cmdutil.DefaultConfigRoot,
+// ~/.config/evener by default). Provider API keys are stored verbatim with
+// chmod 600; encryption-at-rest is deliberately not provided (see spec
+// §5.5 non-goals).
 package credentials
 
 import (

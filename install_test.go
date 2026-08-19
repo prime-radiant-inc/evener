@@ -370,8 +370,8 @@ cp "$EVENER_FAKE_CURL_ARCHIVE" "$out"
 
 // TestInstallScriptWarnsAboutLegacySerf pins install.sh's completion-message
 // nudge toward evener-migrate (README.md, "Migrating from Serf"): a machine
-// with an existing ~/.serf gets told to migrate before first launch, and a
-// clean machine gets no such nudge.
+// with an existing ~/.serf or interim ~/.evener gets told to migrate before
+// first launch, and a clean machine gets no such nudge.
 func TestInstallScriptWarnsAboutLegacySerf(t *testing.T) {
 	t.Parallel()
 	if testing.Short() {
@@ -390,16 +390,23 @@ func TestInstallScriptWarnsAboutLegacySerf(t *testing.T) {
 	for _, tc := range []struct {
 		name        string
 		seedLegacy  bool
+		seedInterim bool
 		wantMessage bool
 	}{
 		{name: "legacy serf present", seedLegacy: true, wantMessage: true},
-		{name: "clean machine", seedLegacy: false, wantMessage: false},
+		{name: "interim evener present", seedInterim: true, wantMessage: true},
+		{name: "clean machine", wantMessage: false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			home := t.TempDir()
 			if tc.seedLegacy {
 				if err := os.MkdirAll(filepath.Join(home, ".serf"), 0o700); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if tc.seedInterim {
+				if err := os.MkdirAll(filepath.Join(home, ".evener"), 0o700); err != nil {
 					t.Fatal(err)
 				}
 			}

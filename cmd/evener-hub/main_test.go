@@ -19,7 +19,7 @@ func TestPrintHubEnvVars(t *testing.T) {
 	// format string would silently pass.
 	wantSummary := map[string]string{
 		"EVENER_PROVIDERS_CONFIG": "Path to providers.toml.",
-		"EVENER_STATE_DIR":        "Overrides the Evener state root.",
+		"EVENER_STATE_DIR":        "Overrides the per-invocation project/session state directory",
 		"OPENAI_API_KEY":          "OpenAI API key.",
 		"ANTHROPIC_API_KEY":       "Anthropic API key.",
 		"GEMINI_API_KEY":          "Google Gemini API key; checked before GOOGLE_API_KEY.",

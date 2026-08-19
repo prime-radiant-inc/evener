@@ -12,9 +12,9 @@ the file structure. This document is the runbook side.
 ## Setup checklist
 
 **Never Jesse's real hub, never his port `9180`.** His `evener-hub` runs
-there for real, host-wide flock'd at `~/.evener/hub.lock`, with his real
-auth token, credentials, providers, and session history under `~/.evener`
-and `~/.local/state/evener`. A test hub started with a bare `$HOME` and
+there for real, host-wide flock'd at `~/.local/state/evener/hub.lock`, with
+his real auth token, credentials, providers, and session history under
+`~/.config/evener` and `~/.local/state/evener`. A test hub started with a bare `$HOME` and
 the doc's old literal `9180` would frequently fail to bind at all
 (the flock is exclusive) — but if the check below can't tell *whose*
 hub answered, an agent that doesn't notice the failure goes on to spawn
@@ -59,15 +59,18 @@ go build -o "$run/evener-hub" ./cmd/evener-hub
 go build -o "$run/evener" ./cmd/evener
 go build -o "$run/evener-tui" ./cmd/evener-tui
 
-# 3. Isolate. A throwaway $HOME keeps auth-token, credentials.toml,
-#    providers.toml, hub.lock, and session history off Jesse's real
-#    ~/.evener and ~/.local/state/evener entirely — unsetting
-#    XDG_STATE_HOME too, in case the ambient shell already points it
-#    somewhere real (DefaultStateGlob prefers XDG_STATE_HOME over
-#    $HOME/.local/state when it's set).
+# 3. Isolate. A throwaway $HOME keeps hub.lock, auth-token, and session
+#    history off Jesse's real ~/.local/state/evener, and credentials.toml/
+#    providers.toml off his real ~/.config/evener — unsetting both
+#    XDG_STATE_HOME and XDG_CONFIG_HOME too, in case the ambient shell
+#    already points either somewhere real (DefaultStateGlob prefers
+#    XDG_STATE_HOME over $HOME/.local/state when it's set, and
+#    cmdutil.DefaultConfigRoot prefers XDG_CONFIG_HOME over $HOME/.config
+#    the same way).
 export HOME="$run/home"
 mkdir -p "$HOME"
 unset XDG_STATE_HOME
+unset XDG_CONFIG_HOME
 
 # 4. Start the hub with -addr 127.0.0.1:0 — never a hardcoded or
 #    dispatch-assigned port. evener-hub binds the listener itself and
@@ -106,7 +109,7 @@ curl -s -o /dev/null -w "%{http_code}\n" "$HUB/"  # → 401 (auth required; mean
 # 7. Grab the auth token from the isolated $HOME. The browser needs it
 #    in the URL query and the curl REST shim needs it as a Bearer
 #    header.
-TOKEN=$(cat "$HOME/.evener/auth-token")
+TOKEN=$(cat "$HOME/.local/state/evener/auth-token")
 ```
 
 ### Handing this hub to a sibling card
@@ -135,9 +138,10 @@ export EVENER_E2E_RUN="$run"
 run=${EVENER_E2E_RUN:?run ask-web-answer.md's Pre-state first, then export EVENER_E2E_RUN="$run"}
 export HOME="$run/home"
 unset XDG_STATE_HOME
+unset XDG_CONFIG_HOME
 PORT=$(grep -oE 'listening on 127\.0\.0\.1:[0-9]+' "$run/hub.log" | grep -oE '[0-9]+$' | tail -1)
 HUB=http://127.0.0.1:$PORT
-TOKEN=$(cat "$HOME/.evener/auth-token")
+TOKEN=$(cat "$HOME/.local/state/evener/auth-token")
 HUBPID=$(cat "$run/hub.pid")
 kill -0 "$HUBPID" 2>/dev/null || { echo "that hub is gone — re-run the owning card's Pre-state" >&2; exit 1; }
 ```
@@ -164,7 +168,7 @@ fresh browser authentications buys nothing back. The number was the problem,
 not the sharing.
 
 The hub picks up provider credentials from env (`OPENAI_API_KEY`,
-`ANTHROPIC_API_KEY`) and/or `$HOME/.evener/credentials.toml` (the isolated
+`ANTHROPIC_API_KEY`) and/or `$HOME/.config/evener/credentials.toml` (the isolated
 one — copy in a scratch `credentials.toml` first if a scenario needs a
 specific provider's stored key; see `credentials-page-displays-sources.md`
 for the pattern). If a scenario needs a specific provider, check
@@ -205,7 +209,7 @@ following two mitigations, which don't require solving the credential
 sharing itself):
 
 - **Check for the flock before you start, don't debug it after.** The
-  host-wide lock at `~/.evener/hub.lock` is exclusive regardless of any
+  host-wide lock at `~/.local/state/evener/hub.lock` is exclusive regardless of any
   other override, so this hub *cannot start at all* while Jesse's real
   one already holds it — that failure looks like a hang or a generic
   bind error, not an obvious "already running" message. Check first:
@@ -546,8 +550,8 @@ await_element [data-testid="composer-input-card"]
 ```
 
 The `/auth` route (`web.go:174`) sets the session cookie then redirects
-to `next`. Use the literal token from `$HOME/.evener/auth-token` (the
-isolated `$HOME` from the Setup checklist), not the path. If you get
+to `next`. Use the literal token from `$HOME/.local/state/evener/auth-token`
+(the isolated `$HOME` from the Setup checklist), not the path. If you get
 `"invalid token"` rendered, you passed the path.
 
 **A session URL is `/s/<hostID>:<sessionID>`, and a bare session id is
@@ -1037,7 +1041,7 @@ file a kata. Don't try to drive past the gate from the scenario.
 - **Hub address**: `127.0.0.1:$PORT` — read back from `$run/hub.log`
   after starting the hub with `-addr 127.0.0.1:0` per the Setup
   checklist, never Jesse's real `9180`.
-- **Auth token**: `$HOME/.evener/auth-token` — the isolated `$HOME` from
+- **Auth token**: `$HOME/.local/state/evener/auth-token` — the isolated `$HOME` from
   the Setup checklist, never Jesse's real one.
 - **Follow-up turn** (after the initial spawn prompt): `POST /api/sessions/local:<SID>/send` with body `{"text":"..."}` (the spawn only starts turn 1; subsequent user turns go here). See "The REST surface" above for the full verb list and for the three verbs — steer, queue, drain-as-steer — that have no REST route at all.
 - **Session URL**: `/s/local:<SID>`. A bare `/s/<SID>` renders "Page not found" client-side, by design.
@@ -1045,7 +1049,7 @@ file a kata. Don't try to drive past the gate from the scenario.
 - **Per-session transcript**: `$HOME/.local/state/evener/projects/<project-id>/sessions/<SID>.transcript.jsonl`
 - **Per-session meta**: same dir, `<SID>.meta.json`
 - **Per-daemon log** (everything a spawned session's `evener serve` writes,
-  including its `[serve]` lines): `$HOME/.evener/run/logs/daemon-<SID>.log`,
+  including its `[serve]` lines): `$HOME/.local/state/evener/run/logs/daemon-<SID>.log`,
   under the hub's run dir. `$run/hub.log` holds hub lines only; each launch
   prints one `[hub] daemon session=… pid=… log=…` banner there naming this
   file. Daemon lines are stamped `[serve <RFC3339 UTC ms> session=<SID>]`,

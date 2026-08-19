@@ -20,9 +20,13 @@ func Enabled(value string) bool {
 // Paths resolves the state-home and provider-config roots used by live evals.
 // A configured state home wins; otherwise it follows the user's home rather
 // than naming one developer's machine. Provider configuration follows the
-// runtime precedence: EVENER_PROVIDERS_CONFIG, EVENER_STATE_DIR/providers.toml,
-// then ~/.evener/providers.toml. The returned state path is the XDG base, not
-// the child "evener" directory that the auth layer appends.
+// runtime precedence: EVENER_PROVIDERS_CONFIG, then
+// $XDG_CONFIG_HOME/evener/providers.toml, then ~/.config/evener/providers.toml
+// — cmdutil.DefaultConfigRoot's resolution, duplicated here so this
+// low-level eval-harness package stays free of a dependency on the cmd
+// helper layer (see appwire/frame_recorder.go for the same tradeoff). The
+// returned state path is the XDG base, not the child "evener" directory that
+// the auth layer appends.
 func Paths(stateHome, userHome string) (string, string) {
 	stateHome = strings.TrimSpace(stateHome)
 	userHome = strings.TrimSpace(userHome)
@@ -32,11 +36,11 @@ func Paths(stateHome, userHome string) (string, string) {
 
 	providerPath := envvars.EVENERProvidersConfig.Trimmed()
 	if providerPath == "" {
-		stateRoot := envvars.EVENERStateDir.Trimmed()
-		if stateRoot == "" {
-			stateRoot = filepath.Join(userHome, ".evener")
+		configHome := envvars.XDGConfigHome.Trimmed()
+		if configHome == "" {
+			configHome = filepath.Join(userHome, ".config")
 		}
-		providerPath = filepath.Join(stateRoot, "providers.toml")
+		providerPath = filepath.Join(configHome, "evener", "providers.toml")
 	}
 	return stateHome, providerPath
 }

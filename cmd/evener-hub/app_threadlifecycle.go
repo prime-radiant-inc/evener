@@ -102,7 +102,11 @@ func hubThreadStart(ctx context.Context, cfg hubcore.WebConfig, sources *appsour
 		v := *params.NonInteractive
 		overrides.NonInteractive = &v
 	}
-	spawnResolved, resolveErr := hubResolveLaunch(cfg.HubStateRoot, workingDir, overrides)
+	// launch.toml is user-editable configuration (Hub UI's Launch settings
+	// tab, or hand-edited), so its root is the config root, not
+	// cfg.HubStateRoot (machine-generated state: auth-token, index.db,
+	// deletions/).
+	spawnResolved, resolveErr := hubResolveLaunch(hubLaunchConfigRoot(cfg), workingDir, overrides)
 	if resolveErr != nil {
 		return appwire.ThreadStartResponse{}, resolveErr
 	}

@@ -41,22 +41,23 @@ live_eval_prepare_trial() {
 	LIVE_EVAL_WORK="$LIVE_EVAL_TRIAL_ROOT/work"
 
 	# The state root contains credentials as input, but no prior sessions. The
-	# home root contains the provider configuration used by the live command.
-	mkdir -p "$LIVE_EVAL_STATE/evener/auth" "$LIVE_EVAL_HOME/.evener" "$LIVE_EVAL_WORK"
+	# home root contains the provider configuration used by the live command,
+	# under .config/evener (the evener config root; see cmdutil.DefaultConfigRoot).
+	mkdir -p "$LIVE_EVAL_STATE/evener/auth" "$LIVE_EVAL_HOME/.config/evener" "$LIVE_EVAL_WORK"
 	if [ ! -d "$ISO/evener/auth" ]; then
 		printf 'live eval source has no evener/auth directory: %s\n' "$ISO" >&2
 		return 1
 	fi
-	if [ ! -d "$HOMEISO/.evener" ]; then
-		printf 'live eval source has no .evener directory: %s\n' "$HOMEISO" >&2
+	if [ ! -d "$HOMEISO/.config/evener" ]; then
+		printf 'live eval source has no .config/evener directory: %s\n' "$HOMEISO" >&2
 		return 1
 	fi
-	if [ ! -f "$HOMEISO/.evener/providers.toml" ]; then
-		printf 'live eval source has no providers.toml: %s\n' "$HOMEISO/.evener" >&2
+	if [ ! -f "$HOMEISO/.config/evener/providers.toml" ]; then
+		printf 'live eval source has no providers.toml: %s\n' "$HOMEISO/.config/evener" >&2
 		return 1
 	fi
 	cp -R "$ISO/evener/auth/." "$LIVE_EVAL_STATE/evener/auth/"
-	cp -R "$HOMEISO/.evener/." "$LIVE_EVAL_HOME/.evener/"
+	cp -R "$HOMEISO/.config/evener/." "$LIVE_EVAL_HOME/.config/evener/"
 	cp "$EVENER_LIVE_BINARY" "$LIVE_EVAL_EVENER"
 	chmod +x "$LIVE_EVAL_EVENER"
 }

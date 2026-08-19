@@ -114,17 +114,21 @@ api_key = "sk-ant-..."
   `SourceNone` for any provider `envvars.RequiresNoCredential` accepts, so the
   rule holds for a second such provider with no edit here.
 
-The hub loads exactly one store at `filepath.Join(hubStateRoot, "credentials.toml")`
-(`cmd/evener-hub/main.go`) and hands it to the spawner and the auth controller.
+The hub loads exactly one store, at
+`filepath.Join(filepath.Dir(providersConfigPath), "credentials.toml")`
+(`cmd/evener-hub/main.go`) — always a sibling of the providers.toml the hub
+loaded, wherever `EVENER_PROVIDERS_CONFIG` or `cmdutil.DefaultConfigRoot()`
+put that — and hands it to the spawner and the auth controller.
 
 > Note: the UI copy and several code comments say keys live in
-> `~/.evener/credentials.toml` (e.g. the package doc at the top of `store.go`).
-> That is the *documented default home*; the hub actually uses whatever
-> `hubStateRoot` is configured to. The hub auth controller's fallback
-> constructors derive the path as
-> `filepath.Join(filepath.Dir(stateDir), "credentials.toml")`
-> (`newHubAuthController` / `newHubAuthControllerWithStore` in
-> `cmd/evener-hub/app_auth.go`).
+> `~/.config/evener/credentials.toml` (e.g. the package doc at the top of
+> `store.go`). That is the *documented default home*; the hub actually uses
+> whatever directory the loaded providers.toml lives in. The hub auth
+> controller's fallback constructors derive the path the same way —
+> `filepath.Join(filepath.Dir(stateDir), "credentials.toml")`, where
+> `stateDir` there is the OpenAI OAuth state directory, not
+> `HubStateRoot` — (`newHubAuthController` / `newHubAuthControllerWithStore`
+> in `cmd/evener-hub/app_auth.go`).
 
 ### Which key a lookup uses
 

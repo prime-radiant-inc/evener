@@ -150,20 +150,21 @@ e2e_disarm_reaper() {
 # e2e_isolate_home RUN_DIR — point HOME at a throwaway dir and clear everything
 # that could redirect evener away from it.
 #
-# A throwaway $HOME keeps auth-token, credentials.toml, providers.toml,
-# hub.lock, and session history off the real ~/.evener and ~/.local/state/evener
-# entirely. Everything that can redirect evener away from the throwaway $HOME
-# is unset, not just the state dir: an operator with any of these exported
-# would otherwise have this hub read or write their real config, cache, run dir
-# or hub token while the header above promises isolation. EVENER_PROVIDERS_CONFIG
-# belongs in this list above all: it outranks $HOME/.evener/providers.toml, so
-# leaving it set would load the operator's real providers instead of the fake
-# backend — a network call and a paid request out of a fixture whose whole
-# point is that neither happens.
+# A throwaway $HOME keeps hub.lock, auth-token, and session history off the
+# real ~/.local/state/evener, and credentials.toml/providers.toml off the
+# real ~/.config/evener, entirely. Everything that can redirect evener away
+# from the throwaway $HOME is unset, not just the state dir: an operator with
+# any of these exported would otherwise have this hub read or write their
+# real config, cache, run dir or hub token while the header above promises
+# isolation. EVENER_PROVIDERS_CONFIG belongs in this list above all: it
+# outranks $HOME/.config/evener/providers.toml, so leaving it set would load
+# the operator's real providers instead of the fake backend — a network call
+# and a paid request out of a fixture whose whole point is that neither
+# happens.
 e2e_isolate_home() {
 	local run_dir="$1"
 	export HOME="$run_dir/home"
-	mkdir -p "$HOME/.evener"
+	mkdir -p "$HOME/.config/evener" "$HOME/.local/state/evener"
 	unset XDG_STATE_HOME XDG_CONFIG_HOME XDG_CACHE_HOME
 	unset EVENER_STATE_DIR EVENER_RUN_DIR EVENER_HUB_TOKEN EVENER_HUB_ADDR EVENER_HUB_SPAWNED
 	unset EVENER_PROVIDERS_CONFIG

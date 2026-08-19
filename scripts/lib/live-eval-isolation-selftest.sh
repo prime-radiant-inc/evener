@@ -16,9 +16,9 @@ source_state="$fixture/source-state"
 source_home="$fixture/source-home"
 binary="$fixture/source-evener"
 env_file="$fixture/live.env"
-mkdir -p "$source_state/evener/auth" "$source_home/.evener"
+mkdir -p "$source_state/evener/auth" "$source_home/.config/evener"
 printf 'oauth fixture\n' >"$source_state/evener/auth/openai.json"
-printf 'provider fixture\n' >"$source_home/.evener/providers.toml"
+printf 'provider fixture\n' >"$source_home/.config/evener/providers.toml"
 cat >"$binary" <<'EOF'
 #!/usr/bin/env bash
 exit 0
@@ -42,13 +42,13 @@ second_trial="$LIVE_EVAL_TRIAL_ROOT"
 
 test "$first_trial" != "$second_trial"
 test -f "$first_state/evener/auth/openai.json"
-test -f "$first_home/.evener/providers.toml"
+test -f "$first_home/.config/evener/providers.toml"
 test -x "$first_evener"
 test -f "$second_trial/state/evener/auth/openai.json"
-test -f "$second_trial/home/.evener/providers.toml"
+test -f "$second_trial/home/.config/evener/providers.toml"
 test "$first_trial" != "$run_root"
 test "$(cat "$source_state/evener/auth/openai.json")" = "oauth fixture"
-test "$(cat "$source_home/.evener/providers.toml")" = "provider fixture"
+test "$(cat "$source_home/.config/evener/providers.toml")" = "provider fixture"
 
 live_eval_cleanup
 test ! -e "$run_root"

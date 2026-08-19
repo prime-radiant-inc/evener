@@ -112,9 +112,10 @@ e2e_wait_for_port "$run/fake429.log" "$fake429_pid" fake429
 fake429_addr="127.0.0.1:$e2e_port"
 
 # Wire providers.toml at fake429's real address, into the isolated hub's own
-# $HOME/.evener — a copy, not a pointer back into the repo tree, so nothing
-# here can leave the checkout dirty even if the hub later rewrites the file.
-sed "s|FAKE429_ADDR|$fake429_addr|" "$fixtures_dir/providers.toml" >"$HOME/.evener/providers.toml"
+# $HOME/.config/evener — a copy, not a pointer back into the repo tree, so
+# nothing here can leave the checkout dirty even if the hub later rewrites
+# the file.
+sed "s|FAKE429_ADDR|$fake429_addr|" "$fixtures_dir/providers.toml" >"$HOME/.config/evener/providers.toml"
 
 echo "==> starting evener-hub" >&2
 "$run/evener-hub" -addr 127.0.0.1:0 -config "$fixtures_dir/hub.toml" -evener "$run/evener" >"$run/hub.log" 2>&1 &
@@ -125,7 +126,7 @@ e2e_wait_for_port "$run/hub.log" "$hub_pid" hub
 hub_port="$e2e_port"
 hub_addr="http://127.0.0.1:$hub_port"
 e2e_health_check "$hub_addr"
-token="$(cat "$HOME/.evener/auth-token")"
+token="$(cat "$HOME/.local/state/evener/auth-token")"
 
 echo "$SCRIPT_NAME: hub up at $hub_addr (pid $hub_pid)" >&2
 
