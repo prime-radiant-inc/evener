@@ -249,10 +249,10 @@ assert_eq "$make_rc" "0" "dist still resolves its default target platform"
 assert_has "$make_state/calls" "go-env	env GOOS" "dist discovers its default operating system"
 assert_has "$make_state/calls" "go-env	env GOARCH" "dist discovers its default architecture"
 
-# Issue #181: when scripts/gate/gate-capability-preflight.sh cannot execute
-# at all (missing, or present but not executable), the merge-approval-gate
-# recipe's eval of its output must STOP the gate rather than silently
-# proceeding on an empty eval. Without the guard the gate FAILS OPEN: the
+# Issue #181: when scripts/gate/gate-capability-preflight.sh cannot run to a
+# verdict (missing, present but not executable, or crashing partway), the
+# merge-approval-gate recipe's eval of its output must STOP the gate rather
+# than silently proceeding on an empty eval. Without the guard the gate FAILS OPEN: the
 # command substitution yields empty (the shell prints an error to stderr and
 # returns nonzero, but that never reaches the `&&`), `eval ""` returns 0, the
 # `&&` chain continues into lint/build/test/test-dev-tooling, and an
@@ -265,8 +265,9 @@ assert_has "$make_state/calls" "go-env	env GOARCH" "dist discovers its default a
 # gate-capability-preflight.sh, so the relative path the recipe evals
 # resolves to a missing file. MAKE is faked (fake_make) so the recursive
 # phases only record their target name to $FAKE_STATE/calls; the gate must
-# stop at the preflight, so calls stays empty. The GREEN fix adds an explicit
-# existence/executability guard that exits 1.
+# stop at the preflight, so calls stays empty. The GREEN fix guards with an
+# explicit existence/executability check plus a check of the command
+# substitution's own exit status, each exiting 1.
 failopen_case="$work/failopen"
 failopen_repo="$failopen_case/repo"
 mkdir -p "$failopen_repo/scripts/gate"
@@ -316,5 +317,24 @@ else
 fi
 actual_calls="$(cat "$work/calls" 2>/dev/null || :)"
 assert_eq "$actual_calls" "" "non-executable preflight script stops the gate before any phase runs (issue #181)"
+
+# Third fail-open trigger: the preflight script starts but crashes before
+# emitting its verdict (nonzero exit, nothing on stdout). An -x guard alone
+# cannot catch this - the recipe must also check the command substitution's
+# own exit status, or `eval ""` silently succeeds exactly as above.
+cat >"$failopen_repo/scripts/gate/gate-capability-preflight.sh" <<'CRASH_PREFLIGHT'
+#!/usr/bin/env bash
+echo "preflight crashed before emitting a verdict" >&2
+exit 7
+CRASH_PREFLIGHT
+chmod +x "$failopen_repo/scripts/gate/gate-capability-preflight.sh"
+run_gate_failopen "$work/failopen-crash.out"
+if [ "$gate_rc" -ne 0 ]; then
+	ok "crashing preflight script fails the gate closed (issue #181)"
+else
+	bad "crashing preflight script fails the gate closed (issue #181) - gate continued with exit 0 (fail-open)"
+fi
+actual_calls="$(cat "$work/calls" 2>/dev/null || :)"
+assert_eq "$actual_calls" "" "crashing preflight script stops the gate before any phase runs (issue #181)"
 
 selftest_summary

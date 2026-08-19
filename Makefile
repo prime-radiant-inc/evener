@@ -292,7 +292,11 @@ merge-approval-gate:
 		echo 'merge-approval-gate: capability preflight script missing or not executable: scripts/gate/gate-capability-preflight.sh' >&2; \
 		exit 1; \
 	fi && \
-	eval "$$(scripts/gate/gate-capability-preflight.sh)" && \
+	preflight="$$(scripts/gate/gate-capability-preflight.sh)" || { \
+		echo 'merge-approval-gate: capability preflight script failed before emitting its verdict: scripts/gate/gate-capability-preflight.sh' >&2; \
+		exit 1; \
+	} && \
+	eval "$$preflight" && \
 		$(MAKE) lint && \
 		$(MAKE) build && \
 		ROOT_FULL=1 $(MAKE) test && \
