@@ -1371,7 +1371,7 @@ describe("width stability across expand/collapse", () => {
 });
 
 describe("hide affordance (onHide)", () => {
-  // The ☰ button renders only when RailHost passes onHide (desktop); the
+  // The « button renders only when RailHost passes onHide (desktop); the
   // mobile drawer instance passes none - the drawer is its own show/hide.
   test("renders a Hide sidebar button that calls onHide when provided", async () => {
     const onHide = vi.fn();

@@ -6,15 +6,12 @@
 <link rel="stylesheet" href="tokens.css">
 <link rel="stylesheet" href="resolved.css">
 <style>
-  /* Transitions OFF (docs/testing.md: "switch transitions off in the
-     harness"): these assertions read elementFromPoint hit-testing, which
-     follows visibility - and the production swap delays visibility flips
-     behind a 120ms opacity fade. With transitions on, a measure taken right
-     after the runner forces :hover would read the MID-FLIP state; with them
-     off, every state the cascade can produce is measured settled. (The
-     geometry assertions wouldn't care - opacity is paint-only - but the
-     hit-testing ones do.) */
-  *, *::before, *::after { transition: none !important; }
+  /* No transition/animation reset here (unlike some sibling cases): every
+     assertion in this case reads getBoundingClientRect() geometry, which
+     .actions's opacity transition never touches - opacity is a paint-only
+     property, and (per this case's own point) doesn't affect hit-testing
+     either, so a mid-transition frame would measure identically to a
+     settled one. */
   body {
     margin: 0;
     background: var(--surface-1);
@@ -28,7 +25,7 @@
      harness uses (see that case's own comment): the treeitem/section
      padding chain .railRow actually sits inside in production insets every
      row equally, so it doesn't change whether the chevron and the actions
-     menu overlap - only the row's own content width does. */
+     overlay overlap - only the row's own content width does. */
   .railBox { box-sizing: border-box; }
 </style>
 </head>
@@ -40,24 +37,14 @@
      and the real Chevron widget's SVG markup (widgets/chevron/index.tsx,
      size=12, viewBox 0 0 16 16), not a text-glyph stand-in: this case's
      whole point is the chevron's actual 12x12 hit box against the actions
-     menu's actual hit box, so a narrower glyph proxy would under-measure
+     overlay's actual hit box, so a narrower glyph proxy would under-measure
      the overlap.
 
-     The anatomy is the 2026-08 shared right slot: the slot's occupant
-     (timestamp / "Not started" / Badge) and .actions are the TWO CHILDREN
-     OF ONE .rightSlot grid cell - the menu borrows the occupant's space and
-     covers it while revealed, instead of reserving its own width beside it.
-     The chevron lives in .textCol, left of the slot.
-
-     9 configs = 2 widths (200/280) x 2 row kinds (session: 1 action button
-     / project: 2) x right-slot occupants (present / absent - the absent
-     case is the title column's unbounded-growth worst case), plus a 280px
-     "Not started" session whose occupant is WIDER than the menu (the one
-     config where the menu does not fill the shared cell). Each config is
-     rendered twice - a resting copy and a copy case.json forces :hover on
-     (docs/testing.md: each state gets its own copy of the markup, so one
-     measurement covers both with a resting control). The title is long
-     enough to ellipsize at both widths. -->
+     8 fixtures = 2 widths (200/280) x 2 row kinds (session: 1 action
+     button / project: 2) x 2 right-slot occupants (something bounding
+     .textCol's growth, or nothing - RCA's worst case: with nothing in the
+     right slot .textCol grows all the way to the row's edge). The title is
+     RCA's own reproduction string, long enough to ellipsize at both widths. -->
 <div class="fixtures"></div>
 <script>
 const TITLE = "Fix the flaky retry backoff timing test";
@@ -71,16 +58,11 @@ function kebabHtml(id, label) {
   return `<div class="root"><button type="button" class="trigger triggerQuiet" id="kebab-${id}" aria-haspopup="menu" aria-expanded="false" tabindex="-1"><span aria-hidden="true">&#8943;</span><span class="srOnly">Actions for ${label}</span></button></div>`;
 }
 
-// SessionRow anatomy (RailRow.tsx): textCol(titleLine(label, chevron)), then
-// the shared .rightSlot cell: the occupant (.time / .notStarted / nothing)
-// and .actions holding SessionMenuRow's single Menu trigger.
-function sessionRowHtml(id, occupant) {
-  const occ =
-    occupant === "time"
-      ? `<span class="time" id="occ-${id}">2h</span>`
-      : occupant === "notStarted"
-        ? `<span class="notStarted" id="occ-${id}">Not started</span>`
-        : "";
+// SessionRow anatomy (RailRow.tsx lines ~513-591): textCol(titleLine(label,
+// chevron)), then the right slot (.time, present or absent), then .actions
+// holding SessionMenuRow's single Menu trigger.
+function sessionRowHtml(id, withTime) {
+  const time = withTime ? `<span class="time" id="time-${id}">2h</span>` : "";
   return `
     <span class="railRow" id="row-${id}">
       <span class="textCol">
@@ -89,24 +71,20 @@ function sessionRowHtml(id, occupant) {
           ${chevronHtml(id)}
         </span>
       </span>
-      <span class="rightSlot" id="slot-${id}">
-        ${occ}
-        <span class="actions" id="actions-${id}">
-          ${kebabHtml(id, TITLE)}
-        </span>
+      ${time}
+      <span class="actions" id="actions-${id}">
+        ${kebabHtml(id, TITLE)}
       </span>
     </span>`;
 }
 
-// ProjectRow anatomy (RailRow.tsx): textCol(titleLine(label, chevron)), then
-// the shared .rightSlot cell: the rollup Badge (or nothing) and .actions
-// holding the "+" IconButton (button quiet sm = button.module.css's base +
-// quiet with iconbutton.module.css's sm square, exactly the classes the real
-// IconButton computes) and the Menu trigger - a project row's menu is WIDER
-// than a session row's (two buttons instead of one), so it's the wider
-// danger zone for the shared cell.
+// ProjectRow anatomy (RailRow.tsx lines ~599-637): textCol(titleLine(label,
+// chevron)), then the right slot (rollup Badge, present or absent), then
+// .actions holding the "+" IconButton (size sm, 28x28) and the Menu trigger
+// - a project row's actions overlay is WIDER than a session row's (two
+// buttons instead of one), so it's the wider danger zone the RCA flagged.
 function projectRowHtml(id, withBadge) {
-  const badge = withBadge ? `<span class="badge attention" id="occ-${id}">3</span>` : "";
+  const badge = withBadge ? `<span class="badge attention" id="badge-${id}">3</span>` : "";
   return `
     <span class="railRow" id="row-${id}">
       <span class="textCol">
@@ -115,36 +93,26 @@ function projectRowHtml(id, withBadge) {
           ${chevronHtml(id)}
         </span>
       </span>
-      <span class="rightSlot" id="slot-${id}">
-        ${badge}
-        <span class="actions" id="actions-${id}">
-          <button type="button" class="button quiet sm" id="plus-${id}" aria-label="New session in ${TITLE}">
-            <span class="icon" aria-hidden="true">+</span>
-          </button>
-          ${kebabHtml(id, TITLE)}
-        </span>
+      ${badge}
+      <span class="actions" id="actions-${id}">
+        <button type="button" class="button quiet sm" id="plus-${id}" aria-label="New session in ${TITLE}">
+          <span class="icon" aria-hidden="true">+</span>
+        </button>
+        ${kebabHtml(id, TITLE)}
       </span>
     </span>`;
 }
 
-const CONFIGS = [
-  { key: "s200ts", width: 200, kind: "session", occupant: "time", label: "200px session, timestamp" },
-  { key: "s200nt", width: 200, kind: "session", occupant: null, label: "200px session, no occupant (worst case)" },
-  { key: "s280ts", width: 280, kind: "session", occupant: "time", label: "280px session, timestamp" },
-  { key: "s280nt", width: 280, kind: "session", occupant: null, label: "280px session, no occupant (worst case)" },
-  { key: "s280ns", width: 280, kind: "session", occupant: "notStarted", label: "280px session, Not started (occupant wider than the menu)" },
-  { key: "p200b", width: 200, kind: "project", badge: true, label: "200px project, with badge" },
-  { key: "p200nb", width: 200, kind: "project", badge: false, label: "200px project, no badge (worst case)" },
-  { key: "p280b", width: 280, kind: "project", badge: true, label: "280px project, with badge" },
-  { key: "p280nb", width: 280, kind: "project", badge: false, label: "280px project, no badge (worst case)" },
+const FIXTURES = [
+  { id: "s200ts", width: 200, label: "200px session, with timestamp", html: sessionRowHtml("s200ts", true) },
+  { id: "s200nt", width: 200, label: "200px session, no timestamp (worst case)", html: sessionRowHtml("s200nt", false) },
+  { id: "s280ts", width: 280, label: "280px session, with timestamp", html: sessionRowHtml("s280ts", true) },
+  { id: "s280nt", width: 280, label: "280px session, no timestamp (worst case)", html: sessionRowHtml("s280nt", false) },
+  { id: "p200b", width: 200, label: "200px project, with badge", html: projectRowHtml("p200b", true) },
+  { id: "p200nb", width: 200, label: "200px project, no badge (worst case)", html: projectRowHtml("p200nb", false) },
+  { id: "p280b", width: 280, label: "280px project, with badge", html: projectRowHtml("p280b", true) },
+  { id: "p280nb", width: 280, label: "280px project, no badge (worst case)", html: projectRowHtml("p280nb", false) },
 ];
-
-// One copy per state: -r is measured at rest, -h has :hover forced by
-// case.json's forcePseudoStates.
-const FIXTURES = CONFIGS.flatMap((c) => [
-  { ...c, id: `${c.key}-r`, state: "rest" },
-  { ...c, id: `${c.key}-h`, state: "hover" },
-]);
 
 const root = document.querySelector(".fixtures");
 for (const f of FIXTURES) {
@@ -152,11 +120,11 @@ for (const f of FIXTURES) {
   section.className = "fixture";
   const label = document.createElement("div");
   label.className = "fixtureLabel";
-  label.textContent = `${f.label} - ${f.state} (#${f.id})`;
+  label.textContent = `${f.label} (#${f.id})`;
   const box = document.createElement("div");
   box.className = "railBox";
   box.style.width = `${f.width}px`;
-  box.innerHTML = f.kind === "session" ? sessionRowHtml(f.id, f.occupant) : projectRowHtml(f.id, f.badge);
+  box.innerHTML = f.html;
   section.append(label, box);
   root.append(section);
 }
@@ -174,15 +142,12 @@ function intersect(a, b) {
   return { left, right, top, bottom, width: right - left, height: bottom - top };
 }
 
-// Who ACTUALLY receives a click at a rect's center - not inferred from
+// Who ACTUALLY receives a click in an overlap region - not inferred from
 // z-index arithmetic, but asked of the browser's own hit-testing
-// (elementFromPoint, sampled at the rect's center - away from any rounded
-// corners on the trigger button). Returns "chevron", "kebab", "plus",
-// "occupant" (the slot's timestamp/"Not started"/Badge), or "other" (the
-// .rightSlot/.railRow background, etc). Note what this proves in each state:
-// at rest a HIDDEN menu button must not win its own pixels (visibility:
-// hidden removes it from hit-testing - opacity alone never would); revealed,
-// it must.
+// (elementFromPoint, sampled at the overlap rect's center - away from any
+// rounded corners on the trigger button). Returns "chevron", "kebab",
+// "plus", or "other" (the .actions wrapper, .railRow, etc - the original
+// bug: the overlay swallows the click and nothing useful happens).
 function winnerAt(rect) {
   const cx = (rect.left + rect.right) / 2;
   const cy = (rect.top + rect.bottom) / 2;
@@ -191,7 +156,6 @@ function winnerAt(rect) {
   if (el.closest(".chevronButton")) return "chevron";
   if (el.closest(".trigger")) return "kebab";
   if (el.closest("[id^='plus-']")) return "plus";
-  if (el.closest(".time") || el.closest(".notStarted") || el.closest(".badge")) return "occupant";
   return "other";
 }
 
@@ -206,10 +170,6 @@ window.measure = () => {
     const kebab = box(document.getElementById(`kebab-${f.id}`));
     const plusEl = document.getElementById(`plus-${f.id}`);
     const plus = plusEl ? box(plusEl) : null;
-    const occEl = document.getElementById(`occ-${f.id}`);
-    const occupant = occEl ? box(occEl) : null;
-    const slot = box(document.getElementById(`slot-${f.id}`));
-    const actions = box(document.getElementById(`actions-${f.id}`));
 
     const kebabOverlap = intersect(chevron, kebab);
     const plusOverlap = plus ? intersect(chevron, plus) : null;
@@ -217,25 +177,22 @@ window.measure = () => {
     return {
       id: f.id,
       label: f.label,
-      state: f.state,
       width: f.width,
       chevron,
       kebab,
       plus,
-      occupant,
-      slot,
-      actions,
       kebabOverlap,
+      kebabOverlapWinner: kebabOverlap ? winnerAt(kebabOverlap) : null,
       plusOverlap,
-      // Each control's OWN center must resolve as the state demands - see
-      // winnerAt's comment for the per-state contract. The chevron's center
-      // must resolve to the chevron in BOTH states (it is never covered);
-      // the occupant's must resolve to the occupant at rest and to
-      // NOT-the-occupant revealed (the menu covers it).
+      plusOverlapWinner: plusOverlap ? winnerAt(plusOverlap) : null,
+      // Each control's OWN center must resolve to itself - a sanity check
+      // that disjoint boxes actually mean both controls are independently
+      // clickable, not just that neither happens to cover the other's
+      // corner while something else (a third element, an ancestor) eats
+      // the click at their own center.
       chevronSelfWinner: winnerAt(chevron),
       kebabSelfWinner: winnerAt(kebab),
       plusSelfWinner: plus ? winnerAt(plus) : null,
-      occupantSelfWinner: occupant ? winnerAt(occupant) : null,
     };
   });
 };

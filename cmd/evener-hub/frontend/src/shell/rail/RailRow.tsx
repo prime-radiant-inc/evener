@@ -20,20 +20,16 @@
 // regardless of state is a row's project name, on a session shown flat across
 // projects (Live/Pinned, depth 0) - see SessionRow's showsProject.
 //
-// CLASS.actions (RailRow.module.css) is what makes the "..." trigger (and a
+// CLASS.actions (Rail.module.css) is what makes the "..." trigger (and a
 // project row's "+") quiet: transparent/borderless by default, revealed only
 // on row hover/focus, matching the design bar (Linear/VS Code-quality
 // sidebar - quiet, hover-revealed, zero layout shift) instead of a
-// permanently-visible bordered button on every row. It lives in the shared
-// .rightSlot grid cell with the row's right-slot occupant (timestamp /
-// Badge / "Not started"), so revealing it covers the occupant instead of
-// narrowing the title column with a reserved slot of its own - and the
-// trailing disclosure chevron, which lives in .textCol left of the slot,
-// stays layout-disjoint from the menu at every width. See
-// RailRow.module.css's own comment on .rightSlot for the exact selectors
-// (row hover, treeitem focus, open-menu, and the <900px touch fallback that
-// keeps the actions visible beside the occupant - in flow, not stacked -
-// with no hover to reveal them).
+// permanently-visible bordered button on every row. They overlay the row's
+// right edge (over the timestamp/Badge) rather than occupying a slot beside
+// it, so revealing them costs this row's own content zero width. See
+// Rail.module.css's own comment on .actions for the exact selectors (row
+// hover, treeitem focus, open-menu, and the <900px touch fallback that
+// keeps it visible - in flow, not overlaid - with no hover to reveal it).
 import type { ReactNode } from "react";
 import type { SessionPanelKind } from "../../panes/sessionPanels";
 import type { TreeNode as ApiTreeNode, TreeProject as ApiTreeProject, PinSectionSummary } from "../../stores/tree";
@@ -68,7 +64,6 @@ export { isTopLevelSession } from "./sessionKind";
 
 const CLASS = {
   railRow: requireClass(styles.railRow, "RailRow.module.css", "railRow"),
-  rightSlot: requireClass(styles.rightSlot, "RailRow.module.css", "rightSlot"),
   actions: requireClass(styles.actions, "RailRow.module.css", "actions"),
   chevronButton: requireClass(styles.chevronButton, "RailRow.module.css", "chevronButton"),
   signal: requireClass(styles.signal, "RailRow.module.css", "signal"),
@@ -561,41 +556,37 @@ function SessionRow({ node, info, actions }: { node: SessionRailNode; info: Tree
           {"★"}
         </span>
       )}
-      {/* Right slot: ONE shared grid cell (RailRow.module.css's .rightSlot)
-          holding the occupant - the Task-7 needs-you-descendant Badge, or
-          (when there's nothing to flag) a relative timestamp / "Not
-          started", never more than one - plus the hover-revealed actions
-          menu, which borrows the occupant's space instead of reserving its
-          own beside it and covers the occupant while revealed. The session's
-          OWN needs-you already shows via its amber Cadence dot above
-          (cadenceStateFor maps awaiting/warning to "needs-you"), so a leaf
-          needs-you session with no needs-you descendants correctly shows its
-          timestamp here, not a redundant "0"/"1" badge. */}
-      <span className={CLASS.rightSlot}>
-        {needsYouCount > 0 ? (
-          <Badge count={needsYouCount} tone="attention" />
-        ) : notStarted ? (
-          // Words, not a number: a session that has never run has no elapsed
-          // work to report, and the age this slot would otherwise show is
-          // counting from the moment it was created - which reads as activity
-          // and is the single most misleading thing on the row. Saying so also
-          // gives the row an accessible name that answers the question a
-          // returning user actually has ("did I already ask it something?"),
-          // which an empty signal gutter never could.
-          <span data-testid="rail-row-not-started" className={CLASS.notStarted}>
-            Not started
-          </span>
-        ) : (
-          session.age !== undefined &&
-          session.age !== "" && (
-            <span data-testid="rail-row-time" className={CLASS.time}>
-              {session.age}
-            </span>
-          )
-        )}
-        <span className={CLASS.actions}>
-          <SessionMenuRow session={session} actions={actions} />
+      {/* Right slot: either the Task-7 needs-you-descendant Badge, or (when
+          there's nothing to flag) a relative timestamp - never both, so the
+          slot never widens the row by more than one small element (vbh8
+          new capability, §2.3). The session's OWN needs-you already shows
+          via its amber Cadence dot above (cadenceStateFor maps
+          awaiting/warning to "needs-you"), so a leaf needs-you session with
+          no needs-you descendants correctly shows its timestamp here, not a
+          redundant "0"/"1" badge. */}
+      {needsYouCount > 0 ? (
+        <Badge count={needsYouCount} tone="attention" />
+      ) : notStarted ? (
+        // Words, not a number: a session that has never run has no elapsed
+        // work to report, and the age this slot would otherwise show is
+        // counting from the moment it was created - which reads as activity
+        // and is the single most misleading thing on the row. Saying so also
+        // gives the row an accessible name that answers the question a
+        // returning user actually has ("did I already ask it something?"),
+        // which an empty signal gutter never could.
+        <span data-testid="rail-row-not-started" className={CLASS.notStarted}>
+          Not started
         </span>
+      ) : (
+        session.age !== undefined &&
+        session.age !== "" && (
+          <span data-testid="rail-row-time" className={CLASS.time}>
+            {session.age}
+          </span>
+        )
+      )}
+      <span className={CLASS.actions}>
+        <SessionMenuRow session={session} actions={actions} />
       </span>
     </span>
   );
@@ -629,25 +620,19 @@ function ProjectRow({ node, info, actions }: { node: ProjectRailNode; info: Tree
           {"★"}
         </span>
       )}
-      {/* Same shared right slot as SessionRow: the rollup Badge (when the
-          project has needs-you descendants) and the hover-revealed actions
-          pair share one cell - the menu covers the badge while revealed
-          instead of reserving width beside it. */}
-      <span className={CLASS.rightSlot}>
-        {attentionCount > 0 && <Badge count={attentionCount} tone="attention" />}
-        <span className={CLASS.actions}>
-          {project.key !== NO_PROJECT_KEY && (
-            <IconButton
-              label={`New session in ${project.name}`}
-              icon={<span aria-hidden="true">{"+"}</span>}
-              variant="quiet"
-              size="sm"
-              tabIndex={-1}
-              onClick={() => spawnInProject(project)}
-            />
-          )}
-          <ActionsMenu label={project.name} items={projectMenuItems(project, actions)} />
-        </span>
+      {attentionCount > 0 && <Badge count={attentionCount} tone="attention" />}
+      <span className={CLASS.actions}>
+        {project.key !== NO_PROJECT_KEY && (
+          <IconButton
+            label={`New session in ${project.name}`}
+            icon={<span aria-hidden="true">{"+"}</span>}
+            variant="quiet"
+            size="sm"
+            tabIndex={-1}
+            onClick={() => spawnInProject(project)}
+          />
+        )}
+        <ActionsMenu label={project.name} items={projectMenuItems(project, actions)} />
       </span>
     </span>
   );

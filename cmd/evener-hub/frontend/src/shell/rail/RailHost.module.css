@@ -5,11 +5,6 @@
 .chipBar {
   flex: none;
   align-self: flex-start;
-  /* The shell's content row has no gap at any width anymore (the docked
-   * rail sits flush against the workspace), so the floating chip carries
-   * its own offset from the window's corner instead of borrowing the old
-   * shell gap's. */
-  margin: var(--space-2);
 }
 
 .chip {

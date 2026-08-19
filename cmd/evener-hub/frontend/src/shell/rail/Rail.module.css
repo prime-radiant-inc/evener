@@ -47,11 +47,11 @@
   }
 }
 
-/* The sidebar owns its own chrome (c8gt): a header zone stacking the status/
- * actions row (needs-you Badge leading, search and hide icon buttons
- * trailing - no wordmark, the footer's daemon identity is the rail's only
- * branding) and the primary "+ New session" button - a column so none of it
- * steals a full-width top bar's worth of the workspace's vertical space. */
+/* The sidebar owns its own chrome (c8gt): a header zone stacking the brand
+ * row (which carries the search and hide icon buttons in its own spare
+ * horizontal room) and the primary "+ New session" button - a column so none
+ * of it steals a full-width top bar's worth of the workspace's vertical
+ * space. */
 .header {
   flex: none;
   display: flex;
@@ -67,22 +67,13 @@
   gap: var(--space-2);
 }
 
-/* The header/footer icon buttons' GLYPHS: they're text glyphs (⌕ ☰ ⚙), so
- * they size to the button's font-size - the IconButton's icon span is 1em x
- * 1em of it - never to the box. md made the boxes 32px but left the glyphs
- * at --font-size-ui (13px); --font-size-pane-title (16px) reads at the md
- * box's scale. */
-.brand button,
-.footer button {
-  font-size: var(--font-size-pane-title);
-}
-
-/* Grows to fill the row's spare width, pushing the search/hide icon buttons
- * to the trailing edge while the needs-you Badge (when present) stays
- * leading - the role the retired "evener" wordmark's own flex: 1 1 auto
- * played before the wordmark was removed. */
-.brandSpacer {
+.brandName {
   flex: 1 1 auto;
+  color: var(--ink-hi);
+  font-family: var(--font-sans);
+  font-size: var(--font-size-ui);
+  font-weight: var(--font-weight-semibold);
+  letter-spacing: var(--tracking-display);
 }
 
 /* Stretches the primary Button to the rail's full width without touching the
