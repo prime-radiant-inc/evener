@@ -67,6 +67,16 @@
   gap: var(--space-2);
 }
 
+/* The header/footer icon buttons' GLYPHS: they're text glyphs (⌕ ☰ ⚙), so
+ * they size to the button's font-size - the IconButton's icon span is 1em x
+ * 1em of it - never to the box. md made the boxes 32px but left the glyphs
+ * at --font-size-ui (13px); --font-size-pane-title (16px) reads at the md
+ * box's scale. */
+.brand button,
+.footer button {
+  font-size: var(--font-size-pane-title);
+}
+
 /* Grows to fill the row's spare width, pushing the search/hide icon buttons
  * to the trailing edge while the needs-you Badge (when present) stays
  * leading - the role the retired "evener" wordmark's own flex: 1 1 auto

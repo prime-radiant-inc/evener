@@ -124,6 +124,19 @@
   transition-delay: 0s;
 }
 
+/* Right-justify the menu trigger's glyph inside the shared cell: the Menu
+ * widget's trigger is padded for a standalone button (--space-4 on both
+ * sides), which sat the "..." glyph ~16px in from the slot's right edge -
+ * the x where the timestamp's own text ends, so the revealed menu read as
+ * leftward of what it replaced. Hugging the glyph flush right (padding only
+ * on the leading side) puts it at the timestamp's own right edge and
+ * shrinks the trigger - and with it the shared cell - to the glyph's real
+ * width. Scoped by attribute so a project row's "+" IconButton keeps its
+ * own square geometry. */
+.actions button[aria-haspopup="menu"] {
+  padding: 0 0 0 var(--space-2);
+}
+
 /* The reveal's other half: the occupant yields the shared cell to the menu
  * (same visibility timing, mirrored: it stays hit-testable through its own
  * fade-out and returns the instant the menu starts fading back). Only on a
