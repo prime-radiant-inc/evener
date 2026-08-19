@@ -112,7 +112,7 @@ func TestRun_AuditJSON(t *testing.T) {
 		Findings        []struct {
 			Signature string `json:"signature"`
 			Evidence  struct {
-				SessionRefs []string `json:"sessionRefs"`
+				SessionRefs []string `json:"sessionRefs"` //nolint:tagliatelle // doctor Finding wire contract is camelCase (finding-contract.md)
 			} `json:"evidence"`
 		} `json:"findings"`
 		Manual []string `json:"manual"`

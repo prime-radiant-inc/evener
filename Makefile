@@ -1,4 +1,4 @@
-.PHONY: build build-runtime build-go build-hub web-preflight build-web test-web test-web-browser build-tui build-doctor build-all build-linux build-namingcheck build-llmcall build-migrate dist install install-home install-system test-install test-dev-tooling test test-short test-fuzz test-race merge-approval-gate vet lint lint-naming lint-gofmt lint-evenerfuzz lint-eval lint-internal lint-docs lint-golangci lint-generated lint-fuzz-registry generate mutation-floor clean fuzz fuzz-seeds fuzz-nightly fuzz-triage fuzz-continuous fuzz-coverage-global fuzz-bisect fuzz-bisect-selftest fuzz-oracle-audit fuzz-oracle-audit-selftest fuzz-mutation-score fuzz-ledger fuzz-coverage fuzz-gap-check fuzz-registry-check fuzz-goldens secret-scan fuzz-corpus-scan refresh-model-catalog test-coverage-floor web-coverage-floor web-coverage-floor-selftest coverage-gaps coverage-gaps-selftest coverage-union coverage-union-selftest merge-into-branch merge-into-branch-selftest test-timing-budget test-timing-budget-selftest test-rebaseline
+.PHONY: build build-runtime build-go build-hub web-preflight build-web test-web test-web-browser build-tui build-doctor build-all build-linux build-llmcall build-migrate dist install install-home install-system test-install test-dev-tooling test test-short test-fuzz test-race merge-approval-gate vet lint lint-naming lint-gofmt lint-evenerfuzz lint-eval lint-internal lint-docs lint-golangci lint-generated lint-fuzz-registry generate mutation-floor clean fuzz fuzz-seeds fuzz-nightly fuzz-triage fuzz-continuous fuzz-coverage-global fuzz-bisect fuzz-bisect-selftest fuzz-oracle-audit fuzz-oracle-audit-selftest fuzz-mutation-score fuzz-ledger fuzz-coverage fuzz-gap-check fuzz-registry-check fuzz-goldens secret-scan fuzz-corpus-scan refresh-model-catalog test-coverage-floor web-coverage-floor web-coverage-floor-selftest coverage-gaps coverage-gaps-selftest coverage-union coverage-union-selftest merge-into-branch merge-into-branch-selftest test-timing-budget test-timing-budget-selftest test-rebaseline
 
 LDFLAGS := -X primeradiant.com/evener/buildinfo.GitSHA=$$(git rev-parse --short HEAD) \
            -X primeradiant.com/evener/buildinfo.GitDirty=$$(git --no-optional-locks diff-files --quiet && echo "" || echo "true") \
@@ -569,9 +569,9 @@ secret-scan:
 fuzz-corpus-scan:
 	@scripts/ops/gitleaks-scan.sh corpus
 
-# lint-naming enforces JSON=snake_case, TOML=snake_case across every Go
-# struct tag and TOML file in the repo. Fast (well under a second) and
-# safe to run as a separate `go vet`-style gate.
+# lint-naming enforces TOML=snake_case across every TOML data file in the
+# repo. Go struct tags are tagliatelle's job (.golangci.yml): JSON and TOML
+# tags are snake_case everywhere but the camelCase wire-protocol packages.
 define run_quiet_lint
 	@set -u; log="$$(mktemp "$${TMPDIR:-/tmp}/evener-lint-check.XXXXXX")" || exit 1; \
 	trap 'rm -f "$$log"' EXIT HUP INT TERM; \
@@ -585,7 +585,7 @@ define run_quiet_lint
 endef
 
 lint-naming:
-	$(call run_quiet_lint,go run ./cmd/evener-namingcheck)
+	$(call run_quiet_lint,go run ./cmd/evener-tomlcheck)
 
 # lint-gofmt keeps the repository's Go sources formatter-clean. The formatter
 # configuration in golangci-lint is not the Makefile gate and may not run in
@@ -626,9 +626,6 @@ lint-internal:
 lint-docs:
 	$(call run_quiet_lint,go run ./cmd/evener-docscheck)
 
-build-namingcheck:
-	go build -o evener-namingcheck ./cmd/evener-namingcheck/
-
 # golangci-lint across every module (./... is per-module under go.work).
 # The runner lives in Go (cmd/evener-dev); MODULES and LINT_PARALLEL keep the
 # interface run-module-lint.sh shipped with.
@@ -660,4 +657,4 @@ LINT_TARGETS := lint-naming lint-gofmt lint-evenerfuzz lint-eval lint-internal l
 lint: $(LINT_TARGETS)
 
 clean:
-	rm -f evener evener-hub evener-tui evener-doctor llmcall evener-namingcheck evener-migrate evener-linux-amd64
+	rm -f evener evener-hub evener-tui evener-doctor llmcall evener-migrate evener-linux-amd64

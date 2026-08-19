@@ -118,7 +118,7 @@ func studyAuditJSON(t *testing.T, base, runbookName string, sessions ...string) 
 		Severity string `json:"severity"`
 		Category string `json:"category"`
 		Evidence struct {
-			SessionRefs []string `json:"sessionRefs"`
+			SessionRefs []string `json:"sessionRefs"` //nolint:tagliatelle // doctor Finding wire contract is camelCase (finding-contract.md)
 		} `json:"evidence"`
 	} `json:"findings"`
 } {
@@ -135,7 +135,7 @@ func studyAuditJSON(t *testing.T, base, runbookName string, sessions ...string) 
 			Severity string `json:"severity"`
 			Category string `json:"category"`
 			Evidence struct {
-				SessionRefs []string `json:"sessionRefs"`
+				SessionRefs []string `json:"sessionRefs"` //nolint:tagliatelle // doctor Finding wire contract is camelCase (finding-contract.md)
 			} `json:"evidence"`
 		} `json:"findings"`
 	}

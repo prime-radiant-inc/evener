@@ -137,22 +137,23 @@ correctly.
 
 ## Enforcement
 
-`cmd/evener-namingcheck` walks the AST and checks every `json:"..."`
-and `toml:"..."` struct tag plus every TOML key. The linter enforces
-the snake-default rule and applies the path carve-outs above
-(appwire-adjacent code — `internal/appwire/`, `internal/appsource/`,
-`internal/appserver/`, `server/appwire_*.go` — requires camelCase;
-`llm/providers/*/` is skipped entirely). A single field can opt out
-with a `// evener:naming-ignore` (Go) or `# evener:naming-ignore` (TOML)
-marker on the immediately preceding line; pair every opt-out with a
-comment explaining why.
+Two standard gates enforce the convention:
+
+- **Go struct tags** — golangci-lint's `tagliatelle` linter (configured in
+  `.golangci.yml`) requires snake_case `json`/`toml` tags by default,
+  camelCase `json` tags in the appwire-adjacent packages (per-package
+  overrides), and nothing under `llm/providers/` (excluded; upstream owns
+  the casing). A single field can opt out with a trailing
+  `//nolint:tagliatelle // <reason>` comment.
+- **TOML data files** — `cmd/evener-tomlcheck` checks every TOML key and
+  table name for snake_case. A single key can opt out with a
+  `# evener:naming-ignore` marker on the immediately preceding line.
 
 Run locally:
 
 ```bash
-go run ./cmd/evener-namingcheck ./...
-# or
-make lint-naming
+make lint-golangci   # struct tags (and everything else golangci covers)
+make lint-naming     # TOML data files
 ```
 
 ## Adding a new surface

@@ -27,11 +27,9 @@ var (
 )
 
 type MarketplaceRef struct {
-	Source Source `json:"source"`
-	// evener:naming-ignore: matches Claude Code plugin/marketplace JSON schema
-	InstallLocation string `json:"installLocation"`
-	// evener:naming-ignore: matches Claude Code plugin/marketplace JSON schema
-	LastUpdated time.Time `json:"lastUpdated"`
+	Source          Source    `json:"source"`
+	InstallLocation string    `json:"installLocation"` //nolint:tagliatelle // matches Claude Code plugin/marketplace JSON schema
+	LastUpdated     time.Time `json:"lastUpdated"`     //nolint:tagliatelle // matches Claude Code plugin/marketplace JSON schema
 }
 
 type Marketplaces map[string]MarketplaceRef

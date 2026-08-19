@@ -43,7 +43,7 @@ type Manifest struct {
 	Commands    json.RawMessage `json:"commands,omitempty"`
 	Agents      json.RawMessage `json:"agents,omitempty"`
 	Hooks       json.RawMessage `json:"hooks,omitempty"`
-	MCPServers  json.RawMessage `json:"mcpServers,omitempty"`
+	MCPServers  json.RawMessage `json:"mcpServers,omitempty"` //nolint:tagliatelle // upstream .mcp.json key spelling
 }
 
 // kebabCaseRe matches valid kebab-case names: lowercase alphanumeric,
@@ -196,7 +196,7 @@ func loadPluginMCPFile(path, pluginDir string) ([]mcpconfig.ServerConfig, error)
 	expanded := expandPluginRoot(string(data), pluginDir)
 
 	var cf struct {
-		MCPServers map[string]json.RawMessage `json:"mcpServers"`
+		MCPServers map[string]json.RawMessage `json:"mcpServers"` //nolint:tagliatelle // upstream .mcp.json key spelling
 	}
 	if err := json.Unmarshal([]byte(expanded), &cf); err != nil {
 		return nil, fmt.Errorf("parsing MCP config %s: %w", path, err)

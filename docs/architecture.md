@@ -379,7 +379,7 @@ projection come from the root delegate journal/controller.
 - ✅ The library public API is fully documented and **gated in CI**: `evener-docscheck`
   fails the build if any exported package-level declaration in `llm`, `agent`,
   `agent/events`, or `auth/openai` lacks a doc comment — running alongside
-  `evener-namingcheck` (tag casing) and `evener-internalcheck` (no internal-type leaks).
+  `evener-tomlcheck` (TOML key casing) and `evener-internalcheck` (no internal-type leaks).
   `llm`/`agent`/`auth/openai` carry runnable `Example`s.
 - ✅ Validated externally consumable: a scratch module that `require`s `agent` resolves
   only `agent` + `llm` + `auth` (plus their third-party deps) — no app code.

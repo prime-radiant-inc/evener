@@ -33,8 +33,7 @@ type TreeResponse struct {
 	Projects         []TreeProject    `json:"projects"`
 	ArchivedProjects []TreeProject    `json:"archived_projects"`
 	TestRuns         []TreeProject    `json:"test_runs"`
-	// evener:naming-ignore
-	AttentionSummary AttentionSummary `json:"attentionSummary"` // camelCase: see AttentionSummary's doc
+	AttentionSummary AttentionSummary `json:"attentionSummary"` //nolint:tagliatelle // camelCase: see AttentionSummary's doc
 }
 
 // PinSectionTree is one non-empty named pin section in GET /api/tree.
@@ -57,8 +56,7 @@ type PinSectionTree struct {
 // layer applies one field-access path to either the REST baseline or the live
 // notification.
 type AttentionSummary struct {
-	// evener:naming-ignore
-	NeedsYou int `json:"needsYou"`
+	NeedsYou int `json:"needsYou"` //nolint:tagliatelle // camelCase: see AttentionSummary's doc
 	Error    int `json:"error"`
 	Working  int `json:"working"`
 }

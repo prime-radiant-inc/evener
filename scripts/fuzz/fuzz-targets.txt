@@ -544,8 +544,7 @@ native:.:./cmd/evener-hub/internal/hubedge:FuzzHubEdgeBehaviorProgram::
 native:.:./cmd/evener-hub/internal/strutil:FuzzFirstNonEmpty::
 native:.:./cmd/evener-internalcheck:FuzzWalkType::
 native:.:./cmd/evener-internalcheck:FuzzInternalCheckCoverage::
-native:.:./cmd/evener-namingcheck:FuzzNamingConversions::
-native:.:./cmd/evener-namingcheck:FuzzNamingCheckCoverage::
+native:.:./cmd/evener-tomlcheck:FuzzTOMLCheck::
 native:.:./cmd/evener-tui/internal/hubdiagnostics:FuzzFormatHubDiagnostic::
 native:.:./cmd/evener-tui/internal/inputhistory:FuzzUnescapeHistory::
 native:.:./cmd/evener-tui/internal/modeldisplay:FuzzAbbreviateModel::
