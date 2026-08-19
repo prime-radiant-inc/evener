@@ -9,7 +9,7 @@ PREFIX ?= $(HOME)/.local
 BINDIR ?= $(PREFIX)/bin
 EVENER_SHARE_BINDIR ?= $(PREFIX)/share/evener/bin
 INSTALL_BUILD_DIR ?= .build/install
-EVENER_INSTALL_BINS := evener evener-hub evener-tui evener-doctor
+EVENER_INSTALL_BINS := evener evener-hub evener-tui evener-doctor evener-migrate
 DIST_DIR ?= dist
 DIST_GOOS ?= $(shell go env GOOS)
 DIST_GOARCH ?= $(shell go env GOARCH)
@@ -169,6 +169,7 @@ dist: build-web
 	CGO_ENABLED=0 GOOS=$(DIST_GOOS) GOARCH=$(DIST_GOARCH) go build -o "$(EVENER_DIST_BIN_DIR)/evener-hub" ./cmd/evener-hub/
 	CGO_ENABLED=0 GOOS=$(DIST_GOOS) GOARCH=$(DIST_GOARCH) go build -o "$(EVENER_DIST_BIN_DIR)/evener-tui" ./cmd/evener-tui/
 	CGO_ENABLED=0 GOOS=$(DIST_GOOS) GOARCH=$(DIST_GOARCH) go build -o "$(EVENER_DIST_BIN_DIR)/evener-doctor" ./cmd/evener-doctor/
+	CGO_ENABLED=0 GOOS=$(DIST_GOOS) GOARCH=$(DIST_GOARCH) go build -o "$(EVENER_DIST_BIN_DIR)/evener-migrate" ./cmd/evener-migrate/
 	tar -C "$(DIST_DIR)" -czf "$(EVENER_DIST_ARCHIVE)" "$(EVENER_DIST_NAME)"
 
 # An installed hub must embed a fresh SPA, not the tracked PLACEHOLDER (install-home/install-system inherit via install).
@@ -178,6 +179,7 @@ install: build-web
 	go build -o "$(INSTALL_BUILD_DIR)/evener-hub" ./cmd/evener-hub/
 	go build -o "$(INSTALL_BUILD_DIR)/evener-tui" ./cmd/evener-tui/
 	go build -o "$(INSTALL_BUILD_DIR)/evener-doctor" ./cmd/evener-doctor/
+	go build -o "$(INSTALL_BUILD_DIR)/evener-migrate" ./cmd/evener-migrate/
 	install -d "$(EVENER_SHARE_BINDIR)" "$(BINDIR)"
 	@for bin in $(EVENER_INSTALL_BINS); do \
 		install -m 0755 "$(INSTALL_BUILD_DIR)/$$bin" "$(EVENER_SHARE_BINDIR)/$$bin"; \

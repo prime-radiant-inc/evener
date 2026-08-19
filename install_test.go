@@ -128,7 +128,7 @@ func TestInstallHomeGeneratedHome(t *testing.T) {
 
 	binDir := filepath.Join(home, ".local", "bin")
 	shareBinDir := filepath.Join(home, ".local", "share", "evener", "bin")
-	for _, bin := range []string{"evener", "evener-hub", "evener-tui", "evener-doctor"} {
+	for _, bin := range []string{"evener", "evener-hub", "evener-tui", "evener-doctor", "evener-migrate"} {
 		installed := filepath.Join(shareBinDir, bin)
 		info, err := os.Stat(installed)
 		if err != nil {
@@ -167,6 +167,7 @@ func TestInstallHomeGeneratedHome(t *testing.T) {
 	runCommand(t, fixtureRoot, env, filepath.Join(binDir, "evener-hub"), "--help")
 	runCommand(t, fixtureRoot, env, filepath.Join(binDir, "evener-tui"), "--help")
 	runCommand(t, fixtureRoot, env, filepath.Join(binDir, "evener-doctor"), "--help")
+	runCommand(t, fixtureRoot, env, filepath.Join(binDir, "evener-migrate"), "--dry-run")
 	runCommand(t, fixtureRoot, env, evenerBin, "--list-sessions")
 
 	for _, dir := range []string{
@@ -282,36 +283,7 @@ func TestInstallScriptInstallsReleaseArchive(t *testing.T) {
 			archive := filepath.Join(fixtures, tc.asset)
 			writeInstallReleaseArchive(t, archive, strings.TrimSuffix(tc.asset, ".tar.gz"))
 
-			fakeBin := filepath.Join(fixtures, "bin")
-			if err := os.Mkdir(fakeBin, 0o755); err != nil {
-				t.Fatalf("mkdir fake bin: %v", err)
-			}
-			writeExecutable(t, filepath.Join(fakeBin, "uname"), fmt.Sprintf(`#!/bin/sh
-case "$1" in
-  -s) echo %q ;;
-  -m) echo %q ;;
-  *) echo "unsupported uname args: $*" >&2; exit 2 ;;
-esac
-`, tc.osName, tc.archName))
-
-			urlFile := filepath.Join(fixtures, "curl-url")
-			writeExecutable(t, filepath.Join(fakeBin, "curl"), `#!/bin/sh
-out=
-url=
-while [ "$#" -gt 0 ]; do
-  case "$1" in
-    -o) out="$2"; shift 2 ;;
-    -*) shift ;;
-    *) url="$1"; shift ;;
-  esac
-done
-if [ -z "$out" ]; then
-  echo "missing -o" >&2
-  exit 2
-fi
-printf '%s\n' "$url" > "$EVENER_FAKE_CURL_URL_FILE"
-cp "$EVENER_FAKE_CURL_ARCHIVE" "$out"
-`)
+			fakeBin, urlFile := writeInstallScriptFakeBin(t, fixtures, tc.osName, tc.archName)
 
 			env := installTestEnv(t, home, map[string]string{
 				"PATH":                      fakeBin + string(os.PathListSeparator) + os.Getenv("PATH"),
@@ -332,7 +304,7 @@ cp "$EVENER_FAKE_CURL_ARCHIVE" "$out"
 
 			binDir := filepath.Join(home, ".local", "bin")
 			shareBinDir := filepath.Join(home, ".local", "share", "evener", "bin")
-			for _, bin := range []string{"evener", "evener-hub", "evener-tui", "evener-doctor"} {
+			for _, bin := range []string{"evener", "evener-hub", "evener-tui", "evener-doctor", "evener-migrate"} {
 				installed := filepath.Join(shareBinDir, bin)
 				info, err := os.Stat(installed)
 				if err != nil {
@@ -350,6 +322,110 @@ cp "$EVENER_FAKE_CURL_ARCHIVE" "$out"
 				if target != installed {
 					t.Fatalf("symlink %s -> %s, want %s", link, target, installed)
 				}
+			}
+		})
+	}
+}
+
+// writeInstallScriptFakeBin writes fake `uname` and `curl` executables into a
+// fixtures/bin directory so install.sh can run without touching the real
+// network or the host's actual OS/arch, and returns that directory alongside
+// the file curl records the download URL into. Shared by every test that
+// drives install.sh directly.
+func writeInstallScriptFakeBin(t *testing.T, fixtures, osName, archName string) (fakeBin, urlFile string) {
+	t.Helper()
+
+	fakeBin = filepath.Join(fixtures, "bin")
+	if err := os.Mkdir(fakeBin, 0o755); err != nil {
+		t.Fatalf("mkdir fake bin: %v", err)
+	}
+	writeExecutable(t, filepath.Join(fakeBin, "uname"), fmt.Sprintf(`#!/bin/sh
+case "$1" in
+  -s) echo %q ;;
+  -m) echo %q ;;
+  *) echo "unsupported uname args: $*" >&2; exit 2 ;;
+esac
+`, osName, archName))
+
+	urlFile = filepath.Join(fixtures, "curl-url")
+	writeExecutable(t, filepath.Join(fakeBin, "curl"), `#!/bin/sh
+out=
+url=
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    -o) out="$2"; shift 2 ;;
+    -*) shift ;;
+    *) url="$1"; shift ;;
+  esac
+done
+if [ -z "$out" ]; then
+  echo "missing -o" >&2
+  exit 2
+fi
+printf '%s\n' "$url" > "$EVENER_FAKE_CURL_URL_FILE"
+cp "$EVENER_FAKE_CURL_ARCHIVE" "$out"
+`)
+	return fakeBin, urlFile
+}
+
+// TestInstallScriptWarnsAboutLegacySerf pins install.sh's completion-message
+// nudge toward evener-migrate (README.md, "Migrating from Serf"): a machine
+// with an existing ~/.serf gets told to migrate before first launch, and a
+// clean machine gets no such nudge.
+func TestInstallScriptWarnsAboutLegacySerf(t *testing.T) {
+	t.Parallel()
+	if testing.Short() {
+		t.Skip("release archive install integration test")
+	}
+	if runtime.GOOS == "windows" {
+		t.Skip("install.sh requires a Unix shell")
+	}
+
+	repoRoot, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("getwd: %v", err)
+	}
+	script := filepath.Join(repoRoot, "install.sh")
+
+	for _, tc := range []struct {
+		name        string
+		seedLegacy  bool
+		wantMessage bool
+	}{
+		{name: "legacy serf present", seedLegacy: true, wantMessage: true},
+		{name: "clean machine", seedLegacy: false, wantMessage: false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			home := t.TempDir()
+			if tc.seedLegacy {
+				if err := os.MkdirAll(filepath.Join(home, ".serf"), 0o700); err != nil {
+					t.Fatal(err)
+				}
+			}
+			fixtures := t.TempDir()
+			archive := filepath.Join(fixtures, "evener_darwin_arm64.tar.gz")
+			writeInstallReleaseArchive(t, archive, "evener_darwin_arm64")
+			fakeBin, urlFile := writeInstallScriptFakeBin(t, fixtures, "Darwin", "arm64")
+
+			env := installTestEnv(t, home, map[string]string{
+				"PATH":                      fakeBin + string(os.PathListSeparator) + os.Getenv("PATH"),
+				"EVENER_INSTALL_VERSION":    "v1.2.3",
+				"EVENER_FAKE_CURL_ARCHIVE":  archive,
+				"EVENER_FAKE_CURL_URL_FILE": urlFile,
+			})
+
+			cmd := exec.Command("sh", script)
+			cmd.Dir = repoRoot
+			cmd.Env = env
+			out, err := cmd.CombinedOutput()
+			if err != nil {
+				t.Fatalf("install.sh failed: %v\n%s", err, out)
+			}
+
+			gotMessage := strings.Contains(string(out), "evener-migrate")
+			if gotMessage != tc.wantMessage {
+				t.Fatalf("evener-migrate mention in output = %v, want %v\noutput:\n%s", gotMessage, tc.wantMessage, out)
 			}
 		})
 	}
@@ -795,7 +871,7 @@ func writeInstallReleaseArchive(t *testing.T, path, root string) {
 	tw := tar.NewWriter(gz)
 	defer tw.Close()
 
-	for _, bin := range []string{"evener", "evener-hub", "evener-tui", "evener-doctor"} {
+	for _, bin := range []string{"evener", "evener-hub", "evener-tui", "evener-doctor", "evener-migrate"} {
 		body := fmt.Sprintf("#!/bin/sh\necho %s\n", bin)
 		header := &tar.Header{
 			Name: filepath.ToSlash(filepath.Join(root, bin)),
