@@ -184,6 +184,7 @@ func DeleteAuth(stateDir, instanceName string) (bool, error) {
 	return true, nil
 }
 
+// Validate reports whether the record is a complete, supported auth record.
 func (r AuthRecord) Validate() error {
 	switch {
 	case r.Version != 1:

@@ -376,7 +376,8 @@ projection come from the root delegate journal/controller.
   established; all four `go.mod` files are clean and publishable (replace-free).
 - ✅ App `internal/` holds only app-shared code (no library/app mixing) — the structural
   goal of the migration is met.
-- ✅ The library public API is fully documented and **gated in CI**: `evener-docscheck`
+- ✅ The library public API is fully documented and **gated in CI**: revive's
+  `exported` rule (scoped in `.golangci.yml`)
   fails the build if any exported package-level declaration in `llm`, `agent`,
   `agent/events`, or `auth/openai` lacks a doc comment — running alongside
   `evener-tomlcheck` (TOML key casing) and `evener-internalcheck` (no internal-type leaks).

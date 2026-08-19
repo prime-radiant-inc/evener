@@ -31,8 +31,9 @@ shipped workstreams live beside them and are the house style to imitate.
 
 - Modules: `GO_MODULES` in Makefile (root, agent, llm, auth, envvars, fuzz,
   invariant); run tests per module (`cd agent && go test ./...`).
-- `make lint` = golangci across modules (tag casing included, via tagliatelle)
-  + evener-tomlcheck + internalcheck + docscheck + codegen check. JSON/TOML keys are
+- `make lint` = golangci across modules (tag casing via tagliatelle, library
+  doc comments via revive's exported rule)
+  + evener-tomlcheck + internalcheck + codegen check. JSON/TOML keys are
   snake_case; deliberate camelCase (e.g. Claude Code plugin schema interop in
   internal/plugins/) takes a trailing `//nolint:tagliatelle // <reason>`.
 - jstest (cmd/evener-hub/jstest) is agent-run, not in CI:

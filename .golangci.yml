@@ -60,6 +60,12 @@ linters:
         - name: superfluous-else
         - name: unreachable-code
         - name: redefines-builtin-id
+        # exported gates doc comments on the published libraries' exported
+        # package-level surface (formerly cmd/evener-docscheck). Scoped to
+        # the library dirs by the path-except exclusion below.
+        - name: exported
+          arguments:
+            - "disable-stuttering-check"
     tagliatelle:
       case:
         rules:
@@ -147,6 +153,17 @@ linters:
       - path: ^server/appwire_
         linters:
           - tagliatelle
+
+      # revive's exported rule gates only the published library packages
+      # (the old cmd/evener-docscheck scope); everywhere else its findings
+      # are excluded. The text pattern matches the message as golangci
+      # reports it — "exported: exported method/function/… " or "exported:
+      # comment on exported …" — and the rule-name prefix keeps it clear of
+      # unexported-return's "unexported-return: exported func …" wording.
+      - path-except: '^(llm/[^/]+|agent/[^/]+|agent/(diagnostic|events|execenv|mcpconfig|plugin|provider|schema|skill|task|transcript)/[^/]+|auth/openai/[^/]+)\.go$'
+        text: '^exported: (exported (method|function|type|const|var)|comment on exported)'
+        linters:
+          - revive
 
 formatters:
   enable:

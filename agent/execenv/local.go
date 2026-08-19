@@ -1395,6 +1395,9 @@ func buildRipgrepArgsWithFilters(outputMode string, caseInsensitive bool, globFi
 	return args
 }
 
+// Grep searches path for pattern, honoring the glob filter, case
+// sensitivity, result cap, output mode, and context window the caller asked
+// for.
 func (e *LocalExecutionEnvironment) Grep(pattern string, path string, globFilter string, caseInsensitive bool, maxResults int, outputMode string, contextLines ...int) (string, error) {
 	globFilters, err := expandGrepFilter(globFilter)
 	if err != nil {

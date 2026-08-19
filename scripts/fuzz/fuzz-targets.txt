@@ -521,8 +521,6 @@ native:agent:.:FuzzLifecycleSequence::session_lifecycle.go#processInputKindWithP
 native:.:./appwire/appwiretest:FuzzScriptedTransportLifecycle::
 native:.:./appwire/appwiretest:FuzzScriptedTransportEdges::
 native:.:./buildinfo:FuzzVersionFormatting::
-native:.:./cmd/evener-docscheck:FuzzCheckPackage::
-native:.:./cmd/evener-docscheck:FuzzDocsCheckCoverage::
 native:.:./cmd/evener-doctor:FuzzRun::
 native:.:./cmd/evener-doctor:FuzzDoctorCoverage::
 native:.:./cmd/evener-fuzz-harvest:FuzzSanitize::

@@ -1054,7 +1054,7 @@ func projectStableDelegateStatus(now time.Time, snapshot delegateSnapshot) stabl
 	return out
 }
 
-// turnSlotOccupancy is the diagnostic tree-counter snapshot surfaced in
+// TurnSlotOccupancy is the diagnostic tree-counter snapshot surfaced in
 // job_list while any delegate-turn slot is held: spawn-budget total in use,
 // cap, and jobs, plus drive turns in flight on the separate drive budget.
 type TurnSlotOccupancy struct {

@@ -186,6 +186,8 @@ func (c *Client) Stream(ctx context.Context, req Request) (Stream, error) {
 	return newProviderStampStream(st, prov, tag), nil
 }
 
+// PlanResponsesContinuation returns the Responses-API continuation plan for
+// req's provider, or an error when no provider can serve the request.
 func (c *Client) PlanResponsesContinuation(ctx context.Context, req Request) (ResponsesContinuationPlan, error) {
 	_ = ctx
 	prov := req.Provider

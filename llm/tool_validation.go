@@ -5,8 +5,8 @@ import (
 	"strings"
 )
 
-// Tool names must match the strict common subset across providers:
-// [a-zA-Z][a-zA-Z0-9_]* with a max length of 64.
+// ValidateToolName rejects tool names outside the strict common subset
+// across providers: [a-zA-Z][a-zA-Z0-9_]* with a max length of 64.
 func ValidateToolName(name string) error {
 	n := strings.TrimSpace(name)
 	if n == "" {

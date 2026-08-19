@@ -1,4 +1,4 @@
-.PHONY: build build-runtime build-go build-hub web-preflight build-web test-web test-web-browser build-tui build-doctor build-all build-linux build-llmcall build-migrate dist install install-home install-system test-install test-dev-tooling test test-short test-fuzz test-race merge-approval-gate vet lint lint-naming lint-gofmt lint-evenerfuzz lint-eval lint-internal lint-docs lint-golangci lint-generated lint-fuzz-registry generate mutation-floor clean fuzz fuzz-seeds fuzz-nightly fuzz-triage fuzz-continuous fuzz-coverage-global fuzz-bisect fuzz-bisect-selftest fuzz-oracle-audit fuzz-oracle-audit-selftest fuzz-mutation-score fuzz-ledger fuzz-coverage fuzz-gap-check fuzz-registry-check fuzz-goldens secret-scan fuzz-corpus-scan refresh-model-catalog test-coverage-floor web-coverage-floor web-coverage-floor-selftest coverage-gaps coverage-gaps-selftest coverage-union coverage-union-selftest merge-into-branch merge-into-branch-selftest test-timing-budget test-timing-budget-selftest test-rebaseline
+.PHONY: build build-runtime build-go build-hub web-preflight build-web test-web test-web-browser build-tui build-doctor build-all build-linux build-llmcall build-migrate dist install install-home install-system test-install test-dev-tooling test test-short test-fuzz test-race merge-approval-gate vet lint lint-naming lint-gofmt lint-evenerfuzz lint-eval lint-internal lint-golangci lint-generated lint-fuzz-registry generate mutation-floor clean fuzz fuzz-seeds fuzz-nightly fuzz-triage fuzz-continuous fuzz-coverage-global fuzz-bisect fuzz-bisect-selftest fuzz-oracle-audit fuzz-oracle-audit-selftest fuzz-mutation-score fuzz-ledger fuzz-coverage fuzz-gap-check fuzz-registry-check fuzz-goldens secret-scan fuzz-corpus-scan refresh-model-catalog test-coverage-floor web-coverage-floor web-coverage-floor-selftest coverage-gaps coverage-gaps-selftest coverage-union coverage-union-selftest merge-into-branch merge-into-branch-selftest test-timing-budget test-timing-budget-selftest test-rebaseline
 
 LDFLAGS := -X primeradiant.com/evener/buildinfo.GitSHA=$$(git rev-parse --short HEAD) \
            -X primeradiant.com/evener/buildinfo.GitDirty=$$(git --no-optional-locks diff-files --quiet && echo "" || echo "true") \
@@ -621,11 +621,6 @@ lint-eval:
 lint-internal:
 	$(call run_quiet_lint,go run ./cmd/evener-internalcheck)
 
-# lint-docs fails if any exported package-level declaration in the published
-# library packages (llm, agent, agent/events, auth/openai) lacks a doc comment.
-lint-docs:
-	$(call run_quiet_lint,go run ./cmd/evener-docscheck)
-
 # golangci-lint across every module (./... is per-module under go.work).
 # The runner lives in Go (cmd/evener-dev); MODULES and LINT_PARALLEL keep the
 # interface run-module-lint.sh shipped with.
@@ -652,7 +647,7 @@ lint-generated:
 lint-fuzz-registry:
 	$(call run_quiet_lint,scripts/fuzz/fuzz-registry-check.sh)
 
-LINT_TARGETS := lint-naming lint-gofmt lint-evenerfuzz lint-eval lint-internal lint-docs lint-golangci lint-generated lint-fuzz-registry secret-scan
+LINT_TARGETS := lint-naming lint-gofmt lint-evenerfuzz lint-eval lint-internal lint-golangci lint-generated lint-fuzz-registry secret-scan
 
 lint: $(LINT_TARGETS)
 

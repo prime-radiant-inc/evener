@@ -47,6 +47,8 @@ func ContinuationHasherForStateDir(stateDir string) (*ContinuationHasher, error)
 	return NewContinuationHasher(secret), nil
 }
 
+// HashContinuationHandle returns the redaction-stable HMAC of a continuation
+// handle of the given kind.
 func (h *ContinuationHasher) HashContinuationHandle(kind, value string) (string, error) {
 	if !validContinuationHandleKind(kind) {
 		return "", fmt.Errorf("%w: unknown handle kind %q", ErrContinuationSecretUnavailable, kind)
@@ -54,6 +56,8 @@ func (h *ContinuationHasher) HashContinuationHandle(kind, value string) (string,
 	return versionedContinuationHMAC("cont-handle-v1", kind, h.redactionKey, value), nil
 }
 
+// HashContinuationScopeValue returns the HMAC of a continuation scope value
+// of the given kind.
 func (h *ContinuationHasher) HashContinuationScopeValue(kind, value string) (string, error) {
 	if !validContinuationScopeKind(kind) {
 		return "", fmt.Errorf("%w: unknown scope kind %q", ErrContinuationSecretUnavailable, kind)
@@ -61,6 +65,8 @@ func (h *ContinuationHasher) HashContinuationScopeValue(kind, value string) (str
 	return versionedContinuationHMAC(ContinuationScopeHashVersion, kind, h.scopeKey, value), nil
 }
 
+// HashContinuationStorageScope returns the HMAC identifying a continuation
+// storage scope.
 func (h *ContinuationHasher) HashContinuationStorageScope(scope ContinuationStorageScope) (string, error) {
 	if h == nil {
 		return "", fmt.Errorf("%w: missing continuation hasher", ErrContinuationSecretUnavailable)

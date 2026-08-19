@@ -80,6 +80,8 @@ func DefaultConfig() Config {
 	}
 }
 
+// RedirectURI returns the loopback redirect URL the OAuth flow listens on
+// for the given port.
 func (c Config) RedirectURI(port int) string {
 	return (&url.URL{
 		Scheme: "http",
@@ -88,6 +90,8 @@ func (c Config) RedirectURI(port int) string {
 	}).String()
 }
 
+// AuthorizeURL constructs the provider authorization URL for options; the
+// redirect URI and state are required.
 func (c Config) AuthorizeURL(options AuthorizeURLOptions) (string, error) {
 	if strings.TrimSpace(options.RedirectURI) == "" {
 		return "", errors.New("redirect URI is required")

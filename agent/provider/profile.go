@@ -664,6 +664,8 @@ func (p *Profile) withCheapModelFrom(original *Profile) *Profile {
 	return p
 }
 
+// WithCommunicateOverridesFrom returns a copy of p whose communicate tool
+// definition is replaced by original's, when original defines one.
 func (p *Profile) WithCommunicateOverridesFrom(original *Profile) *Profile {
 	if p == nil || original == nil {
 		return p
