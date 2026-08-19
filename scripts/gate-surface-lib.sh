@@ -14,8 +14,15 @@
 
 # Fuzz-designated Test* functions are not part of the regular gate. Native Fuzz*
 # targets are already excluded by -run; these names cover rapid/sequence fuzz
-# tests and structured-generator reachability proofs that remain under make fuzz.
-GATE_FUZZ_TEST_SKIP='(SeqFuzz|SchemaFuzz|Structured.*Reach|LifecycleAdapter|ToolArgsAdapter|SeqAdapter|TurnPagingEquivalenceSanity|WireTypeRegistryCoverage|LineWindowExtractorsSanity|TranscriptReadersAgreeSanity|WriteListRoundTrip|LaunchConfigThreeStateRoundTrip|DifferentialSanity|StreamVsNonStreamSanity|FuzzBuildEnforces)'
+# tests that remain under make fuzz. The structured-generator reachability proofs
+# (Structured*Reach*) and the transcript reader sanity check
+# (TranscriptReadersAgreeSanity) used to be skipped here too, but that hid them
+# from the gate — they rotted red for a month (PR #122 fixed the tests; this
+# ungates them). The evenerfuzz-tagged pair among them still only run under
+# make fuzz (their build tag excludes them from the default gate), so the skip
+# entry was redundant; the untagged five now run in the gate and are pinned by
+# scripts/gate-surface-lib-selftest.sh.
+GATE_FUZZ_TEST_SKIP='(SeqFuzz|SchemaFuzz|LifecycleAdapter|ToolArgsAdapter|SeqAdapter|TurnPagingEquivalenceSanity|WireTypeRegistryCoverage|LineWindowExtractorsSanity|WriteListRoundTrip|LaunchConfigThreeStateRoundTrip|DifferentialSanity|StreamVsNonStreamSanity|FuzzBuildEnforces)'
 
 # The gate runs ordinary Test/Example functions only. Without this filter
 # `go test` also executes every native Fuzz target's committed seed corpus,
