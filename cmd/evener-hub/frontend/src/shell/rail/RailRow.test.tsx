@@ -1553,6 +1553,37 @@ describe("row actions overlay (RailRow.module.css)", () => {
     expect(actionsBlock).toMatch(/opacity:\s*1/);
     expect(actionsBlock).toMatch(/background:\s*none/);
   });
+
+  // The disclosure triangle (the trailing .chevronButton) must stay clickable
+  // even while the hover "⋯" overlay (.actions) covers the row's right edge.
+  // .actions is absolutely positioned at right:0 and stays pointer-active at
+  // opacity:0 - CSS opacity never disables hit testing - so a chevron it
+  // overlaps cannot be clicked at rest, let alone on hover (issue #196). The
+  // fix is z-index: the chevron is taken into the same stacking context as
+  // .actions (position: relative, .railRow is the containing block) and given
+  // a positive z-index, painting it above .actions' z-index:auto in both the
+  // opacity:0 (rest) and opacity:1 (hover) states. position:relative without
+  // offsets keeps the chevron in its normal flow box, so the
+  // rail-row-text-align layoutguard's "chevron trails the label" geometry
+  // holds. jsdom applies no stylesheet, so the stacking contract is pinned
+  // against the (comment-stripped) stylesheet text - same mechanism as the
+  // .signal width assertion above.
+  test("the disclosure chevron is raised above the actions overlay so it stays clickable at rest and on hover", () => {
+    const chevronRule = ruleFor(".chevronButton");
+    expect(chevronRule, ".chevronButton must have a rule").not.toBeNull();
+    // position:relative is what lets z-index apply at all; without it
+    // z-index on a static element is ignored.
+    expect(chevronRule).toMatch(/position:\s*relative/);
+    // A tokenized z-index (--z-raised == 1) beats .actions' z-index:auto in
+    // both opacity states, and keeps the z-index token contract (every
+    // z-index in the app comes from the --z-* ladder, never a raw literal).
+    expect(chevronRule).toMatch(/z-index:\s*var\(--z-raised\)/);
+    // The other half of the contract: .actions carries no z-index of its own,
+    // so any positive z-index on the chevron sorts above it.
+    const actionsRule = ruleFor(".actions");
+    expect(actionsRule).not.toBeNull();
+    expect(actionsRule).not.toMatch(/z-index:/);
+  });
 });
 
 // A row that cannot be pinned must not display as pinned. The wire can still

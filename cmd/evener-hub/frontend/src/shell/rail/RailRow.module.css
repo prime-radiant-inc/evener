@@ -174,12 +174,30 @@
 
 /* The trailing chevron button: a quiet inline glyph hugging the title text,
  * smaller than the app's default 14px icon box so it reads as part of the
- * line rather than as a separate control. */
+ * line rather than as a separate control.
+ *
+ * The chevron IS the row's disclosure triangle, and it must stay clickable
+ * even while the hover-revealed "⋯" actions overlay (.actions) is covering
+ * the row's right edge. .actions is absolutely positioned at right:0 and
+ * stays pointer-active at opacity:0 (CSS opacity never disables hit
+ * testing), so a chevron it overlaps cannot be clicked at rest, let alone on
+ * hover. Raising the chevron into the same stacking context (.railRow is
+ * position:relative, no z-index of its own) with --z-raised (the local
+ * stacking tier the token ladder reserves for "overlay controls within a
+ * pane") paints it above .actions' z-index:auto in BOTH states - opacity:0
+ * at rest makes .actions its own stacking context, but a context with
+ * z-index:auto/0 still sorts below a positive z-index sibling; opacity:1 on
+ * hover drops that context and the same ordering holds. position:relative
+ * without offsets keeps the chevron in its normal flow box, so the
+ * rail-row-text-align layoutguard's "chevron trails the label" geometry is
+ * unchanged. */
 .chevronButton {
   flex: none;
   display: inline-flex;
   align-items: center;
   justify-content: center;
+  position: relative;
+  z-index: var(--z-raised);
   padding: 0;
   border: none;
   background: transparent;
