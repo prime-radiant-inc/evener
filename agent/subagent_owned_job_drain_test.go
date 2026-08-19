@@ -1221,3 +1221,99 @@ func TestRetentionDoesNotReclaimSubagentDrainingOwnedWork(t *testing.T) {
 	fixture.releaseAndWait(t)
 	fixture.requireHandledResult(t, 3, "owned shell handled")
 }
+
+// TestSubagentFinalizationDrainReenqueueRaceDeterministic reproduces issue #140
+// deterministically. The root cause is the non-atomic NotifyPending→NotifyDelivered
+// transition in armFinalizedJob: between appending the NotifyPending event and
+// persistStableShellAttention marking the record NotifyDelivered, the drain loop's
+// rematerializeDurablePendings (run on every 250ms recheck kick) observes the still-
+// NotifyPending record and re-enqueues it onto the child's notification queue. The
+// drain then sees peekNotifications > 0 and runs a provider turn during finalization
+// where none is expected.
+//
+// The existing TestSubagentFinalizationRefusesResumeAndDriveUntilCallbackRestored
+// catches this only intermittently because the race window is scheduler-dependent.
+// This test forces the window open with the testOnlyAfterNotifyPendingAppend hook
+// (which fires exactly between the NotifyPending append and the NotifyDelivered
+// transition) and invokes rematerializeDurablePendings directly, then asserts the
+// re-enqueue must NOT happen: the durable pending must not be re-materializable
+// while the finalizing job's NotifyDelivered transition is still in flight. Under
+// the current (buggy) code rematerializeDurablePendings re-enqueues the record, so
+// peekNotifications becomes > 0 and the assertion fails red.
+func TestSubagentFinalizationDrainReenqueueRaceDeterministic(t *testing.T) {
+	fixture := newOwnedJobDrainFixture(t)
+
+	hookFired := make(chan struct{})
+	hookRelease := make(chan struct{})
+	var hookReleaseOnce sync.Once
+	t.Cleanup(func() { hookReleaseOnce.Do(func() { close(hookRelease) }) })
+
+	// Snapshot captured inside the race window, after rematerializeDurablePendings
+	// has been forced to run against the still-NotifyPending record.
+	type windowSnapshot struct {
+		peekAfterRematerialize int
+		requestsAtWindow        int
+	}
+	windowResult := make(chan windowSnapshot, 1)
+
+	var hookOnce sync.Once
+	fixture.child.sess.jobManager.testOnlyAfterNotifyPendingAppend = func(jobID string) {
+		hookOnce.Do(func() {
+			// We are now inside armFinalizedJob, AFTER the NotifyPending event was
+			// appended and the terminal marked notification-pending, but BEFORE
+			// persistStableShellAttention transitions the record to NotifyDelivered.
+			// This is the exact race window the 250ms drain recheck exploits.
+			if jobID != fixture.shellJobID {
+				t.Errorf("after-notify-pending hook jobID = %q, want owned shell %q", jobID, fixture.shellJobID)
+			}
+			// Simulate the drain loop's kick() → rematerializeDurablePendings() that
+			// races in during the 250ms recheck window. The queue should be empty here
+			// (the stable path does not enqueue on the child's own rail), so the
+			// rematerialize path is the one that can strand a re-enqueue.
+			childSess := fixture.child.sess
+			if err := childSess.rematerializeDurablePendings(); err != nil {
+				t.Errorf("rematerializeDurablePendings during finalization window: %v", err)
+			}
+			peek := childSess.peekNotifications()
+			requests := len(fixture.adapter.Requests())
+			windowResult <- windowSnapshot{
+				peekAfterRematerialize: peek,
+				requestsAtWindow:       requests,
+			}
+			close(hookFired)
+			// Hold the window open until the test has inspected the snapshot, so the
+			// NotifyDelivered transition cannot race back in and mask the leak.
+			<-hookRelease
+		})
+	}
+
+	// Release the owned shell so it completes and armFinalizedJob enters the window.
+	fixture.env.releaseJob()
+	select {
+	case <-hookFired:
+	case <-time.After(30 * time.Second): // TRIPWIRE: real signal from a background goroutine/job; 30s only fires on a genuine hang.
+		t.Fatal("after-notify-pending hook did not fire during owned shell finalization")
+	}
+
+	snap := <-windowResult
+	// The invariant the fix must enforce: a job whose NotifyPending→NotifyDelivered
+	// transition is in flight must not be re-materializable onto the notification
+	// queue. rematerializeDurablePendings must observe the in-flight finalization
+	// (or the NotifyDelivered transition must be atomic with the NotifyPending
+	// append) and leave the queue empty. Under the buggy code the record is still
+	// NotifyPending, so it is re-enqueued and peekNotifications becomes 1.
+	if snap.peekAfterRematerialize != 0 {
+		t.Fatalf("rematerializeDurablePendings re-enqueued during finalization: peekNotifications = %d, want 0 (NotifyPending→NotifyDelivered transition is non-atomic; issue #140)", snap.peekAfterRematerialize)
+	}
+	// No provider turn should have fired from the re-enqueue during the window.
+	// The two legitimate requests are the shell launch and the idle report; the
+	// re-enqueued pending would drive a third (the CI count=3 failure).
+	if snap.requestsAtWindow != 2 {
+		t.Fatalf("provider requests at finalization window = %d, want 2 (shell launch + idle); a third means the re-enqueue drove a turn", snap.requestsAtWindow)
+	}
+
+	// Release armFinalizedJob and let finalization complete normally.
+	hookReleaseOnce.Do(func() { close(hookRelease) })
+	fixture.releaseAndWait(t)
+	fixture.requireHandledResult(t, 3, "owned shell handled")
+}

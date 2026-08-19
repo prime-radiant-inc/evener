@@ -486,11 +486,29 @@ func (s *Session) rematerializeDurablePendings() error {
 	if err != nil {
 		return err
 	}
+	// A job still in the running map is mid-finalization in armFinalizedJob:
+	// its NotifyPending record is the transient state between the
+	// EventJobNotificationPending append and the NotifyPending→NotifyDelivered
+	// transition (persistStableShellAttention) or the plain owner enqueue, both
+	// of which run before the job is deleted from the running map. Re-enqueuing
+	// such a record during that window double-delivers (issue #140):
+	// armFinalizedJob still owns its notification. rematerialize is for pendings
+	// that survive ONLY in the durable store after the run is gone, so snapshot
+	// the live running-map IDs under jm.mu and skip any record still live.
+	jm.mu.Lock()
+	liveRunning := make(map[string]struct{}, len(jm.running))
+	for id := range jm.running {
+		liveRunning[id] = struct{}{}
+	}
+	jm.mu.Unlock()
 	for _, rec := range recs {
 		if !isOwnedDrainJob(rec, jm.sessionID) {
 			continue
 		}
 		if rec.NotifyState != jobstore.NotifyPending || rec.TerminalGen == "" {
+			continue
+		}
+		if _, live := liveRunning[rec.JobID]; live {
 			continue
 		}
 		if jm.enqueue != nil {
