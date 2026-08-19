@@ -504,6 +504,29 @@ root_args="$(arguments_for .)"
 assert_not_has_word "$root_args" "TestE2E_" "root's -skip carries no capability pattern when nothing is blocked"
 assert_not_has "$out" "EVENER_GATE_CAPABILITY_SKIP" "an unnarrowed run says nothing about a capability skip"
 
+# PR #222's showstopper: a -run pattern that matches no test name makes every
+# package report "[no tests to run]" and exit 0, so every verdict reads PASS
+# while the gate proves nothing. The runner must fail a run whose Go waves
+# executed zero tests.
+new_case
+out="$case_dir/zero-tests.out"
+if FAKE_NO_TESTS_MATCH=1 run_tests ". agent" "$out"; then rc=0; else rc=$?; fi
+if [ "$rc" -ne 0 ]; then
+	ok "a run whose Go waves executed zero tests fails"
+else
+	bad "a run whose Go waves executed zero tests fails (exit 0 — the gate is a silent no-op)"
+fi
+assert_has "$out" "ran zero tests" "the zero-test failure says the gate proved nothing"
+assert_has "$out" "full logs:" "the zero-test failure keeps the logs for diagnosis"
+
+# Explicitly empty Go waves (a deliberate web-only run) schedule no Go work,
+# so the zero-test tripwire stays out of their way.
+new_case
+out="$case_dir/zero-tests-empty-waves.out"
+if run_tests "agent" "$out" WAVE1= WAVE2=; then rc=0; else rc=$?; fi
+assert_eq "$rc" "0" "explicitly empty Go waves (web-only run) do not trip the zero-test tripwire"
+assert_eq "$(verdicts "$out" | tr '\n' ' ' | sed 's/ *$//')" "web" "a web-only run still reports its stream"
+
 # kata mjzx: the frontend stream already reports and logs under the name "web",
 # so a MODULES entry of the same name gave one label two owners - two verdict
 # lines, two writers on one log, and a failure dump with nothing in it.
