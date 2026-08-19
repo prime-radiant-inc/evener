@@ -23,15 +23,15 @@ trap 'scratch_rm' EXIT
 # copy lives in the throwaway repo's scripts/ and both land inside it naturally —
 # no production seam needed, and the real file's content is what runs.
 repo="$work/repo"
-mkdir -p "$repo/scripts" "$repo/agent"
-cp "$real_script" "$repo/scripts/test-coverage-floor.sh"
-# The script sources its gate-surface definition from its own directory, so the
-# throwaway repo needs the real one beside it.
-cp "$(dirname "$0")/../lib/gate-surface-lib.sh" "$repo/scripts/gate-surface-lib.sh"
-cp "$(dirname "$0")/../lib/covstmt-lib.sh" "$repo/scripts/covstmt-lib.sh"
-cp "$(dirname "$0")/../lib/covscratch-lib.sh" "$repo/scripts/covscratch-lib.sh"
-script="$repo/scripts/test-coverage-floor.sh"
-floors="$repo/scripts/testcov-global-floors.txt"
+mkdir -p "$repo/scripts/coverage" "$repo/scripts/lib" "$repo/agent"
+cp "$real_script" "$repo/scripts/coverage/test-coverage-floor.sh"
+# The script sources its gate-surface definition from ../lib/, so the
+# throwaway repo needs the real one at repo/scripts/lib/.
+cp "$(dirname "$0")/../lib/gate-surface-lib.sh" "$repo/scripts/lib/gate-surface-lib.sh"
+cp "$(dirname "$0")/../lib/covstmt-lib.sh" "$repo/scripts/lib/covstmt-lib.sh"
+cp "$(dirname "$0")/../lib/covscratch-lib.sh" "$repo/scripts/lib/covscratch-lib.sh"
+script="$repo/scripts/coverage/test-coverage-floor.sh"
+floors="$repo/scripts/coverage/testcov-global-floors.txt"
 printf 'module fake\n\ngo 1.25\n' >"$repo/go.mod"
 printf 'module fake/agent\n\ngo 1.25\n' >"$repo/agent/go.mod"
 

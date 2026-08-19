@@ -15,13 +15,13 @@ scratch_dir work evener-covunion-selftest
 trap 'scratch_rm' EXIT
 
 repo="$work/repo"
-mkdir -p "$repo/scripts" "$repo/agent"
-cp "$real_script" "$repo/scripts/coverage-union.sh"
-cp "$(dirname "$0")/../lib/gate-surface-lib.sh" "$repo/scripts/gate-surface-lib.sh"
-cp "$(dirname "$0")/../lib/covstmt-lib.sh" "$repo/scripts/covstmt-lib.sh"
-cp "$(dirname "$0")/../lib/covscratch-lib.sh" "$repo/scripts/covscratch-lib.sh"
-script="$repo/scripts/coverage-union.sh"
-floors="$repo/scripts/covunion-floors.txt"
+mkdir -p "$repo/scripts/coverage" "$repo/scripts/lib" "$repo/agent"
+cp "$real_script" "$repo/scripts/coverage/coverage-union.sh"
+cp "$(dirname "$0")/../lib/gate-surface-lib.sh" "$repo/scripts/lib/gate-surface-lib.sh"
+cp "$(dirname "$0")/../lib/covstmt-lib.sh" "$repo/scripts/lib/covstmt-lib.sh"
+cp "$(dirname "$0")/../lib/covscratch-lib.sh" "$repo/scripts/lib/covscratch-lib.sh"
+script="$repo/scripts/coverage/coverage-union.sh"
+floors="$repo/scripts/coverage/covunion-floors.txt"
 printf 'module fake\n\ngo 1.25\n' >"$repo/go.mod"
 printf 'module fake/agent\n\ngo 1.25\n' >"$repo/agent/go.mod"
 

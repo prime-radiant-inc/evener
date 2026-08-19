@@ -658,7 +658,7 @@ if [ "$startup_ready" -eq 1 ]; then
 		bad "a root package-discovery timeout names a missing or wrong package-list stderr log (logs '$timeout_logs', package list '$timeout_package_list')"
 	fi
 	assert_has "$out" "go clean -cache -modcache" "a root package-discovery timeout gives a cache repair command"
-	assert_has "$out" "scripts/run-module-tests.sh -short -count=1" "a root package-discovery timeout gives an exact retry command"
+	assert_has "$out" "scripts/gate/run-module-tests.sh -short -count=1" "a root package-discovery timeout gives an exact retry command"
 	child_pid="$(cat "$state/root-list-child.pid" 2>/dev/null || :)"
 	if [ -z "$child_pid" ]; then
 		bad "the held go list never published its descendant pid (fixture establishment lost)"
@@ -731,8 +731,8 @@ done
 
 cdpath_out="$work/cdpath.out"
 if (
-	cd "$script_dir/.." || exit 1
-	CDPATH="$PWD" WAVE1= WAVE2= WEB=0 scripts/run-module-tests.sh
+	cd "$script_dir/../.." || exit 1
+	CDPATH="$PWD" WAVE1= WAVE2= WEB=0 scripts/gate/run-module-tests.sh
 ) >"$cdpath_out" 2>&1; then
 	if [ -s "$cdpath_out" ]; then
 		bad "relative runner lookup emitted a CDPATH-corrupted helper diagnostic"
