@@ -21,6 +21,12 @@ type FakeClock struct {
 	now      time.Time
 	waiters  []*fakeWaiter
 	blockers []*blocker
+	// dispatchWG tracks every AfterFunc goroutine FakeClock has launched via
+	// `go fn()` (the d<=0 immediate-dispatch path and fireLocked's due-waiter
+	// path). Advance returns before those goroutines run; Drain waits on this
+	// group so a test can observe — deterministically, with no wall-clock sleep
+	// — whether a callback that should NOT have fired actually ran.
+	dispatchWG sync.WaitGroup
 }
 
 // fakeWaiter is one pending wait on virtual time: a timer/sleep/After delivers
@@ -82,7 +88,11 @@ func (f *FakeClock) AfterFunc(d time.Duration, fn func()) clock.Timer {
 	defer f.mu.Unlock()
 	w := &fakeWaiter{until: f.now.Add(d), fn: fn}
 	if d <= 0 {
-		go fn()
+		f.dispatchWG.Add(1)
+		go func() {
+			defer f.dispatchWG.Done()
+			fn()
+		}()
 		return &fakeTimer{f: f, w: w}
 	}
 	f.addWaiterLocked(w)
@@ -172,6 +182,25 @@ func (f *FakeClock) BlockedCount() int {
 	return len(f.waiters)
 }
 
+// Drain blocks until every AfterFunc goroutine FakeClock has dispatched so far
+// has completed. AfterFunc dispatches callbacks via `go fn()` (matching
+// time.AfterFunc), so Advance returns before a callback runs; Drain is the
+// bounded, deterministic way to wait for those goroutines instead of a
+// wall-clock sleep. It is the negative-assertion counterpart to BlockUntil:
+// BlockUntil waits for a goroutine to ARM a timer before virtual time moves;
+// Drain waits for a callback goroutine to FINISH after virtual time has fired
+// it (or after the d<=0 immediate-dispatch path launched it).
+//
+// All dispatchWG.Add calls happen under f.mu (in AfterFunc's d<=0 arm and in
+// fireLocked, both called while holding the lock), and a caller invokes Drain
+// only after the Advance that dispatched the goroutine has returned, so the
+// mutex release gives Drain's Wait a happens-before edge over every relevant
+// Add. Drain must not be called concurrently with ongoing AfterFunc scheduling
+// from callback goroutines (the sweep callback does not reschedule).
+func (f *FakeClock) Drain() {
+	f.dispatchWG.Wait()
+}
+
 func (f *FakeClock) addWaiterLocked(w *fakeWaiter) {
 	f.waiters = append(f.waiters, w)
 	f.notifyBlockersLocked()
@@ -179,7 +208,11 @@ func (f *FakeClock) addWaiterLocked(w *fakeWaiter) {
 
 func (f *FakeClock) fireLocked(w *fakeWaiter) {
 	if w.fn != nil {
-		go w.fn()
+		f.dispatchWG.Add(1)
+		go func() {
+			defer f.dispatchWG.Done()
+			w.fn()
+		}()
 		return
 	}
 	select {
