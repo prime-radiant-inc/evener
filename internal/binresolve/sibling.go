@@ -75,7 +75,7 @@ func Resolve(name, explicit, currentExecutable string, lookPath func(string) (st
 // The path is canonicalised via filepath.Abs and filepath.EvalSymlinks
 // so that a relative invocation like "./evener-tui" (which would trip
 // exec.ErrDot when handed back to exec.Command) or a symlink such as
-// /usr/local/bi./evener-tui -> /opt/evener/evener-tui still resolves to the
+// /usr/local/bin/evener-tui -> /opt/evener/evener-tui still resolves to the
 // directory that actually holds the binary. Returns ok=false when no
 // usable path can be derived.
 func SiblingDir(currentExecutable string) (string, bool) {

@@ -115,7 +115,7 @@ func TestResolveResolvesRelativeCurrentExecutable(t *testing.T) {
 }
 
 func TestResolveFollowsSymlinkedExecutable(t *testing.T) {
-	// /usr/local/bi./evener-tui -> /opt/evener/evener-tui style layout: the
+	// /usr/local/bin/evener-tui -> /opt/evener/evener-tui style layout: the
 	// sibling lives next to the real binary, not the symlink.
 	realDir := t.TempDir()
 	realTUI := filepath.Join(realDir, "evener-tui")
