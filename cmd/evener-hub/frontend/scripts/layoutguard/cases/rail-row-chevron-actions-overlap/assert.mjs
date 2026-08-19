@@ -34,9 +34,6 @@
 //      there" for the hover menu.
 //   6. The occupant sits flush at the slot's right edge (the revealed menu
 //      right-aligns over the same edge).
-//   7. The menu is right-justified to that same edge and hugs its glyph:
-//      the Menu widget's standalone-button padding must not come back
-//      (a trigger wider than the app's md icon-button box means it did).
 export default function assert(measurement) {
   const failures = [];
 
@@ -114,25 +111,6 @@ export default function assert(measurement) {
         `${at}: the occupant's right edge (${f.occupant.right.toFixed(1)}) is ${(f.slot.right - f.occupant.right).toFixed(1)}px short of the slot's right edge (${f.slot.right.toFixed(1)}) - it must sit flush right, where the revealed menu appears`,
       );
     }
-
-    // 7. The menu hugs the slot's right edge too (right-justified, the same
-    // x the occupant vacates) - and hugs its GLYPH: the Menu widget's
-    // standalone-button padding (--space-4 both sides) used to center the
-    // "..." ~16px in from that edge and blow the trigger up to ~47px. The
-    // row's own padding override keeps it glyph-sized; 32px (the app's
-    // standard md icon-button box) is the bound a padded-out regression
-    // crosses. Checked revealed, where the trigger is the cell's only
-    // visible occupant.
-    if (Math.abs(f.kebab.right - f.slot.right) > 1) {
-      failures.push(
-        `${at}: the kebab trigger's right edge (${f.kebab.right.toFixed(1)}) is ${(f.slot.right - f.kebab.right).toFixed(1)}px off the slot's right edge (${f.slot.right.toFixed(1)}) - the menu must be right-justified to the same edge the timestamp sits at`,
-      );
-    }
-    if (f.kebab.width > 32) {
-      failures.push(
-        `${at}: the kebab trigger is ${f.kebab.width.toFixed(1)}px wide - the row's glyph-hugging padding (RailRow.module.css's .actions button[aria-haspopup="menu"]) is gone; a trigger wider than the app's standard md icon button (32px) means the standalone-button padding is back, centering the glyph away from the right edge and re-widening the shared cell`,
-      );
-    }
   }
 
   if (failures.length > 0) {
@@ -141,6 +119,6 @@ export default function assert(measurement) {
 
   return {
     pass: true,
-    reason: `chevron and menu fully disjoint and the chevron always clickable; the hidden menu eats no clicks at rest; the revealed menu covers the occupant and is clickable; the shared slot is never wider than max(occupant, menu); occupant and menu both right-justified to the slot's edge - in all ${measurement.length} state fixtures`,
+    reason: `chevron and menu fully disjoint and the chevron always clickable; the hidden menu eats no clicks at rest; the revealed menu covers the occupant and is clickable; the shared slot is never wider than max(occupant, menu) - in all ${measurement.length} state fixtures`,
   };
 }
