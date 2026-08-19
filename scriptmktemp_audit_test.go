@@ -342,7 +342,7 @@ var recursiveDeleteAllowedLines = map[string]int{
 	// parses the pid out of the basename, which a random mktemp suffix would
 	// turn into a permanent no-op. Each delete targets the name the script
 	// composed from its own $$ before anything else ran.
-	"fuzz-coverage.sh":        1,
+	"fuzz-coverage.sh": 1,
 	// Owner-side reclamation of the coverage runners' own abandoned scratch:
 	// the delete IS the job. Targets come from a prefix glob walked with
 	// existence and symlink guards, scoped to basenames whose pid suffix no
