@@ -1,6 +1,6 @@
 // Command evener-migrate migrates user data from legacy serf paths to evener
-// paths. It moves the legacy state root (~/.evener), the XDG config root
-// (~/.config/serf), the XDG state root (~/.local/state/evener), and per-project
+// paths. It moves the legacy state root (~/.serf), the XDG config root
+// (~/.config/serf), the XDG state root (~/.local/state/serf), and per-project
 // .serf directories to their evener counterparts.
 package main
 
@@ -11,6 +11,8 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+
+	"primeradiant.com/evener/envvars"
 )
 
 // migration tracks a single source -> destination directory move.
@@ -71,12 +73,12 @@ func run(args []string, stdout, stderr io.Writer) int {
 		return 1
 	}
 
-	configBase := os.Getenv("XDG_CONFIG_HOME")
+	configBase := os.Getenv(envvars.XDGConfigHome.Name)
 	if configBase == "" {
 		configBase = filepath.Join(home, ".config")
 	}
 
-	stateBase := os.Getenv("XDG_STATE_HOME")
+	stateBase := os.Getenv(envvars.XDGStateHome.Name)
 	if stateBase == "" {
 		stateBase = filepath.Join(home, ".local", "state")
 	}
