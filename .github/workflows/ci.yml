@@ -62,14 +62,10 @@ jobs:
       - name: Test (race detector — the permanent -race gate, all go.work modules)
         run: make test-race
 
-      - name: Deterministic tests (full root suite; frontend covered by web job)
-        run: ROOT_FULL=1 WEB=0 make test
-
-      # test-dev-tooling pins evener's own scripts/*-selftest.sh suites. It tests
-      # tooling, not the product, so it is not part of make test above — it
-      # needs only Go, bash, and git; suites stub everything else themselves.
-      - name: Dev-tooling self-test wave (scripts/*-selftest.sh — tooling, not the product)
-        run: make test-dev-tooling
+      - name: Full deterministic tests (capability preflight + no -short)
+        run: |
+          export EVENER_GATE_CAPABILITY_SKIP=$$(go run ./cmd/evener-dev capability-preflight)
+          make test-full
 
       - name: Fuzz seed-corpus replay (committed crashers — no search, deterministic)
         run: make fuzz
