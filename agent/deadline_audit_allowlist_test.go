@@ -2,6 +2,7 @@ package agent
 
 import (
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -24,15 +25,19 @@ func TestDeadlineAuditAllowlistIsEmpty(t *testing.T) {
 
 // TestDeadlineAuditCatchesFreshBareBound proves the "Done when" criterion of
 // issue #142: once the allowlist is empty, the audit must still catch a fresh
-// bare wall-clock bound in any agent test file. It writes a temp _test.go
-// file carrying a bare time.After(5 * time.Second) directly into the agent
-// package dir (the audit scans ".", not a t.TempDir), runs the audit with the
-// real (eventually empty) allowlist, asserts a finding for the temp file, and
-// removes the temp file via t.Cleanup. The temp file is not on the allowlist
-// under any phase, so this test passes both before and after the GREEN fix --
-// its purpose is to prove the audit still works once the list is empty.
+// bare wall-clock bound in the formerly-allowlisted file. It writes a fixture
+// named delegate_resource_runtime_test.go -- the last hold-back's exact name
+// -- carrying a bare time.After(5 * time.Second) into a t.TempDir, then runs
+// the audit over that dir with the REAL allowlist. A finding proves both that
+// the audit catches a fresh offense and that the real allowlist no longer
+// exempts the file by name; with the pre-#142 allowlist this test is RED.
+//
+// The fixture goes in a t.TempDir, never the live package dir: CI runs this
+// package's tests as concurrently-scheduled shards of one binary in the same
+// directory (cmd/evener-dev agent-shards), so a poison file written into "."
+// races another shard's TestNoBareWallClockDeadlineInAgentTests scan of ".".
 func TestDeadlineAuditCatchesFreshBareBound(t *testing.T) {
-	const tempFile = "zzz_fresh_offense_142_test.go"
+	const offendingFile = "delegate_resource_runtime_test.go"
 	source := `package agent
 
 import (
@@ -46,24 +51,24 @@ func TestFreshOffense142(t *testing.T) {
 	}
 }
 `
-	if err := os.WriteFile(tempFile, []byte(source), 0o644); err != nil {
-		t.Fatalf("write temp offense: %v", err)
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, offendingFile), []byte(source), 0o600); err != nil {
+		t.Fatalf("write fixture offense: %v", err)
 	}
-	t.Cleanup(func() { _ = os.Remove(tempFile) })
 
-	findings, err := deadlineAuditFindings(".", deadlineAuditAllowlist)
+	findings, err := deadlineAuditFindings(dir, deadlineAuditAllowlist)
 	if err != nil {
 		t.Fatalf("deadlineAuditFindings: %v", err)
 	}
 	found := false
 	for _, f := range findings {
-		if strings.Contains(f, tempFile) {
+		if strings.Contains(f, offendingFile) {
 			found = true
 			break
 		}
 	}
 	if !found {
 		t.Fatalf("audit did not catch the fresh bare 5s bound in %s; findings: %v",
-			tempFile, findings)
+			offendingFile, findings)
 	}
 }
