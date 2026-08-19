@@ -21,7 +21,7 @@ import (
 )
 
 // Capability ids. Renaming one means updating the matching skip-registry row
-// in scripts/lib/gate-surface-lib.sh, which keys off these exact strings.
+// in internal/devtool/gatesurface, which keys off these exact strings.
 const (
 	CapabilityLoopbackBind   = "loopback-bind"
 	CapabilityChromeCDP      = "chrome-cdp"

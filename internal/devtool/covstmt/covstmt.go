@@ -1,7 +1,7 @@
 //go:build linux || darwin
 
 // Package covstmt counts statements in a Go coverage profile, porting
-// scripts/lib/covstmt-lib.sh's stmt_counts into a Go helper the dev-tooling
+// scripts/lib/covstmt-lib.sh's stmt_counts (now deleted) into a Go helper the dev-tooling
 // wave can call without shelling out to python.
 //
 // Two properties, both inherited from the shell definition, are the heart of
