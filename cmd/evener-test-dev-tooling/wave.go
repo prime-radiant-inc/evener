@@ -216,6 +216,16 @@ func runSuite(cfg waveConfig, runDir, name string, shutdown <-chan struct{}) sui
 		}
 		return suiteResult{exitCode: code, seconds: seconds}
 	}
+	// On a green exit the watcher goroutine returns without touching the
+	// process group — it only group-kills on the shutdown path. A descendant
+	// the suite orphaned (reparented to pid 1 but still a member of this
+	// suite's process group) would survive the wave as a live process. Kill
+	// the group now, the same cleanup the interruption path applies, so no
+	// process rooted in this suite's tree outlives a green run. Doing it
+	// before the leak check also prevents a lingering descendant from
+	// writing to the private TMPDIR between the suite's exit and the check.
+	// (Issue #161.)
+	killSuiteGroup(pgid)
 	// Leak check is post-reap bookkeeping that could block on a wedged
 	// filesystem. Run it with a timeout so it doesn't block the wave's
 	// ability to report this suite's result.

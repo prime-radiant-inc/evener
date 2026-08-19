@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"syscall"
 	"testing"
@@ -564,4 +565,65 @@ func TestReadFifoLineGraceFollowsTheTestDeadline(t *testing.T) {
 	if elapsed > grace+10*time.Second {
 		t.Errorf("waited %v, well past the %v of grace the deadline allows: %v", elapsed, grace, err)
 	}
+}
+
+// TestGreenWaveReapsForkedDescendant is a RED test for issue #161.
+//
+// runSuite only sends TERM/KILL to the suite's process group on the
+// interruption (shutdown) path. On a green exit it reaps only the direct
+// child via cmd.Wait() and never touches the group, so a descendant that
+// outlives the suite shell — reparented to pid 1 but still a member of the
+// suite's process group — survives the wave as an orphan. Under concurrent
+// selftest load this leaks real `go test` processes and `sleep` fixtures.
+//
+// This test is deterministic (not load-dependent): the suite forks a
+// long-lived descendant, records its pid, and exits 0. The wave completes
+// green, and the test asserts the descendant is gone. With the current code
+// the descendant is still alive, so this test FAILS (red). A fix that
+// group-kills on green exit too turns it green.
+func TestGreenWaveReapsForkedDescendant(t *testing.T) {
+	dir := t.TempDir()
+	pidFile := filepath.Join(dir, "descendant.pid")
+
+	// The suite forks a long-lived descendant that outlives the suite
+	// shell: the subshell exits immediately, `sleep` is reparented to pid
+	// 1 but remains in the suite's process group. The suite then exits 0
+	// (green). The pid is recorded outside the suite's private TMPDIR so
+	// the leak check never sees it and the wave stays green.
+	body := "( sleep 120 & echo $! >" + pidFile + " )\nexit 0\n"
+	writeSuite(t, dir, "orphan", body)
+
+	var out bytes.Buffer
+	code := runWave(waveConfig{ScriptsDir: dir, Suites: []string{"orphan"}, KillGrace: time.Second, Out: &out})
+	if code != 0 {
+		t.Fatalf("wave exited %d, want 0 (green); output:\n%s", code, out.String())
+	}
+
+	pidStr := readTrimmed(t, pidFile)
+	pid, err := strconv.Atoi(pidStr)
+	if err != nil {
+		t.Fatalf("descendant did not record a numeric pid (got %q): %v", pidStr, err)
+	}
+
+	// Always clean up the leaked descendant so a red run does not leave a
+	// two-minute sleep behind in CI.
+	t.Cleanup(func() { _ = syscall.Kill(pid, syscall.SIGKILL) })
+
+	// Give the OS a brief window in which a fix that group-kills on green
+	// exit would have reaped the descendant, then assert it is gone.
+	deadline := time.Now().Add(3 * time.Second)
+	for {
+		if err := syscall.Kill(pid, 0); err == syscall.ESRCH {
+			return // descendant was reaped: the behavior we want.
+		} else if err != nil {
+			t.Fatalf("unexpected error probing descendant pid %d: %v", pid, err)
+		}
+		if time.Now().After(deadline) {
+			break
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+
+	t.Fatalf("issue #161: green wave leaked an orphaned descendant (pid %d) still alive after runWave returned 0; wave output:\n%s",
+		pid, out.String())
 }
