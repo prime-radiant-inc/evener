@@ -33,16 +33,34 @@ func FuzzATIFConvert(f *testing.F) {
 		// error + duration, and an orphaned tool-results turn. Hits the metadata
 		// attach path, convertAssistantTurn's branches, and convertToolResults's
 		// error/duration maps — structures the random fuzzer rarely synthesizes.
-		`{"header":{"session_id":"s2","model":"gpt-5.5","profile_id":"openai","build_version":"v1.2.3","working_dir":"/w","parent_session_id":"p1"},
+		`{"header":{"session_id":"s2","model":"gpt-5.5","profile_id":"openai","build_version":"v1.2.3","working_dir":"/w","parent_session_id":"p1","parent_tool_call_id":"tc1","depth":2,"task":"do the thing","system_prompt":"be helpful"},
 "entries":[
 {"kind":"entry","seq":0,"turn":{"kind":"USER_INPUT","timestamp":"2026-06-01T10:00:00Z","message":{"role":"user","content":[{"kind":"text","text":"hi"}]}}},
-{"kind":"entry","seq":1,"turn":{"kind":"ASSISTANT","timestamp":"2026-06-01T10:00:01Z","response_id":"resp_1","response_id_hash":"h_prev","response_provider":"openai","response_model":"gpt-5.5","response_request_model":"gpt-5.5","attempt_group_id":"ag_1","response_endpoint_family":"responses","response_endpoint":"responses","response_storage_scope_fingerprint":"ssf","response_request_fingerprint":"rf","response_context_marker":"ctx","message":{"role":"assistant","content":[{"kind":"text","text":"commentary","phase":"commentary"},{"kind":"text","text":"final","phase":"final_answer"},{"kind":"thinking","thinking":{"text":"reason","signature":"sig1"}},{"kind":"thinking","thinking":{"redacted":true}},{"kind":"redacted_thinking"},{"kind":"web_search","web_search":{"query":"golang","raw":{"results":[1,2]}}},{"kind":"tool_call","tool_call":{"id":"c1","name":"shell","arguments":{"command":"ls"}}}]}}},
+{"kind":"entry","seq":1,"turn":{"kind":"ASSISTANT","timestamp":"2026-06-01T10:00:01Z","response_id":"resp_1","response_id_hash":"h_prev","response_provider":"openai","response_model":"gpt-5.5","response_request_model":"gpt-5.5","attempt_group_id":"ag_1","response_endpoint_family":"responses","response_endpoint":"https://api.openai.com/v1/responses","response_storage_scope_fingerprint":"ssf","response_request_fingerprint":"rf","response_context_marker":"ctx","message":{"role":"assistant","content":[{"kind":"text","text":"commentary","phase":"commentary"},{"kind":"text","text":"final","phase":"final_answer"},{"kind":"thinking","thinking":{"text":"reason","signature":"sig1"}},{"kind":"thinking","thinking":{"text":"more reasoning"}},{"kind":"thinking","thinking":{"redacted":true}},{"kind":"redacted_thinking"},{"kind":"web_search","web_search":{"query":"golang","raw":{"results":[1,2]}}},{"kind":"tool_call","tool_call":{"id":"c1","name":"shell","arguments":{"command":"ls"}}}]}}},
 {"kind":"entry","seq":2,"turn":{"kind":"TOOL_RESULTS","timestamp":"2026-06-01T10:00:02Z","message":{"role":"tool","content":[{"kind":"tool_result","tool_result":{"tool_call_id":"c1","name":"shell","content":"out","is_error":true,"duration_ms":42}}]}}},
 {"kind":"entry","seq":3,"turn":{"kind":"STEERING","timestamp":"2026-06-01T10:00:03Z","message":{"role":"user","content":[{"kind":"text","text":"steer"}]}}},
 {"kind":"entry","seq":4,"turn":{"kind":"SYSTEM","message":{"role":"system","content":[{"kind":"text","text":"sys"}]}}},
 {"kind":"entry","seq":5,"turn":{"kind":"CHECKPOINT","message":{"role":"assistant","content":[{"kind":"text","text":"cp"}]}}},
 {"kind":"entry","seq":6,"turn":{"kind":"SUMMARY","message":{"role":"assistant","content":[{"kind":"text","text":"sum"}]}}},
-{"kind":"entry","seq":7,"turn":{"kind":"TOOL_RESULTS","timestamp":"2026-06-01T10:00:07Z","message":{"role":"tool","content":[{"kind":"tool_result","tool_result":{"tool_call_id":"orphan","content":"x","is_error":false}}]}}}
+{"kind":"entry","seq":7,"turn":{"kind":"TOOL_RESULTS","timestamp":"2026-06-01T10:00:07Z","message":{"role":"tool","content":[{"kind":"tool_result","tool_result":{"tool_call_id":"orphan","content":"x","is_error":true,"duration_ms":7}}]}}}
+]}`,
+		// The paths this exporter grew after the maximal seed above was
+		// written: MODEL_SWITCH, an unrecognized kind carrying Turn.Error, an
+		// unrecognized kind carrying Turn.Hook, an assistant turn reporting
+		// full usage (including cache and reasoning token counts, which also
+		// drives the FinalMetrics totals), an ATTENTION_RESOLUTION marker
+		// sitting between an assistant turn and its tool results (the
+		// resolution look-through), and a TOOL_RESULTS turn whose content
+		// holds no tool_result parts (the orphaned-turn no-observation path).
+		`{"header":{"session_id":"s3"},
+"entries":[
+{"kind":"entry","seq":0,"turn":{"kind":"ASSISTANT","message":{"role":"assistant","content":[{"kind":"text","text":"acting"}]},"usage":{"input_tokens":100,"output_tokens":50,"total_tokens":150,"reasoning_tokens":10,"reasoning_tokens_estimated":8,"cache_read_tokens":20,"cache_write_tokens":5,"cache_write_1h_tokens":2,"raw":{"vendor_field":1}}}},
+{"kind":"entry","seq":1,"turn":{"kind":"ATTENTION_RESOLUTION","attention_resolution":{"attention_id":"a1","disposition":"resolved"}}},
+{"kind":"entry","seq":2,"turn":{"kind":"TOOL_RESULTS","message":{"role":"tool","content":[{"kind":"tool_result","tool_result":{"tool_call_id":"c9","content":"ok","is_error":false}}]}}},
+{"kind":"entry","seq":3,"turn":{"kind":"MODEL_SWITCH","message":{"role":"system","content":[{"kind":"text","text":"switched to gpt-6"}]}}},
+{"kind":"entry","seq":4,"turn":{"kind":"TURN_FAILURE","message":{"role":"system","content":[{"kind":"text","text":"failed"}]},"error":{"message":"boom","source":"provider","title":"Request failed","hint":"retry","cause":{"kind":"http_status","provider":"openai","model":"gpt-5.5","status":500}}}},
+{"kind":"entry","seq":5,"turn":{"kind":"HOOK_COMPLETED","message":{"role":"system","content":[{"kind":"text","text":"hook ran"}]},"hook":{"event":"PostToolUse","hook_type":"command","matcher":"shell","plugin_name":"lint","exit_code":0,"duration_ms":12}}},
+{"kind":"entry","seq":6,"turn":{"kind":"TOOL_RESULTS","message":{"role":"tool","content":[{"kind":"text","text":"stray content, no tool_result"}]}}}
 ]}`,
 	}
 	for _, s := range seeds {
