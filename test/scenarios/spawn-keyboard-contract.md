@@ -100,14 +100,19 @@ roles (`role="combobox"` with `aria-label="Model"`, `role="listbox"`,
    curl -s -H "Authorization: Bearer $TOKEN" "$HUB/api/tree" \
      | jq -c '[.. | objects | .ref? // empty] | unique'
    ```
-4. Open the picker and pick with Enter. The trigger is the only button
-   on the page carrying the screen-reader text `— change model`; assert
-   that before clicking it, because the pane also renders a hidden
-   mobile config block (`[data-testid="spawn-mobile-config"]`):
+4. Open the picker and pick with Enter. The desktop Model field's trigger
+   is the only VISIBLE button on the page carrying the screen-reader
+   text `— change model`; assert that before clicking it. The filter on
+   `offsetParent` is load bearing: the prompt card carries a second such
+   trigger for the phone (`[data-testid="spawn-model-trigger"]`), which
+   at this viewport is inside a `display: none` wrapper and so has no
+   `offsetParent` at all, and the mobile config block
+   (`[data-testid="spawn-mobile-config"]`) is hidden the same way:
    ```javascript
    (() => {
      const triggers = Array.from(document.querySelectorAll("button"))
-       .filter((b) => b.textContent.includes("change model"));
+       .filter((b) => b.textContent.includes("change model"))
+       .filter((b) => b.offsetParent !== null);
      if (triggers.length !== 1) return { port: location.port, triggers: triggers.length };
      triggers[0].click();
      return { port: location.port, triggers: 1 };
@@ -126,7 +131,10 @@ roles (`role="combobox"` with `aria-label="Model"`, `role="listbox"`,
      path: decodeURIComponent(location.pathname),
      // The trigger's own text is the value plus the screen-reader
      // "— change model" suffix: assert `contains`, never `equals`.
+     // Same visibility filter as step 4 - the hidden phone trigger reads
+     // the same model and would answer here otherwise.
      trigger: Array.from(document.querySelectorAll("button"))
+       .filter((b) => b.offsetParent !== null)
        .find((b) => b.textContent.includes("change model"))?.textContent,
      listbox: !!document.querySelector('[role="listbox"]'),
      options: document.querySelectorAll('[role="option"]').length,
@@ -165,7 +173,8 @@ roles (`role="combobox"` with `aria-label="Model"`, `role="listbox"`,
   exactly the hazard kata `t13x` removed, and every absence assertion
   below stops proving anything until it is gone again — so if this fails,
   stop and report it rather than continuing to Part B.
-- **Step 4-5 (picker Enter selects)**: exactly one trigger matched.
+- **Step 4-5 (picker Enter selects)**: exactly one VISIBLE trigger
+  matched.
   `listbox` is false (the popover closed), `trigger` contains the
   `provider/model` id of the highlighted row, `path` is still `/new`,
   and the step-3 snapshot is **identical** to the baseline. Falsify:
@@ -255,10 +264,17 @@ roles (`role="combobox"` with `aria-label="Model"`, `role="listbox"`,
   to exercise that composition, it is a different scenario, and
   `dirListSetting.test.tsx`'s "Enter on a directory row descends without
   submitting the add row" is its unit-level precedent.
-- **The desktop and mobile config blocks both live in the DOM.** Only
-  the desktop one renders the `ModelCatalog` trigger; the mobile rows
-  open a `Sheet` holding the panel directly
-  (`panes/spawn/MobileSettingRows.tsx:285-306`). At a desktop viewport
-  the sheet is closed, so exactly one `— change model` button and one
-  `[role="combobox"]` exist — step 4 asserts that rather than assuming
-  it, because a second match means you are driving the wrong one.
+- **Two `— change model` buttons live in the DOM, and only one of them
+  is on screen.** The desktop Model field renders a `ModelCatalog`
+  trigger (`panes/spawn/Spawn.tsx#ModelField`, inside
+  `[data-testid="spawn-desktop-model"]`); the prompt card renders a
+  `ModelSwitchTrigger` for the phone
+  (`[data-testid="spawn-model-trigger"]`), gated by a
+  `display: none` wrapper until the 899px breakpoint
+  (`panes/spawn/spawn.module.css`'s `.modelTrigger`). Both carry the
+  same screen-reader suffix and read the same model state, so a
+  name-only match at a desktop viewport picks whichever comes first in
+  the DOM — the hidden one. Filter on `offsetParent !== null`, as steps
+  4 and 5 do. The mobile settings list holds no model control at all
+  any more (issue #198 moved that job to the card), so its rows are not
+  a third match.
