@@ -831,7 +831,7 @@ func runCommand(t *testing.T, dir string, env []string, name string, args ...str
 func combinedOutputRetryingETXTBSY(dir string, env []string, name string, args ...string) ([]byte, error) {
 	var out []byte
 	var err error
-	for attempt := 0; attempt < 50; attempt++ {
+	for range 50 {
 		cmd := exec.Command(name, args...)
 		cmd.Dir = dir
 		cmd.Env = env
