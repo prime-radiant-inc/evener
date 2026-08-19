@@ -3,6 +3,8 @@ package evener_test
 import (
 	"fmt"
 	"os"
+	"os/exec"
+	"regexp"
 	"sort"
 	"strings"
 	"testing"
@@ -250,6 +252,53 @@ func TestNoMakefileRecipeFeedsVariableToRecursiveDelete(t *testing.T) {
 			t.Errorf("one makefileVariableFedDeletes entry now blesses %d deletes, so a copy of "+
 				"a reviewed line entered the Makefile without review of its own; give each site "+
 				"its own entry:\n  %s", matched[line], line)
+		}
+	}
+}
+
+// TestBuildAllBuildsEveryInstalledBinary pins `make build-all` to the installed
+// binary set: every name in EVENER_INSTALL_BINS must have its package built
+// somewhere in build-all's expanded command text. The rename shipped a fifth
+// installed binary (evener-migrate) whose build target existed but hung off
+// nothing, so `make build-all` quietly produced four of the five bins this
+// Makefile itself says an install contains.
+//
+// The corpus is `make -n build-all` plus the text of every scripts/*.sh the
+// dry run mentions, because build-runtime builds the evener/evener-hub pair
+// inside scripts/build-runtime-pair.sh where the dry run cannot see the
+// package paths. The predicate is the package path `./cmd/<bin>/`, not the
+// output flag, so it holds no opinion about staging directories or -ldflags.
+func TestBuildAllBuildsEveryInstalledBinary(t *testing.T) {
+	t.Parallel()
+	body, err := os.ReadFile("Makefile")
+	if err != nil {
+		t.Fatalf("read Makefile: %v", err)
+	}
+	var bins []string
+	for line := range strings.SplitSeq(string(body), "\n") {
+		if rest, ok := strings.CutPrefix(line, "EVENER_INSTALL_BINS :="); ok {
+			bins = strings.Fields(rest)
+			break
+		}
+	}
+	if len(bins) == 0 {
+		t.Fatal("EVENER_INSTALL_BINS assignment not found in Makefile")
+	}
+	out, err := exec.Command("make", "-n", "build-all").CombinedOutput()
+	if err != nil {
+		t.Fatalf("make -n build-all: %v\n%s", err, out)
+	}
+	corpus := string(out)
+	for _, script := range regexp.MustCompile(`scripts/[\w./-]+\.sh`).FindAllString(corpus, -1) {
+		text, err := os.ReadFile(script)
+		if err != nil {
+			t.Fatalf("read %s (mentioned by make -n build-all): %v", script, err)
+		}
+		corpus += "\n" + string(text)
+	}
+	for _, bin := range bins {
+		if !strings.Contains(corpus, "./cmd/"+bin+"/") {
+			t.Errorf("make build-all never builds ./cmd/%s/ — EVENER_INSTALL_BINS lists %s but build-all's prerequisite chain does not produce it", bin, bin)
 		}
 	}
 }

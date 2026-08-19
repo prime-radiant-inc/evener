@@ -153,7 +153,7 @@ build-tui:
 build-doctor:
 	go build -o evener-doctor ./cmd/evener-doctor/
 
-build-all: build-runtime build-tui build-doctor
+build-all: build-runtime build-tui build-doctor build-migrate
 
 build-llmcall:
 	go build -o llmcall ./cmd/llmcall/
