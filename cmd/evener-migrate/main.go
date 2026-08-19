@@ -56,20 +56,20 @@ func run(args []string, stdout, stderr io.Writer) int {
 	dryRun := flags.Bool("dry-run", false, "preview changes without moving anything")
 	verbose := flags.Bool("verbose", false, "print detailed output including skipped paths")
 	flags.Usage = func() {
-		fmt.Fprintln(stderr, "Usage: evener-migrate [--dry-run] [--verbose]")
+		_, _ = fmt.Fprintln(stderr, "Usage: evener-migrate [--dry-run] [--verbose]")
 		flags.PrintDefaults()
 	}
 	if err := flags.Parse(args); err != nil {
 		return 2
 	}
 	if flags.NArg() != 0 {
-		fmt.Fprintln(stderr, "evener-migrate: positional arguments are not accepted")
+		_, _ = fmt.Fprintln(stderr, "evener-migrate: positional arguments are not accepted")
 		return 2
 	}
 
 	home, err := os.UserHomeDir()
 	if err != nil {
-		fmt.Fprintf(stderr, "evener-migrate: resolve home directory: %v\n", err)
+		_, _ = fmt.Fprintf(stderr, "evener-migrate: resolve home directory: %v\n", err)
 		return 1
 	}
 
@@ -85,7 +85,7 @@ func run(args []string, stdout, stderr io.Writer) int {
 
 	cwd, err := os.Getwd()
 	if err != nil {
-		fmt.Fprintf(stderr, "evener-migrate: get current directory: %v\n", err)
+		_, _ = fmt.Fprintf(stderr, "evener-migrate: get current directory: %v\n", err)
 		return 1
 	}
 
@@ -126,9 +126,9 @@ func execute(opts options, stdout, stderr io.Writer) int {
 	}
 
 	if opts.dryRun {
-		fmt.Fprintf(stdout, "\ndry-run report: would_move=%d skipped=%d failed=%d\n", rep.moved, rep.skipped, rep.failed)
+		_, _ = fmt.Fprintf(stdout, "\ndry-run report: would_move=%d skipped=%d failed=%d\n", rep.moved, rep.skipped, rep.failed)
 	} else {
-		fmt.Fprintf(stdout, "\nmigration report: moved=%d skipped=%d failed=%d\n", rep.moved, rep.skipped, rep.failed)
+		_, _ = fmt.Fprintf(stdout, "\nmigration report: moved=%d skipped=%d failed=%d\n", rep.moved, rep.skipped, rep.failed)
 	}
 	if rep.failed > 0 {
 		return 1
@@ -144,35 +144,35 @@ func migrate(m migration, dryRun, verbose bool, stdout, stderr io.Writer) status
 	_, srcErr := os.Lstat(m.src)
 	if errors.Is(srcErr, os.ErrNotExist) {
 		if verbose {
-			fmt.Fprintf(stdout, "skip  %s (source does not exist)\n", m.src)
+			_, _ = fmt.Fprintf(stdout, "skip  %s (source does not exist)\n", m.src)
 		}
 		return statusSkipped
 	}
 	if srcErr != nil {
-		fmt.Fprintf(stderr, "evener-migrate: stat %s: %v\n", m.src, srcErr)
+		_, _ = fmt.Fprintf(stderr, "evener-migrate: stat %s: %v\n", m.src, srcErr)
 		return statusFailed
 	}
 
 	_, dstErr := os.Lstat(m.dst)
 	if dstErr == nil {
-		fmt.Fprintf(stdout, "skip  %s -> %s (destination already exists)\n", m.src, m.dst)
+		_, _ = fmt.Fprintf(stdout, "skip  %s -> %s (destination already exists)\n", m.src, m.dst)
 		return statusSkipped
 	}
 	if !errors.Is(dstErr, os.ErrNotExist) {
-		fmt.Fprintf(stderr, "evener-migrate: stat %s: %v\n", m.dst, dstErr)
+		_, _ = fmt.Fprintf(stderr, "evener-migrate: stat %s: %v\n", m.dst, dstErr)
 		return statusFailed
 	}
 
 	if dryRun {
-		fmt.Fprintf(stdout, "would move  %s -> %s\n", m.src, m.dst)
+		_, _ = fmt.Fprintf(stdout, "would move  %s -> %s\n", m.src, m.dst)
 		return statusMoved
 	}
 
 	if err := os.Rename(m.src, m.dst); err != nil {
-		fmt.Fprintf(stderr, "evener-migrate: move %s -> %s: %v\n", m.src, m.dst, err)
+		_, _ = fmt.Fprintf(stderr, "evener-migrate: move %s -> %s: %v\n", m.src, m.dst, err)
 		return statusFailed
 	}
-	fmt.Fprintf(stdout, "moved  %s -> %s\n", m.src, m.dst)
+	_, _ = fmt.Fprintf(stdout, "moved  %s -> %s\n", m.src, m.dst)
 	return statusMoved
 }
 
