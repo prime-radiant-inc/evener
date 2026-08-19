@@ -90,10 +90,10 @@ done
 		prefix := filepath.Join(root, "prefix")
 		urlFile := filepath.Join(root, "url")
 		env := overlayEnv(os.Environ(), map[string]string{
-			"PATH":                   fakeBin + string(os.PathListSeparator) + os.Getenv("PATH"),
-			"HOME":                   home,
-			"PREFIX":                 "",
-			"BINDIR":                 "",
+			"PATH":                     fakeBin + string(os.PathListSeparator) + os.Getenv("PATH"),
+			"HOME":                     home,
+			"PREFIX":                   "",
+			"BINDIR":                   "",
 			"EVENER_SHARE_BINDIR":      "",
 			"EVENER_INSTALL_VERSION":   "",
 			"EVENER_FUZZ_URL_FILE":     urlFile,
@@ -110,7 +110,7 @@ done
 			env = overlayEnv(env, map[string]string{"HOME": "", "PREFIX": ""})
 		case 3:
 			env = overlayEnv(env, map[string]string{
-				"BINDIR":            filepath.Join(root, "commands"),
+				"BINDIR":              filepath.Join(root, "commands"),
 				"EVENER_SHARE_BINDIR": filepath.Join(root, "payload"),
 			})
 		}

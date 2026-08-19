@@ -98,7 +98,7 @@ func FuzzCovExactWebSession(f *testing.F) {
 		thread := appwire.Thread{
 			ID: "live", SessionID: "live", Source: "remote",
 			Status: appwire.ThreadStatus{Type: appwire.ThreadStatusActive},
-			Evener:   appwire.EvenerThread{Ref: "remote:live", Capabilities: caps},
+			Evener: appwire.EvenerThread{Ref: "remote:live", Capabilities: caps},
 		}
 		roster := hubcore.NewRosterWithEntries(hubcore.LiveEntry{Entry: rendezvous.Entry{PID: 11, Address: "unused"}, SessionID: "live", Status: "active"})
 		src := &exactWebSessionSource{scriptedAppSource: &scriptedAppSource{id: "remote", thread: thread}, err: errors.New("scripted action failure")}

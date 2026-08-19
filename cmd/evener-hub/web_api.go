@@ -93,8 +93,8 @@ func writeAPIWireError(w http.ResponseWriter, fallbackStatus int, err error) {
 		return
 	}
 	writeAPIJSON(w, statusForWireError(wire, fallbackStatus), hubapi.ErrorResponse{
-		Error:         wire.Message,
-		Code:          wire.Code,
+		Error:           wire.Message,
+		Code:            wire.Code,
 		EvenerErrorInfo: evenerErrorInfoFromData(wire.Data),
 	})
 }

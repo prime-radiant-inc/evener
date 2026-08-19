@@ -25,7 +25,7 @@ func TestFetchHubTreeUsesAppWireThreadList(t *testing.T) {
 			CWD:       "/tmp/project",
 			Source:    "local",
 			Status:    appwire.ThreadStatus{Type: appwire.ThreadStatusIdle},
-			Evener:      appwire.EvenerThread{Ref: "local:th_1"},
+			Evener:    appwire.EvenerThread{Ref: "local:th_1"},
 		}}}, nil
 	})
 	client, cleanup := newTUIAppWireClient(t, app)

@@ -74,7 +74,7 @@ func FuzzRPCLifecyclePass4(f *testing.F) {
 		thread := appwire.Thread{
 			ID: "thread", SessionID: "thread", Source: "remote", Name: "root",
 			Status: appwire.ThreadStatus{Type: appwire.ThreadStatusIdle},
-			Evener:   appwire.EvenerThread{Ref: "remote:thread", Capabilities: caps},
+			Evener: appwire.EvenerThread{Ref: "remote:thread", Capabilities: caps},
 			Turns:  []appwire.Turn{{ID: "turn_1"}, {ID: "turn_2"}},
 		}
 		base := &scriptedAppSource{id: "remote", thread: thread}

@@ -38,7 +38,7 @@ var (
 	spawnMkdirTemp                   = os.MkdirTemp
 	spawnWriteFile                   = os.WriteFile
 	spawnRemoveAll                   = os.RemoveAll
-	listEvenerLaunchModelContractFn    = listEvenerLaunchModelContract
+	listEvenerLaunchModelContractFn  = listEvenerLaunchModelContract
 	openAIStoredOAuthUsableForLaunch = openAIStoredOAuthUsable
 	listRendezvousForWait            = rendezvous.List
 )
@@ -46,7 +46,7 @@ var (
 // HubSpawner fulfills the hubcore.Spawner interface using SpawnDaemon.
 type HubSpawner struct {
 	Cfg                 Config
-	EvenerBinary          string // path to the evener binary; "" → "evener" on PATH
+	EvenerBinary        string // path to the evener binary; "" → "evener" on PATH
 	RunDir              string
 	HubToken            string
 	Creds               *credentials.Store // credentials store for provider key injection

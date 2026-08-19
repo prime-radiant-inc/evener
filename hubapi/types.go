@@ -294,7 +294,7 @@ type ForkResponse struct {
 }
 
 type ErrorResponse struct {
-	Error         string `json:"error"`
-	Code          int    `json:"code,omitempty"`
+	Error           string `json:"error"`
+	Code            int    `json:"code,omitempty"`
 	EvenerErrorInfo string `json:"evener_error_info,omitempty"`
 }

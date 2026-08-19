@@ -156,7 +156,7 @@ type daemonStatus struct {
 	ContextRemaining int     `json:"context_remaining,omitempty"`
 	// Usage, WorkMillis, and ActiveTurnStartedAt mirror server.StatusInfo's
 	// WS2 working-state/token metrics fields.
-	WorkMillis          int64              `json:"work_millis,omitempty"`
+	WorkMillis          int64                `json:"work_millis,omitempty"`
 	Usage               *appwire.EvenerUsage `json:"usage,omitempty"`
-	ActiveTurnStartedAt int64              `json:"active_turn_started_at,omitempty"`
+	ActiveTurnStartedAt int64                `json:"active_turn_started_at,omitempty"`
 }

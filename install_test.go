@@ -314,7 +314,7 @@ cp "$EVENER_FAKE_CURL_ARCHIVE" "$out"
 `)
 
 			env := installTestEnv(t, home, map[string]string{
-				"PATH":                    fakeBin + string(os.PathListSeparator) + os.Getenv("PATH"),
+				"PATH":                      fakeBin + string(os.PathListSeparator) + os.Getenv("PATH"),
 				"EVENER_INSTALL_VERSION":    "v1.2.3",
 				"EVENER_FAKE_CURL_ARCHIVE":  archive,
 				"EVENER_FAKE_CURL_URL_FILE": urlFile,

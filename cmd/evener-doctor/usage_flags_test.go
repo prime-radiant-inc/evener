@@ -25,7 +25,7 @@ import (
 // it is written down and no allowlist can go stale.
 
 // usageCommentLineRE matches one invocation line of the doc comment's Usage
-// block — the tab-indented `//\tserf-doctor <sub> …` form gofmt renders as a
+// block — the tab-indented `//\tevener-doctor <sub> …` form gofmt renders as a
 // code block. Prose lines in the same comment (the "Common flags:" sentence)
 // are deliberately not matched: they name flags shared by every subcommand
 // rather than flags of one, and have no subcommand to test them against.

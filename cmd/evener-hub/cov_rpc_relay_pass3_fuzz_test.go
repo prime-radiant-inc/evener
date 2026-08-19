@@ -27,7 +27,7 @@ func FuzzRPCRelayPass3(f *testing.F) {
 			ID: "thread", SessionID: "session", Source: "remote", Name: "name",
 			Preview: "preview", CWD: "/work", Path: "/work/file", ModelProvider: "provider",
 			Status: appwire.ThreadStatus{Type: appwire.ThreadStatusActive},
-			Evener:   appwire.EvenerThread{Ref: "remote:thread", Profile: "profile", Capabilities: caps},
+			Evener: appwire.EvenerThread{Ref: "remote:thread", Profile: "profile", Capabilities: caps},
 			Turns:  []appwire.Turn{{ID: "turn_1"}, {ID: "turn_2"}},
 		}
 		source := &scriptedAppSource{id: "remote", thread: thread}

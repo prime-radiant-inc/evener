@@ -247,7 +247,7 @@ func TestHubDetailFromThreadLeavesFailedToolCallsNilWhenThreadHasNone(t *testing
 		ID:        "th_2",
 		SessionID: "th_2",
 		Source:    "local",
-		Evener:      appwire.EvenerThread{Ref: "local:th_2"},
+		Evener:    appwire.EvenerThread{Ref: "local:th_2"},
 	})
 	if detail.FailedToolCalls != nil {
 		t.Fatalf("FailedToolCalls = %+v, want nil", detail.FailedToolCalls)
@@ -262,7 +262,7 @@ func TestHubDetailFromThreadLeavesUsageNilWhenThreadHasNone(t *testing.T) {
 		ID:        "th_2",
 		SessionID: "th_2",
 		Source:    "local",
-		Evener:      appwire.EvenerThread{Ref: "local:th_2"},
+		Evener:    appwire.EvenerThread{Ref: "local:th_2"},
 	})
 	if detail.Usage != nil {
 		t.Fatalf("Usage=%+v, want nil", detail.Usage)

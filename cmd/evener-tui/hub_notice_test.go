@@ -103,8 +103,8 @@ func TestHubModelClearsActionUnavailableNoticeWhenSessionChanges(t *testing.T) {
 
 	updated, _ := m.Update(hubSessionMsg{
 		detail: hubSessionDetail{
-			Ref:         "local:01SERF",
-			SessionID:   "01SERF",
+			Ref:         "local:01EVENER",
+			SessionID:   "01EVENER",
 			SourceLabel: "evener",
 			Title:       "Evener replay",
 			State:       "ended",

@@ -105,7 +105,7 @@ func TestHubRPCThreadForkAsideUnavailableForNonLocal(t *testing.T) {
 				ID:        "th_aside",
 				SessionID: "th_aside",
 				Source:    "codex",
-				Evener:      appwire.EvenerThread{Ref: "codex:th_aside", Capabilities: appwire.ThreadCapabilities{ForkFromTurn: true}},
+				Evener:    appwire.EvenerThread{Ref: "codex:th_aside", Capabilities: appwire.ThreadCapabilities{ForkFromTurn: true}},
 			},
 			notifications: make(chan appwire.Notification, 1),
 			canceled:      make(chan struct{}, 1),

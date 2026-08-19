@@ -12,7 +12,7 @@ func TestSessionHeaderHasThreeMainSections(t *testing.T) {
 	m := hubModel{
 		detail: hubSessionDetail{
 			Title:       "Restore hub TUI widgets",
-			SessionID:   "01SERF",
+			SessionID:   "01EVENER",
 			State:       "awaiting",
 			SourceLabel: "evener",
 			Branch:      "feat/widget",

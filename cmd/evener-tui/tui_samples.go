@@ -99,8 +99,8 @@ func newHubTUISampleCorpus() hubTUISampleCorpus {
 
 func sampleDashboardTree() hubTreeResponse {
 	evenerLive := hubTreeNode{
-		Ref:         "local:01SERF",
-		SessionID:   "01SERF",
+		Ref:         "local:01EVENER",
+		SessionID:   "01EVENER",
 		SourceLabel: "evener",
 		Title:       "Restore hub TUI widgets",
 		Project:     "evener",
@@ -166,8 +166,8 @@ func sampleDashboardTree() hubTreeResponse {
 func sampleSessionDetails() map[string]hubSessionDetail {
 	return map[string]hubSessionDetail{
 		"evener-idle": {
-			Ref:         "local:01SERF",
-			SessionID:   "01SERF",
+			Ref:         "local:01EVENER",
+			SessionID:   "01EVENER",
 			SourceLabel: "evener",
 			Title:       "Restore hub TUI widgets",
 			State:       "idle",
@@ -325,7 +325,7 @@ func sampleAskQuestionsMultiReview() *questionOverlay {
 			},
 		},
 	}
-	o := newQuestionOverlay("local:01SERF", questions, 100)
+	o := newQuestionOverlay("local:01EVENER", questions, 100)
 	o.applyPickerSelection() // picks "Postgres" (cursor starts on the first row)
 	o.idx++                  // -> Naming, left unanswered
 	o.rebuildPicker()
@@ -518,7 +518,7 @@ func sampleRenderFromRealWidget(name string, width int) (tuiSampleRender, bool) 
 		m.session.refreshViewport()
 		return renderSample(name, width, m.sessionView()), true
 	case "ask-overlay-single":
-		o := newQuestionOverlay("local:01SERF", sampleAskQuestionsSingle(), width)
+		o := newQuestionOverlay("local:01EVENER", sampleAskQuestionsSingle(), width)
 		return renderSample(name, width, o.View()), true
 	case "ask-overlay-multi-review":
 		o := sampleAskQuestionsMultiReview()
@@ -553,10 +553,10 @@ func sampleRenderFromRealWidget(name string, width int) (tuiSampleRender, bool) 
 		return renderSample(name, width, view), true
 	case "agents-picker":
 		picker := tuipick.NewTranscriptPicker([]tuipick.ModelPickerItem{
-			{ID: "local:01SERF", Display: "main session"},
-			{ID: "local:01SERF:worker", Display: "worker - restore auth commands"},
-			{ID: "local:01SERF:explorer", Display: "explorer - inspect old TUI"},
-		}, "local:01SERF", width)
+			{ID: "local:01EVENER", Display: "main session"},
+			{ID: "local:01EVENER:worker", Display: "worker - restore auth commands"},
+			{ID: "local:01EVENER:explorer", Display: "explorer - inspect old TUI"},
+		}, "local:01EVENER", width)
 		return renderSample(name, width, picker.View()), true
 	case "help-overlay":
 		return renderSample(name, width, hubSlashCommandHelp(sampleSessionDetails()["evener-idle"].Capabilities)), true

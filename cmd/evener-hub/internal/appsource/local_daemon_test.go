@@ -47,7 +47,7 @@ func TestRelaySessionHealthyRejoinUsesCanonicalConnection(t *testing.T) {
 				return appwire.ThreadReadResponse{Thread: appwire.Thread{
 					ID:     "thread-1",
 					Source: "local",
-					Evener:   appwire.EvenerThread{Ref: "local:thread-1"},
+					Evener: appwire.EvenerThread{Ref: "local:thread-1"},
 				}}, nil
 			default:
 				return nil, fmt.Errorf("unexpected method %q", method)

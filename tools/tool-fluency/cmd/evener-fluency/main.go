@@ -191,7 +191,7 @@ type runConfig struct {
 	probesDir          string
 	probeFilter        string
 	outDir             string
-	evenerBin            string
+	evenerBin          string
 	systemPromptAppend []string
 	build              bool
 	repetitions        int

@@ -251,7 +251,7 @@ var identifierSHA256Inventory = map[string]map[string]map[string]bool{
 	},
 	"cmd/evener-hub/internal/launchconfig/trust.go": {"canonicalHashTOML": {"Sum256(buf.Bytes())": true}},
 	"cmd/evener-hub/output_images.go":               {"outputImageSHA": {"Sum256(data)": true}},
-	"fuzz/promoter/emit_go.go":                    {"ShortHash": {"New()": true}},
+	"fuzz/promoter/emit_go.go":                      {"ShortHash": {"New()": true}},
 	"internal/apptranscript/turn_index.go": {
 		"anchorAt":                        {"Sum256(data[:n])": true},
 		"anchorsMatchObserved":            {"Sum256(data[:n])": true},

@@ -1624,7 +1624,7 @@ exit 2
 
 	spawner := HubSpawner{
 		Cfg:                 DefaultConfig(),
-		EvenerBinary:          bin,
+		EvenerBinary:        bin,
 		RunDir:              runDir,
 		HubToken:            "generated-token",
 		Creds:               store,

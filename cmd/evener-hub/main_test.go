@@ -20,11 +20,11 @@ func TestPrintHubEnvVars(t *testing.T) {
 	wantSummary := map[string]string{
 		"EVENER_PROVIDERS_CONFIG": "Path to providers.toml.",
 		"EVENER_STATE_DIR":        "Overrides the Evener state root.",
-		"OPENAI_API_KEY":        "OpenAI API key.",
-		"ANTHROPIC_API_KEY":     "Anthropic API key.",
-		"GEMINI_API_KEY":        "Google Gemini API key; checked before GOOGLE_API_KEY.",
-		"GOOGLE_API_KEY":        "Google Gemini API key fallback.",
-		"OPENROUTER_API_KEY":    "OpenRouter API key.",
+		"OPENAI_API_KEY":          "OpenAI API key.",
+		"ANTHROPIC_API_KEY":       "Anthropic API key.",
+		"GEMINI_API_KEY":          "Google Gemini API key; checked before GOOGLE_API_KEY.",
+		"GOOGLE_API_KEY":          "Google Gemini API key fallback.",
+		"OPENROUTER_API_KEY":      "OpenRouter API key.",
 	}
 
 	lines := strings.Split(strings.TrimRight(out, "\n"), "\n")

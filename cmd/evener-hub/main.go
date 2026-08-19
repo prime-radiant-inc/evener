@@ -85,8 +85,8 @@ type hubShutdowner interface {
 }
 
 type hubOptions struct {
-	configPath string
-	addr       string
+	configPath   string
+	addr         string
 	evenerBinary string
 }
 
@@ -241,7 +241,7 @@ func runMain(args []string, stderr io.Writer, deps mainDeps) error {
 	}
 	spawner := &HubSpawner{
 		Cfg:                 cfg,
-		EvenerBinary:          resolvedEvenerBinary,
+		EvenerBinary:        resolvedEvenerBinary,
 		RunDir:              runDir,
 		HubToken:            hubToken,
 		Creds:               credsStore,

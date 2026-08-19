@@ -38,7 +38,7 @@ func TestHubModelAgentsPickerReadsSelectedTranscriptThroughAppWire(t *testing.T)
 				ModelProvider: "gpt-5",
 				Status:        appwire.ThreadStatus{Type: appwire.ThreadStatusNotLoaded},
 				Source:        "local",
-				Evener:          appwire.EvenerThread{Ref: "local:01SUB", Kind: "subagent", ParentRef: "local:01SEND"},
+				Evener:        appwire.EvenerThread{Ref: "local:01SUB", Kind: "subagent", ParentRef: "local:01SEND"},
 				Turns: []appwire.Turn{{
 					ID:     "turn_1",
 					Status: appwire.TurnStatusCompleted,
@@ -184,7 +184,7 @@ func TestHubModelAgentsPickerShowsCodexSourceAndLiveSubagent(t *testing.T) {
 				ModelProvider: "gpt-5",
 				Status:        appwire.ThreadStatus{Type: appwire.ThreadStatusActive},
 				Source:        "codex",
-				Evener:          appwire.EvenerThread{Ref: "codex:01LIVE", Kind: "subagent", ParentRef: "codex:01CODEX"},
+				Evener:        appwire.EvenerThread{Ref: "codex:01LIVE", Kind: "subagent", ParentRef: "codex:01CODEX"},
 				Turns: []appwire.Turn{{
 					ID:     "turn_live",
 					Status: appwire.TurnStatusInProgress,

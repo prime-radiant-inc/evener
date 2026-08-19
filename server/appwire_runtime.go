@@ -269,7 +269,7 @@ func (s *Server) RecordDescendantAppEvent(ownerThreadID string, event events.Ses
 					ID:        threadID,
 					SessionID: threadID,
 					Source:    sourceID,
-					Evener:      appwire.EvenerThread{Ref: ref, Kind: "subagent"},
+					Evener:    appwire.EvenerThread{Ref: ref, Kind: "subagent"},
 				},
 			}
 			// Seed from the descendant's own transcript BEFORE this first event is

@@ -30,13 +30,13 @@ func checkToEnv_BaselineSetsRunStateAndProvider(t *testing.T) {
 		HubToken:  "tok",
 	})
 	want := map[string]string{
-		"PATH":              "/usr/bin",
-		"FOO":               "bar",
-		"EVENER_HUB_SPAWNED":  "1",
-		"EVENER_RUN_DIR":      "/run",
-		"EVENER_STATE_DIR":    "/state",
-		"EVENER_HUB_TOKEN":    "tok",
-		"ANTHROPIC_API_KEY": "sk-ant-FROM-FILE",
+		"PATH":               "/usr/bin",
+		"FOO":                "bar",
+		"EVENER_HUB_SPAWNED": "1",
+		"EVENER_RUN_DIR":     "/run",
+		"EVENER_STATE_DIR":   "/state",
+		"EVENER_HUB_TOKEN":   "tok",
+		"ANTHROPIC_API_KEY":  "sk-ant-FROM-FILE",
 	}
 	gotMap := envSliceToMap(got)
 	for k, v := range want {

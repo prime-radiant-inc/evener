@@ -166,7 +166,7 @@ func hubThreadStart(ctx context.Context, cfg hubcore.WebConfig, sources *appsour
 			CWD:           workingDir,
 			Source:        "local",
 			Status:        appwire.ThreadStatus{Type: appwire.ThreadStatusIdle},
-			Evener:          appwire.EvenerThread{Ref: ref},
+			Evener:        appwire.EvenerThread{Ref: ref},
 		}
 		annotateThreadProjects([]appwire.Thread{thread})
 		return appwire.ThreadStartResponse{Thread: thread}, nil
@@ -438,7 +438,7 @@ func hubThreadFork(ctx context.Context, cfg hubcore.WebConfig, sources *appsourc
 			ID:        childID,
 			SessionID: childID,
 			Source:    "local",
-			Evener:      appwire.EvenerThread{Ref: childRef},
+			Evener:    appwire.EvenerThread{Ref: childRef},
 		}}, nil
 	}
 	turn, err := parseSourceTurnID(params.SourceTurnID)
@@ -478,7 +478,7 @@ func hubThreadFork(ctx context.Context, cfg hubcore.WebConfig, sources *appsourc
 			ID:        childID,
 			SessionID: childID,
 			Source:    "local",
-			Evener:      appwire.EvenerThread{Ref: childRef},
+			Evener:    appwire.EvenerThread{Ref: childRef},
 		},
 		OriginalInput: originalInput,
 	}, nil

@@ -24,7 +24,7 @@ func deadGenerationThread() appwire.Thread {
 		ModelProvider: "gpt-5",
 		Status:        appwire.ThreadStatus{Type: appwire.ThreadStatusIdle},
 		Source:        "local",
-		Evener:          appwire.EvenerThread{Ref: "local:01SEND"},
+		Evener:        appwire.EvenerThread{Ref: "local:01SEND"},
 		Turns: []appwire.Turn{{
 			ID:     "turn_4",
 			Status: appwire.TurnStatusCompleted,

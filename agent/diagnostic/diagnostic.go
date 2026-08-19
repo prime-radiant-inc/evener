@@ -26,7 +26,7 @@ type Source string
 // the diagnostic is re-derived downstream.
 const (
 	SourceProvider Source = "provider"
-	SourceEvener     Source = "evener"
+	SourceEvener   Source = "evener"
 	SourceHub      Source = "hub"
 	SourceUI       Source = "ui"
 	SourceHook     Source = "hook"

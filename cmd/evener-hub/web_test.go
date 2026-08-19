@@ -184,7 +184,7 @@ func TestHubDetailFromAppThreadTreatsClosedAsNotLive(t *testing.T) {
 		SessionID: "th_closed",
 		Status:    appwire.ThreadStatus{Type: appwire.ThreadStatusClosed},
 		Source:    "local",
-		Evener:      appwire.EvenerThread{Ref: "local:th_closed"},
+		Evener:    appwire.EvenerThread{Ref: "local:th_closed"},
 	})
 	if detail.Live {
 		t.Fatalf("closed detail marked live: %+v", detail)
@@ -232,7 +232,7 @@ func TestHubDetailFromAppThreadCarriesFailedToolCalls(t *testing.T) {
 		SessionID: "th_nocount",
 		Status:    appwire.ThreadStatus{Type: "idle"},
 		Source:    "local",
-		Evener:      appwire.EvenerThread{Ref: "local:th_nocount"},
+		Evener:    appwire.EvenerThread{Ref: "local:th_nocount"},
 	})
 	if noCount.FailedToolCalls != nil {
 		t.Fatalf("FailedToolCalls = %+v, want nil when the source never counted", noCount.FailedToolCalls)
@@ -262,7 +262,7 @@ func TestHubDetailFromAppThreadCarriesGoal(t *testing.T) {
 		SessionID: "th_nogoal",
 		Status:    appwire.ThreadStatus{Type: "idle"},
 		Source:    "local",
-		Evener:      appwire.EvenerThread{Ref: "local:th_nogoal"},
+		Evener:    appwire.EvenerThread{Ref: "local:th_nogoal"},
 	})
 	if noGoal.GoalStatus != "" || noGoal.GoalIterations != 0 {
 		t.Fatalf("expected empty goal when none set: status=%q iterations=%d", noGoal.GoalStatus, noGoal.GoalIterations)
@@ -296,7 +296,7 @@ func TestWeb_WorkspaceTaskStatusInitialIsNeutral(t *testing.T) {
 		thread: appwire.Thread{
 			ID: "th_tasks", SessionID: "th_tasks", Source: "codex",
 			Status: appwire.ThreadStatus{Type: appwire.ThreadStatusIdle},
-			Evener:   appwire.EvenerThread{Ref: "codex:th_tasks", Capabilities: appwire.ThreadCapabilities{Send: true}},
+			Evener: appwire.EvenerThread{Ref: "codex:th_tasks", Capabilities: appwire.ThreadCapabilities{Send: true}},
 		},
 	})
 	req := httptest.NewRequest(http.MethodGet, "/_partials/s/"+url.PathEscape("codex:th_tasks")+"/workspace", nil)
@@ -1995,7 +1995,7 @@ func TestWeb_SendLiveStartTurnErrorDoesNotResume(t *testing.T) {
 			ID:        sessionID,
 			SessionID: sessionID,
 			Source:    "local",
-			Evener:      appwire.EvenerThread{Ref: params.Ref, Capabilities: appwire.ThreadCapabilities{Send: true}},
+			Evener:    appwire.EvenerThread{Ref: params.Ref, Capabilities: appwire.ThreadCapabilities{Send: true}},
 		}}, nil
 	})
 	appserver.HandleTyped(daemon.Router(), appwire.MethodTurnStart, func(context.Context, appwire.TurnStartParams) (appwire.TurnStartResponse, error) {
@@ -4120,7 +4120,7 @@ func TestWeb_APISessionActionClearReturnsRef(t *testing.T) {
 					ID:        "02wMz5Txv1C3Hut0M8GCeB",
 					SessionID: "02wMz5Txv1C3Hut0M8GCeB",
 					Source:    "local",
-					Evener:      appwire.EvenerThread{Ref: "local:02wMz5Txv1C3Hut0M8GCeB"},
+					Evener:    appwire.EvenerThread{Ref: "local:02wMz5Txv1C3Hut0M8GCeB"},
 				},
 			}, nil
 		})

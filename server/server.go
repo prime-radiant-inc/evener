@@ -136,7 +136,7 @@ type DelegateStatusInfo struct {
 	ExhaustionResumable *bool                        `json:"exhaustion_resumable,omitempty"`
 	DelegationAllowance int                          `json:"delegation_allowance,omitempty"`
 	ParentWatchGranted  bool                         `json:"parent_watch_granted,omitempty"`
-	Usage               *appwire.EvenerUsage           `json:"usage,omitempty"`
+	Usage               *appwire.EvenerUsage         `json:"usage,omitempty"`
 	Worktree            *appwire.JobActivityWorktree `json:"worktree,omitempty"`
 }
 
@@ -195,8 +195,8 @@ type StatusInfo struct {
 	// ActiveTurnStartedAt is Unix epoch MILLISECONDS (like WorkMillis's scale
 	// and the web reducer's epoch-ms read), 0 when no turn is running.
 	Usage               *appwire.EvenerUsage `json:"usage,omitempty"`
-	WorkMillis          int64              `json:"work_millis,omitempty"`
-	ActiveTurnStartedAt int64              `json:"active_turn_started_at,omitempty"`
+	WorkMillis          int64                `json:"work_millis,omitempty"`
+	ActiveTurnStartedAt int64                `json:"active_turn_started_at,omitempty"`
 	// FailedToolCalls is how many of the session's tool calls have failed, over
 	// the WHOLE session — counted by the transcript writer as it records them
 	// and seeded on resume from the file, so a running session's figure is

@@ -378,7 +378,7 @@ func TestHubModelDashboardSortsByAttentionThenRecency(t *testing.T) {
 			Source:        "local",
 			UpdatedAt:     300,
 			Status:        appwire.ThreadStatus{Type: appwire.ThreadStatusIdle},
-			Evener:          appwire.EvenerThread{Ref: "local:01IDLE"},
+			Evener:        appwire.EvenerThread{Ref: "local:01IDLE"},
 		},
 		{
 			ID:            "01OPSOLD",
@@ -389,7 +389,7 @@ func TestHubModelDashboardSortsByAttentionThenRecency(t *testing.T) {
 			Source:        "local",
 			UpdatedAt:     100,
 			Status:        appwire.ThreadStatus{Type: appwire.ThreadStatusAwaiting},
-			Evener:          appwire.EvenerThread{Ref: "local:01OPSOLD"},
+			Evener:        appwire.EvenerThread{Ref: "local:01OPSOLD"},
 		},
 		{
 			ID:            "01BRAIN",
@@ -400,7 +400,7 @@ func TestHubModelDashboardSortsByAttentionThenRecency(t *testing.T) {
 			Source:        "local",
 			UpdatedAt:     400,
 			Status:        appwire.ThreadStatus{Type: appwire.ThreadStatusAwaiting},
-			Evener:          appwire.EvenerThread{Ref: "local:01BRAIN"},
+			Evener:        appwire.EvenerThread{Ref: "local:01BRAIN"},
 		},
 		{
 			ID:            "01OPSNEW",
@@ -411,7 +411,7 @@ func TestHubModelDashboardSortsByAttentionThenRecency(t *testing.T) {
 			Source:        "local",
 			UpdatedAt:     500,
 			Status:        appwire.ThreadStatus{Type: appwire.ThreadStatusAwaiting},
-			Evener:          appwire.EvenerThread{Ref: "local:01OPSNEW"},
+			Evener:        appwire.EvenerThread{Ref: "local:01OPSNEW"},
 		},
 	})
 
@@ -493,7 +493,7 @@ func TestHubModelDashboardWideDetailsFollowSelection(t *testing.T) {
 
 	m.selected = dashboardRowIndex(m.dashboardRows(), "Restore hub TUI widgets")
 	sessionView := m.dashboardView()
-	for _, want := range []string{"details", "Session:  01SERF", "Title:    Restore hub TUI widgets", "Ref:      local:01SERF"} {
+	for _, want := range []string{"details", "Session:  01EVENER", "Title:    Restore hub TUI widgets", "Ref:      local:01EVENER"} {
 		if !strings.Contains(sessionView, want) {
 			t.Fatalf("wide dashboard session details missing %q:\n%s", want, sessionView)
 		}
@@ -4034,7 +4034,7 @@ func TestHubDetailFromThreadIncludesActiveTurnID(t *testing.T) {
 		ID:        "th_1",
 		SessionID: "th_1",
 		Source:    "local",
-		Evener:      appwire.EvenerThread{Ref: "local:th_1"},
+		Evener:    appwire.EvenerThread{Ref: "local:th_1"},
 		Turns: []appwire.Turn{
 			{ID: "turn_done", Status: appwire.TurnStatusCompleted},
 			{ID: "turn_active", Status: appwire.TurnStatusInProgress},

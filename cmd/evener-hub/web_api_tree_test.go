@@ -286,7 +286,7 @@ func TestAppThreadTreeEntriesPreserveRemoteLineageAndKind(t *testing.T) {
 		ID:           "fork",
 		Source:       "remote",
 		ForkedFromID: "parent",
-		Evener:         appwire.EvenerThread{Ref: "remote:fork"},
+		Evener:       appwire.EvenerThread{Ref: "remote:fork"},
 	})
 	if !ok {
 		t.Fatal("appThreadTreeEntries rejected remote fork")

@@ -547,12 +547,12 @@ func runProcessRuntimeProgram(t *testing.T, program []byte) processRuntimeTrace 
 	for _, name := range []string{"argv-none", "argv-default", "argv-all", "argv-core"} {
 		processRuntimeAssertEnv(t, factory.command(name).config.Env, map[string]string{
 			"EVENER_SCRATCH_DIR": scratch,
-			"TMPDIR":           scratch,
+			"TMPDIR":             scratch,
 		}, nil)
 	}
 	processRuntimeAssertEnv(t, factory.command("child-argv").config.Env, map[string]string{
 		"EVENER_SCRATCH_DIR": childScratch,
-		"TMPDIR":           childScratch,
+		"TMPDIR":             childScratch,
 	}, nil)
 	scratchPlaceholders := map[string]string{scratch: "$SCRATCH", childScratch: "$CHILD_SCRATCH"}
 	for _, command := range factory.byName {

@@ -20,29 +20,29 @@ import (
 const ProtocolVersion = "evener-appwire-v3"
 
 const (
-	MethodInitialize                = "initialize"
-	MethodInitialized               = "initialized"
-	MethodPing                      = "ping"
-	MethodThreadList                = "thread/list"
-	MethodThreadRead                = "thread/read"
-	MethodThreadTurnsList           = "thread/turns/list"
-	MethodThreadTurnItemsList       = "thread/turns/items/list"
-	MethodThreadStart               = "thread/start"
-	MethodThreadResume              = "thread/resume"
-	MethodThreadFork                = "thread/fork"
-	MethodThreadClear               = "thread/clear"
-	MethodThreadModelSet            = "thread/model/set"
-	MethodThreadReasoningEffortSet  = "thread/reasoning-effort/set"
-	MethodThreadCompactStart        = "thread/compact/start"
-	MethodThreadShutdown            = "thread/shutdown"
-	MethodTurnStart                 = "turn/start"
-	MethodTurnSteer                 = "turn/steer"
-	MethodTurnInterrupt             = "turn/interrupt"
-	MethodTurnQueue                 = "turn/queue"
-	MethodTurnDrainAsSteer          = "turn/drainAsSteer"
-	MethodTurnPromoteQueuedAsSteer  = "turn/promoteQueuedAsSteer"
-	MethodTurnCancelQueued          = "turn/cancelQueued"
-	MethodGoalSet                   = "goal/set"
+	MethodInitialize                  = "initialize"
+	MethodInitialized                 = "initialized"
+	MethodPing                        = "ping"
+	MethodThreadList                  = "thread/list"
+	MethodThreadRead                  = "thread/read"
+	MethodThreadTurnsList             = "thread/turns/list"
+	MethodThreadTurnItemsList         = "thread/turns/items/list"
+	MethodThreadStart                 = "thread/start"
+	MethodThreadResume                = "thread/resume"
+	MethodThreadFork                  = "thread/fork"
+	MethodThreadClear                 = "thread/clear"
+	MethodThreadModelSet              = "thread/model/set"
+	MethodThreadReasoningEffortSet    = "thread/reasoning-effort/set"
+	MethodThreadCompactStart          = "thread/compact/start"
+	MethodThreadShutdown              = "thread/shutdown"
+	MethodTurnStart                   = "turn/start"
+	MethodTurnSteer                   = "turn/steer"
+	MethodTurnInterrupt               = "turn/interrupt"
+	MethodTurnQueue                   = "turn/queue"
+	MethodTurnDrainAsSteer            = "turn/drainAsSteer"
+	MethodTurnPromoteQueuedAsSteer    = "turn/promoteQueuedAsSteer"
+	MethodTurnCancelQueued            = "turn/cancelQueued"
+	MethodGoalSet                     = "goal/set"
 	MethodEvenerTasksList             = "evener/tasks/list"
 	MethodEvenerJobsList              = "evener/jobs/list"
 	MethodEvenerJobsOutput            = "evener/jobs/output"
@@ -68,7 +68,7 @@ const (
 	MethodEvenerLaunchGetLayer        = "evener/launch/getLayer"
 	MethodEvenerLaunchSetLayer        = "evener/launch/setLayer"
 	MethodEvenerLaunchTrustRepo       = "evener/launch/trustRepo"
-	MethodModelList                 = "model/list"
+	MethodModelList                   = "model/list"
 	MethodEvenerInstanceList          = "evener/instance/list"
 	MethodEvenerInstanceCreate        = "evener/instance/create"
 	MethodEvenerInstanceEdit          = "evener/instance/edit"
@@ -121,20 +121,20 @@ const (
 	NotifyReasoningSummaryDelta        = "item/reasoning/summaryTextDelta"
 	NotifyToolOutputDelta              = "item/toolOutput/delta"
 	NotifyWarning                      = "warning"
-	NotifyEvenerContextPressure          = "evener/thread/contextPressure/updated"
-	NotifyEvenerThreadModelRetry         = "evener/thread/modelRetry"
-	NotifyEvenerThreadResync             = "evener/thread/resync"
-	NotifyEvenerTaskUpdated              = "evener/task/updated"
-	NotifyEvenerSteeringInjected         = "evener/steering/injected"
-	NotifyEvenerJobStarted               = "evener/job/started"
-	NotifyEvenerJobFinished              = "evener/job/finished"
-	NotifyEvenerDelegateUpdated          = "evener/delegate/updated"
-	NotifyEvenerJobsTreeUpdated          = "evener/jobs/treeUpdated"
-	NotifyEvenerAuthUpdated              = "evener/auth/updated"
-	NotifyEvenerLaunchUpdated            = "evener/launch/updated"
-	NotifyEvenerAttentionChanged         = "evener/attention/changed"
-	NotifyEvenerMarketplaceUpdated       = "evener/marketplace/updated"
-	NotifyEvenerPluginUpdated            = "evener/plugin/updated"
+	NotifyEvenerContextPressure        = "evener/thread/contextPressure/updated"
+	NotifyEvenerThreadModelRetry       = "evener/thread/modelRetry"
+	NotifyEvenerThreadResync           = "evener/thread/resync"
+	NotifyEvenerTaskUpdated            = "evener/task/updated"
+	NotifyEvenerSteeringInjected       = "evener/steering/injected"
+	NotifyEvenerJobStarted             = "evener/job/started"
+	NotifyEvenerJobFinished            = "evener/job/finished"
+	NotifyEvenerDelegateUpdated        = "evener/delegate/updated"
+	NotifyEvenerJobsTreeUpdated        = "evener/jobs/treeUpdated"
+	NotifyEvenerAuthUpdated            = "evener/auth/updated"
+	NotifyEvenerLaunchUpdated          = "evener/launch/updated"
+	NotifyEvenerAttentionChanged       = "evener/attention/changed"
+	NotifyEvenerMarketplaceUpdated     = "evener/marketplace/updated"
+	NotifyEvenerPluginUpdated          = "evener/plugin/updated"
 	// NotifyEvenerSandboxEscalationRequested pushes a harness-raised, human-gated
 	// sandbox-exemption approval card to the client (M7). The tool-exec goroutine
 	// blocks until the client answers with MethodEvenerSandboxEscalationResolve.
@@ -241,7 +241,7 @@ type Thread struct {
 	GitInfo       *GitInfo     `json:"gitInfo,omitempty"`
 	Name          string       `json:"name,omitempty"`
 	Turns         []Turn       `json:"turns,omitempty"`
-	Evener        EvenerThread   `json:"evener"`
+	Evener        EvenerThread `json:"evener"`
 }
 
 type GitInfo struct {
@@ -274,7 +274,7 @@ type EvenerThread struct {
 	ContextWindow    int                `json:"contextWindow,omitempty"`
 	ContextRemaining int                `json:"contextRemaining,omitempty"`
 	Capabilities     ThreadCapabilities `json:"capabilities"`
-	Diagnostics      *EvenerDiagnostics   `json:"diagnostics,omitempty"`
+	Diagnostics      *EvenerDiagnostics `json:"diagnostics,omitempty"`
 	// Queue carries authoritative queue depth + preview for the per-session
 	// input queue (kata r80p). Both UIs derive their queue-preview chrome
 	// from this field rather than mirroring queue mutations locally, which
@@ -302,8 +302,8 @@ type EvenerThread struct {
 	// scale, and the web reducer's epoch-ms read), 0 when no turn is running.
 	// Emitting seconds here would mix units with the consumer's ms clock.
 	Usage               *EvenerUsage `json:"usage,omitempty"`
-	WorkMillis          int64      `json:"workMillis,omitempty"`
-	ActiveTurnStartedAt int64      `json:"activeTurnStartedAt,omitempty"`
+	WorkMillis          int64        `json:"workMillis,omitempty"`
+	ActiveTurnStartedAt int64        `json:"activeTurnStartedAt,omitempty"`
 	// Cost is the session's cumulative estimated dollar total — the "~$X.XX"
 	// string EstimateCost derives from Usage at the thread's model price, the
 	// session-scope sibling of the per-turn Turn.Cost (same shape, same "~"
@@ -520,11 +520,11 @@ type EvenerDiagnostics struct {
 	MCP       []EvenerMCPServerInfo `json:"mcp,omitempty"`
 	Skills    []EvenerSkillInfo     `json:"skills,omitempty"`
 	Plugins   []EvenerPluginInfo    `json:"plugins,omitempty"`
-	Hooks     map[string]int      `json:"hooks,omitempty"`
+	Hooks     map[string]int        `json:"hooks,omitempty"`
 	Jobs      []EvenerJobInfo       `json:"jobs,omitempty"`
 	Delegates []EvenerDelegateInfo  `json:"delegates,omitempty"`
 	TurnSlots *EvenerTurnSlots      `json:"turnSlots,omitempty"`
-	Agents    []string            `json:"agents,omitempty"`
+	Agents    []string              `json:"agents,omitempty"`
 }
 
 type EvenerToolInfo struct {
@@ -624,13 +624,13 @@ type EvenerDelegateInfo struct {
 	ExhaustionResumable *bool                `json:"exhaustionResumable,omitempty"`
 	DelegationAllowance int                  `json:"delegationAllowance,omitempty"`
 	ParentWatchGranted  bool                 `json:"parentWatchGranted,omitempty"`
-	Usage               *EvenerUsage           `json:"usage,omitempty"`
+	Usage               *EvenerUsage         `json:"usage,omitempty"`
 	Worktree            *JobActivityWorktree `json:"worktree,omitempty"`
 }
 
 type EvenerDelegateParams struct {
-	ThreadID string           `json:"threadId"`
-	Ref      string           `json:"ref"`
+	ThreadID string             `json:"threadId"`
+	Ref      string             `json:"ref"`
 	Delegate EvenerDelegateInfo `json:"delegate"`
 }
 
@@ -660,7 +660,7 @@ type Turn struct {
 	// (internal/appprojector), and for ended sessions by reading the
 	// persisted per-round schema.Turn.Usage (internal/apptranscript).
 	Usage *EvenerUsage `json:"usage,omitempty"`
-	Cost  string     `json:"cost,omitempty"`
+	Cost  string       `json:"cost,omitempty"`
 }
 
 // SystemPreludeTurnID is the synthetic turn id for content that belongs
@@ -1845,8 +1845,8 @@ type EvenerSteeringInjectedParams struct {
 // EvenerJobInfo; which of its fields are populated is what differs (a finished
 // job adds status/reason/exitCode/output), so one type describes both.
 type EvenerJobParams struct {
-	ThreadID string      `json:"threadId"`
-	Ref      string      `json:"ref"`
+	ThreadID string        `json:"threadId"`
+	Ref      string        `json:"ref"`
 	Job      EvenerJobInfo `json:"job"`
 }
 

@@ -95,7 +95,7 @@ type DelegateStatusInfo struct {
 	ExhaustionResumable *bool                        `json:"exhaustion_resumable,omitempty"`
 	DelegationAllowance int                          `json:"delegation_allowance,omitempty"`
 	ParentWatchGranted  bool                         `json:"parent_watch_granted,omitempty"`
-	Usage               *appwire.EvenerUsage           `json:"usage,omitempty"`
+	Usage               *appwire.EvenerUsage         `json:"usage,omitempty"`
 	Worktree            *appwire.JobActivityWorktree `json:"worktree,omitempty"`
 }
 

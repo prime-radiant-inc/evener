@@ -110,7 +110,7 @@ func relaySnapshot(threadID, text string) appwire.ThreadReadResponse {
 	return appwire.ThreadReadResponse{Thread: appwire.Thread{
 		ID:      threadID,
 		Source:  "local",
-		Evener:    appwire.EvenerThread{Ref: "local:" + threadID},
+		Evener:  appwire.EvenerThread{Ref: "local:" + threadID},
 		Preview: text,
 	}}
 }

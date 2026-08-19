@@ -62,7 +62,7 @@ func TestParseMarker_RoundTrip(t *testing.T) {
 
 func TestParseMarker_Foreign(t *testing.T) {
 	cases := []string{
-		"",                                 // reasonless lock (git's bare `locked`)
+		"",                                   // reasonless lock (git's bare `locked`)
 		"evener:",                            // trailing colon, no session id
 		"evener",                             // no colon at all
 		"evener:dlg:x",                       // missing the parent-session segment
@@ -71,7 +71,7 @@ func TestParseMarker_Foreign(t *testing.T) {
 		"evener:dlg::y",                      // dlg segment present but empty
 		"evener:dlg:a:b:c",                   // five segments — over-long, not guessed at
 		"evener:a:b",                         // three segments, not a "dlg" marker
-		"random text",                      // not a evener marker at all
+		"random text",                        // not a evener marker at all
 		"evenerx:01HXYZABCD0123456789ABCDEF", // looks close but wrong prefix token
 		" evener:01HXYZABCD0123456789ABCDEF", // leading whitespace corrupts the prefix
 		"EVENER:01HXYZABCD0123456789ABCDEF",  // case-sensitive: not a match

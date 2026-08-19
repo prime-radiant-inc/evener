@@ -42,7 +42,7 @@ const (
 )
 
 type ErrorData struct {
-	EvenerErrorInfo    ErrorInfo        `json:"evenerErrorInfo"`
+	EvenerErrorInfo  ErrorInfo        `json:"evenerErrorInfo"`
 	ClientMutationID string           `json:"clientMutationId,omitempty"`
 	MutationOutcome  MutationOutcome  `json:"mutationOutcome,omitempty"`
 	RetryDisposition RetryDisposition `json:"retryDisposition,omitempty"`

@@ -32,8 +32,8 @@ func FuzzSessionTreePass3(f *testing.F) {
 			ID: "thread-1", SessionID: "session-1", Source: "remote", Name: text,
 			Preview: "preview", CWD: "/work/project", ModelProvider: "openai/gpt",
 			CreatedAt: now - 100, UpdatedAt: now, Status: appwire.ThreadStatus{Type: "active"},
-			Turns: []appwire.Turn{{ID: "done", Status: appwire.TurnStatusCompleted}, {ID: "run", Status: appwire.TurnStatusInProgress, StartedAt: &started}},
-			Evener:  appwire.EvenerThread{Ref: "remote:thread-1", ActiveTurnID: "run-explicit", ContextUsed: 10, ContextWindow: 20, ContextRemaining: 10, WorkMillis: number, Usage: usage, Capabilities: appwire.ThreadCapabilities{Send: true, Steer: true, Queue: true}},
+			Turns:  []appwire.Turn{{ID: "done", Status: appwire.TurnStatusCompleted}, {ID: "run", Status: appwire.TurnStatusInProgress, StartedAt: &started}},
+			Evener: appwire.EvenerThread{Ref: "remote:thread-1", ActiveTurnID: "run-explicit", ContextUsed: 10, ContextWindow: 20, ContextRemaining: 10, WorkMillis: number, Usage: usage, Capabilities: appwire.ThreadCapabilities{Send: true, Steer: true, Queue: true}},
 		}
 
 		switch op % 16 {

@@ -102,7 +102,7 @@ func blockedUnknownMutationError(clientMutationID string, err error) error {
 		Code:    appwire.CodeInternalError,
 		Message: err.Error(),
 		Data: appwire.ErrorData{
-			EvenerErrorInfo:    appwire.ErrorMutationOutcomeUnknown,
+			EvenerErrorInfo:  appwire.ErrorMutationOutcomeUnknown,
 			ClientMutationID: clientMutationID,
 			MutationOutcome:  appwire.MutationOutcomeUnknown,
 			RetryDisposition: appwire.RetryDispositionBlocked,

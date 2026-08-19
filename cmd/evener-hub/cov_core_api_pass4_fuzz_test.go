@@ -83,7 +83,7 @@ func FuzzCoreAPIPass4(f *testing.F) {
 		base := &scriptedAppSource{id: "remote", thread: appwire.Thread{
 			ID: "thread", SessionID: "thread", Source: "remote", Name: "Live Name", CWD: workingDir,
 			Status: appwire.ThreadStatus{Type: appwire.ThreadStatusIdle},
-			Evener:   appwire.EvenerThread{Ref: "remote:thread", Capabilities: caps},
+			Evener: appwire.EvenerThread{Ref: "remote:thread", Capabilities: caps},
 		}}
 		source := &coreAPIPass4Source{scriptedAppSource: base, fail: variant&1 != 0}
 		poke := 0

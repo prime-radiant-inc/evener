@@ -414,7 +414,7 @@ func TestAPITreeFavoriteRevalidation_IdenticalRemoteDuplicatesMakeCarriedProject
 	thread := appwire.Thread{
 		ID: threadID, Source: "remote", CWD: filepath.Join(projectDir, "ended-worktree"),
 		ProjectID: project.ID, ProjectPath: project.CanonicalPath,
-		Evener:      appwire.EvenerThread{Ref: "remote:" + threadID},
+		Evener:    appwire.EvenerThread{Ref: "remote:" + threadID},
 		CreatedAt: favoriteRevalidationTreeTime.Unix(), UpdatedAt: favoriteRevalidationTreeTime.Unix(),
 		Status: appwire.ThreadStatus{Type: appwire.ThreadStatusClosed},
 	}

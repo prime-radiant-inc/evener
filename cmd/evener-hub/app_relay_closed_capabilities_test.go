@@ -23,7 +23,7 @@ func TestRelayedCloseFrameCarriesTheHubsCapabilitiesForTheEndedThread(t *testing
 		ID:        "thread-closed",
 		SessionID: "thread-closed",
 		Source:    "local",
-		Evener:      appwire.EvenerThread{Ref: "local:thread-closed"},
+		Evener:    appwire.EvenerThread{Ref: "local:thread-closed"},
 	}
 	deliveries := make(chan appsource.RelayDelivery, 1)
 	acknowledged := make(chan struct{})

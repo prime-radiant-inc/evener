@@ -12,7 +12,7 @@ func TestCov_Classify(t *testing.T) {
 		msg  string
 		want Source
 	}{
-		{"unknown provider: foo", SourceEvener},   // evener configuration
+		{"unknown provider: foo", SourceEvener}, // evener configuration
 		{"rendezvous timed out", SourceHub},     // hub failure
 		{"rate limit exceeded", SourceProvider}, // provider failure
 		{"something unexpected blew up", SourceEvener},
