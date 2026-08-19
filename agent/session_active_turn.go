@@ -305,11 +305,19 @@ func (s *Session) scheduleRunningTurnReleaseRetry(turnID string) {
 	s.releaseRetryMu.Lock()
 	if s.runningTurnReleaseRetry.attempts >= runningTurnReleaseRetryLimit {
 		s.releaseRetryMu.Unlock()
-		// Loud, not diagnostic: the session will refuse every later turn until
-		// it is restarted, and nothing else is going to report that.
+		// Reset the budget so a later episode -- the slot cleared by the
+		// interrupt path, then a new turn's release hits a failing store -- gets
+		// its full retry count rather than inheriting this one's exhaustion. The
+		// name this episode stranded is still held; the reset is for whatever
+		// fails next, not for this name.
+		s.clearRunningTurnReleaseRetry()
+		// Loud, not diagnostic: the name is still held, and nothing in this
+		// process clears it. forgetRunningTurnNoOneOwns drops an ActiveTurnID no
+		// pending execution claims at daemon load, so that is the event the
+		// warning names, not a "session restart".
 		s.emit(events.EventWarning, events.WarningData{
 			Message: fmt.Sprintf(
-				"running turn %s could not be released after %d attempts; this session refuses every later turn until it restarts",
+				"running turn %s could not be released after %d attempts; this session refuses every later turn until the daemon reloads and forgetRunningTurnNoOneOwns clears the name at load",
 				turnID, runningTurnReleaseRetryLimit),
 		})
 		return
