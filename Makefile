@@ -131,19 +131,6 @@ FUZZ_GO_MODULES := $(GO_MODULES) fuzz
 build-go:
 	@for m in $(GO_MODULES); do (cd $$m && go build ./...) || exit 1; done
 
-# MEMCAP runs a recipe under a hard per-run memory ceiling (a systemd user scope)
-# so a leaky test or fuzz run is OOM-killed individually instead of firing the
-# kernel's global OOM killer and taking the whole host — and its network — down.
-# Tune or disable via EVENER_MEM_MAX (default 16G; EVENER_MEM_MAX=0 turns it off).
-# Systemd user scopes are unavailable on Darwin, where the wrapper can only warn
-# before execing the same command, so recipes run directly there. Other hosts
-# retain the wrapper and its uncapped-warning fallback when scopes are unavailable.
-# See scripts/fuzz/run-capped.sh and docs/fuzzing.md ("Memory safety").
-ifeq ($(shell uname -s),Darwin)
-MEMCAP :=
-else
-MEMCAP := scripts/fuzz/run-capped.sh
-endif
 # Fuzz replay is a deterministic evidence gate: never inherit a developer's
 # persisted Go configuration or GOFLAGS, and always use this checkout's workspace.
 override FUZZ_GOWORK := $(abspath $(CURDIR)/go.work)
@@ -180,7 +167,7 @@ test-dev-tooling:
 # re-enter this Makefile's test-web target); it is node work, so it overlaps the
 # Go waves instead of adding its runtime on the end. WEB=0 skips it.
 test:
-	@MODULES="$(GO_MODULES)" MAKE="$(MAKE)" $(MEMCAP) scripts/gate/run-module-tests.sh -short -count=1
+	@MODULES="$(GO_MODULES)" MAKE="$(MAKE)" scripts/gate/run-module-tests.sh -short -count=1
 
 test-short:
 	@$(MAKE) test
@@ -233,7 +220,7 @@ merge-approval-gate:
 # its timeouts. WEB=0: -race is a Go-toolchain gate, and the frontend suite is
 # unaffected by it, so `make test` owns the web stream instead of paying it twice.
 test-race:
-	@MODULES="$(GO_MODULES)" WEB=0 AGENT_SHARDS=0 AGENT_PARALLEL= $(MEMCAP) scripts/gate/run-module-tests.sh -race -short -count=1
+	@MODULES="$(GO_MODULES)" WEB=0 AGENT_SHARDS=0 AGENT_PARALLEL= scripts/gate/run-module-tests.sh -race -short -count=1
 
 # e2e-cover measures END-TO-END coverage of the real evener/evener-tui binaries via
 # `go build -cover` + GOCOVERDIR — the main()/CLI/dispatch/serve paths unit tests
@@ -250,7 +237,7 @@ vet:
 # crashers) under the evenerfuzz tag. `go test -run '^Fuzz'` with no `-fuzz` does
 # not search, so this is deterministic. `make fuzz` runs it as one of its steps;
 # fuzz-seeds is the same work on its own.
-FUZZ_SEED_REPLAY = for m in $(FUZZ_GO_MODULES); do (GOENV=off GOFLAGS= GOWORK="$(FUZZ_GOWORK)" $(MEMCAP) sh -c "cd $$m && go test -run '^Fuzz' -tags evenerfuzz -count=1 ./...") || exit 1; done
+FUZZ_SEED_REPLAY = for m in $(FUZZ_GO_MODULES); do (GOENV=off GOFLAGS= GOWORK="$(FUZZ_GOWORK)" sh -c "cd $$m && go test -run '^Fuzz' -tags evenerfuzz -count=1 ./...") || exit 1; done
 
 # fuzz-seeds is the RUNTIME half of the tagged-source gate whose compile half is
 # `make lint-evenerfuzz`. It stays out of `make test` on measured cost: 144s
@@ -272,13 +259,13 @@ fuzz-seeds:
 # never-panic oracle catches it. The first step verifies the mechanism itself
 # fires under the tag; production builds and `make test` stay tag-free.
 fuzz:
-	@GOENV=off GOFLAGS= GOWORK="$(FUZZ_GOWORK)" $(MEMCAP) sh -c 'cd agent && go test -run "^$$" -tags evenerfuzz -count=1 ./...'
-	@GOENV=off GOFLAGS= GOWORK="$(FUZZ_GOWORK)" $(MEMCAP) sh -c 'cd invariant && go test -tags evenerfuzz ./...'
-	@GOENV=off GOFLAGS= GOWORK="$(FUZZ_GOWORK)" $(MEMCAP) sh -c 'cd fuzz && go test -tags evenerfuzz ./...'
-	@GOENV=off GOFLAGS= GOWORK="$(FUZZ_GOWORK)" $(MEMCAP) sh -c 'go test ./cmd/evener-fuzzcov ./cmd/evener-fuzz-harvest'
+	@GOENV=off GOFLAGS= GOWORK="$(FUZZ_GOWORK)" sh -c 'cd agent && go test -run "^$$" -tags evenerfuzz -count=1 ./...'
+	@GOENV=off GOFLAGS= GOWORK="$(FUZZ_GOWORK)" sh -c 'cd invariant && go test -tags evenerfuzz ./...'
+	@GOENV=off GOFLAGS= GOWORK="$(FUZZ_GOWORK)" sh -c 'cd fuzz && go test -tags evenerfuzz ./...'
+	@GOENV=off GOFLAGS= GOWORK="$(FUZZ_GOWORK)" sh -c 'go test ./cmd/evener-fuzzcov ./cmd/evener-fuzz-harvest'
 	@$(FUZZ_SEED_REPLAY)
-	@RUN_CAP="$(MEMCAP)" scripts/fuzz/rapid-replay.sh
-	@GOENV=off GOFLAGS= GOWORK="$(FUZZ_GOWORK)" $(MEMCAP) sh -c "go test -run '^Test.*Golden\$$' ./appwire"
+	@scripts/fuzz/rapid-replay.sh
+	@GOENV=off GOFLAGS= GOWORK="$(FUZZ_GOWORK)" sh -c "go test -run '^Test.*Golden\$$' ./appwire"
 
 # fuzz-goldens regenerates the decode SNAPSHOT goldens — evener's differential
 # oracle. Each decode target's committed seed corpus is replayed and its decoded
@@ -287,13 +274,13 @@ fuzz:
 # `make fuzz` golden check; run this ONLY after an INTENDED decoder change, then
 # commit the diff. See docs/fuzzing.md ("Choosing an oracle").
 fuzz-goldens:
-	@$(MEMCAP) sh -c "go test -run '^Test.*Golden\$$' ./appwire -update-goldens"
-	@$(MEMCAP) sh -c "cd llm && go test -run '^Test.*Golden\$$' ./providers/difftest -update-goldens"
+	@sh -c "go test -run '^Test.*Golden\$$' ./appwire -update-goldens"
+	@sh -c "cd llm && go test -run '^Test.*Golden\$$' ./providers/difftest -update-goldens"
 
 # fuzz-nightly runs the unbounded coverage-guided search per target, bounded by a
 # per-target time budget. Manual / nightly only — never in the gate.
 fuzz-nightly:
-	@$(MEMCAP) scripts/fuzz/run-fuzz.sh $(FUZZ_ARGS)
+	@scripts/fuzz/run-fuzz.sh $(FUZZ_ARGS)
 
 # fuzz-triage is the local, on-demand campaign + auto-triage tool (8.7): it
 # searches each surface, flake-guards and dedups any crasher, and opens ONE
@@ -301,7 +288,7 @@ fuzz-nightly:
 # Pass flags through FUZZ_ARGS, e.g. `make fuzz-triage FUZZ_ARGS="--time 5m"`,
 # `make fuzz-triage FUZZ_ARGS=--no-pr`, or `make fuzz-triage FUZZ_ARGS=--dry-run`.
 fuzz-triage:
-	@$(MEMCAP) scripts/fuzz/fuzz-triage.sh $(FUZZ_ARGS)
+	@scripts/fuzz/fuzz-triage.sh $(FUZZ_ARGS)
 
 # fuzz-continuous is the LOCAL, on-demand continuous loop: it rotates over every
 # native target, giving each a bounded search turn round after round (the corpus
@@ -410,7 +397,7 @@ fuzz-oracle-audit-selftest:
 # worklist. Nightly/manual (slow); needs gremlins installed. Pass FUZZ_ARGS to
 # score specific packages, e.g. `make fuzz-mutation-score FUZZ_ARGS="llm:./providercfg"`.
 fuzz-mutation-score:
-	@$(MEMCAP) scripts/fuzz/fuzz-mutation-score.sh $(FUZZ_ARGS)
+	@scripts/fuzz/fuzz-mutation-score.sh $(FUZZ_ARGS)
 
 # fuzz-ledger pretty-prints the triage ledger (found/fixed/quarantined counts and
 # the open-bug list) from fuzz/state/ledger.json.

@@ -44,33 +44,14 @@ make fuzz-gap-check  # FAST static gate (the blocking CI floor): every decode/pa
                      # package has a target or a reasoned ignore. No coverage replay.
 ```
 
-## Memory safety (don't take the host down)
+## Memory safety
 
 A coverage-guided search accumulates its corpus in memory, and a long run on a
-target with large inputs — or several runs at once — can climb into tens of GB.
-Left unbounded, that fires the kernel's **global** OOM killer, which has twice
-taken the whole host (and its network) down, requiring a manual reboot.
-
-So every heavy target runs under a hard memory ceiling, enforced by cgroup-v2 via
-`scripts/fuzz/run-capped.sh` and wired into the Makefile (`make test`, `make fuzz`,
-`make fuzz-nightly`, `make fuzz-triage`) and into
-`scripts/fuzz/run-fuzz.sh` itself, so even a **direct** `scripts/fuzz/run-fuzz.sh` is
-protected. There are two ceilings:
-
-- **per run** (`EVENER_MEM_MAX`, default 16G) — one runaway is OOM-killed alone;
-- **shared total** (`EVENER_MEM_TOTAL`, default 32G) — all concurrent evener runs
-  join one slice, so launching several at once still can't exhaust the host.
-
-A runaway now shows up as a *scope/slice* OOM in `journalctl --user`, never
-`global_oom`, and `tailscale`/SSH stay up throughout. Tune the ceilings for a
-bigger box (`EVENER_MEM_MAX=24G make fuzz-nightly`) or disable entirely with
-`EVENER_MEM_MAX=0`. Where systemd user scopes aren't available (some CI
-containers) the wrapper prints a warning and runs uncapped — CI runners impose
-their own cgroup limit.
-
-If a *single* target legitimately needs more than the per-run cap, that is a
-signal worth a `go test -memprofile` pass: a search that grows without bound is
-usually retaining inputs/state it should free between iterations.
+target with large inputs can climb into tens of GB. Run searches on a host that
+can spare the RAM; if a single target legitimately needs more than the machine
+comfortably has, that is a signal worth a `go test -memprofile` pass: a search
+that grows without bound is usually retaining inputs/state it should free
+between iterations.
 
 ## Coverage
 
