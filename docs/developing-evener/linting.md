@@ -6,6 +6,15 @@ output freshness, compile floors, and the repo secret scan. `make lint` is
 `lint-internal`, `lint-golangci`, `lint-generated`, `lint-fuzz-registry`, and
 `secret-scan`. Every one of them is required CI.
 
+`golangci-lint` and `gitleaks` are the only external tools the gate needs;
+`make tools` installs the CI-pinned versions from `.tool-versions`. They
+behave differently when absent: a missing `golangci-lint` fails the gate
+outright, while a missing local `gitleaks` warns and returns zero — CI sets
+`EVENER_GITLEAKS_REQUIRED=1` so absence there is a failure rather than a
+silent skip. Read that local warning as a limitation, never as evidence that a
+scan ran and found nothing — the same applies to `make fuzz-corpus-scan`,
+which points the same tool at the committed fuzz corpora.
+
 ## Why two tagged lint passes exist
 
 `lint-evenerfuzz` and `lint-eval` are compile floors for source trees that no
@@ -60,6 +69,23 @@ share the `server` package with 119 ordinary snake_case tags, so the two
 casing regimes cannot live in one config. `.golangci-appwire.yml` holds the
 camelCase half of the split and explains itself; the root `.golangci.yml`
 holds everything else.
+
+## Why `lint-generated` runs `make generate`
+
+`lint-generated` invokes the `generate` target rather than carrying its own
+copy of the generate commands, and that is structural rather than tidiness:
+the set of paths it diffs and the set it regenerates have to be the same set.
+A diff list wider than what the recipe regenerates is a gate that reports
+green forever while checking nothing — the state `lint-fuzz-registry` was in
+when its recipe went missing and `make lint` kept reporting PASS across every
+module.
+
+The generator's exit status has to reach the gate for the same reason. A
+family whose annotations no longer parse leaves its doc untouched, so the diff
+over all eight outputs comes back clean; only the nonzero status says anything
+is wrong. `lint-generated` runs `make generate` and the diff as one `&&`
+chain, so a generator failure fails the gate before the diff is ever
+consulted.
 
 ## The golangci-lint cross-checkout cache hazard (issue #290)
 

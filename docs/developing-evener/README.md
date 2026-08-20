@@ -7,8 +7,9 @@ gates themselves — building, testing, linting, coverage, and fuzzing.
 - **[building.md](building.md)** — build, distribution, and install targets,
   and the frontend install prerequisite they share with the frontend test
   gates.
-- **[testing.md](testing.md)** — the test reliability policy, the canonical
-  gate matrix, and the post-merge gate.
+- **[testing.md](testing.md)** — the test reliability policy, the
+  post-merge gate, the test-family targets, and the gates that are not make
+  targets.
 - **[linting.md](linting.md)** — the static checks that gate merges without
   running tests: formatting, generated-output freshness, compile floors, and
   the repo secret scan.
