@@ -48,8 +48,14 @@ import (
 //
 // After each op it checks, weakest-first:
 //
-//	I1 (length monotonicity): identical to TestCompactionSeqFuzz — an add op
-//	   strictly grows history; a compact op never grows it.
+//	I1 (length monotonicity): an add op strictly grows history; a compact op
+//	   never grows it. Checked twice: once against the combined ForceCompact
+//	   result (outer test loop, same as TestCompactionSeqFuzz), and once
+//	   against c1 — Layer 1's own checkpoint() output — directly. The second
+//	   check matters here specifically: Layer 2 fires in nearly every case
+//	   Layer 1 also does, and unconditionally replaces *history with its own
+//	   re-cut result, which would otherwise re-normalize a Layer-1-only growth
+//	   bug down to a shrunk length and hide it from the combined-result check.
 //	I2 (single compaction marker, at the front): at most one turn of kind
 //	   TurnCheckpoint OR TurnSummary exists at any time (never both at once),
 //	   and when present it is at index 0. Generalizes the single-layer I2:
@@ -63,20 +69,30 @@ import (
 //	I3/I4 (orphan oracle, both directions): unchanged from TestCompactionSeqFuzz
 //	   — every tool result has an earlier call, every tool call has a
 //	   later-or-equal result. Checked over the full history after every op.
-//	I5 (retained content survives — split from the single-layer I5): tail
-//	   survival is always required, both layers — content still live in the
-//	   preserved tail (I6, below) trivially still appears in history. But
-//	   content folded into a Layer-2 TurnSummary has NO deterministic content
-//	   contract: unlike a checkpoint, which re-extracts and re-renders tracked
-//	   content verbatim on every pass, a summary is opaque model prose that
-//	   might not preserve a token at all. So whenever ForceCompact actually
-//	   produces a summary (its own `summarized` return value), any tracked
-//	   token no longer found in the post-compaction history is pruned from
-//	   the required set instead of failing the test — that loss is Layer 2's
-//	   documented, by-design behavior, not a regression. Do NOT strengthen
-//	   this back to unconditional re-extraction survival: it will spuriously
-//	   fail the moment a summary (fake or real) doesn't happen to echo a
-//	   token it swallowed.
+//	I5 (retained content survives — split from the single-layer I5): checked
+//	   twice, for the same reason as I1 above. First, unconditionally against
+//	   c1 — Layer 1's own checkpoint() output — before Layer 2 runs at all;
+//	   this is the same guarantee TestCompactionSeqFuzz's I5 already proves
+//	   true of checkpoint() in isolation, reused here to catch a Layer-1
+//	   content-preservation bug directly, since the second check below cannot:
+//	   whenever ForceCompact's Layer 2 fires (nearly always, once Layer 1 also
+//	   would), it unconditionally replaces *history with its own re-cut
+//	   result, and the `summarized`-gated pruning immediately below excuses
+//	   ANY token currently missing — including one a Layer-1 bug dropped
+//	   before Layer 2 ever saw it, not just one Layer 2's own opaque summary
+//	   legitimately swallowed. Second, after ForceCompact: content still live
+//	   in the preserved tail (I6, below) trivially still appears in history,
+//	   but content folded into a Layer-2 TurnSummary has NO deterministic
+//	   content contract — unlike a checkpoint, which re-extracts and
+//	   re-renders tracked content verbatim on every pass, a summary is opaque
+//	   model prose that might not preserve a token at all. So whenever
+//	   ForceCompact actually produces a summary (its own `summarized` return
+//	   value), any tracked token no longer found in the post-compaction
+//	   history is pruned from the required set instead of failing the test —
+//	   that loss is Layer 2's documented, by-design behavior, not a
+//	   regression. Do NOT strengthen this second check back to unconditional
+//	   re-extraction survival: it will spuriously fail the moment a summary
+//	   (fake or real) doesn't happen to echo a token it swallowed.
 //	I6 (preserved tail is verbatim): generalized to accept either marker kind
 //	   at index 0 — the turns after it are a byte-identical suffix of the
 //	   pre-compaction history, whether that marker is a TurnCheckpoint (Layer 2
@@ -249,8 +265,8 @@ func (m *doubleLayerModel) applyOp(rt *rapid.T, op dlOp, step int) {
 
 // compact runs the production /compact entry point (with a live client, so
 // both layers can fire) and verifies the compaction-step-local invariants (I6
-// tail-verbatim, I7 determinism, the safeCutoff tail-head guarantee, and I5's
-// Layer-2 pruning).
+// tail-verbatim, I7 determinism, the safeCutoff tail-head guarantee, I1/I5's
+// Layer-1-isolated checks against c1, and I5's Layer-2 pruning).
 func (m *doubleLayerModel) compact(rt *rapid.T, step int) {
 	before := cloneHistory(m.history)
 
@@ -261,6 +277,42 @@ func (m *doubleLayerModel) compact(rt *rapid.T, step int) {
 	if !bytes.Equal(mustJSON(zeroTimestamps(c1)), mustJSON(zeroTimestamps(c2))) {
 		rt.Fatalf("step %d: checkpoint nondeterministic:\n a=%s\n b=%s", step, mustJSON(zeroTimestamps(c1)), mustJSON(zeroTimestamps(c2)))
 		return
+	}
+
+	// I1/I5, Layer-1-isolated: checked against c1 (Layer 1's own output on
+	// `before`) BEFORE ForceCompact runs both layers. Layer 2 fires in nearly
+	// every case Layer 1 also does (both gate on the same
+	// attentionTransparentTurnCount vs preserveRecent comparison), and Layer 2
+	// unconditionally replaces *history with its own re-cut result — so a
+	// Layer-1-only regression (checkpoint() growing history, or dropping
+	// tracked content) is invisible to the length check in the outer test loop
+	// and to I5 below: both are computed against the COMBINED ForceCompact
+	// result, which Layer 2 re-normalizes right past the bug. Checking c1
+	// directly closes that hole; c1's own content-preservation guarantee is
+	// already proven unconditionally by TestCompactionSeqFuzz's I5, so this
+	// reuses a property known true of checkpoint() in isolation, not a new one.
+	if len(c1) > len(before) {
+		rt.Fatalf("step %d: Layer 1 checkpoint alone GREW history %d -> %d", step, len(before), len(c1))
+		return
+	}
+	c1JSON := mustJSON(c1)
+	for _, tok := range m.userTokens {
+		if !bytes.Contains(c1JSON, []byte(tok)) {
+			rt.Fatalf("step %d: user message %q lost from Layer 1's own checkpoint", step, tok)
+			return
+		}
+	}
+	for _, tok := range m.agentTokens {
+		if !bytes.Contains(c1JSON, []byte(tok)) {
+			rt.Fatalf("step %d: agent reply %q lost from Layer 1's own checkpoint", step, tok)
+			return
+		}
+	}
+	for _, tok := range m.noteTokens {
+		if !bytes.Contains(c1JSON, []byte(tok)) {
+			rt.Fatalf("step %d: working note %q lost from Layer 1's own checkpoint", step, tok)
+			return
+		}
 	}
 
 	summarized := m.cm.ForceCompact(context.Background(), &m.history, "", noopEmit)
