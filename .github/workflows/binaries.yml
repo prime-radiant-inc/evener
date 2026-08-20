@@ -38,7 +38,7 @@ jobs:
         run: for f in dist/*.tar.gz; do echo "== $f"; tar -tzf "$f"; done
 
       - name: Upload archives
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: evener-snapshot-artifacts
           path: |
