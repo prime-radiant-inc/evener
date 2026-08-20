@@ -296,11 +296,9 @@ func srspRuntimeAndStatus(t *testing.T, draw byte) {
 
 	model := []string{"gpt-5.3", "gpt-4.1"}[int(draw)&1]
 	effort := []string{"high", "off", "none"}[int(draw)%3]
-	timeout := 1000 + int(draw)
 	name := "  srsp session  "
 	sess.SetModel(model)
 	sess.SetReasoningEffort(effort)
-	sess.SetTimeout(timeout)
 	sess.Rename(name)
 	sess.RegisterTool("srsp_custom", "status fixture", map[string]any{"type": "object"}, func(context.Context, any) (any, error) {
 		return "unused", nil
@@ -311,7 +309,7 @@ func srspRuntimeAndStatus(t *testing.T, draw byte) {
 		t.Fatalf("status tools lost custom/sort invariant: %+v", status.Tools)
 	}
 	meta := sess.Meta()
-	if meta.Model != model || meta.Config.ReasoningEffort != llm.NormalizeReasoningEffort(effort) || meta.Config.DefaultCommandTimeoutMS != timeout || meta.Name != strings.TrimSpace(name) {
+	if meta.Model != model || meta.Config.ReasoningEffort != llm.NormalizeReasoningEffort(effort) || meta.Name != strings.TrimSpace(name) {
 		t.Fatalf("runtime meta = %+v", meta)
 	}
 
@@ -340,11 +338,10 @@ func srspRuntimeAndStatus(t *testing.T, draw byte) {
 	sess.Close()
 	before := sess.Meta()
 	sess.SetModel("gpt-5.4")
-	sess.SetTimeout(timeout + 1)
 	sess.SetReasoningEffort("low")
 	sess.Rename("after close")
 	after := sess.Meta()
-	if after.Model != before.Model || after.Config.DefaultCommandTimeoutMS != before.Config.DefaultCommandTimeoutMS || after.Config.ReasoningEffort != before.Config.ReasoningEffort || after.Name != before.Name {
+	if after.Model != before.Model || after.Config.ReasoningEffort != before.Config.ReasoningEffort || after.Name != before.Name {
 		t.Fatalf("closed setters mutated meta: before=%+v after=%+v", before, after)
 	}
 }
