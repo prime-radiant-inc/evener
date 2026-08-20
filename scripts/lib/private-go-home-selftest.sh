@@ -6,8 +6,8 @@ script_dir="$(cd "$(dirname "$0")" && pwd)"
 . "$script_dir/selftest-lib.sh"
 . "$script_dir/private-go-home.sh"
 
-scratch_dir work private-go-home-selftest
 trap 'scratch_rm' EXIT
+scratch_dir work private-go-home-selftest
 
 ambient_home="$work/ambient-home"
 ambient_config="$work/ambient-config"

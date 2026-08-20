@@ -16,8 +16,8 @@ set -uo pipefail
 tool="$(cd "$(dirname "$0")" && pwd)/merge-into-branch.sh"
 . "$(dirname "$0")/../lib/selftest-lib.sh"
 
-scratch_dir work merge-into-branch-selftest
 trap 'scratch_rm' EXIT
+scratch_dir work merge-into-branch-selftest
 
 # new_repo DIR BRANCH — an empty repo with a private identity, so nothing here
 # depends on the machine's ambient git config (this tool's whole point).

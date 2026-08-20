@@ -7,8 +7,8 @@ set -uo pipefail
 script="$(cd "$(dirname "$0")" && pwd)/coverage-gaps.sh"
 . "$(dirname "$0")/../lib/selftest-lib.sh"
 
-scratch_dir work evener-covgaps-selftest
 trap 'scratch_rm' EXIT
+scratch_dir work evener-covgaps-selftest
 
 profile="$work/p.cov"
 # pkg/a: 10 covered + 5 missing.

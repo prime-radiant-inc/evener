@@ -302,42 +302,45 @@ func recursiveDeleteTakingVariable(line string) bool {
 }
 
 // recursiveDeleteAllowedLines is every variable-fed recursive delete the
-// repository still contains, pinned to an exact count per script. The count
-// matters in both directions: a new offending line in an allowlisted script
-// fails the audit, and a removed one leaves the entry stale and fails the
-// audit until the entry shrinks. What the count cannot catch is substitution:
-// replacing one banned line with a different banned line in the same file
-// keeps the count and passes, so review of these files still has to read the
-// deletes themselves. The list is the finding, not an exemption, and each
-// entry carries the reason it is allowed to exist.
+// repository still contains, pinned to an exact count per script. Keyed on
+// the exact repo-relative path, not basename: a basename key would let an
+// unrelated script that happens to share a name (any other install.sh, say)
+// inherit an exemption it never earned (#183, noted in the PR #116 review).
+// The count matters in both directions: a new offending line in an
+// allowlisted script fails the audit, and a removed one leaves the entry
+// stale and fails the audit until the entry shrinks. What the count cannot
+// catch is substitution: replacing one banned line with a different banned
+// line in the same file keeps the count and passes, so review of these files
+// still has to read the deletes themselves. The list is the finding, not an
+// exemption, and each entry carries the reason it is allowed to exist.
 var recursiveDeleteAllowedLines = map[string]int{
 	// The one blessed delete: scratch_rm removing only what scratch_dir
 	// minted, validated, and registered. Everything else defers here.
-	"scratch-lib.sh": 1,
+	"scripts/lib/scratch-lib.sh": 1,
 	// e2e_stop_run reaps a run directory only after finding the marker file the
 	// start wrote there; an emptied or clobbered argument fails the marker
 	// check and exits 2 without deleting. The two e2e harness scripts used to
 	// each carry their own copy of this delete; centralising it in e2e-lib.sh
 	// moved the one delete and its guard into a single sourced library, which
 	// is why the per-script entries for the harnesses are gone.
-	"e2e-lib.sh": 1,
+	"scripts/lib/e2e-lib.sh": 1,
 	// Printed operator guidance, not a delete. The heredoc is unquoted — the
 	// scanned root has to interpolate — so this line escapes its own
 	// expansion (`rm -rf "\$dir"`) to reach the reader verbatim. Nothing
 	// runs it; a human reviews each entry and removes it by hand (kata gmpr).
-	"report-tmp-debris.sh": 1,
+	"scripts/ops/report-tmp-debris.sh": 1,
 	// A sourced operator library that must return, never exit, so it cannot
 	// adopt scratch_dir. Its mint is a bare mktemp; what keeps the delete safe
 	// is the cleanup guard beside it, which refuses to run when the root
 	// variable is empty or unset.
-	"live-eval-isolation.sh": 1,
+	"scripts/lib/live-eval-isolation.sh": 1,
 	// Per-scenario corpus scratch reclaimed inside the provider loop; the
 	// suite-level guard cannot express "remove this one, keep the rest".
-	"fuzz-drive.sh": 2,
+	"scripts/fuzz/fuzz-drive.sh": 2,
 	// Fixture rebuild/removal of paths built under guard-minted scratch,
 	// mid-suite, where the no-argument delete would take the suite's whole
 	// scratch with it.
-	"e2e-webui-turn-controls-selftest.sh": 1,
+	"scripts/e2e/e2e-webui-turn-controls-selftest.sh": 1,
 	// The coverage runners keep the pid-suffixed name-first/trap-first/mkdir
 	// pattern instead of scratch_dir: the trap exists before the directory
 	// can, so a signal in the window abandons nothing (measured 0/150 leaks
@@ -345,31 +348,62 @@ var recursiveDeleteAllowedLines = map[string]int{
 	// parses the pid out of the basename, which a random mktemp suffix would
 	// turn into a permanent no-op. Each delete targets the name the script
 	// composed from its own $$ before anything else ran.
-	"coverage-union.sh":       1,
-	"fuzz-coverage.sh":        1,
-	"fuzz-coverage-global.sh": 1,
+	"scripts/coverage/coverage-union.sh":   1,
+	"scripts/fuzz/fuzz-coverage.sh":        1,
+	"scripts/fuzz/fuzz-coverage-global.sh": 1,
 	// test-cost adopts the same pid-suffixed pattern as the runners above,
 	// for the same reasons; before this it minted with `mktemp -t` (outside
 	// any TMPDIR a caller set) and never deleted its scratch at all.
-	"test-cost.sh": 1,
+	"scripts/coverage/test-cost.sh": 1,
 	// Owner-side reclamation of the coverage runners' own abandoned scratch:
 	// the delete IS the job. Targets come from a prefix glob walked with
 	// existence and symlink guards, scoped to basenames whose pid suffix no
 	// longer answers kill -0 — never from a caller's variable.
-	"covscratch-lib.sh": 1,
+	"scripts/lib/covscratch-lib.sh": 1,
 	// Between-check resets of the suite's private tmphome fixture, each
 	// guarded by ${tmphome:?} so an unset or empty variable aborts the
 	// expansion instead of widening the delete.
-	"covscratch-selftest-lib.sh": 4,
+	"scripts/lib/covscratch-selftest-lib.sh": 4,
 	// POSIX sh by contract — its own test execs it via `sh`, which ignores
 	// the shebang — so the bash-only guard is unreachable. Under set -eu a
 	// failed mint aborts before the trap arms, and the trap deletes only the
 	// name mktemp just returned.
-	"build-runtime-pair.sh": 1,
+	"scripts/ops/build-runtime-pair.sh": 1,
 	// The curl|sh bootstrap runs on machines that have no checkout, so the
 	// bash-only guard is unreachable. Its mint is checked and empty-guarded,
 	// and cleanup refuses an empty root rather than deleting from it.
 	"install.sh": 1,
+}
+
+// recursiveDeleteOffenders scans paths for variable-fed recursive deletes,
+// keyed and counted by the exact path rather than basename (#183): a poison
+// file at a different path must never inherit another path's allowance just
+// because the two share a basename. Returns the offending lines beyond each
+// path's allowance, and the raw per-path counts so a caller can also check
+// for stale (over-)allowances.
+func recursiveDeleteOffenders(t *testing.T, paths []string, allowed map[string]int) (offenders []string, counts map[string]int) {
+	t.Helper()
+	counts = map[string]int{}
+	for _, path := range paths {
+		body, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatalf("read %s: %v", path, err)
+		}
+		for i, line := range strings.Split(string(body), "\n") {
+			trimmed := strings.TrimSpace(line)
+			if strings.HasPrefix(trimmed, "#") {
+				continue
+			}
+			if !recursiveDeleteTakingVariable(trimmed) {
+				continue
+			}
+			counts[path]++
+			if counts[path] > allowed[path] {
+				offenders = append(offenders, fmt.Sprintf("%s:%d: %s", path, i+1, trimmed))
+			}
+		}
+	}
+	return offenders, counts
 }
 
 // TestNoScriptFeedsVariableToRecursiveDelete enforces the rule directly
@@ -386,38 +420,237 @@ func TestNoScriptFeedsVariableToRecursiveDelete(t *testing.T) {
 	// machines this audit will never run on: install.sh is curl|sh'd into a
 	// user's shell, where a clobbered delete would be someone else's home.
 	allPaths := append([]string{"install.sh"}, paths...)
-	counts := map[string]int{}
-	var offenders []string
-	for _, path := range allPaths {
-		name := filepath.Base(path)
-		body, err := os.ReadFile(path)
-		if err != nil {
-			t.Fatalf("read %s: %v", path, err)
-		}
-		for i, line := range strings.Split(string(body), "\n") {
-			trimmed := strings.TrimSpace(line)
-			if strings.HasPrefix(trimmed, "#") {
-				continue
-			}
-			if !recursiveDeleteTakingVariable(trimmed) {
-				continue
-			}
-			counts[name]++
-			if counts[name] > recursiveDeleteAllowedLines[name] {
-				offenders = append(offenders, fmt.Sprintf("%s:%d: %s", path, i+1, trimmed))
-			}
-		}
-	}
+	offenders, counts := recursiveDeleteOffenders(t, allPaths, recursiveDeleteAllowedLines)
 	sort.Strings(offenders)
 	for _, o := range offenders {
 		t.Errorf("this recursive delete takes a variable a caller can clobber (kata 5hs2 "+
 			"deleted a home directory this way); mint scratch with `scratch_dir <var> <prefix>` "+
 			"and reclaim it with the no-argument `scratch_rm` from scripts/lib/scratch-lib.sh:\n  %s", o)
 	}
-	for name, want := range recursiveDeleteAllowedLines {
-		if got := counts[name]; got < want {
+	for path, want := range recursiveDeleteAllowedLines {
+		if got := counts[path]; got < want {
 			t.Errorf("recursiveDeleteAllowedLines allows %d variable-fed recursive deletes in %s "+
-				"but only %d exist — shrink the entry so the next one cannot hide behind it", want, name, got)
+				"but only %d exist — shrink the entry so the next one cannot hide behind it", want, path, got)
+		}
+	}
+}
+
+// TestRecursiveDeleteAllowlistDoesNotInheritByBasename is the regression
+// test for #183's second defect: a poison file at a DIFFERENT path than an
+// allowlisted one, sharing only its basename, must not inherit the
+// allowlisted path's exemption. Before the fix, recursiveDeleteAllowedLines
+// was keyed by filepath.Base(path), so an unrelated "install.sh" anywhere in
+// the tree read the same allowance as the real root install.sh.
+func TestRecursiveDeleteAllowlistDoesNotInheritByBasename(t *testing.T) {
+	dir := t.TempDir()
+	poisonPath := filepath.Join(dir, "unrelated", "install.sh")
+	writeAuditScriptFixture(t, poisonPath, "#!/bin/sh\nrm -rf \"$stage\"\n")
+
+	// allowedPath is a DIFFERENT file, never written here, that legitimately
+	// earned this allowance under review; poisonPath must not ride on it just
+	// because both happen to end in "install.sh".
+	allowedPath := filepath.Join(dir, "reviewed", "install.sh")
+	allowed := map[string]int{allowedPath: 1}
+
+	offenders, _ := recursiveDeleteOffenders(t, []string{poisonPath}, allowed)
+	if len(offenders) == 0 {
+		t.Fatalf("poisonPath (%s) shares allowedPath's basename (install.sh) but is a different, "+
+			"unreviewed file; its recursive delete must be flagged rather than silently inherit "+
+			"allowedPath's exemption", poisonPath)
+	}
+}
+
+// writeAuditScriptFixture writes content to path, creating any missing
+// parent directories, for audit tests that need real files at specific
+// paths rather than under scriptShellFiles' scripts/ walk.
+func writeAuditScriptFixture(t *testing.T, path, content string) {
+	t.Helper()
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatalf("mkdir %s: %v", filepath.Dir(path), err)
+	}
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		t.Fatalf("write %s: %v", path, err)
+	}
+}
+
+// scratchMintLine reports whether a line mints the scratch directory a
+// script's cleanup trap is responsible for: either the scratch_dir library
+// call, or the manual pid-suffixed `mkdir "$dir" || { trap - EXIT; ...}`
+// idiom the coverage runners use instead (see recursiveDeleteAllowedLines'
+// entry for coverage-union.sh for why they keep the manual pattern rather
+// than adopting scratch_dir). Both are the "mkdir" side of the
+// trap-before-mkdir convention: arm the cleanup trap before this line runs,
+// or a crash in the gap abandons the directory this line creates.
+//
+// Textual, like the checks above it: a caller who reaches either spelling
+// through a function or a variable slips past it.
+func scratchMintLine(line string) bool {
+	fields := strings.Fields(line)
+	if len(fields) == 0 {
+		return false
+	}
+	if fields[0] == "scratch_dir" {
+		return true
+	}
+	return fields[0] == "mkdir" && strings.Contains(line, "trap - EXIT")
+}
+
+// exitTrapInstallLine reports whether a line arms an EXIT trap with a real
+// handler, as distinct from `trap - EXIT`, which disarms one. The manual
+// mint pattern's failed-mkdir branch disarms on the very line that mints
+// (`mkdir "$dir" || { trap - EXIT; ...}`), and that disarm must not be
+// mistaken for the install this check looks for.
+func exitTrapInstallLine(line string) bool {
+	fields := strings.Fields(line)
+	if len(fields) < 2 || fields[0] != "trap" || fields[1] == "-" {
+		return false
+	}
+	return strings.Contains(line, "EXIT")
+}
+
+// scratchOrderOffense is one line that mints scratch before any EXIT trap
+// has been armed earlier in the same file.
+type scratchOrderOffense struct {
+	path, text string
+	line       int
+}
+
+func (o scratchOrderOffense) String() string {
+	return fmt.Sprintf("%s:%d: %s", o.path, o.line, o.text)
+}
+
+// scratchOrderOffenses scans paths for scratchMintLine occurrences with no
+// preceding exitTrapInstallLine earlier in the same file. A file whose trap
+// is armed after its first mint reports that mint; a file with no trap at
+// all reports every mint, since trapArmed never becomes true.
+func scratchOrderOffenses(t *testing.T, paths []string) []scratchOrderOffense {
+	t.Helper()
+	var offenses []scratchOrderOffense
+	for _, path := range paths {
+		body, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatalf("read %s: %v", path, err)
+		}
+		trapArmed := false
+		for i, line := range strings.Split(string(body), "\n") {
+			trimmed := strings.TrimSpace(line)
+			if strings.HasPrefix(trimmed, "#") {
+				continue
+			}
+			if exitTrapInstallLine(trimmed) {
+				trapArmed = true
+				continue
+			}
+			if scratchMintLine(trimmed) && !trapArmed {
+				offenses = append(offenses, scratchOrderOffense{path: path, line: i + 1, text: trimmed})
+			}
+		}
+	}
+	return offenses
+}
+
+// TestScratchOrderAuditCatchesMintBeforeTrap is the regression test for
+// #183's first defect: a poison script that mints scratch with scratch_dir
+// before arming its EXIT trap must be flagged. This is exactly the mutation
+// noted in the PR #133 review — reordering a script to mkdir-then-trap
+// reintroduces the signal-window leak race the trap-before-mkdir convention
+// exists to prevent.
+func TestScratchOrderAuditCatchesMintBeforeTrap(t *testing.T) {
+	dir := t.TempDir()
+	poison := filepath.Join(dir, "poison-selftest.sh")
+	writeAuditScriptFixture(t, poison, "#!/usr/bin/env bash\n"+
+		"set -uo pipefail\n"+
+		"scratch_dir work poison-selftest\n"+
+		"trap 'scratch_rm' EXIT\n")
+
+	offenses := scratchOrderOffenses(t, []string{poison})
+	if len(offenses) == 0 {
+		t.Fatalf("poison script mints scratch with scratch_dir before arming its EXIT trap; " +
+			"the audit must flag it")
+	}
+}
+
+// TestScratchOrderAuditCatchesManualMkdirBeforeTrap is the manual-pattern
+// twin of the test above: the coverage runners' pid-suffixed mkdir idiom,
+// reordered to mint before the trap is armed.
+func TestScratchOrderAuditCatchesManualMkdirBeforeTrap(t *testing.T) {
+	dir := t.TempDir()
+	poison := filepath.Join(dir, "poison-coverage.sh")
+	writeAuditScriptFixture(t, poison, "#!/usr/bin/env bash\n"+
+		"set -uo pipefail\n"+
+		`work_dir="${TMPDIR:-/tmp}/evener-poison.$$"`+"\n"+
+		"fail=0\n"+
+		"cleanup_work() { [ \"$fail\" -eq 0 ] && rm -rf \"$work_dir\"; }\n"+
+		`mkdir "$work_dir" || { trap - EXIT; echo "cannot create $work_dir" >&2; exit 1; }`+"\n"+
+		"trap cleanup_work EXIT\n")
+
+	offenses := scratchOrderOffenses(t, []string{poison})
+	if len(offenses) == 0 {
+		t.Fatalf("poison script mkdirs its manual scratch directory before arming its EXIT " +
+			"trap; the audit must flag it")
+	}
+}
+
+// TestScratchOrderAuditAllowsTrapBeforeMint proves the check does not
+// false-positive on either correctly-ordered idiom.
+func TestScratchOrderAuditAllowsTrapBeforeMint(t *testing.T) {
+	dir := t.TempDir()
+	good := filepath.Join(dir, "good-selftest.sh")
+	writeAuditScriptFixture(t, good, "#!/usr/bin/env bash\n"+
+		"set -uo pipefail\n"+
+		"trap 'scratch_rm' EXIT\n"+
+		"scratch_dir work good-selftest\n")
+	goodManual := filepath.Join(dir, "good-coverage.sh")
+	writeAuditScriptFixture(t, goodManual, "#!/usr/bin/env bash\n"+
+		"set -uo pipefail\n"+
+		`work_dir="${TMPDIR:-/tmp}/evener-good.$$"`+"\n"+
+		"fail=0\n"+
+		"cleanup_work() { [ \"$fail\" -eq 0 ] && rm -rf \"$work_dir\"; }\n"+
+		"trap cleanup_work EXIT\n"+
+		`mkdir "$work_dir" || { trap - EXIT; echo "cannot create $work_dir" >&2; exit 1; }`+"\n")
+
+	offenses := scratchOrderOffenses(t, []string{good, goodManual})
+	if len(offenses) != 0 {
+		t.Fatalf("correctly-ordered scripts (trap armed before mint) were flagged: %v", offenses)
+	}
+}
+
+// scratchOrderAllowedPaths is every script that still mints scratch before
+// arming its cleanup trap, keyed on the exact repo-relative path rather than
+// basename (#183 — see recursiveDeleteAllowedLines for why basename keys are
+// unsafe here too). Empty: every script that mints scratch now arms its trap
+// first, so a new entry needs the same reviewed reason any allowlist growth
+// does.
+var scratchOrderAllowedPaths = map[string]bool{}
+
+// TestScratchTrapInstalledBeforeMkdir pins the trap-before-mkdir convention
+// coverage-union.sh's comment already describes and measures (0/150 leaks
+// trap-first vs 29/150 mint-then-trap): a script's cleanup trap must be
+// armed before the line that creates the scratch directory it cleans up, so
+// a signal in between abandons nothing. Neither TestNoScriptCreatesScratchOutsideTMPDIR
+// nor TestNoScriptFeedsVariableToRecursiveDelete checks ordering — a
+// mutation that reorders a script to mkdir-then-trap left both green (#183,
+// PR #133 review).
+func TestScratchTrapInstalledBeforeMkdir(t *testing.T) {
+	t.Parallel()
+	paths := scriptShellFiles(t)
+	allPaths := append([]string{"install.sh"}, paths...)
+	offenses := scratchOrderOffenses(t, allPaths)
+	sort.Slice(offenses, func(i, j int) bool { return offenses[i].String() < offenses[j].String() })
+	seenAllowed := map[string]bool{}
+	for _, o := range offenses {
+		if scratchOrderAllowedPaths[o.path] {
+			seenAllowed[o.path] = true
+			continue
+		}
+		t.Errorf("this mints scratch before any EXIT trap is armed earlier in the file, so a "+
+			"crash in between leaks it (coverage-union.sh's comment measured 0/150 leaks for "+
+			"trap-first vs 29/150 for mint-then-trap); arm the trap first:\n  %s", o)
+	}
+	for path := range scratchOrderAllowedPaths {
+		if !seenAllowed[path] {
+			t.Errorf("scratchOrderAllowedPaths names %s, which no longer mints scratch before "+
+				"its trap is armed — delete the entry", path)
 		}
 	}
 }

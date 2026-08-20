@@ -12,8 +12,8 @@ set -uo pipefail
 script="$(cd "$(dirname "$0")" && pwd)/test-timing-budget.sh"
 . "$(dirname "$0")/../lib/selftest-lib.sh"
 
-scratch_dir work evener-testbudget-selftest
 trap 'scratch_rm' EXIT
+scratch_dir work evener-testbudget-selftest
 
 budget="$work/budget.json"
 measured="$work/measured.tsv"
