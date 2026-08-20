@@ -19,7 +19,7 @@ import type { EvenerDelegateInfo } from "../../../../protocol/types.gen";
 import { registerPaneForTests } from "../../../../shell/paneRegistry";
 import { registerDockviewApi, resetWorkspaceStoreForTests, workspaceStore } from "../../../../shell/workspace";
 import { connectionStore } from "../../../../stores/connection";
-import { resetThreadsStoreForTests } from "../../../../stores/threads";
+import { resetThreadsStoreForTests, threadsStore } from "../../../../stores/threads";
 import rawCssModule from "./subagentmodule.module.css";
 
 // A minimal, test-only "session" pane registration - real registerPane/
@@ -224,8 +224,7 @@ test("the first delegate item in a turn renders the module; a second one in the 
   // Only ONE module rendered, but it shows BOTH rows (both delegate calls'
   // own data reached the shared store).
   expect(screen.getAllByTestId("subagent-module")).toHaveLength(1);
-  expect(screen.getByText("first child")).toBeTruthy();
-  expect(screen.getByText("second child")).toBeTruthy();
+  expect(screen.getAllByTestId("subagent-row")).toHaveLength(2);
 });
 
 test("a delegate item in a DIFFERENT turn gets its own, separate module", () => {
@@ -289,8 +288,6 @@ test("kata 8525: two sessions sharing the SAME turnId never bleed into each othe
   const [moduleA, moduleB] = screen.getAllByTestId("subagent-module");
   expect(within(moduleA!).getAllByTestId("subagent-row")).toHaveLength(1);
   expect(within(moduleB!).getAllByTestId("subagent-row")).toHaveLength(1);
-  expect(screen.getByText("session A's own task")).toBeTruthy();
-  expect(screen.getByText("session B's own task")).toBeTruthy();
 });
 
 // 78nj: the Disclosure id used a bare turnId, not turnScopeKey(sessionRef,
@@ -315,8 +312,8 @@ test("78nj: one session's expanded card never opens another session's quote list
   );
 
   const [moduleA, moduleB] = screen.getAllByTestId("subagent-module");
-  expect(within(moduleA!).getByText("session A's task")).toBeTruthy();
-  expect(within(moduleB!).getByText("session B's task")).toBeTruthy();
+  expect(within(moduleA!).getAllByTestId("subagent-row")).toHaveLength(1);
+  expect(within(moduleB!).getAllByTestId("subagent-row")).toHaveLength(1);
 
   // Both items rely on the SAME defaults (id "item_1", turnId "turn_1", no
   // callId, no delegate_id), so both resolve to the identical fallback rowKey
@@ -482,7 +479,9 @@ test("a mounted follower takes over when the current delegate leader unmounts", 
   rerender(<Body key={follower.id} item={follower} live={false} />);
 
   expect(screen.getAllByTestId("subagent-module")).toHaveLength(1);
-  expect(screen.getByText("follower task")).toBeTruthy();
+  // Both rows persist in the store (it never evicts) - the follower's module
+  // shows the unmounted leader's row beside its own.
+  expect(screen.getAllByTestId("subagent-row")).toHaveLength(2);
 });
 
 test("a delegate row migrates fallback identity to stable delegate identity without losing its live overlay", () => {
@@ -516,7 +515,7 @@ test("a delegate row migrates fallback identity to stable delegate identity with
 
 // --- row content ----------------------------------------------------------
 
-test("a running row in a multi-row aggregate shows the task and running kind", () => {
+test("a running row in a multi-row stack shows its kind (identity lives on the delegate's own tool row)", () => {
   const d = toolRendererFor("delegate");
   const Body = d.body!;
   const running = delegateItem({
@@ -537,8 +536,10 @@ test("a running row in a multi-row aggregate shows the task and running kind", (
       <Body item={done} live={false} />
     </>,
   );
-  const row = screen.getByText("still working").closest('[data-testid="subagent-row"]') as HTMLElement;
-  expect(row.dataset.kind).toBe("running");
+  const rows = screen.getAllByTestId("subagent-row");
+  expect(rows).toHaveLength(2);
+  // Worst-first: the running card sits above the done one.
+  expect(rows.map((r) => r.getAttribute("data-kind"))).toEqual(["running", "done"]);
 });
 
 // Wire-true duration net: ItemModel.startedAt/completedAt are ISO strings the
@@ -645,7 +646,9 @@ test("3zf8: a cancelled/stopped child gets its own distinct kind - never rendere
   expect(row.dataset.kind).toBe("stopped");
   expect(within(module).queryByText(/1 stopped/)).toBeNull();
   expect(within(module).queryByText(/done/)).toBeNull();
-  expect(screen.getAllByText("misbehaving, killed")).toHaveLength(1);
+  // The card is headless - no tag, no task text inside; identity lives on the
+  // delegate's own tool row.
+  expect(within(row).queryByTestId("subagent-tag")).toBeNull();
 });
 
 // --- fold beyond ~6 done rows (running/failed/unknown always visible) ----
@@ -684,7 +687,7 @@ test("beyond 6 done rows, the extras fold behind a '+N more' control; running/fa
   // 6 done rows visible + the running row always visible = 7 rows shown;
   // 2 done rows folded behind "+2 more".
   expect(screen.getAllByTestId("subagent-row")).toHaveLength(7);
-  expect(screen.getByText("still running extra")).toBeTruthy();
+  expect(screen.getAllByTestId("subagent-row").some((r) => r.getAttribute("data-kind") === "running")).toBe(true);
   expect(screen.getByText(/\+2 more/)).toBeTruthy();
 });
 
@@ -732,8 +735,14 @@ function delegateWithTranscriptRef(ref: string): ItemModel {
 test("open transcript opens the read-only transcript pane (mobile / no dockview host): plain full-screen open, not a session pane", async () => {
   registerDockviewApi(null); // StackHost registers no api - the mobile signal
   const user = userEvent.setup();
-  const Body = toolRendererFor("delegate").body!;
-  render(<Body item={delegateWithTranscriptRef("ref_child_open")} live={false} />);
+  const turn: TurnModel = { id: "turn_open_mobile", status: "completed", items: [] };
+  render(
+    <ToolCallItem
+      item={{ ...delegateWithTranscriptRef("ref_child_open"), turnId: turn.id }}
+      turn={turn}
+      live={false}
+    />,
+  );
   const button = screen.getByRole("button", { name: "Open transcript" });
   expect(button.textContent).toContain("open");
   expect(button.querySelector("svg")).toBeTruthy();
@@ -755,8 +764,14 @@ test("open transcript opens the transcript pane in the secondary group, not the 
   registerDockviewApi(fakeApi());
   const anchor = workspaceStore.getState().openPane("transcript", { ref: "ref_parent_view" });
   const user = userEvent.setup();
-  const Body = toolRendererFor("delegate").body!;
-  render(<Body item={delegateWithTranscriptRef("ref_child_open")} live={false} />);
+  const turn: TurnModel = { id: "turn_open_desktop", status: "completed", items: [] };
+  render(
+    <ToolCallItem
+      item={{ ...delegateWithTranscriptRef("ref_child_open"), turnId: turn.id }}
+      turn={turn}
+      live={false}
+    />,
+  );
   await user.click(screen.getByRole("button", { name: /open transcript/i }));
   const opened = workspaceStore.getState().panes.find((p) => p.type === "transcript" && p.id !== anchor);
   expect(opened?.params).toEqual({ ref: "ref_child_open" });
@@ -768,8 +783,15 @@ test("open transcript opens the transcript pane in the secondary group, not the 
 test("kata 0pzz: open transcript carries the enclosing session ref as parentRef, so the reader can return", async () => {
   registerDockviewApi(fakeApi());
   const user = userEvent.setup();
-  const Body = toolRendererFor("delegate").body!;
-  render(<Body item={delegateWithTranscriptRef("ref_child_open")} live={false} sessionRef="ref_parent_session" />);
+  const turn: TurnModel = { id: "turn_open_parentref", status: "completed", items: [] };
+  render(
+    <ToolCallItem
+      item={{ ...delegateWithTranscriptRef("ref_child_open"), turnId: turn.id }}
+      turn={turn}
+      live={false}
+      sessionRef="ref_parent_session"
+    />,
+  );
   await user.click(screen.getByRole("button", { name: /open transcript/i }));
   const opened = workspaceStore.getState().panes.find((p) => p.type === "transcript");
   expect(opened?.params).toEqual({ ref: "ref_child_open", parentRef: "ref_parent_session" });
@@ -778,23 +800,28 @@ test("kata 0pzz: open transcript carries the enclosing session ref as parentRef,
 test("kata 0pzz: with no enclosing session ref available, parentRef is simply absent (no crash, still opens)", async () => {
   registerDockviewApi(fakeApi());
   const user = userEvent.setup();
-  const Body = toolRendererFor("delegate").body!;
-  render(<Body item={delegateWithTranscriptRef("ref_child_open")} live={false} />);
+  const turn: TurnModel = { id: "turn_open_noparent", status: "completed", items: [] };
+  render(
+    <ToolCallItem
+      item={{ ...delegateWithTranscriptRef("ref_child_open"), turnId: turn.id }}
+      turn={turn}
+      live={false}
+    />,
+  );
   await user.click(screen.getByRole("button", { name: /open transcript/i }));
   const opened = workspaceStore.getState().panes.find((p) => p.type === "transcript");
   expect(opened?.params).toEqual({ ref: "ref_child_open" });
 });
 
 test("no open-transcript button when the row has no transcriptRef yet", () => {
-  const d = toolRendererFor("delegate");
-  const Body = d.body!;
   const noRef = delegateItem({
     id: "d_noref",
     callId: "call_noref",
     argumentsJSON: JSON.stringify({ task: "no ref yet" }),
     output: "",
   });
-  render(<Body item={noRef} live={false} />);
+  const turn: TurnModel = { id: "turn_noref", status: "completed", items: [] };
+  render(<ToolCallItem item={{ ...noRef, turnId: turn.id }} turn={turn} live={false} />);
   expect(screen.queryByRole("button", { name: /open transcript/i })).toBeNull();
 });
 
@@ -802,18 +829,17 @@ test("no open-transcript button when the row has no transcriptRef yet", () => {
 // still RUNNING, not gated on the child being done - the opened pane watches
 // the live child thread.
 test("a still-running row (with a transcriptRef) offers Open transcript, not gated on the child being done", () => {
-  const d = toolRendererFor("delegate");
-  const Body = d.body!;
   const running = delegateItem({
     id: "d_run_link",
     callId: "call_run_link",
     argumentsJSON: JSON.stringify({ task: "still running" }),
     output: JSON.stringify({ delegate_id: "job_rl", status: "running", transcript_ref: "ref_run_link" }),
   });
-  render(<Body item={running} live={false} />);
-  const row = screen.getByTestId("subagent-row");
-  expect(row.dataset.kind).toBe("running"); // genuinely still running
-  expect(within(row).getByRole("button", { name: /open transcript/i })).toBeTruthy();
+  const turn: TurnModel = { id: "turn_run_link", status: "inProgress", items: [] };
+  render(<ToolCallItem item={{ ...running, turnId: turn.id }} turn={turn} live={true} />);
+  const tool = screen.getByTestId("tool-call-item");
+  expect(within(tool).getByRole("img", { name: "Working" })).toBeTruthy(); // genuinely still running
+  expect(within(tool).getByRole("button", { name: /open transcript/i })).toBeTruthy();
 });
 
 // --- expanded card: disclosure + Mandate / Activity / Summary (qb8e, tv5k) -
@@ -1269,7 +1295,6 @@ test("a single delegate has one top-level disclosure, one status rail, and one v
     id: "d_evch",
     turnId: "turn_evch",
     callId: "call_evch",
-    description: "Single delegation",
     argumentsJSON: JSON.stringify({ task: "Inspect one row, one task" }),
     output: JSON.stringify({ delegate_id: "job_evch", status: "running" }),
   });
@@ -1278,6 +1303,8 @@ test("a single delegate has one top-level disclosure, one status rail, and one v
   const module = screen.getByTestId("subagent-module");
   expect(screen.getAllByRole("img", { name: "Working" })).toHaveLength(1);
   expect(within(module).queryByText(/1 running/)).toBeNull(); // single-row mode omits the tally header
+  // Exactly once: the delegate row's own summary. The card below is headless -
+  // no tag, no second copy (the Rail × Quote redesign's dedup).
   expect(screen.getAllByText("Inspect one row, one task")).toHaveLength(1);
   expect(module.querySelectorAll("details > summary")).toHaveLength(0);
   expect(tool.querySelectorAll("details > summary")).toHaveLength(1);
@@ -1328,14 +1355,10 @@ test("a multi-row stack shows each task as its card's tag, with the old section 
   const rows = screen.getAllByTestId("subagent-row");
   expect(rows).toHaveLength(2);
 
-  const runningRow = rows.find((row) => row.getAttribute("data-kind") === "running");
-  const doneRow = rows.find((row) => row.getAttribute("data-kind") === "done");
-  expect(runningRow).toBeTruthy();
-  expect(doneRow).toBeTruthy();
-
-  // Every card - single or one of many - shows its task as the tag.
-  expect(within(runningRow!).getByTestId("subagent-tag").textContent).toBe("Running mandate text");
-  expect(within(doneRow!).getByTestId("subagent-tag").textContent).toBe("Done mandate text");
+  // The cards are headless: the tag/open head row is gone - identity and the
+  // open control live on each delegate's own tool row (ToolCallItem).
+  expect(screen.queryByTestId("subagent-tag")).toBeNull();
+  expect(within(screen.getByTestId("subagent-module")).queryByRole("button", { name: /open transcript/i })).toBeNull();
   // The Mandate/Activity/Summary sections are gone; quote lists stay folded
   // behind each card's own chevron until asked for.
   expect(screen.queryByTestId("subagent-mandate")).toBeNull();
@@ -1398,27 +1421,7 @@ test("no tally header; rows sit worst-first, so a live failure surfaces above a 
   expect(module.textContent).not.toMatch(/\d+ running/);
 });
 
-// --- 7f7c: the tag must not be clipped in the data --------------------------
-//
-// The tag IS the task text; its clipping is purely visual (CSS text-overflow:
-// ellipsis). The full delegation brief stays in the DOM - and one click away
-// via open transcript, whose first turn carries it.
-test("7f7c: the tag carries the full, unclipped task text", () => {
-  const Body = toolRendererFor("delegate").body!;
-  const longTask =
-    "Please test delegation by inspecting the current working directory. Report the directory contents without changing any files.";
-  const running = delegateItem({
-    id: "d_full_tag",
-    callId: "call_full_tag",
-    argumentsJSON: JSON.stringify({ task: longTask }),
-    output: JSON.stringify({ delegate_id: "job_fm", status: "running" }),
-  });
-  render(<Body item={running} live={false} />);
-  const row = screen.getByTestId("subagent-row");
-  expect(within(row).getByTestId("subagent-tag").textContent).toBe(longTask);
-});
-
-test("the card stylesheet declares the rail-quote anatomy: square corners, state rails, mono uppercase tag, ellipsis quote, chromeless module", () => {
+test("the card stylesheet declares the rail-quote anatomy: square corners, state rails, ellipsis quote, chromeless module, no head/tag", () => {
   const css = moduleCss();
   // Square corners were an explicit design amendment (no curved borders).
   expect(css).toMatch(/\.card\s*\{[^}]*border-radius:\s*0/);
@@ -1426,10 +1429,11 @@ test("the card stylesheet declares the rail-quote anatomy: square corners, state
   expect(css).toMatch(/\.card\[data-kind="running"\]\s*\{[^}]*border-left-color:\s*var\(--alive\)/);
   expect(css).toMatch(/\.card\[data-attention="true"\]\s*\{[^}]*border-left-color:\s*var\(--attention\)/);
   expect(css).toMatch(/\.card\[data-attention="true"\]\s*\{[^}]*background:\s*var\(--attention-bg\)/);
-  // Tag: mono small-caps. Quote: single line, ellipsized.
-  expect(css).toMatch(/\.tag\s*\{[^}]*text-transform:\s*uppercase/);
-  expect(css).toMatch(/\.tag\s*\{[^}]*var\(--font-mono\)/);
+  // Quote: single line, ellipsized.
   expect(css).toMatch(/\.quote\s*\{[^}]*text-overflow:\s*ellipsis/);
+  // The head/tag row is deleted - the card opens on the child's quote.
+  expect(css).not.toMatch(/\.tag\s*\{/);
+  expect(css).not.toMatch(/\.head\s*\{/);
   // The module itself is chromeless - no card box of its own.
   expect(css).not.toMatch(/\.module\s*\{[^}]*border:/);
 });
@@ -1550,10 +1554,9 @@ test("the stats line shows the delegate's projected token usage, and omits the s
   );
 
   const rows = screen.getAllByTestId("subagent-row");
-  const tokRow = rows.find((r) => within(r).queryByText("tokened"));
-  const noTokRow = rows.find((r) => within(r).queryByText("untokened"));
-  expect(tokRow).toBeTruthy();
-  expect(noTokRow).toBeTruthy();
+  // Both running, so spawn order holds: the usage-patched card is first.
+  const [tokRow, noTokRow] = rows;
+  if (!tokRow || !noTokRow) throw new Error("expected two subagent cards");
   expect(within(tokRow!).getByTestId("subagent-stats").textContent).toContain("↑41k ↓6k");
   // The no-usage rule (the thread model's own usage-null precedent): absent
   // data renders as no segment, never a misleading ↑0 ↓0.
@@ -1595,4 +1598,236 @@ test("a child awaiting input earns the attention rail while staying kind=running
   // Needs-you is a cadence overlay, not a new row kind: the row still sorts
   // and reports as running.
   expect(row.dataset.kind).toBe("running");
+});
+
+// The card's head (tag + open) duplicated the delegate tool row it sits under.
+// Both are gone from the card: the row carries identity and the open control.
+test("the card is headless: no tag, no open button inside it", () => {
+  const Body = toolRendererFor("delegate").body!;
+  const running = delegateItem({
+    id: "d_headless",
+    callId: "call_headless",
+    argumentsJSON: JSON.stringify({ task: "identity is above me" }),
+    output: JSON.stringify({ delegate_id: "job_headless", status: "running", transcript_ref: "ref_headless" }),
+  });
+  render(<Body item={running} live={false} />);
+  const row = screen.getByTestId("subagent-row");
+  expect(within(row).queryByTestId("subagent-tag")).toBeNull();
+  expect(within(row).queryByRole("button", { name: /open transcript/i })).toBeNull();
+});
+
+// When only some stats segments have data (counts but no tokens, no clock),
+// the line must join what it has - a trailing "·" advertises a segment that
+// never came.
+test("the stats line joins its present segments - never a dangling separator", async () => {
+  const fake = new FakeClient("ready");
+  fake.on("thread/read", (params) => childThreadRead(params, "active"));
+  connectionStore.getState().connect(fake);
+
+  const Body = toolRendererFor("delegate").body!;
+  const running = delegateItem({
+    id: "d_seps",
+    callId: "call_seps",
+    argumentsJSON: JSON.stringify({ task: "counts only, no tokens, no clock" }),
+    output: JSON.stringify({ delegate_id: "job_seps", status: "running", transcript_ref: "ref_seps_child" }),
+  });
+  render(<Body item={running} live={false} />);
+
+  const stats = await within(screen.getByTestId("subagent-row")).findByTestId("subagent-stats");
+  await waitFor(() => expect(stats.textContent).toContain("3 calls"));
+  expect(stats.textContent).not.toMatch(/·\s*$/);
+});
+
+// A historical session read ships its delegates' stable projections inside
+// the snapshot (evener.diagnostics.delegates) - terminal kind, reason, usage,
+// and the child's real run window (runStartedAt/runEndedAt). The card must
+// hydrate from it: without this path a read-back session renders every card
+// from the frozen spawn-call output alone (status stuck "running", no tokens,
+// and the spawn's seconds posing as the child's runtime).
+test("a historical session read hydrates a card's kind, tokens, and clock from the snapshot's stable projection", async () => {
+  const fake = new FakeClient("ready");
+  const t0 = 1_700_000_000_000;
+  fake.on("thread/read", (params) => {
+    const p = params as { ref: string; includeTurns?: boolean };
+    if (p.ref === "ref_parent_hist") {
+      return {
+        thread: {
+          id: "thr_parent_hist",
+          sessionId: "sess_parent_hist",
+          preview: "",
+          ephemeral: false,
+          modelProvider: "anthropic/claude-sonnet-4-5",
+          createdAt: 1000,
+          updatedAt: 1000,
+          status: { type: "closed" },
+          cwd: "/tmp",
+          cliVersion: "1.0.0",
+          source: "evener",
+          evener: {
+            ref: p.ref,
+            capabilities: {} as never,
+            queue: { revision: 0 },
+            diagnostics: {
+              delegates: [
+                {
+                  delegateId: "dlg_hist",
+                  ownerSessionId: "sess_parent_hist",
+                  rootSessionId: "sess_parent_hist",
+                  childSessionId: "sess_hist_child",
+                  transcriptRef: "ref_hist_child",
+                  type: "delegate",
+                  lifecycle: "idle",
+                  phase: "idle",
+                  status: "idle",
+                  outcome: "completed",
+                  terminal: true,
+                  resumable: true,
+                  projectionRevision: 3,
+                  // No originTurnId - deliberately. Real stored projections
+                  // can lack it (the delegate descriptor records
+                  // origin_tool_call_id, and older daemons never recorded a
+                  // turn id at all), and the card must still hydrate.
+                  runStartedAt: new Date(t0).toISOString(),
+                  runEndedAt: new Date(t0 + 22 * 60_000).toISOString(),
+                  usage: { inputTokens: 41200, outputTokens: 6100 },
+                },
+              ],
+            },
+          },
+          turns: [],
+        },
+      };
+    }
+    return childThreadRead(params, "closed");
+  });
+  connectionStore.getState().connect(fake);
+  await act(async () => {
+    await threadsStore.getState().ensureThread("ref_parent_hist");
+  });
+
+  const Body = toolRendererFor("delegate").body!;
+  render(
+    <Body
+      item={delegateItem({
+        id: "d_hist",
+        turnId: "turn_hist",
+        callId: "call_hist",
+        argumentsJSON: JSON.stringify({ task: "historical child" }),
+        output: JSON.stringify({ delegate_id: "dlg_hist", status: "running", transcript_ref: "ref_hist_child" }),
+      })}
+      live={false}
+      sessionRef="ref_parent_hist"
+    />,
+  );
+
+  const row = await screen.findByTestId("subagent-row");
+  // Terminal kind, real window, and tokens - all from the read, none from the
+  // frozen "running" spawn output.
+  await waitFor(() => expect(row.dataset.kind).toBe("done"));
+  const stats = within(row).getByTestId("subagent-stats");
+  expect(stats.textContent).toContain("↑41k ↓6k");
+  expect(stats.textContent).toContain("22m00s");
+});
+
+// --- live-data lessons (2026-08-20): real delegates exposed three fixture-blind
+// spots ---------------------------------------------------------------------
+
+// A foreground_timeout delegate's ITEM timestamps bracket the spawn
+// round-trip (seconds), not the child's run (minutes). The stable
+// projection's runStartedAt/runEndedAt is the child's real window and must
+// win whenever it exists.
+test("the clock shows the child's run window from the stable projection, not the spawn call's seconds", () => {
+  const Body = toolRendererFor("delegate").body!;
+  const t0 = 1_700_000_000_000;
+  const settled = delegateItem({
+    id: "d_runwindow",
+    callId: "call_runwindow",
+    argumentsJSON: JSON.stringify({ task: "long child, quick spawn" }),
+    output: JSON.stringify({ delegate_id: "job_rw", status: "running" }),
+    startedAt: new Date(t0).toISOString(),
+    completedAt: new Date(t0 + 4_000).toISOString(), // the spawn round-trip
+  });
+  render(<Body item={settled} live={false} />);
+  act(() =>
+    updateSubagentRowIfExists(turnScopeKey(undefined, "turn_1"), "dlg:job_rw", {
+      stable: {
+        status: "completed",
+        terminal: true,
+        outcome: "completed",
+        runStartedAt: new Date(t0).toISOString(),
+        runEndedAt: new Date(t0 + 22 * 60_000).toISOString(),
+      } as unknown as EvenerDelegateInfo,
+    }),
+  );
+  const stats = within(screen.getByTestId("subagent-row")).getByTestId("subagent-stats");
+  expect(stats.textContent).toContain("22m00s");
+  expect(stats.textContent).not.toContain("4s");
+});
+
+// With no stable projection in play (a historical session read, where no
+// delegate notifications arrive), the next-best honest window is the child
+// transcript's own turn span - the card already holds the full-turns watch.
+// Only the item's own spawn-call stamps remain otherwise, and those bracket
+// seconds of RPC, not the child's work.
+test("the clock falls back to the child transcript's turn span when no stable run window exists", async () => {
+  const fake = new FakeClient("ready");
+  const t0 = new Date(2026, 7, 19, 15, 0, 0);
+  fake.on("thread/read", (params) => {
+    const base = childThreadRead(params, "closed");
+    if ((params as { includeTurns: boolean }).includeTurns) {
+      const turn = base.thread.turns[0] as { startedAt?: string; completedAt?: string };
+      turn.startedAt = t0.toISOString();
+      turn.completedAt = new Date(t0.getTime() + 22 * 60_000).toISOString();
+    }
+    return base;
+  });
+  connectionStore.getState().connect(fake);
+
+  const Body = toolRendererFor("delegate").body!;
+  const done = delegateItem({
+    id: "d_childspan",
+    callId: "call_childspan",
+    argumentsJSON: JSON.stringify({ task: "historical child" }),
+    output: JSON.stringify({ delegate_id: "job_span", status: "completed", transcript_ref: "ref_span_child" }),
+    startedAt: new Date(t0).toISOString(),
+    completedAt: new Date(t0.getTime() + 4_000).toISOString(), // spawn round-trip
+  });
+  render(<Body item={done} live={false} />);
+
+  const stats = await within(screen.getByTestId("subagent-row")).findByTestId("subagent-stats");
+  await waitFor(() => expect(stats.textContent).toContain("22m00s"));
+});
+
+// A final report is markdown: "## Summary\n\nFixed 9 files…". Flattened raw,
+// the heading markers are noise in a one-line quote. The quote lands on the
+// first substantive plain-text line - skipping blank and heading-only lines,
+// stripped of inline emphasis markers.
+test("the folded quote of a markdown final report lands on its first substantive line, plain text", async () => {
+  const fake = new FakeClient("ready");
+  fake.on("thread/read", (params) => {
+    const base = childThreadRead(params, "closed");
+    if ((params as { includeTurns: boolean }).includeTurns) {
+      base.thread.turns[0]!.items.push({
+        id: "item_report",
+        turnId: "turn_c1",
+        type: "agentMessage",
+        text: "## Summary\n\n**Fixed 9 test files** across 9 commits. All tests pass.\n\n## Files Fixed\n\n- a.go\n- b.go",
+        status: "completed",
+      } as never);
+    }
+    return base;
+  });
+  connectionStore.getState().connect(fake);
+
+  const Body = toolRendererFor("delegate").body!;
+  const done = delegateItem({
+    id: "d_md_quote",
+    callId: "call_md_quote",
+    argumentsJSON: JSON.stringify({ task: "fix the findings" }),
+    output: JSON.stringify({ delegate_id: "job_md", status: "completed", transcript_ref: "ref_md_child" }),
+  });
+  render(<Body item={done} live={false} />);
+
+  const quote = await within(screen.getByTestId("subagent-row")).findByTestId("subagent-quote");
+  expect(quote.textContent).toBe("Fixed 9 test files across 9 commits. All tests pass.");
 });

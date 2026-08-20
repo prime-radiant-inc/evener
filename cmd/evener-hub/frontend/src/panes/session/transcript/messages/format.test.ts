@@ -7,6 +7,7 @@ import {
   formatDurationMs,
   formatElapsed,
   formatTokenCount,
+  plainQuoteLine,
 } from "./format";
 
 // --- formatTokenCount -----------------------------------------------------
@@ -197,4 +198,32 @@ test("formatElapsed: an hour and beyond renders h:mm with zero-padded minutes", 
 
 test("formatElapsed: clock skew (negative input) clamps to 0s rather than printing a negative duration", () => {
   expect(formatElapsed(-5_000)).toBe("0s");
+});
+
+// --- plainQuoteLine -----------------------------------------------------------
+// The subagent card's one-line quote of an agent message. A final report is
+// markdown; flattened raw, its heading markers are noise at a glance. The
+// quote lands on the first SUBSTANTIVE line: blank and heading-only lines are
+// skipped, inline emphasis markers stripped. Never invents text - a message
+// with no substance quotes nothing.
+
+test("plainQuoteLine: skips blank and heading-only lines to the first substantive line", () => {
+  expect(plainQuoteLine("## Summary\n\nFixed 9 files. All tests pass.\n\n## Files\n\n- a.go")).toBe(
+    "Fixed 9 files. All tests pass.",
+  );
+});
+
+test("plainQuoteLine: strips inline emphasis and code markers", () => {
+  expect(plainQuoteLine("**Fixed** `x.go` and *reran* the gate")).toBe("Fixed x.go and reran the gate");
+});
+
+test("plainQuoteLine: a plain message is untouched", () => {
+  expect(plainQuoteLine("All 5 findings fixed, one commit per file.")).toBe(
+    "All 5 findings fixed, one commit per file.",
+  );
+});
+
+test("plainQuoteLine: a message with no substantive line yields empty string (no quote, never a heading as the quote)", () => {
+  expect(plainQuoteLine("## Summary\n\n### Details")).toBe("");
+  expect(plainQuoteLine("\n\n  \n")).toBe("");
 });

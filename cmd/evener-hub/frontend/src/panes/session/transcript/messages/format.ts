@@ -96,3 +96,20 @@ export function formatElapsed(ms: number): string {
   const hours = Math.floor(totalMinutes / 60);
   return `${hours}h${String(totalMinutes % 60).padStart(2, "0")}m`;
 }
+
+// plainQuoteLine renders an agent message as the subagent card's one-line
+// quote. A final report is markdown ("## Summary\n\nFixed 9 files…"); raw,
+// its structural markers are noise at a glance. The quote is the first
+// SUBSTANTIVE line: blank lines and heading-only lines (a heading is a label,
+// never the news) are skipped, and inline emphasis/code markers are stripped
+// to plain text. A message with no substantive line yields "" - the card
+// shows no quote rather than quoting a heading. The full text stays one click
+// away behind open transcript; this line is the glance, not the record.
+export function plainQuoteLine(text: string): string {
+  for (const raw of text.split("\n")) {
+    const line = raw.trim();
+    if (line === "" || /^#+\s/.test(line)) continue;
+    return line.replace(/\*\*|__|[`*]/g, "").trim();
+  }
+  return "";
+}

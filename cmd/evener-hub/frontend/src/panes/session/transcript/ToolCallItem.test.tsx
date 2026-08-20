@@ -972,17 +972,17 @@ test("task-only delegates show a bounded purpose preview and the card tag carrie
     "**Inspect** the parser and report the `task` field. Keep the full mandate available for the reader. This suffix makes th…",
   );
   expect(purpose.textContent).not.toBe(task);
-  // The card's tag carries the full task text (its clipping is visual only);
-  // the old Mandate/Prompt fold is gone, so the row's own disclosure is the
-  // only details/summary in the tool call.
-  const tag = within(module).getByTestId("subagent-tag");
-  expect(tag.textContent).toBe(task);
+  // The card is headless: no tag (identity is the row's own purpose, above),
+  // and the old Mandate/Prompt fold is gone, so the row's own disclosure is
+  // the only details/summary in the tool call.
+  expect(within(module).queryByTestId("subagent-tag")).toBeNull();
   expect(screen.queryByTestId("subagent-mandate")).toBeNull();
   expect(tool.querySelectorAll("details > summary")).toHaveLength(1); // the row's own
   expect(module.querySelectorAll("details > summary")).toHaveLength(0);
   expect(within(tool).getByTestId("tool-row-status").querySelector('[role="img"]')).toBeTruthy();
 
-  const openTranscript = within(module).getByRole("button", { name: "Open transcript" });
+  // open ⤢ rides the delegate row's trailing slot - visible folded or not.
+  const openTranscript = within(tool).getByRole("button", { name: "Open transcript" });
   expect(openTranscript.textContent).toContain("open");
   expect(openTranscript.querySelector("svg")).toBeTruthy();
   expect(container.querySelectorAll('[data-testid="tool-row"]')).toHaveLength(1);
@@ -1022,8 +1022,10 @@ test("delegate controls require stable delegate_id and reject activation-only jo
 
   const rows = screen.getAllByTestId("subagent-row");
   expect(rows).toHaveLength(1);
-  expect(rows[0]?.textContent).toContain("stable");
-  expect(rows[0]?.textContent).not.toContain("legacy activation");
+  // The stable call cards; the activation-only one does not. The card is
+  // headless - assert the kind, and that exactly one row (the stable one)
+  // earned the open control.
+  expect(rows[0]?.getAttribute("data-kind")).toBe("running");
   expect(screen.getAllByRole("button", { name: "Open transcript" })).toHaveLength(1);
 });
 

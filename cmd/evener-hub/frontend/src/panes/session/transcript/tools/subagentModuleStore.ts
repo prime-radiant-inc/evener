@@ -72,6 +72,15 @@ interface ModuleStoreState {
   turnNextSpawnIndex: Map<string, number>;
   // turnId -> the item id currently holding "leader" status for that turn
   turnLeader: Map<string, string>;
+  // sessionRef -> delegateId -> the latest stable projection seen for that
+  // delegate (revision-fenced at write). Rows usually mutate through
+  // applyEvenerDelegateUpdated's originTurnId fast path; this map is the
+  // safety net for projections that arrive with no originTurnId (the stored
+  // delegate descriptor records origin_tool_call_id, and older daemons never
+  // recorded a turn id at all) or before the card's own row exists (a read
+  // hydrates before the user scrolls the delegate turn into view; the row
+  // materializes on mount). upsertSubagentRow consumes it at row creation.
+  sessionProjections: Map<string, Map<string, EvenerDelegateInfo>>;
 }
 
 const moduleStore = createStore<ModuleStoreState>(() => ({
@@ -79,6 +88,7 @@ const moduleStore = createStore<ModuleStoreState>(() => ({
   turnRowsSorted: new Map(),
   turnNextSpawnIndex: new Map(),
   turnLeader: new Map(),
+  sessionProjections: new Map(),
 }));
 
 const EMPTY_ROWS: SubagentRow[] = [];
@@ -186,7 +196,7 @@ export function upsertSubagentRow(scopeKey: string, row: SubagentRowInput, migra
     // spread lands after), but the delegate input never carries any of these -
     // rowFromDelegateItem only ever derives kind/task/jobId/transcriptRef/
     // startedAt/completedAt/resultPreview from the tool call's own output.
-    rows.set(row.rowKey, {
+    let next: SubagentRow = {
       liveKind: existingRow?.liveKind,
       liveReason: existingRow?.liveReason,
       resumable: existingRow?.resumable,
@@ -195,7 +205,17 @@ export function upsertSubagentRow(scopeKey: string, row: SubagentRowInput, migra
       stable: existingRow?.stable,
       ...row,
       spawnIndex,
-    });
+    };
+    // A row with no stable state yet picks up this session's stashed
+    // projection for the same delegate, if one landed first (the read path
+    // hydrates before VirtualList ever mounts the delegate's card).
+    if (!next.stable && next.delegateId) {
+      const pending = s.sessionProjections.get(sessionRefOfScopeKey(scopeKey))?.get(next.delegateId);
+      if (pending) {
+        next = { ...next, ...inputFromStable(next.rowKey, pending, next), spawnIndex };
+      }
+    }
+    rows.set(row.rowKey, next);
 
     const turnRowsByKey = new Map(s.turnRowsByKey);
     turnRowsByKey.set(scopeKey, rows);
@@ -312,22 +332,12 @@ function mergeStableDelegate(current: EvenerDelegateInfo, incoming: EvenerDelega
   return latestActivityAt === stable.latestActivityAt ? stable : { ...stable, latestActivityAt };
 }
 
-// Stable delegate notifications are the only live lifecycle authority for
-// module rows. A snapshot may create the row before the transcript item is
-// mounted; later item rendering enriches the same dlg_-keyed row without
-// replacing this revision-fenced state.
-export function applyEvenerDelegateUpdated(delegate: EvenerDelegateInfo, sessionRef: string | undefined): void {
-  if (!delegate.originTurnId || !delegate.delegateId) return;
-  const scopeKey = turnScopeKey(sessionRef, delegate.originTurnId);
-  const rowKey = resolveRowKey(
-    delegate.delegateId,
-    undefined,
-    delegate.originToolCallId ?? delegate.originItemId ?? "",
-  );
-  const existing = moduleStore.getState().turnRowsByKey.get(scopeKey)?.get(rowKey);
-  const stable = existing?.stable ? mergeStableDelegate(existing.stable, delegate) : cloneStableDelegate(delegate);
+// inputFromStable builds the row payload a stable projection carries. Shared
+// by the originTurnId fast path and the no-originTurnId scan/stash path so
+// both land the identical fields.
+function inputFromStable(rowKey: string, stable: EvenerDelegateInfo, existing?: SubagentRow): SubagentRowInput {
   const resumable = stable.exhaustionResumable ?? stable.resumable;
-  const input: SubagentRowInput = {
+  return {
     rowKey,
     kind: classifyJobStatus(stableDelegateDisplayStatus(stable)),
     delegateId: stable.delegateId,
@@ -342,7 +352,58 @@ export function applyEvenerDelegateUpdated(delegate: EvenerDelegateInfo, session
     exhaustionBudget: stable.exhaustionBudget,
     exhaustionLimit: stable.exhaustionLimit,
   };
-  upsertSubagentRow(scopeKey, input);
+}
+
+// sessionRefOfScopeKey splits a turnScopeKey back to its sessionRef ("" when
+// the key was built without one).
+function sessionRefOfScopeKey(scopeKey: string): string {
+  return scopeKey.split("\0")[0] ?? "";
+}
+
+// Stable delegate notifications are the only live lifecycle authority for
+// module rows. A snapshot may create the row before the transcript item is
+// mounted; later item rendering enriches the same dlg_-keyed row without
+// replacing this revision-fenced state.
+export function applyEvenerDelegateUpdated(delegate: EvenerDelegateInfo, sessionRef: string | undefined): void {
+  if (!delegate.delegateId) return;
+  const delegateId = delegate.delegateId;
+
+  // Every projection - with or without an origin turn - is stashed per
+  // session, revision-fenced, so a row that materializes later (the card
+  // mounts on scroll, after the read hydrated) still picks it up.
+  moduleStore.setState((s) => {
+    const bySession = new Map(s.sessionProjections);
+    const sessionKey = sessionRef ?? "";
+    const byDelegate = new Map(bySession.get(sessionKey) ?? []);
+    const current = byDelegate.get(delegateId);
+    byDelegate.set(delegateId, current ? mergeStableDelegate(current, delegate) : cloneStableDelegate(delegate));
+    bySession.set(sessionKey, byDelegate);
+    return { sessionProjections: bySession };
+  });
+  const stable = moduleStore
+    .getState()
+    .sessionProjections.get(sessionRef ?? "")
+    ?.get(delegateId);
+  if (!stable) return;
+
+  if (delegate.originTurnId) {
+    const scopeKey = turnScopeKey(sessionRef, delegate.originTurnId);
+    const rowKey = resolveRowKey(delegateId, undefined, delegate.originToolCallId ?? delegate.originItemId ?? "");
+    const existing = moduleStore.getState().turnRowsByKey.get(scopeKey)?.get(rowKey);
+    upsertSubagentRow(scopeKey, inputFromStable(rowKey, stable, existing));
+    return;
+  }
+
+  // No origin turn id: patch every row this session already shows for this
+  // delegate (a card mounted before the read landed). Rows mounted later
+  // consume the stash in upsertSubagentRow instead.
+  const prefix = `${sessionRef ?? ""}\0`;
+  const rowKey = `dlg:${delegateId}`;
+  for (const [scopeKey, rows] of moduleStore.getState().turnRowsByKey) {
+    if (!scopeKey.startsWith(prefix)) continue;
+    const existing = rows.get(rowKey);
+    if (existing) updateSubagentRowIfExists(scopeKey, rowKey, inputFromStable(rowKey, stable, existing));
+  }
 }
 
 const TERMINAL_KINDS: ReadonlySet<SubagentRowKind> = new Set(["done", "stopped", "failed", "unknown"]);
@@ -422,5 +483,6 @@ export function resetSubagentModuleStoreForTests(): void {
     turnRowsSorted: new Map(),
     turnNextSpawnIndex: new Map(),
     turnLeader: new Map(),
+    sessionProjections: new Map(),
   });
 }

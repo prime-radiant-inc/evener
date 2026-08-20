@@ -30,15 +30,14 @@
 // specific child, and correlating an arbitrary listing back to individual
 // rows would need far more inference than the wire actually supports.
 import { useEffect, useLayoutEffect, useState } from "react";
-import { type ItemModel, SYSTEM_PRELUDE_TURN_ID } from "../../../../protocol/model";
+import { type ItemModel, SYSTEM_PRELUDE_TURN_ID, type TurnModel } from "../../../../protocol/model";
 import { threadsStore, useThreadsStore } from "../../../../stores/threads";
 import { Button, Chevron, IconButton } from "../../../../widgets";
 import { isDisclosureOpen, toggleDisclosure } from "../../../../widgets/disclosure/disclosureStore";
 import { requireClass } from "../../../../widgets/internal/requireClass";
 import { formatUsagePair } from "../../chrome/activityFormat";
 import { cadenceStateForStatus, NOW_TICK_MS, useNowTick } from "../../liveness";
-import { formatClockTimeSeconds, formatElapsed } from "../messages/format";
-import { OpenTranscriptButton } from "../openTranscript";
+import { formatClockTimeSeconds, formatElapsed, plainQuoteLine } from "../messages/format";
 import { statedPurposeOf } from "../ToolRow";
 import type { ToolRenderProps } from "../toolRenderers";
 import { registerToolRenderer } from "../toolRenderers";
@@ -70,8 +69,6 @@ const RECENT_QUOTES_CAP = 5;
 const CLASS = {
   module: requireClass(styles.module, "subagentmodule.module.css", "module"),
   card: requireClass(styles.card, "subagentmodule.module.css", "card"),
-  head: requireClass(styles.head, "subagentmodule.module.css", "head"),
-  tag: requireClass(styles.tag, "subagentmodule.module.css", "tag"),
   quote: requireClass(styles.quote, "subagentmodule.module.css", "quote"),
   stats: requireClass(styles.stats, "subagentmodule.module.css", "stats"),
   statsSep: requireClass(styles.statsSep, "subagentmodule.module.css", "statsSep"),
@@ -184,7 +181,9 @@ function deriveQuotes(items: ItemModel[]): Quote[] {
   for (const it of items) {
     if (it.eventKind === "round_timings") continue;
     if (it.type === "agentMessage") {
-      const text = it.text.trim();
+      // Messages quote as plain text: a final report's markdown structure
+      // ("## Summary", "**Fixed**") is noise on a one-line glance.
+      const text = plainQuoteLine(it.text);
       if (text !== "") out.push({ id: it.id, text, msg: true, startedAt: it.startedAt, completedAt: it.completedAt });
       continue;
     }
@@ -196,20 +195,59 @@ function deriveQuotes(items: ItemModel[]): Quote[] {
   return out;
 }
 
-// cardClock is the stats line's trailing clock. Settled rows show the fixed
-// start→end span; running rows show live elapsed time (ticking on
-// useNowTick). A row with no start time shows no clock, and a non-running row
-// with no end time shows none either - the clock never guesses.
-function cardClock(row: SubagentRow, displayKind: SubagentRowKind, nowMs: number): string | undefined {
-  const startIso = row.startedAt ?? row.stable?.runStartedAt;
-  if (startIso === undefined) return undefined;
-  const startMs = Date.parse(startIso);
-  if (Number.isNaN(startMs)) return undefined;
-  const endIso = row.completedAt ?? row.stable?.runEndedAt;
-  if (endIso !== undefined) {
-    const endMs = Date.parse(endIso);
-    if (!Number.isNaN(endMs) && endMs >= startMs) return formatElapsed(endMs - startMs);
+// childRunWindow is the child transcript's own first-turn-start →
+// last-turn-end span. The card already holds the full-turns watch, so this
+// costs nothing; historical sessions (read back, no delegate notifications)
+// never get a stable projection, and this is the only honest run window left.
+function childRunWindow(turns: TurnModel[]): { startMs?: number; endMs?: number } | undefined {
+  let startMs: number | undefined;
+  let endMs: number | undefined;
+  for (const t of turns) {
+    const s = Date.parse(t.startedAt ?? "");
+    if (!Number.isNaN(s)) startMs = startMs === undefined ? s : Math.min(startMs, s);
+    const e = Date.parse(t.completedAt ?? "");
+    if (!Number.isNaN(e)) endMs = endMs === undefined ? e : Math.max(endMs, e);
   }
+  if (startMs === undefined && endMs === undefined) return undefined;
+  return { startMs, endMs };
+}
+
+// cardClock is the stats line's trailing clock. Window source precedence:
+//  1. the stable projection's runStartedAt/runEndedAt - the child's actual
+//     run. A foreground_timeout delegate's own ITEM timestamps bracket the
+//     spawn round-trip (seconds), not the child's work (minutes); when the
+//     projection owns the start, only its end counts (a settled spawn item
+//     must not freeze the clock at the spawn's seconds).
+//  2. the child transcript's turn span (its end counts only once the row is
+//     no longer running - a mid-run "end" would freeze a live clock).
+//  3. the delegate item's own stamps, the only source left when the child is
+//     unwatched (no transcriptRef).
+// A row with no start shows no clock; a non-running row with no end shows
+// none. The clock never guesses.
+function cardClock(
+  row: SubagentRow,
+  displayKind: SubagentRowKind,
+  nowMs: number,
+  childWindow?: { startMs?: number; endMs?: number },
+): string | undefined {
+  let startMs: number | undefined;
+  let endMs: number | undefined;
+  const stableStart = Date.parse(row.stable?.runStartedAt ?? "");
+  if (!Number.isNaN(stableStart)) {
+    startMs = stableStart;
+    const stableEnd = Date.parse(row.stable?.runEndedAt ?? "");
+    if (!Number.isNaN(stableEnd)) endMs = stableEnd;
+  } else if (childWindow?.startMs !== undefined) {
+    startMs = childWindow.startMs;
+    if (displayKind !== "running" && childWindow.endMs !== undefined) endMs = childWindow.endMs;
+  } else {
+    const itemStart = Date.parse(row.startedAt ?? "");
+    if (Number.isNaN(itemStart)) return undefined;
+    startMs = itemStart;
+    const itemEnd = Date.parse(row.completedAt ?? "");
+    if (!Number.isNaN(itemEnd)) endMs = itemEnd;
+  }
+  if (endMs !== undefined && endMs >= startMs) return formatElapsed(endMs - startMs);
   if (displayKind !== "running") return undefined;
   return formatElapsed(nowMs - startMs);
 }
@@ -316,9 +354,13 @@ function SubagentCard({
     stableUsage?.inputTokens !== undefined && stableUsage.outputTokens !== undefined
       ? formatUsagePair({ inputTokens: stableUsage.inputTokens, outputTokens: stableUsage.outputTokens })
       : null;
+  const statsSegments: string[] = [];
+  if (turnCount !== undefined) statsSegments.push(`${turnCount} ${turnCount === 1 ? "turn" : "turns"}`);
+  if (callCount !== undefined) statsSegments.push(`${callCount} ${callCount === 1 ? "call" : "calls"}`);
+  if (usage) statsSegments.push(usage);
 
   const nowMs = useNowTick(NOW_TICK_MS);
-  const clock = cardClock(row, displayKind, nowMs);
+  const clock = cardClock(row, displayKind, nowMs, realTurns ? childRunWindow(realTurns) : undefined);
 
   // Per-card expansion, session-and-turn-scoped AND rowKey-scoped so it is
   // stable across the VirtualList/dockview remount (yt2q) and collision-free
@@ -342,39 +384,23 @@ function SubagentCard({
       data-kind={displayKind}
       data-attention={attention ? "true" : undefined}
     >
-      <div className={CLASS.head}>
-        <span className={CLASS.tag} data-testid="subagent-tag">
-          {row.task}
-        </span>
-        {transcriptRef ? <OpenTranscriptButton transcriptRef={transcriptRef} parentRef={sessionRef} /> : null}
-      </div>
       {quoteText && (
         <div className={CLASS.quote} data-testid="subagent-quote">
           {quoteText}
         </div>
       )}
       <div className={CLASS.stats} data-testid="subagent-stats">
-        {turnCount !== undefined && (
-          <>
-            <span>
-              {turnCount} {turnCount === 1 ? "turn" : "turns"}
-            </span>
-            <span className={CLASS.statsSep}>·</span>
-          </>
-        )}
-        {callCount !== undefined && (
-          <>
-            <span>
-              {callCount} {callCount === 1 ? "call" : "calls"}
-            </span>
-            <span className={CLASS.statsSep}>·</span>
-          </>
-        )}
-        {usage && (
-          <>
-            <span>{usage}</span>
-            <span className={CLASS.statsSep}>·</span>
-          </>
+        {/* Segments join with a separator BETWEEN them - never a dangling
+            "·" advertising a segment that has no data. */}
+        {statsSegments.flatMap((segment, i) =>
+          i === 0
+            ? [<span key={segment}>{segment}</span>]
+            : [
+                <span key={`sep-${segment}`} className={CLASS.statsSep}>
+                  ·
+                </span>,
+                <span key={segment}>{segment}</span>,
+              ],
         )}
         <span className={CLASS.statsSpring} />
         {clock && <span className={CLASS.clock}>{clock}</span>}
@@ -537,6 +563,15 @@ registerToolRenderer({
   icon: "delegate",
   summary(item: ItemModel) {
     return item.description ?? "";
+  },
+  // open ⤢ rides the delegate row's trailing slot (visible folded or not) -
+  // ToolCallItem owns the control; the descriptor declares WHAT it targets.
+  openTranscriptRef(item: ItemModel) {
+    const parsed = parseJSONObject(item.output);
+    // Same stable-identity gate as rowFromDelegateItem: an activation-only
+    // job_id result has no child transcript worth opening from here.
+    if (!parsed || !str(parsed, "delegate_id")) return undefined;
+    return str(parsed, "transcript_ref");
   },
   body: DelegateBody,
   // A delegate call is a status card, not a fold-to-open tool row - the same

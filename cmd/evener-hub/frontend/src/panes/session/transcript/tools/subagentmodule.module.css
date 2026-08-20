@@ -45,30 +45,6 @@
   background: var(--attention-bg);
 }
 
-/* Head: the tag (the task, clipped visually only) + the regular open button. */
-.head {
-  display: flex;
-  align-items: center;
-  gap: var(--space-2);
-}
-
-.tag {
-  flex: 1 1 auto;
-  min-width: 0;
-  font-family: var(--font-mono);
-  font-size: var(--font-size-caption);
-  font-weight: var(--font-weight-semibold);
-  text-transform: uppercase;
-  letter-spacing: 0.06em;
-  color: var(--ink-hi);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-.card[data-kind="done"] .tag {
-  color: var(--ink-mid);
-}
-
 /* The quote: the child's newest own words, one line, ellipsized. Italic is
  * the only "this is quoted" marker - no literal quotation marks. */
 .quote {

@@ -637,6 +637,7 @@ async function hydrateAndSubscribe(
     throw err;
   }
   const model = hydrateThread(response, ref, now);
+  hydrateSubagentRows(model, ref);
   applyHydrationResponseCut(pending, ref, model);
   return { model, response };
 }
@@ -691,6 +692,7 @@ async function hydrateAndSubscribeWatch(
     throw err;
   }
   const model = hydrateThread(resp, ref, now);
+  hydrateSubagentRows(model, ref);
   applyHydrationResponseCut(pending, ref, model);
   return model;
 }
@@ -1105,6 +1107,18 @@ function applyToMap(
 // synthesize a delegate row.
 function applyStableDelegateSignal(n: AnyNotification): void {
   if (n.method === "evener/delegate/updated") applyEvenerDelegateUpdated(n.params.delegate, n.params.ref);
+}
+
+// A thread/read snapshot carries the thread's stable delegate projections
+// (evener.diagnostics.delegates) - terminal kind, reasons, usage, and run
+// windows for delegates this session spawned. Notifications only cover LIVE
+// changes, so a freshly opened or historical session's subagent cards would
+// otherwise render from the frozen spawn-call output alone (status stuck
+// "running", no tokens, the spawn's seconds posing as the child's runtime).
+// Hydrate the rows from every read snapshot through the same apply path
+// notifications use (revision-fenced and idempotent, so re-reads are free).
+function hydrateSubagentRows(model: ThreadModel, ref: string): void {
+  for (const delegate of model.delegates ?? []) applyEvenerDelegateUpdated(delegate, ref);
 }
 
 function handleNotification(n: AnyNotification): void {

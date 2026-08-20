@@ -4727,6 +4727,9 @@ function responseWithStableDelegate(ref: string, revision: number, status: strin
 }
 
 describe("stable delegate projection routing", () => {
+  // This describe's reads now hydrate subagent rows; keep them test-local.
+  afterEach(resetSubagentModuleStoreForTests);
+
   test("restores a late stable delegate snapshot from thread/read", async () => {
     const fake = connectFakeClient();
     fake.on("thread/read", () => responseWithStableDelegate("ref_root", 7, "running", "2026-08-15T10:00:00Z"));
@@ -4739,6 +4742,64 @@ describe("stable delegate projection routing", () => {
     expect(model?.delegates).toEqual([
       expect.objectContaining({ delegateId: "dlg_1", projectionRevision: 7, status: "running" }),
     ]);
+  });
+
+  // A historical (or freshly opened) session's delegates arrive IN the read
+  // snapshot (evener.diagnostics.delegates), not via any notification - the
+  // subagent card rows must hydrate from it, or a read-back session renders
+  // its cards from the frozen spawn-call output alone (no terminal kind, no
+  // tokens, no run window).
+  test("the read snapshot's stable delegates hydrate the subagent module rows", async () => {
+    const fake = connectFakeClient();
+    fake.on("thread/read", () => responseWithStableDelegate("ref_root", 7, "completed", "2026-08-15T10:00:00Z"));
+
+    await threadsStore.getState().ensureThread("ref_root");
+
+    const { result } = renderHook(() => useSubagentRows(turnScopeKey("ref_root", "turn_1")));
+    expect(result.current).toHaveLength(1);
+    expect(result.current[0]).toMatchObject({
+      delegateId: "dlg_1",
+      kind: "done",
+    });
+    expect(result.current[0]?.stable?.projectionRevision).toBe(7);
+  });
+
+  // Real stored projections can lack originTurnId (the delegate descriptor
+  // records origin_tool_call_id; older daemons never recorded a turn id).
+  // The row still hydrates: the projection is stashed per session and merged
+  // when the delegate item's own row materializes on mount.
+  test("a snapshot delegate without originTurnId hydrates the row when it materializes later", async () => {
+    const fake = connectFakeClient();
+    fake.on("thread/read", () => {
+      const response = responseWithStableDelegate("ref_root", 7, "completed", "2026-08-15T10:00:00Z");
+      const diagnostics = (
+        response.thread.evener as unknown as { diagnostics: { delegates: Array<Record<string, unknown>> } }
+      ).diagnostics;
+      const first = diagnostics.delegates[0];
+      if (first) delete first.originTurnId;
+      return response;
+    });
+    await threadsStore.getState().ensureThread("ref_root");
+
+    // Nothing mounted yet: no row, but the projection is stashed.
+    const scope = turnScopeKey("ref_root", "turn_9");
+    const { result } = renderHook(() => useSubagentRows(scope));
+    expect(result.current).toHaveLength(0);
+
+    // The delegate item mounts later (VirtualList windows on scroll) and its
+    // row upsert picks the stashed projection up.
+    act(() =>
+      upsertSubagentRow(scope, {
+        rowKey: "dlg:dlg_1",
+        kind: "running",
+        task: "mounted late",
+        resultPreview: "",
+        delegateId: "dlg_1",
+      }),
+    );
+    expect(result.current).toHaveLength(1);
+    expect(result.current[0]?.stable?.projectionRevision).toBe(7);
+    expect(result.current[0]?.kind).toBe("done");
   });
 
   test("ignores a stale delegate revision while max-merging latest activity", async () => {
