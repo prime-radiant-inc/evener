@@ -84,7 +84,7 @@ gate is the API vocabulary, per the max_wait spec's sweep list.
    bytes. TDD; schema + handler + contract in one commit; no schema
    min/max/default keywords (the strict-zero rule).
 4. **Full live 14-card e2e matrix** on fresh builds. Recipe + gotchas:
-   `docs/agentic-testing.md`, plus hard-won rules in
+   `docs/developing-evener/agentic-testing.md`, plus hard-won rules in
    `docs/superpowers/research/2026-06-12-e2e-rerun-addendum.md` and the memory
    file: spawn model `openai/gpt-5.5` (OAuth `openai`, never `oai-work`); NEVER
    `--state-dir`/`EVENER_STATE_DIR`; card command text VERBATIM in spawn prompts

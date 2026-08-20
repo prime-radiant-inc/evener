@@ -461,7 +461,7 @@ ancestry.
 
 Code exploration tells you what the code does, never why. In this repo
 the why is durably recorded: `docs/job-control.md`,
-`docs/sandboxing.md`, `docs/environment.md`,
+`docs/sandboxing.md`, `docs/developing-evener/environment.md`,
 `docs/superpowers/specs/*-design.md`, and `docs/web-ui/decisions.md` are
 normative decision records, and several "obvious bugs" are closed
 questions. A schema-absent-but-still-parsed parameter can mean

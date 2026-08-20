@@ -31,7 +31,7 @@ The Go layer covers the gate and persistence with unit tests
 `agent/session_goal_*_test.go`); this is the live web counterpart that
 proves the palette, the chip, and the marker actually render.
 
-**Surface**: see `docs/agentic-testing.md`, "Driving the web UI" — the
+**Surface**: see `docs/developing-evener/agentic-testing.md`, "Driving the web UI" — the
 selector map there is the single place these hooks are maintained. The
 `window.EvenerAppwire.request("goal/set", …)` /
 `window.EvenerRenderer.sessionId` route this card used to drive died with the
@@ -43,7 +43,7 @@ browser half must go through the real UI, and the exact assertions go to
 
 ## Pre-state
 
-- Build fresh from the branch and run a hub (see `docs/agentic-testing.md`
+- Build fresh from the branch and run a hub (see `docs/developing-evener/agentic-testing.md`
   "Setup checklist"). The default `0.0.0.0:9180` may host an unrelated
   hub; bind the test hub to a kernel-assigned port and use it consistently.
   This card wants the real, signed-in OpenAI credentials (below), so it

@@ -15,7 +15,7 @@ the vanilla frontend was deleted at `660376f78` and there is no global to
 call. The two refusals themselves are alive, and are what this card now
 drives.
 
-**Surface**: see `docs/agentic-testing.md`, "Driving the web UI" and "The
+**Surface**: see `docs/developing-evener/agentic-testing.md`, "Driving the web UI" and "The
 REST surface, and what is no longer on it". Note there is no REST route for
 steer at all; the only non-browser way to reach it is the AppWire socket,
 which Part A uses.
@@ -24,7 +24,7 @@ which Part A uses.
 
 - Hub running on an isolated `$HOME` and free port (never `9180`,
   Jesse's real one — see the Setup checklist in
-  `docs/agentic-testing.md`) with `--evener` resolvable.
+  `docs/developing-evener/agentic-testing.md`) with `--evener` resolvable.
 - A provider credential good enough to run one trivial turn. Anthropic Haiku
   is enough; no OAuth is required.
 - `$HOME/.evener/auth-token` readable (that isolated `$HOME`).

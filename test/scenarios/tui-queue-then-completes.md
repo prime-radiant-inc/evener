@@ -14,7 +14,7 @@ the same queue state.
 
 ## Pre-state
 
-- Complete the full Setup checklist in `docs/agentic-testing.md` in the same
+- Complete the full Setup checklist in `docs/developing-evener/agentic-testing.md` in the same
   Bash shell through the `TOKEN=...` step. Its single `run=$(mktemp -d ...)`
   owns fresh `$run/evener-hub`, `$run/evener`, and `$run/evener-tui` binaries, the
   isolated `$HOME=$run/home` and session state, the kernel-assigned hub port,

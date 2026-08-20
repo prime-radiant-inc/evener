@@ -22,7 +22,7 @@ type StatusProber struct {
 //
 // It is declared independently rather than importing server.StatusInfo on
 // purpose: the hub is a long-running singleton (one flock-guarded process,
-// see docs/conventions/agent-fleets.md) that outlives any single daemon and
+// see docs/developing-evener/conventions/agent-fleets.md) that outlives any single daemon and
 // routinely probes daemons built from a different commit than its own --
 // this codebase decodes an old daemon's absent /status fields as their zero
 // value everywhere for exactly that reason (grep "old daemon"). Pinning the

@@ -30,7 +30,7 @@ way that matters:
   text-normalize-mismatch failure mode is gone too; an id that never comes
   back is the failure now.
 
-**Surface**: see `docs/agentic-testing.md`, "Driving the web UI" —
+**Surface**: see `docs/developing-evener/agentic-testing.md`, "Driving the web UI" —
 specifically "Synchronous vs. async assertion shape", which is this card's
 whole method.
 
@@ -38,7 +38,7 @@ whole method.
 
 - Hub running on an isolated `$HOME` and free port (never `9180`,
   Jesse's real one — see the Setup checklist in
-  `docs/agentic-testing.md`) with `--evener` resolvable.
+  `docs/developing-evener/agentic-testing.md`) with `--evener` resolvable.
 - Anthropic OAuth or API key configured.
 - `$HOME/.evener/auth-token` readable (that isolated `$HOME`).
 - The SPA built (`make build-web`) **before** the hub binary.
@@ -55,7 +55,7 @@ HUB=http://127.0.0.1:$PORT
 
 1. **Drop a pacing `AGENTS.md`** into the workspace so the turn stays in
    flight long enough to click Steer — see "AGENTS.md pacing trick" in
-   `docs/agentic-testing.md`, and steps 1-2 of `web-steer-live-turn.md` for
+   `docs/developing-evener/agentic-testing.md`, and steps 1-2 of `web-steer-live-turn.md` for
    the spawn/second-turn sequence that reliably produces a slow turn.
 2. Wait until `/api/sessions/local:$SID` reports `state=active` with a
    non-empty `active_turn_id`.

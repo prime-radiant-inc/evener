@@ -17,7 +17,7 @@ provider/model, dedupes on first occurrence, and stops at the limit
 (`cmd/evener-hub/internal/hubcore/past.go:653-677`). Nothing in it
 consults a cwd.
 
-**Surface**: see `docs/agentic-testing.md`, "Driving the web UI" — the
+**Surface**: see `docs/developing-evener/agentic-testing.md`, "Driving the web UI" — the
 selector map. The old `.chip-picker-model` / `[data-settings-model-picker]`
 selectors are gone with the vanilla frontend (`660376f78`). Both web
 pickers are the same shared ARIA combobox

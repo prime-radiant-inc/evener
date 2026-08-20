@@ -210,7 +210,7 @@ func TestLoginPATH_SurvivesSandboxInvocationGrant(t *testing.T) {
 
 // --- always-on session scratch vars ---------------------------------------
 
-// TestCommandEnvironment_UnsandboxedSessionExportsScratchVars: docs/environment.md
+// TestCommandEnvironment_UnsandboxedSessionExportsScratchVars: docs/developing-evener/environment.md
 // documents EVENER_SCRATCH_DIR with no sandbox-only caveat, so an unsandboxed
 // session's spawned commands must see EVENER_SCRATCH_DIR and TMPDIR too, not
 // only a sandboxed one.

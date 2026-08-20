@@ -868,7 +868,7 @@ EVENER_MCP_E2E=1 go test ./agent/internal/mcp -run 'TestRealMCP_' -count=1 -v
 ## Environment Variable Tests
 
 Supported runtime environment variables are defined in the `envvars` package
-and documented in `docs/environment.md`. Production code, help text, and test
+and documented in `docs/developing-evener/environment.md`. Production code, help text, and test
 helpers should use those rows instead of hard-coded env names.
 
 When adding a runtime env var:
@@ -876,7 +876,7 @@ When adding a runtime env var:
 - Add one `envvars.Var` row.
 - Use the row's `Name`, `Getenv`, `LookupEnv`, `Trimmed`, or `Assignment`
   helper at call sites.
-- Document it in `docs/environment.md`.
+- Document it in `docs/developing-evener/environment.md`.
 - Keep live-test opt-in gates explicit; a provider credential alone must not
   make a default test issue network requests.
 

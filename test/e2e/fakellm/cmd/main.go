@@ -16,7 +16,7 @@
 // WHY: the mid-turn controls (Steer, Send-while-busy, Stop) can only be
 // exercised while a turn is genuinely in flight. Against a real provider that
 // window is a few seconds and needs an AGENTS.md pacing prompt to widen (see
-// docs/agentic-testing.md); here it is a flag, costs nothing, and needs no
+// docs/developing-evener/agentic-testing.md); here it is a flag, costs nothing, and needs no
 // credential.
 //
 // Every round's messages are printed to stderr, so the operator can see

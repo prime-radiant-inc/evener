@@ -20,7 +20,7 @@ Phase 5.2.
 ## Pre-state
 
 - Fresh binaries from the branch under test; an isolated hub
-  (`docs/agentic-testing.md`); credentialed model.
+  (`docs/developing-evener/agentic-testing.md`); credentialed model.
 - `tmpdir=$(mktemp -d -t evener-e2e-catchup-XXXXX)`.
 
 ## Steps

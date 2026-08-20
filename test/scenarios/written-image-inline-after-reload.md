@@ -11,7 +11,7 @@ and on reload via `enrichThreadFileBackedOutputImages`
 either half regresses, the image appears once and never again — the exact
 regression this card exists for.
 
-**Surface**: see `docs/agentic-testing.md`, "Driving the web UI" — its selector
+**Surface**: see `docs/developing-evener/agentic-testing.md`, "Driving the web UI" — its selector
 map is the single place these hooks are maintained. The `.tool-output-images
 .user-image-card img.user-image-thumb` selectors this card used to name died
 with the vanilla frontend (`660376f78`).
@@ -19,7 +19,7 @@ with the vanilla frontend (`660376f78`).
 ## Pre-state
 
 - A freshly built hub on an isolated `$HOME` and a kernel-assigned port — see
-  the Setup checklist in `docs/agentic-testing.md`. Token at
+  the Setup checklist in `docs/developing-evener/agentic-testing.md`. Token at
   `$HOME/.evener/auth-token` (that isolated one).
 - A hermetic `$WORK` as the session's `working_dir`, and a small valid PNG
   staged somewhere the model can copy or reproduce from.

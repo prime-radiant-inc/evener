@@ -19,7 +19,7 @@ Layer (1) is already pinned deterministically by two scenarios —
 inputs version at `:261-280`), an in-memory index that has to *learn* a
 session's meta changed.
 
-**Surface**: see `docs/agentic-testing.md` — the REST surface table there is
+**Surface**: see `docs/developing-evener/agentic-testing.md` — the REST surface table there is
 authoritative for the session verbs this card drives. The old text used
 `POST /s/$SID/send` and `POST /s/$SID/shutdown`; that shim was deleted at
 `660376f78` and now 404s silently
@@ -62,7 +62,7 @@ broken — that is the failure this card now catches.
 ## Pre-state
 
 - Fresh binaries and a hub on an isolated `$HOME` with a kernel-assigned port —
-  the Setup checklist in `docs/agentic-testing.md`. Never a real hub, never a
+  the Setup checklist in `docs/developing-evener/agentic-testing.md`. Never a real hub, never a
   hardcoded port.
 - A model that can run real turns. A local `ollama` model is the cheapest
   credential-free option and is what the recorded run used
@@ -141,7 +141,7 @@ Those numbers are the shape of the regression, not the current expectation.
 
 - `POST /api/sessions/local:$SID/shutdown` for each spawned session.
 - Kill the hub by the PID you captured; `rm -rf` the run directory and the
-  scratch project dirs (Cleanup recipe in `docs/agentic-testing.md`).
+  scratch project dirs (Cleanup recipe in `docs/developing-evener/agentic-testing.md`).
 
 ## Sharp edges
 

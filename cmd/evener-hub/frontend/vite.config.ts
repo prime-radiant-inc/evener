@@ -42,7 +42,7 @@ export default defineConfig({
     host: "127.0.0.1",
     fs: {
       // Agent worktrees keep cmd/evener-hub/frontend/node_modules as a symlink
-      // to one shared install (see docs/conventions/agent-fleets.md), whose
+      // to one shared install (see docs/developing-evener/conventions/agent-fleets.md), whose
       // realpath sits outside the worktree entirely. global.css's @font-face
       // src ("../../node_modules/...") gets rewritten to that realpath as a
       // /@fs/ request when Vite transforms the CSS, and Vite's fs.allow

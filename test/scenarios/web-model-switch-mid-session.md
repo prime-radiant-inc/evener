@@ -9,7 +9,7 @@ boundary until it empties). Exercises the status strip's model switcher
 (`panes/session/chrome/ModelSwitch.tsx`), the `thread/model/set` RPC
 (`appwire/types.go:19`), and the `thread/model/changed` broadcast (`:94`).
 
-**Surface**: see `docs/agentic-testing.md`, "Driving the web UI" — the
+**Surface**: see `docs/developing-evener/agentic-testing.md`, "Driving the web UI" — the
 selector map there is the single place these hooks are maintained. The
 `[data-model-trigger]` / `[data-model-display]` selectors and
 `assets/model-switch.js` this card used to drive died with the vanilla
@@ -25,7 +25,7 @@ mid-turn, and this card previously asserted that it was.
 ## Pre-state
 
 - Hub running on an isolated `$HOME` and a kernel-assigned port (see the
-  Setup checklist in `docs/agentic-testing.md`). That checklist's `$run`
+  Setup checklist in `docs/developing-evener/agentic-testing.md`). That checklist's `$run`
   directory is where this card writes its scratch files too — never a fixed
   `/tmp/…` name a second concurrent run would clobber (kata `k2rx`). The hub
   needs a real `openai` and a real `anthropic` instance configured (or two
@@ -83,7 +83,7 @@ mid-turn, and this card previously asserted that it was.
 
 6. **[browser-free] Queued-input case.** While the turn from step 4 is still
    active, queue a second message (`turn/queue` over `/rpc`, or Send in the
-   composer — see `docs/agentic-testing.md`; there is no REST queue verb).
+   composer — see `docs/developing-evener/agentic-testing.md`; there is no REST queue verb).
    Wait for the first turn to finish, then re-issue step 4's `curl` *during*
    the drain window and capture the result the same way.
 
@@ -160,7 +160,7 @@ mid-turn, and this card previously asserted that it was.
   does). Don't assert on `ActiveFlags`.
 - The queued-input rejection (step 6) is easy to miss if the drain is fast
   on a quick model — use a prompt with a few tool rounds, or the AGENTS.md
-  pacing trick in `docs/agentic-testing.md`, to widen the window enough to
+  pacing trick in `docs/developing-evener/agentic-testing.md`, to widen the window enough to
   land the call inside it.
 - Note the ref form throughout: `/s/local:$SID`. A bare `/s/$SID` renders
   "Page not found" client-side, by design.

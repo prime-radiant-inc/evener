@@ -14,7 +14,7 @@ available to turn it off).
 
 - Hub + credentials as `ask-web-answer.md` — reuse that card's hub if it is still
   running, otherwise re-run its Pre-state first. The handoff is its run directory, not
-  a port (`docs/agentic-testing.md`, "Handing this hub to a sibling card"); the plain
+  a port (`docs/developing-evener/agentic-testing.md`, "Handing this hub to a sibling card"); the plain
   `evener` binary the one-shot half needs is under it too, and that half never touches
   the hub:
   ```bash
@@ -103,7 +103,7 @@ Leave the hub and `$run` alone — `ask-web-answer.md` started them and its Clea
 kills `$HUBPID` and removes `$run`. If you had to start the hub yourself because
 `EVENER_E2E_RUN` was unset, you own it: `kill "$HUBPID"; rm -rf "$run"`. Never
 `pkill -f evener-hub`, which takes out every other concurrent agent's hub too
-(`docs/agentic-testing.md`, "Cleanup recipe").
+(`docs/developing-evener/agentic-testing.md`, "Cleanup recipe").
 
 ## Sharp edges
 

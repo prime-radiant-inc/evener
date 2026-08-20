@@ -11,7 +11,7 @@ sufficient — the same check `/doc/file` uses. Failing candidates are simply
 skipped (`output_images.go:74-77`), and a notification with nothing to add is
 returned untouched (`:137-139`), so the row is unaffected.
 
-**Surface**: see `docs/agentic-testing.md`, "Driving the web UI" — its selector
+**Surface**: see `docs/developing-evener/agentic-testing.md`, "Driving the web UI" — its selector
 map is the single place these hooks are maintained. The `.tool-output-images` /
 `img.user-image-thumb` selectors this card used to name died with the vanilla
 frontend (`660376f78`); "no thumbnail" now means no
@@ -20,7 +20,7 @@ frontend (`660376f78`); "no thumbnail" now means no
 ## Pre-state
 
 - A freshly built hub on an isolated `$HOME` and a kernel-assigned port — see
-  the Setup checklist in `docs/agentic-testing.md`. Token at
+  the Setup checklist in `docs/developing-evener/agentic-testing.md`. Token at
   `$HOME/.evener/auth-token` (that isolated one).
 - A hermetic `$WORK` as the session's `working_dir`, and a sibling `$OUTSIDE`
   **not** under `$WORK` holding a valid `outside.png`.

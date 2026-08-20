@@ -23,7 +23,7 @@ it worth an e2e card at all:
   any Recent items when `len(resp.Recent) == 0`
   (`cmd/evener-tui/hub_commands.go:510-512`).
 
-**Surface**: see `docs/agentic-testing.md`, "Driving the web UI" — the
+**Surface**: see `docs/developing-evener/agentic-testing.md`, "Driving the web UI" — the
 selector map. The old `button[data-chip="model"]` / `.chip-picker-group`
 / `[data-settings-model-picker]` / `.chip-picker-provider` selectors this
 card used are all gone with the vanilla frontend (`660376f78`). Both
@@ -46,7 +46,7 @@ there is one markup to assert against, not two.
   run; `lunarouter`'s cloudflare tunnel was down for the whole session —
   see Sharp edges). This is a one-time READ out of the real `~/.evener`
   into the isolated `$HOME` — the sanctioned "copy in a scratch
-  credentials.toml first" recipe from `docs/agentic-testing.md`. Nothing
+  credentials.toml first" recipe from `docs/developing-evener/agentic-testing.md`. Nothing
   in this card ever writes to the real `~/.evener`.
 - `evener-hub` built fresh and started against that hermetic env on a
   kernel-assigned port (`-addr 127.0.0.1:0`, read `$PORT` back out of

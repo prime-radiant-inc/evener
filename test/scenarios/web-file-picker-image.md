@@ -24,7 +24,7 @@ Companion scenarios: `web-drag-drop-image.md`,
 `web-paste-image-from-clipboard.md`, `tui-paste-image-from-clipboard.md`,
 `tui-paste-image-path.md`.
 
-**Surface**: see `docs/agentic-testing.md`, "Driving the web UI" — the
+**Surface**: see `docs/developing-evener/agentic-testing.md`, "Driving the web UI" — the
 selector map is where these hooks are maintained. Everything this card
 used to name is gone with the vanilla frontend (`660376f78`):
 `form[data-spawn-form]`, `[data-attach-trigger]`, `[data-file-picker]`,
@@ -38,7 +38,7 @@ combobox, as a real gesture.
 
 - `evener-hub` running on an isolated `$HOME` and a kernel-assigned port
   (never `9180`, Jesse's real one — see the Setup checklist in
-  `docs/agentic-testing.md`). Token at `$HOME/.evener/auth-token`.
+  `docs/developing-evener/agentic-testing.md`). Token at `$HOME/.evener/auth-token`.
 - A frontend built with `make build-web` **before** the hub binary. A
   checkout that never ran it ships a one-line `frontend/dist/PLACEHOLDER`
   and serves no app (rebuild matrix item 3 in the runbook).

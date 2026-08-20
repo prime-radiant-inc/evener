@@ -12,7 +12,7 @@ dashboard ↔ session transitions described in the action bars.
 - `tmux` installed (`which tmux` returns a path; tested on tmux 3.4).
 - `evener-hub` reachable on an isolated `$HOME` and free port
   (never Jesse's port `9180` — see the Setup checklist in
-  `docs/agentic-testing.md`). Token at
+  `docs/developing-evener/agentic-testing.md`). Token at
   `$HOME/.evener/auth-token`.
 - `./evener-tui` built and in repo root (`go build -o evener-tui ./cmd/evener-tui`).
 - At least one live or recent session visible on the dashboard. If

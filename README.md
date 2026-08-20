@@ -120,7 +120,7 @@ that plugin and become available through the plugin path.
 Provider credentials are not created by install. Configure them through the Hub
 or TUI credentials UI, `${XDG_CONFIG_HOME:-~/.config}/evener/credentials.toml`,
 provider environment variables such as `OPENAI_API_KEY`, or OpenAI OAuth. See
-[docs/environment.md](docs/environment.md) for the complete environment variable
+[docs/developing-evener/environment.md](docs/developing-evener/environment.md) for the complete environment variable
 reference.
 
 ### Migrating from Serf
@@ -233,7 +233,7 @@ For local models via Ollama, see [docs/ollama.md](docs/ollama.md).
 
 ### Environment variables
 
-See [docs/environment.md](docs/environment.md) for the complete list. Common
+See [docs/developing-evener/environment.md](docs/developing-evener/environment.md) for the complete list. Common
 variables:
 
 | Variable | Description |

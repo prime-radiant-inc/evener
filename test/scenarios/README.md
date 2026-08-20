@@ -70,7 +70,7 @@ anchors is retired; see git history for `scenario-cite-migrate.sh`.)
 Most scenarios assume:
 - a `evener-hub` you built and started yourself, on an isolated `$HOME`
   and a free port. Never Jesse's real hub or his port `9180`. See
-  "Setup checklist" in `docs/agentic-testing.md` for the exact recipe —
+  "Setup checklist" in `docs/developing-evener/agentic-testing.md` for the exact recipe —
   a card that says nothing about the hub inherits that default.
 - the auth token at `$HOME/.evener/auth-token` (that isolated `$HOME`,
   never Jesse's real one)
@@ -82,7 +82,7 @@ When a scenario needs different state (e.g. no daemon running, OAuth
 signed out), it says so in **Pre-state** and provides commands to
 reach that state.
 
-**See `docs/agentic-testing.md`** for practical patterns and recipes:
+**See `docs/developing-evener/agentic-testing.md`** for practical patterns and recipes:
 hermetic workdirs, the AGENTS.md pacing trick for keeping a turn in
 `processing`, the synchronous-vs-async DOM assertion shape for
 optimistic-rendering scenarios, tmux form-fill conventions

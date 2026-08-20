@@ -8,7 +8,7 @@ deleted project is not silently archived (delete scrubs the archive/favorite
 decision rows for that working dir, so a fresh session at the same path comes
 back as a normal active project rather than stuck under Archived).
 
-**Surface**: see `docs/agentic-testing.md`, "Driving the web UI" — the selector
+**Surface**: see `docs/developing-evener/agentic-testing.md`, "Driving the web UI" — the selector
 map there is the single place these hooks are maintained. `onDeletedRedirect`
 and the rest of `sidebar.js` died with the vanilla frontend (`660376f78`); the
 delete path is now `Rail.tsx`'s `confirmDelete` (`:399-432`) over
@@ -30,7 +30,7 @@ than dropped.
 ## Pre-state
 
 - A freshly built `evener-hub` on an isolated `$HOME` and a kernel-assigned port
-  — the Setup checklist in `docs/agentic-testing.md`. Never a real hub. Build
+  — the Setup checklist in `docs/developing-evener/agentic-testing.md`. Never a real hub. Build
   the frontend (`make build-web`) before the hub for step 5.
 - Three disposable scratch directories, **none of them inside a git repo** (see
   Sharp edges — `identifier.ResolveProject` collapses paths inside one repo to
@@ -127,7 +127,7 @@ Steps 1-4 and 6 are **browser-free** and carry every exact assertion. Only step
   own session bookkeeping — it never touches the working directory or any git
   worktrees on disk.
 - Kill the hub by the PID you captured and `rm -rf` the run directory (Cleanup
-  recipe in `docs/agentic-testing.md`).
+  recipe in `docs/developing-evener/agentic-testing.md`).
 
 ## Sharp edges
 

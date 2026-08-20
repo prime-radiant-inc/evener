@@ -8,7 +8,7 @@ still render and be answerable after the restart. Mirrors
 `cmd/evener/serve_ask_test.go#TestServeAsk_RestoreReportsAwaitingImmediately` at the
 live, hub-fronted level, plus `reconnect-auto-resume.md`'s daemon-kill technique.
 
-**Surface**: see `docs/agentic-testing.md` — "The REST surface, and what is no longer on
+**Surface**: see `docs/developing-evener/agentic-testing.md` — "The REST surface, and what is no longer on
 it" and "Driving the web UI with superpowers-chrome:browsing". The answering surface is the
 composer's **ask dock** (`cmd/evener-hub/frontend/src/panes/session/composer/askDock/`); the
 `[data-ask-card]` / `.ask-question-header` / `[data-ask-option]` / `[data-ask-send-btn]`
@@ -24,7 +24,7 @@ Chrome.
 - Hub, `$HUB`, `$TOKEN`, `$HUBPID` and the isolated `$HOME` **same as
   `ask-web-answer.md`** — reuse that card's hub if it is still running, otherwise re-run
   its Pre-state first. The handoff is its run directory, not a port
-  (`docs/agentic-testing.md`, "Handing this hub to a sibling card"):
+  (`docs/developing-evener/agentic-testing.md`, "Handing this hub to a sibling card"):
   ```bash
   run=${EVENER_E2E_RUN:?run ask-web-answer.md's Pre-state first, then export EVENER_E2E_RUN="$run"}
   export HOME="$run/home"

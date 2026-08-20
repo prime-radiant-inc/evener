@@ -17,7 +17,7 @@ network calls), so a synthetic record with a future expiry exercises it
 exactly as a real sign-in would.
 
 ```bash
-# Isolated everything, per docs/agentic-testing.md's Setup checklist.
+# Isolated everything, per docs/developing-evener/agentic-testing.md's Setup checklist.
 run=$(mktemp -d -t evener-e2e-oauth-wins-XXXXXX)
 go build -o "$run/evener" ./cmd/evener
 go build -o "$run/evener-hub" ./cmd/evener-hub

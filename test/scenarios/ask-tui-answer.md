@@ -10,7 +10,7 @@ submitting through the overlay does.
 
 - Credentials + hub, same as `ask-web-answer.md` — reuse that card's hub if it is still
   running, otherwise re-run its Pre-state first. The handoff is its run directory, not a
-  port (`docs/agentic-testing.md`, "Handing this hub to a sibling card"), and
+  port (`docs/developing-evener/agentic-testing.md`, "Handing this hub to a sibling card"), and
   **never pass `--state-dir`/`EVENER_STATE_DIR`** to anything here:
   ```bash
   run=${EVENER_E2E_RUN:?run ask-web-answer.md's Pre-state first, then export EVENER_E2E_RUN="$run"}
@@ -161,7 +161,7 @@ Leave the hub and `$run` alone — `ask-web-answer.md` started them and its Clea
 kills `$HUBPID` and removes `$run` (including this card's `evener-tui` and stderr log).
 If you had to start the hub yourself because `EVENER_E2E_RUN` was unset, you own it:
 `kill "$HUBPID"; rm -rf "$run"`. Never `pkill -f evener-hub`, which takes out every
-other concurrent agent's hub too (`docs/agentic-testing.md`, "Cleanup recipe").
+other concurrent agent's hub too (`docs/developing-evener/agentic-testing.md`, "Cleanup recipe").
 
 ## Sharp edges
 

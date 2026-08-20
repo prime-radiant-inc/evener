@@ -47,7 +47,7 @@ default).**"); this card only runs with the raised config below.
 ## Pre-state
 
 - Fresh binaries from the branch under test (`job-control-spec`); an isolated hub, per the Setup checklist
-  (`docs/agentic-testing.md`; never Jesse's real hub on `9180`);
+  (`docs/developing-evener/agentic-testing.md`; never Jesse's real hub on `9180`);
   credentialed model that can drive a multi-step delegation plan
   (the orchestrator picks the spawn model at run time, e.g.
   `openai/gpt-5.5`).

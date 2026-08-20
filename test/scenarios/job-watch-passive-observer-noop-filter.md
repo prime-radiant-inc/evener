@@ -16,7 +16,7 @@ terminal `communicate(end_turn:true)` callbacks.
 ## Pre-state
 
 - Fresh binaries from the branch under test; an isolated hub
-  (`docs/agentic-testing.md` setup checklist); credentialed model.
+  (`docs/developing-evener/agentic-testing.md` setup checklist); credentialed model.
 - `tmpdir=$(mktemp -d -t evener-e2e-passive-observer-XXXXX)`.
 - Create the successful read target before spawning:
 

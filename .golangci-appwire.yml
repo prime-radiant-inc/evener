@@ -48,7 +48,7 @@ linters:
     rules:
       # Note the direction: if this anchored pattern ever stops matching — the
       # way golangci's cross-worktree cache can turn reported paths into
-      # `../../server/…` (see docs/conventions/naming.md) — this run excludes
+      # `../../server/…` (see docs/developing-evener/conventions/naming.md) — this run excludes
       # everything and goes quiet, where the main config's `path:` exclusions
       # go loudly red instead. That asymmetry is only safe because the same
       # cache state reds the main sweep first: server/appwire_*_test.go holds

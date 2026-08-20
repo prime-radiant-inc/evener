@@ -3,7 +3,7 @@
 **Date:** 2026-06-12 (evening run) · **Base:** `5469dd63` (six commits past the
 14/14 run at `0c22499d` recorded in `2026-06-12-e2e-coverage-report.md`) ·
 **Model:** `openai/gpt-5.5` (OAuth `openai` instance) · **Runner:** sonnet
-subagent per `docs/agentic-testing.md`, sequential, hermetic workdirs ·
+subagent per `docs/developing-evener/agentic-testing.md`, sequential, hermetic workdirs ·
 **Ledger:** `2026-06-12-e2e-rerun-ledger.md` (verbatim, including the
 orchestrator-driven card-1 retry).
 

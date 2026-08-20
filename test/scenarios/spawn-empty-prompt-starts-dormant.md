@@ -31,7 +31,7 @@ checkable:
   `web_api_tree.go:1334`) and to the rail as
   `[data-testid="rail-row-not-started"]`.
 
-**Surface**: see `docs/agentic-testing.md`, "Driving the web UI" — the
+**Surface**: see `docs/developing-evener/agentic-testing.md`, "Driving the web UI" — the
 selector map there is the single place these hooks are maintained. This
 card names only `spawn-prompt-card`, `spawn-submit`, `rail-row-not-started`
 and the session pane's empty state; anything else, grep `data-testid` in
@@ -41,7 +41,7 @@ and the session pane's empty state; anything else, grep `data-testid` in
 
 - Hub running with auth set up, on an isolated `HOME` and a
   kernel-assigned port (never Jesse's port 9180) — see the Setup
-  checklist in `docs/agentic-testing.md`. Assert `location.port` in the
+  checklist in `docs/developing-evener/agentic-testing.md`. Assert `location.port` in the
   browser before trusting anything you see.
 - **`past_index_rebuild_interval = "2s"` in the hub's `hub.toml`.** The
   default is 60s (`cmd/evener-hub/config.go:62,134-135`) and `dormant` is

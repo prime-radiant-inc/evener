@@ -416,7 +416,7 @@ lane A cannot read lane B. Because inheritance is automatic, the flag only goes 
 on a build where subagent/worktree scoping already holds, so the first `delegate`
 never punches a hole in the boundary you opted into. Resumed delegates re-resolve
 their persisted policy the same way the root session does. See
-[docs/worktrees.md](worktrees.md) for the worktree model itself.
+[docs/developing-evener/worktrees.md](developing-evener/worktrees.md) for the worktree model itself.
 
 ## Hooks and MCP under a sandbox
 
@@ -528,8 +528,8 @@ suite runs the generated profiles under the real `sandbox-exec` when
 
 ## Related
 
-- [docs/worktrees.md](worktrees.md) — the worktree model that backs delegate
+- [docs/developing-evener/worktrees.md](developing-evener/worktrees.md) — the worktree model that backs delegate
   isolation.
-- [docs/environment.md](environment.md) — the environment variables evener reads.
+- [docs/developing-evener/environment.md](developing-evener/environment.md) — the environment variables evener reads.
 - [docs/subagent-runtime-contracts.md](subagent-runtime-contracts.md) — the runtime
   contracts subagents, plugins, and hooks operate under.

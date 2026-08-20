@@ -16,7 +16,7 @@ import (
 //
 // It binds "127.0.0.1:0" and reads the real port back from ln.Addr(); it
 // never dials a fixed port (kata 68fm is the same lesson for evener-hub — see
-// cmd/evener-hub/main_ephemeral_port_test.go and docs/agentic-testing.md).
+// cmd/evener-hub/main_ephemeral_port_test.go and docs/developing-evener/agentic-testing.md).
 func TestFake429Smoke(t *testing.T) {
 	const retryAfter = "3" // deliberately not defaultRetryAfterSeconds ("8"),
 	// so a handler that ignores the configured value and always answers "8"

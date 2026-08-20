@@ -14,7 +14,7 @@ caller-event rail.
 ## Pre-state
 
 - Fresh binaries from the branch under test; hub reachable (own hub via
-  `docs/agentic-testing.md`, or an isolated `$HOME` hub on a spare
+  `docs/developing-evener/agentic-testing.md`, or an isolated `$HOME` hub on a spare
   port); credentialed model.
 - `tmpdir=$(mktemp -d -t evener-e2e-snide-observer-XXXXX)`.
 

@@ -14,7 +14,7 @@ heavy and worth its own scenario.
 
 - Hub running with `--evener` resolvable, on an isolated `$HOME` and a
   free port (never Jesse's port `9180` — see the Setup checklist in
-  `docs/agentic-testing.md`).
+  `docs/developing-evener/agentic-testing.md`).
 - OpenAI OAuth signed in (or an alternative model the harness
   knows about).
 - `git` on PATH. Network access to GitHub.

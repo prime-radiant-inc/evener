@@ -15,7 +15,7 @@ later removed as dead public API (issue #163); `SetModel`/
 
 - Hub running on an isolated `$HOME` and a free port (never `9180`,
   Jesse's real one — see the Setup checklist in
-  `docs/agentic-testing.md`).
+  `docs/developing-evener/agentic-testing.md`).
 - Path to write a transcript: `$HOME/.local/state/evener/projects/`.
 
 ## Steps

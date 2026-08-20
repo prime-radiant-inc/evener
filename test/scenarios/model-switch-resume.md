@@ -12,7 +12,7 @@ live-notification convergence.
 
 - An isolated hub built from the branch under test, running with `-evener` set
   so it can spawn fresh daemons on resume — the scratch `$HOME` and
-  kernel-assigned port from `docs/agentic-testing.md`'s Setup checklist,
+  kernel-assigned port from `docs/developing-evener/agentic-testing.md`'s Setup checklist,
   never Jesse's real hub. The isolation is load-bearing twice over here:
   this card kills a daemon it finds by globbing the run directory, and that
   glob has to be able to name only its own daemons.

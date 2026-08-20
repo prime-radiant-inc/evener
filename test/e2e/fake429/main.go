@@ -11,7 +11,7 @@
 //
 // <listen-addr> is host:port to listen on. Use 127.0.0.1:0 to let the
 // kernel assign a free port rather than hardcoding one (kata 68fm is the
-// same lesson for evener-hub — see docs/agentic-testing.md) and read the
+// same lesson for evener-hub — see docs/developing-evener/agentic-testing.md) and read the
 // real port back from the "fake429 listening on ..." line this prints to
 // stderr. [retry-after-seconds] is the value sent in the 429 response's
 // Retry-After header; it defaults to 8.

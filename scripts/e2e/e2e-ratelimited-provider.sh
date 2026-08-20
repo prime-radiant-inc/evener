@@ -88,7 +88,7 @@ fi
 # One unique run directory. Binaries, $HOME, fixtures, logs, and PID files
 # all live under it, so two concurrent runs (two agents, or two calls of
 # this script) cannot collide with each other or with a real hub — the same
-# reasoning docs/agentic-testing.md's setup checklist uses.
+# reasoning docs/developing-evener/agentic-testing.md's setup checklist uses.
 e2e_make_run_dir "evener-e2e-fake429" ".e2e-ratelimited-provider"
 e2e_setup_reaper "$run" "$SCRIPT_NAME" "$repo_root"
 
@@ -141,7 +141,7 @@ Retry-After; /v1/models still resolves so launch-check succeeds.
   Attach a TUI:
     "$run/evener-tui" --hub-addr "$hub_addr" --auth-token "$token" --no-auto-start-hub
 
-  Or drive the REST shim directly (see docs/agentic-testing.md):
+  Or drive the REST shim directly (see docs/developing-evener/agentic-testing.md):
     curl -H "Authorization: Bearer $token" "$hub_addr/api/..."
 
   When done:

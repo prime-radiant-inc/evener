@@ -9,7 +9,7 @@ notification channel — driven by the hub's `evener/attention/changed` broadcas
 ask-specific wiring (`docs/superpowers/specs/2026-07-03-attention-status-model-design.md`
 §11).
 
-**Surface**: see `docs/agentic-testing.md` — "The REST surface, and what is no longer on
+**Surface**: see `docs/developing-evener/agentic-testing.md` — "The REST surface, and what is no longer on
 it", and "Driving the web UI with superpowers-chrome:browsing" for the selector map and
 **"Seeding preferences before the first load"**, which this card depends on completely.
 Four facts that invert what this card used to say:
@@ -39,7 +39,7 @@ Steps 1, 3 and 5 are **browser-free** (REST). Steps 2, 4 and 6 need Chrome.
 - Hub, `$HUB`, `$TOKEN`, and the isolated environment exactly as `ask-web-answer.md`'s
   Pre-state — reuse that card's hub if it is still running, otherwise re-run its
   Pre-state first. The handoff is its run directory, not a port
-  (`docs/agentic-testing.md`, "Handing this hub to a sibling card"):
+  (`docs/developing-evener/agentic-testing.md`, "Handing this hub to a sibling card"):
   ```bash
   run=${EVENER_E2E_RUN:?run ask-web-answer.md's Pre-state first, then export EVENER_E2E_RUN="$run"}
   export HOME="$run/home"

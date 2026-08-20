@@ -8,7 +8,7 @@ hub should silently spawn a fresh daemon via `hubThreadResume`
 is the "server-side Layer 3" of the mggf design; the UI `Reconnect & retry`
 button uses the SAME path.
 
-**Surface**: see `docs/agentic-testing.md`, "The REST surface, and what is no
+**Surface**: see `docs/developing-evener/agentic-testing.md`, "The REST surface, and what is no
 longer on it" and "Driving the web UI" — the selector map there is the single
 place these hooks are maintained. This card is now runnable **end to end
 without a browser**: the resume is triggered by two entry points that share
@@ -21,7 +21,7 @@ placeholder is not a stable hook at all — see step 6.
 
 - An isolated hub built from the branch under test, running with `-evener` set
   so it can spawn fresh daemons — the scratch `$HOME` and kernel-assigned
-  port from the Setup checklist in `docs/agentic-testing.md`, never Jesse's
+  port from the Setup checklist in `docs/developing-evener/agentic-testing.md`, never Jesse's
   real hub. Every `~/.evener/run` path below is that isolated home's
   rendezvous dir (`rendezvous.DefaultDir`, `rendezvous/rendezvous.go#DefaultDir`):
   step 2 globs it for a pid and step 3 kills that pid, so under a real

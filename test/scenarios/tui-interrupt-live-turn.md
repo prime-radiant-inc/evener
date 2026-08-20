@@ -21,7 +21,7 @@ palette as soon as the turn starts.
 - `tmux` installed (tested on tmux 3.4).
 - `evener-hub` reachable on an isolated `$HOME` and free port
   (never Jesse's port `9180` — see the Setup checklist in
-  `docs/agentic-testing.md`). Token at
+  `docs/developing-evener/agentic-testing.md`). Token at
   `$HOME/.evener/auth-token` (`./evener-hub` launches it; web-only auth).
 - `./evener-tui` and `./evener-hub` built and present in the repo root
   (`go build -o evener-tui ./cmd/evener-tui && go build -o evener-hub

@@ -7,7 +7,7 @@ TUI session header. A deterministic gate pins the complete `hubapi.StateWord`
 vocabulary, including `errored`, without pretending this setup can manufacture
 every owning runtime state.
 
-**Surface**: see `docs/agentic-testing.md`, "Driving the web UI" — the
+**Surface**: see `docs/developing-evener/agentic-testing.md`, "Driving the web UI" — the
 selector map there is the single place these hooks are maintained. This card
 used to query `[data-ref="local:<id>"]`, `.status-icon` and `data-ask`, all
 of which died with the vanilla frontend (`660376f78`). The rail row is now
@@ -19,7 +19,7 @@ of which died with the vanilla frontend (`660376f78`). The rail row is now
 ## Pre-state
 
 - Hub running with a fresh, isolated `$HOME` (its own `~/.evener`, kernel-
-  assigned port — see the Setup checklist in `docs/agentic-testing.md`), real
+  assigned port — see the Setup checklist in `docs/developing-evener/agentic-testing.md`), real
   credentials, no prior sessions.
 - A TUI (`evener-tui`) pointed at the same hub, in a tmux session named from
   your own `$run` dir. Use a tall window (`-y 300`+) — the session header

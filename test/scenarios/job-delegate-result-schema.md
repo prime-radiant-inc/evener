@@ -30,7 +30,7 @@ own `transcript_ref`, the `delegate_send` result, or `delegates.jsonl`.
 ## Pre-state
 
 - Fresh binaries from the branch under test; an isolated hub
-  (`docs/agentic-testing.md` setup checklist); credentialed model that
+  (`docs/developing-evener/agentic-testing.md` setup checklist); credentialed model that
   follows deliberate-misbehavior test instructions.
 - `tmpdir=$(mktemp -d -t evener-e2e-jschema-XXXXX)`.
 - The schema used throughout:

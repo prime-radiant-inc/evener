@@ -24,7 +24,7 @@ command and the header chip are wired to it.
 - Fresh binaries and a hub on a kernel-assigned port, both under one
   `mktemp` run directory — never a fixed `/tmp/evener-hub-test` a second
   concurrent build would overwrite mid-run (kata `k2rx`), never a port a
-  human picked (kata `68fm`). Same recipe as `docs/agentic-testing.md`'s
+  human picked (kata `68fm`). Same recipe as `docs/developing-evener/agentic-testing.md`'s
   Setup checklist:
   ```bash
   run=$(mktemp -d -t evener-e2e-goaltui-XXXXXX)
@@ -62,7 +62,7 @@ command and the header chip are wired to it.
    ```
 
 2. **Spawn a session** through the new-session form (see the tmux
-   form-fill recipe in `docs/agentic-testing.md`). Set `working_dir` to
+   form-fill recipe in `docs/developing-evener/agentic-testing.md`). Set `working_dir` to
    `$tmpdir`, model `openai/gpt-5.4-mini`, and a trivial first prompt
    (`Say hello and stop.`). Wait for the spawn turn to reach idle:
    ```bash
@@ -130,7 +130,7 @@ command and the header chip are wired to it.
 ```bash
 tmux kill-session -t "$TMUX_SESSION" 2>/dev/null
 kill "$HUBPID" 2>/dev/null   # by pid: `pkill -f evener-hub` would take out
-                             # another agent's hub too (docs/agentic-testing.md)
+                             # another agent's hub too (docs/developing-evener/agentic-testing.md)
 rm -rf "$run" "$tmpdir"
 ```
 

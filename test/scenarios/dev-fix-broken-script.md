@@ -11,7 +11,7 @@ before mutating it.
 
 - Hub running with `--evener` resolvable, on an isolated `$HOME` and a
   free port (never Jesse's port `9180` — see the Setup checklist in
-  `docs/agentic-testing.md`).
+  `docs/developing-evener/agentic-testing.md`).
 - OAuth signed in for whichever model you pick (`openai/gpt-5.5` per
   user instruction, or substitute).
 - `python3` on PATH.

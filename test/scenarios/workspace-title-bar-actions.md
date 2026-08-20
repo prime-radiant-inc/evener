@@ -8,7 +8,7 @@ server-side counterpart to `SessionActionsMenu.test.tsx`: did the daemon
 actually stop / compact / exit? Without this, a regression in the daemon-side
 wiring of these RPCs would not be caught.
 
-**Surface**: see `docs/agentic-testing.md`, "The REST surface, and what is no
+**Surface**: see `docs/developing-evener/agentic-testing.md`, "The REST surface, and what is no
 longer on it" — the verb table there is the single place these routes are
 maintained. This card is **almost entirely browser-free**; only step 2b's
 queue leg needs a client, because queue has no REST route at all. The old
@@ -20,7 +20,7 @@ silently, leaving the daemon running — every action below uses
 
 - Hub running on an isolated `$HOME` and free port (never `9180`,
   Jesse's real one — see the Setup checklist in
-  `docs/agentic-testing.md`) with `--evener` resolvable (sibling or
+  `docs/developing-evener/agentic-testing.md`) with `--evener` resolvable (sibling or
   PATH).
 - OpenAI OAuth signed in (`./evener openai status` shows
   `source=oauth`).
@@ -140,7 +140,7 @@ head and runs it as a fresh user turn.
    echo "post-queue settled state=$state turn_count=$tc baseline=$tc_baseline"
    # Confirm the queued text appears in the transcript as a USER turn AFTER
    # the interrupted turn's cancellation marker. Use evener-doctor rather than
-   # hand-parsing JSONL (see docs/agentic-testing.md, "Inspecting transcript
+   # hand-parsing JSONL (see docs/developing-evener/agentic-testing.md, "Inspecting transcript
    # and meta on disk"):
    go run ./cmd/evener-doctor transcript "$SID" --format outline --range last:20
    ```

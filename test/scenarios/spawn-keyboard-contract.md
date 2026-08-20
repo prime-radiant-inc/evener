@@ -40,7 +40,7 @@ picks the highlighted option") pins the picker half in jsdom. This card
 proves the same key does not also start a session, which is the half a
 component test cannot see.
 
-**Surface**: see `docs/agentic-testing.md`, "Driving the web UI" — the
+**Surface**: see `docs/developing-evener/agentic-testing.md`, "Driving the web UI" — the
 selector map there is the single place these hooks are maintained. This
 card names only `spawn-prompt-card`, `spawn-submit`, the picker's ARIA
 roles (`role="combobox"` with `aria-label="Model"`, `role="listbox"`,
@@ -54,7 +54,7 @@ roles (`role="combobox"` with `aria-label="Model"`, `role="listbox"`,
   `$HOME` with `-addr 127.0.0.1:0`, reading the port back from the hub's
   own `listening on 127.0.0.1:<port>` log line — never a port written
   into this card or handed over in a dispatch prompt. Full recipe: the
-  Setup checklist in `docs/agentic-testing.md`. Assert `location.port`
+  Setup checklist in `docs/developing-evener/agentic-testing.md`. Assert `location.port`
   inside every `eval` before trusting what it returns.
 - `make build-web` **before** the hub binary, or the hub embeds
   `dist/PLACEHOLDER` and serves no app at all.

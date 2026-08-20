@@ -6,7 +6,7 @@ answering layer (§6.1): a session ends its turn on a posted question, rests `aw
 the web surfaces the model's real options, and the composed reply reaches the model as an
 ordinary next user message.
 
-**Surface**: see `docs/agentic-testing.md` — "The REST surface, and what is no longer on
+**Surface**: see `docs/developing-evener/agentic-testing.md` — "The REST surface, and what is no longer on
 it" for the endpoints, "Driving the web UI with superpowers-chrome:browsing" for the
 `/auth` recipe and selector map. Two facts this card is built on, because they invert what
 it used to say:
@@ -29,7 +29,7 @@ gesture.
 ## Pre-state
 
 - Build fresh binaries and start an isolated hub, per the Setup checklist in
-  `docs/agentic-testing.md`. Never a real hub, never a hardcoded port — one `mktemp` run
+  `docs/developing-evener/agentic-testing.md`. Never a real hub, never a hardcoded port — one `mktemp` run
   directory names everything:
   ```bash
   run=$(mktemp -d -t evener-e2e-ask-web-XXXXXX)
@@ -73,7 +73,7 @@ gesture.
   whole handoff — `$HOME`, the port, the token and the pid all re-derive from files
   under it, so no sibling has to know a port number and two agents running the set
   concurrently never meet. See "Handing this hub to a sibling card" in
-  `docs/agentic-testing.md`.
+  `docs/developing-evener/agentic-testing.md`.
 - The browser steps need a real SPA bundle: a checkout that has never run `make build-web`
   ships a one-line `frontend/dist/PLACEHOLDER` and serves no app. Build the frontend
   **before** the hub (rebuild-matrix item 3 in the runbook).
