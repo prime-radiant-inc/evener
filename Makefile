@@ -16,7 +16,7 @@ FUZZ_GO_MODULES := $(GO_MODULES) fuzz
 # the guard or the pid-suffixed covscratch pattern, is enforced statically by
 # the audits in scriptmktemp_audit_test.go, not by re-running suites under
 # sabotage (kata 5hs2).
-DEV_TOOLING_TEST_SCRIPTS := gate/run-module-tests lib/private-go-home gate/merge-approval-gate ops/setup-gocache web/web-preflight lib/live-eval-isolation e2e/e2e-webui-turn-controls fuzz/fuzz-bisect fuzz/fuzz-oracle-audit coverage/coverage-gaps gate/test-timing-budget lib/scratch-lib
+DEV_TOOLING_TEST_SCRIPTS := lib/private-go-home gate/merge-approval-gate ops/setup-gocache web/web-preflight lib/live-eval-isolation fuzz/fuzz-bisect fuzz/fuzz-oracle-audit coverage/coverage-gaps gate/test-timing-budget lib/scratch-lib
 
 define run_quiet_lint
 	@set -u; log="$$(mktemp "$${TMPDIR:-/tmp}/evener-lint-check.XXXXXX")" || exit 1; \

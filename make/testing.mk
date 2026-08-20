@@ -60,6 +60,12 @@ test-dev-tooling:
 # concurrent stream inside run-module-tests.sh (MAKE is passed through so it can
 # re-enter this Makefile's test-web target); it is node work, so it overlaps the
 # Go waves instead of adding its runtime on the end. WEB=0 skips it.
+# run-module-tests.sh's own contract — including that every test stream gets a
+# private HOME and TMPDIR — is currently unpinned: run-module-tests-selftest.sh,
+# the only suite that proved it, faked `go` and `mktemp` on PATH, which
+# docs/developing-evener/testing.md's rule against fake-toolchain selftests
+# bans outright, and was deleted. The port that would pin this contract
+# honestly is tracked as issue #293.
 ## The default local test gate: Go modules (short mode) plus the frontend,
 ## run concurrently.
 ## proves: Root short-mode tests, other module tests, and frontend
