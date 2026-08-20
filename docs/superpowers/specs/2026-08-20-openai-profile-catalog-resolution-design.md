@@ -2,208 +2,160 @@
 
 ## Goal
 
-Make `NewOpenAIProfile` resolve its model metadata from the model catalog, and
-give Bedrock's OpenAI inference-profile IDs a catalog key to resolve to.
+Let Evener talk to Amazon Bedrock's OpenAI-compatible Responses endpoint, by
+giving its inference-profile IDs a catalog key to resolve to and by taking the
+web-search capability from the catalog instead of hardcoding it.
 
-One root cause produces four wrong values today. `NewOpenAIProfile`
-(`agent/provider/profile.go:814`) consults the catalog for exactly one field —
-effort levels, via `resolveEffortLevels` (`profile.go:16-24`) — and hardcodes
-the rest: `contextWindow: 400_000` (`:820`) and `webSearch: true` (`:824`).
-Separately, Bedrock addresses models as inference-profile IDs that LiteLLM has
-no key for, so even the one catalog-driven field misses.
-
-The immediate symptom is that Evener cannot talk to Bedrock at all:
+Two things break today. `NewOpenAIProfile` (`agent/provider/profile.go:841`)
+hardcodes `webSearch: true`, and Bedrock rejects the entire request — not just
+the tool — when OpenAI's hosted `web_search` is present:
 
 ```
 bedrock error (status=0): responses.create(stream): web search is not supported
 for this request
 ```
 
-But web search is the least of it. On a Bedrock instance today:
-
-| Value | Now | Correct |
-| --- | --- | --- |
-| Reasoning effort `max` | silently clamped to `xhigh` | `max` |
-| Context window | 400,000 | 272,000 |
-| Max output tokens | 0 | 128,000 |
-| Pricing | absent (`cost_usd` null) | $1.10/$6.60 per M |
-| Web search | requested, request rejected | not requested |
-
-The effort clamp is the dangerous one. `resolveEffortLevels` falls back to the
-profile default `low/medium/high/xhigh` (`:827`), which has no `max`;
-`ClampReasoningEffort` (`llm/types.go:699`) finds no level of rank ≥ `max` (6)
-and returns the highest available, `xhigh` (5). A run labelled "luna-max" would
-silently be an xhigh run.
+Underneath that sits a quieter failure. Bedrock's IDs resolve no catalog entry
+at all, so `resolveEffortLevels` falls back to the profile default
+`low/medium/high/xhigh` (`:854`), and `ClampReasoningEffort`
+(`llm/types.go:699`) finds no level ranked at or above `max` (6) and returns the
+highest it knows, `xhigh` (5). A run asked for `max` silently becomes an xhigh
+run — a mislabeled measurement, which is worse than a failed one.
 
 ## Design
 
 ### 1. Give Bedrock's OpenAI IDs a catalog key
 
-LiteLLM already carries the data, under `bedrock_mantle/openai.gpt-5.6-luna`:
-pricing, `max_input_tokens: 272000`, `max_output_tokens: 128000`,
-`supports_reasoning`, `supports_prompt_caching`,
+LiteLLM already carries the data under `bedrock_mantle/openai.gpt-5.6-luna`:
+pricing, context, output cap, `supports_reasoning`, `supports_prompt_caching`,
 `supported_endpoints: ["/v1/responses"]`.
 
 The gap is naming, and it is narrow. LiteLLM files Anthropic's Bedrock models
-under region-prefixed keys that match what Bedrock advertises, but files
+under region-prefixed keys matching what Bedrock advertises, and files only
 OpenAI's under a `bedrock_mantle/` key with no such alias:
 
-| Bedrock inference-profile ID | resolves today |
+| Bedrock inference-profile ID | resolved before |
 | --- | --- |
 | `us.anthropic.claude-opus-5` | yes |
 | `global.anthropic.claude-opus-5` | yes |
-| `us.anthropic.claude-sonnet-4-6` | yes |
 | `us.openai.gpt-5.6-luna` | **no** |
 | `global.openai.gpt-5.6-luna` | **no** |
 
-So this is not a general "normalize Bedrock IDs" problem. Add one alias step to
-`LookupModelInfo`'s existing fallback chain (`llm/model_catalog.go:121-150`),
-after the exact lookup and the last-path-segment retry: an ID matching
-`us.openai.<rest>` or `global.openai.<rest>` retries as
-`bedrock_mantle/openai.<rest>`.
+`bedrockOpenAICatalogKey` (`llm/model_catalog.go`) maps `us.openai.<rest>` and
+`global.openai.<rest>` to `bedrock_mantle/openai.<rest>`, wired as a fallback in
+`LookupModelInfo` after the exact, last-segment, and dated-family lookups. Those
+two scopes are the complete set for OpenAI, not a sample — verified against
+`ListInferenceProfiles`, which returns only `us` and `global` for OpenAI models.
+Anthropic's models do use further scopes (`eu.`/`apac.`/`au.`/`jp.`), which is
+why this maps OpenAI's names specifically rather than region prefixes generally.
 
-Deliberately not a general region-prefix stripper. Exact match runs first, so a
-general rule would never fire for the Anthropic IDs anyway, and a rule broad
-enough to rewrite arbitrary `us.*` IDs risks shadowing a legitimate model whose
-name happens to start that way. Refreshing the vendored snapshot does not remove
-the need for this: upstream LiteLLM still has no `us.openai.*` keys.
+Refreshing the vendored snapshot does not remove the need for it: upstream still
+publishes no `us.openai.*` keys.
 
-### 2. Resolve context window and web search from the catalog
+### 2. Resolve web search from the catalog
 
-Extend `NewOpenAIProfile` to take both from the catalog when it has an opinion,
-mirroring `resolveEffortLevels` exactly: a catalog value wins, silence falls
-back to the constructor default. Two small helpers alongside the existing one,
-not a new mechanism.
-
-Web search is safe to make catalog-driven: across both catalog files, 55
-OpenAI-family models declare `supports_web_search: true` and **zero** declare
-false. The change is a no-op for every model shipping today and can only alter
-what we explicitly ship an entry for.
-
-Context window is **not** a no-op, and that is the point — see "Behavior change"
-below.
+`resolveWebSearch` mirrors the existing `resolveEffortLevels`: presence-aware,
+so a catalog value wins and catalog silence keeps the provider default. Safe by
+inspection — across both catalog files, 55 OpenAI-family models declare
+`supports_web_search: true` and zero declare false, so this changes no model
+shipping today and can only alter what we explicitly ship an entry for.
 
 ### 3. Ship the two fields LiteLLM lacks
 
-`applyOverrides` (`llm/model_catalog_embedded.go:64-70`) overlays per field onto
-a matching entry, so an override keyed to the Bedrock LiteLLM ID adds metadata
-without discarding upstream pricing or context:
+`applyOverrides` overlays per field onto a matching entry, so an override keyed
+to the Bedrock LiteLLM ID adds metadata without discarding upstream pricing or
+context. `bedrock_mantle/openai.gpt-5.6-{luna,sol,terra}` each gain the effort
+ladder including `max`, and `supports_web_search: false`.
 
-```json
-"bedrock_mantle/openai.gpt-5.6-luna": {
-  "_note": "Bedrock serves these over /v1/responses without OpenAI's hosted tools.",
-  "reasoning_effort_levels": ["low", "medium", "high", "xhigh", "max"],
-  "supports_web_search": false
-}
-```
+Only those three. The other six `bedrock_mantle/openai.*` entries
+(`gpt-5.5`, the `gpt-oss` family) are not reachable: probing
+`us.openai.gpt-5.5` and `us.openai.gpt-oss-120b` returns *"The provided model
+identifier is invalid"*, so they are catalog rows without a serving path. Adding
+capability flags for them would be speculation.
 
-Same for `gpt-5.6-sol` and `gpt-5.6-terra`. `refresh-model-catalog.sh` forbids
-hand-editing the vendored snapshot and names this file as where Evener-specific
-metadata belongs, so this is the sanctioned layer.
+### 4. Rebuild the profile on model change
 
-Note what is *not* in that entry: context window and pricing. Those come from
-upstream and stay current through the refresh script.
+`rebuildOnSameProviderChange` did not list `openai`, so `WithModel`
+shallow-cloned and carried the old model's answers forward. That was already
+wrong before this change — the effort ladder has been catalog-derived since
+`resolveEffortLevels` existed — and adding a second catalog-derived field makes
+it load-bearing. `openai` now rebuilds through `NewOpenAIProfile`, alongside the
+openai-compat family and openrouter-anthropic.
 
-### 4. Context window stays per serving path
+Without this, both fixes fail open on every model switch, model-fallback hop
+(`agent/session_model_call.go:862`), and subagent model override
+(`agent/subagent_model_selection.go`): a switch onto a Bedrock model restores
+the tool that makes the endpoint reject every request.
 
-`gpt-5.6-luna` has three different real context windows depending on how it is
-served: 272,000 on Codex/OAuth, 1,050,000 on the public API, 272,000 on Bedrock.
-A single catalog number cannot be right for all three, and the existing
-`gpt-5.6-luna` override records the OAuth figure per Jesse's 2026-07-28
-decision, sourced from codex-cli 0.145.0's `models_cache.json`.
+## Explicitly not in this change
 
-That override is unchanged. Bedrock does not read it — the alias resolves
-Bedrock IDs to `bedrock_mantle/openai.*`, a different key, which carries
-Bedrock's own 272,000. Each path gets its own answer from its own entry, with no
-new precedence rule.
+**Context window.** An earlier draft also took `contextWindow` from the catalog,
+to put the 272,000 effective Codex/OAuth limit into force. That was removed, for
+two reasons found in review:
 
-## Behavior change
+- It does not work. `fillLiveModelMetadata` (`agent/live_model_metadata.go:41`)
+  runs unconditionally from `NewSession`, with no behavior-tag gate, and
+  `WithLiveModelInfo` overwrites the catalog window with the live one. Evener's
+  own Codex fixture reports `max_context_window: 400000`
+  (`llm/providers/openai/adapter_test.go:4216`), so a live session would still
+  have reported 400,000 while a constructor-level test claimed otherwise.
+- It regressed the bare `gpt-5.6` slug from 400,000 to LiteLLM's public-API
+  1,050,000, while Codex rewrites that slug to `gpt-5.6-sol` — which the same
+  change pins at 272,000. It also raised ~18 other OpenAI models above 400,000,
+  inconsistent with the override file's own stated Codex/OAuth policy.
 
-Making context window catalog-driven changes the OAuth path: `gpt-5.6-luna` goes
-from the hardcoded 400,000 to the override's 272,000.
+Getting it right means settling live-metadata precedence against explicit
+configuration and pinning the bare slug. That is its own change with its own
+spec. The web-search and effort fixes are unaffected: the plain `/v1/models`
+mapping (`llm/providers/openai/models.go:86-96`) populates neither
+`SupportsWebSearch` nor `ReasoningEffortLevels`, so live enumeration cannot
+clobber them.
 
-This is a correction, not a regression. The catalog `context_window` is consumed
-at `profile.go:956` (kimi), `:1051-1076` (openai-compat), and `:449`
-(`WithLiveModelInfo`, which never runs for the `openai` tag because
-`isOpenAICompatTag` excludes it, `cmdutil/cmdutil.go:41-47`). None of those
-reach `NewOpenAIProfile`. The 2026-07-28 decision has therefore never been in
-force on the openai/responses path, which has been over-reporting its window by
-47% — the direction that risks building a request the model rejects.
-
-It is still a live behavior change to the path the Terminal-Bench baseline runs
-on, so it must not land mid-measurement. Land it after the in-flight 89-task run
-completes, and treat the next full run as a new baseline rather than a
-continuation.
+**Anthropic on Bedrock.** Their catalog IDs already resolve, but Bedrock's
+OpenAI-compatible endpoint returns 404 for Anthropic models on both
+`/responses` and `/chat/completions` — it serves OpenAI models only. Reaching
+Claude on Bedrock needs a native Converse/InvokeModel adapter with SigV4.
 
 ## Validation
 
-- `LookupModelInfo` table test: `us.openai.gpt-5.6-luna` and
-  `global.openai.gpt-5.6-luna` resolve to the Bedrock entry; `us.anthropic.*`
-  and `global.anthropic.*` still resolve by exact match and are byte-identical
-  to today; an unrelated `us.`-prefixed ID that matches nothing still returns
-  nil. The alias must not shadow an exact hit.
-- Effort resolution through `NewOpenAIProfile` for a Bedrock ID yields levels
-  including `max`, and `llm.ClampReasoningEffort("max", levels)` returns `max`.
-  This is the failing test that proves the clamp; it fails today.
-- `NewOpenAIProfile` context window and web search: catalog value wins, catalog
-  silence falls back to the constructor default. Assert an explicit `true` for
-  web search as well as `false`, so the resolution is proven to carry a value
-  rather than only ever suppressing.
-- A regression test pinning OAuth `gpt-5.6-luna` to 272,000 through the profile,
-  so the 2026-07-28 decision is enforced by a test rather than by a catalog
-  entry nothing reads.
-- `applyOverrides` overlay test: the Bedrock entry gains effort levels and
-  `supports_web_search` while retaining LiteLLM's pricing and
-  `max_input_tokens`.
-- Confirm no other model's resolution moves: run the existing catalog and
-  profile suites and diff resolved metadata for a sample across providers.
-- `go test ./llm/... ./agent/provider/... -count=1`, then `make lint` and the
-  full gate.
+- `LookupModelInfo`: `us.openai.*` and `global.openai.*` resolve to the Bedrock
+  entry; `us.anthropic.*` and `global.anthropic.*` still resolve by exact match;
+  an unknown `us.openai.*` still returns nil.
+- `resolveWebSearch` presence-awareness, tested white-box with a provider
+  default that *opposes* the catalog. Asserting a catalog `true` against a
+  `true` default would pass even if the helper ignored the catalog entirely —
+  the original version of this test did exactly that, and a mutation test
+  caught it.
+- Profile-level: all four Bedrock GPT-5.6 IDs report web search off; the effort
+  ladder contains `max` and `ClampReasoningEffort("max", …)` returns `max`; an
+  uncatalogued model keeps the constructor default.
+- Model switch in both directions: onto a Bedrock model the capability must go
+  off and the ladder must gain `max`; away from one it must come back.
 
 Acceptance is a live Bedrock session on an unpatched binary, asserting from the
 API log that the request carries `reasoning_effort: max` and no `web_search`
-tool. The earlier rehearsal used a throwaway patch to `profile.go:824` and
-proved only that the endpoint works once web search is gone; it exercised
-neither the catalog path nor the effort ladder.
+tool. The earlier rehearsal used a throwaway patch and proved only that the
+endpoint works once web search is gone.
 
-## Follow-ups, deliberately not bundled
+## Follow-ups
 
-- **Refresh the vendored LiteLLM snapshot.** `--check` reports +72 added, −1
-  removed (`replicateopenai/gpt-oss-20b`), ~430 changed — clean, and it brings
-  Bedrock pricing current. Its own commit, after the benchmark, so a measurement
-  is never taken across a moving catalog.
+- **Context window per serving path**, as above — the substantive one.
 - **Terminal-Bench cannot use Bedrock yet.** The eval adapter uploads only the
   binary, OAuth record, and CA bundle
-  (`harbor-runner/src/harbor_runner/serf_agent.py:59-70`), sets only
-  `SSL_CERT_FILE` and `XDG_STATE_HOME`, and hard-validates
+  (`harbor-runner/src/harbor_runner/serf_agent.py:59-70`) and hard-validates
   `model_name == "openai/gpt-5.6-luna"`. No providers.toml reaches the
-  container. That is harbor-runner work.
+  container.
 - **Credential hazard.** `CredentialTag` (`llm/providercfg/providercfg.go:177-186`)
   returns the behavior tag unless it is `openai-compatible`; for `responses` the
-  tag is `openai`, so the base_url-aware escape hatch never applies and
-  `cmdutil/load_client.go:98` assigns the operator's OpenAI credential to the
-  instance. An openai/responses instance with a non-OpenAI `base_url` must set
-  `api_key` or `credential_headers` explicitly or it bearer-sends an OpenAI key
-  to a third party. Pre-existing; documentation fix.
+  tag is `openai`, so the base_url-aware escape hatch never applies and the
+  operator's OpenAI credential is assigned to the instance. An openai/responses
+  instance with a non-OpenAI `base_url` must set `api_key` or
+  `credential_headers` explicitly or it bearer-sends an OpenAI key to a third
+  party. Pre-existing; needs documenting.
 - **Bedrock model-shape gating.** `responsesLiteModel`
-  (`llm/providers/openai/responses.go:956`) and
-  `openAIModelSupports24hPromptCache` (`agent/session.go:1212`) match bare
-  `gpt-5.6`/`gpt-5` prefixes, which Bedrock inference-profile IDs never match, so
-  this model gets neither the gpt-5.6 request shape nor an Evener-sent
-  `prompt_cache_key`. Bedrock's own automatic caching covered the latter in
-  testing (uncached prompt tokens fell from 13,882 to 60-160 across ten steps),
-  so this is a correctness tidy, not a cost problem.
-
-## Out of scope
-
-Anthropic models on Bedrock. Their catalog IDs already resolve, but Bedrock's
-OpenAI-compatible endpoint returns 404 for them on both `/responses` and
-`/chat/completions` — it serves OpenAI models only. Reaching Claude on Bedrock
-needs a native Converse/InvokeModel adapter with SigV4, which is a provider
-adapter project, not a catalog change.
-
-Also out of scope: making Bedrock a first-class provider type, Bedrock SigV4
-authentication (the endpoint accepts a bearer API key), and any `providers.toml`
-surface for web search — the catalog already models this capability, and a
-second source of truth beside it would owe a precedence rule against
-`resolveOpenRouterAnthropicWebSearch` (`agent/provider/profile.go:997-1035`).
+  (`llm/providers/openai/responses.go:956`), `openAIModelSupports24hPromptCache`
+  (`agent/session.go:1212`), and `reasoningSummaryLevel`
+  (`responses.go:1009`) all match bare `gpt-5`/`gpt-5.6` prefixes that Bedrock
+  IDs never match, so this model gets neither the gpt-5.6 request shape, nor an
+  Evener-sent `prompt_cache_key`, nor `summary: "detailed"`. Bedrock's own
+  automatic caching covered the second in testing.

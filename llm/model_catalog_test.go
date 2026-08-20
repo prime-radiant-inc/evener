@@ -656,6 +656,46 @@ func TestEmbeddedCatalog_CacheTierPricing(t *testing.T) {
 	}
 }
 
+// TestLookupModelInfo_BedrockOpenAIInferenceProfile covers the one Bedrock
+// naming gap. LiteLLM files Anthropic's Bedrock models under region-prefixed
+// keys that match what Bedrock advertises, but files OpenAI's under
+// "bedrock_mantle/openai.<model>" with no such alias, so an OpenAI inference
+// profile resolves to nothing and the profile silently falls back to
+// constructor defaults for every field.
+func TestLookupModelInfo_BedrockOpenAIInferenceProfile(t *testing.T) {
+	cat := EmbeddedModelCatalog()
+	if cat == nil {
+		t.Fatal("embedded catalog nil")
+	}
+
+	for _, id := range []string{"us.openai.gpt-5.6-luna", "global.openai.gpt-5.6-luna"} {
+		mi := cat.LookupModelInfo(id)
+		if mi == nil {
+			t.Errorf("LookupModelInfo(%q) = nil, want the bedrock_mantle entry", id)
+			continue
+		}
+		if mi.MaxOutputTokens == nil {
+			t.Errorf("%s MaxOutputTokens = nil, want 128000", id)
+		} else if *mi.MaxOutputTokens != 128_000 {
+			t.Errorf("%s MaxOutputTokens = %d, want 128000", id, *mi.MaxOutputTokens)
+		}
+		if !mi.SupportsReasoning {
+			t.Errorf("%s SupportsReasoning = false, want true", id)
+		}
+	}
+
+	// Anthropic's Bedrock IDs already match upstream keys exactly. The alias
+	// must not disturb them, and must not invent a hit for an unknown ID.
+	for _, id := range []string{"us.anthropic.claude-opus-5", "global.anthropic.claude-opus-5"} {
+		if mi := cat.LookupModelInfo(id); mi == nil {
+			t.Errorf("LookupModelInfo(%q) = nil, want the existing exact match", id)
+		}
+	}
+	if mi := cat.LookupModelInfo("us.openai.not-a-real-model"); mi != nil {
+		t.Errorf("LookupModelInfo(unknown) = %+v, want nil", mi)
+	}
+}
+
 func f64(v float64) *float64 { return &v }
 
 // floatPtrValue renders a price for a failure message. Formatting the pointer

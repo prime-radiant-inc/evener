@@ -125,6 +125,10 @@
     "_note": "Anthropic Mythos 5, added upstream in the 2026-08-20 refresh. LiteLLM supplies context, pricing, adaptive thinking and the xhigh/max effort flags; the overlay adds only claude5_request_shape, without which the Anthropic request builder sends the pre-5 wire shape.",
     "claude5_request_shape": true
   },
+  "claude-mythos-preview": {
+    "_note": "Added upstream alongside claude-mythos-5 with identical capability flags. isClaude5OrNewer's ID heuristic cannot classify it — 'preview' carries no numeric generation segment — so without this it would take the pre-5 wire shape and send sampling params upstream marks unsupported.",
+    "claude5_request_shape": true
+  },
   "gpt-5.6-sol": {
     "_note": "LiteLLM now supplies the public OpenAI API metadata. Evener overrides only the effective Codex/OAuth context window (272,000 in codex-cli 0.145.0 models_cache.json; public API is 1,050,000) per Jesse's 2026-07-28 decision, plus the existing max effort tier.",
     "context_window": 272000,
@@ -135,6 +139,39 @@
       "xhigh",
       "max"
     ]
+  },
+  "bedrock_mantle/openai.gpt-5.6-luna": {
+    "_note": "Amazon Bedrock serves the GPT-5.6 family over /v1/responses without OpenAI's hosted tools, so web search must be off or Bedrock rejects the entire request. LiteLLM supplies context, output cap and pricing for this serving path; the overlay adds only the effort ladder upstream does not express and that capability flag. Reached from the us./global. inference-profile IDs via bedrockOpenAICatalogKey.",
+    "reasoning_effort_levels": [
+      "low",
+      "medium",
+      "high",
+      "xhigh",
+      "max"
+    ],
+    "supports_web_search": false
+  },
+  "bedrock_mantle/openai.gpt-5.6-sol": {
+    "_note": "See bedrock_mantle/openai.gpt-5.6-luna.",
+    "reasoning_effort_levels": [
+      "low",
+      "medium",
+      "high",
+      "xhigh",
+      "max"
+    ],
+    "supports_web_search": false
+  },
+  "bedrock_mantle/openai.gpt-5.6-terra": {
+    "_note": "See bedrock_mantle/openai.gpt-5.6-luna.",
+    "reasoning_effort_levels": [
+      "low",
+      "medium",
+      "high",
+      "xhigh",
+      "max"
+    ],
+    "supports_web_search": false
   },
   "gpt-5.6-terra": {
     "_note": "LiteLLM supplies the public API metadata; see gpt-5.6-sol for Evener's intentional Codex/OAuth context override.",
