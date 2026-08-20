@@ -5,6 +5,7 @@ package main
 
 import (
 	"errors"
+	"flag"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -15,8 +16,8 @@ import (
 
 // stemToDoc maps a make/<stem>.mk family file to the docs/developing-evener
 // doc whose "## Targets" region it feeds (spec §3). repo.mk is the one
-// exception: its targets (build, help, clean, generate) belong in the
-// directory index rather than a family doc of its own.
+// exception: its targets (tools, generate, clean, refresh-model-catalog,
+// help) belong in the directory index rather than a family doc of its own.
 var stemToDoc = map[string]string{
 	"building": "building.md",
 	"testing":  "testing.md",
@@ -27,10 +28,37 @@ var stemToDoc = map[string]string{
 }
 
 func main() {
-	if err := generate("."); err != nil {
+	mode := flag.String("mode", "generate", `"generate" (default) rewrites the doc tables; "help" prints make help's grouped target listing to stdout`)
+	flag.Parse()
+
+	var err error
+	switch *mode {
+	case "generate":
+		err = generate(".")
+	case "help":
+		err = printHelp(os.Stdout, ".")
+	default:
+		fmt.Fprintf(os.Stderr, "maketargetsdoc: unknown -mode %q; want \"generate\" or \"help\"\n", *mode)
+		os.Exit(2)
+	}
+	if err != nil {
 		fmt.Fprintln(os.Stderr, "maketargetsdoc:", err)
 		os.Exit(1)
 	}
+}
+
+// globFamilyFiles returns every make/*.mk family file under root, sorted by
+// path — the shared file-discovery step both `generate` (doc regeneration)
+// and `loadFamilies` (help.go, `-mode help`) build on, so there is one
+// definition of "which files are family files" rather than two that can
+// drift apart.
+func globFamilyFiles(root string) ([]string, error) {
+	mkPaths, err := filepath.Glob(filepath.Join(root, "make", "*.mk"))
+	if err != nil {
+		return nil, err
+	}
+	sort.Strings(mkPaths)
+	return mkPaths, nil
 }
 
 // generate regenerates every family doc's marked region under root: it
@@ -38,19 +66,16 @@ func main() {
 // root/docs/developing-evener.
 //
 // It processes every family it can rather than stopping at the first
-// problem: as of this writing make/repo.mk carries no ## annotations yet
-// (a later change owns it), and that must not prevent the other five
+// problem: a family that fails to parse must not prevent the other
 // families' docs from being regenerated. Every problem found — a family
 // that fails to parse, a .mk with no destination doc, or a doc region
 // naming a .mk that does not exist — is collected and returned together;
 // generate returns nil only if nothing went wrong anywhere.
 func generate(root string) error {
-	mkDir := filepath.Join(root, "make")
-	mkPaths, err := filepath.Glob(filepath.Join(mkDir, "*.mk"))
+	mkPaths, err := globFamilyFiles(root)
 	if err != nil {
 		return err
 	}
-	sort.Strings(mkPaths)
 
 	docDir := filepath.Join(root, "docs", "developing-evener")
 

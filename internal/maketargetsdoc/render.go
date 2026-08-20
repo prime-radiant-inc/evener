@@ -94,7 +94,9 @@ func command(name string) string {
 // compact two-column list under an "Other targets" subheading, so a target
 // like `clean` does not get four empty wide-table cells. If no target in
 // the family has any structured field, only the compact list is emitted —
-// never an empty (header-only) wide table above it.
+// never an empty (header-only) wide table above it, and with no "Other
+// targets" subheading, since nothing above it exists for the list to be
+// "other" than.
 //
 // The returned string has no trailing newline; RewriteRegion supplies the
 // one blank line that separates it from the END marker.
@@ -113,7 +115,7 @@ func Render(targets []Target) string {
 		sections = append(sections, renderWideTable(wide))
 	}
 	if len(compact) > 0 {
-		sections = append(sections, renderCompactList(compact))
+		sections = append(sections, renderCompactList(compact, len(wide) > 0))
 	}
 	return strings.Join(sections, "\n\n")
 }
@@ -129,9 +131,16 @@ func renderWideTable(targets []Target) string {
 	return b.String()
 }
 
-func renderCompactList(targets []Target) string {
+// renderCompactList renders targets as the two-column Command/Summary list.
+// withHeading controls the "### Other targets" subheading: it belongs only
+// when a wide table precedes this list in the same region, so the list is
+// genuinely "other" than something. A family whose targets all lack fields
+// has no wide table, and the compact list is the whole region — no heading.
+func renderCompactList(targets []Target, withHeading bool) string {
 	var b strings.Builder
-	b.WriteString("### Other targets\n\n")
+	if withHeading {
+		b.WriteString("### Other targets\n\n")
+	}
 	b.WriteString("| Command | Summary |\n")
 	b.WriteString("| --- | --- |")
 	for _, t := range targets {

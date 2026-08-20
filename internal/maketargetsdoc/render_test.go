@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"fmt"
+	"strings"
 	"testing"
 )
 
@@ -30,16 +31,18 @@ func TestRenderWideTableForTargetsWithFields(t *testing.T) {
 
 // TestRenderCompactListForSummaryOnlyTargets: a target with only a summary
 // (no structured fields) must not get four empty wide-table cells (spec
-// §3). It renders under an "Other targets" subheading as a two-column
-// Command/Summary list instead.
+// §3). It renders as a two-column Command/Summary list instead. No wide
+// table exists here for it to be "other" than, so the family gets no
+// "Other targets" subheading — see
+// TestRenderMixedFamilyPutsCompactListAfterWideTable for the shape where
+// the heading is warranted.
 func TestRenderCompactListForSummaryOnlyTargets(t *testing.T) {
 	targets := []Target{{
 		Name:    "clean",
 		Summary: "Remove the built binaries from the repo root.",
 	}}
 	got := Render(targets)
-	want := "### Other targets\n\n" +
-		"| Command | Summary |\n" +
+	want := "| Command | Summary |\n" +
 		"| --- | --- |\n" +
 		"| `make clean` | Remove the built binaries from the repo root. |"
 	if got != want {
@@ -73,10 +76,12 @@ func TestRenderMixedFamilyPutsCompactListAfterWideTable(t *testing.T) {
 
 // TestRenderAllTargetsLackFieldsEmitsNoEmptyWideTable pins spec §3's
 // sharpest edge: a family whose targets ALL lack structured fields emits
-// only the compact list, never an empty (header-only) wide table above it.
-// make/coverage.mk turned out NOT to be this case in practice (3 of its 5
-// targets carry fields) — verified by reading the file rather than assumed
-// — so this shape is exercised here synthetically.
+// only the compact list, never an empty (header-only) wide table above it
+// — and, since there is no wide table for it to be "other" than, no
+// "Other targets" subheading either. make/repo.mk turned out to be exactly
+// this case for real once annotated: every target there is a summary-only
+// repo chore, none a gate, so its README.md region is the compact list with
+// no heading at all.
 func TestRenderAllTargetsLackFieldsEmitsNoEmptyWideTable(t *testing.T) {
 	targets := []Target{
 		{Name: "fuzz-ledger", Summary: "Pretty-print the triage ledger."},
@@ -86,8 +91,10 @@ func TestRenderAllTargetsLackFieldsEmitsNoEmptyWideTable(t *testing.T) {
 	if want := "| Command | What it proves |"; len(got) >= len(want) && got[:len(want)] == want {
 		t.Fatalf("got an empty wide table header when no target has fields:\n%s", got)
 	}
-	want := "### Other targets\n\n" +
-		"| Command | Summary |\n" +
+	if strings.Contains(got, "Other targets") {
+		t.Fatalf("got an \"Other targets\" heading with no wide table for it to be other than:\n%s", got)
+	}
+	want := "| Command | Summary |\n" +
 		"| --- | --- |\n" +
 		"| `make fuzz-ledger` | Pretty-print the triage ledger. |\n" +
 		"| `make fuzz-nightly` | Run the unbounded coverage-guided search. |"
@@ -106,8 +113,7 @@ func TestRenderEscapesPipeInCellText(t *testing.T) {
 		Summary: "Build A | B.",
 	}}
 	got := Render(targets)
-	want := "### Other targets\n\n" +
-		"| Command | Summary |\n" +
+	want := "| Command | Summary |\n" +
 		"| --- | --- |\n" +
 		"| `make build` | Build A \\| B. |"
 	if got != want {
