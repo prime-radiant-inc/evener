@@ -53,13 +53,12 @@ at an unrelated line.
   path may be abbreviated to the part that reads well
   (`internal/hubcore/tree.go`) as long as the suffix is findable.
 
-Three root-module audits keep both halves honest:
-`TestScenarioDocAnchorsAppearInTheDocTheyName` resolves every quoted
-anchor against the doc it names, `TestScenarioSourceCitationsResolve`
-resolves every cited source path, and
-`TestScenarioSourceSymbolsAreDeclared` resolves every `#symbol`. A
-renamed heading, a moved package, or a renamed function fails loudly
-instead of leaving a citation that points at nothing.
+Citation discipline is by convention: every quoted anchor must appear in
+the doc it names, every cited source path must resolve, and every
+`#symbol` must be declared. (The audits that enforced this were retired
+in the 2026-08 tooling standardization; the rules still stand — a
+renamed heading, a moved package, or a renamed function should be caught
+in review instead of leaving a citation that points at nothing.)
 
 Cite Go code with a symbol anchor (`#Symbol` after the path), never with
 a line number — a line number is invalidated silently by any edit above
