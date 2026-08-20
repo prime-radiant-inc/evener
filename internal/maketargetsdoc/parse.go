@@ -26,22 +26,21 @@ type Target struct {
 	FailsWhen string
 }
 
-// fieldLine matches a "## " line's content when it opens a structured field:
-// a lowercase, hyphenated key, a colon, then exactly one space before the
-// value. Anything that doesn't match this shape is summary prose, even if it
-// happens to contain a colon further in.
-var fieldLine = regexp.MustCompile(`^([a-z][a-z0-9-]*): (.*)$`)
-
-// fieldKeyOnly matches a "## " line's content when it looks like an
-// attempted field but is missing the required space before the value —
-// `## trigger:` with nothing after the colon at all. Without this check,
-// such a line misses fieldLine (no ": ") and silently falls through to
-// become summary prose reading "trigger:", which is exactly the kind of
-// silently-wrong output the rest of this parser errors on instead.
-// `## trigger: ` (colon, then a trailing space with an empty value) already
-// matches fieldLine and is a deliberate, valid empty field — this pattern
-// does not match that shape.
-var fieldKeyOnly = regexp.MustCompile(`^([a-z][a-z0-9-]*):$`)
+// fieldAttempt matches a "## " line's content when it OPENS with a
+// lowercase, hyphenated key immediately followed by a colon — the shape a
+// structured field takes, whether or not what follows the colon is
+// well-formed. The discrimination is on that leading key-shaped prefix, not
+// on the presence of a colon anywhere in the line: a summary like "Build
+// the runtime pair: evener and evener-hub." starts with an uppercase word
+// and spaces, so it never matches this pattern and stays a summary.
+//
+// Anything matching here is treated as an attempted field, valid or not:
+// the caller checks the key against the four real ones (else "unknown
+// key"), and then that a space immediately follows the colon (else
+// malformed — this is what catches both "## trigger:" with nothing after
+// it and "## trigger:value" with no space, rather than letting either
+// silently become summary prose with the field left empty).
+var fieldAttempt = regexp.MustCompile(`^([a-z][a-z0-9-]*):(.*)$`)
 
 // targetSpecificVariable matches the remainder of a rule-shaped line
 // (`name: <remainder>`) when <remainder> is itself a variable assignment —
@@ -198,11 +197,15 @@ func accumulate(pending *block, line string, lineNo int) (*block, error) {
 		pending = &block{startLine: lineNo}
 	}
 
-	if m := fieldLine.FindStringSubmatch(content); m != nil {
-		key, value := m[1], m[2]
+	if m := fieldAttempt.FindStringSubmatch(content); m != nil {
+		key, afterColon := m[1], m[2]
 		if pending.fieldPtr(key) == nil {
 			return nil, fmt.Errorf("line %d: unknown annotation key %q; valid keys are proves, trigger, requires, fails-when", lineNo, key)
 		}
+		if !strings.HasPrefix(afterColon, " ") {
+			return nil, fmt.Errorf("line %d: field %q's colon must be followed by a space, even for an empty value; write \"## %s: <value>\" or \"## %s: \"", lineNo, key, key, key)
+		}
+		value := afterColon[1:]
 		if pending.seenKeys[key] {
 			return nil, fmt.Errorf("line %d: annotation key %q appears twice in the same ## block (opened at line %d)", lineNo, key, pending.startLine)
 		}
@@ -214,14 +217,6 @@ func accumulate(pending *block, line string, lineNo int) (*block, error) {
 		pending.lastKey = key
 		*pending.fieldPtr(key) = value
 		return pending, nil
-	}
-
-	if m := fieldKeyOnly.FindStringSubmatch(content); m != nil {
-		key := m[1]
-		if pending.fieldPtr(key) == nil {
-			return nil, fmt.Errorf("line %d: unknown annotation key %q; valid keys are proves, trigger, requires, fails-when", lineNo, key)
-		}
-		return nil, fmt.Errorf("line %d: field %q has a colon but no value; write \"## %s: <value>\" — the space after the colon is required even for an empty value", lineNo, key, key)
 	}
 
 	if pending.inFields {

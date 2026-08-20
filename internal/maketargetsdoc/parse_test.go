@@ -306,3 +306,54 @@ func TestParseFamilyFieldKeyWithColonAndTrailingSpaceIsAnEmptyField(t *testing.T
 		t.Fatalf("got %+v, want an empty Trigger and no error", got)
 	}
 }
+
+// TestParseFamilyFieldSeparatorShapes pins the field grammar's discrimination
+// rule head-on: a known key immediately followed by a colon is a field
+// attempt regardless of what comes after the colon, and only a colon
+// directly followed by a space is well-formed. Before this test's fix,
+// "## trigger:required CI; local pre-merge." (a single missing space, the
+// more natural typo than an abandoned bare "## trigger:") silently became
+// the entire summary, leaving Trigger empty with no error anywhere.
+func TestParseFamilyFieldSeparatorShapes(t *testing.T) {
+	t.Run("key: value is a populated field", func(t *testing.T) {
+		src := "## Lint everything.\n## trigger: required CI; local pre-merge.\nlint:\n\t@true\n"
+		got, err := ParseFamily([]byte(src))
+		if err != nil {
+			t.Fatal(err)
+		}
+		want := "required CI; local pre-merge."
+		if len(got) != 1 || got[0].Trigger != want {
+			t.Fatalf("got %+v, want Trigger %q", got, want)
+		}
+	})
+
+	t.Run("key: with a trailing space and nothing else is a valid empty field", func(t *testing.T) {
+		src := "## Lint everything.\n## trigger: \nlint:\n\t@true\n"
+		got, err := ParseFamily([]byte(src))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(got) != 1 || got[0].Trigger != "" {
+			t.Fatalf("got %+v, want an empty Trigger and no error", got)
+		}
+	})
+
+	t.Run("key:value with no space at all is an error", func(t *testing.T) {
+		src := "## Lint everything.\n## trigger:required CI; local pre-merge.\nlint:\n\t@true\n"
+		if _, err := ParseFamily([]byte(src)); err == nil {
+			t.Fatal("expected an error: 'trigger:required...' has no space after the colon")
+		}
+	})
+
+	t.Run("a summary containing a colon whose prefix is not a known key stays a summary", func(t *testing.T) {
+		src := "## Build the runtime pair: evener and evener-hub.\nbuild-runtime:\n\t@true\n"
+		got, err := ParseFamily([]byte(src))
+		if err != nil {
+			t.Fatal(err)
+		}
+		want := "Build the runtime pair: evener and evener-hub."
+		if len(got) != 1 || got[0].Summary != want {
+			t.Fatalf("got %+v, want Summary %q", got, want)
+		}
+	})
+}
