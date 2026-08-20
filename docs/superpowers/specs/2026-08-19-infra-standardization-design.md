@@ -19,7 +19,7 @@ commit.
 | Custom lint programs | Convert where a standard equivalent holds; internalcheck stays |
 | Release pipeline | Adopt goreleaser |
 | Coverage | No external service; consolidate the floor family to one local script + one floor file (F1b) |
-| Audit test framework | Delete 14 of 16 root `*_audit_test.go` plus `workflow_test.go`; KEEP `scriptmktemp_audit_test.go` and the delete-safety half of `makefile_audit_test.go` (the kata 5hs2 tripwires) |
+| Audit test framework | Delete 13 of 16 root `*_audit_test.go` plus `workflow_test.go`; KEEP `scriptmktemp_audit_test.go` and the delete-safety half of `makefile_audit_test.go` (the kata 5hs2 tripwires), and — by a later owner ruling — `scenariosourcecite_audit_test.go` (see §8) |
 | capability-preflight | Delete; affected tests gain per-test self-detection (`t.Skip`) |
 | MEMCAP | Delete |
 | merge-into-branch | Delete |
@@ -196,9 +196,9 @@ when the host lacks the capability. Apply the helpers to exactly the tests
 the deleted skip patterns covered — implementation maps the gatesurface
 patterns to the concrete test list and touches no others.
 
-### 8. Audit framework deletion (with two survivors)
+### 8. Audit framework deletion (with three survivors)
 
-Delete 14 root `*_audit_test.go` files and `workflow_test.go`. Keep two
+Delete 13 root `*_audit_test.go` files and `workflow_test.go`. Keep two
 safety tripwires tied to the kata 5hs2 incident (a cleanup script deleted a
 home directory):
 
@@ -213,13 +213,26 @@ that rewords a pinned delete recipe (the test-web extraction in particular)
 updates the allowlist in the same commit, and new scripts keep using
 scratch-lib.
 
-Enforcement that ends (accepted): lint-family drift pinning, scenario-card
-rules, envvar-registry doc sync, sha256 call-site inventory, binaries.yml
-shape pinning. The audited *mechanisms* being replaced in this PR (exact
-recipe texts, the lint list in CI, the workflow shape) need no successor;
-the mechanisms that remain (scratch-lib, scenario cards, envvars registry)
-continue by convention. `docs/testing.md` sections that document the deleted
-audits are rewritten.
+A third survives on its own merits (owner ruling, added after the design
+review of the implementation): `scenariosourcecite_audit_test.go` stays
+whole. It resolves the ~930 `file#symbol` / `file:line` anchors the card
+corpus points into source with, and it earned its slot empirically — it
+caught the RailRow citation rot that broke main. It is a self-contained
+plain Go test over `test/scenarios/` plus `docs/agentic-testing.md`, so
+keeping it costs the standardization goal nothing. Its two cross-file
+dependencies on deleted audits (`scenarioNeedleSourceExtensions` and
+`scenarioNeedleCodeSpan` from the needle audit, `scenarioDir` /
+`scenarioCardFiles` from the port audit) are inlined into it rather than
+dragging 910 lines of `scenarioneedle_audit_test.go` back with them.
+
+Enforcement that ends (accepted): lint-family drift pinning, the rest of the
+scenario-card rules (index, needle, port, fixture, home, build, doc-anchor,
+tmppath, patternkill, retired-tool), envvar-registry doc sync, sha256
+call-site inventory, binaries.yml shape pinning. The audited *mechanisms*
+being replaced in this PR (exact recipe texts, the lint list in CI, the
+workflow shape) need no successor; the mechanisms that remain (scratch-lib,
+scenario cards, envvars registry) continue by convention. `docs/testing.md`
+sections that document the deleted audits are rewritten.
 
 ### 9. dependabot
 
@@ -323,6 +336,13 @@ had to reverse.
 
 **And one gap in §5:** the consolidated ratchet had no below-floor case, so
 `p < f - tol` was unproven. Restored, with the tolerance band.
+
+**One deletion overturned by the owner.** §8 counted
+`scenariosourcecite_audit_test.go` among the 14, and the rebase onto a main
+that had just improved it (#271, TS/TSX comment-aware symbol resolution,
+closing #157) surfaced the cost: the branch would have dropped a check that
+had just caught real citation rot. Owner ruling: keep it. §8 is rewritten
+above with the three survivors and the reasoning.
 
 ## Risks and fidelity notes
 
