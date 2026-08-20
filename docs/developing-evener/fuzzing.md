@@ -55,16 +55,11 @@ between iterations.
 
 ## Coverage
 
-`make coverage-floor` owns the "how much is exercised" number: per module it
-unions the unit-test track with the deterministic native seed-corpus replay
-(under `-tags evenerfuzz`), plus the frontend's vitest line coverage, and
-ratchets the result against `scripts/coverage/coverage-floors.txt`:
-
-```sh
-make coverage-floor           # measure + print
-make coverage-floor CHECK=1   # fail on a drop below the floor
-make coverage-floor BLESS=1   # raise floors to the measured values
-```
+`make coverage-floor` is the "how much is exercised" number; run it before
+concluding a package is under-tested. For what it measures and why a
+default-gate `-cover` run answers neither "how much is covered" nor "how well
+is this tested", see [A Coverage Number Is Two Tracks, Not
+One](coverage.md#a-coverage-number-is-two-tracks-not-one) in `coverage.md`.
 
 The blocking fuzz gate is the static `make fuzz-gap-check` above, not a
 coverage replay. The rapid (seqfuzz/schemafuzz) family is env-gated and takes
