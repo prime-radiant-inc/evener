@@ -1,4 +1,4 @@
-.PHONY: build build-runtime build-go build-hub web-preflight build-web test-web test-web-browser build-tui build-doctor build-all build-linux build-llmcall build-migrate dist install install-home install-system test-install tools test-dev-tooling test test-short test-fuzz test-race merge-approval-gate e2e-cover vet lint lint-naming lint-evenerfuzz lint-eval lint-internal lint-golangci lint-generated lint-fuzz-registry generate mutation-floor clean fuzz fuzz-seeds fuzz-nightly fuzz-triage fuzz-continuous fuzz-bisect fuzz-bisect-selftest fuzz-oracle-audit fuzz-oracle-audit-selftest fuzz-mutation-score fuzz-ledger fuzz-gap-check fuzz-registry-check fuzz-goldens secret-scan fuzz-corpus-scan refresh-model-catalog coverage-floor coverage-floor-selftest coverage-gaps coverage-gaps-selftest merge-into-branch merge-into-branch-selftest test-timing-budget test-timing-budget-selftest test-rebaseline
+.PHONY: build build-runtime build-go build-hub web-preflight build-web test-web test-web-browser build-tui build-doctor build-all build-linux build-llmcall build-migrate dist install install-home install-system test-install tools test-dev-tooling test test-short test-fuzz test-race merge-approval-gate e2e-cover vet lint lint-naming lint-evenerfuzz lint-eval lint-internal lint-golangci lint-generated lint-fuzz-registry generate mutation-floor clean fuzz fuzz-seeds fuzz-nightly fuzz-triage fuzz-continuous fuzz-bisect fuzz-bisect-selftest fuzz-oracle-audit fuzz-oracle-audit-selftest fuzz-mutation-score fuzz-ledger fuzz-gap-check fuzz-registry-check fuzz-goldens secret-scan fuzz-corpus-scan refresh-model-catalog coverage-floor coverage-floor-selftest coverage-gaps coverage-gaps-selftest test-timing-budget test-timing-budget-selftest test-rebaseline
 
 LDFLAGS := -X primeradiant.com/evener/buildinfo.GitSHA=$$(git rev-parse --short HEAD) \
            -X primeradiant.com/evener/buildinfo.GitDirty=$$(git --no-optional-locks diff-files --quiet && echo "" || echo "true") \
@@ -146,7 +146,7 @@ override FUZZ_GOWORK := $(abspath $(CURDIR)/go.work)
 # the guard or the pid-suffixed covscratch pattern, is enforced statically by
 # the audits in scriptmktemp_audit_test.go, not by re-running suites under
 # sabotage (kata 5hs2).
-DEV_TOOLING_TEST_SCRIPTS := gate/run-module-tests lib/private-go-home gate/merge-approval-gate ops/setup-gocache web/web-preflight lib/live-eval-isolation e2e/e2e-webui-turn-controls fuzz/fuzz-bisect fuzz/fuzz-oracle-audit coverage/coverage-floor coverage/coverage-gaps gate/test-timing-budget lib/scratch-lib gate/merge-into-branch
+DEV_TOOLING_TEST_SCRIPTS := gate/run-module-tests lib/private-go-home gate/merge-approval-gate ops/setup-gocache web/web-preflight lib/live-eval-isolation e2e/e2e-webui-turn-controls fuzz/fuzz-bisect fuzz/fuzz-oracle-audit coverage/coverage-floor coverage/coverage-gaps gate/test-timing-budget lib/scratch-lib
 
 # test-dev-tooling tests tooling, not the product, so it runs in
 # `make merge-approval-gate` (where tooling regressions matter) and on demand
@@ -325,18 +325,6 @@ coverage-gaps:
 
 coverage-gaps-selftest:
 	@scripts/coverage/coverage-gaps-selftest.sh
-
-# merge-into-branch merges SOURCE into TARGET by ref (refs/heads/TARGET),
-# never through a live checkout: it builds the merge in a private disposable
-# worktree and lands it with a `git update-ref` compare-and-swap, so a
-# concurrent branch switch on a shared checkout cannot land the merge on the
-# wrong branch (kata h2tb). `make merge-into-branch TARGET=main SOURCE=feature
-# MERGE_ARGS="--no-ff"`; see scripts/gate/merge-into-branch.sh --help for flags.
-merge-into-branch:
-	@scripts/gate/merge-into-branch.sh $(MERGE_ARGS) $(TARGET) $(SOURCE)
-
-merge-into-branch-selftest:
-	@scripts/gate/merge-into-branch-selftest.sh
 
 # test-timing-budget ratchets per-package test wall time against
 # testing-budget.json (kata b6rv): fail at 1.5x the budget, warn at 1.1x, plus
