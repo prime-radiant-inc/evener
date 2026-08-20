@@ -122,6 +122,13 @@ func makefileRulesWithoutRecipes(t *testing.T) []string {
 			if strings.HasPrefix(name, ".") {
 				continue
 			}
+			// Only a rule with NO prerequisites can be a hollow gate. A rule
+			// with prerequisites and no recipe is an ordinary aggregator —
+			// `build: build-runtime`, `lint: $(LINT_TARGETS)` — and flagging
+			// those produced 8 false positives when this audit was written.
+			if strings.TrimSpace(rest) != "" {
+				continue
+			}
 			hasRecipe := false
 			for _, next := range lines[i+1:] {
 				if next == "" || strings.HasPrefix(next, "#") {
