@@ -52,7 +52,7 @@ func TestAdapter_Complete_ToolResultImage_ChatDispatchesTextOnly(t *testing.T) {
 	t.Cleanup(srv.Close)
 
 	req := toolResultImageRequest(t)
-	original := append([]byte(nil), req.Messages[0].Content[0].ToolResult.ImageData...)
+	original := append([]byte(nil), req.Messages[1].Content[0].ToolResult.ImageData...)
 	adapter := &Adapter{APIKey: "key", BaseURL: srv.URL, Client: srv.Client()}
 	resp, err := adapter.Complete(t.Context(), req)
 	if err != nil {
@@ -65,8 +65,8 @@ func TestAdapter_Complete_ToolResultImage_ChatDispatchesTextOnly(t *testing.T) {
 	if tool["content"] != "screenshot" {
 		t.Fatalf("tool content = %#v, want screenshot", tool["content"])
 	}
-	if req.Messages[0].Content[0].ToolResult.ImageMediaType != "image/png" ||
-		!bytes.Equal(req.Messages[0].Content[0].ToolResult.ImageData, original) {
+	if req.Messages[1].Content[0].ToolResult.ImageMediaType != "image/png" ||
+		!bytes.Equal(req.Messages[1].Content[0].ToolResult.ImageData, original) {
 		t.Fatal("Complete mutated the original request")
 	}
 }
@@ -132,7 +132,7 @@ func TestAdapter_AdaptiveComplete_ToolResultImage_SanitizesChatFallback(t *testi
 	t.Cleanup(srv.Close)
 
 	req := toolResultImageRequest(t)
-	original := append([]byte(nil), req.Messages[0].Content[0].ToolResult.ImageData...)
+	original := append([]byte(nil), req.Messages[1].Content[0].ToolResult.ImageData...)
 	adapter := &Adapter{APIKey: "key", BaseURL: srv.URL, Client: srv.Client(), Adaptive: true}
 	resp, err := adapter.Complete(t.Context(), req)
 	if err != nil {
@@ -148,8 +148,8 @@ func TestAdapter_AdaptiveComplete_ToolResultImage_SanitizesChatFallback(t *testi
 	if tool["content"] != "screenshot" {
 		t.Fatalf("fallback tool content = %#v, want screenshot", tool["content"])
 	}
-	if req.Messages[0].Content[0].ToolResult.ImageMediaType != "image/png" ||
-		!bytes.Equal(req.Messages[0].Content[0].ToolResult.ImageData, original) {
+	if req.Messages[1].Content[0].ToolResult.ImageMediaType != "image/png" ||
+		!bytes.Equal(req.Messages[1].Content[0].ToolResult.ImageData, original) {
 		t.Fatal("fallback mutated the original request")
 	}
 }

@@ -565,6 +565,48 @@ func buildMultimodalParts(parts []llm.ContentPart) []map[string]any {
 	return out
 }
 
+// requestWithoutToolResultImages returns a request whose tool-result image
+// fields have been removed from a private copy. Chat Completions has no
+// portable image-bearing tool-message representation, so the adapter uses this
+// only on its Chat dispatch path. The original request remains suitable for a
+// Responses attempt and for transcript/API logging.
+func requestWithoutToolResultImages(req llm.Request) llm.Request {
+	needsCopy := false
+	for _, m := range req.Messages {
+		for _, p := range m.Content {
+			if p.Kind == llm.ContentToolResult && p.ToolResult != nil &&
+				(len(p.ToolResult.ImageData) > 0 || p.ToolResult.ImageMediaType != "") {
+				needsCopy = true
+				break
+			}
+		}
+		if needsCopy {
+			break
+		}
+	}
+	if !needsCopy {
+		return req
+	}
+
+	out := req
+	out.Messages = make([]llm.Message, len(req.Messages))
+	copy(out.Messages, req.Messages)
+	for i, m := range req.Messages {
+		out.Messages[i].Content = append([]llm.ContentPart(nil), m.Content...)
+		for j, p := range m.Content {
+			if p.Kind != llm.ContentToolResult || p.ToolResult == nil ||
+				(len(p.ToolResult.ImageData) == 0 && p.ToolResult.ImageMediaType == "") {
+				continue
+			}
+			result := *p.ToolResult
+			result.ImageData = nil
+			result.ImageMediaType = ""
+			out.Messages[i].Content[j].ToolResult = &result
+		}
+	}
+	return out
+}
+
 // requestHasToolResultImages reports whether any tool-result content part in
 // req carries inline image bytes. The Chat Completions wire format only
 // permits text content on a "role":"tool" message, so a tool result with
