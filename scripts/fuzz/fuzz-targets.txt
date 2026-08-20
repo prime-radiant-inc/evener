@@ -443,6 +443,7 @@ native:agent:.:FuzzLifecycleSeq::
 rapid:agent:./internal/jobstore:TestJobstoreSeqFuzz
 rapid:agent:./internal/contextmgr:TestCompactionSeqFuzz
 rapid:agent:./internal/contextmgr:TestFc1MaybeCompactSeqFuzz
+rapid:agent:./internal/contextmgr:TestForceCompactDoubleLayerSeqFuzz
 rapid:.:./internal/appserver:TestRouterSeqFuzz
 rapid:.:./internal/appserver:TestHubMultiSessionSeqFuzz
 # Wave 2: next-tier agent-package surface — doctor rendering, ctx/jobstore
