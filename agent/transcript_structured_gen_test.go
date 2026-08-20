@@ -65,14 +65,31 @@ func generateTranscript(s schemagen.Source) ([]byte, error) {
 			return nil, err
 		}
 	}
-	// Terminate every record, exactly as transcript.Writer frames them. The
-	// readers drain and discard an unterminated final line as a torn write
-	// (transcript.ReadLine), so joining without a trailing terminator would make
-	// every generated transcript look crash-truncated and cost the last record on
-	// every input.
+	// Terminate every record, exactly as transcript.Writer frames them, except
+	// the source can choose to withhold the terminator after the last line to
+	// model a torn write (transcript.ReadLine treats an unterminated final line
+	// as incomplete purely by hitting EOF before '\n', regardless of content, so
+	// a complete record missing only its trailing newline is indistinguishable
+	// from a genuinely mid-write-chopped fragment). This draw is placed last,
+	// after every header and entry draw above, so it never shifts the byte
+	// alignment of any earlier draw: an existing byte source that used to
+	// produce a well-terminated transcript still produces the identical bytes
+	// for every line, and only gains a chance of losing the final newline if it
+	// has leftover bytes past what the rest of the generator consumes. That is
+	// why the persisted FuzzTranscriptReadersAgree corpus (agent/testdata/fuzz/
+	// FuzzTranscriptReadersAgree/) needed no remapping for this change: replayed
+	// against generateTranscript before and after, all 8 entries produce
+	// byte-identical transcripts. len(g.lines) > 1 keeps the bit from ever
+	// tearing the header line when num_lines draws 0 (a torn header fails
+	// readTranscriptFull outright, before Gate A even runs, wasting the draw on
+	// an input outside the three-reader agreement domain).
+	tornTail := len(g.lines) > 1 && s.Bool("torn_tail")
 	var out []byte
-	for _, line := range g.lines {
+	for i, line := range g.lines {
 		out = append(out, line...)
+		if tornTail && i == len(g.lines)-1 {
+			break // omit the terminator: model a torn write
+		}
 		out = append(out, '\n')
 	}
 	return out, nil
@@ -537,6 +554,13 @@ func (g *transcriptGen) bytesField(label string) []byte {
 // that yield at least one decoded entry (so the write/read + resume oracles run
 // over real turns). Raw random bytes essentially never form a valid header line;
 // the structured generator does so on nearly every input.
+//
+// It also measures the torn_tail bit (issue #156): the fraction of structured
+// inputs whose final record is left unterminated (full.Skipped > 0, so Gate A
+// of FuzzTranscriptReadersAgree actually gets a torn-tail-shaped input to
+// exercise) versus the fraction that stay fully clean (full.Skipped == 0, so
+// Gate B — the strict-reader comparison, which already bails out whenever
+// Skipped != 0 — keeps seeing a live population to compare against).
 func TestTranscriptGenReachesDeeper(t *testing.T) {
 	// The rates below are near-deterministic generator properties, not
 	// statistical flukes, so a reduced sample count under -short (the gate's
@@ -560,9 +584,16 @@ func TestTranscriptGenReachesDeeper(t *testing.T) {
 	}
 
 	rng := rand.New(rand.NewSource(1)) //nolint:gosec // deterministic test fixture, not security
-	var rawHeader, rawEntries, structHeader, structEntries int
+	var rawHeader, rawEntries, structHeader, structEntries, structTornTail, gateBEligible int
 	for i := 0; i < samples; i++ {
-		data := make([]byte, rng.Intn(64))
+		// 128 (not 64): the torn_tail draw (issue #156) is the LAST thing
+		// generateTranscript reads from the source, so it only ever fires when a
+		// source has leftover bytes past everything header/entry generation
+		// already consumes. A 0-63 byte budget rarely has any left over, which
+		// starved torn_tail's coverage under -short's reduced sample count; 128
+		// gives sources enough headroom to reach that draw often enough to be
+		// measured reliably even at 300 samples, without needing more samples.
+		data := make([]byte, rng.Intn(128))
 		_, _ = rng.Read(data)
 
 		if d := write(data); d.Skipped != -1 {
@@ -590,16 +621,25 @@ func TestTranscriptGenReachesDeeper(t *testing.T) {
 			if len(d.Entries) > 0 {
 				structEntries++
 			}
+			if d.Skipped > 0 {
+				structTornTail++
+			} else {
+				gateBEligible++
+			}
 		}
 	}
 
 	rawHeaderRate := float64(rawHeader) / float64(samples)
 	structHeaderRate := float64(structHeader) / float64(samples)
 	structEntryRate := float64(structEntries) / float64(samples)
+	structTornTailRate := float64(structTornTail) / float64(samples)
+	gateBEligibleRate := float64(gateBEligible) / float64(samples)
 	t.Logf("header decode: raw=%.1f%% (%d)  structured=%.1f%% (%d)",
 		rawHeaderRate*100, rawHeader, structHeaderRate*100, structHeader)
 	t.Logf("entry yield (>=1 decoded entry): raw=%.1f%% (%d)  structured=%.1f%% (%d)",
 		float64(rawEntries)/float64(samples)*100, rawEntries, structEntryRate*100, structEntries)
+	t.Logf("torn tail (Skipped>0): structured=%.1f%% (%d)  gate-B-eligible (Skipped==0): structured=%.1f%% (%d)",
+		structTornTailRate*100, structTornTail, gateBEligibleRate*100, gateBEligible)
 
 	if rawHeaderRate > 0.05 {
 		t.Errorf("raw random bytes should rarely form a transcript header, got %.1f%%", rawHeaderRate*100)
@@ -613,6 +653,12 @@ func TestTranscriptGenReachesDeeper(t *testing.T) {
 	if structHeaderRate <= rawHeaderRate {
 		t.Errorf("structured (%.1f%%) must reach the reader more than raw bytes (%.1f%%)",
 			structHeaderRate*100, rawHeaderRate*100)
+	}
+	if structTornTailRate <= 0 {
+		t.Errorf("structured generator should produce torn tails at least sometimes (issue #156), got %.1f%%", structTornTailRate*100)
+	}
+	if gateBEligibleRate < 0.9 {
+		t.Errorf("torn_tail should stay rare enough that Gate B keeps a live population, got %.1f%% eligible", gateBEligibleRate*100)
 	}
 }
 
