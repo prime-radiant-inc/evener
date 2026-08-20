@@ -455,12 +455,9 @@ func runInstallScript(t *testing.T, script, osName, archName string, knobs map[s
 
 	home = t.TempDir()
 	fixtures := t.TempDir()
-	asset := "evener_" + strings.ToLower(osName) + "_" + archName + ".tar.gz"
-	if archName == "x86_64" {
-		asset = "evener_" + strings.ToLower(osName) + "_amd64.tar.gz"
-	}
-	archive := filepath.Join(fixtures, asset)
-	writeInstallReleaseArchive(t, archive, strings.TrimSuffix(asset, ".tar.gz"))
+	root := installArchiveRoot(osName, archName)
+	archive := filepath.Join(fixtures, root+".tar.gz")
+	writeInstallReleaseArchive(t, archive, root)
 	fakeBin, urlFile := writeInstallScriptFakeBin(t, fixtures, osName, archName)
 
 	overrides := map[string]string{
@@ -475,6 +472,21 @@ func runInstallScript(t *testing.T, script, osName, archName string, knobs map[s
 	cmd.Env = installTestEnv(t, home, overrides)
 	combined, runErr := cmd.CombinedOutput()
 	return home, string(combined), runErr
+}
+
+// installArch maps a `uname -m` answer to the release archive's arch token.
+// installArchiveRoot composes the archive's directory name (and, with
+// ".tar.gz", the asset name) the same way install.sh does. Both live here
+// rather than in install_fuzz_test.go so the untagged tests can use them too.
+func installArch(arch string) string {
+	if arch == "x86_64" {
+		return "amd64"
+	}
+	return arch
+}
+
+func installArchiveRoot(osName, arch string) string {
+	return "evener_" + strings.ToLower(osName) + "_" + installArch(arch)
 }
 
 func assertNothingInstalled(t *testing.T, home, out string) {

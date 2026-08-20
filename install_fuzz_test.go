@@ -214,14 +214,3 @@ done
 		}
 	})
 }
-
-func installArch(arch string) string {
-	if arch == "x86_64" {
-		return "amd64"
-	}
-	return arch
-}
-
-func installArchiveRoot(osName, arch string) string {
-	return "evener_" + strings.ToLower(osName) + "_" + installArch(arch)
-}
