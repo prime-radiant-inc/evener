@@ -277,7 +277,7 @@ fuzz:
 	@GOENV=off GOFLAGS= GOWORK="$(FUZZ_GOWORK)" $(MEMCAP) sh -c 'cd fuzz && go test -tags evenerfuzz ./...'
 	@GOENV=off GOFLAGS= GOWORK="$(FUZZ_GOWORK)" $(MEMCAP) sh -c 'go test ./cmd/evener-fuzzcov ./cmd/evener-fuzz-harvest'
 	@$(FUZZ_SEED_REPLAY)
-	@set -eu; cap="$(MEMCAP)"; if [ -n "$$cap" ]; then cap="$$(pwd)/$$cap"; fi; go_work="$(FUZZ_GOWORK)"; for target in $$(scripts/fuzz/run-fuzz.sh --list | awk -F: '$$1 == "rapid" { print $$2 ":" $$3 ":" $$4 }'); do module=$${target%%:*}; rest=$${target#*:}; pkg=$${rest%%:*}; name=$${rest#*:}; for seed in 1 2 3 5 8; do echo "=== rapid replay $$module:$$name seed $$seed ==="; (cd "$$module" && GOENV=off GOFLAGS= GOWORK="$$go_work" env -u RAPID_FAILFILE EVENER_FUZZ_TESTS=1 RAPID_SEED="$$seed" RAPID_CHECKS=100 RAPID_STEPS=30 RAPID_NOFAILFILE=true RAPID_LOG=false RAPID_V=false RAPID_DEBUG=false RAPID_DEBUGVIS=false RAPID_SHRINKTIME=30s $${cap:+"$$cap"} go test -tags evenerfuzz -run "^$${name}\$$" -count=1 "$$pkg"); done; done
+	@RUN_CAP="$(MEMCAP)" scripts/fuzz/rapid-replay.sh
 	@GOENV=off GOFLAGS= GOWORK="$(FUZZ_GOWORK)" $(MEMCAP) sh -c "go test -run '^Test.*Golden\$$' ./appwire"
 
 # fuzz-goldens regenerates the decode SNAPSHOT goldens — evener's differential
