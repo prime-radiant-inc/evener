@@ -68,7 +68,7 @@ FuzzCanonicalRecordCodec 68.4
 FuzzCatalogPricingCoverage 11.3
 FuzzCheckPackage 61.2
 FuzzCheckpointExtract 89.4
-FuzzClassify 0.0
+FuzzClassify 20.3
 FuzzClassifyReason 4.6
 FuzzClassifyResponsesError 85.0
 FuzzClientCapabilities 100.0
@@ -228,7 +228,7 @@ FuzzHubcoreScenarios 59.5
 FuzzIdentifierDomainIDs 95.5
 FuzzInitWorktreeSeed100 24.3
 FuzzInstallScript 0.0
-FuzzInstanceFactory 0.0
+FuzzInstanceFactory 100.0
 FuzzInternalCheckCoverage 100.0
 FuzzInvariantHold 100.0
 FuzzIsolateOpenAIAuth 100.0
@@ -347,7 +347,7 @@ FuzzOresp_NewForInstance 37.0
 FuzzOresp_StreamChat 87.2
 FuzzOresp_StreamResponses 87.5
 FuzzOutputMatcher 81.7
-FuzzPackageUnion 0.0
+FuzzPackageUnion 42.9
 FuzzPanesAndShell 36.2
 FuzzParse 100.0
 FuzzParseAgent 83.1
