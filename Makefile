@@ -441,8 +441,9 @@ lint-naming:
 # gate the tagged sources had before (evener-namingcheck parsed every .go file
 # in the tree, tags or not) while reading its casing rules, carve-outs and
 # exclusions from the one .golangci.yml. Widening the tagged pass to the whole
-# linter set is a separate change: it surfaces ~160 findings these files have
-# never been held to.
+# linter set is a separate change: measured at 180 findings across the
+# workspace (99 modernize, 20 revive, 13 staticcheck, ...) that these files
+# have never been held to.
 lint-evenerfuzz:
 	$(call run_quiet_lint,for m in $(FUZZ_GO_MODULES); do (cd $$m && go vet -tags evenerfuzz ./...) || exit 1; done)
 	$(call run_quiet_lint,for m in $(FUZZ_GO_MODULES); do (cd $$m && golangci-lint run --allow-parallel-runners --build-tags evenerfuzz --enable-only tagliatelle ./...) || exit 1; done)
@@ -456,6 +457,8 @@ lint-evenerfuzz:
 # FUZZ_GO_MODULES is the full workspace list, and the floor wants all of it: eval
 # sources sit only under agent/ today, and a floor is worth nothing in the module
 # where the next one lands. ~3.5s warm, the same order as the evenerfuzz pass.
+# It carries the same tagliatelle pass under its own tag, for the reason
+# lint-evenerfuzz's comment gives.
 lint-eval:
 	$(call run_quiet_lint,for m in $(FUZZ_GO_MODULES); do (cd $$m && go vet -tags eval ./...) || exit 1; done)
 	$(call run_quiet_lint,for m in $(FUZZ_GO_MODULES); do (cd $$m && golangci-lint run --allow-parallel-runners --build-tags eval --enable-only tagliatelle ./...) || exit 1; done)
