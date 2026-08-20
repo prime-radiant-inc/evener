@@ -1,54 +1,57 @@
 #!/usr/bin/env bash
-# coverage-union.sh — how much of each module is exercised by ANY of this repo's
-# deterministic tests: the union of the test track and the fuzz track.
+# coverage-floor.sh — the repo's one coverage ratchet: how much of each module
+# (and the frontend) is exercised by ANY deterministic test.
 #
-# Neither existing ratchet answers that question, and both understate it on their
-# own. `evener-dev coverage-floor` measures what `ROOT_FULL=1 make test`
-# proves, whose -run '^(Test|Example)' filter deliberately excludes every fuzz
-# target. scripts/fuzz/fuzz-coverage-global.sh measures only what the fuzz corpus
-# replays. The gap between them is not small and it is not noise: this repo keeps
-# whole families of behavioural checks in `check*` functions that only a
-# evenerfuzz-tagged "program" fuzz target calls, so the packages using that pattern
-# read far lower on the test track than they really are (cmd/evener-hub/internal/
-# appsource: 66.4% on the test track, 83.1% under its program target).
+# Per Go module it measures the UNION of the test track (the gate's Test/
+# Example surface) and the fuzz track (committed seed-corpus replay under
+# -tags evenerfuzz): each track alone understates, because the gate's
+# -run '^(Test|Example)' filter excludes fuzz targets and whole families of
+# behavioural checks live in `check*` functions only a tagged "program" target
+# calls. The web row is the frontend's vitest line coverage.
 #
-# Reading one track alone therefore either credits work that is not there or
-# demands tests that already exist under the other tag. The union is the honest
-# "is this code exercised at all" number, and the one to drive toward 100%.
-#
-# Both tracks are measured against the module's OWN packages (go list ./...), not
-# `./...`, which under go.work is a filesystem pattern matching every nested
-# module too. The two profiles are then concatenated and counted by position, so
-# a block covered by either track counts once — see covstmt-lib.sh.
+# The union of the two Go profiles is counted by position via covstmt-lib.sh,
+# so a block covered by either track counts once. Both tracks are measured
+# against the module's OWN packages (go list ./...), not `./...` — under
+# go.work that is a filesystem pattern matching every nested module too.
 #
 # Usage:
-#   scripts/coverage/coverage-union.sh                     # measure + print
-#   scripts/coverage/coverage-union.sh --check             # ratchet: non-zero on a drop
-#   scripts/coverage/coverage-union.sh --bless             # raise floors to current %
-#   scripts/coverage/coverage-union.sh --modules "agent llm"
-#   scripts/coverage/coverage-union.sh --tolerance 0.5     # wobble band (default 0.5pp)
+#   scripts/coverage/coverage-floor.sh                     # measure + print
+#   scripts/coverage/coverage-floor.sh --check             # ratchet: non-zero on a drop
+#   scripts/coverage/coverage-floor.sh --bless             # raise floors to current %
+#   scripts/coverage/coverage-floor.sh --modules "agent llm"
+#   scripts/coverage/coverage-floor.sh --go-only | --web-only
+#   scripts/coverage/coverage-floor.sh --tolerance 0.5     # wobble band (default 0.5pp)
 #
-# Floors live in scripts/coverage/covunion-floors.txt ("<module> <pct>" per line), raised
-# upward only. A partial --bless preserves every other module's floor, and the
-# comment header is carried through so a hand-written note survives.
+# Floors live in scripts/coverage/coverage-floors.txt ("<module|web> <pct>" per
+# line), raised upward only. A partial --bless preserves every other row's
+# floor, and the comment header is carried through so a hand-written note
+# survives.
 set -uo pipefail
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
-floors_file="${EVENER_COVUNION_FLOORS:-$repo_root/scripts/coverage/covunion-floors.txt}"
+floors_file="${EVENER_COVFLOORS:-$repo_root/scripts/coverage/coverage-floors.txt}"
 modules=". agent llm auth envvars invariant identifier fuzz"
 tolerance="0.5"
 check=false
 bless=false
+go_only=false
+web_only=false
 while [ $# -gt 0 ]; do
 	case "$1" in
 		--modules) modules="$2"; shift 2 ;;
 		--tolerance) tolerance="$2"; shift 2 ;;
 		--check) check=true; shift ;;
 		--bless) bless=true; shift ;;
+		--go-only) go_only=true; shift ;;
+		--web-only) web_only=true; shift ;;
 		-h|--help) awk 'NR==1{next} /^#/{sub(/^# ?/,""); print; next} {exit}' "${BASH_SOURCE[0]}"; exit 0 ;;
 		*) echo "unknown flag: $1" >&2; exit 2 ;;
 	esac
 done
+if $go_only && $web_only; then
+	echo "--go-only and --web-only are mutually exclusive" >&2
+	exit 2
+fi
 
 . "$(dirname "${BASH_SOURCE[0]}")/../lib/gate-surface-lib.sh"
 . "$(dirname "${BASH_SOURCE[0]}")/../lib/covstmt-lib.sh"
@@ -61,10 +64,9 @@ measured_for() { awk -v m="$1" '$1==m {print $2}' "$measured_file" 2>/dev/null; 
 # argument list as a redirection to a file named "0".
 pct_of() { awk -v c="$1" -v t="$2" 'BEGIN{printf "%.1f", (t > 0 ? 100 * c / t : 0)}'; }
 
-# check_measurable MODULE WHY — a floored module that cannot be measured is an
-# unenforced ratchet, not a skippable row; see cmd/evener-dev/coveragefloor.go
-# for the failure mode this closes. A module nobody floored keeps its advisory
-# skip.
+# check_measurable ROW WHY — a floored row that cannot be measured is an
+# unenforced ratchet, not a skippable one. A row nobody floored keeps its
+# advisory skip.
 check_measurable() {
 	$check || return 0
 	local floor
@@ -82,23 +84,24 @@ tmpbase=${TMPDIR:-/tmp}
 # Reclaim what earlier runs of THIS script abandoned here, before taking a name
 # of our own: a SIGKILLed run never reached its trap, and a failed run kept its
 # scratch on purpose. Nothing else sweeps either. See covscratch-lib.sh.
-reclaim_own_scratch "$tmpbase" evener-covunion
+reclaim_own_scratch "$tmpbase" evener-covfloor
 # The name is chosen and the trap armed BEFORE the directory exists; see
 # covscratch-lib.sh for the signal window this closes. $$ is unique among
 # live processes, so concurrent runs cannot collide. A failed mkdir means a
 # stale same-pid leftover this run does not own, so the trap is disarmed before
 # exiting rather than deleting it.
-work_dir="${tmpbase%/}/evener-covunion.$$"
+work_dir="${tmpbase%/}/evener-covfloor.$$"
 fail=0
 # A clean run leaves nothing behind; a failed one keeps the profiles and logs,
 # because the failure line printed their path.
 cleanup_work() { [ "$fail" -eq 0 ] && rm -rf "$work_dir"; }
 trap cleanup_work EXIT
-mkdir "$work_dir" || { trap - EXIT; echo "coverage-union: scratch $work_dir already exists or cannot be created" >&2; exit 1; }
+mkdir "$work_dir" || { trap - EXIT; echo "coverage-floor: scratch $work_dir already exists or cannot be created" >&2; exit 1; }
 measured_file="$work_dir/measured.txt"
 : >"$measured_file"
 
 printf '%-10s %10s %10s %8s %8s %8s %8s\n' "module" "covered" "total" "union%" "test%" "fuzz%" "floor"
+if ! $web_only; then
 for m in $modules; do
 	[ -f "$repo_root/$m/go.mod" ] || { printf '%-10s %s\n' "$m" "(no module)"; check_measurable "$m" "no module exists at $m"; continue; }
 	name="$m"
@@ -168,6 +171,47 @@ for m in $modules; do
 		fi
 	fi
 done
+fi
+
+# The web row: the frontend's vitest line coverage, one total figure. The
+# vitest config names the whole src/ tree in coverage.include, so a file no
+# test ever loads counts as 0% instead of vanishing from the report.
+if ! $go_only; then
+	frontend="$repo_root/cmd/evener-hub/frontend"
+	summary="$frontend/coverage/coverage-summary.json"
+	if [ ! -d "$frontend" ]; then
+		printf '%-10s %s\n' "web" "(no frontend)"
+		check_measurable "web" "no frontend exists at $frontend"
+	else
+		# Delete the previous report before measuring: vitest writes a fresh one
+		# on green and (via reportOnFailure) on red, so any summary present after
+		# the run is this run's.
+		rm -f "$summary"
+		web_suite_failed=false
+		if ! ( cd "$frontend" && npm run test:coverage ) >"$work_dir/web.log" 2>&1; then
+			web_suite_failed=true
+		fi
+		if [ ! -f "$summary" ]; then
+			printf '%-10s %s\n' "web" "SUITE FAILED (log: $work_dir/web.log)"
+			fail=1
+		else
+			web_pct="$(python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); print("%.1f" % d["total"]["lines"]["pct"])' "$summary")"
+			echo "web $web_pct" >>"$measured_file"
+			floor="$(floor_for "web")"
+			suffix=""
+			$web_suite_failed && suffix=" (suite FAILED; reportOnFailure numbers)"
+			printf '%-10s %19s %7s%% %17s %7s%s\n' "web" "—" "$web_pct" "" "${floor:-—}" "$suffix"
+			if $web_suite_failed; then
+				fail=1
+			elif $check && [ -n "$floor" ]; then
+				if [ "$(awk -v p="$web_pct" -v f="$floor" -v tol="$tolerance" 'BEGIN{print (p < f - tol) ? 1 : 0}')" = "1" ]; then
+					echo "    REGRESSION: web line coverage ${web_pct}% < floor ${floor}% (tolerance ${tolerance}pp)" >&2
+					fail=1
+				fi
+			fi
+		fi
+	fi
+fi
 
 if $bless; then
 	tmp="$(mktemp "${TMPDIR:-/tmp}/evener-floors.XXXXXX")"
@@ -175,11 +219,11 @@ if $bless; then
 		if grep -q '^#' "$floors_file" 2>/dev/null; then
 			awk '/^#/{print; next} {exit}' "$floors_file"
 		else
-			echo "# Union (test track + fuzz track) whole-module statement-coverage floors."
-			echo "# Managed by scripts/coverage/coverage-union.sh --bless. Raised upward only;"
+			echo "# Union (test track + fuzz track) whole-module statement-coverage floors, plus the frontend line-coverage row."
+			echo "# Managed by scripts/coverage/coverage-floor.sh --bless. Raised upward only;"
 			echo "# a downward reset (basis change, not a regression) is a hand edit."
 		fi
-		{ printf '%s\n' $modules; awk '!/^#/ && NF {print $1}' "$floors_file" 2>/dev/null; } | sort -u | while read -r m; do
+		{ printf '%s\n' $modules; printf 'web\n'; awk '!/^#/ && NF {print $1}' "$floors_file" 2>/dev/null; } | sort -u | while read -r m; do
 			[ -n "$m" ] || continue
 			cur="$(measured_for "$m")"; old="$(floor_for "$m")"; keep="$cur"
 			[ -n "$old" ] && keep="$(awk -v a="$old" -v b="${cur:-0}" 'BEGIN{print (a>b)?a:b}')"

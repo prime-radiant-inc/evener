@@ -18,7 +18,6 @@ var subcommands = map[string]func(args []string) int{
 	"agent-shards":         runAgentShards,
 	"module-lint":          lintMain,
 	"capability-preflight": runCapabilityPreflight,
-	"coverage-floor":       runCoverageFloor,
 }
 
 func main() {

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # test-timing-budget.sh — a no-regression ratchet on how long the non-fuzz test
 # suite takes, per Go package plus one aggregate for the frontend. Companion to
-# `evener-dev coverage-floor` (coverage) and web-coverage-floor.sh (frontend
+# scripts/coverage/coverage-floor.sh (Go union and frontend)
 # coverage): those guard how MUCH the suite proves, this guards how LONG it
 # takes, so an unexamined regression cannot silently erode the wins recorded in
 # docs/superpowers/specs/2026-08-01-test-gate-runtime-design.md (kata b6rv).
@@ -47,7 +47,7 @@
 #                                                   # rows — how the selftest drives
 #                                                   # the comparison contract with
 #                                                   # fixture durations, exactly like
-#                                                   # web-coverage-floor.sh's --reuse
+#                                                   # the coverage-floor web row's reuse of the vitest report
 #
 # --check's exit policy: CI is strict (a $CI-set environment, or --strict);
 # everywhere else is warn-only (--local, or --check with $CI unset). Strict

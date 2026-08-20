@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# coverage-union-selftest.sh — exercises scripts/coverage-union.sh against a
+# coverage-floor-selftest.sh — exercises scripts/coverage-floor.sh against a
 # throwaway repo and a fake `go` that emits two DIFFERENT profiles depending on
 # whether it was invoked with -tags evenerfuzz. No compilation, no real suite.
 #
@@ -8,20 +8,20 @@
 # correct union reports 100% where each track alone reports 40% and 60%.
 set -uo pipefail
 
-real_script="$(cd "$(dirname "$0")" && pwd)/coverage-union.sh"
+real_script="$(cd "$(dirname "$0")" && pwd)/coverage-floor.sh"
 . "$(dirname "$0")/../lib/selftest-lib.sh"
 
 trap 'scratch_rm' EXIT
-scratch_dir work evener-covunion-selftest
+scratch_dir work evener-covfloor-selftest
 
 repo="$work/repo"
 mkdir -p "$repo/scripts/coverage" "$repo/scripts/lib" "$repo/agent"
-cp "$real_script" "$repo/scripts/coverage/coverage-union.sh"
+cp "$real_script" "$repo/scripts/coverage/coverage-floor.sh"
 cp "$(dirname "$0")/../lib/gate-surface-lib.sh" "$repo/scripts/lib/gate-surface-lib.sh"
 cp "$(dirname "$0")/../lib/covstmt-lib.sh" "$repo/scripts/lib/covstmt-lib.sh"
 cp "$(dirname "$0")/../lib/covscratch-lib.sh" "$repo/scripts/lib/covscratch-lib.sh"
-script="$repo/scripts/coverage/coverage-union.sh"
-floors="$repo/scripts/coverage/covunion-floors.txt"
+script="$repo/scripts/coverage/coverage-floor.sh"
+floors="$repo/scripts/coverage/coverage-floors.txt"
 printf 'module fake\n\ngo 1.25\n' >"$repo/go.mod"
 printf 'module fake/agent\n\ngo 1.25\n' >"$repo/agent/go.mod"
 
@@ -109,7 +109,7 @@ assert_killed_run_cleans_up HUP
 
 # The exits a trap cannot see, and the failed run that keeps its scratch on
 # purpose, are this script's own to reclaim: no janitor sweeps them.
-scratch_prefix=evener-covunion
+scratch_prefix=evener-covfloor
 assert_reclaims_abandoned_scratch
 assert_keeps_concurrent_scratch
 printf 'nosuch 50.0\n' >"$floors"

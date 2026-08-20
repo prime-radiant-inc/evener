@@ -281,11 +281,13 @@ func TestMakeRuntimeAliasesBuildThePair(t *testing.T) {
 		}
 	})
 
-	// dist and install both gained the build-web prerequisite, so the
-	// dependency graph itself (not just build/build-hub) must order the web
-	// build before the hub go build. make -n prints recipes without running
-	// them, so this is cheap and side-effect-free.
-	for _, target := range []string{"dist", "install"} {
+	// install gained the build-web prerequisite, so the dependency graph
+	// itself (not just build/build-hub) must order the web build before the
+	// hub go build. make -n prints recipes without running them, so this is
+	// cheap and side-effect-free. dist defers to goreleaser, whose before
+	// hook owns the same ordering — asserted from the repo's .goreleaser.yml
+	// below.
+	for _, target := range []string{"install"} {
 		t.Run(target+"/dry-run-orders-web-before-hub-build", func(t *testing.T) {
 			fixture := newBuildWebFixture(t)
 
@@ -300,6 +302,31 @@ func TestMakeRuntimeAliasesBuildThePair(t *testing.T) {
 			assertNpmBuildPrecedesHubGoBuild(t, target, output)
 		})
 	}
+
+	t.Run("dist/goreleaser-builds-web-first", func(t *testing.T) {
+		fixture := newBuildWebFixture(t)
+
+		command := exec.Command("make", "-n", "dist")
+		command.Dir = fixture.root
+		command.Env = fixture.environment("")
+		output, err := command.CombinedOutput()
+		if err != nil {
+			t.Fatalf("make -n dist: %v\n%s", err, output)
+		}
+		if !strings.Contains(string(output), "goreleaser release --snapshot --clean") {
+			t.Fatalf("make -n dist does not defer to a goreleaser snapshot build; output = %s", output)
+		}
+
+		cfg, err := os.ReadFile(filepath.Join(fixture.repoRoot, ".goreleaser.yml"))
+		if err != nil {
+			t.Fatalf("read .goreleaser.yml: %v", err)
+		}
+		hook := bytes.Index(cfg, []byte("before:"))
+		buildWeb := bytes.Index(cfg, []byte("make build-web"))
+		if hook == -1 || buildWeb == -1 || buildWeb < hook {
+			t.Fatalf(".goreleaser.yml does not run make build-web as a before hook; the hub binary would embed a stale SPA:\n%s", cfg)
+		}
+	})
 }
 
 func TestMakeWebCommandsContainNodeProcessState(t *testing.T) {
@@ -728,32 +755,29 @@ func TestMakeTestWebInterruptDoesNotSignalReapedCheck(t *testing.T) {
 	waitedReaped := filepath.Join(fixture.root, "waited-reaped.ready")
 	killedReaped := filepath.Join(fixture.root, "killed-reaped")
 	recordingShell := filepath.Join(filepath.Dir(fixture.root), "recording-shell")
-	writeTestFile(t, recordingShell, []byte(`#!/bin/sh
-if [ "${1:-}" = "-c" ]; then
-  exec /bin/sh -c '
-    wait() {
-      command wait "$@"
-      wait_status=$?
-      tracked_pid=$(cat "$EVENER_TEST_NPM_TRACK_PID")
-      [ "${1:-}" != "$tracked_pid" ] || : > "$EVENER_TEST_SHELL_WAITED_REAPED"
-      return "$wait_status"
-    }
-    kill() {
-      tracked_pid=$(cat "$EVENER_TEST_NPM_TRACK_PID")
-      for kill_arg in "$@"; do
-        [ "$kill_arg" != "$tracked_pid" ] || : > "$EVENER_TEST_SHELL_KILLED_REAPED"
-      done
-      command kill "$@"
-    }
-    eval "$1"
-  ' evener-recording-shell "$2"
-fi
-exec /bin/sh "$@"
-`), 0o755)
+	writeTestFile(t, recordingShell, []byte(`wait() {
+  command wait "$@"
+  wait_status=$?
+  tracked_pid=$(cat "$EVENER_TEST_NPM_TRACK_PID")
+  [ "${1:-}" != "$tracked_pid" ] || : > "$EVENER_TEST_SHELL_WAITED_REAPED"
+  return "$wait_status"
+}
+kill() {
+  tracked_pid=$(cat "$EVENER_TEST_NPM_TRACK_PID")
+  for kill_arg in "$@"; do
+    [ "$kill_arg" != "$tracked_pid" ] || : > "$EVENER_TEST_SHELL_KILLED_REAPED"
+  done
+  command kill "$@"
+}
+`), 0o644)
 
-	command := exec.Command("make", "SHELL="+recordingShell, "test-web")
+	// The wait/kill lifecycle lives inside scripts/web/test-web.sh, so the
+	// seam moved with it: BASH_ENV lands the recording functions in the
+	// script's own bash, where they shadow the builtins it calls.
+	command := exec.Command("make", "test-web")
 	command.Dir = fixture.root
 	command.Env = append(fixture.environment(""),
+		"BASH_ENV="+recordingShell,
 		"EVENER_TEST_NPM_HOLD_COMMAND=run test",
 		"EVENER_TEST_NPM_READY="+heldReady,
 		"EVENER_TEST_NPM_PID="+heldPID,
@@ -859,7 +883,10 @@ func newBuildWebFixture(t *testing.T) runtimeBuildFixture {
 	copyRepositoryFile(t, fixture.repoRoot, fixture.root, "Makefile", 0o644)
 	copyRepositoryFile(t, fixture.repoRoot, fixture.root, "scripts/ops/build-runtime-pair.sh", 0o755)
 	copyRepositoryFile(t, fixture.repoRoot, fixture.root, "scripts/lib/private-go-home.sh", 0o644)
+	copyRepositoryFile(t, fixture.repoRoot, fixture.root, "scripts/lib/scratch-lib.sh", 0o644)
 	copyRepositoryFile(t, fixture.repoRoot, fixture.root, "scripts/web/web-preflight.sh", 0o755)
+	copyRepositoryFile(t, fixture.repoRoot, fixture.root, "scripts/web/test-web.sh", 0o755)
+	copyRepositoryFile(t, fixture.repoRoot, fixture.root, "scripts/web/test-web-browser.sh", 0o755)
 	return fixture
 }
 

@@ -287,16 +287,14 @@ var recursiveDeleteAllowedLines = map[string]int{
 	// mid-suite, where the no-argument delete would take the suite's whole
 	// scratch with it.
 	"scripts/e2e/e2e-webui-turn-controls-selftest.sh": 1,
-	// The coverage runners keep the pid-suffixed name-first/trap-first/mkdir
+	// The coverage runner keeps the pid-suffixed name-first/trap-first/mkdir
 	// pattern instead of scratch_dir: the trap exists before the directory
 	// can, so a signal in the window abandons nothing (measured 0/150 leaks
 	// vs 29/150 for a mint-then-trap ordering), and #105's owner-side reclaim
 	// parses the pid out of the basename, which a random mktemp suffix would
-	// turn into a permanent no-op. Each delete targets the name the script
+	// turn into a permanent no-op. Its delete targets the name the script
 	// composed from its own $$ before anything else ran.
-	"scripts/coverage/coverage-union.sh":   1,
-	"scripts/fuzz/fuzz-coverage.sh":        1,
-	"scripts/fuzz/fuzz-coverage-global.sh": 1,
+	"scripts/coverage/coverage-floor.sh": 1,
 	// test-cost adopts the same pid-suffixed pattern as the runners above,
 	// for the same reasons; before this it minted with `mktemp -t` (outside
 	// any TMPDIR a caller set) and never deleted its scratch at all.

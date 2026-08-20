@@ -31,15 +31,12 @@ const (
 )
 
 // Target is a coverage-replay identity. Module and Package are paths relative to
-// go.work and its module directory, respectively. Focus carries the optional
-// ";"-separated "file[#func]" focus specs from the manifest; it is metadata for
-// spec validation, never part of target identity.
+// go.work and its module directory, respectively.
 type Target struct {
 	Kind    string
 	Module  string
 	Package string
 	Name    string
-	Focus   string
 }
 
 // targetIdentity preserves the four target fields as an exact, comparable key.
@@ -106,9 +103,6 @@ func runRegistry(args []string, stdout, stderr io.Writer) int {
 		if err := CheckTargets(registered, discovered); err != nil {
 			return registryError(stderr, "%v", err)
 		}
-		if err := CheckFocusSpecs(*repoRoot, registered); err != nil {
-			return registryError(stderr, "%v", err)
-		}
 	}
 	if *emitPlan {
 		if err := EmitPlan(stdout, registered); err != nil {
@@ -140,18 +134,13 @@ func ParseRegistry(r io.Reader) ([]Target, error) {
 		if len(fields) < 4 {
 			return nil, fmt.Errorf("line %d: expected at least four colon-separated fields", line)
 		}
-		focus := ""
-		if len(fields) >= 6 {
-			// Mirror fuzz-coverage.sh's `IFS=: read tag module pkg name cover
-			// focus`: everything after the fifth colon is the focus field.
-			focus = strings.Join(fields[5:], ":")
-		}
+		// A fifth field (coverpkg) is gap-check metadata, not part of target
+		// identity, and is ignored here.
 		target, err := canonicalTarget(Target{
 			Kind:    strings.TrimSpace(fields[0]),
 			Module:  strings.TrimSpace(fields[1]),
 			Package: strings.TrimSpace(fields[2]),
 			Name:    strings.TrimSpace(fields[3]),
-			Focus:   focus,
 		})
 		if err != nil {
 			return nil, fmt.Errorf("line %d: %w", line, err)
@@ -423,55 +412,7 @@ func canonicalTarget(target Target) (Target, error) {
 	if name == "" || strings.ContainsAny(name, "\t\r\n:") {
 		return Target{}, fmt.Errorf("invalid target name %q", target.Name)
 	}
-	return Target{Kind: kind, Module: module, Package: pkg, Name: name, Focus: strings.TrimSpace(target.Focus)}, nil
-}
-
-// CheckFocusSpecs verifies every native target's focus specs resolve the way
-// cmd/evener-fuzzcov will resolve them at report time: the file exists under the
-// target's package directory and, when a "#func" suffix is present, a top-level
-// function or method of that name is declared there. This catches specs naming
-// a type or a renamed function at registry-check time instead of at the end of
-// a full fuzz-coverage replay.
-func CheckFocusSpecs(root string, targets []Target) error {
-	var issues []string
-	for _, target := range targets {
-		if target.Kind != "native" || target.Focus == "" {
-			continue
-		}
-		pkgSub := strings.TrimPrefix(target.Package, "./")
-		if pkgSub == "." {
-			pkgSub = ""
-		}
-		for spec := range strings.SplitSeq(target.Focus, ";") {
-			relpath, fn, _ := strings.Cut(spec, "#")
-			display := path.Join(target.Module, pkgSub, relpath)
-			srcPath := filepath.Join(root, target.Module, pkgSub, relpath)
-			fset := token.NewFileSet()
-			file, err := parser.ParseFile(fset, srcPath, nil, 0)
-			if err != nil {
-				issues = append(issues, fmt.Sprintf("%s: %s (focus spec %q): %v", target.Name, display, spec, err))
-				continue
-			}
-			if fn == "" {
-				continue
-			}
-			found := false
-			for _, decl := range file.Decls {
-				if fd, ok := decl.(*ast.FuncDecl); ok && fd.Name.Name == fn {
-					found = true
-					break
-				}
-			}
-			if !found {
-				issues = append(issues, fmt.Sprintf("%s: function %s not found in %s (focus spec %q)", target.Name, fn, display, spec))
-			}
-		}
-	}
-	if len(issues) == 0 {
-		return nil
-	}
-	sort.Strings(issues)
-	return errors.New("fuzz focus spec drift:\n  " + strings.Join(issues, "\n  "))
+	return Target{Kind: kind, Module: module, Package: pkg, Name: name}, nil
 }
 
 func canonicalModule(value string) (string, error) {
@@ -662,12 +603,7 @@ func targetString(target Target) string {
 }
 
 func identityOf(target Target) targetIdentity {
-	return targetIdentity{
-		Kind:    target.Kind,
-		Module:  target.Module,
-		Package: target.Package,
-		Name:    target.Name,
-	}
+	return targetIdentity(target)
 }
 
 func sortTargets(targets []Target) {

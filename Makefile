@@ -1,4 +1,4 @@
-.PHONY: build build-runtime build-go build-hub web-preflight build-web test-web test-web-browser build-tui build-doctor build-all build-linux build-llmcall build-migrate dist install install-home install-system test-install tools test-dev-tooling test test-short test-fuzz test-race merge-approval-gate e2e-cover vet lint lint-naming lint-evenerfuzz lint-eval lint-internal lint-golangci lint-generated lint-fuzz-registry generate mutation-floor clean fuzz fuzz-seeds fuzz-nightly fuzz-triage fuzz-continuous fuzz-coverage-global fuzz-bisect fuzz-bisect-selftest fuzz-oracle-audit fuzz-oracle-audit-selftest fuzz-mutation-score fuzz-ledger fuzz-coverage fuzz-gap-check fuzz-registry-check fuzz-goldens secret-scan fuzz-corpus-scan refresh-model-catalog test-coverage-floor web-coverage-floor web-coverage-floor-selftest coverage-gaps coverage-gaps-selftest coverage-union coverage-union-selftest merge-into-branch merge-into-branch-selftest test-timing-budget test-timing-budget-selftest test-rebaseline
+.PHONY: build build-runtime build-go build-hub web-preflight build-web test-web test-web-browser build-tui build-doctor build-all build-linux build-llmcall build-migrate dist install install-home install-system test-install tools test-dev-tooling test test-short test-fuzz test-race merge-approval-gate e2e-cover vet lint lint-naming lint-evenerfuzz lint-eval lint-internal lint-golangci lint-generated lint-fuzz-registry generate mutation-floor clean fuzz fuzz-seeds fuzz-nightly fuzz-triage fuzz-continuous fuzz-bisect fuzz-bisect-selftest fuzz-oracle-audit fuzz-oracle-audit-selftest fuzz-mutation-score fuzz-ledger fuzz-gap-check fuzz-registry-check fuzz-goldens secret-scan fuzz-corpus-scan refresh-model-catalog coverage-floor coverage-floor-selftest coverage-gaps coverage-gaps-selftest merge-into-branch merge-into-branch-selftest test-timing-budget test-timing-budget-selftest test-rebaseline
 
 LDFLAGS := -X primeradiant.com/evener/buildinfo.GitSHA=$$(git rev-parse --short HEAD) \
            -X primeradiant.com/evener/buildinfo.GitDirty=$$(git --no-optional-locks diff-files --quiet && echo "" || echo "true") \
@@ -159,7 +159,7 @@ override FUZZ_GOWORK := $(abspath $(CURDIR)/go.work)
 # the guard or the pid-suffixed covscratch pattern, is enforced statically by
 # the audits in scriptmktemp_audit_test.go, not by re-running suites under
 # sabotage (kata 5hs2).
-DEV_TOOLING_TEST_SCRIPTS := gate/run-module-tests lib/private-go-home gate/merge-approval-gate ops/setup-gocache web/web-preflight lib/live-eval-isolation e2e/e2e-webui-turn-controls fuzz/fuzz-bisect fuzz/fuzz-oracle-audit coverage/web-coverage-floor coverage/coverage-gaps coverage/coverage-union gate/test-timing-budget lib/scratch-lib gate/merge-into-branch
+DEV_TOOLING_TEST_SCRIPTS := gate/run-module-tests lib/private-go-home gate/merge-approval-gate ops/setup-gocache web/web-preflight lib/live-eval-isolation e2e/e2e-webui-turn-controls fuzz/fuzz-bisect fuzz/fuzz-oracle-audit coverage/coverage-floor coverage/coverage-gaps gate/test-timing-budget lib/scratch-lib gate/merge-into-branch
 
 # test-dev-tooling tests tooling, not the product, so it runs in
 # `make merge-approval-gate` (where tooling regressions matter) and on demand
@@ -318,22 +318,17 @@ fuzz-continuous:
 fuzz-drive:
 	@scripts/fuzz/fuzz-drive.sh $(FUZZ_ARGS)
 
-# fuzz-coverage-global validates the registered target plan, requires a local
-# native/Rapid fuzz surface for every production package, then replays each target
-# into package-local profiles for strict whole-module accounting. Heavy + local.
-# CHECK=1 enforces the raw >95% threshold and floors; BLESS=1 raises floors only
-# after every measured module clears that threshold.
-fuzz-coverage-global:
-	@scripts/fuzz/fuzz-coverage-global.sh $(if $(CHECK),--check) $(if $(BLESS),--bless) $(FUZZ_ARGS)
+# coverage-floor is the repo's one coverage ratchet: per module, the union of
+# the test track and the deterministic fuzz-replay track, plus the frontend's
+# vitest line coverage, against scripts/coverage/coverage-floors.txt. Bare
+# invocation reports; CHECK=1 fails on a drop; BLESS=1 raises floors. Heavy +
+# local. Its contract is pinned by scripts/coverage/coverage-floor-selftest.sh
+# in the dev-tooling wave.
+coverage-floor:
+	@scripts/coverage/coverage-floor.sh $(if $(CHECK),--check) $(if $(BLESS),--bless) $(COV_ARGS)
 
-# test-coverage-floor ratchets whole-module FULL-SUITE (unit+integration) coverage
-# against scripts/coverage/testcov-global-floors.txt — the companion to fuzz-coverage-global
-# (fuzz-reachable). CHECK=1 fails on a drop; BLESS=1 raises floors. Heavy + local.
-# Its contract is pinned by cmd/evener-dev/coveragefloor_test.go, which runs in
-# the ordinary Go test wave (including an end-to-end case that measures a real
-# throwaway module), so it needs no shell selftest of its own.
-test-coverage-floor:
-	@go run ./cmd/evener-dev coverage-floor $(if $(CHECK),--check) $(if $(BLESS),--bless) $(COV_ARGS)
+coverage-floor-selftest:
+	@scripts/coverage/coverage-floor-selftest.sh
 
 # coverage-gaps ranks where a coverage profile's UNCOVERED statements are, by
 # count rather than percentage, so coverage work targets the largest real gaps.
@@ -343,18 +338,6 @@ coverage-gaps:
 
 coverage-gaps-selftest:
 	@scripts/coverage/coverage-gaps-selftest.sh
-
-# coverage-union reports how much of each module ANY deterministic test reaches:
-# the union of the test track (test-coverage-floor) and the fuzz track
-# (fuzz-coverage-global). Both understate on their own — the -run '^(Test|Example)'
-# filter excludes fuzz targets, and this repo keeps whole families of behavioural
-# checks in `check*` functions only a evenerfuzz "program" target calls. CHECK=1
-# gates, BLESS=1 raises. Heaviest of the three: two full runs per module.
-coverage-union:
-	@scripts/coverage/coverage-union.sh $(if $(CHECK),--check) $(if $(BLESS),--bless) $(UNION_ARGS)
-
-coverage-union-selftest:
-	@scripts/coverage/coverage-union-selftest.sh
 
 # merge-into-branch merges SOURCE into TARGET by ref (refs/heads/TARGET),
 # never through a live checkout: it builds the merge in a private disposable
@@ -368,25 +351,13 @@ merge-into-branch:
 merge-into-branch-selftest:
 	@scripts/gate/merge-into-branch-selftest.sh
 
-# web-coverage-floor is the frontend counterpart: per-area vitest LINE coverage
-# ratcheted against scripts/coverage/webcov-floors.txt. CHECK=1 fails on a drop; BLESS=1
-# raises floors; REUSE=1 parses the existing report instead of re-running the
-# suite. Heavy + local, same as its Go siblings.
-web-coverage-floor: web-preflight
-	@scripts/coverage/web-coverage-floor.sh $(if $(CHECK),--check) $(if $(BLESS),--bless) $(if $(REUSE),--reuse) $(WEBCOV_ARGS)
-
-# web-coverage-floor-selftest exercises the rollup and ratchet against a
-# throwaway frontend and a synthetic coverage summary — no vitest run.
-web-coverage-floor-selftest:
-	@scripts/coverage/web-coverage-floor-selftest.sh
-
 # test-timing-budget ratchets per-package test wall time against
 # testing-budget.json (kata b6rv): fail at 1.5x the budget, warn at 1.1x, plus
 # a flat per-test ceiling, so an unexamined timing regression cannot silently
 # erode the wins docs/superpowers/specs/2026-08-01-test-gate-runtime-design.md
 # recorded. CHECK=1 enforces (strict in CI, warn-only on a local run); bare
-# invocation only measures and prints. Companion to test-coverage-floor and
-# web-coverage-floor, same as those heavy + local.
+# invocation only measures and prints. Companion to coverage-floor,
+# same heavy + local posture.
 test-timing-budget:
 	@scripts/gate/test-timing-budget.sh $(if $(CHECK),--check) $(TIMING_ARGS)
 
@@ -448,22 +419,10 @@ fuzz-ledger:
 	@echo "--- open bugs (found) ---"
 	@jq -r 'to_entries[] | select(.value.status=="found") | "  \(.key)\t\(.value.pr // "(no PR)")"' fuzz/state/ledger.json
 
-# FUZZCOV_ARGS forwards CHECK=1 -> --check and BLESS=1 -> --bless to the reporter.
-FUZZCOV_ARGS := $(if $(CHECK),--check) $(if $(BLESS),--bless)
-
-# fuzz-coverage replays every fuzz target's COMMITTED corpus under -coverprofile
-# (no -fuzz, so deterministic), computes each target's FOCUS-SET coverage %
-# (primary, drivable to 100%) plus its whole-package % (secondary), enforces the
-# no-regression ratchet against scripts/coverage/fuzzcov-floors.txt, and prints the gap map
-# (decode/parse packages with zero fuzz coverage). Advisory by default; pass
-# CHECK=1 to fail on a ratchet regression or a gap breach, BLESS=1 to raise floors.
-fuzz-coverage:
-	@$(MEMCAP) scripts/fuzz/fuzz-coverage.sh $(FUZZCOV_ARGS)
-
 # fuzz-gap-check is the FAST, STATIC gap gate (the blocking CI floor): it asserts
 # every decode/parse package has a registered fuzz target (or a reasoned ignore),
 # derived from scripts/fuzz/run-fuzz.sh --list without replaying any corpus. Seconds,
-# deterministic. The slow ratchet (fuzz-coverage CHECK=1) stays local/manual.
+# deterministic.
 fuzz-gap-check:
 	@scripts/fuzz/fuzz-gap-check.sh
 

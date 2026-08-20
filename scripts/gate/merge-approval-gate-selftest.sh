@@ -268,9 +268,8 @@ assert_before "$make_state/calls" "web-preflight" "npm	run build" "build-web kee
 assert_before "$make_state/calls" "npm	run build" "go-build-runtime" "build waits for the frontend build before runtime Go work"
 
 run_make_dry_target dist "$make_case/dist-dry-run.out"
-assert_eq "$make_rc" "0" "dist still resolves its default target platform"
-assert_has "$make_state/calls" "go-env	env GOOS" "dist discovers its default operating system"
-assert_has "$make_state/calls" "go-env	env GOARCH" "dist discovers its default architecture"
+assert_eq "$make_rc" "0" "dist dry-runs cleanly"
+assert_has "$make_case/dist-dry-run.out" "goreleaser release --snapshot --clean" "dist defers the release build to goreleaser in snapshot mode"
 
 # Issue #181: when the capability preflight cannot run to a verdict, the
 # merge-approval-gate recipe must STOP the gate rather than proceed without

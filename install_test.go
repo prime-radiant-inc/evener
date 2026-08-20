@@ -297,8 +297,10 @@ func TestInstallScriptInstallsReleaseArchive(t *testing.T) {
 			if err != nil {
 				t.Fatalf("read fake curl URL: %v", err)
 			}
-			if got := strings.TrimSpace(string(data)); got != expectedURL {
-				t.Fatalf("download URL = %q, want %q", got, expectedURL)
+			urls := strings.Split(strings.TrimSpace(string(data)), "\n")
+			wantURLs := []string{expectedURL, "https://github.com/prime-radiant-inc/evener/releases/download/v1.2.3/checksums.txt"}
+			if len(urls) != 2 || urls[0] != wantURLs[0] || urls[1] != wantURLs[1] {
+				t.Fatalf("download URLs = %q, want %q", urls, wantURLs)
 			}
 
 			binDir := filepath.Join(home, ".local", "bin")
@@ -323,6 +325,51 @@ func TestInstallScriptInstallsReleaseArchive(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// TestInstallScriptRejectsTamperedArchive feeds install.sh a checksums.txt
+// whose digest cannot match the served archive: the install must fail closed
+// at verification, before anything is installed.
+func TestInstallScriptRejectsTamperedArchive(t *testing.T) {
+	t.Parallel()
+	if testing.Short() {
+		t.Skip("release archive install integration test")
+	}
+	if runtime.GOOS == "windows" {
+		t.Skip("install.sh requires a Unix shell")
+	}
+
+	repoRoot, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("getwd: %v", err)
+	}
+	script := filepath.Join(repoRoot, "install.sh")
+
+	home := t.TempDir()
+	fixtures := t.TempDir()
+	archive := filepath.Join(fixtures, "evener_darwin_arm64.tar.gz")
+	writeInstallReleaseArchive(t, archive, "evener_darwin_arm64")
+	fakeBin, _ := writeInstallScriptFakeBin(t, fixtures, "Darwin", "arm64")
+
+	env := installTestEnv(t, home, map[string]string{
+		"PATH":                      fakeBin + string(os.PathListSeparator) + os.Getenv("PATH"),
+		"EVENER_INSTALL_VERSION":    "v1.2.3",
+		"EVENER_FAKE_CURL_ARCHIVE":  archive,
+		"EVENER_FAKE_CURL_URL_FILE": filepath.Join(fixtures, "curl-url"),
+		"EVENER_FAKE_CURL_BAD_SHA":  "1",
+	})
+	cmd := exec.Command("sh", script)
+	cmd.Env = env
+	out, runErr := cmd.CombinedOutput()
+	if runErr == nil {
+		t.Fatalf("install succeeded against a tampered checksum; output = %s", out)
+	}
+	if !strings.Contains(string(out), "Checksum verification failed") {
+		t.Fatalf("failure does not name checksum verification; output = %s", out)
+	}
+	if _, err := os.Stat(filepath.Join(home, ".local", "share", "evener", "bin", "evener")); !os.IsNotExist(err) {
+		t.Fatalf("a binary was installed despite the tampered checksum; stat err = %v", err)
 	}
 }
 
@@ -361,8 +408,24 @@ if [ -z "$out" ]; then
   echo "missing -o" >&2
   exit 2
 fi
-printf '%s\n' "$url" > "$EVENER_FAKE_CURL_URL_FILE"
-cp "$EVENER_FAKE_CURL_ARCHIVE" "$out"
+printf '%s\n' "$url" >> "$EVENER_FAKE_CURL_URL_FILE"
+case "$(basename "$url")" in
+  checksums.txt)
+    # Serve the archive's real digest so verification passes; the tamper knob
+    # serves a digest that cannot match.
+    if [ -n "${EVENER_FAKE_CURL_BAD_SHA:-}" ]; then
+      sum="0000000000000000000000000000000000000000000000000000000000000000"
+    elif command -v sha256sum >/dev/null 2>&1; then
+      sum=$(sha256sum "$EVENER_FAKE_CURL_ARCHIVE" | cut -d' ' -f1)
+    else
+      sum=$(shasum -a 256 "$EVENER_FAKE_CURL_ARCHIVE" | cut -d' ' -f1)
+    fi
+    printf '%s  %s\n' "$sum" "$(basename "$EVENER_FAKE_CURL_ARCHIVE")" > "$out"
+    ;;
+  *)
+    cp "$EVENER_FAKE_CURL_ARCHIVE" "$out"
+    ;;
+esac
 `)
 	return fakeBin, urlFile
 }

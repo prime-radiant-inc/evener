@@ -6,19 +6,33 @@ import (
 	"testing"
 )
 
-func FuzzCoverageParsers(f *testing.F) {
-	f.Add("primeradiant.com/evener/agent 10 20\n", "agent", "90")
-	f.Add("mode: set\nfile.go:1.1,1.2 1 1\n", "", "100%")
-	f.Fuzz(func(t *testing.T, profile, focus, floor string) {
-		if len(profile) > 1<<20 || len(focus)+len(floor) > 4096 {
+// FuzzGapInputs drives the two file parsers the gap gate trusts — the target
+// registry and the ignore-list — with arbitrary content. The oracle is
+// "never panic, and a parse that succeeds round-trips through the consumers".
+func FuzzGapInputs(f *testing.F) {
+	f.Add("native:llm:.:FuzzParseSSE", "example.com/x  # reason")
+	f.Add("rapid:.:./internal/appserver:TestRouterSeqFuzz", "example.com/y")
+	f.Add("# comment\n\nnative:agent:.:FuzzToolArgsValidate:./internal/tool,.", "# header only")
+	f.Fuzz(func(t *testing.T, registry, ignore string) {
+		if len(registry)+len(ignore) > 8192 {
 			return
 		}
-		_ = parseFocus(focus)
-		path := filepath.Join(t.TempDir(), "cover.out")
-		if err := os.WriteFile(path, []byte(profile), 0o600); err != nil {
+		dir := t.TempDir()
+		regPath := filepath.Join(dir, "registry.txt")
+		ignPath := filepath.Join(dir, "ignore.txt")
+		if err := os.WriteFile(regPath, []byte(registry), 0o600); err != nil {
 			t.Fatal(err)
 		}
-		_, _ = parseProfile(path)
-		_, _ = parseGlobalFloor(floor)
+		if err := os.WriteFile(ignPath, []byte(ignore), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		targets, regErr := readRegistry(regPath)
+		_, _ = readIgnore(ignPath)
+		if regErr != nil {
+			return
+		}
+		// A parsed registry feeds the gap gate: staticFuzzedPackages must not
+		// panic on whatever the parser accepted.
+		_ = staticFuzzedPackages(targets, map[string]string{".": "m", "agent": "m/agent"})
 	})
 }

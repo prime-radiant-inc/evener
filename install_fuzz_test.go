@@ -100,9 +100,20 @@ case "$1" in
 esac
 `, osName, archName))
 		writeExecutable(t, filepath.Join(fakeBin, "curl"), `#!/bin/sh
-printf '%s\n' "$2" > "$EVENER_FUZZ_URL_FILE"
+url="$2"
+printf '%s\n' "$url" >> "$EVENER_FUZZ_URL_FILE"
 while [ "$#" -gt 0 ]; do
-  if [ "$1" = -o ]; then : > "$2"; exit 0; fi
+  if [ "$1" = -o ]; then
+    case "$url" in
+      *checksums.txt)
+        # The archive above is the empty file this stub wrote, so its digest
+        # is the well-known empty-input sha256.
+        printf '%s  %s\n' "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855" "$EVENER_FUZZ_ARCHIVE_ROOT.tar.gz" > "$2"
+        exit 0
+        ;;
+    esac
+    : > "$2"; exit 0
+  fi
   shift
 done
 exit 2
@@ -196,8 +207,10 @@ done
 			versionPath = "download/v1.2.3"
 		}
 		wantURL := fmt.Sprintf("https://github.com/prime-radiant-inc/evener/releases/%s/evener_%s_%s.tar.gz", versionPath, strings.ToLower(osName), installArch(archName))
-		if strings.TrimSpace(string(gotURL)) != wantURL {
-			t.Fatalf("URL = %q, want %q", strings.TrimSpace(string(gotURL)), wantURL)
+		wantChecksums := fmt.Sprintf("https://github.com/prime-radiant-inc/evener/releases/%s/checksums.txt", versionPath)
+		gotURLs := strings.Split(strings.TrimSpace(string(gotURL)), "\n")
+		if len(gotURLs) != 2 || gotURLs[0] != wantURL || gotURLs[1] != wantChecksums {
+			t.Fatalf("URLs = %q, want [%q %q]", gotURLs, wantURL, wantChecksums)
 		}
 	})
 }

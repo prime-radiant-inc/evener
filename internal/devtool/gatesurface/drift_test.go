@@ -10,7 +10,7 @@ import (
 // This file is the gate-surface drift tripwire the dev-tooling spec requires
 // (docs/superpowers/specs/2026-08-17-dev-tooling-in-go-design.md): the gate's
 // test-selection surface lives in two homes — scripts/lib/gate-surface-lib.sh
-// for the shell consumers (run-module-tests.sh, coverage-union.sh) and this
+// for the shell consumers (run-module-tests.sh, coverage-floor.sh) and this
 // package for the Go consumers (evener-dev coverage-floor,
 // capability-preflight). Two homes that drift are worse than no ratchet: PR
 // #222 shipped a Makefile copy whose BRE-style escaping made `go test -run`
