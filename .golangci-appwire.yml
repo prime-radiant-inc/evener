@@ -1,0 +1,55 @@
+version: "2"
+
+# server/appwire_*.go carries the codex/appwire wire protocol, which forces
+# camelCase JSON tags, inside package `server`, which is snake_case everywhere
+# else (server.go alone holds 119 snake tags). evener-namingcheck expressed that
+# split per FILE. tagliatelle's overrides are per PACKAGE, so the main
+# .golangci.yml cannot: it can only switch the whole package, or exclude the
+# files and enforce nothing there — which is what it did, dropping the
+# camelCase requirement on 20 files including production appwire_runtime.go and
+# appwire_turns.go.
+#
+# This config is the other half. It flips package `server` to camelCase and
+# throws away every finding outside server/appwire_, so the only thing it can
+# report is a non-camelCase JSON tag in an appwire file. The main config keeps
+# excluding tagliatelle for those same files, so exactly one of the two runs
+# judges any given file and neither contradicts the other.
+#
+# `make lint-golangci` runs it after the main sweep.
+
+linters:
+  default: none
+  enable:
+    - tagliatelle
+  settings:
+    tagliatelle:
+      case:
+        # Same key set as .golangci.yml: json and toml only, every other tag
+        # key disabled so tagliatelle's own defaults (yaml/xml/bson: camel, …)
+        # stay out. The root json rule is what applies outside package server;
+        # nothing outside it survives the exclusion below, so it is here only
+        # to keep the two files reading the same.
+        rules:
+          json: snake
+          toml: snake
+          yaml: ""
+          xml: ""
+          bson: ""
+          avro: ""
+          header: ""
+          env: ""
+          envconfig: ""
+        overrides:
+          - pkg: server
+            rules:
+              json: camel
+  exclusions:
+    generated: lax
+    rules:
+      - path-except: '^server/appwire_'
+        linters:
+          - tagliatelle
+
+issues:
+  max-same-issues: 0
+  max-issues-per-linter: 0

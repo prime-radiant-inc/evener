@@ -475,8 +475,14 @@ lint-internal:
 # linter must see — evener-namingcheck reached them by walking the filesystem
 # from the repo root, and a module-list-driven linter only reaches what the
 # list names.
+#
+# The second run is the server/appwire_*.go camelCase regime. tagliatelle's
+# overrides are per-package and those files share package `server` with 119
+# snake_case tags, so the split cannot live in one config; .golangci-appwire.yml
+# holds the other half and explains itself.
 lint-golangci:
 	@MODULES="$(FUZZ_GO_MODULES)" go run ./cmd/evener-dev module-lint
+	$(call run_quiet_lint,golangci-lint run --allow-parallel-runners --config .golangci-appwire.yml ./server/...)
 
 # lint-gofmt keeps EVERY tracked Go source formatter-clean, including the ~250
 # files behind //go:build evenerfuzz / eval. It is not redundant with the gofmt
