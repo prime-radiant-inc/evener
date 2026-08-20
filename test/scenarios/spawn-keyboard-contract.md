@@ -266,7 +266,7 @@ roles (`role="combobox"` with `aria-label="Model"`, `role="listbox"`,
   submitting the add row" is its unit-level precedent.
 - **Two `— change model` buttons live in the DOM, and only one of them
   is on screen.** The desktop Model field renders a `ModelCatalog`
-  trigger (`panes/spawn/Spawn.tsx#ModelField`, inside
+  trigger (`panes/spawn/ModelField.tsx#ModelField`, inside
   `[data-testid="spawn-desktop-model"]`); the prompt card renders a
   `ModelSwitchTrigger` for the phone
   (`[data-testid="spawn-model-trigger"]`), gated by a

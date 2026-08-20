@@ -34,12 +34,20 @@ var scenarioGoCitation = regexp.MustCompile("`([A-Za-z0-9._/-]+\\.go)(?:#([A-Za-
 // audit read until this one. Kata yj52 found the hole from the other side,
 // asking why a `.tsx` citation survived a green gate; the answer is that no
 // needle in the suite matched a `.tsx` path at all.
+//
+// The `#symbol` alternative carries its own capture group so
+// TestScenarioSourceSymbolsAreDeclared can read the symbol half without a
+// Go-only regex (issue #157); the `:line` alternative does not name anything
+// worth capturing here, since TestScenarioQuotedLiteralsSitInsideTheCitedLineRange
+// reads that half through scenarioSourceLineCitation instead.
 var scenarioSourceCitation = regexp.MustCompile(
-	"`([A-Za-z0-9._/-]+(?:" + scenarioSourceExtensionAlternation() + "))(?:#[A-Za-z0-9_.]+|:[0-9][0-9,-]*)`")
+	"`([A-Za-z0-9._/-]+(?:" + scenarioSourceExtensionAlternation() + "))(?:#([A-Za-z0-9_.]+)|:[0-9][0-9,-]*)`")
 
 // scenarioSourceCitationGroups is the length FindStringSubmatch returns for a
-// scenarioSourceCitation match: the whole span plus its one captured path.
-const scenarioSourceCitationGroups = 2
+// scenarioSourceCitation match: the whole span, its captured path, and its
+// captured symbol (empty when the anchor is a `:line` range rather than a
+// `#symbol`).
+const scenarioSourceCitationGroups = 3
 
 // TestScenarioSourceCitationsResolve keeps a card's pointer into source code
 // attached to a file that still exists. Kata 2mzk's audit deliberately exempts
@@ -98,21 +106,32 @@ func TestScenarioSourceCitationsResolve(t *testing.T) {
 	}
 }
 
-// TestScenarioSourceSymbolsAreDeclared keeps the `#symbol` half of a Go
+// TestScenarioSourceSymbolsAreDeclared keeps the `#symbol` half of a source
 // citation resolvable. `agent/tree_counter.go#defaultMaxConcurrentDelegateTurns`
 // survives every edit to that file — which is the entire reason kata ypwb moved
 // the corpus off `:12` — but only until the symbol is renamed or moved to
 // another file, and nothing else in the suite would notice that.
 //
-// A symbol is anything a card legitimately anchors to: a func or method, a
-// type, a package-level or grouped const or var, a struct field, an interface
-// method. Receiver-, type-, and package-qualified names such as `Type.Method`
-// and `openai.IssuerBaseURL` are preserved; an unqualified alias remains
-// available only when that name is unique in the file, so a collision cannot
-// make a citation appear to resolve by accident.
+// A symbol is anything a card legitimately anchors to. For Go, resolved with
+// go/parser (scenarioDeclarationsIn): a func or method, a type, a
+// package-level or grouped const or var, a struct field, an interface method.
+// Receiver-, type-, and package-qualified names such as `Type.Method` and
+// `openai.IssuerBaseURL` are preserved; an unqualified alias remains available
+// only when that name is unique in the file, so a collision cannot make a
+// citation appear to resolve by accident.
+//
+// For TS/TSX/JS/JSX, resolved with a line-anchored regex scan
+// (scenarioTSDeclarationsIn) rather than a parser — no TS toolchain is
+// in-tree, and a `.tsx#symbol` anchor resolving its file but not its symbol
+// was issue #157. A top-level function, const/let/var, class, interface, type
+// alias, or enum declaration is recognized, exported or not; destructured
+// exports, re-exports, and `declare`-block members are not. That gap fails in
+// the safe direction — a real symbol the scan misses turns the audit red, not
+// a fake one it accepts.
 func TestScenarioSourceSymbolsAreDeclared(t *testing.T) {
-	byBase := scenarioGoFilesByBase(t)
-	declared := map[string]map[string]bool{}
+	byBase := scenarioSourceFilesByBase(t)
+	declaredGo := map[string]map[string]bool{}
+	declaredTS := map[string]map[string]bool{}
 	var findings []string
 	checked := 0
 	for _, path := range scenarioCardFiles(t) {
@@ -121,7 +140,7 @@ func TestScenarioSourceSymbolsAreDeclared(t *testing.T) {
 			t.Fatalf("reading %s: %v", path, err)
 		}
 		for i, line := range strings.Split(string(raw), "\n") {
-			for _, m := range scenarioGoCitation.FindAllStringSubmatch(line, -1) {
+			for _, m := range scenarioSourceCitation.FindAllStringSubmatch(line, -1) {
 				cited, symbol := m[1], m[2]
 				if symbol == "" {
 					continue
@@ -129,7 +148,15 @@ func TestScenarioSourceSymbolsAreDeclared(t *testing.T) {
 				checked++
 				found := false
 				for _, file := range scenarioResolveCitedPath(byBase, cited) {
-					names, err := scenarioDeclarationsIn(declared, file)
+					var (
+						names map[string]bool
+						err   error
+					)
+					if filepath.Ext(file) == ".go" {
+						names, err = scenarioDeclarationsIn(declaredGo, file)
+					} else {
+						names, err = scenarioTSDeclarationsIn(declaredTS, file)
+					}
 					if err != nil {
 						t.Fatalf("parsing %s cited by %s: %v", file, path, err)
 					}
@@ -189,14 +216,17 @@ func scenarioSourceExtensionAlternation() string {
 func TestScenarioSourceCitationNeedleReadsEveryCompiledExtension(t *testing.T) {
 	for extension := range scenarioNeedleSourceExtensions {
 		cited := "panes/session/composer/Composer" + extension
-		// scenarioSourceCitation captures one group, the path, so a match is
-		// [whole, path]. Any other length means the needle lost its group.
+		// scenarioSourceCitation captures two groups, the path and the symbol,
+		// so a match is [whole, path, symbol]. Any other length means the
+		// needle lost a group.
 		m := scenarioSourceCitation.FindStringSubmatch("(`" + cited + ":641-643`)")
-		if len(m) != scenarioSourceCitationGroups || m[1] != cited {
+		if len(m) != scenarioSourceCitationGroups || m[1] != cited || m[2] != "" {
 			t.Fatalf("the source-citation needle does not read a %s citation: %v", extension, m)
 		}
-		if m := scenarioSourceCitation.FindStringSubmatch("`Composer" + extension + "#handleSteerClick`"); m == nil {
-			t.Fatalf("the source-citation needle does not read a %s symbol anchor", extension)
+		symbolCited := "Composer" + extension
+		m = scenarioSourceCitation.FindStringSubmatch("`" + symbolCited + "#handleSteerClick`")
+		if len(m) != scenarioSourceCitationGroups || m[1] != symbolCited || m[2] != "handleSteerClick" {
+			t.Fatalf("the source-citation needle does not read a %s symbol anchor: %v", extension, m)
 		}
 	}
 	// An anchorless path is a mention, not a citation — "the package was
@@ -211,8 +241,8 @@ func TestScenarioSourceCitationNeedleReadsEveryCompiledExtension(t *testing.T) {
 // scenarioSourceLineCitation matches the `path:lines` half of a source
 // citation, capturing the anchor so it can be read rather than merely parsed.
 // A `#Symbol` anchor is deliberately absent: it names a declaration, not a
-// range. TestScenarioSourceSymbolsAreDeclared already keeps the Go ones honest;
-// a `.tsx#symbol` anchor is checked by nothing today, which kata 26ya tracks.
+// range. TestScenarioSourceSymbolsAreDeclared keeps the `#symbol` half honest
+// across every compiled extension, Go and TS/TSX/JS/JSX alike (issue #157).
 var scenarioSourceLineCitation = regexp.MustCompile(
 	"`([A-Za-z0-9._/-]+(?:" + scenarioSourceExtensionAlternation() + ")):([0-9][0-9,-]*)`")
 
@@ -701,6 +731,104 @@ func (*Beta) Run() {}
 	}
 }
 
+// TestScenarioTSDeclarationsRecognizeExportForms pins scenarioTSDeclarationsIn
+// against every declaration shape the RCA behind issue #157 specified, plus
+// the two forms it names as known imprecision (destructured exports,
+// re-exports), which must NOT be matched.
+func TestScenarioTSDeclarationsRecognizeExportForms(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "fixture.tsx")
+	const source = `import { useState } from "react";
+
+export function Composer() {}
+export async function loadModels() {}
+export default function App() {}
+function helperOnly() {}
+
+export const ModelField = () => {};
+const localValue = 1;
+
+export class Widget {}
+class Internal {}
+
+export interface Props {}
+interface Hidden {}
+
+export type Alias = string;
+type Private = number;
+
+export enum Mode { Fast, Slow }
+enum Quiet { On, Off }
+
+export const { a, b } = destructure();
+export { Reexported } from "./elsewhere";
+`
+	if err := os.WriteFile(path, []byte(source), 0o600); err != nil {
+		t.Fatalf("write fixture: %v", err)
+	}
+
+	names, err := scenarioTSDeclarationsIn(map[string]map[string]bool{}, path)
+	if err != nil {
+		t.Fatalf("scenarioTSDeclarationsIn: %v", err)
+	}
+	for _, want := range []string{
+		"Composer", "loadModels", "App", "helperOnly",
+		"ModelField", "localValue",
+		"Widget", "Internal",
+		"Props", "Hidden",
+		"Alias", "Private",
+		"Mode", "Quiet",
+	} {
+		if !names[want] {
+			t.Fatalf("declaration missing %q: %v", want, names)
+		}
+	}
+	for _, notMatched := range []string{"a", "b", "destructure", "Reexported", "elsewhere"} {
+		if names[notMatched] {
+			t.Fatalf("declaration wrongly matched %q (known imprecision, issue #157): %v", notMatched, names)
+		}
+	}
+}
+
+// TestScenarioTSDeclarationsIgnoreBlockComments pins the PR #271 review
+// finding: a declaration-shaped line sitting inside a `/* ... */` (or JSDoc
+// `/** ... */`) block comment must not register as declared, and a real
+// declaration sharing a line with an inline block comment must still be
+// found.
+func TestScenarioTSDeclarationsIgnoreBlockComments(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "fixture.tsx")
+	const source = `export function RealSymbol() {}
+
+/*
+ * TODO: someday resurrect this:
+function BlockCommentedFake() {}
+ */
+
+/**
+const JsDocFake = 1;
+ */
+
+export /* eslint-disable-next-line */ function InlineCommented() {}
+`
+	if err := os.WriteFile(path, []byte(source), 0o600); err != nil {
+		t.Fatalf("write fixture: %v", err)
+	}
+
+	names, err := scenarioTSDeclarationsIn(map[string]map[string]bool{}, path)
+	if err != nil {
+		t.Fatalf("scenarioTSDeclarationsIn: %v", err)
+	}
+	for _, want := range []string{"RealSymbol", "InlineCommented"} {
+		if !names[want] {
+			t.Fatalf("declaration missing %q: %v", want, names)
+		}
+	}
+	for _, notMatched := range []string{"BlockCommentedFake", "JsDocFake"} {
+		if names[notMatched] {
+			t.Fatalf("declaration wrongly matched %q — it exists only inside a block comment (PR #271 review): %v", notMatched, names)
+		}
+	}
+}
+
 func TestScenarioTrackedFilesByBaseIgnoresUntrackedFiles(t *testing.T) {
 	root := t.TempDir()
 	for _, name := range []string{"tracked.go", "deleted.go", "untracked.go", "excluded.tsx"} {
@@ -835,6 +963,94 @@ func scenarioReceiverName(fields *ast.FieldList) string {
 	return receiverName(fields.List[0].Type)
 }
 
+// scenarioTSDeclarationPatterns are scenarioTSDeclarationsIn's declaration
+// forms, each capturing the declared name in its first group. This is a
+// line-anchored regex scan, not a TS parser — ts-morph/typescript are not
+// in-tree, and pulling a Node toolchain into a Go audit test is
+// disproportionate to what the audit needs (issue #157).
+//
+// The floor is deliberately honest rather than complete: destructured exports
+// (`export const { a, b } = ...`), re-exports (`export { x } from ...`), and
+// `declare`-block members are not matched. That failure mode is the safe
+// direction — a symbol that IS declared but not matched turns the audit red
+// at authoring time, so the author repoints the anchor or widens the scan,
+// versus a symbol that is NOT declared staying green forever, which is the
+// bug issue #157 closes.
+//
+// A `/* ... */` block comment is the one shape that failed in the UNSAFE
+// direction instead: a declaration-shaped line sitting inside a comment (a
+// commented-out old implementation, a JSDoc example) would register its name
+// as declared when it is not — the same stale-anchor-stays-green failure this
+// audit exists to catch, reached through a comment instead of a rename (PR
+// #271 review). scenarioStripTSBlockComments blanks every such span before
+// the scan runs, so this is closed rather than documented as accepted. It has
+// no model of string or template-literal bodies, so a `/*` inside a quoted
+// string still opens a (blanked) comment span; no citation in the corpus
+// trips that today.
+var scenarioTSDeclarationPatterns = []*regexp.Regexp{
+	regexp.MustCompile(`^\s*(?:export\s+)?(?:default\s+)?(?:async\s+)?(?:function|class|interface|enum)\s+([A-Za-z0-9_$]+)`),
+	regexp.MustCompile(`^\s*(?:export\s+)?(?:const|let|var)\s+([A-Za-z0-9_$]+)`),
+	regexp.MustCompile(`^\s*(?:export\s+)?type\s+([A-Za-z0-9_$]+)\s*=`),
+}
+
+// scenarioStripTSBlockComments blanks every `/* ... */` span in a
+// TypeScript/JavaScript source — a JSDoc `/** ... */` span opens the same way,
+// so it is covered too — replacing comment bytes with a space and preserving
+// newlines, so a declaration sharing a line with an inline block comment
+// (`export /* eslint-disable-next-line */ function Foo() {}`) still matches
+// and line counts are unaffected. A `//` line comment needs no equivalent
+// handling: scenarioTSDeclarationPatterns anchor at `^\s*`, and a
+// `//`-prefixed line can never match a bare keyword sitting right after it.
+func scenarioStripTSBlockComments(source string) string {
+	var out strings.Builder
+	out.Grow(len(source))
+	inComment := false
+	for i := 0; i < len(source); i++ {
+		switch {
+		case inComment && source[i] == '*' && i+1 < len(source) && source[i+1] == '/':
+			inComment = false
+			i++
+		case inComment:
+			if source[i] == '\n' {
+				out.WriteByte('\n')
+			} else {
+				out.WriteByte(' ')
+			}
+		case source[i] == '/' && i+1 < len(source) && source[i+1] == '*':
+			inComment = true
+			i++
+		default:
+			out.WriteByte(source[i])
+		}
+	}
+	return out.String()
+}
+
+// scenarioTSDeclarationsIn returns every top-level name a TypeScript or
+// JavaScript file declares, memoized across citations into the same file.
+// Mirrors scenarioDeclarationsIn's map[string]map[string]bool cache shape so
+// TestScenarioSourceSymbolsAreDeclared can dispatch on file extension without
+// changing how either side is called (issue #157).
+func scenarioTSDeclarationsIn(cache map[string]map[string]bool, path string) (map[string]bool, error) {
+	if names, ok := cache[path]; ok {
+		return names, nil
+	}
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		return nil, err
+	}
+	names := map[string]bool{}
+	for line := range strings.SplitSeq(scenarioStripTSBlockComments(string(raw)), "\n") {
+		for _, pattern := range scenarioTSDeclarationPatterns {
+			if m := pattern.FindStringSubmatch(line); m != nil {
+				names[m[1]] = true
+			}
+		}
+	}
+	cache[path] = names
+	return names, nil
+}
+
 // scenarioTrackedFilesByBase indexes the tracked files carrying one of the
 // given extensions by base name, so a cited path suffix can be resolved without
 // rewalking the tree per citation.
@@ -862,16 +1078,6 @@ func scenarioTrackedFilesByBase(root string, extensions map[string]bool) (map[st
 		byBase[filepath.Base(path)] = append(byBase[filepath.Base(path)], path)
 	}
 	return byBase, nil
-}
-
-// scenarioGoFilesByBase indexes tracked Go files in the worktree by base name.
-func scenarioGoFilesByBase(t *testing.T) map[string][]string {
-	t.Helper()
-	byBase, err := scenarioTrackedFilesByBase(".", map[string]bool{".go": true})
-	if err != nil {
-		t.Fatalf("listing tracked Go files: %v", err)
-	}
-	return byBase
 }
 
 // scenarioResolveCitedPath returns every file whose path is, or ends with, the
