@@ -1416,8 +1416,12 @@ func TestTaskListTool_AppendWithDependsOn(t *testing.T) {
 	if viewRes.IsError {
 		t.Fatalf("view error: %s", viewRes.Output)
 	}
-	if !strings.Contains(viewRes.Output, "1") {
-		t.Fatalf("view output missing depends_on: %s", viewRes.Output)
+	// Verify the view renders the dependency. The "depends on:" prefix is
+	// specific to tasks that carry DependsOn, so it distinguishes a real
+	// dependency render from a bare task ID like "1" (which task A always
+	// prints regardless of whether dependencies are shown).
+	if !strings.Contains(viewRes.Output, "depends on: 1") {
+		t.Fatalf("view output missing depends_on rendering: %s", viewRes.Output)
 	}
 
 	// Verify store state directly.
