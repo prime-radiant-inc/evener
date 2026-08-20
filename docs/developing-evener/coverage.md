@@ -1,5 +1,7 @@
 # Coverage
 
+## A Coverage Number Is Two Tracks, Not One
+
 The default gate's coverage number and the fuzz family's coverage are measured
 separately, by design. `go test ./agent -short`'s `-cover` output measures only
 the imperative test suite — the seqfuzz/schemafuzz family t.Skip()s there.
