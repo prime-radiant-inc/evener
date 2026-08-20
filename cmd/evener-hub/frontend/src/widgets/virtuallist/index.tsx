@@ -98,11 +98,13 @@ const DEFAULT_OVERSCAN = 6;
 
 // How close to the true end (px) counts as "following the tail" when
 // anchorToEnd is on. Matches the transcript scroll metrics' own
-// AT_BOTTOM_THRESHOLD_PX (panes/session/transcript/flow/scrollMetrics.ts) -
-// legacy renderer.js parity (docs/web-ui/parity/parity-m4-transcript.md
-// §15): "within 50px of true bottom". Duplicated rather than imported
-// because the import direction is panes -> widgets, never the reverse.
-const END_ANCHOR_THRESHOLD_PX = 50;
+// AT_BOTTOM_THRESHOLD_PX (panes/session/transcript/flow/scrollMetrics.ts):
+// a few pixels, rounding-safe but effectively "truly at the bottom" - the
+// reader who has scrolled back even one line of text (~20px) must NOT be
+// treated as following the tail, or the transcript yanks underneath them.
+// Duplicated rather than imported because the import direction is panes ->
+// widgets, never the reverse.
+const END_ANCHOR_THRESHOLD_PX = 4;
 
 /**
  * Windows `count` rows down to the visible range via @tanstack/react-virtual

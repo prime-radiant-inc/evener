@@ -242,6 +242,19 @@ export function useTranscriptScroll({
   const firstTurnIdRef = useRef<string | undefined>(undefined);
   const baselineItemCountRef = useRef(0);
   const initializedRef = useRef(false);
+  // The ref this hook's per-ref state was initialized for. The Session pane
+  // is NOT keyed by ref (DockHost's PaneHost renders <Component params=...>
+  // with no key), so clicking a different session in the sidebar updates
+  // params.ref on the SAME mounted component instance - useTranscriptScroll's
+  // own refs (initializedRef, wasAtBottomRef, baselineItemCountRef,
+  // firstTurnIdRef, resolvedFailedTurnIdsRef, errorAnchorIndex) all persist
+  // across that change. Without a reset, the new session opens wherever the
+  // virtualizer defaults (initializedRef is already true, so the mount
+  // effect's scroll-to-bottom is skipped) and stick-to-bottom / pill counts
+  // are computed against the PREVIOUS session's scroll state. refForInitRef
+  // detects the change and re-initializes every per-ref piece of state so
+  // the new session is treated as a fresh open (always land at the bottom).
+  const refForInitRef = useRef<string | undefined>(ref);
   const pendingViewAnchorRef = useRef<{
     anchor: ViewAnchor | undefined;
     proportion: number;
@@ -303,6 +316,15 @@ export function useTranscriptScroll({
   // own render condition exactly, so this flips at the SAME transition
   // VirtualList actually mounts at.
   const hasContent = !isDormantTranscript(model?.turns ?? []);
+  // Track hasContent transitions so a false->true flip (VirtualList remounts
+  // after the model briefly went undefined - e.g. a store resync that clears
+  // the thread, or the same ref re-hydrating) re-runs the one-time
+  // scroll-to-bottom. initializedRef alone can't see this: it was set true on
+  // the first hydration and never resets, so a remount on the SAME ref would
+  // skip the scroll-to-bottom and strand the reader at the virtualizer's
+  // default top position. (A ref CHANGE is handled separately by
+  // refForInitRef below; this handles the same-ref remount.)
+  const prevHasContentRef = useRef(hasContent);
   // Also kept in refs for the scroll listener/jumpToBottom, which are not
   // re-created on every render (see the effects below).
   const itemCountRef = useRef(itemCount);
@@ -406,6 +428,36 @@ export function useTranscriptScroll({
   // triggers no rerun.
   // biome-ignore lint/correctness/useExhaustiveDependencies: both flags below are deliberate, re-verified against this rule - see the two comments inside
   useLayoutEffect(() => {
+    // Ref change on a persistent Session instance (sidebar click to a
+    // different session reuses the pane - see refForInitRef's own comment):
+    // reset every per-ref piece of state so the new session is treated as a
+    // fresh open. This runs before the initializedRef guard below so that
+    // guard re-executes its scroll-to-bottom for the new ref.
+    //
+    // A same-ref remount (hasContent false->true: the model briefly went
+    // undefined and VirtualList unmounted, then re-hydrated) is caught here
+    // too: initializedRef was left true from the first hydration, so without
+    // this reset the remount would skip the scroll-to-bottom and strand the
+    // reader at the top.
+    //
+    // This block runs BEFORE the scroll-element null check below: a ref
+    // change or remount can land on a render where VirtualList hasn't mounted
+    // yet (model undefined), so `el` is null - the reset must still fire so
+    // the LATER render where VirtualList appears treats it as a fresh open.
+    const hasContentRemounted = !prevHasContentRef.current && hasContent;
+    if (refForInitRef.current !== ref || hasContentRemounted) {
+      refForInitRef.current = ref;
+      initializedRef.current = false;
+      wasAtBottomRef.current = true;
+      firstTurnIdRef.current = undefined;
+      baselineItemCountRef.current = 0;
+      resolvedFailedTurnIdsRef.current = new Set();
+      setErrorAnchorIndex(null);
+      errorAnchorIndexRef.current = null;
+      setPillCount(0);
+    }
+    prevHasContentRef.current = hasContent;
+
     const el = listRef.current?.getScrollElement();
     if (!el) return;
 

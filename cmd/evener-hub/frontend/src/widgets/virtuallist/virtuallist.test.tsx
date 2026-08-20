@@ -407,13 +407,15 @@ describe("anchorToEnd", () => {
     return captured;
   }
 
-  test("on: the virtualizer anchors to the end, follows appends, and uses the 50px end threshold", () => {
+  test("on: the virtualizer anchors to the end, follows appends, and uses the 4px end threshold", () => {
     const resolved = captureResolvedOptions(true);
     expect(resolved.options.anchorTo).toBe("end");
     expect(resolved.options.followOnAppend).toBe(true);
-    // Same "within 50px of true bottom" as the transcript scroll metrics'
+    // Same "truly at the bottom" 4px threshold as the transcript scroll metrics'
     // AT_BOTTOM_THRESHOLD_PX - see END_ANCHOR_THRESHOLD_PX in ./index.tsx.
-    expect(resolved.options.scrollEndThreshold).toBe(50);
+    // A few pixels (rounding-safe, far smaller than one line of text ~20px) so
+    // a reader scrolled back even one line is NOT treated as following the tail.
+    expect(resolved.options.scrollEndThreshold).toBe(4);
   });
 
   test("off (default): upstream defaults hold - start-anchored, no append following", () => {
