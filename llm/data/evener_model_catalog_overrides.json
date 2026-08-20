@@ -121,6 +121,10 @@
     "_note": "Anthropic Opus 5. LiteLLM already supplies context, pricing, adaptive thinking and the effort flags; the overlay adds only claude5_request_shape, the generation-5 wire shape upstream does not express.",
     "claude5_request_shape": true
   },
+  "claude-mythos-5": {
+    "_note": "Anthropic Mythos 5, added upstream in the 2026-08-20 refresh. LiteLLM supplies context, pricing, adaptive thinking and the xhigh/max effort flags; the overlay adds only claude5_request_shape, without which the Anthropic request builder sends the pre-5 wire shape.",
+    "claude5_request_shape": true
+  },
   "gpt-5.6-sol": {
     "_note": "LiteLLM now supplies the public OpenAI API metadata. Evener overrides only the effective Codex/OAuth context window (272,000 in codex-cli 0.145.0 models_cache.json; public API is 1,050,000) per Jesse's 2026-07-28 decision, plus the existing max effort tier.",
     "context_window": 272000,
