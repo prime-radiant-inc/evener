@@ -19,10 +19,12 @@ import (
 )
 
 // The defaults are the interface run-module-lint.sh shipped with; the
-// Makefile's lint-golangci target overrides MODULES with $(GO_MODULES), and
-// operators rely on the bare invocation checking the canonical set.
+// Makefile's lint-golangci target overrides MODULES with $(FUZZ_GO_MODULES),
+// and operators rely on the bare invocation checking the canonical set. That
+// set is every Go module in the workspace, fuzz included: the fuzz module sits
+// out the test gate, not the linter.
 const (
-	defaultLintModules  = ". agent llm auth envvars invariant identifier"
+	defaultLintModules  = ". agent llm auth envvars invariant identifier fuzz"
 	defaultLintParallel = 4
 )
 

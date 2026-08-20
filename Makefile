@@ -1,4 +1,4 @@
-.PHONY: build build-runtime build-go build-hub web-preflight build-web test-web test-web-browser build-tui build-doctor build-all build-linux build-llmcall build-migrate dist install install-home install-system test-install tools test-dev-tooling test test-short test-fuzz test-race merge-approval-gate e2e-cover vet lint lint-naming lint-evenerfuzz lint-eval lint-internal lint-golangci lint-generated lint-fuzz-registry generate mutation-floor clean fuzz fuzz-seeds fuzz-nightly fuzz-triage fuzz-continuous fuzz-bisect fuzz-bisect-selftest fuzz-oracle-audit fuzz-oracle-audit-selftest fuzz-mutation-score fuzz-ledger fuzz-gap-check fuzz-registry-check fuzz-goldens secret-scan fuzz-corpus-scan refresh-model-catalog coverage-floor coverage-floor-selftest coverage-gaps coverage-gaps-selftest test-timing-budget test-timing-budget-selftest test-rebaseline
+.PHONY: build build-runtime build-go build-hub web-preflight build-web test-web test-web-browser build-tui build-doctor build-all build-linux build-llmcall build-migrate dist install install-home install-system test-install tools test-dev-tooling test test-short test-fuzz test-race merge-approval-gate e2e-cover vet lint lint-naming lint-gofmt lint-evenerfuzz lint-eval lint-internal lint-golangci lint-generated lint-fuzz-registry generate mutation-floor clean fuzz fuzz-seeds fuzz-nightly fuzz-triage fuzz-continuous fuzz-bisect fuzz-bisect-selftest fuzz-oracle-audit fuzz-oracle-audit-selftest fuzz-mutation-score fuzz-ledger fuzz-gap-check fuzz-registry-check fuzz-goldens secret-scan fuzz-corpus-scan refresh-model-catalog coverage-floor coverage-floor-selftest coverage-gaps coverage-gaps-selftest test-timing-budget test-timing-budget-selftest test-rebaseline
 
 LDFLAGS := -X primeradiant.com/evener/buildinfo.GitSHA=$$(git rev-parse --short HEAD) \
            -X primeradiant.com/evener/buildinfo.GitDirty=$$(git --no-optional-locks diff-files --quiet && echo "" || echo "true") \
@@ -426,7 +426,7 @@ endef
 lint-naming:
 	$(call run_quiet_lint,go run ./cmd/evener-tomlcheck)
 
-# lint-evenerfuzz is the compile floor for the //go:build evenerfuzz sources. Every
+# lint-evenerfuzz is the floor for the //go:build evenerfuzz sources. Every
 # other gate is tag-free — `make test`, `make lint`, `make vet` and
 # `go build ./...` never compile those 250 files — so a production signature
 # change that strands a tagged call site rots there until someone runs
@@ -434,8 +434,18 @@ lint-naming:
 # the tag, which is what catches a stranded call site. Running the corpora
 # themselves is 144s and stays in `make fuzz` / `make fuzz-seeds`; this pass is
 # ~4s warm across the workspace, which is why it can sit in the gate.
+#
+# The tagliatelle pass is the struct-tag half of the same floor: golangci-lint
+# only analyses the files it compiles, and the tag-free run in lint-golangci
+# compiles none of these. --enable-only keeps the tagged pass to exactly the
+# gate the tagged sources had before (evener-namingcheck parsed every .go file
+# in the tree, tags or not) while reading its casing rules, carve-outs and
+# exclusions from the one .golangci.yml. Widening the tagged pass to the whole
+# linter set is a separate change: it surfaces ~160 findings these files have
+# never been held to.
 lint-evenerfuzz:
 	$(call run_quiet_lint,for m in $(FUZZ_GO_MODULES); do (cd $$m && go vet -tags evenerfuzz ./...) || exit 1; done)
+	$(call run_quiet_lint,for m in $(FUZZ_GO_MODULES); do (cd $$m && golangci-lint run --allow-parallel-runners --build-tags evenerfuzz --enable-only tagliatelle ./...) || exit 1; done)
 
 # lint-eval is the same compile floor for the //go:build eval sources: the
 # live-provider eval suites (context-compaction quality, forced notes). This tag
@@ -448,6 +458,7 @@ lint-evenerfuzz:
 # where the next one lands. ~3.5s warm, the same order as the evenerfuzz pass.
 lint-eval:
 	$(call run_quiet_lint,for m in $(FUZZ_GO_MODULES); do (cd $$m && go vet -tags eval ./...) || exit 1; done)
+	$(call run_quiet_lint,for m in $(FUZZ_GO_MODULES); do (cd $$m && golangci-lint run --allow-parallel-runners --build-tags eval --enable-only tagliatelle ./...) || exit 1; done)
 
 # lint-internal fails if any exported symbol in the agent/llm/providercfg
 # libraries names a evener-internal type — keeping them externally importable.
@@ -457,8 +468,22 @@ lint-internal:
 # golangci-lint across every module (./... is per-module under go.work).
 # The runner lives in Go (cmd/evener-dev); MODULES and LINT_PARALLEL keep the
 # interface run-module-lint.sh shipped with.
+#
+# FUZZ_GO_MODULES, not GO_MODULES: the sweep has to cover the fuzz module too.
+# It is excluded from the test gate (its targets run through `make fuzz`), but
+# its 29 struct-tag sites and everything else in it are ordinary Go that the
+# linter must see — evener-namingcheck reached them by walking the filesystem
+# from the repo root, and a module-list-driven linter only reaches what the
+# list names.
 lint-golangci:
-	@MODULES="$(GO_MODULES)" go run ./cmd/evener-dev module-lint
+	@MODULES="$(FUZZ_GO_MODULES)" go run ./cmd/evener-dev module-lint
+
+# lint-gofmt keeps EVERY tracked Go source formatter-clean, including the ~250
+# files behind //go:build evenerfuzz / eval. It is not redundant with the gofmt
+# formatter in .golangci.yml: golangci-lint formats only the files it compiles,
+# and the tag-free lint run compiles none of the tagged ones.
+lint-gofmt:
+	$(call run_quiet_lint,files="$$(git ls-files -z -- '*.go' | xargs -0 gofmt -l)"; status=$$?; if [ "$$status" -ne 0 ]; then if [ -n "$$files" ]; then printf '%s\n' "$$files"; fi; exit "$$status"; fi; if [ -n "$$files" ]; then printf '%s\n' "$$files"; exit 1; fi)
 
 # generate runs all `go generate` directives. The AppWire protocol reference
 # and frontend TypeScript declarations come from the catalog in appwire/protocol.go.
@@ -470,7 +495,7 @@ generate:
 lint-generated:
 	$(call run_quiet_lint,go generate ./appwire/... && { git diff --exit-code -- docs/appwire-protocol.md cmd/evener-hub/frontend/src/protocol/types.gen.ts || { echo "generated AppWire outputs are stale; run 'make generate' and commit."; exit 1; }; })
 
-LINT_TARGETS := lint-naming lint-evenerfuzz lint-eval lint-internal lint-golangci lint-generated lint-fuzz-registry secret-scan
+LINT_TARGETS := lint-naming lint-gofmt lint-evenerfuzz lint-eval lint-internal lint-golangci lint-generated lint-fuzz-registry secret-scan
 
 lint: $(LINT_TARGETS)
 

@@ -72,7 +72,7 @@ type embeddedFields struct {
 	cleanInner
 	*embeddedPointer
 	Named cleanInner `json:"named"`
-	int
+	int              //nolint:unused // the fixture's point: SchemaFromType must not promote an unexported anonymous field, which only reflection reads.
 }
 
 type embeddedPointer struct {

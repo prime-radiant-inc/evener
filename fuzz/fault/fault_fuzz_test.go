@@ -2,6 +2,7 @@ package fault
 
 import (
 	"bytes"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -76,7 +77,8 @@ func errorShape(err error) string {
 	if err == nil {
 		return "ok"
 	}
-	if pe, ok := err.(*os.PathError); ok {
+	pe := &os.PathError{}
+	if errors.As(err, &pe) {
 		return pe.Op + ":" + pe.Err.Error()
 	}
 	return err.Error()
@@ -238,7 +240,11 @@ func exerciseFileFaults(t *testing.T, failByte byte) {
 	operations := []func(afero.File) error{
 		func(f afero.File) error { _, err := f.Read(make([]byte, 2)); return err },
 		func(f afero.File) error { _, err := f.ReadAt(make([]byte, 2), 0); return err },
-		func(f afero.File) error { _, err := f.Write([]byte("x")); return err },
+		// Write, not WriteString: this table exercises the fault wrapper's
+		// per-method injection, and WriteString is a different method with its
+		// own plan slot.
+		func(f afero.File) error { _, err := f.Write([]byte("x")); return err }, //nolint:gocritic // see above
+
 		func(f afero.File) error { _, err := f.WriteAt([]byte("y"), 1); return err },
 		func(f afero.File) error { _, err := f.Seek(0, io.SeekStart); return err },
 		func(f afero.File) error { return f.Truncate(3) },

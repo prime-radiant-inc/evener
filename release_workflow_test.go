@@ -114,7 +114,7 @@ func firstRepoCommand(run string) string {
 		if strings.HasPrefix(trimmed, "#") {
 			continue
 		}
-		for _, field := range strings.Fields(trimmed) {
+		for field := range strings.FieldsSeq(trimmed) {
 			if field == "git" || field == "gh" {
 				return trimmed
 			}
