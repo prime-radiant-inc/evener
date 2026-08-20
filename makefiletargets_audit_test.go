@@ -128,6 +128,9 @@ func TestEveryLintTargetIsPhonyAndHasARule(t *testing.T) {
 func TestEveryRuleIsPhony(t *testing.T) {
 	t.Parallel()
 	phony, rules := makefilePhonyAndRuleNames(t)
+	if len(phony) == 0 || len(rules) == 0 {
+		t.Fatalf("parsed %d .PHONY names and %d rules; the parser is broken, not the Makefile", len(phony), len(rules))
+	}
 	isPhony := make(map[string]bool, len(phony))
 	for _, name := range phony {
 		isPhony[name] = true
@@ -147,13 +150,14 @@ func TestEveryRuleIsPhony(t *testing.T) {
 }
 
 // makefileRulesWithoutRecipes returns rule names whose rule line has no
-// prerequisites and is followed by no recipe line. GNU make treats such a
-// target as satisfied: it prints "Nothing to be done for `x'" and exits 0. A
-// gate in that state reports green while executing nothing, which is the
-// lint-fuzz-registry failure mode that TestEveryPhonyTargetHasARule was
-// written for — except that test cannot see it, because its parser records a
-// rule from the `name:` line alone and never looks at the indented recipe
-// beneath.
+// prerequisites and is followed by no recipe line, along with the total
+// number of rule declarations examined across the source files. GNU make
+// treats such a target as satisfied: it prints "Nothing to be done for `x'"
+// and exits 0. A gate in that state reports green while executing nothing,
+// which is the lint-fuzz-registry failure mode that
+// TestEveryPhonyTargetHasARule was written for — except that test cannot see
+// it, because its parser records a rule from the `name:` line alone and
+// never looks at the indented recipe beneath.
 //
 // The prerequisite check matters: `build: build-runtime` and
 // `lint: $(LINT_TARGETS)` also have no recipe of their own, but they are
@@ -162,9 +166,16 @@ func TestEveryRuleIsPhony(t *testing.T) {
 // empty prerequisite list is also what excludes target-specific variable
 // lines like `install-home: PREFIX := $(HOME)/.local`, since the assignment
 // text lands in the same position a prerequisite list would.
-func makefileRulesWithoutRecipes(t *testing.T) []string {
+//
+// total counts every rule declaration seen, not just the empty ones, so a
+// caller can tell "the source files hold no rules" (parser lost its subject)
+// apart from "the source files hold rules and all of them have recipes"
+// (the audit is clean). Without that distinction, an accidentally empty
+// source-file list — a real risk once the source is a glob over `make/*.mk`
+// instead of a single hardcoded `Makefile` — would make this audit pass
+// vacuously instead of failing loudly.
+func makefileRulesWithoutRecipes(t *testing.T) (empty []string, total int) {
 	t.Helper()
-	var empty []string
 	for _, path := range []string{"Makefile"} {
 		raw, err := os.ReadFile(path)
 		if err != nil {
@@ -182,6 +193,7 @@ func makefileRulesWithoutRecipes(t *testing.T) []string {
 			if strings.HasPrefix(name, ".") {
 				continue
 			}
+			total++
 			if strings.TrimSpace(rest) != "" {
 				continue
 			}
@@ -199,13 +211,17 @@ func makefileRulesWithoutRecipes(t *testing.T) []string {
 		}
 	}
 	sort.Strings(empty)
-	return empty
+	return empty, total
 }
 
 // TestEveryRuleHasARecipe fails on a rule line with no recipe beneath it.
 func TestEveryRuleHasARecipe(t *testing.T) {
 	t.Parallel()
-	if empty := makefileRulesWithoutRecipes(t); len(empty) > 0 {
+	empty, total := makefileRulesWithoutRecipes(t)
+	if total == 0 {
+		t.Fatalf("parsed 0 rule declarations; the parser is broken, not the Makefile")
+	}
+	if len(empty) > 0 {
 		t.Fatalf("these rules have no recipe, so `make <target>` prints "+
 			"\"Nothing to be done\" and exits 0 while checking nothing:\n  %s",
 			strings.Join(empty, "\n  "))
