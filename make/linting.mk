@@ -3,34 +3,41 @@
 # secret-scan runs gitleaks over the whole working tree using the committed
 # .gitleaks.toml ruleset. Part of the gate (`make lint`); skips with a warning
 # when gitleaks is not installed (required in CI).
+## Run gitleaks over the whole working tree using the committed
+## .gitleaks.toml ruleset.
+## proves: No secret matches the committed gitleaks ruleset anywhere in the
+##   working tree.
+## trigger: Required CI (via make lint); local pre-merge.
+## requires: gitleaks. Local absence warns and returns zero; CI sets
+##   EVENER_GITLEAKS_REQUIRED=1.
+## fails-when: A finding, or a required-tool absence under
+##   EVENER_GITLEAKS_REQUIRED=1, is nonzero.
 secret-scan:
 	$(call run_quiet_lint,scripts/ops/gitleaks-scan.sh repo,preserve-gitleaks-warning)
 
 # lint-naming enforces TOML=snake_case across every TOML data file in the
 # repo. Go struct tags are tagliatelle's job (.golangci.yml): JSON and TOML
 # tags are snake_case everywhere but the camelCase wire-protocol packages.
-
+## Enforce snake_case naming across every TOML data file in the repo.
+## proves: Every TOML file's keys use snake_case naming.
+## trigger: Required CI (via make lint); local pre-merge.
+## requires: None beyond the Go toolchain; deterministic, no provider calls.
+## fails-when: Any TOML file has a non-snake_case key.
 lint-naming:
 	$(call run_quiet_lint,go run ./cmd/evener-tomlcheck)
 
-# lint-evenerfuzz is the floor for the //go:build evenerfuzz sources. Every
-# other gate is tag-free — `make test`, `make lint`, `make vet` and
-# `go build ./...` never compile those 250 files — so a production signature
-# change that strands a tagged call site rots there until someone runs
-# `make fuzz` by hand. `go vet` type-checks each module's test packages under
-# the tag, which is what catches a stranded call site. Running the corpora
-# themselves is 144s and stays in `make fuzz` / `make fuzz-seeds`; this pass is
-# ~4s warm across the workspace, which is why it can sit in the gate.
-#
-# The tagliatelle pass is the struct-tag half of the same floor: golangci-lint
-# only analyses the files it compiles, and the tag-free run in lint-golangci
-# compiles none of these. --enable-only keeps the tagged pass to exactly the
-# gate the tagged sources had before (evener-namingcheck parsed every .go file
-# in the tree, tags or not) while reading its casing rules, carve-outs and
-# exclusions from the one .golangci.yml. Widening the tagged pass to the whole
-# linter set is a separate change: measured at 180 findings across the
-# workspace (99 modernize, 20 revive, 13 staticcheck, ...) that these files
-# have never been held to.
+## The compile floor for the //go:build evenerfuzz sources: go vet under the
+## tag, plus a tagliatelle-only golangci-lint pass. See "Why two tagged lint
+## passes exist" in docs/developing-evener/linting.md for the full rationale.
+## proves: Every evenerfuzz-tagged source across FUZZ_GO_MODULES still
+##   compiles and passes its struct-tag casing floor, catching a production
+##   signature change that strands a tagged call site.
+## trigger: Required CI (via make lint); local pre-merge. ~4s warm across
+##   the workspace.
+## requires: golangci-lint. Reads .golangci.yml's casing rules, carve-outs,
+##   and exclusions via --enable-only tagliatelle.
+## fails-when: go vet -tags evenerfuzz fails for any module, or the
+##   tagliatelle pass reports a casing violation.
 lint-evenerfuzz:
 	$(call run_quiet_lint,for m in $(FUZZ_GO_MODULES); do (cd $$m && go vet -tags evenerfuzz ./...) || exit 1; done)
 	$(call run_quiet_lint,for m in $(FUZZ_GO_MODULES); do (cd $$m && golangci-lint run --allow-parallel-runners --build-tags evenerfuzz --enable-only tagliatelle ./...) || exit 1; done)
@@ -46,12 +53,29 @@ lint-evenerfuzz:
 # where the next one lands. ~3.5s warm, the same order as the evenerfuzz pass.
 # It carries the same tagliatelle pass under its own tag, for the reason
 # lint-evenerfuzz's comment gives.
+## The compile floor for the //go:build eval sources: go vet under the tag,
+## plus a tagliatelle-only golangci-lint pass.
+## proves: The eval-tagged live-provider suites (context-compaction quality,
+##   forced notes) still compile.
+## trigger: Required CI (via make lint); local pre-merge. ~3.5s warm.
+## requires: golangci-lint. Covers all of FUZZ_GO_MODULES, since eval
+##   sources could land in any module.
+## fails-when: go vet -tags eval fails for any module, or the tagliatelle
+##   pass reports a casing violation.
 lint-eval:
 	$(call run_quiet_lint,for m in $(FUZZ_GO_MODULES); do (cd $$m && go vet -tags eval ./...) || exit 1; done)
 	$(call run_quiet_lint,for m in $(FUZZ_GO_MODULES); do (cd $$m && golangci-lint run --allow-parallel-runners --build-tags eval --enable-only tagliatelle ./...) || exit 1; done)
 
 # lint-internal fails if any exported symbol in the agent/llm/providercfg
 # libraries names a evener-internal type — keeping them externally importable.
+## Fail if any exported symbol in the agent/llm/providercfg libraries names a
+## evener-internal type.
+## proves: The agent/llm/providercfg libraries stay externally importable —
+##   no exported symbol leaks an internal type name.
+## trigger: Required CI (via make lint); local pre-merge.
+## requires: None beyond the Go toolchain.
+## fails-when: cmd/evener-internalcheck finds an exported symbol naming an
+##   internal type.
 lint-internal:
 	$(call run_quiet_lint,go run ./cmd/evener-internalcheck)
 
@@ -70,6 +94,17 @@ lint-internal:
 # overrides are per-package and those files share package `server` with 119
 # snake_case tags, so the split cannot live in one config; .golangci-appwire.yml
 # holds the other half and explains itself.
+## golangci-lint across every workspace module, plus the second
+## appwire-specific camelCase pass over server/appwire_*.go. See "The
+## server/appwire_*.go camelCase regime" in docs/developing-evener/linting.md.
+## proves: golangci-lint's full ruleset (struct-tag casing, formatting,
+##   exported-doc comments, and the rest) passes across every FUZZ_GO_MODULES
+##   workspace module, and the appwire camelCase regime holds for
+##   server/appwire_*.go.
+## trigger: Required CI (via make lint); local pre-merge.
+## requires: golangci-lint. Runs against FUZZ_GO_MODULES, not GO_MODULES, so
+##   the fuzz module's ordinary Go is covered too.
+## fails-when: Either golangci-lint run fails for any module.
 lint-golangci:
 	@MODULES="$(FUZZ_GO_MODULES)" go run ./cmd/evener-dev module-lint
 	$(call run_quiet_lint,golangci-lint run --allow-parallel-runners --config .golangci-appwire.yml ./server/...)
@@ -78,11 +113,24 @@ lint-golangci:
 # files behind //go:build evenerfuzz / eval. It is not redundant with the gofmt
 # formatter in .golangci.yml: golangci-lint formats only the files it compiles,
 # and the tag-free lint run compiles none of the tagged ones.
+## Keep every tracked Go source formatter-clean, including the tagged
+## evenerfuzz/eval files golangci-lint's own gofmt pass never compiles.
+## proves: `gofmt -l` reports nothing for any tracked .go file, tagged or
+##   not.
+## trigger: Required CI (via make lint); local pre-merge.
+## requires: None beyond the Go toolchain.
+## fails-when: Any tracked .go file is not gofmt-clean.
 lint-gofmt:
 	$(call run_quiet_lint,files="$$(git ls-files -z -- '*.go' | xargs -0 gofmt -l)"; status=$$?; if [ "$$status" -ne 0 ]; then if [ -n "$$files" ]; then printf '%s\n' "$$files"; fi; exit "$$status"; fi; if [ -n "$$files" ]; then printf '%s\n' "$$files"; exit 1; fi)
 
 # lint-generated fails if either committed AppWire output is stale — i.e. the
 # catalog changed without regenerating the protocol doc and TypeScript types.
+## Fail if either committed AppWire output is stale.
+## proves: docs/appwire-protocol.md and the generated TypeScript protocol
+##   types match what `go generate ./appwire/...` produces right now.
+## trigger: Required CI (via make lint); local pre-merge.
+## requires: None beyond the Go toolchain.
+## fails-when: The regenerated output differs from what is committed.
 lint-generated:
 	$(call run_quiet_lint,go generate ./appwire/... && { git diff --exit-code -- docs/appwire-protocol.md cmd/evener-hub/frontend/src/protocol/types.gen.ts || { echo "generated AppWire outputs are stale; run 'make generate' and commit."; exit 1; }; })
 
@@ -93,9 +141,26 @@ lint-generated:
 # without a registry row and nothing in CI or merge-approval-gate caught it,
 # because fuzz-registry-check was wired to neither. This target is fast
 # (well under a second) and safe to run as a separate `go vet`-style gate.
+## Wrap `make fuzz-registry-check` so a fuzz target that lands without its
+## registry row fails the required gate instead of sitting undetected.
+## proves: Every native/Rapid fuzz target in the manifest
+##   (scripts/fuzz/fuzz-targets.txt) matches AST-discovered workspace
+##   declarations.
+## trigger: Required CI (via make lint); local pre-merge. Well under a
+##   second.
+## requires: None beyond the Go toolchain; static AST analysis only.
+## fails-when: A discovered fuzz target has no registry row, or a registry
+##   row has no discovered target.
 lint-fuzz-registry:
 	$(call run_quiet_lint,scripts/fuzz/fuzz-registry-check.sh)
 
 LINT_TARGETS := lint-naming lint-gofmt lint-evenerfuzz lint-eval lint-internal lint-golangci lint-generated lint-fuzz-registry secret-scan
 
+## Go lint, formatting, tagged floors, generated outputs, and secrets.
+## proves: TOML naming; gofmt over every tracked .go file; the evenerfuzz and
+##   eval compile floors; the internal-type check; golangci-lint across every
+##   workspace module.
+## trigger: required CI; local pre-merge.
+## requires: golangci-lint, gitleaks.
+## fails-when: any member of LINT_TARGETS exits nonzero.
 lint: $(LINT_TARGETS)

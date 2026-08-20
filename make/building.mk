@@ -12,6 +12,15 @@ INSTALL_BUILD_DIR ?= .build/install
 EVENER_INSTALL_BINS := evener evener-hub evener-tui evener-doctor evener-migrate
 BUILD_CHANNEL ?=
 
+## Build the runtime pair (evener, evener-hub) with a fresh embedded SPA. The
+## default goal.
+## proves: build-web completes before the evener/evener-hub pair is built, so
+##   the runtime pair contains the fresh SPA.
+## trigger: Local pre-merge; required CI together with make build-go.
+## requires: Go, Node/npm, the frontend install, and enough disk. Build
+##   metadata includes the current SHA, dirty state, time, and channel.
+## fails-when: Frontend preflight, build, or pair-script failure is nonzero;
+##   stale or failed embedding is not a pass.
 build: build-runtime
 
 # build-runtime depends on build-web (not the reverse): make guarantees a
@@ -20,21 +29,34 @@ build: build-runtime
 # guarantees every evener/evener-hub pair build embeds the dist build-web just
 # produced. No target may ship a evener-hub binary with a stale or empty
 # embedded web UI.
+## The actual recipe `build` runs: builds the evener/evener-hub pair via
+## scripts/ops/build-runtime-pair.sh.
 build-runtime: build-web
 	LDFLAGS="$(LDFLAGS)" scripts/ops/build-runtime-pair.sh
 
 # Cross-compile for Linux (eval deployments). Invalidates the agent package
 # cache to ensure embedded files (templates, sections, agent .md) are fresh.
+## Cross-compile evener-linux-amd64 for Linux eval deployments.
 build-linux:
 	go clean -cache 2>/dev/null && \
 	CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -ldflags "$(LDFLAGS)" -o evener-linux-amd64 ./cmd/evener/
 
+## Alias for build-runtime.
 build-hub: build-runtime
 
 # web-preflight owns the frontend node_modules install for every web target,
 # so build-web and test-web share one definition of "the install is ready".
 # The install rules and the two guards they exist for live in the script;
 # scripts/web/web-preflight-selftest.sh exercises them against throwaway trees.
+## Ensure the frontend dependency install is present, healthy, and
+## lockfile-compatible before any web target runs.
+## proves: The worktree has a lockfile-compatible install and a real local
+##   TypeScript compiler.
+## trigger: Setup prerequisite for the web/build/browser gates.
+## requires: May run npm when the install is absent or stale; refuses an
+##   unsafe npm ci through a mismatched shared symlink.
+## fails-when: A missing, mismatched, or unhealthy install is nonzero;
+##   npm/network unavailability is a setup failure.
 web-preflight:
 	@NODE_DISABLE_COMPILE_CACHE=1 scripts/web/web-preflight.sh
 
@@ -45,21 +67,35 @@ web-preflight:
 # tracked dist/PLACEHOLDER on every build; vite.config.ts writes it back at
 # closeBundle, so no recipe here restores it and `git status` stays clean
 # after a build however vite was invoked (kata 88nn).
+## Build the frontend (TypeScript typecheck + Vite production build) into
+## frontend/dist for Go embedding.
+## proves: TypeScript typecheck and the Vite production build complete and
+##   refresh frontend/dist.
+## trigger: Frontend CI; prerequisite of the runtime and release builds.
+## requires: Node/npm; may run npm ci when the install is absent or stale.
+##   No provider credentials. Node's automatic compile cache is disabled.
+## fails-when: An npm, typecheck, or Vite failure is nonzero.
 build-web: web-preflight
 	cd cmd/evener-hub/frontend && NODE_DISABLE_COMPILE_CACHE=1 npm run build
 
+## Build the standalone TUI binary (evener-tui).
 build-tui:
 	go build -o evener-tui ./cmd/evener-tui/
 
 # evener-doctor: the read-only forensic inspector (data plane of the doctoring system).
+## Build evener-doctor, the read-only forensic inspector.
 build-doctor:
 	go build -o evener-doctor ./cmd/evener-doctor/
 
+## Build every runtime binary: the runtime pair, the TUI, evener-doctor, and
+## evener-migrate.
 build-all: build-runtime build-tui build-doctor build-migrate
 
+## Build the llmcall standalone CLI binary.
 build-llmcall:
 	go build -o llmcall ./cmd/llmcall/
 
+## Build evener-migrate.
 build-migrate:
 	go build -o evener-migrate ./cmd/evener-migrate/
 
@@ -68,10 +104,23 @@ build-migrate:
 # same layout the release workflow ships and install.sh consumes. The web
 # build runs as goreleaser's before hook, so the hub binary embeds a fresh
 # SPA rather than the tracked PLACEHOLDER.
+## Build release/distribution binaries with goreleaser in snapshot mode.
+## proves: goreleaser builds evener, evener-hub, evener-tui, evener-doctor,
+##   and evener-migrate for linux/amd64 and darwin/arm64 into
+##   directory-wrapped archives plus checksums.txt, with a fresh SPA embedded
+##   via the before hook.
+## trigger: Release/snapshot CI; manual distribution verification.
+## requires: Cross-compilation and frontend dependencies; release CI has
+##   networked setup for tool/dependency installation.
+## fails-when: Any build, archive, inspection, or checksum failure is
+##   nonzero; unavailable release tooling blocks release.
 dist:
 	goreleaser release --snapshot --clean
 
 # An installed hub must embed a fresh SPA, not the tracked PLACEHOLDER (install-home/install-system inherit via install).
+## Install the runtime binaries into PREFIX (default $(HOME)/.local), building
+## a fresh SPA first so the installed evener-hub never embeds the tracked
+## placeholder.
 install: build-web
 	install -d "$(INSTALL_BUILD_DIR)"
 	go build -ldflags "$(LDFLAGS)" -o "$(INSTALL_BUILD_DIR)/evener" ./cmd/evener/
@@ -86,16 +135,29 @@ install: build-web
 	done
 
 install-home: PREFIX := $(HOME)/.local
+## Install into the user prefix ($(HOME)/.local).
 install-home: install
 
 install-system: PREFIX := /usr/local
+## Install into the system prefix (/usr/local).
 install-system: install
 
+## Integration-test the install path end to end: copy the tracked working
+## tree into a fixture, run the install target with a synthetic HOME, and
+## verify the installed binaries and symlinks. Skipped under -short.
 test-install:
 	go test -count=1 -run '^TestInstallHomeGeneratedHome$$' .
 
 # build-go compiles every non-fuzz Go workspace module. Keep it separate from
 # build: the runtime pair owns the embedded frontend, while this target makes
 # the workspace-wide compile contract explicit for CI and local diagnostics.
+## Compile every non-fuzz Go workspace module.
+## proves: All packages in the seven GO_MODULES compile, including packages
+##   root-level `go build ./...` does not visit under go.work.
+## trigger: Required CI build job; local compile diagnostic.
+## requires: Deterministic Go compilation; no provider calls or
+##   frontend/browser requirements.
+## fails-when: Any module or package compilation failure is nonzero; the
+##   loop stops at the first failing module.
 build-go:
 	@for m in $(GO_MODULES); do (cd $$m && go build ./...) || exit 1; done
