@@ -1,9 +1,12 @@
 version: 2
 
 # goreleaser owns the release pipeline: the five binaries, both supported
-# targets, the archives, and the checksums. The artifact contract is
-# unchanged — evener_<os>_<arch>.tar.gz, directory-wrapped, five binaries at
-# the root — because install.sh and the snapshot channel consume it.
+# targets, the archives, and the checksums. The artifact contract install.sh
+# and the snapshot channel consume is unchanged — evener_<os>_<arch>.tar.gz,
+# directory-wrapped, the five binaries at the root. `files: []` does not mean
+# an empty file list: goreleaser falls back to its defaults there, so the
+# archives also carry README.md and LICENSE-kilroy. Intentional; install.sh
+# reads the five binaries by name and ignores the rest.
 
 before:
   hooks:
