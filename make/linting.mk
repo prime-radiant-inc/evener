@@ -123,16 +123,28 @@ lint-golangci:
 lint-gofmt:
 	$(call run_quiet_lint,files="$$(git ls-files -z -- '*.go' | xargs -0 gofmt -l)"; status=$$?; if [ "$$status" -ne 0 ]; then if [ -n "$$files" ]; then printf '%s\n' "$$files"; fi; exit "$$status"; fi; if [ -n "$$files" ]; then printf '%s\n' "$$files"; exit 1; fi)
 
-# lint-generated fails if either committed AppWire output is stale — i.e. the
-# catalog changed without regenerating the protocol doc and TypeScript types.
-## Fail if either committed AppWire output is stale.
-## proves: docs/appwire-protocol.md and the generated TypeScript protocol
-##   types match what `go generate ./appwire/...` produces right now.
+# lint-generated fails if any committed generated output is stale: the appwire
+# catalog or a make/*.mk annotation changed without the outputs being
+# regenerated.
+#
+# It invokes the `generate` target rather than carrying its own copy of the
+# generate commands. That is the whole point: a diff list wider than what the
+# recipe actually regenerates is a gate that reports green forever while
+# checking nothing — the lint-fuzz-registry failure mode this repo was already
+# bitten by once. The && chain also means a generator that FAILS fails this
+# gate; it must never fall through to a clean diff over outputs nothing
+# rewrote.
+## Fail if any committed generated output is stale: the two AppWire outputs
+## and the six docs/developing-evener/ target tables.
+## proves: docs/appwire-protocol.md, the generated TypeScript protocol
+##   types, and the marked target-table regions in docs/developing-evener/'s
+##   six family docs all match what `make generate` produces right now.
 ## trigger: Required CI (via make lint); local pre-merge.
 ## requires: None beyond the Go toolchain.
-## fails-when: The regenerated output differs from what is committed.
+## fails-when: `make generate` itself exits nonzero, or any regenerated
+##   output differs from what is committed.
 lint-generated:
-	$(call run_quiet_lint,go generate ./appwire/... && { git diff --exit-code -- docs/appwire-protocol.md cmd/evener-hub/frontend/src/protocol/types.gen.ts || { echo "generated AppWire outputs are stale; run 'make generate' and commit."; exit 1; }; })
+	$(call run_quiet_lint,$(MAKE) generate && { git diff --exit-code -- docs/appwire-protocol.md cmd/evener-hub/frontend/src/protocol/types.gen.ts docs/developing-evener/README.md docs/developing-evener/building.md docs/developing-evener/testing.md docs/developing-evener/linting.md docs/developing-evener/fuzzing.md docs/developing-evener/coverage.md || { echo "generated outputs are stale; run 'make generate' and commit."; exit 1; }; })
 
 # lint-fuzz-registry wraps the SAME check as `make fuzz-registry-check`
 # (scripts/fuzz/fuzz-registry-check.sh) so a native/Rapid fuzz target that

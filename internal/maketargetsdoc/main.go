@@ -29,14 +29,19 @@ var stemToDoc = map[string]string{
 
 func main() {
 	mode := flag.String("mode", "generate", `"generate" (default) rewrites the doc tables; "help" prints make help's grouped target listing to stdout`)
+	// go generate runs a directive with the cwd set to the package's own
+	// directory, not the repo root, so doc.go's directive passes -root ../..
+	// to point back at the tree that holds make/ and docs/. The default suits
+	// a hand-run `go run ./internal/maketargetsdoc` from the repo root.
+	root := flag.String("root", ".", "repository root holding make/ and docs/developing-evener/")
 	flag.Parse()
 
 	var err error
 	switch *mode {
 	case "generate":
-		err = generate(".")
+		err = generate(*root)
 	case "help":
-		err = printHelp(os.Stdout, ".")
+		err = printHelp(os.Stdout, *root)
 	default:
 		fmt.Fprintf(os.Stderr, "maketargetsdoc: unknown -mode %q; want \"generate\" or \"help\"\n", *mode)
 		os.Exit(2)
@@ -52,10 +57,22 @@ func main() {
 // and `loadFamilies` (help.go, `-mode help`) build on, so there is one
 // definition of "which files are family files" rather than two that can
 // drift apart.
+//
+// Matching nothing is an error, not an empty result. filepath.Glob returns
+// (nil, nil) for a pattern that matches no file, so a wrong root — the
+// generator run from its own package directory, or from anywhere but the
+// repo root — would otherwise regenerate nothing, write nothing, and exit
+// zero. lint-generated would then diff six unchanged docs and report green
+// forever while checking nothing, which is the exact hollow-gate failure
+// this generator exists to close.
 func globFamilyFiles(root string) ([]string, error) {
-	mkPaths, err := filepath.Glob(filepath.Join(root, "make", "*.mk"))
+	pattern := filepath.Join(root, "make", "*.mk")
+	mkPaths, err := filepath.Glob(pattern)
 	if err != nil {
 		return nil, err
+	}
+	if len(mkPaths) == 0 {
+		return nil, fmt.Errorf("%s matched no family files; run this from the repository root or pass -root", pattern)
 	}
 	sort.Strings(mkPaths)
 	return mkPaths, nil

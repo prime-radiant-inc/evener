@@ -21,16 +21,20 @@ tools:
 refresh-model-catalog:
 	@scripts/ops/refresh-model-catalog.sh
 
-# generate runs the appwire package's `go generate` directives: the AppWire
-# protocol reference and frontend TypeScript declarations, generated from the
-# catalog in appwire/protocol.go. internal/maketargetsdoc has its own
-# `//go:generate go run .` directive, not yet wired in here (its doc comment
-# explains why); this target does not touch it.
-## Run the appwire package's `go generate` directives: the AppWire protocol
-## reference and frontend TypeScript declarations, generated from the
-## catalog in appwire/protocol.go.
+# generate runs the two packages that carry `go generate` directives. appwire
+# produces the AppWire protocol reference and the frontend TypeScript
+# declarations from the catalog in appwire/protocol.go; internal/maketargetsdoc
+# produces the per-family target tables inside docs/developing-evener/'s marked
+# regions from the `##` annotations in these make/*.mk files. lint-generated
+# runs this target and diffs all of those outputs, so both are gated for
+# staleness by the required lint gate.
+## Run the appwire and maketargetsdoc `go generate` directives: the AppWire
+## protocol reference and frontend TypeScript declarations from
+## appwire/protocol.go, and the per-family make-target tables in
+## docs/developing-evener/.
 generate:
 	go generate ./appwire/...
+	go generate ./internal/maketargetsdoc/...
 
 ## Remove the built binaries from the repo root.
 clean:

@@ -194,3 +194,37 @@ func TestGenerateIsIdempotent(t *testing.T) {
 		t.Fatalf("linting.md changed on the second run:\nfirst:\n%s\nsecond:\n%s", firstLinting, secondLinting)
 	}
 }
+
+// TestGenerateErrorsWhenRootHoldsNoFamilyFiles pins the guard that keeps a
+// wrong root loud. filepath.Glob returns no error for a pattern that matches
+// nothing, so a generator pointed at the wrong tree — the mistake a
+// //go:generate directive invites, since go generate runs it from the
+// package's own directory — would rewrite nothing and exit zero, and
+// lint-generated would then diff six unchanged docs and pass forever.
+func TestGenerateErrorsWhenRootHoldsNoFamilyFiles(t *testing.T) {
+	root := t.TempDir()
+	writeFixtureDoc(t, root, "building.md", "building", "")
+
+	err := generate(root)
+	if err == nil {
+		t.Fatal("generate succeeded with no make/*.mk under root; a wrong root must fail loudly, not regenerate nothing")
+	}
+	if !strings.Contains(err.Error(), "matched no family files") {
+		t.Fatalf("error does not name the empty glob: %v", err)
+	}
+}
+
+// TestPrintHelpErrorsWhenRootHoldsNoFamilyFiles is the same guard on the
+// help path: `make help` listing nothing is a failure, not an empty repo.
+func TestPrintHelpErrorsWhenRootHoldsNoFamilyFiles(t *testing.T) {
+	root := t.TempDir()
+
+	var buf bytes.Buffer
+	err := printHelp(&buf, root)
+	if err == nil {
+		t.Fatal("printHelp succeeded with no make/*.mk under root")
+	}
+	if !strings.Contains(err.Error(), "matched no family files") {
+		t.Fatalf("error does not name the empty glob: %v", err)
+	}
+}
