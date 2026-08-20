@@ -182,7 +182,11 @@ function intersect(a, b) {
 // .rightSlot/.railRow background, etc). Note what this proves in each state:
 // at rest a HIDDEN menu button must not win its own pixels (visibility:
 // hidden removes it from hit-testing - opacity alone never would); revealed,
-// it must.
+// it must - and wherever the menu's box intersects the occupant's, the
+// occupant must not win the intersection's center (the menu covers it there,
+// stated font-independently: an occupant wider than the menu keeps its
+// uncovered left portion, so the occupant's OWN center is not the thing to
+// probe).
 function winnerAt(rect) {
   const cx = (rect.left + rect.right) / 2;
   const cy = (rect.top + rect.bottom) / 2;
@@ -211,6 +215,13 @@ window.measure = () => {
     const slot = box(document.getElementById(`slot-${f.id}`));
     const actions = box(document.getElementById(`actions-${f.id}`));
 
+    // The menu and the occupant share one grid cell, right-flush to the same
+    // edge, so their boxes always intersect - by min(actions, occupant) in
+    // width, regardless of how wide the occupant's TEXT renders on this
+    // platform. Who wins hit-testing at that intersection's center is the
+    // font-independent form of "the revealed menu covers the occupant".
+    const actionsOccOverlap = occupant ? intersect(actions, occupant) : null;
+
     const kebabOverlap = intersect(chevron, kebab);
     const plusOverlap = plus ? intersect(chevron, plus) : null;
 
@@ -227,15 +238,18 @@ window.measure = () => {
       actions,
       kebabOverlap,
       plusOverlap,
+      actionsOccOverlap,
       // Each control's OWN center must resolve as the state demands - see
       // winnerAt's comment for the per-state contract. The chevron's center
       // must resolve to the chevron in BOTH states (it is never covered);
-      // the occupant's must resolve to the occupant at rest and to
-      // NOT-the-occupant revealed (the menu covers it).
+      // the occupant's must resolve to the occupant at rest. Revealed, the
+      // coverage check probes the center of the menu-occupant intersection
+      // (actionsOccOverlapWinner), never the occupant's own center.
       chevronSelfWinner: winnerAt(chevron),
       kebabSelfWinner: winnerAt(kebab),
       plusSelfWinner: plus ? winnerAt(plus) : null,
       occupantSelfWinner: occupant ? winnerAt(occupant) : null,
+      actionsOccOverlapWinner: actionsOccOverlap ? winnerAt(actionsOccOverlap) : null,
     };
   });
 };

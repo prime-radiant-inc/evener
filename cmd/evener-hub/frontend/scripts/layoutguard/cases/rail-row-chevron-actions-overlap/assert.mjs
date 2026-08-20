@@ -27,8 +27,11 @@
 //      overlay eating clicks was the original #196 mechanism), and the
 //      occupant's center resolves to the occupant.
 //   4. Revealed, the menu's center resolves to the menu (it is really
-//      clickable), and the occupant's center no longer resolves to the
-//      occupant (the menu covers it - the requested behavior).
+//      clickable), and wherever the menu's box intersects the occupant's,
+//      the occupant does not win the intersection's center (the menu covers
+//      it - the requested behavior, stated font-independently: an occupant
+//      wider than the menu keeps its uncovered left portion, so its own
+//      center is NOT the thing to probe).
 //   5. The slot is never wider than max(occupant, menu) + 1px of rounding:
 //      the menu borrows the occupant's space, so no space is "left sitting
 //      there" for the hover menu.
@@ -90,9 +93,14 @@ export default function assert(measurement) {
           `${at}: revealed, the "+" button's own center resolves to "${f.plusSelfWinner}", not the button itself - the revealed menu isn't reliably clickable`,
         );
       }
-      if (f.occupant && f.occupantSelfWinner === "occupant") {
+      if (f.occupant && !f.actionsOccOverlap) {
         failures.push(
-          `${at}: revealed, the slot occupant still wins its own center - the menu did not cover the timestamp/Badge it shares the cell with`,
+          `${at}: the menu and the occupant share no pixels even though both live in the one .rightSlot cell - the shared-cell anatomy is gone`,
+        );
+      }
+      if (f.occupant && f.actionsOccOverlapWinner === "occupant") {
+        failures.push(
+          `${at}: revealed, the occupant still wins the center of the region where the menu overlaps it - the menu must cover the occupant everywhere their boxes intersect, however wide the occupant's text renders on this platform`,
         );
       }
     }
@@ -141,6 +149,6 @@ export default function assert(measurement) {
 
   return {
     pass: true,
-    reason: `chevron and menu fully disjoint and the chevron always clickable; the hidden menu eats no clicks at rest; the revealed menu covers the occupant and is clickable; the shared slot is never wider than max(occupant, menu); occupant and menu both right-justified to the slot's edge - in all ${measurement.length} state fixtures`,
+    reason: `chevron and menu fully disjoint and the chevron always clickable; the hidden menu eats no clicks at rest; the revealed menu covers the occupant wherever their boxes intersect and is clickable; the shared slot is never wider than max(occupant, menu); occupant and menu both right-justified to the slot's edge - in all ${measurement.length} state fixtures`,
   };
 }
