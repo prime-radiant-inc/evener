@@ -1,11 +1,12 @@
-// Package main implements evener-gate-probe: a one-shot, bounded classifier for
-// the sandbox-sensitive host capabilities the merge-approval gate's live/e2e
-// test components depend on (loopback binds, a Chrome/Chromium binary for
-// CDP-driven checks, process inspection via `ps`, and a writable external git
-// cache directory). It never guesses: a probe that cannot decide in time
-// classifies as blocked, never available. scripts/gate/gate-capability-preflight.sh
-// is the only intended caller.
-package main
+// Package capabilityprobe classifies the sandbox-sensitive host capabilities
+// the merge-approval gate's live/e2e test components depend on (loopback binds,
+// a Chrome/Chromium binary for CDP-driven checks, process inspection via `ps`,
+// and a writable external git cache directory). It never guesses: a probe that
+// cannot decide in time classifies as blocked, never available.
+//
+// Formerly cmd/evener-gate-probe; inlined into evener-dev capability-preflight
+// to eliminate the `go run` subprocess and the separate binary.
+package capabilityprobe
 
 import (
 	"context"
@@ -21,7 +22,7 @@ import (
 )
 
 // Capability ids. Renaming one means updating the matching skip-registry row
-// in scripts/lib/gate-surface-lib.sh, which keys off these exact strings.
+// in internal/devtool/gatesurface, which keys off these exact strings.
 const (
 	CapabilityLoopbackBind   = "loopback-bind"
 	CapabilityChromeCDP      = "chrome-cdp"
@@ -47,8 +48,7 @@ type Capability struct {
 }
 
 // probeTimeout bounds every individual probe. A probe that cannot complete
-// inside it classifies as blocked rather than hanging the gate - "cheap and
-// bounded" from the kata's own acceptance criteria.
+// inside it classifies as blocked rather than hanging the gate.
 const probeTimeout = 5 * time.Second
 
 // chromeCandidates mirrors scripts/ops/agent-chrome.sh's CHROME_CANDIDATES search
@@ -62,11 +62,8 @@ var chromeCandidates = []string{
 }
 
 // gitCacheDir is the path probeGitCache checks. EVENER_GATE_GIT_CACHE_DIR
-// overrides the kata's literal /tmp/git-cache default for a host or fixture
-// that uses a different location; it is gate-tooling-only, not a supported
-// runtime variable for the evener/evener-hub product (docs/testing.md's env-var
-// rule governs product-facing vars, not this gate's own internal plumbing -
-// ROOT_FULL and WEB are the same kind of tooling-only variable already).
+// overrides the default /tmp/git-cache for a host or fixture that uses a
+// different location.
 func gitCacheDir() string {
 	if v := os.Getenv("EVENER_GATE_GIT_CACHE_DIR"); v != "" {
 		return v
@@ -80,11 +77,8 @@ func gitCacheDir() string {
 type probeFunc func(ctx context.Context) (available bool, reason string)
 
 // runProbe runs fn with a bound of timeout. A probe stuck on a stalled
-// resource (kata 5gvk's own warning: "a probe that can hang on a stalled
-// resource is worse than none") reports blocked-by-timeout instead of
-// hanging the caller; the goroutine itself is abandoned rather than waited
-// on; the leak is bounded to one stuck probe of the gate's own tooling, never
-// the gate itself.
+// resource reports blocked-by-timeout instead of hanging the caller; the
+// goroutine itself is abandoned rather than waited on.
 func runProbe(ctx context.Context, id, rerun string, timeout time.Duration, fn probeFunc) Capability {
 	cctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
@@ -129,14 +123,12 @@ func probeLoopbackBind(ctx context.Context) (bool, string) {
 // --- Chrome / CDP ------------------------------------------------------------
 
 // probeChromeCDPWith reports available only for a candidate path that both
-// exists and is executable - a stale, unexecutable file must not count.
+// exists and is executable — a stale, unexecutable file must not count.
 //
 // This checks binary presence only, not a live CDP handshake. Nothing in
-// `make merge-approval-gate` currently launches Chrome (test-web-browser owns
-// that, and it is a separate, non-gate target), so a full launch+CDP
-// round trip would add real cost to classify a signal nothing yet consumes.
-// The probe still runs and reports honestly; wiring a real consumer is
-// future work if one is added to the gate.
+// the gate currently launches Chrome (test-web-browser owns that, and it is
+// a separate, non-gate target), so a full launch+CDP round trip would add
+// real cost to classify a signal nothing yet consumes.
 func probeChromeCDPWith(candidates []string, stat func(string) (fs.FileInfo, error)) (bool, string) {
 	for _, c := range candidates {
 		info, err := stat(c)
@@ -175,8 +167,6 @@ func probeProcessInspect(ctx context.Context) (bool, string) {
 
 // probeGitCacheWith decides from injected filesystem operations: create the
 // directory if needed, write a throwaway file inside it, then remove it.
-// remove is never called when an earlier step already failed - there is
-// nothing to clean up.
 func probeGitCacheWith(dir string, mkdirAll func(string, fs.FileMode) error, createTemp func(dir, pattern string) (*os.File, error), remove func(string) error) (bool, string) {
 	if err := mkdirAll(dir, 0o755); err != nil {
 		return false, fmt.Sprintf("cannot create %s: %v", dir, err)
@@ -203,11 +193,16 @@ func probeGitCache(ctx context.Context, dir string) (bool, string) {
 // one Capability per AllCapabilityIDs entry, in that fixed order.
 func Classify(ctx context.Context) []Capability {
 	return []Capability{
-		runProbe(ctx, CapabilityLoopbackBind, "go run ./cmd/evener-gate-probe -only="+CapabilityLoopbackBind, probeTimeout, probeLoopbackBind),
-		runProbe(ctx, CapabilityChromeCDP, "go run ./cmd/evener-gate-probe -only="+CapabilityChromeCDP, probeTimeout, probeChromeCDP),
-		runProbe(ctx, CapabilityProcessInspect, "go run ./cmd/evener-gate-probe -only="+CapabilityProcessInspect, probeTimeout, probeProcessInspect),
-		runProbe(ctx, CapabilityGitCache, "go run ./cmd/evener-gate-probe -only="+CapabilityGitCache, probeTimeout, func(ctx context.Context) (bool, string) {
+		runProbe(ctx, CapabilityLoopbackBind, rerunCmd(CapabilityLoopbackBind), probeTimeout, probeLoopbackBind),
+		runProbe(ctx, CapabilityChromeCDP, rerunCmd(CapabilityChromeCDP), probeTimeout, probeChromeCDP),
+		runProbe(ctx, CapabilityProcessInspect, rerunCmd(CapabilityProcessInspect), probeTimeout, probeProcessInspect),
+		runProbe(ctx, CapabilityGitCache, rerunCmd(CapabilityGitCache), probeTimeout, func(ctx context.Context) (bool, string) {
 			return probeGitCache(ctx, gitCacheDir())
 		}),
 	}
+}
+
+// rerunCmd is the command a developer can run to re-probe just one capability.
+func rerunCmd(id string) string {
+	return "go run ./cmd/evener-dev capability-preflight -only=" + id
 }

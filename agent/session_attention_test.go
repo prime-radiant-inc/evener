@@ -2615,11 +2615,15 @@ func TestDelegateAttention_RestartRearmsColdChildAndDrainsExactAttention(t *test
 	}
 
 	attentionEntered := make(chan struct{})
+	releaseAttention := make(chan struct{})
+	var releaseOnce sync.Once
+	t.Cleanup(func() { releaseOnce.Do(func() { close(releaseAttention) }) })
 	attentionSeen := false
 	fixture.adapter.steps = []func(llm.Request) llm.Response{
 		func(request llm.Request) llm.Response {
 			attentionSeen = requestContainsText(request, attentionContent)
 			close(attentionEntered)
+			<-releaseAttention
 			return communicateResponse(true, "cold attention handled")
 		},
 		func(llm.Request) llm.Response {
@@ -2643,6 +2647,12 @@ func TestDelegateAttention_RestartRearmsColdChildAndDrainsExactAttention(t *test
 	if _, err := root.ProcessInputKind(context.Background(), "", nil, EntryNotification); err != nil {
 		t.Fatalf("drive restored cold delegate attention: %v", err)
 	}
+	// Read the durable aggregate only while the attention run is blocked inside
+	// its provider request: the run-started fold (CurrentRunOpen=true) commits
+	// before the run launches, and the blocked request keeps the run-finished
+	// fold from clearing it. Reading without this synchronization races the
+	// whole async run and can observe open:false after it completes (#239).
+	<-attentionEntered
 	root.delegateController.mu.Lock()
 	aggregate := root.delegateController.durable[fixture.delegateID]
 	generation := aggregate.Generation
@@ -2652,10 +2662,10 @@ func TestDelegateAttention_RestartRearmsColdChildAndDrainsExactAttention(t *test
 	if generation != 1 || trigger != delegatestore.TriggerAttention || !open {
 		t.Fatalf("cold attention generation = generation:%d trigger:%q open:%t, want 1/attention/open", generation, trigger, open)
 	}
-	<-attentionEntered
 	if !attentionSeen {
 		t.Fatal("cold attention generation provider request omitted the exact durable attention")
 	}
+	releaseOnce.Do(func() { close(releaseAttention) })
 	waitForStableSupervisionRun(t, root, fixture.childID)
 	if _, err := root.DrainJobTree(context.Background()); err != nil {
 		t.Fatalf("drain cold delegate attention: %v", err)

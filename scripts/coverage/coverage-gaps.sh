@@ -18,12 +18,12 @@
 #   go test -count=1 -short -coverpkg="$(go list ./... | paste -sd, -)" \
 #     -coverprofile="$prof" -run "$GATE_TEST_RUN" -skip "$GATE_FUZZ_TEST_SKIP" ./...
 #   scripts/coverage/coverage-gaps.sh "$prof"
-# (the same selection and module scoping scripts/coverage/test-coverage-floor.sh
-# measures; see scripts/lib/gate-surface-lib.sh).
+# (the same selection and module scoping `evener-dev coverage-floor` measures;
+# see scripts/lib/gate-surface-lib.sh).
 #
 # Duplicate blocks from -coverpkg are deduped by position, a block counting as
-# covered if ANY test hit it — the same accounting test-coverage-floor.sh and
-# fuzz-coverage-global.sh use, so the totals here reconcile with the floors.
+# covered if ANY test hit it — the same accounting `evener-dev coverage-floor`
+# and fuzz-coverage-global.sh use, so the totals here reconcile with the floors.
 set -uo pipefail
 
 profile=""

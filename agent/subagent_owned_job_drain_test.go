@@ -340,7 +340,59 @@ func TestSubagentOwnedJobDrainAcceptsStableSteeringWithoutBlockingNotifications(
 }
 
 func TestSubagentDrainReturnHandoffPreservesStableSteeringBeforeTerminalPublication(t *testing.T) {
+	requireDrainReturnHandoffMergesSteering(t, newOwnedJobDrainFixture(t))
+}
+
+// TestSubagentDrainReturnHandoffNoPhantomTurnInFinalizationWindow is #243's
+// CI flake made deterministic: it holds armFinalizedJob's
+// NotifyPending→NotifyDelivered window open across multiple drain recheck
+// passes, so the drain loop's own kick → rematerializeDurablePendings provably
+// runs against the transiently-NotifyPending shell record with an empty
+// in-memory queue. The pre-#237 rematerialize re-enqueued that record, and the
+// drain ran a phantom notification turn BEFORE the handoff sends landed — the
+// phantom stole the continuation's slot (CI observed 12 provider requests with
+// none of the accepted sends in it). With the running-map skip the drain
+// cannot see the mid-finalization record at all, and the handoff below must
+// merge every accepted send exactly as in the unperturbed test.
+func TestSubagentDrainReturnHandoffNoPhantomTurnInFinalizationWindow(t *testing.T) {
 	fixture := newOwnedJobDrainFixture(t)
+	// Hold the window open until the drain loop's own recheck has provably run
+	// rematerializeDurablePendings inside it: windowHeld blocks the
+	// finalization goroutine between the NotifyPending append and the
+	// NotifyDelivered transition, and the rematerialize-load hook — wired to
+	// the drain's 250ms recheck kick — proves the pass happened rather than
+	// assuming it from wall time.
+	windowHeld := make(chan struct{})
+	recheckSawWindow := make(chan struct{})
+	releaseWindow := make(chan struct{})
+	var releaseOnce sync.Once
+	t.Cleanup(func() { releaseOnce.Do(func() { close(releaseWindow) }) })
+	var pendingOnce, recheckOnce sync.Once
+	fixture.child.sess.jobManager.testOnlyAfterNotifyPendingAppend = func(string) {
+		pendingOnce.Do(func() {
+			close(windowHeld)
+			<-releaseWindow
+		})
+	}
+	fixture.child.sess.jobManager.testOnlyAfterRematerializeDurableLoad = func() {
+		select {
+		case <-windowHeld:
+			recheckOnce.Do(func() { close(recheckSawWindow) })
+		default:
+		}
+	}
+	go func() {
+		select {
+		case <-recheckSawWindow:
+			releaseOnce.Do(func() { close(releaseWindow) })
+		case <-time.After(30 * time.Second): // TRIPWIRE: the drain's 250ms recheck fires rematerialize inside the window within one interval; 30s only fires on a genuine hang.
+		}
+	}()
+	requireDrainReturnHandoffMergesSteering(t, fixture)
+}
+
+func requireDrainReturnHandoffMergesSteering(t *testing.T, fixture *ownedJobDrainFixture) {
+	t.Helper()
 	type handoffResult struct {
 		finalizing bool
 		running    bool

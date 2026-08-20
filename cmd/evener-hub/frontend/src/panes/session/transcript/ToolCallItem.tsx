@@ -163,8 +163,9 @@ export const ToolCallItem = memo(function ToolCallItem({ item, live, sessionRef 
     ) : null;
   // outputImages is a generic ItemModel field any tool call can carry (the
   // wire's ToolCallEndData.OutputImages, agent/events/payloads.go), not
-  // owned by any one descriptor - rendered here, once, so every current and
-  // future tool gets it for free rather than each body wiring it in itself.
+  // owned by any one descriptor - rendered here, once, so every tool gets
+  // it for free. A descriptor may still set HOW large they render
+  // (outputImageSize).
   const hasOutputImages = (item.outputImages?.length ?? 0) > 0;
   // Two independent failure signals, OR'd: the generic wire one (error text /
   // honest status) and the descriptor's own (a shell command that ran and
@@ -341,7 +342,7 @@ export const ToolCallItem = memo(function ToolCallItem({ item, live, sessionRef 
               (kata wksf) instead of adding a second way to reach it. */}
           {hasErrorText && <div className={CLASS.error}>{item.error}</div>}
           {Body && <Body item={item} live={live} sessionRef={sessionRef} />}
-          <ImageGallery images={item.outputImages} />
+          <ImageGallery images={item.outputImages} size={descriptor.outputImageSize} />
         </div>
       )}
     </details>
