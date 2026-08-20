@@ -24,7 +24,12 @@ builds:
       - goos: darwin
         goarch: amd64
     ldflags:
-      - -X primeradiant.com/evener/buildinfo.GitSHA={{ .ShortCommit }} -X primeradiant.com/evener/buildinfo.GitDirty={{ .IsGitDirty }} -X primeradiant.com/evener/buildinfo.BuildTime={{ .Date }} -X primeradiant.com/evener/buildinfo.Channel={{ .Env.BUILD_CHANNEL }}
+      # BUILD_CHANNEL is set by the release workflows (snapshot/release).
+      # envOrDefault, not .Env: goreleaser templates run with missingkey=error,
+      # so a bare .Env lookup makes an unset channel a hard build failure —
+      # `make dist` and any hand-run `goreleaser` would die. An empty channel
+      # is the intended local value (buildinfo.BuildChannel() reads it as "dev").
+      - -X primeradiant.com/evener/buildinfo.GitSHA={{ .ShortCommit }} -X primeradiant.com/evener/buildinfo.GitDirty={{ .IsGitDirty }} -X primeradiant.com/evener/buildinfo.BuildTime={{ .Date }} -X primeradiant.com/evener/buildinfo.Channel={{ envOrDefault "BUILD_CHANNEL" "" }}
 
   - id: evener-hub
     main: ./cmd/evener-hub/
