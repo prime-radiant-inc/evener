@@ -1,7 +1,7 @@
 // Package scratch is the Go twin of the shell scratch discipline the dev
 // tooling settled on after the 2026-08-17 incident: TMPDIR-rooted, pid-named
 // scratch that the owning tool reclaims itself on its next run
-// (scripts/lib/covscratch-lib.sh is the shell spelling; docs/testing.md holds the
+// (scripts/lib/covscratch-lib.sh is the shell spelling; docs/developing-evener/testing.md holds the
 // rules). There is no janitor: a directory abandoned by SIGKILL, an OOM kill,
 // or a power cut lives exactly until the same tool's next Acquire.
 //

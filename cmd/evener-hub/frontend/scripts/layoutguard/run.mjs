@@ -96,7 +96,7 @@ const SRC_DIR = path.join(FRONTEND, "src");
 // PID-scoped so concurrent runs never collide on a shared checkout.
 const GENERATED_ROOT = path.join(FRONTEND, `layoutguard-generated-${process.pid}`);
 
-// kata eevs (docs/testing.md: "a guard that has never failed is a
+// kata eevs (docs/developing-evener/testing.md: "a guard that has never failed is a
 // decoration"): every case here was mutation-tested once by hand - its
 // governing CSS declaration reverted in a scratch copy, confirmed to fail
 // the case, then restored. That evidence is recorded in the case's own
@@ -108,7 +108,7 @@ const GENERATED_ROOT = path.join(FRONTEND, `layoutguard-generated-${process.pid}
 function mutationWarning(name, caseJson) {
   const m = caseJson.mutation;
   if (!m || typeof m !== "object")
-    return `${name}: no "mutation" evidence in case.json - was this case ever mutation-tested? see docs/testing.md`;
+    return `${name}: no "mutation" evidence in case.json - was this case ever mutation-tested? see docs/developing-evener/testing.md`;
   const missing = ["declaration", "verified", "expect"].filter((k) => !m[k]);
   if (missing.length > 0) return `${name}: "mutation" evidence is missing ${missing.join(", ")}`;
   return null;
@@ -299,7 +299,7 @@ async function main() {
 
   if (warnings.length > 0) {
     console.warn("");
-    console.warn("WARN: mutation evidence missing (does not fail the run - see docs/testing.md):");
+    console.warn("WARN: mutation evidence missing (does not fail the run - see docs/developing-evener/testing.md):");
     for (const w of warnings) console.warn(`  - ${w}`);
   }
 

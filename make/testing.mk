@@ -40,7 +40,7 @@ test-short:
 	@$(MAKE) test
 
 # merge-approval-gate is the canonical serial post-merge gate. Keep the
-# explicit expansion in docs/testing.md for diagnosis and evidence. Sandboxed
+# explicit expansion in docs/developing-evener/testing.md for diagnosis and evidence. Sandboxed
 # hosts are handled inside the tests themselves: the live/e2e families probe
 # their own capabilities and t.Skip (internal/e2ecap).
 merge-approval-gate:
@@ -81,6 +81,6 @@ test-timing-budget-selftest:
 # measured (kata b6rv). Run it deliberately, on an otherwise idle box, and
 # review the diff in the same commit as whatever change earned it — this is
 # NOT part of any gate, and nothing here should run it to invent a baseline;
-# see docs/testing.md.
+# see docs/developing-evener/testing.md.
 test-rebaseline:
 	@scripts/gate/test-timing-budget.sh --bless $(TIMING_ARGS)

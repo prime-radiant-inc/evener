@@ -17,7 +17,7 @@ import (
 // (spec §4). They reuse wtRepo/wtGit from
 // session_tools_worktree_create_test.go.
 //
-// This file is MIXED across the two lane harnesses; see docs/testing.md for the
+// This file is MIXED across the two lane harnesses; see docs/developing-evener/testing.md for the
 // rule. A test whose subject is evener's own decision-making — which refusal rung
 // fires, its error text, the env-swap and restore-state bookkeeping, argument
 // validation — runs on the scripted git boundary (scriptedLaneRepo, driven

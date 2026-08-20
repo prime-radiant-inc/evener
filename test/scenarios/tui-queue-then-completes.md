@@ -450,7 +450,7 @@ Use `tmux send-keys -t "$TMUX_SESSION" ...` to drive input and
    bound, never a success condition. The idle-state poll is a second positive
    contract, not an elapsed-time assumption. The pane loop evaluates absence
    only after two 20 ms-spaced, byte-identical captures, following the
-   direct-driving stable-capture rule in `docs/testing.md` (the Go harness
+   direct-driving stable-capture rule in `docs/developing-evener/testing.md` (the Go harness
    equivalent is `CaptureStable`, exercised by
    `TestTUITmuxE2E_CaptureStableDuringStream` in
    `cmd/evener-tui/tmux_e2e_test.go#TestTUITmuxE2E_CaptureStableDuringStream`).

@@ -24,7 +24,7 @@ import (
 // This file also DEFINES the real-git harness (wtRepo, newWorktreeRepo, wtGit,
 // worktreeBaseRepo, addManagedWorktreeFixture, …) that the whole worktree test
 // family shares, and it is MIXED across the two lane harnesses; see
-// docs/testing.md for the rule. A test whose subject is evener's own
+// docs/developing-evener/testing.md for the rule. A test whose subject is evener's own
 // decision-making — argument validation, which refusal rung fires, what evener
 // wrote to its own sidecar, the preflight — runs on the scripted git boundary.
 // These stay on real git because their subject IS git's observable behavior:

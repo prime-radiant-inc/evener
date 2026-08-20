@@ -17,7 +17,7 @@ import (
 // init-inside occupancy lock (native worktree tools spec §7 "Persistence and
 // resume" + §5 table row "session init, launch cwd inside a managed worktree").
 //
-// This file is MIXED across the two lane harnesses; see docs/testing.md for the
+// This file is MIXED across the two lane harnesses; see docs/developing-evener/testing.md for the
 // rule. Most tests' subject is evener's own re-entry DECISION — lock, adopt, refuse
 // to the restore root, warn and co-occupy, no-op — plus the notice text and what
 // evener recorded in its own SessionMeta, so they run on the scripted git boundary

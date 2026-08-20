@@ -1,11 +1,22 @@
 # Developing Evener
 
 Dev-facing docs for working on this repo: setup, environment, worktrees,
-performance, naming, and the agent-run scenario harness. Docs about the
-`make` gates themselves (building, testing, linting, coverage, fuzzing)
-land here in a later phase; for now those still live at `docs/testing.md`
-and `docs/developing-evener/fuzzing.md`.
+performance, naming, and the agent-run scenario harness, plus the `make`
+gates themselves — building, testing, linting, coverage, and fuzzing.
 
+- **[building.md](building.md)** — build, distribution, and install targets,
+  and the frontend install prerequisite they share with the frontend test
+  gates.
+- **[testing.md](testing.md)** — the test reliability policy, the canonical
+  gate matrix, and the post-merge gate.
+- **[linting.md](linting.md)** — the static checks that gate merges without
+  running tests: formatting, generated-output freshness, compile floors, and
+  the repo secret scan.
+- **[coverage.md](coverage.md)** — why a default-gate coverage number is two
+  tracks, not one, and what it does and doesn't mean.
+- **[fuzzing.md](fuzzing.md)** — the front door to evener's fuzzing toolkit:
+  the `testing.F`/`rapid.Check` targets, coverage, gating, and regression
+  promotion.
 - **[environment.md](environment.md)** — every environment variable evener
   reads, keyed to the `envvars` package that's their source of truth.
 - **[worktrees.md](worktrees.md)** — the `manage_worktree` tool and delegate

@@ -302,7 +302,7 @@ func (s *sessions) launchedJob(state *sessionState) {
 // the instant one round stops being held, which is the only way to put a round
 // on the far side of its hold while the session that abandoned it has already
 // moved on (sessions.endedTurn). Racing a real timer against a real
-// cancellation decides that by coin flip, and docs/testing.md forbids buying a
+// cancellation decides that by coin flip, and docs/developing-evener/testing.md forbids buying a
 // race with wall-clock tuning.
 var afterHold = time.After
 

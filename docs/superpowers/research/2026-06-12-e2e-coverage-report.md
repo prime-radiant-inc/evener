@@ -1,6 +1,6 @@
 # Job-Control E2E Coverage Report — MATRIX GREEN (14/14)
 
-Date: 2026-06-12. Branch `job-control-spec`; code under test `0c22499d`; cards at `5d0af135`. Live model `openai/gpt-5.5` (OAuth instance), hub-served per `docs/developing-evener/agentic-testing.md`. Evidence: the per-card ledger, committed verbatim at `docs/superpowers/research/2026-06-12-e2e-ledger.md` (477 lines, session IDs and verbatim tool results throughout). Three executor runs: run 1 (cards 1-4; died at a usage limit), run 3 (cards 5-14 + card-1 re-run), closeout (amended cards 9+12 re-run).
+Date: 2026-06-12. Branch `job-control-spec`; code under test `0c22499d`; cards at `5d0af135`. Live model `openai/gpt-5.5` (OAuth instance), hub-served per `docs/agentic-testing.md`. Evidence: the per-card ledger, committed verbatim at `docs/superpowers/research/2026-06-12-e2e-ledger.md` (477 lines, session IDs and verbatim tool results throughout). Three executor runs: run 1 (cards 1-4; died at a usage limit), run 3 (cards 5-14 + card-1 re-run), closeout (amended cards 9+12 re-run).
 
 ## The matrix
 

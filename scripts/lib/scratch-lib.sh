@@ -66,7 +66,7 @@ scratch_dir() {
 
 	# An explicit template, never `-t`: macOS mktemp -t ignores TMPDIR and
 	# creates in the Darwin per-user temp directory, outside both the wave's
-	# per-suite isolation and its leak check (docs/testing.md, kata cqne).
+	# per-suite isolation and its leak check (docs/developing-evener/testing.md, kata cqne).
 	if ! _sc_dir="$(mktemp -d "$_sc_root/$_sc_prefix.XXXXXX")"; then
 		printf '%s: mktemp -d under "%s" failed; refusing to continue\n' \
 			"$_sc_me" "$_sc_root" >&2

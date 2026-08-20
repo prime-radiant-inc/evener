@@ -348,7 +348,7 @@ func TestTermIgnoringSuiteIsKilledAfterGrace(t *testing.T) {
 }
 
 func TestMktempTMinusTIsCaughtByLeakCheck(t *testing.T) {
-	// macOS mktemp -t ignores TMPDIR (docs/testing.md, kata cqne): without
+	// macOS mktemp -t ignores TMPDIR (docs/developing-evener/testing.md, kata cqne): without
 	// the runner's mktemp shim these suites would write to the real per-user
 	// temp dir and the leak check could never see it.
 	dir := t.TempDir()
@@ -381,7 +381,7 @@ func TestWaveCompletesDespiteBlockedLeakCheck(t *testing.T) {
 	//    hang detection, rather than by a wall-clock ceiling: process
 	//    spawn and goroutine scheduling for the two suites are
 	//    load-dependent, so a fixed elapsed-time bound flakes under
-	//    parallel test-suite load (docs/testing.md, "Flakes and Timeouts").
+	//    parallel test-suite load (docs/developing-evener/testing.md, "Flakes and Timeouts").
 	// 2. The blocked suite is reported as failed (timeout)
 	// 3. Other suites still pass
 	// 4. The wave exits with failure code (one suite failed)

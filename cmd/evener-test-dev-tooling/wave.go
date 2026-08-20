@@ -296,7 +296,7 @@ func runSuite(cfg waveConfig, runDir, name string, shutdown <-chan struct{}) sui
 }
 
 // writeMktempShim installs <runDir>/bin/mktemp, which every suite sees first
-// on PATH. macOS mktemp -t ignores TMPDIR (docs/testing.md, kata cqne), so
+// on PATH. macOS mktemp -t ignores TMPDIR (docs/developing-evener/testing.md, kata cqne), so
 // without this shim a suite's `mktemp -d -t x` would escape its private
 // sandbox and the leak check could never see what it left behind. The shim
 // rewrites `-t prefix` (and the bare no-template form, which -t underlies)

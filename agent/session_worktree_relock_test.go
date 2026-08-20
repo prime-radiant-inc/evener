@@ -19,7 +19,7 @@ import (
 //
 // The subject throughout is evener's lock DECISION — re-lock, adopt, skip, leave
 // foreign alone, warn, retry — not git's behavior, so these run on the scripted
-// git boundary (scriptedLaneRepo). See docs/testing.md for the rule.
+// git boundary (scriptedLaneRepo). See docs/developing-evener/testing.md for the rule.
 
 func TestResumeReLock_UnlockedOwnLaneReLocked(t *testing.T) {
 	t.Parallel()

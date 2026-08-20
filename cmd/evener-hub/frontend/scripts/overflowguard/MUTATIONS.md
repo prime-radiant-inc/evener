@@ -2,7 +2,7 @@
 
 kata eevs (see `kata show eevs`): every browser guard's assertions need
 proof they can actually fail — "a guard that has never failed is a
-decoration" (docs/testing.md). layoutguard records this per-case in each
+decoration" (docs/developing-evener/testing.md). layoutguard records this per-case in each
 `case.json`'s `mutation` field. overflowguard has no per-case directory —
 it's one script asserting several properties against the real, live-rendered
 Session pane (`src/dev/overflowharness-entry.tsx`) — so this file is that

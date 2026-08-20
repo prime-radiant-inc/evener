@@ -134,7 +134,7 @@ func TestEveryPhonyTargetHasARule(t *testing.T) {
 
 // TestEveryLintTargetIsPhonyAndHasARule narrows the rule above onto the lint
 // family, because LINT_TARGETS is the list `make lint` expands and the one a
-// reader treats as the inventory of what the gate proves. docs/testing.md's
+// reader treats as the inventory of what the gate proves. docs/developing-evener/testing.md's
 // gate matrix describes this list item by item.
 func TestEveryLintTargetIsPhonyAndHasARule(t *testing.T) {
 	t.Parallel()

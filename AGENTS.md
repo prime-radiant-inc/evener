@@ -2,7 +2,7 @@
 
 ## Testing
 
-Before adding or changing tests, read `docs/testing.md`.
+Before adding or changing tests, read `docs/developing-evener/testing.md`.
 
 Default tests must be deterministic. Do not make `make test` or
 `go test ./...` depend on provider credentials, network access, quota, current

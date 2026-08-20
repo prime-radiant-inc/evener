@@ -657,7 +657,7 @@ func scheduleModelRetryTick() tea.Cmd {
 // Returns nil once there is nothing left to watch (no pending retry, or
 // already in progress) so the tick loop actually stops rather than ticking
 // forever after the chip has resolved — View() stays a pure function of model
-// state (docs/testing.md), so this time-based check lives here in the Update
+// state (docs/developing-evener/testing.md), so this time-based check lives here in the Update
 // path, never in rendering.
 func (m *hubModel) applyModelRetryTick() tea.Cmd {
 	if m.modelRetry == nil || m.modelRetryInProgress {

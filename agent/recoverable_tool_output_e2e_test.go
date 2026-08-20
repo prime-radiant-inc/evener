@@ -200,7 +200,7 @@ func task7RunningOutput(t *testing.T, s *Session, jobID string) *jobstore.Output
 // regex match against content, not on reaching an exact lifetime byte count.
 // Rigging a watch here to stand in for a byte-count wait would test the watch
 // subsystem instead of the output store, so this stays a bounded poll per
-// docs/testing.md's condition-watching fallback.
+// docs/developing-evener/testing.md's condition-watching fallback.
 func task7AwaitOutputBytes(t *testing.T, output *jobstore.OutputStore, want int64) {
 	t.Helper()
 	deadline := time.NewTimer(30 * time.Second) // TRIPWIRE: real subprocess writes retained output asynchronously; only fires on a genuine hang.

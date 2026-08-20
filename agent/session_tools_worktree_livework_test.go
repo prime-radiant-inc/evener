@@ -24,7 +24,7 @@ import (
 // The blockers stay real (real background shell jobs, real child sessions); only
 // the lane the guard is asked about is built on the scripted git boundary
 // (scriptedLaneRepo, driven through wtRepo's shared operation helpers). See
-// docs/testing.md for the rule.
+// docs/developing-evener/testing.md for the rule.
 
 func TestPathEqualOrUnder(t *testing.T) {
 	tests := []struct {

@@ -48,7 +48,7 @@ const closeJoinArrivalWindow = time.Second
 // Close's return). Every step here is in-process with no I/O, so these only
 // fire on a genuine hang, never on scheduler contention under a loaded suite.
 // It is a tripwire only — the synchronization mechanism is the seam channel,
-// not time (docs/testing.md Flakes and Timeouts; kata 0t1y).
+// not time (docs/developing-evener/testing.md Flakes and Timeouts; kata 0t1y).
 const closeJoinHangGuard = 30 * time.Second
 
 // TestSession_Close_JoinsInFlightDispose is spec test 15(a): an in-flight

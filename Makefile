@@ -10,7 +10,7 @@ FUZZ_GO_MODULES := $(GO_MODULES) fuzz
 # only in throwaway fixtures, and each is the ONLY thing that pins its script's
 # contract. A suite earns its slot by pinning outcomes of a tool the gate or CI
 # depends on; hand-run conveniences fail loudly in front of whoever ran them
-# and get no suite (docs/testing.md). scratch-lib tests the shared scratch
+# and get no suite (docs/developing-evener/testing.md). scratch-lib tests the shared scratch
 # guard directly, once — that every script's scratch stays inside TMPDIR and
 # none of its recursive deletes takes a clobberable argument, whether it uses
 # the guard or the pid-suffixed covscratch pattern, is enforced statically by

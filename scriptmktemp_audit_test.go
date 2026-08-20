@@ -243,7 +243,7 @@ func TestScratchDirCannotResolveToCWD(t *testing.T) {
 //
 // What the scan still cannot see, even shared: `find -exec rm` is a delete of
 // the literal `{}` operand, never a variable. None of that spelling exists in
-// the scanned scripts today, and the policy in docs/testing.md covers it. A
+// the scanned scripts today, and the policy in docs/developing-evener/testing.md covers it. A
 // false positive is impossible to suppress silently: the only way past the
 // check is a reviewed entry in recursiveDeleteAllowedLines.
 

@@ -20,7 +20,7 @@ import (
 // §P3): the no-model-in-the-loop sweep that reclaims other sessions'
 // cleanly-closed, unlocked, D0-auto-collectible delegate lanes.
 //
-// This file is MIXED across the two lane harnesses; see docs/testing.md for the
+// This file is MIXED across the two lane harnesses; see docs/developing-evener/testing.md for the
 // rule. Most tests' subject is evener's own sweep DECISION — which skip rung fires
 // (locked, in-grace, not-a-delegate), which arm collects, what it wrote to its
 // stable controller, how the budget and the open timer gate the pass — so they run on
