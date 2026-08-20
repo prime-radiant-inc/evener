@@ -104,6 +104,12 @@ func TestServeModelSwitch_ThreadReadReflectsNewModelWithNoInterveningTurn(t *tes
 
 	ref := appwire.Ref{SourceID: "local", ThreadID: entry.SessionID}.String()
 
+	// This premise read is deliberately a single, unpolled call: it is exactly
+	// what a real client's first thread/read after discovering the rendezvous
+	// entry looks like. serve.go seeds status.Model/Profile synchronously right
+	// after bridgeSession(sess), so this must already observe "gpt-initial" with
+	// no waiting -- polling here would hide a regression of that synchronous
+	// seed behind the bridge's asynchronous EventSessionStart drain (#251).
 	before, err := client.ThreadRead(ctx, appwire.ThreadReadParams{Ref: ref})
 	if err != nil {
 		t.Fatalf("ThreadRead (before): %v", err)

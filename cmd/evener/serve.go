@@ -965,6 +965,24 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 	srv.RefreshThreadEnvelope()
 	// Bridge session events to appwire notifications.
 	bridgeSession(sess)
+	// Belt-and-suspenders with the Bridge/projector SessionStart fix (spec
+	// §5.4 "two touchpoints"): the session's SessionStart event may already be
+	// sitting in its buffered event channel by the time the bridge goroutine
+	// above is scheduled to drain it, so thread/read and /status could observe
+	// the server's zero-value status -- empty model/profile, default state --
+	// until then. That is not a test-only race: it is this daemon's own
+	// startup path, and any real client (TUI, hub-spawned session) that dials
+	// the rendezvous entry and calls thread/read before the drain completes
+	// can observe it (#251).
+	//
+	// Writing it here, from data the daemon already has locally, closes the
+	// window synchronously for every session this daemon starts with --
+	// fresh and resumed alike, since both publish through the same buffered
+	// EventSessionStart. This mirrors SetModelFunc's closure, which already
+	// makes this exact synchronous call after a runtime model switch.
+	p := sess.Profile()
+	srv.UpdateSessionInfo(sess.ID(), p.Model(), p.ID())
+	srv.SetState(string(sess.State()))
 	if deps.observeCallbacks != nil {
 		deps.observeCallbacks(serveCallbackObserver{
 			notify:          notifyCallback,
@@ -972,15 +990,6 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 			setSession: func(next *agent.Session) { setSession(next, currentEnv) },
 			session:    sess,
 		})
-	}
-	if resuming {
-		// Belt-and-suspenders with the Bridge/projector SessionStart fix
-		// (spec §5.4 "two touchpoints"): the session's SessionStart event may
-		// already be sitting in its buffered event channel by the time the
-		// bridge goroutine above is scheduled to drain it, so /status could
-		// read the server's default state until then. Writing the restored
-		// state here closes that window synchronously.
-		srv.SetState(string(sess.State()))
 	}
 
 	// Input processing loop. Each turn runs under a per-turn cancellable
