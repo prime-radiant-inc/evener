@@ -1653,6 +1653,27 @@ func sessionRunningJobIDs(s *Session) []string {
 	return ids
 }
 
+// sessionUndisposedBackgroundJobIDs lists this session's running jobs that were
+// launched in background mode. The one-shot drain uses it to recognise that the
+// only thing still holding it open is a service the model started (#297).
+//
+// Reads Background off jm.list's records, which is safe for it: listWithError
+// lays liveJobRecords over the durable fold, and Background is one of the
+// live-only fields (json:"-") that a folded record always reports false.
+func sessionUndisposedBackgroundJobIDs(s *Session) []string {
+	jm, err := sessionJobManager(s)
+	if err != nil {
+		return nil
+	}
+	var ids []string
+	for _, rec := range jm.list(listFilter{Status: jobstore.StatusRunning}) {
+		if rec.Background {
+			ids = append(ids, rec.JobID)
+		}
+	}
+	return ids
+}
+
 func jobListFilterFromArgs(args map[string]any) (listFilter, error) {
 	limit := defaultJobListLimit
 	if n, ok := shellIntArg(args, "limit"); ok {
