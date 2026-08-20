@@ -948,7 +948,7 @@ test("task-only delegate purpose previews preserve an emoji at the Unicode clipp
   expect(within(asciiTool!).getByTestId("tool-row-purpose").textContent).toBe(exactAsciiTask);
 });
 
-test("task-only delegates show a bounded purpose preview and fold the multi-line Prompt behind one disclosure", () => {
+test("task-only delegates show a bounded purpose preview and the card tag carries the full task", () => {
   const task =
     "**Inspect** the parser\n\nand report the `task` field. Keep the full mandate available for the reader. This suffix makes the preview bounded and honest.";
   const { container } = render(
@@ -972,14 +972,14 @@ test("task-only delegates show a bounded purpose preview and fold the multi-line
     "**Inspect** the parser and report the `task` field. Keep the full mandate available for the reader. This suffix makes th…",
   );
   expect(purpose.textContent).not.toBe(task);
-  const mandate = screen.getByTestId("subagent-mandate");
-  // The Prompt renders as markdown, first line visible: **Inspect** -> <strong>.
-  expect(mandate.querySelector("strong")?.textContent).toBe("Inspect");
-  // The remaining lines sit behind the module's one disclosure, unrendered
-  // until it opens.
-  expect(within(mandate).queryByText(/Keep the full mandate available/)).toBeNull();
-  expect(tool.querySelectorAll("details > summary")).toHaveLength(2); // the row's own + the Prompt fold
-  expect(module.querySelectorAll("details > summary")).toHaveLength(1);
+  // The card's tag carries the full task text (its clipping is visual only);
+  // the old Mandate/Prompt fold is gone, so the row's own disclosure is the
+  // only details/summary in the tool call.
+  const tag = within(module).getByTestId("subagent-tag");
+  expect(tag.textContent).toBe(task);
+  expect(screen.queryByTestId("subagent-mandate")).toBeNull();
+  expect(tool.querySelectorAll("details > summary")).toHaveLength(1); // the row's own
+  expect(module.querySelectorAll("details > summary")).toHaveLength(0);
   expect(within(tool).getByTestId("tool-row-status").querySelector('[role="img"]')).toBeTruthy();
 
   const openTranscript = within(module).getByRole("button", { name: "Open transcript" });

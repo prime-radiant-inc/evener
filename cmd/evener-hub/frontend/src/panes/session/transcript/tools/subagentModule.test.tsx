@@ -13,8 +13,9 @@ import { classifyJobStatus, resolveRowKey, rowFromDelegateItem, rowKindFromChild
 import { resetSubagentModuleStoreForTests, turnScopeKey, updateSubagentRowIfExists } from "./subagentModuleStore";
 import "./subagentModule";
 import type { DockviewApi } from "dockview-core";
-import type { ItemModel, TurnModel } from "../../../../protocol/model";
+import { type ItemModel, SYSTEM_PRELUDE_TURN_ID, type TurnModel } from "../../../../protocol/model";
 import { FakeClient } from "../../../../protocol/testing/fakeClient";
+import type { EvenerDelegateInfo } from "../../../../protocol/types.gen";
 import { registerPaneForTests } from "../../../../shell/paneRegistry";
 import { registerDockviewApi, resetWorkspaceStoreForTests, workspaceStore } from "../../../../shell/workspace";
 import { connectionStore } from "../../../../stores/connection";
@@ -76,7 +77,8 @@ function moduleCss(): string {
 // own rawStyles import, used below to prove the "latest" emphasis lands on the
 // right <li> rather than just eyeballing a snapshot.
 const styles = {
-  activityLatest: requireClass(rawCssModule.activityLatest, "subagentmodule.module.css", "activityLatest"),
+  quoteLive: requireClass(rawCssModule.quoteLive, "subagentmodule.module.css", "quoteLive"),
+  quoteMsg: requireClass(rawCssModule.quoteMsg, "subagentmodule.module.css", "quoteMsg"),
 };
 
 // --- classifyJobStatus / resolveRowKey (pure, unit-level) -----------------
@@ -299,7 +301,8 @@ test("kata 8525: two sessions sharing the SAME turnId never bleed into each othe
 // the identical fallback rowKey call:item_1 under the identical turnId -
 // exactly the "a call that errors before minting any handle" scenario the
 // kata describes. Only sessionRef tells the two rows apart.
-test("78nj: one session's delegate row body never renders another session's mandate", async () => {
+test("78nj: one session's expanded card never opens another session's quote list (disclosure ids are session-scoped)", async () => {
+  const user = userEvent.setup();
   const d = toolRendererFor("delegate");
   const Body = d.body!;
   const sessionA = delegateItem({ argumentsJSON: JSON.stringify({ task: "session A's task" }), output: "" });
@@ -312,10 +315,16 @@ test("78nj: one session's delegate row body never renders another session's mand
   );
 
   const [moduleA, moduleB] = screen.getAllByTestId("subagent-module");
-  expect(within(moduleA!).getByTestId("subagent-mandate")).toBeTruthy();
-  expect(within(moduleB!).getByTestId("subagent-mandate")).toBeTruthy();
   expect(within(moduleA!).getByText("session A's task")).toBeTruthy();
   expect(within(moduleB!).getByText("session B's task")).toBeTruthy();
+
+  // Both items rely on the SAME defaults (id "item_1", turnId "turn_1", no
+  // callId, no delegate_id), so both resolve to the identical fallback rowKey
+  // call:item_1 under the identical turnId - only sessionRef tells their
+  // per-card disclosure ids apart.
+  await user.click(within(moduleA!).getByRole("button", { name: /show recent activity/i }));
+  expect(within(moduleA!).getByTestId("subagent-quotes")).toBeTruthy();
+  expect(within(moduleB!).queryByTestId("subagent-quotes")).toBeNull();
 });
 
 // claimLeader/releaseLeader must stay symmetric across StrictMode's dev-only
@@ -501,7 +510,8 @@ test("a delegate row migrates fallback identity to stable delegate identity with
   const rows = screen.getAllByTestId("subagent-row");
   expect(rows).toHaveLength(1);
   expect(rows[0]?.getAttribute("data-kind")).toBe("failed");
-  expect(screen.getByText("watch failed")).toBeTruthy();
+  // The failed card's folded quote is the live reason, verbatim, ✕-marked.
+  expect(within(rows[0]!).getByTestId("subagent-quote").textContent).toBe("✕ watch failed");
 });
 
 // --- row content ----------------------------------------------------------
@@ -590,7 +600,7 @@ test("a running row with a transcriptRef watches the child and updates live stat
   expect(screen.getByTestId("subagent-module").querySelector('[data-kind="failed"]')).toBeTruthy();
 });
 
-test("a failed row is flagged at module level via data-has-failure, not averaged away", () => {
+test("a failed card carries the danger rail itself - there is no module chrome to average it away", () => {
   const d = toolRendererFor("delegate");
   const Body = d.body!;
   const failed = delegateItem({
@@ -600,19 +610,19 @@ test("a failed row is flagged at module level via data-has-failure, not averaged
     output: JSON.stringify({ delegate_id: "job_f", status: "failed", transcript_ref: "ref_f", reason: "build error" }),
   });
   render(<Body item={failed} live={false} />);
-  const module = screen.getByTestId("subagent-module");
-  expect(module.dataset.hasFailure).toBe("true");
   const row = screen.getByTestId("subagent-row");
   expect(row.dataset.kind).toBe("failed");
+  // The folded quote IS the failure reason, verbatim, ✕-marked - the exception
+  // earns the explanation without a click.
+  expect(within(row).getByTestId("subagent-quote").textContent).toBe("✕ build error");
 
-  // 3h80: data-has-failure must actually paint something, not just sit on
-  // the element - jsdom evaluates no cascade, so the only honest way to
-  // prove that is to read the stylesheet directly, the same rowCss() idiom
-  // toolRowGrammar.test.tsx uses. Without this half, the DOM assertion above
-  // would keep passing even if subagentmodule.module.css were deleted
-  // outright.
+  // jsdom evaluates no cascade, so the rail's visual effect can only be
+  // asserted at the declaration level (the same rowCss() idiom
+  // toolRowGrammar.test.tsx uses). Without this half, the DOM assertion above
+  // would keep passing even if subagentmodule.module.css lost the rule.
   const css = moduleCss();
-  expect(css).toMatch(/\[data-has-failure="true"\]\s*\{[^}]*border-left:[^;]*var\(--danger\)/);
+  expect(css).toMatch(/\.card\[data-kind="failed"\]\s*\{[^}]*border-left-color:\s*var\(--danger\)/);
+  expect(css).toMatch(/\.card\[data-kind="failed"\]\s*\{[^}]*background:\s*var\(--danger-bg\)/);
 });
 
 // 3zf8: a child deliberately killed with job_stop (or reconciled to
@@ -878,37 +888,93 @@ function childThreadRead(params: unknown, childStatus: string) {
   };
 }
 
-test("a delegate card body shows the Prompt, a live Activity feed, and the Summary", async () => {
+test("a folded card quotes the child's newest own words from the full event stream - verbatim, no quote-mark dressing", async () => {
   const fake = new FakeClient("ready");
   fake.on("thread/read", (params) => childThreadRead(params, "active"));
   connectionStore.getState().connect(fake);
 
   const Body = toolRendererFor("delegate").body!;
   const running = delegateItem({
-    id: "d_expand",
-    callId: "call_expand",
+    id: "d_quote",
+    callId: "call_quote",
     argumentsJSON: JSON.stringify({ task: "audit the reducer" }),
-    output: JSON.stringify({ delegate_id: "job_e", status: "running", transcript_ref: "ref_expand_child" }),
+    output: JSON.stringify({ delegate_id: "job_q", status: "running", transcript_ref: "ref_quote_child" }),
   });
   render(<Body item={running} live={false} />);
 
-  // Prompt is the delegation task, labeled "Prompt" (not "Mandate").
-  const mandate = await screen.findByTestId("subagent-mandate");
-  expect(within(mandate).getByText("Prompt")).toBeTruthy();
-  expect(within(mandate).queryByText("Mandate")).toBeNull();
-  expect(within(mandate).getByText("audit the reducer")).toBeTruthy();
+  const row = screen.getByTestId("subagent-row");
+  // The newest child-authored line overall is its final agent message. The
+  // card quotes it verbatim: no added quotation marks, no paraphrase.
+  const quote = await within(row).findByTestId("subagent-quote");
+  expect(quote.textContent).toBe("all done");
+  expect(quote.textContent).not.toMatch(/[“”"]/);
+});
 
-  // Activity feed maps the child's tool-call description/purpose fields.
-  const activity = await screen.findByTestId("subagent-activity");
-  expect(within(activity).getByText("step one")).toBeTruthy();
-  expect(within(activity).getByText("step two")).toBeTruthy();
-  // The whitespace-only description contributed no step: exactly the two real
-  // ones. (See the fixture's own note - both surfaces share statedPurposeOf.)
-  expect(within(activity).getAllByRole("listitem")).toHaveLength(2);
+test("expanding a card lists recent quotes - purposes plain, messages italic - each with its runtime and timestamp", async () => {
+  const fake = new FakeClient("ready");
+  fake.on("thread/read", (params) => {
+    const base = childThreadRead(params, "active");
+    if ((params as { includeTurns: boolean }).includeTurns) {
+      const items = base.thread.turns[0]!.items as { startedAt?: string; completedAt?: string }[];
+      // Step one: 6s starting at a fixed local wall-clock moment.
+      items[0]!.startedAt = new Date(2026, 7, 20, 9, 41, 2).toISOString();
+      items[0]!.completedAt = new Date(2026, 7, 20, 9, 41, 8).toISOString();
+    }
+    return base;
+  });
+  connectionStore.getState().connect(fake);
 
-  // Summary is the child's last agentMessage.
-  const summary = screen.getByTestId("subagent-summary");
-  expect(within(summary).getByText("all done")).toBeTruthy();
+  const Body = toolRendererFor("delegate").body!;
+  const running = delegateItem({
+    id: "d_quotes",
+    callId: "call_quotes",
+    argumentsJSON: JSON.stringify({ task: "audit the reducer" }),
+    output: JSON.stringify({ delegate_id: "job_qs", status: "running", transcript_ref: "ref_quotes_child" }),
+  });
+  const user = userEvent.setup();
+  render(<Body item={running} live={false} />);
+
+  const row = screen.getByTestId("subagent-row");
+  await user.click(within(row).getByRole("button", { name: /show recent activity/i }));
+  const quotes = await within(row).findByTestId("subagent-quotes");
+  const items = within(quotes).getAllByRole("listitem") as HTMLLIElement[];
+  // Two real steps plus the final message; the whitespace-only description
+  // contributed no quote (the same statedPurposeOf rule the old feed used).
+  expect(items).toHaveLength(3);
+  expect(items.map((li) => li.value)).toEqual([1, 2, 3]);
+
+  // Runtime + timestamp ride each stamped quote: "6s · HH:MM:SS" local. The
+  // expected stamp is computed through the same Date parsing the formatter
+  // uses, so the suite stays timezone-independent.
+  const parsed = new Date(2026, 7, 20, 9, 41, 2);
+  const stamp = `${String(parsed.getHours()).padStart(2, "0")}:${String(parsed.getMinutes()).padStart(2, "0")}:${String(parsed.getSeconds()).padStart(2, "0")}`;
+  expect(items[0]!.textContent).toContain("step one");
+  expect(items[0]!.textContent).toContain("6s");
+  expect(items[0]!.textContent).toContain(stamp);
+  // Unstamped quotes render no runtime segment rather than a guess.
+  expect(items[1]!.textContent).toBe("step two");
+
+  // The message renders with the quoteMsg (italic) class; purposes stay plain.
+  expect(items[2]!.querySelector(`.${styles.quoteMsg}`)?.textContent).toBe("all done");
+  expect(items[0]!.querySelector(`.${styles.quoteMsg}`)).toBeNull();
+});
+
+test("an expanded card with no child activity yet says so instead of rendering an empty list", async () => {
+  const Body = toolRendererFor("delegate").body!;
+  const running = delegateItem({
+    id: "d_empty_quotes",
+    callId: "call_empty_quotes",
+    argumentsJSON: JSON.stringify({ task: "just spawned" }),
+    output: JSON.stringify({ delegate_id: "job_eq", status: "running" }),
+  });
+  const user = userEvent.setup();
+  render(<Body item={running} live={false} />);
+
+  const row = screen.getByTestId("subagent-row");
+  await user.click(within(row).getByRole("button", { name: /show recent activity/i }));
+  const quotes = await within(row).findByTestId("subagent-quotes");
+  expect(within(quotes).getByText(/no activity yet/i)).toBeTruthy();
+  expect(within(quotes).queryAllByRole("listitem")).toHaveLength(0);
 });
 
 // mhcf: a child thread/read fixture with MANY purpose-bearing steps.
@@ -961,9 +1027,12 @@ test("mhcf: the Activity feed caps to the 5 most recent steps, not the first 5",
     argumentsJSON: JSON.stringify({ task: "long running audit" }),
     output: JSON.stringify({ delegate_id: "job_cap", status: "running", transcript_ref: "ref_cap_child" }),
   });
+  const user = userEvent.setup();
   render(<Body item={running} live={false} />);
 
-  const activity = await screen.findByTestId("subagent-activity");
+  const row = screen.getByTestId("subagent-row");
+  await user.click(within(row).getByRole("button", { name: /show recent activity/i }));
+  const activity = await screen.findByTestId("subagent-quotes");
   expect(within(activity).getAllByRole("listitem")).toHaveLength(5);
   // WHICH five: the most recent (16-20), never the first five.
   for (const n of [16, 17, 18, 19, 20]) expect(within(activity).getByText(`step ${n}`)).toBeTruthy();
@@ -982,9 +1051,12 @@ test("mhcf: the capped window renders chronologically (most recent last), the li
     argumentsJSON: JSON.stringify({ task: "order audit" }),
     output: JSON.stringify({ delegate_id: "job_order", status: "running", transcript_ref: "ref_order_child" }),
   });
+  const user = userEvent.setup();
   render(<Body item={running} live={false} />);
 
-  const activity = await screen.findByTestId("subagent-activity");
+  const row = screen.getByTestId("subagent-row");
+  await user.click(within(row).getByRole("button", { name: /show recent activity/i }));
+  const activity = await screen.findByTestId("subagent-quotes");
   const items = within(activity).getAllByRole("listitem") as HTMLLIElement[];
 
   // Chronological: step 16 leads, counting up to step 20 (the true latest)
@@ -995,8 +1067,8 @@ test("mhcf: the capped window renders chronologically (most recent last), the li
   // The live-step emphasis must land on the true latest step (step 20) by
   // CONTENT, not merely on whichever <li> a stale idx===length-1 formula
   // (written against the old uncapped array) would still hit.
-  expect(items[4]!.classList.contains(styles.activityLatest)).toBe(true);
-  for (const li of items.slice(0, 4)) expect(li.classList.contains(styles.activityLatest)).toBe(false);
+  expect(items[4]!.classList.contains(styles.quoteLive)).toBe(true);
+  for (const li of items.slice(0, 4)) expect(li.classList.contains(styles.quoteLive)).toBe(false);
 
   // list-style:decimal must read the TRUE step numbers (16 up to 20), not
   // "1." through "5." just because these are the five <li>s rendered -
@@ -1055,9 +1127,12 @@ test("the Activity feed elides round_timings items and ordinals count only real 
     argumentsJSON: JSON.stringify({ task: "timing audit" }),
     output: JSON.stringify({ delegate_id: "job_rt", status: "running", transcript_ref: "ref_rt_child" }),
   });
+  const user = userEvent.setup();
   render(<Body item={running} live={false} />);
 
-  const activity = await screen.findByTestId("subagent-activity");
+  const row = screen.getByTestId("subagent-row");
+  await user.click(within(row).getByRole("button", { name: /show recent activity/i }));
+  const activity = await screen.findByTestId("subagent-quotes");
   expect(within(activity).queryByText("Round timings")).toBeNull();
   const items = within(activity).getAllByRole("listitem") as HTMLLIElement[];
   // Six real steps, capped to the five most recent (2-6); the two
@@ -1065,50 +1140,6 @@ test("the Activity feed elides round_timings items and ordinals count only real 
   // 4..8.
   expect(items.map((li) => li.textContent)).toEqual(["step 2", "step 3", "step 4", "step 5", "step 6"]);
   expect(items.map((li) => li.value)).toEqual([2, 3, 4, 5, 6]);
-});
-
-// The Prompt renders as markdown with only its FIRST line visible; the rest
-// folds behind a disclosure so a long delegation brief doesn't push the
-// Activity feed and Summary off the card.
-test("the Prompt shows its first line as markdown and folds the rest behind a disclosure", async () => {
-  const task = "**Inspect** the parser\nand report the `task` field.\nKeep the report concise.";
-  const Body = toolRendererFor("delegate").body!;
-  const running = delegateItem({
-    id: "d_prompt_fold",
-    callId: "call_prompt_fold",
-    argumentsJSON: JSON.stringify({ task }),
-    output: JSON.stringify({ delegate_id: "job_pf", status: "running" }),
-  });
-  render(<Body item={running} live={false} />);
-
-  const mandate = await screen.findByTestId("subagent-mandate");
-  // First line is rendered AS markdown: **Inspect** became a <strong>.
-  const strong = mandate.querySelector("strong");
-  expect(strong?.textContent).toBe("Inspect");
-  // The remaining lines are absent until the disclosure opens.
-  expect(within(mandate).queryByText(/report the/)).toBeNull();
-  expect(within(mandate).queryByText(/Keep the report concise/)).toBeNull();
-
-  const user = userEvent.setup();
-  await user.click(within(mandate).getByText("Show more"));
-  expect(within(mandate).getByText(/report the/)).toBeTruthy();
-  expect(within(mandate).getByText(/Keep the report concise/)).toBeTruthy();
-});
-
-test("a single-line Prompt renders in full with no disclosure", async () => {
-  const Body = toolRendererFor("delegate").body!;
-  const running = delegateItem({
-    id: "d_prompt_single",
-    callId: "call_prompt_single",
-    argumentsJSON: JSON.stringify({ task: "audit the reducer" }),
-    output: JSON.stringify({ delegate_id: "job_ps", status: "running" }),
-  });
-  render(<Body item={running} live={false} />);
-
-  const mandate = await screen.findByTestId("subagent-mandate");
-  expect(within(mandate).getByText("audit the reducer")).toBeTruthy();
-  expect(within(mandate).queryByText("Show more")).toBeNull();
-  expect(mandate.querySelectorAll("details")).toHaveLength(0);
 });
 
 test("the collapsed pill reads the LIVE watched status, not the frozen tool-output value", async () => {
@@ -1188,6 +1219,7 @@ test("an expanded card shows stable exhaustion budget, limit, and resumable evid
     argumentsJSON: JSON.stringify({ task: "long running task" }),
     output: JSON.stringify({ delegate_id: "job_ex", status: "exhausted" }),
   });
+  const user = userEvent.setup();
   render(<Body item={settled} live={false} />);
   act(() =>
     updateSubagentRowIfExists(turnScopeKey(undefined, "turn_1"), "dlg:job_ex", {
@@ -1197,6 +1229,9 @@ test("an expanded card shows stable exhaustion budget, limit, and resumable evid
     }),
   );
 
+  // The Job detail lives in the expanded region, behind the card's chevron.
+  const row = screen.getByTestId("subagent-row");
+  await user.click(within(row).getByRole("button", { name: /show recent activity/i }));
   const detail = await screen.findByTestId("subagent-job-detail");
   expect(within(detail).getByText("Exhaustion budget: 30m of 60")).toBeTruthy();
   expect(within(detail).getByText("Resumable")).toBeTruthy();
@@ -1211,9 +1246,12 @@ test("dr7e: no Job detail section renders when neither resumable nor exhaustion 
     argumentsJSON: JSON.stringify({ task: "quick task" }),
     output: JSON.stringify({ delegate_id: "job_noex", status: "completed" }),
   });
+  const user = userEvent.setup();
   render(<Body item={settled} live={false} />);
 
-  await screen.findByTestId("subagent-mandate");
+  const row = screen.getByTestId("subagent-row");
+  await user.click(within(row).getByRole("button", { name: /show recent activity/i }));
+  await within(row).findByTestId("subagent-quotes");
   expect(screen.queryByTestId("subagent-job-detail")).toBeNull();
 });
 
@@ -1248,7 +1286,7 @@ test("a single delegate has one top-level disclosure, one status rail, and one v
   expect(statusRail.firstElementChild?.getAttribute("role")).toBe("img");
 });
 
-test("a multi-row aggregate shows task text in row summary and suppresses duplicate mandate sections", () => {
+test("a multi-row stack shows each task as its card's tag, with the old section chrome gone", () => {
   const d = toolRendererFor("delegate");
   const Body = d.body!;
 
@@ -1295,13 +1333,18 @@ test("a multi-row aggregate shows task text in row summary and suppresses duplic
   expect(runningRow).toBeTruthy();
   expect(doneRow).toBeTruthy();
 
-  expect(within(runningRow!).queryByText("Running mandate text")).toBeTruthy();
-  expect(within(runningRow!).queryByTestId("subagent-mandate")).toBeNull();
-  expect(within(doneRow!).queryByText("Done mandate text")).toBeTruthy();
-  expect(within(doneRow!).queryByTestId("subagent-mandate")).toBeNull();
+  // Every card - single or one of many - shows its task as the tag.
+  expect(within(runningRow!).getByTestId("subagent-tag").textContent).toBe("Running mandate text");
+  expect(within(doneRow!).getByTestId("subagent-tag").textContent).toBe("Done mandate text");
+  // The Mandate/Activity/Summary sections are gone; quote lists stay folded
+  // behind each card's own chevron until asked for.
+  expect(screen.queryByTestId("subagent-mandate")).toBeNull();
+  expect(screen.queryByTestId("subagent-activity")).toBeNull();
+  expect(screen.queryByTestId("subagent-summary")).toBeNull();
+  expect(screen.queryByTestId("subagent-quotes")).toBeNull();
 });
 
-test("a multi-row aggregate updates its tally from the watched live kind", async () => {
+test("no tally header; rows sit worst-first, so a live failure surfaces above a clean done", async () => {
   const fake = new FakeClient("ready");
   fake.on("thread/read", (params) => {
     const ref = (params as { ref: string }).ref;
@@ -1344,40 +1387,212 @@ test("a multi-row aggregate updates its tally from the watched live kind", async
   );
 
   const module = screen.getByTestId("subagent-module");
-  await waitFor(() => expect(within(module).getByText("1 failed · 1 done")).toBeTruthy());
-  const failedRow = within(module)
-    .getAllByTestId("subagent-row")
-    .find((row) => row.getAttribute("data-kind") === "failed");
-  expect(failedRow).toBeTruthy();
+  await waitFor(() => {
+    const kinds = within(module)
+      .getAllByTestId("subagent-row")
+      .map((row) => row.getAttribute("data-kind"));
+    expect(kinds).toEqual(["failed", "done"]);
+  });
+  // The tally header is deleted chrome: the cards themselves carry the state.
+  expect(module.textContent).not.toMatch(/\d+ failed/);
+  expect(module.textContent).not.toMatch(/\d+ running/);
 });
 
-// --- 7f7c: the Prompt must not be clipped -----------------------------------
+// --- 7f7c: the tag must not be clipped in the data --------------------------
 //
-// The one-line row summary clips the task to TASK_CLIP (80 chars) - correct
-// for a single line - but rowFromDelegateItem fed that SAME clipped string
-// into the Prompt section, so even the "read more" affordance never showed
-// the rest of the delegated prompt. The Prompt is the deliberate expanded
-// view; it must carry the full, untruncated task text.
-test("7f7c: the Prompt section shows the full, unclipped task text past the 80-char summary clip", async () => {
+// The tag IS the task text; its clipping is purely visual (CSS text-overflow:
+// ellipsis). The full delegation brief stays in the DOM - and one click away
+// via open transcript, whose first turn carries it.
+test("7f7c: the tag carries the full, unclipped task text", () => {
   const Body = toolRendererFor("delegate").body!;
   const longTask =
     "Please test delegation by inspecting the current working directory. Report the directory contents without changing any files.";
-  expect(longTask.length).toBeGreaterThan(80);
   const running = delegateItem({
-    id: "d_full_mandate",
-    callId: "call_full_mandate",
+    id: "d_full_tag",
+    callId: "call_full_tag",
     argumentsJSON: JSON.stringify({ task: longTask }),
     output: JSON.stringify({ delegate_id: "job_fm", status: "running" }),
   });
   render(<Body item={running} live={false} />);
-  const mandate = await screen.findByTestId("subagent-mandate");
-  expect(within(mandate).getByText(longTask)).toBeTruthy();
+  const row = screen.getByTestId("subagent-row");
+  expect(within(row).getByTestId("subagent-tag").textContent).toBe(longTask);
 });
 
-test("the Mandate keeps task line breaks in sans prose with safe wrapping", () => {
-  const mandate = /\.mandate\s*\{([^}]*)\}/.exec(moduleCss());
-  expect(mandate).not.toBeNull();
-  expect(mandate![1]).toMatch(/font-family:\s*var\(--font-sans\)/);
-  expect(mandate![1]).toMatch(/white-space:\s*pre-wrap/);
-  expect(mandate![1]).toMatch(/overflow-wrap:\s*anywhere/);
+test("the card stylesheet declares the rail-quote anatomy: square corners, state rails, mono uppercase tag, ellipsis quote, chromeless module", () => {
+  const css = moduleCss();
+  // Square corners were an explicit design amendment (no curved borders).
+  expect(css).toMatch(/\.card\s*\{[^}]*border-radius:\s*0/);
+  // The 2px left rail carries state colour; needs-you earns the attention wash.
+  expect(css).toMatch(/\.card\[data-kind="running"\]\s*\{[^}]*border-left-color:\s*var\(--alive\)/);
+  expect(css).toMatch(/\.card\[data-attention="true"\]\s*\{[^}]*border-left-color:\s*var\(--attention\)/);
+  expect(css).toMatch(/\.card\[data-attention="true"\]\s*\{[^}]*background:\s*var\(--attention-bg\)/);
+  // Tag: mono small-caps. Quote: single line, ellipsized.
+  expect(css).toMatch(/\.tag\s*\{[^}]*text-transform:\s*uppercase/);
+  expect(css).toMatch(/\.tag\s*\{[^}]*var\(--font-mono\)/);
+  expect(css).toMatch(/\.quote\s*\{[^}]*text-overflow:\s*ellipsis/);
+  // The module itself is chromeless - no card box of its own.
+  expect(css).not.toMatch(/\.module\s*\{[^}]*border:/);
+});
+
+// --- stats line: turns · calls · tokens · clock ------------------------------
+
+test("the stats line counts the child's turns and tool calls from the full-turns watch, excluding the synthetic prelude turn", async () => {
+  const fake = new FakeClient("ready");
+  fake.on("thread/read", (params) => {
+    const base = childThreadRead(params, "active");
+    if ((params as { includeTurns: boolean }).includeTurns) {
+      // The system prelude is not a turn the child took.
+      base.thread.turns.unshift({
+        id: SYSTEM_PRELUDE_TURN_ID,
+        status: "completed",
+        itemsView: "full",
+        items: [],
+      } as never);
+    }
+    return base;
+  });
+  connectionStore.getState().connect(fake);
+
+  const Body = toolRendererFor("delegate").body!;
+  const running = delegateItem({
+    id: "d_counts",
+    callId: "call_counts",
+    argumentsJSON: JSON.stringify({ task: "count my work" }),
+    output: JSON.stringify({ delegate_id: "job_counts", status: "running", transcript_ref: "ref_counts_child" }),
+  });
+  render(<Body item={running} live={false} />);
+
+  const row = screen.getByTestId("subagent-row");
+  const stats = await within(row).findByTestId("subagent-stats");
+  // 1 real turn (the prelude excluded), 3 tool calls (the final agent message
+  // is not a call; the blank-purpose commandExecution still is).
+  await waitFor(() => {
+    expect(stats.textContent).toContain("1 turn");
+    expect(stats.textContent).toContain("3 calls");
+  });
+});
+
+test("the stats line singularizes a single turn and a single call", async () => {
+  const fake = new FakeClient("ready");
+  fake.on("thread/read", (params) => {
+    const base = childThreadRead(params, "active");
+    if ((params as { includeTurns: boolean }).includeTurns) {
+      base.thread.turns = [
+        {
+          id: "turn_c1",
+          status: "inProgress",
+          itemsView: "full",
+          items: [
+            {
+              id: "item_only",
+              turnId: "turn_c1",
+              type: "commandExecution",
+              toolName: "shell",
+              callId: "only",
+              description: "only step",
+              status: "running",
+            },
+          ],
+        },
+      ] as never;
+    }
+    return base;
+  });
+  connectionStore.getState().connect(fake);
+
+  const Body = toolRendererFor("delegate").body!;
+  const running = delegateItem({
+    id: "d_single_counts",
+    callId: "call_single_counts",
+    argumentsJSON: JSON.stringify({ task: "count one thing" }),
+    output: JSON.stringify({
+      delegate_id: "job_single_counts",
+      status: "running",
+      transcript_ref: "ref_single_counts",
+    }),
+  });
+  render(<Body item={running} live={false} />);
+
+  const stats = await within(screen.getByTestId("subagent-row")).findByTestId("subagent-stats");
+  await waitFor(() => {
+    expect(stats.textContent).toContain("1 turn");
+    expect(stats.textContent).toContain("1 call");
+  });
+  expect(stats.textContent).not.toContain("1 calls");
+  expect(stats.textContent).not.toContain("1 turns");
+});
+
+test("the stats line shows the delegate's projected token usage, and omits the segment entirely when there is none", () => {
+  const d = toolRendererFor("delegate");
+  const Body = d.body!;
+  const withUsage = delegateItem({
+    id: "d_tok",
+    callId: "call_tok",
+    argumentsJSON: JSON.stringify({ task: "tokened" }),
+    output: JSON.stringify({ delegate_id: "job_tok", status: "running" }),
+  });
+  const withoutUsage = delegateItem({
+    id: "d_notok",
+    callId: "call_notok",
+    argumentsJSON: JSON.stringify({ task: "untokened" }),
+    output: JSON.stringify({ delegate_id: "job_notok", status: "running" }),
+  });
+  render(
+    <>
+      <Body item={withUsage} live={false} />
+      <Body item={withoutUsage} live={false} />
+    </>,
+  );
+  act(() =>
+    updateSubagentRowIfExists(turnScopeKey(undefined, "turn_1"), "dlg:job_tok", {
+      stable: { status: "running", usage: { inputTokens: 41200, outputTokens: 6100 } } as unknown as EvenerDelegateInfo,
+    }),
+  );
+
+  const rows = screen.getAllByTestId("subagent-row");
+  const tokRow = rows.find((r) => within(r).queryByText("tokened"));
+  const noTokRow = rows.find((r) => within(r).queryByText("untokened"));
+  expect(tokRow).toBeTruthy();
+  expect(noTokRow).toBeTruthy();
+  expect(within(tokRow!).getByTestId("subagent-stats").textContent).toContain("↑41k ↓6k");
+  // The no-usage rule (the thread model's own usage-null precedent): absent
+  // data renders as no segment, never a misleading ↑0 ↓0.
+  expect(within(noTokRow!).getByTestId("subagent-stats").textContent).not.toContain("↑");
+  expect(within(noTokRow!).getByTestId("subagent-stats").textContent).not.toContain("↓");
+});
+
+test("a running card's stats line closes with a live elapsed clock from its start time", () => {
+  const Body = toolRendererFor("delegate").body!;
+  const running = delegateItem({
+    id: "d_clock",
+    callId: "call_clock",
+    argumentsJSON: JSON.stringify({ task: "timing me" }),
+    output: JSON.stringify({ delegate_id: "job_clock", status: "running" }),
+    startedAt: new Date(Date.now() - 221_000).toISOString(),
+  });
+  render(<Body item={running} live={false} />);
+  const stats = within(screen.getByTestId("subagent-row")).getByTestId("subagent-stats");
+  // 221s elapsed reads "3m41s" (allow the second to tick over mid-test).
+  expect(stats.textContent).toMatch(/3m4\ds/);
+});
+
+test("a child awaiting input earns the attention rail while staying kind=running", async () => {
+  const fake = new FakeClient("ready");
+  fake.on("thread/read", (params) => childThreadRead(params, "awaiting"));
+  connectionStore.getState().connect(fake);
+
+  const Body = toolRendererFor("delegate").body!;
+  const running = delegateItem({
+    id: "d_await",
+    callId: "call_await",
+    argumentsJSON: JSON.stringify({ task: "needs an answer" }),
+    output: JSON.stringify({ delegate_id: "job_await", status: "running", transcript_ref: "ref_await_child" }),
+  });
+  render(<Body item={running} live={false} />);
+
+  const row = screen.getByTestId("subagent-row");
+  await waitFor(() => expect(row.dataset.attention).toBe("true"));
+  // Needs-you is a cadence overlay, not a new row kind: the row still sorts
+  // and reports as running.
+  expect(row.dataset.kind).toBe("running");
 });

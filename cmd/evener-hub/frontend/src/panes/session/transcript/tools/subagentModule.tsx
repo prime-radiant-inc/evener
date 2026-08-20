@@ -1,6 +1,7 @@
 // The `delegate` descriptor (parity checklist §2's delegateRenderer) and
-// the subagent module it feeds - "one aggregated block per turn collecting
-// that turn's job_* activity" per the wave-4 plan.
+// the subagent card it feeds - "one aggregated block per turn collecting
+// that turn's job_* activity" per the wave-4 plan, redesigned 2026-08-20
+// as the Rail × Quote card (see the stylesheet's own header).
 //
 // Design rationale (see subagentModuleStore.ts's own header for the full
 // interface-boundary reasoning): ToolRenderProps is {item, live} only, so
@@ -29,18 +30,19 @@
 // specific child, and correlating an arbitrary listing back to individual
 // rows would need far more inference than the wire actually supports.
 import { useEffect, useLayoutEffect, useState } from "react";
-import type { ItemModel } from "../../../../protocol/model";
+import { type ItemModel, SYSTEM_PRELUDE_TURN_ID } from "../../../../protocol/model";
 import { threadsStore, useThreadsStore } from "../../../../stores/threads";
-import { Button, type CadenceState, StatusDot } from "../../../../widgets";
-import { Disclosure } from "../../../../widgets/disclosure";
+import { Button, Chevron, IconButton } from "../../../../widgets";
+import { isDisclosureOpen, toggleDisclosure } from "../../../../widgets/disclosure/disclosureStore";
 import { requireClass } from "../../../../widgets/internal/requireClass";
-import { Markdown } from "../../../../widgets/markdown";
-import { cadenceStateForStatus } from "../../liveness";
+import { formatUsagePair } from "../../chrome/activityFormat";
+import { cadenceStateForStatus, NOW_TICK_MS, useNowTick } from "../../liveness";
+import { formatClockTimeSeconds, formatElapsed } from "../messages/format";
 import { OpenTranscriptButton } from "../openTranscript";
 import { statedPurposeOf } from "../ToolRow";
 import type { ToolRenderProps } from "../toolRenderers";
 import { registerToolRenderer } from "../toolRenderers";
-import { formatToolDuration, parseArgs, parseJSONObject, str } from "./helpers";
+import { parseArgs, parseJSONObject, str } from "./helpers";
 import {
   claimLeader,
   classifyJobStatus,
@@ -59,28 +61,32 @@ import {
 import styles from "./subagentmodule.module.css";
 
 const DONE_VISIBLE_CAP = 6;
-// mhcf: "the ~5 most recent tool-call rationales" (product ask) - see
-// ChildActivityBody's own comment for the cap+ordering reasoning.
-const RECENT_ACTIVITY_CAP = 5;
+// The expanded quote list shows the most recent quotes, not the full feed -
+// "open transcript" exists for the full history (the same reasoning the old
+// Activity feed's cap carried). Within the window the order is
+// chronological, the live quote last.
+const RECENT_QUOTES_CAP = 5;
 
 const CLASS = {
   module: requireClass(styles.module, "subagentmodule.module.css", "module"),
-  header: requireClass(styles.header, "subagentmodule.module.css", "header"),
-  rows: requireClass(styles.rows, "subagentmodule.module.css", "rows"),
-  row: requireClass(styles.row, "subagentmodule.module.css", "row"),
-  summary: requireClass(styles.summary, "subagentmodule.module.css", "summary"),
-  status: requireClass(styles.status, "subagentmodule.module.css", "status"),
-  task: requireClass(styles.task, "subagentmodule.module.css", "task"),
-  meta: requireClass(styles.meta, "subagentmodule.module.css", "meta"),
-  preview: requireClass(styles.preview, "subagentmodule.module.css", "preview"),
-  body: requireClass(styles.body, "subagentmodule.module.css", "body"),
+  card: requireClass(styles.card, "subagentmodule.module.css", "card"),
+  head: requireClass(styles.head, "subagentmodule.module.css", "head"),
+  tag: requireClass(styles.tag, "subagentmodule.module.css", "tag"),
+  quote: requireClass(styles.quote, "subagentmodule.module.css", "quote"),
+  stats: requireClass(styles.stats, "subagentmodule.module.css", "stats"),
+  statsSep: requireClass(styles.statsSep, "subagentmodule.module.css", "statsSep"),
+  statsSpring: requireClass(styles.statsSpring, "subagentmodule.module.css", "statsSpring"),
+  clock: requireClass(styles.clock, "subagentmodule.module.css", "clock"),
+  quotes: requireClass(styles.quotes, "subagentmodule.module.css", "quotes"),
+  quotesList: requireClass(styles.quotesList, "subagentmodule.module.css", "quotesList"),
+  quoteItem: requireClass(styles.quoteItem, "subagentmodule.module.css", "quoteItem"),
+  quoteLive: requireClass(styles.quoteLive, "subagentmodule.module.css", "quoteLive"),
+  quoteMsg: requireClass(styles.quoteMsg, "subagentmodule.module.css", "quoteMsg"),
+  quoteMeta: requireClass(styles.quoteMeta, "subagentmodule.module.css", "quoteMeta"),
+  quotesEmpty: requireClass(styles.quotesEmpty, "subagentmodule.module.css", "quotesEmpty"),
   section: requireClass(styles.section, "subagentmodule.module.css", "section"),
   sectionLabel: requireClass(styles.sectionLabel, "subagentmodule.module.css", "sectionLabel"),
   mandate: requireClass(styles.mandate, "subagentmodule.module.css", "mandate"),
-  activity: requireClass(styles.activity, "subagentmodule.module.css", "activity"),
-  activityItem: requireClass(styles.activityItem, "subagentmodule.module.css", "activityItem"),
-  activityLatest: requireClass(styles.activityLatest, "subagentmodule.module.css", "activityLatest"),
-  summaryText: requireClass(styles.summaryText, "subagentmodule.module.css", "summaryText"),
 };
 
 // classifyJobStatus and resolveRowKey live in subagentModuleStore.ts so stable
@@ -93,7 +99,7 @@ const CLASS = {
 export { classifyJobStatus, resolveRowKey } from "./subagentModuleStore";
 
 // rowKindFromChildStatus maps the child's LIVE thread status onto a row kind
-// for the status pill (yd16). model.status.type is the WIRE thread-status
+// for the card's data-kind (yd16). model.status.type is the WIRE thread-status
 // vocabulary (active/closed/systemError/awaiting/warning/idle/notLoaded), NOT
 // the job-status words classifyJobStatus reads - feeding thread-status to
 // classifyJobStatus misclassifies ("closed"->"running", "systemError"->
@@ -152,62 +158,66 @@ export function statusWordFromText(text: string): string | undefined {
   return undefined;
 }
 
-const KIND_LABEL: Record<SubagentRowKind, string> = {
-  running: "running",
-  done: "done",
-  stopped: "stopped",
-  failed: "failed",
-  unknown: "unknown",
-};
-
-const KIND_STATE: Record<SubagentRowKind, CadenceState> = {
-  running: "working",
-  done: "ended",
-  stopped: "ended",
-  failed: "failed",
-  unknown: "needs-you",
-};
-
-function durationLabel(row: SubagentRow): string | undefined {
-  if (!row.startedAt || !row.completedAt) return undefined;
-  const ms = new Date(row.completedAt).getTime() - new Date(row.startedAt).getTime();
-  return ms >= 0 ? formatToolDuration(ms) : undefined;
+// A Quote is one child-authored line: a tool call's purpose field (plain) or
+// an agent message (msg - rendered italic). Everything the card shows as the
+// child's "own words" comes from this one derivation, folded card and
+// expanded list alike.
+interface Quote {
+  id: string;
+  text: string;
+  msg: boolean;
+  startedAt?: string;
+  completedAt?: string;
 }
 
-// ChildActivityBody is the expanded card's three-layer body (qb8e, tv5k,
-// §4.1/§4.2): Prompt (the delegation task, rendered as markdown with the
-// first line visible and the rest behind a disclosure), a live Activity feed
-// (the child's tool-call purpose/description fields, capped and ordered per
-// mhcf below), and Summary (the child's last agentMessage). It opens its OWN
-// rich watch
-// (Task 9's { includeTurns: true } upgrade) so the Activity feed has the
-// child's turn history, and reads that turn content back out of
-// watchedThreads. Mounted only while the card is expanded, so the row-dot's
-// lean watch stays lean for the common never-expanded case (§4.2). "Always-
-// current" is satisfied by that same rich read: it carries subscribe:true, so
-// the feed is current the instant the card opens and stays live afterward -
-// no further watch work needed (mhcf: this is expanded-only by design, not an
-// oversight - a collapsed row's status pill/preview is a different, cheaper
-// surface entirely).
-//
-// mhcf: the feed used to render EVERY purpose-bearing item since the child's
-// first turn, oldest-first, unbounded - a long-running child produces dozens
-// or hundreds of lines. Capped to RECENT_ACTIVITY_CAP, since a reader doesn't
-// need the full inline history when "Open transcript" already exists for
-// exactly that (7f7c's same reasoning for the Prompt's full task text vs. the
-// row's clipped one). Within that window the order is chronological - oldest
-// of the five first, the most recent LAST - so the feed reads as the child's
-// own transcript does, top to bottom, and the live-step emphasis lands at the
-// natural reading end. Each <li>'s `value` is its TRUE 1-based ordinal into
-// the full history, not its position in the truncated window, so
-// list-style:decimal reads e.g. "16." through "20." rather than relabeling
-// the 16th step "1." merely because it renders first - which would understate
-// how much the child has actually done. round_timings items are elided
-// outright: a timing annotation is not an action, and a chatty child's feed
-// otherwise drowns real steps in them (every round produces one).
-// JobDetailSection surfaces stable exhaustion/resumable evidence. Reason is
-// already visible in the collapsed one-liner via row.resultPreview/liveReason,
-// so it isn't repeated here. Renders nothing once neither field is present.
+// deriveQuotes flattens the child's turns into its authored lines. Two
+// exclusions, both deliberate:
+// - round_timings items: a timing annotation is not an action, and a chatty
+//   child's feed otherwise drowns real steps in them (every round produces
+//   one). Excluded by eventKind - the stable typed discriminator, not by
+//   matching the "Round timings" description text.
+// - purpose-less tool calls: a whitespace-only description is ABSENCE, not a
+//   step - the same statedPurposeOf rule the main transcript's tool row
+//   applies, so a line is a quote on one surface iff it is on the other.
+function deriveQuotes(items: ItemModel[]): Quote[] {
+  const out: Quote[] = [];
+  for (const it of items) {
+    if (it.eventKind === "round_timings") continue;
+    if (it.type === "agentMessage") {
+      const text = it.text.trim();
+      if (text !== "") out.push({ id: it.id, text, msg: true, startedAt: it.startedAt, completedAt: it.completedAt });
+      continue;
+    }
+    const purpose = statedPurposeOf(it);
+    if (purpose !== undefined) {
+      out.push({ id: it.id, text: purpose, msg: false, startedAt: it.startedAt, completedAt: it.completedAt });
+    }
+  }
+  return out;
+}
+
+// cardClock is the stats line's trailing clock. Settled rows show the fixed
+// start→end span; running rows show live elapsed time (ticking on
+// useNowTick). A row with no start time shows no clock, and a non-running row
+// with no end time shows none either - the clock never guesses.
+function cardClock(row: SubagentRow, displayKind: SubagentRowKind, nowMs: number): string | undefined {
+  const startIso = row.startedAt ?? row.stable?.runStartedAt;
+  if (startIso === undefined) return undefined;
+  const startMs = Date.parse(startIso);
+  if (Number.isNaN(startMs)) return undefined;
+  const endIso = row.completedAt ?? row.stable?.runEndedAt;
+  if (endIso !== undefined) {
+    const endMs = Date.parse(endIso);
+    if (!Number.isNaN(endMs) && endMs >= startMs) return formatElapsed(endMs - startMs);
+  }
+  if (displayKind !== "running") return undefined;
+  return formatElapsed(nowMs - startMs);
+}
+
+// JobDetailSection surfaces stable exhaustion/resumable evidence, inside the
+// expanded region. Reason is already visible in the folded quote via
+// row.resultPreview/liveReason, so it isn't repeated here. Renders nothing
+// once neither field is present.
 function JobDetailSection({ row }: { row: SubagentRow }) {
   if (row.resumable === undefined && row.exhaustionBudget === undefined && row.exhaustionLimit === undefined) {
     return null;
@@ -227,17 +237,31 @@ function JobDetailSection({ row }: { row: SubagentRow }) {
   );
 }
 
-function ChildActivityBody({
+// SubagentCard is one subagent, one card: head (tag + open), the child's
+// newest own words as the quote, and the stats line. Expansion (the stats
+// line's chevron) lists the recent quotes with their runtimes and
+// timestamps, plus the Job detail when populated.
+//
+// The card subscribes to the child's FULL event stream on mount
+// (watchThread with includeTurns:true), so the folded card's quote, counts,
+// and attention state are live rather than frozen at the delegate call's own
+// output. This is the same subscription the old design opened from its
+// expanded body - the module auto-expands (autoExpand below), so the
+// subscription was de-facto always-on already; the redesign just admits it.
+function SubagentCard({
   row,
-  transcriptRef,
-  showMandate,
-  scopeKey,
+  turnId,
+  sessionRef,
 }: {
   row: SubagentRow;
-  transcriptRef?: string;
-  showMandate: boolean;
-  scopeKey: string;
+  turnId: string;
+  sessionRef: string | undefined;
 }) {
+  const scopeKey = turnScopeKey(sessionRef, turnId);
+  // Captured once so the effect closures below reference this narrowed local,
+  // not row.transcriptRef re-read through a closure TS can't narrow.
+  const transcriptRef = row.transcriptRef;
+
   useEffect(() => {
     if (transcriptRef === undefined) return;
     threadsStore
@@ -254,188 +278,169 @@ function ChildActivityBody({
       setWatchedLiveKind(scopeKey, row.rowKey, liveKind);
     }
   }, [scopeKey, row.rowKey, liveKind, transcriptRef]);
-  const items = model ? model.turns.flatMap((t) => t.items) : [];
-  // Same "does this item state a purpose" rule the main transcript's tool row
-  // uses (ToolRow.tsx's statedPurposeOf) - the PRESENTATION differs deliberately
-  // (a numbered feed of a child's steps here, a leading line on the row there),
-  // but a whitespace-only description must not be a step in one and nothing in
-  // the other. round_timings items are excluded by eventKind (not by matching
-  // the "Round timings" description text): the kind is the stable typed
-  // discriminator, and a timing annotation is not an action.
-  const activity = items.flatMap((it) => {
-    if (it.eventKind === "round_timings") return [];
-    const purpose = statedPurposeOf(it);
-    return purpose === undefined ? [] : [{ id: it.id, purpose }];
-  });
-  // The RECENT_ACTIVITY_CAP most recent items in chronological order (most
-  // recent LAST), each keeping its TRUE 1-based ordinal into the full
-  // (oldest-first) `activity` array - see this function's own header comment
-  // for why both the cap and the ordering exist, and why the ordinal travels
-  // with the item rather than being re-derived from its position in this
-  // windowed copy.
-  const windowStart = Math.max(0, activity.length - RECENT_ACTIVITY_CAP);
-  const recentActivity = activity.slice(windowStart).map((it, i) => ({ ...it, ordinal: windowStart + i + 1 }));
-  const summaryText = items.filter((it) => it.type === "agentMessage").at(-1)?.text;
-  const childRunning = model ? rowKindFromChildStatus(model.status.type) === "running" : false;
 
-  // The Prompt shows its first line as markdown; anything past it folds behind
-  // a disclosure (the same Markdown+Disclosure pattern ActivityRowDetail uses
-  // for a delegate's mandate in the activity panel), so a long delegation
-  // brief doesn't push the Activity feed and Summary off the card. The
-  // disclosure id is scoped to this row so open/closed state survives remount
-  // (disclosureStore) without leaking across rows, turns, or sessions.
-  const promptNewline = row.task.indexOf("\n");
-  const promptFirstLine = promptNewline === -1 ? row.task : row.task.slice(0, promptNewline);
-  const promptRest = promptNewline === -1 ? "" : row.task.slice(promptNewline + 1).trim();
-
-  const details = (
-    <>
-      {showMandate && (
-        <section className={CLASS.section} data-testid="subagent-mandate">
-          <div className={CLASS.sectionLabel}>Prompt</div>
-          <div className={CLASS.mandate}>
-            <Markdown source={promptFirstLine} />
-            {promptRest && (
-              <Disclosure id={`subagent-prompt-${scopeKey}-${row.rowKey}`} summary="Show more">
-                <Markdown source={promptRest} />
-              </Disclosure>
-            )}
-          </div>
-        </section>
-      )}
-      <JobDetailSection row={row} />
-    </>
-  );
-
-  return (
-    <div className={CLASS.body}>
-      {details}
-      {activity.length > 0 && (
-        <section className={CLASS.section} data-testid="subagent-activity">
-          <div className={CLASS.sectionLabel}>Activity</div>
-          <ol className={CLASS.activity}>
-            {recentActivity.map((it) => {
-              // "latest" is the chronologically LAST item (ordinal ===
-              // activity.length), which now also renders last within the
-              // chronological window above.
-              const latest = childRunning && it.ordinal === activity.length;
-              return (
-                <li
-                  key={it.id}
-                  value={it.ordinal}
-                  className={latest ? `${CLASS.activityItem} ${CLASS.activityLatest}` : CLASS.activityItem}
-                >
-                  {it.purpose}
-                </li>
-              );
-            })}
-          </ol>
-        </section>
-      )}
-      {summaryText && (
-        <section className={CLASS.section} data-testid="subagent-summary">
-          <div className={CLASS.sectionLabel}>Summary</div>
-          <div className={CLASS.summaryText}>{summaryText}</div>
-        </section>
-      )}
-    </div>
-  );
-}
-
-function SubagentRowView({
-  row,
-  turnId,
-  sessionRef,
-  showSummary,
-}: {
-  row: SubagentRow;
-  turnId: string;
-  sessionRef: string | undefined;
-  showSummary: boolean;
-}) {
-  const duration = durationLabel(row);
-  // Captured once so the onClick closure below references this narrowed
-  // local, not row.transcriptRef re-read through a closure TS can't narrow.
-  const transcriptRef = row.transcriptRef;
-  // The pill prefers the live-child-status overlay written back by the watch
-  // (yd16) over the frozen tool-output kind; falls back to the frozen kind
-  // before any live status has arrived. Shared with sortedRows' own sort key
-  // (subagentModuleStore.ts, kata hzq9) so rendering and ordering never
-  // disagree about which kind a row is currently showing.
+  // The card's own kind prefers the live-status overlay / stable projection
+  // over the frozen tool-output kind (effectiveRowKind is the shared rule,
+  // so rendering and sorting never disagree). Needs-you is a separate,
+  // thinner overlay: the child is still kind=running, but its cadence state
+  // is needs-you, which the rail shows in attention.
   const displayKind = effectiveRowKind(row);
-  // Prefer the stable projection's reason over the frozen tool output.
-  const preview = row.liveReason ?? row.resultPreview;
-  const openTranscriptButton = transcriptRef ? (
-    <OpenTranscriptButton transcriptRef={transcriptRef} parentRef={sessionRef} />
-  ) : null;
+  const attention = model !== undefined && cadenceStateForStatus(model.status.type) === "needs-you";
+  const childRunning = model ? rowKindFromChildStatus(model.status.type) === "running" : displayKind === "running";
 
-  // Collapsed one-liner: status dot + (live cadence while running) + task +
-  // duration/preview + the always-available "Open transcript" link.
-  const summary = (
-    <span className={CLASS.summary}>
-      {showSummary && (
-        <span className={CLASS.status} title={KIND_LABEL[displayKind]}>
-          <StatusDot state={KIND_STATE[displayKind]} />
-        </span>
-      )}
-      {showSummary && <span className={CLASS.task}>{row.task}</span>}
-      {(duration ?? preview) && (
-        <span className={CLASS.meta}>
-          {duration}
-          {duration && preview ? " · " : ""}
-          {preview && <span className={CLASS.preview}>{preview}</span>}
-        </span>
-      )}
-      {openTranscriptButton}
-    </span>
-  );
+  const items = model ? model.turns.flatMap((t) => t.items) : [];
+  const quotes = deriveQuotes(items);
+  const reason = row.liveReason ?? row.resultPreview;
+  // The folded quote: a failure quotes its reason verbatim (✕-marked - the
+  // exception earns the explanation without a click); anything else quotes
+  // the child's newest own line, falling back to the reason when the watch
+  // hasn't produced one yet.
+  const latestQuote = quotes.at(-1)?.text;
+  const quoteText = displayKind === "failed" && reason ? `✕ ${reason}` : (latestQuote ?? (reason || undefined));
+
+  // Counts come from the same full-turns model; until the first snapshot
+  // lands there is no stats segment rather than a fabricated 0. The system
+  // prelude is not a turn the child took.
+  const realTurns = model ? model.turns.filter((t) => t.id !== SYSTEM_PRELUDE_TURN_ID) : undefined;
+  const turnCount = realTurns?.length;
+  const callCount = realTurns
+    ? realTurns.flatMap((t) => t.items).filter((it) => it.type === "commandExecution").length
+    : undefined;
+  // Tokens ride the stable delegate projection (applyEvenerDelegateUpdated);
+  // no usage data means no segment, never a misleading ↑0 ↓0 (the thread
+  // model's own usage-null precedent, via formatUsagePair).
+  const stableUsage = row.stable?.usage;
+  // EvenerUsage's fields are individually optional; the pair only renders
+  // when both directions are present (a half-pair would be a guess).
+  const usage =
+    stableUsage?.inputTokens !== undefined && stableUsage.outputTokens !== undefined
+      ? formatUsagePair({ inputTokens: stableUsage.inputTokens, outputTokens: stableUsage.outputTokens })
+      : null;
+
+  const nowMs = useNowTick(NOW_TICK_MS);
+  const clock = cardClock(row, displayKind, nowMs);
+
+  // Per-card expansion, session-and-turn-scoped AND rowKey-scoped so it is
+  // stable across the VirtualList/dockview remount (yt2q) and collision-free
+  // across turns AND sessions (78nj) - the same scoping every other store key
+  // in this file already uses (kata 8525).
+  const disclosureId = `subagent-quotes-${scopeKey}-${row.rowKey}`;
+  const open = isDisclosureOpen(disclosureId, false);
+
+  // The RECENT_QUOTES_CAP most recent quotes in chronological order (most
+  // recent LAST), each keeping its TRUE 1-based ordinal into the full feed -
+  // list-style:decimal reads e.g. "16." through "20." rather than relabeling
+  // the 16th quote "1." merely because it renders first, which would
+  // understate how much the child has actually done.
+  const windowStart = Math.max(0, quotes.length - RECENT_QUOTES_CAP);
+  const recentQuotes = quotes.slice(windowStart).map((q, i) => ({ ...q, ordinal: windowStart + i + 1 }));
 
   return (
-    <div className={CLASS.row} data-testid="subagent-row" data-kind={displayKind}>
-      {/* id is session-and-turn-scoped AND rowKey-scoped so it is both stable
-          across the VirtualList/dockview remount (yt2q) and collision-free
-          across turns AND sessions (78nj) - turnScopeKey, not a bare turnId,
-          for the same reason every other store key in this file already
-          uses it (kata 8525): turn ids restart per session, and row.rowKey's
-          own last-resort fallback (call:${item.id}) is per-session
-          sequential, so two sessions can otherwise land on the identical id
-          and silently share one open/closed boolean. */}
-      <div>
-        {summary}
-        <ChildActivityBody
-          row={row}
-          transcriptRef={transcriptRef}
-          scopeKey={turnScopeKey(sessionRef, turnId)}
-          showMandate={!showSummary}
+    <div
+      className={CLASS.card}
+      data-testid="subagent-row"
+      data-kind={displayKind}
+      data-attention={attention ? "true" : undefined}
+    >
+      <div className={CLASS.head}>
+        <span className={CLASS.tag} data-testid="subagent-tag">
+          {row.task}
+        </span>
+        {transcriptRef ? <OpenTranscriptButton transcriptRef={transcriptRef} parentRef={sessionRef} /> : null}
+      </div>
+      {quoteText && (
+        <div className={CLASS.quote} data-testid="subagent-quote">
+          {quoteText}
+        </div>
+      )}
+      <div className={CLASS.stats} data-testid="subagent-stats">
+        {turnCount !== undefined && (
+          <>
+            <span>
+              {turnCount} {turnCount === 1 ? "turn" : "turns"}
+            </span>
+            <span className={CLASS.statsSep}>·</span>
+          </>
+        )}
+        {callCount !== undefined && (
+          <>
+            <span>
+              {callCount} {callCount === 1 ? "call" : "calls"}
+            </span>
+            <span className={CLASS.statsSep}>·</span>
+          </>
+        )}
+        {usage && (
+          <>
+            <span>{usage}</span>
+            <span className={CLASS.statsSep}>·</span>
+          </>
+        )}
+        <span className={CLASS.statsSpring} />
+        {clock && <span className={CLASS.clock}>{clock}</span>}
+        <IconButton
+          label={open ? "Hide recent activity" : "Show recent activity"}
+          title={open ? "Hide recent activity" : "Show recent activity"}
+          icon={<Chevron direction={open ? "down" : "right"} />}
+          variant="quiet"
+          size="xs"
+          onClick={(event) => {
+            event.stopPropagation();
+            toggleDisclosure(disclosureId, false);
+          }}
         />
       </div>
+      {open && (
+        <div className={CLASS.quotes} data-testid="subagent-quotes">
+          {recentQuotes.length > 0 ? (
+            <ol className={CLASS.quotesList}>
+              {recentQuotes.map((q) => {
+                // "live" is the chronologically LAST quote while the child is
+                // still running - the card's pulse lands at the natural
+                // reading end.
+                const live = childRunning && q.ordinal === quotes.length;
+                // Runtime only when both stamps exist; the live in-flight
+                // quote shows "…" instead. A quote with no start stamp shows
+                // no time at all rather than a guess.
+                const runtime =
+                  q.startedAt !== undefined && q.completedAt !== undefined
+                    ? formatElapsed(Date.parse(q.completedAt) - Date.parse(q.startedAt))
+                    : live && q.startedAt !== undefined
+                      ? "…"
+                      : undefined;
+                const stamp = formatClockTimeSeconds(q.startedAt);
+                const meta = [runtime, stamp].filter((s) => s !== undefined).join(" · ");
+                return (
+                  <li
+                    key={q.id}
+                    value={q.ordinal}
+                    className={live ? `${CLASS.quoteItem} ${CLASS.quoteLive}` : CLASS.quoteItem}
+                  >
+                    <span className={q.msg ? CLASS.quoteMsg : undefined}>{q.text}</span>
+                    {meta && <span className={CLASS.quoteMeta}>{meta}</span>}
+                  </li>
+                );
+              })}
+            </ol>
+          ) : (
+            <div className={CLASS.quotesEmpty}>No activity yet</div>
+          )}
+          <JobDetailSection row={row} />
+        </div>
+      )}
     </div>
   );
 }
 
-function tally(rows: SubagentRow[]): string {
-  const counts: Record<SubagentRowKind, number> = { running: 0, done: 0, stopped: 0, failed: 0, unknown: 0 };
-  for (const row of rows) counts[effectiveRowKind(row)] += 1;
-  const parts: string[] = [];
-  // stopped is never counted among "done"'s successes (3zf8) - it gets its
-  // own tally segment, ordered with the same worst-first sense as everything
-  // else here (a deliberate stop is more worth a glance than a clean finish).
-  (["failed", "unknown", "running", "stopped", "done"] as const).forEach((kind) => {
-    if (counts[kind] > 0) parts.push(`${counts[kind]} ${KIND_LABEL[kind]}`);
-  });
-  return parts.join(" · ");
-}
-
-// SubagentModule is the leader's own rendered chrome: a tally header plus
-// every row, folding done-kind rows beyond DONE_VISIBLE_CAP behind a
-// "+N more" toggle - running/failed/unknown rows are ALWAYS visible
-// regardless of fold state (a live or broken child must never be hidden
-// by count, parity §12).
+// SubagentModule is the leader's own rendered chrome: the stack of cards,
+// folding done-kind cards beyond DONE_VISIBLE_CAP behind a "+N more" toggle -
+// running/failed/unknown cards are ALWAYS visible regardless of fold state
+// (a live or broken child must never be hidden by count, parity §12). The
+// module itself is chromeless: no tally header, no box - the cards carry
+// their own state.
 function SubagentModule({ turnId, sessionRef }: { turnId: string; sessionRef: string | undefined }) {
   const rows = useSubagentRows(turnScopeKey(sessionRef, turnId));
   const [expanded, setExpanded] = useState(false);
-  const hasFailure = rows.some((r) => effectiveRowKind(r) === "failed");
-  const showSummary = rows.length > 1;
 
   const doneRows = rows.filter((r) => effectiveRowKind(r) === "done");
   const foldedCount = expanded ? 0 : Math.max(0, doneRows.length - DONE_VISIBLE_CAP);
@@ -445,19 +450,10 @@ function SubagentModule({ turnId, sessionRef }: { turnId: string; sessionRef: st
   if (rows.length === 0) return null;
 
   return (
-    <div className={CLASS.module} data-testid="subagent-module" data-has-failure={hasFailure ? "true" : "false"}>
-      {showSummary && <div className={CLASS.header}>{tally(rows)}</div>}
-      <div className={CLASS.rows}>
-        {visibleRows.map((row) => (
-          <SubagentRowView
-            key={row.rowKey}
-            row={row}
-            turnId={turnId}
-            sessionRef={sessionRef}
-            showSummary={showSummary}
-          />
-        ))}
-      </div>
+    <div className={CLASS.module} data-testid="subagent-module">
+      {visibleRows.map((row) => (
+        <SubagentCard key={row.rowKey} row={row} turnId={turnId} sessionRef={sessionRef} />
+      ))}
       {foldedCount > 0 && (
         <Button variant="quiet" size="sm" onClick={() => setExpanded(true)}>
           +{foldedCount} more
@@ -479,10 +475,9 @@ export function rowFromDelegateItem(item: ItemModel): {
 } | null {
   const args = parseArgs(item.argumentsJSON);
   // Full, unclipped task text - it is the entire specification of what the
-  // delegate was asked to do (7f7c). Callers that need a one-line preview
-  // (SubagentRowView's collapsed summary) clip at their own render site;
-  // clipping here would also clip the Mandate section, the one place a
-  // reader can go to read the rest.
+  // delegate was asked to do (7f7c). The card's tag clips visually
+  // (text-overflow: ellipsis); clipping here would silently drop the rest
+  // from the DOM entirely.
   const task = str(args, "task") ?? "";
   const parsed = parseJSONObject(item.output);
   const status = parsed ? str(parsed, "status") : undefined;
@@ -546,11 +541,11 @@ registerToolRenderer({
   body: DelegateBody,
   // A delegate call is a status card, not a fold-to-open tool row - the same
   // reasoning as task_list's own `autoExpand: () => true`. Left collapsed by
-  // default, the rich module body and its activity watch never mount until
-  // opened: the ToolCallItem-owned lean watch still keeps the top-level dot
-  // current while collapsed (evch). Opening it at settle makes the
-  // tally/status/live-cadence/result visible without a click; a manual
-  // collapse afterward still sticks (ToolCallItem's own autoDefault vs.
-  // store-backed toggle).
+  // default, the card stack and its per-child event-stream watches never
+  // mount until opened: the ToolCallItem-owned lean watch still keeps the
+  // top-level dot current while collapsed (evch). Opening it at settle makes
+  // the cards' state/quote/stats visible without a click; a manual collapse
+  // afterward still sticks (ToolCallItem's own autoDefault vs. store-backed
+  // toggle).
   autoExpand: () => true,
 });

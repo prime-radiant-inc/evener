@@ -117,22 +117,59 @@ const editItem = item({
   }),
 });
 
-// A subagent module row (the delegate descriptor, subagentModule.tsx):
-// completed, so the module renders its finished summary rather than a live
-// cadence dot.
-const delegateItem = item({
-  id: "tool_delegate_1",
+// Subagent cards (the delegate descriptor, subagentModule.tsx's Rail × Quote
+// card): three frozen states of one fan-out - failed, running, done - so the
+// card's rails land side by side. This surface has no store/network, so
+// nothing watches the (fake) children: the needs-you rail and the live
+// quote/stats pop-in are not demonstrable here. delegate_id (not the legacy
+// activation-only job_id) is what gets a row at all.
+const delegateFailedItem = item({
+  id: "tool_delegate_failed",
   toolName: "delegate",
   status: "completed",
-  callId: "call_delegate_1",
+  callId: "call_delegate_failed",
+  description: "Verify the prune gate against the fixture",
+  argumentsJSON: JSON.stringify({ task: "Verify the prune gate against the fixture" }),
+  output: JSON.stringify({
+    delegate_id: "dlg_dev_failed",
+    status: "failed",
+    transcript_ref: "ref_dev_child_failed",
+    reason: "prune_test.go fails: gate opened without the rename lock",
+  }),
+  startedAt: "2026-08-13T15:02:10Z",
+  completedAt: "2026-08-13T15:03:12Z",
+});
+const delegateRunningItem = item({
+  id: "tool_delegate_running",
+  toolName: "delegate",
+  status: "inProgress",
+  callId: "call_delegate_running",
+  description: "Audit the journal tail writer",
+  argumentsJSON: JSON.stringify({ task: "Audit the journal tail writer" }),
+  output: JSON.stringify({
+    delegate_id: "dlg_dev_running",
+    status: "running",
+    transcript_ref: "ref_dev_child_running",
+  }),
+  // A live clock reads now - startedAt, so a static ISO would age the card by
+  // the fixture's own vintage (days of "elapsed" time). Compute it fresh.
+  startedAt: new Date(Date.now() - 221_000).toISOString(),
+});
+const delegateDoneItem = item({
+  id: "tool_delegate_done",
+  toolName: "delegate",
+  status: "completed",
+  callId: "call_delegate_done",
   description: "Write a regression test for the mid-prune race",
   argumentsJSON: JSON.stringify({ task: "Write a regression test for the mid-prune race" }),
   output: JSON.stringify({
-    job_id: "job_dev_1",
+    delegate_id: "dlg_dev_done",
     status: "completed",
-    transcript_ref: "ref_dev_child_1",
-    summary: "Added TestPruneConcurrentSnapshotRead, which fails without the atomic-rename fix.",
+    transcript_ref: "ref_dev_child_done",
+    reason: "Added TestPruneConcurrentSnapshotRead, which fails without the atomic-rename fix.",
   }),
+  startedAt: "2026-08-13T15:00:10Z",
+  completedAt: "2026-08-13T15:02:20Z",
 });
 
 // A completed-but-unanswered ask_user call: the read-only transcript card
@@ -179,7 +216,9 @@ const turn: TurnModel = {
     shellExpandedItem,
     shellFailedItem,
     editItem,
-    delegateItem,
+    delegateFailedItem,
+    delegateRunningItem,
+    delegateDoneItem,
     askItem,
     agentContinuationItem,
   ],
@@ -208,9 +247,9 @@ export default function TranscriptSurfaceSection() {
       <h2>Transcript</h2>
       <p className={styles.note}>
         One turn: a user message, a settled thought with a headed (step-rail) body, three shell calls (collapsed, forced
-        open, and failed/auto-expanded), an edit diff row, a finished subagent module, an unanswered ask_user card, and
-        a follow-up agent message. Rendered through the real TurnBlock skeleton with a fabricated TurnModel - no store,
-        no network.
+        open, and failed/auto-expanded), an edit diff row, a three-card subagent stack (failed / running / done), an
+        unanswered ask_user card, and a follow-up agent message. Rendered through the real TurnBlock skeleton with a
+        fabricated TurnModel - no store, no network.
       </p>
       <ThemeFlip>
         <TurnBlock turn={turn} sessionRef={SESSION_REF} exchangeOpeners={EXCHANGE_OPENERS} agentLabel="claude" />

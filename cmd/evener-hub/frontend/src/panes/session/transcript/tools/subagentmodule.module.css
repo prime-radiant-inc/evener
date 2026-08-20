@@ -1,128 +1,179 @@
+/* Rail × Quote subagent card (2026-08-20 redesign).
+ *
+ * One card per subagent. The 2px left rail carries the state colour; the card
+ * content is the child's OWN words (tool purposes + agent messages), quoted
+ * verbatim - never the parent's paraphrase. The stats line counts the child's
+ * turns/tool calls (from the full event-stream watch the card already holds)
+ * and the delegate's projected token usage, closing with the clock and the
+ * expand chevron. Square corners are an explicit design amendment.
+ *
+ * The module itself is deliberately chromeless: no box, no tally header -
+ * the cards carry all of it. This stylesheet sits in the token contract's
+ * SEMANTIC_PATH_EXCEPTIONS (see styles/token-contract.test.ts's kata 3h80
+ * note) so the state hues may be referenced here directly. */
+
 .module {
   display: flex;
   flex-direction: column;
   gap: var(--space-2);
-  padding: var(--space-3);
-  border: 1px solid var(--edge);
-  border-radius: var(--radius-pane);
-  background: var(--surface-1);
 }
 
-/* 3h80: a failed row must never be hidden behind the done tally (mockup 08) -
-   the module itself earns a thin failure-colored left edge the moment any
-   row inside it fails, visible even if that row has scrolled out of view or
-   is folded behind "+N more". */
-.module[data-has-failure="true"] {
-  border-left: 2px solid var(--danger);
-}
-
-.header {
-  font-size: var(--font-size-caption);
-  color: var(--ink-mid);
-}
-
-.rows {
+.card {
   display: flex;
   flex-direction: column;
-  gap: var(--space-2);
+  gap: 2px;
+  padding: var(--space-2) var(--space-3);
+  background: var(--surface-1);
+  border: 1px solid var(--edge);
+  border-left: 2px solid var(--edge-strong);
+  border-radius: 0; /* square corners are the design, not an omission */
 }
 
-.row {
+/* The rail is the status. Done is the resting edge; running/failed/needs-you
+ * each claim their one hue. */
+.card[data-kind="running"] {
+  border-left-color: var(--alive);
+}
+.card[data-kind="failed"] {
+  border-left-color: var(--danger);
+  background: var(--danger-bg);
+}
+/* Needs-you is a live-cadence overlay (the child asked a question and waits),
+ * not a new row kind - the card still sorts/reports as running. */
+.card[data-attention="true"] {
+  border-left-color: var(--attention);
+  background: var(--attention-bg);
+}
+
+/* Head: the tag (the task, clipped visually only) + the regular open button. */
+.head {
   display: flex;
   align-items: center;
   gap: var(--space-2);
-  flex-wrap: wrap;
 }
 
-.task {
-  font-size: var(--font-size-ui);
-  color: var(--ink-hi);
-}
-
-.meta {
-  font-family: var(--font-mono);
-  font-size: var(--font-size-caption);
-  color: var(--ink-mid);
-}
-
-.preview {
-  color: var(--ink-mid);
-}
-
-/* The collapsed one-liner inside the Disclosure summary: the status pill,
-   task, meta and transcript link, laid out in a row beside the chevron. */
-.summary {
-  display: flex;
-  align-items: center;
-  gap: var(--space-2);
-  flex-wrap: wrap;
+.tag {
   flex: 1 1 auto;
   min-width: 0;
+  font-family: var(--font-mono);
+  font-size: var(--font-size-caption);
+  font-weight: var(--font-weight-semibold);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--ink-hi);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.card[data-kind="done"] .tag {
+  color: var(--ink-mid);
 }
 
-.status {
-  display: inline-flex;
+/* The quote: the child's newest own words, one line, ellipsized. Italic is
+ * the only "this is quoted" marker - no literal quotation marks. */
+.quote {
+  font-size: var(--font-size-ui);
+  font-style: italic;
+  color: var(--ink-hi);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.card[data-kind="failed"] .quote {
+  color: var(--danger-ink);
+  font-style: normal;
+}
+.card[data-attention="true"] .quote {
+  color: var(--attention-ink);
+}
+.card[data-kind="done"] .quote {
+  color: var(--ink-mid);
+}
+
+/* Stats: turns · calls · ↑in ↓out ... clock + chevron. Mono micro text. */
+.stats {
+  display: flex;
   align-items: center;
-  flex-shrink: 0;
+  gap: var(--space-1);
+  font-family: var(--font-mono);
+  font-size: var(--font-size-caption);
+  color: var(--ink-low);
+}
+.statsSep {
+  color: var(--edge-strong);
+}
+.statsSpring {
+  margin-left: auto;
+}
+.clock {
+  color: var(--ink-mid);
 }
 
-/* The expanded body: Mandate / Activity / Summary sections stacked. */
-.body {
+/* Expanded: the recent-quotes list, chronological, live one last + bold. */
+.quotes {
   display: flex;
   flex-direction: column;
-  gap: var(--space-3);
-  padding-top: var(--space-2);
+  gap: 2px;
+  padding-top: var(--space-1);
+}
+.quotesList {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin: 0;
+  padding-left: var(--space-5);
+  list-style: decimal;
+}
+.quoteItem {
+  font-size: var(--font-size-ui);
+  color: var(--ink-mid);
+}
+.quoteItem::marker {
+  font-family: var(--font-mono);
+  font-size: var(--font-size-caption);
+  color: var(--ink-low);
+}
+/* The latest quote while the child is still running - emphasis by ink weight,
+ * not a status hue. */
+.quoteLive {
+  color: var(--ink-hi);
+  font-weight: 600;
+}
+.quoteMsg {
+  font-style: italic;
+  color: var(--ink-hi);
+}
+.quoteMeta {
+  font-family: var(--font-mono);
+  font-size: var(--font-size-caption);
+  color: var(--ink-low);
+  margin-left: var(--space-2);
+  white-space: nowrap;
+}
+.quotesEmpty {
+  font-size: var(--font-size-caption);
+  color: var(--ink-low);
+  font-style: italic;
 }
 
+/* The Job detail section (exhaustion budget / resumable evidence), kept from
+ * the previous design, rendered inside the expanded region when populated. */
 .section {
   display: flex;
   flex-direction: column;
   gap: var(--space-1);
+  padding-top: var(--space-1);
 }
-
 .sectionLabel {
   font-size: var(--font-size-caption);
   text-transform: uppercase;
   letter-spacing: 0.05em;
   color: var(--ink-low);
 }
-
-.openTranscriptIcon {
-  margin-left: var(--space-1);
-  display: inline-flex;
-}
-
 .mandate {
   font-family: var(--font-sans);
   font-size: var(--font-size-ui);
   color: var(--ink-hi);
   white-space: pre-wrap;
   overflow-wrap: anywhere;
-}
-
-.activity {
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-1);
-  margin: 0;
-  padding-left: var(--space-4);
-  list-style: decimal;
-}
-
-.activityItem {
-  font-size: var(--font-size-ui);
-  color: var(--ink-mid);
-}
-
-/* The latest activity line while the child is still running - emphasized via
-   ink weight/color, not a status hue (this stylesheet is not allowlisted). */
-.activityLatest {
-  color: var(--ink-hi);
-  font-weight: 600;
-}
-
-.summaryText {
-  font-size: var(--font-size-ui);
-  color: var(--ink-hi);
-  white-space: pre-wrap;
 }

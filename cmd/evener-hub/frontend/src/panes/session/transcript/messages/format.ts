@@ -67,3 +67,32 @@ export function formatClockTime(iso: string | undefined): string | undefined {
   const minutes = String(parsed.getMinutes()).padStart(2, "0");
   return `${hours}:${minutes}`;
 }
+
+// formatClockTimeSeconds is formatClockTime's seconds-carrying sibling, for
+// surfaces where consecutive events routinely land inside the same minute -
+// the subagent card's per-quote timestamps. Same local projection, same
+// missing/unparseable → undefined rule: a quote with no stamp shows no time
+// rather than a guess.
+export function formatClockTimeSeconds(iso: string | undefined): string | undefined {
+  if (iso === undefined) return undefined;
+  const parsed = new Date(iso);
+  if (Number.isNaN(parsed.getTime())) return undefined;
+  const hours = String(parsed.getHours()).padStart(2, "0");
+  const minutes = String(parsed.getMinutes()).padStart(2, "0");
+  const seconds = String(parsed.getSeconds()).padStart(2, "0");
+  return `${hours}:${minutes}:${seconds}`;
+}
+
+// formatElapsed renders a live-or-settled duration for the subagent card's
+// clock - a range formatDurationMs's seconds ceiling ("221s") reads badly at
+// delegate timescales, while its decimal tier is noise on a clock. Whole
+// seconds under a minute, zero-padded m:ss under an hour, h:mm beyond.
+// Negative input (clock skew) clamps to an honest "0s".
+export function formatElapsed(ms: number): string {
+  const totalSeconds = Math.max(0, Math.floor(ms / 1000));
+  if (totalSeconds < 60) return `${totalSeconds}s`;
+  const totalMinutes = Math.floor(totalSeconds / 60);
+  if (totalMinutes < 60) return `${totalMinutes}m${String(totalSeconds % 60).padStart(2, "0")}s`;
+  const hours = Math.floor(totalMinutes / 60);
+  return `${hours}h${String(totalMinutes % 60).padStart(2, "0")}m`;
+}
