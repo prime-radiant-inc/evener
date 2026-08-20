@@ -12,13 +12,16 @@ provider. These providers use the Chat Completions wire format, whose
 Responses API `input_image` content for function outputs.
 
 The session will keep tool-result image bytes in durable history and the
-transcript/UI, while removing them from the outbound request copy used by an
-OpenAI-compatible model. The existing vision side-call will continue to turn
-those bytes into textual steering when the configured model can analyze images.
+transcript/UI. The OpenAI-compatible adapter will preserve those bytes when it
+tries a Responses endpoint, and remove them only from the Chat Completions
+request copy where the wire format cannot represent them. The existing vision
+side-call will continue to turn those bytes into textual steering when the
+configured model can analyze images.
 
-The low-level OpenAI-compatible adapter will continue rejecting a direct
-image-bearing tool-result request. That guard protects callers that bypass the
-session and prevents silent data loss at the adapter boundary.
+The exported strict Chat Completions body builder will continue rejecting a
+direct image-bearing tool-result request. The adapter's endpoint dispatcher
+owns the safe conversion for its own Chat path, so adaptive Responses requests
+are not degraded and Chat fallback requests do not fail before dispatch.
 
 ## Problem
 
@@ -30,15 +33,23 @@ request, the OpenAI-compatible adapter sees the image bytes and returns:
 configuration error: openai-compatible chat completions does not support tool-result images
 ```
 
-The adapter is correct: its Chat Completions serializer can emit only the
-textual part of a `role: "tool"` message. The session is incorrect because it
-passes a provider-incompatible representation to that adapter even though it
-already has a vision side-channel and durable image persistence.
+The adapter is correct on its Chat Completions path: its serializer can emit
+only the textual part of a `role: "tool"` message. The session is incorrect
+only when that request reaches the Chat path without endpoint-aware handling,
+even though it already has a vision side-channel and durable image
+persistence.
 
 OpenAI's first-party Responses path is different. It can encode a
 `function_call_output` whose `output` contains `input_text` and `input_image`
-parts. That behavior belongs to the Responses adapter and must not be assumed
-for arbitrary OpenAI-compatible Chat Completions servers.
+parts. The generic adapter can use that format when its adaptive Responses
+attempt succeeds, but must sanitize a copy before falling back to Chat
+Completions. The same Chat-only sanitization applies to non-adaptive
+OpenAI-compatible instances.
+
+The policy is based on the actual request builder path, not a single behavior
+tag. `openai-compatible`, `kimi`, `glm`, `zai`, `deepseek`, `together`,
+`ollama`, and `openrouter` profiles share the compatibility-family behavior,
+but some retain provider-specific behavior tags.
 
 ## Goals
 
@@ -70,46 +81,24 @@ for arbitrary OpenAI-compatible Chat Completions servers.
 3. The session calls `describeImage`, which sends the image as ordinary user
    multimodal input and injects a textual description as steering when the
    side-call succeeds.
-4. `buildModelRequest` assembles the next request from history.
-5. `llm/providers/openaicompat` serializes a tool result as a Chat Completions
-   `role: "tool"` message. Its text-only representation cannot carry the
-   stored image bytes, so `buildRequestBody` rejects the request rather than
-   dropping them silently.
-
-The fix belongs between steps 4 and 5. It must affect only the request copy,
-not the durable history from which that copy was assembled.
-
-## Design
-
-### Request-only sanitization
-
-When `buildModelRequest` receives a profile whose `BehaviorTag()` is
-`"openai-compatible"`, it will make a copy of the assembled messages and
-remove `ToolResult.ImageData` and `ToolResult.ImageMediaType` from each
-image-bearing tool-result part in that copy.
-
-The helper should be pure from the caller's perspective:
-
-- No input `llm.Message`, `ContentPart`, or `ToolResultData` is mutated.
-- Messages and content parts without image-bearing tool results are reused or
-  copied consistently with existing session conventions.
-- The returned request retains the tool call ID, tool name, text/content,
-  error state, timing, and tool state.
-- The original history continues to contain the image bytes and media type.
-
-The sanitization runs after `SystemPromptAsUser` message arrangement and before
-`llm.Request` is returned. This keeps all request construction paths covered,
-including system-prompt-as-user mode, while leaving transcript history intact.
+4. `buildModelRequest` assembles the next request from history, retaining the
+   complete tool-result image.
+5. The OpenAI-compatible adapter selects its endpoint. Responses receives the
+   original request; Chat receives a sanitized copy because its `role: "tool"`
+   representation is text-only.
 
 ### Provider behavior matrix
 
 | Request path | Tool result has image | Outbound behavior |
 | --- | --- | --- |
-| `openai-compatible` / Chat Completions | Yes | Send text-only `role: "tool"`; retain image in history/UI |
-| `openai-compatible` / Chat Completions | No | Existing behavior |
+| Non-adaptive compat adapter / Chat Completions | Yes | Sanitize only the dispatched copy; send text-only `role: "tool"` |
+| Adaptive compat adapter / Responses succeeds | Yes | Preserve image as `input_image` inside `function_call_output.output` |
+| Adaptive compat adapter / Responses falls back to Chat | Yes | Sanitize only the fallback copy; send text-only `role: "tool"` |
+| Any compat-family adapter without image | No | Existing behavior |
 | First-party `openai` / Responses | Yes | Existing `function_call_output` with `input_text` + `input_image` |
+| First-party OpenAI Chat fallback | Yes | Existing explicit unsupported-image behavior |
 | Anthropic or supported Google model | Yes | Existing provider-specific multimodal behavior |
-| Any direct call to `openaicompat.Adapter` with image bytes | Yes | Existing explicit `ConfigurationError` |
+| Direct `ChatCompletionsBody` call with image bytes | Yes | Existing explicit `ConfigurationError` |
 
 ### Vision fallback
 
@@ -128,34 +117,46 @@ vision is available.
 
 Expected implementation and test changes:
 
-- `agent/session_model_call.go` — apply request-only sanitization while
-  assembling requests.
-- An agent session test file near the request-assembly tests — cover the
-  compatible and non-compatible paths and prove the source history is not
-  mutated.
+- `llm/providers/openaicompat/request.go` or a focused neighboring file — add
+  the pure request-copy sanitizer used only by the adapter's Chat dispatch
+  path.
+- `llm/providers/openaicompat/adapter.go` — sanitize non-adaptive Chat calls
+  and adaptive Chat fallback calls, while leaving adaptive Responses attempts
+  untouched.
+- `llm/providers/openaicompat/adapter_test.go` and/or focused request tests —
+  cover the endpoint split, copy-on-write behavior, and direct strict body
+  validation.
 
 No change is expected in:
 
-- `llm/providers/openaicompat/request.go` — retain the adapter guard.
+- `agent/session_model_call.go` — the session request remains complete.
 - Existing OpenAI Responses image serialization.
 - Tool-result persistence or frontend image projection.
+- The strict `ChatCompletionsBody`/`buildRequestBody` rejection guard.
 
 ## Testing
 
-The regression test must fail before the implementation because the generated
-OpenAI-compatible request still contains image bytes and the adapter rejects
-it. The test will then verify:
+The regression tests must fail before the implementation because the Chat path
+still receives image bytes and the adapter rejects them. The tests will then
+verify:
 
-1. An OpenAI-compatible profile produces a request whose tool result retains
-   text but has empty image fields.
-2. The original history passed to request assembly still has the image bytes and
-   media type.
-3. A non-compatible profile does not undergo this sanitization.
-4. Existing adapter tests continue to prove that a direct image-bearing
-   OpenAI-compatible adapter request returns `ConfigurationError`.
+1. A non-adaptive Chat `Complete` request dispatches the tool's text and omits
+   image fields from the wire body.
+2. A non-adaptive Chat `Stream` request has the same behavior.
+3. An adaptive Responses request sends the original image as
+   `function_call_output.output` content when Responses succeeds.
+4. An adaptive Responses failure eligible for fallback sends a sanitized
+   text-only Chat request.
+5. The input request remains unchanged after sanitization.
+6. The strict `ChatCompletionsBody`/`buildRequestBody` helper still returns
+   `ConfigurationError` for a direct image-bearing request.
+7. Configured compat-family providers (`openai-compatible`, `kimi`, `glm`,
+   `zai`, `deepseek`, `together`, `ollama`, and `openrouter`) are covered by
+   the adapter-path tests or a table-driven sanitizer test, so behavior tags do
+   not accidentally become the policy boundary.
 
-Run the focused agent and provider tests first. Then run the applicable module
-gate and inspect the final diff for unrelated changes. All tests must remain
+Run the focused provider tests first. Then run the applicable module gate and
+inspect the final diff for unrelated changes. All tests must remain
 deterministic and offline.
 
 ## Alternatives rejected
@@ -167,33 +168,48 @@ image-bearing tool-result schema. Sending `input_image` or `image_url` there
 would be a provider-specific guess and could produce a 400 or silently
 misinterpreted content.
 
-### Remove the adapter rejection and silently drop the image
+### Sanitize in the session using one behavior tag
 
-Rejected because direct adapter callers would lose data without an explicit
-signal. The session has enough context to make the loss boundary deliberate,
-while the adapter should continue validating its own wire contract.
+Rejected because the behavior tag does not uniquely identify the request path.
+Several providers share the compatibility-family serializer under their own
+tags, and the environment-created compatibility adapter may try Responses
+before Chat. The adapter is the only layer that knows which endpoint is being
+used for the current attempt.
+
+### Remove the adapter rejection everywhere and silently drop the image
+
+Rejected because the exported strict Chat body builder should still signal an
+unsupported direct representation. The adapter's own dispatch path may make a
+deliberate copy for Chat, but callers that explicitly ask the body builder to
+serialize an image-bearing tool result must not lose data without an error.
 
 ### Move the image into a synthetic user message
 
-Rejected for this fix because it changes conversation roles and ordering and
-would require a new provider-independent history transformation. The existing
-vision side-call already supplies a textual user-facing representation without
-altering the main conversation protocol.
+Rejected because it changes conversation roles and ordering and would require a
+new provider-independent history transformation. The existing vision
+side-call already supplies a textual user-facing representation, while the
+Responses path can carry the image in its native function-output content.
 
 ### Add generic provider capability negotiation
 
-Deferred. A capability field could support known vendor extensions later, but
-this incident only requires the safe default for generic Chat Completions.
+Deferred. The adapter's endpoint choice is sufficient for this fix. A
+capability field could support known vendor extensions later, but generic
+compatibility should not guess a non-standard tool-message image schema.
 
 ## Acceptance criteria
 
-- A session using an arbitrary OpenAI-compatible Chat Completions server can
-  continue after an image-bearing tool result instead of failing with the
-  configuration error above.
-- The main request contains the tool result's text and no unsupported image
+- A non-adaptive OpenAI-compatible Chat session can continue after an
+  image-bearing tool result instead of failing with the configuration error
+  above.
+- An adaptive compatibility adapter preserves the image when its Responses
+  attempt succeeds.
+- An adaptive compatibility adapter sanitizes only the Chat fallback copy when
+  Responses is unavailable or rejects the request in a fallback-eligible way.
+- The Chat wire body contains the tool result's text and no unsupported image
   fields.
-- Durable history and user-facing image projections remain unchanged.
+- The original request, durable history, and user-facing image projections
+  remain unchanged.
 - First-party OpenAI Responses behavior remains unchanged.
-- Direct low-level OpenAI-compatible requests still fail explicitly when they
-  contain tool-result image bytes.
+- The strict direct Chat body builder still fails explicitly for an
+  image-bearing tool result.
 - Focused tests and the relevant deterministic package gates pass.
