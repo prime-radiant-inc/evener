@@ -32,6 +32,17 @@ type Target struct {
 // happens to contain a colon further in.
 var fieldLine = regexp.MustCompile(`^([a-z][a-z0-9-]*): (.*)$`)
 
+// fieldKeyOnly matches a "## " line's content when it looks like an
+// attempted field but is missing the required space before the value —
+// `## trigger:` with nothing after the colon at all. Without this check,
+// such a line misses fieldLine (no ": ") and silently falls through to
+// become summary prose reading "trigger:", which is exactly the kind of
+// silently-wrong output the rest of this parser errors on instead.
+// `## trigger: ` (colon, then a trailing space with an empty value) already
+// matches fieldLine and is a deliberate, valid empty field — this pattern
+// does not match that shape.
+var fieldKeyOnly = regexp.MustCompile(`^([a-z][a-z0-9-]*):$`)
+
 // targetSpecificVariable matches the remainder of a rule-shaped line
 // (`name: <remainder>`) when <remainder> is itself a variable assignment —
 // `PREFIX := $(HOME)/.local` rather than a prerequisite list. This is the
@@ -94,7 +105,7 @@ func ParseFamily(src []byte) ([]Target, error) {
 
 	for line := range strings.Lines(string(src)) {
 		lineNo++
-		line = strings.TrimRight(line, "\n")
+		line = strings.TrimRight(line, "\r\n")
 
 		switch {
 		case strings.HasPrefix(line, "##"):
@@ -113,7 +124,13 @@ func ParseFamily(src []byte) ([]Target, error) {
 			name, rest, isRuleShape := ruleShape(line)
 			switch {
 			case !isRuleShape:
-				if pending != nil {
+				// A plain "#" comment (anything here that isn't "##", which
+				// is routed to the case above) is still a comment for
+				// contiguity purposes: spec §2 only breaks a pending block
+				// on a non-comment line. Real family files carry multi-line
+				// "#" rationale directly above the rule, and a "##" summary
+				// placed above that rationale must not be forced to move.
+				if pending != nil && !strings.HasPrefix(line, "#") {
 					return nil, fmt.Errorf("line %d: %q separates the ## block (opened at line %d) from its rule; a block must be contiguous with the rule it documents", lineNo, line, pending.startLine)
 				}
 
@@ -197,6 +214,14 @@ func accumulate(pending *block, line string, lineNo int) (*block, error) {
 		pending.lastKey = key
 		*pending.fieldPtr(key) = value
 		return pending, nil
+	}
+
+	if m := fieldKeyOnly.FindStringSubmatch(content); m != nil {
+		key := m[1]
+		if pending.fieldPtr(key) == nil {
+			return nil, fmt.Errorf("line %d: unknown annotation key %q; valid keys are proves, trigger, requires, fails-when", lineNo, key)
+		}
+		return nil, fmt.Errorf("line %d: field %q has a colon but no value; write \"## %s: <value>\" — the space after the colon is required even for an empty value", lineNo, key, key)
 	}
 
 	if pending.inFields {

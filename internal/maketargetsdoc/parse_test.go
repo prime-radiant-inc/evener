@@ -90,8 +90,15 @@ func TestParseFamilyUnknownKeyIsAnError(t *testing.T) {
 // carries the real prerequisites. A block sitting directly above the
 // variable line documents an assignment, not the rule, so it must fail
 // rather than silently attach to the wrong line.
+//
+// The fixture stops right after the variable line, on purpose: with a
+// trailing `install-home: install` rule line (as an earlier version of this
+// test had), removing the targetSpecificVariable guard would still make the
+// test fail, but for the wrong reason — that later rule line would then
+// have nothing pending above it and fail as "no annotation" instead. This
+// isolated shape fails only if the guard itself fires.
 func TestParseFamilyRejectsBlockAboveTargetSpecificVariable(t *testing.T) {
-	src := "## Install into the home prefix.\ninstall-home: PREFIX := $(HOME)/.local\ninstall-home: install\n\t@true\n"
+	src := "## Install into the home prefix.\ninstall-home: PREFIX := $(HOME)/.local\n"
 	if _, err := ParseFamily([]byte(src)); err == nil {
 		t.Fatal("expected an error: the block sits above a variable assignment, not the rule")
 	}
@@ -229,5 +236,73 @@ func TestParseFamilyMalformedHashHashSpacingIsAnError(t *testing.T) {
 		if _, err := ParseFamily([]byte(src)); err == nil {
 			t.Fatalf("expected an error for block %q", block)
 		}
+	}
+}
+
+// TestParseFamilyPlainHashCommentDoesNotBreakContiguity: spec §2 breaks
+// contiguity on "any non-comment line", and a plain "#" line is still a
+// comment — just not a published one. Real family files (make/fuzzing.mk,
+// most of make/testing.mk and make/building.mk) already carry multi-line
+// "#" rationale directly above the rule, so a "##" summary placed above
+// that rationale (a reasonable "headline first" reading of the grammar)
+// must still parse, and the "#" content must not leak into the summary.
+func TestParseFamilyPlainHashCommentDoesNotBreakContiguity(t *testing.T) {
+	src := "## Lint everything.\n" +
+		"# lint-naming enforces snake_case across every TOML file in the repo.\n" +
+		"# See docs/developing-evener/linting.md for the full rationale.\n" +
+		"lint-naming:\n\t@true\n"
+	got, err := ParseFamily([]byte(src))
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := "Lint everything."
+	if len(got) != 1 || got[0].Name != "lint-naming" || got[0].Summary != want {
+		t.Fatalf("got %+v, want Summary %q and the # lines absent from it", got, want)
+	}
+}
+
+// TestParseFamilyCRLFLineEndings: strings.TrimRight(line, "\n") leaves a
+// trailing "\r" on CRLF input, which survives into the summary and, on a
+// continuation join, ends up embedded mid-string rather than at either end
+// where it might go unnoticed.
+func TestParseFamilyCRLFLineEndings(t *testing.T) {
+	src := "## First line\r\n##   continues here.\r\nclean:\r\n\trm -f evener\r\n"
+	got, err := ParseFamily([]byte(src))
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := "First line continues here."
+	if len(got) != 1 || got[0].Name != "clean" || got[0].Summary != want {
+		t.Fatalf("got %+v, want Summary %q (no embedded \\r)", got, want)
+	}
+}
+
+// TestParseFamilyFieldKeyWithColonButNoSpaceIsAnError: "## trigger:" with
+// nothing after the colon misses fieldLine's required ": " and, before this
+// test's fix, silently became summary prose reading "trigger:" instead of
+// erroring. "## trigger: " (colon, space, then nothing) is a different,
+// already-correct shape — an explicit empty field — and must keep parsing
+// without error; TestParseFamilyAllFourFields and friends already exercise
+// the populated form, so this test only needs the broken one plus that one
+// contrast case.
+func TestParseFamilyFieldKeyWithColonButNoSpaceIsAnError(t *testing.T) {
+	src := "## Lint everything.\n## trigger:\nlint:\n\t@true\n"
+	if _, err := ParseFamily([]byte(src)); err == nil {
+		t.Fatal("expected an error: 'trigger:' has a colon but no value")
+	}
+}
+
+// TestParseFamilyFieldKeyWithColonAndTrailingSpaceIsAnEmptyField pins the
+// contrast case named in TestParseFamilyFieldKeyWithColonButNoSpaceIsAnError's
+// comment: a trailing space after the colon is a deliberate empty value, not
+// an error.
+func TestParseFamilyFieldKeyWithColonAndTrailingSpaceIsAnEmptyField(t *testing.T) {
+	src := "## Lint everything.\n## trigger: \nlint:\n\t@true\n"
+	got, err := ParseFamily([]byte(src))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 1 || got[0].Trigger != "" {
+		t.Fatalf("got %+v, want an empty Trigger and no error", got)
 	}
 }
