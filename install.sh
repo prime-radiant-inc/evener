@@ -82,7 +82,31 @@ else
 	echo "Neither sha256sum nor shasum is available; refusing to install an unverified archive." >&2
 	exit 1
 fi
-if ! (cd "$tmpdir" && grep "  $archive_name\$" checksums.txt | $sha_check); then
+
+# Find this archive's line in checksums.txt BEFORE handing anything to the
+# checksum tool, and treat "not exactly one line" as a hard failure. Piping
+# grep straight into the tool fails open twice over: a pipeline's status is
+# its last command's, and macOS's /sbin/sha256sum exits 0 on empty input — so
+# an unmatched grep read as "verified" and installed the archive unchecked.
+#
+# The name may carry a path prefix: goreleaser writes a bare name, the older
+# hand-rolled publisher wrote "dist/<name>". Accept either, anchored, with the
+# archive name's regex metacharacters escaped.
+archive_name_re=$(printf '%s' "$archive_name" | sed 's/[^A-Za-z0-9_-]/\\&/g')
+checksum_line=$(grep -E "^[0-9a-fA-F]{64}[[:space:]]+(dist/)?${archive_name_re}\$" "$tmpdir/checksums.txt" || true)
+if [ -z "$checksum_line" ]; then
+	echo "checksums.txt has no entry for $archive_name; refusing to install an unverified archive." >&2
+	exit 1
+fi
+if [ "$(printf '%s\n' "$checksum_line" | wc -l | tr -d ' ')" -ne 1 ]; then
+	echo "checksums.txt has more than one entry for $archive_name; refusing to install an ambiguous archive." >&2
+	exit 1
+fi
+
+# Re-emit the line under the bare name so the tool finds the file next to
+# checksums.txt whatever prefix the release wrote.
+expected_sha=${checksum_line%% *}
+if ! (cd "$tmpdir" && printf '%s  %s\n' "$expected_sha" "$archive_name" | $sha_check); then
 	echo "Checksum verification failed for $archive_name." >&2
 	exit 1
 fi

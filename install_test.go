@@ -346,30 +346,141 @@ func TestInstallScriptRejectsTamperedArchive(t *testing.T) {
 	}
 	script := filepath.Join(repoRoot, "install.sh")
 
-	home := t.TempDir()
-	fixtures := t.TempDir()
-	archive := filepath.Join(fixtures, "evener_darwin_arm64.tar.gz")
-	writeInstallReleaseArchive(t, archive, "evener_darwin_arm64")
-	fakeBin, _ := writeInstallScriptFakeBin(t, fixtures, "Darwin", "arm64")
-
-	env := installTestEnv(t, home, map[string]string{
-		"PATH":                      fakeBin + string(os.PathListSeparator) + os.Getenv("PATH"),
-		"EVENER_INSTALL_VERSION":    "v1.2.3",
-		"EVENER_FAKE_CURL_ARCHIVE":  archive,
-		"EVENER_FAKE_CURL_URL_FILE": filepath.Join(fixtures, "curl-url"),
-		"EVENER_FAKE_CURL_BAD_SHA":  "1",
+	home, out, runErr := runInstallScript(t, script, "Darwin", "arm64", map[string]string{
+		"EVENER_FAKE_CURL_BAD_SHA": "1",
 	})
-	cmd := exec.Command("sh", script)
-	cmd.Env = env
-	out, runErr := cmd.CombinedOutput()
 	if runErr == nil {
 		t.Fatalf("install succeeded against a tampered checksum; output = %s", out)
 	}
-	if !strings.Contains(string(out), "Checksum verification failed") {
+	if !strings.Contains(out, "Checksum verification failed") {
 		t.Fatalf("failure does not name checksum verification; output = %s", out)
 	}
+	assertNothingInstalled(t, home, out)
+}
+
+// The verification step used to pipe grep straight into the checksum tool.
+// A pipeline reports its last command's status, and macOS's /sbin/sha256sum
+// exits 0 on empty input, so a checksums.txt with no line for this archive —
+// exactly what the live snapshot channel serves, because it writes
+// "dist/<name>" and the grep anchored on a bare name — read as "verified" and
+// installed the archive unchecked. Every non-unique match must now be a hard
+// failure before the checksum tool sees anything.
+func TestInstallScriptRejectsChecksumsItCannotMatch(t *testing.T) {
+	t.Parallel()
+	if testing.Short() {
+		t.Skip("release archive install integration test")
+	}
+	if runtime.GOOS == "windows" {
+		t.Skip("install.sh requires a Unix shell")
+	}
+
+	repoRoot, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("getwd: %v", err)
+	}
+	script := filepath.Join(repoRoot, "install.sh")
+
+	for _, tc := range []struct {
+		name    string
+		knobs   map[string]string
+		wantMsg string
+	}{
+		{
+			name:    "no entry for this archive",
+			knobs:   map[string]string{"EVENER_FAKE_CURL_SUM_NAME": "evener_linux_amd64.tar.gz"},
+			wantMsg: "has no entry for evener_darwin_arm64.tar.gz",
+		},
+		{
+			name:    "entry hidden behind an unexpected path prefix",
+			knobs:   map[string]string{"EVENER_FAKE_CURL_SUM_PREFIX": "build/artifacts/"},
+			wantMsg: "has no entry for evener_darwin_arm64.tar.gz",
+		},
+		{
+			name:    "two entries for the same archive",
+			knobs:   map[string]string{"EVENER_FAKE_CURL_SUM_DUPLICATE": "1"},
+			wantMsg: "has more than one entry for evener_darwin_arm64.tar.gz",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			home, out, runErr := runInstallScript(t, script, "Darwin", "arm64", tc.knobs)
+			if runErr == nil {
+				t.Fatalf("install succeeded against an unverifiable checksums.txt; output = %s", out)
+			}
+			if !strings.Contains(out, tc.wantMsg) {
+				t.Fatalf("output does not report %q; output = %s", tc.wantMsg, out)
+			}
+			assertNothingInstalled(t, home, out)
+		})
+	}
+}
+
+// The snapshot channel published today lists "dist/<name>"; goreleaser lists
+// the bare name. install.sh has to verify against both, or the transition
+// breaks every install.
+func TestInstallScriptVerifiesDistPrefixedChecksums(t *testing.T) {
+	t.Parallel()
+	if testing.Short() {
+		t.Skip("release archive install integration test")
+	}
+	if runtime.GOOS == "windows" {
+		t.Skip("install.sh requires a Unix shell")
+	}
+
+	repoRoot, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("getwd: %v", err)
+	}
+	script := filepath.Join(repoRoot, "install.sh")
+
+	home, out, runErr := runInstallScript(t, script, "Darwin", "arm64", map[string]string{
+		"EVENER_FAKE_CURL_SUM_PREFIX": "dist/",
+	})
+	if runErr != nil {
+		t.Fatalf("install failed against dist/-prefixed checksums: %v; output = %s", runErr, out)
+	}
+	if !strings.Contains(out, "evener_darwin_arm64.tar.gz: OK") {
+		t.Fatalf("output does not show the archive being verified; output = %s", out)
+	}
+	if _, err := os.Stat(filepath.Join(home, ".local", "share", "evener", "bin", "evener")); err != nil {
+		t.Fatalf("evener was not installed: %v; output = %s", err, out)
+	}
+}
+
+// runInstallScript drives install.sh against fake uname/curl for the given
+// platform, with extra environment knobs layered on, and returns the HOME it
+// installed into alongside the combined output and the run error.
+func runInstallScript(t *testing.T, script, osName, archName string, knobs map[string]string) (home, out string, runErr error) {
+	t.Helper()
+
+	home = t.TempDir()
+	fixtures := t.TempDir()
+	asset := "evener_" + strings.ToLower(osName) + "_" + archName + ".tar.gz"
+	if archName == "x86_64" {
+		asset = "evener_" + strings.ToLower(osName) + "_amd64.tar.gz"
+	}
+	archive := filepath.Join(fixtures, asset)
+	writeInstallReleaseArchive(t, archive, strings.TrimSuffix(asset, ".tar.gz"))
+	fakeBin, urlFile := writeInstallScriptFakeBin(t, fixtures, osName, archName)
+
+	overrides := map[string]string{
+		"PATH":                      fakeBin + string(os.PathListSeparator) + os.Getenv("PATH"),
+		"EVENER_INSTALL_VERSION":    "v1.2.3",
+		"EVENER_FAKE_CURL_ARCHIVE":  archive,
+		"EVENER_FAKE_CURL_URL_FILE": urlFile,
+	}
+	maps.Copy(overrides, knobs)
+
+	cmd := exec.Command("sh", script)
+	cmd.Env = installTestEnv(t, home, overrides)
+	combined, runErr := cmd.CombinedOutput()
+	return home, string(combined), runErr
+}
+
+func assertNothingInstalled(t *testing.T, home, out string) {
+	t.Helper()
 	if _, err := os.Stat(filepath.Join(home, ".local", "share", "evener", "bin", "evener")); !os.IsNotExist(err) {
-		t.Fatalf("a binary was installed despite the tampered checksum; stat err = %v", err)
+		t.Fatalf("a binary was installed despite the failed verification; stat err = %v; output = %s", err, out)
 	}
 }
 
@@ -420,7 +531,15 @@ case "$(basename "$url")" in
     else
       sum=$(shasum -a 256 "$EVENER_FAKE_CURL_ARCHIVE" | cut -d' ' -f1)
     fi
-    printf '%s  %s\n' "$sum" "$(basename "$EVENER_FAKE_CURL_ARCHIVE")" > "$out"
+    # EVENER_FAKE_CURL_SUM_PREFIX reproduces the path prefix a publisher may put
+    # on the artifact name ("dist/" — what the hand-rolled channel wrote and the
+    # live snapshot still carries); EVENER_FAKE_CURL_SUM_NAME serves an entry for
+    # some other artifact, so no line matches at all.
+    name=${EVENER_FAKE_CURL_SUM_NAME:-$(basename "$EVENER_FAKE_CURL_ARCHIVE")}
+    printf '%s  %s%s\n' "$sum" "${EVENER_FAKE_CURL_SUM_PREFIX:-}" "$name" > "$out"
+    if [ -n "${EVENER_FAKE_CURL_SUM_DUPLICATE:-}" ]; then
+      printf '%s  %s\n' "0000000000000000000000000000000000000000000000000000000000000000" "$name" >> "$out"
+    fi
     ;;
   *)
     cp "$EVENER_FAKE_CURL_ARCHIVE" "$out"
