@@ -1,6 +1,6 @@
 {
   "name": "rail-row-chevron-actions-overlap",
-  "description": "rail: a branch row's trailing disclosure chevron and the '...'/'+' actions buttons must have fully disjoint, independently-clickable hit boxes - not merely 'the chevron wins the overlap' - at the sidebar's min (200px) and default (280px) widths, for both a session row (1 action button) and a project row (2), with and without a right-slot occupant (timestamp/badge) bounding the title column's growth (issue #196)",
+  "description": "rail: a branch row's trailing disclosure chevron and the hover-revealed '...'/'+' menu must have fully disjoint, state-appropriate hit boxes at the sidebar's min (200px) and default (280px) widths, for both a session row (1 menu button) and a project row (2), with and without a right-slot occupant (timestamp/Badge/'Not started') bounding the title column's growth. The menu and the occupant share ONE grid cell (.rightSlot) and swap visibility: at rest the hidden menu must eat no clicks (issue #196's invisible-overlay mechanism), revealed it must cover the occupant and be clickable, the chevron must win its own center in BOTH states, and the slot must never be wider than max(occupant, menu) - no space reserved for the hover menu",
   "cssFiles": [
     "styles/global.css",
     "styles/tokens.css",
@@ -12,24 +12,25 @@
   ],
   "viewport": {
     "width": 1000,
-    "height": 900,
+    "height": 1200,
     "deviceScaleFactor": 1,
     "mobile": false
   },
   "forcePseudoStates": [
-    { "selector": "#row-s200ts", "pseudoClasses": ["hover"] },
-    { "selector": "#row-s200nt", "pseudoClasses": ["hover"] },
-    { "selector": "#row-s280ts", "pseudoClasses": ["hover"] },
-    { "selector": "#row-s280nt", "pseudoClasses": ["hover"] },
-    { "selector": "#row-p200b", "pseudoClasses": ["hover"] },
-    { "selector": "#row-p200nb", "pseudoClasses": ["hover"] },
-    { "selector": "#row-p280b", "pseudoClasses": ["hover"] },
-    { "selector": "#row-p280nb", "pseudoClasses": ["hover"] }
+    { "selector": "#row-s200ts-h", "pseudoClasses": ["hover"] },
+    { "selector": "#row-s200nt-h", "pseudoClasses": ["hover"] },
+    { "selector": "#row-s280ts-h", "pseudoClasses": ["hover"] },
+    { "selector": "#row-s280nt-h", "pseudoClasses": ["hover"] },
+    { "selector": "#row-s280ns-h", "pseudoClasses": ["hover"] },
+    { "selector": "#row-p200b-h", "pseudoClasses": ["hover"] },
+    { "selector": "#row-p200nb-h", "pseudoClasses": ["hover"] },
+    { "selector": "#row-p280b-h", "pseudoClasses": ["hover"] },
+    { "selector": "#row-p280nb-h", "pseudoClasses": ["hover"] }
   ],
   "mutation": {
-    "declaration": "RailRow.module.css: .actions reverted to position: absolute; right: 0; top: 0; bottom: 0; with its old padding-left/linear-gradient mask and the .railRow:hover .actions background swap restored, plus .railRow given back position: relative (its containing block) - i.e. the pre-rework, position:absolute overlay design, with .chevronButton left exactly as shipped (no z-index either)",
-    "verified": "2026-08-18",
+    "declaration": "RailRow.module.css: .actions's rest rule reverted to the opacity-only hide of the pre-2026-08 design (drop `visibility: hidden` and the visibility transition entries, keep `opacity: 0`) - geometry unchanged, hit-testing broken exactly the way issue #196's invisible overlay was",
+    "verified": "2026-08-19",
     "expect": "fail",
-    "note": "With .actions back to an absolutely-positioned overlay and .chevronButton carrying no stacking-order fix of its own, .actions paints above the statically-positioned chevron in all 8 fixtures: kebabOverlap is non-null (12.0x12.0px, full containment) and chevronSelfWinner resolves to \"kebab\", not \"chevron\", in every one - reproducing issue #196 exactly (a total swallow, not the z-index branch's partial one). Restoring the in-flow .actions returns every fixture to PASS with fully disjoint boxes."
+    "note": "With the menu hidden by opacity alone it stays hit-testable at rest: every -r fixture's kebabSelfWinner resolves to \"kebab\" (and plusSelfWinner to \"plus\" on project rows), failing with 'the HIDDEN kebab trigger wins its own center at rest ... the invisible-overlay mechanism of #196' in all 9 rest fixtures, with occupant-covered failures alongside wherever an occupant exists. Restoring visibility: hidden returns every fixture to PASS. A second mutation was verified the same day: .rightSlot reverted from display:grid (shared cell) to display:flex (side-by-side) leaves hit-testing green but fails the slot-width and flush-right assertions in all 10 occupant-bearing fixtures - the slot grows to occupant + menu (measured: 37.7px vs its 23.3px widest child on a timestamp row, after the menu trigger's glyph-hugging padding landed), the reserved-space regression the shared cell removed. With the intersection assertion added, the flex mutation also fails 'the menu and the occupant share no pixels' in the revealed copies of those fixtures."
   }
 }
