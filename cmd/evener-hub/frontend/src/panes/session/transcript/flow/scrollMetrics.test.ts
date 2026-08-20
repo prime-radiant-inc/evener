@@ -7,18 +7,21 @@ import {
   readScrollMetrics,
 } from "./scrollMetrics";
 
-// isAtBottom: legacy parity threshold (docs/web-ui/parity/parity-m4-transcript.md
-// §15) - "within 50px of true bottom counts as at bottom".
+// isAtBottom: "at the bottom" means the reader is at the TRUE end of the
+// scrollable content, not merely near it. The threshold is a few pixels
+// (rounding-safe, far smaller than one line of text ~20px) so a reader who
+// has scrolled back even one line is NOT treated as at the bottom - the
+// legacy 50px value let autoscroll engage while scrolled comfortably back.
 test("isAtBottom: true when scrollTop+clientHeight exactly equals scrollHeight (pixel-perfect bottom)", () => {
   expect(isAtBottom({ scrollTop: 950, scrollHeight: 1000, clientHeight: 50 })).toBe(true);
 });
 
-test("isAtBottom: true within the 50px threshold", () => {
-  expect(isAtBottom({ scrollTop: 910, scrollHeight: 1000, clientHeight: 40 })).toBe(true); // gap = 50
+test("isAtBottom: true within the 4px threshold (rounding tolerance)", () => {
+  expect(isAtBottom({ scrollTop: 946, scrollHeight: 1000, clientHeight: 50 })).toBe(true); // gap = 4
 });
 
-test("isAtBottom: false just past the 50px threshold", () => {
-  expect(isAtBottom({ scrollTop: 909, scrollHeight: 1000, clientHeight: 40 })).toBe(false); // gap = 51
+test("isAtBottom: false just past the 4px threshold (one line of text is ~20px, far larger)", () => {
+  expect(isAtBottom({ scrollTop: 945, scrollHeight: 1000, clientHeight: 50 })).toBe(false); // gap = 5
 });
 
 test("isAtBottom: true for a short thread that doesn't scroll at all (scrollHeight <= clientHeight)", () => {
@@ -29,13 +32,13 @@ test("isAtBottom: false when scrolled far up", () => {
   expect(isAtBottom({ scrollTop: 0, scrollHeight: 5000, clientHeight: 500 })).toBe(false);
 });
 
-test("isAtBottom: accepts a custom threshold, overriding the 50px default", () => {
+test("isAtBottom: accepts a custom threshold, overriding the 4px default", () => {
   expect(isAtBottom({ scrollTop: 800, scrollHeight: 1000, clientHeight: 100 }, 100)).toBe(true); // gap = 100
-  expect(isAtBottom({ scrollTop: 800, scrollHeight: 1000, clientHeight: 100 }, 50)).toBe(false);
+  expect(isAtBottom({ scrollTop: 800, scrollHeight: 1000, clientHeight: 100 }, 4)).toBe(false);
 });
 
-test("AT_BOTTOM_THRESHOLD_PX is the legacy-matching 50px default", () => {
-  expect(AT_BOTTOM_THRESHOLD_PX).toBe(50);
+test("AT_BOTTOM_THRESHOLD_PX is the 4px default (rounding-safe, smaller than one line of text)", () => {
+  expect(AT_BOTTOM_THRESHOLD_PX).toBe(4);
 });
 
 // isNearTop: legacy parity threshold (parity doc §15) - "scrollTop < 200
