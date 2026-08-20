@@ -35,7 +35,7 @@ jobs:
           BUILD_CHANNEL: snapshot
 
       - name: Inspect archives
-        run: tar -tzf dist/*.tar.gz
+        run: for f in dist/*.tar.gz; do echo "== $f"; tar -tzf "$f"; done
 
       - name: Upload archives
         uses: actions/upload-artifact@v4
@@ -49,7 +49,6 @@ jobs:
   release:
     name: Publish release
     if: startsWith(github.ref, 'refs/tags/v')
-    needs: []
     runs-on: ubuntu-latest
     permissions:
       contents: write
