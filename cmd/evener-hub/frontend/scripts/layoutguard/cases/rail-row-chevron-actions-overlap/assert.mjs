@@ -129,8 +129,10 @@ export default function assert(measurement) {
     // "..." ~16px in from that edge and blow the trigger up to ~47px. The
     // row's own padding override keeps it glyph-sized; 32px (the app's
     // standard md icon-button box) is the bound a padded-out regression
-    // crosses. Checked revealed, where the trigger is the cell's only
-    // visible occupant.
+    // crosses. Checked in BOTH states, not just revealed: the geometry is
+    // state-independent, so the resting copy must hold the same edges - and
+    // checking it keeps a state-dependent width or justification regression
+    // from sneaking through.
     if (Math.abs(f.kebab.right - f.slot.right) > 1) {
       failures.push(
         `${at}: the kebab trigger's right edge (${f.kebab.right.toFixed(1)}) is ${(f.slot.right - f.kebab.right).toFixed(1)}px off the slot's right edge (${f.slot.right.toFixed(1)}) - the menu must be right-justified to the same edge the timestamp sits at`,
