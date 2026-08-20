@@ -770,11 +770,17 @@ func TestDefGrepContextLinesParam(t *testing.T) {
 		t.Errorf("context_lines type = %v, want integer", cl["type"])
 	}
 	desc, _ := cl["description"].(string)
-	if !strings.Contains(desc, "0") || !strings.Contains(desc, "10") {
+	// Pin the actual parameter semantics, not bare digit characters. "0" and
+	// "10" individually appear almost anywhere; the meaningful contracts are
+	// the range form and the explicit default marker.
+	if !strings.Contains(desc, "0-10") {
 		t.Errorf("context_lines description should document the 0-10 range, got: %q", desc)
 	}
-	if !strings.Contains(desc, "default") {
+	if !strings.Contains(desc, "default 0") {
 		t.Errorf("context_lines description should document the default of 0, got: %q", desc)
+	}
+	if !strings.Contains(desc, "context") {
+		t.Errorf("context_lines description should mention context lines, got: %q", desc)
 	}
 }
 
