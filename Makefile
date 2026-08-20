@@ -504,6 +504,16 @@ generate:
 lint-generated:
 	$(call run_quiet_lint,go generate ./appwire/... && { git diff --exit-code -- docs/appwire-protocol.md cmd/evener-hub/frontend/src/protocol/types.gen.ts || { echo "generated AppWire outputs are stale; run 'make generate' and commit."; exit 1; }; })
 
+# lint-fuzz-registry wraps the SAME check as `make fuzz-registry-check`
+# (scripts/fuzz/fuzz-registry-check.sh) so a native/Rapid fuzz target that
+# lands without its scripts/fuzz/fuzz-targets.txt row fails the required gate
+# instead of sitting undetected: PR #273 added TestForceCompactDoubleLayerSeqFuzz
+# without a registry row and nothing in CI or merge-approval-gate caught it,
+# because fuzz-registry-check was wired to neither. This target is fast
+# (well under a second) and safe to run as a separate `go vet`-style gate.
+lint-fuzz-registry:
+	$(call run_quiet_lint,scripts/fuzz/fuzz-registry-check.sh)
+
 LINT_TARGETS := lint-naming lint-gofmt lint-evenerfuzz lint-eval lint-internal lint-golangci lint-generated lint-fuzz-registry secret-scan
 
 lint: $(LINT_TARGETS)

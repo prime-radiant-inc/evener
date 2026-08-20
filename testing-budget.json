@@ -23,7 +23,7 @@
   "primeradiant.com/evener/cmd/evener-hub/internal/launchconfig": 0.1,
   "primeradiant.com/evener/cmd/evener-hub/internal/strutil": 0.0,
   "primeradiant.com/evener/cmd/evener-internalcheck": 0.3,
-  "primeradiant.com/evener/cmd/evener-tomlcheck": 0.0,
+  "primeradiant.com/evener/cmd/evener-tomlcheck": 0.3,
   "primeradiant.com/evener/cmd/evener-transcript-v2-upgrade": 0.31,
   "primeradiant.com/evener/cmd/evener-test-dev-tooling": 17.24,
   "primeradiant.com/evener/cmd/evener-tui": 40.39,
