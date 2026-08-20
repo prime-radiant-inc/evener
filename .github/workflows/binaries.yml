@@ -27,7 +27,7 @@ jobs:
       - uses: ./.github/actions/setup-toolchain
 
       - name: Build snapshot
-        uses: goreleaser/goreleaser-action@v6
+        uses: goreleaser/goreleaser-action@v7
         with:
           version: "~> v2"
           args: release --snapshot --clean
@@ -60,7 +60,7 @@ jobs:
       - uses: ./.github/actions/setup-toolchain
 
       - name: Publish with goreleaser
-        uses: goreleaser/goreleaser-action@v6
+        uses: goreleaser/goreleaser-action@v7
         with:
           version: "~> v2"
           args: release --clean
