@@ -119,3 +119,95 @@ func TestEveryLintTargetIsPhonyAndHasARule(t *testing.T) {
 		}
 	}
 }
+
+// TestEveryRuleIsPhony is the mirror of TestEveryPhonyTargetHasARule. That
+// test catches a .PHONY name whose recipe vanished; this one catches a rule
+// that was never declared .PHONY, where a file of the same name at the repo
+// root silently turns the target into a no-op. fuzz-drive was in exactly that
+// state when this test was written.
+func TestEveryRuleIsPhony(t *testing.T) {
+	t.Parallel()
+	phony, rules := makefilePhonyAndRuleNames(t)
+	isPhony := make(map[string]bool, len(phony))
+	for _, name := range phony {
+		isPhony[name] = true
+	}
+	var missing []string
+	for _, name := range rules {
+		if !isPhony[name] {
+			missing = append(missing, name)
+		}
+	}
+	sort.Strings(missing)
+	if len(missing) > 0 {
+		t.Fatalf("these rules are not .PHONY, so a file of the same name at the repo root "+
+			"makes `make <target>` a silent no-op. Add them to a .PHONY line:\n  %s",
+			strings.Join(missing, "\n  "))
+	}
+}
+
+// makefileRulesWithoutRecipes returns rule names whose rule line has no
+// prerequisites and is followed by no recipe line. GNU make treats such a
+// target as satisfied: it prints "Nothing to be done for `x'" and exits 0. A
+// gate in that state reports green while executing nothing, which is the
+// lint-fuzz-registry failure mode that TestEveryPhonyTargetHasARule was
+// written for — except that test cannot see it, because its parser records a
+// rule from the `name:` line alone and never looks at the indented recipe
+// beneath.
+//
+// The prerequisite check matters: `build: build-runtime` and
+// `lint: $(LINT_TARGETS)` also have no recipe of their own, but they are
+// alias targets whose prerequisites do the real work — make runs those
+// before reporting "Nothing to be done", so nothing is skipped. Requiring an
+// empty prerequisite list is also what excludes target-specific variable
+// lines like `install-home: PREFIX := $(HOME)/.local`, since the assignment
+// text lands in the same position a prerequisite list would.
+func makefileRulesWithoutRecipes(t *testing.T) []string {
+	t.Helper()
+	var empty []string
+	for _, path := range []string{"Makefile"} {
+		raw, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatalf("reading %s: %v", path, err)
+		}
+		lines := strings.Split(string(raw), "\n")
+		for i, line := range lines {
+			name, rest, ok := strings.Cut(line, ":")
+			if !ok || strings.HasPrefix(rest, "=") || strings.ContainsAny(name, " \t") || name == "" {
+				continue
+			}
+			if line == "" || line[0] == '\t' || line[0] == '#' || line[0] == ' ' {
+				continue
+			}
+			if strings.HasPrefix(name, ".") {
+				continue
+			}
+			if strings.TrimSpace(rest) != "" {
+				continue
+			}
+			hasRecipe := false
+			for _, next := range lines[i+1:] {
+				if next == "" || strings.HasPrefix(next, "#") {
+					continue
+				}
+				hasRecipe = strings.HasPrefix(next, "\t")
+				break
+			}
+			if !hasRecipe {
+				empty = append(empty, name)
+			}
+		}
+	}
+	sort.Strings(empty)
+	return empty
+}
+
+// TestEveryRuleHasARecipe fails on a rule line with no recipe beneath it.
+func TestEveryRuleHasARecipe(t *testing.T) {
+	t.Parallel()
+	if empty := makefileRulesWithoutRecipes(t); len(empty) > 0 {
+		t.Fatalf("these rules have no recipe, so `make <target>` prints "+
+			"\"Nothing to be done\" and exits 0 while checking nothing:\n  %s",
+			strings.Join(empty, "\n  "))
+	}
+}
