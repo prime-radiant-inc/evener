@@ -40,6 +40,22 @@ func collapseViewWhitespace(view string) string {
 	return strings.Join(strings.Fields(strings.ReplaceAll(view, "│", " ")), " ")
 }
 
+// collapseLabelPadding collapses each line's runs of whitespace to a single
+// space. The detail panes hand-maintain their column padding in the format
+// strings ("Project:  %s", "Live:     %d", "Hub ref:  %s"), so adding or
+// renaming a label rewrites the padding on every sibling line. Collapsing lets
+// a test keep the full "label value" pair — which is what catches a swapped
+// label or a wrong value — without pinning the alignment. Line structure is
+// preserved so a label at the end of one line can never bind to a value at the
+// start of the next.
+func collapseLabelPadding(view string) string {
+	lines := strings.Split(view, "\n")
+	for i, line := range lines {
+		lines[i] = strings.Join(strings.Fields(line), " ")
+	}
+	return strings.Join(lines, "\n")
+}
+
 func TestHubModelInitialFetchRendersLiveAndRecentRows(t *testing.T) {
 	client, cleanup := newTestHubClient(t, func(app *appserver.Server) {
 		appserver.HandleTyped(app.Router(), appwire.MethodThreadList, func(context.Context, appwire.ThreadListParams) (appwire.ThreadListResponse, error) {
@@ -484,21 +500,21 @@ func TestHubModelDashboardWideDetailsFollowSelection(t *testing.T) {
 	m := sampleHubModel(140)
 	m.selected = 1
 
-	projectView := m.dashboardView()
-	for _, want := range []string{"details", "Project:  evener", "Live:     2", "Dir:      /Users/jesse/Documents/GitHub/prime-radiant-inc/evener"} {
+	projectView := collapseLabelPadding(m.dashboardView())
+	for _, want := range []string{"details", "Project: evener", "Live: 2", "Dir: /Users/jesse/Documents/GitHub/prime-radiant-inc/evener"} {
 		if !strings.Contains(projectView, want) {
 			t.Fatalf("wide dashboard project details missing %q:\n%s", want, projectView)
 		}
 	}
 
 	m.selected = dashboardRowIndex(m.dashboardRows(), "Restore hub TUI widgets")
-	sessionView := m.dashboardView()
-	for _, want := range []string{"details", "Session:  01EVENER", "Title:    Restore hub TUI widgets", "Ref:      local:01EVENER"} {
+	sessionView := collapseLabelPadding(m.dashboardView())
+	for _, want := range []string{"details", "Session: 01EVENER", "Title: Restore hub TUI widgets", "Ref: local:01EVENER"} {
 		if !strings.Contains(sessionView, want) {
 			t.Fatalf("wide dashboard session details missing %q:\n%s", want, sessionView)
 		}
 	}
-	if strings.Contains(sessionView, "Live:     2") {
+	if strings.Contains(sessionView, "Live: 2") {
 		t.Fatalf("wide details did not update after selection change:\n%s", sessionView)
 	}
 }
@@ -534,8 +550,8 @@ func TestHubModelDashboardWideDetailsShowDiagnosticSelection(t *testing.T) {
 	m := sampleHubModel(140)
 	m.err = errors.New("hub connection lost")
 
-	got := m.dashboardView()
-	for _, want := range []string{"Diagnostic", "hub connection lost", "Next:     refresh dashboard or check Hub health"} {
+	got := collapseLabelPadding(m.dashboardView())
+	for _, want := range []string{"Diagnostic", "hub connection lost", "Next: refresh dashboard or check Hub health"} {
 		if !strings.Contains(got, want) {
 			t.Fatalf("wide dashboard diagnostic details missing %q:\n%s", want, got)
 		}
@@ -2672,15 +2688,15 @@ func TestHubModelStatusUsesHubThreadTasksAndAuth(t *testing.T) {
 	if len(model.session.messages) != 0 {
 		t.Fatalf("/status should not append diagnostics to transcript history: %+v", model.session.messages)
 	}
-	plain := ansiPattern.ReplaceAllString(model.View(), "")
+	plain := collapseLabelPadding(ansiPattern.ReplaceAllString(model.View(), ""))
 	for _, want := range []string{
 		"status",
-		"Model:    gpt-5 (openai)",
-		"Dir:      /tmp/details",
-		"Turns:    2",
-		"Context:  42% used",
-		"Tasks:    1/2 done, 1 active",
-		"Auth:     openai oauth jesse@example.test",
+		"Model: gpt-5 (openai)",
+		"Dir: /tmp/details",
+		"Turns: 2",
+		"Context: 42% used",
+		"Tasks: 1/2 done, 1 active",
+		"Auth: openai oauth jesse@example.test",
 		"Recent errors:",
 		"turn_2: provider quota exceeded",
 	} {

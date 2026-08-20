@@ -165,9 +165,11 @@ func TestDetailsDrawerShowsCapabilities(t *testing.T) {
 		Compact: true,
 	}
 
-	got := m.renderSessionDetails()
-	// "details" header is now an uppercase section label (DETAILS).
-	for _, want := range []string{"DETAILS", "Source:   codex-local", "Capabilities: send, steer, compact"} {
+	// "details" header is now an uppercase section label (DETAILS). The drawer's
+	// column padding is hand-maintained per format string, so collapse it and keep
+	// each label bound to its full value.
+	got := collapseLabelPadding(m.renderSessionDetails())
+	for _, want := range []string{"DETAILS", "Source: codex-local", "Capabilities: send, steer, compact"} {
 		if !strings.Contains(got, want) {
 			t.Fatalf("details drawer missing %q:\n%s", want, got)
 		}
@@ -203,12 +205,14 @@ func TestDetailsDrawerShowsHubDiagnostics(t *testing.T) {
 		},
 	}
 
-	plain := ansiPattern.ReplaceAllString(m.renderSessionDetails(), "")
+	// Column padding is hand-maintained per format string; collapse it so each
+	// label stays bound to its full value without pinning the alignment.
+	plain := collapseLabelPadding(ansiPattern.ReplaceAllString(m.renderSessionDetails(), ""))
 	for _, want := range []string{
-		"Hub ref:  local:01SEND",
-		"Web:      http://127.0.0.1:9180/s/local:01SEND",
-		"Context:  37% used",
-		"Branch:   wip/tui",
+		"Hub ref: local:01SEND",
+		"Web: http://127.0.0.1:9180/s/local:01SEND",
+		"Context: 37% used",
+		"Branch: wip/tui",
 		"Tools (2):",
 		"MCP [linear]: linear__search",
 		"MCP Servers (1):",
@@ -236,8 +240,8 @@ func TestDetailsDrawerShowsMissingDiagnostics(t *testing.T) {
 		Model:       "gpt-5.1",
 	}
 
-	got := m.renderSessionDetails()
-	for _, want := range []string{"Source:   codex", "Diagnostics: not reported by source"} {
+	got := collapseLabelPadding(m.renderSessionDetails())
+	for _, want := range []string{"Source: codex", "Diagnostics: not reported by source"} {
 		if !strings.Contains(got, want) {
 			t.Fatalf("details drawer missing %q:\n%s", want, got)
 		}
