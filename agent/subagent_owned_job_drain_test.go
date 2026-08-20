@@ -573,95 +573,84 @@ func TestSubagentRunPreservesStructuredResultAcrossLateNotification(t *testing.T
 }
 
 func TestSubagentFinalizationRefusesResumeAndDriveUntilCallbackRestored(t *testing.T) {
-	for _, action := range []string{"explicit resume", "delegate send", "watch delegate send"} {
-		t.Run(action, func(t *testing.T) {
-			fixture := newOwnedJobDrainFixture(t)
-			finalizationEntered := make(chan struct{})
-			finalizationRelease := make(chan struct{})
-			var releaseOnce sync.Once
-			t.Cleanup(func() { releaseOnce.Do(func() { close(finalizationRelease) }) })
-			var finalizationOnce sync.Once
-			fixture.child.sess.cfg.testOnly.subagentAfterFinalStatePublish = func(got *subagent) {
-				finalizationOnce.Do(func() {
-					if got != fixture.child {
-						t.Errorf("finalization hook child = %p, want %p", got, fixture.child)
-					}
-					close(finalizationEntered)
-					<-finalizationRelease
-				})
+	// All three resume/deliver entry points converge on a single code path:
+	// delegateRuntime.send (explicit resume, delegate_send, and watch-origin
+	// stable send all route through Steer/ReserveStart/CommitStart). There is no
+	// distinct entry point to exercise, so the test runs a single case against
+	// that shared path rather than three identical copy-pasted iterations.
+	fixture := newOwnedJobDrainFixture(t)
+	finalizationEntered := make(chan struct{})
+	finalizationRelease := make(chan struct{})
+	var releaseOnce sync.Once
+	t.Cleanup(func() { releaseOnce.Do(func() { close(finalizationRelease) }) })
+	var finalizationOnce sync.Once
+	fixture.child.sess.cfg.testOnly.subagentAfterFinalStatePublish = func(got *subagent) {
+		finalizationOnce.Do(func() {
+			if got != fixture.child {
+				t.Errorf("finalization hook child = %p, want %p", got, fixture.child)
 			}
-			var armOnce sync.Once
-			fixture.drainClock.onDrainStop = func() {
-				armOnce.Do(func() {
-					if err := armOwnedJobDrainAttention(fixture.child.sess, "delegate:finalization-window-job", "finalization-window-job"); err != nil {
-						t.Errorf("arm finalization-window attention: %v", err)
-					}
-				})
-			}
-			fixture.env.releaseJob()
-			select {
-			case <-finalizationEntered:
-			case <-time.After(30 * time.Second): // TRIPWIRE: real signal from a background goroutine/job; 30s only fires on a genuine hang.
-				t.Fatal("subagent did not reach the post-publication finalization window")
-			}
-
-			fixture.child.mu.Lock()
-			running := fixture.child.running
-			fixture.child.mu.Unlock()
-			if running {
-				t.Fatal("finalization hook ran before running=false was published")
-			}
-			if fixture.parent.driveSubagentNotificationTurn(fixture.child) {
-				t.Fatal("automatic notification drive launched during callback restoration")
-			}
-
-			switch action {
-			case "explicit resume":
-				res := (delegateRuntime{owner: fixture.parent}).send(context.Background(), fixture.result.DelegateID, "resume too early", 0).result
-				if !errors.Is(res.Err, errDelegateTargetBusy) {
-					t.Fatalf("early explicit resume result = %+v, want target_busy", res)
-				}
-			case "delegate send":
-				res := (delegateRuntime{owner: fixture.parent}).send(context.Background(), fixture.result.DelegateID, "resume too early", 0).result
-				if !errors.Is(res.Err, errDelegateTargetBusy) {
-					t.Fatalf("early delegate_send result = %+v, want target_busy", res)
-				}
-			case "watch delegate send":
-				res := (delegateRuntime{owner: fixture.parent}).send(context.Background(), fixture.result.DelegateID, "resume too early", 0).result
-				if !errors.Is(res.Err, errDelegateTargetBusy) {
-					t.Fatalf("early watch-origin stable send result = %+v, want retryable target_busy", res)
-				}
-			}
-			if queue := fixture.child.sess.SteeringQueueSnapshot(); len(queue) != 0 {
-				t.Fatalf("child steering queue during finalization = %+v, want no delivery", queue)
-			}
-			if requests := fixture.adapter.Requests(); len(requests) != 2 {
-				t.Fatalf("provider requests during finalization = %d, want no resumed or automatic turn", len(requests))
-			}
-
-			releaseOnce.Do(func() { close(finalizationRelease) })
-			waitForOwnedJobDrainGeneration(t, fixture.child, fixture.freshHandled, "post-finalization attention generation")
-			select {
-			case <-fixture.runDone:
-			case <-time.After(30 * time.Second): // TRIPWIRE: real signal from a background goroutine/job; 30s only fires on a genuine hang.
-				t.Fatal("delegate did not finish after callback restoration")
-			}
-			if action == "explicit resume" {
-				fixture.child.sess.cfg.testOnly.subagentAfterFinalStatePublish = nil
-				resumed := (delegateRuntime{owner: fixture.parent}).send(context.Background(), fixture.result.DelegateID, "resume after finalization", 0).result
-				if resumed.Err != nil || resumed.Action != "started" {
-					t.Fatalf("explicit resume after finalization = %+v, want started", resumed)
-				}
-				fixture.child.mu.Lock()
-				resumedDone := fixture.child.done
-				fixture.child.mu.Unlock()
-				select {
-				case <-resumedDone:
-				case <-time.After(30 * time.Second): // TRIPWIRE: real signal from a background goroutine/job; 30s only fires on a genuine hang.
-					t.Fatal("explicit resume after finalization did not finish")
-				}
+			close(finalizationEntered)
+			<-finalizationRelease
+		})
+	}
+	var armOnce sync.Once
+	fixture.drainClock.onDrainStop = func() {
+		armOnce.Do(func() {
+			if err := armOwnedJobDrainAttention(fixture.child.sess, "delegate:finalization-window-job", "finalization-window-job"); err != nil {
+				t.Errorf("arm finalization-window attention: %v", err)
 			}
 		})
+	}
+	fixture.env.releaseJob()
+	select {
+	case <-finalizationEntered:
+	case <-time.After(30 * time.Second): // TRIPWIRE: real signal from a background goroutine/job; 30s only fires on a genuine hang.
+		t.Fatal("subagent did not reach the post-publication finalization window")
+	}
+
+	fixture.child.mu.Lock()
+	running := fixture.child.running
+	fixture.child.mu.Unlock()
+	if running {
+		t.Fatal("finalization hook ran before running=false was published")
+	}
+	if fixture.parent.driveSubagentNotificationTurn(fixture.child) {
+		t.Fatal("automatic notification drive launched during callback restoration")
+	}
+
+	// The shared send path (used by explicit resume, delegate_send, and
+	// watch-origin stable send) must refuse the message while the finalization
+	// callback holds the delegate, returning a retryable target_busy error.
+	res := (delegateRuntime{owner: fixture.parent}).send(context.Background(), fixture.result.DelegateID, "resume too early", 0).result
+	if !errors.Is(res.Err, errDelegateTargetBusy) {
+		t.Fatalf("early send during finalization = %+v, want target_busy", res)
+	}
+	if queue := fixture.child.sess.SteeringQueueSnapshot(); len(queue) != 0 {
+		t.Fatalf("child steering queue during finalization = %+v, want no delivery", queue)
+	}
+	if requests := fixture.adapter.Requests(); len(requests) != 2 {
+		t.Fatalf("provider requests during finalization = %d, want no resumed or automatic turn", len(requests))
+	}
+
+	releaseOnce.Do(func() { close(finalizationRelease) })
+	waitForOwnedJobDrainGeneration(t, fixture.child, fixture.freshHandled, "post-finalization attention generation")
+	select {
+	case <-fixture.runDone:
+	case <-time.After(30 * time.Second): // TRIPWIRE: real signal from a background goroutine/job; 30s only fires on a genuine hang.
+		t.Fatal("delegate did not finish after callback restoration")
+	}
+	fixture.child.sess.cfg.testOnly.subagentAfterFinalStatePublish = nil
+	resumed := (delegateRuntime{owner: fixture.parent}).send(context.Background(), fixture.result.DelegateID, "resume after finalization", 0).result
+	if resumed.Err != nil || resumed.Action != "started" {
+		t.Fatalf("explicit resume after finalization = %+v, want started", resumed)
+	}
+	fixture.child.mu.Lock()
+	resumedDone := fixture.child.done
+	fixture.child.mu.Unlock()
+	select {
+	case <-resumedDone:
+	case <-time.After(30 * time.Second): // TRIPWIRE: real signal from a background goroutine/job; 30s only fires on a genuine hang.
+		t.Fatal("explicit resume after finalization did not finish")
 	}
 }
 
