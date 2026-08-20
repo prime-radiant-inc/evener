@@ -57,7 +57,7 @@ fuzz:
 # output canonically re-encoded into appwire/testdata/golden/. A code change that
 # silently alters a decoder's output (no panic, round-trip still holds) fails the
 # `make fuzz` golden check; run this ONLY after an INTENDED decoder change, then
-# commit the diff. See docs/fuzzing.md ("Choosing an oracle").
+# commit the diff. See docs/developing-evener/fuzzing.md ("Choosing an oracle").
 fuzz-goldens:
 	@sh -c "go test -run '^Test.*Golden\$$' ./appwire -update-goldens"
 	@sh -c "cd llm && go test -run '^Test.*Golden\$$' ./providers/difftest -update-goldens"

@@ -4,7 +4,7 @@ Dev-facing docs for working on this repo: setup, environment, worktrees,
 performance, naming, and the agent-run scenario harness. Docs about the
 `make` gates themselves (building, testing, linting, coverage, fuzzing)
 land here in a later phase; for now those still live at `docs/testing.md`
-and `docs/fuzzing.md`.
+and `docs/developing-evener/fuzzing.md`.
 
 - **[environment.md](environment.md)** — every environment variable evener
   reads, keyed to the `envvars` package that's their source of truth.

@@ -9,9 +9,9 @@ permanent regression test. Start here, then follow the pointers.
 | You want to… | Read |
 | --- | --- |
 | run/operate the fuzzer day to day | this doc |
-| operational reference (env vars, triage internals, recorders) | [`fuzz/README.md`](../fuzz/README.md) |
-| **add** a fuzz target to a new surface (the methodology) | [`docs/skills/fuzzing-an-api-surface/SKILL.md`](skills/fuzzing-an-api-surface/SKILL.md) |
-| the architecture / why it's built this way | [`docs/design/fuzzing-toolkit-design.md`](design/fuzzing-toolkit-design.md) |
+| operational reference (env vars, triage internals, recorders) | [`fuzz/README.md`](../../fuzz/README.md) |
+| **add** a fuzz target to a new surface (the methodology) | [`docs/skills/fuzzing-an-api-surface/SKILL.md`](../skills/fuzzing-an-api-surface/SKILL.md) |
+| the architecture / why it's built this way | [`docs/design/fuzzing-toolkit-design.md`](../design/fuzzing-toolkit-design.md) |
 
 `scripts/fuzz/run-fuzz.sh`'s `TARGETS` array is the **single source of truth** for
 every target; `--list` emits it and the coverage/triage/gap tools all consume it.
@@ -97,7 +97,7 @@ comment, so the finding stays visible.
 For an on-demand campaign that triages for you, `make fuzz-triage` runs the search,
 applies a flake-guard (a failure must reproduce K times to count), dedups against
 prior findings, and opens a PR by default carrying the generated regression test.
-See [`fuzz/README.md`](../fuzz/README.md) for its flags and `EVENER_FUZZ_PERSIST`.
+See [`fuzz/README.md`](../../fuzz/README.md) for its flags and `EVENER_FUZZ_PERSIST`.
 
 ## Continuous fuzzing (local, on-demand)
 
@@ -146,7 +146,7 @@ file the toolchain saved when it found the crash. `--bad` defaults to `HEAD`.
 target**. Two ways to clear it:
 
 1. **Add a target** for the package's real decode seam — follow
-   [the skill](skills/fuzzing-an-api-surface/SKILL.md) and register it in
+   [the skill](../skills/fuzzing-an-api-surface/SKILL.md) and register it in
    `scripts/fuzz/run-fuzz.sh`. This is almost always the right answer.
 2. If the package genuinely has no real parse surface (a generated file, pure
    tooling), add it to `scripts/coverage/fuzzcov-ignore.txt` **with a reason** — the gate
@@ -272,4 +272,121 @@ Deliberately-fake test keys and a few non-secret false positives are allowlisted
 in `.gitleaks.toml` (regexes + a `docs/superpowers/` path entry); the corpora are
 *not* path-allowlisted, so the corpus scan genuinely inspects the seeds. gitleaks
 must be installed for these to run (they warn-skip if absent; CI installs it).
-See [`fuzz/README.md`](../fuzz/README.md) for harvesting and the recorders.
+See [`fuzz/README.md`](../../fuzz/README.md) for harvesting and the recorders.
+
+## The seqfuzz/schemafuzz Family Lives Only in `make test-fuzz`
+
+A Jesse ruling: no fuzz-family test — including a smoke-depth iteration —
+belongs in `make test`, `go test ./...`, or any of their variants. This is a
+different exclusion from the `evenerfuzz`-tagged native `FuzzXxx` targets and
+`seed100`-style edge suites, which never compile into a default build because
+of their build tag. The tests this ruling targets are ordinary
+`func TestXxx(t *testing.T)` functions that call `rapid.Check` to run a
+stateful/sequence property fuzzer — no build tag hides them, so a plain
+`go test ./agent` used to run them, at whatever depth `rapid.Check`'s own
+`testing.Short()` awareness picked.
+
+Each test in the family is now individually gated at the top of its body:
+
+```go
+func TestDelegateSeqFuzz(t *testing.T) {
+	if os.Getenv("EVENER_FUZZ_TESTS") != "1" {
+		t.Skip("fuzz: skipped by default; run `make test-fuzz`, or EVENER_FUZZ_TESTS=1 go test ./agent -run TestDelegateSeqFuzz -count=1 -v")
+	}
+	...
+```
+
+The gate is an env-var check rather than reusing `-short`, precisely so that
+`go test ./agent` with no flags stays fuzz-free too — matching the ruling's
+spirit rather than only its `-short` letter. The gate is the first statement
+in every one of these functions, including the two (`TestDelegateSeqFuzz`,
+`TestLifecycleSeqFuzz`) that resolve `fuzz/promoter.PersistPaths` before
+deciding whether to call `t.Parallel()`: the skip must fire before any of that
+path resolution or parallelism decision runs.
+
+The family, by file and function:
+
+| File | Function |
+| --- | --- |
+| `agent/delegate_seqfuzz_test.go` | `TestDelegateSeqFuzz` |
+| `agent/watch_seqfuzz_test.go` | `TestWatchSeqFuzz` |
+| `agent/lifecycle_seqfuzz_test.go` | `TestLifecycleSeqFuzz` |
+| `agent/jobs_fc2_seqfuzz_test.go` | `TestJobsFc2DescendantMergeSeqFuzz` |
+| `agent/registry_schemafuzz_test.go` | `TestToolArgsSchemaFuzz` |
+| `agent/internal/contextmgr/compaction_seqfuzz_test.go` | `TestCompactionSeqFuzz` |
+| `agent/internal/contextmgr/maybecompact_fc1_seqfuzz_test.go` | `TestFc1MaybeCompactSeqFuzz` |
+| `agent/internal/jobstore/seqfuzz_test.go` | `TestJobstoreSeqFuzz` |
+| `internal/appserver/router_seqfuzz_test.go` | `TestRouterSeqFuzz` |
+| `internal/appserver/hub_multisession_seqfuzz_test.go` | `TestHubMultiSessionSeqFuzz` |
+
+A test that merely has "fuzz" in its name is not automatically in this family
+— `TestDelegateSeqFuzzReplayClean`, `TestToolArgsAdapter_PromotesDeterministicFailure`,
+and the other promoter-adapter tests alongside these files replay one fixed,
+deterministic artifact (or a synthetic failure) rather than running a
+`rapid.Check` search; they stay in the default suite because they are fast and
+their coverage is otherwise lost. The `job_delegate_seed100_fuzz_test.go` file
+and its siblings named for the same "seed100" convention are native `FuzzXxx`
+targets under the `evenerfuzz` build tag — already excluded from every default
+build, not part of this change.
+
+Three other entry points drive this same rapid family and needed
+`EVENER_FUZZ_TESTS=1` threaded through so this ruling would not silently blind
+them: `make fuzz`'s fixed-seed rapid replay loop (`scripts/fuzz/run-fuzz.sh`'s
+`rapid` case, used by `fuzz-nightly`/`fuzz-triage`/`fuzz-continuous` too) and
+`scripts/fuzz/fuzz-oracle-audit.sh`'s `run_seeds`, which replays a mutation against
+`TestJobstoreSeqFuzz` and must never read that test's now-default skip as the
+oracle failing to catch the mutation.
+
+For how this family's exclusion interacts with the coverage-floor number —
+why a default-gate `-cover` run cannot see it, and why that's neither "how
+much is covered" nor "how well is this tested" — see [A Coverage Number Is
+Two Tracks, Not One](coverage.md#a-coverage-number-is-two-tracks-not-one) in
+`coverage.md`.
+
+## Proving a Type Survives a Round Trip
+
+When two code paths must agree about a struct — a decoder and a
+projector, a live path and a reload path — a hand-written fixture proves
+only that today's fields survive. A field added next month passes,
+because nothing in the test knows it exists.
+
+Build the fixture by walking the **type** with reflection instead. Fill
+every field with a distinguishable value, decode the same bytes through
+both paths, and report divergent fields by name.
+
+`agent/session_client_mutation_doctor_drift_test.go` is the worked
+example. `clientMutationSnapshot` is unexported, so evener-doctor's
+mutations reader mirrors the persisted shape and decodes it with
+`DisallowUnknownFields`; the test walks the snapshot type with
+reflection and marshals it the way the save path does, so a field the
+mirror has never heard of makes the doctor refuse the store and name it.
+Verified by adding a synthetic field to `clientMutationSnapshot` and
+watching the test name it unprompted, with no test edit.
+
+The gotchas in a fixture builder are all in the leaves. This example
+demonstrates two: `json.RawMessage` must contain valid JSON, and any
+other `[]byte` marshals as base64. Two more are general technique that
+this particular type never exercises, because `clientMutationSnapshot`
+carries no `time.Time`, no float and no `any` — a `time.Time` needs whole
+seconds wherever the encoding is RFC 3339, and floats must be integral to
+survive widening through `any`. The last gotcha is the structural one: an
+unhandled `reflect.Kind` must fail loudly rather than skip, because a
+builder that silently skips a kind is a test that silently stops covering
+it. `fillEveryField` has no `reflect.Interface` case, so an `any` field
+added to the snapshot tomorrow stops the test rather than going quietly
+untested.
+
+Two corollaries:
+
+- **Always prove it by mutation.** Route one path through a struct that
+  omits a field and confirm the test names that field. A drift test that
+  has never failed is a decoration.
+- **Delete the round-trip test when the second path dies.** Once a
+  mirror type is gone, both sides of its round-trip test are the same
+  `json.Unmarshal` and it cannot fail. Keeping it leaves a comment
+  claiming coverage that no longer exists.
+
+## Targets
+
+<!-- BEGIN GENERATED: make targets. Edit make/fuzzing.mk, then run `make generate`. -->
+<!-- END GENERATED -->

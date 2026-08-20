@@ -71,7 +71,7 @@ for t in "${TARGETS[@]}"; do
 		native)
 			echo "=== fuzzing $module:$name for $duration ==="
 			# -tags evenerfuzz makes the internal/invariant assertions live so a
-			# tripped invariant is found as a crasher (see docs/fuzzing.md).
+			# tripped invariant is found as a crasher (see docs/developing-evener/fuzzing.md).
 			( cd "$repo_root/$module" && go test -tags evenerfuzz -run '^$' -fuzz "^${name}\$" -fuzztime "$duration" "$pkg" ) || fail=1
 			;;
 			test)

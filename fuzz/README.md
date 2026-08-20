@@ -1,6 +1,6 @@
 # evener fuzzing + failure-to-regression toolkit
 
-> New to the fuzzer? Start at [`docs/fuzzing.md`](../docs/fuzzing.md) — the
+> New to the fuzzer? Start at [`docs/developing-evener/fuzzing.md`](../docs/developing-evener/fuzzing.md) — the
 > developer's guide (running, reading coverage, triaging a crasher). This file is
 > the operational reference it points back to.
 
@@ -39,8 +39,8 @@ Two cross-cutting facts about every run above:
   the internal `invariant.Hold()` assertions (`primeradiant.com/evener/invariant`)
   are live — a tripped invariant panics and the never-panic oracle catches it.
   `make test` / `go build` stay tag-free and byte-unchanged. See
-  [`docs/fuzzing.md`](../docs/fuzzing.md) → *Internal invariants*.
-- **Memory**: a coverage-guided search can balloon into tens of GB — run searches on a host that can spare the RAM. See [`docs/fuzzing.md`](../docs/fuzzing.md) → *Memory safety*.
+  [`docs/developing-evener/fuzzing.md`](../docs/developing-evener/fuzzing.md) → *Internal invariants*.
+- **Memory**: a coverage-guided search can balloon into tens of GB — run searches on a host that can spare the RAM. See [`docs/developing-evener/fuzzing.md`](../docs/developing-evener/fuzzing.md) → *Memory safety*.
 
 ## Coverage measurement
 
@@ -205,7 +205,7 @@ only after a known commit — real `git bisect`, no stubbed search.
   valid-but-adversarial inputs so search reaches deep logic instead of bouncing off
   the parser.
 
-See [`docs/fuzzing.md`](../docs/fuzzing.md) → *Choosing an oracle* for the full
+See [`docs/developing-evener/fuzzing.md`](../docs/developing-evener/fuzzing.md) → *Choosing an oracle* for the full
 table and when to use each.
 
 ## Seed corpus
