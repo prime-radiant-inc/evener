@@ -1,0 +1,21 @@
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+
+  # Go modules only. npm is deliberately absent: the frontend's dependency
+  # bumps are a reviewed, manual affair (owner ruling, 2026-08-19).
+  - package-ecosystem: gomod
+    directories:
+      - /
+      - /agent
+      - /auth
+      - /envvars
+      - /fuzz
+      - /identifier
+      - /invariant
+      - /llm
+    schedule:
+      interval: weekly

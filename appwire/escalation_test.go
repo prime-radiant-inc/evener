@@ -8,7 +8,7 @@ import (
 
 // TestSandboxEscalationWireKeys pins the camelCase wire spelling of the M7
 // escalation pair (the appwire tree speaks the codex/appwire camelCase protocol,
-// enforced by evener-namingcheck) and that the resolve params round-trip.
+// enforced by tagliatelle) and that the resolve params round-trip.
 func TestSandboxEscalationWireKeys(t *testing.T) {
 	req := SandboxEscalationRequested{
 		ThreadID: "t1", Ref: "local:t1",

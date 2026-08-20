@@ -83,7 +83,7 @@ func FindSharedStorage(a, b reflect.Value, path string) string {
 			return ""
 		}
 		if a.Pointer() == b.Pointer() {
-			return fmt.Sprintf("%s: copy shares the original's pointer, so the copy is missing a deep copy for this field", path)
+			return path + ": copy shares the original's pointer, so the copy is missing a deep copy for this field"
 		}
 		return FindSharedStorage(a.Elem(), b.Elem(), path+".*")
 	case reflect.Slice:
@@ -91,7 +91,7 @@ func FindSharedStorage(a, b reflect.Value, path string) string {
 			return ""
 		}
 		if a.Pointer() == b.Pointer() {
-			return fmt.Sprintf("%s: copy shares the original's slice backing array", path)
+			return path + ": copy shares the original's slice backing array"
 		}
 		for i := range min(a.Len(), b.Len()) {
 			if found := FindSharedStorage(a.Index(i), b.Index(i), path+"[]"); found != "" {
@@ -103,7 +103,7 @@ func FindSharedStorage(a, b reflect.Value, path string) string {
 			return ""
 		}
 		if a.Pointer() == b.Pointer() {
-			return fmt.Sprintf("%s: copy shares the original's map, so a write through either is seen by both", path)
+			return path + ": copy shares the original's map, so a write through either is seen by both"
 		}
 		// A rebuilt map is not enough on its own. Copying entries across
 		// (maps.Copy, or a loop that assigns the value unchanged) leaves any

@@ -17,7 +17,17 @@
 /evener-tui
 /evener-doctor
 /evener-migrate
-/evener-namingcheck
+# `go build ./cmd/<name>` drops its output at the repo root under the command
+# name. Every cmd/ entry gets a line so a stray hand-build can never be
+# committed (a 3.9 MB evener-fuzzregistry once was).
+/evener-dev
+/evener-fuzz-harvest
+/evener-fuzzcov
+/evener-fuzzregistry
+/evener-internalcheck
+/evener-test-dev-tooling
+/evener-tomlcheck
+/evener-transcript-v2-upgrade
 /evenereval
 /llmcall
 /sessions/
@@ -34,3 +44,6 @@ docs/experiments/dashboard.html
 docs/experiments/dashboard-session24.html
 .kata.local.toml
 /evener-doctoring-report.html
+
+# goreleaser output
+/dist/

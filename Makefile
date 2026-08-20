@@ -1,4 +1,4 @@
-.PHONY: build build-runtime build-go build-hub web-preflight build-web test-web test-web-browser build-tui build-doctor build-all build-linux build-namingcheck build-llmcall build-migrate dist install install-home install-system test-install test-dev-tooling test test-short test-fuzz test-race merge-approval-gate vet lint lint-naming lint-gofmt lint-evenerfuzz lint-eval lint-internal lint-docs lint-golangci lint-generated lint-fuzz-registry generate mutation-floor clean fuzz fuzz-seeds fuzz-nightly fuzz-triage fuzz-continuous fuzz-coverage-global fuzz-bisect fuzz-bisect-selftest fuzz-oracle-audit fuzz-oracle-audit-selftest fuzz-mutation-score fuzz-ledger fuzz-coverage fuzz-gap-check fuzz-registry-check fuzz-goldens secret-scan fuzz-corpus-scan refresh-model-catalog test-coverage-floor web-coverage-floor web-coverage-floor-selftest coverage-gaps coverage-gaps-selftest coverage-union coverage-union-selftest merge-into-branch merge-into-branch-selftest test-timing-budget test-timing-budget-selftest test-rebaseline
+.PHONY: build build-runtime build-go build-hub web-preflight build-web test-web test-web-browser build-tui build-doctor build-all build-linux build-llmcall build-migrate dist install install-home install-system test-install tools test-dev-tooling test test-short test-fuzz test-race merge-approval-gate e2e-cover vet lint lint-naming lint-gofmt lint-evenerfuzz lint-eval lint-internal lint-golangci lint-generated lint-fuzz-registry generate mutation-floor clean fuzz fuzz-seeds fuzz-nightly fuzz-triage fuzz-continuous fuzz-bisect fuzz-bisect-selftest fuzz-oracle-audit fuzz-oracle-audit-selftest fuzz-mutation-score fuzz-ledger fuzz-gap-check fuzz-registry-check fuzz-goldens secret-scan fuzz-corpus-scan refresh-model-catalog coverage-floor coverage-floor-selftest coverage-gaps coverage-gaps-selftest test-timing-budget test-timing-budget-selftest test-rebaseline
 
 LDFLAGS := -X primeradiant.com/evener/buildinfo.GitSHA=$$(git rev-parse --short HEAD) \
            -X primeradiant.com/evener/buildinfo.GitDirty=$$(git --no-optional-locks diff-files --quiet && echo "" || echo "true") \
@@ -10,13 +10,7 @@ BINDIR ?= $(PREFIX)/bin
 EVENER_SHARE_BINDIR ?= $(PREFIX)/share/evener/bin
 INSTALL_BUILD_DIR ?= .build/install
 EVENER_INSTALL_BINS := evener evener-hub evener-tui evener-doctor evener-migrate
-DIST_DIR ?= dist
-DIST_GOOS ?= $(shell go env GOOS)
-DIST_GOARCH ?= $(shell go env GOARCH)
 BUILD_CHANNEL ?=
-EVENER_DIST_NAME = evener_$(DIST_GOOS)_$(DIST_GOARCH)
-EVENER_DIST_BIN_DIR = $(DIST_DIR)/$(EVENER_DIST_NAME)
-EVENER_DIST_ARCHIVE = $(DIST_DIR)/$(EVENER_DIST_NAME).tar.gz
 
 build: build-runtime
 
@@ -55,96 +49,19 @@ build-web: web-preflight
 	cd cmd/evener-hub/frontend && NODE_DISABLE_COMPILE_CACHE=1 npm run build
 
 # test-web is the frontend's single gate entry point: typecheck, unit tests,
-# then lint (mirrors the Go test+lint split, but the frontend toolchain
-# doesn't need separate targets per check).
-# The three checks are independent readers of the same sources, so they run
-# concurrently and the target's wall time is the slowest one (vitest) instead
-# of the sum. Each writes its own log; a failure replays exactly the failing
-# check's output.
+# then lint. The three checks are independent readers of the same sources, so
+# the script runs them concurrently with per-check private HOME/TMPDIR/XDG
+# roots; wall time is the slowest one (vitest) instead of the sum. A failure
+# replays exactly the failing check's log.
 test-web: web-preflight
-	@set -u; cd cmd/evener-hub/frontend && \
-	dir="$$(mktemp -d "$${TMPDIR:-/tmp}/evener-test-web.XXXXXX")" || exit 1; \
-	pids=""; started=""; fail=0; complete=0; \
-	stop_checks() { \
-		for pid in $$pids; do kill -TERM "$$pid" 2>/dev/null || :; done; \
-		for pid in $$pids; do wait "$$pid" 2>/dev/null || :; done; \
-		pids=""; \
-	}; \
-	finish() { \
-		finish_status=$$?; \
-		[ "$$complete" -eq 1 ] || stop_checks; \
-		if [ "$$complete" -eq 1 ] && [ "$$fail" -eq 0 ] && [ "$$finish_status" -eq 0 ]; then \
-			rm -rf "$$dir" || finish_status=1; \
-		else \
-			printf 'full logs: %s\n' "$$dir" >&2; \
-		fi; \
-		trap - 0; exit "$$finish_status"; \
-	}; \
-	interrupted() { stop_checks; exit "$$1"; }; \
-	trap finish 0; \
-	trap 'interrupted 129' 1; trap 'interrupted 130' 2; trap 'interrupted 143' 15; \
-	for c in typecheck test lint; do \
-		check_dir="$$dir/$$c"; \
-		if ! mkdir -p "$$check_dir/home" "$$check_dir/tmp" "$$check_dir/xdg-config" "$$check_dir/xdg-cache" "$$check_dir/xdg-state"; then fail=1; break; fi; \
-		HOME="$$check_dir/home" TMPDIR="$$check_dir/tmp" XDG_CONFIG_HOME="$$check_dir/xdg-config" XDG_CACHE_HOME="$$check_dir/xdg-cache" XDG_STATE_HOME="$$check_dir/xdg-state" NODE_DISABLE_COMPILE_CACHE=1 npm run $$c >"$$dir/$$c.log" 2>&1 & \
-		pids="$$pids $$!"; started="$$started $$c"; \
-	done; \
-	set -- $$pids; \
-	for c in $$started; do \
-		pid=$$1; shift; \
-		if wait "$$pid"; then check_status=0; else check_status=$$?; fi; \
-		pids="$$*"; \
-		printf '%s\n' "$$check_status" >"$$dir/$$c.status"; \
-	done; \
-	for c in typecheck test lint; do \
-		if [ "$$(cat "$$dir/$$c.status" 2>/dev/null || echo 1)" = 0 ]; then \
-			printf 'PASS  web-%s\n' "$$c"; \
-		else \
-			printf 'FAIL  web-%s\n' "$$c"; [ ! -f "$$dir/$$c.log" ] || cat "$$dir/$$c.log"; fail=1; \
-		fi; \
-	done; \
-	complete=1; \
-	exit $$fail
+	@scripts/web/test-web.sh
 
 # test-web-browser runs the real browser-only frontend guards. They stay out
 # of test-web because jsdom cannot evaluate the CSS cascade or browser geometry.
-# Run every guard so one missing browser or failing case does not hide the
-# remaining guard's verdict; return the first nonzero status.
+# The script runs every guard so one missing browser or failing case does not
+# hide the remaining guard's verdict; exit status is the first nonzero one.
 test-web-browser: web-preflight
-	@set -u; cd cmd/evener-hub/frontend && \
-	dir="$$(mktemp -d "$${TMPDIR:-/tmp}/evener-test-web-browser.XXXXXX")" || exit 1; \
-	guard_pid=""; status=0; complete=0; \
-	stop_guard() { [ -z "$$guard_pid" ] || { kill -TERM "$$guard_pid" 2>/dev/null || :; wait "$$guard_pid" 2>/dev/null || :; guard_pid=""; }; }; \
-	finish_browser() { \
-		finish_status=$$?; stop_guard; \
-		if [ "$$complete" -eq 1 ] && [ "$$status" -eq 0 ] && [ "$$finish_status" -eq 0 ]; then \
-			rm -rf "$$dir" || { finish_status=1; printf 'full logs: %s\n' "$$dir" >&2; }; \
-		else \
-			printf 'full logs: %s\n' "$$dir" >&2; \
-		fi; \
-		trap - 0; exit "$$finish_status"; \
-	}; \
-	interrupted_browser() { stop_guard; exit "$$1"; }; \
-	trap finish_browser 0; \
-	trap 'interrupted_browser 129' 1; trap 'interrupted_browser 130' 2; trap 'interrupted_browser 143' 15; \
-	for guard in layoutguard overflowguard spawnguard; do \
-		guard_dir="$$dir/$$guard"; \
-		mkdir -p "$$guard_dir/home" "$$guard_dir/tmp" "$$guard_dir/xdg-config" "$$guard_dir/xdg-cache" "$$guard_dir/xdg-state" || exit 1; \
-		HOME="$$guard_dir/home" TMPDIR="$$guard_dir/tmp" XDG_CONFIG_HOME="$$guard_dir/xdg-config" XDG_CACHE_HOME="$$guard_dir/xdg-cache" XDG_STATE_HOME="$$guard_dir/xdg-state" NODE_DISABLE_COMPILE_CACHE=1 node "scripts/$$guard/run.mjs" >"$$dir/$$guard.log" 2>&1 & \
-		guard_pid=$$!; \
-		if wait "$$guard_pid"; then \
-			guard_pid=""; \
-			printf 'PASS  web-%s\n' "$$guard"; \
-		else \
-			guard_status=$$?; \
-			guard_pid=""; \
-			printf 'FAIL  web-%s (exit %s)\n' "$$guard" "$$guard_status" >&2; \
-			cat "$$dir/$$guard.log"; \
-			[ "$$status" -ne 0 ] || status="$$guard_status"; \
-		fi; \
-	done; \
-	complete=1; \
-	exit "$$status"
+	@scripts/web/test-web-browser.sh
 
 build-tui:
 	go build -o evener-tui ./cmd/evener-tui/
@@ -161,16 +78,13 @@ build-llmcall:
 build-migrate:
 	go build -o evener-migrate ./cmd/evener-migrate/
 
-# A shipped dist archive must embed a fresh SPA, not the tracked PLACEHOLDER.
-dist: build-web
-	rm -rf "$(EVENER_DIST_BIN_DIR)" "$(EVENER_DIST_ARCHIVE)"
-	install -d "$(EVENER_DIST_BIN_DIR)"
-	CGO_ENABLED=0 GOOS=$(DIST_GOOS) GOARCH=$(DIST_GOARCH) go build -ldflags "$(LDFLAGS)" -o "$(EVENER_DIST_BIN_DIR)/evener" ./cmd/evener/
-	CGO_ENABLED=0 GOOS=$(DIST_GOOS) GOARCH=$(DIST_GOARCH) go build -o "$(EVENER_DIST_BIN_DIR)/evener-hub" ./cmd/evener-hub/
-	CGO_ENABLED=0 GOOS=$(DIST_GOOS) GOARCH=$(DIST_GOARCH) go build -o "$(EVENER_DIST_BIN_DIR)/evener-tui" ./cmd/evener-tui/
-	CGO_ENABLED=0 GOOS=$(DIST_GOOS) GOARCH=$(DIST_GOARCH) go build -o "$(EVENER_DIST_BIN_DIR)/evener-doctor" ./cmd/evener-doctor/
-	CGO_ENABLED=0 GOOS=$(DIST_GOOS) GOARCH=$(DIST_GOARCH) go build -o "$(EVENER_DIST_BIN_DIR)/evener-migrate" ./cmd/evener-migrate/
-	tar -C "$(DIST_DIR)" -czf "$(EVENER_DIST_ARCHIVE)" "$(EVENER_DIST_NAME)"
+# dist builds the release artifacts with goreleaser in snapshot mode (no tag,
+# no publish): dist/ holds evener_<os>_<arch>.tar.gz plus checksums.txt — the
+# same layout the release workflow ships and install.sh consumes. The web
+# build runs as goreleaser's before hook, so the hub binary embeds a fresh
+# SPA rather than the tracked PLACEHOLDER.
+dist:
+	goreleaser release --snapshot --clean
 
 # An installed hub must embed a fresh SPA, not the tracked PLACEHOLDER (install-home/install-system inherit via install).
 install: build-web
@@ -192,6 +106,15 @@ install-home: install
 install-system: PREFIX := /usr/local
 install-system: install
 
+# tools installs the CI-pinned lint/scanner versions from .tool-versions, so
+# a local `make lint` runs exactly what CI runs.
+tools:
+	@set -eu; \
+	golangci=$$(awk '$$1=="golangci-lint" {print $$2}' .tool-versions); \
+	gitleaks=$$(awk '$$1=="gitleaks" {print $$2}' .tool-versions); \
+	curl -sSfL https://raw.githubusercontent.com/golangci/golangci-lint/HEAD/install.sh | sh -s -- -b "$$(go env GOPATH)/bin" "v$$golangci"; \
+	go install github.com/zricethezav/gitleaks/v8@v$$gitleaks
+
 test-install:
 	go test -count=1 -run '^TestInstallHomeGeneratedHome$$' .
 
@@ -208,19 +131,6 @@ FUZZ_GO_MODULES := $(GO_MODULES) fuzz
 build-go:
 	@for m in $(GO_MODULES); do (cd $$m && go build ./...) || exit 1; done
 
-# MEMCAP runs a recipe under a hard per-run memory ceiling (a systemd user scope)
-# so a leaky test or fuzz run is OOM-killed individually instead of firing the
-# kernel's global OOM killer and taking the whole host — and its network — down.
-# Tune or disable via EVENER_MEM_MAX (default 16G; EVENER_MEM_MAX=0 turns it off).
-# Systemd user scopes are unavailable on Darwin, where the wrapper can only warn
-# before execing the same command, so recipes run directly there. Other hosts
-# retain the wrapper and its uncapped-warning fallback when scopes are unavailable.
-# See scripts/fuzz/run-capped.sh and docs/fuzzing.md ("Memory safety").
-ifeq ($(shell uname -s),Darwin)
-MEMCAP :=
-else
-MEMCAP := scripts/fuzz/run-capped.sh
-endif
 # Fuzz replay is a deterministic evidence gate: never inherit a developer's
 # persisted Go configuration or GOFLAGS, and always use this checkout's workspace.
 override FUZZ_GOWORK := $(abspath $(CURDIR)/go.work)
@@ -236,7 +146,7 @@ override FUZZ_GOWORK := $(abspath $(CURDIR)/go.work)
 # the guard or the pid-suffixed covscratch pattern, is enforced statically by
 # the audits in scriptmktemp_audit_test.go, not by re-running suites under
 # sabotage (kata 5hs2).
-DEV_TOOLING_TEST_SCRIPTS := gate/run-module-tests lib/private-go-home gate/merge-approval-gate ops/setup-gocache web/web-preflight lib/live-eval-isolation e2e/e2e-webui-turn-controls fuzz/fuzz-bisect fuzz/fuzz-oracle-audit coverage/web-coverage-floor coverage/coverage-gaps coverage/coverage-union gate/test-timing-budget lib/scratch-lib gate/merge-into-branch
+DEV_TOOLING_TEST_SCRIPTS := gate/run-module-tests lib/private-go-home gate/merge-approval-gate ops/setup-gocache web/web-preflight lib/live-eval-isolation e2e/e2e-webui-turn-controls fuzz/fuzz-bisect fuzz/fuzz-oracle-audit coverage/coverage-floor coverage/coverage-gaps gate/test-timing-budget lib/scratch-lib
 
 # test-dev-tooling tests tooling, not the product, so it runs in
 # `make merge-approval-gate` (where tooling regressions matter) and on demand
@@ -257,7 +167,7 @@ test-dev-tooling:
 # re-enter this Makefile's test-web target); it is node work, so it overlaps the
 # Go waves instead of adding its runtime on the end. WEB=0 skips it.
 test:
-	@MODULES="$(GO_MODULES)" MAKE="$(MAKE)" $(MEMCAP) scripts/gate/run-module-tests.sh -short -count=1
+	@MODULES="$(GO_MODULES)" MAKE="$(MAKE)" scripts/gate/run-module-tests.sh -short -count=1
 
 test-short:
 	@$(MAKE) test
@@ -277,29 +187,11 @@ test-fuzz:
 	@EVENER_FUZZ_TESTS=1 go test ./internal/appserver -run 'SeqFuzz' -count=1 -v
 
 # merge-approval-gate is the canonical serial post-merge gate. Keep the
-# explicit expansion in docs/testing.md for diagnosis and evidence.
-#
-# The capability preflight (evener-dev capability-preflight) classifies
-# sandbox-sensitive host capabilities ONCE, before any phase runs, and
-# exports EVENER_GATE_CAPABILITY_SKIP so ROOT_FULL=1 make test skips exactly
-# the known-infeasible live/e2e tests instead of repeatedly failing into
-# them, and reports what it found blocked with exact rerun commands. All four
-# steps run in ONE shell (chained with && instead of four separate
-# `@$(MAKE)` lines) so that export reaches every phase; the gate still stops
-# at the first failing phase either way.
-#
-# The assignment and the export are SEPARATE statements, and the assignment's
-# own exit status is what the `if` tests. `export VAR="$$(preflight)"` would
-# fail open (issue #181): export succeeds whatever the substitution did, so a
-# preflight that never reached a verdict would run every phase with an empty or
-# inherited skip pattern and call the result a pass.
+# explicit expansion in docs/testing.md for diagnosis and evidence. Sandboxed
+# hosts are handled inside the tests themselves: the live/e2e families probe
+# their own capabilities and t.Skip (internal/e2ecap).
 merge-approval-gate:
-	@if ! EVENER_GATE_CAPABILITY_SKIP="$$(go run ./cmd/evener-dev capability-preflight)"; then \
-		echo 'merge-approval-gate: capability preflight failed before emitting its verdict: go run ./cmd/evener-dev capability-preflight' >&2; \
-		exit 1; \
-	fi; \
-	export EVENER_GATE_CAPABILITY_SKIP; \
-		$(MAKE) lint && \
+	@$(MAKE) lint && \
 		$(MAKE) build && \
 		ROOT_FULL=1 $(MAKE) test && \
 		$(MAKE) test-dev-tooling
@@ -310,7 +202,7 @@ merge-approval-gate:
 # its timeouts. WEB=0: -race is a Go-toolchain gate, and the frontend suite is
 # unaffected by it, so `make test` owns the web stream instead of paying it twice.
 test-race:
-	@MODULES="$(GO_MODULES)" WEB=0 AGENT_SHARDS=0 AGENT_PARALLEL= $(MEMCAP) scripts/gate/run-module-tests.sh -race -short -count=1
+	@MODULES="$(GO_MODULES)" WEB=0 AGENT_SHARDS=0 AGENT_PARALLEL= scripts/gate/run-module-tests.sh -race -short -count=1
 
 # e2e-cover measures END-TO-END coverage of the real evener/evener-tui binaries via
 # `go build -cover` + GOCOVERDIR — the main()/CLI/dispatch/serve paths unit tests
@@ -327,7 +219,7 @@ vet:
 # crashers) under the evenerfuzz tag. `go test -run '^Fuzz'` with no `-fuzz` does
 # not search, so this is deterministic. `make fuzz` runs it as one of its steps;
 # fuzz-seeds is the same work on its own.
-FUZZ_SEED_REPLAY = for m in $(FUZZ_GO_MODULES); do (GOENV=off GOFLAGS= GOWORK="$(FUZZ_GOWORK)" $(MEMCAP) sh -c "cd $$m && go test -run '^Fuzz' -tags evenerfuzz -count=1 ./...") || exit 1; done
+FUZZ_SEED_REPLAY = for m in $(FUZZ_GO_MODULES); do (GOENV=off GOFLAGS= GOWORK="$(FUZZ_GOWORK)" sh -c "cd $$m && go test -run '^Fuzz' -tags evenerfuzz -count=1 ./...") || exit 1; done
 
 # fuzz-seeds is the RUNTIME half of the tagged-source gate whose compile half is
 # `make lint-evenerfuzz`. It stays out of `make test` on measured cost: 144s
@@ -349,13 +241,13 @@ fuzz-seeds:
 # never-panic oracle catches it. The first step verifies the mechanism itself
 # fires under the tag; production builds and `make test` stay tag-free.
 fuzz:
-	@GOENV=off GOFLAGS= GOWORK="$(FUZZ_GOWORK)" $(MEMCAP) sh -c 'cd agent && go test -run "^$$" -tags evenerfuzz -count=1 ./...'
-	@GOENV=off GOFLAGS= GOWORK="$(FUZZ_GOWORK)" $(MEMCAP) sh -c 'cd invariant && go test -tags evenerfuzz ./...'
-	@GOENV=off GOFLAGS= GOWORK="$(FUZZ_GOWORK)" $(MEMCAP) sh -c 'cd fuzz && go test -tags evenerfuzz ./...'
-	@GOENV=off GOFLAGS= GOWORK="$(FUZZ_GOWORK)" $(MEMCAP) sh -c 'go test ./cmd/evener-fuzzcov ./cmd/evener-fuzz-harvest'
+	@GOENV=off GOFLAGS= GOWORK="$(FUZZ_GOWORK)" sh -c 'cd agent && go test -run "^$$" -tags evenerfuzz -count=1 ./...'
+	@GOENV=off GOFLAGS= GOWORK="$(FUZZ_GOWORK)" sh -c 'cd invariant && go test -tags evenerfuzz ./...'
+	@GOENV=off GOFLAGS= GOWORK="$(FUZZ_GOWORK)" sh -c 'cd fuzz && go test -tags evenerfuzz ./...'
+	@GOENV=off GOFLAGS= GOWORK="$(FUZZ_GOWORK)" sh -c 'go test ./cmd/evener-fuzzcov ./cmd/evener-fuzz-harvest'
 	@$(FUZZ_SEED_REPLAY)
-	@set -eu; cap="$(MEMCAP)"; if [ -n "$$cap" ]; then cap="$$(pwd)/$$cap"; fi; go_work="$(FUZZ_GOWORK)"; for target in $$(scripts/fuzz/run-fuzz.sh --list | awk -F: '$$1 == "rapid" { print $$2 ":" $$3 ":" $$4 }'); do module=$${target%%:*}; rest=$${target#*:}; pkg=$${rest%%:*}; name=$${rest#*:}; for seed in 1 2 3 5 8; do echo "=== rapid replay $$module:$$name seed $$seed ==="; (cd "$$module" && GOENV=off GOFLAGS= GOWORK="$$go_work" env -u RAPID_FAILFILE EVENER_FUZZ_TESTS=1 RAPID_SEED="$$seed" RAPID_CHECKS=100 RAPID_STEPS=30 RAPID_NOFAILFILE=true RAPID_LOG=false RAPID_V=false RAPID_DEBUG=false RAPID_DEBUGVIS=false RAPID_SHRINKTIME=30s $${cap:+"$$cap"} go test -tags evenerfuzz -run "^$${name}\$$" -count=1 "$$pkg"); done; done
-	@GOENV=off GOFLAGS= GOWORK="$(FUZZ_GOWORK)" $(MEMCAP) sh -c "go test -run '^Test.*Golden\$$' ./appwire"
+	@scripts/fuzz/rapid-replay.sh
+	@GOENV=off GOFLAGS= GOWORK="$(FUZZ_GOWORK)" sh -c "go test -run '^Test.*Golden\$$' ./appwire"
 
 # fuzz-goldens regenerates the decode SNAPSHOT goldens — evener's differential
 # oracle. Each decode target's committed seed corpus is replayed and its decoded
@@ -364,13 +256,13 @@ fuzz:
 # `make fuzz` golden check; run this ONLY after an INTENDED decoder change, then
 # commit the diff. See docs/fuzzing.md ("Choosing an oracle").
 fuzz-goldens:
-	@$(MEMCAP) sh -c "go test -run '^Test.*Golden\$$' ./appwire -update-goldens"
-	@$(MEMCAP) sh -c "cd llm && go test -run '^Test.*Golden\$$' ./providers/difftest -update-goldens"
+	@sh -c "go test -run '^Test.*Golden\$$' ./appwire -update-goldens"
+	@sh -c "cd llm && go test -run '^Test.*Golden\$$' ./providers/difftest -update-goldens"
 
 # fuzz-nightly runs the unbounded coverage-guided search per target, bounded by a
 # per-target time budget. Manual / nightly only — never in the gate.
 fuzz-nightly:
-	@$(MEMCAP) scripts/fuzz/run-fuzz.sh $(FUZZ_ARGS)
+	@scripts/fuzz/run-fuzz.sh $(FUZZ_ARGS)
 
 # fuzz-triage is the local, on-demand campaign + auto-triage tool (8.7): it
 # searches each surface, flake-guards and dedups any crasher, and opens ONE
@@ -378,7 +270,7 @@ fuzz-nightly:
 # Pass flags through FUZZ_ARGS, e.g. `make fuzz-triage FUZZ_ARGS="--time 5m"`,
 # `make fuzz-triage FUZZ_ARGS=--no-pr`, or `make fuzz-triage FUZZ_ARGS=--dry-run`.
 fuzz-triage:
-	@$(MEMCAP) scripts/fuzz/fuzz-triage.sh $(FUZZ_ARGS)
+	@scripts/fuzz/fuzz-triage.sh $(FUZZ_ARGS)
 
 # fuzz-continuous is the LOCAL, on-demand continuous loop: it rotates over every
 # native target, giving each a bounded search turn round after round (the corpus
@@ -395,22 +287,17 @@ fuzz-continuous:
 fuzz-drive:
 	@scripts/fuzz/fuzz-drive.sh $(FUZZ_ARGS)
 
-# fuzz-coverage-global validates the registered target plan, requires a local
-# native/Rapid fuzz surface for every production package, then replays each target
-# into package-local profiles for strict whole-module accounting. Heavy + local.
-# CHECK=1 enforces the raw >95% threshold and floors; BLESS=1 raises floors only
-# after every measured module clears that threshold.
-fuzz-coverage-global:
-	@scripts/fuzz/fuzz-coverage-global.sh $(if $(CHECK),--check) $(if $(BLESS),--bless) $(FUZZ_ARGS)
+# coverage-floor is the repo's one coverage ratchet: per module, the union of
+# the test track and the deterministic fuzz-replay track, plus the frontend's
+# vitest line coverage, against scripts/coverage/coverage-floors.txt. Bare
+# invocation reports; CHECK=1 fails on a drop; BLESS=1 raises floors. Heavy +
+# local. Its contract is pinned by scripts/coverage/coverage-floor-selftest.sh
+# in the dev-tooling wave.
+coverage-floor:
+	@scripts/coverage/coverage-floor.sh $(if $(CHECK),--check) $(if $(BLESS),--bless) $(COV_ARGS)
 
-# test-coverage-floor ratchets whole-module FULL-SUITE (unit+integration) coverage
-# against scripts/coverage/testcov-global-floors.txt — the companion to fuzz-coverage-global
-# (fuzz-reachable). CHECK=1 fails on a drop; BLESS=1 raises floors. Heavy + local.
-# Its contract is pinned by cmd/evener-dev/coveragefloor_test.go, which runs in
-# the ordinary Go test wave (including an end-to-end case that measures a real
-# throwaway module), so it needs no shell selftest of its own.
-test-coverage-floor:
-	@go run ./cmd/evener-dev coverage-floor $(if $(CHECK),--check) $(if $(BLESS),--bless) $(COV_ARGS)
+coverage-floor-selftest:
+	@scripts/coverage/coverage-floor-selftest.sh
 
 # coverage-gaps ranks where a coverage profile's UNCOVERED statements are, by
 # count rather than percentage, so coverage work targets the largest real gaps.
@@ -421,49 +308,13 @@ coverage-gaps:
 coverage-gaps-selftest:
 	@scripts/coverage/coverage-gaps-selftest.sh
 
-# coverage-union reports how much of each module ANY deterministic test reaches:
-# the union of the test track (test-coverage-floor) and the fuzz track
-# (fuzz-coverage-global). Both understate on their own — the -run '^(Test|Example)'
-# filter excludes fuzz targets, and this repo keeps whole families of behavioural
-# checks in `check*` functions only a evenerfuzz "program" target calls. CHECK=1
-# gates, BLESS=1 raises. Heaviest of the three: two full runs per module.
-coverage-union:
-	@scripts/coverage/coverage-union.sh $(if $(CHECK),--check) $(if $(BLESS),--bless) $(UNION_ARGS)
-
-coverage-union-selftest:
-	@scripts/coverage/coverage-union-selftest.sh
-
-# merge-into-branch merges SOURCE into TARGET by ref (refs/heads/TARGET),
-# never through a live checkout: it builds the merge in a private disposable
-# worktree and lands it with a `git update-ref` compare-and-swap, so a
-# concurrent branch switch on a shared checkout cannot land the merge on the
-# wrong branch (kata h2tb). `make merge-into-branch TARGET=main SOURCE=feature
-# MERGE_ARGS="--no-ff"`; see scripts/gate/merge-into-branch.sh --help for flags.
-merge-into-branch:
-	@scripts/gate/merge-into-branch.sh $(MERGE_ARGS) $(TARGET) $(SOURCE)
-
-merge-into-branch-selftest:
-	@scripts/gate/merge-into-branch-selftest.sh
-
-# web-coverage-floor is the frontend counterpart: per-area vitest LINE coverage
-# ratcheted against scripts/coverage/webcov-floors.txt. CHECK=1 fails on a drop; BLESS=1
-# raises floors; REUSE=1 parses the existing report instead of re-running the
-# suite. Heavy + local, same as its Go siblings.
-web-coverage-floor: web-preflight
-	@scripts/coverage/web-coverage-floor.sh $(if $(CHECK),--check) $(if $(BLESS),--bless) $(if $(REUSE),--reuse) $(WEBCOV_ARGS)
-
-# web-coverage-floor-selftest exercises the rollup and ratchet against a
-# throwaway frontend and a synthetic coverage summary — no vitest run.
-web-coverage-floor-selftest:
-	@scripts/coverage/web-coverage-floor-selftest.sh
-
 # test-timing-budget ratchets per-package test wall time against
 # testing-budget.json (kata b6rv): fail at 1.5x the budget, warn at 1.1x, plus
 # a flat per-test ceiling, so an unexamined timing regression cannot silently
 # erode the wins docs/superpowers/specs/2026-08-01-test-gate-runtime-design.md
 # recorded. CHECK=1 enforces (strict in CI, warn-only on a local run); bare
-# invocation only measures and prints. Companion to test-coverage-floor and
-# web-coverage-floor, same as those heavy + local.
+# invocation only measures and prints. Companion to coverage-floor,
+# same heavy + local posture.
 test-timing-budget:
 	@scripts/gate/test-timing-budget.sh $(if $(CHECK),--check) $(TIMING_ARGS)
 
@@ -516,7 +367,7 @@ fuzz-oracle-audit-selftest:
 # worklist. Nightly/manual (slow); needs gremlins installed. Pass FUZZ_ARGS to
 # score specific packages, e.g. `make fuzz-mutation-score FUZZ_ARGS="llm:./providercfg"`.
 fuzz-mutation-score:
-	@$(MEMCAP) scripts/fuzz/fuzz-mutation-score.sh $(FUZZ_ARGS)
+	@scripts/fuzz/fuzz-mutation-score.sh $(FUZZ_ARGS)
 
 # fuzz-ledger pretty-prints the triage ledger (found/fixed/quarantined counts and
 # the open-bug list) from fuzz/state/ledger.json.
@@ -525,22 +376,10 @@ fuzz-ledger:
 	@echo "--- open bugs (found) ---"
 	@jq -r 'to_entries[] | select(.value.status=="found") | "  \(.key)\t\(.value.pr // "(no PR)")"' fuzz/state/ledger.json
 
-# FUZZCOV_ARGS forwards CHECK=1 -> --check and BLESS=1 -> --bless to the reporter.
-FUZZCOV_ARGS := $(if $(CHECK),--check) $(if $(BLESS),--bless)
-
-# fuzz-coverage replays every fuzz target's COMMITTED corpus under -coverprofile
-# (no -fuzz, so deterministic), computes each target's FOCUS-SET coverage %
-# (primary, drivable to 100%) plus its whole-package % (secondary), enforces the
-# no-regression ratchet against scripts/coverage/fuzzcov-floors.txt, and prints the gap map
-# (decode/parse packages with zero fuzz coverage). Advisory by default; pass
-# CHECK=1 to fail on a ratchet regression or a gap breach, BLESS=1 to raise floors.
-fuzz-coverage:
-	@$(MEMCAP) scripts/fuzz/fuzz-coverage.sh $(FUZZCOV_ARGS)
-
 # fuzz-gap-check is the FAST, STATIC gap gate (the blocking CI floor): it asserts
 # every decode/parse package has a registered fuzz target (or a reasoned ignore),
 # derived from scripts/fuzz/run-fuzz.sh --list without replaying any corpus. Seconds,
-# deterministic. The slow ratchet (fuzz-coverage CHECK=1) stays local/manual.
+# deterministic.
 fuzz-gap-check:
 	@scripts/fuzz/fuzz-gap-check.sh
 
@@ -569,9 +408,9 @@ secret-scan:
 fuzz-corpus-scan:
 	@scripts/ops/gitleaks-scan.sh corpus
 
-# lint-naming enforces JSON=snake_case, TOML=snake_case across every Go
-# struct tag and TOML file in the repo. Fast (well under a second) and
-# safe to run as a separate `go vet`-style gate.
+# lint-naming enforces TOML=snake_case across every TOML data file in the
+# repo. Go struct tags are tagliatelle's job (.golangci.yml): JSON and TOML
+# tags are snake_case everywhere but the camelCase wire-protocol packages.
 define run_quiet_lint
 	@set -u; log="$$(mktemp "$${TMPDIR:-/tmp}/evener-lint-check.XXXXXX")" || exit 1; \
 	trap 'rm -f "$$log"' EXIT HUP INT TERM; \
@@ -585,15 +424,9 @@ define run_quiet_lint
 endef
 
 lint-naming:
-	$(call run_quiet_lint,go run ./cmd/evener-namingcheck)
+	$(call run_quiet_lint,go run ./cmd/evener-tomlcheck)
 
-# lint-gofmt keeps the repository's Go sources formatter-clean. The formatter
-# configuration in golangci-lint is not the Makefile gate and may not run in
-# every lint mode.
-lint-gofmt:
-	$(call run_quiet_lint,files="$$(git ls-files -z -- '*.go' | xargs -0 gofmt -l)"; status=$$?; if [ "$$status" -ne 0 ]; then if [ -n "$$files" ]; then printf '%s\n' "$$files"; fi; exit "$$status"; fi; if [ -n "$$files" ]; then printf '%s\n' "$$files"; exit 1; fi)
-
-# lint-evenerfuzz is the compile floor for the //go:build evenerfuzz sources. Every
+# lint-evenerfuzz is the floor for the //go:build evenerfuzz sources. Every
 # other gate is tag-free — `make test`, `make lint`, `make vet` and
 # `go build ./...` never compile those 250 files — so a production signature
 # change that strands a tagged call site rots there until someone runs
@@ -601,8 +434,19 @@ lint-gofmt:
 # the tag, which is what catches a stranded call site. Running the corpora
 # themselves is 144s and stays in `make fuzz` / `make fuzz-seeds`; this pass is
 # ~4s warm across the workspace, which is why it can sit in the gate.
+#
+# The tagliatelle pass is the struct-tag half of the same floor: golangci-lint
+# only analyses the files it compiles, and the tag-free run in lint-golangci
+# compiles none of these. --enable-only keeps the tagged pass to exactly the
+# gate the tagged sources had before (evener-namingcheck parsed every .go file
+# in the tree, tags or not) while reading its casing rules, carve-outs and
+# exclusions from the one .golangci.yml. Widening the tagged pass to the whole
+# linter set is a separate change: measured at 180 findings across the
+# workspace (99 modernize, 20 revive, 13 staticcheck, ...) that these files
+# have never been held to.
 lint-evenerfuzz:
 	$(call run_quiet_lint,for m in $(FUZZ_GO_MODULES); do (cd $$m && go vet -tags evenerfuzz ./...) || exit 1; done)
+	$(call run_quiet_lint,for m in $(FUZZ_GO_MODULES); do (cd $$m && golangci-lint run --allow-parallel-runners --build-tags evenerfuzz --enable-only tagliatelle ./...) || exit 1; done)
 
 # lint-eval is the same compile floor for the //go:build eval sources: the
 # live-provider eval suites (context-compaction quality, forced notes). This tag
@@ -613,27 +457,42 @@ lint-evenerfuzz:
 # FUZZ_GO_MODULES is the full workspace list, and the floor wants all of it: eval
 # sources sit only under agent/ today, and a floor is worth nothing in the module
 # where the next one lands. ~3.5s warm, the same order as the evenerfuzz pass.
+# It carries the same tagliatelle pass under its own tag, for the reason
+# lint-evenerfuzz's comment gives.
 lint-eval:
 	$(call run_quiet_lint,for m in $(FUZZ_GO_MODULES); do (cd $$m && go vet -tags eval ./...) || exit 1; done)
+	$(call run_quiet_lint,for m in $(FUZZ_GO_MODULES); do (cd $$m && golangci-lint run --allow-parallel-runners --build-tags eval --enable-only tagliatelle ./...) || exit 1; done)
 
 # lint-internal fails if any exported symbol in the agent/llm/providercfg
 # libraries names a evener-internal type — keeping them externally importable.
 lint-internal:
 	$(call run_quiet_lint,go run ./cmd/evener-internalcheck)
 
-# lint-docs fails if any exported package-level declaration in the published
-# library packages (llm, agent, agent/events, auth/openai) lacks a doc comment.
-lint-docs:
-	$(call run_quiet_lint,go run ./cmd/evener-docscheck)
-
-build-namingcheck:
-	go build -o evener-namingcheck ./cmd/evener-namingcheck/
-
 # golangci-lint across every module (./... is per-module under go.work).
 # The runner lives in Go (cmd/evener-dev); MODULES and LINT_PARALLEL keep the
 # interface run-module-lint.sh shipped with.
+#
+# FUZZ_GO_MODULES, not GO_MODULES: the sweep has to cover the fuzz module too.
+# It is excluded from the test gate (its targets run through `make fuzz`), but
+# its 29 struct-tag sites and everything else in it are ordinary Go that the
+# linter must see — evener-namingcheck reached them by walking the filesystem
+# from the repo root, and a module-list-driven linter only reaches what the
+# list names.
+#
+# The second run is the server/appwire_*.go camelCase regime. tagliatelle's
+# overrides are per-package and those files share package `server` with 119
+# snake_case tags, so the split cannot live in one config; .golangci-appwire.yml
+# holds the other half and explains itself.
 lint-golangci:
-	@MODULES="$(GO_MODULES)" go run ./cmd/evener-dev module-lint
+	@MODULES="$(FUZZ_GO_MODULES)" go run ./cmd/evener-dev module-lint
+	$(call run_quiet_lint,golangci-lint run --allow-parallel-runners --config .golangci-appwire.yml ./server/...)
+
+# lint-gofmt keeps EVERY tracked Go source formatter-clean, including the ~250
+# files behind //go:build evenerfuzz / eval. It is not redundant with the gofmt
+# formatter in .golangci.yml: golangci-lint formats only the files it compiles,
+# and the tag-free lint run compiles none of the tagged ones.
+lint-gofmt:
+	$(call run_quiet_lint,files="$$(git ls-files -z -- '*.go' | xargs -0 gofmt -l)"; status=$$?; if [ "$$status" -ne 0 ]; then if [ -n "$$files" ]; then printf '%s\n' "$$files"; fi; exit "$$status"; fi; if [ -n "$$files" ]; then printf '%s\n' "$$files"; exit 1; fi)
 
 # generate runs all `go generate` directives. The AppWire protocol reference
 # and frontend TypeScript declarations come from the catalog in appwire/protocol.go.
@@ -655,9 +514,9 @@ lint-generated:
 lint-fuzz-registry:
 	$(call run_quiet_lint,scripts/fuzz/fuzz-registry-check.sh)
 
-LINT_TARGETS := lint-naming lint-gofmt lint-evenerfuzz lint-eval lint-internal lint-docs lint-golangci lint-generated lint-fuzz-registry secret-scan
+LINT_TARGETS := lint-naming lint-gofmt lint-evenerfuzz lint-eval lint-internal lint-golangci lint-generated lint-fuzz-registry secret-scan
 
 lint: $(LINT_TARGETS)
 
 clean:
-	rm -f evener evener-hub evener-tui evener-doctor llmcall evener-namingcheck evener-migrate evener-linux-amd64
+	rm -f evener evener-hub evener-tui evener-doctor llmcall evener-migrate evener-linux-amd64

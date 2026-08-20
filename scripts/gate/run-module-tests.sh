@@ -116,25 +116,7 @@ fi
 . "$(dirname "${BASH_SOURCE[0]}")/../lib/gate-surface-lib.sh"
 fuzz_test_skip="$GATE_FUZZ_TEST_SKIP"
 
-# EVENER_GATE_CAPABILITY_SKIP is exported by evener-dev capability-preflight
-# (merge-approval-gate's preflight) when it classified a sandbox capability as
-# blocked. Applied to the ROOT module ONLY: the known test-name patterns
-# (TestE2E_, TestTUITmuxE2E_) live entirely in cmd/evener-hub and cmd/evener-tui,
-# both part of root, and agent/session_escalation_e2e_test.go has unrelated
-# TestE2E_*-named tests of its own - unioning the pattern into every module
-# would silently skip those too. See gate-surface-lib.sh's
-# gate_capability_skip_pattern for the evidenced mapping.
-#
-# A run that skips root tests says so on its own output. The preflight prints
-# its BLOCKED summary before this script starts, but this script is also run
-# directly (ROOT_FULL=1 make test), where an inherited or hand-set value would
-# otherwise narrow root's surface and still report PASS with no trace of it.
 root_skip="$fuzz_test_skip"
-if [ -n "${EVENER_GATE_CAPABILITY_SKIP:-}" ]; then
-	root_skip="(${fuzz_test_skip}|${EVENER_GATE_CAPABILITY_SKIP})"
-	printf 'run-module-tests.sh: EVENER_GATE_CAPABILITY_SKIP is set; root runs with -skip %s (capability-blocked tests are NOT proven by this run)\n' \
-		"$EVENER_GATE_CAPABILITY_SKIP" >&2
-fi
 
 flags="$*"
 module_test_flags() {
@@ -311,8 +293,7 @@ run_module() {
 		fi
 		# ROOT_FULL removes short mode through module_test_flags while retaining
 		# the regular Test/Example name filter. Fuzz-owned targets and sanity
-		# functions stay under the explicit make fuzz gate. root_skip additionally
-		# carries any capability-blocked skip pattern - see its definition above.
+		# functions stay under the explicit make fuzz gate.
 		/usr/bin/time -p go test $test_flags $extra -run "$GATE_TEST_RUN" -skip "$root_skip" "${packages[@]}"
 		return
 	fi

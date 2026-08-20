@@ -2,16 +2,15 @@ package main
 
 import "testing"
 
-// FuzzRegistryProgram replays deterministic parsing, discovery, AST, focus,
+// FuzzRegistryProgram replays deterministic parsing, discovery, AST,
 // and CLI operation programs selected by fuzz input.
 func FuzzRegistryProgram(f *testing.F) {
 	cases := []func(*testing.T){
 		scenarioRunRegistryAllPipelineFailures, scenarioRegistryMainAndReaderWriterErrors,
-		scenarioRegistryFocusAndEmitValidationFailures, scenarioCanonicalAndHelperRejections,
+		scenarioRegistryEmitValidationFailures, scenarioCanonicalAndHelperRejections,
 		scenarioASTHelperBranches, scenarioRegistryInjectedFilesystemFailures,
 		scenarioReadWorkspaceModuleFailureMatrix, scenarioDiscoverWorkspaceMalformedFilesAndRapidIssues,
-		scenarioParseRegistry, scenarioCheckFocusSpecsAcceptsResolvableSpecs,
-		scenarioCheckFocusSpecsReportsUnresolvableSpecs, scenarioDiscoverWorkspaceFindsNativeAndMarkedRapidTargets,
+		scenarioParseRegistry, scenarioDiscoverWorkspaceFindsNativeAndMarkedRapidTargets,
 		scenarioDiscoverWorkspaceUsesLogicalLabelForSymlinkedModule,
 		scenarioDiscoverWorkspaceRejectsSymlinkedModuleOutsideRepository,
 		scenarioDiscoverWorkspaceRejectsDuplicateResolvedModuleDirectories,

@@ -185,19 +185,17 @@ type hookMatcherGroup struct {
 // Field names and json tags match Claude's documented config shape
 // (07 §"Formal config shape").
 type hookSpec struct {
-	Type    string   `json:"type"`
-	Command string   `json:"command,omitempty"`
-	Prompt  string   `json:"prompt,omitempty"`
-	Timeout int      `json:"timeout,omitempty"`
-	Model   string   `json:"model,omitempty"`
-	Args    []string `json:"args,omitempty"`
-	Shell   string   `json:"shell,omitempty"`
-	If      string   `json:"if,omitempty"`
-	Async   bool     `json:"async,omitempty"`
-	// evener:naming-ignore
-	AsyncRewake bool `json:"asyncRewake,omitempty"` // Claude wire format: camelCase required
-	// evener:naming-ignore
-	StatusMessage string `json:"statusMessage,omitempty"` // Claude wire format: camelCase required
+	Type          string   `json:"type"`
+	Command       string   `json:"command,omitempty"`
+	Prompt        string   `json:"prompt,omitempty"`
+	Timeout       int      `json:"timeout,omitempty"`
+	Model         string   `json:"model,omitempty"`
+	Args          []string `json:"args,omitempty"`
+	Shell         string   `json:"shell,omitempty"`
+	If            string   `json:"if,omitempty"`
+	Async         bool     `json:"async,omitempty"`
+	AsyncRewake   bool     `json:"asyncRewake,omitempty"`   //nolint:tagliatelle // Claude wire format: camelCase required
+	StatusMessage string   `json:"statusMessage,omitempty"` //nolint:tagliatelle // Claude wire format: camelCase required
 }
 
 // knownHookSpecKeys is the set of json field names in hookSpec, used to

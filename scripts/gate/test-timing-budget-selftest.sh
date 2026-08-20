@@ -2,7 +2,7 @@
 # test-timing-budget-selftest.sh — exercises scripts/test-timing-budget.sh's
 # comparison contract against fixture "already-measured" duration rows and
 # fixture testing-budget.json files, via --measured (test-timing-budget.sh's
-# own --reuse-shaped seam — see web-coverage-floor.sh's --reuse for the same
+# own reuse-shaped seam — see coverage-floor.sh's web row for the same
 # idea). No go test, no vitest, no network: every check here is about the
 # ratio/ceiling/missing-entry/no-baseline arithmetic and the strict-vs-warn-only
 # exit policy, not about running a real suite. Run via

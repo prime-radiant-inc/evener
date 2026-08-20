@@ -12,6 +12,33 @@ import (
 	"testing"
 )
 
+// installedBins returns the EVENER_INSTALL_BINS list from the Makefile — the
+// single source of truth for which binaries a release install contains, and
+// the same source install.sh's `bins` line and `make dist` are kept in sync
+// with. Reading it here, rather than hardcoding a parallel copy, keeps the
+// fixture archive below honest: a sixth binary can't silently break the
+// fixture the way evener-migrate once did (Release archive did not contain
+// evener-migrate).
+func installedBins(t testing.TB) []string {
+	t.Helper()
+
+	body, err := os.ReadFile("Makefile")
+	if err != nil {
+		t.Fatalf("read Makefile: %v", err)
+	}
+	for line := range strings.SplitSeq(string(body), "\n") {
+		if rest, ok := strings.CutPrefix(line, "EVENER_INSTALL_BINS :="); ok {
+			bins := strings.Fields(rest)
+			if len(bins) == 0 {
+				t.Fatal("EVENER_INSTALL_BINS assignment in Makefile has no binaries")
+			}
+			return bins
+		}
+	}
+	t.Fatal("EVENER_INSTALL_BINS assignment not found in Makefile")
+	return nil
+}
+
 // FuzzInstallScript drives the release installer through its environment,
 // platform, archive-validation, and filesystem branches. Network and platform
 // discovery are replaced at the process boundary; installation and symlink
@@ -73,9 +100,20 @@ case "$1" in
 esac
 `, osName, archName))
 		writeExecutable(t, filepath.Join(fakeBin, "curl"), `#!/bin/sh
-printf '%s\n' "$2" > "$EVENER_FUZZ_URL_FILE"
+url="$2"
+printf '%s\n' "$url" >> "$EVENER_FUZZ_URL_FILE"
 while [ "$#" -gt 0 ]; do
-  if [ "$1" = -o ]; then : > "$2"; exit 0; fi
+  if [ "$1" = -o ]; then
+    case "$url" in
+      *checksums.txt)
+        # The archive above is the empty file this stub wrote, so its digest
+        # is the well-known empty-input sha256.
+        printf '%s  %s\n' "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855" "$EVENER_FUZZ_ARCHIVE_ROOT.tar.gz" > "$2"
+        exit 0
+        ;;
+    esac
+    : > "$2"; exit 0
+  fi
   shift
 done
 exit 2
@@ -169,19 +207,10 @@ done
 			versionPath = "download/v1.2.3"
 		}
 		wantURL := fmt.Sprintf("https://github.com/prime-radiant-inc/evener/releases/%s/evener_%s_%s.tar.gz", versionPath, strings.ToLower(osName), installArch(archName))
-		if strings.TrimSpace(string(gotURL)) != wantURL {
-			t.Fatalf("URL = %q, want %q", strings.TrimSpace(string(gotURL)), wantURL)
+		wantChecksums := fmt.Sprintf("https://github.com/prime-radiant-inc/evener/releases/%s/checksums.txt", versionPath)
+		gotURLs := strings.Split(strings.TrimSpace(string(gotURL)), "\n")
+		if len(gotURLs) != 2 || gotURLs[0] != wantURL || gotURLs[1] != wantChecksums {
+			t.Fatalf("URLs = %q, want [%q %q]", gotURLs, wantURL, wantChecksums)
 		}
 	})
-}
-
-func installArch(arch string) string {
-	if arch == "x86_64" {
-		return "amd64"
-	}
-	return arch
-}
-
-func installArchiveRoot(osName, arch string) string {
-	return "evener_" + strings.ToLower(osName) + "_" + installArch(arch)
 }

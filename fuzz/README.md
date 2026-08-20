@@ -27,7 +27,6 @@ targets to sit in the package under test (they call unexported seams and their
 ```sh
 make fuzz           # seed corpus + saved crashers as deterministic tests (gate-safe)
 make fuzz-nightly   # bounded coverage-guided search per target (60s each by default)
-make fuzz-coverage  # focus-set coverage map + gap map (committed corpus, deterministic)
 make fuzz-triage    # local campaign + auto-triage: search, flake-guard, dedup, open a PR
 scripts/run-fuzz.sh --time 5m            # all targets, 5 min each
 scripts/run-fuzz.sh llm:FuzzParseSSE     # one target
@@ -41,60 +40,27 @@ Two cross-cutting facts about every run above:
   are live — a tripped invariant panics and the never-panic oracle catches it.
   `make test` / `go build` stay tag-free and byte-unchanged. See
   [`docs/fuzzing.md`](../docs/fuzzing.md) → *Internal invariants*.
-- **Runs are memory-capped.** A coverage-guided search can balloon into tens of GB
-  and fire the kernel's global OOM killer (it has taken the host's network down).
-  `scripts/run-capped.sh` bounds every run via a cgroup-v2 systemd user scope —
-  per-run `EVENER_MEM_MAX` (default 16G) plus a shared-slice `EVENER_MEM_TOTAL`
-  (default 32G) so concurrent runs can't sum past the host. Default-on across the
-  Makefile and inside `run-fuzz.sh`; degrades to a warning + uncapped where user
-  scopes aren't available (CI imposes its own cgroup limit). `EVENER_MEM_MAX=0`
-  disables. See [`docs/fuzzing.md`](../docs/fuzzing.md) → *Memory safety*.
+- **Memory**: a coverage-guided search can balloon into tens of GB — run searches on a host that can spare the RAM. See [`docs/fuzzing.md`](../docs/fuzzing.md) → *Memory safety*.
 
-## Coverage measurement (`make fuzz-coverage`)
+## Coverage measurement
 
-`make fuzz-coverage` answers the question `make fuzz` cannot: *how much of each
-parse surface does the corpus actually exercise?* It replays every target's
-**committed corpus** under `go test -coverprofile` (no `-fuzz`, so deterministic
-and reproducible from a clean checkout), then `cmd/evener-fuzzcov` reports, per
-target:
+`make coverage-floor` answers the question `make fuzz` cannot: *how much of
+each module does any deterministic test exercise?* Per module it unions the
+unit-test track with the committed-corpus replay (no `-fuzz`, so deterministic
+and reproducible from a clean checkout), plus the frontend's vitest line
+coverage, and ratchets the rows in `scripts/coverage/coverage-floors.txt`.
+`make fuzz-gap-check` is the static blocking gate: every decode/parse package
+must have a registered target or a reasoned ignore
+(`scripts/coverage/fuzzcov-ignore.txt`, reviewed like code).
 
-- **FOCUS-SET %** — the primary, drivable-to-100% metric: line coverage of the
-  specific decode/parse seam the target fuzzes. The seam is declared as the
-  trailing `focus` field of each `scripts/run-fuzz.sh` `TARGETS` entry (a file
-  like `sse.go`, or a function like `adapter.go#decodeStream`); an empty focus
-  means the whole SUT package.
-- **FLOOR** — the committed ratchet value from `scripts/fuzzcov-floors.txt`. A
-  surface's focus % may never drop below its floor.
-- **PKG %** — the secondary whole-package number, for visibility / zero-spotting
-  only. A narrow decoder legitimately scores low here (e.g. the appwire frame
-  decoder is ~14% of all of `appwire`, which also holds the client/transport/
-  router glue it has no business covering).
-
-It also prints a **GAP MAP**: every decode/parse package across the workspace
-(`. agent llm auth fuzz`) with *zero* fuzz coverage — the holes where no target
-exists yet. Genuinely out-of-scope packages are excluded via the
-reason-required `scripts/fuzzcov-ignore.txt` (each entry needs a `# reason`; a
-reasonless entry is a hard error, so the file is reviewed like code).
-
-```sh
-make fuzz-coverage           # advisory: print the report, exit 0
-make fuzz-coverage CHECK=1   # exit non-zero on a focus-set regression or an un-ignored gap
-make fuzz-coverage BLESS=1   # raise the ratchet floors to the current measured %
-```
-
-The single source of truth for the target list is `scripts/run-fuzz.sh --list`;
-`scripts/fuzz-coverage.sh` consumes it, so the report lines and the campaign
-runner can never drift. The focus % is driven toward 100% by committing the
-coverage-expanding inputs that `make fuzz-nightly` discovers into
-`testdata/fuzz/<FuzzName>/`, then `make fuzz-coverage BLESS=1` to lock the gain
-into the floor. Enforcement is **advisory** today (decision per the 8.6 plan);
-the gap floor is the candidate for the existing `ci.yml` PR gate later.
+The single source of truth for the target list is `scripts/fuzz/run-fuzz.sh --list`.
+Coverage gains found by `make fuzz-nightly` are locked in by committing the
+new inputs into `testdata/fuzz/<FuzzName>/`.
 
 `make fuzz` runs `go test -run '^Fuzz' ./...` per module: with no `-fuzz` flag
 the toolchain does **not** random-search — it replays each target's seed corpus
 plus any saved `testdata/fuzz/<FuzzName>/` crashers as ordinary, deterministic
-unit tests. `make test` already executes these seeds (Go runs Fuzz seed corpora
-as subtests), so the gate covers them; `make fuzz` is the explicit entry point.
+unit tests.
 
 ## The free regression loop
 

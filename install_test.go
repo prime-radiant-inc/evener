@@ -297,8 +297,10 @@ func TestInstallScriptInstallsReleaseArchive(t *testing.T) {
 			if err != nil {
 				t.Fatalf("read fake curl URL: %v", err)
 			}
-			if got := strings.TrimSpace(string(data)); got != expectedURL {
-				t.Fatalf("download URL = %q, want %q", got, expectedURL)
+			urls := strings.Split(strings.TrimSpace(string(data)), "\n")
+			wantURLs := []string{expectedURL, "https://github.com/prime-radiant-inc/evener/releases/download/v1.2.3/checksums.txt"}
+			if len(urls) != 2 || urls[0] != wantURLs[0] || urls[1] != wantURLs[1] {
+				t.Fatalf("download URLs = %q, want %q", urls, wantURLs)
 			}
 
 			binDir := filepath.Join(home, ".local", "bin")
@@ -323,6 +325,174 @@ func TestInstallScriptInstallsReleaseArchive(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// TestInstallScriptRejectsTamperedArchive feeds install.sh a checksums.txt
+// whose digest cannot match the served archive: the install must fail closed
+// at verification, before anything is installed.
+func TestInstallScriptRejectsTamperedArchive(t *testing.T) {
+	t.Parallel()
+	if testing.Short() {
+		t.Skip("release archive install integration test")
+	}
+	if runtime.GOOS == "windows" {
+		t.Skip("install.sh requires a Unix shell")
+	}
+
+	repoRoot, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("getwd: %v", err)
+	}
+	script := filepath.Join(repoRoot, "install.sh")
+
+	home, out, runErr := runInstallScript(t, script, "Darwin", "arm64", map[string]string{
+		"EVENER_FAKE_CURL_BAD_SHA": "1",
+	})
+	if runErr == nil {
+		t.Fatalf("install succeeded against a tampered checksum; output = %s", out)
+	}
+	if !strings.Contains(out, "Checksum verification failed") {
+		t.Fatalf("failure does not name checksum verification; output = %s", out)
+	}
+	assertNothingInstalled(t, home, out)
+}
+
+// The verification step used to pipe grep straight into the checksum tool.
+// A pipeline reports its last command's status, and macOS's /sbin/sha256sum
+// exits 0 on empty input, so a checksums.txt with no line for this archive —
+// exactly what the live snapshot channel serves, because it writes
+// "dist/<name>" and the grep anchored on a bare name — read as "verified" and
+// installed the archive unchecked. Every non-unique match must now be a hard
+// failure before the checksum tool sees anything.
+func TestInstallScriptRejectsChecksumsItCannotMatch(t *testing.T) {
+	t.Parallel()
+	if testing.Short() {
+		t.Skip("release archive install integration test")
+	}
+	if runtime.GOOS == "windows" {
+		t.Skip("install.sh requires a Unix shell")
+	}
+
+	repoRoot, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("getwd: %v", err)
+	}
+	script := filepath.Join(repoRoot, "install.sh")
+
+	for _, tc := range []struct {
+		name    string
+		knobs   map[string]string
+		wantMsg string
+	}{
+		{
+			name:    "no entry for this archive",
+			knobs:   map[string]string{"EVENER_FAKE_CURL_SUM_NAME": "evener_linux_amd64.tar.gz"},
+			wantMsg: "has no entry for evener_darwin_arm64.tar.gz",
+		},
+		{
+			name:    "entry hidden behind an unexpected path prefix",
+			knobs:   map[string]string{"EVENER_FAKE_CURL_SUM_PREFIX": "build/artifacts/"},
+			wantMsg: "has no entry for evener_darwin_arm64.tar.gz",
+		},
+		{
+			name:    "two entries for the same archive",
+			knobs:   map[string]string{"EVENER_FAKE_CURL_SUM_DUPLICATE": "1"},
+			wantMsg: "has more than one entry for evener_darwin_arm64.tar.gz",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			home, out, runErr := runInstallScript(t, script, "Darwin", "arm64", tc.knobs)
+			if runErr == nil {
+				t.Fatalf("install succeeded against an unverifiable checksums.txt; output = %s", out)
+			}
+			if !strings.Contains(out, tc.wantMsg) {
+				t.Fatalf("output does not report %q; output = %s", tc.wantMsg, out)
+			}
+			assertNothingInstalled(t, home, out)
+		})
+	}
+}
+
+// The snapshot channel published today lists "dist/<name>"; goreleaser lists
+// the bare name. install.sh has to verify against both, or the transition
+// breaks every install.
+func TestInstallScriptVerifiesDistPrefixedChecksums(t *testing.T) {
+	t.Parallel()
+	if testing.Short() {
+		t.Skip("release archive install integration test")
+	}
+	if runtime.GOOS == "windows" {
+		t.Skip("install.sh requires a Unix shell")
+	}
+
+	repoRoot, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("getwd: %v", err)
+	}
+	script := filepath.Join(repoRoot, "install.sh")
+
+	home, out, runErr := runInstallScript(t, script, "Darwin", "arm64", map[string]string{
+		"EVENER_FAKE_CURL_SUM_PREFIX": "dist/",
+	})
+	if runErr != nil {
+		t.Fatalf("install failed against dist/-prefixed checksums: %v; output = %s", runErr, out)
+	}
+	if !strings.Contains(out, "evener_darwin_arm64.tar.gz: OK") {
+		t.Fatalf("output does not show the archive being verified; output = %s", out)
+	}
+	if _, err := os.Stat(filepath.Join(home, ".local", "share", "evener", "bin", "evener")); err != nil {
+		t.Fatalf("evener was not installed: %v; output = %s", err, out)
+	}
+}
+
+// runInstallScript drives install.sh against fake uname/curl for the given
+// platform, with extra environment knobs layered on, and returns the HOME it
+// installed into alongside the combined output and the run error.
+func runInstallScript(t *testing.T, script, osName, archName string, knobs map[string]string) (home, out string, runErr error) {
+	t.Helper()
+
+	home = t.TempDir()
+	fixtures := t.TempDir()
+	root := installArchiveRoot(osName, archName)
+	archive := filepath.Join(fixtures, root+".tar.gz")
+	writeInstallReleaseArchive(t, archive, root)
+	fakeBin, urlFile := writeInstallScriptFakeBin(t, fixtures, osName, archName)
+
+	overrides := map[string]string{
+		"PATH":                      fakeBin + string(os.PathListSeparator) + os.Getenv("PATH"),
+		"EVENER_INSTALL_VERSION":    "v1.2.3",
+		"EVENER_FAKE_CURL_ARCHIVE":  archive,
+		"EVENER_FAKE_CURL_URL_FILE": urlFile,
+	}
+	maps.Copy(overrides, knobs)
+
+	cmd := exec.Command("sh", script)
+	cmd.Env = installTestEnv(t, home, overrides)
+	combined, runErr := cmd.CombinedOutput()
+	return home, string(combined), runErr
+}
+
+// installArch maps a `uname -m` answer to the release archive's arch token.
+// installArchiveRoot composes the archive's directory name (and, with
+// ".tar.gz", the asset name) the same way install.sh does. Both live here
+// rather than in install_fuzz_test.go so the untagged tests can use them too.
+func installArch(arch string) string {
+	if arch == "x86_64" {
+		return "amd64"
+	}
+	return arch
+}
+
+func installArchiveRoot(osName, arch string) string {
+	return "evener_" + strings.ToLower(osName) + "_" + installArch(arch)
+}
+
+func assertNothingInstalled(t *testing.T, home, out string) {
+	t.Helper()
+	if _, err := os.Stat(filepath.Join(home, ".local", "share", "evener", "bin", "evener")); !os.IsNotExist(err) {
+		t.Fatalf("a binary was installed despite the failed verification; stat err = %v; output = %s", err, out)
 	}
 }
 
@@ -361,8 +531,32 @@ if [ -z "$out" ]; then
   echo "missing -o" >&2
   exit 2
 fi
-printf '%s\n' "$url" > "$EVENER_FAKE_CURL_URL_FILE"
-cp "$EVENER_FAKE_CURL_ARCHIVE" "$out"
+printf '%s\n' "$url" >> "$EVENER_FAKE_CURL_URL_FILE"
+case "$(basename "$url")" in
+  checksums.txt)
+    # Serve the archive's real digest so verification passes; the tamper knob
+    # serves a digest that cannot match.
+    if [ -n "${EVENER_FAKE_CURL_BAD_SHA:-}" ]; then
+      sum="0000000000000000000000000000000000000000000000000000000000000000"
+    elif command -v sha256sum >/dev/null 2>&1; then
+      sum=$(sha256sum "$EVENER_FAKE_CURL_ARCHIVE" | cut -d' ' -f1)
+    else
+      sum=$(shasum -a 256 "$EVENER_FAKE_CURL_ARCHIVE" | cut -d' ' -f1)
+    fi
+    # EVENER_FAKE_CURL_SUM_PREFIX reproduces the path prefix a publisher may put
+    # on the artifact name ("dist/" — what the hand-rolled channel wrote and the
+    # live snapshot still carries); EVENER_FAKE_CURL_SUM_NAME serves an entry for
+    # some other artifact, so no line matches at all.
+    name=${EVENER_FAKE_CURL_SUM_NAME:-$(basename "$EVENER_FAKE_CURL_ARCHIVE")}
+    printf '%s  %s%s\n' "$sum" "${EVENER_FAKE_CURL_SUM_PREFIX:-}" "$name" > "$out"
+    if [ -n "${EVENER_FAKE_CURL_SUM_DUPLICATE:-}" ]; then
+      printf '%s  %s\n' "0000000000000000000000000000000000000000000000000000000000000000" "$name" >> "$out"
+    fi
+    ;;
+  *)
+    cp "$EVENER_FAKE_CURL_ARCHIVE" "$out"
+    ;;
+esac
 `)
 	return fakeBin, urlFile
 }
@@ -1000,32 +1194,4 @@ func overlayEnv(base []string, overrides map[string]string) []string {
 func exists(path string) bool {
 	_, err := os.Stat(path)
 	return err == nil
-}
-
-// installedBins returns the EVENER_INSTALL_BINS list from the Makefile — the
-// single source of truth for which binaries a release install contains, and
-// the same source install.sh's `bins` line and `make dist` are kept in sync
-// with. Reading it here, rather than hardcoding a parallel copy, is what
-// makefile_audit_test.go's TestBuildAllBuildsEveryInstalledBinary already
-// does for build-all; FuzzInstallScript reuses it so a sixth binary can't
-// silently break its fixture archive the way evener-migrate broke it
-// (Release archive did not contain evener-migrate).
-func installedBins(t testing.TB) []string {
-	t.Helper()
-
-	body, err := os.ReadFile("Makefile")
-	if err != nil {
-		t.Fatalf("read Makefile: %v", err)
-	}
-	for line := range strings.SplitSeq(string(body), "\n") {
-		if rest, ok := strings.CutPrefix(line, "EVENER_INSTALL_BINS :="); ok {
-			bins := strings.Fields(rest)
-			if len(bins) == 0 {
-				t.Fatal("EVENER_INSTALL_BINS assignment in Makefile has no binaries")
-			}
-			return bins
-		}
-	}
-	t.Fatal("EVENER_INSTALL_BINS assignment not found in Makefile")
-	return nil
 }

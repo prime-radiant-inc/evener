@@ -247,6 +247,8 @@ func BeginAPIAttempt(ctx context.Context, meta APIAttemptMeta) *APIAttempt {
 	return attempt
 }
 
+// Complete records the attempt's terminal result to the group's API log
+// sink and releases the group's pending-attempt slot. It runs at most once.
 func (a *APIAttempt) Complete(result APIAttemptResult) {
 	if a == nil {
 		return
@@ -399,6 +401,7 @@ func mergeAPILogCredentialMaterial(left, right APILogCredentialMaterial) APILogC
 	return NewAPILogCredentialMaterial(headerNames, queryNames, values...)
 }
 
+// Settle finalizes the attempt group with the given outcome class.
 func (g *APIAttemptGroup) Settle(ctx context.Context, outcome apilog.AttemptOutcomeClass) {
 	g.settle(ctx, outcome, false)
 }

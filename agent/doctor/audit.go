@@ -25,26 +25,26 @@ type Finding struct {
 	Title        string          `json:"title"`
 	Description  string          `json:"description"`
 	Evidence     FindingEvidence `json:"evidence"`
-	SuggestedFix SuggestedFix    `json:"suggestedFix"`
+	SuggestedFix SuggestedFix    `json:"suggestedFix"` //nolint:tagliatelle // doctor Finding wire contract is camelCase (finding-contract.md)
 }
 
 // FindingEvidence is the contract's evidence object. At least one sub-field
 // is populated per Finding; doctorCommand is always set.
 type FindingEvidence struct {
-	SessionRefs     []string `json:"sessionRefs,omitempty"`
-	WatchIDs        []string `json:"watchIds,omitempty"`
-	DeliveryIDs     []string `json:"deliveryIds,omitempty"`
-	TranscriptTurns []int    `json:"transcriptTurns,omitempty"`
-	DoctorCommand   string   `json:"doctorCommand,omitempty"`
-	LogSnippets     []string `json:"logSnippets,omitempty"`
+	SessionRefs     []string `json:"sessionRefs,omitempty"`     //nolint:tagliatelle // doctor Finding wire contract is camelCase (finding-contract.md)
+	WatchIDs        []string `json:"watchIds,omitempty"`        //nolint:tagliatelle // doctor Finding wire contract is camelCase (finding-contract.md)
+	DeliveryIDs     []string `json:"deliveryIds,omitempty"`     //nolint:tagliatelle // doctor Finding wire contract is camelCase (finding-contract.md)
+	TranscriptTurns []int    `json:"transcriptTurns,omitempty"` //nolint:tagliatelle // doctor Finding wire contract is camelCase (finding-contract.md)
+	DoctorCommand   string   `json:"doctorCommand,omitempty"`   //nolint:tagliatelle // doctor Finding wire contract is camelCase (finding-contract.md)
+	LogSnippets     []string `json:"logSnippets,omitempty"`     //nolint:tagliatelle // doctor Finding wire contract is camelCase (finding-contract.md)
 }
 
 // SuggestedFix is the contract's routing directive: diagnosis (report-only),
 // runbook (extend), or skill (heal, gated).
 type SuggestedFix struct {
 	Type       string `json:"type"`
-	FileHint   string `json:"fileHint,omitempty"`
-	SymbolHint string `json:"symbolHint,omitempty"`
+	FileHint   string `json:"fileHint,omitempty"`   //nolint:tagliatelle // doctor Finding wire contract is camelCase (finding-contract.md)
+	SymbolHint string `json:"symbolHint,omitempty"` //nolint:tagliatelle // doctor Finding wire contract is camelCase (finding-contract.md)
 }
 
 var validSeverities = map[string]bool{"low": true, "medium": true, "high": true}

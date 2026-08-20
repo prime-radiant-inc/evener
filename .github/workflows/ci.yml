@@ -29,15 +29,7 @@ jobs:
     steps:
       - uses: actions/checkout@v6
 
-      - uses: actions/setup-go@v6
-        with:
-          go-version-file: go.work
-
-      - uses: actions/setup-node@v6
-        with:
-          node-version: "22"
-          cache: npm
-          cache-dependency-path: cmd/evener-hub/frontend/package-lock.json
+      - uses: ./.github/actions/setup-toolchain
 
       - name: Build runtime pair and all Go workspace packages
         run: make build && make build-go
@@ -47,17 +39,30 @@ jobs:
 
       # The aggregate target, never its families one by one: the Makefile's
       # `lint:` rule is the only list, so a family added there runs here too.
-      # Both tools install first because a lint family that cannot find its
-      # tool does not always fail loudly — secret-scan skips with a warning
-      # and a zero exit when gitleaks is missing.
+      # Tool versions come from .tool-versions — the same file `make tools`
+      # installs from — so CI and local runs lint with identical binaries.
+      - name: Read tool versions
+        id: tool-versions
+        run: |
+          echo "golangci=$(awk '$1=="golangci-lint" {print $2}' .tool-versions)" >> "$GITHUB_OUTPUT"
+          echo "gitleaks=$(awk '$1=="gitleaks" {print $2}' .tool-versions)" >> "$GITHUB_OUTPUT"
+          echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
+
+      # golangci-lint's own install script (its documented CI method): the
+      # action runs an analysis itself, but analysis here lives in `make
+      # lint`'s per-module loop, so only the binary is wanted.
+      - name: Install golangci-lint
+        run: curl -sSfL https://raw.githubusercontent.com/golangci/golangci-lint/HEAD/install.sh | sh -s -- -b "$(go env GOPATH)/bin" "v${{ steps.tool-versions.outputs.golangci }}"
+
+      # gitleaks is installed once and serves both scan steps; a scan that
+      # cannot find its tool must not pass silently, hence the required mode.
+      - name: Install gitleaks
+        run: go install github.com/zricethezav/gitleaks/v8@v${{ steps.tool-versions.outputs.gitleaks }}
+
       - name: Lint (make lint — every family of the local gate, all go.work modules)
         env:
           EVENER_GITLEAKS_REQUIRED: "1"
-        run: |
-          curl -sSfL https://raw.githubusercontent.com/golangci/golangci-lint/HEAD/install.sh | sh -s -- -b "$(go env GOPATH)/bin" v2.12.2
-          go install github.com/zricethezav/gitleaks/v8@v8.30.1
-          export PATH="$(go env GOPATH)/bin:$PATH"
-          make lint
+        run: make lint
 
       - name: Test (race detector — the permanent -race gate, all go.work modules)
         run: make test-race
@@ -82,7 +87,4 @@ jobs:
       - name: Secret scan (gitleaks — committed fuzz corpora)
         env:
           EVENER_GITLEAKS_REQUIRED: "1"
-        run: |
-          go install github.com/zricethezav/gitleaks/v8@v8.30.1
-          export PATH="$(go env GOPATH)/bin:$PATH"
-          make fuzz-corpus-scan
+        run: make fuzz-corpus-scan

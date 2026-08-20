@@ -8,6 +8,12 @@ Default tests must be deterministic. Do not make `make test` or
 `go test ./...` depend on provider credentials, network access, quota, current
 model behavior, or ambient developer machine state.
 
+The gates: `make lint` (golangci-lint across every module, TOML naming,
+tagged compile floors, generated-output freshness, secret scan), `make vet`,
+`make test` (all modules + the frontend gate). `make merge-approval-gate`
+is the canonical pre/post-merge sequence. Tool versions are pinned in
+`.tool-versions` — `make tools` installs what CI runs.
+
 Use this boundary:
 
 - Evener plumbing: use a scripted provider at the LLM boundary and exercise real

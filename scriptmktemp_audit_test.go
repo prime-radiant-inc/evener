@@ -287,16 +287,14 @@ var recursiveDeleteAllowedLines = map[string]int{
 	// mid-suite, where the no-argument delete would take the suite's whole
 	// scratch with it.
 	"scripts/e2e/e2e-webui-turn-controls-selftest.sh": 1,
-	// The coverage runners keep the pid-suffixed name-first/trap-first/mkdir
+	// The coverage runner keeps the pid-suffixed name-first/trap-first/mkdir
 	// pattern instead of scratch_dir: the trap exists before the directory
 	// can, so a signal in the window abandons nothing (measured 0/150 leaks
 	// vs 29/150 for a mint-then-trap ordering), and #105's owner-side reclaim
 	// parses the pid out of the basename, which a random mktemp suffix would
-	// turn into a permanent no-op. Each delete targets the name the script
+	// turn into a permanent no-op. Its delete targets the name the script
 	// composed from its own $$ before anything else ran.
-	"scripts/coverage/coverage-union.sh":   1,
-	"scripts/fuzz/fuzz-coverage.sh":        1,
-	"scripts/fuzz/fuzz-coverage-global.sh": 1,
+	"scripts/coverage/coverage-floor.sh": 1,
 	// test-cost adopts the same pid-suffixed pattern as the runners above,
 	// for the same reasons; before this it minted with `mktemp -t` (outside
 	// any TMPDIR a caller set) and never deleted its scratch at all.
@@ -467,7 +465,7 @@ func writeAuditScriptFixture(t *testing.T, path, content string) {
 // script's cleanup trap is responsible for: either the scratch_dir library
 // call, or the manual pid-suffixed `mkdir "$dir" || { trap - EXIT; ...}`
 // idiom the coverage runners use instead (see recursiveDeleteAllowedLines'
-// entry for coverage-union.sh for why they keep the manual pattern rather
+// entry for coverage-floor.sh for why they keep the manual pattern rather
 // than adopting scratch_dir). Both are the "mkdir" side of the
 // trap-before-mkdir convention: arm the cleanup trap before this line runs,
 // or a crash in the gap abandons the directory this line creates.
@@ -614,8 +612,8 @@ func TestScratchOrderAuditAllowsTrapBeforeMint(t *testing.T) {
 var scratchOrderAllowedPaths = map[string]bool{}
 
 // TestScratchTrapInstalledBeforeMkdir pins the trap-before-mkdir convention
-// coverage-union.sh's comment already describes and measures (0/150 leaks
-// trap-first vs 29/150 mint-then-trap): a script's cleanup trap must be
+// the coverage runner's allowlist entry above already describes and measures
+// (0/150 leaks trap-first vs 29/150 mint-then-trap): a cleanup trap must be
 // armed before the line that creates the scratch directory it cleans up, so
 // a signal in between abandons nothing. Neither TestNoScriptCreatesScratchOutsideTMPDIR
 // nor TestNoScriptFeedsVariableToRecursiveDelete checks ordering — a
@@ -634,7 +632,7 @@ func TestScratchTrapInstalledBeforeMkdir(t *testing.T) {
 			continue
 		}
 		t.Errorf("this mints scratch before any EXIT trap is armed earlier in the file, so a "+
-			"crash in between leaks it (coverage-union.sh's comment measured 0/150 leaks for "+
+			"crash in between leaks it (the coverage runner measured 0/150 leaks for "+
 			"trap-first vs 29/150 for mint-then-trap); arm the trap first:\n  %s", o)
 	}
 	for path := range scratchOrderAllowedPaths {

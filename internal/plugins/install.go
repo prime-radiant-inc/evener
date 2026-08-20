@@ -319,21 +319,16 @@ func (m *Manager) Remove(plugin, marketplace string) error {
 }
 
 type ListItem struct {
-	Plugin      string `json:"plugin"`
-	Marketplace string `json:"marketplace"`
-	Version     string `json:"version"`
-	Enabled     bool   `json:"enabled"`
-	// evener:naming-ignore: matches Claude Code plugin/marketplace JSON schema
-	AutoUpgrade bool `json:"autoUpgrade"`
-	Broken      bool `json:"broken"`
-	// evener:naming-ignore: matches Claude Code plugin/marketplace JSON schema
-	InstallPath string `json:"installPath"`
-	// evener:naming-ignore: matches Claude Code plugin/marketplace JSON schema
-	GitCommitSha string `json:"gitCommitSha"`
-	// evener:naming-ignore: matches Claude Code plugin/marketplace JSON schema
-	InstalledAt time.Time `json:"installedAt"`
-	// evener:naming-ignore: matches Claude Code plugin/marketplace JSON schema
-	LastUpdated time.Time `json:"lastUpdated"`
+	Plugin       string    `json:"plugin"`
+	Marketplace  string    `json:"marketplace"`
+	Version      string    `json:"version"`
+	Enabled      bool      `json:"enabled"`
+	AutoUpgrade  bool      `json:"autoUpgrade"` //nolint:tagliatelle // matches Claude Code plugin/marketplace JSON schema
+	Broken       bool      `json:"broken"`
+	InstallPath  string    `json:"installPath"`  //nolint:tagliatelle // matches Claude Code plugin/marketplace JSON schema
+	GitCommitSha string    `json:"gitCommitSha"` //nolint:tagliatelle // matches Claude Code plugin/marketplace JSON schema
+	InstalledAt  time.Time `json:"installedAt"`  //nolint:tagliatelle // matches Claude Code plugin/marketplace JSON schema
+	LastUpdated  time.Time `json:"lastUpdated"`  //nolint:tagliatelle // matches Claude Code plugin/marketplace JSON schema
 }
 
 func splitKey(key string) (plugin, marketplace string) {

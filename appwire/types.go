@@ -2039,7 +2039,7 @@ type LaunchConfigLayer struct {
 	Agent                       string            `json:"agent,omitempty"`
 	ReasoningEffort             string            `json:"reasoningEffort,omitempty"`
 	ContextStrategy             string            `json:"contextStrategy,omitempty"`
-	OpenAIResponsesContinuation string            `json:"openAIResponsesContinuation,omitempty"`
+	OpenAIResponsesContinuation string            `json:"openAIResponsesContinuation,omitempty"` //nolint:tagliatelle // codex wire spells the AI/ATIF initialisms all-caps
 	Sandbox                     string            `json:"sandbox,omitempty"`
 	SandboxNet                  *bool             `json:"sandboxNet,omitempty"`
 	MaxRounds                   *int              `json:"maxRounds,omitempty"`
@@ -2065,8 +2065,8 @@ type LaunchConfigLayer struct {
 	Verbose                     *bool             `json:"verbose,omitempty"`
 	TraceFile                   string            `json:"traceFile,omitempty"`
 	CPUProfile                  string            `json:"cpuProfile,omitempty"`
-	ExportATIFPath              string            `json:"exportATIFPath,omitempty"`
-	ExportATIFProviderHandles   string            `json:"exportATIFProviderHandles,omitempty"`
+	ExportATIFPath              string            `json:"exportATIFPath,omitempty"`            //nolint:tagliatelle // codex wire spells the AI/ATIF initialisms all-caps
+	ExportATIFProviderHandles   string            `json:"exportATIFProviderHandles,omitempty"` //nolint:tagliatelle // codex wire spells the AI/ATIF initialisms all-caps
 }
 
 func (l LaunchConfigLayer) MarshalJSON() ([]byte, error) {

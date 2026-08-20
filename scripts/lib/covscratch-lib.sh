@@ -1,7 +1,6 @@
 #!/usr/bin/env bash
 # covscratch-lib.sh — the coverage runners' shared reclaim of their OWN
-# abandoned scratch, sourced by coverage-union.sh, fuzz-coverage.sh and
-# fuzz-coverage-global.sh.
+# abandoned scratch, sourced by coverage-floor.sh.
 #
 # Sourced, never executed. Sourcing has no side effects: it defines one function
 # and touches nothing until a runner calls it.
@@ -11,7 +10,7 @@
 # debris class moved to a self-reclaiming owner (cmd/evener-dev agent-shards).
 # Two exit paths still leave a directory behind. A run killed by
 # SIGKILL (or an OOM kill, or a power cut) never reaches its trap. And
-# coverage-union.sh KEEPS its scratch on a failed run on purpose: the failure
+# coverage-floor.sh KEEPS its scratch on a failed run on purpose: the failure
 # line printed its path, and the profiles and per-module logs are the only
 # record of why. So each runner reclaims those
 # leftovers itself, at the start of its next run — which is exactly when a

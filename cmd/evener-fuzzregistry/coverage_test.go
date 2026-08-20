@@ -84,21 +84,8 @@ func scenarioRegistryMainAndReaderWriterErrors(t *testing.T) {
 	}
 }
 
-func scenarioRegistryFocusAndEmitValidationFailures(t *testing.T) {
-	var out, errOut bytes.Buffer
-	reg := filepath.Join(t.TempDir(), "registry")
-	row := "native:.:.:FuzzX::missing.go#Nope\n"
-	if err := os.WriteFile(reg, []byte(row), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	old := discoverWorkspace
-	t.Cleanup(func() { discoverWorkspace = old })
-	discoverWorkspace = func(string) ([]Target, error) {
-		return []Target{{Kind: "native", Module: ".", Package: ".", Name: "FuzzX", Focus: "missing.go#Nope"}}, nil
-	}
-	if got := runRegistry([]string{"--registry", reg, "--check", "--repo-root", t.TempDir()}, &out, &errOut); got != 1 {
-		t.Fatalf("focus=%d", got)
-	}
+func scenarioRegistryEmitValidationFailures(t *testing.T) {
+	var out bytes.Buffer
 	if err := EmitPlan(&out, []Target{{Kind: "bad", Module: ".", Package: ".", Name: "x"}}); err == nil {
 		t.Fatal("invalid emit")
 	}

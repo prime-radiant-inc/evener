@@ -38,6 +38,7 @@ linters:
     - perfsprint
     - predeclared
     - revive
+    - tagliatelle
     - unconvert
     - usestdlibvars
   settings:
@@ -59,6 +60,47 @@ linters:
         - name: superfluous-else
         - name: unreachable-code
         - name: redefines-builtin-id
+        # exported gates doc comments on the published libraries' exported
+        # package-level surface (formerly cmd/evener-docscheck). Scoped to
+        # the library dirs by the path-except exclusion below.
+        - name: exported
+          arguments:
+            - "disable-stuttering-check"
+    tagliatelle:
+      case:
+        rules:
+          json: snake
+          toml: snake
+          # tagliatelle applies its own defaults (yaml/xml/bson: camel, …)
+          # for any tag key left unset. Empty string disables a key, so the
+          # gate checks exactly the two casings namingcheck enforced.
+          yaml: ""
+          xml: ""
+          bson: ""
+          avro: ""
+          header: ""
+          env: ""
+          envconfig: ""
+        # The codex/appwire wire protocol forces camelCase JSON tags in these
+        # packages (formerly evener-namingcheck's path carve-outs).
+        # pkg values are module-relative package paths, not import paths
+        # (verified empirically against golangci-lint v2.12.2).
+        overrides:
+          - pkg: appwire
+            rules:
+              json: camel
+          - pkg: cmd/evener-hub/internal/appsource
+            rules:
+              json: camel
+          - pkg: internal/appserver
+            rules:
+              json: camel
+          - pkg: internal/appprojector
+            rules:
+              json: camel
+          - pkg: cmd/evener-hub/internal/launchconfig
+            rules:
+              json: camel
     gocritic:
       enabled-tags:
         - diagnostic
@@ -97,6 +139,31 @@ linters:
       # on a cold cache, which takes the count to zero.
       - path: _test\.go
         text: SA5011
+
+      # llm/providers/ speaks each upstream provider's wire format; tag
+      # casing belongs to upstream, not to this repo's snake_case default.
+      # (Paths are relative to this config file, so this matches the llm
+      # module's run from the repo root.)
+      - path: ^llm/providers/
+        linters:
+          - tagliatelle
+      # server/appwire_*.go mirrors the camelCase appwire wire format inside
+      # a package that is otherwise snake_case. tagliatelle's overrides are
+      # per-package, so this per-file regime is expressed as an exclusion.
+      - path: ^server/appwire_
+        linters:
+          - tagliatelle
+
+      # revive's exported rule gates only the published library packages
+      # (the old cmd/evener-docscheck scope); everywhere else its findings
+      # are excluded. The text pattern matches the message as golangci
+      # reports it — "exported: exported method/function/… " or "exported:
+      # comment on exported …" — and the rule-name prefix keeps it clear of
+      # unexported-return's "unexported-return: exported func …" wording.
+      - path-except: '^(llm/[^/]+|agent/[^/]+|agent/(diagnostic|events|execenv|mcpconfig|plugin|provider|schema|skill|task|transcript)/[^/]+|auth/openai/[^/]+)\.go$'
+        text: '^exported: (exported (method|function|type|const|var)|comment on exported)'
+        linters:
+          - revive
 
 formatters:
   enable:

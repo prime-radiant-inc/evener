@@ -191,6 +191,44 @@ func TestScenarioSourceSymbolsAreDeclared(t *testing.T) {
 	}
 }
 
+// scenarioDir is the one directory this audit reads, relative to the repo root
+// that `go test` runs it from, and scenarioCardFiles is its card corpus plus
+// the one prose file that carries citations of the same shape. Both lived in
+// scenarioport_audit_test.go until that audit was deleted with the rest of the
+// framework.
+const scenarioDir = "test" + string(filepath.Separator) + "scenarios"
+
+func scenarioCardFiles(t *testing.T) []string {
+	t.Helper()
+	var files []string
+	entries, err := os.ReadDir(scenarioDir)
+	if err != nil {
+		t.Fatalf("reading %s: %v", scenarioDir, err)
+	}
+	for _, e := range entries {
+		if e.IsDir() || filepath.Ext(e.Name()) != ".md" {
+			continue
+		}
+		files = append(files, filepath.Join(scenarioDir, e.Name()))
+	}
+	files = append(files, "docs/agentic-testing.md")
+	sort.Strings(files)
+	return files
+}
+
+// scenarioNeedleSourceExtensions are the compiled surfaces production emits
+// from: a citation can only point at a file some code path actually builds.
+// scenarioNeedleCodeSpan matches an inline `code span`, the corpus's marker for
+// "this is a literal, not prose". Both lived in scenarioneedle_audit_test.go
+// until that audit was deleted with the rest of the framework; this file is the
+// only remaining reader, so they moved here rather than into a shared home
+// nothing else would use.
+var scenarioNeedleSourceExtensions = map[string]bool{
+	".go": true, ".ts": true, ".tsx": true, ".js": true, ".jsx": true,
+}
+
+var scenarioNeedleCodeSpan = regexp.MustCompile("`([^`\n]+)`")
+
 // scenarioSourceExtensionAlternation builds the regexp alternation for the
 // compiled-source extensions from the set itself, longest first, so the needle
 // and the file index cannot drift apart as that set grows.

@@ -24,19 +24,14 @@ type Registry struct {
 
 // InstallEntry is one installed plugin.
 type InstallEntry struct {
-	// evener:naming-ignore: matches Claude Code plugin/marketplace JSON schema
-	InstallPath string `json:"installPath"`
-	Version     string `json:"version"`
-	// evener:naming-ignore: matches Claude Code plugin/marketplace JSON schema
-	GitCommitSha string `json:"gitCommitSha,omitempty"`
-	// evener:naming-ignore: matches Claude Code plugin/marketplace JSON schema
-	InstalledAt time.Time `json:"installedAt"`
-	// evener:naming-ignore: matches Claude Code plugin/marketplace JSON schema
-	LastUpdated time.Time `json:"lastUpdated"`
-	Enabled     bool      `json:"enabled"`
-	// evener:naming-ignore: matches Claude Code plugin/marketplace JSON schema
-	AutoUpgrade bool   `json:"autoUpgrade"`
-	Source      Source `json:"source"`
+	InstallPath  string    `json:"installPath"` //nolint:tagliatelle // matches Claude Code plugin/marketplace JSON schema
+	Version      string    `json:"version"`
+	GitCommitSha string    `json:"gitCommitSha,omitempty"` //nolint:tagliatelle // matches Claude Code plugin/marketplace JSON schema
+	InstalledAt  time.Time `json:"installedAt"`            //nolint:tagliatelle // matches Claude Code plugin/marketplace JSON schema
+	LastUpdated  time.Time `json:"lastUpdated"`            //nolint:tagliatelle // matches Claude Code plugin/marketplace JSON schema
+	Enabled      bool      `json:"enabled"`
+	AutoUpgrade  bool      `json:"autoUpgrade"` //nolint:tagliatelle // matches Claude Code plugin/marketplace JSON schema
+	Source       Source    `json:"source"`
 	// Note is an install-time message worth showing the user — currently
 	// only why an MCP-server-shaped, manifest-less plugin was NOT
 	// auto-wired (see ensureManifestFallback). Empty for a clean install.

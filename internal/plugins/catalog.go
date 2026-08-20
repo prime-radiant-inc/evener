@@ -32,7 +32,7 @@ type CatalogPlugin struct {
 	Commands   json.RawMessage `json:"commands,omitempty"`
 	Agents     json.RawMessage `json:"agents,omitempty"`
 	Hooks      json.RawMessage `json:"hooks,omitempty"`
-	MCPServers json.RawMessage `json:"mcpServers,omitempty"`
+	MCPServers json.RawMessage `json:"mcpServers,omitempty"` //nolint:tagliatelle // upstream .mcp.json key spelling
 	// Skills is parsed for schema completeness but NOT currently honored:
 	// agent/plugin.Manifest has no Skills override field (a plugin's
 	// skills/ directory is always scanned by default, manifest or not), so
@@ -64,13 +64,11 @@ type Catalog struct {
 	// and were therefore dropped rather than failing the whole catalog. A
 	// skipped plugin is simply absent from Plugins (and so not installable);
 	// this field exists so Browse/CLI/callers can surface a warning about it.
-	// evener:naming-ignore: matches Claude Code plugin/marketplace JSON schema
-	SkippedPlugins []string `json:"skippedPlugins,omitempty"`
+	SkippedPlugins []string `json:"skippedPlugins,omitempty"` //nolint:tagliatelle // matches Claude Code plugin/marketplace JSON schema
 }
 
 type catalogMetadata struct {
-	// evener:naming-ignore: matches Claude Code plugin/marketplace JSON schema
-	PluginRoot string `json:"pluginRoot,omitempty"`
+	PluginRoot string `json:"pluginRoot,omitempty"` //nolint:tagliatelle // matches Claude Code plugin/marketplace JSON schema
 }
 
 // catalogHeader decodes everything in marketplace.json except the plugin

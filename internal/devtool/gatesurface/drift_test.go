@@ -10,9 +10,8 @@ import (
 // This file is the gate-surface drift tripwire the dev-tooling spec requires
 // (docs/superpowers/specs/2026-08-17-dev-tooling-in-go-design.md): the gate's
 // test-selection surface lives in two homes — scripts/lib/gate-surface-lib.sh
-// for the shell consumers (run-module-tests.sh, coverage-union.sh) and this
-// package for the Go consumers (evener-dev coverage-floor,
-// capability-preflight). Two homes that drift are worse than no ratchet: PR
+// for the shell consumers (run-module-tests.sh, coverage-floor.sh) and this
+// package for the Go consumers. Two homes that drift are worse than no ratchet: PR
 // #222 shipped a Makefile copy whose BRE-style escaping made `go test -run`
 // match ZERO tests, and the whole gate exited green without running anything.
 // These tests fail the moment either home changes without the other.
@@ -48,29 +47,6 @@ func TestShellTestRunMatchesGoConstant(t *testing.T) {
 func TestShellFuzzTestSkipMatchesGoConstant(t *testing.T) {
 	if shell := shellSingleQuotedVar(t, "GATE_FUZZ_TEST_SKIP"); shell != FuzzTestSkip {
 		t.Errorf("gate surface drift: shell GATE_FUZZ_TEST_SKIP=%q, Go gatesurface.FuzzTestSkip=%q — update both homes together", shell, FuzzTestSkip)
-	}
-}
-
-// TestShellCapabilitySkipPatternMatchesGoLookup pins the shell lib's
-// gate_capability_skip_pattern registry to CapabilitySkipPattern for every
-// probed capability id: each non-empty Go pattern must appear verbatim in the
-// shell function's case arm for that id.
-func TestShellCapabilitySkipPatternMatchesGoLookup(t *testing.T) {
-	content, err := os.ReadFile(shellGateSurfaceLib)
-	if err != nil {
-		t.Fatalf("reading %s: %v", shellGateSurfaceLib, err)
-	}
-	for _, id := range []string{"loopback-bind", "process-inspect"} {
-		pattern := CapabilitySkipPattern(id)
-		if pattern == "" {
-			t.Fatalf("CapabilitySkipPattern(%q) is empty; this test expects the E2E skip pattern", id)
-		}
-		// The shell case arm groups both ids on one line ending with the
-		// single-quoted pattern.
-		re := regexp.MustCompile(`(?m)^\s*[^)\n]*` + regexp.QuoteMeta(id) + `[^)\n]*\)\s*printf '%s' '` + regexp.QuoteMeta(pattern) + `'`)
-		if !re.Match(content) {
-			t.Errorf("gate surface drift: %s's gate_capability_skip_pattern for %q does not print %q — update both homes together", shellGateSurfaceLib, id, pattern)
-		}
 	}
 }
 

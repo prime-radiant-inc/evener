@@ -22,8 +22,8 @@
 # see scripts/lib/gate-surface-lib.sh).
 #
 # Duplicate blocks from -coverpkg are deduped by position, a block counting as
-# covered if ANY test hit it — the same accounting `evener-dev coverage-floor`
-# and fuzz-coverage-global.sh use, so the totals here reconcile with the floors.
+# covered if ANY test hit it — the same accounting `coverage-floor.sh`
+# uses, so the totals here reconcile with the floors.
 set -uo pipefail
 
 profile=""

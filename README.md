@@ -458,7 +458,7 @@ The repo enforces a single naming rule across wire formats:
 - **TOML tags and keys** must be `snake_case`.
 - **CLI flags** are `kebab-case` (enforced at the flag registry).
 
-Run the linter via `make lint-naming` or directly with `go run ./cmd/evener-namingcheck`. CI runs it after `go vet`. The check is fast (< 1s on this tree) and exits non-zero on violations. A single field/key can opt out with a `// evener:naming-ignore` (Go) or `# evener:naming-ignore` (TOML) marker on the preceding line — use sparingly, and explain why.
+Struct tags are gated by golangci-lint's `tagliatelle` (see `.golangci.yml` for the camelCase carve-outs); TOML data files are gated by `make lint-naming` (`go run ./cmd/evener-tomlcheck`). Both run in CI inside `make lint`. A struct field can opt out with a trailing `//nolint:tagliatelle // <reason>`; a TOML key with a `# evener:naming-ignore` marker on the preceding line — use sparingly, and explain why.
 
 ## Acknowledgments
 

@@ -17,6 +17,8 @@ import (
 	"testing"
 	"time"
 
+	"primeradiant.com/evener/internal/e2ecap"
+
 	"primeradiant.com/evener/agent/task"
 	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/identifier"
@@ -74,6 +76,8 @@ var ansiPattern = regexp.MustCompile(`\x1b\[[0-9;?]*[\x20-\x2f]*[\x40-\x7e]`)
 func TestTUITmuxE2E_DashboardProjectAndSpawn(t *testing.T) {
 	t.Parallel()
 	requireTmux(t)
+	e2ecap.RequireLoopbackBind(t)
+	e2ecap.RequireProcessInspect(t)
 	bin := buildTUIBinary(t)
 	hub := newTUIE2EHub(t)
 	defer hub.Close()
@@ -166,6 +170,8 @@ func TestTUITmuxE2E_DashboardProjectAndSpawn(t *testing.T) {
 func TestTUITmuxE2E_BurstTypedKeysApplyIndividually(t *testing.T) {
 	t.Parallel()
 	requireTmux(t)
+	e2ecap.RequireLoopbackBind(t)
+	e2ecap.RequireProcessInspect(t)
 	bin := buildTUIBinary(t)
 	hub := newTUIE2EHub(t)
 	defer hub.Close()
@@ -182,6 +188,8 @@ func TestTUITmuxE2E_BurstTypedKeysApplyIndividually(t *testing.T) {
 func TestTUITmuxE2E_AppShellPreservesLayoutAcrossWidths(t *testing.T) {
 	t.Parallel()
 	requireTmux(t)
+	e2ecap.RequireLoopbackBind(t)
+	e2ecap.RequireProcessInspect(t)
 	bin := buildTUIBinary(t)
 	hub := newTUIE2EHub(t)
 	defer hub.Close()
@@ -215,6 +223,8 @@ func TestTUITmuxE2E_AppShellPreservesLayoutAcrossWidths(t *testing.T) {
 func TestTUITmuxE2E_DashboardNarrowWideStates(t *testing.T) {
 	t.Parallel()
 	requireTmux(t)
+	e2ecap.RequireLoopbackBind(t)
+	e2ecap.RequireProcessInspect(t)
 	bin := buildTUIBinary(t)
 	hub := newTUIE2EHub(t)
 	hub.SetSessionTitle("01LIVE", "live dashboard task with a title long enough to truncate cleanly")
@@ -253,6 +263,8 @@ func TestTUITmuxE2E_DashboardNarrowWideStates(t *testing.T) {
 func TestTUITmuxE2E_DashboardFooterAnchorsToBottom(t *testing.T) {
 	t.Parallel()
 	requireTmux(t)
+	e2ecap.RequireLoopbackBind(t)
+	e2ecap.RequireProcessInspect(t)
 	bin := buildTUIBinary(t)
 	hub := newTUIE2EHub(t)
 	defer hub.Close()
@@ -279,6 +291,8 @@ func TestTUITmuxE2E_DashboardFooterAnchorsToBottom(t *testing.T) {
 func TestTUITmuxE2E_DashboardRecentOnlyState(t *testing.T) {
 	t.Parallel()
 	requireTmux(t)
+	e2ecap.RequireLoopbackBind(t)
+	e2ecap.RequireProcessInspect(t)
 	bin := buildTUIBinary(t)
 	hub := newTUIE2EHub(t)
 	hub.EndDashboardSessions()
@@ -304,6 +318,8 @@ func TestTUITmuxE2E_DashboardRecentOnlyState(t *testing.T) {
 func TestTUITmuxE2E_ProjectHistoryReadOnlyAndResume(t *testing.T) {
 	t.Parallel()
 	requireTmux(t)
+	e2ecap.RequireLoopbackBind(t)
+	e2ecap.RequireProcessInspect(t)
 	bin := buildTUIBinary(t)
 	hub := newTUIE2EHub(t)
 	defer hub.Close()
@@ -333,6 +349,8 @@ func TestTUITmuxE2E_ProjectHistoryReadOnlyAndResume(t *testing.T) {
 func TestTUITmuxE2E_CodexSpawnUsesHarnessModelPicker(t *testing.T) {
 	t.Parallel()
 	requireTmux(t)
+	e2ecap.RequireLoopbackBind(t)
+	e2ecap.RequireProcessInspect(t)
 	bin := buildTUIBinary(t)
 	hub := newTUIE2EHub(t)
 	hub.SetHarnesses([]appwire.HarnessDescriptor{
@@ -370,6 +388,8 @@ func TestTUITmuxE2E_CodexSpawnUsesHarnessModelPicker(t *testing.T) {
 func TestTUITmuxE2E_SessionCommandsAndNavigation(t *testing.T) {
 	t.Parallel()
 	requireTmux(t)
+	e2ecap.RequireLoopbackBind(t)
+	e2ecap.RequireProcessInspect(t)
 	bin := buildTUIBinary(t)
 	hub := newTUIE2EHub(t)
 	defer hub.Close()
@@ -510,6 +530,8 @@ func TestTUITmuxE2E_SessionCommandsAndNavigation(t *testing.T) {
 func TestTUITmuxE2E_BrowseAndFork(t *testing.T) {
 	t.Parallel()
 	requireTmux(t)
+	e2ecap.RequireLoopbackBind(t)
+	e2ecap.RequireProcessInspect(t)
 	// Browse-mode fork: k/j move the selection cursor across rows (auto-
 	// scrolling to keep it visible) so a user message can be reached and forked.
 	bin := buildTUIBinary(t)
@@ -558,6 +580,8 @@ func TestTUITmuxE2E_BrowseAndFork(t *testing.T) {
 func TestTUITmuxE2E_FailedForkPreservesDraft(t *testing.T) {
 	t.Parallel()
 	requireTmux(t)
+	e2ecap.RequireLoopbackBind(t)
+	e2ecap.RequireProcessInspect(t)
 	bin := buildTUIBinary(t)
 	hub := newTUIE2EHub(t)
 	hub.SetFailFork(true)
@@ -597,6 +621,8 @@ func TestTUITmuxE2E_FailedForkPreservesDraft(t *testing.T) {
 func TestTUITmuxE2E_CapabilityGates(t *testing.T) {
 	t.Parallel()
 	requireTmux(t)
+	e2ecap.RequireLoopbackBind(t)
+	e2ecap.RequireProcessInspect(t)
 	bin := buildTUIBinary(t)
 	hub := newTUIE2EHub(t)
 	hub.SetSessionCapabilities("01LIVE", appwire.ThreadCapabilities{})
@@ -667,6 +693,8 @@ func TestTUITmuxE2E_CapabilityGates(t *testing.T) {
 func TestTUITmuxE2E_SessionCommandPalettePreservesDraft(t *testing.T) {
 	t.Parallel()
 	requireTmux(t)
+	e2ecap.RequireLoopbackBind(t)
+	e2ecap.RequireProcessInspect(t)
 	bin := buildTUIBinary(t)
 	hub := newTUIE2EHub(t)
 	defer hub.Close()
@@ -690,6 +718,8 @@ func TestTUITmuxE2E_SessionCommandPalettePreservesDraft(t *testing.T) {
 func TestTUITmuxE2E_SessionLeadingSlashOpensPalette(t *testing.T) {
 	t.Parallel()
 	requireTmux(t)
+	e2ecap.RequireLoopbackBind(t)
+	e2ecap.RequireProcessInspect(t)
 	bin := buildTUIBinary(t)
 	hub := newTUIE2EHub(t)
 	defer hub.Close()
@@ -704,6 +734,8 @@ func TestTUITmuxE2E_SessionLeadingSlashOpensPalette(t *testing.T) {
 func TestTUITmuxE2E_CtrlCRequiresDoublePressFromSession(t *testing.T) {
 	t.Parallel()
 	requireTmux(t)
+	e2ecap.RequireLoopbackBind(t)
+	e2ecap.RequireProcessInspect(t)
 	bin := buildTUIBinary(t)
 	hub := newTUIE2EHub(t)
 	defer hub.Close()
@@ -724,6 +756,8 @@ func TestTUITmuxE2E_CtrlCRequiresDoublePressFromSession(t *testing.T) {
 func TestTUITmuxE2E_CtrlCRestoreMessageSurvivesAltScreenExit(t *testing.T) {
 	t.Parallel()
 	requireTmux(t)
+	e2ecap.RequireLoopbackBind(t)
+	e2ecap.RequireProcessInspect(t)
 	bin := buildTUIBinary(t)
 	hub := newTUIE2EHub(t)
 	defer hub.Close()
@@ -747,6 +781,8 @@ func TestTUITmuxE2E_CtrlCRestoreMessageSurvivesAltScreenExit(t *testing.T) {
 func TestTUITmuxE2E_ModelPickerShowsAuthRequiredModels(t *testing.T) {
 	t.Parallel()
 	requireTmux(t)
+	e2ecap.RequireLoopbackBind(t)
+	e2ecap.RequireProcessInspect(t)
 	bin := buildTUIBinary(t)
 	hub := newTUIE2EHub(t)
 	hub.SetAuthRequiredModels(true)
@@ -776,6 +812,8 @@ func TestTUITmuxE2E_ModelPickerShowsAuthRequiredModels(t *testing.T) {
 func TestTUITmuxE2E_SessionHeaderStatusAndComposerStates(t *testing.T) {
 	t.Parallel()
 	requireTmux(t)
+	e2ecap.RequireLoopbackBind(t)
+	e2ecap.RequireProcessInspect(t)
 	bin := buildTUIBinary(t)
 	hub := newTUIE2EHub(t)
 	hub.SetSessionState("01LIVE", appwire.ThreadStatusActive)
@@ -850,6 +888,8 @@ func TestTUITmuxE2E_SessionHeaderStatusAndComposerStates(t *testing.T) {
 func TestTUITmuxE2E_HubStreamingAssistantDeltaBeforeRefresh(t *testing.T) {
 	t.Parallel()
 	requireTmux(t)
+	e2ecap.RequireLoopbackBind(t)
+	e2ecap.RequireProcessInspect(t)
 	bin := buildTUIBinary(t)
 	hub := newTUIE2EHub(t)
 	defer hub.Close()
@@ -874,6 +914,8 @@ func TestTUITmuxE2E_HubStreamingAssistantDeltaBeforeRefresh(t *testing.T) {
 func TestTUITmuxE2E_HubStreamingToolGroupBeforeRefresh(t *testing.T) {
 	t.Parallel()
 	requireTmux(t)
+	e2ecap.RequireLoopbackBind(t)
+	e2ecap.RequireProcessInspect(t)
 	bin := buildTUIBinary(t)
 	hub := newTUIE2EHub(t)
 	defer hub.Close()
@@ -898,6 +940,8 @@ func TestTUITmuxE2E_HubStreamingToolGroupBeforeRefresh(t *testing.T) {
 func TestTUITmuxE2E_APIErrorsRenderInPlace(t *testing.T) {
 	t.Parallel()
 	requireTmux(t)
+	e2ecap.RequireLoopbackBind(t)
+	e2ecap.RequireProcessInspect(t)
 	bin := buildTUIBinary(t)
 	hub := newTUIE2EHub(t)
 	defer hub.Close()
@@ -940,6 +984,8 @@ func TestTUITmuxE2E_APIErrorsRenderInPlace(t *testing.T) {
 func TestTUITmuxE2E_CaptureStableDuringStream(t *testing.T) {
 	t.Parallel()
 	requireTmux(t)
+	e2ecap.RequireLoopbackBind(t)
+	e2ecap.RequireProcessInspect(t)
 	bin := buildTUIBinary(t)
 	hub := newTUIE2EHub(t)
 	defer hub.Close()

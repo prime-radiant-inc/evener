@@ -471,45 +471,6 @@ assert_has_word "$root_args" "-count=1" "full-root mode preserves root's other f
 assert_has_word "$agent_args" "-short" "full-root mode keeps -short on non-root modules"
 assert_has_word "$agent_args" "-count=1" "full-root mode preserves non-root flags"
 
-# kata 5gvk: evener-dev capability-preflight exports
-# EVENER_GATE_CAPABILITY_SKIP when it classified a sandbox capability as
-# blocked. The runner must union that pattern into root's -skip so the
-# known-infeasible TestE2E_/TestTUITmuxE2E_ family is skipped instead of
-# failing into a denied bind/exec - but ONLY for root: agent has its own,
-# unrelated TestE2E_* tests (agent/session_escalation_e2e_test.go), and
-# unioning the pattern into every module would silently skip those too.
-new_case
-out="$case_dir/capability-skip.out"
-if run_tests ". agent" "$out" EVENER_GATE_CAPABILITY_SKIP='^(TestE2E_|TestTUITmuxE2E_)'; then rc=0; else rc=$?; fi
-assert_eq "$rc" "0" "a capability-driven skip pattern alone does not fail the run"
-root_args="$(arguments_for .)"
-agent_args="$(arguments_for agent)"
-assert_has_word "$root_args" "-skip" "root's invocation still carries -skip"
-case "$root_args" in
-	*"-skip "*"TestE2E_"*"TestTUITmuxE2E_"*) ok "root's -skip pattern carries the capability skip pattern" ;;
-	*) bad "root's -skip pattern does not carry the capability skip pattern (got: $root_args)" ;;
-esac
-case "$agent_args" in
-	*"TestE2E_"*) bad "agent's -skip pattern was wrongly widened by the root-only capability skip (got: $agent_args)" ;;
-	*) ok "agent's -skip pattern is untouched by the root-only capability skip" ;;
-esac
-# A run that narrows root's surface says so in its own output, not only in the
-# preflight summary that ran before it. This script is also invoked directly
-# (ROOT_FULL=1 make test), where an inherited or hand-set value would otherwise
-# narrow the surface and still report PASS with no trace of it.
-assert_has "$out" "EVENER_GATE_CAPABILITY_SKIP is set" "a capability-narrowed run names the narrowing in its own output"
-
-# The absence case: no EVENER_GATE_CAPABILITY_SKIP set (the ordinary path, and
-# what an unrestricted host's preflight exports) leaves -skip exactly as
-# before - this is the "green path unchanged" half of kata 5gvk's contract.
-new_case
-out="$case_dir/no-capability-skip.out"
-if run_tests "." "$out"; then rc=0; else rc=$?; fi
-assert_eq "$rc" "0" "a run with nothing capability-blocked exits zero"
-root_args="$(arguments_for .)"
-assert_not_has_word "$root_args" "TestE2E_" "root's -skip carries no capability pattern when nothing is blocked"
-assert_not_has "$out" "EVENER_GATE_CAPABILITY_SKIP" "an unnarrowed run says nothing about a capability skip"
-
 # PR #222's showstopper: a -run pattern that matches no test name makes every
 # package report "[no tests to run]" and exit 0, so every verdict reads PASS
 # while the gate proves nothing. The runner must fail a run whose Go waves

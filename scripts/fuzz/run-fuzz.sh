@@ -20,7 +20,7 @@ set -uo pipefail
 # The fuzz target registry lives in scripts/fuzz/fuzz-targets.txt — one colon-delimited
 # entry per line (tag:module:package-relpath:name[:coverpkg[:focus]]); see that file
 # for the field documentation. This script loads it and emits the list verbatim via
-# `--list`, consumed by scripts/fuzz/fuzz-coverage.sh, scripts/fuzz/fuzz-triage.sh, and the
+# `--list`, consumed by scripts/fuzz/fuzz-triage.sh and the
 # static gap gate (cmd/evener-fuzzcov -gap-only). Comment lines (beginning with '#')
 # and blank lines in the data file are skipped, so `--list` yields only real entries.
 # (macOS bash 3.2 lacks mapfile; this while-read loop is the portable equivalent of
@@ -72,14 +72,11 @@ for t in "${TARGETS[@]}"; do
 			echo "=== fuzzing $module:$name for $duration ==="
 			# -tags evenerfuzz makes the internal/invariant assertions live so a
 			# tripped invariant is found as a crasher (see docs/fuzzing.md).
-			# run-capped.sh gives each target its own memory ceiling so a leaky
-			# search OOMs that one target's scope, never the host. The targets run
-			# sequentially, so a per-target cap is the tightest safe bound.
-			( cd "$repo_root/$module" && "$repo_root/scripts/fuzz/run-capped.sh" go test -tags evenerfuzz -run '^$' -fuzz "^${name}\$" -fuzztime "$duration" "$pkg" ) || fail=1
+			( cd "$repo_root/$module" && go test -tags evenerfuzz -run '^$' -fuzz "^${name}\$" -fuzztime "$duration" "$pkg" ) || fail=1
 			;;
 			test)
 				echo "=== fuzz-test $module:$name ==="
-				( cd "$repo_root/$module" && "$repo_root/scripts/fuzz/run-capped.sh" go test -tags evenerfuzz -run "^${name}\$" -count=1 "$pkg" ) || fail=1
+				( cd "$repo_root/$module" && go test -tags evenerfuzz -run "^${name}\$" -count=1 "$pkg" ) || fail=1
 				;;
 
 			rapid)
@@ -91,7 +88,7 @@ for t in "${TARGETS[@]}"; do
 				# EVENER_FUZZ_TESTS=1: the seqfuzz/schemafuzz family t.Skip()s under a
 				# plain `go test` (moved out of `make test` per the fuzz-family
 				# ruling); this campaign must still drive them.
-				( cd "$repo_root/$module" && EVENER_FUZZ_TESTS=1 RAPID_CHECKS="${RAPID_CHECKS:-100}" "$repo_root/scripts/fuzz/run-capped.sh" go test -tags evenerfuzz -run "^${name}\$" -count=1 "$pkg" ) || fail=1
+				( cd "$repo_root/$module" && EVENER_FUZZ_TESTS=1 RAPID_CHECKS="${RAPID_CHECKS:-100}" go test -tags evenerfuzz -run "^${name}\$" -count=1 "$pkg" ) || fail=1
 				;;
 
 			*)

@@ -573,17 +573,15 @@ func ProjectTurn(turnID string, turnIndex int, turn schema.Turn, toolNames map[s
 // (content[]), and Gemini's grounding metadata (webSearchQueries +
 // groundingChunks[]).
 type webSearchRaw struct {
-	Action struct{ Query string } `json:"action"`
-	Input  struct{ Query string } `json:"input"`
-	// evener:naming-ignore: Gemini grounding-metadata wire field name (camelCase, fixed by the Gemini API).
-	WebSearchQueries []string `json:"webSearchQueries"`
-	// evener:naming-ignore: Gemini grounding-metadata wire field name (camelCase, fixed by the Gemini API).
-	GroundingChunks []struct {
+	Action           struct{ Query string } `json:"action"`
+	Input            struct{ Query string } `json:"input"`
+	WebSearchQueries []string               `json:"webSearchQueries"` //nolint:tagliatelle // Gemini grounding-metadata wire field name (camelCase, fixed by the Gemini API).
+	GroundingChunks  []struct {
 		Web struct {
 			URI   string `json:"uri"`
 			Title string `json:"title"`
 		} `json:"web"`
-	} `json:"groundingChunks"`
+	} `json:"groundingChunks"` //nolint:tagliatelle // Gemini grounding-metadata wire field name (camelCase, fixed by the Gemini API).
 	Content []struct {
 		Type  string `json:"type"`
 		URL   string `json:"url"`

@@ -14,8 +14,8 @@ Moved here from `test/scenarios/index-sidebar-lists-projects.md` (kata
 `e0ee`): it read like an automated sweep card living in the wrong
 directory, hardcoded to Jesse's real `/home/jesse` path with no
 isolation marker, which is exactly the hazard
-`scenariohome_audit_test.go` (kata `93f5`) flags for cards actually
-under `test/scenarios/`. It never spawns a session or writes anything,
+`scenariohome_audit_test.go` (kata `93f5`) flagged for cards actually
+under `test/scenarios/` (the audit is retired; the rule stands). It never spawns a session or writes anything,
 so it was never the OAuth-footgun class of hazard (kata `keyb`) — just
 filed in the wrong place.
 

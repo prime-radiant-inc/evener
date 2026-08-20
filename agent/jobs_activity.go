@@ -139,6 +139,8 @@ func decodeActivityContinuation(token, expectedRoot string) (activityContinuatio
 	return cont, nil
 }
 
+// JobActivityTree builds the session's job-activity tree reported over
+// appwire, after validating params' root reference against this session.
 func (s *Session) JobActivityTree(params appwire.JobsListParams) (appwire.JobActivityTree, error) {
 	if s == nil {
 		return appwire.JobActivityTree{}, errors.New("session unavailable")

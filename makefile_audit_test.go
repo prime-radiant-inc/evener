@@ -3,8 +3,6 @@ package evener_test
 import (
 	"fmt"
 	"os"
-	"os/exec"
-	"regexp"
 	"sort"
 	"strings"
 	"testing"
@@ -26,16 +24,7 @@ import (
 // reworded message beside the delete — fails the audit and forces someone to
 // re-read the delete in that diff. Keys are the line as recursiveDeleteLineText
 // normalizes it, so they carry no trailing continuation backslash.
-var makefileVariableFedDeletes = map[string]string{
-	`rm -rf "$$dir" || finish_status=1;`: "test-web's log directory: minted on the same recipe by a checked " +
-		`mktemp -d "${TMPDIR:-/tmp}/evener-test-web.XXXXXX" || exit 1, ` +
-		"so $$dir is either a fresh temp directory or the recipe already exited",
-	`rm -rf "$$dir" || { finish_status=1; printf 'full logs: %s\n' "$$dir" >&2; };`: "test-web-browser's log directory: " +
-		`minted on the same recipe by a checked mktemp -d "${TMPDIR:-/tmp}/evener-test-web-browser.XXXXXX" || exit 1`,
-	`rm -rf "$(EVENER_DIST_BIN_DIR)" "$(EVENER_DIST_ARCHIVE)"`: "dist's own output paths, both rooted at DIST_DIR " +
-		"(default `dist`) and named for the build's GOOS/GOARCH. This is the weakest entry of the three: " +
-		"`make dist DIST_DIR=` roots both operands at `/` instead, and nothing in the recipe refuses that",
-}
+var makefileVariableFedDeletes = map[string]string{}
 
 // TestNoMakefileRecipeFeedsVariableToRecursiveDelete holds the delete-safety
 // rule over the Makefile, which is where the repository's remaining
@@ -152,40 +141,6 @@ func TestNoMakefileRecipeFeedsVariableToRecursiveDelete(t *testing.T) {
 			t.Errorf("one makefileVariableFedDeletes entry now blesses %d deletes, so a copy of "+
 				"a reviewed line entered the Makefile without review of its own; give each site "+
 				"its own entry:\n  %s", matched[line], line)
-		}
-	}
-}
-
-// TestBuildAllBuildsEveryInstalledBinary pins `make build-all` to the installed
-// binary set: every name in EVENER_INSTALL_BINS must have its package built
-// somewhere in build-all's expanded command text. The rename shipped a fifth
-// installed binary (evener-migrate) whose build target existed but hung off
-// nothing, so `make build-all` quietly produced four of the five bins this
-// Makefile itself says an install contains.
-//
-// The corpus is `make -n build-all` plus the text of every scripts/*.sh the
-// dry run mentions, because build-runtime builds the evener/evener-hub pair
-// inside scripts/build-runtime-pair.sh where the dry run cannot see the
-// package paths. The predicate is the package path `./cmd/<bin>/`, not the
-// output flag, so it holds no opinion about staging directories or -ldflags.
-func TestBuildAllBuildsEveryInstalledBinary(t *testing.T) {
-	t.Parallel()
-	bins := installedBins(t)
-	out, err := exec.Command("make", "-n", "build-all").CombinedOutput()
-	if err != nil {
-		t.Fatalf("make -n build-all: %v\n%s", err, out)
-	}
-	corpus := string(out)
-	for _, script := range regexp.MustCompile(`scripts/[\w./-]+\.sh`).FindAllString(corpus, -1) {
-		text, err := os.ReadFile(script)
-		if err != nil {
-			t.Fatalf("read %s (mentioned by make -n build-all): %v", script, err)
-		}
-		corpus += "\n" + string(text)
-	}
-	for _, bin := range bins {
-		if !strings.Contains(corpus, "./cmd/"+bin+"/") {
-			t.Errorf("make build-all never builds ./cmd/%s/ — EVENER_INSTALL_BINS lists %s but build-all's prerequisite chain does not produce it", bin, bin)
 		}
 	}
 }

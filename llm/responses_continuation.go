@@ -37,25 +37,25 @@ const (
 type ResponsesErrorClass string
 
 const (
-	// ResponsesErrorContinuationRejected: the server rejected the continuation
-	// anchor (e.g. an unknown or expired previous response).
+	// ResponsesErrorContinuationRejected means the server rejected the
+	// continuation anchor (e.g. an unknown or expired previous response).
 	ResponsesErrorContinuationRejected ResponsesErrorClass = "continuation_rejected"
-	// ResponsesErrorModelEndpoint: the model or endpoint is unavailable or misconfigured.
+	// ResponsesErrorModelEndpoint means the model or endpoint is unavailable or misconfigured.
 	ResponsesErrorModelEndpoint ResponsesErrorClass = "model_endpoint"
-	// ResponsesErrorTransient: a temporary error that is safe to retry.
+	// ResponsesErrorTransient is a temporary error that is safe to retry.
 	ResponsesErrorTransient ResponsesErrorClass = "transient"
-	// ResponsesErrorPermanentOther: a permanent error not covered by the other classes.
+	// ResponsesErrorPermanentOther is a permanent error not covered by the other classes.
 	ResponsesErrorPermanentOther ResponsesErrorClass = "permanent_other"
 )
 
 const (
-	// ResponsesStoragePolicyPublicOpenAIStore: public OpenAI endpoint with
+	// ResponsesStoragePolicyPublicOpenAIStore is the public OpenAI endpoint with
 	// server-side storage (store=true) enabled.
 	ResponsesStoragePolicyPublicOpenAIStore = "public-openai-store"
-	// ResponsesStoragePolicyPublicOpenAINoStore: public OpenAI endpoint with
+	// ResponsesStoragePolicyPublicOpenAINoStore is the public OpenAI endpoint with
 	// server-side storage disabled.
 	ResponsesStoragePolicyPublicOpenAINoStore = "public-openai-no-store"
-	// ResponsesStoragePolicyCodexUnproven: Codex endpoint whose storage behavior
+	// ResponsesStoragePolicyCodexUnproven is a Codex endpoint whose storage behavior
 	// is not yet proven.
 	ResponsesStoragePolicyCodexUnproven = "codex-storage-unproven"
 )

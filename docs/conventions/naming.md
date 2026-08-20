@@ -137,23 +137,43 @@ correctly.
 
 ## Enforcement
 
-`cmd/evener-namingcheck` walks the AST and checks every `json:"..."`
-and `toml:"..."` struct tag plus every TOML key. The linter enforces
-the snake-default rule and applies the path carve-outs above
-(appwire-adjacent code — `internal/appwire/`, `internal/appsource/`,
-`internal/appserver/`, `server/appwire_*.go` — requires camelCase;
-`llm/providers/*/` is skipped entirely). A single field can opt out
-with a `// evener:naming-ignore` (Go) or `# evener:naming-ignore` (TOML)
-marker on the immediately preceding line; pair every opt-out with a
-comment explaining why.
+Two standard gates enforce the convention:
+
+- **Go struct tags** — golangci-lint's `tagliatelle` linter (configured in
+  `.golangci.yml`) requires snake_case `json`/`toml` tags by default,
+  camelCase `json` tags in the appwire-adjacent packages (per-package
+  overrides), and nothing under `llm/providers/` (excluded; upstream owns
+  the casing). A single field can opt out with a trailing
+  `//nolint:tagliatelle // <reason>` comment.
+
+  `server/appwire_*.go` is camelCase too, but it shares package `server`
+  with snake_case code, and tagliatelle's overrides are per-package. That
+  half lives in `.golangci-appwire.yml`, a second config that flips the
+  package to camelCase and discards every finding outside those files;
+  `make lint-golangci` runs it after the main sweep. The build-tagged
+  sources (`//go:build evenerfuzz` / `eval`) are linted the same way, by a
+  tagliatelle pass under each tag inside `make lint-evenerfuzz` /
+  `make lint-eval` — the tag-free run does not compile them, so it cannot
+  see their tags.
+- **TOML data files** — `cmd/evener-tomlcheck` checks every TOML key and
+  table name for snake_case. A single key can opt out with a
+  `# evener:naming-ignore` marker on the immediately preceding line.
 
 Run locally:
 
 ```bash
-go run ./cmd/evener-namingcheck ./...
-# or
-make lint-naming
+make lint-golangci   # struct tags (and everything else golangci covers)
+make lint-naming     # TOML data files
 ```
+
+If `make lint` reports tagliatelle findings under `llm/providers/` or
+`server/appwire_` — paths those `path:` exclusions cover — check for a
+stale cache before believing them. golangci-lint's cache is shared across
+worktrees; when it replays entries recorded under a different checkout's
+absolute path, the reported paths come back as `../../…` and stop matching
+the anchored regexes. `golangci-lint cache clean` fixes it. Only the two
+`path:` exclusions are exposed this way; the per-package `overrides` match
+on package path and are immune.
 
 ## Adding a new surface
 

@@ -42,102 +42,34 @@ run starts from a richer corpus than the last. A failing input is auto-saved (se
 ```sh
 make fuzz-gap-check  # FAST static gate (the blocking CI floor): every decode/parse
                      # package has a target or a reasoned ignore. No coverage replay.
-make fuzz-coverage   # measure focus-set coverage per target + print the gap map
 ```
 
-## Memory safety (don't take the host down)
+## Memory safety
 
 A coverage-guided search accumulates its corpus in memory, and a long run on a
-target with large inputs — or several runs at once — can climb into tens of GB.
-Left unbounded, that fires the kernel's **global** OOM killer, which has twice
-taken the whole host (and its network) down, requiring a manual reboot.
+target with large inputs can climb into tens of GB. Run searches on a host that
+can spare the RAM; if a single target legitimately needs more than the machine
+comfortably has, that is a signal worth a `go test -memprofile` pass: a search
+that grows without bound is usually retaining inputs/state it should free
+between iterations.
 
-So every heavy target runs under a hard memory ceiling, enforced by cgroup-v2 via
-`scripts/fuzz/run-capped.sh` and wired into the Makefile (`make test`, `make fuzz`,
-`make fuzz-nightly`, `make fuzz-coverage`, `make fuzz-triage`) and into
-`scripts/fuzz/run-fuzz.sh` itself, so even a **direct** `scripts/fuzz/run-fuzz.sh` is
-protected. There are two ceilings:
+## Coverage
 
-- **per run** (`EVENER_MEM_MAX`, default 16G) — one runaway is OOM-killed alone;
-- **shared total** (`EVENER_MEM_TOTAL`, default 32G) — all concurrent evener runs
-  join one slice, so launching several at once still can't exhaust the host.
-
-A runaway now shows up as a *scope/slice* OOM in `journalctl --user`, never
-`global_oom`, and `tailscale`/SSH stay up throughout. Tune the ceilings for a
-bigger box (`EVENER_MEM_MAX=24G make fuzz-nightly`) or disable entirely with
-`EVENER_MEM_MAX=0`. Where systemd user scopes aren't available (some CI
-containers) the wrapper prints a warning and runs uncapped — CI runners impose
-their own cgroup limit.
-
-If a *single* target legitimately needs more than the per-run cap, that is a
-signal worth a `go test -memprofile` pass: a search that grows without bound is
-usually retaining inputs/state it should free between iterations.
-
-## Reading the coverage map
-
-`make fuzz-coverage` replays each target's committed corpus under `-coverprofile`
-and prints, per target, two numbers:
-
-- **focus-set %** — coverage of the decode/parse **seam** the target is meant to
-  drive (the `focus` field in the registry: a file like `sse.go`, a function like
-  `adapter.go#decodeStream`, or empty = the whole SUT package). This is the
-  primary, drive-toward-100 metric.
-- **whole-package %** — secondary context.
-
-It also prints the **gap map**: decode/parse packages with *zero* fuzz coverage
-(none should remain except the toolkit's own packages, listed with reasons in
-`scripts/coverage/fuzzcov-ignore.txt`).
-
-The focus % is ratcheted: floors live in `scripts/coverage/fuzzcov-floors.txt` and only go
-up. After legitimately raising a target's coverage, lock it in:
+`make coverage-floor` owns the "how much is exercised" number: per module it
+unions the unit-test track with the deterministic native seed-corpus replay
+(under `-tags evenerfuzz`), plus the frontend's vitest line coverage, and
+ratchets the result against `scripts/coverage/coverage-floors.txt`:
 
 ```sh
-make fuzz-coverage CHECK=1   # fail on a focus-set regression OR a gap breach (local/manual)
-make fuzz-coverage BLESS=1   # raise each floor to the current measured %
+make coverage-floor           # measure + print
+make coverage-floor CHECK=1   # fail on a drop below the floor
+make coverage-floor BLESS=1   # raise floors to the measured values
 ```
 
-## Whole-module fuzz coverage
-
-`make fuzz-coverage-global` is the slow, strict coverage gate for the entire
-workspace. It is distinct from `make fuzz-coverage`: the latter reports
-per-target focus sets, while the global command measures raw statement coverage
-of every production package in each module.
-
-```sh
-make fuzz-coverage-global                    # every module declared in go.work
-make fuzz-coverage-global CHECK=1            # require raw coverage >95.0% per module
-make fuzz-coverage-global CHECK=1 FUZZ_ARGS='--modules agent --format json'
-make fuzz-coverage-global BLESS=1            # only after every measured module is >95.0%
-```
-
-The runner first obtains the exact four-column native/Rapid plan from
-`make fuzz-registry-check`. It then lists every production package with
-`-tags evenerfuzz`; a package without a registered **local** fuzz surface fails
-before any replay with `missing local fuzz surface: <module>:<package>`.
-Each native target runs once. Each Rapid target runs with
-`RAPID_SEED=1,2,3,5,8`, `RAPID_CHECKS=100`, `RAPID_STEPS=30`,
-`RAPID_NOFAILFILE=true`, `RAPID_LOG=false`, `RAPID_V=false`,
-`RAPID_DEBUG=false`, `RAPID_DEBUGVIS=false`, and `RAPID_SHRINKTIME=30s`;
-`RAPID_FAILFILE` is explicitly unset. Their coverage profiles are unioned only
-within the owning package, then passed to `evener-fuzzcov` for the strict raw
-threshold, reviewed file-only exclusions, and upward-only floors. There is no
-`-coverpkg` cross-package instrumentation.
-
-The runner exports `GOWORK=<repository>/go.work` and derives its canonical,
-repo-relative module labels from that file at invocation, so it does not depend
-on an ambient workspace setting or a stale hard-coded list. `--modules` accepts
-only those derived labels. `--format json` reserves stdout for the final
-`evener-fuzzcov` JSON document; runner progress and replay output go to stderr.
-Any registry, listing, replay, profile, or accounting failure is fatal; the
-command never turns a failed target into an omitted or synthetic zero profile.
-
-Current implementation status: the registry audit is clean, and `make
-fuzz-coverage-global FUZZ_ARGS='--modules agent'` now clears the local-surface preflight
-too — every production package in `agent` has a registered native or Rapid
-target. The runner proceeds into the real per-target replay, which is where
-`make fuzz-coverage-global` actually spends its time; per the design above, a
-package that fails the preflight needs a fuzz target added, it must not be
-excluded.
+The blocking fuzz gate is the static `make fuzz-gap-check` above, not a
+coverage replay. The rapid (seqfuzz/schemafuzz) family is env-gated and takes
+part in neither track — its assurance comes from `make fuzz` and
+`make test-fuzz`, not from a coverage number.
 
 Interpreting a **low focus %**: use `go tool cover -func` on the profile to see
 which blocks are uncovered. A block with a `0` count that a crafted input *could*
@@ -251,7 +183,7 @@ invariant.Enabled                                      // untyped const: false i
 condition is not evaluated and the args are not boxed (verified by disassembly), so
 production binaries are byte-unchanged. Built with **`-tags evenerfuzz`** a violated
 invariant panics, so the existing never-panic oracle reports it for free. The whole
-fuzz path (`make fuzz`, `run-fuzz.sh`, `fuzz-coverage`, `fuzz-triage`) builds with
+fuzz path (`make fuzz`, `run-fuzz.sh`, `fuzz-triage`) builds with
 that tag automatically; `make test` and `go build` stay tag-free.
 
 To add one: import the module and assert a load-bearing assumption where it must

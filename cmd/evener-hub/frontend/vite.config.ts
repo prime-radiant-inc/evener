@@ -125,7 +125,8 @@ export default defineConfig({
         "src/dev/**",
       ],
       reportsDirectory: "coverage",
-      // json-summary is what scripts/web-coverage-floor.sh ratchets against;
+      // json-summary is what scripts/coverage/coverage-floor.sh's web row
+      // ratchets against;
       // text-summary keeps the terminal readable; html is for reading a miss.
       reporter: ["text-summary", "json-summary", "html"],
       // Report even on failure so a red suite still yields a coverage number

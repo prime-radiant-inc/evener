@@ -33,7 +33,7 @@ type ServerInfo struct {
 
 // mcpConfigFile is the JSON structure of an mcp.json file.
 type mcpConfigFile struct {
-	MCPServers map[string]json.RawMessage `json:"mcpServers"`
+	MCPServers map[string]json.RawMessage `json:"mcpServers"` //nolint:tagliatelle // upstream .mcp.json key spelling
 }
 
 // mcpServerJSON is the raw JSON form of a single server entry.

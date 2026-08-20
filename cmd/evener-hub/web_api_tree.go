@@ -121,9 +121,8 @@ func (s *WebServer) handleAPITree(w http.ResponseWriter, r *http.Request) {
 	if r.URL.Query().Get("summary") == "1" {
 		_, attentionSummary := s.memoTree(r.Context())
 		writeAPIJSON(w, http.StatusOK, struct {
-			GeneratedAt time.Time `json:"generated_at"`
-			// evener:naming-ignore
-			AttentionSummary hubapi.AttentionSummary `json:"attentionSummary"` // camelCase: see hubapi.AttentionSummary's doc
+			GeneratedAt      time.Time               `json:"generated_at"`
+			AttentionSummary hubapi.AttentionSummary `json:"attentionSummary"` //nolint:tagliatelle // camelCase: see hubapi.AttentionSummary's doc
 		}{time.Now().UTC(), hubAttentionSummaryFromCore(attentionSummary)})
 		return
 	}

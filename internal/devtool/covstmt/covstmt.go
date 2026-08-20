@@ -1,6 +1,6 @@
 // Package covstmt counts statements in a Go coverage profile. It is the Go
 // counterpart of scripts/lib/covstmt-lib.sh's stmt_counts, which still serves
-// the shell coverage runners (coverage-union.sh and the fuzz family); the two
+// the shell coverage runners (coverage-floor.sh); the two
 // must agree, because their numbers are compared against the same floors.
 //
 // Two properties, both inherited from the shell definition, are the heart of

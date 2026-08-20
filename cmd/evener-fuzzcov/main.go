@@ -1,22 +1,18 @@
-// Command evener-fuzzcov is the fuzz coverage reporter: it turns the per-target
-// coverage profiles produced by replaying each fuzz target's COMMITTED corpus
-// into an honest, drivable-to-100% coverage map.
+// Command evener-fuzzcov is the static fuzz gap gate: it asserts that every
+// decode/parse package in the workspace has a registered fuzz target (or a
+// reasoned ignore-list entry), without replaying any corpus.
 //
-// For each fuzz target it computes a FOCUS-SET coverage % — the line coverage
-// the corpus drives into the specific decode/parse seam the target is meant to
-// fuzz (declared as the trailing `focus` field of scripts/fuzz/run-fuzz.sh's TARGETS)
-// — plus the whole-package % as a secondary visibility number. It enforces a
-// no-regression ratchet against scripts/coverage/fuzzcov-floors.txt and emits a GAP MAP:
-// every decode/parse package across the workspace that has zero fuzz coverage.
+// It derives the fuzzed package set from the target registry
+// (scripts/fuzz/run-fuzz.sh --list output, passed via -registry), scans the
+// workspace for decode/parse signatures, subtracts the ignore-list, and exits
+// non-zero on anything left over. Seconds, deterministic — safe as a blocking
+// PR gate. Run it via:
 //
-// It does not run any tests; scripts/fuzz/fuzz-coverage.sh produces the profiles and
-// the target manifest, then invokes this reporter. Run it via:
+//	make fuzz-gap-check
 //
-//	make fuzz-coverage           # advisory: print the report, always exit 0
-//	make fuzz-coverage CHECK=1   # ratchet + gap floor: exit non-zero on a breach
-//
-// The --bless mode raises each floor in scripts/coverage/fuzzcov-floors.txt upward to the
-// current measured focus % (it never lowers a floor), locking in corpus gains.
+// The per-target coverage reporter that used to live here was deleted with
+// the coverage-floor consolidation; `make coverage-floor` owns the "how much
+// is exercised" number now.
 package main
 
 import (
@@ -24,56 +20,23 @@ import (
 	"errors"
 	"flag"
 	"fmt"
-	"go/ast"
-	"go/parser"
-	"go/token"
-	"maps"
 	"os"
-	"path"
 	"path/filepath"
 	"regexp"
 	"sort"
-	"strconv"
 	"strings"
 )
 
 var exitProcess = os.Exit
 
-// target is one fuzz target plus the metadata the reporter needs to attribute
-// its profile. The first five fields mirror scripts/fuzz/run-fuzz.sh's TARGETS entry;
-// profile is the path to that target's replayed -coverprofile.
+// target is one registry entry: the fuzz target's identity plus the optional
+// coverpkg override naming the package(s) it really exercises.
 type target struct {
 	tag      string // "native" (testing.F) or "rapid" (rapid.Check Test func)
 	module   string // go.work module dir, e.g. "agent" or "."
 	pkg      string // package relpath within the module, e.g. "./appwire" or "."
 	name     string // FuzzName
-	coverpkg string // go test -coverpkg value (defaults to pkg)
-	focus    string // ";"-separated focus specs; empty means "whole SUT package"
-	profile  string // path to the replayed coverage profile
-}
-
-// focusSpec is one focus entry: a file relative to the SUT package dir, with an
-// optional function name to narrow to that function's line range.
-type focusSpec struct {
-	relpath string
-	fn      string // empty means the whole file
-}
-
-// block is a single coverage block parsed from a profile line.
-type block struct {
-	file  string // import-path-qualified, e.g. primeradiant.com/evener/appwire/jsonrpc.go
-	start int    // start line of the block
-	stmts int    // number of statements
-	count int    // execution count (0 or 1 under mode: set)
-}
-
-// result holds the computed numbers for one target's report row.
-type result struct {
-	name       string
-	focusLabel string
-	focusPct   float64
-	floor      float64
-	pkgPct     float64
+	coverpkg string // package(s) the target covers; defaults to pkg
 }
 
 func main() {
@@ -88,40 +51,13 @@ func main() {
 func runCLI(args []string, stdout, stderr *os.File) (int, error) {
 	flags := flag.NewFlagSet("evener-fuzzcov", flag.ContinueOnError)
 	flags.SetOutput(stderr)
-	manifest := flags.String("manifest", "", "path to the target manifest written by fuzz-coverage.sh (required)")
-	floorsPath := flags.String("floors", "scripts/coverage/fuzzcov-floors.txt", "ratchet floors file")
-	globalManifest := flags.String("global-manifest", "", "path to module/package/profile TSV emitted by fuzz-coverage-global.sh")
-	globalExclusions := flags.String("global-exclusions", "scripts/coverage/fuzzcov-global-exclusions.txt", "reviewed whole-file global coverage exclusions")
-	globalFloors := flags.String("global-floors", "scripts/coverage/fuzzcov-global-floors.txt", "whole-module global coverage floors")
-	globalMinimum := flags.Float64("global-minimum", 95.0, "strict raw whole-module coverage threshold")
-	globalJSON := flags.Bool("global-json", false, "emit the global coverage report as JSON")
 	ignorePath := flags.String("ignore", "scripts/coverage/fuzzcov-ignore.txt", "gap-map ignore-list")
 	repoRoot := flags.String("repo-root", ".", "repository root")
 	modulesArg := flags.String("modules", "", "space-separated go.work module dirs to scan for the gap map (default: derived from go.work)")
-	check := flags.Bool("check", false, "exit non-zero on a focus-set regression or a gap breach")
-	bless := flags.Bool("bless", false, "raise each floor upward to the current measured focus %")
-	tolerance := flags.Float64("tolerance", 0.5, "ratchet tolerance band (percentage points) absorbing nondeterministic wobble")
 	gapOnly := flags.Bool("gap-only", false, "STATIC gap gate: derive the fuzzed set from the registry (no coverage replay) and exit non-zero on any unfuzzed, unignored parse package")
 	registry := flags.String("registry", "", "path to scripts/fuzz/run-fuzz.sh --list output (required with -gap-only)")
 	if err := flags.Parse(args); err != nil {
 		return 2, err
-	}
-
-	if *globalManifest != "" {
-		if *gapOnly || *manifest != "" {
-			return 2, errors.New("-global-manifest cannot be combined with -gap-only or -manifest")
-		}
-		code, err := runGlobalMode(globalModeOptions{
-			manifestPath: *globalManifest, exclusionsPath: *globalExclusions, floorsPath: *globalFloors,
-			repoRoot: *repoRoot, minimum: *globalMinimum, check: *check, bless: *bless, json: *globalJSON,
-		}, stdout, stderr)
-		if err != nil {
-			return 2, fmt.Errorf("global coverage: %w", err)
-		}
-		return code, nil
-	}
-	if *globalJSON {
-		return 2, errors.New("-global-json requires -global-manifest")
 	}
 
 	modules := strings.Fields(*modulesArg)
@@ -137,97 +73,13 @@ func runCLI(args []string, stdout, stderr *os.File) (int, error) {
 		return runGapOnlyE(*registry, *repoRoot, modules, *ignorePath)
 	}
 
-	if *manifest == "" {
-		return 2, errors.New("--manifest is required")
-	}
-
-	targets, err := readManifest(*manifest)
-	if err != nil {
-		return 2, fmt.Errorf("read manifest: %w", err)
-	}
-	modulePaths, err := readModulePaths(*repoRoot, modules)
-	if err != nil {
-		return 2, fmt.Errorf("read module paths: %w", err)
-	}
-	floors, err := readFloors(*floorsPath)
-	if err != nil {
-		return 2, fmt.Errorf("read floors: %w", err)
-	}
-	if err := validateFloorTargets(floors, targets); err != nil {
-		return 2, fmt.Errorf("validate floors: %w", err)
-	}
-
-	// Parse every profile once; build per-target blocks and the merged union.
-	merged := map[string]block{} // file:start -> block (union of counts)
-	perTarget := map[string][]block{}
-	for _, t := range targets {
-		blocks, err := parseProfile(t.profile)
-		if err != nil {
-			return 2, fmt.Errorf("%s: %w", t.name, err)
-		}
-		perTarget[t.name] = blocks
-		for _, b := range blocks {
-			key := fmt.Sprintf("%s:%d", b.file, b.start)
-			if prev, ok := merged[key]; ok {
-				if b.count > prev.count {
-					prev.count = b.count
-					merged[key] = prev
-				}
-				continue
-			}
-			merged[key] = b
-		}
-	}
-
-	results := make([]result, 0, len(targets))
-	for _, t := range targets {
-		r, err := computeTarget(*repoRoot, modulePaths, t, perTarget[t.name], floors)
-		if err != nil {
-			return 2, fmt.Errorf("%s: %w", t.name, err)
-		}
-		results = append(results, r)
-	}
-
-	// Gap map: every decode/parse package minus the fuzzed set minus the ignore-list.
-	fuzzed := fuzzedPackages(merged)
-	universe, err := scanUniverse(*repoRoot, modulePaths)
-	if err != nil {
-		return 2, fmt.Errorf("scan parse universe: %w", err)
-	}
-	ignore, err := readIgnore(*ignorePath)
-	if err != nil {
-		return 2, fmt.Errorf("read ignore-list: %w", err)
-	}
-	gaps := gapMap(universe, fuzzed, ignore)
-
-	if *bless {
-		if err := writeFloors(*floorsPath, results, floors); err != nil {
-			return 2, fmt.Errorf("bless floors: %w", err)
-		}
-		_, _ = fmt.Fprintf(stdout, "evener-fuzzcov: raised floors in %s\n", *floorsPath)
-	}
-
-	printReportTo(stdout, results, gaps)
-
-	if *check {
-		return checkExitTo(stderr, results, gaps, *tolerance), nil
-	}
-	return 0, nil
+	return 2, errors.New("the only mode is -gap-only -registry <file>; the coverage reporter was removed")
 }
 
-// runGapOnly is the fast STATIC gap gate. It never replays a corpus: it derives
-// the fuzzed package set from the registry's declared target packages, scans the
-// parse-signature universe, subtracts the ignore-list, and exits non-zero if any
-// parse package is left un-fuzzed and un-ignored. Seconds, deterministic — safe
-// for the PR gate, unlike the slow coverage-driven --check.
-func runGapOnly(registryPath, repoRoot string, modules []string, ignorePath string) int {
-	code, err := runGapOnlyE(registryPath, repoRoot, modules, ignorePath)
-	if err != nil {
-		fatal("%v", err)
-	}
-	return code
-}
-
+// runGapOnlyE is the fast STATIC gap gate. It never replays a corpus: it
+// derives the fuzzed package set from the registry's declared target packages,
+// scans the parse-signature universe, subtracts the ignore-list, and exits
+// non-zero if any parse package is left un-fuzzed and un-ignored.
 func runGapOnlyE(registryPath, repoRoot string, modules []string, ignorePath string) (int, error) {
 	if registryPath == "" {
 		return 2, errors.New("-gap-only requires -registry (the scripts/fuzz/run-fuzz.sh --list output)")
@@ -284,117 +136,6 @@ func staticFuzzedPackages(targets []target, modulePaths map[string]string) map[s
 				continue
 			}
 			out[joinImport(modulePath, pkgSubdir(part))] = true
-		}
-	}
-	return out
-}
-
-// computeTarget resolves the focus set, attributes the target's profile to it,
-// and computes both the primary focus % and the secondary whole-package %.
-func computeTarget(repoRoot string, modulePaths map[string]string, t target, blocks []block, floors map[string]float64) (result, error) {
-	r := result{name: t.name, floor: floors[t.name]}
-
-	modulePath := modulePaths[t.module]
-	if modulePath == "" {
-		return r, fmt.Errorf("no module path for module %q", t.module)
-	}
-	pkgSub := pkgSubdir(t.pkg)
-	sutImport := joinImport(modulePath, pkgSub)
-
-	specs := parseFocus(t.focus)
-	if len(specs) == 0 {
-		// Whole-package focus: the seam is the entire SUT package.
-		r.focusLabel = "(whole package)"
-		r.focusPct = pctForPackage(blocks, sutImport)
-		r.pkgPct = r.focusPct
-		return r, nil
-	}
-
-	var labels []string
-	covered, total := 0, 0
-	pkgImport := ""
-	for _, s := range specs {
-		fileImport := joinImport(modulePath, path.Join(pkgSub, s.relpath))
-		if pkgImport == "" {
-			pkgImport = path.Dir(fileImport)
-		}
-		lo, hi := 0, 1<<30
-		if s.fn != "" {
-			srcPath := filepath.Join(repoRoot, t.module, pkgSub, s.relpath)
-			var err error
-			lo, hi, err = funcLineRange(srcPath, s.fn)
-			if err != nil {
-				return r, err
-			}
-			labels = append(labels, s.relpath+"#"+s.fn)
-		} else {
-			labels = append(labels, s.relpath)
-		}
-		for _, b := range blocks {
-			if b.file != fileImport || b.start < lo || b.start > hi {
-				continue
-			}
-			total += b.stmts
-			if b.count > 0 {
-				covered += b.stmts
-			}
-		}
-	}
-	r.focusLabel = strings.Join(labels, "; ")
-	if total > 0 {
-		r.focusPct = 100 * float64(covered) / float64(total)
-	}
-	// The secondary whole-package % is measured over the package that holds the
-	// focus set (which, for FuzzToolArgsValidate, is internal/tool — the real SUT
-	// — not the agent root package the target's go test lives in).
-	r.pkgPct = pctForPackage(blocks, pkgImport)
-	return r, nil
-}
-
-// pctForPackage computes covered/total over the blocks whose file sits directly
-// in the given package import path.
-func pctForPackage(blocks []block, pkgImport string) float64 {
-	covered, total := 0, 0
-	for _, b := range blocks {
-		if path.Dir(b.file) != pkgImport {
-			continue
-		}
-		total += b.stmts
-		if b.count > 0 {
-			covered += b.stmts
-		}
-	}
-	if total == 0 {
-		return 0
-	}
-	return 100 * float64(covered) / float64(total)
-}
-
-// funcLineRange parses srcPath and returns the [start,end] line range of the
-// top-level function (or method) named fn.
-func funcLineRange(srcPath, fn string) (int, int, error) {
-	fset := token.NewFileSet()
-	f, err := parser.ParseFile(fset, srcPath, nil, 0)
-	if err != nil {
-		return 0, 0, fmt.Errorf("parse %s: %w", srcPath, err)
-	}
-	for _, decl := range f.Decls {
-		fd, ok := decl.(*ast.FuncDecl)
-		if !ok || fd.Name.Name != fn {
-			continue
-		}
-		return fset.Position(fd.Pos()).Line, fset.Position(fd.End()).Line, nil
-	}
-	return 0, 0, fmt.Errorf("function %s not found in %s", fn, srcPath)
-}
-
-// fuzzedPackages returns the set of package import paths with at least one
-// covered statement in the merged union profile.
-func fuzzedPackages(merged map[string]block) map[string]bool {
-	out := map[string]bool{}
-	for _, b := range merged {
-		if b.count > 0 {
-			out[path.Dir(b.file)] = true
 		}
 	}
 	return out
@@ -487,94 +228,9 @@ func gapMap(universe map[string]string, fuzzed, ignore map[string]bool) [][2]str
 	return out
 }
 
-func printReport(results []result, gaps [][2]string) {
-	printReportTo(os.Stdout, results, gaps)
-}
-
-func printReportTo(w *os.File, results []result, gaps [][2]string) {
-	_, _ = fmt.Fprintln(w, "FUZZ SURFACE COVERAGE  (committed corpus, deterministic replay — goal: 100%)")
-	_, _ = fmt.Fprintln(w)
-	_, _ = fmt.Fprintf(w, "  %-40s %-44s %8s %8s %8s\n", "TARGET", "FOCUS SET", "FOCUS %", "FLOOR", "PKG %")
-	for _, r := range results {
-		// Compare against the 1-decimal floor with a matching band so a target at
-		// its floor reads "=", not a perpetual "^" from sub-0.1 rounding noise.
-		var mark string
-		switch {
-		case r.focusPct < r.floor-0.05:
-			mark = "!"
-		case r.focusPct > r.floor+0.05:
-			mark = "^"
-		default:
-			mark = "="
-		}
-		_, _ = fmt.Fprintf(w, "  %-40s %-44s %6.1f%% %s %6.1f%% %6.1f%%\n",
-			r.name, truncate(r.focusLabel, 44), r.focusPct, mark, r.floor, r.pkgPct)
-	}
-	_, _ = fmt.Fprintln(w)
-	_, _ = fmt.Fprintln(w, "  (^ above floor — ratchet will rise; = at floor; ! below floor fails --check)")
-	_, _ = fmt.Fprintln(w)
-	if len(gaps) == 0 {
-		_, _ = fmt.Fprintln(w, "GAP MAP — decode/parse packages with ZERO fuzz coverage: none (all covered or ignored)")
-		return
-	}
-	_, _ = fmt.Fprintln(w, "GAP MAP — decode/parse packages with ZERO fuzz coverage")
-	for _, g := range gaps {
-		_, _ = fmt.Fprintf(w, "  %-52s (%s)\n", g[0], g[1])
-	}
-}
-
-// checkExit returns the process exit code for --check: non-zero on any focus-set
-// regression (beyond the tolerance band) or any unignored gap.
-func checkExit(results []result, gaps [][2]string, tolerance float64) int {
-	return checkExitTo(os.Stderr, results, gaps, tolerance)
-}
-
-func checkExitTo(w *os.File, results []result, gaps [][2]string, tolerance float64) int {
-	code := 0
-	for _, r := range results {
-		if r.focusPct+tolerance+1e-9 < r.floor {
-			_, _ = fmt.Fprintf(w, "evener-fuzzcov: REGRESSION %s: focus %.1f%% < floor %.1f%% (tolerance %.1f)\n",
-				r.name, r.focusPct, r.floor, tolerance)
-			code = 1
-		}
-	}
-	if len(gaps) > 0 {
-		_, _ = fmt.Fprintf(w, "evener-fuzzcov: GAP BREACH: %d decode/parse package(s) have zero fuzz coverage and are not ignored\n", len(gaps))
-		code = 1
-	}
-	return code
-}
-
-// --- parsing helpers ---
-
-func readManifest(p string) ([]target, error) {
-	f, err := os.Open(p)
-	if err != nil {
-		return nil, err
-	}
-	defer func() { _ = f.Close() }()
-	var out []target
-	sc := bufio.NewScanner(f)
-	for sc.Scan() {
-		line := strings.TrimSpace(sc.Text())
-		if line == "" || strings.HasPrefix(line, "#") {
-			continue
-		}
-		fields := strings.Split(line, "\t")
-		if len(fields) != 6 {
-			return nil, fmt.Errorf("malformed manifest line (want 6 tab-separated fields): %q", line)
-		}
-		out = append(out, target{
-			module: fields[0], pkg: fields[1], name: fields[2],
-			coverpkg: fields[3], focus: fields[4], profile: fields[5],
-		})
-	}
-	return out, sc.Err()
-}
-
 // readRegistry parses scripts/fuzz/run-fuzz.sh --list output: one colon-separated
-// "tag:module:pkg:name[:coverpkg[:focus]]" entry per line. Comments and blank
-// lines are skipped. Profiles are not part of a registry entry.
+// "tag:module:pkg:name[:coverpkg]" entry per line. Comments and blank lines are
+// skipped.
 func readRegistry(p string) ([]target, error) {
 	f, err := os.Open(p)
 	if err != nil {
@@ -590,104 +246,17 @@ func readRegistry(p string) ([]target, error) {
 		}
 		fields := strings.Split(line, ":")
 		if len(fields) < 4 {
-			return nil, fmt.Errorf("malformed registry line (want \"tag:module:pkg:name[:coverpkg[:focus]]\"): %q", line)
+			return nil, fmt.Errorf("malformed registry line (want \"tag:module:pkg:name[:coverpkg]\"): %q", line)
 		}
 		t := target{tag: fields[0], module: fields[1], pkg: fields[2], name: fields[3]}
 		if len(fields) > 4 {
 			t.coverpkg = fields[4]
-		}
-		if len(fields) > 5 {
-			t.focus = fields[5]
 		}
 		out = append(out, t)
 	}
 	return out, sc.Err()
 }
 
-func parseFocus(focus string) []focusSpec {
-	focus = strings.TrimSpace(focus)
-	if focus == "" {
-		return nil
-	}
-	var out []focusSpec
-	for part := range strings.SplitSeq(focus, ";") {
-		part = strings.TrimSpace(part)
-		if part == "" {
-			continue
-		}
-		s := focusSpec{relpath: part}
-		if rel, fn, ok := strings.Cut(part, "#"); ok {
-			s.relpath = rel
-			s.fn = fn
-		}
-		out = append(out, s)
-	}
-	return out
-}
-
-func parseProfile(p string) ([]block, error) {
-	f, err := os.Open(p)
-	if err != nil {
-		return nil, fmt.Errorf("open profile: %w", err)
-	}
-	defer func() { _ = f.Close() }()
-	sc := bufio.NewScanner(f)
-	sc.Buffer(make([]byte, 0, 1<<20), 1<<24)
-	if !sc.Scan() {
-		return nil, fmt.Errorf("empty profile %s", p)
-	}
-	if mode := strings.TrimSpace(sc.Text()); mode != "mode: set" {
-		return nil, fmt.Errorf("profile %s has mode %q; only \"mode: set\" is supported", p, mode)
-	}
-	var out []block
-	for sc.Scan() {
-		line := strings.TrimSpace(sc.Text())
-		if line == "" {
-			continue
-		}
-		b, err := parseBlock(line)
-		if err != nil {
-			return nil, fmt.Errorf("profile %s: %w", p, err)
-		}
-		out = append(out, b)
-	}
-	return out, sc.Err()
-}
-
-// parseBlock parses one coverage line: "file:sl.sc,el.ec stmts count".
-func parseBlock(line string) (block, error) {
-	fields := strings.Fields(line)
-	if len(fields) != 3 {
-		return block{}, fmt.Errorf("malformed block line %q", line)
-	}
-	stmts, err := strconv.Atoi(fields[1])
-	if err != nil {
-		return block{}, fmt.Errorf("bad stmt count in %q: %w", line, err)
-	}
-	count, err := strconv.Atoi(fields[2])
-	if err != nil {
-		return block{}, fmt.Errorf("bad count in %q: %w", line, err)
-	}
-	loc := fields[0]
-	colon := strings.LastIndex(loc, ":")
-	if colon < 0 {
-		return block{}, fmt.Errorf("no position in %q", line)
-	}
-	file := loc[:colon]
-	rng := loc[colon+1:] // sl.sc,el.ec
-	before, _, found := strings.Cut(rng, ",")
-	if !found {
-		return block{}, fmt.Errorf("no range in %q", line)
-	}
-	startLine, err := strconv.Atoi(strings.SplitN(before, ".", 2)[0])
-	if err != nil {
-		return block{}, fmt.Errorf("bad start line in %q: %w", line, err)
-	}
-	return block{file: file, start: startLine, stmts: stmts, count: count}, nil
-}
-
-// goWorkModules derives the module dir list from the repo's go.work use
-// directives, so new workspace modules are picked up without touching flags.
 func goWorkModules(repoRoot string) ([]string, error) {
 	content, err := fuzzcovSystem.readFile(filepath.Join(repoRoot, "go.work"))
 	if err != nil {
@@ -750,78 +319,6 @@ func modulePathFromGoMod(content []byte) string {
 	return ""
 }
 
-func readFloors(p string) (map[string]float64, error) {
-	out := map[string]float64{}
-	f, err := os.Open(p)
-	if os.IsNotExist(err) {
-		return out, nil
-	}
-	if err != nil {
-		return nil, err
-	}
-	defer func() { _ = f.Close() }()
-	sc := bufio.NewScanner(f)
-	for sc.Scan() {
-		line := strings.TrimSpace(sc.Text())
-		if line == "" || strings.HasPrefix(line, "#") {
-			continue
-		}
-		fields := strings.Fields(line)
-		if len(fields) != 2 {
-			return nil, fmt.Errorf("malformed floors line %q (want \"FuzzName PCT\")", line)
-		}
-		v, err := strconv.ParseFloat(fields[1], 64)
-		if err != nil {
-			return nil, fmt.Errorf("bad floor %q: %w", line, err)
-		}
-		out[fields[0]] = v
-	}
-	return out, sc.Err()
-}
-
-func validateFloorTargets(floors map[string]float64, targets []target) error {
-	registered := make(map[string]bool, len(targets))
-	for _, target := range targets {
-		registered[target.name] = true
-	}
-	orphans := make([]string, 0)
-	for name := range floors {
-		if !registered[name] {
-			orphans = append(orphans, name)
-		}
-	}
-	if len(orphans) == 0 {
-		return nil
-	}
-	sort.Strings(orphans)
-	return fmt.Errorf("floor target(s) not registered: %s", strings.Join(orphans, ", "))
-}
-
-// writeFloors rewrites the floors file, raising each target's floor upward to
-// its current measured focus %. It never lowers an existing floor.
-func writeFloors(p string, results []result, old map[string]float64) error {
-	raised := map[string]float64{}
-	maps.Copy(raised, old)
-	for _, r := range results {
-		if r.focusPct > raised[r.name] {
-			raised[r.name] = r.focusPct
-		}
-	}
-	names := make([]string, 0, len(raised))
-	for k := range raised {
-		names = append(names, k)
-	}
-	sort.Strings(names)
-	var sb strings.Builder
-	sb.WriteString("# fuzzcov focus-set ratchet floors — one line per fuzz target: \"FuzzName PCT\".\n")
-	sb.WriteString("# A target's focus-set coverage may never drop below its floor (evener-fuzzcov --check).\n")
-	sb.WriteString("# Raised upward only, by `make fuzz-coverage CHECK=1` with --bless; never edit downward.\n")
-	for _, n := range names {
-		_, _ = fmt.Fprintf(&sb, "%s %.1f\n", n, raised[n])
-	}
-	return fuzzcovSystem.writeFile(p, []byte(sb.String()), 0o644)
-}
-
 // readIgnore reads the gap-map ignore-list. Every entry must carry a reason
 // comment ("<import-path>  # <reason>"); a reasonless entry is an error so the
 // file is reviewed like code.
@@ -874,16 +371,4 @@ func joinImport(modulePath, sub string) string {
 		return modulePath
 	}
 	return modulePath + "/" + sub
-}
-
-func truncate(s string, n int) string {
-	if len(s) <= n {
-		return s
-	}
-	return s[:n-1] + "…"
-}
-
-func fatal(format string, args ...any) {
-	_, _ = fmt.Fprintf(os.Stderr, "evener-fuzzcov: "+format+"\n", args...)
-	exitProcess(2)
 }

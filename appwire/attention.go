@@ -8,20 +8,17 @@ package appwire
 // appwire — only this plain-data result crosses the boundary, in the
 // direction hubcore already imports (kata 4j2t).
 type AttentionEntry struct {
-	// evener:naming-ignore
-	ID      string `json:"threadId"`
-	Title   string `json:"title"`
-	Project string `json:"project"`
-	Level   string `json:"level"`
-	// evener:naming-ignore
-	AskPending bool `json:"askPending,omitempty"`
+	ID         string `json:"threadId"`
+	Title      string `json:"title"`
+	Project    string `json:"project"`
+	Level      string `json:"level"`
+	AskPending bool   `json:"askPending,omitempty"`
 }
 
 // AttentionSummary is the authoritative badge count set, computed over the
 // tier-eligible population (hubcore.DeriveAttention's doc has the full
 // definition). camelCase: see AttentionEntry.
 type AttentionSummary struct {
-	// evener:naming-ignore
 	NeedsYou int `json:"needsYou"`
 	Error    int `json:"error"`
 	Working  int `json:"working"`
@@ -31,7 +28,6 @@ type AttentionSummary struct {
 // AttentionEntry.
 type AttentionChanged struct {
 	AttentionEntry
-	// evener:naming-ignore
 	PrevLevel string `json:"prevLevel"`
 }
 
