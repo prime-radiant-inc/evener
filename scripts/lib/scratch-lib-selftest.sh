@@ -23,8 +23,8 @@ set -uo pipefail
 
 . "$(dirname "$0")/selftest-lib.sh"
 scripts_dir="$(cd "$(dirname "$0")" && pwd -P)"
-scratch_dir work scratch-lib-selftest
 trap 'scratch_rm' EXIT
+scratch_dir work scratch-lib-selftest
 
 # new_victim NAME — a throwaway working directory seeded the way a repo
 # checkout is: a tracked-looking file, a nested directory, and a real git repo.

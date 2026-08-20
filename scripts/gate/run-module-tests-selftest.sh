@@ -22,8 +22,8 @@ if [ -n "${EVENER_RUN_MODULE_TESTS_SHELL:-}" ]; then
 fi
 . "$(dirname "$0")/../lib/selftest-lib.sh"
 
-scratch_dir work evener-module-tests-selftest
 trap 'scratch_rm' EXIT
+scratch_dir work evener-module-tests-selftest
 
 assert_has_word() {
 	case " $1 " in

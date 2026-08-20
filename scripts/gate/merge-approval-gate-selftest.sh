@@ -7,8 +7,8 @@ repo_root="$(cd "$script_dir/../.." && pwd)"
 real_make="$(command -v make)"
 . "$(dirname "$0")/../lib/selftest-lib.sh"
 
-scratch_dir work evener-merge-approval-gate-selftest
 trap 'scratch_rm' EXIT
+scratch_dir work evener-merge-approval-gate-selftest
 
 assert_before() {
 	first="$(grep -n -m 1 -F -- "$2" "$1" 2>/dev/null | cut -d: -f1)"

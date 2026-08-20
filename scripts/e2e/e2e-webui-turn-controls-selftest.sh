@@ -21,17 +21,14 @@ set -uo pipefail
 script="$(cd "$(dirname "$0")" && pwd)/e2e-webui-turn-controls.sh"
 . "$(dirname "$0")/../lib/selftest-lib.sh"
 
-scratch_dir work e2e-webui-turn-controls-selftest
-
-# Where the fixture binaries record what they saw, including the pid of the
-# stand-in daemon the fake hub spawns. Defined before cleanup, which sweeps it.
-state="$work/state"
-mkdir -p "$state"
-
 # Run directories the script made under its own mktemp; reaped on the way out
 # so a failing assertion cannot leave a sleeper or a directory behind.
 run_dirs=()
 
+# cleanup runs from the trap below, which is armed before scratch_dir mints
+# $work: a crash between arming and minting fires cleanup with $work and
+# $state still unset, so both are read with a default-empty expansion rather
+# than assumed present.
 cleanup() {
 	for dir in ${run_dirs[@]+"${run_dirs[@]}"}; do
 		for pidfile in "$dir"/*.pid; do
@@ -41,7 +38,7 @@ cleanup() {
 		done
 		rm -rf "$dir"
 	done
-	for pidfile in "$work"/sleeper-*.pid "$state"/*.pid; do
+	for pidfile in "${work:-}"/sleeper-*.pid "${state:-}"/*.pid; do
 		[ -f "$pidfile" ] || continue
 		kill "$(cat "$pidfile")" 2>/dev/null
 		wait_dead "$pidfile"
@@ -49,6 +46,13 @@ cleanup() {
 	scratch_rm
 }
 trap cleanup EXIT
+scratch_dir work e2e-webui-turn-controls-selftest
+
+# Where the fixture binaries record what they saw, including the pid of the
+# stand-in daemon the fake hub spawns. Defined before cleanup runs, which
+# sweeps it.
+state="$work/state"
+mkdir -p "$state"
 
 # spawn_sleeper — start a throwaway process and put its pid file in
 # $sleeper_pidfile. The background job lives in a subshell that exits

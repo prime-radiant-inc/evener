@@ -9,8 +9,8 @@ set -uo pipefail
 script="$(cd "$(dirname "$0")" && pwd)/web-coverage-floor.sh"
 . "$(dirname "$0")/../lib/selftest-lib.sh"
 
-scratch_dir work evener-webcov-selftest
 trap 'scratch_rm' EXIT
+scratch_dir work evener-webcov-selftest
 
 frontend="$work/frontend"
 mkdir -p "$frontend/coverage"

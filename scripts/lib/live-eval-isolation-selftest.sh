@@ -6,11 +6,11 @@ repo=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." && pwd)
 
 . "$repo/scripts/lib/selftest-lib.sh"
 
-scratch_dir fixture evener-live-isolation-selftest
 cleanup() {
 	scratch_rm
 }
 trap cleanup EXIT
+scratch_dir fixture evener-live-isolation-selftest
 
 source_state="$fixture/source-state"
 source_home="$fixture/source-home"

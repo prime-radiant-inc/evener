@@ -13,8 +13,8 @@ set -uo pipefail
 bisect="$(cd "$(dirname "$0")" && pwd)/fuzz-bisect.sh"
 . "$(dirname "$0")/../lib/selftest-lib.sh"
 
-scratch_dir work fuzz-bisect-selftest
 trap 'scratch_rm' EXIT
+scratch_dir work fuzz-bisect-selftest
 
 repo="$work/repo"
 mkdir -p "$repo"
