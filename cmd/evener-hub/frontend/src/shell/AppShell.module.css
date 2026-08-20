@@ -18,12 +18,15 @@
    * host. min-height/min-width: 0 are required for the flex children to
    * scroll/fill correctly instead of stretching this box to fit content
    * (PaneScaffold's own .pane relies on a parent with a real height
-   * chain; dockview needs a real width to lay panels out in). */
+   * chain; dockview needs a real width to lay panels out in).
+   *
+   * No gap, at any width: the rail's own border-right hairline is the only
+   * divider, so the sidebar sits flush against the workspace like a modern
+   * sidebar instead of floating beside it with a strip of shell between. */
   display: flex;
   flex-direction: row;
   min-height: 0;
   min-width: 0;
-  gap: var(--space-3);
 }
 
 .content > :last-child {
@@ -34,9 +37,11 @@
 }
 
 /* Mobile full-bleed (2026-07-30-mobile-session-layout-design.md, decision 1):
- * the desktop frame's padding/gap would inset the whole workspace as a
- * floating card on a 390px screen. On the phone the host (StackHost) sits
- * flush against the screen edges; the surface steps carry the structure. */
+ * the desktop frame's padding would inset the whole workspace as a floating
+ * card on a 390px screen. On the phone the host (StackHost) sits flush against
+ * the screen edges; the surface steps carry the structure. (No gap rule here:
+ * .content has no gap at any width anymore - the flush sidebar is the desktop
+ * rule too.) */
 @media (max-width: 899px) {
   .shell {
     position: fixed;
@@ -46,6 +51,5 @@
 
   .content {
     padding: 0;
-    gap: 0;
   }
 }

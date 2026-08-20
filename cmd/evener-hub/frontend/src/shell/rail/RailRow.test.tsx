@@ -1437,14 +1437,14 @@ describe("roving-tabindex integration (Tree + RailRow)", () => {
   });
 });
 
-// --- the actions overlay the row's right edge -------------------------
+// --- the actions share the right slot with the timestamp -----------------
 //
 // jsdom applies no stylesheet at all (vite.config.ts's test block enables
-// no `css` processing), so "hovering a row costs zero layout width" is not
+// no `css` processing), so "the revealed menu covers the timestamp" is not
 // assertable against a rendered tree here. These read RailRow.module.css off
 // disk and pin the structure that makes it true - same mechanism as
 // styles/display-gates.test.ts and widgets/tooltip's own touch gate.
-describe("row actions overlay (RailRow.module.css)", () => {
+describe("shared right slot (RailRow.module.css)", () => {
   const RAIL_CSS = readFileSync(join(dirname(fileURLToPath(import.meta.url)), "RailRow.module.css"), "utf8");
   // Block comments stripped so a class or token named only in prose can
   // never satisfy an assertion (same discipline as token-contract.test.ts).
@@ -1456,79 +1456,126 @@ describe("row actions overlay (RailRow.module.css)", () => {
     return match ? match[1]! : null;
   }
 
-  // issue #196 (reworked): the actions overlay used to be an absolutely
-  // positioned, zero-width-cost mask pinned to the row's right edge - which
-  // let the row's trailing disclosure chevron end up UNDER it on a long
-  // enough title, invisibly swallowing clicks even at rest (CSS opacity
-  // never disables hit testing). A z-index fix was tried and reverted (see
-  // git history / layoutguard's rail-row-chevron-actions-overlap case): it
-  // only moved the swallowed-click bug onto the actions trigger instead of
-  // removing the overlap. `.actions` is now a real in-flow flex item, so
-  // flexbox reserves it actual space and nothing can ever be laid out (or
-  // hit-tested) underneath it - a structural guarantee, not a stacking
-  // fight. jsdom applies no stylesheet and getBoundingClientRect() always
-  // reports zero there, so this describe block can only pin the STYLESHEET
-  // CONTRACT (same discipline as token-contract.test.ts); the actual
-  // non-overlap geometry, at real sidebar widths with a real truncating
-  // title, is what layoutguard's rail-row-chevron-actions-overlap case
-  // proves against a real browser.
-  test("actions are a real in-flow flex item, not an absolutely-positioned overlay", () => {
+  // 2026-08 sidebar UX rework, successor to the issue #196 fix it keeps the
+  // guarantee of. The #196 rework made `.actions` a real in-flow flex item
+  // beside the timestamp, so flexbox reserved it space and the trailing
+  // disclosure chevron could never be laid out under it (the pre-#196
+  // absolutely-positioned overlay swallowed the chevron's clicks, invisibly,
+  // because CSS opacity never disables hit-testing). The cost was that every
+  // row's title column stayed narrower by the menu's full width at rest as
+  // much as on hover. The shared right slot keeps the structural guarantee -
+  // the slot is the in-flow item, the chevron lives in .textCol to its LEFT -
+  // while the menu and the timestamp share ONE grid cell: the menu borrows
+  // the timestamp's space instead of adding its own, and the two swap
+  // visibility on reveal. jsdom applies no stylesheet and
+  // getBoundingClientRect() always reports zero there, so this describe block
+  // can only pin the STYLESHEET CONTRACT (same discipline as
+  // token-contract.test.ts); the actual non-overlap geometry and per-state
+  // hit-testing, at real sidebar widths with a real truncating title, is
+  // what layoutguard's rail-row-chevron-actions-overlap case proves against
+  // a real browser.
+  test("the actions share one grid cell with the right-slot occupant - never an overlay", () => {
+    const slotRule = ruleFor(".rightSlot");
+    expect(slotRule, ".rightSlot must have a rule").not.toBeNull();
+    expect(slotRule).toMatch(/display:\s*grid/);
+    // The slot is the in-flow flex item (flexbox reserves its width, so the
+    // chevron in .textCol can never be pushed underneath anything in it).
+    expect(slotRule).toMatch(/flex:\s*none/);
+    // Both children occupy the same area, so the slot is only ever as wide
+    // as the WIDER of occupant and menu - the menu borrows the timestamp's
+    // space rather than reserving its own beside it.
+    const cellRule = ruleFor(".rightSlot > *");
+    expect(cellRule, ".rightSlot > * must have a rule").not.toBeNull();
+    expect(cellRule).toMatch(/grid-area:\s*1\s*\/\s*1/);
+
     const actionsRule = ruleFor(".actions");
     expect(actionsRule, ".actions must have a rule").not.toBeNull();
     expect(actionsRule).not.toMatch(/position:\s*absolute/);
     expect(actionsRule).not.toMatch(/\bright:\s*0/);
-    expect(actionsRule).toMatch(/display:\s*inline-flex/);
-    expect(actionsRule).toMatch(/flex:\s*none/);
+    // Hidden means BOTH: opacity never disables hit-testing (issue #196), so
+    // visibility is what keeps the at-rest menu from eating the clicks it
+    // covers.
+    expect(actionsRule).toMatch(/opacity:\s*0/);
+    expect(actionsRule).toMatch(/visibility:\s*hidden/);
   });
 
-  test("the disclosure chevron carries no stacking-order fix - it doesn't need one", () => {
-    // The z-index approach this replaced required position:relative +
-    // z-index on .chevronButton to win a stacking fight against .actions.
-    // Neither is needed (or wanted - see the describe block's own comment)
-    // now that .actions can't ever share the chevron's pixels.
-    const chevronRule = ruleFor(".chevronButton");
-    expect(chevronRule, ".chevronButton must have a rule").not.toBeNull();
-    expect(chevronRule).not.toMatch(/position:\s*relative/);
-    expect(chevronRule).not.toMatch(/z-index:/);
-  });
-
-  test("the reveal drives the actions container, not just its buttons", () => {
-    // An opacity that lives on `.actions button` alone would leave the
-    // container invisible-but-present at rest, which is fine now that
-    // there's no mask to worry about - but the container itself still has
-    // to be what animates, since that's what the touch media query below
-    // forces open.
-    expect(ruleFor(".actions")).toMatch(/opacity:\s*0/);
-
-    // Every condition that reveals `.actions` - row hover, treeitem focus,
-    // and an open menu on this row's own trigger - now folds into ONE rule
-    // (they all just set opacity: 1, with nothing left to keep separate
-    // once there's no mask background to swap in the hover case).
-    const rules = [...CSS.matchAll(/([^{}]*)\{([^}]*)\}/g)]
-      .map((m) => ({ selector: m[1]!.trim(), body: m[2]! }))
-      .filter((r) => /opacity:\s*1\b/.test(r.body));
-    const revealRule = rules.find((r) => r.selector.includes(".railRow:hover .actions"));
-    expect(revealRule, "row hover must reveal the actions").toBeTruthy();
-    const targets = revealRule!.selector.split(",").map((s) => s.trim());
-    expect(targets).toEqual(
+  test("revealing the menu covers the occupant - and only on a hover-capable desktop pointer", () => {
+    // The reveal flips BOTH halves of the shared cell. Menu side (top-level
+    // rule): the same three conditions as ever - row hover, treeitem focus,
+    // this row's own menu held open.
+    const rules = [...CSS.matchAll(/([^{}]*)\{([^}]*)\}/g)].map((m) => ({
+      selector: m[1]!.trim(),
+      body: m[2]!,
+    }));
+    const reveal = rules.find((r) => r.selector.includes(".railRow:hover .actions"));
+    expect(reveal, "row hover must reveal the actions").toBeTruthy();
+    expect(reveal!.body).toMatch(/opacity:\s*1/);
+    expect(reveal!.body).toMatch(/visibility:\s*visible/);
+    const revealTargets = reveal!.selector.split(",").map((s) => s.trim());
+    expect(revealTargets).toEqual(
       expect.arrayContaining([
         '[role="treeitem"]:focus .actions',
         '.actions:has(button[aria-expanded="true"])',
         ".railRow:hover .actions",
       ]),
     );
+
+    // Occupant side: the same three conditions hide the timestamp/Badge
+    // under the menu. The flip lives inside a hover-capable desktop media
+    // block - on touch the actions are always visible BESIDE the occupant
+    // (the 899px block below), and a sticky tap-hover or treeitem focus
+    // must never make the timestamp vanish out from under the row. Rules
+    // nested in @media mangle the flat matchAll above, so this half is
+    // pinned against the media block's own text.
+    const flipMedia = /@media\s*\(hover:\s*hover\)\s*and\s*\(min-width:\s*900px\)\s*\{([\s\S]*?)\n\}/.exec(CSS);
+    expect(flipMedia, "the occupant flip must be gated to hover-capable desktop pointers").not.toBeNull();
+    const flipBlock = flipMedia![1]!;
+    for (const selector of [
+      '[role="treeitem"]:focus .rightSlot > :not(.actions)',
+      '.rightSlot:has(button[aria-expanded="true"]) > :not(.actions)',
+      ".railRow:hover .rightSlot > :not(.actions)",
+    ]) {
+      expect(flipBlock).toContain(selector);
+    }
+    expect(flipBlock).toMatch(/opacity:\s*0/);
+    expect(flipBlock).toMatch(/visibility:\s*hidden/);
   });
 
-  test("nothing paints a mask over .actions any more - there's nothing left for it to hide", () => {
-    // The old overlay needed a background (to match whatever it covered)
-    // and a gradient + padding-left (so its leading edge didn't slice
-    // covered text mid-glyph). A real flex item covers nothing, so none of
-    // that machinery belongs here any more - its reappearance would be a
-    // sign the overlay design crept back in.
+  test("the disclosure chevron carries no stacking-order fix - it doesn't need one", () => {
+    // The z-index approach the #196 rework replaced required
+    // position:relative + z-index on .chevronButton to win a stacking fight
+    // against .actions. Neither is needed (or wanted - see the describe
+    // block's own comment) now that the chevron and the menu are
+    // layout-disjoint by construction.
+    const chevronRule = ruleFor(".chevronButton");
+    expect(chevronRule, ".chevronButton must have a rule").not.toBeNull();
+    expect(chevronRule).not.toMatch(/position:\s*relative/);
+    expect(chevronRule).not.toMatch(/z-index:/);
+  });
+
+  test("nothing paints a mask over .actions - the shared cell needs no background to hide behind", () => {
+    // The old absolute overlay needed a background (to match whatever it
+    // covered) and a gradient + padding-left (so its leading edge didn't
+    // slice covered text mid-glyph). An in-flow grid item covers its own
+    // cell and nothing else, so none of that machinery belongs here - its
+    // reappearance would be a sign the overlay design crept back in.
     const actionsRule = ruleFor(".actions");
     expect(actionsRule).not.toMatch(/background:/);
     expect(actionsRule).not.toMatch(/linear-gradient/);
     expect(actionsRule).not.toMatch(/padding-left:/);
+  });
+
+  test("the row's menu trigger hugs its glyph, right-justified to the slot's edge", () => {
+    // The Menu widget's trigger is padded for a standalone button
+    // (--space-4 on both sides), which centered the "..." glyph ~16px in
+    // from the slot's right edge - the x the timestamp's own text ends at.
+    // The row's override keeps padding only on the leading side, so the
+    // revealed menu right-justifies to the timestamp's own edge (and the
+    // shared cell narrows to the glyph's real width). Scoped by attribute
+    // so a project row's "+" IconButton keeps its own square geometry.
+    const justifyRule = ruleFor('.actions button[aria-haspopup="menu"]');
+    expect(justifyRule, "the row must right-justify the menu trigger's glyph").not.toBeNull();
+    expect(justifyRule).toMatch(/padding:\s*0\s+0\s+0\s+var\(--space-2\)/);
   });
 
   // The signal dot keeps a FIXED width and refuses to flex: its outdent
@@ -1543,17 +1590,18 @@ describe("row actions overlay (RailRow.module.css)", () => {
     expect(rule).toMatch(/flex:\s*none|flex-shrink:\s*0/);
   });
 
-  test("touch keeps the actions permanently open instead of relying on a hover it doesn't have", () => {
+  test("touch keeps the actions permanently open beside the occupant instead of relying on a hover it doesn't have", () => {
     // Below the mobile breakpoint there's no hover to reveal the actions
-    // with, so this block forces them open. Unlike the old overlay design,
-    // there's no separate "in-flow" layout left to restore here - the base
-    // rule above is already a real flex item at every width - so this
-    // block should do nothing BUT flip the opacity.
+    // with, so this block forces them visible AND turns the shared cell back
+    // into an ordinary flex row - on touch the occupant and the menu sit
+    // side by side; the visibility swap above is a desktop-hover mechanism.
     const media = /@media\s*\(max-width:\s*899px\)\s*\{([\s\S]*?)\n\}/g;
     const blocks = [...CSS.matchAll(media)].map((m) => m[1]!);
     const actionsBlock = blocks.find((b) => b.includes(".actions"));
     expect(actionsBlock, "the 899px block must still address .actions").toBeTruthy();
+    expect(actionsBlock).toMatch(/\.rightSlot\s*\{[^}]*display:\s*flex/);
     expect(actionsBlock).toMatch(/opacity:\s*1/);
+    expect(actionsBlock).toMatch(/visibility:\s*visible/);
     expect(actionsBlock).not.toMatch(/position:/);
     expect(actionsBlock).not.toMatch(/background:/);
   });
