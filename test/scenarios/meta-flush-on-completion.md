@@ -7,7 +7,9 @@ on an error / panic / ctx-cancellation / cfg setter without
 flushing. The fixes layered: explicit flush on the recoverable LLM
 error (`3tgv`), a deferred flush + panic recovery at the top of
 `processOneInput` (`ztne`), and explicit flush on `SetModel`/
-`SetReasoningEffort`/`SetTimeout` (`wnfz`).
+`SetReasoningEffort`/`SetTimeout` (`wnfz`). `SetTimeout` itself was
+later removed as dead public API (issue #163); `SetModel`/
+`SetReasoningEffort` still carry the same flush.
 
 ## Pre-state
 
