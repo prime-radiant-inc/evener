@@ -218,3 +218,29 @@ func TestResolveOpenRouterAnthropicWebSearch(t *testing.T) {
 		map[string]*bool{}, map[string]bool{},
 		"anthropic/m", true)
 }
+
+// TestResolveWebSearch_PresenceAware pins the three-state contract: the catalog
+// saying true, the catalog saying false, and the catalog being silent are all
+// distinct. Passing a default that opposes the catalog is what makes this
+// falsifiable — asserting true against a true default would pass just as well
+// if the helper ignored the catalog entirely.
+func TestResolveWebSearch_PresenceAware(t *testing.T) {
+	tests := []struct {
+		name            string
+		model           string
+		providerDefault bool
+		want            bool
+	}{
+		{"catalog true overrides an opposing default", "gpt-5.6-luna", false, true},
+		{"catalog false overrides an opposing default", "us.openai.gpt-5.6-luna", true, false},
+		{"catalog silence keeps the default (true)", "not-a-catalogued-model", true, true},
+		{"catalog silence keeps the default (false)", "not-a-catalogued-model", false, false},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := resolveWebSearch(tc.model, tc.providerDefault); got != tc.want {
+				t.Errorf("resolveWebSearch(%q, %v) = %v, want %v", tc.model, tc.providerDefault, got, tc.want)
+			}
+		})
+	}
+}
