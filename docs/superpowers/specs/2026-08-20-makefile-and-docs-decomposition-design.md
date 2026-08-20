@@ -392,11 +392,21 @@ mapping needs all six destination docs to exist and three of them
    changes, no annotations yet. Verified by planted regressions (below).
 2. **Doc split, directory move, link sweep.** Creates all six docs under
    `docs/developing-evener/` with hand-written prose and empty generated-region
-   markers; dissolves the gate matrix; updates live inbound refs and the seven
-   outbound links; fixes `scenariosourcecite_audit_test.go:214`.
-3. **Annotations, generator, `make help`, annotation audit.** Fills the marked
-   regions. Rewires `lint-generated` to call `$(MAKE) generate` and adds the six
-   docs to its diff list. Adds `TestEveryTargetHasASummaryAnnotation`.
+   markers; updates live inbound refs and the seven outbound links; fixes
+   `scenariosourcecite_audit_test.go:214`. **The gate matrix is copied over
+   intact and is not dissolved here** — see below.
+3. **Annotations, generator, `make help`, annotation audit, matrix dissolution.**
+   Fills the marked regions. Rewires `lint-generated` to call `$(MAKE) generate`
+   and adds the six docs to its diff list. Adds
+   `TestEveryTargetHasASummaryAnnotation`. Only now deletes the gate matrix,
+   because this is the first commit in which generated output exists to replace
+   it.
+
+Dissolving the matrix in commit 2 would leave the repo with the matrix gone and
+its replacement not yet generated — gates green, but no gate reference at all
+for the length of one commit. Deferring the deletion to commit 3 costs one
+commit of duplication (an intact matrix beside empty markers) and buys
+continuous documentation.
 
 Splitting 2 from 3 keeps the rename-and-relink diff free of semantic content,
 and keeps the annotation prose reviewable against files that are already in
