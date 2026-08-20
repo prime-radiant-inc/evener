@@ -10,6 +10,8 @@ import (
 	"testing"
 	"time"
 
+	"primeradiant.com/evener/internal/e2ecap"
+
 	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/test/e2e/fakellm"
 )
@@ -44,6 +46,8 @@ import (
 // evidence -- the turn is held at the model call, so only cancellation can end
 // it, and the durable transcript is where that shows up).
 func TestE2E_StopCancelsWhateverIsRunningAndNamesIt(t *testing.T) {
+	e2ecap.RequireLoopbackBind(t)
+	e2ecap.RequireProcessInspect(t)
 	if testing.Short() {
 		t.Skip("live-stack e2e: builds binaries and runs a hub + daemon")
 	}
@@ -116,6 +120,8 @@ func TestE2E_StopCancelsWhateverIsRunningAndNamesIt(t *testing.T) {
 // ~10ms, so no client-driven fixture can hold it open. That precondition is
 // pinned where it can be: agent's TestStopIsHonestAboutAQueuedMessage.
 func TestE2E_ASendThatRacedAStopStillRuns(t *testing.T) {
+	e2ecap.RequireLoopbackBind(t)
+	e2ecap.RequireProcessInspect(t)
 	if testing.Short() {
 		t.Skip("live-stack e2e: builds binaries and runs a hub + daemon")
 	}
@@ -201,6 +207,8 @@ func TestE2E_ASendThatRacedAStopStillRuns(t *testing.T) {
 // sees it. A test that stops at the receipt asserts only that the daemon said
 // yes.
 func TestE2E_SteerWithNoTurnIDReachesTheModelAndTheTranscript(t *testing.T) {
+	e2ecap.RequireLoopbackBind(t)
+	e2ecap.RequireProcessInspect(t)
 	if testing.Short() {
 		t.Skip("live-stack e2e: builds binaries and runs a hub + daemon")
 	}
@@ -270,6 +278,8 @@ func TestE2E_SteerWithNoTurnIDReachesTheModelAndTheTranscript(t *testing.T) {
 // session has demonstrably settled before the steer is sent, so there is no
 // turn for it to name and no race to lose.
 func TestE2E_SteerLandsInTheNextTurnWhenItsTurnEnded(t *testing.T) {
+	e2ecap.RequireLoopbackBind(t)
+	e2ecap.RequireProcessInspect(t)
 	if testing.Short() {
 		t.Skip("live-stack e2e: builds binaries and runs a hub + daemon")
 	}
@@ -345,6 +355,8 @@ func TestE2E_SteerLandsInTheNextTurnWhenItsTurnEnded(t *testing.T) {
 // Each refusal is paired with the same call made against the CURRENT snapshot,
 // so a daemon that refuses everything fails here too.
 func TestE2E_QueuePreconditionsStillRefuseAStaleClient(t *testing.T) {
+	e2ecap.RequireLoopbackBind(t)
+	e2ecap.RequireProcessInspect(t)
 	if testing.Short() {
 		t.Skip("live-stack e2e: builds binaries and runs a hub + daemon")
 	}
@@ -467,6 +479,8 @@ func TestE2E_QueuePreconditionsStillRefuseAStaleClient(t *testing.T) {
 // Skips by default, and on any machine without credentials: it is extra
 // evidence for a rule the fakellm tests already gate, never the gate itself.
 func TestE2E_LiveModelStopAndSteerNeedNoTurnID(t *testing.T) {
+	e2ecap.RequireLoopbackBind(t)
+	e2ecap.RequireProcessInspect(t)
 	if testing.Short() {
 		t.Skip("live-stack e2e: builds binaries and runs a hub + daemon")
 	}

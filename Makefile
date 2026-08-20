@@ -187,29 +187,11 @@ test-fuzz:
 	@EVENER_FUZZ_TESTS=1 go test ./internal/appserver -run 'SeqFuzz' -count=1 -v
 
 # merge-approval-gate is the canonical serial post-merge gate. Keep the
-# explicit expansion in docs/testing.md for diagnosis and evidence.
-#
-# The capability preflight (evener-dev capability-preflight) classifies
-# sandbox-sensitive host capabilities ONCE, before any phase runs, and
-# exports EVENER_GATE_CAPABILITY_SKIP so ROOT_FULL=1 make test skips exactly
-# the known-infeasible live/e2e tests instead of repeatedly failing into
-# them, and reports what it found blocked with exact rerun commands. All four
-# steps run in ONE shell (chained with && instead of four separate
-# `@$(MAKE)` lines) so that export reaches every phase; the gate still stops
-# at the first failing phase either way.
-#
-# The assignment and the export are SEPARATE statements, and the assignment's
-# own exit status is what the `if` tests. `export VAR="$$(preflight)"` would
-# fail open (issue #181): export succeeds whatever the substitution did, so a
-# preflight that never reached a verdict would run every phase with an empty or
-# inherited skip pattern and call the result a pass.
+# explicit expansion in docs/testing.md for diagnosis and evidence. Sandboxed
+# hosts are handled inside the tests themselves: the live/e2e families probe
+# their own capabilities and t.Skip (internal/e2ecap).
 merge-approval-gate:
-	@if ! EVENER_GATE_CAPABILITY_SKIP="$$(go run ./cmd/evener-dev capability-preflight)"; then \
-		echo 'merge-approval-gate: capability preflight failed before emitting its verdict: go run ./cmd/evener-dev capability-preflight' >&2; \
-		exit 1; \
-	fi; \
-	export EVENER_GATE_CAPABILITY_SKIP; \
-		$(MAKE) lint && \
+	@$(MAKE) lint && \
 		$(MAKE) build && \
 		ROOT_FULL=1 $(MAKE) test && \
 		$(MAKE) test-dev-tooling

@@ -8,6 +8,8 @@ import (
 	"testing"
 	"time"
 
+	"primeradiant.com/evener/internal/e2ecap"
+
 	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/cmd/evener-hub/internal/launchconfig"
 	"primeradiant.com/evener/test/e2e/fakellm"
@@ -33,6 +35,8 @@ import (
 // key and runs in the ordinary suite, which is the point -- a test only this
 // package's e2e set can reach is a test nobody runs.
 func TestE2E_HubAndDaemon(t *testing.T) {
+	e2ecap.RequireLoopbackBind(t)
+	e2ecap.RequireProcessInspect(t)
 	if testing.Short() {
 		t.Skip("live-stack e2e: builds binaries and runs a hub + daemon")
 	}
@@ -119,6 +123,8 @@ func TestE2E_HubAndDaemon(t *testing.T) {
 }
 
 func TestE2E_LayeredLaunchConfig(t *testing.T) {
+	e2ecap.RequireLoopbackBind(t)
+	e2ecap.RequireProcessInspect(t)
 	if testing.Short() {
 		t.Skip("e2e")
 	}

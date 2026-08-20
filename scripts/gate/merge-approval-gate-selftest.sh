@@ -27,10 +27,6 @@ cat >"$fake_make" <<'FAKE_MAKE'
 set -u
 target="${!#}"
 printf '%s\t%s\n' "$target" "${ROOT_FULL:-}" >>"$FAKE_STATE/calls"
-# What each phase actually INHERITED for the capability skip. Recorded
-# separately from calls so the phase-order assertions keep their two-field
-# shape; see the skip-propagation case below for why it is recorded at all.
-printf '%s\t%s\n' "$target" "${EVENER_GATE_CAPABILITY_SKIP-<unset>}" >>"$FAKE_STATE/skips"
 printf 'recursive stdout: %s\n' "$target"
 printf 'recursive stderr: %s\n' "$target" >&2
 if [ "${FAKE_FAIL_TARGET:-}" = "$target" ]; then
@@ -80,90 +76,6 @@ fi
 expected_calls=$(printf 'lint\t\nbuild\t\n')
 actual_calls="$(cat "$work/calls" 2>/dev/null || :)"
 assert_eq "$actual_calls" "$expected_calls" "build failure stops test"
-
-# kata 5gvk: FAKE_GATE_PROBE_BLOCKED forces evener-dev capability-preflight
-# to report the named capabilities BLOCKED without touching the real host, so
-# the gate's classify-once/skip-not-fail/structured-summary contract is
-# provable without an actually restricted sandbox.
-run_gate_blocked() {
-	blocked="$1"
-	failure="$2"
-	output="$3"
-	rm -f "$work/calls" "$work/skips"
-	if env -u ROOT_FULL -u EVENER_GATE_CAPABILITY_SKIP FAKE_STATE="$work" FAKE_FAIL_TARGET="$failure" FAKE_GATE_PROBE_BLOCKED="$blocked" \
-		"$real_make" -C "$repo_root" -j 4 MAKE="$fake_make" merge-approval-gate \
-		>"$output" 2>&1; then
-		gate_rc=0
-	else
-		gate_rc=$?
-	fi
-}
-
-# The all-available path, forced: an EMPTY FAKE_GATE_PROBE_BLOCKED reports
-# every capability AVAILABLE without consulting the host. Asserting this
-# against the real probe instead would make the assertion a claim about the
-# machine running the selftest - a host with no Chrome, or no writable git
-# cache directory, genuinely has a blocked capability, and this suite runs
-# inside `make test-dev-tooling`, a merge-approval-gate phase. The gate would
-# then fail on exactly the restricted hosts kata 5gvk exists to keep it green
-# on. run_gate above still drives the REAL probe end to end, so the
-# capabilityprobe -> preflight-summary wire contract stays covered.
-run_gate_blocked "" "" "$work/all-available.out"
-assert_eq "$gate_rc" "0" "the all-available green path exits zero"
-assert_not_has "$work/all-available.out" "BLOCKED" "the all-available green path reports nothing blocked"
-
-run_gate_blocked "loopback-bind" "" "$work/blocked-loopback.out"
-assert_eq "$gate_rc" "0" "a blocked capability alone does not fail the gate"
-expected_calls=$(printf 'lint\t\nbuild\t\ntest\t1\ntest-dev-tooling\t\n')
-actual_calls="$(cat "$work/calls" 2>/dev/null || :)"
-assert_eq "$actual_calls" "$expected_calls" "a blocked capability still runs every feasible phase, in order"
-assert_has "$work/blocked-loopback.out" "BLOCKED loopback-bind" "the blocked capability is named in the structured summary"
-assert_has "$work/blocked-loopback.out" "go run ./cmd/evener-dev capability-preflight -only=loopback-bind" "the summary carries an exact reprobe command"
-assert_has "$work/blocked-loopback.out" "rerun once fixed" "the summary carries an exact rerun command for the skipped tests"
-blocked_lines="$(grep -c 'BLOCKED loopback-bind' "$work/blocked-loopback.out" 2>/dev/null || echo 0)"
-assert_eq "$blocked_lines" "1" "the capability is classified once, not once per phase"
-
-# Classifying a capability as blocked is only half the contract: the skip
-# pattern has to REACH the phases, or the gate prints an accurate summary and
-# then runs the infeasible tests anyway. PR #222 shipped exactly that half - a
-# preflight whose verdict never expanded into the test phase - so the recipe's
-# `export` is asserted here rather than assumed. Every phase must inherit the
-# pattern, not just the one that consumes it: which phase reads it is the
-# recipe's business, and a phase that silently got `<unset>` is the bug.
-expected_skips=$(printf 'lint\t^(TestE2E_|TestTUITmuxE2E_)\nbuild\t^(TestE2E_|TestTUITmuxE2E_)\ntest\t^(TestE2E_|TestTUITmuxE2E_)\ntest-dev-tooling\t^(TestE2E_|TestTUITmuxE2E_)\n')
-actual_skips="$(cat "$work/skips" 2>/dev/null || :)"
-assert_eq "$actual_skips" "$expected_skips" "a blocked capability's skip pattern reaches every phase"
-
-# The mirror case: nothing blocked means every phase inherits an EMPTY skip,
-# never an unset one. run-module-tests.sh runs under `set -u`, and an inherited
-# value from the caller's environment would silently narrow the gate's surface.
-run_gate_blocked "" "" "$work/all-available-skip.out"
-expected_skips=$(printf 'lint\t\nbuild\t\ntest\t\ntest-dev-tooling\t\n')
-actual_skips="$(cat "$work/skips" 2>/dev/null || :)"
-assert_eq "$actual_skips" "$expected_skips" "an all-available preflight exports an empty skip, not an unset one"
-
-# Two capabilities the kata names have no known gate consumer yet
-# (scripts/gate-surface-lib.sh's registry, kata 5gvk's premise check). They
-# must still classify and report honestly - never silently dropped.
-run_gate_blocked "chrome-cdp git-cache" "" "$work/blocked-no-consumer.out"
-assert_eq "$gate_rc" "0" "capabilities with no gate consumer still do not fail the gate"
-assert_has "$work/blocked-no-consumer.out" "BLOCKED chrome-cdp" "chrome-cdp is classified and reported even with nothing to skip"
-assert_has "$work/blocked-no-consumer.out" "BLOCKED git-cache" "git-cache is classified and reported even with nothing to skip"
-assert_has "$work/blocked-no-consumer.out" "no gate component currently depends on this" "a capability with no consumer says so honestly"
-
-# A blocked capability must never mask a genuine failure elsewhere - the
-# structured summary and a real FAIL are reported together, not one instead
-# of the other.
-run_gate_blocked "loopback-bind" "build" "$work/blocked-and-failed.out"
-if [ "$gate_rc" -ne 0 ]; then
-	ok "a genuine failure alongside a blocked capability still fails the gate"
-else
-	bad "a genuine failure alongside a blocked capability still fails the gate"
-fi
-expected_calls=$(printf 'lint\t\nbuild\t\n')
-actual_calls="$(cat "$work/calls" 2>/dev/null || :)"
-assert_eq "$actual_calls" "$expected_calls" "a genuine failure still stops later phases even when something is blocked"
-assert_has "$work/blocked-and-failed.out" "BLOCKED loopback-bind" "the blocked-capability summary still appears alongside a real failure"
 
 # Run the real Makefile in a throwaway tree, faking only the external
 # commands (go, npm, git) and the scripts it shells out to, so it proves
@@ -270,50 +182,5 @@ assert_before "$make_state/calls" "npm	run build" "go-build-runtime" "build wait
 run_make_dry_target dist "$make_case/dist-dry-run.out"
 assert_eq "$make_rc" "0" "dist dry-runs cleanly"
 assert_has "$make_case/dist-dry-run.out" "goreleaser release --snapshot --clean" "dist defers the release build to goreleaser in snapshot mode"
-
-# Issue #181: when the capability preflight cannot run to a verdict, the
-# merge-approval-gate recipe must STOP the gate rather than proceed without
-# one. The classic shape of that bug is `export VAR="$(preflight)"`: the
-# command substitution's failure never reaches the `&&` chain because it is
-# `export`'s exit status that gets tested, and export succeeded. The gate then
-# FAILS OPEN - it runs lint/build/test/test-dev-tooling with an empty or
-# inherited EVENER_GATE_CAPABILITY_SKIP and calls the result a pass. The
-# assignment and the export must therefore be separate statements, with the
-# assignment's own status tested.
-#
-# This proves it by running the REAL Makefile recipe against a throwaway tree
-# that is not a Go module, so `go run ./cmd/evener-dev capability-preflight`
-# cannot run to a verdict there. MAKE is faked (fake_make) so the recursive
-# phases only record their target name to $FAKE_STATE/calls; the gate must stop
-# at the preflight, so calls stays empty.
-failopen_case="$work/failopen"
-failopen_repo="$failopen_case/repo"
-mkdir -p "$failopen_repo/scripts/gate"
-# The throwaway tree needs none of the scripts merge-approval-gate reaches:
-# fake_make intercepts every recursive lint/build/test/test-dev-tooling call,
-# and the preflight - the one command the recipe runs directly - is deliberately
-# the thing that cannot succeed here.
-
-run_gate_failopen() {
-	output="$1"
-	rm -f "$work/calls"
-	if env -u ROOT_FULL FAKE_STATE="$work" \
-		"$real_make" -C "$failopen_repo" -f "$repo_root/Makefile" \
-		--no-print-directory -j 4 MAKE="$fake_make" merge-approval-gate \
-		>"$output" 2>&1; then
-		gate_rc=0
-	else
-		gate_rc=$?
-	fi
-}
-
-run_gate_failopen "$work/failopen-no-verdict.out"
-if [ "$gate_rc" -ne 0 ]; then
-	ok "a preflight that cannot reach a verdict fails the gate closed (issue #181)"
-else
-	bad "a preflight that cannot reach a verdict fails the gate closed (issue #181) - gate continued with exit 0 (fail-open)"
-fi
-actual_calls="$(cat "$work/calls" 2>/dev/null || :)"
-assert_eq "$actual_calls" "" "a preflight with no verdict stops the gate before any phase runs (issue #181)"
 
 selftest_summary

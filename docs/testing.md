@@ -161,7 +161,7 @@ capacity, browser availability, and CI tool setup are explicit prerequisites.
 | <code>make fuzz-gap-check</code> | Static decode/parse fuzz-target coverage | Every discovered decode/parse package has a registered fuzz target or an explicit ignore | Required CI; local quick check | Seconds, deterministic, no network or corpus replay | An uncovered package or registry/tool failure is nonzero | Evener fuzz/tooling; no new follow-up currently |
 | <code>make fuzz-corpus-scan</code> | Gitleaks over committed fuzz corpora | Fuzz seeds do not contain secrets | Required CI; local harvester feedback | Needs gitleaks for a meaningful scan; local absence warns and returns zero unless EVENER_GITLEAKS_REQUIRED=1 | A finding or required-tool absence is nonzero; a local warning is an explicit limitation, not evidence of a scan | Evener security/tooling; no new follow-up currently |
 | <code>make test-dev-tooling</code> | The scripts/*-selftest.sh suites that pin evener's own dev tooling | Each suite is the only thing pinning its script's contract; a suite that leaves anything in its private TMPDIR after passing fails, which is what enforces suite cleanup | Final step of <code>make merge-approval-gate</code>, and on demand; not part of <code>make test</code> because these suites test tooling, not the product | Each suite is offline and deterministic; the wave runner (<code>cmd/evener-test-dev-tooling</code>) gives every suite its own process group and private TMPDIR, is quiet on success, and replays a failing suite's whole log | Any suite exit nonzero, or a passing suite leaving files behind, is nonzero | Evener CI/tooling; no new follow-up currently |
-| <code>make merge-approval-gate</code> | Serial local composition of lint, runtime build, full deterministic test, and the dev-tooling self-test wave | The canonical local/post-merge contract: make lint, make build, ROOT_FULL=1 make test, then make test-dev-tooling | Local pre-merge/post-merge; CI keeps equivalent checks in separate named jobs | Does not run fuzz search, race testing, provider calls, or browser guards; those have separate owners. A one-time capability preflight (<code>go run ./cmd/evener-dev capability-preflight</code>) classifies loopback binds, Chrome/CDP, process inspection, and the external git cache directory before any phase runs; on an unrestricted host every capability is available and behavior is unchanged | The first failing phase stops the gate and returns nonzero; do not infer a verdict from partial logs. A capability the preflight classifies as blocked skips exactly the known-infeasible tests that need it (reported, with an exact rerun command, on the preflight's own summary) instead of failing into them; a blocked capability alone never fails the gate, and a genuine test or build failure still does | Evener CI/tooling; no new follow-up currently |
+| <code>make merge-approval-gate</code> | Serial local composition of lint, runtime build, full deterministic test, and the dev-tooling self-test wave | The canonical local/post-merge contract: make lint, make build, ROOT_FULL=1 make test, then make test-dev-tooling | Local pre-merge/post-merge; CI keeps equivalent checks in separate named jobs | Does not run fuzz search, race testing, provider calls, or browser guards; those have separate owners | The first failing phase stops the gate and returns nonzero; do not infer a verdict from partial logs. Live/e2e tests self-probe their host capabilities and skip individually on restricted hosts (internal/e2ecap) | Evener CI/tooling; no new follow-up currently |
 | <code>make dist DIST_GOOS=... DIST_GOARCH=...</code> | Release/distribution binaries | The archive contains evener, evener-hub, evener-tui, and evener-doctor built for the requested target with a fresh SPA | Release/snapshot CI; manual distribution verification | Cross-compilation and frontend dependencies; release CI has networked setup for tool/dependency installation | Any build, archive, inspection, checksum, or upload failure is nonzero; unavailable release tooling blocks release | Release engineering; no Evener launcher work is implied |
 | <code>scripts/web/web-preflight.sh</code> | Frontend dependency/setup health | The worktree has a lockfile-compatible install and a real local TypeScript compiler | Setup prerequisite for web/build/browser gates | May access npm when a real install is missing/stale; refuses unsafe npm ci through a mismatched shared symlink | Missing, mismatched, or unhealthy install is nonzero; npm/network unavailability is a setup failure | Worktree/frontend tooling; shared install management stays outside Evener |
 | <code>make coverage-floor</code> (<code>CHECK=1</code> to gate, <code>BLESS=1</code> to raise) | Per-module Go statement coverage reached by ANY deterministic test (test track unioned with the deterministic fuzz-seed replay), plus the frontend's vitest line coverage | How much of each module is exercised at all, ratcheted against <code>scripts/coverage/coverage-floors.txt</code>. Neither track alone is honest: the gate's <code>-run '^(Test|Example)'</code> filter excludes every fuzz target, and whole families of behavioural checks live in <code>check*</code> functions only a evenerfuzz-tagged "program" target calls | Local/on-demand; not required CI (heavier than <code>make test</code>) | Deterministic; no provider calls. The fuzz half replays committed seed corpora only (<code>go test</code> without <code>-fuzz</code>), never a search | A row below its floor beyond the tolerance band is nonzero; a floored row that cannot be measured fails loudly rather than skipping | Evener CI/tooling; no new follow-up currently |
@@ -187,34 +187,13 @@ ROOT_FULL=1 make test
 make test-dev-tooling
 ~~~
 
-Before any phase runs, `merge-approval-gate` runs
-`go run ./cmd/evener-dev capability-preflight` and captures its verdict. The
-recipe fails closed: a preflight that exits nonzero before emitting its verdict
-stops the gate with exit 1 instead of silently proceeding uncertain (issue
-#181), which is why the capture and the `export` are separate statements. The
-preflight classifies four sandbox-sensitive host capabilities ONCE via
-`internal/devtool/capabilityprobe`: loopback binds, a Chrome/Chromium binary,
-process inspection via `ps`, and a writable external git cache directory
-(kata 5gvk). Each probe is bounded (it classifies blocked rather than hanging
-on a stalled resource) and honest (it never guesses available). The
-preflight echoes one AVAILABLE/BLOCKED line per capability to stderr, and for
-any it finds blocked, exports `EVENER_GATE_CAPABILITY_SKIP` - a `go test -skip`
-regex covering the known root-module test-name pattern that needs it
-(currently `TestE2E_`/`TestTUITmuxE2E_`, the cmd/evener-hub and cmd/evener-tui
-live/e2e families that only run under `ROOT_FULL=1` and need a real
-loopback-bound hub/daemon or tmux pane). `scripts/gate/run-module-tests.sh` unions
-that pattern into root's own `-skip` argument only - never into other
-modules', since `agent/session_escalation_e2e_test.go` has unrelated
-`TestE2E_`-named tests of its own. A blocked capability alone does not fail
-the gate; a genuine test or build failure still does, and still stops the
-gate at the first failing phase as below. Chrome/CDP and the git cache
-directory are classified and reported the same way, honestly, even though no
-gate component currently depends on either - see
-`scripts/lib/gate-surface-lib.sh`'s `gate_capability_skip_pattern` for the full,
-evidenced mapping and how to extend it. On an unrestricted host every probe
-reports available, `EVENER_GATE_CAPABILITY_SKIP` is empty, and the gate's
-coverage and exit code are exactly what they were before the preflight
-existed.
+Live/e2e tests police their own requirements: the cmd/evener-hub
+`TestE2E_*` and cmd/evener-tui `TestTUITmuxE2E_*` families call
+`internal/e2ecap`'s `RequireLoopbackBind`/`RequireProcessInspect`, which probe
+the capability at test time and `t.Skip` with the probe's reason when the host
+lacks it. On an unrestricted host nothing skips and the gate's coverage and
+exit code are unchanged; on a sandboxed host the infeasible tests skip
+individually instead of failing into a denied bind.
 
 ROOT_FULL=1 makes the protected first wave remove root's ordinary -short mode
 while retaining the non-fuzz Test/Example name filter.

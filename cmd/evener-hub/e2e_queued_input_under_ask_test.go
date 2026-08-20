@@ -7,6 +7,8 @@ import (
 	"testing"
 	"time"
 
+	"primeradiant.com/evener/internal/e2ecap"
+
 	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/test/e2e/fakellm"
 )
@@ -25,6 +27,8 @@ import (
 // The assertion is at the model boundary. A receipt says the daemon accepted
 // the message; the next model request is what proves it ran.
 func TestE2E_QueuedInputRunsWhileAQuestionIsPending(t *testing.T) {
+	e2ecap.RequireLoopbackBind(t)
+	e2ecap.RequireProcessInspect(t)
 	if testing.Short() {
 		t.Skip("live-stack e2e: builds binaries and runs a hub + daemon")
 	}
