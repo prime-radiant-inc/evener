@@ -107,7 +107,7 @@ someone has to maintain:
 | `make/testing.mk` | `testing.md` | test, test-short, test-race, test-web, test-web-browser, test-dev-tooling, test-timing-budget, test-timing-budget-selftest, test-rebaseline, merge-approval-gate, vet |
 | `make/linting.mk` | `linting.md` | lint, lint-naming, lint-gofmt, lint-evenerfuzz, lint-eval, lint-internal, lint-golangci, lint-generated, lint-fuzz-registry, secret-scan |
 | `make/fuzzing.mk` | `fuzzing.md` | test-fuzz, fuzz, fuzz-seeds, fuzz-nightly, fuzz-triage, fuzz-continuous, fuzz-bisect, fuzz-bisect-selftest, fuzz-oracle-audit, fuzz-oracle-audit-selftest, fuzz-mutation-score, fuzz-ledger, fuzz-gap-check, fuzz-registry-check, fuzz-goldens, fuzz-corpus-scan, fuzz-drive, mutation-floor |
-| `make/coverage.mk` | `coverage.md` | coverage-floor, coverage-floor-selftest, coverage-gaps, coverage-gaps-selftest, e2e-cover |
+| `make/coverage.mk` | `coverage.md` | coverage-floor, coverage-gaps, coverage-gaps-selftest, e2e-cover |
 | `make/repo.mk` | `README.md` | help, clean, generate, tools, refresh-model-catalog |
 
 66 targets: the 65 rules that exist today, plus `help`. Placements that could

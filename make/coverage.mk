@@ -1,4 +1,4 @@
-.PHONY: e2e-cover coverage-floor coverage-floor-selftest coverage-gaps coverage-gaps-selftest
+.PHONY: e2e-cover coverage-floor coverage-gaps coverage-gaps-selftest
 
 # e2e-cover measures END-TO-END coverage of the real evener/evener-tui binaries via
 # `go build -cover` + GOCOVERDIR — the main()/CLI/dispatch/serve paths unit tests
@@ -16,8 +16,10 @@ e2e-cover:
 # the test track and the deterministic fuzz-replay track, plus the frontend's
 # vitest line coverage, against scripts/coverage/coverage-floors.txt. Bare
 # invocation reports; CHECK=1 fails on a drop; BLESS=1 raises floors. Heavy +
-# local. Its contract is pinned by scripts/coverage/coverage-floor-selftest.sh
-# in the dev-tooling wave.
+# local. Its contract is currently unpinned: the fake-toolchain selftest that
+# used to pin it was banned outright by docs/developing-evener/testing.md's
+# rule against faking `go` on PATH and deleted; the port that would pin it
+# honestly is tracked as issue #293.
 ## The repo's one coverage ratchet: per module, the union of the test track
 ## and the deterministic fuzz-replay track, plus the frontend's vitest line
 ## coverage.
@@ -34,19 +36,6 @@ e2e-cover:
 ##   rather than skipping.
 coverage-floor:
 	@scripts/coverage/coverage-floor.sh $(if $(CHECK),--check) $(if $(BLESS),--bless) $(COV_ARGS)
-
-## Exercise coverage-floor.sh against a throwaway repo and a fake `go` that
-## emits two different profiles depending on the evenerfuzz tag.
-## proves: The union arithmetic is correct — a fixture where the test track
-##   covers only block A and the fuzz track covers only block B, so a
-##   correct union reports 100% where each track alone reports 40% and 60%.
-## trigger: make test-dev-tooling wave; on demand.
-## requires: Offline and deterministic; no real go build or suite runs, only
-##   a faked go binary and a throwaway repo.
-## fails-when: The computed union coverage diverges from the fixture's
-##   hand-computed answer, or the suite leaves files behind.
-coverage-floor-selftest:
-	@scripts/coverage/coverage-floor-selftest.sh
 
 # coverage-gaps ranks where a coverage profile's UNCOVERED statements are, by
 # count rather than percentage, so coverage work targets the largest real gaps.
