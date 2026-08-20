@@ -1162,22 +1162,6 @@ func (s *Session) DroppedModelFallbacksFromLastSwitch() []string {
 	return s.lastDroppedModelFallbacks
 }
 
-// SetTimeout changes the default command timeout for shell tool invocations.
-// Takes effect on the next tool execution.
-func (s *Session) SetTimeout(timeoutMS int) {
-	s.mu.Lock()
-	if s.closingOrClosedLocked() {
-		s.mu.Unlock()
-		return
-	}
-	s.cfg.DefaultCommandTimeoutMS = timeoutMS
-	s.mu.Unlock()
-	// Flush meta.json so a daemon crash before the next happy-path turn
-	// boundary doesn't leave on-disk cfg stale. Kata wnfz. maybeAutoSave
-	// re-acquires s.mu via s.Meta(), so the lock must be released first.
-	s.maybeAutoSave()
-}
-
 // Rename sets a user-chosen session title. It records NameSource="user" so the
 // auto-namers (prompt + compaction) will never overwrite it — shouldApplySession
 // NameLocked and shouldNameFromCompaction both reject any source that is not
@@ -1329,7 +1313,7 @@ func (s *Session) maybeAppendEnvironmentContext() {
 
 // setEnvContextState updates the mu-guarded mirror of envTracker.State() that
 // Meta() reads, then flushes meta.json — mirroring the lock-then-release-then-
-// maybeAutoSave pattern used by SetReasoningEffort/SetTimeout/Rename (maybeAutoSave
+// maybeAutoSave pattern used by SetReasoningEffort/Rename (maybeAutoSave
 // re-acquires mu via Meta(), so it must not be called while mu is held).
 func (s *Session) setEnvContextState(st envctx.State) {
 	s.mu.Lock()

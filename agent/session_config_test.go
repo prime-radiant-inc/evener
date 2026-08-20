@@ -89,10 +89,7 @@ func TestSession_SetModel_FlushesMeta(t *testing.T) {
 	}
 }
 
-// kata wnfz: SetTimeout mutates s.cfg.DefaultCommandTimeoutMS. Same crash
-// window: without flushing, on-disk meta.json keeps the previous timeout
-// until the next happy-path autosave.
-func TestSession_SetTimeout_FlushesMeta(t *testing.T) {
+func TestSession_SetModel_NoOpAfterClose(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
 	c := llm.NewClient()
@@ -100,37 +97,6 @@ func TestSession_SetTimeout_FlushesMeta(t *testing.T) {
 
 	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{
 		StateDir: dir,
-	})
-	if err != nil {
-		t.Fatalf("NewSession: %v", err)
-	}
-	go func() {
-		for range sess.Events() {
-		}
-	}()
-	defer sess.Close()
-
-	sessID := sess.ID()
-	sess.SetTimeout(45_000)
-
-	meta, err := schema.LoadSessionMeta(dir, sessID)
-	if err != nil {
-		t.Fatalf("LoadSessionMeta: %v", err)
-	}
-	if meta.Config.DefaultCommandTimeoutMS != 45_000 {
-		t.Fatalf("meta.Config.DefaultCommandTimeoutMS: got %d want %d", meta.Config.DefaultCommandTimeoutMS, 45_000)
-	}
-}
-
-func TestSession_SetModelAndTimeout_NoOpAfterClose(t *testing.T) {
-	t.Parallel()
-	dir := t.TempDir()
-	c := llm.NewClient()
-	c.Register(&fakeAdapter{name: "openai"})
-
-	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{
-		StateDir:                dir,
-		DefaultCommandTimeoutMS: 10_000,
 	})
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)
@@ -148,7 +114,6 @@ func TestSession_SetModelAndTimeout_NoOpAfterClose(t *testing.T) {
 	}
 
 	sess.SetModel("gpt-5.3")
-	sess.SetTimeout(45_000)
 
 	after, err := schema.LoadSessionMeta(dir, sessID)
 	if err != nil {
@@ -157,14 +122,8 @@ func TestSession_SetModelAndTimeout_NoOpAfterClose(t *testing.T) {
 	if after.Model != before.Model {
 		t.Fatalf("closed SetModel changed meta model: got %q want %q", after.Model, before.Model)
 	}
-	if after.Config.DefaultCommandTimeoutMS != before.Config.DefaultCommandTimeoutMS {
-		t.Fatalf("closed SetTimeout changed meta timeout: got %d want %d", after.Config.DefaultCommandTimeoutMS, before.Config.DefaultCommandTimeoutMS)
-	}
 	if got := sess.Meta().Model; got != before.Model {
 		t.Fatalf("closed SetModel changed in-memory model: got %q want %q", got, before.Model)
-	}
-	if got := sess.Meta().Config.DefaultCommandTimeoutMS; got != before.Config.DefaultCommandTimeoutMS {
-		t.Fatalf("closed SetTimeout changed in-memory timeout: got %d want %d", got, before.Config.DefaultCommandTimeoutMS)
 	}
 }
 
@@ -1878,51 +1837,6 @@ func TestSession_SetModel_TakesEffectOnNextCall(t *testing.T) {
 	}
 	if capturedModel != "new-model" {
 		t.Errorf("expected 'new-model', got %q", capturedModel)
-	}
-}
-
-func TestSession_SetTimeout(t *testing.T) {
-	t.Parallel()
-	c := llm.NewClient()
-	f := &fakeAdapter{
-		name: "openai",
-		steps: []func(req llm.Request) llm.Response{
-			func(req llm.Request) llm.Response {
-				return llm.Response{
-					Message: llm.Message{
-						Role: llm.RoleAssistant,
-						Content: []llm.ContentPart{
-							{Kind: llm.ContentToolCall, ToolCall: &llm.ToolCallData{ID: "1", Name: "shell", Arguments: json.RawMessage(`{"command":"echo hi"}`)}},
-						},
-					},
-				}
-			},
-			func(req llm.Request) llm.Response { return finalResponse("ok") },
-		},
-	}
-	c.Register(f)
-
-	env := &captureEnv{wd: "/tmp"}
-	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), env, SessionConfig{})
-	if err != nil {
-		t.Fatalf("NewSession: %v", err)
-	}
-	defer sess.Close()
-
-	sess.SetTimeout(30000)
-
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second) // TRIPWIRE: scripted in-process adapter, no real I/O; only fires on a genuine hang.
-	defer cancel()
-	if _, err := sess.ProcessInput(ctx, "run", nil); err != nil {
-		t.Fatalf("ProcessInput: %v", err)
-	}
-
-	got, ok := env.TimeoutForCommand("echo hi")
-	if !ok {
-		t.Fatal("expected ExecCommand call with 'echo hi'")
-	}
-	if got != 30000 {
-		t.Fatalf("shell timeout after SetTimeout: got %d want %d", got, 30000)
 	}
 }
 

@@ -42,7 +42,7 @@ type toolDeps struct {
 	resultToolName func() string
 
 	// cmdTimeouts is a live getter for the default and max shell command
-	// timeouts. It reads cfg on every call so SetTimeout mutations are visible;
+	// timeouts. It reads cfg on every call so cfg mutations are visible;
 	// the values are NOT snapshotted at registration time.
 	cmdTimeouts func() (def, maxTimeout int)
 
