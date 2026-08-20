@@ -48,14 +48,22 @@ var makefileVariableFedDeletes = map[string]string{}
 // continuation hides nothing.
 func TestNoMakefileRecipeFeedsVariableToRecursiveDelete(t *testing.T) {
 	t.Parallel()
-	body, err := os.ReadFile("Makefile")
-	if err != nil {
-		t.Fatalf("read Makefile: %v", err)
+	// Bodies are joined with "\n" rather than concatenated raw, so a file
+	// missing its own trailing newline can never glue its last line onto the
+	// first line of the next file and hide a delete from the scan below.
+	var bodies []string
+	for _, path := range makefileSourcePaths(t) {
+		raw, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatalf("read %s: %v", path, err)
+		}
+		bodies = append(bodies, string(raw))
 	}
+	body := strings.Join(bodies, "\n")
 
 	var unswept, unreadable []string
 	matched := map[string]int{}
-	for i, line := range strings.Split(string(body), "\n") {
+	for i, line := range strings.Split(body, "\n") {
 		// continues reports whether make joins the NEXT physical line onto
 		// this one, which is what makes a delete at the end of this line
 		// unreviewable.

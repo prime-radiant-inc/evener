@@ -22,11 +22,19 @@ import (
 func installedBins(t testing.TB) []string {
 	t.Helper()
 
-	body, err := os.ReadFile("Makefile")
-	if err != nil {
-		t.Fatalf("read Makefile: %v", err)
+	var bodies []string
+	for _, path := range makefileSourcePaths(t) {
+		raw, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatalf("read %s: %v", path, err)
+		}
+		bodies = append(bodies, string(raw))
 	}
-	for line := range strings.SplitSeq(string(body), "\n") {
+	// Bodies are joined with "\n" rather than concatenated raw, so a file
+	// missing its own trailing newline can never glue its last line onto the
+	// first line of the next file.
+	body := strings.Join(bodies, "\n")
+	for line := range strings.SplitSeq(body, "\n") {
 		if rest, ok := strings.CutPrefix(line, "EVENER_INSTALL_BINS :="); ok {
 			bins := strings.Fields(rest)
 			if len(bins) == 0 {

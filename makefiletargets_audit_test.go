@@ -2,40 +2,79 @@ package evener_test
 
 import (
 	"os"
+	"path/filepath"
 	"sort"
 	"strings"
 	"testing"
 )
 
+// makefileSourcePaths returns every file that contributes rules to the build:
+// the root Makefile plus the family files it includes. Tests that audit the
+// Makefile must read all of them — reading only the root would silently stop
+// auditing most of the repo's targets the moment they moved into make/.
+//
+// t is testing.TB rather than *testing.T because FuzzInstallScript's
+// installedBins helper (install_fuzz_test.go) reads the Makefile from a
+// *testing.F, which is not a *testing.T but does satisfy testing.TB.
+func makefileSourcePaths(t testing.TB) []string {
+	t.Helper()
+	paths := []string{"Makefile"}
+	family, err := filepath.Glob("make/*.mk")
+	if err != nil {
+		t.Fatalf("globbing make/*.mk: %v", err)
+	}
+	sort.Strings(family)
+	return append(paths, family...)
+}
+
+// TestMakefileSourcePathsIncludesRootAndFamilies pins the shape every other
+// Makefile-reading test relies on: the root file first, then the family
+// files in sorted order, so a caller can always assume index 0 is "Makefile".
+func TestMakefileSourcePathsIncludesRootAndFamilies(t *testing.T) {
+	t.Parallel()
+	paths := makefileSourcePaths(t)
+	if len(paths) == 0 || paths[0] != "Makefile" {
+		t.Fatalf("expected Makefile first, got %v", paths)
+	}
+	for _, p := range paths[1:] {
+		if !strings.HasPrefix(p, "make/") || !strings.HasSuffix(p, ".mk") {
+			t.Errorf("unexpected source path %q", p)
+		}
+	}
+}
+
 // makefilePhonyAndRuleNames returns the names declared across every .PHONY
-// line and the targets that actually carry a rule. A rule line starts at
-// column zero with `name:`; `:=` assignments (LINT_TARGETS := …) and recipe
-// lines (which begin with a tab) are not rules.
+// line and the targets that actually carry a rule, accumulated across every
+// file in makefileSourcePaths. A rule line starts at column zero with
+// `name:`; `:=` assignments (LINT_TARGETS := …) and recipe lines (which
+// begin with a tab) are not rules.
 func makefilePhonyAndRuleNames(t *testing.T) (phony, rules []string) {
 	t.Helper()
-	raw, err := os.ReadFile("Makefile")
-	if err != nil {
-		t.Fatalf("reading Makefile: %v", err)
-	}
 	seen := map[string]bool{}
-	for line := range strings.Lines(string(raw)) {
-		line = strings.TrimRight(line, "\n")
-		if after, ok := strings.CutPrefix(line, ".PHONY:"); ok {
-			phony = append(phony, strings.Fields(after)...)
-			continue
+	for _, path := range makefileSourcePaths(t) {
+		raw, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatalf("reading %s: %v", path, err)
 		}
-		if line == "" || line[0] == '\t' || line[0] == '#' || line[0] == ' ' {
-			continue
+		for line := range strings.Lines(string(raw)) {
+			line = strings.TrimRight(line, "\n")
+			if after, ok := strings.CutPrefix(line, ".PHONY:"); ok {
+				phony = append(phony, strings.Fields(after)...)
+				continue
+			}
+			if line == "" || line[0] == '\t' || line[0] == '#' || line[0] == ' ' {
+				continue
+			}
+			name, rest, ok := strings.Cut(line, ":")
+			if !ok || strings.HasPrefix(rest, "=") || strings.ContainsAny(name, " \t") || name == "" {
+				continue
+			}
+			if seen[name] {
+				continue
+			}
+			seen[name] = true
+			rules = append(rules, name)
 		}
-		name, rest, ok := strings.Cut(line, ":")
-		if !ok || strings.HasPrefix(rest, "=") || strings.ContainsAny(name, " \t") || name == "" {
-			continue
-		}
-		if seen[name] {
-			continue
-		}
-		seen[name] = true
-		rules = append(rules, name)
 	}
 	return phony, rules
 }
@@ -88,15 +127,18 @@ func TestEveryPhonyTargetHasARule(t *testing.T) {
 func TestEveryLintTargetIsPhonyAndHasARule(t *testing.T) {
 	t.Parallel()
 	phony, rules := makefilePhonyAndRuleNames(t)
-	raw, err := os.ReadFile("Makefile")
-	if err != nil {
-		t.Fatalf("reading Makefile: %v", err)
-	}
 	var targets []string
-	for line := range strings.Lines(string(raw)) {
-		if after, ok := strings.CutPrefix(strings.TrimRight(line, "\n"), "LINT_TARGETS :="); ok {
-			targets = strings.Fields(after)
-			break
+search:
+	for _, path := range makefileSourcePaths(t) {
+		raw, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatalf("reading %s: %v", path, err)
+		}
+		for line := range strings.Lines(string(raw)) {
+			if after, ok := strings.CutPrefix(strings.TrimRight(line, "\n"), "LINT_TARGETS :="); ok {
+				targets = strings.Fields(after)
+				break search
+			}
 		}
 	}
 	if len(targets) == 0 {
@@ -176,7 +218,7 @@ func TestEveryRuleIsPhony(t *testing.T) {
 // vacuously instead of failing loudly.
 func makefileRulesWithoutRecipes(t *testing.T) (empty []string, total int) {
 	t.Helper()
-	for _, path := range []string{"Makefile"} {
+	for _, path := range makefileSourcePaths(t) {
 		raw, err := os.ReadFile(path)
 		if err != nil {
 			t.Fatalf("reading %s: %v", path, err)
