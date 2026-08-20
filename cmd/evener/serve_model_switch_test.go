@@ -104,32 +104,19 @@ func TestServeModelSwitch_ThreadReadReflectsNewModelWithNoInterveningTurn(t *tes
 
 	ref := appwire.Ref{SourceID: "local", ThreadID: entry.SessionID}.String()
 
-	// The daemon publishes status.Model from the session-start event, which the
-	// bridge drains asynchronously with respect to the rendezvous write — the
-	// test's dial can win that race and read an empty ModelProvider (#251). The
-	// premise read must await the published state instead of assuming it. Only
-	// the premise may poll: the post-switch read below stays a single
-	// synchronous read, because immediate visibility is the G2 property under
-	// test.
-	awaitModelProvider := func(want string) {
-		t.Helper()
-		for {
-			read, err := client.ThreadRead(ctx, appwire.ThreadReadParams{Ref: ref})
-			if err != nil {
-				t.Fatalf("ThreadRead: %v", err)
-			}
-			if read.Thread.ModelProvider == want {
-				return
-			}
-			select {
-			case <-ctx.Done():
-				t.Fatalf("thread/read ModelProvider = %q, want %q (awaiting published model): %v",
-					read.Thread.ModelProvider, want, ctx.Err())
-			case <-time.After(25 * time.Millisecond):
-			}
-		}
+	// This premise read is deliberately a single, unpolled call: it is exactly
+	// what a real client's first thread/read after discovering the rendezvous
+	// entry looks like. serve.go seeds status.Model/Profile synchronously right
+	// after bridgeSession(sess), so this must already observe "gpt-initial" with
+	// no waiting -- polling here would hide a regression of that synchronous
+	// seed behind the bridge's asynchronous EventSessionStart drain (#251).
+	before, err := client.ThreadRead(ctx, appwire.ThreadReadParams{Ref: ref})
+	if err != nil {
+		t.Fatalf("ThreadRead (before): %v", err)
 	}
-	awaitModelProvider("gpt-initial")
+	if before.Thread.ModelProvider != "gpt-initial" {
+		t.Fatalf("initial thread/read ModelProvider = %q, want %q", before.Thread.ModelProvider, "gpt-initial")
+	}
 
 	// Drive the switch through the REAL wired path: the thread/model/set RPC
 	// handler, which invokes serve.go's SetModelFunc closure.
