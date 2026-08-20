@@ -44,7 +44,7 @@ gates themselves — building, testing, linting, coverage, and fuzzing.
 | --- | --- |
 | `make tools` | Install the CI-pinned golangci-lint and gitleaks versions from .tool-versions, so a local make lint runs exactly what CI runs. |
 | `make refresh-model-catalog` | Replace the vendored LiteLLM model-catalog snapshot with the current upstream and run the catalog sanity tests. |
-| `make generate` | Run every `go generate` directive: the AppWire protocol reference and frontend TypeScript declarations, generated from the catalog in appwire/protocol.go. |
+| `make generate` | Run the appwire package's `go generate` directives: the AppWire protocol reference and frontend TypeScript declarations, generated from the catalog in appwire/protocol.go. |
 | `make clean` | Remove the built binaries from the repo root. |
 | `make help` | Print every make target, grouped by family, with its one-line summary. |
 <!-- END GENERATED -->

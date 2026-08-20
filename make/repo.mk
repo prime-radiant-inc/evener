@@ -21,11 +21,14 @@ tools:
 refresh-model-catalog:
 	@scripts/ops/refresh-model-catalog.sh
 
-# generate runs all `go generate` directives. The AppWire protocol reference
-# and frontend TypeScript declarations come from the catalog in appwire/protocol.go.
-## Run every `go generate` directive: the AppWire protocol reference and
-## frontend TypeScript declarations, generated from the catalog in
-## appwire/protocol.go.
+# generate runs the appwire package's `go generate` directives: the AppWire
+# protocol reference and frontend TypeScript declarations, generated from the
+# catalog in appwire/protocol.go. internal/maketargetsdoc has its own
+# `//go:generate go run .` directive, not yet wired in here (its doc comment
+# explains why); this target does not touch it.
+## Run the appwire package's `go generate` directives: the AppWire protocol
+## reference and frontend TypeScript declarations, generated from the
+## catalog in appwire/protocol.go.
 generate:
 	go generate ./appwire/...
 
