@@ -46,75 +46,78 @@ var makefileVariableFedDeletes = map[string]string{}
 // The scan is also per physical line, but that is handled rather than merely
 // admitted: a delete running past the end of its line is refused outright, so a
 // continuation hides nothing.
+//
+// The scan walks makefileSourcePaths one file at a time, rather than joining
+// every file's body into one string first, so a failure's citation is
+// path:line for the file that actually holds the delete — matching the
+// pattern scriptmktemp_audit_test.go's recursiveDeleteOffenders already uses
+// for the equivalent scripts/ audit. Scanning file-by-file also means the
+// last line of one file's content can never be mistaken for a continuation
+// of, or fused onto, the first line of the next file: each file's line index
+// and its "does this line continue" check are entirely its own.
 func TestNoMakefileRecipeFeedsVariableToRecursiveDelete(t *testing.T) {
 	t.Parallel()
-	// Bodies are joined with "\n" rather than concatenated raw, so a file
-	// missing its own trailing newline can never glue its last line onto the
-	// first line of the next file and hide a delete from the scan below.
-	var bodies []string
+
+	var unswept, unreadable []string
+	matched := map[string]int{}
 	for _, path := range makefileSourcePaths(t) {
 		raw, err := os.ReadFile(path)
 		if err != nil {
 			t.Fatalf("read %s: %v", path, err)
 		}
-		bodies = append(bodies, string(raw))
-	}
-	body := strings.Join(bodies, "\n")
-
-	var unswept, unreadable []string
-	matched := map[string]int{}
-	for i, line := range strings.Split(body, "\n") {
-		// continues reports whether make joins the NEXT physical line onto
-		// this one, which is what makes a delete at the end of this line
-		// unreviewable.
-		trimmed, continues := recursiveDeleteLineText(line)
-		if strings.HasPrefix(trimmed, "#") {
-			continue
-		}
-		where := fmt.Sprintf("Makefile:%d: %s", i+1, trimmed)
-		commands := recursiveDeleteCommands(trimmed, "$$(")
-		for c, command := range commands {
-			args, isRM := rmArguments(command)
-			if !isRM {
+		for i, line := range strings.Split(string(raw), "\n") {
+			// continues reports whether make joins the NEXT physical line onto
+			// this one, which is what makes a delete at the end of this line
+			// unreviewable.
+			trimmed, continues := recursiveDeleteLineText(line)
+			if strings.HasPrefix(trimmed, "#") {
 				continue
 			}
-			// An rm that is the LAST command on a continued line runs on into
-			// the next physical line, which may carry its recursion flag, its
-			// path, or both. Neither this line nor the next says what gets
-			// deleted, so the shape is refused outright rather than
-			// allowlisted: a delete that cannot be read cannot be reviewed.
-			//
-			// A delete followed by more commands on the same line is safe from
-			// this: `||` and `;` end the rm before the continuation does, which
-			// is why the blessed sites at Makefile:77 and :121 stay green.
-			if continues && c == len(commands)-1 {
-				unreadable = append(unreadable, where)
-				continue
-			}
-			operands, recursive := recursiveDelete(args)
-			if !recursive {
-				continue
-			}
-			// A recursive delete with no path at all takes its target from a
-			// pipe (`xargs rm -rf`), which is equally unreadable.
-			if len(operands) == 0 {
-				unreadable = append(unreadable, where)
-				continue
-			}
-			fromVariable := false
-			for _, operand := range operands {
-				if operandComesFromVariable(operand) {
-					fromVariable = true
+			where := fmt.Sprintf("%s:%d: %s", path, i+1, trimmed)
+			commands := recursiveDeleteCommands(trimmed, "$$(")
+			for c, command := range commands {
+				args, isRM := rmArguments(command)
+				if !isRM {
+					continue
 				}
+				// An rm that is the LAST command on a continued line runs on into
+				// the next physical line, which may carry its recursion flag, its
+				// path, or both. Neither this line nor the next says what gets
+				// deleted, so the shape is refused outright rather than
+				// allowlisted: a delete that cannot be read cannot be reviewed.
+				//
+				// A delete followed by more commands on the same line is safe from
+				// this: `||` and `;` end the rm before the continuation does, which
+				// is why the blessed sites at Makefile:77 and :121 stay green.
+				if continues && c == len(commands)-1 {
+					unreadable = append(unreadable, where)
+					continue
+				}
+				operands, recursive := recursiveDelete(args)
+				if !recursive {
+					continue
+				}
+				// A recursive delete with no path at all takes its target from a
+				// pipe (`xargs rm -rf`), which is equally unreadable.
+				if len(operands) == 0 {
+					unreadable = append(unreadable, where)
+					continue
+				}
+				fromVariable := false
+				for _, operand := range operands {
+					if operandComesFromVariable(operand) {
+						fromVariable = true
+					}
+				}
+				if !fromVariable {
+					continue
+				}
+				if _, allowed := makefileVariableFedDeletes[trimmed]; allowed {
+					matched[trimmed]++
+					continue
+				}
+				unswept = append(unswept, where)
 			}
-			if !fromVariable {
-				continue
-			}
-			if _, allowed := makefileVariableFedDeletes[trimmed]; allowed {
-				matched[trimmed]++
-				continue
-			}
-			unswept = append(unswept, where)
 		}
 	}
 
