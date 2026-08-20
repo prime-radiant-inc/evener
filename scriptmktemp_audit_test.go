@@ -235,71 +235,17 @@ func TestScratchDirCannotResolveToCWD(t *testing.T) {
 	}
 }
 
-// recursiveDeleteTakingVariable reports whether a line invokes `rm` with a
-// recursive flag and any argument that expands a variable. That shape is what
-// Jesse banned after kata 5hs2: a delete that accepts a path can be handed
-// $PWD, $HOME, or / by a variable that was emptied or clobbered, and no
-// checking inside the callee makes the caller's variable trustworthy. The safe
-// spellings take no argument at all (scratch_rm in scripts/scratch-lib.sh) or
-// live on the count-pinned list below with a reason.
+// The rm-detection predicate this audit walks scripts/ with —
+// recursiveDeleteLineText, recursiveDeleteCommands, namesRM, rmArguments,
+// recursiveDelete, operandComesFromVariable — is shared with the Makefile
+// audit's TestNoMakefileRecipeFeedsVariableToRecursiveDelete and lives in
+// recursivedelete_audit_test.go; see that file's header for why (issue #153).
 //
-// The scan is textual, so `find -exec rm` and `xargs rm` would slip past it,
-// as would `rm<TAB>flags` (the match requires "rm" followed by a space) and a
-// backslash-newline continuation that puts rm's arguments on the next line —
-// the scan is per-line. None of those spellings exist in the scanned scripts
-// today, and the policy in docs/testing.md covers them. A false positive is
-// impossible to suppress silently: the only way past the check is a reviewed
-// entry in recursiveDeleteAllowedLines.
-func recursiveDeleteTakingVariable(line string) bool {
-	rest := line
-	for {
-		at := strings.Index(rest, "rm ")
-		if at < 0 {
-			return false
-		}
-		ownWord := at == 0
-		if at > 0 {
-			switch rest[at-1] {
-			// `/bin/rm`, `$(rm ...)`, backticked, piped, chained, and
-			// trap-quoted (`trap 'rm -rf ...' EXIT`) spellings all still
-			// invoke rm; mid-word hits like "confirm " do not.
-			case ' ', '\t', ';', '(', '|', '&', '/', '`', '\'', '"':
-				ownWord = true
-			}
-		}
-		call := rest[at:]
-		rest = rest[at+len("rm "):]
-		if !ownWord {
-			continue
-		}
-		// Stop at whatever ends the command, so the next command's words are
-		// not mistaken for rm's arguments. A command substitution inside an
-		// argument gets truncated mid-arg by ")", which can only widen the
-		// match, never hide one.
-		for _, terminator := range []string{";", "|", "&&", "||", ")", "`", " #"} {
-			if i := strings.Index(call, terminator); i >= 0 {
-				call = call[:i]
-			}
-		}
-		fields := strings.Fields(call)
-		recursive := false
-		variable := false
-		for _, f := range fields[1:] {
-			if strings.HasPrefix(f, "-") && !strings.Contains(f, "$") {
-				if strings.ContainsAny(f, "rR") {
-					recursive = true
-				}
-				continue
-			}
-			if strings.Contains(f, "$") {
-				variable = true
-			}
-		}
-		if recursive && variable {
-			return true
-		}
-	}
-}
+// What the scan still cannot see, even shared: `find -exec rm` is a delete of
+// the literal `{}` operand, never a variable. None of that spelling exists in
+// the scanned scripts today, and the policy in docs/testing.md covers it. A
+// false positive is impossible to suppress silently: the only way past the
+// check is a reviewed entry in recursiveDeleteAllowedLines.
 
 // recursiveDeleteAllowedLines is every variable-fed recursive delete the
 // repository still contains, pinned to an exact count per script. Keyed on
@@ -375,13 +321,16 @@ var recursiveDeleteAllowedLines = map[string]int{
 	"install.sh": 1,
 }
 
-// recursiveDeleteOffenders scans paths for variable-fed recursive deletes,
-// keyed and counted by the exact path rather than basename (#183): a poison
-// file at a different path must never inherit another path's allowance just
-// because the two share a basename. Returns the offending lines beyond each
-// path's allowance, and the raw per-path counts so a caller can also check
-// for stale (over-)allowances.
-func recursiveDeleteOffenders(t *testing.T, paths []string, allowed map[string]int) (offenders []string, counts map[string]int) {
+// recursiveDeleteOffenders scans paths for variable-fed recursive deletes
+// using the shared predicate described above, keyed and counted by the exact
+// path rather than basename (#183): a poison file at a different path must
+// never inherit another path's allowance just because the two share a
+// basename. Returns the offending lines beyond each path's allowance, the
+// lines the predicate cannot fully read (a delete split across a
+// backslash-continued line, or with no path at all — see
+// recursiveDeleteUnreadableReason), and the raw per-path counts so a caller
+// can also check for stale (over-)allowances.
+func recursiveDeleteOffenders(t *testing.T, paths []string, allowed map[string]int) (offenders, unreadable []string, counts map[string]int) {
 	t.Helper()
 	counts = map[string]int{}
 	for _, path := range paths {
@@ -390,20 +339,57 @@ func recursiveDeleteOffenders(t *testing.T, paths []string, allowed map[string]i
 			t.Fatalf("read %s: %v", path, err)
 		}
 		for i, line := range strings.Split(string(body), "\n") {
-			trimmed := strings.TrimSpace(line)
+			// continues reports whether the shell joins the NEXT physical
+			// line onto this one, which is what makes a delete at the end
+			// of this line unreviewable.
+			trimmed, continues := recursiveDeleteLineText(line)
 			if strings.HasPrefix(trimmed, "#") {
 				continue
 			}
-			if !recursiveDeleteTakingVariable(trimmed) {
-				continue
-			}
-			counts[path]++
-			if counts[path] > allowed[path] {
-				offenders = append(offenders, fmt.Sprintf("%s:%d: %s", path, i+1, trimmed))
+			where := fmt.Sprintf("%s:%d: %s", path, i+1, trimmed)
+			commands := recursiveDeleteCommands(trimmed, "$(")
+			for c, command := range commands {
+				args, isRM := rmArguments(command)
+				if !isRM {
+					continue
+				}
+				// An rm that is the LAST command on a continued line runs on
+				// into the next physical line, which may carry its
+				// recursion flag, its path, or both. Neither this line nor
+				// the next says what gets deleted, so the shape is refused
+				// outright rather than allowlisted: a delete that cannot be
+				// read cannot be reviewed.
+				if continues && c == len(commands)-1 {
+					unreadable = append(unreadable, where)
+					continue
+				}
+				operands, recursive := recursiveDelete(args)
+				if !recursive {
+					continue
+				}
+				// A recursive delete with no path at all takes its target
+				// from a pipe (`xargs rm -rf`), which is equally unreadable.
+				if len(operands) == 0 {
+					unreadable = append(unreadable, where)
+					continue
+				}
+				fromVariable := false
+				for _, operand := range operands {
+					if operandComesFromVariable(operand) {
+						fromVariable = true
+					}
+				}
+				if !fromVariable {
+					continue
+				}
+				counts[path]++
+				if counts[path] > allowed[path] {
+					offenders = append(offenders, where)
+				}
 			}
 		}
 	}
-	return offenders, counts
+	return offenders, unreadable, counts
 }
 
 // TestNoScriptFeedsVariableToRecursiveDelete enforces the rule directly
@@ -420,12 +406,16 @@ func TestNoScriptFeedsVariableToRecursiveDelete(t *testing.T) {
 	// machines this audit will never run on: install.sh is curl|sh'd into a
 	// user's shell, where a clobbered delete would be someone else's home.
 	allPaths := append([]string{"install.sh"}, paths...)
-	offenders, counts := recursiveDeleteOffenders(t, allPaths, recursiveDeleteAllowedLines)
+	offenders, unreadable, counts := recursiveDeleteOffenders(t, allPaths, recursiveDeleteAllowedLines)
 	sort.Strings(offenders)
 	for _, o := range offenders {
 		t.Errorf("this recursive delete takes a variable a caller can clobber (kata 5hs2 "+
 			"deleted a home directory this way); mint scratch with `scratch_dir <var> <prefix>` "+
 			"and reclaim it with the no-argument `scratch_rm` from scripts/lib/scratch-lib.sh:\n  %s", o)
+	}
+	sort.Strings(unreadable)
+	for _, o := range unreadable {
+		t.Errorf(recursiveDeleteUnreadableReason, o)
 	}
 	for path, want := range recursiveDeleteAllowedLines {
 		if got := counts[path]; got < want {
@@ -452,7 +442,7 @@ func TestRecursiveDeleteAllowlistDoesNotInheritByBasename(t *testing.T) {
 	allowedPath := filepath.Join(dir, "reviewed", "install.sh")
 	allowed := map[string]int{allowedPath: 1}
 
-	offenders, _ := recursiveDeleteOffenders(t, []string{poisonPath}, allowed)
+	offenders, _, _ := recursiveDeleteOffenders(t, []string{poisonPath}, allowed)
 	if len(offenders) == 0 {
 		t.Fatalf("poisonPath (%s) shares allowedPath's basename (install.sh) but is a different, "+
 			"unreviewed file; its recursive delete must be flagged rather than silently inherit "+

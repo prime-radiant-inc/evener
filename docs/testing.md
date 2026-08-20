@@ -87,10 +87,15 @@ list grows only with an explicitly reviewed reason and shrinks as
 scripts convert or retire.
 
 Two parts of the rule the audit cannot hold, which is why it is written
-here for people. Its scan is textual and per-line, so four equally banned
-spellings are invisible to it: `find -exec rm`, `xargs rm`, a tab between
-`rm` and its flags, and a backslash-newline continuation that puts the
-flags or the path on the next line. And the count pin is narrower than it
+here for people. Its scan is textual, so `find -exec rm -rf {} +` and
+`xargs -I{} rm -rf {}` both read as deletes of the literal `{}`
+placeholder rather than a variable, and slip through — the operand is
+present and visibly not a variable, so neither is a shape the predicate
+can refuse. A recursive delete piped a path with no placeholder at all —
+the ordinary `| xargs rm -rf` shape, or a delete split across a
+backslash-newline continuation — is instead refused outright: the
+predicate cannot tell what it deletes, and treats that as unreadable
+rather than silently passing it. And the count pin is narrower than it
 sounds — it stops a file gaining an *extra* variable-fed delete and it
 fails a listed file whose lines went away, but it cannot see one blessed
 delete being swapped for a different one inside an already-listed file.
