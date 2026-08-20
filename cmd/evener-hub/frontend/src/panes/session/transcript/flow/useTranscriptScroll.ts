@@ -451,6 +451,7 @@ export function useTranscriptScroll({
       wasAtBottomRef.current = true;
       firstTurnIdRef.current = undefined;
       baselineItemCountRef.current = 0;
+      pendingViewAnchorRef.current = null;
       resolvedFailedTurnIdsRef.current = new Set();
       setErrorAnchorIndex(null);
       errorAnchorIndexRef.current = null;

@@ -897,6 +897,36 @@ describe("mount positioning", () => {
 // computed against the PREVIOUS session's scroll state. These tests prove the
 // ref change re-initializes all of that.
 describe("ref change on a persistent pane instance (sidebar click to a different session)", () => {
+  test("changing ref cancels a pending view anchor before the fresh-open scroll-to-bottom", () => {
+    const { ref, el, scrollToIndex } = makeListHandle();
+    scrollToIndex.mockImplementation((_index, options) => {
+      if (options.align === "end") el.scrollTop = 900;
+    });
+    const { measure } = makeMeasure({ scrollTop: 300, scrollHeight: 1200, clientHeight: 300 });
+    let positions: ViewAnchorPosition[] = [
+      { id: "ref-a-tool", sourceIndex: 4, index: 4, offset: -18, height: 40, isMessage: false },
+    ];
+    const { result, rerender } = renderHook(
+      ({ r }) =>
+        useTranscriptScroll({
+          ref: r,
+          model: model([turn("t1", ["i1"])]),
+          listRef: ref,
+          loadOlder: vi.fn(),
+          measure,
+          measureAnchors: () => positions,
+        }),
+      { initialProps: { r: "ref_a" } },
+    );
+
+    act(() => result.current.captureViewAnchor());
+    positions = [{ id: "ref-b-message", sourceIndex: 5, index: 0, offset: 0, height: 96, isMessage: true }];
+    rerender({ r: "ref_b" });
+    act(() => result.current.restoreViewAnchorAfterMeasurement());
+
+    expect(el.scrollTop).toBe(900);
+  });
+
   test("changing ref re-runs the scroll-to-bottom for the new session", () => {
     const { ref, scrollToIndex } = makeListHandle();
     const { measure } = makeMeasure(AT_BOTTOM);
