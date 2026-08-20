@@ -134,6 +134,16 @@ lint-gofmt:
 # bitten by once. The && chain also means a generator that FAILS fails this
 # gate; it must never fall through to a clean diff over outputs nothing
 # rewrote.
+#
+# The diff is against HEAD, not the index. A bare `git diff` compares the
+# working tree to the INDEX, so `git add`ing a regeneration without committing
+# it made the gate pass while the COMMITTED output was still stale — the gate
+# reporting green over exactly the content it claims to check (ruling R26).
+#
+# Naming HEAD is strictly stricter, never looser: an uncommitted regeneration
+# still fails, and staging no longer silences it. That is the intended cost.
+# The unit this gate wants is one commit carrying both the changed annotation
+# and its regenerated doc, which is why the message says "and commit".
 ## Fail if any committed generated output is stale: the two AppWire outputs
 ## and the six docs/developing-evener/ target tables.
 ## proves: docs/appwire-protocol.md, the generated TypeScript protocol
@@ -144,7 +154,7 @@ lint-gofmt:
 ## fails-when: `make generate` itself exits nonzero, or any regenerated
 ##   output differs from what is committed.
 lint-generated:
-	$(call run_quiet_lint,$(MAKE) generate && { git diff --exit-code -- docs/appwire-protocol.md cmd/evener-hub/frontend/src/protocol/types.gen.ts docs/developing-evener/README.md docs/developing-evener/building.md docs/developing-evener/testing.md docs/developing-evener/linting.md docs/developing-evener/fuzzing.md docs/developing-evener/coverage.md || { echo "generated outputs are stale; run 'make generate' and commit."; exit 1; }; })
+	$(call run_quiet_lint,$(MAKE) generate && { git diff --exit-code HEAD -- docs/appwire-protocol.md cmd/evener-hub/frontend/src/protocol/types.gen.ts docs/developing-evener/README.md docs/developing-evener/building.md docs/developing-evener/testing.md docs/developing-evener/linting.md docs/developing-evener/fuzzing.md docs/developing-evener/coverage.md || { echo "generated outputs are stale; run 'make generate' and commit."; exit 1; }; })
 
 # lint-fuzz-registry wraps the SAME check as `make fuzz-registry-check`
 # (scripts/fuzz/fuzz-registry-check.sh) so a native/Rapid fuzz target that

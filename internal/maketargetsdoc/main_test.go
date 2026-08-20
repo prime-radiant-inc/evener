@@ -65,7 +65,7 @@ func TestGenerateWritesAllFamilyDocs(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(string(linting), "| Command | What it proves | Trigger | Requires | Fails when |") {
+	if !strings.Contains(string(linting), "| Command | Summary | What it proves | Trigger | Requires | Fails when |") {
 		t.Fatalf("linting.md missing the wide table (lint has a trigger field):\n%s", linting)
 	}
 }

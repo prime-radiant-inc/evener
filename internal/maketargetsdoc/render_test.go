@@ -7,10 +7,11 @@ import (
 	"testing"
 )
 
-// TestRenderWideTableForTargetsWithFields is the populated shape from spec
-// §3's own example: a target carrying all four structured fields renders as
-// one row of the five-column wide table, command wrapped in backticks as
-// `make <name>`.
+// TestRenderWideTableForTargetsWithFields is the populated shape: a target
+// carrying all four structured fields renders as one row of the six-column
+// wide table, command wrapped in backticks as `make <name>`, with the
+// summary in the second column (ruling R25 — spec §3's own example predates
+// it and shows five).
 func TestRenderWideTableForTargetsWithFields(t *testing.T) {
 	targets := []Target{{
 		Name:      "lint",
@@ -21,11 +22,30 @@ func TestRenderWideTableForTargetsWithFields(t *testing.T) {
 		FailsWhen: "any member of LINT_TARGETS exits nonzero.",
 	}}
 	got := Render(targets)
-	want := "| Command | What it proves | Trigger | Requires | Fails when |\n" +
-		"| --- | --- | --- | --- | --- |\n" +
-		"| `make lint` | TOML naming; gofmt over every tracked .go file. | required CI; local pre-merge. | golangci-lint, gitleaks. | any member of LINT_TARGETS exits nonzero. |"
+	want := "| Command | Summary | What it proves | Trigger | Requires | Fails when |\n" +
+		"| --- | --- | --- | --- | --- | --- |\n" +
+		"| `make lint` | Go lint, formatting, tagged floors, generated outputs, and secrets. | TOML naming; gofmt over every tracked .go file. | required CI; local pre-merge. | golangci-lint, gitleaks. | any member of LINT_TARGETS exits nonzero. |"
 	if got != want {
 		t.Fatalf("got:\n%s\nwant:\n%s", got, want)
+	}
+}
+
+// TestRenderWideTablePublishesTheSummary is ruling R25's regression guard,
+// stated on its own rather than left implicit in the shape assertion above.
+// Before R25 the wide table carried only the four structured fields, so a
+// gate target's summary reached no doc and lint-generated could not see it
+// drift: mutating coverage-floor's summary left every generated region
+// byte-identical and `make lint` passed. Keep the summary in a published
+// column, or that hole reopens for every fielded target in the repository.
+func TestRenderWideTablePublishesTheSummary(t *testing.T) {
+	targets := []Target{{
+		Name:    "coverage-floor",
+		Summary: "The repo's one coverage ratchet.",
+		Proves:  "Per-module statement coverage against its floor.",
+	}}
+	got := Render(targets)
+	if !strings.Contains(got, "The repo's one coverage ratchet.") {
+		t.Fatalf("wide table dropped the summary, so nothing gates it:\n%s", got)
 	}
 }
 
@@ -61,9 +81,9 @@ func TestRenderMixedFamilyPutsCompactListAfterWideTable(t *testing.T) {
 		{Name: "clean", Summary: "Remove the built binary."},
 	}
 	got := Render(targets)
-	want := "| Command | What it proves | Trigger | Requires | Fails when |\n" +
-		"| --- | --- | --- | --- | --- |\n" +
-		"| `make build` | It compiles. | CI. | Go. | Build fails. |\n" +
+	want := "| Command | Summary | What it proves | Trigger | Requires | Fails when |\n" +
+		"| --- | --- | --- | --- | --- | --- |\n" +
+		"| `make build` | Build the binary. | It compiles. | CI. | Go. | Build fails. |\n" +
 		"\n" +
 		"### Other targets\n\n" +
 		"| Command | Summary |\n" +
@@ -88,7 +108,11 @@ func TestRenderAllTargetsLackFieldsEmitsNoEmptyWideTable(t *testing.T) {
 		{Name: "fuzz-nightly", Summary: "Run the unbounded coverage-guided search."},
 	}
 	got := Render(targets)
-	if want := "| Command | What it proves |"; len(got) >= len(want) && got[:len(want)] == want {
+	// The compact list's header is a PREFIX of the wide table's since R25 put
+	// Summary second in both ("| Command | Summary |" vs
+	// "| Command | Summary | What it proves | …"), so tell them apart on the
+	// wide table's full header rather than on a shared prefix.
+	if strings.HasPrefix(got, "| Command | Summary | What it proves |") {
 		t.Fatalf("got an empty wide table header when no target has fields:\n%s", got)
 	}
 	if strings.Contains(got, "Other targets") {

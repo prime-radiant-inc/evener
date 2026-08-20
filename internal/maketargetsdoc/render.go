@@ -90,7 +90,7 @@ func command(name string) string {
 // markdown body for one family's marked "## Targets" region.
 //
 // Targets carrying at least one structured field render as rows of a wide
-// five-column table. Targets with only a summary render as rows of a
+// six-column table. Targets with only a summary render as rows of a
 // compact two-column list under an "Other targets" subheading, so a target
 // like `clean` does not get four empty wide-table cells. If no target in
 // the family has any structured field, only the compact list is emitted —
@@ -120,13 +120,28 @@ func Render(targets []Target) string {
 	return strings.Join(sections, "\n\n")
 }
 
+// wideTableHeader is the wide table's header row. Summary sits second, right
+// after Command, so a row reads what-it-is, what-it-guarantees, when, needs,
+// fails (ruling R25).
+//
+// Publishing the summary is what puts a gate target's summary under
+// lint-generated at all. Without this column the wide table showed only the
+// four structured fields, so a gate target's summary was required by
+// TestEveryTargetHasASummaryAnnotation, printed by `make help`, and rendered
+// in no doc — which left it gated by nothing, for 36 of the repository's 65
+// targets. On a single-fact gate like lint-naming the summary and `proves`
+// mildly restate each other; that overlap is inherent to single-fact gates
+// and is not a reason to reword an annotation.
+const wideTableHeader = "| Command | Summary | What it proves | Trigger | Requires | Fails when |\n" +
+	"| --- | --- | --- | --- | --- | --- |"
+
 func renderWideTable(targets []Target) string {
 	var b strings.Builder
-	b.WriteString("| Command | What it proves | Trigger | Requires | Fails when |\n")
-	b.WriteString("| --- | --- | --- | --- | --- |")
+	b.WriteString(wideTableHeader)
 	for _, t := range targets {
-		fmt.Fprintf(&b, "\n| %s | %s | %s | %s | %s |",
-			command(t.Name), escapeCell(t.Proves), escapeCell(t.Trigger), escapeCell(t.Requires), escapeCell(t.FailsWhen))
+		fmt.Fprintf(&b, "\n| %s | %s | %s | %s | %s | %s |",
+			command(t.Name), escapeCell(t.Summary), escapeCell(t.Proves),
+			escapeCell(t.Trigger), escapeCell(t.Requires), escapeCell(t.FailsWhen))
 	}
 	return b.String()
 }
