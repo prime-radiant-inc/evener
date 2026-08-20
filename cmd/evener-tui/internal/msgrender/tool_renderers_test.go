@@ -110,8 +110,8 @@ func TestGrepRenderer(t *testing.T) {
 		t.Errorf("grep target should contain pattern: %q", r.Target(args))
 	}
 	result := r.Result(args, "match1\nmatch2\nmatch3", "", 0)
-	if !strings.Contains(result, "3") {
-		t.Errorf("grep result should count hits: %q", result)
+	if !strings.HasPrefix(result, "3 ") {
+		t.Errorf("grep result should count 3 hits: %q", result)
 	}
 }
 

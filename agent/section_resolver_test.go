@@ -652,8 +652,22 @@ func TestSubagentTemplate_StructuralRegression(t *testing.T) {
 		}
 	}
 
-	if !strings.Contains(result, "When you create or enter a fresh worktree, its dependency directories may be absent; copy or install the project's dependencies before running its gates.") {
-		t.Errorf("subagent prompt missing fresh-worktree dependency guidance; got:\n%s", result)
+	// The fresh-worktree guidance is a four-part contract: it applies on entering
+	// a worktree, warns that dependency directories may be missing, tells the
+	// agent to copy or install them, and scopes that to before the gates run.
+	// Pinned clause by clause against the case-folded section rather than as one
+	// sentence, so splitting the semicolon into two sentences (which recapitalizes
+	// the second clause) cannot break the test while the contract holds.
+	folded := strings.ToLower(result)
+	for _, want := range []string{
+		"fresh worktree",
+		"dependency directories may be absent",
+		"copy or install the project's dependencies",
+		"before running its gates",
+	} {
+		if !strings.Contains(folded, want) {
+			t.Errorf("subagent prompt missing fresh-worktree dependency guidance %q; got:\n%s", want, result)
+		}
 	}
 
 	// Subagent should NOT have root-only sections such as delegation, git-safety,

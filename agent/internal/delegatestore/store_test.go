@@ -471,7 +471,7 @@ func TestOpenRejectsTerminatedMalformedBatch(t *testing.T) {
 		t.Fatalf("WriteFile: %v", err)
 	}
 
-	if _, err := Open(path); err == nil || !strings.Contains(err.Error(), "batch") {
+	if _, err := Open(path); err == nil || !strings.Contains(err.Error(), "decode batch line") {
 		t.Fatalf("Open error = %v, want malformed terminated batch", err)
 	}
 	if got := mustReadFile(t, path); !bytes.Equal(got, raw) {
