@@ -789,6 +789,46 @@ export { Reexported } from "./elsewhere";
 	}
 }
 
+// TestScenarioTSDeclarationsIgnoreBlockComments pins the PR #271 review
+// finding: a declaration-shaped line sitting inside a `/* ... */` (or JSDoc
+// `/** ... */`) block comment must not register as declared, and a real
+// declaration sharing a line with an inline block comment must still be
+// found.
+func TestScenarioTSDeclarationsIgnoreBlockComments(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "fixture.tsx")
+	const source = `export function RealSymbol() {}
+
+/*
+ * TODO: someday resurrect this:
+function BlockCommentedFake() {}
+ */
+
+/**
+const JsDocFake = 1;
+ */
+
+export /* eslint-disable-next-line */ function InlineCommented() {}
+`
+	if err := os.WriteFile(path, []byte(source), 0o600); err != nil {
+		t.Fatalf("write fixture: %v", err)
+	}
+
+	names, err := scenarioTSDeclarationsIn(map[string]map[string]bool{}, path)
+	if err != nil {
+		t.Fatalf("scenarioTSDeclarationsIn: %v", err)
+	}
+	for _, want := range []string{"RealSymbol", "InlineCommented"} {
+		if !names[want] {
+			t.Fatalf("declaration missing %q: %v", want, names)
+		}
+	}
+	for _, notMatched := range []string{"BlockCommentedFake", "JsDocFake"} {
+		if names[notMatched] {
+			t.Fatalf("declaration wrongly matched %q — it exists only inside a block comment (PR #271 review): %v", notMatched, names)
+		}
+	}
+}
+
 func TestScenarioTrackedFilesByBaseIgnoresUntrackedFiles(t *testing.T) {
 	root := t.TempDir()
 	for _, name := range []string{"tracked.go", "deleted.go", "untracked.go", "excluded.tsx"} {
@@ -936,10 +976,54 @@ func scenarioReceiverName(fields *ast.FieldList) string {
 // at authoring time, so the author repoints the anchor or widens the scan,
 // versus a symbol that is NOT declared staying green forever, which is the
 // bug issue #157 closes.
+//
+// A `/* ... */` block comment is the one shape that failed in the UNSAFE
+// direction instead: a declaration-shaped line sitting inside a comment (a
+// commented-out old implementation, a JSDoc example) would register its name
+// as declared when it is not — the same stale-anchor-stays-green failure this
+// audit exists to catch, reached through a comment instead of a rename (PR
+// #271 review). scenarioStripTSBlockComments blanks every such span before
+// the scan runs, so this is closed rather than documented as accepted. It has
+// no model of string or template-literal bodies, so a `/*` inside a quoted
+// string still opens a (blanked) comment span; no citation in the corpus
+// trips that today.
 var scenarioTSDeclarationPatterns = []*regexp.Regexp{
 	regexp.MustCompile(`^\s*(?:export\s+)?(?:default\s+)?(?:async\s+)?(?:function|class|interface|enum)\s+([A-Za-z0-9_$]+)`),
 	regexp.MustCompile(`^\s*(?:export\s+)?(?:const|let|var)\s+([A-Za-z0-9_$]+)`),
 	regexp.MustCompile(`^\s*(?:export\s+)?type\s+([A-Za-z0-9_$]+)\s*=`),
+}
+
+// scenarioStripTSBlockComments blanks every `/* ... */` span in a
+// TypeScript/JavaScript source — a JSDoc `/** ... */` span opens the same way,
+// so it is covered too — replacing comment bytes with a space and preserving
+// newlines, so a declaration sharing a line with an inline block comment
+// (`export /* eslint-disable-next-line */ function Foo() {}`) still matches
+// and line counts are unaffected. A `//` line comment needs no equivalent
+// handling: scenarioTSDeclarationPatterns anchor at `^\s*`, and a
+// `//`-prefixed line can never match a bare keyword sitting right after it.
+func scenarioStripTSBlockComments(source string) string {
+	var out strings.Builder
+	out.Grow(len(source))
+	inComment := false
+	for i := 0; i < len(source); i++ {
+		switch {
+		case inComment && source[i] == '*' && i+1 < len(source) && source[i+1] == '/':
+			inComment = false
+			i++
+		case inComment:
+			if source[i] == '\n' {
+				out.WriteByte('\n')
+			} else {
+				out.WriteByte(' ')
+			}
+		case source[i] == '/' && i+1 < len(source) && source[i+1] == '*':
+			inComment = true
+			i++
+		default:
+			out.WriteByte(source[i])
+		}
+	}
+	return out.String()
 }
 
 // scenarioTSDeclarationsIn returns every top-level name a TypeScript or
@@ -956,7 +1040,7 @@ func scenarioTSDeclarationsIn(cache map[string]map[string]bool, path string) (ma
 		return nil, err
 	}
 	names := map[string]bool{}
-	for line := range strings.SplitSeq(string(raw), "\n") {
+	for line := range strings.SplitSeq(scenarioStripTSBlockComments(string(raw)), "\n") {
 		for _, pattern := range scenarioTSDeclarationPatterns {
 			if m := pattern.FindStringSubmatch(line); m != nil {
 				names[m[1]] = true
