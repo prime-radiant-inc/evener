@@ -11,9 +11,15 @@ per-module. Run from the root, they say nothing about `agent` or `llm`.
 A change that breaks a sibling module passes every one of them.
 
 `make lint` and `make test` loop the modules explicitly
-(`evener-dev module-lint`, driven by `GO_MODULES` in the Makefile).
+(`evener-dev module-lint`, driven by the Makefile's module lists).
 **Those are the gates.** A green `./...` is not evidence that the
 workspace builds.
+
+The two lists differ on purpose: `make test` runs `GO_MODULES`, which
+leaves out `fuzz` because its targets run through `make fuzz`, while
+`make lint` runs `FUZZ_GO_MODULES` — every Go module in the workspace,
+`fuzz` included. Sitting out the test gate is not a reason to sit out the
+linter.
 
 This has bitten before in CI, where a per-module `./...` silently skipped
 the library test suites entirely for a period — the suites existed,
@@ -91,7 +97,10 @@ go build ./... && go vet ./...
 Remember that a build tag hides a whole compilation unit. `make lint`
 now type-checks the two tagged trees for you — `lint-evenerfuzz` and
 `lint-eval` each run `go vet -tags <tag> ./...` across every module — so
-a rename that strands a tagged call site fails the gate.
+a rename that strands a tagged call site fails the gate. Each also runs a
+tagliatelle pass under its tag, and `lint-gofmt` covers every tracked
+`.go` file, because golangci-lint only analyses what it compiles and the
+tag-free run compiles none of these.
 
 **`make lint-evenerfuzz` is part of the standard per-commit gate set**
 (Jesse, 2026-08-07), alongside the per-module build and test runs. Two
