@@ -50,7 +50,11 @@ done
 	if [ "$tagged" = 1 ]; then
 		# The fuzz track reaches blocks B and C only.
 		echo "fake/a.go:1.1,2.1 200 0"
-		if [ -n "${FAKE_GO_SHIFT_FUZZ_BLOCKS:-}" ]; then
+		if [ -n "${FAKE_GO_DROP_B:-}" ]; then
+			# Neither track reaches block B: the union falls to 202/500 = 40.4%,
+			# well under a 100.0 floor.
+			echo "fake/b.go:3.1,4.1 298 0"
+		elif [ -n "${FAKE_GO_SHIFT_FUZZ_BLOCKS:-}" ]; then
 			# A large block split differently by the two builds — a different
 			# basis, whose union denominator would be meaningless.
 			echo "fake/b.go:3.1,4.9 298 1"
@@ -121,6 +125,28 @@ assert_has "$floors" "agent 100.0" "bless records the measured union floor"
 
 run --check >"$out" 2>&1
 assert_eq "$?" "0" "check passes at the blessed floor"
+
+# The ratchet's whole job: a measurement BELOW its floor must fail. Nothing
+# else here drives `p < f - tol` down the failing branch, so without this case
+# the comparison could be inverted or dropped and every other assertion would
+# still pass.
+printf 'agent 100.0\n' >"$floors"
+PATH="$fake_bin:$PATH" TMPDIR="$tmphome" FAKE_GO_DROP_B=1 bash "$script" --modules "agent" --check >"$out" 2>&1
+assert_eq "$?" "1" "check fails when a module drops below its floor"
+assert_has "$out" "REGRESSION: agent" "the regressed module is named"
+assert_has "$out" "40.4% < floor 100.0%" "the report gives the measured percentage and the floor it missed"
+
+# The tolerance band is the other half of that arithmetic: a drop inside it is
+# wobble, a drop past it is a regression. The fixture measures 100.0, so a
+# 100.4 floor is 0.4pp above it (inside the 0.5pp default) and a 100.6 floor is
+# 0.6pp above it (outside).
+printf 'agent 100.4\n' >"$floors"
+run --check >"$out" 2>&1
+assert_eq "$?" "0" "a shortfall inside the tolerance band passes"
+printf 'agent 100.6\n' >"$floors"
+run --check >"$out" 2>&1
+assert_eq "$?" "1" "a shortfall past the tolerance band fails"
+assert_has "$out" "tolerance 0.5pp" "the failure names the tolerance it applied"
 
 printf '# keep this note\nagent 100.0\nllm 77.0\n' >"$floors"
 run --bless >"$out" 2>&1
