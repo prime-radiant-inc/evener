@@ -37,4 +37,28 @@ the same way the ordinary runtime build does.
 ## Targets
 
 <!-- BEGIN GENERATED: make targets. Edit make/building.mk, then run `make generate`. -->
+| Command | What it proves | Trigger | Requires | Fails when |
+| --- | --- | --- | --- | --- |
+| `make build` | build-web completes before the evener/evener-hub pair is built, so the runtime pair contains the fresh SPA. | Local pre-merge; required CI together with make build-go. | Go, Node/npm, the frontend install, and enough disk. Build metadata includes the current SHA, dirty state, time, and channel. | Frontend preflight, build, or pair-script failure is nonzero; stale or failed embedding is not a pass. |
+| `make web-preflight` | The worktree has a lockfile-compatible install and a real local TypeScript compiler. | Setup prerequisite for the web/build/browser gates. | May run npm when the install is absent or stale; refuses an unsafe npm ci through a mismatched shared symlink. | A missing, mismatched, or unhealthy install is nonzero; npm/network unavailability is a setup failure. |
+| `make build-web` | TypeScript typecheck and the Vite production build complete and refresh frontend/dist. | Frontend CI; prerequisite of the runtime and release builds. | Node/npm; may run npm ci when the install is absent or stale. No provider credentials. Node's automatic compile cache is disabled. | An npm, typecheck, or Vite failure is nonzero. |
+| `make dist` | goreleaser builds evener, evener-hub, evener-tui, evener-doctor, and evener-migrate for linux/amd64 and darwin/arm64 into directory-wrapped archives plus checksums.txt, with a fresh SPA embedded via the before hook. | Release/snapshot CI; manual distribution verification. | Cross-compilation and frontend dependencies; release CI has networked setup for tool/dependency installation. | Any build, archive, inspection, or checksum failure is nonzero; unavailable release tooling blocks release. |
+| `make build-go` | All packages in the seven GO_MODULES compile, including packages root-level `go build ./...` does not visit under go.work. | Required CI build job; local compile diagnostic. | Deterministic Go compilation; no provider calls or frontend/browser requirements. | Any module or package compilation failure is nonzero; the loop stops at the first failing module. |
+
+### Other targets
+
+| Command | Summary |
+| --- | --- |
+| `make build-runtime` | The actual recipe `build` runs: builds the evener/evener-hub pair via scripts/ops/build-runtime-pair.sh. |
+| `make build-linux` | Cross-compile evener-linux-amd64 for Linux eval deployments. |
+| `make build-hub` | Alias for build-runtime. |
+| `make build-tui` | Build the standalone TUI binary (evener-tui). |
+| `make build-doctor` | Build evener-doctor, the read-only forensic inspector. |
+| `make build-all` | Build every runtime binary: the runtime pair, the TUI, evener-doctor, and evener-migrate. |
+| `make build-llmcall` | Build the llmcall standalone CLI binary. |
+| `make build-migrate` | Build evener-migrate. |
+| `make install` | Install the runtime binaries into PREFIX (default $(HOME)/.local), building a fresh SPA first so the installed evener-hub never embeds the tracked placeholder. |
+| `make install-home` | Install into the user prefix ($(HOME)/.local). |
+| `make install-system` | Install into the system prefix (/usr/local). |
+| `make test-install` | Integration-test the install path end to end: copy the tracked working tree into a fixture, run the install target with a synthetic HOME, and verify the installed binaries and symlinks. Skipped under -short. |
 <!-- END GENERATED -->

@@ -384,4 +384,29 @@ Two corollaries:
 ## Targets
 
 <!-- BEGIN GENERATED: make targets. Edit make/fuzzing.mk, then run `make generate`. -->
+| Command | What it proves | Trigger | Requires | Fails when |
+| --- | --- | --- | --- | --- |
+| `make test-fuzz` | Each surface's rapid state machine runs its full default check count (no -short reduction), catching sequence bugs the focused unit suites cannot. | Local pre-merge/post-merge for these surfaces; not run in CI's default make test job. EVENER_FUZZ_TESTS=1 opts each test back in from its default t.Skip. | No network, no provider calls; fully offline (deny exec env, fake clock, scripted adapters). | Any surface's oracle/invariant failure or panic is nonzero. |
+| `make fuzz-seeds` | Every committed evenerfuzz-tagged seed still passes, not merely still compiles. | Absorbed as a step of make fuzz; stands alone for fast iteration. Stays out of make test: 144s across the workspace against make test's ~70s. | go test -run '^Fuzz' with no -fuzz, so deterministic, no search. | Any tagged seed no longer passes. |
+| `make fuzz` | Fuzz invariants compile and execute, committed fuzz inputs remain safe, Rapid properties replay under a fixed coverage seed bank, and decode goldens remain stable. | Required CI deterministic corpus gate; local pre-merge when warranted. | Builds with -tags evenerfuzz so internal/invariant assertions are live; no fuzz search or provider calls; sets EVENER_FUZZ_TESTS=1 so the seqfuzz/schemafuzz family's default skip does not swallow the replay. | Any compile, replay, invariant, Rapid, or golden failure is nonzero. |
+| `make mutation-floor` | Each curated package's test efficacy (gremlins mutation kill score) meets the floor. | Nightly/manual; not required CI. Slow. | gremlins installed. | MIN=<n> is set and any curated package's kill efficacy drops below it. With no MIN, this only reports. |
+| `make fuzz-bisect-selftest` | fuzz-bisect names the correct commit using real git bisect and real replay; only the registry source (run-fuzz.sh --list) is stubbed. | make test-dev-tooling wave; on demand. | Offline and deterministic; builds a real throwaway git history. | fuzz-bisect fails to name the known-bad commit, or the suite leaves files behind. |
+| `make fuzz-oracle-audit` | Each mutation's target FAILS once the mutation is applied — an oracle that stays green on a known bug is caught. FUZZ_ARGS=--gap-only lists native targets with no mutation yet. | Manual, on-demand. | A throwaway worktree per mutation; real go test runs. | A mutated target's oracle does not fail (a blind spot), or a target fails to build under audit. |
+| `make fuzz-oracle-audit-selftest` | The audit correctly classifies each outcome (caught, blind, rot, build-failure) using a real worktree and go test, with only the registry stubbed. | make test-dev-tooling wave; on demand. | Offline and deterministic; a real throwaway module. | The audit's classification diverges from the fixture's expected verdict, or the suite leaves files behind. |
+| `make fuzz-gap-check` | Every discovered decode/parse package has a registered fuzz target or an explicit ignore, derived from scripts/fuzz/run-fuzz.sh --list without replaying any corpus. | Required CI; local quick check. | Seconds, deterministic; no network or corpus replay. | An uncovered package, or a registry/tool failure, is nonzero. |
+| `make fuzz-registry-check` | scripts/fuzz/fuzz-targets.txt matches AST-discovered native/Rapid declarations exactly. | Wrapped by the required lint-fuzz-registry; also runs standalone. Well under a second. | Static AST analysis only; no ordinary tests, fuzz search, or network activity. | A discovered target has no registry row, or a registry row has no discovered target. |
+| `make fuzz-corpus-scan` | The committed fuzz seed corpora contain no secret matching the gitleaks ruleset. Unlike secret-scan, the corpora are not path-allowlisted, so this genuinely inspects the seeds. | Required CI; local harvester feedback. | gitleaks; local absence warns and returns zero unless EVENER_GITLEAKS_REQUIRED=1. | A finding, or a required-tool absence under EVENER_GITLEAKS_REQUIRED=1, is nonzero. |
+
+### Other targets
+
+| Command | Summary |
+| --- | --- |
+| `make fuzz-goldens` | Regenerate the decode SNAPSHOT goldens from the current decoders. Run ONLY after an intended decoder change, then commit the diff. |
+| `make fuzz-nightly` | Run the unbounded coverage-guided search per target, bounded by a per-target time budget. Manual/nightly only — never in the gate. |
+| `make fuzz-triage` | The local, on-demand campaign + auto-triage tool: search each surface, flake-guard and dedup any crasher, and open one reviewable PR per distinct deterministic bug via the developer's local gh. |
+| `make fuzz-continuous` | The local, on-demand continuous loop: rotate over every native target with a bounded search turn per round, routing any new crasher through fuzz-triage. Runs until Ctrl-C or --total. |
+| `make fuzz-drive` | Generate real provider traffic (varied coding tasks through the evener one-shot CLI, recorders on) and harvest it into the seed corpus. Makes live, paid provider calls — run on demand, not in CI. |
+| `make fuzz-bisect` | Find the commit that introduced a saved crasher via git bisect, replaying one corpus entry per step. |
+| `make fuzz-mutation-score` | Measure detection sufficiency with gremlins: the per-package kill rate, where the surviving (LIVED) mutants are the weak-oracle worklist. Nightly/manual; needs gremlins installed. |
+| `make fuzz-ledger` | Pretty-print the triage ledger — found/fixed/quarantined counts and the open-bug list — from fuzz/state/ledger.json. |
 <!-- END GENERATED -->

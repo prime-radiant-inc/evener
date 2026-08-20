@@ -1,4 +1,4 @@
-package maketargetsdoc
+package main
 
 import "testing"
 

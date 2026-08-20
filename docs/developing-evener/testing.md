@@ -833,4 +833,22 @@ If sandboxed DNS/network blocks the live run, rerun with command escalation for 
 ## Targets
 
 <!-- BEGIN GENERATED: make targets. Edit make/testing.mk, then run `make generate`. -->
+| Command | What it proves | Trigger | Requires | Fails when |
+| --- | --- | --- | --- | --- |
+| `make test-web` | jsdom/unit-level frontend behavior, type safety, and source lint. | Local pre-merge; required CI web job. | Deterministic after Node dependencies are installed; each check owns a private process home plus temporary/XDG roots and disables Node's compile cache; no real browser, provider, or network service. | Any of the three streams is nonzero; a missing or unhealthy frontend install fails preflight. |
+| `make test-web-browser` | Headless Chrome evaluates real CSS geometry, the real Session reducer/tree, and the real Spawn staging/breakpoint path. | Required CI web job; local pre-merge on a Chrome-capable host. | Chrome/Chromium; each guard gets a private process home, temporary/XDG roots, and a private browser profile. No WebKit/Safari runner. | Any guard error, Vite failure, cleanup failure, or missing Chrome/Chromium is nonzero. |
+| `make test-dev-tooling` | Each suite is the only thing pinning its script's contract. | Final step of make merge-approval-gate, and on demand; not part of make test. | Each suite is offline and deterministic; the wave runner gives every suite its own process group and private TMPDIR. | Any suite exit nonzero, or a passing suite leaving files behind, is nonzero. |
+| `make test` | Root short-mode tests, other module tests, and frontend typecheck/Vitest/Biome all pass. | Local quick check; included by the merge gate. | Scripted/fake external boundaries for default tests; runs ZERO fuzz-family tests, even at reduced depth. WEB=0 skips the frontend stream. | Any module, frontend stream, or setup failure is nonzero. |
+| `make merge-approval-gate` | make lint, make build, ROOT_FULL=1 make test, then make test-dev-tooling all pass, in that order. | Local pre-merge/post-merge; CI keeps equivalent checks in separate named jobs. | Does not run fuzz search, race testing, provider calls, or browser guards; those have separate owners. | The first failing phase stops the gate and returns nonzero; do not infer a verdict from partial logs. |
+| `make test-race` | Data races in the non-fuzz modules surface; frontend is intentionally not duplicated. | Required CI; local diagnostic. | A race-capable Go toolchain and more CPU/memory; WEB=0, AGENT_SHARDS=0, AGENT_PARALLEL= to avoid oversubscribing few-core CI under -race's ~10x slowdown. | Any race report, test failure, or setup failure is nonzero. |
+| `make vet` | go vet diagnostics for every module, independent of the tagged lint floors. | Required CI; local diagnostic. | Deterministic Go analysis; no provider calls. | Any module's vet failure is nonzero. |
+| `make test-timing-budget` | A timing regression does not silently erode the suite's runtime wins — fail at 1.5x the checked-in budget, warn at 1.1x, plus a flat per-test ceiling. | Local/on-demand; not required CI — deliberately not part of make merge-approval-gate, since measuring durations means a second full test run. CHECK=1 enforces; bare invocation only measures and prints. | Deterministic; no provider calls. Reuses gate-surface-lib.sh, so it measures the same surface ROOT_FULL=1 make test proves. | Under CHECK=1 in a CI-shaped environment, a package over 1.5x its budget or any per-test ceiling breach is nonzero; a missing or empty budget file always exits zero. |
+| `make test-timing-budget-selftest` | The ratio bands, the per-test ceiling, a missing budget entry, an absent/empty budget file, strict-vs-warn-only policy, and --bless all compare correctly. | make test-dev-tooling wave; on demand. | Offline and deterministic; fixture rows only, no real suite run. | Any comparison diverges from its fixture's expected verdict, or the suite leaves files behind. |
+
+### Other targets
+
+| Command | Summary |
+| --- | --- |
+| `make test-short` | Alias for `make test`. |
+| `make test-rebaseline` | Reset testing-budget.json to what a clean-host run just measured. Run deliberately, on an otherwise idle box, and review the diff in the same commit as whatever change earned it — never to invent a baseline. Not part of any gate. |
 <!-- END GENERATED -->

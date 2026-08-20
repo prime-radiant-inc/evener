@@ -1,12 +1,12 @@
-// Package maketargetsdoc parses the "## " target-annotation comment blocks
-// that sit directly above rules in make/*.mk, so the doc generator and
-// `make help` share one implementation of the grammar rather than two that
-// can drift apart.
+// parse.go implements ParseFamily, the "## " target-annotation grammar that
+// the doc generator (render.go, main.go) and `make help` both build on, so
+// there is one implementation of the grammar rather than two that can drift
+// apart. The package doc comment lives in doc.go.
 //
 // The grammar is defined in
 // docs/superpowers/specs/2026-08-20-makefile-and-docs-decomposition-design.md
 // §2, and is authoritative over the summary in this file's comments.
-package maketargetsdoc
+package main
 
 import (
 	"fmt"
