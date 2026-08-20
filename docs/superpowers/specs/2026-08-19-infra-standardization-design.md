@@ -73,10 +73,13 @@ the comments in the same commit. If large, also pass
 `disable-checks-on-methods` and note the narrower rule in the PR. Delete
 `cmd/evener-docscheck` and the `lint-docs` target.
 
-**1c. Drop the `lint-gofmt` double gate.** `.golangci.yml` already enables
-the `gofmt` and `goimports` formatters, and `lint-golangci` is mandatory in
-the family list, so the standalone gofmt gate is strictly redundant. Delete
-the target.
+**1c. ~~Drop the `lint-gofmt` double gate.~~ Wrong; reversed in review.**
+The reasoning was that `.golangci.yml` already enables the `gofmt` and
+`goimports` formatters and `lint-golangci` is mandatory, so the standalone
+gate is redundant. It is not: golangci-lint formats only the files it
+compiles, and the tag-free run compiles none of the ~250 `//go:build
+evenerfuzz` / `eval` sources. `lint-gofmt` (`gofmt -l` over every tracked
+`.go` file) stays. See "Corrections after review".
 
 **1d. Keep `evener-internalcheck`.** No standard linter checks "exported API
 must not name internal types." It stays as-is.
@@ -277,6 +280,49 @@ commit catches strays.
 - Coverage: run the new `make coverage-floor` and confirm it reproduces
   the union numbers the deleted tracks reported (spot-check two modules).
 - Final: full local `make merge-approval-gate`, then CI green on the PR.
+
+## Corrections after review
+
+The design review of the implementation (PR #278) rejected it and found
+four defects and three enforcement losses this spec did not anticipate.
+Recorded here so the spec stops authorizing decisions the implementation
+had to reverse.
+
+**Four defects, all execution-proven by the reviewer:**
+
+1. A 3.9 MB compiled `evener-fuzzregistry` was committed. Dropped by
+   rewriting the branch; `.gitignore` now lists every `cmd/` binary.
+2. `binaries.yml`'s snapshot job lost `actions/checkout`, so its `git` and
+   `gh` steps would have run in a workspace with no repository. It fires
+   only on a push to main, which is why PR CI could not see it. §8's
+   "`workflow_test.go` is deleted, not rewritten" was wrong to that extent:
+   two slim tests now pin the shape CI structurally cannot exercise.
+3. §10's checksum verification failed open. `grep … | sha256sum -c -` reports
+   the pipeline's last status, macOS `/sbin/sha256sum` exits 0 on empty
+   input, and the published `checksums.txt` names artifacts as `dist/<name>`,
+   which the pattern never matched — so a tampered archive installed with
+   exit 0. Fixed on both sides: the lookup accepts either name form and
+   demands exactly one match before the checksum tool runs.
+4. §4's `make dist` never worked: `{{ .Env.BUILD_CHANNEL }}` under
+   goreleaser's `missingkey=error` is a hard failure when the variable is
+   unset, which is the local case. Now `envOrDefault`.
+
+**Three enforcement losses, none of them on §5's accepted-loss list:**
+
+5. `server/appwire_*.go`'s camelCase regime. §1a assumed the carve-outs were
+   all package-shaped; that path is file-shaped inside a snake_case package,
+   and tagliatelle's overrides are per-package only. `.golangci-appwire.yml`
+   is the second half of the split.
+6. The `fuzz` module was outside `lint-golangci`'s module list, so 29
+   struct-tag sites went ungated. §1a assumed golangci reached everything
+   the filesystem-walking `evener-namingcheck` did; it reaches only what the
+   module list names.
+7. Build-tagged sources are compiled by no lint pass, so neither tagliatelle
+   nor the gofmt formatter saw them. Each tag floor gains a tagliatelle run
+   under its tag, and 1c's deletion is reversed.
+
+**And one gap in §5:** the consolidated ratchet had no below-floor case, so
+`p < f - tol` was unproven. Restored, with the tolerance band.
 
 ## Risks and fidelity notes
 
