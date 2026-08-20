@@ -87,12 +87,18 @@ func recursiveDeleteCommands(line, nestOpen string) []string {
 // holding a recursive delete is what deleted a checkout in kata 5hs2 — so it
 // must not read as an ordinary word.
 //
+// Two more glued spellings reach rm with no space at all: a bare subshell
+// with nothing between the paren and the command, `(rm -rf "$x")`, and rm
+// backgrounded with nothing between it and the `&`, `sleep 1 &rm -rf $x`.
+// (PR #276 review: the pre-union scripts scanner's character-boundary check
+// already covered both — the field-based rewrite lost them until now.)
+//
 // Two indirect spellings reach rm without naming it directly. `$(RM)` is
 // defined by GNU make itself (as `rm -f`) and needs no declaration here to
 // work, and any absolute path ends in `/rm`. Both are ordinary things to
 // write, so both have to count.
 func namesRM(field string) bool {
-	word := strings.Trim(field, `@-+'"`)
+	word := strings.Trim(field, `@-+'"(&`)
 	return word == "rm" || word == "$(RM)" || word == "${RM}" || strings.HasSuffix(word, "/rm")
 }
 
@@ -232,6 +238,18 @@ func TestRecursiveDeletePredicateCatchesBothLineages(t *testing.T) {
 		{"delete hidden behind &&", `echo start && rm -rf $x`, shellOpen},
 		{"delete hidden behind ||", `mkdir -p "$x" || rm -rf $x`, shellOpen},
 		{"delete hidden behind ;", `cd /tmp; rm -rf $x`, shellOpen},
+		// PR #276 review finding: the old scripts scanner's boundary-char set
+		// included '(' and '&' — a bare subshell with no space after the
+		// paren, and rm glued directly to a backgrounding '&', both still
+		// invoked rm. namesRM's Trim-cutset approach dropped both when the
+		// scripts audit moved onto it.
+		{"bare subshell with no space after the paren", `(rm -rf "$SOME_VAR")`, shellOpen},
+		{"rm glued to a backgrounding &", `sleep 1 &rm -rf $x`, shellOpen},
+		// PR #276 review finding: real, but previously unproven by any
+		// committed poison case. strings.Fields splits on any whitespace,
+		// including a tab, so `rm` glued to its flags by a tab rather than a
+		// space is still its own field.
+		{"rm glued to its flags by a tab", "rm\t-rf $x", shellOpen},
 	}
 	for _, tc := range flaggedCases {
 		t.Run(tc.name, func(t *testing.T) {
