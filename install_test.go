@@ -40,13 +40,7 @@ func TestWebPreflightBootstrapsMissingFrontendDependencies(t *testing.T) {
 		t.Fatalf("mkdir frontend: %v", err)
 	}
 
-	makefile, err := os.ReadFile(filepath.Join(repoRoot, "Makefile"))
-	if err != nil {
-		t.Fatalf("read Makefile: %v", err)
-	}
-	if err := os.WriteFile(filepath.Join(fixtureRoot, "Makefile"), makefile, 0o644); err != nil {
-		t.Fatalf("write Makefile: %v", err)
-	}
+	copyMakefileSources(t, repoRoot, fixtureRoot)
 	copyRepositoryFile(t, repoRoot, fixtureRoot, "scripts/web/web-preflight.sh", 0o755)
 	if err := os.WriteFile(filepath.Join(frontendDir, "package-lock.json"), []byte("{}\n"), 0o644); err != nil {
 		t.Fatalf("write package-lock.json: %v", err)

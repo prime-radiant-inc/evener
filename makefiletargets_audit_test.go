@@ -27,6 +27,18 @@ func makefileSourcePaths(t testing.TB) []string {
 	return append(paths, family...)
 }
 
+// copyMakefileSources copies the root Makefile and every make/*.mk family
+// file from repoRoot into fixtureRoot, so a fixture that runs `make
+// <target>` reaches the split rules the anchored include pulls in. Copying
+// only "Makefile" reaches zero rules post-split — TestRootMakefileHasNoRules
+// keeps the root file rule-free — and `make <target>` there does nothing.
+func copyMakefileSources(t *testing.T, repoRoot, fixtureRoot string) {
+	t.Helper()
+	for _, rel := range makefileSourcePaths(t) {
+		copyRepositoryFile(t, repoRoot, fixtureRoot, rel, 0o644)
+	}
+}
+
 // TestMakefileSourcePathsIncludesRootAndFamilies pins the shape every other
 // Makefile-reading test relies on: the root file first, then the family
 // files in sorted order, so a caller can always assume index 0 is "Makefile".
@@ -267,5 +279,36 @@ func TestEveryRuleHasARecipe(t *testing.T) {
 		t.Fatalf("these rules have no recipe, so `make <target>` prints "+
 			"\"Nothing to be done\" and exits 0 while checking nothing:\n  %s",
 			strings.Join(empty, "\n  "))
+	}
+}
+
+// TestRootMakefileHasNoRules keeps every rule in a family file. The generator
+// reads make/*.mk only, so a rule left in the root would be annotated by the
+// annotation audit and then have nowhere to be published — documented in the
+// Makefile and invisible in the docs.
+func TestRootMakefileHasNoRules(t *testing.T) {
+	t.Parallel()
+	raw, err := os.ReadFile("Makefile")
+	if err != nil {
+		t.Fatalf("reading Makefile: %v", err)
+	}
+	var found []string
+	for line := range strings.Lines(string(raw)) {
+		line = strings.TrimRight(line, "\n")
+		if line == "" || line[0] == '\t' || line[0] == '#' || line[0] == ' ' {
+			continue
+		}
+		name, rest, ok := strings.Cut(line, ":")
+		if !ok || strings.HasPrefix(rest, "=") || strings.ContainsAny(name, " \t") || name == "" {
+			continue
+		}
+		if strings.HasPrefix(name, ".") {
+			continue
+		}
+		found = append(found, name)
+	}
+	if len(found) > 0 {
+		t.Fatalf("these rules are in the root Makefile; move them into a make/*.mk "+
+			"family file so the generator can publish them:\n  %s", strings.Join(found, "\n  "))
 	}
 }

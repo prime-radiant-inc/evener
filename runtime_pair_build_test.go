@@ -880,7 +880,7 @@ func newBuildWebFixture(t *testing.T) runtimeBuildFixture {
 	t.Helper()
 	fixture := newRuntimeBuildFixture(t)
 	installFrontendToolchainStubs(t, fixture)
-	copyRepositoryFile(t, fixture.repoRoot, fixture.root, "Makefile", 0o644)
+	copyMakefileSources(t, fixture.repoRoot, fixture.root)
 	copyRepositoryFile(t, fixture.repoRoot, fixture.root, "scripts/ops/build-runtime-pair.sh", 0o755)
 	copyRepositoryFile(t, fixture.repoRoot, fixture.root, "scripts/lib/private-go-home.sh", 0o644)
 	copyRepositoryFile(t, fixture.repoRoot, fixture.root, "scripts/lib/scratch-lib.sh", 0o644)
