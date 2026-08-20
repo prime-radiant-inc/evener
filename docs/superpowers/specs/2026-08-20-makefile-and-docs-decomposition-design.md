@@ -513,3 +513,65 @@ annotation described a `.build` cleanup the recipe does not do;
 rule for target-specific variable lines, for comments separated from their rule
 by an intervening block, or for multi-line summaries; the §7 counts are
 referring files, not occurrences.
+
+## Corrections during execution
+
+The design survived implementation largely intact, but execution found six
+defects in it. Each is recorded here because the sections above still read as
+originally written.
+
+1. **§3's table was missing a Summary column.** It fixed five columns —
+   `Command | What it proves | Trigger | Requires | Fails when` — while §6 said
+   "Scope collapses into the summary". Together those meant a gate target's
+   `##` summary was required by the audit, printed by `make help`, published in
+   no doc, and therefore gated by nothing: 36 of 65 targets. Proven by planting
+   a mutated summary on `coverage-floor` and watching `make lint` pass on an
+   empty diff while `make help` printed the planted text. The wide table is now
+   `Command | Summary | What it proves | Trigger | Requires | Fails when`.
+   Accepted cost: on single-fact gates such as `lint-naming`, `proves` mildly
+   restates the summary.
+
+2. **`lint-generated` must diff against `HEAD`, not the index.** `git diff
+   --exit-code -- <paths>` compares the working tree to the index, so a
+   regeneration that is staged but not committed passes the gate while `HEAD`
+   is stale. Now `git diff --exit-code HEAD -- <paths>`. Measured consequence,
+   correcting an overclaim made when this was ruled: HEAD-diff is strictly
+   stricter in both directions and relaxes nothing — `git add` simply stops
+   silencing it. The trade is that `make lint` is now red on any uncommitted
+   change to those eight paths, including hand-written prose outside the marker
+   regions, because the diff is path-scoped rather than region-scoped.
+
+3. **`go generate` runs a directive from its own package's directory.** Wiring
+   `go generate ./internal/maketargetsdoc/...` would have run the generator with
+   root `internal/maketargetsdoc`, where the `make/*.mk` glob matches nothing;
+   `filepath.Glob` returns `(nil, nil)`, so it would have regenerated nothing
+   and exited 0, and `lint-generated` would have diffed six unchanged docs
+   forever. The directive carries `-root ../..` and the generator hard-errors on
+   an empty glob.
+
+4. **§2 never mentions `.PHONY`.** `.PHONY: a b c` at column zero is
+   syntactically indistinguishable from a rule line and every family file opens
+   with one, so the parser must special-case dot-directives.
+
+5. **A plain `#` comment does not break annotation contiguity.** §2 says "any
+   non-comment line", and a `#` line is a comment — but the first parser
+   rejected it, which would have failed every target whose existing `#`
+   rationale sits directly above its rule. Convention, now standardised: the
+   `##` block goes last, immediately above the rule, below any surviving `#`
+   narrative. Related: summaries must be capitalised, because a summary opening
+   with a lowercase word immediately followed by `: ` is read as a field attempt
+   and rejected as an unknown key.
+
+6. **Decision 6's historical exclusion omitted `docs/superpowers/research/`.**
+   It holds fourteen dated evidence records of the same character as
+   `plans/`, `notes/` and `proofs/`. Three were wrongly rewritten and reverted.
+   The exclusion is `(plans|notes|proofs|specs|research)`.
+
+Two commit-plan deviations, both deliberate:
+
+- **The gate matrix survives commit 2 and is retired in commit 3**, the same
+  commit that generates its replacement. Dissolving it earlier would leave the
+  repo with no gate reference at all for the length of one commit.
+- **`make/repo.mk` is annotated in the `make help` task, not the annotation
+  task**, so that the two tasks — run concurrently in separate worktrees —
+  could not collide on one file.
