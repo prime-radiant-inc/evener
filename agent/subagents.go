@@ -597,6 +597,34 @@ func (s *Session) prepareStableDelegateRun(ctx context.Context, descriptor deleg
 	)
 }
 
+// subagentConfigFromFrozenDescriptor rebuilds a stable delegate's SessionConfig
+// from its frozen descriptor snapshot, re-taking every process-scoped field
+// from the LIVE parent. The snapshot answers "what was this delegate asked to
+// be"; anything about the process now hosting it — paths, credentials, clocks,
+// test wiring, process lifetime — belongs to the restorer, and inheriting it
+// from the freeze-time snapshot would carry one process's answer into another
+// (a one-shot run's descriptor restored under serve, or the reverse).
+func subagentConfigFromFrozenDescriptor(frozenConfig schema.ConfigSnapshot, parentCfg SessionConfig) SessionConfig {
+	subCfg := configFromSnapshot(frozenConfig.Clone())
+	subCfg.Project = parentCfg.Project
+	subCfg.LLMRetryPolicy = parentCfg.LLMRetryPolicy
+	subCfg.LLMSleep = parentCfg.LLMSleep
+	subCfg.clock = parentCfg.clock
+	subCfg.StateDir = parentCfg.StateDir
+	subCfg.AcquireSessionOwnership = parentCfg.AcquireSessionOwnership
+	subCfg.ExportATIFPath = parentCfg.ExportATIFPath
+	subCfg.ExportATIFProviderHandles = parentCfg.ExportATIFProviderHandles
+	subCfg.ResolveProfile = parentCfg.ResolveProfile
+	subCfg.testOnly = parentCfg.testOnly
+	subCfg.TurnEndsProcess = parentCfg.TurnEndsProcess
+	subCfg.ForceRealIO = parentCfg.ForceRealIO
+	subCfg.spawn.descendantEvent = parentCfg.spawn.descendantEvent
+	subCfg.spawn.driveCounter = parentCfg.spawn.driveCounter
+	subCfg.spawn.treeCounter = parentCfg.spawn.treeCounter
+	subCfg.spawn.jobActivityClock = parentCfg.spawn.jobActivityClock
+	return subCfg
+}
+
 func (s *Session) prepareSubagentRunFromSelection(
 	ctx context.Context,
 	task, workingDir string,
@@ -619,22 +647,7 @@ func (s *Session) prepareSubagentRunFromSelection(
 
 	subCfg := parentCfg
 	if frozen != nil {
-		subCfg = configFromSnapshot(frozen.Config.Clone())
-		subCfg.Project = parentCfg.Project
-		subCfg.LLMRetryPolicy = parentCfg.LLMRetryPolicy
-		subCfg.LLMSleep = parentCfg.LLMSleep
-		subCfg.clock = parentCfg.clock
-		subCfg.StateDir = parentCfg.StateDir
-		subCfg.AcquireSessionOwnership = parentCfg.AcquireSessionOwnership
-		subCfg.ExportATIFPath = parentCfg.ExportATIFPath
-		subCfg.ExportATIFProviderHandles = parentCfg.ExportATIFProviderHandles
-		subCfg.ResolveProfile = parentCfg.ResolveProfile
-		subCfg.testOnly = parentCfg.testOnly
-		subCfg.ForceRealIO = parentCfg.ForceRealIO
-		subCfg.spawn.descendantEvent = parentCfg.spawn.descendantEvent
-		subCfg.spawn.driveCounter = parentCfg.spawn.driveCounter
-		subCfg.spawn.treeCounter = parentCfg.spawn.treeCounter
-		subCfg.spawn.jobActivityClock = parentCfg.spawn.jobActivityClock
+		subCfg = subagentConfigFromFrozenDescriptor(frozen.Config, parentCfg)
 	}
 	subCfg.artifactStore = s.artifactStore
 	subCfg.MCPConfigFiles = nil

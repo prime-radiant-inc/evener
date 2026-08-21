@@ -1319,6 +1319,7 @@ func (runtime delegateRuntime) restoreIdle(started delegateStartCommit) (*subage
 		LLMSleep:                s.cfg.LLMSleep,
 		clock:                   s.clock,
 		testOnly:                s.cfg.testOnly,
+		TurnEndsProcess:         s.cfg.TurnEndsProcess,
 		ForceRealIO:             s.cfg.ForceRealIO,
 		artifactStore:           s.artifactStore,
 		deferRestoreSideEffects: true,
