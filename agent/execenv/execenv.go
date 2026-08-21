@@ -38,6 +38,18 @@ type DetachedExecutor interface {
 	DetachCommand(ctx context.Context, command, workingDir string, envVars map[string]string) (DetachedProcess, error)
 }
 
+// DetachSupportReporter is an optional execution-environment capability:
+// answering, before anything is launched, whether DetachCommand can actually
+// disown a process here. It exists so a caller can tell a model whether
+// mode:"detached" is available instead of recommending a call that fails —
+// notably under a sandbox, where a provisioned wrapper refuses detach outright.
+// Separate from DetachedExecutor, like the other optional capabilities, so
+// existing implementers are unaffected; an environment that does not report is
+// treated as unable to detach.
+type DetachSupportReporter interface {
+	DetachSupported() bool
+}
+
 // StreamingExecutor is an optional capability: a long-running command whose
 // output streams to out as it arrives, returning a handle to wait on and signal.
 // It is separate from ExecutionEnvironment so existing implementers (incl. test

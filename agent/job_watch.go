@@ -4571,6 +4571,24 @@ func (jm *jobManager) kick() {
 	}
 }
 
+// hasLiveWatchOnTarget reports whether any ARMED watch targets jobID. The
+// undisposed-background-job announcement reads it directly rather than
+// inferring "watched" from watch frames in the notification queue: on a long
+// progress interval the queue is empty between frames, and inferring from it
+// would re-announce — and eventually kill — a job the model explicitly said it
+// was waiting on. A cleared watch (model-cleared, or the delivery-budget
+// auto-clear) leaves this map, so the job counts as undisposed again.
+func (jm *jobManager) hasLiveWatchOnTarget(jobID string) bool {
+	jm.mu.Lock()
+	defer jm.mu.Unlock()
+	for key := range jm.watches {
+		if key.Target == jobID {
+			return true
+		}
+	}
+	return false
+}
+
 // hasPendingWatchSends reports whether any live or terminal-flush watch config
 // holds undelivered pending sends. Drain-loop tails use it to decide whether a
 // wake needs a drain pass.
