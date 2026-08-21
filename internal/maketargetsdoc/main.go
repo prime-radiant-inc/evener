@@ -10,7 +10,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"regexp"
 	"sort"
 	"strings"
 )
@@ -53,29 +52,49 @@ func main() {
 	}
 }
 
-// globFamilyFiles returns every make/*.mk family file under root, sorted by
-// path — the shared file-discovery step both `generate` (doc regeneration)
-// and `loadFamilies` (help.go, `-mode help`) build on, so there is one
-// definition of "which files are family files" rather than two that can
-// drift apart.
+// filesWithSuffix returns literal directory entries carrying suffix, sorted by
+// path. Reading the directory instead of globbing a full path keeps wildcard
+// characters in a checkout's own name from changing what gets discovered.
+func filesWithSuffix(dir, suffix string) ([]string, error) {
+	entries, err := os.ReadDir(dir)
+	if os.IsNotExist(err) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	var paths []string
+	for _, entry := range entries {
+		if !strings.HasSuffix(entry.Name(), suffix) {
+			continue
+		}
+		paths = append(paths, filepath.Join(dir, entry.Name()))
+	}
+	sort.Strings(paths)
+	return paths, nil
+}
+
+// familyFiles returns every literal make/*.mk family file under root,
+// sorted by path — the shared file-discovery step both `generate` (doc
+// regeneration) and `loadFamilies` (help.go, `-mode help`) build on, so there
+// is one definition of "which files are family files" rather than two that
+// can drift apart.
 //
-// Matching nothing is an error, not an empty result. filepath.Glob returns
-// (nil, nil) for a pattern that matches no file, so a wrong root — the
-// generator run from its own package directory, or from anywhere but the
-// repo root — would otherwise regenerate nothing, write nothing, and exit
-// zero. lint-generated would then diff six unchanged docs and report green
-// forever while checking nothing, which is the exact hollow-gate failure
-// this generator exists to close.
-func globFamilyFiles(root string) ([]string, error) {
-	pattern := filepath.Join(root, "make", "*.mk")
-	mkPaths, err := filepath.Glob(pattern)
+// Matching nothing is an error, not an empty result. A wrong root — the
+// generator run from its own package directory, or from anywhere but the repo
+// root — would otherwise regenerate nothing, write nothing, and exit zero.
+// lint-generated would then diff six unchanged docs and report green forever
+// while checking nothing, which is the exact hollow-gate failure this
+// generator exists to close.
+func familyFiles(root string) ([]string, error) {
+	dir := filepath.Join(root, "make")
+	mkPaths, err := filesWithSuffix(dir, ".mk")
 	if err != nil {
 		return nil, err
 	}
 	if len(mkPaths) == 0 {
-		return nil, fmt.Errorf("%s matched no family files; run this from the repository root or pass -root", pattern)
+		return nil, fmt.Errorf("%s matched no family files; run this from the repository root or pass -root", filepath.Join(dir, "*.mk"))
 	}
-	sort.Strings(mkPaths)
 	return mkPaths, nil
 }
 
@@ -90,7 +109,7 @@ func globFamilyFiles(root string) ([]string, error) {
 // naming a .mk that does not exist — is collected and returned together;
 // generate returns nil only if nothing went wrong anywhere.
 func generate(root string) error {
-	mkPaths, err := globFamilyFiles(root)
+	mkPaths, err := familyFiles(root)
 	if err != nil {
 		return err
 	}
@@ -149,17 +168,13 @@ func generateOne(docDir, mkPath, stem string) error {
 	return os.WriteFile(docPath, newDoc, 0o644)
 }
 
-// regionFamilyPattern extracts the family name a doc's GENERATED marker
-// names — "linting" from "Edit make/linting.mk, then run ...".
-var regionFamilyPattern = regexp.MustCompile(`<!-- BEGIN GENERATED: make targets\. Edit make/([A-Za-z0-9_-]+)\.mk, then run`)
-
 // checkOrphanRegions reverses generateOne's direction: every doc under
 // docDir that carries a GENERATED marker must name a family present in
 // stems (a make/*.mk file that actually exists), so a stale or misspelled
 // marker left behind by a rename or deletion is caught rather than quietly
 // generating nothing forever.
 func checkOrphanRegions(docDir string, stems map[string]bool) []error {
-	docPaths, err := filepath.Glob(filepath.Join(docDir, "*.md"))
+	docPaths, err := filesWithSuffix(docDir, ".md")
 	if err != nil {
 		return []error{err}
 	}
@@ -171,13 +186,25 @@ func checkOrphanRegions(docDir string, stems map[string]bool) []error {
 			errs = append(errs, err)
 			continue
 		}
-		m := regionFamilyPattern.FindSubmatch(docSrc)
-		if m == nil {
+		families := generatedRegionFamilies(docSrc)
+		markerErr := validateGeneratedRegionMarkers(docSrc)
+		if len(families) == 0 {
+			if markerErr != nil {
+				errs = append(errs, fmt.Errorf("%s: %w", docPath, markerErr))
+			}
 			continue // no GENERATED region in this doc at all: not every doc has one.
 		}
-		family := string(m[1])
-		if !stems[family] {
-			errs = append(errs, fmt.Errorf("%s: marked region references make/%s.mk, which does not exist", docPath, family))
+		for _, family := range families {
+			if !stems[family] {
+				errs = append(errs, fmt.Errorf("%s: marked region references make/%s.mk, which does not exist", docPath, family))
+				continue
+			}
+			if canonicalDoc, ok := stemToDoc[family]; ok && filepath.Base(docPath) != canonicalDoc {
+				errs = append(errs, fmt.Errorf("%s: marked region for make/%s.mk belongs in %s, not %s", docPath, family, canonicalDoc, filepath.Base(docPath)))
+			}
+		}
+		if markerErr != nil {
+			errs = append(errs, fmt.Errorf("%s: %w", docPath, markerErr))
 		}
 	}
 	return errs

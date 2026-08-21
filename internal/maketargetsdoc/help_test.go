@@ -60,7 +60,7 @@ func TestRenderHelpEmptyFamiliesIsEmptyString(t *testing.T) {
 }
 
 // TestLoadFamiliesGroupsBySortedStem: loadFamilies walks make/*.mk the same
-// way generate does (globFamilyFiles), so the returned families come back
+// way generate does (familyFiles), so the returned families come back
 // in sorted-stem order regardless of the order the fixture files were
 // written in.
 func TestLoadFamiliesGroupsBySortedStem(t *testing.T) {

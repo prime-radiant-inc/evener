@@ -21,7 +21,7 @@ type family struct {
 	Targets []Target
 }
 
-// loadFamilies parses every make/*.mk file under root (via globFamilyFiles,
+// loadFamilies parses every make/*.mk file under root (via familyFiles,
 // the same file-discovery generate uses), returning one family per file in
 // sorted-stem order.
 //
@@ -31,7 +31,7 @@ type family struct {
 // so one bad annotation does not hide `make help`'s output for everything
 // else.
 func loadFamilies(root string) ([]family, error) {
-	mkPaths, err := globFamilyFiles(root)
+	mkPaths, err := familyFiles(root)
 	if err != nil {
 		return nil, err
 	}

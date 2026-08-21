@@ -154,6 +154,29 @@ func TestRenderEscapesPipeInCellText(t *testing.T) {
 	}
 }
 
+// TestRenderEncodesTargetNamesInsideCommandCells keeps valid Make target names
+// from splitting a Markdown table or terminating its inline-code span.
+func TestRenderEncodesTargetNamesInsideCommandCells(t *testing.T) {
+	tests := map[string]struct {
+		name        string
+		wantCommand string
+	}{
+		"pipe":     {name: "build|test", wantCommand: "`make build\\|test`"},
+		"backtick": {name: "build`test", wantCommand: "``make build`test``"},
+	}
+	for name, tt := range tests {
+		t.Run(name, func(t *testing.T) {
+			got := Render([]Target{{Name: tt.name, Summary: "Run it."}})
+			want := "| Command | Summary |\n" +
+				"| --- | --- |\n" +
+				"| " + tt.wantCommand + " | Run it. |"
+			if got != want {
+				t.Fatalf("got:\n%s\nwant:\n%s", got, want)
+			}
+		})
+	}
+}
+
 // TestRenderEmptyTargetsIsEmptyString: no real family is ever empty, but
 // Render should not panic or emit stray headings for a zero-target input.
 func TestRenderEmptyTargetsIsEmptyString(t *testing.T) {
@@ -217,6 +240,63 @@ func TestRewriteRegionReplacingExistingBodyIsIdempotentInputShape(t *testing.T) 
 	want := fmt.Appendf(nil, testDocTemplate, "coverage", "fresh body\n")
 	if !bytes.Equal(got, want) {
 		t.Fatalf("got:\n%s\nwant:\n%s", got, want)
+	}
+}
+
+// TestRewriteRegionMarkerTextInsideBodyIsIdempotent keeps annotation prose
+// from masquerading as the structural END marker. Rendered table rows may
+// contain the literal marker text, but only a standalone marker line closes
+// the generated region.
+func TestRewriteRegionMarkerTextInsideBodyIsIdempotent(t *testing.T) {
+	doc := fmt.Appendf(nil, testDocTemplate, "building", "")
+	body := "| `make build` | Text <!-- END GENERATED --> tail. |"
+
+	first, err := RewriteRegion(doc, "building", body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := RewriteRegion(first, "building", body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(first, second) {
+		t.Fatalf("rewrite changed on the second run:\nfirst:\n%s\nsecond:\n%s", first, second)
+	}
+}
+
+// TestRewriteRegionRejectsMultipleGeneratedRegions prevents a second stale
+// region from surviving every regeneration. Each family doc owns exactly one
+// generated region, so another BEGIN/END pair is malformed input.
+func TestRewriteRegionRejectsMultipleGeneratedRegions(t *testing.T) {
+	doc := fmt.Appendf(nil, testDocTemplate, "building", "")
+	doc = append(doc, fmt.Appendf(nil, testDocTemplate, "ghost", "")...)
+	if _, err := RewriteRegion(doc, "building", "body"); err == nil {
+		t.Fatal("expected an error for a doc with multiple generated regions")
+	}
+}
+
+// TestRewriteRegionRejectsUnpairedEndMarker keeps a stray delimiter from
+// surviving outside the one structurally paired generated region.
+func TestRewriteRegionRejectsUnpairedEndMarker(t *testing.T) {
+	doc := fmt.Appendf(nil, testDocTemplate, "building", "")
+	doc = append(doc, []byte(endMarker+"\n")...)
+	if _, err := RewriteRegion(doc, "building", "body"); err == nil {
+		t.Fatal("expected an error for an unpaired END marker")
+	}
+}
+
+// TestRewriteRegionPreservesCRLF lets the generator run in a checkout whose
+// Markdown files were converted to CRLF without rewriting the hand-written
+// document or introducing mixed line endings inside the generated region.
+func TestRewriteRegionPreservesCRLF(t *testing.T) {
+	doc := bytes.ReplaceAll(fmt.Appendf(nil, testDocTemplate, "building", ""), []byte("\n"), []byte("\r\n"))
+	got, err := RewriteRegion(doc, "building", "first\nsecond")
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := bytes.ReplaceAll(fmt.Appendf(nil, testDocTemplate, "building", "first\nsecond\n"), []byte("\n"), []byte("\r\n"))
+	if !bytes.Equal(got, want) {
+		t.Fatalf("got:\n%q\nwant:\n%q", got, want)
 	}
 }
 
