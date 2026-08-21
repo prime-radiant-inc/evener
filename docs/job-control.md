@@ -253,15 +253,15 @@ Canonical foreground shape for ordinary commands:
 }
 ```
 
-Shell defaults to `mode="foreground"` because most shell calls are short and decision-producing. It waits up to the session command timeout (120s standard), then promotes the command to a durable background job if it is still running. Set `mode="background"` to launch-and-return immediately for deliberate background work such as a dev server or a long command the agent should not wait on. Set `mode="detached"` to immediately disown a process; it returns only a PID and cannot be discovered or controlled through job tools.
+Shell defaults to `mode="foreground"` because most shell calls are short and decision-producing. It waits up to the session command timeout (120s standard), then promotes the command to a durable background job if it is still running. Set `mode="background"` to launch-and-return immediately for deliberate background work that terminates on its own, such as a long build or test run the agent should not wait on inline. A background job is session-owned and dies with the session — a server or any other process that must keep running belongs in `mode="detached"`, which immediately disowns the process; it returns only a PID and cannot be discovered or controlled through job tools.
 
 Launch-and-return (immediate background) shape:
 
 ```json
 {
-  "command": "npm run dev",
+  "command": "npm test",
   "mode": "background",
-  "description": "start dev server"
+  "description": "run the test suite"
 }
 ```
 
