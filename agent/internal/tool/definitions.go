@@ -182,7 +182,8 @@ func DefDelegateSend() llm.ToolDefinition {
 	}
 }
 
-// DefJobWatch defines the root-only job_watch tool. eventKinds are the
+// DefJobWatch defines the job_watch tool, available to any session that can
+// run jobs; cross-session sources authorize themselves. eventKinds are the
 // model-facing session/job event-kind names available this session; they are
 // interpolated into the description so the model can discover them (spec §5.11).
 func DefJobWatch(eventKinds []string) llm.ToolDefinition {

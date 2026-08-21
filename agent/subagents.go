@@ -71,7 +71,7 @@ delegate's result before relying on it.
 
 Your job is to complete the task and report your findings.`
 
-var rootOnlyJobPresenceTools = []string{"delegate", "job_watch"}
+var rootOnlyJobPresenceTools = []string{"delegate"}
 
 // rootOnlyWorktreeTools are worktree lifecycle tools reserved for the root
 // session. Delegates receive worktree isolation via delegate(isolation:"worktree"),
