@@ -40,7 +40,7 @@ func TestAgentToServerDetailedStatus_DelegatesLossless(t *testing.T) {
 	in := agent.DelegateStatusInfo{
 		DelegateID: "dlg_bridge", OwnerSessionID: "owner", RootSessionID: "root", ChildSessionID: "child", TranscriptRef: "local:child",
 		ParentDelegateID: "dlg_parent", Type: "delegate", Lifecycle: "idle", Phase: "idle", Status: "idle", Outcome: "exhausted",
-		Reason: "tool_round_budget_exhausted", Terminal: true, Resumable: true, ProjectionRevision: 9,
+		Reason: "tool_round_budget_exhausted", Terminal: true, Resumable: true, NeedsAttention: true, ProjectionRevision: 9,
 		Task: "inspect", Description: "inspect carefully", AgentType: "explorer", RequestedModel: "openai/gpt-5",
 		ResolvedProfileID: "openai", ResolvedModel: "gpt-5", Model: "gpt-5", ReasoningEffort: "high",
 		OriginTurnID: "turn", OriginToolCallID: "call", OriginItemID: "item", RunStartedAt: "start", RunEndedAt: "end", LatestActivityAt: "latest",
@@ -57,7 +57,7 @@ func TestAgentToServerDetailedStatus_DelegatesLossless(t *testing.T) {
 	want := server.DelegateStatusInfo{
 		DelegateID: in.DelegateID, OwnerSessionID: in.OwnerSessionID, RootSessionID: in.RootSessionID, ChildSessionID: in.ChildSessionID, TranscriptRef: in.TranscriptRef,
 		ParentDelegateID: in.ParentDelegateID, Type: in.Type, Lifecycle: in.Lifecycle, Phase: in.Phase, Status: in.Status, Outcome: in.Outcome,
-		Reason: in.Reason, Terminal: in.Terminal, Resumable: in.Resumable, NotResumableReason: in.NotResumableReason, ProjectionRevision: in.ProjectionRevision,
+		Reason: in.Reason, Terminal: in.Terminal, Resumable: in.Resumable, NeedsAttention: in.NeedsAttention, NotResumableReason: in.NotResumableReason, ProjectionRevision: in.ProjectionRevision,
 		Task: in.Task, Description: in.Description, AgentType: in.AgentType, RequestedModel: in.RequestedModel, ResolvedProfileID: in.ResolvedProfileID,
 		ResolvedModel: in.ResolvedModel, Model: in.Model, ReasoningEffort: in.ReasoningEffort, OriginTurnID: in.OriginTurnID,
 		OriginToolCallID: in.OriginToolCallID, OriginItemID: in.OriginItemID, RunStartedAt: in.RunStartedAt, RunEndedAt: in.RunEndedAt,

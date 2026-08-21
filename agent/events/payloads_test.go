@@ -38,7 +38,7 @@ func TestDelegateUpdatedDataJSONRoundTrip(t *testing.T) {
 	in := DelegateUpdatedData{
 		DelegateID: "dlg_1", OwnerSessionID: "owner", RootSessionID: "root", ChildSessionID: "child",
 		TranscriptRef: "local:child", ParentDelegateID: "dlg_parent", Type: "delegate", Lifecycle: "idle", Phase: "idle", Status: "idle",
-		Resumable: true, ProjectionRevision: 9, Message: json.RawMessage("null"), StructuredResult: json.RawMessage("null"),
+		Resumable: true, NeedsAttention: true, ProjectionRevision: 9, Message: json.RawMessage("null"), StructuredResult: json.RawMessage("null"),
 		StructuredValid: &valid, StructuredReason: "valid null", ExhaustionBudget: "max_tool_rounds_per_input", ExhaustionLimit: 4,
 		ExhaustionResumable: &exhaustionResumable, RunningForMS: &runningForMS, Warnings: []string{"warning"}, Diagnostics: []string{"diagnostic"},
 		Usage:    &DelegateUsageData{InputTokens: 3, OutputTokens: 2, CacheReadTokens: 1, TotalTokens: 5},
@@ -48,7 +48,7 @@ func TestDelegateUpdatedDataJSONRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatalf("marshal DelegateUpdatedData: %v", err)
 	}
-	for _, want := range []string{`"message":null`, `"structured_result":null`, `"projection_revision":9`, `"parent_delegate_id":"dlg_parent"`} {
+	for _, want := range []string{`"message":null`, `"structured_result":null`, `"needs_attention":true`, `"projection_revision":9`, `"parent_delegate_id":"dlg_parent"`} {
 		if !strings.Contains(string(raw), want) {
 			t.Fatalf("DelegateUpdatedData JSON %s missing %s", raw, want)
 		}
@@ -60,7 +60,7 @@ func TestDelegateUpdatedDataJSONRoundTrip(t *testing.T) {
 	if err := json.Unmarshal(raw, &out); err != nil {
 		t.Fatalf("unmarshal DelegateUpdatedData: %v", err)
 	}
-	if out.DelegateID != in.DelegateID || out.ProjectionRevision != in.ProjectionRevision || string(out.Message) != "null" || string(out.StructuredResult) != "null" ||
+	if out.DelegateID != in.DelegateID || !out.NeedsAttention || out.ProjectionRevision != in.ProjectionRevision || string(out.Message) != "null" || string(out.StructuredResult) != "null" ||
 		out.StructuredValid == nil || !*out.StructuredValid || out.ExhaustionResumable == nil || *out.ExhaustionResumable || out.RunningForMS == nil || *out.RunningForMS != runningForMS ||
 		out.Usage == nil || out.Usage.TotalTokens != 5 || out.Worktree == nil || !out.Worktree.Dirty || len(out.Warnings) != 1 || len(out.Diagnostics) != 1 {
 		t.Fatalf("DelegateUpdatedData round trip = %+v", out)

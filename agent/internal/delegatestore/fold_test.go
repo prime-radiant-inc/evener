@@ -373,15 +373,20 @@ func TestApplyStopWinsOverPreparedNormalFinish(t *testing.T) {
 func TestApplyStopCompletionDiscardsInternalDeliveriesAndRetainsExternal(t *testing.T) {
 	state := applyEvents(t,
 		createdEvent("dlg_parent", ""),
+		Event{Kind: EventDelegateAttentionChanged, DelegateID: "dlg_parent", AttentionChanged: &DelegateAttentionChanged{NeedsAttention: true}},
 		startedEvent("dlg_parent", 1, TriggerOwnerInput),
 		preparedEvent("dlg_parent", 1, reportedPacket("for root")),
 		finishedEvent("dlg_parent", 1, OutcomeCompleted, DispositionReported, "dlg_parent/delivery/1", nil),
 		createdEvent("dlg_child", "dlg_parent"),
+		Event{Kind: EventDelegateAttentionChanged, DelegateID: "dlg_child", AttentionChanged: &DelegateAttentionChanged{NeedsAttention: true}},
 		startedEvent("dlg_child", 1, TriggerOwnerInput),
 		preparedEvent("dlg_child", 1, reportedPacket("for parent")),
 		finishedEvent("dlg_child", 1, OutcomeCompleted, DispositionReported, "dlg_child/delivery/1", nil),
 		stopRequestedEvent("dlg_parent"),
 	)
+	if state["dlg_parent"].NeedsAttention || state["dlg_child"].NeedsAttention {
+		t.Fatalf("subtree stop request retained attention: parent=%t child=%t", state["dlg_parent"].NeedsAttention, state["dlg_child"].NeedsAttention)
+	}
 	requestSeq := state["dlg_parent"].PendingStopSeq
 	if err := Apply(state, Event{
 		Kind:                 EventDelegateSubtreeStopCompleted,
@@ -397,16 +402,25 @@ func TestApplyStopCompletionDiscardsInternalDeliveriesAndRetainsExternal(t *test
 	if got := state["dlg_child"].PendingDeliveries; len(got) != 0 {
 		t.Fatalf("internal deliveries = %#v, want discarded", got)
 	}
+	if state["dlg_parent"].NeedsAttention || state["dlg_child"].NeedsAttention {
+		t.Fatalf("subtree stop completion retained attention: parent=%t child=%t", state["dlg_parent"].NeedsAttention, state["dlg_child"].NeedsAttention)
+	}
 }
 
 func TestApplyResumabilityClosureIsMonotonic(t *testing.T) {
-	state := applyEvents(t, createdEvent("dlg_alpha", ""))
+	state := applyEvents(t,
+		createdEvent("dlg_alpha", ""),
+		Event{Kind: EventDelegateAttentionChanged, DelegateID: "dlg_alpha", AttentionChanged: &DelegateAttentionChanged{NeedsAttention: true}},
+	)
 	if err := Apply(state, Event{
 		Kind:               EventDelegateResumabilityClosed,
 		DelegateID:         "dlg_alpha",
 		ResumabilityClosed: &ResumabilityClosed{Reason: "isolation_disposed"},
 	}); err != nil {
 		t.Fatalf("Apply first closure: %v", err)
+	}
+	if state["dlg_alpha"].NeedsAttention {
+		t.Fatal("resumability closure retained attention")
 	}
 	want := stateJSON(t, state)
 	err := Apply(state, Event{
@@ -482,6 +496,32 @@ func TestApplyProjectionRevisionIncrementsOnlyAffectedDelegate(t *testing.T) {
 		createdEvent("dlg_child", "dlg_parent"),
 		createdEvent("dlg_other", ""),
 	)
+	attentionRevision := state["dlg_other"].ProjectionRevision
+	for _, tc := range []struct {
+		name           string
+		needsAttention bool
+		wantRevision   uint64
+	}{
+		{name: "false to true", needsAttention: true, wantRevision: attentionRevision + 1},
+		{name: "repeated true", needsAttention: true, wantRevision: attentionRevision + 1},
+		{name: "true to false", needsAttention: false, wantRevision: attentionRevision + 2},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if err := Apply(state, Event{
+				Kind:             EventDelegateAttentionChanged,
+				DelegateID:       "dlg_other",
+				AttentionChanged: &DelegateAttentionChanged{NeedsAttention: tc.needsAttention},
+			}); err != nil {
+				t.Fatalf("Apply attention change: %v", err)
+			}
+			if got := state["dlg_other"].NeedsAttention; got != tc.needsAttention {
+				t.Fatalf("needs attention = %t, want %t", got, tc.needsAttention)
+			}
+			if got := state["dlg_other"].ProjectionRevision; got != tc.wantRevision {
+				t.Fatalf("attention revision = %d, want %d", got, tc.wantRevision)
+			}
+		})
+	}
 	beforeParent := state["dlg_parent"].ProjectionRevision
 	beforeChild := state["dlg_child"].ProjectionRevision
 	beforeOther := state["dlg_other"].ProjectionRevision

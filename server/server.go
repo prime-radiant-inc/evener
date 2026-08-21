@@ -105,6 +105,7 @@ type DelegateStatusInfo struct {
 	Reason              string                       `json:"reason,omitempty"`
 	Terminal            bool                         `json:"terminal,omitempty"`
 	Resumable           bool                         `json:"resumable"`
+	NeedsAttention      bool                         `json:"needs_attention"`
 	NotResumableReason  string                       `json:"not_resumable_reason,omitempty"`
 	ProjectionRevision  uint64                       `json:"projection_revision"`
 	Task                string                       `json:"task,omitempty"`

@@ -54,6 +54,7 @@ func TestDelegateProjection_RevisionRejectsStaleStateButMergesLatestActivityByMa
 	newer.ProjectionRevision = 8
 	newer.Phase = "running"
 	newer.Status = "running"
+	newer.NeedsAttention = true
 	newer.LatestActivityAt = "2026-08-15T01:00:00Z"
 	requireDelegateProjection(t, p.Project(delegateProjectionEvent("owner", newer)))
 
@@ -61,9 +62,10 @@ func TestDelegateProjection_RevisionRejectsStaleStateButMergesLatestActivityByMa
 	stale.ProjectionRevision = 7
 	stale.Phase = "idle"
 	stale.Status = "idle"
+	stale.NeedsAttention = false
 	stale.LatestActivityAt = "2026-08-15T02:00:00Z"
 	merged := requireDelegateProjection(t, p.Project(delegateProjectionEvent("owner", stale))).Delegate
-	if merged.ProjectionRevision != 8 || merged.Phase != "running" || merged.Status != "running" {
+	if merged.ProjectionRevision != 8 || merged.Phase != "running" || merged.Status != "running" || !merged.NeedsAttention {
 		t.Fatalf("stale lifecycle regressed projection: %+v", merged)
 	}
 	if merged.LatestActivityAt != stale.LatestActivityAt {
@@ -163,7 +165,7 @@ func delegateProjectionFixture() events.DelegateUpdatedData {
 	return events.DelegateUpdatedData{
 		DelegateID: "dlg_projection", OwnerSessionID: "owner", RootSessionID: "root", ChildSessionID: "child",
 		TranscriptRef: "local:child", Type: "delegate", Lifecycle: "idle", Phase: "idle", Status: "idle",
-		Resumable: true, ProjectionRevision: 7, Task: "inspect", Description: "inspect carefully", AgentType: "explorer",
+		Resumable: true, NeedsAttention: true, ProjectionRevision: 7, Task: "inspect", Description: "inspect carefully", AgentType: "explorer",
 		RequestedModel: "openai/gpt-5", ResolvedProfileID: "openai", ResolvedModel: "gpt-5", Model: "gpt-5",
 		ReasoningEffort: "high", LatestActivityAt: "2026-08-15T00:00:00Z", DelegationAllowance: 2, ParentWatchGranted: true,
 	}

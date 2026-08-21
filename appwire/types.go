@@ -593,6 +593,7 @@ type EvenerDelegateInfo struct {
 	Reason              string               `json:"reason,omitempty"`
 	Terminal            bool                 `json:"terminal,omitempty"`
 	Resumable           bool                 `json:"resumable"`
+	NeedsAttention      bool                 `json:"needsAttention"`
 	NotResumableReason  string               `json:"notResumableReason,omitempty"`
 	ProjectionRevision  uint64               `json:"projectionRevision"`
 	Task                string               `json:"task,omitempty"`

@@ -83,6 +83,8 @@ func applyEvent(state State, event Event) error {
 		return applySubtreeStopCompleted(state, event)
 	case EventDelegateDeliveryAcknowledged:
 		return applyDeliveryAcknowledged(state, event)
+	case EventDelegateAttentionChanged:
+		return applyAttentionChanged(state, event)
 	default:
 		return fmt.Errorf("unknown delegate event kind %q", event.Kind)
 	}
@@ -189,6 +191,7 @@ func applyRunFinished(state State, event Event) error {
 		packet = aggregate.PreparedTerminal
 	}
 	if stopping {
+		aggregate.NeedsAttention = false
 		if payload.ObserverCallbackDelivered {
 			return fmt.Errorf("delegate %q stopped finish cannot report observer callback", event.DelegateID)
 		}
@@ -223,6 +226,7 @@ func applyRunFinished(state State, event Event) error {
 			aggregate.Phase = PhaseIdle
 		} else {
 			aggregate.Phase = PhaseClosed
+			aggregate.NeedsAttention = false
 		}
 	}
 	aggregate.CurrentRunOpen = false
@@ -244,6 +248,7 @@ func applyResumabilityClosed(state State, event Event) error {
 	}
 	aggregate.Resumable = false
 	aggregate.NotResumableReason = event.ResumabilityClosed.Reason
+	aggregate.NeedsAttention = false
 	if aggregate.Phase == PhaseIdle {
 		aggregate.Phase = PhaseClosed
 	}
@@ -271,6 +276,7 @@ func applySubtreeStopRequested(state State, event Event) error {
 			continue
 		}
 		aggregate.PendingStopSeq = event.Seq
+		aggregate.NeedsAttention = false
 		if aggregate.Phase != PhaseClosed {
 			aggregate.Phase = PhaseStopping
 		}
@@ -318,6 +324,7 @@ func applySubtreeStopCompleted(state State, event Event) error {
 		aggregate := state[id]
 		aggregate.PendingStopSeq = 0
 		aggregate.PreparedTerminal = nil
+		aggregate.NeedsAttention = false
 		if aggregate.Resumable {
 			aggregate.Phase = PhaseIdle
 		} else {
@@ -343,6 +350,15 @@ func applyDeliveryAcknowledged(state State, event Event) error {
 	return nil
 }
 
+func applyAttentionChanged(state State, event Event) error {
+	aggregate, err := requireAggregate(state, event.DelegateID)
+	if err != nil {
+		return err
+	}
+	aggregate.NeedsAttention = event.AttentionChanged.NeedsAttention
+	return nil
+}
+
 func validateEventEnvelope(event Event) error {
 	if event.DelegateID == "" {
 		return fmt.Errorf("delegate event %q has empty delegate id", event.Kind)
@@ -356,6 +372,7 @@ func validateEventEnvelope(event Event) error {
 		event.SubtreeStopRequested != nil,
 		event.SubtreeStopCompleted != nil,
 		event.DeliveryAcknowledged != nil,
+		event.AttentionChanged != nil,
 	}
 	count := 0
 	for _, present := range payloads {
@@ -381,6 +398,8 @@ func validateEventEnvelope(event Event) error {
 		matching = event.SubtreeStopCompleted != nil
 	case EventDelegateDeliveryAcknowledged:
 		matching = event.DeliveryAcknowledged != nil
+	case EventDelegateAttentionChanged:
+		matching = event.AttentionChanged != nil
 	default:
 		return fmt.Errorf("unknown delegate event kind %q", event.Kind)
 	}
@@ -640,6 +659,7 @@ type publicProjection struct {
 	Phase              Phase
 	Resumable          bool
 	NotResumableReason string
+	NeedsAttention     bool
 	LatestActivityAt   string
 	LatestOutcome      *Outcome
 }
@@ -650,6 +670,7 @@ func (aggregate *Aggregate) publicProjection() publicProjection {
 		Phase:              aggregate.Phase,
 		Resumable:          aggregate.Resumable,
 		NotResumableReason: aggregate.NotResumableReason,
+		NeedsAttention:     aggregate.NeedsAttention,
 		LatestActivityAt:   aggregate.LatestActivityAt.UTC().Format("2006-01-02T15:04:05.999999999Z07:00"),
 		LatestOutcome:      cloneOutcome(aggregate.LatestOutcome),
 	}

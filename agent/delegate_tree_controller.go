@@ -148,6 +148,7 @@ type delegateSnapshot struct {
 	currentRunOpen     bool
 	runStartedAt       time.Time
 	resumable          bool
+	needsAttention     bool
 	revision           uint64
 	transcriptRef      string
 	notResumableReason string
@@ -570,6 +571,7 @@ func captureDelegateSnapshot(aggregate *delegatestore.Aggregate) delegateSnapsho
 		currentRunOpen:     aggregate.CurrentRunOpen,
 		runStartedAt:       aggregate.RunStartedAt,
 		resumable:          aggregate.Resumable,
+		needsAttention:     aggregate.NeedsAttention,
 		revision:           aggregate.ProjectionRevision,
 		transcriptRef:      aggregate.Descriptor.TranscriptRef,
 		notResumableReason: aggregate.NotResumableReason,
