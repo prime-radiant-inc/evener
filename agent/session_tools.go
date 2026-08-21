@@ -907,20 +907,26 @@ func (s *Session) appendToolResultsWithDeliveryCommitsDurably(live, persisted ll
 	s.mu.Lock()
 	s.history = append(s.history, liveTurn)
 	s.mu.Unlock()
+	var completionErrs []error
+	requeue := false
 	for _, binding := range commits {
 		if binding.commit == nil {
 			continue
 		}
 		plans, err := binding.commit.Complete(true)
 		if err != nil {
-			s.requeueReplayableDelegateDeliveries(nil)
-			return err
+			completionErrs = append(completionErrs, err)
+			requeue = true
+			continue
 		}
 		if err := s.executeDelegateMutationPlans(plans); err != nil {
-			return err
+			completionErrs = append(completionErrs, err)
 		}
 	}
-	return nil
+	if requeue {
+		s.requeueReplayableDelegateDeliveries(nil)
+	}
+	return errors.Join(completionErrs...)
 }
 
 // announceReadableToolResultImages names the round's tool calls whose result

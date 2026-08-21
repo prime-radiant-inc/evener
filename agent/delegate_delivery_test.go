@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"reflect"
 	"sync"
 	"testing"
@@ -594,16 +595,23 @@ func TestDelegateControllerDeliveryAcknowledgedAppendFailureKeepsReceiptAndHead(
 		t.Fatalf("retried delivery did not publish atomically: sender=%#v owner=%#v unresolved=%#v", c.durable["dlg_target"], c.durable["dlg_owner"], c.attentionWakeIDs["dlg_owner"])
 	}
 
-	inline, inlineStorePath := newDelegateControllerTestHarness(t, 1, 1)
-	seedDelegateControllerIdle(t, inline, "dlg_inline", "")
-	lease, waiter := startDelegateDeliveryGeneration(t, inline, "dlg_inline", true)
-	inlinePlan := finishDelegateDeliveryGeneration(t, inline, lease, "inline").deliveries[0]
-	if _, err := deliverDelegatePacket(inlinePlan, nil); err != nil {
-		t.Fatalf("handoff inline delivery: %v", err)
-	}
-	resolution := <-waiter.resolution
-	if resolution.commit == nil {
-		t.Fatal("inline handoff returned no delivery commit")
+	inline, inlineStorePath := newDelegateControllerTestHarness(t, 2, 1)
+	inlineIDs := []string{"dlg_inline_a", "dlg_inline_b"}
+	inlinePlans := make([]delegateDeliveryPlan, 0, len(inlineIDs))
+	inlineCommits := make([]delegateToolCallDeliveryCommit, 0, len(inlineIDs))
+	for index, delegateID := range inlineIDs {
+		seedDelegateControllerIdle(t, inline, delegateID, "")
+		lease, waiter := startDelegateDeliveryGeneration(t, inline, delegateID, true)
+		plan := finishDelegateDeliveryGeneration(t, inline, lease, "inline").deliveries[0]
+		if _, err := deliverDelegatePacket(plan, nil); err != nil {
+			t.Fatalf("handoff inline delivery %s: %v", delegateID, err)
+		}
+		resolution := <-waiter.resolution
+		if resolution.commit == nil {
+			t.Fatalf("inline handoff %s returned no delivery commit", delegateID)
+		}
+		inlinePlans = append(inlinePlans, plan)
+		inlineCommits = append(inlineCommits, delegateToolCallDeliveryCommit{toolCallID: fmt.Sprintf("inline-call-%d", index+1), commit: resolution.commit})
 	}
 	rootWriter, err := transcript.NewWriter(transcriptPath(inline.stateDir, "root-session"), transcript.Header{SessionID: "root-session"})
 	if err != nil {
@@ -616,16 +624,18 @@ func TestDelegateControllerDeliveryAcknowledgedAppendFailureKeepsReceiptAndHead(
 	if err := inline.store.Close(); err != nil {
 		t.Fatalf("close inline store: %v", err)
 	}
-	result := llm.ToolResultNamed("inline-call", "delegate_send", "done", false)
-	err = root.appendToolResultsWithDeliveryCommitsDurably(result, result, []delegateToolCallDeliveryCommit{{toolCallID: "inline-call", commit: resolution.commit}})
+	result := llm.ToolResultNamed("inline-call-1", "delegate_send", "done one", false)
+	secondResult := llm.ToolResultNamed("inline-call-2", "delegate_send", "done two", false)
+	result.Content = append(result.Content, secondResult.Content...)
+	err = root.appendToolResultsWithDeliveryCommitsDurably(result, result, inlineCommits)
 	if err == nil {
 		t.Fatal("inline tool-result acknowledgment succeeded after store close")
 	}
 	root.delegateDeliveryMu.Lock()
 	scheduled := append([]delegateDeliveryPlan(nil), root.pendingDelegateDeliveries...)
 	root.delegateDeliveryMu.Unlock()
-	if len(scheduled) != 1 || scheduled[0].deliveryID != inlinePlan.deliveryID || scheduled[0].waiter != nil {
-		t.Fatalf("scheduled inline replay = %#v, want public rebuilt plan", scheduled)
+	if len(scheduled) != 2 || scheduled[0].deliveryID != inlinePlans[0].deliveryID || scheduled[1].deliveryID != inlinePlans[1].deliveryID || scheduled[0].waiter != nil || scheduled[1].waiter != nil {
+		t.Fatalf("scheduled inline replay = %#v, want both public rebuilt plans", scheduled)
 	}
 	inlineReopened, err := delegatestore.Open(inlineStorePath)
 	if err != nil {
@@ -638,14 +648,16 @@ func TestDelegateControllerDeliveryAcknowledgedAppendFailureKeepsReceiptAndHead(
 	if err := root.flushPendingDelegateDeliveries(); err != nil {
 		t.Fatalf("drain scheduled inline replay: %v", err)
 	}
-	if len(inline.durable["dlg_inline"].PendingDeliveries) != 0 {
-		t.Fatalf("scheduled inline replay left sender head: %#v", inline.durable["dlg_inline"].PendingDeliveries)
+	for _, delegateID := range inlineIDs {
+		if len(inline.durable[delegateID].PendingDeliveries) != 0 {
+			t.Fatalf("scheduled inline replay left %s head: %#v", delegateID, inline.durable[delegateID].PendingDeliveries)
+		}
 	}
 	rootFold, err := readDelegateAttentionFold(transcriptPath(inline.stateDir, "root-session"), "root-session")
 	if err != nil {
 		t.Fatalf("read inline owner transcript: %v", err)
 	}
-	if rootFold.deliveryCommits[inlinePlan.deliveryID] != "inline-call" || len(rootFold.content) != 0 {
+	if rootFold.deliveryCommits[inlinePlans[0].deliveryID] != "inline-call-1" || rootFold.deliveryCommits[inlinePlans[1].deliveryID] != "inline-call-2" || len(rootFold.content) != 0 {
 		t.Fatalf("inline retry fold = commits:%#v unresolved:%#v", rootFold.deliveryCommits, rootFold.content)
 	}
 }
