@@ -70,6 +70,7 @@ func TestStableDelegateAttention_RestoreAndColdRead(t *testing.T) {
 		wantRestore       bool
 		deferredLaunch    bool
 		nestedOwner       bool
+		callbackOwnership bool
 	}{
 		{name: "stale false with pending attention", pending: true, wantAttention: true, wantRestore: true},
 		{name: "stale true without pending attention", journalAttention: true, wantRestore: true},
@@ -81,6 +82,7 @@ func TestStableDelegateAttention_RestoreAndColdRead(t *testing.T) {
 		{name: "owed generation is admitted before boolean repair", owed: true, journalAttention: true, wantRestore: true},
 		{name: "recovered owed launch waits for final reconciliation", wantRestore: true, deferredLaunch: true},
 		{name: "nested cold owner side effects wait and invalidate stale owed launch", wantRestore: true, nestedOwner: true},
+		{name: "owed run callback replacement survives gate open", callbackOwnership: true},
 	}
 
 	for _, tt := range tests {
@@ -222,6 +224,23 @@ func TestStableDelegateAttention_RestoreAndColdRead(t *testing.T) {
 			wantJournalAttention := tt.journalAttention && tt.lifecycle != "closed" && tt.lifecycle != "stopping"
 			if got := journalState[targetDelegateID].NeedsAttention; got != wantJournalAttention {
 				t.Fatalf("cold status wrote journal needs_attention=%t, want unchanged %t", got, wantJournalAttention)
+			}
+			if tt.callbackOwnership {
+				normalWakes, replacementWakes := 0, 0
+				target := &Session{notifyFunc: func() { normalWakes++ }}
+				sub := &subagent{sess: target, running: true}
+				gate := &owedBootstrapRestore{held: true, pending: make(map[*Session]func()), done: make(map[*subagent]bool)}
+				if err := gate.add(nil, sub, delegateStartCommit{}); err != nil {
+					t.Fatalf("install owed bootstrap gate: %v", err)
+				}
+				target.notify()
+				target.SetNotifyFunc(func() { replacementWakes++ })
+				gate.open()
+				target.notify()
+				if normalWakes != 1 || replacementWakes != 1 {
+					t.Fatalf("gate callback ownership = normal:%d replacement:%d, want queued normal once and replacement wake once", normalWakes, replacementWakes)
+				}
+				return
 			}
 
 			if !tt.wantRestore {

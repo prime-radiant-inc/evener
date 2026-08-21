@@ -78,7 +78,7 @@ Ineligible delegates (closed, non-resumable, stopping, pending-stop, or permanen
 
 - Agent top-level tests: `3318 -> 3319` (`+1`).
 - New top-level group: `TestStableDelegateAttention_RestoreAndColdRead`.
-- Table rows in that group: `10`.
+- Table rows in that group: `11`.
 - No new test file, package helper, framework, script, meta-test, matrix, cache, worker, or migration.
 
 ## Self-review / concerns
@@ -211,10 +211,9 @@ The replacement is one bootstrap-local gate:
 5. Valid owed candidates sort with the existing depth/ID leaf-first ordering and
    launch descendants-first after one immediate exact state classification.
    Owner drives remain gated across every check/use boundary.
-6. The gate atomically opens/snapshots pending callbacks, restores normal session
-   callbacks without nesting the gate mutex under session/controller/subagent
-   locks, then invokes queued drives outside all locks. Post-open wrapper calls
-   drive normally.
+6. The gate atomically opens/snapshots pending callbacks and clears its retained
+   runtime collections without writing session callback slots. Installed wrappers
+   become graph-free pass-throughs, and queued drives run outside all locks.
 
 Bootstrap failure never opens the gate. Reverse restored-runtime records provide
 leaf-first cleanup: exact open/stopping bindings settle through
@@ -244,4 +243,44 @@ Round-3 verification:
   than it adds; no generic scheduler, new test group/helper, or framework remains.
 
 The separate round-3 commit hash is reported in the final handoff because a
+commit cannot embed its own hash.
+
+## Fix round 4/5: preserve callback-slot ownership at gate open
+
+Review found one MEDIUM ownership race after the round-3 reslice. A fast owed run
+could enter `DrainJobTree` and temporarily replace its notify callback while the
+bootstrap gate was still held. `gate.open` then unconditionally restored the
+pre-gate callback, overwriting the drain's active callback and risking a missed
+wake.
+
+The approved repair is deliberately smaller than a callback revision/token:
+
+- `gate.open` marks the gate open and snapshots queued callbacks under the gate
+  mutex;
+- it clears `pending`, restored-runtime records, and processed-candidate state so
+  surviving wrappers retain no bootstrap runtime graph;
+- it never reads or writes a session callback slot;
+- queued normal callbacks run outside all locks;
+- an installed wrapper is a graph-free pass-through after open, while a callback
+  temporarily owned by `DrainJobTree` remains untouched and can later restore the
+  wrapper through its own lifecycle.
+
+The existing Task 3 table gained one deterministic row, not a new top-level test.
+It queues one held wrapper wake, replaces the callback as a running owed session
+would, opens the gate, and sends another wake. RED observed `normal=2` and
+`replacement=0`; GREEN observes exactly one queued normal wake and one replacement
+wake. A 20-run focused stress pass stayed green.
+
+Round-4 verification:
+
+- Required focused Task 3 group: PASS.
+- Focused stress (`-count=20`): PASS.
+- `go test ./agent -count=1`: PASS (`72.386s`).
+- `go test ./cmd/evener-hub -count=1`: PASS (`35.256s`).
+- `go vet ./agent ./cmd/evener-hub`: PASS.
+- `gofmt` check and `git diff --check`: PASS.
+- Cumulative production delta after `031467110`: `169` added, `42` deleted,
+  `+127` net lines (three below the approved `<=130` ceiling).
+
+The separate round-4 commit hash is reported in the final handoff because a
 commit cannot embed its own hash.

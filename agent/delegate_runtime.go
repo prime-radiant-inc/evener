@@ -424,7 +424,6 @@ type owedBootstrapRestore struct {
 }
 type owedBootstrapRuntime struct {
 	deferredOwedDelegateAttentionStart
-	normal func()
 }
 
 func (g *owedBootstrapRestore) add(owner *Session, sub *subagent, start delegateStartCommit) error {
@@ -447,19 +446,17 @@ func (g *owedBootstrapRestore) add(owner *Session, sub *subagent, start delegate
 		}
 	}
 	target.mu.Unlock()
-	g.restored = append(g.restored, owedBootstrapRuntime{deferredOwedDelegateAttentionStart: deferredOwedDelegateAttentionStart{owner: owner, sub: sub, started: start}, normal: normal})
+	g.restored = append(g.restored, owedBootstrapRuntime{deferredOwedDelegateAttentionStart: deferredOwedDelegateAttentionStart{owner: owner, sub: sub, started: start}})
 	return nil
 }
 func (g *owedBootstrapRestore) open() {
 	g.mu.Lock()
 	g.held = false
 	pending := g.pending
+	g.pending = nil
+	g.restored = nil
+	g.done = nil
 	g.mu.Unlock()
-	for _, restored := range g.restored {
-		restored.sub.sess.mu.Lock()
-		restored.sub.sess.notifyFunc = restored.normal
-		restored.sub.sess.mu.Unlock()
-	}
 	for _, drive := range pending {
 		drive()
 	}
