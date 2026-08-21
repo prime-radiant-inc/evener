@@ -1034,3 +1034,85 @@ func TestMakeLintGeneratedRegeneratesAndDiffsHEAD(t *testing.T) {
 			"R26). Arguments as make expands them: git diff%s", diffArgs)
 	}
 }
+
+// TestLintGeneratedRejectsOutputDeletedFromHEAD exercises the real Make recipe
+// with real git. A generated path deleted in HEAD is recreated as untracked;
+// `git diff HEAD -- <path>` alone does not report that file, so the gate must
+// also require every expected output to remain tracked.
+func TestLintGeneratedRejectsOutputDeletedFromHEAD(t *testing.T) {
+	makePath, err := exec.LookPath("make")
+	if err != nil {
+		t.Skipf("make is not on PATH: %v", err)
+	}
+	gitPath, err := exec.LookPath("git")
+	if err != nil {
+		t.Skipf("git is not on PATH: %v", err)
+	}
+
+	repoRoot, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	fixture := t.TempDir()
+	copyRepositoryFile(t, repoRoot, fixture, "Makefile", 0o644)
+	copyRepositoryFile(t, repoRoot, fixture, "make/linting.mk", 0o644)
+
+	generated := []string{
+		"docs/appwire-protocol.md",
+		"cmd/evener-hub/frontend/src/protocol/types.gen.ts",
+		"docs/developing-evener/README.md",
+		"docs/developing-evener/building.md",
+		"docs/developing-evener/testing.md",
+		"docs/developing-evener/linting.md",
+		"docs/developing-evener/fuzzing.md",
+		"docs/developing-evener/coverage.md",
+	}
+	for _, path := range generated {
+		if err := os.MkdirAll(filepath.Join(fixture, filepath.Dir(path)), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	makefile := filepath.Join(fixture, "Makefile")
+	raw, err := os.ReadFile(makefile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw = append(raw, []byte("\n.PHONY: generate\ngenerate:\n\t@touch "+strings.Join(generated, " ")+"\n")...)
+	if err := os.WriteFile(makefile, raw, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	run := func(path string, args ...string) string {
+		t.Helper()
+		cmd := exec.Command(path, args...)
+		cmd.Dir = fixture
+		out, runErr := cmd.CombinedOutput()
+		if runErr != nil {
+			t.Fatalf("%s %v: %v\n%s", path, args, runErr, out)
+		}
+		return string(out)
+	}
+	run(makePath, "generate")
+	run(gitPath, "init", "-q")
+	run(gitPath, "add", "--", "Makefile", "make/linting.mk")
+	gitAddGenerated := append([]string{"add", "--"}, generated...)
+	run(gitPath, gitAddGenerated...)
+	run(gitPath, "-c", "user.name=Evener Test", "-c", "user.email=test@evener.invalid", "commit", "-qm", "baseline")
+
+	deleted := generated[0]
+	if err := os.Remove(filepath.Join(fixture, deleted)); err != nil {
+		t.Fatal(err)
+	}
+	run(gitPath, "add", "-u", "--", deleted)
+	run(gitPath, "-c", "user.name=Evener Test", "-c", "user.email=test@evener.invalid", "commit", "-qm", "delete generated output")
+
+	cmd := exec.Command(makePath, "lint-generated")
+	cmd.Dir = fixture
+	out, runErr := cmd.CombinedOutput()
+	if runErr == nil {
+		t.Fatalf("lint-generated accepted %s after the generator recreated it untracked:\n%s", deleted, out)
+	}
+	if _, err := os.Stat(filepath.Join(fixture, deleted)); err != nil {
+		t.Fatalf("fixture generator did not recreate %s: %v\n%s", deleted, err, out)
+	}
+}
