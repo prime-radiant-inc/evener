@@ -271,7 +271,11 @@ func TestRebuildOnSameProviderChange(t *testing.T) {
 		{"openrouter", true},
 		{"ollama", true},
 		{"openrouter-anthropic", true},
-		{"openai", false},
+		// openai's constructor resolves per-model state from the catalog —
+		// the effort ladder via resolveEffortLevels and, since Bedrock, the
+		// web-search capability — so a model change has to rebuild or both
+		// go stale.
+		{"openai", true},
 		{"anthropic", false},
 		{"minimax", false},
 		{"google", false},

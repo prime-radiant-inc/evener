@@ -108,6 +108,32 @@ func (c *ModelCatalog) ResolveAlias(alias string) (target *ModelInfo, ambiguous 
 	return target, false
 }
 
+// bedrockOpenAICatalogKey maps a Bedrock OpenAI inference-profile ID to the
+// LiteLLM key carrying its metadata, reporting whether the ref had that shape.
+//
+// This covers one specific upstream naming gap, not Bedrock IDs generally.
+// LiteLLM files Anthropic's Bedrock models under region-prefixed keys that
+// already match what Bedrock advertises ("us.anthropic.claude-opus-5"), so
+// those resolve on the exact lookup and must not be rewritten. Only the OpenAI
+// models are filed under a "bedrock_mantle/" key with no region-prefixed alias.
+// Keeping the rule this narrow avoids shadowing an unrelated model whose name
+// merely begins with a region prefix.
+//
+// The two scopes are the complete set, not a sample: Bedrock publishes its
+// OpenAI models under "us." and "global." inference profiles only, verified
+// against ListInferenceProfiles. Anthropic's models do use further scopes
+// (eu./apac./au./jp.), which is why this maps OpenAI's names specifically
+// rather than region prefixes generally.
+func bedrockOpenAICatalogKey(id string) (string, bool) {
+	for _, scope := range []string{"us.", "global."} {
+		rest, ok := strings.CutPrefix(id, scope+"openai.")
+		if ok && rest != "" {
+			return "bedrock_mantle/openai." + rest, true
+		}
+	}
+	return "", false
+}
+
 // LookupModelInfo resolves catalog metadata for a model ref that may carry an
 // Anthropic "[1m]" 1M-context suffix and/or a provider namespace (e.g.
 // "anthropic/claude-opus-4-5" served by an openrouter-anthropic instance). It
@@ -139,6 +165,11 @@ func (c *ModelCatalog) LookupModelInfo(modelID string) *ModelInfo {
 		// own; fall back to its family (claude-opus-4-5-YYYYMMDD → claude-opus-4-5).
 		if fam := familyModelID(id); fam != id {
 			mi = c.GetModelInfo(fam)
+		}
+	}
+	if mi == nil {
+		if alias, ok := bedrockOpenAICatalogKey(id); ok {
+			mi = c.GetModelInfo(alias)
 		}
 	}
 	if mi != nil && oneMillion {
