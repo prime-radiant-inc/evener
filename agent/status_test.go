@@ -519,7 +519,15 @@ func TestStableDelegateAttention_RestoreAndColdRead(t *testing.T) {
 					t.Fatalf("seed cold parent terminal notification: %v", err)
 				}
 
+				releaseNested := make(chan struct{})
+				var releaseNestedOnce sync.Once
+				defer releaseNestedOnce.Do(func() { close(releaseNested) })
+				fixture.adapter.steps = []func(llm.Request) llm.Response{func(llm.Request) llm.Response {
+					<-releaseNested
+					return communicateResponse(true, "nested owed run stopped")
+				}}
 				notified := make(chan error, 1)
+				stopDone := make(chan (<-chan struct{}), 1)
 				var notifyOnce sync.Once
 				restored.delegateRestoreBeforeSideEffects = func(child *Session) {
 					if child.ID() != fixture.childID {
@@ -527,16 +535,24 @@ func TestStableDelegateAttention_RestoreAndColdRead(t *testing.T) {
 					}
 					child.SetNotifyFunc(func() {
 						notifyOnce.Do(func() {
+							nestedSub := child.subagents.get(nestedChild)
+							nestedRunning := false
+							if nestedSub != nil {
+								nestedSub.mu.Lock()
+								nestedRunning = nestedSub.running
+								nestedSub.mu.Unlock()
+							}
 							child.delegateController.mu.Lock()
 							witness := child.delegateController.durable[witnessID]
 							_, published := child.delegateController.attentionWakeIDs[witnessID][witnessWake]
 							child.delegateController.mu.Unlock()
-							if witness == nil || !witness.NeedsAttention || !published {
-								notified <- fmt.Errorf("cold parent side effects ran before final publication: aggregate=%+v published=%t", witness, published)
+							if witness == nil || !witness.NeedsAttention || !published || !nestedRunning {
+								notified <- fmt.Errorf("queued cold-parent drive observed publication=%t aggregate=%+v nested_running=%t", published, witness, nestedRunning)
 								return
 							}
-							_, cancelPlan, _, stopErr := child.delegateController.StopSubtree(rootDelegateActor(fixture.meta.ID), targetDelegateID)
+							result, cancelPlan, _, stopErr := child.delegateController.StopSubtreeAndDrive(rootDelegateActor(fixture.meta.ID), targetDelegateID)
 							executeDelegateCancelPlan(cancelPlan)
+							stopDone <- result.done
 							notified <- stopErr
 						})
 					})
@@ -548,15 +564,24 @@ func TestStableDelegateAttention_RestoreAndColdRead(t *testing.T) {
 				if err := <-notified; err != nil {
 					t.Fatalf("cold parent pending notification: %v", err)
 				}
+				releaseNestedOnce.Do(func() { close(releaseNested) })
+				if done := <-stopDone; done != nil {
+					<-done
+				}
 				restored.delegateController.mu.Lock()
 				nested := restored.delegateController.durable[nestedID]
 				nestedLive := restored.delegateController.live[nestedID]
 				restored.delegateController.mu.Unlock()
-				if nested == nil || nested.CurrentRunOpen || nested.Generation != 1 || nestedLive == nil || nestedLive.binding != nil || nestedLive.runtime != nil {
-					t.Fatalf("invalidated nested owed runtime leaked or launched: aggregate=%+v live=%+v", nested, nestedLive)
+				nestedRunning := false
+				if parentSub := restored.subagents.get(fixture.childID); parentSub != nil && parentSub.sess != nil {
+					if nestedSub := parentSub.sess.subagents.get(nestedChild); nestedSub != nil {
+						nestedSub.mu.Lock()
+						nestedRunning = nestedSub.running
+						nestedSub.mu.Unlock()
+					}
 				}
-				if got := len(fixture.adapter.Requests()); got != 0 {
-					t.Fatalf("provider requests after invalid nested owed launch = %d, want 0", got)
+				if nested == nil || nested.CurrentRunOpen || nested.Generation != 1 || nestedLive == nil || nestedLive.binding != nil || nestedRunning {
+					t.Fatalf("invalidated nested owed runtime leaked or launched: aggregate=%+v live=%+v", nested, nestedLive)
 				}
 			}
 		})

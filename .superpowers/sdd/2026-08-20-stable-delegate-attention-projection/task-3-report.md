@@ -190,3 +190,58 @@ Round-2 verification:
 
 The separate round-2 commit hash is reported in the final handoff because a
 commit cannot embed its own hash.
+
+## Fix round 3/5: bootstrap-local owner-drive gate reslice
+
+A fresh read-only reslice replaced, rather than extended, the round-2 release and
+validation branch matrix. The remaining HIGH was an unlocked validation-to-launch
+window: released parent drives could invalidate an owed descendant after its
+check but before launch. The round-2 already-settled matrix also carried a MEDIUM
+classification error and exceeded the approved complexity ceiling.
+
+The replacement is one bootstrap-local gate:
+
+1. Owed starts commit/attach normally. Every recursively reconstructed runtime
+   retains its existing nonnil notify callback, installs a gate wrapper, and
+   records its restore side effects parent-first.
+2. Final strict transcript repair and exact wake-map publication complete.
+3. Collected restore side effects run once, parent-first. Their notify callbacks
+   record at most one queued wake per restored target while the gate remains held.
+4. Invalid starts classify/settle once.
+5. Valid owed candidates sort with the existing depth/ID leaf-first ordering and
+   launch descendants-first after one immediate exact state classification.
+   Owner drives remain gated across every check/use boundary.
+6. The gate atomically opens/snapshots pending callbacks, restores normal session
+   callbacks without nesting the gate mutex under session/controller/subagent
+   locks, then invokes queued drives outside all locks. Post-open wrapper calls
+   drive normally.
+
+Bootstrap failure never opens the gate. Reverse restored-runtime records provide
+leaf-first cleanup: exact open/stopping bindings settle through
+`FailCommittedRestart` and mutation plans; absent/settled controller references
+are benign; candidate-referencing foreign bindings are conflicts; append failure
+keeps binding/recovery evidence while severing exact candidate runtime pointers.
+Exact manager removal and restored-candidate disposal occur outside the controller
+lock.
+
+The existing nested row was revised, not duplicated. Its pending parent callback
+now proves final publication and `nestedSub.running == true`, then admits a parent
+subtree stop. RED on round 2 observed publication true but `nested_running=false`.
+GREEN proves the callback was queued until the owed descendant launched, the stop
+then settled it, and final state has no open generation, binding, or running
+subagent.
+
+Round-3 verification:
+
+- Focused Task 3 group plus lifecycle inventory: PASS.
+- `go test ./agent -count=1`: PASS (`68.913s`).
+- `go test ./cmd/evener-hub -count=1`: PASS (`35.642s`).
+- `go vet ./agent ./cmd/evener-hub`: PASS.
+- `gofmt` check and `git diff --check`: PASS.
+- Cumulative race production delta after `031467110`: `172` added, `42`
+  deleted, exactly `+130` net lines (approved ceiling: `<=130`).
+- The round-3 reslice itself removes substantially more round-2 production code
+  than it adds; no generic scheduler, new test group/helper, or framework remains.
+
+The separate round-3 commit hash is reported in the final handoff because a
+commit cannot embed its own hash.
