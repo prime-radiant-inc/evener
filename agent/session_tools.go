@@ -913,6 +913,7 @@ func (s *Session) appendToolResultsWithDeliveryCommitsDurably(live, persisted ll
 		}
 		plans, err := binding.commit.Complete(true)
 		if err != nil {
+			s.requeueReplayableDelegateDeliveries(nil)
 			return err
 		}
 		if err := s.executeDelegateMutationPlans(plans); err != nil {

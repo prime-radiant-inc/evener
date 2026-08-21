@@ -261,6 +261,11 @@ func rootDelegateActor(rootSessionID string) delegateActor {
 }
 
 func (c *delegateTreeController) appendLocked(events ...delegatestore.Event) ([]delegatestore.Event, error) {
+	for _, event := range events {
+		if event.ResumabilityClosed != nil && c.attentionStartBlockerLocked(event.DelegateID, true) != nil {
+			return nil, errDelegateTargetBusy
+		}
+	}
 	appended, next, err := c.store.AppendBatch(c.durable, events)
 	if err != nil {
 		return nil, err
@@ -411,10 +416,20 @@ func (c *delegateTreeController) closeStableWorktreeResumability(owner *Session,
 		return stableDelegateWorktreeSnapshot{}, false, delegateMutationPlans{}, errDelegateNotControllable
 	}
 	c.mu.Lock()
-	defer c.mu.Unlock()
-	if c.closing && !allowControllerClose {
-		return stableDelegateWorktreeSnapshot{}, false, delegateMutationPlans{}, errDelegateTargetBusy
+	for {
+		if c.closing && !allowControllerClose {
+			c.mu.Unlock()
+			return stableDelegateWorktreeSnapshot{}, false, delegateMutationPlans{}, errDelegateTargetBusy
+		}
+		if blocker := c.attentionStartBlockerLocked(delegateID, true); blocker != nil {
+			c.mu.Unlock()
+			<-blocker
+			c.mu.Lock()
+			continue
+		}
+		break
 	}
+	defer c.mu.Unlock()
 	aggregate := c.durable[delegateID]
 	if aggregate == nil || !c.stableDelegateOwnedBySessionLocked(owner, aggregate) {
 		return stableDelegateWorktreeSnapshot{}, false, delegateMutationPlans{}, errDelegateNotControllable

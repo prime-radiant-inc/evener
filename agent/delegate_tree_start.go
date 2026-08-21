@@ -45,6 +45,7 @@ type delegateStartRecord struct {
 	runtime                  *Session
 	attentionID              string
 	attentionPendingIDs      []string
+	attentionAdmitted        bool
 	attentionResolutionReady bool
 	waiter                   *delegateInlineWaiter
 	done                     chan struct{}
@@ -218,19 +219,33 @@ func (c *delegateTreeController) ReserveAttention(runtime *Session, attentionID 
 
 func (c *delegateTreeController) attentionReservationIdentity(reservation *delegateStartReservation, runtime *Session) (string, uint64, error) {
 	c.mu.Lock()
-	defer c.mu.Unlock()
 	record, err := c.reservationRecordLocked(reservation)
 	if err != nil || record.trigger != delegatestore.TriggerAttention || record.runtime != runtime || record.attentionID == "" {
+		c.mu.Unlock()
 		return "", 0, errDelegateTargetBusy
 	}
 	if record.ctx.Err() != nil || c.stopCoversLocked(record.delegateID) {
+		c.mu.Unlock()
 		return "", 0, errDelegateTargetBusy
 	}
 	aggregate := c.durable[record.delegateID]
 	if aggregate == nil || aggregate.Phase != delegatestore.PhaseIdle || !aggregate.Resumable || aggregate.Generation+1 != record.generation {
+		cancel := c.releaseReservationLocked(record)
+		c.mu.Unlock()
+		cancel()
 		return "", 0, errDelegateTargetBusy
 	}
-	return record.attentionID, record.generation, nil
+	if blocked, _ := c.ancestorFenceLocked(aggregate.Descriptor.ParentDelegateID); blocked {
+		cancel := c.releaseReservationLocked(record)
+		c.mu.Unlock()
+		cancel()
+		return "", 0, errDelegateTargetBusy
+	}
+	record.attentionAdmitted = true
+	c.evidenceVersion++
+	attentionID, generation := record.attentionID, record.generation
+	c.mu.Unlock()
+	return attentionID, generation, nil
 }
 
 func (c *delegateTreeController) reservedAttentionID(runtime *Session) string {
@@ -339,6 +354,7 @@ func (c *delegateTreeController) reserveAttentionStartLocked(aggregate *delegate
 		runtime:                  runtime,
 		attentionID:              attentionID,
 		attentionPendingIDs:      append([]string(nil), pendingIDs...),
+		attentionAdmitted:        prepared,
 		attentionResolutionReady: prepared,
 		done:                     make(chan struct{}),
 	}

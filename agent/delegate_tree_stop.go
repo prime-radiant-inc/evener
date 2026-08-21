@@ -63,7 +63,7 @@ func (c *delegateTreeController) StopSubtree(actor delegateActor, targetID strin
 				c.mu.Unlock()
 				return delegateStopResult{}, delegateCancelPlan{}, delegateMutationPlans{}, err
 			}
-			if blocker := c.attentionStartBlockerLocked(targetID); blocker != nil {
+			if blocker := c.attentionStartBlockerLocked(targetID, false); blocker != nil {
 				c.mu.Unlock()
 				<-blocker
 				continue
@@ -86,7 +86,7 @@ func (c *delegateTreeController) StopSubtreeAndDrive(actor delegateActor, target
 				c.mu.Unlock()
 				return delegateStopResult{}, delegateCancelPlan{}, delegateMutationPlans{}, err
 			}
-			if blocker := c.attentionStartBlockerLocked(targetID); blocker != nil {
+			if blocker := c.attentionStartBlockerLocked(targetID, false); blocker != nil {
 				c.mu.Unlock()
 				<-blocker
 				continue
@@ -139,11 +139,11 @@ func (c *delegateTreeController) StopSubtreeAndDrive(actor delegateActor, target
 	return result, cancelPlan, plans, nil
 }
 
-func (c *delegateTreeController) attentionStartBlockerLocked(targetID string) <-chan struct{} {
+func (c *delegateTreeController) attentionStartBlockerLocked(targetID string, acceptedOnly bool) <-chan struct{} {
 	members := c.subtreeMembersLocked(targetID)
 	tokens := make([]uint64, 0)
 	for token, record := range c.reservations {
-		if record == nil || record.trigger != delegatestore.TriggerAttention || record.done == nil {
+		if record == nil || record.trigger != delegatestore.TriggerAttention || record.done == nil || acceptedOnly && !record.attentionAdmitted {
 			continue
 		}
 		if _, covered := members[record.delegateID]; covered {
@@ -467,16 +467,28 @@ func (c *delegateTreeController) deliveryIntersectsMembersLocked(receipt *delega
 
 func (c *delegateTreeController) CloseResumability(actor delegateActor, delegateID, reason string) (delegateMutationPlans, error) {
 	c.mu.Lock()
+	for {
+		if c.closing {
+			c.mu.Unlock()
+			return delegateMutationPlans{}, errDelegateTargetBusy
+		}
+		if err := c.authorizeMutationLocked(actor, delegateID); err != nil {
+			c.mu.Unlock()
+			return delegateMutationPlans{}, err
+		}
+		if strings.TrimSpace(reason) == "" {
+			c.mu.Unlock()
+			return delegateMutationPlans{}, errDelegateTargetBusy
+		}
+		if blocker := c.attentionStartBlockerLocked(delegateID, true); blocker != nil {
+			c.mu.Unlock()
+			<-blocker
+			c.mu.Lock()
+			continue
+		}
+		break
+	}
 	defer c.mu.Unlock()
-	if c.closing {
-		return delegateMutationPlans{}, errDelegateTargetBusy
-	}
-	if err := c.authorizeMutationLocked(actor, delegateID); err != nil {
-		return delegateMutationPlans{}, err
-	}
-	if strings.TrimSpace(reason) == "" {
-		return delegateMutationPlans{}, errDelegateTargetBusy
-	}
 	if _, err := c.appendLocked(delegatestore.Event{
 		Kind:               delegatestore.EventDelegateResumabilityClosed,
 		DelegateID:         delegateID,
@@ -593,7 +605,7 @@ func (c *delegateTreeController) stopSubtreeForClose(ctx context.Context, target
 	for {
 		c.mu.Lock()
 		if c.stop == nil {
-			if blocker := c.attentionStartBlockerLocked(targetID); blocker != nil {
+			if blocker := c.attentionStartBlockerLocked(targetID, false); blocker != nil {
 				c.mu.Unlock()
 				select {
 				case <-blocker:

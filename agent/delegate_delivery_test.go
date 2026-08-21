@@ -10,6 +10,7 @@ import (
 
 	"primeradiant.com/evener/agent/internal/delegatestore"
 	"primeradiant.com/evener/agent/transcript"
+	"primeradiant.com/evener/llm"
 )
 
 func TestDelegateControllerTwoGenerationsCanFinishBeforeFirstAck(t *testing.T) {
@@ -591,6 +592,61 @@ func TestDelegateControllerDeliveryAcknowledgedAppendFailureKeepsReceiptAndHead(
 	}
 	if len(c.durable["dlg_target"].PendingDeliveries) != 1 || !c.durable["dlg_owner"].NeedsAttention || len(c.attentionWakeIDs["dlg_owner"]) != 1 {
 		t.Fatalf("retried delivery did not publish atomically: sender=%#v owner=%#v unresolved=%#v", c.durable["dlg_target"], c.durable["dlg_owner"], c.attentionWakeIDs["dlg_owner"])
+	}
+
+	inline, inlineStorePath := newDelegateControllerTestHarness(t, 1, 1)
+	seedDelegateControllerIdle(t, inline, "dlg_inline", "")
+	lease, waiter := startDelegateDeliveryGeneration(t, inline, "dlg_inline", true)
+	inlinePlan := finishDelegateDeliveryGeneration(t, inline, lease, "inline").deliveries[0]
+	if _, err := deliverDelegatePacket(inlinePlan, nil); err != nil {
+		t.Fatalf("handoff inline delivery: %v", err)
+	}
+	resolution := <-waiter.resolution
+	if resolution.commit == nil {
+		t.Fatal("inline handoff returned no delivery commit")
+	}
+	rootWriter, err := transcript.NewWriter(transcriptPath(inline.stateDir, "root-session"), transcript.Header{SessionID: "root-session"})
+	if err != nil {
+		t.Fatalf("create inline owner transcript: %v", err)
+	}
+	t.Cleanup(func() { _ = rootWriter.Close() })
+	root := &Session{id: "root-session", stateDir: inline.stateDir, state: SessionIdle, delegateController: inline}
+	root.attachTranscript(rootWriter)
+	inline.rootRuntime = root
+	if err := inline.store.Close(); err != nil {
+		t.Fatalf("close inline store: %v", err)
+	}
+	result := llm.ToolResultNamed("inline-call", "delegate_send", "done", false)
+	err = root.appendToolResultsWithDeliveryCommitsDurably(result, result, []delegateToolCallDeliveryCommit{{toolCallID: "inline-call", commit: resolution.commit}})
+	if err == nil {
+		t.Fatal("inline tool-result acknowledgment succeeded after store close")
+	}
+	root.delegateDeliveryMu.Lock()
+	scheduled := append([]delegateDeliveryPlan(nil), root.pendingDelegateDeliveries...)
+	root.delegateDeliveryMu.Unlock()
+	if len(scheduled) != 1 || scheduled[0].deliveryID != inlinePlan.deliveryID || scheduled[0].waiter != nil {
+		t.Fatalf("scheduled inline replay = %#v, want public rebuilt plan", scheduled)
+	}
+	inlineReopened, err := delegatestore.Open(inlineStorePath)
+	if err != nil {
+		t.Fatalf("reopen inline store: %v", err)
+	}
+	t.Cleanup(func() { _ = inlineReopened.Close() })
+	inline.mu.Lock()
+	inline.store = inlineReopened
+	inline.mu.Unlock()
+	if err := root.flushPendingDelegateDeliveries(); err != nil {
+		t.Fatalf("drain scheduled inline replay: %v", err)
+	}
+	if len(inline.durable["dlg_inline"].PendingDeliveries) != 0 {
+		t.Fatalf("scheduled inline replay left sender head: %#v", inline.durable["dlg_inline"].PendingDeliveries)
+	}
+	rootFold, err := readDelegateAttentionFold(transcriptPath(inline.stateDir, "root-session"), "root-session")
+	if err != nil {
+		t.Fatalf("read inline owner transcript: %v", err)
+	}
+	if rootFold.deliveryCommits[inlinePlan.deliveryID] != "inline-call" || len(rootFold.content) != 0 {
+		t.Fatalf("inline retry fold = commits:%#v unresolved:%#v", rootFold.deliveryCommits, rootFold.content)
 	}
 }
 

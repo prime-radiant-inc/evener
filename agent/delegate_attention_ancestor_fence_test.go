@@ -2,6 +2,7 @@ package agent
 
 import (
 	"errors"
+	"runtime"
 	"testing"
 	"time"
 
@@ -72,9 +73,8 @@ func TestDelegateAttentionWake_ClosedAncestorRefusesReserveAndNextIdle(t *testin
 }
 
 // TestDelegateAttentionWake_CommitStartRechecksAncestorFence covers the
-// reserve/commit race: the ancestor closes after ReserveAttention admitted the
-// wake. CommitStart must re-check the ancestor chain and refuse instead of
-// durably committing an inoperable generation.
+// accept/closure race: once transcript consumption is admitted, permanent
+// ancestor closure waits for the exact attention start batch.
 func TestDelegateAttentionWake_CommitStartRechecksAncestorFence(t *testing.T) {
 	c, _ := newDelegateControllerTestHarness(t, 4, 2)
 	seedDelegateControllerIdle(t, c, "dlg_parent", "")
@@ -96,23 +96,46 @@ func TestDelegateAttentionWake_CommitStartRechecksAncestorFence(t *testing.T) {
 	if err := child.acceptDelegateAttention(reservation); err != nil {
 		t.Fatalf("accept attention before ancestor closes: %v", err)
 	}
-	closeDelegateControllerResumability(t, c, "dlg_parent", "turn_budget_exhausted")
+	c.mu.Lock()
+	closureStarted := make(chan struct{})
+	closureDone := make(chan error, 1)
+	go func() {
+		close(closureStarted)
+		_, closeErr := c.CloseResumability(rootDelegateActor("root-session"), "dlg_parent", "turn_budget_exhausted")
+		closureDone <- closeErr
+	}()
+	<-closureStarted
+	c.mu.Unlock()
+	runtime.Gosched()
 
-	if _, err := c.CommitStart(reservation); !errors.Is(err, errDelegateTargetBusy) {
-		t.Fatalf("CommitStart after ancestor closed = %v, want target_busy", err)
+	started, err := c.CommitStart(reservation)
+	if err != nil {
+		t.Fatalf("accepted CommitStart lost to ancestor closure: %v", err)
+	}
+	if err := <-closureDone; err != nil {
+		t.Fatalf("CloseResumability after accepted start: %v", err)
 	}
 	c.mu.Lock()
 	generation := c.durable["dlg_child"].Generation
 	reservations := len(c.reservations)
+	trigger := c.runStarts[started.lease]
+	parentResumable := c.durable["dlg_parent"].Resumable
 	c.mu.Unlock()
-	if generation != 0 {
-		t.Fatalf("committed generation %d under closed ancestor, want none", generation)
+	if generation != 1 || trigger != delegatestore.TriggerAttention {
+		t.Fatalf("accepted generation = %d trigger %q, want exact 1/attention RunStarted", generation, trigger)
 	}
 	if reservations != 0 {
-		t.Fatalf("reservations after refused commit = %d, want released", reservations)
+		t.Fatalf("reservations after accepted commit = %d, want released", reservations)
 	}
-	if turns, drives := c.capacityInUse(); turns != 0 || drives != 0 {
-		t.Fatalf("capacity after refused commit = (%d, %d), want released", turns, drives)
+	if parentResumable {
+		t.Fatal("ancestor closure did not commit after accepted attention start")
+	}
+	fold, err := readDelegateAttentionFold(transcriptPath(c.stateDir, "child-dlg_child"), "child-dlg_child")
+	if err != nil {
+		t.Fatalf("read accepted attention marker: %v", err)
+	}
+	if fold.resumeGenerations[attentionID] != started.lease.generation {
+		t.Fatalf("accepted marker generation = %d, want %d", fold.resumeGenerations[attentionID], started.lease.generation)
 	}
 }
 
