@@ -36,7 +36,8 @@ build-runtime: build-web
 
 # Cross-compile for Linux (eval deployments). Invalidates the agent package
 # cache to ensure embedded files (templates, sections, agent .md) are fresh.
-## Cross-compile evener-linux-amd64 for Linux eval deployments.
+## Cross-compile evener-linux-amd64 for Linux eval deployments. Starts by
+## running `go clean -cache`, which wipes the whole Go build cache.
 build-linux:
 	go clean -cache 2>/dev/null && \
 	CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -ldflags "$(LDFLAGS)" -o evener-linux-amd64 ./cmd/evener/
@@ -118,7 +119,7 @@ dist:
 	goreleaser release --snapshot --clean
 
 # An installed hub must embed a fresh SPA, not the tracked PLACEHOLDER (install-home/install-system inherit via install).
-## Install the runtime binaries into PREFIX (default $(HOME)/.local), building
+## Install the runtime binaries into PREFIX (default ~/.local), building
 ## a fresh SPA first so the installed evener-hub never embeds the tracked
 ## placeholder.
 install: build-web
@@ -135,7 +136,7 @@ install: build-web
 	done
 
 install-home: PREFIX := $(HOME)/.local
-## Install into the user prefix ($(HOME)/.local).
+## Install into the user prefix (~/.local).
 install-home: install
 
 install-system: PREFIX := /usr/local

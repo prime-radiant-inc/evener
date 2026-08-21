@@ -161,8 +161,9 @@ test-timing-budget:
 ##   compare correctly.
 ## trigger: make test-dev-tooling wave; on demand.
 ## requires: Offline and deterministic; fixture rows only, no real suite run.
-## fails-when: Any comparison diverges from its fixture's expected verdict,
-##   or the suite leaves files behind.
+## fails-when: Any comparison diverges from its fixture's expected verdict.
+##   Leftover files fail only under the test-dev-tooling wave, which owns
+##   that check.
 test-timing-budget-selftest:
 	@scripts/gate/test-timing-budget-selftest.sh
 

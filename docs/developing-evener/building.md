@@ -65,15 +65,15 @@ the same way the ordinary runtime build does.
 | Command | Summary |
 | --- | --- |
 | `make build-runtime` | The actual recipe `build` runs: builds the evener/evener-hub pair via scripts/ops/build-runtime-pair.sh. |
-| `make build-linux` | Cross-compile evener-linux-amd64 for Linux eval deployments. |
+| `make build-linux` | Cross-compile evener-linux-amd64 for Linux eval deployments. Starts by running `go clean -cache`, which wipes the whole Go build cache. |
 | `make build-hub` | Alias for build-runtime. |
 | `make build-tui` | Build the standalone TUI binary (evener-tui). |
 | `make build-doctor` | Build evener-doctor, the read-only forensic inspector. |
 | `make build-all` | Build every runtime binary: the runtime pair, the TUI, evener-doctor, and evener-migrate. |
 | `make build-llmcall` | Build the llmcall standalone CLI binary. |
 | `make build-migrate` | Build evener-migrate. |
-| `make install` | Install the runtime binaries into PREFIX (default $(HOME)/.local), building a fresh SPA first so the installed evener-hub never embeds the tracked placeholder. |
-| `make install-home` | Install into the user prefix ($(HOME)/.local). |
+| `make install` | Install the runtime binaries into PREFIX (default ~/.local), building a fresh SPA first so the installed evener-hub never embeds the tracked placeholder. |
+| `make install-home` | Install into the user prefix (~/.local). |
 | `make install-system` | Install into the system prefix (/usr/local). |
 | `make test-install` | Integration-test the install path end to end: copy the tracked working tree into a fixture, run the install target with a synthetic HOME, and verify the installed binaries and symlinks. Skipped under -short. |
 <!-- END GENERATED -->

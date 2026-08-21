@@ -54,6 +54,7 @@ coverage-gaps:
 ## requires: Offline and deterministic; no go test or compilation, arithmetic
 ##   only.
 ## fails-when: The ranked output diverges from the fixture's hand-computed
-##   answer, or the suite leaves files behind.
+##   answer. Leftover files fail only under the test-dev-tooling wave, which
+##   owns that check.
 coverage-gaps-selftest:
 	@scripts/coverage/coverage-gaps-selftest.sh

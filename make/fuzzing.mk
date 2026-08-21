@@ -170,8 +170,8 @@ fuzz-bisect:
 ##   real replay; only the registry source (run-fuzz.sh --list) is stubbed.
 ## trigger: make test-dev-tooling wave; on demand.
 ## requires: Offline and deterministic; builds a real throwaway git history.
-## fails-when: fuzz-bisect fails to name the known-bad commit, or the suite
-##   leaves files behind.
+## fails-when: fuzz-bisect fails to name the known-bad commit. Leftover
+##   files fail only under the test-dev-tooling wave, which owns that check.
 fuzz-bisect-selftest:
 	@scripts/fuzz/fuzz-bisect-selftest.sh
 
@@ -202,7 +202,8 @@ fuzz-oracle-audit:
 ## trigger: make test-dev-tooling wave; on demand.
 ## requires: Offline and deterministic; a real throwaway module.
 ## fails-when: The audit's classification diverges from the fixture's
-##   expected verdict, or the suite leaves files behind.
+##   expected verdict. Leftover files fail only under the test-dev-tooling
+##   wave, which owns that check.
 fuzz-oracle-audit-selftest:
 	@scripts/fuzz/fuzz-oracle-audit-selftest.sh
 
@@ -261,8 +262,9 @@ fuzz-registry-check:
 ## Run gitleaks over only the fuzz seed corpora — the corpus-scoped subset
 ## of secret-scan, for fast harvester feedback.
 ## proves: The committed fuzz seed corpora contain no secret matching the
-##   gitleaks ruleset. Unlike secret-scan, the corpora are not
-##   path-allowlisted, so this genuinely inspects the seeds.
+##   gitleaks ruleset. The corpora are deliberately not path-allowlisted, so
+##   the seeds are genuinely inspected — here, and by the repo-wide
+##   secret-scan that shares this ruleset.
 ## trigger: Required CI; local harvester feedback.
 ## requires: gitleaks; local absence warns and returns zero unless
 ##   EVENER_GITLEAKS_REQUIRED=1.
