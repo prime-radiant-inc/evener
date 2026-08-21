@@ -1,100 +1,138 @@
 # Stable Delegate Attention Projection
 
 - **Issue:** [#307](https://github.com/prime-radiant-inc/evener/issues/307)
-- **Status:** Approved design
+- **Status:** Approved design, revised after adversarial review
 - **Date:** 2026-08-20
 
 ## Problem
 
-Delegate cards currently combine stable delegate lifecycle with child-thread status. These streams describe different domains and have no shared revision: a completed delegate may have an idle, resumable child session, and reconnect may deliver stale child status. Neither backend nor frontend should infer delegate lifecycle or attention from generic child-thread status.
+Delegate cards combine stable delegate lifecycle with generic child-thread status. These streams describe different domains and have no shared revision: a completed delegate may have an idle, resumable child session, and reconnect may deliver stale child status.
 
-The stable delegate projection already owns lifecycle and has `ProjectionRevision`. It needs one additional fact: whether unresolved transcript attention can wake the delegate.
+The stable delegate projection already owns lifecycle and `ProjectionRevision`. It lacks one fact: whether unresolved transcript attention can wake the delegate.
 
 ## Design
 
-The child transcript is the durable authority for unresolved attention. The delegate journal materializes only its derived boolean:
+The child transcript remains the durable authority. The delegate journal materializes one derived field:
 
 ```go
 NeedsAttention bool
 ```
 
-Add a delegate event containing that boolean. Append it only when the value changes; folding it updates `NeedsAttention` and advances the existing `ProjectionRevision`. Do not add attention IDs, another revision, or an unknown attention state.
+Add one delegate event carrying that boolean. Append it only when the value changes; folding it updates `NeedsAttention` and advances the existing `ProjectionRevision`. Do not add attention IDs, another revision, or an unknown state.
 
-The boolean is required on every stable delegate projection surface, including delegate updates, warm and cold status reads, `job_status`, Appwire, generated TypeScript, `ThreadModel.delegates`, and Hub cards. Missing historical journal data has the zero value and is corrected as described below, never by falling back to child-thread status.
+A consumed attention resolution also records an optional `ResumeGeneration`. This is crash-recovery evidence, not another state authority: zero means a historical resolution created before this design; nonzero means that exact generation must exist in the delegate journal. No new acceptance-intent event is added.
 
-The process-local pending-ID set remains an internal wake-routing aid. It is rebuilt from transcripts and is not persisted in the delegate journal or exposed to clients.
+Carry the required boolean through this closed projection list:
 
-## Invariants
+- delegate aggregate, snapshot, and status;
+- warm and cold delegate status;
+- delegate update event;
+- Appwire and generated TypeScript;
+- `ThreadModel.delegates`;
+- `job_status`;
+- Hub delegate cards.
 
-`NeedsAttention` is true exactly when the transcript contains at least one unresolved attention item eligible to wake or resume the current delegate.
+`job_list` remains unchanged. Generic child-thread status remains unchanged.
 
-- The first unresolved item changes false to true.
-- Additional unresolved items do not change the boolean or revision.
-- Consuming an item changes nothing while another remains unresolved.
+## Attention ownership
+
+The controller keeps one process-local set that exactly mirrors all transcript-unresolved attention IDs, including claimed or in-flight IDs. Reservation and settlement claims remain separate from this set. An ID leaves the set only after its transcript resolution and any required delegate event commit.
+
+A resumed generation claims one attention ID. Other unresolved IDs remain in the set and keep `NeedsAttention=true`.
+
+`NeedsAttention` is true when at least one unresolved ID is eligible to wake or resume the delegate.
+
+- The first unresolved ID changes false to true.
+- Additional IDs and nonfinal consumption do not change the boolean or revision.
 - Durable acceptance of the final answer changes true to false.
-- Closed, stopped, and otherwise non-resumable delegates project false, including when malformed historical state says true.
+- `PhaseStopping`, a pending stop, permanent closure, non-resumability, or a permanent ancestor fence forces false.
+- A completed generation's `Terminal` bit or `OutcomeStopped` does not itself force false. An idle, resumable delegate may need attention between generations.
 - A resumed generation can become true again.
 
-Stable projection data solely determines delegate lifecycle, terminal outcome, resumability, and attention. Child transcripts remain authoritative for attention content; generic child-thread lifecycle status determines none of those delegate fields.
+Existing lifecycle events normalize `NeedsAttention=false` in the same fold whenever they make an aggregate stopping or permanently ineligible. Subtree lifecycle events normalize every affected aggregate. Do not append separate attention events for lifecycle-caused clears. The frontend uses `NeedsAttention` directly; it does not add a second terminal gate.
 
-## Write ordering
+## Serialized transitions
 
-The controller serializes comparison with the folded aggregate, journal append, and publication of the process-local pending set. It emits the existing revisioned delegate update afterward.
+Attention transitions use the existing controller claim pattern. A per-child claim spans transcript I/O and the delegate-journal commit so two transcript-derived proposals cannot publish out of order. It is not a generalized transaction framework.
 
-When opening attention:
+### Opening attention through delivery
 
-1. Durably append and verify the attention turn in the child transcript.
-2. Derive the proposed pending set.
-3. If its boolean differs, append the delegate event.
-4. Publish the local set and delegate update only after any required journal append succeeds.
+1. Append and verify the attention turn in the receiver transcript.
+2. Under the claim, derive the complete unresolved-ID set.
+3. In one controller-locked `AppendBatch`, append the owner's attention event when false becomes true and acknowledge the sender's delivery.
+4. After the batch succeeds, publish the local set and revisioned updates for affected delegates.
 
-When accepting an answer:
+Root-owned deliveries have no owner delegate event. If the batch fails, the delivery remains replayable and local attention state does not advance.
 
-1. Durably record its consumption in the child transcript.
-2. Derive the proposed pending set.
-3. If the final unresolved item was consumed, append `NeedsAttention=false`.
-4. Publish the local removal and delegate update only after any required journal append succeeds.
-5. Admit the resumed generation only after the clear succeeds.
+### Accepting an answer and resuming
 
-A journal failure leaves transcript truth durable but does not publish the proposed local state or admit a resumed generation. Retry derives state from the transcript, completes the projection change without duplicating transcript records, and then resumes. Duplicate booleans are no-ops and do not advance `ProjectionRevision`.
+1. Acquire an acceptance claim and reserve the next generation. If stop already won, reject before transcript consumption.
+2. Durably record consumption in the child transcript with that `ResumeGeneration`.
+3. Derive the complete unresolved-ID set.
+4. In one `AppendBatch`, append the final false event when needed and append `RunStarted` for the reserved generation.
+5. After the batch succeeds, publish the local removal and start the generation.
 
-## Restore, cold reads, and compatibility
+Once consumption is admitted, the claim linearizes against stop: stop wins before transcript consumption or waits until the attention-clear/`RunStarted` batch commits. If the batch fails after transcript consumption, retain the desired boolean and owed generation as process-local repair state; retry completes the same batch without duplicating transcript records.
 
-Before exposing a controller, startup rebuilds pending IDs from each child transcript and compares the derived boolean with the journal aggregate. It appends one repair event when they differ, then publishes the rebuilt local sets. Transcript read or repair failure fails startup rather than serving known-stale state.
+## Projection append failure
 
-A cold `LoadSessionDelegateStatus` read overlays the transcript-derived boolean on its returned snapshot without modifying the journal. A cold snapshot replaces client state rather than joining a live revision stream. If that controller later starts, startup repair persists any difference before live updates begin.
+A failed attention append does not publish local state, emit a delegate update, acknowledge a delivery, or admit a generation. Existing retry paths complete persistence before those operations continue.
 
-Existing journals require no migration. Their absent field reads as false and is corrected by cold overlay or startup repair. No background repair, cache, poller, TTL, janitor, migration command, or downgrade compatibility mechanism is added.
+During retry, every live projection surface continues to serve the last journal-committed value and the operation reports its persistence error. Do not overlay an uncommitted value on selected reads. Wake, resume, and start remain blocked until persistence succeeds. A crash discards process-local retry state, but bootstrap reconstructs it from transcripts as described below.
 
-## Frontend ownership
+The transcript drives repair; the delegate journal remains the one client-visible live projection. Do not make general snapshot/status APIs error-capable and do not add a background repair service.
 
-After stable delegate hydration, `ThreadModel.delegates` is the sole source of card lifecycle and attention. Cards derive lifecycle, terminal outcome, attention, reason, usage, timing, exhaustion, and resumability from that projection. Attention is shown only on a nonterminal projection with `NeedsAttention=true`.
+## Restore and cold reads
 
-Before hydration, frozen delegate tool output remains the fallback. Child watches may provide transcript content, quotes, turns, calls, and counts, but never card lifecycle or attention. Remove the child-status reconciliation path and its obsolete tests when no content behavior needs them.
+Bootstrap performs existing stop reconciliation, missing-input cleanup, and unreachable-attention transfer first. Immediately before exposing the controller, it scans eligible delegate transcripts.
 
-## Failure behavior
+For each consumed resolution with nonzero `ResumeGeneration`, bootstrap verifies that the matching `RunStarted` exists. If it is missing, a dedicated accepted-attention admission step reconstructs the child runtime from its persisted transcript/descriptor, appends the owed `RunStarted` together with any required boolean change, attaches the runtime, and launches that generation. It reuses existing runtime construction and committed-start failure handling; it does not route the generation through lost-runtime reconciliation. Historical resolutions with zero carry no owed-start intent. Recovery works even when other attention IDs remain unresolved and the boolean is already true.
 
-- Never emit or return a projection transition whose journal append failed.
-- Treat transcript read failure during startup or cold loading as an error, not false attention.
-- Preserve existing revision fencing and latest-activity merge behavior for delegate updates.
+After recovering owed starts, bootstrap compares transcript-derived booleans with journal aggregates and appends the same attention-change event for remaining mismatches through the existing batch path. It then publishes the rebuilt local sets.
 
-## Test strategy
+Read transcripts only for delegates that can still wake. Closed, non-resumable, stopping, pending-stop, and permanently ancestor-fenced delegates normalize to false without requiring a transcript read. A missing or unreadable transcript for an eligible existing delegate is an error; do not reuse missing-as-empty behavior.
 
-Use the smallest existing behavior-level tests that prove:
+A cold `LoadSessionDelegateStatus` read applies the same eligibility rules and overlays transcript-derived attention without writing the journal. A cold snapshot replaces client state rather than joining a live revision stream. If its controller later starts, bootstrap persists any mismatch before live updates begin.
 
-1. Opening the first of multiple attention items and durably accepting the last answer produce the only boolean and revision changes; journal failure prevents visibility and resume until retry.
-2. Startup repair and cold reads correct stale values in both directions from transcript truth, and transcript read failure is returned.
-3. One frontend card test shows that stable lifecycle and attention control the card even when child status is `active` or `awaiting`.
+Existing journals require no migration. Their absent field folds as false and is corrected by cold overlay or startup repair. No cache, poller, TTL, janitor, migration command, second repair event type, or downgrade mechanism is added.
 
-Update existing event/Appwire fixtures for the required field. Delete obsolete child-lifecycle tests. Add no test infrastructure, meta-tests, source-string assertions, mocks of compilers/browsers/processes, matrices, or one-test-per-function coverage scaffolding.
+## Frontend ownership and deletion
+
+After hydration, the owning `ThreadModel.delegates` entry solely determines lifecycle, outcome, reason, timing, exhaustion, resumability, and attention. Frozen delegate tool output is the pre-hydration fallback.
+
+Child watches remain only where expanded cards need transcript content, quotes, turns, calls, counts, or latest-quote activity. Delete rather than layer over:
+
+- `WatchedChildIndicator` and its lean collapsed-row mount;
+- child-status lifecycle mapping and write-back;
+- `liveKind`, lifecycle no-resurrection helpers, and lifecycle shadow fields;
+- follow-up-tool mutation of spawn-row lifecycle/reason/resumability/exhaustion;
+- child-derived lifecycle, attention, and run-window fallbacks;
+- obsolete tests for those paths.
+
+Stable `NeedsAttention` controls the card's hidden status and glyph even when a content watch reports child `active`, `idle`, or `awaiting`.
+
+## Tests
+
+Use existing suites and fault seams. Add no test infrastructure, meta-tests, source-string assertions, compiler/browser/process mocks, mutation scaffolding, or one-test-per-function coverage work.
+
+Keep three behavior groups:
+
+1. **Controller/store transition:** first open, additional IDs, nonfinal/final consumption, delivery-ack batching, acceptance-vs-stop precedence, lifecycle-folded false, same-value no-op, revision changes, append-failure retry state, and crash recovery of a consumed resolution's owed generation. Extend existing controller state-machine tests; do not create one test per case.
+2. **Restore and cold read:** stale values in both directions, eligibility filtering, final bootstrap placement, and eligible missing-transcript error in one table-driven group.
+3. **Projection and card:** extend existing event/Appwire fixtures, then use one real card test to prove stable attention authority over child status. Delete obsolete reconciliation tests.
+
+Add another test only for a distinct failure mode these groups cannot express.
 
 ## Acceptance criteria
 
-- Every stable delegate projection surface carries required `NeedsAttention`.
-- Attention handling advances the existing `ProjectionRevision` only when the boolean changes.
-- Live updates, warm reads, cold reads, `job_status`, Appwire, and Hub cards agree.
-- Durable acceptance of the final answer clears attention before resume begins.
-- Startup repairs stale journal state from transcript authority; cold reads overlay the same truth without writing.
-- Stable projection data solely owns frontend lifecycle and attention; child-thread status cannot override it.
-- Obsolete frontend reconciliation code and tests are removed.
-- The design adds only the materialized boolean and its journal event, with no generalized attention framework or background machinery.
+- Every surface in the closed projection list carries required `NeedsAttention` and agrees.
+- Attention handling advances `ProjectionRevision` only when the boolean changes.
+- Delivery acknowledgment and first-open materialization commit atomically in the delegate journal.
+- Final answer consumption records an owed generation; attention clear and `RunStarted` commit atomically and are linearized against stop.
+- Append failure leaves every live surface on the last committed revision, reports the operation error, and blocks admission/live emission until retry persists.
+- Bootstrap recovers a consumed-but-not-started generation after a crash.
+- Lifecycle events normalize attention without separate attention-event records.
+- Bootstrap and cold reads derive attention after attention-mutating reconciliation and apply eligibility filtering.
+- Frontend lifecycle and attention come only from the stable delegate projection after hydration.
+- Obsolete child-status reconciliation production code and tests are deleted.
+- The implementation adds only the materialized boolean, its delegate event, the optional owed-generation transcript marker, and the narrow claims/retry state required for ordering—no generalized attention framework or background machinery.
