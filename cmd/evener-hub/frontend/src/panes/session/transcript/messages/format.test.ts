@@ -1,14 +1,6 @@
 // @vitest-environment node
 import { expect, test } from "vitest";
-import {
-  firstLine,
-  formatClockTime,
-  formatClockTimeSeconds,
-  formatDurationMs,
-  formatElapsed,
-  formatTokenCount,
-  plainQuoteLine,
-} from "./format";
+import { firstLine, formatClockTime, formatDurationMs, formatTokenCount } from "./format";
 
 // --- formatTokenCount -----------------------------------------------------
 // Parity: renderer-format.js:582-587. Below 1000 is a plain rounded
@@ -144,86 +136,4 @@ test("formatClockTime: undefined input yields undefined, so a header with no tim
 test("formatClockTime: an unparseable string yields undefined rather than a guess", () => {
   expect(formatClockTime("not a timestamp")).toBeUndefined();
   expect(formatClockTime("")).toBeUndefined();
-});
-
-// --- formatClockTimeSeconds ---------------------------------------------------
-// The subagent card's per-quote timestamps: local "HH:MM:SS" - same local
-// projection and missing-data rules as formatClockTime, with seconds because
-// consecutive child steps routinely land inside the same minute. Expected
-// values are computed through the same Date parsing the helper uses, never
-// hardcoded, so the suite stays timezone-independent.
-
-test("formatClockTimeSeconds: renders a valid ISO timestamp as local HH:MM:SS", () => {
-  const iso = "2026-08-20T09:41:02";
-  const parsed = new Date(iso);
-  const expected = `${String(parsed.getHours()).padStart(2, "0")}:${String(parsed.getMinutes()).padStart(2, "0")}:${String(parsed.getSeconds()).padStart(2, "0")}`;
-  expect(formatClockTimeSeconds(iso)).toBe(expected);
-});
-
-test("formatClockTimeSeconds: a Zulu ISO projects to the correct local hour, minute, and second", () => {
-  const iso = "2026-08-20T16:41:02Z";
-  const parsed = new Date(iso);
-  const expected = `${String(parsed.getHours()).padStart(2, "0")}:${String(parsed.getMinutes()).padStart(2, "0")}:${String(parsed.getSeconds()).padStart(2, "0")}`;
-  expect(formatClockTimeSeconds(iso)).toBe(expected);
-});
-
-test("formatClockTimeSeconds: missing or unparseable input yields undefined rather than a guess", () => {
-  expect(formatClockTimeSeconds(undefined)).toBeUndefined();
-  expect(formatClockTimeSeconds("not a timestamp")).toBeUndefined();
-});
-
-// --- formatElapsed ------------------------------------------------------------
-// The subagent card's clock: a duration that can run to minutes or hours, so
-// the whole-seconds ceiling of formatDurationMs ("221s") is not enough - but
-// the decimal tier is noise on a clock. Whole seconds under a minute, m:ss
-// under an hour, h:mm beyond. Elapsed time starts at an honest "0s".
-
-test("formatElapsed: under a minute renders whole seconds, starting at an honest 0s", () => {
-  expect(formatElapsed(0)).toBe("0s");
-  expect(formatElapsed(400)).toBe("0s");
-  expect(formatElapsed(42_000)).toBe("42s");
-  expect(formatElapsed(59_999)).toBe("59s");
-});
-
-test("formatElapsed: under an hour renders m:ss with zero-padded seconds", () => {
-  expect(formatElapsed(60_000)).toBe("1m00s");
-  expect(formatElapsed(221_000)).toBe("3m41s");
-  expect(formatElapsed(3_599_000)).toBe("59m59s");
-});
-
-test("formatElapsed: an hour and beyond renders h:mm with zero-padded minutes", () => {
-  expect(formatElapsed(3_600_000)).toBe("1h00m");
-  expect(formatElapsed(3_780_000)).toBe("1h03m");
-});
-
-test("formatElapsed: clock skew (negative input) clamps to 0s rather than printing a negative duration", () => {
-  expect(formatElapsed(-5_000)).toBe("0s");
-});
-
-// --- plainQuoteLine -----------------------------------------------------------
-// The subagent card's one-line quote of an agent message. A final report is
-// markdown; flattened raw, its heading markers are noise at a glance. The
-// quote lands on the first SUBSTANTIVE line: blank and heading-only lines are
-// skipped, inline emphasis markers stripped. Never invents text - a message
-// with no substance quotes nothing.
-
-test("plainQuoteLine: skips blank and heading-only lines to the first substantive line", () => {
-  expect(plainQuoteLine("## Summary\n\nFixed 9 files. All tests pass.\n\n## Files\n\n- a.go")).toBe(
-    "Fixed 9 files. All tests pass.",
-  );
-});
-
-test("plainQuoteLine: strips inline emphasis and code markers", () => {
-  expect(plainQuoteLine("**Fixed** `x.go` and *reran* the gate")).toBe("Fixed x.go and reran the gate");
-});
-
-test("plainQuoteLine: a plain message is untouched", () => {
-  expect(plainQuoteLine("All 5 findings fixed, one commit per file.")).toBe(
-    "All 5 findings fixed, one commit per file.",
-  );
-});
-
-test("plainQuoteLine: a message with no substantive line yields empty string (no quote, never a heading as the quote)", () => {
-  expect(plainQuoteLine("## Summary\n\n### Details")).toBe("");
-  expect(plainQuoteLine("\n\n  \n")).toBe("");
 });

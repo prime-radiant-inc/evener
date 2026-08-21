@@ -948,46 +948,6 @@ test("task-only delegate purpose previews preserve an emoji at the Unicode clipp
   expect(within(asciiTool!).getByTestId("tool-row-purpose").textContent).toBe(exactAsciiTask);
 });
 
-test("task-only delegates show a bounded purpose preview above a headless card", () => {
-  const task =
-    "**Inspect** the parser\n\nand report the `task` field. Keep the full mandate available for the reader. This suffix makes the preview bounded and honest.";
-  const { container } = render(
-    <ToolCallItem
-      item={item({
-        id: "task_only_delegate",
-        callId: "call_task_only_delegate",
-        toolName: "delegate",
-        argumentsJSON: JSON.stringify({ task, mode: "foreground_timeout" }),
-        output: JSON.stringify({ delegate_id: "dlg_task_only", status: "completed", transcript_ref: "ref_task_only" }),
-      })}
-      turn={turn}
-      live={false}
-    />,
-  );
-
-  const tool = screen.getByTestId("tool-call-item");
-  const card = screen.getByTestId("subagent-row");
-  const purpose = screen.getByTestId("tool-row-purpose");
-  expect(purpose.textContent).toBe(
-    "**Inspect** the parser and report the `task` field. Keep the full mandate available for the reader. This suffix makes th…",
-  );
-  expect(purpose.textContent).not.toBe(task);
-  // The card is headless: no tag (identity is the row's own purpose, above),
-  // and the old Mandate/Prompt fold is gone, so the row's own disclosure is
-  // the only details/summary in the tool call.
-  expect(within(card).queryByTestId("subagent-tag")).toBeNull();
-  expect(screen.queryByTestId("subagent-mandate")).toBeNull();
-  expect(tool.querySelectorAll("details > summary")).toHaveLength(1); // the row's own
-  expect(card.querySelectorAll("details > summary")).toHaveLength(0);
-  expect(within(tool).getByTestId("tool-row-status").querySelector('[role="img"]')).toBeTruthy();
-
-  // open ⤢ rides the delegate row's trailing slot - visible folded or not.
-  const openTranscript = within(tool).getByRole("button", { name: "Open transcript" });
-  expect(openTranscript.textContent).toContain("open");
-  expect(openTranscript.querySelector("svg")).toBeTruthy();
-  expect(container.querySelectorAll('[data-testid="tool-row"]')).toHaveLength(1);
-});
-
 test("delegate controls require stable delegate_id and reject activation-only job_id", () => {
   render(
     <>

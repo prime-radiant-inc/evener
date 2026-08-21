@@ -1,15 +1,4 @@
-/* Rail × Quote subagent card (2026-08-20 redesign).
- *
- * One card per subagent. The 2px left rail carries the state colour; the card
- * content is the child's OWN words (tool purposes + agent messages), quoted
- * verbatim - never the parent's paraphrase. The stats line counts the child's
- * turns/tool calls (from the full event-stream watch the card already holds)
- * and the delegate's projected token usage, closing with the clock and the
- * expand chevron. Square corners are an explicit design amendment.
- *
- * This stylesheet sits in the token contract's
- * SEMANTIC_PATH_EXCEPTIONS (see styles/token-contract.test.ts's kata 3h80
- * note) so the state hues may be referenced here directly. */
+/* Rail × Quote card. State hues are a token-contract semantic exception. */
 
 .card {
   display: flex;
@@ -24,8 +13,6 @@
   border-radius: 0; /* square corners are the design, not an omission */
 }
 
-/* The rail is the status. Done is the resting edge; running/failed/needs-you
- * each claim their one hue. */
 .card[data-kind="running"] {
   border-left-color: var(--alive);
 }
@@ -33,15 +20,11 @@
   border-left-color: var(--danger);
   background: var(--danger-bg);
 }
-/* Needs-you is a live-cadence overlay (the child asked a question and waits),
- * not a new row kind - the card still sorts/reports as running. */
 .card[data-attention="true"] {
   border-left-color: var(--attention);
   background: var(--attention-bg);
 }
 
-/* The quote: the child's newest own words. Italic is the only "this is quoted"
- * marker; long paths and URLs wrap instead of widening the card. */
 .quote {
   display: block;
   min-width: 0;
@@ -60,7 +43,6 @@
   color: var(--ink-mid);
 }
 
-/* Stats: turns · calls · ↑in ↓out ... clock + chevron. Mono micro text. */
 .stats {
   display: flex;
   min-width: 0;
@@ -92,7 +74,6 @@
   white-space: nowrap;
 }
 
-/* Expanded: the recent-quotes list, chronological, live one last + bold. */
 .quotes {
   display: flex;
   flex-direction: column;
@@ -118,8 +99,6 @@
   font-size: var(--font-size-caption);
   color: var(--ink-low);
 }
-/* The latest quote while the child is still running - emphasis by ink weight,
- * not a status hue. */
 .quoteLive {
   color: var(--ink-hi);
   font-weight: 600;
@@ -141,8 +120,6 @@
   font-style: italic;
 }
 
-/* The Job detail section (exhaustion budget / resumable evidence), kept from
- * the previous design, rendered inside the expanded region when populated. */
 .section {
   display: flex;
   flex-direction: column;

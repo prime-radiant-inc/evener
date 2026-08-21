@@ -425,9 +425,7 @@ test("the generic job_* descriptor never wins over an exact match", () => {
   expect(toolRendererFor("job_stop")).not.toBe(toolRendererFor("job_watch"));
 });
 
-// --- correlating follow-up calls into the subagent module's existing row
-// (never spawning a fresh row of their own - mirrors the legacy
-// reconcileSubagent's identical "update only" rule) ------------------------
+// --- follow-up calls patch existing delegate rows only --------------------
 
 function spawnRow(turnId: string, delegateId: string, transcriptRef: string) {
   const turn: TurnModel = { id: turnId, status: "completed", items: [] };

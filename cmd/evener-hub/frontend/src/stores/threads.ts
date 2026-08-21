@@ -9,10 +9,6 @@
 
 import { useStore } from "zustand";
 import { createStore } from "zustand/vanilla";
-import {
-  applyEvenerDelegateUpdated,
-  releaseSubagentSession,
-} from "../panes/session/transcript/tools/subagentModuleStore";
 import { ClientNotReadyError, mutationErrorData, WireError } from "../protocol/errors";
 import type { ThreadModel } from "../protocol/model";
 import {
@@ -378,7 +374,6 @@ function currentDispatchClient(targetRef?: string): AppwireClientLike | null {
 
 function dropUnpinnedModel(ref: string): void {
   if (pinnedMutationRefs.has(ref) || (refCounts.get(ref) ?? 0) > 0) return;
-  releaseSubagentSessionIfUnowned(ref);
   // Nothing owns this ref any more, so no scheduled retry may outlive it.
   retireOwnedHydration("thread", ref);
   threadsStore.setState((state) => {
@@ -603,13 +598,6 @@ const watchIncludeTurns = new Map<string, boolean>();
 // was released before either response arrived.
 const watchHydratedIncludeTurns = new Map<string, boolean>();
 
-function releaseSubagentSessionIfUnowned(ref: string): void {
-  if ((refCounts.get(ref) ?? 0) > 0) return;
-  if ((watchRefCounts.get(ref) ?? 0) > 0) return;
-  if (pinnedMutationRefs.has(ref)) return;
-  releaseSubagentSession(ref);
-}
-
 // Every tracked ref gets exactly these params on both the first subscribe
 // (ensureThread) and every re-subscribe (onReady after reconnect):
 // replaceSubscription is always false — additive, layering onto whatever the
@@ -648,7 +636,6 @@ async function hydrateAndSubscribe(
     throw err;
   }
   const model = hydrateThread(response, ref, now);
-  hydrateSubagentRows(model, ref);
   applyHydrationResponseCut(pending, ref, model);
   return { model, response };
 }
@@ -663,7 +650,6 @@ async function hydrateAndSubscribe(
 // caller can observe once the retry loop is running.
 function markThreadDeletedIfFenced(ref: string, err: unknown): void {
   if (mutationErrorData(err)?.mutationOutcome !== "targetDeleted") return;
-  releaseSubagentSession(ref);
   threadsStore.setState((s) => {
     if (s.deletedRefs.has(ref)) return s;
     const deletedRefs = new Set(s.deletedRefs);
@@ -705,7 +691,6 @@ async function hydrateAndSubscribeWatch(
     throw err;
   }
   const model = hydrateThread(resp, ref, now);
-  hydrateSubagentRows(model, ref);
   applyHydrationResponseCut(pending, ref, model);
   return model;
 }
@@ -1114,26 +1099,6 @@ function applyToMap(
   return { next, changedRefs };
 }
 
-// Stable delegate snapshots update the transcript module independently of
-// ThreadModel rendering. Shell job lifecycle notifications deliberately do
-// not enter this path: a shell keeps its job row and can never mutate or
-// synthesize a delegate row.
-function applyStableDelegateSignal(n: AnyNotification): void {
-  if (n.method === "evener/delegate/updated") applyEvenerDelegateUpdated(n.params.delegate, n.params.ref);
-}
-
-// A thread/read snapshot carries the thread's stable delegate projections
-// (evener.diagnostics.delegates) - terminal kind, reasons, usage, and run
-// windows for delegates this session spawned. Notifications only cover LIVE
-// changes, so a freshly opened or historical session's subagent cards would
-// otherwise render from the frozen spawn-call output alone (status stuck
-// "running", no tokens, the spawn's seconds posing as the child's runtime).
-// Hydrate the rows from every read snapshot through the same apply path
-// notifications use (revision-fenced and idempotent, so re-reads are free).
-function hydrateSubagentRows(model: ThreadModel, ref: string): void {
-  for (const delegate of model.delegates ?? []) applyEvenerDelegateUpdated(delegate, ref);
-}
-
 function handleNotification(n: AnyNotification): void {
   if (n.method === "evener/thread/resync") {
     if (wiredClient) void handleReady(wiredClient, readyEpoch, n.params.ref);
@@ -1154,7 +1119,6 @@ function handleNotification(n: AnyNotification): void {
         });
     }
   }
-  applyStableDelegateSignal(n);
   const now = Date.now();
   const { threads, frameTimes, watchedThreads, watchedFrameTimes } = threadsStore.getState();
   const pendingRefs = new Set<string>();
@@ -1809,7 +1773,6 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
       return;
     }
     refCounts.delete(ref);
-    releaseSubagentSessionIfUnowned(ref);
     if (pinnedMutationRefs.has(ref)) return;
     // Release is terminal for this owner generation: cancel its scheduled
     // retry and wake anything still awaiting its first model.
@@ -1960,7 +1923,6 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
       return;
     }
     watchRefCounts.delete(ref);
-    releaseSubagentSessionIfUnowned(ref);
     retireOwnedHydration("watched", ref);
     watchGenerations.set(ref, (watchGenerations.get(ref) ?? 0) + 1);
     // A retired lifecycle must not lend its pending hydrate to a new watcher.

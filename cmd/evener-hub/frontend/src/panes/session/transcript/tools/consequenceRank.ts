@@ -28,8 +28,8 @@
 //
 // - delegate/delegate_send are clusterable and ranked like every other tool
 //   in this table (2026-07-26 ruling from Jesse). A delegate call does not
-//   get a pass from ranking just because it also owns a subagent module
-//   rendered beneath it in the transcript - keeping that module's provenance
+//   get a pass from ranking just because it also owns a delegate card
+//   rendered beneath it in the transcript - keeping that card's provenance
 //   legible when its spawning call is folded into a collapsed run is d6fp's
 //   problem to solve, not a reason for this module to exempt the call.
 //

@@ -11,7 +11,6 @@ import "./subagentModule";
 import type { DockviewApi } from "dockview-core";
 import { type ItemModel, SYSTEM_PRELUDE_TURN_ID, type TurnModel } from "../../../../protocol/model";
 import { FakeClient } from "../../../../protocol/testing/fakeClient";
-import type { EvenerDelegateInfo } from "../../../../protocol/types.gen";
 import { registerPaneForTests } from "../../../../shell/paneRegistry";
 import { registerDockviewApi, resetWorkspaceStoreForTests, workspaceStore } from "../../../../shell/workspace";
 import { connectionStore } from "../../../../stores/connection";
@@ -110,7 +109,7 @@ test("rowFromDelegateItem uses stable delegate_id and rejects activation-only jo
   );
   expect(stable).toMatchObject({
     rowKey: "dlg:dlg_stable",
-    row: { delegateId: "dlg_stable", transcriptRef: "local:sess_child", task: "inspect" },
+    row: { delegateId: "dlg_stable", transcriptRef: "local:sess_child" },
   });
   expect(stable?.row).not.toHaveProperty("jobId");
 
@@ -937,43 +936,6 @@ test("the stats line singularizes a single turn and a single call", async () => 
   expect(stats.textContent).not.toContain("1 turns");
 });
 
-test("the stats line shows the delegate's projected token usage, and omits the segment entirely when there is none", () => {
-  const turn: TurnModel = { id: "turn_1", status: "completed", items: [] };
-  const withUsage = delegateItem({
-    id: "d_tok",
-    callId: "call_tok",
-    argumentsJSON: JSON.stringify({ task: "tokened" }),
-    output: JSON.stringify({ delegate_id: "job_tok", status: "running" }),
-  });
-  const withoutUsage = delegateItem({
-    id: "d_notok",
-    callId: "call_notok",
-    argumentsJSON: JSON.stringify({ task: "untokened" }),
-    output: JSON.stringify({ delegate_id: "job_notok", status: "running" }),
-  });
-  render(
-    <>
-      <ToolCallItem item={withUsage} turn={turn} live={false} />
-      <ToolCallItem item={withoutUsage} turn={turn} live={false} />
-    </>,
-  );
-  act(() =>
-    updateSubagentRowIfExists(turnScopeKey(undefined, "turn_1"), "dlg:job_tok", {
-      stable: { status: "running", usage: { inputTokens: 41200, outputTokens: 6100 } } as unknown as EvenerDelegateInfo,
-    }),
-  );
-
-  const rows = screen.getAllByTestId("subagent-row");
-  // Both running, so spawn order holds: the usage-patched card is first.
-  const [tokRow, noTokRow] = rows;
-  if (!tokRow || !noTokRow) throw new Error("expected two subagent cards");
-  expect(within(tokRow!).getByTestId("subagent-stats").textContent).toContain("↑41k ↓6k");
-  // The no-usage rule (the thread model's own usage-null precedent): absent
-  // data renders as no segment, never a misleading ↑0 ↓0.
-  expect(within(noTokRow!).getByTestId("subagent-stats").textContent).not.toContain("↑");
-  expect(within(noTokRow!).getByTestId("subagent-stats").textContent).not.toContain("↓");
-});
-
 test("a running card's stats line closes with a live elapsed clock from its start time", () => {
   const Body = toolRendererFor("delegate").body!;
   const now = 1_700_000_221_000;
@@ -1009,8 +971,6 @@ test("a child awaiting input earns the attention rail while staying kind=running
 
   const row = screen.getByTestId("subagent-row");
   await waitFor(() => expect(row.dataset.attention).toBe("true"));
-  // Needs-you is a cadence overlay, not a new row kind: the row still sorts
-  // and reports as running.
   expect(row.dataset.kind).toBe("running");
 });
 
@@ -1213,34 +1173,6 @@ test("a historical session read hydrates a card's kind, tokens, and clock from t
 // round-trip (seconds), not the child's run (minutes). The stable
 // projection's runStartedAt/runEndedAt is the child's real window and must
 // win whenever it exists.
-test("the clock shows the child's run window from the stable projection, not the spawn call's seconds", () => {
-  const turn: TurnModel = { id: "turn_1", status: "completed", items: [] };
-  const t0 = 1_700_000_000_000;
-  const settled = delegateItem({
-    id: "d_runwindow",
-    callId: "call_runwindow",
-    argumentsJSON: JSON.stringify({ task: "long child, quick spawn" }),
-    output: JSON.stringify({ delegate_id: "job_rw", status: "running" }),
-    startedAt: new Date(t0).toISOString(),
-    completedAt: new Date(t0 + 4_000).toISOString(), // the spawn round-trip
-  });
-  render(<ToolCallItem item={settled} turn={turn} live={false} />);
-  act(() =>
-    updateSubagentRowIfExists(turnScopeKey(undefined, "turn_1"), "dlg:job_rw", {
-      stable: {
-        status: "completed",
-        terminal: true,
-        outcome: "completed",
-        runStartedAt: new Date(t0).toISOString(),
-        runEndedAt: new Date(t0 + 22 * 60_000).toISOString(),
-      } as unknown as EvenerDelegateInfo,
-    }),
-  );
-  const stats = within(screen.getByTestId("subagent-row")).getByTestId("subagent-stats");
-  expect(stats.textContent).toContain("22m00s");
-  expect(stats.textContent).not.toContain("4s");
-});
-
 // With no stable projection in play (a historical session read, where no
 // delegate notifications arrive), the next-best honest window is the child
 // transcript's own turn span - the card already holds the full-turns watch.

@@ -174,7 +174,7 @@ test("delegate always ranks destructive - spawns an independently-acting agent w
   expect(consequenceLevel(call("delegate", { task: "do something" }))).toBe("destructive");
 });
 
-test("delegate_send always ranks destructive - steers a running or idle delegate, equally unbounded, and is clusterable like every other tool here (2026-07-26 ruling: no exemption for owning a subagent module)", () => {
+test("delegate_send always ranks destructive - steers a running or idle delegate, equally unbounded, and is clusterable like every other tool here (2026-07-26 ruling: no exemption for owning a delegate card)", () => {
   expect(consequenceLevel(call("delegate_send", { to: "dlg_1", message: "keep going" }))).toBe("destructive");
 });
 

@@ -1,21 +1,13 @@
-// Small, pure text-formatting helpers shared by the message renderers in
-// this directory. Kept dependency-free (no React, no ItemModel/TurnModel)
-// so each is trivially unit-testable in isolation - see format.test.ts.
+// Pure text-formatting helpers shared by transcript renderers.
 
-// formatTokenCount mirrors legacy's own token formatter
-// (renderer-format.js:582-587): plain integer under 1000, "Nk" (rounded, no
-// decimal) at/above 1000 - deliberately never scales past "k" (1,000,000
-// reads "1000k", not "1M").
+// Deliberately never scales past "k" to match the legacy formatter.
 export function formatTokenCount(n: number): string {
   const clamped = Number.isFinite(n) && n > 0 ? n : 0;
   if (clamped < 1000) return String(Math.round(clamped));
   return `${Math.round(clamped / 1000)}k`;
 }
 
-// formatDurationMs mirrors legacy's formatToolDuration
-// (renderer-format.js:636): floors sub-1000ms at 1ms so a real (non-zero)
-// duration never prints the dishonest "0ms"; 1000-9999ms shows one decimal
-// of seconds with a stripped trailing ".0"; 10000ms+ shows whole seconds.
+// Floors at 1ms, then uses decimal or whole seconds as durations grow.
 export function formatDurationMs(ms: number): string {
   const rounded = Math.max(1, Math.round(ms));
   if (rounded < 1000) return `${rounded}ms`;
@@ -23,11 +15,7 @@ export function formatDurationMs(ms: number): string {
   return `${Math.round(rounded / 1000)}s`;
 }
 
-// firstLine finds the first non-blank line of `text`, trims it, and clips
-// it to maxLen with a trailing ellipsis if it overflows. Deliberately
-// simpler than legacy's reasoningGist (renderer-format.js:688-697, which
-// prefers the LAST sentence and strips filler words) - the wave-4 scope
-// calls for a first-line preview, not a reproduction of that heuristic.
+// Returns a clipped first non-blank line.
 export function firstLine(text: string, maxLen: number): string {
   const line = text
     .split("\n")
@@ -38,27 +26,14 @@ export function firstLine(text: string, maxLen: number): string {
   return `${line.slice(0, maxLen).trimEnd()}…`;
 }
 
-// formatCharCount renders a plain character count for a scaffolding
-// disclosure's summary line (SystemNoticeItem's "System prompt · 8.2k
-// chars"): the exact count under 1000, otherwise one decimal place of
-// thousands with a stripped trailing ".0" (mirrors formatDurationMs's own
-// stripping above). Deliberately its own helper rather than reusing
-// formatTokenCount - that one rounds to a whole "k" with no decimal, fine
-// for a token count but too coarse here, where the reader is deciding
-// whether a many-thousand-character block is worth expanding.
+// Character counts retain one decimal of thousands, unlike token counts.
 export function formatCharCount(n: number): string {
   const clamped = Number.isFinite(n) && n > 0 ? n : 0;
   if (clamped < 1000) return `${clamped} chars`;
   return `${(clamped / 1000).toFixed(1).replace(/\.0$/, "")}k chars`;
 }
 
-// formatClockTime renders an item's wall-clock moment (ItemModel.startedAt)
-// for the slack-lean speaker header's meta slot ("You · 12:41"): the local
-// 24-hour "HH:MM", zero-padded so times align down the transcript. Local
-// time, not UTC - the header answers "when did this happen" for the person
-// reading their own session, and Date's getHours/getMinutes are the local
-// projection of the parsed instant. undefined for a missing or unparseable
-// timestamp: a header with no time shows no time rather than a guess.
+// Local 24-hour time; missing or invalid timestamps stay absent.
 export function formatClockTime(iso: string | undefined): string | undefined {
   if (iso === undefined) return undefined;
   const parsed = new Date(iso);
@@ -68,11 +43,7 @@ export function formatClockTime(iso: string | undefined): string | undefined {
   return `${hours}:${minutes}`;
 }
 
-// formatClockTimeSeconds is formatClockTime's seconds-carrying sibling, for
-// surfaces where consecutive events routinely land inside the same minute -
-// the subagent card's per-quote timestamps. Same local projection, same
-// missing/unparseable → undefined rule: a quote with no stamp shows no time
-// rather than a guess.
+// Seconds-carrying local time for card activity.
 export function formatClockTimeSeconds(iso: string | undefined): string | undefined {
   if (iso === undefined) return undefined;
   const parsed = new Date(iso);
@@ -83,11 +54,7 @@ export function formatClockTimeSeconds(iso: string | undefined): string | undefi
   return `${hours}:${minutes}:${seconds}`;
 }
 
-// formatElapsed renders a live-or-settled duration for the subagent card's
-// clock - a range formatDurationMs's seconds ceiling ("221s") reads badly at
-// delegate timescales, while its decimal tier is noise on a clock. Whole
-// seconds under a minute, zero-padded m:ss under an hour, h:mm beyond.
-// Negative input (clock skew) clamps to an honest "0s".
+// Compact elapsed clock; negative skew clamps to zero.
 export function formatElapsed(ms: number): string {
   const totalSeconds = Math.max(0, Math.floor(ms / 1000));
   if (totalSeconds < 60) return `${totalSeconds}s`;
@@ -97,14 +64,7 @@ export function formatElapsed(ms: number): string {
   return `${hours}h${String(totalMinutes % 60).padStart(2, "0")}m`;
 }
 
-// plainQuoteLine renders an agent message as the subagent card's one-line
-// quote. A final report is markdown ("## Summary\n\nFixed 9 files…"); raw,
-// its structural markers are noise at a glance. The quote is the first
-// SUBSTANTIVE line: blank lines and heading-only lines (a heading is a label,
-// never the news) are skipped, and inline emphasis/code markers are stripped
-// to plain text. A message with no substantive line yields "" - the card
-// shows no quote rather than quoting a heading. The full text stays one click
-// away behind open transcript; this line is the glance, not the record.
+// Returns the first substantive markdown line as plain text.
 export function plainQuoteLine(text: string): string {
   for (const raw of text.split("\n")) {
     const line = raw.trim();

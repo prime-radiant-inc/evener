@@ -9,6 +9,7 @@
 // rows would need far more inference than the wire actually supports.
 import { useEffect } from "react";
 import { type ItemModel, SYSTEM_PRELUDE_TURN_ID, type TurnModel } from "../../../../protocol/model";
+import type { EvenerDelegateInfo } from "../../../../protocol/types.gen";
 import { threadsStore, useThreadsStore } from "../../../../stores/threads";
 import { Chevron, IconButton } from "../../../../widgets";
 import { isDisclosureOpen, toggleDisclosure } from "../../../../widgets/disclosure/disclosureStore";
@@ -19,7 +20,7 @@ import { formatClockTimeSeconds, formatElapsed, plainQuoteLine } from "../messag
 import { statedPurposeOf } from "../ToolRow";
 import type { ToolRenderProps } from "../toolRenderers";
 import { registerToolRenderer } from "../toolRenderers";
-import { parseArgs, parseJSONObject, str } from "./helpers";
+import { parseJSONObject, str } from "./helpers";
 import {
   classifyJobStatus,
   effectiveRowKind,
@@ -147,16 +148,17 @@ function childRunWindow(turns: TurnModel[]): { startMs?: number; endMs?: number 
 // item. Only running rows consume the shared `now` value.
 function cardClock(
   row: SubagentRow,
+  stable: EvenerDelegateInfo | undefined,
   displayKind: SubagentRowKind,
   nowMs: number,
   childWindow?: { startMs?: number; endMs?: number },
 ): string | undefined {
   let startMs: number | undefined;
   let endMs: number | undefined;
-  const stableStart = Date.parse(row.stable?.runStartedAt ?? "");
+  const stableStart = Date.parse(stable?.runStartedAt ?? "");
   if (!Number.isNaN(stableStart)) {
     startMs = stableStart;
-    const stableEnd = Date.parse(row.stable?.runEndedAt ?? "");
+    const stableEnd = Date.parse(stable?.runEndedAt ?? "");
     if (!Number.isNaN(stableEnd)) endMs = stableEnd;
   } else if (childWindow?.startMs !== undefined) {
     startMs = childWindow.startMs;
@@ -174,20 +176,23 @@ function cardClock(
 }
 
 // Stable exhaustion evidence belongs in the expanded region.
-function JobDetailSection({ row }: { row: SubagentRow }) {
-  if (row.resumable === undefined && row.exhaustionBudget === undefined && row.exhaustionLimit === undefined) {
+function JobDetailSection({ row, stable }: { row: SubagentRow; stable: EvenerDelegateInfo | undefined }) {
+  const resumable = stable?.exhaustionResumable ?? stable?.resumable ?? row.resumable;
+  const exhaustionBudget = stable?.exhaustionBudget ?? row.exhaustionBudget;
+  const exhaustionLimit = stable?.exhaustionLimit ?? row.exhaustionLimit;
+  if (resumable === undefined && exhaustionBudget === undefined && exhaustionLimit === undefined) {
     return null;
   }
   const exhaustion =
-    row.exhaustionBudget !== undefined || row.exhaustionLimit !== undefined
-      ? `${row.exhaustionBudget ?? "?"} of ${row.exhaustionLimit ?? "?"}`
+    exhaustionBudget !== undefined || exhaustionLimit !== undefined
+      ? `${exhaustionBudget ?? "?"} of ${exhaustionLimit ?? "?"}`
       : undefined;
   return (
     <section className={CLASS.section} data-testid="subagent-job-detail">
       <div className={CLASS.sectionLabel}>Job</div>
       <div className={CLASS.mandate}>
         {exhaustion && <div>Exhaustion budget: {exhaustion}</div>}
-        {row.resumable !== undefined && <div>{row.resumable ? "Resumable" : "Not resumable"}</div>}
+        {resumable !== undefined && <div>{resumable ? "Resumable" : "Not resumable"}</div>}
       </div>
     </section>
   );
@@ -219,6 +224,11 @@ function SubagentCard({
   }, [transcriptRef]);
 
   const model = useThreadsStore((s) => (transcriptRef !== undefined ? s.watchedThreads.get(transcriptRef) : undefined));
+  const stable = useThreadsStore((s) => {
+    if (sessionRef === undefined || row.delegateId === undefined) return undefined;
+    const owner = s.threads.get(sessionRef) ?? s.watchedThreads.get(sessionRef);
+    return owner?.delegates?.find((delegate) => delegate.delegateId === row.delegateId);
+  });
   const liveKind = model ? rowKindFromChildStatus(model.status.type) : undefined;
   useEffect(() => {
     if (liveKind && transcriptRef) {
@@ -227,13 +237,13 @@ function SubagentCard({
   }, [scopeKey, row.rowKey, liveKind, transcriptRef]);
 
   // Needs-you is an attention overlay on a still-running child.
-  const displayKind = effectiveRowKind(row);
+  const displayKind = effectiveRowKind(row, stable);
   const attention = model !== undefined && cadenceStateForStatus(model.status.type) === "needs-you";
   const childRunning = model ? rowKindFromChildStatus(model.status.type) === "running" : displayKind === "running";
 
   const items = model ? model.turns.flatMap((t) => t.items) : [];
   const quotes = deriveQuotes(items);
-  const reason = row.liveReason ?? row.resultPreview;
+  const reason = stable?.reason ?? row.liveReason ?? row.resultPreview;
   // Failures lead with their reason; other cards use the child's latest words.
   const latestQuote = quotes.at(-1)?.text;
   const quoteText = displayKind === "failed" && reason ? `✕ ${reason}` : (latestQuote ?? (reason || undefined));
@@ -244,7 +254,7 @@ function SubagentCard({
   const callCount = realTurns
     ? realTurns.flatMap((t) => t.items).filter((it) => it.type === "commandExecution").length
     : undefined;
-  const stableUsage = row.stable?.usage;
+  const stableUsage = stable?.usage;
   // A half-present usage pair would be a guess, so omit it.
   const usage =
     stableUsage?.inputTokens !== undefined && stableUsage.outputTokens !== undefined
@@ -256,7 +266,7 @@ function SubagentCard({
   if (usage) statsSegments.push(usage);
 
   const nowMs = useSessionNow();
-  const clock = cardClock(row, displayKind, nowMs, realTurns ? childRunWindow(realTurns) : undefined);
+  const clock = cardClock(row, stable, displayKind, nowMs, realTurns ? childRunWindow(realTurns) : undefined);
 
   // Deterministic scoping preserves disclosure state across virtualization.
   const disclosureId = `subagent-quotes-${encodeURIComponent(scopeKey)}-${encodeURIComponent(row.rowKey)}`;
@@ -349,7 +359,7 @@ function SubagentCard({
           ) : (
             <div className={CLASS.quotesEmpty}>No activity yet</div>
           )}
-          <JobDetailSection row={row} />
+          <JobDetailSection row={row} stable={stable} />
         </section>
       )}
     </div>
@@ -361,10 +371,6 @@ export function rowFromDelegateItem(item: ItemModel): {
   migrateFromRowKey?: string;
   row: Omit<SubagentRow, "rowKey">;
 } | null {
-  const args = parseArgs(item.argumentsJSON);
-  // Keep the full task in row state even though ToolCallItem's visible purpose
-  // preview is clipped.
-  const task = str(args, "task") ?? "";
   const parsed = parseJSONObject(item.output);
   const status = parsed ? str(parsed, "status") : undefined;
   const delegateId = parsed ? str(parsed, "delegate_id") : undefined;
@@ -381,7 +387,6 @@ export function rowFromDelegateItem(item: ItemModel): {
     migrateFromRowKey: rowKey === fallbackRowKey ? undefined : fallbackRowKey,
     row: {
       kind: classifyJobStatus(status),
-      task,
       delegateId,
       transcriptRef,
       startedAt: item.startedAt,

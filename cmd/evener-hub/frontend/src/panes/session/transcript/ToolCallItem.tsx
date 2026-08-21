@@ -6,6 +6,7 @@
 // descriptors registered under tools/.
 import { memo, useLayoutEffect, useState } from "react";
 import type { ItemModel } from "../../../protocol/model";
+import type { EvenerDelegateInfo } from "../../../protocol/types.gen";
 import { useThreadsStore } from "../../../stores/threads";
 import { type CadenceState, StatusDot } from "../../../widgets";
 import { isDisclosureOpen, toggleDisclosure } from "../../../widgets/disclosure/disclosureStore";
@@ -76,11 +77,12 @@ function delegateStatusFromOutput(parsedOutput: Record<string, unknown> | undefi
 function delegateStatusForOutput(
   parsedOutput: Record<string, unknown> | undefined,
   delegateRow: SubagentRow | undefined,
+  stableDelegate: EvenerDelegateInfo | undefined,
   live: boolean,
 ): DelegateStatusKey {
   const hasSettledOutputStatus = parsedOutput !== undefined && str(parsedOutput, "status") !== undefined;
   if (live && !hasSettledOutputStatus) return "running";
-  return delegateRow ? effectiveRowKind(delegateRow) : delegateStatusFromOutput(parsedOutput);
+  return delegateRow ? effectiveRowKind(delegateRow, stableDelegate) : delegateStatusFromOutput(parsedOutput);
 }
 
 // Memoized ignoring `turn` identity (types.ts's ignoringTurn): this
@@ -99,8 +101,13 @@ export const ToolCallItem = memo(function ToolCallItem({ item, live, sessionRef 
     isDelegate ? turnScopeKey(sessionRef, item.turnId) : "",
     isDelegate ? rowKeyForDelegateItem(item) : "",
   );
+  const stableDelegate = useThreadsStore((s) => {
+    if (sessionRef === undefined || stableDelegateId === undefined) return undefined;
+    const owner = s.threads.get(sessionRef) ?? s.watchedThreads.get(sessionRef);
+    return owner?.delegates?.find((delegate) => delegate.delegateId === stableDelegateId);
+  });
   const delegateTranscriptRef = stableDelegateId ? str(delegateOutput ?? {}, "transcript_ref") : undefined;
-  const delegateKind = delegateStatusForOutput(delegateOutput, delegateRow, live);
+  const delegateKind = delegateStatusForOutput(delegateOutput, delegateRow, stableDelegate, live);
   const delegateStatus = isDelegate ? <StatusDot state={DELEGATE_INDICATOR_STATE[delegateKind]} /> : undefined;
   const delegateScopeKey = turnScopeKey(sessionRef, item.turnId);
 
@@ -148,7 +155,7 @@ export const ToolCallItem = memo(function ToolCallItem({ item, live, sessionRef 
   const trailingAfter = canOpenBeside ? descriptor.openBesideInline?.(item) : undefined;
   // A child-targeting tool (delegate_send today) exposes its target's
   // transcript ref via descriptor.openTranscriptRef; ToolCallItem turns that
-  // into the same "open ⤢" control the subagent module rows use, riding the
+  // into the same "open ⤢" control delegate rows use, riding the
   // row's trailing slot beside any file open-beside button. parentRef is the
   // enclosing session so the opened pane keeps its way back (kata 0pzz).
   const openTranscriptRef = descriptor.openTranscriptRef?.(item);
@@ -262,7 +269,6 @@ export const ToolCallItem = memo(function ToolCallItem({ item, live, sessionRef 
         ref={delegateTranscriptRef}
         scopeKey={turnScopeKey(sessionRef, item.turnId)}
         rowKey={rowKeyForDelegateItem(item)}
-        renderCadence={false}
       />
     ) : null;
 
