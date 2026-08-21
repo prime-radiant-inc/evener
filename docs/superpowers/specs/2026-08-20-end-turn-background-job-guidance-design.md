@@ -61,6 +61,53 @@ today it would block forever. That is also the more literal reading of the
 instruction this spec is built on — *force a new turn with the notification
 rather than just timing out* — because the timing out happens in the drain.
 
+## A second attempt, and what it proved
+
+The drain-side notification was built (`06bd1a32c`) and reverted (`36a919d46`)
+after adversarial review. It was **inert**: it never called the model.
+
+`s.Steer()` enqueues daemon-sourced steering (`trySteerEnqueue(..., source: "")`,
+`session_queue.go:252`). `EntrySteeringCarrier` opens with
+`if !s.hasPendingUserSteering() { s.finishNotificationNoop(); return false }`
+(`session_lifecycle.go:1763`), and `hasPendingUserSteering` counts only
+`Source == events.SteeringSourceUser` (`session_queue.go:981-989`). So the turn
+stood down before any model call. Two reviewers proved it independently against
+the pristine commit: `modelCalls=0, drainReturned=false, steeringStillQueued=true`.
+
+**`EntryNotification` is the correct kind.** `acceptNotificationInput` gates on
+`hasPendingSteering()` (any source, `session_lifecycle.go:1668`).
+
+Everything the next attempt must also handle, all evidenced in review:
+
+- **The backstop is not optional.** Notification alone is best-effort: if the
+  model ignores it, `bgNotified` has latched and the loop returns to the
+  identical block. §"Backstop the drain anyway" below was never implemented, and
+  that is what makes the fix a guarantee rather than a nudge.
+- **A test that substitutes `process` cannot see any of this.** That is exactly
+  why the defect shipped. The regression test has to drive the real
+  `ProcessInputKind`.
+- **`exec_command` is an OpenAI-only rename.** Anthropic sees `shell`, Gemini
+  `run_shell_command` (`provider/profile.go:849,937`). Use the existing
+  `providerVisibleToolNames` seam (`session_tools.go:378-380`).
+- **`mode:"detached"` fails closed under a sandbox.** `ErrDetachUnsupported`
+  whenever a wrapper is provisioned (`execenv/local.go:1778-1781`), which is any
+  `--sandbox` run. The message must not offer it unconditionally.
+- **Relaunching detached does not dispose the original.** `runDetachedShell`
+  never touches the existing job, so the drain stays held; and for a port-bound
+  server the relaunch fails outright while the original still listens. The
+  correct sequence is stop, *then* relaunch.
+- **The guard is session-scoped while the drain blocks on the subtree.** A live
+  child keeps `treeHasOutstandingWork` true while this session's outstanding set
+  is only the background shell, so the notification fires and says something
+  false, spending the once-only budget on a false alarm.
+- **`TurnEndsProcess` does not survive.** It is absent from
+  `schema.ConfigSnapshot`, so `evener run --resume` and every child session lose
+  it. Its `json` tag is inert because `SessionConfig` persists via the snapshot.
+- **Pin the grace in a test.** Mutating the elapsed check to `case true:` left
+  the whole suite green.
+- **Four existing drain tests inject no clock**, so they now carry an unpinned
+  real-time 3s budget against 0.18-0.63s runtimes. Override the grace there.
+
 ## Design
 
 ### Force a notification turn from the drain, not a refusal at end-turn
