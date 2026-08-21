@@ -3,7 +3,7 @@
 //
 // Go struct tags are NOT checked here — golangci-lint's tagliatelle linter
 // owns those (json/toml struct tags, with the camelCase wire-protocol
-// overrides); see .golangci.yml and docs/conventions/naming.md.
+// overrides); see .golangci.yml and docs/developing-evener/conventions/naming.md.
 //
 // It prints one violation per line in `path:line: message` format and exits
 // non-zero when violations exist.

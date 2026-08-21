@@ -15,7 +15,7 @@ badges.
   `source=oauth`). This is the typical dev state after running
   through `auth-device-autodetect.md`.
 - **This card deliberately runs against Jesse's real `$HOME`** — the
-  documented OAuth-footgun exception in `docs/agentic-testing.md`'s Setup
+  documented OAuth-footgun exception in `docs/developing-evener/agentic-testing.md`'s Setup
   checklist, since OAuth state lives under the normal user state home
   and a fresh isolated `$HOME` would never have it. That means it reads
   (and, per Sharp edges below, temporarily edits) Jesse's real

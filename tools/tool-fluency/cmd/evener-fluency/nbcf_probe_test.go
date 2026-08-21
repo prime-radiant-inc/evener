@@ -8,7 +8,7 @@ import (
 )
 
 // TestNBCFSeededConfigPathProbeLoadsAndValidates is an offline check (no live
-// model calls — see docs/testing.md's "keep it real only where model
+// model calls — see docs/developing-evener/testing.md's "keep it real only where model
 // behavior is the thing under test" boundary) for kata nbcf's opt-in
 // diagnose-then-fix eval scaffold. It proves three things deterministically:
 //

@@ -14,7 +14,7 @@ Companion scenarios: `web-paste-image-from-clipboard.md`,
 `web-file-picker-image.md`, `tui-paste-image-from-clipboard.md`,
 `tui-paste-image-path.md`.
 
-**Surface**: see `docs/agentic-testing.md`, "Driving the web UI" — its selector
+**Surface**: see `docs/developing-evener/agentic-testing.md`, "Driving the web UI" — its selector
 map is the single place these hooks are maintained. `form[data-spawn-form]`,
 `[data-drop-zone]`, `[data-composer-attachments]`, `[data-attachment]`,
 `[data-attachment-error]`, `.spawn-btn`, `.drop-active`, `window.EvenerAppwire`
@@ -26,7 +26,7 @@ is no REST fallback on this path either: `startThread` goes to appwire
 
 - `evener-hub` running on an isolated `$HOME` and a kernel-assigned port
   (never `9180`, Jesse's real one — see the Setup checklist in
-  `docs/agentic-testing.md`). Token at `$HOME/.evener/auth-token`.
+  `docs/developing-evener/agentic-testing.md`). Token at `$HOME/.evener/auth-token`.
 - `make build-web` before building the hub; a checkout that has never run it
   ships a one-line `frontend/dist/PLACEHOLDER` and serves no app (rebuild
   matrix item 3 in the runbook).

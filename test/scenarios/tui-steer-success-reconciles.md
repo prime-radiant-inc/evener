@@ -29,7 +29,7 @@ Driver: tmux send-keys / capture-pane.
 - `tmux` installed.
 - `evener-hub` reachable on an isolated `$HOME` and free port
   (never Jesse's port `9180` — see the Setup checklist in
-  `docs/agentic-testing.md`). Token at
+  `docs/developing-evener/agentic-testing.md`). Token at
   `$HOME/.evener/auth-token`. The pane captures below land in that
   checklist's own `$run` directory, never a fixed `/tmp/pane-*.txt`
   that a second agent running this card would overwrite between this

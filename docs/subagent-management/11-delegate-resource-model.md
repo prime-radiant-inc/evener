@@ -1981,7 +1981,7 @@ objects, reopen only the root state, and prove reconciliation:
 
 ### Verification gates
 
-The implementation plan must derive exact commands from docs/testing.md, but
+The implementation plan must derive exact commands from docs/developing-evener/testing.md, but
 the minimum final evidence includes:
 
 - every causal selector in normal mode for at least 20 repetitions;

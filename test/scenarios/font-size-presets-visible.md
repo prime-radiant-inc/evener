@@ -8,13 +8,13 @@ the `--font-size-*` ramp, set via Settings → Theme and persisted to
 
 ## Pre-state
 
-- Complete the full **Setup checklist** in `docs/agentic-testing.md` for this
+- Complete the full **Setup checklist** in `docs/developing-evener/agentic-testing.md` for this
   run: one unique `run=$(mktemp -d ...)` owns the fresh binaries, an isolated
   `$HOME=$run/home` (with `XDG_STATE_HOME` unset), and a hub bound by the kernel
   to `127.0.0.1:0`. Keep its exact PID in `$run/hub.pid`; never use an ambient
   hub, assigned port, real home, or shared state.
 - Coordinate browser ownership before the first browser call, following
-  `docs/conventions/agent-fleets.md`. Use one of two honest modes: either this
+  `docs/developing-evener/conventions/agent-fleets.md`. Use one of two honest modes: either this
   run is the designated browser verifier and holds an exclusive serialized
   browser-verification slot, or it has a genuinely distinct browser server and
   process whose PID and data directory are recorded below `$run`. A different
@@ -79,7 +79,7 @@ the `--font-size-*` ramp, set via Settings → Theme and persisted to
 - **`set_profile` is prohibited.** It changes one sticky value on the shared
   MCP server process and does not create per-agent isolation. The measured
   authority and current coordination rule are in
-  `docs/conventions/agent-fleets.md` under “Chrome is one shared instance.”
+  `docs/developing-evener/conventions/agent-fleets.md` under “Chrome is one shared instance.”
 - **This run's actual coverage**: the `claude-in-chrome` browser tool was not
   connected in this session, so the visual/screenshot verification in step 3
   was **not driven live**. Backing evidence used instead:

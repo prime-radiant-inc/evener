@@ -7,7 +7,7 @@
 # WHY: the web composer's mid-turn controls — Steer, Send (which routes to
 # turn/queue while busy), and Stop — only exist while a turn is genuinely in
 # flight. Against a real provider that window is seconds wide and needs an
-# AGENTS.md pacing prompt to widen (docs/agentic-testing.md). Here it is a
+# AGENTS.md pacing prompt to widen (docs/developing-evener/agentic-testing.md). Here it is a
 # flag: --hold 30 --rounds 40 keeps one turn "running" for twenty minutes,
 # for free, with no credential and no network, and fakellm's log shows
 # exactly what reached the model each round — so "the steer never got

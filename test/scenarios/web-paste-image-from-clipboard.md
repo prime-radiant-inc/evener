@@ -13,7 +13,7 @@ image part on the first user message.
 Companion scenarios: `web-drag-drop-image.md`, `web-file-picker-image.md`,
 `tui-paste-image-from-clipboard.md`, `tui-paste-image-path.md`.
 
-**Surface**: see `docs/agentic-testing.md`, "Driving the web UI" — the
+**Surface**: see `docs/developing-evener/agentic-testing.md`, "Driving the web UI" — the
 selector map there is the single place these hooks are maintained.
 `form[data-spawn-form]`, `textarea[name='prompt']`,
 `[data-composer-attachments]`, `[data-attachment]`, `.spawn-btn` and the
@@ -28,7 +28,7 @@ inline banner.
 
 - `evener-hub` running on an isolated `$HOME` and free port
   (never `9180`, Jesse's real one — see the Setup checklist in
-  `docs/agentic-testing.md`). Token at `$HOME/.evener/auth-token`.
+  `docs/developing-evener/agentic-testing.md`). Token at `$HOME/.evener/auth-token`.
 - `anthropic/claude-haiku-4-5-20251001` or `openai/gpt-5.5` reachable
   through configured credentials. Both accept image inputs (verified
   2026-05-18 against the live hub).

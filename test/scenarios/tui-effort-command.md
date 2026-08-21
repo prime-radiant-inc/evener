@@ -10,7 +10,7 @@ the criterion — the status strip's `ReasoningEffortControl`
 (`panes/session/chrome/StatusRow.tsx:109-165`) plus the `⌘K`
 "Set reasoning effort" palette command (`shell/palette/commands.ts:392-429`).
 
-**Surface**: see `docs/agentic-testing.md`, "Driving the web UI" — the
+**Surface**: see `docs/developing-evener/agentic-testing.md`, "Driving the web UI" — the
 selector map there is the single place these hooks are maintained. The web
 half used to drive `window.EvenerModelSwitch.effortLevels()` and read
 `[data-effort-display]` out of `assets/search.js` / `assets/model-switch.js`;
@@ -21,7 +21,7 @@ handle, and the effort control is no longer read-only — see Sharp edges.
 
 - Hub + evener-tui + a web client, all able to attach to the same session
   (isolated `$HOME`, kernel-assigned port — see the Setup checklist in
-  `docs/agentic-testing.md`).
+  `docs/developing-evener/agentic-testing.md`).
 - A session on a reasoning-capable model with a known ladder (e.g.
   `openai/gpt-5.5`), idle. Confirm the ladder over the wire before asserting
   on either UI: `thread/read`'s `reasoningEffortLevels` /

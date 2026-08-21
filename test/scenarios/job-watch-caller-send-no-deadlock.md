@@ -18,7 +18,7 @@ executed by plan Phase 5.2 (`docs/superpowers/plans/2026-06-11-watch-mailbox.md`
 ## Pre-state
 
 - Binaries built fresh from the watch-mailbox branch under test (the
-  setup checklist in `docs/agentic-testing.md`): an isolated hub
+  setup checklist in `docs/developing-evener/agentic-testing.md`): an isolated hub
   (never Jesse's real hub on `9180`) spawning the freshly built `evener`.
 - Auth token at `$HOME/.evener/auth-token` (the isolated `$HOME`); a
   credentialed model that follows

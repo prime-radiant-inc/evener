@@ -16,14 +16,14 @@ once. `urlToPane` now matches a qualified ref only (`isRef`,
 `cmd/evener-hub/frontend/src/shell/routing.ts:29-32`) and the palette dropped
 its bare-id fallback. Jesse's call was no back-compat for the old form.
 
-**Surface**: see `docs/agentic-testing.md`, "Driving the web UI" — rail rows
+**Surface**: see `docs/developing-evener/agentic-testing.md`, "Driving the web UI" — rail rows
 are `[data-session-ref="local:<SID>"]` (`shell/rail/RailRow.tsx:509`); there
 is no `.sb-row` class and no `data-ref` attribute.
 
 ## Pre-state
 
 - Freshly built `evener-hub` on an isolated `$HOME` and a kernel-assigned port
-  (Setup checklist in `docs/agentic-testing.md`). The frontend must be built
+  (Setup checklist in `docs/developing-evener/agentic-testing.md`). The frontend must be built
   (`make build-web`) before the hub, or the SPA is a placeholder.
 - Browser authenticated to the test hub (`/auth?token=$TOKEN&next=/`).
 - At least one local Evener session visible in the rail. Spawning one via

@@ -9,7 +9,7 @@ lands in the pane's image view rather than its text view. If `ImageGallery`'s
 lightbox wiring, `FileOpenBesideButton`'s cwd gate, or `DocPane`'s file/image
 branch regresses, this catches it.
 
-**Surface**: see `docs/agentic-testing.md`, "Driving the web UI" — its selector
+**Surface**: see `docs/developing-evener/agentic-testing.md`, "Driving the web UI" — its selector
 map is the single place these hooks are maintained. `#image-lightbox`,
 `.open-beside-btn`, `.tool-output-images .user-image-card` and
 `window.EvenerPanes` all died with the vanilla frontend (`660376f78`): there is
@@ -21,7 +21,7 @@ no pane handle on `window`, and the opener is `paneActions.openBeside`
 - A session that already renders an output-image thumbnail on a
   **file-referencing** tool row: run `read-image-tool-result-inline.md` or
   `written-image-inline-after-reload.md` first and reuse its session, hub, and
-  isolated `$HOME` (see the Setup checklist in `docs/agentic-testing.md`).
+  isolated `$HOME` (see the Setup checklist in `docs/developing-evener/agentic-testing.md`).
 - **Not** `shell-generated-image-path-inline.md`. Its row structurally cannot
   produce an open-beside control: `openBesidePath` is defined only on
   `read_file` (`tools/fsTools.tsx:64-67`) and `edit_file`/`write_file`

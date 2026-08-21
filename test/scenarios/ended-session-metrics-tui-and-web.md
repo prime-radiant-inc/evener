@@ -8,7 +8,7 @@ exercises both surfaces added/extended to close that gap: the TUI
 Session-details panel's ended-session rows
 (`cmd/evener-hub/frontend/src/panes/session/chrome/DetailsPanel.tsx:183-196`).
 
-**Surface**: see `docs/agentic-testing.md`, "The REST surface, and what is no
+**Surface**: see `docs/developing-evener/agentic-testing.md`, "The REST surface, and what is no
 longer on it" and "Driving the web UI" — the selector map there is the single
 place these hooks are maintained. The web half used to `GET
 /_partials/s/<id>/details` and read a `<dl class="details-list">`; the whole
@@ -20,7 +20,7 @@ replaces them is one REST object and one React panel — see steps 3 and 4.
 ## Pre-state
 
 - An isolated `evener-hub` (fake `$HOME`, non-`9180` port — never Jesse's
-  real hub; see the Setup checklist in `docs/agentic-testing.md`) with
+  real hub; see the Setup checklist in `docs/developing-evener/agentic-testing.md`) with
   `-evener` pointed at a freshly built `evener` binary.
 - A session spawned via `POST /api/spawn`, sent one prompt to completion, then
   ended via `POST /api/sessions/local:<id>/shutdown`.

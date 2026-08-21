@@ -30,7 +30,7 @@ import (
 //   - the literal carries a "// TRIPWIRE:" comment on its own line or the
 //     line directly above it, explaining why the bound is raised generously
 //     above the expected completion time rather than tuned tight to it (see
-//     docs/testing.md's Flakes and Timeouts ranking: a ceiling is only
+//     docs/developing-evener/testing.md's Flakes and Timeouts ranking: a ceiling is only
 //     legitimate as a tripwire, never the mechanism).
 //
 // This is the ONE sanctioned way to carry a wall-clock bound in an agent

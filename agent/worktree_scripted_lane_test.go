@@ -29,7 +29,7 @@ import (
 // detection, real porcelain output, real ref rules) MUST use the real-git
 // wtRepo harness, or it would be asserting against the model in
 // session_tools_worktree_scripted_test.go rather than against git. See
-// docs/testing.md.
+// docs/developing-evener/testing.md.
 //
 // The saving is large enough to matter: a real-git lane test averages ~1.2s and
 // spawns ~14 git subprocesses; a scripted one runs in ~0.04s.

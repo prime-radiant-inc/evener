@@ -243,7 +243,7 @@ func TestScratchDirCannotResolveToCWD(t *testing.T) {
 //
 // What the scan still cannot see, even shared: `find -exec rm` is a delete of
 // the literal `{}` operand, never a variable. None of that spelling exists in
-// the scanned scripts today, and the policy in docs/testing.md covers it. A
+// the scanned scripts today, and the policy in docs/developing-evener/testing.md covers it. A
 // false positive is impossible to suppress silently: the only way past the
 // check is a reviewed entry in recursiveDeleteAllowedLines.
 
@@ -283,10 +283,6 @@ var recursiveDeleteAllowedLines = map[string]int{
 	// Per-scenario corpus scratch reclaimed inside the provider loop; the
 	// suite-level guard cannot express "remove this one, keep the rest".
 	"scripts/fuzz/fuzz-drive.sh": 2,
-	// Fixture rebuild/removal of paths built under guard-minted scratch,
-	// mid-suite, where the no-argument delete would take the suite's whole
-	// scratch with it.
-	"scripts/e2e/e2e-webui-turn-controls-selftest.sh": 1,
 	// The coverage runner keeps the pid-suffixed name-first/trap-first/mkdir
 	// pattern instead of scratch_dir: the trap exists before the directory
 	// can, so a signal in the window abandons nothing (measured 0/150 leaks

@@ -8,7 +8,7 @@
 > gemini usage-on-finish-chunk). The supporting tail (8.5 dictionaries / OSS-Fuzz
 > seeds; continuous-fuzzing infra) was deliberately deferred as lower-value. This
 > is the original plan, preserved as written; for current usage see
-> [`docs/fuzzing.md`](../../fuzzing.md).
+> [`docs/developing-evener/fuzzing.md`](../../developing-evener/fuzzing.md).
 
 **Status:** plan, ready to fan out. **Premise:** the 10× deeper campaign found *nothing
 new*. That is the **oracle ceiling, not the time ceiling** — more hours and more targets

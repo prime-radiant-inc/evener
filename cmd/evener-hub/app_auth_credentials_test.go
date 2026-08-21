@@ -60,7 +60,7 @@ func (f *credentialProbeFakeClient) callCount() int {
 // credentials.Store.ResolveKey whether an instance has a credential, and that
 // reads the environment — so a test asserting an instance is unconfigured means
 // nothing unless it states that the environment holds no key for it
-// (docs/testing.md: no ambient developer machine state). Walking the registry
+// (docs/developing-evener/testing.md: no ambient developer machine state). Walking the registry
 // rather than a literal list keeps a provider row added later covered here with
 // no edit.
 func clearProviderKeysFromEnvironment(t *testing.T) {

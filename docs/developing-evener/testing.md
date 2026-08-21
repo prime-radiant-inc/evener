@@ -137,38 +137,108 @@ that accumulates real logic belongs in Go under `go test`, where the type
 system, `-race`, and ordinary unit tests replace an entire shell-fixture
 harness; shell stays for glue.
 
-## Canonical Gate Matrix
+## Gates that need more than a table row
 
-This table is the authoritative answer to which checks run when, what they
-prove, what they require, and what counts as a failure. Test assertions remain
-deterministic when live opt-ins are unset; dependency installation, disk
-capacity, browser availability, and CI tool setup are explicit prerequisites.
+Every gate that is a make target is documented in the generated target table
+of the doc that owns its family: [Targets](#targets) below for the test
+family, and [building.md](building.md), [linting.md](linting.md),
+[coverage.md](coverage.md) and [fuzzing.md](fuzzing.md) for the rest. Those
+tables are generated from the `##` annotations above each rule in `make/*.mk`,
+and `make lint` fails if a committed table has drifted from them.
 
-| Gate and exact command | Scope | What it proves | Trigger | Determinism and external requirements | Failure or unavailable-tool behavior | Owner and follow-up |
-| --- | --- | --- | --- | --- | --- | --- |
-| <code>make lint</code> | Go lint, formatting, tagged floors, generated outputs, secrets | TOML naming, <code>gofmt -l</code> over every tracked <code>.go</code> file, evenerfuzz/eval floors (compile plus a struct-tag pass under each tag), internal-type check, golangci-lint for every workspace module including <code>fuzz</code> (struct-tag casing via tagliatelle, gofmt/goimports formatting, and library doc comments via revive's exported rule) plus the second tagliatelle run that holds <code>server/appwire_*.go</code> to camelCase, generated AppWire outputs, the fuzz-target registry (scripts/fuzz/fuzz-targets.txt matches AST-discovered native/Rapid declarations), and the repo secret scan | Local pre-merge; required CI | No provider calls or model behavior; needs Go and golangci-lint. Local gitleaks absence warns and returns zero; CI sets EVENER_GITLEAKS_REQUIRED=1 | Any lint family or generated-output diff is nonzero. Missing golangci-lint is not-checked and nonzero; required gitleaks absence is nonzero | Evener CI/tooling; no new follow-up currently |
-| <code>make build</code> (same runtime target as <code>make build-runtime</code>) | Runtime Go binaries plus embedded frontend | build-web completes before the evener/evener-hub pair is built, so the runtime pair contains the fresh SPA | Local pre-merge; required CI together with <code>make build-go</code> | Needs Go, Node/npm, the frontend install, and enough disk. Build metadata includes the current SHA, dirty state, time, and channel. Runtime Go builds use a disposable process home while preserving the caller's Go caches and copied go env settings | Frontend preflight, build, or pair-script failure is nonzero; stale/failed embedding is not a pass | Evener CI/build; release wiring follows make dist |
-| <code>make build-go</code> | Every non-fuzz Go workspace module | Compiles all packages in the seven modules listed by <code>GO_MODULES</code>, including packages that root-level <code>go build ./...</code> does not visit under <code>go.work</code> | Required CI build job; local compile diagnostic | Deterministic Go compilation; no provider calls or frontend/browser requirements | Any module or package compilation failure is nonzero; the loop stops at the first failing module | Evener CI/build; no new follow-up currently |
-| <code>make build-web</code> | Frontend build | TypeScript typecheck and Vite production build complete and refresh frontend/dist for Go embedding | Frontend CI; prerequisite of runtime/release builds | Needs Node/npm and may run npm ci when the install is absent or stale; no provider credentials. Node's automatic compile cache is disabled for preflight and build processes | npm, typecheck, or Vite failure is nonzero | Frontend CI; no new follow-up currently |
-| <code>make test</code> | Non-fuzz Go modules and frontend | Root short-mode tests, other module tests, and frontend typecheck/Vitest/Biome. Every stream receives distinct private process-home, temporary, and XDG roots; Go streams also receive copied go env settings | Local quick check; included by the merge gate | Uses scripted/fake external boundaries for default tests. Existing Go build/module caches remain reusable outside the disposable roots. web-preflight may install dependencies. Runs ZERO fuzz-family tests, even at reduced depth — see <code>make test-fuzz</code> | Any module, frontend stream, or setup failure is nonzero. A live opt-in in the environment intentionally changes the scope. A failed or interrupted run retains and prints its log directory, including stream scratch | Evener CI/tooling and frontend; no new follow-up currently |
-| <code>ROOT_FULL=1 make test</code> | Full intended non-fuzz root suite plus all non-root modules and frontend | Removes root -short mode while retaining the non-fuzz Test/Example name filter and explicit fuzz-owned exclusions; preserves the complete non-fuzz post-merge surface | Local pre-merge/post-merge; required CI equivalent is <code>ROOT_FULL=1 WEB=0 make test</code> because the web job owns test-web | Same requirements as make test; ROOT_FULL=1 does not enable providers or fuzz search | Any root/module failure is nonzero; skipped live tests remain explicitly skipped unless opted in | Evener CI/tooling; no new follow-up currently |
-| <code>make test-fuzz</code> | The seqfuzz/schemafuzz stateful <code>rapid.Check</code> family (delegate, watch, lifecycle, jobs descendant-merge, tool-args schema, jobstore, two context-compaction surfaces, appserver router, appserver multi-session) | Each surface's rapid state machine runs its full default check count (no <code>-short</code> reduction), catching sequence bugs the focused unit suites cannot | Local pre-merge/post-merge for these surfaces; not run in CI's default `make test` job | <code>EVENER_FUZZ_TESTS=1</code> opts each test back in from its default <code>t.Skip</code>; no network, no provider calls; fully offline (deny exec env, fake clock, scripted adapters) | Any surface's oracle/invariant failure or panic is nonzero | Evener agent/fuzz tooling; no new follow-up currently |
-| <code>make test-web</code> | Frontend typecheck, Vitest, and Biome lint | jsdom/unit-level frontend behavior, type safety, and source lint | Local pre-merge; required CI web job | Deterministic after Node dependencies are installed; each check owns a private process home plus temporary/XDG roots and disables Node's automatic compile cache; no real browser, provider, or network service | Any of the three streams is nonzero; missing/unhealthy frontend install fails preflight. Failure or interruption retains and names its owned evidence root | Frontend CI; no new follow-up currently |
-| <code>make test-web-browser</code> | Frontend layout, overflow, and Spawn browser guards | Headless Chrome evaluates real CSS geometry, the real Session reducer/tree, and the real Spawn staging/breakpoint path | Required CI web job; local pre-merge on a Chrome-capable host | Make invokes each guard's Node entrypoint directly so interruption reaches the process that owns cleanup. Each guard receives private process-home, temporary, and XDG roots and disables Node's compile cache; Chrome uses a private profile, disables crash reporting, keeps Crashpad state beneath that profile, and uses a mock keychain for Darwin fresh profiles so network startup cannot block on ambient credentials. Cleanup first awaits Chrome's CDP <code>Browser.close</code>, then falls back through bounded TERM-to-KILL escalation when CDP fails or stays pending. On POSIX, Chrome and Vite run in detached process groups and cleanup removes the profile only after each exact group disappears; Win32 uses direct-child exit handling. macOS Crashpad escapes Chrome's process group, so cleanup captures before shutdown and rescans afterward for only the handler with the canonical random profile's exact database argument. The escaped helper is observation-only: cleanup waits for that exact identity within a bounded grace period and retains the private profile on failure rather than signaling a reusable numeric PID. Chrome/Chromium is required; no WebKit/Safari runner exists | Every guard runs. Green output contains only the three verdicts and removes the owned root. Any guard error, Vite failure, cleanup failure, or missing Chrome/Chromium is nonzero; failed guard logs are replayed and failed or interrupted roots are retained and named. Interruption waits for owned cleanup. WebKit/Safari is an explicit unsupported/manual gap, never a pass | Frontend/Evener CI; WebKit/Safari gap is a deliberate ceiling, not a follow-up (Jesse, 2026-08-07, kata 7tf6): a spike proved Playwright WebKit cannot diverge vh/dvh (no browser-chrome emulation exists in its API), and the iOS-simulator+safaridriver route needs sudo enablement plus WebDriver plumbing we chose not to carry. Dynamic-viewport enforcement is the CSS-text contract in layoutguard's mobile-shell-viewport-height case plus the AppShell.test.tsx source contract; true geometry verification stays manual/on-device |
-| <code>make test-race</code> | Go non-fuzz modules under the race detector | Data races in the same non-fuzz module surface; frontend is intentionally not duplicated | Required CI; local diagnostic | Needs a race-capable Go toolchain and more CPU/memory; WEB=0, AGENT_SHARDS=0 | Any race report, test failure, or setup failure is nonzero; a slow or unavailable toolchain is a limitation/failure | Evener CI/tooling; no new follow-up currently |
-| <code>make vet</code> | Go vet across all non-fuzz workspace modules | Go vet diagnostics for every module, independent of the tagged lint floors | Required CI; local diagnostic | Deterministic Go analysis; no provider calls | Any module vet failure is nonzero | Evener CI/tooling; no new follow-up currently |
-| <code>make fuzz</code> | Tagged fuzz contracts, committed seed/crasher replay, Rapid replay, golden replay, and fuzz-tool packages | Fuzz invariants compile and execute, committed fuzz inputs remain safe, Rapid properties (including the seqfuzz/schemafuzz family that <code>make test-fuzz</code> also owns) replay under a fixed coverage seed bank, and decode goldens remain stable | Required CI deterministic corpus gate; local pre-merge when warranted | No fuzz search or provider calls; uses committed inputs and evenerfuzz tags; sets <code>EVENER_FUZZ_TESTS=1</code> so the seqfuzz/schemafuzz family's default skip does not swallow the replay; memory caps are best-effort by platform | Any compile, replay, invariant, Rapid, or golden failure is nonzero. Search campaigns belong to make fuzz-nightly, not this gate | Evener fuzz/tooling; no new follow-up currently |
-| <code>make fuzz-gap-check</code> | Static decode/parse fuzz-target coverage | Every discovered decode/parse package has a registered fuzz target or an explicit ignore | Required CI; local quick check | Seconds, deterministic, no network or corpus replay | An uncovered package or registry/tool failure is nonzero | Evener fuzz/tooling; no new follow-up currently |
-| <code>make fuzz-corpus-scan</code> | Gitleaks over committed fuzz corpora | Fuzz seeds do not contain secrets | Required CI; local harvester feedback | Needs gitleaks for a meaningful scan; local absence warns and returns zero unless EVENER_GITLEAKS_REQUIRED=1 | A finding or required-tool absence is nonzero; a local warning is an explicit limitation, not evidence of a scan | Evener security/tooling; no new follow-up currently |
-| <code>make test-dev-tooling</code> | The scripts/*-selftest.sh suites that pin evener's own dev tooling | Each suite is the only thing pinning its script's contract; a suite that leaves anything in its private TMPDIR after passing fails, which is what enforces suite cleanup | Final step of <code>make merge-approval-gate</code>, and on demand; not part of <code>make test</code> because these suites test tooling, not the product | Each suite is offline and deterministic; the wave runner (<code>cmd/evener-test-dev-tooling</code>) gives every suite its own process group and private TMPDIR, is quiet on success, and replays a failing suite's whole log | Any suite exit nonzero, or a passing suite leaving files behind, is nonzero | Evener CI/tooling; no new follow-up currently |
-| <code>make merge-approval-gate</code> | Serial local composition of lint, runtime build, full deterministic test, and the dev-tooling self-test wave | The canonical local/post-merge contract: make lint, make build, ROOT_FULL=1 make test, then make test-dev-tooling | Local pre-merge/post-merge; CI keeps equivalent checks in separate named jobs | Does not run fuzz search, race testing, provider calls, or browser guards; those have separate owners | The first failing phase stops the gate and returns nonzero; do not infer a verdict from partial logs. Live/e2e tests self-probe their host capabilities and skip individually on restricted hosts (internal/e2ecap) | Evener CI/tooling; no new follow-up currently |
-| <code>make dist</code> | Release/distribution binaries | goreleaser builds evener, evener-hub, evener-tui, evener-doctor, and evener-migrate for linux/amd64 and darwin/arm64 into directory-wrapped archives plus checksums.txt, with a fresh SPA embedded via the before hook | Release/snapshot CI; manual distribution verification | Cross-compilation and frontend dependencies; release CI has networked setup for tool/dependency installation | Any build, archive, inspection, checksum, or upload failure is nonzero; unavailable release tooling blocks release | Release engineering; no Evener launcher work is implied |
-| <code>scripts/web/web-preflight.sh</code> | Frontend dependency/setup health | The worktree has a lockfile-compatible install and a real local TypeScript compiler | Setup prerequisite for web/build/browser gates | May access npm when a real install is missing/stale; refuses unsafe npm ci through a mismatched shared symlink | Missing, mismatched, or unhealthy install is nonzero; npm/network unavailability is a setup failure | Worktree/frontend tooling; shared install management stays outside Evener |
-| <code>make coverage-floor</code> (<code>CHECK=1</code> to gate, <code>BLESS=1</code> to raise) | Per-module Go statement coverage reached by ANY deterministic test (test track unioned with the deterministic fuzz-seed replay), plus the frontend's vitest line coverage | How much of each module is exercised at all, ratcheted against <code>scripts/coverage/coverage-floors.txt</code>. Neither track alone is honest: the gate's <code>-run '^(Test|Example)'</code> filter excludes every fuzz target, and whole families of behavioural checks live in <code>check*</code> functions only a evenerfuzz-tagged "program" target calls | Local/on-demand; not required CI (heavier than <code>make test</code>) | Deterministic; no provider calls. The fuzz half replays committed seed corpora only (<code>go test</code> without <code>-fuzz</code>), never a search | A row below its floor beyond the tolerance band is nonzero; a floored row that cannot be measured fails loudly rather than skipping | Evener CI/tooling; no new follow-up currently |
-| <code>make test-timing-budget</code> (<code>CHECK=1</code> to enforce) / <code>make test-rebaseline</code> to reset | Per-Go-package test wall time, plus one aggregate for the frontend, against <code>testing-budget.json</code> | A timing regression does not silently erode the wins <code>docs/superpowers/specs/2026-08-01-test-gate-runtime-design.md</code> recorded: fail at 1.5x the checked-in budget, warn at 1.1x, plus a flat per-test ceiling regardless of package (<code>perTestCeilingSeconds</code> in that file, currently 3s) (kata b6rv) | Local/on-demand; not required CI — deliberately NOT part of <code>make merge-approval-gate</code>, because measuring durations means a second full non-fuzz <code>go test -json</code> run, which would double the very gate runtime this ratchet exists to protect. Wiring real enforcement into CI needs the durations sourced from the gate's own run instead of a second one, which is future work, not this kata's | Deterministic; no provider calls. Reuses <code>gate-surface-lib.sh</code>, so it measures the same surface <code>ROOT_FULL=1 make test</code> proves | A package over 1.5x its budget or any per-test ceiling breach is nonzero, but only under <code>CHECK=1</code> in a CI-shaped environment (<code>$CI</code> set, or <code>--strict</code>); a local run only warns. A missing or empty <code>testing-budget.json</code> is an explicit warn state — <code>CHECK=1</code> always exits zero until <code>make test-rebaseline</code> lands a measured baseline. The first clean-host baseline (121 packages) is checked in, so ratios are enforced under <code>CHECK=1</code> in a CI-shaped environment | Evener CI/tooling; deciding how to wire enforcement without duplicating the gate's own test run is an open follow-up (kata b6rv) |
-| <code>EVENER_LIVE_TESTS=1</code> (umbrella opt-in)<br><code>EVENER_MCP_E2E=1 go test ./agent/internal/mcp -run 'TestRealMCP_' -count=1 -v</code><br><code>EVENER_OPENAI_CODEX_E2E=1 go test ./llm/providers/openai -run 'TestAdapter_E2E_Codex' -count=1 -v</code><br><code>EVENER_ANTHROPIC_E2E=1 go test ./llm/providers/anthropic -run 'TestAdapter_E2E_Anthropic' -count=1 -v</code> | Provider/live/e2e | Real MCP and provider wire/API behavior, credentials, and model/provider contracts | Explicit manual/nightly opt-in; never default CI; <code>EVENER_LIVE_TESTS=1</code> also enables applicable live suites | Requires the named opt-in plus the corresponding tool, credentials, model access, and network; provider keys alone do not enable it | Tests without opt-in skip explicitly. With opt-in, configuration/API failures are nonzero; unavailable optional tools or credentials must be reported as skips/limitations, not passes | Provider owners; no default-gate follow-up |
-| <code>EVENER_E2E_LIVE=1 scripts/coverage/e2e-cover.sh --merge-unit</code><br><code>EVENER_SEATBELT_LIVE=1 go test ./agent/sandbox/ -run TestSeatbeltLive -count=1 -v</code> | Live service coverage and host sandbox parity | Exercises real binaries/services or the host Seatbelt backend beyond deterministic unit coverage | Manual/platform-specific; not required CI | Needs provider/network services for live scenario scripts or macOS Seatbelt; EVENER_E2E_LIVE is not a correctness gate because the coverage script intentionally continues past scenario failures | Missing platform/service is a limitation; live scenario failures must be read from script output rather than treated as coverage success | E2E/sandbox owners; hardening the coverage script is a separate follow-up |
-| Launcher health checks, managed-service restart, SDD/Kata semantics | Operational/external workflow | None are Evener-owned gate proofs in the current Makefile or workflows | Outside this repository's gates | Owned by the launcher, worktree manager, or SDD/Kata tooling | Do not add or silently imply these checks in Evener CI | Launcher/worktree manager/SDD owners; outside this change |
+Five gates are written out here anyway. Three have no make target at all: they
+are environment opt-ins, or work this repository does not own. The other two do
+run through make. `scripts/web/web-preflight.sh` has both a target and a
+generated row in building.md, and is named here because it is a setup
+prerequisite rather than a gate in its own right, so a reader hunting for it
+among the gates is told where its row lives. `ROOT_FULL=1 make test` is the
+`test` target under an environment override, which no generated row can
+carry.
+
+All five follow the same rules as the rest: test assertions stay deterministic
+when the live opt-ins are unset, and dependency installation, disk capacity,
+browser availability, and CI tool setup are explicit prerequisites rather than
+assumptions.
+
+### `scripts/web/web-preflight.sh`
+
+A setup prerequisite for the web, build, and browser gates rather than a gate
+in its own right: `make web-preflight` runs it directly, and `make build-web`,
+`make test-web` and `make test-web-browser` all reach it.
+
+What it proves, what it may run, and how it fails live in the `make
+web-preflight` row of [building.md's target table](building.md#targets).
+That row is generated from the annotation above the rule and gated for
+staleness by `make lint`; a copy of those cells here would drift the first
+time the annotation changed, with nothing to say so.
+
+Managing a shared install across worktrees belongs to the worktree and
+frontend tooling, outside Evener.
+
+### `ROOT_FULL=1 make test`
+
+The full intended non-fuzz surface: the whole root suite plus every non-root
+module plus the frontend. `ROOT_FULL=1` removes root's ordinary `-short` mode
+while retaining the non-fuzz `Test`/`Example` name filter and the explicit
+fuzz-owned exclusions, which is what preserves the complete non-fuzz
+post-merge surface.
+
+Run it locally pre-merge and post-merge; `make merge-approval-gate` runs it as
+its third phase. The required CI equivalent is `ROOT_FULL=1 WEB=0 make test`,
+because the web job owns `make test-web` and the Go job must not duplicate it.
+
+Requirements are the same as `make test`. `ROOT_FULL=1` enables no provider and
+no fuzz search. Any root or module failure is nonzero, and live tests stay
+explicitly skipped unless their own opt-in is set.
+
+### `EVENER_LIVE_TESTS=1` and the per-provider live suites
+
+Real MCP and provider wire/API behaviour, credentials, and model/provider
+contracts. `EVENER_LIVE_TESTS=1` is the umbrella opt-in that enables the
+applicable live suites together; each suite also has its own:
+
+~~~sh
+EVENER_MCP_E2E=1 go test ./agent/internal/mcp -run 'TestRealMCP_' -count=1 -v
+EVENER_OPENAI_CODEX_E2E=1 go test ./llm/providers/openai -run 'TestAdapter_E2E_Codex' -count=1 -v
+EVENER_ANTHROPIC_E2E=1 go test ./llm/providers/anthropic -run 'TestAdapter_E2E_Anthropic' -count=1 -v
+~~~
+
+These are an explicit manual or nightly opt-in and never run in default CI.
+Each needs its named opt-in plus the corresponding tool, credentials, model
+access, and network; a provider key on its own enables nothing. Without the
+opt-in the tests skip explicitly. With it, a configuration or API failure is
+nonzero, and an unavailable optional tool or credential must be reported as a
+skip or a limitation, never as a pass. What each suite covers is described in
+[MCP Server E2E](#mcp-server-e2e), [OpenAI Codex Backend
+E2E](#openai-codex-backend-e2e), and [Anthropic Messages API
+E2E](#anthropic-messages-api-e2e) below.
+
+### Live service coverage and host sandbox parity
+
+~~~sh
+EVENER_E2E_LIVE=1 scripts/coverage/e2e-cover.sh --merge-unit
+EVENER_SEATBELT_LIVE=1 go test ./agent/sandbox/ -run TestSeatbeltLive -count=1 -v
+~~~
+
+These exercise real binaries and services, or the host Seatbelt backend,
+beyond what deterministic unit coverage reaches. Both are manual and
+platform-specific, and neither is required CI. The first needs provider and
+network services for the live scenario scripts; the second needs macOS
+Seatbelt.
+
+`EVENER_E2E_LIVE` is not a correctness gate, because the coverage script
+intentionally continues past a failing scenario. A missing platform or service
+is a limitation; a live scenario failure has to be read out of the script's
+output rather than treated as coverage success. Hardening that script is a
+separate follow-up.
+
+### Launcher health checks, managed-service restart, and SDD/Kata semantics
+
+Operational and external workflow, owned by the launcher, the worktree
+manager, or the SDD/Kata tooling. None of it is a gate proof this repository
+owns — none appears in its Makefile or workflows — and none belongs in Evener CI:
+do not add these checks here, and do not write anything that silently implies
+Evener runs them.
 
 ## Post-Merge Gate
 
@@ -226,9 +296,9 @@ own tooling (cmd/evener-test-dev-tooling). They test tooling, not the product,
 so they run here — where tooling regressions matter — and on demand, not
 inside every inner-loop make test.
 
-The matrix intentionally does not make browser guards part of make lint or
-make test: those default gates remain usable without Chrome, while CI still
-requires the browser-specific gate in its web job.
+The browser guards are deliberately not part of make lint or make test:
+those default gates remain usable without Chrome, while CI still requires the
+browser-specific gate in its web job.
 
 ### Frontend setup boundary
 
@@ -288,157 +358,32 @@ no resumable application session, and continuation state created by tests lived
 inside their process-owned state root. Apple container is diagnostic evidence
 for this contract, not a local or CI gate dependency.
 
-## The seqfuzz/schemafuzz Family Lives Only in `make test-fuzz`
+## The Test Timing Ratchet
 
-A Jesse ruling: no fuzz-family test — including a smoke-depth iteration —
-belongs in `make test`, `go test ./...`, or any of their variants. This is a
-different exclusion from the `evenerfuzz`-tagged native `FuzzXxx` targets and
-`seed100`-style edge suites, which never compile into a default build because
-of their build tag. The tests this ruling targets are ordinary
-`func TestXxx(t *testing.T)` functions that call `rapid.Check` to run a
-stateful/sequence property fuzzer — no build tag hides them, so a plain
-`go test ./agent` used to run them, at whatever depth `rapid.Check`'s own
-`testing.Short()` awareness picked.
+`make test-timing-budget` measures per-Go-package test wall time, plus one
+aggregate for the frontend, against the checked-in `testing-budget.json`. It
+exists so a timing regression cannot silently erode the runtime wins
+`docs/superpowers/specs/2026-08-01-test-gate-runtime-design.md` recorded: it
+fails at 1.5x a package's checked-in budget, warns at 1.1x, and applies a flat
+per-test ceiling regardless of package (`testing-budget.json`'s
+`perTestCeilingSeconds`, currently 3s) (kata b6rv). It reuses
+`gate-surface-lib.sh`, so it measures the same surface `ROOT_FULL=1 make test`
+proves.
 
-Each test in the family is now individually gated at the top of its body:
+Enforcement is conditional. A local run only warns. A package over 1.5x its
+budget, or any per-test ceiling breach, is nonzero only under `CHECK=1` in a
+CI-shaped environment (`$CI` set, or `--strict`). A missing or empty
+`testing-budget.json` is an explicit warn state, so `CHECK=1` exits zero until
+`make test-rebaseline` lands a measured baseline. A clean-host baseline is
+checked in, so the ratios are enforced under `CHECK=1` in a CI-shaped
+environment today.
 
-```go
-func TestDelegateSeqFuzz(t *testing.T) {
-	if os.Getenv("EVENER_FUZZ_TESTS") != "1" {
-		t.Skip("fuzz: skipped by default; run `make test-fuzz`, or EVENER_FUZZ_TESTS=1 go test ./agent -run TestDelegateSeqFuzz -count=1 -v")
-	}
-	...
-```
-
-The gate is an env-var check rather than reusing `-short`, precisely so that
-`go test ./agent` with no flags stays fuzz-free too — matching the ruling's
-spirit rather than only its `-short` letter. The gate is the first statement
-in every one of these functions, including the two (`TestDelegateSeqFuzz`,
-`TestLifecycleSeqFuzz`) that resolve `fuzz/promoter.PersistPaths` before
-deciding whether to call `t.Parallel()`: the skip must fire before any of that
-path resolution or parallelism decision runs.
-
-The family, by file and function:
-
-| File | Function |
-| --- | --- |
-| `agent/delegate_seqfuzz_test.go` | `TestDelegateSeqFuzz` |
-| `agent/watch_seqfuzz_test.go` | `TestWatchSeqFuzz` |
-| `agent/lifecycle_seqfuzz_test.go` | `TestLifecycleSeqFuzz` |
-| `agent/jobs_fc2_seqfuzz_test.go` | `TestJobsFc2DescendantMergeSeqFuzz` |
-| `agent/registry_schemafuzz_test.go` | `TestToolArgsSchemaFuzz` |
-| `agent/internal/contextmgr/compaction_seqfuzz_test.go` | `TestCompactionSeqFuzz` |
-| `agent/internal/contextmgr/maybecompact_fc1_seqfuzz_test.go` | `TestFc1MaybeCompactSeqFuzz` |
-| `agent/internal/jobstore/seqfuzz_test.go` | `TestJobstoreSeqFuzz` |
-| `internal/appserver/router_seqfuzz_test.go` | `TestRouterSeqFuzz` |
-| `internal/appserver/hub_multisession_seqfuzz_test.go` | `TestHubMultiSessionSeqFuzz` |
-
-A test that merely has "fuzz" in its name is not automatically in this family
-— `TestDelegateSeqFuzzReplayClean`, `TestToolArgsAdapter_PromotesDeterministicFailure`,
-and the other promoter-adapter tests alongside these files replay one fixed,
-deterministic artifact (or a synthetic failure) rather than running a
-`rapid.Check` search; they stay in the default suite because they are fast and
-their coverage is otherwise lost. The `job_delegate_seed100_fuzz_test.go` file
-and its siblings named for the same "seed100" convention are native `FuzzXxx`
-targets under the `evenerfuzz` build tag — already excluded from every default
-build, not part of this change.
-
-Three other entry points drive this same rapid family and needed
-`EVENER_FUZZ_TESTS=1` threaded through so this ruling would not silently blind
-them: `make fuzz`'s fixed-seed rapid replay loop (`scripts/fuzz/run-fuzz.sh`'s
-`rapid` case, used by `fuzz-nightly`/`fuzz-triage`/`fuzz-continuous` too) and
-`scripts/fuzz/fuzz-oracle-audit.sh`'s `run_seeds`, which replays a mutation against
-`TestJobstoreSeqFuzz` and must never read that test's now-default skip as the
-oracle failing to catch the mutation.
-
-The default gate's coverage number and the fuzz family's coverage are measured
-separately, by design. `go test ./agent -short`'s `-cover` output measures only
-the imperative test suite — the seqfuzz/schemafuzz family t.Skip()s there.
-`make coverage-floor` answers the honest "how much is exercised at all" number:
-per module it unions the test track with the deterministic native seed-corpus
-replay (the rapid family is env-gated and not part of either track). Do not read
-a default-gate coverage number as "whole-repo coverage including fuzz" — it
-never was, and now it's explicit.
-
-The corollary runs the other way too, and it is the one that misleads: a
-default-gate number is not "how much of this package is tested". Several
-packages keep whole families of behavioural checks in `check*` functions that
-only a native *program* fuzz target calls — `FuzzLaunchConfigBehaviorProgram`
-invokes 98 of them. These `Fuzz*BehaviorProgram` targets carry no `evenerfuzz`
-build tag; what excludes them from the test track is the same
-`-run '^(Test|Example)'` filter (`scripts/lib/gate-surface-lib.sh`'s
-`GATE_TEST_RUN`) that excludes every other `FuzzXxx` name, so the test track
-cannot see that work at all: `cmd/evener-hub/internal/appsource` reads 66.4%
-there and 83.1% under its own program target, and four modules that look
-incomplete on both tracks separately are in fact fully covered.
-
-So before concluding a package is under-tested — and certainly before writing a
-test to raise its number — read `make coverage-floor`, which unions the two
-tracks. The test you were about to write may already exist under the other build
-tag.
-
-`cmd/evener-hub/cov_*_test.go` pulls the union number in the other direction.
-(The `cov_`-prefixed name is not the marker — some, like
-`agent/execenv/cov_s4_local_test.go`, are ordinary untagged `TestXxx`
-suites. The marker is the shape below: a `FuzzXxx` target, not a `TestXxx`
-function — the `//go:build evenerfuzz` tag is not part of it, and most of
-`cmd/evener-hub`'s cov_* files carry no such tag, including
-`cov_auth_instances_fuzz_test.go` below. Its own seed shape isn't universal
-either: it ignores a single seed byte, `f.Add(byte(0))`, but several other
-cov_* files seed multiple bytes that select between behaviors.) Each of
-`cmd/evener-hub`'s cov_* files is a deterministic replay matrix that calls
-production functions and discards most results (`_ = f(x)`). Their oracle is
-real — a panic or a `-race` failure still fails the build — but thin: a call
-site with no assertion cannot fail on a wrong answer, only a crash. So
-statements these files reach count as EXECUTED toward coverage-floor, not
-TESTED — read the number that way for `cmd/evener-hub`, where they are a large
-share of the fuzz track. Upgrading a call site's target from panic-net to an
-assertion against an independently-written literal (see
-`cov_auth_instances_fuzz_test.go`) turns EXECUTED into TESTED for that call
-site; it is not required for the rest of the file to keep earning its lines.
-
-## Proving a Type Survives a Round Trip
-
-When two code paths must agree about a struct — a decoder and a
-projector, a live path and a reload path — a hand-written fixture proves
-only that today's fields survive. A field added next month passes,
-because nothing in the test knows it exists.
-
-Build the fixture by walking the **type** with reflection instead. Fill
-every field with a distinguishable value, decode the same bytes through
-both paths, and report divergent fields by name.
-
-`agent/session_client_mutation_doctor_drift_test.go` is the worked
-example. `clientMutationSnapshot` is unexported, so evener-doctor's
-mutations reader mirrors the persisted shape and decodes it with
-`DisallowUnknownFields`; the test walks the snapshot type with
-reflection and marshals it the way the save path does, so a field the
-mirror has never heard of makes the doctor refuse the store and name it.
-Verified by adding a synthetic field to `clientMutationSnapshot` and
-watching the test name it unprompted, with no test edit.
-
-The gotchas in a fixture builder are all in the leaves. This example
-demonstrates two: `json.RawMessage` must contain valid JSON, and any
-other `[]byte` marshals as base64. Two more are general technique that
-this particular type never exercises, because `clientMutationSnapshot`
-carries no `time.Time`, no float and no `any` — a `time.Time` needs whole
-seconds wherever the encoding is RFC 3339, and floats must be integral to
-survive widening through `any`. The last gotcha is the structural one: an
-unhandled `reflect.Kind` must fail loudly rather than skip, because a
-builder that silently skips a kind is a test that silently stops covering
-it. `fillEveryField` has no `reflect.Interface` case, so an `any` field
-added to the snapshot tomorrow stops the test rather than going quietly
-untested.
-
-Two corollaries:
-
-- **Always prove it by mutation.** Route one path through a struct that
-  omits a field and confirm the test names that field. A drift test that
-  has never failed is a decoration.
-- **Delete the round-trip test when the second path dies.** Once a
-  mirror type is gone, both sides of its round-trip test are the same
-  `json.Unmarshal` and it cannot fail. Keeping it leaves a comment
-  claiming coverage that no longer exists.
+It is deliberately not part of `make merge-approval-gate`, and it is not
+required CI: measuring durations means a second full non-fuzz
+`go test -json` run, which would double the very gate runtime this ratchet
+exists to protect. Wiring real enforcement into CI needs the durations sourced
+from the gate's own run instead of a second one. Deciding how to do that is an
+open follow-up (kata b6rv).
 
 ## The Three Browser Guards, and Why There Are Three
 
@@ -535,6 +480,51 @@ case pass when it should not have (katas hk8v, edhz):
 Geometry also cannot see `object-fit`: dropping `object-fit: cover` leaves every
 box identical and only changes how pixels are scaled inside the image box. Say
 so in the case rather than letting a pass imply coverage it does not have.
+
+### What the browser gate owns, and how it cleans up
+
+The determinism story for `make test-web-browser` is longer than a table cell,
+because a real browser is a process tree rather than a function call.
+
+Make invokes each guard's Node entrypoint directly, so an interruption reaches
+the process that owns cleanup rather than a wrapper that does not. Each guard
+receives private process-home, temporary, and XDG roots and disables Node's
+automatic compile cache. Chrome runs against a private profile with crash
+reporting disabled and Crashpad state kept beneath that profile, and on a
+fresh Darwin profile it uses a mock keychain so network startup cannot block
+on ambient credentials.
+
+Cleanup first awaits Chrome's CDP `Browser.close`, then falls back through a
+bounded TERM-to-KILL escalation when CDP fails or stays pending. On POSIX,
+Chrome and Vite run in detached process groups and cleanup removes the profile
+only after each exact group disappears; Win32 uses direct-child exit handling
+instead.
+
+macOS Crashpad escapes Chrome's process group, so cleanup captures the handler
+before shutdown and rescans afterward for only the handler carrying the
+canonical random profile's exact database argument. That escaped helper is
+observation-only: cleanup waits for that exact identity within a bounded grace
+period, and on failure retains the private profile rather than signalling a
+numeric PID the OS may already have reused.
+
+Green output contains only the three verdicts and removes the owned root. Any
+guard error, Vite failure, cleanup failure, or missing Chrome/Chromium is
+nonzero; a failed guard's log is replayed, and a failed or interrupted root is
+retained and named. An interruption waits for the cleanup it owns.
+
+### Why there is no WebKit or Safari runner
+
+Chrome/Chromium is required and there is no WebKit or Safari runner. That gap
+is a deliberate ceiling, not a follow-up (Jesse, 2026-08-07, kata 7tf6): a
+spike proved Playwright's WebKit cannot diverge `vh` from `dvh`, because no
+browser-chrome emulation exists in its API, and the iOS-simulator plus
+`safaridriver` route needs sudo enablement and WebDriver plumbing we chose not
+to carry. WebKit/Safari is an explicit unsupported and manual gap, never a
+pass.
+
+Dynamic-viewport enforcement is instead the CSS-text contract in layoutguard's
+`mobile-shell-viewport-height` case plus the `AppShell.test.tsx` source
+contract; true geometry verification stays manual and on-device.
 
 ## A Single `tmux capture-pane` Can Lie
 
@@ -868,7 +858,7 @@ EVENER_MCP_E2E=1 go test ./agent/internal/mcp -run 'TestRealMCP_' -count=1 -v
 ## Environment Variable Tests
 
 Supported runtime environment variables are defined in the `envvars` package
-and documented in `docs/environment.md`. Production code, help text, and test
+and documented in `docs/developing-evener/environment.md`. Production code, help text, and test
 helpers should use those rows instead of hard-coded env names.
 
 When adding a runtime env var:
@@ -876,7 +866,7 @@ When adding a runtime env var:
 - Add one `envvars.Var` row.
 - Use the row's `Name`, `Getenv`, `LookupEnv`, `Trimmed`, or `Assignment`
   helper at call sites.
-- Document it in `docs/environment.md`.
+- Document it in `docs/developing-evener/environment.md`.
 - Keep live-test opt-in gates explicit; a provider credential alone must not
   make a default test issue network requests.
 
@@ -981,3 +971,26 @@ Observed live result on 2026-05-21:
 - Some prompts/models may not emit visible thinking blocks even when reasoning is requested; the test logs this instead of failing. Unit tests cover thinking/signature and redacted-thinking round-trip shapes.
 
 If sandboxed DNS/network blocks the live run, rerun with command escalation for network access.
+
+## Targets
+
+<!-- BEGIN GENERATED: make targets. Edit make/testing.mk, then run `make generate`. -->
+| Command | Summary | What it proves | Trigger | Requires | Fails when |
+| --- | --- | --- | --- | --- | --- |
+| `make test-web` | The frontend's single gate entry point: typecheck, unit tests, then lint, run concurrently. | jsdom/unit-level frontend behavior, type safety, and source lint. | Local pre-merge; required CI web job. | Deterministic after Node dependencies are installed; each check owns a private process home plus temporary/XDG roots and disables Node's compile cache; no real browser, provider, or network service. | Any of the three streams is nonzero; a missing or unhealthy frontend install fails preflight. |
+| `make test-web-browser` | The real browser-only frontend guards (layoutguard, overflowguard, spawnguard) that jsdom cannot evaluate. | Headless Chrome evaluates real CSS geometry, the real Session reducer/tree, and the real Spawn staging/breakpoint path. | Required CI web job; local pre-merge on a Chrome-capable host. | Chrome/Chromium; each guard gets a private process home, temporary/XDG roots, and a private browser profile. No WebKit/Safari runner. | Any guard error, Vite failure, cleanup failure, or missing Chrome/Chromium is nonzero. |
+| `make test-dev-tooling` | Run the scripts/*-selftest.sh suites that pin evener's own dev tooling. | Each suite is the only thing pinning its script's contract. | Final step of make merge-approval-gate, and on demand; not part of make test. | Each suite is offline and deterministic; the wave runner gives every suite its own process group and private TMPDIR. It is quiet on success and replays a failing suite's whole log. | Any suite exit nonzero, or a passing suite leaving files behind, is nonzero. |
+| `make test` | The default local test gate: Go modules (short mode) plus the frontend, run concurrently. | Root short-mode tests, other module tests, and frontend typecheck/Vitest/Biome all pass. | Local quick check; included by the merge gate. | Scripted/fake external boundaries for default tests; runs ZERO fuzz-family tests, even at reduced depth. WEB=0 skips the frontend stream. | Any module, frontend stream, or setup failure is nonzero. |
+| `make merge-approval-gate` | The canonical serial post-merge gate: lint, build, the full test suite, then the dev-tooling selftest wave. | make lint, make build, ROOT_FULL=1 make test, then make test-dev-tooling all pass, in that order. | Local pre-merge/post-merge; CI keeps equivalent checks in separate named jobs. | Does not run fuzz search, race testing, provider calls, or browser guards; those have separate owners. | The first failing phase stops the gate and returns nonzero; do not infer a verdict from partial logs. |
+| `make test-race` | The permanent -race gate across every non-fuzz module. | Data races in the non-fuzz modules surface; frontend is intentionally not duplicated. | Required CI; local diagnostic. | A race-capable Go toolchain and more CPU/memory; WEB=0, AGENT_SHARDS=0, AGENT_PARALLEL= to avoid oversubscribing few-core CI under -race's ~10x slowdown. | Any race report, test failure, or setup failure is nonzero. |
+| `make vet` | go vet across every non-fuzz workspace module. | go vet diagnostics for every module, independent of the tagged lint floors. | Required CI; local diagnostic. | Deterministic Go analysis; no provider calls. | Any module's vet failure is nonzero. |
+| `make test-timing-budget` | Ratchet per-package test wall time against testing-budget.json. | A timing regression does not silently erode the suite's runtime wins — fail at 1.5x the checked-in budget, warn at 1.1x, plus a flat per-test ceiling. | Local/on-demand; not required CI — deliberately not part of make merge-approval-gate, since measuring durations means a second full test run. CHECK=1 enforces; bare invocation only measures and prints. | Deterministic; no provider calls. Reuses gate-surface-lib.sh, so it measures the same surface ROOT_FULL=1 make test proves. | Under CHECK=1 in a CI-shaped environment, a package over 1.5x its budget or any per-test ceiling breach is nonzero; a missing or empty budget file always exits zero. |
+| `make test-timing-budget-selftest` | Exercise the timing-budget comparison contract against fixture duration rows — no go test or vitest run. | The ratio bands, the per-test ceiling, a missing budget entry, an absent/empty budget file, strict-vs-warn-only policy, and --bless all compare correctly. | make test-dev-tooling wave; on demand. | Offline and deterministic; fixture rows only, no real suite run. | Any comparison diverges from its fixture's expected verdict. Leftover files fail only under the test-dev-tooling wave, which owns that check. |
+
+### Other targets
+
+| Command | Summary |
+| --- | --- |
+| `make test-short` | Alias for `make test`. |
+| `make test-rebaseline` | Reset testing-budget.json to what a clean-host run just measured. Run deliberately, on an otherwise idle box, and review the diff in the same commit as whatever change earned it — never to invent a baseline. Not part of any gate. |
+<!-- END GENERATED -->

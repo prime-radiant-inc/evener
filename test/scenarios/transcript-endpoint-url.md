@@ -10,7 +10,7 @@ provider forensics come from `sessions/<SID>.api.jsonl` or explicit
 
 - Hub running with `--evener` set, on an isolated `$HOME` and a free port
   (never Jesse's port `9180` — see the Setup checklist in
-  `docs/agentic-testing.md`).
+  `docs/developing-evener/agentic-testing.md`).
 - OAuth or API-key creds set up so a model call can actually succeed.
 - A cheap, fast-responding model available (e.g.
   `anthropic/claude-haiku-4-5-20251001`).

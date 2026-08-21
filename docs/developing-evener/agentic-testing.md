@@ -503,7 +503,7 @@ measurement can consequently be for the wrong page.
 `set_profile` does **not** create a private browser and must not be called. It
 changes one sticky value on the shared MCP server process, redirecting every
 agent that uses that server. The authoritative measured behavior and fleet
-rule are in `docs/conventions/agent-fleets.md` under “Chrome is one shared
+rule are in `docs/developing-evener/conventions/agent-fleets.md` under “Chrome is one shared
 instance.”
 
 Use one of these ownership modes before browser verification:
@@ -1068,4 +1068,4 @@ file a kata. Don't try to drive past the gate from the scenario.
 - **Browser console capture**: `~/.cache/superpowers/browser/<date>/<session>/<NNN>-<action>-console.txt`
 - **Kata CLI**: `~/go/bin/kata` (see `kata create --help`)
 - **Rate-limited provider for retry/liveness checks**: `scripts/e2e/e2e-ratelimited-provider.sh` — see "Testing against a rate-limited provider" above.
-- **Browser verification ownership**: serialize the shared browser to one designated verifier, or use a genuinely distinct browser server/process owned by the run. Never call `set_profile`; see "Driving the web UI" above and `docs/conventions/agent-fleets.md`.
+- **Browser verification ownership**: serialize the shared browser to one designated verifier, or use a genuinely distinct browser server/process owned by the run. Never call `set_profile`; see "Driving the web UI" above and `docs/developing-evener/conventions/agent-fleets.md`.

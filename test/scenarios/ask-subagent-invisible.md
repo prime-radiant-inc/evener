@@ -10,7 +10,7 @@ delegation-only tools for a coordinator.
 
 - Hub + credentials as `ask-web-answer.md` — reuse that card's hub if it is still
   running, otherwise re-run its Pre-state first. The handoff is its run directory, not
-  a port (`docs/agentic-testing.md`, "Handing this hub to a sibling card"):
+  a port (`docs/developing-evener/agentic-testing.md`, "Handing this hub to a sibling card"):
   ```bash
   run=${EVENER_E2E_RUN:?run ask-web-answer.md's Pre-state first, then export EVENER_E2E_RUN="$run"}
   export HOME="$run/home"
@@ -128,7 +128,7 @@ Leave the hub and `$run` alone — `ask-web-answer.md` started them and its Clea
 kills `$HUBPID` and removes `$run`. If you had to start the hub yourself because
 `EVENER_E2E_RUN` was unset, you own it: `kill "$HUBPID"; rm -rf "$run"`. Never
 `pkill -f evener-hub`, which takes out every other concurrent agent's hub too
-(`docs/agentic-testing.md`, "Cleanup recipe").
+(`docs/developing-evener/agentic-testing.md`, "Cleanup recipe").
 
 ## Sharp edges
 
@@ -150,7 +150,7 @@ kills `$HUBPID` and removes `$run`. If you had to start the hub yourself because
   That guarantee holds at the Go API level (verified by the tests in step 5) but has no live
   caller today — the `delegate` tool simply does not expose a way to request extra tool
   grants yet. This is the documented "over-specification trap" pattern from
-  `docs/agentic-testing.md`: when production wiring doesn't reach a designed behavior,
+  `docs/developing-evener/agentic-testing.md`: when production wiring doesn't reach a designed behavior,
   confirm the gate in source, point at the unit test that verifies it, and say so in the
   scenario rather than fabricating a step that looks executable but would actually exercise
   nothing (a `grant_tools` key on a live `delegate` call is silently discarded, not

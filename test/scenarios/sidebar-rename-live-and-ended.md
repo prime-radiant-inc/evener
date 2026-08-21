@@ -8,7 +8,7 @@ rail's rename dialog, and the namer-suppression rule in
 `"compaction"`-sourced suggestion must **not** overwrite it
 (`shouldApplySessionNameLocked`, `:374-382`; the source constants at `:21-23`).
 
-**Surface**: see `docs/agentic-testing.md`, "Driving the web UI" — the selector
+**Surface**: see `docs/developing-evener/agentic-testing.md`, "Driving the web UI" — the selector
 map there is the single place these hooks are maintained. Rows are
 `[data-session-ref="local:<SID>"]` (`RailRow.tsx:509`); there is no `.sb-row`,
 no `.title` class, and no `window.EvenerSidebar.refresh()`.
@@ -27,7 +27,7 @@ the trimmed value is empty (`Rail.tsx:639`).
 ## Pre-state
 
 - A freshly built `evener-hub` on an isolated `$HOME` and a kernel-assigned port
-  — the Setup checklist in `docs/agentic-testing.md`. Never a real hub. Build
+  — the Setup checklist in `docs/developing-evener/agentic-testing.md`. Never a real hub. Build
   the frontend (`make build-web`) before the hub for the browser half.
 - A **live** session against a real, credentialed model (step 4's compaction is
   a genuine model call) and, separately, an **ended** session. Note both refs
@@ -103,7 +103,7 @@ optimistic overlay.
 
 - `POST /api/sessions/local:<SID>/shutdown` for the live session.
 - Kill the hub by the PID you captured; `rm -rf` the run directory and the
-  scratch working directories (Cleanup recipe in `docs/agentic-testing.md`).
+  scratch working directories (Cleanup recipe in `docs/developing-evener/agentic-testing.md`).
 
 ## Sharp edges
 

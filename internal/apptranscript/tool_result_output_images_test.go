@@ -20,7 +20,9 @@ import (
 //
 // It compares BY FIELD NAME over the wire struct rather than against a
 // hand-written fixture, so a field added to appwire.OutputImage tomorrow fails
-// here — named — instead of silently going unprojected (docs/testing.md).
+// here — named — instead of silently going unprojected (the round-trip
+// technique in docs/developing-evener/fuzzing.md's "Proving a Type Survives a
+// Round Trip").
 func TestToolResultOutputImagesMatchesTheLiveDescriptorFieldForField(t *testing.T) {
 	data := []byte{0x89, 'P', 'N', 'G', 0x0d, 0x0a, 0x1a, 0x0a, 'b', 'o', 'd', 'y'}
 	result := &llm.ToolResultData{Name: "screenshot", ImageData: data, ImageMediaType: "image/webp"}

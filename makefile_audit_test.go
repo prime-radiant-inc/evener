@@ -33,9 +33,9 @@ var makefileVariableFedDeletes = map[string]string{}
 // The hazard is the one from kata 5hs2: a recursive delete whose path arrives
 // in a variable deletes whatever that variable happens to hold, and an empty
 // expansion turns a scratch cleanup into a delete of something a person would
-// miss. Makefile:232 records the same lesson from the other side — the
-// selftest-lib suite exists to prove no selftest can be made to delete the
-// checkout.
+// miss. The Makefile's DEV_TOOLING_TEST_SCRIPTS comment records the same
+// lesson from the other side — the scratch-lib suite exists to prove no
+// selftest can be made to delete the checkout.
 //
 // Two limits are worth stating, because a passing run does not cover them. The
 // scan is textual, so `find … -exec rm -rf {} +` reads as a delete of the
@@ -46,67 +46,77 @@ var makefileVariableFedDeletes = map[string]string{}
 // The scan is also per physical line, but that is handled rather than merely
 // admitted: a delete running past the end of its line is refused outright, so a
 // continuation hides nothing.
+//
+// The scan walks makefileSourcePaths one file at a time, rather than joining
+// every file's body into one string first, so a failure's citation is
+// path:line for the file that actually holds the delete — matching the
+// pattern scriptmktemp_audit_test.go's recursiveDeleteOffenders already uses
+// for the equivalent scripts/ audit. Scanning file-by-file also means the
+// last line of one file's content can never be mistaken for a continuation
+// of, or fused onto, the first line of the next file: each file's line index
+// and its "does this line continue" check are entirely its own.
 func TestNoMakefileRecipeFeedsVariableToRecursiveDelete(t *testing.T) {
 	t.Parallel()
-	body, err := os.ReadFile("Makefile")
-	if err != nil {
-		t.Fatalf("read Makefile: %v", err)
-	}
 
 	var unswept, unreadable []string
 	matched := map[string]int{}
-	for i, line := range strings.Split(string(body), "\n") {
-		// continues reports whether make joins the NEXT physical line onto
-		// this one, which is what makes a delete at the end of this line
-		// unreviewable.
-		trimmed, continues := recursiveDeleteLineText(line)
-		if strings.HasPrefix(trimmed, "#") {
-			continue
+	for _, path := range makefileSourcePaths(t) {
+		raw, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatalf("read %s: %v", path, err)
 		}
-		where := fmt.Sprintf("Makefile:%d: %s", i+1, trimmed)
-		commands := recursiveDeleteCommands(trimmed, "$$(")
-		for c, command := range commands {
-			args, isRM := rmArguments(command)
-			if !isRM {
+		for i, line := range strings.Split(string(raw), "\n") {
+			// continues reports whether make joins the NEXT physical line onto
+			// this one, which is what makes a delete at the end of this line
+			// unreviewable.
+			trimmed, continues := recursiveDeleteLineText(line)
+			if strings.HasPrefix(trimmed, "#") {
 				continue
 			}
-			// An rm that is the LAST command on a continued line runs on into
-			// the next physical line, which may carry its recursion flag, its
-			// path, or both. Neither this line nor the next says what gets
-			// deleted, so the shape is refused outright rather than
-			// allowlisted: a delete that cannot be read cannot be reviewed.
-			//
-			// A delete followed by more commands on the same line is safe from
-			// this: `||` and `;` end the rm before the continuation does, which
-			// is why the blessed sites at Makefile:77 and :121 stay green.
-			if continues && c == len(commands)-1 {
-				unreadable = append(unreadable, where)
-				continue
-			}
-			operands, recursive := recursiveDelete(args)
-			if !recursive {
-				continue
-			}
-			// A recursive delete with no path at all takes its target from a
-			// pipe (`xargs rm -rf`), which is equally unreadable.
-			if len(operands) == 0 {
-				unreadable = append(unreadable, where)
-				continue
-			}
-			fromVariable := false
-			for _, operand := range operands {
-				if operandComesFromVariable(operand) {
-					fromVariable = true
+			where := fmt.Sprintf("%s:%d: %s", path, i+1, trimmed)
+			commands := recursiveDeleteCommands(trimmed, "$$(")
+			for c, command := range commands {
+				args, isRM := rmArguments(command)
+				if !isRM {
+					continue
 				}
+				// An rm that is the LAST command on a continued line runs on into
+				// the next physical line, which may carry its recursion flag, its
+				// path, or both. Neither this line nor the next says what gets
+				// deleted, so the shape is refused outright rather than
+				// allowlisted: a delete that cannot be read cannot be reviewed.
+				//
+				// A delete followed by more commands on the same line is safe from
+				// this: `||` and `;` end the rm before the continuation does.
+				if continues && c == len(commands)-1 {
+					unreadable = append(unreadable, where)
+					continue
+				}
+				operands, recursive := recursiveDelete(args)
+				if !recursive {
+					continue
+				}
+				// A recursive delete with no path at all takes its target from a
+				// pipe (`xargs rm -rf`), which is equally unreadable.
+				if len(operands) == 0 {
+					unreadable = append(unreadable, where)
+					continue
+				}
+				fromVariable := false
+				for _, operand := range operands {
+					if operandComesFromVariable(operand) {
+						fromVariable = true
+					}
+				}
+				if !fromVariable {
+					continue
+				}
+				if _, allowed := makefileVariableFedDeletes[trimmed]; allowed {
+					matched[trimmed]++
+					continue
+				}
+				unswept = append(unswept, where)
 			}
-			if !fromVariable {
-				continue
-			}
-			if _, allowed := makefileVariableFedDeletes[trimmed]; allowed {
-				matched[trimmed]++
-				continue
-			}
-			unswept = append(unswept, where)
 		}
 	}
 

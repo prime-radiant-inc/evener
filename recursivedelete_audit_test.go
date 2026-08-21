@@ -278,7 +278,7 @@ func TestRecursiveDeletePredicateCatchesBothLineages(t *testing.T) {
 		// the next physical line.
 		{"rm as last command on a continued Makefile recipe line", `rm -rf`, makeOpen, true},
 		{"rm as last command on a continued script line", `rm -rf`, shellOpen, true},
-		// Bonus closure (documented as an accepted gap in docs/testing.md
+		// Bonus closure (documented as an accepted gap in docs/developing-evener/testing.md
 		// for the old scripts scanner): a recursive rm with no operand at
 		// all, because its target arrives over a pipe rather than as a
 		// command-line argument. Unifying on the Makefile detector's

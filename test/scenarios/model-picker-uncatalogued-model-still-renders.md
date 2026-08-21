@@ -15,7 +15,7 @@ entries". The embedded catalog carries 29 `ollama/*` keys
 (`llm/data/litellm_model_catalog.json`), so any locally-pulled model
 outside that set is uncatalogued **by design**, not by accident.
 
-**Surface**: see `docs/agentic-testing.md`, "Driving the web UI" — the
+**Surface**: see `docs/developing-evener/agentic-testing.md`, "Driving the web UI" — the
 selector map. The old `.chip-picker-model-meta` /
 `.chip-picker-model-badges` selectors are gone with the vanilla frontend
 (`660376f78`), and the replacement is not a rename: the current row has
@@ -33,7 +33,7 @@ So the assertion is **absence of the element**, not an empty one.
 - Same hermetic hub, continued from
   `model-picker-recent-reflects-last-5-global.md` (isolated
   `$HOME`/`$XDG_STATE_HOME`, kernel-assigned port — Setup checklist in
-  `docs/agentic-testing.md`).
+  `docs/developing-evener/agentic-testing.md`).
 - Real local `ollama` instance serving `gemma4:e4b` (`ollama pull
   gemma4:e4b` already done). Confirm it is genuinely absent from the
   catalog's `ollama/*` keys before relying on it:

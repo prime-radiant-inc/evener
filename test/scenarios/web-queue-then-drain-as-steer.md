@@ -26,7 +26,7 @@ there is no REST equivalent for queue or drain at all. The methods live on
 the AppWire socket as `turn/queue` and `turn/drainAsSteer`
 (`appwire/types.go:26-27`).
 
-**Surface**: see `docs/agentic-testing.md`, "Driving the web UI" and "The
+**Surface**: see `docs/developing-evener/agentic-testing.md`, "Driving the web UI" and "The
 REST surface, and what is no longer on it". The queue strip carries no
 `data-testid` — address it by its visible text, which is what
 `test/scenarios/README.md` asks for anyway.
@@ -35,7 +35,7 @@ REST surface, and what is no longer on it". The queue strip carries no
 
 Same as `web-queue-then-completes.md`: a long-running turn via the AGENTS.md
 pacing nudge, an isolated hub (never `9180`, Jesse's
-  real one — see the Setup checklist in `docs/agentic-testing.md`), a
+  real one — see the Setup checklist in `docs/developing-evener/agentic-testing.md`), a
 provider credential good enough for one slow multi-tool turn, and a browser
 authenticated against the hub. The SPA must be built (`make build-web`)
 before the hub binary.

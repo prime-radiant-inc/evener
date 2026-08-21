@@ -52,7 +52,7 @@ createRoot(rootEl).render(
 // has to be hermetic (no file I/O, no network, no clipboard), and the source
 // must NOT be square. An <img> with no height still gets one from its
 // intrinsic aspect ratio, so a square source would make .imageThumbnail's
-// height:100% redundant and unfalsifiable (docs/testing.md's own
+// height:100% redundant and unfalsifiable (docs/developing-evener/testing.md's own
 // unfalsifiable-fixture trap).
 const SAMPLE_PNG_BASE64 =
   "iVBORw0KGgoAAAANSUhEUgAAAAgAAAAECAIAAAA8r+mnAAAAFUlEQVR4nGP4z/AfK2LAKYFDHLcEAGSoP8FHDbrlAAAAAElFTkSuQmCC";
@@ -68,7 +68,7 @@ function samplePngFile(index: number): File {
 // hidden <input type=file>, its own handleFilePicker, useAttachments.
 // ingestFiles, and the canvas re-encode - so what gets measured afterward is
 // the production staging pipeline's own output rather than hand-built tile
-// markup that can drift from it (kata 289v; docs/testing.md's
+// markup that can drift from it (kata 289v; docs/developing-evener/testing.md's
 // unfalsifiable-fixture trap). Nothing here is stubbed: this runs in a real
 // headless Chrome, where Image decode and canvas.toBlob work, so determinism
 // comes from the inline bytes alone.

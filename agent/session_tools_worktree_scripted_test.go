@@ -431,7 +431,7 @@ func (g *scriptedWorktreeGit) run(args ...string) (string, error) {
 // scriptedUnmodeledVerdict reports a command whose answer is a git verdict the
 // model has no state to derive — merge state or working-tree dirtiness. It
 // errors instead of answering so an assertion that depends on the verdict
-// fails loudly, per docs/testing.md's rule that the model never stubs the
+// fails loudly, per docs/developing-evener/testing.md's rule that the model never stubs the
 // specific answer an assertion is looking for.
 func scriptedUnmodeledVerdict(args []string) error {
 	return fmt.Errorf("scripted git: %q is a verdict the model does not derive; assert it on the real-git harness", args)

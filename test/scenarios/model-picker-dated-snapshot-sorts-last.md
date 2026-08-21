@@ -7,7 +7,7 @@ within one provider's group, a bare model id (e.g. `claude-opus-4-6`)
 must render before its dated snapshot (`claude-opus-4-6-20251101`),
 regardless of the order the live listing returned them in.
 
-**Surface**: see `docs/agentic-testing.md`, "Driving the web UI" — the
+**Surface**: see `docs/developing-evener/agentic-testing.md`, "Driving the web UI" — the
 selector map. What changed since this card was written is *where* the
 rule is observable, and it is good news: **the exact assertion is now
 browser-free.** `sortModelEntriesDatedLast` runs inside
@@ -26,7 +26,7 @@ list.
 ## Pre-state
 
 - Hub running on an isolated `$HOME` and a kernel-assigned port (Setup
-  checklist in `docs/agentic-testing.md`), with `--evener` resolvable.
+  checklist in `docs/developing-evener/agentic-testing.md`), with `--evener` resolvable.
 - For the browser step only: a frontend built with `make build-web`
   before the hub binary.
 - A provider whose live listing carries **both** a bare model id and its

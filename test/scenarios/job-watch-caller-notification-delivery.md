@@ -26,14 +26,14 @@ untouched by the removal and are what this card now covers.
 ## Pre-state
 
 - Fresh binaries from the branch under test; an isolated hub
-  (`docs/agentic-testing.md`). Serve mode through the hub is REQUIRED:
+  (`docs/developing-evener/agentic-testing.md`). Serve mode through the hub is REQUIRED:
   idle wake rides the server-wired notify func; a one-shot library/CLI
   run only delivers at natural boundaries and cannot exercise run 1.
 - Credentialed model. Two hermetic workdirs:
   `tmpA=$(mktemp -d -t evener-e2e-wake-XXXXX)` and
   `tmpB=$(mktemp -d -t evener-e2e-coalesce-XXXXX)`.
 - For run 2, write the AGENTS.md pacing file into `$tmpB` per
-  `docs/agentic-testing.md` ("AGENTS.md pacing trick"), phrased for
+  `docs/developing-evener/agentic-testing.md` ("AGENTS.md pacing trick"), phrased for
   evener's shell tool: pause between every paragraph and every action by
   running `sleep 8` via the shell tool, at least four pauses per turn.
 

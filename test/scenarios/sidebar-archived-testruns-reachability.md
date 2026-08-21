@@ -10,7 +10,7 @@ the `EVENER_SESSION_ORIGIN=test` classification path (`envvars/envvars.go:81`,
 read once at fresh-session create in `agent/session_init.go:209`), and whole-
 project delete through to on-disk removal.
 
-**Surface**: see `docs/agentic-testing.md`, "Driving the web UI" — the selector
+**Surface**: see `docs/developing-evener/agentic-testing.md`, "Driving the web UI" — the selector
 map there is the single place these hooks are maintained. This card used to
 drive `sidebar.js`'s `pushArchivedSection`/`pushTestRunsSection`, poke
 `window.EvenerSidebar.refresh()`, and match `[data-row-id="section:test-runs"]`.
@@ -34,7 +34,7 @@ biggest change from the card's old text:
 ## Pre-state
 
 - A freshly built `evener-hub` on an isolated `$HOME` and a kernel-assigned port
-  — the Setup checklist in `docs/agentic-testing.md`. Never a real hub.
+  — the Setup checklist in `docs/developing-evener/agentic-testing.md`. Never a real hub.
 - The frontend must be built (`make build-web`) *before* the hub for step 5+,
   or the SPA is a one-line placeholder (rebuild matrix item 3 in the runbook).
 - Two scratch working directories `$A` and `$B` that must both still exist for
@@ -146,7 +146,7 @@ a browser, and only assert what the rail renders.
   step 9. Delete never touches the working directory itself.
 - Unarchive or ignore `$A` — the whole state root goes away with the run dir.
 - Kill the hub by the PID you captured and `rm -rf` the run directory
-  (Cleanup recipe in `docs/agentic-testing.md`).
+  (Cleanup recipe in `docs/developing-evener/agentic-testing.md`).
 
 ## Sharp edges
 

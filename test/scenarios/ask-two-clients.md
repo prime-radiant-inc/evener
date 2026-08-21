@@ -6,7 +6,7 @@ when two clients answer the same awaiting session exactly one reply becomes a re
 the loser is rejected rather than silently retried into a second user message, and both
 clients converge on the same answered recap.
 
-**Surface**: see `docs/agentic-testing.md` — "The REST surface, and what is no longer on
+**Surface**: see `docs/developing-evener/agentic-testing.md` — "The REST surface, and what is no longer on
 it" and "Driving the web UI with superpowers-chrome:browsing". Three mechanism changes
 this card is rebuilt around, because they invert what it used to say:
 
@@ -40,7 +40,7 @@ and assert what each tab converges to.
 - Hub, `$HUB`, `$TOKEN`, and the isolated environment exactly as `ask-web-answer.md`'s
   Pre-state — reuse that card's hub if it is still running, otherwise re-run its
   Pre-state first. The handoff is its run directory, not a port
-  (`docs/agentic-testing.md`, "Handing this hub to a sibling card"):
+  (`docs/developing-evener/agentic-testing.md`, "Handing this hub to a sibling card"):
   ```bash
   run=${EVENER_E2E_RUN:?run ask-web-answer.md's Pre-state first, then export EVENER_E2E_RUN="$run"}
   export HOME="$run/home"

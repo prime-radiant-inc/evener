@@ -2,7 +2,10 @@
 
 ## Testing
 
-Before adding or changing tests, read `docs/testing.md`.
+Before adding or changing tests, read `docs/developing-evener/testing.md`.
+For the rest of the dev-facing docs (building, linting, coverage, fuzzing,
+environment, worktrees), see `docs/developing-evener/README.md`; for every
+`make` target with a one-line summary, run `make help`.
 
 Default tests must be deterministic. Do not make `make test` or
 `go test ./...` depend on provider credentials, network access, quota, current

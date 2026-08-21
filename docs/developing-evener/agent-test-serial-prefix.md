@@ -140,7 +140,7 @@ Two fixes follow from that, and both are worth more than the prefix work:
    became 750.
 2. **Move tests that do not need real git onto the scripted boundary** — a
    scripted test runs in ~0.04s instead of ~1.2s, a 33x difference. The policy for
-   deciding which is which now lives in `docs/testing.md`; do not convert a test
+   deciding which is which now lives in `docs/developing-evener/testing.md`; do not convert a test
    whose subject is git's own behavior.
 
 ## What is left, and what it would take

@@ -103,10 +103,10 @@ implementation bases.
 2. Verify this exact worktree, branch, expected prior commit, merge base, and
    clean tracked porcelain/index before any change. Do not fetch, rebase,
    merge, cherry-pick, reset, clean, stash, switch branches, or push.
-3. Read `AGENTS.md`, `docs/testing.md`, the evergreen model, this dated plan,
-   then the ignored SDD progress and owning task report before implementing the
-   next task. Use the evergreen model for product authority and the dated plan
-   for task execution.
+3. Read `AGENTS.md`, `docs/developing-evener/testing.md`, the evergreen model,
+   this dated plan, then the ignored SDD progress and owning task report before
+   implementing the next task. Use the evergreen model for product authority
+   and the dated plan for task execution.
 4. Keep Kata `my73` and the SDD ledger as the project record. There is no
    Linear work for this project.
 5. Establish a deterministic behavioral RED against the applicable unchanged

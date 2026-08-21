@@ -18,14 +18,14 @@ Both died with the vanilla frontend (`660376f78`): there is no steer REST
 route at all any more, and the composer is a React component addressed by
 `data-testid`.
 
-**Surface**: see `docs/agentic-testing.md`, "Driving the web UI" and "The
+**Surface**: see `docs/developing-evener/agentic-testing.md`, "Driving the web UI" and "The
 REST surface, and what is no longer on it".
 
 ## Pre-state
 
 - Hub running on an isolated `$HOME` and free port (never `9180`,
   Jesse's real one — see the Setup checklist in
-  `docs/agentic-testing.md`) with `--evener` resolvable.
+  `docs/developing-evener/agentic-testing.md`) with `--evener` resolvable.
 - A provider credential that can sustain a slow multi-tool turn. Any model
   that honours the pacing trick works; `anthropic/claude-haiku-4-5-20251001`
   is the cheap default the runbook recommends.
@@ -42,7 +42,7 @@ HUB=http://127.0.0.1:$PORT
 ```
 
 1. **Drop a pacing `AGENTS.md` into the workspace** — see "AGENTS.md pacing
-   trick" in `docs/agentic-testing.md`. Without it the model finishes before
+   trick" in `docs/developing-evener/agentic-testing.md`. Without it the model finishes before
    a browser-driving agent can type a steer.
 
 2. **Spawn**, wait for the first turn to settle, then start a second, slow

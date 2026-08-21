@@ -17,7 +17,7 @@ by any of `thread/started`, `thread/closed`, `evener/attention/changed`,
 Those two live in different stores and never touch each other, which is exactly
 the property this card exists to keep true.
 
-**Surface**: see `docs/agentic-testing.md`, "Driving the web UI" — the selector
+**Surface**: see `docs/developing-evener/agentic-testing.md`, "Driving the web UI" — the selector
 map there is the single place these hooks are maintained. Rows are
 `[data-session-ref="local:<SID>"]` (`RailRow.tsx:509`); there is no `.sb-row`
 class, no `data-ref`, and no `.project-header[data-project-key]`. A **project**
@@ -39,7 +39,7 @@ regression guard rather than a known-bug note.
 ## Pre-state
 
 - A freshly built `evener-hub` + daemon on an isolated `$HOME` and a kernel-
-  assigned port — the Setup checklist in `docs/agentic-testing.md`. Never a
+  assigned port — the Setup checklist in `docs/developing-evener/agentic-testing.md`. Never a
   real hub. Build the frontend (`make build-web`) before the hub.
 - Browser authenticated to the test hub, on its own Chrome profile (see the
   runbook's "Claim your own Chrome instance first").
@@ -131,7 +131,7 @@ entirely in the client bundle, so there is no REST-level counterpart to assert.
 
 - `POST /api/sessions/local:<SID>/shutdown` for every session you spawned.
 - Kill the hub by the PID you captured; `rm -rf` the run directory and the
-  scratch working directories (Cleanup recipe in `docs/agentic-testing.md`).
+  scratch working directories (Cleanup recipe in `docs/developing-evener/agentic-testing.md`).
 - The `window.fetch` wrapper from step 5 dies with the tab; a reload (step 7)
   already clears it, so re-arm if you want to re-run step 6.
 

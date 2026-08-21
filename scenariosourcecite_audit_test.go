@@ -211,7 +211,7 @@ func scenarioCardFiles(t *testing.T) []string {
 		}
 		files = append(files, filepath.Join(scenarioDir, e.Name()))
 	}
-	files = append(files, "docs/agentic-testing.md")
+	files = append(files, "docs/developing-evener/agentic-testing.md")
 	sort.Strings(files)
 	return files
 }

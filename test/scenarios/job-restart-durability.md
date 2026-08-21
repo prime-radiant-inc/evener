@@ -26,7 +26,7 @@ is not command failure. It is supervision loss").
   daemons: the restart leg rides the hub's auto-resume
   (`reconnect-auto-resume.md` is the plumbing-side card for that
   path). An isolated hub, per the Setup checklist in
-  `docs/agentic-testing.md` (never Jesse's real hub on `9180`).
+  `docs/developing-evener/agentic-testing.md` (never Jesse's real hub on `9180`).
 - Credentialed model; `tmpdir=$(mktemp -d -t evener-e2e-jrestart-XXXXX)`;
   `TOKEN=$(cat "$HOME/.evener/auth-token")`; `HUB=http://127.0.0.1:$PORT`.
 

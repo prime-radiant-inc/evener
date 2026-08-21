@@ -13,7 +13,7 @@ real `POST /api/spawn` handler (`handleApiSpawn`,
 **Surface**: this card is **fully browser-free** — every assertion is a
 `curl` against `/api/spawn` and a read of the JSON body. It needs no
 `data-testid`, no Chrome, and no frontend build. The runbook section it
-depends on is `docs/agentic-testing.md`'s "Setup checklist" (isolated
+depends on is `docs/developing-evener/agentic-testing.md`'s "Setup checklist" (isolated
 `$HOME`, kernel-assigned port) and "The REST surface, and what is no
 longer on it".
 

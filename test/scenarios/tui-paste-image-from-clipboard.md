@@ -20,7 +20,7 @@ Companion scenarios: `web-paste-image-from-clipboard.md`,
 - `tmux` installed (tested on tmux 3.4).
 - `evener-hub` reachable on an isolated `$HOME` and free port
   (never Jesse's port `9180` — see the Setup checklist in
-  `docs/agentic-testing.md`). Token at
+  `docs/developing-evener/agentic-testing.md`). Token at
   `$HOME/.evener/auth-token`.
 - `./evener-tui` and `./evener-hub` built in repo root.
 - `anthropic/claude-haiku-4-5-20251001` (or `openai/gpt-5.5`)

@@ -16,7 +16,7 @@ and the observer callback (`communicate(end_turn:true)`).
 ## Pre-state
 
 - Fresh binaries from the branch under test; hub reachable (own hub via
-  `docs/agentic-testing.md`, or an isolated `$HOME` hub on a spare port —
+  `docs/developing-evener/agentic-testing.md`, or an isolated `$HOME` hub on a spare port —
   the PASS run below used the isolated form); credentialed model.
 - `tmpdir=$(mktemp -d -t evener-e2e-actually-observer-XXXXX)`.
 

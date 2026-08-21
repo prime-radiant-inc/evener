@@ -2,13 +2,13 @@
 
 **What this covers**: the named-section replacement for session favorites: `POST /api/session-pin`, `DELETE /api/session-pin`, `GET /api/pin-sections`, `PATCH /api/pin-sections/<id>`, `DELETE /api/pin-sections/<id>`, and `/api/tree`'s `pin_sections[]` plus per-row `pin_section_id`. It proves the sidebar is driven by durable server state, not optimistic client state, across raw API mutations and hard reloads.
 
-**Surface**: see `docs/agentic-testing.md`, especially the setup checklist and the reminder that every `eval` must assert the scenario hub's own `location.port`. Use a **fresh Hub state directory** and a **dedicated Chrome profile** for this scenario only. Never reuse Jesse's real hub, real `$HOME`, or any fixed host port from another run.
+**Surface**: see `docs/developing-evener/agentic-testing.md`, especially the setup checklist and the reminder that every `eval` must assert the scenario hub's own `location.port`. Use a **fresh Hub state directory** and a **dedicated Chrome profile** for this scenario only. Never reuse Jesse's real hub, real `$HOME`, or any fixed host port from another run.
 
 A session row is addressed by `[data-session-ref="local:<SID>"]`. Section headings are top-level disclosure buttons named by the section title. The row menu exposes **Pin this session…** or **Move pinned session…** depending on `pin_section_id`. The picker lists durable sections from `GET /api/pin-sections`, including hidden empties.
 
 ## Pre-state
 
-1. Follow `docs/agentic-testing.md`'s isolated setup exactly:
+1. Follow `docs/developing-evener/agentic-testing.md`'s isolated setup exactly:
    - `run=$(mktemp -d -t evener-e2e-XXXXXX)`
    - `make build-web`
    - build fresh `evener-hub` and `evener` binaries into `$run`

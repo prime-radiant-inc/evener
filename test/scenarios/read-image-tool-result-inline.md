@@ -11,7 +11,7 @@ MediaType / Size / URL / SHA / Path and **no data field at all**. If
 sha-route stamp (`cmd/evener-hub/output_images.go:169-181`), or the transcript
 byte-serving route regresses, this catches it.
 
-**Surface**: see `docs/agentic-testing.md`, "Driving the web UI" — its selector
+**Surface**: see `docs/developing-evener/agentic-testing.md`, "Driving the web UI" — its selector
 map is the single place these hooks are maintained. The `.tool-output-images
 .user-image-card img.user-image-thumb` / `#image-lightbox` selectors this card
 used to name died with the vanilla frontend (`660376f78`); the gallery is now
@@ -20,7 +20,7 @@ used to name died with the vanilla frontend (`660376f78`); the gallery is now
 ## Pre-state
 
 - A freshly built hub on an isolated `$HOME` and a kernel-assigned port — see
-  the Setup checklist in `docs/agentic-testing.md`. Token at
+  the Setup checklist in `docs/developing-evener/agentic-testing.md`. Token at
   `$HOME/.evener/auth-token` (that isolated one).
 - A hermetic `$WORK` containing a small valid PNG, `fixture.png`.
 - A cheap image-capable model, e.g. `anthropic/claude-haiku-4-5-20251001`.

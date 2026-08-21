@@ -38,7 +38,7 @@ executed.
 **The live 3×3 run is a human-triggered step, NOT part of CI.** These cards are
 executed by an agent (Claude / Codex / etc.) against a freshly built `evener`
 binary with real, billed provider calls — see `test/scenarios/README.md` and
-`docs/agentic-testing.md` for the harness conventions. CI covers the mechanics
+`docs/developing-evener/agentic-testing.md` for the harness conventions. CI covers the mechanics
 deterministically (the `TestE2E_*` session-level integration tests in
 `agent/dld_e2e_test.go`, plus the P0/P1/P3 unit suites); the behavioral nudge
 gate is run on demand before shipping copy changes, not on every push.

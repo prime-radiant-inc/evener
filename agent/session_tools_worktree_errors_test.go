@@ -29,7 +29,7 @@ import (
 // git's behavior, so these run on the scripted git boundary (scriptedLaneRepo,
 // driven through wtRepo's shared operation helpers). Two rows below are
 // deliberate exceptions and stay on real git; each says why at its own doc
-// comment. See docs/testing.md for the rule.
+// comment. See docs/developing-evener/testing.md for the rule.
 //
 // Row 8 ("delegate_send to a delegate whose isolation worktree was
 // disposed") is STILL OUT OF SCOPE here: Task 21 built spawn/restore/revival

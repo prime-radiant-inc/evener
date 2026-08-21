@@ -4,8 +4,10 @@ import (
 	"bufio"
 	"encoding/json"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strings"
 
@@ -249,17 +251,59 @@ func detectBuildSystem(root string) string {
 	return strings.Join(parts, "\n")
 }
 
-// parseMakefileTargets extracts target names from a Makefile.
-// Only includes named targets (not pattern rules or implicit rules).
+// makefileAssignment matches a variable assignment operator (":=", "::=",
+// "+=", "?=" or plain "="). A naive "has = but no :" test treats
+// "LDFLAGS := x" as a rule named LDFLAGS, because ":=" contains both
+// characters. Plain "=" (GNU make's recursive assignment) must be included
+// too: without it, a line like "FUZZ_SEED_REPLAY = for m in …" reads as an
+// assignment only as long as its value holds no colon — the moment it does
+// (a sed expression, a host:port), the value's first colon gets parsed as a
+// rule's, mining bogus targets out of it.
+var makefileAssignment = regexp.MustCompile(`^[^:=#]*(::?=|\+=|\?=|=)`)
+
+// makefileInclude matches an "include"/"-include" line, with or without the
+// "$(dir $(lastword $(MAKEFILE_LIST)))" prefix make/*.mk-style splits use to
+// resolve relative to the including file, capturing the path or glob.
+var makefileInclude = regexp.MustCompile(`^-?include\s+(?:\$\(dir \$\(lastword \$\(MAKEFILE_LIST\)\)\))?(\S+)`)
+
+// parseMakefileTargets extracts target names from a Makefile, following
+// "include"/"-include" directives one level deep so a split Makefile (a root
+// of variables and an include line, with rules living in included files)
+// still yields its real targets. Only includes named targets (not pattern
+// rules or implicit rules).
 func parseMakefileTargets(path string) []string {
-	f, err := os.Open(path)
+	root, err := os.OpenRoot(filepath.Dir(path))
 	if err != nil {
 		return nil
 	}
-	defer func() { _ = f.Close() }() // read-only handle; close error is immaterial
+	defer func() { _ = root.Close() }()
 
 	var targets []string
 	seen := make(map[string]bool)
+	if !appendMakefileTargets(root, filepath.Base(path), &targets, seen, 0) {
+		return nil
+	}
+	return targets
+}
+
+// appendMakefileTargets scans one Makefile, appending any targets it finds
+// to *targets (skipping names already in seen), and follows include lines
+// one level deeper (depth+1). Recursion is capped at depth 0: only a
+// top-level include is followed, so an included file's own include lines
+// are left alone. That bounds the recursion to a single hop, which is all
+// the split Makefile needs, without requiring a visited-file cycle check.
+// root confines every include read to the top-level Makefile's directory.
+// Unlike Make itself, workspace discovery must not let an absolute path, ..,
+// or an escaping symlink pull external file contents into the model prompt.
+// Returns false on a scan error, telling the caller to discard the whole
+// (now-partial) result rather than publish it as if it were complete.
+func appendMakefileTargets(root *os.Root, path string, targets *[]string, seen map[string]bool, depth int) bool {
+	f, err := root.Open(path)
+	if err != nil {
+		return true // an unreadable file (missing Makefile, bad include) isn't a scan error
+	}
+	defer func() { _ = f.Close() }() // read-only handle; close error is immaterial
+
 	scanner := bufio.NewScanner(f)
 
 	for scanner.Scan() {
@@ -276,7 +320,20 @@ func parseMakefileTargets(path string) []string {
 		}
 
 		// Skip variable assignments.
-		if strings.Contains(line, "=") && !strings.Contains(line, ":") {
+		if makefileAssignment.MatchString(line) {
+			continue
+		}
+
+		// Follow includes one level deep: the split Makefile's root pulls in
+		// make/*.mk, and the real targets live there.
+		if m := makefileInclude.FindStringSubmatch(line); m != nil && depth == 0 {
+			pattern := filepath.ToSlash(m[1])
+			matches, _ := fs.Glob(root.FS(), pattern)
+			for _, inc := range matches {
+				if !appendMakefileTargets(root, inc, targets, seen, depth+1) {
+					return false
+				}
+			}
 			continue
 		}
 
@@ -297,7 +354,7 @@ func parseMakefileTargets(path string) []string {
 			for t := range strings.FieldsSeq(targetPart) {
 				t = strings.TrimSpace(t)
 				if t != "" && !seen[t] {
-					targets = append(targets, t)
+					*targets = append(*targets, t)
 					seen[t] = true
 				}
 			}
@@ -309,11 +366,7 @@ func parseMakefileTargets(path string) []string {
 	// for both. Treat a scan error the same as a file we couldn't open at
 	// all, rather than silently returning a partial, misleadingly-"complete"
 	// target list.
-	if err := scanner.Err(); err != nil {
-		return nil
-	}
-
-	return targets
+	return scanner.Err() == nil
 }
 
 // parsePackageJsonScripts extracts script names from a package.json file.

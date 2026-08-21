@@ -32,7 +32,7 @@ For the queue-only and queue+composer drain paths, see
 - `tmux` installed (tested on tmux 3.4).
 - `evener-hub` reachable on an isolated `$HOME` and free port
   (never Jesse's port `9180` — see the Setup checklist in
-  `docs/agentic-testing.md`). Token at
+  `docs/developing-evener/agentic-testing.md`). Token at
   `$HOME/.evener/auth-token`.
 - `./evener-tui` and `./evener-hub` (or `./evener`) built in repo root.
 - Anthropic OAuth or API key configured so the default

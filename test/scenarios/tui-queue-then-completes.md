@@ -14,7 +14,7 @@ the same queue state.
 
 ## Pre-state
 
-- Complete the full Setup checklist in `docs/agentic-testing.md` in the same
+- Complete the full Setup checklist in `docs/developing-evener/agentic-testing.md` in the same
   Bash shell through the `TOKEN=...` step. Its single `run=$(mktemp -d ...)`
   owns fresh `$run/evener-hub`, `$run/evener`, and `$run/evener-tui` binaries, the
   isolated `$HOME=$run/home` and session state, the kernel-assigned hub port,
@@ -450,7 +450,7 @@ Use `tmux send-keys -t "$TMUX_SESSION" ...` to drive input and
    bound, never a success condition. The idle-state poll is a second positive
    contract, not an elapsed-time assumption. The pane loop evaluates absence
    only after two 20 ms-spaced, byte-identical captures, following the
-   direct-driving stable-capture rule in `docs/testing.md` (the Go harness
+   direct-driving stable-capture rule in `docs/developing-evener/testing.md` (the Go harness
    equivalent is `CaptureStable`, exercised by
    `TestTUITmuxE2E_CaptureStableDuringStream` in
    `cmd/evener-tui/tmux_e2e_test.go#TestTUITmuxE2E_CaptureStableDuringStream`).

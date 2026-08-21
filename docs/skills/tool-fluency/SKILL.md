@@ -12,7 +12,7 @@ coverage.
 ## Required reading
 
 1. Read `tools/tool-fluency/README.md`.
-2. Read `docs/agentic-testing.md` if the Go runner cannot exercise the live
+2. Read `docs/developing-evener/agentic-testing.md` if the Go runner cannot exercise the live
    session shape you need.
 3. For session/job/watch forensics, use `evener-doctor` or the `agent/doctor`
    package. Do not hand-parse transcript JSONL.
@@ -171,5 +171,5 @@ go run ./cmd/evener-doctor watches "$SID" --state-dir "$STATE"
 If a live observer/callback scenario needs a session to remain open across
 notification turns, use `evener-fluency run --harness live`. If that harness
 cannot represent the needed shape, use the live scenario process in
-`docs/agentic-testing.md`, or improve the Go runner instead of accumulating
+`docs/developing-evener/agentic-testing.md`, or improve the Go runner instead of accumulating
 shell glue.

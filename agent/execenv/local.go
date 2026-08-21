@@ -146,7 +146,7 @@ type LocalExecutionEnvironment struct {
 	unsandboxedScratchMu sync.Mutex
 	// unsandboxedScratch is a per-session scratch dir this UNSANDBOXED env
 	// provisions on first spawn, so commandEnvironment can export
-	// EVENER_SCRATCH_DIR/TMPDIR per docs/environment.md's contract, which carries
+	// EVENER_SCRATCH_DIR/TMPDIR per docs/developing-evener/environment.md's contract, which carries
 	// no sandbox-only caveat. It reuses the sandbox scratch location convention
 	// (sandbox.NewSessionScratch) but is entirely separate from ownedSessionTmp,
 	// which only a sandboxed env owns — a sandboxed spawn's scratch vars come

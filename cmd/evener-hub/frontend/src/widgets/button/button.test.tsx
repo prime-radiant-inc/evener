@@ -61,7 +61,7 @@ test("each variant renders a distinct class", () => {
 // are what make it read as a button where quiet reads as bare text. jsdom
 // applies no stylesheet, so the declaration is the checkable truth - comments
 // stripped first so a doc comment quoting a declaration cannot satisfy the
-// match (docs/testing.md).
+// match (docs/developing-evener/testing.md).
 test("secondary declares visible button chrome (fill + border), unlike quiet", () => {
   const css = readFileSync(join(dirname(fileURLToPath(import.meta.url)), "button.module.css"), "utf8").replace(
     /\/\*[\s\S]*?\*\//g,

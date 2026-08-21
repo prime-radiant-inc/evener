@@ -8,7 +8,7 @@ on impossible transitions. This is the single-tab happy path named in the spec's
 section, plus the interrupt guard-rail. (The goal-loop variant is intentionally NOT
 re-proven here — see Part C.)
 
-**Surface**: see `docs/agentic-testing.md` — "The REST surface, and what is no longer on
+**Surface**: see `docs/developing-evener/agentic-testing.md` — "The REST surface, and what is no longer on
 it", and "Driving the web UI with superpowers-chrome:browsing" for the selector map and
 **"Seeding preferences before the first load"**. Three facts that invert what this card
 used to say:
@@ -37,7 +37,7 @@ Part B (steps 5-7) and Part C are **fully browser-free**. Part A (steps 1-4) nee
 
 ## Pre-state
 
-- Fresh binaries and an isolated hub, per the Setup checklist in `docs/agentic-testing.md`.
+- Fresh binaries and an isolated hub, per the Setup checklist in `docs/developing-evener/agentic-testing.md`.
   Everything is named from one `mktemp` run directory, and the hub binds a kernel-assigned
   port — never Jesse's real `9180`, where his own hub runs host-wide flock'd with his real
   token and history:

@@ -9,7 +9,7 @@ the daemon/hub `thread/turns/list` handlers, the `TurnLimit`/`OlderCursor`
 wiring, or the web's `loadOlderTurns`/`prependOlderTurns` path regress, this
 catches it.
 
-**Surface**: see `docs/agentic-testing.md`, "Driving the web UI" — the
+**Surface**: see `docs/developing-evener/agentic-testing.md`, "Driving the web UI" — the
 selector map there is the single place these hooks are maintained. The old
 `window.EvenerRenderer.olderTurnsCursor` probe and `.conversation`/`.sb-row`
 selectors this card used to drive died with the vanilla frontend
@@ -19,7 +19,7 @@ selectors this card used to drive died with the vanilla frontend
 
 A freshly built `evener-hub` and a seeded large *past* session, both in an
 isolated state dir (own `$HOME`/state, kernel-assigned port — see the Setup
-checklist in `docs/agentic-testing.md`; never touch a real hub):
+checklist in `docs/developing-evener/agentic-testing.md`; never touch a real hub):
 
 1. `go build -o "$run/evener-hub" ./cmd/evener-hub`
 2. Seed `$run/state/projects/bigproj/sessions/<id>.{meta.json,transcript.jsonl}`

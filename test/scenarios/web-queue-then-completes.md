@@ -14,14 +14,14 @@ vanilla frontend (`660376f78`): there is no queue REST route, the composer is
 a React component, and the send/queue decision is now made client-side by a
 pure function.
 
-**Surface**: see `docs/agentic-testing.md`, "Driving the web UI" and "The
+**Surface**: see `docs/developing-evener/agentic-testing.md`, "Driving the web UI" and "The
 REST surface, and what is no longer on it".
 
 ## Pre-state
 
 - Hub running on an isolated `$HOME` and free port (never `9180`,
   Jesse's real one — see the Setup checklist in
-  `docs/agentic-testing.md`) with `--evener` resolvable.
+  `docs/developing-evener/agentic-testing.md`) with `--evener` resolvable.
 - A provider credential good enough for one slow multi-tool turn.
 - `$HOME/.evener/auth-token` readable (that isolated `$HOME`).
 - The SPA built (`make build-web`) **before** the hub binary.

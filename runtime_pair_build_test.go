@@ -880,7 +880,7 @@ func newBuildWebFixture(t *testing.T) runtimeBuildFixture {
 	t.Helper()
 	fixture := newRuntimeBuildFixture(t)
 	installFrontendToolchainStubs(t, fixture)
-	copyRepositoryFile(t, fixture.repoRoot, fixture.root, "Makefile", 0o644)
+	copyMakefileSources(t, fixture.repoRoot, fixture.root)
 	copyRepositoryFile(t, fixture.repoRoot, fixture.root, "scripts/ops/build-runtime-pair.sh", 0o755)
 	copyRepositoryFile(t, fixture.repoRoot, fixture.root, "scripts/lib/private-go-home.sh", 0o644)
 	copyRepositoryFile(t, fixture.repoRoot, fixture.root, "scripts/lib/scratch-lib.sh", 0o644)
@@ -940,7 +940,7 @@ printf '%s\n' "$package" > "$output"
 }
 
 // installFrontendToolchainStubs equips the fixture for make targets that
-// reach build-web (Makefile:40-51): it creates the frontend directory the
+// reach build-web (make/building.mk:78): it creates the frontend directory the
 // recipe cd's into, and shadows npm, Node, and git on the fixture PATH so the REAL
 // build-web recipe runs end to end without touching the network or the
 // checkout's actual git state.
@@ -1301,7 +1301,7 @@ func countNpmInvocations(t *testing.T, logPath string) (npmCiCount, npmBuildCoun
 }
 
 // assertNpmPrecedesHubGoBuild pins the load-bearing prerequisite order at
-// Makefile:23-29: build-web must run before build-runtime so the evener-hub
+// make/building.mk:34: build-web must run before build-runtime so the evener-hub
 // go build embeds the dist build-web just produced. It tolerates the
 // DIST_GOOS/DIST_GOARCH parse-time "go env" pollution lines that the
 // Makefile's ?= assignments trigger against the fake go shim.
@@ -1331,7 +1331,7 @@ func assertNpmPrecedesHubGoBuild(t *testing.T, logPath string) {
 		}
 		sawNpm = true
 		if i > hubBuildLine {
-			t.Fatalf("npm call %q ran after the evener-hub go build; build-web must run before build-runtime (Makefile:23-29); log = %q", line, logData)
+			t.Fatalf("npm call %q ran after the evener-hub go build; build-web must run before build-runtime (make/building.mk:34); log = %q", line, logData)
 		}
 	}
 	if !sawNpm {

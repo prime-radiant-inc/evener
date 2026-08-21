@@ -24,12 +24,12 @@ Restart-side exactly-once is job-restart-durability.md.
 ## Pre-state
 
 - Fresh binaries from the branch under test; an isolated hub
-  (`docs/agentic-testing.md`). Serve mode through the hub is REQUIRED:
+  (`docs/developing-evener/agentic-testing.md`). Serve mode through the hub is REQUIRED:
   idle wake rides the server-wired notify func.
 - Credentialed model. Two workdirs:
   `tmpA=$(mktemp -d -t evener-e2e-notif-XXXXX)` and
   `tmpB=$(mktemp -d -t evener-e2e-notifbatch-XXXXX)`; write the
-  AGENTS.md pacing file (per `docs/agentic-testing.md`) into `$tmpB`
+  AGENTS.md pacing file (per `docs/developing-evener/agentic-testing.md`) into `$tmpB`
   only.
 
 ## Steps

@@ -14,7 +14,7 @@ hand it back as an observer callback. Driving mechanism:
 
 - Fresh `evener` and `evener-hub` from the branch under test.
 - Hub running on a free port, never Jesse's real hub on `9180` (see
-  the Setup checklist in `docs/agentic-testing.md`);
+  the Setup checklist in `docs/developing-evener/agentic-testing.md`);
   `TOKEN=$(cat "$HOME/.evener/auth-token")`.
 - `tmpdir=$(mktemp -d -t evener-e2e-approval-broker-XXXXX)`.
 - When testing Kimi fluency, spawn with `model` set to

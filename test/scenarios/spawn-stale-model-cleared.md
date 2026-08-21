@@ -15,7 +15,7 @@ says so in its own header ("matching the legacy spawn.js key layout").
 So this card's storage assertions are unchanged; only the DOM half was
 rewritten.
 
-**Surface**: see `docs/agentic-testing.md`, "Driving the web UI" — the
+**Surface**: see `docs/developing-evener/agentic-testing.md`, "Driving the web UI" — the
 selector map and the "Seeding preferences before the first load" recipe.
 Two things this card used to assume are wrong now and are the likely
 cause of a false pass: there is no `[data-chip-value-model]` and no
@@ -36,7 +36,7 @@ runs mount-only (deps `[]`, `Spawn.tsx:275`), so seed before you open
 ## Pre-state
 
 - Hub running on an isolated `$HOME` and a kernel-assigned port (see the
-  Setup checklist in `docs/agentic-testing.md`), with `--evener`
+  Setup checklist in `docs/developing-evener/agentic-testing.md`), with `--evener`
   resolvable so the harness enumerates models. This matters — kata
   `6bdb`: with no `evener` on PATH and no `--evener`, the list is empty and
   `validateEvenerLaunchModel` fails open, so nothing is ever classified

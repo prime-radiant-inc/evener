@@ -4,7 +4,7 @@ A non-interactive coding agent. Give it a prompt, it does the work.
 
 Evener uses the LLM's native tool-calling to read files, write files, run commands, and search code in a loop until the work is complete. It supports OpenAI, Anthropic, and Google models.
 
-For how the code is organized — modules, layout, and the build workspace — see [docs/architecture.md](docs/architecture.md). For the runtime contracts subagents, plugins, hooks, and helpers operate under (capability policy, lifecycle hooks, helper isolation, lineage), see [docs/subagent-runtime-contracts.md](docs/subagent-runtime-contracts.md); for background jobs and the job-control tools, see [docs/job-control.md](docs/job-control.md). To confine a session's file, process, and network access with `--sandbox`, see [docs/sandboxing.md](docs/sandboxing.md).
+For how the code is organized — modules, layout, and the build workspace — see [docs/architecture.md](docs/architecture.md). For the runtime contracts subagents, plugins, hooks, and helpers operate under (capability policy, lifecycle hooks, helper isolation, lineage), see [docs/subagent-runtime-contracts.md](docs/subagent-runtime-contracts.md); for background jobs and the job-control tools, see [docs/job-control.md](docs/job-control.md). To confine a session's file, process, and network access with `--sandbox`, see [docs/sandboxing.md](docs/sandboxing.md). For building, testing, linting, coverage, and fuzzing this repo, see [docs/developing-evener/README.md](docs/developing-evener/README.md) — or run `make help` for every target with a one-line summary.
 
 ## Build
 
@@ -120,7 +120,7 @@ that plugin and become available through the plugin path.
 Provider credentials are not created by install. Configure them through the Hub
 or TUI credentials UI, `${XDG_CONFIG_HOME:-~/.config}/evener/credentials.toml`,
 provider environment variables such as `OPENAI_API_KEY`, or OpenAI OAuth. See
-[docs/environment.md](docs/environment.md) for the complete environment variable
+[docs/developing-evener/environment.md](docs/developing-evener/environment.md) for the complete environment variable
 reference.
 
 ### Migrating from Serf
@@ -233,7 +233,7 @@ For local models via Ollama, see [docs/ollama.md](docs/ollama.md).
 
 ### Environment variables
 
-See [docs/environment.md](docs/environment.md) for the complete list. Common
+See [docs/developing-evener/environment.md](docs/developing-evener/environment.md) for the complete list. Common
 variables:
 
 | Variable | Description |

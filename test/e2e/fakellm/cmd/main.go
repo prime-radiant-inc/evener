@@ -16,7 +16,7 @@
 // WHY: the mid-turn controls (Steer, Send-while-busy, Stop) can only be
 // exercised while a turn is genuinely in flight. Against a real provider that
 // window is a few seconds and needs an AGENTS.md pacing prompt to widen (see
-// docs/agentic-testing.md); here it is a flag, costs nothing, and needs no
+// docs/developing-evener/agentic-testing.md); here it is a flag, costs nothing, and needs no
 // credential.
 //
 // Every round's messages are printed to stderr, so the operator can see
@@ -302,7 +302,7 @@ func (s *sessions) launchedJob(state *sessionState) {
 // the instant one round stops being held, which is the only way to put a round
 // on the far side of its hold while the session that abandoned it has already
 // moved on (sessions.endedTurn). Racing a real timer against a real
-// cancellation decides that by coin flip, and docs/testing.md forbids buying a
+// cancellation decides that by coin flip, and docs/developing-evener/testing.md forbids buying a
 // race with wall-clock tuning.
 var afterHold = time.After
 
