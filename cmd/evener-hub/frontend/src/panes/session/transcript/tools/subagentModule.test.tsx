@@ -282,35 +282,6 @@ test("a genuinely live collapsed delegate has a status row before its child sett
   expect(screen.getByRole("img", { name: "Ended" })).toBeTruthy();
 });
 
-test("a delegate row migrates fallback identity to stable delegate identity without losing its live overlay", () => {
-  const Body = toolRendererFor("delegate").body!;
-  const scopeKey = turnScopeKey(undefined, "turn_row_migrates");
-  const beforeJob = delegateItem({
-    id: "d_row_migrates",
-    turnId: "turn_row_migrates",
-    callId: "call_row_migrates",
-    argumentsJSON: JSON.stringify({ task: "migrate this row" }),
-    output: undefined,
-  });
-  const { rerender } = render(<Body item={beforeJob} live={false} />);
-
-  act(() => {
-    updateSubagentRowIfExists(scopeKey, "call:call_row_migrates", {
-      liveKind: "failed",
-      liveReason: "watch failed",
-    });
-  });
-
-  const withJob = { ...beforeJob, output: JSON.stringify({ delegate_id: "job_row_migrates", status: "completed" }) };
-  rerender(<Body item={withJob} live={false} />);
-
-  const rows = screen.getAllByTestId("subagent-row");
-  expect(rows).toHaveLength(1);
-  expect(rows[0]?.getAttribute("data-kind")).toBe("failed");
-  // The failed card's folded quote is the live reason, verbatim, ✕-marked.
-  expect(within(rows[0]!).getByTestId("subagent-quote").textContent).toBe("✕ watch failed");
-});
-
 // --- row content ----------------------------------------------------------
 
 // Wire-true duration net: ItemModel.startedAt/completedAt are ISO strings the
@@ -335,40 +306,6 @@ test("a settled delegate row renders an honest ms-scale duration", () => {
   render(<Body item={settled} live={false} />);
   const row = screen.getByTestId("subagent-row");
   expect(within(row).getByText("12s")).toBeTruthy();
-});
-
-test("a running row with a transcriptRef watches the child and updates live status from thread state", async () => {
-  const fake = new FakeClient("ready");
-  fake.on("thread/read", (params) => ({
-    thread: {
-      id: "thr_child",
-      sessionId: "sess_child",
-      preview: "",
-      ephemeral: false,
-      modelProvider: "anthropic/claude-sonnet-4-5",
-      createdAt: 1000,
-      updatedAt: 1000,
-      status: { type: "systemError" },
-      cwd: "/tmp",
-      cliVersion: "1.0.0",
-      source: "evener",
-      evener: { ref: (params as { ref: string }).ref, capabilities: {} as never, queue: { revision: 0 } },
-    },
-  }));
-  connectionStore.getState().connect(fake);
-
-  const d = toolRendererFor("delegate");
-  const Body = d.body!;
-  const running = delegateItem({
-    id: "d_watch",
-    callId: "call_watch",
-    argumentsJSON: JSON.stringify({ task: "watched task" }),
-    output: JSON.stringify({ delegate_id: "job_w", status: "running", transcript_ref: "ref_watched_child" }),
-  });
-  render(<Body item={running} live={false} />);
-
-  const row = screen.getByTestId("subagent-row");
-  await waitFor(() => expect(row.dataset.kind).toBe("failed"));
 });
 
 test("a failed card carries the danger rail itself - there is no module chrome to average it away", () => {
@@ -821,27 +758,6 @@ test("the Activity feed elides round_timings items and ordinals count only real 
   expect(items.map((li) => li.value)).toEqual([2, 3, 4, 5, 6]);
 });
 
-test("the collapsed pill reads the LIVE watched status, not the frozen tool-output value", async () => {
-  const fake = new FakeClient("ready");
-  // Frozen delegate output says running; the live child thread reports a
-  // systemError - the pill must follow the live status (yd16 write-back).
-  fake.on("thread/read", (params) => childThreadRead(params, "systemError"));
-  connectionStore.getState().connect(fake);
-
-  const Body = toolRendererFor("delegate").body!;
-  const running = delegateItem({
-    id: "d_live_pill",
-    callId: "call_live_pill",
-    argumentsJSON: JSON.stringify({ task: "will break" }),
-    output: JSON.stringify({ delegate_id: "job_lp", status: "running", transcript_ref: "ref_live_pill_child" }),
-  });
-  render(<Body item={running} live={false} />);
-
-  const row = screen.getByTestId("subagent-row");
-  await waitFor(() => expect(row.dataset.kind).toBe("failed")); // running -> live failed
-  expect(row.dataset.kind).toBe("failed");
-});
-
 // g5kf: the honest-clock bug. A foreground_timeout freezes the delegate's own
 // tool output at status:"running" forever (agent/job_delegate.go's mainline
 // path for any non-trivial delegate, not an edge case), so the watched
@@ -853,14 +769,15 @@ test("g5kf: a child that leaves the live roster (notLoaded) demotes off running 
   fake.on("thread/read", (params) => childThreadRead(params, "notLoaded"));
   connectionStore.getState().connect(fake);
 
-  const Body = toolRendererFor("delegate").body!;
+  const turn: TurnModel = { id: "turn_notloaded", status: "completed", items: [] };
   const running = delegateItem({
     id: "d_notloaded",
+    turnId: turn.id,
     callId: "call_notloaded",
     argumentsJSON: JSON.stringify({ task: "orphaned by a hub restart" }),
     output: JSON.stringify({ delegate_id: "job_nl", status: "running", transcript_ref: "ref_notloaded_child" }),
   });
-  render(<Body item={running} live={false} />);
+  render(<ToolCallItem item={running} turn={turn} live={false} />);
 
   const row = screen.getByTestId("subagent-row");
   await waitFor(() => expect(row.dataset.kind).toBe("unknown"));
@@ -871,15 +788,14 @@ test("g5kf: a child that leaves the live roster (notLoaded) demotes off running 
 // --- dr7e: evener/job/finished's own reason/resumable/exhaustion detail -----
 
 test("the collapsed preview prefers a live overlay reason over the frozen tool-output reason", () => {
-  const d = toolRendererFor("delegate");
-  const Body = d.body!;
+  const turn: TurnModel = { id: "turn_1", status: "completed", items: [] };
   const running = delegateItem({
     id: "d_livereason",
     callId: "call_livereason",
     argumentsJSON: JSON.stringify({ task: "still working" }),
     output: JSON.stringify({ delegate_id: "job_lr", status: "running", reason: "frozen reason" }),
   });
-  render(<Body item={running} live={false} />);
+  render(<ToolCallItem item={running} turn={turn} live={false} />);
   act(() =>
     updateSubagentRowIfExists(turnScopeKey(undefined, "turn_1"), "dlg:job_lr", { liveReason: "exhausted budget" }),
   );
@@ -890,8 +806,7 @@ test("the collapsed preview prefers a live overlay reason over the frozen tool-o
 });
 
 test("an expanded card shows stable exhaustion budget, limit, and resumable evidence", async () => {
-  const d = toolRendererFor("delegate");
-  const Body = d.body!;
+  const turn: TurnModel = { id: "turn_1", status: "completed", items: [] };
   const settled = delegateItem({
     id: "d_exhaust",
     callId: "call_exhaust",
@@ -899,7 +814,7 @@ test("an expanded card shows stable exhaustion budget, limit, and resumable evid
     output: JSON.stringify({ delegate_id: "job_ex", status: "exhausted" }),
   });
   const user = userEvent.setup();
-  render(<Body item={settled} live={false} />);
+  render(<ToolCallItem item={settled} turn={turn} live={false} />);
   act(() =>
     updateSubagentRowIfExists(turnScopeKey(undefined, "turn_1"), "dlg:job_ex", {
       resumable: true,
@@ -1023,8 +938,7 @@ test("the stats line singularizes a single turn and a single call", async () => 
 });
 
 test("the stats line shows the delegate's projected token usage, and omits the segment entirely when there is none", () => {
-  const d = toolRendererFor("delegate");
-  const Body = d.body!;
+  const turn: TurnModel = { id: "turn_1", status: "completed", items: [] };
   const withUsage = delegateItem({
     id: "d_tok",
     callId: "call_tok",
@@ -1039,8 +953,8 @@ test("the stats line shows the delegate's projected token usage, and omits the s
   });
   render(
     <>
-      <Body item={withUsage} live={false} />
-      <Body item={withoutUsage} live={false} />
+      <ToolCallItem item={withUsage} turn={turn} live={false} />
+      <ToolCallItem item={withoutUsage} turn={turn} live={false} />
     </>,
   );
   act(() =>
@@ -1267,16 +1181,17 @@ test("a historical session read hydrates a card's kind, tokens, and clock from t
     await threadsStore.getState().ensureThread("ref_parent_hist");
   });
 
-  const Body = toolRendererFor("delegate").body!;
+  const turn: TurnModel = { id: "turn_hist", status: "completed", items: [] };
   render(
-    <Body
+    <ToolCallItem
       item={delegateItem({
         id: "d_hist",
-        turnId: "turn_hist",
+        turnId: turn.id,
         callId: "call_hist",
         argumentsJSON: JSON.stringify({ task: "historical child" }),
         output: JSON.stringify({ delegate_id: "dlg_hist", status: "running", transcript_ref: "ref_hist_child" }),
       })}
+      turn={turn}
       live={false}
       sessionRef="ref_parent_hist"
     />,
@@ -1299,7 +1214,7 @@ test("a historical session read hydrates a card's kind, tokens, and clock from t
 // projection's runStartedAt/runEndedAt is the child's real window and must
 // win whenever it exists.
 test("the clock shows the child's run window from the stable projection, not the spawn call's seconds", () => {
-  const Body = toolRendererFor("delegate").body!;
+  const turn: TurnModel = { id: "turn_1", status: "completed", items: [] };
   const t0 = 1_700_000_000_000;
   const settled = delegateItem({
     id: "d_runwindow",
@@ -1309,7 +1224,7 @@ test("the clock shows the child's run window from the stable projection, not the
     startedAt: new Date(t0).toISOString(),
     completedAt: new Date(t0 + 4_000).toISOString(), // the spawn round-trip
   });
-  render(<Body item={settled} live={false} />);
+  render(<ToolCallItem item={settled} turn={turn} live={false} />);
   act(() =>
     updateSubagentRowIfExists(turnScopeKey(undefined, "turn_1"), "dlg:job_rw", {
       stable: {

@@ -7,7 +7,7 @@
 // orientation calls over MANY jobs at once, not a check-in on one
 // specific child, and correlating an arbitrary listing back to individual
 // rows would need far more inference than the wire actually supports.
-import { useEffect, useLayoutEffect } from "react";
+import { useEffect } from "react";
 import { type ItemModel, SYSTEM_PRELUDE_TURN_ID, type TurnModel } from "../../../../protocol/model";
 import { threadsStore, useThreadsStore } from "../../../../stores/threads";
 import { Chevron, IconButton } from "../../../../widgets";
@@ -23,13 +23,11 @@ import { parseArgs, parseJSONObject, str } from "./helpers";
 import {
   classifyJobStatus,
   effectiveRowKind,
-  removeSubagentRow,
   resolveRowKey,
   type SubagentRow,
   type SubagentRowKind,
   setWatchedLiveKind,
   turnScopeKey,
-  upsertSubagentRow,
   useSubagentRow,
 } from "./subagentModuleStore";
 import styles from "./subagentmodule.module.css";
@@ -397,16 +395,6 @@ function DelegateBody({ item, sessionRef }: ToolRenderProps) {
   const scopeKey = turnScopeKey(sessionRef, item.turnId);
   const projected = rowFromDelegateItem(item);
   const storedRow = useSubagentRow(scopeKey, projected?.rowKey ?? "");
-
-  useLayoutEffect(() => {
-    const next = rowFromDelegateItem(item);
-    if (!next) {
-      removeSubagentRow(scopeKey, resolveRowKey(undefined, undefined, item.callId ?? item.id));
-      return;
-    }
-    const { rowKey, migrateFromRowKey, row } = next;
-    upsertSubagentRow(scopeKey, { rowKey, ...row }, migrateFromRowKey);
-  }, [scopeKey, item]);
 
   if (!projected) return null;
   return (

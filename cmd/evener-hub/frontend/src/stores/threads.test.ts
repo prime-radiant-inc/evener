@@ -4800,6 +4800,23 @@ describe("stable delegate projection routing", () => {
     expect(result.current?.kind).toBe("done");
   });
 
+  test("the final watcher releases projections only after the pane owner is gone", async () => {
+    const fake = connectFakeClient();
+    fake.on("thread/read", () => responseWithStableDelegate("ref_shared", 7, "running", "2026-08-15T10:00:00Z"));
+
+    await threadsStore.getState().watchThread("ref_shared");
+    const scope = turnScopeKey("ref_shared", "turn_1");
+    const { result } = renderHook(() => useSubagentRow(scope, "dlg:dlg_1"));
+    expect(result.current?.stable?.projectionRevision).toBe(7);
+
+    await threadsStore.getState().ensureThread("ref_shared");
+    act(() => threadsStore.getState().releaseThread("ref_shared"));
+    expect(result.current?.stable?.projectionRevision).toBe(7);
+
+    act(() => threadsStore.getState().releaseWatchedThread("ref_shared"));
+    expect(result.current).toBeUndefined();
+  });
+
   test("releasing one parent session evicts only its stashed delegate projections", async () => {
     const fake = connectFakeClient();
     fake.on("thread/read", (params) => {
@@ -6208,12 +6225,16 @@ describe("retry-safe mutation outbox integration", () => {
     await flushIndexedDBUntil(() => readAttempts === 2);
     expect(scheduledHydrationRetries).toHaveLength(1);
     expect(scheduledHydrationRetries[0]?.cancelled).toBe(false);
+    const scope = turnScopeKey("ref_a", "turn_1");
+    upsertSubagentRow(scope, { rowKey: "dlg:dlg_1", kind: "running", task: "pinned", resultPreview: "" });
+    const { result: row } = renderHook(() => useSubagentRow(scope, "dlg:dlg_1"));
 
     fake.emitNotification(appliedItemNotification("ref_a", "mutation-a"));
     await flushIndexedDBUntil(() => scheduledHydrationRetries[0]?.cancelled === true);
 
     expect(scheduledHydrationRetries[0]?.cancelled).toBe(true);
     expect(readAttempts).toBe(2);
+    expect(row.current).toBeUndefined();
   });
 
   // The mirror of the case above, one step earlier: here the pin goes away

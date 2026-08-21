@@ -157,7 +157,7 @@ function ThreadTranscript({ params }: { params: TranscriptParams }) {
               count={model.turns.length}
               estimateSize={() => ESTIMATED_TURN_HEIGHT}
               getItemKey={(index) => turnAt(index).id}
-              renderRow={(index) => <TurnBlock turn={turnAt(index)} exchangeOpeners={openers} />}
+              renderRow={(index) => <TurnBlock turn={turnAt(index)} sessionRef={ref} exchangeOpeners={openers} />}
             />
           </div>
         </div>

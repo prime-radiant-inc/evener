@@ -378,6 +378,7 @@ function currentDispatchClient(targetRef?: string): AppwireClientLike | null {
 
 function dropUnpinnedModel(ref: string): void {
   if (pinnedMutationRefs.has(ref) || (refCounts.get(ref) ?? 0) > 0) return;
+  releaseSubagentSessionIfUnowned(ref);
   // Nothing owns this ref any more, so no scheduled retry may outlive it.
   retireOwnedHydration("thread", ref);
   threadsStore.setState((state) => {
@@ -602,6 +603,13 @@ const watchIncludeTurns = new Map<string, boolean>();
 // was released before either response arrived.
 const watchHydratedIncludeTurns = new Map<string, boolean>();
 
+function releaseSubagentSessionIfUnowned(ref: string): void {
+  if ((refCounts.get(ref) ?? 0) > 0) return;
+  if ((watchRefCounts.get(ref) ?? 0) > 0) return;
+  if (pinnedMutationRefs.has(ref)) return;
+  releaseSubagentSession(ref);
+}
+
 // Every tracked ref gets exactly these params on both the first subscribe
 // (ensureThread) and every re-subscribe (onReady after reconnect):
 // replaceSubscription is always false — additive, layering onto whatever the
@@ -692,6 +700,7 @@ async function hydrateAndSubscribeWatch(
   try {
     resp = await client.request("thread/read", watchReadParams(ref, includeTurns));
   } catch (err) {
+    markThreadDeletedIfFenced(ref, err);
     scheduleOwnedHydrationRetry("watched", ref, pending);
     throw err;
   }
@@ -1800,7 +1809,7 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
       return;
     }
     refCounts.delete(ref);
-    releaseSubagentSession(ref);
+    releaseSubagentSessionIfUnowned(ref);
     if (pinnedMutationRefs.has(ref)) return;
     // Release is terminal for this owner generation: cancel its scheduled
     // retry and wake anything still awaiting its first model.
@@ -1951,6 +1960,7 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
       return;
     }
     watchRefCounts.delete(ref);
+    releaseSubagentSessionIfUnowned(ref);
     retireOwnedHydration("watched", ref);
     watchGenerations.set(ref, (watchGenerations.get(ref) ?? 0) + 1);
     // A retired lifecycle must not lend its pending hydrate to a new watcher.
