@@ -22,24 +22,6 @@ import (
 // time, matching laneClosePassBudget in jobs.go.
 var drainStallTimeout = 2 * time.Minute
 
-// drainBackgroundGrace is how long the one-shot drain waits before telling the
-// model that the only thing it is still waiting on is a background job.
-//
-// It is not a prediction that the job will never finish; nothing at this layer
-// can know that. Its only purpose is to let a job that is about to complete do
-// so, rather than nagging about a `printf` that had not been collected yet. A
-// job that is genuinely finishing is collected within a few drainRecheckInterval
-// passes (250ms each), so seconds are generous for that case and negligible
-// against the alternative: #297 hung for 751 seconds.
-//
-// A long silent background build also trips this, and that is deliberate. The
-// model then chooses to detach it, stop it, or keep waiting, instead of the
-// process blocking with nobody able to see why.
-//
-// A package var (not a const) so tests override and restore it without wall
-// time, matching drainStallTimeout above.
-var drainBackgroundGrace = 3 * time.Second
-
 // drainRecheckInterval bounds how long DrainJobTree blocks between explicit
 // completion wakes. The outstanding count is race-free, so a re-check can never
 // return prematurely; this ticker is only a lost-wake backstop and the cadence
@@ -244,52 +226,6 @@ func (s *Session) treeHasOutstandingWork() (bool, error) {
 // same liveDirectSubagents / child gate path treeHasOutstandingWork does,
 // skipping stop-gated and fatally failed children identically (they are never
 // driven, so their leftover state is not a stall the drain can act on).
-// onlyBackgroundDrainJobsOutstanding reports this session's own outstanding
-// drain jobs when every one of them is a background shell, and false otherwise.
-//
-// Both halves are load-bearing. Restricting it to background shells is what
-// separates a service the model started from a foreground command still
-// finishing, which the drain resolves on its own. Requiring that they are ALL
-// background is what keeps the notification from interrupting a drain that is
-// legitimately waiting on something else: a background job alongside real
-// pending work is not the reason the drain is blocked.
-//
-// Scoped to this session rather than the subtree: the stranding this addresses
-// (#297) is a root-session service, and a descendant's jobs are drained through
-// that descendant's own turns.
-// undisposedBackgroundJobsMessage tells the model the drain is blocked on a
-// background job it started and that only it can resolve. Both remedies are
-// named because the right one depends on intent, which the model alone knows: a
-// service the task asked to keep running wants detaching, scratch work wants
-// stopping.
-func undisposedBackgroundJobsMessage(jobIDs []string) string {
-	return fmt.Sprintf("Cannot exit with %d undisposed background job(s): %s. "+
-		"This run ends when this turn ends, so the job will be killed rather than reported on later. "+
-		"Relaunch it with exec_command mode=\"detached\" if it must outlive this session, "+
-		"or stop it with job_stop if it was scratch work.",
-		len(jobIDs), strings.Join(jobIDs, ", "))
-}
-
-func (s *Session) onlyBackgroundDrainJobsOutstanding() ([]string, bool) {
-	if s.jobManager == nil {
-		return nil, false
-	}
-	outstanding, err := s.jobManager.outstandingDrainJobIDs()
-	if err != nil || len(outstanding) == 0 {
-		return nil, false
-	}
-	background := make(map[string]bool, len(outstanding))
-	for _, id := range sessionUndisposedBackgroundJobIDs(s) {
-		background[id] = true
-	}
-	for _, id := range outstanding {
-		if !background[id] {
-			return nil, false
-		}
-	}
-	return outstanding, true
-}
-
 func (s *Session) drainSubtreeIsStalled() (bool, error) {
 	outstanding, err := s.treeHasOutstandingWork()
 	if err != nil {
@@ -411,8 +347,6 @@ func (s *Session) drainJobTreeWith(ctx context.Context, recheck <-chan time.Time
 
 	lastResult := ""
 	var stallStart time.Time
-	var bgGraceStart time.Time
-	bgNotified := false
 	for {
 		// Take this pass's wake edge before it reads any state. treeHasOutstandingWork
 		// consults eight independent signals in sequence, so it is not a snapshot, and
@@ -474,40 +408,6 @@ func (s *Session) drainJobTreeWith(ctx context.Context, recheck <-chan time.Time
 				continue
 			}
 			return lastResult, nil
-		}
-		// An undisposed background job never quiesces, so the loop below would
-		// block on it until the caller's context is cancelled (#297: a Flask
-		// server the model was asked to run held the drain for 751s while the
-		// agent's own work had finished in 149s). The stall watchdog cannot
-		// catch it: a running managed job counts as a live component precisely
-		// so a long silent build is never cut, and a server is indistinguishable
-		// from that build here.
-		//
-		// So hand it back to the only party that can tell them apart. After a
-		// grace period, deliver one steering turn naming the job and its two
-		// remedies; the model detaches it, stops it, or explains itself, and the
-		// drain resumes. Once only, because a second identical turn teaches the
-		// model nothing and burns a round.
-		if !bgNotified && s.cfg.TurnEndsProcess {
-			bgIDs, onlyBackground := s.onlyBackgroundDrainJobsOutstanding()
-			switch {
-			case !onlyBackground:
-				bgGraceStart = time.Time{}
-			case bgGraceStart.IsZero():
-				bgGraceStart = s.sclock().Now()
-			case s.sclock().Now().Sub(bgGraceStart) >= drainBackgroundGrace:
-				bgNotified = true
-				s.Steer(undisposedBackgroundJobsMessage(bgIDs))
-				res, err := process(ctx, "", nil, EntrySteeringCarrier)
-				if err != nil {
-					return lastResult, err
-				}
-				if res != "" {
-					lastResult = res
-				}
-				stallStart = time.Time{}
-				continue
-			}
 		}
 		// Defense-in-depth stall watchdog. Outstanding work with NO live or
 		// deliverable component anywhere is a genuine wedge (drainSubtreeIsStalled);

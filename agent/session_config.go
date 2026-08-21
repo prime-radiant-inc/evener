@@ -119,13 +119,6 @@ type SessionConfig struct {
 	// autonomously. Appends guidance to the system prompt adapting skill behavior.
 	NonInteractive bool `json:"non_interactive,omitempty"`
 
-	// TurnEndsProcess indicates the session dies with the current turn, as in a
-	// one-shot CLI run: no later turn exists in which a background job could
-	// report, so ending the turn kills it. Distinct from NonInteractive, which
-	// asks whether a human can be questioned — a long-lived serve session is
-	// frequently non-interactive and must not set this.
-	TurnEndsProcess bool `json:"turn_ends_process,omitempty"`
-
 	// ContextStrategy selects the context management strategy: compact|session-log|ooda.
 	// The value "recall" is accepted as a compatibility alias for compact.
 	ContextStrategy string `json:"context_strategy,omitempty"`
