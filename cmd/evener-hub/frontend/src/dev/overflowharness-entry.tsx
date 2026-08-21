@@ -72,6 +72,7 @@ const SYSTEM_PROMPT =
   );
 
 const RAW_UNBROKEN_PAYLOAD = "R".repeat(12_000);
+const CARD_LONG_TOKEN = `https://example.invalid/${"delegate-card-segment".repeat(80)}`;
 
 const snapshot: ThreadReadResponse = {
   thread: {
@@ -131,6 +132,7 @@ const snapshot: ThreadReadResponse = {
             status: "completed",
             durationMs: 1500,
             argumentsJson: JSON.stringify({ task: TASK, mode: "foreground_timeout", delegateId: "dlg_1" }),
+            output: JSON.stringify({ delegate_id: "dlg_1", status: "running", reason: CARD_LONG_TOKEN }),
           },
           {
             // A purpose-bearing shell row: the two-line composition (italic
@@ -417,6 +419,7 @@ function measure(): {
   disclosures: DisclosureContract[];
   footer: FooterContract;
   visibility: VisibilityProbe;
+  subagentCard: { found: boolean; contained: boolean; quoteWrapped: boolean; statsContained: boolean };
 } {
   const pane = document.getElementById("oh-pane");
   if (!pane) throw new Error("harness pane never mounted");
@@ -505,12 +508,22 @@ function measure(): {
   const context = pane.querySelector<HTMLElement>('[data-testid="status-row-context"]');
   const queue = pane.querySelector<HTMLElement>('[data-testid="status-row-queue"]');
   const model = pane.querySelector<HTMLElement>('[data-testid="model-switch-value"]');
+  const subagentCard = pane.querySelector<HTMLElement>('[data-testid="subagent-row"]');
+  const subagentQuote = subagentCard?.querySelector<HTMLElement>('[data-testid="subagent-quote"]');
+  const subagentStats = subagentCard?.querySelector<HTMLElement>('[data-testid="subagent-stats"]');
+  const quoteFontSize = subagentQuote ? Number.parseFloat(getComputedStyle(subagentQuote).fontSize) : 0;
   return {
     width,
     scrollers,
     ignored,
     disclosures,
     visibility: visibilityProbe(),
+    subagentCard: {
+      found: subagentCard !== null,
+      contained: !!subagentCard && subagentCard.scrollWidth <= subagentCard.clientWidth + 1,
+      quoteWrapped: !!subagentQuote && subagentQuote.getBoundingClientRect().height > quoteFontSize * 1.5,
+      statsContained: !!subagentStats && subagentStats.scrollWidth <= subagentStats.clientWidth + 1,
+    },
     footer: {
       effortVisible: visible(effort),
       contextVisible: visible(context),
@@ -557,9 +570,9 @@ function dump(selector: string) {
   };
 }
 
-// The tree is not done assembling at load: the delegate module claims its
-// turn's leadership in a layout effect, and the virtualizer replaces its
-// estimated row heights with measured ones a frame later. A driver that
+// The tree is not done assembling at load: delegate cards update from layout
+// effects, and the virtualizer replaces its estimated row heights with
+// measured ones a frame later. A driver that
 // measured on `load` would measure a tree mid-assembly, which is how a guard
 // starts reporting numbers nobody can reproduce by hand. Resolving after two
 // painted frames plus a macrotask is the settle point, and it is awaited

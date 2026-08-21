@@ -16,11 +16,7 @@
 // describeLiveness's own doc comment (kata gw2c). Display-only - no self-heal/reconnect side
 // effect (that's a connection.ts/threads.ts concern, not this pane's), no
 // idle animation (Cadence already carries live activity via its trace - see
-// widgets/cadence). Session-level thresholds only; the legacy renderer also
-// runs a SEPARATE per-subagent-row liveness clock (10s/45s) - that's a
-// distinct feature area (T3's subagent module) this deliberately does not
-// unify with (borrowing its live COUNT is not adopting its thresholds), per
-// parity doc's own Highlights section.
+// widgets/cadence). These are session-level thresholds only.
 
 export type LivenessLevel = "none" | "quiet" | "stalled" | "waiting" | "retrying";
 

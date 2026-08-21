@@ -12,9 +12,15 @@ export interface ScrollMetrics {
   clientHeight: number;
 }
 
-// Legacy renderer.js parity (docs/web-ui/parity/parity-m4-transcript.md
-// §15): isNearBottom is "within 50px of true bottom".
-export const AT_BOTTOM_THRESHOLD_PX = 50;
+// "At the bottom" means the reader is at the TRUE end of the scrollable
+// content, not merely near it. A threshold of a few pixels tolerates the
+// sub-pixel rounding browsers apply to scrollTop/scrollHeight without ever
+// treating a reader who has scrolled back by even one line of text (~20px)
+// as "at the bottom" - the previous 50px legacy value let autoscroll engage
+// while the reader was comfortably scrolled back into history, yanking the
+// transcript underneath them. One line of text is far larger than 4px, so
+// this is effectively "truly at the bottom" while remaining rounding-safe.
+export const AT_BOTTOM_THRESHOLD_PX = 4;
 
 // Legacy renderer.js parity (same doc, §15): isNearTop is "scrollTop < 200".
 export const NEAR_TOP_THRESHOLD_PX = 200;

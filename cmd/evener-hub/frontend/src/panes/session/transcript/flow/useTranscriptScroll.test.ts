@@ -886,6 +886,159 @@ describe("mount positioning", () => {
   });
 });
 
+// The Session pane is NOT keyed by ref (DockHost's PaneHost renders
+// <Component params=...> with no key), so clicking a different session in the
+// sidebar updates params.ref on the SAME mounted component instance. Without
+// a reset, useTranscriptScroll's per-mount refs (initializedRef,
+// wasAtBottomRef, baselineItemCountRef, firstTurnIdRef,
+// resolvedFailedTurnIdsRef, errorAnchorIndex) all persist across the ref
+// change, so the new session opens wherever the virtualizer defaults (the
+// scroll-to-bottom is skipped) and stick-to-bottom / pill counts are
+// computed against the PREVIOUS session's scroll state. These tests prove the
+// ref change re-initializes all of that.
+describe("ref change on a persistent pane instance (sidebar click to a different session)", () => {
+  test("changing ref cancels a pending view anchor before the fresh-open scroll-to-bottom", () => {
+    const { ref, el, scrollToIndex } = makeListHandle();
+    scrollToIndex.mockImplementation((_index, options) => {
+      if (options.align === "end") el.scrollTop = 900;
+    });
+    const { measure } = makeMeasure({ scrollTop: 300, scrollHeight: 1200, clientHeight: 300 });
+    let positions: ViewAnchorPosition[] = [
+      { id: "ref-a-tool", sourceIndex: 4, index: 4, offset: -18, height: 40, isMessage: false },
+    ];
+    const { result, rerender } = renderHook(
+      ({ r }) =>
+        useTranscriptScroll({
+          ref: r,
+          model: model([turn("t1", ["i1"])]),
+          listRef: ref,
+          loadOlder: vi.fn(),
+          measure,
+          measureAnchors: () => positions,
+        }),
+      { initialProps: { r: "ref_a" } },
+    );
+
+    act(() => result.current.captureViewAnchor());
+    positions = [{ id: "ref-b-message", sourceIndex: 5, index: 0, offset: 0, height: 96, isMessage: true }];
+    rerender({ r: "ref_b" });
+    act(() => result.current.restoreViewAnchorAfterMeasurement());
+
+    expect(el.scrollTop).toBe(900);
+  });
+
+  test("changing ref re-runs the scroll-to-bottom for the new session", () => {
+    const { ref, scrollToIndex } = makeListHandle();
+    const { measure } = makeMeasure(AT_BOTTOM);
+    const { rerender } = renderHook(
+      ({ r }) =>
+        useTranscriptScroll({
+          ref: r,
+          model: model([turn("t1", ["i1"]), turn("t2", ["i2"])]),
+          listRef: ref,
+          loadOlder: vi.fn(),
+          measure,
+        }),
+      { initialProps: { r: "ref_a" } },
+    );
+    // Initial mount scrolled to bottom for ref_a.
+    expect(scrollToIndex).toHaveBeenCalledWith(1, { align: "end" });
+    scrollToIndex.mockClear();
+
+    // Sidebar click to a different session reuses the same hook instance.
+    rerender({ r: "ref_b" });
+
+    // The new session must also land at the bottom.
+    expect(scrollToIndex).toHaveBeenCalledWith(1, { align: "end" });
+  });
+
+  test("changing ref resets the pill count and baseline, so the new session doesn't inherit the old one's unseen count", () => {
+    const { ref, scrollToIndex } = makeListHandle();
+    const { measure } = makeMeasure(SCROLLED_AWAY);
+    const { result, rerender } = renderHook(
+      ({ r, m }) => useTranscriptScroll({ ref: r, model: m, listRef: ref, loadOlder: vi.fn(), measure }),
+      {
+        initialProps: {
+          r: "ref_a",
+          m: model([turn("t1", ["i1"])]),
+        },
+      },
+    );
+    // Append while scrolled away -> pill counts for ref_a.
+    rerender({ r: "ref_a", m: model([turn("t1", ["i1"]), turn("t2", ["i2"])]) });
+    expect(result.current.pillCount).toBe(1);
+
+    // Switch to ref_b (sidebar click). Pill must reset to 0 and the scroll-to-bottom must fire.
+    scrollToIndex.mockClear();
+    rerender({ r: "ref_b", m: model([turn("t1", ["i1"]), turn("t2", ["i2"])]) });
+
+    expect(result.current.pillCount).toBe(0);
+    expect(scrollToIndex).toHaveBeenCalledWith(1, { align: "end" });
+  });
+
+  test("changing ref clears an active error anchor so the new session doesn't inherit the old one's failed-turn anchor", () => {
+    const { ref, scrollToIndex } = makeListHandle();
+    const { measure } = makeMeasure(SCROLLED_AWAY);
+    const { result, rerender } = renderHook(
+      ({ r, m }) => useTranscriptScroll({ ref: r, model: m, listRef: ref, loadOlder: vi.fn(), measure }),
+      {
+        initialProps: {
+          r: "ref_a",
+          m: model([turn("t1", ["i1"])]),
+        },
+      },
+    );
+    // Append a failed turn on ref_a (scrolled away) -> becomes the error anchor.
+    rerender({ r: "ref_a", m: model([turn("t1", ["i1"]), turn("t2", ["i2"], { status: "failed" })]) });
+    expect(result.current.pillError).toBe(true);
+
+    // Switch to ref_b (no failed turn). The error anchor must clear.
+    scrollToIndex.mockClear();
+    rerender({ r: "ref_b", m: model([turn("t1", ["i1"]), turn("t2", ["i2"])]) });
+
+    expect(result.current.pillError).toBe(false);
+    expect(scrollToIndex).toHaveBeenCalledWith(1, { align: "end" });
+  });
+});
+
+// A same-ref remount (the model briefly goes undefined - e.g. a store resync
+// that clears the thread, or the same ref re-hydrating - so VirtualList
+// unmounts then remounts) must also re-run the scroll-to-bottom.
+// initializedRef was left true from the first hydration; without a reset the
+// remount skips the scroll-to-bottom and strands the reader at the top.
+describe("same-ref remount (model undefined -> defined on the same ref)", () => {
+  test("re-hydrating the same ref after the model went undefined re-runs the scroll-to-bottom", () => {
+    const list = makeListHandle();
+    const handle = list.ref.current;
+    const { measure } = makeMeasure(AT_BOTTOM);
+    const { result, rerender } = renderHook(
+      ({ m }) =>
+        useTranscriptScroll({
+          ref: "ref_a",
+          model: m,
+          listRef: list.ref,
+          loadOlder: vi.fn(),
+          measure,
+        }),
+      { initialProps: { m: model([turn("t1", ["i1"]), turn("t2", ["i2"])]) as ThreadModel | undefined } },
+    );
+    // Initial mount scrolled to bottom.
+    expect(list.scrollToIndex).toHaveBeenCalledWith(1, { align: "end" });
+    list.scrollToIndex.mockClear();
+
+    // Model goes undefined (VirtualList unmounts). listRef reads null.
+    (list.ref as { current: VirtualListHandle | null }).current = null;
+    rerender({ m: undefined as ThreadModel | undefined });
+    expect(result.current.pillCount).toBe(0);
+
+    // Model re-hydrates (VirtualList remounts). Must scroll to bottom again.
+    (list.ref as { current: VirtualListHandle | null }).current = handle;
+    rerender({ m: model([turn("t1", ["i1"]), turn("t2", ["i2"])]) });
+
+    expect(list.scrollToIndex).toHaveBeenCalledWith(1, { align: "end" });
+  });
+});
+
 describe("view-mode anchor preservation", () => {
   test("captures and restores the same stable entry and viewport offset", () => {
     const anchor = captureTopAnchor({ id: "turn-4", sourceIndex: 4, index: 4, offset: 18, isMessage: true });

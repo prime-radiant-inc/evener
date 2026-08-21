@@ -24,6 +24,19 @@ func resolveEffortLevels(model string, providerDefault []string) []string {
 	return providerDefault
 }
 
+// resolveWebSearch reports whether the model's endpoint serves provider-native
+// web search, preferring the catalog over the provider default. Presence-aware:
+// the catalog being silent is not the same as it saying false, so an
+// uncatalogued model keeps the provider default.
+func resolveWebSearch(model string, providerDefault bool) bool {
+	if cat := llm.EmbeddedModelCatalog(); cat != nil {
+		if mi := cat.LookupModelInfo(model); mi != nil && mi.SupportsWebSearch != nil {
+			return *mi.SupportsWebSearch
+		}
+	}
+	return providerDefault
+}
+
 // Profile describes a provider's identity, model, tool definitions, and
 // capabilities, and produces derived profiles via WithModel and the With*
 // decorator functions. Construct one with NewOpenAIProfile or
@@ -721,12 +734,13 @@ func restampInstanceIdentity(p *Profile, behaviorTag, id string) *Profile {
 // catalog, providerOpts that depend on the model — is recomputed.
 //
 // True for providers whose constructors look up per-model state (every
-// openai-compat provider; openrouter-anthropic). False for providers
-// whose model-derived state is fixed at construction (openai, minimax)
+// openai-compat provider; openrouter-anthropic; openai, whose web-search
+// capability and effort ladder both come from the catalog). False for
+// providers whose model-derived state is fixed at construction (minimax)
 // or handled by the dedicated anthropic branch of WithModel.
 func rebuildOnSameProviderChange(behaviorTag string) bool {
 	switch behaviorTag {
-	case "kimi", "glm", "openrouter", "ollama", "openrouter-anthropic", "openai-compatible":
+	case "kimi", "glm", "openrouter", "ollama", "openrouter-anthropic", "openai-compatible", "openai":
 		return true
 	}
 	return false
@@ -796,6 +810,8 @@ func (p *Profile) WithModel(model string) *Profile {
 		switch p.behaviorTag {
 		case "openrouter-anthropic":
 			rebuilt = newOpenRouterAnthropicProfile(model)
+		case "openai":
+			rebuilt = NewOpenAIProfile(model)
 		default:
 			rebuilt = newOpenAICompatProfile(p.behaviorTag, model, 0, p.instModels)
 		}
@@ -821,7 +837,7 @@ func NewOpenAIProfile(model string) *Profile {
 		docFiles:        []string{"AGENTS.md", ".codex/instructions.md"},
 		reasoning:       true,
 		streaming:       true,
-		webSearch:       true,
+		webSearch:       resolveWebSearch(model, true),
 		defaultTimeout:  120_000,
 		knowledgeCutoff: "2025-06-01",
 		defaultEfforts:  []string{"low", "medium", "high", "xhigh"},

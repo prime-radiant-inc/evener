@@ -1,97 +1,137 @@
-.module {
+/* Rail × Quote card. State hues are a token-contract semantic exception. */
+
+.card {
   display: flex;
   flex-direction: column;
-  gap: var(--space-2);
-  padding: var(--space-3);
-  border: 1px solid var(--edge);
-  border-radius: var(--radius-pane);
+  min-width: 0;
+  max-width: 100%;
+  gap: 2px;
+  padding: var(--space-2) var(--space-3);
   background: var(--surface-1);
+  border: 1px solid var(--edge);
+  border-left: 2px solid var(--edge-strong);
+  border-radius: 0; /* square corners are the design, not an omission */
 }
 
-/* 3h80: a failed row must never be hidden behind the done tally (mockup 08) -
-   the module itself earns a thin failure-colored left edge the moment any
-   row inside it fails, visible even if that row has scrolled out of view or
-   is folded behind "+N more". */
-.module[data-has-failure="true"] {
-  border-left: 2px solid var(--danger);
+.card[data-kind="running"] {
+  border-left-color: var(--alive);
+}
+.card[data-kind="failed"] {
+  border-left-color: var(--danger);
+  background: var(--danger-bg);
+}
+.card[data-attention="true"] {
+  border-left-color: var(--attention);
+  background: var(--attention-bg);
 }
 
-.header {
-  font-size: var(--font-size-caption);
+.quote {
+  display: block;
+  min-width: 0;
+  font-size: var(--font-size-ui);
+  font-style: italic;
+  color: var(--ink-hi);
+  overflow-wrap: anywhere;
+}
+.card[data-kind="failed"] .quote {
+  color: var(--danger-ink);
+}
+.card[data-attention="true"] .quote {
+  color: var(--attention-ink);
+}
+.card[data-kind="done"] .quote {
   color: var(--ink-mid);
 }
 
-.rows {
+.stats {
   display: flex;
-  flex-direction: column;
-  gap: var(--space-2);
-}
-
-.row {
-  display: flex;
-  align-items: center;
-  gap: var(--space-2);
+  min-width: 0;
   flex-wrap: wrap;
-}
-
-.task {
-  font-size: var(--font-size-ui);
-  color: var(--ink-hi);
-}
-
-.meta {
+  align-items: center;
+  gap: var(--space-1);
   font-family: var(--font-mono);
   font-size: var(--font-size-caption);
-  color: var(--ink-mid);
+  color: var(--ink-low);
 }
-
-.preview {
-  color: var(--ink-mid);
-}
-
-/* The collapsed one-liner inside the Disclosure summary: the status pill,
-   task, meta and transcript link, laid out in a row beside the chevron. */
-.summary {
-  display: flex;
-  align-items: center;
-  gap: var(--space-2);
-  flex-wrap: wrap;
-  flex: 1 1 auto;
+.stats > span {
   min-width: 0;
+  overflow-wrap: anywhere;
+}
+.statusGlyph {
+  flex: none;
+  color: var(--ink-mid);
+}
+.statsSep {
+  color: var(--edge-strong);
+}
+.statsSpring {
+  flex: 1 1 auto;
+  margin-left: auto;
+}
+.clock {
+  flex: none;
+  color: var(--ink-mid);
+  white-space: nowrap;
 }
 
-.status {
-  display: inline-flex;
-  align-items: center;
-  flex-shrink: 0;
-}
-
-/* The expanded body: Mandate / Activity / Summary sections stacked. */
-.body {
+.quotes {
   display: flex;
   flex-direction: column;
-  gap: var(--space-3);
-  padding-top: var(--space-2);
+  gap: 2px;
+  padding-top: var(--space-1);
+}
+.quotesList {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin: 0;
+  padding-left: var(--space-5);
+  list-style: decimal;
+}
+.quoteItem {
+  min-width: 0;
+  font-size: var(--font-size-ui);
+  color: var(--ink-mid);
+  overflow-wrap: anywhere;
+}
+.quoteItem::marker {
+  font-family: var(--font-mono);
+  font-size: var(--font-size-caption);
+  color: var(--ink-low);
+}
+.quoteLive {
+  color: var(--ink-hi);
+  font-weight: 600;
+}
+.quoteMsg {
+  font-style: italic;
+  color: var(--ink-hi);
+}
+.quoteMeta {
+  font-family: var(--font-mono);
+  font-size: var(--font-size-caption);
+  color: var(--ink-low);
+  margin-left: var(--space-2);
+  white-space: nowrap;
+}
+.quotesEmpty {
+  font-size: var(--font-size-caption);
+  color: var(--ink-low);
+  font-style: italic;
 }
 
 .section {
   display: flex;
   flex-direction: column;
   gap: var(--space-1);
+  padding-top: var(--space-1);
 }
-
 .sectionLabel {
   font-size: var(--font-size-caption);
   text-transform: uppercase;
   letter-spacing: 0.05em;
   color: var(--ink-low);
 }
-
-.openTranscriptIcon {
-  margin-left: var(--space-1);
-  display: inline-flex;
-}
-
 .mandate {
   font-family: var(--font-sans);
   font-size: var(--font-size-ui);
@@ -100,29 +140,14 @@
   overflow-wrap: anywhere;
 }
 
-.activity {
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-1);
-  margin: 0;
-  padding-left: var(--space-4);
-  list-style: decimal;
-}
-
-.activityItem {
-  font-size: var(--font-size-ui);
-  color: var(--ink-mid);
-}
-
-/* The latest activity line while the child is still running - emphasized via
-   ink weight/color, not a status hue (this stylesheet is not allowlisted). */
-.activityLatest {
-  color: var(--ink-hi);
-  font-weight: 600;
-}
-
-.summaryText {
-  font-size: var(--font-size-ui);
-  color: var(--ink-hi);
-  white-space: pre-wrap;
+.srOnly {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
 }

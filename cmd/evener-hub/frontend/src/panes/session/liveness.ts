@@ -7,7 +7,7 @@
 // create a cycle (Session.tsx -> "./transcript/tools" -> subagentModule.tsx
 // -> watchedChild.tsx -> back to Session.tsx), so this lives in its own
 // leaf module instead - it imports nothing from panes/session/ itself.
-import { useEffect, useState } from "react";
+import { createContext, useContext, useEffect, useState } from "react";
 import type { CadenceState } from "../../widgets";
 
 // Same interval as the legacy renderer's own liveness tick
@@ -15,6 +15,14 @@ import type { CadenceState } from "../../widgets";
 // enough that Cadence's tick decay visibly advances promptly, coarse enough
 // to be a non-issue re-rendering cost-wise.
 export const NOW_TICK_MS = 3_000;
+
+// Session owns the live clock; transcript descendants only consume it. The
+// fixed default keeps standalone renders deterministic and timer-free.
+export const SessionNowContext = createContext(Date.now());
+
+export function useSessionNow(): number {
+  return useContext(SessionNowContext);
+}
 
 // cadenceStateForStatus maps the WIRE ThreadStatus.type vocabulary
 // (appwire/types.go's constants: idle/active/awaiting/warning/closed/

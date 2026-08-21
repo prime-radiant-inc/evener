@@ -5,9 +5,8 @@ import { recoveryComposerDraft } from "../panes/session/composer/recovery/recove
 import {
   resetSubagentModuleStoreForTests,
   turnScopeKey,
-  updateSubagentRowIfExists,
   upsertSubagentRow,
-  useSubagentRows,
+  useSubagentRow,
 } from "../panes/session/transcript/tools/subagentModuleStore";
 import type { ConnectionState } from "../protocol/client";
 import { ClientNotReadyError, errorKind, RequestTimeoutError, WireError } from "../protocol/errors";
@@ -300,6 +299,7 @@ function runScheduledHydrationRetry(index = 0): void {
 beforeEach(async () => {
   connectionStore.setState({ state: "idle", serverInfo: undefined, client: null });
   resetThreadsStoreForTests();
+  resetSubagentModuleStoreForTests();
   scheduledHydrationRetries = [];
   restoreHydrationRetryScheduler = installHydrationRetrySchedulerForTests((attempt, retry) => {
     const scheduled: ScheduledHydrationRetry = { attempt, retry, cancelled: false };
@@ -325,6 +325,7 @@ afterEach(async () => {
   // re-triggers rewireClient, which re-issues a stray thread/read against
   // whatever client that later file just connected.
   resetThreadsStoreForTests();
+  resetSubagentModuleStoreForTests();
   // The beforeEach above only clears the GLOBAL "evener-mutation-outbox"
   // IndexedDB database (installed once, for the worker's life, by this
   // file's own `import "fake-indexeddb/auto"") before EACH of THIS file's
@@ -4582,241 +4583,7 @@ describe("frameTimes tracking (threads store)", () => {
   });
 });
 
-// Shell-job notifications are activation state only. Stable delegate rows are
-// owned by evener/delegate/updated and must never be rewritten from a job event.
-describe("evener/job/started|finished stay out of stable delegate rows", () => {
-  afterEach(resetSubagentModuleStoreForTests);
-
-  test("evener/job/finished does not patch a stable delegate row", async () => {
-    const fake = connectFakeClient();
-    fake.on("thread/read", () => readResponse("ref_a"));
-    await threadsStore.getState().ensureThread("ref_a");
-    const scope = turnScopeKey("ref_a", "turn_1");
-    upsertSubagentRow(scope, { rowKey: "dlg:dlg_1", kind: "running", task: "t", resultPreview: "" });
-
-    fake.emitNotification({
-      method: "evener/job/finished",
-      params: {
-        threadId: "thr_ref_a",
-        ref: "ref_a",
-        job: {
-          jobId: "job_1",
-          jobType: "delegate",
-          status: "exhausted",
-          reason: "ran out of turns",
-          resumable: true,
-          exhaustionBudget: "30m",
-          exhaustionLimit: 60,
-          outputBytes: 0,
-          delegateId: "dlg_1",
-          originTurnId: "turn_1",
-        },
-      },
-    });
-
-    const { result } = renderHook(() => useSubagentRows(scope));
-    expect(result.current[0]).toMatchObject({ rowKey: "dlg:dlg_1", kind: "running" });
-    expect(result.current[0]?.liveKind).toBeUndefined();
-  });
-
-  test("evener/job/started does not reset a stable delegate row", async () => {
-    const fake = connectFakeClient();
-    fake.on("thread/read", () => readResponse("ref_a"));
-    await threadsStore.getState().ensureThread("ref_a");
-    const scope = turnScopeKey("ref_a", "turn_1");
-    upsertSubagentRow(scope, { rowKey: "dlg:dlg_1", kind: "done", task: "t", resultPreview: "" });
-    updateSubagentRowIfExists(scope, "dlg:dlg_1", { liveKind: "failed", liveReason: "boom" });
-
-    fake.emitNotification({
-      method: "evener/job/started",
-      params: {
-        threadId: "thr_ref_a",
-        ref: "ref_a",
-        job: {
-          jobId: "job_2",
-          jobType: "delegate",
-          status: "running",
-          outputBytes: 0,
-          delegateId: "dlg_1",
-          originTurnId: "turn_1",
-        },
-      },
-    });
-
-    const { result } = renderHook(() => useSubagentRows(scope));
-    expect(result.current[0]).toMatchObject({ liveKind: "failed", liveReason: "boom" });
-  });
-
-  test("a job with no originTurnId (not run via delegate) is silently ignored, no row touched", async () => {
-    const fake = connectFakeClient();
-    fake.on("thread/read", () => readResponse("ref_a"));
-    await threadsStore.getState().ensureThread("ref_a");
-    const scope = turnScopeKey("ref_a", "turn_1");
-    upsertSubagentRow(scope, { rowKey: "job:job_3", kind: "running", task: "t", resultPreview: "" });
-
-    fake.emitNotification({
-      method: "evener/job/finished",
-      params: {
-        threadId: "thr_ref_a",
-        ref: "ref_a",
-        job: { jobId: "job_3", jobType: "shell", status: "completed", outputBytes: 0 },
-      },
-    });
-
-    const { result } = renderHook(() => useSubagentRows(scope));
-    expect(result.current[0]?.liveKind).toBeUndefined();
-  });
-
-  // kata 8525: a notification for a DIFFERENT session must never patch a row
-  // planted under the same bare turnId in another session - this is exactly
-  // the collision the fix closes (turn ids restart at 0 per session).
-  test("a evener/job/finished notification for a different session's ref never touches this session's row", async () => {
-    const fake = connectFakeClient();
-    fake.on("thread/read", () => readResponse("ref_a"));
-    await threadsStore.getState().ensureThread("ref_a");
-    const scope = turnScopeKey("ref_a", "turn_1");
-    upsertSubagentRow(scope, { rowKey: "dlg:dlg_1", kind: "running", task: "t", resultPreview: "" });
-
-    fake.emitNotification({
-      method: "evener/job/finished",
-      params: {
-        threadId: "thr_ref_b",
-        ref: "ref_b",
-        job: {
-          jobId: "job_1",
-          jobType: "delegate",
-          status: "completed",
-          outputBytes: 0,
-          delegateId: "dlg_1",
-          originTurnId: "turn_1",
-        },
-      },
-    });
-
-    const { result } = renderHook(() => useSubagentRows(scope));
-    expect(result.current[0]?.liveKind).toBeUndefined();
-  });
-});
-
-function responseWithStableDelegate(ref: string, revision: number, status: string, latestActivityAt: string) {
-  const response = readResponse(ref);
-  const running = status === "running";
-  (response.thread.evener as unknown as Record<string, unknown>).diagnostics = {
-    delegates: [
-      {
-        delegateId: "dlg_1",
-        ownerSessionId: response.thread.sessionId,
-        rootSessionId: response.thread.sessionId,
-        childSessionId: "sess_child",
-        transcriptRef: "local:sess_child",
-        type: "delegate",
-        lifecycle: running ? "running" : "idle",
-        phase: running ? "running" : "idle",
-        status: running ? "running" : "idle",
-        outcome: running ? undefined : status,
-        terminal: !running,
-        resumable: true,
-        projectionRevision: revision,
-        latestActivityAt,
-        originTurnId: "turn_1",
-      },
-    ],
-    turnSlots: { inUse: status === "running" ? 1 : 0, cap: 4, jobs: 0, driveTurns: status === "running" ? 1 : 0 },
-  };
-  return response;
-}
-
-describe("stable delegate projection routing", () => {
-  test("restores a late stable delegate snapshot from thread/read", async () => {
-    const fake = connectFakeClient();
-    fake.on("thread/read", () => responseWithStableDelegate("ref_root", 7, "running", "2026-08-15T10:00:00Z"));
-
-    await threadsStore.getState().ensureThread("ref_root");
-
-    const model = threadsStore.getState().threads.get("ref_root") as
-      | (ThreadModel & { delegates?: Array<Record<string, unknown>> })
-      | undefined;
-    expect(model?.delegates).toEqual([
-      expect.objectContaining({ delegateId: "dlg_1", projectionRevision: 7, status: "running" }),
-    ]);
-  });
-
-  test("ignores a stale delegate revision while max-merging latest activity", async () => {
-    const fake = connectFakeClient();
-    fake.on("thread/read", () => responseWithStableDelegate("ref_root", 7, "completed", "2026-08-15T10:00:00Z"));
-    await threadsStore.getState().ensureThread("ref_root");
-
-    fake.emitNotification({
-      method: "evener/delegate/updated",
-      params: {
-        threadId: "thr_ref_root",
-        ref: "ref_root",
-        delegate: {
-          delegateId: "dlg_1",
-          ownerSessionId: "sess_ref_root",
-          rootSessionId: "sess_ref_root",
-          childSessionId: "sess_child",
-          transcriptRef: "local:sess_child",
-          type: "delegate",
-          lifecycle: "running",
-          phase: "running",
-          status: "running",
-          terminal: false,
-          resumable: true,
-          projectionRevision: 6,
-          latestActivityAt: "2026-08-15T10:01:00Z",
-          originTurnId: "turn_1",
-        },
-      },
-    });
-
-    const model = threadsStore.getState().threads.get("ref_root") as ThreadModel & {
-      delegates?: Array<Record<string, unknown>>;
-    };
-    expect(model.delegates?.[0]).toMatchObject({
-      projectionRevision: 7,
-      status: "idle",
-      outcome: "completed",
-      latestActivityAt: "2026-08-15T10:01:00Z",
-    });
-  });
-
-  test("preserves descendant ordinary events beside the root stable snapshot", async () => {
-    const fake = connectFakeClient();
-    fake.on("thread/read", (params) =>
-      params.ref === "ref_root"
-        ? responseWithStableDelegate("ref_root", 7, "running", "2026-08-15T10:00:00Z")
-        : readResponse("ref_child"),
-    );
-    await threadsStore.getState().ensureThread("ref_root");
-    await threadsStore.getState().ensureThread("ref_child");
-
-    fake.emitNotification({
-      method: "turn/started",
-      params: {
-        threadId: "thr_ref_child",
-        ref: "ref_child",
-        turn: { id: "turn_child", status: "inProgress", itemsView: "" },
-      },
-    });
-
-    expect(threadsStore.getState().threads.get("ref_child")?.activeTurnId).toBe("turn_child");
-    const root = threadsStore.getState().threads.get("ref_root") as ThreadModel & {
-      delegates?: Array<Record<string, unknown>>;
-    };
-    expect(root.delegates?.[0]).toMatchObject({ delegateId: "dlg_1", projectionRevision: 7 });
-  });
-});
-
-// watchThread is the sanctioned narrow extension the transcript/tools
-// stream (subagent-module watched-child rows) added to this store: an
-// ADDITIVE, leaner (includeTurns:false) subscription to a child thread,
-// refcounted independently of ensureThread's own counter so a real pane
-// and a watching subagent row never fight over the same lifecycle - and
-// stored in its own watchedThreads/watchedFrameTimes fields so releasing
-// a watch can never touch a ref's "real pane" data (or vice versa), even
-// when the exact same ref happens to be both ensureThread'd and
-// watchThread'd at once.
+// Lean child watches are refcounted independently of real panes.
 describe("useThreadsStore.watchThread", () => {
   test("an initial watched snapshot supersedes notifications buffered before its response", async () => {
     const fake = connectFakeClient();
@@ -4934,7 +4701,6 @@ describe("useThreadsStore.watchThread", () => {
     expect(model?.turns[0]?.status).toBe("completed");
     expect(model?.turns[0]?.items[0]?.output).toBe("done");
     expect(model?.turns[0]?.items).toHaveLength(1);
-    expect(threadsStore.getState().watchedFrameTimes.get("ref_a")).toBeUndefined();
     threadsStore.getState().releaseWatchedThread("ref_a");
     expect(threadsStore.getState().watchedThreads.has("ref_a")).toBe(false);
   });
@@ -5080,31 +4846,20 @@ describe("useThreadsStore.watchThread", () => {
     await threadsStore.getState().watchThread("ref_a");
     expect(threadsStore.getState().threads.has("ref_a")).toBe(true);
     expect(threadsStore.getState().watchedThreads.has("ref_a")).toBe(true);
+    const scope = turnScopeKey("ref_a", "turn_1");
+    upsertSubagentRow(scope, { rowKey: "dlg:1", kind: "running", resultPreview: "" });
+    const { result: row } = renderHook(() => useSubagentRow(scope, "dlg:1"));
 
-    threadsStore.getState().releaseThread("ref_a");
+    act(() => threadsStore.getState().releaseThread("ref_a"));
     expect(threadsStore.getState().threads.has("ref_a")).toBe(false);
     expect(threadsStore.getState().watchedThreads.has("ref_a")).toBe(true); // the watch survives
+    expect(row.current).toBeUndefined();
 
     threadsStore.getState().releaseWatchedThread("ref_a");
     expect(threadsStore.getState().watchedThreads.has("ref_a")).toBe(false);
   });
 
-  test("frameTimes for a watched ref land in watchedFrameTimes, never the real-pane frameTimes map", async () => {
-    const fake = connectFakeClient();
-    fake.on("thread/read", () => readResponse("ref_a"));
-    await threadsStore.getState().watchThread("ref_a");
-
-    vi.spyOn(Date, "now").mockReturnValue(4_000_000);
-    fake.emitNotification({
-      method: "thread/status/changed",
-      params: { threadId: "thr_ref_a", ref: "ref_a", status: { type: "active" } },
-    });
-
-    expect(threadsStore.getState().watchedFrameTimes.get("ref_a")).toEqual([4_000_000]);
-    expect(threadsStore.getState().frameTimes.get("ref_a")).toBeUndefined();
-  });
-
-  test("a notification is delivered to BOTH a real pane and a watch on the same ref, but frameTimes is appended once per map, not doubled into either", async () => {
+  test("a notification is delivered to both a real pane and a watch on the same ref", async () => {
     const fake = connectFakeClient();
     fake.on("thread/read", () => readResponse("ref_a"));
     await threadsStore.getState().ensureThread("ref_a");
@@ -5119,7 +4874,6 @@ describe("useThreadsStore.watchThread", () => {
     expect(threadsStore.getState().threads.get("ref_a")?.status).toEqual({ type: "active" });
     expect(threadsStore.getState().watchedThreads.get("ref_a")?.status).toEqual({ type: "active" });
     expect(threadsStore.getState().frameTimes.get("ref_a")).toEqual([9_000_000]);
-    expect(threadsStore.getState().watchedFrameTimes.get("ref_a")).toEqual([9_000_000]);
   });
 
   test("releaseWatchedThread refcounts watchers; stops tracking only when the last watcher releases", async () => {
@@ -5213,7 +4967,6 @@ describe("useThreadsStore.watchThread", () => {
     const reads = fake.calls.filter((call) => call.method === "thread/read");
     expect(reads).toHaveLength(2);
     expect(reads[1]?.params).toMatchObject({ ref: "ref_a", includeTurns: true });
-    expect(threadsStore.getState().watchedFrameTimes.get("ref_a")).toBeUndefined();
 
     fake.emitNotification({
       method: "thread/status/changed",
@@ -5236,7 +4989,6 @@ describe("useThreadsStore.watchThread", () => {
     expect(model?.capabilities.queue).toBe(true);
     expect(model?.turns[0]?.id).toBe("turn_after");
     expect(model?.status).toEqual({ type: "active", activeFlags: ["streaming"] });
-    expect(threadsStore.getState().watchedFrameTimes.get("ref_a")).toBeUndefined();
   });
 
   test("repeated thread resyncs keep rich watched hydration newest-wins in one epoch", async () => {
@@ -6106,7 +5858,6 @@ describe("retry-safe mutation outbox integration", () => {
     await flushIndexedDBUntil(() => readAttempts === 2);
     expect(scheduledHydrationRetries).toHaveLength(1);
     expect(scheduledHydrationRetries[0]?.cancelled).toBe(false);
-
     fake.emitNotification(appliedItemNotification("ref_a", "mutation-a"));
     await flushIndexedDBUntil(() => scheduledHydrationRetries[0]?.cancelled === true);
 
