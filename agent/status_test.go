@@ -12,6 +12,7 @@ import (
 	"slices"
 	"sort"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -19,7 +20,9 @@ import (
 	"primeradiant.com/evener/agent/internal/delegatestore"
 	"primeradiant.com/evener/agent/internal/jobstore"
 	"primeradiant.com/evener/agent/plugin"
+	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/agent/transcript"
+	"primeradiant.com/evener/identifier"
 	"primeradiant.com/evener/llm"
 )
 
@@ -66,6 +69,7 @@ func TestStableDelegateAttention_RestoreAndColdRead(t *testing.T) {
 		wantColdError     bool
 		wantRestore       bool
 		deferredLaunch    bool
+		nestedOwner       bool
 	}{
 		{name: "stale false with pending attention", pending: true, wantAttention: true, wantRestore: true},
 		{name: "stale true without pending attention", journalAttention: true, wantRestore: true},
@@ -76,6 +80,7 @@ func TestStableDelegateAttention_RestoreAndColdRead(t *testing.T) {
 		{name: "eligible unreadable transcript is an error", transcriptFailure: "unreadable", wantColdError: true},
 		{name: "owed generation is admitted before boolean repair", owed: true, journalAttention: true, wantRestore: true},
 		{name: "recovered owed launch waits for final reconciliation", wantRestore: true, deferredLaunch: true},
+		{name: "nested cold owner side effects wait and invalidate stale owed launch", wantRestore: true, nestedOwner: true},
 	}
 
 	for _, tt := range tests {
@@ -386,6 +391,172 @@ func TestStableDelegateAttention_RestoreAndColdRead(t *testing.T) {
 				restored.delegateController.mu.Unlock()
 				if target == nil || !target.NeedsAttention || !laterPublished {
 					t.Fatalf("post-reconciliation attention was clobbered: aggregate=%+v published=%t", target, laterPublished)
+				}
+			}
+
+			if tt.nestedOwner {
+				const (
+					nestedID     = "dlg_nested_owed"
+					witnessID    = "dlg_nested_reconcile_witness"
+					witnessChild = "nestedreconcilewitness"
+					witnessWake  = "watch:restore-cold-read:nested-reconcile-witness"
+					owedID       = "watch:restore-cold-read:nested-owed"
+				)
+				nestedChild := identifier.MustNewSessionID()
+				nestedPath := transcriptPath(fixture.stateDir, nestedChild)
+				nestedWriter, err := transcript.NewWriter(nestedPath, transcript.Header{
+					SessionID:       nestedChild,
+					ParentSessionID: fixture.childID,
+					ProfileID:       "openai",
+					Model:           "gpt-5.2",
+				})
+				if err != nil {
+					t.Fatalf("create nested owed transcript: %v", err)
+				}
+				if err := nestedWriter.Close(); err != nil {
+					t.Fatalf("close nested owed transcript: %v", err)
+				}
+				if appended, err := appendColdDelegateNotificationDurablyWithOpen(
+					nestedPath,
+					nestedChild,
+					owedID,
+					"recover nested owed generation",
+					time.Unix(1_700_000_700, 0).UTC(),
+					transcript.OpenWriterForSession,
+				); err != nil || !appended {
+					t.Fatalf("append nested owed attention = appended:%t err:%v", appended, err)
+				}
+				nestedWriter, _, err = transcript.OpenWriterForSession(nestedPath, nestedChild)
+				if err != nil {
+					t.Fatalf("open nested owed transcript: %v", err)
+				}
+				if err := nestedWriter.AppendDurable(delegateAttentionResolutionTurnForGeneration(owedID, delegateAttentionConsumed, 1)); err != nil {
+					_ = nestedWriter.Close()
+					t.Fatalf("append nested owed resolution: %v", err)
+				}
+				if err := nestedWriter.Close(); err != nil {
+					t.Fatalf("close nested owed resolution: %v", err)
+				}
+				nestedMeta := fixture.meta
+				nestedMeta.ID = nestedChild
+				nestedMeta.ParentSessionID = fixture.childID
+				nestedMeta.IsSubagent = true
+				if err := schema.SaveSessionMeta(fixture.stateDir, nestedMeta); err != nil {
+					t.Fatalf("save nested owed metadata: %v", err)
+				}
+
+				witnessPath := transcriptPath(fixture.stateDir, witnessChild)
+				witnessWriter, err := transcript.NewWriter(witnessPath, transcript.Header{SessionID: witnessChild, ParentSessionID: fixture.meta.ID})
+				if err != nil {
+					t.Fatalf("create nested reconciliation witness: %v", err)
+				}
+				if err := witnessWriter.Close(); err != nil {
+					t.Fatalf("close nested reconciliation witness: %v", err)
+				}
+				if appended, err := appendColdDelegateNotificationDurablyWithOpen(
+					witnessPath,
+					witnessChild,
+					witnessWake,
+					"prove nested owner side effects waited",
+					time.Unix(1_700_000_701, 0).UTC(),
+					transcript.OpenWriterForSession,
+				); err != nil || !appended {
+					t.Fatalf("append nested reconciliation witness = appended:%t err:%v", appended, err)
+				}
+
+				restored.delegateController.mu.Lock()
+				nestedDescriptor := restored.delegateController.durable[targetDelegateID].Descriptor
+				nestedDescriptor.ChildSessionID = nestedChild
+				nestedDescriptor.TranscriptRef = encodeRef("", nestedChild)
+				nestedDescriptor.ParentDelegateID = targetDelegateID
+				nestedDescriptor.OwnerSessionID = fixture.childID
+				nestedDescriptor.VisibleSessionID = fixture.childID
+				nestedDescriptor.Task = "nested owed child"
+				witnessDescriptor := restored.delegateController.durable[targetDelegateID].Descriptor
+				witnessDescriptor.ChildSessionID = witnessChild
+				witnessDescriptor.TranscriptRef = encodeRef("", witnessChild)
+				witnessDescriptor.Task = "nested reconciliation witness"
+				_, err = restored.delegateController.appendLocked(
+					delegatestore.Event{
+						Kind:       delegatestore.EventDelegateCreated,
+						DelegateID: nestedID,
+						Created:    &delegatestore.DelegateCreated{Descriptor: nestedDescriptor},
+					},
+					delegatestore.Event{
+						Kind:       delegatestore.EventDelegateAttentionChanged,
+						DelegateID: nestedID,
+						AttentionChanged: &delegatestore.DelegateAttentionChanged{
+							NeedsAttention: true,
+						},
+					},
+					delegatestore.Event{
+						Kind:       delegatestore.EventDelegateCreated,
+						DelegateID: witnessID,
+						Created:    &delegatestore.DelegateCreated{Descriptor: witnessDescriptor},
+					},
+				)
+				restored.delegateController.owedAdmission = true
+				restored.delegateController.mu.Unlock()
+				if err != nil {
+					t.Fatalf("append nested owed setup: %v", err)
+				}
+
+				parentJM, err := newJobManagerNoSync(fixture.stateDir, fixture.childID, nil)
+				if err != nil {
+					t.Fatalf("open cold parent job manager: %v", err)
+				}
+				parentJM.parentDelegateID = targetDelegateID
+				parentJM.now = func() time.Time { return time.Unix(1_700_000_702, 0).UTC() }
+				record, err := parentJM.createShell(createShellOpts{Command: "true", Description: "invalidate nested owed child"})
+				if err == nil {
+					code := 0
+					err = parentJM.finalize(record.JobID, jobstore.StatusCompleted, "exit_zero", &code)
+				}
+				if closeErr := parentJM.closeStoreOnly(); err == nil {
+					err = closeErr
+				}
+				if err != nil {
+					t.Fatalf("seed cold parent terminal notification: %v", err)
+				}
+
+				notified := make(chan error, 1)
+				var notifyOnce sync.Once
+				restored.delegateRestoreBeforeSideEffects = func(child *Session) {
+					if child.ID() != fixture.childID {
+						return
+					}
+					child.SetNotifyFunc(func() {
+						notifyOnce.Do(func() {
+							child.delegateController.mu.Lock()
+							witness := child.delegateController.durable[witnessID]
+							_, published := child.delegateController.attentionWakeIDs[witnessID][witnessWake]
+							child.delegateController.mu.Unlock()
+							if witness == nil || !witness.NeedsAttention || !published {
+								notified <- fmt.Errorf("cold parent side effects ran before final publication: aggregate=%+v published=%t", witness, published)
+								return
+							}
+							_, cancelPlan, _, stopErr := child.delegateController.StopSubtree(rootDelegateActor(fixture.meta.ID), targetDelegateID)
+							executeDelegateCancelPlan(cancelPlan)
+							notified <- stopErr
+						})
+					})
+				}
+
+				if err := restored.flushPendingDelegateDeliveries(); err != nil {
+					t.Fatalf("flush nested cold-owner owed recovery: %v", err)
+				}
+				if err := <-notified; err != nil {
+					t.Fatalf("cold parent pending notification: %v", err)
+				}
+				restored.delegateController.mu.Lock()
+				nested := restored.delegateController.durable[nestedID]
+				nestedLive := restored.delegateController.live[nestedID]
+				restored.delegateController.mu.Unlock()
+				if nested == nil || nested.CurrentRunOpen || nested.Generation != 1 || nestedLive == nil || nestedLive.binding != nil || nestedLive.runtime != nil {
+					t.Fatalf("invalidated nested owed runtime leaked or launched: aggregate=%+v live=%+v", nested, nestedLive)
+				}
+				if got := len(fixture.adapter.Requests()); got != 0 {
+					t.Fatalf("provider requests after invalid nested owed launch = %d, want 0", got)
 				}
 			}
 		})

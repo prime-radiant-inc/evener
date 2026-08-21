@@ -78,7 +78,7 @@ Ineligible delegates (closed, non-resumable, stopping, pending-stop, or permanen
 
 - Agent top-level tests: `3318 -> 3319` (`+1`).
 - New top-level group: `TestStableDelegateAttention_RestoreAndColdRead`.
-- Table rows in that group: `8`.
+- Table rows in that group: `10`.
 - No new test file, package helper, framework, script, meta-test, matrix, cache, worker, or migration.
 
 ## Self-review / concerns
@@ -145,4 +145,48 @@ Fix-round verification:
 - `gofmt` check and `git diff --check`: PASS.
 
 The separate fix-round commit hash is reported in the final handoff because a
+commit cannot embed its own hash.
+
+## Fix round 2/5: defer recursive cold-owner restore effects
+
+Review found a second HIGH bootstrap path: reconstructing a cold non-root owner
+for an owed child immediately ran that owner's deferred restore side effects. A
+durable terminal notification could arm and drive the owner before final
+attention publication, recreating the stale-fold race and invalidating the owed
+child before the round-1 launch boundary.
+
+Owed bootstrap now carries one bootstrap-local restore collection through every
+recursive cold-owner reconstruction. Newly restored runtimes attach normally,
+but their `runDeferredRestoreSideEffects` calls are recorded rather than run.
+After all exact owed admissions, bootstrap performs the final strict fold,
+deterministic repair batch, and exact wake-map publication. It then releases
+cold-owner effects parent-first. For each owed candidate it validates the exact
+generation/binding/runtime, releases that candidate's own deferred restore
+effects, validates again at the immediate prelaunch boundary, and launches only
+if the same ready attention binding still exists.
+
+A released side effect that stops or settles a candidate therefore produces no
+stale launch. The invalid candidate is settled through the existing committed
+restart failure path when needed, or its already-severed runtime is removed and
+discarded while durable recovery evidence remains. Admission, fold, restore
+effect, invalidation, and launch failures clean all remaining unlaunched owed
+candidates plus recursively restored idle owners.
+
+The existing behavior table gained one nested row. It creates a nested owed
+child, a cold parent with a durable pending terminal notification, and a stale
+reconciliation witness. Its synchronized notify callback both checks the witness
+and stops the parent subtree. RED proved the parent side effects ran while the
+witness was still false/unpublished. GREEN proves publication happens first and
+that the stopped owed child reaches generation 1 without an open run, binding,
+runtime, provider request, or stale launch.
+
+Round-2 verification:
+
+- Focused Task 3 group (including lifecycle-inventory integration): PASS.
+- `go test ./agent -count=1`: PASS (`70.698s`).
+- `go test ./cmd/evener-hub -count=1`: PASS (`35.358s`).
+- `go vet ./agent ./cmd/evener-hub`: PASS.
+- `gofmt` check and `git diff --check`: PASS.
+
+The separate round-2 commit hash is reported in the final handoff because a
 commit cannot embed its own hash.

@@ -391,6 +391,10 @@ func (s *Session) launchAcceptedDelegateAttention(sub *subagent, started delegat
 }
 
 func (s *Session) restoreColdDelegateAttentionRuntime(delegateID string) (*Session, *subagent, error) {
+	return s.restoreColdDelegateAttentionRuntimeForBootstrap(delegateID, nil)
+}
+
+func (s *Session) restoreColdDelegateAttentionRuntimeForBootstrap(delegateID string, bootstrap *owedDelegateBootstrapRestore) (*Session, *subagent, error) {
 	if s == nil || s.delegateController == nil || delegateID == "" {
 		return nil, nil, errors.New("cold delegate attention restore identity is incomplete")
 	}
@@ -398,12 +402,12 @@ func (s *Session) restoreColdDelegateAttentionRuntime(delegateID string) (*Sessi
 	if err != nil {
 		return nil, nil, err
 	}
-	owner, err := s.restoreColdDelegateOwnerRuntime(parentID)
+	owner, err := s.restoreColdDelegateOwnerRuntimeForBootstrap(parentID, bootstrap)
 	if err != nil {
 		return nil, nil, err
 	}
 
-	sub, err := s.reconstructDelegateAttentionRuntime(owner, started, delegateRuntimeAttachIdle)
+	sub, err := s.reconstructDelegateAttentionRuntime(owner, started, delegateRuntimeAttachIdle, bootstrap)
 	return owner, sub, err
 }
 
@@ -414,7 +418,11 @@ const (
 	delegateRuntimeAttachStarted
 )
 
-func (s *Session) reconstructDelegateAttentionRuntime(owner *Session, started delegateStartCommit, mode delegateRuntimeAttachMode) (*subagent, error) {
+func (s *Session) reconstructDelegateAttentionRuntime(owner *Session, started delegateStartCommit, mode delegateRuntimeAttachMode, bootstraps ...*owedDelegateBootstrapRestore) (*subagent, error) {
+	var bootstrap *owedDelegateBootstrapRestore
+	if len(bootstraps) != 0 {
+		bootstrap = bootstraps[0]
+	}
 	runtime := delegateRuntime{owner: owner}
 	sub, restored, finishRestore, err := runtime.restoreIdleForSend(started)
 	if err != nil {
@@ -457,7 +465,9 @@ func (s *Session) reconstructDelegateAttentionRuntime(owner *Session, started de
 		owner.delegateRestoreBeforeSideEffects(sub.sess)
 	}
 	bindStableDelegateActivityToOwner(sub.sess, s.delegateController, started.lease, owner)
-	if restored {
+	if restored && bootstrap != nil {
+		bootstrap.restored = append(bootstrap.restored, deferredDelegateRestoreSideEffects{owner: owner, sub: sub, started: started, mode: mode})
+	} else if restored {
 		if err := sub.sess.runDeferredRestoreSideEffects(); err != nil {
 			sub.sess.emit(events.EventWarning, warningDataFromError("restored delegate side effects incomplete", err))
 		}
@@ -467,13 +477,17 @@ func (s *Session) reconstructDelegateAttentionRuntime(owner *Session, started de
 }
 
 func (s *Session) restoreColdDelegateOwnerRuntime(parentID string) (*Session, error) {
+	return s.restoreColdDelegateOwnerRuntimeForBootstrap(parentID, nil)
+}
+
+func (s *Session) restoreColdDelegateOwnerRuntimeForBootstrap(parentID string, bootstrap *owedDelegateBootstrapRestore) (*Session, error) {
 	if parentID == "" {
 		return s, nil
 	}
 	if resident := s.delegateController.residentDelegateRuntime(parentID); resident != nil {
 		return resident, nil
 	}
-	_, parent, err := s.restoreColdDelegateAttentionRuntime(parentID)
+	_, parent, err := s.restoreColdDelegateAttentionRuntimeForBootstrap(parentID, bootstrap)
 	if err != nil {
 		return nil, err
 	}
@@ -487,6 +501,18 @@ type deferredOwedDelegateAttentionStart struct {
 	owner   *Session
 	sub     *subagent
 	started delegateStartCommit
+}
+
+type deferredDelegateRestoreSideEffects struct {
+	owner    *Session
+	sub      *subagent
+	started  delegateStartCommit
+	mode     delegateRuntimeAttachMode
+	released bool
+}
+
+type owedDelegateBootstrapRestore struct {
+	restored []deferredDelegateRestoreSideEffects
 }
 
 func (s *Session) admitOwedDelegateAttentionStarts() error {
@@ -503,11 +529,12 @@ func (s *Session) admitOwedDelegateAttentionStarts() error {
 	if err != nil {
 		return err
 	}
+	bootstrap := &owedDelegateBootstrapRestore{}
 	deferred := make([]deferredOwedDelegateAttentionStart, 0, len(owed))
 	for _, start := range owed {
-		admitted, err := s.admitOwedDelegateAttentionStart(start)
+		admitted, err := s.admitOwedDelegateAttentionStart(start, bootstrap)
 		if err != nil {
-			cleanupErr := s.failDeferredOwedDelegateAttentionStarts(deferred, err)
+			cleanupErr := s.cleanupFailedOwedDelegateBootstrap(deferred, bootstrap, err)
 			return errors.Join(fmt.Errorf("delegate %s attention %s: %w", start.delegateID, start.attentionID, err), cleanupErr)
 		}
 		if admitted != nil {
@@ -515,22 +542,47 @@ func (s *Session) admitOwedDelegateAttentionStarts() error {
 		}
 	}
 	if err := s.delegateController.reconcileDelegateAttentionFromTranscripts(); err != nil {
-		cleanupErr := s.failDeferredOwedDelegateAttentionStarts(deferred, err)
+		cleanupErr := s.cleanupFailedOwedDelegateBootstrap(deferred, bootstrap, err)
+		return errors.Join(err, cleanupErr)
+	}
+	if err := bootstrap.releaseOwnerRestoreSideEffects(); err != nil {
+		cleanupErr := s.cleanupFailedOwedDelegateBootstrap(deferred, bootstrap, err)
 		return errors.Join(err, cleanupErr)
 	}
 	for i := range deferred {
 		start := deferred[i]
+		if !s.deferredOwedDelegateAttentionStartValid(start) {
+			if err := s.discardInvalidDeferredOwedDelegateAttentionStart(start); err != nil {
+				cleanupErr := s.cleanupFailedOwedDelegateBootstrap(deferred[i+1:], bootstrap, err)
+				return errors.Join(fmt.Errorf("discard invalidated delegate %s owed attention: %w", start.started.lease.delegateID, err), cleanupErr)
+			}
+			continue
+		}
+		if err := bootstrap.releaseOwedRestoreSideEffects(start); err != nil {
+			cleanupErr := s.cleanupFailedOwedDelegateBootstrap(deferred[i:], bootstrap, err)
+			return errors.Join(err, cleanupErr)
+		}
+		// Released owner/child restore effects may synchronously stop or settle the
+		// admitted generation. Re-check the exact runtime at the last boundary before
+		// launch; never hand a stale lease to a goroutine.
+		if !s.deferredOwedDelegateAttentionStartValid(start) {
+			if err := s.discardInvalidDeferredOwedDelegateAttentionStart(start); err != nil {
+				cleanupErr := s.cleanupFailedOwedDelegateBootstrap(deferred[i+1:], bootstrap, err)
+				return errors.Join(fmt.Errorf("discard invalidated delegate %s owed attention: %w", start.started.lease.delegateID, err), cleanupErr)
+			}
+			continue
+		}
 		if err := start.owner.launchAcceptedDelegateAttention(start.sub, start.started); err != nil {
 			failureErr := s.failDeferredOwedDelegateAttentionStart(start, err)
-			cleanupErr := s.failDeferredOwedDelegateAttentionStarts(deferred[i+1:], err)
+			cleanupErr := s.cleanupFailedOwedDelegateBootstrap(deferred[i+1:], bootstrap, err)
 			return errors.Join(fmt.Errorf("launch delegate %s owed attention: %w", start.started.lease.delegateID, err), failureErr, cleanupErr)
 		}
 	}
 	return nil
 }
 
-func (s *Session) admitOwedDelegateAttentionStart(owed delegateOwedAttentionStart) (*deferredOwedDelegateAttentionStart, error) {
-	owner, err := s.restoreColdDelegateOwnerRuntime(owed.parentID)
+func (s *Session) admitOwedDelegateAttentionStart(owed delegateOwedAttentionStart, bootstrap *owedDelegateBootstrapRestore) (*deferredOwedDelegateAttentionStart, error) {
+	owner, err := s.restoreColdDelegateOwnerRuntimeForBootstrap(owed.parentID, bootstrap)
 	if err != nil {
 		return nil, fmt.Errorf("restore owner runtime: %w", err)
 	}
@@ -542,12 +594,146 @@ func (s *Session) admitOwedDelegateAttentionStart(owed delegateOwedAttentionStar
 	if err != nil {
 		return nil, fmt.Errorf("commit owed generation: %w", err)
 	}
-	sub, restoreErr := s.reconstructDelegateAttentionRuntime(owner, started, delegateRuntimeAttachStarted)
+	sub, restoreErr := s.reconstructDelegateAttentionRuntime(owner, started, delegateRuntimeAttachStarted, bootstrap)
 	if restoreErr != nil {
 		cleanupErr := s.failOwedDelegateAttentionStart(started, nil, restoreErr)
 		return nil, fmt.Errorf("restore owed runtime: %w", errors.Join(restoreErr, cleanupErr))
 	}
 	return &deferredOwedDelegateAttentionStart{owner: owner, sub: sub, started: started}, nil
+}
+
+func (bootstrap *owedDelegateBootstrapRestore) releaseOwnerRestoreSideEffects() error {
+	if bootstrap == nil {
+		return nil
+	}
+	for i := range bootstrap.restored {
+		restored := &bootstrap.restored[i]
+		if restored.mode != delegateRuntimeAttachIdle || restored.released {
+			continue
+		}
+		if restored.sub == nil || restored.sub.sess == nil {
+			return errors.New("deferred delegate restore side effects lost their runtime")
+		}
+		if err := restored.sub.sess.runDeferredRestoreSideEffects(); err != nil {
+			return fmt.Errorf("delegate %s restore side effects: %w", restored.started.lease.delegateID, err)
+		}
+		restored.released = true
+	}
+	return nil
+}
+
+func (bootstrap *owedDelegateBootstrapRestore) releaseOwedRestoreSideEffects(start deferredOwedDelegateAttentionStart) error {
+	if bootstrap == nil {
+		return nil
+	}
+	for i := range bootstrap.restored {
+		restored := &bootstrap.restored[i]
+		if restored.released || restored.sub != start.sub {
+			continue
+		}
+		if restored.sub == nil || restored.sub.sess == nil {
+			return errors.New("deferred owed restore side effects lost their runtime")
+		}
+		if err := restored.sub.sess.runDeferredRestoreSideEffects(); err != nil {
+			return fmt.Errorf("delegate %s restore side effects: %w", restored.started.lease.delegateID, err)
+		}
+		restored.released = true
+	}
+	return nil
+}
+
+func (s *Session) cleanupFailedOwedDelegateBootstrap(starts []deferredOwedDelegateAttentionStart, bootstrap *owedDelegateBootstrapRestore, cause error) error {
+	startErr := s.failDeferredOwedDelegateAttentionStarts(starts, cause)
+	restoreErr := s.discardUnlaunchedBootstrapOwnerRuntimes(bootstrap)
+	return errors.Join(startErr, restoreErr)
+}
+
+func (s *Session) discardUnlaunchedBootstrapOwnerRuntimes(bootstrap *owedDelegateBootstrapRestore) error {
+	if bootstrap == nil {
+		return nil
+	}
+	var failures []error
+	for i := len(bootstrap.restored) - 1; i >= 0; i-- {
+		restored := bootstrap.restored[i]
+		if restored.mode != delegateRuntimeAttachIdle || restored.owner == nil || restored.sub == nil || restored.sub.sess == nil {
+			continue
+		}
+		c := s.delegateController
+		c.mu.Lock()
+		live := c.live[restored.started.lease.delegateID]
+		detached := live != nil && live.binding == nil && live.runtime == restored.sub.sess
+		possiblyAlreadyDetached := live != nil && live.binding == nil && live.runtime == nil
+		if detached {
+			live.runtime = nil
+			c.evidenceVersion++
+		}
+		c.mu.Unlock()
+		alreadyDetached := possiblyAlreadyDetached && restored.owner.subagents.get(restored.sub.id) != restored.sub
+		if alreadyDetached {
+			continue
+		}
+		if !detached {
+			failures = append(failures, fmt.Errorf("delegate %s restored owner runtime remained attached", restored.started.lease.delegateID))
+			continue
+		}
+		restored.owner.subagents.removeSession(restored.sub.id, restored.sub.sess)
+		restored.sub.sess.discardRestoredCandidate()
+	}
+	return errors.Join(failures...)
+}
+
+func (s *Session) deferredOwedDelegateAttentionStartValid(start deferredOwedDelegateAttentionStart) bool {
+	if start.sub == nil || start.sub.sess == nil || start.owner == nil {
+		return false
+	}
+	c := s.delegateController
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	aggregate := c.durable[start.started.lease.delegateID]
+	live := c.live[start.started.lease.delegateID]
+	return aggregate != nil && aggregate.Generation == start.started.lease.generation && aggregate.CurrentRunOpen && aggregate.Phase == delegatestore.PhaseRunning && aggregate.Trigger == delegatestore.TriggerAttention && aggregate.PendingStopSeq == 0 && live != nil && !live.recoveryRequired && live.binding != nil && live.binding.lease == start.started.lease && live.binding.ready && live.binding.runtime == start.sub.sess && live.runtime == start.sub.sess
+}
+
+func (s *Session) discardInvalidDeferredOwedDelegateAttentionStart(start deferredOwedDelegateAttentionStart) error {
+	if start.sub == nil || start.sub.sess == nil || start.owner == nil {
+		return errors.New("invalidated owed delegate runtime is unavailable")
+	}
+	c := s.delegateController
+	c.mu.Lock()
+	live := c.live[start.started.lease.delegateID]
+	detached := false
+	if live != nil && live.binding == nil && (live.runtime == start.sub.sess || live.runtime == nil) {
+		if live.runtime == start.sub.sess {
+			live.runtime = nil
+			c.evidenceVersion++
+		}
+		detached = true
+	} else if live != nil && live.binding != nil && live.binding.lease == start.started.lease && live.binding.runtime == nil && live.runtime == nil {
+		// A released stop side effect may already have severed this runtime while
+		// retaining the exact binding as durable recovery evidence.
+		detached = true
+	}
+	if detached {
+		c.mu.Unlock()
+		start.owner.subagents.removeSession(start.sub.id, start.sub.sess)
+		start.sub.sess.discardRestoredCandidate()
+		return nil
+	}
+	aggregate := c.durable[start.started.lease.delegateID]
+	phase := delegatestore.Phase("")
+	currentRunOpen := false
+	if aggregate != nil {
+		phase = aggregate.Phase
+		currentRunOpen = aggregate.CurrentRunOpen
+	}
+	bindingPresent := live != nil && live.binding != nil
+	bindingRuntimeMatches := bindingPresent && live.binding.runtime == start.sub.sess
+	liveRuntimeMatches := live != nil && live.runtime == start.sub.sess
+	c.mu.Unlock()
+	if err := s.failDeferredOwedDelegateAttentionStart(start, errors.New("owed delegate start was invalidated before launch")); err != nil {
+		return fmt.Errorf("%w (phase=%s current_run_open=%t binding=%t binding_runtime_matches=%t live_runtime_matches=%t)", err, phase, currentRunOpen, bindingPresent, bindingRuntimeMatches, liveRuntimeMatches)
+	}
+	return nil
 }
 
 func (s *Session) failDeferredOwedDelegateAttentionStarts(starts []deferredOwedDelegateAttentionStart, cause error) error {
@@ -612,7 +798,13 @@ func (s *Session) failOwedDelegateAttentionStart(started delegateStartCommit, ru
 	}
 	plans, finishErr := s.delegateController.FailCommittedRestart(started.lease, delegatePermanentStartFailure(cause, "construction_failed"))
 	if finishErr != nil {
-		return finishErr
+		c.mu.Lock()
+		aggregate := c.durable[started.lease.delegateID]
+		stopSettled := errors.Is(finishErr, errDelegateTargetBusy) && aggregate != nil && aggregate.Generation == started.lease.generation && !aggregate.CurrentRunOpen
+		c.mu.Unlock()
+		if !stopSettled {
+			return finishErr
+		}
 	}
 	return s.executeDelegateMutationPlans(plans)
 }
