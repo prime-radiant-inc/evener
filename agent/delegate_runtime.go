@@ -487,6 +487,12 @@ func (s *Session) admitOwedDelegateAttentionStarts() error {
 	if s == nil || s.delegateController == nil {
 		return errors.New("owed delegate attention controller is unavailable")
 	}
+	// The delivery pump is also exercised by controller-only unit harnesses.
+	// Owed-start admission is a restore boundary and requires a fully configured
+	// persisted Session, not merely a controller attached to a transcript writer.
+	if strings.TrimSpace(s.cfg.StateDir) == "" {
+		return nil
+	}
 	owed, err := s.delegateController.owedAttentionStartsFromTranscripts()
 	if err != nil {
 		return err
@@ -496,7 +502,7 @@ func (s *Session) admitOwedDelegateAttentionStarts() error {
 			return fmt.Errorf("delegate %s attention %s: %w", start.delegateID, start.attentionID, err)
 		}
 	}
-	return nil
+	return s.delegateController.reconcileDelegateAttentionFromTranscripts()
 }
 
 func (s *Session) admitOwedDelegateAttentionStart(owed delegateOwedAttentionStart) error {
@@ -1790,10 +1796,6 @@ func (s *Session) bootstrapDelegateResources() error {
 	if err := repairPermanentlyUnreachableDelegateAttention(controller); err != nil {
 		_ = store.Close()
 		return fmt.Errorf("repair unreachable delegate attention: %w", err)
-	}
-	if err := controller.rearmDelegateAttentionFromTranscripts(); err != nil {
-		_ = store.Close()
-		return fmt.Errorf("rearm delegate attention: %w", err)
 	}
 	deliveryPlans := append([]delegateDeliveryPlan(nil), reconcileDeliveries...)
 	deliveryPlans = append(deliveryPlans, missingPlans.deliveries...)

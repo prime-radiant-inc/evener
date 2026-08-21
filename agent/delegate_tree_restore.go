@@ -107,7 +107,7 @@ func (c *delegateTreeController) owedAttentionStartsFromTranscripts() ([]delegat
 	}
 	stateDir := c.stateDir
 	for id, aggregate := range c.durable {
-		if aggregate == nil || aggregate.Phase != delegatestore.PhaseIdle || !aggregate.Resumable || aggregate.PendingStopSeq != 0 {
+		if aggregate == nil || aggregate.Phase != delegatestore.PhaseIdle || !delegateAttentionProjectionEligible(c.durable, id) {
 			continue
 		}
 		refs = append(refs, coldDelegateAttentionRef{delegateID: id, transcriptRef: aggregate.Descriptor.TranscriptRef})
@@ -123,9 +123,9 @@ func (c *delegateTreeController) owedAttentionStartsFromTranscripts() ([]delegat
 		if err != nil {
 			return nil, err
 		}
-		fold, err := readDelegateAttentionFold(path, sessionID)
+		fold, err := readExistingDelegateAttentionFold(path, sessionID)
 		if err != nil {
-			return nil, err
+			return nil, fmt.Errorf("delegate %s attention transcript: %w", ref.delegateID, err)
 		}
 		resumes := make([]struct {
 			attentionID string

@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 
@@ -103,6 +104,10 @@ func loadHistoricalActivityBase(stateDir, sessionID string, required bool) (acti
 }
 
 func loadHistoricalStableActivity(stateDir, rootSessionID, ownerSessionID string) (map[string]delegateSnapshot, []string, error) {
+	return loadHistoricalStableActivityWithAttention(stateDir, rootSessionID, ownerSessionID, false)
+}
+
+func loadHistoricalStableActivityWithAttention(stateDir, rootSessionID, ownerSessionID string, strictTranscript bool) (map[string]delegateSnapshot, []string, error) {
 	path := filepath.Join(jobsDir(stateDir, rootSessionID), "delegates.jsonl")
 	events, readDiagnostics, err := delegatestore.ReadEventsWithDiagnostics(path)
 	if err != nil {
@@ -112,12 +117,36 @@ func loadHistoricalStableActivity(stateDir, rootSessionID, ownerSessionID string
 	if err != nil {
 		return nil, nil, err
 	}
-	rows := make(map[string]delegateSnapshot)
+	ids := make([]string, 0, len(state))
 	for id, aggregate := range state {
 		if aggregate == nil || aggregate.Descriptor.OwnerSessionID != ownerSessionID {
 			continue
 		}
-		rows[id] = captureDelegateSnapshot(aggregate)
+		ids = append(ids, id)
+	}
+	sort.Strings(ids)
+	rows := make(map[string]delegateSnapshot, len(ids))
+	for _, id := range ids {
+		aggregate := state[id]
+		row := captureDelegateSnapshot(aggregate)
+		row.needsAttention = false
+		if delegateAttentionProjectionEligible(state, id) {
+			transcriptPath, childSessionID, err := delegateTranscriptPathFromRef(stateDir, aggregate.Descriptor.TranscriptRef)
+			if err != nil {
+				return nil, nil, fmt.Errorf("delegate %s attention transcript: %w", id, err)
+			}
+			var fold delegateAttentionFold
+			if strictTranscript {
+				fold, err = readExistingDelegateAttentionFold(transcriptPath, childSessionID)
+			} else {
+				fold, err = readDelegateAttentionFold(transcriptPath, childSessionID)
+			}
+			if err != nil {
+				return nil, nil, fmt.Errorf("delegate %s attention transcript: %w", id, err)
+			}
+			row.needsAttention = len(fold.pendingIDs()) != 0
+		}
+		rows[id] = row
 	}
 	var diagnostics []string
 	if readDiagnostics.TornTail {

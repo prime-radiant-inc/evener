@@ -1,13 +1,17 @@
 package agent
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
+	"maps"
 	"os"
 	"path/filepath"
 	"reflect"
 	"slices"
 	"sort"
+	"strings"
 	"testing"
 	"time"
 
@@ -15,6 +19,7 @@ import (
 	"primeradiant.com/evener/agent/internal/delegatestore"
 	"primeradiant.com/evener/agent/internal/jobstore"
 	"primeradiant.com/evener/agent/plugin"
+	"primeradiant.com/evener/agent/transcript"
 	"primeradiant.com/evener/llm"
 )
 
@@ -46,6 +51,228 @@ func TestSession_DetailedStatus_DelegatesMatchControllerFoldAfterReopen(t *testi
 	}
 	if got.Description != "stable status description" || !got.ParentWatchGranted || got.DelegationAllowance != 2 {
 		t.Fatalf("descriptor fidelity = %+v", got)
+	}
+}
+
+func TestStableDelegateAttention_RestoreAndColdRead(t *testing.T) {
+	tests := []struct {
+		name              string
+		pending           bool
+		owed              bool
+		journalAttention  bool
+		lifecycle         string
+		transcriptFailure string
+		wantAttention     bool
+		wantColdError     bool
+		wantRestore       bool
+	}{
+		{name: "stale false with pending attention", pending: true, wantAttention: true, wantRestore: true},
+		{name: "stale true without pending attention", journalAttention: true, wantRestore: true},
+		{name: "closed delegate skips missing transcript", journalAttention: true, lifecycle: "closed", transcriptFailure: "missing", wantRestore: true},
+		{name: "stopping delegate skips missing transcript", journalAttention: true, lifecycle: "stopping", transcriptFailure: "missing", wantRestore: true},
+		{name: "permanently fenced delegate skips missing transcript", journalAttention: true, lifecycle: "fenced", transcriptFailure: "missing", wantRestore: true},
+		{name: "eligible missing transcript is an error", transcriptFailure: "missing", wantColdError: true},
+		{name: "eligible unreadable transcript is an error", transcriptFailure: "unreadable", wantColdError: true},
+		{name: "owed generation is admitted before boolean repair", owed: true, journalAttention: true, wantRestore: true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			fixture := newColdStableDelegateFixture(t, "")
+			targetDelegateID := fixture.delegateID
+			targetChildID := fixture.childID
+			if tt.lifecycle == "fenced" {
+				targetDelegateID = "dlg_permanently_fenced"
+				targetChildID = "permanentlyfenced"
+			}
+			childPath := transcriptPath(fixture.stateDir, targetChildID)
+			attentionID := "watch:restore-cold-read:" + strings.ReplaceAll(tt.name, " ", "-")
+			if tt.pending || tt.owed {
+				if appended, err := appendColdDelegateNotificationDurablyWithOpen(
+					childPath,
+					targetChildID,
+					attentionID,
+					"restore and cold-read attention",
+					time.Unix(1_700_000_500, 0).UTC(),
+					transcript.OpenWriterForSession,
+				); err != nil || !appended {
+					t.Fatalf("append attention = appended:%t err:%v", appended, err)
+				}
+			}
+			if tt.owed {
+				writer, _, err := transcript.OpenWriterForSession(childPath, targetChildID)
+				if err != nil {
+					t.Fatalf("open owed attention transcript: %v", err)
+				}
+				resolution := delegateAttentionResolutionTurnForGeneration(attentionID, delegateAttentionConsumed, 1)
+				if err := writer.AppendDurable(resolution); err != nil {
+					_ = writer.Close()
+					t.Fatalf("append owed resolution: %v", err)
+				}
+				if err := writer.Close(); err != nil {
+					t.Fatalf("close owed attention transcript: %v", err)
+				}
+			}
+
+			if tt.journalAttention || tt.lifecycle == "closed" || tt.lifecycle == "stopping" || tt.lifecycle == "fenced" {
+				store, err := delegatestore.Open(delegateResourceStorePath(fixture.stateDir, fixture.meta.ID))
+				if err != nil {
+					t.Fatalf("open delegate store: %v", err)
+				}
+				events, err := store.Load()
+				if err != nil {
+					_ = store.Close()
+					t.Fatalf("load delegate store: %v", err)
+				}
+				state, err := delegatestore.Fold(events)
+				if err != nil {
+					_ = store.Close()
+					t.Fatalf("fold delegate store: %v", err)
+				}
+				appendEvents := make([]delegatestore.Event, 0, 3)
+				if tt.lifecycle == "fenced" {
+					descriptor := state[fixture.delegateID].Descriptor
+					descriptor.ChildSessionID = targetChildID
+					descriptor.TranscriptRef = encodeRef("", targetChildID)
+					descriptor.ParentDelegateID = fixture.delegateID
+					appendEvents = append(appendEvents, delegatestore.Event{
+						Kind:       delegatestore.EventDelegateCreated,
+						DelegateID: targetDelegateID,
+						Created:    &delegatestore.DelegateCreated{Descriptor: descriptor},
+					})
+				}
+				if tt.journalAttention {
+					appendEvents = append(appendEvents, delegatestore.Event{
+						Kind:       delegatestore.EventDelegateAttentionChanged,
+						DelegateID: targetDelegateID,
+						AttentionChanged: &delegatestore.DelegateAttentionChanged{
+							NeedsAttention: true,
+						},
+					})
+				}
+				switch tt.lifecycle {
+				case "closed":
+					appendEvents = append(appendEvents, delegatestore.Event{
+						Kind:               delegatestore.EventDelegateResumabilityClosed,
+						DelegateID:         fixture.delegateID,
+						ResumabilityClosed: &delegatestore.ResumabilityClosed{Reason: "test closed"},
+					})
+				case "stopping":
+					appendEvents = append(appendEvents, delegatestore.Event{
+						Kind:                 delegatestore.EventDelegateSubtreeStopRequested,
+						DelegateID:           fixture.delegateID,
+						SubtreeStopRequested: &delegatestore.SubtreeStopRequested{TargetDelegateID: fixture.delegateID},
+					})
+				case "fenced":
+					appendEvents = append(appendEvents, delegatestore.Event{
+						Kind:               delegatestore.EventDelegateResumabilityClosed,
+						DelegateID:         fixture.delegateID,
+						ResumabilityClosed: &delegatestore.ResumabilityClosed{Reason: "test permanent fence"},
+					})
+				}
+				if _, _, err := store.AppendBatch(state, appendEvents); err != nil {
+					_ = store.Close()
+					t.Fatalf("append delegate setup: %v", err)
+				}
+				if err := store.Close(); err != nil {
+					t.Fatalf("close delegate store: %v", err)
+				}
+			}
+
+			switch tt.transcriptFailure {
+			case "missing":
+				if err := os.Remove(childPath); err != nil && !os.IsNotExist(err) {
+					t.Fatalf("remove child transcript: %v", err)
+				}
+			case "unreadable":
+				if err := os.WriteFile(childPath, []byte("not a transcript\n"), 0o644); err != nil {
+					t.Fatalf("corrupt child transcript: %v", err)
+				}
+			}
+
+			cold, _, coldErr := LoadSessionDelegateStatus(fixture.stateDir, fixture.meta.ID)
+			if tt.wantColdError {
+				if coldErr == nil {
+					t.Fatal("cold delegate status accepted an eligible missing/unreadable transcript")
+				}
+				return
+			}
+			if coldErr != nil {
+				t.Fatalf("cold delegate status: %v", coldErr)
+			}
+			coldIndex := slices.IndexFunc(cold, func(row DelegateStatusInfo) bool { return row.DelegateID == targetDelegateID })
+			if coldIndex < 0 || cold[coldIndex].NeedsAttention != tt.wantAttention {
+				t.Fatalf("cold delegate status = %+v, want needs_attention=%t", cold, tt.wantAttention)
+			}
+			journalEvents, err := delegatestore.ReadEvents(delegateResourceStorePath(fixture.stateDir, fixture.meta.ID))
+			if err != nil {
+				t.Fatalf("read journal after cold status: %v", err)
+			}
+			journalState, err := delegatestore.Fold(journalEvents)
+			if err != nil {
+				t.Fatalf("fold journal after cold status: %v", err)
+			}
+			wantJournalAttention := tt.journalAttention && tt.lifecycle != "closed" && tt.lifecycle != "stopping"
+			if got := journalState[targetDelegateID].NeedsAttention; got != wantJournalAttention {
+				t.Fatalf("cold status wrote journal needs_attention=%t, want unchanged %t", got, wantJournalAttention)
+			}
+
+			if !tt.wantRestore {
+				return
+			}
+			var release chan struct{}
+			if tt.owed {
+				release = make(chan struct{})
+				fixture.adapter.steps = []func(llm.Request) llm.Response{func(llm.Request) llm.Response {
+					<-release
+					return communicateResponse(true, "owed attention restored")
+				}}
+			}
+			restored, err := restoreDelegateResourceBootstrapSession(fixture.client, fixture.profile, fixture.workspace, fixture.meta, fixture.stateDir)
+			if err != nil {
+				if release != nil {
+					close(release)
+				}
+				t.Fatalf("restore delegate status: %v", err)
+			}
+			defer func() {
+				if release != nil {
+					close(release)
+				}
+				restored.Close()
+			}()
+
+			restored.delegateController.mu.Lock()
+			aggregate := restored.delegateController.durable[targetDelegateID]
+			wakeIDs := slices.Sorted(maps.Keys(restored.delegateController.attentionWakeIDs[targetDelegateID]))
+			restored.delegateController.mu.Unlock()
+			if aggregate == nil || aggregate.NeedsAttention != tt.wantAttention {
+				t.Fatalf("restored aggregate = %+v, want needs_attention=%t", aggregate, tt.wantAttention)
+			}
+			if tt.pending && !reflect.DeepEqual(wakeIDs, []string{attentionID}) {
+				t.Fatalf("restored unresolved attention = %#v, want %#v", wakeIDs, []string{attentionID})
+			}
+			if !tt.pending && len(wakeIDs) != 0 {
+				t.Fatalf("restored unresolved attention = %#v, want none", wakeIDs)
+			}
+
+			if tt.owed {
+				data, err := os.ReadFile(delegateResourceStorePath(fixture.stateDir, fixture.meta.ID))
+				if err != nil {
+					t.Fatalf("read owed delegate journal: %v", err)
+				}
+				lines := bytes.Split(bytes.TrimSpace(data), []byte("\n"))
+				var lastBatch struct {
+					Events []delegatestore.Event `json:"events"`
+				}
+				if len(lines) == 0 || json.Unmarshal(lines[len(lines)-1], &lastBatch) != nil {
+					t.Fatalf("decode final owed admission batch: %q", lines[len(lines)-1])
+				}
+				if len(lastBatch.Events) != 2 || lastBatch.Events[0].Kind != delegatestore.EventDelegateAttentionChanged || lastBatch.Events[0].AttentionChanged == nil || lastBatch.Events[0].AttentionChanged.NeedsAttention || lastBatch.Events[1].Kind != delegatestore.EventDelegateRunStarted || lastBatch.Events[1].RunStarted == nil || lastBatch.Events[1].RunStarted.Generation != 1 {
+					t.Fatalf("final owed admission batch = %#v, want attention false then generation 1 RunStarted", lastBatch.Events)
+				}
+			}
+		})
 	}
 }
 

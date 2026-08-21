@@ -254,7 +254,7 @@ func LoadSessionDelegateStatus(stateDir, sessionID string) ([]DelegateStatusInfo
 		return nil, nil, err
 	}
 	rootID := activityRootIDFromMeta(sessionID, meta)
-	rows, diagnostics, err := loadHistoricalStableActivity(stateDir, rootID, sessionID)
+	rows, diagnostics, err := loadHistoricalStableActivityWithAttention(stateDir, rootID, sessionID, true)
 	if err != nil {
 		return nil, nil, err
 	}
