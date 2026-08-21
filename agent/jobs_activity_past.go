@@ -104,10 +104,34 @@ func loadHistoricalActivityBase(stateDir, sessionID string, required bool) (acti
 }
 
 func loadHistoricalStableActivity(stateDir, rootSessionID, ownerSessionID string) (map[string]delegateSnapshot, []string, error) {
-	return loadHistoricalStableActivityWithAttention(stateDir, rootSessionID, ownerSessionID, false)
+	path := filepath.Join(jobsDir(stateDir, rootSessionID), "delegates.jsonl")
+	events, readDiagnostics, err := delegatestore.ReadEventsWithDiagnostics(path)
+	if err != nil {
+		return nil, nil, err
+	}
+	state, err := delegatestore.Fold(events)
+	if err != nil {
+		return nil, nil, err
+	}
+	ids := make([]string, 0, len(state))
+	for id, aggregate := range state {
+		if aggregate != nil && aggregate.Descriptor.OwnerSessionID == ownerSessionID {
+			ids = append(ids, id)
+		}
+	}
+	sort.Strings(ids)
+	rows := make(map[string]delegateSnapshot, len(ids))
+	for _, id := range ids {
+		rows[id] = captureDelegateSnapshot(state[id])
+	}
+	var diagnostics []string
+	if readDiagnostics.TornTail {
+		diagnostics = append(diagnostics, "delegate_journal_torn_tail: ignored unterminated trailing batch")
+	}
+	return rows, diagnostics, nil
 }
 
-func loadHistoricalStableActivityWithAttention(stateDir, rootSessionID, ownerSessionID string, strictTranscript bool) (map[string]delegateSnapshot, []string, error) {
+func loadHistoricalStableActivityWithAttention(stateDir, rootSessionID, ownerSessionID string) (map[string]delegateSnapshot, []string, error) {
 	path := filepath.Join(jobsDir(stateDir, rootSessionID), "delegates.jsonl")
 	events, readDiagnostics, err := delegatestore.ReadEventsWithDiagnostics(path)
 	if err != nil {
@@ -135,12 +159,7 @@ func loadHistoricalStableActivityWithAttention(stateDir, rootSessionID, ownerSes
 			if err != nil {
 				return nil, nil, fmt.Errorf("delegate %s attention transcript: %w", id, err)
 			}
-			var fold delegateAttentionFold
-			if strictTranscript {
-				fold, err = readExistingDelegateAttentionFold(transcriptPath, childSessionID)
-			} else {
-				fold, err = readDelegateAttentionFold(transcriptPath, childSessionID)
-			}
+			fold, err := readExistingDelegateAttentionFold(transcriptPath, childSessionID)
 			if err != nil {
 				return nil, nil, fmt.Errorf("delegate %s attention transcript: %w", id, err)
 			}

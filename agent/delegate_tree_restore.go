@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"maps"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -102,9 +103,7 @@ func (c *delegateTreeController) owedAttentionStartsFromTranscripts() ([]delegat
 	generations := make(map[string]uint64, len(c.durable))
 	parents := make(map[string]string, len(c.durable))
 	runStarts := make(map[delegateLease]delegatestore.RunTrigger, len(c.runStarts))
-	for lease, trigger := range c.runStarts {
-		runStarts[lease] = trigger
-	}
+	maps.Copy(runStarts, c.runStarts)
 	stateDir := c.stateDir
 	for id, aggregate := range c.durable {
 		if aggregate == nil || aggregate.Phase != delegatestore.PhaseIdle || !delegateAttentionProjectionEligible(c.durable, id) {

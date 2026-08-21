@@ -247,12 +247,22 @@ func TestDelegateAttentionWake_PermanentClosedAncestorEscalatesToRootOnce(t *tes
 	descriptor.ChildSessionID = grandchildSessionID
 	descriptor.TranscriptRef = encodeRef("", grandchildSessionID)
 	descriptor.ParentDelegateID = fixture.delegateID
-	_, _, err = store.AppendBatch(state, []delegatestore.Event{{
-		Kind:       delegatestore.EventDelegateCreated,
-		TS:         time.Unix(1_700_000_300, 0).UTC(),
-		DelegateID: grandchildDelegateID,
-		Created:    &delegatestore.DelegateCreated{Descriptor: descriptor},
-	}})
+	_, _, err = store.AppendBatch(state, []delegatestore.Event{
+		{
+			Kind:       delegatestore.EventDelegateCreated,
+			TS:         time.Unix(1_700_000_300, 0).UTC(),
+			DelegateID: grandchildDelegateID,
+			Created:    &delegatestore.DelegateCreated{Descriptor: descriptor},
+		},
+		{
+			Kind:       delegatestore.EventDelegateAttentionChanged,
+			TS:         time.Unix(1_700_000_301, 0).UTC(),
+			DelegateID: grandchildDelegateID,
+			AttentionChanged: &delegatestore.DelegateAttentionChanged{
+				NeedsAttention: true,
+			},
+		},
+	})
 	if closeErr := store.Close(); err == nil {
 		err = closeErr
 	}
@@ -289,7 +299,35 @@ func TestDelegateAttentionWake_PermanentClosedAncestorEscalatesToRootOnce(t *tes
 	}
 
 	root := restoreSupervisionRoot(t, fixture, nil)
-	closeDelegateControllerResumability(t, root.delegateController, fixture.delegateID, "turn_budget_exhausted")
+	root.delegateController.mu.Lock()
+	childRevision := root.delegateController.durable[grandchildDelegateID].ProjectionRevision
+	var published []delegateUpdatePlan
+	root.delegateController.emitUpdate = func(plan delegateUpdatePlan) { published = append(published, plan) }
+	root.delegateController.mu.Unlock()
+	plans, err := root.delegateController.CloseResumability(rootDelegateActor(root.ID()), fixture.delegateID, "turn_budget_exhausted")
+	if err != nil {
+		t.Fatalf("close parent resumability: %v", err)
+	}
+	if err := root.executeDelegateMutationPlans(plans); err != nil {
+		t.Fatalf("publish parent closure: %v", err)
+	}
+	root.delegateController.mu.Lock()
+	childAggregate := root.delegateController.durable[grandchildDelegateID]
+	root.delegateController.mu.Unlock()
+	if childAggregate.NeedsAttention || childAggregate.ProjectionRevision != childRevision+1 {
+		t.Fatalf("closed-ancestor child projection = attention:%t revision:%d, want false/%d", childAggregate.NeedsAttention, childAggregate.ProjectionRevision, childRevision+1)
+	}
+	childPublished := false
+	for _, update := range published {
+		for _, row := range update.rows {
+			if row.id == grandchildDelegateID && !row.needsAttention && row.revision == childRevision+1 {
+				childPublished = true
+			}
+		}
+	}
+	if !childPublished {
+		t.Fatalf("closed-ancestor child update was not published: %#v", published)
+	}
 
 	root.drivePendingStableDelegateAttention()
 

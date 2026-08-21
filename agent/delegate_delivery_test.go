@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	"primeradiant.com/evener/agent/internal/delegatestore"
+	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/agent/transcript"
 	"primeradiant.com/evener/llm"
 )
@@ -218,6 +219,46 @@ func TestDelegateControllerInlineReplayAfterReceiverCommitIsIdempotent(t *testin
 	}
 	if receiver.writes != 0 || len(c.durable["dlg_target"].PendingDeliveries) != 0 {
 		t.Fatalf("idempotent replay writes=%d pending=%#v", receiver.writes, c.durable["dlg_target"].PendingDeliveries)
+	}
+
+	nested, nestedPlan, nestedWaiter := nestedInlineDelegateDelivery(t)
+	if _, err := deliverDelegatePacket(nestedPlan, nil); err != nil {
+		t.Fatalf("deliver nested inline packet: %v", err)
+	}
+	nestedResolution := <-nestedWaiter.resolution
+	if _, err := nestedResolution.commit.Complete(false); err != nil {
+		t.Fatalf("leave nested inline acknowledgement pending: %v", err)
+	}
+	ownerSessionID := nested.durable["dlg_owner"].Descriptor.ChildSessionID
+	writer, err := transcript.NewWriter(transcriptPath(nested.stateDir, ownerSessionID), transcript.Header{SessionID: ownerSessionID})
+	if err != nil {
+		t.Fatalf("create nested caller transcript: %v", err)
+	}
+	commit := schema.NewTurn(schema.TurnToolResults, llm.ToolResultNamed("delegate-call", "delegate", "nested inline", false))
+	commit.DelegateDeliveryCommits = []schema.DelegateDeliveryCommit{{ToolCallID: "delegate-call", DeliveryID: nestedPlan.deliveryID}}
+	if err := writer.AppendDurable(commit); err != nil {
+		_ = writer.Close()
+		t.Fatalf("append nested caller commit: %v", err)
+	}
+	if err := writer.Close(); err != nil {
+		t.Fatalf("close nested caller transcript: %v", err)
+	}
+	pending, err := prepareColdDelegateDeliveryReplay(nested, nested.ReplayDeliveries())
+	if err != nil {
+		t.Fatalf("replay caller-committed nested delivery: %v", err)
+	}
+	if len(pending) != 0 {
+		t.Fatalf("caller-committed nested replay remained pending: %#v", pending)
+	}
+	if nested.durable["dlg_owner"].NeedsAttention || len(nested.attentionWakeIDs["dlg_owner"]) != 0 {
+		t.Fatalf("caller-committed nested replay opened owner attention: owner=%#v unresolved=%#v", nested.durable["dlg_owner"], nested.attentionWakeIDs["dlg_owner"])
+	}
+	events, err := nested.store.Load()
+	if err != nil {
+		t.Fatalf("load caller-committed nested replay journal: %v", err)
+	}
+	if tail := events[len(events)-1]; tail.Kind != delegatestore.EventDelegateDeliveryAcknowledged || tail.DeliveryAcknowledged == nil || tail.DeliveryAcknowledged.DeliveryID != nestedPlan.deliveryID {
+		t.Fatalf("caller-committed nested replay tail = %#v, want sender acknowledgment only", tail)
 	}
 }
 

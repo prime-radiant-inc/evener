@@ -558,7 +558,20 @@ func (c *delegateTreeController) emitDelegateUpdates(plans delegateMutationPlans
 }
 
 func (c *delegateTreeController) capturedPlanLocked(id string) delegateUpdatePlan {
-	return delegateUpdatePlan{rows: []delegateSnapshot{c.captureDelegateSnapshotLocked(id)}}
+	ids := []string{id}
+	if aggregate := c.durable[id]; aggregate != nil && !aggregate.Resumable {
+		members := c.subtreeMembersLocked(id)
+		ids = ids[:0]
+		for memberID := range members {
+			ids = append(ids, memberID)
+		}
+		sort.Strings(ids)
+	}
+	rows := make([]delegateSnapshot, 0, len(ids))
+	for _, memberID := range ids {
+		rows = append(rows, c.captureDelegateSnapshotLocked(memberID))
+	}
+	return delegateUpdatePlan{rows: rows}
 }
 
 func (c *delegateTreeController) captureDelegateSnapshotLocked(id string) delegateSnapshot {

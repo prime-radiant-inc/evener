@@ -248,9 +248,13 @@ func applyResumabilityClosed(state State, event Event) error {
 	}
 	aggregate.Resumable = false
 	aggregate.NotResumableReason = event.ResumabilityClosed.Reason
-	aggregate.NeedsAttention = false
 	if aggregate.Phase == PhaseIdle {
 		aggregate.Phase = PhaseClosed
+	}
+	for id, descendant := range state {
+		if isDelegateOrDescendant(state, id, event.DelegateID) {
+			descendant.NeedsAttention = false
+		}
 	}
 	return nil
 }

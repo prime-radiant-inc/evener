@@ -221,7 +221,7 @@ func TestStableDelegateAttention_RestoreAndColdRead(t *testing.T) {
 			if err != nil {
 				t.Fatalf("fold journal after cold status: %v", err)
 			}
-			wantJournalAttention := tt.journalAttention && tt.lifecycle != "closed" && tt.lifecycle != "stopping"
+			wantJournalAttention := tt.journalAttention && tt.lifecycle != "closed" && tt.lifecycle != "stopping" && tt.lifecycle != "fenced"
 			if got := journalState[targetDelegateID].NeedsAttention; got != wantJournalAttention {
 				t.Fatalf("cold status wrote journal needs_attention=%t, want unchanged %t", got, wantJournalAttention)
 			}

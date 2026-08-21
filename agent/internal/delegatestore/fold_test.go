@@ -411,7 +411,10 @@ func TestApplyResumabilityClosureIsMonotonic(t *testing.T) {
 	state := applyEvents(t,
 		createdEvent("dlg_alpha", ""),
 		Event{Kind: EventDelegateAttentionChanged, DelegateID: "dlg_alpha", AttentionChanged: &DelegateAttentionChanged{NeedsAttention: true}},
+		createdEvent("dlg_child", "dlg_alpha"),
+		Event{Kind: EventDelegateAttentionChanged, DelegateID: "dlg_child", AttentionChanged: &DelegateAttentionChanged{NeedsAttention: true}},
 	)
+	childRevision := state["dlg_child"].ProjectionRevision
 	if err := Apply(state, Event{
 		Kind:               EventDelegateResumabilityClosed,
 		DelegateID:         "dlg_alpha",
@@ -419,8 +422,11 @@ func TestApplyResumabilityClosureIsMonotonic(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("Apply first closure: %v", err)
 	}
-	if state["dlg_alpha"].NeedsAttention {
-		t.Fatal("resumability closure retained attention")
+	if state["dlg_alpha"].NeedsAttention || state["dlg_child"].NeedsAttention {
+		t.Fatalf("resumability closure retained attention: parent=%t child=%t", state["dlg_alpha"].NeedsAttention, state["dlg_child"].NeedsAttention)
+	}
+	if got := state["dlg_child"].ProjectionRevision; got != childRevision+1 {
+		t.Fatalf("descendant projection revision = %d, want %d", got, childRevision+1)
 	}
 	want := stateJSON(t, state)
 	err := Apply(state, Event{

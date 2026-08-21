@@ -44,13 +44,14 @@ type delegateDeliveryToken struct {
 }
 
 type delegateDeliveryAdmission struct {
-	token      delegateDeliveryToken
-	delegateID string
-	ownerID    string
-	claim      delegateDeliveryClaimToken
-	cold       bool
-	inline     bool
-	retryable  bool
+	token           delegateDeliveryToken
+	delegateID      string
+	ownerID         string
+	claim           delegateDeliveryClaimToken
+	cold            bool
+	inline          bool
+	callerCommitted bool
+	retryable       bool
 }
 
 type delegateDeliveryClaimToken struct {
@@ -75,6 +76,7 @@ type delegateDeliveryPlan struct {
 	packet          delegatestore.TerminalPacket
 	claim           delegateDeliveryClaimToken
 	receiver        delegateDeliveryReceiver
+	callerCommitted bool
 }
 
 type delegateDeliveryReceiver interface {
@@ -220,12 +222,13 @@ func (c *delegateTreeController) BeginDelivery(plan delegateDeliveryPlan) (deleg
 	c.nextToken++
 	token := delegateDeliveryToken{processID: c.nextToken, deliveryID: plan.deliveryID}
 	c.deliveries[token.processID] = &delegateDeliveryAdmission{
-		token:      token,
-		delegateID: plan.delegateID,
-		ownerID:    plan.ownerDelegateID,
-		claim:      plan.claim,
-		cold:       claim.cold,
-		inline:     plan.waiter != nil,
+		token:           token,
+		delegateID:      plan.delegateID,
+		ownerID:         plan.ownerDelegateID,
+		claim:           plan.claim,
+		cold:            claim.cold,
+		inline:          plan.waiter != nil || plan.callerCommitted,
+		callerCommitted: plan.callerCommitted,
 	}
 	c.evidenceVersion++
 	return token, true, nil
@@ -349,6 +352,7 @@ func prepareColdDelegateDeliveryReplay(c *delegateTreeController, plans []delega
 			pending = append(pending, plan)
 			continue
 		}
+		plan.callerCommitted = true
 		next, err := deliverDelegatePacket(plan, committedCallerDeliveryReceiver{})
 		if err != nil {
 			return nil, err
@@ -398,6 +402,7 @@ func deliverColdDelegatePacket(plan delegateDeliveryPlan) (delegateMutationPlans
 		return delegateMutationPlans{}, err
 	}
 	if committed {
+		plan.callerCommitted = true
 		return deliverDelegatePacket(plan, committedCallerDeliveryReceiver{})
 	}
 	return deliverDelegatePacket(plan, plan.receiver)

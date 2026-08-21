@@ -616,8 +616,7 @@ func (s *Session) admitOwedDelegateAttentionStart(owed delegateOwedAttentionStar
 }
 func (s *Session) abortOwedDelegateBootstrap(gate *owedBootstrapRestore, cause error) error {
 	var cleanupErr error
-	for i := len(gate.restored) - 1; i >= 0; i-- {
-		restored := gate.restored[i]
+	for _, restored := range slices.Backward(gate.restored) {
 		if !gate.done[restored.sub] {
 			_, err := s.prepareDeferredOwedStart(restored.deferredOwedDelegateAttentionStart, cause)
 			cleanupErr = errors.Join(cleanupErr, err)

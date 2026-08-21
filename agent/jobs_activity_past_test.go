@@ -27,6 +27,12 @@ func TestLoadSessionJobActivityTree_FollowsOnlyStableDelegateChildren(t *testing
 		pastStableDescriptor(rootID, childID, "child task"),
 		pastStableDescriptor(rootID, strayID, "stray task"),
 	)
+	if err := os.WriteFile(transcriptPath(stateDir, childID), []byte("malformed eligible child transcript\n"), 0o600); err != nil {
+		t.Fatalf("corrupt child transcript: %v", err)
+	}
+	if err := os.Remove(transcriptPath(stateDir, strayID)); err != nil {
+		t.Fatalf("remove stray transcript: %v", err)
+	}
 	s1cov_writeJobLog(t, stateDir, rootID,
 		jobstore.Event{Kind: jobstore.EventJobStarted, TS: started, JobID: "job_root_shell", Type: jobstore.JobShell, OwnerSessionID: rootID, VisibleToSession: rootID, StartedAt: &started, Description: "root shell"},
 	)

@@ -422,9 +422,6 @@ func (s *Session) armDelegateAttention(attentionID string) error {
 		return errors.New("delegate attention wake identity is incomplete")
 	}
 	err := s.armDelegateAttentionOnce(attentionID)
-	if !s.isRootDelegateAttentionReceiver() {
-		return err
-	}
 	s.attentionMu.Lock()
 	if err != nil {
 		if s.delegateAttentionArmIDs == nil {
@@ -465,7 +462,7 @@ func (s *Session) armDelegateAttentionOnce(attentionID string) error {
 }
 
 func (s *Session) hasPendingDelegateAttentionArmRetry() bool {
-	if s == nil || !s.isRootDelegateAttentionReceiver() {
+	if s == nil {
 		return false
 	}
 	s.attentionMu.Lock()
