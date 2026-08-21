@@ -1,8 +1,10 @@
 package evener_test
 
 import (
+	"bytes"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"regexp"
 	"slices"
@@ -748,5 +750,283 @@ func TestEveryGeneratedRegionIsInTheStalenessDiff(t *testing.T) {
 			"`make generate` rewrites them and the gate reports green over whatever they "+
 			"drift into. Add them to lint-generated's staleness list in make/linting.mk:\n  %s",
 			strings.Join(missing, "\n  "))
+	}
+}
+
+// lintGateCommands maps every gate `make lint` is required to run to a
+// fragment of that gate's recipe. The fragment, not the target name, is what
+// the two audits below look for in `make -n lint`'s output: run_quiet_lint
+// wraps each recipe in `if ( … )`, so a dry run prints COMMANDS and never
+// target names, and an audit keyed on names would match nothing and have to be
+// written so that it could not fail.
+//
+// The list is deliberately written out rather than derived from LINT_TARGETS.
+// Derived, it could not see the failure it exists to catch: drop a gate from
+// LINT_TARGETS and the expectation drops with it, leaving the audit green over
+// a shrunken gate — PR #273 again, with the audit joining in. Written out, the
+// deletion has to be made here too, where a reviewer sees it in the diff. If
+// you are reading this because the map and LINT_TARGETS disagree, the question
+// is which of them is wrong, not which is easier to edit.
+var lintGateCommands = map[string]string{
+	"lint-naming":        "go run ./cmd/evener-tomlcheck",
+	"lint-gofmt":         "gofmt -l",
+	"lint-evenerfuzz":    "-tags evenerfuzz",
+	"lint-eval":          "-tags eval ",
+	"lint-internal":      "go run ./cmd/evener-internalcheck",
+	"lint-golangci":      "module-lint",
+	"lint-generated":     "docs/appwire-protocol.md",
+	"lint-fuzz-registry": "scripts/fuzz/fuzz-registry-check.sh",
+	"secret-scan":        "scripts/ops/gitleaks-scan.sh repo",
+}
+
+// makefileRecipes returns every rule's recipe across makefileSourcePaths,
+// keyed by target name: the tab-indented lines beneath the rule line, joined.
+// A target declared more than once accumulates every recipe line it carries.
+//
+// Any line that is neither a rule nor tab-indented ends the current recipe, so
+// a `define`d block's tab-indented body cannot attach itself to whatever rule
+// happened to come before it.
+func makefileRecipes(t *testing.T) map[string]string {
+	t.Helper()
+	collected := map[string][]string{}
+	readMakefileSources(t, func(_ string, raw []byte) {
+		current := ""
+		for line := range strings.Lines(string(raw)) {
+			line = strings.TrimRight(line, "\n")
+			if name, _, ok := ruleLineName(line); ok {
+				current = name
+				continue
+			}
+			if strings.HasPrefix(line, "\t") {
+				if current != "" {
+					collected[current] = append(collected[current], line)
+				}
+				continue
+			}
+			current = ""
+		}
+	})
+	recipes := make(map[string]string, len(collected))
+	for name, lines := range collected {
+		recipes[name] = strings.Join(lines, "\n")
+	}
+	return recipes
+}
+
+// makeLintDryRun runs `make -n -k lint` from the repository root and returns
+// what it printed. It is the one audit input in this file that comes from make
+// itself rather than from Makefile text: every other assertion here is a
+// textual proxy, and a proxy cannot tell whether `lint` still depends on the
+// list it reads.
+//
+// -n prints recipe lines instead of running them, with one GNU make exception
+// this audit has to account for: a line referencing $(MAKE) counts as
+// recursion and IS executed, with -n handed down through MAKEFLAGS so the
+// sub-make prints rather than runs. lint-generated's recipe is such a line, so
+// its `git diff --exit-code HEAD` really runs, and the dry run's EXIT STATUS
+// therefore reports whether this working tree's generated docs are fresh — not
+// whether `make lint` is wired up. Hence two deliberate choices: the callers
+// assert on the printed recipes and never on the exit status, and -k keeps
+// make going past that failure, because without it a stale doc truncates the
+// output at lint-generated and every gate after it reads as missing.
+//
+// Empty output is the vacuity failure. It means make never reached the point
+// of printing a recipe, so every assertion built on the output would hold
+// against nothing; it fails loudly here instead.
+func makeLintDryRun(t *testing.T, makePath string) string {
+	t.Helper()
+	cmd := exec.Command(makePath, "-n", "-k", "lint")
+	// A parent make (this suite runs under `make test`) exports its own flags,
+	// job-server file descriptors and recursion depth. Inheriting them makes
+	// the child warn about an unavailable job server and can change what it
+	// prints, so the child starts from a clean slate.
+	for _, env := range os.Environ() {
+		name, _, _ := strings.Cut(env, "=")
+		if name == "MAKEFLAGS" || name == "MFLAGS" || name == "MAKELEVEL" {
+			continue
+		}
+		cmd.Env = append(cmd.Env, env)
+	}
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+	runErr := cmd.Run()
+	if strings.TrimSpace(stdout.String()) == "" {
+		t.Fatalf("`%s -n -k lint` printed no recipe lines (%v), so this audit has no subject and "+
+			"would hold against nothing. That is a broken Makefile, not a clean one.\nstderr:\n%s",
+			makePath, runErr, stderr.String())
+	}
+	return stdout.String()
+}
+
+// TestMakeLintRunsEveryGateInLintTargets asks make what `make lint` actually
+// expands to.
+//
+// Every other Makefile audit in this file reads Makefile TEXT. That is a proxy
+// for what make does, and it has a blind spot exactly where this branch's
+// original defect lives: nothing in the text says `lint`'s prerequisite list is
+// still `$(LINT_TARGETS)`. Rewrite the rule as `lint: lint-naming` and the gate
+// drops from nine checks to one with every textual audit still green, while
+// LINT_TARGETS goes on being validated as a list nothing expands. Move a gate's
+// rule into another family file and drop it from LINT_TARGETS and
+// TestEveryLintingRuleIsInLintTargets stops seeing it too, because that audit
+// reads make/linting.mk alone — PR #273 rebuilt out of two edits that are
+// individually harmless.
+//
+// So this one shells out. It asserts that the set of gates `make lint` really
+// invokes is exactly LINT_TARGETS, matching on each gate's distinguishing
+// command because the wrapper hides the names (see lintGateCommands).
+//
+// What it does not prove: that no EXTRA work rides along in `make lint`. The
+// dry run's other lines are not attributable to a target without reimplementing
+// make, and an extra check is not the failure mode this repository keeps
+// suffering.
+func TestMakeLintRunsEveryGateInLintTargets(t *testing.T) {
+	t.Parallel()
+	makePath, err := exec.LookPath("make")
+	if err != nil {
+		t.Skipf("make is not on PATH (%v), so nothing can ask it what `make lint` expands to", err)
+	}
+
+	targets := firstLintTargetsList(t)
+	if len(targets) == 0 {
+		t.Fatal("no LINT_TARGETS assignment found; `make lint` has no family list to expand")
+	}
+	inTargets := make(map[string]bool, len(targets))
+	for _, target := range targets {
+		inTargets[target] = true
+		if _, known := lintGateCommands[target]; !known {
+			t.Errorf("LINT_TARGETS names %q, which lintGateCommands does not cover, so no audit "+
+				"checks that `make lint` runs it. Add it there, pinned to the command that "+
+				"distinguishes its recipe.", target)
+		}
+	}
+	for name := range lintGateCommands {
+		if !inTargets[name] {
+			t.Errorf("lintGateCommands requires %q of `make lint`, but LINT_TARGETS no longer "+
+				"names it. Either restore it to LINT_TARGETS, or delete it here and say in the "+
+				"commit message why the gate stopped being required.", name)
+		}
+	}
+
+	// The map's fragments are worth matching only if each really identifies its
+	// own gate. A fragment absent from its recipe could never appear in the dry
+	// run; a fragment shared with a sibling gate would go on matching after its
+	// own gate stopped running.
+	recipes := makefileRecipes(t)
+	for name, fragment := range lintGateCommands {
+		recipe, ok := recipes[name]
+		if !ok {
+			t.Errorf("lintGateCommands names %q, which has no recipe in any make source file", name)
+			continue
+		}
+		if !strings.Contains(recipe, fragment) {
+			t.Errorf("lintGateCommands pins %q to %q, which is no longer in that target's recipe, "+
+				"so the dry-run check for it can never fail. Repoint it at a command the recipe "+
+				"actually runs.", name, fragment)
+		}
+		for other, otherRecipe := range recipes {
+			if other == name || lintGateCommands[other] == "" {
+				continue
+			}
+			if strings.Contains(otherRecipe, fragment) {
+				t.Errorf("lintGateCommands pins %q to %q, which also appears in gate %q's recipe, "+
+					"so the check would keep matching after %s stopped running.",
+					name, fragment, other, name)
+			}
+		}
+	}
+
+	dryRun := makeLintDryRun(t, makePath)
+	var missing []string
+	for name, fragment := range lintGateCommands {
+		if !strings.Contains(dryRun, fragment) {
+			missing = append(missing, fmt.Sprintf("%s (no %q in the dry run)", name, fragment))
+		}
+	}
+	sort.Strings(missing)
+	if len(missing) > 0 {
+		t.Fatalf("`make lint` does not run these gates. They are in LINT_TARGETS and their rules "+
+			"still work standing alone, but make's own expansion of `lint` never reaches them — "+
+			"the shape PR #273 shipped, where a required gate reported PASS while executing "+
+			"nothing:\n  %s\n\nfull dry run:\n%s", strings.Join(missing, "\n  "), dryRun)
+	}
+}
+
+// lintGeneratedInvokesGenerate matches a command that runs the `generate`
+// TARGET: $(MAKE) expands to a make binary under some path or name (`make`,
+// `gmake`, `/usr/bin/make`), and the recipe chains the diff onto it with `&&`
+// so a generator that FAILS fails the gate instead of falling through to a
+// clean comparison over outputs nothing rewrote.
+//
+// Requiring the command position — start of line, or after `(`, `;`, `&`, `|`
+// — is what keeps this able to fail. lint-generated's own error message
+// contains the words "make generate has already run", so a bare substring
+// search would go on matching after the recipe was reverted to a hand-copied
+// `go generate ./appwire/...`, which is the exact regression this pins.
+var lintGeneratedInvokesGenerate = regexp.MustCompile(`(^|[(;&|])\s*[^\s;&|]*make\s+generate\s+&&`)
+
+// lintGeneratedDiffNamesHEAD matches HEAD as a whole word among git diff's
+// arguments.
+var lintGeneratedDiffNamesHEAD = regexp.MustCompile(`\bHEAD\b`)
+
+// TestMakeLintGeneratedRegeneratesAndDiffsHEAD pins the two properties that
+// make lint-generated a staleness gate rather than a decoration, against what
+// make actually expands its recipe to.
+//
+// It must run the `generate` TARGET, not a copy of the generate commands: a
+// hand-copied list regenerates a subset, and the diff over the rest then
+// compares committed output with itself forever. And it must diff against HEAD
+// with --exit-code: a bare `git diff` compares the working tree with the INDEX,
+// so staging a regeneration without committing it silenced the gate over
+// exactly the committed content it claims to check (ruling R26), and without
+// --exit-code a difference prints and exits zero.
+//
+// TestEveryGeneratedRegionIsInTheStalenessDiff covers the other half — that the
+// diff names every doc carrying a generated region. It checks that the recipe
+// contains each path as text, which stays true whatever the recipe does with
+// them, so on its own it cannot tell a working gate from a hollow one.
+func TestMakeLintGeneratedRegeneratesAndDiffsHEAD(t *testing.T) {
+	t.Parallel()
+	makePath, err := exec.LookPath("make")
+	if err != nil {
+		t.Skipf("make is not on PATH (%v), so nothing can ask it what `make lint` expands to", err)
+	}
+	dryRun := makeLintDryRun(t, makePath)
+
+	var line string
+	for candidate := range strings.Lines(dryRun) {
+		if strings.Contains(candidate, lintGateCommands["lint-generated"]) {
+			line = strings.TrimRight(candidate, "\n")
+			break
+		}
+	}
+	if line == "" {
+		t.Fatalf("`make lint`'s dry run holds no lint-generated recipe (nothing naming %q), so "+
+			"this audit has no subject:\n%s", lintGateCommands["lint-generated"], dryRun)
+	}
+
+	if !lintGeneratedInvokesGenerate.MatchString(line) {
+		t.Errorf("lint-generated does not run `$(MAKE) generate &&` ahead of its diff, so it "+
+			"compares only whatever its own copy of the generate commands happened to rewrite — "+
+			"green forever over everything else. Recipe as make expands it:\n%s", line)
+	}
+
+	_, afterDiff, found := strings.Cut(line, "git diff")
+	if !found {
+		t.Fatalf("lint-generated runs no `git diff`, so nothing compares the regenerated output "+
+			"with what is committed:\n%s", line)
+	}
+	// Everything up to the `||` is the diff invocation itself. The message after
+	// it mentions HEAD in prose, and must not be allowed to satisfy this.
+	diffArgs, _, _ := strings.Cut(afterDiff, "||")
+	if !strings.Contains(diffArgs, "--exit-code") {
+		t.Errorf("lint-generated's `git diff` has no --exit-code, so a difference prints and the "+
+			"gate still exits zero. Arguments as make expands them: git diff%s", diffArgs)
+	}
+	if !lintGeneratedDiffNamesHEAD.MatchString(diffArgs) {
+		t.Errorf("lint-generated's `git diff` does not name HEAD, so it compares the working tree "+
+			"with the INDEX and `git add` silences it over still-stale COMMITTED output (ruling "+
+			"R26). Arguments as make expands them: git diff%s", diffArgs)
 	}
 }
