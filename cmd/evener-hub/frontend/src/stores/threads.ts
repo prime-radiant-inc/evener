@@ -9,6 +9,7 @@
 
 import { useStore } from "zustand";
 import { createStore } from "zustand/vanilla";
+import { releaseSubagentRows } from "../panes/session/transcript/tools/subagentModuleStore";
 import { ClientNotReadyError, mutationErrorData, WireError } from "../protocol/errors";
 import type { ThreadModel } from "../protocol/model";
 import {
@@ -117,16 +118,8 @@ export interface ThreadsStoreState {
   // activity retained across the gap may be stale. Like frameTimes, this is
   // store bookkeeping, not wire-derived thread state.
   hydrations: Map<string, number>;
-  // watchedThreads/watchedFrameTimes: the transcript/tools stream's own
-  // sanctioned extension (watched delegate cards - a leaner,
-  // additive subscription alongside a real ensureThread'd pane, never
-  // replacing it). Deliberately SEPARATE maps from threads/frameTimes,
-  // not a shared one keyed the same way: a ref can legitimately be both
-  // ensureThread'd (a real pane open on it) and watchThread'd (a parent
-  // session's subagent row watching it) at once, and releasing one must
-  // never disturb the other's tracked data or lifecycle.
+  // Lean child subscriptions are independent from real pane ownership.
   watchedThreads: Map<string, ThreadModel>;
-  watchedFrameTimes: Map<string, number[]>;
   // Refs whose hydration has been durably rejected by the hub's own
   // deletion fence (data.mutationOutcome === "targetDeleted" - see
   // hydrateAndSubscribe's catch below and cmd/evener-hub/app_sources.go's
@@ -650,6 +643,7 @@ async function hydrateAndSubscribe(
 // caller can observe once the retry loop is running.
 function markThreadDeletedIfFenced(ref: string, err: unknown): void {
   if (mutationErrorData(err)?.mutationOutcome !== "targetDeleted") return;
+  releaseSubagentRows(ref);
   threadsStore.setState((s) => {
     if (s.deletedRefs.has(ref)) return s;
     const deletedRefs = new Set(s.deletedRefs);
@@ -658,12 +652,7 @@ function markThreadDeletedIfFenced(ref: string, err: unknown): void {
   });
 }
 
-// watchReadParams mirrors readParams but defaults includeTurns:false - a
-// watched child's row dot only needs live status/liveness (Cadence reads
-// watchedFrameTimes, not turn content), not its full turn/item history,
-// which would be wasted fetch+storage for a subagent row most sessions
-// never expand. The expanded card (yd16 §4.2) passes includeTurns:true to
-// carry the child's turns for its Activity feed.
+// Lean watches omit turns until an expanded card asks for them.
 function watchReadParams(ref: string, includeTurns = false) {
   return {
     ref,
@@ -1051,34 +1040,13 @@ function publishWatchedHydration(
 
   const replayed = replayHydrationNotifications(model, pending.notifications);
   pendingWatchedHydrations.delete(ref);
-  storeWatchedModel(ref, replayed.model, includeTurns, generation, replayed.appliedAt);
+  storeWatchedModel(ref, replayed.model, includeTurns, generation);
   settleOwnedHydration("watched", ref, replayed.model);
   return replayed.model;
 }
 
-// handleNotification routes one live notification to whichever tracked
-// model(s) it targets, folding it through the reducer. A notification for a
-// ref this store isn't tracking (or that targets no tracked model) finds no
-// match below and the threads map is left as the exact same reference — no
-// setState call at all. Every ref whose model actually changed (a real
-// applied frame, not a same-reference reducer no-op) also gets `now`
-// appended to its frameTimes ring, reusing this same `now` rather than
-// reading a second Date.now() for it.
-// applyToMap folds `n` through every model in `map` that targets it,
-// returning the replaced map (or null if nothing in this particular map
-// changed) plus exactly the refs that actually changed - shared by both
-// the threads/frameTimes pass and the watchedThreads/watchedFrameTimes
-// pass below, since the fold-and-detect-a-real-change logic is identical
-// for either map.
-//
-// Delivery is decided by IDENTITY alone (notificationTargetsThread's
-// authoritative ref/threadId): where a frame lands inside a model is the
-// reducer's call, not this router's. turn/completed used to need the
-// model's active turn to match on top of that, back when the reducer
-// settled a completion into whichever turn was in flight; it now settles
-// the turn the frame NAMES and leaves activeTurnId alone for any other, so
-// the extra gate only cost the session its startup announcements - a
-// synthetic prelude turn is never any model's active turn.
+// Fold one notification into matching models; real-pane updates also append
+// the same timestamp to their liveness trace.
 function applyToMap(
   map: Map<string, ThreadModel>,
   n: AnyNotification,
@@ -1120,7 +1088,7 @@ function handleNotification(n: AnyNotification): void {
     }
   }
   const now = Date.now();
-  const { threads, frameTimes, watchedThreads, watchedFrameTimes } = threadsStore.getState();
+  const { threads, frameTimes, watchedThreads } = threadsStore.getState();
   const pendingRefs = new Set<string>();
   for (const [ref, pending] of pendingThreadHydrations) {
     if (targetsPendingHydration(n, pending)) {
@@ -1143,12 +1111,7 @@ function handleNotification(n: AnyNotification): void {
     }
   }
   const { next: nextThreads, changedRefs: changedThreads } = applyToMap(threads, n, now, pendingRefs);
-  const { next: nextWatchedThreads, changedRefs: changedWatched } = applyToMap(
-    watchedThreads,
-    n,
-    now,
-    pendingWatchedRefs,
-  );
+  const { next: nextWatchedThreads } = applyToMap(watchedThreads, n, now, pendingWatchedRefs);
   if (!nextThreads && !nextWatchedThreads) return;
 
   const patch: Partial<ThreadsStoreState> = {};
@@ -1160,21 +1123,11 @@ function handleNotification(n: AnyNotification): void {
   }
   if (nextWatchedThreads) {
     patch.watchedThreads = nextWatchedThreads;
-    const nextWatchedFrameTimes = new Map(watchedFrameTimes);
-    for (const ref of changedWatched)
-      nextWatchedFrameTimes.set(ref, appendFrameTime(watchedFrameTimes.get(ref) ?? [], now));
-    patch.watchedFrameTimes = nextWatchedFrameTimes;
   }
   threadsStore.setState(patch);
 }
 
-function storeWatchedModel(
-  ref: string,
-  model: ThreadModel,
-  includeTurns: boolean,
-  generation: number,
-  appliedAt: number[] = [],
-): void {
+function storeWatchedModel(ref: string, model: ThreadModel, includeTurns: boolean, generation: number): void {
   if ((watchRefCounts.get(ref) ?? 0) <= 0) return;
   if ((watchGenerations.get(ref) ?? 0) !== generation) return;
 
@@ -1183,16 +1136,7 @@ function storeWatchedModel(
   const hydratedRich = watchHydratedIncludeTurns.get(ref) ?? false;
   if (!includeTurns && hydratedRich) return;
   watchHydratedIncludeTurns.set(ref, hydratedRich || includeTurns);
-  threadsStore.setState((s) => {
-    const next = new Map(s.watchedThreads);
-    next.set(ref, model);
-    if (appliedAt.length === 0) return { watchedThreads: next };
-    const nextFrameTimes = new Map(s.watchedFrameTimes);
-    let times = nextFrameTimes.get(ref) ?? [];
-    for (const now of appliedAt) times = appendFrameTime(times, now);
-    nextFrameTimes.set(ref, times);
-    return { watchedThreads: next, watchedFrameTimes: nextFrameTimes };
-  });
+  threadsStore.setState((s) => ({ watchedThreads: new Map(s.watchedThreads).set(ref, model) }));
 }
 
 function ownedHydrationsFor(kind: HydrationOwnerKind): Map<string, OwnedHydration> {
@@ -1653,7 +1597,6 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
   frameTimes: new Map(),
   hydrations: new Map(),
   watchedThreads: new Map(),
-  watchedFrameTimes: new Map(),
   deletedRefs: new Set(),
 
   async ensureThread(ref) {
@@ -1773,6 +1716,7 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
       return;
     }
     refCounts.delete(ref);
+    releaseSubagentRows(ref);
     if (pinnedMutationRefs.has(ref)) return;
     // Release is terminal for this owner generation: cancel its scheduled
     // retry and wake anything still awaiting its first model.
@@ -1806,11 +1750,7 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
   // watchThread is the transcript/tools stream's own sanctioned addition:
   // an additive, leaner (includeTurns:false) subscription to a child
   // thread for a delegate card's live view, refcounted
-  // independently of ensureThread's own counter (watchRefCounts, not
-  // refCounts) and stored in watchedThreads/watchedFrameTimes, not
-  // threads/frameTimes - see this file's own ThreadsStoreState doc
-  // comment for why the two must stay fully independent. Otherwise a
-  // structural mirror of ensureThread above.
+  // independently of ensureThread's own counter and stored in watchedThreads.
   async watchThread(ref, opts) {
     let client = requireClient();
     const wantTurns = opts?.includeTurns ?? false;
@@ -1938,12 +1878,10 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
     watchIncludeTurns.delete(ref);
     watchHydratedIncludeTurns.delete(ref);
     threadsStore.setState((s) => {
-      if (!s.watchedThreads.has(ref) && !s.watchedFrameTimes.has(ref)) return s;
+      if (!s.watchedThreads.has(ref)) return s;
       const nextWatchedThreads = new Map(s.watchedThreads);
       nextWatchedThreads.delete(ref);
-      const nextWatchedFrameTimes = new Map(s.watchedFrameTimes);
-      nextWatchedFrameTimes.delete(ref);
-      return { watchedThreads: nextWatchedThreads, watchedFrameTimes: nextWatchedFrameTimes };
+      return { watchedThreads: nextWatchedThreads };
     });
   },
 
@@ -2302,7 +2240,6 @@ export function resetThreadsStoreForTests(): void {
       frameTimes: new Map(),
       hydrations: new Map(),
       watchedThreads: new Map(),
-      watchedFrameTimes: new Map(),
       deletedRefs: new Set(),
     },
     true,

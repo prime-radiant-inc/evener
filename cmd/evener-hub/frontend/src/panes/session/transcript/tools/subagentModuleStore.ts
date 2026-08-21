@@ -155,6 +155,20 @@ export function useRunningSubagentCount(scopeKey: string | undefined, delegates?
   });
 }
 
+export function releaseSubagentRows(sessionRef: string): void {
+  moduleStore.setState((state) => {
+    const prefix = `${sessionRef}\0`;
+    const turnRowsByKey = new Map(state.turnRowsByKey);
+    let changed = false;
+    for (const scopeKey of turnRowsByKey.keys()) {
+      if (!scopeKey.startsWith(prefix)) continue;
+      turnRowsByKey.delete(scopeKey);
+      changed = true;
+    }
+    return changed ? { turnRowsByKey } : state;
+  });
+}
+
 export function resetSubagentModuleStoreForTests(): void {
   moduleStore.setState({
     turnRowsByKey: new Map(),

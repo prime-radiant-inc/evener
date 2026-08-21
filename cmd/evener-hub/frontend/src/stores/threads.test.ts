@@ -2,6 +2,12 @@ import "fake-indexeddb/auto";
 import { act, cleanup, renderHook } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { recoveryComposerDraft } from "../panes/session/composer/recovery/recoveryDraft";
+import {
+  resetSubagentModuleStoreForTests,
+  turnScopeKey,
+  upsertSubagentRow,
+  useSubagentRow,
+} from "../panes/session/transcript/tools/subagentModuleStore";
 import type { ConnectionState } from "../protocol/client";
 import { ClientNotReadyError, errorKind, RequestTimeoutError, WireError } from "../protocol/errors";
 import type { ThreadModel } from "../protocol/model";
@@ -293,6 +299,7 @@ function runScheduledHydrationRetry(index = 0): void {
 beforeEach(async () => {
   connectionStore.setState({ state: "idle", serverInfo: undefined, client: null });
   resetThreadsStoreForTests();
+  resetSubagentModuleStoreForTests();
   scheduledHydrationRetries = [];
   restoreHydrationRetryScheduler = installHydrationRetrySchedulerForTests((attempt, retry) => {
     const scheduled: ScheduledHydrationRetry = { attempt, retry, cancelled: false };
@@ -318,6 +325,7 @@ afterEach(async () => {
   // re-triggers rewireClient, which re-issues a stray thread/read against
   // whatever client that later file just connected.
   resetThreadsStoreForTests();
+  resetSubagentModuleStoreForTests();
   // The beforeEach above only clears the GLOBAL "evener-mutation-outbox"
   // IndexedDB database (installed once, for the worker's life, by this
   // file's own `import "fake-indexeddb/auto"") before EACH of THIS file's
@@ -4575,15 +4583,7 @@ describe("frameTimes tracking (threads store)", () => {
   });
 });
 
-// watchThread is the sanctioned narrow extension the transcript/tools
-// stream (subagent-module watched-child rows) added to this store: an
-// ADDITIVE, leaner (includeTurns:false) subscription to a child thread,
-// refcounted independently of ensureThread's own counter so a real pane
-// and a watching subagent row never fight over the same lifecycle - and
-// stored in its own watchedThreads/watchedFrameTimes fields so releasing
-// a watch can never touch a ref's "real pane" data (or vice versa), even
-// when the exact same ref happens to be both ensureThread'd and
-// watchThread'd at once.
+// Lean child watches are refcounted independently of real panes.
 describe("useThreadsStore.watchThread", () => {
   test("an initial watched snapshot supersedes notifications buffered before its response", async () => {
     const fake = connectFakeClient();
@@ -4701,7 +4701,6 @@ describe("useThreadsStore.watchThread", () => {
     expect(model?.turns[0]?.status).toBe("completed");
     expect(model?.turns[0]?.items[0]?.output).toBe("done");
     expect(model?.turns[0]?.items).toHaveLength(1);
-    expect(threadsStore.getState().watchedFrameTimes.get("ref_a")).toBeUndefined();
     threadsStore.getState().releaseWatchedThread("ref_a");
     expect(threadsStore.getState().watchedThreads.has("ref_a")).toBe(false);
   });
@@ -4847,31 +4846,20 @@ describe("useThreadsStore.watchThread", () => {
     await threadsStore.getState().watchThread("ref_a");
     expect(threadsStore.getState().threads.has("ref_a")).toBe(true);
     expect(threadsStore.getState().watchedThreads.has("ref_a")).toBe(true);
+    const scope = turnScopeKey("ref_a", "turn_1");
+    upsertSubagentRow(scope, { rowKey: "dlg:1", kind: "running", resultPreview: "" });
+    const { result: row } = renderHook(() => useSubagentRow(scope, "dlg:1"));
 
-    threadsStore.getState().releaseThread("ref_a");
+    act(() => threadsStore.getState().releaseThread("ref_a"));
     expect(threadsStore.getState().threads.has("ref_a")).toBe(false);
     expect(threadsStore.getState().watchedThreads.has("ref_a")).toBe(true); // the watch survives
+    expect(row.current).toBeUndefined();
 
     threadsStore.getState().releaseWatchedThread("ref_a");
     expect(threadsStore.getState().watchedThreads.has("ref_a")).toBe(false);
   });
 
-  test("frameTimes for a watched ref land in watchedFrameTimes, never the real-pane frameTimes map", async () => {
-    const fake = connectFakeClient();
-    fake.on("thread/read", () => readResponse("ref_a"));
-    await threadsStore.getState().watchThread("ref_a");
-
-    vi.spyOn(Date, "now").mockReturnValue(4_000_000);
-    fake.emitNotification({
-      method: "thread/status/changed",
-      params: { threadId: "thr_ref_a", ref: "ref_a", status: { type: "active" } },
-    });
-
-    expect(threadsStore.getState().watchedFrameTimes.get("ref_a")).toEqual([4_000_000]);
-    expect(threadsStore.getState().frameTimes.get("ref_a")).toBeUndefined();
-  });
-
-  test("a notification is delivered to BOTH a real pane and a watch on the same ref, but frameTimes is appended once per map, not doubled into either", async () => {
+  test("a notification is delivered to both a real pane and a watch on the same ref", async () => {
     const fake = connectFakeClient();
     fake.on("thread/read", () => readResponse("ref_a"));
     await threadsStore.getState().ensureThread("ref_a");
@@ -4886,7 +4874,6 @@ describe("useThreadsStore.watchThread", () => {
     expect(threadsStore.getState().threads.get("ref_a")?.status).toEqual({ type: "active" });
     expect(threadsStore.getState().watchedThreads.get("ref_a")?.status).toEqual({ type: "active" });
     expect(threadsStore.getState().frameTimes.get("ref_a")).toEqual([9_000_000]);
-    expect(threadsStore.getState().watchedFrameTimes.get("ref_a")).toEqual([9_000_000]);
   });
 
   test("releaseWatchedThread refcounts watchers; stops tracking only when the last watcher releases", async () => {
@@ -4980,7 +4967,6 @@ describe("useThreadsStore.watchThread", () => {
     const reads = fake.calls.filter((call) => call.method === "thread/read");
     expect(reads).toHaveLength(2);
     expect(reads[1]?.params).toMatchObject({ ref: "ref_a", includeTurns: true });
-    expect(threadsStore.getState().watchedFrameTimes.get("ref_a")).toBeUndefined();
 
     fake.emitNotification({
       method: "thread/status/changed",
@@ -5003,7 +4989,6 @@ describe("useThreadsStore.watchThread", () => {
     expect(model?.capabilities.queue).toBe(true);
     expect(model?.turns[0]?.id).toBe("turn_after");
     expect(model?.status).toEqual({ type: "active", activeFlags: ["streaming"] });
-    expect(threadsStore.getState().watchedFrameTimes.get("ref_a")).toBeUndefined();
   });
 
   test("repeated thread resyncs keep rich watched hydration newest-wins in one epoch", async () => {
