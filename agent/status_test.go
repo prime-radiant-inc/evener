@@ -65,6 +65,7 @@ func TestStableDelegateAttention_RestoreAndColdRead(t *testing.T) {
 		wantAttention     bool
 		wantColdError     bool
 		wantRestore       bool
+		deferredLaunch    bool
 	}{
 		{name: "stale false with pending attention", pending: true, wantAttention: true, wantRestore: true},
 		{name: "stale true without pending attention", journalAttention: true, wantRestore: true},
@@ -74,6 +75,7 @@ func TestStableDelegateAttention_RestoreAndColdRead(t *testing.T) {
 		{name: "eligible missing transcript is an error", transcriptFailure: "missing", wantColdError: true},
 		{name: "eligible unreadable transcript is an error", transcriptFailure: "unreadable", wantColdError: true},
 		{name: "owed generation is admitted before boolean repair", owed: true, journalAttention: true, wantRestore: true},
+		{name: "recovered owed launch waits for final reconciliation", wantRestore: true, deferredLaunch: true},
 	}
 
 	for _, tt := range tests {
@@ -270,6 +272,120 @@ func TestStableDelegateAttention_RestoreAndColdRead(t *testing.T) {
 				}
 				if len(lastBatch.Events) != 2 || lastBatch.Events[0].Kind != delegatestore.EventDelegateAttentionChanged || lastBatch.Events[0].AttentionChanged == nil || lastBatch.Events[0].AttentionChanged.NeedsAttention || lastBatch.Events[1].Kind != delegatestore.EventDelegateRunStarted || lastBatch.Events[1].RunStarted == nil || lastBatch.Events[1].RunStarted.Generation != 1 {
 					t.Fatalf("final owed admission batch = %#v, want attention false then generation 1 RunStarted", lastBatch.Events)
+				}
+			}
+
+			if tt.deferredLaunch {
+				const (
+					owedID       = "watch:restore-cold-read:deferred-owed"
+					witnessID    = "dlg_reconcile_witness"
+					witnessChild = "reconcilewitness"
+					witnessWake  = "watch:restore-cold-read:reconcile-witness"
+					laterWake    = "watch:restore-cold-read:opened-after-reconcile"
+				)
+				if appended, err := appendColdDelegateNotificationDurablyWithOpen(
+					childPath,
+					targetChildID,
+					owedID,
+					"recover this owed generation",
+					time.Unix(1_700_000_600, 0).UTC(),
+					transcript.OpenWriterForSession,
+				); err != nil || !appended {
+					t.Fatalf("append deferred owed attention = appended:%t err:%v", appended, err)
+				}
+				writer, _, err := transcript.OpenWriterForSession(childPath, targetChildID)
+				if err != nil {
+					t.Fatalf("open deferred owed transcript: %v", err)
+				}
+				if err := writer.AppendDurable(delegateAttentionResolutionTurnForGeneration(owedID, delegateAttentionConsumed, 1)); err != nil {
+					_ = writer.Close()
+					t.Fatalf("append deferred owed resolution: %v", err)
+				}
+				if err := writer.Close(); err != nil {
+					t.Fatalf("close deferred owed transcript: %v", err)
+				}
+
+				witnessPath := transcriptPath(fixture.stateDir, witnessChild)
+				witnessWriter, err := transcript.NewWriter(witnessPath, transcript.Header{SessionID: witnessChild, ParentSessionID: fixture.meta.ID})
+				if err != nil {
+					t.Fatalf("create reconciliation witness transcript: %v", err)
+				}
+				if err := witnessWriter.Close(); err != nil {
+					t.Fatalf("close reconciliation witness transcript: %v", err)
+				}
+				if appended, err := appendColdDelegateNotificationDurablyWithOpen(
+					witnessPath,
+					witnessChild,
+					witnessWake,
+					"prove final reconciliation completed",
+					time.Unix(1_700_000_601, 0).UTC(),
+					transcript.OpenWriterForSession,
+				); err != nil || !appended {
+					t.Fatalf("append reconciliation witness = appended:%t err:%v", appended, err)
+				}
+
+				restored.delegateController.mu.Lock()
+				descriptor := restored.delegateController.durable[targetDelegateID].Descriptor
+				descriptor.ChildSessionID = witnessChild
+				descriptor.TranscriptRef = encodeRef("", witnessChild)
+				descriptor.Task = "reconciliation witness"
+				_, err = restored.delegateController.appendLocked(
+					delegatestore.Event{
+						Kind:       delegatestore.EventDelegateAttentionChanged,
+						DelegateID: targetDelegateID,
+						AttentionChanged: &delegatestore.DelegateAttentionChanged{
+							NeedsAttention: true,
+						},
+					},
+					delegatestore.Event{
+						Kind:       delegatestore.EventDelegateCreated,
+						DelegateID: witnessID,
+						Created:    &delegatestore.DelegateCreated{Descriptor: descriptor},
+					},
+				)
+				restored.delegateController.owedAdmission = true
+				restored.delegateController.mu.Unlock()
+				if err != nil {
+					t.Fatalf("append deferred launch setup: %v", err)
+				}
+
+				childReady := make(chan *Session, 1)
+				restored.delegateRestoreBeforeSideEffects = func(child *Session) { childReady <- child }
+				opened := make(chan error, 1)
+				releaseRun := make(chan struct{})
+				defer close(releaseRun)
+				fixture.adapter.steps = []func(llm.Request) llm.Response{func(llm.Request) llm.Response {
+					child := <-childReady
+					child.delegateController.mu.Lock()
+					witness := child.delegateController.durable[witnessID]
+					_, witnessPublished := child.delegateController.attentionWakeIDs[witnessID][witnessWake]
+					child.delegateController.mu.Unlock()
+					if witness == nil || !witness.NeedsAttention || !witnessPublished {
+						opened <- fmt.Errorf("owed launch observed unreconciled witness: aggregate=%+v published=%t", witness, witnessPublished)
+						<-releaseRun
+						return communicateResponse(true, "unreconciled")
+					}
+					if _, err := child.appendDelegateNotificationDurably(laterWake, "opened after final reconciliation"); err != nil {
+						opened <- err
+					} else {
+						opened <- child.armDelegateAttention(laterWake)
+					}
+					<-releaseRun
+					return communicateResponse(true, "deferred launch complete")
+				}}
+
+				if err := restored.flushPendingDelegateDeliveries(); err != nil {
+					t.Fatalf("flush deferred owed launch: %v", err)
+				}
+				if err := <-opened; err != nil {
+					t.Fatalf("deferred owed launch: %v", err)
+				}
+				restored.delegateController.mu.Lock()
+				target := restored.delegateController.durable[targetDelegateID]
+				_, laterPublished := restored.delegateController.attentionWakeIDs[targetDelegateID][laterWake]
+				restored.delegateController.mu.Unlock()
+				if target == nil || !target.NeedsAttention || !laterPublished {
+					t.Fatalf("post-reconciliation attention was clobbered: aggregate=%+v published=%t", target, laterPublished)
 				}
 			}
 		})

@@ -108,3 +108,41 @@ Follow-up verification:
 
 The earlier Hub-fixture concern is resolved. The separate follow-up commit hash
 is reported in the final handoff because a commit cannot embed its own hash.
+
+## Fix round 1/5: defer recovered owed launches
+
+Review identified a HIGH bootstrap race: recovered owed generations launched
+before the final transcript fold/repair/publication and could open attention that
+the stale final wake-map replacement then erased.
+
+The runtime boundary now separates owed admission from launch. It commits each
+exact owed `RunStarted`, reconstructs and attaches the runtime, and retains a
+deferred launch record. Bootstrap then performs the final strict transcript fold,
+deterministic repair batch, and exact unresolved-ID publication. Only after that
+succeeds are the deferred generations launched.
+
+If admission or final reconciliation fails, every already committed deferred
+start goes through the existing `FailCommittedRestart` and mutation-plan cleanup.
+Its exact attached runtime is then detached, removed from the owner, and discarded.
+If the failure journal append itself fails, durable recovery state remains while
+the unlaunched runtime pointer is still severed so the failed bootstrap leaks no
+candidate run.
+
+The existing `TestStableDelegateAttention_RestoreAndColdRead` table gained one
+row, not a new top-level test. Using the existing reconstruction hook and scripted
+provider boundary, it seeds a stale witness delegate plus an owed generation. The
+behavioral RED showed the recovered launch observing the witness at
+`NeedsAttention=false` with no published ID. GREEN proves launch observes the
+final repaired witness and that attention opened by the released generation
+afterward remains true and present in the exact wake map.
+
+Fix-round verification:
+
+- Focused Task 3 behavior group: PASS.
+- `go test ./agent -count=1`: PASS (`69.256s`).
+- `go test ./cmd/evener-hub -count=1`: PASS (`37.590s`).
+- `go vet ./agent ./cmd/evener-hub`: PASS.
+- `gofmt` check and `git diff --check`: PASS.
+
+The separate fix-round commit hash is reported in the final handoff because a
+commit cannot embed its own hash.
