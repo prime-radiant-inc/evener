@@ -528,11 +528,15 @@ var lintTargetsDefinition = regexp.MustCompile(`^LINT_TARGETS\s*(:=|\+=|\?=|!=|=
 // the whole source set.
 //
 // TestEveryLintTargetIsPhonyAndHasARule validates the FIRST definition it
-// finds, scanning the root Makefile and then make/*.mk in sorted order; make
-// itself uses the LAST one to win. A second definition in an earlier-sorting
-// file — make/building.mk, say — therefore splits the two apart: the audit
-// validates a list nobody runs while `make lint` expands a list nobody
-// audits, and every other Makefile audit stays green throughout. One
+// finds, scanning the root Makefile and then make/*.mk in sorted order. What
+// `make lint` expands is neither the first definition nor the last: a rule's
+// prerequisite list is expanded when the RULE IS READ, so `lint` is fixed to
+// whatever LINT_TARGETS holds at make/linting.mk's `lint:` line, and a
+// definition in a later-sorting file never reaches it at all. An
+// earlier-sorting one — make/building.mk, say — is the case that splits audit
+// and make apart: the audit validates that copy while `lint` still expands
+// linting.mk's, so the audit reads a list nobody runs and `make lint` runs a
+// list nobody audits, with every other Makefile audit green throughout. One
 // definition is the only state in which the audit's subject and make's are
 // the same list.
 func TestExactlyOneLintTargetsDefinition(t *testing.T) {

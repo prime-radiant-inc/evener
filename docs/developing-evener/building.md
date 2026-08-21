@@ -15,8 +15,8 @@ COMPLETE before its own recipe runs, even under parallel `make -j`, so
 hanging `build-web` off `build-runtime` structurally guarantees every
 evener/evener-hub pair build embeds the frontend `build-web` just produced.
 No target may ship an evener-hub binary with a stale or empty embedded web
-UI — `install`, `install-home`, and `install-system` inherit the same
-guarantee by depending on `install`, which depends on `build-web` directly.
+UI — `install` depends on `build-web` directly, and `install-home` and
+`install-system` inherit the same guarantee by depending on `install`.
 
 `build-web`'s own build is deliberately unconditional — dist freshness is the
 entire point, and `web-preflight` (the frontend dependency install, shared

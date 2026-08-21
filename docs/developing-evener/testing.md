@@ -137,7 +137,7 @@ that accumulates real logic belongs in Go under `go test`, where the type
 system, `-race`, and ordinary unit tests replace an entire shell-fixture
 harness; shell stays for glue.
 
-## Gates that are not make targets
+## Gates that need more than a table row
 
 Every gate that is a make target is documented in the generated target table
 of the doc that owns its family: [Targets](#targets) below for the test
@@ -146,25 +146,34 @@ family, and [building.md](building.md), [linting.md](linting.md),
 tables are generated from the `##` annotations above each rule in `make/*.mk`,
 and `make lint` fails if a committed table has drifted from them.
 
-Five gates have no make target of their own. They are written out here
-instead, and they follow the same rules as the rest: test assertions stay
-deterministic when the live opt-ins are unset, and dependency installation,
-disk capacity, browser availability, and CI tool setup are explicit
-prerequisites rather than assumptions.
+Five gates are written out here anyway. Three have no make target at all: they
+are environment opt-ins, or work this repository does not own. The other two do
+run through make. `scripts/web/web-preflight.sh` has both a target and a
+generated row in building.md, and is named here because it is a setup
+prerequisite rather than a gate in its own right, so a reader hunting for it
+among the gates is told where its row lives. `ROOT_FULL=1 make test` is the
+`test` target under an environment override, which no generated row can
+carry.
+
+All five follow the same rules as the rest: test assertions stay deterministic
+when the live opt-ins are unset, and dependency installation, disk capacity,
+browser availability, and CI tool setup are explicit prerequisites rather than
+assumptions.
 
 ### `scripts/web/web-preflight.sh`
 
-Frontend dependency and setup health: it proves the worktree has a
-lockfile-compatible install and a real local TypeScript compiler. It is a
-setup prerequisite for the web, build, and browser gates rather than a gate in
-its own right — `make web-preflight` runs it directly, and `make build-web`,
+A setup prerequisite for the web, build, and browser gates rather than a gate
+in its own right: `make web-preflight` runs it directly, and `make build-web`,
 `make test-web` and `make test-web-browser` all reach it.
 
-It may access npm when a real install is missing or stale, and it refuses an
-unsafe `npm ci` through a mismatched shared symlink. A missing, mismatched, or
-unhealthy install is nonzero; npm or network unavailability is a setup
-failure, not a test result. Managing a shared install across worktrees belongs
-to the worktree and frontend tooling, outside Evener.
+What it proves, what it may run, and how it fails live in the `make
+web-preflight` row of [building.md's target table](building.md#targets).
+That row is generated from the annotation above the rule and gated for
+staleness by `make lint`; a copy of those cells here would drift the first
+time the annotation changed, with nothing to say so.
+
+Managing a shared install across worktrees belongs to the worktree and
+frontend tooling, outside Evener.
 
 ### `ROOT_FULL=1 make test`
 
