@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strings"
 	"testing"
 )
 
@@ -71,5 +72,56 @@ func TestParseMakefileTargetsSkipsPlainEqualsAssignment(t *testing.T) {
 		if slices.Contains(got, unwanted) {
 			t.Errorf("bogus target %q mined from the plain-\"=\" assignment's value; got %v", unwanted, got)
 		}
+	}
+}
+
+// TestScanWorkspaceDoesNotReadMakefileIncludesOutsideWorkspace protects the
+// workspace boundary: Make may follow arbitrary include paths, but collecting
+// prompt metadata must not read target names from outside the selected root.
+func TestScanWorkspaceDoesNotReadMakefileIncludesOutsideWorkspace(t *testing.T) {
+	t.Parallel()
+
+	tests := map[string]func(t *testing.T, root, external string) string{
+		"absolute path": func(_ *testing.T, _, external string) string {
+			return external
+		},
+		"parent traversal": func(_ *testing.T, _, _ string) string {
+			return "../outside.mk"
+		},
+		"escaping symlink": func(t *testing.T, root, external string) string {
+			link := filepath.Join(root, "linked.mk")
+			if err := os.Symlink(external, link); err != nil {
+				t.Skipf("creating symlink: %v", err)
+			}
+			return "linked.mk"
+		},
+	}
+
+	for name, includePath := range tests {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			parent := t.TempDir()
+			root := filepath.Join(parent, "workspace")
+			if err := os.Mkdir(root, 0o755); err != nil {
+				t.Fatal(err)
+			}
+			external := filepath.Join(parent, "outside.mk")
+			if err := os.WriteFile(external, []byte("outside-secret-target:\n"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			include := includePath(t, root, external)
+			makefile := "include " + include + "\n\ninside-target:\n"
+			if err := os.WriteFile(filepath.Join(root, "Makefile"), []byte(makefile), 0o600); err != nil {
+				t.Fatal(err)
+			}
+
+			buildInfo := ScanWorkspace(root).BuildInfo
+			if !strings.Contains(buildInfo, "inside-target") {
+				t.Fatalf("workspace target missing from build info: %q", buildInfo)
+			}
+			if strings.Contains(buildInfo, "outside-secret-target") {
+				t.Fatalf("external target escaped into build info: %q", buildInfo)
+			}
+		})
 	}
 }

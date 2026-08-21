@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"encoding/json"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -271,9 +272,15 @@ var makefileInclude = regexp.MustCompile(`^-?include\s+(?:\$\(dir \$\(lastword \
 // still yields its real targets. Only includes named targets (not pattern
 // rules or implicit rules).
 func parseMakefileTargets(path string) []string {
+	root, err := os.OpenRoot(filepath.Dir(path))
+	if err != nil {
+		return nil
+	}
+	defer func() { _ = root.Close() }()
+
 	var targets []string
 	seen := make(map[string]bool)
-	if !appendMakefileTargets(path, &targets, seen, 0) {
+	if !appendMakefileTargets(root, filepath.Base(path), &targets, seen, 0) {
 		return nil
 	}
 	return targets
@@ -285,10 +292,13 @@ func parseMakefileTargets(path string) []string {
 // top-level include is followed, so an included file's own include lines
 // are left alone. That bounds the recursion to a single hop, which is all
 // the split Makefile needs, without requiring a visited-file cycle check.
+// root confines every include read to the top-level Makefile's directory.
+// Unlike Make itself, workspace discovery must not let an absolute path, ..,
+// or an escaping symlink pull external file contents into the model prompt.
 // Returns false on a scan error, telling the caller to discard the whole
 // (now-partial) result rather than publish it as if it were complete.
-func appendMakefileTargets(path string, targets *[]string, seen map[string]bool, depth int) bool {
-	f, err := os.Open(path)
+func appendMakefileTargets(root *os.Root, path string, targets *[]string, seen map[string]bool, depth int) bool {
+	f, err := root.Open(path)
 	if err != nil {
 		return true // an unreadable file (missing Makefile, bad include) isn't a scan error
 	}
@@ -317,14 +327,10 @@ func appendMakefileTargets(path string, targets *[]string, seen map[string]bool,
 		// Follow includes one level deep: the split Makefile's root pulls in
 		// make/*.mk, and the real targets live there.
 		if m := makefileInclude.FindStringSubmatch(line); m != nil && depth == 0 {
-			pattern := m[1]
-			if !filepath.IsAbs(pattern) {
-				pattern = filepath.Join(filepath.Dir(path), pattern)
-			}
-			matches, _ := filepath.Glob(pattern)
-			sort.Strings(matches)
+			pattern := filepath.ToSlash(m[1])
+			matches, _ := fs.Glob(root.FS(), pattern)
 			for _, inc := range matches {
-				if !appendMakefileTargets(inc, targets, seen, depth+1) {
+				if !appendMakefileTargets(root, inc, targets, seen, depth+1) {
 					return false
 				}
 			}
