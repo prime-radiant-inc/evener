@@ -447,17 +447,18 @@ func (c *delegateTreeController) closeStableWorktreeResumability(owner *Session,
 	if !aggregate.Resumable {
 		return c.stableWorktreeSnapshotLocked(delegateID, aggregate), true, delegateMutationPlans{}, nil
 	}
-	if _, err := c.appendLocked(delegatestore.Event{
+	plan, err := c.appendResumabilityClosureLocked(delegateID, delegatestore.Event{
 		Kind:       delegatestore.EventDelegateResumabilityClosed,
 		DelegateID: delegateID,
 		ResumabilityClosed: &delegatestore.ResumabilityClosed{
 			Reason: reason,
 		},
-	}); err != nil {
+	})
+	if err != nil {
 		return stableDelegateWorktreeSnapshot{}, false, delegateMutationPlans{}, err
 	}
 	row := c.stableWorktreeSnapshotLocked(delegateID, c.durable[delegateID])
-	return row, false, delegateMutationPlans{updates: []delegateUpdatePlan{c.capturedPlanLocked(delegateID)}}, nil
+	return row, false, delegateMutationPlans{updates: []delegateUpdatePlan{plan}}, nil
 }
 
 func (c *delegateTreeController) exactLeaseLocked(lease delegateLease) (*delegatestore.Aggregate, *delegateLiveState, error) {
@@ -558,20 +559,30 @@ func (c *delegateTreeController) emitDelegateUpdates(plans delegateMutationPlans
 }
 
 func (c *delegateTreeController) capturedPlanLocked(id string) delegateUpdatePlan {
-	ids := []string{id}
-	if aggregate := c.durable[id]; aggregate != nil && !aggregate.Resumable {
-		members := c.subtreeMembersLocked(id)
-		ids = ids[:0]
-		for memberID := range members {
-			ids = append(ids, memberID)
+	return delegateUpdatePlan{rows: []delegateSnapshot{c.captureDelegateSnapshotLocked(id)}}
+}
+
+func (c *delegateTreeController) appendResumabilityClosureLocked(delegateID string, events ...delegatestore.Event) (delegateUpdatePlan, error) {
+	members := c.subtreeMembersLocked(delegateID)
+	revisions := make(map[string]uint64, len(members))
+	for id := range members {
+		revisions[id] = c.durable[id].ProjectionRevision
+	}
+	if _, err := c.appendLocked(events...); err != nil {
+		return delegateUpdatePlan{}, err
+	}
+	ids := make([]string, 0, len(members))
+	for id, revision := range revisions {
+		if c.durable[id].ProjectionRevision != revision {
+			ids = append(ids, id)
 		}
-		sort.Strings(ids)
 	}
+	sort.Strings(ids)
 	rows := make([]delegateSnapshot, 0, len(ids))
-	for _, memberID := range ids {
-		rows = append(rows, c.captureDelegateSnapshotLocked(memberID))
+	for _, id := range ids {
+		rows = append(rows, c.captureDelegateSnapshotLocked(id))
 	}
-	return delegateUpdatePlan{rows: rows}
+	return delegateUpdatePlan{rows: rows}, nil
 }
 
 func (c *delegateTreeController) captureDelegateSnapshotLocked(id string) delegateSnapshot {

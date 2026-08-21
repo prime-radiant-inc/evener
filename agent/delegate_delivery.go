@@ -44,14 +44,13 @@ type delegateDeliveryToken struct {
 }
 
 type delegateDeliveryAdmission struct {
-	token           delegateDeliveryToken
-	delegateID      string
-	ownerID         string
-	claim           delegateDeliveryClaimToken
-	cold            bool
-	inline          bool
-	callerCommitted bool
-	retryable       bool
+	token      delegateDeliveryToken
+	delegateID string
+	ownerID    string
+	claim      delegateDeliveryClaimToken
+	cold       bool
+	inline     bool
+	retryable  bool
 }
 
 type delegateDeliveryClaimToken struct {
@@ -222,13 +221,12 @@ func (c *delegateTreeController) BeginDelivery(plan delegateDeliveryPlan) (deleg
 	c.nextToken++
 	token := delegateDeliveryToken{processID: c.nextToken, deliveryID: plan.deliveryID}
 	c.deliveries[token.processID] = &delegateDeliveryAdmission{
-		token:           token,
-		delegateID:      plan.delegateID,
-		ownerID:         plan.ownerDelegateID,
-		claim:           plan.claim,
-		cold:            claim.cold,
-		inline:          plan.waiter != nil || plan.callerCommitted,
-		callerCommitted: plan.callerCommitted,
+		token:      token,
+		delegateID: plan.delegateID,
+		ownerID:    plan.ownerDelegateID,
+		claim:      plan.claim,
+		cold:       claim.cold,
+		inline:     plan.waiter != nil || plan.callerCommitted,
 	}
 	c.evidenceVersion++
 	return token, true, nil

@@ -489,14 +489,15 @@ func (c *delegateTreeController) CloseResumability(actor delegateActor, delegate
 		break
 	}
 	defer c.mu.Unlock()
-	if _, err := c.appendLocked(delegatestore.Event{
+	plan, err := c.appendResumabilityClosureLocked(delegateID, delegatestore.Event{
 		Kind:               delegatestore.EventDelegateResumabilityClosed,
 		DelegateID:         delegateID,
 		ResumabilityClosed: &delegatestore.ResumabilityClosed{Reason: reason},
-	}); err != nil {
+	})
+	if err != nil {
 		return delegateMutationPlans{}, err
 	}
-	return delegateMutationPlans{updates: []delegateUpdatePlan{c.capturedPlanLocked(delegateID)}}, nil
+	return delegateMutationPlans{updates: []delegateUpdatePlan{plan}}, nil
 }
 
 // Close fences the whole controller before joining or starting teardown. It

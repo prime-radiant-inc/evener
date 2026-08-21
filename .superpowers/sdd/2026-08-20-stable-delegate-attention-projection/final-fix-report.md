@@ -80,7 +80,7 @@ RED:
 
 GREEN:
 
-- One `callerCommitted` provenance bit now travels through the existing replay plan and admission receipt. Such replay durably acknowledges the sender but is treated as inline for owner-attention suppression.
+- One `callerCommitted` provenance bit now travels through the existing replay plan into the admission receipt's existing `inline` bit. Such replay durably acknowledges the sender but is treated as inline for owner-attention suppression.
 - The replay journal tail is acknowledgment-only; owner attention and local attention IDs remain absent.
 
 ### 4. Job activity remains journal-only
@@ -140,10 +140,44 @@ Full agent limitation:
 ## Self-review / concerns
 
 - Descendant closure changes only the materialized public attention projection; transcript attention IDs remain untouched until normal transfer/discard.
-- Every production resumability-close producer already captures its target plan; expanding that existing capture only for a non-resumable target publishes all normalized descendants without another event or retry domain.
+- Every production resumability-close producer uses one closure-specific append/capture path that compares pre-append subtree revisions and publishes only aggregates whose revision changed. Ordinary `capturedPlanLocked` calls retain their one-row invariant.
 - Resident quiet, shell, and watch recovery reuse existing exact-ID, finalization, pending-send, receipt, and settlement replay states. No cache, poller, worker, migration, TTL, or second producer retry domain was introduced.
 - Shell and watch durable source acknowledgments now occur only after successful arm. Replay remains idempotent because transcript attention append and controller attention open are exact-ID no-ops after success.
 - Caller-commit provenance is process-local replay provenance only; no transcript field or compatibility state was added.
 - Job activity and job list remain journal-only; strict transcript overlay remains exclusive to delegate status.
 - Concern: the exact full agent test command is environmentally incomplete due sandbox loopback-bind denial, as detailed above. All affected tests, the sandbox-compatible remainder of the full agent package, vet, diff checks, and full lint pass.
 - Scratch directory: `/private/var/folders/46/dz2z92w907j150sqxn8b8y1c0000gn/T/evener-sandbox-3279988824`. No scratch artifact needs retention.
+
+## Final fix round 2/5: narrow closure publication
+
+Status: complete. Both reviewer-requested YAGNI cleanups landed without changing the durable fold, events, retry state, or tests.
+
+Round-2 production paths:
+
+- `agent/delegate_tree_controller.go`
+- `agent/delegate_tree_stop.go`
+- `agent/delegate_tree_restore.go`
+- `agent/delegate_tree_start.go`
+- `agent/delegate_tree_finish.go`
+- `agent/delegate_delivery.go`
+
+The five delegate-tree files are the complete existing resumability-close producer set: direct/worktree closure, restore input closure, non-resumable exhaustion, and committed-start failure. Touching each was mechanically necessary to replace the global projection expansion without regressing descendant publication on any closure path.
+
+Changes:
+
+- `capturedPlanLocked(id)` again captures exactly one row.
+- One closure-specific batch helper snapshots target-subtree `ProjectionRevision` values under the existing controller lock, appends the existing event batch, compares revisions, sorts changed IDs, and captures only those rows. Unchanged descendants are no longer published by closure or by later ordinary target updates.
+- Deleted dead `delegateDeliveryAdmission.callerCommitted` storage and its initializer. `delegateDeliveryPlan.callerCommitted` and `inline: plan.waiter != nil || plan.callerCommitted` remain the complete live provenance path.
+- No test or test helper changed; top-level test count delta remains zero.
+
+Verification:
+
+- Exact focused ancestor and inline delivery tests: PASS (`0.667s`).
+- Focused ancestor plus all `TestDelegateController.*` delivery/controller tests: PASS (`5.256s`).
+- `go vet ./agent`: PASS.
+- `gofmt` over all six changed production files: PASS.
+- `git diff --check`: PASS.
+
+Round-2 code delta before this report update: `+61 / -37` (net `+24`). The new closure-specific logic replaces the prior globally expanded capture; no production behavior outside closure update selection and dead-field removal changed.
+
+Round-2 concerns: none. The exact changed-ID selection is revision-based, deterministic, and local to existing closure batches; no event, state authority, cache, retry domain, or test infrastructure was added.

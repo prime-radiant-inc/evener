@@ -513,7 +513,8 @@ func (c *delegateTreeController) FailCommittedStart(lease delegateLease, failure
 		DelegateID:         lease.delegateID,
 		ResumabilityClosed: &delegatestore.ResumabilityClosed{Reason: closeReason},
 	}
-	if _, appendErr := c.appendLocked(terminal, finish, closure); appendErr != nil {
+	closurePlan, appendErr := c.appendResumabilityClosureLocked(lease.delegateID, terminal, finish, closure)
+	if appendErr != nil {
 		live.recoveryRequired = true
 		return delegateMutationPlans{updates: []delegateUpdatePlan{c.capturedPlanLocked(lease.delegateID)}}, false, &delegateCommittedStartFailureError{
 			disposition: delegateCommittedStartFailureAppendFailed,
@@ -521,6 +522,7 @@ func (c *delegateTreeController) FailCommittedStart(lease delegateLease, failure
 		}
 	}
 	plans, generationCancel := c.generationFinishedPlansLocked(lease, finish.RunFinished.DeliveryID)
+	plans.updates[0] = closurePlan
 	cancel = generationCancel
 	return plans, false, nil
 }

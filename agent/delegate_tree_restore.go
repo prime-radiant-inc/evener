@@ -400,15 +400,16 @@ func (c *delegateTreeController) closeMissingRestoreInputs(reasons map[string]st
 		if aggregate == nil || aggregate.Phase != delegatestore.PhaseIdle || !aggregate.Resumable || strings.TrimSpace(reason) == "" {
 			continue
 		}
-		if _, err := c.appendLocked(delegatestore.Event{
+		plan, err := c.appendResumabilityClosureLocked(id, delegatestore.Event{
 			Kind:               delegatestore.EventDelegateResumabilityClosed,
 			DelegateID:         id,
 			ResumabilityClosed: &delegatestore.ResumabilityClosed{Reason: reason},
-		}); err != nil {
+		})
+		if err != nil {
 			return delegateMutationPlans{}, err
 		}
 		c.evidenceVersion++
-		plans.updates = append(plans.updates, c.capturedPlanLocked(id))
+		plans.updates = append(plans.updates, plan)
 	}
 	return plans, nil
 }
