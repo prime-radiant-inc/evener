@@ -37,6 +37,52 @@ func makefileSourcePaths(t testing.TB) []string {
 	return append(paths, family...)
 }
 
+// ruleLineName reports whether line declares a make rule, and if so returns the
+// target name and everything after the colon.
+//
+// A rule line starts at column zero with `name:`. Recipe lines begin with a tab;
+// `:=` and friends are assignments, not rules; a name carrying whitespace is a
+// multi-target line this repo does not use; a leading `.` is a directive like
+// .PHONY or .DEFAULT_GOAL, not a target.
+//
+// This predicate lives in one place because it did not used to: five audits
+// each carried their own copy, and they had already drifted — only four of the
+// five excluded leading-dot directives, so a `.NOTPARALLEL:` line would have
+// counted as a real rule in one reading and not in the others. Nothing in the
+// tree triggered it, which is exactly how a hand-copied predicate hides a
+// divergence until the day it does.
+//
+// internal/maketargetsdoc/parse.go's ruleShape mirrors this deliberately and
+// says so; that copy is unavoidable, because the generator is package main and
+// cannot be imported here.
+func ruleLineName(line string) (name, rest string, ok bool) {
+	if line == "" || line[0] == '\t' || line[0] == '#' || line[0] == ' ' {
+		return "", "", false
+	}
+	name, rest, ok = strings.Cut(line, ":")
+	if !ok || strings.HasPrefix(rest, "=") || strings.ContainsAny(name, " \t") || name == "" {
+		return "", "", false
+	}
+	if strings.HasPrefix(name, ".") {
+		return "", "", false
+	}
+	return name, rest, true
+}
+
+// readMakefileSources reads every file in makefileSourcePaths and hands each
+// body to visit. Six audits needed this loop and each had re-typed it, down to
+// two different spellings of the read-error message.
+func readMakefileSources(t testing.TB, visit func(path string, raw []byte)) {
+	t.Helper()
+	for _, path := range makefileSourcePaths(t) {
+		raw, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatalf("reading %s: %v", path, err)
+		}
+		visit(path, raw)
+	}
+}
+
 // copyMakefileSources copies the root Makefile and every make/*.mk family
 // file from repoRoot into fixtureRoot, so a fixture that runs `make
 // <target>` reaches the split rules the anchored include pulls in. Copying
@@ -73,31 +119,21 @@ func TestMakefileSourcePathsIncludesRootAndFamilies(t *testing.T) {
 func makefilePhonyAndRuleNames(t *testing.T) (phony, rules []string) {
 	t.Helper()
 	seen := map[string]bool{}
-	for _, path := range makefileSourcePaths(t) {
-		raw, err := os.ReadFile(path)
-		if err != nil {
-			t.Fatalf("reading %s: %v", path, err)
-		}
+	readMakefileSources(t, func(_ string, raw []byte) {
 		for line := range strings.Lines(string(raw)) {
 			line = strings.TrimRight(line, "\n")
 			if after, ok := strings.CutPrefix(line, ".PHONY:"); ok {
 				phony = append(phony, strings.Fields(after)...)
 				continue
 			}
-			if line == "" || line[0] == '\t' || line[0] == '#' || line[0] == ' ' {
-				continue
-			}
-			name, rest, ok := strings.Cut(line, ":")
-			if !ok || strings.HasPrefix(rest, "=") || strings.ContainsAny(name, " \t") || name == "" {
-				continue
-			}
-			if seen[name] {
+			name, _, ok := ruleLineName(line)
+			if !ok || seen[name] {
 				continue
 			}
 			seen[name] = true
 			rules = append(rules, name)
 		}
-	}
+	})
 	return phony, rules
 }
 
@@ -211,14 +247,8 @@ func makefileLintingRuleNames(t *testing.T) []string {
 	var names []string
 	for line := range strings.Lines(string(raw)) {
 		line = strings.TrimRight(line, "\n")
-		if line == "" || line[0] == '\t' || line[0] == '#' || line[0] == ' ' {
-			continue
-		}
-		name, rest, ok := strings.Cut(line, ":")
-		if !ok || strings.HasPrefix(rest, "=") || strings.ContainsAny(name, " \t") || name == "" {
-			continue
-		}
-		if strings.HasPrefix(name, ".") || name == "lint" {
+		name, _, ok := ruleLineName(line)
+		if !ok || name == "lint" {
 			continue
 		}
 		names = append(names, name)
@@ -367,14 +397,8 @@ func makefileRulesWithoutRecipes(t *testing.T) (empty []string, total int) {
 // to be done") and, before this fix, passed this audit too.
 func rulesWithoutRecipesInLines(lines []string) (empty []string, total int) {
 	for i, line := range lines {
-		name, rest, ok := strings.Cut(line, ":")
-		if !ok || strings.HasPrefix(rest, "=") || strings.ContainsAny(name, " \t") || name == "" {
-			continue
-		}
-		if line == "" || line[0] == '\t' || line[0] == '#' || line[0] == ' ' {
-			continue
-		}
-		if strings.HasPrefix(name, ".") {
+		name, rest, ok := ruleLineName(line)
+		if !ok {
 			continue
 		}
 		total++
@@ -479,14 +503,8 @@ func TestRootMakefileHasNoRules(t *testing.T) {
 	var found []string
 	for line := range strings.Lines(string(raw)) {
 		line = strings.TrimRight(line, "\n")
-		if line == "" || line[0] == '\t' || line[0] == '#' || line[0] == ' ' {
-			continue
-		}
-		name, rest, ok := strings.Cut(line, ":")
-		if !ok || strings.HasPrefix(rest, "=") || strings.ContainsAny(name, " \t") || name == "" {
-			continue
-		}
-		if strings.HasPrefix(name, ".") {
+		name, _, ok := ruleLineName(line)
+		if !ok {
 			continue
 		}
 		found = append(found, name)
@@ -577,15 +595,9 @@ func makefileTargetsMissingSummaries(t *testing.T) (missing []string, total int)
 		}
 		lines := strings.Split(strings.ReplaceAll(string(raw), "\r\n", "\n"), "\n")
 		for i, line := range lines {
-			if line == "" || line[0] == '\t' || line[0] == '#' || line[0] == ' ' {
+			name, rest, ok := ruleLineName(line)
+			if !ok {
 				continue
-			}
-			name, rest, ok := strings.Cut(line, ":")
-			if !ok || strings.HasPrefix(rest, "=") || strings.ContainsAny(name, " \t") || name == "" {
-				continue
-			}
-			if strings.HasPrefix(name, ".") {
-				continue // .PHONY and friends are directives, not rules.
 			}
 			if annotationTargetSpecificVariable.MatchString(strings.TrimSpace(rest)) {
 				continue

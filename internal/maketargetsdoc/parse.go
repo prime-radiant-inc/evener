@@ -55,7 +55,6 @@ type block struct {
 	Target
 	startLine int             // for the "dangling block" error at EOF
 	lastKey   string          // "" means the summary is still the active accumulator
-	inFields  bool            // true once the leading summary run has ended
 	seenKeys  map[string]bool // duplicate-field detection
 }
 
@@ -213,13 +212,12 @@ func accumulate(pending *block, line string, lineNo int) (*block, error) {
 			pending.seenKeys = map[string]bool{}
 		}
 		pending.seenKeys[key] = true
-		pending.inFields = true
 		pending.lastKey = key
 		*pending.fieldPtr(key) = value
 		return pending, nil
 	}
 
-	if pending.inFields {
+	if pending.lastKey != "" {
 		return nil, fmt.Errorf("line %d: %q looks like summary prose but appears after a field line; the summary must be the leading run of ## lines, before any key: field", lineNo, line)
 	}
 	pending.lastKey = ""

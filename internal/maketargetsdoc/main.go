@@ -4,6 +4,7 @@
 package main
 
 import (
+	"bytes"
 	"errors"
 	"flag"
 	"fmt"
@@ -138,6 +139,12 @@ func generateOne(docDir, mkPath, stem string) error {
 	newDoc, err := RewriteRegion(docSrc, stem, body)
 	if err != nil {
 		return fmt.Errorf("%s: %w", docPath, err)
+	}
+	// `make lint` runs this on every invocation via lint-generated, so an
+	// unconditional write would bump all six docs' mtimes on a no-op run and
+	// wake anything watching them by timestamp rather than by content.
+	if bytes.Equal(newDoc, docSrc) {
+		return nil
 	}
 	return os.WriteFile(docPath, newDoc, 0o644)
 }
