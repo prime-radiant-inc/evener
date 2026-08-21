@@ -1,20 +1,4 @@
-// Descriptors for the job_*/delegate_send family (parity checklist §2's
-// job_read_output/job_list/job_stop/job_send_message renderers), minus
-// `delegate` itself (the spawn call - see subagentModule.tsx, which owns
-// the aggregated view these calls' targets correlate into).
-//
-// Ground truth (agent/session_tools_jobs.go, verified directly): the
-// registered "read one job" tool is named job_status, NOT job_read_output,
-// which has no definition and no registration, and reaches this renderer
-// only from stored transcripts. ExecuteCall marshals State directly into
-// item.raw with no wrapper key. job_status returns whole-object JSON in
-// item.output, so its existing output parser is the useful representation;
-// raw duplicates that state. job_list returns human-formatted text in output
-// but a stable direct jobListResult in raw, which supplies valuable row fields
-// and is rendered below. job_stop remains formatted-output-driven; delegate_send
-// prefers validated raw state and otherwise falls back to its historical
-// formatted output. job_send_message is a retired/banned tool name kept only
-// as a defensive alias reading its legacy target arg.
+// Descriptors for job_* and delegate_send follow-up calls.
 import { useEffect, useLayoutEffect, useState } from "react";
 import type { ItemModel } from "../../../../protocol/model";
 import { IconButton } from "../../../../widgets";
@@ -28,12 +12,7 @@ import { turnScopeKey, updateSubagentRowIfExists } from "./subagentModuleStore";
 
 const ID_CLIP = 26;
 
-// correlateOnly is the shared shape job_status/job_stop/delegate_send's
-// bodies use to ALSO update an existing subagent-module row for the child
-// they're checking on/messaging, in addition to their own normal output
-// display - never spawning a fresh row (subagentModule.tsx's own
-// updateSubagentRowIfExists already enforces that; this is just the
-// per-tool row-key/kind/preview derivation).
+// Follow-up calls may patch an existing delegate row but never create one.
 type CorrelationResolvers = {
   resolveKey: (item: ItemModel) => string;
   resolveKind: (item: ItemModel) => ReturnType<typeof classifyJobStatus> | undefined;
@@ -410,11 +389,7 @@ function delegateSendWaitIgnoredReason(item: ItemModel): string | undefined {
   return reason || undefined;
 }
 
-// The target's transcript ref rides the tool call's raw state
-// (agent/session_tools_jobs.go's delegateSendResult.TranscriptRef), so the
-// collapsed row can offer the same open-in-pane link the subagent module rows
-// have. Runtime-message results and pre-field transcripts carry no ref - no
-// button, never a dead link.
+// The target transcript ref enables the row's open-in-pane action.
 function delegateSendTranscriptRef(item: ItemModel): string | undefined {
   if (!delegateSendResult(item.raw)) return undefined;
   const ref = item.raw.transcript_ref;

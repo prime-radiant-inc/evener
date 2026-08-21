@@ -948,46 +948,6 @@ test("task-only delegate purpose previews preserve an emoji at the Unicode clipp
   expect(within(asciiTool!).getByTestId("tool-row-purpose").textContent).toBe(exactAsciiTask);
 });
 
-test("task-only delegates show a bounded purpose preview and fold the multi-line Prompt behind one disclosure", () => {
-  const task =
-    "**Inspect** the parser\n\nand report the `task` field. Keep the full mandate available for the reader. This suffix makes the preview bounded and honest.";
-  const { container } = render(
-    <ToolCallItem
-      item={item({
-        id: "task_only_delegate",
-        callId: "call_task_only_delegate",
-        toolName: "delegate",
-        argumentsJSON: JSON.stringify({ task, mode: "foreground_timeout" }),
-        output: JSON.stringify({ delegate_id: "dlg_task_only", status: "completed", transcript_ref: "ref_task_only" }),
-      })}
-      turn={turn}
-      live={false}
-    />,
-  );
-
-  const tool = screen.getByTestId("tool-call-item");
-  const module = screen.getByTestId("subagent-module");
-  const purpose = screen.getByTestId("tool-row-purpose");
-  expect(purpose.textContent).toBe(
-    "**Inspect** the parser and report the `task` field. Keep the full mandate available for the reader. This suffix makes th…",
-  );
-  expect(purpose.textContent).not.toBe(task);
-  const mandate = screen.getByTestId("subagent-mandate");
-  // The Prompt renders as markdown, first line visible: **Inspect** -> <strong>.
-  expect(mandate.querySelector("strong")?.textContent).toBe("Inspect");
-  // The remaining lines sit behind the module's one disclosure, unrendered
-  // until it opens.
-  expect(within(mandate).queryByText(/Keep the full mandate available/)).toBeNull();
-  expect(tool.querySelectorAll("details > summary")).toHaveLength(2); // the row's own + the Prompt fold
-  expect(module.querySelectorAll("details > summary")).toHaveLength(1);
-  expect(within(tool).getByTestId("tool-row-status").querySelector('[role="img"]')).toBeTruthy();
-
-  const openTranscript = within(module).getByRole("button", { name: "Open transcript" });
-  expect(openTranscript.textContent).toContain("open");
-  expect(openTranscript.querySelector("svg")).toBeTruthy();
-  expect(container.querySelectorAll('[data-testid="tool-row"]')).toHaveLength(1);
-});
-
 test("delegate controls require stable delegate_id and reject activation-only job_id", () => {
   render(
     <>
@@ -1022,8 +982,10 @@ test("delegate controls require stable delegate_id and reject activation-only jo
 
   const rows = screen.getAllByTestId("subagent-row");
   expect(rows).toHaveLength(1);
-  expect(rows[0]?.textContent).toContain("stable");
-  expect(rows[0]?.textContent).not.toContain("legacy activation");
+  // The stable call cards; the activation-only one does not. The card is
+  // headless - assert the kind, and that exactly one row (the stable one)
+  // earned the open control.
+  expect(rows[0]?.getAttribute("data-kind")).toBe("running");
   expect(screen.getAllByRole("button", { name: "Open transcript" })).toHaveLength(1);
 });
 

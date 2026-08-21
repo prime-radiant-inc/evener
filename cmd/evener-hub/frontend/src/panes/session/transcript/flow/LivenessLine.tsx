@@ -19,8 +19,9 @@
 // that activity stops.
 
 import type { ModelRetryState } from "../../../../protocol/model";
+import { useThreadsStore } from "../../../../stores/threads";
 import { requireClass } from "../../../../widgets/internal/requireClass";
-import { turnScopeKey, useSubagentRows } from "../tools/subagentModuleStore";
+import { turnScopeKey, useRunningSubagentCount } from "../tools/subagentModuleStore";
 import { describeLiveness, type RetryWait } from "./liveness";
 import styles from "./livenessline.module.css";
 
@@ -58,27 +59,14 @@ const CLASS = {
 };
 
 export function LivenessLine({ lastFrameAt, now, active, sessionRef, turnId, retry, primaryModel }: LivenessLineProps) {
-  const rows = useSubagentRows(turnScopeKey(sessionRef, turnId ?? ""));
-  // turnId undefined means there is no active turn to ask about (e.g. the
-  // brief window between thread/status/changed flipping "active" and
-  // turn/started's own activeTurnId landing - see
-  // protocol/sendQueueAvailability.ts's note on that same race): zero
-  // running children, not a lookup under the empty-string fallback
-  // turnScopeKey reserves for exactly this case. displayKind prefers the
-  // live overlay over the frozen tool-output kind, mirroring
-  // SubagentRowView's own displayKind (subagentModule.tsx) - a faster live
-  // watch/notification can know a child is done, or freshly re-running,
-  // before that child's own delegate tool call has settled a new output.
-  const runningSubagents =
-    turnId === undefined ? 0 : rows.filter((row) => (row.liveKind ?? row.kind) === "running").length;
-  // Narrows the raw retry into what describeLiveness renders (RetryWait's own
-  // doc comment): `model` only when it names a DIFFERENT model than the
-  // session's current one - without this the chip cannot distinguish "same
-  // model, still failing" from "now trying a fallback" (design doc Component
-  // 1). `inProgress` once either a frame has landed since this retry was
-  // reported or its own delay has elapsed - the wait is over, so the wait
-  // period's countdown gives way to "in progress" rather than the indicator
-  // vanishing (the web-only difference from the TUI half of this feature).
+  const delegates = useThreadsStore((s) => {
+    if (sessionRef === undefined) return undefined;
+    return (s.threads.get(sessionRef) ?? s.watchedThreads.get(sessionRef))?.delegates;
+  });
+  const runningSubagents = useRunningSubagentCount(
+    turnId === undefined ? undefined : turnScopeKey(sessionRef, turnId),
+    delegates,
+  );
   const retryWait: RetryWait | undefined = retry && {
     attempt: retry.attempt,
     attemptCap: retry.attemptCap,

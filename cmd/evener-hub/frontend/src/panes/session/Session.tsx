@@ -41,7 +41,7 @@ import { modelLabel } from "./chrome/statusFormat";
 import { ColdStartSkeleton, useColdStartSkeleton } from "./coldStart";
 import { Composer } from "./composer/Composer";
 import { requestQuoteInsert } from "./composer/quoteInsert";
-import { cadenceStateForStatus, NOW_TICK_MS, useNowTick } from "./liveness";
+import { cadenceStateForStatus, NOW_TICK_MS, SessionNowContext, useNowTick } from "./liveness";
 import { PendingChips } from "./pending/PendingChips";
 import { resolveThreadName } from "./threadTitle";
 import { exchangeOpenersFor } from "./transcript/exchangeOpeners";
@@ -369,7 +369,7 @@ export default function Session({ params, paneId, focused: paneFocused }: PanePr
     return row;
   };
 
-  const transcript = (
+  const transcriptContent = (
     <div className={styles.transcript} ref={transcriptContainerRef}>
       <SelectionQuote
         containerRef={transcriptContainerRef}
@@ -482,6 +482,7 @@ export default function Session({ params, paneId, focused: paneFocused }: PanePr
       </FlowOverlay>
     </div>
   );
+  const transcript = <SessionNowContext.Provider value={now}>{transcriptContent}</SessionNowContext.Provider>;
 
   return (
     <PaneScaffold

@@ -1,9 +1,10 @@
 import { cleanup, render, screen, within } from "@testing-library/react";
 import { afterEach, expect, test } from "vitest";
+import { ToolCallItem } from "../ToolCallItem";
 import { toolRendererFor } from "../toolRenderers";
 import "./jobTools";
 import "./subagentModule"; // registers `delegate` too - needed for the row-correlation tests below
-import type { ItemModel } from "../../../../protocol/model";
+import type { ItemModel, TurnModel } from "../../../../protocol/model";
 import { resetSubagentModuleStoreForTests } from "./subagentModuleStore";
 
 afterEach(() => {
@@ -424,15 +425,12 @@ test("the generic job_* descriptor never wins over an exact match", () => {
   expect(toolRendererFor("job_stop")).not.toBe(toolRendererFor("job_watch"));
 });
 
-// --- correlating follow-up calls into the subagent module's existing row
-// (never spawning a fresh row of their own - mirrors the legacy
-// reconcileSubagent's identical "update only" rule) ------------------------
+// --- follow-up calls patch existing delegate rows only --------------------
 
 function spawnRow(turnId: string, delegateId: string, transcriptRef: string) {
-  const d = toolRendererFor("delegate");
-  const Body = d.body!;
+  const turn: TurnModel = { id: turnId, status: "completed", items: [] };
   render(
-    <Body
+    <ToolCallItem
       item={item({
         id: `spawn_${delegateId}`,
         turnId,
@@ -441,6 +439,7 @@ function spawnRow(turnId: string, delegateId: string, transcriptRef: string) {
         argumentsJSON: JSON.stringify({ task: "spawn" }),
         output: JSON.stringify({ delegate_id: delegateId, status: "running", transcript_ref: transcriptRef }),
       })}
+      turn={turn}
       live={false}
     />,
   );
@@ -521,26 +520,7 @@ test("stored job_stop activation shape never updates a stable delegate row", () 
 });
 
 test("delegate_send checking on a delegate (by delegate_id) updates its existing row", () => {
-  const d0 = toolRendererFor("delegate");
-  const Body0 = d0.body!;
-  render(
-    <Body0
-      item={item({
-        id: "spawn_dlg",
-        turnId: "turn_wire_send",
-        callId: "call_spawn_dlg",
-        toolName: "delegate",
-        argumentsJSON: JSON.stringify({ task: "spawn" }),
-        output: JSON.stringify({
-          delegate_id: "dlg_wired",
-          job_id: "job_x",
-          status: "running",
-          transcript_ref: "ref_x",
-        }),
-      })}
-      live={false}
-    />,
-  );
+  spawnRow("turn_wire_send", "dlg_wired", "ref_x");
 
   const d = toolRendererFor("delegate_send");
   const Body = d.body!;

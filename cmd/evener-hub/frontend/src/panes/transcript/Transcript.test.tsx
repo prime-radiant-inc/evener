@@ -1,4 +1,4 @@
-import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { lazy } from "react";
 import { afterAll, afterEach, beforeEach, expect, test, vi } from "vitest";
 import { FakeClient } from "../../protocol/testing/fakeClient";
@@ -8,6 +8,7 @@ import { registerPaneForTests } from "../../shell/paneRegistry";
 import { registerDockviewApi, resetWorkspaceStoreForTests } from "../../shell/workspace";
 import { connectionStore } from "../../stores/connection";
 import { resetThreadsStoreForTests } from "../../stores/threads";
+import { resetSubagentModuleStoreForTests } from "../session/transcript/tools/subagentModuleStore";
 import Transcript from "./Transcript";
 
 // A minimal, test-only "session" pane registration - mirrors
@@ -75,6 +76,7 @@ let offsetHeightDescriptor: PropertyDescriptor | undefined;
 beforeEach(() => {
   connectionStore.setState({ state: "idle", serverInfo: undefined, client: null });
   resetThreadsStoreForTests();
+  resetSubagentModuleStoreForTests();
   resetWorkspaceStoreForTests();
   offsetHeightDescriptor = Object.getOwnPropertyDescriptor(HTMLElement.prototype, "offsetHeight");
   Object.defineProperty(HTMLElement.prototype, "offsetHeight", { configurable: true, value: CONTAINER_HEIGHT });
@@ -92,6 +94,7 @@ afterEach(() => {
   // opened (pointing at a tracked "ref_parent" ref) stays open and focused
   // for whichever file runs next under isolate:false.
   resetThreadsStoreForTests();
+  resetSubagentModuleStoreForTests();
   resetWorkspaceStoreForTests();
 });
 
@@ -129,6 +132,30 @@ test("renders the thread's turns through the shared VirtualList/TurnBlock engine
   const fake = connectFakeClient();
   fake.on("thread/read", () =>
     readResponse("ref_a", {
+      evener: {
+        ref: "ref_a",
+        capabilities: CAPABILITIES,
+        queue: { revision: 0 },
+        diagnostics: {
+          delegates: [
+            {
+              delegateId: "dlg_observed",
+              ownerSessionId: "sess_ref_a",
+              rootSessionId: "sess_ref_a",
+              childSessionId: "sess_child",
+              transcriptRef: "",
+              type: "delegate",
+              lifecycle: "idle",
+              phase: "idle",
+              status: "idle",
+              outcome: "completed",
+              terminal: true,
+              resumable: true,
+              projectionRevision: 1,
+            },
+          ],
+        },
+      },
       turns: [
         {
           id: "turn_1",
@@ -140,6 +167,17 @@ test("renders the thread's turns through the shared VirtualList/TurnBlock engine
               turnId: "turn_1",
               type: "userMessage",
               text: "hi from the observed thread",
+              status: "completed",
+            },
+            {
+              id: "item_delegate",
+              turnId: "turn_1",
+              type: "commandExecution",
+              toolName: "delegate",
+              callId: "call_delegate",
+              description: "Observed delegate",
+              argumentsJson: JSON.stringify({ task: "inspect the observed thread" }),
+              output: JSON.stringify({ delegate_id: "dlg_observed", status: "running" }),
               status: "completed",
             },
           ],
@@ -156,6 +194,8 @@ test("renders the thread's turns through the shared VirtualList/TurnBlock engine
 
   await waitFor(() => expect(screen.getByTestId("turn-block")).toBeTruthy());
   expect(screen.getByText("hi from the observed thread")).toBeTruthy();
+  await waitFor(() => expect(screen.getByTestId("subagent-row")).toBeTruthy());
+  expect(within(screen.getByTestId("subagent-row")).getByText("Status: done")).toBeTruthy();
 });
 
 test("is read-only: renders no composer and no session-chrome footer, even for a fully capable thread", async () => {
