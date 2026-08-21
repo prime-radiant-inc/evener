@@ -142,6 +142,28 @@ func TestEveryPhonyTargetHasARule(t *testing.T) {
 	}
 }
 
+// firstLintTargetsList returns the FIRST "LINT_TARGETS :=" assignment's
+// values across makefileSourcePaths — the same list both
+// TestEveryLintTargetIsPhonyAndHasARule and TestEveryLintingRuleIsInLintTargets
+// validate, and the one `make lint` actually expands because
+// TestExactlyOneLintTargetsDefinition holds there to be exactly one
+// definition.
+func firstLintTargetsList(t *testing.T) []string {
+	t.Helper()
+	for _, path := range makefileSourcePaths(t) {
+		raw, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatalf("reading %s: %v", path, err)
+		}
+		for line := range strings.Lines(string(raw)) {
+			if after, ok := strings.CutPrefix(strings.TrimRight(line, "\n"), "LINT_TARGETS :="); ok {
+				return strings.Fields(after)
+			}
+		}
+	}
+	return nil
+}
+
 // TestEveryLintTargetIsPhonyAndHasARule narrows the rule above onto the lint
 // family, because LINT_TARGETS is the list `make lint` expands and the one a
 // reader treats as the inventory of what the gate proves.
@@ -154,20 +176,7 @@ func TestEveryPhonyTargetHasARule(t *testing.T) {
 func TestEveryLintTargetIsPhonyAndHasARule(t *testing.T) {
 	t.Parallel()
 	phony, rules := makefilePhonyAndRuleNames(t)
-	var targets []string
-search:
-	for _, path := range makefileSourcePaths(t) {
-		raw, err := os.ReadFile(path)
-		if err != nil {
-			t.Fatalf("reading %s: %v", path, err)
-		}
-		for line := range strings.Lines(string(raw)) {
-			if after, ok := strings.CutPrefix(strings.TrimRight(line, "\n"), "LINT_TARGETS :="); ok {
-				targets = strings.Fields(after)
-				break search
-			}
-		}
-	}
+	targets := firstLintTargetsList(t)
 	if len(targets) == 0 {
 		t.Fatal("no LINT_TARGETS assignment found; `make lint` has no family list to expand")
 	}
@@ -186,6 +195,83 @@ search:
 		if !isPhony[target] {
 			t.Errorf("LINT_TARGETS names %q, which is not .PHONY: a file of that name would skip the check", target)
 		}
+	}
+}
+
+// makefileLintingRuleNames returns every rule name declared in
+// make/linting.mk, excluding the `lint` alias itself (the target
+// LINT_TARGETS feeds, not a member of it) and directive lines like
+// .PHONY.
+func makefileLintingRuleNames(t *testing.T) []string {
+	t.Helper()
+	raw, err := os.ReadFile("make/linting.mk")
+	if err != nil {
+		t.Fatalf("reading make/linting.mk: %v", err)
+	}
+	var names []string
+	for line := range strings.Lines(string(raw)) {
+		line = strings.TrimRight(line, "\n")
+		if line == "" || line[0] == '\t' || line[0] == '#' || line[0] == ' ' {
+			continue
+		}
+		name, rest, ok := strings.Cut(line, ":")
+		if !ok || strings.HasPrefix(rest, "=") || strings.ContainsAny(name, " \t") || name == "" {
+			continue
+		}
+		if strings.HasPrefix(name, ".") || name == "lint" {
+			continue
+		}
+		names = append(names, name)
+	}
+	return names
+}
+
+// TestEveryLintingRuleIsInLintTargets is the mirror
+// TestEveryLintTargetIsPhonyAndHasARule does not cover: that test walks
+// LINT_TARGETS outward to confirm every member still has a working rule.
+// This one walks make/linting.mk's rules inward to confirm every one of
+// them is still a LINT_TARGETS member. Nothing enforced that direction
+// before this test, and it is the direction PR #273's failure actually
+// took reversed onto this branch: a reviewer proved it by dropping
+// lint-generated from LINT_TARGETS, and all ten prior audits kept passing
+// while `make help`, linting.md's generated table (`trigger: Required CI
+// (via make lint)`), and linting.md's prose kept asserting it runs, and
+// `make -n lint` held zero references to it. lint-generated still exists,
+// still has a working recipe, and `make lint-generated` standing alone
+// still runs it — but the required gate silently stopped calling it.
+//
+// Every one of make/linting.mk's rules was checked against `make -n lint`
+// before this test was written, and each is genuinely required: none is
+// exempt, so this test hardcodes no allowlist. If a future lint-family rule
+// is deliberately NOT gate material, say so in a comment next to its rule
+// rather than adding a silent skip here.
+func TestEveryLintingRuleIsInLintTargets(t *testing.T) {
+	t.Parallel()
+	rules := makefileLintingRuleNames(t)
+	if len(rules) == 0 {
+		t.Fatal("parsed 0 rules from make/linting.mk; the parser is broken, not the Makefile")
+	}
+	targets := firstLintTargetsList(t)
+	if len(targets) == 0 {
+		t.Fatal("no LINT_TARGETS assignment found; `make lint` has no family list to expand")
+	}
+	inTargets := make(map[string]bool, len(targets))
+	for _, target := range targets {
+		inTargets[target] = true
+	}
+	var missing []string
+	for _, rule := range rules {
+		if !inTargets[rule] {
+			missing = append(missing, rule)
+		}
+	}
+	sort.Strings(missing)
+	if len(missing) > 0 {
+		t.Fatalf("these make/linting.mk rules are not in LINT_TARGETS, so `make lint` never calls "+
+			"them even though they still work standing alone — PR #273's failure mode, mirrored: "+
+			"a lint-shaped rule that quietly stopped being part of the required gate. Add each to "+
+			"LINT_TARGETS, or if one is genuinely not gate material, say why in a comment beside "+
+			"it:\n  %s", strings.Join(missing, "\n  "))
 	}
 }
 
@@ -250,36 +336,65 @@ func makefileRulesWithoutRecipes(t *testing.T) (empty []string, total int) {
 		if err != nil {
 			t.Fatalf("reading %s: %v", path, err)
 		}
-		lines := strings.Split(string(raw), "\n")
-		for i, line := range lines {
-			name, rest, ok := strings.Cut(line, ":")
-			if !ok || strings.HasPrefix(rest, "=") || strings.ContainsAny(name, " \t") || name == "" {
-				continue
-			}
-			if line == "" || line[0] == '\t' || line[0] == '#' || line[0] == ' ' {
-				continue
-			}
-			if strings.HasPrefix(name, ".") {
-				continue
-			}
-			total++
-			if strings.TrimSpace(rest) != "" {
-				continue
-			}
-			hasRecipe := false
-			for _, next := range lines[i+1:] {
-				if next == "" || strings.HasPrefix(next, "#") {
-					continue
-				}
-				hasRecipe = strings.HasPrefix(next, "\t")
-				break
-			}
-			if !hasRecipe {
-				empty = append(empty, name)
-			}
-		}
+		fileEmpty, fileTotal := rulesWithoutRecipesInLines(strings.Split(string(raw), "\n"))
+		empty = append(empty, fileEmpty...)
+		total += fileTotal
 	}
 	sort.Strings(empty)
+	return empty, total
+}
+
+// rulesWithoutRecipesInLines is the scan makefileRulesWithoutRecipes runs
+// against one source file's lines. It is factored out, pure, so the two
+// hollow-gate shapes below can be pinned directly against synthetic content
+// instead of by editing the real Makefile.
+//
+// Two shapes read as "has prerequisites" if the text after the rule's colon
+// is tested for emptiness verbatim, when GNU make treats both as having
+// none:
+//
+//   - A trailing "#…" comment. `lint-fuzz-registry: # TODO restore after
+//     the rebase` leaves "rest" as " # TODO restore after the rebase" —
+//     visibly non-empty — but make strips the comment before looking at the
+//     prerequisite list, so the real list is empty.
+//   - A bare ";". `lint-fuzz-registry: ;` leaves "rest" as " ;", also
+//     non-empty by the same naive test, but a semicolon with nothing after
+//     it introduces an EMPTY inline recipe, not a prerequisite.
+//
+// Both are the same hollow-gate shape this audit exists to catch: a rule
+// that is phony, has a rule line, and does nothing. A rebase conflict
+// resolution that leaves either shape behind passes make cleanly ("Nothing
+// to be done") and, before this fix, passed this audit too.
+func rulesWithoutRecipesInLines(lines []string) (empty []string, total int) {
+	for i, line := range lines {
+		name, rest, ok := strings.Cut(line, ":")
+		if !ok || strings.HasPrefix(rest, "=") || strings.ContainsAny(name, " \t") || name == "" {
+			continue
+		}
+		if line == "" || line[0] == '\t' || line[0] == '#' || line[0] == ' ' {
+			continue
+		}
+		if strings.HasPrefix(name, ".") {
+			continue
+		}
+		total++
+		restNoComment, _, _ := strings.Cut(rest, "#")
+		restTrimmed := strings.TrimSpace(restNoComment)
+		if restTrimmed != "" && restTrimmed != ";" {
+			continue
+		}
+		hasRecipe := false
+		for _, next := range lines[i+1:] {
+			if next == "" || strings.HasPrefix(next, "#") {
+				continue
+			}
+			hasRecipe = strings.HasPrefix(next, "\t")
+			break
+		}
+		if !hasRecipe {
+			empty = append(empty, name)
+		}
+	}
 	return empty, total
 }
 
@@ -294,6 +409,60 @@ func TestEveryRuleHasARecipe(t *testing.T) {
 		t.Fatalf("these rules have no recipe, so `make <target>` prints "+
 			"\"Nothing to be done\" and exits 0 while checking nothing:\n  %s",
 			strings.Join(empty, "\n  "))
+	}
+}
+
+// TestEveryRuleHasARecipeCatchesTrailingComment pins the first hollow-gate
+// shape rulesWithoutRecipesInLines must not read as "has prerequisites": a
+// rule line whose only text after the colon is a "#…" comment. This is
+// exactly the shape a rebase conflict resolution left behind on
+// lint-fuzz-registry, and `make` runs it as "Nothing to be done" — a gate
+// that reports green while checking nothing.
+func TestEveryRuleHasARecipeCatchesTrailingComment(t *testing.T) {
+	t.Parallel()
+	lines := strings.Split("lint-fuzz-registry: # TODO restore after the rebase\n", "\n")
+	empty, total := rulesWithoutRecipesInLines(lines)
+	if total != 1 {
+		t.Fatalf("expected 1 rule declaration parsed, got %d", total)
+	}
+	if !slices.Contains(empty, "lint-fuzz-registry") {
+		t.Fatalf("expected lint-fuzz-registry to be reported as recipe-less (a trailing comment "+
+			"is not a prerequisite), got %v", empty)
+	}
+}
+
+// TestEveryRuleHasARecipeCatchesSemicolonOnlyRecipe pins the second
+// hollow-gate shape: a rule line ending in a bare ";" with nothing after
+// it. GNU make reads ";" as introducing an inline recipe, and an inline
+// recipe with no text is empty — the same "Nothing to be done" outcome as
+// no recipe at all — but the raw text after the colon (" ;") is non-empty,
+// so a verbatim emptiness test misreads it as a prerequisite list.
+func TestEveryRuleHasARecipeCatchesSemicolonOnlyRecipe(t *testing.T) {
+	t.Parallel()
+	lines := strings.Split("lint-fuzz-registry: ;\n", "\n")
+	empty, total := rulesWithoutRecipesInLines(lines)
+	if total != 1 {
+		t.Fatalf("expected 1 rule declaration parsed, got %d", total)
+	}
+	if !slices.Contains(empty, "lint-fuzz-registry") {
+		t.Fatalf("expected lint-fuzz-registry to be reported as recipe-less (a bare \";\" is an "+
+			"empty inline recipe, not a prerequisite), got %v", empty)
+	}
+}
+
+// TestEveryRuleHasARecipeAllowsRealSemicolonRecipe guards the fix above
+// against overcorrecting: a rule whose inline recipe after ";" actually has
+// content must NOT be reported as recipe-less.
+func TestEveryRuleHasARecipeAllowsRealSemicolonRecipe(t *testing.T) {
+	t.Parallel()
+	lines := strings.Split("lint-fuzz-registry: ; echo hi\n", "\n")
+	empty, total := rulesWithoutRecipesInLines(lines)
+	if total != 1 {
+		t.Fatalf("expected 1 rule declaration parsed, got %d", total)
+	}
+	if slices.Contains(empty, "lint-fuzz-registry") {
+		t.Fatalf("lint-fuzz-registry has a real inline recipe after \";\" and should not be "+
+			"reported as recipe-less, got %v", empty)
 	}
 }
 

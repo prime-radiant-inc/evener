@@ -251,9 +251,14 @@ func detectBuildSystem(root string) string {
 }
 
 // makefileAssignment matches a variable assignment operator (":=", "::=",
-// "+=" or "?="). A naive "has = but no :" test treats "LDFLAGS := x" as a
-// rule named LDFLAGS, because ":=" contains both characters.
-var makefileAssignment = regexp.MustCompile(`^[^:=#]*(::?=|\+=|\?=)`)
+// "+=", "?=" or plain "="). A naive "has = but no :" test treats
+// "LDFLAGS := x" as a rule named LDFLAGS, because ":=" contains both
+// characters. Plain "=" (GNU make's recursive assignment) must be included
+// too: without it, a line like "FUZZ_SEED_REPLAY = for m in …" reads as an
+// assignment only as long as its value holds no colon — the moment it does
+// (a sed expression, a host:port), the value's first colon gets parsed as a
+// rule's, mining bogus targets out of it.
+var makefileAssignment = regexp.MustCompile(`^[^:=#]*(::?=|\+=|\?=|=)`)
 
 // makefileInclude matches an "include"/"-include" line, with or without the
 // "$(dir $(lastword $(MAKEFILE_LIST)))" prefix make/*.mk-style splits use to

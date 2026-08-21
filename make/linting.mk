@@ -181,8 +181,9 @@ LINT_TARGETS := lint-naming lint-gofmt lint-evenerfuzz lint-eval lint-internal l
 ## Go lint, formatting, tagged floors, generated outputs, and secrets.
 ## proves: TOML naming; gofmt over every tracked .go file; the evenerfuzz and
 ##   eval compile floors; the internal-type check; golangci-lint across every
-##   workspace module.
-## trigger: required CI; local pre-merge.
+##   workspace module; generated-output freshness; the fuzz registry check;
+##   and the repo secret scan.
+## trigger: Required CI; local pre-merge.
 ## requires: golangci-lint, gitleaks.
-## fails-when: any member of LINT_TARGETS exits nonzero.
+## fails-when: Any member of LINT_TARGETS exits nonzero.
 lint: $(LINT_TARGETS)
