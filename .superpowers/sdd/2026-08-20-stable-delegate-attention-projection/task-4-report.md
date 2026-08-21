@@ -132,3 +132,29 @@ No helper, harness, fake store, matrix, cache, poller, migration, or abstraction
 - Required obsolete symbols are absent across all frontend `src` production and tests.
 - Concern: the aggregate `make test-web` gate remains environmentally incomplete because the fixed sandbox denies loopback listening and `/bin/ps` to unrelated browser-process selftests. Typecheck, all 6,706 Vitest tests, Biome, and the focused Task 4 suite passed. The parent should rerun `make test-web` outside this restricted sandbox for a zero-exit aggregate verdict.
 - Scratch directory: `/private/var/folders/46/dz2z92w907j150sqxn8b8y1c0000gn/T/evener-sandbox-2565723561`; retain the gate evidence directory named above if diagnosis is needed.
+
+## Fix round 1/5: stale ownership comments
+
+The reviewer approved the spec behavior, runtime implementation, tests, and
+YAGNI result, with one LOW documentation finding. Two comments in
+`subagentModule.tsx` still described deleted follow-up row mutation and the
+deleted collapsed lean watch. This follow-up changes comments only:
+
+- the header now states that only the `delegate` spawn materializes frozen
+  pre-hydration row state and the stable owner projection supplies hydrated
+  state;
+- the `autoExpand` comment now states that child watching exists only in the
+  expanded body for content, while collapsed lifecycle and attention come from
+  the stable owner projection.
+
+The parent reran `make test-web` outside the restricted sandbox. It exited 0
+with `PASS web-typecheck`, `PASS web-test`, and `PASS web-lint`, resolving the
+environmental concern recorded above.
+
+Comment-only follow-up verification:
+
+- `npx biome check --write src/panes/session/transcript/tools/subagentModule.tsx`: PASS;
+- `npx vitest run src/panes/session/transcript/tools/subagentModule.test.tsx`: PASS (35/35);
+- `git diff --check`: PASS.
+
+No runtime behavior or test code changed in this fix round.

@@ -1,12 +1,7 @@
 // The delegate descriptor and its Rail × Quote card. Each delegate tool call
-// renders exactly one card in its own ToolCallItem body; shared store state is
-// limited to that row's reactive lifecycle data.
-//
-// Scope decision: only `delegate` (the spawn) and the three follow-up
-// calls above ever touch a row. job_list/job_watch do not - they're
-// orientation calls over MANY jobs at once, not a check-in on one
-// specific child, and correlating an arbitrary listing back to individual
-// rows would need far more inference than the wire actually supports.
+// renders exactly one card in its own ToolCallItem body. Only the `delegate`
+// spawn materializes a frozen pre-hydration row in the shared store; once the
+// owning stable delegate projection exists, it supplies the hydrated state.
 import { useEffect } from "react";
 import { type ItemModel, SYSTEM_PRELUDE_TURN_ID } from "../../../../protocol/model";
 import type { EvenerDelegateInfo } from "../../../../protocol/types.gen";
@@ -398,12 +393,10 @@ registerToolRenderer({
   },
   body: DelegateBody,
   // A delegate call is a status card, not a fold-to-open tool row - the same
-  // reasoning as task_list's own `autoExpand: () => true`. Left collapsed by
-  // default, the card stack and its per-child event-stream watches never
-  // mount until opened: the ToolCallItem-owned lean watch still keeps the
-  // top-level dot current while collapsed (evch). Opening it at settle makes
-  // the cards' state/quote/stats visible without a click; a manual collapse
-  // afterward still sticks (ToolCallItem's own autoDefault vs. store-backed
-  // toggle).
+  // reasoning as task_list's own `autoExpand: () => true`. Child watching
+  // exists only while the body is expanded, for quotes and stats; collapsed
+  // lifecycle and attention come from the stable owner projection. Opening at
+  // settle makes the card visible without a click; a manual collapse afterward
+  // still sticks (ToolCallItem's own autoDefault vs. store-backed toggle).
   autoExpand: () => true,
 });
