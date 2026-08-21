@@ -426,6 +426,15 @@ func (s *Session) drainJobTreeWith(ctx context.Context, recheck <-chan time.Time
 			if stallStart.IsZero() {
 				stallStart = now
 			} else if now.Sub(stallStart) >= drainStallTimeout {
+				// The stall verdict was assembled across sequential reads, not a
+				// snapshot. A wake raised since this pass took its edge means the
+				// tree moved mid-verdict — the same straddle the quiescence return
+				// guards against — so re-run the pass rather than letting Close()
+				// SIGKILL work that armed while the scan ran. A genuinely wedged
+				// tree raises no wake, so the confirming pass gives up cleanly.
+				if takeDrainWake(wake) {
+					continue
+				}
 				// The drain is wedged on undelivered work the machinery is not
 				// converting. Warn (naming the stuck managed job(s)) and return the last
 				// result with nil error so cmd/evener/run.go prints the coordinator's
