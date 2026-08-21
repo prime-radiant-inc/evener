@@ -7,6 +7,7 @@ package main
 
 import (
 	"bytes"
+	"errors"
 	"fmt"
 	"strings"
 )
@@ -101,7 +102,7 @@ func validateGeneratedRegionMarkers(doc []byte) error {
 		if bytes.Equal(line.text, []byte(endMarker)) {
 			endCount++
 			if !open && orderErr == nil {
-				orderErr = fmt.Errorf("doc has an END marker before its GENERATED BEGIN marker")
+				orderErr = errors.New("doc has an END marker before its GENERATED BEGIN marker")
 			}
 			open = false
 		}
