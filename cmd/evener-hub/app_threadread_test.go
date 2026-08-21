@@ -37,6 +37,18 @@ func TestAppThreadReadColdDelegatesMatchReconnectedDetailedStatus(t *testing.T) 
 		"task": "cold task", "description": "cold description", "agent_type": "explorer", "resolved_profile_id": "openai", "resolved_model": "gpt-5",
 		"tool_name_ceiling": []string{"communicate"}, "delegation_allowance": 2, "parent_watch_granted": true, "resumable": true, "config": map[string]any{},
 	}
+	childWriter, err := transcript.NewWriter(filepath.Join(entry.StateDir, "sessions", "child-cold.transcript.jsonl"), transcript.Header{
+		SessionID:       "child-cold",
+		ParentSessionID: sessionID,
+		ProfileID:       "openai",
+		Model:           "gpt-5",
+	})
+	if err != nil {
+		t.Fatalf("create child transcript: %v", err)
+	}
+	if err := childWriter.Close(); err != nil {
+		t.Fatalf("close child transcript: %v", err)
+	}
 	batch, err := json.Marshal(map[string]any{"events": []any{map[string]any{
 		"kind": "delegate_created", "seq": 1, "ts": time.Unix(10, 0).UTC(), "delegate_id": "dlg_cold", "created": map[string]any{"descriptor": descriptor},
 	}}})

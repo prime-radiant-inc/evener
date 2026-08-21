@@ -89,3 +89,22 @@ Ineligible delegates (closed, non-resumable, stopping, pending-stop, or permanen
 - Owed-generation admission remains the Task 2 reservation/`CommitStart` path; Task 3 only places final reconciliation after it.
 - Concern: `cmd/evener-hub`'s `TestAppThreadReadColdDelegatesMatchReconnectedDetailedStatus` still builds an eligible child descriptor and metadata without its transcript. The new strict status contract correctly returns a missing-transcript error, so that non-brief fixture now needs a valid child transcript in its owning task. It was not modified because Task 3 is constrained to brief-named paths.
 - Scratch directory: `/private/var/folders/46/dz2z92w907j150sqxn8b8y1c0000gn/T/evener-sandbox-1598484732`; no scratch artifacts need retention.
+
+## Authorized Hub fixture follow-up
+
+The parent reproduced the concern above and authorized one additional existing
+test path: `cmd/evener-hub/app_threadread_test.go`. The cold/reconnected parity
+fixture now creates and closes a valid `child-cold.transcript.jsonl` with the
+existing `transcript.NewWriter` pattern and matching child, parent, profile, and
+model header fields. Production strictness is unchanged; no test/helper was
+added, and no other Hub fixture changed.
+
+Follow-up verification:
+
+- `go test ./cmd/evener-hub -run '^(TestAppThreadReadColdDelegatesMatchReconnectedDetailedStatus)$' -count=1`: PASS.
+- `go test ./cmd/evener-hub -count=1`: PASS (`33.799s`).
+- `go test ./agent -run '^(TestStableDelegateAttention_RestoreAndColdRead)$' -count=1`: PASS.
+- `git diff --check`: PASS.
+
+The earlier Hub-fixture concern is resolved. The separate follow-up commit hash
+is reported in the final handoff because a commit cannot embed its own hash.
