@@ -24,6 +24,7 @@ import { connectionStore } from "../../stores/connection";
 import { threadsStore } from "../../stores/threads";
 import { EmptyState, PaneScaffold, VirtualList, type VirtualListHandle } from "../../widgets";
 import { requireClass } from "../../widgets/internal/requireClass";
+import { NOW_TICK_MS, SessionNowContext, useNowTick } from "../session/liveness";
 import { exchangeOpenersFor } from "../session/transcript/exchangeOpeners";
 import { LoadOlderRow } from "../session/transcript/flow/LoadOlderRow";
 import { TurnBlock } from "../session/transcript/TurnBlock";
@@ -72,6 +73,7 @@ export default function Transcript({ params }: PaneProps<TranscriptParams>) {
 
 function ThreadTranscript({ params }: { params: TranscriptParams }) {
   const { ref } = params;
+  const now = useNowTick(NOW_TICK_MS);
 
   // ensureThread on mount / releaseThread on unmount, deferred until the one
   // client is actually ready - a deep-linked open can reach this effect before
@@ -138,7 +140,7 @@ function ThreadTranscript({ params }: { params: TranscriptParams }) {
     return turn;
   };
 
-  return (
+  const content = (
     <PaneScaffold title={model.name || ref}>
       {model.turns.length === 0 ? (
         <EmptyState title="No turns yet" hint="This thread hasn't sent or received anything yet." />
@@ -162,4 +164,5 @@ function ThreadTranscript({ params }: { params: TranscriptParams }) {
       )}
     </PaneScaffold>
   );
+  return <SessionNowContext.Provider value={now}>{content}</SessionNowContext.Provider>;
 }

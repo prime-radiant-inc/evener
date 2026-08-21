@@ -58,10 +58,8 @@ async function measureAt(cdpPort, url) {
     const host = await evaluate(send, "location.host");
     if (String(host).includes("9180")) throw new Error("refusing: this eval landed on the shared evener-hub port");
 
-    // The delegate module claims its turn's leadership in a layout effect and
-    // the virtualizer measures rows post-mount, so the tree settles a frame or
-    // two after load. Await that settling rather than measuring a tree that is
-    // still assembling itself.
+    // Delegate cards update from layout effects and the virtualizer measures
+    // rows post-mount, so await the real tree settling before measurement.
     await evaluate(send, "window.settled");
     // After the origin refusal above (it must precede every other eval) and
     // after the tree settles, because document.fonts.ready re-arms for each new
@@ -314,6 +312,16 @@ async function main() {
       if (result.footer.modelClientWidth <= 0) {
         widthFailed = true;
         console.log(`${width}px ... FAIL - pressured footer model has zero visible width`);
+      }
+      if (
+        width === 390 &&
+        (!result.subagentCard.found ||
+          !result.subagentCard.contained ||
+          !result.subagentCard.quoteWrapped ||
+          !result.subagentCard.statsContained)
+      ) {
+        widthFailed = true;
+        console.log(`${width}px ... FAIL - narrow long-token subagent card: ${JSON.stringify(result.subagentCard)}`);
       }
       for (const disclosure of result.disclosures) {
         if (!disclosure.openDuringOverflowScan) {

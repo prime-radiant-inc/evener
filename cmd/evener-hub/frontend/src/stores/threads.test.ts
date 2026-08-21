@@ -7,7 +7,7 @@ import {
   turnScopeKey,
   updateSubagentRowIfExists,
   upsertSubagentRow,
-  useSubagentRows,
+  useSubagentRow,
 } from "../panes/session/transcript/tools/subagentModuleStore";
 import type { ConnectionState } from "../protocol/client";
 import { ClientNotReadyError, errorKind, RequestTimeoutError, WireError } from "../protocol/errors";
@@ -4614,9 +4614,9 @@ describe("evener/job/started|finished stay out of stable delegate rows", () => {
       },
     });
 
-    const { result } = renderHook(() => useSubagentRows(scope));
-    expect(result.current[0]).toMatchObject({ rowKey: "dlg:dlg_1", kind: "running" });
-    expect(result.current[0]?.liveKind).toBeUndefined();
+    const { result } = renderHook(() => useSubagentRow(scope, "dlg:dlg_1"));
+    expect(result.current).toMatchObject({ rowKey: "dlg:dlg_1", kind: "running" });
+    expect(result.current?.liveKind).toBeUndefined();
   });
 
   test("evener/job/started does not reset a stable delegate row", async () => {
@@ -4643,8 +4643,8 @@ describe("evener/job/started|finished stay out of stable delegate rows", () => {
       },
     });
 
-    const { result } = renderHook(() => useSubagentRows(scope));
-    expect(result.current[0]).toMatchObject({ liveKind: "failed", liveReason: "boom" });
+    const { result } = renderHook(() => useSubagentRow(scope, "dlg:dlg_1"));
+    expect(result.current).toMatchObject({ liveKind: "failed", liveReason: "boom" });
   });
 
   test("a job with no originTurnId (not run via delegate) is silently ignored, no row touched", async () => {
@@ -4663,8 +4663,8 @@ describe("evener/job/started|finished stay out of stable delegate rows", () => {
       },
     });
 
-    const { result } = renderHook(() => useSubagentRows(scope));
-    expect(result.current[0]?.liveKind).toBeUndefined();
+    const { result } = renderHook(() => useSubagentRow(scope, "job:job_3"));
+    expect(result.current?.liveKind).toBeUndefined();
   });
 
   // kata 8525: a notification for a DIFFERENT session must never patch a row
@@ -4693,8 +4693,8 @@ describe("evener/job/started|finished stay out of stable delegate rows", () => {
       },
     });
 
-    const { result } = renderHook(() => useSubagentRows(scope));
-    expect(result.current[0]?.liveKind).toBeUndefined();
+    const { result } = renderHook(() => useSubagentRow(scope, "dlg:dlg_1"));
+    expect(result.current?.liveKind).toBeUndefined();
   });
 });
 
@@ -4755,13 +4755,12 @@ describe("stable delegate projection routing", () => {
 
     await threadsStore.getState().ensureThread("ref_root");
 
-    const { result } = renderHook(() => useSubagentRows(turnScopeKey("ref_root", "turn_1")));
-    expect(result.current).toHaveLength(1);
-    expect(result.current[0]).toMatchObject({
+    const { result } = renderHook(() => useSubagentRow(turnScopeKey("ref_root", "turn_1"), "dlg:dlg_1"));
+    expect(result.current).toMatchObject({
       delegateId: "dlg_1",
       kind: "done",
     });
-    expect(result.current[0]?.stable?.projectionRevision).toBe(7);
+    expect(result.current?.stable?.projectionRevision).toBe(7);
   });
 
   // Real stored projections can lack originTurnId (the delegate descriptor
@@ -4783,8 +4782,8 @@ describe("stable delegate projection routing", () => {
 
     // Nothing mounted yet: no row, but the projection is stashed.
     const scope = turnScopeKey("ref_root", "turn_9");
-    const { result } = renderHook(() => useSubagentRows(scope));
-    expect(result.current).toHaveLength(0);
+    const { result } = renderHook(() => useSubagentRow(scope, "dlg:dlg_1"));
+    expect(result.current).toBeUndefined();
 
     // The delegate item mounts later (VirtualList windows on scroll) and its
     // row upsert picks the stashed projection up.
@@ -4797,9 +4796,51 @@ describe("stable delegate projection routing", () => {
         delegateId: "dlg_1",
       }),
     );
-    expect(result.current).toHaveLength(1);
-    expect(result.current[0]?.stable?.projectionRevision).toBe(7);
-    expect(result.current[0]?.kind).toBe("done");
+    expect(result.current?.stable?.projectionRevision).toBe(7);
+    expect(result.current?.kind).toBe("done");
+  });
+
+  test("releasing one parent session evicts only its stashed delegate projections", async () => {
+    const fake = connectFakeClient();
+    fake.on("thread/read", (params) => {
+      const ref = (params as { ref: string }).ref;
+      const response = responseWithStableDelegate(ref, 7, "completed", "2026-08-15T10:00:00Z");
+      const delegates = (
+        response.thread.evener as unknown as { diagnostics: { delegates: Array<Record<string, unknown>> } }
+      ).diagnostics.delegates;
+      const first = delegates[0];
+      if (first) delete first.originTurnId;
+      return response;
+    });
+
+    await threadsStore.getState().ensureThread("ref_session_a");
+    await threadsStore.getState().ensureThread("ref_session_b");
+    threadsStore.getState().releaseThread("ref_session_a");
+
+    const scopeA = turnScopeKey("ref_session_a", "turn_late");
+    const scopeB = turnScopeKey("ref_session_b", "turn_late");
+    act(() => {
+      upsertSubagentRow(scopeA, {
+        rowKey: "dlg:dlg_1",
+        kind: "running",
+        task: "late A",
+        resultPreview: "",
+        delegateId: "dlg_1",
+      });
+      upsertSubagentRow(scopeB, {
+        rowKey: "dlg:dlg_1",
+        kind: "running",
+        task: "late B",
+        resultPreview: "",
+        delegateId: "dlg_1",
+      });
+    });
+
+    const { result: rowA } = renderHook(() => useSubagentRow(scopeA, "dlg:dlg_1"));
+    const { result: rowB } = renderHook(() => useSubagentRow(scopeB, "dlg:dlg_1"));
+    expect(rowA.current?.stable).toBeUndefined();
+    expect(rowB.current?.stable?.projectionRevision).toBe(7);
+    threadsStore.getState().releaseThread("ref_session_b");
   });
 
   test("ignores a stale delegate revision while max-merging latest activity", async () => {

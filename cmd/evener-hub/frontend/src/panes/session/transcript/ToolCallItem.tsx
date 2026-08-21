@@ -28,7 +28,7 @@ import {
   type SubagentRow,
   turnScopeKey,
   upsertSubagentRow,
-  useSubagentRows,
+  useSubagentRow,
 } from "./tools/subagentModuleStore";
 import { WatchedChildIndicator } from "./tools/watchedChild";
 import { type ItemRenderProps, ignoringTurn, registerItemRenderer } from "./types";
@@ -95,8 +95,10 @@ export const ToolCallItem = memo(function ToolCallItem({ item, live, sessionRef 
   const isDelegate = item.toolName === "delegate";
   const delegateOutput = isDelegate ? parseJSONObject(item.output) : undefined;
   const stableDelegateId = delegateOutput ? str(delegateOutput, "delegate_id") : undefined;
-  const delegateRows = useSubagentRows(isDelegate ? turnScopeKey(sessionRef, item.turnId) : "");
-  const delegateRow = isDelegate ? delegateRows.find((row) => row.rowKey === rowKeyForDelegateItem(item)) : undefined;
+  const delegateRow = useSubagentRow(
+    isDelegate ? turnScopeKey(sessionRef, item.turnId) : "",
+    isDelegate ? rowKeyForDelegateItem(item) : "",
+  );
   const delegateTranscriptRef = stableDelegateId ? str(delegateOutput ?? {}, "transcript_ref") : undefined;
   const delegateKind = delegateStatusForOutput(delegateOutput, delegateRow, live);
   const delegateStatus = isDelegate ? <StatusDot state={DELEGATE_INDICATOR_STATE[delegateKind]} /> : undefined;

@@ -7,20 +7,15 @@
  * and the delegate's projected token usage, closing with the clock and the
  * expand chevron. Square corners are an explicit design amendment.
  *
- * The module itself is deliberately chromeless: no box, no tally header -
- * the cards carry all of it. This stylesheet sits in the token contract's
+ * This stylesheet sits in the token contract's
  * SEMANTIC_PATH_EXCEPTIONS (see styles/token-contract.test.ts's kata 3h80
  * note) so the state hues may be referenced here directly. */
-
-.module {
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-2);
-}
 
 .card {
   display: flex;
   flex-direction: column;
+  min-width: 0;
+  max-width: 100%;
   gap: 2px;
   padding: var(--space-2) var(--space-3);
   background: var(--surface-1);
@@ -45,19 +40,18 @@
   background: var(--attention-bg);
 }
 
-/* The quote: the child's newest own words, one line, ellipsized. Italic is
- * the only "this is quoted" marker - no literal quotation marks. */
+/* The quote: the child's newest own words. Italic is the only "this is quoted"
+ * marker; long paths and URLs wrap instead of widening the card. */
 .quote {
+  display: block;
+  min-width: 0;
   font-size: var(--font-size-ui);
   font-style: italic;
   color: var(--ink-hi);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  overflow-wrap: anywhere;
 }
 .card[data-kind="failed"] .quote {
   color: var(--danger-ink);
-  font-style: normal;
 }
 .card[data-attention="true"] .quote {
   color: var(--attention-ink);
@@ -69,20 +63,33 @@
 /* Stats: turns · calls · ↑in ↓out ... clock + chevron. Mono micro text. */
 .stats {
   display: flex;
+  min-width: 0;
+  flex-wrap: wrap;
   align-items: center;
   gap: var(--space-1);
   font-family: var(--font-mono);
   font-size: var(--font-size-caption);
   color: var(--ink-low);
 }
+.stats > span {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.statusGlyph {
+  flex: none;
+  color: var(--ink-mid);
+}
 .statsSep {
   color: var(--edge-strong);
 }
 .statsSpring {
+  flex: 1 1 auto;
   margin-left: auto;
 }
 .clock {
+  flex: none;
   color: var(--ink-mid);
+  white-space: nowrap;
 }
 
 /* Expanded: the recent-quotes list, chronological, live one last + bold. */
@@ -101,8 +108,10 @@
   list-style: decimal;
 }
 .quoteItem {
+  min-width: 0;
   font-size: var(--font-size-ui);
   color: var(--ink-mid);
+  overflow-wrap: anywhere;
 }
 .quoteItem::marker {
   font-family: var(--font-mono);
@@ -152,4 +161,16 @@
   color: var(--ink-hi);
   white-space: pre-wrap;
   overflow-wrap: anywhere;
+}
+
+.srOnly {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
 }

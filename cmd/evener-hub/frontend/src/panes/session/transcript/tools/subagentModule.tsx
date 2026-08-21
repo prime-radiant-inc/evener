@@ -1,52 +1,28 @@
-// The `delegate` descriptor (parity checklist §2's delegateRenderer) and
-// the subagent card it feeds - "one aggregated block per turn collecting
-// that turn's job_* activity" per the wave-4 plan, redesigned 2026-08-20
-// as the Rail × Quote card (see the stylesheet's own header).
-//
-// Design rationale (see subagentModuleStore.ts's own header for the full
-// interface-boundary reasoning): ToolRenderProps is {item, live} only, so
-// a single tool call's body cannot see its sibling items to build a
-// shared block by itself. Every delegate item computes its OWN row
-// (spawned/running/done/failed + duration + result preview, all derived
-// from that ONE item's own output/args) and upserts it into
-// subagentModuleStore keyed by (turnId, rowKey); job_status/job_stop/
-// delegate_send do the same via updateSubagentRowIfExists (jobTools.tsx),
-// UPDATING an existing row rather than spawning one, mirroring the legacy
-// reconcileSubagent's identical rule. Whichever delegate item is first to
-// mount within a turn (VirtualList windows a whole TurnBlock as one row -
-// see TurnBlock.tsx's own file - so a turn's items always mount/unmount
-// together, making "first to render, in wire/array order" a real,
-// deterministic signal, not a race) claims leadership inside a
-// useLayoutEffect (symmetric with its own release - see DelegateBody's own
-// comment for why claim and release must live in the same effect) and is
-// the only one that renders the module chrome; every other delegate item in
-// the same turn renders nothing further (its own one-line summary still
-// shows independently - that's ToolCallItem's mandatory summary span, owned
-// by T1, not this body).
+// The delegate descriptor and its Rail × Quote card. Each delegate tool call
+// renders exactly one card in its own ToolCallItem body; shared store state is
+// limited to that row's reactive lifecycle data.
 //
 // Scope decision: only `delegate` (the spawn) and the three follow-up
 // calls above ever touch a row. job_list/job_watch do not - they're
 // orientation calls over MANY jobs at once, not a check-in on one
 // specific child, and correlating an arbitrary listing back to individual
 // rows would need far more inference than the wire actually supports.
-import { useEffect, useLayoutEffect, useState } from "react";
+import { useEffect, useLayoutEffect } from "react";
 import { type ItemModel, SYSTEM_PRELUDE_TURN_ID, type TurnModel } from "../../../../protocol/model";
 import { threadsStore, useThreadsStore } from "../../../../stores/threads";
-import { Button, Chevron, IconButton } from "../../../../widgets";
+import { Chevron, IconButton } from "../../../../widgets";
 import { isDisclosureOpen, toggleDisclosure } from "../../../../widgets/disclosure/disclosureStore";
 import { requireClass } from "../../../../widgets/internal/requireClass";
 import { formatUsagePair } from "../../chrome/activityFormat";
-import { cadenceStateForStatus, NOW_TICK_MS, useNowTick } from "../../liveness";
+import { cadenceStateForStatus, useSessionNow } from "../../liveness";
 import { formatClockTimeSeconds, formatElapsed, plainQuoteLine } from "../messages/format";
 import { statedPurposeOf } from "../ToolRow";
 import type { ToolRenderProps } from "../toolRenderers";
 import { registerToolRenderer } from "../toolRenderers";
 import { parseArgs, parseJSONObject, str } from "./helpers";
 import {
-  claimLeader,
   classifyJobStatus,
   effectiveRowKind,
-  releaseLeader,
   removeSubagentRow,
   resolveRowKey,
   type SubagentRow,
@@ -54,12 +30,10 @@ import {
   setWatchedLiveKind,
   turnScopeKey,
   upsertSubagentRow,
-  useLeader,
-  useSubagentRows,
+  useSubagentRow,
 } from "./subagentModuleStore";
 import styles from "./subagentmodule.module.css";
 
-const DONE_VISIBLE_CAP = 6;
 // The expanded quote list shows the most recent quotes, not the full feed -
 // "open transcript" exists for the full history (the same reasoning the old
 // Activity feed's cap carried). Within the window the order is
@@ -67,8 +41,9 @@ const DONE_VISIBLE_CAP = 6;
 const RECENT_QUOTES_CAP = 5;
 
 const CLASS = {
-  module: requireClass(styles.module, "subagentmodule.module.css", "module"),
   card: requireClass(styles.card, "subagentmodule.module.css", "card"),
+  statusGlyph: requireClass(styles.statusGlyph, "subagentmodule.module.css", "statusGlyph"),
+  srOnly: requireClass(styles.srOnly, "subagentmodule.module.css", "srOnly"),
   quote: requireClass(styles.quote, "subagentmodule.module.css", "quote"),
   stats: requireClass(styles.stats, "subagentmodule.module.css", "stats"),
   statsSep: requireClass(styles.statsSep, "subagentmodule.module.css", "statsSep"),
@@ -86,44 +61,11 @@ const CLASS = {
   mandate: requireClass(styles.mandate, "subagentmodule.module.css", "mandate"),
 };
 
-// classifyJobStatus and resolveRowKey live in subagentModuleStore.ts so stable
-// projection and a delegate item's frozen output use identical
-// classification/keying. That plain data store is also the layer
-// stores/threads.ts can import without transitively pulling in
-// Button/CSS modules a core store must never transitively
-// bundle. Re-exported here unchanged so every existing import site (this
-// file's own uses below, subagentModule.test.tsx) keeps working.
+// Keep stable projections and frozen tool output on the same classification.
 export { classifyJobStatus, resolveRowKey } from "./subagentModuleStore";
 
-// rowKindFromChildStatus maps the child's LIVE thread status onto a row kind
-// for the card's data-kind (yd16). model.status.type is the WIRE thread-status
-// vocabulary (active/closed/systemError/awaiting/warning/idle/notLoaded), NOT
-// the job-status words classifyJobStatus reads - feeding thread-status to
-// classifyJobStatus misclassifies ("closed"->"running", "systemError"->
-// "running"). So this reuses cadenceStateForStatus (the one canonical wire-
-// status interpreter) and adapts its CadenceState to a SubagentRowKind: a
-// failed child is "failed", an ended (closed) child is "done", and everything
-// still live from the parent's view (working / needs-you / idle) stays
-// "running".
-//
-// g5kf (the honest-clock bug): "notLoaded" must be carved out BEFORE that
-// collapse, not after. cadenceStateForStatus deliberately folds notLoaded
-// into the same "idle" family a genuinely-idle-but-still-live child gets -
-// right for the Cadence dot, which only needs "nothing to animate" either
-// way (liveness.ts's own doc comment, cross-checked by its test) - but wrong
-// here: notLoaded means the child left the daemon's live roster entirely
-// (evicted, orphaned, or lost to a hub restart - cmd/evener-hub/
-// app_threadread.go's pastEntryThread stamps it), not "still going". Once
-// cadenceStateForStatus has already collapsed it to "idle" this function has
-// no way to tell the two apart, and a delegate call frozen at
-// status:"running" by a foreground_timeout (agent/job_delegate.go's mainline
-// path for any non-trivial delegate, not an edge case) would then read as
-// "running" forever with no path back to honesty - this was the only
-// remaining liveness check once the child stops reporting. Composer.tsx and
-// StatusRow.tsx each already keep their own separate notLoaded check
-// alongside cadenceStateForStatus for the identical reason; this follows the
-// same, already-established pattern rather than teaching
-// cadenceStateForStatus itself a state its other two callers don't want.
+// notLoaded means the child left the live roster; cadence intentionally folds
+// it into idle, so preserve that distinction before mapping cadence states.
 export function rowKindFromChildStatus(type: string): SubagentRowKind {
   if (type === "notLoaded") return "unknown";
   const state = cadenceStateForStatus(type);
@@ -132,22 +74,9 @@ export function rowKindFromChildStatus(type: string): SubagentRowKind {
   return "running";
 }
 
-// KNOWN_JOB_STATUSES mirrors the status enum job_list's own tool schema
-// declares (agent/internal/tool/definitions.go's DefJobList: "running",
-// "completed", "failed", "exhausted", "cancelled", "stopped"). Used by
-// statusWordFromText below to read a status back out of a plain-text
-// footer (job_stop/delegate_send) whose field ORDER isn't fixed - see
-// that function's own comment.
 const KNOWN_JOB_STATUSES = ["completed", "failed", "cancelled", "stopped", "exhausted", "running"] as const;
 
-// statusWordFromText finds a known status word anywhere in `text` (a
-// job_stop/delegate_send footer), rather than splitting by position: both
-// formatJobStop's and formatDelegateSend's footer fields are each
-// conditionally present (agent/session_tools_jobs.go - verified directly,
-// e.g. delegate_send's footer omits `status` entirely when the field was
-// empty), so a fixed field index would silently read the wrong segment
-// whenever an earlier field is missing. A word-boundary search is robust
-// to that reordering/omission.
+// Footer fields are optional, so status cannot be read by position.
 export function statusWordFromText(text: string): string | undefined {
   for (const status of KNOWN_JOB_STATUSES) {
     if (new RegExp(`\\b${status}\\b`).test(text)) return status;
@@ -155,10 +84,8 @@ export function statusWordFromText(text: string): string | undefined {
   return undefined;
 }
 
-// A Quote is one child-authored line: a tool call's purpose field (plain) or
-// an agent message (msg - rendered italic). Everything the card shows as the
-// child's "own words" comes from this one derivation, folded card and
-// expanded list alike.
+// A Quote is one child-authored line. Folded hero quotes are always italic;
+// `msg` preserves source-specific italics only in the expanded activity list.
 interface Quote {
   id: string;
   text: string;
@@ -166,6 +93,15 @@ interface Quote {
   startedAt?: string;
   completedAt?: string;
 }
+
+const STATUS_GLYPH: Record<SubagentRowKind | "attention", string> = {
+  running: "●",
+  done: "✓",
+  stopped: "■",
+  failed: "×",
+  unknown: "?",
+  attention: "◆",
+};
 
 // deriveQuotes flattens the child's turns into its authored lines. Two
 // exclusions, both deliberate:
@@ -195,10 +131,7 @@ function deriveQuotes(items: ItemModel[]): Quote[] {
   return out;
 }
 
-// childRunWindow is the child transcript's own first-turn-start →
-// last-turn-end span. The card already holds the full-turns watch, so this
-// costs nothing; historical sessions (read back, no delegate notifications)
-// never get a stable projection, and this is the only honest run window left.
+// Fallback run window for historical children without a stable projection.
 function childRunWindow(turns: TurnModel[]): { startMs?: number; endMs?: number } | undefined {
   let startMs: number | undefined;
   let endMs: number | undefined;
@@ -212,18 +145,8 @@ function childRunWindow(turns: TurnModel[]): { startMs?: number; endMs?: number 
   return { startMs, endMs };
 }
 
-// cardClock is the stats line's trailing clock. Window source precedence:
-//  1. the stable projection's runStartedAt/runEndedAt - the child's actual
-//     run. A foreground_timeout delegate's own ITEM timestamps bracket the
-//     spawn round-trip (seconds), not the child's work (minutes); when the
-//     projection owns the start, only its end counts (a settled spawn item
-//     must not freeze the clock at the spawn's seconds).
-//  2. the child transcript's turn span (its end counts only once the row is
-//     no longer running - a mid-run "end" would freeze a live clock).
-//  3. the delegate item's own stamps, the only source left when the child is
-//     unwatched (no transcriptRef).
-// A row with no start shows no clock; a non-running row with no end shows
-// none. The clock never guesses.
+// Prefer the child's stable run window, then its transcript, then the spawn
+// item. Only running rows consume the shared `now` value.
 function cardClock(
   row: SubagentRow,
   displayKind: SubagentRowKind,
@@ -252,10 +175,7 @@ function cardClock(
   return formatElapsed(nowMs - startMs);
 }
 
-// JobDetailSection surfaces stable exhaustion/resumable evidence, inside the
-// expanded region. Reason is already visible in the folded quote via
-// row.resultPreview/liveReason, so it isn't repeated here. Renders nothing
-// once neither field is present.
+// Stable exhaustion evidence belongs in the expanded region.
 function JobDetailSection({ row }: { row: SubagentRow }) {
   if (row.resumable === undefined && row.exhaustionBudget === undefined && row.exhaustionLimit === undefined) {
     return null;
@@ -275,17 +195,8 @@ function JobDetailSection({ row }: { row: SubagentRow }) {
   );
 }
 
-// SubagentCard is one subagent, one card: head (tag + open), the child's
-// newest own words as the quote, and the stats line. Expansion (the stats
-// line's chevron) lists the recent quotes with their runtimes and
-// timestamps, plus the Job detail when populated.
-//
-// The card subscribes to the child's FULL event stream on mount
-// (watchThread with includeTurns:true), so the folded card's quote, counts,
-// and attention state are live rather than frozen at the delegate call's own
-// output. This is the same subscription the old design opened from its
-// expanded body - the module auto-expands (autoExpand below), so the
-// subscription was de-facto always-on already; the redesign just admits it.
+// One headless card for one delegate. Its full child watch drives quote,
+// counts, status, and the expanded recent-activity region.
 function SubagentCard({
   row,
   turnId,
@@ -317,11 +228,7 @@ function SubagentCard({
     }
   }, [scopeKey, row.rowKey, liveKind, transcriptRef]);
 
-  // The card's own kind prefers the live-status overlay / stable projection
-  // over the frozen tool-output kind (effectiveRowKind is the shared rule,
-  // so rendering and sorting never disagree). Needs-you is a separate,
-  // thinner overlay: the child is still kind=running, but its cadence state
-  // is needs-you, which the rail shows in attention.
+  // Needs-you is an attention overlay on a still-running child.
   const displayKind = effectiveRowKind(row);
   const attention = model !== undefined && cadenceStateForStatus(model.status.type) === "needs-you";
   const childRunning = model ? rowKindFromChildStatus(model.status.type) === "running" : displayKind === "running";
@@ -329,27 +236,18 @@ function SubagentCard({
   const items = model ? model.turns.flatMap((t) => t.items) : [];
   const quotes = deriveQuotes(items);
   const reason = row.liveReason ?? row.resultPreview;
-  // The folded quote: a failure quotes its reason verbatim (✕-marked - the
-  // exception earns the explanation without a click); anything else quotes
-  // the child's newest own line, falling back to the reason when the watch
-  // hasn't produced one yet.
+  // Failures lead with their reason; other cards use the child's latest words.
   const latestQuote = quotes.at(-1)?.text;
   const quoteText = displayKind === "failed" && reason ? `✕ ${reason}` : (latestQuote ?? (reason || undefined));
 
-  // Counts come from the same full-turns model; until the first snapshot
-  // lands there is no stats segment rather than a fabricated 0. The system
-  // prelude is not a turn the child took.
+  // Missing snapshots omit counts rather than fabricating zeroes.
   const realTurns = model ? model.turns.filter((t) => t.id !== SYSTEM_PRELUDE_TURN_ID) : undefined;
   const turnCount = realTurns?.length;
   const callCount = realTurns
     ? realTurns.flatMap((t) => t.items).filter((it) => it.type === "commandExecution").length
     : undefined;
-  // Tokens ride the stable delegate projection (applyEvenerDelegateUpdated);
-  // no usage data means no segment, never a misleading ↑0 ↓0 (the thread
-  // model's own usage-null precedent, via formatUsagePair).
   const stableUsage = row.stable?.usage;
-  // EvenerUsage's fields are individually optional; the pair only renders
-  // when both directions are present (a half-pair would be a guess).
+  // A half-present usage pair would be a guess, so omit it.
   const usage =
     stableUsage?.inputTokens !== undefined && stableUsage.outputTokens !== undefined
       ? formatUsagePair({ inputTokens: stableUsage.inputTokens, outputTokens: stableUsage.outputTokens })
@@ -359,21 +257,15 @@ function SubagentCard({
   if (callCount !== undefined) statsSegments.push(`${callCount} ${callCount === 1 ? "call" : "calls"}`);
   if (usage) statsSegments.push(usage);
 
-  const nowMs = useNowTick(NOW_TICK_MS);
+  const nowMs = useSessionNow();
   const clock = cardClock(row, displayKind, nowMs, realTurns ? childRunWindow(realTurns) : undefined);
 
-  // Per-card expansion, session-and-turn-scoped AND rowKey-scoped so it is
-  // stable across the VirtualList/dockview remount (yt2q) and collision-free
-  // across turns AND sessions (78nj) - the same scoping every other store key
-  // in this file already uses (kata 8525).
-  const disclosureId = `subagent-quotes-${scopeKey}-${row.rowKey}`;
+  // Deterministic scoping preserves disclosure state across virtualization.
+  const disclosureId = `subagent-quotes-${encodeURIComponent(scopeKey)}-${encodeURIComponent(row.rowKey)}`;
   const open = isDisclosureOpen(disclosureId, false);
+  const effectiveStatus = attention ? "needs attention" : displayKind;
 
-  // The RECENT_QUOTES_CAP most recent quotes in chronological order (most
-  // recent LAST), each keeping its TRUE 1-based ordinal into the full feed -
-  // list-style:decimal reads e.g. "16." through "20." rather than relabeling
-  // the 16th quote "1." merely because it renders first, which would
-  // understate how much the child has actually done.
+  // Keep true feed ordinals when slicing the recent chronological window.
   const windowStart = Math.max(0, quotes.length - RECENT_QUOTES_CAP);
   const recentQuotes = quotes.slice(windowStart).map((q, i) => ({ ...q, ordinal: windowStart + i + 1 }));
 
@@ -384,12 +276,17 @@ function SubagentCard({
       data-kind={displayKind}
       data-attention={attention ? "true" : undefined}
     >
+      <span className={CLASS.srOnly}>{`Delegate ${row.delegateId ?? row.rowKey.replace(/^[^:]+:/, "")}`}</span>
+      <span className={CLASS.srOnly}>{`Status: ${effectiveStatus}`}</span>
       {quoteText && (
-        <div className={CLASS.quote} data-testid="subagent-quote">
+        <em className={CLASS.quote} data-testid="subagent-quote">
           {quoteText}
-        </div>
+        </em>
       )}
       <div className={CLASS.stats} data-testid="subagent-stats">
+        <span className={CLASS.statusGlyph} data-testid="subagent-status-glyph" aria-hidden="true">
+          {STATUS_GLYPH[attention ? "attention" : displayKind]}
+        </span>
         {/* Segments join with a separator BETWEEN them - never a dangling
             "·" advertising a segment that has no data. */}
         {statsSegments.flatMap((segment, i) =>
@@ -410,6 +307,8 @@ function SubagentCard({
           icon={<Chevron direction={open ? "down" : "right"} />}
           variant="quiet"
           size="xs"
+          aria-expanded={open}
+          aria-controls={disclosureId}
           onClick={(event) => {
             event.stopPropagation();
             toggleDisclosure(disclosureId, false);
@@ -417,17 +316,18 @@ function SubagentCard({
         />
       </div>
       {open && (
-        <div className={CLASS.quotes} data-testid="subagent-quotes">
+        <section
+          id={disclosureId}
+          aria-label={`Recent activity for ${row.delegateId ?? "delegate"}`}
+          className={CLASS.quotes}
+          data-testid="subagent-quotes"
+        >
           {recentQuotes.length > 0 ? (
             <ol className={CLASS.quotesList}>
               {recentQuotes.map((q) => {
-                // "live" is the chronologically LAST quote while the child is
-                // still running - the card's pulse lands at the natural
-                // reading end.
+                // The chronologically last quote is live while the child runs.
                 const live = childRunning && q.ordinal === quotes.length;
-                // Runtime only when both stamps exist; the live in-flight
-                // quote shows "…" instead. A quote with no start stamp shows
-                // no time at all rather than a guess.
+                // In-flight stamped work gets an ellipsis; missing stamps omit time.
                 const runtime =
                   q.startedAt !== undefined && q.completedAt !== undefined
                     ? formatElapsed(Date.parse(q.completedAt) - Date.parse(q.startedAt))
@@ -442,7 +342,7 @@ function SubagentCard({
                     value={q.ordinal}
                     className={live ? `${CLASS.quoteItem} ${CLASS.quoteLive}` : CLASS.quoteItem}
                   >
-                    <span className={q.msg ? CLASS.quoteMsg : undefined}>{q.text}</span>
+                    {q.msg ? <em className={CLASS.quoteMsg}>{q.text}</em> : <span>{q.text}</span>}
                     {meta && <span className={CLASS.quoteMeta}>{meta}</span>}
                   </li>
                 );
@@ -452,43 +352,7 @@ function SubagentCard({
             <div className={CLASS.quotesEmpty}>No activity yet</div>
           )}
           <JobDetailSection row={row} />
-        </div>
-      )}
-    </div>
-  );
-}
-
-// SubagentModule is the leader's own rendered chrome: the stack of cards,
-// folding done-kind cards beyond DONE_VISIBLE_CAP behind a "+N more" toggle -
-// running/failed/unknown cards are ALWAYS visible regardless of fold state
-// (a live or broken child must never be hidden by count, parity §12). The
-// module itself is chromeless: no tally header, no box - the cards carry
-// their own state.
-function SubagentModule({ turnId, sessionRef }: { turnId: string; sessionRef: string | undefined }) {
-  const rows = useSubagentRows(turnScopeKey(sessionRef, turnId));
-  const [expanded, setExpanded] = useState(false);
-
-  const doneRows = rows.filter((r) => effectiveRowKind(r) === "done");
-  const foldedCount = expanded ? 0 : Math.max(0, doneRows.length - DONE_VISIBLE_CAP);
-  const hiddenKeys = new Set(expanded ? [] : doneRows.slice(DONE_VISIBLE_CAP).map((r) => r.rowKey));
-  const visibleRows = rows.filter((r) => !hiddenKeys.has(r.rowKey));
-
-  if (rows.length === 0) return null;
-
-  return (
-    <div className={CLASS.module} data-testid="subagent-module">
-      {visibleRows.map((row) => (
-        <SubagentCard key={row.rowKey} row={row} turnId={turnId} sessionRef={sessionRef} />
-      ))}
-      {foldedCount > 0 && (
-        <Button variant="quiet" size="sm" onClick={() => setExpanded(true)}>
-          +{foldedCount} more
-        </Button>
-      )}
-      {expanded && doneRows.length > DONE_VISIBLE_CAP && (
-        <Button variant="quiet" size="sm" onClick={() => setExpanded(false)}>
-          Collapse
-        </Button>
+        </section>
       )}
     </div>
   );
@@ -497,13 +361,11 @@ function SubagentModule({ turnId, sessionRef }: { turnId: string; sessionRef: st
 export function rowFromDelegateItem(item: ItemModel): {
   rowKey: string;
   migrateFromRowKey?: string;
-  row: Omit<SubagentRow, "spawnIndex" | "rowKey">;
+  row: Omit<SubagentRow, "rowKey">;
 } | null {
   const args = parseArgs(item.argumentsJSON);
-  // Full, unclipped task text - it is the entire specification of what the
-  // delegate was asked to do (7f7c). The card's tag clips visually
-  // (text-overflow: ellipsis); clipping here would silently drop the rest
-  // from the DOM entirely.
+  // Keep the full task in row state even though ToolCallItem's visible purpose
+  // preview is clipped.
   const task = str(args, "task") ?? "";
   const parsed = parseJSONObject(item.output);
   const status = parsed ? str(parsed, "status") : undefined;
@@ -533,29 +395,27 @@ export function rowFromDelegateItem(item: ItemModel): {
 
 function DelegateBody({ item, sessionRef }: ToolRenderProps) {
   const scopeKey = turnScopeKey(sessionRef, item.turnId);
-  const leaderId = useLeader(scopeKey);
-  const isLeader = leaderId === item.id;
+  const projected = rowFromDelegateItem(item);
+  const storedRow = useSubagentRow(scopeKey, projected?.rowKey ?? "");
 
   useLayoutEffect(() => {
-    const projected = rowFromDelegateItem(item);
-    if (!projected) {
+    const next = rowFromDelegateItem(item);
+    if (!next) {
       removeSubagentRow(scopeKey, resolveRowKey(undefined, undefined, item.callId ?? item.id));
       return;
     }
-    const { rowKey, migrateFromRowKey, row } = projected;
+    const { rowKey, migrateFromRowKey, row } = next;
     upsertSubagentRow(scopeKey, { rowKey, ...row }, migrateFromRowKey);
   }, [scopeKey, item]);
 
-  // The reactive leader read lets a mounted follower retry after the current
-  // leader unmounts. The effect only claims an empty slot and releases it
-  // from the elected component's cleanup, keeping StrictMode's mount/cleanup
-  // cycle symmetric without making followers poll or render nested details.
-  useLayoutEffect(() => {
-    if (leaderId === undefined) claimLeader(scopeKey, item.id);
-  }, [scopeKey, item.id, leaderId]);
-  useLayoutEffect(() => () => releaseLeader(scopeKey, item.id), [scopeKey, item.id]);
-
-  return isLeader ? <SubagentModule turnId={item.turnId} sessionRef={sessionRef} /> : null;
+  if (!projected) return null;
+  return (
+    <SubagentCard
+      row={storedRow ?? { rowKey: projected.rowKey, ...projected.row }}
+      turnId={item.turnId}
+      sessionRef={sessionRef}
+    />
+  );
 }
 
 registerToolRenderer({

@@ -8,7 +8,7 @@ import {
   resetSubagentModuleStoreForTests,
   type SubagentRowKind,
   upsertSubagentRow,
-  useSubagentRows,
+  useSubagentRow,
 } from "./subagentModuleStore";
 import { WatchedChildIndicator } from "./watchedChild";
 
@@ -81,8 +81,8 @@ afterEach(() => {
 // of subagentModuleStore so a test can assert the effect-guarded write-back
 // (yd16) landed, without reaching for a non-hook store accessor.
 function LiveKindProbe({ turnId, rowKey }: { turnId: string; rowKey: string }) {
-  const rows = useSubagentRows(turnId);
-  const liveKind: SubagentRowKind | "none" = rows.find((r) => r.rowKey === rowKey)?.liveKind ?? "none";
+  const row = useSubagentRow(turnId, rowKey);
+  const liveKind: SubagentRowKind | "none" = row?.liveKind ?? "none";
   return <span data-testid="live-kind">{liveKind}</span>;
 }
 

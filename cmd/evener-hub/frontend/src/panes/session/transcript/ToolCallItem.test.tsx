@@ -948,7 +948,7 @@ test("task-only delegate purpose previews preserve an emoji at the Unicode clipp
   expect(within(asciiTool!).getByTestId("tool-row-purpose").textContent).toBe(exactAsciiTask);
 });
 
-test("task-only delegates show a bounded purpose preview and the card tag carries the full task", () => {
+test("task-only delegates show a bounded purpose preview above a headless card", () => {
   const task =
     "**Inspect** the parser\n\nand report the `task` field. Keep the full mandate available for the reader. This suffix makes the preview bounded and honest.";
   const { container } = render(
@@ -966,7 +966,7 @@ test("task-only delegates show a bounded purpose preview and the card tag carrie
   );
 
   const tool = screen.getByTestId("tool-call-item");
-  const module = screen.getByTestId("subagent-module");
+  const card = screen.getByTestId("subagent-row");
   const purpose = screen.getByTestId("tool-row-purpose");
   expect(purpose.textContent).toBe(
     "**Inspect** the parser and report the `task` field. Keep the full mandate available for the reader. This suffix makes th…",
@@ -975,10 +975,10 @@ test("task-only delegates show a bounded purpose preview and the card tag carrie
   // The card is headless: no tag (identity is the row's own purpose, above),
   // and the old Mandate/Prompt fold is gone, so the row's own disclosure is
   // the only details/summary in the tool call.
-  expect(within(module).queryByTestId("subagent-tag")).toBeNull();
+  expect(within(card).queryByTestId("subagent-tag")).toBeNull();
   expect(screen.queryByTestId("subagent-mandate")).toBeNull();
   expect(tool.querySelectorAll("details > summary")).toHaveLength(1); // the row's own
-  expect(module.querySelectorAll("details > summary")).toHaveLength(0);
+  expect(card.querySelectorAll("details > summary")).toHaveLength(0);
   expect(within(tool).getByTestId("tool-row-status").querySelector('[role="img"]')).toBeTruthy();
 
   // open ⤢ rides the delegate row's trailing slot - visible folded or not.

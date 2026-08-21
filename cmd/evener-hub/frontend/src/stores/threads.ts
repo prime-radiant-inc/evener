@@ -9,7 +9,10 @@
 
 import { useStore } from "zustand";
 import { createStore } from "zustand/vanilla";
-import { applyEvenerDelegateUpdated } from "../panes/session/transcript/tools/subagentModuleStore";
+import {
+  applyEvenerDelegateUpdated,
+  releaseSubagentSession,
+} from "../panes/session/transcript/tools/subagentModuleStore";
 import { ClientNotReadyError, mutationErrorData, WireError } from "../protocol/errors";
 import type { ThreadModel } from "../protocol/model";
 import {
@@ -119,7 +122,7 @@ export interface ThreadsStoreState {
   // store bookkeeping, not wire-derived thread state.
   hydrations: Map<string, number>;
   // watchedThreads/watchedFrameTimes: the transcript/tools stream's own
-  // sanctioned extension (watched-child subagent-module rows - a leaner,
+  // sanctioned extension (watched delegate cards - a leaner,
   // additive subscription alongside a real ensureThread'd pane, never
   // replacing it). Deliberately SEPARATE maps from threads/frameTimes,
   // not a shared one keyed the same way: a ref can legitimately be both
@@ -144,7 +147,7 @@ export interface ThreadsStoreState {
   deletedRefs: Set<string>;
   ensureThread(ref: string): Promise<void>;
   releaseThread(ref: string): void;
-  // Additive, leaner subscription to a child thread for a subagent-module
+  // Additive, leaner subscription to a child thread for a delegate card's
   // row's live view (see this file's own doc comment). opts.includeTurns
   // upgrades the read to carry the child's turn history for the expanded
   // card's Activity feed (yd16 §4.2); it is MONOTONIC per ref — once any
@@ -652,6 +655,7 @@ async function hydrateAndSubscribe(
 // caller can observe once the retry loop is running.
 function markThreadDeletedIfFenced(ref: string, err: unknown): void {
   if (mutationErrorData(err)?.mutationOutcome !== "targetDeleted") return;
+  releaseSubagentSession(ref);
   threadsStore.setState((s) => {
     if (s.deletedRefs.has(ref)) return s;
     const deletedRefs = new Set(s.deletedRefs);
@@ -1796,6 +1800,7 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
       return;
     }
     refCounts.delete(ref);
+    releaseSubagentSession(ref);
     if (pinnedMutationRefs.has(ref)) return;
     // Release is terminal for this owner generation: cancel its scheduled
     // retry and wake anything still awaiting its first model.
@@ -1828,7 +1833,7 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
 
   // watchThread is the transcript/tools stream's own sanctioned addition:
   // an additive, leaner (includeTurns:false) subscription to a child
-  // thread for a subagent-module row's live view, refcounted
+  // thread for a delegate card's live view, refcounted
   // independently of ensureThread's own counter (watchRefCounts, not
   // refCounts) and stored in watchedThreads/watchedFrameTimes, not
   // threads/frameTimes - see this file's own ThreadsStoreState doc

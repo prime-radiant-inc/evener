@@ -10,7 +10,7 @@
 import { useEffect } from "react";
 import { threadsStore, useThreadsStore } from "../../../../stores/threads";
 import { Cadence } from "../../../../widgets";
-import { cadenceStateForStatus, NOW_TICK_MS, useNowTick } from "../../liveness";
+import { cadenceStateForStatus, useSessionNow } from "../../liveness";
 import { rowKindFromChildStatus } from "./subagentModule";
 import { setWatchedLiveKind } from "./subagentModuleStore";
 
@@ -47,16 +47,14 @@ export function WatchedChildIndicator({
 
   const model = useThreadsStore((s) => s.watchedThreads.get(childRef));
   const frameTimes = useThreadsStore((s) => s.watchedFrameTimes.get(childRef) ?? EMPTY_FRAME_TIMES);
-  const now = useNowTick(NOW_TICK_MS);
+  const now = useSessionNow();
 
   // Write the live child status back onto the row as its liveKind overlay
   // (yd16), through setWatchedLiveKind's guard so a stale "running" read
   // never resurrects a row stable projection already settled into a terminal
   // kind. Effect-guarded and keyed on the derived
   // liveKind so it fires only on an actual status change - never a
-  // render-time store write, which would be an infinite re-render loop
-  // (updateSubagentRowIfExists returns a fresh useSubagentRows reference
-  // every call).
+  // render-time store write, which would be an infinite re-render loop.
   const liveKind = model ? rowKindFromChildStatus(model.status.type) : undefined;
   useEffect(() => {
     if (liveKind) setWatchedLiveKind(scopeKey, rowKey, liveKind);
