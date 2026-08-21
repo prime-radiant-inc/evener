@@ -1330,6 +1330,12 @@ Rules:
   by `delegate_id`; fresh activity re-arms it. The watchdog only reports—it
   never steers, resumes, or stops the delegate.
 - Notification delivery state is internal; there is no `job_ack`.
+- The `end_turn=true` warning naming still-running jobs depends on whether the
+  session outlives the turn. Where it does, the warning keeps promising each
+  job reports separately on completion. Where the process exits with the turn
+  (one-shot `evener run`, and any session it delegates to), it says instead
+  that a job which keeps running is killed at exit rather than reported on
+  later, because promising a later report there is simply false.
 
 Shell terminal delivery keeps its existing durable pending/delivered/consumed
 state and dedupe key. Stable delegate packet delivery is ordered in the
