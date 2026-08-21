@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"reflect"
@@ -341,30 +342,79 @@ func TestDelegateControllerFailedDeliveryCompletionLeavesHeadPending(t *testing.
 }
 
 func TestDelegateControllerCommittedDeliveryCompletionAcknowledgesExactHead(t *testing.T) {
-	c, firstPlan, _, _, _ := controllerWithTwoDelegateDeliveries(t, false, false)
+	c, path, firstPlan := controllerWithNestedDelegateDeliveries(t)
+	before := readDelegateControllerFile(t, path)
+	beforeRevision := c.durable["dlg_owner"].ProjectionRevision
 	token, admitted, err := c.BeginDelivery(firstPlan)
 	if err != nil || !admitted {
 		t.Fatalf("BeginDelivery = admitted:%t err:%v", admitted, err)
 	}
-	if _, err := c.CompleteDelivery(token, true); err != nil {
+	plans, err := c.CompleteDelivery(token, true)
+	if err != nil {
 		t.Fatalf("CompleteDelivery(true): %v", err)
 	}
 	pending := c.durable["dlg_target"].PendingDeliveries
 	if len(pending) != 1 || pending[0].DeliveryID != "dlg_target/delivery/2" {
 		t.Fatalf("pending after exact ack = %#v", pending)
 	}
+	owner := c.durable["dlg_owner"]
+	attentionID := delegateAttentionID(firstPlan.deliveryID)
+	if !owner.NeedsAttention || owner.ProjectionRevision != beforeRevision+1 {
+		t.Fatalf("owner attention projection = needs:%t revision:%d, want true/%d", owner.NeedsAttention, owner.ProjectionRevision, beforeRevision+1)
+	}
+	if _, present := c.attentionWakeIDs["dlg_owner"][attentionID]; !present || len(c.attentionWakeIDs["dlg_owner"]) != 1 {
+		t.Fatalf("published unresolved attention = %#v, want only %q", c.attentionWakeIDs["dlg_owner"], attentionID)
+	}
+	if got := readDelegateControllerFile(t, path); bytes.Count(got, []byte{'\n'}) != bytes.Count(before, []byte{'\n'})+1 {
+		t.Fatalf("attention open and delivery ack did not share one journal batch:\n%s", got)
+	}
+	events, err := c.store.Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	tail := events[len(events)-2:]
+	if tail[0].Kind != delegatestore.EventDelegateAttentionChanged || tail[0].DelegateID != "dlg_owner" || tail[0].AttentionChanged == nil || !tail[0].AttentionChanged.NeedsAttention || tail[1].Kind != delegatestore.EventDelegateDeliveryAcknowledged || tail[1].DelegateID != "dlg_target" || tail[1].DeliveryAcknowledged == nil || tail[1].DeliveryAcknowledged.DeliveryID != firstPlan.deliveryID {
+		t.Fatalf("serialized delivery batch tail = %#v", tail)
+	}
+	if len(plans.updates) != 2 {
+		t.Fatalf("delivery updates = %#v, want owner open and sender ack", plans.updates)
+	}
 }
 
 func TestDelegateControllerDeliveryAckRemovesOnlyExactID(t *testing.T) {
-	c, firstPlan, _, _, _ := controllerWithTwoDelegateDeliveries(t, false, false)
+	c, _, firstPlan := controllerWithNestedDelegateDeliveries(t)
 	beforeSecond := cloneDelegateTerminalPacket(c.durable["dlg_target"].PendingDeliveries[1].Packet)
 	token, _, _ := c.BeginDelivery(firstPlan)
-	if _, err := c.CompleteDelivery(token, true); err != nil {
+	plans, err := c.CompleteDelivery(token, true)
+	if err != nil {
 		t.Fatalf("CompleteDelivery: %v", err)
 	}
 	pending := c.durable["dlg_target"].PendingDeliveries
 	if len(pending) != 1 || pending[0].DeliveryID != "dlg_target/delivery/2" || !reflect.DeepEqual(pending[0].Packet, beforeSecond) {
 		t.Fatalf("ack removed or changed non-head delivery: %#v", pending)
+	}
+	if len(plans.deliveries) != 1 {
+		t.Fatalf("next delivery plans = %#v", plans.deliveries)
+	}
+	beforeRevision := c.durable["dlg_owner"].ProjectionRevision
+	secondPlan := plans.deliveries[0]
+	secondToken, admitted, err := c.BeginDelivery(secondPlan)
+	if err != nil || !admitted {
+		t.Fatalf("BeginDelivery second = admitted:%t err:%v", admitted, err)
+	}
+	if _, err := c.CompleteDelivery(secondToken, true); err != nil {
+		t.Fatalf("CompleteDelivery second: %v", err)
+	}
+	owner := c.durable["dlg_owner"]
+	if !owner.NeedsAttention || owner.ProjectionRevision != beforeRevision {
+		t.Fatalf("additional unresolved ID changed attention projection = needs:%t revision:%d, want true/%d", owner.NeedsAttention, owner.ProjectionRevision, beforeRevision)
+	}
+	wantIDs := map[string]struct{}{
+		delegateAttentionID(firstPlan.deliveryID):  {},
+		delegateAttentionID(secondPlan.deliveryID): {},
+	}
+	if !reflect.DeepEqual(c.attentionWakeIDs["dlg_owner"], wantIDs) {
+		t.Fatalf("exact unresolved attention = %#v, want %#v", c.attentionWakeIDs["dlg_owner"], wantIDs)
 	}
 }
 
@@ -465,11 +515,13 @@ func TestDelegateControllerRunFinishedAppendFailureKeepsPreparedAndWaiter(t *tes
 }
 
 func TestDelegateControllerDeliveryAcknowledgedAppendFailureKeepsReceiptAndHead(t *testing.T) {
-	c, firstPlan, _, _, _ := controllerWithTwoDelegateDeliveries(t, false, false)
+	c, path, firstPlan := controllerWithNestedDelegateDeliveries(t)
 	token, admitted, err := c.BeginDelivery(firstPlan)
 	if err != nil || !admitted {
 		t.Fatalf("BeginDelivery = admitted:%t err:%v", admitted, err)
 	}
+	before := readDelegateControllerFile(t, path)
+	beforeOwner := captureDelegateSnapshot(c.durable["dlg_owner"])
 	if err := c.store.Close(); err != nil {
 		t.Fatalf("Close: %v", err)
 	}
@@ -480,8 +532,28 @@ func TestDelegateControllerDeliveryAcknowledgedAppendFailureKeepsReceiptAndHead(
 	c.mu.Lock()
 	receipt := c.deliveries[token.processID]
 	c.mu.Unlock()
-	if len(plans.deliveries) != 0 || receipt != nil || c.durable["dlg_target"].PendingDeliveries[0].DeliveryID != firstPlan.deliveryID {
+	if len(plans.deliveries) != 0 || receipt == nil || c.durable["dlg_target"].PendingDeliveries[0].DeliveryID != firstPlan.deliveryID {
 		t.Fatalf("failed ack state plans=%#v receipt=%#v pending=%#v", plans, receipt, c.durable["dlg_target"].PendingDeliveries)
+	}
+	if got := captureDelegateSnapshot(c.durable["dlg_owner"]); got.needsAttention != beforeOwner.needsAttention || got.revision != beforeOwner.revision || len(c.attentionWakeIDs["dlg_owner"]) != 0 {
+		t.Fatalf("failed batch published owner attention: before=%#v after=%#v unresolved=%#v", beforeOwner, got, c.attentionWakeIDs["dlg_owner"])
+	}
+	if got := readDelegateControllerFile(t, path); !bytes.Equal(got, before) {
+		t.Fatalf("failed delivery batch changed journal bytes")
+	}
+	reopened, err := delegatestore.Open(path)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	t.Cleanup(func() { _ = reopened.Close() })
+	c.mu.Lock()
+	c.store = reopened
+	c.mu.Unlock()
+	if _, err := c.CompleteDelivery(token, true); err != nil {
+		t.Fatalf("retry exact receipt: %v", err)
+	}
+	if len(c.durable["dlg_target"].PendingDeliveries) != 1 || !c.durable["dlg_owner"].NeedsAttention || len(c.attentionWakeIDs["dlg_owner"]) != 1 {
+		t.Fatalf("retried delivery did not publish atomically: sender=%#v owner=%#v unresolved=%#v", c.durable["dlg_target"], c.durable["dlg_owner"], c.attentionWakeIDs["dlg_owner"])
 	}
 }
 
@@ -560,6 +632,20 @@ func controllerWithTwoDelegateDeliveries(t *testing.T, firstWaiter, secondWaiter
 		secondPlan = &secondPlans.deliveries[0]
 	}
 	return c, firstPlans.deliveries[0], first, secondPlan, second
+}
+
+func controllerWithNestedDelegateDeliveries(t *testing.T) (*delegateTreeController, string, delegateDeliveryPlan) {
+	t.Helper()
+	c, path := newDelegateControllerTestHarness(t, 2, 1)
+	seedDelegateControllerIdle(t, c, "dlg_owner", "")
+	seedDelegateControllerIdle(t, c, "dlg_target", "dlg_owner")
+	seedDelegateControllerDelivery(t, c, "dlg_target")
+	seedDelegateControllerDelivery(t, c, "dlg_target")
+	plans := c.ReplayDeliveries()
+	if len(plans) != 1 {
+		t.Fatalf("first nested delivery plans = %#v", plans)
+	}
+	return c, path, plans[0]
 }
 
 func restartDelegateDeliveryController(t *testing.T, c *delegateTreeController, path string) *delegateTreeController {

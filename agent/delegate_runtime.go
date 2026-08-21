@@ -310,10 +310,16 @@ func (s *Session) driveStableDelegateAttention(sub *subagent) bool {
 	if s == nil || sub == nil || sub.sess == nil || sub.sess.owningDelegateID == "" || s.delegateController == nil || sub.sess.delegateController != s.delegateController {
 		return false
 	}
-	ids, err := sub.sess.pendingDelegateAttentionIDs()
-	if err != nil {
-		s.emit(events.EventWarning, warningDataFromError("inspect delegate attention", err))
-		return true
+	var ids []string
+	if retryID := s.delegateController.reservedAttentionID(sub.sess); retryID != "" {
+		ids = []string{retryID}
+	} else {
+		var err error
+		ids, err = sub.sess.pendingDelegateAttentionIDs()
+		if err != nil {
+			s.emit(events.EventWarning, warningDataFromError("inspect delegate attention", err))
+			return true
+		}
 	}
 	if len(ids) == 0 {
 		return false
@@ -338,6 +344,11 @@ func (s *Session) driveStableDelegateAttention(sub *subagent) bool {
 		s.delegateController.retryDelegateAttentionLater()
 		return true
 	}
+	if err := sub.sess.acceptDelegateAttention(reservation); err != nil {
+		s.emit(events.EventWarning, warningDataFromError("accept delegate attention", err))
+		s.delegateController.retryDelegateAttentionLater()
+		return true
+	}
 	started, err := s.delegateController.CommitStart(reservation)
 	if err != nil {
 		s.emit(events.EventWarning, warningDataFromError("commit delegate attention", err))
@@ -345,21 +356,24 @@ func (s *Session) driveStableDelegateAttention(sub *subagent) bool {
 		return true
 	}
 	s.delegateController.emitDelegateUpdate(started.plan)
-	s.mu.Lock()
-	if s.closingOrClosedLocked() {
-		s.mu.Unlock()
-		cause := errors.New("delegate attention owner is closed")
-		plans, finishErr := s.delegateController.FailCommittedRestart(started.lease, delegatePermanentStartFailure(cause, "launch_failed"))
+	if launchErr := s.launchAcceptedDelegateAttention(sub, started); launchErr != nil {
+		plans, finishErr := s.delegateController.FailCommittedRestart(started.lease, delegatePermanentStartFailure(launchErr, "launch_failed"))
 		if executeErr := s.executeDelegateMutationPlans(plans); finishErr == nil {
 			finishErr = executeErr
 		}
-		if armErr := sub.sess.armDelegateAttention(ids[0]); armErr != nil {
-			finishErr = errors.Join(finishErr, armErr)
-		}
-		if finishErr != nil {
-			s.emit(events.EventWarning, warningDataFromError("abort delegate attention launch", errors.Join(cause, finishErr)))
-		}
-		return true
+		s.emit(events.EventWarning, warningDataFromError("launch delegate attention", errors.Join(launchErr, finishErr)))
+	}
+	return true
+}
+
+func (s *Session) launchAcceptedDelegateAttention(sub *subagent, started delegateStartCommit) error {
+	if s == nil || sub == nil || sub.sess == nil || s.delegateController == nil {
+		return errDelegateDeliveryReceiverUnavailable
+	}
+	s.mu.Lock()
+	if s.closingOrClosedLocked() {
+		s.mu.Unlock()
+		return errors.New("delegate attention owner is closed")
 	}
 	s.sendersWG.Add(1)
 	s.mu.Unlock()
@@ -373,7 +387,7 @@ func (s *Session) driveStableDelegateAttention(sub *subagent) bool {
 	bindStableDelegateActivity(sub.sess, s.delegateController, started.lease)
 	s.launchSubagentRun(runCtx, sub, runCancel, "", descriptorProvenance(started.descriptor))
 	s.startDelegateQuietWatchdog(started.ctx, started.lease)
-	return true
+	return nil
 }
 
 func (s *Session) restoreColdDelegateAttentionRuntime(delegateID string) (*Session, *subagent, error) {
@@ -384,20 +398,9 @@ func (s *Session) restoreColdDelegateAttentionRuntime(delegateID string) (*Sessi
 	if err != nil {
 		return nil, nil, err
 	}
-	owner := s
-	if parentID != "" {
-		if resident := s.delegateController.residentDelegateRuntime(parentID); resident != nil {
-			owner = resident
-		} else {
-			_, parent, restoreErr := s.restoreColdDelegateAttentionRuntime(parentID)
-			if restoreErr != nil {
-				return nil, nil, restoreErr
-			}
-			if parent == nil || parent.sess == nil {
-				return nil, nil, errors.New("cold delegate attention parent runtime is unavailable")
-			}
-			owner = parent.sess
-		}
+	owner, err := s.restoreColdDelegateOwnerRuntime(parentID)
+	if err != nil {
+		return nil, nil, err
 	}
 
 	runtime := delegateRuntime{owner: owner}
@@ -441,6 +444,121 @@ func (s *Session) restoreColdDelegateAttentionRuntime(delegateID string) (*Sessi
 	}
 	finishRestore(sub, nil)
 	return owner, sub, nil
+}
+
+func (s *Session) restoreColdDelegateOwnerRuntime(parentID string) (*Session, error) {
+	if parentID == "" {
+		return s, nil
+	}
+	if resident := s.delegateController.residentDelegateRuntime(parentID); resident != nil {
+		return resident, nil
+	}
+	_, parent, err := s.restoreColdDelegateAttentionRuntime(parentID)
+	if err != nil {
+		return nil, err
+	}
+	if parent == nil || parent.sess == nil {
+		return nil, errors.New("cold delegate attention parent runtime is unavailable")
+	}
+	return parent.sess, nil
+}
+
+func (s *Session) admitOwedDelegateAttentionStarts() error {
+	if s == nil || s.delegateController == nil {
+		return errors.New("owed delegate attention controller is unavailable")
+	}
+	owed, err := s.delegateController.owedAttentionStartsFromTranscripts()
+	if err != nil {
+		return err
+	}
+	for _, start := range owed {
+		if err := s.admitOwedDelegateAttentionStart(start); err != nil {
+			return fmt.Errorf("delegate %s attention %s: %w", start.delegateID, start.attentionID, err)
+		}
+	}
+	return nil
+}
+
+func (s *Session) admitOwedDelegateAttentionStart(owed delegateOwedAttentionStart) error {
+	owner, err := s.restoreColdDelegateOwnerRuntime(owed.parentID)
+	if err != nil {
+		return fmt.Errorf("restore owner runtime: %w", err)
+	}
+	reservation, err := s.delegateController.reserveOwedAttentionStart(owed.delegateID, owed.attentionID, owed.generation, owed.pendingIDs)
+	if err != nil {
+		return fmt.Errorf("reserve owed generation: %w", err)
+	}
+	started, err := s.delegateController.commitStart(reservation)
+	if err != nil {
+		return fmt.Errorf("commit owed generation: %w", err)
+	}
+	runtime := delegateRuntime{owner: owner}
+	sub, restored, finishRestore, restoreErr := runtime.restoreIdleForSend(started)
+	if restoreErr != nil {
+		finishRestore(nil, restoreErr)
+		if failErr := s.failOwedDelegateAttentionStart(started, restoreErr); failErr != nil {
+			return fmt.Errorf("restore owed runtime: %w", failErr)
+		}
+		return nil
+	}
+	if sub == nil || sub.sess == nil {
+		cause := errors.New("owed delegate attention runtime is unavailable")
+		finishRestore(nil, cause)
+		if failErr := s.failOwedDelegateAttentionStart(started, cause); failErr != nil {
+			return fmt.Errorf("restore owed runtime: %w", failErr)
+		}
+		return nil
+	}
+	if restored {
+		candidate := sub
+		tracked, inserted, trackErr := owner.subagents.admitReconstructed(candidate, func(selected *subagent) error {
+			return s.delegateController.attachRuntime(started.lease, selected.sess)
+		})
+		if trackErr != nil {
+			candidate.sess.discardRestoredCandidate()
+			finishRestore(nil, trackErr)
+			if failErr := s.failOwedDelegateAttentionStart(started, trackErr); failErr != nil {
+				return fmt.Errorf("track owed runtime: %w", failErr)
+			}
+			return nil
+		}
+		if !inserted {
+			candidate.sess.discardRestoredCandidate()
+			sub = tracked
+			restored = false
+		}
+	} else if err := s.delegateController.attachRuntime(started.lease, sub.sess); err != nil {
+		finishRestore(nil, err)
+		if failErr := s.failOwedDelegateAttentionStart(started, err); failErr != nil {
+			return fmt.Errorf("attach owed runtime: %w", failErr)
+		}
+		return nil
+	}
+	if restored && owner.delegateRestoreBeforeSideEffects != nil {
+		owner.delegateRestoreBeforeSideEffects(sub.sess)
+	}
+	bindStableDelegateActivityToOwner(sub.sess, s.delegateController, started.lease, owner)
+	if restored {
+		if err := sub.sess.runDeferredRestoreSideEffects(); err != nil {
+			sub.sess.emit(events.EventWarning, warningDataFromError("restored delegate side effects incomplete", err))
+		}
+	}
+	finishRestore(sub, nil)
+	if err := owner.launchAcceptedDelegateAttention(sub, started); err != nil {
+		if failErr := s.failOwedDelegateAttentionStart(started, err); failErr != nil {
+			return fmt.Errorf("launch owed runtime: %w", failErr)
+		}
+		return nil
+	}
+	return nil
+}
+
+func (s *Session) failOwedDelegateAttentionStart(started delegateStartCommit, cause error) error {
+	plans, finishErr := s.delegateController.failCommittedRestart(started.lease, delegatePermanentStartFailure(cause, "construction_failed"))
+	if finishErr != nil {
+		return errors.Join(cause, finishErr)
+	}
+	return errors.Join(cause, s.executeDelegateMutationPlans(plans))
 }
 
 // escalateUnreachableDelegateAttention transfers pending attention wakes that

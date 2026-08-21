@@ -69,6 +69,89 @@ type delegateAttentionTransferPlan struct {
 	targetRef        string
 }
 
+type delegateOwedAttentionStart struct {
+	delegateID  string
+	parentID    string
+	attentionID string
+	generation  uint64
+	pendingIDs  []string
+}
+
+func (c *delegateTreeController) takeOwedAttentionAdmission() bool {
+	if c == nil {
+		return false
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if !c.owedAdmission {
+		return false
+	}
+	c.owedAdmission = false
+	return true
+}
+
+// owedAttentionStartsFromTranscripts finds accepted attention generations that
+// survived in a child transcript but not in the delegate journal. A zero
+// generation is historical resolution metadata and never creates work.
+func (c *delegateTreeController) owedAttentionStartsFromTranscripts() ([]delegateOwedAttentionStart, error) {
+	if c == nil {
+		return nil, errors.New("delegate controller is nil")
+	}
+	c.mu.Lock()
+	refs := make([]coldDelegateAttentionRef, 0, len(c.durable))
+	generations := make(map[string]uint64, len(c.durable))
+	parents := make(map[string]string, len(c.durable))
+	stateDir := c.stateDir
+	for id, aggregate := range c.durable {
+		if aggregate == nil || aggregate.Phase != delegatestore.PhaseIdle || !aggregate.Resumable || aggregate.PendingStopSeq != 0 {
+			continue
+		}
+		refs = append(refs, coldDelegateAttentionRef{delegateID: id, transcriptRef: aggregate.Descriptor.TranscriptRef})
+		generations[id] = aggregate.Generation
+		parents[id] = aggregate.Descriptor.ParentDelegateID
+	}
+	c.mu.Unlock()
+	sort.Slice(refs, func(i, j int) bool { return refs[i].delegateID < refs[j].delegateID })
+
+	owed := make([]delegateOwedAttentionStart, 0)
+	for _, ref := range refs {
+		path, sessionID, err := delegateTranscriptPathFromRef(stateDir, ref.transcriptRef)
+		if err != nil {
+			return nil, err
+		}
+		fold, err := readDelegateAttentionFold(path, sessionID)
+		if err != nil {
+			return nil, err
+		}
+		resumeGenerations := make([]uint64, 0, len(fold.resumeAttention))
+		for generation := range fold.resumeAttention {
+			resumeGenerations = append(resumeGenerations, generation)
+		}
+		sort.Slice(resumeGenerations, func(i, j int) bool { return resumeGenerations[i] < resumeGenerations[j] })
+		journalGeneration := generations[ref.delegateID]
+		for _, generation := range resumeGenerations {
+			if generation <= journalGeneration {
+				continue
+			}
+			attentionID := fold.resumeAttention[generation]
+			if generation != journalGeneration+1 {
+				return nil, fmt.Errorf("delegate %s attention %q owes generation %d after journal generation %d", ref.delegateID, attentionID, generation, journalGeneration)
+			}
+			if len(owed) != 0 && owed[len(owed)-1].delegateID == ref.delegateID {
+				return nil, fmt.Errorf("delegate %s owes multiple attention generations", ref.delegateID)
+			}
+			owed = append(owed, delegateOwedAttentionStart{
+				delegateID:  ref.delegateID,
+				parentID:    parents[ref.delegateID],
+				attentionID: attentionID,
+				generation:  generation,
+				pendingIDs:  fold.pendingIDs(),
+			})
+		}
+	}
+	return owed, nil
+}
+
 func (c *delegateTreeController) ReconcileRequirements() delegateReconcileRequirements {
 	c.mu.Lock()
 	defer c.mu.Unlock()

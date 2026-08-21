@@ -66,8 +66,9 @@ const (
 // terminal disposition. The resolution is append-only so cold reconciliation
 // can repeat safely after a crash.
 type AttentionResolutionInfo struct {
-	AttentionID string `json:"attention_id"`
-	Disposition string `json:"disposition"`
+	AttentionID      string `json:"attention_id"`
+	Disposition      string `json:"disposition"`
+	ResumeGeneration uint64 `json:"resume_generation,omitempty"`
 }
 
 // DelegateDeliveryCommit records which exact tool call durably received one

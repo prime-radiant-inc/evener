@@ -56,16 +56,44 @@ type delegateCancelPlan struct {
 }
 
 func (c *delegateTreeController) StopSubtree(actor delegateActor, targetID string) (delegateStopResult, delegateCancelPlan, delegateMutationPlans, error) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	return c.stopSubtreeLocked(actor, targetID, false)
+	for {
+		c.mu.Lock()
+		if c.stop == nil {
+			if err := c.authorizeMutationLocked(actor, targetID); err != nil {
+				c.mu.Unlock()
+				return delegateStopResult{}, delegateCancelPlan{}, delegateMutationPlans{}, err
+			}
+			if blocker := c.attentionStartBlockerLocked(targetID); blocker != nil {
+				c.mu.Unlock()
+				<-blocker
+				continue
+			}
+		}
+		result, cancel, plans, err := c.stopSubtreeLocked(actor, targetID, false)
+		c.mu.Unlock()
+		return result, cancel, plans, err
+	}
 }
 
 // StopSubtreeAndDrive admits the durable stop and gives its reconciliation to
 // the root runtime. The driver is process-only and unique for the exact stop;
 // callers may stop waiting without stopping reconciliation.
 func (c *delegateTreeController) StopSubtreeAndDrive(actor delegateActor, targetID string) (delegateStopResult, delegateCancelPlan, delegateMutationPlans, error) {
-	c.mu.Lock()
+	for {
+		c.mu.Lock()
+		if c.stop == nil {
+			if err := c.authorizeMutationLocked(actor, targetID); err != nil {
+				c.mu.Unlock()
+				return delegateStopResult{}, delegateCancelPlan{}, delegateMutationPlans{}, err
+			}
+			if blocker := c.attentionStartBlockerLocked(targetID); blocker != nil {
+				c.mu.Unlock()
+				<-blocker
+				continue
+			}
+		}
+		break
+	}
 	if c.closing {
 		c.mu.Unlock()
 		return delegateStopResult{}, delegateCancelPlan{}, delegateMutationPlans{}, errDelegateTargetBusy
@@ -109,6 +137,24 @@ func (c *delegateTreeController) StopSubtreeAndDrive(actor delegateActor, target
 		go c.runStopReconcileDriver(stop, driver, root)
 	}
 	return result, cancelPlan, plans, nil
+}
+
+func (c *delegateTreeController) attentionStartBlockerLocked(targetID string) <-chan struct{} {
+	members := c.subtreeMembersLocked(targetID)
+	tokens := make([]uint64, 0)
+	for token, record := range c.reservations {
+		if record == nil || record.trigger != delegatestore.TriggerAttention || record.done == nil {
+			continue
+		}
+		if _, covered := members[record.delegateID]; covered {
+			tokens = append(tokens, token)
+		}
+	}
+	if len(tokens) == 0 {
+		return nil
+	}
+	slices.Sort(tokens)
+	return c.reservations[tokens[0]].done
 }
 
 func (c *delegateTreeController) stopSubtreeLocked(actor delegateActor, targetID string, allowClosing bool) (delegateStopResult, delegateCancelPlan, delegateMutationPlans, error) {
@@ -516,7 +562,7 @@ func (c *delegateTreeController) closeRuntimeTree(ctx context.Context, closeChil
 		if missing {
 			continue
 		}
-		result, cancelPlan, _, err := c.stopSubtreeForClose(rootID)
+		result, cancelPlan, _, err := c.stopSubtreeForClose(ctx, rootID)
 		if err != nil {
 			return err
 		}
@@ -543,10 +589,24 @@ func (c *delegateTreeController) closeRuntimeTree(ctx context.Context, closeChil
 	return nil
 }
 
-func (c *delegateTreeController) stopSubtreeForClose(targetID string) (delegateStopResult, delegateCancelPlan, delegateMutationPlans, error) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	return c.stopSubtreeLocked(rootDelegateActor(c.rootSessionID), targetID, true)
+func (c *delegateTreeController) stopSubtreeForClose(ctx context.Context, targetID string) (delegateStopResult, delegateCancelPlan, delegateMutationPlans, error) {
+	for {
+		c.mu.Lock()
+		if c.stop == nil {
+			if blocker := c.attentionStartBlockerLocked(targetID); blocker != nil {
+				c.mu.Unlock()
+				select {
+				case <-blocker:
+				case <-ctx.Done():
+					return delegateStopResult{}, delegateCancelPlan{}, delegateMutationPlans{}, ctx.Err()
+				}
+				continue
+			}
+		}
+		result, cancel, plans, err := c.stopSubtreeLocked(rootDelegateActor(c.rootSessionID), targetID, true)
+		c.mu.Unlock()
+		return result, cancel, plans, err
+	}
 }
 
 func (c *delegateTreeController) stopForResult(result delegateStopResult) *delegateStopState {

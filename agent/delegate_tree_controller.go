@@ -72,7 +72,6 @@ type delegateTreeController struct {
 	deliveryClaims      map[string]*delegateDeliveryClaim
 	quietClaims         map[uint64]*delegateQuietAttentionClaim
 	attentionWakeIDs    map[string]map[string]struct{}
-	coldAttentionArmIDs map[string]map[string]struct{}
 	watchEnqueues       map[uint64]*delegateWatchReceipt
 	watchDeliveries     map[uint64]*delegateWatchReceipt
 	reclamations        map[uint64]*delegateRuntimeReclamationClaim
@@ -82,6 +81,7 @@ type delegateTreeController struct {
 	evidenceVersion     uint64
 	closing             bool
 	reconcileOrder      []delegateLease
+	owedAdmission       bool
 	emitUpdate          func(delegateUpdatePlan)
 	attentionOpen       delegateAttentionWriterOpener
 }
@@ -241,12 +241,12 @@ func openDelegateTreeController(cfg delegateTreeControllerConfig) (*delegateTree
 		deliveryClaims:      make(map[string]*delegateDeliveryClaim),
 		quietClaims:         make(map[uint64]*delegateQuietAttentionClaim),
 		attentionWakeIDs:    make(map[string]map[string]struct{}),
-		coldAttentionArmIDs: make(map[string]map[string]struct{}),
 		watchEnqueues:       make(map[uint64]*delegateWatchReceipt),
 		watchDeliveries:     make(map[uint64]*delegateWatchReceipt),
 		reclamations:        make(map[uint64]*delegateRuntimeReclamationClaim),
 		reclaiming:          make(map[string]uint64),
 		reconcileOrder:      delegateOpenRunOrder(events, durable),
+		owedAdmission:       true,
 	}
 	if err := c.restorePendingStop(events); err != nil {
 		return nil, err

@@ -86,11 +86,13 @@ func readDelegateAttentionFold(path, expectedSessionID string) (delegateAttentio
 }
 
 type delegateAttentionFold struct {
-	order           []string
-	content         map[string]llm.Message
-	turns           map[string]schema.Turn
-	resolutions     map[string]delegateAttentionResolution
-	deliveryCommits map[string]string
+	order             []string
+	content           map[string]llm.Message
+	turns             map[string]schema.Turn
+	resolutions       map[string]delegateAttentionResolution
+	resumeGenerations map[string]uint64
+	resumeAttention   map[uint64]string
+	deliveryCommits   map[string]string
 }
 
 func foldDelegateAttention(entries []transcript.Entry) (delegateAttentionFold, error) {
@@ -128,13 +130,26 @@ func foldDelegateAttention(entries []transcript.Entry) (delegateAttentionFold, e
 		if disposition != delegateAttentionConsumed && disposition != delegateAttentionDiscarded {
 			return delegateAttentionFold{}, fmt.Errorf("attention %q has invalid resolution %q", resolution.AttentionID, resolution.Disposition)
 		}
+		if disposition == delegateAttentionDiscarded && resolution.ResumeGeneration != 0 {
+			return delegateAttentionFold{}, fmt.Errorf("discarded attention %q has resume generation %d", resolution.AttentionID, resolution.ResumeGeneration)
+		}
 		if _, exists := fold.content[resolution.AttentionID]; !exists {
 			return delegateAttentionFold{}, fmt.Errorf("attention %q resolved before it was appended", resolution.AttentionID)
 		}
-		if previous, exists := fold.resolutions[resolution.AttentionID]; exists && previous != disposition {
-			return delegateAttentionFold{}, fmt.Errorf("attention %q has conflicting resolutions", resolution.AttentionID)
+		if previous, exists := fold.resolutions[resolution.AttentionID]; exists {
+			if previous != disposition || fold.resumeGenerations[resolution.AttentionID] != resolution.ResumeGeneration {
+				return delegateAttentionFold{}, fmt.Errorf("attention %q has conflicting resolutions", resolution.AttentionID)
+			}
+			continue
+		}
+		if resolution.ResumeGeneration != 0 {
+			if previousID := fold.resumeAttention[resolution.ResumeGeneration]; previousID != "" && previousID != resolution.AttentionID {
+				return delegateAttentionFold{}, fmt.Errorf("resume generation %d claims attention %q and %q", resolution.ResumeGeneration, previousID, resolution.AttentionID)
+			}
+			fold.resumeAttention[resolution.ResumeGeneration] = resolution.AttentionID
 		}
 		fold.resolutions[resolution.AttentionID] = disposition
+		fold.resumeGenerations[resolution.AttentionID] = resolution.ResumeGeneration
 	}
 	return fold, nil
 }
@@ -174,10 +189,12 @@ func foldDelegateDeliveryCommits(fold *delegateAttentionFold, turn schema.Turn) 
 
 func newDelegateAttentionFold() delegateAttentionFold {
 	return delegateAttentionFold{
-		content:         make(map[string]llm.Message),
-		turns:           make(map[string]schema.Turn),
-		resolutions:     make(map[string]delegateAttentionResolution),
-		deliveryCommits: make(map[string]string),
+		content:           make(map[string]llm.Message),
+		turns:             make(map[string]schema.Turn),
+		resolutions:       make(map[string]delegateAttentionResolution),
+		resumeGenerations: make(map[string]uint64),
+		resumeAttention:   make(map[uint64]string),
+		deliveryCommits:   make(map[string]string),
 	}
 }
 
@@ -255,6 +272,10 @@ func appendColdAttentionResolution(path, expectedSessionID string, ids []string,
 }
 
 func appendColdAttentionResolutionWithOpen(path, expectedSessionID string, ids []string, disposition delegateAttentionResolution, open delegateAttentionWriterOpener) (err error) {
+	return appendColdAttentionResolutionForGenerationWithOpen(path, expectedSessionID, ids, disposition, 0, open)
+}
+
+func appendColdAttentionResolutionForGenerationWithOpen(path, expectedSessionID string, ids []string, disposition delegateAttentionResolution, resumeGeneration uint64, open delegateAttentionWriterOpener) (err error) {
 	if expectedSessionID == "" {
 		return errors.New("cold attention resolution session ID is empty")
 	}
@@ -265,7 +286,7 @@ func appendColdAttentionResolutionWithOpen(path, expectedSessionID string, ids [
 	if err != nil {
 		return err
 	}
-	if err := validateDelegateAttentionResolutions(preflight, ids, disposition); err != nil {
+	if err := validateDelegateAttentionResolutions(preflight, ids, disposition, resumeGeneration); err != nil {
 		return err
 	}
 	if len(ids) == 0 {
@@ -282,7 +303,7 @@ func appendColdAttentionResolutionWithOpen(path, expectedSessionID string, ids [
 	}
 	allResolved := true
 	for _, attentionID := range ids {
-		if fold.resolutions[attentionID] != disposition {
+		if fold.resolutions[attentionID] != disposition || fold.resumeGenerations[attentionID] != resumeGeneration {
 			allResolved = false
 			break
 		}
@@ -290,14 +311,19 @@ func appendColdAttentionResolutionWithOpen(path, expectedSessionID string, ids [
 	if allResolved {
 		return writer.EstablishDurability()
 	}
-	return appendDelegateAttentionResolutions(writer, fold, ids, disposition)
+	return appendDelegateAttentionResolutions(writer, fold, ids, disposition, resumeGeneration)
 }
 
 func delegateAttentionResolutionTurn(attentionID string, disposition delegateAttentionResolution) schema.Turn {
+	return delegateAttentionResolutionTurnForGeneration(attentionID, disposition, 0)
+}
+
+func delegateAttentionResolutionTurnForGeneration(attentionID string, disposition delegateAttentionResolution, resumeGeneration uint64) schema.Turn {
 	turn := schema.NewTurn(schema.TurnAttentionResolution, llm.System("Attention resolved."))
 	turn.AttentionResolution = &schema.AttentionResolutionInfo{
-		AttentionID: attentionID,
-		Disposition: string(disposition),
+		AttentionID:      attentionID,
+		Disposition:      string(disposition),
+		ResumeGeneration: resumeGeneration,
 	}
 	return turn
 }
@@ -397,6 +423,9 @@ func (s *Session) armDelegateAttention(attentionID string) error {
 		return errors.New("delegate attention wake identity is incomplete")
 	}
 	err := s.armDelegateAttentionOnce(attentionID)
+	if !s.isRootDelegateAttentionReceiver() {
+		return err
+	}
 	s.attentionMu.Lock()
 	if err != nil {
 		if s.delegateAttentionArmIDs == nil {
@@ -429,13 +458,15 @@ func (s *Session) armDelegateAttentionOnce(attentionID string) error {
 	if s.delegateController == nil || s.owningDelegateID == "" {
 		return errors.New("delegate attention controller identity is incomplete")
 	}
-	s.delegateController.noteDelegateAttention(s.owningDelegateID, attentionID)
+	if _, err := s.delegateController.openDelegateAttention(s.owningDelegateID, attentionID); err != nil {
+		return err
+	}
 	s.notify()
 	return nil
 }
 
 func (s *Session) hasPendingDelegateAttentionArmRetry() bool {
-	if s == nil {
+	if s == nil || !s.isRootDelegateAttentionReceiver() {
 		return false
 	}
 	s.attentionMu.Lock()
@@ -463,6 +494,31 @@ func (s *Session) pendingDelegateAttentionIDs() ([]string, error) {
 		return nil, err
 	}
 	return fold.pendingIDs(), nil
+}
+
+// acceptDelegateAttention records the exact reserved generation in the child
+// transcript before asking the controller to publish that generation. The
+// reservation remains the per-child claim across both durability boundaries;
+// a journal append failure can therefore replay this same marker and batch.
+func (s *Session) acceptDelegateAttention(reservation *delegateStartReservation) error {
+	if s == nil || s.delegateController == nil {
+		return errDelegateStaleLease
+	}
+	attentionID, generation, err := s.delegateController.attentionReservationIdentity(reservation, s)
+	if err != nil {
+		return err
+	}
+	if err := s.resolveAttentionDurablyForGeneration([]string{attentionID}, delegateAttentionConsumed, generation); err != nil {
+		return err
+	}
+	pendingIDs, err := s.pendingDelegateAttentionIDs()
+	if err != nil {
+		return err
+	}
+	if err := s.delegateController.prepareAttentionStart(reservation, s, pendingIDs); err != nil {
+		return err
+	}
+	return nil
 }
 
 // isRootDelegateAttentionReceiver reports whether this Session is the stable
@@ -683,9 +739,6 @@ func (s *Session) scheduleStableDelegateAttentionRetry() {
 		s.stableAttentionRetry.active = false
 		s.attentionMu.Unlock()
 
-		if s.delegateController != nil {
-			s.delegateController.retryColdDelegateAttentionArms()
-		}
 		runnable := s.delegateController != nil && s.delegateController.hasRunnableDelegateAttention()
 		if runnable {
 			s.notify()
@@ -798,6 +851,10 @@ func (s *Session) readDelegateAttentionFold(path, sessionID string) (delegateAtt
 // durable because transcript.Writer deliberately treats a closed writer as a
 // successful no-op.
 func (s *Session) resolveAttentionDurably(ids []string, disposition delegateAttentionResolution) error {
+	return s.resolveAttentionDurablyForGeneration(ids, disposition, 0)
+}
+
+func (s *Session) resolveAttentionDurablyForGeneration(ids []string, disposition delegateAttentionResolution, resumeGeneration uint64) error {
 	if s == nil {
 		return errors.New("attention resolution session is nil")
 	}
@@ -818,11 +875,11 @@ func (s *Session) resolveAttentionDurably(ids []string, disposition delegateAtte
 	if err != nil {
 		return err
 	}
-	if err := validateDelegateAttentionResolutions(fold, ids, disposition); err != nil {
+	if err := validateDelegateAttentionResolutions(fold, ids, disposition, resumeGeneration); err != nil {
 		return err
 	}
 	for _, attentionID := range ids {
-		if fold.resolutions[attentionID] != disposition {
+		if fold.resolutions[attentionID] != disposition || fold.resumeGenerations[attentionID] != resumeGeneration {
 			continue
 		}
 		writer, fold, err = s.reopenAttentionTranscriptDurably(writer, path, sessionID)
@@ -831,7 +888,7 @@ func (s *Session) resolveAttentionDurably(ids []string, disposition delegateAtte
 		}
 		break
 	}
-	if err := appendDelegateAttentionResolutions(writer, fold, ids, disposition); err != nil {
+	if err := appendDelegateAttentionResolutions(writer, fold, ids, disposition, resumeGeneration); err != nil {
 		return err
 	}
 	verified, err := readDelegateAttentionFold(path, sessionID)
@@ -839,7 +896,7 @@ func (s *Session) resolveAttentionDurably(ids []string, disposition delegateAtte
 		return err
 	}
 	for _, attentionID := range ids {
-		if verified.resolutions[attentionID] != disposition {
+		if verified.resolutions[attentionID] != disposition || verified.resumeGenerations[attentionID] != resumeGeneration {
 			return fmt.Errorf("attention %q resolution was not durably appended", attentionID)
 		}
 	}
@@ -964,38 +1021,50 @@ func (s *Session) stabilizeAttentionForStop(attentionID string) error {
 	return writer.Close()
 }
 
-func appendDelegateAttentionResolutions(writer *transcript.Writer, fold delegateAttentionFold, ids []string, disposition delegateAttentionResolution) error {
-	if err := validateDelegateAttentionResolutions(fold, ids, disposition); err != nil {
+func appendDelegateAttentionResolutions(writer *transcript.Writer, fold delegateAttentionFold, ids []string, disposition delegateAttentionResolution, resumeGeneration uint64) error {
+	if err := validateDelegateAttentionResolutions(fold, ids, disposition, resumeGeneration); err != nil {
 		return err
 	}
 	for _, attentionID := range ids {
-		if previous, resolved := fold.resolutions[attentionID]; resolved && previous == disposition {
+		if previous, resolved := fold.resolutions[attentionID]; resolved && previous == disposition && fold.resumeGenerations[attentionID] == resumeGeneration {
 			continue
 		}
-		if err := writer.AppendDurable(delegateAttentionResolutionTurn(attentionID, disposition)); err != nil {
+		if err := writer.AppendDurable(delegateAttentionResolutionTurnForGeneration(attentionID, disposition, resumeGeneration)); err != nil {
 			return err
 		}
 		fold.resolutions[attentionID] = disposition
+		fold.resumeGenerations[attentionID] = resumeGeneration
+		if resumeGeneration != 0 {
+			fold.resumeAttention[resumeGeneration] = attentionID
+		}
 	}
 	return nil
 }
 
-func validateDelegateAttentionResolutions(fold delegateAttentionFold, ids []string, disposition delegateAttentionResolution) error {
+func validateDelegateAttentionResolutions(fold delegateAttentionFold, ids []string, disposition delegateAttentionResolution, resumeGeneration uint64) error {
 	if disposition != delegateAttentionConsumed && disposition != delegateAttentionDiscarded {
 		return fmt.Errorf("invalid attention resolution %q", disposition)
+	}
+	if resumeGeneration != 0 && (disposition != delegateAttentionConsumed || len(ids) != 1) {
+		return errors.New("resume generation requires one consumed attention ID")
 	}
 	for _, attentionID := range ids {
 		if attentionID == "" {
 			return errors.New("attention resolution ID is empty")
 		}
 		if previous, resolved := fold.resolutions[attentionID]; resolved {
-			if previous != disposition {
+			if previous != disposition || fold.resumeGenerations[attentionID] != resumeGeneration {
 				return fmt.Errorf("attention %q has conflicting resolution %q", attentionID, previous)
 			}
 			continue
 		}
 		if _, pending := fold.content[attentionID]; !pending {
 			return fmt.Errorf("attention %q is not pending", attentionID)
+		}
+		if resumeGeneration != 0 {
+			if previousID := fold.resumeAttention[resumeGeneration]; previousID != "" && previousID != attentionID {
+				return fmt.Errorf("resume generation %d already claims attention %q", resumeGeneration, previousID)
+			}
 		}
 	}
 	return nil
