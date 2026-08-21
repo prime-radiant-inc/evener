@@ -414,6 +414,7 @@ _(no fields)_
 | `reason` | `string` | yes |  |
 | `terminal` | `bool` | yes |  |
 | `resumable` | `bool` |  |  |
+| `needsAttention` | `bool` |  |  |
 | `notResumableReason` | `string` | yes |  |
 | `projectionRevision` | `uint64` |  |  |
 | `task` | `string` | yes |  |
