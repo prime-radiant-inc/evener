@@ -94,8 +94,7 @@ func (c *delegateTreeController) openDelegateAttention(delegateID, attentionID s
 			<-blocker
 			continue
 		}
-		aggregate := c.durable[delegateID]
-		if aggregate == nil {
+		if c.durable[delegateID] == nil {
 			c.mu.Unlock()
 			return false, errDelegateNotControllable
 		}
@@ -103,33 +102,47 @@ func (c *delegateTreeController) openDelegateAttention(delegateID, attentionID s
 			c.mu.Unlock()
 			return false, nil
 		}
-		changed := false
-		blocked, _ := c.ancestorFenceLocked(aggregate.Descriptor.ParentDelegateID)
-		if !aggregate.NeedsAttention && aggregate.Resumable && aggregate.PendingStopSeq == 0 && aggregate.Phase != delegatestore.PhaseClosed && aggregate.Phase != delegatestore.PhaseStopping && !blocked {
-			if _, err := c.appendLocked(delegatestore.Event{
-				Kind:       delegatestore.EventDelegateAttentionChanged,
-				DelegateID: delegateID,
-				AttentionChanged: &delegatestore.DelegateAttentionChanged{
-					NeedsAttention: true,
-				},
-			}); err != nil {
+		openEvent, err := c.delegateAttentionOpenEventLocked(delegateID)
+		if err != nil {
+			c.mu.Unlock()
+			return false, err
+		}
+		if openEvent != nil {
+			if _, err := c.appendLocked(*openEvent); err != nil {
 				c.mu.Unlock()
 				return false, err
 			}
-			changed = true
 		}
 		added := c.noteDelegateAttentionLocked(delegateID, attentionID)
 		var plan delegateUpdatePlan
-		if changed {
+		if openEvent != nil {
 			plan = c.capturedPlanLocked(delegateID)
 		}
 		c.evidenceVersion++
 		c.mu.Unlock()
-		if changed {
+		if openEvent != nil {
 			c.emitDelegateUpdate(plan)
 		}
 		return added, nil
 	}
+}
+
+func (c *delegateTreeController) delegateAttentionOpenEventLocked(delegateID string) (*delegatestore.Event, error) {
+	aggregate := c.durable[delegateID]
+	if aggregate == nil {
+		return nil, errDelegateNotControllable
+	}
+	blocked, _ := c.ancestorFenceLocked(aggregate.Descriptor.ParentDelegateID)
+	if aggregate.NeedsAttention || !aggregate.Resumable || aggregate.PendingStopSeq != 0 || aggregate.Phase == delegatestore.PhaseClosed || aggregate.Phase == delegatestore.PhaseStopping || blocked {
+		return nil, nil
+	}
+	return &delegatestore.Event{
+		Kind:       delegatestore.EventDelegateAttentionChanged,
+		DelegateID: delegateID,
+		AttentionChanged: &delegatestore.DelegateAttentionChanged{
+			NeedsAttention: true,
+		},
+	}, nil
 }
 
 func (c *delegateTreeController) noteDelegateAttentionLocked(delegateID, attentionID string) bool {

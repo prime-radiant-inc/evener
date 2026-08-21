@@ -101,6 +101,10 @@ func (c *delegateTreeController) owedAttentionStartsFromTranscripts() ([]delegat
 	refs := make([]coldDelegateAttentionRef, 0, len(c.durable))
 	generations := make(map[string]uint64, len(c.durable))
 	parents := make(map[string]string, len(c.durable))
+	runStarts := make(map[delegateLease]delegatestore.RunTrigger, len(c.runStarts))
+	for lease, trigger := range c.runStarts {
+		runStarts[lease] = trigger
+	}
 	stateDir := c.stateDir
 	for id, aggregate := range c.durable {
 		if aggregate == nil || aggregate.Phase != delegatestore.PhaseIdle || !aggregate.Resumable || aggregate.PendingStopSeq != 0 {
@@ -123,19 +127,38 @@ func (c *delegateTreeController) owedAttentionStartsFromTranscripts() ([]delegat
 		if err != nil {
 			return nil, err
 		}
-		resumeGenerations := make([]uint64, 0, len(fold.resumeAttention))
-		for generation := range fold.resumeAttention {
-			resumeGenerations = append(resumeGenerations, generation)
+		resumes := make([]struct {
+			attentionID string
+			generation  uint64
+		}, 0, len(fold.resumeGenerations))
+		for attentionID, generation := range fold.resumeGenerations {
+			if generation != 0 {
+				resumes = append(resumes, struct {
+					attentionID string
+					generation  uint64
+				}{attentionID: attentionID, generation: generation})
+			}
 		}
-		sort.Slice(resumeGenerations, func(i, j int) bool { return resumeGenerations[i] < resumeGenerations[j] })
+		sort.Slice(resumes, func(i, j int) bool {
+			if resumes[i].generation != resumes[j].generation {
+				return resumes[i].generation < resumes[j].generation
+			}
+			return resumes[i].attentionID < resumes[j].attentionID
+		})
 		journalGeneration := generations[ref.delegateID]
-		for _, generation := range resumeGenerations {
-			if generation <= journalGeneration {
+		for _, resume := range resumes {
+			lease := delegateLease{delegateID: ref.delegateID, generation: resume.generation}
+			if trigger, exists := runStarts[lease]; exists {
+				if trigger != delegatestore.TriggerAttention {
+					return nil, fmt.Errorf("delegate %s attention %q resume generation %d matches run trigger %q, want %q", ref.delegateID, resume.attentionID, resume.generation, trigger, delegatestore.TriggerAttention)
+				}
 				continue
 			}
-			attentionID := fold.resumeAttention[generation]
-			if generation != journalGeneration+1 {
-				return nil, fmt.Errorf("delegate %s attention %q owes generation %d after journal generation %d", ref.delegateID, attentionID, generation, journalGeneration)
+			if resume.generation <= journalGeneration {
+				return nil, fmt.Errorf("delegate %s attention %q resume generation %d has no exact RunStarted at journal generation %d", ref.delegateID, resume.attentionID, resume.generation, journalGeneration)
+			}
+			if resume.generation != journalGeneration+1 {
+				return nil, fmt.Errorf("delegate %s attention %q owes generation %d after journal generation %d", ref.delegateID, resume.attentionID, resume.generation, journalGeneration)
 			}
 			if len(owed) != 0 && owed[len(owed)-1].delegateID == ref.delegateID {
 				return nil, fmt.Errorf("delegate %s owes multiple attention generations", ref.delegateID)
@@ -143,13 +166,23 @@ func (c *delegateTreeController) owedAttentionStartsFromTranscripts() ([]delegat
 			owed = append(owed, delegateOwedAttentionStart{
 				delegateID:  ref.delegateID,
 				parentID:    parents[ref.delegateID],
-				attentionID: attentionID,
-				generation:  generation,
+				attentionID: resume.attentionID,
+				generation:  resume.generation,
 				pendingIDs:  fold.pendingIDs(),
 			})
 		}
 	}
 	return owed, nil
+}
+
+func delegateRunStartIndex(events []delegatestore.Event) map[delegateLease]delegatestore.RunTrigger {
+	index := make(map[delegateLease]delegatestore.RunTrigger)
+	for _, event := range events {
+		if event.RunStarted != nil {
+			index[delegateLease{delegateID: event.DelegateID, generation: event.RunStarted.Generation}] = event.RunStarted.Trigger
+		}
+	}
+	return index
 }
 
 func (c *delegateTreeController) ReconcileRequirements() delegateReconcileRequirements {

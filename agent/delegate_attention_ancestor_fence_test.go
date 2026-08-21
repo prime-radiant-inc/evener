@@ -87,10 +87,14 @@ func TestDelegateAttentionWake_CommitStartRechecksAncestorFence(t *testing.T) {
 	if !c.noteDelegateAttention("dlg_child", attentionID) {
 		t.Fatal("note child attention")
 	}
+	attachDelegateAttentionTranscriptForTest(t, c, child, "dlg_child", attentionID)
 
 	reservation, err := c.ReserveAttention(child, attentionID)
 	if err != nil {
 		t.Fatalf("ReserveAttention with open ancestor: %v", err)
+	}
+	if err := child.acceptDelegateAttention(reservation); err != nil {
+		t.Fatalf("accept attention before ancestor closes: %v", err)
 	}
 	closeDelegateControllerResumability(t, c, "dlg_parent", "turn_budget_exhausted")
 
@@ -176,6 +180,10 @@ func TestDelegateAttentionWake_StoppingAncestorParksAttentionForLaterDelivery(t 
 	reservation, err := c.ReserveAttention(child, attentionID)
 	if err != nil {
 		t.Fatalf("ReserveAttention after ancestor resumed: %v", err)
+	}
+	attachDelegateAttentionTranscriptForTest(t, c, child, "dlg_child", attentionID)
+	if err := child.acceptDelegateAttention(reservation); err != nil {
+		t.Fatalf("accept attention after ancestor resumed: %v", err)
 	}
 	if _, err := c.CommitStart(reservation); err != nil {
 		t.Fatalf("CommitStart after ancestor resumed: %v", err)
@@ -532,6 +540,10 @@ func TestDelegateAttentionWake_AncestorStopFenceParksUncoveredChild(t *testing.T
 	reservation, err := c.ReserveAttention(child, attentionID)
 	if err != nil {
 		t.Fatalf("ReserveAttention after ancestor stop completed: %v", err)
+	}
+	attachDelegateAttentionTranscriptForTest(t, c, child, "dlg_child", attentionID)
+	if err := child.acceptDelegateAttention(reservation); err != nil {
+		t.Fatalf("accept attention after ancestor stop completed: %v", err)
 	}
 	if _, err := c.CommitStart(reservation); err != nil {
 		t.Fatalf("CommitStart after ancestor stop completed: %v", err)

@@ -213,42 +213,7 @@ func (c *delegateTreeController) ReserveAttention(runtime *Session, attentionID 
 	if blocked, _ := c.ancestorFenceLocked(aggregate.Descriptor.ParentDelegateID); blocked {
 		return nil, errDelegateTargetBusy
 	}
-	if !c.reserveCapacityLocked(delegateDriveCapacity) {
-		return nil, errTreeAtCapacity
-	}
-	ctx, cancel := context.WithCancel(context.Background())
-	c.nextToken++
-	descriptor := cloneDelegateStartDescriptor(aggregate.Descriptor)
-	transcriptPath := filepath.Join(c.stateDir, sessionsSubdir, descriptor.ChildSessionID+".transcript.jsonl")
-	worktreePath := ""
-	if descriptor.Isolation == "worktree" {
-		worktreePath = descriptor.WorkingDir
-	}
-	reservation := &delegateStartReservation{
-		delegateID:     delegateID,
-		descriptor:     cloneDelegateStartDescriptor(descriptor),
-		transcriptPath: transcriptPath,
-		worktreePath:   worktreePath,
-	}
-	record := &delegateStartRecord{
-		receipt:        reservation,
-		token:          c.nextToken,
-		delegateID:     delegateID,
-		generation:     aggregate.Generation + 1,
-		trigger:        delegatestore.TriggerAttention,
-		capacityKind:   delegateDriveCapacity,
-		ctx:            ctx,
-		cancel:         cancel,
-		descriptor:     descriptor,
-		transcriptPath: transcriptPath,
-		worktreePath:   worktreePath,
-		runtime:        runtime,
-		attentionID:    attentionID,
-		done:           make(chan struct{}),
-	}
-	c.reservations[record.token] = record
-	c.evidenceVersion++
-	return reservation, nil
+	return c.reserveAttentionStartLocked(aggregate, attentionID, aggregate.Generation+1, runtime, nil, false)
 }
 
 func (c *delegateTreeController) attentionReservationIdentity(reservation *delegateStartReservation, runtime *Session) (string, uint64, error) {
@@ -337,9 +302,14 @@ func (c *delegateTreeController) reserveOwedAttentionStart(delegateID, attention
 	if c.hasDeliveryWorkForOwnerLocked(delegateID) {
 		return nil, errDelegateTargetBusy
 	}
+	return c.reserveAttentionStartLocked(aggregate, attentionID, generation, nil, pendingIDs, true)
+}
+
+func (c *delegateTreeController) reserveAttentionStartLocked(aggregate *delegatestore.Aggregate, attentionID string, generation uint64, runtime *Session, pendingIDs []string, prepared bool) (*delegateStartReservation, error) {
 	if !c.reserveCapacityLocked(delegateDriveCapacity) {
 		return nil, errTreeAtCapacity
 	}
+	delegateID := aggregate.DelegateID
 	descriptor := cloneDelegateStartDescriptor(aggregate.Descriptor)
 	transcriptPath := filepath.Join(c.stateDir, sessionsSubdir, descriptor.ChildSessionID+".transcript.jsonl")
 	worktreePath := ""
@@ -366,9 +336,10 @@ func (c *delegateTreeController) reserveOwedAttentionStart(delegateID, attention
 		descriptor:               descriptor,
 		transcriptPath:           transcriptPath,
 		worktreePath:             worktreePath,
+		runtime:                  runtime,
 		attentionID:              attentionID,
 		attentionPendingIDs:      append([]string(nil), pendingIDs...),
-		attentionResolutionReady: true,
+		attentionResolutionReady: prepared,
 		done:                     make(chan struct{}),
 	}
 	c.reservations[record.token] = record
@@ -377,10 +348,6 @@ func (c *delegateTreeController) reserveOwedAttentionStart(delegateID, attention
 }
 
 func (c *delegateTreeController) AttachRuntime(lease delegateLease, runtime *Session) error {
-	return c.attachRuntime(lease, runtime)
-}
-
-func (c *delegateTreeController) attachRuntime(lease delegateLease, runtime *Session) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if c.closing {
@@ -543,10 +510,6 @@ func (c *delegateTreeController) FailCommittedStart(lease delegateLease, failure
 }
 
 func (c *delegateTreeController) FailCommittedRestart(lease delegateLease, failure delegateFinish) (delegateMutationPlans, error) {
-	return c.failCommittedRestart(lease, failure)
-}
-
-func (c *delegateTreeController) failCommittedRestart(lease delegateLease, failure delegateFinish) (delegateMutationPlans, error) {
 	c.mu.Lock()
 	var cancel context.CancelFunc
 	defer func() {
@@ -715,10 +678,6 @@ func (c *delegateTreeController) releaseReservationLocked(record *delegateStartR
 }
 
 func (c *delegateTreeController) CommitStart(reservation *delegateStartReservation) (delegateStartCommit, error) {
-	return c.commitStart(reservation)
-}
-
-func (c *delegateTreeController) commitStart(reservation *delegateStartReservation) (delegateStartCommit, error) {
 	c.mu.Lock()
 	var cancel context.CancelFunc
 	defer func() {
@@ -729,6 +688,10 @@ func (c *delegateTreeController) commitStart(reservation *delegateStartReservati
 	}()
 	record, err := c.reservationRecordLocked(reservation)
 	if err != nil {
+		return delegateStartCommit{}, errDelegateTargetBusy
+	}
+	if record.trigger == delegatestore.TriggerAttention && !record.attentionResolutionReady {
+		cancel = c.releaseReservationLocked(record)
 		return delegateStartCommit{}, errDelegateTargetBusy
 	}
 	if record.ctx.Err() != nil || c.stopCoversLocked(record.delegateID) || c.closing && record.trigger != delegatestore.TriggerAttention {
@@ -763,7 +726,7 @@ func (c *delegateTreeController) commitStart(reservation *delegateStartReservati
 	startedAt := c.now()
 	events := make([]delegatestore.Event, 0, 2)
 	attentionNeeded := len(record.attentionPendingIDs) != 0
-	if record.trigger == delegatestore.TriggerAttention && record.attentionResolutionReady && aggregate.NeedsAttention != attentionNeeded {
+	if record.trigger == delegatestore.TriggerAttention && aggregate.NeedsAttention != attentionNeeded {
 		events = append(events, delegatestore.Event{
 			Kind:       delegatestore.EventDelegateAttentionChanged,
 			DelegateID: record.delegateID,
@@ -787,7 +750,7 @@ func (c *delegateTreeController) commitStart(reservation *delegateStartReservati
 	}
 	_, err = c.appendLocked(events...)
 	if err != nil {
-		if record.trigger == delegatestore.TriggerAttention && record.attentionResolutionReady {
+		if record.trigger == delegatestore.TriggerAttention {
 			return delegateStartCommit{}, err
 		}
 		cancel = c.releaseReservationLocked(record)
@@ -817,11 +780,7 @@ func (c *delegateTreeController) commitStart(reservation *delegateStartReservati
 		ready:   record.trigger == delegatestore.TriggerAttention,
 	}
 	if record.trigger == delegatestore.TriggerAttention {
-		if record.attentionResolutionReady {
-			c.replaceDelegateAttentionLocked(record.delegateID, record.attentionPendingIDs)
-		} else {
-			c.forgetDelegateAttentionLocked(record.delegateID, record.attentionID)
-		}
+		c.replaceDelegateAttentionLocked(record.delegateID, record.attentionPendingIDs)
 	}
 	if record.runtime != nil {
 		live.runtime = record.runtime

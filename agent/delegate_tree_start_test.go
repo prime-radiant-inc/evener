@@ -739,9 +739,23 @@ func TestDelegateControllerReserveAttentionRequiresResidentRuntimeAndPendingID(t
 	if turns, drives := c.capacityInUse(); turns != 0 || drives != 1 {
 		t.Fatalf("attention capacity = (%d, %d), want (0, 1)", turns, drives)
 	}
+	if _, err := c.CommitStart(reservation); !errors.Is(err, errDelegateTargetBusy) {
+		t.Fatalf("unprepared CommitStart attention = %v, want busy", err)
+	}
+	if turns, drives := c.capacityInUse(); turns != 0 || drives != 0 || len(c.reservations) != 0 {
+		t.Fatalf("unprepared attention start retained state = capacity:(%d,%d) reservations:%d", turns, drives, len(c.reservations))
+	}
+	attachDelegateAttentionTranscriptForTest(t, c, runtime, "dlg_target", "attention-1")
+	reservation, err = c.ReserveAttention(runtime, "attention-1")
+	if err != nil {
+		t.Fatalf("ReserveAttention prepared retry: %v", err)
+	}
+	if err := runtime.acceptDelegateAttention(reservation); err != nil {
+		t.Fatalf("accept attention: %v", err)
+	}
 	attention, err := c.CommitStart(reservation)
 	if err != nil {
-		t.Fatalf("CommitStart attention: %v", err)
+		t.Fatalf("CommitStart prepared attention: %v", err)
 	}
 	if aggregate := c.durable["dlg_target"]; aggregate.Trigger != delegatestore.TriggerAttention || aggregate.Generation != 2 {
 		t.Fatalf("attention aggregate = %#v, want generation 2 attention", aggregate)

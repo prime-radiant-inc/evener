@@ -256,6 +256,34 @@ func newDelegateAttentionAcceptanceHarness(t *testing.T, sessionID string, fs af
 	return c, runtime, path
 }
 
+func attachDelegateAttentionTranscriptForTest(t *testing.T, c *delegateTreeController, runtime *Session, delegateID, attentionID string) {
+	t.Helper()
+	c.mu.Lock()
+	aggregate := c.durable[delegateID]
+	c.mu.Unlock()
+	if aggregate == nil {
+		t.Fatalf("delegate %q is absent", delegateID)
+	}
+	sessionID := aggregate.Descriptor.ChildSessionID
+	path := transcriptPath(c.stateDir, sessionID)
+	writer, err := transcript.NewWriter(path, transcript.Header{SessionID: sessionID})
+	if err != nil {
+		t.Fatalf("create attention transcript: %v", err)
+	}
+	t.Cleanup(func() { _ = writer.Close() })
+	runtime.id = sessionID
+	runtime.stateDir = c.stateDir
+	runtime.delegateController = c
+	runtime.owningDelegateID = delegateID
+	runtime.attachTranscript(writer)
+	turn := schema.NewTurn(schema.TurnSteering, llm.User("attention "+attentionID))
+	turn.AttentionID = attentionID
+	if err := writer.AppendDurable(turn); err != nil {
+		t.Fatalf("append attention: %v", err)
+	}
+	c.noteDelegateAttention(delegateID, attentionID)
+}
+
 func TestDelegateAttention_ResolutionFailureLeavesGenerationStoppable(t *testing.T) {
 	const (
 		sessionID   = "child-dlg_target"
@@ -2730,6 +2758,73 @@ func TestDelegateAttention_RestartRearmsColdChildAndDrainsExactAttention(t *test
 	}
 	releaseOnce.Do(func() { close(releaseAttention) })
 	waitForStableSupervisionRun(t, root, fixture.childID)
+
+	t.Run("rejects exact non-attention generation", func(t *testing.T) {
+		fixture := newColdStableDelegateFixture(t, "")
+		const attentionID = "watch:restart-attention:trigger-conflict"
+		childPath := transcriptPath(fixture.stateDir, fixture.childID)
+		if appended, err := appendColdDelegateNotificationDurablyWithOpen(childPath, fixture.childID, attentionID, "trigger conflict", time.Unix(1_700_000_400, 0).UTC(), transcript.OpenWriterForSession); err != nil || !appended {
+			t.Fatalf("append conflicting attention = appended:%t err:%v", appended, err)
+		}
+		writer, _, err := transcript.OpenWriterForSession(childPath, fixture.childID)
+		if err != nil {
+			t.Fatalf("open conflicting transcript: %v", err)
+		}
+		resolution := delegateAttentionResolutionTurn(attentionID, delegateAttentionConsumed)
+		resolution.AttentionResolution.ResumeGeneration = 1
+		if err := writer.AppendDurable(resolution); err != nil {
+			_ = writer.Close()
+			t.Fatalf("append conflicting consumed marker: %v", err)
+		}
+		if err := writer.Close(); err != nil {
+			t.Fatalf("close conflicting transcript: %v", err)
+		}
+		store, err := delegatestore.Open(delegateResourceStorePath(fixture.stateDir, fixture.meta.ID))
+		if err != nil {
+			t.Fatalf("open conflicting store: %v", err)
+		}
+		events, err := store.Load()
+		if err != nil {
+			_ = store.Close()
+			t.Fatalf("load conflicting store: %v", err)
+		}
+		state, err := delegatestore.Fold(events)
+		if err != nil {
+			_ = store.Close()
+			t.Fatalf("fold conflicting store: %v", err)
+		}
+		lease := delegateLease{delegateID: fixture.delegateID, generation: 1}
+		packet := delegateControllerReportedPacket("owner generation")
+		_, _, err = store.AppendBatch(state, []delegatestore.Event{
+			delegateControllerRunStartedEvent(fixture.delegateID, 1, delegatestore.TriggerOwnerInput, time.Unix(1_700_000_401, 0).UTC()),
+			{
+				Kind:       delegatestore.EventDelegateTerminalPrepared,
+				DelegateID: fixture.delegateID,
+				TerminalPrepared: &delegatestore.TerminalPrepared{
+					Generation: 1,
+					Packet:     packet,
+				},
+			},
+			delegateRunFinishedEvent(lease, delegatestore.OutcomeCompleted, delegatestore.DispositionReported, "", time.Unix(1_700_000_402, 0).UTC(), delegateDeliveryID(fixture.delegateID, 1), nil),
+		})
+		if closeErr := store.Close(); err == nil {
+			err = closeErr
+		}
+		if err != nil {
+			t.Fatalf("append conflicting owner generation: %v", err)
+		}
+		if _, err := restoreDelegateResourceBootstrapSession(fixture.client, fixture.profile, fixture.workspace, fixture.meta, fixture.stateDir); err == nil || !strings.Contains(err.Error(), "trigger") {
+			t.Fatalf("restore with exact non-attention generation = %v, want trigger corruption", err)
+		}
+		rootFold, err := readDelegateAttentionFold(transcriptPath(fixture.stateDir, fixture.meta.ID), fixture.meta.ID)
+		if err != nil {
+			t.Fatalf("read root delivery replay after corruption: %v", err)
+		}
+		deliveryAttentionID := delegateAttentionID(delegateDeliveryID(fixture.delegateID, 1))
+		if _, deliveredBeforeAdmission := rootFold.content[deliveryAttentionID]; !deliveredBeforeAdmission {
+			t.Fatalf("prepared delivery %q was not drained before owed-generation scan", deliveryAttentionID)
+		}
+	})
 }
 
 func TestDelegateAttention_PrelaunchRecoveryDoesNotWaitForUnlaunchedRunner(t *testing.T) {

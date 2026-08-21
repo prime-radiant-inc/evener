@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"primeradiant.com/evener/agent/internal/delegatestore"
+	"primeradiant.com/evener/agent/transcript"
 )
 
 func TestDelegateControllerTwoGenerationsCanFinishBeforeFirstAck(t *testing.T) {
@@ -167,6 +168,28 @@ func TestDelegateControllerInlineCommitReleasesNPlusOneOnlyAfterN(t *testing.T) 
 	pending := c.durable["dlg_target"].PendingDeliveries
 	if len(pending) != 1 || pending[0].DeliveryID != "dlg_target/delivery/2" {
 		t.Fatalf("pending after N commit = %#v", pending)
+	}
+
+	nested, nestedPlan, nestedWaiter := nestedInlineDelegateDelivery(t)
+	if _, err := deliverDelegatePacket(nestedPlan, nil); err != nil {
+		t.Fatalf("deliver nested inline packet: %v", err)
+	}
+	nestedResolution := <-nestedWaiter.resolution
+	if nestedResolution.commit == nil {
+		t.Fatal("nested inline delivery returned no commit")
+	}
+	if _, err := nestedResolution.commit.Complete(true); err != nil {
+		t.Fatalf("commit nested inline delivery: %v", err)
+	}
+	if nested.durable["dlg_owner"].NeedsAttention || len(nested.attentionWakeIDs["dlg_owner"]) != 0 {
+		t.Fatalf("inline DelegateDeliveryCommit opened owner attention: owner=%#v unresolved=%#v", nested.durable["dlg_owner"], nested.attentionWakeIDs["dlg_owner"])
+	}
+	events, err := nested.store.Load()
+	if err != nil {
+		t.Fatalf("load nested inline journal: %v", err)
+	}
+	if tail := events[len(events)-1]; tail.Kind != delegatestore.EventDelegateDeliveryAcknowledged || tail.DeliveryAcknowledged == nil || tail.DeliveryAcknowledged.DeliveryID != nestedPlan.deliveryID {
+		t.Fatalf("nested inline completion tail = %#v, want sender acknowledgment only", tail)
 	}
 }
 
@@ -516,21 +539,21 @@ func TestDelegateControllerRunFinishedAppendFailureKeepsPreparedAndWaiter(t *tes
 
 func TestDelegateControllerDeliveryAcknowledgedAppendFailureKeepsReceiptAndHead(t *testing.T) {
 	c, path, firstPlan := controllerWithNestedDelegateDeliveries(t)
-	token, admitted, err := c.BeginDelivery(firstPlan)
-	if err != nil || !admitted {
-		t.Fatalf("BeginDelivery = admitted:%t err:%v", admitted, err)
-	}
+	writeEmptyAttentionTranscript(t, transcriptPath(c.stateDir, "child-dlg_owner"), "child-dlg_owner")
 	before := readDelegateControllerFile(t, path)
 	beforeOwner := captureDelegateSnapshot(c.durable["dlg_owner"])
 	if err := c.store.Close(); err != nil {
 		t.Fatalf("Close: %v", err)
 	}
-	plans, err := c.CompleteDelivery(token, true)
+	plans, err := deliverColdDelegatePacket(firstPlan)
 	if err == nil {
-		t.Fatal("CompleteDelivery succeeded after store close")
+		t.Fatal("delivery acknowledgment succeeded after store close")
 	}
 	c.mu.Lock()
-	receipt := c.deliveries[token.processID]
+	var receipt *delegateDeliveryAdmission
+	for _, candidate := range c.deliveries {
+		receipt = candidate
+	}
 	c.mu.Unlock()
 	if len(plans.deliveries) != 0 || receipt == nil || c.durable["dlg_target"].PendingDeliveries[0].DeliveryID != firstPlan.deliveryID {
 		t.Fatalf("failed ack state plans=%#v receipt=%#v pending=%#v", plans, receipt, c.durable["dlg_target"].PendingDeliveries)
@@ -549,8 +572,22 @@ func TestDelegateControllerDeliveryAcknowledgedAppendFailureKeepsReceiptAndHead(
 	c.mu.Lock()
 	c.store = reopened
 	c.mu.Unlock()
-	if _, err := c.CompleteDelivery(token, true); err != nil {
-		t.Fatalf("retry exact receipt: %v", err)
+	ownerWriter, _, err := transcript.OpenWriterForSession(transcriptPath(c.stateDir, "child-dlg_owner"), "child-dlg_owner")
+	if err != nil {
+		t.Fatalf("open current owner receiver: %v", err)
+	}
+	t.Cleanup(func() { _ = ownerWriter.Close() })
+	ownerRuntime := &Session{id: "child-dlg_owner", stateDir: c.stateDir, delegateController: c, owningDelegateID: "dlg_owner"}
+	ownerRuntime.attachTranscript(ownerWriter)
+	c.mu.Lock()
+	c.live["dlg_owner"] = &delegateLiveState{runtime: ownerRuntime}
+	c.mu.Unlock()
+	replay := c.ReplayDeliveries()
+	if len(replay) != 1 || replay[0].deliveryID != firstPlan.deliveryID || replay[0].waiter != nil || replay[0].receiver != ownerRuntime {
+		t.Fatalf("public replay plans = %#v, want rebuilt exact head without a spent waiter", replay)
+	}
+	if _, err := deliverColdDelegatePacket(replay[0]); err != nil {
+		t.Fatalf("retry through public delivery path: %v", err)
 	}
 	if len(c.durable["dlg_target"].PendingDeliveries) != 1 || !c.durable["dlg_owner"].NeedsAttention || len(c.attentionWakeIDs["dlg_owner"]) != 1 {
 		t.Fatalf("retried delivery did not publish atomically: sender=%#v owner=%#v unresolved=%#v", c.durable["dlg_target"], c.durable["dlg_owner"], c.attentionWakeIDs["dlg_owner"])
@@ -646,6 +683,45 @@ func controllerWithNestedDelegateDeliveries(t *testing.T) (*delegateTreeControll
 		t.Fatalf("first nested delivery plans = %#v", plans)
 	}
 	return c, path, plans[0]
+}
+
+func nestedInlineDelegateDelivery(t *testing.T) (*delegateTreeController, delegateDeliveryPlan, *delegateInlineWaiter) {
+	t.Helper()
+	c, _ := newDelegateControllerTestHarness(t, 2, 1)
+	seedDelegateControllerIdle(t, c, "dlg_owner", "")
+	seedDelegateControllerIdle(t, c, "dlg_target", "dlg_owner")
+	ownerReservation, err := c.ReserveStart(rootDelegateActor("root-session"), "dlg_owner")
+	if err != nil {
+		t.Fatalf("ReserveStart owner: %v", err)
+	}
+	owner, err := c.CommitStart(ownerReservation)
+	if err != nil {
+		t.Fatalf("CommitStart owner: %v", err)
+	}
+	ownerRuntime := &Session{}
+	if err := c.AttachRuntime(owner.lease, ownerRuntime); err != nil {
+		t.Fatalf("AttachRuntime owner: %v", err)
+	}
+	if _, err := c.AdmitStartInput(owner.lease, func() error { return nil }); err != nil {
+		t.Fatalf("AdmitStartInput owner: %v", err)
+	}
+	reservation, err := c.ReserveStart(delegateActor{lease: &owner.lease}, "dlg_target")
+	if err != nil {
+		t.Fatalf("ReserveStart nested target: %v", err)
+	}
+	waiter, err := c.RegisterInlineWaiter(reservation)
+	if err != nil {
+		t.Fatalf("RegisterInlineWaiter nested target: %v", err)
+	}
+	started, err := c.CommitStart(reservation)
+	if err != nil {
+		t.Fatalf("CommitStart nested target: %v", err)
+	}
+	plans := finishDelegateDeliveryGeneration(t, c, started.lease, "nested inline")
+	if len(plans.deliveries) != 1 {
+		t.Fatalf("nested inline delivery plans = %#v", plans.deliveries)
+	}
+	return c, plans.deliveries[0], waiter
 }
 
 func restartDelegateDeliveryController(t *testing.T, c *delegateTreeController, path string) *delegateTreeController {

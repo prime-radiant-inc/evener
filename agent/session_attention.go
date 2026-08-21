@@ -91,7 +91,6 @@ type delegateAttentionFold struct {
 	turns             map[string]schema.Turn
 	resolutions       map[string]delegateAttentionResolution
 	resumeGenerations map[string]uint64
-	resumeAttention   map[uint64]string
 	deliveryCommits   map[string]string
 }
 
@@ -143,10 +142,11 @@ func foldDelegateAttention(entries []transcript.Entry) (delegateAttentionFold, e
 			continue
 		}
 		if resolution.ResumeGeneration != 0 {
-			if previousID := fold.resumeAttention[resolution.ResumeGeneration]; previousID != "" && previousID != resolution.AttentionID {
-				return delegateAttentionFold{}, fmt.Errorf("resume generation %d claims attention %q and %q", resolution.ResumeGeneration, previousID, resolution.AttentionID)
+			for previousID, generation := range fold.resumeGenerations {
+				if generation == resolution.ResumeGeneration && previousID != resolution.AttentionID {
+					return delegateAttentionFold{}, fmt.Errorf("resume generation %d claims attention %q and %q", resolution.ResumeGeneration, previousID, resolution.AttentionID)
+				}
 			}
-			fold.resumeAttention[resolution.ResumeGeneration] = resolution.AttentionID
 		}
 		fold.resolutions[resolution.AttentionID] = disposition
 		fold.resumeGenerations[resolution.AttentionID] = resolution.ResumeGeneration
@@ -193,7 +193,6 @@ func newDelegateAttentionFold() delegateAttentionFold {
 		turns:             make(map[string]schema.Turn),
 		resolutions:       make(map[string]delegateAttentionResolution),
 		resumeGenerations: make(map[string]uint64),
-		resumeAttention:   make(map[uint64]string),
 		deliveryCommits:   make(map[string]string),
 	}
 }
@@ -1034,9 +1033,6 @@ func appendDelegateAttentionResolutions(writer *transcript.Writer, fold delegate
 		}
 		fold.resolutions[attentionID] = disposition
 		fold.resumeGenerations[attentionID] = resumeGeneration
-		if resumeGeneration != 0 {
-			fold.resumeAttention[resumeGeneration] = attentionID
-		}
 	}
 	return nil
 }
@@ -1062,8 +1058,10 @@ func validateDelegateAttentionResolutions(fold delegateAttentionFold, ids []stri
 			return fmt.Errorf("attention %q is not pending", attentionID)
 		}
 		if resumeGeneration != 0 {
-			if previousID := fold.resumeAttention[resumeGeneration]; previousID != "" && previousID != attentionID {
-				return fmt.Errorf("resume generation %d already claims attention %q", resumeGeneration, previousID)
+			for previousID, generation := range fold.resumeGenerations {
+				if generation == resumeGeneration && previousID != attentionID {
+					return fmt.Errorf("resume generation %d already claims attention %q", resumeGeneration, previousID)
+				}
 			}
 		}
 	}

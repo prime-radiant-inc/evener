@@ -81,6 +81,7 @@ type delegateTreeController struct {
 	evidenceVersion     uint64
 	closing             bool
 	reconcileOrder      []delegateLease
+	runStarts           map[delegateLease]delegatestore.RunTrigger
 	owedAdmission       bool
 	emitUpdate          func(delegateUpdatePlan)
 	attentionOpen       delegateAttentionWriterOpener
@@ -246,6 +247,7 @@ func openDelegateTreeController(cfg delegateTreeControllerConfig) (*delegateTree
 		reclamations:        make(map[uint64]*delegateRuntimeReclamationClaim),
 		reclaiming:          make(map[string]uint64),
 		reconcileOrder:      delegateOpenRunOrder(events, durable),
+		runStarts:           delegateRunStartIndex(events),
 		owedAdmission:       true,
 	}
 	if err := c.restorePendingStop(events); err != nil {
@@ -264,6 +266,11 @@ func (c *delegateTreeController) appendLocked(events ...delegatestore.Event) ([]
 		return nil, err
 	}
 	c.durable = next
+	for _, event := range appended {
+		if event.RunStarted != nil {
+			c.runStarts[delegateLease{delegateID: event.DelegateID, generation: event.RunStarted.Generation}] = event.RunStarted.Trigger
+		}
+	}
 	return appended, nil
 }
 

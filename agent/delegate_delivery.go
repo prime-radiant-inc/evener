@@ -47,8 +47,9 @@ type delegateDeliveryAdmission struct {
 	token      delegateDeliveryToken
 	delegateID string
 	ownerID    string
+	claim      delegateDeliveryClaimToken
 	cold       bool
-	plan       delegateDeliveryPlan
+	inline     bool
 	retryable  bool
 }
 
@@ -165,7 +166,7 @@ func (c *delegateTreeController) BeginDelivery(plan delegateDeliveryPlan) (deleg
 		return delegateDeliveryToken{}, false, errDelegateStaleLease
 	}
 	if receipt := c.deliveryReceiptLocked(plan.deliveryID); receipt != nil {
-		if !receipt.retryable || receipt.plan.claim != plan.claim || receipt.delegateID != plan.delegateID || receipt.ownerID != plan.ownerDelegateID {
+		if !receipt.retryable || receipt.claim != plan.claim || receipt.delegateID != plan.delegateID || receipt.ownerID != plan.ownerDelegateID || plan.waiter != nil {
 			return delegateDeliveryToken{}, false, nil
 		}
 		aggregate := c.durable[receipt.delegateID]
@@ -222,8 +223,9 @@ func (c *delegateTreeController) BeginDelivery(plan delegateDeliveryPlan) (deleg
 		token:      token,
 		delegateID: plan.delegateID,
 		ownerID:    plan.ownerDelegateID,
+		claim:      plan.claim,
 		cold:       claim.cold,
-		plan:       plan,
+		inline:     plan.waiter != nil,
 	}
 	c.evidenceVersion++
 	return token, true, nil
@@ -262,20 +264,13 @@ func (c *delegateTreeController) CompleteDelivery(token delegateDeliveryToken, c
 	events := make([]delegatestore.Event, 0, 2)
 	ownerChanged := false
 	attentionID := delegateAttentionID(token.deliveryID)
-	if receipt.ownerID != "" {
-		owner := c.durable[receipt.ownerID]
-		if owner == nil {
-			return delegateMutationPlans{}, errDelegateStaleLease
+	if !receipt.inline && receipt.ownerID != "" {
+		openEvent, err := c.delegateAttentionOpenEventLocked(receipt.ownerID)
+		if err != nil {
+			return delegateMutationPlans{}, err
 		}
-		blocked, _ := c.ancestorFenceLocked(owner.Descriptor.ParentDelegateID)
-		if !owner.NeedsAttention && owner.Resumable && owner.PendingStopSeq == 0 && owner.Phase != delegatestore.PhaseClosed && owner.Phase != delegatestore.PhaseStopping && !blocked {
-			events = append(events, delegatestore.Event{
-				Kind:       delegatestore.EventDelegateAttentionChanged,
-				DelegateID: receipt.ownerID,
-				AttentionChanged: &delegatestore.DelegateAttentionChanged{
-					NeedsAttention: true,
-				},
-			})
+		if openEvent != nil {
+			events = append(events, *openEvent)
 			ownerChanged = true
 		}
 	}
@@ -291,7 +286,7 @@ func (c *delegateTreeController) CompleteDelivery(token delegateDeliveryToken, c
 		c.evidenceVersion++
 		return delegateMutationPlans{}, err
 	}
-	if receipt.ownerID != "" {
+	if !receipt.inline && receipt.ownerID != "" {
 		c.noteDelegateAttentionLocked(receipt.ownerID, attentionID)
 	}
 	delete(c.deliveries, token.processID)
@@ -327,7 +322,9 @@ func (c *delegateTreeController) ReplayDeliveries() []delegateDeliveryPlan {
 		}
 		if receipt := c.deliveryReceiptLocked(aggregate.PendingDeliveries[0].DeliveryID); receipt != nil {
 			if receipt.retryable {
-				plans = append(plans, receipt.plan)
+				if plan := c.retryDeliveryPlanLocked(receipt); plan != nil {
+					plans = append(plans, *plan)
+				}
 			}
 			continue
 		}
@@ -447,6 +444,9 @@ func deliverDelegatePacket(plan delegateDeliveryPlan, receiver delegateDeliveryR
 			},
 		})
 		return delegateMutationPlans{}, nil
+	}
+	if plan.controller.deliveryReceiptIsInline(token) {
+		return plan.controller.CompleteDelivery(token, true)
 	}
 	if receiver == nil {
 		plans, completionErr := plan.controller.CompleteDelivery(token, false)
@@ -590,6 +590,40 @@ func (c *delegateTreeController) deliveryReceiptLocked(deliveryID string) *deleg
 		}
 	}
 	return nil
+}
+
+func (c *delegateTreeController) retryDeliveryPlanLocked(receipt *delegateDeliveryAdmission) *delegateDeliveryPlan {
+	if receipt == nil || !receipt.retryable {
+		return nil
+	}
+	aggregate := c.durable[receipt.delegateID]
+	if aggregate == nil || len(aggregate.PendingDeliveries) == 0 {
+		return nil
+	}
+	head := aggregate.PendingDeliveries[0]
+	if head.DeliveryID != receipt.token.deliveryID || head.OwnerDelegateID != receipt.ownerID {
+		return nil
+	}
+	receiver := c.deliveryReceiverLocked(receipt.ownerID)
+	if !receipt.inline && receipt.ownerID != "" && receiver == nil {
+		return nil
+	}
+	return &delegateDeliveryPlan{
+		controller:      c,
+		delegateID:      receipt.delegateID,
+		deliveryID:      head.DeliveryID,
+		ownerDelegateID: head.OwnerDelegateID,
+		packet:          cloneDelegateTerminalPacket(head.Packet),
+		claim:           receipt.claim,
+		receiver:        receiver,
+	}
+}
+
+func (c *delegateTreeController) deliveryReceiptIsInline(token delegateDeliveryToken) bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	receipt := c.deliveries[token.processID]
+	return receipt != nil && receipt.token == token && receipt.inline
 }
 
 func (c *delegateTreeController) replayDeliveriesForOwnerLocked(ownerDelegateID string) []delegateDeliveryPlan {
@@ -793,16 +827,6 @@ func (s *Session) flushPendingDelegateDeliveries() error {
 	if s == nil {
 		return nil
 	}
-	// Restore reaches this boundary only after the root's subagent manager, job
-	// manager, profile, tools, and transcript are ready, but before the Session is
-	// returned to its caller. That makes it the existing bootstrap admission
-	// boundary where owed accepted generations can use normal runtime construction
-	// and launch without a background repair worker.
-	if s.isRootDelegateAttentionReceiver() && s.delegateController.takeOwedAttentionAdmission() {
-		if err := s.admitOwedDelegateAttentionStarts(); err != nil {
-			return fmt.Errorf("admit owed delegate attention: %w", err)
-		}
-	}
 	s.delegateDeliveryMu.Lock()
 	if s.delegateDeliveryPumping {
 		s.delegateDeliveryMu.Unlock()
@@ -826,6 +850,15 @@ func (s *Session) flushPendingDelegateDeliveries() error {
 			s.delegateDeliveryWake = false
 			s.resetDelegateDeliveryRetryLocked()
 			s.delegateDeliveryMu.Unlock()
+			// Restore reaches this empty boundary after prepared delivery replay has
+			// drained and after the root runtime, tools, and transcript are ready,
+			// but before the Session is returned to its caller.
+			if s.isRootDelegateAttentionReceiver() && s.delegateController.takeOwedAttentionAdmission() {
+				if err := s.admitOwedDelegateAttentionStarts(); err != nil {
+					return fmt.Errorf("admit owed delegate attention: %w", err)
+				}
+				continue
+			}
 			return nil
 		}
 		plan := s.pendingDelegateDeliveries[0]
