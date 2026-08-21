@@ -50,7 +50,8 @@ test-web-browser: web-preflight
 ## trigger: Final step of make merge-approval-gate, and on demand; not part
 ##   of make test.
 ## requires: Each suite is offline and deterministic; the wave runner gives
-##   every suite its own process group and private TMPDIR.
+##   every suite its own process group and private TMPDIR. It is quiet on
+##   success and replays a failing suite's whole log.
 ## fails-when: Any suite exit nonzero, or a passing suite leaving files
 ##   behind, is nonzero.
 test-dev-tooling:

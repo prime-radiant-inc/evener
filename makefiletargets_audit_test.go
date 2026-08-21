@@ -485,3 +485,87 @@ func TestEveryTargetHasASummaryAnnotation(t *testing.T) {
 			strings.Join(missing, "\n  "))
 	}
 }
+
+// lintGeneratedRecipe returns make/linting.mk's lint-generated recipe as one
+// string: every tab-indented line beneath the rule, joined. Reading the
+// recipe text rather than expanding it through make keeps this a static
+// audit that costs nothing and cannot itself fail for environmental reasons.
+func lintGeneratedRecipe(t *testing.T) string {
+	t.Helper()
+	raw, err := os.ReadFile("make/linting.mk")
+	if err != nil {
+		t.Fatalf("reading make/linting.mk: %v", err)
+	}
+	var recipe []string
+	inRule := false
+	for line := range strings.Lines(string(raw)) {
+		line = strings.TrimRight(line, "\n")
+		if strings.HasPrefix(line, "lint-generated:") {
+			inRule = true
+			continue
+		}
+		if !inRule {
+			continue
+		}
+		if !strings.HasPrefix(line, "\t") {
+			break
+		}
+		recipe = append(recipe, line)
+	}
+	if len(recipe) == 0 {
+		t.Fatal("found no recipe beneath lint-generated: in make/linting.mk; this audit has lost its subject")
+	}
+	return strings.Join(recipe, "\n")
+}
+
+// TestEveryGeneratedRegionIsInTheStalenessDiff closes the one direction the
+// generator cannot see for itself.
+//
+// internal/maketargetsdoc already guards both directions it can reach:
+// generateOne errors on a make/*.mk with no stemToDoc entry, and
+// checkOrphanRegions errors on a doc region naming a .mk that does not exist.
+// Neither can see lint-generated's diff list, which is a hand-maintained
+// literal inside a recipe. Add make/newfamily.mk plus a newfamily.md carrying
+// a region and forget to widen that literal, and `make generate` faithfully
+// regenerates the new doc while the gate never inspects it — green forever
+// over stale content, which is the lint-fuzz-registry failure class this
+// whole branch exists to install tripwires against.
+//
+// The assertion is deliberately textual: every doc under
+// docs/developing-evener/ that carries a generated region must have its path
+// appear in the recipe. A path in the recipe that carries no region is
+// harmless — a comparison over a file nothing rewrites — so this checks the
+// one direction that can actually go wrong.
+func TestEveryGeneratedRegionIsInTheStalenessDiff(t *testing.T) {
+	t.Parallel()
+	recipe := lintGeneratedRecipe(t)
+
+	docPaths, err := filepath.Glob("docs/developing-evener/*.md")
+	if err != nil {
+		t.Fatalf("globbing docs/developing-evener/*.md: %v", err)
+	}
+	var marked, missing []string
+	for _, docPath := range docPaths {
+		raw, err := os.ReadFile(docPath)
+		if err != nil {
+			t.Fatalf("reading %s: %v", docPath, err)
+		}
+		if !strings.Contains(string(raw), "BEGIN GENERATED: make targets") {
+			continue
+		}
+		marked = append(marked, docPath)
+		if !strings.Contains(recipe, filepath.ToSlash(docPath)) {
+			missing = append(missing, docPath)
+		}
+	}
+	if len(marked) == 0 {
+		t.Fatal("no doc under docs/developing-evener/ carries a generated region; the parser is broken, not the docs")
+	}
+	sort.Strings(missing)
+	if len(missing) > 0 {
+		t.Fatalf("these docs carry a generated region that lint-generated never inspects, so "+
+			"`make generate` rewrites them and the gate reports green over whatever they "+
+			"drift into. Add them to lint-generated's staleness list in make/linting.mk:\n  %s",
+			strings.Join(missing, "\n  "))
+	}
+}

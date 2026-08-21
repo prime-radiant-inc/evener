@@ -154,7 +154,7 @@ lint-gofmt:
 ## fails-when: `make generate` itself exits nonzero, or any regenerated
 ##   output differs from what is committed.
 lint-generated:
-	$(call run_quiet_lint,$(MAKE) generate && { git diff --exit-code HEAD -- docs/appwire-protocol.md cmd/evener-hub/frontend/src/protocol/types.gen.ts docs/developing-evener/README.md docs/developing-evener/building.md docs/developing-evener/testing.md docs/developing-evener/linting.md docs/developing-evener/fuzzing.md docs/developing-evener/coverage.md || { echo "generated outputs are stale; run 'make generate' and commit."; exit 1; }; })
+	$(call run_quiet_lint,$(MAKE) generate && { git diff --exit-code HEAD -- docs/appwire-protocol.md cmd/evener-hub/frontend/src/protocol/types.gen.ts docs/developing-evener/README.md docs/developing-evener/building.md docs/developing-evener/testing.md docs/developing-evener/linting.md docs/developing-evener/fuzzing.md docs/developing-evener/coverage.md || { echo "the paths above differ from HEAD. make generate has already run; the fix is to commit that diff - it is either a regenerated table or a hand-written edit inside one of these files."; exit 1; }; })
 
 # lint-fuzz-registry wraps the SAME check as `make fuzz-registry-check`
 # (scripts/fuzz/fuzz-registry-check.sh) so a native/Rapid fuzz target that

@@ -44,6 +44,15 @@ func TestRenderWideTablePublishesTheSummary(t *testing.T) {
 		Proves:  "Per-module statement coverage against its floor.",
 	}}
 	got := Render(targets)
+	// Both assertions are load-bearing. Presence alone would still pass if a
+	// hasFields() regression demoted a fielded target into the COMPACT list,
+	// where its summary is published but its four structured fields are not
+	// — the summary would be there, in the wrong table. Pin the wide header
+	// too, so this test can only pass when a fielded target renders wide AND
+	// carries its summary.
+	if !strings.Contains(got, wideTableHeader) {
+		t.Fatalf("a target with fields did not render in the wide table:\n%s", got)
+	}
 	if !strings.Contains(got, "The repo's one coverage ratchet.") {
 		t.Fatalf("wide table dropped the summary, so nothing gates it:\n%s", got)
 	}

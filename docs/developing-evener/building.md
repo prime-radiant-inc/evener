@@ -26,6 +26,21 @@ writes it back at `closeBundle`, so nothing in the Makefile has to restore it
 and `git status` stays clean after a build however Vite was invoked (kata
 88nn).
 
+## Runtime builds get a disposable process home
+
+`scripts/ops/build-runtime-pair.sh` sources `scripts/lib/private-go-home.sh`
+and prepares a disposable `HOME` beneath its own scratch root before it builds
+anything, so a runtime build cannot write into the caller's home directory.
+The caller owns and removes that root; the helper only creates state beneath
+it and exports the environment for the commands that follow.
+
+It is deliberately not an isolated *cache*. The helper preserves the caller's
+reusable Go build and module caches and carries the persisted `go env`
+settings across, so an isolated home does not cost a cold rebuild every time.
+`make test`'s runner gives every Go and frontend stream the same treatment for
+the same reason — see [Post-Merge Gate](testing.md#post-merge-gate) in
+testing.md.
+
 ## Release builds
 
 `make dist` runs goreleaser in snapshot mode — no tag, no publish — and
