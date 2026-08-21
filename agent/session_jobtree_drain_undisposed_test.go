@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -172,33 +173,115 @@ func TestOneShotDrainAnnouncementStopResolves(t *testing.T) {
 	t.Parallel()
 	var jobID string
 	adapter := &fakeAdapter{name: "openai"}
+	stopRequested := make(chan struct{})
+	stopTurnReturned := make(chan struct{})
+	allowStopTurn := make(chan struct{})
+	var finalWarningSeen atomic.Bool
 	adapter.steps = []func(llm.Request) llm.Response{
 		func(llm.Request) llm.Response {
+			close(stopRequested)
 			return toolCallResponse(llm.ToolCallData{
 				ID: "stop-it", Name: "job_stop", Type: "function",
 				Arguments: json.RawMessage(`{"target":"` + jobID + `"}`),
 			})
 		},
-		func(llm.Request) llm.Response { return finalResponse("stopped the scratch job") },
+		func(llm.Request) llm.Response {
+			<-allowStopTurn
+			close(stopTurnReturned)
+			return finalResponse("stopped the scratch job")
+		},
+		func(req llm.Request) llm.Response {
+			if strings.Contains(req.Messages[len(req.Messages)-1].Text(), "Final notice:") {
+				finalWarningSeen.Store(true)
+			}
+			return finalResponse("all wrapped up")
+		},
 		func(llm.Request) llm.Response { return finalResponse("all wrapped up") },
 	}
 	sess := newSession(t, withAdapter(adapter), withConfig(SessionConfig{
 		NoProjectPrompts: true,
 		TurnEndsProcess:  true,
 	}))
-	jobID = startUndisposedBackgroundShell(t, sess)
-
-	res, err := runDrainToCompletion(t, sess)
-	if err != nil {
-		t.Fatalf("drain error: %v", err)
+	se := newDelayedExitStreamingExecutor()
+	started := runShell(context.Background(), sess.jobManager, se, shellArgs{
+		Command:    "controlled stop",
+		Mode:       shellModeBackground,
+		Background: true,
+	})
+	if started.JobID == "" || !started.RunningInBackground {
+		t.Fatalf("controlled shell start = %+v, want a live background job", started)
 	}
-	// The stop's cancelled-notification is delivered either as its own turn
-	// (whose reply folds into the result, PRI-2441) or inside the announcement
-	// turn's post-tool boundary (discarded with the rest of that housekeeping
-	// turn) — real concurrency, both correct. What must NEVER happen is the
-	// announcement turn's reply becoming the answer.
-	if res != "all wrapped up" && res != "" {
-		t.Fatalf("drain result = %q: an announcement-turn reply leaked into the run's answer", res)
+	jobID = started.JobID
+	releaseShell := func() {
+		select {
+		case <-se.release:
+		default:
+			close(se.release)
+		}
+	}
+	t.Cleanup(func() {
+		releaseShell()
+		waitForShellDone(t, sess.jobManager, jobID)
+	})
+	if ids, sole, err := sess.undisposedBackgroundDrainJobs(); err != nil || !sole || len(ids) != 1 || ids[0] != jobID {
+		t.Fatalf("controlled shell drain candidate = (%v, %v, %v), want (%v, true, nil)", ids, sole, err, jobID)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	done := make(chan struct {
+		res string
+		err error
+	}, 1)
+	go func() {
+		res, err := sess.drainJobTreeWith(ctx, feedRechecks(ctx), sess.kickDriveTree, sess.ProcessInputKind)
+		done <- struct {
+			res string
+			err error
+		}{res, err}
+	}()
+	// The fed rechecks advance the first-sighting arm and start the real
+	// ProcessInputKind announcement turn without a wall-clock park.
+	select {
+	case <-done:
+		t.Fatal("drain returned before the stop turn")
+	case <-stopRequested:
+	case <-ctx.Done():
+		t.Fatalf("drain did not reach the stop turn (model requests: %d)", len(adapter.Requests()))
+	}
+	// The tool call has synchronously set stopStatus while the executor remains
+	// behind its release barrier. The job is still ordinary outstanding work, but
+	// it must no longer be an announcement candidate.
+	if n, err := sess.jobManager.outstandingDrainJobCount(); err != nil || n != 1 {
+		t.Fatalf("outstanding drain jobs while stop is pending = (%d, %v), want (1, nil)", n, err)
+	}
+	if ids, sole, err := sess.undisposedBackgroundDrainJobs(); err != nil || sole || len(ids) != 0 {
+		t.Fatalf("undisposed while stop is pending = (%v, %v, %v), want no announcement candidate", ids, sole, err)
+	}
+	close(allowStopTurn)
+	<-stopTurnReturned
+	// Rechecks continue after the stop turn returns, while finalization is still
+	// held by the executor. A pending stop must not produce a final warning.
+	releaseShell()
+	var d struct {
+		res string
+		err error
+	}
+	select {
+	case d = <-done:
+	case <-ctx.Done():
+		t.Fatal("drain did not resolve after controlled shell completion")
+	}
+	if d.err != nil {
+		t.Fatalf("drain error: %v", d.err)
+	}
+	if finalWarningSeen.Load() {
+		t.Fatal("drain escalated to a final warning while stopStatus was pending")
+	}
+	// The stop's cancelled notification is the only post-stop model turn. What
+	// must NEVER happen is the announcement turn's reply becoming the answer.
+	if d.res != "all wrapped up" && d.res != "" {
+		t.Fatalf("drain result = %q: an announcement-turn reply leaked into the run's answer", d.res)
 	}
 	if warnings := collectStallWarnings(sess); len(warnings) != 0 {
 		t.Fatalf("no job was killed, want no warning, got %+v", warnings)
@@ -426,6 +509,49 @@ func TestUndisposedJobsYieldToQueuedNotifications(t *testing.T) {
 	}
 }
 
+// TestUndisposedJobsSuppressesStopPendingAnnouncement keeps the two drain
+// predicates distinct: a stop request does not make the job quiescent, but it
+// does mean the model has already disposed of it and must not be nagged again.
+func TestUndisposedJobsSuppressesStopPendingAnnouncement(t *testing.T) {
+	t.Parallel()
+	sess := newSession(t, withConfig(SessionConfig{
+		NoProjectPrompts: true,
+		TurnEndsProcess:  true,
+	}))
+	jobID := startUndisposedBackgroundShell(t, sess)
+	// startUndisposedBackgroundShell's cleanup must be allowed to signal the
+	// real shell after this test's synthetic stop-pending state is removed.
+	t.Cleanup(func() {
+		sess.jobManager.mu.Lock()
+		if run := sess.jobManager.running[jobID]; run != nil {
+			run.stopStatus = ""
+			run.stopReason = ""
+		}
+		sess.jobManager.mu.Unlock()
+	})
+	sess.jobManager.mu.Lock()
+	run := sess.jobManager.running[jobID]
+	if run == nil {
+		sess.jobManager.mu.Unlock()
+		t.Fatalf("running job %s disappeared before stop-pending setup", jobID)
+	}
+	run.stopStatus = jobstore.StatusCancelled
+	run.stopReason = "stopped_by_parent"
+	sess.jobManager.mu.Unlock()
+
+	n, err := sess.jobManager.outstandingDrainJobCount()
+	if err != nil || n != 1 {
+		t.Fatalf("ordinary outstanding work = (%d, %v), want (1, nil)", n, err)
+	}
+	ids, sole, err := sess.undisposedBackgroundDrainJobs()
+	if err != nil {
+		t.Fatalf("undisposedBackgroundDrainJobs: %v", err)
+	}
+	if sole || len(ids) != 0 {
+		t.Fatalf("stop-pending announcement candidates = (%v, %v), want ([], false)", ids, sole)
+	}
+}
+
 // TestClearedWatchResumesEscalation pins the resume path: a watch that is
 // cleared (the delivery-budget auto-clear, or the model clearing it) stops
 // excusing the job, so the predicate reports it undisposed again.
@@ -464,6 +590,140 @@ func TestClearedWatchResumesEscalation(t *testing.T) {
 	ids, ok, err := sess.undisposedBackgroundDrainJobs()
 	if err != nil || !ok || len(ids) != 1 || ids[0] != jobID {
 		t.Fatalf("undisposed after clear = (%v, %v, %v), want the job reported again", ids, ok, err)
+	}
+}
+
+// TestClearedWatchStartsAFreshAnnouncementEpisode drives the real budget
+// auto-clear transition. The first announcement arms a watch, the next matched
+// event crosses watchDeliveryBudget and clears it, and the cleared notification
+// is then drained before the same job set is considered again. That new episode
+// must start with the first announcement, not jump straight to Final notice.
+func TestClearedWatchStartsAFreshAnnouncementEpisode(t *testing.T) {
+	t.Parallel()
+	var jobID string
+	watchArmed := make(chan struct{})
+	var clearedNoticeSeen atomic.Bool
+	adapter := &fakeAdapter{name: "openai"}
+	adapter.steps = []func(llm.Request) llm.Response{
+		func(llm.Request) llm.Response {
+			return toolCallResponse(llm.ToolCallData{
+				ID: "watch-it", Name: "job_watch", Type: "function",
+				Arguments: json.RawMessage(`{"operation":"create","source":"` + jobID + `","events":["job.notification"]}`),
+			})
+		},
+		func(llm.Request) llm.Response {
+			close(watchArmed)
+			return finalResponse("watching; it will finish")
+		},
+		func(req llm.Request) llm.Response {
+			if strings.Contains(req.Messages[len(req.Messages)-1].Text(), "watch cleared") {
+				clearedNoticeSeen.Store(true)
+			}
+			return finalResponse("the watch was cleared; reconsidering")
+		},
+		func(llm.Request) llm.Response { return finalResponse("still waiting for the job") },
+		func(llm.Request) llm.Response { return finalResponse("exiting") },
+	}
+	sess := newSession(t, withAdapter(adapter), withConfig(SessionConfig{
+		NoProjectPrompts: true,
+		TurnEndsProcess:  true,
+	}))
+	jobID = startUndisposedBackgroundShell(t, sess)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	type drainDone struct {
+		res string
+		err error
+	}
+	done := make(chan drainDone, 1)
+	go func() {
+		res, err := sess.drainJobTreeWith(ctx, feedRechecks(ctx), sess.kickDriveTree, sess.ProcessInputKind)
+		done <- drainDone{res, err}
+	}()
+	select {
+	case <-watchArmed:
+	case d := <-done:
+		t.Fatalf("drain returned before the live watch was armed: (%q, %v)", d.res, d.err)
+	case <-ctx.Done():
+		t.Fatal("drain did not arm the live watch")
+	}
+
+	sess.jobManager.mu.Lock()
+	var watched *watchConfig
+	for _, cfg := range sess.jobManager.watches {
+		if cfg != nil && cfg.target == jobID {
+			watched = cfg
+			break
+		}
+	}
+	if watched == nil {
+		sess.jobManager.mu.Unlock()
+		t.Fatalf("live watch for %s disappeared before budget crossing", jobID)
+	}
+	watched.deliveries = watchDeliveryBudget - 1
+	sess.jobManager.mu.Unlock()
+
+	// This is a real matching session event, and the next delivery crosses the
+	// actual budget auto-clear path rather than merely deleting jm.watches.
+	onSessionEventKD(sess.jobManager, events.EventJobFinished, events.JobFinishedData{
+		JobID: jobID, JobType: "shell", Status: "completed",
+	})
+	sess.jobManager.mu.Lock()
+	stillLive := false
+	for _, cfg := range sess.jobManager.watches {
+		if cfg == watched {
+			stillLive = true
+			break
+		}
+	}
+	sess.jobManager.mu.Unlock()
+	if stillLive {
+		t.Fatal("budget-crossing delivery left the watch live")
+	}
+
+	var d drainDone
+	select {
+	case d = <-done:
+	case <-ctx.Done():
+		t.Fatal("drain did not complete after the watch auto-clear")
+	}
+	if d.err != nil {
+		t.Fatalf("drain error: %v", d.err)
+	}
+	if !clearedNoticeSeen.Load() {
+		t.Fatal("drain did not process the watch-cleared notification")
+	}
+	reqs := adapter.Requests()
+	if len(reqs) != 5 {
+		t.Fatalf("model requests = %d, want 5 (initial watch turn, cleared notification, fresh announcement, final warning)", len(reqs))
+	}
+	if strings.Contains(reqs[3].Messages[len(reqs[3].Messages)-1].Text(), "Final notice:") ||
+		!strings.Contains(reqs[3].Messages[len(reqs[3].Messages)-1].Text(), "cannot finish") {
+		t.Fatalf("fresh episode request = %q, want the first announcement rather than the final warning", reqs[3].Messages[len(reqs[3].Messages)-1].Text())
+	}
+}
+
+// TestUndisposedBackgroundJobsFinalWarningUsesAvailableRemedy keeps the final
+// warning truthful in a sandbox that cannot detach processes. The warning must
+// direct the model to stop and report, never promise an unavailable detached
+// mode. The companion announcement assertions pin the available-host wording.
+func TestUndisposedBackgroundJobsFinalWarningUsesAvailableRemedy(t *testing.T) {
+	t.Parallel()
+	final := undisposedBackgroundJobsFinalWarning([]string{"job_sandbox"})
+	if strings.Contains(final, "detach them") {
+		t.Fatalf("sandbox final warning advertises detached mode: %q", final)
+	}
+	if !strings.Contains(final, "stop") || !strings.Contains(final, "report") {
+		t.Fatalf("sandbox final warning must describe stop-and-report: %q", final)
+	}
+	available := undisposedBackgroundJobsAnnouncement([]string{"job_host"}, "shell", true)
+	if !strings.Contains(available, `mode="detached"`) {
+		t.Fatalf("detached-capable warning omitted detached remedy: %q", available)
+	}
+	sandbox := undisposedBackgroundJobsAnnouncement([]string{"job_sandbox"}, "shell", false)
+	if strings.Contains(sandbox, `mode="detached"`) || !strings.Contains(sandbox, "Stop the job and say so plainly") {
+		t.Fatalf("sandbox announcement advertised detached mode or omitted stop-and-report: %q", sandbox)
 	}
 }
 
