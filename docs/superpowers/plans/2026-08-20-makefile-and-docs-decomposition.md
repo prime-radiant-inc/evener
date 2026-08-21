@@ -17,7 +17,7 @@
 - **No target behaviour changes.** Recipes move verbatim. The one deliberate product change is `agent/workspace_info.go`, and it exists to preserve today's behaviour across the split.
 - **Every lint run in this worktree must isolate the cache:** `export GOLANGCI_LINT_CACHE=/private/tmp/claude-501/-Users-jesse-git-prime-radiant-evener/422cd0dd-aa5c-42ce-b71e-4a1c3b90a6be/scratchpad/wt-glcache`. A content-identical checkout at a second path poisons the shared golangci-lint cache (issue #290) and breaks the main checkout.
 - **Family membership rule:** a target lives in the `.mk` named for the doc that explains it — not the CI job that runs it.
-- **Six families:** `building`, `testing`, `linting`, `fuzzing`, `coverage`, `repo`. 66 targets (65 existing rules + `help`).
+- **Six families:** `building`, `testing`, `linting`, `fuzzing`, `coverage`, `repo`. 65 targets (64 retained rules after the approved selftest retirement + `help`).
 - **Commit after every task.** Never use `--no-verify`.
 
 ---
@@ -1008,19 +1008,19 @@ git commit -m "feat(maketargetsdoc): render target tables into marked doc region
 - [ ] **Step 2: Run and watch it fail.**
 - [ ] **Step 3: Implement `-mode help`,** reusing `ParseFamily` so there is exactly one annotation parser.
 - [ ] **Step 4: Add the target** to `make/repo.mk` with its own `##` summary, and to that file's `.PHONY`.
-- [ ] **Step 5: Confirm** `make help` prints all 66 targets and `make` with no argument still builds.
+- [ ] **Step 5: Confirm** `make help` prints all 65 targets and `make` with no argument still builds.
 - [ ] **Step 6: Commit.**
 
 ---
 
-## Task 13: Annotate all 66 targets
+## Task 13: Annotate all 65 targets
 
 One step per family so a reviewer can reject one family's prose without rejecting the rest.
 
 **Files:** all six `make/*.mk`
 
 - [ ] **Step 1: `make/repo.mk`** (5 targets). Note `clean` removes the built binaries from the repo root — it does **not** touch `.build`; check the recipe before writing the summary.
-- [ ] **Step 2: `make/coverage.mk`** (5 targets).
+- [ ] **Step 2: `make/coverage.mk`** (4 targets).
 - [ ] **Step 3: `make/building.mk`** (17 targets).
 - [ ] **Step 4: `make/testing.mk`** (11 targets).
 - [ ] **Step 5: `make/linting.mk`** (10 targets). Move `lint-evenerfuzz`'s 19-line comment into `linting.md` prose; the `##` block gets the table-cell version only.
@@ -1080,7 +1080,7 @@ non-target rows become prose."
 
 ## Task 15: Final sweep
 
-- [ ] **Step 1: Confirm every target is discoverable** — `make help | wc -l` covers 66 targets; the five originally-undocumented ones (`mutation-floor`, `fuzz-drive`, `coverage-gaps`, `coverage-gaps-selftest`, `test-install`) each appear in a doc.
+- [ ] **Step 1: Confirm every target is discoverable** — `make help` lists all 65 targets; the five originally-undocumented ones (`mutation-floor`, `fuzz-drive`, `coverage-gaps`, `coverage-gaps-selftest`, `test-install`) each appear in a doc.
 - [ ] **Step 2: Confirm no relative link in `docs/developing-evener/` is broken** — rerun the loop from Task 8 Step 4.
 - [ ] **Step 3: Full gate from a clean cache** — `golangci-lint cache clean` is **not** safe here; instead delete only the worktree-local cache directory and rerun `make lint`.
 - [ ] **Step 4: Update `AGENTS.md`** if it points at any moved doc.

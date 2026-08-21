@@ -110,8 +110,8 @@ someone has to maintain:
 | `make/coverage.mk` | `coverage.md` | coverage-floor, coverage-gaps, coverage-gaps-selftest, e2e-cover |
 | `make/repo.mk` | `README.md` | help, clean, generate, tools, refresh-model-catalog |
 
-66 targets: the 65 rules that exist today, plus `help`. Placements that could
-go either way:
+65 targets: the 64 retained rules after the approved selftest retirement, plus
+`help`. Placements that could go either way:
 
 - `mutation-floor` reads like a coverage ratchet but invokes
   `scripts/fuzz/fuzz-mutation-score.sh`. Fuzz family.
