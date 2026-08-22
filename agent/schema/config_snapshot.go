@@ -30,6 +30,7 @@ type ConfigSnapshot struct {
 	SystemPromptAppend          []string                   `json:"system_prompt_append,omitempty"`          // file paths appended to the system prompt
 	NoProjectPrompts            bool                       `json:"no_project_prompts,omitempty"`            // suppress loading .evener/prompts/
 	NonInteractive              bool                       `json:"non_interactive,omitempty"`               // no human available for questions/confirmation
+	TurnEndsProcess             bool                       `json:"turn_ends_process,omitempty"`             // the process exits with the turn (one-shot run), so nothing reports later
 	ContextStrategy             string                     `json:"context_strategy,omitempty"`              // context-management strategy
 	ShareTasksWithChildren      bool                       `json:"share_tasks_with_children,omitempty"`     // pass the task store to spawned children
 	ResultToolName              string                     `json:"result_tool_name,omitempty"`              // override for the result tool name

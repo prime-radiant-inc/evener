@@ -119,6 +119,20 @@ type SessionConfig struct {
 	// autonomously. Appends guidance to the system prompt adapting skill behavior.
 	NonInteractive bool `json:"non_interactive,omitempty"`
 
+	// TurnEndsProcess indicates the process exits when the current turn's work is
+	// drained, as in a one-shot `evener run`: there is no later turn in which a
+	// background job could report, so ending the turn kills it. Distinct from
+	// NonInteractive, which asks whether a human can be questioned — a long-lived
+	// serve session is frequently non-interactive and must never set this.
+	//
+	// It is persisted so a CHILD session inherits it: children are built from the
+	// parent's own toSnapshot, and a delegate of a one-shot run dies with the same
+	// process. RESTORE is the other direction — see
+	// RestoreSessionConfig.TurnEndsProcess, where the restoring process's answer
+	// replaces the stored one, because the same session id resumed by `evener run`
+	// dies with its turn and resumed by the daemon does not.
+	TurnEndsProcess bool `json:"turn_ends_process,omitempty"`
+
 	// ContextStrategy selects the context management strategy: compact|session-log|ooda.
 	// The value "recall" is accepted as a compatibility alias for compact.
 	ContextStrategy string `json:"context_strategy,omitempty"`
@@ -638,6 +652,7 @@ func (c SessionConfig) toSnapshot() schema.ConfigSnapshot {
 		SystemPromptAppend:          c.SystemPromptAppend,
 		NoProjectPrompts:            c.NoProjectPrompts,
 		NonInteractive:              c.NonInteractive,
+		TurnEndsProcess:             c.TurnEndsProcess,
 		ContextStrategy:             c.ContextStrategy,
 		ShareTasksWithChildren:      c.ShareTasksWithChildren,
 		ResultToolName:              c.ResultToolName,
@@ -677,6 +692,7 @@ func configFromSnapshot(s schema.ConfigSnapshot) SessionConfig {
 		SystemPromptAppend:          s.SystemPromptAppend,
 		NoProjectPrompts:            s.NoProjectPrompts,
 		NonInteractive:              s.NonInteractive,
+		TurnEndsProcess:             s.TurnEndsProcess,
 		ContextStrategy:             s.ContextStrategy,
 		ShareTasksWithChildren:      s.ShareTasksWithChildren,
 		ResultToolName:              s.ResultToolName,

@@ -48,7 +48,13 @@ func clampJobBlockTimeout(ms int) time.Duration {
 	return time.Duration(clamped) * time.Millisecond
 }
 
-var rootOnlyJobControlTools = []string{"delegate", "job_watch"}
+// rootOnlyJobControlTools gates DELEGATION, not job control: a session that
+// can run jobs can always watch its own jobs, at any depth, so job_watch is
+// deliberately not here. The accesses the old job_watch strip was protecting
+// are each enforced at their own source: `parent` requires
+// delegate(watch_parent=true) (delegate_tree_watch.go), and a concrete job id
+// must be owned by the watching session (job_watch.go's target_not_watchable).
+var rootOnlyJobControlTools = []string{"delegate"}
 
 func registerJobTools(reg *tool.Registry, s *Session, deps *toolDeps) error {
 	if deps != nil && deps.registerTool != nil {
@@ -251,6 +257,7 @@ func (s *Session) configureDescendantReceiverWatch(a watchArgs) (watchResult, bo
 	childArgs.ReceiverSessionID = s.ID()
 	childArgs.ReceiverDelegateID = ""
 	childArgs.ReceiverNotify = s.enqueueJobNotificationAndNotify
+	childArgs.ReceiverHoldWake = s.holdJobNotificationWake
 	res, err := ownerJM.configureWatch(childArgs)
 	return res, true, err
 }

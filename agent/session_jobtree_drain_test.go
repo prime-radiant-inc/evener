@@ -1007,8 +1007,8 @@ func TestDrainJobTreeWaitsForForegroundPromotedShell(t *testing.T) {
 	if live == nil {
 		t.Fatalf("promoted shell %s missing from live jobs", shell.JobID)
 	}
-	if live.rec.Background {
-		t.Fatal("foreground-promoted shell live record has Background=true, want false")
+	if !live.rec.Background {
+		t.Fatal("foreground-promoted shell live record has Background=false; promotion must record that the command now runs in the background")
 	}
 	if n, err := sess.jobManager.outstandingDrainJobCount(); err != nil || n != 1 {
 		t.Fatalf("outstanding drain jobs = %d (err %v), want 1", n, err)

@@ -17,6 +17,31 @@ import (
 
 func TestLocalExecutionEnvironmentImplementsDetachedExecutor(t *testing.T) {
 	var _ DetachedExecutor = (*LocalExecutionEnvironment)(nil)
+	var _ DetachSupportReporter = (*LocalExecutionEnvironment)(nil)
+}
+
+// TestDetachSupportedMatchesDetachCommandsRefusal pins the capability a caller
+// reads BEFORE launching anything — the answer a model is given about whether
+// mode:"detached" is worth trying — against the refusal DetachCommand actually
+// makes. A sandbox wrapper is the case that matters: it is present on every
+// --sandbox run, and advertising detach there sends the model at a call that
+// only ever returns ErrDetachUnsupported.
+func TestDetachSupportedMatchesDetachCommandsRefusal(t *testing.T) {
+	platformSupports := runtime.GOOS == "linux" || runtime.GOOS == "darwin"
+
+	plain := NewLocalExecutionEnvironment(t.TempDir())
+	if got := plain.DetachSupported(); got != platformSupports {
+		t.Fatalf("DetachSupported() = %v on an unwrapped environment, want %v", got, platformSupports)
+	}
+
+	wrapped := NewLocalExecutionEnvironment(t.TempDir())
+	wrapped.Wrapper = &sandbox.Wrapper{}
+	if wrapped.DetachSupported() {
+		t.Fatal("DetachSupported() = true with a sandbox wrapper provisioned, but DetachCommand refuses there")
+	}
+	if _, err := wrapped.DetachCommand(context.Background(), "true", "", nil); !errors.Is(err, ErrDetachUnsupported) {
+		t.Fatalf("DetachCommand under a wrapper = %v, want ErrDetachUnsupported; the reported capability and the refusal have drifted", err)
+	}
 }
 
 func TestDetachCommandRejectsCancelledContextBeforeStart(t *testing.T) {

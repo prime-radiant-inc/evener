@@ -92,6 +92,11 @@ type toolDeps struct {
 	// end_turn=true is called while work is still in flight.
 	runningJobIDs func() []string
 
+	// turnEndsProcess mirrors SessionConfig.TurnEndsProcess so the end_turn
+	// warning can tell the truth about what happens to those jobs. Captured by
+	// value: the flag is fixed for a session's lifetime.
+	turnEndsProcess bool
+
 	// skill looks up a discovered skill by name.
 	skill func(name string) (skill.SkillMeta, bool)
 
@@ -252,7 +257,8 @@ func newToolDeps(s *Session) *toolDeps {
 			s.comm.structured = raw
 			s.mu.Unlock()
 		},
-		runningJobIDs: func() []string { return sessionRunningJobIDs(s) },
+		runningJobIDs:   func() []string { return sessionRunningJobIDs(s) },
+		turnEndsProcess: s.cfg.TurnEndsProcess,
 		skill: func(name string) (skill.SkillMeta, bool) {
 			meta, ok := s.skills[name]
 			return meta, ok
