@@ -440,23 +440,35 @@ func (s *Session) armDelegateAttention(attentionID string) error {
 }
 
 func (s *Session) armDelegateAttentionOnce(attentionID string) error {
-	ids, err := s.pendingDelegateAttentionIDs()
-	if err != nil {
-		return err
-	}
-	if !slices.Contains(ids, attentionID) {
-		return nil
-	}
 	if s.isRootDelegateAttentionReceiver() {
+		ids, err := s.pendingDelegateAttentionIDs()
+		if err != nil {
+			return err
+		}
+		if !slices.Contains(ids, attentionID) {
+			return nil
+		}
 		s.armRootDelegateAttention(attentionID)
 		return nil
 	}
 	if s.delegateController == nil || s.owningDelegateID == "" {
 		return errors.New("delegate attention controller identity is incomplete")
 	}
-	if _, err := s.delegateController.openDelegateAttention(s.owningDelegateID, attentionID); err != nil {
+	s.attentionMu.Lock()
+	ids, err := s.pendingDelegateAttentionIDsLocked()
+	if err != nil {
+		s.attentionMu.Unlock()
 		return err
 	}
+	if !slices.Contains(ids, attentionID) {
+		s.attentionMu.Unlock()
+		return nil
+	}
+	if _, err := s.delegateController.openDelegateAttention(s.owningDelegateID, attentionID); err != nil {
+		s.attentionMu.Unlock()
+		return err
+	}
+	s.attentionMu.Unlock()
 	s.notify()
 	return nil
 }
@@ -477,6 +489,13 @@ func (s *Session) pendingDelegateAttentionIDs() ([]string, error) {
 	}
 	s.attentionMu.Lock()
 	defer s.attentionMu.Unlock()
+	return s.pendingDelegateAttentionIDsLocked()
+}
+
+func (s *Session) pendingDelegateAttentionIDsLocked() ([]string, error) {
+	if s == nil {
+		return nil, nil
+	}
 	s.mu.Lock()
 	ready := s.transcriptReady
 	sessionID := s.id

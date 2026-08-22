@@ -330,6 +330,116 @@ func TestDelegateAttention_ResolutionFailureLeavesGenerationStoppable(t *testing
 	}
 }
 
+func TestDelegateAttention_ArmClaimSpansFoldAndOpen(t *testing.T) {
+	const (
+		sessionID   = "child-dlg_target"
+		attentionID = "interleaved-attention"
+	)
+	c, _ := newDelegateControllerTestHarness(t, 1, 1)
+	seedDelegateControllerIdle(t, c, "dlg_target", "")
+	path := transcriptPath(c.stateDir, sessionID)
+	writer, err := transcript.NewWriter(path, transcript.Header{SessionID: sessionID})
+	if err != nil {
+		t.Fatalf("NewWriter: %v", err)
+	}
+	t.Cleanup(func() { _ = writer.Close() })
+	attention := schema.NewTurn(schema.TurnSteering, llm.User("interleaved attention"))
+	attention.AttentionID = attentionID
+	if err := writer.AppendDurable(attention); err != nil {
+		t.Fatalf("append attention: %v", err)
+	}
+	runtime := &Session{
+		id:                 sessionID,
+		stateDir:           c.stateDir,
+		delegateController: c,
+		owningDelegateID:   "dlg_target",
+	}
+	runtime.attachTranscript(writer)
+	c.mu.Lock()
+	c.live["dlg_target"] = &delegateLiveState{runtime: runtime}
+	c.mu.Unlock()
+
+	foldEntered := make(chan struct{})
+	releaseFold := make(chan struct{})
+	t.Cleanup(func() {
+		select {
+		case <-releaseFold:
+		default:
+			close(releaseFold)
+		}
+	})
+	runtime.cfg.testOnly.delegateAttentionReadFold = func(path, sessionID string) (delegateAttentionFold, error) {
+		close(foldEntered)
+		<-releaseFold
+		return readDelegateAttentionFold(path, sessionID)
+	}
+
+	armDone := make(chan error, 1)
+	go func() { armDone <- runtime.armDelegateAttentionOnce(attentionID) }()
+	<-foldEntered
+
+	// Keep the controller lock held while releasing the fold seam. On the
+	// unfixed path arm drops attentionMu before openDelegateAttention, allowing
+	// resolution to complete while open is stuck on c.mu.
+	c.mu.Lock()
+	resolutionReached := make(chan struct{})
+	consumeDone := make(chan error, 1)
+	go func() {
+		err := runtime.resolveAttentionDurably([]string{attentionID}, delegateAttentionConsumed)
+		if err == nil {
+			close(resolutionReached)
+			c.mu.Lock()
+			delete(c.attentionWakeIDs, "dlg_target")
+			_, err = c.appendLocked(delegatestore.Event{
+				Kind:       delegatestore.EventDelegateAttentionChanged,
+				DelegateID: "dlg_target",
+				AttentionChanged: &delegatestore.DelegateAttentionChanged{
+					NeedsAttention: false,
+				},
+			})
+			c.mu.Unlock()
+		}
+		consumeDone <- err
+	}()
+	close(releaseFold)
+	resolvedBeforeArmOpen := false
+	select {
+	case <-resolutionReached:
+		resolvedBeforeArmOpen = true
+	case <-time.After(100 * time.Millisecond):
+	}
+	c.mu.Unlock()
+	if resolvedBeforeArmOpen {
+		t.Fatal("attention resolution completed before arm/open")
+	}
+
+	if err := <-armDone; err != nil {
+		t.Fatalf("arm attention: %v", err)
+	}
+	if err := <-consumeDone; err != nil {
+		t.Fatalf("resolve attention: %v", err)
+	}
+
+	fold, err := readDelegateAttentionFold(path, sessionID)
+	if err != nil {
+		t.Fatalf("read attention fold: %v", err)
+	}
+	if got := fold.resolutions[attentionID]; got != delegateAttentionConsumed {
+		t.Fatalf("attention resolution = %q, want consumed", got)
+	}
+	events, err := c.store.Load()
+	if err != nil {
+		t.Fatalf("load controller journal: %v", err)
+	}
+	state, err := delegatestore.Fold(events)
+	if err != nil {
+		t.Fatalf("fold controller journal: %v", err)
+	}
+	if state["dlg_target"].NeedsAttention || len(c.attentionWakeIDs["dlg_target"]) != 0 {
+		t.Fatalf("consumed attention reopened: state=%#v wakeIDs=%#v", state["dlg_target"], c.attentionWakeIDs["dlg_target"])
+	}
+}
+
 func TestDelegateAttention_RecoveryStopWaitsForOldRunnerBeforeReuse(t *testing.T) {
 	providerEntered := make(chan struct{})
 	releaseProvider := make(chan struct{})
