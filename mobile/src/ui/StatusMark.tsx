@@ -1,6 +1,11 @@
 import type { JSX } from "react";
 
-export type StatusKind = "reachable" | "reconnecting" | "offline" | "attention";
+export type StatusKind =
+  | "reachable"
+  | "reconnecting"
+  | "offline"
+  | "unknown"
+  | "attention";
 
 export interface StatusMarkProps {
   readonly status: StatusKind;
@@ -10,13 +15,15 @@ const LABELS: Record<StatusKind, string> = {
   reachable: "Connected",
   reconnecting: "Reconnecting",
   offline: "Offline",
+  unknown: "Not checked",
   attention: "Needs attention",
 };
 
 /**
  * Status mark with a unique glyph + text label per status. Color reinforces
  * the glyph but never carries meaning alone — every variant has a distinct
- * character and word.
+ * character and word. "unknown" means reachability has not been checked — it
+ * is never used to fabricate "Reconnecting" when no real health data exists.
  */
 export function StatusMark({ status }: StatusMarkProps): JSX.Element {
   return (
@@ -37,6 +44,8 @@ function glyphFor(status: StatusKind): string {
       return "↻";
     case "offline":
       return "✕";
+    case "unknown":
+      return "?";
     case "attention":
       return "!";
   }

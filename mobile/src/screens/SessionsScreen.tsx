@@ -7,7 +7,8 @@
  * placeholder with the live roster.
  *
  * Reachability is honest: without real health data it shows "Reconnecting"
- * (unknown), never fabricated "Connected".
+ * Reachability is honest: without real health data it shows "Not checked"
+ * (unknown), never fabricated "Connected" or "Reconnecting".
  */
 import { type JSX, useEffect } from "react";
 import { Empty, ErrorState, Loading } from "../ui/States";
@@ -37,7 +38,9 @@ export function SessionsScreen({
       ? "offline"
       : active && reachability[active.id] === "reachable"
         ? "reachable"
-        : "reconnecting";
+        : active && reachability[active.id] === "reconnecting"
+          ? "reconnecting"
+          : "unknown";
 
   useEffect(() => {
     if (status === "initial") {

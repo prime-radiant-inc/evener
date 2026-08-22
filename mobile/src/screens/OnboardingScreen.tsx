@@ -113,13 +113,15 @@ export function OnboardingScreen({
     setConfirmError(null);
     try {
       await store.getState().refresh();
-      const scanResult = await services.native.scanAndPreviewPairing();
-      // Feed the scan preview directly to the store — no raw URL or token in JS.
-      await store.getState().setScanPreview({
-        previewId: scanResult.previewId,
-        origin: scanResult.origin,
+      // Route the scan through the store's preview protocol so the generation
+      // guard rejects stale/cancelled scan results (e.g. after unmount).
+      await store.getState().previewScan(async () => {
+        const scanResult = await services.native.scanAndPreviewPairing();
+        return { previewId: scanResult.previewId, origin: scanResult.origin };
       });
-      if (mounted.current) setPhase("confirming");
+      if (mounted.current && store.getState().preview !== null) {
+        setPhase("confirming");
+      }
     } catch {
       if (mounted.current) setPhase("error");
     }
