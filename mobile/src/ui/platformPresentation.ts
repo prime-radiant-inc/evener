@@ -193,13 +193,12 @@ function finiteNonnegative(value: number): number {
 /**
  * Compute the overlay/resizes-content viewport metrics.
  *
- * Layout height follows the current `window.innerHeight`, clamped to a finite
- * nonnegative number. The keyboard inset is the *final*
- * `max(0, layoutHeight - (offsetTop + height))` — the operands are used as-is
- * (finite negative offsetTop/height are NOT individually clamped before the
- * subtraction); only the final result is clamped to 0. A non-finite operand
- * (NaN/±Infinity) makes the intermediate or final result non-finite, which
- * yields 0.
+ * Layout height follows the current `window.innerHeight`. An invalid layout
+ * height (negative or non-finite) yields zero for both output metrics. For a
+ * valid layout height, keyboard inset is the *final*
+ * `max(0, layoutHeight - (offsetTop + height))` — finite viewport operands are
+ * used as-is and only the final result is clamped. A non-finite viewport operand
+ * makes the intermediate result non-finite, which yields 0.
  *
  * When `visualViewport` is absent/null, the viewport height is `innerHeight`
  * and the keyboard inset is 0.
@@ -208,16 +207,17 @@ export function computeViewportMetrics(opts: {
   visualViewport?: VisualViewportLike | null;
   innerHeight?: number;
 }): { viewportHeight: number; keyboardInset: number } {
-  const viewportHeight = finiteNonnegative(opts.innerHeight ?? 0);
+  const rawInnerHeight = opts.innerHeight ?? 0;
+  const viewportHeight = finiteNonnegative(rawInnerHeight);
   const vp = opts.visualViewport;
-  if (!vp) {
+  if (!vp || !Number.isFinite(rawInnerHeight) || rawInnerHeight < 0) {
     return { viewportHeight, keyboardInset: 0 };
   }
   const offsetTop = vp.offsetTop;
   const height = vp.height;
   const sum = offsetTop + height;
-  const inset = viewportHeight - sum;
-  // Non-finite operand -> non-finite sum/inset; final clamp yields 0.
+  const inset = rawInnerHeight - sum;
+  // Non-finite viewport operand -> non-finite sum/inset; final clamp yields 0.
   return { viewportHeight, keyboardInset: finiteNonnegative(inset) };
 }
 

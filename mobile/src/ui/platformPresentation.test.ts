@@ -22,7 +22,10 @@ import {
 } from "./platformPresentation";
 
 const ORIGINAL_VP = Object.getOwnPropertyDescriptor(window, "visualViewport");
-const ORIGINAL_INNER_HEIGHT = window.innerHeight;
+const ORIGINAL_INNER_HEIGHT = Object.getOwnPropertyDescriptor(
+  window,
+  "innerHeight",
+);
 
 function resetDocument() {
   const el = document.documentElement;
@@ -36,17 +39,18 @@ function resetDocument() {
   el.removeAttribute("style");
 }
 
-function restoreVisualViewport() {
+function restoreTestEnvironment() {
   if (ORIGINAL_VP === undefined) {
     delete (window as unknown as { visualViewport?: unknown }).visualViewport;
   } else {
     Object.defineProperty(window, "visualViewport", ORIGINAL_VP);
   }
-  Object.defineProperty(window, "innerHeight", {
-    configurable: true,
-    value: ORIGINAL_INNER_HEIGHT,
-    writable: true,
-  });
+  if (ORIGINAL_INNER_HEIGHT === undefined) {
+    delete (window as unknown as { innerHeight?: number }).innerHeight;
+  } else {
+    Object.defineProperty(window, "innerHeight", ORIGINAL_INNER_HEIGHT);
+  }
+  resetDocument();
 }
 
 interface FakeVisualViewport extends EventTarget {
@@ -99,7 +103,7 @@ const base: PlatformPresentation = {
 
 describe("7C presentation — document-root preferences", () => {
   beforeEach(resetDocument);
-  afterEach(restoreVisualViewport);
+  afterEach(restoreTestEnvironment);
 
   it("explicit light theme sets data-theme=light on documentElement", () => {
     const stop = applyPlatformPresentation(
@@ -172,7 +176,7 @@ describe("7C presentation — document-root preferences", () => {
 
 describe("7C presentation — restore pre-existing document state", () => {
   beforeEach(resetDocument);
-  afterEach(restoreVisualViewport);
+  afterEach(restoreTestEnvironment);
 
   it("restore returns a pre-existing data-theme attribute", () => {
     document.documentElement.setAttribute("data-theme", "dark");
@@ -259,7 +263,7 @@ describe("7C presentation — restore pre-existing document state", () => {
 
 describe("7C presentation — preference changes update documentElement live", () => {
   beforeEach(resetDocument);
-  afterEach(restoreVisualViewport);
+  afterEach(restoreTestEnvironment);
 
   it("theme change is reflected on documentElement", () => {
     const stop = applyPlatformPresentation(
@@ -376,15 +380,18 @@ describe("7C computeViewportMetrics — exact finite-operand formula", () => {
     expect(m.keyboardInset).toBe(0);
   });
 
-  it("non-finite innerHeight yields finite nonnegative viewportHeight (0)", () => {
-    expect(
-      computeViewportMetrics({ innerHeight: Number.NaN }).viewportHeight,
-    ).toBe(0);
-    expect(
-      computeViewportMetrics({ innerHeight: Number.POSITIVE_INFINITY })
-        .viewportHeight,
-    ).toBe(0);
-    expect(computeViewportMetrics({ innerHeight: -10 }).viewportHeight).toBe(0);
+  it("invalid innerHeight yields zero metrics even with negative viewport geometry", () => {
+    const viewport = createFakeVisualViewport({ height: 0, offsetTop: -50 });
+    for (const innerHeight of [
+      Number.NaN,
+      Number.POSITIVE_INFINITY,
+      Number.NEGATIVE_INFINITY,
+      -10,
+    ]) {
+      expect(
+        computeViewportMetrics({ visualViewport: viewport, innerHeight }),
+      ).toEqual({ viewportHeight: 0, keyboardInset: 0 });
+    }
   });
 });
 
@@ -394,7 +401,7 @@ describe("7C computeViewportMetrics — exact finite-operand formula", () => {
 
 describe("7C coordinator — basic values", () => {
   beforeEach(resetDocument);
-  afterEach(restoreVisualViewport);
+  afterEach(restoreTestEnvironment);
 
   it("sets --viewport-height to innerHeight and --keyboard-inset to 0 with no keyboard", () => {
     setVisualViewport(createFakeVisualViewport({ height: 768, offsetTop: 0 }));
@@ -452,7 +459,7 @@ describe("7C coordinator — basic values", () => {
 
 describe("7C coordinator — live updates", () => {
   beforeEach(resetDocument);
-  afterEach(restoreVisualViewport);
+  afterEach(restoreTestEnvironment);
 
   it("updates --keyboard-inset and --viewport-height on visualViewport.resize", () => {
     const vp = createFakeVisualViewport({ height: 768, offsetTop: 0 });
@@ -496,7 +503,7 @@ describe("7C coordinator — live updates", () => {
 
 describe("7C coordinator — fallback and null seam", () => {
   beforeEach(resetDocument);
-  afterEach(restoreVisualViewport);
+  afterEach(restoreTestEnvironment);
 
   it("falls back to window.resize when visualViewport is absent", () => {
     setVisualViewport(undefined);
@@ -545,18 +552,22 @@ describe("7C coordinator — fallback and null seam", () => {
 
 describe("7C coordinator — listener cleanup cardinality", () => {
   beforeEach(resetDocument);
-  afterEach(restoreVisualViewport);
+  afterEach(restoreTestEnvironment);
 
-  it("proves resize, scroll, and window-resize listeners are added then removed", () => {
-    // Use explicit fake window + fake viewport (both real EventTargets) so
-    // add/remove counts are deterministic regardless of jsdom's Window
-    // prototype chain. Wrap each target's own add/removeEventListener.
+  it("adds each exact listener once and removes the same listener/options once", () => {
     const fakeWindow = new EventTarget() as unknown as Window &
       typeof globalThis & { innerHeight: number };
     (fakeWindow as { innerHeight: number }).innerHeight = 768;
-    // Cast the bound methods to a generic signature so the wrapper can
-    // forward any (type, listener, options?) tuple without fighting DOM
-    // overloads.
+    type Options =
+      | boolean
+      | AddEventListenerOptions
+      | EventListenerOptions
+      | undefined;
+    interface ListenerRecord {
+      readonly type: string;
+      readonly listener: EventListenerOrEventListenerObject;
+      readonly options: Options;
+    }
     type AddFn = (
       type: string,
       listener: EventListenerOrEventListenerObject,
@@ -573,28 +584,28 @@ describe("7C coordinator — listener cleanup cardinality", () => {
     const winRemove = fakeWindow.removeEventListener.bind(
       fakeWindow,
     ) as unknown as RemoveFn;
-    const winAdded: Array<{ type: string }> = [];
-    const winRemoved: Array<{ type: string }> = [];
+    const winAdded: ListenerRecord[] = [];
+    const winRemoved: ListenerRecord[] = [];
     fakeWindow.addEventListener = ((type: string, listener, options) => {
-      winAdded.push({ type });
+      winAdded.push({ type, listener, options });
       winAdd(type, listener, options);
     }) as AddFn;
     fakeWindow.removeEventListener = ((type: string, listener, options) => {
-      winRemoved.push({ type });
+      winRemoved.push({ type, listener, options });
       winRemove(type, listener, options);
     }) as RemoveFn;
 
     const vp = createFakeVisualViewport({ height: 768, offsetTop: 0 });
     const vpAdd = vp.addEventListener.bind(vp) as unknown as AddFn;
     const vpRemove = vp.removeEventListener.bind(vp) as unknown as RemoveFn;
-    const vpAdded: Array<{ type: string }> = [];
-    const vpRemoved: Array<{ type: string }> = [];
+    const vpAdded: ListenerRecord[] = [];
+    const vpRemoved: ListenerRecord[] = [];
     vp.addEventListener = ((type: string, listener, options) => {
-      vpAdded.push({ type });
+      vpAdded.push({ type, listener, options });
       vpAdd(type, listener, options);
     }) as AddFn;
     vp.removeEventListener = ((type: string, listener, options) => {
-      vpRemoved.push({ type });
+      vpRemoved.push({ type, listener, options });
       vpRemove(type, listener, options);
     }) as RemoveFn;
 
@@ -604,30 +615,57 @@ describe("7C coordinator — listener cleanup cardinality", () => {
       window: fakeWindow,
     });
     coord.start();
-    // Three listeners: vp.resize, vp.scroll, window.resize.
-    expect(vpAdded.map((a) => a.type).sort()).toEqual(["resize", "scroll"]);
-    expect(winAdded.map((a) => a.type)).toEqual(["resize"]);
+    coord.start();
+    expect(vpAdded.map(({ type }) => type).sort()).toEqual([
+      "resize",
+      "scroll",
+    ]);
+    expect(winAdded.map(({ type }) => type)).toEqual(["resize"]);
     expect(vpAdded.length + winAdded.length).toBe(3);
+
     coord.stop();
-    // All three removed.
-    expect(vpRemoved.map((a) => a.type).sort()).toEqual(["resize", "scroll"]);
-    expect(winRemoved.map((a) => a.type)).toEqual(["resize"]);
-    expect(vpRemoved.length + winRemoved.length).toBe(3);
+    coord.stop();
+    expect(vpRemoved).toEqual(vpAdded);
+    expect(winRemoved).toEqual(winAdded);
   });
 
-  it("removes listeners on stop: no updates after stop()", () => {
+  it("all three event types stop changing metrics after cleanup", () => {
+    const fakeWindow = new EventTarget() as unknown as Window &
+      typeof globalThis & { innerHeight: number };
+    (fakeWindow as { innerHeight: number }).innerHeight = 768;
     const vp = createFakeVisualViewport({ height: 768, offsetTop: 0 });
-    setVisualViewport(vp);
-    const coord = createViewportCoordinator({ document });
+    const coord = createViewportCoordinator({
+      document,
+      visualViewport: vp,
+      window: fakeWindow,
+    });
     coord.start();
     coord.stop();
-    document.documentElement.style.setProperty("--keyboard-inset", "0px");
+    document.documentElement.style.setProperty(
+      "--viewport-height",
+      "sentinel-vh",
+    );
+    document.documentElement.style.setProperty(
+      "--keyboard-inset",
+      "sentinel-kb",
+    );
     vp.height = 300;
-    vp.offsetTop = 0;
-    dispatch(vp, "resize");
-    expect(
-      document.documentElement.style.getPropertyValue("--keyboard-inset"),
-    ).toBe("0px");
+    vp.offsetTop = 25;
+    (fakeWindow as { innerHeight: number }).innerHeight = 600;
+
+    for (const [target, type] of [
+      [vp, "resize"],
+      [vp, "scroll"],
+      [fakeWindow, "resize"],
+    ] as const) {
+      dispatch(target, type);
+      expect(
+        document.documentElement.style.getPropertyValue("--viewport-height"),
+      ).toBe("sentinel-vh");
+      expect(
+        document.documentElement.style.getPropertyValue("--keyboard-inset"),
+      ).toBe("sentinel-kb");
+    }
   });
 
   it("NaN-safe geometry still yields finite nonnegative px", () => {
@@ -657,7 +695,7 @@ describe("7C coordinator — listener cleanup cardinality", () => {
 
 describe("7C coordinator — restores pre-existing viewport CSS declarations", () => {
   beforeEach(resetDocument);
-  afterEach(restoreVisualViewport);
+  afterEach(restoreTestEnvironment);
 
   it("stop() restores prior --viewport-height and --keyboard-inset values and priority", () => {
     document.documentElement.style.setProperty(
@@ -746,7 +784,7 @@ describe("7C coordinator — restores pre-existing viewport CSS declarations", (
 
 describe("7C coordinator — ownership token guard", () => {
   beforeEach(resetDocument);
-  afterEach(restoreVisualViewport);
+  afterEach(restoreTestEnvironment);
 
   it("a stale owner's stop does not clobber a newer owner's declarations", () => {
     setVisualViewport(createFakeVisualViewport({ height: 768, offsetTop: 0 }));
