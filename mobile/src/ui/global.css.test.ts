@@ -112,7 +112,38 @@ function must<T>(value: T | undefined, label: string): T {
 }
 
 function selectorMembers(selector: string): string[] {
-  return selector.split(",").map((member) => member.trim());
+  const members: string[] = [];
+  let start = 0;
+  let depth = 0;
+  let quote: '"' | "'" | null = null;
+  let escaped = false;
+  for (let index = 0; index < selector.length; index += 1) {
+    const char = selector[index];
+    if (escaped) {
+      escaped = false;
+      continue;
+    }
+    if (char === "\\") {
+      escaped = true;
+      continue;
+    }
+    if (quote !== null) {
+      if (char === quote) quote = null;
+      continue;
+    }
+    if (char === '"' || char === "'") {
+      quote = char;
+    } else if (char === "(") {
+      depth += 1;
+    } else if (char === ")") {
+      depth = Math.max(0, depth - 1);
+    } else if (char === "," && depth === 0) {
+      members.push(selector.slice(start, index).trim());
+      start = index + 1;
+    }
+  }
+  members.push(selector.slice(start).trim());
+  return members;
 }
 
 /** All top-level (non-media) style rules whose selectorText exactly equals
@@ -198,11 +229,24 @@ function viewportDirectives(): Map<string, string> {
 /** Which safe-area edges a declaration map references. */
 function safeEdges(decls: Record<string, string>): Set<string> {
   const edges = new Set<string>();
-  const all = Object.values(decls).join(" ");
-  if (all.includes("--safe-area-top")) edges.add("top");
-  if (all.includes("--safe-area-bottom")) edges.add("bottom");
-  if (all.includes("--safe-area-left")) edges.add("left");
-  if (all.includes("--safe-area-right")) edges.add("right");
+  const all = Object.entries(decls)
+    .filter(([property]) => !property.startsWith("--safe-area-"))
+    .map(([, value]) => value)
+    .join(" ");
+  if (all.includes("--safe-area-top") || all.includes("safe-area-inset-top"))
+    edges.add("top");
+  if (
+    all.includes("--safe-area-bottom") ||
+    all.includes("safe-area-inset-bottom")
+  )
+    edges.add("bottom");
+  if (all.includes("--safe-area-left") || all.includes("safe-area-inset-left"))
+    edges.add("left");
+  if (
+    all.includes("--safe-area-right") ||
+    all.includes("safe-area-inset-right")
+  )
+    edges.add("right");
   return edges;
 }
 
@@ -214,7 +258,6 @@ function safeEdgeConsumers(): Record<string, string[]> {
     right: [],
   };
   for (const rule of sheet.styleRules) {
-    if (rule.media !== "") continue;
     const edges = safeEdges(rule.decls);
     for (const selector of selectorMembers(rule.selector)) {
       for (const edge of edges) result[edge]?.push(selector);
@@ -761,6 +804,7 @@ describe("7C lane D — conversation participates in shell flex geometry", () =>
     expect(conversation?.querySelectorAll(".evener-screen-scroll").length).toBe(
       1,
     );
+    expect(container.querySelectorAll(".evener-bottombar").length).toBe(0);
   });
 
   it("real tab screen nests TopBar under the compensated screen scroller", () => {
