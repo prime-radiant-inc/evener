@@ -18,10 +18,10 @@ import (
 
 // A daemon that stays in the hub's process group dies with the hub: Ctrl-C on
 // the hub's terminal delivers SIGINT to the whole foreground process group,
-// closing the terminal delivers SIGHUP to the session, and `evener serve`
-// honors both. Spawned daemons are documented to outlive a hub restart
-// (SpawnDaemon), so each one must launch detached into a session of its own —
-// observable as the daemon being its own process-group leader.
+// closing the terminal hangs up on that same group, and `evener serve` honors
+// both. Spawned daemons are documented to outlive a hub restart (SpawnDaemon),
+// so each one must launch detached into a session of its own — observable as
+// the daemon leading both its own session and its own process group.
 func TestSpawnDaemonDetachesFromHubSession(t *testing.T) {
 	t.Parallel()
 	bin, runDir := writeDetachFakeDaemon(t)
@@ -64,16 +64,25 @@ exec sleep 30
 }
 
 // assertOwnSessionLeader proves the daemon cannot receive the terminal
-// signals aimed at the hub: a setsid'd process leads its own process group,
-// so its pgid equals its pid.
+// signals aimed at the hub: a setsid'd process leads its own session, so its
+// sid equals its pid. The pgid check alone would also pass under a
+// group-only regression (Setpgid without Setsid), which keeps the hub's
+// session and controlling terminal — the sid check pins the real invariant.
 func assertOwnSessionLeader(t *testing.T, pid int) {
 	t.Helper()
+	sid, err := syscall.Getsid(pid)
+	if err != nil {
+		t.Fatalf("Getsid(%d): %v", pid, err)
+	}
+	if sid != pid {
+		t.Fatalf("daemon pid %d lives in session %d shared with the hub: terminal signals to the hub (Ctrl-C, hangup) reach it; want its own session (sid == pid)", pid, sid)
+	}
 	pgid, err := syscall.Getpgid(pid)
 	if err != nil {
 		t.Fatalf("Getpgid(%d): %v", pid, err)
 	}
 	if pgid != pid {
-		t.Fatalf("daemon pid %d lives in process group %d shared with the hub: terminal signals to the hub (Ctrl-C, SIGHUP) kill it; want it as its own session leader (pgid == pid)", pid, pgid)
+		t.Fatalf("daemon pid %d lives in process group %d shared with the hub: want its own group (pgid == pid)", pid, pgid)
 	}
 }
 
