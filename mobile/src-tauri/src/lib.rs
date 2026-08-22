@@ -7,8 +7,14 @@ pub fn run() {
 
     // Construct production adapters. The app owns one persistent ProfileStore
     // backed by atomic file preferences (app-data), a Keychain bridge to the
-    // native plugin, a real HTTP pairing probe, system DNS, and a recording
-    // close-transport callback (the AppWire manager is wired in slice B).
+    // native plugin, a real HTTP pairing probe, system DNS, and a
+    // close-transport callback that closes the AppWire socket before the
+    // active profile changes.
+    //
+    // One managed TransportState owns the shared NetworkPolicy, Diagnostics,
+    // AppwireManager, and the Keychain bridge for token retrieval. One
+    // managed ProfileRuntime owns the ProfileStore with an async lifecycle
+    // mutex that serializes profile lifecycle commands.
     //
     // The managed preview handler delegates to the exact same ProfileStore,
     // so a QR scan preview can be confirmed later through the same store.
@@ -42,12 +48,22 @@ pub fn run() {
                 profile_runtime::SystemDnsResolver,
             )));
 
-            // Close-transport callback (AppWire manager wired in slice B).
-            let close: Arc<dyn profile::CloseTransport> = Arc::new(NoopCloseTransport);
+            // One AppWire manager for the active profile.
+            let appwire = Arc::new(appwire_transport::AppwireManager::new());
+
+            // Close-transport callback: closes the AppWire socket before the
+            // active profile changes.
+            let close: Arc<dyn profile::CloseTransport> =
+                Arc::new(transport_state::AppwireCloseTransport::new(appwire.clone()));
 
             // One managed ProfileStore.
             let store = Arc::new(profile::ProfileStore::new(
-                prefs, secure, probe, clock, policy, close,
+                prefs,
+                secure.clone(),
+                probe,
+                clock,
+                policy.clone(),
+                close,
             ));
 
             // Managed runtime with async lifecycle mutex.
@@ -63,8 +79,22 @@ pub fn run() {
                 tauri_plugin_evener_native::PreviewCoordinator::new(handler),
             ));
 
-            // Register the profile runtime as managed state.
+            // Shared diagnostics ring (200 metadata-only entries).
+            let diagnostics = Arc::new(diagnostics::Diagnostics::new());
+
+            // Managed transport state: owns the shared policy, diagnostics,
+            // AppWire manager, and the Keychain bridge for token retrieval.
+            let transport = transport_state::TransportState::new(
+                policy,
+                error::ReleaseMode::Release,
+                diagnostics,
+                appwire,
+                secure,
+            );
+
+            // Register managed state.
             app.manage(runtime);
+            app.manage(transport);
 
             Ok(())
         })
@@ -81,17 +111,22 @@ pub fn run() {
             commands::appwire_open,
             commands::appwire_send,
             commands::appwire_close,
+            commands::diagnostics_snapshot,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }
 
+pub mod appwire_transport;
 pub mod commands;
+pub mod diagnostics;
 pub mod error;
+pub mod http_transport;
 pub mod network_policy;
 pub mod pairing;
 pub mod profile;
 pub mod profile_runtime;
+pub mod transport_state;
 
 /// System clock using `std::time::SystemTime`.
 struct SystemClock;
@@ -102,15 +137,6 @@ impl profile::Clock for SystemClock {
             .duration_since(std::time::UNIX_EPOCH)
             .map(|d| d.as_secs())
             .unwrap_or(0)
-    }
-}
-
-/// No-op close transport. Replaced by the AppWire manager in slice B.
-struct NoopCloseTransport;
-
-impl profile::CloseTransport for NoopCloseTransport {
-    fn close_current(&self) -> profile::ProfileGeneration {
-        profile::ProfileGeneration(0)
     }
 }
 
