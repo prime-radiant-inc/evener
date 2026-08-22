@@ -36,14 +36,28 @@ impl fmt::Display for ProfileGeneration {
 }
 
 /// Preferences content stored in nonsecret atomic preferences.
-#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub const PREFERENCES_VERSION: u32 = 1;
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
 pub struct Preferences {
+    pub version: u32,
     /// Ordered redacted profile summaries.
     #[serde(default)]
     pub profiles: Vec<ProfileSummary>,
     /// Active profile ID, or none.
     #[serde(default)]
     pub active_id: Option<String>,
+}
+
+impl Default for Preferences {
+    fn default() -> Self {
+        Self {
+            version: PREFERENCES_VERSION,
+            profiles: Vec::new(),
+            active_id: None,
+        }
+    }
 }
 
 /// Atomic preferences store (injected). Must be atomic load/save.
@@ -91,6 +105,23 @@ struct PendingPreview {
     existing_id: Option<String>,
 }
 
+/// Schedules secret-free expiry callbacks. Production uses a sleeping worker;
+/// tests inject a deterministic scheduler and trigger callbacks manually.
+pub trait PreviewExpiryScheduler: Send + Sync {
+    fn schedule(&self, delay_secs: u64, callback: Box<dyn FnOnce() + Send>);
+}
+
+pub struct ThreadPreviewExpiryScheduler;
+
+impl PreviewExpiryScheduler for ThreadPreviewExpiryScheduler {
+    fn schedule(&self, delay_secs: u64, callback: Box<dyn FnOnce() + Send>) {
+        std::thread::spawn(move || {
+            std::thread::sleep(std::time::Duration::from_secs(delay_secs));
+            callback();
+        });
+    }
+}
+
 /// Result of previewing a pairing URL.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PairingPreview {
@@ -113,7 +144,8 @@ pub struct ProfileStore {
     clock: Arc<dyn Clock>,
     policy: Arc<NetworkPolicy>,
     /// Pending previews keyed by opaque ID.
-    pending: Mutex<HashMap<String, PendingPreview>>,
+    pending: Arc<Mutex<HashMap<String, PendingPreview>>>,
+    expiry_scheduler: Arc<dyn PreviewExpiryScheduler>,
     /// Monotonic generation counter.
     generation: AtomicU64,
     /// Close-current-transport callback invoked before active ID changes.
@@ -129,16 +161,56 @@ impl ProfileStore {
         policy: Arc<NetworkPolicy>,
         close_transport: Arc<dyn CloseTransport>,
     ) -> Self {
+        Self::new_with_scheduler(
+            prefs,
+            secure,
+            probe,
+            clock,
+            policy,
+            close_transport,
+            Arc::new(ThreadPreviewExpiryScheduler),
+        )
+    }
+
+    pub fn new_with_scheduler(
+        prefs: Arc<dyn PreferencesStore>,
+        secure: Arc<dyn SecureStore>,
+        probe: Arc<dyn PairingProbe>,
+        clock: Arc<dyn Clock>,
+        policy: Arc<NetworkPolicy>,
+        close_transport: Arc<dyn CloseTransport>,
+        expiry_scheduler: Arc<dyn PreviewExpiryScheduler>,
+    ) -> Self {
         Self {
             prefs,
             secure,
             probe,
             clock,
             policy,
-            pending: Mutex::new(HashMap::new()),
+            pending: Arc::new(Mutex::new(HashMap::new())),
+            expiry_scheduler,
             generation: AtomicU64::new(0),
             close_transport,
         }
+    }
+
+    fn schedule_expiry(&self, preview_id: &str, created_at: u64) {
+        let pending = self.pending.clone();
+        let clock = self.clock.clone();
+        let preview_id = preview_id.to_owned();
+        self.expiry_scheduler.schedule(
+            PREVIEW_TTL_SECS,
+            Box::new(move || {
+                let now = clock.now_secs();
+                let mut pending = pending.lock().unwrap();
+                if pending.get(&preview_id).is_some_and(|preview| {
+                    preview.created_at == created_at
+                        && now.saturating_sub(preview.created_at) >= PREVIEW_TTL_SECS
+                }) {
+                    pending.remove(&preview_id);
+                }
+            }),
+        );
     }
 
     /// List all redacted profile summaries in order.
@@ -188,15 +260,17 @@ impl ProfileStore {
         let pairing = parse_pairing(raw)?;
         let origin = pairing.origin().to_owned();
         let preview_id = new_preview_id();
+        let created_at = self.clock.now_secs();
         let pending = PendingPreview {
             pairing,
-            created_at: self.clock.now_secs(),
+            created_at,
             existing_id: None,
         };
         self.pending
             .lock()
             .unwrap()
             .insert(preview_id.clone(), pending);
+        self.schedule_expiry(&preview_id, created_at);
         Ok(PairingPreview { preview_id, origin })
     }
 
@@ -214,15 +288,17 @@ impl ProfileStore {
         let pairing = parse_pairing(raw)?;
         let origin = pairing.origin().to_owned();
         let preview_id = new_preview_id();
+        let created_at = self.clock.now_secs();
         let pending = PendingPreview {
             pairing,
-            created_at: self.clock.now_secs(),
+            created_at,
             existing_id: Some(profile_id.to_owned()),
         };
         self.pending
             .lock()
             .unwrap()
             .insert(preview_id.clone(), pending);
+        self.schedule_expiry(&preview_id, created_at);
         Ok(PairingPreview { preview_id, origin })
     }
 
@@ -327,6 +403,11 @@ impl ProfileStore {
             };
             self.rollback_keychain(&profile_id, prior_token.as_deref(), operation)?;
             return Err(prefs_err);
+        }
+
+        if pending.existing_id.is_some() && new_prefs.active_id.as_deref() == Some(&profile_id) {
+            self.close_transport.close_current();
+            self.bump_generation();
         }
 
         Ok(summary)
@@ -463,6 +544,70 @@ impl ProfileStore {
                 },
             }),
         }
+    }
+
+    /// Capture one immutable active transport snapshot. Active-id validation,
+    /// summary lookup, generation read, and Keychain read happen while the
+    /// caller holds the profile lifecycle lock.
+    pub fn active_snapshot(
+        &self,
+        expected_profile_id: &str,
+    ) -> Result<ActiveProfileSnapshot, ProfileError> {
+        let snapshot = self.active_snapshot_current()?;
+        if snapshot.id() != expected_profile_id {
+            return Err(ProfileError::NotFound("active profile mismatch".to_owned()));
+        }
+        Ok(snapshot)
+    }
+
+    pub fn active_snapshot_current(&self) -> Result<ActiveProfileSnapshot, ProfileError> {
+        let prefs = self.prefs.load()?;
+        let active_id = prefs
+            .active_id
+            .as_deref()
+            .ok_or_else(|| ProfileError::NotFound("no active profile".to_owned()))?;
+        let profile = prefs
+            .profiles
+            .iter()
+            .find(|profile| profile.id == active_id)
+            .ok_or_else(|| ProfileError::NotFound("active profile mismatch".to_owned()))?;
+        let token = self
+            .secure
+            .get(active_id)?
+            .ok_or_else(|| ProfileError::SecureStore("capability missing".to_owned()))?;
+        Ok(ActiveProfileSnapshot {
+            id: profile.id.clone(),
+            generation: self.generation(),
+            origin: profile.origin.clone(),
+            token,
+        })
+    }
+}
+
+/// Immutable native-only credentials and routing identity captured atomically.
+/// Deliberately has no `Debug` or serialization implementation.
+pub struct ActiveProfileSnapshot {
+    id: String,
+    generation: ProfileGeneration,
+    origin: String,
+    token: String,
+}
+
+impl ActiveProfileSnapshot {
+    pub fn id(&self) -> &str {
+        &self.id
+    }
+    pub fn generation(&self) -> ProfileGeneration {
+        self.generation
+    }
+    pub fn origin(&self) -> &str {
+        &self.origin
+    }
+    pub fn token(&self) -> &str {
+        &self.token
+    }
+    pub fn into_parts(self) -> (String, ProfileGeneration, String, String) {
+        (self.id, self.generation, self.origin, self.token)
     }
 }
 
@@ -752,6 +897,98 @@ fn auth_url(host: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    type ScheduledExpiry = (u64, Box<dyn FnOnce() + Send>);
+
+    #[derive(Default)]
+    struct DeterministicScheduler {
+        scheduled: Mutex<Vec<ScheduledExpiry>>,
+    }
+
+    impl PreviewExpiryScheduler for DeterministicScheduler {
+        fn schedule(&self, delay_secs: u64, callback: Box<dyn FnOnce() + Send>) {
+            self.scheduled.lock().unwrap().push((delay_secs, callback));
+        }
+    }
+
+    impl DeterministicScheduler {
+        fn delays(&self) -> Vec<u64> {
+            self.scheduled
+                .lock()
+                .unwrap()
+                .iter()
+                .map(|(delay, _)| *delay)
+                .collect()
+        }
+
+        fn run_all(&self) {
+            let callbacks = std::mem::take(&mut *self.scheduled.lock().unwrap());
+            for (_, callback) in callbacks {
+                callback();
+            }
+        }
+    }
+
+    fn make_store_with_scheduler(
+        clock: Arc<StepClock>,
+        scheduler: Arc<DeterministicScheduler>,
+    ) -> ProfileStore {
+        ProfileStore::new_with_scheduler(
+            Arc::new(MemoryPreferences::new()),
+            Arc::new(MemorySecureStore::new()),
+            Arc::new(OkProbe),
+            clock,
+            Arc::new(NetworkPolicy::new(Box::new(
+                crate::network_policy::AlwaysPrivateResolver,
+            ))),
+            Arc::new(RecordingCloseTransport::default()),
+            scheduler,
+        )
+    }
+
+    #[test]
+    fn scheduled_expiry_removes_secret_without_another_store_call() {
+        let clock = Arc::new(StepClock::new(10));
+        let scheduler = Arc::new(DeterministicScheduler::default());
+        let store = make_store_with_scheduler(clock.clone(), scheduler.clone());
+        let preview = store.preview_pairing(&auth_url("hub.example.com")).unwrap();
+        assert_eq!(scheduler.delays(), vec![PREVIEW_TTL_SECS]);
+
+        clock.advance(PREVIEW_TTL_SECS);
+        scheduler.run_all();
+
+        assert!(matches!(
+            store.cancel_preview(&preview.preview_id),
+            Err(ProfileError::PreviewNotFound(_))
+        ));
+    }
+
+    #[test]
+    fn scheduled_callback_contains_no_secret_and_cancel_is_idempotent_for_timer() {
+        let clock = Arc::new(StepClock::new(0));
+        let scheduler = Arc::new(DeterministicScheduler::default());
+        let store = make_store_with_scheduler(clock.clone(), scheduler.clone());
+        let preview = store.preview_pairing(&auth_url("hub.example.com")).unwrap();
+        store.cancel_preview(&preview.preview_id).unwrap();
+        clock.advance(PREVIEW_TTL_SECS);
+        scheduler.run_all();
+        assert!(matches!(
+            store.cancel_preview(&preview.preview_id),
+            Err(ProfileError::PreviewNotFound(_))
+        ));
+    }
+
+    #[test]
+    fn clear_previews_removes_all_pending_secrets() {
+        let clock = Arc::new(StepClock::new(0));
+        let scheduler = Arc::new(DeterministicScheduler::default());
+        let store = make_store_with_scheduler(clock, scheduler);
+        let first = store.preview_pairing(&auth_url("one.example.com")).unwrap();
+        let second = store.preview_pairing(&auth_url("two.example.com")).unwrap();
+        store.clear_previews();
+        assert!(store.cancel_preview(&first.preview_id).is_err());
+        assert!(store.cancel_preview(&second.preview_id).is_err());
+    }
 
     // -- Two profiles with separate Keychain accounts -----------------------
 

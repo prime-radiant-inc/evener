@@ -1,3 +1,4 @@
+import AVFoundation
 import Foundation
 import Security
 import SwiftRs
@@ -151,8 +152,6 @@ struct KeychainStore {
         let account = account(for: profileID)
         let data = Data(capability.utf8)
 
-        // Delete any existing item first (upsert semantics)
-        try client.delete(service: Self.service, account: account)
         try client.set(
             data,
             service: Self.service,
@@ -176,12 +175,15 @@ struct KeychainStore {
     /// Used internally by the Rust bridge to retrieve the token for HTTP
     /// bearer auth and rollback compensation. The capability never crosses
     /// to JavaScript.
-    func loadCapability(profileID: String) -> String? {
+    func loadCapability(profileID: String) throws -> String? {
         let account = account(for: profileID)
-        guard let data = try? client.get(service: Self.service, account: account) else {
+        guard let data = try client.get(service: Self.service, account: account) else {
             return nil
         }
-        return String(data: data, encoding: .utf8)
+        guard let value = String(data: data, encoding: .utf8) else {
+            throw KeychainError.decodeFailure
+        }
+        return value
     }
 
     func delete(profileID: String) throws {
@@ -202,6 +204,166 @@ enum QRScanError: Error {
 
 protocol QRScanning {
     func scan(completion: @escaping (Result<String, Error>) -> Void)
+}
+
+/// Production QR scanner. Camera permission is resolved before presenting a
+/// dedicated capture controller. The controller owns one AVCaptureSession,
+/// scans only QR metadata, and completes exactly once for scan/cancel/error.
+final class SystemQRScanner: QRScanning {
+    func scan(completion: @escaping (Result<String, Error>) -> Void) {
+        switch AVCaptureDevice.authorizationStatus(for: .video) {
+        case .authorized:
+            presentScanner(completion: completion)
+        case .notDetermined:
+            AVCaptureDevice.requestAccess(for: .video) { [weak self] granted in
+                DispatchQueue.main.async {
+                    if granted {
+                        self?.presentScanner(completion: completion)
+                    } else {
+                        completion(.failure(QRScanError.permissionDenied))
+                    }
+                }
+            }
+        case .denied, .restricted:
+            completion(.failure(QRScanError.permissionDenied))
+        @unknown default:
+            completion(.failure(QRScanError.permissionDenied))
+        }
+    }
+
+    private func presentScanner(completion: @escaping (Result<String, Error>) -> Void) {
+        DispatchQueue.main.async {
+            guard let presenter = Self.topViewController() else {
+                completion(.failure(QRScanError.cameraUnavailable))
+                return
+            }
+            let scanner = QRScannerViewController(completion: completion)
+            scanner.modalPresentationStyle = .fullScreen
+            presenter.present(scanner, animated: true)
+        }
+    }
+
+    private static func topViewController() -> UIViewController? {
+        let root = UIApplication.shared.connectedScenes
+            .compactMap { $0 as? UIWindowScene }
+            .flatMap(\.windows)
+            .first(where: \.isKeyWindow)?.rootViewController
+        var current = root
+        while let presented = current?.presentedViewController {
+            current = presented
+        }
+        if let navigation = current as? UINavigationController {
+            return navigation.visibleViewController
+        }
+        if let tabs = current as? UITabBarController {
+            return tabs.selectedViewController
+        }
+        return current
+    }
+}
+
+private final class QRScannerViewController: UIViewController, AVCaptureMetadataOutputObjectsDelegate {
+    private let session = AVCaptureSession()
+    private let completion: (Result<String, Error>) -> Void
+    private var completed = false
+    private var previewLayer: AVCaptureVideoPreviewLayer?
+
+    init(completion: @escaping (Result<String, Error>) -> Void) {
+        self.completion = completion
+        super.init(nibName: nil, bundle: nil)
+    }
+
+    @available(*, unavailable)
+    required init?(coder: NSCoder) { nil }
+
+    override func viewDidLoad() {
+        super.viewDidLoad()
+        view.backgroundColor = .black
+        configureCapture()
+        configureCancelButton()
+    }
+
+    override func viewDidLayoutSubviews() {
+        super.viewDidLayoutSubviews()
+        previewLayer?.frame = view.bounds
+    }
+
+    override func viewDidAppear(_ animated: Bool) {
+        super.viewDidAppear(animated)
+        guard !completed else { return }
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            self?.session.startRunning()
+        }
+    }
+
+    override func viewWillDisappear(_ animated: Bool) {
+        super.viewWillDisappear(animated)
+        if session.isRunning { session.stopRunning() }
+    }
+
+    private func configureCapture() {
+        guard let device = AVCaptureDevice.default(for: .video),
+              let input = try? AVCaptureDeviceInput(device: device),
+              session.canAddInput(input)
+        else {
+            finish(.failure(QRScanError.cameraUnavailable))
+            return
+        }
+        session.addInput(input)
+
+        let output = AVCaptureMetadataOutput()
+        guard session.canAddOutput(output) else {
+            finish(.failure(QRScanError.cameraUnavailable))
+            return
+        }
+        session.addOutput(output)
+        output.setMetadataObjectsDelegate(self, queue: .main)
+        output.metadataObjectTypes = [.qr]
+
+        let preview = AVCaptureVideoPreviewLayer(session: session)
+        preview.videoGravity = .resizeAspectFill
+        preview.frame = view.bounds
+        view.layer.addSublayer(preview)
+        previewLayer = preview
+    }
+
+    private func configureCancelButton() {
+        let button = UIButton(type: .system)
+        button.setTitle("Cancel", for: .normal)
+        button.setTitleColor(.white, for: .normal)
+        button.backgroundColor = UIColor.black.withAlphaComponent(0.6)
+        button.layer.cornerRadius = 8
+        button.translatesAutoresizingMaskIntoConstraints = false
+        button.addTarget(self, action: #selector(cancel), for: .touchUpInside)
+        view.addSubview(button)
+        NSLayoutConstraint.activate([
+            button.leadingAnchor.constraint(equalTo: view.safeAreaLayoutGuide.leadingAnchor, constant: 20),
+            button.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor, constant: 12),
+            button.widthAnchor.constraint(greaterThanOrEqualToConstant: 80),
+            button.heightAnchor.constraint(equalToConstant: 44),
+        ])
+    }
+
+    @objc private func cancel() { finish(.failure(QRScanError.cancelled)) }
+
+    func metadataOutput(
+        _ output: AVCaptureMetadataOutput,
+        didOutput metadataObjects: [AVMetadataObject],
+        from connection: AVCaptureConnection
+    ) {
+        guard let object = metadataObjects.first as? AVMetadataMachineReadableCodeObject,
+              object.type == .qr,
+              let value = object.stringValue
+        else { return }
+        finish(.success(value))
+    }
+
+    private func finish(_ result: Result<String, Error>) {
+        guard !completed else { return }
+        completed = true
+        if session.isRunning { session.stopRunning() }
+        dismiss(animated: true) { [completion] in completion(result) }
+    }
 }
 
 final class QRScanCoordinator {
@@ -234,9 +396,11 @@ class EvenerNativePlugin: Plugin {
 
     override init() {
         self.keychain = KeychainStore(client: SystemKeychainClient())
-        self.scanCoordinator = nil
+        self.scanCoordinator = QRScanCoordinator(scanner: SystemQRScanner())
         super.init()
     }
+
+    var hasScannerForTesting: Bool { scanCoordinator != nil }
 
     /// Test initializer: inject a fake keychain client and scanner.
     init(keychainClient: KeychainClient, scanner: QRScanning? = nil) {
@@ -323,7 +487,7 @@ class EvenerNativePlugin: Plugin {
     /// compensation.
     @objc public func secureGetCapability(_ invoke: Invoke) throws {
         let args = try invoke.parseArgs(SecureGetArgs.self)
-        let capability = keychain.loadCapability(profileID: args.profileId)
+        let capability = try keychain.loadCapability(profileID: args.profileId)
         invoke.resolve([
             "capability": capability as Any,
         ] as [String: Any])
@@ -331,7 +495,7 @@ class EvenerNativePlugin: Plugin {
 
     @objc public func secureGet(_ invoke: Invoke) throws {
         let args = try invoke.parseArgs(SecureGetArgs.self)
-        let present = keychain.loadCapability(profileID: args.profileId) != nil
+        let present = try keychain.loadCapability(profileID: args.profileId) != nil
         invoke.resolve([
             "version": ContractV1.version,
             "present": present,
@@ -388,19 +552,26 @@ struct SystemKeychainClient: KeychainClient {
     }
 
     func set(_ data: Data, service: String, account: String, accessibility: CFString) throws {
-        var query: [String: Any] = [
+        let query: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: service,
             kSecAttrAccount as String: account,
         ]
-        // Delete existing first (upsert semantics handled by KeychainStore)
-        SecItemDelete(query as CFDictionary)
-
-        query[kSecValueData as String] = data
-        query[kSecAttrAccessible as String] = accessibility
-        let status = SecItemAdd(query as CFDictionary, nil)
-        if status != errSecSuccess {
-            throw KeychainError.unexpectedStatus(status)
+        let update: [String: Any] = [kSecValueData as String: data]
+        let updateStatus = SecItemUpdate(query as CFDictionary, update as CFDictionary)
+        switch updateStatus {
+        case errSecSuccess:
+            return
+        case errSecItemNotFound:
+            var add = query
+            add[kSecValueData as String] = data
+            add[kSecAttrAccessible as String] = accessibility
+            let addStatus = SecItemAdd(add as CFDictionary, nil)
+            if addStatus != errSecSuccess {
+                throw KeychainError.unexpectedStatus(addStatus)
+            }
+        default:
+            throw KeychainError.unexpectedStatus(updateStatus)
         }
     }
 

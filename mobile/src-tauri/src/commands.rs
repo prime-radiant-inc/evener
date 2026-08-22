@@ -13,9 +13,9 @@ use crate::appwire_transport::{AppwireEvent, ConnectionId};
 use crate::diagnostics::DiagnosticEntry;
 use crate::error::ReleaseMode;
 use crate::profile_runtime::{
-    ConfirmPairingRequest, HealthResponse, PreviewPasteRequest, PreviewRepairRequest,
-    PreviewResponse, ProfileRuntime, ProfileSummaryResponse, RemoveRequest, RenameRequest,
-    SelectRequest, SelectResponse,
+    CancelPreviewRequest, ConfirmPairingRequest, HealthResponse, PreviewPasteRequest,
+    PreviewRepairRequest, PreviewResponse, ProfileRuntime, ProfileSummaryResponse, RemoveRequest,
+    RenameRequest, SelectRequest, SelectResponse,
 };
 use crate::transport_state::TransportState;
 
@@ -87,6 +87,26 @@ pub async fn profile_confirm_pairing(
         })
         .await
         .map(ProfileSummaryResponse::from)
+}
+
+#[tauri::command]
+pub async fn profile_preview_cancel(
+    runtime: State<'_, ProfileRuntime>,
+    request: CancelPreviewRequest,
+) -> Result<(), String> {
+    runtime
+        .serialized(|store| {
+            store
+                .cancel_preview(&request.preview_id)
+                .map_err(|e| e.to_string())
+        })
+        .await
+}
+
+#[tauri::command]
+pub async fn profile_previews_clear(runtime: State<'_, ProfileRuntime>) -> Result<(), String> {
+    runtime.serialized(|store| store.clear_previews()).await;
+    Ok(())
 }
 
 #[tauri::command]
@@ -183,27 +203,17 @@ pub async fn hub_http_request(
     transport: State<'_, TransportState>,
     request: HubHttpRequest,
 ) -> Result<HubHttpResponse, String> {
-    // Brief state transition under the lifecycle mutex: look up the active
-    // profile's origin and verify the profile ID matches. The token is
-    // retrieved outside the mutex to avoid holding it across Keychain I/O.
-    let (origin, generation) = runtime
+    // Capture ID, generation, origin, and token as one immutable snapshot
+    // while lifecycle serialization is held. Caller mismatch is rejected
+    // before any network operation begins.
+    let snapshot = runtime
         .serialized(|store| {
-            let profiles = store.list().map_err(|e| e.to_string())?;
-            let profile = profiles
-                .iter()
-                .find(|p| p.id == request.active_profile_id)
-                .ok_or_else(|| "profile not active".to_string())?;
-            let generation = store.generation();
-            Ok::<_, String>((profile.origin.clone(), generation.0))
+            store
+                .active_snapshot(&request.active_profile_id)
+                .map_err(|e| e.to_string())
         })
         .await?;
-
-    // Retrieve the token from the native Keychain adapter (outside the
-    // mutex). The token never crosses to JavaScript.
-    let token = transport
-        .get_token(&request.active_profile_id)
-        .map_err(|e| e.to_string())?
-        .ok_or_else(|| "no capability for active profile".to_owned())?;
+    let (profile_id, generation, origin, token) = snapshot.into_parts();
 
     // Construct a HubHttp with the active profile's origin and token, using
     // the shared client and diagnostics. The network request runs outside
@@ -217,8 +227,8 @@ pub async fn hub_http_request(
                 body: request.body,
                 media_type: request.media_type,
             },
-            Some(&request.active_profile_id),
-            generation,
+            Some(&profile_id),
+            generation.0,
         )
         .await
         .map_err(|e| e.to_string())?;
@@ -271,25 +281,14 @@ pub async fn appwire_open(
     request: AppwireOpenRequest,
     on_event: tauri::ipc::Channel,
 ) -> Result<AppwireOpenResponse, String> {
-    // Brief state transition: look up the profile's origin and verify it
-    // exists. The generation is read for staleness checking.
-    let (origin, _generation) = runtime
+    let snapshot = runtime
         .serialized(|store| {
-            let profiles = store.list().map_err(|e| e.to_string())?;
-            let profile = profiles
-                .iter()
-                .find(|p| p.id == request.profile_id)
-                .ok_or_else(|| "profile not found".to_owned())?;
-            let generation = store.generation();
-            Ok::<_, String>((profile.origin.clone(), generation.0))
+            store
+                .active_snapshot(&request.profile_id)
+                .map_err(|e| e.to_string())
         })
         .await?;
-
-    // Retrieve the token outside the mutex.
-    let token = transport
-        .get_token(&request.profile_id)
-        .map_err(|e| e.to_string())?
-        .ok_or_else(|| "no capability for profile".to_owned())?;
+    let (profile_id, _generation, origin, token) = snapshot.into_parts();
 
     // Build the WebSocket URL from the origin.
     let ws_url = appwire_url(&origin);
@@ -315,7 +314,7 @@ pub async fn appwire_open(
 
     let conn_id = transport
         .appwire()
-        .open(&request.profile_id, ws_url, token, tx)
+        .open(&profile_id, ws_url, token, tx)
         .await
         .map_err(|e| e.to_string())?;
 
