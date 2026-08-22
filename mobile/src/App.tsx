@@ -55,7 +55,7 @@ function FixtureApp({ route }: { readonly route: FixtureRoute }): JSX.Element {
     <ShellHost
       services={fixture.services}
       initialTab={fixture.initialTab}
-      offlineProfileIds={fixture.offlineProfileIds}
+      reachabilitySeed={fixture.reachabilitySeed}
     />
   );
 }
@@ -65,17 +65,20 @@ function ShellHost(props: {
     | ShellServiceBundle
     | ReturnType<typeof createProductionServices>;
   readonly initialTab: RootTab;
-  readonly offlineProfileIds?: readonly string[];
+  readonly reachabilitySeed?: Record<
+    string,
+    import("./state/connection").Reachability
+  >;
 }): JSX.Element {
-  const { services, initialTab, offlineProfileIds } = props;
+  const { services, initialTab, reachabilitySeed } = props;
   const stores = {
     connection: createConnectionStore(services.profile),
     navigation: createNavigationStore(),
     preferences: createPreferencesStore(),
   };
-  if (offlineProfileIds) {
-    for (const id of offlineProfileIds) {
-      stores.connection.getState().setReachability(id, "unreachable");
+  if (reachabilitySeed) {
+    for (const [id, state] of Object.entries(reachabilitySeed)) {
+      stores.connection.getState().setReachability(id, state);
     }
   }
   if (stores.navigation.getState().tab !== initialTab) {

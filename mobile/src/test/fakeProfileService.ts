@@ -103,6 +103,42 @@ export class FakeProfileService implements ProfileService {
     return this.pendingPreview !== null;
   }
 
+  /**
+   * Gated health plumbing. When armed, the next `health()` call blocks until
+   * {@link resolveHealthGate} is called. Lets a test prove that Onboarding
+   * establishes the store generation synchronously at user intent, before
+   * refresh resolves — so a late refresh cannot reverse click order or
+   * launch a preview after unmount cancellation.
+   */
+  private healthGateArmed = false;
+  private pendingHealthResolve: ((value: HealthSnapshot) => void) | null = null;
+
+  /** Arm a gate so the next `health()` call blocks until resolved. */
+  gateHealth(): void {
+    if (this.healthGateArmed) {
+      throw new Error("health gate already armed");
+    }
+    this.healthGateArmed = true;
+  }
+
+  /** Resolve the in-flight gated health call. */
+  resolveHealthGate(): void {
+    const resolve = this.pendingHealthResolve;
+    if (resolve === null) throw new Error("no health gate pending");
+    this.pendingHealthResolve = null;
+    this.healthGateArmed = false;
+    resolve({
+      activeProfileId: this.activeProfileId,
+      profiles: [...this.profiles.values()],
+      generation: this.generation,
+    });
+  }
+
+  /** True if a gated health call is in flight (blocked). */
+  isHealthGatePending(): boolean {
+    return this.pendingHealthResolve !== null;
+  }
+
   private awaitGatedPreview(): Promise<ProfilePreview> {
     return new Promise<ProfilePreview>((resolve, reject) => {
       this.pendingPreview = { resolve, reject };
@@ -217,6 +253,12 @@ export class FakeProfileService implements ProfileService {
 
   async health(): Promise<HealthSnapshot> {
     this.checkFail("health");
+    if (this.healthGateArmed) {
+      this.healthGateArmed = false;
+      return new Promise<HealthSnapshot>((resolve) => {
+        this.pendingHealthResolve = resolve;
+      });
+    }
     return {
       activeProfileId: this.activeProfileId,
       profiles: [...this.profiles.values()],

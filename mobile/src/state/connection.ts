@@ -14,6 +14,12 @@
  *
  * Preview operations carry a generation counter so stale completions from a
  * cancelled or superseded preview cannot replace the latest preview state.
+ * Each preview op atomically claims the generation and clears any visible
+ * prior preview synchronously before any await, then best-effort cancels the
+ * captured ID. After the service/callback returns, if the generation is
+ * stale, the returned previewId is best-effort cancelled exactly once — the
+ * winning result alone publishes. confirmPairing/rePair consume the preview
+ * (clear + increment generation) without cancelling the consumed ID.
  */
 
 import { create } from "zustand";
@@ -103,35 +109,28 @@ function toRaw(input: string | PreviewInput): string {
 
 export function createConnectionStore(service: ProfileService) {
   let previewGen = 0;
-  // The preview ID of the in-flight operation (not yet published). cancelPreview
-  // uses this to cancel a pending preview that hasn't reached the visible state.
-  let inFlightPreviewId: string | null = null;
 
-  // Cancel the visible preview and any in-flight preview with the service
-  // (best-effort), then clear the visible state. Passed `get`/`set` from the
-  // store callback so this closure is not part of the public store surface.
-  async function cancelVisiblePreview(
+  // Atomically claim and clear the visible preview synchronously, before any
+  // await. Returns the captured preview ID (or null) so the caller can
+  // best-effort cancel it. The state is cleared BEFORE the await so the UI
+  // updates synchronously and a concurrent op sees no visible preview.
+  function claimVisiblePreview(
     get: () => ConnectionState,
     set: (partial: Partial<ConnectionState>) => void,
-  ): Promise<void> {
+  ): string | null {
     const preview = get().preview;
-    if (preview !== null) {
-      try {
-        await service.cancelPreview({ previewId: preview.previewId });
-      } catch {
-        // best-effort; preview is transient
-      }
-    }
-    if (inFlightPreviewId !== null) {
-      const id = inFlightPreviewId;
-      inFlightPreviewId = null;
-      try {
-        await service.cancelPreview({ previewId: id });
-      } catch {
-        // best-effort
-      }
-    }
     set({ preview: null });
+    return preview?.previewId ?? null;
+  }
+
+  // Best-effort cancel a preview ID with the service. Never throws.
+  async function bestEffortCancel(previewId: string): Promise<void> {
+    if (previewId === "") return;
+    try {
+      await service.cancelPreview({ previewId });
+    } catch {
+      // best-effort; preview is transient
+    }
   }
 
   return create<ConnectionState>((set, get) => ({
@@ -163,13 +162,20 @@ export function createConnectionStore(service: ProfileService) {
     async previewPaste(input: string | PreviewInput) {
       const gen = ++previewGen;
       set({ previewError: null });
-      await cancelVisiblePreview(get, set);
+      const claimedId = claimVisiblePreview(get, set);
+      if (claimedId !== null) await bestEffortCancel(claimedId);
+      // Re-check generation before invoking the service — a concurrent op or
+      // cancellation may have invalidated this one during the cancel await.
+      if (gen !== previewGen) return;
       try {
         const result: ProfilePreview = await service.previewPaste({
           raw: toRaw(input),
         });
-        if (gen !== previewGen) return; // stale — superseded or cancelled
-        inFlightPreviewId = null;
+        if (gen !== previewGen) {
+          // Stale — best-effort cancel the returned ID exactly once.
+          await bestEffortCancel(result.previewId);
+          return;
+        }
         set({
           preview: {
             previewId: result.previewId,
@@ -178,7 +184,6 @@ export function createConnectionStore(service: ProfileService) {
           },
         });
       } catch (cause) {
-        inFlightPreviewId = null;
         if (gen !== previewGen) return;
         set({ preview: null, previewError: redactError(cause) });
       }
@@ -187,14 +192,18 @@ export function createConnectionStore(service: ProfileService) {
     async previewRepair(input) {
       const gen = ++previewGen;
       set({ previewError: null });
-      await cancelVisiblePreview(get, set);
+      const claimedId = claimVisiblePreview(get, set);
+      if (claimedId !== null) await bestEffortCancel(claimedId);
+      if (gen !== previewGen) return;
       try {
         const result: ProfilePreview = await service.previewRepair({
           profileId: input.profileId,
           raw: input.raw,
         });
-        if (gen !== previewGen) return;
-        inFlightPreviewId = null;
+        if (gen !== previewGen) {
+          await bestEffortCancel(result.previewId);
+          return;
+        }
         set({
           preview: {
             previewId: result.previewId,
@@ -203,7 +212,6 @@ export function createConnectionStore(service: ProfileService) {
           },
         });
       } catch (cause) {
-        inFlightPreviewId = null;
         if (gen !== previewGen) return;
         set({ preview: null, previewError: redactError(cause) });
       }
@@ -212,11 +220,15 @@ export function createConnectionStore(service: ProfileService) {
     async previewScan(scan: () => Promise<ScanPreviewResult>) {
       const gen = ++previewGen;
       set({ previewError: null });
-      await cancelVisiblePreview(get, set);
+      const claimedId = claimVisiblePreview(get, set);
+      if (claimedId !== null) await bestEffortCancel(claimedId);
+      if (gen !== previewGen) return;
       try {
         const result = await scan();
-        if (gen !== previewGen) return; // stale — superseded or cancelled
-        inFlightPreviewId = null;
+        if (gen !== previewGen) {
+          await bestEffortCancel(result.previewId);
+          return;
+        }
         set({
           preview: {
             previewId: result.previewId,
@@ -225,7 +237,6 @@ export function createConnectionStore(service: ProfileService) {
           },
         });
       } catch (cause) {
-        inFlightPreviewId = null;
         if (gen !== previewGen) return;
         set({ preview: null, previewError: redactError(cause) });
       }
@@ -233,7 +244,9 @@ export function createConnectionStore(service: ProfileService) {
 
     async cancelPreview() {
       ++previewGen; // invalidate any in-flight preview
-      await cancelVisiblePreview(get, set);
+      // Clear the visible state synchronously before awaiting the service.
+      const claimedId = claimVisiblePreview(get, set);
+      if (claimedId !== null) await bestEffortCancel(claimedId);
     },
 
     async confirmPairing(previewId, name, allowDuplicateOrigin) {
@@ -246,7 +259,10 @@ export function createConnectionStore(service: ProfileService) {
           name,
           allowDuplicateOrigin,
         });
+        // Consume the preview: increment generation and clear preview/error
+        // WITHOUT calling cancel on the consumed ID (it's been confirmed).
         ++previewGen;
+        set({ preview: null, previewError: null });
         await syncFromService(service, set);
         return profile;
       } catch (cause) {
@@ -264,6 +280,7 @@ export function createConnectionStore(service: ProfileService) {
           allowDuplicateOrigin,
         });
         ++previewGen;
+        set({ preview: null, previewError: null });
         await syncFromService(service, set);
         return profile;
       } catch (cause) {
