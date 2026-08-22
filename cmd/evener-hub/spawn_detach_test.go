@@ -12,6 +12,8 @@ import (
 	"testing"
 	"time"
 
+	"golang.org/x/sys/unix"
+
 	"primeradiant.com/evener/cmd/evener-hub/internal/hubcore"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hubtest"
 )
@@ -70,7 +72,7 @@ exec sleep 30
 // session and controlling terminal — the sid check pins the real invariant.
 func assertOwnSessionLeader(t *testing.T, pid int) {
 	t.Helper()
-	sid, err := syscall.Getsid(pid)
+	sid, err := unix.Getsid(pid)
 	if err != nil {
 		t.Fatalf("Getsid(%d): %v", pid, err)
 	}
