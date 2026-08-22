@@ -237,6 +237,33 @@ describe("Sheet — browser/system Back history semantics", () => {
     });
   });
 
+  it("an unrelated app push truncates the dead Forward branch and tears down the listener", async () => {
+    const onClose = vi.fn();
+    render(
+      <Sheet open onClose={onClose} title="Servers">
+        <p>body</p>
+      </Sheet>,
+    );
+    await browserBack();
+    expect(__sheetHistoryDebug()).toMatchObject({
+      forwardDead: true,
+      listenerInstalled: true,
+    });
+
+    const appState = { route: "/new" };
+    history.pushState(appState, "");
+
+    expect(history.state).toEqual(appState);
+    expect(__sheetHistoryDebug()).toEqual({
+      hasOwner: false,
+      queueLength: 0,
+      pendingBack: false,
+      buriedCount: 0,
+      forwardDead: false,
+      listenerInstalled: false,
+    });
+  });
+
   it("popstate does not double-call onClose", async () => {
     const onClose = vi.fn();
     render(
@@ -562,48 +589,48 @@ describe("Sheet — browser/system Back history semantics", () => {
     expect(history.state).toBeNull();
   });
 
-  it("recovers an unrelated app entry pushed after Back was requested", async () => {
+  it("queues an unrelated app push until the pending Back completes", async () => {
     const onClose = vi.fn();
-    const backSpy = vi.spyOn(history, "back").mockImplementation(() => {});
-    const forwardSpy = vi
-      .spyOn(history, "forward")
-      .mockImplementation(() => {});
+    const backSpy = vi.spyOn(history, "back");
+    const forwardSpy = vi.spyOn(history, "forward");
+    const pushSpy = vi.spyOn(history, "pushState");
     render(
       <Sheet open onClose={onClose} title="Servers">
         <p>body</p>
       </Sheet>,
     );
 
+    pushSpy.mockClear();
+    const traversal = nextPopstate();
     fireEvent.click(screen.getByRole("button", { name: "Done" }));
     expect(backSpy).toHaveBeenCalledTimes(1);
     expect(onClose).not.toHaveBeenCalled();
-    const deadState = history.state;
-    expect((deadState as Record<string, unknown>).__evener_sheet_dead).toBe(
+    expect((history.state as Record<string, unknown>).__evener_sheet_dead).toBe(
       true,
     );
 
     const appEntry = { route: "/new", revision: 8 };
     history.pushState(appEntry, "");
-    // The already-requested Back lands late on our dead entry, popping the new
-    // app entry. The coordinator must reverse that one traversal, not back again.
-    history.replaceState(deadState, "");
-    window.dispatchEvent(new PopStateEvent("popstate", { state: deadState }));
-    expect(forwardSpy).toHaveBeenCalledTimes(1);
-    expect(backSpy).toHaveBeenCalledTimes(1);
-    expect(onClose).not.toHaveBeenCalled();
+    // The write is held at the shared boundary; it cannot become the entry that
+    // the already-requested Back would pop.
+    expect(pushSpy).not.toHaveBeenCalled();
+    expect(history.state).not.toEqual(appEntry);
 
-    // Forward recovery restores the unrelated entry before close completion.
-    history.replaceState(appEntry, "");
-    window.dispatchEvent(new PopStateEvent("popstate", { state: appEntry }));
+    await traversal;
     await settled();
+
+    expect(forwardSpy).not.toHaveBeenCalled();
+    expect(backSpy).toHaveBeenCalledTimes(1);
+    expect(pushSpy).toHaveBeenCalledTimes(1);
     expect(history.state).toEqual(appEntry);
     expect(onClose).toHaveBeenCalledTimes(1);
-    expect(__sheetHistoryDebug()).toMatchObject({
+    expect(__sheetHistoryDebug()).toEqual({
       hasOwner: false,
+      queueLength: 0,
       pendingBack: false,
-      buriedCount: 1,
+      buriedCount: 0,
       forwardDead: false,
-      listenerInstalled: true,
+      listenerInstalled: false,
     });
   });
 
