@@ -3,29 +3,37 @@
  *
  * Behavioral tests use a real fake `EventTarget` standing in for
  * `VisualViewport` (jsdom does not ship one) and assert exact
- * document-element attributes / inline CSS variables, live updates, listener
- * cleanup, preference changes, the no-`visualViewport` fallback, NaN-safe
- * geometry, and restore of pre-existing document state. No sleeps, fixed
- * flushes, or source regex.
+ * document-element attributes / inline CSS declarations (presence, value,
+ * !important priority, and pre-existing style-attribute absence), live
+ * updates, listener cleanup with exact add/remove cardinality, preference
+ * changes, the no-`visualViewport` fallback, an explicit-`null` fallback seam,
+ * negative-offset and Infinity/NaN geometry proofs, the ownership-token
+ * guard, and restore of pre-existing document state. No sleeps, fixed
+ * flushes, or source regex. `EventTarget.dispatchEvent` is synchronous, so
+ * assertions follow dispatch directly.
  */
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { ContentSizeCategory } from "../native/contract";
 import {
   applyPlatformPresentation,
+  computeViewportMetrics,
   createViewportCoordinator,
   type PlatformPresentation,
-  type ViewportCoordinator,
 } from "./platformPresentation";
 
 const ORIGINAL_VP = Object.getOwnPropertyDescriptor(window, "visualViewport");
+const ORIGINAL_INNER_HEIGHT = window.innerHeight;
 
 function resetDocument() {
   const el = document.documentElement;
   el.removeAttribute("data-theme");
   el.removeAttribute("data-content-size");
   el.removeAttribute("data-reduced-motion");
+  el.removeAttribute("data-unrelated");
   el.style.removeProperty("--viewport-height");
   el.style.removeProperty("--keyboard-inset");
+  el.style.removeProperty("--app-custom");
+  el.removeAttribute("style");
 }
 
 function restoreVisualViewport() {
@@ -34,6 +42,11 @@ function restoreVisualViewport() {
   } else {
     Object.defineProperty(window, "visualViewport", ORIGINAL_VP);
   }
+  Object.defineProperty(window, "innerHeight", {
+    configurable: true,
+    value: ORIGINAL_INNER_HEIGHT,
+    writable: true,
+  });
 }
 
 interface FakeVisualViewport extends EventTarget {
@@ -73,10 +86,9 @@ function setVisualViewport(vp: FakeVisualViewport | undefined) {
   }
 }
 
-/** Dispatch the named event on the target, then yield a microtask. */
-async function dispatch(target: EventTarget, type: string): Promise<void> {
+/** Synchronous dispatch — EventTarget.dispatchEvent is sync, no flush needed. */
+function dispatch(target: EventTarget, type: string): void {
   target.dispatchEvent(new Event(type));
-  await Promise.resolve();
 }
 
 const base: PlatformPresentation = {
@@ -87,6 +99,7 @@ const base: PlatformPresentation = {
 
 describe("7C presentation — document-root preferences", () => {
   beforeEach(resetDocument);
+  afterEach(restoreVisualViewport);
 
   it("explicit light theme sets data-theme=light on documentElement", () => {
     const stop = applyPlatformPresentation(
@@ -159,6 +172,7 @@ describe("7C presentation — document-root preferences", () => {
 
 describe("7C presentation — restore pre-existing document state", () => {
   beforeEach(resetDocument);
+  afterEach(restoreVisualViewport);
 
   it("restore returns a pre-existing data-theme attribute", () => {
     document.documentElement.setAttribute("data-theme", "dark");
@@ -245,6 +259,7 @@ describe("7C presentation — restore pre-existing document state", () => {
 
 describe("7C presentation — preference changes update documentElement live", () => {
   beforeEach(resetDocument);
+  afterEach(restoreVisualViewport);
 
   it("theme change is reflected on documentElement", () => {
     const stop = applyPlatformPresentation(
@@ -263,7 +278,118 @@ describe("7C presentation — preference changes update documentElement live", (
 });
 
 // ---------------------------------------------------------------------------
-// VisualViewport coordinator
+// computeViewportMetrics — exact finite-operand formula proofs
+// ---------------------------------------------------------------------------
+
+describe("7C computeViewportMetrics — exact finite-operand formula", () => {
+  it("no viewport: height=innerHeight, inset=0", () => {
+    const m = computeViewportMetrics({ innerHeight: 800 });
+    expect(m).toEqual({ viewportHeight: 800, keyboardInset: 0 });
+  });
+
+  it("inset = max(0, layoutHeight - (offsetTop + height))", () => {
+    const m = computeViewportMetrics({
+      visualViewport: createFakeVisualViewport({ height: 500, offsetTop: 100 }),
+      innerHeight: 800,
+    });
+    // 800 - (100 + 500) = 200
+    expect(m).toEqual({ viewportHeight: 800, keyboardInset: 200 });
+  });
+
+  it("negative final inset clamps to 0 (clamps the final result only)", () => {
+    const m = computeViewportMetrics({
+      visualViewport: createFakeVisualViewport({ height: 900, offsetTop: 100 }),
+      innerHeight: 800,
+    });
+    // 800 - (100 + 900) = -200 -> 0
+    expect(m).toEqual({ viewportHeight: 800, keyboardInset: 0 });
+  });
+
+  it("negative offsetTop is NOT individually clamped: it contributes to the sum", () => {
+    // offsetTop = -50, height = 500 -> sum = 450 -> inset = 800 - 450 = 350.
+    // If offsetTop had been clamped to 0 first, sum would be 500 and inset 300.
+    const m = computeViewportMetrics({
+      visualViewport: createFakeVisualViewport({ height: 500, offsetTop: -50 }),
+      innerHeight: 800,
+    });
+    expect(m.keyboardInset).toBe(350);
+    expect(m.viewportHeight).toBe(800);
+  });
+
+  it("negative height is NOT individually clamped: it contributes to the sum", () => {
+    // height = -100, offsetTop = 50 -> sum = -50 -> inset = 800 - (-50) = 850.
+    // If height had been clamped to 0 first, sum would be 50 and inset 750.
+    const m = computeViewportMetrics({
+      visualViewport: createFakeVisualViewport({ height: -100, offsetTop: 50 }),
+      innerHeight: 800,
+    });
+    expect(m.keyboardInset).toBe(850);
+    expect(m.viewportHeight).toBe(800);
+  });
+
+  it("NaN offsetTop yields a finite nonnegative inset (0)", () => {
+    const m = computeViewportMetrics({
+      visualViewport: createFakeVisualViewport({
+        height: 500,
+        offsetTop: Number.NaN,
+      }),
+      innerHeight: 800,
+    });
+    expect(Number.isFinite(m.keyboardInset)).toBe(true);
+    expect(m.keyboardInset).toBe(0);
+    expect(m.viewportHeight).toBe(800);
+  });
+
+  it("NaN height yields a finite nonnegative inset (0)", () => {
+    const m = computeViewportMetrics({
+      visualViewport: createFakeVisualViewport({
+        height: Number.NaN,
+        offsetTop: 100,
+      }),
+      innerHeight: 800,
+    });
+    expect(Number.isFinite(m.keyboardInset)).toBe(true);
+    expect(m.keyboardInset).toBe(0);
+  });
+
+  it("Infinity offsetTop yields a finite nonnegative inset (0)", () => {
+    const m = computeViewportMetrics({
+      visualViewport: createFakeVisualViewport({
+        height: 500,
+        offsetTop: Number.POSITIVE_INFINITY,
+      }),
+      innerHeight: 800,
+    });
+    expect(Number.isFinite(m.keyboardInset)).toBe(true);
+    expect(m.keyboardInset).toBe(0);
+  });
+
+  it("Infinity height yields a finite nonnegative inset (0)", () => {
+    const m = computeViewportMetrics({
+      visualViewport: createFakeVisualViewport({
+        height: Number.POSITIVE_INFINITY,
+        offsetTop: 100,
+      }),
+      innerHeight: 800,
+    });
+    expect(Number.isFinite(m.keyboardInset)).toBe(true);
+    expect(m.keyboardInset).toBe(0);
+  });
+
+  it("non-finite innerHeight yields finite nonnegative viewportHeight (0)", () => {
+    expect(
+      computeViewportMetrics({ innerHeight: Number.NaN }).viewportHeight,
+    ).toBe(0);
+    expect(
+      computeViewportMetrics({ innerHeight: Number.POSITIVE_INFINITY })
+        .viewportHeight,
+    ).toBe(0);
+    expect(computeViewportMetrics({ innerHeight: -10 }).viewportHeight).toBe(0);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// VisualViewport coordinator — basic values
 // ---------------------------------------------------------------------------
 
 describe("7C coordinator — basic values", () => {
@@ -295,7 +421,7 @@ describe("7C coordinator — basic values", () => {
     coord.stop();
   });
 
-  it("keyboard inset never negative (clamps to 0)", () => {
+  it("keyboard inset never negative (clamps final result to 0)", () => {
     setVisualViewport(
       createFakeVisualViewport({ height: 900, offsetTop: 100 }),
     );
@@ -306,13 +432,29 @@ describe("7C coordinator — basic values", () => {
     ).toBe("0px");
     coord.stop();
   });
+
+  it("viewport height is nonnegative as well as finite", () => {
+    setVisualViewport(createFakeVisualViewport({ height: 768, offsetTop: 0 }));
+    const coord = createViewportCoordinator({ document });
+    coord.start();
+    const vh = Number.parseFloat(
+      document.documentElement.style.getPropertyValue("--viewport-height"),
+    );
+    expect(Number.isFinite(vh)).toBe(true);
+    expect(vh).toBeGreaterThanOrEqual(0);
+    coord.stop();
+  });
 });
+
+// ---------------------------------------------------------------------------
+// Coordinator — live updates (synchronous dispatch, no flush)
+// ---------------------------------------------------------------------------
 
 describe("7C coordinator — live updates", () => {
   beforeEach(resetDocument);
   afterEach(restoreVisualViewport);
 
-  it("updates --keyboard-inset and --viewport-height on visualViewport.resize", async () => {
+  it("updates --keyboard-inset and --viewport-height on visualViewport.resize", () => {
     const vp = createFakeVisualViewport({ height: 768, offsetTop: 0 });
     setVisualViewport(vp);
     const coord = createViewportCoordinator({ document });
@@ -323,7 +465,7 @@ describe("7C coordinator — live updates", () => {
 
     vp.height = 400;
     vp.offsetTop = 0;
-    await dispatch(vp, "resize");
+    dispatch(vp, "resize");
     expect(
       document.documentElement.style.getPropertyValue("--keyboard-inset"),
     ).toBe(`${window.innerHeight - 400}px`);
@@ -333,14 +475,14 @@ describe("7C coordinator — live updates", () => {
     coord.stop();
   });
 
-  it("updates --keyboard-inset on visualViewport.scroll", async () => {
+  it("updates --keyboard-inset on visualViewport.scroll", () => {
     const vp = createFakeVisualViewport({ height: 768, offsetTop: 0 });
     setVisualViewport(vp);
     const coord = createViewportCoordinator({ document });
     coord.start();
     vp.height = 300;
     vp.offsetTop = 50;
-    await dispatch(vp, "scroll");
+    dispatch(vp, "scroll");
     expect(
       document.documentElement.style.getPropertyValue("--keyboard-inset"),
     ).toBe(`${window.innerHeight - (50 + 300)}px`);
@@ -348,11 +490,15 @@ describe("7C coordinator — live updates", () => {
   });
 });
 
-describe("7C coordinator — fallback and cleanup", () => {
+// ---------------------------------------------------------------------------
+// Coordinator — fallback and explicit null seam
+// ---------------------------------------------------------------------------
+
+describe("7C coordinator — fallback and null seam", () => {
   beforeEach(resetDocument);
   afterEach(restoreVisualViewport);
 
-  it("falls back to window.resize when visualViewport is absent", async () => {
+  it("falls back to window.resize when visualViewport is absent", () => {
     setVisualViewport(undefined);
     const coord = createViewportCoordinator({ document });
     coord.start();
@@ -363,25 +509,113 @@ describe("7C coordinator — fallback and cleanup", () => {
       document.documentElement.style.getPropertyValue("--keyboard-inset"),
     ).toBe("0px");
 
-    const prev = window.innerHeight;
     Object.defineProperty(window, "innerHeight", {
       configurable: true,
       value: 600,
       writable: true,
     });
-    await dispatch(window, "resize");
+    dispatch(window, "resize");
     expect(
       document.documentElement.style.getPropertyValue("--viewport-height"),
     ).toBe("600px");
-    Object.defineProperty(window, "innerHeight", {
-      configurable: true,
-      value: prev,
-      writable: true,
-    });
     coord.stop();
   });
 
-  it("removes listeners on stop: no updates after stop()", async () => {
+  it("explicit null forces fallback even when window.visualViewport is present", () => {
+    // window still has a viewport installed.
+    setVisualViewport(
+      createFakeVisualViewport({ height: 400, offsetTop: 100 }),
+    );
+    const coord = createViewportCoordinator({ document, visualViewport: null });
+    coord.start();
+    // Fallback path: inset 0, height = innerHeight (ignores the live viewport).
+    expect(
+      document.documentElement.style.getPropertyValue("--keyboard-inset"),
+    ).toBe("0px");
+    expect(
+      document.documentElement.style.getPropertyValue("--viewport-height"),
+    ).toBe(`${window.innerHeight}px`);
+    coord.stop();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Coordinator — listener cleanup cardinality (exact add/remove proof)
+// ---------------------------------------------------------------------------
+
+describe("7C coordinator — listener cleanup cardinality", () => {
+  beforeEach(resetDocument);
+  afterEach(restoreVisualViewport);
+
+  it("proves resize, scroll, and window-resize listeners are added then removed", () => {
+    // Use explicit fake window + fake viewport (both real EventTargets) so
+    // add/remove counts are deterministic regardless of jsdom's Window
+    // prototype chain. Wrap each target's own add/removeEventListener.
+    const fakeWindow = new EventTarget() as unknown as Window &
+      typeof globalThis & { innerHeight: number };
+    (fakeWindow as { innerHeight: number }).innerHeight = 768;
+    // Cast the bound methods to a generic signature so the wrapper can
+    // forward any (type, listener, options?) tuple without fighting DOM
+    // overloads.
+    type AddFn = (
+      type: string,
+      listener: EventListenerOrEventListenerObject,
+      options?: boolean | AddEventListenerOptions,
+    ) => void;
+    type RemoveFn = (
+      type: string,
+      listener: EventListenerOrEventListenerObject,
+      options?: boolean | EventListenerOptions,
+    ) => void;
+    const winAdd = fakeWindow.addEventListener.bind(
+      fakeWindow,
+    ) as unknown as AddFn;
+    const winRemove = fakeWindow.removeEventListener.bind(
+      fakeWindow,
+    ) as unknown as RemoveFn;
+    const winAdded: Array<{ type: string }> = [];
+    const winRemoved: Array<{ type: string }> = [];
+    fakeWindow.addEventListener = ((type: string, listener, options) => {
+      winAdded.push({ type });
+      winAdd(type, listener, options);
+    }) as AddFn;
+    fakeWindow.removeEventListener = ((type: string, listener, options) => {
+      winRemoved.push({ type });
+      winRemove(type, listener, options);
+    }) as RemoveFn;
+
+    const vp = createFakeVisualViewport({ height: 768, offsetTop: 0 });
+    const vpAdd = vp.addEventListener.bind(vp) as unknown as AddFn;
+    const vpRemove = vp.removeEventListener.bind(vp) as unknown as RemoveFn;
+    const vpAdded: Array<{ type: string }> = [];
+    const vpRemoved: Array<{ type: string }> = [];
+    vp.addEventListener = ((type: string, listener, options) => {
+      vpAdded.push({ type });
+      vpAdd(type, listener, options);
+    }) as AddFn;
+    vp.removeEventListener = ((type: string, listener, options) => {
+      vpRemoved.push({ type });
+      vpRemove(type, listener, options);
+    }) as RemoveFn;
+
+    const coord = createViewportCoordinator({
+      document,
+      visualViewport: vp,
+      window: fakeWindow,
+    });
+    coord.start();
+    // Three listeners: vp.resize, vp.scroll, window.resize.
+    expect(vpAdded.map((a) => a.type).sort()).toEqual(["resize", "scroll"]);
+    expect(winAdded.map((a) => a.type)).toEqual(["resize"]);
+    expect(vpAdded.length + winAdded.length).toBe(3);
+    coord.stop();
+    // All three removed.
+    expect(vpRemoved.map((a) => a.type).sort()).toEqual(["resize", "scroll"]);
+    expect(winRemoved.map((a) => a.type)).toEqual(["resize"]);
+    expect(vpRemoved.length + winRemoved.length).toBe(3);
+  });
+
+  it("removes listeners on stop: no updates after stop()", () => {
     const vp = createFakeVisualViewport({ height: 768, offsetTop: 0 });
     setVisualViewport(vp);
     const coord = createViewportCoordinator({ document });
@@ -390,7 +624,7 @@ describe("7C coordinator — fallback and cleanup", () => {
     document.documentElement.style.setProperty("--keyboard-inset", "0px");
     vp.height = 300;
     vp.offsetTop = 0;
-    await dispatch(vp, "resize");
+    dispatch(vp, "resize");
     expect(
       document.documentElement.style.getPropertyValue("--keyboard-inset"),
     ).toBe("0px");
@@ -417,12 +651,20 @@ describe("7C coordinator — fallback and cleanup", () => {
   });
 });
 
-describe("7C coordinator — restores pre-existing viewport CSS variables", () => {
+// ---------------------------------------------------------------------------
+// Coordinator — restore of pre-existing inline CSS declarations
+// ---------------------------------------------------------------------------
+
+describe("7C coordinator — restores pre-existing viewport CSS declarations", () => {
   beforeEach(resetDocument);
   afterEach(restoreVisualViewport);
 
-  it("stop() restores prior --viewport-height and --keyboard-inset values", () => {
-    document.documentElement.style.setProperty("--viewport-height", "100dvh");
+  it("stop() restores prior --viewport-height and --keyboard-inset values and priority", () => {
+    document.documentElement.style.setProperty(
+      "--viewport-height",
+      "100dvh",
+      "important",
+    );
     document.documentElement.style.setProperty(
       "--keyboard-inset",
       "env(keyboard-inset-height, 0px)",
@@ -438,10 +680,108 @@ describe("7C coordinator — restores pre-existing viewport CSS variables", () =
       document.documentElement.style.getPropertyValue("--viewport-height"),
     ).toBe("100dvh");
     expect(
+      document.documentElement.style.getPropertyPriority("--viewport-height"),
+    ).toBe("important");
+    expect(
       document.documentElement.style.getPropertyValue("--keyboard-inset"),
     ).toBe("env(keyboard-inset-height, 0px)");
   });
+
+  it("stop() removes managed declarations that did not pre-exist (no leftover)", () => {
+    // No pre-existing declarations; style attribute absent.
+    expect(document.documentElement.hasAttribute("style")).toBe(false);
+    setVisualViewport(createFakeVisualViewport({ height: 768, offsetTop: 0 }));
+    const coord = createViewportCoordinator({ document });
+    coord.start();
+    expect(document.documentElement.hasAttribute("style")).toBe(true);
+    coord.stop();
+    expect(
+      document.documentElement.style.getPropertyValue("--viewport-height"),
+    ).toBe("");
+    expect(
+      document.documentElement.style.getPropertyValue("--keyboard-inset"),
+    ).toBe("");
+    // The empty style attribute is dropped (no artifact left behind).
+    expect(document.documentElement.hasAttribute("style")).toBe(false);
+  });
+
+  it("stop() from no inline vars removes declarations, not an empty inline style", () => {
+    setVisualViewport(createFakeVisualViewport({ height: 768, offsetTop: 0 }));
+    const coord = createViewportCoordinator({ document });
+    coord.start();
+    coord.stop();
+    // cssText empty AND style attribute absent.
+    expect(document.documentElement.style.cssText).toBe("");
+    expect(document.documentElement.hasAttribute("style")).toBe(false);
+  });
+
+  it("stop() does not delete unrelated inline styles added later", () => {
+    document.documentElement.style.setProperty("--keep", "5px");
+    setVisualViewport(createFakeVisualViewport({ height: 768, offsetTop: 0 }));
+    const coord = createViewportCoordinator({ document });
+    coord.start();
+    coord.stop();
+    expect(document.documentElement.style.getPropertyValue("--keep")).toBe(
+      "5px",
+    );
+    // The style attribute is retained because unrelated declarations remain.
+    expect(document.documentElement.hasAttribute("style")).toBe(true);
+  });
+
+  it("stop() preserves a pre-existing empty style attribute", () => {
+    document.documentElement.setAttribute("style", "");
+    expect(document.documentElement.hasAttribute("style")).toBe(true);
+    setVisualViewport(createFakeVisualViewport({ height: 768, offsetTop: 0 }));
+    const coord = createViewportCoordinator({ document });
+    coord.start();
+    coord.stop();
+    // The pre-existing empty style attribute was present, so it is kept.
+    expect(document.documentElement.hasAttribute("style")).toBe(true);
+  });
 });
 
-// Keep type imports referenced for tsc.
-void (undefined as unknown as ViewportCoordinator);
+// ---------------------------------------------------------------------------
+// Coordinator — ownership token guard
+// ---------------------------------------------------------------------------
+
+describe("7C coordinator — ownership token guard", () => {
+  beforeEach(resetDocument);
+  afterEach(restoreVisualViewport);
+
+  it("a stale owner's stop does not clobber a newer owner's declarations", () => {
+    setVisualViewport(createFakeVisualViewport({ height: 768, offsetTop: 0 }));
+    // First coordinator starts and owns the document; its snapshot is empty.
+    const first = createViewportCoordinator({ document });
+    first.start();
+    // Second coordinator starts and becomes the new owner; its snapshot
+    // captures the first owner's written values (0px / innerHeight px).
+    const second = createViewportCoordinator({ document });
+    second.start();
+    expect(
+      document.documentElement.style.getPropertyValue("--keyboard-inset"),
+    ).toBe("0px");
+    // Make the second owner write a nonzero inset.
+    const vp = (window as unknown as { visualViewport: FakeVisualViewport })
+      .visualViewport;
+    vp.height = 300;
+    vp.offsetTop = 0;
+    vp.dispatchEvent(new Event("resize"));
+    expect(
+      document.documentElement.style.getPropertyValue("--keyboard-inset"),
+    ).toBe(`${window.innerHeight - 300}px`);
+    // The first (stale) owner stopping must NOT restore/clobber the newer
+    // owner's live values.
+    first.stop();
+    expect(
+      document.documentElement.style.getPropertyValue("--keyboard-inset"),
+    ).toBe(`${window.innerHeight - 300}px`);
+    // The current owner stopping restores to ITS snapshot (first owner's 0px).
+    second.stop();
+    expect(
+      document.documentElement.style.getPropertyValue("--keyboard-inset"),
+    ).toBe("0px");
+    expect(
+      document.documentElement.style.getPropertyValue("--viewport-height"),
+    ).toBe(`${window.innerHeight}px`);
+  });
+});
