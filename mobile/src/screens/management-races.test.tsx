@@ -555,7 +555,9 @@ describe("Honest reachability — explicit fixture seeds", () => {
     render(<App fixtureRoute="sessions" />);
     await screen.findByText(/not checked/i);
     fireEvent.click(
-      await screen.findByRole("button", { name: /laptop active server/i }),
+      await screen.findByRole("button", {
+        name: /laptop.*active server.*not checked/i,
+      }),
     );
     await screen.findByRole("dialog", { name: /servers/i });
     expect(screen.getByText(/reconnecting/i)).toBeInTheDocument();
