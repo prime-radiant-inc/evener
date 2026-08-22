@@ -13,7 +13,7 @@ import { createFixture, type FixtureRoute, isFixtureRoute } from "./fixture";
 import { createProductionServices } from "./screens/production-services";
 import { RootShell } from "./screens/RootShell";
 import type { ShellServiceBundle } from "./screens/root-types";
-import { createConnectionStore } from "./state/connection";
+import { createConnectionStore, type Reachability } from "./state/connection";
 import { createNavigationStore, type RootTab } from "./state/navigation";
 import { createPreferencesStore } from "./state/preferences";
 
@@ -65,10 +65,7 @@ function ShellHost(props: {
     | ShellServiceBundle
     | ReturnType<typeof createProductionServices>;
   readonly initialTab: RootTab;
-  readonly reachabilitySeed?: Record<
-    string,
-    import("./state/connection").Reachability
-  >;
+  readonly reachabilitySeed?: Record<string, Reachability>;
 }): JSX.Element {
   const { services, initialTab, reachabilitySeed } = props;
   const stores = {
