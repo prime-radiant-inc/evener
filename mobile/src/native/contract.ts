@@ -259,6 +259,18 @@ function assertErrorObject(obj: Record<string, unknown>, field: string): void {
       throw new Error(`Field "${f}" in ${field} must be a string`);
     }
   }
+  const kind = (err as Record<string, unknown>).kind;
+  const validKinds: readonly string[] = [
+    "pairing_unavailable",
+    "internal",
+    "secure_store",
+    "scanner",
+    "permission_denied",
+    "unsupported",
+  ];
+  if (typeof kind === "string" && !validKinds.includes(kind)) {
+    throw new Error(`Unknown error kind: ${kind}`);
+  }
 }
 
 // ---------------------------------------------------------------------------
