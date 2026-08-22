@@ -20,10 +20,10 @@ describe("App", () => {
   it("fixture=onboarding shows the connect flow", async () => {
     render(<App fixtureRoute="onboarding" />);
     expect(
-      await screen.findByRole("button", { name: /scan qr/i }),
+      await screen.findByRole("button", { name: /scan qr code/i }),
     ).toBeInTheDocument();
     expect(
-      await screen.findByRole("button", { name: /paste/i }),
+      await screen.findByRole("button", { name: /connect/i }),
     ).toBeInTheDocument();
   });
 

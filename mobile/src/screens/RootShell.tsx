@@ -174,6 +174,7 @@ export function RootShell({ services, stores }: RootShellProps): JSX.Element {
       >
         <ServerSwitcherSheet
           connection={connection}
+          navigation={navigation}
           onSwitch={() => setSwitcherOpen(false)}
           onAdd={() => {
             setSwitcherOpen(false);

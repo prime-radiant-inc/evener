@@ -1,11 +1,13 @@
 /**
  * Server switcher sheet — lists multiple redacted profiles with reachability
- * state and actions to switch, add, edit (rename), re-pair, or remove.
+ * state. Tapping a row opens a profile detail view with actions to switch,
+ * edit (rename), re-pair, or remove.
  *
- * Switching clears server-scoped placeholder state and closes the sheet.
- * Removing the active profile requires confirmation and falls back to the next
- * saved profile or returns to onboarding. Server identity is always name +
- * full origin (including scheme) + status — never a credential.
+ * Switching clears server-scoped placeholder state, clears the conversation
+ * stack, and closes the sheet. Removing the active profile requires
+ * confirmation and falls back to the next saved profile or returns to
+ * onboarding. Server identity is always name + full origin (including scheme)
+ * + status — never a credential.
  *
  * Re-pair uses `previewRepair` → origin confirmation → `confirmPairing` for the
  * same profile, preserving the old profile on failure. Rename preserves the
@@ -16,19 +18,21 @@ import type { ProfileRedacted } from "../services/nativeProfiles";
 import { Button } from "../ui/Button";
 import { Input } from "../ui/Input";
 import { type StatusKind, StatusMark } from "../ui/StatusMark";
-import type { ConnectionStore } from "./root-types";
+import type { ConnectionStore, NavigationStore } from "./root-types";
 
 export interface ServerSwitcherSheetProps {
   readonly connection: ConnectionStore;
+  readonly navigation?: NavigationStore;
   readonly onSwitch: () => void;
   readonly onAdd: () => void;
   readonly onClose: () => void;
 }
 
-type RowMode = "view" | "rename" | "repair" | "confirm-remove";
+type RowMode = "view" | "detail" | "rename" | "repair" | "confirm-remove";
 
 export function ServerSwitcherSheet({
   connection,
+  navigation,
   onSwitch,
   onAdd,
   onClose,
@@ -44,15 +48,27 @@ export function ServerSwitcherSheet({
   const [repairUrl, setRepairUrl] = useState("");
   const [repairError, setRepairError] = useState<string | null>(null);
   const [pendingRepair, setPendingRepair] = useState(false);
+  const [switchError, setSwitchError] = useState<string | null>(null);
 
   const handleSwitch = async (id: string) => {
-    await connection.getState().switchTo(id);
-    onSwitch();
-    onClose();
+    setSwitchError(null);
+    try {
+      await connection.getState().switchTo(id);
+      // Clear actual navigation/conversation state on switch.
+      navigation?.getState().clearConversations();
+      onSwitch();
+      onClose();
+    } catch {
+      setSwitchError("switch failed — try again");
+    }
   };
 
   const handleRemove = async (id: string) => {
-    await connection.getState().remove(id);
+    try {
+      await connection.getState().remove(id);
+    } catch {
+      // keep state, show inline error in detail
+    }
     setMode(null);
     onClose();
   };
@@ -63,7 +79,7 @@ export function ServerSwitcherSheet({
     setRenameError(null);
     try {
       await connection.getState().rename(id, name);
-      setMode(null);
+      setMode({ id, mode: "detail" });
       setEditName("");
     } catch {
       setRenameError("server name must be unique");
@@ -72,7 +88,7 @@ export function ServerSwitcherSheet({
 
   const handleRepairPreview = async (id: string) => {
     const raw = repairUrl;
-    setRepairUrl(""); // clear transient input immediately
+    setRepairUrl("");
     setRepairError(null);
     setPendingRepair(true);
     try {
@@ -88,13 +104,13 @@ export function ServerSwitcherSheet({
     if (preview === null) return;
     setRepairError(null);
     setPendingRepair(true);
+    const existing = profiles.find((p) => p.id === id);
+    const repairName = editName.trim() || existing?.name || "";
     try {
-      const repairName =
-        editName.trim() || (profiles.find((p) => p.id === id)?.name ?? "");
       await connection
         .getState()
         .rePair(id, preview.previewId, repairName, false);
-      setMode(null);
+      setMode({ id, mode: "detail" });
       setRepairUrl("");
       setEditName("");
     } catch {
@@ -109,7 +125,6 @@ export function ServerSwitcherSheet({
     if (r === "reachable") return "reachable";
     if (r === "reconnecting") return "reconnecting";
     if (r === "unreachable") return "offline";
-    // Unknown — show a neutral loading/unknown state, not fabricated Connected.
     return "reconnecting";
   };
 
@@ -146,7 +161,7 @@ export function ServerSwitcherSheet({
                     <Button
                       variant="tertiary"
                       onClick={() => {
-                        setMode(null);
+                        setMode({ id: p.id, mode: "detail" });
                         setEditName("");
                         setRenameError(null);
                       }}
@@ -190,7 +205,7 @@ export function ServerSwitcherSheet({
                         <Button
                           variant="tertiary"
                           onClick={() => {
-                            setMode(null);
+                            setMode({ id: p.id, mode: "detail" });
                             void connection.getState().cancelPreview();
                             setRepairUrl("");
                             setRepairError(null);
@@ -225,7 +240,7 @@ export function ServerSwitcherSheet({
                         <Button
                           variant="tertiary"
                           onClick={() => {
-                            setMode(null);
+                            setMode({ id: p.id, mode: "detail" });
                             setRepairUrl("");
                             setRepairError(null);
                           }}
@@ -258,13 +273,90 @@ export function ServerSwitcherSheet({
                     >
                       Confirm Remove
                     </Button>
-                    <Button variant="tertiary" onClick={() => setMode(null)}>
+                    <Button
+                      variant="tertiary"
+                      onClick={() => setMode({ id: p.id, mode: "detail" })}
+                    >
                       Cancel
                     </Button>
                   </div>
                 </div>
+              ) : rowMode === "detail" ? (
+                <div className="evener-form-row">
+                  <div
+                    style={{
+                      display: "flex",
+                      alignItems: "center",
+                      gap: "8px",
+                    }}
+                  >
+                    <span className="evener-list-row__title">
+                      {p.name}
+                      {isActive ? " (active)" : ""}
+                    </span>
+                    <StatusMark status={statusFor(p.id)} />
+                  </div>
+                  <span className="evener-list-row__subtitle">{p.origin}</span>
+                  {switchError !== null ? (
+                    <p role="alert">{switchError}</p>
+                  ) : null}
+                  <div
+                    style={{
+                      display: "flex",
+                      flexDirection: "column",
+                      gap: "8px",
+                    }}
+                  >
+                    {!isActive ? (
+                      <Button
+                        variant="primary"
+                        onClick={() => handleSwitch(p.id)}
+                      >
+                        Use This Server
+                      </Button>
+                    ) : null}
+                    <Button
+                      variant="secondary"
+                      onClick={() => {
+                        setMode({ id: p.id, mode: "rename" });
+                        setEditName(p.name);
+                        setRenameError(null);
+                      }}
+                    >
+                      Rename
+                    </Button>
+                    <Button
+                      variant="secondary"
+                      onClick={() => {
+                        setMode({ id: p.id, mode: "repair" });
+                        setEditName(p.name);
+                        setRepairUrl("");
+                        setRepairError(null);
+                        void connection.getState().cancelPreview();
+                      }}
+                    >
+                      Re-pair
+                    </Button>
+                    <Button
+                      variant="danger"
+                      onClick={() =>
+                        setMode({ id: p.id, mode: "confirm-remove" })
+                      }
+                    >
+                      Remove
+                    </Button>
+                    <Button variant="tertiary" onClick={() => setMode(null)}>
+                      Back
+                    </Button>
+                  </div>
+                </div>
               ) : (
-                <div className="evener-list-row" style={{ cursor: "default" }}>
+                <button
+                  type="button"
+                  className="evener-list-row"
+                  aria-label={`${p.name} ${p.origin}`}
+                  onClick={() => setMode({ id: p.id, mode: "detail" })}
+                >
                   <span className="evener-list-row__main">
                     <span className="evener-list-row__title">
                       {p.name}
@@ -275,49 +367,13 @@ export function ServerSwitcherSheet({
                     </span>
                   </span>
                   <StatusMark status={statusFor(p.id)} />
-                  {!isActive ? (
-                    <Button
-                      variant="secondary"
-                      aria-label={`switch ${p.name}`}
-                      onClick={() => handleSwitch(p.id)}
-                    >
-                      Use
-                    </Button>
-                  ) : null}
-                  <Button
-                    variant="tertiary"
-                    aria-label={`edit ${p.name}`}
-                    onClick={() => {
-                      setMode({ id: p.id, mode: "rename" });
-                      setEditName(p.name);
-                      setRenameError(null);
-                    }}
+                  <span
+                    aria-hidden="true"
+                    style={{ color: "var(--secondary)" }}
                   >
-                    Edit
-                  </Button>
-                  <Button
-                    variant="tertiary"
-                    aria-label={`re-pair ${p.name}`}
-                    onClick={() => {
-                      setMode({ id: p.id, mode: "repair" });
-                      setEditName(p.name);
-                      setRepairUrl("");
-                      setRepairError(null);
-                      void connection.getState().cancelPreview();
-                    }}
-                  >
-                    Re-pair
-                  </Button>
-                  <Button
-                    variant="tertiary"
-                    aria-label={`remove ${p.name}`}
-                    onClick={() =>
-                      setMode({ id: p.id, mode: "confirm-remove" })
-                    }
-                  >
-                    Remove
-                  </Button>
-                </div>
+                    ›
+                  </span>
+                </button>
               )}
             </div>
           );

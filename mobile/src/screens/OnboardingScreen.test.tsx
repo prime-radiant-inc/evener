@@ -29,14 +29,16 @@ describe("OnboardingScreen — identity and actions", () => {
     render(<OnboardingScreen services={services} />);
     expect(screen.getByRole("heading", { name: /evener/i })).toBeVisible();
     // Copy explains private-network HTTP warning.
-    expect(screen.getByText(/private network/i)).toBeInTheDocument();
+    expect(
+      screen.getByText(/local network|trusted.*network/i),
+    ).toBeInTheDocument();
   });
 
   it("Scan QR is the primary action and Paste URL is secondary", () => {
     const services = createOnboardingServices();
     render(<OnboardingScreen services={services} />);
-    const scan = screen.getByRole("button", { name: /scan qr/i });
-    const paste = screen.getByRole("button", { name: /paste/i });
+    const scan = screen.getByRole("button", { name: /scan qr code/i });
+    const paste = screen.getByRole("button", { name: /connect/i });
     // Primary scan has a higher visual prominence class than paste (secondary).
     expect(scan.className).toMatch(/primary/i);
     expect(paste.className).toMatch(/secondary|tertiary/i);
@@ -50,11 +52,11 @@ describe("OnboardingScreen — paste flow redaction", () => {
     const services = createOnboardingServices();
     render(<OnboardingScreen services={services} />);
     const input = screen.getByLabelText(
-      /authorization url|paste/i,
+      /authorization url/i,
     ) as HTMLInputElement;
     fireEvent.change(input, { target: { value: SAMPLE_AUTH_URL_HTTPS } });
     const pasteButton = screen.getByRole("button", {
-      name: /paste|preview|next/i,
+      name: /connect|preview|next/i,
     });
     fireEvent.click(pasteButton);
     // Input cleared synchronously after the click dispatch.
@@ -64,10 +66,10 @@ describe("OnboardingScreen — paste flow redaction", () => {
   it("never shows the token or query in the DOM after paste", async () => {
     const services = createOnboardingServices();
     const { container } = render(<OnboardingScreen services={services} />);
-    const input = screen.getByLabelText(/authorization url|paste/i);
+    const input = screen.getByLabelText(/authorization url/i);
     fireEvent.change(input, { target: { value: SAMPLE_AUTH_URL_HTTPS } });
     fireEvent.click(
-      screen.getByRole("button", { name: /paste|preview|next/i }),
+      screen.getByRole("button", { name: /connect|preview|next/i }),
     );
     expect(container.textContent).not.toContain(SECRET_TOKEN);
     expect(container.textContent).not.toContain("token=");
@@ -76,10 +78,10 @@ describe("OnboardingScreen — paste flow redaction", () => {
   it("shows the confirmed origin (scheme/host/port) before save, never the token", async () => {
     const services = createOnboardingServices();
     render(<OnboardingScreen services={services} />);
-    const input = screen.getByLabelText(/authorization url|paste/i);
+    const input = screen.getByLabelText(/authorization url/i);
     fireEvent.change(input, { target: { value: SAMPLE_AUTH_URL_HTTPS } });
     fireEvent.click(
-      screen.getByRole("button", { name: /paste|preview|next/i }),
+      screen.getByRole("button", { name: /connect|preview|next/i }),
     );
     // After preview, the redacted origin appears for confirmation.
     const originText = await screen.findByText(/hub\.example\.com:8443/i);
@@ -95,10 +97,10 @@ describe("OnboardingScreen — name and origin confirmation", () => {
     services: ReturnType<typeof createOnboardingServices>,
   ) {
     render(<OnboardingScreen services={services} />);
-    const input = screen.getByLabelText(/authorization url|paste/i);
+    const input = screen.getByLabelText(/authorization url/i);
     fireEvent.change(input, { target: { value: SAMPLE_AUTH_URL_HTTPS } });
     fireEvent.click(
-      screen.getByRole("button", { name: /paste|preview|next/i }),
+      screen.getByRole("button", { name: /connect|preview|next/i }),
     );
     await screen.findByText(/hub\.example\.com:8443/i);
   }
@@ -112,7 +114,7 @@ describe("OnboardingScreen — name and origin confirmation", () => {
     await pasteAndPreview(services);
     const nameInput = screen.getByLabelText(/server name/i) as HTMLInputElement;
     // Empty name => save disabled.
-    const save = screen.getByRole("button", { name: /^save|add|connect/i });
+    const save = screen.getByRole("button", { name: /^connect|add|save/i });
     expect(
       save.hasAttribute("disabled") ||
         save.getAttribute("aria-disabled") === "true",
@@ -152,7 +154,7 @@ describe("OnboardingScreen — name and origin confirmation", () => {
       name: /confirm|second.*credential|duplicate/i,
     });
     expect(consent).not.toBeChecked();
-    const save = screen.getByRole("button", { name: /^save|add|connect/i });
+    const save = screen.getByRole("button", { name: /^connect|add|save/i });
     // Save blocked until consent checked.
     expect(save.hasAttribute("disabled")).toBe(true);
     fireEvent.click(consent);
@@ -165,15 +167,15 @@ describe("OnboardingScreen — success navigation", () => {
     const services = createOnboardingServices();
     const onConnected = vi.fn();
     render(<OnboardingScreen services={services} onConnected={onConnected} />);
-    const input = screen.getByLabelText(/authorization url|paste/i);
+    const input = screen.getByLabelText(/authorization url/i);
     fireEvent.change(input, { target: { value: SAMPLE_AUTH_URL_HTTPS } });
     fireEvent.click(
-      screen.getByRole("button", { name: /paste|preview|next/i }),
+      screen.getByRole("button", { name: /connect|preview|next/i }),
     );
     await screen.findByText(/hub\.example\.com:8443/i);
     const nameInput = screen.getByLabelText(/server name/i);
     fireEvent.change(nameInput, { target: { value: "my hub" } });
-    fireEvent.click(screen.getByRole("button", { name: /^save|add|connect/i }));
+    fireEvent.click(screen.getByRole("button", { name: /^connect|add|save/i }));
     // haptic success was invoked
     await vi.waitFor(() =>
       expect(services.hapticCalls).toContain("notificationSuccess"),
@@ -187,10 +189,10 @@ describe("OnboardingScreen — error redaction", () => {
   it("preview error never echoes token or query text", async () => {
     const services = createOnboardingServices({ failPreview: true });
     const { container } = render(<OnboardingScreen services={services} />);
-    const input = screen.getByLabelText(/authorization url|paste/i);
+    const input = screen.getByLabelText(/authorization url/i);
     fireEvent.change(input, { target: { value: SAMPLE_AUTH_URL_HTTPS } });
     fireEvent.click(
-      screen.getByRole("button", { name: /paste|preview|next/i }),
+      screen.getByRole("button", { name: /connect|preview|next/i }),
     );
     await screen.findByText(/failed|error|unable/i);
     expect(container.textContent).not.toContain(SECRET_TOKEN);
@@ -199,16 +201,16 @@ describe("OnboardingScreen — error redaction", () => {
   it("confirm error never echoes token or query text", async () => {
     const services = createOnboardingServices({ failConfirm: true });
     const { container } = render(<OnboardingScreen services={services} />);
-    const input = screen.getByLabelText(/authorization url|paste/i);
+    const input = screen.getByLabelText(/authorization url/i);
     fireEvent.change(input, { target: { value: SAMPLE_AUTH_URL_HTTPS } });
     fireEvent.click(
-      screen.getByRole("button", { name: /paste|preview|next/i }),
+      screen.getByRole("button", { name: /connect|preview|next/i }),
     );
     await screen.findByText(/hub\.example\.com:8443/i);
     fireEvent.change(screen.getByLabelText(/server name/i), {
       target: { value: "my hub" },
     });
-    fireEvent.click(screen.getByRole("button", { name: /^save|add|connect/i }));
+    fireEvent.click(screen.getByRole("button", { name: /^connect|add|save/i }));
     await screen.findByText(/failed|error|unable/i);
     expect(container.textContent).not.toContain(SECRET_TOKEN);
   });
@@ -218,11 +220,13 @@ describe("OnboardingScreen — private-network warning", () => {
   it("shows a private-network warning for an HTTP origin", async () => {
     const services = createOnboardingServices();
     render(<OnboardingScreen services={services} />);
-    const input = screen.getByLabelText(/authorization url|paste/i);
+    const input = screen.getByLabelText(/authorization url/i);
     fireEvent.change(input, { target: { value: SAMPLE_AUTH_URL_HTTP } });
     fireEvent.click(
-      screen.getByRole("button", { name: /paste|preview|next/i }),
+      screen.getByRole("button", { name: /connect|preview|next/i }),
     );
+    // Wait for the confirm view to appear with the origin.
+    await screen.findByText(/192\.168\.1\.10:8080/i);
     expect(
       await screen.findByText(
         /private network|trusted.*network|http.*not.*secure/i,
