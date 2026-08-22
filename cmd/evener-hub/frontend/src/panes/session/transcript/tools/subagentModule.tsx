@@ -1,14 +1,9 @@
 // The delegate descriptor and its Rail × Quote card. Each delegate tool call
-// renders exactly one card in its own ToolCallItem body; shared store state is
-// limited to that row's reactive lifecycle data.
-//
-// Scope decision: only `delegate` (the spawn) and the three follow-up
-// calls above ever touch a row. job_list/job_watch do not - they're
-// orientation calls over MANY jobs at once, not a check-in on one
-// specific child, and correlating an arbitrary listing back to individual
-// rows would need far more inference than the wire actually supports.
+// renders exactly one card in its own ToolCallItem body. Only the `delegate`
+// spawn materializes a frozen pre-hydration row in the shared store; once the
+// owning stable delegate projection exists, it supplies the hydrated state.
 import { useEffect } from "react";
-import { type ItemModel, SYSTEM_PRELUDE_TURN_ID, type TurnModel } from "../../../../protocol/model";
+import { type ItemModel, SYSTEM_PRELUDE_TURN_ID } from "../../../../protocol/model";
 import type { EvenerDelegateInfo } from "../../../../protocol/types.gen";
 import { threadsStore, useThreadsStore } from "../../../../stores/threads";
 import { Chevron, IconButton } from "../../../../widgets";
@@ -27,7 +22,6 @@ import {
   resolveRowKey,
   type SubagentRow,
   type SubagentRowKind,
-  setWatchedLiveKind,
   turnScopeKey,
   useSubagentRow,
 } from "./subagentModuleStore";
@@ -62,16 +56,6 @@ const CLASS = {
 
 // Keep stable projections and frozen tool output on the same classification.
 export { classifyJobStatus, resolveRowKey } from "./subagentModuleStore";
-
-// notLoaded means the child left the live roster; cadence intentionally folds
-// it into idle, so preserve that distinction before mapping cadence states.
-export function rowKindFromChildStatus(type: string): SubagentRowKind {
-  if (type === "notLoaded") return "unknown";
-  const state = cadenceStateForStatus(type);
-  if (state === "failed") return "failed";
-  if (state === "ended") return "done";
-  return "running";
-}
 
 const KNOWN_JOB_STATUSES = ["completed", "failed", "cancelled", "stopped", "exhausted", "running"] as const;
 
@@ -130,39 +114,22 @@ function deriveQuotes(items: ItemModel[]): Quote[] {
   return out;
 }
 
-// Fallback run window for historical children without a stable projection.
-function childRunWindow(turns: TurnModel[]): { startMs?: number; endMs?: number } | undefined {
-  let startMs: number | undefined;
-  let endMs: number | undefined;
-  for (const t of turns) {
-    const s = Date.parse(t.startedAt ?? "");
-    if (!Number.isNaN(s)) startMs = startMs === undefined ? s : Math.min(startMs, s);
-    const e = Date.parse(t.completedAt ?? "");
-    if (!Number.isNaN(e)) endMs = endMs === undefined ? e : Math.max(endMs, e);
-  }
-  if (startMs === undefined && endMs === undefined) return undefined;
-  return { startMs, endMs };
-}
-
-// Prefer the child's stable run window, then its transcript, then the spawn
-// item. Only running rows consume the shared `now` value.
+// The stable projection owns timing after hydration. Frozen tool output is the
+// pre-hydration fallback. Only running rows consume the shared `now` value.
 function cardClock(
   row: SubagentRow,
   stable: EvenerDelegateInfo | undefined,
   displayKind: SubagentRowKind,
   nowMs: number,
-  childWindow?: { startMs?: number; endMs?: number },
 ): string | undefined {
   let startMs: number | undefined;
   let endMs: number | undefined;
-  const stableStart = Date.parse(stable?.runStartedAt ?? "");
-  if (!Number.isNaN(stableStart)) {
+  if (stable !== undefined) {
+    const stableStart = Date.parse(stable.runStartedAt ?? "");
+    if (Number.isNaN(stableStart)) return undefined;
     startMs = stableStart;
-    const stableEnd = Date.parse(stable?.runEndedAt ?? "");
+    const stableEnd = Date.parse(stable.runEndedAt ?? "");
     if (!Number.isNaN(stableEnd)) endMs = stableEnd;
-  } else if (childWindow?.startMs !== undefined) {
-    startMs = childWindow.startMs;
-    if (displayKind !== "running" && childWindow.endMs !== undefined) endMs = childWindow.endMs;
   } else {
     const itemStart = Date.parse(row.startedAt ?? "");
     if (Number.isNaN(itemStart)) return undefined;
@@ -177,9 +144,9 @@ function cardClock(
 
 // Stable exhaustion evidence belongs in the expanded region.
 function JobDetailSection({ row, stable }: { row: SubagentRow; stable: EvenerDelegateInfo | undefined }) {
-  const resumable = stable?.exhaustionResumable ?? stable?.resumable ?? row.resumable;
-  const exhaustionBudget = stable?.exhaustionBudget ?? row.exhaustionBudget;
-  const exhaustionLimit = stable?.exhaustionLimit ?? row.exhaustionLimit;
+  const resumable = stable ? (stable.exhaustionResumable ?? stable.resumable) : row.resumable;
+  const exhaustionBudget = stable ? stable.exhaustionBudget : row.exhaustionBudget;
+  const exhaustionLimit = stable ? stable.exhaustionLimit : row.exhaustionLimit;
   if (resumable === undefined && exhaustionBudget === undefined && exhaustionLimit === undefined) {
     return null;
   }
@@ -199,7 +166,7 @@ function JobDetailSection({ row, stable }: { row: SubagentRow; stable: EvenerDel
 }
 
 // One headless card for one delegate. Its full child watch drives quote,
-// counts, status, and the expanded recent-activity region.
+// counts, and the expanded recent-activity region.
 function SubagentCard({
   row,
   turnId,
@@ -229,21 +196,13 @@ function SubagentCard({
     const owner = s.threads.get(sessionRef) ?? s.watchedThreads.get(sessionRef);
     return owner?.delegates?.find((delegate) => delegate.delegateId === row.delegateId);
   });
-  const liveKind = model ? rowKindFromChildStatus(model.status.type) : undefined;
-  useEffect(() => {
-    if (liveKind && transcriptRef) {
-      setWatchedLiveKind(scopeKey, row.rowKey, liveKind);
-    }
-  }, [scopeKey, row.rowKey, liveKind, transcriptRef]);
-
-  // Needs-you is an attention overlay on a still-running child.
   const displayKind = effectiveRowKind(row, stable);
-  const attention = model !== undefined && cadenceStateForStatus(model.status.type) === "needs-you";
-  const childRunning = model ? rowKindFromChildStatus(model.status.type) === "running" : displayKind === "running";
+  const attention = stable?.needsAttention ?? false;
+  const childRunning = model ? cadenceStateForStatus(model.status.type) === "working" : displayKind === "running";
 
   const items = model ? model.turns.flatMap((t) => t.items) : [];
   const quotes = deriveQuotes(items);
-  const reason = stable?.reason ?? row.liveReason ?? row.resultPreview;
+  const reason = stable ? stable.reason : row.resultPreview;
   // Failures lead with their reason; other cards use the child's latest words.
   const latestQuote = quotes.at(-1)?.text;
   const quoteText = displayKind === "failed" && reason ? `✕ ${reason}` : (latestQuote ?? (reason || undefined));
@@ -266,7 +225,7 @@ function SubagentCard({
   if (usage) statsSegments.push(usage);
 
   const nowMs = useSessionNow();
-  const clock = cardClock(row, stable, displayKind, nowMs, realTurns ? childRunWindow(realTurns) : undefined);
+  const clock = cardClock(row, stable, displayKind, nowMs);
 
   // Deterministic scoping preserves disclosure state across virtualization.
   const disclosureId = `subagent-quotes-${encodeURIComponent(scopeKey)}-${encodeURIComponent(row.rowKey)}`;
@@ -380,6 +339,9 @@ export function rowFromDelegateItem(item: ItemModel): {
   if (parsed && !delegateId) return null;
   const transcriptRef = parsed ? str(parsed, "transcript_ref") : undefined;
   const reason = parsed ? str(parsed, "reason") : undefined;
+  const resumable = parsed && typeof parsed.resumable === "boolean" ? parsed.resumable : undefined;
+  const exhaustionBudget = parsed ? str(parsed, "exhaustion_budget") : undefined;
+  const exhaustionLimit = parsed && typeof parsed.exhaustion_limit === "number" ? parsed.exhaustion_limit : undefined;
   const fallbackRowKey = resolveRowKey(undefined, undefined, item.callId ?? item.id);
   const rowKey = resolveRowKey(delegateId, undefined, item.callId ?? item.id);
   return {
@@ -392,6 +354,9 @@ export function rowFromDelegateItem(item: ItemModel): {
       startedAt: item.startedAt,
       completedAt: item.completedAt,
       resultPreview: reason ?? "",
+      resumable,
+      exhaustionBudget,
+      exhaustionLimit,
     },
   };
 }
@@ -428,12 +393,10 @@ registerToolRenderer({
   },
   body: DelegateBody,
   // A delegate call is a status card, not a fold-to-open tool row - the same
-  // reasoning as task_list's own `autoExpand: () => true`. Left collapsed by
-  // default, the card stack and its per-child event-stream watches never
-  // mount until opened: the ToolCallItem-owned lean watch still keeps the
-  // top-level dot current while collapsed (evch). Opening it at settle makes
-  // the cards' state/quote/stats visible without a click; a manual collapse
-  // afterward still sticks (ToolCallItem's own autoDefault vs. store-backed
-  // toggle).
+  // reasoning as task_list's own `autoExpand: () => true`. Child watching
+  // exists only while the body is expanded, for quotes and stats; collapsed
+  // lifecycle and attention come from the stable owner projection. Opening at
+  // settle makes the card visible without a click; a manual collapse afterward
+  // still sticks (ToolCallItem's own autoDefault vs. store-backed toggle).
   autoExpand: () => true,
 });

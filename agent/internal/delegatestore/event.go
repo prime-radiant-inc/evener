@@ -15,6 +15,7 @@ const (
 	EventDelegateSubtreeStopRequested EventKind = "delegate_subtree_stop_requested"
 	EventDelegateSubtreeStopCompleted EventKind = "delegate_subtree_stop_completed"
 	EventDelegateDeliveryAcknowledged EventKind = "delegate_delivery_acknowledged"
+	EventDelegateAttentionChanged     EventKind = "delegate_attention_changed"
 )
 
 type Event struct {
@@ -23,14 +24,15 @@ type Event struct {
 	TS         time.Time `json:"ts,omitzero"`
 	DelegateID string    `json:"delegate_id"`
 
-	Created              *DelegateCreated      `json:"created,omitempty"`
-	RunStarted           *RunStarted           `json:"run_started,omitempty"`
-	TerminalPrepared     *TerminalPrepared     `json:"terminal_prepared,omitempty"`
-	RunFinished          *RunFinished          `json:"run_finished,omitempty"`
-	ResumabilityClosed   *ResumabilityClosed   `json:"resumability_closed,omitempty"`
-	SubtreeStopRequested *SubtreeStopRequested `json:"subtree_stop_requested,omitempty"`
-	SubtreeStopCompleted *SubtreeStopCompleted `json:"subtree_stop_completed,omitempty"`
-	DeliveryAcknowledged *DeliveryAcknowledged `json:"delivery_acknowledged,omitempty"`
+	Created              *DelegateCreated          `json:"created,omitempty"`
+	RunStarted           *RunStarted               `json:"run_started,omitempty"`
+	TerminalPrepared     *TerminalPrepared         `json:"terminal_prepared,omitempty"`
+	RunFinished          *RunFinished              `json:"run_finished,omitempty"`
+	ResumabilityClosed   *ResumabilityClosed       `json:"resumability_closed,omitempty"`
+	SubtreeStopRequested *SubtreeStopRequested     `json:"subtree_stop_requested,omitempty"`
+	SubtreeStopCompleted *SubtreeStopCompleted     `json:"subtree_stop_completed,omitempty"`
+	DeliveryAcknowledged *DeliveryAcknowledged     `json:"delivery_acknowledged,omitempty"`
+	AttentionChanged     *DelegateAttentionChanged `json:"attention_changed,omitempty"`
 }
 
 type DelegateCreated struct {
@@ -79,6 +81,10 @@ type SubtreeStopCompleted struct {
 
 type DeliveryAcknowledged struct {
 	DeliveryID string `json:"delivery_id"`
+}
+
+type DelegateAttentionChanged struct {
+	NeedsAttention bool `json:"needs_attention"`
 }
 
 type versionRecord struct {

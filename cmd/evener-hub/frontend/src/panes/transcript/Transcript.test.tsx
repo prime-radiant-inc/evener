@@ -151,6 +151,7 @@ test("renders the thread's turns through the shared VirtualList/TurnBlock engine
               outcome: "completed",
               terminal: true,
               resumable: true,
+              needsAttention: false,
               projectionRevision: 1,
             },
           ],

@@ -1006,6 +1006,7 @@ type stableDelegateStatusResult struct {
 	Model              string                 `json:"model,omitempty"`
 	ReasoningEffort    string                 `json:"reasoning_effort,omitempty"`
 	Resumable          bool                   `json:"resumable"`
+	NeedsAttention     bool                   `json:"needs_attention"`
 	NotResumableReason string                 `json:"not_resumable_reason,omitempty"`
 	TranscriptRef      string                 `json:"transcript_ref"`
 	RunStartedAt       string                 `json:"run_started_at,omitempty"`
@@ -1028,6 +1029,7 @@ func projectStableDelegateStatus(now time.Time, snapshot delegateSnapshot) stabl
 		Model:              descriptor.ResolvedModel,
 		ReasoningEffort:    descriptor.Config.ReasoningEffort,
 		Resumable:          snapshot.resumable,
+		NeedsAttention:     snapshot.needsAttention,
 		NotResumableReason: snapshot.notResumableReason,
 		TranscriptRef:      snapshot.transcriptRef,
 		LastOutcome:        snapshot.lastOutcome,

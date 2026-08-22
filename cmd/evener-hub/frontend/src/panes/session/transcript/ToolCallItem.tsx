@@ -6,6 +6,7 @@
 // descriptors registered under tools/.
 import { memo, useLayoutEffect, useState } from "react";
 import type { ItemModel } from "../../../protocol/model";
+import { stableDelegateDisplayStatus } from "../../../protocol/stableDelegate";
 import type { EvenerDelegateInfo } from "../../../protocol/types.gen";
 import { useThreadsStore } from "../../../stores/threads";
 import { type CadenceState, StatusDot } from "../../../widgets";
@@ -31,7 +32,6 @@ import {
   upsertSubagentRow,
   useSubagentRow,
 } from "./tools/subagentModuleStore";
-import { WatchedChildIndicator } from "./tools/watchedChild";
 import { type ItemRenderProps, ignoringTurn, registerItemRenderer } from "./types";
 
 const CLASS = {
@@ -80,9 +80,10 @@ function delegateStatusForOutput(
   stableDelegate: EvenerDelegateInfo | undefined,
   live: boolean,
 ): DelegateStatusKey {
+  if (stableDelegate) return classifyJobStatus(stableDelegateDisplayStatus(stableDelegate));
   const hasSettledOutputStatus = parsedOutput !== undefined && str(parsedOutput, "status") !== undefined;
   if (live && !hasSettledOutputStatus) return "running";
-  return delegateRow ? effectiveRowKind(delegateRow, stableDelegate) : delegateStatusFromOutput(parsedOutput);
+  return delegateRow ? effectiveRowKind(delegateRow) : delegateStatusFromOutput(parsedOutput);
 }
 
 // Memoized ignoring `turn` identity (types.ts's ignoringTurn): this
@@ -106,7 +107,6 @@ export const ToolCallItem = memo(function ToolCallItem({ item, live, sessionRef 
     const owner = s.threads.get(sessionRef) ?? s.watchedThreads.get(sessionRef);
     return owner?.delegates?.find((delegate) => delegate.delegateId === stableDelegateId);
   });
-  const delegateTranscriptRef = stableDelegateId ? str(delegateOutput ?? {}, "transcript_ref") : undefined;
   const delegateKind = delegateStatusForOutput(delegateOutput, delegateRow, stableDelegate, live);
   const delegateStatus = isDelegate ? <StatusDot state={DELEGATE_INDICATOR_STATE[delegateKind]} /> : undefined;
   const delegateScopeKey = turnScopeKey(sessionRef, item.turnId);
@@ -259,19 +259,6 @@ export const ToolCallItem = memo(function ToolCallItem({ item, live, sessionRef 
   // below).
   if (descriptor.suppress?.(item)) return null;
 
-  // The module's rich watcher only exists while the body is expanded. Keep a
-  // single lean watcher mounted for the collapsed state so the top-level dot
-  // still follows terminal child status; the rich body watcher takes over
-  // when the disclosure opens.
-  const leanDelegateWatch =
-    isDelegate && !expanded && delegateTranscriptRef ? (
-      <WatchedChildIndicator
-        ref={delegateTranscriptRef}
-        scopeKey={turnScopeKey(sessionRef, item.turnId)}
-        rowKey={rowKeyForDelegateItem(item)}
-      />
-    ) : null;
-
   // A failed row is never a bare summary line even with no body/images: the
   // reader must be able to open it and read the error, so it is always a
   // <details>.
@@ -335,7 +322,6 @@ export const ToolCallItem = memo(function ToolCallItem({ item, live, sessionRef 
           the row-to-body spacing live in one rule rather than per-descriptor.
           Rendered only when open: an unmounted body can animate in on the next
           open, and a collapsed row costs nothing to render. */}
-      {leanDelegateWatch}
       {expanded && (
         <div className={CLASS.body} data-testid="tool-call-body">
           {/* descriptor.detail() (currently only shell's exit code) rides the

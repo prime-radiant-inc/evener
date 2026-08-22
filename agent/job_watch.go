@@ -3338,19 +3338,22 @@ func (jm *jobManager) deliverStableWatchSend(cfg *watchConfig, state jobstore.Wa
 			jm.releaseStableWatchReceipt(state.DeliveryID)
 			return false, appendErr
 		}
+		if err := armStableWatchAttention(controller, receiver, state.ReceiverDelegateID, attentionID); err != nil {
+			return false, err
+		}
 		if err := jm.settleWatchSendDelivered(cfg, state); err != nil {
 			jm.rememberStableWatchSettlementRetry(cfg, state)
 			return false, err
 		}
-		return false, armStableWatchAttention(controller, receiver, state.ReceiverDelegateID, attentionID)
+		return false, nil
 	}
 	if appendErr != nil {
 		return false, appendErr
 	}
-	if err := jm.settleWatchSendDelivered(cfg, state); err != nil {
+	if err := armStableWatchAttention(controller, receiver, state.ReceiverDelegateID, attentionID); err != nil {
 		return false, err
 	}
-	if err := armStableWatchAttention(controller, receiver, state.ReceiverDelegateID, attentionID); err != nil {
+	if err := jm.settleWatchSendDelivered(cfg, state); err != nil {
 		return false, err
 	}
 	return true, nil

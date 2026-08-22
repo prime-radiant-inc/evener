@@ -1,12 +1,7 @@
 // Shared "what time is it, and what does this wire status mean for
-// Cadence" helpers. Hoisted out of Session.tsx (their original home) so
-// transcript/tools/watchedChild.tsx - the subagent module's per-row watched-
-// child indicator - can use the SAME logic instead of carrying its own
-// verbatim copy (file-ownership-forced during the parallel wave-4 streams).
-// A direct `import ... from "../../Session"` from watchedChild.tsx would
-// create a cycle (Session.tsx -> "./transcript/tools" -> subagentModule.tsx
-// -> watchedChild.tsx -> back to Session.tsx), so this lives in its own
-// leaf module instead - it imports nothing from panes/session/ itself.
+// Cadence" helpers. Hoisted out of Session.tsx so the session pane and its
+// transcript descendants can share the same logic without importing the
+// pane back into this leaf module.
 import { createContext, useContext, useEffect, useState } from "react";
 import type { CadenceState } from "../../widgets";
 

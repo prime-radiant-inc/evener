@@ -209,7 +209,7 @@ func TestAppDiagnosticsFromDetailedStatus_DelegatesLossless(t *testing.T) {
 	input := DelegateStatusInfo{
 		DelegateID: "dlg_wire", OwnerSessionID: "root", RootSessionID: "root", ChildSessionID: "child", TranscriptRef: "local:child",
 		ParentDelegateID: "dlg_parent", Type: "delegate", Lifecycle: "idle", Phase: "idle", Status: "idle", Outcome: "completed",
-		Resumable: true, ProjectionRevision: 6, Task: "task", Message: message, StructuredResult: json.RawMessage("null"), StructuredValid: &valid,
+		Resumable: true, NeedsAttention: true, ProjectionRevision: 6, Task: "task", Message: message, StructuredResult: json.RawMessage("null"), StructuredValid: &valid,
 		Warnings: []string{"warning"}, Diagnostics: []string{"diagnostic"}, Usage: &appwire.EvenerUsage{InputTokens: 3, TotalTokens: 3},
 		Worktree: &appwire.JobActivityWorktree{Path: "/tmp/lane", Branch: "delegate/lane"},
 	}
@@ -218,7 +218,7 @@ func TestAppDiagnosticsFromDetailedStatus_DelegatesLossless(t *testing.T) {
 		t.Fatalf("delegates = %+v", got.Delegates)
 	}
 	delegate := got.Delegates[0]
-	if delegate.DelegateID != input.DelegateID || delegate.ParentDelegateID != input.ParentDelegateID || delegate.ProjectionRevision != input.ProjectionRevision ||
+	if delegate.DelegateID != input.DelegateID || delegate.ParentDelegateID != input.ParentDelegateID || !delegate.NeedsAttention || delegate.ProjectionRevision != input.ProjectionRevision ||
 		!bytes.Equal(delegate.Message, message) || delegate.StructuredValid == nil || !*delegate.StructuredValid || delegate.Usage == nil || delegate.Worktree == nil ||
 		!reflect.DeepEqual(delegate.Warnings, input.Warnings) || !reflect.DeepEqual(delegate.Diagnostics, input.Diagnostics) {
 		t.Fatalf("app delegate diagnostics = %+v", delegate)

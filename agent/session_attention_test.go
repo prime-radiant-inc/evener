@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"maps"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -29,92 +30,376 @@ import (
 )
 
 func TestDelegateAttention_ResolutionFsyncPrecedesSourceAck(t *testing.T) {
-	c, _ := newDelegateControllerTestHarness(t, 1, 1)
-	seedDelegateControllerIdle(t, c, "dlg_target", "")
-
 	const (
-		sessionID   = "child-dlg_target"
-		attentionID = "delegate:delivery-attention"
+		sessionID = "child-dlg_target"
+		firstID   = "delegate:delivery-attention-1"
+		secondID  = "delegate:delivery-attention-2"
 	)
-	path := transcriptPath(c.stateDir, sessionID)
 	fs := newAttentionSyncBarrierFS()
-	writer, err := transcript.NewWriterWithFS(fs, path, transcript.Header{SessionID: sessionID})
+	c, runtime, path := newDelegateAttentionAcceptanceHarness(t, sessionID, fs, firstID, secondID)
+	beforeRevision := c.durable["dlg_target"].ProjectionRevision
+	reservation, err := c.ReserveAttention(runtime, firstID)
 	if err != nil {
-		t.Fatalf("NewWriterWithFS: %v", err)
+		t.Fatalf("ReserveAttention: %v", err)
 	}
-	t.Cleanup(func() { _ = writer.Close() })
-	runtime := &Session{id: sessionID, stateDir: c.stateDir, delegateController: c}
-	runtime.attachTranscript(writer)
-	attention := schema.NewTurn(schema.TurnSteering, llm.User("durable attention"))
-	attention.AttentionID = attentionID
-	if err := writer.AppendDurable(attention); err != nil {
-		t.Fatalf("append attention: %v", err)
+
+	fs.arm()
+	type startResult struct {
+		started delegateStartCommit
+		err     error
+	}
+	done := make(chan startResult, 1)
+	go func() {
+		startErr := runtime.acceptDelegateAttention(reservation)
+		var started delegateStartCommit
+		if startErr == nil {
+			started, startErr = c.CommitStart(reservation)
+		}
+		done <- startResult{started: started, err: startErr}
+	}()
+	select {
+	case <-fs.syncEntered:
+	case result := <-done:
+		t.Fatalf("attention acceptance returned before fsync: %#v", result)
 	}
 	c.mu.Lock()
-	c.live["dlg_target"] = &delegateLiveState{runtime: runtime}
+	blockedAggregate := c.durable["dlg_target"]
+	blockedGeneration := blockedAggregate.Generation
+	blockedNeedsAttention := blockedAggregate.NeedsAttention
+	_, firstStillUnresolved := c.attentionWakeIDs["dlg_target"][firstID]
 	c.mu.Unlock()
+	if blockedGeneration != 0 || !blockedNeedsAttention || !firstStillUnresolved {
+		t.Fatalf("acceptance published before resolution fsync: generation=%d needs=%t unresolved=%#v", blockedGeneration, blockedNeedsAttention, c.attentionWakeIDs["dlg_target"])
+	}
+	fs.release()
+	first := <-done
+	if first.err != nil {
+		t.Fatalf("accept first attention: %v", first.err)
+	}
+	aggregate := c.durable["dlg_target"]
+	if aggregate.Generation != 1 || aggregate.Trigger != delegatestore.TriggerAttention || !aggregate.CurrentRunOpen || !aggregate.NeedsAttention || aggregate.ProjectionRevision != beforeRevision+1 {
+		t.Fatalf("nonfinal acceptance aggregate = %#v, want generation 1 open with unchanged true attention", aggregate)
+	}
+	if got := c.attentionWakeIDs["dlg_target"]; !reflect.DeepEqual(got, map[string]struct{}{secondID: {}}) {
+		t.Fatalf("unresolved IDs after nonfinal consumption = %#v", got)
+	}
+	fold, err := readDelegateAttentionFold(path, sessionID)
+	if err != nil {
+		t.Fatalf("read attention fold: %v", err)
+	}
+	if got := fold.resolutions[firstID]; got != delegateAttentionConsumed || fold.resumeGenerations[firstID] != 1 {
+		t.Fatalf("first resolution = %q generation %d, want consumed/1", got, fold.resumeGenerations[firstID])
+	}
+	if _, err := c.FinishGeneration(first.started.lease, delegateFinish{outcome: delegatestore.OutcomeCompleted, reason: "first handled"}); err != nil {
+		t.Fatalf("FinishGeneration first: %v", err)
+	}
+	secondReservation, err := c.ReserveAttention(runtime, secondID)
+	if err != nil {
+		t.Fatalf("ReserveAttention second: %v", err)
+	}
+	if err := runtime.acceptDelegateAttention(secondReservation); err != nil {
+		t.Fatalf("accept final attention: %v", err)
+	}
+	second, err := c.CommitStart(secondReservation)
+	if err != nil {
+		t.Fatalf("commit final attention: %v", err)
+	}
+	aggregate = c.durable["dlg_target"]
+	if aggregate.Generation != 2 || aggregate.NeedsAttention || len(c.attentionWakeIDs["dlg_target"]) != 0 {
+		t.Fatalf("final acceptance aggregate=%#v unresolved=%#v", aggregate, c.attentionWakeIDs["dlg_target"])
+	}
+	fold, err = readDelegateAttentionFold(path, sessionID)
+	if err != nil {
+		t.Fatalf("read final attention fold: %v", err)
+	}
+	if got := fold.resolutions[secondID]; got != delegateAttentionConsumed || fold.resumeGenerations[secondID] != 2 {
+		t.Fatalf("second resolution = %q generation %d, want consumed/2", got, fold.resumeGenerations[secondID])
+	}
+	events, err := c.store.Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	tail := events[len(events)-2:]
+	if tail[0].Kind != delegatestore.EventDelegateAttentionChanged || tail[0].AttentionChanged == nil || tail[0].AttentionChanged.NeedsAttention || tail[1].Kind != delegatestore.EventDelegateRunStarted || tail[1].RunStarted.Generation != second.lease.generation {
+		t.Fatalf("final-clear/run-start batch tail = %#v", tail)
+	}
+}
+
+func TestDelegateAttention_StopLeavesBoundAttentionForDiscard(t *testing.T) {
+	t.Run("stop wins before acceptance", func(t *testing.T) {
+		const (
+			sessionID   = "child-dlg_target"
+			attentionID = "delegate:delivery-stopped"
+		)
+		c, runtime, path := newDelegateAttentionAcceptanceHarness(t, sessionID, nil, attentionID)
+		if _, _, _, err := c.StopSubtree(rootDelegateActor("root-session"), "dlg_target"); err != nil {
+			t.Fatalf("StopSubtree: %v", err)
+		}
+		if _, err := c.ReserveAttention(runtime, attentionID); !errors.Is(err, errDelegateTargetBusy) {
+			t.Fatalf("ReserveAttention after stop = %v, want target busy", err)
+		}
+		fold, err := readDelegateAttentionFold(path, sessionID)
+		if err != nil {
+			t.Fatalf("read attention fold: %v", err)
+		}
+		if pending := fold.pendingIDs(); !reflect.DeepEqual(pending, []string{attentionID}) {
+			t.Fatalf("pending attention for stop discard = %#v", pending)
+		}
+		if c.durable["dlg_target"].NeedsAttention {
+			t.Fatal("lifecycle stop failed to fold attention false")
+		}
+		events, err := c.store.Load()
+		if err != nil {
+			t.Fatalf("Load: %v", err)
+		}
+		if events[len(events)-1].Kind != delegatestore.EventDelegateSubtreeStopRequested {
+			t.Fatalf("lifecycle clear appended a separate attention event: %#v", events[len(events)-2:])
+		}
+	})
+
+	t.Run("stop waits after acceptance admission", func(t *testing.T) {
+		const (
+			sessionID   = "child-dlg_target"
+			attentionID = "delegate:delivery-admitted"
+		)
+		fs := newAttentionSyncBarrierFS()
+		c, runtime, path := newDelegateAttentionAcceptanceHarness(t, sessionID, fs, attentionID)
+		reservation, err := c.ReserveAttention(runtime, attentionID)
+		if err != nil {
+			t.Fatalf("ReserveAttention: %v", err)
+		}
+		fs.arm()
+		accepted := make(chan error, 1)
+		go func() {
+			acceptErr := runtime.acceptDelegateAttention(reservation)
+			if acceptErr == nil {
+				_, acceptErr = c.CommitStart(reservation)
+			}
+			accepted <- acceptErr
+		}()
+		<-fs.syncEntered
+		stopped := make(chan error, 1)
+		go func() {
+			_, _, _, stopErr := c.StopSubtree(rootDelegateActor("root-session"), "dlg_target")
+			stopped <- stopErr
+		}()
+		select {
+		case err := <-stopped:
+			t.Fatalf("stop returned before admitted acceptance committed: %v", err)
+		default:
+		}
+		fs.release()
+		if err := <-accepted; err != nil {
+			t.Fatalf("accept admitted attention: %v", err)
+		}
+		if err := <-stopped; err != nil {
+			t.Fatalf("StopSubtree after acceptance: %v", err)
+		}
+		fold, err := readDelegateAttentionFold(path, sessionID)
+		if err != nil {
+			t.Fatalf("read admitted attention fold: %v", err)
+		}
+		if fold.resolutions[attentionID] != delegateAttentionConsumed || fold.resumeGenerations[attentionID] != 1 {
+			t.Fatalf("admitted resolution = %q generation %d", fold.resolutions[attentionID], fold.resumeGenerations[attentionID])
+		}
+		events, err := c.store.Load()
+		if err != nil {
+			t.Fatalf("Load: %v", err)
+		}
+		if events[len(events)-2].Kind != delegatestore.EventDelegateRunStarted || events[len(events)-1].Kind != delegatestore.EventDelegateSubtreeStopRequested {
+			t.Fatalf("acceptance/stop ordering = %#v", events[len(events)-2:])
+		}
+	})
+}
+
+func newDelegateAttentionAcceptanceHarness(t *testing.T, sessionID string, fs afero.Fs, attentionIDs ...string) (*delegateTreeController, *Session, string) {
+	t.Helper()
+	c, _ := newDelegateControllerTestHarness(t, 1, 1)
+	seedDelegateControllerIdle(t, c, "dlg_target", "")
+	path := transcriptPath(c.stateDir, sessionID)
+	var writer *transcript.Writer
+	var err error
+	if fs == nil {
+		writer, err = transcript.NewWriter(path, transcript.Header{SessionID: sessionID})
+	} else {
+		writer, err = transcript.NewWriterWithFS(fs, path, transcript.Header{SessionID: sessionID})
+	}
+	if err != nil {
+		t.Fatalf("NewWriter: %v", err)
+	}
+	t.Cleanup(func() { _ = writer.Close() })
+	for _, attentionID := range attentionIDs {
+		attention := schema.NewTurn(schema.TurnSteering, llm.User("durable attention "+attentionID))
+		attention.AttentionID = attentionID
+		if err := writer.AppendDurable(attention); err != nil {
+			t.Fatalf("append attention %q: %v", attentionID, err)
+		}
+	}
+	runtime := &Session{id: sessionID, stateDir: c.stateDir, delegateController: c}
+	runtime.attachTranscript(writer)
+	c.mu.Lock()
+	if _, err := c.appendLocked(delegatestore.Event{
+		Kind:       delegatestore.EventDelegateAttentionChanged,
+		DelegateID: "dlg_target",
+		AttentionChanged: &delegatestore.DelegateAttentionChanged{
+			NeedsAttention: true,
+		},
+	}); err != nil {
+		c.mu.Unlock()
+		t.Fatalf("append attention projection: %v", err)
+	}
+	c.live["dlg_target"] = &delegateLiveState{runtime: runtime}
+	for _, attentionID := range attentionIDs {
+		c.noteDelegateAttentionLocked("dlg_target", attentionID)
+	}
+	c.mu.Unlock()
+	return c, runtime, path
+}
+
+func attachDelegateAttentionTranscriptForTest(t *testing.T, c *delegateTreeController, runtime *Session, delegateID, attentionID string) {
+	t.Helper()
+	c.mu.Lock()
+	aggregate := c.durable[delegateID]
+	c.mu.Unlock()
+	if aggregate == nil {
+		t.Fatalf("delegate %q is absent", delegateID)
+	}
+	sessionID := aggregate.Descriptor.ChildSessionID
+	path := transcriptPath(c.stateDir, sessionID)
+	writer, err := transcript.NewWriter(path, transcript.Header{SessionID: sessionID})
+	if err != nil {
+		t.Fatalf("create attention transcript: %v", err)
+	}
+	t.Cleanup(func() { _ = writer.Close() })
+	runtime.id = sessionID
+	runtime.stateDir = c.stateDir
+	runtime.delegateController = c
+	runtime.owningDelegateID = delegateID
+	runtime.attachTranscript(writer)
+	turn := schema.NewTurn(schema.TurnSteering, llm.User("attention "+attentionID))
+	turn.AttentionID = attentionID
+	if err := writer.AppendDurable(turn); err != nil {
+		t.Fatalf("append attention: %v", err)
+	}
+	c.noteDelegateAttention(delegateID, attentionID)
+}
+
+func TestDelegateAttention_ResolutionFailureLeavesGenerationStoppable(t *testing.T) {
+	const (
+		sessionID   = "child-dlg_target"
+		attentionID = "attention-resolution-failure"
+	)
+	fs := newAttentionAmbiguousSyncFS()
+	c, runtime, path := newDelegateAttentionAcceptanceHarness(t, sessionID, fs, attentionID)
 	reservation, err := c.ReserveAttention(runtime, attentionID)
 	if err != nil {
 		t.Fatalf("ReserveAttention: %v", err)
 	}
+	fs.failNextResolutionDurability()
+	if err := runtime.acceptDelegateAttention(reservation); err == nil {
+		t.Fatal("consumed attention resolution unexpectedly survived injected sync failure")
+	}
+	fold, err := readDelegateAttentionFold(path, sessionID)
+	if err != nil {
+		t.Fatalf("read ambiguous attention resolution: %v", err)
+	}
+	if got := fold.resolutions[attentionID]; got != delegateAttentionConsumed || fold.resumeGenerations[attentionID] != 1 {
+		t.Fatalf("page-cache-visible attention resolution = %q generation %d, want consumed/1", got, fold.resumeGenerations[attentionID])
+	}
+	if aggregate := c.durable["dlg_target"]; aggregate.Generation != 0 || aggregate.CurrentRunOpen || !aggregate.NeedsAttention {
+		t.Fatalf("failed resolution admitted generation: %#v", aggregate)
+	}
+	if len(c.reservations) != 1 || c.live["dlg_target"].binding != nil {
+		t.Fatalf("failed resolution lost retry claim or installed binding: reservations=%#v live=%#v", c.reservations, c.live["dlg_target"])
+	}
+	if err := runtime.acceptDelegateAttention(reservation); err != nil {
+		t.Fatalf("retry ambiguous attention resolution: %v", err)
+	}
 	started, err := c.CommitStart(reservation)
 	if err != nil {
-		t.Fatalf("CommitStart: %v", err)
+		t.Fatalf("commit retried attention generation: %v", err)
 	}
-	claim, continueRun, err := c.BeginSettlement(started.lease)
-	if err != nil || continueRun {
-		t.Fatalf("BeginSettlement = continue:%t err:%v", continueRun, err)
+	if got := fs.successfulSyncsAfterFailure(); got == 0 {
+		t.Fatal("attention retry established no successful child-transcript durability barrier")
 	}
-	packet := delegateControllerReportedPacket("attention handled")
-	plans, err := c.AttentionResolutionsForFinalization(claim)
+	if _, _, _, err := c.StopSubtree(rootDelegateActor("root-session"), "dlg_target"); err != nil {
+		t.Fatalf("StopSubtree after recovered acceptance: %v", err)
+	}
+	if aggregate := c.durable["dlg_target"]; aggregate.Phase != delegatestore.PhaseStopping || aggregate.Generation != started.lease.generation {
+		t.Fatalf("recovered attention generation is not stoppable: %#v", aggregate)
+	}
+}
+
+func TestDelegateAttention_ArmClaimSpansFoldAndOpen(t *testing.T) {
+	const (
+		sessionID   = "child-dlg_target"
+		attentionID = "interleaved-attention"
+	)
+	c, runtime, path := newDelegateAttentionAcceptanceHarness(t, sessionID, nil, attentionID)
+	runtime.owningDelegateID = "dlg_target"
+	reservation, err := c.ReserveAttention(runtime, attentionID)
 	if err != nil {
-		t.Fatalf("AttentionResolutionsForFinalization: %v", err)
+		t.Fatalf("ReserveAttention: %v", err)
 	}
 
-	fs.arm()
-	done := make(chan error, 1)
-	go func() { done <- runtime.executeDelegateMutationPlans(plans) }()
+	foldEntered := make(chan struct{})
+	releaseFold := make(chan struct{})
+	var foldOnce sync.Once
+	t.Cleanup(func() {
+		select {
+		case <-releaseFold:
+		default:
+			close(releaseFold)
+		}
+	})
+	runtime.cfg.testOnly.delegateAttentionReadFold = func(path, sessionID string) (delegateAttentionFold, error) {
+		wait := false
+		foldOnce.Do(func() {
+			close(foldEntered)
+			wait = true
+		})
+		if wait {
+			<-releaseFold
+		}
+		return readDelegateAttentionFold(path, sessionID)
+	}
+
+	armDone := make(chan error, 1)
+	go func() { armDone <- runtime.armDelegateAttentionOnce(attentionID) }()
+	<-foldEntered
+
+	// The reservation is the controller-side blocker that used to deadlock
+	// armDelegateAttentionOnce while it held attentionMu. The acceptance path
+	// must resolve the exact ID before it can close that blocker.
+	consumeDone := make(chan error, 1)
+	go func() {
+		err := runtime.acceptDelegateAttention(reservation)
+		if err == nil {
+			_, err = c.CommitStart(reservation)
+		}
+		consumeDone <- err
+	}()
+	close(releaseFold)
+	// TRIPWIRE: this one-second ceiling only detects a deadlock; normal arm and acceptance completion is awaited on channels, never paced by the timer.
+	timeout := time.NewTimer(time.Second)
+	defer timeout.Stop()
 	select {
-	case <-fs.syncEntered:
-	case err := <-done:
-		t.Fatalf("attention resolution returned before fsync: %v", err)
+	case err := <-armDone:
+		if err != nil {
+			t.Fatalf("arm attention: %v", err)
+		}
+	case <-timeout.C:
+		t.Fatal("arm attention remained blocked on an accepted reservation")
 	}
-	if _, err := c.CompleteSettlement(claim, &packet); !errors.Is(err, errDelegateTargetBusy) {
-		t.Fatalf("CompleteSettlement before resolution fsync = %v, want target busy", err)
+	select {
+	case err := <-consumeDone:
+		if err != nil {
+			t.Fatalf("consume attention: %v", err)
+		}
+	case <-timeout.C:
+		t.Fatal("attention acceptance remained blocked behind arm")
 	}
-	c.mu.Lock()
-	blockedAggregate := c.durable["dlg_target"]
-	blockedPhase := blockedAggregate.Phase
-	blockedPrepared := blockedAggregate.PreparedTerminal
-	c.mu.Unlock()
-	if blockedPhase != delegatestore.PhaseRunning || blockedPrepared != nil {
-		t.Fatalf("settlement mutated before resolution fsync: phase=%s prepared=%#v", blockedPhase, blockedPrepared)
-	}
-	fs.release()
-	if err := <-done; err != nil {
-		t.Fatalf("execute attention resolution: %v", err)
-	}
-	settlementPlans, err := c.CompleteSettlement(claim, &packet)
-	if err != nil {
-		t.Fatalf("CompleteSettlement after resolution fsync: %v", err)
-	}
-	c.mu.Lock()
-	settledAggregate := c.durable["dlg_target"]
-	settledPhase := settledAggregate.Phase
-	settledPrepared := settledAggregate.PreparedTerminal
-	c.mu.Unlock()
-	if settledPhase != delegatestore.PhaseSettling || settledPrepared == nil {
-		t.Fatalf("settlement after resolution fsync: phase=%s prepared=%#v", settledPhase, settledPrepared)
-	}
-	if err := runtime.executeDelegateMutationPlans(settlementPlans); err != nil {
-		t.Fatalf("execute settlement plans: %v", err)
-	}
-	if _, err := c.FinishGeneration(started.lease, delegateFinish{
-		outcome:     delegatestore.OutcomeCompleted,
-		disposition: delegatestore.DispositionReported,
-	}); err != nil {
-		t.Fatalf("FinishGeneration after resolution fsync: %v", err)
-	}
+
 	fold, err := readDelegateAttentionFold(path, sessionID)
 	if err != nil {
 		t.Fatalf("read attention fold: %v", err)
@@ -122,177 +407,16 @@ func TestDelegateAttention_ResolutionFsyncPrecedesSourceAck(t *testing.T) {
 	if got := fold.resolutions[attentionID]; got != delegateAttentionConsumed {
 		t.Fatalf("attention resolution = %q, want consumed", got)
 	}
-}
-
-func TestDelegateAttention_StopLeavesBoundAttentionForDiscard(t *testing.T) {
-	c, _ := newDelegateControllerTestHarness(t, 1, 1)
-	seedDelegateControllerIdle(t, c, "dlg_target", "")
-
-	const (
-		sessionID   = "child-dlg_target"
-		attentionID = "delegate:delivery-stopped"
-	)
-	path := transcriptPath(c.stateDir, sessionID)
-	writer, err := transcript.NewWriter(path, transcript.Header{SessionID: sessionID})
+	events, err := c.store.Load()
 	if err != nil {
-		t.Fatalf("NewWriter: %v", err)
+		t.Fatalf("load controller journal: %v", err)
 	}
-	t.Cleanup(func() { _ = writer.Close() })
-	runtime := &Session{id: sessionID, stateDir: c.stateDir, delegateController: c}
-	runtime.attachTranscript(writer)
-	attention := schema.NewTurn(schema.TurnSteering, llm.User("pending attention"))
-	attention.AttentionID = attentionID
-	if err := writer.AppendDurable(attention); err != nil {
-		t.Fatalf("append attention: %v", err)
-	}
-	c.mu.Lock()
-	c.live["dlg_target"] = &delegateLiveState{runtime: runtime}
-	c.mu.Unlock()
-	reservation, err := c.ReserveAttention(runtime, attentionID)
+	state, err := delegatestore.Fold(events)
 	if err != nil {
-		t.Fatalf("ReserveAttention: %v", err)
+		t.Fatalf("fold controller journal: %v", err)
 	}
-	started, err := c.CommitStart(reservation)
-	if err != nil {
-		t.Fatalf("CommitStart: %v", err)
-	}
-	if _, _, _, err := c.StopSubtree(rootDelegateActor("root-session"), "dlg_target"); err != nil {
-		t.Fatalf("StopSubtree: %v", err)
-	}
-	claim, continueRun, err := c.BeginFinalization(started.lease, delegateSettlementOrdinary)
-	if err != nil || continueRun || claim.mode != delegateSettlementTerminal {
-		t.Fatalf("BeginFinalization = claim:%#v continue:%t err:%v", claim, continueRun, err)
-	}
-	plans, err := c.AttentionResolutionsForFinalization(claim)
-	if err != nil {
-		t.Fatalf("AttentionResolutionsForFinalization: %v", err)
-	}
-	if len(plans.attention) != 0 {
-		t.Fatalf("stop finalization planned consumed attention: %#v", plans.attention)
-	}
-	fold, err := readDelegateAttentionFold(path, sessionID)
-	if err != nil {
-		t.Fatalf("read attention fold: %v", err)
-	}
-	if pending := fold.pendingIDs(); !reflect.DeepEqual(pending, []string{attentionID}) {
-		t.Fatalf("pending attention before stop discard = %#v", pending)
-	}
-}
-
-func TestDelegateAttention_ResolutionFailureLeavesGenerationStoppable(t *testing.T) {
-	c, _ := newDelegateControllerTestHarness(t, 1, 1)
-	seedDelegateControllerIdle(t, c, "dlg_target", "")
-	const (
-		sessionID   = "child-dlg_target"
-		attentionID = "attention-resolution-failure"
-	)
-	fs := newAttentionAmbiguousSyncFS()
-	path := transcriptPath(c.stateDir, sessionID)
-	writer, err := transcript.NewWriterWithFS(fs, path, transcript.Header{SessionID: sessionID})
-	if err != nil {
-		t.Fatalf("create attention transcript: %v", err)
-	}
-	t.Cleanup(func() { _ = writer.Close() })
-	runtime := &Session{id: sessionID, stateDir: c.stateDir, delegateController: c}
-	runtime.attachTranscript(writer)
-	attention := schema.NewTurn(schema.TurnSteering, llm.User("durable attention"))
-	attention.AttentionID = attentionID
-	if err := writer.AppendDurable(attention); err != nil {
-		t.Fatalf("append attention: %v", err)
-	}
-	c.mu.Lock()
-	c.live["dlg_target"] = &delegateLiveState{runtime: runtime}
-	c.mu.Unlock()
-	reservation, err := c.ReserveAttention(runtime, attentionID)
-	if err != nil {
-		t.Fatalf("ReserveAttention: %v", err)
-	}
-	started, err := c.CommitStart(reservation)
-	if err != nil {
-		t.Fatalf("CommitStart: %v", err)
-	}
-	claim, continueRun, err := c.BeginFinalization(started.lease, delegateSettlementOrdinary)
-	if err != nil || continueRun {
-		t.Fatalf("BeginFinalization = claim %#v continue %v err %v", claim, continueRun, err)
-	}
-	plans, err := c.AttentionResolutionsForFinalization(claim)
-	if err != nil || len(plans.attention) != 1 {
-		t.Fatalf("attention resolution plans = %#v, err %v", plans, err)
-	}
-	fs.failNextResolutionDurability()
-	if err := runtime.executeDelegateMutationPlans(plans); err == nil {
-		t.Fatal("consumed attention resolution unexpectedly survived injected sync failure")
-	}
-	fold, err := readDelegateAttentionFold(path, sessionID)
-	if err != nil {
-		t.Fatalf("read ambiguous attention resolution: %v", err)
-	}
-	if got := fold.resolutions[attentionID]; got != delegateAttentionConsumed {
-		t.Fatalf("page-cache-visible attention resolution = %q, want consumed", got)
-	}
-	if _, err := c.FinishGeneration(started.lease, delegateFinish{outcome: delegatestore.OutcomeFailed, reason: "resolution persistence failed"}); err == nil {
-		t.Fatal("resolution failure unexpectedly finished the generation")
-	}
-
-	result, _, _, err := c.StopSubtree(rootDelegateActor("root-session"), "dlg_target")
-	if err != nil {
-		t.Fatalf("StopSubtree: %v", err)
-	}
-	if _, err := c.FinishGeneration(started.lease, delegateFinish{outcome: delegatestore.OutcomeFailed, reason: "resolution persistence failed"}); !errors.Is(err, errDelegateTargetBusy) {
-		t.Fatalf("FinishGeneration while failed resolution is stopping = %v, want target busy", err)
-	}
-	if aggregate := c.durable["dlg_target"]; !aggregate.CurrentRunOpen {
-		t.Fatalf("failed resolution runner bypassed transcript stabilization during stop: %#v", aggregate)
-	}
-	if err := c.ReportFinalizationQuiesced(started.lease, runtime); err != nil {
-		t.Fatalf("report failed-resolution runner quiesced: %v", err)
-	}
-	evidence, err := collectDelegateReconcileEvidence(c.stateDir, c.ReconcileRequirements())
-	if err != nil {
-		t.Fatalf("collect recovery evidence: %v", err)
-	}
-	barrier, err := c.Reconcile(evidence)
-	if err != nil {
-		t.Fatalf("reconcile failed resolution: %v", err)
-	}
-	if aggregate := c.durable["dlg_target"]; !aggregate.CurrentRunOpen {
-		t.Fatalf("failed resolution recovery closed the run before a transcript durability barrier: %#v", aggregate)
-	}
-	if len(barrier.attention) != 1 {
-		t.Fatalf("failed resolution recovery plans = %#v, want one transcript durability barrier", barrier)
-	}
-	if err := runtime.executeDelegateMutationPlans(barrier); err != nil {
-		t.Fatalf("execute failed-resolution durability barrier: %v", err)
-	}
-	if got := fs.successfulSyncsAfterFailure(); got == 0 {
-		t.Fatal("stop recovery established no successful child-transcript durability barrier")
-	}
-
-	evidence, err = collectDelegateReconcileEvidence(c.stateDir, c.ReconcileRequirements())
-	if err != nil {
-		t.Fatalf("collect recovery evidence after durability barrier: %v", err)
-	}
-	recovery, err := c.Reconcile(evidence)
-	if err != nil {
-		t.Fatalf("reconcile failed resolution after durability barrier: %v", err)
-	}
-	if aggregate := c.durable["dlg_target"]; aggregate.CurrentRunOpen || aggregate.LatestOutcome == nil || aggregate.LatestOutcome.Status != delegatestore.OutcomeStopped {
-		t.Fatalf("failed resolution recovery aggregate = %#v, want stopped closed run", aggregate)
-	}
-	if err := runtime.executeDelegateMutationPlans(recovery); err != nil {
-		t.Fatalf("execute failed-resolution recovery: %v", err)
-	}
-	evidence, err = collectDelegateReconcileEvidence(c.stateDir, c.ReconcileRequirements())
-	if err != nil {
-		t.Fatalf("collect stop-completion evidence: %v", err)
-	}
-	if _, err := c.Reconcile(evidence); err != nil {
-		t.Fatalf("complete stop after failed resolution: %v", err)
-	}
-	select {
-	case <-result.done:
-	default:
-		t.Fatal("stop remained pending after failed resolution recovery")
+	if state["dlg_target"].NeedsAttention || len(c.attentionWakeIDs["dlg_target"]) != 0 {
+		t.Fatalf("consumed attention reopened: state=%#v wakeIDs=%#v", state["dlg_target"], c.attentionWakeIDs["dlg_target"])
 	}
 }
 
@@ -1874,13 +1998,15 @@ func TestDelegateAttention_ColdPostAckReadFailureRetriesExactID(t *testing.T) {
 	if err := os.Rename(backup, path); err != nil {
 		t.Fatalf("restore cold attention transcript: %v", err)
 	}
-	if got := clock.BlockedCount(); got != retryTimersBefore+1 {
-		t.Fatalf("cold post-ack fold failure retry timers = %d, want baseline %d plus one", got, retryTimersBefore)
+	if got := clock.BlockedCount(); got != retryTimersBefore {
+		t.Fatalf("cold fold failure created a second arm mirror timer: got %d, want baseline %d", got, retryTimersBefore)
 	}
-	if !root.sessionWorkPending() {
-		t.Fatal("cold post-ack fold failure disappeared from root work-pending")
+	if root.sessionWorkPending() || len(c.attentionWakeIDs["dlg_target"]) != 0 {
+		t.Fatalf("failed cold fold published unverified attention: work=%t unresolved=%#v", root.sessionWorkPending(), c.attentionWakeIDs["dlg_target"])
 	}
-	clock.Advance(jobNotificationRetryInitialDelay)
+	if err := c.armColdDelegateAttention("dlg_target", attentionID); err != nil {
+		t.Fatalf("caller retry cold attention: %v", err)
+	}
 	<-wakes
 	delegateID, gotAttentionID, pending := c.nextIdleDelegateAttention()
 	if !pending || delegateID != "dlg_target" || gotAttentionID != attentionID {
@@ -2600,18 +2726,76 @@ func TestRootDelegateAttention_RestoreRearmsPendingIDsWithoutProviderCall(t *tes
 func TestDelegateAttention_RestartRearmsColdChildAndDrainsExactAttention(t *testing.T) {
 	fixture := newColdStableDelegateFixture(t, "")
 	const (
-		attentionID      = "watch:restart-attention:1"
-		attentionContent = `<job-notification event="watch_send">resume cold delegate attention</job-notification>`
+		owedID            = "watch:restart-attention:owed"
+		owedContent       = `<job-notification event="watch_send">recover consumed owed generation</job-notification>`
+		remainingID       = "watch:restart-attention:remaining"
+		remainingContent  = `<job-notification event="watch_send">remain unresolved while owed generation runs</job-notification>`
+		historicalID      = "watch:restart-attention:historical"
+		historicalContent = `<job-notification event="watch_send">historical zero marker launches nothing</job-notification>`
 	)
-	if appended, err := appendColdDelegateNotificationDurablyWithOpen(
-		transcriptPath(fixture.stateDir, fixture.childID),
-		fixture.childID,
-		attentionID,
-		attentionContent,
-		time.Unix(1_700_000_300, 0).UTC(),
-		transcript.OpenWriterForSession,
-	); err != nil || !appended {
-		t.Fatalf("append cold delegate attention = appended:%t err:%v", appended, err)
+	childPath := transcriptPath(fixture.stateDir, fixture.childID)
+	for index, item := range []struct {
+		id      string
+		content string
+	}{
+		{id: owedID, content: owedContent},
+		{id: remainingID, content: remainingContent},
+		{id: historicalID, content: historicalContent},
+	} {
+		if appended, err := appendColdDelegateNotificationDurablyWithOpen(
+			childPath,
+			fixture.childID,
+			item.id,
+			item.content,
+			time.Unix(1_700_000_300+int64(index), 0).UTC(),
+			transcript.OpenWriterForSession,
+		); err != nil || !appended {
+			t.Fatalf("append cold delegate attention %q = appended:%t err:%v", item.id, appended, err)
+		}
+	}
+	writer, _, err := transcript.OpenWriterForSession(childPath, fixture.childID)
+	if err != nil {
+		t.Fatalf("open child attention transcript: %v", err)
+	}
+	owedResolution := delegateAttentionResolutionTurn(owedID, delegateAttentionConsumed)
+	owedResolution.AttentionResolution.ResumeGeneration = 1
+	if err := writer.AppendDurable(owedResolution); err != nil {
+		_ = writer.Close()
+		t.Fatalf("append owed consumed marker: %v", err)
+	}
+	if err := writer.AppendDurable(delegateAttentionResolutionTurn(historicalID, delegateAttentionConsumed)); err != nil {
+		_ = writer.Close()
+		t.Fatalf("append historical consumed marker: %v", err)
+	}
+	if err := writer.Close(); err != nil {
+		t.Fatalf("close child attention transcript: %v", err)
+	}
+	store, err := delegatestore.Open(delegateResourceStorePath(fixture.stateDir, fixture.meta.ID))
+	if err != nil {
+		t.Fatalf("open delegate store: %v", err)
+	}
+	events, err := store.Load()
+	if err != nil {
+		_ = store.Close()
+		t.Fatalf("load delegate store: %v", err)
+	}
+	state, err := delegatestore.Fold(events)
+	if err != nil {
+		_ = store.Close()
+		t.Fatalf("fold delegate store: %v", err)
+	}
+	if _, _, err := store.AppendBatch(state, []delegatestore.Event{{
+		Kind:       delegatestore.EventDelegateAttentionChanged,
+		DelegateID: fixture.delegateID,
+		AttentionChanged: &delegatestore.DelegateAttentionChanged{
+			NeedsAttention: true,
+		},
+	}}); err != nil {
+		_ = store.Close()
+		t.Fatalf("append initial attention projection: %v", err)
+	}
+	if err := store.Close(); err != nil {
+		t.Fatalf("close delegate store: %v", err)
 	}
 
 	attentionEntered := make(chan struct{})
@@ -2621,65 +2805,116 @@ func TestDelegateAttention_RestartRearmsColdChildAndDrainsExactAttention(t *test
 	attentionSeen := false
 	fixture.adapter.steps = []func(llm.Request) llm.Response{
 		func(request llm.Request) llm.Response {
-			attentionSeen = requestContainsText(request, attentionContent)
+			attentionSeen = requestContainsText(request, owedContent)
 			close(attentionEntered)
 			<-releaseAttention
-			return communicateResponse(true, "cold attention handled")
+			return communicateResponse(true, "recovered owed generation handled")
+		},
+		func(request llm.Request) llm.Response {
+			if !requestContainsText(request, remainingContent) {
+				t.Errorf("successor attention request omitted remaining unresolved input")
+			}
+			return communicateResponse(true, "remaining attention handled")
 		},
 		func(llm.Request) llm.Response {
-			return communicateResponse(true, "root drained delegate completion")
+			return communicateResponse(true, "root drained recovered completions")
 		},
 	}
 	root := restoreSupervisionRoot(t, fixture, nil)
-	if got := len(fixture.adapter.Requests()); got != 0 {
-		t.Fatalf("provider requests during cold attention rearm = %d, want 0", got)
-	}
-	if !root.sessionWorkPending() {
-		t.Fatal("restored cold delegate attention is absent from root work-pending state")
-	}
-	wakes := make(chan struct{}, 1)
-	root.SetNotifyFunc(func() { wakes <- struct{}{} })
-	select {
-	case <-wakes:
-	default:
-		t.Fatal("restored cold delegate attention emitted no provider-free wake")
-	}
-	if _, err := root.ProcessInputKind(context.Background(), "", nil, EntryNotification); err != nil {
-		t.Fatalf("drive restored cold delegate attention: %v", err)
-	}
-	// Read the durable aggregate only while the attention run is blocked inside
-	// its provider request: the run-started fold (CurrentRunOpen=true) commits
-	// before the run launches, and the blocked request keeps the run-finished
-	// fold from clearing it. Reading without this synchronization races the
-	// whole async run and can observe open:false after it completes (#239).
 	<-attentionEntered
 	root.delegateController.mu.Lock()
 	aggregate := root.delegateController.durable[fixture.delegateID]
 	generation := aggregate.Generation
 	trigger := aggregate.Trigger
 	open := aggregate.CurrentRunOpen
+	needsAttention := aggregate.NeedsAttention
+	unresolved := maps.Clone(root.delegateController.attentionWakeIDs[fixture.delegateID])
 	root.delegateController.mu.Unlock()
-	if generation != 1 || trigger != delegatestore.TriggerAttention || !open {
-		t.Fatalf("cold attention generation = generation:%d trigger:%q open:%t, want 1/attention/open", generation, trigger, open)
+	if generation != 1 || trigger != delegatestore.TriggerAttention || !open || !needsAttention {
+		t.Fatalf("owed attention generation = generation:%d trigger:%q open:%t needs:%t, want 1/attention/open/true", generation, trigger, open, needsAttention)
+	}
+	if !reflect.DeepEqual(unresolved, map[string]struct{}{remainingID: {}}) {
+		t.Fatalf("restart unresolved IDs = %#v, want only %q", unresolved, remainingID)
 	}
 	if !attentionSeen {
-		t.Fatal("cold attention generation provider request omitted the exact durable attention")
+		t.Fatal("owed generation provider request omitted the exact consumed attention")
+	}
+	fold, err := readDelegateAttentionFold(childPath, fixture.childID)
+	if err != nil {
+		t.Fatalf("read restarted attention fold: %v", err)
+	}
+	if fold.resumeGenerations[owedID] != 1 || fold.resumeGenerations[historicalID] != 0 || fold.resolutions[historicalID] != delegateAttentionConsumed {
+		t.Fatalf("restart resolution generations = %#v resolutions=%#v", fold.resumeGenerations, fold.resolutions)
 	}
 	releaseOnce.Do(func() { close(releaseAttention) })
 	waitForStableSupervisionRun(t, root, fixture.childID)
-	if _, err := root.DrainJobTree(context.Background()); err != nil {
-		t.Fatalf("drain cold delegate attention: %v", err)
-	}
-	fold, err := readDelegateAttentionFold(transcriptPath(fixture.stateDir, fixture.childID), fixture.childID)
-	if err != nil {
-		t.Fatalf("read drained cold attention: %v", err)
-	}
-	if got := fold.resolutions[attentionID]; got != delegateAttentionConsumed {
-		t.Fatalf("cold attention resolution = %q, want consumed", got)
-	}
-	if root.sessionWorkPending() {
-		t.Fatal("root work-pending remained set after cold delegate attention drained")
-	}
+
+	t.Run("rejects exact non-attention generation", func(t *testing.T) {
+		fixture := newColdStableDelegateFixture(t, "")
+		const attentionID = "watch:restart-attention:trigger-conflict"
+		childPath := transcriptPath(fixture.stateDir, fixture.childID)
+		if appended, err := appendColdDelegateNotificationDurablyWithOpen(childPath, fixture.childID, attentionID, "trigger conflict", time.Unix(1_700_000_400, 0).UTC(), transcript.OpenWriterForSession); err != nil || !appended {
+			t.Fatalf("append conflicting attention = appended:%t err:%v", appended, err)
+		}
+		writer, _, err := transcript.OpenWriterForSession(childPath, fixture.childID)
+		if err != nil {
+			t.Fatalf("open conflicting transcript: %v", err)
+		}
+		resolution := delegateAttentionResolutionTurn(attentionID, delegateAttentionConsumed)
+		resolution.AttentionResolution.ResumeGeneration = 1
+		if err := writer.AppendDurable(resolution); err != nil {
+			_ = writer.Close()
+			t.Fatalf("append conflicting consumed marker: %v", err)
+		}
+		if err := writer.Close(); err != nil {
+			t.Fatalf("close conflicting transcript: %v", err)
+		}
+		store, err := delegatestore.Open(delegateResourceStorePath(fixture.stateDir, fixture.meta.ID))
+		if err != nil {
+			t.Fatalf("open conflicting store: %v", err)
+		}
+		events, err := store.Load()
+		if err != nil {
+			_ = store.Close()
+			t.Fatalf("load conflicting store: %v", err)
+		}
+		state, err := delegatestore.Fold(events)
+		if err != nil {
+			_ = store.Close()
+			t.Fatalf("fold conflicting store: %v", err)
+		}
+		lease := delegateLease{delegateID: fixture.delegateID, generation: 1}
+		packet := delegateControllerReportedPacket("owner generation")
+		_, _, err = store.AppendBatch(state, []delegatestore.Event{
+			delegateControllerRunStartedEvent(fixture.delegateID, 1, delegatestore.TriggerOwnerInput, time.Unix(1_700_000_401, 0).UTC()),
+			{
+				Kind:       delegatestore.EventDelegateTerminalPrepared,
+				DelegateID: fixture.delegateID,
+				TerminalPrepared: &delegatestore.TerminalPrepared{
+					Generation: 1,
+					Packet:     packet,
+				},
+			},
+			delegateRunFinishedEvent(lease, delegatestore.OutcomeCompleted, delegatestore.DispositionReported, "", time.Unix(1_700_000_402, 0).UTC(), delegateDeliveryID(fixture.delegateID, 1), nil),
+		})
+		if closeErr := store.Close(); err == nil {
+			err = closeErr
+		}
+		if err != nil {
+			t.Fatalf("append conflicting owner generation: %v", err)
+		}
+		if _, err := restoreDelegateResourceBootstrapSession(fixture.client, fixture.profile, fixture.workspace, fixture.meta, fixture.stateDir); err == nil || !strings.Contains(err.Error(), "trigger") {
+			t.Fatalf("restore with exact non-attention generation = %v, want trigger corruption", err)
+		}
+		rootFold, err := readDelegateAttentionFold(transcriptPath(fixture.stateDir, fixture.meta.ID), fixture.meta.ID)
+		if err != nil {
+			t.Fatalf("read root delivery replay after corruption: %v", err)
+		}
+		deliveryAttentionID := delegateAttentionID(delegateDeliveryID(fixture.delegateID, 1))
+		if _, deliveredBeforeAdmission := rootFold.content[deliveryAttentionID]; !deliveredBeforeAdmission {
+			t.Fatalf("prepared delivery %q was not drained before owed-generation scan", deliveryAttentionID)
+		}
+	})
 }
 
 func TestDelegateAttention_PrelaunchRecoveryDoesNotWaitForUnlaunchedRunner(t *testing.T) {
