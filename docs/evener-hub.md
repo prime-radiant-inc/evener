@@ -97,12 +97,13 @@ create a default launch stanza; launch defaults still come from the layered
 launch files described below.
 
 Create `hub.toml` when you need to override those paths or the listen
-address. This command expands `$HOME` before writing the file; TOML itself
-does not expand shell variables.
+address. The shell expands `hub_config` and the `$HOME` values in the heredoc
+before writing the file; TOML itself does not expand shell variables.
 
 ```bash
-mkdir -p "$HOME/.config/evener"
-cat > "$HOME/.config/evener/hub.toml" <<EOF
+hub_config="${XDG_CONFIG_HOME:-$HOME/.config}/evener/hub.toml"
+mkdir -p "$(dirname "$hub_config")"
+cat > "$hub_config" <<EOF
 addr = "127.0.0.1:9180"
 hub_state_root = "$HOME/.local/state/evener"
 run_dir = "$HOME/.local/state/evener/run"
@@ -113,7 +114,7 @@ past_index_rebuild_interval = "60s"
 past_results_per_page = 50
 EOF
 
-chmod 600 "$HOME/.config/evener/hub.toml"
+chmod 600 "$hub_config"
 ```
 
 Codex app-server integration is a separate, optional block. Use
