@@ -11,6 +11,9 @@
  *
  * Switching clears server-scoped placeholder state and increments the
  * connection generation so late frames from the old server are rejected.
+ *
+ * Preview operations carry a generation counter so stale completions from a
+ * cancelled or superseded preview cannot replace the latest preview state.
  */
 
 import { create } from "zustand";
@@ -24,7 +27,11 @@ import type {
 import { isProfileServiceError } from "../services/nativeProfiles";
 
 export type ConnectionStatus = "initial" | "loading" | "ready" | "error";
-export type Reachability = "reachable" | "reconnecting" | "unreachable";
+export type Reachability =
+  | "reachable"
+  | "reconnecting"
+  | "unreachable"
+  | "unknown";
 
 /** A preview holds only the opaque ID + redacted origin. Never a token/query. */
 export interface ConnectionPreview {
@@ -36,6 +43,12 @@ export interface ConnectionPreview {
 /** Input for paste preview — the raw URL is transient and never persisted. */
 export interface PreviewInput {
   readonly raw: string;
+}
+
+/** A native scan result — opaque preview ID + redacted origin, no token. */
+export interface ScanPreviewResult {
+  readonly previewId: string;
+  readonly origin: string;
 }
 
 export interface ConnectionState {
@@ -58,6 +71,8 @@ export interface ConnectionState {
     readonly profileId: string;
     readonly raw: string;
   }): Promise<void>;
+  /** Set a preview directly from a native scan result (no raw URL in JS). */
+  setScanPreview(result: ScanPreviewResult): Promise<void>;
   cancelPreview(): Promise<void>;
   confirmPairing(
     previewId: string,
@@ -81,6 +96,8 @@ function toRaw(input: string | PreviewInput): string {
 }
 
 export function createConnectionStore(service: ProfileService) {
+  let previewGen = 0;
+
   return create<ConnectionState>((set, get) => ({
     profiles: [],
     activeProfileId: null,
@@ -108,11 +125,13 @@ export function createConnectionStore(service: ProfileService) {
     },
 
     async previewPaste(input: string | PreviewInput) {
+      const gen = ++previewGen;
       set({ previewError: null });
       try {
         const result: ProfilePreview = await service.previewPaste({
           raw: toRaw(input),
         });
+        if (gen !== previewGen) return; // stale — superseded or cancelled
         set({
           preview: {
             previewId: result.previewId,
@@ -121,17 +140,20 @@ export function createConnectionStore(service: ProfileService) {
           },
         });
       } catch (cause) {
+        if (gen !== previewGen) return;
         set({ preview: null, previewError: redactError(cause) });
       }
     },
 
     async previewRepair(input) {
+      const gen = ++previewGen;
       set({ previewError: null });
       try {
         const result: ProfilePreview = await service.previewRepair({
           profileId: input.profileId,
           raw: input.raw,
         });
+        if (gen !== previewGen) return;
         set({
           preview: {
             previewId: result.previewId,
@@ -140,11 +162,28 @@ export function createConnectionStore(service: ProfileService) {
           },
         });
       } catch (cause) {
+        if (gen !== previewGen) return;
         set({ preview: null, previewError: redactError(cause) });
       }
     },
 
+    async setScanPreview(result: ScanPreviewResult) {
+      const gen = ++previewGen;
+      set({ previewError: null });
+      // No raw URL crosses this boundary — the native layer returns only the
+      // opaque previewId and redacted origin. We set the preview directly.
+      if (gen !== previewGen) return;
+      set({
+        preview: {
+          previewId: result.previewId,
+          origin: result.origin,
+          isPrivateNetwork: isPrivateNetwork(result.origin),
+        },
+      });
+    },
+
     async cancelPreview() {
+      ++previewGen; // invalidate any in-flight preview
       const preview = get().preview;
       if (preview === null) return;
       try {
@@ -156,8 +195,6 @@ export function createConnectionStore(service: ProfileService) {
     },
 
     async confirmPairing(previewId, name, allowDuplicateOrigin) {
-      // Load the current profile list so name/origin validation runs against
-      // the authoritative service state, not a stale snapshot.
       const profiles = await loadProfiles(service, get, set);
       assertNameUnique(profiles, name);
       assertOriginConsent(profiles, get().preview, allowDuplicateOrigin);
@@ -167,6 +204,7 @@ export function createConnectionStore(service: ProfileService) {
           name,
           allowDuplicateOrigin,
         });
+        ++previewGen;
         await syncFromService(service, set);
         return profile;
       } catch (cause) {
@@ -183,6 +221,7 @@ export function createConnectionStore(service: ProfileService) {
           name,
           allowDuplicateOrigin,
         });
+        ++previewGen;
         await syncFromService(service, set);
         return profile;
       } catch (cause) {
@@ -203,7 +242,6 @@ export function createConnectionStore(service: ProfileService) {
     },
 
     async remove(profileId) {
-      // Load current state so a failure leaves the prior list intact.
       await loadProfiles(service, get, set);
       try {
         const result: SelectResult = await service.remove({ profileId });
@@ -225,11 +263,9 @@ export function createConnectionStore(service: ProfileService) {
         set({
           activeProfileId: result.profileId,
           generation: result.generation,
-          // Clear server-scoped placeholder state (roster/conversation).
           __serverScopedState: null,
         });
       } catch (cause) {
-        // Restore prior active on failure.
         set({ activeProfileId: priorActive });
         throw redactedThrow(cause);
       }
@@ -251,7 +287,6 @@ async function loadProfiles(
   get: () => ConnectionState,
   set: (partial: Partial<ConnectionState>) => void,
 ): Promise<readonly ProfileRedacted[]> {
-  // If we already have a non-stale list, return it; otherwise fetch health.
   try {
     const health = await service.health();
     const next: {
@@ -264,7 +299,6 @@ async function loadProfiles(
       activeProfileId: health.activeProfileId,
       generation: health.generation,
     };
-    // Preserve loading/error status unless we were initial.
     if (get().status === "initial") {
       next.status = "ready";
     }
@@ -296,10 +330,6 @@ function isPrivateNetwork(origin: string): boolean {
   return origin.startsWith("http://");
 }
 
-/**
- * Map any error to a redacted, secret-free message. The raw cause is dropped
- * deliberately: it may carry a token, query, or path.
- */
 function redactError(cause: unknown): string {
   if (isProfileServiceError(cause)) {
     return cause.message;

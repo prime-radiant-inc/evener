@@ -4,6 +4,7 @@ import type { ProfileRedacted } from "../services/nativeProfiles";
 import { createConnectionStore } from "../state/connection";
 import { createNavigationStore } from "../state/navigation";
 import { createPreferencesStore } from "../state/preferences";
+import type { FakeProfileService } from "../test/fakeProfileService";
 import { createShellServices } from "./fixture-services";
 import { RootShell } from "./RootShell";
 
@@ -27,7 +28,8 @@ function renderShell(
     profiles: opts.profiles ?? [],
     activeProfileId: opts.activeProfileId ?? null,
   });
-  if (opts.fail?.health) services.profile.failOnce("health");
+  if (opts.fail?.health)
+    (services.profile as FakeProfileService).failOnce("health");
   const stores = {
     connection: createConnectionStore(services.profile),
     navigation: createNavigationStore(),
@@ -205,8 +207,8 @@ describe("RootShell — honest states", () => {
 
   it("Sessions shows a loading state then ready", async () => {
     renderShell({ profiles: PROFILES, activeProfileId: "p1" });
-    // Initially the main region is present.
-    expect(screen.getByRole("main")).toBeInTheDocument();
+    // After loading, the tab panel is present.
+    expect(await screen.findByRole("tabpanel")).toBeInTheDocument();
   });
 
   it("Settings shows mobile-only sections", async () => {

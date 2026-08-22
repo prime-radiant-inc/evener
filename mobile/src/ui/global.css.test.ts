@@ -136,3 +136,39 @@ describe("keyboard viewport — bottom dock above keyboard", () => {
     );
   });
 });
+
+describe("fix round 1 — dark glyph contrast", () => {
+  it("dark-mode status glyphs use dark ink on bright fills for >=3:1", () => {
+    expect(
+      has(/--status-glyph-ink\s*:\s*#000/i) || has(/color\s*:\s*#000/i),
+    ).toBe(true);
+  });
+
+  it("status marks always have a text label class, not glyph alone", () => {
+    expect(has(/evener-status-mark__label/i)).toBe(true);
+  });
+});
+
+describe("fix round 1 — no duplicate safe-area padding", () => {
+  it("screen-scroll does NOT apply safe-area (shell applies it once)", () => {
+    const scrollMatch = css.match(
+      /\.evener-screen-scroll\s*\{[^}]*safe-area[^}]*\}/s,
+    );
+    expect(scrollMatch).toBeFalsy();
+  });
+});
+
+describe("fix round 1 — intrinsic rows at 375/AX", () => {
+  it("list rows use min-height not fixed height", () => {
+    const rowFixedHeight = css.match(
+      /\.evener-list-row\s*\{[^}]*\bheight\s*:\s*\d+px[^}]*\}/s,
+    );
+    expect(rowFixedHeight).toBeFalsy();
+  });
+});
+
+describe("fix round 1 — tablist container", () => {
+  it("bottom bar CSS class exists for tablist role", () => {
+    expect(has(/evener-bottombar/i)).toBe(true);
+  });
+});

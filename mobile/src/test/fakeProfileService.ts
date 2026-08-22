@@ -40,10 +40,6 @@ export class FakeProfileService implements ProfileService {
   private readonly previews = new Map<string, string>();
   private previewCounter = 0;
   private readonly failQueue: FakeProfileOp[] = [];
-  /** Last origin seen by previewPaste/previewRepair — lets tests assert redaction. */
-  lastPreviewOrigin: string | null = null;
-  /** Recorded raw inputs (cleared by tests) — never persists a secret. */
-  readonly recordedRaws: string[] = [];
 
   constructor(seed: FakeProfileServiceSeed = {}) {
     this.activeProfileId = seed.activeProfileId ?? null;
@@ -73,22 +69,18 @@ export class FakeProfileService implements ProfileService {
   }
 
   async previewPaste(input: { readonly raw: string }): Promise<ProfilePreview> {
-    this.recordedRaws.push(input.raw);
     this.checkFail("previewPaste");
     const previewId = `pv-${++this.previewCounter}`;
     // Parse a minimal http(s)://host[:port]/auth?token=... to extract origin.
     const origin = parseOrigin(input.raw);
-    this.lastPreviewOrigin = origin;
     this.previews.set(previewId, origin);
     return { previewId, origin };
   }
 
   async previewRepair(input: PreviewRepairInput): Promise<ProfilePreview> {
-    this.recordedRaws.push(input.raw);
     this.checkFail("previewRepair");
     const previewId = `pv-${++this.previewCounter}`;
     const origin = parseOrigin(input.raw);
-    this.lastPreviewOrigin = origin;
     this.previews.set(previewId, origin);
     return { previewId, origin };
   }
@@ -99,7 +91,7 @@ export class FakeProfileService implements ProfileService {
     if (origin === undefined) {
       throw new Error("preview not found (redacted)");
     }
-    const id = `p-${this.profiles.size + 1}-${Math.random().toString(36).slice(2, 8)}`;
+    const id = `p-${this.profiles.size + 1}`;
     const profile: ProfileRedacted = { id, name: input.name, origin };
     this.profiles.set(id, profile);
     this.activeProfileId = id;

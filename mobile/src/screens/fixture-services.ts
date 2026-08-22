@@ -8,11 +8,15 @@
  */
 import type { NativeBridge } from "../native/client";
 import { FakeNativeBridge } from "../native/fake";
-import type { ProfileRedacted } from "../services/nativeProfiles";
+import type {
+  ProfileRedacted,
+  ProfileService,
+} from "../services/nativeProfiles";
 import { FakeProfileService } from "../test/fakeProfileService";
+import type { ShellServiceBundle } from "./root-types";
 
 export interface OnboardingServiceBundle {
-  readonly profile: FakeProfileService;
+  readonly profile: ProfileService;
   readonly native: NativeBridge;
   /** Recorded haptic kinds (for tests asserting success haptic). */
   readonly hapticCalls: string[];
@@ -87,13 +91,6 @@ export function createOnboardingServices(
     hapticCalls,
     contentSize: () => "large",
   };
-}
-
-export interface ShellServiceBundle {
-  readonly profile: FakeProfileService;
-  readonly native: NativeBridge;
-  readonly hapticCalls: string[];
-  readonly contentSize: () => string;
 }
 
 export interface CreateShellServicesOptions {

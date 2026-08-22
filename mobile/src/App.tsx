@@ -1,19 +1,18 @@
 /**
  * App entry — wires the RootShell with real or fixture services.
  *
- * In production, the real `nativeProfiles` service and `NativeBridge` are
- * injected. In fixture mode (`?fixture=onboarding|servers|sessions|new|settings`),
- * deterministic seeded multi-profile data and a fake bridge load so the
- * renderer can be exercised in a browser without a Hub.
+ * In production, real Tauri-backed services are injected via
+ * {@link createProductionServices}. In fixture mode
+ * (`?fixture=onboarding|servers|sessions|new|settings`), deterministic seeded
+ * multi-profile data and a fake bridge load so the renderer can be exercised
+ * in a browser without a Hub.
  */
 import type { JSX } from "react";
 import "./ui/global.css";
 import { createFixture, type FixtureRoute, isFixtureRoute } from "./fixture";
-import {
-  createShellServices,
-  type ShellServiceBundle,
-} from "./screens/fixture-services";
+import { createProductionServices } from "./screens/production-services";
 import { RootShell } from "./screens/RootShell";
+import type { ShellServiceBundle } from "./screens/root-types";
 import { createConnectionStore } from "./state/connection";
 import { createNavigationStore, type RootTab } from "./state/navigation";
 import { createPreferencesStore } from "./state/preferences";
@@ -31,24 +30,22 @@ function readFixtureRoute(): string | null {
 
 export function App(props: AppProps): JSX.Element {
   const routeParam = props.fixtureRoute ?? readFixtureRoute();
-  const isFixture = isFixtureRoute(routeParam);
 
-  if (isFixture) {
+  // Fixture mode — only when an explicit ?fixture= param is present.
+  if (isFixtureRoute(routeParam)) {
     return <FixtureApp route={routeParam} />;
   }
 
-  // Production wiring — real services (or fixture=false test fallback).
+  // Production — real Tauri-backed services.
   if (props.fixture) {
-    const services = createShellServices({
-      profiles: [],
-      activeProfileId: null,
-    });
+    // Test fallback: fixture=true without a route shows the empty shell.
+    // This path is only hit by tests that pass fixture={true} explicitly.
+    // with an empty profile store (shows onboarding).
+    const services = createProductionServices();
     return <ShellHost services={services} initialTab="sessions" />;
   }
 
-  // Production: real services will be wired in the Tauri build. For now, use
-  // the shell with empty profiles (shows onboarding).
-  const services = createShellServices({ profiles: [], activeProfileId: null });
+  const services = createProductionServices();
   return <ShellHost services={services} initialTab="sessions" />;
 }
 
@@ -64,7 +61,9 @@ function FixtureApp({ route }: { readonly route: FixtureRoute }): JSX.Element {
 }
 
 function ShellHost(props: {
-  readonly services: ShellServiceBundle;
+  readonly services:
+    | ShellServiceBundle
+    | ReturnType<typeof createProductionServices>;
   readonly initialTab: RootTab;
   readonly offlineProfileIds?: readonly string[];
 }): JSX.Element {
@@ -74,7 +73,6 @@ function ShellHost(props: {
     navigation: createNavigationStore(),
     preferences: createPreferencesStore(),
   };
-  // Seed offline reachability for fixture state testing.
   if (offlineProfileIds) {
     for (const id of offlineProfileIds) {
       stores.connection.getState().setReachability(id, "unreachable");

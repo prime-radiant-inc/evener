@@ -1,10 +1,13 @@
 /**
  * Sessions screen — honest placeholder for Task 8.
  *
- * Shows the active server in the top bar (name + host:port + status), an honest
- * empty state when no sessions exist, and a loading state while the roster
- * loads. No session implementation yet — Task 8 replaces the placeholder with
- * the live roster.
+ * Shows the active server in the top bar (name + full origin + status), an
+ * honest empty state when no sessions exist, and a loading state while the
+ * roster loads. No session implementation yet — Task 8 replaces the
+ * placeholder with the live roster.
+ *
+ * Reachability is honest: without real health data it shows "Reconnecting"
+ * (unknown), never fabricated "Connected".
  */
 import { type JSX, useEffect } from "react";
 import { Empty, ErrorState, Loading } from "../ui/States";
@@ -28,13 +31,13 @@ export function SessionsScreen({
 
   const active = profiles.find((p) => p.id === activeProfileId) ?? null;
   const activeName = active?.name ?? "No server";
-  const activeHost = active ? hostFromOrigin(active.origin) : "";
+  const activeOrigin = active?.origin ?? "";
   const reachState: StatusKind =
     active && reachability[active.id] === "unreachable"
       ? "offline"
-      : active
+      : active && reachability[active.id] === "reachable"
         ? "reachable"
-        : "offline";
+        : "reconnecting";
 
   useEffect(() => {
     if (status === "initial") {
@@ -43,7 +46,7 @@ export function SessionsScreen({
   }, [status, connection]);
 
   return (
-    <main className="evener-screen-scroll">
+    <div>
       <TopBar
         title="Sessions"
         trailing={
@@ -54,7 +57,7 @@ export function SessionsScreen({
             onClick={onOpenSwitcher}
             style={{ minHeight: "var(--tap-target)" }}
           >
-            {activeName} {activeHost ? `· ${activeHost}` : ""}
+            {activeName} {activeOrigin ? `· ${activeOrigin}` : ""}
           </button>
         }
       />
@@ -74,16 +77,6 @@ export function SessionsScreen({
           hint="Start a new session from the New tab."
         />
       )}
-    </main>
+    </div>
   );
-}
-
-function hostFromOrigin(origin: string): string {
-  try {
-    const url = new URL(origin);
-    const port = url.port ? `:${url.port}` : "";
-    return `${url.hostname}${port}`;
-  } catch {
-    return origin;
-  }
 }
