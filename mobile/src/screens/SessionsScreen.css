@@ -1,0 +1,65 @@
+/*
+ * Sessions screen — responsive server header (Foundation 7C lane C).
+ *
+ * One full-width server disclosure control replaces the redundant title row.
+ * Uses a grid layout so the name, origin, and status row stack robustly. Long
+ * origins wrap via overflow-wrap: anywhere so no word is ellipsized merely
+ * because of the header layout. Long names and localized labels wrap
+ * intrinsically. No text truncation or forced single-line — no
+ * horizontal overflow at 375/393/430 CSS px across default and AX type scales.
+ * 44px minimum tap target. No desktop card, floating pill, box-shadow, or
+ * border-radius. Uses existing design tokens only.
+ */
+
+.evener-sessions-header {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: var(--space-8);
+  width: 100%;
+  min-height: var(--tap-target);
+  padding: var(--space-12) var(--space-16);
+  border: 0;
+  border-bottom: 1px solid var(--hairline);
+  background: var(--canvas);
+  color: var(--primary);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.evener-sessions-header:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+
+.evener-sessions-header__text {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+  min-width: 0;
+}
+
+.evener-sessions-header__name {
+  font-weight: 600;
+  /* Intrinsic wrapping — long names/localized labels wrap naturally. */
+  overflow-wrap: anywhere;
+}
+
+.evener-sessions-header__origin {
+  font-size: 0.85em;
+  color: var(--secondary);
+  /* Full origin wraps at any character boundary — no truncation. */
+  overflow-wrap: anywhere;
+}
+
+.evener-sessions-header__status {
+  /* Status lives inside the header button, not as a detached row. */
+}
+
+.evener-sessions-header__chevron {
+  flex: 0 0 auto;
+  font-size: 1.2em;
+  color: var(--secondary);
+  line-height: 1;
+}
