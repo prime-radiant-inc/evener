@@ -15,6 +15,10 @@
 import { type JSX, useEffect, useState } from "react";
 import type { RootTab } from "../state/navigation";
 import { BottomBar, type BottomTab } from "../ui/BottomBar";
+import {
+  usePlatformPresentation,
+  useViewportCoordinator,
+} from "../ui/platformPresentation";
 import { Sheet } from "../ui/Sheet";
 import { Loading } from "../ui/States";
 import { NewSessionScreen } from "./NewSessionScreen";
@@ -56,6 +60,13 @@ export function RootShell({ services, stores }: RootShellProps): JSX.Element {
   const theme = preferences((s) => s.theme);
   const reducedMotion = preferences((s) => s.reducedMotion);
   const contentSize = preferences((s) => s.contentSize);
+
+  // Apply presentation preferences (theme, content-size, reduced-motion) to
+  // document.documentElement so body-level portals inherit the same tokens.
+  usePlatformPresentation({ theme, contentSize, reducedMotion });
+  // Coordinate the visualViewport once: writes --viewport-height and
+  // --keyboard-inset onto the document root and tears down on unmount.
+  useViewportCoordinator();
 
   const [switcherOpen, setSwitcherOpen] = useState(false);
   const [addingServer, setAddingServer] = useState(false);
