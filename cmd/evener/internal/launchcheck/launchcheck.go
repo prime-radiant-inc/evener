@@ -268,31 +268,19 @@ func launchCheckModelListUnavailable(err error) bool {
 }
 
 // launchCheckModelVisible reports whether modelID should appear in the launch
-// model list for a provider with the given behavior tag. It returns false for
-// non-chat model IDs (embedding, media, etc.) and, for the "openrouter" tag,
-// for models that are not in the catalog or lack tool support.
+// model list for a provider with the given behavior tag. It delegates to the
+// shared llm.ModelCatalog.VisibleLiveModel rule so the launch-check path and the
+// hub /api/models path cannot drift. See VisibleLiveModel for the OpenRouter
+// bare-live-ID vs prefix-keyed-catalog resolution this fixes.
 func launchCheckModelVisible(behaviorTag, modelID string, cat *llm.ModelCatalog) bool {
-	lower := strings.ToLower(modelID)
-	if strings.Contains(lower, "embedding") ||
-		strings.Contains(lower, "whisper") ||
-		strings.Contains(lower, "tts") ||
-		strings.Contains(lower, "dall-e") ||
-		strings.Contains(lower, "moderation") ||
-		strings.Contains(lower, "audio") ||
-		strings.Contains(lower, "transcribe") ||
-		strings.Contains(lower, "image") {
-		return false
-	}
-	if behaviorTag == "openrouter" {
-		mi := launchCheckCatalogModelInfo(cat, modelID)
-		return mi != nil && mi.SupportsTools
-	}
-	return true
+	return cat.VisibleLiveModel(behaviorTag, modelID)
 }
 
+// launchCheckCatalogModelInfo resolves catalog metadata for a live model ID,
+// delegating to the shared llm.ModelCatalog.ResolveLiveModelInfo so OpenRouter
+// bare live IDs (e.g. "anthropic/claude-sonnet-4.5") resolve against the
+// openrouter/-prefixed catalog entry. behaviorTag defaults to "openrouter" for
+// the launch-check path, which only calls this for openrouter instances.
 func launchCheckCatalogModelInfo(cat *llm.ModelCatalog, modelID string) *llm.ModelInfo {
-	if cat == nil {
-		return nil
-	}
-	return cat.GetModelInfo(modelID)
+	return cat.ResolveLiveModelInfo("openrouter", modelID)
 }

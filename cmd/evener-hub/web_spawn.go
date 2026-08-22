@@ -389,22 +389,14 @@ func (s *WebServer) fetchLiveModels(ctx context.Context) []map[string]any {
 			continue
 		}
 		for _, m := range models {
-			lower := strings.ToLower(m.ID)
-			// Skip non-chat / non-completion models from the live list.
-			if strings.Contains(lower, "embedding") ||
-				strings.Contains(lower, "whisper") ||
-				strings.Contains(lower, "tts") ||
-				strings.Contains(lower, "dall-e") ||
-				strings.Contains(lower, "moderation") ||
-				strings.Contains(lower, "audio") ||
-				strings.Contains(lower, "transcribe") ||
-				strings.Contains(lower, "image") {
+			// VisibleLiveModel applies the shared non-chat skip rule and, for
+			// the openrouter tag, the catalog tools-capability filter. This is
+			// the same rule the launch-check path uses (llm.VisibleLiveModel),
+			// so the two live-model paths cannot drift.
+			if !cat.VisibleLiveModel(tag, m.ID) {
 				continue
 			}
 			mi := catalogModelInfo(cat, tag, m.ID)
-			if tag == "openrouter" && (mi == nil || !mi.SupportsTools) {
-				continue
-			}
 			// Use the registered provider name (prov), not m.Provider — wrapper
 			// adapters like openrouter forward to openaicompat which reports
 			// itself as "openai-compatible". The hub's spawn flow needs the
@@ -493,29 +485,12 @@ func (s *WebServer) overlayLiveEntries(entries []map[string]any) []map[string]an
 }
 
 func catalogModelInfo(cat *llm.ModelCatalog, behaviorTag, modelID string) *llm.ModelInfo {
-	// Canonicalized bare lookup first: LookupModelInfo handles the "[1m]"
-	// suffix, provider namespaces, and dated snapshots, and resolves evener's
-	// curated overrides — LiteLLM's provider-qualified entries (e.g.
-	// "openrouter/deepseek/deepseek-chat") often carry NULL capability flags
-	// where the canonical entry is richer. The exact tag-qualified key is the
-	// FALLBACK so openrouter-only listings (entries keyed solely
-	// "openrouter/<model>") still resolve instead of being dropped as not
-	// tool-capable. (The adapter's fillFromCatalog uses the opposite,
-	// exact-qualified-first order — it wants the provider-specific WIRE
-	// behavior, not the richest display metadata.)
-	if behaviorTag == "ollama" {
-		// Local ollama models are unrelated to same-named upstream catalog
-		// entries — the same bare-lookup suppression the profile and adapter
-		// paths apply. Only an explicit ollama/<model> entry counts.
-		return cat.GetModelInfo("ollama/" + modelID)
-	}
-	if mi := cat.LookupModelInfo(modelID); mi != nil {
-		return mi
-	}
-	if behaviorTag != "" {
-		return cat.GetModelInfo(behaviorTag + "/" + modelID)
-	}
-	return nil
+	// Delegates to the shared llm.ModelCatalog.ResolveLiveModelInfo rule so the
+	// hub /api/models path and the launch-check path share one resolution: bare
+	// LookupModelInfo first (handles "[1m]", provider namespaces, dated
+	// snapshots, curated overrides), then the exact tag-qualified key as a
+	// fallback so openrouter-only listings (keyed "openrouter/<model>") resolve.
+	return cat.ResolveLiveModelInfo(behaviorTag, modelID)
 }
 
 // behaviorTagFor resolves an instance name to its behavior tag via the loaded

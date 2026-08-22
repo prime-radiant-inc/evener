@@ -161,27 +161,10 @@ func formatModelAlternatives(models []llm.ModelInfo, tag string, cat *llm.ModelC
 	return strings.Join(ids, ", ")
 }
 
-// modelSwitchVisible mirrors launchcheck's launchCheckModelVisible: non-chat
-// model IDs (embedding, media, etc.) are never valid switch targets, and the
-// "openrouter" tag additionally requires catalog tool support.
+// modelSwitchVisible delegates to the shared llm.ModelCatalog.VisibleLiveModel
+// rule so the in-session model-switch path, the launch-check path, and the hub
+// /api/models path share one visibility rule and cannot drift. See
+// VisibleLiveModel for the OpenRouter bare-live-ID resolution this fixes.
 func modelSwitchVisible(behaviorTag, modelID string, cat *llm.ModelCatalog) bool {
-	lower := strings.ToLower(modelID)
-	if strings.Contains(lower, "embedding") ||
-		strings.Contains(lower, "whisper") ||
-		strings.Contains(lower, "tts") ||
-		strings.Contains(lower, "dall-e") ||
-		strings.Contains(lower, "moderation") ||
-		strings.Contains(lower, "audio") ||
-		strings.Contains(lower, "transcribe") ||
-		strings.Contains(lower, "image") {
-		return false
-	}
-	if behaviorTag == "openrouter" {
-		if cat == nil {
-			return false
-		}
-		mi := cat.GetModelInfo(modelID)
-		return mi != nil && mi.SupportsTools
-	}
-	return true
+	return cat.VisibleLiveModel(behaviorTag, modelID)
 }
