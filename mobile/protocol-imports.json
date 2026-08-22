@@ -1,0 +1,8 @@
+[
+  "cmd/evener-hub/frontend/src/protocol/client.ts",
+  "cmd/evener-hub/frontend/src/protocol/errors.ts",
+  "cmd/evener-hub/frontend/src/protocol/model.ts",
+  "cmd/evener-hub/frontend/src/protocol/reducer.ts",
+  "cmd/evener-hub/frontend/src/protocol/transport.ts",
+  "cmd/evener-hub/frontend/src/protocol/types.gen.ts"
+]
