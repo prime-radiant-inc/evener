@@ -352,6 +352,31 @@ func (launchCheckTimeoutError) Error() string   { return "timeout" }
 func (launchCheckTimeoutError) Timeout() bool   { return true }
 func (launchCheckTimeoutError) Temporary() bool { return true }
 
+// TestLaunchCheckModelVisible_OpenRouterBareLiveID is the regression test for the
+// bug where the launch-check model list showed only ~10 OpenRouter models.
+// OpenRouter's /v1/models endpoint returns bare IDs like
+// "anthropic/claude-sonnet-4.5", but the catalog keys them as
+// "openrouter/anthropic/claude-sonnet-4.5". Before the shared
+// llm.VisibleLiveModel rule, launchCheckCatalogModelInfo did an exact
+// GetModelInfo(bareID) that returned nil, so the tools filter dropped the model.
+// Now the shared ResolveLiveModelInfo applies the "openrouter/<id>" fallback.
+func TestLaunchCheckModelVisible_OpenRouterBareLiveID(t *testing.T) {
+	cat := llm.EmbeddedModelCatalog()
+
+	// Premise: only the prefixed key exists.
+	if cat.GetModelInfo("anthropic/claude-sonnet-4.5") != nil {
+		t.Fatal("test premise broken: bare anthropic/claude-sonnet-4.5 now exists as a key")
+	}
+	if cat.GetModelInfo("openrouter/anthropic/claude-sonnet-4.5") == nil {
+		t.Fatal("test premise broken: openrouter/anthropic/claude-sonnet-4.5 missing from catalog")
+	}
+
+	// The bare live ID must now survive the launch-check visibility filter.
+	if !launchCheckModelVisible("openrouter", "anthropic/claude-sonnet-4.5", cat) {
+		t.Error("bare OpenRouter live ID should be visible after the shared-helper fix")
+	}
+}
+
 func TestLaunchCheckRejectsUnsupportedProvider(t *testing.T) {
 	var stdout, stderr bytes.Buffer
 	err := RunLaunchCheck([]string{

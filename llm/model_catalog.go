@@ -220,6 +220,90 @@ func (c *ModelCatalog) ListModels(provider string) []ModelInfo {
 	return out
 }
 
+// nonChatModelSubstrings identifies live /models IDs that are not text-completion
+// models. It is shared by every caller that filters a live model list down to
+// chat/completion models so the skip rule cannot drift between them.
+var nonChatModelSubstrings = []string{
+	"embedding", "whisper", "tts", "dall-e", "moderation", "audio", "transcribe", "image",
+}
+
+// IsChatModelID reports whether modelID names a text-completion model rather than
+// an embedding, audio, image, or moderation model. It is a substring check on the
+// lowercased ID, matching the skip rule the launch-check and hub /api/models paths
+// previously duplicated. A nil or empty ID reports false.
+func IsChatModelID(modelID string) bool {
+	if modelID == "" {
+		return false
+	}
+	lower := strings.ToLower(modelID)
+	for _, s := range nonChatModelSubstrings {
+		if strings.Contains(lower, s) {
+			return false
+		}
+	}
+	return true
+}
+
+// ResolveLiveModelInfo resolves catalog metadata for a model ID advertised by a
+// provider's live /models endpoint, keyed by the provider's behavior tag. It is
+// the single resolution rule for live model IDs:
+//
+//   - For the "ollama" tag, local models are unrelated to same-named upstream
+//     catalog entries, so only an explicit "ollama/<id>" key counts (bare lookup
+//     is suppressed).
+//   - Otherwise it tries LookupModelInfo(id) first (handles "[1m]" suffixes,
+//     provider-namespace stripping, dated-snapshot family fallbacks, and evener's
+//     curated overrides), then falls back to the exact tag-qualified key
+//     "tag/<id>" so provider-only listings (e.g. OpenRouter entries keyed solely
+//     "openrouter/<model>") still resolve.
+//
+// The OpenRouter case is the motivating bug: OpenRouter's /v1/models endpoint
+// returns bare IDs like "anthropic/claude-sonnet-4.5", but the embedded LiteLLM
+// catalog keys those models as "openrouter/anthropic/claude-sonnet-4.5". An exact
+// GetModelInfo(bareID) returns nil, so a tools-capability filter dropped nearly
+// every OpenRouter model. The tag-qualified fallback resolves them.
+//
+// Returns nil when the catalog is nil or nothing matches.
+func (c *ModelCatalog) ResolveLiveModelInfo(behaviorTag, modelID string) *ModelInfo {
+	if c == nil {
+		return nil
+	}
+	if behaviorTag == "ollama" {
+		// Local ollama models are unrelated to same-named upstream catalog
+		// entries — the same bare-lookup suppression the profile and adapter
+		// paths apply. Only an explicit ollama/<model> entry counts.
+		return c.GetModelInfo("ollama/" + modelID)
+	}
+	if mi := c.LookupModelInfo(modelID); mi != nil {
+		return mi
+	}
+	if behaviorTag != "" {
+		return c.GetModelInfo(behaviorTag + "/" + modelID)
+	}
+	return nil
+}
+
+// VisibleLiveModel reports whether modelID should appear in a live model list for
+// a provider with the given behavior tag. It returns false for non-chat model IDs
+// (IsChatModelID) and, for the "openrouter" tag, for models that do not resolve in
+// the catalog (ResolveLiveModelInfo) or lack tool support. Other behavior tags do
+// not gate on the catalog: a live /models entry is visible as long as it is a
+// chat model.
+//
+// This consolidates the visibility rule previously duplicated (and drifted)
+// between cmd/evener/internal/launchcheck.launchCheckModelVisible and
+// cmd/evener-hub/web_spawn.go's fetchLiveModels.
+func (c *ModelCatalog) VisibleLiveModel(behaviorTag, modelID string) bool {
+	if !IsChatModelID(modelID) {
+		return false
+	}
+	if behaviorTag != "openrouter" {
+		return true
+	}
+	mi := c.ResolveLiveModelInfo(behaviorTag, modelID)
+	return mi != nil && mi.SupportsTools
+}
+
 // GetLatestModel returns the model for the given provider that best matches the
 // requested capability, selecting the largest context window and breaking ties
 // by lexically greater ID. The capability filter (case-insensitive,
