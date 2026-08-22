@@ -1,0 +1,51 @@
+use tauri::{
+    plugin::{Builder, TauriPlugin},
+    Manager, Runtime,
+};
+
+pub use models::*;
+
+#[cfg(desktop)]
+mod desktop;
+#[cfg(mobile)]
+mod mobile;
+
+mod commands;
+mod error;
+mod models;
+
+pub use error::{Error, Result};
+
+#[cfg(desktop)]
+use desktop::EvenerNative;
+#[cfg(mobile)]
+use mobile::EvenerNative;
+
+/// Extensions to [`tauri::App`], [`tauri::AppHandle`] and [`tauri::Window`] to access the evener-native APIs.
+pub trait EvenerNativeExt<R: Runtime> {
+    fn evener_native(&self) -> &EvenerNative<R>;
+}
+
+impl<R: Runtime, T: Manager<R>> crate::EvenerNativeExt<R> for T {
+    fn evener_native(&self) -> &EvenerNative<R> {
+        self.state::<EvenerNative<R>>().inner()
+    }
+}
+
+/// Initializes the plugin.
+pub fn init<R: Runtime>() -> TauriPlugin<R> {
+    Builder::new("evener-native")
+        .invoke_handler(tauri::generate_handler![
+            commands::ping,
+            commands::scan_and_preview_pairing
+        ])
+        .setup(|app, api| {
+            #[cfg(mobile)]
+            let evener_native = mobile::init(app, api)?;
+            #[cfg(desktop)]
+            let evener_native = desktop::init(app, api)?;
+            app.manage(evener_native);
+            Ok(())
+        })
+        .build()
+}

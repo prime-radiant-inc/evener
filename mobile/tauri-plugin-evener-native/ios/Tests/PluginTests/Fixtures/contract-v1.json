@@ -1,0 +1,54 @@
+{
+  "bridgeVersion": 1,
+  "commands": [
+    { "version": 1, "type": "secure.get", "profileId": "11111111-1111-1111-1111-111111111111" },
+    {
+      "version": 1,
+      "type": "secure.set",
+      "profileId": "11111111-1111-1111-1111-111111111111",
+      "capability": "fixture-secret-not-a-real-capability"
+    },
+    { "version": 1, "type": "secure.delete", "profileId": "11111111-1111-1111-1111-111111111111" },
+    { "version": 1, "type": "pairing.scanAndPreview" },
+    { "version": 1, "type": "permission.request", "kind": "camera" },
+    { "version": 1, "type": "speech.start" },
+    { "version": 1, "type": "speech.stop" },
+    { "version": 1, "type": "synthesis.speak", "text": "fixture-text-not-spoken" },
+    { "version": 1, "type": "synthesis.stop" },
+    { "version": 1, "type": "haptic.perform", "kind": "selection" },
+    { "version": 1, "type": "contentSize.get" }
+  ],
+  "responses": [
+    { "version": 1, "type": "secure.state", "present": true },
+    { "version": 1, "type": "secure.updated", "stored": true },
+    { "version": 1, "type": "secure.deleted", "deleted": true },
+    {
+      "version": 1,
+      "type": "pairing.preview",
+      "previewId": "preview-fixture",
+      "origin": "https://hub.example.test:8443"
+    },
+    { "version": 1, "type": "permission.status", "kind": "camera", "granted": true },
+    { "version": 1, "type": "speech.ready" },
+    { "version": 1, "type": "speech.stopped" },
+    { "version": 1, "type": "synthesis.started" },
+    { "version": 1, "type": "synthesis.stopped" },
+    { "version": 1, "type": "haptic.completed" },
+    { "version": 1, "type": "contentSize.value", "category": "large" },
+    {
+      "version": 1,
+      "type": "error",
+      "error": {
+        "id": "error-fixture",
+        "kind": "pairing_unavailable",
+        "message": "Pairing is unavailable"
+      }
+    }
+  ],
+  "events": [
+    { "version": 1, "type": "lifecycle.changed", "state": "active" },
+    { "version": 1, "type": "speech.partial", "text": "fixture-partial-not-spoken" },
+    { "version": 1, "type": "speech.final", "text": "fixture-final-not-spoken" },
+    { "version": 1, "type": "barge.in" }
+  ]
+}
