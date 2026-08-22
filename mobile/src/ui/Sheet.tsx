@@ -380,16 +380,17 @@ function updateHandlers(
   }
 }
 
-function finishOwnerFromBack(token: string): void {
+function finishOwnerFromBack(token: string): (() => void) | null {
   const owner = coordinator.owner;
   if (owner?.token === token) {
     coordinator.owner = null;
     owner.revoke(token);
     if (owner.notifyOnComplete) {
       owner.notifyOnComplete = false;
-      owner.onClose();
+      return owner.onClose;
     }
   }
+  return null;
 }
 
 function onPopState(): void {
@@ -400,17 +401,19 @@ function onPopState(): void {
       coordinator.pendingBack = null;
       const queuedWrites = takeQueuedHistoryWrites();
       const owner = coordinator.owner;
+      let notifyParent: (() => void) | null = null;
       if (owner?.token === pending.token) {
         coordinator.owner = null;
         coordinator.buriedCount += 1;
         owner.revoke(owner.token);
         if (owner.notifyOnComplete) {
           owner.notifyOnComplete = false;
-          owner.onClose();
+          notifyParent = owner.onClose;
         }
       }
       setForwardDead(false);
       replayHistoryWrites(queuedWrites);
+      notifyParent?.();
       pumpQueue();
       return;
     }
@@ -434,14 +437,16 @@ function onPopState(): void {
     coordinator.pendingBack = null;
     const queuedWrites = takeQueuedHistoryWrites();
     if (landedOnBase) restoreBaseMarker(state);
+    let notifyParent: (() => void) | null = null;
     if (pending.kind === "owner") {
       setForwardDead(true);
-      finishOwnerFromBack(pending.token);
+      notifyParent = finishOwnerFromBack(pending.token);
     } else {
       coordinator.buriedCount = Math.max(0, coordinator.buriedCount - 1);
       setForwardDead(false);
     }
     replayHistoryWrites(queuedWrites);
+    notifyParent?.();
     // A dead marker may be immediately below another dead marker.
     const current = history.state;
     if (
