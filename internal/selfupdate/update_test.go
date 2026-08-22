@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"compress/gzip"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -150,6 +151,40 @@ func TestUpgradeInstallsReleaseArchive(t *testing.T) {
 			t.Fatalf("symlink %s -> %s, want %s", link, target, installed)
 		}
 	}
+}
+
+func TestUpgradeInstallsMigrateBinary(t *testing.T) {
+	archive := releaseArchive(t, "evener_linux_amd64")
+	client := &http.Client{Transport: staticArchiveRoundTripper(archive)}
+
+	prefix := filepath.Join(t.TempDir(), ".local")
+	_, err := Upgrade(t.Context(), Options{
+		Requested:      "snapshot",
+		CurrentChannel: "snapshot",
+		Prefix:         prefix,
+		GOOS:           "linux",
+		GOARCH:         "amd64",
+		RepoURL:        "https://example.invalid/evener",
+		HTTPClient:     client,
+	})
+	if err != nil {
+		t.Fatalf("Upgrade: %v", err)
+	}
+
+	migrate := filepath.Join(prefix, "share", "evener", "bin", "evener-migrate")
+	if _, err := os.Stat(migrate); err != nil {
+		t.Fatalf("evener-migrate was not installed: %v", err)
+	}
+}
+
+type staticArchiveRoundTripper []byte
+
+func (t staticArchiveRoundTripper) RoundTrip(*http.Request) (*http.Response, error) {
+	return &http.Response{
+		StatusCode: http.StatusOK,
+		Body:       io.NopCloser(bytes.NewReader(t)),
+		Header:     make(http.Header),
+	}, nil
 }
 
 func TestUpgradeReleaseChannelUsesLatestDownloadURL(t *testing.T) {

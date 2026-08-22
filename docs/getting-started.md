@@ -25,7 +25,7 @@ SHA-256 checksum, and installs five commands — `evener`, `evener-hub`,
 `~/.local/bin` to your `PATH` if your shell does not already find the
 commands there.
 
-Two environment variables adjust the install:
+Four environment variables adjust the install:
 
 - `EVENER_INSTALL_VERSION=v1.2.3` installs a specific tagged release;
   `EVENER_INSTALL_VERSION=snapshot` installs the latest successful build from
@@ -33,6 +33,15 @@ Two environment variables adjust the install:
 - `PREFIX=/usr/local` changes the install root (use `sudo` for system-owned
   paths); `BINDIR` and `EVENER_SHARE_BINDIR` override the two install
   directories individually.
+
+Pass installer variables to `sh`, not to `curl`, in a pipeline:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/prime-radiant-inc/evener/main/install.sh \
+  | EVENER_INSTALL_VERSION=snapshot sh
+curl -fsSL https://raw.githubusercontent.com/prime-radiant-inc/evener/main/install.sh \
+  | sudo env PREFIX=/usr/local sh
+```
 
 From a source checkout, `make install` builds and installs the same layout;
 `sudo make install-system` uses `/usr/local`. Runtime and config directories
@@ -68,15 +77,18 @@ URL:
 
 Open that URL. It sets a long-lived cookie, and later visits to
 `http://127.0.0.1:9180` need no token. The token also lives at
-`~/.local/state/evener/auth-token` for scripted clients, which pass it as
-`Authorization: Bearer`.
+`${XDG_STATE_HOME:-$HOME/.local/state}/evener/auth-token` for scripted clients,
+which pass it as `Authorization: Bearer`.
 
 ## Add provider credentials
 
-Evener calls LLM providers and needs a credential for at least one. The web
-UI is the easiest place to add one: open
+Hosted LLM providers generally need a credential. Local/auth-none providers
+such as Ollama can run without one. For providers that need credentials, the
+web UI is the easiest place to add one: open
 `http://127.0.0.1:9180/credentials` and paste an API key. The page writes
-`~/.config/evener/credentials.toml` with owner-only permissions.
+`${XDG_CONFIG_HOME:-$HOME/.config}/evener/credentials.toml` with owner-only
+permissions. If `EVENER_PROVIDERS_CONFIG` points to a custom `providers.toml`,
+Evener stores `credentials.toml` beside it.
 
 Two alternatives cover other workflows. Environment variables such as
 `OPENAI_API_KEY` and `ANTHROPIC_API_KEY` work as a fallback when the

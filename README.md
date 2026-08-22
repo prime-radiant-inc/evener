@@ -53,25 +53,25 @@ and web UI expose the same mechanism through their `/upgrade` command.
 
 On first use, Evener creates:
 
-- `${XDG_STATE_HOME:-~/.local/state}/evener/run` for live daemon rendezvous
+- `${XDG_STATE_HOME:-$HOME/.local/state}/evener/run` for live daemon rendezvous
   files and per-daemon logs.
-- `${XDG_STATE_HOME:-~/.local/state}/evener/auth-token` for the local hub/TUI
+- `${XDG_STATE_HOME:-$HOME/.local/state}/evener/auth-token` for the local hub/TUI
   bearer token.
-- `${XDG_STATE_HOME:-~/.local/state}/evener/projects/<project-id>/` for saved
+- `${XDG_STATE_HOME:-$HOME/.local/state}/evener/projects/<project-id>/` for saved
   per-project session state. The project ID is readable (derived from the
   canonical project path) and ends with a 10-character base62 suffix.
-- `${XDG_CONFIG_HOME:-~/.config}/evener/skills` for standalone user skills.
-- `${XDG_CONFIG_HOME:-~/.config}/evener/plugins` for user plugins.
+- `${XDG_CONFIG_HOME:-$HOME/.config}/evener/skills` for standalone user skills.
+- `${XDG_CONFIG_HOME:-$HOME/.config}/evener/plugins` for user plugins.
 
 The user skill and plugin directories are extension roots; installing Evener
 does not automatically enable their contents. Add standalone skill paths to
 `skills_dirs` and plugin paths to `plugin_dirs` in
-`${XDG_CONFIG_HOME:-~/.config}/evener/launch.toml`, or pass them with the
+`${XDG_CONFIG_HOME:-$HOME/.config}/evener/launch.toml`, or pass them with the
 corresponding CLI flags for a single run. Plugin-contained skills live under
 that plugin and become available through the plugin path.
 
 Install does not create provider credentials. Configure them through the hub
-or TUI credentials UI, `${XDG_CONFIG_HOME:-~/.config}/evener/credentials.toml`,
+or TUI credentials UI, `${XDG_CONFIG_HOME:-$HOME/.config}/evener/credentials.toml`,
 provider environment variables such as `OPENAI_API_KEY`, or OpenAI OAuth. See
 [docs/developing-evener/environment.md](docs/developing-evener/environment.md) for the complete environment variable
 reference.
@@ -106,17 +106,19 @@ browser-based interface for many concurrent sessions.
 
 ### Build & run
 
-```bash
-make build-hub
-evener-hub  # default 127.0.0.1:9180
-```
+From a source checkout, run `make build-hub`; then run `evener-hub` (default
+`127.0.0.1:9180`). Installed users can skip the build.
 
 For production-style setup, credentials, Codex app-server sources, and smoke
-checks, see [`docs/evener-hub.md`](docs/evener-hub.md).
+checks, see [`docs/evener-hub.md`](docs/evener-hub.md). Keep this short build
+and run recipe; the runbook is the detailed operational reference.
 
 ### What's there
 
-- **Sidebar** with a Live section (every running session sorted by who needs you) and a Projects section (sessions grouped by working directory, subagents indented under the session that spawned them).
+- **Sidebar** with a Live section (running sessions, excluding archived ones,
+  sorted by who needs you) and a Projects section (sessions grouped by
+  canonical project identity, not raw working-directory strings; subagents are
+  indented under the session that spawned them).
 - **Workspace pane** with a two-tier conversation: messages (user pills + assistant body) at the primary reading tier, tool calls and diffs as muted margin annotations.
 - **New session** at `/new` — prompt-first, pick model and working dir, click Start.
 - **Fork from here**: every message you sent carries a fork button. Click it to branch the session at that point; the original message lands in the composer for you to edit, and the original line is preserved as a sibling fork.
@@ -127,7 +129,7 @@ checks, see [`docs/evener-hub.md`](docs/evener-hub.md).
 
 ### Configuration
 
-`${XDG_CONFIG_HOME:-~/.config}/evener/hub.toml` (optional):
+`${XDG_CONFIG_HOME:-$HOME/.config}/evener/hub.toml` (optional):
 
 ```toml
 addr = "127.0.0.1:9180"
@@ -140,24 +142,39 @@ past_index_db = "/Users/you/.local/state/evener/index.db"
 The hub's launch model choices come from the Evener launch harness contract
 (`evener launch-check --models`), not from a static model roster in `hub.toml`.
 Launch defaults live in layered launch config files. For user-wide defaults,
-create `${XDG_CONFIG_HOME:-~/.config}/evener/launch.toml`:
+create `${XDG_CONFIG_HOME:-$HOME/.config}/evener/launch.toml`:
 
 ```toml
 app_replay_size = 4096
 
 [env]
-OPENAI_API_KEY = "..."
+# Non-secret runtime setting; do not put credentials in launch.toml.
+OLLAMA_BASE_URL = "http://localhost:11434/v1"
 ```
+
+Credential-like keys are rejected in every launch-config layer. Add provider
+keys in the hub/TUI credentials UI or `credentials.toml`, export supported
+provider environment variables before starting the hub, or use OpenAI OAuth.
 
 ### Architecture
 
-Daemons are loopback-only. Each writes a private rendezvous file to `${XDG_STATE_HOME:-~/.local/state}/evener/run/<pid>.json`; the hub watches the directory, probes daemons for state, and proxies AppWire/REST so the browser only ever talks to the hub origin. The hub requires a capability token on every route except `/auth`, `/api/health`, and the PWA icons: browsers authorize once through the auth URL printed at startup (which sets a long-lived cookie), and scripted clients send the token as `Authorization: Bearer`. Daemons spawned by the hub require the per-hub bearer token recorded in their rendezvous file. A strict content security policy and a SameSite=Lax auth cookie defend against cross-origin attacks.
+Hub-spawned daemons are forced to loopback and each writes a private
+rendezvous file to `${XDG_STATE_HOME:-$HOME/.local/state}/evener/run/<pid>.json`;
+direct `evener serve` defaults to loopback but `--addr` can override it. The
+hub watches the directory, probes daemons for state, and proxies AppWire/REST
+so the browser only ever talks to the hub origin. The hub requires a capability
+token on every route except `/auth`, `/api/health`, and the PWA icons: browsers
+authorize once through the auth URL printed at startup (which sets a long-lived
+cookie), and scripted clients send the token as `Authorization: Bearer`.
+Daemons spawned by the hub require the per-hub bearer token recorded in their
+rendezvous file. A strict content security policy and a SameSite=Lax auth cookie
+defend against cross-origin attacks.
 
 ### Operating notes
 
 - **Daemons keep the binary they were spawned from.** Rebuilding `evener` does not update already-running daemons; live sessions continue to run the old code until they shut down. To pick up changes mid-session, end the session (which terminates its daemon), rebuild, and resume — resume reads the new binary. This matches typical daemonized-server behavior.
 - **Remote hosts**: see `docs/evener-hub-remote-operations.md` for the current deployment runbook, including credential handling, state directories, browser/TUI access, health checks, and Codex app-server sources.
-- **Rebuild and restart a launchd-managed hub**: `scripts/ops/deploy-hub.sh` builds this worktree's `evener-hub` and `kickstart -k`s its launchd job, never stopping the old process until the new one is built and healthy — see `scripts/ops/deploy-hub.sh --help`.
+- **Rebuild and restart a launchd-managed hub**: `scripts/ops/deploy-hub.sh` builds while the old hub remains running, kickstarts the job to replace it, then verifies health — see `scripts/ops/deploy-hub.sh --help`.
 
 Design spec, plans, and notes live under `docs/superpowers/`.
 
@@ -179,7 +196,10 @@ Start the dashboard:
 evener-tui
 ```
 
-By default `evener-tui` connects to `http://127.0.0.1:9180`. If no local hub is running, it starts `evener-hub` automatically and waits for `/api/health`.
+By default `evener-tui` connects to `http://127.0.0.1:9180`. If no local hub is
+running, it starts `evener-hub` automatically and waits for an authenticated
+AppWire `/rpc` connection. When `--state-dir` is explicit, it also checks
+`/api/health` for state-environment compatibility.
 
 Connect to a specific hub:
 
@@ -324,7 +344,7 @@ NDJSON events include: `SESSION_START`, `ASSISTANT_TEXT_END` (with usage, reason
 ### Session persistence
 
 Evener auto-saves session state under
-`${XDG_STATE_HOME:-~/.local/state}/evener/projects/<project-id>/sessions/`
+`${XDG_STATE_HOME:-$HOME/.local/state}/evener/projects/<project-id>/sessions/`
 after each assistant turn. This enables resuming interrupted work.
 
 Project IDs are shared by a repository's main checkout and linked worktrees:

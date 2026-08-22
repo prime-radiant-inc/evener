@@ -617,9 +617,18 @@ func TestInstallScriptWarnsAboutLegacySerf(t *testing.T) {
 				t.Fatalf("install.sh failed: %v\n%s", err, out)
 			}
 
-			gotMessage := strings.Contains(string(out), "evener-migrate")
+			output := string(out)
+			gotMessage := strings.Contains(output, "evener-migrate")
 			if gotMessage != tc.wantMessage {
 				t.Fatalf("evener-migrate mention in output = %v, want %v\noutput:\n%s", gotMessage, tc.wantMessage, out)
+			}
+			if tc.wantMessage {
+				if !strings.Contains(output, "--dry-run") {
+					t.Fatalf("legacy migration guidance omits --dry-run:\n%s", output)
+				}
+				if strings.Contains(output, "README.md") {
+					t.Fatalf("legacy migration guidance points at stale README.md documentation:\n%s", output)
+				}
 			}
 		})
 	}
