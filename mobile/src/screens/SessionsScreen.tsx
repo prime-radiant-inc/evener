@@ -6,7 +6,7 @@
  * an honest status glyph+text, and a chevron — all in a robust grid layout
  * that wraps long names and origins without ellipsis or horizontal overflow.
  *
- * The accessible name is the natural text content: origin, name, "active
+ * The accessible name is the natural text content: name, full origin, "active
  * server" (visually hidden), and the unchanged StatusMark label. No duplicate
  * status-label table — the StatusMark component owns the label text. The
  * chevron and status glyph are aria-hidden.
@@ -61,6 +61,7 @@ export function SessionsScreen({
         onClick={onOpenSwitcher}
       >
         <span className="evener-sessions-header__text">
+          <span className="evener-sessions-header__name">{activeName}</span>{" "}
           {activeOrigin ? (
             <>
               <span className="evener-sessions-header__origin">
@@ -68,7 +69,6 @@ export function SessionsScreen({
               </span>{" "}
             </>
           ) : null}
-          <span className="evener-sessions-header__name">{activeName}</span>{" "}
           <span className="evener-sessions-header__label">active server</span>{" "}
           <StatusMark status={reachState} />
         </span>
