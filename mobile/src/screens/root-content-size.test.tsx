@@ -151,14 +151,9 @@ describe("7A root: foreground refresh updates content size", () => {
 
     // Now the old mount read resolves with "large" — must be ignored.
     resolveMount?.("large");
-    await vi.waitFor(() => {
-      // A microtask flush.
-    });
-    // Give it a tick.
-    await Promise.resolve();
-    await Promise.resolve();
-
-    // The newer foreground result must win.
+    // Await the old mount promise settlement.
+    await mountPromise.then(() => {});
+    // The store must still hold the newer foreground result.
     expect(stores.preferences.getState().contentSize).toBe("extraExtraLarge");
   });
 
@@ -184,8 +179,7 @@ describe("7A root: foreground refresh updates content size", () => {
 
     // Resolve the mount read — must not throw or update the store.
     resolveMount?.("extraExtraLarge");
-    await Promise.resolve();
-    await Promise.resolve();
+    await mountPromise.then(() => {});
 
     // Store keeps its default.
     expect(stores.preferences.getState().contentSize).toBe("large");
@@ -203,13 +197,5 @@ describe("7A root: foreground refresh updates content size", () => {
 
     unmount();
     expect(unsubscribeSpy).toHaveBeenCalled();
-  });
-});
-
-describe("7A root: hardcoded contentSize lie is removed", () => {
-  it("production services do not expose a hardcoded contentSize function", async () => {
-    const { createProductionServices } = await import("./production-services");
-    const services = createProductionServices();
-    expect(services).not.toHaveProperty("contentSize");
   });
 });

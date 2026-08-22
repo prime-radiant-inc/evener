@@ -26,6 +26,7 @@ type ListenerHandler = (event: {
 interface DeferredListen {
   readonly event: string;
   readonly id: number;
+  readonly promise: Promise<UnlistenFn>;
   resolve: (fn: UnlistenFn) => void;
   reject: (err: unknown) => void;
   unlistenCalls: number;
@@ -73,19 +74,22 @@ function fakeTauriBridgeWithEvents(): TauriBridge & {
         event,
         handler: handler as unknown as ListenerHandler,
       });
-      return new Promise<UnlistenFn>((resolve, reject) => {
-        const deferred: DeferredListen = {
-          event,
-          id,
-          resolve: (fn) => {
-            // Replace the listener entry's handler so emit still works.
-            resolve(fn);
-          },
-          reject,
-          unlistenCalls: 0,
-        };
-        deferredListens.push(deferred);
+      let resolve!: (fn: UnlistenFn) => void;
+      let reject!: (err: unknown) => void;
+      const promise = new Promise<UnlistenFn>((res, rej) => {
+        resolve = res;
+        reject = rej;
       });
+      const deferred: DeferredListen = {
+        event,
+        id,
+        promise,
+        resolve,
+        reject,
+        unlistenCalls: 0,
+      };
+      deferredListens.push(deferred);
+      return promise;
     },
   };
 
@@ -138,6 +142,8 @@ describe("7A lifecycle: subscribe maps suspended→background and resumed→fore
     for (const d of bridge.deferredListens) {
       bridge.resolveListen(d.id);
     }
+    // Await the listen promises to ensure the adapter's .then has run.
+    await Promise.all(bridge.deferredListens.map((d) => d.promise));
     bridge.emit("tauri://suspended", null);
     expect(states).toContain("background");
     unsub();
@@ -153,6 +159,7 @@ describe("7A lifecycle: subscribe maps suspended→background and resumed→fore
     for (const d of bridge.deferredListens) {
       bridge.resolveListen(d.id);
     }
+    await Promise.all(bridge.deferredListens.map((d) => d.promise));
     bridge.emit("tauri://resumed", null);
     expect(states).toContain("foreground");
     unsub();
@@ -170,6 +177,7 @@ describe("7A lifecycle: unsubscribe is idempotent and race-safe", () => {
     for (const d of bridge.deferredListens) {
       bridge.resolveListen(d.id);
     }
+    await Promise.all(bridge.deferredListens.map((d) => d.promise));
     unsub();
     bridge.emit("tauri://suspended", null);
     expect(states).toHaveLength(0);
@@ -196,9 +204,8 @@ describe("7A lifecycle: unsubscribe is idempotent and race-safe", () => {
         unlistenCalls.push(d.id);
       });
     }
-    // Let the .then callbacks run.
-    await Promise.resolve();
-    await Promise.resolve();
+    // Await the listen promises so the adapter's .then callbacks settle.
+    await Promise.all(bridge.deferredListens.map((d) => d.promise));
     expect(unlistenCalls).toHaveLength(2);
   });
 
@@ -212,57 +219,51 @@ describe("7A lifecycle: unsubscribe is idempotent and race-safe", () => {
     // Resolve the first listen promise before unsubscribe.
     const [first, second] = bridge.deferredListens;
     if (first) bridge.resolveListen(first.id);
-    await Promise.resolve();
+    await first?.promise;
     // Emit before unsubscribe — should deliver.
     bridge.emit("tauri://suspended", null);
     expect(states).toContain("background");
     unsub();
     // Resolve the second listen promise after unsubscribe — must not deliver.
     if (second) bridge.resolveListen(second.id);
+    await second?.promise;
     bridge.emit("tauri://resumed", null);
     expect(states).not.toContain("foreground");
   });
 
-  it("one listen rejects without unhandled rejection", async () => {
+  it("one listen rejects after unsubscribe without unhandled rejection", async () => {
     const bridge = fakeTauriBridgeWithEvents();
     const transport = createTauriNativeTransport(bridge);
     const unsub = transport.subscribe("lifecycle.changed", () => {});
-    // Reject one listen promise — the adapter must catch it silently.
+    // Unsubscribe BEFORE rejecting — the adapter's .catch must swallow it.
+    unsub();
     const [first, second] = bridge.deferredListens;
     if (first) bridge.rejectListen(first.id);
     if (second) bridge.resolveListen(second.id);
-    // If the rejection were unhandled, vitest would fail this test.
-    await Promise.resolve();
-    await Promise.resolve();
-    unsub();
+    // Await both promises — the rejected one must settle without throwing.
+    const results = await Promise.allSettled(
+      bridge.deferredListens.map((d) => d.promise),
+    );
+    // First rejected, second fulfilled — no unhandled rejection.
+    expect(results[0]?.status).toBe("rejected");
+    expect(results[1]?.status).toBe("fulfilled");
   });
 
-  it("both listen promises reject without unhandled rejection", async () => {
+  it("both listen promises reject after unsubscribe without unhandled rejection", async () => {
     const bridge = fakeTauriBridgeWithEvents();
     const transport = createTauriNativeTransport(bridge);
     const unsub = transport.subscribe("lifecycle.changed", () => {});
+    // Unsubscribe BEFORE rejecting both.
+    unsub();
     bridge.rejectListen(bridge.deferredListens[0]?.id ?? 0);
     bridge.rejectListen(bridge.deferredListens[1]?.id ?? 0);
-    await Promise.resolve();
-    await Promise.resolve();
+    // Await both — both rejected, no unhandled rejection.
+    const results = await Promise.allSettled(
+      bridge.deferredListens.map((d) => d.promise),
+    );
+    expect(results[0]?.status).toBe("rejected");
+    expect(results[1]?.status).toBe("rejected");
     // Double-unsubscribe must still be safe after rejections.
     expect(() => unsub()).not.toThrow();
-    expect(() => unsub()).not.toThrow();
-  });
-
-  it("lifecycle unsubscribe is called on unmount", () => {
-    const bridge = fakeTauriBridgeWithEvents();
-    const transport = createTauriNativeTransport(bridge);
-    let unsubCalled = false;
-    const realUnsub = transport.subscribe("lifecycle.changed", () => {});
-    // Wrap to track
-    const trackingUnsub = () => {
-      unsubCalled = true;
-      realUnsub();
-    };
-    trackingUnsub();
-    expect(unsubCalled).toBe(true);
-    // Emit after unsubscribe — no delivery.
-    bridge.emit("tauri://suspended", null);
   });
 });

@@ -26,29 +26,17 @@
  */
 import type { NativeTransport } from "../native/client";
 import type {
-  ContentSizeCategory,
   LifecycleState,
   NativeCommand,
   NativeResponse,
 } from "../native/contract";
-import { decodeNativeResponse } from "../native/contract";
+import {
+  decodeNativeResponse,
+  isContentSizeCategory,
+} from "../native/contract";
 import type { TauriBridge } from "../services/tauri";
 
 const PLUGIN = "plugin:evener-native|";
-
-const CONTENT_SIZE_CATEGORIES: readonly ContentSizeCategory[] = [
-  "small",
-  "medium",
-  "large",
-  "extraLarge",
-  "extraExtraLarge",
-  "extraExtraExtraLarge",
-  "accessibilityMedium",
-  "accessibilityLarge",
-  "accessibilityExtraLarge",
-  "accessibilityExtraExtraLarge",
-  "accessibilityExtraExtraExtraLarge",
-];
 
 /**
  * Create the production native transport backed by a real {@link TauriBridge}.
@@ -171,10 +159,6 @@ function decodeContentSizeResponse(raw: unknown): NativeResponse {
     type: "contentSize.value",
     category: obj.category,
   };
-}
-
-function isContentSizeCategory(value: string): value is ContentSizeCategory {
-  return (CONTENT_SIZE_CATEGORIES as readonly string[]).includes(value);
 }
 
 // ---------------------------------------------------------------------------

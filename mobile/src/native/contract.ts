@@ -36,6 +36,31 @@ export type ContentSizeCategory =
   | "accessibilityExtraExtraLarge"
   | "accessibilityExtraExtraExtraLarge";
 
+/** Canonical content-size category values — the single source of truth. */
+export const CONTENT_SIZE_CATEGORIES: readonly ContentSizeCategory[] = [
+  "small",
+  "medium",
+  "large",
+  "extraLarge",
+  "extraExtraLarge",
+  "extraExtraExtraLarge",
+  "accessibilityMedium",
+  "accessibilityLarge",
+  "accessibilityExtraLarge",
+  "accessibilityExtraExtraLarge",
+  "accessibilityExtraExtraExtraLarge",
+];
+
+/** Type guard: true if `value` is a valid `ContentSizeCategory`. */
+export function isContentSizeCategory(
+  value: unknown,
+): value is ContentSizeCategory {
+  return (
+    typeof value === "string" &&
+    (CONTENT_SIZE_CATEGORIES as readonly string[]).includes(value)
+  );
+}
+
 export type LifecycleState =
   | "active"
   | "inactive"
@@ -394,6 +419,9 @@ export function decodeNativeResponse(obj: unknown): NativeResponse {
       assertNoExtraFields(obj, ["version", "type", "category"], "response");
       assertRequiredFields(obj, ["category"], "response");
       assertString(obj, "category");
+      if (!isContentSizeCategory(obj.category)) {
+        throw new Error(`Unknown content size category: ${obj.category}`);
+      }
       return obj as NativeResponse;
     case "error":
       assertNoExtraFields(obj, ["version", "type", "error"], "response");
