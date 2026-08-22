@@ -4,7 +4,7 @@
 
 **Goal:** Turn the mobile foundation into a complete session client with a streaming phone-first timeline, composer, structured `ask_user` questions, attachments, activity sheets, and all advertised V1 controls.
 
-**Architecture:** One shared AppWire connection feeds strict thread reduction and a mobile-only projection. Dedicated React screens render a virtualized timeline and sheets; typed service interfaces isolate protocol and native transport from UI state.
+**Architecture:** Exactly one active profile AppWire connection feeds strict thread reduction and a mobile-only projection. Profile switching closes and invalidates it before another opens. Dedicated React screens render a virtualized timeline and sheets; typed service interfaces isolate protocol and native transport from UI state.
 
 **Tech Stack:** The foundation plan's React/TypeScript/Tauri/Rust stack plus `@tanstack/react-virtual` 3.14.7, Marked 18.0.6, and DOMPurify 3.4.12.
 
@@ -15,7 +15,7 @@
 - Complete `docs/superpowers/plans/2026-08-21-native-mobile-foundation.md` first.
 - Import only files listed in `mobile/protocol-imports.json`; never import Hub web components, CSS, panes, shell, stores, or widgets.
 - Treat every Hub/user/agent/tool/filename field as untrusted. Plain text is the default; only assistant Markdown enters the strict sanitizer.
-- Use one shared AppWire socket. Conversation generations reject stale hydration; connection generations reject stale frames.
+- Use one total AppWire socket for the selected profile. Profile, connection, and conversation generations jointly reject stale cross-server frames or hydration.
 - `ThreadCapabilities` controls every action. Never invent support from source name or UI state.
 - Preserve drafts on conflicts; never retry user mutations automatically.
 - At most eight normalized image attachments, 8 MiB each. View images up to 20 MiB and UTF-8 text/Markdown up to 2 MiB.
@@ -50,7 +50,7 @@
 
 - [ ] **Step 1: Define fixture-driven failing tests**
 
-Cover user text, assistant text/deltas, reasoning, shell/tool/MCP calls, steering, system notices, failures, images, ask-user, unknown forward-compatible item, consecutive tool clustering, capability projection, queue state, and usage.
+Cover user text, assistant text/deltas, reasoning, shell/tool/MCP calls, steering, system notices, failures, images, ask-user, unknown forward-compatible item, consecutive tool clustering, capability projection, queue state, usage, and profile/session identity.
 
 The union begins:
 
@@ -151,7 +151,7 @@ git commit -m "feat(mobile): sanitize conversation content"
 
 - [ ] **Step 1: Write failing service tests**
 
-Use a fake AppwireClient. Assert one connection serves two sequential sessions; late hydration from session A cannot overwrite B; reconnect rehydrates B; notification refs route correctly; paging cursor is passed; and malformed projection retains last good state with compatibility error.
+Use fake AppwireClients for two profiles. Assert one connection serves sequential sessions on profile A; switching closes A before opening B; late A frames/hydration cannot overwrite B; switching back rehydrates A; notification refs route with profile identity; paging cursor is passed; and malformed projection retains only that profile's last good state with compatibility error.
 
 - [ ] **Step 2: Write failing mutation tests**
 
@@ -197,7 +197,7 @@ git commit -m "feat(mobile): add conversation state and actions"
 
 - [ ] **Step 1: Write failing state-machine tests**
 
-Assert near-bottom threshold enables follow; upward scroll disables; new items increment unseen; tapping new activity scrolls bottom; prepending older items returns an anchor adjustment; session switch resets; stale measurements do nothing.
+Assert near-bottom threshold enables follow; upward scroll disables; new items increment unseen; tapping new activity scrolls bottom; prepending older items returns an anchor adjustment; session or profile switch resets; stale measurements do nothing.
 
 - [ ] **Step 2: Write failing component tests**
 
@@ -391,7 +391,7 @@ git commit -m "feat(mobile): add session activity sheets"
 
 - [ ] **Step 1: Write failing lifecycle tests**
 
-Assert background closes AppWire, cancels HTTP/uploads, revokes URLs, deletes temp handles, ends voice placeholder state, preserves process-memory draft, rejects stale events, and foreground probes/reconnects/refreshes/rehydrates before enabling mutation.
+Assert background closes active-profile AppWire, cancels HTTP/uploads, revokes URLs, deletes temp handles, ends voice placeholder state, preserves profile/session-keyed process-memory drafts, rejects stale events from inactive profiles, and foreground probes/reconnects/refreshes/rehydrates the selected profile before enabling mutation.
 
 - [ ] **Step 2: Write geometry fixtures and failing assertions**
 

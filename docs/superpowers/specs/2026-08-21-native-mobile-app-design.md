@@ -29,7 +29,7 @@ Every visible mobile surface, layout, navigation pattern, and interaction is new
 
 V1 includes:
 
-- one active Hub profile;
+- multiple named Hub profiles with add, edit, remove, and explicit switching;
 - private-network HTTP and HTTPS connections;
 - QR and pasted-URL pairing with native secret storage;
 - a searchable session roster grouped by attention and liveness;
@@ -47,7 +47,7 @@ V1 excludes:
 
 - Android packaging;
 - offline transcripts or offline mutation queues;
-- simultaneous Hub profiles;
+- simultaneous live connections to several Hub profiles (V1 keeps exactly one active connection while retaining every saved profile);
 - plugin, marketplace, provider-credential, or Hub administration screens;
 - arbitrary workspace file browsing;
 - background audio, wake words, or push notifications; and
@@ -59,9 +59,9 @@ The excluded web administration features remain available in the Hub web app. Th
 
 ### App launch and onboarding
 
-With no valid profile, the app opens a full-screen connection flow. The primary action scans a Hub QR code. A secondary action pastes the authorization URL printed by Hub. The screen explains that plain HTTP belongs only on a trusted private network.
+With no valid profile, the app opens a full-screen connection flow. The primary action scans a Hub QR code. A secondary action pastes the authorization URL printed by Hub. The screen explains that plain HTTP belongs only on a trusted private network. The same flow opens from the server switcher to add another Hub.
 
-After a successful connection check, the app stores the non-secret Hub origin in app preferences and the capability in native secure storage. It opens Sessions. A profile failure returns to the same screen without destroying redacted diagnostics.
+After a successful connection check, the app asks for a short server name, stores a generated profile ID plus non-secret name/origin in app preferences, and stores the capability under that profile ID in native secure storage. It activates the new profile and opens Sessions. A profile failure returns to the same screen without destroying other profiles or redacted diagnostics.
 
 ### Root navigation
 
@@ -72,6 +72,8 @@ The root uses a three-item bottom bar:
 3. **Settings** — connection, appearance, voice, privacy, and diagnostics.
 
 A conversation pushes above the tab bar as a focused destination in React's history stack. It has an explicit 44-point back action and a short horizontal transition. V1 does not implement an interactive iOS edge-swipe gesture inside the WebView; Android's system back action will map to the same history pop in the Android follow-up. Session-specific secondary content appears in sheets, not permanent sidebars.
+
+The Sessions top bar shows the active server name and opens a server sheet. The sheet lists saved profiles with reachability state and actions to switch, add, edit, or remove. Switching closes the old AppWire generation, clears server-scoped roster/conversation/activity state, activates the selected profile, then probes and hydrates it. Removing the active profile requires confirmation and activates the next saved profile or returns to onboarding.
 
 ### Sessions
 
@@ -145,7 +147,7 @@ Advanced launch configuration stays in the Hub web app. The mobile flow uses Hub
 
 Settings includes only mobile concerns:
 
-- connected Hub identity and reconnect/re-pair actions;
+- saved Hub servers with add, edit, remove, switch, reconnect, and re-pair actions;
 - system, light, or dark appearance;
 - voice, speech rate, and automatic speaking preferences;
 - permission status and links to system settings;
@@ -195,7 +197,7 @@ The first implementation should reuse `protocol/client.ts`, `transport.ts`, `typ
 
 Small independent stores own:
 
-- **connection** — profile identity, health, compatibility, and reconnect state;
+- **connection** — saved profile summaries, active profile ID, health, compatibility, switching, and reconnect state;
 - **roster** — tree snapshot, search, refresh, and attention groups;
 - **conversation** — one active thread projection, paging, pending mutations, follow mode, and draft;
 - **activity** — tasks, jobs, delegates, usage, and sheet selection;
@@ -212,7 +214,8 @@ Rust owns Hub HTTP and WebSocket connections. It provides a narrow Tauri plugin 
 
 - parse and validate an authorization URL;
 - scan and pair;
-- read redacted profile and health state;
+- list redacted profiles, select one active profile, and read its health state;
+- rename, replace credentials for, or remove a profile;
 - perform an allowlisted relative Hub HTTP request;
 - open one AppWire stream;
 - send an AppWire text frame;
@@ -223,7 +226,7 @@ The HTTP command accepts only relative paths under the known Hub API and documen
 
 The AppWire command opens the upstream `/rpc` WebSocket with bearer authentication and the Hub Origin. Rust returns an ordered Tauri channel. A TypeScript `WebSocketLike` adapter converts channel messages and close/error records into the existing `AppwireClient` interface and identifies itself as `evener-mobile`. This preserves the tested handshake, heartbeat, correlation, timeout, and reconnect behavior without exposing a browser socket or token.
 
-One Rust AppWire socket belongs to the active Hub profile. The roster and active conversation share its notification bus; tree-change notifications refresh the roster, while thread notifications route by source/thread reference. Opening or switching conversations requests different thread data but does not open a second socket. A connection generation rejects late frames after reconnect, and a separate conversation generation rejects late hydration after a session switch.
+One Rust AppWire socket belongs to the active Hub profile. The roster and active conversation share its notification bus; tree-change notifications refresh the roster, while thread notifications route by source/thread reference. Opening or switching conversations requests different thread data but does not open a second socket. Switching profiles closes and invalidates the prior socket before any request for the new profile. Profile ID, connection generation, and conversation generation jointly reject late frames or hydration from another server/session.
 
 Backpressure is explicit: the Rust reader has a bounded queue, preserves frame order, and closes with an overload error rather than dropping protocol frames. Reconnect creates a new connection generation and re-subscribes the roster and active conversation from authoritative state.
 
@@ -235,11 +238,11 @@ The accepted authorization URL grammar is `http(s)://host[:port]/auth?token=<tok
 
 HTTPS may target a public or private origin. Production HTTP accepts only addresses in IPv4 loopback/RFC1918/link-local/CGNAT (`100.64.0.0/10`) or IPv6 loopback/link-local/unique-local ranges; release builds reject loopback because it cannot name the Hub host from a physical phone. Hostnames must resolve entirely into the allowed set. Rust resolves before each new HTTP or WebSocket connection and connects to the validated address while retaining the original Host header; redirects are disabled. Tests cover mixed public/private answers, IPv4, IPv6, `.local`, rebinding between connections, and forbidden redirects. Debug simulator builds may opt into loopback explicitly.
 
-On iOS, the native bridge stores the Hub capability in Keychain with after-first-unlock, this-device-only accessibility. The non-secret origin and display metadata use ordinary app preferences. Rust retrieves the capability only when creating an upstream request. Logout deletes it.
+Each profile has a random UUID profile ID. On iOS, the native bridge stores its Hub capability in Keychain service `com.primeradiant.evener.hub` under account `profile:<uuid>` with after-first-unlock, this-device-only accessibility. Ordinary app preferences contain only ordered `{id, name, origin}` summaries and the active profile ID. Rust retrieves only the active profile's capability when creating an upstream request. Removing or re-pairing a profile deletes/replaces only that Keychain item.
 
 Paste pairing transiently places the user-supplied URL in the connection field. The field clears immediately after native submission and is never persisted or logged. QR scanning completes pairing in the native layer and returns only redacted success or error data to React.
 
-Hub's V1 capability is long-lived and replayable until the operator rotates it; QR scanning does not make it one-time. The onboarding copy states that fact. Keychain uses after-first-unlock, this-device-only accessibility, and logout/re-pair deletes the previous item before reporting success.
+Hub's V1 capability is long-lived and replayable until the operator rotates it; QR scanning does not make it one-time. The onboarding copy states that fact. Adding/editing uses a two-phase native preview and atomic save: the old profile remains usable until the new authenticated probe and Keychain write both succeed. Names must be nonblank and unique case-insensitively; origins may repeat only when the user explicitly confirms a second credential/profile for that server.
 
 Private-network HTTP is supported as requested and labeled clearly. The app supplies the iOS local-network usage description and the narrow transport exceptions needed for private HTTP. Anyone who can observe that network can observe the bearer capability; the UI does not imply otherwise.
 
@@ -263,7 +266,7 @@ This contract is narrower than the web frontend hash. Hub and mobile may ship di
 
 ### Conversation
 
-1. Pairing or foreground reconnect creates the shared profile AppWire connection.
+1. Selecting a profile or foreground reconnect creates that active profile's shared AppWire connection.
 2. Opening a session creates a conversation generation and requests its thread data through that connection.
 3. Pure reducer logic builds a thread model.
 4. A mobile projector maps items into the small visible item families.
@@ -282,9 +285,9 @@ Every Hub, user, agent, tool, filename, and diagnostic string is untrusted. Comp
 
 ### Local data and diagnostics
 
-V1 stores no transcript cache and no draft across process termination. Typed and voice drafts exist in memory, survive an ordinary foreground reconnect, and clear on logout; speech captions clear when voice mode ends or the app backgrounds. App-private attachment files use complete-until-first-authentication file protection and the deletion rules above. Preferences contain only theme, voice choices, and the redacted Hub origin.
+V1 stores no transcript cache and no draft across process termination. Typed and voice drafts are keyed by `{profileId, sessionRef}` in memory, survive an ordinary foreground reconnect or profile switch during the process, and clear when that profile is removed; speech captions clear when voice mode ends or the app backgrounds. App-private attachment files use complete-until-first-authentication file protection and the deletion rules above. Preferences contain only theme, voice choices, ordered redacted profile summaries, and the active profile ID.
 
-Diagnostics use a 200-entry in-memory ring of timestamps, operation names, status classes, byte counts, connection generations, and opaque error identifiers. They never include URL queries, authorization/cookie headers, request or response bodies, transcript text, filenames, attachment bytes, speech text, or provider payloads. Export applies the same allowlist. The ring clears on logout and process termination; native crash reporting is disabled in V1.
+Diagnostics use a 200-entry in-memory ring of timestamps, redacted profile IDs, operation names, status classes, byte counts, connection generations, and opaque error identifiers. They never include URL queries, authorization/cookie headers, request or response bodies, transcript text, filenames, attachment bytes, speech text, or provider payloads. Export applies the same allowlist. Entries for a removed profile are deleted; the ring clears on process termination; native crash reporting is disabled in V1.
 
 ## Voice Interaction
 
@@ -343,12 +346,12 @@ Permissions are requested at first use, not launch. Camera, microphone, speech, 
 
 On backgrounding, the app stops voice, closes the AppWire socket, cancels in-flight HTTP and attachment transfers without retry, revokes object URLs, deletes attachment temporaries, and marks the active conversation stale. It preserves only in-memory typed drafts if the process survives suspension; termination loses them by design. No user mutation is retried automatically.
 
-On foregrounding, Rust re-reads the profile and Keychain item, probes health, opens a new connection generation, refreshes the roster, and rehydrates the active conversation before enabling mutations. Visible authenticated images are refetched on demand. Deterministic lifecycle tests cover stale events, suspended transfers, surviving drafts, terminated-state cold start, and reconnect failure; one physical-device check backgrounds and resumes during a live session.
+On foregrounding, Rust re-reads saved summaries, the active profile ID, and that profile's Keychain item; probes health; opens a new profile/connection generation; refreshes the roster; and rehydrates the active conversation before enabling mutations. Visible authenticated images are refetched on demand. Deterministic lifecycle tests cover stale cross-profile events, suspended transfers, surviving drafts, terminated-state cold start, and reconnect failure; one physical-device check backgrounds and resumes during a live session.
 
 ## Error Handling
 
-- **Hub unreachable:** keep the redacted profile, show reconnect and re-pair actions, and preserve local drafts.
-- **Invalid or rotated capability:** stop requests and return to onboarding without echoing or logging the credential.
+- **Hub unreachable:** keep the redacted profile, show reconnect/re-pair/switch actions, preserve local drafts, and leave other profiles usable.
+- **Invalid or rotated capability:** stop requests for that profile and show re-pair or switch without echoing/logging the credential or invalidating other profiles.
 - **Mobile API or AppWire mismatch:** stop with a precise update-required screen; do not retry identical handshakes.
 - **Malformed DTO:** keep the last good roster or conversation, show a compatibility error, and record only bounded redacted diagnostics.
 - **Stream overload or disconnect:** close the generation, retain authoritative content, and use the existing reconnect backoff.
@@ -389,7 +392,7 @@ At every matrix point, tests require no document-level horizontal overflow, no c
 Unit and integration tests cover:
 
 - authorization URL parsing and redaction;
-- profile lifecycle;
+- multi-profile add/edit/remove/switch lifecycle and atomic Keychain replacement;
 - API path, method, body, and redirect allowlists;
 - bearer injection and browser credential stripping;
 - HTTP status and binary-body fidelity;
@@ -427,8 +430,8 @@ A gate counts only when it runs and exits zero. `docs/verification/native-mobile
 
 Implementation stays in the `native-mobile-v1` worktree and lands in reviewable slices.
 
-1. **Foundation:** scaffold Tauri, native transport, secure profile, shared protocol boundary, fixture mode, and mobile design tokens.
-2. **Onboarding and shell:** QR/paste pairing, root navigation, Sessions, New, and Settings shells.
+1. **Foundation:** scaffold Tauri, native transport, secure multi-profile store, shared protocol boundary, fixture mode, and mobile design tokens.
+2. **Onboarding and shell:** QR/paste pairing, server switcher/editor, root navigation, Sessions, New, and Settings shells.
 3. **Conversation:** roster service, AppWire adapter, timeline projection, streaming UI, paging, composer, asks, attachments, and controls.
 4. **Activity:** tasks, delegates, jobs, usage, diagnostics, and session action sheets.
 5. **Voice:** Swift bridge, full-screen voice UI, synthesis coordinator, lifecycle, and barge-in.
@@ -441,8 +444,8 @@ Each slice must pass focused tests before the next begins.
 V1 is complete when:
 
 1. The bundled app contains a dedicated mobile renderer and the dependency/bundle tests prove it contains no Hub web renderer or desktop shell.
-2. An iPhone or simulator can pair by native QR scan or pasted authorization URL, and the saved capability remains in native secure storage.
-3. Sessions load into Needs You, Running, and Recent groups with search, refresh, and actionable status.
+2. An iPhone or simulator can add at least two named servers by native QR scan or pasted authorization URL, edit/re-pair/rename/remove them, and switch the single active connection without exposing either saved capability outside native secure storage.
+3. For each selected server, Sessions loads that server's Needs You, Running, and Recent groups with search, refresh, and actionable status; late data from the previously selected server cannot appear.
 4. A user can open a session, page history, follow live AppWire output, inspect tools/activity, answer structured questions, attach an image, and use every advertised V1 action: send, steer, queue, interrupt, compact, change model/effort, rename, and shutdown. Unsupported actions explain their source capability without sending a request.
 5. A user can start a session with project, prompt, model, and effort, then land in its live conversation.
 6. Tasks, delegates, jobs, usage, bounded redacted diagnostics, and lifecycle controls work through mobile sheets without desktop panes.

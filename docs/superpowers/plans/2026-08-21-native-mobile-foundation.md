@@ -4,7 +4,7 @@
 
 **Goal:** Produce a dedicated Tauri iOS app that securely pairs with one Hub, owns native HTTP/AppWire transport, and renders a tested phone-only onboarding, navigation shell, session roster, new-session shell, and settings shell.
 
-**Architecture:** A new `mobile/` React/Vite renderer uses Tauri's bundled asset origin and imports only an exact allowlist of headless web protocol files. Rust owns the Hub capability, private-network policy, HTTP, and one AppWire socket; a versioned native plugin owns iOS Keychain, QR, haptics, lifecycle, and content-size events.
+**Architecture:** A new `mobile/` React/Vite renderer uses Tauri's bundled asset origin and imports only an exact allowlist of headless web protocol files. Rust owns multiple named Hub profiles, their private-network policy, and exactly one active HTTP/AppWire connection; a versioned native plugin owns per-profile iOS Keychain items, QR, haptics, lifecycle, and content-size events.
 
 **Tech Stack:** React 19.2.7, TypeScript 6.0.3, Vite 8.1.5, Vitest 4.1.10, Zustand 5.0.14, Biome 2.5.5, Tauri CLI 2.11.4/API 2.11.1, Rust 1.98.0, Tauri 2.11.5, Tokio 1.53.1, Reqwest 0.13.4, tokio-tungstenite 0.30.0, Swift/XCTest, Go 1.26 workspace.
 
@@ -15,7 +15,7 @@
 - Work only on branch/worktree `native-mobile-v1`; stage named paths, never `git add .` or `git add -A`.
 - Read `docs/developing-evener/testing.md` before changing tests; default tests use only local scripted boundaries and deterministic clocks.
 - The mobile renderer must not import Hub web presentation code. Its only imports under `cmd/evener-hub/frontend/src` come from the exact allowlist in `mobile/protocol-imports.json`.
-- The Hub capability stays in iOS Keychain and native memory; JavaScript never receives a saved capability.
+- Every Hub capability stays in its own iOS Keychain item and native memory; JavaScript receives only redacted `{id,name,origin}` profile summaries.
 - Release HTTP permits only the private address ranges defined in the spec. HTTPS may be public or private. Redirects remain disabled.
 - Mobile API version is `1`; AppWire remains `evener-appwire-v3`.
 - Minimum deployment target is iOS 17.0. Required Info.plist usage strings are camera, microphone, speech recognition, and local network.
@@ -291,7 +291,7 @@ git commit -m "feat(hub): expose mobile pairing contract"
 - Test: Rust and Swift contract fixtures in the plugin
 
 **Interfaces:**
-- Produces: `NATIVE_BRIDGE_VERSION = 1`; `NativeBridge` with `secureGet`, `secureSet`, `secureDelete`, `scanPairingCode`, `haptic`, `getContentSize`, `onLifecycle`, and voice methods reserved for the voice plan.
+- Produces: `NATIVE_BRIDGE_VERSION = 1`; `NativeBridge` with profile-keyed `secureGet`, `secureSet`, `secureDelete`, `scanAndPreviewPairing`, `haptic`, `getContentSize`, `onLifecycle`, and voice methods reserved for the voice plan.
 
 - [ ] **Step 1: Write the failing TypeScript contract test**
 
@@ -323,7 +323,7 @@ The Rust and Swift tests decode the same checked-in `contract-v1.json` and asser
 
 - [ ] **Step 6: Implement iOS Keychain and QR primitives**
 
-Store the capability under service `com.primeradiant.evener.hub`, account `active`, with `kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly`. `scanPairingCode` uses `AVCaptureSession` and returns the scanned text to Rust plugin code, which immediately passes it into pairing; JavaScript receives no scanned URL.
+Store each capability under service `com.primeradiant.evener.hub`, account `profile:<uuid>`, with `kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly`. `scanAndPreviewPairing` uses `AVCaptureSession` and returns scanned text only to Rust plugin code, which immediately creates a native preview; JavaScript receives only opaque preview ID and normalized origin.
 
 - [ ] **Step 7: Run contract and native tests**
 
@@ -351,11 +351,11 @@ git commit -m "feat(mobile): add native bridge and secure pairing"
 - Test: sibling Rust unit tests
 
 **Interfaces:**
-- Produces: `PairingUrl::parse(&str) -> Result<PairingUrl>`; `NetworkPolicy::resolve(&Url, ReleaseMode) -> Result<PinnedOrigin>`; `ProfileStore` trait; redacted `ProfileSummary`.
+- Produces: `PairingUrl::parse(&str) -> Result<PairingUrl>`; `NetworkPolicy::resolve(&Url, ReleaseMode) -> Result<PinnedOrigin>`; `ProfileStore::{list,preview,confirm,rename,remove,select}`; redacted `ProfileSummary { id, name, origin }` and active profile ID.
 
 - [ ] **Step 1: Write failing table tests**
 
-Cover exact `/auth`, one 43-character base64url token, optional `next`, forbidden userinfo/fragments/query keys, noncanonical ports, HTTPS public host, HTTP RFC1918/CGNAT/ULA, mixed DNS answers, release loopback, debug loopback, and redirect refusal.
+Cover exact `/auth`, one 43-character base64url token, optional `next`, forbidden userinfo/fragments/query keys, noncanonical ports, HTTPS public host, HTTP RFC1918/CGNAT/ULA, mixed DNS answers, release loopback, debug loopback, redirect refusal, two profiles with separate Keychain accounts, case-insensitive unique names, atomic edit/re-pair, remove, active-profile fallback, and stale switch generation.
 
 - [ ] **Step 2: Verify failure**
 
@@ -369,7 +369,7 @@ Keep the original hostname for Host/TLS identity and a validated address set for
 
 - [ ] **Step 4: Implement profile lifecycle**
 
-Preferences store origin/display metadata. Keychain adapter stores/deletes token. Pairing probes health, checks mobile API 1, displays normalized origin for confirmation, then performs authenticated probe with redirects disabled before replacing the active profile.
+Preferences store ordered redacted summaries and active profile ID. Keychain adapter stores/deletes `profile:<uuid>` tokens. Pairing preview holds the token in native memory for at most five minutes and displays normalized origin; confirmation names the profile, performs the authenticated probe with redirects disabled, then atomically adds or replaces only that profile. Switching closes the old generation before selecting/probing the new profile. Removing the active profile selects the next saved profile or leaves no active profile.
 
 - [ ] **Step 5: Run tests and Clippy**
 
@@ -397,7 +397,7 @@ git commit -m "feat(mobile): secure Hub pairing policy"
 - Test: Rust local-server integration tests and TypeScript socket tests
 
 **Interfaces:**
-- Produces: `HubHttp.request(HubRequest) -> HubResponse`; `AppwireManager.open(Channel<AppwireEvent>) -> ConnectionId`; `TauriSocket implements WebSocketLike`.
+- Produces: `HubHttp.request(activeProfileId, HubRequest) -> HubResponse`; `AppwireManager.select(profileId)` and `open(Channel<AppwireEvent>) -> ConnectionId`; `TauriSocket implements WebSocketLike` with profile and connection generations.
 
 - [ ] **Step 1: Write failing HTTP integration tests**
 
@@ -405,7 +405,7 @@ A local scripted server asserts pinned Host, bearer injection, removed cookie/au
 
 - [ ] **Step 2: Write failing AppWire integration tests**
 
-Assert ordered text frames, close code propagation, one socket per profile, bounded overload close, generation rejection, and cancellation using a scripted local WebSocket server.
+Assert ordered text frames, close code propagation, exactly one total socket, switch closes the prior profile before opening the next, profile/generation rejection, bounded overload close, and cancellation using two scripted local WebSocket servers.
 
 - [ ] **Step 3: Verify failures**
 
@@ -453,15 +453,15 @@ git commit -m "feat(mobile): add authenticated Hub transport"
 - Test: colocated `.test.tsx` files
 
 **Interfaces:**
-- Produces: `NavigationStore`; `ConnectionService`; `ConnectionStore`; reusable mobile `Button`, `IconButton`, `ListRow`, `Sheet`, `StatusMark`, `TopBar`, `BottomBar`.
+- Produces: `NavigationStore`; multi-profile `ConnectionService`; `ConnectionStore`; `ServerSwitcherSheet`; reusable mobile `Button`, `IconButton`, `ListRow`, `Sheet`, `StatusMark`, `TopBar`, `BottomBar`.
 
 - [ ] **Step 1: Write failing onboarding tests**
 
-Assert scan is primary, paste is secondary, origin confirmation precedes save, token input clears, HTTP warning appears, errors redact query text, and successful pairing navigates to Sessions with success haptic.
+Assert scan is primary, paste is secondary, origin confirmation precedes save, server name is required/unique, token input clears, HTTP warning appears, errors redact query text, successful add activates/navigates to Sessions, and edit/re-pair failure leaves the old profile usable.
 
 - [ ] **Step 2: Write failing navigation/accessibility tests**
 
-Assert three tabs, conversation push/pop history, no iOS swipe claim, accessible labels, 44-pixel classes, theme, reduced-motion, safe-area, and Dynamic Type bridge updates.
+Assert three tabs, conversation push/pop history, active server button, add/edit/remove/switch sheet flows, old-profile state clearing, active removal fallback, no iOS swipe claim, accessible labels, 44-pixel classes, theme, reduced-motion, safe-area, and Dynamic Type bridge updates.
 
 - [ ] **Step 3: Verify failures**
 
@@ -479,7 +479,7 @@ Services inject real or fake native clients. Shell screens show honest empty/loa
 
 - [ ] **Step 6: Add fixture mode**
 
-`?fixture=onboarding|sessions|new|settings` loads deterministic seeded data and fake bridge, enabling browser geometry tests without a Hub.
+`?fixture=onboarding|servers|sessions|new|settings` loads deterministic seeded multi-profile data and fake bridge, enabling browser geometry tests without a Hub.
 
 - [ ] **Step 7: Run checks**
 
@@ -524,7 +524,7 @@ Keep DTOs separate from view models. Add fixture freshness to `make lint-generat
 
 - [ ] **Step 3: Write failing roster/new-session screen tests**
 
-Assert Needs You/Running/Recent grouping, local title/project search, pull refresh, last-good error behavior, recent project selection, model/effort defaults, inline launch errors, and navigation after spawn.
+Assert Needs You/Running/Recent grouping per active profile, local title/project search, pull refresh, last-good error behavior, switch between two distinct rosters without leakage, recent project selection, model/effort defaults, inline launch errors, and navigation after spawn.
 
 - [ ] **Step 4: Implement services/stores/screens**
 
