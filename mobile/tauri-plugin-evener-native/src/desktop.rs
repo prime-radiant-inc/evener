@@ -71,4 +71,22 @@ impl<R: Runtime> EvenerNative<R> {
     ) -> crate::Result<SecureDeleteResponse> {
         Ok(SecureDeleteResponse { deleted: false })
     }
+
+    /// Desktop has no haptic hardware; return completed: true (no-op).
+    pub fn haptic_perform(
+        &self,
+        _payload: HapticPerformRequest,
+    ) -> crate::Result<HapticPerformResponse> {
+        Ok(HapticPerformResponse { completed: true })
+    }
+
+    /// Desktop has no Dynamic Type; return the default "large" category.
+    pub fn content_size_get(
+        &self,
+        _payload: ContentSizeGetRequest,
+    ) -> crate::Result<ContentSizeGetResponse> {
+        Ok(ContentSizeGetResponse {
+            category: "large".to_owned(),
+        })
+    }
 }

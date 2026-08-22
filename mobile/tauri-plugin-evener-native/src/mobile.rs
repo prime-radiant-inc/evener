@@ -93,4 +93,24 @@ impl<R: Runtime> EvenerNative<R> {
             .run_mobile_plugin("secureDelete", payload)
             .map_err(Into::into)
     }
+
+    /// Perform a haptic feedback pattern via the Swift UIFeedbackGenerator.
+    pub fn haptic_perform(
+        &self,
+        payload: HapticPerformRequest,
+    ) -> crate::Result<HapticPerformResponse> {
+        self.handle
+            .run_mobile_plugin("hapticPerform", payload)
+            .map_err(Into::into)
+    }
+
+    /// Get the current UIContentSizeCategory from Swift.
+    pub fn content_size_get(
+        &self,
+        payload: ContentSizeGetRequest,
+    ) -> crate::Result<ContentSizeGetResponse> {
+        self.handle
+            .run_mobile_plugin("contentSizeGet", payload)
+            .map_err(Into::into)
+    }
 }

@@ -133,7 +133,9 @@ export function OnboardingScreen({
       await store
         .getState()
         .confirmPairing(preview.previewId, serverName.trim(), consent);
-      await services.native.hapticPerform("notificationSuccess");
+      // Haptic is best-effort — pairing success commits and navigates
+      // even if the haptic call rejects.
+      void services.native.hapticPerform("notificationSuccess").catch(() => {});
       onConnected?.();
     } catch {
       setConfirmError("pairing failed");
@@ -160,19 +162,16 @@ export function OnboardingScreen({
   return (
     <main className="evener-onboarding">
       <h1 className="evener-onboarding__identity">Evener</h1>
-      <p>
-        Connect to a Hub to manage sessions from your phone. Plain HTTP belongs
-        only on a trusted private network — anyone on that network can observe
-        the bearer capability.
-      </p>
+      <p>Connect to a Hub to manage sessions from your phone.</p>
 
       {showActions ? (
         <>
           <Button variant="primary" onClick={handleScan}>
-            Scan QR
+            Scan QR Code
           </Button>
+          <p className="evener-onboarding__divider">or</p>
           <Input
-            label="Paste authorization URL"
+            label="Authorization URL"
             name="auth-url"
             placeholder="https://hub.example.com/auth?token=…"
             value={pasteUrl}
@@ -186,8 +185,12 @@ export function OnboardingScreen({
             onClick={handlePaste}
             disabled={pasteUrl.trim() === ""}
           >
-            Paste
+            Connect
           </Button>
+          <p className="evener-onboarding__warning">
+            Plain HTTP is only safe on a trusted local network — anyone on that
+            network can observe the bearer capability.
+          </p>
           {previewError !== null ? (
             <p role="alert">
               {previewError} — unable to preview the authorization URL.
@@ -236,7 +239,7 @@ export function OnboardingScreen({
             </label>
           ) : null}
           <Button variant="primary" disabled={!canSave} onClick={handleSave}>
-            Add
+            Connect
           </Button>
           {onCancel ? (
             <Button variant="tertiary" onClick={onCancel}>

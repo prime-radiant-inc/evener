@@ -38,6 +38,7 @@ export class FakeProfileService implements ProfileService {
   private activeProfileId: string | null;
   private generation: number;
   private readonly previews = new Map<string, string>();
+  private readonly repairProfileIds = new Map<string, string>();
   private previewCounter = 0;
   private readonly failQueue: FakeProfileOp[] = [];
 
@@ -82,6 +83,7 @@ export class FakeProfileService implements ProfileService {
     const previewId = `pv-${++this.previewCounter}`;
     const origin = parseOrigin(input.raw);
     this.previews.set(previewId, origin);
+    this.repairProfileIds.set(previewId, input.profileId);
     return { previewId, origin };
   }
 
@@ -91,21 +93,25 @@ export class FakeProfileService implements ProfileService {
     if (origin === undefined) {
       throw new Error("preview not found (redacted)");
     }
-    const id = `p-${this.profiles.size + 1}`;
+    const repairId = this.repairProfileIds.get(input.previewId);
+    const id = repairId ?? `p-${this.profiles.size + 1}`;
     const profile: ProfileRedacted = { id, name: input.name, origin };
     this.profiles.set(id, profile);
     this.activeProfileId = id;
     this.generation += 1;
     this.previews.delete(input.previewId);
+    this.repairProfileIds.delete(input.previewId);
     return profile;
   }
 
   async cancelPreview(_input: { readonly previewId: string }): Promise<void> {
     this.previews.delete(_input.previewId);
+    this.repairProfileIds.delete(_input.previewId);
   }
 
   async clearPreviews(): Promise<void> {
     this.previews.clear();
+    this.repairProfileIds.clear();
   }
 
   async rename(input: RenameInput): Promise<ProfileRedacted> {

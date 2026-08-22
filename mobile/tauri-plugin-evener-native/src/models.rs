@@ -33,6 +33,36 @@ pub struct PingResponse {
 #[serde(rename_all = "camelCase")]
 pub struct ScanAndPreviewRequest {}
 
+// ---------------------------------------------------------------------------
+// hapticPerform command
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HapticPerformRequest {
+    pub kind: String,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HapticPerformResponse {
+    pub completed: bool,
+}
+
+// ---------------------------------------------------------------------------
+// contentSizeGet command
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ContentSizeGetRequest {}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ContentSizeGetResponse {
+    pub category: String,
+}
+
 /// Public response to the `scanAndPreviewPairing` command. This is the only
 /// scan data that crosses to JavaScript. On success `response_type` is
 /// `"pairing.preview"` with `preview_id` and `origin`. On failure it is
