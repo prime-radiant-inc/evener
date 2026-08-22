@@ -23,14 +23,14 @@ import type {
   ConnectionStore,
   NavigationStore,
   PreferencesStore,
-  ShellServiceBundle,
+  ShellServices,
 } from "./root-types";
 import { ServerSwitcherSheet } from "./ServerSwitcherSheet";
 import { SessionsScreen } from "./SessionsScreen";
 import { SettingsScreen } from "./SettingsScreen";
 
 export interface RootShellProps {
-  readonly services: ShellServiceBundle;
+  readonly services: ShellServices;
   readonly stores: {
     readonly connection: ConnectionStore;
     readonly navigation: NavigationStore;
@@ -64,6 +64,33 @@ export function RootShell({ services, stores }: RootShellProps): JSX.Element {
   useEffect(() => {
     void connection.getState().refresh();
   }, [connection]);
+
+  // Consume the native content-size category on mount. Best-effort: a getter
+  // failure must not break profile loading or render the shell unusable.
+  useEffect(() => {
+    let cancelled = false;
+    void services.native
+      .getContentSize()
+      .then((category) => {
+        if (!cancelled) preferences.getState().setContentSize(category);
+      })
+      .catch(() => {
+        // contentSize is best-effort; keep the store default.
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [services.native, preferences]);
+
+  // Refresh connection state when the app returns to the foreground.
+  useEffect(() => {
+    const unsubscribe = services.native.onLifecycle((state) => {
+      if (state === "foreground") {
+        void connection.getState().refresh();
+      }
+    });
+    return unsubscribe;
+  }, [services.native, connection]);
 
   const isLoading = status === "initial" || status === "loading";
   const hasProfiles = profiles.length > 0 && activeProfileId !== null;

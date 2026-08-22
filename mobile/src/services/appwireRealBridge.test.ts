@@ -122,6 +122,10 @@ class RustHarnessBridge implements TauriBridge {
     return channel;
   }
 
+  listen(): Promise<() => void> {
+    return Promise.resolve(() => {});
+  }
+
   control<T = unknown>(action: string): Promise<T> {
     return this.send<T>({ kind: "control", action });
   }

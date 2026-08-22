@@ -20,3 +20,14 @@ export interface ShellServiceBundle {
   readonly hapticCalls: string[];
   readonly contentSize: () => string;
 }
+
+/**
+ * Minimal service surface the root shell and onboarding screen consume.
+ * Both the fixture {@link ShellServiceBundle} (superset) and the production
+ * {@link ProductionServices} satisfy this — neither exposes a hardcoded
+ * content-size; the shell reads it via `native.getContentSize()` instead.
+ */
+export interface ShellServices {
+  readonly profile: ProfileService;
+  readonly native: NativeBridge;
+}

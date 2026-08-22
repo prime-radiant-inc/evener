@@ -33,6 +33,14 @@ interface FakeBridge {
     onclose: (() => void) | null;
     dispose(): void;
   };
+  listen: <T = unknown>(
+    event: string,
+    handler: (event: {
+      readonly event: string;
+      readonly id: number;
+      readonly payload: T;
+    }) => void,
+  ) => Promise<() => void>;
   /** Captured channel emit helper (typed for AppwireChannelEvent). */
   emit: (event: AppwireChannelEvent) => void;
   readonly invokes: { cmd: string; args: Record<string, unknown> }[];
@@ -97,6 +105,9 @@ function fakeBridge(openScript: OpenScript): FakeBridge {
     },
     emit(event) {
       channel?.onmessage(event);
+    },
+    listen(): Promise<() => void> {
+      return Promise.resolve(() => {});
     },
     invokes,
     sendResult(connId, ok, error) {
@@ -740,6 +751,9 @@ describe("appwireSocket — imported AppwireClient scripted Tauri integration", 
               this.onclose?.();
             },
           };
+        },
+        listen(): Promise<() => void> {
+          return Promise.resolve(() => {});
         },
       };
 
