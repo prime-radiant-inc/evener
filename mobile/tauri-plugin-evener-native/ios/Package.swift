@@ -10,7 +10,7 @@ let package = Package(
     ],
     products: [
         .library(
-            name: "EvenerNativePlugin",
+            name: "tauri-plugin-evener-native",
             type: .static,
             targets: ["EvenerNativePlugin"]),
     ],
