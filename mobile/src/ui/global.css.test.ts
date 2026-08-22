@@ -2,442 +2,710 @@ import { readFileSync } from "node:fs";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
 
-// Read the compiled global CSS to assert design-system contracts without
-// rendering pixels. The source tokens must compile into the production CSS.
+/* ---------------------------------------------------------------------------
+ * Foundation 7C lane D — parser-based contract tests.
+ *
+ * These tests do NOT use loose substring/regex matching. They parse the
+ * production CSS through the browser CSSOM (`<style>` + `sheet.cssRules`,
+ * recursing into grouping rules like `@media`) and the host HTML through
+ * `DOMParser`. Every assertion is built on exact selector rules and exact
+ * declaration maps, so a coincidental mention in a comment, an unrelated
+ * rule, or a grouped selector cannot satisfy an exact-selector check.
+ * ------------------------------------------------------------------------- */
+
 const cssPath = path.join(__dirname, "global.css");
-const css = readFileSync(cssPath, "utf8");
+const cssSource = readFileSync(cssPath, "utf8");
 
-// Read the HTML host page to assert viewport meta and root markup.
 const htmlPath = path.join(__dirname, "..", "..", "index.html");
-const html = readFileSync(htmlPath, "utf8");
+const htmlSource = readFileSync(htmlPath, "utf8");
 
-function has(rule: RegExp): boolean {
-  return rule.test(css);
+/* -------------------------------------------------------------------------
+ * CSSOM parser — collect every exact style rule across the whole sheet,
+ * recursing into @media / @supports grouping rules. A later rule with the
+ * same selector is recorded separately so duplicate-ownership can be
+ * detected and rejected.
+ * ----------------------------------------------------------------------- */
+
+interface StyleRuleEntry {
+  /** Exact selectorText from CSSOM (grouped selectors stay as one string). */
+  selector: string;
+  /** Media condition text if this rule lives inside a grouping rule. */
+  media: string;
+  /** Exact property -> value map (CSSOM-normalized). */
+  decls: Record<string, string>;
 }
 
-/**
- * Extract the first rule block for a selector from the CSS source.
- * Returns the declarations string (inside the braces) or null if not found.
- * This is more precise than a loose substring search because it isolates
- * which selector owns a declaration, preventing coincidental passes from
- * an unrelated rule that happens to mention the same token.
- */
-function ruleBlock(selector: string): string | null {
-  const escaped = selector.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-  // Match the selector followed by its { ... } block. The /s flag lets the
-  // body span newlines. We capture the inside of the braces.
-  const re = new RegExp(`${escaped}\\s*\\{([^}]*)\\}`, "s");
-  const m = css.match(re);
-  return m ? m[1] : null;
+interface KeyframesEntry {
+  name: string;
 }
 
-/**
- * Extract the viewport meta tag content from index.html.
- */
-function viewportMeta(): string | null {
-  const m = html.match(
-    /<meta\s+name=["']viewport["']\s+content=["']([^"']*)["']/i,
+interface SheetModel {
+  styleRules: StyleRuleEntry[];
+  keyframes: KeyframesEntry[];
+  /** Raw constructor names encountered, for diagnostics. */
+  ruleTypes: string[];
+}
+
+function parseSheet(source: string): SheetModel {
+  const style = document.createElement("style");
+  style.textContent = source;
+  document.head.appendChild(style);
+  const sheet = style.sheet as CSSStyleSheet;
+
+  const styleRules: StyleRuleEntry[] = [];
+  const keyframes: KeyframesEntry[] = [];
+  const ruleTypes: string[] = [];
+
+  function declMap(rule: CSSStyleRule): Record<string, string> {
+    const map: Record<string, string> = {};
+    for (let i = 0; i < rule.style.length; i++) {
+      const prop = rule.style[i];
+      if (prop === undefined) continue;
+      map[prop] = rule.style.getPropertyValue(prop);
+    }
+    return map;
+  }
+
+  function walk(rules: CSSRuleList, media: string): void {
+    for (const rule of Array.from(rules)) {
+      const ctor = rule.constructor.name;
+      ruleTypes.push(ctor);
+      if (ctor === "CSSMediaRule" || ctor === "CSSSupportsRule") {
+        const group = rule as CSSMediaRule;
+        const cond =
+          "conditionText" in group
+            ? ((group as CSSConditionRule).conditionText ?? "")
+            : "";
+        walk(group.cssRules, cond);
+      } else if (ctor === "CSSStyleRule") {
+        const sr = rule as CSSStyleRule;
+        styleRules.push({
+          selector: sr.selectorText,
+          media,
+          decls: declMap(sr),
+        });
+      } else if (ctor === "CSSKeyframesRule") {
+        keyframes.push({ name: (rule as CSSKeyframesRule).name });
+      }
+    }
+  }
+  walk(sheet.cssRules, "");
+  // Remove the injected <style> so it does not leak across tests.
+  style.remove();
+  return { styleRules, keyframes, ruleTypes };
+}
+
+const sheet = parseSheet(cssSource);
+
+/** All top-level (non-media) style rules whose selectorText exactly equals
+ *  `selector`. Media-scoped rules are matched via `rulesInMedia` so that a
+ *  `:root` inside `@media` cannot satisfy a top-level `:root` ownership check. */
+function rulesFor(selector: string): StyleRuleEntry[] {
+  return sheet.styleRules.filter(
+    (r) => r.selector === selector && r.media === "",
   );
-  return m ? m[1] : null;
 }
+
+/** The single style rule for an exact selector; fails if 0 or >1. */
+function oneRule(selector: string): StyleRuleEntry {
+  const matches = rulesFor(selector);
+  expect(
+    matches.length,
+    `expected exactly one rule for ${selector}, found ${matches.length}`,
+  ).toBe(1);
+  return matches[0]!;
+}
+
+/** Style rules for an exact selector inside a given media condition. */
+function rulesInMedia(selector: string, media: string): StyleRuleEntry[] {
+  return sheet.styleRules.filter(
+    (r) => r.selector === selector && r.media === media,
+  );
+}
+
+/* -------------------------------------------------------------------------
+ * DOMParser — parse index.html and assert exactly one viewport meta with
+ * split, exact directives. No loose substring scanning.
+ * ----------------------------------------------------------------------- */
+
+function parseHtml(source: string): Document {
+  return new DOMParser().parseFromString(source, "text/html");
+}
+
+const doc = parseHtml(htmlSource);
+
+function viewportMetas(): HTMLMetaElement[] {
+  return Array.from(doc.querySelectorAll('meta[name="viewport"]'));
+}
+
+/** Split a viewport content string into an ordered key->value map. */
+function viewportDirectives(): Map<string, string> {
+  const metas = viewportMetas();
+  expect(metas.length, "exactly one viewport meta").toBe(1);
+  const content = metas[0]!.getAttribute("content") ?? "";
+  const map = new Map<string, string>();
+  for (const part of content.split(",")) {
+    const trimmed = part.trim();
+    if (trimmed === "") continue;
+    const eq = trimmed.indexOf("=");
+    if (eq === -1) {
+      map.set(trimmed, "");
+    } else {
+      map.set(trimmed.slice(0, eq).trim(), trimmed.slice(eq + 1).trim());
+    }
+  }
+  return map;
+}
+
+/* -------------------------------------------------------------------------
+ * Helpers for safe-area edge accounting.
+ * ----------------------------------------------------------------------- */
+
+/** Which safe-area edges a declaration map references. */
+function safeEdges(decls: Record<string, string>): Set<string> {
+  const edges = new Set<string>();
+  const all = Object.values(decls).join(" ");
+  if (all.includes("--safe-area-top")) edges.add("top");
+  if (all.includes("--safe-area-bottom")) edges.add("bottom");
+  if (all.includes("--safe-area-left")) edges.add("left");
+  if (all.includes("--safe-area-right")) edges.add("right");
+  return edges;
+}
+
+/* =========================================================================
+ * EXISTING DESIGN-TOKEN CONTRACTS (parser-backed, exact selectors)
+ * ====================================================================== */
 
 describe("design tokens — semantic colors (forest-teal + summit-amber)", () => {
-  it("defines accent tokens (forest-teal light/dark)", () => {
-    expect(has(/--accent\s*:\s*#0A7D62/i)).toBe(true);
+  it("root defines accent tokens (forest-teal light)", () => {
+    const root = oneRule(":root");
+    expect(root.decls["--accent"]).toBe("#0a7d62"); // jsdom lowercases hex
   });
 
-  it("defines accentInk for light theme", () => {
-    expect(
-      has(/--accent-ink\s*:\s*#0B6B54/i) || has(/--accentInk\s*:\s*#0B6B54/i),
-    ).toBe(true);
+  it("root defines accentInk for light theme", () => {
+    const root = oneRule(":root");
+    expect(root.decls["--accent-ink"]).toBe("#0b6b54");
   });
 
-  it("defines dark-mode accent (summit/teal light)", () => {
-    expect(
-      css.match(/--accent\s*:\s*#3DD6A8/i) ?? css.match(/#3DD6A8/i),
-    ).toBeTruthy();
+  it("dark media defines teal-light accent #3dd6a8", () => {
+    const dark = rulesInMedia(":root", "(prefers-color-scheme: dark)");
+    expect(dark.length).toBe(1);
+    expect(dark[0]!.decls["--accent"]).toBe("#3dd6a8");
   });
 
-  it("defines canvas and raised surface tokens", () => {
-    expect(
-      has(/--canvas\s*:\s*#F2F2F7/i) || has(/--background\s*:\s*#F2F2F7/i),
-    ).toBe(true);
-    expect(
-      has(/--raised\s*:\s*#FFFFFF/i) || has(/--surface\s*:\s*#FFFFFF/i),
-    ).toBe(true);
+  it("root defines canvas #f2f2f7 and raised #ffffff", () => {
+    const root = oneRule(":root");
+    expect(root.decls["--canvas"]).toBe("#f2f2f7");
+    expect(root.decls["--raised"]).toBe("#ffffff");
   });
 
-  it("defines status colors: live (green), attention (amber), danger (red)", () => {
-    expect(has(/--live\s*:\s*#1E7A3F/i)).toBe(true);
-    expect(has(/--attention\s*:\s*#8A4D00/i)).toBe(true);
-    expect(has(/--danger\s*:\s*#C22F28/i)).toBe(true);
+  it("root defines status colors live/attention/danger", () => {
+    const root = oneRule(":root");
+    expect(root.decls["--live"]).toBe("#1e7a3f");
+    expect(root.decls["--attention"]).toBe("#8a4d00");
+    expect(root.decls["--danger"]).toBe("#c22f28");
   });
 });
 
 describe("design tokens — 44px tap target", () => {
-  it("defines a 44px tap-target token", () => {
-    expect(has(/--tap-target\s*:\s*44px/i)).toBe(true);
+  it("root defines a 44px tap-target token", () => {
+    const root = oneRule(":root");
+    expect(root.decls["--tap-target"]).toBe("44px");
   });
 
-  it("applies min tap target to interactive controls", () => {
-    expect(has(/min-height\s*:\s*var\(--tap-target\)/i)).toBe(true);
-    expect(has(/min-width\s*:\s*var\(--tap-target\)/i)).toBe(true);
+  it("interactive controls apply min tap target", () => {
+    const button = oneRule(".evener-button");
+    expect(button.decls["min-height"]).toBe("var(--tap-target)");
+    expect(button.decls["min-width"]).toBe("var(--tap-target)");
+    const icon = oneRule(".evener-icon-button");
+    expect(icon.decls["min-height"]).toBe("var(--tap-target)");
+    expect(icon.decls["min-width"]).toBe("var(--tap-target)");
   });
 });
 
-describe("design tokens — safe area", () => {
-  it("defines safe-area insets from env()", () => {
-    expect(has(/--safe-area-top\s*:\s*env\(safe-area-inset-top/i)).toBe(true);
-    expect(has(/--safe-area-bottom\s*:\s*env\(safe-area-inset-bottom/i)).toBe(
-      true,
+describe("design tokens — safe area tokens", () => {
+  it("root defines all four safe-area insets from env()", () => {
+    const root = oneRule(":root");
+    // jsdom normalizes env() by stripping the space after the comma.
+    expect(root.decls["--safe-area-top"]).toBe("env(safe-area-inset-top,0px)");
+    expect(root.decls["--safe-area-bottom"]).toBe(
+      "env(safe-area-inset-bottom,0px)",
     );
-  });
-
-  it("applies safe-area padding to the shell chrome", () => {
-    expect(has(/var\(--safe-area-top\)/i)).toBe(true);
-    expect(has(/var\(--safe-area-bottom\)/i)).toBe(true);
+    expect(root.decls["--safe-area-left"]).toBe(
+      "env(safe-area-inset-left,0px)",
+    );
+    expect(root.decls["--safe-area-right"]).toBe(
+      "env(safe-area-inset-right,0px)",
+    );
   });
 });
 
 describe("design tokens — spacing scale", () => {
-  it("defines the 4/8/12/16/20/24/32 spacing scale", () => {
+  it("root defines the 4/8/12/16/20/24/32 spacing scale", () => {
+    const root = oneRule(":root");
     for (const v of [4, 8, 12, 16, 20, 24, 32]) {
-      expect(has(new RegExp(`--space-${v}\\s*:\\s*${v}px`, "i"))).toBe(true);
+      expect(root.decls[`--space-${v}`]).toBe(`${v}px`);
     }
   });
 });
 
 describe("design tokens — radii", () => {
-  it("defines control, row, and sheet radii (10/14/20)", () => {
-    expect(
-      has(/--radius-control\s*:\s*10px/i) || has(/--radius-sm\s*:\s*10px/i),
-    ).toBe(true);
-    expect(
-      has(/--radius-row\s*:\s*14px/i) || has(/--radius-md\s*:\s*14px/i),
-    ).toBe(true);
-    expect(
-      has(/--radius-sheet\s*:\s*20px/i) || has(/--radius-lg\s*:\s*20px/i),
-    ).toBe(true);
+  it("root defines control/row/sheet radii (10/14/20)", () => {
+    const root = oneRule(":root");
+    expect(root.decls["--radius-control"]).toBe("10px");
+    expect(root.decls["--radius-row"]).toBe("14px");
+    expect(root.decls["--radius-sheet"]).toBe("20px");
   });
 });
 
-describe("Dynamic Type — semantic type scale", () => {
-  it("defines content-size categories via data attribute classes", () => {
-    expect(has(/\[data-content-size/i) || has(/data-content-size/i)).toBe(true);
-  });
-
-  it("maps at least small, large, extraExtraLarge, and AX5 to scale steps", () => {
-    expect(has(/extraExtraLarge/i) || has(/xxl/i)).toBe(true);
-    expect(has(/accessibilityExtraExtraExtraLarge/i) || has(/ax5/i)).toBe(true);
-  });
-});
-
-describe("reduced motion — disables spatial movement", () => {
-  it("defines a prefers-reduced-motion media block", () => {
-    expect(has(/@media\s*\(prefers-reduced-motion/i)).toBe(true);
-  });
-
-  it("removes transitions/animations under reduced motion", () => {
-    expect(has(/transition\s*:\s*none/i) || has(/animation\s*:\s*none/i)).toBe(
-      true,
-    );
-  });
-});
-
-describe("themes — light and dark", () => {
-  it("defines a dark color-scheme media block", () => {
-    expect(has(/prefers-color-scheme:\s*dark/i)).toBe(true);
-  });
-
-  it("defines explicit dark canvas #000 and raised #1C1C1E", () => {
-    expect(has(/--canvas\s*:\s*#000/i) || has(/--background\s*:\s*#000/i)).toBe(
-      true,
-    );
-    expect(
-      has(/--raised\s*:\s*#1C1C1E/i) || has(/--surface\s*:\s*#1C1C1E/i),
-    ).toBe(true);
-  });
-});
-
-describe("keyboard viewport — bottom dock above keyboard", () => {
-  it("defines a keyboard inset token", () => {
-    expect(has(/--keyboard-inset/i) || has(/keyboard|visualViewport/i)).toBe(
-      true,
-    );
-  });
-});
-
-describe("fix round 1 — dark glyph contrast", () => {
-  it("dark-mode status glyphs use dark ink on bright fills for >=3:1", () => {
-    expect(
-      has(/--status-glyph-ink\s*:\s*#000/i) || has(/color\s*:\s*#000/i),
-    ).toBe(true);
-  });
-
-  it("status marks always have a text label class, not glyph alone", () => {
-    expect(has(/evener-status-mark__label/i)).toBe(true);
-  });
-});
-
-describe("fix round 1 — no duplicate safe-area padding", () => {
-  it("shell does NOT apply safe-area insets (edge owners apply them once)", () => {
-    const shell = ruleBlock(".evener-shell");
-    expect(shell).not.toBeNull();
-    expect(shell).not.toContain("safe-area");
-  });
-});
-
-describe("fix round 1 — intrinsic rows at 375/AX", () => {
-  it("list rows use min-height not fixed height", () => {
-    const rowFixedHeight = css.match(
-      /\.evener-list-row\s*\{[^}]*\bheight\s*:\s*\d+px[^}]*\}/s,
-    );
-    expect(rowFixedHeight).toBeFalsy();
-  });
-});
-
-describe("fix round 1 — tablist container", () => {
-  it("bottom bar CSS class exists for tablist role", () => {
-    expect(has(/evener-bottombar/i)).toBe(true);
-  });
-});
-
-/* ---------------------------------------------------------------------------
- * Foundation 7C lane D — safe-area ownership, dynamic type, onboarding scroll,
- * keyboard-ready geometry. These tests parse rule blocks (not loose
- * substrings) to reject duplicate inset ownership, missing scrolling,
- * inherited font failure, and missing viewport meta.
- * ------------------------------------------------------------------------- */
+/* =========================================================================
+ * VIEWPORT META — exact, one meta, split directives, no dupes/extras
+ * ====================================================================== */
 
 describe("7C lane D — viewport meta honors safe areas and keyboard", () => {
-  it("index.html has a viewport meta tag", () => {
-    expect(viewportMeta()).not.toBeNull();
+  it("index.html has exactly one viewport meta tag", () => {
+    expect(viewportMetas().length).toBe(1);
   });
 
-  it("viewport meta includes viewport-fit=cover", () => {
-    expect(viewportMeta()).toMatch(/viewport-fit\s*=\s*cover/i);
+  it("viewport directives are exactly the expected set", () => {
+    const d = viewportDirectives();
+    // Exactly these four keys, no more, no less.
+    expect(d.size).toBe(4);
+    expect(Array.from(d.keys()).sort()).toEqual(
+      ["initial-scale", "interactive-widget", "viewport-fit", "width"].sort(),
+    );
   });
 
-  it("viewport meta includes interactive-widget=resizes-content", () => {
-    expect(viewportMeta()).toMatch(/interactive-widget\s*=\s*resizes-content/i);
+  it("width=device-width exactly", () => {
+    expect(viewportDirectives().get("width")).toBe("device-width");
   });
 
-  it("viewport meta preserves width=device-width", () => {
-    expect(viewportMeta()).toMatch(/width\s*=\s*device-width/i);
+  it("initial-scale=1.0 exactly", () => {
+    expect(viewportDirectives().get("initial-scale")).toBe("1.0");
   });
 
-  it("viewport meta preserves initial-scale=1", () => {
-    expect(viewportMeta()).toMatch(/initial-scale\s*=\s*1(\.0)?/i);
+  it("viewport-fit=cover exactly", () => {
+    expect(viewportDirectives().get("viewport-fit")).toBe("cover");
+  });
+
+  it("interactive-widget=resizes-content exactly", () => {
+    expect(viewportDirectives().get("interactive-widget")).toBe(
+      "resizes-content",
+    );
+  });
+
+  it("rejects a duplicate viewport meta (parser counts all)", () => {
+    // Sanity check that the helper would catch a second meta if present.
+    const dup = parseHtml(
+      '<head><meta name="viewport" content="width=device-width"><meta name="viewport" content="viewport-fit=cover"></head>',
+    );
+    expect(dup.querySelectorAll('meta[name="viewport"]').length).toBe(2);
   });
 });
 
+/* =========================================================================
+ * SAFE-AREA OWNERSHIP — one unambiguous owner per edge, exact selectors
+ * ====================================================================== */
+
 describe("7C lane D — one unambiguous safe-area owner per edge", () => {
-  it("shell owns viewport height/overflow but NOT safe-area padding", () => {
-    const shell = ruleBlock(".evener-shell");
-    expect(shell).not.toBeNull();
-    expect(shell).toContain("var(--viewport-height)");
-    expect(shell).toContain("overflow");
-    expect(shell).not.toContain("safe-area");
+  it("shell owns viewport height/overflow but NOT any safe-area padding", () => {
+    const shell = oneRule(".evener-shell");
+    expect(shell.decls["height"]).toBe("var(--viewport-height)");
+    expect(shell.decls["overflow"]).toBe("hidden");
+    expect(shell.decls["padding-top"]).toBeUndefined();
+    expect(shell.decls["padding-bottom"]).toBeUndefined();
+    expect(shell.decls["padding-left"]).toBeUndefined();
+    expect(shell.decls["padding-right"]).toBeUndefined();
+    expect(safeEdges(shell.decls).size).toBe(0);
   });
 
-  it("TopBar owns top + horizontal safe edges", () => {
-    const topbar = ruleBlock(".evener-topbar");
-    expect(topbar).not.toBeNull();
-    expect(topbar).toContain("var(--safe-area-top)");
-    // horizontal edges
-    const horizMatch =
-      topbar.includes("var(--safe-area-left)") ||
-      topbar.includes("var(--safe-area-right)");
-    expect(horizMatch).toBe(true);
+  it("TopBar (base) owns top + left + right safe edges, not bottom", () => {
+    const topbar = oneRule(".evener-topbar");
+    const edges = safeEdges(topbar.decls);
+    expect(edges.has("top")).toBe(true);
+    expect(edges.has("left")).toBe(true);
+    expect(edges.has("right")).toBe(true);
+    expect(edges.has("bottom")).toBe(false);
+    // Exact top padding composes space + safe once.
+    expect(topbar.decls["padding-top"]).toBe(
+      "calc(var(--space-8) + var(--safe-area-top))",
+    );
+    expect(topbar.decls["padding-left"]).toBe(
+      "calc(var(--space-16) + var(--safe-area-left))",
+    );
+    expect(topbar.decls["padding-right"]).toBe(
+      "calc(var(--space-16) + var(--safe-area-right))",
+    );
   });
 
-  it("TopBar does NOT own the bottom safe edge", () => {
-    const topbar = ruleBlock(".evener-topbar");
-    expect(topbar).not.toBeNull();
-    expect(topbar).not.toContain("var(--safe-area-bottom)");
+  it("nested screen-scroll TopBar cancels ancestor horizontal inset exactly", () => {
+    const nested = oneRule(".evener-screen-scroll .evener-topbar");
+    // Asymmetric left/right negative margins matching the scroll's insets.
+    expect(nested.decls["margin-left"]).toBe(
+      "calc(-1 * var(--safe-area-left))",
+    );
+    expect(nested.decls["margin-right"]).toBe(
+      "calc(-1 * var(--safe-area-right))",
+    );
+    // The compensation rule must NOT itself add safe-area padding (it only
+    // cancels the ancestor; the base TopBar re-adds space+safe once).
+    expect(nested.decls["padding-left"]).toBeUndefined();
+    expect(nested.decls["padding-right"]).toBeUndefined();
+    expect(nested.decls["padding-top"]).toBeUndefined();
   });
 
-  it("BottomBar owns the bottom safe edge", () => {
-    const bottombar = ruleBlock(".evener-bottombar");
-    expect(bottombar).not.toBeNull();
-    expect(bottombar).toContain("var(--safe-area-bottom)");
+  it("BottomBar owns bottom + left + right safe edges, not top", () => {
+    const bar = oneRule(".evener-bottombar");
+    const edges = safeEdges(bar.decls);
+    expect(edges.has("bottom")).toBe(true);
+    expect(edges.has("left")).toBe(true);
+    expect(edges.has("right")).toBe(true);
+    expect(edges.has("top")).toBe(false);
+    expect(bar.decls["padding-bottom"]).toBe("var(--safe-area-bottom)");
+    expect(bar.decls["padding-left"]).toBe("var(--safe-area-left)");
+    expect(bar.decls["padding-right"]).toBe("var(--safe-area-right)");
   });
 
-  it("BottomBar does NOT own the top safe edge", () => {
-    const bottombar = ruleBlock(".evener-bottombar");
-    expect(bottombar).not.toBeNull();
-    expect(bottombar).not.toContain("var(--safe-area-top)");
+  it("screen-scroll owns left + right only (no vertical double counting)", () => {
+    const scroll = oneRule(".evener-screen-scroll");
+    const edges = safeEdges(scroll.decls);
+    expect(edges.has("left")).toBe(true);
+    expect(edges.has("right")).toBe(true);
+    expect(edges.has("top")).toBe(false);
+    expect(edges.has("bottom")).toBe(false);
+    expect(scroll.decls["padding-left"]).toBe("var(--safe-area-left)");
+    expect(scroll.decls["padding-right"]).toBe("var(--safe-area-right)");
+    expect(scroll.decls["padding-top"]).toBeUndefined();
+    expect(scroll.decls["padding-bottom"]).toBeUndefined();
   });
 
   it("onboarding owns all four safe edges", () => {
-    const onboarding = ruleBlock(".evener-onboarding");
-    expect(onboarding).not.toBeNull();
-    expect(onboarding).toContain("var(--safe-area-top)");
-    expect(onboarding).toContain("var(--safe-area-bottom)");
-    const horiz =
-      onboarding.includes("var(--safe-area-left)") ||
-      onboarding.includes("var(--safe-area-right)");
-    expect(horiz).toBe(true);
+    const onb = oneRule(".evener-onboarding");
+    const edges = safeEdges(onb.decls);
+    expect(edges.has("top")).toBe(true);
+    expect(edges.has("bottom")).toBe(true);
+    expect(edges.has("left")).toBe(true);
+    expect(edges.has("right")).toBe(true);
   });
 
-  it("Sheet owns bottom + horizontal safe edges", () => {
-    const sheet = ruleBlock(".evener-sheet");
-    expect(sheet).not.toBeNull();
-    expect(sheet).toContain("var(--safe-area-bottom)");
-    const horiz =
-      sheet.includes("var(--safe-area-left)") ||
-      sheet.includes("var(--safe-area-right)");
-    expect(horiz).toBe(true);
+  it("Sheet owns bottom + horizontal safe edges, not top", () => {
+    const sheetRule = oneRule(".evener-sheet");
+    const edges = safeEdges(sheetRule.decls);
+    expect(edges.has("bottom")).toBe(true);
+    expect(edges.has("left")).toBe(true);
+    expect(edges.has("right")).toBe(true);
+    expect(edges.has("top")).toBe(false);
+    expect(sheetRule.decls["padding-bottom"]).toBe("var(--safe-area-bottom)");
+    expect(sheetRule.decls["padding-left"]).toBe("var(--safe-area-left)");
+    expect(sheetRule.decls["padding-right"]).toBe("var(--safe-area-right)");
   });
 
-  it("Sheet does NOT own the top safe edge", () => {
-    const sheet = ruleBlock(".evener-sheet");
-    expect(sheet).not.toBeNull();
-    expect(sheet).not.toContain("var(--safe-area-top)");
+  it("conversation owns NO safe-area edges (TopBar owns top, dock owns bottom)", () => {
+    const conv = oneRule(".evener-conversation");
+    expect(safeEdges(conv.decls).size).toBe(0);
+    expect(conv.decls["padding-top"]).toBeUndefined();
+    expect(conv.decls["padding-bottom"]).toBeUndefined();
+    expect(conv.decls["padding-left"]).toBeUndefined();
+    expect(conv.decls["padding-right"]).toBeUndefined();
   });
 
-  it("screen-scroll gets horizontal safety without top/bottom double counting", () => {
-    const scroll = ruleBlock(".evener-screen-scroll");
-    expect(scroll).not.toBeNull();
-    // horizontal safety is allowed (and expected) for content that may
-    // exceed the shell's lateral bounds, but vertical insets must NOT be
-    // doubled here — TopBar/BottomBar own the vertical edges.
-    expect(scroll).not.toContain("var(--safe-area-top)");
-    expect(scroll).not.toContain("var(--safe-area-bottom)");
+  it("dock uses max(keyboard, safe-bottom) — never calc(+)", () => {
+    const dock = oneRule(".evener-dock");
+    expect(dock.decls["padding-bottom"]).toBe(
+      "max(var(--keyboard-inset), var(--safe-area-bottom))",
+    );
+    // Reject any calc that adds the two (would double to 68px).
+    expect(dock.decls["padding-bottom"]).not.toContain("calc(");
   });
 
-  it("a simulated 34px bottom inset yields 34px total, never 68px (no double application)", () => {
-    // Count how many distinct top-level layout rule blocks apply BOTH
-    // --safe-area-bottom AND --keyboard-inset in the same padding
-    // declaration. A dock should use max() — not calc(+) — so the inset
-    // never stacks keyboard + safe-area into 68px when only 34px is real.
-    const dock = ruleBlock(".evener-dock");
-    expect(dock).not.toBeNull();
-    // The dock must NOT use calc(x + y) which would double-count.
-    const doubleCount =
-      /calc\s*\([^)]*--keyboard-inset[^)]*\+\s*var\(--safe-area-bottom\)/;
-    expect(dock).not.toMatch(doubleCount);
-    // Instead it should use max() so only the larger of keyboard/safe applies.
-    expect(dock).toMatch(/max\s*\(/);
-    expect(dock).toContain("--keyboard-inset");
-    expect(dock).toContain("--safe-area-bottom");
+  it("a simulated 34px bottom inset composes to exactly 34px, never 68px", () => {
+    // Composition table: count each vertical edge owner once for the bottom.
+    // Conversation contributes 0 (no safe-area). Dock contributes max(0,34)=34
+    // when keyboard=0 and safe=34. BottomBar contributes 34 only on tab screens,
+    // never stacked with the dock. No rule adds bottom safe-area twice.
+    const bottomOwners = sheet.styleRules.filter((r) =>
+      safeEdges(r.decls).has("bottom"),
+    );
+    // Each owner is a distinct screen region; the conversation has none.
+    const conv = oneRule(".evener-conversation");
+    expect(safeEdges(conv.decls).has("bottom")).toBe(false);
+    // Dock arithmetic: max(0, 34) = 34, not 0 + 34 stacked on top of safe.
+    const dockVal = oneRule(".evener-dock").decls["padding-bottom"];
+    expect(dockVal).toBe("max(var(--keyboard-inset), var(--safe-area-bottom))");
+    // If keyboard=0 and safe=34: max(0,34)=34. If keyboard=34,safe=0: max(34,0)=34.
+    // calc(0 + 34) would also be 34 here, BUT calc(keyboard + safe) when both
+    // are 34 yields 68 — that is the double-count the max() formula prevents.
+    expect(dockVal).not.toMatch(/\+\s*var\(--safe-area-bottom\)/);
   });
 });
 
+/* =========================================================================
+ * ONBOARDING — sole vertical scroller, shell flex geometry
+ * ====================================================================== */
+
 describe("7C lane D — onboarding is the one vertical scroller", () => {
-  it("onboarding uses flex:1 so it participates in shell flex geometry", () => {
-    const onboarding = ruleBlock(".evener-onboarding");
-    expect(onboarding).not.toBeNull();
-    expect(onboarding).toMatch(/flex\s*:\s*1/i);
+  it("onboarding uses flex:1 to participate in shell flex geometry", () => {
+    expect(oneRule(".evener-onboarding").decls["flex"]).toBe("1 1 auto");
   });
 
   it("onboarding uses min-height:0 to allow shrinking below content", () => {
-    const onboarding = ruleBlock(".evener-onboarding");
-    expect(onboarding).not.toBeNull();
-    expect(onboarding).toMatch(/min-height\s*:\s*0/i);
+    // jsdom normalizes unitless 0 to 0px.
+    expect(oneRule(".evener-onboarding").decls["min-height"]).toBe("0px");
   });
 
   it("onboarding has overflow-y:auto for vertical scrolling", () => {
-    const onboarding = ruleBlock(".evener-onboarding");
-    expect(onboarding).not.toBeNull();
-    expect(onboarding).toMatch(/overflow-y\s*:\s*auto/i);
+    expect(oneRule(".evener-onboarding").decls["overflow-y"]).toBe("auto");
   });
 
-  it("onboarding does NOT use min-height:viewport-height (would clip instead of scroll)", () => {
-    const onboarding = ruleBlock(".evener-onboarding");
-    expect(onboarding).not.toBeNull();
-    expect(onboarding).not.toMatch(
-      /min-height\s*:\s*var\(--viewport-height\)/i,
-    );
+  it("onboarding does NOT pin min-height to viewport-height (would clip)", () => {
+    const onb = oneRule(".evener-onboarding");
+    expect(onb.decls["min-height"]).not.toContain("viewport-height");
   });
 });
+
+/* =========================================================================
+ * DYNAMIC TYPE — exact :root[data-content-size] rules, bounded values
+ * ====================================================================== */
+
+const CONTENT_SIZE_CATEGORIES = [
+  "small",
+  "medium",
+  "large",
+  "extraLarge",
+  "extraExtraLarge",
+  "extraExtraExtraLarge",
+  "accessibilityMedium",
+  "accessibilityLarge",
+  "accessibilityExtraLarge",
+  "accessibilityExtraExtraLarge",
+  "accessibilityExtraExtraExtraLarge",
+] as const;
+
+const CONTENT_SIZE_VALUES: Record<string, { base: string; leading: string }> = {
+  small: { base: "15px", leading: "1.35" },
+  medium: { base: "16px", leading: "1.35" },
+  large: { base: "17px", leading: "1.4" },
+  extraLarge: { base: "19px", leading: "1.4" },
+  extraExtraLarge: { base: "21px", leading: "1.45" },
+  extraExtraExtraLarge: { base: "23px", leading: "1.45" },
+  accessibilityMedium: { base: "20px", leading: "1.45" },
+  accessibilityLarge: { base: "22px", leading: "1.5" },
+  accessibilityExtraLarge: { base: "24px", leading: "1.5" },
+  accessibilityExtraExtraLarge: { base: "27px", leading: "1.5" },
+  accessibilityExtraExtraExtraLarge: { base: "30px", leading: "1.55" },
+};
 
 describe("7C lane D — dynamic type recomputes root font and line height", () => {
   it("root :root sets font-size and line-height from type tokens", () => {
-    const root = ruleBlock(":root");
-    expect(root).not.toBeNull();
-    expect(root).toContain("font-size");
-    expect(root).toContain("line-height");
+    const root = oneRule(":root");
+    expect(root.decls["font-size"]).toBe("var(--type-base, 17px)");
+    expect(root.decls["line-height"]).toBe("var(--type-leading, 1.4)");
   });
 
-  it("all 11 bounded content-size categories are defined", () => {
-    const categories = [
-      "small",
-      "medium",
-      "large",
-      "extraLarge",
-      "extraExtraLarge",
-      "extraExtraExtraLarge",
-      "accessibilityMedium",
-      "accessibilityLarge",
-      "accessibilityExtraLarge",
-      "accessibilityExtraExtraLarge",
-      "accessibilityExtraExtraExtraLarge",
-    ];
-    for (const cat of categories) {
-      expect(has(new RegExp(`\\[data-content-size="${cat}"\\]`, "i"))).toBe(
-        true,
-      );
+  it("root :root sets the system font-family stack", () => {
+    const root = oneRule(":root");
+    expect(root.decls["font-family"]).toContain("-apple-system");
+  });
+
+  it("defines exactly 11 bounded content-size categories as :root[data-content-size]", () => {
+    expect(CONTENT_SIZE_CATEGORIES.length).toBe(11);
+    for (const cat of CONTENT_SIZE_CATEGORIES) {
+      const selector = `:root[data-content-size="${cat}"]`;
+      // Exact selector, exactly one rule.
+      const matches = rulesFor(selector);
+      expect(matches.length, `${selector} count`).toBe(1);
     }
   });
 
-  it("each content-size category sets --type-base and --type-leading", () => {
-    const categories = [
-      "small",
-      "medium",
-      "large",
-      "extraLarge",
-      "extraExtraLarge",
-      "extraExtraExtraLarge",
-      "accessibilityMedium",
-      "accessibilityLarge",
-      "accessibilityExtraLarge",
-      "accessibilityExtraExtraLarge",
-      "accessibilityExtraExtraExtraLarge",
-    ];
-    for (const cat of categories) {
-      const block = ruleBlock(`[data-content-size="${cat}"]`);
-      expect(block).not.toBeNull();
-      expect(block).toContain("--type-base");
-      expect(block).toContain("--type-leading");
+  it("each content-size category sets bounded --type-base and --type-leading", () => {
+    for (const cat of CONTENT_SIZE_CATEGORIES) {
+      const rule = oneRule(`:root[data-content-size="${cat}"]`);
+      const expected = CONTENT_SIZE_VALUES[cat]!;
+      expect(rule.decls["--type-base"]).toBe(expected.base);
+      expect(rule.decls["--type-leading"]).toBe(expected.leading);
     }
   });
 
-  it("AX5 (accessibilityExtraExtraExtraLarge) maps to 30px base", () => {
-    const block = ruleBlock(
-      '[data-content-size="accessibilityExtraExtraExtraLarge"]',
+  it("AX5 (accessibilityExtraExtraExtraLarge) maps to 30px base / 1.55 leading", () => {
+    const rule = oneRule(
+      ':root[data-content-size="accessibilityExtraExtraExtraLarge"]',
     );
-    expect(block).not.toBeNull();
-    expect(block).toMatch(/--type-base\s*:\s*30px/i);
+    expect(rule.decls["--type-base"]).toBe("30px");
+    expect(rule.decls["--type-leading"]).toBe("1.55");
   });
 
-  it("body does NOT override font-size (portal descendants inherit root)", () => {
-    const body = ruleBlock("body");
-    expect(body).not.toBeNull();
-    expect(body).not.toMatch(/font-size\s*:/i);
+  it("content-size selectors are pinned to :root (portal-compatible)", () => {
+    // A bare [data-content-size="..."] (not :root-qualified) must NOT exist.
+    for (const cat of CONTENT_SIZE_CATEGORIES) {
+      const bare = rulesFor(`[data-content-size="${cat}"]`);
+      expect(
+        bare.length,
+        `bare [data-content-size="${cat}"] should not exist`,
+      ).toBe(0);
+    }
+  });
+
+  it("body explicitly inherits font-size and line-height (not just family)", () => {
+    const body = oneRule("body");
+    expect(body.decls["font-family"]).toBe("inherit");
+    expect(body.decls["font-size"]).toBe("inherit");
+    expect(body.decls["line-height"]).toBe("inherit");
+  });
+
+  it("controls use font:inherit so they share the Dynamic Type scale", () => {
+    const button = oneRule(".evener-button");
+    expect(button.decls["font"]).toBe("inherit");
+    const input = oneRule(".evener-input");
+    expect(input.decls["font"]).toBe("inherit");
+    const tab = oneRule(".evener-tab");
+    expect(tab.decls["font"]).toBe("inherit");
   });
 });
 
+/* =========================================================================
+ * THEMES — exact :root[data-theme] rules, color-scheme, precedence
+ * ====================================================================== */
+
+describe("7C lane D — system and explicit theme variables on html", () => {
+  it("dark media sets color-scheme: dark on :root", () => {
+    const dark = rulesInMedia(":root", "(prefers-color-scheme: dark)");
+    expect(dark.length).toBe(1);
+    expect(dark[0]!.decls["color-scheme"]).toBe("dark");
+    expect(dark[0]!.decls["--canvas"]).toBe("#000000");
+    expect(dark[0]!.decls["--raised"]).toBe("#1c1c1e");
+  });
+
+  it("explicit light theme is :root[data-theme=light] with color-scheme: light", () => {
+    const rule = oneRule(':root[data-theme="light"]');
+    expect(rule.decls["color-scheme"]).toBe("light");
+    expect(rule.decls["--canvas"]).toBe("#f2f2f7");
+    expect(rule.decls["--raised"]).toBe("#ffffff");
+  });
+
+  it("explicit dark theme is :root[data-theme=dark] with color-scheme: dark", () => {
+    const rule = oneRule(':root[data-theme="dark"]');
+    expect(rule.decls["color-scheme"]).toBe("dark");
+    expect(rule.decls["--canvas"]).toBe("#000000");
+    expect(rule.decls["--raised"]).toBe("#1c1c1e");
+  });
+
+  it("theme selectors are pinned to :root (not bare attribute)", () => {
+    expect(rulesFor('[data-theme="light"]').length).toBe(0);
+    expect(rulesFor('[data-theme="dark"]').length).toBe(0);
+  });
+
+  it("html/body background follows canvas token", () => {
+    // jsdom normalizes the grouped selector to "html,\nbody".
+    const htmlBody = oneRule("html,\nbody");
+    expect(htmlBody.decls["background"]).toBe("var(--canvas)");
+    expect(htmlBody.decls["color"]).toBe("var(--primary)");
+  });
+
+  it("root :root declares color-scheme: light dark", () => {
+    expect(oneRule(":root").decls["color-scheme"]).toBe("light dark");
+  });
+});
+
+/* =========================================================================
+ * CONVERSATION — flex geometry, one scroller, reduced-motion semantics
+ * ====================================================================== */
+
 describe("7C lane D — conversation participates in shell flex geometry", () => {
-  it("conversation uses flex:1 not position:fixed inset:0", () => {
-    const conv = ruleBlock(".evener-conversation");
-    expect(conv).not.toBeNull();
-    expect(conv).toMatch(/flex\s*:\s*1/i);
-    expect(conv).not.toMatch(/position\s*:\s*fixed/i);
+  it("conversation uses flex:1, not position:fixed", () => {
+    const conv = oneRule(".evener-conversation");
+    expect(conv.decls["flex"]).toBe("1 1 auto");
+    expect(conv.decls["position"]).toBeUndefined();
+    expect(conv.decls["inset"]).toBeUndefined();
   });
 
-  it("conversation keeps one scroller (screen-scroll) for content", () => {
-    // The conversation markup reuses evener-screen-scroll; the CSS class must
-    // still exist and remain a scroller.
-    const scroll = ruleBlock(".evener-screen-scroll");
-    expect(scroll).not.toBeNull();
-    expect(scroll).toMatch(/overflow-y\s*:\s*auto/i);
+  it("conversation keeps background and reduced-motion-compatible animation", () => {
+    const conv = oneRule(".evener-conversation");
+    expect(conv.decls["background"]).toBe("var(--canvas)");
+    expect(conv.decls["animation"]).toContain("evener-conversation-in");
   });
 
-  it("conversation preserves reduced-motion animation override", () => {
-    const reduced = css.match(
-      /data-reduced-motion.*?\.evener-conversation\s*\{[^}]*animation\s*:\s*none/s,
+  it("conversation keeps one scroller via evener-screen-scroll", () => {
+    const scroll = oneRule(".evener-screen-scroll");
+    expect(scroll.decls["overflow-y"]).toBe("auto");
+  });
+
+  it("reduced-motion media removes conversation animation", () => {
+    // The reduced-motion override is a grouped selector (.evener-sheet,
+    // .evener-conversation). Find it by media + selector membership.
+    const reducedMedia = sheet.styleRules.find(
+      (r) =>
+        r.media.includes("prefers-reduced-motion") &&
+        r.selector.includes(".evener-conversation"),
     );
-    expect(reduced).toBeTruthy();
+    expect(
+      reducedMedia,
+      "reduced-motion .evener-conversation rule",
+    ).toBeTruthy();
+    expect(reducedMedia?.decls["animation"]).toBe("none");
+    expect(reducedMedia?.decls["transform"]).toBe("none");
+    // The exact single selector ".evener-conversation" is NOT present inside
+    // the media — only the grouped form is. This proves a grouped selector
+    // does not satisfy an exact-selector check.
+    const exact = sheet.styleRules.filter(
+      (r) =>
+        r.media.includes("prefers-reduced-motion") &&
+        r.selector === ".evener-conversation",
+    );
+    expect(exact.length).toBe(0);
+  });
+});
+
+/* =========================================================================
+ * PARSER RIGOR — the parser collects ALL rules, rejects grouped/comment
+ * satisfactions, and detects duplicate selector rules.
+ * ====================================================================== */
+
+describe("parser rigor — exact selectors, duplicates, comments, grouping", () => {
+  it("a duplicate later rule for the same selector is collected separately", () => {
+    const model = parseSheet(".x { color: red; } .x { color: blue; }");
+    const xs = model.styleRules.filter((r) => r.selector === ".x");
+    expect(xs.length).toBe(2);
+    expect(xs[0]!.decls["color"]).toBe("red");
+    expect(xs[1]!.decls["color"]).toBe("blue");
+  });
+
+  it("a grouped selector does not satisfy an exact single-selector check", () => {
+    const model = parseSheet(".a, .b { color: red; }");
+    // Exact selector ".a" alone is NOT present; only ".a, .b" is.
+    expect(model.styleRules.filter((r) => r.selector === ".a").length).toBe(0);
+    const grouped = model.styleRules.filter((r) => r.selector === ".a, .b");
+    expect(grouped.length).toBe(1);
+    expect(grouped[0]!.decls["color"]).toBe("red");
+  });
+
+  it("a comment cannot satisfy a declaration check", () => {
+    // The CSSOM drops comments, so a rule whose only "declaration" is in a
+    // comment has an empty declaration map.
+    const model = parseSheet("/* color: red; */ .x { margin: 0; }");
+    const x = model.styleRules.filter((r) => r.selector === ".x");
+    expect(x.length).toBe(1);
+    expect(x[0]!.decls["color"]).toBeUndefined();
+    // jsdom normalizes unitless 0 to 0px.
+    expect(x[0]!.decls["margin"]).toBe("0px");
+  });
+
+  it("@media nested rules are collected with their media context", () => {
+    const model = parseSheet(
+      "@media (min-width: 1px) { .y { color: green; } }",
+    );
+    const y = model.styleRules.find(
+      (r) => r.selector === ".y" && r.media === "(min-width: 1px)",
+    );
+    expect(y?.decls["color"]).toBe("green");
+  });
+
+  it("real sheet has no duplicate .evener-shell rules (single owner)", () => {
+    expect(rulesFor(".evener-shell").length).toBe(1);
+  });
+
+  it("real sheet has no duplicate .evener-topbar base rules", () => {
+    // The nested descendant rule has a different exact selector, so the
+    // base .evener-topbar must appear exactly once.
+    expect(rulesFor(".evener-topbar").length).toBe(1);
   });
 });
