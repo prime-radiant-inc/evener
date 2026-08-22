@@ -76,6 +76,7 @@
 
 @media (prefers-color-scheme: dark) {
   :root {
+    color-scheme: dark;
     --canvas: #000000;
     --raised: #1c1c1e;
     --primary: #ffffff;
@@ -97,7 +98,8 @@
 }
 
 /* Explicit theme overrides via data-theme on the root shell. */
-[data-theme="light"] {
+:root[data-theme="light"] {
+  color-scheme: light;
   --canvas: #f2f2f7;
   --raised: #ffffff;
   --primary: #1c1c1e;
@@ -116,7 +118,8 @@
   --sheet-shadow: 0 -2px 20px rgba(0, 0, 0, 0.16);
 }
 
-[data-theme="dark"] {
+:root[data-theme="dark"] {
+  color-scheme: dark;
   --canvas: #000000;
   --raised: #1c1c1e;
   --primary: #ffffff;
@@ -139,47 +142,47 @@
 /* Dynamic Type — map UIContentSizeCategory to a bounded semantic type scale.
    The native bridge reports the category; JS sets data-content-size on the
    root. Each step scales base size and leading. */
-[data-content-size="small"] {
+:root[data-content-size="small"] {
   --type-base: 15px;
   --type-leading: 1.35;
 }
-[data-content-size="medium"] {
+:root[data-content-size="medium"] {
   --type-base: 16px;
   --type-leading: 1.35;
 }
-[data-content-size="large"] {
+:root[data-content-size="large"] {
   --type-base: 17px;
   --type-leading: 1.4;
 }
-[data-content-size="extraLarge"] {
+:root[data-content-size="extraLarge"] {
   --type-base: 19px;
   --type-leading: 1.4;
 }
-[data-content-size="extraExtraLarge"] {
+:root[data-content-size="extraExtraLarge"] {
   --type-base: 21px;
   --type-leading: 1.45;
 }
-[data-content-size="extraExtraExtraLarge"] {
+:root[data-content-size="extraExtraExtraLarge"] {
   --type-base: 23px;
   --type-leading: 1.45;
 }
-[data-content-size="accessibilityMedium"] {
+:root[data-content-size="accessibilityMedium"] {
   --type-base: 20px;
   --type-leading: 1.45;
 }
-[data-content-size="accessibilityLarge"] {
+:root[data-content-size="accessibilityLarge"] {
   --type-base: 22px;
   --type-leading: 1.5;
 }
-[data-content-size="accessibilityExtraLarge"] {
+:root[data-content-size="accessibilityExtraLarge"] {
   --type-base: 24px;
   --type-leading: 1.5;
 }
-[data-content-size="accessibilityExtraExtraLarge"] {
+:root[data-content-size="accessibilityExtraExtraLarge"] {
   --type-base: 27px;
   --type-leading: 1.5;
 }
-[data-content-size="accessibilityExtraExtraExtraLarge"] {
+:root[data-content-size="accessibilityExtraExtraExtraLarge"] {
   --type-base: 30px;
   --type-leading: 1.55;
 }
@@ -200,6 +203,11 @@ body {
 
 body {
   font-family: inherit;
+  /* Explicitly inherit font-size and line-height from :root so portal
+     descendants (Sheet) and native form controls share the Dynamic Type
+     scale rather than a UA default. */
+  font-size: inherit;
+  line-height: inherit;
 }
 
 /* One scroller per screen — the shell owns the single vertical scroll. */
@@ -220,6 +228,16 @@ body {
      Vertical insets are NOT doubled here — TopBar/BottomBar own those edges. */
   padding-left: var(--safe-area-left);
   padding-right: var(--safe-area-right);
+}
+
+/* A TopBar nested under .evener-screen-scroll (New/Settings tabs) sits inside
+   the scroll's horizontal safe-area inset. Cancel that ancestor inset with
+   matching negative margins so the TopBar's own padding adds space+safe once
+   — never twice. The conversation's direct TopBar is NOT a descendant of
+   .evener-screen-scroll, so this compensation does not apply there. */
+.evener-screen-scroll .evener-topbar {
+  margin-left: calc(-1 * var(--safe-area-left));
+  margin-right: calc(-1 * var(--safe-area-right));
 }
 
 /* ---------------------------------------------------------------------------
@@ -622,8 +640,6 @@ body {
   flex: 1 1 auto;
   min-height: 0;
   background: var(--canvas);
-  padding-top: var(--safe-area-top);
-  padding-bottom: var(--safe-area-bottom);
   animation: evener-conversation-in 0.24s ease-out;
 }
 
