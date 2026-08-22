@@ -3,7 +3,8 @@
  *
  * A short mobile flow: project path, initial prompt, model/effort, launch.
  * This placeholder shows the intended form structure without fake
- * functionality; Task 8 wires it to the live Hub.
+ * functionality; Task 8 wires it to the live Hub. The Start button is disabled
+ * — it does not start a session.
  */
 import type { JSX } from "react";
 import { Button } from "../ui/Button";
@@ -13,7 +14,7 @@ import { TopBar } from "../ui/TopBar";
 
 export function NewSessionScreen(): JSX.Element {
   return (
-    <main className="evener-screen-scroll">
+    <div>
       <TopBar title="New Session" />
       <div className="evener-list-group">
         <Input
@@ -36,6 +37,6 @@ export function NewSessionScreen(): JSX.Element {
         title="Session creation arrives in Task 8"
         hint="This form is a placeholder — it does not start a session yet."
       />
-    </main>
+    </div>
   );
 }

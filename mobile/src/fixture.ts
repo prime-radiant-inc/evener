@@ -7,10 +7,8 @@
  * No credential, raw URL, or token is ever held in JS state.
  */
 
-import {
-  createShellServices,
-  type ShellServiceBundle,
-} from "./screens/fixture-services";
+import { createShellServices } from "./screens/fixture-services";
+import type { ShellServiceBundle } from "./screens/root-types";
 import type { ProfileRedacted } from "./services/nativeProfiles";
 
 export type FixtureRoute =

@@ -4,6 +4,8 @@
  *
  * No web settings panels. Mobile-only: saved servers, appearance (theme),
  * and permission/connection diagnostics placeholders for Task 8.
+ * Noninteractive diagnostics/placeholders render disabled/static, not
+ * enabled no-op buttons.
  */
 import type { JSX } from "react";
 import type { ThemeChoice } from "../state/preferences";
@@ -29,7 +31,7 @@ export function SettingsScreen({
   const active = profiles.find((p) => p.id === activeProfileId) ?? null;
 
   return (
-    <main className="evener-screen-scroll">
+    <div>
       <TopBar title="Settings" />
       <div className="evener-list-group">
         <div className="evener-list-group__header">Connection</div>
@@ -69,23 +71,33 @@ export function SettingsScreen({
       </div>
       <div className="evener-list-group">
         <div className="evener-list-group__header">Diagnostics</div>
-        <ListRow
-          title="Permissions"
-          subtitle="Camera, microphone, speech"
-          ariaLabel="permissions"
-        />
-        <ListRow
-          title="Connection"
-          subtitle="Hub reachability and transport"
-          ariaLabel="connection diagnostics"
-        />
+        <div className="evener-list-row" style={{ cursor: "default" }}>
+          <span className="evener-list-row__main">
+            <span className="evener-list-row__title">Permissions</span>
+            <span className="evener-list-row__subtitle">
+              Camera, microphone, speech
+            </span>
+          </span>
+        </div>
+        <div className="evener-list-row" style={{ cursor: "default" }}>
+          <span className="evener-list-row__main">
+            <span className="evener-list-row__title">Connection</span>
+            <span className="evener-list-row__subtitle">
+              Hub reachability and transport
+            </span>
+          </span>
+        </div>
       </div>
       <div style={{ padding: "16px" }}>
-        <Button variant="tertiary" disabled>
+        <Button
+          variant="tertiary"
+          disabled
+          aria-label="diagnostics arrive in Task 8"
+        >
           Diagnostics arrive in Task 8
         </Button>
       </div>
-    </main>
+    </div>
   );
 }
 
@@ -101,6 +113,7 @@ function ThemeRow(props: {
       type="button"
       className="evener-list-row"
       aria-label={`theme ${props.label.toLowerCase()}`}
+      aria-pressed={selected}
       onClick={() => props.onSelect(props.value)}
     >
       <span className="evener-list-row__main">
