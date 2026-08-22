@@ -197,8 +197,8 @@ function assertObject(
 }
 
 function assertVersion1(obj: Record<string, unknown>): void {
-  if (obj["version"] !== 1) {
-    throw new Error(`Unsupported bridge version: ${String(obj["version"])}`);
+  if (obj.version !== 1) {
+    throw new Error(`Unsupported bridge version: ${String(obj.version)}`);
   }
 }
 
@@ -268,7 +268,7 @@ function assertErrorObject(obj: Record<string, unknown>, field: string): void {
 export function decodeNativeCommand(obj: unknown): NativeCommand {
   assertObject(obj);
   assertVersion1(obj);
-  switch (obj["type"]) {
+  switch (obj.type) {
     case "secure.get":
       assertNoExtraFields(obj, ["version", "type", "profileId"], "command");
       assertRequiredFields(obj, ["profileId"], "command");
@@ -320,14 +320,14 @@ export function decodeNativeCommand(obj: unknown): NativeCommand {
       assertNoExtraFields(obj, ["version", "type"], "command");
       return obj as NativeCommand;
     default:
-      throw new Error(`Unknown command type: ${String(obj["type"])}`);
+      throw new Error(`Unknown command type: ${String(obj.type)}`);
   }
 }
 
 export function decodeNativeResponse(obj: unknown): NativeResponse {
   assertObject(obj);
   assertVersion1(obj);
-  switch (obj["type"]) {
+  switch (obj.type) {
     case "secure.state":
       assertNoExtraFields(obj, ["version", "type", "present"], "response");
       assertRequiredFields(obj, ["present"], "response");
@@ -389,14 +389,14 @@ export function decodeNativeResponse(obj: unknown): NativeResponse {
       assertErrorObject(obj, "error");
       return obj as NativeResponse;
     default:
-      throw new Error(`Unknown response type: ${String(obj["type"])}`);
+      throw new Error(`Unknown response type: ${String(obj.type)}`);
   }
 }
 
 export function decodeNativeEvent(obj: unknown): NativeEvent {
   assertObject(obj);
   assertVersion1(obj);
-  switch (obj["type"]) {
+  switch (obj.type) {
     case "lifecycle.changed":
       assertNoExtraFields(obj, ["version", "type", "state"], "event");
       assertRequiredFields(obj, ["state"], "event");
@@ -416,6 +416,6 @@ export function decodeNativeEvent(obj: unknown): NativeEvent {
       assertNoExtraFields(obj, ["version", "type"], "event");
       return obj as NativeEvent;
     default:
-      throw new Error(`Unknown event type: ${String(obj["type"])}`);
+      throw new Error(`Unknown event type: ${String(obj.type)}`);
   }
 }
