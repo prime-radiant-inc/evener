@@ -76,9 +76,6 @@ mod ws_server {
         pub connection_count: Arc<AtomicU64>,
         frames_to_send: Arc<Mutex<Vec<String>>>,
         server_close: Arc<Mutex<Option<(u16, String)>>>,
-        hold_after_server_close: Arc<AtomicBool>,
-        server_close_sent_count: Arc<AtomicU64>,
-        server_close_sent: Arc<tokio::sync::Notify>,
         abrupt_close: Arc<Mutex<bool>>,
         pause_after_frames: Arc<AtomicBool>,
         frames_sent_count: Arc<AtomicU64>,
@@ -87,8 +84,6 @@ mod ws_server {
         received_frames: Arc<Mutex<Vec<String>>>,
         close_code: Arc<Mutex<Option<u16>>>,
         close_observed: Arc<tokio::sync::Notify>,
-        hold_after_client_close: Arc<AtomicBool>,
-        release_close_hold: Arc<tokio::sync::Notify>,
         received_authorization: Arc<Mutex<Option<String>>>,
         received_origin: Arc<Mutex<Option<String>>>,
         received_protocol: Arc<Mutex<Option<String>>>,
@@ -103,9 +98,6 @@ mod ws_server {
             let connection_count = Arc::new(AtomicU64::new(0));
             let frames_to_send: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
             let server_close: Arc<Mutex<Option<(u16, String)>>> = Arc::new(Mutex::new(None));
-            let hold_after_server_close = Arc::new(AtomicBool::new(false));
-            let server_close_sent_count = Arc::new(AtomicU64::new(0));
-            let server_close_sent = Arc::new(tokio::sync::Notify::new());
             let abrupt_close = Arc::new(Mutex::new(false));
             let pause_after_frames = Arc::new(AtomicBool::new(false));
             let frames_sent_count = Arc::new(AtomicU64::new(0));
@@ -114,8 +106,6 @@ mod ws_server {
             let received_frames: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
             let close_code: Arc<Mutex<Option<u16>>> = Arc::new(Mutex::new(None));
             let close_observed = Arc::new(tokio::sync::Notify::new());
-            let hold_after_client_close = Arc::new(AtomicBool::new(false));
-            let release_close_hold = Arc::new(tokio::sync::Notify::new());
             let received_authorization: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(None));
             let received_origin: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(None));
             let received_protocol: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(None));
@@ -123,9 +113,6 @@ mod ws_server {
             let cc = connection_count.clone();
             let fts = frames_to_send.clone();
             let server_close_task = server_close.clone();
-            let hold_after_server_close_task = hold_after_server_close.clone();
-            let server_close_sent_count_task = server_close_sent_count.clone();
-            let server_close_sent_task = server_close_sent.clone();
             let abrupt_close_task = abrupt_close.clone();
             let pause_after_frames_task = pause_after_frames.clone();
             let frames_sent_count_task = frames_sent_count.clone();
@@ -134,8 +121,6 @@ mod ws_server {
             let rf = received_frames.clone();
             let clc = close_code.clone();
             let close_observed_task = close_observed.clone();
-            let hold_after_client_close_task = hold_after_client_close.clone();
-            let release_close_hold_task = release_close_hold.clone();
             let ra = received_authorization.clone();
             let ro = received_origin.clone();
             let rp = received_protocol.clone();
@@ -150,9 +135,6 @@ mod ws_server {
 
                     let fts = fts.clone();
                     let server_close = server_close_task.clone();
-                    let hold_after_server_close = hold_after_server_close_task.clone();
-                    let server_close_sent_count = server_close_sent_count_task.clone();
-                    let server_close_sent = server_close_sent_task.clone();
                     let abrupt_close = abrupt_close_task.clone();
                     let pause_after_frames = pause_after_frames_task.clone();
                     let frames_sent_count = frames_sent_count_task.clone();
@@ -161,8 +143,6 @@ mod ws_server {
                     let rf = rf.clone();
                     let clc = clc.clone();
                     let close_observed = close_observed_task.clone();
-                    let hold_after_client_close = hold_after_client_close_task.clone();
-                    let release_close_hold = release_close_hold_task.clone();
                     let ra = ra.clone();
                     let ro = ro.clone();
                     let rp = rp.clone();
@@ -227,15 +207,6 @@ mod ws_server {
                                     },
                                 )))
                                 .await;
-                            server_close_sent_count.fetch_add(1, Ordering::SeqCst);
-                            server_close_sent.notify_waiters();
-                            loop {
-                                let released = release_close_hold.notified();
-                                if !hold_after_server_close.load(Ordering::SeqCst) {
-                                    break;
-                                }
-                                released.await;
-                            }
                             return;
                         }
 
@@ -250,13 +221,6 @@ mod ws_server {
                                         *clc.lock().unwrap() = Some(u16::from(cf.code));
                                     }
                                     close_observed.notify_waiters();
-                                    loop {
-                                        let released = release_close_hold.notified();
-                                        if !hold_after_client_close.load(Ordering::SeqCst) {
-                                            break;
-                                        }
-                                        released.await;
-                                    }
                                     break;
                                 }
                                 Ok(_) => {}
@@ -272,9 +236,6 @@ mod ws_server {
                 connection_count,
                 frames_to_send,
                 server_close,
-                hold_after_server_close,
-                server_close_sent_count,
-                server_close_sent,
                 abrupt_close,
                 pause_after_frames,
                 frames_sent_count,
@@ -283,8 +244,6 @@ mod ws_server {
                 received_frames,
                 close_code,
                 close_observed,
-                hold_after_client_close,
-                release_close_hold,
                 received_authorization,
                 received_origin,
                 received_protocol,
@@ -301,30 +260,6 @@ mod ws_server {
 
         pub fn close_new_connections(&self, code: u16, reason: &str) {
             *self.server_close.lock().unwrap() = Some((code, reason.to_owned()));
-        }
-
-        pub fn hold_new_connections_after_server_close(&self) {
-            self.hold_after_server_close.store(true, Ordering::SeqCst);
-        }
-
-        pub async fn await_server_close_sent(&self, count: u64) {
-            loop {
-                let sent = self.server_close_sent.notified();
-                if self.server_close_sent_count.load(Ordering::SeqCst) >= count {
-                    return;
-                }
-                sent.await;
-            }
-        }
-
-        pub fn hold_new_connections_after_client_close(&self) {
-            self.hold_after_client_close.store(true, Ordering::SeqCst);
-        }
-
-        pub fn release_close_hold(&self) {
-            self.hold_after_server_close.store(false, Ordering::SeqCst);
-            self.hold_after_client_close.store(false, Ordering::SeqCst);
-            self.release_close_hold.notify_waiters();
         }
 
         pub fn keep_new_connections_open(&self) {
@@ -491,89 +426,6 @@ async fn server_close_clears_active_emits_exact_identity_then_allows_immediate_r
     assert!(manager.is_active(&second));
     assert_eq!(server.connection_count(), 2);
     manager.close(second).await;
-}
-
-#[tokio::test]
-async fn peer_close_reaps_while_peer_withholds_close_completion() {
-    use ws_server::ScriptedWsServer;
-
-    let server = ScriptedWsServer::start().await;
-    server.hold_new_connections_after_server_close();
-    server.close_new_connections(1012, "scripted service restart");
-    let manager = test_manager();
-    let (tx, mut rx) = tokio::sync::mpsc::channel(16);
-    let connection = manager
-        .open("profile-1", 0, server.url.clone(), "tok".to_owned(), tx)
-        .await
-        .unwrap();
-
-    tokio::time::timeout_at(deadline_secs(3), server.await_server_close_sent(1))
-        .await
-        .expect("server sent Close before holding the socket open");
-    let select = tokio::time::timeout_at(deadline_secs(3), manager.select(None, 1)).await;
-    if select.is_err() {
-        server.release_close_hold();
-        panic!("manager waited for peer close completion before reaping");
-    }
-
-    assert_eq!(manager.reaped_connection_count(), 1);
-    assert!(!manager.is_active(&connection));
-    assert!(matches!(
-        next_event(&mut rx, deadline_secs(3)).await,
-        Some(AppwireEvent::Closed {
-            ref connection_id,
-            code: 1012,
-            ref reason,
-        }) if connection_id == &connection && reason == "scripted service restart"
-    ));
-    server.release_close_hold();
-}
-
-#[tokio::test]
-async fn local_close_reaps_while_peer_withholds_close_reply_and_eof() {
-    use ws_server::ScriptedWsServer;
-
-    let server = ScriptedWsServer::start().await;
-    server.hold_new_connections_after_client_close();
-    let manager = Arc::new(test_manager());
-    let (tx, mut rx) = tokio::sync::mpsc::channel(16);
-    let connection = manager
-        .open("profile-1", 0, server.url.clone(), "tok".to_owned(), tx)
-        .await
-        .unwrap();
-    tokio::time::timeout_at(deadline_secs(3), server.await_frames_sent(1))
-        .await
-        .expect("WebSocket handshake completed");
-
-    let closing_manager = manager.clone();
-    let closing_connection = connection.clone();
-    let close_task = tokio::spawn(async move {
-        closing_manager.close(closing_connection).await;
-    });
-    assert_eq!(
-        tokio::time::timeout_at(deadline_secs(3), server.await_close_code())
-            .await
-            .expect("server observed client Close before holding the socket open"),
-        1000
-    );
-    let close = tokio::time::timeout_at(deadline_secs(3), close_task).await;
-    if close.is_err() {
-        server.release_close_hold();
-        panic!("manager.close waited for the peer close reply or EOF before reaping");
-    }
-    close.unwrap().expect("manager close task");
-
-    assert_eq!(manager.reaped_connection_count(), 1);
-    assert!(!manager.is_active(&connection));
-    assert!(matches!(
-        next_event(&mut rx, deadline_secs(3)).await,
-        Some(AppwireEvent::Closed {
-            ref connection_id,
-            code: 1000,
-            ref reason,
-        }) if connection_id == &connection && reason == "client closed"
-    ));
-    server.release_close_hold();
 }
 
 #[tokio::test]

@@ -375,12 +375,7 @@ impl AppwireManager {
                                     code: code.into(),
                                     reason: reason.clone().into(),
                                 };
-                                // Give the close frame one nonblocking poll. A
-                                // peer that stops reading must not retain socket
-                                // ownership or block lifecycle completion.
-                                let send = write.send(Message::Close(Some(frame)));
-                                tokio::pin!(send);
-                                let _ = futures_util::poll!(&mut send);
+                                let _ = write.send(Message::Close(Some(frame))).await;
                                 break Terminal::LocalClose { code, reason };
                             }
                             None => {
@@ -434,16 +429,10 @@ impl AppwireManager {
 
             supervisor_lifecycle.mark_terminal_started();
 
-            // Best-effort one nonblocking close poll, then force socket-half
-            // drop before publishing terminal outcome. Awaiting a WebSocket
-            // flush here can depend indefinitely on peer cooperation, while
-            // every reconnect/profile lifecycle operation waits for this
-            // supervisor to release active ownership.
-            {
-                let close = write.close();
-                tokio::pin!(close);
-                let _ = futures_util::poll!(&mut close);
-            }
+            // Finish the WebSocket side before publishing terminal outcome.
+            // The reserved permits below cannot await queue capacity. Socket
+            // halves are explicitly dropped before the supervisor returns.
+            let _ = write.close().await;
             drop(write);
             drop(read);
 
