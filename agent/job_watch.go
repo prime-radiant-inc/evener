@@ -164,6 +164,7 @@ type watchConfig struct {
 	receiverSessionID  string
 	receiverDelegateID string
 	receiverNotify     func(jobNotification)
+	receiverHoldWake   func() func()
 	sourceDelegateID   string
 	sourceGeneration   uint64
 	stableReceiver     bool
@@ -210,6 +211,7 @@ type watchArgs struct {
 	ReceiverSessionID    string
 	ReceiverDelegateID   string
 	ReceiverNotify       func(jobNotification)
+	ReceiverHoldWake     func() func()
 	OutputMatch          string
 	ProgressIntervalMS   int
 	Events               []string
@@ -980,6 +982,7 @@ func newWatchConfig(a watchArgs, createdAt time.Time) (*watchConfig, error) {
 		receiverSessionID:  strings.TrimSpace(a.ReceiverSessionID),
 		receiverDelegateID: strings.TrimSpace(a.ReceiverDelegateID),
 		receiverNotify:     a.ReceiverNotify,
+		receiverHoldWake:   a.ReceiverHoldWake,
 		target:             a.Target,
 		outputMatch:        a.OutputMatch,
 		progressIntervalMS: a.ProgressIntervalMS,
@@ -3092,6 +3095,7 @@ func (jm *jobManager) watchNotificationFromWatch(cfg *watchConfig, jobID, reason
 	if cfg.receiverSessionID != "" {
 		n.receiverSessionID = cfg.receiverSessionID
 		n.receiverNotify = cfg.receiverNotify
+		n.receiverHoldWake = cfg.receiverHoldWake
 	}
 	return n
 }
@@ -4906,17 +4910,51 @@ func (jm *jobManager) routeWatchNotifications(notifications []jobNotification) [
 		return nil
 	}
 	var own []jobNotification
+	type receiverGroup struct {
+		sessionID string
+		notify    func(jobNotification)
+		hold      func() func()
+		notices   []jobNotification
+	}
+	var receiverGroups []receiverGroup
+	groupBySession := make(map[string]int)
 	for _, n := range notifications {
 		if n.receiverNotify != nil {
-			enqueue := n.receiverNotify
+			if n.receiverHoldWake == nil {
+				enqueue := n.receiverNotify
+				n.receiverNotify = nil
+				n.receiverHoldWake = nil
+				enqueue(n)
+				continue
+			}
+			group, ok := groupBySession[n.receiverSessionID]
+			if !ok {
+				group = len(receiverGroups)
+				groupBySession[n.receiverSessionID] = group
+				receiverGroups = append(receiverGroups, receiverGroup{
+					sessionID: n.receiverSessionID,
+					notify:    n.receiverNotify,
+					hold:      n.receiverHoldWake,
+				})
+			}
 			n.receiverNotify = nil
-			enqueue(n)
+			n.receiverHoldWake = nil
+			receiverGroups[group].notices = append(receiverGroups[group].notices, n)
 			continue
 		}
 		if n.receiverSessionID != "" && n.receiverSessionID != jm.sessionID {
 			continue
 		}
 		own = append(own, n)
+	}
+	for _, group := range receiverGroups {
+		release := group.hold()
+		func() {
+			defer release()
+			for _, n := range group.notices {
+				group.notify(n)
+			}
+		}()
 	}
 	return own
 }

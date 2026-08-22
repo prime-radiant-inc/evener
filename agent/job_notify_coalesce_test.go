@@ -180,6 +180,66 @@ func TestWatchBudgetClearCoalescesWithMatchedEvent(t *testing.T) {
 	}
 }
 
+func TestReceiverWatchBudgetClearCoalescesWithMatchedEvent(t *testing.T) {
+	t.Parallel()
+	source := newTestJM(t)
+	receiver := newTestSession(t)
+	rec, _ := source.createShell(createShellOpts{Command: "sleep 300"})
+	if _, err := source.configureWatch(watchArgs{
+		Target:            rec.JobID,
+		Events:            []string{"job.notification"},
+		ReceiverSessionID: receiver.ID(),
+		ReceiverNotify:    receiver.enqueueJobNotificationAndNotify,
+		ReceiverHoldWake:  receiver.holdJobNotificationWake,
+	}); err != nil {
+		t.Fatalf("configure receiver watch: %v", err)
+	}
+	source.mu.Lock()
+	var watched *watchConfig
+	for _, cfg := range source.watches {
+		if cfg != nil && cfg.target == rec.JobID {
+			watched = cfg
+			break
+		}
+	}
+	source.mu.Unlock()
+	if watched == nil {
+		t.Fatalf("receiver watch for %s not installed", rec.JobID)
+	}
+	source.mu.Lock()
+	watched.deliveries = watchDeliveryBudget - 1
+	source.mu.Unlock()
+
+	log := &notificationWakeLog{}
+	watcher := newJobNotifyWatcher(receiver, func() { log.observe(receiver) })
+	onSessionEventKD(source, events.EventJobFinished, events.JobFinishedData{
+		JobID: rec.JobID, JobType: "shell", Status: "completed",
+	})
+	watcher.await(t, "receiver matched event and budget-clear notices queued", func() bool {
+		receiver.pendingJobNotifsMu.Lock()
+		defer receiver.pendingJobNotifsMu.Unlock()
+		return len(receiver.pendingJobNotifs) >= 2
+	})
+
+	wakes := log.snapshot()
+	if len(wakes) != 1 {
+		t.Fatalf("receiver notification wakes = %d, want 1; wake contents: %s",
+			len(wakes), describeWakes(wakes))
+	}
+	var matched, cleared bool
+	for _, n := range wakes[0] {
+		if n.JobID == rec.JobID && n.Status != jobNotificationEventWatch {
+			matched = true
+		}
+		if n.Status == jobNotificationEventWatch && strings.Contains(n.Reason, "watch cleared") {
+			cleared = true
+		}
+	}
+	if !matched || !cleared {
+		t.Fatalf("single receiver wake carried matched=%t cleared=%t, want both: notices=%+v", matched, cleared, wakes[0])
+	}
+}
+
 func describeWakes(wakes [][]jobNotification) string {
 	var out strings.Builder
 	for i, w := range wakes {

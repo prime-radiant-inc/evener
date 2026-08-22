@@ -496,9 +496,11 @@ type jobNotification struct {
 	// receiverSessionID/receiverNotify route no-send watch notifications for
 	// concrete descendant watches back to the ancestor session that installed
 	// them. They are in-memory only; active watches are not restored without a
-	// live installer.
+	// live installer. receiverHoldWake is the matching in-memory receiver rail
+	// hold; it is nil for restored or otherwise non-live callbacks.
 	receiverSessionID string
 	receiverNotify    func(jobNotification)
+	receiverHoldWake  func() func()
 	// watchSendFrame is the rendered frame, populated only between filter and
 	// format inside one accept pass (never persisted, never enqueued).
 	watchSendFrame string

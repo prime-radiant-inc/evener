@@ -257,6 +257,7 @@ func (s *Session) configureDescendantReceiverWatch(a watchArgs) (watchResult, bo
 	childArgs.ReceiverSessionID = s.ID()
 	childArgs.ReceiverDelegateID = ""
 	childArgs.ReceiverNotify = s.enqueueJobNotificationAndNotify
+	childArgs.ReceiverHoldWake = s.holdJobNotificationWake
 	res, err := ownerJM.configureWatch(childArgs)
 	return res, true, err
 }
