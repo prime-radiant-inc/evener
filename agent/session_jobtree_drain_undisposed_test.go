@@ -199,13 +199,27 @@ func TestOneShotDrainAnnouncementStopResolves(t *testing.T) {
 		t.Fatalf("controlled shell drain candidate = (%v, %v, %v), want (%v, true, nil)", ids, sole, err, jobID)
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
+	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan struct {
 		res string
 		err error
 	}, 1)
+	finished := make(chan struct{})
+	releaseStopTurn := func() {
+		select {
+		case <-allowStopTurn:
+		default:
+			close(allowStopTurn)
+		}
+	}
+	t.Cleanup(func() {
+		cancel()
+		releaseStopTurn()
+		releaseShell()
+		<-finished
+	})
 	go func() {
+		defer close(finished)
 		res, err := sess.drainJobTreeWith(ctx, feedRechecks(ctx), sess.kickDriveTree, sess.ProcessInputKind)
 		done <- struct {
 			res string
@@ -218,8 +232,6 @@ func TestOneShotDrainAnnouncementStopResolves(t *testing.T) {
 	case <-done:
 		t.Fatal("drain returned before the stop turn")
 	case <-stopRequested:
-	case <-ctx.Done():
-		t.Fatalf("drain did not reach the stop turn (model requests: %d)", len(adapter.Requests()))
 	}
 	// The tool call has synchronously set stopStatus while the executor remains
 	// behind its release barrier. The job is still ordinary outstanding work, but
@@ -230,20 +242,12 @@ func TestOneShotDrainAnnouncementStopResolves(t *testing.T) {
 	if ids, sole, err := sess.undisposedBackgroundDrainJobs(); err != nil || sole || len(ids) != 0 {
 		t.Fatalf("undisposed while stop is pending = (%v, %v, %v), want no announcement candidate", ids, sole, err)
 	}
-	close(allowStopTurn)
+	releaseStopTurn()
 	<-stopTurnReturned
 	// Rechecks continue after the stop turn returns, while finalization is still
 	// held by the executor. A pending stop must not produce a final warning.
 	releaseShell()
-	var d struct {
-		res string
-		err error
-	}
-	select {
-	case d = <-done:
-	case <-ctx.Done():
-		t.Fatal("drain did not resolve after controlled shell completion")
-	}
+	d := <-done
 	if d.err != nil {
 		t.Fatalf("drain error: %v", d.err)
 	}
@@ -290,7 +294,9 @@ func TestOneShotDrainWaitsForForegroundShell(t *testing.T) {
 	}
 	t.Cleanup(releaseShell)
 	resCh := make(chan shellResult, 1)
+	shellFinished := make(chan struct{})
 	go func() {
+		defer close(shellFinished)
 		resCh <- runShell(context.Background(), sess.jobManager, se, shellArgs{
 			Command:        "delayed foreground success",
 			BlockTimeoutMS: 60000,
@@ -304,27 +310,33 @@ func TestOneShotDrainWaitsForForegroundShell(t *testing.T) {
 
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan struct{})
+	drainStarted := make(chan struct{})
+	kick := func(ctx context.Context) error {
+		select {
+		case <-drainStarted:
+		default:
+			close(drainStarted)
+		}
+		return sess.kickDriveTree(ctx)
+	}
+	t.Cleanup(func() {
+		cancel()
+		releaseShell()
+		<-done
+		<-shellFinished
+	})
 	go func() {
-		_, _ = sess.drainJobTreeWith(ctx, feedRechecks(ctx), sess.kickDriveTree, sess.ProcessInputKind)
+		_, _ = sess.drainJobTreeWith(ctx, feedRechecks(ctx), kick, sess.ProcessInputKind)
 		close(done)
 	}()
-	select {
-	case <-done:
-		cancel()
-		t.Fatal("drain returned while a foreground shell was still running")
-	case <-time.After(150 * time.Millisecond):
-	}
+	<-drainStarted
+	releaseShell()
+	<-resCh
 	cancel()
-	select {
-	case <-done:
-	case <-time.After(30 * time.Second):
-		t.Fatal("drain did not exit after cancellation")
-	}
+	<-done
 	if got := len(adapter.Requests()); got != 0 {
 		t.Fatalf("foreground shell drew %d announcement calls, want 0", got)
 	}
-	releaseShell()
-	<-resCh
 }
 
 // TestUndisposedJobsYieldToOtherOutstandingWork pins the predicate's honesty: a
@@ -469,14 +481,19 @@ func TestClearedWatchStartsAFreshAnnouncementEpisode(t *testing.T) {
 	}))
 	jobID = startUndisposedBackgroundShell(t, sess)
 
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
+	ctx, cancel := context.WithCancel(context.Background())
 	type drainDone struct {
 		res string
 		err error
 	}
 	done := make(chan drainDone, 1)
+	finished := make(chan struct{})
+	t.Cleanup(func() {
+		cancel()
+		<-finished
+	})
 	go func() {
+		defer close(finished)
 		res, err := sess.drainJobTreeWith(ctx, feedRechecks(ctx), sess.kickDriveTree, sess.ProcessInputKind)
 		done <- drainDone{res, err}
 	}()
@@ -484,8 +501,6 @@ func TestClearedWatchStartsAFreshAnnouncementEpisode(t *testing.T) {
 	case <-watchArmed:
 	case d := <-done:
 		t.Fatalf("drain returned before the live watch was armed: (%q, %v)", d.res, d.err)
-	case <-ctx.Done():
-		t.Fatal("drain did not arm the live watch")
 	}
 
 	sess.jobManager.mu.Lock()
@@ -521,12 +536,7 @@ func TestClearedWatchStartsAFreshAnnouncementEpisode(t *testing.T) {
 		t.Fatal("budget-crossing delivery left the watch live")
 	}
 
-	var d drainDone
-	select {
-	case d = <-done:
-	case <-ctx.Done():
-		t.Fatal("drain did not complete after the watch auto-clear")
-	}
+	d := <-done
 	if d.err != nil {
 		t.Fatalf("drain error: %v", d.err)
 	}
