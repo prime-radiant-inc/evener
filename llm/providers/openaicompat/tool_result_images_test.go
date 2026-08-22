@@ -36,7 +36,7 @@ func TestRequestWithoutToolResultImagesCopiesOnlyWireImageFields(t *testing.T) {
 
 func TestAdapter_Complete_ToolResultImage_ChatDispatchesTextOnly(t *testing.T) {
 	srv := newImageTestServer(t, map[string]imageTestResponse{
-		"/chat/completions": jsonTestResponse(`{"id":"chatcmpl-image","model":"compat","choices":[{"index":0,"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}]}`),
+		"/chat/completions": {contentType: "application/json", body: `{"id":"chatcmpl-image","model":"compat","choices":[{"index":0,"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}]}`},
 	})
 
 	req := toolResultImageRequest(t)
@@ -49,13 +49,13 @@ func TestAdapter_Complete_ToolResultImage_ChatDispatchesTextOnly(t *testing.T) {
 	if got := resp.Text(); got != "ok" {
 		t.Fatalf("response text = %q, want ok", got)
 	}
-	assertChatToolMessage(t, srv.requestBody("/chat/completions"))
+	assertChatToolMessage(t, srv.bodies["/chat/completions"])
 	assertToolResultImage(t, req, original)
 }
 
 func TestAdapter_Stream_ToolResultImage_ChatDispatchesTextOnly(t *testing.T) {
 	srv := newImageTestServer(t, map[string]imageTestResponse{
-		"/chat/completions": sseTestResponse("data: {\"id\":\"chatcmpl-image\",\"model\":\"compat\",\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\",\"content\":\"ok\"},\"finish_reason\":\"stop\"}]}\n\ndata: [DONE]\n\n"),
+		"/chat/completions": {contentType: "text/event-stream", body: "data: {\"id\":\"chatcmpl-image\",\"model\":\"compat\",\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\",\"content\":\"ok\"},\"finish_reason\":\"stop\"}]}\n\ndata: [DONE]\n\n"},
 	})
 
 	req := toolResultImageRequest(t)
@@ -76,14 +76,14 @@ func TestAdapter_Stream_ToolResultImage_ChatDispatchesTextOnly(t *testing.T) {
 	if !finished {
 		t.Fatal("stream did not finish")
 	}
-	assertChatToolMessage(t, srv.requestBody("/chat/completions"))
+	assertChatToolMessage(t, srv.bodies["/chat/completions"])
 	assertToolResultImage(t, req, original)
 }
 
 func TestAdapter_AdaptiveComplete_ToolResultImage_SanitizesChatFallback(t *testing.T) {
 	srv := newImageTestServer(t, map[string]imageTestResponse{
-		"/responses":        jsonTestResponseWithStatus(http.StatusNotFound, `{"error":{"message":"responses unavailable"}}`),
-		"/chat/completions": jsonTestResponse(`{"id":"chatcmpl-image","model":"compat","choices":[{"index":0,"message":{"role":"assistant","content":"fallback ok"},"finish_reason":"stop"}]}`),
+		"/responses":        {status: http.StatusNotFound, contentType: "application/json", body: `{"error":{"message":"responses unavailable"}}`},
+		"/chat/completions": {contentType: "application/json", body: `{"id":"chatcmpl-image","model":"compat","choices":[{"index":0,"message":{"role":"assistant","content":"fallback ok"},"finish_reason":"stop"}]}`},
 	})
 
 	req := toolResultImageRequest(t)
@@ -96,16 +96,16 @@ func TestAdapter_AdaptiveComplete_ToolResultImage_SanitizesChatFallback(t *testi
 	if resp.Text() != "fallback ok" {
 		t.Fatalf("response text = %q, want fallback ok", resp.Text())
 	}
-	if srv.requestBody("/responses") == nil {
+	if srv.bodies["/responses"] == nil {
 		t.Fatal("adaptive Responses attempt was not made")
 	}
-	assertChatToolMessage(t, srv.requestBody("/chat/completions"))
+	assertChatToolMessage(t, srv.bodies["/chat/completions"])
 	assertToolResultImage(t, req, original)
 }
 
 func TestAdapter_AdaptiveComplete_ToolResultImage_PreservesResponsesImage(t *testing.T) {
 	srv := newImageTestServer(t, map[string]imageTestResponse{
-		"/responses": jsonTestResponse(`{"id":"resp-image","model":"compat","output":[{"type":"message","content":[{"type":"output_text","text":"responses ok"}]}]}`),
+		"/responses": {contentType: "application/json", body: `{"id":"resp-image","model":"compat","output":[{"type":"message","content":[{"type":"output_text","text":"responses ok"}]}]}`},
 	})
 
 	req := toolResultImageRequest(t)
@@ -117,7 +117,7 @@ func TestAdapter_AdaptiveComplete_ToolResultImage_PreservesResponsesImage(t *tes
 	if resp.Text() != "responses ok" {
 		t.Fatalf("response text = %q, want responses ok", resp.Text())
 	}
-	assertResponsesInputImage(t, srv.requestBody("/responses"), original)
+	assertResponsesInputImage(t, srv.bodies["/responses"], original)
 	assertToolResultImage(t, req, original)
 }
 
@@ -148,10 +148,6 @@ func newImageTestServer(t *testing.T, routes map[string]imageTestResponse) *imag
 	return srv
 }
 
-func (s *imageTestServer) requestBody(path string) map[string]any {
-	return s.bodies[path]
-}
-
 func decodeImageTestRequest(t *testing.T, r *http.Request) map[string]any {
 	t.Helper()
 	var body map[string]any
@@ -161,20 +157,11 @@ func decodeImageTestRequest(t *testing.T, r *http.Request) map[string]any {
 	return body
 }
 
-func jsonTestResponse(body string) imageTestResponse {
-	return jsonTestResponseWithStatus(http.StatusOK, body)
-}
-
-func jsonTestResponseWithStatus(status int, body string) imageTestResponse {
-	return imageTestResponse{status: status, contentType: "application/json", body: body}
-}
-
-func sseTestResponse(body string) imageTestResponse {
-	return imageTestResponse{status: http.StatusOK, contentType: "text/event-stream", body: body}
-}
-
 func writeImageTestResponse(w http.ResponseWriter, response imageTestResponse) {
 	w.Header().Set("Content-Type", response.contentType)
+	if response.status == 0 {
+		response.status = http.StatusOK
+	}
 	w.WriteHeader(response.status)
 	_, _ = io.WriteString(w, response.body)
 }
@@ -211,17 +198,15 @@ func assertToolResultImage(t *testing.T, req llm.Request, expected []byte) {
 
 func toolResultImageRequest(t *testing.T) llm.Request {
 	t.Helper()
+	message := llm.ToolResultNamed("call_img", "read_file", "screenshot", false)
+	result := message.Content[0].ToolResult
+	result.ImageData = testPNG(t)
+	result.ImageMediaType = "image/png"
 	return llm.Request{
 		Model: "compat",
 		Messages: []llm.Message{
 			llm.User("inspect this"),
-			func() llm.Message {
-				message := llm.ToolResultNamed("call_img", "read_file", "screenshot", false)
-				result := message.Content[0].ToolResult
-				result.ImageData = testPNG(t)
-				result.ImageMediaType = "image/png"
-				return message
-			}(),
+			message,
 		},
 	}
 }
