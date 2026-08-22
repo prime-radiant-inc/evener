@@ -10,17 +10,14 @@
  * floating pill, box-shadow, or border-radius. Uses existing design tokens
  * only.
  *
- * The header owns the top and horizontal safe-area edges. The shell applies
+ * The header owns the top and horizontal safe-area edges. The screen scroller applies
  * safe-area padding; the header uses negative left/right margins to break out
  * of the shell's horizontal insets so its full-width background reaches the
  * screen edge, then re-applies the same insets as padding so content sits
  * within the safe area exactly once. Top safe-area padding is added directly
  * because the header is the first child of the scroll container.
  *
- * The text column uses CSS order to present name, origin, then status visually
- * while the DOM order places origin before name for the accessible name — so
- * the header button's accessible name does not match origin-in-name queries
- * that existing switcher-sheet tests use for profile rows.
+ * Semantic and visual order are both server name, full origin, then status.
  */
 
 .evener-sessions-header {
@@ -28,7 +25,7 @@
   grid-template-columns: minmax(0, 1fr) auto;
   align-items: center;
   gap: var(--space-8);
-  width: 100%;
+  width: calc(100% + var(--safe-area-left) + var(--safe-area-right));
   min-height: var(--tap-target);
   padding-top: calc(var(--space-12) + var(--safe-area-top));
   padding-right: calc(var(--space-16) + var(--safe-area-right));
@@ -58,13 +55,11 @@
 }
 
 .evener-sessions-header__name {
-  order: 1;
   font-weight: 600;
   overflow-wrap: anywhere;
 }
 
 .evener-sessions-header__origin {
-  order: 2;
   font-size: 0.85em;
   color: var(--secondary);
   overflow-wrap: anywhere;
@@ -72,10 +67,7 @@
 
 /*
  * Visually hidden "active server" label — present in the accessible name but
- * not visible. Placed after the name in DOM order so /laptop.*active server/i
- * matches, and before the origin in accessible-name order so the origin
- * precedes "laptop" (preventing /laptop.*hub\.example/i from matching the
- * header when the switcher sheet is also open).
+ * not visible.
  */
 .evener-sessions-header__label {
   position: absolute;
