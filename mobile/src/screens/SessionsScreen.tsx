@@ -6,6 +6,11 @@
  * an honest status glyph+text, and a chevron — all in a robust grid layout
  * that wraps long names and origins without ellipsis or horizontal overflow.
  *
+ * The accessible name is the natural text content: origin, name, "active
+ * server" (visually hidden), and the unchanged StatusMark label. No duplicate
+ * status-label table — the StatusMark component owns the label text. The
+ * chevron and status glyph are aria-hidden.
+ *
  * Reachability is honest: without real health data it shows "Not checked"
  * (unknown), never fabricated "Connected" or "Reconnecting". The status state
  * logic is owned by 7B; this screen only reads it.
@@ -48,26 +53,24 @@ export function SessionsScreen({
     }
   }, [status, connection]);
 
-  const statusLabel = STATUS_LABELS[reachState];
-
   return (
     <div>
       <button
         type="button"
         className="evener-sessions-header"
-        aria-label={`${activeOrigin ? `${activeOrigin}, ` : ""}${activeName} active server, ${statusLabel}`}
         onClick={onOpenSwitcher}
       >
         <span className="evener-sessions-header__text">
-          <span className="evener-sessions-header__name">{activeName}</span>
           {activeOrigin ? (
-            <span className="evener-sessions-header__origin">
-              {activeOrigin}
-            </span>
+            <>
+              <span className="evener-sessions-header__origin">
+                {activeOrigin}
+              </span>{" "}
+            </>
           ) : null}
-          <span className="evener-sessions-header__status">
-            <StatusMark status={reachState} />
-          </span>
+          <span className="evener-sessions-header__name">{activeName}</span>{" "}
+          <span className="evener-sessions-header__label">active server</span>{" "}
+          <StatusMark status={reachState} />
         </span>
         <span className="evener-sessions-header__chevron" aria-hidden="true">
           ›
@@ -89,11 +92,3 @@ export function SessionsScreen({
     </div>
   );
 }
-
-const STATUS_LABELS: Record<StatusKind, string> = {
-  reachable: "Connected",
-  reconnecting: "Reconnecting",
-  offline: "Offline",
-  unknown: "Not checked",
-  attention: "Needs attention",
-};

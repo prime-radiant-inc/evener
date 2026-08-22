@@ -7,11 +7,17 @@
  * status, and a chevron hidden from AT. Loading/error/empty behavior and
  * reachability mapping are maintained.
  *
- * CSS contract tests pin full-width, grid layout, overflow-wrap:anywhere on
- * the origin, no text-overflow ellipsis, no white-space:nowrap, a 44px minimum
- * tap target, and no horizontal overflow — across default and AX type scales.
+ * CSS contract tests use a structural parser that strips comments, parses
+ * exact selector blocks into declaration maps, and asserts exact declarations
+ * for each relevant selector. No loose global substring, OR fallback, or
+ * comment-match false positives. The parser pins header width/grid/minmax/
+ * min-height/font/no-card; text min-width 0; name+origin exact
+ * overflow-wrap:anywhere; safe-area composition; and verifies every relevant
+ * content selector lacks nowrap/ellipsis/overflow-hidden/fixed-width traps.
+ * The responsive invariant is width-independent — it does not fake or claim
+ * to measure viewport geometry in JSDOM; the parent real-browser matrix is
+ * the geometry gate.
  */
-
 import { readFileSync } from "node:fs";
 import path from "node:path";
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
@@ -35,6 +41,76 @@ const LONG_NAME =
   "Very Long Server Name That Exceeds Normal Width Constraints And Then Some";
 const LONG_ORIGIN =
   "https://extremely-long-subdomain-name.deeply.nested.path.example.com:8443/long/path/to/resource";
+const FULL_ORIGIN_FOR_NAME_PROOF = "https://hub.example.com:8443";
+
+// ---------------------------------------------------------------------------
+// Structural CSS parser — strips comments, parses selector blocks and
+// declaration maps. No loose global substring or comment-match false positives.
+// ---------------------------------------------------------------------------
+
+interface CssBlock {
+  selector: string;
+  declarations: Map<string, string>;
+}
+
+function parseCss(source: string): CssBlock[] {
+  // Strip /* ... */ comments.
+  const stripped = source.replace(/\/\*[\s\S]*?\*\//g, "");
+  const blocks: CssBlock[] = [];
+  const blockRegex = /([^{}]+)\{([^}]*)\}/g;
+  for (;;) {
+    const match = blockRegex.exec(stripped);
+    if (match === null) break;
+    const selector = (match[1] ?? "").trim();
+    const body = match[2] ?? "";
+    const declarations = new Map<string, string>();
+    for (const decl of body.split(";")) {
+      const trimmed = decl.trim();
+      if (trimmed === "") continue;
+      const colonIdx = trimmed.indexOf(":");
+      if (colonIdx < 0) continue;
+      const property = trimmed.slice(0, colonIdx).trim();
+      const value = trimmed.slice(colonIdx + 1).trim();
+      declarations.set(property, value);
+    }
+    blocks.push({ selector, declarations });
+  }
+  return blocks;
+}
+
+function findBlock(blocks: CssBlock[], selector: string): CssBlock | undefined {
+  return blocks.find((b) => b.selector === selector);
+}
+
+function getDecl(
+  blocks: CssBlock[],
+  selector: string,
+  property: string,
+): string | undefined {
+  return findBlock(blocks, selector)?.declarations.get(property);
+}
+
+const cssSource = readFileSync(
+  path.join(__dirname, "SessionsScreen.css"),
+  "utf8",
+);
+const cssBlocks = parseCss(cssSource);
+
+// Selectors that carry header content text — these must not have truncation
+// or fixed-width traps. The visually-hidden __label is excluded because it
+// uses the standard clip/overflow/nowrap pattern to hide text.
+const CONTENT_SELECTORS = [
+  ".evener-sessions-header",
+  ".evener-sessions-header:focus-visible",
+  ".evener-sessions-header__text",
+  ".evener-sessions-header__name",
+  ".evener-sessions-header__origin",
+  ".evener-sessions-header__chevron",
+];
+
+// ---------------------------------------------------------------------------
+// Helper
+// ---------------------------------------------------------------------------
 
 function renderSessions(
   opts: {
@@ -44,16 +120,18 @@ function renderSessions(
     failHealth?: boolean;
   } = {},
 ) {
+  // Pass activeProfileId through: explicit null must stay null, not default
+  // to "p1".
+  const activeId =
+    opts.activeProfileId === undefined ? "p1" : opts.activeProfileId;
   const services = createShellServices({
     profiles: opts.profiles ?? PROFILES,
-    activeProfileId: opts.activeProfileId ?? "p1",
+    activeProfileId: activeId,
   });
   if (opts.failHealth) {
     (services.profile as FakeProfileService).failOnce("health");
   }
   const connection = createConnectionStore(services.profile);
-  // refresh() sets status to "loading" synchronously before the async health
-  // call resolves, so the initial render sees a known status.
   void connection.getState().refresh();
   if (opts.reachability) {
     for (const [id, state] of Object.entries(opts.reachability)) {
@@ -99,13 +177,13 @@ describe("SessionsScreen — server header disclosure control", () => {
     ).not.toBeInTheDocument();
   });
 
-  it("status is inside the header button, not a detached row", () => {
+  it("status mark is inside the header button, not a detached row", () => {
     const { container } = renderSessions();
     const header = container.querySelector(".evener-sessions-header");
-    const status = container.querySelector(".evener-sessions-header__status");
+    const mark = container.querySelector(".evener-status-mark");
     expect(header).not.toBeNull();
-    expect(status).not.toBeNull();
-    expect(header?.contains(status)).toBe(true);
+    expect(mark).not.toBeNull();
+    expect(header?.contains(mark)).toBe(true);
   });
 
   it("status mark renders glyph and text inside the header", async () => {
@@ -119,13 +197,22 @@ describe("SessionsScreen — server header disclosure control", () => {
     expect(mark?.querySelector(".evener-status-mark__label")).not.toBeNull();
   });
 
-  it("accessible name includes server name, full origin, and status", async () => {
-    renderSessions({ reachability: { p1: "unknown" } });
+  it("accessible name includes server name, full origin, and status (exact normalized proof)", async () => {
+    renderSessions({
+      profiles: [
+        { id: "p1", name: "laptop", origin: FULL_ORIGIN_FOR_NAME_PROOF },
+      ],
+      reachability: { p1: "unknown" },
+    });
     const btn = await screen.findByRole("button", {
       name: /laptop.*active server/i,
     });
+    // Exact accessible name from natural text content (DOM order: origin,
+    // name, visually-hidden "active server", StatusMark label; glyph and
+    // chevron are aria-hidden). This fails if scheme or port is removed from
+    // the origin.
     expect(btn).toHaveAccessibleName(
-      /hub\.example\.com.*laptop.*active server.*not checked/i,
+      "https://hub.example.com:8443 laptop active server Not checked",
     );
   });
 
@@ -134,6 +221,13 @@ describe("SessionsScreen — server header disclosure control", () => {
     const chevron = container.querySelector(".evener-sessions-header__chevron");
     expect(chevron).not.toBeNull();
     expect(chevron?.getAttribute("aria-hidden")).toBe("true");
+  });
+
+  it("status glyph is hidden from assistive tech", () => {
+    const { container } = renderSessions();
+    const glyph = container.querySelector(".evener-status-mark__glyph");
+    expect(glyph).not.toBeNull();
+    expect(glyph?.getAttribute("aria-hidden")).toBe("true");
   });
 
   it("opens switcher on click", async () => {
@@ -176,8 +270,21 @@ describe("SessionsScreen — server header disclosure control", () => {
     expect(await screen.findByText(LONG_ORIGIN)).toBeInTheDocument();
   });
 
-  it("no active profile shows No server and Not checked", async () => {
+  it("active profile with missing reachability-map shows Not checked (visible + accessible)", async () => {
+    // Active profile exists but no reachability entry for it — must map to
+    // unknown / "Not checked", not fabricated "Connected" or "Reconnecting".
+    renderSessions({ reachability: {} });
+    expect(await screen.findByText(/not checked/i)).toBeInTheDocument();
+    const btn = await screen.findByRole("button", {
+      name: /laptop.*active server/i,
+    });
+    expect(btn).toHaveAccessibleName(/not checked/i);
+  });
+
+  it("no active profile shows No server and Not checked (after refresh)", async () => {
     renderSessions({ activeProfileId: null });
+    // Wait for refresh to complete — the authoritative state after refresh
+    // has no active profile, so "No server" and "Not checked" must appear.
     expect(await screen.findByText("No server")).toBeInTheDocument();
     expect(await screen.findByText(/not checked/i)).toBeInTheDocument();
   });
@@ -202,59 +309,173 @@ describe("SessionsScreen — server header disclosure control", () => {
 });
 
 // ---------------------------------------------------------------------------
-// CSS contract tests — pin responsive header geometry
+// CSS contract tests — structural parser, no loose substring
 // ---------------------------------------------------------------------------
 
-describe("SessionsScreen.css — responsive header contract", () => {
-  let css = "";
-  try {
-    css = readFileSync(path.join(__dirname, "SessionsScreen.css"), "utf8");
-  } catch {
-    // CSS file does not exist yet — all contract tests fail (RED).
-  }
-
-  function has(rule: RegExp): boolean {
-    return rule.test(css);
-  }
+describe("SessionsScreen.css — structural header contract", () => {
+  it("parses all expected selectors", () => {
+    for (const selector of CONTENT_SELECTORS) {
+      expect(findBlock(cssBlocks, selector)).toBeDefined();
+    }
+  });
 
   it("header button is full-width", () => {
-    expect(has(/\.evener-sessions-header\s*\{[^}]*width\s*:\s*100%/)).toBe(
-      true,
-    );
+    expect(getDecl(cssBlocks, ".evener-sessions-header", "width")).toBe("100%");
   });
 
   it("header uses grid layout", () => {
-    expect(has(/\.evener-sessions-header\s*\{[^}]*display\s*:\s*grid/)).toBe(
-      true,
+    expect(getDecl(cssBlocks, ".evener-sessions-header", "display")).toBe(
+      "grid",
     );
+  });
+
+  it("header grid uses minmax(0, 1fr) to prevent overflow", () => {
+    expect(
+      getDecl(cssBlocks, ".evener-sessions-header", "grid-template-columns"),
+    ).toBe("minmax(0, 1fr) auto");
+  });
+
+  it("header min 44px tap target", () => {
+    expect(getDecl(cssBlocks, ".evener-sessions-header", "min-height")).toBe(
+      "var(--tap-target)",
+    );
+  });
+
+  it("header inherits font (no fixed font-size that breaks AX scale)", () => {
+    expect(getDecl(cssBlocks, ".evener-sessions-header", "font")).toBe(
+      "inherit",
+    );
+    const header = findBlock(cssBlocks, ".evener-sessions-header");
+    expect(header?.declarations.has("font-size")).toBe(false);
+  });
+
+  it("header has no box-shadow (no desktop card)", () => {
+    const header = findBlock(cssBlocks, ".evener-sessions-header");
+    expect(header?.declarations.has("box-shadow")).toBe(false);
+  });
+
+  it("header has no border-radius (no desktop card)", () => {
+    const header = findBlock(cssBlocks, ".evener-sessions-header");
+    expect(header?.declarations.has("border-radius")).toBe(false);
+  });
+
+  it("header has no fixed width (width is 100%, not a pixel value)", () => {
+    const width = getDecl(cssBlocks, ".evener-sessions-header", "width");
+    expect(width).toBe("100%");
+    expect(width).not.toMatch(/\d+px/);
+  });
+
+  it("text column min-width is 0 (prevents grid blowout)", () => {
+    expect(
+      getDecl(cssBlocks, ".evener-sessions-header__text", "min-width"),
+    ).toBe("0");
+  });
+
+  it("name uses overflow-wrap: anywhere", () => {
+    expect(
+      getDecl(cssBlocks, ".evener-sessions-header__name", "overflow-wrap"),
+    ).toBe("anywhere");
   });
 
   it("origin uses overflow-wrap: anywhere", () => {
-    expect(has(/overflow-wrap\s*:\s*anywhere/i)).toBe(true);
+    expect(
+      getDecl(cssBlocks, ".evener-sessions-header__origin", "overflow-wrap"),
+    ).toBe("anywhere");
   });
 
-  it("no text-overflow ellipsis on header elements", () => {
-    expect(has(/text-overflow\s*:\s*ellipsis/i)).toBe(false);
+  it("no relevant content selector has white-space: nowrap", () => {
+    for (const selector of CONTENT_SELECTORS) {
+      const block = findBlock(cssBlocks, selector);
+      expect(block?.declarations.get("white-space")).not.toBe("nowrap");
+    }
   });
 
-  it("no white-space: nowrap on header elements", () => {
-    expect(has(/white-space\s*:\s*nowrap/i)).toBe(false);
+  it("no relevant content selector has text-overflow: ellipsis", () => {
+    for (const selector of CONTENT_SELECTORS) {
+      const block = findBlock(cssBlocks, selector);
+      expect(block?.declarations.get("text-overflow")).not.toBe("ellipsis");
+    }
   });
 
-  it("min 44px tap target on header button", () => {
-    expect(has(/min-height\s*:\s*var\(--tap-target\)/i)).toBe(true);
+  it("no relevant content selector has overflow: hidden", () => {
+    for (const selector of CONTENT_SELECTORS) {
+      const block = findBlock(cssBlocks, selector);
+      expect(block?.declarations.get("overflow")).not.toBe("hidden");
+    }
   });
 
-  it("prevents horizontal overflow (min-width: 0 or minmax(0, 1fr))", () => {
-    expect(has(/min-width\s*:\s*0/i) || has(/minmax\(\s*0\s*,\s*1fr\)/i)).toBe(
-      true,
+  it("no relevant content selector has a fixed pixel width", () => {
+    for (const selector of CONTENT_SELECTORS) {
+      const block = findBlock(cssBlocks, selector);
+      const width = block?.declarations.get("width");
+      if (width !== undefined) {
+        expect(width).not.toMatch(/\d+px/);
+      }
+    }
+  });
+
+  it("no empty CSS rule blocks (every selector has at least one declaration)", () => {
+    for (const block of cssBlocks) {
+      expect(block.declarations.size).toBeGreaterThan(0);
+    }
+  });
+
+  it("responsive wrapping is width-independent (overflow-wrap:anywhere on name and origin, no fixed widths)", () => {
+    // This invariant does not depend on viewport size. It guarantees that
+    // the header wraps long content at any width. The parent real-browser
+    // matrix (375/393/430 CSS px, default and AX type) is the geometry
+    // gate; JSDOM cannot measure real layout.
+    const nameWrap = getDecl(
+      cssBlocks,
+      ".evener-sessions-header__name",
+      "overflow-wrap",
+    );
+    const originWrap = getDecl(
+      cssBlocks,
+      ".evener-sessions-header__origin",
+      "overflow-wrap",
+    );
+    expect(nameWrap).toBe("anywhere");
+    expect(originWrap).toBe("anywhere");
+  });
+
+  // -------------------------------------------------------------------------
+  // Safe-area composition — header owns top + horizontal safe edges
+  // -------------------------------------------------------------------------
+
+  it("header padding-top includes safe-area-top", () => {
+    expect(getDecl(cssBlocks, ".evener-sessions-header", "padding-top")).toBe(
+      "calc(var(--space-12) + var(--safe-area-top))",
     );
   });
 
-  it("no desktop card styling on header (no box-shadow or border-radius)", () => {
-    const headerBlock =
-      css.match(/\.evener-sessions-header\s*\{([\s\S]*?)\}/)?.[1] ?? "";
-    expect(/box-shadow/i.test(headerBlock)).toBe(false);
-    expect(/border-radius/i.test(headerBlock)).toBe(false);
+  it("header padding-right includes safe-area-right", () => {
+    expect(getDecl(cssBlocks, ".evener-sessions-header", "padding-right")).toBe(
+      "calc(var(--space-16) + var(--safe-area-right))",
+    );
+  });
+
+  it("header padding-left includes safe-area-left", () => {
+    expect(getDecl(cssBlocks, ".evener-sessions-header", "padding-left")).toBe(
+      "calc(var(--space-16) + var(--safe-area-left))",
+    );
+  });
+
+  it("header padding-bottom uses ordinary space token (no safe-area)", () => {
+    expect(
+      getDecl(cssBlocks, ".evener-sessions-header", "padding-bottom"),
+    ).toBe("var(--space-12)");
+  });
+
+  it("header negative margin-left compensates shell safe-area-left", () => {
+    expect(getDecl(cssBlocks, ".evener-sessions-header", "margin-left")).toBe(
+      "calc(-1 * var(--safe-area-left))",
+    );
+  });
+
+  it("header negative margin-right compensates shell safe-area-right", () => {
+    expect(getDecl(cssBlocks, ".evener-sessions-header", "margin-right")).toBe(
+      "calc(-1 * var(--safe-area-right))",
+    );
   });
 });
