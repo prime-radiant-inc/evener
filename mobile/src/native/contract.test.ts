@@ -74,4 +74,38 @@ describe("native bridge V1 contract", () => {
       }),
     ).toThrow(/field/i);
   });
+
+  it("rejects contentSize.value with a category outside the ContentSizeCategory union", () => {
+    expect(() =>
+      decodeNativeResponse({
+        version: 1,
+        type: "contentSize.value",
+        category: "not-a-category",
+      }),
+    ).toThrow();
+  });
+
+  it("isContentSizeCategory is exported and validates the union", async () => {
+    const { isContentSizeCategory } = await import("./contract");
+    expect(isContentSizeCategory("large")).toBe(true);
+    expect(isContentSizeCategory("accessibilityExtraExtraExtraLarge")).toBe(
+      true,
+    );
+    expect(isContentSizeCategory("not-a-category")).toBe(false);
+    expect(isContentSizeCategory(42)).toBe(false);
+  });
+
+  it("rejects error with a kind outside the NativeErrorKind union", () => {
+    expect(() =>
+      decodeNativeResponse({
+        version: 1,
+        type: "error",
+        error: {
+          id: "e",
+          kind: "totally_made_up",
+          message: "bad kind",
+        },
+      }),
+    ).toThrow();
+  });
 });
