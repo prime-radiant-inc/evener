@@ -510,6 +510,10 @@ body {
   background: var(--attention);
   color: var(--status-glyph-ink);
 }
+.evener-status-mark[data-status="unknown"] .evener-status-mark__glyph {
+  background: var(--secondary);
+  color: var(--status-glyph-ink);
+}
 
 /* ---------------------------------------------------------------------------
  * Sheet — detent portal with focus trap, Escape/back, reduced-motion fallback
