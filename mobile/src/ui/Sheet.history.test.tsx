@@ -1,12 +1,36 @@
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
-import { afterEach, describe, expect, it, vi } from "vitest";
-import { Sheet } from "./Sheet";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { __resetSheetHistory, __sheetHistorySettled, Sheet } from "./Sheet";
 
 /**
- * Resolve on the next `popstate` dispatched on `window`. JSDOM queues the
- * popstate from `history.back()`/`go(-1)` as a macrotask; awaiting this event
- * (not a sleep) is the deterministic way to observe that navigation completed.
+ * Real browsers structured-clone `history.state` on `pushState`/`replaceState`,
+ * discarding symbol-keyed properties and breaking object identity. JSDOM does
+ * NOT — it keeps the same reference. This seam patches `pushState` so the
+ * state is structured-cloned (symbols dropped, identity broken), mirroring
+ * real-Chrome semantics. Tests that rely on object identity or symbol markers
+ * would fail under this seam exactly as they fail in real Chrome.
  */
+function installStructuredCloneSeam(): () => void {
+  const original = history.pushState.bind(history);
+  history.pushState = function patchedPushState(
+    state: unknown,
+    unused: string,
+    url?: string | URL | null,
+  ) {
+    const cloned =
+      state === null || state === undefined
+        ? state
+        : typeof structuredClone === "function"
+          ? structuredClone(state)
+          : JSON.parse(JSON.stringify(state));
+    return original.call(history, cloned, unused, url ?? null);
+  };
+  return () => {
+    history.pushState = original;
+  };
+}
+
+/** Resolve on the next `popstate` dispatched on `window`. */
 function nextPopstate(): Promise<PopStateEvent> {
   return new Promise((resolve) => {
     const handler = (event: Event): void => {
@@ -17,51 +41,71 @@ function nextPopstate(): Promise<PopStateEvent> {
   });
 }
 
-/**
- * Drive a real browser/Android Back: `history.back()` then await the popstate
- * the browser fires once that navigation lands.
- */
+/** Drive a real browser/Android Back and await its popstate. */
 async function browserBack(): Promise<void> {
   const pending = nextPopstate();
   history.back();
   await pending;
 }
 
-afterEach(() => {
+/**
+ * Await all pending coordinator traversals (unwinds, skips) so the history
+ * stack is quiescent before the next assertion or test teardown.
+ */
+async function settled(): Promise<void> {
+  await __sheetHistorySettled();
+}
+
+/** Read the current sheet sentinel token, or null if not a sheet marker. */
+function currentToken(): string | null {
+  const state = history.state as {
+    __evener_sheet?: boolean;
+    token?: string;
+  } | null;
+  if (state?.__evener_sheet === true && typeof state.token === "string") {
+    return state.token;
+  }
+  return null;
+}
+
+beforeEach(() => {
+  installStructuredCloneSeam();
+});
+
+afterEach(async () => {
   cleanup();
-  // JSDOM never shrinks `history.length` and persists `history.state` across
-  // tests in the same window. Reset the current entry's state so the next
-  // test starts from a clean baseline; tests baseline against `history.length`
-  // at render time so a monotonically growing length is not a problem.
+  await settled();
+  __resetSheetHistory();
+  // Reset the current entry so the next test starts from a clean baseline.
   history.replaceState(null, "");
 });
 
 describe("Sheet — browser/system Back history semantics", () => {
-  it("pushes exactly one tagged same-document sentinel when opened", () => {
-    const before = history.length;
+  it("pushes exactly one tagged same-document sentinel with a plain-string token when opened", () => {
     render(
       <Sheet open onClose={() => {}} title="Servers">
         <p>body</p>
       </Sheet>,
     );
-    expect(history.length).toBe(before + 1);
-    expect(history.state).not.toBeNull();
-    expect(history.state).not.toBe(before === 0 ? null : undefined);
-    // sentinel is a tagged object, not the app's prior state
-    expect(typeof history.state).toBe("object");
+    const state = history.state as Record<string, unknown> | null;
+    expect(state).not.toBeNull();
+    expect(state?.__evener_sheet).toBe(true);
+    expect(typeof state?.token).toBe("string");
+    const token = state?.token;
+    expect(typeof token === "string" && token.length > 0).toBe(true);
+    // No symbol-keyed properties survive structured clone.
+    expect(Object.getOwnPropertySymbols(state as object).length).toBe(0);
   });
 
   it("opening one sheet pushes exactly one history entry (no double push)", () => {
-    const before = history.length;
+    const pushState = vi.spyOn(history, "pushState");
     render(
       <Sheet open onClose={() => {}} title="Servers">
         <p>body</p>
       </Sheet>,
     );
-    expect(history.length).toBe(before + 1);
-    // a re-render with the same `open` must not push again
-    fireEvent.click(screen.getByRole("button", { name: "Done" }));
-    // still only one extra entry relative to start (unwound on close)
+    expect(pushState).toHaveBeenCalledTimes(1);
+    expect(currentToken()).not.toBeNull();
   });
 
   it("browser Back (popstate) closes via onClose without navigating away", async () => {
@@ -71,13 +115,32 @@ describe("Sheet — browser/system Back history semantics", () => {
         <p>body</p>
       </Sheet>,
     );
-    const sheetEntry = history.state;
-    expect(sheetEntry).not.toBeNull();
+    expect(currentToken()).not.toBeNull();
 
     await browserBack();
 
     expect(onClose).toHaveBeenCalledTimes(1);
-    // the app did not navigate away: we are back at the pre-sheet entry
+    // The app did not navigate away: we are back at the pre-sheet entry.
+    expect(history.state).toBeNull();
+  });
+
+  it("system Back closes once without another back", async () => {
+    const onClose = vi.fn();
+    const backSpy = vi.spyOn(history, "back");
+    render(
+      <Sheet open onClose={onClose} title="Servers">
+        <p>body</p>
+      </Sheet>,
+    );
+    backSpy.mockClear();
+    await browserBack();
+    // browserBack itself calls history.back (the user's Back). Clear it so
+    // we only count coordinator-initiated backs after the popstate settled.
+    backSpy.mockClear();
+    await settled();
+    expect(onClose).toHaveBeenCalledTimes(1);
+    // System Back must not schedule an additional history.back (no double nav).
+    expect(backSpy).not.toHaveBeenCalled();
     expect(history.state).toBeNull();
   });
 
@@ -89,7 +152,10 @@ describe("Sheet — browser/system Back history semantics", () => {
       </Sheet>,
     );
     await browserBack();
-    await browserBack(); // a second unrelated back must not call onClose again
+    // A second unrelated popstate (e.g., the app navigating further back) must
+    // not call onClose again. Dispatch a synthetic popstate rather than a real
+    // back, since at the bottom of the stack JSDOM may not fire popstate.
+    window.dispatchEvent(new PopStateEvent("popstate", { state: null }));
     expect(onClose).toHaveBeenCalledTimes(1);
   });
 
@@ -101,14 +167,9 @@ describe("Sheet — browser/system Back history semantics", () => {
       </Sheet>,
     );
     fireEvent.click(screen.getByRole("button", { name: "Done" }));
-    // onClose called once
     expect(onClose).toHaveBeenCalledTimes(1);
-    // the sentinel is unwound: a popstate for our own back lands and must NOT
-    // re-invoke onClose (already closed).
-    await nextPopstate();
+    await settled();
     expect(onClose).toHaveBeenCalledTimes(1);
-    // The sentinel is unwound: history.state is no longer the sheet's tagged
-    // entry (JSDOM never shrinks history.length, so assert state, not length).
     expect(history.state).toBeNull();
   });
 
@@ -123,7 +184,7 @@ describe("Sheet — browser/system Back history semantics", () => {
       document.querySelector(".evener-sheet-overlay") as HTMLElement,
     );
     expect(onClose).toHaveBeenCalledTimes(1);
-    await nextPopstate();
+    await settled();
     expect(onClose).toHaveBeenCalledTimes(1);
     expect(history.state).toBeNull();
   });
@@ -137,32 +198,29 @@ describe("Sheet — browser/system Back history semantics", () => {
     );
     fireEvent.keyDown(document, { key: "Escape" });
     expect(onClose).toHaveBeenCalledTimes(1);
-    await nextPopstate();
+    await settled();
     expect(onClose).toHaveBeenCalledTimes(1);
     expect(history.state).toBeNull();
   });
 
-  it("explicit close then external popstate does not clobber unrelated history", async () => {
+  it("explicit close requests at most one unwind (one history.back)", async () => {
     const onClose = vi.fn();
+    const backSpy = vi.spyOn(history, "back");
     render(
       <Sheet open onClose={onClose} title="Servers">
         <p>body</p>
       </Sheet>,
     );
-    // app pushes an unrelated entry after the sheet
-    history.pushState({ app: "unrelated" }, "");
+    backSpy.mockClear();
     fireEvent.click(screen.getByRole("button", { name: "Done" }));
-    expect(onClose).toHaveBeenCalledTimes(1);
-    // The unrelated entry is now on top of our sentinel, so the sheet must NOT
-    // `history.back()` (that would pop the unrelated entry, not ours — never
-    // pop unrelated history). onClose is still called exactly once and no
-    // popstate is scheduled.
-    expect(onClose).toHaveBeenCalledTimes(1);
-    // unrelated entry still on top, untouched
-    expect(history.state).toEqual({ app: "unrelated" });
+    expect(backSpy).toHaveBeenCalledTimes(1);
+    await settled();
+    // No additional back calls after the unwind settles.
+    expect(backSpy).toHaveBeenCalledTimes(1);
+    expect(history.state).toBeNull();
   });
 
-  it("external parent closure (open=false) unmounts portal and removes the sentinel safely", async () => {
+  it("external parent closure (open=false) unmounts portal and unwinds the sentinel", async () => {
     const onClose = vi.fn();
     const { rerender } = render(
       <Sheet open onClose={onClose} title="Servers">
@@ -174,13 +232,12 @@ describe("Sheet — browser/system Back history semantics", () => {
         <p>body</p>
       </Sheet>,
     );
-    // sentinel unwound
-    await nextPopstate();
+    await settled();
     expect(history.state).toBeNull();
     expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
   });
 
-  it("unmount removes the sentinel safely", async () => {
+  it("unmount unwinds the sentinel safely", async () => {
     const onClose = vi.fn();
     const { unmount } = render(
       <Sheet open onClose={onClose} title="Servers">
@@ -188,18 +245,17 @@ describe("Sheet — browser/system Back history semantics", () => {
       </Sheet>,
     );
     unmount();
-    await nextPopstate();
+    await settled();
     expect(history.state).toBeNull();
   });
 
-  it("never pops unrelated history: an app popstate with a foreign state is left alone", async () => {
+  it("never pops unrelated history: a foreign popstate is left alone", () => {
     const onClose = vi.fn();
     render(
       <Sheet open onClose={onClose} title="Servers">
         <p>body</p>
       </Sheet>,
     );
-    // simulate the app's own popstate (foreign state) — must not close the sheet
     window.dispatchEvent(
       new PopStateEvent("popstate", { state: { foreign: true } }),
     );
@@ -207,56 +263,129 @@ describe("Sheet — browser/system Back history semantics", () => {
     expect(screen.queryByRole("dialog")).toBeInTheDocument();
   });
 
-  it("no sentinel remains after close and remount (fresh open pushes exactly one)", () => {
+  it("foreign route above sentinel: explicit close does not pop the unrelated entry and retires the token", () => {
+    const onClose = vi.fn();
+    const backSpy = vi.spyOn(history, "back");
+    render(
+      <Sheet open onClose={onClose} title="Servers">
+        <p>body</p>
+      </Sheet>,
+    );
+    // App pushes an unrelated entry over the sentinel.
+    history.pushState({ app: "unrelated" }, "");
+    backSpy.mockClear();
+    fireEvent.click(screen.getByRole("button", { name: "Done" }));
+    expect(onClose).toHaveBeenCalledTimes(1);
+    // Must NOT back (would pop the unrelated entry).
+    expect(backSpy).not.toHaveBeenCalled();
+    // The unrelated entry is preserved on top.
+    expect(history.state).toEqual({ app: "unrelated" });
+  });
+
+  it("foreign route above sentinel then real Back: unrelated entry preserved, inert sentinel skipped", async () => {
+    const onClose = vi.fn();
+    render(
+      <Sheet open onClose={onClose} title="Servers">
+        <p>body</p>
+      </Sheet>,
+    );
+    const sentinelToken = currentToken();
+    expect(sentinelToken).not.toBeNull();
+    // App pushes an unrelated entry over the sentinel.
+    history.pushState({ app: "unrelated" }, "");
+    // Close the sheet (token retired, no back since buried).
+    fireEvent.click(screen.getByRole("button", { name: "Done" }));
+    expect(onClose).toHaveBeenCalledTimes(1);
+    expect(history.state).toEqual({ app: "unrelated" });
+    // User presses Back over the unrelated entry — lands on the inert sentinel.
+    await browserBack();
+    // The inert sentinel must not close anything (already retired).
+    expect(onClose).toHaveBeenCalledTimes(1);
+    // The coordinator skips the inert sentinel: history.state is no longer the
+    // sheet's marker.
+    await settled();
+    expect(currentToken()).not.toBe(sentinelToken);
+  });
+
+  it("fresh token on reopen (no stale token reuse)", async () => {
     const onClose = vi.fn();
     const { rerender } = render(
       <Sheet open onClose={onClose} title="Servers">
         <p>body</p>
       </Sheet>,
     );
-    const afterFirstOpen = history.length;
-    // close
+    const firstToken = currentToken();
     rerender(
       <Sheet open={false} onClose={onClose} title="Servers">
         <p>body</p>
       </Sheet>,
     );
-    // reopen
+    await settled();
     rerender(
       <Sheet open onClose={onClose} title="Servers">
         <p>body</p>
       </Sheet>,
     );
-    expect(history.length).toBe(afterFirstOpen);
+    const secondToken = currentToken();
+    expect(secondToken).not.toBe(firstToken);
   });
 
-  it("rapid open-close-open does not leak sentinels", () => {
+  it("no sentinel remains after close and remount (one sentinel at a time)", async () => {
     const onClose = vi.fn();
     const { rerender } = render(
       <Sheet open onClose={onClose} title="Servers">
         <p>body</p>
       </Sheet>,
     );
-    const baseline = history.length;
+    const firstToken = currentToken();
+    rerender(
+      <Sheet open={false} onClose={onClose} title="Servers">
+        <p>body</p>
+      </Sheet>,
+    );
+    await settled();
+    rerender(
+      <Sheet open onClose={onClose} title="Servers">
+        <p>body</p>
+      </Sheet>,
+    );
+    // The new sentinel has a fresh token, not the old one.
+    const secondToken = currentToken();
+    expect(secondToken).not.toBe(firstToken);
+    expect(secondToken).not.toBeNull();
+  });
+
+  it("rapid open-close-open does not leak sentinels", async () => {
+    const onClose = vi.fn();
+    const pushState = vi.spyOn(history, "pushState");
+    const { rerender } = render(
+      <Sheet open onClose={onClose} title="Servers">
+        <p>body</p>
+      </Sheet>,
+    );
+    const firstPushCount = pushState.mock.calls.length;
     for (let i = 0; i < 5; i++) {
       rerender(
         <Sheet open={false} onClose={onClose} title="Servers">
           <p>body</p>
         </Sheet>,
       );
+      await settled();
       rerender(
         <Sheet open onClose={onClose} title="Servers">
           <p>body</p>
         </Sheet>,
       );
     }
-    // exactly one sentinel at a time
-    expect(history.length).toBe(baseline);
+    // Each reopen pushes exactly one sentinel; the close unwinds it. Total
+    // pushState calls = initial + 5 reopens.
+    expect(pushState.mock.calls.length).toBe(firstPushCount + 5);
+    expect(currentToken()).not.toBeNull();
   });
 
   it("StrictMode effect replay pushes exactly one sentinel", async () => {
     const { StrictMode } = await import("react");
-    const before = history.length;
+    const pushState = vi.spyOn(history, "pushState");
     render(
       <StrictMode>
         <Sheet open onClose={() => {}} title="Servers">
@@ -264,7 +393,10 @@ describe("Sheet — browser/system Back history semantics", () => {
         </Sheet>
       </StrictMode>,
     );
-    expect(history.length).toBe(before + 1);
+    await settled();
+    // Exactly one sentinel push across the StrictMode double-invoke.
+    expect(pushState).toHaveBeenCalledTimes(1);
+    expect(currentToken()).not.toBeNull();
   });
 
   it("popstate followed by cleanup does not throw and leaves no sentinel", async () => {
@@ -274,11 +406,10 @@ describe("Sheet — browser/system Back history semantics", () => {
         <p>body</p>
       </Sheet>,
     );
-    await browserBack(); // closes via popstate
+    await browserBack();
     expect(onClose).toHaveBeenCalledTimes(1);
-    unmount(); // cleanup after popstate must be safe (no throw, no extra nav)
-    // give any stray async popstate a chance and assert no throw
-    await new Promise((r) => setTimeout(r, 0));
+    unmount();
+    await settled();
     expect(onClose).toHaveBeenCalledTimes(1);
   });
 
@@ -289,13 +420,91 @@ describe("Sheet — browser/system Back history semantics", () => {
         <p>body</p>
       </Sheet>,
     );
-    // explicit close schedules history.back(); onClose is synchronous
     fireEvent.click(screen.getByRole("button", { name: "Done" }));
     expect(onClose).toHaveBeenCalledTimes(1);
-    // onClose fires synchronously, before the async history.back() popstate
-    // lands. The sentinel is still current at this instant.
+    // onClose fires synchronously, before the async history.back() popstate lands.
     expect(history.state).not.toBeNull();
-    await nextPopstate(); // back lands
+    await settled();
     expect(history.state).toBeNull();
+  });
+
+  it("rapid close/reopen while unwind is pending does not let the old back pop the new sentinel", async () => {
+    const onClose = vi.fn();
+    const { rerender } = render(
+      <Sheet open onClose={onClose} title="Servers">
+        <p>body</p>
+      </Sheet>,
+    );
+    const firstToken = currentToken();
+    // Close — initiates an async history.back() (pending unwind).
+    rerender(
+      <Sheet open={false} onClose={onClose} title="Servers">
+        <p>body</p>
+      </Sheet>,
+    );
+    // Immediately reopen before the back lands.
+    rerender(
+      <Sheet open onClose={onClose} title="Servers">
+        <p>body</p>
+      </Sheet>,
+    );
+    const secondToken = currentToken();
+    expect(secondToken).not.toBe(firstToken);
+    await settled();
+    // The old back must not have popped the new sentinel.
+    expect(currentToken()).toBe(secondToken);
+  });
+
+  it("two concurrent instances: a second Sheet does not push another sentinel", () => {
+    const onClose1 = vi.fn();
+    const onClose2 = vi.fn();
+    const pushState = vi.spyOn(history, "pushState");
+    render(
+      <>
+        <Sheet open onClose={onClose1} title="First">
+          <p>first</p>
+        </Sheet>
+        <Sheet open onClose={onClose2} title="Second">
+          <p>second</p>
+        </Sheet>
+      </>,
+    );
+    // Only one sentinel pushed (one global owner enforced).
+    expect(pushState).toHaveBeenCalledTimes(1);
+    // Both sheets rendered their portals.
+    expect(screen.getByText("first")).toBeInTheDocument();
+    expect(screen.getByText("second")).toBeInTheDocument();
+  });
+
+  it("two concurrent instances: one Back closes only the owner, not both", async () => {
+    const onClose1 = vi.fn();
+    const onClose2 = vi.fn();
+    render(
+      <>
+        <Sheet open onClose={onClose1} title="First">
+          <p>first</p>
+        </Sheet>
+        <Sheet open onClose={onClose2} title="Second">
+          <p>second</p>
+        </Sheet>
+      </>,
+    );
+    await browserBack();
+    // Exactly one onClose called (the owner), not both.
+    expect(onClose1.mock.calls.length + onClose2.mock.calls.length).toBe(1);
+  });
+
+  it("Escape remains capture-phase and overlay is noninteractive to AT", () => {
+    const onClose = vi.fn();
+    render(
+      <Sheet open onClose={onClose} title="Servers">
+        <p>body</p>
+      </Sheet>,
+    );
+    const overlay = document.querySelector(".evener-sheet-overlay");
+    expect(overlay?.getAttribute("aria-hidden")).toBe("true");
+    // Escape handler is registered on capture phase.
+    fireEvent.keyDown(document, { key: "Escape" });
+    expect(onClose).toHaveBeenCalledTimes(1);
   });
 });
