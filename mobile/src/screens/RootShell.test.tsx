@@ -1,4 +1,10 @@
-import { cleanup, fireEvent, render, screen } from "@testing-library/react";
+import {
+  cleanup,
+  fireEvent,
+  render,
+  screen,
+  within,
+} from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { ProfileRedacted } from "../services/nativeProfiles";
 import { createConnectionStore } from "../state/connection";
@@ -166,8 +172,11 @@ describe("RootShell — server switcher flows", () => {
       }),
     );
     // Click the "laptop" profile row to open its detail view.
+    const dialog = await screen.findByRole("dialog", { name: /servers/i });
     fireEvent.click(
-      await screen.findByRole("button", { name: /laptop.*hub\.example/i }),
+      await within(dialog).findByRole("button", {
+        name: /laptop.*hub\.example/i,
+      }),
     );
     // Click "Remove" in the detail view.
     fireEvent.click(await screen.findByRole("button", { name: /^remove/i }));

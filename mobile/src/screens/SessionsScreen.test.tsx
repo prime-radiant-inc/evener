@@ -132,7 +132,7 @@ function renderSessions(
     (services.profile as FakeProfileService).failOnce("health");
   }
   const connection = createConnectionStore(services.profile);
-  void connection.getState().refresh();
+  const refresh = connection.getState().refresh();
   if (opts.reachability) {
     for (const [id, state] of Object.entries(opts.reachability)) {
       connection.getState().setReachability(id, state as never);
@@ -142,7 +142,7 @@ function renderSessions(
   const { container } = render(
     <SessionsScreen connection={connection} onOpenSwitcher={onOpenSwitcher} />,
   );
-  return { connection, onOpenSwitcher, container };
+  return { connection, onOpenSwitcher, container, refresh };
 }
 
 // ---------------------------------------------------------------------------
@@ -207,12 +207,12 @@ describe("SessionsScreen — server header disclosure control", () => {
     const btn = await screen.findByRole("button", {
       name: /laptop.*active server/i,
     });
-    // Exact accessible name from natural text content (DOM order: origin,
-    // name, visually-hidden "active server", StatusMark label; glyph and
+    // Exact accessible name from natural text content (DOM order: name,
+    // origin, visually-hidden "active server", StatusMark label; glyph and
     // chevron are aria-hidden). This fails if scheme or port is removed from
     // the origin.
     expect(btn).toHaveAccessibleName(
-      "https://hub.example.com:8443 laptop active server Not checked",
+      "laptop https://hub.example.com:8443 active server Not checked",
     );
   });
 
@@ -282,11 +282,14 @@ describe("SessionsScreen — server header disclosure control", () => {
   });
 
   it("no active profile shows No server and Not checked (after refresh)", async () => {
-    renderSessions({ activeProfileId: null });
+    const { connection, refresh } = renderSessions({ activeProfileId: null });
     // Wait for refresh to complete — the authoritative state after refresh
     // has no active profile, so "No server" and "Not checked" must appear.
-    expect(await screen.findByText("No server")).toBeInTheDocument();
-    expect(await screen.findByText(/not checked/i)).toBeInTheDocument();
+    await refresh;
+    expect(connection.getState().status).toBe("ready");
+    expect(connection.getState().activeProfileId).toBeNull();
+    expect(screen.getByText("No server")).toBeInTheDocument();
+    expect(screen.getByText(/not checked/i)).toBeInTheDocument();
   });
 
   it("maintains loading state", () => {
@@ -320,7 +323,9 @@ describe("SessionsScreen.css — structural header contract", () => {
   });
 
   it("header button is full-width", () => {
-    expect(getDecl(cssBlocks, ".evener-sessions-header", "width")).toBe("100%");
+    expect(getDecl(cssBlocks, ".evener-sessions-header", "width")).toBe(
+      "calc(100% + var(--safe-area-left) + var(--safe-area-right))",
+    );
   });
 
   it("header uses grid layout", () => {
@@ -359,9 +364,11 @@ describe("SessionsScreen.css — structural header contract", () => {
     expect(header?.declarations.has("border-radius")).toBe(false);
   });
 
-  it("header has no fixed width (width is 100%, not a pixel value)", () => {
+  it("header expands across both ancestor safe-area insets without a pixel width", () => {
     const width = getDecl(cssBlocks, ".evener-sessions-header", "width");
-    expect(width).toBe("100%");
+    expect(width).toBe(
+      "calc(100% + var(--safe-area-left) + var(--safe-area-right))",
+    );
     expect(width).not.toMatch(/\d+px/);
   });
 
