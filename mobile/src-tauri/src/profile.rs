@@ -471,10 +471,7 @@ fn new_preview_id() -> String {
 }
 
 fn parse_pairing(raw: &str) -> Result<PairingUrl, ProfileError> {
-    PairingUrl::parse(raw).map_err(|e| ProfileError::ProbeFailed {
-        origin: String::new(),
-        message: e.to_string(),
-    })
+    PairingUrl::parse(raw).map_err(|e| ProfileError::InvalidPairing(e.to_string()))
 }
 
 fn validate_name_unique(

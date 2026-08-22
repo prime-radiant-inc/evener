@@ -33,13 +33,56 @@ pub struct PingResponse {
 #[serde(rename_all = "camelCase")]
 pub struct ScanAndPreviewRequest {}
 
+/// Public response to the `scanAndPreviewPairing` command. This is the only
+/// scan data that crosses to JavaScript. On success `response_type` is
+/// `"pairing.preview"` with `preview_id` and `origin`. On failure it is
+/// `"error"` with a redacted `NativeError`. Raw scanned text never appears
+/// in this type.
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ScanAndPreviewResponse {
     pub version: u8,
     #[serde(rename = "type")]
     pub response_type: String,
-    pub error: NativeError,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub preview_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub origin: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error: Option<NativeError>,
+}
+
+impl ScanAndPreviewResponse {
+    /// Construct a successful `pairing.preview` response.
+    pub fn preview(preview_id: impl Into<String>, origin: impl Into<String>) -> Self {
+        Self {
+            version: NATIVE_BRIDGE_VERSION,
+            response_type: "pairing.preview".to_owned(),
+            preview_id: Some(preview_id.into()),
+            origin: Some(origin.into()),
+            error: None,
+        }
+    }
+
+    /// Construct an `error` response with a redacted error.
+    pub fn error(err: NativeError) -> Self {
+        Self {
+            version: NATIVE_BRIDGE_VERSION,
+            response_type: "error".to_owned(),
+            preview_id: None,
+            origin: None,
+            error: Some(err),
+        }
+    }
+
+    /// Construct a `pairing_unavailable` error response.
+    pub fn unavailable() -> Self {
+        Self::error(NativeError {
+            id: "scan-and-preview".to_owned(),
+            kind: NativeErrorKind::PairingUnavailable,
+            message: "Pairing scan is unavailable on this platform".to_owned(),
+        })
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -67,6 +110,122 @@ pub struct NativeError {
     pub id: String,
     pub kind: NativeErrorKind,
     pub message: String,
+}
+
+// ---------------------------------------------------------------------------
+// MobileScanResult — private internal Swift→Rust scan result.
+// Deserialize-only (never Serialize), redacted Debug. Raw QR text stays
+// Swift→Rust and never crosses to JavaScript.
+// ---------------------------------------------------------------------------
+
+/// Internal scan result returned by the Swift scanner to Rust. This type is
+/// never serialized back to JavaScript: it is Deserialize-only with a
+/// redacted Debug impl so the raw scanned code cannot leak through logs or
+/// public output.
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MobileScanResult {
+    /// Bridge version (must be 1).
+    pub version: u8,
+    /// "scanned" when the scanner captured text; "unavailable" when no
+    /// scanner/permission; "error" on failure.
+    #[serde(rename = "type")]
+    pub result_type: String,
+    /// Raw scanned text — present only when `result_type == "scanned"`.
+    /// Wrapped in [`SensitiveScannedCode`] so Debug redacts it.
+    #[serde(default)]
+    pub scanned: Option<SensitiveScannedCode>,
+    /// Structured error — present only when `result_type == "error"` or
+    /// `"unavailable"`.
+    #[serde(default)]
+    pub error: Option<NativeError>,
+}
+
+impl MobileScanResult {
+    /// Construct a "scanned" result carrying raw text.
+    pub fn scanned(raw: impl Into<String>) -> Self {
+        Self {
+            version: NATIVE_BRIDGE_VERSION,
+            result_type: "scanned".to_owned(),
+            scanned: Some(SensitiveScannedCode::new(raw)),
+            error: None,
+        }
+    }
+
+    /// Construct an "unavailable" result (no camera/permission).
+    pub fn unavailable() -> Self {
+        Self {
+            version: NATIVE_BRIDGE_VERSION,
+            result_type: "unavailable".to_owned(),
+            scanned: None,
+            error: Some(NativeError {
+                id: "scan-and-preview".to_owned(),
+                kind: NativeErrorKind::PairingUnavailable,
+                message: "Pairing scan is unavailable on this platform".to_owned(),
+            }),
+        }
+    }
+
+    /// Construct an "error" result.
+    pub fn error(err: NativeError) -> Self {
+        Self {
+            version: NATIVE_BRIDGE_VERSION,
+            result_type: "error".to_owned(),
+            scanned: None,
+            error: Some(err),
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// SecureGetCapabilityResponse — internal Rust↔Swift token retrieval.
+// Deserialize-only (never Serialize), redacted Debug. The Keychain capability
+// never crosses to JavaScript.
+// ---------------------------------------------------------------------------
+
+/// Internal response from the Swift Keychain `load` operation. This type is
+/// never serialized to JavaScript: it is Deserialize-only with a redacted
+/// Debug impl so the capability cannot leak.
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SecureGetCapabilityResponse {
+    /// The stored capability/token, or None if not present.
+    #[serde(default)]
+    pub capability: Option<SensitiveCapability>,
+}
+
+/// A capability token that redacts its Debug output. Used only in internal
+/// Rust↔Swift bridge types that must not serialize to JavaScript.
+pub struct SensitiveCapability(String);
+
+impl SensitiveCapability {
+    pub fn new(raw: impl Into<String>) -> Self {
+        Self(raw.into())
+    }
+
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+
+    pub fn into_string(self) -> String {
+        self.0
+    }
+}
+
+impl fmt::Debug for SensitiveCapability {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("SensitiveCapability([REDACTED])")
+    }
+}
+
+impl<'de> Deserialize<'de> for SensitiveCapability {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let s = String::deserialize(deserializer)?;
+        Ok(Self(s))
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -257,6 +416,16 @@ impl SensitiveScannedCode {
 impl fmt::Debug for SensitiveScannedCode {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str("SensitiveScannedCode([REDACTED])")
+    }
+}
+
+impl<'de> Deserialize<'de> for SensitiveScannedCode {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let s = String::deserialize(deserializer)?;
+        Ok(Self(s))
     }
 }
 

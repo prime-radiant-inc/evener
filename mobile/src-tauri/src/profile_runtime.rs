@@ -11,8 +11,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::error::{ProfileError, ReleaseMode};
 use crate::profile::{
-    self, Clock, PairingProbe, PreferencesStore, ProfileStore, ProfileSummary, SecureStore,
-    SelectResult,
+    self, PairingProbe, PreferencesStore, ProfileStore, ProfileSummary, SecureStore, SelectResult,
 };
 
 // ---------------------------------------------------------------------------
@@ -140,60 +139,75 @@ impl Default for RealPairingProbe {
 
 impl PairingProbe for RealPairingProbe {
     fn probe(&self, origin: &str, token: &str, _mode: ReleaseMode) -> Result<i64, ProfileError> {
-        let runtime =
-            tokio::runtime::Handle::try_current().map_err(|e| ProfileError::ProbeFailed {
-                origin: origin.to_owned(),
-                message: e.to_string(),
-            })?;
-
-        let health_url = format!("{origin}/api/health");
-        let health_resp = runtime
-            .block_on(self.client.get(&health_url).send())
-            .map_err(|_e| ProfileError::ProbeFailed {
-                origin: origin.to_owned(),
-                message: "health request failed".to_owned(),
-            })?;
-
-        if !health_resp.status().is_success() {
-            return Err(ProfileError::ProbeFailed {
-                origin: origin.to_owned(),
-                message: format!("health status {}", health_resp.status().as_u16()),
-            });
-        }
-
-        let body: serde_json::Value =
-            runtime
-                .block_on(health_resp.json())
-                .map_err(|_e| ProfileError::ProbeFailed {
-                    origin: origin.to_owned(),
-                    message: "health body parse failed".to_owned(),
-                })?;
-
-        let version = body
-            .get("mobile_api_version")
-            .and_then(|v| v.as_i64())
-            .ok_or_else(|| ProfileError::ProbeFailed {
-                origin: origin.to_owned(),
-                message: "mobile_api_version missing".to_owned(),
-            })?;
-
-        let pairing_url = format!("{origin}/api/mobile/pairing");
-        let pairing_resp = runtime
-            .block_on(self.client.get(&pairing_url).bearer_auth(token).send())
-            .map_err(|_e| ProfileError::ProbeFailed {
-                origin: origin.to_owned(),
-                message: "authenticated probe failed".to_owned(),
-            })?;
-
-        if !pairing_resp.status().is_success() {
-            return Err(ProfileError::ProbeFailed {
-                origin: origin.to_owned(),
-                message: format!("auth probe status {}", pairing_resp.status().as_u16()),
-            });
-        }
-
-        Ok(version)
+        // The probe is called from within `serialized()`, which holds the
+        // async lifecycle mutex. Calling `Handle::block_on` from an async
+        // context panics, so we use `block_in_place` (safe on the
+        // multi-threaded production runtime) and run the async reqwest
+        // calls on a fresh current-thread runtime inside it. This avoids
+        // the reentrant-async `block_on` panic.
+        tokio::task::block_in_place(|| probe_blocking(self.client.clone(), origin, token))
     }
+}
+
+/// Blocking probe implementation. Runs the async reqwest calls on a
+/// current-thread tokio runtime created inside `block_in_place`, avoiding
+/// the `block_on` reentrant-async panic. Never logs bodies, URLs, or tokens.
+fn probe_blocking(client: reqwest::Client, origin: &str, token: &str) -> Result<i64, ProfileError> {
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .map_err(|e| ProfileError::ProbeFailed {
+            origin: origin.to_owned(),
+            message: format!("runtime build failed: {e}"),
+        })?;
+
+    let health_url = format!("{origin}/api/health");
+    let health_resp = runtime
+        .block_on(client.get(&health_url).send())
+        .map_err(|_e| ProfileError::ProbeFailed {
+            origin: origin.to_owned(),
+            message: "health request failed".to_owned(),
+        })?;
+
+    if !health_resp.status().is_success() {
+        return Err(ProfileError::ProbeFailed {
+            origin: origin.to_owned(),
+            message: format!("health status {}", health_resp.status().as_u16()),
+        });
+    }
+
+    let body: serde_json::Value =
+        runtime
+            .block_on(health_resp.json())
+            .map_err(|_e| ProfileError::ProbeFailed {
+                origin: origin.to_owned(),
+                message: "health body parse failed".to_owned(),
+            })?;
+
+    let version = body
+        .get("mobile_api_version")
+        .and_then(|v| v.as_i64())
+        .ok_or_else(|| ProfileError::ProbeFailed {
+            origin: origin.to_owned(),
+            message: "mobile_api_version missing".to_owned(),
+        })?;
+
+    let pairing_url = format!("{origin}/api/mobile/pairing");
+    let pairing_resp = runtime
+        .block_on(client.get(&pairing_url).bearer_auth(token).send())
+        .map_err(|_e| ProfileError::ProbeFailed {
+            origin: origin.to_owned(),
+            message: "authenticated probe failed".to_owned(),
+        })?;
+
+    if !pairing_resp.status().is_success() {
+        return Err(ProfileError::ProbeFailed {
+            origin: origin.to_owned(),
+            message: format!("auth probe status {}", pairing_resp.status().as_u16()),
+        });
+    }
+
+    Ok(version)
 }
 
 // ---------------------------------------------------------------------------
@@ -222,13 +236,11 @@ impl crate::network_policy::DnsResolver for SystemDnsResolver {
 /// handler: a QR scan preview can be confirmed later through the same store.
 pub struct ManagedPreviewHandler {
     store: Arc<ProfileStore>,
-    #[allow(dead_code)]
-    clock: Arc<dyn Clock>,
 }
 
 impl ManagedPreviewHandler {
-    pub fn new(store: Arc<ProfileStore>, clock: Arc<dyn Clock>) -> Self {
-        Self { store, clock }
+    pub fn new(store: Arc<ProfileStore>) -> Self {
+        Self { store }
     }
 }
 
@@ -395,6 +407,7 @@ mod tests {
     use super::*;
     use crate::network_policy::AlwaysPrivateResolver;
     use crate::network_policy::NetworkPolicy;
+    use crate::profile::Clock;
     use crate::profile::{
         MemoryPreferences, MemorySecureStore, OkProbe, RecordingCloseTransport, StepClock,
     };
@@ -593,8 +606,7 @@ mod tests {
     async fn preview_from_scan_can_be_confirmed_through_same_store() {
         let (rt, _prefs, _secure) = make_memory_runtime();
         let store_arc = rt.store_arc();
-        let clock = Arc::new(StepClock::new(0));
-        let handler = ManagedPreviewHandler::new(store_arc, clock);
+        let handler = ManagedPreviewHandler::new(store_arc);
 
         // Simulate QR scan: raw text -> handler -> preview.
         let raw = auth_url("hub.example.com");
@@ -621,8 +633,7 @@ mod tests {
     async fn paste_preview_and_scan_preview_share_same_store() {
         let (rt, _prefs, _secure) = make_memory_runtime();
         let store_arc = rt.store_arc();
-        let clock = Arc::new(StepClock::new(0));
-        let handler = ManagedPreviewHandler::new(store_arc, clock);
+        let handler = ManagedPreviewHandler::new(store_arc);
 
         let paste_pv = rt
             .serialized(|store| store.preview_pairing(&auth_url("hub1.example.com")))
@@ -973,5 +984,32 @@ mod tests {
         secure.fail_next_get("id1".to_owned());
         let err = bridge.get("id1").unwrap_err();
         assert!(matches!(err, ProfileError::SecureStore(_)));
+    }
+
+    // -- Probe block_in_place does not panic in async context -------------
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn real_pairing_probe_does_not_panic_in_async_context() {
+        // RealPairingProbe::probe uses block_in_place to avoid the
+        // reentrant-async block_on panic. This test proves the probe can be
+        // called from within a tokio multi-threaded runtime (as it is when
+        // called through serialized()) without panicking. We don't make a
+        // real network call — we just prove the probe construction and the
+        // block_in_place path are safe. The probe will fail with a
+        // ProbeFailed error (no server), which is the expected non-panic
+        // outcome.
+        let probe = RealPairingProbe::new();
+        let result = probe.probe(
+            "https://nonexistent.invalid",
+            "dummy-token",
+            ReleaseMode::Release,
+        );
+        // The probe should return an error (not panic).
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(matches!(err, ProfileError::ProbeFailed { .. }));
+        // The error must not contain the token.
+        assert!(!format!("{err}").contains("dummy-token"));
+        assert!(!format!("{err:?}").contains("dummy-token"));
     }
 }

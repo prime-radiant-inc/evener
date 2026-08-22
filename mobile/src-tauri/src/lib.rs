@@ -13,12 +13,7 @@ pub fn run() {
     // The managed preview handler delegates to the exact same ProfileStore,
     // so a QR scan preview can be confirmed later through the same store.
     tauri::Builder::default()
-        .plugin(tauri_plugin_evener_native::init_with_preview_handler(
-            // The handler is set in setup() after the ProfileStore is created,
-            // because it needs the app-data path. We pass a placeholder here;
-            // the plugin's setup hook replaces it.
-            Arc::new(PlaceholderPreviewHandler),
-        ))
+        .plugin(tauri_plugin_evener_native::init())
         .setup(|app| {
             // Get the app-data directory for atomic file preferences.
             let app_data = app.path().app_data_dir().expect("app-data dir unavailable");
@@ -59,12 +54,10 @@ pub fn run() {
             let runtime = profile_runtime::ProfileRuntime::new(store.clone());
 
             // Managed preview handler backed by the exact same store.
-            let handler = Arc::new(profile_runtime::ManagedPreviewHandler::new(
-                store,
-                Arc::new(SystemClock),
-            ));
+            let handler = Arc::new(profile_runtime::ManagedPreviewHandler::new(store));
 
-            // Replace the placeholder coordinator with the real one.
+            // Install the preview coordinator directly on the native plugin.
+            // No placeholder: the real handler is installed here.
             let native = app.evener_native();
             native.set_preview_coordinator(Arc::new(
                 tauri_plugin_evener_native::PreviewCoordinator::new(handler),
@@ -100,26 +93,6 @@ pub mod pairing;
 pub mod profile;
 pub mod profile_runtime;
 
-use tauri_plugin_evener_native::PreviewHandler;
-
-/// Placeholder preview handler used only during plugin initialization.
-/// Replaced in `setup()` with the managed `ProfileRuntime`-backed handler.
-struct PlaceholderPreviewHandler;
-
-impl PreviewHandler for PlaceholderPreviewHandler {
-    fn preview(
-        &self,
-        _scanned: &str,
-    ) -> Result<tauri_plugin_evener_native::PairingPreview, tauri_plugin_evener_native::NativeError>
-    {
-        Err(tauri_plugin_evener_native::NativeError {
-            id: "not-initialized".to_owned(),
-            kind: tauri_plugin_evener_native::NativeErrorKind::Internal,
-            message: "preview handler not yet initialized".to_owned(),
-        })
-    }
-}
-
 /// System clock using `std::time::SystemTime`.
 struct SystemClock;
 
@@ -142,9 +115,15 @@ impl profile::CloseTransport for NoopCloseTransport {
 }
 
 /// Native secure store bridge: delegates to the Tauri plugin's Keychain.
+/// The `get` method retrieves the actual stored token via the private
+/// `secureGetCapability` bridge command so re-pair/remove can capture the
+/// prior Keychain token for rollback compensation. No silent fallback:
+/// a Keychain error propagates as `ProfileError::SecureStore`.
 mod native {
     use tauri::{AppHandle, Runtime};
-    use tauri_plugin_evener_native::{EvenerNativeExt, SecureDeleteRequest, SecureSetRequest};
+    use tauri_plugin_evener_native::{
+        EvenerNativeExt, SecureDeleteRequest, SecureGetRequest, SecureSetRequest,
+    };
 
     use crate::error::ProfileError;
     use crate::profile::SecureStore;
@@ -161,23 +140,13 @@ mod native {
 
     impl<R: Runtime> SecureStore for NativeSecureStore<R> {
         fn get(&self, profile_id: &str) -> Result<Option<String>, ProfileError> {
-            // The Keychain stores tokens. We query presence; if present, we
-            // return the token. The native plugin returns whether the item
-            // exists, not the token itself (tokens stay in native memory).
-            //
-            // Actually, the bridge needs the token to inject into HTTP
-            // requests. The native plugin's secureGet returns present/not,
-            // not the token. This is a design constraint: the app crate
-            // needs the token for HTTP bearer auth, but the native bridge
-            // contract returns only present/not-present.
-            //
-            // For now, this returns an error indicating the bridge is not
-            // yet wired for token retrieval. The full token retrieval path
-            // is completed in slice B with the HTTP transport.
-            let _ = profile_id;
-            Err(ProfileError::SecureStore(
-                "native secure store not yet wired for token retrieval".to_owned(),
-            ))
+            let native = self.app.evener_native();
+            let resp = native
+                .secure_get_capability(SecureGetRequest {
+                    profile_id: profile_id.to_owned(),
+                })
+                .map_err(|e| ProfileError::SecureStore(e.to_string()))?;
+            Ok(resp.capability.map(|c| c.into_string()))
         }
 
         fn set(&self, profile_id: &str, token: &str) -> Result<(), ProfileError> {

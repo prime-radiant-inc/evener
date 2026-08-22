@@ -13,10 +13,11 @@ pub(crate) async fn ping<R: Runtime>(
 }
 
 /// Scan and preview pairing. On mobile, Swift captures the QR text and
-/// returns it to Rust. When a `PreviewCoordinator` is installed, Rust
-/// converts the raw text to a `SensitiveScannedCode`, feeds it through
-/// the coordinator, and returns only `{previewId, origin}` to JS.
-/// When no coordinator is installed, returns structured `pairing_unavailable`.
+/// returns it to Rust via a private `MobileScanResult` (Deserialize-only,
+/// redacted Debug). When a `PreviewCoordinator` is installed, Rust wraps the
+/// raw text in `SensitiveScannedCode`, feeds it through the coordinator, and
+/// returns only `{previewId, origin}` to JS. When no coordinator is
+/// installed, returns structured `pairing_unavailable`.
 #[command]
 pub(crate) async fn scan_and_preview_pairing<R: Runtime>(
     app: AppHandle<R>,
@@ -24,82 +25,69 @@ pub(crate) async fn scan_and_preview_pairing<R: Runtime>(
 ) -> Result<ScanAndPreviewResponse> {
     let native = app.evener_native();
 
-    // Check if a coordinator is installed.
-    if let Some(_coordinator) = native.preview_coordinator() {
-        // On mobile, ask Swift to scan and return raw text. On desktop,
-        // there is no camera, so we return pairing_unavailable.
+    // If a coordinator is installed, the scan path delegates to it.
+    // On desktop the coordinator is bound but only the mobile branch
+    // consumes it (no camera on desktop).
+    if let Some(coordinator) = native.preview_coordinator() {
+        // On mobile, ask Swift to scan and return raw text via the private
+        // MobileScanResult type. On desktop, there is no camera scanner.
         #[cfg(mobile)]
         {
-            // The Swift side returns a ScanAndPreviewResponse with the raw
-            // scanned text in the error.message field (a transport-only
-            // channel — never returned to JS as-is). We then feed it through
-            // the coordinator.
-            //
-            // Actually, the Swift scanner returns raw text via a dedicated
-            // response. We call run_mobile_plugin which returns the raw text
-            // from Swift, then convert and feed through the coordinator.
-            let scan_result = native.scan_and_preview_pairing(payload);
-            match scan_result {
-                Ok(resp) => {
-                    // Swift returned a structured response. If it contains
-                    // raw text (in the error.message field as a transport
-                    // channel), feed it through the coordinator.
-                    if resp.response_type == "scanned" {
-                        let scanned = SensitiveScannedCode::new(&resp.error.message);
-                        match coordinator.preview_scanned(scanned) {
-                            Ok(preview) => {
-                                return Ok(ScanAndPreviewResponse {
-                                    version: crate::NATIVE_BRIDGE_VERSION,
-                                    response_type: "preview".to_owned(),
-                                    error: NativeError {
-                                        id: preview.preview_id,
-                                        kind: NativeErrorKind::Internal,
-                                        message: preview.origin,
-                                    },
-                                });
-                            }
-                            Err(e) => {
-                                return Ok(ScanAndPreviewResponse {
-                                    version: crate::NATIVE_BRIDGE_VERSION,
-                                    response_type: "error".to_owned(),
-                                    error: e,
-                                });
-                            }
-                        }
-                    }
-                    // Swift returned a direct preview or error.
-                    return Ok(resp);
-                }
-                Err(e) => {
-                    return Ok(ScanAndPreviewResponse {
-                        version: crate::NATIVE_BRIDGE_VERSION,
-                        response_type: "error".to_owned(),
-                        error: NativeError {
-                            id: "scan-failed".to_owned(),
-                            kind: NativeErrorKind::Scanner,
-                            message: e.to_string(),
-                        },
-                    });
-                }
-            }
+            let scan_result = native.scan_raw_text(payload);
+            return Ok(convert_scan_result(scan_result, &coordinator));
         }
         #[cfg(desktop)]
         {
             let _ = payload;
+            let _ = coordinator;
             // Desktop has no camera scanner even with a coordinator installed.
             // The paste path is the primary desktop flow.
-            return Ok(ScanAndPreviewResponse {
-                version: crate::NATIVE_BRIDGE_VERSION,
-                response_type: "error".to_owned(),
-                error: NativeError {
-                    id: "scan-and-preview".to_owned(),
-                    kind: NativeErrorKind::PairingUnavailable,
-                    message: "Pairing scan is unavailable on this platform".to_owned(),
-                },
-            });
+            return Ok(ScanAndPreviewResponse::unavailable());
         }
     }
 
     // No coordinator installed: return structured unavailable.
-    native.scan_and_preview_pairing(payload)
+    Ok(ScanAndPreviewResponse::unavailable())
+}
+
+/// Convert the private Swift scan result to a public response. Raw scanned
+/// text is fed through the coordinator and never crosses to the output.
+#[cfg_attr(desktop, allow(dead_code))]
+fn convert_scan_result(
+    scan_result: crate::Result<MobileScanResult>,
+    coordinator: &PreviewCoordinator,
+) -> ScanAndPreviewResponse {
+    match scan_result {
+        Ok(result) => match result.result_type.as_str() {
+            "scanned" => {
+                let Some(scanned) = result.scanned else {
+                    return ScanAndPreviewResponse::error(NativeError {
+                        id: "scan-and-preview".to_owned(),
+                        kind: NativeErrorKind::Internal,
+                        message: "scanner returned no scanned text".to_owned(),
+                    });
+                };
+                match coordinator.preview_scanned(scanned) {
+                    Ok(preview) => {
+                        ScanAndPreviewResponse::preview(preview.preview_id, preview.origin)
+                    }
+                    Err(e) => ScanAndPreviewResponse::error(e),
+                }
+            }
+            "unavailable" => ScanAndPreviewResponse::unavailable(),
+            _ => {
+                let err = result.error.unwrap_or_else(|| NativeError {
+                    id: "scan-and-preview".to_owned(),
+                    kind: NativeErrorKind::Internal,
+                    message: "unknown scan result type".to_owned(),
+                });
+                ScanAndPreviewResponse::error(err)
+            }
+        },
+        Err(e) => ScanAndPreviewResponse::error(NativeError {
+            id: "scan-failed".to_owned(),
+            kind: NativeErrorKind::Scanner,
+            message: e.to_string(),
+        }),
+    }
 }

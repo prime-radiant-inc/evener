@@ -48,14 +48,11 @@ impl<R: Runtime> EvenerNative<R> {
     }
 
     /// On mobile, the Swift scanner captures the QR text and returns it to
-    /// Rust. When a preview coordinator is installed, the command delegates
-    /// parsing to it; JavaScript receives only `{previewId, origin}`. Until a
-    /// coordinator is installed, the Swift layer returns
-    /// `pairing_unavailable`.
-    pub fn scan_and_preview_pairing(
-        &self,
-        payload: ScanAndPreviewRequest,
-    ) -> crate::Result<ScanAndPreviewResponse> {
+    /// Rust via a private `MobileScanResult` (Deserialize-only, redacted
+    /// Debug). The raw text never crosses to JavaScript. When a preview
+    /// coordinator is installed, the command feeds the scanned text through
+    /// it and returns only `{previewId, origin}` to JS.
+    pub fn scan_raw_text(&self, payload: ScanAndPreviewRequest) -> crate::Result<MobileScanResult> {
         self.handle
             .run_mobile_plugin("scanAndPreviewPairing", payload)
             .map_err(Into::into)
@@ -65,6 +62,20 @@ impl<R: Runtime> EvenerNative<R> {
     pub fn secure_get(&self, payload: SecureGetRequest) -> crate::Result<SecureGetResponse> {
         self.handle
             .run_mobile_plugin("secureGet", payload)
+            .map_err(Into::into)
+    }
+
+    /// Internal: retrieve the actual Keychain capability/token for a profile.
+    /// This returns a private `SecureGetCapabilityResponse` (Deserialize-only,
+    /// redacted Debug) so the token never crosses to JavaScript. The app
+    /// crate uses this to capture the prior token for rollback compensation
+    /// and to inject the bearer token into HTTP requests.
+    pub fn secure_get_capability(
+        &self,
+        payload: SecureGetRequest,
+    ) -> crate::Result<SecureGetCapabilityResponse> {
+        self.handle
+            .run_mobile_plugin("secureGetCapability", payload)
             .map_err(Into::into)
     }
 
