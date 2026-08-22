@@ -295,6 +295,30 @@
       "type": "string",
       "oneOf": [
         {
+          "description": "Enables the content_size_get command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-content-size-get",
+          "markdownDescription": "Enables the content_size_get command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the content_size_get command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-content-size-get",
+          "markdownDescription": "Denies the content_size_get command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the haptic_perform command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-haptic-perform",
+          "markdownDescription": "Enables the haptic_perform command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the haptic_perform command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-haptic-perform",
+          "markdownDescription": "Denies the haptic_perform command without any pre-configured scope."
+        },
+        {
           "description": "Enables the ping command without any pre-configured scope.",
           "type": "string",
           "const": "allow-ping",

@@ -26,10 +26,10 @@ import {
 import { createConnectionStore } from "../state/connection";
 import { Button } from "../ui/Button";
 import { Input } from "../ui/Input";
-import type { OnboardingServiceBundle } from "./fixture-services";
+import type { ShellServices } from "./root-types";
 
 export interface OnboardingScreenProps {
-  readonly services: OnboardingServiceBundle;
+  readonly services: ShellServices;
   readonly onConnected?: () => void;
   readonly onCancel?: () => void;
 }

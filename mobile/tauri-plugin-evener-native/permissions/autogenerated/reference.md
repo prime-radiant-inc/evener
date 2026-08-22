@@ -19,6 +19,58 @@ Default permissions for the plugin
 <tr>
 <td>
 
+`evener-native:allow-content-size-get`
+
+</td>
+<td>
+
+Enables the content_size_get command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
+`evener-native:deny-content-size-get`
+
+</td>
+<td>
+
+Denies the content_size_get command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
+`evener-native:allow-haptic-perform`
+
+</td>
+<td>
+
+Enables the haptic_perform command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
+`evener-native:deny-haptic-perform`
+
+</td>
+<td>
+
+Denies the haptic_perform command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
 `evener-native:allow-ping`
 
 </td>

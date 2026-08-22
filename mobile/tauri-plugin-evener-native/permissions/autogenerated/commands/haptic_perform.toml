@@ -1,0 +1,13 @@
+# Automatically generated - DO NOT EDIT!
+
+"$schema" = "../../schemas/schema.json"
+
+[[permission]]
+identifier = "allow-haptic-perform"
+description = "Enables the haptic_perform command without any pre-configured scope."
+commands.allow = ["haptic_perform"]
+
+[[permission]]
+identifier = "deny-haptic-perform"
+description = "Denies the haptic_perform command without any pre-configured scope."
+commands.deny = ["haptic_perform"]

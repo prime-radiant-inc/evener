@@ -105,6 +105,9 @@ function binaryBridge(script: ResponseScript): TauriBridge & {
         },
       };
     },
+    listen(): Promise<() => void> {
+      return Promise.resolve(() => {});
+    },
   };
   return Object.assign(bridge, {
     invocations,
@@ -392,6 +395,9 @@ describe("nativeHttp — native cancellation", () => {
         responseChannel = channel as TauriChannel<unknown>;
         return channel;
       },
+      listen(): Promise<() => void> {
+        return Promise.resolve(() => {});
+      },
     };
     const controller = new AbortController();
     const pending = service(bridge).request({
@@ -473,6 +479,9 @@ describe("nativeHttp — redacted errors", () => {
           onclose: null,
           dispose() {},
         };
+      },
+      listen(): Promise<() => void> {
+        return Promise.resolve(() => {});
       },
     };
     const error = await service(bridge)

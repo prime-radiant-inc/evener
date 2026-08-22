@@ -65,6 +65,9 @@ function recordingBridge(): TauriBridge & {
         },
       };
     },
+    listen(): Promise<() => void> {
+      return Promise.resolve(() => {});
+    },
   };
   return Object.assign(bridge, {
     calls,
