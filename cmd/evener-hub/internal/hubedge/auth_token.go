@@ -28,10 +28,8 @@ import (
 // request must carry the cookie (or an "Authorization: Bearer" header for
 // scripted clients).
 //
-// The token lives in $hub_state_root/auth-token. Newly created token files are
-// mode 0600; a non-empty existing file is accepted after surrounding
-// whitespace is trimmed, without format or mode enforcement. Delete the file
-// to invalidate existing sessions.
+// The token lives in $hub_state_root/auth-token (mode 0600). Delete the
+// file (or use --rotate-auth-token) to invalidate existing sessions.
 
 const (
 	// authCookiePrefix begins the cookie key set after a successful /auth
@@ -68,10 +66,9 @@ func cookieName(token string) string {
 	return authCookiePrefix + "_" + base64.RawURLEncoding.EncodeToString(h.Sum(nil))
 }
 
-// LoadOrCreateAuthToken returns a non-empty token from
-// $hubStateRoot/auth-token after trimming surrounding whitespace, or generates
-// a fresh 256-bit token and persists it when the file is absent or empty. A
-// newly created file is written with mode 0600.
+// LoadOrCreateAuthToken returns the existing token at
+// $hubStateRoot/auth-token, or generates a fresh 256-bit token and
+// persists it. The file is created with mode 0600.
 func LoadOrCreateAuthToken(hubStateRoot string) (string, error) {
 	return loadOrCreateAuthToken(hubStateRoot, rand.Reader, os.Rename)
 }

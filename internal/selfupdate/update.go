@@ -17,7 +17,7 @@ import (
 
 const defaultRepoURL = "https://github.com/prime-radiant-inc/evener"
 
-var installBinaries = []string{"evener", "evener-hub", "evener-tui", "evener-doctor", "evener-migrate"}
+var installBinaries = []string{"evener", "evener-hub", "evener-tui", "evener-doctor"}
 
 var (
 	copyStream = io.Copy

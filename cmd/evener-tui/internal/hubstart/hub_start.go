@@ -450,7 +450,10 @@ func StartLocalHub(req HubStartRequest) error {
 	}
 	var out *os.File
 	if req.LogFile != "" {
-		f, err := openPrivateLogFile(req.LogFile)
+		if err := os.MkdirAll(filepath.Dir(req.LogFile), 0o755); err != nil {
+			return err
+		}
+		f, err := openHubOutput(req.LogFile, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o644)
 		if err != nil {
 			return err
 		}
@@ -585,7 +588,10 @@ func WriteStartupDiagnostic(logFile string, err error) {
 	if logFile == "" || err == nil {
 		return
 	}
-	f, openErr := openPrivateLogFile(logFile)
+	if mkErr := os.MkdirAll(filepath.Dir(logFile), 0o755); mkErr != nil {
+		return
+	}
+	f, openErr := os.OpenFile(logFile, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o644)
 	if openErr != nil {
 		return
 	}
@@ -597,40 +603,4 @@ func WriteStartupDiagnostic(logFile string, err error) {
 	}
 	// Best-effort diagnostic; a write failure here is unactionable.
 	_, _ = fmt.Fprintf(f, "evener-tui startup failed kind=%s error=%s\n", kind, err)
-}
-
-func openPrivateLogFile(logFile string) (*os.File, error) {
-	parent := filepath.Dir(logFile)
-	if err := os.MkdirAll(parent, 0o700); err != nil {
-		return nil, err
-	}
-	parentInfo, err := os.Lstat(parent)
-	if err != nil {
-		return nil, err
-	}
-	if parentInfo.Mode()&os.ModeSymlink != 0 {
-		return nil, fmt.Errorf("log directory %s is a symlink", parent)
-	}
-	if !parentInfo.IsDir() {
-		return nil, fmt.Errorf("log directory %s is not a directory", parent)
-	}
-	if info, err := os.Lstat(logFile); err == nil {
-		if info.Mode()&os.ModeSymlink != 0 {
-			return nil, fmt.Errorf("log file %s is a symlink", logFile)
-		}
-		if !info.Mode().IsRegular() {
-			return nil, fmt.Errorf("log file %s is not a regular file", logFile)
-		}
-	} else if !errors.Is(err, os.ErrNotExist) {
-		return nil, err
-	}
-	f, err := openHubOutput(logFile, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o600)
-	if err != nil {
-		return nil, err
-	}
-	if err := f.Chmod(0o600); err != nil {
-		_ = f.Close()
-		return nil, err
-	}
-	return f, nil
 }

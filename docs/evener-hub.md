@@ -261,6 +261,11 @@ Production deployments should preferably execute `evener-hub --config
 "$hub_config"` directly under a supervisor and let it capture stdout/stderr.
 The hub logs config errors, past-index rebuild errors, roster watch errors,
 child-process launch diagnostics, and the auth URL there.
+
+The TUI's `--log-file` option also captures the auto-started hub's full
+authorization URL, including its bearer token. Run the TUI with a restrictive
+`umask` and choose a private log path; do not place this log in a shared
+directory or expose it through a supervisor's broadly readable logs.
 On macOS, [`scripts/ops/deploy-hub.sh`](../scripts/ops/deploy-hub.sh) builds
 while the old hub remains running, kickstarts its launchd job to replace it,
 then verifies health; see

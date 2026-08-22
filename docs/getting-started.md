@@ -136,10 +136,13 @@ Upgrade the installed binaries with:
 evener upgrade
 ```
 
-The command follows the binary's install channel: release builds upgrade to
-the latest release, snapshot builds to the latest `main` build. Pass
-`release`, `snapshot`, or a tag such as `v1.2.3` to switch tracks. The web
-UI's `/upgrade` command and the TUI call through the same mechanism.
+The command updates `evener`, `evener-hub`, `evener-tui`, and `evener-doctor`,
+following the binary's install channel: release builds upgrade to the latest
+release, snapshot builds to the latest `main` build. Pass `release`, `snapshot`,
+or a tag such as `v1.2.3` to switch tracks. It does not update `evener-migrate`;
+rerun the installer, or run `make install` (or `sudo make install-system`), to
+refresh that command. The web UI's `/upgrade` command and the TUI call through
+the same mechanism.
 
 Running sessions keep the binary they started with. End a session, upgrade,
 and resume it to pick up the new build.

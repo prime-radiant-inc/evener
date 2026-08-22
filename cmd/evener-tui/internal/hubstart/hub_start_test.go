@@ -431,65 +431,6 @@ func TestStartLocalHubReportsImmediateExitOutput(t *testing.T) {
 	}
 }
 
-func TestStartLocalHubProtectsLogPath(t *testing.T) {
-	logDir := filepath.Join(t.TempDir(), "logs")
-	logFile := filepath.Join(logDir, "hub.log")
-	bin := filepath.Join(t.TempDir(), "evener-hub")
-	if err := os.WriteFile(bin, []byte("#!/bin/sh\nsleep 2\n"), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := StartLocalHub(HubStartRequest{
-		Binary:   bin,
-		BindAddr: "127.0.0.1:9180",
-		LogFile:  logFile,
-	}); err != nil {
-		t.Fatalf("StartLocalHub: %v", err)
-	}
-	if err := os.Chmod(logFile, 0o644); err != nil {
-		t.Fatal(err)
-	}
-	if err := StartLocalHub(HubStartRequest{
-		Binary:   bin,
-		BindAddr: "127.0.0.1:9180",
-		LogFile:  logFile,
-	}); err != nil {
-		t.Fatalf("StartLocalHub with existing log: %v", err)
-	}
-
-	for path, want := range map[string]os.FileMode{logDir: 0o700, logFile: 0o600} {
-		info, err := os.Stat(path)
-		if err != nil {
-			t.Fatalf("stat %s: %v", path, err)
-		}
-		if got := info.Mode().Perm(); got != want {
-			t.Errorf("%s mode = %04o, want %04o", path, got, want)
-		}
-	}
-	permissiveDir := filepath.Join(t.TempDir(), "logs")
-	if err := os.Mkdir(permissiveDir, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	permissiveLog := filepath.Join(permissiveDir, "hub.log")
-	err := StartLocalHub(HubStartRequest{
-		Binary:   bin,
-		BindAddr: "127.0.0.1:9180",
-		LogFile:  permissiveLog,
-	})
-	if err != nil {
-		t.Fatalf("StartLocalHub with existing permissive directory: %v", err)
-	}
-	if info, err := os.Stat(permissiveDir); err != nil {
-		t.Fatal(err)
-	} else if got := info.Mode().Perm(); got != 0o755 {
-		t.Fatalf("existing permissive directory mode = %04o, want 0755", got)
-	}
-	if info, err := os.Stat(permissiveLog); err != nil {
-		t.Fatal(err)
-	} else if got := info.Mode().Perm(); got != 0o600 {
-		t.Fatalf("log in existing permissive directory mode = %04o, want 0600", got)
-	}
-}
-
 func withLocalHubImmediateExitWindow(t *testing.T, window time.Duration) {
 	t.Helper()
 	previous := LocalHubImmediateExitWindow

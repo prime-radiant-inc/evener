@@ -45,11 +45,14 @@ install under `/usr/local`, see
 [docs/getting-started.md](docs/getting-started.md#install). Verify any install
 with `evener --version`.
 
-Upgrade installed binaries with `evener upgrade`. The command follows the
-binary's install channel: release builds upgrade to the latest release, and
-snapshot builds upgrade to the latest successful `main` build. Pass
-`release`, `snapshot`, or a tag such as `v1.2.3` to switch tracks. The TUI
-and web UI expose the same mechanism through their `/upgrade` command.
+Upgrade `evener`, `evener-hub`, `evener-tui`, and `evener-doctor` with
+`evener upgrade`. The command follows the binary's install channel: release
+builds upgrade to the latest release, and snapshot builds upgrade to the latest
+successful `main` build. Pass `release`, `snapshot`, or a tag such as `v1.2.3`
+to switch tracks. `evener-migrate` is not updated by `evener upgrade`; rerun
+the installer, or run `make install` (or `sudo make install-system`), to refresh
+it. The TUI and web UI expose the same mechanism through their `/upgrade`
+command.
 
 On first use, Evener creates:
 
