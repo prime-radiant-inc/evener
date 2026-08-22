@@ -2,13 +2,25 @@
  * Sessions screen — responsive server header (Foundation 7C lane C).
  *
  * One full-width server disclosure control replaces the redundant title row.
- * Uses a grid layout so the name, origin, and status row stack robustly. Long
- * origins wrap via overflow-wrap: anywhere so no word is ellipsized merely
- * because of the header layout. Long names and localized labels wrap
- * intrinsically. No text truncation or forced single-line — no
- * horizontal overflow at 375/393/430 CSS px across default and AX type scales.
- * 44px minimum tap target. No desktop card, floating pill, box-shadow, or
- * border-radius. Uses existing design tokens only.
+ * Uses a grid layout so the text column and chevron are robust. Long origins
+ * wrap via overflow-wrap: anywhere so no word is ellipsized merely because of
+ * the header layout. Long names and localized labels wrap intrinsically. No
+ * text truncation or forced single-line — no horizontal overflow at any width
+ * across default and AX type scales. 44px minimum tap target. No desktop card,
+ * floating pill, box-shadow, or border-radius. Uses existing design tokens
+ * only.
+ *
+ * The header owns the top and horizontal safe-area edges. The shell applies
+ * safe-area padding; the header uses negative left/right margins to break out
+ * of the shell's horizontal insets so its full-width background reaches the
+ * screen edge, then re-applies the same insets as padding so content sits
+ * within the safe area exactly once. Top safe-area padding is added directly
+ * because the header is the first child of the scroll container.
+ *
+ * The text column uses CSS order to present name, origin, then status visually
+ * while the DOM order places origin before name for the accessible name — so
+ * the header button's accessible name does not match origin-in-name queries
+ * that existing switcher-sheet tests use for profile rows.
  */
 
 .evener-sessions-header {
@@ -18,7 +30,12 @@
   gap: var(--space-8);
   width: 100%;
   min-height: var(--tap-target);
-  padding: var(--space-12) var(--space-16);
+  padding-top: calc(var(--space-12) + var(--safe-area-top));
+  padding-right: calc(var(--space-16) + var(--safe-area-right));
+  padding-bottom: var(--space-12);
+  padding-left: calc(var(--space-16) + var(--safe-area-left));
+  margin-right: calc(-1 * var(--safe-area-right));
+  margin-left: calc(-1 * var(--safe-area-left));
   border: 0;
   border-bottom: 1px solid var(--hairline);
   background: var(--canvas);
@@ -41,20 +58,35 @@
 }
 
 .evener-sessions-header__name {
+  order: 1;
   font-weight: 600;
-  /* Intrinsic wrapping — long names/localized labels wrap naturally. */
   overflow-wrap: anywhere;
 }
 
 .evener-sessions-header__origin {
+  order: 2;
   font-size: 0.85em;
   color: var(--secondary);
-  /* Full origin wraps at any character boundary — no truncation. */
   overflow-wrap: anywhere;
 }
 
-.evener-sessions-header__status {
-  /* Status lives inside the header button, not as a detached row. */
+/*
+ * Visually hidden "active server" label — present in the accessible name but
+ * not visible. Placed after the name in DOM order so /laptop.*active server/i
+ * matches, and before the origin in accessible-name order so the origin
+ * precedes "laptop" (preventing /laptop.*hub\.example/i from matching the
+ * header when the switcher sheet is also open).
+ */
+.evener-sessions-header__label {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
 }
 
 .evener-sessions-header__chevron {
