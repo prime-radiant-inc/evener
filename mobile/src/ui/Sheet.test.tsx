@@ -37,7 +37,7 @@ describe("Sheet — lifecycle and accessibility", () => {
     expect(within(dialog).getByText("sheet body")).toBeInTheDocument();
   });
 
-  it("Escape closes the sheet", () => {
+  it("Escape closes the sheet", async () => {
     const onClose = vi.fn();
     render(
       <Sheet open onClose={onClose} title="Servers">
@@ -45,7 +45,9 @@ describe("Sheet — lifecycle and accessibility", () => {
       </Sheet>,
     );
     fireEvent.keyDown(document, { key: "Escape" });
-    expect(onClose).toHaveBeenCalled();
+    expect(onClose).not.toHaveBeenCalled();
+    await __sheetHistorySettled();
+    expect(onClose).toHaveBeenCalledTimes(1);
   });
 
   it("focuses the first focusable control (Done) when open", async () => {
