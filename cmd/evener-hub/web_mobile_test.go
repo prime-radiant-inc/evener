@@ -19,6 +19,19 @@ func TestWeb_MobilePairingRequiresAuth(t *testing.T) {
 	}
 }
 
+func TestWeb_MobilePairingQueryTokenRedirectIsNoStore(t *testing.T) {
+	web := NewWebServer(hubcore.WebConfig{AuthToken: "mobile-secret"})
+	req := httptest.NewRequest(http.MethodGet, "/api/mobile/pairing?token=mobile-secret", nil)
+	rec := httptest.NewRecorder()
+	web.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusFound {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusFound)
+	}
+	if got := rec.Header().Get("Cache-Control"); got != "no-store" {
+		t.Fatalf("Cache-Control = %q, want no-store", got)
+	}
+}
+
 func TestWeb_MobilePairingRejectsLoopbackFallback(t *testing.T) {
 	web := NewWebServer(hubcore.WebConfig{AuthToken: "mobile-secret"})
 	req := httptest.NewRequest(http.MethodGet, "http://127.0.0.1:9180/api/mobile/pairing", nil)
