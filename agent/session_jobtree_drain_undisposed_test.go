@@ -179,13 +179,16 @@ func TestOneShotDrainAnnouncementStopResolves(t *testing.T) {
 	var finalWarningSeen atomic.Bool
 	adapter.steps = []func(llm.Request) llm.Response{
 		func(llm.Request) llm.Response {
-			close(stopRequested)
 			return toolCallResponse(llm.ToolCallData{
 				ID: "stop-it", Name: "job_stop", Type: "function",
 				Arguments: json.RawMessage(`{"target":"` + jobID + `"}`),
 			})
 		},
 		func(llm.Request) llm.Response {
+			// ProcessInputKind executes the job_stop tool before requesting this
+			// follow-up response. Signalling here gives the pending-state assertions
+			// a happens-before edge from the actual stop request.
+			close(stopRequested)
 			<-allowStopTurn
 			close(stopTurnReturned)
 			return finalResponse("stopped the scratch job")
