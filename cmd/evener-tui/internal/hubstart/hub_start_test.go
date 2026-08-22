@@ -469,13 +469,24 @@ func TestStartLocalHubProtectsLogPath(t *testing.T) {
 	if err := os.Mkdir(permissiveDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
+	permissiveLog := filepath.Join(permissiveDir, "hub.log")
 	err := StartLocalHub(HubStartRequest{
 		Binary:   bin,
 		BindAddr: "127.0.0.1:9180",
-		LogFile:  filepath.Join(permissiveDir, "hub.log"),
+		LogFile:  permissiveLog,
 	})
-	if err == nil || !strings.Contains(err.Error(), "group/world accessible") {
-		t.Fatalf("permissive log directory error = %v", err)
+	if err != nil {
+		t.Fatalf("StartLocalHub with existing permissive directory: %v", err)
+	}
+	if info, err := os.Stat(permissiveDir); err != nil {
+		t.Fatal(err)
+	} else if got := info.Mode().Perm(); got != 0o755 {
+		t.Fatalf("existing permissive directory mode = %04o, want 0755", got)
+	}
+	if info, err := os.Stat(permissiveLog); err != nil {
+		t.Fatal(err)
+	} else if got := info.Mode().Perm(); got != 0o600 {
+		t.Fatalf("log in existing permissive directory mode = %04o, want 0600", got)
 	}
 }
 

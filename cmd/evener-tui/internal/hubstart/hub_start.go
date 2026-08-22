@@ -611,8 +611,8 @@ func openPrivateLogFile(logFile string) (*os.File, error) {
 	if parentInfo.Mode()&os.ModeSymlink != 0 {
 		return nil, fmt.Errorf("log directory %s is a symlink", parent)
 	}
-	if parentInfo.Mode().Perm()&0o077 != 0 {
-		return nil, fmt.Errorf("log directory %s is group/world accessible; refusing to use it", parent)
+	if !parentInfo.IsDir() {
+		return nil, fmt.Errorf("log directory %s is not a directory", parent)
 	}
 	if info, err := os.Lstat(logFile); err == nil {
 		if info.Mode()&os.ModeSymlink != 0 {
