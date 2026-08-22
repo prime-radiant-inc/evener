@@ -454,23 +454,32 @@ func (s *Session) armDelegateAttentionOnce(attentionID string) error {
 	if s.delegateController == nil || s.owningDelegateID == "" {
 		return errors.New("delegate attention controller identity is incomplete")
 	}
-	s.attentionMu.Lock()
-	ids, err := s.pendingDelegateAttentionIDsLocked()
-	if err != nil {
+	for {
+		s.attentionMu.Lock()
+		ids, err := s.pendingDelegateAttentionIDsLocked()
+		if err != nil {
+			s.attentionMu.Unlock()
+			return err
+		}
+		if !slices.Contains(ids, attentionID) {
+			s.attentionMu.Unlock()
+			return nil
+		}
+		_, blocker, plan, emit, err := s.delegateController.tryOpenDelegateAttention(s.owningDelegateID, attentionID)
 		s.attentionMu.Unlock()
-		return err
-	}
-	if !slices.Contains(ids, attentionID) {
-		s.attentionMu.Unlock()
+		if err != nil {
+			return err
+		}
+		if blocker != nil {
+			<-blocker
+			continue
+		}
+		if emit {
+			s.delegateController.emitDelegateUpdate(plan)
+		}
+		s.notify()
 		return nil
 	}
-	if _, err := s.delegateController.openDelegateAttention(s.owningDelegateID, attentionID); err != nil {
-		s.attentionMu.Unlock()
-		return err
-	}
-	s.attentionMu.Unlock()
-	s.notify()
-	return nil
 }
 
 func (s *Session) hasPendingDelegateAttentionArmRetry() bool {

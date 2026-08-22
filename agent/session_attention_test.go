@@ -335,32 +335,16 @@ func TestDelegateAttention_ArmClaimSpansFoldAndOpen(t *testing.T) {
 		sessionID   = "child-dlg_target"
 		attentionID = "interleaved-attention"
 	)
-	c, _ := newDelegateControllerTestHarness(t, 1, 1)
-	seedDelegateControllerIdle(t, c, "dlg_target", "")
-	path := transcriptPath(c.stateDir, sessionID)
-	writer, err := transcript.NewWriter(path, transcript.Header{SessionID: sessionID})
+	c, runtime, path := newDelegateAttentionAcceptanceHarness(t, sessionID, nil, attentionID)
+	runtime.owningDelegateID = "dlg_target"
+	reservation, err := c.ReserveAttention(runtime, attentionID)
 	if err != nil {
-		t.Fatalf("NewWriter: %v", err)
+		t.Fatalf("ReserveAttention: %v", err)
 	}
-	t.Cleanup(func() { _ = writer.Close() })
-	attention := schema.NewTurn(schema.TurnSteering, llm.User("interleaved attention"))
-	attention.AttentionID = attentionID
-	if err := writer.AppendDurable(attention); err != nil {
-		t.Fatalf("append attention: %v", err)
-	}
-	runtime := &Session{
-		id:                 sessionID,
-		stateDir:           c.stateDir,
-		delegateController: c,
-		owningDelegateID:   "dlg_target",
-	}
-	runtime.attachTranscript(writer)
-	c.mu.Lock()
-	c.live["dlg_target"] = &delegateLiveState{runtime: runtime}
-	c.mu.Unlock()
 
 	foldEntered := make(chan struct{})
 	releaseFold := make(chan struct{})
+	var foldOnce sync.Once
 	t.Cleanup(func() {
 		select {
 		case <-releaseFold:
@@ -369,8 +353,14 @@ func TestDelegateAttention_ArmClaimSpansFoldAndOpen(t *testing.T) {
 		}
 	})
 	runtime.cfg.testOnly.delegateAttentionReadFold = func(path, sessionID string) (delegateAttentionFold, error) {
-		close(foldEntered)
-		<-releaseFold
+		wait := false
+		foldOnce.Do(func() {
+			close(foldEntered)
+			wait = true
+		})
+		if wait {
+			<-releaseFold
+		}
 		return readDelegateAttentionFold(path, sessionID)
 	}
 
@@ -378,47 +368,35 @@ func TestDelegateAttention_ArmClaimSpansFoldAndOpen(t *testing.T) {
 	go func() { armDone <- runtime.armDelegateAttentionOnce(attentionID) }()
 	<-foldEntered
 
-	// Keep the controller lock held while releasing the fold seam. On the
-	// unfixed path arm drops attentionMu before openDelegateAttention, allowing
-	// resolution to complete while open is stuck on c.mu.
-	c.mu.Lock()
-	resolutionReached := make(chan struct{})
+	// The reservation is the controller-side blocker that used to deadlock
+	// armDelegateAttentionOnce while it held attentionMu. The acceptance path
+	// must resolve the exact ID before it can close that blocker.
 	consumeDone := make(chan error, 1)
 	go func() {
-		err := runtime.resolveAttentionDurably([]string{attentionID}, delegateAttentionConsumed)
+		err := runtime.acceptDelegateAttention(reservation)
 		if err == nil {
-			close(resolutionReached)
-			c.mu.Lock()
-			delete(c.attentionWakeIDs, "dlg_target")
-			_, err = c.appendLocked(delegatestore.Event{
-				Kind:       delegatestore.EventDelegateAttentionChanged,
-				DelegateID: "dlg_target",
-				AttentionChanged: &delegatestore.DelegateAttentionChanged{
-					NeedsAttention: false,
-				},
-			})
-			c.mu.Unlock()
+			_, err = c.CommitStart(reservation)
 		}
 		consumeDone <- err
 	}()
 	close(releaseFold)
-	resolvedBeforeArmOpen := false
+	timeout := time.NewTimer(time.Second)
+	defer timeout.Stop()
 	select {
-	case <-resolutionReached:
-		resolvedBeforeArmOpen = true
-	// TRIPWIRE: 100ms is only a deadlock detector while c.mu is held; it is never async pacing.
-	case <-time.After(100 * time.Millisecond):
+	case err := <-armDone:
+		if err != nil {
+			t.Fatalf("arm attention: %v", err)
+		}
+	case <-timeout.C:
+		t.Fatal("arm attention remained blocked on an accepted reservation")
 	}
-	c.mu.Unlock()
-	if resolvedBeforeArmOpen {
-		t.Fatal("attention resolution completed before arm/open")
-	}
-
-	if err := <-armDone; err != nil {
-		t.Fatalf("arm attention: %v", err)
-	}
-	if err := <-consumeDone; err != nil {
-		t.Fatalf("resolve attention: %v", err)
+	select {
+	case err := <-consumeDone:
+		if err != nil {
+			t.Fatalf("consume attention: %v", err)
+		}
+	case <-timeout.C:
+		t.Fatal("attention acceptance remained blocked behind arm")
 	}
 
 	fold, err := readDelegateAttentionFold(path, sessionID)

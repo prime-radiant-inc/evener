@@ -147,54 +147,63 @@ func (c *delegateTreeController) noteDelegateAttention(delegateID, attentionID s
 // answer consumption for the same child. Delivery opens use their larger
 // owner-open/source-ack batch; watch and quiet opens use this single-event path.
 func (c *delegateTreeController) openDelegateAttention(delegateID, attentionID string) (bool, error) {
-	if c == nil || delegateID == "" || attentionID == "" {
-		return false, errDelegateNotControllable
-	}
 	for {
-		c.mu.Lock()
-		var blocker <-chan struct{}
-		for _, record := range c.reservations {
-			if record != nil && record.delegateID == delegateID && record.trigger == delegatestore.TriggerAttention && record.done != nil {
-				blocker = record.done
-				break
-			}
+		added, blocker, plan, emit, err := c.tryOpenDelegateAttention(delegateID, attentionID)
+		if err != nil {
+			return false, err
 		}
 		if blocker != nil {
-			c.mu.Unlock()
 			<-blocker
 			continue
 		}
-		if c.durable[delegateID] == nil {
-			c.mu.Unlock()
-			return false, errDelegateNotControllable
-		}
-		if _, exists := c.attentionWakeIDs[delegateID][attentionID]; exists {
-			c.mu.Unlock()
-			return false, nil
-		}
-		openEvent, err := c.delegateAttentionOpenEventLocked(delegateID)
-		if err != nil {
-			c.mu.Unlock()
-			return false, err
-		}
-		if openEvent != nil {
-			if _, err := c.appendLocked(*openEvent); err != nil {
-				c.mu.Unlock()
-				return false, err
-			}
-		}
-		added := c.noteDelegateAttentionLocked(delegateID, attentionID)
-		var plan delegateUpdatePlan
-		if openEvent != nil {
-			plan = c.capturedPlanLocked(delegateID)
-		}
-		c.evidenceVersion++
-		c.mu.Unlock()
-		if openEvent != nil {
+		if emit {
 			c.emitDelegateUpdate(plan)
 		}
 		return added, nil
 	}
+}
+
+// tryOpenDelegateAttention performs one nonblocking projection-open attempt.
+// A reservation blocker is returned to the caller without waiting so callers
+// that hold a Session attention claim can release it before waiting.
+func (c *delegateTreeController) tryOpenDelegateAttention(delegateID, attentionID string) (bool, <-chan struct{}, delegateUpdatePlan, bool, error) {
+	if c == nil || delegateID == "" || attentionID == "" {
+		return false, nil, delegateUpdatePlan{}, false, errDelegateNotControllable
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	var blocker <-chan struct{}
+	for _, record := range c.reservations {
+		if record != nil && record.delegateID == delegateID && record.trigger == delegatestore.TriggerAttention && record.done != nil {
+			blocker = record.done
+			break
+		}
+	}
+	if blocker != nil {
+		return false, blocker, delegateUpdatePlan{}, false, nil
+	}
+	if c.durable[delegateID] == nil {
+		return false, nil, delegateUpdatePlan{}, false, errDelegateNotControllable
+	}
+	if _, exists := c.attentionWakeIDs[delegateID][attentionID]; exists {
+		return false, nil, delegateUpdatePlan{}, false, nil
+	}
+	openEvent, err := c.delegateAttentionOpenEventLocked(delegateID)
+	if err != nil {
+		return false, nil, delegateUpdatePlan{}, false, err
+	}
+	if openEvent != nil {
+		if _, err := c.appendLocked(*openEvent); err != nil {
+			return false, nil, delegateUpdatePlan{}, false, err
+		}
+	}
+	added := c.noteDelegateAttentionLocked(delegateID, attentionID)
+	var plan delegateUpdatePlan
+	if openEvent != nil {
+		plan = c.capturedPlanLocked(delegateID)
+	}
+	c.evidenceVersion++
+	return added, nil, plan, openEvent != nil, nil
 }
 
 func (c *delegateTreeController) delegateAttentionOpenEventLocked(delegateID string) (*delegatestore.Event, error) {
