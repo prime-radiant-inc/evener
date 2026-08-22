@@ -1,11 +1,41 @@
-import { render, screen } from "@testing-library/react";
-import { describe, expect, it } from "vitest";
+import { cleanup, render, screen } from "@testing-library/react";
+import { afterEach, describe, expect, it } from "vitest";
 import { App } from "./App";
 
+afterEach(() => {
+  cleanup();
+});
+
 describe("App", () => {
-  it("renders the dedicated mobile fixture shell", () => {
+  it("renders the dedicated mobile shell (no Hub widgets)", () => {
     render(<App fixture />);
-    expect(screen.getByRole("navigation", { name: "Primary" })).toBeVisible();
+    // With no profiles, the onboarding screen shows.
+    expect(
+      screen.getByRole("heading", { name: /evener/i }),
+    ).toBeInTheDocument();
+    // No Dockview or desktop web widgets.
     expect(screen.queryByText("Dockview")).not.toBeInTheDocument();
+  });
+
+  it("fixture=onboarding shows the connect flow", () => {
+    render(<App fixtureRoute="onboarding" />);
+    expect(
+      screen.getByRole("button", { name: /scan qr/i }),
+    ).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /paste/i })).toBeInTheDocument();
+  });
+
+  it("fixture=sessions shows the three-tab shell", async () => {
+    render(<App fixtureRoute="sessions" />);
+    expect(
+      await screen.findByRole("tab", { name: /sessions/i }),
+    ).toBeInTheDocument();
+    expect(screen.getByRole("tab", { name: /new/i })).toBeInTheDocument();
+    expect(screen.getByRole("tab", { name: /settings/i })).toBeInTheDocument();
+  });
+
+  it("fixture=settings opens on the settings tab", async () => {
+    render(<App fixtureRoute="settings" />);
+    expect(await screen.findByText(/appearance|theme/i)).toBeInTheDocument();
   });
 });
