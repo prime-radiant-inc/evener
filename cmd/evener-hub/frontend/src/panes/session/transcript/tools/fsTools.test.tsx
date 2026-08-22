@@ -106,6 +106,43 @@ test("read_file: plain text output (not the image/document marker) renders exact
   expect(screen.getByText("[not-a-marker] just text")).toBeTruthy();
 });
 
+// --- read_file autoExpand (image reads open by default) --------------------
+// The picture is an image read's whole output, so the row auto-expands to
+// show it without a click. A text or PDF read keeps the usual collapsed
+// default. autoExpand shares the body's own isImageRead detection, so the
+// auto-open and the empty body answer the same question.
+
+test("read_file: autoExpand is defined (parity with edit_file's own undefined check)", () => {
+  const d = toolRendererFor("read_file");
+  expect(d.autoExpand).toBeDefined();
+});
+
+test("read_file: an image read auto-expands - the picture is the call's whole output", () => {
+  const d = toolRendererFor("read_file");
+  expect(
+    d.autoExpand!(item({ toolName: "read_file", output: "[image: png, 178337 bytes, base64 data follows]" })),
+  ).toBe(true);
+});
+
+test("read_file: autoExpand still fires when an older daemon left the base64 payload in output (isImageRead shares the body's own detection)", () => {
+  const d = toolRendererFor("read_file");
+  expect(
+    d.autoExpand!(item({ toolName: "read_file", output: "[image: png, 3 bytes, base64 data follows]\nQUJD" })),
+  ).toBe(true);
+});
+
+test("read_file: a document (PDF) read does NOT auto-expand - no in-transcript preview duplicates its header", () => {
+  const d = toolRendererFor("read_file");
+  expect(
+    d.autoExpand!(item({ toolName: "read_file", output: "[document: pdf, 90210 bytes, base64 data follows]" })),
+  ).toBe(false);
+});
+
+test("read_file: plain text output does NOT auto-expand", () => {
+  const d = toolRendererFor("read_file");
+  expect(d.autoExpand!(item({ toolName: "read_file", output: "just text" }))).toBe(false);
+});
+
 // --- grep / grep_files / grep_search -----------------------------------
 
 test("grep: summary composes pattern, path, and hit count", () => {
