@@ -431,6 +431,8 @@ body {
 }
 
 .evener-list-row__main {
+  display: flex;
+  flex-direction: column;
   flex: 1 1 auto;
   min-width: 0;
 }
@@ -448,6 +450,12 @@ body {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+:root[data-content-size^="accessibility"] .evener-list-row__title,
+:root[data-content-size^="accessibility"] .evener-list-row__subtitle {
+  overflow-wrap: anywhere;
+  white-space: normal;
 }
 
 .evener-form-row {
