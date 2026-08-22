@@ -26,6 +26,20 @@ function tab(name: RegExp) {
   return screen.getByRole("tab", { name });
 }
 
+/** Assert that exactly one tab is selected and report which. */
+function expectExactlyOneSelected(expectedId: string) {
+  const all = screen.getAllByRole("tab");
+  const selected = all.filter(
+    (n) => n.getAttribute("aria-selected") === "true",
+  );
+  expect(selected).toHaveLength(1);
+  expect(selected[0]).toHaveAttribute("id", `${PANEL_ID}-tab-${expectedId}`);
+  for (const t of TABS) {
+    const node = tab(new RegExp(t.label, "i"));
+    expect(node).toHaveAttribute("aria-selected", String(t.id === expectedId));
+  }
+}
+
 /** Controlled wrapper mirroring RootShell: onSelect updates activeId. */
 function ControlledBottomBar({
   initial = "sessions",
@@ -146,7 +160,7 @@ describe("BottomBar — roving tabIndex", () => {
     expect(tab(/settings/i)).toHaveAttribute("tabindex", "-1");
   });
 
-  it("controlled activeId update makes exactly that tab tabbable", () => {
+  it("controlled activeId update makes exactly that tab tabbable with exactly one selected", () => {
     const { rerender } = render(
       <BottomBar
         tabs={TABS}
@@ -156,6 +170,8 @@ describe("BottomBar — roving tabIndex", () => {
       />,
     );
     expect(tab(/sessions/i)).toHaveAttribute("tabindex", "0");
+    expectExactlyOneSelected("sessions");
+
     rerender(
       <BottomBar
         tabs={TABS}
@@ -164,9 +180,14 @@ describe("BottomBar — roving tabIndex", () => {
         panelId={PANEL_ID}
       />,
     );
+    // Exactly the new active tab is tabbable; the prior + other inactive tabs
+    // are removed from the tab order.
     expect(tab(/settings/i)).toHaveAttribute("tabindex", "0");
     expect(tab(/sessions/i)).toHaveAttribute("tabindex", "-1");
     expect(tab(/new/i)).toHaveAttribute("tabindex", "-1");
+    // Exactly one tab is selected (settings); the prior active (sessions)
+    // and the other inactive tab are unselected.
+    expectExactlyOneSelected("settings");
   });
 });
 
@@ -177,25 +198,33 @@ describe("BottomBar — arrow-key roving navigation", () => {
     const sessions = tab(/sessions/i);
     sessions.focus();
     expect(sessions).toHaveFocus();
+
+    // sessions -> new
     fireEvent.keyDown(sessions, { key: "ArrowRight" });
     expect(onSelect).toHaveBeenCalledTimes(1);
-    expect(onSelect).toHaveBeenCalledWith("new");
+    expect(onSelect).toHaveBeenNthCalledWith(1, "new");
     const newTab = tab(/new/i);
     expect(newTab).toHaveFocus();
     expect(newTab).toHaveAttribute("aria-selected", "true");
     expect(newTab).toHaveAttribute("tabindex", "0");
 
-    // Continue right to the last tab.
+    // new -> settings
     fireEvent.keyDown(newTab, { key: "ArrowRight" });
+    expect(onSelect).toHaveBeenCalledTimes(2);
+    expect(onSelect).toHaveBeenNthCalledWith(2, "settings");
     const settings = tab(/settings/i);
     expect(settings).toHaveFocus();
     expect(settings).toHaveAttribute("aria-selected", "true");
+    expect(settings).toHaveAttribute("tabindex", "0");
 
-    // Wrap: ArrowRight on the last tab returns to the first.
+    // Wrap: settings -> sessions
     fireEvent.keyDown(settings, { key: "ArrowRight" });
+    expect(onSelect).toHaveBeenCalledTimes(3);
+    expect(onSelect).toHaveBeenNthCalledWith(3, "sessions");
     const sessionsAgain = tab(/sessions/i);
     expect(sessionsAgain).toHaveFocus();
     expect(sessionsAgain).toHaveAttribute("aria-selected", "true");
+    expect(sessionsAgain).toHaveAttribute("tabindex", "0");
   });
 
   it("ArrowLeft selects and focuses the previous tab, wrapping at the start", () => {
@@ -204,33 +233,85 @@ describe("BottomBar — arrow-key roving navigation", () => {
     const sessions = tab(/sessions/i);
     sessions.focus();
     expect(sessions).toHaveFocus();
-    // Wrap from first to last.
+
+    // Wrap: sessions -> settings
     fireEvent.keyDown(sessions, { key: "ArrowLeft" });
-    expect(onSelect).toHaveBeenCalledWith("settings");
+    expect(onSelect).toHaveBeenCalledTimes(1);
+    expect(onSelect).toHaveBeenNthCalledWith(1, "settings");
     const settings = tab(/settings/i);
     expect(settings).toHaveFocus();
     expect(settings).toHaveAttribute("aria-selected", "true");
+    expect(settings).toHaveAttribute("tabindex", "0");
 
-    // Continue left to the middle tab.
+    // settings -> new
     fireEvent.keyDown(settings, { key: "ArrowLeft" });
-    expect(tab(/new/i)).toHaveFocus();
+    expect(onSelect).toHaveBeenCalledTimes(2);
+    expect(onSelect).toHaveBeenNthCalledWith(2, "new");
+    const newTab = tab(/new/i);
+    expect(newTab).toHaveFocus();
+    expect(newTab).toHaveAttribute("aria-selected", "true");
+    expect(newTab).toHaveAttribute("tabindex", "0");
   });
 
-  it("ArrowDown and ArrowUp also rove and wrap", () => {
+  it("ArrowDown selects and focuses the next tab, wrapping from the last to the first", () => {
     const onSelect = vi.fn();
     render(<ControlledBottomBar onSelectSpy={onSelect} />);
     const sessions = tab(/sessions/i);
     sessions.focus();
-    // ArrowDown moves to the next tab.
+    expect(sessions).toHaveFocus();
+
+    // sessions -> new
     fireEvent.keyDown(sessions, { key: "ArrowDown" });
-    expect(onSelect).toHaveBeenCalledWith("new");
-    expect(tab(/new/i)).toHaveFocus();
-    // ArrowUp moves back to the previous tab.
-    fireEvent.keyDown(tab(/new/i), { key: "ArrowUp" });
-    expect(tab(/sessions/i)).toHaveFocus();
-    // ArrowUp on the first tab wraps to the last tab.
-    fireEvent.keyDown(tab(/sessions/i), { key: "ArrowUp" });
-    expect(tab(/settings/i)).toHaveFocus();
+    expect(onSelect).toHaveBeenCalledTimes(1);
+    expect(onSelect).toHaveBeenNthCalledWith(1, "new");
+    const newTab = tab(/new/i);
+    expect(newTab).toHaveFocus();
+    expect(newTab).toHaveAttribute("aria-selected", "true");
+    expect(newTab).toHaveAttribute("tabindex", "0");
+
+    // new -> settings
+    fireEvent.keyDown(newTab, { key: "ArrowDown" });
+    expect(onSelect).toHaveBeenCalledTimes(2);
+    expect(onSelect).toHaveBeenNthCalledWith(2, "settings");
+    const settings = tab(/settings/i);
+    expect(settings).toHaveFocus();
+    expect(settings).toHaveAttribute("aria-selected", "true");
+    expect(settings).toHaveAttribute("tabindex", "0");
+
+    // Wrap: settings (last) -> sessions (first) — proves ArrowDown wraps last→first.
+    fireEvent.keyDown(settings, { key: "ArrowDown" });
+    expect(onSelect).toHaveBeenCalledTimes(3);
+    expect(onSelect).toHaveBeenNthCalledWith(3, "sessions");
+    const sessionsAgain = tab(/sessions/i);
+    expect(sessionsAgain).toHaveFocus();
+    expect(sessionsAgain).toHaveAttribute("aria-selected", "true");
+    expect(sessionsAgain).toHaveAttribute("tabindex", "0");
+  });
+
+  it("ArrowUp selects and focuses the previous tab, wrapping from the first to the last", () => {
+    const onSelect = vi.fn();
+    render(<ControlledBottomBar onSelectSpy={onSelect} />);
+    const sessions = tab(/sessions/i);
+    sessions.focus();
+    expect(sessions).toHaveFocus();
+
+    // Wrap: sessions (first) -> settings (last).
+    fireEvent.keyDown(sessions, { key: "ArrowUp" });
+    expect(onSelect).toHaveBeenCalledTimes(1);
+    expect(onSelect).toHaveBeenNthCalledWith(1, "settings");
+    const settings = tab(/settings/i);
+    expect(settings).toHaveFocus();
+    expect(settings).toHaveAttribute("aria-selected", "true");
+    expect(settings).toHaveAttribute("tabindex", "0");
+
+    // settings -> new
+    fireEvent.keyDown(settings, { key: "ArrowUp" });
+    expect(onSelect).toHaveBeenCalledTimes(2);
+    expect(onSelect).toHaveBeenNthCalledWith(2, "new");
+    const newTab = tab(/new/i);
+    expect(newTab).toHaveFocus();
+    expect(newTab).toHaveAttribute("aria-selected", "true");
+    expect(newTab).toHaveAttribute("tabindex", "0");
   });
 });
 
@@ -242,11 +323,15 @@ describe("BottomBar — Home/End", () => {
     settings.focus();
     expect(settings).toHaveFocus();
     fireEvent.keyDown(settings, { key: "Home" });
-    expect(onSelect).toHaveBeenCalledWith("sessions");
+    expect(onSelect).toHaveBeenCalledTimes(1);
+    expect(onSelect).toHaveBeenNthCalledWith(1, "sessions");
     const sessions = tab(/sessions/i);
     expect(sessions).toHaveFocus();
     expect(sessions).toHaveAttribute("aria-selected", "true");
     expect(sessions).toHaveAttribute("tabindex", "0");
+    // The previously active tab is no longer tabbable or selected.
+    expect(tab(/settings/i)).toHaveAttribute("tabindex", "-1");
+    expect(tab(/settings/i)).toHaveAttribute("aria-selected", "false");
   });
 
   it("End selects and focuses the last tab", () => {
@@ -256,11 +341,15 @@ describe("BottomBar — Home/End", () => {
     sessions.focus();
     expect(sessions).toHaveFocus();
     fireEvent.keyDown(sessions, { key: "End" });
-    expect(onSelect).toHaveBeenCalledWith("settings");
+    expect(onSelect).toHaveBeenCalledTimes(1);
+    expect(onSelect).toHaveBeenNthCalledWith(1, "settings");
     const settings = tab(/settings/i);
     expect(settings).toHaveFocus();
     expect(settings).toHaveAttribute("aria-selected", "true");
     expect(settings).toHaveAttribute("tabindex", "0");
+    // The previously active tab is no longer tabbable or selected.
+    expect(tab(/sessions/i)).toHaveAttribute("tabindex", "-1");
+    expect(tab(/sessions/i)).toHaveAttribute("aria-selected", "false");
   });
 });
 
