@@ -1,19 +1,39 @@
 # Evener Hub
 
-`evener-hub` is the browser and AppWire orchestrator for `evener serve` daemons.
-Run it as the only process your browser and `evener-tui` talk to; Hub launches
-Evener daemons, watches their rendezvous files, indexes saved sessions, and can
-connect to or launch Codex app-server sources.
+`evener-hub` is Evener's primary interface. It serves the web UI where you
+start sessions, watch the agent work, and steer it across many concurrent
+sessions; the `evener-tui` terminal dashboard talks to the same API. The hub
+launches and supervises `evener serve` daemons, indexes saved sessions for
+search, and connects to or launches Codex app-server sources.
 
-This README is the production-style local runbook. For non-local hosts, see
+**First time here?** [docs/getting-started.md](../../docs/getting-started.md)
+walks from install to your first session. This README is the production-style
+local runbook: config files, credentials, supervised operation, and smoke
+checks. For non-local hosts, see
 [`docs/evener-hub-remote-operations.md`](../../docs/evener-hub-remote-operations.md).
 
 ## Trust Boundary
 
-Hub has same-origin checks and a strict CSP, and Hub-spawned daemons use an
-internal bearer token. Hub does not currently provide user authentication at the
-Hub edge. Keep it on loopback unless it is behind an SSH tunnel, VPN/private
-network firewall, or authenticated reverse proxy.
+The hub requires a capability token on every route except `/auth`,
+`/api/health`, and the PWA icons. At startup it generates or loads a 256-bit
+token at `${XDG_STATE_HOME:-~/.local/state}/evener/auth-token` (mode 0600)
+and logs an authorization URL:
+
+```
+[hub] auth URL (visit once per browser): http://127.0.0.1:9180/auth?token=...
+```
+
+A browser authorizes by visiting that URL once; the hub sets a long-lived
+`SameSite=Lax` cookie and slides its expiry forward on each visit. Scripted
+clients pass the token as `Authorization: Bearer`. Treat the token as a
+credential: anyone holding it has full hub access.
+
+Hub-spawned daemons authenticate to the hub with a separate per-hub bearer
+token recorded in their rendezvous file, and the hub serves a strict content
+security policy. The hub binds to loopback by default. When you expose it
+further, put it behind an SSH tunnel, VPN or private-network firewall, or an
+authenticated reverse proxy — the token is a bearer capability, not a
+per-user login system.
 
 ## Build And Install
 
@@ -23,11 +43,12 @@ From the repo root:
 make install
 ```
 
-This builds `evener`, `evener-hub`, `evener-tui`, and `evener-doctor`, installs the
-binaries under `~/.local/share/evener/bin`, and symlinks them into
-`~/.local/bin`. Hub, TUI, and doctor workflows resolve sibling binaries through
-the symlink targets, so the installed commands find each other without extra
-flags. `make install-home` is an alias for the same layout.
+This builds `evener`, `evener-hub`, `evener-tui`, `evener-doctor`, and
+`evener-migrate`, installs the binaries under `~/.local/share/evener/bin`, and
+symlinks them into `~/.local/bin`. Hub, TUI, and doctor workflows resolve
+sibling binaries through the symlink targets, so the installed commands find
+each other without extra flags. `make install-home` is an alias for the same
+layout.
 
 For a system-style install under `/usr/local`:
 
@@ -38,15 +59,21 @@ sudo make install-system
 ## Runtime Directories
 
 The installer does not create runtime/config directories. Evener creates them on
-first use.
+first use. Paths below use the XDG defaults; `${XDG_STATE_HOME:-...}` and
+`${XDG_CONFIG_HOME:-...}` forms apply throughout.
 
-- `~/.local/state/evener/run` is runtime rendezvous state (and per-daemon
-  logs) for live daemons.
-- `~/.local/state/evener/projects/*` is durable per-project Evener state and saved
-  transcripts.
-- `~/.local/state/evener/index.db` is Hub's SQLite search index.
-- `~/.config/evener/skills` and `~/.config/evener/plugins` are user extension
-  roots created by Evener startup.
+- `${XDG_STATE_HOME:-~/.local/state}/evener/run` holds each live daemon's
+  rendezvous file — a small JSON document, named by PID, that tells the hub
+  how to reach and authenticate to that daemon — plus per-daemon logs.
+- `${XDG_STATE_HOME:-~/.local/state}/evener/projects/*` is durable per-project
+  Evener state and saved transcripts.
+- `${XDG_STATE_HOME:-~/.local/state}/evener/index.db` is Hub's SQLite search
+  index.
+- `${XDG_STATE_HOME:-~/.local/state}/evener/auth-token` is the hub's
+  capability token (see Trust Boundary).
+- `${XDG_CONFIG_HOME:-~/.config}/evener/skills` and
+  `${XDG_CONFIG_HOME:-~/.config}/evener/plugins` are user extension roots
+  created by Evener startup.
 
 Those extension roots are not active just because they exist. Add standalone
 skill paths to `skills_dirs` and plugin roots to `plugin_dirs` in the layered
@@ -54,16 +81,18 @@ launch config, or pass the equivalent CLI flags for a single launch.
 
 ## Hub Config
 
-`~/.config/evener/hub.toml` is optional. If it is absent, Hub uses defaults:
-`hub_state_root = ~/.local/state/evener`, `run_dir` from the rendezvous
-default, `state_glob = ~/.local/state/evener/projects/*`, and `past_index_db
-= ~/.local/state/evener/index.db`. Missing config does not create a default
-launch stanza; launch defaults still come from the layered launch files
-described below.
+`${XDG_CONFIG_HOME:-~/.config}/evener/hub.toml` is optional. If it is absent,
+Hub uses defaults: `hub_state_root =
+${XDG_STATE_HOME:-~/.local/state}/evener`, `run_dir` = the rendezvous
+directory described above, `state_glob` =
+`${XDG_STATE_HOME:-~/.local/state}/evener/projects/*`, and `past_index_db` =
+`${XDG_STATE_HOME:-~/.local/state}/evener/index.db`. Missing config does not
+create a default launch stanza; launch defaults still come from the layered
+launch files described below.
 
-Create `~/.config/evener/hub.toml` when you need to override those paths or
-configure Codex app-server sources/launches. This command expands `$HOME`
-before writing the file; TOML itself does not expand shell variables.
+Create `hub.toml` when you need to override those paths or the listen
+address. This command expands `$HOME` before writing the file; TOML itself
+does not expand shell variables.
 
 ```bash
 mkdir -p "$HOME/.config/evener"
@@ -76,23 +105,27 @@ past_index_db = "$HOME/.local/state/evener/index.db"
 spawn_timeout = "30s"
 past_index_rebuild_interval = "60s"
 past_results_per_page = 50
-
-[[codex_launches]]
-id = "codex-local"
-binary = "codex"
-working_dir = "$HOME/Documents/GitHub"
-listen = "ws://127.0.0.1:0"
-timeout = "30s"
-
-[codex_launches.env]
-CODEX_HOME = "$HOME/.codex"
 EOF
 
 chmod 600 "$HOME/.config/evener/hub.toml"
 ```
 
-Use `codex_launches` when Hub should own the Codex app-server lifecycle. Use
-`codex_sources` instead when a Codex app-server is already running:
+Codex app-server integration is a separate, optional block. Use
+`codex_launches` when Hub should own the Codex app-server lifecycle:
+
+```toml
+[[codex_launches]]
+id = "codex-local"
+binary = "codex"
+working_dir = "/path/to/projects"
+listen = "ws://127.0.0.1:0"
+timeout = "30s"
+
+[codex_launches.env]
+CODEX_HOME = "/path/to/.codex"
+```
+
+Use `codex_sources` instead when a Codex app-server is already running:
 
 ```toml
 [[codex_sources]]
@@ -105,9 +138,9 @@ bearer_token_file = "/run/secrets/codex-token"
 
 Hub-spawned `evener serve` daemons get their flags from a layered config:
 
-- **Global**: `~/.config/evener/launch.toml` — hub-wide defaults (model,
-  agent, reasoning effort, skills/plugin dirs, MCP servers, etc.). Editable
-  from the Hub UI's Launch settings tab or by hand.
+- **Global**: `${XDG_CONFIG_HOME:-~/.config}/evener/launch.toml` — hub-wide
+  defaults (model, agent, reasoning effort, skills/plugin dirs, MCP servers,
+  etc.). Editable from the Hub UI's Launch settings tab or by hand.
 - **In-repo**: `<cwd>/.evener/launch.toml` — per-project config shipped in
   the working directory. Trust-on-first-use: the Hub UI prompts to review
   and approve before applying. Untrusted in-repo files are skipped.
@@ -121,8 +154,10 @@ Hub-spawned `evener serve` daemons get their flags from a layered config:
 
 Layers merge in order: global → in-repo → project → per-launch.
 - **Scalars** (model, reasoning_effort, etc.): most-specific value wins.
-- **Lists** (skills_dirs, plugin_dirs, mcps, mcp_configs,
-  system_prompt_append): concatenate in layer order; no dedup.
+- **Lists** (skills_dirs, plugin_dirs, mcps, mcp_configs): concatenate in
+  layer order; no dedup. Two exceptions replace instead of concatenating:
+  `system_prompt_append` collapses to its first file-mode entry, and
+  `model_fallbacks` takes the most-specific value.
 - **Env map** (`[env]`): merge by key; most-specific wins per key.
 
 See `docs/superpowers/specs/2026-05-16-hub-evener-launch-config-design.md`
@@ -136,8 +171,8 @@ for the full schema and semantics.
 > [`docs/llm-provider-config-and-launch.md`](../../docs/llm-provider-config-and-launch.md)
 > (credentials, OAuth, and the hub launch/spawn model).
 
-Hub-managed at `~/.config/evener/credentials.toml` (chmod 600). The file's
-format is a small TOML document:
+Hub-managed at `${XDG_CONFIG_HOME:-~/.config}/evener/credentials.toml`
+(chmod 600). The file's format is a small TOML document:
 
 ```toml
 schema = 1
@@ -163,19 +198,16 @@ who prefer external secret management.
 OpenAI supports both an API key (stored in `credentials.toml` like any other
 provider, or via `OPENAI_API_KEY`) and OAuth (sign in via
 `evener/auth/login/start`; state stored in
-`~/.local/state/evener/auth/openai.json`).
+`${XDG_STATE_HOME:-~/.local/state}/evener/auth/openai.json`). An explicit
+OAuth sign-in wins over the file key, which in turn shadows the environment
+variable.
 
-The effective credential is resolved by precedence:
-
-1. **OAuth** record (`openai.json`), if signed in;
-2. **file** key (`credentials.toml`);
-3. **`OPENAI_API_KEY`** env var.
-
-The file layer shadows env, like other providers; an explicit OAuth sign-in
-wins over both. The two routes hit **different backends**: OAuth routes to the
+The two routes hit **different backends**: OAuth routes to the
 ChatGPT/Codex backend (`OPENAI_CHATGPT_BASE_URL`), while an API key routes to
 the standard OpenAI API backend (`OPENAI_BASE_URL`). They are not
-interchangeable credentials for one endpoint.
+interchangeable credentials for one endpoint. See
+[`docs/llm-provider-config-and-launch.md`](../../docs/llm-provider-config-and-launch.md)
+for the full resolution detail.
 
 ## Start Hub
 
@@ -186,27 +218,33 @@ mkdir -p "$HOME/.local/state/evener/log"
 "$HOME/.local/bin/evener-hub" 2>&1 | tee -a "$HOME/.local/state/evener/log/hub.log"
 ```
 
+The hub listens on `127.0.0.1:9180` unless `addr` in `hub.toml` says
+otherwise, and logs the authorization URL described under Trust Boundary on
+every start.
+
 If you manage credentials via environment variables rather than
-`~/.config/evener/credentials.toml`, source your env file before starting:
+`${XDG_CONFIG_HOME:-~/.config}/evener/credentials.toml`, source your env file
+before starting:
 
 ```bash
 set -a; source "$HOME/.config/evener/hub.env"; set +a
 ```
 
 Production deployments should run the same command under a supervisor and
-capture stdout/stderr. Hub logs config errors, past-index rebuild errors, roster
-watch errors, and child-process launch diagnostics there.
+capture stdout/stderr. Hub logs config errors, past-index rebuild errors,
+roster watch errors, and child-process launch diagnostics there. On macOS,
+[`scripts/ops/deploy-hub.sh`](../../scripts/ops/deploy-hub.sh) builds this
+checkout's `evener-hub` and restarts its launchd job without stopping the old
+process until the new one is built and healthy; see
+`scripts/ops/deploy-hub.sh --help`.
 
-Only one Hub process can run per host user because Hub takes
-`~/.local/state/evener/hub.lock`.
+Hub takes an `flock` on `hub.lock` in its state root, so one hub process runs
+per `hub_state_root` — one per user under the default layout.
 
 ## Browser And TUI
 
-Browser:
-
-```bash
-open http://127.0.0.1:9180
-```
+Browser: visit the authorization URL logged at startup. It sets the auth
+cookie; after that, plain `http://127.0.0.1:9180` works in that browser.
 
 TUI:
 
@@ -221,24 +259,27 @@ separate local Hub with default config.
 
 ## Smoke Checks
 
-Basic health:
+The smoke checks use `jq` and `python3`; install both first. Basic health
+(this route is auth-exempt):
 
 ```bash
 curl -fsS http://127.0.0.1:9180/api/health | jq .
 ```
 
-Check the spawn-scoped Evener model list:
+Other API routes need the auth token. Check the spawn-scoped Evener model
+list:
 
 ```bash
 curl -fsS \
+  -H "Authorization: Bearer $(cat "$HOME/.local/state/evener/auth-token")" \
   "http://127.0.0.1:9180/api/models?cwd=$(python3 -c 'import urllib.parse,sys; print(urllib.parse.quote(sys.argv[1]))' /path/to/project)" \
   | jq .
 ```
 
 Manual verification:
 
-1. Open `/new` in the browser.
-2. Pick a working directory and spawn a Evener session.
+1. Authorize the browser via the startup auth URL, then open `/new`.
+2. Pick a working directory and spawn an Evener session.
 3. Confirm the transcript streams live before refresh.
 4. Refresh and confirm the transcript replays from saved state.
 5. Open `evener-tui --hub-addr http://127.0.0.1:9180 --no-auto-start-hub` and
@@ -256,5 +297,5 @@ Manual verification:
   restart sessions to pick up a new binary.
 - `run_dir` is runtime state and can be pruned after failed probes. Saved
   transcripts live under the state directories matched by `state_glob`.
-- Keep `hub.toml`, env files, run directories, and state directories private to
-  the service user.
+- Keep `hub.toml`, env files, the auth token, run directories, and state
+  directories private to the service user.
