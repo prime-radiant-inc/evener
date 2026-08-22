@@ -1,0 +1,381 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Idea 2 — Mission Timeline · evener session 0J8XKM</title>
+<style>
+  :root{
+    --bg:#0e1116; --bg2:#12161d; --panel:#151a21; --panel2:#1a2029;
+    --edge:#242c37; --edge2:#2e3846;
+    --ink:#dbe2ea; --ink-mid:#9aa7b5; --ink-low:#64707e;
+    --blue:#5b9dff; --teal:#39c2c9; --green:#3fb97a; --amber:#e8b13f;
+    --red:#e5534b; --violet:#9a7bff; --pink:#e57bb0;
+    --mono:'IBM Plex Mono',ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
+    --sans:'IBM Plex Sans',-apple-system,'Segoe UI',Helvetica,Arial,sans-serif;
+  }
+  *{box-sizing:border-box;margin:0;padding:0}
+  html,body{height:100%}
+  body{background:var(--bg);color:var(--ink);font:13px/1.5 var(--sans);overflow:hidden;display:flex;flex-direction:column}
+  .topbar{display:flex;align-items:center;gap:16px;padding:10px 18px;border-bottom:1px solid var(--edge);background:var(--bg2)}
+  .mark{font:600 14px var(--sans)} .mark b{color:var(--blue)}
+  .sess{font:12px var(--mono);color:var(--ink-mid)}
+  .goal{color:var(--ink-mid);font-size:12.5px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:480px}
+  .spacer{flex:1}
+  .tag{font:600 11px var(--mono);color:#0b0e12;background:var(--teal);padding:3px 10px;border-radius:999px;letter-spacing:.04em}
+  .kpis{display:flex;gap:8px;padding:8px 18px;border-bottom:1px solid var(--edge);flex-wrap:wrap}
+  .kpi{font:12px var(--mono);color:var(--ink-mid);background:var(--panel);border:1px solid var(--edge);border-radius:6px;padding:3px 10px}
+  .kpi b{color:var(--ink);font-weight:600}
+  .kpi.warn b{color:var(--amber)} .kpi.bad b{color:var(--red)} .kpi.vio b{color:var(--violet)}
+  .main{flex:1;display:flex;min-height:0}
+  .stage{flex:1;display:flex;flex-direction:column;min-width:0;padding:10px 14px 6px}
+  .toolbar{display:flex;gap:8px;align-items:center;padding:0 2px 8px}
+  .btn{font:11px var(--mono);color:var(--ink-mid);background:var(--panel);border:1px solid var(--edge2);border-radius:6px;padding:3px 10px;cursor:pointer}
+  .btn:hover{color:var(--ink);border-color:var(--ink-low)}
+  .hint{font:11px var(--sans);color:var(--ink-low)}
+  .tlwrap{flex:1;position:relative;min-height:0}
+  svg#tl{width:100%;height:100%;display:block}
+  .laneNames{position:absolute;left:0;top:0;bottom:0;width:118px;pointer-events:none}
+  /* inspector */
+  .insp{width:330px;min-width:330px;border-left:1px solid var(--edge);background:var(--bg2);padding:14px 16px;overflow-y:auto}
+  .insp h3{font:600 11px var(--sans);color:var(--ink-low);letter-spacing:.08em;text-transform:uppercase;margin-bottom:10px}
+  .card{background:var(--panel);border:1px solid var(--edge);border-radius:8px;padding:12px 14px;margin-bottom:10px}
+  .card .t{font:600 13px var(--sans);color:var(--ink);margin-bottom:4px}
+  .card .row{display:flex;justify-content:space-between;font:11px var(--mono);color:var(--ink-mid);padding:2px 0}
+  .card .row b{color:var(--ink);font-weight:600}
+  .card p{font:12px var(--sans);color:var(--ink-mid);margin-top:6px}
+  .card.vio{border-color:#3a3160}.card.red{border-color:#5a2a26}.card.grn{border-color:#24503b}.card.amb{border-color:#57431c}
+  .barlist{margin-top:8px}
+  .barlist .bl{display:flex;align-items:center;gap:8px;font:10.5px var(--mono);color:var(--ink-mid);margin:3px 0}
+  .barlist .track{flex:1;height:8px;background:#10141a;border-radius:4px;overflow:hidden}
+  .barlist .fill{height:100%;background:var(--teal);border-radius:4px}
+  #tip{position:fixed;z-index:50;pointer-events:none;background:#0b0e12;border:1px solid var(--edge2);border-radius:6px;padding:8px 11px;font:11px var(--mono);color:var(--ink);display:none;max-width:340px;box-shadow:0 6px 24px rgba(0,0,0,.5)}
+  #tip .th{color:var(--ink-mid);font-weight:600;margin-bottom:2px}
+  #tip .tl{color:var(--ink-low)} #tip .tl b{color:var(--ink-mid);font-weight:600}
+  .caption{height:34px;display:flex;align-items:center;gap:18px;padding:0 18px;border-top:1px solid var(--edge);background:var(--bg2);font:11px var(--sans);color:var(--ink-low)}
+  .caption b{color:var(--ink-mid);font-weight:600}
+</style>
+</head>
+<body>
+<div class="topbar">
+  <div class="mark">◆ <b>evener</b> hub</div>
+  <div class="sess">session 0J8XKM · branch main · model k3</div>
+  <div class="goal">goal: migrate jobstore to SQLite, repair the watcher runaway loop, land regression tests</div>
+  <div class="spacer"></div>
+  <div class="tag">IDEA 2 · MISSION TIMELINE</div>
+</div>
+<div class="kpis" id="kpis"></div>
+<div class="main">
+  <div class="stage">
+    <div class="toolbar">
+      <button class="btn" id="reset">⟲ full session</button>
+      <button class="btn" id="zoomErr">jump: breakage 2:55–3:35</button>
+      <button class="btn" id="zoomDlg">jump: dlg_02 migration</button>
+      <span class="hint">drag on the ruler to zoom · hover anything for detail · click to pin into inspector</span>
+      <div class="spacer"></div>
+      <span class="hint" id="domainLbl"></span>
+    </div>
+    <div class="tlwrap"><svg id="tl"></svg></div>
+  </div>
+  <div class="insp" id="insp"></div>
+</div>
+<div id="tip"></div>
+<div class="caption">
+  <span><b>Question answered:</b> “Who was active when, what ran in parallel, and what did waiting / context pressure look like over 6h42m?”</span>
+  <span>time-proportional · stalls and runaways show as literal width</span>
+</div>
+<script>
+/* ============ synthetic session model (same session as idea 1) ============ */
+function mulberry32(a){return function(){a|=0;a=a+0x6D2B79F5|0;var t=Math.imul(a^a>>>15,1|a);t=t+Math.imul(t^t>>>7,61|t)^t;return((t^t>>>14)>>>0)/4294967296}}
+const R=mulberry32(20260821);
+const ri=(a,b)=>a+Math.floor(R()*(b-a+1));
+const N=278, COMPACTIONS=[88,191,249], MODEL_SWITCH=150, TURN_FAILURE=182;
+const DELEGATES=[
+ {id:"dlg_01",name:"survey watcher code",depth:0,s:22,e:39},
+ {id:"dlg_02",name:"migrate schema to SQLite",depth:0,s:96,e:158},
+ {id:"dlg_02a",name:"repair migration test",depth:1,s:131,e:146},
+ {id:"dlg_03",name:"audit execenv sandbox",depth:0,s:160,e:196},
+ {id:"dlg_04",name:"write regression tests",depth:0,s:236,e:268}];
+const JOBS=[
+ {id:"job_5",cmd:"rg -n 'Notify' agent/",s:55,e:56,status:"ok",mode:"bg"},
+ {id:"job_1",cmd:"go test ./agent/... -count=1",s:100,e:118,status:"ok",mode:"bg"},
+ {id:"job_2",cmd:"go test -fuzz=FuzzWatch -fuzztime=30m",s:162,e:205,status:"ok",mode:"bg"},
+ {id:"job_4",cmd:"go build ./...",s:178,e:181,status:"failed",mode:"bg",exit:1},
+ {id:"job_3",cmd:"make generate",s:210,e:214,status:"ok",mode:"detached"},
+ {id:"job_6",cmd:"go vet ./...",s:250,e:256,status:"ok",mode:"bg"}];
+const WATCHES=[
+ {id:"watch_1",name:"jobstore/*.go → rerun tests",fires:[105,133,161]},
+ {id:"watch_2",name:"tail fuzz log for FAIL",runaway:true,fires:[186,186,187,187,187,187,188,188,188,188,188,189,189,189,189,189,189,189,190,190,190,190,190,190,190,190,190,191]}];
+const ERR_TURNS=[178,179,180];
+const USERS={0:"Migrate jobstore to SQLite + fix watcher runaway",40:"Schema OK — implement behind a flag",120:"Steering: keep legacy JSON path",205:"Fuzz found a crash — dig in",260:"Wrap up: changelog + PR summary"};
+const STEERS={95:"Prefer apply_patch",176:"Re-read the file first",232:"Stop the noisy watch"};
+const PHASES=[[0,21,"intake & plan"],[22,39,"delegate survey"],[40,87,"implement sqlite jobstore"],[88,95,"replan"],[96,158,"delegate migration"],[159,177,"sandbox audit"],[178,196,"breakage & watch runaway"],[197,235,"fix & verify"],[236,268,"regression tests"],[269,277,"wrap-up"]];
+function phaseOf(i){for(const[a,b,n]of PHASES)if(i>=a&&i<=b)return n;return"work"}
+const turns=[];
+for(let i=0;i<N;i++){
+  let kind="ASSISTANT";
+  if(USERS[i])kind="USER_INPUT";else if(STEERS[i])kind="STEERING";
+  if(COMPACTIONS.includes(i))kind="CHECKPOINT";
+  if(i===MODEL_SWITCH)kind="MODEL_SWITCH";
+  if(i===TURN_FAILURE)kind="TURN_FAILURE";
+  if(i%37===9)kind="ENVIRONMENT"; if(i%41===13)kind="HOOK_COMPLETED";
+  if(i===212||i===271)kind="ATTENTION_RESOLUTION";
+  let tools=0;
+  if(kind==="ASSISTANT"){const ph=phaseOf(i);const heavy=/implement|migration|fix|regression/.test(ph);tools=heavy?ri(3,13):ri(1,6)}
+  const tok=kind==="CHECKPOINT"?ri(18000,26000):(kind==="ASSISTANT"?700+tools*ri(380,720):ri(200,1800));
+  const dur=kind==="ASSISTANT"?ri(4,40)+tools*ri(1,4):ri(2,12);
+  turns.push({i,kind,tools,tok,dur});
+}
+const TARGET=6*3600+42*60;
+const sum=turns.reduce((a,t)=>a+t.dur,0);
+let clock=0;turns.forEach(t=>{t.start=clock;t.dur=t.dur/sum*TARGET;clock+=t.dur;t.end=clock});
+/* context-pressure model: sawtooth with folds */
+let ctx=30000;turns.forEach(t=>{t.ctx0=ctx;ctx=Math.min(196000,ctx+t.tok*.9);t.ctx1=ctx;if(t.kind==="CHECKPOINT"){ctx=24000;t.ctxAfter=ctx}});
+const totalTools=turns.reduce((a,t)=>a+t.tools,0);
+const totalTok=turns.reduce((a,t)=>a+t.tok,0);
+const fmtClock=s=>{const h=Math.floor(s/3600),m=Math.floor(s/60)-h*60;return h+":"+String(m).padStart(2,"0")};
+const fmtK=n=>n>=1e6?(n/1e6).toFixed(2)+"M":n>=1000?Math.round(n/1000)+"k":n;
+const fmtInt=n=>Math.round(n).toLocaleString();
+function clipTxt(s,w){s=String(s);return s.length>w?s.slice(0,Math.max(1,w-1))+'…':s}
+document.getElementById('kpis').innerHTML=[
+ `<span class="kpi"><b>${N}</b> turns</span>`,`<span class="kpi"><b>${totalTools.toLocaleString()}</b> tool calls</span>`,
+ `<span class="kpi vio"><b>5</b> delegates · 3 levels</span>`,`<span class="kpi"><b>6</b> jobs</span>`,
+ `<span class="kpi warn"><b>2</b> watches · 1 runaway</span>`,`<span class="kpi vio"><b>3</b> compactions</span>`,
+ `<span class="kpi bad"><b>4</b> errors · 1 failure</span>`,`<span class="kpi"><b>${fmtK(totalTok)}</b> tokens</span>`,
+ `<span class="kpi"><b>6h 42m</b> wall clock</span>`].join('');
+/* ============ timeline ============ */
+const NS='http://www.w3.org/2000/svg';
+const svg=document.getElementById('tl');
+const tip=document.getElementById('tip');
+const LABELW=118, RULERH=26, CTXH=64;
+let dom=[0,TARGET];
+function el(n,at,parent){const e=document.createElementNS(NS,n);for(const k in at)e.setAttribute(k,at[k]);(parent||svg).appendChild(e);return e}
+const KC={USER_INPUT:'#5b9dff',STEERING:'#e8b13f',ASSISTANT:'#39424e',CHECKPOINT:'#9a7bff',MODEL_SWITCH:'#9a7bff',TURN_FAILURE:'#e5534b',ENVIRONMENT:'#2a3a3f',HOOK_COMPLETED:'#4a3a52',ATTENTION_RESOLUTION:'#39424e'};
+function render(){
+  svg.innerHTML='';
+  const W=svg.clientWidth,H=svg.clientHeight;
+  if(W<200)return;
+  svg.setAttribute('viewBox',`0 0 ${W} ${H}`);
+  const x0=LABELW,x1=W-8;
+  const X=s=>x0+(s-dom[0])/(dom[1]-dom[0])*(x1-x0);
+  const Y0=RULERH+CTXH; /* lanes start */
+  const lanes=[];
+  lanes.push({id:'ctx',h:0}); /* context band occupies CTXH above lanes */
+  const laneDefs=[
+    {id:'root',label:'ROOT · k3',h:34},
+    ...DELEGATES.map(d=>({id:d.id,label:'  '.repeat(d.depth)+'↳ '+d.id,h:22,depth:d.depth})),
+    ...JOBS.map(j=>({id:j.id,label:j.id,h:18})),
+    ...WATCHES.map(w=>({id:w.id,label:w.id,h:18})),
+  ];
+  let y=Y0+6;
+  const avail=H-Y0-10, sumH=laneDefs.reduce((a,l)=>a+l.h,0);
+  const gap=Math.max(6,(avail-sumH)/laneDefs.length);
+  laneDefs.forEach(l=>{l.y=y;y+=l.h+gap});
+  const botY=y+2;
+  /* ---- ruler ---- */
+  el('rect',{x:0,y:0,width:W,height:RULERH,fill:'#10141a'});
+  const span=dom[1]-dom[0];
+  const step=span>7200?1800:span>2400?600:span>900?300:60;
+  const mstep=step/3;
+  for(let s=Math.floor(dom[0]/mstep)*mstep;s<=dom[1];s+=mstep){
+    const xx=X(s);if(xx<x0-1||xx>x1)continue;
+    const major=Math.abs(s/step-Math.round(s/step))<.01;
+    el('line',{x1:xx,y1:major?8:16,x2:xx,y2:RULERH,stroke:major?'#3a4552':'#242c37','stroke-width':1});
+    if(major){const t=el('text',{x:xx+3,y:13,'font-size':10,fill:'#8b96a3','font-family':'var(--mono)'});t.textContent=fmtClock(s)}
+  }
+  /* brush surface */
+  const brush=el('rect',{x:x0,y:0,width:x1-x0,height:RULERH,fill:'transparent',cursor:'text'});
+  /* ---- context band ---- */
+  el('rect',{x:x0,y:RULERH,width:x1-x0,height:CTXH,fill:'#0f1319',stroke:'#1b222c','stroke-width':1});
+  {const t=el('text',{x:8,y:RULERH+14,'font-size':9,fill:'#64707e','font-family':'var(--mono)'});t.textContent='CONTEXT'}
+   {const t=el('text',{x:8,y:RULERH+26,'font-size':9,fill:'#64707e','font-family':'var(--mono)'});t.textContent='196k'}
+  const pts=turns.map(t=>[X(t.start),RULERH+CTXH-(t.ctx1/200000)*(CTXH-8)-2]);
+  let dstr=`M ${x0} ${RULERH+CTXH} `;
+  turns.forEach((t,i)=>{
+    const xx=X(t.start), yy=RULERH+CTXH-(t.ctx0/200000)*(CTXH-8)-2;
+    dstr+=`L ${xx} ${yy} `;
+    dstr+=`L ${X(t.end)} ${RULERH+CTXH-(t.ctx1/200000)*(CTXH-8)-2} `;
+    if(t.kind==='CHECKPOINT')dstr+=`L ${X(t.end)} ${RULERH+CTXH-(24000/200000)*(CTXH-8)-2} `;
+  });
+  dstr+=`L ${x1} ${RULERH+CTXH} Z`;
+  el('path',{d:dstr,fill:'rgba(91,157,255,.14)',stroke:'#5b9dff','stroke-width':1,'stroke-opacity':.5});
+  /* compaction fault lines across everything */
+  COMPACTIONS.forEach((c,ci)=>{
+    const xx=X(turns[c].start);
+    if(xx<x0||xx>x1)return;
+    el('line',{x1:xx,y1:RULERH,x2:xx,y2:botY,stroke:'#9a7bff','stroke-width':1.6,'stroke-dasharray':'5 3'});
+    const nearR=xx>x1-135;
+    const t=el('text',{x:nearR?xx-4:xx+4,y:RULERH+11+(ci%2)*11,'font-size':9.5,fill:'#b9a5ff','font-family':'var(--mono)','text-anchor':nearR?'end':'start','paint-order':'stroke',stroke:'#0e1116','stroke-width':3});
+    t.textContent=`⛛ fold @${c} · 186k→24k`;
+  });
+  /* ---- lane labels & rows ---- */
+  laneDefs.forEach(l=>{
+    const t=el('text',{x:l.depth?10+l.depth*12:8,y:l.y+l.h/2+3.5,'font-size':10,fill:l.id==='root'?'#9aa7b5':'#64707e','font-family':'var(--mono)'});
+    t.textContent=l.label;
+    el('rect',{x:x0,y:l.y,width:x1-x0,height:l.h,fill:l.id==='root'?'#10141a':'#0f1319',stroke:'#1b222c','stroke-width':1,rx:3});
+  });
+  /* root turns */
+  const root=laneDefs[0];
+  const minW=.8;
+  turns.forEach(t=>{
+    const xx=X(t.start),ww=Math.max(X(t.end)-xx,minW);
+    if(xx>x1||xx+ww<x0)return;
+    const r=el('rect',{x:xx,y:root.y+3,width:ww,height:root.h-6,fill:KC[t.kind],rx:1,'data-i':t.i,class:'hit'});
+    r.addEventListener('mousemove',ev=>showTip(ev,turnTip(t)));
+    r.addEventListener('mouseleave',hideTip);
+    r.addEventListener('click',()=>pinTurn(t));
+  });
+  /* delegates */
+  DELEGATES.forEach(d=>{
+    const l=laneDefs.find(x=>x.id===d.id);
+    const a=turns[d.s].start,b=turns[d.e].end;
+    const xx=X(a),ww=Math.max(X(b)-xx,3);
+    const col=['#8f74ff','#7b5fe8','#b39dff','#6a4fd0','#9a7bff'][d.depth%5];
+    const r=el('rect',{x:xx,y:l.y+2,width:ww,height:l.h-4,fill:col+'30',stroke:col,'stroke-width':1.2,rx:3,class:'hit'});
+    el('path',{d:`M ${xx} ${l.y+2} l 5 4 l -5 4 z`,fill:col});
+    el('rect',{x:xx+ww-5,y:l.y+l.h-7,width:5,height:4,fill:col});
+    if(ww>44){const t=el('text',{x:xx+8,y:l.y+l.h/2+3,'font-size':9,fill:col,'font-family':'var(--mono)'});t.textContent=clipTxt(d.name,ww/6.2)}
+    if(d.depth){/* tree connector to parent span */
+      const p=DELEGATES.find(x=>x.id==='dlg_02');
+      const pl=laneDefs.find(x=>x.id===p.id);
+      el('path',{d:`M ${xx} ${l.y} C ${xx-14} ${l.y-6}, ${xx-14} ${pl.y+pl.h}, ${X(turns[d.s].start)-2} ${pl.y+pl.h}`,fill:'none',stroke:col,'stroke-width':1,'stroke-dasharray':'2 2'});
+    }
+    r.addEventListener('mousemove',ev=>showTip(ev,`<div class="th">${d.id} · depth ${d.depth+1}</div><div class="tl">${d.name}</div><div class="tl">turns ${d.s}–${d.e} · ${fmtClock(a)}–${fmtClock(b)} · ${Math.round((b-a)/60)}m</div>`));
+    r.addEventListener('mouseleave',hideTip);
+    r.addEventListener('click',()=>pinDelegate(d));
+  });
+  /* jobs */
+  JOBS.forEach(j=>{
+    const l=laneDefs.find(x=>x.id===j.id);
+    const a=turns[j.s].start,b=turns[j.e].end;
+    const xx=X(a),ww=Math.max(X(b)-xx,2.5);
+    const col=j.status==='failed'?'#e5534b':'#3fb97a';
+    const r=el('rect',{x:xx,y:l.y+2,width:ww,height:l.h-4,fill:col+'2a',stroke:col,'stroke-width':1,'stroke-dasharray':j.mode==='detached'?'4 2':'none',rx:2,class:'hit'});
+    if(ww>44){const t=el('text',{x:xx+5,y:l.y+l.h/2+3,'font-size':8.5,fill:col,'font-family':'var(--mono)'});t.textContent=(j.status==='failed'?'✕ exit 1 · ':'')+j.cmd.slice(0,Math.floor(ww/6))}
+    r.addEventListener('mousemove',ev=>showTip(ev,`<div class="th">${j.id} · ${j.mode} · ${j.status.toUpperCase()}</div><div class="tl">${j.cmd}</div><div class="tl">${fmtClock(a)}–${fmtClock(b)} · ${Math.round((b-a)/60)}m · exit ${j.exit||0}</div>`));
+    r.addEventListener('mouseleave',hideTip);
+    r.addEventListener('click',()=>pinJob(j));
+  });
+  /* watches */
+  WATCHES.forEach(w=>{
+    const l=laneDefs.find(x=>x.id===w.id);
+    w.fires.forEach(f=>{
+      const xx=X(turns[f].start);
+      el('rect',{x:xx,y:l.y+3,width:Math.max(1.4,(x1-x0)/(dom[1]-dom[0])*20),height:l.h-6,fill:'#e8b13f',opacity:w.runaway?.95:.75});
+    });
+    if(w.runaway){
+      const a=X(turns[w.fires[0]].start),b=X(turns[w.fires[w.fires.length-1]].end);
+      el('rect',{x:a-2,y:l.y,width:Math.max(b-a+4,8),height:l.h,fill:'none',stroke:'#e8b13f','stroke-width':1.2,rx:3});
+      if(b-a>40){const t=el('text',{x:a+4,y:l.y-3,'font-size':9,fill:'#e8b13f','font-family':'var(--mono)'});t.textContent='RUNAWAY · 47 fires/4m → stopped by steering'}
+    }
+    const r=el('rect',{x:x0,y:l.y,width:x1-x0,height:l.h,fill:'transparent',class:'hit'});
+    r.addEventListener('mousemove',ev=>showTip(ev,`<div class="th">${w.id}${w.runaway?' · RUNAWAY':''}</div><div class="tl">${w.name}</div><div class="tl">${w.fires.length} fires${w.runaway?' · 47 in 4 min · stopped by user steering @#232':''}</div>`));
+    r.addEventListener('mouseleave',hideTip);
+    r.addEventListener('click',()=>pinWatch(w));
+  });
+  /* error diamonds on root lane */
+  ERR_TURNS.forEach(i=>{
+    const xx=X(turns[i].start);
+    el('path',{d:`M ${xx} ${root.y-4} L ${xx+3.4} ${root.y-0.6} L ${xx} ${root.y+2.8} L ${xx-3.4} ${root.y-0.6} Z`,fill:'#e5534b'});
+  });
+  {const xx=X(turns[TURN_FAILURE].start);
+   el('path',{d:`M ${xx} ${root.y-8} L ${xx+4.4} ${root.y-3.4} L ${xx} ${root.y+1.2} L ${xx-4.4} ${root.y-3.4} Z`,fill:'#e5534b',stroke:'#ff8a80','stroke-width':.7});
+   const t=el('text',{x:xx+6,y:root.y-3,'font-size':9,fill:'#ff8a80','font-family':'var(--mono)'});
+   t.textContent='529 overload → retry';}
+  {const xx=X(turns[MODEL_SWITCH].start);
+   el('path',{d:`M ${xx} ${root.y-7} L ${xx+4} ${root.y-3} L ${xx} ${root.y+1} L ${xx-4} ${root.y-3} Z`,fill:'#9a7bff'});
+   const t=el('text',{x:xx+6,y:root.y-8,'font-size':9,fill:'#b9a5ff','font-family':'var(--mono)'});
+   t.textContent='model → k3-fast';}
+  document.getElementById('domainLbl').textContent=`domain ${fmtClock(dom[0])} – ${fmtClock(dom[1])} (${Math.round((dom[1]-dom[0])/60)}m)`;
+  /* brush handlers */
+  let bs=null;
+  brush.addEventListener('mousedown',ev=>{bs=X.invert?0:pt(ev).s;ev.preventDefault()});
+  function pt(ev){const r=svg.getBoundingClientRect();const px=ev.clientX-r.left;return{s:dom[0]+(px-x0)/(x1-x0)*(dom[1]-dom[0]),px}}
+  window.onmousemove=ev=>{
+    if(bs===null)return;
+    window._bsel&&window._bsel.remove();
+    const p=pt(ev);
+    window._bsel=el('rect',{x:Math.min(X(bs),X(p.s)),y:0,width:Math.abs(X(p.s)-X(bs)),height:H,fill:'rgba(91,157,255,.12)',stroke:'#5b9dff','stroke-width':1,'pointer-events':'none'});
+  };
+  window.onmouseup=ev=>{
+    if(bs===null)return;
+    const p=pt(ev);const a=Math.min(bs,p.s),b=Math.max(bs,p.s);
+    window._bsel&&window._bsel.remove();bs=null;
+    if(b-a>45){dom=[Math.max(0,a),Math.min(TARGET,b)];render()}
+  };
+}
+function turnTip(t){
+  return `<div class="th">turn #${t.i} · ${t.kind} · ${fmtClock(t.start)}</div>
+  <div class="tl">phase <b>${phaseOf(t.i)}</b> · tools <b>${t.tools}</b> · tokens <b>${fmtK(t.tok)}</b> · ${t.dur.toFixed(0)}s</div>
+  <div class="tl">context after: <b>${fmtK(t.ctx1)}</b>${t.kind==='CHECKPOINT'?' → folded to <b>24.0k</b>':''}</div>`}
+function showTip(ev,html){tip.style.display='block';tip.innerHTML=html;
+  tip.style.left=Math.min(ev.clientX+16,innerWidth-350)+'px';tip.style.top=(ev.clientY+14)+'px'}
+function hideTip(){tip.style.display='none'}
+/* ============ inspector ============ */
+const insp=document.getElementById('insp');
+function toolBars(list){const mx=Math.max(...list.map(x=>x[1]));
+  return `<div class="barlist">`+list.map(([n,v])=>`<div class="bl"><span style="width:86px">${n}</span><div class="track"><div class="fill" style="width:${(v/mx*100).toFixed(0)}%"></div></div><span>${fmtInt(v)}</span></div>`).join('')+`</div>`}
+function pinTurn(t){
+  insp.innerHTML=`<h3>pinned · turn</h3>
+  <div class="card"><div class="t">turn #${t.i} — ${t.kind}</div>
+   <div class="row"><span>phase</span><b>${phaseOf(t.i)}</b></div>
+   <div class="row"><span>time</span><b>${fmtClock(t.start)} · ${t.dur.toFixed(0)}s</b></div>
+   <div class="row"><span>tool calls</span><b>${t.tools}</b></div>
+   <div class="row"><span>tokens</span><b>${fmtK(t.tok)}</b></div>
+   <div class="row"><span>context after</span><b>${fmtK(t.ctx1)}</b></div>
+   ${t.kind==='CHECKPOINT'?'<p>⛛ Compaction boundary: deterministic checkpoint + LLM summary fold context to 24k. Older turns survive only as summary.</p>':''}
+   ${t.kind==='TURN_FAILURE'?'<p style="color:var(--red)">Provider 529 overloaded. Automatic backoff retry; recovered at #184.</p>':''}
+  </div>`;
+}
+function pinDelegate(d){
+  const seg=turns.slice(d.s,d.e+1);
+  const tk=seg.reduce((a,t)=>a+t.tok,0),tc=seg.reduce((a,t)=>a+t.tools,0);
+  insp.innerHTML=`<h3>pinned · delegate</h3>
+  <div class="card vio"><div class="t">${d.id} — ${d.name}</div>
+   <div class="row"><span>depth</span><b>${d.depth+1} of 3</b></div>
+   <div class="row"><span>turns</span><b>${d.s}–${d.e} (${d.e-d.s+1})</b></div>
+   <div class="row"><span>wall time</span><b>${Math.round((turns[d.e].end-turns[d.s].start)/60)}m</b></div>
+   <div class="row"><span>tool calls</span><b>${tc}</b></div>
+   <div class="row"><span>tokens</span><b>${fmtK(tk)} (${(tk/totalTok*100).toFixed(1)}% of session)</b></div>
+   <p>Reported back at #${d.e}: “complete — ${ri(3,9)} files changed, tests green.” Delivery committed to the transcript.</p>
+   ${toolBars([['read_file',Math.round(tc*.3)],['shell',Math.round(tc*.24)],['edit_file',Math.round(tc*.16)],['grep',Math.round(tc*.12)],['other',Math.round(tc*.18)]])}
+  </div>`;
+}
+function pinJob(j){
+  insp.innerHTML=`<h3>pinned · job</h3>
+  <div class="card ${j.status==='failed'?'red':'grn'}"><div class="t">${j.id} · ${j.status==='failed'?'FAILED':'exit 0'}</div>
+   <div class="row"><span>cmd</span><b style="max-width:180px;overflow:hidden;text-overflow:ellipsis">${j.cmd}</b></div>
+   <div class="row"><span>mode</span><b>${j.mode}</b></div>
+   <div class="row"><span>ran</span><b>${fmtClock(turns[j.s].start)}–${fmtClock(turns[j.e].end)}</b></div>
+   <div class="row"><span>duration</span><b>${Math.round((turns[j.e].end-turns[j.s].start)/60)}m</b></div>
+   ${j.status==='failed'?'<p style="color:var(--red)">undefined: jobstore.Open — migration not yet wired into build. Root-caused the #178–#183 edit_file retry loop.</p>':'<p>Completion notification arrived mid-turn and was delivered as a system notice.</p>'}
+  </div>`;
+}
+function pinWatch(w){
+  insp.innerHTML=`<h3>pinned · watch</h3>
+  <div class="card amb"><div class="t">${w.id}${w.runaway?' — RUNAWAY EPISODE':''}</div>
+   <div class="row"><span>trigger</span><b style="max-width:180px">${w.name}</b></div>
+   <div class="row"><span>fires</span><b>${w.fires.length}</b></div>
+   ${w.runaway?'<p>Log tailer matched every fuzz status line, injecting a steering event per match — 47 fires in 4 minutes, crowding real turns. Stopped by user steering at #232 after the second compaction.</p>':'<p>Normal cadence: fired on each schema save, reran the focused test.</p>'}
+  </div>`;
+}
+function pinDefault(){
+  insp.innerHTML=`<h3>inspector</h3>
+  <div class="card"><div class="t">session 0J8XKM</div>
+  <p>Click any turn block, delegate bar, job bar, or watch lane to pin its detail here. Drag across the ruler to zoom into a time window.</p>
+  <p style="margin-top:8px">Reading tips:</p>
+  <p>· The <b>blue band</b> is context pressure — note the three violet <b>fold lines</b> where compaction drops 186k→24k.<br>
+  · <b>Wide bars</b> = long wall-clock spans: the ${Math.round((turns[205].end-turns[162].start)/60)}m fuzz job and the delegate migration dominate.<br>
+  · The <b>amber cluster</b> at ~${fmtClock(turns[187].start)} is the watch runaway; red diamonds above ROOT are the build-break / retry episode.</p></div>
+  <div class="card"><div class="t">token cost by actor</div>
+  ${toolBars([['ROOT mainline',Math.round(totalTok*.52)],['dlg_02 subtree',Math.round(totalTok*.21)],['dlg_03 audit',Math.round(totalTok*.11)],['dlg_04 tests',Math.round(totalTok*.09)],['dlg_01 survey',Math.round(totalTok*.07)]])}
+  </div>`;
+}
+document.getElementById('zoomErr').textContent=`jump: breakage ${fmtClock(turns[176].start)}–${fmtClock(turns[196].end)}`;
+document.getElementById('reset').onclick=()=>{dom=[0,TARGET];render()};
+document.getElementById('zoomErr').onclick=()=>{dom=[turns[170].start-300,turns[200].end+300];render()};
+document.getElementById('zoomDlg').onclick=()=>{dom=[turns[94].start-200,turns[160].end+200];render()};
+window.addEventListener('resize',render);
+render();pinDefault();
+</script>
+</body>
+</html>

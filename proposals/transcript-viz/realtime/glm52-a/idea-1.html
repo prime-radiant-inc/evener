@@ -1,0 +1,500 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>evener · Realtime Event Tape — transcript comprehension</title>
+<style>
+  :root{
+    --surface-0:#0d1117; --surface-1:#161b22; --surface-inset:#11161d; --surface-2:#1c232c;
+    --edge:#2a3340; --edge-strong:#3a4658;
+    --ink-hi:#e6edf3; --ink-mid:#9da9b8; --ink-low:#6a7686;
+    --alive:#3fb950; --alive-ink:#4ade80; --alive-bg:rgba(63,185,80,.14);
+    --attention:#d29922; --attention-ink:#e3b341; --attention-bg:rgba(210,153,34,.16);
+    --danger:#f85149; --danger-ink:#ff6b62; --danger-bg:rgba(248,81,73,.16);
+    --accent:#58a6ff; --accent-ink:#79b8ff; --accent-bg:rgba(88,166,255,.14);
+    --violet:#a371f7; --cyan:#39c5cf; --pink:#db61a2;
+    --mono:ui-monospace,SFMono-Regular,"JetBrains Mono",Menlo,Consolas,monospace;
+    --sans:"Inter",-apple-system,BlinkMacSystemFont,"Segoe UI",Helvetica,Arial,sans-serif;
+  }
+  *{box-sizing:border-box}
+  html,body{margin:0;padding:0;background:var(--surface-0);color:var(--ink-hi);font-family:var(--sans);-webkit-font-smoothing:antialiased}
+  body{padding:20px 28px 40px;min-height:100vh}
+  .micro{font-size:11px;letter-spacing:.08em;text-transform:uppercase;font-weight:500;color:var(--ink-low)}
+  h1{font-size:18px;font-weight:600;letter-spacing:-.01em;margin:0 0 2px}
+  .sub{color:var(--ink-mid);font-size:13px;line-height:1.5;max-width:880px;margin:0 0 18px}
+  code{font-family:var(--mono);font-size:12px;background:var(--surface-inset);padding:1px 5px;border-radius:4px;color:var(--ink-mid)}
+  .card{background:var(--surface-1);border:1px solid var(--edge);border-radius:10px;padding:16px 18px;margin-bottom:16px}
+  .card-head{display:flex;align-items:baseline;justify-content:space-between;gap:12px;margin-bottom:10px}
+  .card-head h2{font-size:13px;font-weight:600;margin:0;letter-spacing:.01em}
+  .pill{display:inline-block;padding:2px 8px;border-radius:999px;font-size:11px;font-weight:500;border:1px solid var(--edge)}
+  .pill.alive{color:var(--alive-ink);background:var(--alive-bg);border-color:rgba(63,185,80,.3)}
+  .pill.attention{color:var(--attention-ink);background:var(--attention-bg);border-color:rgba(210,153,34,.3)}
+  .pill.danger{color:var(--danger-ink);background:var(--danger-bg);border-color:rgba(248,81,73,.3)}
+  .pill.accent{color:var(--accent-ink);background:var(--accent-bg);border-color:rgba(88,166,255,.3)}
+  .pill.muted{color:var(--ink-mid);background:var(--surface-inset)}
+
+  /* ---------- controls ---------- */
+  .controls{display:flex;align-items:center;gap:10px;margin-bottom:14px}
+  .btn{background:var(--surface-2);border:1px solid var(--edge);color:var(--ink-hi);border-radius:6px;padding:4px 12px;font-family:var(--sans);font-size:12px;font-weight:500;cursor:pointer;transition:background .12s ease}
+  .btn:hover{background:var(--edge)}
+  .btn.active{background:var(--accent);color:#06121f;border-color:var(--accent)}
+  .live{display:flex;align-items:center;gap:6px;font-size:11px;color:var(--ink-mid);font-family:var(--mono)}
+  .dot{width:8px;height:8px;border-radius:50%;background:var(--alive);box-shadow:0 0 8px var(--alive)}
+  .dot.paused{background:var(--ink-low);box-shadow:none}
+
+  /* ---------- ribbon ---------- */
+  .tape-wrap{position:relative;width:100%;user-select:none}
+  .axis{display:flex;align-items:baseline;justify-content:space-between;font-family:var(--mono);font-size:10px;color:var(--ink-low);margin-bottom:6px}
+  .jobs-lane{position:relative;height:14px;margin-bottom:4px;background:var(--surface-inset);border:1px solid var(--edge);border-radius:3px}
+  .job-tick{position:absolute;top:0;width:2px;height:14px;background:var(--cyan);border-radius:1px;opacity:.85}
+  .job-tick.detach{background:var(--pink);height:10px;top:4px}
+  .ribbon{display:grid;grid-template-rows:repeat(var(--rows,2), 14px);grid-auto-flow:column;grid-auto-columns:1fr;gap:2px;background:var(--surface-inset);border:1px solid var(--edge);border-radius:6px;padding:6px;min-height:0}
+  .cell{position:relative;height:14px;border-radius:2px;background:var(--surface-1);border:1px solid rgba(255,255,255,.04);cursor:pointer;transition:opacity .12s ease}
+  .cell.live-cell{border-color:var(--alive);box-shadow:0 0 6px rgba(63,185,80,.5)}
+  .cell:hover{outline:2px solid var(--ink-hi);outline-offset:0;z-index:5}
+  .cell.sel{outline:2px solid var(--accent);outline-offset:0;z-index:6}
+  .cell .kind{position:absolute;left:0;top:0;bottom:0;width:3px;border-radius:2px 0 0 2px}
+  .cell .bar{position:absolute;left:4px;right:2px;bottom:1px;border-radius:1px;background:rgba(255,255,255,.05)}
+  .cell.ckpt{background:var(--attention-bg)}
+  .cell.ckpt .kind{background:var(--attention)}
+  .cell.summary{background:var(--attention-bg)}
+  .cell.fail{background:var(--danger-bg)}
+  .cell.fail .kind{background:var(--danger)}
+  .cell.fail::after{content:"";position:absolute;top:-1px;right:-1px;width:0;height:0;border-style:solid;border-width:5px 5px 0 0;border-color:var(--danger) transparent transparent transparent;z-index:3}
+  .cell.steer{position:relative}
+  .cell.steer::after{content:"";position:absolute;top:1px;right:2px;width:4px;height:4px;border-radius:50%;background:var(--attention-ink)}
+  .cell.new{animation:flash .5s ease-out}
+  @keyframes flash{0%{background:rgba(63,185,80,.35)}100%{background:var(--surface-1)}}
+
+  /* ---------- lanes ---------- */
+  .lanes{margin-top:10px;display:flex;flex-direction:column;gap:5px;position:relative}
+  .lane-row{display:flex;align-items:center;gap:8px;font-size:11px;color:var(--ink-low);font-family:var(--mono)}
+  .lane-label{width:118px;flex:none;text-align:right;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .lane-track{position:relative;flex:1;height:11px;background:var(--surface-inset);border:1px solid var(--edge);border-radius:3px}
+  .lane-span{position:absolute;top:0;bottom:0;border-radius:2px;display:flex;align-items:center;justify-content:center;font-size:9px;color:rgba(0,0,0,.55);font-weight:600;overflow:hidden;white-space:nowrap;transition:opacity .12s ease}
+  .lane-span.d0{background:var(--accent);color:#06121f}
+  .lane-span.d1{background:var(--violet);color:#1a0f2e}
+  .lane-span.d2{background:var(--cyan);color:#06262a}
+  .lane-span.d3{background:var(--pink);color:#2a0f1f}
+  .lane-span.active{opacity:.5;border:1px solid var(--ink-hi)}
+
+  .ticker{font-family:var(--mono);font-size:11px;color:var(--ink-mid);margin-top:10px;line-height:1.5;min-height:36px;background:var(--surface-inset);border:1px solid var(--edge);border-radius:6px;padding:6px 9px}
+  .ticker .ts{color:var(--ink-low)}
+  .ticker .ev{color:var(--alive-ink)}
+  .ticker .err{color:var(--danger-ink)}
+  .ticker .steer{color:var(--attention-ink)}
+  .ticker .comp{color:var(--attention-ink)}
+
+  .kv{display:flex;gap:14px;flex-wrap:wrap;margin-top:8px;font-family:var(--mono);font-size:11px;color:var(--ink-low)}
+  .kv span b{color:var(--ink-hi);font-weight:500}
+
+  .detail{display:grid;grid-template-columns:1fr 1fr;gap:14px 22px;font-size:12px}
+  .detail dt{color:var(--ink-low);font-size:10px;letter-spacing:.06em;text-transform:uppercase;margin:0 0 2px}
+  .detail dd{margin:0 0 10px;color:var(--ink-hi);font-family:var(--mono);font-size:12px;line-height:1.45}
+
+  .caption{color:var(--ink-mid);font-size:12px;line-height:1.55;max-width:920px}
+  .caption b{color:var(--ink-hi);font-weight:500}
+</style>
+</head>
+<body>
+
+<div style="max-width:1180px;margin:0 auto">
+  <div class="micro">evener · transcript-viz proposal · REALTIME idea 1 of 3</div>
+  <h1 style="margin-top:6px">Realtime Event Tape — a live per-turn glyph ribbon</h1>
+  <p class="sub">Columns stream in from the right as turns arrive; older turns compress toward the left so the full-session-so-far pattern stays legible at 250+ turns. A <b>LIVE</b> indicator and streaming ticker show what is happening right now — bursts, stalls, retry loops, compactions — as patterns form. <b>Play/pause/speed</b> controls let the reviewer drive the simulation.</p>
+
+  <div class="controls">
+    <button class="btn" id="playBtn">▶ play</button>
+    <button class="btn" id="pauseBtn">⏸ pause</button>
+    <span style="color:var(--ink-low);font-size:11px">speed</span>
+    <button class="btn" id="speedBtn">1×</button>
+    <button class="btn" id="speed2Btn">3×</button>
+    <button class="btn" id="speed4Btn">10×</button>
+    <span class="live" id="liveBadge"><span class="dot" id="liveDot"></span><span id="liveTxt">LIVE</span></span>
+    <span class="micro" style="margin-left:auto">turn #<span id="turnCount">0</span></span>
+  </div>
+
+  <div class="card">
+    <div class="card-head"><h2>Legend &amp; encoding</h2></div>
+    <div style="display:flex;flex-wrap:wrap;gap:10px 16px;align-items:center;font-size:12px;color:var(--ink-mid)">
+      <span style="display:flex;align-items:center;gap:6px"><span style="width:14px;height:14px;border-radius:3px;background:#2f6f3f"></span> assistant</span>
+      <span style="display:flex;align-items:center;gap:6px"><span style="width:14px;height:14px;border-radius:3px;background:#3a5a2a"></span> tool_results</span>
+      <span style="display:flex;align-items:center;gap:6px"><span style="width:14px;height:14px;border-radius:3px;background:var(--accent)"></span> user_input</span>
+      <span style="display:flex;align-items:center;gap:6px"><span style="width:14px;height:14px;border-radius:3px;background:var(--attention)"></span> steering</span>
+      <span style="display:flex;align-items:center;gap:6px"><span style="width:14px;height:14px;border-radius:3px;background:#6a4f1f"></span> system/env/hook</span>
+      <span style="display:flex;align-items:center;gap:6px"><span style="width:14px;height:14px;border-radius:3px;background:var(--attention-bg);border-left:2px solid var(--attention)"></span> checkpoint+summary</span>
+      <span style="display:flex;align-items:center;gap:6px"><span style="width:14px;height:14px;border-radius:3px;background:var(--surface-1);border:1px solid var(--edge);position:relative"></span> turn_failure (red corner)</span>
+      <span style="display:flex;align-items:center;gap:6px"><span style="width:14px;height:14px;border-radius:3px;background:linear-gradient(to top, var(--alive) 0%, rgba(63,185,80,.08) 100%)"></span> inner bar = tool-call count</span>
+      <span style="display:flex;align-items:center;gap:6px"><span style="width:14px;height:14px;border-radius:3px;background:var(--cyan)"></span> bg job (detached = pink, top lane)</span>
+      <span style="display:flex;align-items:center;gap:6px"><span style="width:14px;height:14px;border-radius:3px;background:var(--surface-1);border:1px solid var(--alive)"></span> live cell (glowing green border)</span>
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="card-head"><h2>Realtime Event Tape</h2><span class="micro" id="zoomLabel">fit-to-width · 2 rows</span></div>
+    <div class="tape-wrap">
+      <div class="axis"><span id="axisStart">12:00</span><span id="axisMid1">—</span><span id="axisMid2">—</span><span id="axisMid3">—</span><span id="axisEnd">—</span></div>
+      <div class="jobs-lane" id="jobsLane"></div>
+      <div class="ribbon" id="ribbon"></div>
+      <div class="lanes" id="lanes"></div>
+    </div>
+    <div class="kv" id="kv"></div>
+    <div class="ticker" id="ticker"></div>
+  </div>
+
+  <div class="card" id="detailCard">
+    <div class="card-head"><h2 id="detailTitle">Turn — hover or click a column</h2><span class="micro" id="detailPos"></span></div>
+    <div class="detail" id="detail"></div>
+  </div>
+
+  <p class="caption">
+    <b>What you see at a glance, live:</b> as turns stream in from the right, the tape fills column by column; older columns compress left to keep the full-session-so-far pattern on one screen. A green-glow border marks the live cell. The streaming ticker narrates each event as it arrives (steering, compaction, tool_results, failure). <b>Live questions answered:</b> what pattern is forming right now (burst, stall, retry loop)? what just changed? is current activity normal for this session? Bursts show as rapid column arrivals; stalls as gaps; retry loops as a red glyph followed by rapid tool_results; compaction as an amber full-height divider. The delegate lanes beneath grow right-ward as new children spawn; the top lane's ticks mark background jobs, with a pink tick for a detached job that outlives the session.
+  </p>
+</div>
+
+<script>
+"use strict";
+/* ---------- realtime event stream simulation ---------- */
+var speed = 1;
+var paused = true;
+var tickInterval = null;
+var turns = [];
+var turnIdx = 0;
+var clock = 12 * 60; // 12:00 in minutes
+var COLS = 132;
+var ROWS = 2;
+var totalTools = 0;
+var totalTokens = 0;
+var compactions = 0;
+var failures = 0;
+var steers = 0;
+var delegates = [{name:"root session", depth:0, start:0, span:0}];
+var jobs = [];
+
+var KIND = {assistant:"#2f6f3f", tool:"#3a5a2a", user:"#58a6ff", steering:"#d29922", system:"#6a4f1f", env:"#5a4a2a", hook:"#4a3a1a", checkpoint:"#a07a1f", summary:"#c79a2a", failure:"#f85149"};
+var TOOL_NAMES = ["exec_command","read_file","grep_files","list_dir","edit_file","apply_patch","write_file","web_fetch","delegate_send","use_skill"];
+var RNG = (function(){var s=0x9e3779b9>>>0;return function(){s^=s<<13;s>>>=0;s^=s>>>17;s>>>=0;s^=s<<5;s>>>=0;return s/4294967296};})();
+
+function pushTurn(kind, opts) {
+  opts = opts || {};
+  var t = {idx:turnIdx, kind:kind, clock:clock, tools:opts.tools||0, tokens:opts.tokens||0, label:opts.label||"", text:opts.text||"", live:true};
+  turns.push(t);
+  turnIdx++;
+  if (t.tools) totalTools += t.tools;
+  if (t.tokens) totalTokens += t.tokens;
+  if (kind==="checkpoint"||kind==="summary") compactions++;
+  if (kind==="failure") failures++;
+  if (kind==="steering") steers++;
+  delegates[0].span = turnIdx;
+  render();
+  tick(t);
+}
+
+function spawnDelegate(parent, name) {
+  delegates.push({name:name, depth:parent.depth+1, start:turnIdx, span:0, parent:parent.name});
+  pushTurn("assistant", {tokens:500, text:"Spawning delegate "+name});
+}
+
+function endDelegate(name) {
+  var d = delegates.find(function(x){return x.name===name;});
+  if (d) d.span = turnIdx - d.start;
+}
+
+function spawnJob(name, detached) {
+  jobs.push({name:name, startIdx:turnIdx, detached:detached});
+}
+
+function endJob(name) {
+  var j = jobs.find(function(x){return x.name===name;});
+  if (j) j.endIdx = turnIdx;
+}
+
+/* ---------- scripted realtime session ---------- */
+function step() {
+  if (turnIdx === 0) {
+    pushTurn("user", {tokens:120, text:"Build three genuinely different visual mockups for the evener web UI transcript comprehension."});
+    pushTurn("system", {text:"environment context: cwd=/Users/jesse/... date=2026-08-21 sandbox=off git=main"});
+    return;
+  }
+  if (turnIdx === 1) {
+    spawnJob("job_build_watch", false);
+    spawnJob("job_dev_server", false);
+    return;
+  }
+  if (turnIdx < 95) {
+    var tc = Math.round(3 + RNG() * 14);
+    pushTurn("assistant", {tokens:300+Math.floor(RNG()*900), text:"Planning step "+turnIdx+": "+TOOL_NAMES[Math.floor(RNG()*10)]});
+    pushTurn("tool", {tools:tc, tokens:40+Math.floor(RNG()*200), text:tc+" tool results ("+TOOL_NAMES[Math.floor(RNG()*10)]+")"});
+    clock += Math.round(20 + RNG() * 120);
+    return;
+  }
+  if (turnIdx === 95) {
+    pushTurn("checkpoint", {label:"compaction L3", text:"Deterministic checkpoint — context folded."});
+    pushTurn("summary", {tokens:800, text:"Summary: explored schema/turn.go, transcript pane, design system; three ideas drafted."});
+    clock += 30;
+    return;
+  }
+  if (turnIdx === 96) {
+    pushTurn("steering", {tokens:90, text:"Make sure the mockups depict delegates and background jobs, not just a chat log."});
+    return;
+  }
+  if (turnIdx === 100) {
+    spawnDelegate(delegates[0], "dlg_event_tape");
+    spawnDelegate(delegates[0], "dlg_heatmap");
+    spawnDelegate(delegates[0], "dlg_cost_tree");
+    return;
+  }
+  if (turnIdx === 103) {
+    spawnDelegate(delegates[1], "dlg_g1_render");
+    return;
+  }
+  if (turnIdx === 130) {
+    endDelegate("dlg_g1_render");
+    return;
+  }
+  if (turnIdx === 135) {
+    spawnDelegate(delegates[1], "dlg_g2_data");
+    return;
+  }
+  if (turnIdx === 155) {
+    endDelegate("dlg_g2_data");
+    return;
+  }
+  if (turnIdx === 158) {
+    spawnDelegate(delegates[2], "dlg_g3_verify");
+    return;
+  }
+  if (turnIdx === 160) {
+    pushTurn("steering", {tokens:70, text:"The heatmap idea feels weak — push it further."});
+    return;
+  }
+  if (turnIdx === 185) {
+    endDelegate("dlg_g3_verify");
+    endDelegate("dlg_event_tape");
+    endDelegate("dlg_heatmap");
+    endDelegate("dlg_cost_tree");
+    return;
+  }
+  if (turnIdx === 186) {
+    pushTurn("checkpoint", {label:"compaction L3", text:"Context folded mid-delegation."});
+    pushTurn("summary", {tokens:1200, text:"Summary: 3 delegates spawned, 2 grandchildren, mockups in progress."});
+    clock += 40;
+    return;
+  }
+  if (turnIdx === 190) {
+    spawnJob("job_fuzz_overnight", true);
+    return;
+  }
+  if (turnIdx === 205) {
+    pushTurn("assistant", {tokens:500, text:"Running verification gate..."});
+    pushTurn("tool", {tools:3, tokens:300, text:"exec_command: npm run build (3 results)"});
+    return;
+  }
+  if (turnIdx === 206) {
+    pushTurn("failure", {label:"TURN_FAILURE", tokens:0, text:"exec_command exit 1: build failed — TypeError in ToolRow.tsx", err:{msg:"TypeError: Cannot read properties of undefined (reading 'summary')", source:"exec_command", title:"Turn failed"}});
+    return;
+  }
+  if (turnIdx === 207) {
+    pushTurn("assistant", {tokens:700, text:"Build failed — the ToolRow descriptor lookup returned undefined. Patching the registry."});
+    pushTurn("tool", {tokens:200, tools:2, text:"edit_file + exec_command (retry)"});
+    return;
+  }
+  if (turnIdx === 208) {
+    spawnJob("job_lint_watch", false);
+    return;
+  }
+  if (turnIdx === 225) {
+    pushTurn("hook", {label:"pre-commit hook completed", text:"lint hook exit 0 · 240ms"});
+    return;
+  }
+  if (turnIdx === 240) {
+    endJob("job_lint_watch");
+    return;
+  }
+  if (turnIdx === 245) {
+    pushTurn("steering", {tokens:50, text:"Looks good — finalize the README."});
+    return;
+  }
+  if (turnIdx === 260) {
+    endJob("job_build_watch");
+    endJob("job_dev_server");
+    return;
+  }
+  if (turnIdx === 263) {
+    endJob("job_fuzz_overnight");
+    pause();
+    return;
+  }
+  // default: assistant + tool
+  var tc = Math.round(2 + RNG() * 12);
+  pushTurn("assistant", {tokens:300+Math.floor(RNG()*800), text:"Step "+turnIdx});
+  if (turnIdx % 2 === 0) { pushTurn("tool", {tools:tc, tokens:50+Math.floor(RNG()*220), text:tc+" results"}); }
+  clock += Math.round(20 + RNG() * 90);
+}
+
+/* ---------- render ---------- */
+var ribbon = document.getElementById("ribbon");
+ribbon.style.setProperty("--rows", ROWS);
+var jobsLane = document.getElementById("jobsLane");
+var lanes = document.getElementById("lanes");
+
+function render() {
+  // ribbon
+  while (ribbon.childElementCount > turns.length) ribbon.removeChild(ribbon.lastChild);
+  var maxTools = Math.max.apply(null, turns.map(function(t){return t.tools||0;})) || 1;
+  for (var i = 0; i < turns.length; i++) {
+    var turn = turns[i];
+    var cell = ribbon.children[i];
+    if (!cell) {
+      cell = document.createElement("div");
+      ribbon.appendChild(cell);
+    }
+    cell.className = "cell";
+    if (turn.kind === "checkpoint") cell.classList.add("ckpt");
+    else if (turn.kind === "summary") cell.classList.add("summary");
+    else if (turn.kind === "failure") cell.classList.add("fail");
+    if (turn.kind === "steering") cell.classList.add("steer");
+    if (turn.live) cell.classList.add("live-cell");
+    cell.innerHTML = "";
+    var kindEl = document.createElement("div");
+    kindEl.className = "kind";
+    kindEl.style.background = KIND[turn.kind] || "#444";
+    cell.appendChild(kindEl);
+    if (turn.tools > 0) {
+      var barEl = document.createElement("div");
+      barEl.className = "bar";
+      var h = Math.max(8, (turn.tools / maxTools) * 100);
+      barEl.style.height = h + "%";
+      barEl.style.background = turn.kind === "tool" ? "rgba(63,185,80,.55)" : "rgba(88,166,255,.5)";
+      cell.appendChild(barEl);
+    }
+    cell.title = "#" + turn.idx + " " + turn.kind + (turn.tools ? " · " + turn.tools + " tools" : "");
+    cell.onmouseenter = function() { selectTurn(turn); };
+    cell.onclick = function() { selectTurn(turn); };
+  }
+  document.getElementById("turnCount").textContent = turnIdx;
+  renderJobsLane();
+  renderLanes();
+  renderKV();
+}
+
+function renderJobsLane() {
+  jobsLane.innerHTML = "";
+  jobs.forEach(function(job) {
+    var tick = document.createElement("div");
+    tick.className = "job-tick" + (job.detached ? " detach" : "");
+    tick.style.left = ((job.startIdx / Math.max(1, turnIdx)) * 100) + "%";
+    jobsLane.appendChild(tick);
+  });
+}
+
+function renderLanes() {
+  lanes.innerHTML = "";
+  delegates.forEach(function(d) {
+    var rowEl = document.createElement("div");
+    rowEl.className = "lane-row";
+    var lblEl = document.createElement("div");
+    lblEl.className = "lane-label";
+    lblEl.textContent = "└".repeat(d.depth) + " " + d.name;
+    rowEl.appendChild(lblEl);
+    var track = document.createElement("div");
+    track.className = "lane-track";
+    var span = document.createElement("div");
+    span.className = "lane-span d" + d.depth + (d.span === 0 ? " active" : "");
+    span.style.left = ((d.start / Math.max(1, turnIdx)) * 100) + "%";
+    span.style.width = ((d.span / Math.max(1, turnIdx)) * 100) + "%";
+    span.textContent = "d" + d.depth;
+    track.appendChild(span);
+    rowEl.appendChild(track);
+    lanes.appendChild(rowEl);
+  });
+}
+
+function renderKV() {
+  document.getElementById("kv").innerHTML =
+    "<span><b>" + turnIdx + "</b> turns</span>" +
+    "<span><b>" + totalTools.toLocaleString() + "</b> tool calls</span>" +
+    "<span><b>" + (totalTokens / 1000).toFixed(1) + "k</b> tokens</span>" +
+    "<span><b>" + compactions + "</b> compactions</span>" +
+    "<span><b>" + failures + "</b> failure(s)</span>" +
+    "<span><b>" + steers + "</b> steering</span>" +
+    "<span><b>" + delegates.length + "</b> delegate nodes</span>";
+}
+
+/* ---------- ticker ---------- */
+function tick(turn) {
+  var ticker = document.getElementById("ticker");
+  var ts = fmtClock(turn.clock);
+  var cls = "ev";
+  var txt = turn.kind + (turn.tools ? " · " + turn.tools + " tools" : "");
+  if (turn.kind === "steering") { cls = "steer"; txt = "STEERING: " + turn.text; }
+  else if (turn.kind === "checkpoint") { cls = "comp"; txt = "COMPACTION: " + turn.text; }
+  else if (turn.kind === "summary") { cls = "comp"; txt = "SUMMARY: " + turn.text; }
+  else if (turn.kind === "failure") { cls = "err"; txt = "ERROR: " + turn.err.msg; }
+  else if (turn.kind === "user") { cls = "ev"; txt = "USER: " + turn.text; }
+  else if (turn.kind === "system") { cls = "ev"; txt = "SYSTEM: " + turn.text; }
+  else if (turn.kind === "assistant") { cls = "ev"; txt = "ASSISTANT: " + turn.text; }
+  else if (turn.kind === "tool") { cls = "ev"; txt = "TOOL_RESULTS: " + txt; }
+  ticker.innerHTML = '<span class="ts">' + ts + '</span> <span class="' + cls + '">' + txt + '</span>';
+}
+
+/* ---------- detail ---------- */
+function selectTurn(turn) {
+  document.querySelectorAll(".cell.sel").forEach(function(x) { x.classList.remove("sel"); });
+  var cell = ribbon.children[turn.idx];
+  if (cell) cell.classList.add("sel");
+  var d = document.getElementById("detail");
+  var kindLabel = {assistant:"ASSISTANT",tool:"TOOL_RESULTS",user:"USER_INPUT",steering:"STEERING",system:"SYSTEM",env:"ENVIRONMENT",hook:"HOOK_COMPLETED",checkpoint:"CHECKPOINT",summary:"SUMMARY",failure:"TURN_FAILURE"}[turn.kind] || turn.kind.toUpperCase();
+  var pills = "";
+  if (turn.kind === "failure") pills += '<span class="pill danger">failed</span>';
+  if (turn.kind === "checkpoint"||turn.kind === "summary") pills += '<span class="pill attention">compaction</span>';
+  if (turn.kind === "steering") pills += '<span class="pill attention">steering</span>';
+  if (turn.kind === "user") pills += '<span class="pill accent">user</span>';
+  if (turn.tools) pills += '<span class="pill alive">' + turn.tools + ' tools</span>';
+  if (turn.live) pills += ' <span class="pill alive">live</span>';
+  d.innerHTML =
+    "<div><dt>Kind</dt><dd>" + kindLabel + " " + pills + "</dd></div>" +
+    "<div><dt>Turn index</dt><dd>#" + turn.idx + "</dd></div>" +
+    "<div><dt>Wall-clock</dt><dd>" + fmtClock(turn.clock) + "</dd></div>" +
+    "<div><dt>Tokens</dt><dd>" + (turn.tokens||0).toLocaleString() + "</dd></div>" +
+    "<div><dt>Tool calls</dt><dd>" + (turn.tools||0) + "</dd></div>" +
+    '<div style="grid-column:1/-1"><dt>Content</dt><dd>' + esc(turn.text||"") + '</dd></div>';
+  document.getElementById("detailTitle").textContent = "Turn #" + turn.idx + " — " + kindLabel;
+  document.getElementById("detailPos").textContent = "row " + (Math.floor(turn.idx/COLS)+1) + " · col " + ((turn.idx%COLS)+1);
+}
+function fmtClock(m) { return Math.floor(m/60) + ":" + String(m%60).padStart(2,"0"); }
+function esc(s) { return String(s).replace(/[&<>]/g, function(c) { return {"&":"&amp;","<":"&lt;",">":"&gt;"}[c]; }); }
+
+/* ---------- controls ---------- */
+var playBtn = document.getElementById("playBtn");
+var pauseBtn = document.getElementById("pauseBtn");
+var speedBtn = document.getElementById("speedBtn");
+var speed2Btn = document.getElementById("speed2Btn");
+var speed4Btn = document.getElementById("speed4Btn");
+var liveDot = document.getElementById("liveDot");
+var liveTxt = document.getElementById("liveTxt");
+
+function setSpeed(s) {
+  speed = s;
+  speedBtn.classList.toggle("active", s===1);
+  speed2Btn.classList.toggle("active", s===3);
+  speed4Btn.classList.toggle("active", s===10);
+  if (!paused) restartTick();
+}
+speedBtn.onclick = function() { setSpeed(1); };
+speed2Btn.onclick = function() { setSpeed(3); };
+speed4Btn.onclick = function() { setSpeed(10); };
+
+function restartTick() {
+  if (tickInterval) clearInterval(tickInterval);
+  if (!paused) tickInterval = setInterval(step, 1000 / speed);
+}
+playBtn.onclick = function() { paused = false; playBtn.classList.add("active"); pauseBtn.classList.remove("active"); liveDot.classList.remove("paused"); liveTxt.textContent = "LIVE"; restartTick(); step(); };
+pauseBtn.onclick = function() { paused = true; playBtn.classList.remove("active"); pauseBtn.classList.add("active"); liveDot.classList.add("paused"); liveTxt.textContent = "PAUSED"; if (tickInterval) clearInterval(tickInterval); };
+playBtn.classList.add("active");
+
+render();
+</script>
+</body>
+</html>

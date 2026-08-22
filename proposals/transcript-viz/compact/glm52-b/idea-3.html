@@ -1,0 +1,517 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>Session Lens Compact Live — corner query instrument for a realtime session</title>
+<style>
+  :root{
+    --bg:#0c0e12; --bg-2:#11141b; --panel:#151922; --panel-2:#1b212c;
+    --line:#262d3a; --line-2:#333c4d;
+    --ink:#e7edf5; --ink-mid:#aab4c5; --ink-low:#6b7689; --ink-dim:#4a5366;
+    --accent:#7cc4ff; --warn:#ffce6b; --err:#ff7d7d; --ok:#8fe3a0; --teal:#5fd0c4; --violet:#b69cff; --pink:#ff9ecb;
+  }
+  *{box-sizing:border-box}
+  html,body{margin:0;height:100%}
+  body{
+    background:radial-gradient(1200px 600px at 70% -10%, #161b26 0%, var(--bg) 60%);
+    color:var(--ink); font:13px/1.45 ui-monospace,"SF Mono",Menlo,Consolas,monospace;
+    -webkit-font-smoothing:antialiased; overflow:hidden;
+  }
+  .app{display:grid; grid-template-rows:auto 1fr auto; height:100vh}
+  header.top{
+    display:flex; align-items:center; gap:14px; padding:10px 16px;
+    border-bottom:1px solid var(--line); background:linear-gradient(180deg,#10141d,#0c0e12);
+  }
+  .brand{font-weight:700; letter-spacing:.04em; color:var(--ink)}
+  .brand .dim{color:var(--ink-low); font-weight:400}
+  .session-id{color:var(--ink-mid); font-size:12px}
+  .session-id b{color:var(--accent)}
+  .top .spacer{flex:1}
+  /* transport lives in page chrome, outside the component */
+  .tport{display:flex; gap:8px; align-items:center}
+  .tport .lbl{font-size:10px; color:var(--ink-dim); text-transform:uppercase; letter-spacing:.05em}
+  .btn{display:inline-flex; align-items:center; gap:4px; padding:4px 9px; border-radius:6px; border:1px solid var(--line-2); color:var(--ink-mid); background:var(--panel); cursor:pointer; user-select:none; transition:.12s; font:inherit; font-size:12px}
+  .btn:hover{border-color:var(--accent); color:var(--ink)}
+  .tport select{background:var(--panel); border:1px solid var(--line-2); color:var(--ink); border-radius:6px; padding:3px 6px; font:inherit; font-size:11px}
+  .follow{display:flex; gap:4px; align-items:center; font-size:11px; color:var(--ink-mid); cursor:pointer}
+  #progress{color:var(--ink-mid); font-variant-numeric:tabular-nums; font-size:11px}
+  .live-badge{display:inline-flex; align-items:center; gap:6px; padding:2px 8px; border-radius:12px; font-size:10px; font-weight:600; letter-spacing:.05em; background:rgba(143,227,160,.14); color:var(--ok); border:1px solid rgba(143,227,160,.3)}
+  .live-badge .dot{width:6px;height:6px;border-radius:50%;background:var(--ok); animation:pulse 1.4s infinite}
+  .live-badge.off{opacity:.35}
+  .live-badge.off .dot{animation:none}
+  @keyframes pulse{0%{opacity:1;transform:scale(1)}50%{opacity:.4;transform:scale(.7)}100%{opacity:1;transform:scale(1)}}
+  /* ── dimmed mock transcript column; the badge sits in the right gutter beside it ── */
+  main{position:relative; min-height:0; padding-right:352px; display:flex}
+  .txwrap{flex:1; min-width:0; display:flex; flex-direction:column; border-right:1px dashed var(--line)}
+  .tx-head{padding:7px 16px; color:var(--ink-dim); font-size:10px; letter-spacing:.06em; border-bottom:1px solid var(--line); display:flex; gap:14px}
+  .tx-head .hint{margin-left:auto; color:var(--ink-dim)}
+  .txcol{flex:1; overflow-y:auto; padding:10px 18px 250px; opacity:.62}
+  .block{padding:4px 8px; border-left:2px solid transparent; margin-bottom:2px; border-radius:0 4px 4px 0}
+  .block .bline{display:flex; gap:8px; align-items:baseline; min-width:0}
+  .tno{color:var(--ink-dim); font-size:10px; font-variant-numeric:tabular-nums; width:26px; flex:none}
+  .kchip{font-size:9px; letter-spacing:.05em; text-transform:uppercase; padding:0 5px; border-radius:8px; flex:none}
+  .kc-user{background:rgba(124,196,255,.16); color:var(--accent)}
+  .kc-steer{background:rgba(95,208,196,.16); color:var(--teal)}
+  .kc-assist{background:rgba(231,237,245,.10); color:var(--ink-mid)}
+  .kc-checkpoint,.kc-summary{background:rgba(182,156,255,.16); color:var(--violet)}
+  .kc-failure{background:rgba(255,125,125,.16); color:var(--err)}
+  .kc-hook{background:rgba(143,227,160,.14); color:var(--ok)}
+  .kc-model_switch{background:rgba(255,206,107,.14); color:var(--warn)}
+  .kc-env{background:rgba(90,134,184,.18); color:#7ea6d6}
+  .txt{color:var(--ink-mid); min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-size:12px}
+  .block.prompt .txt{color:var(--ink); white-space:normal}
+  .meta{margin-left:34px; color:var(--ink-low); font-size:10px; margin-top:1px}
+  .block.k-user{border-left-color:var(--accent); background:rgba(124,196,255,.07)}
+  .block.k-steer{border-left-color:var(--teal); background:rgba(95,208,196,.06)}
+  .block.k-checkpoint,.block.k-summary{border-left-color:var(--violet)}
+  .block.k-failure{border-left-color:var(--err); background:rgba(255,125,125,.06)}
+  .block.out-of-brush{opacity:.13}
+  .block.flash{animation:flashHi 1.6s ease-out}
+  @keyframes flashHi{0%{background:rgba(124,196,255,.38)}100%{background:transparent}}
+  .live-tag{color:var(--ok); font-size:9px; letter-spacing:.05em; flex:none}
+  /* ── THE COMPONENT: corner badge 312×232, no internal scroll ── */
+  #lens{
+    position:fixed; right:14px; bottom:14px; width:312px; height:232px; z-index:40;
+    background:linear-gradient(180deg,#12161f,#0d1017); border:1px solid var(--line-2); border-radius:10px;
+    box-shadow:0 8px 28px rgba(0,0,0,.5); padding:7px 8px 6px; overflow:visible;
+    display:flex; flex-direction:column; gap:5px;
+  }
+  .lz-head{display:flex; align-items:center; gap:8px; height:16px; flex:none}
+  .lz-title{font-size:10px; font-weight:700; letter-spacing:.08em; color:var(--ink-mid)}
+  .lz-turn{margin-left:auto; font-size:10px; color:var(--ink-low); font-variant-numeric:tabular-nums}
+  .lz-field{position:relative; width:296px; height:150px; flex:none; background:rgba(0,0,0,.25); border:1px solid var(--line); border-radius:6px}
+  #cv{position:absolute; inset:0; width:296px; height:150px; cursor:crosshair; display:block}
+  #anchors{position:absolute; inset:0; pointer-events:none}
+  .anchor{position:absolute; top:1px; width:12px; height:12px; padding:0; border:none; cursor:pointer; pointer-events:auto;
+    transform:translateX(-50%) rotate(45deg); border-radius:2px; background:var(--accent); box-shadow:0 0 7px rgba(124,196,255,.75)}
+  .anchor.s{background:var(--teal); box-shadow:0 0 7px rgba(95,208,196,.75)}
+  .anchor span{position:absolute; inset:0; display:flex; align-items:center; justify-content:center; transform:rotate(-45deg); font-size:7px; font-weight:700; color:#081018}
+  .anchor:hover{filter:brightness(1.35)}
+  .lz-query{display:flex; align-items:center; gap:6px; flex:none; height:18px}
+  .lz-query .qp{color:var(--ink-dim); font-size:11px; font-weight:700}
+  #lensQ{flex:1; min-width:0; background:var(--panel); border:1px solid var(--line-2); color:var(--ink); border-radius:5px; padding:2px 7px; font:inherit; font-size:10px; height:18px}
+  .lz-status{flex:none; height:13px; font-size:9px; color:var(--ink-dim); white-space:nowrap; overflow:hidden; text-overflow:ellipsis}
+  /* popovers may exceed the budget; the always-on layer may not */
+  .lz-pop{position:absolute; right:0; bottom:calc(100% + 10px); width:284px; background:var(--panel-2); border:1px solid var(--line-2); border-radius:8px; padding:10px 12px; box-shadow:0 10px 30px rgba(0,0,0,.55); z-index:50; font-size:11px; color:var(--ink-mid)}
+  .lz-pop h5{margin:0 0 4px; font-size:10px; letter-spacing:.07em; text-transform:uppercase; color:var(--ink-dim); display:flex; gap:6px; align-items:center}
+  .lz-pop .ptext{color:var(--ink); margin:4px 0 6px; line-height:1.4}
+  .lz-pop .prow{display:flex; justify-content:space-between; gap:8px; padding:2px 0; color:var(--ink-low); font-size:10px}
+  .lz-pop .pbtns{display:flex; gap:6px; margin-top:8px}
+  .lz-pop .pbtns .btn{font-size:10px; padding:3px 8px}
+  .lz-pop .x{position:absolute; top:6px; right:8px; cursor:pointer; color:var(--ink-dim); background:none; border:none; font:inherit; font-size:11px}
+  .lz-pop .x:hover{color:var(--ink)}
+  footer.foot{border-top:1px solid var(--line); background:var(--bg-2); padding:6px 16px; display:flex; gap:16px; color:var(--ink-low); font-size:10px}
+  footer.foot b{color:var(--ink-mid)}
+  kbd{background:var(--panel); border:1px solid var(--line-2); border-bottom-width:2px; border-radius:4px; padding:0 5px; font-size:9px; color:var(--ink-mid)}
+  .hint{color:var(--ink-dim)}
+</style>
+</head>
+<body>
+<div class="app">
+  <header class="top">
+    <div class="brand">SESSION LENS <span class="dim">// corner query instrument — compact live · idea 3</span></div>
+    <div class="session-id" id="sessionMeta">session <b>s_4a9f…2c1</b> · main · glm-5.2-vision</div>
+    <div class="spacer"></div>
+    <div class="tport">
+      <span class="lbl">stream</span>
+      <button class="btn" id="playPause" title="play/pause">▶ play</button>
+      <span class="lbl">speed</span>
+      <select id="speedSel">
+        <option value="1">1×</option>
+        <option value="2">2×</option>
+        <option value="4" selected>4×</option>
+        <option value="8">8×</option>
+        <option value="16">16×</option>
+      </select>
+      <button class="btn" id="resetBtn" title="restart the synthetic stream">⟲ reset</button>
+      <label class="follow" title="auto-scroll transcript with the stream"><input type="checkbox" id="followChk" checked> follow</label>
+      <span id="progress">turn 0 / 244</span>
+    </div>
+  </header>
+
+  <main>
+    <div class="txwrap">
+      <div class="tx-head"><span>TRANSCRIPT — dimmed mock</span><span id="txCount">0 turns revealed</span><span class="hint">♦ anchors in the lens jump here</span></div>
+      <div class="txcol" id="tx"></div>
+    </div>
+  </main>
+
+  <aside id="lens" aria-label="Session Lens compact instrument">
+    <div class="lz-head">
+      <span class="live-badge off" id="lzLive"><span class="dot"></span>LIVE</span>
+      <span class="lz-title">SESSION LENS</span>
+      <span class="lz-turn" id="lzTurn">t —/244</span>
+    </div>
+    <div class="lz-field" id="lzField">
+      <canvas id="cv"></canvas>
+      <div id="anchors"></div>
+    </div>
+    <div class="lz-query"><span class="qp">?</span><input id="lensQ" type="text" spellcheck="false" placeholder="query turns — 429 · grep · delegate · checkpoint"></div>
+    <div class="lz-status" id="lzStatus"></div>
+    <div class="lz-pop" id="pop" hidden></div>
+  </aside>
+
+  <footer class="foot">
+    <span><b>▶</b> stream · <b>hover</b> the field to isolate a lane · <b>click</b> to jump · <b>drag</b> to brush · <b>♦</b> anchors = your prompts, permanent · <b>type</b> in ? to query · <kbd>Esc</kbd> clears</span>
+    <span class="hint">synthetic data — same 245-turn session as ideas 1–2 · 3 compactions · 3-level delegation · 2 watches · 1 retry episode</span>
+  </footer>
+</div>
+
+<script>
+/* ── seeded rng + shared synthetic session (same constants as idea-1 / idea-2) ── */
+let _s=9173;
+function rnd(){ _s=(_s*1103515245+12345)&0x7fffffff; return _s/0x7fffffff }
+function pick(a){ return a[Math.floor(rnd()*a.length)] }
+function rint(lo,hi){ return Math.floor(lo+rnd()*(hi-lo+1)) }
+const TOOL_TYPES=['exec_command','read_file','apply_patch','write_file','grep','web_fetch','delegate_send'];
+const ASSIST_BLURBS=[
+  'Inspecting the transcript pane to map turn kinds to a query index.',
+  'Generating a three-level delegation tree for the migration spike.',
+  'Running the fuzz corpus against the new securepath edge cases.',
+  'Summarizing compaction boundary #2 for the README.',
+  'Diagnosing the rate-limit retry that hit attempt 9/11.',
+  'Building the mockup data so the strip demonstrates scale honestly.',
+  'Triaging the detached shell job that outlived its session.',
+  'Reconciling the delegate delivery commits across two children.',
+];
+const USER_BLURBS=[
+  'Build three transcript viz proposals under proposals/transcript-viz/glm52-b/.',
+  'The minimap idea feels generic — push for something interaction-centric.',
+  'Use synthetic data from one coherent ~250-turn session so they compare.',
+  'Make sure each idea renders from file:// with no network.',
+];
+const COMPACTS=[59,122,213];
+const USER_TURNS=[0,61,124,215];
+const STEER_TURNS=[150,205];
+const STEER_BLURBS=[
+  'Steer: prefer read-only inspection before patching.',
+  'Steer: keep the strip honest about scale — no aggregating prompts.',
+];
+const FAIL_TURNS=[163,164,165,166,167,168];
+const HOOK_TURNS=[33,88,141,199];
+const DELEGATES=[
+  {id:'root', parent:null, spawn:0, done:244, level:0, name:'main session', outcome:'ok', tools:1605, tokens:1840000, wallSec:22*60},
+  {id:'dlg_a1', parent:'root', spawn:20, done:58, level:1, name:'fuzz-securepath', outcome:'ok', tools:214, tokens:184000, wallSec:14*60},
+  {id:'dlg_b2', parent:'root', spawn:76, done:115, level:1, name:'build-mockups', outcome:'ok', tools:302, tokens:410000, wallSec:28*60},
+  {id:'dlg_c3', parent:'dlg_b2', spawn:84, done:99, level:2, name:'render-idea-1', outcome:'ok', tools:128, tokens:152000, wallSec:14*60},
+  {id:'dlg_d4', parent:'dlg_b2', spawn:106, done:114, level:2, name:'render-idea-2', outcome:'ok', tools:96, tokens:118000, wallSec:8*60},
+  {id:'dlg_e5', parent:'root', spawn:139, done:210, level:1, name:'verify-in-browser', outcome:'err', tools:471, tokens:506000, wallSec:71*60},
+  {id:'dlg_f6', parent:'dlg_e5', spawn:149, done:182, level:2, name:'chrome-screenshot', outcome:'ok', tools:188, tokens:201000, wallSec:33*60},
+  {id:'dlg_g7', parent:'dlg_f6', spawn:157, done:172, level:3, name:'fix-layout-bug', outcome:'ok', tools:73, tokens:88000, wallSec:15*60},
+];
+const JOBS=[
+  {id:'job_t1', delegate:null, spawn:42, done:56, name:'fuzz securepath (detached)', kind:'detached', durSec:14*60, outcome:'ok'},
+  {id:'job_t2', delegate:null, spawn:96, done:210, name:'go test ./agent/doctor (bg)', kind:'background', durSec:115*60, outcome:'ok'},
+  {id:'job_t3', delegate:null, spawn:114, done:116, name:'npm run build (bg)', kind:'background', durSec:2*60, outcome:'ok'},
+  {id:'job_t4', delegate:null, spawn:165, done:225, name:'chrome screenshot loop (bg)', kind:'background', durSec:55*60, outcome:'ok'},
+];
+const WATCHES=[
+  {id:'watch_w1', name:'job_t2 completion → notify root', spawn:96, fire:210},
+  {id:'watch_w2', name:'fs watch · fuzz corpus dir', spawn:44, fire:57},
+];
+const MAX_TURN=244;
+const KIND_LABEL={ USER:'user', STEER:'steer', ASSIST:'assistant', CHECKPOINT:'checkpoint', SUMMARY:'summary', FAILURE:'failure', HOOK:'hook', MODEL_SWITCH:'model_sw', ENV:'env' };
+
+function buildEvents(){
+  const ev=[]; let wall=0;
+  for(let i=0;i<=MAX_TURN;i++){
+    wall+=rint(3,8);
+    const t={idx:i, kind:'ASSIST', tools:0, text:pick(ASSIST_BLURBS), wall, delegate:null, job:null, watch:null, ckpt:0, err:false, toolType:null};
+    const ui=USER_TURNS.indexOf(i);
+    if(ui>=0){ t.kind='USER'; t.text=USER_BLURBS[ui]; }
+    else if(STEER_TURNS.includes(i)){ t.kind='STEER'; t.text=STEER_BLURBS[STEER_TURNS.indexOf(i)]; }
+    else if(COMPACTS.includes(i)){ t.kind='CHECKPOINT'; t.ckpt=COMPACTS.indexOf(i)+1; t.text=`compaction checkpoint #${t.ckpt} — context folded at 78% pressure`; }
+    else if(COMPACTS.includes(i-1)){ t.kind='SUMMARY'; t.text=`carry-forward summary for segment ${COMPACTS.indexOf(i-1)+1}`; }
+    else if(FAIL_TURNS.includes(i)){ t.kind='FAILURE'; t.err=true; t.tools=rint(1,3); t.text=`rate-limit 429 inside verify-in-browser — retry attempt ${FAIL_TURNS.indexOf(i)+6}/11 after backoff`; }
+    else if(i===1){ t.kind='ENV'; t.text='environment context collected (darwin, go, node)'; }
+    else if(i===130){ t.kind='MODEL_SWITCH'; t.text='model switch: glm-5.2-vision → glm-5.2 (vision no longer needed)'; }
+    else if(HOOK_TURNS.includes(i)){ t.kind='HOOK'; t.text='hook_completed: session-log rotate'; }
+    if((t.kind==='ASSIST'||t.kind==='HOOK') && rnd()<0.68){ t.tools=rint(1,25); t.toolType=pick(TOOL_TYPES); }
+    const d=DELEGATES.find(x=>x.parent && (x.spawn===i || x.done===i || ((x.spawn+x.done)>>1)===i));
+    if(d) t.delegate=d.id;
+    const j=JOBS.find(x=>x.spawn===i || x.done===i);
+    if(j) t.job=j.id;
+    const w=WATCHES.find(x=>x.spawn===i || x.fire===i);
+    if(w) t.watch=w.id;
+    t.hay=`${KIND_LABEL[t.kind]} ${t.text} ${t.toolType||''} ${d?d.id+' '+d.name:''} ${j?j.id+' '+j.name+' '+j.kind:''} ${w?w.id+' '+w.name:''}`.toLowerCase();
+    ev.push(t);
+  }
+  return ev;
+}
+const EVENTS=buildEvents();
+
+/* ── lane model: a turn can paint in several lanes ── */
+const LANES=[
+  {key:'prompt',  label:'P', color:'#7cc4ff', has:t=>t.kind==='USER'||t.kind==='STEER'},
+  {key:'assist',  label:'A', color:'#e7edf5', has:t=>t.kind==='ASSIST'||t.kind==='HOOK'||t.kind==='MODEL_SWITCH'||t.kind==='ENV'},
+  {key:'tool',    label:'T', color:'#8fa3c8', has:t=>t.tools>0},
+  {key:'deleg',   label:'D', color:'#5fd0c4', has:t=>!!t.delegate},
+  {key:'job',     label:'J', color:'#ffce6b', has:t=>!!t.job},
+  {key:'watch',   label:'W', color:'#ff9ecb', has:t=>!!t.watch},
+  {key:'compact', label:'C', color:'#b69cff', has:t=>t.kind==='CHECKPOINT'||t.kind==='SUMMARY'},
+  {key:'fail',    label:'F', color:'#ff7d7d', has:t=>t.kind==='FAILURE'},
+];
+
+const state={ playing:false, speed:4, idx:0, q:'', iso:null, brush:null, anchorNo:0, popPinned:false };
+const $=id=>document.getElementById(id);
+const txEl=$('tx'), anchorsEl=$('anchors'), popEl=$('pop'), lensQ=$('lensQ'), lzStatus=$('lzStatus'),
+      lzTurnEl=$('lzTurn'), progressEl=$('progress'), txCountEl=$('txCount'), lzLive=$('lzLive'),
+      playPauseBtn=$('playPause'), speedSel=$('speedSel'), resetBtn=$('resetBtn'), followChk=$('followChk');
+const DEFAULT_STATUS='hover isolates a lane · click jumps the transcript · drag brushes · ♦ = your prompts';
+function status(msg){ lzStatus.textContent=msg }
+function escapeHtml(s){ return (s||'').replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'})[c]) }
+function hexA(hex,a){ const r=parseInt(hex.slice(1,3),16), g=parseInt(hex.slice(3,5),16), b=parseInt(hex.slice(5,7),16); return `rgba(${r},${g},${b},${a})` }
+
+/* ── canvas field ── */
+const cv=$('cv'), ctx=cv.getContext('2d');
+const CSSW=296, CSSH=150, GUT=14, TRACK=13;
+const dpr=window.devicePixelRatio||1;
+cv.width=CSSW*dpr; cv.height=CSSH*dpr; ctx.scale(dpr,dpr);
+const laneH=(CSSH-TRACK)/LANES.length;
+const xFor=t=>GUT + (t/MAX_TURN)*(CSSW-GUT-2);
+
+function draw(){
+  ctx.clearRect(0,0,CSSW,CSSH);
+  const now=state.idx-1, q=state.q, iso=state.iso;
+  ctx.font='8px ui-monospace,Menlo,monospace';
+  LANES.forEach((L,li)=>{
+    const y=TRACK+li*laneH;
+    if(li%2){ ctx.fillStyle='rgba(255,255,255,0.035)'; ctx.fillRect(GUT,y,CSSW-GUT-1,laneH) }
+    ctx.fillStyle = iso===L.key ? L.color : '#4a5366';
+    ctx.fillText(L.label, 3, y+laneH/2+3);
+  });
+  // in-flight / completed spans on delegate, job, watch lanes
+  const spans=[
+    ...DELEGATES.filter(d=>d.parent).map(d=>({a:d.spawn,b:d.done,lane:'deleg',color:'#5fd0c4'})),
+    ...JOBS.map(j=>({a:j.spawn,b:j.done,lane:'job',color:'#ffce6b'})),
+    ...WATCHES.map(w=>({a:w.spawn,b:w.fire,lane:'watch',color:'#ff9ecb'})),
+  ];
+  spans.forEach(s=>{
+    if(now < s.a) return;
+    const li=LANES.findIndex(l=>l.key===s.lane), y=TRACK+li*laneH;
+    const x1=xFor(s.a), x2=xFor(Math.min(now,s.b));
+    const active = now<=s.b;
+    ctx.fillStyle=hexA(s.color, active?0.14:0.06);
+    ctx.fillRect(x1,y+2,Math.max(1,x2-x1),laneH-4);
+    if(active){
+      ctx.strokeStyle=hexA(s.color,0.9); ctx.setLineDash([3,3]); ctx.lineDashOffset=-(performance.now()/60)%6;
+      ctx.strokeRect(x1+.5,y+2.5,Math.max(1,x2-x1),laneH-5);
+      ctx.setLineDash([]);
+    }
+  });
+  // brush band
+  if(state.brush){
+    const x1=xFor(state.brush[0]), x2=xFor(state.brush[1]);
+    ctx.fillStyle='rgba(124,196,255,.10)'; ctx.fillRect(x1,TRACK,Math.max(1,x2-x1),CSSH-TRACK);
+    ctx.strokeStyle='rgba(124,196,255,.8)';
+    ctx.beginPath(); ctx.moveTo(x1+.5,TRACK); ctx.lineTo(x1+.5,CSSH); ctx.moveTo(x2+.5,TRACK); ctx.lineTo(x2+.5,CSSH); ctx.stroke();
+  }
+  // event glyphs, session-so-far only
+  for(let i=0;i<=now && i<EVENTS.length;i++){
+    const t=EVENTS[i];
+    const dimQ = q && !t.hay.includes(q);
+    LANES.forEach((L,li)=>{
+      if(!L.has(t)) return;
+      let alpha=0.95;
+      if(iso && iso!==L.key) alpha=Math.min(alpha,0.15);
+      if(dimQ) alpha=Math.min(alpha,0.15);
+      const x=xFor(t.idx), y=TRACK+li*laneH;
+      let h=laneH-5;
+      if(L.key==='tool') h=2+(t.tools/25)*(laneH-7);
+      ctx.fillStyle=hexA(L.color,alpha);
+      ctx.fillRect(x, y+laneH-2-h, 1, h);
+    });
+    if(t.kind==='USER'||t.kind==='STEER'){
+      ctx.fillStyle=hexA(t.kind==='USER'?'#7cc4ff':'#5fd0c4', dimQ?0.2:1);
+      ctx.fillRect(xFor(t.idx), 2, 2, TRACK-4);
+    }
+  }
+  // pulsing now-line
+  if(now>=0){
+    const x=xFor(now), a=0.55+0.45*Math.sin(performance.now()/300);
+    ctx.strokeStyle=`rgba(143,227,160,${a})`;
+    ctx.beginPath(); ctx.moveTo(x+.5,TRACK); ctx.lineTo(x+.5,CSSH); ctx.stroke();
+  }
+}
+(function loop(){ draw(); requestAnimationFrame(loop) })();
+
+/* ── transcript (dimmed mock) ── */
+function addTranscriptBlock(t){
+  const prev=txEl.querySelector('.live-tag'); if(prev) prev.remove();
+  const b=document.createElement('div');
+  b.className='block k-'+t.kind.toLowerCase()+((t.kind==='USER'||t.kind==='STEER')?' prompt':'');
+  b.id='t-'+t.idx;
+  let meta='';
+  if(t.tools) meta+=`${t.tools} tool${t.tools>1?'s':''}${t.toolType?' · '+t.toolType:''}`;
+  const d=t.delegate&&DELEGATES.find(x=>x.id===t.delegate);
+  if(d) meta+=(meta?' · ':'')+`delegate ${d.id} (${d.name})`;
+  const j=t.job&&JOBS.find(x=>x.id===t.job);
+  if(j) meta+=(meta?' · ':'')+`job ${j.id} (${j.name})`;
+  const w=t.watch&&WATCHES.find(x=>x.id===t.watch);
+  if(w) meta+=(meta?' · ':'')+`watch ${w.id} (${w.name})`;
+  b.innerHTML=`<div class="bline"><span class="tno">${String(t.idx).padStart(3,'0')}</span><span class="kchip kc-${t.kind.toLowerCase()}">${KIND_LABEL[t.kind]}</span><span class="txt">${escapeHtml(t.text)}</span><span class="live-tag">● live</span></div>${meta?`<div class="meta">${escapeHtml(meta)}</div>`:''}`;
+  txEl.appendChild(b);
+}
+
+/* ── user-prompt anchors: permanent, one per user_input/steering turn, never aggregated ── */
+function addAnchor(t){
+  const b=document.createElement('button');
+  b.className='anchor'+(t.kind==='STEER'?' s':'');
+  b.style.left=xFor(t.idx)+'px';
+  b.dataset.turn=t.idx;
+  const n=++state.anchorNo;
+  b.innerHTML=`<span>${n}</span>`;
+  b.title=`${t.kind==='USER'?'user prompt':'steering'} #${n} · turn ${t.idx} — click to jump`;
+  b.onclick=e=>{ e.stopPropagation(); state.popPinned=true; jumpToTurn(t.idx); showPop(promptPopHtml(t,n), true) };
+  b.onmouseenter=()=>{ if(!state.popPinned) showPop(promptPopHtml(t,n), false) };
+  b.onmouseleave=()=>{ if(!state.popPinned) popEl.hidden=true };
+  anchorsEl.appendChild(b);
+}
+
+/* ── popovers (allowed to exceed the 312×232 budget) ── */
+function promptPopHtml(t,n){
+  return `<h5>${t.kind==='USER'?'USER PROMPT':'STEERING'} anchor ♦${n} <span class="kchip kc-${t.kind.toLowerCase()}">turn ${t.idx}</span></h5>
+    <div class="ptext">${escapeHtml(t.text)}</div>
+    <div class="prow"><span>permanent anchor — never aggregated</span><span>${Math.floor(t.wall/60)}:${String(t.wall%60).padStart(2,'0')} wall</span></div>
+    <div class="pbtns"><button class="btn" data-jump="${t.idx}">jump in transcript ↗</button></div>`;
+}
+function turnPopHtml(t){
+  const d=t.delegate&&DELEGATES.find(x=>x.id===t.delegate);
+  const j=t.job&&JOBS.find(x=>x.id===t.job);
+  const w=t.watch&&WATCHES.find(x=>x.id===t.watch);
+  let rows=`<div class="prow"><span>kind</span><span>${KIND_LABEL[t.kind]}</span></div>
+    <div class="prow"><span>tools</span><span>${t.tools}${t.toolType?' · '+t.toolType:''}</span></div>
+    <div class="prow"><span>wall</span><span>${Math.floor(t.wall/60)}:${String(t.wall%60).padStart(2,'0')}</span></div>`;
+  if(d) rows+=`<div class="prow"><span>delegate</span><span>${d.id} · ${d.name} · ${d.outcome}</span></div>`;
+  if(j) rows+=`<div class="prow"><span>job</span><span>${j.id} · ${j.kind} · ${j.outcome}</span></div>`;
+  if(w) rows+=`<div class="prow"><span>watch</span><span>${w.id} · ${w.name}</span></div>`;
+  return `<h5>turn ${t.idx}</h5><div class="ptext">${escapeHtml(t.text)}</div>${rows}
+    <div class="pbtns"><button class="btn" data-jump="${t.idx}">jump in transcript ↗</button></div>`;
+}
+function showPop(html,pinned){
+  popEl.innerHTML=html+`<button class="x" title="close (Esc)">✕</button>`;
+  popEl.hidden=false; state.popPinned=pinned;
+  popEl.querySelector('.x').onclick=()=>{ state.popPinned=false; popEl.hidden=true };
+  popEl.querySelectorAll('[data-jump]').forEach(b=>b.onclick=()=>jumpToTurn(+b.dataset.jump));
+}
+
+/* ── transcript jump: the hard requirement, demonstrated ── */
+function jumpToTurn(n){
+  const el=document.getElementById('t-'+n);
+  if(!el) return;
+  followChk.checked=false;
+  el.scrollIntoView({behavior:'smooth', block:'center'});
+  el.classList.remove('flash'); void el.offsetWidth; el.classList.add('flash');
+  status(`jumped to turn ${n} · follow off — re-enable in page chrome`);
+}
+
+/* ── field interactions: hover isolates · click jumps · drag brushes ── */
+function turnFromEvent(e){
+  const r=cv.getBoundingClientRect();
+  return Math.max(0, Math.min(MAX_TURN, Math.round(((e.clientX-r.left-GUT)/(CSSW-GUT-2))*MAX_TURN)));
+}
+function laneFromEvent(e){
+  const r=cv.getBoundingClientRect(), y=e.clientY-r.top;
+  if(y<TRACK) return null;
+  return LANES[Math.max(0, Math.min(LANES.length-1, Math.floor((y-TRACK)/laneH)))];
+}
+let dragStart=null, dragging=false;
+cv.addEventListener('mousedown',e=>{ dragStart=turnFromEvent(e); dragging=false });
+cv.addEventListener('mousemove',e=>{
+  if(dragStart!=null){
+    const t=turnFromEvent(e);
+    if(Math.abs(t-dragStart)>1){
+      dragging=true;
+      state.brush=[Math.min(dragStart,t),Math.max(dragStart,t)];
+      applyBrush(false);
+      status(`brushing t ${state.brush[0]}–${state.brush[1]} — release to commit`);
+    }
+  } else {
+    const L=laneFromEvent(e);
+    state.iso=L?L.key:null;
+    status(L?`lane ${L.key} isolated — others dimmed · click to jump · drag to brush`:DEFAULT_STATUS);
+  }
+});
+cv.addEventListener('mouseup',e=>{
+  if(dragging){
+    if(state.brush){
+      state.brush[1]=Math.min(state.brush[1], Math.max(0,state.idx-1));
+      if(state.brush[0]>state.brush[1]) state.brush=null;
+    }
+    applyBrush(true);
+  } else if(dragStart!=null){
+    const t=Math.min(dragStart, state.idx-1);
+    if(t>=0){ jumpToTurn(t); showPop(turnPopHtml(EVENTS[t]), true) }
+  }
+  dragStart=null; dragging=false;
+});
+cv.addEventListener('mouseleave',()=>{ state.iso=null; if(!state.brush) status(DEFAULT_STATUS) });
+cv.addEventListener('dblclick',clearAll);
+function applyBrush(commit){
+  if(!state.brush) return;
+  const [a,b]=state.brush;
+  [...txEl.children].forEach(c=>{ const n=+c.id.slice(2); c.classList.toggle('out-of-brush', n<a||n>b) });
+  if(commit){
+    jumpToTurn(a);
+    const prompts=EVENTS.slice(a,b+1).filter(t=>t.kind==='USER'||t.kind==='STEER').length;
+    status(`brush t ${a}–${b} committed · ${prompts} prompt${prompts!==1?'s':''} in range · transcript dimmed outside · dbl-click/Esc clears`);
+  }
+}
+
+/* ── query instrument ── */
+lensQ.addEventListener('input',()=>{
+  state.q=lensQ.value.trim().toLowerCase();
+  if(state.q){
+    const n=EVENTS.slice(0,Math.max(0,state.idx)).filter(t=>t.hay.includes(state.q)).length;
+    status(`query “${state.q}” — ${n} matching turn${n!==1?'s':''} so far · others dimmed`);
+  } else status(DEFAULT_STATUS);
+});
+function clearAll(){
+  state.brush=null; state.q=''; lensQ.value=''; state.iso=null; state.popPinned=false; popEl.hidden=true;
+  [...txEl.children].forEach(c=>c.classList.remove('out-of-brush'));
+  status(DEFAULT_STATUS);
+}
+document.addEventListener('keydown',e=>{ if(e.key==='Escape') clearAll() });
+
+/* ── transport (page chrome) + realtime stream ── */
+let tickTimer=null;
+function updateLive(){ lzLive.classList.toggle('off', !state.playing) }
+playPauseBtn.onclick=()=>{
+  state.playing=!state.playing;
+  playPauseBtn.textContent = state.playing ? '⏸ pause' : '▶ play';
+  updateLive();
+  if(state.playing) tick(); else clearTimeout(tickTimer);
+};
+speedSel.onchange=e=>{ state.speed=parseInt(e.target.value) };
+resetBtn.onclick=()=>{
+  state.playing=false; clearTimeout(tickTimer); playPauseBtn.textContent='▶ play';
+  state.idx=0; state.anchorNo=0;
+  txEl.innerHTML=''; anchorsEl.innerHTML='';
+  lzTurnEl.textContent='t —/244'; progressEl.textContent='turn 0 / 244'; txCountEl.textContent='0 turns revealed';
+  clearAll(); updateLive();
+};
+function tick(){
+  if(!state.playing) return;
+  if(state.idx<=MAX_TURN){
+    const t=EVENTS[state.idx];
+    addTranscriptBlock(t);
+    if(t.kind==='USER'||t.kind==='STEER') addAnchor(t);
+    lzTurnEl.textContent=`t ${String(t.idx).padStart(3,'0')}/244`;
+    progressEl.textContent=`turn ${t.idx} / 244`;
+    txCountEl.textContent=`${t.idx+1} turns revealed`;
+    state.idx++;
+    if(followChk.checked) txEl.scrollTop=txEl.scrollHeight;
+    tickTimer=setTimeout(tick, 1000/state.speed);
+  } else {
+    state.playing=false; playPauseBtn.textContent='▶ play'; updateLive();
+    status('stream complete — 245 turns · hover/click/query/brush still live');
+  }
+}
+
+/* init */
+$('sessionMeta').innerHTML=`session <b>s_4a9f…2c1</b> · main · glm-5.2-vision · 245 turns · ${EVENTS.reduce((s,t)=>s+t.tools,0).toLocaleString()} tool calls · 3 compactions · ${DELEGATES.length-1} delegates · ${JOBS.length} jobs · ${WATCHES.length} watches`;
+status(DEFAULT_STATUS);
+</script>
+</body>
+</html>

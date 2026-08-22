@@ -1,0 +1,363 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Compact RT-1 — Trigger Rail (160px)</title>
+<style>
+  :root{
+    --bg:#0d1117; --panel:#161b22; --border:#30363d; --text:#e6edf3; --dim:#8b949e;
+    --blue:#58a6ff; --green:#3fb950; --red:#f85149; --orange:#d29922;
+    --violet:#bc8cff; --purple:#a371f7; --teal:#39c5cf; --amber:#f0b72f;
+  }
+  *{box-sizing:border-box}
+  html,body{margin:0;padding:0;background:var(--bg);color:var(--text);
+    font:12px/1.45 ui-monospace,'SF Mono',SFMono-Regular,Menlo,Consolas,monospace;height:100%}
+  body{display:flex;flex-direction:column;overflow:hidden}
+  /* ---- page chrome (OUTSIDE the component budget) ---- */
+  #chrome{padding:8px 16px;border-bottom:1px solid var(--border);display:flex;flex-wrap:wrap;gap:8px;align-items:center}
+  #chrome .title{font-size:13px;font-weight:700}
+  #chrome .title .idea{color:var(--violet)}
+  .chip{border:1px solid var(--border);border-radius:10px;padding:1px 8px;color:var(--dim);background:var(--panel);font-size:11px}
+  .chip b{color:var(--text)}
+  #liveChip{display:inline-flex;align-items:center;gap:5px;border:1px solid var(--red);color:var(--red);border-radius:10px;padding:1px 9px;font-weight:700;font-size:11px}
+  #liveChip .dot{width:7px;height:7px;border-radius:50%;background:var(--red);animation:blink 1.1s infinite}
+  #liveChip.paused{border-color:var(--orange);color:var(--orange)} #liveChip.paused .dot{background:var(--orange);animation:none}
+  #liveChip.ended{border-color:var(--green);color:var(--green)} #liveChip.ended .dot{background:var(--green);animation:none}
+  @keyframes blink{0%,100%{opacity:1}50%{opacity:.25}}
+  #transport{display:flex;gap:8px;align-items:center;padding:6px 16px;border-bottom:1px solid var(--border);background:#0f141b}
+  #transport button{background:var(--panel);border:1px solid var(--border);color:var(--text);border-radius:6px;padding:2px 10px;font:inherit;font-size:11px;cursor:pointer}
+  #transport button.on{border-color:var(--blue);color:var(--blue)}
+  #seek{flex:1;appearance:none;height:5px;border-radius:3px;background:#21262d;outline:none;cursor:pointer}
+  #seek::-webkit-slider-thumb{appearance:none;width:12px;height:12px;border-radius:50%;background:var(--blue)}
+  #clock{color:var(--teal);font-weight:700;font-size:11px}
+  #caption{padding:4px 16px;font-size:10px;color:var(--dim);border-bottom:1px solid var(--border)}
+  #caption b{color:var(--text)}
+  /* ---- in-situ layout ---- */
+  #stage{display:flex;flex:1;min-height:0;overflow:hidden}
+  #railwrap{flex:0 0 auto;position:relative;padding:0}
+  .frametag{position:absolute;top:4px;left:166px;font-size:9px;color:#6e7681;white-space:nowrap;z-index:4}
+  #trx{flex:1;overflow-y:auto;padding:14px 18px;background:#0a0d12}
+  .tb{margin:5px 0;border-radius:4px;background:#21262d;opacity:.28;position:relative;animation:tbin .3s}
+  @keyframes tbin{from{opacity:0;transform:translateY(4px)}to{opacity:.28;transform:none}}
+  .tb .tl{position:absolute;left:6px;top:2px;font-size:7px;color:#8b949e}
+  .tb.user{background:#1f3a2d}.tb.tool{background:#1a1f27}.tb.sys{background:#2a2438}
+  .tb.up{opacity:.6;border-left:2px solid var(--green)}
+  .tb.up .tl{color:#7ee2a0;font-size:8px}
+  .tb.uflash{animation:uflash 1.2s}
+  @keyframes uflash{0%{opacity:1;box-shadow:0 0 0 2px var(--green)}100%{opacity:.6;box-shadow:none}}
+  /* ================= COMPONENT: 160px rail ================= */
+  #rail{width:160px;height:100%;background:#0e1319;border-right:1px solid var(--border);
+    position:relative;overflow:hidden;font-size:9px;transition:box-shadow .4s}
+  #rail.alert{box-shadow:inset 3px 0 0 var(--red), inset 0 0 22px rgba(248,81,73,.18)}
+  #rail.alertok{box-shadow:inset 3px 0 0 var(--green)}
+  #rTop{height:16px;display:flex;align-items:center;gap:5px;padding:0 8px;border-bottom:1px solid #21262d;color:var(--dim)}
+  #rTop .ld{width:6px;height:6px;border-radius:50%;background:var(--red);animation:blink 1.1s infinite}
+  #rTop.paused .ld{background:var(--orange);animation:none}
+  #rTop.ended .ld{background:var(--green);animation:none}
+  #rTop b{color:var(--text)}
+  #rTray{min-height:15px;display:flex;gap:3px;align-items:center;padding:1px 6px;border-bottom:1px solid #21262d;flex-wrap:wrap}
+  .tk{font-size:8px;border-radius:3px;padding:0 3px;border:1px solid var(--border);color:var(--dim);background:#161b22}
+  .tk.run{border-color:var(--blue);color:var(--blue);animation:blink 1.2s infinite}
+  .tk.ok{border-color:rgba(63,185,80,.5);color:var(--green)}
+  .tk.bad{border-color:var(--red);color:var(--red)}
+  .tk.fire{border-color:var(--orange);color:var(--orange)}
+  #rBody{position:relative;padding:2px 0 40px 26px}
+  #rBr{position:absolute;left:0;top:0;width:26px;height:100%;pointer-events:none}
+  .rw{display:flex;align-items:center;gap:4px;position:relative;transition:height .6s;overflow:hidden;height:10px}
+  .rw .dt{width:7px;height:7px;border-radius:50%;background:var(--dim);flex:none;position:relative}
+  .rw .lb{color:var(--dim);white-space:nowrap}
+  .rw .st{margin-left:auto;padding-right:10px;color:var(--dim)}
+  .rw:not(:last-child)::before{content:"";position:absolute;left:3px;top:8px;bottom:-2px;width:1px;background:#30363d}
+  .rw.ep .dt{background:#8b949e}
+  .rw.delegate .dt{background:var(--violet)}
+  .rw.steer .dt{background:var(--blue);border-radius:2px}
+  .rw.jobsrow .dt{background:var(--blue);border-radius:2px}
+  .rw.watch .dt{background:var(--orange);border-radius:0;clip-path:polygon(50% 0,100% 100%,0 100%);width:8px;height:7px}
+  .rw.error .dt{background:var(--red);border-radius:2px}
+  .rw.fold .dt{background:var(--purple);border-radius:2px;height:5px}
+  .rw.term .dt{background:var(--green)}
+  .rw.sub{padding-left:12px}
+  .rw.sub::after{content:"";position:absolute;left:-9px;top:50%;width:8px;height:1px;background:var(--violet)}
+  .rw.done{opacity:.75}
+  .rw.open{height:26px;opacity:1}
+  .rw.open .dt{animation:blink 1s infinite;box-shadow:0 0 6px var(--amber)}
+  .rw.open .lb{color:var(--amber);font-weight:700}
+  .rw.recent{height:16px}
+  .rw.old{height:10px}
+  .rw.old .lb{font-size:8px;opacity:.7}
+  .rw.sliver{height:5px}
+  .rw.sliver .lb,.rw.sliver .st{display:none}
+  .rw.sliver .dt{width:6px;height:4px;border-radius:1px}
+  .rw.foldrow{height:9px}
+  .rw.foldrow .lb{color:var(--purple);font-size:7px}
+  .rw.alertrow .dt{background:var(--red);animation:blink .7s infinite}
+  .rw.alertrow .lb{color:var(--red);font-weight:700}
+  /* user-prompt markers: NEVER compress, never hide */
+  .rw.usr{height:13px;cursor:pointer}
+  .rw.usr .dt{background:var(--green);border-radius:2px;transform:rotate(45deg)}
+  .rw.usr .lb{color:#7ee2a0;font-weight:700}
+  .rw.usr:hover{background:rgba(63,185,80,.12)}
+  .rw.usr .st{color:#7ee2a0}
+  /* context gauge on the right edge */
+  #rGauge{position:absolute;right:0;top:0;bottom:0;width:6px;background:#161b22;border-left:1px solid #21262d}
+  #rGaugeFill{position:absolute;bottom:0;left:0;right:0;background:var(--green);transition:height .3s,background .3s}
+  .gfold{position:absolute;left:-1px;width:8px;height:2px;background:var(--purple)}
+  /* now zone at the bottom */
+  #rNow{position:absolute;left:0;right:6px;bottom:0;min-height:34px;border-top:1px solid #21262d;background:#0b0f15;padding:4px 7px}
+  #rNow .nl{font-size:9px;color:var(--teal);white-space:pre-line;line-height:1.3}
+  #rNow .ntag{display:none;margin-top:3px;font-size:8px;font-weight:700;color:var(--red);border:1px solid var(--red);border-radius:4px;padding:0 4px;width:fit-content;animation:blink 1s infinite}
+  #rNow .ntag.ok{color:var(--green);border-color:var(--green);animation:none}
+  .quiet *{animation:none!important;transition:none!important}
+</style>
+</head>
+<body>
+<div id="chrome">
+  <span id="liveChip"><span class="dot"></span>LIVE</span>
+  <span class="title"><span class="idea">COMPACT RT-1 · TRIGGER RAIL</span></span>
+  <span class="chip">session <b>evener-8f3k2</b></span>
+  <span class="chip">turn <b id="cTurn">1</b>/287</span>
+  <span class="chip"><b id="cCalls">0</b> calls</span>
+  <span class="chip"><b id="cTok">0</b> tok · <b id="cCost">$0.00</b></span>
+</div>
+<div id="transport">
+  <button id="bPlay">⏸ pause</button>
+  <button class="spd" data-s="1">1×</button><button class="spd" data-s="8">8×</button>
+  <button class="spd on" data-s="32">32×</button><button class="spd" data-s="128">128×</button>
+  <input id="seek" type="range" min="0" max="372" step="0.5" value="0">
+  <span id="clock">T+0h00m</span>
+  <button id="bReplay">↺ replay</button>
+</div>
+<div id="caption"><b>Component under test: the 160px rail below-left</b> (dashed boundary, “160 × vh” tag). Legend lives here, not in the component: ● row = episode (violet = delegate, blue = steering/jobs, orange ▲ = watch, red ▪ = failure cascade, purple = fold) · pulsing = in flight · <b>left-edge brackets = non-adjacent causality</b> (red = caused failure, teal = reported, blue = steered, green = gate) · right-edge mercury = context pressure (purple nicks = folds) · rows compress to slivers behind each fold — the rail literally compacts · bottom = now · whole left border glows red while a runaway/cascade is active. <b>◆ green U-rows = user prompts (U1 goal … U7)</b> — they never compress or scroll away; <b>click one to jump the transcript to that exact prompt</b> (try U5 once it appears — mid-cascade steering).</div>
+<div id="stage">
+  <div id="railwrap">
+    <span class="frametag">component: 160px × 100% viewport height</span>
+    <div id="rail">
+      <div id="rTop"><span class="ld"></span><b id="rTurn">T1</b><span style="color:#6e7681">trigger rail</span></div>
+      <div id="rTray"></div>
+      <div id="rBody"><svg id="rBr"></svg><div id="rRows"></div></div>
+      <div id="rGauge"><div id="rGaugeFill"></div></div>
+      <div id="rNow"><div class="nl" id="rNowLine">…</div><div class="ntag" id="rNowTag"></div></div>
+    </div>
+  </div>
+  <div id="trx"></div>
+</div>
+<script>
+"use strict";
+function mulberry32(a){return function(){a|=0;a=a+0x6D2B79F5|0;let t=Math.imul(a^a>>>15,1|a);t=t+Math.imul(t^t>>>7,61|t)^t;return((t^t>>>14)>>>0)/4294967296;};}
+const rnd=mulberry32(580914);
+const SIM_END=372;
+const TURN_ANCHORS=[[1,0],[28,25],[61,70],[62,75],[95,140],[128,180],[131,185],[149,215],[151,220],[200,290],[220,330],[221,335],[260,355],[287,372]];
+function turnAt(min){for(let i=1;i<TURN_ANCHORS.length;i++){const [t1,m1]=TURN_ANCHORS[i];const [t0,m0]=TURN_ANCHORS[i-1];
+  if(min<=m1)return Math.round(t0+(min-m0)*(t1-t0)/(m1-m0));}return 287;}
+function fmt(t){const h=Math.floor(t/60),m=Math.floor(t%60);return "T+"+h+"h"+String(m).padStart(2,"0")+"m";}
+// episodes: [id, m0, m1, cssClass, label, indent]
+const EPS=[
+ ["E1",0,25,"ep","recon",0],["E2",25,70,"ep","jobstore",0],["S1",75,76,"steer","U3·STEER",0],
+ ["E4",78,140,"delegate","dlg_store",0],["E5",90,200,"delegate sub","dlg_tests",1],
+ ["E6",150,180,"jobsrow","jobs",0],["E7",182,188,"watch","w_storm",0],
+ ["E8",196,216,"error","CASCADE",0],["E9",220,221,"fold","≣ FOLD·1",0],
+ ["E10",226,298,"ep","integrate",0],["E11",300,330,"error","ci retry",0],
+ ["E12",335,336,"fold","≣ FOLD·2",0],["E13",338,355,"delegate","dlg_docs",0],
+ ["E14",356,372,"term","GOAL ✓",0],
+];
+// user prompts (user_input + steering) — permanent markers, never compressed
+const UPROMPTS=[
+ [1,0,"goal","Implement tombstone pruning; fix watch runaway loop"],
+ [2,48,"steer","prefer in-place rewrite over copy-prune"],
+ [3,75,"steer","also handle delegate tombstones"],
+ [4,168,"steer","keep the fuzz job detached — don't block on it"],
+ [5,205,"steer","stop guessing — find the root cause first"],
+ [6,310,"steer","update docs/web-ui while CI runs"],
+ [7,365,"wrap","wrap up and prep the PR"],
+];
+// non-adjacent causal brackets [t, fromId, toId, color]
+const BRACKETS=[
+ [205,"U5","E8","#58a6ff"],[208,"E5","E8","#8b949e"],[214,"E2","E8","#f85149"],
+ [290,"E4","E10","#39c5cf"],[290,"E5","E10","#39c5cf"],
+ [308,"E8","E11","#f85149"],[310,"U6","E13","#58a6ff"],[356,"E11","E14","#3fb950"],
+];
+const NOW=[[0,"▶ grep/read sweep"],[25,"▶ edit prune.go"],[52,"▶ iterator (T44)"],[75,"➤ STEERING consumed"],
+ [78,"▶ dlg: tombstone.go"],[90,"▶ dlg2: fuzz targets"],[150,"⚙ build + fuzz start"],[154,"✓ build · fuzz running"],
+ [182,"▲ w_fuzz fire 1"],[184.5,"▲ fire 2 — same line!"],[187,"⚠ STORM 3×/90s"],
+ [196,"✗ attempt 1 · vet"],[202,"✗ attempt 2 · build"],[208,"✗ attempt 3 · test"],[212,"✗ attempt 4 · fuzz"],
+ [214,"✱ ROOT CAUSE found"],[215,"✔ fix +6−2 · green"],[220,"≣ FOLD 1.9M→40k"],[226,"▶ merge dlg report"],
+ [48,"➤ U2: in-place rewrite"],[168,"➤ U4: fuzz stays detached"],[205,"➤ U5: find ROOT CAUSE first"],[310,"➤ U6: update docs"],[365,"➤ U7: wrap up + PR"],
+ [250,"▲ w_cost once · ok"],[290,"✓ dlg_store reported"],[292,"⚙ MODEL k3→mini"],[300,"▶ ci run 1"],
+ [308,"✗ ci exit 1 · lint"],[312,"▶ ci rerun"],[318,"✓ ci green · ▲w_ci ×1"],[330,"✓ fuzz done 3h"],
+ [335,"≣ FOLD 890k→22k"],[338,"▶ dlg_docs ×6 files"],[350,"▶ build·vet·test ✓"],[355,"✓ docs merged"],
+ [356,"⚙ e2e running"],[360,"✓ e2e exit 0"],[372,"✔ GOAL COMPLETE · PR#312"]];
+const ALERTS=[[184.5,"warn","⚠ w_fuzz ×2"],[187,"bad","⚠ RUNAWAY ×3"],[202,"warn","⚠ fails ×2"],[208,"bad","⚠ CASCADE ×3"],
+ [214,"ok","✓ cause found"],[250,"info","w_cost ok"],[308,"warn","ci ✗ lint"],[318,"ok","ci ✓ rerun"],[372,"ok","GOAL ✓"]];
+const EV=[];
+for(const [id,m0,m1] of EPS){EV.push({t:m0,k:"open",id});EV.push({t:m1,k:"seal",id});}
+for(const [t,a,b,c] of BRACKETS)EV.push({t,k:"bracket",a,b,c});
+for(const [n,t] of UPROMPTS)EV.push({t:t+0.1,k:"prompt",n});
+for(const [t,text] of NOW)EV.push({t,k:"now",text});
+for(const [t,level,text] of ALERTS)EV.push({t,k:"alert",level,text});
+for(const j of [{id:"build",t0:150,t1:154,ok:1},{id:"fuzz",t0:150,t1:330,ok:1},{id:"ci",t0:300,t1:308,ok:0},{id:"ci↻",t0:312,t1:318,ok:1},{id:"e2e",t0:340,t1:360,ok:1}]){
+  EV.push({t:j.t0,k:"jstart",j});EV.push({t:j.t1,k:"jend",j});}
+for(const f of [182,184.5,187,250,318])EV.push({t:f,k:"fire"});
+EV.push({t:220,k:"fold"});EV.push({t:335,k:"fold"});
+(function(){const raw=[];let sum=0;
+ for(let t=3;t<=372;t+=6){let w=3+3*Math.abs(Math.sin(t/17));
+   if(t>=78&&t<=140)w+=5;if(t>=196&&t<=216)w+=10;if(t>=226&&t<=290)w+=6;if(t>=338&&t<=356)w+=8;if(t>=25&&t<=70)w+=5;
+   w*=0.6+0.8*rnd();raw.push([t,w]);sum+=w;}
+ for(const [t,w] of raw)EV.push({t,k:"act",calls:Math.max(1,Math.round(w*2146/sum))});})();
+for(let t=4;t<=372;t+=6)EV.push({t,k:"tb"});
+EV.sort((a,b)=>a.t-b.t);
+// ---- state ----
+let now=0,speed=32,playing=true,evIdx=0,lastTs=null,quiet=false;
+let openIds=new Set(),sealedOrder=[],foldsAt=[],calls=0,firesSeen=0,alertTag=null,alertCls="",jobsLive={};
+const rail=document.getElementById("rail"),rowsBox=document.getElementById("rRows"),brSvg=document.getElementById("rBr"),
+  tray=document.getElementById("rTray"),nowLine=document.getElementById("rNowLine"),nowTag=document.getElementById("rNowTag"),
+  gaugeFill=document.getElementById("rGaugeFill"),gauge=document.getElementById("rGauge"),trx=document.getElementById("trx");
+const rowEls={},brEls=[];let bracketLane=0;
+const epById=id=>EPS.find(e=>e[0]===id);
+function ctxAt(t){let v=8;for(let s=0;s<=t;s+=4){if(s>=220&&s<224)v=12;else if(s>=335&&s<339)v=10;else v=Math.min(96,v+1.6);if(s>330&&s<336)v=78;}return v;}
+function mkRow(id){
+  const [eid,m0,m1,cls,label,sub]=epById(id);
+  const d=document.createElement("div");d.className="rw "+cls+(sub?" sub":"")+(cls==="fold"?" foldrow":"");
+  d.dataset.id=id;
+  d.innerHTML=`<span class="dt"></span><span class="lb">${label}</span><span class="st">▶</span>`;
+  if(id==="S1"){d.classList.add("usr");d.title=UPROMPTS[2][3];
+    d.addEventListener("click",()=>scrollTrx(3));}
+  rowsBox.appendChild(d);rowEls[id]=d;return d;
+}
+function mkURow(n){
+  const [nn,t,kind,full]=UPROMPTS.find(p=>p[0]===n);
+  const d=document.createElement("div");d.className="rw usr";d.dataset.id="U"+n;
+  d.title=`${kind==="goal"?"USER_INPUT":"STEERING"} T${turnAt(t)} — ${full}\nclick → jump transcript to this prompt`;
+  d.innerHTML=`<span class="dt"></span><span class="lb">U${n} · ${kind}</span><span class="st">➤</span>`;
+  d.addEventListener("click",()=>scrollTrx(n));
+  rowsBox.appendChild(d);rowEls["U"+n]=d;return d;
+}
+function addPromptBlock(n){
+  const [nn,t,kind,full]=UPROMPTS.find(p=>p[0]===n);
+  const d=document.createElement("div");d.className="tb user up";d.id="u-prompt-"+n;
+  d.style.width="72%";d.style.height="22px";
+  d.innerHTML=`<span class="tl">${kind==="goal"?"USER_INPUT":"STEERING"} T${turnAt(t)} · “${full}”</span>`;
+  trx.appendChild(d);
+  if(trx.children.length>80)trx.removeChild(trx.firstChild);
+  trx.scrollTop=trx.scrollHeight;
+}
+function scrollTrx(n){
+  const b=document.getElementById("u-prompt-"+n);if(!b)return;
+  b.scrollIntoView({behavior:"smooth",block:"center"});
+  b.classList.remove("uflash");void b.offsetWidth;b.classList.add("uflash");
+}
+function rowStates(){
+  // heights: open 26 · latest 2 sealed 16 · older 10 · behind a fold → 5 (sliver)
+  const maxSeal=sealedOrder.reduce((m,id)=>Math.max(m,EPS.findIndex(e=>e[0]===id)),-1);
+  for(const [id,m0,m1,cls] of EPS){
+    const d=rowEls[id];if(!d)continue;
+    const isOpen=openIds.has(id);
+    const idx=EPS.findIndex(e=>e[0]===id);
+    const behindFold=foldsAt.some(f=>f>m1);
+    if(id==="S1"){ // U3 marker row: pulses while live, never compresses
+      d.classList.toggle("open",isOpen);d.classList.toggle("done",!isOpen);continue;
+    }
+    d.classList.toggle("open",isOpen);
+    d.classList.toggle("done",!isOpen);
+    d.classList.toggle("recent",!isOpen&&!behindFold&&idx>=maxSeal-1);
+    d.classList.toggle("old",!isOpen&&!behindFold&&idx<maxSeal-1);
+    d.classList.toggle("sliver",!isOpen&&behindFold);
+    d.classList.toggle("alertrow",isOpen&&(id==="E7"||id==="E8")&&!!alertTag);
+    d.querySelector(".st").textContent=isOpen?"▶":(cls==="fold"?"≣":(id==="E7"?"⚠":(id==="E11"?"✗✓":"✓")));
+  }
+}
+function drawBrackets(){
+  brSvg.innerHTML="";
+  const H=rowsBox.offsetHeight;brSvg.setAttribute("height",H);
+  for(const b of brEls){
+    const a=rowEls[b.a],t=rowEls[b.b];if(!a||!t)continue;
+    const ya=a.offsetTop+a.offsetHeight/2, yt=t.offsetTop+t.offsetHeight/2, x=b.lane;
+    const p=document.createElementNS("http://www.w3.org/2000/svg","path");
+    p.setAttribute("d",`M ${x+10} ${ya} L ${x} ${ya} L ${x} ${yt} L ${x+8} ${yt}`);
+    p.setAttribute("fill","none");p.setAttribute("stroke",b.c);p.setAttribute("stroke-width","1.6");
+    p.setAttribute("opacity",".9");
+    const ah=document.createElementNS("http://www.w3.org/2000/svg","path");
+    ah.setAttribute("d",`M ${x+8} ${yt-3} L ${x+12} ${yt} L ${x+8} ${yt+3} Z`);ah.setAttribute("fill",b.c);
+    brSvg.appendChild(p);brSvg.appendChild(ah);
+  }
+}
+function addTrx(){
+  const kinds=[["assistant · edit_file","",42,14],["tool_results · 2.1k lines","tool",88,18],["assistant","",30,8],
+    ["tool_results · exit 1","tool",64,10],["user","user",22,8],["system · hook","sys",36,8]];
+  const k=kinds[Math.floor(rnd()*kinds.length)];
+  const d=document.createElement("div");d.className="tb "+k[1];
+  d.style.width=k[2]+Math.floor(rnd()*20)+"%";d.style.height=k[3]+Math.floor(rnd()*8)+"px";
+  d.innerHTML=`<span class="tl">${k[0]}</span>`;
+  trx.appendChild(d);
+  if(trx.children.length>80)trx.removeChild(trx.firstChild);
+  trx.scrollTop=trx.scrollHeight;
+}
+function handle(ev){
+  const k=ev.k;
+  if(k==="open"){openIds.add(ev.id);mkRow(ev.id);rowStates();setTimeout(drawBrackets,650);}
+  else if(k==="seal"){openIds.delete(ev.id);sealedOrder.push(ev.id);rowStates();setTimeout(drawBrackets,650);}
+  else if(k==="bracket"){brEls.push({a:ev.a,b:ev.b,c:ev.c,lane:3+bracketLane%20});bracketLane+=6;setTimeout(drawBrackets,660);}
+  else if(k==="now"){nowLine.textContent=ev.text;}
+  else if(k==="alert"){alertTag=ev.text;alertCls=ev.level;
+    rail.classList.toggle("alert",ev.level==="bad");
+    rail.classList.toggle("alertok",ev.level==="ok");
+    nowTag.style.display="inline-block";nowTag.textContent=ev.text;
+    nowTag.classList.toggle("ok",ev.level==="ok"||ev.level==="info");
+    rowStates();}
+  else if(k==="jstart"){const c=document.createElement("span");c.className="tk run";c.textContent="⚙"+ev.j.id;
+    c.dataset.jid=ev.j.id+ev.j.t0;tray.appendChild(c);jobsLive[ev.j.id+ev.j.t0]=c;}
+  else if(k==="jend"){const c=jobsLive[ev.j.id+ev.j.t0];
+    if(c){c.classList.remove("run");c.classList.add(ev.j.ok?"ok":"bad");c.textContent=(ev.j.ok?"✓":"✗")+ev.j.id;}}
+  else if(k==="fire"){firesSeen++;const c=document.createElement("span");c.className="tk fire";
+    c.textContent="▲"+(firesSeen>1?"×"+firesSeen:"");const old=tray.querySelector(".fire");if(old)old.remove();
+    tray.appendChild(c);}
+  else if(k==="fold"){foldsAt.push(ev.t);rowStates();
+    const n=document.createElement("div");n.className="gfold";n.style.bottom=(ctxAt(ev.t))+"%";gauge.appendChild(n);
+    setTimeout(drawBrackets,660);}
+  else if(k==="prompt"){addPromptBlock(ev.n);if(ev.n!==3)mkURow(ev.n);setTimeout(drawBrackets,660);}
+  else if(k==="act"){calls+=ev.calls;}
+  else if(k==="tb"){addTrx();}
+}
+function dispatchTo(target){while(evIdx<EV.length&&EV[evIdx].t<=target){handle(EV[evIdx]);evIdx++;}}
+function renderHud(){
+  document.getElementById("cTurn").textContent=turnAt(now);
+  document.getElementById("rTurn").textContent="T"+turnAt(now);
+  document.getElementById("cCalls").textContent=calls.toLocaleString();
+  const tok=Math.round(calls*1925);
+  document.getElementById("cTok").textContent=tok>=1e6?(tok/1e6).toFixed(2)+"M":Math.round(tok/1e3)+"k";
+  document.getElementById("cCost").textContent="$"+(tok*9.3e-6).toFixed(2);
+  document.getElementById("clock").textContent=fmt(now);
+  document.getElementById("seek").value=now;
+  const cv=ctxAt(now);
+  gaugeFill.style.height=cv+"%";
+  gaugeFill.style.background=cv>85?"var(--red)":cv>65?"var(--amber)":"var(--green)";
+  const lc=document.getElementById("liveChip"),rt=document.getElementById("rTop");
+  if(now>=SIM_END){lc.className="ended";lc.innerHTML='<span class="dot"></span>ENDED ✓';rt.className="ended";}
+  else if(playing){lc.className="";lc.innerHTML='<span class="dot"></span>LIVE';rt.className="";}
+  else{lc.className="paused";lc.innerHTML='<span class="dot"></span>PAUSED';rt.className="paused";}
+}
+function rebuild(target){
+  quiet=true;document.body.classList.add("quiet");
+  evIdx=0;openIds=new Set();sealedOrder=[];foldsAt=[];calls=0;firesSeen=0;alertTag=null;bracketLane=0;
+  rowsBox.innerHTML="";for(const id in rowEls)delete rowEls[id];
+  brEls.length=0;brSvg.innerHTML="";tray.innerHTML="";trx.innerHTML="";jobsLive={};
+  gauge.querySelectorAll(".gfold").forEach(x=>x.remove());
+  rail.classList.remove("alert","alertok");nowTag.style.display="none";
+  now=target;dispatchTo(target);
+  document.body.classList.remove("quiet");quiet=false;
+  rowStates();setTimeout(drawBrackets,30);
+}
+function frame(ts){
+  if(lastTs==null)lastTs=ts;const dt=(ts-lastTs)/1000;lastTs=ts;
+  if(playing&&now<SIM_END){now=Math.min(SIM_END,now+dt*speed);dispatchTo(now);}
+  renderHud();
+  requestAnimationFrame(frame);
+}
+document.getElementById("bPlay").addEventListener("click",ev=>{playing=!playing;ev.target.textContent=playing?"⏸ pause":"▶ play";});
+document.querySelectorAll(".spd").forEach(b=>b.addEventListener("click",()=>{
+  document.querySelectorAll(".spd").forEach(x=>x.classList.remove("on"));b.classList.add("on");speed=+b.dataset.s;}));
+document.getElementById("bReplay").addEventListener("click",()=>{rebuild(0);playing=true;document.getElementById("bPlay").textContent="⏸ pause";});
+document.getElementById("seek").addEventListener("input",ev=>{rebuild(+ev.target.value);});
+requestAnimationFrame(frame);
+</script>
+</body>
+</html>

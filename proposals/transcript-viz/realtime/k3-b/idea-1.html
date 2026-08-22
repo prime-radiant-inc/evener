@@ -1,0 +1,407 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>RT Idea 1 — Upstream Live: growing causal graph</title>
+<style>
+  :root{
+    --bg:#0d1117; --panel:#161b22; --border:#30363d; --text:#e6edf3; --dim:#8b949e;
+    --blue:#58a6ff; --green:#3fb950; --red:#f85149; --orange:#d29922;
+    --violet:#bc8cff; --purple:#a371f7; --teal:#39c5cf; --amber:#f0b72f;
+  }
+  *{box-sizing:border-box}
+  html,body{margin:0;padding:0;background:var(--bg);color:var(--text);
+    font:12px/1.45 ui-monospace,'SF Mono',SFMono-Regular,Menlo,Consolas,monospace;}
+  header{padding:10px 20px 8px;border-bottom:1px solid var(--border);display:flex;flex-wrap:wrap;gap:8px;align-items:center}
+  header .title{font-size:14px;font-weight:700;margin-right:6px}
+  header .title .idea{color:var(--violet)}
+  .chip{border:1px solid var(--border);border-radius:10px;padding:2px 8px;color:var(--dim);background:var(--panel)}
+  .chip b{color:var(--text);font-weight:600}
+  #liveChip{display:inline-flex;align-items:center;gap:6px;border:1px solid var(--red);color:var(--red);
+    border-radius:10px;padding:2px 10px;font-weight:700}
+  #liveChip .dot{width:8px;height:8px;border-radius:50%;background:var(--red);animation:blink 1.1s infinite}
+  #liveChip.paused{border-color:var(--orange);color:var(--orange)} #liveChip.paused .dot{background:var(--orange);animation:none}
+  #liveChip.ended{border-color:var(--green);color:var(--green)} #liveChip.ended .dot{background:var(--green);animation:none}
+  @keyframes blink{0%,100%{opacity:1}50%{opacity:.25}}
+  /* transport */
+  #transport{display:flex;gap:10px;align-items:center;padding:8px 20px;border-bottom:1px solid var(--border);background:#0f141b}
+  #transport button{background:var(--panel);border:1px solid var(--border);color:var(--text);border-radius:6px;
+    padding:3px 12px;font:inherit;cursor:pointer}
+  #transport button:hover{border-color:var(--blue)}
+  #transport button.on{border-color:var(--blue);color:var(--blue);background:rgba(88,166,255,.1)}
+  #seek{flex:1;appearance:none;height:6px;border-radius:3px;background:#21262d;outline:none;cursor:pointer}
+  #seek::-webkit-slider-thumb{appearance:none;width:14px;height:14px;border-radius:50%;background:var(--blue)}
+  #clock{color:var(--teal);font-weight:700;min-width:170px}
+  .layout{display:flex;min-height:calc(100vh - 96px)}
+  aside{width:310px;flex:0 0 310px;border-right:1px solid var(--border);padding:12px 14px;background:#0f141b;overflow-y:auto}
+  aside h3{margin:0 0 6px;font-size:11px;text-transform:uppercase;letter-spacing:.08em;color:var(--dim)}
+  aside .block{margin-bottom:16px}
+  #whynow .focus-card{border:1px solid var(--amber);border-radius:8px;padding:8px 10px;background:rgba(240,183,47,.06)}
+  #whynow .focus-card .t{font-weight:700;color:var(--amber)}
+  #whynow .focus-card .s{color:#c9d1d9;font-size:11px;margin-top:3px;white-space:pre-line}
+  #whynow .via{color:var(--amber);margin:4px 0 0 8px;font-size:10px}
+  #whynow .chain{border:1px solid var(--border);border-left:3px solid var(--amber);border-radius:6px;padding:5px 8px;margin:4px 0;background:var(--panel);font-size:11px}
+  #alerts .alert{border:1px solid var(--border);border-left:3px solid var(--dim);border-radius:6px;
+    padding:5px 8px;margin:4px 0;background:var(--panel);font-size:11px;color:#c9d1d9}
+  #alerts .alert.warn{border-left-color:var(--orange)}
+  #alerts .alert.bad{border-left-color:var(--red);background:rgba(248,81,73,.07)}
+  #alerts .alert.ok{border-left-color:var(--green);color:var(--dim)}
+  #alerts .alert.info{border-left-color:var(--blue)}
+  #alerts .alert .at{color:var(--dim);font-size:10px;margin-right:6px}
+  .legend-item{display:flex;align-items:center;gap:8px;margin:3px 0;color:var(--dim);font-size:11px}
+  .legend-item .sw{width:22px;height:0;border-top:3px solid #888;border-radius:2px;flex:none}
+  .legend-item .sw.dash{border-top-style:dashed}
+  .legend-item .ng{width:13px;height:13px;border:1.5px solid #888;border-radius:4px;flex:none;background:var(--panel)}
+  main{flex:1;position:relative;overflow:auto}
+  svg{display:block;width:100%;height:auto;min-width:900px}
+  .node{cursor:default}
+  .n-title{font-size:12px;font-weight:700;fill:var(--text)}
+  .n-sub{font-size:10px;fill:var(--dim)}
+  .n-status{font-size:9.5px;fill:var(--teal)}
+  .n-glyph{font-size:14px;fill:var(--dim)}
+  .edge{fill:none;stroke-width:1.6;opacity:.85}
+  .edge-label{font-size:9.5px;fill:var(--dim);paint-order:stroke;stroke:var(--bg);stroke-width:3px}
+  .halo{fill:none;stroke:var(--amber);stroke-width:2;opacity:.9;animation:halo 1.4s infinite}
+  @keyframes halo{0%,100%{opacity:.9}50%{opacity:.15}}
+  .node.done .halo{display:none}
+  .node.failflash rect.body{animation:failflash 1s 2}
+  @keyframes failflash{0%,100%{stroke:var(--red)}50%{stroke:#ff9b94;stroke-width:3}}
+  .appear{animation:appear .55s ease-out;transform-box:fill-box;transform-origin:center}
+  @keyframes appear{from{opacity:0;transform:scale(.55)}to{opacity:1;transform:scale(1)}}
+  .drawedge{stroke-dasharray:1200;stroke-dashoffset:1200;animation:drawedge 1s forwards}
+  @keyframes drawedge{to{stroke-dashoffset:0}}
+  .quiet *{animation:none!important}
+  .axis-label{font-size:10px;fill:#6e7681}
+  #tip{position:fixed;display:none;max-width:330px;background:#1c2330;border:1px solid #444c56;border-radius:8px;
+    padding:9px 11px;pointer-events:none;z-index:10;box-shadow:0 8px 24px rgba(0,0,0,.5);font-size:11px}
+  #tip .tt{font-weight:700} #tip .td{color:#c9d1d9;white-space:pre-line;margin-top:4px}
+</style>
+</head>
+<body>
+<header>
+  <span id="liveChip"><span class="dot"></span>LIVE</span>
+  <span class="title"><span class="idea">RT-1 · UPSTREAM LIVE</span> — growing causal graph</span>
+  <span class="chip">session <b>evener-8f3k2</b></span>
+  <span class="chip">turn <b id="cTurn">1</b>/287</span>
+  <span class="chip"><b id="cCalls">0</b> tool calls</span>
+  <span class="chip"><b id="cTok">0</b> tok · <b id="cCost">$0.00</b></span>
+  <span class="chip">actors now: <b id="cActors">1</b></span>
+</header>
+<div id="transport">
+  <button id="bPlay">⏸ pause</button>
+  <button class="spd" data-s="1">1×</button>
+  <button class="spd" data-s="8">8×</button>
+  <button class="spd on" data-s="32">32×</button>
+  <button class="spd" data-s="128">128×</button>
+  <input id="seek" type="range" min="0" max="372" step="0.5" value="0">
+  <span id="clock">T+0h00m</span>
+  <button id="bReplay">↺ replay</button>
+</div>
+<div class="layout">
+  <aside>
+    <div class="block">
+      <h3>What am I looking at?</h3>
+      <div style="color:var(--dim)">The causal graph <b style="color:var(--text)">as it forms</b>. Nodes materialize when work
+      starts (pulsing amber halo = <i>in flight right now</i>), edges draw in when one thing causes another,
+      completed work goes solid. Nothing here is retrospective — the future does not exist yet.</div>
+    </div>
+    <div class="block" id="whynow">
+      <h3>Why is it doing this right now?</h3>
+      <div id="whynowBody"><div class="focus-card"><div class="t">—</div><div class="s">waiting for first event…</div></div></div>
+    </div>
+    <div class="block" id="alerts">
+      <h3>Live alerts</h3>
+      <div id="alertList"><div style="color:var(--dim);font-style:italic;font-size:11px">no anomalies detected</div></div>
+    </div>
+    <div class="block">
+      <h3>Legend</h3>
+      <div class="legend-item"><span class="ng" style="border-color:var(--amber);box-shadow:0 0 6px var(--amber)"></span>in flight (pulsing halo)</div>
+      <div class="legend-item"><span class="ng" style="border-color:var(--border)"></span>completed</div>
+      <div class="legend-item"><span class="ng" style="border-color:var(--red)"></span>failed / cascade node</div>
+      <div class="legend-item"><span class="sw" style="border-color:var(--violet)"></span>spawned</div>
+      <div class="legend-item"><span class="sw" style="border-color:var(--blue)"></span>steered</div>
+      <div class="legend-item"><span class="sw" style="border-color:var(--orange)"></span>triggered</div>
+      <div class="legend-item"><span class="sw" style="border-color:var(--teal)"></span>reported</div>
+      <div class="legend-item"><span class="sw" style="border-color:var(--red)"></span>caused failure</div>
+      <div class="legend-item"><span class="sw dash" style="border-color:var(--purple)"></span>folded by compaction</div>
+      <div class="legend-item"><span class="sw" style="border-color:var(--green)"></span>gate passed / satisfied</div>
+      <div class="legend-item"><span class="sw" style="border-color:#8b949e"></span>informed / preceded</div>
+    </div>
+  </aside>
+  <main><svg id="g" viewBox="0 0 1240 840" preserveAspectRatio="xMidYMin meet"></svg></main>
+</div>
+<div id="tip"></div>
+<script>
+"use strict";
+const NS="http://www.w3.org/2000/svg";
+function mulberry32(a){return function(){a|=0;a=a+0x6D2B79F5|0;let t=Math.imul(a^a>>>15,1|a);t=t+Math.imul(t^t>>>7,61|t)^t;return((t^t>>>14)>>>0)/4294967296;};}
+const rnd=mulberry32(580914);
+function el(name,attrs,parent){const e=document.createElementNS(NS,name);for(const k in attrs)e.setAttribute(k,attrs[k]);if(parent)parent.appendChild(e);return e;}
+function textLines(parent,txt,x,y,cls,anchor){const lines=String(txt).split("\n");const t=el("text",{x,y,"class":cls,"text-anchor":anchor||"middle"},parent);
+  lines.forEach((ln,i)=>{const ts=el("tspan",{x,dy:i===0?0:11},t);ts.textContent=ln;});return t;}
+const EDGE_COLORS={informed:"#8b949e",steered:"#58a6ff",spawned:"#bc8cff",triggered:"#d29922",
+  reported:"#39c5cf",caused:"#f85149",folded:"#a371f7",gate:"#3fb950"};
+const TYPE_STYLE={
+  goal:{stroke:"#3fb950",fill:"rgba(63,185,80,.09)",glyph:"◎"},
+  terminal:{stroke:"#3fb950",fill:"rgba(63,185,80,.09)",glyph:"✔"},
+  episode:{stroke:"#30363d",fill:"#161b22",glyph:"▤"},
+  error:{stroke:"#f85149",fill:"rgba(248,81,73,.09)",glyph:"⚠"},
+  delegate:{stroke:"#bc8cff",fill:"rgba(188,140,255,.08)",glyph:"⬡"},
+  job:{stroke:"#58a6ff",fill:"rgba(88,166,255,.08)",glyph:"⚙"},
+  watch:{stroke:"#d29922",fill:"rgba(210,153,34,.10)",glyph:"▲"},
+  compaction:{stroke:"#a371f7",fill:"rgba(163,113,247,.09)",glyph:"≣",dash:true},
+  steering:{stroke:"#58a6ff",fill:"rgba(88,166,255,.10)",glyph:"➤"},
+  micro:{stroke:"#f85149",fill:"#161b22",glyph:"·"},
+  cause:{stroke:"#f85149",fill:"rgba(248,81,73,.14)",glyph:"✱"},
+  fix:{stroke:"#3fb950",fill:"rgba(63,185,80,.12)",glyph:"✔"},
+};
+const NODES=[
+ {id:"G",  x:120,y:100, w:210,h:58,type:"goal",   title:"GOAL", sub:"tombstone pruning +\nwatch-storm fix"},
+ {id:"E1", x:120,y:250, w:180,h:48,type:"episode",title:"Recon & plan", sub:"T1–28 · reads/greps"},
+ {id:"E2", x:120,y:400, w:180,h:48,type:"episode",title:"jobstore pruning", sub:"T29–61 · edits ×17"},
+ {id:"S1", x:120,y:560, w:200,h:58,type:"steering",title:"STEERING · T62", sub:"“handle delegate\ntombstones too”"},
+ {id:"E4", x:370,y:500, w:190,h:58,type:"delegate",title:"dlg_store · L1", sub:"spawned T63 · reports T200\n310 calls · $6.80"},
+ {id:"E5", x:620,y:640, w:200,h:48,type:"delegate",title:"dlg_tests · L2 grandchild", sub:"T70–140 · fuzz targets"},
+ {id:"E6", x:370,y:320, w:190,h:58,type:"job",    title:"job_build + job_fuzz", sub:"started T96 · fuzz detached\n`go test -fuzz=…`"},
+ {id:"W1", x:620,y:160, w:190,h:58,type:"watch",  title:"watch w_fuzz", sub:"/FAILURE/ on job_fuzz\nT129–131"},
+ {id:"m1", x:620,y:236, w:180,h:32,type:"micro",  title:"attempt 1 · go vet", sub:"T133"},
+ {id:"m2", x:620,y:284, w:180,h:32,type:"micro",  title:"attempt 2 · make build", sub:"T137"},
+ {id:"m3", x:620,y:332, w:180,h:32,type:"micro",  title:"attempt 3 · go test", sub:"T141"},
+ {id:"m4", x:620,y:380, w:180,h:32,type:"micro",  title:"attempt 4 · fuzz seed", sub:"T145"},
+ {id:"RC", x:620,y:436, w:200,h:58,type:"cause",  title:"ROOT CAUSE", sub:"T147 · iterator skipped\nsealed tombstones"},
+ {id:"FX", x:620,y:506, w:180,h:32,type:"fix",    title:"FIX + green", sub:"T149"},
+ {id:"C1", x:870,y:150, w:200,h:58,type:"compaction",title:"COMPACTION #1", sub:"T151 · folds T1–150\n1.9M → 40k tok"},
+ {id:"E10",x:870,y:360, w:200,h:58,type:"episode",title:"report + MODEL_SWITCH", sub:"T152–200 · k3→mini\n288 calls · $4.10"},
+ {id:"J1", x:870,y:560, w:190,h:58,type:"job",    title:"job_ci", sub:"T205–214\nexit 1 → rerun → exit 0"},
+ {id:"W2", x:1060,y:640,w:160,h:44,type:"watch",  title:"watch w_ci", sub:"fires 1× · T214"},
+ {id:"C2", x:1120,y:210,w:190,h:58,type:"compaction",title:"COMPACTION #2", sub:"T221 · folds T152–220\n890k → 22k tok"},
+ {id:"E13",x:1120,y:380,w:170,h:48,type:"episode",title:"docs + final gates", sub:"T222–260 · dlg_docs"},
+ {id:"E14",x:1120,y:600,w:180,h:58,type:"terminal",title:"GOAL COMPLETE", sub:"T287 · PR ready\ncoverage 91.2%"},
+];
+const EDGES=[
+ {t:0.5, a:"G", b:"E1", type:"informed"},
+ {t:25,  a:"E1",b:"E2", type:"informed"},
+ {t:78,  a:"E2",b:"E4", type:"informed", label:"tombstone gap found"},
+ {t:78,  a:"S1",b:"E4", type:"steered"},
+ {t:90,  a:"E4",b:"E5", type:"spawned"},
+ {t:150, a:"E4",b:"E6", type:"spawned", label:"starts"},
+ {t:182, a:"E6",b:"W1", type:"triggered", label:"stdout matched /FAILURE/", labelPos:0.3},
+ {t:196, a:"W1",b:"m1", type:"caused", label:"storm → interrupt"},
+ {t:202, a:"m1",b:"m2", type:"caused"},
+ {t:208, a:"m2",b:"m3", type:"caused"},
+ {t:212, a:"m3",b:"m4", type:"caused"},
+ {t:214, a:"m4",b:"RC", type:"caused"},
+ {t:214, a:"E2",b:"RC", type:"caused", label:"bug written @T44", labelPos:0.4},
+ {t:215, a:"RC",b:"FX", type:"gate", label:"edit +6 −2"},
+ {t:220, a:"FX",b:"C1", type:"folded", label:"context 92%"},
+ {t:226, a:"C1",b:"E10",type:"folded", label:"continuity via SUMMARY"},
+ {t:290, a:"E4",b:"E10",type:"reported"},
+ {t:290, a:"E5",b:"E10",type:"reported", label:"12 fuzz tests"},
+ {t:300, a:"E10",b:"J1",type:"triggered",label:"push"},
+ {t:300, a:"E6",b:"J1", type:"informed"},
+ {t:318, a:"J1",b:"W2", type:"triggered"},
+ {t:338, a:"W2",b:"E13",type:"informed", label:"notify"},
+ {t:335, a:"E10",b:"C2",type:"folded"},
+ {t:335, a:"J1",b:"C2", type:"folded"},
+ {t:338, a:"C2",b:"E13",type:"folded",   label:"continuity"},
+ {t:356, a:"J1",b:"E14",type:"gate",     label:"CI green"},
+ {t:356, a:"E13",b:"E14",type:"gate"},
+ {t:356, a:"E5",b:"E14",type:"gate",     label:"coverage"},
+ {t:372, a:"G", b:"E14",type:"gate", label:"satisfies", path:"M 120 71 C 120 18, 1120 18, 1120 571"},
+];
+// ---- event stream ----
+const EV=[];
+function node(t,id,st,status){EV.push({t,k:"node",id,st,status});}
+node(0,"G","active","goal set by USER_INPUT T1"); node(4,"G","done");
+node(0,"E1","active","▶ grep/read sweep: schema, jobstore"); node(25,"E1","done","✓ plan: 9 task_list items");
+node(25,"E2","active","▶ edit_file prune.go (+412 −88)"); node(52,"E2","active","▶ skip-list iterator written (T44)"); node(70,"E2","done","✓ green — carries hidden bug");
+node(75,"S1","active","user steering queued mid-run"); node(76,"S1","done","consumed at T63 → widens scope");
+node(78,"E4","active","▶ child: implement tombstone.go"); node(200,"E4","active","▶ final tests in child"); node(290,"E4","done","✓ reported +412 lines · 42 tests");
+node(90,"E5","active","▶ grandchild: write fuzz targets"); node(150,"E5","active","▶ 12 seeds · 1 corpus FAIL"); node(200,"E5","done","✓ delivered 12 fuzz targets");
+node(150,"E6","active","▶ build(bg) + fuzz(detached)"); node(154,"E6","active","✓ job_build exit 0 · fuzz running"); node(330,"E6","done","✓ job_fuzz exit 0 (3h00m)");
+node(182,"W1","active","▲ fire 1 — /FAILURE/ matched"); node(187,"W1","active","▲ fire 3 — RUNAWAY (3×/90s)"); node(188,"W1","done","storm quelled by interrupt");
+node(196,"m1","active"); node(198,"m1","done");
+node(202,"m2","active"); node(204,"m2","done");
+node(208,"m3","active"); node(210,"m3","done");
+node(212,"m4","active"); node(213,"m4","done");
+node(214,"RC","active","✱ iterator skipped sealed entries"); node(214.8,"RC","done");
+node(215,"FX","active"); node(216,"FX","done");
+node(220,"C1","active","≣ context 92% — CHECKPOINT+SUMMARY"); node(221,"C1","done","✓ folded T1–150 · 1.9M→40k tok");
+node(226,"E10","active","▶ merging delegate report"); node(250,"E10","active","⚠ w_cost fired ($30) — handled"); node(292,"E10","active","⚙ MODEL_SWITCH k3→mini"); node(298,"E10","done","✓ integrated; tests ×42");
+node(300,"J1","active","▶ CI run 1"); node(308,"J1","active","✗ exit 1 — lint: unused param"); node(312,"J1","active","▶ rerun after edit_file"); node(318,"J1","done","✓ exit 0");
+node(318,"W2","active","▲ fires once — job_ci done"); node(319,"W2","done","✓ clean single fire (guard works)");
+node(335,"C2","active","≣ folding T152–220"); node(336,"C2","done","✓ 890k→22k tok");
+node(338,"E13","active","▶ dlg_docs: docs/web-ui ×6"); node(350,"E13","active","▶ make build · vet · test — green"); node(355,"E13","done","✓ gates green");
+node(356,"E14","active","▶ job_e2e running"); node(360,"E14","active","✓ e2e exit 0 · coverage 91.2%"); node(372,"E14","done","✔ update_goal(complete) · PR #312");
+for(const e of EDGES)EV.push({t:e.t,k:"edge",e});
+const ALERTS=[
+ {t:184.5,level:"warn",text:"w_fuzz fired 2× in 2.5 min — re-arm suspected"},
+ {t:187,level:"bad",text:"WATCH RUNAWAY — w_fuzz 3 fires / 90s; root interrupted"},
+ {t:202,level:"warn",text:"2 consecutive failed fix attempts"},
+ {t:208,level:"bad",text:"ERROR CASCADE — 3 consecutive failures (vet→build→test)"},
+ {t:214,level:"ok",text:"cascade resolved — root cause: skip-list iterator"},
+ {t:250,level:"info",text:"w_cost fired once ($30) — handled, no storm"},
+ {t:308,level:"warn",text:"job_ci exit 1 — lint residue of the T147 fix"},
+ {t:318,level:"ok",text:"CI green on rerun"},
+ {t:372,level:"ok",text:"GOAL COMPLETE — PR #312 ready"},
+];
+for(const a of ALERTS)EV.push({t:a.t,k:"alert",a});
+// activity heartbeats → counters (total ≈ 2146 calls)
+(function(){const raw=[];let sum=0;
+ for(let t=6;t<=372;t+=6){let w=3+3*Math.abs(Math.sin(t/17));
+   if(t>=78&&t<=140)w+=5; if(t>=196&&t<=216)w+=10; if(t>=226&&t<=290)w+=6;
+   if(t>=338&&t<=356)w+=8; if(t>=25&&t<=70)w+=5;
+   w*=0.6+0.8*rnd(); raw.push([t,w]); sum+=w;}
+ for(const [t,w] of raw)EV.push({t,k:"act",calls:Math.max(1,Math.round(w*2146/sum))});
+})();
+EV.sort((a,b)=>a.t-b.t);
+const SIM_END=372;
+const TURN_ANCHORS=[[1,0],[28,25],[61,70],[62,75],[95,140],[128,180],[131,185],[149,215],[151,220],[200,290],[220,330],[221,335],[260,355],[287,372]];
+function turnAt(min){for(let i=1;i<TURN_ANCHORS.length;i++){const [t1,m1]=TURN_ANCHORS[i];const [t0,m0]=TURN_ANCHORS[i-1];
+  if(min<=m1)return Math.round(t0+(min-m0)*(t1-t0)/(m1-m0));}return 287;}
+function fmt(t){const h=Math.floor(t/60),m=Math.floor(t%60);return "T+"+h+"h"+String(m).padStart(2,"0")+"m";}
+// ---- engine state ----
+let now=0,speed=32,playing=true,evIdx=0,lastTs=null,quiet=false;
+let nodeState={},nodeStatus={},edgesIn=[],alertsIn=[],callsSoFar=0,focus=null;
+const svg=document.getElementById("g"),tip=document.getElementById("tip");
+let nodeEls={},edgeEls={},labelLayer,nodesG,edgesG,defsG;
+const nodeById=id=>NODES.find(n=>n.id===id);
+function edgePath(a,b,e){
+  if(e.path)return e.path;
+  if(Math.abs(a.x-b.x)<=30){const dir=(b.y>a.y)?1:-1;const off=Math.max(50,Math.abs(b.y-a.y)*0.35);
+    return `M ${a.x} ${a.y+dir*a.h/2} C ${a.x+off} ${a.y+dir*a.h/2}, ${b.x+off} ${b.y-dir*b.h/2}, ${b.x} ${b.y-dir*b.h/2}`;}
+  const x1=a.x+a.w/2,y1=a.y,x2=b.x-b.w/2,y2=b.y;
+  if(x2>x1+30){const mx=(x1+x2)/2;return `M ${x1} ${y1} C ${mx} ${y1}, ${mx} ${y2}, ${x2} ${y2}`;}
+  const my=Math.min(y1,y2)-70;return `M ${x1} ${y1} C ${x1+50} ${my}, ${x2-50} ${my}, ${x2} ${y2}`;
+}
+function buildSvg(){
+  svg.innerHTML="";nodeEls={};edgeEls={};
+  defsG=el("defs",{},svg);
+  for(const t in EDGE_COLORS){const m=el("marker",{id:"ar-"+t,viewBox:"0 0 10 10",refX:9,refY:5,markerWidth:7,markerHeight:7,orient:"auto-start-reverse"},defsG);
+    el("path",{d:"M 0 1 L 9 5 L 0 9 z",fill:EDGE_COLORS[t]},m);}
+  edgesG=el("g",{},svg);nodesG=el("g",{},svg);labelLayer=el("g",{},svg);
+  el("line",{x1:60,y1:800,x2:1200,y2:800,stroke:"#21262d"},svg);
+  for(const [lbl,x] of [["T1",120],["T62–63",250],["T96",370],["T129–131",495],["T132–149",620],["T151",745],["T200–214",920],["T221",1060],["T287",1120]]){
+    el("line",{x1:x,y1:796,x2:x,y2:804,stroke:"#30363d"},svg);
+    const t=el("text",{x,y:816,"class":"axis-label","text-anchor":"middle"},svg);t.textContent=lbl;}
+}
+function upsertNode(n,animate){
+  let g=nodeEls[n.id];
+  const st=TYPE_STYLE[n.type],state=nodeState[n.id];
+  if(!g){
+    g=el("g",{class:"node",transform:`translate(${n.x},${n.y})`},nodesG);
+    if(animate&&!quiet)g.setAttribute("class","node appear");
+    const r=el("rect",{class:"body",x:-n.w/2,y:-n.h/2,width:n.w,height:n.h,rx:8,fill:st.fill,stroke:st.stroke,"stroke-width":1.5},g);
+    if(st.dash)r.setAttribute("stroke-dasharray","5 3");
+    el("rect",{class:"halo",x:-n.w/2-5,y:-n.h/2-5,width:n.w+10,height:n.h+10,rx:11},g);
+    const gy=-n.h/2+16;
+    if(n.h>36){const gl=textLines(g,st.glyph,-n.w/2+13,gy+2,"n-glyph");gl.setAttribute("text-anchor","middle");}
+    const tx=n.h>36?-n.w/2+24:-n.w/2+8;
+    if(n.h>36){textLines(g,n.title,tx,gy,"n-title","start");textLines(g,n.sub,tx,gy+14,"n-sub","start");}
+    else{textLines(g,n.title,tx,gy-2,"n-title","start");textLines(g,n.sub,tx,gy+10,"n-sub","start");}
+    if(n.h>36){ // small nodes have no room for a live status line
+      const st2=textLines(g,"",tx,gy+(n.sub.includes("\n")?36:25),"n-status","start");
+      g._status=st2;
+    }else g._status={set textContent(v){}};
+    g.addEventListener("mousemove",ev=>{tip.style.display="block";
+      tip.innerHTML=`<div class="tt">${n.title}</div><div class="td">${(nodeStatus[n.id]||"")+"\nstate: "+(nodeState[n.id]||"?")}</div>`;
+      tip.style.left=Math.min(ev.clientX+14,innerWidth-350)+"px";tip.style.top=(ev.clientY+12)+"px";});
+    g.addEventListener("mouseleave",()=>tip.style.display="none");
+    nodeEls[n.id]=g;
+  }
+  g._status.textContent=nodeStatus[n.id]||"";
+  g.classList.remove("done");g.classList.remove("failflash");
+  if(state==="done"){g.classList.add("done");g.style.opacity=.92;}
+  else g.style.opacity=1;
+}
+function upsertEdge(e,animate){
+  const key=e.a+">"+e.b+":"+e.type;
+  if(edgeEls[key])return;
+  const a=nodeById(e.a),b=nodeById(e.b);
+  const p=el("path",{d:edgePath(a,b,e),"class":"edge"+(animate&&!quiet&&e.type!=="folded"?" drawedge":""),stroke:EDGE_COLORS[e.type],
+    "marker-end":`url(#ar-${e.type})`,"stroke-dasharray":e.type==="folded"?"6 4":"none"},edgesG);
+  if(e.type==="caused")p.setAttribute("stroke-width","2.4");
+  edgeEls[key]=p;
+  if(e.label){const L=p.getTotalLength();const pt=p.getPointAtLength(L*(e.labelPos||0.5));
+    const t=el("text",{x:pt.x,y:pt.y-5,"class":"edge-label","text-anchor":"middle"},labelLayer);t.textContent=e.label;}
+}
+function handle(ev,animate){
+  if(ev.k==="node"){nodeState[ev.id]=ev.st;if(ev.status)nodeStatus[ev.id]=ev.status;
+    upsertNode(nodeById(ev.id),animate);
+    if(ev.st==="active")focus=ev.id;}
+  else if(ev.k==="edge"){edgesIn.push(ev.e);upsertEdge(ev.e,animate);}
+  else if(ev.k==="alert"){alertsIn.push(ev.a);renderAlerts();}
+  else if(ev.k==="act"){callsSoFar+=ev.calls;}
+}
+function renderAlerts(){
+  const box=document.getElementById("alertList");
+  if(!alertsIn.length){box.innerHTML='<div style="color:var(--dim);font-style:italic;font-size:11px">no anomalies detected</div>';return;}
+  box.innerHTML=alertsIn.slice(-7).reverse().map(a=>
+    `<div class="alert ${a.level}"><span class="at">${fmt(a.t)}</span>${a.text}</div>`).join("");
+}
+function renderWhyNow(){
+  const body=document.getElementById("whynowBody");
+  if(!focus||!nodeById(focus)){body.innerHTML='<div class="focus-card"><div class="t">—</div><div class="s">waiting…</div></div>';return;}
+  const n=nodeById(focus);
+  let html=`<div class="focus-card"><div class="t">▶ ${n.title}</div><div class="s">${nodeStatus[focus]||""}</div></div>`;
+  // walk upstream over edges that exist so far
+  const seen=new Set([focus]);let cur=focus;
+  while(true){
+    const ins=edgesIn.filter(e=>e.b===cur&&!seen.has(e.a));
+    if(!ins.length)break;
+    ins.sort((x,y)=>y.t-x.t);
+    const e=ins[0];seen.add(e.a);
+    const pn=nodeById(e.a);
+    html+=`<div class="via">▲ ${e.type}${e.label?" — "+e.label:""}</div>
+      <div class="chain"><b>${pn.title}</b> <span style="color:var(--dim)">· ${nodeStatus[e.a]||""}</span></div>`;
+    cur=e.a;
+    if(seen.size>6)break;
+  }
+  body.innerHTML=html;
+}
+function renderCounters(){
+  document.getElementById("cTurn").textContent=turnAt(now);
+  document.getElementById("cCalls").textContent=callsSoFar.toLocaleString();
+  const tok=Math.round(callsSoFar*1925);
+  document.getElementById("cTok").textContent=tok>=1e6?(tok/1e6).toFixed(2)+"M":Math.round(tok/1e3)+"k";
+  document.getElementById("cCost").textContent="$"+(tok*9.3e-6).toFixed(2);
+  document.getElementById("cActors").textContent=Object.values(nodeState).filter(s=>s==="active").length;
+  document.getElementById("clock").textContent=fmt(now);
+  document.getElementById("seek").value=now;
+  const lc=document.getElementById("liveChip");
+  if(now>=SIM_END){lc.className="ended";lc.innerHTML='<span class="dot"></span>ENDED · GOAL ✓';}
+  else if(playing){lc.className="";lc.innerHTML='<span class="dot"></span>LIVE';}
+  else{lc.className="paused";lc.innerHTML='<span class="dot"></span>PAUSED';}
+}
+function dispatchTo(target,animate){
+  while(evIdx<EV.length&&EV[evIdx].t<=target){handle(EV[evIdx],animate);evIdx++;}
+}
+function rebuild(target){
+  quiet=true;evIdx=0;nodeState={};nodeStatus={};edgesIn=[];alertsIn=[];callsSoFar=0;focus=null;
+  buildSvg();dispatchTo(target,false);
+  for(const id in nodeState)upsertNode(nodeById(id),false);
+  renderAlerts();quiet=false;
+}
+function frame(ts){
+  if(lastTs==null)lastTs=ts;
+  const dt=(ts-lastTs)/1000;lastTs=ts;
+  if(playing&&now<SIM_END){
+    now=Math.min(SIM_END,now+dt*speed);
+    dispatchTo(now,true);
+  }
+  renderCounters();renderWhyNow();
+  requestAnimationFrame(frame);
+}
+// transport
+document.getElementById("bPlay").addEventListener("click",ev=>{
+  playing=!playing;ev.target.textContent=playing?"⏸ pause":"▶ play";});
+document.querySelectorAll(".spd").forEach(b=>b.addEventListener("click",()=>{
+  document.querySelectorAll(".spd").forEach(x=>x.classList.remove("on"));
+  b.classList.add("on");speed=+b.dataset.s;}));
+document.getElementById("bReplay").addEventListener("click",()=>{now=0;rebuild(0);playing=true;
+  document.getElementById("bPlay").textContent="⏸ pause";});
+document.getElementById("seek").addEventListener("input",ev=>{now=+ev.target.value;rebuild(now);});
+buildSvg();requestAnimationFrame(frame);
+</script>
+</body>
+</html>

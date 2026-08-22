@@ -1,0 +1,305 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Evener Real-Session Viz — 8 Proposals on Real Data</title>
+<style>
+  :root {
+    --bg: #0d1117; --panel: #161b22; --panel2: #1c2330; --border: #2d333f;
+    --text: #e6edf3; --dim: #8b949e; --accent: #58a6ff; --live: #f85149;
+    --k3: #7ee787; --gpt: #d2a8ff;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--text);
+         font: 14px/1.5 -apple-system, "SF Pro Text", "Segoe UI", sans-serif; }
+  header { padding: 28px 36px 20px; border-bottom: 1px solid var(--border); }
+  h1 { margin: 0 0 6px; font-size: 22px; letter-spacing: .2px; }
+  .live-dot { color: var(--live); }
+  .sub { color: var(--dim); max-width: 1020px; }
+  .sub code { color: var(--accent); font-size: 12px; }
+  .sub a { color: var(--accent); }
+  .privacy { margin-top: 10px; padding: 8px 12px; border: 1px solid rgba(248,81,73,.4);
+             border-radius: 8px; color: #ffa198; font-size: 12px; max-width: 1020px; }
+  nav.toc { display: flex; flex-wrap: wrap; gap: 8px; padding: 14px 36px;
+            border-bottom: 1px solid var(--border); position: sticky; top: 0;
+            background: var(--bg); z-index: 5; }
+  nav.toc a { color: var(--dim); text-decoration: none; font-size: 12px;
+              border: 1px solid var(--border); border-radius: 20px; padding: 3px 12px; }
+  nav.toc a:hover { color: var(--text); border-color: var(--accent); }
+  section { padding: 26px 36px 8px; }
+  .slot-head { display: flex; align-items: baseline; gap: 12px; margin-bottom: 4px; }
+  .slot-head h2 { margin: 0; font-size: 17px; }
+  .chip { font-size: 11px; font-weight: 600; padding: 2px 10px; border-radius: 20px; }
+  .chip.k3  { background: rgba(126,231,135,.12); color: var(--k3);  border: 1px solid rgba(126,231,135,.35); }
+  .chip.gpt { background: rgba(210,168,255,.12); color: var(--gpt); border: 1px solid rgba(210,168,255,.35); }
+  .theme { color: var(--dim); font-size: 13px; margin: 0 0 16px; }
+  .cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(440px, 1fr)); gap: 18px; }
+  .card { background: var(--panel); border: 1px solid var(--border); border-radius: 10px;
+          overflow: hidden; display: flex; flex-direction: column; }
+  .card:hover { border-color: #46505f; }
+  .thumb { display: block; width: 100%; aspect-ratio: 1440/1000; object-fit: cover;
+           object-position: top left; background: var(--panel2);
+           border-bottom: 1px solid var(--border); }
+  .body { padding: 14px 16px 16px; }
+  .body h3 { margin: 0 0 4px; font-size: 15px; display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap; }
+  .body h3 a { color: var(--text); text-decoration: none; }
+  .body h3 a:hover { color: var(--accent); }
+  .fp { font-size: 10px; font-weight: 700; color: var(--bg); background: var(--accent);
+        border-radius: 4px; padding: 1px 6px; letter-spacing: .3px; white-space: nowrap; }
+  .fp.rail { background: #7ee787; } .fp.strip { background: #79c0ff; } .fp.badge { background: #d2a8ff; }
+  .one { color: var(--text); opacity: .85; margin: 0 0 10px; font-size: 13px; }
+  dl { margin: 0; font-size: 12px; }
+  dt { color: var(--accent); font-weight: 600; margin-top: 8px; font-size: 11px;
+       text-transform: uppercase; letter-spacing: .4px; }
+  dd { margin: 2px 0 0; color: var(--dim); }
+  .links { margin-top: 12px; font-size: 12px; }
+  .links a { color: var(--accent); text-decoration: none; margin-right: 14px; }
+  .links a:hover { text-decoration: underline; }
+  footer { padding: 24px 36px 40px; color: var(--dim); font-size: 12px; max-width: 1020px; }
+</style>
+</head>
+<body>
+
+<header>
+  <h1><span class="live-dot">●</span> Real-session visualization — 8 compact proposals on real data</h1>
+  <p class="sub">Round 4: the <a href="compact.html">round-3 compact set</a> won the direction (Micro Strata Rail), so now every proposal renders
+  <b>three real evener sessions</b> — extracted with canonical types (<code>agent/transcript</code> + <code>agent/schema</code>) and
+  <code>evener-doctor</code> enrichment, embedded inline, replayed on real timestamps with transport, in-flight states, and a LIVE indicator.
+  Sessions: <b>A</b> = a 353-turn orchestrator (8 delegates, 18 jobs, 11.5h) · <b>B</b> = a 562-turn leaf worker (no jobs/delegates) ·
+  <b>C</b> = a 932-turn big-tree orchestrator (39 delegates, 238 jobs, 15h). The data tells the truth: <b>no compaction events, no watch fires</b>
+  in any of the three, real multi-hour idle gaps, and <code>steer_src</code> populated on only 1 of 160 steering turns — designs had to degrade
+  honestly instead of performing synthetic perfection. Every proposal keeps every USER_INPUT (+ provably user-sourced steering) as a permanent
+  one-click transcript anchor. Delegates: 4 × kimi/k3, 4 × codex-personal/gpt-5.6-sol (one idea each). Generated 2026-08-22.</p>
+  <p class="privacy">⚠ Contains real session prompt text from this machine. Served locally only — deliberately <b>not</b> mirrored to the public wiki.</p>
+</header>
+
+<nav class="toc">
+  <a href="#combined" style="color:#7ee787;border-color:rgba(126,231,135,.4)">★ combined · convergence</a>
+  <a href="#k3-r1">k3-r1 · anchor evolution</a>
+  <a href="#k3-r2">k3-r2 · prompt spine</a>
+  <a href="#k3-r3">k3-r3 · multi-session</a>
+  <a href="#k3-r4">k3-r4 · health-first</a>
+  <a href="#gpt-r1">gpt-r1 · strip</a>
+  <a href="#gpt-r2">gpt-r2 · badge</a>
+  <a href="#gpt-r3">gpt-r3 · true-time</a>
+  <a href="#gpt-r4">gpt-r4 · cost</a>
+</nav>
+
+<!-- ══════════ combined · convergence build ══════════ -->
+<section id="combined">
+  <div class="slot-head"><h2>Combined Rail — True-Time × Token Seismograph</h2><span class="chip k3">kimi/k3 · convergence</span></div>
+  <p class="theme">Not a proposal — the picked direction, built: <b>gpt-r3</b>'s true-time rail + <b>gpt-r4</b>'s token seismograph merged into one 156px rail
+  that <b>is the transcript's scrollbar</b> (draggable thumb, click-to-jump, prompt anchors to exact turns), plus a full-screen
+  <b>comprehension view</b> (⤢ button / ESC) composing <b>k3-r3</b>'s multi-session clock out of those same rails — fixed rail width,
+  parent session leftmost, subagent rails sorted by most recent activity (A → C → B). One click from any rail lands on that exact session+turn in the transcript.</p>
+  <div class="cards" style="grid-template-columns:1fr">
+    <div class="card">
+      <a href="combined/index.html"><img class="thumb" src="real-thumbs/combined.png" alt="Combined Rail — scrollbar mode"></a>
+      <div class="body">
+        <h3><a href="combined/index.html">★ Combined Rail — rail-as-scrollbar + multi-session comprehension</a><span class="fp rail">156px</span></h3>
+        <p class="one">One rail, two truths: vertical = real elapsed time (idle voids literal), texture = real token mass (IN/OUT strata + white Σ burn line, result cliffs, error ticks). Drag its thumb to scroll; click ◆ prompt anchors to jump; ⤢ COMPREHENSION aligns all three sessions on one shared clock with aligned now-lines.</p>
+        <dl>
+          <dt>Verified</dt>
+          <dd>Thumb drag ΔscrollTop ratio 1.000 · anchor click → exact turn #228 · comprehension order [A,C,B], now-line spread 0px, click-through → session C #237, ESC exits. One real bug found by pixel-sampling and fixed (idle-gap hatch fill).</dd>
+          <dt>Honest limits</dt>
+          <dd>Per-turn token mass log-scaled within each session (Σ line is absolute) · no cache-split data · anchors ≈ USER_INPUT (steer_src sparse) · 0 folds / 0 watches in data → none drawn.</dd>
+        </dl>
+        <div class="links"><a href="combined/index.html">open component →</a><a href="combined/README.md">README</a></div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ══════════ k3-r1 ══════════ -->
+<section id="k3-r1">
+  <div class="slot-head"><h2>Anchor evolution, on real data</h2><span class="chip k3">kimi/k3 · k3-r1</span></div>
+  <p class="theme">The Micro Strata Rail re-implemented honestly against real records — what breaks when the data is real, fixed.</p>
+  <div class="cards">
+    <div class="card">
+      <a href="real/k3-r1/idea-1.html"><img class="thumb" src="real-thumbs/k3-r1-1.png" alt="REAL-1 Micro Strata Rail"></a>
+      <div class="body">
+        <h3><a href="real/k3-r1/idea-1.html">REAL-1 · Micro Strata Rail</a> <span class="fp rail">RAIL 160px</span></h3>
+        <p class="one">The compact Micro Strata Rail evolved for real data: y-axis is gap-compressed REAL wall time (idle ≥10min collapses into labeled ⏸ bands), strata heights are real step durations, 238 real jobs aggregate into a concurrency ribbon with individual red failure ticks, delegate spawns are timestamped diamonds, and every USER_INPUT plus the single honestly-tagged user-steering turn is a permanent clickable chevron.</p>
+        <dl>
+          <dt>Realtime comprehension</dt>
+          <dd>What's happening now (white head line + animated in-flight stratum), what it cost (real context micro-bar + cumulative token bar), where a human last redirected it (prompt chevrons), where wall time actually went (labeled idle bands, failure ticks, concurrency ribbon).</dd>
+          <dt>Real-data adaptations</dt>
+          <dd>No fold/watch/model-switch encodings — none exist in the data (captioned, never faked); children[] lack timestamps so delegate lifespan brackets became spawn diamonds; session A's unpaired final assistant turn gets an amber "no result" edge; session C's still-running job is a dashed span; untagged steering demotes to dim ticks rather than being mislabeled.</dd>
+          <dt>Verification</dt>
+          <dd>Prompt-click test jumped to turn 228 — the real "make it compact" user message — centered with lastJump=228. B and C switched and cropped; B's empty lanes show ∅ + caption.</dd>
+        </dl>
+        <div class="links"><a href="real/k3-r1/idea-1.html">open mockup ↗</a><a href="real/k3-r1/README.md">README</a></div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ══════════ k3-r2 ══════════ -->
+<section id="k3-r2">
+  <div class="slot-head"><h2>The prompt spine</h2><span class="chip k3">kimi/k3 · k3-r2</span></div>
+  <p class="theme">"Get to any user prompt step" as the organizing principle — the session told as what-the-human-asked → what-the-agent-did.</p>
+  <div class="cards">
+    <div class="card">
+      <a href="real/k3-r2/idea-1.html"><img class="thumb" src="real-thumbs/k3-r2-1.png" alt="Prompt-Spine Rail"></a>
+      <div class="body">
+        <h3><a href="real/k3-r2/idea-1.html">Prompt-Spine Rail</a> <span class="fp rail">RAIL 160px</span></h3>
+        <p class="one">A vertical spine of one-click prompt nodes with real text previews; agent-work strata (real out-token bars, delegate/job brackets, error diamonds, hatched idle-gap bands) hang beneath each ask.</p>
+        <dl>
+          <dt>Realtime comprehension</dt>
+          <dd>What was asked, what was done about each ask, which ask is active now, and where the multi-hour silences were — in 160px with zero internal scrolling. Click seeks the replay to the prompt's real timestamp, rebuilds world state, centers + flashes the transcript row.</dd>
+          <dt>Real-data adaptations</dt>
+          <dd>Idle-gap threshold adapts 120s→2700s so the largest real gaps always render as log-height bands; session B's absent jobs/delegates render as quiet lanes, not breakage; honest fallback to meta-line-only at ~20+ prompts.</dd>
+          <dt>Verification</dt>
+          <dd>DOM-asserted jump: selAnchor=106, headIdx=106, simT == ts[106], row in view + flash. Works playing or paused.</dd>
+        </dl>
+        <div class="links"><a href="real/k3-r2/idea-1.html">open mockup ↗</a><a href="real/k3-r2/README.md">README</a></div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ══════════ k3-r3 ══════════ -->
+<section id="k3-r3">
+  <div class="slot-head"><h2>Multi-session mini-multiples</h2><span class="chip k3">kimi/k3 · k3-r3</span></div>
+  <p class="theme">Three real sessions side-by-side on one clock — the shape difference is the content.</p>
+  <div class="cards">
+    <div class="card">
+      <a href="real/k3-r3/idea-1.html"><img class="thumb" src="real-thumbs/k3-r3-1.png" alt="Multi-Session Micro Strata Rail"></a>
+      <div class="body">
+        <h3><a href="real/k3-r3/idea-1.html">Multi-Session Micro Strata Rail</a> <span class="fp rail">3×RAIL 466px</span></h3>
+        <p class="one">Three real sessions replayed side-by-side as compact strata rails on one shared clock — aligned now-lines, real-timestamp reveal, per-rail LIVE chips, and permanent one-click prompt anchors into the dimmed transcript.</p>
+        <dl>
+          <dt>Realtime comprehension</dt>
+          <dd>Orchestrator vs leaf worker vs big-tree are instantly distinguishable by density, delegate/job lanes, idle voids, and end caps (B ends at 36% height, A at 76%, C full). Per-rail lanes: kind strip, tool-heat stratum, delegate spawns, jobs, events.</dd>
+          <dt>Real-data adaptations</dt>
+          <dd>Only 1 of 160 steering turns carries steer_src — it demoted 159 steering turns to minor ticks rather than fabricate anchors; mixed UTC/-07:00 timestamps normalized; delegate brackets became spawn chevrons (children carry no timestamps).</dd>
+          <dt>Verification</dt>
+          <dd>End-state footers exactly match real counts (353/562/932 turns; real out-token sums); click on rail B's #193 switched transcript session and scrolled/flashed the exact row.</dd>
+        </dl>
+        <div class="links"><a href="real/k3-r3/idea-1.html">open mockup ↗</a><a href="real/k3-r3/README.md">README</a></div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ══════════ k3-r4 ══════════ -->
+<section id="k3-r4">
+  <div class="slot-head"><h2>Health-first verdicts</h2><span class="chip k3">kimi/k3 · k3-r4</span></div>
+  <p class="theme">"Is it healthy right now, and where did it hurt?" — computed only from the replayed prefix.</p>
+  <div class="cards">
+    <div class="card">
+      <a href="real/k3-r4/index.html"><img class="thumb" src="real-thumbs/k3-r4-1.png" alt="Health Strata Rail"></a>
+      <div class="body">
+        <h3><a href="real/k3-r4/index.html">Health Strata Rail</a> <span class="fp rail">RAIL 148px</span></h3>
+        <p class="one">Causal verdicts (STALLED/HURT/LOOPING/CHURNING/STRAINED) computed from the replayed prefix of real sessions, with error diamonds, repetition washes, honest stall voids, failed-job ticks, and one-click prompt chevrons.</p>
+        <dl>
+          <dt>Realtime comprehension</dt>
+          <dd>Verdict glyph + reason anchors (✕ web_fetch #147, ⌛ 4.2h @#316, ⟳ edit_file×30 @#434), loud anomaly paint on quiet strata; wall-clock strip where multi-hour voids are visible — the void is the signal. Health is a pure prefix function: no peeking ahead.</dd>
+          <dt>Verification rigor</dt>
+          <dd>Detector output matched an independent Python re-analysis exactly (A: 2err/8stall/4loop; B: 32 loops incl. the real edit_file×30 loop; C: 10err/7loop/6stall/27 failed jobs). It finds today's actual incidents.</dd>
+        </dl>
+        <div class="links"><a href="real/k3-r4/index.html">open mockup ↗</a><a href="real/k3-r4/README.md">README</a></div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ══════════ gpt-r1 ══════════ -->
+<section id="gpt-r1">
+  <div class="slot-head"><h2>Real-data bottom strip</h2><span class="chip gpt">gpt-5.6-sol · gpt-r1</span></div>
+  <p class="theme">The strip counterpart of the rail, honest on real data.</p>
+  <div class="cards">
+    <div class="card">
+      <a href="real/gpt-r1/idea-1.html"><img class="thumb" src="real-thumbs/gpt-r1-1.png" alt="Real-data Micro Strata Strip"></a>
+      <div class="body">
+        <h3><a href="real/gpt-r1/idea-1.html">Real-data Micro Strata Strip</a> <span class="fp strip">STRIP 96px</span></h3>
+        <p class="one">A full-width 96px real-time barcode dock that preserves real idle gaps and jumps from permanent prompt diamonds to exact transcript steps.</p>
+        <dl>
+          <dt>Realtime comprehension</dt>
+          <dd>Where real wall-clock time went, what is active at the replay head, and the exact user-prompt anchors behind the work; dense events form barcode texture, interval spans use four subtracks.</dd>
+          <dt>Verification</dt>
+          <dd>Measured dock 96px; prompt step 58 click moved transcript scrollTop 0→1493 with the exact row centered; big-tree switch rendered 238 jobs / 39 delegate spans / 11 prompt markers; leaf session explicit 0/0 with neutral labels.</dd>
+        </dl>
+        <div class="links"><a href="real/gpt-r1/idea-1.html">open mockup ↗</a><a href="real/gpt-r1/README.md">README</a></div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ══════════ gpt-r2 ══════════ -->
+<section id="gpt-r2">
+  <div class="slot-head"><h2>Real-data corner badge</h2><span class="chip gpt">gpt-5.6-sol · gpt-r2</span></div>
+  <p class="theme">The ambient "how is it doing" instrument, driven by real records.</p>
+  <div class="cards">
+    <div class="card">
+      <a href="real/gpt-r2/index.html"><img class="thumb" src="real-thumbs/gpt-r2-1.png" alt="Strata Halo"></a>
+      <div class="body">
+        <h3><a href="real/gpt-r2/index.html">Strata Halo</a> <span class="fp badge">BADGE 316×232</span></h3>
+        <p class="one">A 316×232 ambient session instrument turning real progress, token pressure, tool flight, anomalies, idle gaps, and every human prompt into a glanceable corner halo.</p>
+        <dl>
+          <dt>Realtime comprehension</dt>
+          <dd>How far through the real session we are, what is happening now, whether token pressure is unusual, and where to jump to any human prompt — ratio rings and 30 real-time token bins stay constant-size.</dd>
+          <dt>Verification</dt>
+          <dd>Measured 316×232 at scale 1; replay advancement proven; A/B/C switching incl. B's 0-job/0-child state; real #44→#45 shell interval reconstructed as 01:00/02:00; prompt-jump #233 with receipt. Proof PNGs kept in the slot directory.</dd>
+        </dl>
+        <div class="links"><a href="real/gpt-r2/index.html">open mockup ↗</a><a href="real/gpt-r2/README.md">README</a></div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ══════════ gpt-r3 ══════════ -->
+<section id="gpt-r3">
+  <div class="slot-head"><h2>True-time rail</h2><span class="chip gpt">gpt-5.6-sol · gpt-r3</span></div>
+  <p class="theme">Wall-clock honesty as the feature — the 3-hour gap, the 20-minute burst, the terminal stall.</p>
+  <div class="cards">
+    <div class="card">
+      <a href="real/gpt-r3/idea-1.html"><img class="thumb" src="real-thumbs/gpt-r3-1.png" alt="True-Time Rail"></a>
+      <div class="body">
+        <h3><a href="real/gpt-r3/idea-1.html">True-Time Rail</a> <span class="fp rail">RAIL 156px</span></h3>
+        <p class="one">A 156px minimap where vertical distance is real elapsed time, making genuine burst/stall rhythm the session picture — with a turn-index toggle for the gap-collapsed comparison.</p>
+        <dl>
+          <dt>Realtime comprehension</dt>
+          <dd>When work actually happened versus stalled, what was in flight at any wall-clock instant, and permanent jumps to every real user prompt. Linear true-time compression keeps multi-hour gaps literal; 238 jobs use interval-partitioned micro-lanes.</dd>
+          <dt>Verification</dt>
+          <dd>Rail measured 156×815; prompt markers survive true-time clustering; click on #233 centered the exact row (0px delta) with a JUMPED #233 · 23:45:10 UTC receipt; embedded JSON deep-equals the sources.</dd>
+        </dl>
+        <div class="links"><a href="real/gpt-r3/idea-1.html">open mockup ↗</a><a href="real/gpt-r3/README.md">README</a></div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ══════════ gpt-r4 ══════════ -->
+<section id="gpt-r4">
+  <div class="slot-head"><h2>Cost-first rail</h2><span class="chip gpt">gpt-5.6-sol · gpt-r4</span></div>
+  <p class="theme">The session's resource story from real per-turn token usage.</p>
+  <div class="cards">
+    <div class="card">
+      <a href="real/gpt-r4/idea-1.html"><img class="thumb" src="real-thumbs/gpt-r4-1.png" alt="Token Seismograph"></a>
+      <div class="body">
+        <h3><a href="real/gpt-r4/idea-1.html">Token Seismograph</a> <span class="fp rail">RAIL 156px</span></h3>
+        <p class="one">A real-time token seismograph that turns per-turn usage and result bytes into a compact cumulative-burn rail.</p>
+        <dl>
+          <dt>Realtime comprehension</dt>
+          <dd>When and where real token burn accumulated, the input/output texture of each assistant turn, result-size cliffs, and the exact expensive episodes — while preserving real idle gaps. Real totals on screen: A 813,765 · B 1,005,542 · C 9,553,164 tokens.</dd>
+          <dt>Verification</dt>
+          <dd>Before/after crops showed real cumulative burn 1,955,923→9,553,164; prompt #444 click centered exact row (471px centers); B showed 562 rows / 4 anchors / 0 jobs / 0 children; a stale cross-session jump-state bug was found in the pass and fixed.</dd>
+        </dl>
+        <div class="links"><a href="real/gpt-r4/idea-1.html">open mockup ↗</a><a href="real/gpt-r4/README.md">README</a></div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<footer>
+  Round 4 (real data). Extraction: <code>proposals/transcript-viz/_extract/</code> (canonical types) + <code>evener-doctor jobs|tree --json</code>;
+  dataset + schema notes in <code>proposals/transcript-viz/realdata/README.md</code>. Known data limitations surfaced by the delegates:
+  <code>steer_src</code> is almost never populated (1/160 steering turns), <code>children[]</code> carries no timestamps, and none of the three sessions
+  contain compaction or watch events. Earlier rounds: <a href="compact.html" style="color:var(--accent)">compact synthetic</a> ·
+  <a href="realtime.html" style="color:var(--accent)">realtime</a> · <a href="index.html" style="color:var(--accent)">retrospective</a>.
+</footer>
+
+</body>
+</html>

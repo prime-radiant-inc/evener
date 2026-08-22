@@ -1,0 +1,293 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>evener · Tool-Mix Timeline — transcript comprehension</title>
+<style>
+  :root{
+    --surface-0:#0d1117; --surface-1:#161b22; --surface-inset:#11161d;
+    --edge:#2a3340; --edge-strong:#3a4658;
+    --ink-hi:#e6edf3; --ink-mid:#9da9b8; --ink-low:#6a7686;
+    --alive:#3fb950; --alive-ink:#4ade80; --alive-bg:rgba(63,185,80,.14);
+    --attention:#d29922; --attention-ink:#e3b341; --attention-bg:rgba(210,153,34,.16);
+    --danger:#f85149; --danger-ink:#ff6b62; --danger-bg:rgba(248,81,73,.16);
+    --accent:#58a6ff; --accent-ink:#79b8ff; --accent-bg:rgba(88,166,255,.14);
+    --violet:#a371f7; --cyan:#39c5cf; --pink:#db61a2;
+    --mono:ui-monospace,SFMono-Regular,"JetBrains Mono",Menlo,Consolas,monospace;
+    --sans:"Inter",-apple-system,BlinkMacSystemFont,"Segoe UI",Helvetica,Arial,sans-serif;
+  }
+  *{box-sizing:border-box}
+  html,body{margin:0;padding:0;background:var(--surface-0);color:var(--ink-hi);font-family:var(--sans);-webkit-font-smoothing:antialiased}
+  body{padding:20px 28px 40px;min-height:100vh}
+  .micro{font-size:11px;letter-spacing:.08em;text-transform:uppercase;font-weight:500;color:var(--ink-low)}
+  h1{font-size:18px;font-weight:600;letter-spacing:-.01em;margin:0 0 2px}
+  .sub{color:var(--ink-mid);font-size:13px;line-height:1.5;max-width:880px;margin:0 0 18px}
+  code{font-family:var(--mono);font-size:12px;background:var(--surface-inset);padding:1px 5px;border-radius:4px;color:var(--ink-mid)}
+  .card{background:var(--surface-1);border:1px solid var(--edge);border-radius:10px;padding:16px 18px;margin-bottom:16px}
+  .card-head{display:flex;align-items:baseline;justify-content:space-between;gap:12px;margin-bottom:10px}
+  .card-head h2{font-size:13px;font-weight:600;margin:0;letter-spacing:.01em}
+  .pill{display:inline-block;padding:2px 8px;border-radius:999px;font-size:11px;font-weight:500;border:1px solid var(--edge)}
+  .pill.attention{color:var(--attention-ink);background:var(--attention-bg);border-color:rgba(210,153,34,.3)}
+  .pill.accent{color:var(--accent-ink);background:var(--accent-bg);border-color:rgba(88,166,255,.3)}
+  .pill.danger{color:var(--danger-ink);background:var(--danger-bg);border-color:rgba(248,81,73,.3)}
+  .pill.muted{color:var(--ink-mid);background:var(--surface-inset)}
+  .legend{display:flex;flex-wrap:wrap;gap:10px 16px;align-items:center;font-size:12px;color:var(--ink-mid)}
+  .grad{width:120px;height:10px;border-radius:3px;background:linear-gradient(to right, #161b22, #1a3d2a, #2f6f3f, #3fb950);display:inline-block}
+  .icicle-wrap{display:flex;flex-direction:column;gap:2px;margin-bottom:10px;padding-left:150px}
+  .icicle-row{display:flex;gap:2px;height:14px;align-items:center}
+  .icicle-cell{border-radius:2px;display:flex;align-items:center;justify-content:center;font-size:9px;color:#06121f;font-weight:600;white-space:nowrap;overflow:hidden;cursor:pointer}
+  .icicle-cell.d0{background:var(--accent);}
+  .icicle-cell.d1{background:var(--violet);color:#1a0f2e;}
+  .icicle-cell.d2{background:var(--cyan);color:#06262a;}
+  .icicle-cell.d3{background:var(--pink);color:#2a0f1f;}
+  .icicle-cell.empty{background:transparent}
+  .grid-wrap{display:flex;gap:0;align-items:flex-start}
+  .row-labels{display:flex;flex-direction:column;gap:2px;width:150px;flex:none;padding-right:10px}
+  .row-label{height:18px;display:flex;align-items:center;font-family:var(--mono);font-size:11px;color:var(--ink-mid);white-space:nowrap}
+  .row-label .glyph{width:14px;height:14px;border-radius:3px;margin-right:8px;flex:none}
+  .grid{display:grid;grid-auto-flow:column;grid-auto-columns:1fr;flex:1;gap:2px;position:relative;min-width:0}
+  .col-gap{width:3px;height:100%;background:linear-gradient(to bottom,transparent,var(--attention) 8%,var(--attention) 92%,transparent);position:absolute;z-index:2}
+  .cell{height:18px;border-radius:2px;cursor:pointer;transition:transform .08s ease;min-width:0}
+  .cell:hover{transform:scaleY(1.15);z-index:3;outline:1px solid var(--ink-hi)}
+  .cell.sel{outline:2px solid var(--accent);z-index:4}
+  .cell.zero{background:var(--surface-inset);border:1px solid rgba(255,255,255,.03)}
+  .cell.err{background:var(--danger-bg);outline:1px solid rgba(248,81,73,.4)}
+  .axis{display:flex;justify-content:space-between;font-family:var(--mono);font-size:10px;color:var(--ink-low);margin:4px 0 2px;padding-left:150px}
+  .kv{display:flex;gap:14px;flex-wrap:wrap;margin-top:8px;font-family:var(--mono);font-size:11px;color:var(--ink-low)}
+  .kv span b{color:var(--ink-hi);font-weight:500}
+  .tip{position:fixed;background:var(--surface-2);border:1px solid var(--edge-strong);border-radius:6px;padding:6px 9px;font-family:var(--mono);font-size:11px;color:var(--ink-hi);pointer-events:none;z-index:100;box-shadow:0 4px 12px rgba(0,0,0,.5);display:none}
+  .tip b{color:var(--alive-ink)}
+  .tip .fail{color:var(--danger-ink)}
+  .caption{color:var(--ink-mid);font-size:12px;line-height:1.55;max-width:920px}
+  .caption b{color:var(--ink-hi);font-weight:500}
+  .detail{display:grid;grid-template-columns:1fr 1fr;gap:14px 22px;font-size:12px}
+  .detail dt{color:var(--ink-low);font-size:10px;letter-spacing:.06em;text-transform:uppercase;margin:0 0 2px}
+  .detail dd{margin:0 0 10px;color:var(--ink-hi);font-family:var(--mono);font-size:12px;line-height:1.45}
+</style>
+</head>
+<body>
+
+<div style="max-width:1180px;margin:0 auto">
+  <div class="micro">evener · transcript-viz proposal · idea 2 of 3</div>
+  <h1 style="margin-top:6px">Tool-Mix Timeline — a dense activity heatmap</h1>
+  <p class="sub">Rows are tool types, columns are time-buckets across the session. Cell <b>intensity = call count</b> in that bucket. A <b>vertical amber band</b> marks each compaction boundary; the <b>mini-icicle</b> on top shows the 3-level delegate tree spanning the same time axis. Phase transitions (exploration → delegation → integration), tool-mix shifts, and the error episode become spatial patterns — no clicking needed to read them.</p>
+
+  <div class="card">
+    <div class="card-head"><h2>Legend</h2><span class="micro">hover a cell for detail</span></div>
+    <div class="legend">
+      <span><span class="grad"></span> 0 → peak call count</span>
+      <span><span class="pill attention">amber band</span> compaction boundary</span>
+      <span><span class="pill danger">red cell</span> error episode (exec_command exit 1)</span>
+      <span><span class="pill accent">icicle</span> delegate tree (d0 root · d1 · d2)</span>
+      <span><span class="pill muted">row = tool type</span> ordered by total calls</span>
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="card-head"><h2>Delegate tree (icicle, same time axis)</h2></div>
+    <div class="icicle-wrap" id="icicle"></div>
+  </div>
+
+  <div class="card">
+    <div class="card-head">
+      <h2>Tool-Mix Timeline · 50 buckets × 10 tool types</h2>
+      <span class="micro" id="bucketInfo">~5 turns / bucket</span>
+    </div>
+    <div class="grid-wrap">
+      <div class="row-labels" id="rowLabels"></div>
+      <div class="grid" id="grid"></div>
+    </div>
+    <div class="axis"><span>12:04</span><span>13:17</span><span>14:38</span><span>16:02</span><span>17:21</span></div>
+    <div class="kv" id="kv"></div>
+  </div>
+
+  <div class="card" id="detailCard">
+    <div class="card-head"><h2 id="detailTitle">Cell — hover or click</h2><span class="micro" id="detailPos"></span></div>
+    <div class="detail" id="detail"></div>
+  </div>
+
+  <p class="caption">
+    <b>What you see at a glance:</b> the top rows (<code>exec_command</code>, <code>read_file</code>, <code>grep_files</code>) are hottest in buckets 2–18 (the exploration phase), then <code>delegate_send</code> dominates buckets 20–35 (delegation), and <code>edit_file</code>/<code>apply_patch</code> heat up in buckets 38–48 (integration). The single red cell at bucket 41 is the error/retry episode. The three amber bands are compaction boundaries; the icicle above shows the delegate tree — a wide accent bar (root), three violet children, and three cyan grandchildren, widths proportional to time owned.
+  </p>
+</div>
+<div class="tip" id="tip"></div>
+
+<script>
+"use strict";
+/* ---------- synthetic data ---------- */
+var rngSeed = 0x12345;
+function rng() {
+  rngSeed ^= rngSeed << 13;
+  rngSeed >>>= 0;
+  rngSeed ^= rngSeed >>> 17;
+  rngSeed >>>= 0;
+  rngSeed ^= rngSeed << 5;
+  rngSeed >>>= 0;
+  return rngSeed / 4294967296;
+}
+var NB = 50;
+var TOOLS = [
+  {name:"exec_command", glyph:"#3fb950"},
+  {name:"read_file", glyph:"#58a6ff"},
+  {name:"grep_files", glyph:"#39c5cf"},
+  {name:"edit_file", glyph:"#d29922"},
+  {name:"apply_patch", glyph:"#f85149"},
+  {name:"list_dir", glyph:"#a371f7"},
+  {name:"write_file", glyph:"#4ade80"},
+  {name:"web_fetch", glyph:"#79b8ff"},
+  {name:"delegate_send", glyph:"#db61a2"},
+  {name:"use_skill", glyph:"#e3b341"}
+];
+var counts = TOOLS.map(function() { return new Array(NB).fill(0); });
+var totalCalls = 0;
+for (var b = 0; b < NB; b++) {
+  var phase;
+  if (b < 19) phase = "explore";
+  else if (b < 36) phase = "delegate";
+  else phase = "integrate";
+  TOOLS.forEach(function(tool, ti) {
+    var c = 0;
+    if (phase === "explore") {
+      if (["exec_command", "read_file", "grep_files", "list_dir"].includes(tool.name)) c = Math.round(2 + rng() * 10);
+      else c = Math.round(rng() * 3);
+    } else if (phase === "delegate") {
+      if (tool.name === "delegate_send") c = Math.round(3 + rng() * 9);
+      else if (["exec_command", "read_file"].includes(tool.name)) c = Math.round(1 + rng() * 5);
+      else c = Math.round(rng() * 2);
+    } else {
+      if (["edit_file", "apply_patch", "exec_command"].includes(tool.name)) c = Math.round(2 + rng() * 7);
+      else c = Math.round(rng() * 3);
+    }
+    counts[ti][b] = c;
+    totalCalls += c;
+  });
+}
+counts[0][41] = Math.max(counts[0][41], 3);
+var errBucket = 41;
+var compactions = [18, 35, 47];
+var tree = [
+  {name:"root", depth:0, start:0, span:50},
+  {name:"dlg_event_tape", depth:1, start:19, span:18},
+  {name:"dlg_heatmap", depth:1, start:20, span:22},
+  {name:"dlg_cost_tree", depth:1, start:21, span:27},
+  {name:"dlg_g1_render", depth:2, start:23, span:8},
+  {name:"dlg_g2_data", depth:2, start:31, span:7},
+  {name:"dlg_g3_verify", depth:2, start:38, span:8}
+];
+
+/* ---------- render icicle ---------- */
+var icicle = document.getElementById("icicle");
+var maxDepth = Math.max.apply(null, tree.map(function(t) { return t.depth; }));
+for (var d = 0; d <= maxDepth; d++) {
+  var row = document.createElement("div");
+  row.className = "icicle-row";
+  for (var b = 0; b < NB; b++) {
+    var node = tree.find(function(n) { return n.depth === d && b >= n.start && b < n.start + n.span; });
+    var cell = document.createElement("div");
+    cell.className = "icicle-cell " + (node ? "d" + d : "empty");
+    if (node) {
+      cell.style.width = ((node.span / NB) * 100) + "%";
+      cell.textContent = node.name.length > 10 ? node.name.slice(0, 8) : node.name;
+      cell.title = node.name + " (d" + d + ")";
+      b += node.span - 1;
+    } else {
+      cell.style.flex = "1";
+    }
+    row.appendChild(cell);
+  }
+  icicle.appendChild(row);
+}
+
+/* ---------- render row labels ---------- */
+var totals = counts.map(function(arr, i) { return {i: i, total: arr.reduce(function(a, b) { return a + b; }, 0)}; }).sort(function(a, b) { return b.total - a.total; });
+var rowLabels = document.getElementById("rowLabels");
+totals.forEach(function(t) {
+  var lbl = document.createElement("div");
+  lbl.className = "row-label";
+  var tool = TOOLS[t.i];
+  lbl.innerHTML = '<span class="glyph" style="background:' + tool.glyph + '"></span>' + tool.name + ' <span style="color:var(--ink-low)">' + t.total + '</span>';
+  rowLabels.appendChild(lbl);
+});
+
+/* ---------- render grid ---------- */
+var grid = document.getElementById("grid");
+var maxCell = Math.max.apply(null, counts.flat());
+compactions.forEach(function(b) {
+  var gap = document.createElement("div");
+  gap.className = "col-gap";
+  gap.style.left = ((b / NB) * 100) + "%";
+  grid.appendChild(gap);
+});
+totals.forEach(function(t) {
+  for (var b = 0; b < NB; b++) {
+    var c = counts[t.i][b];
+    var cell = document.createElement("div");
+    cell.className = "cell" + (c === 0 ? " zero" : "") + (b === errBucket && t.i === 0 ? " err" : "");
+    if (c > 0) {
+      var intensity = c / maxCell;
+      cell.style.background = "rgba(63,185,80," + (0.12 + intensity * 0.85) + ")";
+    }
+    cell.dataset.tool = t.i;
+    cell.dataset.bucket = b;
+    cell.dataset.count = c;
+    var toolRef = TOOLS[t.i];
+    cell.addEventListener("mouseenter", function(e) { showTip(e, toolRef, b, c, t.total); });
+    cell.addEventListener("mouseleave", hideTip);
+    cell.addEventListener("click", function() { selectCell(t.i, b, c); });
+    grid.appendChild(cell);
+  }
+});
+
+/* ---------- tooltip ---------- */
+var tip = document.getElementById("tip");
+function showTip(e, tool, b, c, tot) {
+  tip.style.display = "block";
+  tip.innerHTML = "<b>" + tool.name + "</b> · bucket " + b + "<br>" + c + " calls" + (b === errBucket && tool.name === "exec_command" ? ' <span class="fail">(error episode)</span>' : "") + "<br>row total: " + tot;
+  tip.style.left = (e.clientX + 12) + "px";
+  tip.style.top = (e.clientY + 12) + "px";
+}
+function hideTip() { tip.style.display = "none"; }
+
+/* ---------- kv ---------- */
+document.getElementById("kv").innerHTML =
+  "<span><b>" + totalCalls.toLocaleString() + "</b> tool calls</span>" +
+  "<span><b>" + TOOLS.length + "</b> tool types</span>" +
+  "<span><b>" + NB + "</b> time-buckets (~5 turns/bucket)</span>" +
+  "<span><b>" + compactions.length + "</b> compaction bands</span>" +
+  "<span><b>1</b> error episode (bucket " + errBucket + ")</span>" +
+  "<span><b>" + tree.length + "</b> delegate nodes (3 levels)</span>";
+
+/* ---------- detail ---------- */
+function selectCell(ti, b, c) {
+  document.querySelectorAll(".cell.sel").forEach(function(x) { x.classList.remove("sel"); });
+  var cells = grid.querySelectorAll('.cell[data-tool="' + ti + '"][data-bucket="' + b + '"]');
+  cells.forEach(function(x) { x.classList.add("sel"); });
+  var tool = TOOLS[ti];
+  var d = document.getElementById("detail");
+  var err = (ti === 0 && b === errBucket);
+  d.innerHTML =
+    "<div><dt>Tool type</dt><dd>" + tool.name + '</dd></div>' +
+    "<div><dt>Time bucket</dt><dd>" + b + " of " + NB + "</dd></div>" +
+    "<div><dt>Calls in bucket</dt><dd>" + c + (err ? ' <span class="pill danger">error</span>' : "") + '</dd></div>' +
+    "<div><dt>Row total</dt><dd>" + counts[ti].reduce(function(a, b) { return a + b; }, 0) + " calls</dd></div>" +
+    '<div style="grid-column:1/-1"><dt>Phase</dt><dd>' + phaseFor(b) + '</dd></div>' +
+    '<div style="grid-column:1/-1"><dt>Reading</dt><dd>' + readingFor(b, tool, err) + '</dd></div>';
+  document.getElementById("detailTitle").textContent = "Cell · " + tool.name + " · bucket " + b;
+  document.getElementById("detailPos").textContent = "col " + b + " · row " + (totals.findIndex(function(t) { return t.i === ti; }) + 1);
+}
+function phaseFor(b) {
+  if (b < 19) return "exploration";
+  if (b < 36) return "delegation";
+  return "integration";
+}
+function readingFor(b, tool, err) {
+  if (err) return "exec_command exit 1 at this bucket — the build failure; retry follows.";
+  if (b < 19) return "Dense " + tool.name + " activity typical of the exploration phase.";
+  if (b < 36) return tool.name === "delegate_send" ? "Peak delegate spawning." : tool.name + " supporting the delegation phase.";
+  return (tool.name === "edit_file" || tool.name === "apply_patch") ? "Integration edits — writing the final mockups." : tool.name + " supporting integration.";
+}
+selectCell(0, errBucket, counts[0][errBucket]);
+</script>
+</body>
+</html>

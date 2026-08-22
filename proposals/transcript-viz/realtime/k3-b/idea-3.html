@@ -1,0 +1,508 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>RT Idea 3 — Case File Live: ledger writing itself</title>
+<style>
+  :root{
+    --bg:#0d1117; --panel:#161b22; --border:#30363d; --text:#e6edf3; --dim:#8b949e;
+    --blue:#58a6ff; --green:#3fb950; --red:#f85149; --orange:#d29922;
+    --violet:#bc8cff; --purple:#a371f7; --teal:#39c5cf; --amber:#f0b72f;
+  }
+  *{box-sizing:border-box}
+  html,body{margin:0;padding:0;background:var(--bg);color:var(--text);
+    font:12px/1.45 ui-monospace,'SF Mono',SFMono-Regular,Menlo,Consolas,monospace;}
+  header{padding:10px 20px 8px;border-bottom:1px solid var(--border);display:flex;flex-wrap:wrap;gap:8px;align-items:center}
+  header .title{font-size:14px;font-weight:700;margin-right:6px}
+  header .title .idea{color:var(--amber)}
+  .chip{border:1px solid var(--border);border-radius:10px;padding:2px 8px;color:var(--dim);background:var(--panel)}
+  .chip b{color:var(--text);font-weight:600}
+  #liveChip{display:inline-flex;align-items:center;gap:6px;border:1px solid var(--red);color:var(--red);
+    border-radius:10px;padding:2px 10px;font-weight:700}
+  #liveChip .dot{width:8px;height:8px;border-radius:50%;background:var(--red);animation:blink 1.1s infinite}
+  #liveChip.paused{border-color:var(--orange);color:var(--orange)} #liveChip.paused .dot{background:var(--orange);animation:none}
+  #liveChip.ended{border-color:var(--green);color:var(--green)} #liveChip.ended .dot{background:var(--green);animation:none}
+  @keyframes blink{0%,100%{opacity:1}50%{opacity:.25}}
+  #transport{display:flex;gap:10px;align-items:center;padding:8px 20px;border-bottom:1px solid var(--border);background:#0f141b}
+  #transport button{background:var(--panel);border:1px solid var(--border);color:var(--text);border-radius:6px;padding:3px 12px;font:inherit;cursor:pointer}
+  #transport button:hover{border-color:var(--blue)}
+  #transport button.on{border-color:var(--blue);color:var(--blue);background:rgba(88,166,255,.1)}
+  #seek{flex:1;appearance:none;height:6px;border-radius:3px;background:#21262d;outline:none;cursor:pointer}
+  #seek::-webkit-slider-thumb{appearance:none;width:14px;height:14px;border-radius:50%;background:var(--blue)}
+  #clock{color:var(--teal);font-weight:700;min-width:90px}
+  #alertbar{display:flex;gap:8px;align-items:center;padding:6px 20px;border-bottom:1px solid var(--border);background:#0b0f15;min-height:34px;flex-wrap:wrap}
+  #alertbar .lab{font-size:10px;text-transform:uppercase;letter-spacing:.08em;color:var(--dim)}
+  .abadge{border:1px solid;border-radius:8px;padding:2px 9px;font-size:11px;font-weight:700;animation:slidein .4s ease-out}
+  .abadge.warn{color:var(--orange);border-color:rgba(210,153,34,.6);background:rgba(210,153,34,.08)}
+  .abadge.bad{color:var(--red);border-color:rgba(248,81,73,.6);background:rgba(248,81,73,.10);animation:slidein .4s ease-out,blink 1.2s infinite}
+  .abadge.ok{color:var(--green);border-color:rgba(63,185,80,.5);background:rgba(63,185,80,.07)}
+  .abadge.info{color:var(--blue);border-color:rgba(88,166,255,.5);background:rgba(88,166,255,.07)}
+  @keyframes slidein{from{opacity:0;transform:translateY(-6px)}to{opacity:1;transform:none}}
+  .wrap{padding:10px 20px 30px;max-width:1460px}
+  h2{font-size:11px;text-transform:uppercase;letter-spacing:.09em;color:var(--dim);margin:14px 0 8px}
+  h2 .n{color:var(--text)}
+  #heat{border:1px solid var(--border);border-radius:8px;background:#0a0e13;padding:10px 12px}
+  .hgrid{display:grid;gap:2px;align-items:center}
+  .hlabel{font-size:10px;color:var(--dim);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;padding-right:8px}
+  .hcell{height:14px;border-radius:2px;background:rgba(88,166,255,var(--a,0));position:relative;transition:background .3s}
+  .hcell.fold{background:rgba(163,113,247,.18)}
+  .hcell .fail{position:absolute;inset:1px;border:1.5px solid var(--red);border-radius:2px}
+  .hcell .ro{position:absolute;left:50%;top:50%;width:4px;height:4px;margin:-2px;border-radius:50%;background:#6e7681}
+  .hcell.flash{animation:cellflash .7s}
+  @keyframes cellflash{0%{background:rgba(230,237,243,.85)}100%{background:rgba(88,166,255,var(--a,0))}}
+  .haxis{font-size:9px;color:#6e7681;text-align:center}
+  .hlegend{display:flex;gap:16px;margin-top:8px;font-size:10px;color:var(--dim);flex-wrap:wrap}
+  .cols{display:flex;gap:18px;align-items:flex-start}
+  #ledger{flex:1;position:relative;padding-left:30px;min-width:0}
+  #spine{position:absolute;left:11px;top:14px;bottom:14px;width:2px;background:#30363d}
+  .connector{position:relative;height:22px}
+  .connector .rel{display:inline-block;margin-left:14px;margin-top:4px;font-size:10px;color:var(--dim);
+    border:1px solid var(--border);border-radius:9px;padding:1px 8px;background:#0f141b;animation:slidein .4s}
+  .card{position:relative;border:1px solid var(--border);border-radius:10px;background:var(--panel);
+    padding:10px 12px;margin-bottom:10px;transition:border-color .2s}
+  .card.open{border-color:var(--amber);animation:openpulse 1.6s infinite}
+  @keyframes openpulse{0%,100%{box-shadow:0 0 0 0 rgba(240,183,47,.35)}50%{box-shadow:0 0 0 5px rgba(240,183,47,0)}}
+  .card .dot{position:absolute;left:-24px;top:16px;width:10px;height:10px;border-radius:50%;background:var(--panel);border:2px solid var(--dim)}
+  .card.open .dot{border-color:var(--amber);background:var(--amber);animation:blink 1.1s infinite}
+  .chead{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
+  .eid{font-weight:700;color:var(--dim)}
+  .ctitle{font-weight:700;font-size:13px}
+  .tag{font-size:9.5px;border-radius:8px;padding:1px 7px;border:1px solid;text-transform:uppercase;letter-spacing:.05em}
+  .tag.ok{color:var(--green);border-color:rgba(63,185,80,.5);background:rgba(63,185,80,.08)}
+  .tag.warn{color:var(--orange);border-color:rgba(210,153,34,.5);background:rgba(210,153,34,.08)}
+  .tag.bad{color:var(--red);border-color:rgba(248,81,73,.5);background:rgba(248,81,73,.08)}
+  .tag.fold{color:var(--purple);border-color:rgba(163,113,247,.5);background:rgba(163,113,247,.08)}
+  .tag.info{color:var(--blue);border-color:rgba(88,166,255,.5);background:rgba(88,166,255,.08)}
+  .tag.open{color:var(--amber);border-color:rgba(240,183,47,.6);background:rgba(240,183,47,.08)}
+  .spacer{flex:1}
+  .meta{font-size:10px;color:var(--dim)}
+  .meta b{color:var(--text)}
+  .livenow{margin-top:6px;font-size:11px;color:var(--teal);border:1px dashed rgba(57,197,207,.4);border-radius:7px;padding:4px 8px;background:rgba(57,197,207,.05)}
+  .causal-links{display:flex;gap:6px;flex-wrap:wrap;margin-top:6px}
+  .clink{font-size:10px;border-radius:8px;padding:1px 7px;background:#0f141b;border:1px solid var(--border);color:var(--dim)}
+  .clink b{color:var(--amber);font-weight:600}
+  .clink.out b{color:var(--teal)}
+  .clink.new{animation:linkflash 1s}
+  @keyframes linkflash{0%{background:rgba(240,183,47,.35);border-color:var(--amber)}100%{background:#0f141b}}
+  .strip{display:grid;grid-template-columns:1fr 22px 1.4fr 22px 1fr;gap:4px;align-items:stretch;margin-top:8px}
+  .panel{border:1px solid var(--border);border-radius:7px;padding:6px 8px;background:#0f141b}
+  .panel .ph{font-size:9px;text-transform:uppercase;letter-spacing:.07em;margin-bottom:2px}
+  .panel.cause .ph{color:var(--amber)} .panel.mech .ph{color:var(--blue)} .panel.out .ph{color:var(--green)}
+  .panel .pb{font-size:11px;color:#c9d1d9}
+  .panel.pending .pb{color:#6e7681;font-style:italic}
+  .arr{align-self:center;text-align:center;color:var(--dim);font-size:13px}
+  .evid{display:flex;gap:6px;flex-wrap:wrap;margin-top:8px}
+  .ev{font-size:10px;color:var(--dim);border:1px solid var(--border);border-radius:8px;padding:1px 7px;background:#0f141b}
+  .row{position:relative;display:flex;gap:8px;align-items:center;border:1px solid var(--border);border-radius:8px;
+    background:#10151d;padding:4px 10px;margin-bottom:6px;cursor:pointer;font-size:11px;color:var(--dim)}
+  .row:hover{border-color:var(--blue);color:var(--text)}
+  .row .dot2{width:8px;height:8px;border-radius:50%;flex:none}
+  .row b{color:var(--text)}
+  .row .spacer{flex:1}
+  #rail{width:300px;flex:0 0 300px;position:sticky;top:12px;border:1px solid var(--border);border-radius:10px;background:#0f141b;padding:12px}
+  #rail h3{margin:0 0 6px;font-size:11px;text-transform:uppercase;letter-spacing:.08em;color:var(--dim)}
+  #rail .rc{border:1px solid var(--border);border-left:3px solid var(--amber);border-radius:6px;padding:6px 8px;margin:6px 0;background:var(--panel);font-size:11px}
+  #rail .rc .t{font-weight:700}
+  #rail .rc .w{color:var(--dim);font-size:10px}
+  #rail .via{color:var(--amber);margin-left:8px;font-size:10px}
+  #rail .doing{font-size:11px;color:var(--teal);margin-top:4px;white-space:pre-line}
+  .caption{color:var(--dim);font-size:11px;margin-top:14px}
+  .quiet *{animation:none!important;transition:none!important}
+</style>
+</head>
+<body>
+<header>
+  <span id="liveChip"><span class="dot"></span>LIVE</span>
+  <span class="title"><span class="idea">RT-3 · CASE FILE LIVE</span> — the ledger writes itself</span>
+  <span class="chip">session <b>evener-8f3k2</b></span>
+  <span class="chip">turn <b id="cTurn">1</b>/287</span>
+  <span class="chip"><b id="cCalls">0</b> tool calls</span>
+  <span class="chip"><b id="cTok">0</b> tok · <b id="cCost">$0.00</b></span>
+  <span class="chip">episodes: <b id="cEp">1 open</b></span>
+</header>
+<div id="transport">
+  <button id="bPlay">⏸ pause</button>
+  <button class="spd" data-s="1">1×</button>
+  <button class="spd" data-s="8">8×</button>
+  <button class="spd on" data-s="32">32×</button>
+  <button class="spd" data-s="128">128×</button>
+  <input id="seek" type="range" min="0" max="372" step="0.5" value="0">
+  <span id="clock">T+0h00m</span>
+  <button id="bReplay">↺ replay</button>
+</div>
+<div id="alertbar"><span class="lab">live alerts</span><span id="alertNone" style="color:var(--dim);font-style:italic;font-size:11px">none — session healthy</span></div>
+<div class="wrap">
+  <h2><span class="n">① Blast radius</span> — fills in live as edits land (48 time buckets ≈ 7¾ min each)</h2>
+  <div id="heat"></div>
+  <h2><span class="n">② Chain of custody, live</span> — the open episode ticks; sealed episodes collapse to one-line custody rows</h2>
+  <div class="cols">
+    <div id="ledger"><div id="spine"></div></div>
+    <div id="rail">
+      <h3>Why is it doing this right now?</h3>
+      <div id="railbody"><div class="rc"><div class="t">—</div><div class="w">waiting for first event…</div></div></div>
+    </div>
+  </div>
+  <div class="caption">Update model: episodes open as amber pulsing cards with a live action line; when their outcome event arrives they seal (outcome chip flips ✓/✗) and, once two newer episodes exist, collapse to one-line custody rows (click any row to re-open it). Causal link pills flash in the moment their triggering event lands — watch <b>↖ caused by E2 · bug introduced @T44</b> attach to E8 live at T147. The blast-radius cell flashes on every edit. Scaling: at T287 the ledger is ~11 compact rows + the 2 newest cards — the session stays one screenful no matter how long it runs.</div>
+</div>
+<script>
+"use strict";
+function mulberry32(a){return function(){a|=0;a=a+0x6D2B79F5|0;let t=Math.imul(a^a>>>15,1|a);t=t+Math.imul(t^t>>>7,61|t)^t;return((t^t>>>14)>>>0)/4294967296;};}
+const rnd=mulberry32(424242);
+const SIM_END=372, NCB=48, BK=372/NCB;
+const TURN_ANCHORS=[[1,0],[28,25],[61,70],[62,75],[95,140],[128,180],[131,185],[149,215],[151,220],[200,290],[220,330],[221,335],[260,355],[287,372]];
+function turnAt(min){for(let i=1;i<TURN_ANCHORS.length;i++){const [t1,m1]=TURN_ANCHORS[i];const [t0,m0]=TURN_ANCHORS[i-1];
+  if(min<=m1)return Math.round(t0+(min-m0)*(t1-t0)/(m1-m0));}return 287;}
+function fmt(t){const h=Math.floor(t/60),m=Math.floor(t%60);return "T+"+h+"h"+String(m).padStart(2,"0")+"m";}
+function fmtR(t){const h=Math.floor(t/60),m=Math.floor(t%60);return h+"h"+String(m).padStart(2,"0")+"m";}
+// ---------------- episodes ----------------
+const EPS=[
+{id:"E1",turns:"T1–28",m0:0,m1:25,title:"Recon & plan",tag:"exploration",st:"info",
+ cause:"USER_INPUT T1 sets the goal: tombstone pruning + fix the watch runaway loop.",
+ mech:"read_file ×61 · grep ×34 · glob ×18 over agent/schema, agent/internal/jobstore.",
+ out:"Plan committed; jobstore identified as the existing-pruning reference.",
+ calls:210,cost:"$2.10",files:["agent/schema/turn.go","agent/internal/jobstore/store.go"],actors:"root",tools:"read_file, grep, glob",relNext:"informed"},
+{id:"E2",turns:"T29–61",m0:25,m1:70,title:"jobstore pruning implemented",tag:"implementation",st:"ok",
+ cause:"Plan items 1–4 from E1.",
+ mech:"edit_file ×17 on prune.go (+412 −88) with build↔test loops ×6. T44: skip-list iterator written here.",
+ out:"prune.go green. ⚠ the diff silently carries the iterator bug that detonates at T132.",
+ calls:342,cost:"$5.40",files:["jobstore/prune.go","jobstore/prune_test.go"],actors:"root",tools:"edit_file, shell, read_file",relNext:"gap found"},
+{id:"E3",turns:"T62",m0:75,m1:76,title:"STEERING: widen scope",tag:"steering pivot",st:"info",
+ cause:"User, mid-run: “handle delegate tombstones too.”",
+ mech:"TurnSteering queued while a shell job runs; consumed at T63.",
+ out:"Scope expands from jobstore → delegatestore.",
+ calls:0,cost:"$0.01",files:[],actors:"user → root",tools:"—",relNext:"steered"},
+{id:"E4",turns:"T63–95",m0:78,m1:140,title:"Delegate: dlg_store (L1)",tag:"delegation",st:"ok",
+ cause:"E2 found the tombstone gap; E3 widened scope.",
+ mech:"Root spawns dlg_store (budget $8, depth 2) for delegatestore/tombstone.go; root polishes jobstore in parallel.",
+ out:"Child running async; first delivery ~T140.",
+ calls:88,cost:"$1.30",files:["delegatestore/tombstone.go"],actors:"root → dlg_store",tools:"delegate, edit_file",relNext:"spawned"},
+{id:"E5",turns:"T70–140",m0:90,m1:200,title:"Grandchild: dlg_tests (L2)",tag:"delegation",st:"warn",
+ cause:"dlg_store needs fuzz coverage.",
+ mech:"dlg_store spawns dlg_tests (3-level tree). 12 fuzz seeds; one corpus seed FAILS (3≠7 tombstones).",
+ out:"Fuzz targets delivered; the failing seed becomes E8 evidence.",
+ calls:263,cost:"$2.60",files:["delegatestore/testdata/fuzz/*"],actors:"dlg_store → dlg_tests",tools:"write_file, shell",relNext:"evidence"},
+{id:"E6",turns:"T96–128",m0:150,m1:180,title:"Background jobs: build + fuzz",tag:"jobs",st:"ok",
+ cause:"dlg_store requests validation artifacts.",
+ mech:"shell(background) make build → exit 0 in 4m. shell(detached) go test -fuzz for 3h; stdout streamed to watchers.",
+ out:"Detached fuzz job accumulating the corpus line w_fuzz will match.",
+ calls:41,cost:"$0.50",files:[],actors:"dlg_store, root",tools:"shell",relNext:"output fed"},
+{id:"E7",turns:"T129–131",m0:182,m1:188,title:"WATCH STORM",tag:"runaway loop",st:"bad",
+ cause:"job_fuzz prints a corpus FAILURE line; w_fuzz /FAILURE/ matcher fires.",
+ mech:"Handler re-arms the same matcher on the same line → 3 fires in 90s; each injects an attention item.",
+ out:"Root interrupted at T132. The storm is itself the named bug.",
+ calls:3,cost:"$0.06",files:["doctor/watches.go"],actors:"w_fuzz → root",tools:"job_watch (inject ×3)",relNext:"triggered"},
+{id:"E8",turns:"T132–149",m0:196,m1:216,title:"RETRY CASCADE ×4",tag:"retry cascade",st:"bad",
+ cause:"Storm interrupt (E7) + the T44 iterator bug (E2) + dlg_tests’ failing seed (E5).",
+ mech:"attempt 1 vet exit 1 (T133) → attempt 2 build exit 1 (T137) → attempt 3 test FAIL (T141) → attempt 4 fuzz FAIL (T145) → root cause T147 → fix T149.",
+ out:"prune.go +6 −2; re-arm guard in watches.go; all green.",
+ calls:96,cost:"$3.10",files:["jobstore/prune.go","doctor/watches.go"],actors:"root",tools:"edit_file, shell, read_file",relNext:"context 92% →"},
+{id:"E9",turns:"T151",m0:220,m1:221,title:"COMPACTION #1",tag:"compaction fold",st:"fold",
+ cause:"Context at 92% after the cascade’s huge tool results.",
+ mech:"Layer-3 CHECKPOINT + Layer-4 SUMMARY fold turns 1–150.",
+ out:"1.9M → 40k tokens.",
+ calls:0,cost:"$0.40",files:[],actors:"harness",tools:"compact_context",relNext:"continuity via SUMMARY"},
+{id:"E10",turns:"T152–200",m0:226,m1:298,title:"Delegate report integrated + MODEL_SWITCH",tag:"delegation return",st:"ok",
+ cause:"dlg_store completes and reports back.",
+ mech:"Report merged: tombstone.go +412 lines, 42 tests. MODEL_SWITCH T166: k3→mini. w_cost fires once ($30) — no storm.",
+ out:"delegatestore integrated; spend throttled.",
+ calls:288,cost:"$4.10",files:["delegatestore/tombstone.go","delegatestore/store_test.go","delegatestore/store.go"],actors:"dlg_store → root",tools:"communicate, edit_file, shell",relNext:"push"},
+{id:"E11",turns:"T201–220",m0:300,m1:330,title:"CI fail → rerun (small retry)",tag:"error→retry",st:"warn",
+ cause:"Push at T205; lint fails on an unused parameter — residue of the T147 fix.",
+ mech:"job_ci exit 1 → edit_file drops the param → rerun exit 0. w_ci fires exactly once.",
+ out:"CI green at T214.",
+ calls:74,cost:"$0.90",files:["delegatestore/store.go"],actors:"root, job_ci, w_ci",tools:"shell, edit_file",relNext:"context 78% →"},
+{id:"E12",turns:"T221",m0:335,m1:336,title:"COMPACTION #2",tag:"compaction fold",st:"fold",
+ cause:"Context at 78%; long CI logs folded out.",
+ mech:"Folds T152–220. Cascade survives as: “iterator fixed after 4 attempts; re-arm guard added.”",
+ out:"890k → 22k tokens.",
+ calls:0,cost:"$0.20",files:[],actors:"harness",tools:"compact_context",relNext:"continuity"},
+{id:"E13",turns:"T222–260",m0:338,m1:355,title:"Docs + final gates",tag:"delegation",st:"ok",
+ cause:"Behavior changed in E8/E10 → docs must match.",
+ mech:"Root spawns dlg_docs: 6 files under docs/web-ui/*. Gates: make build, go vet, go test ./... — all green.",
+ out:"Docs report merged at T258.",
+ calls:96,cost:"$1.50",files:["docs/web-ui/transcript.md","docs/web-ui/delegates.md","Makefile"],actors:"root → dlg_docs",tools:"delegate, shell, edit_file",relNext:"gates green"},
+{id:"E14",turns:"T261–287",m0:356,m1:372,title:"GOAL COMPLETE",tag:"terminal",st:"ok",
+ cause:"All gates green (E13) + CI green (E11) + e2e exit 0.",
+ mech:"job_e2e exit 0; coverage 91.2%; update_goal(complete). PR #312 prepared.",
+ out:"Session ends: pruning shipped, watch storm fixed and verified.",
+ calls:60,cost:"$0.70",files:[],actors:"root",tools:"shell, update_goal",relNext:""},
+];
+const epById=id=>EPS.find(e=>e.id===id);
+// causal links with arrival times
+const LINKS=[
+ {t:78, to:"E4", rel:{id:"E2",rel:"gap found"},dir:"in"},{t:78, to:"E4", rel:{id:"E3",rel:"steered"},dir:"in"},
+ {t:78, to:"E2", rel:{id:"E4",rel:"gap found"},dir:"out"},{t:78, to:"E3", rel:{id:"E4",rel:"steered"},dir:"out"},
+ {t:90, to:"E5", rel:{id:"E4",rel:"spawned"},dir:"in"},{t:90, to:"E4", rel:{id:"E5",rel:"spawned"},dir:"out"},
+ {t:150,to:"E6", rel:{id:"E4",rel:"requested"},dir:"in"},{t:150,to:"E4", rel:{id:"E6",rel:"requested"},dir:"out"},
+ {t:182,to:"E7", rel:{id:"E6",rel:"output fed"},dir:"in"},{t:182,to:"E6", rel:{id:"E7",rel:"output fed"},dir:"out"},
+ {t:188,to:"E8", rel:{id:"E7",rel:"triggered"},dir:"in"},{t:188,to:"E7", rel:{id:"E8",rel:"triggered"},dir:"out"},
+ {t:208,to:"E8", rel:{id:"E5",rel:"failing-seed evidence"},dir:"in"},{t:208,to:"E5", rel:{id:"E8",rel:"failing-seed evidence"},dir:"out"},
+ {t:214,to:"E8", rel:{id:"E2",rel:"bug introduced @T44"},dir:"in"},{t:214,to:"E2", rel:{id:"E8",rel:"bug introduced @T44"},dir:"out"},
+ {t:220,to:"E9", rel:{id:"E8",rel:"exhausted context"},dir:"in"},
+ {t:226,to:"E10",rel:{id:"E9",rel:"continuity"},dir:"in"},
+ {t:290,to:"E10",rel:{id:"E4",rel:"reported"},dir:"in"},{t:290,to:"E10",rel:{id:"E5",rel:"tests delivered"},dir:"in"},
+ {t:300,to:"E11",rel:{id:"E10",rel:"push"},dir:"in"},{t:308,to:"E11",rel:{id:"E8",rel:"fix residue"},dir:"in"},
+ {t:335,to:"E12",rel:{id:"E11",rel:"exhausted context"},dir:"in"},
+ {t:338,to:"E13",rel:{id:"E12",rel:"continuity"},dir:"in"},
+ {t:356,to:"E14",rel:{id:"E13",rel:"gates green"},dir:"in"},{t:356,to:"E14",rel:{id:"E11",rel:"CI green"},dir:"in"},
+];
+// ---------------- event stream ----------------
+const EV=[];
+for(const e of EPS){EV.push({t:e.m0,k:"open",id:e.id});EV.push({t:e.m1,k:"seal",id:e.id});}
+for(const l of LINKS)EV.push({t:l.t,k:"link",l});
+// heatmap edits
+const FMAP={"prune.go":"agent/internal/jobstore/prune.go","prune_test.go":"agent/internal/jobstore/prune_test.go",
+ "tombstone.go":"agent/internal/delegatestore/tombstone.go","store.go":"agent/internal/delegatestore/store.go",
+ "store_test.go":"agent/internal/delegatestore/store_test.go","watches.go":"agent/doctor/watches.go",
+ "fuzz seeds":"agent/internal/delegatestore/testdata/fuzz/*","transcript.md":"docs/web-ui/transcript.md",
+ "delegates.md":"docs/web-ui/delegates.md","Makefile":"Makefile"};
+function scatterEdits(w0,w1,n,file){for(let i=0;i<n;i++)EV.push({t:w0+rnd()*(w1-w0),k:"edit",file:FMAP[file]});}
+scatterEdits(25,70,20,"prune.go");scatterEdits(30,66,7,"prune_test.go");
+scatterEdits(80,140,12,"tombstone.go");scatterEdits(90,190,8,"store.go");
+scatterEdits(226,290,10,"tombstone.go");scatterEdits(226,290,12,"store_test.go");scatterEdits(294,318,4,"store.go");
+scatterEdits(95,200,11,"fuzz seeds");
+scatterEdits(196,215,11,"prune.go");scatterEdits(212,216,3,"watches.go");scatterEdits(340,360,6,"watches.go");
+scatterEdits(338,352,4,"transcript.md");scatterEdits(338,352,3,"delegates.md");
+scatterEdits(30,40,2,"Makefile");scatterEdits(340,350,1,"Makefile");scatterEdits(212,214,1,"agent/events/payloads.go");
+EV.push({t:212,k:"edit",file:"agent/events/payloads.go"});
+for(const [t,file] of [[196,"agent/internal/jobstore/prune.go"],[202,"agent/internal/jobstore/prune.go"],[208,"agent/internal/delegatestore/tombstone.go"],[212,"agent/internal/delegatestore/testdata/fuzz/*"],[308,"agent/internal/delegatestore/store.go"]])
+  EV.push({t,k:"failmark",file});
+for(let i=0;i<9;i++)EV.push({t:2+i*2.5,k:"read",file:"agent/schema/turn.go"});
+for(let i=0;i<5;i++)EV.push({t:3+i*4,k:"read",file:"agent/events/payloads.go"});
+for(const c of [220,335])EV.push({t:c,k:"fold"});
+// counters
+(function(){const raw=[];let sum=0;
+ for(let t=3;t<=372;t+=6){let w=3+3*Math.abs(Math.sin(t/17));
+   if(t>=78&&t<=140)w+=5;if(t>=196&&t<=216)w+=10;if(t>=226&&t<=290)w+=6;if(t>=338&&t<=356)w+=8;if(t>=25&&t<=70)w+=5;
+   w*=0.6+0.8*rnd();raw.push([t,w]);sum+=w;}
+ for(const [t,w] of raw)EV.push({t,k:"act",calls:Math.max(1,Math.round(w*2146/sum))});})();
+// now-status feed for open cards + rail
+const NOW=[
+ [0,"E1","▶ grep/read sweep: agent/schema, jobstore"],[25,"E2","▶ edit_file prune.go (+412 −88)"],
+ [52,"E2","▶ skip-list iterator for sealed entries (T44)"],[75,"E3","➤ steering queued mid-run"],
+ [78,"E4","▶ child session: implement tombstone.go"],[90,"E5","▶ grandchild: write fuzz targets"],
+ [150,"E6","▶ shell(bg) make build · shell(detached) fuzz"],[154,"E6","✓ job_build exit 0 · fuzz running"],
+ [182,"E7","▲ fire 1 — /FAILURE/ matched corpus line"],[184.5,"E7","▲ fire 2 — re-armed same line!"],
+ [187,"E7","▲ fire 3 — RUNAWAY (3×/90s)"],[196,"E8","▶ attempt 1 — go vet exit 1"],
+ [202,"E8","▶ attempt 2 — make build exit 1"],[208,"E8","▶ attempt 3 — go test FAIL (3≠7)"],
+ [212,"E8","▶ attempt 4 — fuzz FAIL again"],[214,"E8","✱ ROOT CAUSE: iterator skipped sealed tombstones"],
+ [215,"E8","▶ fix +6 −2 · re-arm guard"],[220,"E9","≣ CHECKPOINT+SUMMARY folding T1–150"],
+ [226,"E10","▶ merging dlg_store report"],[250,"E10","⚠ w_cost fired ($30) — handled"],
+ [292,"E10","⚙ MODEL_SWITCH k3→mini"],[300,"E11","▶ job_ci run 1 (push)"],
+ [308,"E11","✗ exit 1 — lint: unused param"],[312,"E11","▶ rerun after edit_file"],
+ [318,"E11","✓ w_ci fired once — exit 0"],[335,"E12","≣ folding T152–220"],
+ [338,"E13","▶ dlg_docs: docs/web-ui ×6"],[350,"E13","▶ make build · vet · test — green"],
+ [356,"E14","▶ job_e2e running"],[360,"E14","✓ e2e exit 0 · coverage 91.2%"],
+ [372,"E14","✔ update_goal(complete) · PR #312"],
+];
+for(const [t,id,text] of NOW)EV.push({t,k:"now",id,text});
+const ALERTS=[
+ {t:184.5,level:"warn",text:"w_fuzz 2 fires / 2.5m"},{t:187,level:"bad",text:"WATCH RUNAWAY — 3 fires/90s"},
+ {t:202,level:"warn",text:"2 consecutive failures"},{t:208,level:"bad",text:"ERROR CASCADE — depth 3"},
+ {t:214,level:"ok",text:"cascade resolved — root cause found"},{t:250,level:"info",text:"w_cost fired once — handled"},
+ {t:308,level:"warn",text:"job_ci exit 1 — lint residue"},{t:318,level:"ok",text:"CI green on rerun"},
+ {t:372,level:"ok",text:"GOAL COMPLETE — PR #312 ready"},
+];
+for(const a of ALERTS)EV.push({t:a.t,k:"alert",a});
+EV.sort((a,b)=>a.t-b.t);
+// ---------------- state ----------------
+let now=0,speed=32,playing=true,evIdx=0,lastTs=null,quiet=false;
+let openEps=new Set(),sealedOrder=[],linksIn={},epStatus={},callsSoFar=0,alertsIn=[],expandedRows=new Set(),cells={},focus=null;
+const ledger=document.getElementById("ledger");
+const cardEls={},rowEls={};
+// ---------------- heatmap ----------------
+const HFILES=["agent/internal/jobstore/prune.go","agent/internal/jobstore/prune_test.go","agent/internal/delegatestore/tombstone.go",
+ "agent/internal/delegatestore/store.go","agent/internal/delegatestore/store_test.go","agent/doctor/watches.go",
+ "agent/internal/delegatestore/testdata/fuzz/*","docs/web-ui/transcript.md","docs/web-ui/delegates.md","Makefile",
+ "agent/schema/turn.go","agent/events/payloads.go"];
+const FOLD_BUCKETS=[Math.floor(220/BK),Math.floor(335/BK)];
+const heatGrid=document.createElement("div");let cellEls={};
+(function buildHeat(){
+  heatGrid.className="hgrid";heatGrid.style.gridTemplateColumns=`230px repeat(${NCB},1fr)`;
+  const corner=document.createElement("div");corner.className="hlabel";corner.textContent="file \\ time";heatGrid.appendChild(corner);
+  for(let i=0;i<NCB;i++){const c=document.createElement("div");c.className="haxis";
+    c.textContent=(i%8===0)?Math.round(i*BK/60)+"h":"";heatGrid.appendChild(c);}
+  for(const f of HFILES){
+    const lab=document.createElement("div");lab.className="hlabel";lab.textContent=f;heatGrid.appendChild(lab);
+    for(let i=0;i<NCB;i++){const c=document.createElement("div");c.className="hcell";heatGrid.appendChild(c);
+      (cellEls[f]=cellEls[f]||[]).push(c);}}
+  document.getElementById("heat").appendChild(heatGrid);
+  const lg=document.createElement("div");lg.className="hlegend";
+  lg.innerHTML=`<span><span style="display:inline-block;width:12px;height:9px;background:rgba(88,166,255,.6);border-radius:2px"></span> edit intensity (accumulates live)</span>
+   <span><span style="display:inline-block;width:10px;height:9px;border:1.5px solid var(--red);border-radius:2px"></span> failure referencing file</span>
+   <span><span style="display:inline-block;width:5px;height:5px;border-radius:50%;background:#6e7681"></span> read-only touches</span>
+   <span><span style="display:inline-block;width:10px;height:9px;background:rgba(163,113,247,.25);border-radius:2px"></span> compaction fold</span>`;
+  document.getElementById("heat").appendChild(lg);
+})();
+function bumpCell(file,bucket,cls){
+  const c=cellEls[file]&&cellEls[file][bucket];if(!c)return;
+  if(cls==="read"){if(!c.querySelector(".ro")&&!c.dataset.v){const d=document.createElement("div");d.className="ro";c.appendChild(d);}return;}
+  if(cls==="fail"){if(!c.querySelector(".fail")){const d=document.createElement("div");d.className="fail";c.appendChild(d);
+    if(!quiet){c.classList.remove("flash");void c.offsetWidth;c.classList.add("flash");}}return;}
+  const v=(+c.dataset.v||0)+1;c.dataset.v=v;
+  c.style.setProperty("--a",Math.min(.85,.15+v*.16).toFixed(2));
+  if(!quiet){c.classList.remove("flash");void c.offsetWidth;c.classList.add("flash");}
+}
+// ---------------- ledger ----------------
+function cardHTML(e,open){
+  const outCls=e.st==="bad"?"var(--red)":e.st==="warn"?"var(--orange)":e.st==="fold"?"var(--purple)":"var(--green)";
+  const links=(linksIn[e.id]||[]).map(L=>
+    `<span class="clink${L.dir==="out"?" out":""}${L.fresh&&!quiet?" new":""}">${L.dir==="out"?"↘ caused":"↖ caused by"} <b>${L.rel.id}</b> · ${L.rel.rel}</span>`).join("");
+  const prog=open?Math.min(1,(now-e.m0)/Math.max(1,e.m1-e.m0)):1;
+  const liveLine=open?`<div class="livenow">● OPEN · elapsed ${Math.max(0,Math.round(now-e.m0))}m · ~${Math.round(e.calls*prog)} calls so far<br>${epStatus[e.id]||"…"}</div>`:"";
+  return `
+    <span class="dot" style="border-color:${open?"var(--amber)":outCls}"></span>
+    <div class="chead">
+      <span class="eid">${e.id}</span><span class="ctitle">${e.title}</span>
+      <span class="tag ${open?"open":e.st}">${open?"OPEN · "+e.tag:e.tag}</span>
+      <span class="spacer"></span>
+      <span class="meta"><b>${e.turns}</b> · ${e.m0===e.m1?fmtR(e.m0):fmtR(e.m0)+"–"+fmtR(e.m1)} · ${open?"~"+Math.round(e.calls*prog):e.calls} calls · <b>${e.cost}</b></span>
+    </div>
+    ${links?`<div class="causal-links">${links}</div>`:""}
+    ${liveLine}
+    <div class="strip">
+      <div class="panel cause"><div class="ph">cause</div><div class="pb">${e.cause}</div></div>
+      <div class="arr">→</div>
+      <div class="panel mech"><div class="ph">mechanism</div><div class="pb">${e.mech}</div></div>
+      <div class="arr">→</div>
+      <div class="panel out${open?" pending":""}"><div class="ph">outcome</div><div class="pb" style="${open?"":"color:"+outCls}">${open?"pending — episode in flight…":e.out}</div></div>
+    </div>
+    <div class="evid">
+      ${e.files.map(f=>`<span class="ev">📄 ${f}</span>`).join("")}
+      <span class="ev">👤 ${e.actors}</span><span class="ev">🔧 ${e.tools}</span>
+    </div>`;
+}
+function rowHTML(e){
+  const outCls=e.st==="bad"?"var(--red)":e.st==="warn"?"var(--orange)":e.st==="fold"?"var(--purple)":"var(--green)";
+  return `<span class="dot2" style="background:${outCls}"></span><b>${e.id}</b> ${e.title}
+    <span class="spacer"></span><span>${e.turns} · ${e.calls} calls · ${e.cost} · ${e.tag}</span>`;
+}
+function ensureEpisodeDom(e){
+  if(cardEls[e.id])return cardEls[e.id];
+  const idx=EPS.indexOf(e);
+  // connector from previous episode
+  if(idx>0){const conn=document.createElement("div");conn.className="connector";
+    conn.innerHTML=`<span class="rel">▼ <b>${EPS[idx-1].relNext||"then"}</b> · ${e.turns}</span>`;
+    ledger.appendChild(conn);}
+  const holder=document.createElement("div");
+  ledger.appendChild(holder);cardEls[e.id]=holder;
+  return holder;
+}
+function renderEpisode(e){
+  const holder=ensureEpisodeDom(e);
+  const isOpen=openEps.has(e.id);
+  const sealedIdx=sealedOrder.indexOf(e.id);
+  // collapse by narrative position: keep the two latest sealed episodes (by episode order) expanded
+  const maxSealedNarr=sealedOrder.reduce((m,id)=>Math.max(m,EPS.indexOf(epById(id))),-1);
+  const collapse=!isOpen&&sealedIdx>-1&&EPS.indexOf(e)<maxSealedNarr-1&&!expandedRows.has(e.id);
+  if(collapse){
+    if(!holder._row){holder.innerHTML="";const r=document.createElement("div");r.className="row";
+      r.innerHTML=rowHTML(e);r.addEventListener("click",()=>{expandedRows.add(e.id);renderEpisode(e);});
+      holder.appendChild(r);holder._row=r;}
+    return;
+  }
+  holder._row=null;
+  holder.innerHTML="";
+  const card=document.createElement("div");card.className="card"+(isOpen?" open":"");
+  card.innerHTML=cardHTML(e,isOpen);
+  if(!isOpen&&sealedIdx>-1&&EPS.indexOf(e)<maxSealedNarr-1){
+    card.style.cursor="pointer";card.title="double-click to collapse";
+    card.addEventListener("dblclick",()=>{expandedRows.delete(e.id);renderEpisode(e);});
+  }
+  holder.appendChild(card);
+}
+function renderAllEpisodes(){for(const e of EPS)if(cardEls[e.id])renderEpisode(e);}
+function renderAlerts(){
+  const bar=document.getElementById("alertbar");
+  bar.querySelectorAll(".abadge").forEach(x=>x.remove());
+  document.getElementById("alertNone").style.display=alertsIn.length?"none":"";
+  for(const a of alertsIn.slice(-5)){const b=document.createElement("span");b.className="abadge "+a.level;
+    b.textContent=fmt(a.t)+" "+a.text;bar.appendChild(b);}
+}
+function renderRail(){
+  const body=document.getElementById("railbody");
+  if(!focus){body.innerHTML='<div class="rc"><div class="t">—</div><div class="w">waiting…</div></div>';return;}
+  const e=epById(focus);
+  let html=`<div class="rc"><div class="t">▶ ${e.id} · ${e.title}</div><div class="w">${e.turns} — OPEN NOW</div>
+    <div class="doing">${epStatus[focus]||""}</div></div>`;
+  const seen=new Set([focus]);let cur=focus;
+  const allLinks=Object.entries(linksIn).flatMap(([to,ls])=>ls.map(l=>({to,...l})));
+  while(true){
+    const ins=allLinks.filter(l=>l.to===cur&&l.dir==="in"&&!seen.has(l.rel.id));
+    if(!ins.length)break;
+    ins.sort((a,b)=>b.t-a.t);const l=ins[0];seen.add(l.rel.id);
+    html+=`<div class="via">▲ ${l.rel.rel}</div><div class="rc"><div class="t">${l.rel.id} · ${epById(l.rel.id).title}</div><div class="w">${epById(l.rel.id).turns}</div></div>`;
+    cur=l.rel.id;if(seen.size>6)break;
+  }
+  body.innerHTML=html;
+}
+// ---------------- handlers ----------------
+function handle(ev){
+  const k=ev.k;
+  if(k==="open"){const e=epById(ev.id);openEps.add(e.id);focus=e.id;renderEpisode(e);renderAllEpisodes();}
+  else if(k==="seal"){const e=epById(ev.id);openEps.delete(e.id);sealedOrder.push(e.id);renderEpisode(e);renderAllEpisodes();}
+  else if(k==="link"){const {to,rel,dir}=ev.l;(linksIn[to]=linksIn[to]||[]).push({rel,dir,t:ev.t,fresh:!quiet});
+    if(cardEls[to])renderEpisode(epById(to));
+    setTimeout(()=>{const ls=linksIn[to];if(ls)ls.forEach(x=>x.fresh=false);},900);}
+  else if(k==="edit"){bumpCell(ev.file,Math.min(NCB-1,Math.floor(ev.t/BK)),"edit");}
+  else if(k==="failmark"){bumpCell(ev.file,Math.min(NCB-1,Math.floor(ev.t/BK)),"fail");}
+  else if(k==="read"){bumpCell(ev.file,Math.min(NCB-1,Math.floor(ev.t/BK)),"read");}
+  else if(k==="fold"){const b=Math.floor(ev.t/BK);
+    for(const f of HFILES){const c=cellEls[f][b];c.classList.add("fold");}}
+  else if(k==="now"){epStatus[ev.id]=ev.text;
+    if(openEps.has(ev.id))renderEpisode(epById(ev.id));
+    if(focus===ev.id)renderRail();}
+  else if(k==="alert"){alertsIn.push(ev.a);renderAlerts();}
+  else if(k==="act"){callsSoFar+=ev.calls;}
+}
+function dispatchTo(target){while(evIdx<EV.length&&EV[evIdx].t<=target){handle(EV[evIdx]);evIdx++;}}
+function renderHud(){
+  document.getElementById("cTurn").textContent=turnAt(now);
+  document.getElementById("cCalls").textContent=callsSoFar.toLocaleString();
+  const tok=Math.round(callsSoFar*1925);
+  document.getElementById("cTok").textContent=tok>=1e6?(tok/1e6).toFixed(2)+"M":Math.round(tok/1e3)+"k";
+  document.getElementById("cCost").textContent="$"+(tok*9.3e-6).toFixed(2);
+  document.getElementById("cEp").textContent=openEps.size+" open · "+sealedOrder.length+" sealed";
+  document.getElementById("clock").textContent=fmt(now);
+  document.getElementById("seek").value=now;
+  // live-tick only the open cards' live line (no full re-render — keeps pulse animation alive)
+  for(const id of openEps){
+    const holder=cardEls[id];if(!holder)continue;
+    const ln=holder.querySelector(".livenow");if(!ln)continue;
+    const e=epById(id);
+    const prog=Math.min(1,(now-e.m0)/Math.max(1,e.m1-e.m0));
+    const next=`● OPEN · elapsed ${Math.max(0,(now-e.m0).toFixed(1))}m · ~${Math.round(e.calls*prog)} calls so far<br>${epStatus[id]||"…"}`;
+    if(ln._cache!==next){ln.innerHTML=next;ln._cache=next;}
+  }
+  renderRail();
+  const lc=document.getElementById("liveChip");
+  if(now>=SIM_END){lc.className="ended";lc.innerHTML='<span class="dot"></span>ENDED · GOAL ✓';}
+  else if(playing){lc.className="";lc.innerHTML='<span class="dot"></span>LIVE';}
+  else{lc.className="paused";lc.innerHTML='<span class="dot"></span>PAUSED';}
+}
+function rebuild(target){
+  quiet=true;document.body.classList.add("quiet");
+  evIdx=0;openEps=new Set();sealedOrder=[];linksIn={};epStatus={};callsSoFar=0;alertsIn=[];expandedRows=new Set();focus=null;
+  for(const f of HFILES)for(const c of cellEls[f]){c.className="hcell";delete c.dataset.v;c.innerHTML="";c.style.removeProperty("--a");}
+  for(const id in cardEls)cardEls[id].remove();
+  for(const id in cardEls)delete cardEls[id];
+  ledger.querySelectorAll(".connector").forEach(c=>c.remove());
+  renderAlerts();
+  now=target;dispatchTo(target);
+  document.body.classList.remove("quiet");quiet=false;
+}
+function frame(ts){
+  if(lastTs==null)lastTs=ts;const dt=(ts-lastTs)/1000;lastTs=ts;
+  if(playing&&now<SIM_END){now=Math.min(SIM_END,now+dt*speed);dispatchTo(now);}
+  renderHud();
+  requestAnimationFrame(frame);
+}
+document.getElementById("bPlay").addEventListener("click",ev=>{playing=!playing;ev.target.textContent=playing?"⏸ pause":"▶ play";});
+document.querySelectorAll(".spd").forEach(b=>b.addEventListener("click",()=>{
+  document.querySelectorAll(".spd").forEach(x=>x.classList.remove("on"));b.classList.add("on");speed=+b.dataset.s;}));
+document.getElementById("bReplay").addEventListener("click",()=>{rebuild(0);playing=true;document.getElementById("bPlay").textContent="⏸ pause";});
+document.getElementById("seek").addEventListener("input",ev=>{rebuild(+ev.target.value);});
+requestAnimationFrame(frame);
+</script>
+</body>
+</html>

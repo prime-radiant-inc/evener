@@ -1,0 +1,366 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Compact 1 — Micro Strata Rail · evener session 0J8XKM</title>
+<style>
+  :root{
+    --bg:#0e1116; --bg2:#12161d; --panel:#151a21; --panel2:#1a2029;
+    --edge:#242c37; --edge2:#2e3846;
+    --ink:#dbe2ea; --ink-mid:#9aa7b5; --ink-low:#64707e;
+    --blue:#5b9dff; --teal:#39c2c9; --green:#3fb97a; --amber:#e8b13f;
+    --red:#e5534b; --violet:#9a7bff; --pink:#e57bb0;
+    --mono:'IBM Plex Mono',ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
+    --sans:'IBM Plex Sans',-apple-system,'Segoe UI',Helvetica,Arial,sans-serif;
+  }
+  *{box-sizing:border-box;margin:0;padding:0}
+  html,body{height:100%}
+  body{background:var(--bg);color:var(--ink);font:13px/1.5 var(--sans);overflow:hidden;display:flex;flex-direction:column}
+  /* ======== page chrome (NOT part of the component) ======== */
+  .chrome{display:flex;align-items:center;gap:12px;padding:7px 16px;border-bottom:1px solid var(--edge);background:var(--bg2)}
+  .mark{font:600 13px var(--sans)} .mark b{color:var(--blue)}
+  .chrome .note{font:11px var(--mono);color:var(--ink-low)}
+  .live{display:flex;align-items:center;gap:6px;font:600 10px var(--mono);letter-spacing:.1em;color:var(--green);border:1px solid #24503b;border-radius:999px;padding:2px 10px;background:#122019}
+  .live .dot{width:7px;height:7px;border-radius:50%;background:var(--green)}
+  .live.paused{color:var(--amber);border-color:#57431c;background:#211a0e}.live.paused .dot{background:var(--amber)}
+  .live.ended{color:var(--ink-low);border-color:var(--edge2);background:var(--panel)}.live.ended .dot{background:var(--ink-low)}
+  .tbtn{font:600 12px var(--mono);color:var(--ink);background:var(--panel);border:1px solid var(--edge2);border-radius:6px;padding:3px 11px;cursor:pointer;min-width:36px}
+  .seg{display:flex;border:1px solid var(--edge2);border-radius:6px;overflow:hidden}
+  .seg button{font:11px var(--mono);color:var(--ink-mid);background:var(--panel);border:0;padding:3px 10px;cursor:pointer}
+  .seg button.on{background:var(--blue);color:#0b0e12;font-weight:600}
+  input[type=range]{-webkit-appearance:none;width:160px;height:4px;background:var(--edge2);border-radius:2px;outline:none}
+  input[type=range]::-webkit-slider-thumb{-webkit-appearance:none;width:11px;height:11px;border-radius:50%;background:var(--blue);cursor:pointer}
+  .clock{font:11px var(--mono);color:var(--ink-mid)}
+  .spacer{flex:1}
+  .tag{font:600 10px var(--mono);color:#0b0e12;background:var(--amber);padding:2px 9px;border-radius:999px;letter-spacing:.04em}
+  /* ======== in-situ layout ======== */
+  .stage{flex:1;min-height:0;display:flex}
+  /* dimmed mock transcript */
+  .transcript{flex:1;min-width:0;overflow-y:auto;padding:12px 26px 30px;opacity:.62;filter:saturate(.8)}
+  .transcript::-webkit-scrollbar{width:10px}.transcript::-webkit-scrollbar-thumb{background:var(--edge2);border-radius:5px}
+  .trow{border-radius:6px;padding:5px 10px;margin-bottom:3px;font:12px var(--sans);color:var(--ink-mid);transition:background .3s}
+  .trow .m{font:10px var(--mono);color:var(--ink-low);margin-right:8px}
+  .trow.cur{background:#101a2b;color:var(--ink)}
+  .trow.flash{background:#1b2c4d}
+  .badge{font:600 9px var(--mono);padding:1px 5px;border-radius:3px;margin-right:7px;background:#20262f;color:var(--ink-mid)}
+  .badge.u{background:#1c2f4d;color:var(--blue)} .badge.s{background:#3a2f14;color:var(--amber)}
+  .badge.f{background:#44201d;color:var(--red)} .badge.c{background:#2a2340;color:var(--violet)}
+  .chips{font:10px var(--mono);color:var(--ink-low);margin-left:8px}
+  /* ======== THE COMPONENT: 120px rail ======== */
+  #rail{width:120px;min-width:120px;height:100%;border-left:1px solid var(--edge);background:var(--bg2);display:flex;flex-direction:column;cursor:crosshair}
+  #railmap{flex:1;min-height:0;width:100%;display:block}
+  .railfoot{border-top:1px solid var(--edge);padding:5px 6px 6px}
+  .microbar{position:relative;height:6px;background:#10141a;border:1px solid var(--edge);border-radius:3px;overflow:hidden;margin-bottom:4px}
+  .microbar .f{height:100%;border-radius:2px}
+  .microbar.ctx .f{background:linear-gradient(90deg,#2c5d8a,var(--blue))}
+  .microbar.bud{height:4px}.microbar.bud .f{background:linear-gradient(90deg,#1e6e4c,var(--green))}
+  .microbar .tick{position:absolute;top:-1px;bottom:-1px;width:2px;background:var(--violet)}
+  .microrow{display:flex;align-items:center;gap:5px;margin-top:2px}
+  .livedot{width:7px;height:7px;border-radius:50%;background:var(--green);flex:0 0 7px}
+  .livedot.paused{background:var(--amber)} .livedot.ended{background:var(--ink-low)}
+  .turnno{font:600 10px var(--mono);color:var(--ink)}
+  .vglyph{width:14px;height:14px;border-radius:3px;display:flex;align-items:center;justify-content:center;font:600 9px var(--mono);background:#10141a;color:#3a4552;border:1px solid var(--edge)}
+  .vglyph.warn{background:#2a1f0c;color:var(--amber);border-color:#57431c}
+  .vglyph.bad{background:#2e1512;color:var(--red);border-color:#5a2a26}
+  @keyframes dashmove{to{stroke-dashoffset:-8}}
+  .runline{animation:dashmove .7s linear infinite}
+  #tip{position:fixed;z-index:50;pointer-events:none;background:#0b0e12;border:1px solid var(--edge2);border-radius:6px;padding:7px 10px;font:10.5px var(--mono);color:var(--ink);display:none;max-width:300px;box-shadow:0 6px 24px rgba(0,0,0,.5)}
+  #tip .th{color:var(--ink-mid);font-weight:600;margin-bottom:2px}
+  #tip .tl{color:var(--ink-low)} #tip .tl b{color:var(--ink-mid)}
+  .caption{flex:0 0 auto;display:flex;gap:16px;padding:4px 16px;border-top:1px solid var(--edge);background:var(--bg2);font:10.5px var(--sans);color:var(--ink-low)}
+  .caption b{color:var(--ink-mid)}
+</style>
+</head>
+<body>
+<div class="chrome">
+  <div class="mark">◆ <b>evener</b></div>
+  <span class="note">session 0J8XKM · component footprint <b style="color:var(--ink-mid)">120px × full height rail</b></span>
+  <span class="live" id="liveChip"><span class="dot"></span><span id="liveTxt">LIVE</span></span>
+  <button class="tbtn" id="playBtn">⏸</button>
+  <div class="seg" id="speedSeg"><button data-s="1" class="on">1×</button><button data-s="4">4×</button><button data-s="16">16×</button></div>
+  <button class="tbtn" id="restart">⟲</button>
+  <input type="range" id="seek" min="0" max="1000" value="0">
+  <span class="clock" id="clock">0:00 / 6:42</span>
+  <div class="spacer"></div>
+  <div class="tag">COMPACT-1 · MICRO STRATA RAIL</div>
+</div>
+<div class="stage">
+  <div class="transcript" id="transcript"></div>
+  <div id="rail">
+    <svg id="railmap"></svg>
+    <div class="railfoot">
+      <div class="microbar ctx"><div class="f" id="ctxF" style="width:15%"></div><div class="tick" style="left:93%"></div></div>
+      <div class="microbar bud"><div class="f" id="budF" style="width:2%"></div></div>
+      <div class="microrow">
+        <span class="livedot" id="miniLive"></span>
+        <span class="turnno" id="turnNo">#0</span>
+        <div class="spacer"></div>
+        <span class="vglyph" id="vLoop" title="loop">⟳</span>
+        <span class="vglyph" id="vRun" title="runaway">⚠</span>
+        <span class="vglyph" id="vStall" title="stall">…</span>
+      </div>
+    </div>
+  </div>
+</div>
+<div id="tip"></div>
+<div class="caption">
+  <span><b>Compact layer answers:</b> now? (head line + animated stratum) · stuck/loop/runaway? (⟳⚠… glyphs) · progress? (turn # + strata fill) · anomalies? (red diamonds, amber ticks) · fold? (violet bars + ctx micro-bar) · <b>▶ blue/amber chevrons = every user/steering prompt — never collapse, one click jumps the transcript</b></span>
+  <span>hover = inspect · click = jump transcript</span>
+</div>
+<script>
+/* ================= session skeleton (0J8XKM) — same sim ================= */
+function mulberry32(a){return function(){a|=0;a=a+0x6D2B79F5|0;var t=Math.imul(a^a>>>15,1|a);t=t+Math.imul(t^t>>>7,61|t)^t;return((t^t>>>14)>>>0)/4294967296}}
+const R=mulberry32(20260821);
+const ri=(a,b)=>a+Math.floor(R()*(b-a+1));
+const N=278, COMPACTIONS=[88,191,249], MODEL_SWITCH=150, TURN_FAILURE=182;
+const USERS={0:"Migrate jobstore to SQLite, fix the watcher runaway.",40:"Schema OK — implement behind a flag.",120:"Steering: keep legacy JSON path.",205:"Fuzz found a crash — dig in.",260:"Wrap up: changelog + PR summary."};
+const STEERS={95:"Prefer apply_patch.",176:"Re-read the file first.",232:"Stop the noisy watch."};
+const DELEGATES=[{id:"dlg_01",name:"survey watcher code",depth:0,s:22,e:39},{id:"dlg_02",name:"migrate schema to SQLite",depth:0,s:96,e:158},{id:"dlg_02a",name:"repair migration test",depth:1,s:131,e:146},{id:"dlg_03",name:"audit execenv sandbox",depth:0,s:160,e:196},{id:"dlg_04",name:"write regression tests",depth:0,s:236,e:268}];
+const JOBS=[{id:"job_5",cmd:"rg -n 'Notify' agent/",s:55,e:56,status:"ok",mode:"bg"},{id:"job_1",cmd:"go test ./agent/...",s:100,e:118,status:"ok",mode:"bg"},{id:"job_2",cmd:"go test -fuzz=FuzzWatch",s:162,e:205,status:"ok",mode:"bg"},{id:"job_4",cmd:"go build ./...",s:178,e:181,status:"failed",mode:"bg",exit:1},{id:"job_3",cmd:"make generate",s:210,e:214,status:"ok",mode:"detached"},{id:"job_6",cmd:"go vet ./...",s:250,e:256,status:"ok",mode:"bg"}];
+const WATCHES=[{id:"watch_1",name:"jobstore/*.go → tests",fires:[105,133,161]},{id:"watch_2",name:"tail fuzz log",runaway:true,fires:[186,186,187,187,187,187,188,188,188,188,188,189,189,189,189,189,189,189,190,190,190,190,190,190,190,190,190,191]}];
+const ERR_TURNS={178:"edit_file stale ctx",179:"edit_file stale ctx",180:"edit_file stale ctx"};
+const TOOL_POOL=[["read_file",.27],["shell",.22],["grep",.13],["edit_file",.11],["apply_patch",.07],["write_file",.05],["glob",.05],["delegate_send",.03],["task_list",.02],["communicate",.02],["job_list",.02],["read_transcript",.01]];
+const PHASES=[[0,21,"intake & plan"],[22,39,"delegate survey"],[40,87,"implement sqlite jobstore"],[88,95,"replan"],[96,158,"delegate migration"],[159,177,"sandbox audit"],[178,196,"breakage & runaway"],[197,235,"fix & verify"],[236,268,"regression tests"],[269,277,"wrap-up"]];
+const LBL={"intake & plan":["read jobstore/store.go","grep Notify callers","sketch schema v1","list watch sites","read jobs.go"],"delegate survey":["spawn dlg_01","collect survey findings","read watcher loop"],"implement sqlite jobstore":["write migrate.go","edit Open() path","add sqlc queries","unit-test Put/Get","wire feature flag"],"replan":["re-read checkpoint","confirm plan after fold"],"delegate migration":["spawn dlg_02","review migration diff","run migration test","steer dlg_02"],"sandbox audit":["spawn dlg_03","audit securepath","check sandbox seats"],"breakage & runaway":["re-read migrate.go","fix symbol","triage build failure","stop runaway watch"],"fix & verify":["patch coalescing","re-run build","verify fuzz corpus","green test run"],"regression tests":["spawn dlg_04","table-drive watcher tests","cover compaction path"],"wrap-up":["write changelog","final go test ./...","compose PR summary"]};
+function phaseOf(i){for(const[a,b,n]of PHASES)if(i>=a&&i<=b)return n;return"work"}
+function pickTool(){let x=R(),acc=0;for(const[n,w]of TOOL_POOL){acc+=w;if(x<=acc)return n}return"shell"}
+const turns=[];
+for(let i=0;i<N;i++){
+  let kind="ASSISTANT";
+  if(USERS[i])kind="USER_INPUT";else if(STEERS[i])kind="STEERING";
+  if(COMPACTIONS.includes(i))kind="CHECKPOINT";
+  if(i===MODEL_SWITCH)kind="MODEL_SWITCH";if(i===TURN_FAILURE)kind="TURN_FAILURE";
+  if(i%37===9&&kind==="ASSISTANT")kind="ENVIRONMENT";if(i%41===13&&kind==="ASSISTANT")kind="HOOK_COMPLETED";
+  if((i===212||i===271)&&kind==="ASSISTANT")kind="ATTENTION_RESOLUTION";
+  let tools=0;
+  if(kind==="ASSISTANT"){const ph=phaseOf(i);const heavy=/implement|migration|fix|regression/.test(ph);tools=heavy?ri(3,13):ri(1,6)}
+  const tok=kind==="CHECKPOINT"?ri(18000,26000):(kind==="ASSISTANT"?700+tools*ri(380,720):ri(200,1800));
+  const tls=[];for(let k=0;k<tools;k++)tls.push(pickTool());
+  turns.push({i,kind,tools,tok,tls,err:ERR_TURNS[i]||null,label:(LBL[phaseOf(i)]||["work"])[ri(0,(LBL[phaseOf(i)]||["x"]).length-1)]});
+}
+turns.forEach(tr=>{if(tr.err&&!tr.tls.includes("edit_file"))tr.tls[0]="edit_file";tr.tools=tr.tls.length});
+let _t=0;
+turns.forEach((tr,i)=>{tr.t0=_t;let d=1.3+tr.tools*0.45+R()*0.9;if(i===206)d=22;_t+=d;tr.t1=_t});
+const SIM_TOTAL=_t, WALL=6*3600+42*60;
+const wallClock=sim=>{const s=sim/SIM_TOTAL*WALL;const h=Math.floor(s/3600),m=Math.floor(s/60)-h*60;return h+":"+String(m).padStart(2,"0")};
+const EV=[];
+turns.forEach((tr,i)=>{
+  EV.push({t:tr.t0,type:"turn_start",i});
+  tr.tls.forEach((tn,k)=>{const st=tr.t0+0.25+k*0.42,en=Math.min(st+0.28+R()*0.2,tr.t1-0.06);
+    EV.push({t:st,type:"tool_start",i,k,name:tn});EV.push({t:en,type:"tool_end",i,k,name:tn,ok:!(tr.err&&tn==="edit_file")})});
+  EV.push({t:tr.t1,type:"turn_end",i});
+});
+DELEGATES.forEach(d=>{EV.push({t:turns[d.s].t0+0.05,type:"dlg_spawn",d:d.id});EV.push({t:turns[d.e].t1-0.05,type:"dlg_report",d:d.id})});
+JOBS.forEach(j=>{EV.push({t:turns[j.s].t0+0.1,type:"job_start",j:j.id});EV.push({t:turns[j.e].t1-0.1,type:"job_end",j:j.id})});
+WATCHES.forEach(w=>w.fires.forEach(f=>EV.push({t:turns[f].t0+0.15,type:"watch_fire",w:w.id})));
+COMPACTIONS.forEach(c=>EV.push({t:turns[c].t0+0.2,type:"fold",i:c}));
+EV.push({t:turns[MODEL_SWITCH].t0+0.1,type:"model_switch"});
+EV.sort((a,b)=>a.t-b.t);
+function freshWorld(){return{done:0,cur:-1,inflight:[],toolsDone:0,tokUsed:0,ctx:30000,folds:[],dlgs:{},jobs:{},wfires:{watch_1:[],watch_2:[]},errs:[],alerts:[],loop:{name:null,n:0}}}
+function applyEv(w,ev){
+  switch(ev.type){
+    case"turn_start":w.cur=ev.i;break;
+    case"tool_start":w.inflight.push(ev);break;
+    case"tool_end":w.inflight=w.inflight.filter(x=>!(x.i===ev.i&&x.k===ev.k));w.toolsDone++;
+      if(!ev.ok){w.errs.push(ev);w.loop=w.loop.name===ev.name?{name:ev.name,n:w.loop.n+1}:{name:ev.name,n:1};
+        if(w.loop.n===3)w.alerts.push({t:ev.t,kind:"loop"});}
+      else w.loop={name:null,n:0};break;
+    case"turn_end":{const tr=turns[ev.i];w.done=Math.max(w.done,ev.i+1);w.cur=-1;
+      w.tokUsed+=tr.tok;w.ctx=Math.min(196000,w.ctx+tr.tok*0.9);
+      if(ev.i===TURN_FAILURE)w.alerts.push({t:ev.t,kind:"fail"});break}
+    case"dlg_spawn":w.dlgs[ev.d]={state:"active",at:ev.t};break;
+    case"dlg_report":w.dlgs[ev.d].state="done";break;
+    case"job_start":w.jobs[ev.j]={state:"running",at:ev.t};break;
+    case"job_end":{const j=JOBS.find(x=>x.id===ev.j);w.jobs[ev.j].state=j.status==="failed"?"failed":"done";
+      if(j.status==="failed")w.alerts.push({t:ev.t,kind:"fail"});break}
+    case"watch_fire":{w.wfires[ev.w].push(ev.t);
+      if(w.wfires[ev.w].filter(x=>ev.t-x<5).length>=8&&!w.alerts.some(a=>a.kind==="runaway"))w.alerts.push({t:ev.t,kind:"runaway"});break}
+    case"fold":w.ctx=24000;w.folds.push(ev.i);break;
+  }
+}
+let simT=0,playing=true,speed=1,ptr=0,world=freshWorld(),sel=-1;
+const fmtK=n=>n>=1e6?(n/1e6).toFixed(2)+"M":n>=1000?(n/1000).toFixed(1)+"k":Math.round(n);
+/* ================= mock transcript (dimmed) ================= */
+const tc=document.getElementById('transcript');
+function transcriptRow(i){
+  const t=turns[i];
+  const b=t.kind==='USER_INPUT'?'<span class="badge u">USER</span>':t.kind==='STEERING'?'<span class="badge s">STEER</span>':t.kind==='CHECKPOINT'?'<span class="badge c">FOLD</span>':t.kind==='TURN_FAILURE'?'<span class="badge f">FAIL</span>':'<span class="badge">ASST</span>';
+  const body=t.kind==='USER_INPUT'?USERS[i]:t.kind==='STEERING'?'↪ '+STEERS[i]:t.kind==='CHECKPOINT'?'⛛ checkpoint + summary · 186k→24k':t.kind==='TURN_FAILURE'?'✕ provider 529 — retrying':t.label;
+  const chips=t.tools?`<span class="chips">${t.tls.slice(0,4).join(' · ')}${t.tools>4?' · +'+(t.tools-4):''}</span>`:'';
+  return`<div class="trow" id="tr${i}"><span class="m">#${String(i).padStart(3,'0')} ${wallClock(t.t0)}</span>${b}${body}${chips}</div>`;
+}
+function renderTranscript(){
+  const upto=Math.max(world.done,world.cur+1);
+  let h='';for(let i=0;i<upto;i++)h+=transcriptRow(i);
+  tc.innerHTML=h;
+  const cur=document.getElementById('tr'+Math.min(world.cur>=0?world.cur:world.done-1,N-1));
+  if(cur){cur.classList.add('cur');cur.scrollIntoView({block:'center'})}
+}
+/* ================= THE COMPONENT ================= */
+const NS='http://www.w3.org/2000/svg';
+const svg=document.getElementById('railmap');
+/* lanes within 108px (6px padding each side of 120) */
+const LX={who:0,tools:8,dlg:50,jobs:74,evt:92}, LW=108;
+function el(n,at){const e=document.createElementNS(NS,n);for(const k in at)e.setAttribute(k,at[k]);svg.appendChild(e);return e}
+function heat(n){return`rgba(57,194,201,${(.15+.8*Math.min(n,14)/14).toFixed(2)})`}
+function dlgColor(d){return['#8f74ff','#7b5fe8','#b39dff','#6a4fd0','#9a7bff'][d.depth%5]}
+function renderRail(){
+  const r=svg.getBoundingClientRect();const H=r.height;if(H<50)return;
+  svg.setAttribute('viewBox',`0 0 ${LW} ${H}`);
+  svg.innerHTML='';
+  const RH=H/N;
+  /* column guides */
+  el('rect',{x:0,y:0,width:6,height:H,fill:'#10141a'});
+  el('rect',{x:8,y:0,width:38,height:H,fill:'#0f1319'});
+  el('rect',{x:50,y:0,width:20,height:H,fill:'#10141a'});
+  el('rect',{x:74,y:0,width:14,height:H,fill:'#0f1319'});
+  el('rect',{x:92,y:0,width:16,height:H,fill:'#10141a'});
+  const upto=Math.max(world.done,world.cur+1);
+  for(let i=0;i<upto;i++){
+    const t=turns[i],y=i*RH;
+    let c='#39424e';
+    if(t.kind==='USER_INPUT')c='#5b9dff';else if(t.kind==='STEERING')c='#e8b13f';
+    else if(t.kind==='CHECKPOINT')c='#9a7bff';else if(t.kind==='TURN_FAILURE')c='#e5534b';
+    el('rect',{x:0,y,width:6,height:Math.max(RH-.3,.5),fill:c});
+    if(i<world.done&&t.tools>0)el('rect',{x:8,y,width:38,height:Math.max(RH-.3,.5),fill:heat(t.tools)});
+    if(i===world.cur)el('rect',{x:8,y,width:38,height:Math.max(RH-.3,.5),fill:'rgba(91,157,255,.3)',stroke:'#5b9dff','stroke-width':.7,'stroke-dasharray':'3 2',class:'runline'});
+  }
+  /* delegates: brackets, indent = depth, animated while active */
+  DELEGATES.forEach(d=>{
+    const st=world.dlgs[d.id];if(!st)return;
+    const x=51+d.depth*8,w=17-d.depth*8;
+    const end=st.state==='done'?d.e+1:Math.min(upto,d.e+1);
+    const rect=el('rect',{x,y:d.s*RH,width:w,height:Math.max(end*RH-d.s*RH,1.6),fill:dlgColor(d)+'40',stroke:dlgColor(d),'stroke-width':.9,rx:1.5});
+    if(st.state==='active'){rect.setAttribute('stroke-dasharray','3 2');rect.setAttribute('class','runline')}
+    el('path',{d:`M ${x} ${d.s*RH} l 4 3 l -4 3 z`,fill:dlgColor(d)});
+    if(st.state==='done')el('rect',{x,y:(d.e+1)*RH-3.6,width:4,height:3,fill:dlgColor(d)});
+  });
+  /* jobs */
+  JOBS.forEach(j=>{
+    const st=world.jobs[j.id];if(!st)return;
+    const running=st.state==='running';
+    const col=!running&&j.status==='failed'?'#e5534b':'#46cf87';
+    const end=running?Math.max(upto,j.s+1):j.e+1;
+    const rect=el('rect',{x:75,y:j.s*RH,width:12,height:Math.max(end*RH-j.s*RH,1.4),fill:col+'40',stroke:col,'stroke-width':1,rx:1.5});
+    if(j.mode==='detached'||running)rect.setAttribute('stroke-dasharray','3 2');
+    if(running)rect.setAttribute('class','runline');
+    if(st.state==='failed')el('path',{d:`M 78 ${(j.s+j.e+1)/2*RH-2.4} l 5 5 m 0 -5 l -5 5`,stroke:'#e5534b','stroke-width':1.2});
+  });
+  /* watch fires: two sub-columns in events lane */
+  WATCHES.forEach((w,k)=>{
+    const x=93+k*8;
+    w.fires.forEach(f=>{if(f>=upto)return;
+      el('rect',{x,y:f*RH,width:5,height:Math.max(RH*.8,.7),fill:'#e8b13f',opacity:w.runaway?.95:.75})});
+  });
+  /* errors + markers */
+  world.errs.forEach(e=>{const y=e.i*RH+RH/2;
+    el('path',{d:`M 105 ${y-2.8} L 107.8 ${y} L 105 ${y+2.8} L 102.2 ${y} Z`,fill:'#e5534b'})});
+  if(world.done>TURN_FAILURE){const y=TURN_FAILURE*RH+RH/2;
+    el('path',{d:`M 105 ${y-3.4} L 108.4 ${y} L 105 ${y+3.4} L 101.6 ${y} Z`,fill:'none',stroke:'#ff8a80','stroke-width':1})}
+  if(world.done>MODEL_SWITCH){const y=MODEL_SWITCH*RH+RH/2;
+    el('path',{d:`M 97 ${y-2.8} L 99.8 ${y} L 97 ${y+2.8} L 94.2 ${y} Z`,fill:'#9a7bff'})}
+  /* folds: full-width violet bars */
+  world.folds.forEach(c=>{
+    el('rect',{x:0,y:c*RH-1,width:LW,height:2,fill:'#9a7bff'});
+  });
+  /* head */
+  if(upto>0&&simT<SIM_TOTAL){
+    el('rect',{x:0,y:upto*RH-1,width:LW,height:1.6,fill:'#e8edf3'});
+    el('path',{d:`M ${LW} ${upto*RH-4} l -5 4 l 5 4 z`,fill:'#e8edf3'});
+  }
+  /* USER PROMPT MARKERS — never collapse: min 9px chevron, drawn last (on top), one per prompt */
+  promptList().forEach(p=>{
+    if(p.i>=upto)return;
+    const y=p.i*RH+RH/2;
+    const col=p.kind==='USER_INPUT'?'#5b9dff':'#e8b13f';
+    el('path',{d:`M 0 ${y-4.5} L 9 ${y} L 0 ${y+4.5} Z`,fill:col,stroke:'#0e1116','stroke-width':.8});
+    el('rect',{x:0,y:y-6,width:12,height:12,fill:'transparent','data-prompt':p.i,style:'cursor:pointer'});
+  });
+  if(sel>=0)el('rect',{x:-1,y:sel*RH,width:LW+2,height:Math.max(RH,2),fill:'none',stroke:'#fff','stroke-width':1});
+  /* footer state */
+  document.getElementById('ctxF').style.width=(world.ctx/200000*100).toFixed(1)+'%';
+  document.getElementById('budF').style.width=Math.min(world.tokUsed/1500000*100,100).toFixed(1)+'%';
+  document.getElementById('turnNo').textContent='#'+(world.cur>=0?world.cur:world.done);
+  const runCount=world.wfires.watch_2.filter(t=>simT-t<5).length;
+  const stall=world.cur>=0&&(simT-turns[world.cur].t0)>8;
+  setV('vLoop',world.loop.n>=2?'warn':world.alerts.some(a=>a.kind==='loop')?'bad':'');
+  setV('vRun',runCount>=8?'bad':world.alerts.some(a=>a.kind==='runaway')?'warn':'');
+  setV('vStall',stall?'warn':'');
+  const ml=document.getElementById('miniLive');
+  ml.className='livedot '+(simT>=SIM_TOTAL?'ended':playing?'':'paused');
+}
+function setV(id,cls){document.getElementById(id).className='vglyph'+(cls?' '+cls:'')}
+/* rail interactions */
+const PROMPTS=Object.keys(USERS).map(Number).map(i=>({i,kind:'USER_INPUT'}))
+  .concat(Object.keys(STEERS).map(Number).map(i=>({i,kind:'STEERING'}))).sort((a,b)=>a.i-b.i);
+function promptList(){return PROMPTS}
+const tip=document.getElementById('tip');
+function turnAt(ev){const r=svg.getBoundingClientRect();return Math.max(0,Math.min(N-1,Math.floor((ev.clientY-r.top)/r.height*N)))}
+function promptNear(ev){const r=svg.getBoundingClientRect();const y=ev.clientY-r.top;const RH=r.height/N;
+  const upto=Math.max(world.done,world.cur+1);
+  let best=null,bd=8;
+  PROMPTS.forEach(p=>{if(p.i>=upto)return;const d=Math.abs(p.i*RH+RH/2-y);if(d<bd){bd=d;best=p}});
+  return ev.clientX-r.left<=14?best:null}
+function jumpTo(i){
+  sel=i;
+  const row=document.getElementById('tr'+i);
+  if(row){row.scrollIntoView({block:'center'});row.classList.add('flash');setTimeout(()=>row.classList.remove('flash'),900)}
+  renderRail();
+}
+svg.addEventListener('mousemove',ev=>{
+  const upto=Math.max(world.done,world.cur+1);
+  const p=promptNear(ev);
+  if(p){
+    tip.style.display='block';tip.style.left=(ev.clientX-310)+'px';tip.style.top=(ev.clientY+10)+'px';
+    tip.innerHTML=`<div class="th">${p.kind==='USER_INPUT'?'USER PROMPT':'STEERING'} #${p.i} · ${wallClock(turns[p.i].t0)}</div>
+     <div class="tl">${(p.kind==='USER_INPUT'?USERS:STEERS)[p.i]}</div><div class="tl"><b>click to jump to this prompt</b></div>`;
+    return;
+  }
+  const i=turnAt(ev);
+  if(i>=upto){tip.style.display='none';return}
+  const t=turns[i];
+  tip.style.display='block';tip.style.left=(ev.clientX-310)+'px';tip.style.top=(ev.clientY+10)+'px';
+  const dlgs=DELEGATES.filter(x=>i>=x.s&&i<=x.e&&world.dlgs[x.id]).map(x=>x.id).join(', ')||'—';
+  const job=JOBS.find(j=>i>=j.s&&i<=j.e&&world.jobs[j.id]);
+  tip.innerHTML=`<div class="th">#${i} · ${t.kind} · ${wallClock(t.t0)}${i===world.cur?' · <span style="color:#5b9dff">RUNNING</span>':''}</div>
+   <div class="tl">${t.label}</div><div class="tl">tools <b>${t.tools}</b> · <b>${fmtK(t.tok)}</b> tok · dlg <b>${dlgs}</b>${job?` · ${job.id} <b>${world.jobs[job.id].state}</b>`:''}${t.err&&i<world.done?` · <span style="color:#e5534b">⚠ ${t.err}</span>`:''}</div>`;
+});
+svg.addEventListener('mouseleave',()=>tip.style.display='none');
+svg.addEventListener('click',ev=>{
+  const upto=Math.max(world.done,world.cur+1);
+  const p=promptNear(ev);
+  if(p){jumpTo(p.i);return}
+  const i=turnAt(ev);if(i>=upto)return;
+  sel=sel===i?-1:i;
+  if(sel>=0){const row=document.getElementById('tr'+sel);
+    if(row){row.scrollIntoView({block:'center'});row.classList.add('flash');setTimeout(()=>row.classList.remove('flash'),900)}}
+  renderRail();
+});
+/* ================= transport & loop ================= */
+const liveChip=document.getElementById('liveChip'),liveTxt=document.getElementById('liveTxt'),playBtn=document.getElementById('playBtn');
+function updateTransport(){
+  liveChip.className='live '+(simT>=SIM_TOTAL?'ended':playing?'':'paused');
+  liveTxt.textContent=simT>=SIM_TOTAL?'ENDED':playing?'LIVE':'PAUSED';
+  playBtn.textContent=playing?'⏸':'⏵';
+  document.getElementById('seek').value=Math.round(simT/SIM_TOTAL*1000);
+  document.getElementById('clock').textContent=`${wallClock(simT)} / 6:42`;
+}
+playBtn.onclick=()=>{if(simT>=SIM_TOTAL)return;playing=!playing;updateTransport()};
+document.querySelectorAll('#speedSeg button').forEach(b=>b.onclick=()=>{
+  document.querySelectorAll('#speedSeg button').forEach(x=>x.classList.remove('on'));b.classList.add('on');speed=+b.dataset.s});
+function seekTo(v){simT=v;ptr=0;world=freshWorld();while(ptr<EV.length&&EV[ptr].t<=simT)applyEv(world,EV[ptr++])}
+document.getElementById('restart').onclick=()=>{seekTo(0);playing=true;sel=-1;renderAll()};
+document.getElementById('seek').oninput=ev=>{seekTo(ev.target.value/1000*SIM_TOTAL);renderAll()};
+function renderAll(){renderRail();renderTranscript();updateTransport()}
+setInterval(()=>{
+  if(!playing)return;
+  if(simT>=SIM_TOTAL){playing=false;updateTransport();return}
+  simT=Math.min(SIM_TOTAL,simT+0.1*2.2*speed);
+  while(ptr<EV.length&&EV[ptr].t<=simT)applyEv(world,EV[ptr++]);
+  renderAll();
+},100);
+window.addEventListener('resize',renderAll);
+renderAll();
+</script>
+</body>
+</html>

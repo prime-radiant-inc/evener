@@ -1,0 +1,325 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Idea 3 — Anatomy Atlas · evener session 0J8XKM</title>
+<style>
+  :root{
+    --bg:#0e1116; --bg2:#12161d; --panel:#151a21; --panel2:#1a2029;
+    --edge:#242c37; --edge2:#2e3846;
+    --ink:#dbe2ea; --ink-mid:#9aa7b5; --ink-low:#64707e;
+    --blue:#5b9dff; --teal:#39c2c9; --green:#3fb97a; --amber:#e8b13f;
+    --red:#e5534b; --violet:#9a7bff; --pink:#e57bb0;
+    --mono:'IBM Plex Mono',ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
+    --sans:'IBM Plex Sans',-apple-system,'Segoe UI',Helvetica,Arial,sans-serif;
+  }
+  *{box-sizing:border-box;margin:0;padding:0}
+  html,body{height:100%}
+  body{background:var(--bg);color:var(--ink);font:13px/1.5 var(--sans);overflow:hidden;display:flex;flex-direction:column}
+  .topbar{display:flex;align-items:center;gap:16px;padding:10px 18px;border-bottom:1px solid var(--edge);background:var(--bg2)}
+  .mark{font:600 14px var(--sans)} .mark b{color:var(--blue)}
+  .sess{font:12px var(--mono);color:var(--ink-mid)}
+  .goal{color:var(--ink-mid);font-size:12.5px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:460px}
+  .spacer{flex:1}
+  .tag{font:600 11px var(--mono);color:#0b0e12;background:var(--violet);padding:3px 10px;border-radius:999px;letter-spacing:.04em}
+  .kpis{display:flex;gap:8px;padding:8px 18px;border-bottom:1px solid var(--edge);flex-wrap:wrap}
+  .kpi{font:12px var(--mono);color:var(--ink-mid);background:var(--panel);border:1px solid var(--edge);border-radius:6px;padding:3px 10px}
+  .kpi b{color:var(--ink);font-weight:600}
+  .kpi.warn b{color:var(--amber)} .kpi.bad b{color:var(--red)} .kpi.vio b{color:var(--violet)}
+  .main{flex:1;display:flex;min-height:0}
+  .stage{flex:1;display:flex;flex-direction:column;min-width:0;padding:10px 16px 8px}
+  .toolbar{display:flex;gap:8px;align-items:center;padding-bottom:8px}
+  .seg{display:flex;border:1px solid var(--edge2);border-radius:6px;overflow:hidden}
+  .seg button{font:11px var(--mono);color:var(--ink-mid);background:var(--panel);border:0;padding:4px 12px;cursor:pointer;white-space:nowrap}
+  .seg button.on{background:var(--blue);color:#0b0e12;font-weight:600}
+  .crumb{font:11.5px var(--mono);color:var(--ink-mid);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;min-width:0}
+  .crumb a{color:var(--blue);cursor:pointer;text-decoration:none}
+  .crumb a:hover{text-decoration:underline}
+  .hint{font:11px var(--sans);color:var(--ink-low)}
+  .icwrap{flex:1;min-height:0;position:relative}
+  svg#ic{width:100%;height:100%;display:block}
+  .insp{width:330px;min-width:330px;border-left:1px solid var(--edge);background:var(--bg2);padding:14px 16px;overflow-y:auto}
+  .insp h3{font:600 11px var(--sans);color:var(--ink-low);letter-spacing:.08em;text-transform:uppercase;margin-bottom:10px}
+  .card{background:var(--panel);border:1px solid var(--edge);border-radius:8px;padding:12px 14px;margin-bottom:10px}
+  .card .t{font:600 13px var(--sans);margin-bottom:4px}
+  .card .row{display:flex;justify-content:space-between;font:11px var(--mono);color:var(--ink-mid);padding:2px 0}
+  .card .row b{color:var(--ink);font-weight:600}
+  .card p{font:12px var(--sans);color:var(--ink-mid);margin-top:6px}
+  .barlist .bl{display:flex;align-items:center;gap:8px;font:10.5px var(--mono);color:var(--ink-mid);margin:4px 0;cursor:pointer}
+  .barlist .bl:hover{color:var(--ink)}
+  .barlist .nm{width:150px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .barlist .track{flex:1;height:9px;background:#10141a;border-radius:4px;overflow:hidden}
+  .barlist .fill{height:100%;border-radius:4px}
+  .barlist .v{width:64px;text-align:right;white-space:nowrap}
+  #tip{position:fixed;z-index:50;pointer-events:none;background:#0b0e12;border:1px solid var(--edge2);border-radius:6px;padding:8px 11px;font:11px var(--mono);color:var(--ink);display:none;max-width:340px;box-shadow:0 6px 24px rgba(0,0,0,.5)}
+  #tip .th{color:var(--ink-mid);font-weight:600;margin-bottom:2px}
+  #tip .tl{color:var(--ink-low)} #tip .tl b{color:var(--ink-mid);font-weight:600}
+  .caption{min-height:34px;display:flex;align-items:center;align-content:center;gap:4px 14px;flex-wrap:wrap;padding:5px 18px;border-top:1px solid var(--edge);background:var(--bg2);font:11px var(--sans);color:var(--ink-low)}
+  .caption b{color:var(--ink-mid);font-weight:600}
+  .lg{display:inline-flex;align-items:center;gap:5px;margin-right:12px}
+  .lg .sw{width:10px;height:10px;border-radius:2px;display:inline-block}
+</style>
+</head>
+<body>
+<div class="topbar">
+  <div class="mark">◆ <b>evener</b> hub</div>
+  <div class="sess">session 0J8XKM · branch main · model k3</div>
+  <div class="goal">goal: migrate jobstore to SQLite, repair the watcher runaway loop, land regression tests</div>
+  <div class="spacer"></div>
+  <div class="tag">IDEA 3 · ANATOMY ATLAS</div>
+</div>
+<div class="kpis" id="kpis"></div>
+<div class="main">
+  <div class="stage">
+    <div class="toolbar">
+      <div class="seg" id="metricSeg">
+        <button data-m="tok" class="on">TOKENS</button>
+        <button data-m="dur">WALL TIME</button>
+        <button data-m="tools">TOOL CALLS</button>
+      </div>
+      <div class="crumb" id="crumb"></div>
+      <div class="spacer"></div>
+      <span class="hint">click a block to zoom in · click breadcrumb to zoom out · hover for exact numbers</span>
+    </div>
+    <div class="icwrap"><svg id="ic"></svg></div>
+  </div>
+  <div class="insp" id="insp"></div>
+</div>
+<div id="tip"></div>
+<div class="caption">
+  <span><b>Question answered:</b> “Where did this session's cost actually go — which actor, which phase, which single turns?”</span>
+  <span class="lg"><span class="sw" style="background:#39c2c9"></span>mainline</span>
+  <span class="lg"><span class="sw" style="background:#5b9dff"></span>dlg_02 migration</span>
+  <span class="lg"><span class="sw" style="background:#8db8ff"></span>dlg_02a (depth 3)</span>
+  <span class="lg"><span class="sw" style="background:#e57bb0"></span>dlg_03 audit</span>
+  <span class="lg"><span class="sw" style="background:#e8b13f"></span>dlg_04 tests</span>
+  <span class="lg"><span class="sw" style="background:#8f74ff"></span>dlg_01 survey</span>
+  <span class="lg"><span class="sw" style="background:#e5534b"></span>error/failure</span>
+  <span class="lg"><span class="sw" style="background:#9a7bff"></span>compaction</span>
+</div>
+<script>
+/* ============ synthetic session model (same session) ============ */
+function mulberry32(a){return function(){a|=0;a=a+0x6D2B79F5|0;var t=Math.imul(a^a>>>15,1|a);t=t+Math.imul(t^t>>>7,61|t)^t;return((t^t>>>14)>>>0)/4294967296}}
+const R=mulberry32(20260821);
+const ri=(a,b)=>a+Math.floor(R()*(b-a+1));
+const N=278, COMPACTIONS=[88,191,249], MODEL_SWITCH=150, TURN_FAILURE=182;
+const ERR_TURNS={178:"edit_file stale ctx",179:"edit_file stale ctx",180:"edit_file stale ctx"};
+const USERS=[0,40,120,205,260], STEERS=[95,176,232];
+const PHASES=[[0,21,"intake & plan"],[22,39,"delegate survey"],[40,87,"implement sqlite jobstore"],[88,95,"post-fold replan"],[96,158,"delegate migration"],[159,177,"sandbox audit"],[178,196,"breakage & watch runaway"],[197,235,"fix & verify"],[236,268,"regression tests"],[269,277,"wrap-up"]];
+function phaseOf(i){for(const[a,b,n]of PHASES)if(i>=a&&i<=b)return n;return"work"}
+const turns=[];
+for(let i=0;i<N;i++){
+  let kind="ASSISTANT";
+  if(USERS.includes(i))kind="USER_INPUT";else if(STEERS.includes(i))kind="STEERING";
+  if(COMPACTIONS.includes(i))kind="CHECKPOINT";
+  if(i===MODEL_SWITCH)kind="MODEL_SWITCH";if(i===TURN_FAILURE)kind="TURN_FAILURE";
+  if(i%37===9)kind="ENVIRONMENT";if(i%41===13)kind="HOOK_COMPLETED";
+  if(i===212||i===271)kind="ATTENTION_RESOLUTION";
+  let tools=0;
+  if(kind==="ASSISTANT"){const ph=phaseOf(i);const heavy=/implement|migration|fix|regression/.test(ph);tools=heavy?ri(3,13):ri(1,6)}
+  const tok=kind==="CHECKPOINT"?ri(18000,26000):(kind==="ASSISTANT"?700+tools*ri(380,720):ri(200,1800));
+  const dur=kind==="ASSISTANT"?ri(4,40)+tools*ri(1,4):ri(2,12);
+  turns.push({i,kind,tools,tok,dur,err:ERR_TURNS[i]||null,phase:phaseOf(i)});
+}
+const totalTok=turns.reduce((a,t)=>a+t.tok,0);
+const totalTools=turns.reduce((a,t)=>a+t.tools,0);
+const totalDur=turns.reduce((a,t)=>a+t.dur,0);
+const fmtK=n=>n>=1e6?(n/1e6).toFixed(2)+"M":n>=1000?(n/1000).toFixed(1)+"k":Math.round(n);
+const fmtDur=s=>{s=Math.round(s);return s>=3600?(s/3600).toFixed(1)+"h":s>=60?Math.round(s/60)+"m":s+"s"};
+document.getElementById('kpis').innerHTML=[
+ `<span class="kpi"><b>${N}</b> turns</span>`,`<span class="kpi"><b>${totalTools.toLocaleString()}</b> tool calls</span>`,
+ `<span class="kpi vio"><b>5</b> delegates · 3 levels</span>`,`<span class="kpi"><b>6</b> jobs</span>`,
+ `<span class="kpi warn"><b>2</b> watches · 1 runaway</span>`,`<span class="kpi vio"><b>3</b> compactions</span>`,
+ `<span class="kpi bad"><b>4</b> errors · 1 failure</span>`,`<span class="kpi"><b>${fmtK(totalTok)}</b> tokens</span>`,
+ `<span class="kpi"><b>${fmtDur(totalDur)}</b> active model time</span>`].join('');
+/* ============ hierarchy: session → actor → cluster → turn ============ */
+const ACTORS=[
+ {name:'ROOT mainline',hue:'#39c2c9',ranges:[[0,21],[40,95],[159,159],[197,235],[269,277]],note:'User-facing orchestration: planning, tool rounds, steering delegates, verification.'},
+ {name:'dlg_01 · survey watcher code',hue:'#8f74ff',ranges:[[22,39]],note:'Read-only survey of the watcher loop; reported 3 candidate fault sites.'},
+ {name:'dlg_02 · migrate schema',hue:'#5b9dff',ranges:[[96,130],[147,158]],note:'The heavy lift: schema, migration, feature flag. Spawned dlg_02a when the migration test broke.'},
+ {name:'dlg_02a · repair migration test',hue:'#8db8ff',ranges:[[131,146]],note:'Depth-3 delegate: fixture corruption in migrate_test.go.'},
+ {name:'dlg_03 · audit execenv sandbox',hue:'#e57bb0',ranges:[[160,196]],note:'Sandbox-seat audit overlapping the build breakage.'},
+ {name:'dlg_04 · regression tests',hue:'#e8b13f',ranges:[[236,268]],note:'Table-driven watcher tests incl. runaway-guard regression.'}];
+let METRIC='tok';
+const val=t=>METRIC==='tok'?t.tok:METRIC==='dur'?t.dur:t.tools;
+function buildTree(){
+  const root={name:'session 0J8XKM',children:[],kind:'root',depth:0,parent:null};
+  for(const a of ACTORS){
+    const an={name:a.name,hue:a.hue,note:a.note,children:[],kind:'actor',parent:root};
+    for(const[s,e]of a.ranges){
+      for(let c=s;c<=e;c+=6){
+        const ce=Math.min(c+5,e);
+        const cl={name:`turns ${c}–${ce}`,children:[],kind:'cluster',hue:a.hue,parent:an,s:c,e:ce};
+        for(let i=c;i<=ce;i++){const t=turns[i];
+          cl.children.push({name:`#${i} · ${t.kind.toLowerCase().replace('_',' ')}`,turn:t,kind:'leaf',hue:a.hue,parent:cl,value:Math.max(val(t),.001)})}
+        cl.value=cl.children.reduce((x,y)=>x+y.value,0);
+        an.children.push(cl);
+      }
+    }
+    an.value=an.children.reduce((x,y)=>x+y.value,0);
+    root.children.push(an);
+  }
+  root.children.sort((a,b)=>b.value-a.value);
+  root.value=root.children.reduce((x,y)=>x+y.value,0);
+  return root;
+}
+let ROOT=buildTree(), FOCUS=ROOT;
+/* ============ icicle render ============ */
+const NS='http://www.w3.org/2000/svg';
+const svg=document.getElementById('ic');
+const tip=document.getElementById('tip');
+function leafColor(n){
+  const t=n.turn;
+  if(t.err||t.kind==='TURN_FAILURE')return'#e5534b';
+  if(t.kind==='CHECKPOINT')return'#9a7bff';
+  if(t.kind==='USER_INPUT')return'#e8edf3';
+  if(t.kind==='STEERING')return'#e8b13f';
+  if(t.kind==='MODEL_SWITCH')return'#b9a5ff';
+  /* assistant & misc: actor hue, alpha by weight */
+  const frac=Math.min(1,t.tok/9000);
+  return n.hue+Math.round(40+frac*175).toString(16).padStart(2,'0');
+}
+function shade(hex,alpha){return hex+Math.round(alpha*255).toString(16).padStart(2,'0')}
+function render(){
+  svg.innerHTML='';
+  const W=svg.clientWidth,H=svg.clientHeight;
+  if(W<100)return;
+  svg.setAttribute('viewBox',`0 0 ${W} ${H}`);
+  /* depth of focus subtree */
+  let maxd=0;(function walk(n,d){maxd=Math.max(maxd,d);(n.children||[]).forEach(c=>walk(c,d+1))})(FOCUS,0);
+  const levels=maxd+1;
+  const rootH=32;
+  const rowH=(H-rootH-2)/Math.max(levels-1,1);
+  const yOf=d=>d===0?0:rootH+(d-1)*rowH;
+  const hOf=d=>(d===0?rootH:rowH)-2;
+  function layout(n,x,w,d){
+    n._x=x;n._w=w;n._d=d;
+    let cx=x;
+    for(const c of n.children||[]){const cw=w*(c.value/n.value);layout(c,cx,cw,d+1);cx+=cw}
+  }
+  layout(FOCUS,0,W,0);
+  const frag=document.createDocumentFragment?null:null;
+  (function draw(n){
+    const y=yOf(n._d)+1,h=hOf(n._d);
+    if(n._w<.15)return;
+    let fill,stroke='#0e1116';
+    if(n.kind==='root')fill='#20262f';
+    else if(n.kind==='actor')fill=shade(n.hue,.34);
+    else if(n.kind==='cluster')fill=shade(n.hue,.16);
+    else fill=leafColor(n);
+    const r=document.createElementNS(NS,'rect');
+    r.setAttribute('x',n._x);r.setAttribute('y',y);r.setAttribute('width',Math.max(n._w-1,.3));r.setAttribute('height',h);
+    r.setAttribute('fill',fill);r.setAttribute('stroke',stroke);r.setAttribute('stroke-width',1);r.setAttribute('rx',2);
+    r.style.cursor='pointer';
+    if(n.kind==='leaf'&&(n.turn.err||n.turn.kind==='TURN_FAILURE')){r.setAttribute('stroke','#ff8a80');r.setAttribute('stroke-width',1.2)}
+    r.addEventListener('mousemove',ev=>showTip(ev,tipFor(n)));
+    r.addEventListener('mouseleave',hideTip);
+    r.addEventListener('click',()=>{FOCUS=n;render();pinNode(n)});
+    svg.appendChild(r);
+    if(n._w>54&&n.kind!=='leaf'){
+      const pct=(n.value/ROOT.value*100).toFixed(1);
+      const mk=(yy,txt,size,fill)=>{const t=document.createElementNS(NS,'text');
+        t.setAttribute('x',n._x+5);t.setAttribute('y',y+yy);t.setAttribute('font-size',size);
+        t.setAttribute('fill',fill);t.setAttribute('font-family','var(--mono)');t.style.pointerEvents='none';
+        t.textContent=txt;svg.appendChild(t)};
+      if(n.kind==='actor'&&n._w>90&&h>40){
+        mk(15,clip(n.name,n._w/6.4),10,n.hue);
+        mk(29,clip(`${fmtVal(n.value)} · ${pct}%`,n._w/6.4),9.5,'rgba(219,226,234,.8)');
+      }else{
+        mk(Math.min(h/2+3.5,16),clip(`${n.name} · ${fmtVal(n.value)} · ${pct}%`,n._w/6.2),n.kind==='root'?11:10,n.kind==='root'?'#dbe2ea':n.hue||'#9aa7b5');
+      }
+    }else if(n.kind==='leaf'&&n._w>26){
+      const t=document.createElementNS(NS,'text');
+      t.setAttribute('x',n._x+3);t.setAttribute('y',y+h/2+3);
+      t.setAttribute('font-size',8.5);t.setAttribute('fill','rgba(219,226,234,.75)');
+      t.setAttribute('font-family','var(--mono)');t.style.pointerEvents='none';
+      t.textContent=clip('#'+n.turn.i,n._w/5.4);
+      svg.appendChild(t);
+    }
+    (n.children||[]).forEach(draw);
+  })(FOCUS);
+  renderCrumb();
+}
+function clip(s,w){s=String(s);return s.length>w?s.slice(0,Math.max(1,w-1))+'…':s}
+function fmtVal(v){return METRIC==='tok'?fmtK(v)+' tok':METRIC==='dur'?fmtDur(v):Math.round(v)+' calls'}
+function tipFor(n){
+  if(n.kind==='leaf'){const t=n.turn;
+    return `<div class="th">turn #${t.i} · ${t.kind}</div>
+    <div class="tl">phase <b>${t.phase}</b></div>
+    <div class="tl">tokens <b>${fmtK(t.tok)}</b> · tools <b>${t.tools}</b> · ${t.dur}s</div>
+    ${t.err?`<div class="tl" style="color:#e5534b">⚠ ${t.err}</div>`:''}
+    ${t.kind==='CHECKPOINT'?`<div class="tl" style="color:#b9a5ff">⛛ compaction: 186k→24k fold</div>`:''}`}
+  const leaves=[];(function w(x){if(x.kind==='leaf')leaves.push(x.turn);(x.children||[]).forEach(w)})(n);
+  const errs=leaves.filter(t=>t.err||t.kind==='TURN_FAILURE').length;
+  return `<div class="th">${n.name}</div>
+  <div class="tl">${fmtVal(n.value)} · <b>${(n.value/ROOT.value*100).toFixed(1)}%</b> of session</div>
+  <div class="tl">${leaves.length} turns · ${leaves.reduce((a,t)=>a+t.tools,0)} tool calls${errs?` · <span style="color:#e5534b">${errs} errors</span>`:''}</div>
+  <div class="tl">click to zoom</div>`;
+}
+function showTip(ev,html){tip.style.display='block';tip.innerHTML=html;
+  tip.style.left=Math.min(ev.clientX+16,innerWidth-350)+'px';tip.style.top=(ev.clientY+14)+'px'}
+function hideTip(){tip.style.display='none'}
+function renderCrumb(){
+  const path=[];let n=FOCUS;while(n){path.unshift(n);n=n.parent}
+  document.getElementById('crumb').innerHTML='⌂ '+path.map((p,i)=>
+    i===path.length-1?`<span style="color:var(--ink)">${p.name}</span>`
+    :`<a data-i="${i}">${p.name}</a><span style="color:var(--ink-low)"> ▸ </span>`).join('');
+  document.querySelectorAll('#crumb a').forEach(a=>a.addEventListener('click',()=>{
+    let n=FOCUS;const idx=+a.dataset.i;const p=[];let m=FOCUS;while(m){p.unshift(m);m=m.parent}
+    FOCUS=p[idx];render();pinNode(FOCUS);
+  }));
+}
+/* ============ inspector ============ */
+const insp=document.getElementById('insp');
+function pinNode(n){
+  if(n.kind==='leaf'){const t=n.turn;
+    insp.innerHTML=`<h3>selected · turn</h3>
+    <div class="card"><div class="t">#${t.i} — ${t.kind}</div>
+    <div class="row"><span>phase</span><b>${t.phase}</b></div>
+    <div class="row"><span>tokens</span><b>${fmtK(t.tok)} (${(t.tok/totalTok*100).toFixed(2)}%)</b></div>
+    <div class="row"><span>tool calls</span><b>${t.tools}</b></div>
+    <div class="row"><span>model time</span><b>${t.dur}s</b></div>
+    ${t.err?`<p style="color:var(--red)">⚠ ${t.err} — part of the #178–#183 retry loop that the build break caused.</p>`:''}
+    ${t.kind==='CHECKPOINT'?'<p style="color:var(--violet)">⛛ Compaction boundary. Everything older survives only as checkpoint+summary — its token size here is the summary write itself.</p>':''}
+    </div>`;return}
+  const leaves=[];(function w(x){if(x.kind==='leaf')leaves.push(x.turn);(x.children||[]).forEach(w)})(n);
+  const tk=leaves.reduce((a,t)=>a+t.tok,0),tc=leaves.reduce((a,t)=>a+t.tools,0),du=leaves.reduce((a,t)=>a+t.dur,0);
+  const errs=leaves.filter(t=>t.err||t.kind==='TURN_FAILURE');
+  insp.innerHTML=`<h3>selected · ${n.kind}</h3>
+  <div class="card" style="border-color:${n.hue||'var(--edge2)'}"><div class="t">${n.name}</div>
+  ${n.note?`<p>${n.note}</p>`:''}
+  <div class="row"><span>tokens</span><b>${fmtK(tk)} (${(tk/totalTok*100).toFixed(1)}%)</b></div>
+  <div class="row"><span>tool calls</span><b>${tc}</b></div>
+  <div class="row"><span>model time</span><b>${fmtDur(du)}</b></div>
+  <div class="row"><span>turns</span><b>${leaves.length}</b></div>
+  ${errs.length?`<div class="row"><span>errors</span><b style="color:var(--red)">${errs.length} (${errs.map(t=>'#'+t.i).join(', ')})</b></div>`:''}
+  </div>`;
+}
+function pinDefault(){
+  const actors=ROOT.children.slice().sort((a,b)=>b.value-a.value);
+  const mx=actors[0].value;
+  let clusters=[];ROOT.children.forEach(a=>(function w(n){if(n.kind==='cluster')clusters.push(n);(n.children||[]).forEach(w)})(a));
+  clusters.sort((a,b)=>b.value-a.value);
+  insp.innerHTML=`<h3>cost breakdown · ${METRIC==='tok'?'tokens':METRIC==='dur'?'wall time':'tool calls'}</h3>
+  <div class="card"><div class="t">by actor</div><div class="barlist" style="margin-top:8px">
+  ${actors.map(a=>`<div class="bl" data-n="${a.name}"><span class="nm">${a.name}</span><div class="track"><div class="fill" style="width:${(a.value/mx*100).toFixed(0)}%;background:${a.hue}"></div></div><span class="v">${(a.value/ROOT.value*100).toFixed(0)}%</span></div>`).join('')}
+  </div><p>Delegates own <b>${((1-actors.find(a=>a.name.startsWith('ROOT')).value/ROOT.value)*100).toFixed(0)}%</b> of session cost — the dlg_02 migration subtree alone is ${(actors.find(a=>a.name.startsWith('dlg_02 ·')).value/ROOT.value*100).toFixed(0)}%.</p></div>
+  <div class="card"><div class="t">hottest 6-turn clusters</div><div class="barlist" style="margin-top:8px">
+  ${clusters.slice(0,6).map(c=>`<div class="bl" data-c="1"><span class="nm" style="color:${c.hue}">${c.parent.name.split(' ·')[0]} ${c.name}</span><div class="track"><div class="fill" style="width:${(c.value/clusters[0].value*100).toFixed(0)}%;background:${c.hue}"></div></div><span class="v">${fmtVal(c.value)}</span></div>`).join('')}
+  </div><p>The single most expensive leaf: turn #${clusters[0].children.slice().sort((a,b)=>b.value-a.value)[0].turn.i}. Three violet blocks are compaction writes — the fold itself is a cost.</p></div>`;
+  insp.querySelectorAll('.bl[data-n]').forEach(b=>b.addEventListener('click',()=>{
+    const a=ROOT.children.find(x=>x.name===b.dataset.n);FOCUS=a;render();pinNode(a)}));
+}
+document.querySelectorAll('#metricSeg button').forEach(b=>b.addEventListener('click',()=>{
+  document.querySelectorAll('#metricSeg button').forEach(x=>x.classList.remove('on'));
+  b.classList.add('on');METRIC=b.dataset.m;ROOT=buildTree();
+  /* keep focus by name path */
+  const path=[];let n=FOCUS;while(n&&n.parent){path.unshift(n.name);n=n.parent}
+  let f=ROOT;for(const nm of path){const c=(f.children||[]).find(x=>x.name===nm);if(!c)break;f=c}
+  FOCUS=f;render();pinDefault();
+}));
+window.addEventListener('resize',render);
+render();pinDefault();
+</script>
+</body>
+</html>

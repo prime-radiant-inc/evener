@@ -1,0 +1,15 @@
+# Transcript visualization proposals — semantic zoom and narrative
+
+All three mockups use the same synthetic long-session scenario so their trade-offs can be compared directly: **287 durable turns, 2,184 tool calls, 14 delegates across three levels, eight background jobs, five watch triggers, three compactions, and one persisted provider failure/retry over 4h 42m**. The scenario follows a flaky securepath sandbox test from reproduction through a rejected fix, a cross-epoch publication root cause, an atomic snapshot implementation, and parallel verification. Each HTML file is standalone, uses inline CSS/JavaScript, and works from `file://` without network access.
+
+## Idea 1 — Chronicle
+
+**Comprehension question:** What is the readable story of the session, and which exact evidence supports each chapter? Chronicle treats the transcript as a generated technical document: a one-paragraph synopsis becomes nine chapters, then typed turns, then raw evidence through a four-level semantic zoom; an always-visible outline, whole-session ribbon, and selected-chapter marginalia preserve orientation. It scales because the first two levels have bounded narrative length while every chapter still exposes its true turn/call counts and materializes exact evidence only when requested. Interactions include zoom buttons (or keys 1–4), chapter navigation, ribbon selection, and arrow-key movement between chapters.
+
+## Idea 2 — Story Loom
+
+**Comprehension question:** Which work happened in parallel, what caused the next decision, and how did child findings and jobs converge on the parent? Story Loom braids the parent, a three-level delegate tree, durable jobs, watches, hooks, failures, and compactions on a shared wall-clock axis; dashed causal curves show spawn, delivery, and dependency rather than merely temporal adjacency. It scales by aggregating 2,184 calls into a small number of causal packets at whole-session scale, then widening the same stable lanes for 30-minute and 5-minute inspection instead of adding rows. Interactions include selecting narrative beats or events, dragging the focus lens, switching time scale, horizontal focus scrolling, and jumping directly to the root-cause packet.
+
+## Idea 3 — Narrative Cartogram
+
+**Comprehension question:** Where did the session spend its time, tokens, and tool effort, and what narrative explains that distribution? Narrative Cartogram is an ordered, nested work map: chapter area encodes the selected cost metric, semantic color encodes the dominant activity, a dotted spine preserves sequence, and compaction seams and failure regions remain visible as structural landmarks. It scales through hierarchical aggregation—287 turns become nine chapter regions, a selected chapter becomes six semantic packets, and exact totals remain in the dossier rather than requiring thousands of marks at once. Interactions include switching area among tool calls, wall time, and tokens; hovering for exact totals; selecting for a narrative dossier; and double-clicking or using the dossier button to drill into a chapter.

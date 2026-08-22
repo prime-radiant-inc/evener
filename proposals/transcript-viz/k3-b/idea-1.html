@@ -1,0 +1,346 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Idea 1 — Upstream: causal provenance graph</title>
+<style>
+  :root{
+    --bg:#0d1117; --panel:#161b22; --border:#30363d; --text:#e6edf3; --dim:#8b949e;
+    --blue:#58a6ff; --green:#3fb950; --red:#f85149; --orange:#d29922;
+    --violet:#bc8cff; --purple:#a371f7; --teal:#39c5cf; --amber:#f0b72f;
+  }
+  *{box-sizing:border-box}
+  html,body{margin:0;padding:0;background:var(--bg);color:var(--text);
+    font:12px/1.45 ui-monospace,'SF Mono',SFMono-Regular,Menlo,Consolas,monospace;}
+  header{padding:14px 20px 10px;border-bottom:1px solid var(--border);display:flex;flex-wrap:wrap;gap:8px;align-items:center}
+  header .title{font-size:14px;font-weight:700;margin-right:10px}
+  header .title .idea{color:var(--violet)}
+  .chip{border:1px solid var(--border);border-radius:10px;padding:2px 8px;color:var(--dim);background:var(--panel)}
+  .chip b{color:var(--text);font-weight:600}
+  .chip.red b{color:var(--red)} .chip.green b{color:var(--green)} .chip.purple b{color:var(--purple)}
+  .layout{display:flex;min-height:calc(100vh - 49px)}
+  aside{width:300px;flex:0 0 300px;border-right:1px solid var(--border);padding:14px;background:#0f141b;overflow-y:auto}
+  aside h3{margin:0 0 6px;font-size:11px;text-transform:uppercase;letter-spacing:.08em;color:var(--dim)}
+  aside .block{margin-bottom:18px}
+  .legend-item{display:flex;align-items:center;gap:8px;margin:3px 0;color:var(--dim)}
+  .legend-item .sw{width:22px;height:0;border-top:3px solid #888;border-radius:2px;flex:none}
+  .legend-item .sw.dash{border-top-style:dashed}
+  .legend-item .ng{width:14px;height:14px;border:1.5px solid #888;border-radius:4px;flex:none;background:var(--panel)}
+  .legend-item .ng.tri{border-radius:0;clip-path:polygon(50% 0,100% 100%,0 100%);background:#888;border:none;height:12px}
+  #trace{min-height:120px}
+  #trace .hint{color:var(--dim);font-style:italic}
+  #trace .node-card{border:1px solid var(--border);border-left:3px solid var(--amber);border-radius:6px;
+    padding:6px 8px;margin:6px 0;background:var(--panel)}
+  #trace .node-card .t{font-weight:700}
+  #trace .node-card .w{color:var(--dim);font-size:11px;margin-top:2px}
+  #trace .via{color:var(--amber);margin:0 0 0 8px;font-size:10px}
+  #trace .down-note{color:var(--teal);margin-top:8px}
+  main{flex:1;position:relative;overflow:auto}
+  svg{display:block;width:100%;height:auto;min-width:900px}
+  .node{cursor:pointer}
+  .node rect.body{transition:filter .12s}
+  .node:hover rect.body{filter:brightness(1.5)}
+  .node text{pointer-events:none}
+  .n-title{font-size:12px;font-weight:700;fill:var(--text)}
+  .n-sub{font-size:10px;fill:var(--dim)}
+  .n-glyph{font-size:14px;fill:var(--dim)}
+  .edge{fill:none;stroke-width:1.6;opacity:.85}
+  .edge-label{font-size:9.5px;fill:var(--dim);paint-order:stroke;stroke:var(--bg);stroke-width:3px}
+  .dimmed{opacity:.09!important}
+  .up rect.body{stroke:var(--amber)!important;stroke-width:2.5!important}
+  .up text.n-title{fill:var(--amber)}
+  path.edge.up{stroke:var(--amber)!important;opacity:1;stroke-width:2.6}
+  .down rect.body{stroke:var(--teal)!important;stroke-width:2!important}
+  path.edge.down{stroke:var(--teal)!important;opacity:.9}
+  .axis-label{font-size:10px;fill:#6e7681}
+  #tip{position:fixed;display:none;max-width:340px;background:#1c2330;border:1px solid #444c56;border-radius:8px;
+    padding:10px 12px;pointer-events:none;z-index:10;box-shadow:0 8px 24px rgba(0,0,0,.5)}
+  #tip .tt{font-weight:700;margin-bottom:2px}
+  #tip .ts{color:var(--dim);font-size:11px}
+  #tip .td{margin-top:6px;font-size:11px;color:#c9d1d9;white-space:pre-line}
+  .expand-hint{color:var(--red)}
+</style>
+</head>
+<body>
+<header>
+  <span class="title"><span class="idea">IDEA 1 · UPSTREAM</span> — causal provenance graph</span>
+  <span class="chip">session <b>evener-8f3k2</b></span>
+  <span class="chip">repo <b>prime-radiant/evener</b> · branch <b>delegatestore-pruning</b></span>
+  <span class="chip"><b>287</b> turns</span>
+  <span class="chip"><b>2,146</b> tool calls</span>
+  <span class="chip"><b>4.13M</b> tok · <b>$38.42</b></span>
+  <span class="chip"><b>6h12m</b> wall</span>
+  <span class="chip purple"><b>2</b> compactions</span>
+  <span class="chip"><b>3</b> delegates (3 levels) · <b>4</b> jobs · <b>3</b> watches</span>
+  <span class="chip red"><b>1</b> retry cascade</span>
+  <span class="chip green">goal <b>COMPLETE</b></span>
+</header>
+<div class="layout">
+  <aside>
+    <div class="block">
+      <h3>What am I looking at?</h3>
+      <div style="color:var(--dim)">The session as a <b style="color:var(--text)">causal graph</b>, not a log.
+      Every node is something that <i>happened</i>; every edge answers <i>“what did it cause?”</i>
+      Time flows left → right (turn markers along the bottom). The 287 turns are folded into
+      16 key entities — the graph shows structure, the transcript stays one click away.</div>
+    </div>
+    <div class="block">
+      <h3>Interactions</h3>
+      <div style="color:var(--dim)">· <b style="color:var(--text)">Click any node</b> → flood-trace: <span style="color:var(--amber)">amber = why it happened</span>, <span style="color:var(--teal)">teal = what it caused</span>, rest dimmed.<br>
+      · <b style="color:var(--red)">Click the red RETRY CASCADE</b> → semantic zoom into its 6-node internal chain.<br>
+      · Hover anything for evidence (turns, tools, cost).</div>
+    </div>
+    <div class="block">
+      <h3>Edge types (causal relations)</h3>
+      <div class="legend-item"><span class="sw" style="border-color:#8b949e"></span>informed / preceded</div>
+      <div class="legend-item"><span class="sw" style="border-color:var(--blue)"></span>steered (user redirect)</div>
+      <div class="legend-item"><span class="sw" style="border-color:var(--violet)"></span>spawned (delegate / job)</div>
+      <div class="legend-item"><span class="sw" style="border-color:var(--orange)"></span>triggered (watch / event)</div>
+      <div class="legend-item"><span class="sw" style="border-color:var(--teal)"></span>reported back</div>
+      <div class="legend-item"><span class="sw" style="border-color:var(--red)"></span>caused failure / retry</div>
+      <div class="legend-item"><span class="sw dash" style="border-color:var(--purple)"></span>folded by compaction</div>
+      <div class="legend-item"><span class="sw" style="border-color:var(--green)"></span>gate passed / satisfied</div>
+    </div>
+    <div class="block">
+      <h3>Node shapes</h3>
+      <div class="legend-item"><span class="ng" style="border-color:var(--green)"></span>goal / terminal state</div>
+      <div class="legend-item"><span class="ng" style="border-color:var(--border)"></span>episode (turn cluster)</div>
+      <div class="legend-item"><span class="ng" style="border-color:var(--violet)"></span>delegate (L1/L2 = depth)</div>
+      <div class="legend-item"><span class="ng" style="border-color:var(--blue)"></span>shell job</div>
+      <div class="legend-item"><span class="ng" style="border-color:var(--orange)"></span>watch</div>
+      <div class="legend-item"><span class="ng" style="border-color:var(--purple)"></span>compaction boundary</div>
+      <div class="legend-item"><span class="ng" style="border-color:var(--blue)"></span>user steering</div>
+    </div>
+    <div class="block" id="trace">
+      <h3>Why did it end here?</h3>
+      <div class="hint">Select a node to see its upstream causal chain — e.g. click <b>GOAL COMPLETE</b> (bottom right) or the <b>RETRY CASCADE</b>.</div>
+    </div>
+  </aside>
+  <main>
+    <svg id="g" viewBox="0 0 1240 840" preserveAspectRatio="xMidYMin meet"></svg>
+  </main>
+</div>
+<div id="tip"></div>
+<script>
+"use strict";
+const NS="http://www.w3.org/2000/svg";
+const EDGE_COLORS={informed:"#8b949e",steered:"#58a6ff",spawned:"#bc8cff",triggered:"#d29922",
+  reported:"#39c5cf",caused:"#f85149",folded:"#a371f7",gate:"#3fb950"};
+const TYPE_STYLE={
+  goal:{stroke:"#3fb950",fill:"rgba(63,185,80,.09)",glyph:"◎"},
+  terminal:{stroke:"#3fb950",fill:"rgba(63,185,80,.09)",glyph:"✔"},
+  episode:{stroke:"#30363d",fill:"#161b22",glyph:"▤"},
+  error:{stroke:"#f85149",fill:"rgba(248,81,73,.09)",glyph:"⚠"},
+  delegate:{stroke:"#bc8cff",fill:"rgba(188,140,255,.08)",glyph:"⬡"},
+  job:{stroke:"#58a6ff",fill:"rgba(88,166,255,.08)",glyph:"⚙"},
+  watch:{stroke:"#d29922",fill:"rgba(210,153,34,.10)",glyph:"▲"},
+  compaction:{stroke:"#a371f7",fill:"rgba(163,113,247,.09)",glyph:"≣",dash:true},
+  steering:{stroke:"#58a6ff",fill:"rgba(88,166,255,.10)",glyph:"➤"},
+  micro:{stroke:"#f85149",fill:"#161b22",glyph:"·"},
+  cause:{stroke:"#f85149",fill:"rgba(248,81,73,.14)",glyph:"✱"},
+  fix:{stroke:"#3fb950",fill:"rgba(63,185,80,.12)",glyph:"✔"},
+};
+// ---- nodes (x,y = center) ----
+const NODES=[
+ {id:"G",  x:120,y:100, w:210,h:48,type:"goal",   title:"GOAL", sub:"tombstone pruning +\nwatch-storm fix", turns:"T1",
+  tip:"USER_INPUT T1: “Implement delegate store tombstone pruning; fix the watch runaway loop on fuzz jobs.”\nSet the session goal; every path ultimately serves or endangers it."},
+ {id:"E1", x:120,y:250, w:180,h:48,type:"episode",title:"Recon & plan", sub:"T1–28 · 210 calls", turns:"T1–28",
+  tip:"read_file/grep sweep over agent/schema, agent/internal/jobstore.\nOutput: plan with 9 task_list items.\nCost: $2.10 · 480k tok"},
+ {id:"E2", x:120,y:400, w:180,h:48,type:"episode",title:"jobstore pruning", sub:"T29–61 · 342 calls", turns:"T29–61",
+  tip:"edit_file ×17 on agent/internal/jobstore/prune.go (+412 −88).\nT44: skip-list iterator for sealed entries written here —\nthe bug that resurfaces at T132 lives in this diff."},
+ {id:"S1", x:120,y:560, w:200,h:48,type:"steering",title:"STEERING · T62", sub:"“handle delegate\ntombstones too”", turns:"T62",
+  tip:"Mid-run user message widens scope from jobstore to delegatestore.\nArrives while a shell job is running; queued as TurnSteering and\nconsumed at T63 — directly causes the first delegation."},
+ {id:"E4", x:370,y:500, w:190,h:52,type:"delegate",title:"dlg_store  · L1", sub:"spawned T63 · reports T200\n310 calls · $6.80", turns:"T63–200",
+  tip:"Child session: implement delegatestore/tombstone.go.\nRuns 2h10m in parallel with root.\nSpawns its own child (dlg_tests) at T70."},
+ {id:"E5", x:620,y:640, w:224,h:48,type:"delegate",title:"dlg_tests · L2 grandchild", sub:"T70–140 · 263 calls", turns:"T70–140",
+  tip:"Grandchild session writing fuzz targets:\nagent/internal/delegatestore/testdata/fuzz/ · 12 seeds.\nIts corpus failure at T141 becomes attempt-3 evidence in the cascade."},
+ {id:"E6", x:370,y:320, w:190,h:52,type:"job",    title:"job_build + job_fuzz", sub:"started T96 · fuzz detached\n`go test -fuzz=…`", turns:"T96–",
+  tip:"communicate→shell(background) job_build: exit 0 in 4m.\nshell(detached) job_fuzz runs 3h.\njob_fuzz stdout is the watch source that storms at T129."},
+ {id:"W1", x:620,y:160, w:190,h:52,type:"watch",  title:"watch w_fuzz", sub:"fires 3× in 90s\nT129–131 · RUNAWAY", turns:"T129–131",
+  tip:"Trigger: /FAILURE/ on job_fuzz output.\nEach fire injects an attention item; the handler at T130\nre-arms the same matcher on the same line → 3 fires in 90s.\nThis is the runaway-loop failure mode the goal targets."},
+ {id:"E8", x:620,y:370, w:200,h:52,type:"error",  title:"RETRY CASCADE ×4", sub:"T132–149 · vet→build→test\nclick to expand ▸", turns:"T132–149", expandable:true,
+  tip:"4 failed fix attempts in 18 minutes.\nvet T133 · build T137 · test T141 · fuzz T145.\nRoot cause found T147, fixed T149.\nCLICK to zoom into the internal chain."},
+ {id:"C1", x:870,y:150, w:200,h:52,type:"compaction",title:"COMPACTION #1", sub:"T151 · folds T1–150\n1.9M → 40k tok", turns:"T151",
+  tip:"Context at 92%. Layer-3 CHECKPOINT + Layer-4 SUMMARY\nfold turns 1–150 into a 40k-token summary.\nEverything left of this node is no longer in the model’s context —\nonly what the summary preserved can still cause anything."},
+ {id:"E10",x:870,y:360, w:200,h:52,type:"episode",title:"report + MODEL_SWITCH", sub:"T152–200 · k3 → mini\n288 calls · $4.10", turns:"T152–200",
+  tip:"dlg_store reports back (delegate_send→communicate).\nRoot switches to a cheaper model for test-writing (T166).\nwatch w_cost ($30 threshold) fires once at T188 — handled, no storm."},
+ {id:"J1", x:870,y:560, w:190,h:52,type:"job",    title:"job_ci", sub:"T205–214\nexit 1 → rerun → exit 0", turns:"T205–214",
+  tip:"Push triggers CI job. First run exit 1 (lint: unused param —\na residue of the T147 fix). Rerun after edit_file passes.\nSecond, smaller failure caused by the cascade fix."},
+ {id:"W2", x:1060,y:640,w:160,h:44,type:"watch",  title:"watch w_ci", sub:"fires 1× · T214", turns:"T214",
+  tip:"Trigger on job_ci completion. Fires once, notifies root\ncleanly — the post-fix watch behavior, contrast with w_fuzz."},
+ {id:"C2", x:1120,y:210,w:190,h:48,type:"compaction",title:"COMPACTION #2", sub:"T221 · folds T152–220\n890k → 22k tok", turns:"T221",
+  tip:"Second fold. The retry-cascade detail survives only as:\n“tombstone iterator fixed after 4 attempts; watch re-arm guard added”."},
+ {id:"E13",x:1120,y:380,w:170,h:48,type:"episode",title:"docs + final gates", sub:"T222–260 · 174 calls", turns:"T222–260",
+  tip:"dlg_docs (L1, third delegate) updates docs/web-ui/*.\nFinal gates: make build, go vet, full test run — all green."},
+ {id:"E14",x:1120,y:600,w:180,h:52,type:"terminal",title:"GOAL COMPLETE", sub:"T287 · PR ready\ncoverage 91.2%", turns:"T287",
+  tip:"update_goal(complete). PR #312 prepared.\nEvery gate green; watch storm gone (guard verified by w_ci firing once)."},
+];
+// micro-chain inside E8 (semantic zoom)
+const MICRO=[
+ {id:"m1",x:620,y:236,w:180,h:32,type:"micro",title:"attempt 1 · go vet",   sub:"T133 · exit 1", turns:"T133",tip:"Fix hypothesis: shadowed err. go vet fails on unreachable code."},
+ {id:"m2",x:620,y:284,w:180,h:32,type:"micro",title:"attempt 2 · make build",sub:"T137 · exit 1", turns:"T137",tip:"Vet fixed; build now fails — prune.go:88: undefined: sealedAfter."},
+ {id:"m3",x:620,y:332,w:180,h:32,type:"micro",title:"attempt 3 · go test",   sub:"T141 · FAIL", turns:"T141",tip:"dlg_tests’ fuzz seed fails: tombstone count mismatch (got 3, want 7)."},
+ {id:"m4",x:620,y:380,w:180,h:32,type:"micro",title:"attempt 4 · fuzz seed", sub:"T145 · FAIL", turns:"T145",tip:"Narrower test still fails — evidence converges on the iterator, not the test."},
+ {id:"RC",x:620,y:436,w:200,h:48,type:"cause",title:"ROOT CAUSE", sub:"T147 · iterator skipped sealed\ntombstones", turns:"T147",tip:"read_file of prune.go:71 — the skip-list iterator from T44 (E2)\nadvances past sealed entries. 4 failures, one cause."},
+ {id:"FX",x:620,y:500,w:180,h:32,type:"fix",  title:"FIX + green", sub:"T149 · all tests pass", turns:"T149",tip:"edit_file +6 −2 on prune.go. go test ./... ok. watch re-arm guard added in doctor/watches.go."},
+];
+// ---- edges ----
+const EDGES=[
+ {a:"G", b:"E1", t:"informed"},
+ {a:"E1",b:"E2", t:"informed"},
+ {a:"E2",b:"E4", t:"informed", label:"tombstone gap found"},
+ {a:"S1",b:"E4", t:"steered"},
+ {a:"E4",b:"E5", t:"spawned"},
+ {a:"E4",b:"E6", t:"spawned", label:"starts"},
+ {a:"E6",b:"W1", t:"triggered", label:"stdout matched /FAILURE/", labelPos:0.3},
+ {a:"W1",b:"E8", t:"caused",  label:"storm → interrupt"},
+ {a:"E2",b:"E8", t:"caused",  label:"bug written @T44"},
+ {a:"E8",b:"C1", t:"folded",  label:"context 92%"},
+ {a:"C1",b:"E10",t:"folded",  label:"continuity via SUMMARY"},
+ {a:"E4",b:"E10",t:"reported"},
+ {a:"E5",b:"E10",t:"reported", label:"12 fuzz tests"},
+ {a:"E10",b:"J1",t:"triggered",label:"push"},
+ {a:"E6",b:"J1", t:"informed"},
+ {a:"J1",b:"W2", t:"triggered"},
+ {a:"W2",b:"E13",t:"informed", label:"notify"},
+ {a:"E10",b:"C2",t:"folded"},
+ {a:"J1",b:"C2", t:"folded"},
+ {a:"C2",b:"E13",t:"folded",   label:"continuity"},
+ {a:"J1",b:"E14",t:"gate",     label:"CI green"},
+ {a:"E13",b:"E14",t:"gate"},
+ {a:"E5",b:"E14",t:"gate",     label:"coverage"},
+ {a:"G", b:"E14",t:"gate", label:"satisfies", path:"M 120 76 C 120 18, 1120 18, 1120 574"},
+];
+// expanded: replace E8 with micro-chain
+const EDGES_EXPANDED = EDGES.filter(e=>e.a!=="E8"&&e.b!=="E8").concat([
+ {a:"W1",b:"m1",t:"caused",label:"storm → interrupt"},
+ {a:"m1",b:"m2",t:"caused"},{a:"m2",b:"m3",t:"caused"},{a:"m3",b:"m4",t:"caused"},
+ {a:"m4",b:"RC",t:"caused"},
+ {a:"E2",b:"RC",t:"caused",label:"bug written @T44"},
+ {a:"RC",b:"FX",t:"gate",label:"edit +6 −2"},
+ {a:"FX",b:"C1",t:"folded",label:"context 92%"},
+]);
+const TURN_AXIS=[["T1",120],["T62–63",250],["T96",370],["T129–131",495],["T132–149",620],["T151",745],["T200–214",920],["T221",1060],["T287",1120]];
+let expanded=false, selected=null;
+const svg=document.getElementById("g"), tip=document.getElementById("tip");
+function el(name,attrs,parent){const e=document.createElementNS(NS,name);for(const k in attrs)e.setAttribute(k,attrs[k]);if(parent)parent.appendChild(e);return e;}
+function textLines(parent,txt,x,y,cls,anchor){const lines=txt.split("\n");const t=el("text",{x,y,"class":cls,"text-anchor":anchor||"middle"},parent);
+  lines.forEach((ln,i)=>{const ts=el("tspan",{x,dy:i===0?0:11},t);ts.textContent=ln;});return t;}
+function nodeById(id){return (expanded?NODES.filter(n=>n.id!=="E8").concat(MICRO):NODES).find(n=>n.id===id);}
+function currentEdges(){return expanded?EDGES_EXPANDED:EDGES;}
+function edgePath(a,b,e){
+  if(e.path)return e.path;
+  if(Math.abs(a.x-b.x)<=30){ // same column: vertical drop with a right bow
+    const dir=(b.y>a.y)?1:-1;const off=Math.max(50,Math.abs(b.y-a.y)*0.35);
+    return `M ${a.x} ${a.y+dir*a.h/2} C ${a.x+off} ${a.y+dir*a.h/2}, ${b.x+off} ${b.y-dir*b.h/2}, ${b.x} ${b.y-dir*b.h/2}`;
+  }
+  const x1=a.x+a.w/2,y1=a.y,x2=b.x-b.w/2,y2=b.y;
+  if(x2>x1+30){const mx=(x1+x2)/2;return `M ${x1} ${y1} C ${mx} ${y1}, ${mx} ${y2}, ${x2} ${y2}`;}
+  const my=Math.min(y1,y2)-70;return `M ${x1} ${y1} C ${x1+50} ${my}, ${x2-50} ${my}, ${x2} ${y2}`;
+}
+function ancestors(id){const E=currentEdges();const seen=new Set();const q=[id];while(q.length){const c=q.shift();for(const e of E)if(e.b===c&&!seen.has(e.a)){seen.add(e.a);q.push(e.a);}}return seen;}
+function descendants(id){const E=currentEdges();const seen=new Set();const q=[id];while(q.length){const c=q.shift();for(const e of E)if(e.a===c&&!seen.has(e.b)){seen.add(e.b);q.push(e.b);}}return seen;}
+function render(){
+  svg.innerHTML="";
+  const defs=el("defs",{},svg);
+  for(const t in EDGE_COLORS){
+    const m=el("marker",{id:"ar-"+t,viewBox:"0 0 10 10",refX:9,refY:5,markerWidth:7,markerHeight:7,orient:"auto-start-reverse"},defs);
+    el("path",{d:"M 0 1 L 9 5 L 0 9 z",fill:EDGE_COLORS[t]},m);
+  }
+  // faint turn axis
+  el("line",{x1:60,y1:800,x2:1200,y2:800,stroke:"#21262d","stroke-width":1},svg);
+  for(const [lbl,x] of TURN_AXIS){el("line",{x1:x,y1:796,x2:x,y2:804,stroke:"#30363d"},svg);
+    const t=el("text",{x,y:816,"class":"axis-label","text-anchor":"middle"},svg);t.textContent=lbl;}
+  const upSet=selected?ancestors(selected):new Set();
+  const downSet=selected?descendants(selected):new Set();
+  const E=currentEdges();
+  const edgeEls=[];
+  const labelJobs=[];
+  for(const e of E){
+    const a=nodeById(e.a),b=nodeById(e.b);if(!a||!b)continue;
+    const p=el("path",{d:edgePath(a,b,e),"class":"edge",stroke:EDGE_COLORS[e.t],
+      "marker-end":`url(#ar-${e.t})`,"stroke-dasharray":e.t==="folded"?"6 4":"none"},svg);
+    if(e.t==="caused")p.setAttribute("stroke-width","2.4");
+    let cls="";
+    if(selected){
+      const onUp=upSet.has(e.a)&&(upSet.has(e.b)||e.b===selected);
+      const onDown=downSet.has(e.b)&&(downSet.has(e.a)||e.a===selected);
+      cls=onUp?"up":onDown?"down":"dimmed";
+      if(cls)p.setAttribute("class","edge "+cls);
+    }
+    edgeEls.push([p,e]);
+    if(e.label)labelJobs.push([p,e.label,cls,e.labelPos||0.5]);
+  }
+  const nodes=expanded?NODES.filter(n=>n.id!=="E8").concat(MICRO):NODES;
+  for(const n of nodes){
+    if(n.sub.includes("\n"))n.h=Math.max(n.h,58); // two-line subs need headroom
+    const st=TYPE_STYLE[n.type];
+    const g=el("g",{class:"node",transform:`translate(${n.x},${n.y})`},svg);
+    if(selected){ if(n.id===selected||upSet.has(n.id))g.setAttribute("class","node up");
+      else if(downSet.has(n.id))g.setAttribute("class","node down");
+      else g.setAttribute("class","node dimmed");}
+    const r=el("rect",{class:"body",x:-n.w/2,y:-n.h/2,width:n.w,height:n.h,rx:8,
+      fill:st.fill,stroke:st.stroke,"stroke-width":1.5},g);
+    if(st.dash)r.setAttribute("stroke-dasharray","5 3");
+    const gy= n.h<=36? -n.h/2+14 : -n.h/2+16;
+    if(n.h>36){ const gl=textLines(g,st.glyph, -n.w/2+13, gy+2,"n-glyph"); gl.setAttribute("text-anchor","middle");}
+    const tx = n.h>36 ? -n.w/2+24 : -n.w/2+8;
+    if(n.h>36){
+      textLines(g,n.title,tx,gy,"n-title","start");
+      textLines(g,n.sub,tx,gy+14,"n-sub","start");
+    }else{
+      textLines(g,n.title,tx,gy-2,"n-title","start");
+      textLines(g,n.sub,tx,gy+10,"n-sub","start");
+    }
+    if(n.expandable){const h=textLines(g,"⊕",n.w/2-12,gy+2,"n-glyph expand-hint");h.setAttribute("text-anchor","middle");}
+    g.addEventListener("mousemove",ev=>{tip.style.display="block";
+      tip.innerHTML=`<div class="tt">${n.title}</div><div class="ts">${n.sub.replace(/\n/g," · ")} — turns ${n.turns}</div><div class="td">${n.tip||""}</div>`;
+      tip.style.left=Math.min(ev.clientX+14,innerWidth-360)+"px";tip.style.top=Math.min(ev.clientY+12,innerHeight-190)+"px";});
+    g.addEventListener("mouseleave",()=>tip.style.display="none");
+    g.addEventListener("click",()=>{
+      if(n.id==="E8"){expanded=true;selected=null;render();renderTrace();return;}
+      if(expanded&&["m1","m2","m3","m4","RC","FX"].includes(n.id)&&n.id==="RC"){/* keep */ }
+      if(expanded&&n.id==="FX"){ /* allow select */ }
+      selected=(selected===n.id)?null:n.id;render();renderTrace();
+    });
+  }
+  // edge labels on top of nodes
+  for(const [p,label,cls,pos] of labelJobs){
+    const L=p.getTotalLength();const pt=p.getPointAtLength(L*pos);
+    const t=el("text",{x:pt.x,y:pt.y-5,"class":"edge-label"+(selected&&cls==="dimmed"?" dimmed":""),"text-anchor":"middle"},svg);
+    t.textContent=label;
+  }
+  if(expanded){
+    const b=el("g",{class:"node",transform:"translate(620,548)"},svg);
+    const r=el("rect",{x:-70,y:-12,width:140,height:20,rx:10,fill:"#1c2330",stroke:"#f85149","stroke-width":1},b);
+    const t=el("text",{y:3,"class":"n-sub","text-anchor":"middle"},b);t.textContent="collapse cascade ⊖";
+    b.style.cursor="pointer";
+    b.addEventListener("click",()=>{expanded=false;selected=null;render();renderTrace();});
+  }
+}
+function renderTrace(){
+  const box=document.getElementById("trace");
+  box.innerHTML='<h3>Why did it end here?</h3>';
+  if(!selected){box.innerHTML+='<div class="hint">Select a node to see its upstream causal chain — e.g. click <b>GOAL COMPLETE</b> (bottom right) or the <b>RETRY CASCADE</b>.</div>';return;}
+  const E=currentEdges();
+  // walk upstream choosing the most recent causal parent each step (by source x)
+  const chain=[];const seen=new Set([selected]);let cur=selected;
+  while(true){
+    const ins=E.filter(e=>e.b===cur&&!seen.has(e.a));
+    if(!ins.length)break;
+    ins.sort((a,b)=>nodeById(b.a).x-nodeById(a.a).x);
+    const e=ins[0];seen.add(e.a);chain.push({edge:e,node:nodeById(e.a)});cur=e.a;
+  }
+  const sel=nodeById(selected);
+  box.innerHTML+=`<div class="node-card"><div class="t">${sel.title}</div><div class="w">${sel.turns} — selected</div></div>`;
+  for(const c of chain){
+    box.innerHTML+=`<div class="via">▲ ${c.edge.t}${c.edge.label? " — "+c.edge.label:""}</div>
+      <div class="node-card"><div class="t">${c.node.title}</div><div class="w">${c.node.turns} · ${c.node.sub.replace(/\n/g," ")}</div></div>`;
+  }
+  const dn=descendants(selected);
+  if(dn.size)box.innerHTML+=`<div class="down-note">▼ also caused ${dn.size} downstream node${dn.size>1?"s":""} (teal)</div>`;
+}
+render();renderTrace();
+</script>
+</body>
+</html>

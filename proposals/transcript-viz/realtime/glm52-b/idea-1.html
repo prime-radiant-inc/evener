@@ -1,0 +1,474 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>Query-Rift Live — realtime evener session query-driven transcript atlas</title>
+<style>
+  :root{
+    --bg:#0c0e12; --bg-2:#11141b; --panel:#151922; --panel-2:#1b212c;
+    --line:#262d3a; --line-2:#333c4d;
+    --ink:#e7edf5; --ink-mid:#aab4c5; --ink-low:#6b7689; --ink-dim:#4a5366;
+    --accent:#7cc4ff; --warn:#ffce6b; --err:#ff7d7d; --ok:#8fe3a0; --teal:#5fd0c4; --violet:#b69cff; --pink:#ff9ecb;
+    --k-user:#7cc4ff; --k-steer:#5fd0c4; --k-assist:#e7edf5; --k-tool:#3a4456; --k-sys:#6b7689; --k-check:#b69cff; --k-summary:#9a86f0; --k-switch:#ffce6b; --k-fail:#ff7d7d; --k-hook:#8fe3a0; --k-env:#5a86b8; --k-atten:#ff9ecb;
+  }
+  *{box-sizing:border-box}
+  html,body{margin:0;height:100%}
+  body{
+    background:radial-gradient(1200px 600px at 70% -10%, #161b26 0%, var(--bg) 60%);
+    color:var(--ink); font:13px/1.45 ui-monospace,"SF Mono",Menlo,Consolas,monospace;
+    -webkit-font-smoothing:antialiased; overflow:hidden;
+  }
+  .app{display:grid; grid-template-rows:auto 1fr; height:100vh}
+  header.top{
+    display:flex; align-items:center; gap:14px; padding:10px 16px;
+    border-bottom:1px solid var(--line); background:linear-gradient(180deg,#10141d,#0c0e12);
+  }
+  .brand{font-weight:700; letter-spacing:.04em; color:var(--ink)}
+  .brand .dim{color:var(--ink-low); font-weight:400}
+  .session-id{color:var(--ink-mid); font-size:12px}
+  .session-id b{color:var(--accent)}
+  .top .spacer{flex:1}
+  .live-badge{display:inline-flex; align-items:center; gap:6px; padding:4px 9px; border-radius:14px; font-size:11px; font-weight:600; letter-spacing:.04em; background:rgba(143,227,160,.14); color:var(--ok); border:1px solid rgba(143,227,160,.3)}
+  .live-badge .dot{width:7px;height:7px;border-radius:50%;background:var(--ok); animation:pulse 1.4s infinite}
+  @keyframes pulse{0%{opacity:1;transform:scale(1)}50%{opacity:.4;transform:scale(.7)}100%{opacity:1;transform:scale(1)}}
+  .legend-inline{display:flex; gap:10px; align-items:center; color:var(--ink-low); font-size:11px}
+  .legend-inline .sw{width:10px;height:10px;border-radius:2px;display:inline-block;margin-right:4px;vertical-align:-1px}
+  /* ── controls ── */
+  .controls{display:flex; gap:10px; align-items:center; padding:8px 16px; border-bottom:1px solid var(--line); background:var(--bg-2)}
+  .controls .lbl{font-size:10px; color:var(--ink-dim); margin-right:4px; text-transform:uppercase; letter-spacing:.05em}
+  .btn{display:inline-flex; align-items:center; gap:4px; padding:4px 9px; border-radius:6px; border:1px solid var(--line-2); color:var(--ink-mid); background:var(--panel); cursor:pointer; user-select:none; transition:.12s}
+  .btn:hover{border-color:var(--accent); color:var(--ink)}
+  .btn.active{background:rgba(124,196,255,.14); border-color:var(--accent); color:var(--accent)}
+  .speed-sel{display:flex; gap:6px; align-items:center; font-size:11px; color:var(--ink-mid)}
+  .speed-sel select{background:var(--panel); border:1px solid var(--line-2); color:var(--ink); border-radius:6px; padding:3px 6px; font:inherit}
+  /* ── query bar ── */
+  .querybar{display:flex; gap:10px; align-items:center; padding:8px 16px; border-bottom:1px solid var(--line); background:var(--bg-2)}
+  .qfield{
+    flex:1; display:flex; align-items:center; gap:8px; background:var(--panel); border:1px solid var(--line-2);
+    border-radius:8px; padding:7px 10px;
+  }
+  .qfield .prefix{color:var(--ink-low)}
+  .qfield input{flex:1; background:none; border:0; color:var(--ink); font:inherit; outline:none}
+  .qfield input::placeholder{color:var(--ink-dim)}
+  .chips{display:flex; gap:6px; flex-wrap:wrap}
+  .chip{
+    font-size:11px; padding:4px 9px; border-radius:14px; border:1px solid var(--line-2);
+    color:var(--ink-mid); background:var(--panel); cursor:pointer; user-select:none; white-space:nowrap; transition:.12s;
+  }
+  .chip:hover{border-color:var(--accent); color:var(--ink)}
+  .chip.active{background:rgba(124,196,255,.14); border-color:var(--accent); color:var(--accent)}
+  .chip .n{color:var(--ink-low); margin-left:5px; font-variant-numeric:tabular-nums}
+  .chip.active .n{color:var(--accent)}
+  /* ── main split ── */
+  main{display:grid; grid-template-rows:auto 1fr; min-height:0}
+  .strip-wrap{padding:12px 16px 6px; border-bottom:1px solid var(--line); background:linear-gradient(180deg,#0e1218,#0b0d12)}
+  .strip-axis{display:flex; justify-content:space-between; color:var(--ink-dim); font-size:10px; padding:0 2px 6px}
+  .strip-scroll{overflow-x:auto; overflow-y:hidden; padding-bottom:6px}
+  .strip{position:relative; height:128px; display:flex; align-items:flex-end; gap:1px; min-width:100%}
+  .cell{
+    position:relative; flex:1 0 0; min-width:4px; max-width:8px; border-radius:1px 1px 0 0;
+    background:var(--k-tool); cursor:pointer; transition:filter .12s, transform .12s;
+  }
+  .cell:hover{filter:brightness(1.5); transform:scaleY(1.04)}
+  .cell.match{box-shadow:0 0 0 1px var(--accent), 0 0 8px rgba(124,196,255,.5)}
+  .cell.dim{opacity:.16}
+  .cell.live{box-shadow:0 0 0 1px var(--ok), 0 0 12px rgba(143,227,160,.4)}
+  .strip .marker{
+    position:absolute; bottom:100%; transform:translateX(-50%); width:2px; border-radius:2px; pointer-events:none;
+  }
+  .strip .marker.lbl{font-size:9px; color:var(--ink-low); writing-mode:vertical-rl; transform:rotate(180deg) translateX(-3px); white-space:nowrap; letter-spacing:.02em}
+  .brush{position:absolute; top:-4px; bottom:-4px; background:rgba(124,196,255,.10); border-left:1px solid var(--accent); border-right:1px solid var(--accent); pointer-events:none; border-radius:3px}
+  .brush .handle{position:absolute; top:0; bottom:0; width:6px; background:var(--accent); border-radius:3px; cursor:ew-resize; pointer-events:all; opacity:.8}
+  .brush .handle.l{left:-3px} .brush .handle.r{right:-3px}
+  .strip-summary{display:flex; gap:18px; padding:6px 2px 0; color:var(--ink-low); font-size:11px}
+  .strip-summary b{color:var(--ink); font-variant-numeric:tabular-nums}
+  /* ── detail pane ── */
+  .detail{display:grid; grid-template-columns:230px 1fr; min-height:0; background:var(--bg)}
+  .facets{border-right:1px solid var(--line); background:var(--bg-2); overflow:auto; padding:12px}
+  .facets h4{margin:14px 0 6px; font-size:10px; letter-spacing:.08em; text-transform:uppercase; color:var(--ink-dim); font-weight:600}
+  .facets h4:first-child{margin-top:0}
+  .facet{display:flex; justify-content:space-between; padding:4px 6px; border-radius:5px; color:var(--ink-mid); cursor:pointer; font-size:12px}
+  .facet:hover{background:var(--panel)}
+  .facet.on{background:rgba(124,196,255,.12); color:var(--ink)}
+  .facet .n{color:var(--ink-low); font-variant-numeric:tabular-nums}
+  .facets .dot{width:8px;height:8px;border-radius:2px;display:inline-block;margin-right:7px;vertical-align:-1px}
+  .turnlist{overflow:auto; padding:8px 10px}
+  .turnrow{
+    display:grid; grid-template-columns:54px 96px 1fr auto; gap:10px; align-items:start;
+    padding:8px 10px; border:1px solid transparent; border-radius:7px; cursor:pointer; margin-bottom:3px;
+  }
+  .turnrow:hover{background:var(--panel); border-color:var(--line-2)}
+  .turnrow.sel{background:rgba(124,196,255,.10); border-color:var(--accent)}
+  .turnrow .tno{color:var(--ink-low); font-variant-numeric:tabular-nums; font-size:11px; padding-top:1px}
+  .turnrow .kind{font-size:10px; letter-spacing:.04em; text-transform:uppercase; color:var(--ink-mid); padding-top:1px}
+  .turnrow .body{color:var(--ink); min-width:0}
+  .turnrow .body .sub{color:var(--ink-low); font-size:11px; margin-top:2px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis}
+  .turnrow .tools{color:var(--accent); font-variant-numeric:tabular-nums; font-size:11px; text-align:right; padding-top:1px}
+  .turnrow .tools.zero{color:var(--ink-dim)}
+  .turnrow.fail .kind{color:var(--err)} .turnrow.fail .tno{color:var(--err)}
+  .turnrow.check .kind{color:var(--violet)} .turnrow.check .tno{color:var(--violet)}
+  .turnrow.deleg .body .sub b{color:var(--teal)}
+  .tag{display:inline-block; font-size:10px; padding:1px 6px; border-radius:9px; margin-right:4px; vertical-align:1px}
+  .tag.dlg{background:rgba(95,208,196,.14); color:var(--teal)}
+  .tag.job{background:rgba(255,206,107,.14); color:var(--warn)}
+  .tag.err{background:rgba(255,125,125,.14); color:var(--err)}
+  .tag.ckpt{background:rgba(182,156,255,.14); color:var(--violet)}
+  .tag.live{background:rgba(143,227,160,.14); color:var(--ok)}
+  footer.foot{border-top:1px solid var(--line); background:var(--bg-2); padding:8px 16px; display:flex; gap:16px; color:var(--ink-low); font-size:11px}
+  footer.foot b{color:var(--ink-mid)}
+  .hint{color:var(--ink-dim)}
+  kbd{background:var(--panel); border:1px solid var(--line-2); border-bottom-width:2px; border-radius:4px; padding:0 5px; font-size:10px; color:var(--ink-mid)}
+</style>
+</head>
+<body>
+<div class="app">
+  <header class="top">
+    <div class="brand">QUERY-RIFT <span class="dim">// live transcript atlas</span></div>
+    <div class="session-id" id="sessionMeta">session <b>s_4a9f…2c1</b> · main · glm-5.2-vision</div>
+    <div class="spacer"></div>
+    <div class="legend-inline">
+      <span class="live-badge"><span class="dot"></span>LIVE</span>
+    </div>
+  </header>
+
+  <div class="controls">
+    <span class="lbl">stream</span>
+    <button class="btn" id="playPause" title="play/pause">▶ play</button>
+    <span class="lbl">speed</span>
+    <select id="speedSel">
+      <option value="1">1×</option>
+      <option value="2">2×</option>
+      <option value="4" selected>4×</option>
+      <option value="8">8×</option>
+      <option value="16">16×</option>
+    </select>
+    <span class="lbl">progress</span>
+    <span id="progress" style="color:var(--ink-mid);font-variant-numeric:tabular-nums">turn 0 / 245</span>
+  </div>
+
+  <div class="querybar">
+    <div class="qfield">
+      <span class="prefix">filter ⌕</span>
+      <input id="q" placeholder='query the live session: "delegates that errored" · "jobs > 30s" · "compaction boundaries" · "tool:grep" · "model:k3"' autocomplete="off"/>
+    </div>
+    <div class="chips" id="chips"></div>
+  </div>
+
+  <main>
+    <div class="strip-wrap">
+      <div class="strip-axis"><span>turn 0</span><span>↦ wall-clock time ↦</span><span>turn 244</span></div>
+      <div class="strip-scroll"><div class="strip" id="strip"></div></div>
+      <div class="strip-summary" id="summary"></div>
+    </div>
+    <div class="detail">
+      <aside class="facets" id="facets"></aside>
+      <div class="turnlist" id="turnlist"></div>
+    </div>
+  </main>
+
+  <footer class="foot">
+    <span><b>Play/pause</b> the live stream · <b>change</b> speed · <b>type</b> or <b>click</b> a query clause to filter · <b>brush</b> a span on the strip to scope the detail list · <b>drag</b> the cyan handles · <kbd>Esc</kbd> clears</span>
+    <span class="hint">synthetic data — one very long session, 3-level delegation, 1 error/retry episode</span>
+  </footer>
+</div>
+
+<script>
+let _s=9173;
+function rnd(){ _s=(_s*1103515245+12345)&0x7fffffff; return _s/0x7fffffff }
+function pick(a){ return a[Math.floor(rnd()*a.length)] }
+function rint(lo,hi){ return Math.floor(lo+rnd()*(hi-lo+1)) }
+const ASSIST_BLURBS=[
+  'Inspecting the transcript pane to map turn kinds to a query index.',
+  'Generating a three-level delegation tree for the migration spike.',
+  'Running the fuzz corpus against the new securepath edge cases.',
+  'Summarizing compaction boundary #2 for the README.',
+  'Diagnosing the rate-limit retry that hit attempt 9/11.',
+  'Building the mockup data so the strip demonstrates scale honestly.',
+  'Triaging the detached shell job that outlived its session.',
+  'Reconciling the delegate delivery commits across two children.',
+];
+const USER_BLURBS=[
+  'Build three transcript viz proposals under proposals/transcript-viz/glm52-b/.',
+  'The minimap idea feels generic — push for something interaction-centric.',
+  'Use synthetic data from one coherent ~250-turn session so they compare.',
+  'Make sure each idea renders from file:// with no network.',
+];
+const COMPACTS=[59,122,213];
+const DELEGATES=[
+  {id:'dlg_a1', parent:null, spawn:20, done:58, level:1, name:'fuzz-securepath', outcome:'ok', tools:214, tokens:184000, wallSec:14*60},
+  {id:'dlg_b2', parent:null, spawn:76, done:115, level:1, name:'build-mockups', outcome:'ok', tools:302, tokens:410000, wallSec:28*60},
+  {id:'dlg_c3', parent:'dlg_b2', spawn:84, done:99, level:2, name:'render-idea-1', outcome:'ok', tools:128, tokens:152000, wallSec:14*60},
+  {id:'dlg_d4', parent:'dlg_b2', spawn:106, done:114, level:2, name:'render-idea-2', outcome:'ok', tools:96, tokens:118000, wallSec:8*60},
+  {id:'dlg_e5', parent:null, spawn:139, done:210, level:1, name:'verify-in-browser', outcome:'err', tools:471, tokens:506000, wallSec:71*60},
+  {id:'dlg_f6', parent:'dlg_e5', spawn:149, done:182, level:2, name:'chrome-screenshot', outcome:'ok', tools:188, tokens:201000, wallSec:33*60},
+  {id:'dlg_g7', parent:'dlg_f6', spawn:157, done:172, level:3, name:'fix-layout-bug', outcome:'ok', tools:73, tokens:88000, wallSec:15*60},
+];
+const JOBS=[
+  {id:'job_t1', spawn:42, done:56, name:'fuzz securepath (detached)', kind:'detached', durSec:14*60, outcome:'ok'},
+  {id:'job_t2', spawn:96, done:210, name:'go test ./agent/doctor (bg)', kind:'background', durSec:115*60, outcome:'ok'},
+  {id:'job_t3', spawn:114, done:116, name:'npm run build (bg)', kind:'background', durSec:2*60, outcome:'ok'},
+  {id:'job_t4', spawn:165, done:225, name:'chrome screenshot loop (bg)', kind:'background', durSec:55*60, outcome:'ok'},
+];
+const TOOL_TYPES=['exec_command','read_file','apply_patch','write_file','grep','web_fetch','delegate_send'];
+const KIND_COLOR={ USER:'var(--k-user)', STEER:'var(--k-steer)', ASSIST:'var(--k-assist)', TOOL:'var(--k-tool)', SYSTEM:'var(--k-sys)', CHECKPOINT:'var(--k-check)', SUMMARY:'var(--k-summary)', MODEL_SWITCH:'var(--k-switch)', FAILURE:'var(--k-fail)', HOOK:'var(--k-hook)', ENV:'var(--k-env)', ATTEN:'var(--k-atten)' };
+const KIND_LABEL={ USER:'user_input', STEER:'steering', ASSIST:'assistant', TOOL:'tool_results', SYSTEM:'system', CHECKPOINT:'checkpoint', SUMMARY:'summary', MODEL_SWITCH:'model_switch', FAILURE:'turn_failure', HOOK:'hook_completed', ENV:'environment', ATTEN:'attention_resolution' };
+
+// Pre-generate the session event stream (turns). Each event carries its kind, tool count, tool type, wall time, and text.
+function buildEventStream(){
+  const evs=[]; let t=0; let wall=0;
+  function push(kind, opt){
+    const o=opt||{};
+    const tools=o.tools!=null?o.tools:0;
+    const toolType=o.toolType||null;
+    const dw=o.wall!=null?o.wall:(kind==='ASSIST'?rint(4,14):(kind==='TOOL'?rint(1,4):(kind==='FAILURE'?rint(3,12):1)));
+    wall+=dw;
+    evs.push({idx:t, kind, tools, toolType, wall, text:o.text||'', delegate:o.delegate, job:o.job, err:o.err, ckpt:o.ckpt});
+    t++;
+  }
+  function work(n){ for(let i=0;i<n;i++){ push('ASSIST',{text:pick(ASSIST_BLURBS)}); push('TOOL',{tools:rint(8,25), toolType:pick(TOOL_TYPES)}) } }
+  push('USER',{text:USER_BLURBS[0], wall:3}); work(7); push('STEER',{text:USER_BLURBS[1], wall:2}); work(2);
+  push('ASSIST',{text:'Spawning subagent to run the securepath fuzz suite off-thread.', delegate:'dlg_a1'}); push('TOOL',{tools:1, toolType:'delegate_send'}); work(10);
+  push('ASSIST',{text:'Detaching the fuzz run so it survives the session stop.', job:'job_t1'}); push('TOOL',{tools:1, toolType:'exec_command'}); work(4); push('HOOK',{text:'post-tool exec_command hook · exit 0', wall:1}); work(3);
+  push('CHECKPOINT',{ckpt:1, text:'Layer 3 deterministic checkpoint', wall:1}); push('SUMMARY',{ckpt:1, text:'Compaction #1: folded turns 0–58 into summary (186k tokens → 9k).', wall:1});
+  push('STEER',{text:USER_BLURBS[2], wall:2}); work(7);
+  push('ASSIST',{text:'Spawning subagent to build the three mockups in parallel.', delegate:'dlg_b2'}); push('TOOL',{tools:1, toolType:'delegate_send'}); work(3);
+  push('ASSIST',{text:'Delegating idea-1 render to a child delegate.', delegate:'dlg_c3'}); push('TOOL',{tools:1, toolType:'delegate_send'}); work(5);
+  push('ASSIST',{text:'Backgrounding the doctor test suite — completion will notify.', job:'job_t2'}); push('TOOL',{tools:1, toolType:'exec_command'}); work(4);
+  push('ASSIST',{text:'Delegating idea-2 render to a child delegate.', delegate:'dlg_d4'}); push('TOOL',{tools:1, toolType:'delegate_send'}); work(3);
+  push('ASSIST',{text:'Running the frontend build to verify file:// rendering.', job:'job_t3'}); push('TOOL',{tools:1, toolType:'exec_command'}); work(3);
+  push('CHECKPOINT',{ckpt:2, text:'Layer 3 deterministic checkpoint', wall:1}); push('SUMMARY',{ckpt:2, text:'Compaction #2: folded turns 59–121 into summary (402k tokens → 14k).', wall:1});
+  work(4); push('MODEL_SWITCH',{text:'model_switch: glm-5.2-vision → k3 (fallback chain walk)', wall:1}); work(3);
+  push('ASSIST',{text:'Spawning subagent to verify all three mockups in Chrome.', delegate:'dlg_e5'}); push('TOOL',{tools:1, toolType:'delegate_send'}); work(4);
+  push('ASSIST',{text:'Delegating Chrome screenshots to a child delegate.', delegate:'dlg_f6'}); push('TOOL',{tools:1, toolType:'delegate_send'}); work(3);
+  push('ASSIST',{text:'Delegating a layout-bug fix to a grandchild delegate.', delegate:'dlg_g7'}); push('TOOL',{tools:1, toolType:'delegate_send'}); work(3);
+  push('ASSIST',{text:'Backgrounding the Chrome screenshot loop.', job:'job_t4'}); push('TOOL',{tools:1, toolType:'exec_command'}); work(3);
+  push('ASSIST',{text:'Requesting the next turn from the provider.', wall:8});
+  push('FAILURE',{err:true, text:'rate_limited — provider returned 429', wall:4});
+  for(let a=2;a<=9;a++){ push('ASSIST',{text:`Retry attempt ${a}/11 in flight.`, wall:rint(4,12)}); push('FAILURE',{err:true, text:`rate_limited — 429 (attempt ${a})`, wall:rint(3,8)}) }
+  push('ASSIST',{text:'Retry attempt 10/11 succeeded on fallback model k3.', wall:14}); work(5);
+  push('STEER',{text:USER_BLURBS[3], wall:2}); work(5);
+  push('CHECKPOINT',{ckpt:3, text:'Layer 3 deterministic checkpoint', wall:1}); push('SUMMARY',{ckpt:3, text:'Compaction #3: folded turns 122–212 into summary (518k tokens → 21k).', wall:1});
+  work(10); push('ENV',{text:'environment: cwd /Users/jesse/git/prime-radiant/evener · git main · sandbox off', wall:1}); work(4); push('ASSIST',{text:'Done — three mockups rendered and verified, README written.', wall:6});
+  return evs;
+}
+const EVENTS=buildEventStream();
+const state={ active:new Set(['all']), brush:[0,0], playing:false, speed:4, idx:0 };
+const stripEl=document.getElementById('strip');
+const chipsEl=document.getElementById('chips');
+const facetsEl=document.getElementById('facets');
+const listEl=document.getElementById('turnlist');
+const summaryEl=document.getElementById('summary');
+
+const CLAUSES={
+  delegates: t => !!t.delegate,
+  errored_delegates: t => t.delegate && DELEGATES.find(d=>d.id===t.delegate)?.outcome==='err',
+  jobs: t => !!t.job,
+  long_jobs: t => t.job && (JOBS.find(j=>j.id===t.job)?.durSec||0) > 30*60,
+  compaction: t => t.kind==='CHECKPOINT' || t.kind==='SUMMARY',
+  failures: t => t.kind==='FAILURE',
+  retries: t => t.kind==='FAILURE' && /attempt/.test(t.text||''),
+  tool_grep: t => t.toolType==='grep',
+  tool_exec: t => t.toolType==='exec_command',
+  user: t => t.kind==='USER' || t.kind==='STEER',
+  assistant: t => t.kind==='ASSIST',
+  hooks: t => t.kind==='HOOK',
+  model_switch: t => t.kind==='MODEL_SWITCH',
+  env: t => t.kind==='ENV',
+};
+const CHIPS=[
+  {key:'delegates', label:'delegates'},
+  {key:'errored_delegates', label:'delegates ✕ errored'},
+  {key:'jobs', label:'jobs'},
+  {key:'long_jobs', label:'jobs > 30s'},
+  {key:'compaction', label:'compaction boundaries'},
+  {key:'failures', label:'failures'},
+  {key:'retries', label:'retry attempts'},
+  {key:'tool_grep', label:'tool:grep only'},
+];
+const FACET_GROUPS=[
+  {title:'Turn kind', items:[ ['user','user + steering'], ['assistant','assistant'], ['tool_grep','tool_results'], ['compaction','checkpoint + summary'], ['failures','turn_failure'], ['hooks','hook_completed'], ['model_switch','model_switch'], ['env','environment'] ]},
+  {title:'Cross-turn structures', items:[ ['delegates','any delegate spawn'], ['errored_delegates','delegates that errored'], ['jobs','shell job spawn'], ['long_jobs','jobs > 30s'], ['retries','retry attempts'] ]},
+];
+
+function buildStrip(){
+  // The strip builds cells dynamically to allow the live stream to add cells as turns arrive.
+  stripEl.innerHTML='';
+  // we'll maintain the strip at a constant cell width so the strip width grows with turn count (the strip grows horizontally)
+  EVENTS.forEach((t,i)=>addCell(t, i));
+  state.brush=[0,Math.max(0,EVENTS.length-1)];
+}
+function addCell(t, i){
+  if(t.idx>=stripEl.children.length){
+    const c=document.createElement('div'); c.className='cell'; c.style.background=KIND_COLOR[t.kind]; c.dataset.idx=t.idx;
+    const h = t.tools>0 ? 14 + (t.tools/25)*104 : (t.kind==='ASSIST'?22:(t.kind==='CHECKPOINT'||t.kind==='SUMMARY'?100:14));
+    c.style.height=h+'px';
+    if(t.delegate){ const m=document.createElement('div'); m.className='marker'; m.style.height='6px'; m.style.background='var(--teal)'; c.appendChild(m) }
+    if(t.job){ const m=document.createElement('div'); m.className='marker'; m.style.height='6px'; m.style.bottom=(t.delegate?'8px':'100%'); m.style.background='var(--warn)'; c.appendChild(m) }
+    if(t.err){ const m=document.createElement('div'); m.className='marker'; m.style.height='10px'; m.style.background='var(--err)'; c.appendChild(m) }
+    if(t.ckpt){ c.style.outline='1px solid var(--violet)'; }
+    c.title=`turn ${t.idx} · ${KIND_LABEL[t.kind]} · ${t.tools} tools`;
+    stripEl.appendChild(c);
+  } else {
+    const c=stripEl.children[t.idx];
+    // update the cell if it already exists (e.g., during a replay)
+    c.style.background=KIND_COLOR[t.kind];
+    const h = t.tools>0 ? 14 + (t.tools/25)*104 : (t.kind==='ASSIST'?22:(t.kind==='CHECKPOINT'||t.kind==='SUMMARY'?100:14));
+    c.style.height=h+'px';
+  }
+}
+function buildChips(){
+  chipsEl.innerHTML='';
+  CHIPS.forEach(ch=>{
+    const n=EVENTS.filter(CLAUSES[ch.key]).length;
+    const el=document.createElement('div');
+    el.className='chip'+(state.active.has(ch.key)?' active':'');
+    el.innerHTML=`${ch.label}<span class="n">${n}</span>`;
+    el.onclick=()=>toggleClause(ch.key);
+    chipsEl.appendChild(el);
+  });
+}
+function buildFacets(){
+  facetsEl.innerHTML='';
+  FACET_GROUPS.forEach(g=>{
+    const h=document.createElement('h4'); h.textContent=g.title; facetsEl.appendChild(h);
+    g.items.forEach(([key,label])=>{
+      const n=EVENTS.filter(CLAUSES[key]).length;
+      const dot=document.createElement('span'); dot.className='dot';
+      dot.style.background = ({ user:'var(--k-user)', assistant:'var(--k-assist)', tool_grep:'var(--k-tool)', compaction:'var(--k-check)', failures:'var(--k-fail)', hooks:'var(--k-hook)', model_switch:'var(--k-switch)', env:'var(--k-env)', delegates:'var(--teal)', errored_delegates:'var(--err)', jobs:'var(--warn)', long_jobs:'var(--warn)', retries:'var(--err)', })[key]||'var(--ink-low)';
+      const el=document.createElement('div');
+      el.className='facet'+(state.active.has(key)?' on':'');
+      el.innerHTML=`<span>${dot.outerHTML}${label}</span><span class="n">${n}</span>`;
+      el.onclick=()=>toggleClause(key);
+      facetsEl.appendChild(el);
+    });
+  });
+}
+function toggleClause(key){
+  if(key==='all'){ state.active=new Set(['all']); }
+  else { if(state.active.has(key)) state.active.delete(key); else state.active.add(key); state.active.delete('all') }
+  if(state.active.size===0) state.active.add('all');
+  buildChips(); buildFacets(); applyFilter();
+}
+function matchedTurns(){
+  if(state.active.size===0 || state.active.has('all')) return EVENTS.map(t=>({t,match:true}));
+  return EVENTS.map(t=>{ let match=true; state.active.forEach(k=>{ if(!CLAUSES[k](t)) match=false }); return {t,match} });
+}
+function applyFilter(){
+  const m=matchedTurns();
+  // strip highlight/dim
+  [...stripEl.children].forEach((c,i)=>{ c.classList.remove('match','dim','live'); if(state.active.size && !state.active.has('all')){ if(m[i].match) c.classList.add('match'); else c.classList.add('dim') } });
+  renderList(m); renderSummary(m); renderBrush();
+}
+function renderSummary(m){
+  const inb=EVENTS.slice(state.brush[0],state.brush[1]+1);
+  let mm=0, tools=0;
+  inb.forEach((t,i)=>{ if(state.active.size===0 || state.active.has('all') || m[t.idx].match){ mm++; tools+=t.tools } });
+  const span=`turns ${state.brush[0]}–${state.brush[1]}`;
+  const totalTools=EVENTS.reduce((s,t)=>s+t.tools,0);
+  const totalWall=Math.round(EVENTS[EVENTS.length-1].wall/60);
+  const brushWall=Math.round((EVENTS[state.brush[1]].wall - (state.brush[0]>0?EVENTS[state.brush[0]-1].wall:0))/60);
+  summaryEl.innerHTML=`<span>brush: <b>${span}</b></span><span><b>${mm}</b> turn${mm!==1?'s':''}${state.active.size && !state.active.has('all')?` match ${[...state.active].join(' + ')}`:''} in range</span><span><b>${tools}</b> tool calls in range</span><span>~<b>${brushWall}</b> min wall in range</span><span>total session: <b>${EVENTS.length}</b> turns · <b>${totalTools.toLocaleString()}</b> tools · <b>${totalWall}</b> min wall</span>`;
+}
+function renderList(m){
+  listEl.innerHTML='';
+  const inb=EVENTS.slice(state.brush[0],state.brush[1]+1);
+  const rows = state.active.size && !state.active.has('all') ? inb.filter((t,i)=>m[t.idx].match) : inb;
+  const cap = rows.length>220?220:rows.length;
+  rows.slice(0,cap).forEach(t=>{
+    const r=document.createElement('div');
+    r.className='turnrow';
+    if(t.kind==='FAILURE') r.classList.add('fail');
+    if(t.kind==='CHECKPOINT'||t.kind==='SUMMARY') r.classList.add('check');
+    if(t.delegate) r.classList.add('deleg');
+    const d = t.delegate? DELEGATES.find(x=>x.id===t.delegate):null;
+    const j = t.job? JOBS.find(x=>x.id===t.job):null;
+    let tags='';
+    if(t.delegate) tags+=`<span class="tag dlg">${d.level===1?'subagent':d.level===2?'delegate':'grand-delegate'} · ${d.name.split(':')[1].trim()}</span>`;
+    if(t.job) tags+=`<span class="tag job">${j.kind} · ${j.name}</span>`;
+    if(t.err) tags+=`<span class="tag err">retry</span>`;
+    if(t.ckpt) tags+=`<span class="tag ckpt">ckpt #${t.ckpt}</span>`;
+    if(state.idx===t.idx && state.playing) tags+=`<span class="tag live">live</span>`;
+    let sub=t.err?`attempt ${[...t.text.matchAll(/attempt (\d+)\/\d+/)][0][1]}`:''; // no good simple sub-text: just leave sub empty for now
+    if(j) sub=`${j.kind} job · ${Math.round(j.durSec/60)} min · ${j.outcome}`;
+    if(d) sub=`L${d.level} · ${d.tools} tools · ${Math.round(d.tokens/1000)}k tok · ${d.outcome}`;
+    r.innerHTML=`<div class="tno">${String(t.idx).padStart(3,'0')}</div><div class="kind">${KIND_LABEL[t.kind]}</div><div class="body"><div>${tags}${escapeHtml(t.text)}</div>${sub?`<div class="sub">${escapeHtml(sub)}</div>`:''}</div><div class="tools ${t.tools?'' : 'zero'}">${t.tools?t.tools+' tools':''}</div>`;
+    listEl.appendChild(r);
+  });
+  if(rows.length>cap){
+    const note=document.createElement('div');
+    note.style.cssText='padding:10px;color:var(--ink-dim);font-size:11px';
+    note.textContent=`+ ${rows.length-cap} more in brush — narrow the brush or add a clause to see them.`;
+    listEl.appendChild(note);
+  }
+  if(rows.length===0){
+    const note=document.createElement('div');
+    note.style.cssText='padding:16px;color:var(--ink-low)';
+    note.textContent= state.active.size? 'No turns match all active clauses in this brush.' : 'No turns in this brush.';
+    listEl.appendChild(note);
+  }
+}
+function renderBrush(){
+  const old=stripEl.querySelector('.brush'); if(old) old.remove();
+  const [a,b]=state.brush;
+  const ca=stripEl.children[a], cb=stripEl.children[b];
+  if(!ca||!cb) return;
+  const rectA=ca.getBoundingClientRect(), rectB=cb.getBoundingClientRect();
+  const srect=stripEl.getBoundingClientRect();
+  const brush=document.createElement('div'); brush.className='brush';
+  brush.style.left=(rectA.left-srect.left)+'px'; brush.style.width=(rectB.right-rectA.left)+'px';
+  const hl=document.createElement('div'); hl.className='handle l';
+  const hr=document.createElement('div'); hr.className='handle r';
+  brush.appendChild(hl); brush.appendChild(hr);
+  stripEl.appendChild(brush);
+  makeDraggable(hl,'l'); makeDraggable(hr,'r');
+}
+function makeDraggable(handle,side){
+  handle.onmousedown=e=>{ e.preventDefault(); const onmove=ev=>{ const srect=stripEl.getBoundingClientRect(); const x=ev.clientX-srect.left; const idx=Math.max(0, Math.min(stripEl.children.length-1, Math.round(x / (srect.width/stripEl.children.length)))); if(side==='l') state.brush[0]=Math.min(idx,state.brush[1]); else state.brush[1]=Math.max(idx,state.brush[0]); applyFilter(); }; const onup=()=>{ document.removeEventListener('mousemove',onmove); document.removeEventListener('mouseup',onup) }; document.addEventListener('mousemove',onmove); document.addEventListener('mouseup',onup); };
+}
+function escapeHtml(s){ return (s||'').replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'})[c]) }
+
+/* ── live stream ── */
+const playPauseBtn=document.getElementById('playPause');
+const speedSel=document.getElementById('speedSel');
+const progressEl=document.getElementById('progress');
+playPauseBtn.onclick=()=>{ state.playing=!state.playing; playPauseBtn.textContent = state.playing ? '⏸ pause' : '▶ play'; if(state.playing){ tick(); } };
+speedSel.onchange=e=>{ state.speed=parseInt(e.target.value); };
+let tickTimer=null;
+function tick(){
+  if(!state.playing) return;
+  if(state.idx<EVENTS.length){
+    const e=EVENTS[state.idx];
+    // add the turn to the strip (update the strip incrementally)
+    addCell(e, state.idx);
+    // mark the latest turn live
+    [...stripEl.children].forEach(c=>c.classList.toggle('live', c.dataset.idx==String(state.idx)));
+    // update brush to follow live turn
+    state.brush=[Math.max(0,state.idx-5), Math.max(0,state.idx)];
+    applyFilter();
+    progressEl.textContent=`turn ${state.idx+1} / ${EVENTS.length}`;
+    state.idx++;
+  } else { state.playing=false; playPauseBtn.textContent='▶ play'; clearInterval(tickTimer); }
+  if(state.playing){ tickTimer=setTimeout(tick, 1000/state.speed); }
+}
+
+/* ── free-text query → clauses ── */
+const qEl=document.getElementById('q');
+qEl.addEventListener('input',()=>{
+  const v=qEl.value.toLowerCase();
+  if(!v){ return }
+  const map={ 'delegate':'delegates','subagent':'delegates','child':'delegates','error':'errored_delegates','errored':'errored_delegates','fail':'failures','failure':'failures','retry':'retries','rate':'retries','429':'retries','job':'jobs','background':'jobs','detached':'jobs','long job':'long_jobs','slow':'long_jobs','compaction':'compaction','checkpoint':'compaction','summary':'compaction','ckpt':'compaction','tool':'tool_grep','grep':'tool_grep','user':'user','steer':'user','hook':'hooks','model':'model_switch','switch':'model_switch','env':'env','environment':'env' };
+  const matched=new Set();
+  Object.keys(map).forEach(k=>{ if(v.includes(k)) matched.add(map[k]) });
+  if(/delegate.*error|error.*delegate/.test(v)) { matched.delete('delegates'); matched.add('errored_delegates') }
+  if(matched.size){ state.active=matched; buildChips(); buildFacets(); applyFilter() }
+});
+document.addEventListener('keydown',e=>{ if(e.key==='Escape'){ state.active.clear(); qEl.value=''; buildChips(); buildFacets(); applyFilter() } });
+
+/* init */
+document.getElementById('sessionMeta').innerHTML=`session <b>s_4a9f…2c1</b> · main · glm-5.2-vision · ${EVENTS.length} turns · ${EVENTS.reduce((s,t)=>s+t.tools,0).toLocaleString()} tool calls · 3 compactions · ${Math.round(EVENTS[EVENTS.length-1].wall/60)}m wall`;
+buildStrip(); buildChips(); buildFacets(); applyFilter();
+window.addEventListener('resize',applyFilter);
+</script>
+</body>
+</html>

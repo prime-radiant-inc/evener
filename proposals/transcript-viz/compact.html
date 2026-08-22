@@ -1,0 +1,415 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Evener Compact Session Viz — 18 Proposals</title>
+<style>
+  :root {
+    --bg: #0d1117; --panel: #161b22; --panel2: #1c2330; --border: #2d333f;
+    --text: #e6edf3; --dim: #8b949e; --accent: #58a6ff; --live: #f85149;
+    --k3: #7ee787; --gpt: #d2a8ff; --glm: #79c0ff;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--text);
+         font: 14px/1.5 -apple-system, "SF Pro Text", "Segoe UI", sans-serif; }
+  header { padding: 28px 36px 20px; border-bottom: 1px solid var(--border); }
+  h1 { margin: 0 0 6px; font-size: 22px; letter-spacing: .2px; }
+  .live-dot { color: var(--live); }
+  .sub { color: var(--dim); max-width: 1000px; }
+  .sub code { color: var(--accent); font-size: 12px; }
+  .sub a { color: var(--accent); }
+  nav.toc { display: flex; flex-wrap: wrap; gap: 8px; padding: 14px 36px;
+            border-bottom: 1px solid var(--border); position: sticky; top: 0;
+            background: var(--bg); z-index: 5; }
+  nav.toc a { color: var(--dim); text-decoration: none; font-size: 12px;
+              border: 1px solid var(--border); border-radius: 20px; padding: 3px 12px; }
+  nav.toc a:hover { color: var(--text); border-color: var(--accent); }
+  section { padding: 26px 36px 8px; }
+  .slot-head { display: flex; align-items: baseline; gap: 12px; margin-bottom: 4px; }
+  .slot-head h2 { margin: 0; font-size: 17px; }
+  .chip { font-size: 11px; font-weight: 600; padding: 2px 10px; border-radius: 20px; }
+  .chip.k3  { background: rgba(126,231,135,.12); color: var(--k3);  border: 1px solid rgba(126,231,135,.35); }
+  .chip.gpt { background: rgba(210,168,255,.12); color: var(--gpt); border: 1px solid rgba(210,168,255,.35); }
+  .chip.glm { background: rgba(121,192,255,.12); color: var(--glm); border: 1px solid rgba(121,192,255,.35); }
+  .chip.warn { background: rgba(248,81,73,.10); color: var(--live); border: 1px solid rgba(248,81,73,.35); }
+  .theme { color: var(--dim); font-size: 13px; margin: 0 0 16px; }
+  .cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(440px, 1fr)); gap: 18px; }
+  .card { background: var(--panel); border: 1px solid var(--border); border-radius: 10px;
+          overflow: hidden; display: flex; flex-direction: column; }
+  .card:hover { border-color: #46505f; }
+  .thumb { display: block; width: 100%; aspect-ratio: 1440/1000; object-fit: cover;
+           object-position: top left; background: var(--panel2);
+           border-bottom: 1px solid var(--border); }
+  .body { padding: 14px 16px 16px; }
+  .body h3 { margin: 0 0 4px; font-size: 15px; display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap; }
+  .body h3 a { color: var(--text); text-decoration: none; }
+  .body h3 a:hover { color: var(--accent); }
+  .fp { font-size: 10px; font-weight: 700; color: var(--bg); background: var(--accent);
+        border-radius: 4px; padding: 1px 6px; letter-spacing: .3px; white-space: nowrap; }
+  .fp.rail { background: #7ee787; } .fp.strip { background: #79c0ff; } .fp.badge { background: #d2a8ff; }
+  .one { color: var(--text); opacity: .85; margin: 0 0 10px; font-size: 13px; }
+  dl { margin: 0; font-size: 12px; }
+  dt { color: var(--accent); font-weight: 600; margin-top: 8px; font-size: 11px;
+       text-transform: uppercase; letter-spacing: .4px; }
+  dd { margin: 2px 0 0; color: var(--dim); }
+  .links { margin-top: 12px; font-size: 12px; }
+  .links a { color: var(--accent); text-decoration: none; margin-right: 14px; }
+  .links a:hover { text-decoration: underline; }
+  footer { padding: 24px 36px 40px; color: var(--dim); font-size: 12px; }
+</style>
+</head>
+<body>
+
+<header>
+  <h1><span class="live-dot">●</span> Evener compact session visualization — 18 always-on component proposals</h1>
+  <p class="sub">Round 3: the owner's verdict on rounds 1–2 was <i>too big</i> — so every idea here lives under a hard pixel budget as an
+  <b>always-on component beside the transcript</b>, never a destination page: a ≤160px <b>vertical rail</b>, a ≤100px <b>horizontal strip</b>,
+  or a ≤320×240 <b>corner badge</b>. All are realtime (embedded event-stream sims with transport in page chrome, in-flight states, LIVE indicators),
+  all render the whole session-so-far inside the footprint, and every one exposes <b>permanent one-click markers for every user/steering prompt</b>
+  — click jumps the mock transcript to that exact step. Mockups are shown <i>in situ</i> next to a dimmed transcript column; thumbnails captured mid-simulation.
+  Earlier rounds: <a href="realtime.html">realtime live-HUD gallery</a> · <a href="index.html">retrospective gallery</a>. Generated 2026-08-21.</p>
+</header>
+
+<nav class="toc">
+  <a href="#k3-a">k3-a · overview</a>
+  <a href="#k3-b">k3-b · causality</a>
+  <a href="#gpt56-a">gpt56-a · time</a>
+  <a href="#gpt56-b">gpt56-b · narrative</a>
+  <a href="#glm52-a">glm52-a · patterns</a>
+  <a href="#glm52-b">glm52-b · interaction</a>
+</nav>
+
+<!-- ══════════ kimi/k3 · slot a ══════════ -->
+<section id="k3-a">
+  <div class="slot-head"><h2>Overview-first navigation</h2><span class="chip k3">kimi/k3 · k3-a</span></div>
+  <p class="theme">The minimap distilled — the whole session's shape in a rail, strip, or coin.</p>
+  <div class="cards">
+
+    <div class="card">
+      <a href="compact/k3-a/idea-1.html"><img class="thumb" src="compact-thumbs/k3-a-1.png" alt="Micro Strata Rail mockup"></a>
+      <div class="body">
+        <h3><a href="compact/k3-a/idea-1.html">Micro Strata Rail</a> <span class="fp rail">RAIL 120px</span></h3>
+        <p class="one">The minimap distilled to a 120px rail: 1px-per-turn semantic lanes, live head marker, micro context/budget gauges, verdict glyphs, and permanent clickable prompt chevrons.</p>
+        <dl>
+          <dt>Realtime comprehension</dt>
+          <dd>From the rail alone: what's happening now (white head line + animated in-flight stratum), is it stuck/looping/runaway (⟳⚠… verdict glyphs), how far through, where the anomalies are (red diamonds, amber watch ticks, failed-job ✕), what's about to fold (context micro-bar + threshold tick), and every prompt one click away via never-collapsing gutter chevrons.</dd>
+          <dt>Long-session scaling</dt>
+          <dd>Append-only strata compress to texture (2px/turn at 278) while folds, delegate brackets, and anomalies use separate lanes so they stay separable; prompt chevrons and verdict glyphs are count-based with min-size + proximity-snap hit zones — they never wash out.</dd>
+        </dl>
+        <div class="links"><a href="compact/k3-a/idea-1.html">open mockup ↗</a><a href="compact/k3-a/README.md">slot README</a></div>
+      </div>
+    </div>
+
+    <div class="card">
+      <a href="compact/k3-a/idea-2.html"><img class="thumb" src="compact-thumbs/k3-a-2.png" alt="Session Ribbon mockup"></a>
+      <div class="body">
+        <h3><a href="compact/k3-a/idea-2.html">Session Ribbon</a> <span class="fp strip">STRIP 88px</span></h3>
+        <p class="one">A full-width 88px ribbon: context-cliff band over a live turn barcode over actor/event micro-lanes, with permanent prompt ticks and a fixed live-readout cluster.</p>
+        <dl>
+          <dt>Realtime comprehension</dt>
+          <dd>Now (NOW caret + animated barcode column), health (verdict glyphs + red diamonds/amber runaway cluster), progress (barcode fill), folds (context-band cliffs + full-height violet notches), parallel actors (delegate brackets + job pills), and all prompts as full-height blue/amber ticks with one-click jump.</dd>
+          <dt>Long-session scaling</dt>
+          <dd>~3.5px per turn at 278 turns, merging into honest density texture at thousands; prompt ticks (10px hit columns with nearest-prompt snap), fold notches, and the runaway cluster survive compression on separate visual channels.</dd>
+        </dl>
+        <div class="links"><a href="compact/k3-a/idea-2.html">open mockup ↗</a><a href="compact/k3-a/README.md">slot README</a></div>
+      </div>
+    </div>
+
+    <div class="card">
+      <a href="compact/k3-a/idea-3.html"><img class="thumb" src="compact-thumbs/k3-a-3.png" alt="Session Coin mockup"></a>
+      <div class="body">
+        <h3><a href="compact/k3-a/idea-3.html">Session Coin</a> <span class="fp badge">BADGE 300×220</span></h3>
+        <p class="one">A 300×220 corner coin: progress ring with fold/error/runaway notches, live context inner ring, orbit status dots for delegates/jobs, a center state glyph, and prompt dots that jump the transcript.</p>
+        <dl>
+          <dt>Realtime comprehension</dt>
+          <dd>Now (live two-letter tool glyph center, swapping to ⟳LOOP?/⚠RUNAWAY/…STALL? verdicts), progress (outer ring), fold proximity (inner context ring), anomalies (red notches, amber runaway arc), actor states (orbit dots), burn rate, budget %, and prompts as fixed-size ring dots.</dd>
+          <dt>Long-session scaling</dt>
+          <dd>O(markers), not O(turns): a 5,000-turn session is the same ring with the same 8 prompt dots and ~14 orbit dots — the most length-immune of the set, trading per-turn texture for always-legible state.</dd>
+        </dl>
+        <div class="links"><a href="compact/k3-a/idea-3.html">open mockup ↗</a><a href="compact/k3-a/README.md">slot README</a></div>
+      </div>
+    </div>
+
+  </div>
+</section>
+
+<!-- ══════════ kimi/k3 · slot b ══════════ -->
+<section id="k3-b">
+  <div class="slot-head"><h2>Causality &amp; structure</h2><span class="chip k3">kimi/k3 · k3-b</span></div>
+  <p class="theme">What's causing what, right now — causal structure native to tiny footprints.</p>
+  <div class="cards">
+
+    <div class="card">
+      <a href="compact/k3-b/idea-1.html"><img class="thumb" src="compact-thumbs/k3-b-1.png" alt="Trigger Rail mockup"></a>
+      <div class="body">
+        <h3><a href="compact/k3-b/idea-1.html">Trigger Rail</a> <span class="fp rail">RAIL 160px</span></h3>
+        <p class="one">A 160px spine rail where episodes are rows that compress to slivers behind each compaction fold, non-adjacent causality draws as left-edge brackets, context pressure is a mercury gauge, and user prompts are permanent green rows that jump the transcript.</p>
+        <dl>
+          <dt>Realtime comprehension</dt>
+          <dd>What it's doing now (pulsing row + NOW zone), what triggered it (causal brackets landing live — red caused-failure, blue steered, teal reported), whether a runaway/cascade is active (left border glows red), context pressure as right-edge mercury that drops at each fold. History literally compacts to slivers behind folds.</dd>
+          <dt>Long-session scaling</dt>
+          <dd>287 turns → ~20 spine rows; sealed rows collapse to 5px slivers behind each fold, so vertical cost shrinks as the session grows — 10× longer sessions still fit one viewport. Prompt rows are exempt from compression forever.</dd>
+        </dl>
+        <div class="links"><a href="compact/k3-b/idea-1.html">open mockup ↗</a><a href="compact/k3-b/README.md">slot README</a></div>
+      </div>
+    </div>
+
+    <div class="card">
+      <a href="compact/k3-b/idea-2.html"><img class="thumb" src="compact-thumbs/k3-b-2.png" alt="Causal Tape mockup"></a>
+      <div class="body">
+        <h3><a href="compact/k3-b/idea-2.html">Causal Tape</a> <span class="fp strip">STRIP 100px</span></h3>
+        <p class="one">A bottom-docked 100px tape: context-pressure hairline, permanent user-prompt diamond lane, actor tokens with spawn arcs, and a causal episode ribbon with a live why-now fuse — the whole session so far plus NOW in one strip.</p>
+        <dl>
+          <dt>Realtime comprehension</dt>
+          <dd>Who's running (pulsing actor tokens + spawn arcs), what just fired (watch ▾ notches), what triggered the current action (live fuse chips: E7·⚠storm → E2·✱bug@44 → ▶ now), cascade formation (ribbon hatches red + ⚠CASCADE badge), and why folds happened (pressure hairline climbs then resets at purple nicks).</dd>
+          <dt>Long-session scaling</dt>
+          <dd>O(duration), never O(turns): 2,146 calls are implicit in ribbon color; only causally salient events earn pixels. Fixed full-session scale; fuse capped at 4 hops; prompt pips on a permanent lane that never scrolls.</dd>
+        </dl>
+        <div class="links"><a href="compact/k3-b/idea-2.html">open mockup ↗</a><a href="compact/k3-b/README.md">slot README</a></div>
+      </div>
+    </div>
+
+    <div class="card">
+      <a href="compact/k3-b/idea-3.html"><img class="thumb" src="compact-thumbs/k3-b-3.png" alt="Causality Badge mockup"></a>
+      <div class="body">
+        <h3><a href="compact/k3-b/idea-3.html">Causality Badge</a> <span class="fp badge">BADGE 320×240</span></h3>
+        <p class="one">A 320×240 corner HUD: a delegate/job constellation (spawn/report/interrupt links) on the left, a trigger fuse burning down to the current action on the right, and a notch-marked progress bar below.</p>
+        <dl>
+          <dt>Realtime comprehension</dt>
+          <dd>Who spawned whom and what's still running (pulsing vs green/red nodes), what triggered the current action (fuse: current at bottom, causes stacked as rungs, connectors burn red in cascade), where it broke (red zigzag interrupt), progress bar with fold/fire/failure/model-switch notches; badge border pulses red under alert.</dd>
+          <dt>Long-session scaling</dt>
+          <dd>O(actors + fuse depth) — both stay tiny at any session length; everything else compresses to notches. The permanent U1–U7 pip row never scrolls; at extreme prompt counts pips shrink but never vanish.</dd>
+        </dl>
+        <div class="links"><a href="compact/k3-b/idea-3.html">open mockup ↗</a><a href="compact/k3-b/README.md">slot README</a></div>
+      </div>
+    </div>
+
+  </div>
+</section>
+
+<!-- ══════════ gpt-5.6-sol · slot a ══════════ -->
+<section id="gpt56-a">
+  <div class="slot-head"><h2>Time &amp; rhythm</h2><span class="chip gpt">codex-personal/gpt-5.6-sol · gpt56-a</span></div>
+  <p class="theme">Tempo, stalls, latency, cost trajectory — in a ribbon, a rail, or a puck.</p>
+  <div class="cards">
+
+    <div class="card">
+      <a href="compact/gpt56-a/idea-1.html"><img class="thumb" src="compact-thumbs/gpt56-a-1.png" alt="Pulse Ribbon mockup"></a>
+      <div class="body">
+        <h3><a href="compact/gpt56-a/idea-1.html">Pulse Ribbon</a> <span class="fp strip">STRIP 92px</span></h3>
+        <p class="one">A 92px-tall session waveform with a growing live tail and a never-aggregated prompt jump rail.</p>
+        <dl>
+          <dt>Realtime comprehension</dt>
+          <dd>Whole-session tempo, latency heat, cost burn, compaction cuts, fold pressure, and the live RUN/WAIT elapsed tail in one shallow ribbon. Every user/steering step has its own clickable top-rail marker that jumps to the exact transcript prompt.</dd>
+          <dt>Long-session scaling</dt>
+          <dd>Non-prompt turns compress to subpixel beats; the full axis renormalizes as the session grows, while prompt markers remain one-for-one indexed draw/hit targets and the live tail keeps a reserved focus zone.</dd>
+        </dl>
+        <div class="links"><a href="compact/gpt56-a/idea-1.html">open mockup ↗</a><a href="compact/gpt56-a/README.md">slot README</a></div>
+      </div>
+    </div>
+
+    <div class="card">
+      <a href="compact/gpt56-a/idea-2.html"><img class="thumb" src="compact-thumbs/gpt56-a-2.png" alt="Rhythm Spine mockup"></a>
+      <div class="body">
+        <h3><a href="compact/gpt56-a/idea-2.html">Rhythm Spine</a> <span class="fp rail">RAIL 148px</span></h3>
+        <p class="one">A 148px-wide vertical rhythm rail where waits become gaps and the current operation becomes a growing needle.</p>
+        <dl>
+          <dt>Realtime comprehension</dt>
+          <dd>Where wall-clock gaps accumulated, whether the bottom edge is moving or stalled, current elapsed time, latency temperature, cost trajectory, context/fold pressure. A dedicated left track gives every prompt an individually clickable arrow/diamond.</dd>
+          <dt>Long-session scaling</dt>
+          <dd>The entire run renormalizes onto one vertical trace; ordinary activity may compress, but every prompt preserves a unique marker and click target that jumps the adjacent transcript to its exact step.</dd>
+        </dl>
+        <div class="links"><a href="compact/gpt56-a/idea-2.html">open mockup ↗</a><a href="compact/gpt56-a/README.md">slot README</a></div>
+      </div>
+    </div>
+
+    <div class="card">
+      <a href="compact/gpt56-a/idea-3.html"><img class="thumb" src="compact-thumbs/gpt56-a-3.png" alt="Tempo Puck mockup"></a>
+      <div class="body">
+        <h3><a href="compact/gpt56-a/idea-3.html">Tempo Puck</a> <span class="fp badge">BADGE 304×220</span></h3>
+        <p class="one">A corner-sized radial instrument combining whole-session rings with a live elapsed-time core.</p>
+        <dl>
+          <dt>Realtime comprehension</dt>
+          <dd>Current RUN/WAIT elapsed at center, all durable turns around the edge, latency heat, context/fold proximity, cost trajectory, recent tempo beads. Every user/steering prompt is a distinct clickable bead on a separate outer orbit.</dd>
+          <dt>Long-session scaling</dt>
+          <dd>Concentric encodings preserve 250+ turns without panels; the orbit renormalizes to session length while prompt beads remain one-for-one indexed and clickable, never clustered away.</dd>
+        </dl>
+        <div class="links"><a href="compact/gpt56-a/idea-3.html">open mockup ↗</a><a href="compact/gpt56-a/README.md">slot README</a></div>
+      </div>
+    </div>
+
+  </div>
+</section>
+
+<!-- ══════════ gpt-5.6-sol · slot b ══════════ -->
+<section id="gpt56-b">
+  <div class="slot-head"><h2>Semantic zoom &amp; narrative</h2><span class="chip gpt">codex-personal/gpt-5.6-sol · gpt56-b</span></div>
+  <p class="theme">The story compressed — chapter strata, a living sentence, and prompt pins.</p>
+  <div class="cards">
+
+    <div class="card">
+      <a href="compact/gpt56-b/idea-1.html"><img class="thumb" src="compact-thumbs/gpt56-b-1.png" alt="Narrative Spine mockup"></a>
+      <div class="body">
+        <h3><a href="compact/gpt56-b/idea-1.html">Narrative Spine</a> <span class="fp rail">RAIL 156px</span></h3>
+        <p class="one">A 156px narrative minimap rail that compresses the whole live session into chapter strata, one living sentence, and exact prompt jump pins.</p>
+        <dl>
+          <dt>Realtime comprehension</dt>
+          <dd>In one narrow glance: the three-line story so far, every chapter stratum, the chapter still being written, the current attempt, latest change, and every user-prompt jump point.</dd>
+          <dt>Long-session scaling</dt>
+          <dd>Turn volume changes stratum proportions and counts rather than adding rows; user prompts remain six distinct clickable pins in their owning chapters and never aggregate away.</dd>
+        </dl>
+        <div class="links"><a href="compact/gpt56-b/idea-1.html">open mockup ↗</a><a href="compact/gpt56-b/README.md">slot README</a></div>
+      </div>
+    </div>
+
+    <div class="card">
+      <a href="compact/gpt56-b/idea-2.html"><img class="thumb" src="compact-thumbs/gpt56-b-2.png" alt="Storyline Strip mockup"></a>
+      <div class="body">
+        <h3><a href="compact/gpt56-b/idea-2.html">Storyline Strip</a> <span class="fp strip">STRIP 96px</span></h3>
+        <p class="one">A 96px horizontal story dock combining a three-line synopsis, proportional chapter ribbon, live attempt, and persistent prompt diamonds.</p>
+        <dl>
+          <dt>Realtime comprehension</dt>
+          <dd>The complete narrative arc, live edge, current attempt, latest change, and every user prompt — without taking vertical space from the transcript.</dd>
+          <dt>Long-session scaling</dt>
+          <dd>250+ turns remain proportional chapter segments inside a 96px dock; six diamond prompt markers stay individually visible and one-click addressable.</dd>
+        </dl>
+        <div class="links"><a href="compact/gpt56-b/idea-2.html">open mockup ↗</a><a href="compact/gpt56-b/README.md">slot README</a></div>
+      </div>
+    </div>
+
+    <div class="card">
+      <a href="compact/gpt56-b/idea-3.html"><img class="thumb" src="compact-thumbs/gpt56-b-3.png" alt="Story Stamp mockup"></a>
+      <div class="body">
+        <h3><a href="compact/gpt56-b/idea-3.html">Story Stamp</a> <span class="fp badge">BADGE 312×232</span></h3>
+        <p class="one">A 312×232px live story stamp with a chapter stack, current-chapter seal, living sentence, change receipt, and exact prompt dots.</p>
+        <dl>
+          <dt>Realtime comprehension</dt>
+          <dd>A corner glance answers story, chapter, attempt, change, context, and prompt history while leaving the primary transcript layout intact.</dd>
+          <dt>Long-session scaling</dt>
+          <dd>One tiny row per narrative chapter absorbs all non-prompt turns; six prompt dots — including two separate Verification prompts — never collapse and jump to exact transcript targets.</dd>
+        </dl>
+        <div class="links"><a href="compact/gpt56-b/idea-3.html">open mockup ↗</a><a href="compact/gpt56-b/README.md">slot README</a></div>
+      </div>
+    </div>
+
+  </div>
+</section>
+
+<!-- ══════════ glm-5.2-vision · slot a ══════════ -->
+<section id="glm52-a">
+  <div class="slot-head"><h2>Dense pattern surfaces</h2><span class="chip glm">lunaroute/glm-5.2-vision · glm52-a</span></div>
+  <p class="theme">Pattern-native glyphs — tape, barcode, and growing icicle at companion size. <i>(README authored by the orchestrator; see provenance note in slot README.)</i></p>
+  <div class="cards">
+
+    <div class="card">
+      <a href="compact/glm52-a/idea-1.html"><img class="thumb" src="compact-thumbs/glm52-a-1.png" alt="Compact Event Tape Rail mockup"></a>
+      <div class="body">
+        <h3><a href="compact/glm52-a/idea-1.html">Compact Event Tape Rail</a> <span class="fp rail">RAIL ≤160px</span></h3>
+        <p class="one">The event tape turned on its side: a vertical glyph column where each turn is a ~12px-tall cell — kind, intensity, and anomaly state readable as a running pattern.</p>
+        <dl>
+          <dt>Realtime comprehension</dt>
+          <dd>What pattern is forming right now (burst, stall, retry loop, runaway) and whether it's normal for this session; delegates/jobs read as bracketed sub-runs; compaction folds as divider bands; live cell glows at the head.</dd>
+          <dt>Long-session scaling</dt>
+          <dd>Cell height shrinks with turn count; prompt markers and anomaly glyphs stay distinct at 250+ turns; the whole session-so-far stays in the rail.</dd>
+        </dl>
+        <div class="links"><a href="compact/glm52-a/idea-1.html">open mockup ↗</a><a href="compact/glm52-a/README.md">slot README</a></div>
+      </div>
+    </div>
+
+    <div class="card">
+      <a href="compact/glm52-a/idea-2.html"><img class="thumb" src="compact-thumbs/glm52-a-2.png" alt="Compact Tool-Mix Timeline mockup"></a>
+      <div class="body">
+        <h3><a href="compact/glm52-a/idea-2.html">Compact Tool-Mix Timeline</a> <span class="fp strip">STRIP ≤100px</span></h3>
+        <p class="one">The tool-mix heatmap compressed to a barcode strip: tool-type rows × time-bucket columns, cell intensity = call count, active bucket pulsing.</p>
+        <dl>
+          <dt>Realtime comprehension</dt>
+          <dd>How the tool mix is shifting right now, which tools dominate the current phase, where the error episode is; compaction boundaries render as vertical bands.</dd>
+          <dt>Long-session scaling</dt>
+          <dd>Fixed bucket × tool-type grid — cell size changes, layout doesn't, at any session length.</dd>
+        </dl>
+        <div class="links"><a href="compact/glm52-a/idea-2.html">open mockup ↗</a><a href="compact/glm52-a/README.md">slot README</a></div>
+      </div>
+    </div>
+
+    <div class="card">
+      <a href="compact/glm52-a/idea-3.html"><img class="thumb" src="compact-thumbs/glm52-a-3.png" alt="Compact Delegate Cost Matrix mockup"></a>
+      <div class="body">
+        <h3><a href="compact/glm52-a/idea-3.html">Compact Delegate Cost Matrix</a> <span class="fp badge">BADGE ≤320×240</span></h3>
+        <p class="one">The delegation icicle as a corner companion: the tree grows live, micro-ribbons stack density/token/duration per node, and a red ribbon marks the error branch the instant it fails.</p>
+        <dl>
+          <dt>Realtime comprehension</dt>
+          <dd>Which branch of the delegation tree owns the session's tokens, wall-clock, and tool calls right now; active nodes pulse; error ribbon appears at failure time.</dd>
+          <dt>Long-session scaling</dt>
+          <dd>One node per actor — a bounded tree regardless of turn volume.</dd>
+        </dl>
+        <div class="links"><a href="compact/glm52-a/idea-3.html">open mockup ↗</a><a href="compact/glm52-a/README.md">slot README</a></div>
+      </div>
+    </div>
+
+  </div>
+</section>
+
+<!-- ══════════ glm-5.2-vision · slot b ══════════ -->
+<section id="glm52-b">
+  <div class="slot-head"><h2>Interaction-centric exploration</h2><span class="chip glm">lunaroute/glm-5.2-vision · glm52-b</span> <span class="chip warn">ideas 1–2 repaired + idea 3 by k3 substitute</span></div>
+  <p class="theme">Query, brush, and jump inside a matchbox. <i>idea-1/2 by the glm delegate (minimally repaired — they arrived non-functional); idea-3 + README by a kimi/k3 substitute. Details in slot README.</i></p>
+  <div class="cards">
+
+    <div class="card">
+      <a href="compact/glm52-b/idea-1.html"><img class="thumb" src="compact-thumbs/glm52-b-1.png" alt="Query-Rift compact mockup"></a>
+      <div class="body">
+        <h3><a href="compact/glm52-b/idea-1.html">Query-Rift (compact)</a> <span class="fp rail">RAIL 160px</span></h3>
+        <p class="one">160px vertical-rail turn atlas: one cell per turn (height = tool count, color = kind), filtered by composable query clauses/chips/facets with a draggable brush scoping a turn list.</p>
+        <dl>
+          <dt>Realtime comprehension</dt>
+          <dd>Which turns match an ad-hoc query (delegates, failures, jobs&gt;30s, compaction boundaries) and where they cluster in time — clauses + brush light up matching cells and scope a filtered turn list, live.</dd>
+          <dt>Long-session scaling</dt>
+          <dd>≥2px cells; brush + clauses are the narrowing mechanism. Honest limit noted by the implementer: O(turns) counting holds to ~10³ turns, then needs aggregation (not implemented).</dd>
+        </dl>
+        <div class="links"><a href="compact/glm52-b/idea-1.html">open mockup ↗</a><a href="compact/glm52-b/README.md">slot README</a></div>
+      </div>
+    </div>
+
+    <div class="card">
+      <a href="compact/glm52-b/idea-2.html"><img class="thumb" src="compact-thumbs/glm52-b-2.png" alt="Delegate Cascade compact mockup"></a>
+      <div class="body">
+        <h3><a href="compact/glm52-b/idea-2.html">Delegate Cascade (compact)</a> <span class="fp strip">STRIP 100px</span></h3>
+        <p class="one">A full-width × 100px bottom timeline strip of delegate/job span bars under a compact lane tree — playback sweeps a turn counter, flashing in-flight nodes and bars.</p>
+        <dl>
+          <dt>Realtime comprehension</dt>
+          <dd>How the delegation tree actually unfolded — who spawned whom, when, how long, at what cost, which branch errored; sibling side-by-side cost comparison while running.</dd>
+          <dt>Long-session scaling</dt>
+          <dd>Span bars hold to ~10³ spans before going sub-pixel; lane stacking/collapse not implemented (implementer's note).</dd>
+        </dl>
+        <div class="links"><a href="compact/glm52-b/idea-2.html">open mockup ↗</a><a href="compact/glm52-b/README.md">slot README</a></div>
+      </div>
+    </div>
+
+    <div class="card">
+      <a href="compact/glm52-b/idea-3.html"><img class="thumb" src="compact-thumbs/glm52-b-3.png" alt="Session Lens mockup"></a>
+      <div class="body">
+        <h3><a href="compact/glm52-b/idea-3.html">Session Lens</a> <span class="fp badge">BADGE 312×232</span></h3>
+        <p class="one">A 312×232 corner-badge query instrument: an 8-lane canvas event field (prompts/assistant/tools/delegates/jobs/watches/compaction/failures) with permanent numbered prompt anchors — hover isolates a lane, click jumps the transcript, drag brushes a range.</p>
+        <dl>
+          <dt>Realtime comprehension</dt>
+          <dd>While it's still running: where the moments that matter are — your prompts, failures, folds, delegate/job/watch spans — and one gesture to slice to them. The field IS the query surface: hover isolates, click jumps, drag brushes, a substring box dims non-matches.</dd>
+          <dt>Long-session scaling</dt>
+          <dd>~1.15px/turn at 245 turns; honest to ~10³ turns before lanes saturate. Prompt anchors are permanent DOM buttons, never aggregated; verified jump to turn 61 with flash + popover.</dd>
+        </dl>
+        <div class="links"><a href="compact/glm52-b/idea-3.html">open mockup ↗</a><a href="compact/glm52-b/README.md">slot README</a></div>
+      </div>
+    </div>
+
+  </div>
+</section>
+
+<footer>
+  Round 3 (compact). Every component lives under its stated pixel budget with the whole session + live-now inside it; every user/steering prompt is a permanent
+  one-click transcript anchor. Earlier rounds: <a href="realtime.html" style="color:var(--accent)">realtime</a> · <a href="index.html" style="color:var(--accent)">retrospective</a> · <b><a href="real.html" style="color:var(--accent)">round 4: this direction on real session data →</a></b>
+  Provenance: glm52-a README orchestrator-written (delegate looped after finishing its mockups); glm52-b ideas 1–2 repaired and idea-3 authored by a k3 substitute
+  (details in its README). Synthetic data only; self-contained <code>file://</code> HTML.
+</footer>
+
+</body>
+</html>

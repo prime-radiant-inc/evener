@@ -1,0 +1,358 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>Cost & Compaction Atlas — evener session cost-over-time explorer</title>
+<style>
+  :root{
+    --bg:#0c0e12; --bg-2:#11141b; --panel:#151922; --panel-2:#1b212c;
+    --line:#262d3a; --line-2:#333c4d;
+    --ink:#e7edf5; --ink-mid:#aab4c5; --ink-low:#6b7689; --ink-dim:#4a5366;
+    --accent:#7cc4ff; --warn:#ffce6b; --err:#ff7d7d; --ok:#8fe3a0; --teal:#5fd0c4; --violet:#b69cff; --pink:#ff9ecb;
+    --tool-color:#3a4456; --assistant-color:#e7edf5; --user-color:#7cc4ff; --steer-color:#5fd0c4; --fail-color:#ff7d7d; --hook-color:#8fe3a0; --switch-color:#ffce6b; --env-color:#5a86b8; --atten-color:#ff9ecb;
+  }
+  *{box-sizing:border-box}
+  html,body{margin:0;height:100%}
+  body{
+    background:radial-gradient(1200px 600px at 70% -10%, #161b26 0%, var(--bg) 60%);
+    color:var(--ink); font:13px/1.45 ui-monospace,"SF Mono",Menlo,Consolas,monospace;
+    -webkit-font-smoothing:antialiased; overflow:hidden;
+  }
+  .app{display:grid; grid-template-rows:auto 1fr; height:100vh}
+  header.top{
+    display:flex; align-items:center; gap:14px; padding:10px 16px;
+    border-bottom:1px solid var(--line); background:linear-gradient(180deg,#10141d,#0c0e12);
+  }
+  .brand{font-weight:700; letter-spacing:.04em; color:var(--ink)}
+  .brand .dim{color:var(--ink-low); font-weight:400}
+  .session-id{color:var(--ink-mid); font-size:12px}
+  .session-id b{color:var(--accent)}
+  .top .spacer{flex:1}
+  .legend-inline{display:flex; gap:10px; align-items:center; color:var(--ink-low); font-size:11px}
+  .legend-inline .sw{width:10px;height:10px;border-radius:2px;display:inline-block;margin-right:4px;vertical-align:-1px}
+  /* ── main ── */
+  main{display:grid; grid-template-rows:auto 1fr; min-height:0; background:var(--bg)}
+  /* ── filter toggles ── */
+  .filters{display:flex; gap:6px; padding:10px 16px; border-bottom:1px solid var(--line); background:var(--bg-2); flex-wrap:wrap; align-items:center}
+  .filters .lbl{font-size:10px; color:var(--ink-dim); margin-right:4px; text-transform:uppercase; letter-spacing:.05em}
+  .ftog{
+    font-size:11px; padding:4px 9px; border-radius:14px; border:1px solid var(--line-2); color:var(--ink-mid); background:var(--panel); cursor:pointer; user-select:none; transition:.12s;
+  }
+  .ftog:hover{border-color:var(--accent); color:var(--ink)}
+  .ftog.active{background:rgba(124,196,255,.14); border-color:var(--accent); color:var(--accent)}
+  .ftog .n{color:var(--ink-low); margin-left:5px; font-variant-numeric:tabular-nums}
+  .ftog.active .n{color:var(--accent)}
+  .spacer-filter{flex:1}
+  .phase-sel{display:flex; gap:6px; align-items:center; font-size:11px; color:var(--ink-mid)}
+  .phase-sel select{background:var(--panel); border:1px solid var(--line-2); color:var(--ink); border-radius:6px; padding:3px 6px; font:inherit}
+  /* ── chart ── */
+  .chart-wrap{position:relative; padding:14px 16px 8px; overflow:hidden}
+  .chart-axis-y{position:absolute; left:16px; top:14px; bottom:60px; width:40px; display:flex; flex-direction:column; justify-content:space-between; color:var(--ink-dim); font-size:10px; text-align:right; padding-right:6px}
+  .chart-axis-x{position:absolute; left:56px; right:16px; bottom:40px; height:20px; display:flex; justify-content:space-between; color:var(--ink-dim); font-size:10px}
+  .chart-area{position:absolute; left:56px; right:16px; top:14px; bottom:60px; overflow:hidden}
+  .comp-wall{position:absolute; top:0; bottom:0; width:1px; background:rgba(182,156,255,.5); pointer-events:none}
+  .comp-wall-label{position:absolute; left:2px; top:2px; font-size:9px; color:var(--violet); writing-mode:vertical-rl; transform:rotate(180deg) translateY(4px); white-space:nowrap; letter-spacing:.02em}
+  .stack-bar{position:absolute; left:0; right:0; bottom:0; display:flex; align-items:flex-end; gap:1px; pointer-events:none}
+  .seg{flex:1 0 0; min-width:3px; max-width:8px; border-radius:1px 1px 0 0; transition:opacity .12s}
+  .seg.hidden{opacity:.08}
+  .err-marker{position:absolute; width:8px; height:8px; border-radius:50%; background:var(--err); transform:translateX(-50%); border:2px solid var(--bg); z-index:2}
+  .job-span{position:absolute; top:14px; height:4px; background:rgba(255,206,107,.4); pointer-events:none}
+  /* ── phase scrubber ── */
+  .scrubber{position:absolute; left:56px; right:16px; bottom:34px; height:20px; display:flex; align-items:center; gap:8px; color:var(--ink-mid); font-size:11px; z-index:3}
+  .scrubber-track{flex:1; position:relative; height:4px; background:var(--line-2); border-radius:4px}
+  .scrubber-thumb{position:absolute; top:-6px; width:14px; height:14px; border-radius:50%; background:var(--accent); border:2px solid var(--bg); cursor:ew-resize; transform:translateX(-50%)}
+  .scrubber-thumb.hover{background:var(--ok)}
+  .scrubber-vals{font-variant-numeric:tabular-nums}
+  /* ── panel ── */
+  .panel{border-top:1px solid var(--line); background:var(--bg-2); overflow:auto; padding:14px}
+  .panel h3{margin:0 0 10px; font-size:12px; color:var(--ink); letter-spacing:.04em}
+  .panel h4{margin:14px 0 6px; font-size:10px; letter-spacing:.08em; text-transform:uppercase; color:var(--ink-dim); font-weight:600}
+  .panel h4:first-child{margin-top:0}
+  .phase-stats{display:grid; grid-template-columns:1fr 1fr; gap:8px}
+  .stat{background:var(--panel); border:1px solid var(--line-2); border-radius:6px; padding:8px 10px}
+  .stat .l{font-size:10px; color:var(--ink-dim); margin-bottom:3px}
+  .stat .v{font-size:14px; color:var(--ink); font-variant-numeric:tabular-nums}
+  .stat .v b{font-weight:600}
+  .cost-spend{margin-top:12px}
+  .cost-row{display:flex; justify-content:space-between; padding:5px 0; border-bottom:1px solid var(--line-2); font-size:12px}
+  .cost-row:last-child{border-bottom:0}
+  .cost-row .k{color:var(--ink-mid)}
+  .cost-row .v{color:var(--ink); font-variant-numeric:tabular-nums}
+  .cost-row .v .warn{color:var(--warn)}
+  footer.foot{border-top:1px solid var(--line); background:var(--bg-2); padding:8px 16px; display:flex; gap:16px; color:var(--ink-low); font-size:11px}
+  footer.foot b{color:var(--ink-mid)}
+  kbd{background:var(--panel); border:1px solid var(--line-2); border-bottom-width:2px; border-radius:4px; padding:0 5px; font-size:10px; color:var(--ink-mid)}
+  .hint{color:var(--ink-dim)}
+</style>
+</head>
+<body>
+<div class="app">
+  <header class="top">
+    <div class="brand">COST & COMPACTION ATLAS <span class="dim">// cost-over-time explorer</span></div>
+    <div class="session-id" id="sessionMeta">session <b>s_4a9f…2c1</b> · main · glm-5.2-vision</div>
+    <div class="spacer"></div>
+    <div class="legend-inline">
+      <span><i class="sw" style="background:var(--accent)"></i>user</span>
+      <span><i class="sw" style="background:var(--assistant-color)"></i>assistant</span>
+      <span><i class="sw" style="background:var(--tool-color)"></i>tool</span>
+      <span><i class="sw" style="background:var(--warn)"></i>job</span>
+      <span><i class="sw" style="background:var(--violet)"></i>checkpoint</span>
+      <span><i class="sw" style="background:var(--fail-color)"></i>failure</span>
+    </div>
+  </header>
+
+  <main>
+    <div class="filters" id="filters">
+      <span class="lbl">tool filters</span>
+      <div class="ftog active" data-k="all">all<span class="n">245</span></div>
+      <div class="ftog" data-k="exec_command">exec_command<span class="n">112</span></div>
+      <div class="ftog" data-k="read_file">read_file<span class="n">68</span></div>
+      <div class="ftog" data-k="apply_patch">apply_patch<span class="n">54</span></div>
+      <div class="ftog" data-k="write_file">write_file<span class="n">39</span></div>
+      <div class="ftog" data-k="grep">grep<span class="n">42</span></div>
+      <div class="ftog" data-k="web_fetch">web_fetch<span class="n">12</span></div>
+      <div class="ftog" data-k="delegate_send">delegate_send<span class="n">7</span></div>
+      <span class="spacer-filter"></span>
+      <div class="phase-sel">
+        <span>compare phase</span>
+        <select id="phaseSel">
+          <option value="none">none</option>
+          <option value="1">compaction 1 → 2</option>
+          <option value="2">compaction 2 → 3</option>
+        </select>
+      </div>
+    </div>
+
+    <div class="chart-wrap" id="chartWrap">
+      <div class="chart-axis-y" id="axisY"></div>
+      <div class="chart-area" id="chartArea">
+        <div class="stack-bar" id="stackBar"></div>
+      </div>
+      <div class="chart-axis-x" id="axisX"></div>
+      <div class="scrubber" id="scrubber">
+        <span>scrub →</span>
+        <div class="scrubber-track" id="scrubberTrack">
+          <div class="scrubber-thumb" id="scrubberThumb"></div>
+        </div>
+        <span class="scrubber-vals" id="scrubberVals">turn 0</span>
+      </div>
+    </div>
+
+    <div class="panel" id="panel">
+      <h3>Phase inspector</h3>
+      <div id="panelBody"></div>
+    </div>
+  </main>
+
+  <footer class="foot">
+    <span><b>Click</b> a filter toggle to isolate a tool type · <b>drag</b> the scrubber to scope phases · <kbd>Esc</kbd> clears</span>
+    <span class="hint">synthetic data — one very long session, 3-level delegation, 1 error/retry episode</span>
+  </footer>
+</div>
+
+<script>
+let _s=9173;
+function rnd(){ _s=(_s*1103515245+12345)&0x7fffffff; return _s/0x7fffffff }
+function rint(lo,hi){ return Math.floor(lo+rnd()*(hi-lo+1)) }
+const TOOLS_BY_KIND={ exec_command:112, read_file:68, apply_patch:54, write_file:39, grep:42, web_fetch:12, delegate_send:7 };
+const COMPACTS=[59,122,213];
+const JOBS=[ {t:[42,56]}, {t:[96,210]}, {t:[114,116]}, {t:[165,225]} ];
+
+function buildSession(){
+  const turns=[]; let t=0; let wall=0; let tokens=0; let context=0;
+  const ASSIST_BLURBS=[
+    'Inspecting the transcript pane to map turn kinds to a query index.',
+    'Generating a three-level delegation tree for the migration spike.',
+    'Running the fuzz corpus against the new securepath edge cases.',
+    'Summarizing compaction boundary #2 for the README.',
+    'Diagnosing the rate-limit retry that hit attempt 9/11.',
+    'Building the mockup data so the strip demonstrates scale honestly.',
+    'Triaging the detached shell job that outlived its session.',
+    'Reconciling the delegate delivery commits across two children.',
+  ];
+  const USER_BLURBS=[
+    'Build three transcript viz proposals under proposals/transcript-viz/glm52-b/.',
+    'The minimap idea feels generic — push for something interaction-centric.',
+    'Use synthetic data from one coherent ~250-turn session so they compare.',
+    'Make sure each idea renders from file:// with no network.',
+  ];
+  function push(kind, opt){
+    const o=opt||{};
+    const tools = o.tools!=null?o.tools:0;
+    const toolType=o.toolType||null;
+    const dw = o.wall!=null?o.wall:(kind==='ASSIST'?rint(4,14):(kind==='TOOL'?rint(1,4):(kind==='FAILURE'?rint(3,12):1)));
+    wall += dw;
+    // token model: assistant ~2k input + rint(1,8)k output, tool ~ context+rint(0,2)k, user/steer ~50, system/checkpoint ~1k
+    let dt=0;
+    if(kind==='ASSIST'){ dt=2000+rint(1,8)*1000 }
+    else if(kind==='TOOL'){ dt=context+rint(0,2)*1000; context+=dt }
+    else if(kind==='FAILURE'){ dt=0 }
+    else if(kind==='CHECKPOINT'||kind==='SUMMARY'){ dt=1000; context=1000 }
+    else { dt=50 }
+    tokens += dt;
+    turns.push({idx:t, kind, tools, toolType, wall, tokens, context});
+    t++;
+  }
+  function work(n){ for(let i=0;i<n;i++){ push('ASSIST',{text:pick(ASSIST_BLURBS)}); push('TOOL',{tools:rint(8,25), toolType:pick(['exec_command','read_file','apply_patch','write_file','grep','web_fetch','delegate_send'])}) } }
+
+  push('USER',{text:USER_BLURBS[0], wall:3}); work(7); push('STEER',{text:USER_BLURBS[1], wall:2}); work(2);
+  push('ASSIST',{text:'Spawning subagent to run the securepath fuzz suite off-thread.'}); push('TOOL',{tools:1, toolType:'delegate_send'}); work(10);
+  push('ASSIST',{text:'Detaching the fuzz run so it survives the session stop.'}); push('TOOL',{tools:1, toolType:'exec_command'}); work(4); push('HOOK',{text:'post-tool exec_command hook · exit 0', wall:1}); work(3);
+  push('CHECKPOINT',{text:'Layer 3 deterministic checkpoint', wall:1}); push('SUMMARY',{text:'Compaction #1: folded turns 0–58 into summary (186k tokens → 9k).', wall:1});
+  push('STEER',{text:USER_BLURBS[2], wall:2}); work(7);
+  push('ASSIST',{text:'Spawning subagent to build the three mockups in parallel.'}); push('TOOL',{tools:1, toolType:'delegate_send'}); work(3);
+  push('ASSIST',{text:'Delegating idea-1 render to a child delegate.'}); push('TOOL',{tools:1, toolType:'delegate_send'}); work(5);
+  push('ASSIST',{text:'Backgrounding the doctor test suite — completion will notify.'}); push('TOOL',{tools:1, toolType:'exec_command'}); work(4);
+  push('ASSIST',{text:'Delegating idea-2 render to a child delegate.'}); push('TOOL',{tools:1, toolType:'delegate_send'}); work(3);
+  push('ASSIST',{text:'Running the frontend build to verify file:// rendering.'}); push('TOOL',{tools:1, toolType:'exec_command'}); work(3);
+  push('CHECKPOINT',{text:'Layer 3 deterministic checkpoint', wall:1}); push('SUMMARY',{text:'Compaction #2: folded turns 59–121 into summary (402k tokens → 14k).', wall:1});
+  work(4); push('MODEL_SWITCH',{text:'model_switch: glm-5.2-vision → k3 (fallback chain walk)', wall:1}); work(3);
+  push('ASSIST',{text:'Spawning subagent to verify all three mockups in Chrome.'}); push('TOOL',{tools:1, toolType:'delegate_send'}); work(4);
+  push('ASSIST',{text:'Delegating Chrome screenshots to a child delegate.'}); push('TOOL',{tools:1, toolType:'delegate_send'}); work(3);
+  push('ASSIST',{text:'Delegating a layout-bug fix to a grandchild delegate.'}); push('TOOL',{tools:1, toolType:'delegate_send'}); work(3);
+  push('ASSIST',{text:'Backgrounding the Chrome screenshot loop.'}); push('TOOL',{tools:1, toolType:'exec_command'}); work(3);
+  // error/retry episode
+  push('ASSIST',{text:'Requesting the next turn from the provider.', wall:8});
+  push('FAILURE',{text:'rate_limited — provider returned 429', wall:4});
+  for(let a=2;a<=9;a++){
+    push('ASSIST',{text:`Retry attempt ${a}/11 in flight.`, wall:rint(4,12)});
+    push('FAILURE',{text:`rate_limited — 429 (attempt ${a})`, wall:rint(3,8)});
+  }
+  push('ASSIST',{text:'Retry attempt 10/11 succeeded on fallback model k3.', wall:14}); work(5);
+  push('STEER',{text:USER_BLURBS[3], wall:2}); work(5);
+  push('CHECKPOINT',{text:'Layer 3 deterministic checkpoint', wall:1}); push('SUMMARY',{text:'Compaction #3: folded turns 122–212 into summary (518k tokens → 21k).', wall:1});
+  work(10); push('ENV',{text:'environment: cwd /Users/jesse/git/prime-radiant/evener · git main · sandbox off', wall:1}); work(4); push('ASSIST',{text:'Done — three mockups rendered and verified, README written.', wall:6});
+  return turns;
+}
+
+const SESS=buildSession();
+
+const filtersEl=document.getElementById('filters');
+const chartArea=document.getElementById('chartArea');
+const axisY=document.getElementById('axisY');
+const axisX=document.getElementById('axisX');
+const scrubberTrack=document.getElementById('scrubberTrack');
+const scrubberThumb=document.getElementById('scrubberThumb');
+const scrubberVals=document.getElementById('scrubberVals');
+const panelEl=document.getElementById('panel');
+
+const state={ activeTools:new Set(['all']), scrub:0, phaseSel:'none' };
+
+function renderAxisY(){
+  axisY.innerHTML='';
+  const maxTok=Math.max(...SESS.map(t=>t.tokens));
+  for(let i=0;i<=4;i++){ const v=Math.round(maxTok*(1-i/4)/1000); const e=document.createElement('div'); e.textContent=v+'k'; axisY.appendChild(e) }
+}
+function renderAxisX(){
+  axisX.innerHTML='';
+  const max=SESS.length;
+  for(let i=0;i<=5;i++){ const e=document.createElement('div'); e.textContent='t'+Math.round(max*i/5); axisX.appendChild(e) }
+}
+function renderChart(){
+  chartArea.querySelector('.stack-bar').innerHTML='';
+  const maxTok=Math.max(...SESS.map(t=>t.tokens));
+  const pxPerTurn=Math.max(4,(chartArea.clientWidth)/SESS.length);
+  const stackBar=chartArea.querySelector('.stack-bar');
+  SESS.forEach((t,i)=>{
+    const seg=document.createElement('div'); seg.className='seg';
+    // color by kind, hidden if filtered out
+    const k=t.kind;
+    let bg='var(--tool-color)';
+    if(k==='ASSIST') bg='var(--assistant-color)';
+    else if(k==='USER'||k==='STEER') bg='var(--user-color)';
+    else if(k==='FAILURE') bg='var(--fail-color)';
+    else if(k==='CHECKPOINT'||k==='SUMMARY') bg='var(--violet)';
+    else if(k==='HOOK') bg='var(--hook-color)';
+    else if(k==='MODEL_SWITCH') bg='var(--switch-color)';
+    else if(k==='ENV') bg='var(--env-color)';
+    seg.style.background=bg;
+    const h=(t.tokens/maxTok)*100;
+    seg.style.height=h+'%';
+    seg.dataset.idx=i;
+    seg.title=`turn ${i} · ${k} · ${t.tools} tools · ${Math.round(t.tokens/1000)}k tok`;
+    if(state.activeTools.size && !state.activeTools.has('all')){
+      const toolType=t.toolType;
+      if(toolType && !state.activeTools.has(toolType)) seg.classList.add('hidden');
+      if(!toolType && !state.activeTools.has('other')) seg.classList.add('hidden');
+    }
+    stackBar.appendChild(seg);
+  });
+  // compaction walls
+  COMPACTS.forEach((ci,i)=>{
+    const wall=document.createElement('div'); wall.className='comp-wall'; wall.style.left=(ci*pxPerTurn)+'px';
+    const lbl=document.createElement('div'); lbl.className='comp-wall-label'; lbl.textContent='ckpt #'+(i+1); wall.appendChild(lbl);
+    chartArea.appendChild(wall);
+  });
+  // error markers
+  SESS.forEach((t,i)=>{ if(t.kind==='FAILURE'){ const m=document.createElement('div'); m.className='err-marker'; m.style.left=((i+0.5)*pxPerTurn)+'px'; m.style.bottom=(t.tokens/maxTok*100)+'px'; chartArea.appendChild(m) } });
+  // job spans
+  JOBS.forEach((j,i)=>{
+    const span=document.createElement('div'); span.className='job-span'; span.style.left=(j.t[0]*pxPerTurn)+'px'; span.style.width=((j.t[1]-j.t[0])*pxPerTurn)+'px'; chartArea.appendChild(span);
+  });
+}
+
+function renderPanel(){
+  const body=document.getElementById('panelBody');
+  body.innerHTML='';
+  // phase stats
+  const phaseIdx=state.phaseSel==='none' ? state.scrub : parseInt(state.phaseSel);
+  const phaseEnd=state.phaseSel==='none' ? state.scrub : (state.phaseSel==='1' ? COMPACTS[1]-1 : SESS.length-1);
+  const inPhase=SESS.slice(phaseIdx, phaseEnd+1);
+  const toolsIn=inPhase.reduce((s,t)=>s+t.tools,0);
+  const tokensIn=inPhase.reduce((s,t)=>s+t.tokens,0);
+  const wallIn=Math.round(inPhase.reduce((s,t)=>s+t.wall,0)/60);
+  const failIn=inPhase.filter(t=>t.kind==='FAILURE').length;
+  const make=(l,v)=>{const s=document.createElement('div'); s.className='stat'; s.innerHTML=`<div class="l">${l}</div><div class="v">${v}</div>`; return s };
+  const stats=document.createElement('div'); stats.className='phase-stats';
+  stats.appendChild(make('turn span',`t${phaseIdx}→t${phaseEnd}`));
+  stats.appendChild(make('tools',toolsIn.toLocaleString()));
+  stats.appendChild(make('tokens',tokensIn.toLocaleString()));
+  stats.appendChild(make('wall',wallIn+' min'));
+  stats.appendChild(make('failures',failIn));
+  body.appendChild(stats);
+  // cost spend in phase
+  const h4=document.createElement('h4'); h4.textContent='cost spend in phase'; body.appendChild(h4);
+  const rows=[
+    ['exec_command', inPhase.filter(t=>t.toolType==='exec_command').length],
+    ['read_file', inPhase.filter(t=>t.toolType==='read_file').length],
+    ['apply_patch', inPhase.filter(t=>t.toolType==='apply_patch').length],
+    ['write_file', inPhase.filter(t=>t.toolType==='write_file').length],
+    ['grep', inPhase.filter(t=>t.toolType==='grep').length],
+    ['web_fetch', inPhase.filter(t=>t.toolType==='web_fetch').length],
+    ['delegate_send', inPhase.filter(t=>t.toolType==='delegate_send').length],
+  ];
+  rows.forEach(([k,n])=>{ if(n>0){ const r=document.createElement('div'); r.className='cost-row'; r.innerHTML=`<span class="k">${k}</span><span class="v">${n}</span>`; body.appendChild(r) } });
+}
+
+function toggleFilter(k){
+  if(k==='all'){ state.activeTools=new Set(['all']); }
+  else { if(state.activeTools.has(k)) state.activeTools.delete(k); else state.activeTools.add(k); state.activeTools.delete('all') }
+  if(state.activeTools.size===0) state.activeTools.add('all');
+  [...filtersEl.children].forEach(el=>{ if(el.classList.contains('ftog')) el.classList.toggle('active', el.dataset.k==='all' ? state.activeTools.has('all') : state.activeTools.has(el.dataset.k)) });
+  renderChart(); renderPanel();
+}
+
+filtersEl.querySelectorAll('.ftog').forEach(el=>{ el.onclick=()=>toggleFilter(el.dataset.k) });
+document.getElementById('phaseSel').onchange=e=>{ state.phaseSel=e.target.value; renderPanel(); };
+scrubberThumb.onmousedown=e=>{
+  e.preventDefault();
+  const onmove=ev=>{
+    const r=scrubberTrack.getBoundingClientRect();
+    const x=Math.max(0,Math.min(scrubberTrack.clientWidth, ev.clientX-r.left));
+    state.scrub=Math.round(x/scrubberTrack.clientWidth*(SESS.length-1));
+    scrubberThumb.style.left=x+'px'; scrubberVals.textContent='turn '+state.scrub;
+    renderPanel();
+  };
+  const onup=()=>{ document.removeEventListener('mousemove',onmove); document.removeEventListener('mouseup',onup) };
+  document.addEventListener('mousemove',onmove); document.addEventListener('mouseup',onup);
+};
+document.addEventListener('keydown',e=>{ if(e.key==='Escape'){ state.activeTools=new Set(['all']); state.phaseSel='none'; state.scrub=0; [...filtersEl.children].forEach(el=>{ if(el.classList.contains('ftog')) el.classList.toggle('active', el.dataset.k==='all' ? state.activeTools.has('all') : state.activeTools.has(el.dataset.k)) }); renderChart(); renderPanel() } });
+
+/* init */
+document.getElementById('sessionMeta').innerHTML=`session <b>s_4a9f…2c1</b> · main · glm-5.2-vision · ${SESS.length} turns · ${SESS.reduce((s,t)=>s+t.tools,0).toLocaleString()} tool calls · 3 compactions · ${Math.round(SESS[SESS.length-1].wall/60)}m wall`;
+renderAxisY(); renderAxisX(); renderChart(); renderPanel();
+window.addEventListener('resize',()=>{ renderAxisY(); renderAxisX(); renderChart() });
+</script>
+</body>
+</html>

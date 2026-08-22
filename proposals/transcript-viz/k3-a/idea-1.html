@@ -1,0 +1,366 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Idea 1 — Stratigraphic Minimap · evener session 0J8XKM</title>
+<style>
+  :root{
+    --bg:#0e1116; --bg2:#12161d; --panel:#151a21; --panel2:#1a2029;
+    --edge:#242c37; --edge2:#2e3846;
+    --ink:#dbe2ea; --ink-mid:#9aa7b5; --ink-low:#64707e;
+    --blue:#5b9dff; --teal:#39c2c9; --green:#3fb97a; --amber:#e8b13f;
+    --red:#e5534b; --violet:#9a7bff; --pink:#e57bb0;
+    --mono:'IBM Plex Mono',ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
+    --sans:'IBM Plex Sans',-apple-system,'Segoe UI',Helvetica,Arial,sans-serif;
+  }
+  *{box-sizing:border-box;margin:0;padding:0}
+  html,body{height:100%}
+  body{background:var(--bg);color:var(--ink);font:13px/1.5 var(--sans);overflow:hidden;display:flex;flex-direction:column}
+  /* ---------- top bar ---------- */
+  .topbar{display:flex;align-items:center;gap:16px;padding:10px 18px;border-bottom:1px solid var(--edge);background:var(--bg2)}
+  .mark{font:600 14px var(--sans);letter-spacing:-.01em}
+  .mark b{color:var(--blue)}
+  .sess{font:12px var(--mono);color:var(--ink-mid)}
+  .goal{color:var(--ink-mid);font-size:12.5px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:520px}
+  .spacer{flex:1}
+  .tag{font:600 11px var(--mono);color:#0b0e12;background:var(--amber);padding:3px 10px;border-radius:999px;letter-spacing:.04em}
+  /* ---------- KPI strip ---------- */
+  .kpis{display:flex;gap:8px;padding:8px 18px;border-bottom:1px solid var(--edge);background:var(--bg);flex-wrap:wrap}
+  .kpi{font:12px var(--mono);color:var(--ink-mid);background:var(--panel);border:1px solid var(--edge);border-radius:6px;padding:3px 10px}
+  .kpi b{color:var(--ink);font-weight:600}
+  .kpi.warn b{color:var(--amber)} .kpi.bad b{color:var(--red)} .kpi.vio b{color:var(--violet)}
+  /* ---------- main split ---------- */
+  .main{flex:1;min-height:0;display:flex}
+  .rail{width:392px;min-width:392px;border-right:1px solid var(--edge);background:var(--bg2);display:flex;flex-direction:column}
+  .railhead{padding:8px 14px 4px;font:600 11px var(--sans);color:var(--ink-low);letter-spacing:.08em;text-transform:uppercase;display:flex;justify-content:space-between;gap:8px;white-space:nowrap}
+  .railhead .range{font:10px var(--mono);color:var(--ink-mid);text-transform:none;letter-spacing:0}
+  .mapwrap{flex:1;min-height:0;position:relative;padding:0 14px}
+  svg#map{display:block;width:100%;height:100%;cursor:crosshair}
+  .lanehdr{position:relative;height:16px;margin:0 14px}
+  .lanehdr span{position:absolute;top:0;font:9px var(--mono);color:var(--ink-low);letter-spacing:.03em;white-space:nowrap;transform:translateX(-50%)}
+  .railfoot{border-top:1px solid var(--edge);padding:8px 14px 10px}
+  .legend{display:grid;grid-template-columns:1fr 1fr;gap:3px 14px;font:11px var(--sans);color:var(--ink-mid)}
+  .legend .sw{display:inline-block;width:10px;height:10px;border-radius:2px;margin-right:6px;vertical-align:-1px}
+  .legend .dia{display:inline-block;width:8px;height:8px;margin:0 8px 0 2px;transform:rotate(45deg);vertical-align:0}
+  /* ---------- detail pane ---------- */
+  .detail{flex:1;overflow-y:auto;background:var(--bg);padding:14px 22px 40px}
+  .detail::-webkit-scrollbar{width:10px}.detail::-webkit-scrollbar-thumb{background:var(--edge2);border-radius:5px}
+  .dt-head{position:sticky;top:-14px;z-index:5;background:var(--bg);padding:6px 0 10px;font:600 11px var(--sans);color:var(--ink-low);letter-spacing:.08em;text-transform:uppercase;border-bottom:1px solid var(--edge);margin-bottom:8px}
+  .turn{border:1px solid transparent;border-radius:8px;padding:7px 12px;margin-bottom:4px;cursor:pointer}
+  .turn:hover{background:var(--panel)}
+  .turn.sel{background:var(--panel);border-color:var(--edge2)}
+  .t-meta{display:flex;gap:10px;align-items:baseline;font:10.5px var(--mono);color:var(--ink-low);margin-bottom:2px}
+  .t-meta .no{color:var(--ink-mid);font-weight:600}
+  .badge{font:600 9.5px var(--mono);padding:1px 6px;border-radius:4px;letter-spacing:.05em}
+  .b-user{background:#1c2f4d;color:var(--blue)} .b-steer{background:#3a2f14;color:var(--amber)}
+  .b-asst{background:#20262f;color:var(--ink-mid)} .b-sys{background:#20262f;color:var(--ink-low)}
+  .b-fail{background:#44201d;color:var(--red)} .b-model{background:#2a2340;color:var(--violet)}
+  .b-env{background:#1d2a26;color:var(--teal)} .b-hook{background:#26202c;color:var(--pink)}
+  .t-body{color:var(--ink-mid)}
+  .t-body.user{color:var(--ink)}
+  .tools{display:flex;flex-wrap:wrap;gap:5px;margin-top:5px}
+  .chip{font:10.5px var(--mono);background:var(--panel2);border:1px solid var(--edge);border-radius:5px;padding:1px 8px;color:var(--teal);max-width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .chip.err{color:var(--red);border-color:#5a2a26;background:#2a1512}
+  .tres{font:10.5px var(--mono);color:var(--ink-low);margin-top:4px}
+  .tres.bad{color:var(--red)}
+  .compact-card{border:1px solid var(--violet);background:linear-gradient(90deg,#1d1830,#151a21);border-radius:8px;padding:10px 14px;margin:6px 0}
+  .compact-card .h{font:600 11px var(--mono);color:var(--violet);letter-spacing:.06em}
+  .compact-card .s{font:11px var(--mono);color:var(--ink-mid);margin-top:3px}
+  .fail-card{border:1px solid #5a2a26;background:#22110f;border-radius:8px;padding:8px 12px;margin-top:5px}
+  .fail-card .h{font:600 11px var(--mono);color:var(--red)}
+  .fail-card .s{font:11px var(--mono);color:var(--ink-mid)}
+  .dlv{font:10.5px var(--mono);color:var(--violet);margin-top:4px}
+  /* ---------- tooltip ---------- */
+  #tip{position:fixed;z-index:50;pointer-events:none;background:#0b0e12;border:1px solid var(--edge2);border-radius:6px;padding:8px 11px;font:11px var(--mono);color:var(--ink);display:none;max-width:330px;box-shadow:0 6px 24px rgba(0,0,0,.5)}
+  #tip .th{color:var(--ink-mid);font-weight:600;margin-bottom:3px}
+  #tip .tl{color:var(--ink-low)} #tip .tl b{color:var(--ink-mid);font-weight:600}
+  /* ---------- caption ---------- */
+  .caption{flex:0 0 34px;display:flex;align-items:center;gap:18px;padding:0 18px;border-top:1px solid var(--edge);background:var(--bg2);font:11px var(--sans);color:var(--ink-low)}
+  .caption b{color:var(--ink-mid);font-weight:600}
+</style>
+</head>
+<body>
+<div class="topbar">
+  <div class="mark">◆ <b>evener</b> hub</div>
+  <div class="sess">session 0J8XKM · branch main · model k3</div>
+  <div class="goal">goal: migrate jobstore to SQLite, repair the watcher runaway loop, land regression tests</div>
+  <div class="spacer"></div>
+  <div class="tag">IDEA 1 · STRATIGRAPHIC MINIMAP</div>
+</div>
+<div class="kpis" id="kpis"></div>
+<div class="main">
+  <div class="rail">
+    <div class="railhead"><span>session strata · 278 turns</span><span class="range" id="rangeLbl"></span></div>
+    <div class="lanehdr" id="lanehdr"></div>
+    <div class="mapwrap"><svg id="map"></svg></div>
+    <div class="railfoot">
+      <div class="legend">
+        <div><span class="sw" style="background:var(--blue)"></span>user / <span class="sw" style="background:var(--amber);width:10px"></span>steering</div>
+        <div><span class="sw" style="background:#39424e;border:1px solid #556272"></span>assistant turn</div>
+        <div><span class="sw" style="background:linear-gradient(90deg,#15303a,#39c2c9)"></span>tool-call density / turn</div>
+        <div><span class="sw" style="background:var(--violet)"></span>delegate span (indent = depth)</div>
+        <div><span class="sw" style="background:var(--green)"></span>job ok · <span class="sw" style="background:var(--red)"></span>failed</div>
+        <div><span class="dia" style="background:var(--amber)"></span>watch fire · dense = runaway</div>
+        <div><span class="dia" style="background:var(--red)"></span>tool error / turn failure</div>
+        <div><span class="sw" style="background:var(--violet);height:4px;margin-top:3px"></span>compaction fault (checkpoint+summary)</div>
+      </div>
+    </div>
+  </div>
+  <div class="detail" id="detail"></div>
+</div>
+<div id="tip"></div>
+<div class="caption">
+  <span><b>Question answered:</b> “What is the shape of this whole session, and where are the interesting faults?”</span>
+  <span>hover = inspect stratum · click = jump detail · drag white window / scroll over map = navigate</span>
+</div>
+<script>
+/* ================= synthetic session model (deterministic) ================= */
+function mulberry32(a){return function(){a|=0;a=a+0x6D2B79F5|0;var t=Math.imul(a^a>>>15,1|a);t=t+Math.imul(t^t>>>7,61|t)^t;return((t^t>>>14)>>>0)/4294967296}}
+const R=mulberry32(20260821);
+const ri=(a,b)=>a+Math.floor(R()*(b-a+1));
+const N=278;
+const COMPACTIONS=[88,191,249];
+const MODEL_SWITCH=150, TURN_FAILURE=182;
+const USERS={0:"Migrate the jobstore to SQLite and fix the watcher runaway. Start by surveying the code.",40:"Schema sketch looks right — go implement it behind a feature flag.",120:"Steering: keep the legacy JSON path readable until the migration test passes.",205:"The fuzz job found a crash in watch coalescing — dig in before you continue.",260:"Wrap up: changelog, final test run, and a summary I can paste into the PR."};
+const STEERS={95:"Prefer apply_patch for the schema files.",176:"That edit_file keeps failing on stale context — re-read the file first.",232:"Stop the noisy watch before it spams more turns."};
+const DELEGATES=[
+ {id:"dlg_01",name:"survey watcher code",parent:null,depth:0,s:22,e:39,status:"done"},
+ {id:"dlg_02",name:"migrate schema to SQLite",parent:null,depth:0,s:96,e:158,status:"done"},
+ {id:"dlg_02a",name:"repair migration test",parent:"dlg_02",depth:1,s:131,e:146,status:"done"},
+ {id:"dlg_03",name:"audit execenv sandbox",parent:null,depth:0,s:160,e:196,status:"done"},
+ {id:"dlg_04",name:"write regression tests",parent:null,depth:0,s:236,e:268,status:"done"}];
+const JOBS=[
+ {id:"job_5",cmd:"rg -n 'Notify' agent/",s:55,e:56,status:"ok",mode:"bg"},
+ {id:"job_1",cmd:"go test ./agent/... -count=1",s:100,e:118,status:"ok",mode:"bg"},
+ {id:"job_4",cmd:"go build ./...",s:178,e:181,status:"failed",mode:"bg",exit:1},
+ {id:"job_2",cmd:"go test -fuzz=FuzzWatch -fuzztime=30m",s:162,e:205,status:"ok",mode:"bg"},
+ {id:"job_3",cmd:"make generate",s:210,e:214,status:"ok",mode:"detached"},
+ {id:"job_6",cmd:"go vet ./...",s:250,e:256,status:"ok",mode:"bg"}];
+const WATCHES=[
+ {id:"watch_1",name:"jobstore/*.go → rerun tests",fires:[105,133,161]},
+ {id:"watch_2",name:"tail fuzz log for FAIL",fires:[186,186,187,187,187,187,188,188,188,188,188,189,189,189,189,189,189,189,190,190,190,190,190,190,190,190,190,191],runaway:true}];
+const ERR_TURNS={178:"edit_file: stale context",179:"edit_file: stale context",180:"edit_file: stale context"};
+const TOOL_POOL=[["read_file",.27],["shell",.22],["grep",.13],["edit_file",.11],["apply_patch",.07],["write_file",.05],["glob",.05],["delegate_send",.03],["task_list",.02],["communicate",.02],["job_list",.02],["read_transcript",.01]];
+const PHASES=[[0,21,"intake & plan"],[22,39,"delegate survey"],[40,87,"implement sqlite jobstore"],[88,95,"post-compaction replan"],[96,158,"delegate migration"],[159,177,"sandbox audit"],[178,196,"breakage & watch runaway"],[197,235,"fix & verify"],[236,268,"regression tests"],[269,277,"wrap-up"]];
+const LBL={
+ "intake & plan":["read jobstore/store.go","grep Notify callers","sketch schema v1","list watch sites","read jobs.go"],
+ "delegate survey":["spawn dlg_01","collect survey findings","read watcher loop"],
+ "implement sqlite jobstore":["write migrate.go","edit Open() path","add sqlc queries","unit-test Put/Get","wire feature flag"],
+ "post-compaction replan":["re-read checkpoint","confirm plan after fold"],
+ "delegate migration":["spawn dlg_02","review migration diff","run migration test","steer dlg_02"],
+ "sandbox audit":["spawn dlg_03","audit securepath","check sandbox seats"],
+ "breakage & watch runaway":["re-read migrate.go","fix symbol","triage build failure","stop runaway watch"],
+ "fix & verify":["patch coalescing","re-run build","verify fuzz corpus","green test run"],
+ "regression tests":["spawn dlg_04","table-drive watcher tests","cover compaction path"],
+ "wrap-up":["write changelog","final go test ./...","compose PR summary"]};
+function phaseOf(i){for(const[a,b,n]of PHASES)if(i>=a&&i<=b)return n;return"work"}
+function pickTool(){let x=R(),acc=0;for(const[n,w]of TOOL_POOL){acc+=w;if(x<=acc)return n}return"shell"}
+const turns=[];
+for(let i=0;i<N;i++){
+  let kind="ASSISTANT";
+  if(USERS[i])kind="USER_INPUT"; else if(STEERS[i])kind="STEERING";
+  if(COMPACTIONS.includes(i))kind="CHECKPOINT";
+  if(i===MODEL_SWITCH)kind="MODEL_SWITCH";
+  if(i===TURN_FAILURE)kind="TURN_FAILURE";
+  if(i%37===9)kind="ENVIRONMENT";
+  if(i%41===13)kind="HOOK_COMPLETED";
+  if(i===212||i===271)kind="ATTENTION_RESOLUTION";
+  let tools=0;
+  if(kind==="ASSISTANT"){
+    const ph=phaseOf(i);
+    const heavy=(ph==="implement sqlite jobstore"||ph==="delegate migration"||ph==="fix & verify"||ph==="regression tests");
+    tools=heavy?ri(3,13):ri(1,6);
+  }
+  const tok=kind==="CHECKPOINT"?ri(18000,26000):(kind==="ASSISTANT"?700+tools*ri(380,720):ri(200,1800));
+  const dur=kind==="ASSISTANT"?ri(4,40)+tools*ri(1,4):ri(2,12);
+  const tls=[];for(let t=0;t<tools;t++)tls.push(pickTool());
+  turns.push({i,kind,tools,tok,dur,tls,err:ERR_TURNS[i]||null,label:(LBL[phaseOf(i)]||["work"])[ri(0,(LBL[phaseOf(i)]||["x"]).length-1)]});
+}
+/* scale durations to 6h42m wall clock */
+const TARGET=6*3600+42*60;
+const sum=turns.reduce((a,t)=>a+t.dur,0);
+let clock=0;turns.forEach(t=>{t.start=clock;t.dur=t.dur/sum*TARGET;clock+=t.dur;t.end=clock});
+const totalTools=turns.reduce((a,t)=>a+t.tools,0);
+const totalTok=turns.reduce((a,t)=>a+t.tok,0);
+const fmtT=s=>{const h=Math.floor(s/3600),m=Math.floor(s%3600/60);return h+"h "+String(m).padStart(2,"0")+"m"};
+const fmtClock=s=>{const h=Math.floor(s/3600),m=Math.floor(s%3600/60);return h+":"+String(m).padStart(2,"0")};
+const fmtK=n=>n>=1e6?(n/1e6).toFixed(2)+"M":n>=1000?(n/1000).toFixed(1)+"k":n;
+/* ================= KPI strip ================= */
+document.getElementById('kpis').innerHTML=[
+ `<span class="kpi"><b>${N}</b> turns</span>`,
+ `<span class="kpi"><b>${totalTools.toLocaleString()}</b> tool calls</span>`,
+ `<span class="kpi vio"><b>5</b> delegates · 3 levels</span>`,
+ `<span class="kpi"><b>6</b> jobs (1 detached)</span>`,
+ `<span class="kpi warn"><b>2</b> watches · 1 runaway (47 fires/4m)</span>`,
+ `<span class="kpi vio"><b>3</b> compactions</span>`,
+ `<span class="kpi bad"><b>4</b> errors · 1 turn failure (retried)</span>`,
+ `<span class="kpi"><b>${fmtK(totalTok)}</b> tokens</span>`,
+ `<span class="kpi"><b>${fmtT(TARGET)}</b> wall clock</span>`].join('');
+/* ================= minimap ================= */
+const LANES=[{k:'who',x:0,w:14,label:'WHO'},{k:'tools',x:16,w:74,label:'TOOL DENSITY'},{k:'dlg',x:94,w:64,label:'DELEGATES'},{k:'jobs',x:162,w:46,label:'JOBS'},{k:'evt',x:212,w:52,label:'EVENTS'}];
+const MAPW=264;
+const svg=document.getElementById('map');
+const NS='http://www.w3.org/2000/svg';
+const lanehdr=document.getElementById('lanehdr');
+LANES.forEach(L=>{const s=document.createElement('span');s.textContent=L.label;s.style.left=(14+L.x+L.w/2)/ (MAPW+28) *100+'%';lanehdr.appendChild(s)});
+let VH=0,RH=0; /* viewport height px, row height */
+let sel=0, winStart=0; const WIN=42;
+function el(n,at){const e=document.createElementNS(NS,n);for(const k in at)e.setAttribute(k,at[k]);return e}
+function heat(n){ /* 0..13+ calls → teal ramp */
+  const t=Math.min(n,14)/14;
+  const a=.14+.86*t;
+  return `rgba(57,194,201,${a.toFixed(2)})`}
+function dlgColor(d){return ['#8f74ff','#7b5fe8','#b39dff','#6a4fd0','#9a7bff'][d.depth%5]}
+function renderMap(){
+  svg.innerHTML='';
+  const r=svg.getBoundingClientRect(); VH=r.height; RH=VH/N;
+  svg.setAttribute('viewBox',`0 0 ${MAPW} ${VH}`);
+  /* column guides */
+  LANES.forEach(L=>svg.appendChild(el('rect',{x:L.x,y:0,width:L.w,height:VH,fill:L.k==='who'?'#10141a':'#0f1319',stroke:'#1b222c','stroke-width':.5})));
+  /* per-turn strata */
+  for(const t of turns){
+    const y=t.i*RH;
+    /* WHO lane */
+    let c='#39424e';
+    if(t.kind==='USER_INPUT')c='#5b9dff'; else if(t.kind==='STEERING')c='#e8b13f';
+    else if(t.kind==='CHECKPOINT')c='#9a7bff'; else if(t.kind==='TURN_FAILURE')c='#e5534b';
+    svg.appendChild(el('rect',{x:1,y,width:12,height:Math.max(RH-.4,.6),fill:c}));
+    /* TOOL density */
+    if(t.tools>0)svg.appendChild(el('rect',{x:17,y,width:72,height:Math.max(RH-.4,.6),fill:heat(t.tools)}));
+    /* EVENTS: watch fires */
+  }
+  /* delegates: bracket spans, indented by depth */
+  DELEGATES.forEach(d=>{
+    const x=95+d.depth*14,w=44-d.depth*14;
+    const y1=d.s*RH,y2=(d.e+1)*RH;
+    svg.appendChild(el('rect',{x,y:y1,width:w,height:y2-y1,fill:dlgColor(d)+'33',stroke:dlgColor(d),'stroke-width':1,rx:2}));
+    svg.appendChild(el('path',{d:`M ${x} ${y1} l 6 4 l -6 4 z`,fill:dlgColor(d)}));           /* spawn */
+    svg.appendChild(el('rect',{x:x,y:y2-5,width:6,height:4,fill:dlgColor(d)}));                /* report-back */
+    if(VH>420){const tx=el('text',{x:x+8,y:y1+9,'font-size':7.5,fill:dlgColor(d),'font-family':'var(--mono)','paint-order':'stroke',stroke:'#0e1116','stroke-width':3});tx.textContent=d.id;svg.appendChild(tx)}
+  });
+  /* jobs */
+  JOBS.forEach((j,k)=>{
+    const y1=j.s*RH,y2=(j.e+1)*RH;const col=j.status==='failed'?'#e5534b':'#3fb97a';
+    svg.appendChild(el('rect',{x:163,y:y1,width:44,height:Math.max(y2-y1,1.6),fill:col+'2e',stroke:col,'stroke-width':1,'stroke-dasharray':j.mode==='detached'?'3 2':'none',rx:2}));
+    if(j.status==='failed'){const tx=el('text',{x:170,y:(y1+y2)/2+3,'font-size':8,fill:'#e5534b','font-family':'var(--mono)'});tx.textContent='✕1';svg.appendChild(tx)}
+  });
+  /* watch fires + markers in events lane */
+  WATCHES.forEach((w,k)=>{
+    const x=214+k*14;
+    w.fires.forEach(f=>svg.appendChild(el('rect',{x,y:f*RH,width:8,height:Math.max(RH*.9,.8),fill:'#e8b13f',opacity:w.runaway?.95:.7})));
+    if(w.runaway){const y1=w.fires[0]*RH,y2=(w.fires[w.fires.length-1]+1)*RH;
+      svg.appendChild(el('rect',{x:x-2,y:y1-1,width:12,height:y2-y1+2,fill:'none',stroke:'#e8b13f','stroke-width':1,rx:2}))}
+  });
+  /* errors */
+  Object.keys(ERR_TURNS).forEach(i=>{const y=i*RH+RH/2;
+    svg.appendChild(el('path',{d:`M 244 ${y-3.4} L 247.4 ${y} L 244 ${y+3.4} L 240.6 ${y} Z`,fill:'#e5534b'}))});
+  /* turn failure */
+  {const y=TURN_FAILURE*RH+RH/2;svg.appendChild(el('path',{d:`M 254 ${y-4} L 258 ${y} L 254 ${y+4} L 250 ${y} Z`,fill:'#e5534b',stroke:'#ff8a80','stroke-width':.6}))}
+  /* model switch */
+  {const y=MODEL_SWITCH*RH+RH/2;svg.appendChild(el('path',{d:`M 234 ${y-3.4} L 237.4 ${y} L 234 ${y+3.4} L 230.6 ${y} Z`,fill:'#9a7bff'}))}
+  /* compaction faults: full-width bright lines */
+  COMPACTIONS.forEach(c=>{
+    const y=c*RH;
+    svg.appendChild(el('rect',{x:0,y:y-1.1,width:MAPW,height:2.2,fill:'#9a7bff'}));
+    const tx=el('text',{x:6,y:y-2.6,'font-size':7.5,fill:'#c9b8ff','text-anchor':'start','font-family':'var(--mono)','paint-order':'stroke',stroke:'#0e1116','stroke-width':3});
+    tx.textContent=`⛛ fold @${c} · 186k→24k`;svg.appendChild(tx);
+  });
+  /* hover row + selection + viewport window (order last) */
+  window._hov=el('rect',{x:0,y:-99,width:MAPW,height:RH*3,fill:'#ffffff',opacity:.06,'pointer-events':'none'});svg.appendChild(_hov);
+  window._selR=el('rect',{x:-2,y:-99,width:MAPW+4,height:Math.max(RH,2.4),fill:'none',stroke:'#fff','stroke-width':1.2,'pointer-events':'none'});svg.appendChild(_selR);
+  window._win=el('rect',{x:-3,y:0,width:MAPW+6,height:WIN*RH,fill:'#ffffff',opacity:.07,stroke:'#e8edf3','stroke-width':1,rx:3,cursor:'grab'});svg.appendChild(_win);
+  updateOverlays();
+}
+function updateOverlays(){
+  _win.setAttribute('y',winStart*RH);
+  _selR.setAttribute('y',sel*RH);
+  document.getElementById('rangeLbl').textContent=`turns ${winStart}–${Math.min(winStart+WIN-1,N-1)} · ${fmtClock(turns[winStart].start)}–${fmtClock(turns[Math.min(winStart+WIN-1,N-1)].end)}`;
+}
+/* ================= detail pane ================= */
+const KINDLBL={USER_INPUT:['b-user','USER'],STEERING:['b-steer','STEERING'],ASSISTANT:['b-asst','ASSISTANT'],CHECKPOINT:['b-model','CHECKPOINT'],MODEL_SWITCH:['b-model','MODEL SWITCH'],TURN_FAILURE:['b-fail','TURN FAILURE'],ENVIRONMENT:['b-env','ENV'],HOOK_COMPLETED:['b-hook','HOOK'],ATTENTION_RESOLUTION:['b-sys','ATTENTION'],SYSTEM:['b-sys','SYSTEM']};
+const ARGS={read_file:()=>`agent/internal/jobstore/${['store.go','migrate.go','jobs.go','queries.sql'][ri(0,3)]}`,
+ shell:()=>['go test ./agent/internal/jobstore/ -count=1','go build ./...','git status --short','go test -run TestWatch -count=1'][ri(0,3)],
+ grep:()=>['pattern: "func .*Notify"','pattern: "checkpoint" agent/','pattern: "watcher" --type go'][ri(0,2)],
+ edit_file:()=>`agent/internal/jobstore/migrate.go`,
+ apply_patch:()=>`*** 3 files: schema, store, tests`,
+ write_file:()=>`agent/internal/jobstore/migrate_test.go`,
+ glob:()=>`agent/internal/jobstore/*.go`,
+ delegate_send:()=>`to=dlg_02 "rerun with -count=2"`,
+ task_list:()=>`update #7 → done`,
+ communicate:()=>`status → caller`,
+ job_list:()=>`status=running`,
+ read_transcript:()=>`job:job_4 · offset 16KiB`};
+function renderDetail(){
+  const d=document.getElementById('detail');
+  let h=`<div class="dt-head">transcript detail · turns ${winStart}–${Math.min(winStart+WIN-1,N-1)} (synthetic excerpt)</div>`;
+  for(let i=winStart;i<Math.min(winStart+WIN,N);i++){
+    const t=turns[i];const[bc,bl]=KINDLBL[t.kind]||['b-sys',t.kind];
+    const dlgs=DELEGATES.filter(x=>i>=x.s&&i<=x.e);
+    h+=`<div class="turn ${i===sel?'sel':''}" data-i="${i}">
+      <div class="t-meta"><span class="no">#${String(t.i).padStart(3,'0')}</span><span class="badge ${bc}">${bl}</span>
+      <span>${fmtClock(t.start)}</span><span>${t.tools} tools</span><span>${fmtK(t.tok)} tok</span><span>${t.dur.toFixed(0)}s</span>
+      ${dlgs.length?`<span style="color:var(--violet)">⊂ ${dlgs.map(x=>x.id).join(', ')}</span>`:''}</div>`;
+    if(t.kind==='USER_INPUT')h+=`<div class="t-body user">${USERS[i]}</div>`;
+    else if(t.kind==='STEERING')h+=`<div class="t-body" style="color:var(--amber)">↪ ${STEERS[i]}</div>`;
+    else if(t.kind==='CHECKPOINT'){
+      h+=`<div class="compact-card"><div class="h">⛛ COMPACTION · CHECKPOINT + SUMMARY</div>
+      <div class="s">context folded 186,412 → 24,018 tokens · deterministic checkpoint (L3) + LLM summary (L4) · 12 items carried: goal, plan, 4 delegate reports, 3 open tasks</div></div>`;
+    }
+    else if(t.kind==='MODEL_SWITCH')h+=`<div class="t-body" style="color:var(--violet)">◆ model switched k3 → k3-fast for mechanical edit batch (turns 150–209)</div>`;
+    else if(t.kind==='TURN_FAILURE')h+=`<div class="fail-card"><div class="h">✕ TURN FAILED — provider 529 overloaded</div><div class="s">source: provider · retrying with backoff (attempt 2) · recovered at turn #184</div></div>`;
+    else if(t.kind==='ENVIRONMENT')h+=`<div class="t-body" style="color:var(--teal)">⌂ env diff: branch main · 14 files dirty · memory pressure normal</div>`;
+    else if(t.kind==='HOOK_COMPLETED')h+=`<div class="t-body" style="color:var(--pink)">⚙ PostToolUse hook lint-md exit 0 · 38ms</div>`;
+    else if(t.kind==='ATTENTION_RESOLUTION')h+=`<div class="t-body" style="color:var(--ink-low)">◉ attention item att_${i===212?'7':'11'} resolved · disposition: approved</div>`;
+    else{
+      h+=`<div class="t-body">${t.label}${t.tools?`: dispatched ${t.tools} tool call${t.tools>1?'s':''}`:'.'}</div>`;
+      if(t.tools){h+=`<div class="tools">`;
+        for(const tn of t.tls){const bad=t.err&&tn==='edit_file';h+=`<span class="chip ${bad?'err':''}">${tn} ${ARGS[tn]?ARGS[tn]():''}</span>`}
+        h+=`</div><div class="tres ${t.err?'bad':''}">⤷ ${t.tools} result${t.tools>1?'s':''} aggregated${t.err?' · ⚠ '+t.err:' · all exit 0'} · ${ri(40,2400)} lines</div>`}
+      const dj=JOBS.find(j=>j.e===i);if(dj)h+=`<div class="tres ${dj.status==='failed'?'bad':''}">◈ ${dj.id} completed (${dj.mode}) — ${dj.cmd} · exit ${dj.exit||0}</div>`;
+      const dd=DELEGATES.find(x=>x.e===i);if(dd)h+=`<div class="dlv">◈ ${dd.id} reported back: “${dd.name} — complete, ${ri(3,9)} files changed, tests green”</div>`;
+    }
+    h+=`</div>`;
+  }
+  d.innerHTML=h;
+  d.querySelectorAll('.turn').forEach(n=>n.addEventListener('click',()=>select(+n.dataset.i,false)));
+}
+function select(i,recenter=true){
+  sel=Math.max(0,Math.min(N-1,i));
+  if(recenter)winStart=Math.max(0,Math.min(N-WIN,sel-Math.floor(WIN/2)));
+  updateOverlays();renderDetail();
+  const node=document.querySelector(`.turn[data-i="${sel}"]`);
+  if(node)node.scrollIntoView({block:'center'});
+}
+/* ================= interactions ================= */
+const tip=document.getElementById('tip');
+function turnAt(ev){const r=svg.getBoundingClientRect();const y=(ev.clientY-r.top)/r.height*N;return Math.max(0,Math.min(N-1,Math.floor(y)))}
+let dragging=false,dragOff=0;
+svg.addEventListener('mousemove',ev=>{
+  const i=turnAt(ev);const t=turns[i];
+  _hov.setAttribute('y',Math.max(0,(i-1)*RH));
+  const dlgs=DELEGATES.filter(x=>i>=x.s&&i<=x.e).map(x=>x.id).join(', ')||'—';
+  const job=JOBS.find(j=>i>=j.s&&i<=j.e);
+  tip.style.display='block';tip.style.left=(ev.clientX+16)+'px';tip.style.top=(ev.clientY+14)+'px';
+  tip.innerHTML=`<div class="th">turn #${i} · ${t.kind} · ${fmtClock(t.start)}</div>
+   <div class="tl">${t.label}</div>
+   <div class="tl">tools <b>${t.tools}</b> · tokens <b>${fmtK(t.tok)}</b> · dur <b>${t.dur.toFixed(0)}s</b></div>
+   <div class="tl">delegate <b>${dlgs}</b>${job?` · job <b>${job.id}</b> (${job.status})`:''}${t.err?` · <span style="color:#e5534b">⚠ ${t.err}</span>`:''}</div>`;
+  if(dragging){winStart=Math.max(0,Math.min(N-WIN,i-dragOff));updateOverlays();renderDetail()}
+});
+svg.addEventListener('mouseleave',()=>tip.style.display='none');
+svg.addEventListener('click',ev=>{if(!dragging)select(turnAt(ev))});
+svg.addEventListener('mousedown',ev=>{
+  const i=turnAt(ev);
+  if(i>=winStart&&i<winStart+WIN){dragging=true;dragOff=i-winStart;svg.style.cursor='grabbing';ev.preventDefault()}
+});
+window.addEventListener('mouseup',()=>{dragging=false;svg.style.cursor='crosshair'});
+document.querySelector('.mapwrap').addEventListener('wheel',ev=>{
+  ev.preventDefault();winStart=Math.max(0,Math.min(N-WIN,winStart+Math.sign(ev.deltaY)*3));
+  updateOverlays();renderDetail();
+},{passive:false});
+window.addEventListener('resize',()=>{renderMap();updateOverlays()});
+/* init */
+renderMap();select(176);
+</script>
+</body>
+</html>

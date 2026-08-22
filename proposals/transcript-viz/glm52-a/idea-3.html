@@ -1,0 +1,212 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>evener · Delegate Cost Matrix — transcript comprehension</title>
+<style>
+  :root{
+    --surface-0:#0d1117; --surface-1:#161b22; --surface-inset:#11161d;
+    --edge:#2a3340; --edge-strong:#3a4658;
+    --ink-hi:#e6edf3; --ink-mid:#9da9b8; --ink-low:#6a7686;
+    --alive:#3fb950; --alive-ink:#4ade80; --alive-bg:rgba(63,185,80,.14);
+    --attention:#d29922; --attention-ink:#e3b341; --attention-bg:rgba(210,153,34,.16);
+    --danger:#f85149; --danger-ink:#ff6b62; --danger-bg:rgba(248,81,73,.16);
+    --accent:#58a6ff; --accent-ink:#79b8ff; --accent-bg:rgba(88,166,255,.14);
+    --violet:#a371f7; --cyan:#39c5cf; --pink:#db61a2;
+    --mono:ui-monospace,SFMono-Regular,"JetBrains Mono",Menlo,Consolas,monospace;
+    --sans:"Inter",-apple-system,BlinkMacSystemFont,"Segoe UI",Helvetica,Arial,sans-serif;
+  }
+  *{box-sizing:border-box}
+  html,body{margin:0;padding:0;background:var(--surface-0);color:var(--ink-hi);font-family:var(--sans);-webkit-font-smoothing:antialiased}
+  body{padding:20px 28px 40px;min-height:100vh}
+  .micro{font-size:11px;letter-spacing:.08em;text-transform:uppercase;font-weight:500;color:var(--ink-low)}
+  h1{font-size:18px;font-weight:600;letter-spacing:-.01em;margin:0 0 2px}
+  .sub{color:var(--ink-mid);font-size:13px;line-height:1.5;max-width:880px;margin:0 0 18px}
+  code{font-family:var(--mono);font-size:12px;background:var(--surface-inset);padding:1px 5px;border-radius:4px;color:var(--ink-mid)}
+  .card{background:var(--surface-1);border:1px solid var(--edge);border-radius:10px;padding:16px 18px;margin-bottom:16px}
+  .card-head{display:flex;align-items:baseline;justify-content:space-between;gap:12px;margin-bottom:10px}
+  .card-head h2{font-size:13px;font-weight:600;margin:0;letter-spacing:.01em}
+  .pill{display:inline-block;padding:2px 8px;border-radius:999px;font-size:11px;font-weight:500;border:1px solid var(--edge)}
+  .pill.attention{color:var(--attention-ink);background:var(--attention-bg);border-color:rgba(210,153,34,.3)}
+  .pill.accent{color:var(--accent-ink);background:var(--accent-bg);border-color:rgba(88,166,255,.3)}
+  .pill.danger{color:var(--danger-ink);background:var(--danger-bg);border-color:rgba(248,81,73,.3)}
+  .pill.alive{color:var(--alive-ink);background:var(--alive-bg);border-color:rgba(63,185,80,.3)}
+  .pill.muted{color:var(--ink-mid);background:var(--surface-inset)}
+
+  /* ---------- icicle ---------- */
+  .icicle{display:flex;flex-direction:column;gap:1px;width:100%}
+  .row{display:flex;gap:1px;height:26px;align-items:stretch}
+  .seg{display:flex;flex-direction:column;border-radius:3px;overflow:hidden;cursor:pointer;position:relative;border:1px solid rgba(255,255,255,.06);min-width:0}
+  .seg:hover{outline:1px solid var(--ink-hi);z-index:5}
+  .seg.sel{outline:2px solid var(--accent);z-index:6}
+  .seg .label{font-size:9px;color:rgba(0,0,0,.65);font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;padding:1px 4px;height:11px;line-height:11px;flex:none}
+  .seg .ribbon-stack{display:flex;flex-direction:column;flex:1;gap:1px;padding:1px}
+  .ribbon{height:3px;border-radius:1px;flex:none;background:var(--surface-inset)}
+  .ribbon.tools{background:linear-gradient(to right, var(--surface-inset), var(--alive));}
+  .ribbon.tokens{background:linear-gradient(to right, var(--surface-inset), var(--accent));}
+  .ribbon.time{background:linear-gradient(to right, var(--surface-inset), var(--violet));}
+  .ribbon.err{background:var(--danger);opacity:.9}
+
+  .legend{display:flex;flex-wrap:wrap;gap:10px 16px;align-items:center;font-size:12px;color:var(--ink-mid)}
+  .lg-item{display:flex;align-items:center;gap:6px}
+
+  .kv{display:flex;gap:14px;flex-wrap:wrap;margin-top:8px;font-family:var(--mono);font-size:11px;color:var(--ink-low)}
+  .kv span b{color:var(--ink-hi);font-weight:500}
+
+  .caption{color:var(--ink-mid);font-size:12px;line-height:1.55;max-width:920px}
+  .caption b{color:var(--ink-hi);font-weight:500}
+
+  .detail{display:grid;grid-template-columns:1fr 1fr;gap:14px 22px;font-size:12px}
+  .detail dt{color:var(--ink-low);font-size:10px;letter-spacing:.06em;text-transform:uppercase;margin:0 0 2px}
+  .detail dd{margin:0 0 10px;color:var(--ink-hi);font-family:var(--mono);font-size:12px;line-height:1.45}
+  .meter{height:6px;border-radius:3px;background:var(--surface-inset);margin-top:3px;overflow:hidden}
+  .meter-fill{height:100%;border-radius:3px}
+</style>
+</head>
+<body>
+
+<div style="max-width:1180px;margin:0 auto">
+  <div class="micro">evener · transcript-viz proposal · idea 3 of 3</div>
+  <h1 style="margin-top:6px">Delegate Cost Matrix — an icicle + ribbon tree</h1>
+  <p class="sub">The 3-level delegation tree as an icicle: node width = turn span, depth = delegation level. Inside each node, stacked micro-ribbons show <b>tool-call density</b> (green), <b>token cost</b> (blue), and <b>wall-clock duration</b> (violet) — a red ribbon marks an error. Where cost concentrates is scannable at a glance: a fat <code>dlg_cost_tree</code> node dominates the session, its cyan grandchild carries a red error ribbon, and the root bar spans everything.</p>
+
+  <div class="card">
+    <div class="card-head"><h2>Legend</h2><span class="micro">hover a node for detail</span></div>
+    <div class="legend">
+      <span class="lg-item"><span class="pill accent">d0</span> root session</span>
+      <span class="lg-item"><span class="pill" style="color:var(--violet);background:rgba(163,113,247,.16);border-color:rgba(163,113,247,.3)">d1</span> delegate</span>
+      <span class="lg-item"><span class="pill" style="color:var(--cyan);background:rgba(57,197,207,.16);border-color:rgba(57,197,207,.3)">d2</span> grandchild</span>
+      <span class="lg-item"><span style="width:40px;height:6px;border-radius:3px;background:linear-gradient(to right,var(--surface-inset),var(--alive));display:inline-block"></span> tool-call density</span>
+      <span class="lg-item"><span style="width:40px;height:6px;border-radius:3px;background:linear-gradient(to right,var(--surface-inset),var(--accent));display:inline-block"></span> token cost</span>
+      <span class="lg-item"><span style="width:40px;height:6px;border-radius:3px;background:linear-gradient(to right,var(--surface-inset),var(--violet));display:inline-block"></span> wall-clock</span>
+      <span class="lg-item"><span style="width:40px;height:6px;border-radius:3px;background:var(--danger);display:inline-block"></span> error episode</span>
+      <span class="lg-item"><span class="pill muted">width</span> turn span (proportional)</span>
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="card-head"><h2>Delegate Cost Matrix · 3-level tree</h2><span class="micro" id="nodeInfo">hover or click a node</span></div>
+    <div class="icicle" id="icicle"></div>
+    <div class="kv" id="kv"></div>
+  </div>
+
+  <div class="card" id="detailCard">
+    <div class="card-head"><h2 id="detailTitle">Node — hover or click</h2><span class="micro" id="detailPos"></span></div>
+    <div class="detail" id="detail"></div>
+  </div>
+
+  <p class="caption">
+    <b>What you see at a glance:</b> the wide blue <code>root</code> bar spans the full session; below it, three purple delegate bars (<code>dlg_event_tape</code>, <code>dlg_heatmap</code>, <code>dlg_cost_tree</code>) overlap in time, with <code>dlg_cost_tree</code> the widest and most expensive (tallest tool-density + token ribbons). Its cyan grandchild <code>dlg_g3_verify</code> carries a red error ribbon — the build-failure retry — and a taller violet duration ribbon, showing it took wall-clock time to recover. The sibling <code>dlg_g1_render</code> is narrow and cheap; the grandchild <code>dlg_g2_data</code> sits mid. Cost concentration is immediately visible: one branch owns most of the session's tokens and time, and it is the only branch that errored.
+  </p>
+</div>
+
+<script>
+"use strict";
+/* ---------- synthetic delegate tree ---------- */
+var totalSpan = 263;
+var nodes = [
+  {id:"root",              depth:0, start:0,   span:263, parent:null,     name:"root session",       tools:1109, tokens:127600, timeMin:317, errs:0},
+  {id:"dlg_event_tape",    depth:1, start:103, span:60,  parent:"root",   name:"dlg_event_tape",    tools:312,  tokens:41200,  timeMin:108, errs:0},
+  {id:"dlg_heatmap",       depth:1, start:108, span:80,  parent:"root",   name:"dlg_heatmap",       tools:487,  tokens:58100,  timeMin:137, errs:0},
+  {id:"dlg_cost_tree",     depth:1, start:112, span:95,  parent:"root",   name:"dlg_cost_tree",     tools:310,  tokens:28300,  timeMin:72,  errs:0},
+  {id:"dlg_g1_render",     depth:2, start:118, span:30,  parent:"dlg_heatmap", name:"dlg_g1_render",  tools:91,   tokens:12100,  timeMin:24,  errs:0},
+  {id:"dlg_g2_data",       depth:2, start:150, span:25,  parent:"dlg_heatmap", name:"dlg_g2_data",    tools:68,   tokens:9600,   timeMin:18,  errs:0},
+  {id:"dlg_g3_verify",     depth:2, start:176, span:28,  parent:"dlg_cost_tree", name:"dlg_g3_verify", tools:42, tokens:8300, timeMin:31, errs:1}
+];
+
+var maxDepth = Math.max.apply(null, nodes.map(function(n) { return n.depth; }));
+var maxTools = Math.max.apply(null, nodes.map(function(n) { return n.tools; }));
+var maxTokens = Math.max.apply(null, nodes.map(function(n) { return n.tokens; }));
+var maxTime = Math.max.apply(null, nodes.map(function(n) { return n.timeMin; }));
+
+/* ---------- render icicle ---------- */
+var icicle = document.getElementById("icicle");
+for (var d = 0; d <= maxDepth; d++) {
+  var rowEl = document.createElement("div");
+  rowEl.className = "row";
+  var rowNodes = nodes.filter(function(n) { return n.depth === d; }).sort(function(a, b) { return a.start - b.start; });
+  var pos = 0;
+  for (var b = 0; b < totalSpan; b++) {
+    var node = null;
+    for (var i = 0; i < rowNodes.length; i++) {
+      var rn = rowNodes[i];
+      if (b >= rn.start && b < rn.start + rn.span) { node = rn; break; }
+    }
+    var seg = document.createElement("div");
+    seg.className = "seg";
+    if (node) {
+      seg.dataset.id = node.id;
+      var w = (node.span / totalSpan) * 100;
+      seg.style.width = w + "%";
+      var bg = (node.depth === 0) ? "var(--accent)" : (node.depth === 1) ? "var(--violet)" : "var(--cyan)";
+      var labelEl = document.createElement("div");
+      labelEl.className = "label";
+      labelEl.style.background = bg;
+      var labelTxt = node.name.length > 14 ? node.name.slice(0, 12) + "…" : node.name;
+      labelEl.textContent = labelTxt;
+      seg.appendChild(labelEl);
+      var stack = document.createElement("div");
+      stack.className = "ribbon-stack";
+      var rTools = document.createElement("div"); rTools.className = "ribbon tools"; rTools.style.width = Math.min(100, (node.tools / maxTools) * 100) + "%";
+      var rTokens = document.createElement("div"); rTokens.className = "ribbon tokens"; rTokens.style.width = Math.min(100, (node.tokens / maxTokens) * 100) + "%";
+      var rTime = document.createElement("div"); rTime.className = "ribbon time"; rTime.style.width = Math.min(100, (node.timeMin / maxTime) * 100) + "%";
+      stack.appendChild(rTools); stack.appendChild(rTokens); stack.appendChild(rTime);
+      if (node.errs > 0) {
+        var rErr = document.createElement("div"); rErr.className = "ribbon err";
+        stack.appendChild(rErr);
+      }
+      seg.appendChild(stack);
+      seg.addEventListener("mouseenter", function(e) { showDetail(node); });
+      seg.addEventListener("click", function() { selectNode(node); });
+      b += node.span - 1;
+    } else {
+      seg.style.background = "var(--surface-inset)";
+      seg.style.flex = "1";
+    }
+    rowEl.appendChild(seg);
+  }
+  icicle.appendChild(rowEl);
+}
+
+/* ---------- kv ---------- */
+var totalTools = nodes.reduce(function(a, n) { return a + n.tools; }, 0);
+var totalTokens = nodes.reduce(function(a, n) { return a + n.tokens; }, 0);
+var totalTime = nodes.reduce(function(a, n) { return a + n.timeMin; }, 0);
+var totalErrs = nodes.reduce(function(a, n) { return a + n.errs; }, 0);
+document.getElementById("kv").innerHTML =
+  "<span><b>" + nodes.length + "</b> delegate nodes (3 levels)</span>" +
+  "<span><b>" + totalTools.toLocaleString() + "</b> tool calls</span>" +
+  "<span><b>" + (totalTokens / 1000).toFixed(1) + "k</b> tokens</span>" +
+  "<span><b>" + Math.floor(totalTime / 60) + "h " + (totalTime % 60) + "m</b> total wall-clock</span>" +
+  "<span><b>" + totalErrs + "</b> error episode(s)</span>" +
+  "<span><b>" + totalSpan + "</b> turns (root span)</span>";
+
+/* ---------- detail ---------- */
+function showDetail(node) { selectNode(node); }
+function selectNode(node) {
+  document.querySelectorAll(".seg.sel").forEach(function(x) { x.classList.remove("sel"); });
+  var seg = document.querySelector('.seg[data-id="' + node.id + '"]');
+  if (seg) seg.classList.add("sel");
+  var d = document.getElementById("detail");
+  var pills = "";
+  if (node.depth === 0) pills += '<span class="pill accent">d0 root</span>';
+  else if (node.depth === 1) pills += '<span class="pill" style="color:var(--violet);background:rgba(163,113,247,.16);border-color:rgba(163,113,247,.3)">d1 delegate</span>';
+  else pills += '<span class="pill" style="color:var(--cyan);background:rgba(57,197,207,.16);border-color:rgba(57,197,207,.3)">d2 grandchild</span>';
+  if (node.errs > 0) pills += ' <span class="pill danger">error</span>';
+  d.innerHTML =
+    "<div><dt>Node</dt><dd>" + node.name + " " + pills + "</dd></div>" +
+    "<div><dt>Depth</dt><dd>" + node.depth + "</dd></div>" +
+    "<div><dt>Parent</dt><dd>" + (node.parent || "—") + "</dd></div>" +
+    "<div><dt>Turn span</dt><dd>" + node.start + "–" + (node.start + node.span) + " (" + node.span + " turns)</dd></div>" +
+    "<div><dt>Tool calls</dt><dd>" + node.tools + ' <div class="meter"><div class="meter-fill" style="width:' + Math.min(100, (node.tools / maxTools) * 100) + '%;background:var(--alive)"></div></div></dd></div>' +
+    "<div><dt>Tokens</dt><dd>" + node.tokens.toLocaleString() + ' <div class="meter"><div class="meter-fill" style="width:' + Math.min(100, (node.tokens / maxTokens) * 100) + '%;background:var(--accent)"></div></div></dd></div>' +
+    "<div><dt>Wall-clock</dt><dd>" + Math.floor(node.timeMin / 60) + "h " + (node.timeMin % 60) + "m" + ' <div class="meter"><div class="meter-fill" style="width:' + Math.min(100, (node.timeMin / maxTime) * 100) + '%;background:var(--violet)"></div></div></dd></div>' +
+    "<div><dt>Errors</dt><dd>" + node.errs + (node.errs > 0 ? " <span class=\"pill danger\">build-failure retry</span>" : "") + "</dd></div>";
+  document.getElementById("detailTitle").textContent = "Node · " + node.name;
+  document.getElementById("detailPos").textContent = "depth " + node.depth + " · turns " + node.start + "–" + (node.start + node.span);
+}
+selectNode(nodes.find(function(n) { return n.errs > 0; }));
+</script>
+</body>
+</html>

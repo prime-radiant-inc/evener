@@ -1,0 +1,408 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>evener · Compact Event Tape Rail — transcript comprehension</title>
+<style>
+  :root{
+    --surface-0:#0d1117; --surface-1:#161b22; --surface-inset:#11161d; --surface-2:#1c232c;
+    --edge:#2a3340; --edge-strong:#3a4658;
+    --ink-hi:#e6edf3; --ink-mid:#9da9b8; --ink-low:#6a7686;
+    --alive:#3fb950; --alive-ink:#4ade80; --alive-bg:rgba(63,185,80,.14);
+    --attention:#d29922; --attention-ink:#e3b341; --attention-bg:rgba(210,153,34,.16);
+    --danger:#f85149; --danger-ink:#ff6b62; --danger-bg:rgba(248,81,73,.16);
+    --accent:#58a6ff; --accent-ink:#79b8ff; --accent-bg:rgba(88,166,255,.14);
+    --violet:#a371f7; --cyan:#39c5cf; --pink:#db61a2;
+    --mono:ui-monospace,SFMono-Regular,"JetBrains Mono",Menlo,Consolas,monospace;
+    --sans:"Inter",-apple-system,BlinkMacSystemFont,"Segoe UI",Helvetica,Arial,sans-serif;
+  }
+  *{box-sizing:border-box}
+  html,body{margin:0;padding:0;background:var(--surface-0);color:var(--ink-hi);font-family:var(--sans);-webkit-font-smoothing:antialiased}
+  body{padding:20px 28px 40px;min-height:100vh}
+  .micro{font-size:11px;letter-spacing:.08em;text-transform:uppercase;font-weight:500;color:var(--ink-low)}
+  h1{font-size:18px;font-weight:600;letter-spacing:-.01em;margin:0 0 2px}
+  .sub{color:var(--ink-mid);font-size:13px;line-height:1.5;max-width:880px;margin:0 0 18px}
+  code{font-family:var(--mono);font-size:12px;background:var(--surface-inset);padding:1px 5px;border-radius:4px;color:var(--ink-mid)}
+  .card{background:var(--surface-1);border:1px solid var(--edge);border-radius:10px;padding:16px 18px;margin-bottom:16px}
+  .card-head{display:flex;align-items:baseline;justify-content:space-between;gap:12px;margin-bottom:10px}
+  .card-head h2{font-size:13px;font-weight:600;margin:0;letter-spacing:.01em}
+  .pill{display:inline-block;padding:2px 8px;border-radius:999px;font-size:11px;font-weight:500;border:1px solid var(--edge)}
+  .pill.alive{color:var(--alive-ink);background:var(--alive-bg);border-color:rgba(63,185,80,.3)}
+  .pill.attention{color:var(--attention-ink);background:var(--attention-bg);border-color:rgba(210,153,34,.3)}
+  .pill.danger{color:var(--danger-ink);background:var(--danger-bg);border-color:rgba(248,81,73,.3)}
+  .pill.accent{color:var(--accent-ink);background:var(--accent-bg);border-color:rgba(88,166,255,.3)}
+  .pill.muted{color:var(--ink-mid);background:var(--surface-inset)}
+  .controls{display:flex;align-items:center;gap:10px;margin-bottom:14px}
+  .btn{background:var(--surface-2);border:1px solid var(--edge);color:var(--ink-hi);border-radius:6px;padding:4px 12px;font-family:var(--sans);font-size:12px;font-weight:500;cursor:pointer;transition:background .12s ease}
+  .btn:hover{background:var(--edge)}
+  .btn.active{background:var(--accent);color:#06121f;border-color:var(--accent)}
+  .live{display:flex;align-items:center;gap:6px;font-size:11px;color:var(--ink-mid);font-family:var(--mono)}
+  .dot{width:8px;height:8px;border-radius:50%;background:var(--alive);box-shadow:0 0 8px var(--alive)}
+  .dot.paused{background:var(--ink-low);box-shadow:none}
+  .legend{display:flex;flex-wrap:wrap;gap:10px 16px;align-items:center;font-size:12px;color:var(--ink-mid)}
+  .lg-item{display:flex;align-items:center;gap:6px}
+  .rail{width:160px;flex:none;background:var(--surface-inset);border:1px solid var(--edge);border-radius:6px;padding:6px;display:grid;grid-auto-flow:row;grid-template-columns:repeat(var(--cols,16), 1fr);gap:2px;overflow:hidden}
+  .glyph-cell{height:12px;border-radius:2px;background:var(--surface-1);border:1px solid rgba(255,255,255,.04);cursor:pointer;transition:transform .08s ease;position:relative}
+  .glyph-cell:hover{transform:scaleY(1.15);z-index:3;outline:1px solid var(--ink-hi)}
+  .glyph-cell.ckpt{background:var(--attention-bg);border-color:var(--attention)}
+  .glyph-cell.summary{background:var(--attention-bg)}
+  .glyph-cell.fail{background:var(--danger-bg);border-color:var(--danger)}
+  .glyph-cell.fail::after{content:"";position:absolute;top:-1px;right:-1px;width:0;height:0;border-style:solid;border-width:5px 5px 0 0;border-color:var(--danger) transparent transparent transparent;z-index:3}
+  .glyph-cell.steer::after{content:"";position:absolute;top:1px;right:2px;width:4px;height:4px;border-radius:50%;background:var(--attention-ink)}
+  .glyph-cell.live-cell{border-color:var(--alive);box-shadow:0 0 6px rgba(63,185,80,.5)}
+  .glyph-cell.new{animation:flash .5s ease-out}
+  @keyframes flash{0%{background:rgba(63,185,80,.35)}100%{background:var(--surface-1)}}
+  .ticker{font-family:var(--mono);font-size:11px;color:var(--ink-mid);margin-top:10px;line-height:1.5;min-height:36px;background:var(--surface-inset);border:1px solid var(--edge);border-radius:6px;padding:6px 9px}
+  .ticker .ts{color:var(--ink-low)}
+  .ticker .ev{color:var(--alive-ink)}
+  .ticker .err{color:var(--danger-ink)}
+  .ticker .steer{color:var(--attention-ink)}
+  .ticker .comp{color:var(--attention-ink)}
+  .kv{display:flex;gap:14px;flex-wrap:wrap;margin-top:8px;font-family:var(--mono);font-size:11px;color:var(--ink-low)}
+  .kv span b{color:var(--ink-hi);font-weight:500}
+  .layout{display:flex;gap:0;align-items:flex-start}
+  .transcript-col{flex:1;background:var(--surface-inset);border:1px solid var(--edge);border-radius:6px;padding:12px;min-width:0;font-family:var(--mono);font-size:11px;color:var(--ink-mid);line-height:1.45;opacity:.6}
+  .caption{color:var(--ink-mid);font-size:12px;line-height:1.55;max-width:920px}
+  .caption b{color:var(--ink-hi);font-weight:500}
+</style>
+</head>
+<body>
+
+<div style="max-width:1180px;margin:0 auto">
+  <div class="micro">evener · transcript-viz proposal · COMPACT idea 1 of 3</div>
+  <h1 style="margin-top:6px">Compact Event Tape Rail — a vertical glyph column</h1>
+  <p class="sub">A ≤160px-wide vertical rail compresses the full session into a glyph column where each turn is a 12px-tall cell; <b>column hue = turn kind, inner bar = tool-call intensity, amber dividers = compaction, red corner = failure, amber dot = steering</b>. The full-session-so-far pattern stays visible without scrolling. A <b>LIVE</b> indicator and streaming ticker narrate events as they arrive. Play/pause/speed controls live in page chrome outside the component's pixel budget.</p>
+
+  <div class="controls">
+    <button class="btn" id="playBtn">▶ play</button>
+    <button class="btn" id="pauseBtn">⏸ pause</button>
+    <span style="color:var(--ink-low);font-size:11px">speed</span>
+    <button class="btn" id="speedBtn">1×</button>
+    <button class="btn" id="speed2Btn">3×</button>
+    <button class="btn" id="speed4Btn">10×</button>
+    <span class="live" id="liveBadge"><span class="dot" id="liveDot"></span><span id="liveTxt">LIVE</span></span>
+    <span class="micro" style="margin-left:auto">turn #<span id="turnCount">0</span></span>
+  </div>
+
+  <div class="card">
+    <div class="card-head"><h2>Legend</h2></div>
+    <div class="legend">
+      <span class="lg-item"><span style="width:14px;height:14px;border-radius:3px;background:#2f6f3f"></span> assistant</span>
+      <span class="lg-item"><span style="width:14px;height:14px;border-radius:3px;background:#3a5a2a"></span> tool_results</span>
+      <span class="lg-item"><span style="width:14px;height:14px;border-radius:3px;background:var(--accent)"></span> user_input</span>
+      <span class="lg-item"><span style="width:14px;height:14px;border-radius:3px;background:var(--attention)"></span> steering</span>
+      <span class="lg-item"><span style="width:14px;height:14px;border-radius:3px;background:#6a4f1f"></span> system/env/hook</span>
+      <span class="lg-item"><span style="width:14px;height:14px;border-radius:3px;background:var(--attention-bg);border-left:2px solid var(--attention)"></span> checkpoint+summary</span>
+      <span class="lg-item"><span style="width:14px;height:14px;border-radius:3px;background:var(--surface-1);border:1px solid var(--edge);position:relative"></span> turn_failure (red corner)</span>
+      <span class="lg-item"><span style="width:14px;height:14px;border-radius:3px;background:linear-gradient(to top, var(--alive) 0%, rgba(63,185,80,.08) 100%)"></span> inner bar = tool-call count</span>
+      <span class="lg-item"><span style="width:14px;height:14px;border-radius:3px;background:var(--cyan)"></span> bg job</span>
+      <span class="lg-item"><span style="width:14px;height:14px;border-radius:3px;background:var(--surface-1);border:1px solid var(--alive)"></span> live cell (glowing green border)</span>
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="card-head"><h2>Compact Event Tape Rail · 160px wide</h2></div>
+    <div class="layout">
+      <div class="rail" id="rail"></div>
+      <div class="transcript-col" id="transcriptCol">
+        <div class="micro">Dimmed transcript column (mock — in-situ)</div>
+        <div>12:00 USER: Build three genuinely different visual mockups for the evener web UI transcript comprehension.</div>
+        <div>12:00 SYSTEM: environment context: cwd=/Users/jesse/... date=2026-08-21 sandbox=off git=main</div>
+        <div>12:01 ASSISTANT: Planning step 1: read the schema</div>
+        <div>12:02 TOOL_RESULTS: 16 tool results (read_file, grep_files, list_dir)</div>
+        <div>12:04 ASSISTANT: Planning step 2: grep for turn kinds</div>
+        <div>12:05 TOOL_RESULTS: 11 tool results (grep_files)</div>
+        <div>12:06 ASSISTANT: Planning step 3: inspect transcript pane</div>
+        <div>12:07 TOOL_RESULTS: 13 tool results (read_file, list_dir)</div>
+        <div>12:08 ASSISTANT: Planning step 4: design encoding</div>
+        <div>12:09 TOOL_RESULTS: 9 tool results (read_file, grep_files)</div>
+        <div>12:10 ASSISTANT: Planning step 5: sketch layout</div>
+        <div>12:11 TOOL_RESULTS: 14 tool results (read_file, grep_files, list_dir)</div>
+        <div>12:12 ASSISTANT: Planning step 6: read the schema</div>
+        <div>12:13 TOOL_RESULTS: 12 tool results (read_file, list_dir)</div>
+        <div>12:14 ASSISTANT: Planning step 7: grep for turn kinds</div>
+        <div>12:15 TOOL_RESULTS: 11 tool results (grep_files)</div>
+        <div>12:16 ASSISTANT: Planning step 8: inspect transcript pane</div>
+        <div>12:17 TOOL_RESULTS: 13 tool results (read_file, list_dir)</div>
+        <div>12:18 ASSISTANT: Planning step 9: design encoding</div>
+        <div>12:19 TOOL_RESULTS: 9 tool results (read_file, grep_files)</div>
+        <div>12:20 ASSISTANT: Planning step 10: sketch layout</div>
+      </div>
+    </div>
+    <div class="kv" id="kv"></div>
+    <div class="ticker" id="ticker"></div>
+  </div>
+
+  <div class="card" id="detailCard">
+    <div class="card-head"><h2 id="detailTitle">Turn — hover or click a column</h2><span class="micro" id="detailPos"></span></div>
+    <div style="grid-template-columns:1fr 1fr;display:grid;gap:14px 22px;font-size:12px" id="detail">
+      <div><dt>Kind</dt><dd>—</dd></div>
+      <div><dt>Turn index</dt><dd>—</dd></div>
+      <div><dt>Wall-clock</dt><dd>—</dd></div>
+      <div><dt>Tokens</dt><dd>—</dd></div>
+      <div><dt>Tool calls</dt><dd>—</dd></div>
+      <div><dt>Content</dt><dd>—</dd></div>
+    </div>
+  </div>
+
+  <p class="caption">
+    <b>What you see at a glance, live, in ≤160px:</b> as turns stream in, the rail fills column by column; older columns compress upward to keep the full-session-so-far pattern on one screen. A green-glow border marks the live cell. The streaming ticker narrates each event as it arrives. <b>Live questions answered:</b> what pattern is forming right now (burst, stall, retry loop)? what just changed? is current activity normal for this session? Bursts show as rapid column arrivals; stalls as gaps; retry loops as a red glyph followed by rapid tool_results; compaction as an amber full-height divider. The delegate lanes and background jobs are compressed into thin tracks beneath the ribbon sharing the time axis.
+  </p>
+</div>
+
+<script>
+"use strict";
+var speed = 1;
+var paused = true;
+var tickInterval = null;
+var turns = [];
+var turnIdx = 0;
+var clock = 12 * 60;
+var totalTools = 0;
+var totalTokens = 0;
+var compactions = 0;
+var failures = 0;
+var steers = 0;
+var delegates = [{name:"root", depth:0, start:0, span:0}];
+var jobs = [];
+var COLS = 16;
+var RNG = (function(){var s=0x9e3779b9>>>0;return function(){s^=s<<13;s>>>=0;s^=s>>>17;s>>>=0;s^=s<<5;s>>>=0;return s/4294967296};})();
+
+function step() {
+  if (turnIdx === 0) {
+    pushTurn({kind:"user", tokens:120, text:"Build three genuinely different visual mockups for the evener web UI transcript comprehension."});
+    pushTurn({kind:"system", text:"environment context: cwd=/Users/jesse/... date=2026-08-21 sandbox=off git=main"});
+    return;
+  }
+  if (turnIdx < 95) {
+    var tc = Math.round(3 + RNG() * 14);
+    pushTurn({kind:"assistant", tokens:300+Math.floor(RNG()*900), text:"Planning step "+turnIdx});
+    pushTurn({kind:"tool", tools:tc, tokens:40+Math.floor(RNG()*200), text:tc+" tool results"});
+    clock += Math.round(20 + RNG() * 120);
+    return;
+  }
+  if (turnIdx === 95) {
+    pushTurn({kind:"checkpoint", text:"Deterministic checkpoint — context folded."});
+    pushTurn({kind:"summary", tokens:800, text:"Summary: explored schema/turn.go, transcript pane, design system; three ideas drafted."});
+    clock += 30;
+    return;
+  }
+  if (turnIdx === 96) {
+    pushTurn({kind:"steering", tokens:90, text:"Make sure the mockups depict delegates and background jobs, not just a chat log."});
+    return;
+  }
+  if (turnIdx === 100) {
+    spawnDelegate(delegates[0], "dlg_event_tape");
+    spawnDelegate(delegates[0], "dlg_heatmap");
+    spawnDelegate(delegates[0], "dlg_cost_tree");
+    return;
+  }
+  if (turnIdx === 103) {
+    spawnDelegate(delegates[1], "dlg_g1_render");
+    return;
+  }
+  if (turnIdx === 130) {
+    endDelegate("dlg_g1_render");
+    return;
+  }
+  if (turnIdx === 135) {
+    spawnDelegate(delegates[1], "dlg_g2_data");
+    return;
+  }
+  if (turnIdx === 155) {
+    endDelegate("dlg_g2_data");
+    return;
+  }
+  if (turnIdx === 158) {
+    spawnDelegate(delegates[2], "dlg_g3_verify");
+    return;
+  }
+  if (turnIdx === 160) {
+    pushTurn({kind:"steering", tokens:70, text:"The heatmap idea feels weak — push it further."});
+    return;
+  }
+  if (turnIdx === 185) {
+    endDelegate("dlg_g3_verify");
+    endDelegate("dlg_event_tape");
+    endDelegate("dlg_heatmap");
+    endDelegate("dlg_cost_tree");
+    return;
+  }
+  if (turnIdx === 186) {
+    pushTurn({kind:"checkpoint", text:"Context folded mid-delegation."});
+    pushTurn({kind:"summary", tokens:1200, text:"Summary: 3 delegates spawned, 2 grandchildren, mockups in progress."});
+    clock += 40;
+    return;
+  }
+  if (turnIdx === 205) {
+    pushTurn({kind:"assistant", tokens:500, text:"Running verification gate..."});
+    pushTurn({kind:"tool", tools:3, tokens:300, text:"exec_command: npm run build (3 results)"});
+    return;
+  }
+  if (turnIdx === 206) {
+    pushTurn({kind:"failure", text:"exec_command exit 1: build failed — TypeError in ToolRow.tsx", err:{msg:"TypeError: Cannot read properties of undefined (reading 'summary')", source:"exec_command", title:"Turn failed"}});
+    return;
+  }
+  if (turnIdx === 207) {
+    pushTurn({kind:"assistant", tokens:700, text:"Build failed — the ToolRow descriptor lookup returned undefined. Patching the registry."});
+    pushTurn({kind:"tool", tokens:200, tools:2, text:"edit_file + exec_command (retry)"});
+    return;
+  }
+  if (turnIdx === 225) {
+    pushTurn({kind:"hook", text:"pre-commit hook completed: lint hook exit 0 · 240ms"});
+    return;
+  }
+  if (turnIdx === 245) {
+    pushTurn({kind:"steering", tokens:50, text:"Looks good — finalize the README."});
+    return;
+  }
+  if (turnIdx === 263) {
+    pause();
+    return;
+  }
+  var tc = Math.round(2 + RNG() * 12);
+  pushTurn({kind:"assistant", tokens:300+Math.floor(RNG()*800), text:"Step "+turnIdx});
+  if (turnIdx % 2 === 0) { pushTurn({kind:"tool", tools:tc, tokens:50+Math.floor(RNG()*220), text:tc+" results"}); }
+  clock += Math.round(20 + RNG() * 90);
+}
+
+function pushTurn(opts) {
+  var t = {idx:turnIdx, clock:clock, tools:opts.tools||0, tokens:opts.tokens||0, kind:opts.kind, text:opts.text||"", live:true, err:opts.err||null};
+  turns.push(t);
+  turnIdx++;
+  if (t.tools) totalTools += t.tools;
+  if (t.tokens) totalTokens += t.tokens;
+  if (t.kind === "checkpoint" || t.kind === "summary") compactions++;
+  if (t.kind === "failure") failures++;
+  if (t.kind === "steering") steers++;
+  delegates[0].span = turnIdx;
+  tick(t);
+  render();
+}
+
+function spawnDelegate(parent, name) {
+  delegates.push({name:name, depth:parent.depth+1, start:turnIdx, span:0, parent:parent.name, errs:0});
+  pushTurn({kind:"assistant", tokens:500, text:"Spawning delegate "+name});
+}
+
+function endDelegate(name) {
+  var d = delegates.find(function(x){return x.name===name;});
+  if (d) d.span = turnIdx - d.start;
+}
+
+/* ---------- render ---------- */
+function render() {
+  var rail = document.getElementById("rail");
+  var maxTools = Math.max.apply(null, turns.map(function(t){return t.tools||0;})) || 1;
+  while (rail.childElementCount > turns.length) rail.removeChild(rail.lastChild);
+  for (var i = 0; i < turns.length; i++) {
+    var turn = turns[i];
+    var cell = rail.children[i];
+    if (!cell) {
+      cell = document.createElement("div");
+      rail.appendChild(cell);
+    }
+    cell.className = "glyph-cell";
+    if (turn.kind === "checkpoint") cell.classList.add("ckpt");
+    else if (turn.kind === "summary") cell.classList.add("summary");
+    else if (turn.kind === "failure") cell.classList.add("fail");
+    if (turn.kind === "steering") cell.classList.add("steer");
+    if (turn.live) cell.classList.add("live-cell");
+    cell.innerHTML = "";
+    var kindEl = document.createElement("div");
+    kindEl.className = "kind";
+    kindEl.style.background = (turn.kind === "assistant" ? "#2f6f3f" : (turn.kind === "tool" ? "#3a5a2a" : (turn.kind === "user" ? "#58a6ff" : (turn.kind === "steering" ? "#d29922" : (turn.kind === "system" ? "#6a4f1f" : (turn.kind === "env" ? "#5a4a2a" : (turn.kind === "hook" ? "#4a3a1a" : (turn.kind === "checkpoint" ? "#a07a1f" : (turn.kind === "summary" ? "#c79a2a" : "#444")))))))));
+    cell.appendChild(kindEl);
+    if (turn.tools > 0) {
+      var barEl = document.createElement("div");
+      barEl.className = "bar";
+      var h = Math.max(8, (turn.tools / maxTools) * 100);
+      barEl.style.height = h + "%";
+      barEl.style.background = turn.kind === "tool" ? "rgba(63,185,80,.55)" : "rgba(88,166,255,.5)";
+      cell.appendChild(barEl);
+    }
+    cell.title = "#" + turn.idx + " " + turn.kind + (turn.tools ? " · " + turn.tools + " tools" : "");
+    cell.onmouseenter = function() { selectTurn(turn); };
+    cell.onclick = function() { selectTurn(turn); };
+  }
+  document.getElementById("turnCount").textContent = turnIdx;
+  renderKV();
+  renderTickerContent();
+}
+
+function renderKV() {
+  document.getElementById("kv").innerHTML =
+    "<span><b>" + turnIdx + "</b> turns</span>" +
+    "<span><b>" + totalTools.toLocaleString() + "</b> tool calls</span>" +
+    "<span><b>" + (totalTokens / 1000).toFixed(1) + "k</b> tokens</span>" +
+    "<span><b>" + compactions + "</b> compactions</span>" +
+    "<span><b>" + failures + "</b> failure(s)</span>" +
+    "<span><b>" + steers + "</b> steering</span>" +
+    "<span><b>" + delegates.length + "</b> delegate nodes</span>";
+}
+
+function renderTickerContent() {
+  var ticker = document.getElementById("ticker");
+  ticker.innerHTML = '<span class="ts">12:00</span> <span class="ev">turn 0: USER: Build three genuinely different visual mockups for the evener web UI transcript comprehension.</span>';
+}
+
+/* ---------- detail ---------- */
+function selectTurn(turn) {
+  document.querySelectorAll(".glyph-cell.sel").forEach(function(x){ x.classList.remove("sel"); });
+  var cell = document.getElementById('rail').children[turn.idx];
+  if (cell) cell.classList.add("sel");
+  var d = document.getElementById("detail");
+  var kindLabel = {assistant:"ASSISTANT",tool:"TOOL_RESULTS",user:"USER_INPUT",steering:"STEERING",system:"SYSTEM",env:"ENVIRONMENT",hook:"HOOK_COMPLETED",checkpoint:"CHECKPOINT",summary:"SUMMARY",failure:"TURN_FAILURE"}[turn.kind] || turn.kind.toUpperCase();
+  var pills = "";
+  if (turn.kind === "failure") pills += '<span class="pill danger">failed</span>';
+  if (turn.kind === "checkpoint"||turn.kind === "summary") pills += '<span class="pill attention">compaction</span>';
+  if (turn.kind === "steering") pills += '<span class="pill attention">steering</span>';
+  if (turn.kind === "user") pills += '<span class="pill accent">user</span>';
+  if (turn.tools) pills += '<span class="pill alive">' + turn.tools + ' tools</span>';
+  if (turn.live) pills += ' <span class="pill alive">live</span>';
+  d.innerHTML =
+    "<div><dt>Kind</dt><dd>" + kindLabel + " " + pills + "</dd></div>" +
+    "<div><dt>Turn index</dt><dd>#" + turn.idx + "</dd></div>" +
+    "<div><dt>Wall-clock</dt><dd>" + fmtClock(turn.clock) + "</dd></div>" +
+    "<div><dt>Tokens</dt><dd>" + (turn.tokens||0).toLocaleString() + "</dd></div>" +
+    "<div><dt>Tool calls</dt><dd>" + (turn.tools||0) + "</dd></div>" +
+    '<div style="grid-column:1/-1"><dt>Content</dt><dd>' + esc(turn.text||"") + '</dd></div>';
+  document.getElementById("detailTitle").textContent = "Turn #" + turn.idx + " — " + kindLabel;
+  document.getElementById("detailPos").textContent = "col " + (turn.idx % COLS + 1);
+}
+function fmtClock(m) { return Math.floor(m/60) + ":" + String(m%60).padStart(2,"0"); }
+function esc(s) { return String(s).replace(/[&<>]/g, function(c) { return {"&":"&amp;","<":"&lt;",">":"&gt;"}[c]; }); }
+
+/* ---------- controls ---------- */
+var playBtn = document.getElementById("playBtn");
+var pauseBtn = document.getElementById("pauseBtn");
+var speedBtn = document.getElementById("speedBtn");
+var speed2Btn = document.getElementById("speed2Btn");
+var speed4Btn = document.getElementById("speed4Btn");
+var liveDot = document.getElementById("liveDot");
+var liveTxt = document.getElementById("liveTxt");
+
+function setSpeed(s) {
+  speed = s;
+  speedBtn.classList.toggle("active", s===1);
+  speed2Btn.classList.toggle("active", s===3);
+  speed4Btn.classList.toggle("active", s===10);
+  if (!paused) restartTick();
+}
+speedBtn.onclick = function() { setSpeed(1); };
+speed2Btn.onclick = function() { setSpeed(3); };
+speed4Btn.onclick = function() { setSpeed(10); };
+
+function restartTick() {
+  if (tickInterval) clearInterval(tickInterval);
+  if (!paused) tickInterval = setInterval(step, 1000 / speed);
+}
+playBtn.onclick = function() { paused = false; playBtn.classList.add("active"); pauseBtn.classList.remove("active"); liveDot.classList.remove("paused"); liveTxt.textContent = "LIVE"; restartTick(); step(); };
+pauseBtn.onclick = function() { paused = true; playBtn.classList.remove("active"); pauseBtn.classList.add("active"); liveDot.classList.add("paused"); liveTxt.textContent = "PAUSED"; if (tickInterval) clearInterval(tickInterval); };
+playBtn.classList.add("active");
+
+render();
+</script>
+</body>
+</html>

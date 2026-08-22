@@ -1,0 +1,305 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>Delegate Cascade — evener session delegation tree explorer</title>
+<style>
+  :root{
+    --bg:#0c0e12; --bg-2:#11141b; --panel:#151922; --panel-2:#1b212c;
+    --line:#262d3a; --line-2:#333c4d;
+    --ink:#e7edf5; --ink-mid:#aab4c5; --ink-low:#6b7689; --ink-dim:#4a5366;
+    --accent:#7cc4ff; --warn:#ffce6b; --err:#ff7d7d; --ok:#8fe3a0; --teal:#5fd0c4; --violet:#b69cff; --pink:#ff9ecb;
+  }
+  *{box-sizing:border-box}
+  html,body{margin:0;height:100%}
+  body{
+    background:radial-gradient(1200px 600px at 70% -10%, #161b26 0%, var(--bg) 60%);
+    color:var(--ink); font:13px/1.45 ui-monospace,"SF Mono",Menlo,Consolas,monospace;
+    -webkit-font-smoothing:antialiased; overflow:hidden;
+  }
+  .app{display:grid; grid-template-rows:auto 1fr; height:100vh}
+  header.top{
+    display:flex; align-items:center; gap:14px; padding:10px 16px;
+    border-bottom:1px solid var(--line); background:linear-gradient(180deg,#10141d,#0c0e12);
+  }
+  .brand{font-weight:700; letter-spacing:.04em; color:var(--ink)}
+  .brand .dim{color:var(--ink-low); font-weight:400}
+  .session-id{color:var(--ink-mid); font-size:12px}
+  .session-id b{color:var(--accent)}
+  .top .spacer{flex:1}
+  .legend-inline{display:flex; gap:12px; align-items:center; color:var(--ink-low); font-size:11px}
+  .legend-inline .sw{width:10px;height:10px;border-radius:2px;display:inline-block;margin-right:4px;vertical-align:-1px}
+  /* ── main ── */
+  main{display:grid; grid-template-columns:1fr 320px; min-height:0; background:var(--bg)}
+  .tree-area{overflow:auto; padding:14px}
+  /* ── tree ── */
+  .tree{position:relative; min-width:900px}
+  .lane{position:absolute; left:0; right:0; height:1px; background:var(--line-2); pointer-events:none}
+  .lane-label{position:absolute; left:0; top:-12px; font-size:10px; color:var(--ink-dim); letter-spacing:.05em}
+  .node{
+    position:absolute; width:148px; border:1px solid var(--line-2); border-radius:8px; background:var(--panel); padding:8px 10px; cursor:pointer; transition:.15s; z-index:1;
+  }
+  .node:hover{border-color:var(--accent); background:var(--panel-2)}
+  .node.selected{border-color:var(--accent); box-shadow:0 0 0 1px var(--accent), 0 0 12px rgba(124,196,255,.25)}
+  .node .hdr{display:flex; align-items:center; gap:6px; margin-bottom:5px}
+  .node .lvl{font-size:9px; font-weight:700; padding:1px 5px; border-radius:9px; text-transform:uppercase; letter-spacing:.05em}
+  .node .lvl.l1{background:rgba(124,196,255,.16); color:var(--accent)}
+  .node .lvl.l2{background:rgba(95,208,196,.16); color:var(--teal)}
+  .node .lvl.l3{background:rgba(182,156,255,.16); color:var(--violet)}
+  .node .name{font-size:11px; color:var(--ink-mid); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; flex:1}
+  .node .outcome{font-size:10px; padding:1px 5px; border-radius:9px}
+  .node .outcome.ok{background:rgba(143,227,160,.14); color:var(--ok)}
+  .node .outcome.err{background:rgba(255,125,125,.14); color:var(--err)}
+  .node .row{display:flex; justify-content:space-between; font-size:10px; color:var(--ink-low); margin-top:2px}
+  .node .spark{height:22px; margin-top:4px; display:flex; align-items:flex-end; gap:1px}
+  .node .spark .bar{flex:1; background:var(--line-2); border-radius:1px 1px 0 0; min-width:2px}
+  .edge{position:absolute; background:var(--line-2); pointer-events:none}
+  .edge.v{width:1px} .edge.h{height:1px}
+  /* ── timeline lane overlay ── */
+  .timeline-overlay{position:absolute; left:0; right:0; bottom:0; height:40px; background:var(--bg-2); border-top:1px solid var(--line); overflow:hidden}
+  .tl-label{position:absolute; left:8px; top:6px; font-size:10px; color:var(--ink-dim)}
+  .tl-bar{position:absolute; top:18px; height:10px; border-radius:5px; cursor:pointer; transition:.15s}
+  .tl-bar:hover{filter:brightness(1.3)}
+  .tl-bar.selected{outline:1px solid var(--accent); box-shadow:0 0 8px rgba(124,196,255,.4)}
+  /* ── right panel ── */
+  .panel{border-left:1px solid var(--line); background:var(--bg-2); overflow:auto; padding:14px}
+  .panel h3{margin:0 0 10px; font-size:12px; color:var(--ink); letter-spacing:.04em}
+  .panel h4{margin:14px 0 6px; font-size:10px; letter-spacing:.08em; text-transform:uppercase; color:var(--ink-dim); font-weight:600}
+  .panel h4:first-child{margin-top:0}
+  .panel .select-hint{color:var(--ink-low); font-size:11px; margin-bottom:10px}
+  .cmp-row{display:grid; grid-template-columns:1fr 1fr; gap:8px; margin-bottom:8px}
+  .cmp-cell{border:1px solid var(--line-2); border-radius:7px; padding:8px 10px; background:var(--panel)}
+  .cmp-cell .h{font-size:10px; color:var(--ink-low); margin-bottom:3px; display:flex; align-items:center; gap:5px}
+  .cmp-cell .h .dot{width:8px;height:8px;border-radius:2px;display:inline-block}
+  .cmp-cell .v{font-size:12px; color:var(--ink)}
+  .cmp-cell .v b{font-variant-numeric:tabular-nums}
+  .row2{display:flex; gap:8px; font-size:11px; color:var(--ink-low); margin-top:4px; flex-wrap:wrap}
+  .row2 span{flex:1}
+  .stat-grid{display:grid; grid-template-columns:1fr 1fr; gap:6px}
+  .stat{background:var(--panel); border:1px solid var(--line-2); border-radius:6px; padding:8px 10px}
+  .stat .l{font-size:10px; color:var(--ink-dim); margin-bottom:3px}
+  .stat .v{font-size:14px; color:var(--ink); font-variant-numeric:tabular-nums}
+  footer.foot{border-top:1px solid var(--line); background:var(--bg-2); padding:8px 16px; display:flex; gap:16px; color:var(--ink-low); font-size:11px}
+  footer.foot b{color:var(--ink-mid)}
+  kbd{background:var(--panel); border:1px solid var(--line-2); border-bottom-width:2px; border-radius:4px; padding:0 5px; font-size:10px; color:var(--ink-mid)}
+  .hint{color:var(--ink-dim)}
+</style>
+</head>
+<body>
+<div class="app">
+  <header class="top">
+    <div class="brand">DELEGATE CASCADE <span class="dim">// delegation tree explorer</span></div>
+    <div class="session-id" id="sessionMeta">session <b>s_4a9f…2c1</b> · main · glm-5.2-vision</div>
+    <div class="spacer"></div>
+    <div class="legend-inline">
+      <span><i class="sw" style="background:var(--accent)"></i>L1 subagent</span>
+      <span><i class="sw" style="background:var(--teal)"></i>L2 delegate</span>
+      <span><i class="sw" style="background:var(--violet)"></i>L3 grand-delegate</span>
+      <span><i class="sw" style="background:var(--ok)"></i>ok</span>
+      <span><i class="sw" style="background:var(--err)"></i>errored</span>
+    </div>
+  </header>
+
+  <main>
+    <div class="tree-area">
+      <div class="tree" id="tree"></div>
+      <div class="timeline-overlay" id="timeline"></div>
+    </div>
+    <div class="panel" id="panel">
+      <h3>Delegation comparison</h3>
+      <div class="select-hint" id="selectHint">Click a node to inspect it. Click a second sibling to compare side-by-side.</div>
+      <div id="panelBody"></div>
+    </div>
+  </main>
+
+  <footer class="foot">
+    <span><b>Click</b> a node to inspect · <b>click</b> a sibling to compare · <kbd>Esc</kbd> clears</span>
+    <span class="hint">synthetic data — one very long session, 3-level delegation, 1 error/retry episode</span>
+  </footer>
+</div>
+
+<script>
+const DELEGATES=[
+  {id:'root', parent:null, spawn:0, done:244, level:0, name:'main session', outcome:'ok', tools:1605, tokens:1840000, wallSec:22*60},
+  {id:'dlg_a1', parent:'root', spawn:20, done:58, level:1, name:'fuzz-securepath', outcome:'ok', tools:214, tokens:184000, wallSec:14*60},
+  {id:'dlg_b2', parent:'root', spawn:76, done:115, level:1, name:'build-mockups', outcome:'ok', tools:302, tokens:410000, wallSec:28*60},
+  {id:'dlg_c3', parent:'dlg_b2', spawn:84, done:99, level:2, name:'render-idea-1', outcome:'ok', tools:128, tokens:152000, wallSec:14*60},
+  {id:'dlg_d4', parent:'dlg_b2', spawn:106, done:114, level:2, name:'render-idea-2', outcome:'ok', tools:96, tokens:118000, wallSec:8*60},
+  {id:'dlg_e5', parent:'root', spawn:139, done:210, level:1, name:'verify-in-browser', outcome:'err', tools:471, tokens:506000, wallSec:71*60},
+  {id:'dlg_f6', parent:'dlg_e5', spawn:149, done:182, level:2, name:'chrome-screenshot', outcome:'ok', tools:188, tokens:201000, wallSec:33*60},
+  {id:'dlg_g7', parent:'dlg_f6', spawn:157, done:172, level:3, name:'fix-layout-bug', outcome:'ok', tools:73, tokens:88000, wallSec:15*60},
+];
+const JOBS=[
+  {id:'job_t1', delegate:null, spawn:42, done:56, name:'fuzz securepath (detached)', kind:'detached', durSec:14*60, outcome:'ok'},
+  {id:'job_t2', delegate:null, spawn:96, done:210, name:'go test ./agent/doctor (bg)', kind:'background', durSec:115*60, outcome:'ok'},
+  {id:'job_t3', delegate:null, spawn:114, done:116, name:'npm run build (bg)', kind:'background', durSec:2*60, outcome:'ok'},
+  {id:'job_t4', delegate:null, spawn:165, done:225, name:'chrome screenshot loop (bg)', kind:'background', durSec:55*60, outcome:'ok'},
+];
+const state={ selected:null, compare:[] };
+
+const treeEl=document.getElementById('tree');
+const tlEl=document.getElementById('timeline');
+const panelEl=document.getElementById('panel');
+const hintEl=document.getElementById('selectHint');
+
+// layout: lanes by level
+const LANES={0:30, 1:90, 2:150, 3:210};
+const NODE_W=148; const NODE_GAP=20; const TIMELINE_H=40;
+
+function buildTree(){
+  treeEl.innerHTML='';
+  const maxX=Math.max(...DELEGATES.map(d=>d.done));
+  const pxPerTurn=Math.max(4, (treeEl.clientWidth - NODE_W) / maxX);
+  // lanes
+  Object.entries(LANES).forEach(([lvl,y])=>{
+    const lane=document.createElement('div'); lane.className='lane'; lane.style.top=y+'px';
+    const lbl=document.createElement('div'); lbl.className='lane-label'; lbl.textContent='L'+lvl; lane.appendChild(lbl);
+    treeEl.appendChild(lane);
+  });
+  // nodes
+  DELEGATES.forEach(d=>{
+    const n=document.createElement('div'); n.className='node'; n.dataset.id=d.id;
+    n.style.left=(d.spawn*pxPerTurn)+'px'; n.style.top=LANES[d.level]+'px';
+    const hdr=document.createElement('div'); hdr.className='hdr';
+    const lvl=document.createElement('span'); lvl.className='lvl l'+d.level; lvl.textContent='L'+d.level; hdr.appendChild(lvl);
+    const name=document.createElement('span'); name.className='name'; name.textContent=d.name; hdr.appendChild(name);
+    const oc=document.createElement('span'); oc.className='outcome '+(d.outcome==='ok'?'ok':'err'); oc.textContent=d.outcome==='ok'?'✓':'✕'; hdr.appendChild(oc);
+    n.appendChild(hdr);
+    // sparkline of token spend over turns (synthetic)
+    const spark=document.createElement('div'); spark.className='spark';
+    const steps=12; const maxTok=600000;
+    for(let i=0;i<steps;i++){
+      const bar=document.createElement('div'); bar.className='bar';
+      // token spend rises then plateaus, with a spike near the end
+      let v=Math.sin(i/steps*Math.PI)*0.6 + (i/steps)*0.3 + (i===steps-1?0.2:0);
+      bar.style.height=Math.round(v*22)+'px';
+      bar.style.background = d.outcome==='err' && i>7 ? 'var(--err)' : 'var(--accent)';
+      spark.appendChild(bar);
+    }
+    n.appendChild(spark);
+    const row=document.createElement('div'); row.className='row';
+    row.innerHTML=`<span>${d.tools} tools</span><span>${Math.round(d.tokens/1000)}k tok</span>`;
+    n.appendChild(row);
+    const row2=document.createElement('div'); row2.className='row2';
+    row2.innerHTML=`<span>spawn t${d.spawn}</span><span>done t${d.done}</span><span>${Math.round(d.wallSec/60)} min</span>`;
+    n.appendChild(row2);
+    n.onclick=()=>selectNode(d.id);
+    treeEl.appendChild(n);
+  });
+  // edges (parent→child)
+  DELEGATES.forEach(d=>{
+    if(!d.parent) return;
+    const parent=DELEGATES.find(x=>x.id===d.parent);
+    const x1=parent.spawn*pxPerTurn+NODE_W/2;
+    const y1=LANES[parent.level];
+    const x2=d.spawn*pxPerTurn+NODE_W/2;
+    const y2=LANES[d.level];
+    // vertical from parent down
+    const ev=document.createElement('div'); ev.className='edge v'; ev.style.left=(parent.spawn*pxPerTurn+NODE_W/2)+'px'; ev.style.top=y1+'px'; ev.style.height=(y2-y1)+'px'; treeEl.appendChild(ev);
+    // horizontal to child
+    const eh=document.createElement('div'); eh.className='edge h'; eh.style.left=x1+'px'; eh.style.top=y2+'px'; eh.style.width=(x2-x1)+'px'; treeEl.appendChild(eh);
+  });
+  // root node is wider to fit the timeline below
+  // adjust tree height
+  treeEl.style.height=(LANES[3]+60)+'px';
+}
+
+function buildTimeline(){
+  tlEl.innerHTML='';
+  const maxX=Math.max(...DELEGATES.map(d=>d.done));
+  const pxPerTurn=Math.max(4, (treeEl.clientWidth - 10) / maxX);
+  const lbl=document.createElement('div'); lbl.className='tl-label'; lbl.textContent='root timeline · wall-clock time →'; tlEl.appendChild(lbl);
+  // delegate spans
+  DELEGATES.filter(d=>d.parent).forEach(d=>{
+    const bar=document.createElement('div'); bar.className='tl-bar';
+    bar.style.left=(d.spawn*pxPerTurn)+'px';
+    bar.style.width=((d.done-d.spawn)*pxPerTurn)+'px';
+    bar.style.background = d.outcome==='err' ? 'rgba(255,125,125,.35)' : 'rgba(124,196,255,.35)';
+    bar.title=`${d.name}: turns ${d.spawn}–${d.done} · ${d.tools} tools · ${d.outcome}`;
+    bar.dataset.id=d.id;
+    bar.onclick=()=>selectNode(d.id);
+    tlEl.appendChild(bar);
+  });
+  // jobs spans (narrow bars above the delegate bars)
+  JOBS.forEach(j=>{
+    const bar=document.createElement('div'); bar.className='tl-bar';
+    bar.style.left=(j.spawn*pxPerTurn)+'px';
+    bar.style.width=((j.done-j.spawn)*pxPerTurn)+'px';
+    bar.style.background='rgba(255,206,107,.30)';
+    bar.style.height='6px'; bar.style.top='10px';
+    bar.title=`${j.name}: turns ${j.spawn}–${j.done} · ${j.kind}`;
+    tlEl.appendChild(bar);
+  });
+}
+
+function selectNode(id){
+  if(state.selected===id){ // toggle off
+    state.selected=null; state.compare=[]; hintEl.textContent='Click a node to inspect it. Click a second sibling to compare side-by-side.';
+  } else if(state.compare.length && state.compare[0].parent===DELEGATES.find(x=>x.id===id)?.parent){
+    // sibling compare: add to compare (max 2)
+    if(state.compare.includes(id)) state.compare=state.compare.filter(x=>x!==id);
+    else state.compare.push(id);
+  } else {
+    state.selected=id; state.compare=[id];
+  }
+  renderPanel();
+  renderTreeSel();
+}
+
+function renderTreeSel(){
+  [...treeEl.children].forEach(el=>{
+    el.classList.toggle('selected', el.dataset.id===state.selected || state.compare.includes(el.dataset.id));
+  });
+  [...tlEl.children].forEach(el=>{
+    if(el.dataset.id) el.classList.toggle('selected', el.dataset.id===state.selected || state.compare.includes(el.dataset.id));
+  });
+}
+
+function renderPanel(){
+  const body=document.getElementById('panelBody');
+  body.innerHTML='';
+  if(!state.compare.length){ return }
+  if(state.compare.length===1){
+    const d=DELEGATES.find(x=>x.id===state.compare[0]);
+    const stats=document.createElement('div'); stats.className='stat-grid';
+    const make=(l,v)=>{const s=document.createElement('div'); s.className='stat'; s.innerHTML=`<div class="l">${l}</div><div class="v">${v}</div>`; return s };
+    stats.appendChild(make('tools',d.tools.toLocaleString()));
+    stats.appendChild(make('tokens',d.tokens.toLocaleString()));
+    stats.appendChild(make('wall',Math.round(d.wallSec/60)+' min'));
+    stats.appendChild(make('span',`t${d.spawn}→t${d.done}`));
+    body.appendChild(stats);
+    const jobRows=document.createElement('div'); jobRows.innerHTML=`<h4>shell jobs in span</h4>`;
+    const j=JOBS.filter(x=>x.spawn>=d.spawn && x.done<=d.done);
+    if(j.length){ j.forEach(jj=>{ const r=document.createElement('div'); r.style.cssText='font-size:11px;color:var(--ink-low);padding:3px 0'; r.innerHTML=`• ${jj.name} (${jj.kind}) · ${Math.round(jj.durSec/60)} min`; jobRows.appendChild(r) }) }
+    else { jobRows.innerHTML+=`<div style='font-size:11px;color:var(--ink-dim);padding:3px 0'>none in this span</div>` }
+    body.appendChild(jobRows);
+    return;
+  }
+  // sibling compare: 2 cells side-by-side
+  const a=DELEGATES.find(x=>x.id===state.compare[0]);
+  const b=DELEGATES.find(x=>x.id===state.compare[1]);
+  const grid=document.createElement('div'); grid.className='cmp-row';
+  grid.appendChild(cmpCell(a)); grid.appendChild(cmpCell(b));
+  body.appendChild(grid);
+}
+
+function cmpCell(d){
+  const c=document.createElement('div'); c.className='cmp-cell';
+  const dotColor = d.outcome==='err'?'var(--err)':d.level===1?'var(--accent)':d.level===2?'var(--teal)':'var(--violet)';
+  c.innerHTML=`<div class="h"><span class="dot" style="background:${dotColor}"></span>${d.name}</div>
+    <div class="v"><b>${d.tools}</b> tools · <b>${Math.round(d.tokens/1000)}k</b> tok</div>
+    <div class="row2"><span>spawn t${d.spawn}</span><span>done t${d.done}</span><span>${Math.round(d.wallSec/60)} min</span></div>`;
+  return c;
+}
+
+document.addEventListener('keydown',e=>{ if(e.key==='Escape'){ state.selected=null; state.compare=[]; hintEl.textContent='Click a node to inspect it. Click a second sibling to compare side-by-side.'; renderTreeSel(); renderPanel() } });
+
+/* init */
+document.getElementById('sessionMeta').innerHTML=`session <b>s_4a9f…2c1</b> · main · glm-5.2-vision · 245 turns · 1,605 tool calls · 3 compactions · 22m wall`;
+buildTree();
+buildTimeline();
+window.addEventListener('resize',()=>{ buildTree(); buildTimeline() });
+</script>
+</body>
+</html>

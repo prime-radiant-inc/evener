@@ -1,0 +1,363 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Idea 2 — Riverbed: actor-lane causal timeline</title>
+<style>
+  :root{
+    --bg:#0d1117; --panel:#161b22; --border:#30363d; --text:#e6edf3; --dim:#8b949e;
+    --blue:#58a6ff; --green:#3fb950; --red:#f85149; --orange:#d29922;
+    --violet:#bc8cff; --purple:#a371f7; --teal:#39c5cf; --amber:#f0b72f;
+  }
+  *{box-sizing:border-box}
+  html,body{margin:0;padding:0;background:var(--bg);color:var(--text);
+    font:12px/1.45 ui-monospace,'SF Mono',SFMono-Regular,Menlo,Consolas,monospace;}
+  header{padding:14px 20px 10px;border-bottom:1px solid var(--border);display:flex;flex-wrap:wrap;gap:8px;align-items:center}
+  header .title{font-size:14px;font-weight:700;margin-right:10px}
+  header .title .idea{color:var(--teal)}
+  .chip{border:1px solid var(--border);border-radius:10px;padding:2px 8px;color:var(--dim);background:var(--panel)}
+  .chip b{color:var(--text);font-weight:600}
+  .chip.red b{color:var(--red)} .chip.green b{color:var(--green)} .chip.purple b{color:var(--purple)}
+  .wrap{padding:10px 20px 26px}
+  .legend{display:flex;flex-wrap:wrap;gap:14px;padding:8px 2px 12px;color:var(--dim);font-size:11px;align-items:center}
+  .legend .li{display:flex;gap:6px;align-items:center}
+  .sw-line{width:20px;border-top:3px solid #888;border-radius:2px}
+  .sw-area{width:16px;height:10px;border-radius:2px;background:rgba(88,166,255,.35);border:1px solid rgba(88,166,255,.8)}
+  .sw-dia{width:9px;height:9px;background:var(--red);transform:rotate(45deg)}
+  .sw-tick{width:3px;height:11px;background:var(--blue)}
+  .sw-tri{width:0;height:0;border-left:6px solid transparent;border-right:6px solid transparent;border-bottom:10px solid var(--orange)}
+  .sw-band{width:8px;height:12px;background:rgba(163,113,247,.28);border-left:1px dashed var(--purple);border-right:1px dashed var(--purple)}
+  svg{display:block;width:100%;height:auto}
+  #main{border:1px solid var(--border);border-radius:8px;background:#0a0e13}
+  #ov{margin-top:8px;border:1px solid var(--border);border-radius:8px;background:#0a0e13;cursor:crosshair}
+  .lane-label{font-size:10px;fill:var(--dim);text-anchor:end}
+  .lane-sublabel{font-size:8.5px;fill:#6e7681;text-anchor:end}
+  .axis-label{font-size:10px;fill:#6e7681}
+  .arc{fill:none;stroke-width:1.7;opacity:.9;cursor:pointer}
+  .arc-label{font-size:9px;fill:var(--dim);paint-order:stroke;stroke:#0a0e13;stroke-width:3px}
+  .dimmed{opacity:.08!important}
+  .glyph{cursor:pointer}
+  #tip{position:fixed;display:none;max-width:340px;background:#1c2330;border:1px solid #444c56;border-radius:8px;
+    padding:9px 11px;pointer-events:none;z-index:10;box-shadow:0 8px 24px rgba(0,0,0,.5);font-size:11px}
+  #tip .tt{font-weight:700;margin-bottom:2px}
+  #tip .td{color:#c9d1d9;white-space:pre-line;margin-top:4px}
+  .caption{color:var(--dim);font-size:11px;margin-top:10px}
+</style>
+</head>
+<body>
+<header>
+  <span class="title"><span class="idea">IDEA 2 · RIVERBED</span> — actor-lane causal timeline</span>
+  <span class="chip">session <b>evener-8f3k2</b></span>
+  <span class="chip">repo <b>prime-radiant/evener</b></span>
+  <span class="chip"><b>287</b> turns</span>
+  <span class="chip"><b>2,146</b> tool calls</span>
+  <span class="chip"><b>4.13M</b> tok · <b>$38.42</b></span>
+  <span class="chip"><b>6h12m</b> wall</span>
+  <span class="chip purple"><b>2</b> compactions</span>
+  <span class="chip"><b>3</b> delegates · <b>4</b> jobs · <b>3</b> watches</span>
+  <span class="chip red"><b>1</b> retry cascade</span>
+  <span class="chip green">goal <b>COMPLETE</b></span>
+</header>
+<div class="wrap">
+  <div class="legend">
+    <span><b style="color:var(--text)">CAUSALITY ACROSS ACTORS.</b> Each lane is one actor; time flows left→right. Arcs crossing lanes are causal events: who spawned, triggered, or reported to whom.</span>
+    <span class="li"><span class="sw-area"></span>tool-call density (calls/6min)</span>
+    <span class="li"><span class="sw-tick"></span>file edit (color = file)</span>
+    <span class="li"><span class="sw-dia"></span>failure</span>
+    <span class="li"><span class="sw-tri"></span>watch fire</span>
+    <span class="li"><span class="sw-band"></span>compaction fold</span>
+    <span class="li"><span class="sw-line" style="border-color:var(--violet)"></span>spawned</span>
+    <span class="li"><span class="sw-line" style="border-color:var(--teal)"></span>reported</span>
+    <span class="li"><span class="sw-line" style="border-color:var(--orange)"></span>triggered</span>
+    <span class="li"><span class="sw-line" style="border-color:var(--blue)"></span>steered</span>
+    <span class="li"><span class="sw-line" style="border-color:var(--green)"></span>notify / gate</span>
+    <span class="li">✲ top lane = context-window pressure (why folds happen)</span>
+  </div>
+  <svg id="main" viewBox="0 0 1280 612" preserveAspectRatio="xMidYMin meet"></svg>
+  <svg id="ov" viewBox="0 0 1280 64" preserveAspectRatio="xMidYMin meet"></svg>
+  <div class="caption">Interactions: <b>drag on the overview strip</b> to zoom into any window (try the watch storm at ~3h02m), <b>double-click</b> it to reset · hover glyphs and arcs for evidence · click an arc to pin-highlight it (click empty space to clear). All 2,146 tool calls are rendered as density currents, not rows — rendering cost is O(minutes), not O(turns).</div>
+</div>
+<div id="tip"></div>
+<script>
+"use strict";
+const NS="http://www.w3.org/2000/svg";
+const svg=document.getElementById("main"), ov=document.getElementById("ov"), tip=document.getElementById("tip");
+function mulberry32(a){return function(){a|=0;a=a+0x6D2B79F5|0;let t=Math.imul(a^a>>>15,1|a);t=t+Math.imul(t^t>>>7,61|t)^t;return((t^t>>>14)>>>0)/4294967296;};}
+const rnd=mulberry32(580914);
+function el(name,attrs,parent){const e=document.createElementNS(NS,name);for(const k in attrs)e.setAttribute(k,attrs[k]);if(parent)parent.appendChild(e);return e;}
+function txt(parent,s,x,y,cls,anchor){const t=el("text",{x,y,"class":cls,"text-anchor":anchor||"start"},parent);t.textContent=s;return t;}
+
+// ---------- time model ----------
+const T_END=372; // minutes, 6h12m
+const TURN_ANCHORS=[[1,0],[28,25],[61,70],[62,75],[95,140],[128,180],[131,185],[149,215],[151,220],[200,290],[220,330],[221,335],[260,355],[287,372]];
+function turn2min(turn){for(let i=1;i<TURN_ANCHORS.length;i++){const [t1,m1]=TURN_ANCHORS[i];const [t0,m0]=TURN_ANCHORS[i-1];
+  if(turn<=t1)return m0+(turn-t0)*(m1-m0)/(t1-t0);}return T_END;}
+function fmt(t){const h=Math.floor(t/60),m=Math.round(t%60);return h+"h"+String(m).padStart(2,"0")+"m";}
+
+// ---------- lanes ----------
+const ML=96, MR=24, PW=1280-ML-MR; // plot margins/width
+const LANES=[
+ {id:"ctx",  label:"CONTEXT",  sub:"window %", h:34},
+ {id:"user", label:"USER",     sub:"",         h:26},
+ {id:"root", label:"ROOT",     sub:"agent · k3→mini", h:92},
+ {id:"store",label:"dlg_store",sub:"delegate L1",     h:56},
+ {id:"tests",label:"dlg_tests",sub:"delegate L2",     h:44},
+ {id:"docs", label:"dlg_docs", sub:"delegate L1",     h:34},
+ {id:"jbuild",label:"job_build",sub:"background",     h:22},
+ {id:"jfuzz", label:"job_fuzz", sub:"detached",       h:22},
+ {id:"jci",   label:"job_ci",   sub:"background",     h:22},
+ {id:"je2e",  label:"job_e2e",  sub:"background",     h:22},
+ {id:"watch", label:"WATCHES",  sub:"fires", h:44},
+];
+const GAP=5, TOP=30;
+(function layout(){let y=TOP;for(const l of LANES){l.y=y;l.yc=y+l.h/2;y+=l.h+GAP;}window.BOT=y;})();
+const lane=id=>LANES.find(l=>l.id===id);
+
+// ---------- synthetic data ----------
+// tool-call density: 62 buckets of 6 min; per-lane windows; totals: root 1187, store 522, tests 263, docs 174 = 2146
+const NB=62;
+function density(w0,w1,total,shape){
+  const raw=[];let sum=0;
+  for(let i=0;i<NB;i++){const t=(i+0.5)*T_END/NB;
+    let v=0;
+    if(t>=w0&&t<=w1){const ph=(t-w0)/(w1-w0);
+      v=(0.35+0.65*shape(ph))*(0.55+0.9*rnd());}
+    raw.push(v);sum+=v;}
+  return raw.map(v=>sum>0?v*total/sum:0);
+}
+const DENS={
+ root: density(0,372,1187,p=>0.45+0.55*Math.abs(Math.sin(p*7.3))+ (p>0.5&&p<0.58?0.9:0)),
+ store:density(78,290,522,p=>0.4+0.6*Math.abs(Math.sin(p*5.1+1))),
+ tests:density(90,200,263,p=>0.4+0.6*Math.abs(Math.sin(p*4.2+2))),
+ docs: density(338,356,174,p=>0.5+0.5*Math.abs(Math.sin(p*6))),
+};
+// file-edit ticks: [tMinutes, lane, file]
+const FILES={"prune.go":"#58a6ff","tombstone.go":"#bc8cff","store.go":"#39c5cf","watches.go":"#d29922","prune_test.go":"#3fb950","fuzz seeds":"#f0883e","docs/*.md":"#8b949e"};
+const EDITS=[];
+function scatterEdits(w0,w1,n,lane,file){for(let i=0;i<n;i++)EDITS.push({t:w0+rnd()*(w1-w0),lane,file});}
+scatterEdits(28,70,18,"root","prune.go");
+scatterEdits(30,66,7,"root","prune_test.go");
+scatterEdits(80,200,13,"store","tombstone.go");
+scatterEdits(80,190,9,"store","store.go");
+scatterEdits(95,195,11,"tests","fuzz seeds");
+scatterEdits(196,214,9,"root","prune.go");       // cascade attempts
+scatterEdits(212,216,3,"root","watches.go");     // re-arm guard
+scatterEdits(222,290,12,"root","tombstone.go");  // integrating report
+scatterEdits(294,318,4,"root","store.go");       // CI lint fix
+scatterEdits(338,352,8,"docs","docs/*.md");
+scatterEdits(340,360,6,"root","watches.go");
+// failures
+const ERRORS=[
+ {t:196,lane:"root",label:"T133 go vet exit 1"},
+ {t:202,lane:"root",label:"T137 make build exit 1"},
+ {t:208,lane:"root",label:"T141 go test FAIL (fuzz seed)"},
+ {t:212,lane:"root",label:"T145 fuzz FAIL — same seed"},
+ {t:308,lane:"jci", label:"job_ci exit 1 (lint: unused param)"},
+];
+// jobs: [lane, start, end, status]
+const JOBS=[
+ {lane:"jbuild",t0:150,t1:170,ok:true,tip:"job_build · `make build` · background · exit 0 in 3m58s.\nStarted by dlg_store at T96 to validate the tombstone compile."},
+ {lane:"jfuzz", t0:150,t1:330,ok:true,tip:"job_fuzz · `go test -fuzz=FuzzPrune` · DETACHED · ran 3h00m.\nIts stdout fed watch w_fuzz; corpus failures at 3h02 caused the storm.\nExit 0 — the job was fine; the watch was not."},
+ {lane:"jci",   t0:300,t1:309,ok:false,tip:"job_ci run 1 · exit 1.\nCause: lint failure (unused param) — residue of the T147 root-cause fix in prune.go.",tip2:true},
+ {lane:"jci",   t0:312,t1:322,ok:true,tip:"job_ci rerun · exit 0.\nedit_file removed the unused param; CI green at T214.",tip2:true},
+ {lane:"je2e",  t0:340,t1:360,ok:true,tip:"job_e2e · end-to-end suite · exit 0.\nFinal gate before GOAL COMPLETE."},
+];
+// watch fires
+const FIRES=[
+ {t:182.0,w:"w_fuzz",storm:true,to:{lane:"root",t:196},tip:"w_fuzz fire 1/3 · matcher /FAILURE/ hit job_fuzz stdout.\nHandler at T129 re-arms the same matcher on the same output line…"},
+ {t:184.5,w:"w_fuzz",storm:true,to:{lane:"root",t:198},tip:"w_fuzz fire 2/3 · re-armed matcher fires again on the same line.\nRUNAWAY LOOP — 3 fires in 90 seconds."},
+ {t:187.0,w:"w_fuzz",storm:true,to:{lane:"root",t:200},tip:"w_fuzz fire 3/3 · storm interrupts root’s work at T132.\nThis interruption starts the retry cascade — and becomes the bug to fix."},
+ {t:250,w:"w_cost",to:{lane:"root",t:252},tip:"w_cost fire · token spend crossed $30.\nHandled cleanly: root switches test-writing to a cheaper model (T166 marker at 4h52)."},
+ {t:312,w:"w_ci",to:{lane:"root",t:314},tip:"w_ci fire · job_ci completed (exit 0).\nFires exactly once — the post-fix, non-runaway watch behavior."},
+];
+// cross-lane causal arcs
+const ARCS=[
+ {t0:0,  l0:"user", t1:4,  l1:"root", type:"gate",    label:"GOAL", tip:"USER_INPUT T1: goal set — tombstone pruning + fix the watch runaway loop."},
+ {t0:75, l0:"user", t1:76, l1:"root", type:"steered", label:"STEERING T62", tip:"STEERING T62: “handle delegate tombstones too”.\nQueued mid-run; consumed at T63 → immediately causes the dlg_store delegation."},
+ {t0:78, l0:"root", t1:79, l1:"store",type:"spawned", label:"spawn dlg_store", tip:"Root spawns child session dlg_store (L1) at T63:\nimplement agent/internal/delegatestore/tombstone.go. Budget $8, 2 levels allowed."},
+ {t0:90, l0:"store",t1:91, l1:"tests",type:"spawned", label:"spawn dlg_tests", tip:"dlg_store spawns grandchild dlg_tests (L2) at T70:\nwrite fuzz targets for delegatestore. 3-level delegation tree."},
+ {t0:200,l0:"tests",t1:201,l1:"store",type:"reported",label:"report", tip:"dlg_tests reports back at T140: 12 fuzz seeds, 1 corpus failure\n(the failure is evidence that reaches the root via dlg_store)."},
+ {t0:290,l0:"store",t1:291,l1:"root", type:"reported",label:"report T200", tip:"dlg_store reports back at T200:\ntombstone.go +412 lines, tests green, $6.80 of $8 budget."},
+ {t0:338,l0:"root", t1:339,l1:"docs", type:"spawned", label:"spawn dlg_docs", tip:"Root spawns dlg_docs (L1) at T230: update docs/web-ui/* for the new pruning behavior."},
+ {t0:353,l0:"docs", t1:354,l1:"root", type:"reported",label:"report", tip:"dlg_docs reports back at T258: 6 doc files updated."},
+ {t0:170,l0:"jbuild",t1:171,l1:"root",type:"gate",   label:"exit 0", tip:"job_build completion notification → root T98."},
+ {t0:330,l0:"jfuzz", t1:331,l1:"root",type:"gate",   label:"detached done", tip:"job_fuzz (detached) finishes at T217 — notification lands after compaction #1; root reads the retained output."},
+ {t0:360,l0:"je2e",  t1:361,l1:"root",type:"gate",   label:"exit 0", tip:"job_e2e green → final gate satisfied → update_goal(complete) at T287."},
+];
+const ARC_COLORS={spawned:"#bc8cff",reported:"#39c5cf",triggered:"#d29922",steered:"#58a6ff",gate:"#3fb950",informed:"#8b949e"};
+const COMPACTIONS=[{t:220,label:"FOLD #1 · T151 · 1.9M→40k"},{t:335,label:"FOLD #2 · T221 · 890k→22k"}];
+const MODEL_SWITCH={t:292,label:"MODEL_SWITCH T166 · k3 → mini"};
+// context pressure polyline (percent of window)
+const CTX=[];(function(){let v=8;for(let t=0;t<=T_END;t+=6){
+  if(t>=220&&t<226)v=12; else if(t>=335&&t<341)v=10;
+  else v=Math.min(96,v+2.4+rnd()*3.2);
+  if(t>330&&t<336)v=78;
+  CTX.push([t,v]);}})();
+CTX.push([T_END,55]);
+
+// ---------- zoom state ----------
+let view=[0,T_END], pinned=null;
+const X=t=>ML+(t-view[0])/(view[1]-view[0])*PW;
+const inView=t=>t>=view[0]-1&&t<=view[1]+1;
+
+// ---------- render ----------
+function render(){
+  svg.innerHTML="";
+  const defs=el("defs",{},svg);
+  for(const k in ARC_COLORS){const m=el("marker",{id:"arw-"+k,viewBox:"0 0 10 10",refX:9,refY:5,markerWidth:7,markerHeight:7,orient:"auto-start-reverse"},defs);
+    el("path",{d:"M 0 1 L 9 5 L 0 9 z",fill:ARC_COLORS[k]},m);}
+  const content=el("g",{},svg);
+  // compaction bands (behind lanes)
+  for(const c of COMPACTIONS){ if(!inView(c.t))continue;
+    const g=el("g",{},content);
+    el("rect",{x:X(c.t)-2.5,y:TOP-6,width:5,height:BOT-TOP+2,fill:"rgba(163,113,247,.16)",stroke:"#a371f7","stroke-width":1,"stroke-dasharray":"4 3",rx:2},g);
+    const nearRight=X(c.t)>ML+PW-170;
+    const t=txt(g,c.label,nearRight?X(c.t)-5:X(c.t)+5,TOP-12,"axis-label",nearRight?"end":"start");t.setAttribute("fill","#a371f7");
+  }
+  // lane separators + labels
+  for(const l of LANES){
+    el("rect",{x:ML,y:l.y,width:PW,height:l.h,fill:l.id==="root"?"rgba(88,166,255,.03)":"rgba(255,255,255,.014)",rx:3},content);
+    txt(content,l.label,ML-8,l.yc+3,"lane-label","end");
+    if(l.sub)txt(content,l.sub,ML-8,l.yc+12,"lane-sublabel","end");
+  }
+  // context pressure lane
+  (function(){const l=lane("ctx");const pts=CTX.filter(p=>inView(p[0]));
+    if(pts.length>1){const d=pts.map((p,i)=>(i?"L":"M")+X(p[0]).toFixed(1)+" "+(l.y+l.h-2-(p[1]/100)*(l.h-6)).toFixed(1)).join(" ");
+      el("path",{d,fill:"none",stroke:"#f0b72f","stroke-width":1.4,opacity:.9},content);}
+    for(const c of COMPACTIONS)if(inView(c.t)){el("circle",{cx:X(c.t),cy:l.y+l.h-8,r:2.5,fill:"#a371f7"},content);}
+    txt(content,"96%",X(view[0])+2,l.y+9,"lane-sublabel","start");
+  })();
+  // density currents
+  const dmax=Math.max(...DENS.root);
+  for(const id of ["root","store","tests","docs"]){
+    const l=lane(id);const col=id==="root"?"#58a6ff":id==="store"?"#bc8cff":id==="tests"?"#d2a8ff":"#8b949e";
+    let d="";let any=false;
+    for(let i=0;i<NB;i++){const t=(i+0.5)*T_END/NB;if(t<view[0]-3||t>view[1]+3)continue;
+      const h=(DENS[id][i]/dmax)*(l.h-14);const x=X(t);
+      d+=(any?"L":"M")+x.toFixed(1)+" "+(l.y+l.h-4-h).toFixed(1)+" ";any=true;}
+    if(!any)continue;
+    const xLast=X(Math.min(view[1],T_END)),xFirst=X(Math.max(view[0],0));
+    const area=d+`L ${xLast} ${l.y+l.h-4} L ${xFirst} ${l.y+l.h-4} Z`;
+    el("path",{d:area,fill:col,opacity:.22},content);
+    el("path",{d,fill:"none",stroke:col,"stroke-width":1.2,opacity:.75},content);
+  }
+  // edit ticks
+  for(const e of EDITS){if(!inView(e.t))continue;
+    const l=lane(e.lane);
+    const r=el("rect",{x:X(e.t)-1,y:l.y+3,width:2.2,height:Math.min(11,l.h*0.4),fill:FILES[e.file],opacity:.95,rx:1},content);
+    r.setAttribute("class","glyph");
+    r.addEventListener("mousemove",ev=>showTip(ev,"edit_file — "+e.file,`Turn ~T${Math.round(turnAt(e.t))} · actor ${e.lane==="root"?"ROOT":"dlg_"+e.lane}\n${fmt(e.t)} into session`));
+    r.addEventListener("mouseleave",hideTip);
+  }
+  // job bars
+  for(const j of JOBS){if(j.t1<view[0]||j.t0>view[1])continue;
+    const l=lane(j.lane);const x0=Math.max(X(j.t0),ML),x1=Math.min(X(j.t1),ML+PW);
+    const r=el("rect",{x:x0,y:l.y+4,width:Math.max(4,x1-x0),height:l.h-8,rx:3,
+      fill:j.ok?"rgba(63,185,80,.25)":"rgba(248,81,73,.30)",stroke:j.ok?"#3fb950":"#f85149","stroke-width":1.2},content);
+    r.setAttribute("class","glyph");
+    r.addEventListener("mousemove",ev=>showTip(ev,(j.ok?"job ok · ":"JOB FAILED · ")+j.lane.replace("j","job_").replace("job_b","b").replace("job_c","c").replace("job_e","e"),j.tip));
+    r.addEventListener("mouseleave",hideTip);
+  }
+  // failure diamonds
+  for(const e of ERRORS){if(!inView(e.t))continue;
+    const l=lane(e.lane);const y=l.id==="root"?l.y+22:l.yc;
+    const d=el("rect",{x:X(e.t)-4.5,y:y-4.5,width:9,height:9,fill:"#f85149",transform:`rotate(45 ${X(e.t)} ${y})`},content);
+    d.setAttribute("class","glyph");
+    d.addEventListener("mousemove",ev=>showTip(ev,"FAILURE — "+e.label,e.label.includes("T1")?"Part of the retry cascade (T132–149).\nCaused by the skip-list iterator bug written at T44\nand surfaced by the w_fuzz storm at T129–131.":"Caused by residue of the T147 fix; rerun passes."));
+    d.addEventListener("mouseleave",hideTip);
+  }
+  // watch fires (triangles) + arcs to handler
+  for(const f of FIRES){if(!inView(f.t))continue;
+    const l=lane("watch");const x=X(f.t);const y=l.y+12;
+    const g=el("g",{class:"glyph"},content);
+    el("path",{d:`M ${x} ${y} L ${x+6} ${y+11} L ${x-6} ${y+11} Z`,fill:f.storm?"#f85149":"#d29922",stroke:f.storm?"#ff9b94":"#e8c363","stroke-width":1},g);
+    if(f.storm)el("circle",{cx:x,cy:y+16,r:1.6,fill:"#f85149"},g);
+    const tgt=lane(f.to.lane);
+    const p=el("path",{d:`M ${x} ${y} C ${x} ${(y+tgt.y+tgt.h-6)/2}, ${X(f.to.t)} ${(y+tgt.y+tgt.h-6)/2}, ${X(f.to.t)} ${tgt.y+tgt.h-6}`,
+      fill:"none",stroke:f.storm?"#f85149":"#d29922","stroke-width":1.5,"stroke-dasharray":"3 3","marker-end":"url(#arw-triggered)",opacity:.8},content);
+    const lab=f.storm?"storm":"fire";
+    g.addEventListener("mousemove",ev=>showTip(ev,"WATCH FIRE — "+f.w+" @"+fmt(f.t),f.tip));
+    g.addEventListener("mouseleave",hideTip);
+  }
+  // storm bracket
+  if(view[0]<190&&view[1]>180){const l=lane("watch");
+    el("path",{d:`M ${X(181)} ${l.y+l.h-14} L ${X(181)} ${l.y+l.h-8} L ${X(188)} ${l.y+l.h-8} L ${X(188)} ${l.y+l.h-14}`,fill:"none",stroke:"#f85149","stroke-width":1},content);
+    const t=txt(content,"RUNAWAY ×3 / 90s",(X(181)+X(188))/2,l.y+l.h-2,"axis-label","middle");t.setAttribute("fill","#f85149");
+  }
+  // steering + spawn/report/notify arcs
+  for(const a of ARCS){if(a.t1<view[0]||a.t0>view[1])continue;
+    const l0=lane(a.l0),l1=lane(a.l1);
+    const x0=X(a.t0),x1=X(a.t1);
+    const y0=a.type==="steered"||a.type==="gate"&&a.l0==="user"?l0.yc:l0.y+l0.h-4;
+    const y1=l1.yc;
+    const mx=(x0+x1)/2;
+    const p=el("path",{d:`M ${x0} ${y0} C ${mx} ${y0}, ${mx} ${y1}, ${x1} ${y1}`,
+      "class":"arc",stroke:ARC_COLORS[a.type],"marker-end":`url(#arw-${a.type})`},content);
+    if(pinned&&pinned!==a)p.setAttribute("class","arc dimmed");
+    if(pinned===a)p.setAttribute("stroke-width","3");
+    if(inView(a.t0)&&(view[1]-view[0])<200){const pt=p.getPointAtLength(p.getTotalLength()*0.5);
+      const t=txt(content,a.label,pt.x,pt.y-4,"arc-label","middle");}
+    p.addEventListener("mousemove",ev=>showTip(ev,a.label+" · "+a.type,a.tip));
+    p.addEventListener("mouseleave",hideTip);
+    p.addEventListener("click",ev=>{ev.stopPropagation();pinned=pinned===a?null:a;render();});
+  }
+  // goal flag at start of user lane
+  if(view[0]<2){txt(content,"◎",X(0)-2,lane("user").yc+4,"axis-label","end");}
+  // model switch chip on root lane
+  if(inView(MODEL_SWITCH.t)){const l=lane("root");const x=X(MODEL_SWITCH.t);
+    const w=Math.max(70,Math.min(150,PW*0.14));
+    el("rect",{x:x-w/2,y:l.y+2,width:w,height:13,rx:6,fill:"#1c2330",stroke:"#58a6ff","stroke-width":1},content);
+    const t=txt(content,"⚙ MODEL_SWITCH k3→mini",x,l.y+11,"axis-label","middle");t.setAttribute("fill","#79b8ff");
+  }
+  // axis
+  const span=view[1]-view[0];const step=span>240?60:span>120?30:span>40?10:5;
+  const ay=BOT+16;
+  el("line",{x1:ML,y1:ay-8,x2:ML+PW,y2:ay-8,stroke:"#21262d"},content);
+  for(let t=Math.ceil(view[0]/step)*step;t<=view[1];t+=step){
+    el("line",{x1:X(t),y1:ay-11,x2:X(t),y2:ay-5,stroke:"#30363d"},content);
+    txt(content,fmt(t),X(t),ay+5,"axis-label","middle");
+  }
+  // turn anchors (secondary labels; when anchors cluster, keep the later one — folds matter more)
+  const gapMin=Math.max(4,14*span/372);
+  for(let i=0;i<TURN_ANCHORS.length;i++){const [turn,min]=TURN_ANCHORS[i];
+    if(min<view[0]+2||min>view[1]-2)continue;
+    if(i+1<TURN_ANCHORS.length&&TURN_ANCHORS[i+1][1]-min<gapMin)continue; // defer to the later anchor
+    const t=txt(content,"T"+turn,X(min),ay+17,"axis-label","middle");t.setAttribute("fill","#484f58");}
+}
+function turnAt(min){for(let i=1;i<TURN_ANCHORS.length;i++){const [t1,m1]=TURN_ANCHORS[i];const [t0,m0]=TURN_ANCHORS[i-1];
+  if(min<=m1)return t0+(min-m0)*(t1-t0)/(m1-m0);}return 287;}
+function showTip(ev,title,body){tip.style.display="block";
+  tip.innerHTML=`<div class="tt">${title}</div><div class="td">${body||""}</div>`;
+  tip.style.left=Math.min(ev.clientX+14,innerWidth-360)+"px";tip.style.top=Math.min(ev.clientY+12,innerHeight-180)+"px";}
+function hideTip(){tip.style.display="none";}
+
+// ---------- overview + brush ----------
+function renderOv(){
+  ov.innerHTML="";
+  const Xo=t=>ML+(t/T_END)*PW;
+  // mini density (root)
+  const l={y:8,h:34};const dmax=Math.max(...DENS.root);
+  let d="";for(let i=0;i<NB;i++){const t=(i+0.5)*T_END/NB;const h=(DENS.root[i]/dmax)*l.h;
+    d+=(i?"L":"M")+Xo(t).toFixed(1)+" "+(l.y+l.h-h).toFixed(1)+" ";}
+  d+=`L ${Xo(T_END)} ${l.y+l.h} L ${Xo(0)} ${l.y+l.h} Z`;
+  el("path",{d,fill:"rgba(88,166,255,.25)"},ov);
+  for(const c of COMPACTIONS)el("rect",{x:Xo(c.t)-1.5,y:4,width:3,height:44,fill:"rgba(163,113,247,.5)"},ov);
+  for(const e of ERRORS)el("rect",{x:Xo(e.t)-1.5,y:46,width:3,height:5,fill:"#f85149"},ov);
+  txt(ov,"overview — drag to zoom · double-click to reset",ML+6,60,"lane-sublabel","start");
+  // brush window
+  const bx0=Xo(view[0]),bx1=Xo(view[1]);
+  el("rect",{x:bx0,y:2,width:bx1-bx0,height:48,fill:"rgba(88,166,255,.08)",stroke:"#58a6ff","stroke-width":1.2,rx:3,id:"brush"},ov);
+}
+let dragStart=null;
+ov.addEventListener("mousedown",ev=>{const r=ov.getBoundingClientRect();dragStart=(ev.clientX-r.left)/r.width*T_END;ev.preventDefault();});
+window.addEventListener("mousemove",ev=>{if(dragStart===null)return;const r=ov.getBoundingClientRect();
+  const cur=Math.max(0,Math.min(T_END,(ev.clientX-r.left)/r.width*T_END));
+  const a=Math.min(dragStart,cur),b=Math.max(dragStart,cur);
+  if(b-a>=12){view=[a,b];render();renderOv();}});
+window.addEventListener("mouseup",()=>{dragStart=null;});
+ov.addEventListener("dblclick",()=>{view=[0,T_END];render();renderOv();});
+svg.addEventListener("click",()=>{if(pinned){pinned=null;render();}});
+render();renderOv();
+</script>
+</body>
+</html>

@@ -1,0 +1,388 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>evener · Event Tape — transcript comprehension</title>
+<style>
+  :root{
+    --surface-0:#0d1117; --surface-1:#161b22; --surface-inset:#11161d; --surface-2:#1c232c;
+    --edge:#2a3340; --edge-strong:#3a4658;
+    --ink-hi:#e6edf3; --ink-mid:#9da9b8; --ink-low:#6a7686;
+    --alive:#3fb950; --alive-ink:#4ade80; --alive-bg:rgba(63,185,80,.14);
+    --attention:#d29922; --attention-ink:#e3b341; --attention-bg:rgba(210,153,34,.16);
+    --danger:#f85149; --danger-ink:#ff6b62; --danger-bg:rgba(248,81,73,.16);
+    --accent:#58a6ff; --accent-ink:#79b8ff; --accent-bg:rgba(88,166,255,.14);
+    --violet:#a371f7; --cyan:#39c5cf; --pink:#db61a2;
+    --mono:ui-monospace,SFMono-Regular,"JetBrains Mono",Menlo,Consolas,monospace;
+    --sans:"Inter",-apple-system,BlinkMacSystemFont,"Segoe UI",Helvetica,Arial,sans-serif;
+  }
+  *{box-sizing:border-box}
+  html,body{margin:0;padding:0;background:var(--surface-0);color:var(--ink-hi);font-family:var(--sans);-webkit-font-smoothing:antialiased}
+  body{padding:20px 28px 40px;min-height:100vh}
+  .micro{font-size:11px;letter-spacing:.08em;text-transform:uppercase;font-weight:500;color:var(--ink-low)}
+  h1{font-size:18px;font-weight:600;letter-spacing:-.01em;margin:0 0 2px}
+  .sub{color:var(--ink-mid);font-size:13px;line-height:1.5;max-width:880px;margin:0 0 18px}
+  code{font-family:var(--mono);font-size:12px;background:var(--surface-inset);padding:1px 5px;border-radius:4px;color:var(--ink-mid)}
+
+  .card{background:var(--surface-1);border:1px solid var(--edge);border-radius:10px;padding:16px 18px;margin-bottom:16px}
+  .card-head{display:flex;align-items:baseline;justify-content:space-between;gap:12px;margin-bottom:10px}
+  .card-head h2{font-size:13px;font-weight:600;margin:0;letter-spacing:.01em}
+
+  /* ---------- legend ---------- */
+  .legend{display:flex;flex-wrap:wrap;gap:14px 18px;align-items:center}
+  .lg{display:flex;align-items:center;gap:6px;font-size:12px;color:var(--ink-mid)}
+  .sw{width:14px;height:14px;border-radius:3px;display:inline-block;position:relative}
+  .sw.intensity{background:linear-gradient(to top, var(--alive) 0%, rgba(63,185,80,.08) 100%)}
+  .sw.f{background:var(--surface-1);border:1px solid var(--edge)}
+  .sw.f::after{content:"";position:absolute;top:-1px;right:-1px;width:0;height:0;border-style:solid;border-width:4px 4px 0 0;border-color:var(--danger) transparent transparent transparent}
+  .sw.ckpt{background:var(--attention-bg);border-left:2px solid var(--attention)}
+
+  /* ---------- ribbon ---------- */
+  .tape-wrap{position:relative;width:100%;user-select:none}
+  .axis{display:flex;align-items:baseline;justify-content:space-between;font-family:var(--mono);font-size:10px;color:var(--ink-low);margin-bottom:6px}
+  .jobs-lane{position:relative;height:14px;margin-bottom:4px}
+  .job-tick{position:absolute;top:0;width:2px;height:14px;background:var(--cyan);border-radius:1px;opacity:.85}
+  .job-tick.detach{background:var(--pink);height:10px;top:4px}
+  .ribbon{display:grid;grid-template-rows:repeat(var(--rows,2), 14px);grid-auto-flow:column;grid-auto-columns:1fr;gap:2px;direction:ltr;background:var(--surface-inset);border:1px solid var(--edge);border-radius:6px;padding:6px;min-height:0}
+  .cell{position:relative;height:14px;border-radius:2px;background:var(--surface-1);border:1px solid rgba(255,255,255,.04);cursor:pointer;transition:transform .08s ease, box-shadow .12s ease}
+  .cell:hover{outline:2px solid var(--ink-hi);outline-offset:0;z-index:5}
+  .cell.sel{outline:2px solid var(--accent);outline-offset:0;z-index:6}
+  .cell .kind{position:absolute;left:0;top:0;bottom:0;width:3px;border-radius:2px 0 0 2px}
+  .cell .bar{position:absolute;left:4px;right:2px;bottom:1px;border-radius:1px;background:rgba(255,255,255,.05)}
+  .cell.ckpt{background:var(--attention-bg)}
+  .cell.ckpt .kind{background:var(--attention)}
+  .cell.summary{background:var(--attention-bg)}
+  .cell.fail{background:var(--danger-bg)}
+  .cell.fail .kind{background:var(--danger)}
+  .cell.fail::after{content:"";position:absolute;top:-1px;right:-1px;width:0;height:0;border-style:solid;border-width:5px 5px 0 0;border-color:var(--danger) transparent transparent transparent;z-index:3}
+
+  /* compaction column divider — full ribbon height */
+  .ckpt-rule{position:absolute;top:0;bottom:0;width:1px;background:linear-gradient(to bottom, transparent, var(--attention) 12%, var(--attention) 88%, transparent);opacity:.6;pointer-events:none}
+
+  /* ---------- delegate lanes ---------- */
+  .lanes{margin-top:10px;display:flex;flex-direction:column;gap:5px;position:relative}
+  .lane-row{display:flex;align-items:center;gap:8px;font-size:11px;color:var(--ink-low);font-family:var(--mono)}
+  .lane-label{width:118px;flex:none;text-align:right;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .lane-track{position:relative;flex:1;height:11px;background:var(--surface-inset);border:1px solid var(--edge);border-radius:3px}
+  .lane-span{position:absolute;top:0;bottom:0;border-radius:2px;display:flex;align-items:center;justify-content:center;font-size:9px;color:rgba(0,0,0,.55);font-weight:600;overflow:hidden;white-space:nowrap}
+  .lane-span.d0{background:var(--accent);color:#06121f}
+  .lane-span.d1{background:var(--violet);color:#1a0f2e}
+  .lane-span.d2{background:var(--cyan);color:#06262a}
+  .lane-span.d3{background:var(--pink);color:#2a0f1f}
+
+  /* ---------- detail ---------- */
+  .detail{display:grid;grid-template-columns:1fr 1fr;gap:14px 22px;font-size:12px}
+  .detail dt{color:var(--ink-low);font-size:10px;letter-spacing:.06em;text-transform:uppercase;margin:0 0 2px}
+  .detail dd{margin:0 0 10px;color:var(--ink-hi);font-family:var(--mono);font-size:12px;line-height:1.45;word-break:break-word}
+  .detail dd .tag{display:inline-block;padding:1px 6px;border-radius:4px;font-size:11px;margin-right:4px}
+  .pill{display:inline-block;padding:2px 8px;border-radius:999px;font-size:11px;font-weight:500;border:1px solid var(--edge)}
+  .pill.alive{color:var(--alive-ink);background:var(--alive-bg);border-color:rgba(63,185,80,.3)}
+  .pill.danger{color:var(--danger-ink);background:var(--danger-bg);border-color:rgba(248,81,73,.3)}
+  .pill.attention{color:var(--attention-ink);background:var(--attention-bg);border-color:rgba(210,153,34,.3)}
+  .pill.accent{color:var(--accent-ink);background:var(--accent-bg);border-color:rgba(88,166,255,.3)}
+  .pill.muted{color:var(--ink-mid);background:var(--surface-inset)}
+
+  .readout{font-family:var(--mono);font-size:11px;color:var(--ink-mid);margin-top:10px;line-height:1.5}
+  .readout b{color:var(--ink-hi);font-weight:500}
+
+  .caption{color:var(--ink-mid);font-size:12px;line-height:1.55;max-width:920px}
+  .caption b{color:var(--ink-hi);font-weight:500}
+  .kv{display:flex;gap:18px;flex-wrap:wrap;margin-top:8px;font-family:var(--mono);font-size:11px;color:var(--ink-low)}
+  .kv span b{color:var(--ink-hi);font-weight:500}
+</style>
+</head>
+<body>
+
+<div style="max-width:1180px;margin:0 auto">
+  <div class="micro">evener · transcript-viz proposal · idea 1 of 3</div>
+  <h1 style="margin-top:6px">Event Tape — a per-turn glyph ribbon</h1>
+  <p class="sub">Every turn of a 263-turn session becomes one column in a fit-to-width ribbon. <b>Column hue = turn kind</b>, <b>inner bar height = tool-call intensity</b>, <b>compaction = amber divider</b>, <b>failure = red corner glyph</b>, <b>steering = amber dot</b>. Bursts, stalls, failure clusters, and compaction boundaries become patterns you read before clicking anything. Delegate sessions and background jobs are separate lanes beneath.</p>
+
+  <div class="card">
+    <div class="card-head">
+      <h2>Legend &amp; encoding</h2>
+      <span class="micro">hover a column · click to inspect</span>
+    </div>
+    <div class="legend">
+      <span class="lg"><span class="sw" style="background:#2f6f3f"></span> assistant (prose)</span>
+      <span class="lg"><span class="sw" style="background:#3a5a2a"></span> tool_results</span>
+      <span class="lg"><span class="sw" style="background:var(--accent)"></span> user_input</span>
+      <span class="lg"><span class="sw" style="background:var(--attention)"></span> steering</span>
+      <span class="lg"><span class="sw" style="background:#6a4f1f"></span> system / env / hook</span>
+      <span class="lg"><span class="sw ckpt"></span> checkpoint+summary (compaction)</span>
+      <span class="lg"><span class="sw f"></span> turn_failure</span>
+      <span class="lg"><span class="sw intensity"></span> inner bar = tool-call count (intensity)</span>
+      <span class="lg"><span class="sw" style="background:var(--cyan)"></span> bg job (detached = pink, top lane)</span>
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="card-head">
+      <h2>Event Tape · turn 0–262</h2>
+      <span class="micro" id="zoomLabel">fit-to-width · 2 rows × 132 cols</span>
+    </div>
+
+    <div class="tape-wrap">
+      <div class="axis"><span>wall-clock 12:04</span><span>13:17</span><span>14:38</span><span>16:02</span><span>17:21</span></div>
+      <div class="jobs-lane" id="jobsLane"></div>
+      <div class="ribbon" id="ribbon"></div>
+      <div class="lanes" id="lanes"></div>
+    </div>
+    <div class="kv" id="sessionKv"></div>
+  </div>
+
+  <div class="card" id="detailCard">
+    <div class="card-head">
+      <h2 id="detailTitle">Turn — select a column</h2>
+      <span class="micro" id="detailPos"></span>
+    </div>
+    <div class="detail" id="detail"></div>
+    <div class="readout" id="readout"></div>
+  </div>
+
+  <p class="caption">
+    <b>What you see at a glance:</b> a thick green band around turns 20–95 is the long exploration phase (dense <code>grep</code>/<code>read</code> tool_results); the sparse amber-dotted stretch at ~140 is the user steering mid-run; the two full-height amber rules are compaction boundaries where context was folded; the red corner glyph at turn 206 is the error/retry episode; the thin cyan/pink ticks up top are background shell jobs (one detached job outlives the session). The delegate lanes beneath show a 3-level delegation tree — a wide accent bar (root), violet children, cyan grandchildren — with span widths proportional to how much of the session each child owned.
+  </p>
+</div>
+
+<script>
+"use strict";
+/* ---------- synthetic session: 263 turns, ~1800 tool calls, 3-level delegation, 3 compactions, error/retry, bg jobs ---------- */
+const RNG=(()=>{let s=0x9e3779b9>>>0;return ()=>{s^=s<<13;s>>>=0;s^=s>>>17;s>>>=0;s^=s<<5;s>>>=0;return s/4294967296};})();
+function pick(a){return a[Math.floor(RNG()*a.length)];}
+
+const KIND={
+  assistant:"#2f6f3f", tool:"#3a5a2a", user:"#58a6ff", steering:"#d29922",
+  system:"#6a4f1f", env:"#5a4a2a", hook:"#4a3a1a",
+  checkpoint:"#a07a1f", summary:"#c79a2a", failure:"#f85149"
+};
+
+const turns=[];
+const TOOL_NAMES=["exec_command","read_file","edit_file","grep_files","list_dir","web_fetch","apply_patch","write_file","delegate_send","use_skill"];
+let t=0, clock=12*60+4;
+function push(o){o.idx=turns.length;o.clock=clock;turns.push(o);}
+
+// Phase 1: user kickoff + long exploration (turns 0-95)
+push({kind:"user", label:"Implement the dense transcript-viz proposals", tokens:120, tools:0, text:"Build three genuinely different visual mockups for the evener web UI transcript comprehension, using dense pattern surfaces."});
+push({kind:"system", label:"environment context", tokens:0, tools:0, text:"cwd=/Users/jesse/... date=2026-08-21 sandbox=off git=main"});
+let phase1End=95;
+for(let i=2;i<phase1End;i++){
+  const isExploration=i<60;
+  const toolCount=Math.round(3+RNG()*(isExploration?14:8));
+  push({kind:"assistant", tokens:300+Math.floor(RNG()*900), tools:0, text:"Planning step "+i+": "+pick(["read the schema","grep for turn kinds","inspect transcript pane","design encoding","sketch layout"])});
+  push({kind:"tool", tokens:40+Math.floor(RNG()*200), tools:toolCount, text:toolCount+" tool results ("+pick(TOOL_NAMES)+", "+pick(TOOL_NAMES)+")"});
+  i++;
+  clock+=Math.round((20+RNG()*120));
+  if(clock>17*60+21)clock=17*60+21;
+}
+// first compaction
+push({kind:"checkpoint", label:"compaction L3 checkpoint", tokens:0, tools:0, text:"Deterministic checkpoint — context folded."});
+push({kind:"summary", label:"compaction L4 summary", tokens:800, tools:0, text:"Summary: explored schema/turn.go, transcript pane, design system; three ideas drafted."});
+clock+=30;
+
+// steering mid-run (sparse amber dots)
+push({kind:"steering", label:"user steering", tokens:90, tools:0, text:"Make sure the mockups actually depict delegates and background jobs, not just a chat log."});
+push({kind:"steering", label:"user steering", tokens:60, tools:0, text:"And keep the dark dev-tool aesthetic."});
+
+// Phase 2: delegation heavy (turns ~100-150)
+push({kind:"assistant", tokens:600, tools:0, text:"Spawning three delegates to build each mockup in parallel."});
+const delegates=[
+  {name:"dlg_event_tape", depth:1, start:103, span:60, parent:0},
+  {name:"dlg_heatmap",    depth:1, start:108, span:80, parent:0},
+  {name:"dlg_cost_tree",  depth:1, start:112, span:95, parent:0},
+];
+// grandchildren under dlg_heatmap
+const grandchildren=[
+  {name:"dlg_g1_render", depth:2, start:118, span:30, parent:1},
+  {name:"dlg_g2_data",   depth:2, start:150, span:25, parent:1},
+  {name:"dlg_g3_verify", depth:2, start:176, span:28, parent:2},
+];
+
+for(let i=105;i<205;i++){
+  if(i===140){push({kind:"steering", label:"user steering", tokens:70, tools:0, text:"The heatmap idea feels weak — push it further."});continue;}
+  if(i===160){push({kind:"env", label:"environment update", tokens:0, tools:0, text:"resource pressure: high (delegates running)"});continue;}
+  const heavy=i>120&&i<185;
+  const toolCount=Math.round(2+RNG()*(heavy?18:7));
+  push({kind:"assistant", tokens:400+Math.floor(RNG()*1200), tools:0, text:"Delegate coordination step "+i});
+  push({kind:"tool", tokens:60+Math.floor(RNG()*300), tools:toolCount, text:toolCount+" results incl. delegate_send"});
+  i++;
+  clock+=Math.round((15+RNG()*100));
+  if(clock>17*60+21)clock=17*60+21;
+}
+// second compaction
+push({kind:"checkpoint", label:"compaction L3 checkpoint", tokens:0, tools:0, text:"Context folded mid-delegation."});
+push({kind:"summary", label:"compaction L4 summary", tokens:1200, tools:0, text:"Summary: 3 delegates spawned, 2 grandchildren, mockups in progress."});
+clock+=40;
+
+// Phase 3: integration + error/retry episode (turns ~210-262)
+for(let i=210;i<263;i++){
+  if(i===206){/* placed below */ }
+  const toolCount=Math.round(2+RNG()*12);
+  if(i===218){
+    push({kind:"assistant", tokens:500, tools:0, text:"Running verification gate..."});
+    push({kind:"tool", tokens:300, tools:3, text:"exec_command: npm run build (3 results)"});
+    // error episode
+    push({kind:"failure", label:"TURN_FAILURE", tokens:0, tools:0, text:"exec_command exit 1: build failed — TypeError in ToolRow.tsx", err:{msg:"TypeError: Cannot read properties of undefined (reading 'summary')", source:"exec_command", title:"Turn failed"}});
+    push({kind:"assistant", tokens:700, tools:0, text:"Build failed — the ToolRow descriptor lookup returned undefined. Patching the registry."});
+    push({kind:"tool", tokens:200, tools:2, text:"edit_file + exec_command (retry)"});
+    i+=4;continue;
+  }
+  if(i===245){push({kind:"hook", label:"pre-commit hook completed", tokens:0, tools:0, text:"lint hook exit 0 · 240ms"});}
+  if(i===255){push({kind:"steering", label:"user steering", tokens:50, tools:0, text:"Looks good — finalize the README."});}
+  push({kind:"assistant", tokens:300+Math.floor(RNG()*800), tools:0, text:"Integration step "+i});
+  if(i%2===0){push({kind:"tool", tokens:50+Math.floor(RNG()*220), tools:toolCount, text:toolCount+" results"});i++;}
+  clock+=Math.round((20+RNG()*90));
+  if(clock>17*60+21)clock=17*60+21;
+}
+// third compaction near the end
+turns.splice(258,0,{idx:258,kind:"checkpoint",label:"compaction L3 checkpoint",tokens:0,tools:0,text:"Final context fold.",clock});
+turns.splice(259,0,{idx:259,kind:"summary",label:"compaction L4 summary",tokens:900,tools:0,text:"Summary: all mockups built, verified, README written.",clock});
+// reindex
+turns.forEach((o,i)=>o.idx=i);
+
+// background jobs (detached + background), positioned by turn index fraction
+const jobs=[
+  {name:"job_build_watch", startIdx:30, endIdx:70, detached:false},
+  {name:"job_dev_server",  startIdx:120, endIdx:240, detached:false},
+  {name:"job_fuzz_overnight", startIdx:150, endIdx:263, detached:true}, // outlives session
+  {name:"job_lint_watch", startIdx:200, endIdx:230, detached:false},
+];
+
+/* ---------- stats ---------- */
+const totalTools=turns.reduce((a,t)=>a+(t.tools||0),0);
+const totalTokens=turns.reduce((a,t)=>a+(t.tokens||0),0);
+const compactions=turns.filter(t=>t.kind==="checkpoint").length;
+const failures=turns.filter(t=>t.kind==="failure").length;
+const steers=turns.filter(t=>t.kind==="steering").length;
+const wallMin=turns[turns.length-1].clock-turns[0].clock;
+
+/* ---------- render ribbon ---------- */
+const ribbon=document.getElementById("ribbon");
+const COLS=132;
+const ROWS=Math.ceil(turns.length/COLS);
+ribbon.style.setProperty("--rows",ROWS);
+document.getElementById("zoomLabel").textContent="fit-to-width · "+ROWS+" rows × "+COLS+" cols";
+
+const maxTools=Math.max(...turns.map(t=>t.tools||0));
+turns.forEach(turn=>{
+  const cell=document.createElement("div");
+  cell.className="cell";
+  cell.dataset.idx=turn.idx;
+  let kindClass="";
+  if(turn.kind==="checkpoint")kindClass="ckpt";
+  else if(turn.kind==="summary")kindClass="summary";
+  else if(turn.kind==="failure")kindClass="fail";
+  if(kindClass)cell.classList.add(kindClass);
+  const kind=document.createElement("div");
+  kind.className="kind";
+  kind.style.background=KIND[turn.kind]||"#444";
+  cell.appendChild(kind);
+  if(turn.tools>0){
+    const bar=document.createElement("div");
+    bar.className="bar";
+    const h=Math.max(8,(turn.tools/maxTools)*100);
+    bar.style.height=h+"%";
+    bar.style.background=turn.kind==="tool"?"rgba(63,185,80,.55)":"rgba(88,166,255,.5)";
+    cell.appendChild(bar);
+  }
+  if(turn.kind==="steering"){
+    const dot=document.createElement("div");
+    dot.style.cssText="position:absolute;top:1px;right:2px;width:4px;height:4px;border-radius:50%;background:var(--attention-ink)";
+    cell.appendChild(dot);
+  }
+  cell.title="#"+turn.idx+" "+turn.kind+(turn.tools?(" · "+turn.tools+" tools"):"");
+  cell.addEventListener("mouseenter",e=>hoverTurn(turn,e));
+  cell.addEventListener("click",()=>selectTurn(turn));
+  ribbon.appendChild(cell);
+});
+
+/* ---------- jobs lane ---------- */
+const jobsLane=document.getElementById("jobsLane");
+jobs.forEach(job=>{
+  const tick=document.createElement("div");
+  tick.className="job-tick"+(job.detached?" detach":"");
+  tick.style.left=((job.startIdx/turns.length)*100)+"%";
+  tick.title=job.name+(job.detached?" (detached — outlived session)":"");
+  jobsLane.appendChild(tick);
+});
+
+/* ---------- delegate lanes ---------- */
+const lanesEl=document.getElementById("lanes");
+const allDelegates=[
+  {name:"root session", depth:0, start:0, span:turns.length, parent:-1},
+  ...delegates.map(d=>({...d,span:d.span})),
+  ...grandchildren.map(g=>({...g,span:g.span})),
+];
+allDelegates.forEach(d=>{
+  const row=document.createElement("div");
+  row.className="lane-row";
+  const label=document.createElement("div");
+  label.className="lane-label";
+  label.textContent="└".repeat(d.depth)+" "+d.name;
+  row.appendChild(label);
+  const track=document.createElement("div");
+  track.className="lane-track";
+  const span=document.createElement("div");
+  span.className="lane-span d"+d.depth;
+  span.style.left=((d.start/turns.length)*100)+"%";
+  span.style.width=((d.span/turns.length)*100)+"%";
+  span.textContent="d"+d.depth;
+  span.title=d.name+" · turns "+d.start+"–"+(d.start+d.span);
+  track.appendChild(span);
+  row.appendChild(track);
+  lanesEl.appendChild(row);
+});
+
+/* ---------- session KV ---------- */
+document.getElementById("sessionKv").innerHTML=
+  "<span><b>"+turns.length+"</b> turns</span>"+
+  "<span><b>"+totalTools.toLocaleString()+"</b> tool calls</span>"+
+  "<span><b>"+(totalTokens/1000).toFixed(1)+"k</b> tokens</span>"+
+  "<span><b>"+compactions+"</b> compactions</span>"+
+  "<span><b>"+failures+"</b> failure(s)</span>"+
+  "<span><b>"+steers+"</b> steering</span>"+
+  "<span><b>"+allDelegates.length+"</b> delegate nodes (3 levels)</span>"+
+  "<span><b>"+Math.floor(wallMin/60)+"h "+(wallMin%60)+"m</b> wall-clock</span>";
+
+/* ---------- hover + detail ---------- */
+function hoverTurn(turn,e){
+  // could show a floating tip; keep title attr for simplicity
+}
+function selectTurn(turn){
+  document.querySelectorAll(".cell.sel").forEach(c=>c.classList.remove("sel"));
+  const cell=ribbon.children[turn.idx];if(cell)cell.classList.add("sel");
+  const d=document.getElementById("detail");
+  const kindLabel={assistant:"ASSISTANT",tool:"TOOL_RESULTS",user:"USER_INPUT",steering:"STEERING",system:"SYSTEM",env:"ENVIRONMENT",hook:"HOOK_COMPLETED",checkpoint:"CHECKPOINT",summary:"SUMMARY",failure:"TURN_FAILURE"}[turn.kind]||turn.kind.toUpperCase();
+  let pills="";
+  if(turn.kind==="failure")pills+='<span class="pill danger">failed</span>';
+  if(turn.kind==="checkpoint"||turn.kind==="summary")pills+='<span class="pill attention">compaction</span>';
+  if(turn.kind==="steering")pills+='<span class="pill attention">steering</span>';
+  if(turn.kind==="user")pills+='<span class="pill accent">user</span>';
+  if(turn.tools)pills+='<span class="pill alive">'+turn.tools+' tools</span>';
+  d.innerHTML=
+    "<div><dt>Kind</dt><dd>"+kindLabel+" "+pills+"</dd></div>"+
+    "<div><dt>Label</dt><dd>"+(turn.label||"—")+"</dd></div>"+
+    "<div><dt>Turn index</dt><dd>#"+turn.idx+" / "+(turns.length-1)+"</dd></div>"+
+    "<div><dt>Wall-clock</dt><dd>"+fmtClock(turn.clock)+"</dd></div>"+
+    "<div><dt>Tokens</dt><dd>"+((turn.tokens||0).toLocaleString())+"</dd></div>"+
+    "<div><dt>Tool calls</dt><dd>"+(turn.tools||0)+"</dd></div>"+
+    '<div style="grid-column:1/-1"><dt>Content (synthetic)</dt><dd>'+esc(turn.text||"")+'</dd></div>';
+  document.getElementById("detailTitle").textContent="Turn #"+turn.idx+" — "+kindLabel;
+  document.getElementById("detailPos").textContent="row "+(Math.floor(turn.idx/COLS)+1)+" · col "+((turn.idx%COLS)+1);
+  const r=document.getElementById("readout");
+  if(turn.err){
+    r.innerHTML='<span class="pill danger">error</span> <b>'+esc(turn.err.title)+'</b><br>'+esc(turn.err.msg)+'<br><span style="color:var(--ink-low)">source: '+esc(turn.err.source)+'</span>';
+  } else {
+    r.innerHTML="No diagnostic for this turn.";
+  }
+}
+function fmtClock(m){return Math.floor(m/60)+":"+String(m%60).padStart(2,"0");}
+function esc(s){return String(s).replace(/[&<>]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;"}[c]));}
+
+// initial selection: the failure episode
+const fail=turns.find(t=>t.kind==="failure");
+if(fail)selectTurn(fail);
+</script>
+</body>
+</html>

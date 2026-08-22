@@ -1,0 +1,447 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>RT Idea 3 — Vitals &amp; Verdict · evener session 0J8XKM</title>
+<style>
+  :root{
+    --bg:#0e1116; --bg2:#12161d; --panel:#151a21; --panel2:#1a2029;
+    --edge:#242c37; --edge2:#2e3846;
+    --ink:#dbe2ea; --ink-mid:#9aa7b5; --ink-low:#64707e;
+    --blue:#5b9dff; --teal:#39c2c9; --green:#3fb97a; --amber:#e8b13f;
+    --red:#e5534b; --violet:#9a7bff; --pink:#e57bb0;
+    --mono:'IBM Plex Mono',ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
+    --sans:'IBM Plex Sans',-apple-system,'Segoe UI',Helvetica,Arial,sans-serif;
+  }
+  *{box-sizing:border-box;margin:0;padding:0}
+  html,body{height:100%}
+  body{background:var(--bg);color:var(--ink);font:13px/1.5 var(--sans);overflow:hidden;display:flex;flex-direction:column}
+  .topbar{display:flex;align-items:center;gap:16px;padding:9px 18px;border-bottom:1px solid var(--edge);background:var(--bg2)}
+  .mark{font:600 14px var(--sans)} .mark b{color:var(--blue)}
+  .sess{font:12px var(--mono);color:var(--ink-mid)}
+  .goal{color:var(--ink-mid);font-size:12.5px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:400px}
+  .spacer{flex:1}
+  .tag{font:600 11px var(--mono);color:#0b0e12;background:var(--violet);padding:3px 10px;border-radius:999px;letter-spacing:.04em}
+  .transport{display:flex;align-items:center;gap:12px;padding:7px 18px;border-bottom:1px solid var(--edge)}
+  .live{display:flex;align-items:center;gap:7px;font:600 11px var(--mono);letter-spacing:.1em;color:var(--green);border:1px solid #24503b;border-radius:999px;padding:3px 12px;background:#122019}
+  .live .dot{width:8px;height:8px;border-radius:50%;background:var(--green)}
+  .live.paused{color:var(--amber);border-color:#57431c;background:#211a0e}.live.paused .dot{background:var(--amber)}
+  .live.ended{color:var(--ink-low);border-color:var(--edge2);background:var(--panel)}.live.ended .dot{background:var(--ink-low)}
+  .tbtn{font:600 12px var(--mono);color:var(--ink);background:var(--panel);border:1px solid var(--edge2);border-radius:6px;padding:4px 12px;cursor:pointer;min-width:40px}
+  .seg{display:flex;border:1px solid var(--edge2);border-radius:6px;overflow:hidden}
+  .seg button{font:11px var(--mono);color:var(--ink-mid);background:var(--panel);border:0;padding:4px 11px;cursor:pointer;white-space:nowrap}
+  .seg button.on{background:var(--blue);color:#0b0e12;font-weight:600}
+  input[type=range]{-webkit-appearance:none;width:200px;height:4px;background:var(--edge2);border-radius:2px;outline:none}
+  input[type=range]::-webkit-slider-thumb{-webkit-appearance:none;width:12px;height:12px;border-radius:50%;background:var(--blue);cursor:pointer}
+  .clock{font:11.5px var(--mono);color:var(--ink-mid);white-space:nowrap}
+  .kpis-live{margin-left:auto;display:flex;gap:8px;font:11px var(--mono);color:var(--ink-low)}
+  .kpis-live b{color:var(--ink-mid)}
+  /* ---------- main grid ---------- */
+  .main{flex:1;min-height:0;display:grid;grid-template-columns:330px 1fr 300px;gap:0}
+  .col{border-right:1px solid var(--edge);overflow-y:auto;padding:12px 14px 20px}
+  .col:last-child{border-right:0}
+  .col::-webkit-scrollbar{width:8px}.col::-webkit-scrollbar-thumb{background:var(--edge2);border-radius:4px}
+  .col h3{font:600 11px var(--sans);color:var(--ink-low);letter-spacing:.08em;text-transform:uppercase;margin:12px 0 7px}
+  .col h3:first-child{margin-top:0}
+  .nowcard{background:#101823;border:1px solid #2c4a72;border-radius:8px;padding:12px 14px}
+  .nowcard .act{font:600 14px var(--sans)}
+  .nowcard .sub{font:11px var(--mono);color:var(--ink-mid);margin-top:5px}
+  .nowcard .sub b{color:var(--blue)}
+  .nowcard .big{font:600 26px var(--mono);color:var(--blue);margin-top:2px}
+  /* health checks */
+  .chk{display:flex;align-items:center;gap:10px;border:1px solid var(--edge);border-radius:8px;padding:8px 11px;margin-bottom:5px;background:var(--panel)}
+  .chk .ic{width:22px;height:22px;border-radius:6px;display:flex;align-items:center;justify-content:center;font:600 12px var(--mono);flex:0 0 22px}
+  .chk.ok .ic{background:#12281d;color:var(--green)}
+  .chk.warn{border-color:#57431c;background:#1d170d}.chk.warn .ic{background:#2a1f0c;color:var(--amber)}
+  .chk.bad{border-color:#5a2a26;background:#1f1210}.chk.bad .ic{background:#2e1512;color:var(--red)}
+  .chk .tx{flex:1;min-width:0}
+  .chk .t1{font:600 11.5px var(--sans);color:var(--ink)}
+  .chk .t2{font:10px var(--mono);color:var(--ink-low);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .chk.warn .t2{color:var(--amber)}.chk.bad .t2{color:var(--red)}
+  /* charts */
+  .chartcard{background:var(--panel);border:1px solid var(--edge);border-radius:8px;padding:10px 12px;margin-bottom:10px}
+  .chartcard .ch{display:flex;justify-content:space-between;align-items:baseline;margin-bottom:5px}
+  .chartcard .cn{font:600 11px var(--sans);color:var(--ink-mid)}
+  .chartcard .cv{font:600 15px var(--mono);color:var(--ink)}
+  .chartcard .cv small{font:10px;color:var(--ink-low);font-weight:400}
+  .chartcard svg{display:block;width:100%;height:64px}
+  .gauge{margin:7px 0}
+  .gauge .gl{display:flex;justify-content:space-between;font:10.5px var(--mono);color:var(--ink-mid);margin-bottom:3px}
+  .gauge .gl b{color:var(--ink)}
+  .gtrack{position:relative;height:12px;background:#10141a;border:1px solid var(--edge);border-radius:6px;overflow:hidden}
+  .gfill{height:100%;border-radius:5px;transition:width .2s linear}
+  .gfill.ctx{background:linear-gradient(90deg,#2c5d8a,var(--blue))}
+  .gfill.bud{background:linear-gradient(90deg,#1e6e4c,var(--green))}
+  .gmark{position:absolute;top:-2px;bottom:-2px;width:2px;background:var(--violet)}
+  .proj{font:10.5px var(--mono);color:var(--violet);margin-top:3px}
+  /* boards */
+  .rowitem{display:flex;align-items:center;gap:8px;font:10.5px var(--mono);color:var(--ink-mid);padding:4px 8px;border:1px solid var(--edge);border-radius:6px;margin-bottom:4px;background:var(--panel)}
+  .rowitem .nm{flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  @keyframes sweep{to{background-position:17px 0}}
+  .rowitem.active{border-color:#2c4a72;background-image:repeating-linear-gradient(45deg,rgba(91,157,255,.07) 0 6px,transparent 6px 12px);background-size:17px 17px;animation:sweep .9s linear infinite;color:var(--ink)}
+  .rowitem.done{opacity:.62}
+  .rowitem.failed{border-color:#5a2a26;color:var(--red)}
+  .st{font:600 9px var(--mono);padding:1px 6px;border-radius:4px;letter-spacing:.05em;white-space:nowrap}
+  .st.act{background:#1c2f4d;color:var(--blue)} .st.done{background:#1d3328;color:var(--green)}
+  .st.fail{background:#44201d;color:var(--red)} .st.idle{background:#20262f;color:var(--ink-low)}
+  .alert{border-radius:6px;padding:6px 10px;font:10.5px var(--mono);margin-bottom:4px;border:1px solid}
+  .alert.loop,.alert.runaway{background:#2a1a0e;border-color:#57431c;color:var(--amber)}
+  .alert.fail{background:#22110f;border-color:#5a2a26;color:var(--red)}
+  .alert.info{background:#171830;border-color:#3a3160;color:#b9a5ff}
+  .evt{display:flex;gap:8px;font:10.5px var(--mono);color:var(--ink-low);padding:2px 0;cursor:pointer}
+  .evt:hover{color:var(--ink-mid)}
+  .evt .et{color:var(--ink-mid);min-width:34px}
+  .evt .em{flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  /* mini strata */
+  .miniwrap{background:var(--panel);border:1px solid var(--edge);border-radius:8px;padding:10px 12px}
+  svg#mini{display:block;width:100%;height:64px;cursor:crosshair}
+  .pin{background:var(--panel2);border:1px solid var(--edge2);border-radius:8px;padding:8px 12px;margin-top:8px;font:11px var(--mono);color:var(--ink-mid)}
+  .pin b{color:var(--ink)}
+  #tip{position:fixed;z-index:50;pointer-events:none;background:#0b0e12;border:1px solid var(--edge2);border-radius:6px;padding:8px 11px;font:11px var(--mono);color:var(--ink);display:none;max-width:320px;box-shadow:0 6px 24px rgba(0,0,0,.5)}
+  #tip .th{color:var(--ink-mid);font-weight:600;margin-bottom:2px}
+  #tip .tl{color:var(--ink-low)} #tip .tl b{color:var(--ink-mid);font-weight:600}
+  .caption{flex:0 0 auto;min-height:32px;display:flex;align-items:center;gap:16px;padding:4px 18px;border-top:1px solid var(--edge);background:var(--bg2);font:11px var(--sans);color:var(--ink-low)}
+  .caption b{color:var(--ink-mid);font-weight:600}
+</style>
+</head>
+<body>
+<div class="topbar">
+  <div class="mark">◆ <b>evener</b> hub</div>
+  <div class="sess">session 0J8XKM · branch main · model k3</div>
+  <div class="goal">goal: migrate jobstore to SQLite, repair the watcher runaway loop, land regression tests</div>
+  <div class="spacer"></div>
+  <div class="tag">RT-3 · VITALS &amp; VERDICT</div>
+</div>
+<div class="transport">
+  <span class="live" id="liveChip"><span class="dot"></span><span id="liveTxt">LIVE</span></span>
+  <button class="tbtn" id="playBtn">⏸</button>
+  <div class="seg" id="speedSeg"><button data-s="1" class="on">1×</button><button data-s="4">4×</button><button data-s="16">16×</button></div>
+  <button class="tbtn" id="restart">⟲</button>
+  <input type="range" id="seek" min="0" max="1000" value="0">
+  <span class="clock" id="clock">0:00 / 6:42</span>
+  <div class="kpis-live" id="kpisLive"></div>
+</div>
+<div class="main">
+  <div class="col" id="colA"></div>
+  <div class="col" id="colB"></div>
+  <div class="col" id="colC"></div>
+</div>
+<div id="tip"></div>
+<div class="caption">
+  <span><b>Realtime question:</b> “Is the session healthy right now — throughput, loop/runaway/stall verdicts, and how long until the next fold or the budget wall?”</span>
+  <span>charts accumulate the session-so-far · click the session strip or an event to pin that moment</span>
+</div>
+<script>
+/* ================= session skeleton (0J8XKM) — same sim ================= */
+function mulberry32(a){return function(){a|=0;a=a+0x6D2B79F5|0;var t=Math.imul(a^a>>>15,1|a);t=t+Math.imul(t^t>>>7,61|t)^t;return((t^t>>>14)>>>0)/4294967296}}
+const R=mulberry32(20260821);
+const ri=(a,b)=>a+Math.floor(R()*(b-a+1));
+const N=278, COMPACTIONS=[88,191,249], MODEL_SWITCH=150, TURN_FAILURE=182;
+const USERS={0:"Migrate the jobstore to SQLite and fix the watcher runaway.",40:"Schema OK — implement behind a flag.",120:"Steering: keep legacy JSON path.",205:"Fuzz found a crash — dig in.",260:"Wrap up: changelog + PR summary."};
+const STEERS={95:"Prefer apply_patch.",176:"Re-read the file first.",232:"Stop the noisy watch."};
+const DELEGATES=[
+ {id:"dlg_01",name:"survey watcher code",depth:0,s:22,e:39},
+ {id:"dlg_02",name:"migrate schema to SQLite",depth:0,s:96,e:158},
+ {id:"dlg_02a",name:"repair migration test",depth:1,s:131,e:146},
+ {id:"dlg_03",name:"audit execenv sandbox",depth:0,s:160,e:196},
+ {id:"dlg_04",name:"write regression tests",depth:0,s:236,e:268}];
+const JOBS=[
+ {id:"job_5",cmd:"rg -n 'Notify' agent/",s:55,e:56,status:"ok",mode:"bg"},
+ {id:"job_1",cmd:"go test ./agent/... -count=1",s:100,e:118,status:"ok",mode:"bg"},
+ {id:"job_2",cmd:"go test -fuzz=FuzzWatch -fuzztime=30m",s:162,e:205,status:"ok",mode:"bg"},
+ {id:"job_4",cmd:"go build ./...",s:178,e:181,status:"failed",mode:"bg",exit:1},
+ {id:"job_3",cmd:"make generate",s:210,e:214,status:"ok",mode:"detached"},
+ {id:"job_6",cmd:"go vet ./...",s:250,e:256,status:"ok",mode:"bg"}];
+const WATCHES=[
+ {id:"watch_1",name:"jobstore/*.go → rerun tests",fires:[105,133,161]},
+ {id:"watch_2",name:"tail fuzz log for FAIL",runaway:true,fires:[186,186,187,187,187,187,188,188,188,188,188,189,189,189,189,189,189,189,190,190,190,190,190,190,190,190,190,191]}];
+const ERR_TURNS={178:"edit_file: stale context",179:"edit_file: stale context",180:"edit_file: stale context"};
+const TOOL_POOL=[["read_file",.27],["shell",.22],["grep",.13],["edit_file",.11],["apply_patch",.07],["write_file",.05],["glob",.05],["delegate_send",.03],["task_list",.02],["communicate",.02],["job_list",.02],["read_transcript",.01]];
+const PHASES=[[0,21,"intake & plan"],[22,39,"delegate survey"],[40,87,"implement sqlite jobstore"],[88,95,"post-compaction replan"],[96,158,"delegate migration"],[159,177,"sandbox audit"],[178,196,"breakage & watch runaway"],[197,235,"fix & verify"],[236,268,"regression tests"],[269,277,"wrap-up"]];
+const LBL={"intake & plan":["read jobstore/store.go","grep Notify callers","sketch schema v1","list watch sites","read jobs.go"],
+ "delegate survey":["spawn dlg_01","collect survey findings","read watcher loop"],
+ "implement sqlite jobstore":["write migrate.go","edit Open() path","add sqlc queries","unit-test Put/Get","wire feature flag"],
+ "post-compaction replan":["re-read checkpoint","confirm plan after fold"],
+ "delegate migration":["spawn dlg_02","review migration diff","run migration test","steer dlg_02"],
+ "sandbox audit":["spawn dlg_03","audit securepath","check sandbox seats"],
+ "breakage & watch runaway":["re-read migrate.go","fix symbol","triage build failure","stop runaway watch"],
+ "fix & verify":["patch coalescing","re-run build","verify fuzz corpus","green test run"],
+ "regression tests":["spawn dlg_04","table-drive watcher tests","cover compaction path"],
+ "wrap-up":["write changelog","final go test ./...","compose PR summary"]};
+function phaseOf(i){for(const[a,b,n]of PHASES)if(i>=a&&i<=b)return n;return"work"}
+function pickTool(){let x=R(),acc=0;for(const[n,w]of TOOL_POOL){acc+=w;if(x<=acc)return n}return"shell"}
+const turns=[];
+for(let i=0;i<N;i++){
+  let kind="ASSISTANT";
+  if(USERS[i])kind="USER_INPUT";else if(STEERS[i])kind="STEERING";
+  if(COMPACTIONS.includes(i))kind="CHECKPOINT";
+  if(i===MODEL_SWITCH)kind="MODEL_SWITCH";if(i===TURN_FAILURE)kind="TURN_FAILURE";
+  if(i%37===9)kind="ENVIRONMENT";if(i%41===13)kind="HOOK_COMPLETED";
+  if(i===212||i===271)kind="ATTENTION_RESOLUTION";
+  let tools=0;
+  if(kind==="ASSISTANT"){const ph=phaseOf(i);const heavy=/implement|migration|fix|regression/.test(ph);tools=heavy?ri(3,13):ri(1,6)}
+  const tok=kind==="CHECKPOINT"?ri(18000,26000):(kind==="ASSISTANT"?700+tools*ri(380,720):ri(200,1800));
+  const tls=[];for(let k=0;k<tools;k++)tls.push(pickTool());
+  turns.push({i,kind,tools,tok,tls,err:ERR_TURNS[i]||null,label:(LBL[phaseOf(i)]||["work"])[ri(0,(LBL[phaseOf(i)]||["x"]).length-1)]});
+}
+turns.forEach(tr=>{if(tr.err&&!tr.tls.includes("edit_file"))tr.tls[0]="edit_file";tr.tools=tr.tls.length});
+let _t=0;
+turns.forEach((tr,i)=>{tr.t0=_t;let d=1.3+tr.tools*0.45+R()*0.9;if(i===206)d=22;_t+=d;tr.t1=_t});
+const SIM_TOTAL=_t, WALL=6*3600+42*60;
+const wallClock=sim=>{const s=sim/SIM_TOTAL*WALL;const h=Math.floor(s/3600),m=Math.floor(s/60)-h*60;return h+":"+String(m).padStart(2,"0")};
+const wallMin=sim=>sim/SIM_TOTAL*WALL/60;
+const EV=[];
+turns.forEach((tr,i)=>{
+  EV.push({t:tr.t0,type:"turn_start",i});
+  tr.tls.forEach((tn,k)=>{const st=tr.t0+0.25+k*0.42,en=Math.min(st+0.28+R()*0.2,tr.t1-0.06);
+    EV.push({t:st,type:"tool_start",i,k,name:tn});
+    EV.push({t:en,type:"tool_end",i,k,name:tn,ok:!(tr.err&&tn==="edit_file")});});
+  EV.push({t:tr.t1,type:"turn_end",i});
+});
+DELEGATES.forEach(d=>{EV.push({t:turns[d.s].t0+0.05,type:"dlg_spawn",d:d.id});EV.push({t:turns[d.e].t1-0.05,type:"dlg_report",d:d.id})});
+JOBS.forEach(j=>{EV.push({t:turns[j.s].t0+0.1,type:"job_start",j:j.id});EV.push({t:turns[j.e].t1-0.1,type:"job_end",j:j.id})});
+WATCHES.forEach(w=>w.fires.forEach(f=>EV.push({t:turns[f].t0+0.15,type:"watch_fire",w:w.id})));
+COMPACTIONS.forEach(c=>EV.push({t:turns[c].t0+0.2,type:"fold",i:c}));
+EV.push({t:turns[MODEL_SWITCH].t0+0.1,type:"model_switch"});
+EV.sort((a,b)=>a.t-b.t);
+/* ================= world ================= */
+function freshWorld(){return{done:0,cur:-1,inflight:[],toolsDone:0,tokUsed:0,ctx:30000,folds:[],dlgs:{},jobs:{},wfires:{watch_1:[],watch_2:[]},errs:[],alerts:[],log:[],loop:{name:null,n:0}}}
+function applyEv(w,ev){
+  switch(ev.type){
+    case"turn_start":w.cur=ev.i;break;
+    case"tool_start":w.inflight.push(ev);break;
+    case"tool_end":
+      w.inflight=w.inflight.filter(x=>!(x.i===ev.i&&x.k===ev.k));w.toolsDone++;
+      if(!ev.ok){w.errs.push(ev);w.loop=w.loop.name===ev.name?{name:ev.name,n:w.loop.n+1}:{name:ev.name,n:1};
+        if(w.loop.n===3)w.alerts.push({t:ev.t,kind:"loop",text:`possible loop — ${ev.name} failed 3× in a row (#178–#180)`});}
+      else w.loop={name:null,n:0};
+      break;
+    case"turn_end":{const tr=turns[ev.i];w.done=Math.max(w.done,ev.i+1);w.cur=-1;
+      w.tokUsed+=tr.tok;w.ctx=Math.min(196000,w.ctx+tr.tok*0.9);
+      if(ev.i===TURN_FAILURE)w.alerts.push({t:ev.t,kind:"fail",text:"turn #182 failed — provider 529 · backoff retry"});break}
+    case"dlg_spawn":w.dlgs[ev.d]={state:"active",at:ev.t};break;
+    case"dlg_report":w.dlgs[ev.d].state="done";break;
+    case"job_start":w.jobs[ev.j]={state:"running",at:ev.t};break;
+    case"job_end":{const j=JOBS.find(x=>x.id===ev.j);w.jobs[ev.j].state=j.status==="failed"?"failed":"done";
+      if(j.status==="failed")w.alerts.push({t:ev.t,kind:"fail",text:"job_4 failed — go build exit 1"});break}
+    case"watch_fire":{w.wfires[ev.w].push(ev.t);
+      if(w.wfires[ev.w].filter(x=>ev.t-x<5).length>=8&&!w.alerts.some(a=>a.kind==="runaway"&&a.w===ev.w))
+        w.alerts.push({t:ev.t,kind:"runaway",w:ev.w,text:"watch_2 RUNAWAY — 8+ fires in 5s"});break}
+    case"fold":w.ctx=24000;w.folds.push(ev.i);break;
+    case"model_switch":w.alerts.push({t:ev.t,kind:"info",text:"model switch k3 → k3-fast"});break;
+  }
+  w.log.push(ev);
+}
+let simT=0,playing=true,speed=1,ptr=0,world=freshWorld(),sel=-1,lastSampleT=-9;
+let samples=[]; /* {t, tokPerMin, toolsPerMin, errs} */
+const fmtK=n=>n>=1e6?(n/1e6).toFixed(2)+"M":n>=1000?(n/1000).toFixed(1)+"k":Math.round(n);
+function evText(ev){
+  switch(ev.type){
+    case"turn_start":return`#${ev.i} ${turns[ev.i].kind.toLowerCase().replace("_"," ")}`;
+    case"turn_end":return`#${ev.i} done · ${turns[ev.i].tools} tools · ${fmtK(turns[ev.i].tok)} tok`;
+    case"tool_end":return ev.ok?`${ev.name} ✓`:`⚠ ${ev.name} failed — stale context`;
+    case"dlg_spawn":return`${ev.d} spawned`;
+    case"dlg_report":return`${ev.d} reported back`;
+    case"job_start":return`${ev.j} started`;
+    case"job_end":{const j=JOBS.find(x=>x.id===ev.j);return`${ev.j} ${j.status==="failed"?"FAILED exit 1":"exit 0"}`}
+    case"watch_fire":return`${ev.w} fired`;
+    case"fold":return`⛛ compaction @#${ev.i} — 186k→24k`;
+    case"model_switch":return`model → k3-fast`;
+  }return ev.type}
+/* rates over last 30 sim-s window, expressed per wall-minute */
+function rates(){
+  const w0=simT-30;
+  let tok=0,tools=0;
+  for(let i=world.log.length-1;i>=0;i--){const e=world.log[i];if(e.t<w0)break;
+    if(e.type==="turn_end")tok+=turns[e.i].tok;
+    else if(e.type==="tool_end")tools++;}
+  const mins=wallMin(Math.min(30,simT||1));
+  return{tokPerMin:mins>0?tok/mins:0,toolsPerMin:mins>0?tools/mins:0};
+}
+function sampleIfNeeded(){
+  if(simT-lastSampleT<1)return;
+  lastSampleT=simT;
+  const r=rates();
+  samples.push({t:simT,tok:r.tokPerMin,tools:r.toolsPerMin,errs:world.errs.length});
+}
+/* ================= SVG spark helpers ================= */
+const NS='http://www.w3.org/2000/svg';
+function spark(values,cur,color,W,H){
+  const mx=Math.max(...values,1);
+  let d=`M 0 ${H}`;
+  values.forEach((v,i)=>{const x=i/Math.max(values.length-1,1)*W;d+=` L ${x.toFixed(1)} ${(H-3-(v/mx)*(H-8)).toFixed(1)}`});
+  d+=` L ${((values.length-1)/Math.max(values.length-1,1)*W).toFixed(1)} ${H} Z`;
+  return `<svg viewBox="0 0 ${W} ${H}" preserveAspectRatio="none">
+    <path d="${d}" fill="${color}22" stroke="${color}" stroke-width="1.2"/>
+    <circle cx="${((values.length-1)/Math.max(values.length-1,1)*W).toFixed(1)}" cy="${(H-3-(cur/mx)*(H-8)).toFixed(1)}" r="2.6" fill="${color}"/>
+  </svg>`;
+}
+/* ================= render: column A (NOW + verdicts) ================= */
+function renderA(){
+  const el=document.getElementById('colA');
+  const cur=world.cur>=0?turns[world.cur]:null;
+  const flight=world.inflight[world.inflight.length-1];
+  const inTurn=cur?simT-cur.t0:0;
+  /* verdicts */
+  const loopActive=world.loop.n>=2;
+  const loopEver=world.alerts.some(a=>a.kind==='loop');
+  const runCount=world.wfires.watch_2.filter(t=>simT-t<5).length;
+  const runawayActive=runCount>=8;
+  const runawayEver=world.alerts.some(a=>a.kind==='runaway');
+  const stall=inTurn>8;
+  const failedJob=Object.keys(world.jobs).some(j=>world.jobs[j].state==='failed');
+  let h=`<h3>right now</h3><div class="nowcard">`;
+  if(cur)h+=`<div class="act">${cur.label}</div>
+    <div class="sub">turn <b>#${world.cur}</b> · ${phaseOf(world.cur)}</div>
+    <div class="big">${inTurn.toFixed(1)}s</div>
+    <div class="sub">${flight?`running <b>${flight.name}</b> (${(simT-flight.t).toFixed(1)}s)`:'composing…'} · ${world.inflight.length} tool${world.inflight.length===1?'':'s'} in flight</div>`;
+  else h+=`<div class="act">between turns</div><div class="big">${world.done}</div><div class="sub">turns complete</div>`;
+  h+=`</div>`;
+  h+=`<h3>verdicts</h3>`;
+  h+=`<div class="chk ${loopActive?'warn':loopEver?'bad':'ok'}"><div class="ic">${loopActive?'⟳':loopEver?'!':'✓'}</div>
+    <div class="tx"><div class="t1">loop detector</div>
+    <div class="t2">${loopActive?`${world.loop.name} failed ×${world.loop.n} consecutively`:loopEver?'looped earlier (#178–#180) · recovered':'no repeated failures'}</div></div></div>`;
+  h+=`<div class="chk ${runawayActive?'bad':runawayEver?'warn':'ok'}"><div class="ic">${runawayActive?'⚠':runawayEver?'!':'✓'}</div>
+    <div class="tx"><div class="t1">watch runaway</div>
+    <div class="t2">${runawayActive?`watch_2 firing ${runCount}× / 5s — flooding turns`:runawayEver?'ran away at ~4:20 · stopped by steering #232':'watch_2 fires/min normal'}</div></div></div>`;
+  h+=`<div class="chk ${stall?'warn':'ok'}"><div class="ic">${stall?'…':'✓'}</div>
+    <div class="tx"><div class="t1">stall check</div>
+    <div class="t2">${stall?`turn #${world.cur} open ${inTurn.toFixed(0)}s — long think or hang`:'turn cadence normal'}</div></div></div>`;
+  h+=`<div class="chk ${failedJob?'bad':'ok'}"><div class="ic">${failedJob?'✕':'✓'}</div>
+    <div class="tx"><div class="t1">jobs healthy</div>
+    <div class="t2">${failedJob?'job_4 exit 1 — go build (undefined: jobstore.Open)':'no failed jobs'}</div></div></div>`;
+  const aa=world.alerts.slice(-4).reverse();
+  if(aa.length)h+=`<h3>alert log</h3>`+aa.map(a=>`<div class="alert ${a.kind}">${a.kind==='loop'?'⟳':a.kind==='runaway'?'⚠':a.kind==='fail'?'✕':'◆'} ${a.text} <span style="opacity:.6">· ${wallClock(a.t)}</span></div>`).join('');
+  el.innerHTML=h;
+}
+/* ================= render: column B (charts + session strip) ================= */
+function renderB(){
+  const el=document.getElementById('colB');
+  const r=rates();
+  const tokS=samples.map(s=>s.tok),toolS=samples.map(s=>s.tools),errS=samples.map(s=>s.errs);
+  const ctxPct=world.ctx/200000*100,budPct=world.tokUsed/1500000*100;
+  const ctxRate=r.tokPerMin/60*0.9; /* ctx tokens per sim-s */
+  const etaSim=ctxRate>1?(196000-world.ctx)/ctxRate:Infinity;
+  const etaTxt=world.ctx<150000?'—':isFinite(etaSim)?`~${Math.max(1,Math.round(wallMin(etaSim)))} wall-min at current rate`:'stalled intake';
+  const budEta=r.tokPerMin>10?(1500000-world.tokUsed)/r.tokPerMin:Infinity;
+  let h=`<h3>throughput · session-so-far</h3>
+  <div class="chartcard"><div class="ch"><span class="cn">tokens / wall-min</span><span class="cv">${fmtK(r.tokPerMin)}<small> /min</small></span></div>${spark(tokS,r.tokPerMin,'#5b9dff',560,64)}</div>
+  <div class="chartcard"><div class="ch"><span class="cn">tool calls / wall-min</span><span class="cv">${Math.round(r.toolsPerMin)}<small> /min</small></span></div>${spark(toolS,r.toolsPerMin,'#39c2c9',560,64)}</div>
+  <div class="chartcard"><div class="ch"><span class="cn">errors (cumulative)</span><span class="cv" style="color:${world.errs.length?'var(--red)':'var(--ink)'}">${world.errs.length}</span></div>${spark(errS,world.errs.length,'#e5534b',560,64)}</div>`;
+  h+=`<h3>pressure &amp; budget</h3>
+  <div class="chartcard">
+   <div class="gauge"><div class="gl"><span>context pressure</span><b>${fmtK(world.ctx)} / 200k${world.ctx>170000?' · FOLD SOON':''}</b></div>
+    <div class="gtrack"><div class="gfill ctx" style="width:${ctxPct.toFixed(1)}%"></div><div class="gmark" style="left:93%"></div></div>
+    <div class="proj">⛛ ${world.folds.length} folds so far · next fold ${world.ctx>=196000?'now':etaTxt}</div></div>
+   <div class="gauge" style="margin-top:9px"><div class="gl"><span>token budget</span><b>${fmtK(world.tokUsed)} / 1.50M (${budPct.toFixed(0)}%)</b></div>
+    <div class="gtrack"><div class="gfill bud" style="width:${Math.min(budPct,100).toFixed(1)}%"></div></div>
+    <div class="proj" style="color:var(--ink-low)">${isFinite(budEta)?`budget wall in ~${Math.round(budEta)} wall-min at current burn`:'burn rate ~0'}</div></div>
+  </div>`;
+  h+=`<h3>session strip · click to pin a moment</h3><div class="miniwrap"><svg id="mini"></svg><div id="pinSlot">${pinHtml()}</div></div>`;
+  el.innerHTML=h;
+  renderMini();
+}
+function pinHtml(){
+  if(sel<0)return`<span style="color:var(--ink-low)">no moment pinned — click the strip above or an event</span>`;
+  const t=turns[sel];
+  return`<b>#${sel}</b> · ${t.kind} · ${wallClock(t.t0)} · ${t.tools} tools · ${fmtK(t.tok)} tok — ${t.label}${t.err?` · <span style="color:var(--red)">⚠ ${t.err}</span>`:''}`;
+}
+function renderMini(){
+  const svg=document.getElementById('mini');if(!svg)return;
+  const W=svg.clientWidth||560,H=64;
+  svg.setAttribute('viewBox',`0 0 ${W} ${H}`);
+  const upto=Math.max(world.done,world.cur+1);
+  const cw=W/N;
+  let s='';
+  for(let i=0;i<upto;i++){
+    const t=turns[i];
+    let c='#39c2c9';
+    const a=.15+.8*Math.min(t.tools,14)/14;
+    if(t.kind==='USER_INPUT')c='#5b9dff';else if(t.kind==='STEERING')c='#e8b13f';
+    else if(t.kind==='CHECKPOINT')c='#9a7bff';else if(t.kind==='TURN_FAILURE')c='#e5534b';
+    const fill=c==='#39c2c9'?`rgba(57,194,201,${a.toFixed(2)})`:c;
+    s+=`<rect x="${(i*cw).toFixed(2)}" y="14" width="${Math.max(cw-.4,.5).toFixed(2)}" height="36" fill="${fill}"/>`;
+  }
+  if(world.cur>=0)s+=`<rect x="${(world.cur*cw).toFixed(2)}" y="10" width="${Math.max(cw,1.5)}" height="44" fill="rgba(91,157,255,.3)" stroke="#5b9dff" stroke-width="1" stroke-dasharray="3 2"/>`;
+  world.folds.forEach(c=>{s+=`<rect x="${(c*cw).toFixed(2)}" y="6" width="2" height="52" fill="#9a7bff"/>`});
+  world.errs.forEach(e=>{s+=`<rect x="${(e.i*cw).toFixed(2)}" y="6" width="2.4" height="8" fill="#e5534b"/>`});
+  if(sel>=0)s+=`<rect x="${(sel*cw-1).toFixed(2)}" y="8" width="${Math.max(cw+2,3)}" height="48" fill="none" stroke="#fff" stroke-width="1.2"/>`;
+  if(upto>0&&simT<SIM_TOTAL)s+=`<rect x="${(upto*cw).toFixed(2)}" y="4" width="2" height="56" fill="#e8edf3"/>`;
+  s+=`<text x="2" y="62" font-size="8" fill="#64707e" font-family="var(--mono)">${upto}/${N} turns</text>`;
+  s+=`<text x="${W-2}" y="62" font-size="8" fill="#64707e" text-anchor="end" font-family="var(--mono)">teal=tools·violet=fold·red=error·white=head</text>`;
+  svg.innerHTML=s;
+}
+/* ================= render: column C (boards + ticker) ================= */
+function renderC(){
+  const el=document.getElementById('colC');
+  let h=`<h3>delegates</h3>`;
+  DELEGATES.forEach(d=>{const st=world.dlgs[d.id];
+    const age=st?wallMin(simT-st.at):0;
+    h+=`<div class="rowitem ${st?(st.state==='active'?'active':'done'):''}"><span class="nm">${'  '.repeat(d.depth)}↳ ${d.id} · ${d.name}</span>${st?(st.state==='active'?`<span class="st act">ACTIVE ${Math.round(age)}m</span>`:'<span class="st done">DONE ✓</span>'):'<span class="st idle">—</span>'}</div>`});
+  h+=`<h3>jobs</h3>`;
+  JOBS.forEach(j=>{const st=world.jobs[j.id];
+    const age=st?wallMin(simT-st.at):0;
+    h+=`<div class="rowitem ${st?(st.state==='running'?'active':st.state==='failed'?'failed':'done'):''}"><span class="nm">${j.id} · ${j.cmd}</span>${st?(st.state==='running'?`<span class="st act">RUN ${Math.round(age)}m</span>`:st.state==='failed'?'<span class="st fail">EXIT 1</span>':'<span class="st done">EXIT 0</span>'):'<span class="st idle">—</span>'}</div>`});
+  h+=`<h3>watches</h3>`;
+  WATCHES.forEach(w=>{const f=world.wfires[w.id].length;
+    const run=w.runaway&&world.alerts.some(a=>a.kind==='runaway');
+    h+=`<div class="rowitem ${run?'failed':''}"><span class="nm">${w.id} · ${w.name}</span><span class="st ${run?'fail':'done'}">${f} fires${run?' ⚠':''}</span></div>`});
+  h+=`<h3>event ticker</h3>`;
+  world.log.slice(-9).reverse().forEach(ev=>{
+    h+=`<div class="evt" data-i="${ev.type.startsWith('turn')||ev.type.startsWith('tool')?ev.i:-1}"><span class="et">${wallClock(ev.t)}</span><span class="em">${evText(ev)}</span></div>`});
+  el.innerHTML=h;
+  el.querySelectorAll('.evt').forEach(n=>n.addEventListener('click',()=>{
+    const i=+n.dataset.i;if(i>=0&&i<world.done){sel=i;renderB()}
+  }));
+}
+/* ================= transport & loop ================= */
+const liveChip=document.getElementById('liveChip'),liveTxt=document.getElementById('liveTxt'),playBtn=document.getElementById('playBtn');
+function updateTransport(){
+  liveChip.className='live '+(simT>=SIM_TOTAL?'ended':playing?'':'paused');
+  liveTxt.textContent=simT>=SIM_TOTAL?'ENDED':playing?'LIVE':'PAUSED';
+  playBtn.textContent=playing?'⏸':'⏵';
+  document.getElementById('seek').value=Math.round(simT/SIM_TOTAL*1000);
+  document.getElementById('clock').textContent=`${wallClock(simT)} / 6:42`;
+  document.getElementById('kpisLive').innerHTML=`<span><b>${world.done}</b> turns</span> <span><b>${world.toolsDone}</b> tools</span> <span><b>${fmtK(world.tokUsed)}</b> tok</span>`;
+}
+playBtn.onclick=()=>{if(simT>=SIM_TOTAL)return;playing=!playing;updateTransport()};
+document.querySelectorAll('#speedSeg button').forEach(b=>b.onclick=()=>{
+  document.querySelectorAll('#speedSeg button').forEach(x=>x.classList.remove('on'));b.classList.add('on');speed=+b.dataset.s});
+function seekTo(v){simT=v;ptr=0;world=freshWorld();samples=[];lastSampleT=-9;while(ptr<EV.length&&EV[ptr].t<=simT){applyEv(world,EV[ptr++]);sampleIfNeeded()}}
+document.getElementById('restart').onclick=()=>{seekTo(0);playing=true;sel=-1;renderAll()};
+document.getElementById('seek').oninput=ev=>{seekTo(ev.target.value/1000*SIM_TOTAL);renderAll()};
+function renderAll(){renderA();renderB();renderC();updateTransport()}
+setInterval(()=>{
+  if(!playing)return;
+  if(simT>=SIM_TOTAL){playing=false;updateTransport();return}
+  simT=Math.min(SIM_TOTAL,simT+0.1*2.2*speed);
+  while(ptr<EV.length&&EV[ptr].t<=simT)applyEv(world,EV[ptr++]);
+  sampleIfNeeded();
+  renderAll();
+},100);
+/* mini strip interactions (delegated after each renderB) */
+document.getElementById('colB').addEventListener('mousemove',ev=>{
+  const svg=document.getElementById('mini');if(!svg)return;
+  const tip=document.getElementById('tip');
+  const r=svg.getBoundingClientRect();
+  if(ev.clientY<r.top||ev.clientY>r.bottom){tip.style.display='none';return}
+  const i=Math.max(0,Math.min(N-1,Math.floor((ev.clientX-r.left)/r.width*N)));
+  const upto=Math.max(world.done,world.cur+1);
+  if(i>=upto){tip.style.display='none';return}
+  const t=turns[i];
+  tip.style.display='block';tip.style.left=(ev.clientX+14)+'px';tip.style.top=(ev.clientY+12)+'px';
+  tip.innerHTML=`<div class="th">turn #${i} · ${t.kind} · ${wallClock(t.t0)}</div><div class="tl">${t.label}</div><div class="tl">tools <b>${t.tools}</b> · <b>${fmtK(t.tok)}</b> tok${i===world.cur?' · <span style="color:#5b9dff">RUNNING</span>':''}</div>`;
+});
+document.getElementById('colB').addEventListener('mouseleave',()=>document.getElementById('tip').style.display='none');
+document.getElementById('colB').addEventListener('click',ev=>{
+  const svg=document.getElementById('mini');if(!svg)return;
+  const r=svg.getBoundingClientRect();
+  if(ev.clientY<r.top||ev.clientY>r.bottom)return;
+  const i=Math.max(0,Math.min(N-1,Math.floor((ev.clientX-r.left)/r.width*N)));
+  if(i<Math.max(world.done,world.cur+1)){sel=sel===i?-1:i;renderB()}
+});
+window.addEventListener('resize',renderAll);
+renderAll();
+</script>
+</body>
+</html>

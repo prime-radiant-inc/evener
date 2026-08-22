@@ -1,0 +1,412 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Evener Realtime Session Viz — 18 Proposals</title>
+<style>
+  :root {
+    --bg: #0d1117; --panel: #161b22; --panel2: #1c2330; --border: #2d333f;
+    --text: #e6edf3; --dim: #8b949e; --accent: #58a6ff; --live: #f85149;
+    --k3: #7ee787; --gpt: #d2a8ff; --glm: #79c0ff;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--text);
+         font: 14px/1.5 -apple-system, "SF Pro Text", "Segoe UI", sans-serif; }
+  header { padding: 28px 36px 20px; border-bottom: 1px solid var(--border); }
+  h1 { margin: 0 0 6px; font-size: 22px; letter-spacing: .2px; }
+  .live-dot { color: var(--live); }
+  .sub { color: var(--dim); max-width: 980px; }
+  .sub code { color: var(--accent); font-size: 12px; }
+  .sub a { color: var(--accent); }
+  nav.toc { display: flex; flex-wrap: wrap; gap: 8px; padding: 14px 36px;
+            border-bottom: 1px solid var(--border); position: sticky; top: 0;
+            background: var(--bg); z-index: 5; }
+  nav.toc a { color: var(--dim); text-decoration: none; font-size: 12px;
+              border: 1px solid var(--border); border-radius: 20px; padding: 3px 12px; }
+  nav.toc a:hover { color: var(--text); border-color: var(--accent); }
+  section { padding: 26px 36px 8px; }
+  .slot-head { display: flex; align-items: baseline; gap: 12px; margin-bottom: 4px; }
+  .slot-head h2 { margin: 0; font-size: 17px; }
+  .chip { font-size: 11px; font-weight: 600; padding: 2px 10px; border-radius: 20px; }
+  .chip.k3  { background: rgba(126,231,135,.12); color: var(--k3);  border: 1px solid rgba(126,231,135,.35); }
+  .chip.gpt { background: rgba(210,168,255,.12); color: var(--gpt); border: 1px solid rgba(210,168,255,.35); }
+  .chip.glm { background: rgba(121,192,255,.12); color: var(--glm); border: 1px solid rgba(121,192,255,.35); }
+  .theme { color: var(--dim); font-size: 13px; margin: 0 0 16px; }
+  .cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(420px, 1fr)); gap: 18px; }
+  .card { background: var(--panel); border: 1px solid var(--border); border-radius: 10px;
+          overflow: hidden; display: flex; flex-direction: column; }
+  .card:hover { border-color: #46505f; }
+  .thumb { display: block; width: 100%; aspect-ratio: 1440/1000; object-fit: cover;
+           object-position: top left; background: var(--panel2);
+           border-bottom: 1px solid var(--border); }
+  .body { padding: 14px 16px 16px; }
+  .body h3 { margin: 0 0 4px; font-size: 15px; }
+  .body h3 a { color: var(--text); text-decoration: none; }
+  .body h3 a:hover { color: var(--accent); }
+  .one { color: var(--text); opacity: .85; margin: 0 0 10px; font-size: 13px; }
+  dl { margin: 0; font-size: 12px; }
+  dt { color: var(--accent); font-weight: 600; margin-top: 8px; font-size: 11px;
+       text-transform: uppercase; letter-spacing: .4px; }
+  dd { margin: 2px 0 0; color: var(--dim); }
+  .links { margin-top: 12px; font-size: 12px; }
+  .links a { color: var(--accent); text-decoration: none; margin-right: 14px; }
+  .links a:hover { text-decoration: underline; }
+  footer { padding: 24px 36px 40px; color: var(--dim); font-size: 12px; }
+</style>
+</head>
+<body>
+
+<header>
+  <h1><span class="live-dot">●</span> Evener realtime session visualization — 18 live-HUD proposals</h1>
+  <p class="sub">Round 2: the same six design delegates (2 × <b>kimi/k3</b>, 2 × <b>codex-personal/gpt-5.6-sol</b>, 2 × <b>lunaroute/glm-5.2-vision</b>),
+  same theme angles, re-aimed at the real goal — <b>visualization that updates live during a running session</b>.
+  Every mockup embeds a synthetic realtime event stream (turns arriving, tools starting/finishing, delegates spawning, jobs notifying,
+  watches firing, context pressure climbing, compactions folding) with play/pause/speed/seek transport and a LIVE indicator;
+  in-flight work renders distinctly from completed history. Thumbnails are captured mid-simulation — open any mockup to watch it run.
+  Round 1 (retrospective analysis of finished sessions) lives at <a href="index.html">the retrospective gallery</a>;
+  round 3 (<b>wildly more compact</b> always-on components) at <a href="compact.html">the compact gallery</a>;
+  round 4 (the compact set re-done on <b>real session data</b>) at <a href="real.html">the real-session gallery</a>. Generated 2026-08-21.</p>
+</header>
+
+<nav class="toc">
+  <a href="#k3-a">k3-a · overview</a>
+  <a href="#k3-b">k3-b · causality</a>
+  <a href="#gpt56-a">gpt56-a · time</a>
+  <a href="#gpt56-b">gpt56-b · narrative</a>
+  <a href="#glm52-a">glm52-a · patterns</a>
+  <a href="#glm52-b">glm52-b · interaction</a>
+</nav>
+
+<!-- ══════════════ kimi/k3 · slot a ══════════════ -->
+<section id="k3-a">
+  <div class="slot-head"><h2>Overview-first navigation</h2><span class="chip k3">kimi/k3 · k3-a</span></div>
+  <p class="theme">The whole session-so-far's shape at a glance, filling in live — the minimap as an always-on HUD.</p>
+  <div class="cards">
+
+    <div class="card">
+      <a href="realtime/k3-a/idea-1.html"><img class="thumb" src="realtime-thumbs/k3-a-1.png" alt="Live Strata HUD mockup"></a>
+      <div class="body">
+        <h3><a href="realtime/k3-a/idea-1.html">Live Strata HUD</a></h3>
+        <p class="one">The owner's minimap as a live HUD: five semantic lanes fill in stratum-by-stratum under a head marker, flanked by a NOW card, pressure gauges, live delegate/job/watch boards, and a transcript tail with streaming in-flight chips.</p>
+        <dl>
+          <dt>Realtime comprehension</dt>
+          <dd>While the session runs: what the agent is doing right now (NOW card with current action/tool/elapsed), what just changed (event feed), whether it's looping or about to fold (alerts + context gauge with fold threshold), state of every delegate/job/watch — plus the accumulating whole-session shape as strata with fault lines and anomaly diamonds.</dd>
+          <dt>Long-session scaling</dt>
+          <dd>Past strata are immutable and only shrink in height (278 turns ≈ 2px each); all live cost concentrates at the head marker and O(actors) rail panels, so glanceability holds at 250+ turns and beyond. Click any past stratum to pin it.</dd>
+        </dl>
+        <div class="links"><a href="realtime/k3-a/idea-1.html">open live mockup ↗</a><a href="realtime/k3-a/README.md">slot README</a></div>
+      </div>
+    </div>
+
+    <div class="card">
+      <a href="realtime/k3-a/idea-2.html"><img class="thumb" src="realtime-thumbs/k3-a-2.png" alt="Live Mission Timeline mockup"></a>
+      <div class="body">
+        <h3><a href="realtime/k3-a/idea-2.html">Live Mission Timeline</a></h3>
+        <p class="one">A wall-clock swimlane trace that grows as the session ages: context-pressure band cliffs live at each compaction, in-flight delegate/job bars extend until they land, NOW cursor at the edge.</p>
+        <dl>
+          <dt>Realtime comprehension</dt>
+          <dd>What is running in parallel and for how long — delegate and job bars lengthen in real time (animated while active, red on failure), the context band climbs and cliffs at each fold, a watch runaway visibly packs into a barcode; hover any bar for elapsed time and status.</dd>
+          <dt>Long-session scaling</dt>
+          <dd>Lane count grows with actors, not turns; the x-axis starts at a 20-minute window and rescales as the session ages; completed blocks compress into texture while anomalies stay distinct at full 6h42m / 278-turn length.</dd>
+        </dl>
+        <div class="links"><a href="realtime/k3-a/idea-2.html">open live mockup ↗</a><a href="realtime/k3-a/README.md">slot README</a></div>
+      </div>
+    </div>
+
+    <div class="card">
+      <a href="realtime/k3-a/idea-3.html"><img class="thumb" src="realtime-thumbs/k3-a-3.png" alt="Vitals and Verdict mockup"></a>
+      <div class="body">
+        <h3><a href="realtime/k3-a/idea-3.html">Vitals &amp; Verdict</a></h3>
+        <p class="one">An ops console for the running agent: loop/runaway/stall/jobs verdicts, throughput sparklines, and projected time-to-fold and time-to-budget-wall, over a clickable whole-session strip.</p>
+        <dl>
+          <dt>Realtime comprehension</dt>
+          <dd>Is it healthy? Four explicit verdicts (loop detector, watch runaway, stall check, jobs healthy) with one-line reasons, a big in-turn timer, tokens/min + tools/min sparklines that show a breakage episode as a dip and a step, and rate-based ETAs for the next fold and the budget wall.</dd>
+          <dt>Long-session scaling</dt>
+          <dd>Every panel is fixed-size: sparklines compress from a once-per-second sample buffer, the session strip is one pixel-column per turn, verdicts recompute from O(1) sliding windows — degrades least of the set at thousands of turns.</dd>
+        </dl>
+        <div class="links"><a href="realtime/k3-a/idea-3.html">open live mockup ↗</a><a href="realtime/k3-a/README.md">slot README</a></div>
+      </div>
+    </div>
+
+  </div>
+</section>
+
+<!-- ══════════════ kimi/k3 · slot b ══════════════ -->
+<section id="k3-b">
+  <div class="slot-head"><h2>Causality &amp; structure</h2><span class="chip k3">kimi/k3 · k3-b</span></div>
+  <p class="theme">What is causing what, right now — causal structure that forms live as the session runs.</p>
+  <div class="cards">
+
+    <div class="card">
+      <a href="realtime/k3-b/idea-1.html"><img class="thumb" src="realtime-thumbs/k3-b-1.png" alt="Upstream Live mockup"></a>
+      <div class="body">
+        <h3><a href="realtime/k3-b/idea-1.html">Upstream Live — the growing causal graph</a></h3>
+        <p class="one">The provenance DAG materializes live — nodes appear with pulsing halos when work starts, causal edges draw themselves at the moment one thing causes another, and a WHY-NOW rail answers "what triggered this?" continuously.</p>
+        <dl>
+          <dt>Realtime comprehension</dt>
+          <dd>"Why is the agent doing this exact thing right now?" The WHY-NOW rail walks the current node's upstream chain over edges that exist so far; the alert rail flags a watch runaway at the third fire, not in hindsight; you watch the "bug written @T44" edge land on ROOT CAUSE live.</dd>
+          <dt>Long-session scaling</dt>
+          <dd>The graph accumulates ~21 entities for 287 turns — it tracks causal structure, not turn volume. Completed nodes freeze solid and dim; the eye is pulled to the 1–2 pulsing in-flight nodes. Full 6h12m replay at 128× takes ~3s; seek rebuilds any point.</dd>
+        </dl>
+        <div class="links"><a href="realtime/k3-b/idea-1.html">open live mockup ↗</a><a href="realtime/k3-b/README.md">slot README</a></div>
+      </div>
+    </div>
+
+    <div class="card">
+      <a href="realtime/k3-b/idea-2.html"><img class="thumb" src="realtime-thumbs/k3-b-2.png" alt="Riverbed Live mockup"></a>
+      <div class="body">
+        <h3><a href="realtime/k3-b/idea-2.html">Riverbed Live — swimlanes with playhead</a></h3>
+        <p class="one">Actor swimlanes with a sweeping playhead and a growing time axis — lanes fade in as delegates/jobs spawn, jobs render as hatched bars growing until their exit event, watch fires and folds land live.</p>
+        <dl>
+          <dt>Realtime comprehension</dt>
+          <dd>Who is active right now, what just fired (watch triangles drop with arcs to their handler turns), whether a runaway/cascade is developing (RIGHT NOW strip flips to blinking red the moment the pattern forms); the CONTEXT lane makes each compaction legible as it happens.</dd>
+          <dt>Long-session scaling</dt>
+          <dd>Rendering cost is O(elapsed minutes × lanes), never O(turns): 2,146 tool calls accumulate as density currents. Lanes appear only when actors exist; the whole 287-turn session stays one screen at 1×–128×.</dd>
+        </dl>
+        <div class="links"><a href="realtime/k3-b/idea-2.html">open live mockup ↗</a><a href="realtime/k3-b/README.md">slot README</a></div>
+      </div>
+    </div>
+
+    <div class="card">
+      <a href="realtime/k3-b/idea-3.html"><img class="thumb" src="realtime-thumbs/k3-b-3.png" alt="Case File Live mockup"></a>
+      <div class="body">
+        <h3><a href="realtime/k3-b/idea-3.html">Case File Live — the ledger writes itself</a></h3>
+        <p class="one">The forensic ledger writes itself — episodes open as amber-pulsing cards with live action lines, seal with ✓/✗ outcomes, then collapse into one-line custody rows as newer episodes arrive.</p>
+        <dl>
+          <dt>Realtime comprehension</dt>
+          <dd>What episode is in flight, what it just caused, is the session healthy? Open cards tick live (elapsed, ~calls, current tool) with "pending — episode in flight…" until the seal event; causal link pills flash in the instant their trigger lands; alert strip badges anomaly onset AND resolution. Multiple cards can be open — parallel work is honest.</dd>
+          <dt>Long-session scaling</dt>
+          <dd>Sealed episodes auto-collapse to one-line custody rows once two newer episodes exist: at T287 the ledger is 12 compact rows + 2 full cards — one screen regardless of length. Heatmap is files × 48 buckets regardless of run length.</dd>
+        </dl>
+        <div class="links"><a href="realtime/k3-b/idea-3.html">open live mockup ↗</a><a href="realtime/k3-b/README.md">slot README</a></div>
+      </div>
+    </div>
+
+  </div>
+</section>
+
+<!-- ══════════════ gpt-5.6-sol · slot a ══════════════ -->
+<section id="gpt56-a">
+  <div class="slot-head"><h2>Time &amp; rhythm</h2><span class="chip gpt">codex-personal/gpt-5.6-sol · gpt56-a</span></div>
+  <p class="theme">Tempo as it happens — bursts, stalls, latency trends, and pathology detection in real time.</p>
+  <div class="cards">
+
+    <div class="card">
+      <a href="realtime/gpt56-a/idea-1.html"><img class="thumb" src="realtime-thumbs/gpt56-a-1.png" alt="Pulse Deck mockup"></a>
+      <div class="body">
+        <h3><a href="realtime/gpt56-a/idea-1.html">Pulse Deck</a></h3>
+        <p class="one">A rolling live strip-chart whose right edge is now and whose unfinished spans keep growing.</p>
+        <dl>
+          <dt>Realtime comprehension</dt>
+          <dd>What main, delegates, jobs, and watches are doing now; whether cadence is a productive burst, a possible stall, or a runaway callback loop; and how latency, context, and spend are moving.</dd>
+          <dt>Long-session scaling</dt>
+          <dd>A fixed 90-second live window preserves in-flight detail while a compressed session tape retains the complete 250+-turn rhythm and compaction boundaries.</dd>
+        </dl>
+        <div class="links"><a href="realtime/gpt56-a/idea-1.html">open live mockup ↗</a><a href="realtime/gpt56-a/README.md">slot README</a></div>
+      </div>
+    </div>
+
+    <div class="card">
+      <a href="realtime/gpt56-a/idea-2.html"><img class="thumb" src="realtime-thumbs/gpt56-a-2.png" alt="Conductor Orbit mockup"></a>
+      <div class="body">
+        <h3><a href="realtime/gpt56-a/idea-2.html">Conductor Orbit</a></h3>
+        <p class="one">A radial system clock where active actor arcs grow until completion and hangs become conspicuous.</p>
+        <dl>
+          <dt>Realtime comprehension</dt>
+          <dd>Centers the current action and makes elapsed-time risk spatial: parallel tools, delegates, jobs, watches, context pressure, latency, and pathology remain visible without reading a feed.</dd>
+          <dt>Long-session scaling</dt>
+          <dd>Active work consumes bounded concentric orbits; completed work cools into a pulse ring, phase mass, and one fine outer tick per durable turn.</dd>
+        </dl>
+        <div class="links"><a href="realtime/gpt56-a/idea-2.html">open live mockup ↗</a><a href="realtime/gpt56-a/README.md">slot README</a></div>
+      </div>
+    </div>
+
+    <div class="card">
+      <a href="realtime/gpt56-a/idea-3.html"><img class="thumb" src="realtime-thumbs/gpt56-a-3.png" alt="Cadence Loom mockup"></a>
+      <div class="body">
+        <h3><a href="realtime/gpt56-a/idea-3.html">Cadence Loom</a></h3>
+        <p class="one">A streaming semantic loom that brackets repeated motifs and distinguishes loops from stalled jobs.</p>
+        <dl>
+          <dt>Realtime comprehension</dt>
+          <dd>Detects whether the live event pattern is progressing across new consequences or repeating the same tool/target/watch signature; separately identifies a stale background job after a loop clears.</dd>
+          <dt>Long-session scaling</dt>
+          <dd>A bounded 120-second semantic loom expands the live edge while a stable 288-cell tapestry keeps every accumulated turn visible beyond 250 turns.</dd>
+        </dl>
+        <div class="links"><a href="realtime/gpt56-a/idea-3.html">open live mockup ↗</a><a href="realtime/gpt56-a/README.md">slot README</a></div>
+      </div>
+    </div>
+
+  </div>
+</section>
+
+<!-- ══════════════ gpt-5.6-sol · slot b ══════════════ -->
+<section id="gpt56-b">
+  <div class="slot-head"><h2>Semantic zoom &amp; narrative</h2><span class="chip gpt">codex-personal/gpt-5.6-sol · gpt56-b</span></div>
+  <p class="theme">The session as a story that writes itself live — synopsis down to the latest turn.</p>
+  <div class="cards">
+
+    <div class="card">
+      <a href="realtime/gpt56-b/idea-1.html"><img class="thumb" src="realtime-thumbs/gpt56-b-1.png" alt="Live Chronicle mockup"></a>
+      <div class="body">
+        <h3><a href="realtime/gpt56-b/idea-1.html">Live Chronicle — The Self-Writing Session</a></h3>
+        <p class="one">A technical document that rewrites its synopsis and current chapter live while settled chapters stay stable.</p>
+        <dl>
+          <dt>Realtime comprehension</dt>
+          <dd>Keeps "story so far," current chapter, latest durable event, and the agent's present attempt readable while the transcript is still arriving.</dd>
+          <dt>Long-session scaling</dt>
+          <dd>A fixed chapter outline and proportional ribbon absorb 250+ turns; only the running chapter and a bounded 7–9-event tail render at high detail.</dd>
+        </dl>
+        <div class="links"><a href="realtime/gpt56-b/idea-1.html">open live mockup ↗</a><a href="realtime/gpt56-b/README.md">slot README</a></div>
+      </div>
+    </div>
+
+    <div class="card">
+      <a href="realtime/gpt56-b/idea-2.html"><img class="thumb" src="realtime-thumbs/gpt56-b-2.png" alt="Nowline Loom mockup"></a>
+      <div class="body">
+        <h3><a href="realtime/gpt56-b/idea-2.html">Nowline Loom — The Live Causal Braid</a></h3>
+        <p class="one">A realtime causal braid where in-flight bars terminate at a moving now-line and detach into history when completed.</p>
+        <dl>
+          <dt>Realtime comprehension</dt>
+          <dd>Shows what is running in parallel now, which causal branch just settled, and exactly what the parent is waiting for.</dd>
+          <dt>Long-session scaling</dt>
+          <dd>Stable parent/delegate/job/watch lanes retain identity while old activity collapses into a density strip and only the causal present remains expanded.</dd>
+        </dl>
+        <div class="links"><a href="realtime/gpt56-b/idea-2.html">open live mockup ↗</a><a href="realtime/gpt56-b/README.md">slot README</a></div>
+      </div>
+    </div>
+
+    <div class="card">
+      <a href="realtime/gpt56-b/idea-3.html"><img class="thumb" src="realtime-thumbs/gpt56-b-3.png" alt="Growing Atlas mockup"></a>
+      <div class="body">
+        <h3><a href="realtime/gpt56-b/idea-3.html">Growing Atlas — The Live Narrative Cartogram</a></h3>
+        <p class="one">A sequence-preserving story map that grows, rebalances, opens new chapters, and marks compaction seams as events arrive.</p>
+        <dl>
+          <dt>Realtime comprehension</dt>
+          <dd>Explains how incoming evidence changes the session's narrative shape, which chapter remains provisional, and what active work is causing it to grow.</dd>
+          <dt>Long-session scaling</dt>
+          <dd>The overview stays bounded to nine narrative regions; incoming turns change area and totals rather than adding rows, with deeper packet and Now zooms on demand.</dd>
+        </dl>
+        <div class="links"><a href="realtime/gpt56-b/idea-3.html">open live mockup ↗</a><a href="realtime/gpt56-b/README.md">slot README</a></div>
+      </div>
+    </div>
+
+  </div>
+</section>
+
+<!-- ══════════════ glm-5.2-vision · slot a ══════════════ -->
+<section id="glm52-a">
+  <div class="slot-head"><h2>Dense pattern surfaces</h2><span class="chip glm">lunaroute/glm-5.2-vision · glm52-a</span></div>
+  <p class="theme">Patterns visible the instant they form — bursts, stalls, repeats, failure clusters.</p>
+  <div class="cards">
+
+    <div class="card">
+      <a href="realtime/glm52-a/idea-1.html"><img class="thumb" src="realtime-thumbs/glm52-a-1.png" alt="Realtime Event Tape mockup"></a>
+      <div class="body">
+        <h3><a href="realtime/glm52-a/idea-1.html">Realtime Event Tape</a></h3>
+        <p class="one">Every turn becomes one column in a fit-to-width ribbon, streaming in from the right — bursts, stalls, failure clusters, and compaction boundaries read as patterns before any clicking.</p>
+        <dl>
+          <dt>Realtime comprehension</dt>
+          <dd>What pattern is forming right now (burst, stall, retry loop, runaway), what just changed, is current activity normal for this session? Columns stream in live, a green-glow border marks the live cell, and a streaming ticker narrates each event as it arrives.</dd>
+          <dt>Long-session scaling</dt>
+          <dd>One column per turn; older columns compress leftward to keep the full-session-so-far pattern on one screen — a 263-turn session fits 2 rows; 1,000 turns ≈ 8 rows, never scroll.</dd>
+        </dl>
+        <div class="links"><a href="realtime/glm52-a/idea-1.html">open live mockup ↗</a><a href="realtime/glm52-a/README.md">slot README</a></div>
+      </div>
+    </div>
+
+    <div class="card">
+      <a href="realtime/glm52-a/idea-2.html"><img class="thumb" src="realtime-thumbs/glm52-a-2.png" alt="Realtime Tool-Mix Timeline mockup"></a>
+      <div class="body">
+        <h3><a href="realtime/glm52-a/idea-2.html">Realtime Tool-Mix Timeline</a></h3>
+        <p class="one">The tool-type × time-bucket activity heatmap, growing column-by-column — phase transitions and tool-mix shifts as spatial patterns the moment they form.</p>
+        <dl>
+          <dt>Realtime comprehension</dt>
+          <dd>How the tool mix is shifting right now, which tools dominate the current phase, where the error episode is — the active bucket's column pulses with a green outline, the active-row label highlights the current tool type, and the ticker narrates events.</dd>
+          <dt>Long-session scaling</dt>
+          <dd>50 buckets × 10 tool types keeps the grid to one screen regardless of session length; adding buckets or rows only changes cell size, not layout.</dd>
+        </dl>
+        <div class="links"><a href="realtime/glm52-a/idea-2.html">open live mockup ↗</a><a href="realtime/glm52-a/README.md">slot README</a></div>
+      </div>
+    </div>
+
+    <div class="card">
+      <a href="realtime/glm52-a/idea-3.html"><img class="thumb" src="realtime-thumbs/glm52-a-3.png" alt="Realtime Delegate Cost Matrix mockup"></a>
+      <div class="body">
+        <h3><a href="realtime/glm52-a/idea-3.html">Realtime Delegate Cost Matrix</a></h3>
+        <p class="one">The delegation icicle grows live — the root bar extends rightward, child delegate nodes spawn into the tree, and cost ribbons accumulate inside each node.</p>
+        <dl>
+          <dt>Realtime comprehension</dt>
+          <dd>How cost (tokens, wall-clock, tool calls) distributes across the delegation tree as it grows — active nodes pulse with a green outline; an error ribbon appears the instant a failure fires; a taller duration ribbon shows recovery time.</dd>
+          <dt>Long-session scaling</dt>
+          <dd>One node per session element, width proportional to turn span: a 3-level tree fits one screen regardless of depth; fat nodes with tall ribbons show where tokens and time concentrate.</dd>
+        </dl>
+        <div class="links"><a href="realtime/glm52-a/idea-3.html">open live mockup ↗</a><a href="realtime/glm52-a/README.md">slot README</a></div>
+      </div>
+    </div>
+
+  </div>
+</section>
+
+<!-- ══════════════ glm-5.2-vision · slot b ══════════════ -->
+<section id="glm52-b">
+  <div class="slot-head"><h2>Interaction-centric exploration</h2><span class="chip glm">lunaroute/glm-5.2-vision · glm52-b</span></div>
+  <p class="theme">Filtering, brushing, and linking — against a stream that keeps changing under your hands.</p>
+  <div class="cards">
+
+    <div class="card">
+      <a href="realtime/glm52-b/idea-1.html"><img class="thumb" src="realtime-thumbs/glm52-b-1.png" alt="Query-Rift Live mockup"></a>
+      <div class="body">
+        <h3><a href="realtime/glm52-b/idea-1.html">Query-Rift Live</a></h3>
+        <p class="one">A live filtered strip + brush-linked detail pane that updates incrementally as turns stream in.</p>
+        <dl>
+          <dt>Realtime comprehension</dt>
+          <dd>What is the agent doing right now, filtered to what you care about? Query clauses ("delegates that errored", "jobs &gt; 30s", "compaction boundaries") dim non-matching turns as they arrive; the cyan brush follows the live turn even when paused.</dd>
+          <dt>Long-session scaling</dt>
+          <dd>Constant-width strip regardless of turn count; queries collapse irrelevant turns (dimmed) and keep relevant ones highlighted; the brush scopes the detail list so it never overflows.</dd>
+        </dl>
+        <div class="links"><a href="realtime/glm52-b/idea-1.html">open live mockup ↗</a><a href="realtime/glm52-b/README.md">slot README</a></div>
+      </div>
+    </div>
+
+    <div class="card">
+      <a href="realtime/glm52-b/idea-2.html"><img class="thumb" src="realtime-thumbs/glm52-b-2.png" alt="Delegate Cascade Live mockup"></a>
+      <div class="body">
+        <h3><a href="realtime/glm52-b/idea-2.html">Delegate Cascade Live</a></h3>
+        <p class="one">A live 3-level delegation tree laid out by spawn time — nodes appear as delegates start, with token-spend sparklines, tool counts, wall time, and outcomes.</p>
+        <dl>
+          <dt>Realtime comprehension</dt>
+          <dd>Who spawned whom, when, at what cost — right now. In-flight states (running tool calls, active delegates, pending jobs) render distinctly from completed history; click two siblings to compare while they run.</dd>
+          <dt>Long-session scaling</dt>
+          <dd>Delegation forms a bounded tree, not a linear list: a 3-level tree stays legible across hundreds of turns and thousands of tool calls; the root timeline lane overlays each delegate's active span.</dd>
+        </dl>
+        <div class="links"><a href="realtime/glm52-b/idea-2.html">open live mockup ↗</a><a href="realtime/glm52-b/README.md">slot README</a></div>
+      </div>
+    </div>
+
+    <div class="card">
+      <a href="realtime/glm52-b/idea-3.html"><img class="thumb" src="realtime-thumbs/glm52-b-3.png" alt="Cost and Compaction Atlas Live mockup"></a>
+      <div class="body">
+        <h3><a href="realtime/glm52-b/idea-3.html">Cost &amp; Compaction Atlas Live</a></h3>
+        <p class="one">A live stacked bar chart of token/context cost over turns — bars grow as turns land, compaction phase walls drop in live, and the phase scrubber tracks the stream.</p>
+        <dl>
+          <dt>Realtime comprehension</dt>
+          <dd>How token/context cost is evolving right now; compaction boundaries re-partition the session into comparable phases as they happen; error markers and job spans overlay live; tool-type toggles isolate the mix.</dd>
+          <dt>Long-session scaling</dt>
+          <dd>Constant-width x-axis maps any turn count into the same space; compaction partitions long sessions into legible phases; tool-type filter toggles keep the chart from drowning in call volume.</dd>
+        </dl>
+        <div class="links"><a href="realtime/glm52-b/idea-3.html">open live mockup ↗</a><a href="realtime/glm52-b/README.md">slot README</a></div>
+      </div>
+    </div>
+
+  </div>
+</section>
+
+<footer>
+  All 18 mockups are synthetic-data design proposals — self-contained <code>file://</code> HTML, no network, each embedding a deterministic
+  realtime event-stream simulation with transport controls (play/pause/speed/seek) and LIVE/PAUSED/ENDED states.
+  Round 1 retrospective set: <a href="index.html" style="color:var(--accent)">index.html</a> · per-slot READMEs contain encoding/scaling/interaction writeups.
+</footer>
+
+</body>
+</html>

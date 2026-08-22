@@ -1,0 +1,415 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>evener · Compact Delegate Cost Matrix — transcript comprehension</title>
+<style>
+  :root{
+    --surface-0:#0d1117; --surface-1:#161b22; --surface-inset:#11161d; --surface-2:#1c232c;
+    --edge:#2a3340; --edge-strong:#3a4658;
+    --ink-hi:#e6edf3; --ink-mid:#9da9b8; --ink-low:#6a7686;
+    --alive:#3fb950; --alive-ink:#4ade80; --alive-bg:rgba(63,185,80,.14);
+    --attention:#d29922; --attention-ink:#e3b341; --attention-bg:rgba(210,153,34,.16);
+    --danger:#f85149; --danger-ink:#ff6b62; --danger-bg:rgba(248,81,73,.16);
+    --accent:#58a6ff; --accent-ink:#79b8ff; --accent-bg:rgba(88,166,255,.14);
+    --violet:#a371f7; --cyan:#39c5cf; --pink:#db61a2;
+    --mono:ui-monospace,SFMono-Regular,"JetBrains Mono",Menlo,Consolas,monospace;
+    --sans:"Inter",-apple-system,BlinkMacSystemFont,"Segoe UI",Helvetica,Arial,sans-serif;
+  }
+  *{box-sizing:border-box}
+  html,body{margin:0;padding:0;background:var(--surface-0);color:var(--ink-hi);font-family:var(--sans);-webkit-font-smoothing:antialiased}
+  body{padding:20px 28px 40px;min-height:100vh}
+  .micro{font-size:11px;letter-spacing:.08em;text-transform:uppercase;font-weight:500;color:var(--ink-low)}
+  h1{font-size:18px;font-weight:600;letter-spacing:-.01em;margin:0 0 2px}
+  .sub{color:var(--ink-mid);font-size:13px;line-height:1.5;max-width:880px;margin:0 0 18px}
+  code{font-family:var(--mono);font-size:12px;background:var(--surface-inset);padding:1px 5px;border-radius:4px;color:var(--ink-mid)}
+  .card{background:var(--surface-1);border:1px solid var(--edge);border-radius:10px;padding:16px 18px;margin-bottom:16px}
+  .card-head{display:flex;align-items:baseline;justify-content:space-between;gap:12px;margin-bottom:10px}
+  .card-head h2{font-size:13px;font-weight:600;margin:0;letter-spacing:.01em}
+  .pill{display:inline-block;padding:2px 8px;border-radius:999px;font-size:11px;font-weight:500;border:1px solid var(--edge)}
+  .pill.alive{color:var(--alive-ink);background:var(--alive-bg);border-color:rgba(63,185,80,.3)}
+  .pill.attention{color:var(--attention-ink);background:var(--attention-bg);border-color:rgba(210,153,34,.3)}
+  .pill.danger{color:var(--danger-ink);background:var(--danger-bg);border-color:rgba(248,81,73,.3)}
+  .pill.accent{color:var(--accent-ink);background:var(--accent-bg);border-color:rgba(88,166,255,.3)}
+  .pill.muted{color:var(--ink-mid);background:var(--surface-inset)}
+  .controls{display:flex;align-items:center;gap:10px;margin-bottom:14px}
+  .btn{background:var(--surface-2);border:1px solid var(--edge);color:var(--ink-hi);border-radius:6px;padding:4px 12px;font-family:var(--sans);font-size:12px;font-weight:500;cursor:pointer;transition:background .12s ease}
+  .btn:hover{background:var(--edge)}
+  .btn.active{background:var(--accent);color:#06121f;border-color:var(--accent)}
+  .live{display:flex;align-items:center;gap:6px;font-size:11px;color:var(--ink-mid);font-family:var(--mono)}
+  .dot{width:8px;height:8px;border-radius:50%;background:var(--alive);box-shadow:0 0 8px var(--alive)}
+  .dot.paused{background:var(--ink-low);box-shadow:none}
+  .legend{display:flex;flex-wrap:wrap;gap:10px 16px;align-items:center;font-size:12px;color:var(--ink-mid)}
+  .lg-item{display:flex;align-items:center;gap:6px}
+  .grad{width:120px;height:10px;border-radius:3px;background:linear-gradient(to right, #161b22, #1a3d2a, #2f6f3f, #3fb950);display:inline-block}
+  .icicle-wrap{display:flex;flex-direction:column;gap:2px;margin-bottom:10px;padding-left:150px}
+  .icicle-row{display:flex;gap:2px;height:14px;align-items:center}
+  .icicle-cell{border-radius:2px;display:flex;align-items:center;justify-content:center;font-size:9px;color:#06121f;font-weight:600;white-space:nowrap;overflow:hidden;cursor:pointer}
+  .icicle-cell.d0{background:var(--accent);}
+  .icicle-cell.d1{background:var(--violet);color:#1a0f2e;}
+  .icicle-cell.d2{background:var(--cyan);color:#06262a;}
+  .icicle-cell.d3{background:var(--pink);color:#2a0f1f;}
+  .icicle-cell.empty{background:transparent}
+  .icicle-cell.active{outline:2px solid var(--alive);box-shadow:0 0 6px rgba(63,185,80,.5);z-index:5}
+  .grid-wrap{display:flex;gap:0;align-items:flex-start}
+  .row-labels{display:flex;flex-direction:column;gap:2px;width:150px;flex:none;padding-right:10px}
+  .row-label{height:18px;display:flex;align-items:center;font-family:var(--mono);font-size:11px;color:var(--ink-mid);white-space:nowrap}
+  .row-label .glyph{width:14px;height:14px;border-radius:3px;margin-right:8px;flex:none}
+  .row-label.active-row{background:var(--alive-bg);border-left:2px solid var(--alive);color:var(--alive-ink)}
+  .grid{display:grid;grid-auto-flow:column;grid-auto-columns:1fr;flex:1;gap:2px;position:relative;min-width:0}
+  .col-gap{width:3px;height:100%;background:linear-gradient(to bottom,transparent,var(--attention) 8%,var(--attention) 92%,transparent);position:absolute;z-index:2}
+  .cell{height:18px;border-radius:2px;cursor:pointer;transition:transform .08s ease;min-width:0}
+  .cell:hover{transform:scaleY(1.15);z-index:3;outline:1px solid var(--ink-hi)}
+  .cell.sel{outline:2px solid var(--accent);z-index:4}
+  .cell.zero{background:var(--surface-inset);border:1px solid rgba(255,255,255,.03)}
+  .cell.err{background:var(--danger-bg);outline:1px solid rgba(248,81,73,.4)}
+  .cell.active-cell{outline:2px solid var(--alive);box-shadow:0 0 6px rgba(63,185,80,.5);z-index:5}
+  .ticker{font-family:var(--mono);font-size:11px;color:var(--ink-mid);margin-top:10px;line-height:1.5;min-height:36px;background:var(--surface-inset);border:1px solid var(--edge);border-radius:6px;padding:6px 9px}
+  .ticker .ts{color:var(--ink-low)}
+  .ticker .ev{color:var(--alive-ink)}
+  .ticker .err{color:var(--danger-ink)}
+  .ticker .steer{color:var(--attention-ink)}
+  .ticker .comp{color:var(--attention-ink)}
+  .caption{color:var(--ink-mid);font-size:12px;line-height:1.55;max-width:920px}
+  .caption b{color:var(--ink-hi);font-weight:500}
+</style>
+</head>
+<body>
+<div style="max-width:1180px;margin:0 auto">
+  <div class="micro">evener · transcript-viz proposal · COMPACT idea 3 of 3</div>
+  <h1 style="margin-top:6px">Compact Delegate Cost Matrix — a corner/badge icicle tree</h1>
+  <p class="sub">The 3-level delegation tree is an icicle that grows live as turns stream in. Node width = turn span, depth = delegation level; inside each node, stacked micro-ribbons show tool-call density (green), token cost (blue), and wall-clock duration (violet) — a red ribbon marks an error. Active nodes pulse/glow with a green outline; a new child delegate node glows green and grows rightward; an error ribbon appears the instant a failure fires (the build-failure retry) and a taller violet duration ribbon, showing it took wall-clock time to recover.</p>
+  <div class="controls">
+    <button class="btn" id="playBtn">▶ play</button>
+    <button class="btn" id="pauseBtn">⏸ pause</button>
+    <span style="color:var(--ink-low);font-size:11px">speed</span>
+    <button class="btn" id="speedBtn">1×</button>
+    <button class="btn" id="speed2Btn">3×</button>
+    <button class="btn" id="speed4Btn">10×</button>
+    <span class="live" id="liveBadge"><span class="dot" id="liveDot"></span><span id="liveTxt">LIVE</span></span>
+    <span class="micro" style="margin-left:auto">turn #<span id="turnCount">0</span></span>
+  </div>
+  <div class="card">
+    <div class="card-head"><h2>Legend</h2></div>
+    <div class="legend">
+      <span class="lg-item"><span class="pill accent">d0</span> root session</span>
+      <span class="lg-item"><span class="pill" style="color:var(--violet);background:rgba(163,113,247,.16);border-color:rgba(163,113,247,.3)">d1</span> delegate</span>
+      <span class="lg-item"><span class="pill" style="color:var(--cyan);background:rgba(57,197,207,.16);border-color:rgba(57,197,207,.3)">d2</span> grandchild</span>
+      <span class="lg-item"><span style="width:40px;height:6px;border-radius:3px;background:linear-gradient(to right,var(--surface-inset),var(--alive));display:inline-block"></span> tool-call density</span>
+      <span class="lg-item"><span style="width:40px;height:6px;border-radius:3px;background:linear-gradient(to right,var(--surface-inset),var(--accent));display:inline-block"></span> token cost</span>
+      <span class="lg-item"><span style="width:40px;height:6px;border-radius:3px;background:linear-gradient(to right,var(--surface-inset),var(--violet));display:inline-block"></span> wall-clock</span>
+      <span class="lg-item"><span style="width:40px;height:6px;border-radius:3px;background:var(--danger);display:inline-block"></span> error episode</span>
+      <span class="lg-item"><span class="pill muted">width</span> turn span (proportional)</span>
+      <span class="lg-item"><span class="pill alive">active node</span> glowing green outline (current session segment)</span>
+    </div>
+  </div>
+  <div class="card">
+    <div class="card-head"><h2>Delegate Cost Matrix · 3-level tree</h2></div>
+    <div class="icicle-wrap" id="icicle"></div>
+  </div>
+  <div class="kv" id="kv"></div>
+    <div class="ticker" id="ticker"></div>
+  </div>
+  <div class="card" id="detailCard">
+    <div class="card-head"><h2 id="detailTitle">Node — hover or click</h2><span class="micro" id="detailPos"></span></div>
+    <div style="grid-template-columns:1fr 1fr;display:grid;gap:14px 22px;font-size:12px" id="detail">
+      <div><dt>Node</dt><dd>—</dd></div>
+      <div><dt>Depth</dt><dd>—</dd></div>
+      <div><dt>Parent</dt><dd>—</dd></div>
+      <div><dt>Turn span</dt><dd>—</dd></div>
+      <div><dt>Tool calls</dt><dd>—</dd></div>
+      <div><dt>Tokens</dt><dd>—</dd></div>
+      <div><dt>Wall-clock</dt><dd>—</dd></div>
+      <div><dt>Errors</dt><dd>—</dd></div>
+    </div>
+  </div>
+  <p class="caption">
+    <b>What you see at a glance, live:</b> as turns stream in, the root bar grows rightward; below it, new child delegate nodes spawn into the tree and grow rightward. Active nodes pulse/glow with a green outline; an error ribbon appears the instant a failure fires (the build-failure retry) and a taller violet duration ribbon, showing it took wall-clock time to recover.
+  </p>
+</div>
+
+<script>
+"use strict";
+var speed = 1;
+var paused = true;
+var tickInterval = null;
+var turns = [];
+var turnIdx = 0;
+var clock = 12 * 60;
+var NB = 50;
+var totalCalls = 0;
+var compactions = 0;
+var failures = 0;
+var steers = 0;
+var delegates = [{name:"root", depth:0, start:0, span:0}];
+var currentBucketIdx = 0;
+var currentToolIdx = 0;
+var currentBucketCalls = new Array(10).fill(0);
+var TOOLS = [
+  {name:"exec_command", glyph:"#3fb950"},
+  {name:"read_file", glyph:"#58a6ff"},
+  {name:"grep_files", glyph:"#39c5cf"},
+  {name:"edit_file", glyph:"#d29922"},
+  {name:"apply_patch", glyph:"#f85149"},
+  {name:"list_dir", glyph:"#a371f7"},
+  {name:"write_file", glyph:"#4ade80"},
+  {name:"web_fetch", glyph:"#79b8ff"},
+  {name:"delegate_send", glyph:"#db61a2"},
+  {name:"use_skill", glyph:"#e3b341"}
+];
+var RNG = (function(){var s=0x12345>>>0;return function(){s^=s<<13;s>>>=0;s^=s>>>17;s>>>=0;s^=s<<5;s>>>=0;return s/4294967296};})();
+
+function step() {
+  if (turnIdx === 0) {
+    pushTurn({kind:"user", tokens:120, text:"Build three genuinely different visual mockups for the evener web UI transcript comprehension."});
+    pushTurn({kind:"system", text:"environment context: cwd=/Users/jesse/... date=2026-08-21 sandbox=off git=main"});
+    return;
+  }
+  if (turnIdx < 95) {
+    var tc = Math.round(3 + RNG() * 14);
+    pushTurn({kind:"assistant", tokens:300+Math.floor(RNG()*900), text:"Planning step "+turnIdx});
+    pushTurn({kind:"tool", tools:tc, tokens:40+Math.floor(RNG()*200), text:tc+" tool results"});
+    clock += Math.round(20 + RNG() * 120);
+    return;
+  }
+  if (turnIdx === 95) {
+    pushTurn({kind:"checkpoint", text:"Deterministic checkpoint — context folded."});
+    pushTurn({kind:"summary", tokens:800, text:"Summary: explored schema/turn.go, transcript pane, design system; three ideas drafted."});
+    clock += 30;
+    return;
+  }
+  if (turnIdx === 96) {
+    pushTurn({kind:"steering", tokens:90, text:"Make sure the mockups depict delegates and background jobs, not just a chat log."});
+    return;
+  }
+  if (turnIdx === 100) {
+    spawnDelegate(delegates[0], "dlg_event_tape");
+    spawnDelegate(delegates[0], "dlg_heatmap");
+    spawnDelegate(delegates[0], "dlg_cost_tree");
+    return;
+  }
+  if (turnIdx === 103) {
+    spawnDelegate(delegates[1], "dlg_g1_render");
+    return;
+  }
+  if (turnIdx === 130) {
+    endDelegate("dlg_g1_render");
+    return;
+  }
+  if (turnIdx === 135) {
+    spawnDelegate(delegates[1], "dlg_g2_data");
+    return;
+  }
+  if (turnIdx === 155) {
+    endDelegate("dlg_g2_data");
+    return;
+  }
+  if (turnIdx === 158) {
+    spawnDelegate(delegates[2], "dlg_g3_verify");
+    return;
+  }
+  if (turnIdx === 160) {
+    pushTurn({kind:"steering", tokens:70, text:"The heatmap idea feels weak — push it further."});
+    return;
+  }
+  if (turnIdx === 185) {
+    endDelegate("dlg_g3_verify");
+    endDelegate("dlg_event_tape");
+    endDelegate("dlg_heatmap");
+    endDelegate("dlg_cost_tree");
+    return;
+  }
+  if (turnIdx === 186) {
+    pushTurn({kind:"checkpoint", text:"Context folded mid-delegation."});
+    pushTurn({kind:"summary", tokens:1200, text:"Summary: 3 delegates spawned, 2 grandchildren, mockups in progress."});
+    clock += 40;
+    return;
+  }
+  if (turnIdx === 205) {
+    pushTurn({kind:"assistant", tokens:500, text:"Running verification gate..."});
+    pushTurn({kind:"tool", tools:3, tokens:300, text:"exec_command: npm run build (3 results)"});
+    return;
+  }
+  if (turnIdx === 206) {
+    pushTurn({kind:"failure", text:"exec_command exit 1: build failed — TypeError in ToolRow.tsx", err:{msg:"TypeError: Cannot read properties of undefined (reading 'summary')", source:"exec_command", title:"Turn failed"}});
+    return;
+  }
+  if (turnIdx === 207) {
+    pushTurn({kind:"assistant", tokens:700, text:"Build failed — the ToolRow descriptor lookup returned undefined. Patching the registry."});
+    pushTurn({kind:"tool", tokens:200, tools:2, text:"edit_file + exec_command (retry)"});
+    return;
+  }
+  if (turnIdx === 225) {
+    pushTurn({kind:"hook", text:"pre-commit hook completed: lint hook exit 0 · 240ms"});
+    return;
+  }
+  if (turnIdx === 245) {
+    pushTurn({kind:"steering", tokens:50, text:"Looks good — finalize the README."});
+    return;
+  }
+  if (turnIdx === 263) {
+    pause();
+    return;
+  }
+  var tc = Math.round(2 + RNG() * 12);
+  pushTurn({kind:"assistant", tokens:300+Math.floor(RNG()*800), text:"Step "+turnIdx});
+  if (turnIdx % 2 === 0) { pushTurn({kind:"tool", tools:tc, tokens:50+Math.floor(RNG()*220), text:tc+" results"}); }  clock += Math.round(20 + RNG() * 90);
+}
+
+function pushTurn(opts) {
+  var t = {idx:turnIdx, clock:clock, tools:opts.tools||0, tokens:opts.tokens||0, kind:opts.kind, text:opts.text||"", live:true, err:opts.err||null};
+  turns.push(t);
+  turnIdx++;
+  if (t.tools) totalCalls += t.tools;
+  if (t.tokens) totalTokens += t.tokens;
+  if (t.kind === "checkpoint" || t.kind === "summary") compactions++;
+  if (t.kind === "failure") totalErrs++;
+  if (t.kind === "steering") steers++;
+  delegates[0].span = turnIdx;
+  tick(t);
+  render();
+}
+
+function spawnDelegate(parent, name) {
+  delegates.push({name:name, depth:parent.depth+1, start:turnIdx, span:0, parent:parent.name, errs:0});
+  pushTurn({kind:"assistant", tokens:500, text:"Spawning delegate "+name});
+}
+
+function endDelegate(name) {
+  var d = delegates.find(function(x){return x.name===name;});
+  if (d) d.span = turnIdx - d.start;
+}
+
+/* ---------- render ---------- */
+function render() {
+  var icicle = document.getElementById("icicle");
+  var maxDepth = Math.max.apply(null, delegates.map(function(d){return d.depth;}));
+  icicle.innerHTML = "";
+  for (var d = 0; d <= maxDepth; d++) {
+    var row = document.createElement("div");
+    row.className = "icicle-row";
+    var rowDelegates = delegates.filter(function(n){return n.depth===d;}).sort(function(a,b){return a.start-b.start;});
+    for (var b = 0; b < turnIdx; b++) {
+      var node = null;
+      for (var i = 0; i < rowDelegates.length; i++) {
+        var rn = rowDelegates[i];
+        if (b >= rn.start && b < rn.start + rn.span) { node = rn; break; }
+      }
+      var cell = document.createElement("div");
+      cell.className = "icicle-cell " + (node ? "d" + d : " empty");
+      if (node) {
+        cell.style.width = ((node.span / turnIdx) * 100) + "%";
+        if (node.span === 0) cell.classList.add("active");
+        var labelEl = document.createElement("div");
+        labelEl.className = "label";
+        var bgColor = node.depth === 0 ? "var(--accent)" : node.depth === 1 ? "var(--violet)" : "var(--cyan)";
+        labelEl.style.background = bgColor;
+        var labelTxt = node.name.length > 14 ? node.name.slice(0,12) + "…" : node.name;
+        labelEl.textContent = labelTxt;
+        seg.appendChild(labelEl);
+        var stack = document.createElement("div");
+        stack.className = "ribbon-stack";
+        var rTools = document.createElement("div"); rTools.className = "ribbon tools"; rTools.style.width = Math.min(100, (node.tools / maxTools) * 100) + "%";
+        var rTokens = document.createElement("div"); rTokens.className = "ribbon tokens"; rTokens.style.width = Math.min(100, (node.tokens / maxTokens) * 100) + "%";
+        var rTime = document.createElement("div"); rTime.className = "ribbon time"; rTime.style.width = Math.min(100, (node.timeMin / maxTime) * 100) + "%";
+        stack.appendChild(rTools); stack.appendChild(rTokens); stack.appendChild(rTime);
+        if (node.errs > 0) {
+          var rErr = document.createElement("div"); rErr.className = "ribbon err";
+          stack.appendChild(rErr);
+        }
+        seg.appendChild(stack);
+        seg.onmouseenter = function(e){ showDetail(node); };
+        seg.onclick = function(){ selectNode(node); };
+        b += node.span - 1;
+      } else {
+        seg.style.flex = "1";
+      }
+      row.appendChild(seg);
+    }
+    icicle.appendChild(row);
+  }
+  document.getElementById("turnCount").textContent = turnIdx;
+  var totalCallsStr = totalCalls.toLocaleString();
+  var totalTokensStr = (totalTokens / 1000).toFixed(1) + "k";
+  document.getElementById("kv").innerHTML =
+    "<span><b>" + turnIdx + "</b> turns</span>" +
+    "<span><b>" + totalCallsStr + "</b> tool calls</span>" +
+    "<span><b>" + totalTokensStr + "</b> tokens</span>" +
+    "<span><b>" + compactions + "</b> compaction bands</span>" +
+    "<span><b>" + failures + "</b> failure(s)</span>" +
+    "<span><b>" + steers + "</b> steering</span>" +
+    "<span><b>" + delegates.length + "</b> delegate nodes</span>";
+}
+
+/* ---------- ticker ---------- */
+function tick(turn) {
+  var ticker = document.getElementById("ticker");
+  var ts = fmtClock(turn.clock);
+  var cls = "ev";
+  var txt = turn.kind + (turn.tools ? " · " + turn.tools + " tools" : "");
+  if (turn.kind === "steering") { cls = "steer"; txt = "STEERING: " + turn.text; }
+  else if (turn.kind === "checkpoint") { cls = "comp"; txt = "COMPACTION: " + turn.text; }
+  else if (turn.kind === "summary") { cls = "comp"; txt = "SUMMARY: " + turn.text; }
+  else if (turn.kind === "failure") { cls = "err"; txt = "ERROR: " + turn.err.msg; }
+  else if (turn.kind === "user") { cls = "ev"; txt = "USER: " + turn.text; }
+  else if (turn.kind === "system") { cls = "ev"; txt = "SYSTEM: " + turn.text; }
+  else if (turn.kind === "assistant") { cls = "ev"; txt = "ASSISTANT: " + turn.text; }
+  else if (turn.kind === "tool") { cls = "ev"; txt = "TOOL_RESULTS: " + txt; }
+  ticker.innerHTML = '<span class="ts">' + ts + '</span> <span class="' + cls + '">' + txt + '</span>';
+}
+
+/* ---------- detail ---------- */
+function selectCell(ti, b, c) {
+  document.querySelectorAll(".cell.sel").forEach(function(x){ x.classList.remove("sel"); });
+  var cells = grid.querySelectorAll('.cell[data-tool="' + ti + '"][data-bucket="' + b + '"]');
+  cells.forEach(function(x){ x.classList.add("sel"); });
+  var tool = TOOLS[ti];
+  var d = document.getElementById("detail");
+  var err = (ti === 0 && b === 41);
+  d.innerHTML =
+    "<div><dt>Tool type</dt><dd>" + tool.name + '</dd></div>' +
+    "<div><dt>Time bucket</dt><dd>" + b + " of " + NB + "</dd></div>" +
+    "<div><dt>Calls in bucket</dt><dd>" + c + (err ? ' <span class="pill danger">error</span>' : "") + '</dd></div>' +
+    "<div><dt>Row total</dt><dd>" + (TOOL_TOTALS[ti]||0) + " calls</dd></div>' +
+    '<div style="grid-column:1/-1"><dt>Phase</dt><dd>' + phaseFor(b) + '</dd></div>' +
+    '<div style="grid-column:1/-1"><dt>Reading</dt><dd>' + readingFor(b, tool, err) + '</dd></div>';
+  document.getElementById("detailTitle").textContent = "Cell · " + tool.name + " · bucket " + b;
+  document.getElementById("detailPos").textContent = "col " + b + " · row " + (TOOL_TOTALS.findIndex(function(t){return t.i===ti;})+1);
+}
+function phaseFor(b) { if (b < 19) return "exploration"; if (b < 36) return "delegation"; return "integration"; }
+function readingFor(b, tool, err) { if (err) return "exec_command exit 1 at this bucket — the build failure; retry follows."; if (b < 19) return "Dense " + tool.name + " activity typical of the exploration phase."; if (b < 36) return tool.name === "delegate_send" ? "Peak delegate spawning." : tool.name + " supporting the delegation phase."; return (tool.name === "edit_file" || tool.name === "apply_patch") ? "Integration edits — writing the final mockups." : tool.name + " supporting integration."; }
+function fmtClock(m) { return Math.floor(m/60) + ":" + String(m%60).padStart(2,"0"); }
+
+/* ---------- controls ---------- */
+var playBtn = document.getElementById("playBtn");
+var pauseBtn = document.getElementById("pauseBtn");
+var speedBtn = document.getElementById("speedBtn");
+var speed2Btn = document.getElementById("speed2Btn");
+var speed4Btn = document.getElementById("speed4Btn");
+var liveDot = document.getElementById("liveDot");
+var liveTxt = document.getElementById("liveTxt");
+
+function setSpeed(s) {
+  speed = s;
+  speedBtn.classList.toggle("active", s===1);
+  speed2Btn.classList.toggle("active", s===3);
+  speed4Btn.classList.toggle("active", s===10);
+  if (!paused) restartTick();
+}
+speedBtn.onclick = function() { setSpeed(1); };
+speed2Btn.onclick = function() { setSpeed(3); };
+speed4Btn.onclick = function() { setSpeed(10); };
+
+function restartTick() {
+  if (tickInterval) clearInterval(tickInterval);
+  if (!paused) tickInterval = setInterval(step, 1000 / speed);
+}
+playBtn.onclick = function() { paused = false; playBtn.classList.add("active"); pauseBtn.classList.remove("active"); liveDot.classList.remove("paused"); liveTxt.textContent = "LIVE"; restartTick(); step(); };
+pauseBtn.onclick = function() { paused = true; playBtn.classList.remove("active"); pauseBtn.classList.add("active"); liveDot.classList.add("paused"); liveTxt.textContent = "PAUSED"; if (tickInterval) clearInterval(tickInterval); };
+playBtn.classList.add("active");
+
+render();
+</script>
+</body>
+</html>

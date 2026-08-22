@@ -1,0 +1,376 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>RT Idea 2 — Riverbed Live: swimlanes with playhead</title>
+<style>
+  :root{
+    --bg:#0d1117; --panel:#161b22; --border:#30363d; --text:#e6edf3; --dim:#8b949e;
+    --blue:#58a6ff; --green:#3fb950; --red:#f85149; --orange:#d29922;
+    --violet:#bc8cff; --purple:#a371f7; --teal:#39c5cf; --amber:#f0b72f;
+  }
+  *{box-sizing:border-box}
+  html,body{margin:0;padding:0;background:var(--bg);color:var(--text);
+    font:12px/1.45 ui-monospace,'SF Mono',SFMono-Regular,Menlo,Consolas,monospace;}
+  header{padding:10px 20px 8px;border-bottom:1px solid var(--border);display:flex;flex-wrap:wrap;gap:8px;align-items:center}
+  header .title{font-size:14px;font-weight:700;margin-right:6px}
+  header .title .idea{color:var(--teal)}
+  .chip{border:1px solid var(--border);border-radius:10px;padding:2px 8px;color:var(--dim);background:var(--panel)}
+  .chip b{color:var(--text);font-weight:600}
+  #liveChip{display:inline-flex;align-items:center;gap:6px;border:1px solid var(--red);color:var(--red);
+    border-radius:10px;padding:2px 10px;font-weight:700}
+  #liveChip .dot{width:8px;height:8px;border-radius:50%;background:var(--red);animation:blink 1.1s infinite}
+  #liveChip.paused{border-color:var(--orange);color:var(--orange)} #liveChip.paused .dot{background:var(--orange);animation:none}
+  #liveChip.ended{border-color:var(--green);color:var(--green)} #liveChip.ended .dot{background:var(--green);animation:none}
+  @keyframes blink{0%,100%{opacity:1}50%{opacity:.25}}
+  #transport{display:flex;gap:10px;align-items:center;padding:8px 20px;border-bottom:1px solid var(--border);background:#0f141b}
+  #transport button{background:var(--panel);border:1px solid var(--border);color:var(--text);border-radius:6px;padding:3px 12px;font:inherit;cursor:pointer}
+  #transport button:hover{border-color:var(--blue)}
+  #transport button.on{border-color:var(--blue);color:var(--blue);background:rgba(88,166,255,.1)}
+  #seek{flex:1;appearance:none;height:6px;border-radius:3px;background:#21262d;outline:none;cursor:pointer}
+  #seek::-webkit-slider-thumb{appearance:none;width:14px;height:14px;border-radius:50%;background:var(--blue)}
+  #clock{color:var(--teal);font-weight:700;min-width:90px}
+  #nowbar{display:flex;gap:10px;align-items:center;padding:6px 20px;border-bottom:1px solid var(--border);background:#0b0f15;min-height:34px}
+  #nowbar .lab{font-size:10px;text-transform:uppercase;letter-spacing:.08em;color:var(--dim);flex:none}
+  #nowDoing{font-size:12px;color:var(--text)}
+  #nowDoing b{color:var(--teal)}
+  #nowAlert{display:none;border:1px solid var(--red);border-radius:7px;padding:2px 9px;
+    color:var(--red);background:rgba(248,81,73,.08);font-weight:700;font-size:11px;animation:blink 1s infinite}
+  .wrap{padding:10px 20px 24px;position:relative}
+  .legend{display:flex;flex-wrap:wrap;gap:13px;padding:6px 2px 10px;color:var(--dim);font-size:11px;align-items:center}
+  .legend .li{display:flex;gap:6px;align-items:center}
+  .sw-line{width:20px;border-top:3px solid #888;border-radius:2px}
+  .sw-area{width:16px;height:10px;border-radius:2px;background:rgba(88,166,255,.35);border:1px solid rgba(88,166,255,.8)}
+  .sw-dia{width:9px;height:9px;background:var(--red);transform:rotate(45deg)}
+  .sw-tick{width:3px;height:11px;background:var(--blue)}
+  .sw-tri{width:0;height:0;border-left:6px solid transparent;border-right:6px solid transparent;border-bottom:10px solid var(--orange)}
+  .sw-band{width:8px;height:12px;background:rgba(163,113,247,.28);border-left:1px dashed var(--purple);border-right:1px dashed var(--purple)}
+  .sw-run{width:16px;height:10px;border-radius:2px;background:repeating-linear-gradient(45deg,rgba(88,166,255,.5) 0 3px,transparent 3px 6px);border:1px solid var(--blue)}
+  svg{display:block;width:100%;height:auto}
+  #main{border:1px solid var(--border);border-radius:8px;background:#0a0e13}
+  .lane-label{font-size:10px;fill:var(--dim);text-anchor:end}
+  .lane-sublabel{font-size:8.5px;fill:#6e7681;text-anchor:end}
+  .axis-label{font-size:10px;fill:#6e7681}
+  .arc{fill:none;stroke-width:1.7;opacity:.9}
+  .lanein{animation:lanein .8s ease-out}
+  @keyframes lanein{from{opacity:0}to{opacity:1}}
+  .pop{animation:pop .5s ease-out;transform-box:fill-box;transform-origin:center}
+  @keyframes pop{from{opacity:0;transform:scale(.3)}to{opacity:1;transform:scale(1)}}
+  .running{animation:runpulse 1.2s infinite}
+  @keyframes runpulse{0%,100%{opacity:1}50%{opacity:.55}}
+  .quiet *{animation:none!important}
+  .caption{color:var(--dim);font-size:11px;margin-top:10px}
+</style>
+</head>
+<body>
+<header>
+  <span id="liveChip"><span class="dot"></span>LIVE</span>
+  <span class="title"><span class="idea">RT-2 · RIVERBED LIVE</span> — swimlanes with playhead</span>
+  <span class="chip">session <b>evener-8f3k2</b></span>
+  <span class="chip">turn <b id="cTurn">1</b>/287</span>
+  <span class="chip"><b id="cCalls">0</b> tool calls</span>
+  <span class="chip"><b id="cTok">0</b> tok · <b id="cCost">$0.00</b></span>
+</header>
+<div id="transport">
+  <button id="bPlay">⏸ pause</button>
+  <button class="spd" data-s="1">1×</button>
+  <button class="spd" data-s="8">8×</button>
+  <button class="spd on" data-s="32">32×</button>
+  <button class="spd" data-s="128">128×</button>
+  <input id="seek" type="range" min="0" max="372" step="0.5" value="0">
+  <span id="clock">T+0h00m</span>
+  <button id="bReplay">↺ replay</button>
+</div>
+<div id="nowbar"><span class="lab">right now</span><span id="nowDoing"><b>ROOT</b> · starting…</span><span id="nowAlert"></span></div>
+<div class="wrap">
+  <div class="legend">
+    <span><b style="color:var(--text)">LIVE CAUSALITY.</b> Lanes appear when actors join; the playhead sweeps; hatched = in flight.</span>
+    <span class="li"><span class="sw-area"></span>accumulated tool-call density</span>
+    <span class="li"><span class="sw-run"></span>in-flight job</span>
+    <span class="li"><span class="sw-tick"></span>file edit</span>
+    <span class="li"><span class="sw-dia"></span>failure</span>
+    <span class="li"><span class="sw-tri"></span>watch fire</span>
+    <span class="li"><span class="sw-band"></span>compaction fold</span>
+    <span class="li"><span class="sw-line" style="border-color:var(--violet)"></span>spawned</span>
+    <span class="li"><span class="sw-line" style="border-color:var(--teal)"></span>reported</span>
+    <span class="li"><span class="sw-line" style="border-color:var(--orange)"></span>triggered</span>
+    <span class="li"><span class="sw-line" style="border-color:var(--green)"></span>notify / gate</span>
+  </div>
+  <svg id="main" viewBox="0 0 1280 612" preserveAspectRatio="xMidYMin meet"></svg>
+  <div class="caption">The time axis only extends a little past NOW — the future does not exist yet. Delegate lanes fade in on spawn, job bars grow rightward while running, watch fires drop in as they happen, and when context pressure crosses the threshold the fold band lands live. Alerts surface in the NOW panel the moment a runaway/cascade pattern forms — not after the session ends.</div>
+</div>
+<script>
+"use strict";
+const NS="http://www.w3.org/2000/svg";
+function mulberry32(a){return function(){a|=0;a=a+0x6D2B79F5|0;let t=Math.imul(a^a>>>15,1|a);t=t+Math.imul(t^t>>>7,61|t)^t;return((t^t>>>14)>>>0)/4294967296;};}
+const rnd=mulberry32(580914);
+function el(name,attrs,parent){const e=document.createElementNS(NS,name);for(const k in attrs)e.setAttribute(k,attrs[k]);if(parent)parent.appendChild(e);return e;}
+function txt(parent,s,x,y,cls,anchor){const t=el("text",{x,y,"class":cls,"text-anchor":anchor||"start"},parent);t.textContent=s;return t;}
+const SIM_END=372, ML=96, MR=24, PW=1280-ML-MR;
+const TURN_ANCHORS=[[1,0],[28,25],[61,70],[62,75],[95,140],[128,180],[131,185],[149,215],[151,220],[200,290],[220,330],[221,335],[260,355],[287,372]];
+function turnAt(min){for(let i=1;i<TURN_ANCHORS.length;i++){const [t1,m1]=TURN_ANCHORS[i];const [t0,m0]=TURN_ANCHORS[i-1];
+  if(min<=m1)return Math.round(t0+(min-m0)*(t1-t0)/(m1-m0));}return 287;}
+function fmt(t){const h=Math.floor(t/60),m=Math.floor(t%60);return "T+"+h+"h"+String(m).padStart(2,"0")+"m";}
+// lanes (fixed positions; invisible until intro)
+const LANES=[
+ {id:"ctx",  label:"CONTEXT",  sub:"window %", h:34, intro:0},
+ {id:"user", label:"USER",     sub:"",         h:26, intro:0},
+ {id:"root", label:"ROOT",     sub:"agent",    h:92, intro:0},
+ {id:"store",label:"dlg_store",sub:"delegate L1", h:56, intro:78},
+ {id:"tests",label:"dlg_tests",sub:"delegate L2", h:44, intro:90},
+ {id:"docs", label:"dlg_docs", sub:"delegate L1", h:34, intro:338},
+ {id:"jbuild",label:"job_build",sub:"background", h:22, intro:150},
+ {id:"jfuzz", label:"job_fuzz", sub:"detached",   h:22, intro:150},
+ {id:"jci",   label:"job_ci",   sub:"background", h:22, intro:300},
+ {id:"je2e",  label:"job_e2e",  sub:"background", h:22, intro:340},
+ {id:"watch", label:"WATCHES",  sub:"fires",      h:44, intro:182},
+];
+const GAP=5,TOP=30;
+(function(){let y=TOP;for(const l of LANES){l.y=y;l.yc=y+l.h/2;y+=l.h+GAP;}window.BOT=y;})();
+const lane=id=>LANES.find(l=>l.id===id);
+const LANE_COLORS={root:"#58a6ff",store:"#bc8cff",tests:"#d2a8ff",docs:"#8b949e"};
+const FILES={"prune.go":"#58a6ff","tombstone.go":"#bc8cff","store.go":"#39c5cf","watches.go":"#d29922","prune_test.go":"#3fb950","fuzz seeds":"#f0883e","docs/*.md":"#8b949e"};
+const ARC_COLORS={spawned:"#bc8cff",reported:"#39c5cf",triggered:"#d29922",steered:"#58a6ff",gate:"#3fb950",informed:"#8b949e"};
+// ---- event stream ----
+const EV=[];
+function densityEvents(laneId,w0,w1,total,shapeFn){
+  const raw=[];let sum=0;
+  for(let t=w0+3;t<=w1;t+=3){const ph=(t-w0)/(w1-w0);
+    const v=shapeFn(ph)*(0.55+0.9*rnd());raw.push([t,v]);sum+=v;}
+  for(const [t,v] of raw)EV.push({t,k:"act",lane:laneId,calls:Math.max(0,Math.round(v*total/sum))});
+}
+densityEvents("root",0,372,1187,p=>0.45+0.55*Math.abs(Math.sin(p*7.3))+(p>0.5&&p<0.58?0.9:0));
+densityEvents("store",78,290,522,p=>0.4+0.6*Math.abs(Math.sin(p*5.1+1)));
+densityEvents("tests",90,200,263,p=>0.4+0.6*Math.abs(Math.sin(p*4.2+2)));
+densityEvents("docs",338,356,174,p=>0.5+0.5*Math.abs(Math.sin(p*6)));
+function scatterEdits(w0,w1,n,laneId,file){for(let i=0;i<n;i++)EV.push({t:w0+rnd()*(w1-w0),k:"edit",lane:laneId,file});}
+scatterEdits(28,70,18,"root","prune.go"); scatterEdits(30,66,7,"root","prune_test.go");
+scatterEdits(80,200,13,"store","tombstone.go"); scatterEdits(80,190,9,"store","store.go");
+scatterEdits(95,195,11,"tests","fuzz seeds");
+scatterEdits(196,214,9,"root","prune.go"); scatterEdits(212,216,3,"root","watches.go");
+scatterEdits(222,290,12,"root","tombstone.go"); scatterEdits(294,318,4,"root","store.go");
+scatterEdits(338,352,8,"docs","docs/*.md"); scatterEdits(340,360,6,"root","watches.go");
+for(const [t,laneId,label] of [[196,"root","go vet exit 1"],[202,"root","make build exit 1"],[208,"root","go test FAIL"],[212,"root","fuzz FAIL"],[308,"jci","job_ci exit 1"]])
+  EV.push({t,k:"error",lane:laneId,label});
+for(const j of [{lane:"jbuild",t0:150,t1:154,ok:true},{lane:"jfuzz",t0:150,t1:330,ok:true},
+                {lane:"jci",t0:300,t1:308,ok:false},{lane:"jci",t0:312,t1:318,ok:true},{lane:"je2e",t0:340,t1:360,ok:true}]){
+  EV.push({t:j.t0,k:"jobstart",j});EV.push({t:j.t1,k:"jobend",j});
+}
+for(const f of [{t:182,w:"w_fuzz",storm:1,toT:196},{t:184.5,w:"w_fuzz",storm:2,toT:198},{t:187,w:"w_fuzz",storm:3,toT:200},
+                {t:250,w:"w_cost",storm:0,toT:252},{t:318,w:"w_ci",storm:0,toT:320}])
+  EV.push({t:f.t,k:"fire",f});
+for(const a of [{t:0,l0:"user",l1:"root",type:"gate"},{t:75,l0:"user",l1:"root",type:"steered"},
+  {t:78,l0:"root",l1:"store",type:"spawned"},{t:90,l0:"store",l1:"tests",type:"spawned"},
+  {t:200,l0:"tests",l1:"store",type:"reported"},{t:290,l0:"store",l1:"root",type:"reported"},
+  {t:338,l0:"root",l1:"docs",type:"spawned"},{t:353,l0:"docs",l1:"root",type:"reported"},
+  {t:154,l0:"jbuild",l1:"root",type:"gate"},{t:330,l0:"jfuzz",l1:"root",type:"gate"},{t:360,l0:"je2e",l1:"root",type:"gate"}])
+  EV.push({t:a.t,k:"arc",a});
+for(const c of [220,335])EV.push({t:c,k:"fold"});
+EV.push({t:292,k:"chip",text:"⚙ MODEL_SWITCH k3→mini"});
+EV.push({t:0,k:"chip",text:"◎ GOAL set",lane:"user"});
+// now-panel narrative
+const NOW=[
+ [0,"ROOT · ▶ grep/read sweep — plan the pruning work"],[25,"ROOT · ▶ edit_file prune.go (+412 −88), build↔test loops"],
+ [75,"USER · ➤ STEERING: “handle delegate tombstones too”"],[78,"dlg_store L1 · spawned — implements tombstone.go"],
+ [90,"dlg_tests L2 · spawned by dlg_store — fuzz targets"],[150,"jobs · job_build (bg) + job_fuzz (detached) started"],
+ [154,"job_build · ✓ exit 0; job_fuzz still running"],[182,"w_fuzz · ▲ fire 1 — /FAILURE/ matched"],
+ [184.5,"w_fuzz · ▲ fire 2 — same line re-armed…"],[187,"ROOT · interrupted by watch storm (3 fires/90s)"],
+ [196,"ROOT · ▶ fix attempt 1 — go vet exit 1"],[202,"ROOT · ▶ attempt 2 — make build exit 1"],
+ [208,"ROOT · ▶ attempt 3 — go test FAIL (3≠7)"],[212,"ROOT · ▶ attempt 4 — fuzz FAIL again"],
+ [214,"ROOT · ✱ ROOT CAUSE: iterator skipped sealed tombstones"],[215,"ROOT · ✔ fix +6 −2 · re-arm guard · all green"],
+ [220,"harness · ≣ COMPACTION #1 — context 92%, 1.9M→40k tok"],[226,"ROOT · ▶ merging dlg_store report"],
+ [250,"w_cost · ▲ fired once ($30) — handled"],[290,"dlg_store · ✓ reported back (+412 lines, 42 tests)"],
+ [292,"ROOT · ⚙ MODEL_SWITCH k3→mini"],[300,"job_ci · ▶ run 1 (push)"],[308,"job_ci · ✗ exit 1 — lint residue"],
+ [312,"job_ci · ▶ rerun"],[318,"w_ci · ▲ fired once — job_ci exit 0 ✓"],[330,"job_fuzz · ✓ detached run finished (3h)"],
+ [335,"harness · ≣ COMPACTION #2 — 890k→22k tok"],[338,"dlg_docs L1 · spawned — docs/web-ui ×6"],
+ [350,"ROOT · ▶ final gates: build · vet · test"],[355,"dlg_docs · ✓ reported (6 files)"],
+ [360,"job_e2e · ✓ exit 0 — last gate"],[372,"✔ GOAL COMPLETE — update_goal · PR #312 ready"],
+];
+for(const [t,text] of NOW)EV.push({t,k:"now",text});
+EV.push({t:187,k:"alert",on:"⚠ WATCH RUNAWAY — w_fuzz 3 fires/90s"});
+EV.push({t:196,k:"alert",on:"⚠ ERROR CASCADE developing — failed attempts: 1"});
+EV.push({t:202,k:"alert",on:"⚠ ERROR CASCADE — consecutive failures: 2"});
+EV.push({t:208,k:"alert",on:"⚠ ERROR CASCADE — consecutive failures: 3"});
+EV.push({t:214,k:"alert",off:true});
+EV.sort((a,b)=>a.t-b.t);
+// ---- engine ----
+let now=0,speed=32,playing=true,evIdx=0,lastTs=null,quiet=false;
+let callsSoFar=0,counts={},ticks=[],errors=[],jobs=[],fires=[],arcs=[],folds=[],chips=[],ctxSeries=[],nowText="starting…",alertOn=null;
+const svg=document.getElementById("main");
+let gLanes,gDens,gTicks,gJobs,gArcs,gFires,gFolds,gAxis,gPlay,laneEls={},defsG;
+const viewEnd=()=>Math.max(90,now*1.12+6);
+const X=t=>ML+(t/viewEnd())*PW;
+function buildSvg(){
+  svg.innerHTML="";laneEls={};ticks=[];errors=[];jobs=[];fires=[];arcs=[];folds=[];chips=[];ctxSeries=[];
+  counts={};for(const l of LANES)counts[l.id]=new Array(124).fill(0);
+  defsG=el("defs",{},svg);
+  for(const k in ARC_COLORS){const m=el("marker",{id:"arw-"+k,viewBox:"0 0 10 10",refX:9,refY:5,markerWidth:7,markerHeight:7,orient:"auto-start-reverse"},defsG);
+    el("path",{d:"M 0 1 L 9 5 L 0 9 z",fill:ARC_COLORS[k]},m);}
+  const pat=el("pattern",{id:"hatch",width:"6",height:"6",patternUnits:"userSpaceOnUse",patternTransform:"rotate(45)"},defsG);
+  el("rect",{width:6,height:6,fill:"rgba(88,166,255,.10)"},pat);
+  el("line",{x1:0,y1:0,x2:0,y2:6,stroke:"rgba(88,166,255,.55)","stroke-width":2},pat);
+  gLanes=el("g",{},svg);gDens=el("g",{},svg);gFolds=el("g",{},svg);gJobs=el("g",{},svg);
+  gTicks=el("g",{},svg);gArcs=el("g",{},svg);gFires=el("g",{},svg);gAxis=el("g",{},svg);gPlay=el("g",{},svg);
+}
+function introLane(l){
+  if(laneEls[l.id])return;
+  const g=el("g",{class:quiet?"":"lanein"},gLanes);
+  el("rect",{x:ML,y:l.y,width:PW,height:l.h,fill:l.id==="root"?"rgba(88,166,255,.03)":"rgba(255,255,255,.014)",rx:3},g);
+  txt(g,l.label,ML-8,l.yc+3,"lane-label","end");
+  if(l.sub)txt(g,l.sub,ML-8,l.yc+12,"lane-sublabel","end");
+  laneEls[l.id]=g;
+  if(l.id==="ctx")txt(g,"96%",ML+2,l.y+9,"lane-sublabel","start");
+}
+function handle(ev){
+  const k=ev.k;
+  if(k==="act"){const l=lane(ev.lane);introLane(l);
+    const bi=Math.min(123,Math.floor(ev.t/3));counts[ev.lane][bi]+=ev.calls;callsSoFar+=ev.calls;}
+  else if(k==="edit"){const l=lane(ev.lane);introLane(l);
+    const r=el("rect",{y:l.y+3,width:2.2,height:Math.min(11,l.h*0.4),fill:FILES[ev.file],rx:1,class:quiet?"":"pop"},gTicks);
+    ticks.push({t:ev.t,el:r});}
+  else if(k==="error"){const l=lane(ev.lane);
+    const d=el("rect",{width:9,height:9,fill:"#f85149",class:quiet?"":"pop"},gTicks);
+    errors.push({t:ev.t,lane:ev.lane,el:d});}
+  else if(k==="jobstart"){const j=ev.j;introLane(lane(j.lane));
+    const r=el("rect",{y:lane(j.lane).y+4,height:lane(j.lane).h-8,rx:3,class:"running"},gJobs);
+    jobs.push({t0:j.t0,t1:j.t1,lane:j.lane,el:r,ok:j.ok,running:true});}
+  else if(k==="jobend"){const j=jobs.find(q=>q.lane===ev.j.lane&&q.t0===ev.j.t0&&q.running);
+    if(j){j.running=false;j.el.setAttribute("class","");
+      j.el.setAttribute("fill",j.ok?"rgba(63,185,80,.25)":"rgba(248,81,73,.30)");
+      j.el.setAttribute("stroke",j.ok?"#3fb950":"#f85149");j.el.setAttribute("stroke-width","1.2");}}
+  else if(k==="fire"){introLane(lane("watch"));const l=lane("watch");
+    const g=el("g",{class:quiet?"":"pop"},gFires);
+    el("path",{d:"M 0 0 L 6 11 L -6 11 Z",fill:ev.f.storm?"#f85149":"#d29922",stroke:ev.f.storm?"#ff9b94":"#e8c363","stroke-width":1},g);
+    const p=el("path",{fill:"none",stroke:ev.f.storm?"#f85149":"#d29922","stroke-width":1.5,"stroke-dasharray":"3 3","marker-end":"url(#arw-triggered)",opacity:.8},gFires);
+    fires.push({t:ev.t,toT:ev.f.toT,g,p});
+    if(ev.f.storm===3){const br=el("g",{},gFires);
+      const bp=el("path",{fill:"none",stroke:"#f85149","stroke-width":1},br);
+      const bt=txt(br,"RUNAWAY ×3 / 90s",0,0,"axis-label","middle");bt.setAttribute("fill","#f85149");
+      chips.push({kind:"storm",el:br,bp,bt});}}
+  else if(k==="arc"){const a=ev.a;introLane(lane(a.l1));
+    const p=el("path",{class:"arc",stroke:ARC_COLORS[a.type],"marker-end":`url(#arw-${a.type})`},gArcs);
+    arcs.push({...a,el:p});}
+  else if(k==="fold"){const g=el("g",{class:quiet?"":"pop"},gFolds);
+    const r=el("rect",{y:TOP-6,width:5,fill:"rgba(163,113,247,.16)",stroke:"#a371f7","stroke-width":1,"stroke-dasharray":"4 3",rx:2},g);
+    const t=txt(g,"",0,TOP-12,"axis-label");t.setAttribute("fill","#a371f7");
+    folds.push({t:ev.t,r,label:t});}
+  else if(k==="chip"){const l=lane(ev.lane||"root");
+    const g=el("g",{class:quiet?"":"pop"},gTicks);
+    const r=el("rect",{width:150,height:13,rx:6,fill:"#1c2330",stroke:"#58a6ff","stroke-width":1},g);
+    const t=txt(g,ev.text,0,10,"axis-label","middle");t.setAttribute("fill","#79b8ff");
+    chips.push({kind:"chip",t:ev.t,lane:ev.lane||"root",el:g,r,label:t});}
+  else if(k==="now"){nowText=ev.text;}
+  else if(k==="alert"){alertOn=ev.off?null:ev.on;}
+}
+function dispatchTo(target){while(evIdx<EV.length&&EV[evIdx].t<=target){handle(EV[evIdx]);evIdx++;}}
+function ctxAt(t){ // sawtooth pressure curve
+  let v=8;
+  for(let s=0;s<=t;s+=6){
+    if(s>=220&&s<226)v=12;else if(s>=335&&s<341)v=10;else v=Math.min(96,v+2.4);
+    if(s>330&&s<336)v=78;
+  }
+  return v;
+}
+function reposition(){
+  for(const l of LANES)if(now>=l.intro)introLane(l); // lanes join on schedule even without their own events (ctx, user)
+  const ve=viewEnd();
+  for(const t of ticks)t.el.setAttribute("x",X(t.t)-1);
+  for(const e of errors){const l=lane(e.lane);const y=l.id==="root"?l.y+22:l.yc;
+    e.el.setAttribute("transform",`translate(${X(e.t)} ${y}) rotate(45)`);e.el.setAttribute("x",-4.5);e.el.setAttribute("y",-4.5);}
+  for(const j of jobs){const l=lane(j.lane);const x0=X(j.t0);const x1=j.running?X(Math.min(now,SIM_END)):X(j.t1);
+    j.el.setAttribute("x",x0);j.el.setAttribute("width",Math.max(4,x1-x0));
+    if(j.running){j.el.setAttribute("fill","url(#hatch)");j.el.setAttribute("stroke","#58a6ff");j.el.setAttribute("stroke-width","1.2");}}
+  for(const f of fires){const l=lane("watch");
+    f.g.setAttribute("transform",`translate(${X(f.t)} ${l.y+12})`);
+    const tgt=lane("root");const x0=X(f.t),x1=X(f.toT),y0=l.y+12,y1=tgt.y+tgt.h-6;
+    f.p.setAttribute("d",`M ${x0} ${y0} C ${x0} ${(y0+y1)/2}, ${x1} ${(y0+y1)/2}, ${x1} ${y1}`);}
+  for(const a of arcs){const l0=lane(a.l0),l1=lane(a.l1);
+    const x0=X(a.t),x1=X(a.t+1.5);
+    const y0=a.l0==="user"?l0.yc:l0.y+l0.h-4,y1=l1.yc;const mx=(x0+x1)/2;
+    a.el.setAttribute("d",`M ${x0} ${y0} C ${mx} ${y0}, ${mx} ${y1}, ${x1} ${y1}`);}
+  for(const f of folds){f.r.setAttribute("x",X(f.t)-2.5);f.r.setAttribute("height",BOT-TOP+2);
+    const lbl=f.t===220?"FOLD #1 · T151 · 1.9M→40k":"FOLD #2 · T221 · 890k→22k";
+    const nearRight=X(f.t)>ML+PW-170;
+    f.label.setAttribute("x",nearRight?X(f.t)-5:X(f.t)+5);f.label.setAttribute("text-anchor",nearRight?"end":"start");
+    f.label.textContent=lbl;}
+  for(const c of chips){
+    if(c.kind==="storm"){const l=lane("watch");
+      c.bp.setAttribute("d",`M ${X(181)} ${l.y+l.h-14} L ${X(181)} ${l.y+l.h-8} L ${X(188)} ${l.y+l.h-8} L ${X(188)} ${l.y+l.h-14}`);
+      c.bt.setAttribute("x",(X(181)+X(188))/2);c.bt.setAttribute("y",l.y+l.h-2);}
+    else{const l=lane(c.lane);const x=X(c.t);
+      c.r.setAttribute("x",x-75);c.r.setAttribute("y",l.y+2);c.label.setAttribute("x",x);c.label.setAttribute("y",l.y+11);
+      if(c.lane==="user"){c.r.setAttribute("width",86);c.r.setAttribute("x",x-4);c.label.setAttribute("text-anchor","start");c.label.setAttribute("x",x+4);c.label.setAttribute("y",l.yc+3);c.r.setAttribute("y",l.yc-6);}}
+  }
+  // density paths
+  gDens.innerHTML="";
+  const dmax=34;
+  for(const id of ["root","store","tests","docs"]){
+    const l=lane(id);if(!laneEls[id])continue;
+    const col=LANE_COLORS[id];let d="",x0f=null,xLast=null;
+    for(let i=0;i<124;i++){const t=(i+0.5)*3;if(t>now)break;const v=counts[id][i];if(v<=0)continue;
+      const h=Math.min(1,v/dmax)*(l.h-14);const x=X(t);
+      if(x0f===null)x0f=x;
+      d+=(d?"L":"M")+x.toFixed(1)+" "+(l.y+l.h-4-h).toFixed(1)+" ";xLast=x;}
+    if(!d)continue;
+    el("path",{d:d+`L ${xLast} ${l.y+l.h-4} L ${x0f} ${l.y+l.h-4} Z`,fill:col,opacity:.22},gDens);
+    el("path",{d,fill:"none",stroke:col,"stroke-width":1.2,opacity:.75},gDens);
+  }
+  // context pressure line up to now
+  if(laneEls.ctx){const l=lane("ctx");let d="";
+    for(let t=0;t<=Math.min(now,SIM_END);t+=4){const v=ctxAt(t);
+      d+=(d?"L":"M")+X(t).toFixed(1)+" "+(l.y+l.h-2-(v/100)*(l.h-6)).toFixed(1)+" ";}
+    gDens.insertBefore(el("path",{d,fill:"none",stroke:"#f0b72f","stroke-width":1.4,opacity:.9},gDens),gDens.firstChild);}
+  // axis
+  gAxis.innerHTML="";
+  const ay=BOT+16;
+  el("line",{x1:ML,y1:ay-8,x2:ML+PW,y2:ay-8,stroke:"#21262d"},gAxis);
+  const step=ve>240?60:30;
+  for(let t=0;t<=ve;t+=step){el("line",{x1:X(t),y1:ay-11,x2:X(t),y2:ay-5,stroke:"#30363d"},gAxis);
+    txt(gAxis,Math.floor(t/60)+"h"+String(Math.floor(t%60)).padStart(2,"0")+"m",X(t),ay+5,"axis-label","middle");}
+  const gapMin=Math.max(4,14*ve/372);
+  for(let i=0;i<TURN_ANCHORS.length;i++){const [turn,min]=TURN_ANCHORS[i];
+    if(min<2||min>ve-2)continue;
+    if(i+1<TURN_ANCHORS.length&&TURN_ANCHORS[i+1][1]-min<gapMin)continue;
+    const tt=txt(gAxis,"T"+turn,X(min),ay+17,"axis-label","middle");tt.setAttribute("fill","#484f58");}
+  // playhead
+  gPlay.innerHTML="";
+  el("line",{x1:X(now),y1:TOP-8,x2:X(now),y2:BOT+4,stroke:"#e6edf3","stroke-width":1,opacity:.5,"stroke-dasharray":"2 3"},gPlay);
+  const tri=el("path",{d:"M 0 0 L 5 7 L -5 7 Z",fill:"#e6edf3",opacity:.8,transform:`translate(${X(now)} ${TOP-9})`},gPlay);
+}
+function renderHud(){
+  document.getElementById("cTurn").textContent=turnAt(now);
+  document.getElementById("cCalls").textContent=callsSoFar.toLocaleString();
+  const tok=Math.round(callsSoFar*1925);
+  document.getElementById("cTok").textContent=tok>=1e6?(tok/1e6).toFixed(2)+"M":Math.round(tok/1e3)+"k";
+  document.getElementById("cCost").textContent="$"+(tok*9.3e-6).toFixed(2);
+  document.getElementById("clock").textContent=fmt(now);
+  document.getElementById("seek").value=now;
+  document.getElementById("nowDoing").innerHTML="<b>"+nowText.replace(" · ","</b> · ").replace(" — "," — ");
+  const na=document.getElementById("nowAlert");
+  if(alertOn){na.style.display="block";na.textContent=alertOn;}else na.style.display="none";
+  const lc=document.getElementById("liveChip");
+  if(now>=SIM_END){lc.className="ended";lc.innerHTML='<span class="dot"></span>ENDED · GOAL ✓';}
+  else if(playing){lc.className="";lc.innerHTML='<span class="dot"></span>LIVE';}
+  else{lc.className="paused";lc.innerHTML='<span class="dot"></span>PAUSED';}
+}
+function rebuild(target){
+  quiet=true;document.body.classList.add("quiet");
+  evIdx=0;callsSoFar=0;nowText="starting…";alertOn=null;buildSvg();
+  now=target;dispatchTo(target);
+  document.body.classList.remove("quiet");quiet=false;
+}
+function frame(ts){
+  if(lastTs==null)lastTs=ts;const dt=(ts-lastTs)/1000;lastTs=ts;
+  if(playing&&now<SIM_END){now=Math.min(SIM_END,now+dt*speed);dispatchTo(now);}
+  reposition();renderHud();
+  requestAnimationFrame(frame);
+}
+document.getElementById("bPlay").addEventListener("click",ev=>{playing=!playing;ev.target.textContent=playing?"⏸ pause":"▶ play";});
+document.querySelectorAll(".spd").forEach(b=>b.addEventListener("click",()=>{
+  document.querySelectorAll(".spd").forEach(x=>x.classList.remove("on"));b.classList.add("on");speed=+b.dataset.s;}));
+document.getElementById("bReplay").addEventListener("click",()=>{rebuild(0);now=0;playing=true;document.getElementById("bPlay").textContent="⏸ pause";});
+document.getElementById("seek").addEventListener("input",ev=>{rebuild(+ev.target.value);});
+buildSvg();requestAnimationFrame(frame);
+</script>
+</body>
+</html>

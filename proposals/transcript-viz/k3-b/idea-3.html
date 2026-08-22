@@ -1,0 +1,368 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Idea 3 — Case File: chain-of-custody episode ledger</title>
+<style>
+  :root{
+    --bg:#0d1117; --panel:#161b22; --border:#30363d; --text:#e6edf3; --dim:#8b949e;
+    --blue:#58a6ff; --green:#3fb950; --red:#f85149; --orange:#d29922;
+    --violet:#bc8cff; --purple:#a371f7; --teal:#39c5cf; --amber:#f0b72f;
+  }
+  *{box-sizing:border-box}
+  html,body{margin:0;padding:0;background:var(--bg);color:var(--text);
+    font:12px/1.45 ui-monospace,'SF Mono',SFMono-Regular,Menlo,Consolas,monospace;}
+  header{padding:14px 20px 10px;border-bottom:1px solid var(--border);display:flex;flex-wrap:wrap;gap:8px;align-items:center}
+  header .title{font-size:14px;font-weight:700;margin-right:10px}
+  header .title .idea{color:var(--amber)}
+  .chip{border:1px solid var(--border);border-radius:10px;padding:2px 8px;color:var(--dim);background:var(--panel)}
+  .chip b{color:var(--text);font-weight:600}
+  .chip.red b{color:var(--red)} .chip.green b{color:var(--green)} .chip.purple b{color:var(--purple)}
+  .wrap{padding:12px 20px 30px;max-width:1460px}
+  h2{font-size:11px;text-transform:uppercase;letter-spacing:.09em;color:var(--dim);margin:18px 0 8px}
+  h2 .n{color:var(--text)}
+  /* ---- heatmap ---- */
+  #heat{border:1px solid var(--border);border-radius:8px;background:#0a0e13;padding:10px 12px}
+  .hgrid{display:grid;gap:2px;align-items:center}
+  .hlabel{font-size:10px;color:var(--dim);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;padding-right:8px;cursor:default}
+  .hlabel.hl{color:var(--text)}
+  .hcell{height:14px;border-radius:2px;background:rgba(88,166,255,var(--a,0));position:relative;cursor:default}
+  .hcell.fold{background:rgba(163,113,247,.18)}
+  .hcell .fail{position:absolute;inset:1px;border:1.5px solid var(--red);border-radius:2px}
+  .hcell .ro{position:absolute;left:50%;top:50%;width:4px;height:4px;margin:-2px;border-radius:50%;background:#6e7681}
+  .haxis{font-size:9px;color:#6e7681;text-align:center}
+  .hlegend{display:flex;gap:16px;margin-top:8px;font-size:10px;color:var(--dim);flex-wrap:wrap}
+  /* ---- ledger ---- */
+  .cols{display:flex;gap:18px;align-items:flex-start}
+  #ledger{flex:1;position:relative;padding-left:34px;min-width:0}
+  #spine{position:absolute;left:11px;top:14px;bottom:14px;width:2px;background:linear-gradient(#30363d,#30363d);}
+  .connector{position:relative;height:26px}
+  .connector .rel{display:inline-block;margin-left:14px;margin-top:6px;font-size:10px;color:var(--dim);
+    border:1px solid var(--border);border-radius:9px;padding:1px 8px;background:#0f141b}
+  .connector .rel b{font-weight:600}
+  .card{position:relative;border:1px solid var(--border);border-radius:10px;background:var(--panel);
+    padding:10px 12px;cursor:pointer;transition:opacity .15s, border-color .15s}
+  .card:hover{border-color:#58a6ff}
+  .card .dot{position:absolute;left:-29px;top:16px;width:10px;height:10px;border-radius:50%;background:var(--panel);border:2px solid var(--dim)}
+  .card.up{border-color:var(--amber);box-shadow:0 0 0 1px var(--amber) inset}
+  .card.up .dot{border-color:var(--amber);background:var(--amber)}
+  .card.down{border-color:var(--teal)}
+  .card.down .dot{border-color:var(--teal);background:var(--teal)}
+  .card.sel{border-color:var(--text)}
+  .card.dimmed{opacity:.25}
+  .chead{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
+  .eid{font-weight:700;color:var(--dim)}
+  .ctitle{font-weight:700;font-size:13px}
+  .tag{font-size:9.5px;border-radius:8px;padding:1px 7px;border:1px solid;text-transform:uppercase;letter-spacing:.05em}
+  .tag.ok{color:var(--green);border-color:rgba(63,185,80,.5);background:rgba(63,185,80,.08)}
+  .tag.warn{color:var(--orange);border-color:rgba(210,153,34,.5);background:rgba(210,153,34,.08)}
+  .tag.bad{color:var(--red);border-color:rgba(248,81,73,.5);background:rgba(248,81,73,.08)}
+  .tag.fold{color:var(--purple);border-color:rgba(163,113,247,.5);background:rgba(163,113,247,.08)}
+  .tag.info{color:var(--blue);border-color:rgba(88,166,255,.5);background:rgba(88,166,255,.08)}
+  .spacer{flex:1}
+  .meta{font-size:10px;color:var(--dim)}
+  .meta b{color:var(--text)}
+  .causal-links{display:flex;gap:6px;flex-wrap:wrap;margin-top:6px}
+  .clink{font-size:10px;border-radius:8px;padding:1px 7px;background:#0f141b;border:1px solid var(--border);color:var(--dim)}
+  .clink b{color:var(--amber);font-weight:600}
+  .clink.out b{color:var(--teal)}
+  .strip{display:grid;grid-template-columns:1fr 22px 1.4fr 22px 1fr;gap:4px;align-items:stretch;margin-top:8px}
+  .panel{border:1px solid var(--border);border-radius:7px;padding:6px 8px;background:#0f141b}
+  .panel .ph{font-size:9px;text-transform:uppercase;letter-spacing:.07em;margin-bottom:2px}
+  .panel.cause .ph{color:var(--amber)} .panel.mech .ph{color:var(--blue)} .panel.out .ph{color:var(--green)}
+  .panel .pb{font-size:11px;color:#c9d1d9}
+  .arr{align-self:center;text-align:center;color:var(--dim);font-size:13px}
+  .evid{display:flex;gap:6px;flex-wrap:wrap;margin-top:8px}
+  .ev{font-size:10px;color:var(--dim);border:1px solid var(--border);border-radius:8px;padding:1px 7px;background:#0f141b;cursor:default}
+  .ev.file:hover{border-color:var(--blue);color:var(--text)}
+  /* ---- rail ---- */
+  #rail{width:290px;flex:0 0 290px;position:sticky;top:12px;border:1px solid var(--border);border-radius:10px;background:#0f141b;padding:12px;max-height:calc(100vh - 60px);overflow:auto}
+  #rail h3{margin:0 0 6px;font-size:11px;text-transform:uppercase;letter-spacing:.08em;color:var(--dim)}
+  #rail .hint{color:var(--dim);font-style:italic;font-size:11px}
+  #rail .rc{border:1px solid var(--border);border-left:3px solid var(--amber);border-radius:6px;padding:6px 8px;margin:6px 0;background:var(--panel);font-size:11px}
+  #rail .rc .t{font-weight:700}
+  #rail .rc .w{color:var(--dim);font-size:10px}
+  #rail .via{color:var(--amber);margin-left:8px;font-size:10px}
+  #rail .stat{display:flex;justify-content:space-between;font-size:11px;color:var(--dim);margin-top:3px}
+  #rail .stat b{color:var(--text)}
+  #tip{position:fixed;display:none;max-width:330px;background:#1c2330;border:1px solid #444c56;border-radius:8px;
+    padding:9px 11px;pointer-events:none;z-index:10;box-shadow:0 8px 24px rgba(0,0,0,.5);font-size:11px}
+  #tip .tt{font-weight:700} #tip .td{color:#c9d1d9;white-space:pre-line;margin-top:4px}
+  .caption{color:var(--dim);font-size:11px;margin-top:14px}
+</style>
+</head>
+<body>
+<header>
+  <span class="title"><span class="idea">IDEA 3 · CASE FILE</span> — chain-of-custody episode ledger</span>
+  <span class="chip">session <b>evener-8f3k2</b></span>
+  <span class="chip">repo <b>prime-radiant/evener</b></span>
+  <span class="chip"><b>287</b> turns → <b>14</b> episodes</span>
+  <span class="chip"><b>2,146</b> tool calls</span>
+  <span class="chip"><b>4.13M</b> tok · <b>$38.42</b></span>
+  <span class="chip"><b>6h12m</b> wall</span>
+  <span class="chip purple"><b>2</b> compactions</span>
+  <span class="chip red"><b>1</b> watch storm · <b>2</b> retry episodes</span>
+  <span class="chip green">goal <b>COMPLETE</b></span>
+</header>
+<div class="wrap">
+  <h2><span class="n">① Blast radius</span> — which files absorbed the session’s edits, when, and where failures landed (48 time buckets ≈ 7¾ min each)</h2>
+  <div id="heat"></div>
+  <h2><span class="n">② Chain of custody</span> — 287 turns auto-clustered into 14 causal episodes; the spine is narrative order, the pills are the true causal links</h2>
+  <div class="cols">
+    <div id="ledger"><div id="spine"></div></div>
+    <div id="rail">
+      <h3>Why did the session end up here?</h3>
+      <div class="hint">Click an episode card. <span style="color:var(--amber)">Amber = what caused it</span>, <span style="color:var(--teal)">teal = what it caused</span>. Try <b>E8 · RETRY CASCADE</b> or <b>E14 · GOAL COMPLETE</b>. Hover a file chip to find it in the blast radius.</div>
+      <div id="railbody"></div>
+    </div>
+  </div>
+  <div class="caption">Encoding: each episode = CAUSE → MECHANISM → OUTCOME strip + evidence chips (files, actors, tools, cost). Non-adjacent causal links appear as <b>↖ caused-by</b> / <b>↘ caused</b> pills (e.g. E8 traces back to E2’s T44 diff, three episodes earlier). Scaling: the ledger grows with the number of <i>episodes</i> (≈14 for 287 turns), not turns — a 2,000-turn session stays a one-screen scroll. Episode totals exclude 101 hook/system bookkeeping turns.</div>
+</div>
+<div id="tip"></div>
+<script>
+"use strict";
+function mulberry32(a){return function(){a|=0;a=a+0x6D2B79F5|0;let t=Math.imul(a^a>>>15,1|a);t=t+Math.imul(t^t>>>7,61|t)^t;return((t^t>>>14)>>>0)/4294967296;};}
+const rnd=mulberry32(424242);
+const tip=document.getElementById("tip");
+const NCB=48, T_END=372, BK=T_END/NCB;
+// ---------------- episodes ----------------
+const EPS=[
+{id:"E1",turns:"T1–28",m0:0,m1:25,title:"Recon & plan",tag:"exploration",st:"info",
+ cause:"USER_INPUT T1 sets the goal: tombstone pruning + fix the watch runaway loop.",
+ mech:"read_file ×61 · grep ×34 · glob ×18 over agent/schema, agent/internal/jobstore. 9 task_list items drafted.",
+ out:"Plan committed; jobstore identified as the existing-pruning reference.",
+ calls:210,tok:"480k",cost:"$2.10",files:["agent/schema/turn.go","agent/internal/jobstore/store.go"],actors:"root",tools:"read_file, grep, glob",
+ parents:[],relNext:"informed"},
+{id:"E2",turns:"T29–61",m0:25,m1:70,title:"jobstore pruning implemented",tag:"implementation",st:"ok",
+ cause:"Plan items 1–4 from E1.",
+ mech:"edit_file ×17 on prune.go (+412 −88) with build↔test loops ×6. T44: skip-list iterator for sealed entries written here.",
+ out:"prune.go green. ⚠ the diff silently carries the iterator bug that detonates at T132.",
+ calls:342,tok:"620k",cost:"$5.40",files:["jobstore/prune.go","jobstore/prune_test.go"],actors:"root",tools:"edit_file, shell, read_file",
+ parents:[{id:"E1",rel:"plan"}],relNext:"gap found"},
+{id:"E3",turns:"T62",m0:75,m1:75,title:"STEERING: widen scope",tag:"steering pivot",st:"info",
+ cause:"User, mid-run: “handle delegate tombstones too.”",
+ mech:"TurnSteering queued while a shell job runs; consumed at T63 before the next assistant turn.",
+ out:"Scope expands from jobstore → delegatestore.",
+ calls:0,tok:"2k",cost:"$0.01",files:[],actors:"user → root",tools:"—",
+ parents:[],relNext:"steered"},
+{id:"E4",turns:"T63–95",m0:78,m1:140,title:"Delegate: dlg_store (L1)",tag:"delegation",st:"ok",
+ cause:"E2 found the tombstone gap; E3 widened scope to delegatestore.",
+ mech:"Root spawns child session dlg_store (budget $8, depth 2 allowed) to implement delegatestore/tombstone.go; root polishes jobstore in parallel.",
+ out:"Child running async; first delivery expected ~T140.",
+ calls:88,tok:"150k",cost:"$1.30",files:["delegatestore/tombstone.go"],actors:"root → dlg_store",tools:"delegate, edit_file",
+ parents:[{id:"E2",rel:"gap found"},{id:"E3",rel:"steered"}],relNext:"spawned"},
+{id:"E5",turns:"T70–140",m0:90,m1:200,title:"Grandchild: dlg_tests (L2)",tag:"delegation",st:"warn",
+ cause:"dlg_store needs fuzz coverage before it can trust its own pruning.",
+ mech:"dlg_store spawns dlg_tests (3-level tree). 12 fuzz seeds written; one corpus seed FAILS — mismatch 3 vs 7 tombstones.",
+ out:"Fuzz targets delivered; the failing seed becomes attempt-3 evidence in E8.",
+ calls:263,tok:"310k",cost:"$2.60",files:["delegatestore/testdata/fuzz/*"],actors:"dlg_store → dlg_tests",tools:"write_file, shell",
+ parents:[{id:"E4",rel:"spawned"}],relNext:"evidence"},
+{id:"E6",turns:"T96–128",m0:150,m1:180,title:"Background jobs: build + fuzz",tag:"jobs",st:"ok",
+ cause:"dlg_store requests validation artifacts.",
+ mech:"shell(background) job_build: make build → exit 0 in 4m. shell(detached) job_fuzz: go test -fuzz for 3h; stdout streamed to watchers.",
+ out:"Detached fuzz job quietly accumulating the corpus line that w_fuzz will match.",
+ calls:41,tok:"60k",cost:"$0.50",files:[],actors:"dlg_store, root",tools:"shell",
+ parents:[{id:"E4",rel:"requested"}],relNext:"output fed"},
+{id:"E7",turns:"T129–131",m0:182,m1:187,title:"WATCH STORM",tag:"runaway loop",st:"bad",
+ cause:"job_fuzz prints a corpus FAILURE line; watch w_fuzz’s /FAILURE/ matcher fires.",
+ mech:"Handler at T130 re-arms the same matcher on the same output line → 3 fires in 90s; each injects an attention item and interrupts root.",
+ out:"Root’s work interrupted at T132. This storm is itself the bug the goal names.",
+ calls:3,tok:"8k",cost:"$0.06",files:["doctor/watches.go"],actors:"w_fuzz → root",tools:"job_watch (inject ×3)",
+ parents:[{id:"E6",rel:"output fed"}],relNext:"triggered"},
+{id:"E8",turns:"T132–149",m0:196,m1:215,title:"RETRY CASCADE ×4",tag:"retry cascade",st:"bad",
+ cause:"Storm interrupt (E7) + the T44 iterator bug (E2) + dlg_tests’ failing seed (E5).",
+ mech:"attempt 1 go vet exit 1 (T133) → attempt 2 make build exit 1 (T137) → attempt 3 go test FAIL (T141) → attempt 4 fuzz FAIL (T145) → root cause found T147: iterator skipped sealed tombstones → fix T149.",
+ out:"prune.go +6 −2; re-arm guard added to doctor/watches.go; all tests green.",
+ calls:96,tok:"210k",cost:"$3.10",files:["jobstore/prune.go","doctor/watches.go"],actors:"root",tools:"edit_file, shell, read_file",
+ parents:[{id:"E7",rel:"triggered"},{id:"E2",rel:"bug introduced @T44"},{id:"E5",rel:"failing-seed evidence"}],relNext:"context 92% →"},
+{id:"E9",turns:"T151",m0:220,m1:220,title:"COMPACTION #1",tag:"compaction fold",st:"fold",
+ cause:"Context window at 92% after the cascade’s huge tool results.",
+ mech:"Layer-3 CHECKPOINT + Layer-4 SUMMARY fold turns 1–150.",
+ out:"1.9M → 40k tokens. From here on, the model can only be influenced by what the summary kept.",
+ calls:0,tok:"—",cost:"$0.40",files:[],actors:"harness",tools:"compact_context",
+ parents:[{id:"E8",rel:"exhausted context"}],relNext:"continuity via SUMMARY"},
+{id:"E10",turns:"T152–200",m0:226,m1:290,title:"Delegate report integrated + MODEL_SWITCH",tag:"delegation return",st:"ok",
+ cause:"dlg_store completes and reports back (T200 delivery).",
+ mech:"Report merged: tombstone.go +412 lines, 42 tests. MODEL_SWITCH T166: k3 → mini for test-writing. watch w_cost fires once at $30 — handled, no storm (guard works).",
+ out:"delegatestore integrated; spend throttled.",
+ calls:288,tok:"540k",cost:"$4.10",files:["delegatestore/tombstone.go","delegatestore/store_test.go","delegatestore/store.go"],actors:"dlg_store → root",tools:"communicate, edit_file, shell",
+ parents:[{id:"E4",rel:"reported"},{id:"E5",rel:"tests delivered"},{id:"E9",rel:"continuity"}],relNext:"push"},
+{id:"E11",turns:"T201–220",m0:300,m1:330,title:"CI fail → rerun (small retry)",tag:"error→retry",st:"warn",
+ cause:"Push at T205 triggers job_ci; lint fails on an unused parameter — residue of the T147 fix.",
+ mech:"job_ci exit 1 → edit_file drops the param → rerun exit 0. watch w_ci fires exactly once (post-fix behavior).",
+ out:"CI green at T214.",
+ calls:74,tok:"120k",cost:"$0.90",files:["delegatestore/store.go"],actors:"root, job_ci, w_ci",tools:"shell, edit_file",
+ parents:[{id:"E10",rel:"push"},{id:"E8",rel:"fix residue"}],relNext:"context 78% →"},
+{id:"E12",turns:"T221",m0:335,m1:335,title:"COMPACTION #2",tag:"compaction fold",st:"fold",
+ cause:"Context at 78%; long CI logs folded out.",
+ mech:"Folds T152–220. Cascade detail survives only as: “iterator fixed after 4 attempts; re-arm guard added.”",
+ out:"890k → 22k tokens.",
+ calls:0,tok:"—",cost:"$0.20",files:[],actors:"harness",tools:"compact_context",
+ parents:[{id:"E11",rel:"exhausted context"}],relNext:"continuity"},
+{id:"E13",turns:"T222–260",m0:338,m1:355,title:"Docs + final gates",tag:"delegation",st:"ok",
+ cause:"Behavior changed in E8/E10 → docs must match.",
+ mech:"Root spawns dlg_docs (L1): 6 files under docs/web-ui/*. Final gates: make build, go vet, go test ./... — all green.",
+ out:"Docs report merged at T258.",
+ calls:96,tok:"180k",cost:"$1.50",files:["docs/web-ui/transcript.md","docs/web-ui/delegates.md","Makefile"],actors:"root → dlg_docs",tools:"delegate, shell, edit_file",
+ parents:[{id:"E12",rel:"continuity"}],relNext:"gates green"},
+{id:"E14",turns:"T261–287",m0:356,m1:372,title:"GOAL COMPLETE",tag:"terminal",st:"ok",
+ cause:"All gates green (E13) + CI green (E11) + e2e exit 0.",
+ mech:"job_e2e exit 0; coverage 91.2%; update_goal(complete). PR #312 prepared.",
+ out:"Session ends: pruning shipped, watch storm fixed and verified by w_ci firing once.",
+ calls:60,tok:"90k",cost:"$0.70",files:[],actors:"root",tools:"shell, update_goal",
+ parents:[{id:"E13",rel:"gates green"},{id:"E11",rel:"CI green"}],relNext:""},
+];
+// children derived
+for(const e of EPS)e.children=[];
+for(const e of EPS)for(const p of e.parents)EPS.find(x=>x.id===p.id).children.push({id:e.id,rel:p.rel});
+// ---------------- heatmap ----------------
+const HFILES=[
+ {n:"agent/internal/jobstore/prune.go",win:[[25,70,20],[196,215,11],[226,250,3]],fail:[[196,215]]},
+ {n:"agent/internal/jobstore/prune_test.go",win:[[30,66,7],[200,215,4]],fail:[]},
+ {n:"agent/internal/delegatestore/tombstone.go",win:[[80,140,12],[226,290,10]],fail:[[195,200]]},
+ {n:"agent/internal/delegatestore/store.go",win:[[90,190,8],[294,318,4]],fail:[[300,309]]},
+ {n:"agent/internal/delegatestore/store_test.go",win:[[226,290,12]],fail:[]},
+ {n:"agent/doctor/watches.go",win:[[212,216,3],[340,360,6]],fail:[]},
+ {n:"agent/internal/delegatestore/testdata/fuzz/*",win:[[95,200,11]],fail:[[196,212]]},
+ {n:"docs/web-ui/transcript.md",win:[[338,352,4]],fail:[]},
+ {n:"docs/web-ui/delegates.md",win:[[338,352,3]],fail:[]},
+ {n:"Makefile",win:[[30,40,2],[340,350,1]],fail:[]},
+ {n:"agent/schema/turn.go",win:[],fail:[],ro:[[0,25,9]]},
+ {n:"agent/events/payloads.go",win:[[212,214,1]],fail:[],ro:[[0,25,5]]},
+];
+const FOLD_BUCKETS=[Math.floor(220/BK),Math.floor(335/BK)];
+const heat=document.getElementById("heat");
+(function buildHeat(){
+  const grid=document.createElement("div");grid.className="hgrid";
+  grid.style.gridTemplateColumns=`230px repeat(${NCB},1fr)`;
+  // header row
+  const corner=document.createElement("div");corner.className="hlabel";corner.textContent="file \\ time";grid.appendChild(corner);
+  for(let i=0;i<NCB;i++){const c=document.createElement("div");c.className="haxis";
+    c.textContent=(i%8===0)?Math.round(i*BK/60)+"h":"";grid.appendChild(c);}
+  for(const f of HFILES){
+    const lab=document.createElement("div");lab.className="hlabel";lab.textContent=f.n;lab.dataset.file=f.n;grid.appendChild(lab);
+    const cells=new Array(NCB).fill(0);
+    for(const [w0,w1,n] of f.win){for(let k=0;k<n;k++){const t=w0+rnd()*(w1-w0);cells[Math.min(NCB-1,Math.floor(t/BK))]++;}}
+    const failB=new Set();for(const [w0,w1] of f.fail){for(let t=w0;t<=w1;t+=BK*0.5)failB.add(Math.min(NCB-1,Math.floor(t/BK)));}
+    const roB=new Set();for(const r of (f.ro||[])){const [w0,w1,n]=r;for(let k=0;k<n;k++){const t=w0+rnd()*(w1-w0);roB.add(Math.min(NCB-1,Math.floor(t/BK)));}}
+    for(let i=0;i<NCB;i++){
+      const c=document.createElement("div");c.className="hcell";c.dataset.file=f.n;c.dataset.bucket=i;
+      if(FOLD_BUCKETS.includes(i))c.classList.add("fold");
+      const v=cells[i];
+      if(v>0)c.style.setProperty("--a",Math.min(.85,.12+v*.18).toFixed(2));
+      if(failB.has(i)){const d=document.createElement("div");d.className="fail";c.appendChild(d);}
+      if(v===0&&roB.has(i)){const d=document.createElement("div");d.className="ro";c.appendChild(d);}
+      const mins=[(i*BK).toFixed(0),((i+1)*BK).toFixed(0)];
+      c.addEventListener("mousemove",ev=>{
+        tip.style.display="block";
+        tip.innerHTML=`<div class="tt">${f.n}</div><div class="td">bucket ${i} · ${mins[0]}–${mins[1]} min\nedits: ${v}${failB.has(i)?" · ⚠ failure referencing this file":""}${roB.has(i)&&!v?" · read-only touches":""}${FOLD_BUCKETS.includes(i)?"\n⧉ compaction fold in this bucket":""}</div>`;
+        tip.style.left=Math.min(ev.clientX+14,innerWidth-350)+"px";tip.style.top=(ev.clientY+12)+"px";});
+      c.addEventListener("mouseleave",()=>tip.style.display="none");
+      grid.appendChild(c);
+    }
+  }
+  heat.appendChild(grid);
+  const lg=document.createElement("div");lg.className="hlegend";
+  lg.innerHTML=`<span><span style="display:inline-block;width:12px;height:9px;background:rgba(88,166,255,.6);border-radius:2px"></span> edit intensity</span>
+   <span><span style="display:inline-block;width:10px;height:9px;border:1.5px solid var(--red);border-radius:2px"></span> failure referencing file</span>
+   <span><span style="display:inline-block;width:5px;height:5px;border-radius:50%;background:#6e7681"></span> read-only touches</span>
+   <span><span style="display:inline-block;width:10px;height:9px;background:rgba(163,113,247,.25);border-radius:2px"></span> compaction fold</span>
+   <span>· hover any cell for evidence; click an episode below to isolate its columns</span>`;
+  heat.appendChild(lg);
+})();
+// ---------------- ledger ----------------
+const ledger=document.getElementById("ledger"), railBody=document.getElementById("railbody");
+const cardEls={};
+function relPill(rel,dir){return `<span class="clink${dir==="out"?" out":""}">${dir==="out"?"↘":"↖"} ${dir==="out"?"caused":"caused by"} <b>${rel.id}</b>${rel.rel?" · "+rel.rel:""}</span>`;}
+function renderLedger(){
+  for(let idx=0;idx<EPS.length;idx++){
+    const e=EPS[idx];
+    if(idx>0){const conn=document.createElement("div");conn.className="connector";
+      const prev=EPS[idx-1];
+      conn.innerHTML=`<span class="rel">▼ <b>${prev.relNext||"then"}</b> · ${e.turns}</span>`;
+      ledger.appendChild(conn);}
+    const card=document.createElement("div");card.className="card";card.id="card-"+e.id;
+    const outCls=e.st==="bad"?"var(--red)":e.st==="warn"?"var(--orange)":e.st==="fold"?"var(--purple)":"var(--green)";
+    const links=[
+      ...e.parents.filter(p=>EPS.findIndex(x=>x.id===p.id)<idx-1).map(p=>relPill(p,"in")),
+      ...e.children.filter(c=>EPS.findIndex(x=>x.id===c.id)>idx+1).map(c=>relPill(c,"out")),
+    ].join("");
+    card.innerHTML=`
+      <span class="dot" style="border-color:${outCls}"></span>
+      <div class="chead">
+        <span class="eid">${e.id}</span>
+        <span class="ctitle">${e.title}</span>
+        <span class="tag ${e.st}">${e.tag}</span>
+        <span class="spacer"></span>
+        <span class="meta"><b>${e.turns}</b> · ${e.m0===e.m1?fmt(e.m0):fmt(e.m0)+"–"+fmt(e.m1)} · <b>${e.calls}</b> calls · ${e.tok} tok · <b>${e.cost}</b></span>
+      </div>
+      ${links?`<div class="causal-links">${links}</div>`:""}
+      <div class="strip">
+        <div class="panel cause"><div class="ph">cause</div><div class="pb">${e.cause}</div></div>
+        <div class="arr">→</div>
+        <div class="panel mech"><div class="ph">mechanism</div><div class="pb">${e.mech}</div></div>
+        <div class="arr">→</div>
+        <div class="panel out"><div class="ph">outcome</div><div class="pb" style="color:${outCls}">${e.out}</div></div>
+      </div>
+      <div class="evid">
+        ${e.files.map(f=>`<span class="ev file" data-file="${f}">📄 ${f}</span>`).join("")}
+        <span class="ev">👤 ${e.actors}</span>
+        <span class="ev">🔧 ${e.tools}</span>
+      </div>`;
+    card.addEventListener("click",ev=>{ev.stopPropagation();select(selected===e.id?null:e.id);});
+    ledger.appendChild(card);cardEls[e.id]=card;
+  }
+}
+function fmt(t){const h=Math.floor(t/60),m=Math.round(t%60);return h+"h"+String(m).padStart(2,"0")+"m";}
+// file chip → heatmap row hover
+document.addEventListener("mouseover",ev=>{
+  const chip=ev.target.closest(".ev.file");
+  document.querySelectorAll(".hlabel").forEach(l=>l.classList.remove("hl"));
+  if(chip){const f=chip.dataset.file;
+    document.querySelectorAll(".hlabel").forEach(l=>{if(l.textContent.includes(f.replace("*","")))l.classList.add("hl");});
+  }
+});
+// ---------------- selection / causal trace ----------------
+let selected=null;
+function closure(id,dir){const seen=new Set();const q=[id];
+  while(q.length){const c=q.shift();const e=EPS.find(x=>x.id===c);
+    const next=dir==="up"?e.parents:e.children;
+    for(const r of next)if(!seen.has(r.id)){seen.add(r.id);q.push(r.id);}}
+  return seen;}
+function select(id){
+  selected=id;
+  for(const e of EPS){const card=cardEls[e.id];card.classList.remove("up","down","sel","dimmed");}
+  document.querySelectorAll(".hcell").forEach(c=>c.style.opacity="");
+  if(!id){railBody.innerHTML="";return;}
+  const up=closure(id,"up"),down=closure(id,"down");
+  for(const e of EPS){const card=cardEls[e.id];
+    if(e.id===id)card.classList.add("sel","up");
+    else if(up.has(e.id))card.classList.add("up");
+    else if(down.has(e.id))card.classList.add("down");
+    else card.classList.add("dimmed");}
+  // isolate heatmap columns of the causal set
+  const inSet=new Set([id,...up,...down]);
+  const keep=new Set();
+  for(const eid of inSet){const e=EPS.find(x=>x.id===eid);
+    const b0=Math.floor(e.m0/BK),b1=Math.floor(e.m1/BK);
+    for(let b=b0;b<=b1;b++)keep.add(b);}
+  document.querySelectorAll(".hcell").forEach(c=>{if(!keep.has(+c.dataset.bucket))c.style.opacity=".12";});
+  // rail: upstream chain walk (most recent causal parent first)
+  const chain=[];const seen=new Set([id]);let cur=id;
+  while(true){const e=EPS.find(x=>x.id===cur);
+    const ps=e.parents.filter(p=>!seen.has(p.id)).sort((a,b)=>EPS.find(x=>x.id===b.id).m0-EPS.find(x=>x.id===a.id).m0);
+    if(!ps.length)break;seen.add(ps[0].id);chain.push(ps[0]);cur=ps[0].id;}
+  const sel=EPS.find(x=>x.id===id);
+  let html=`<div class="rc"><div class="t">${sel.id} · ${sel.title}</div><div class="w">${sel.turns} — selected</div></div>`;
+  for(const r of chain){const e=EPS.find(x=>x.id===r.id);
+    html+=`<div class="via">▲ ${r.rel||"caused"}</div><div class="rc"><div class="t">${e.id} · ${e.title}</div><div class="w">${e.turns} · ${e.tag}</div></div>`;}
+  if(down.size)html+=`<div class="via" style="color:var(--teal)">▼ also caused ${down.size} downstream episode${down.size>1?"s":""}: ${[...down].join(", ")}</div>`;
+  const tot=[...inSet].reduce((s,x)=>s+EPS.find(e=>e.id===x).calls,0);
+  html+=`<div class="stat"><span>causal-set tool calls</span><b>${tot}</b></div>`;
+  railBody.innerHTML=html;
+}
+renderLedger();
+document.addEventListener("click",()=>select(null));
+</script>
+</body>
+</html>
