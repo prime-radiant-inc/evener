@@ -42,7 +42,9 @@ pub fn init_with_preview_handler<R: Runtime>(handler: Arc<dyn PreviewHandler>) -
     Builder::new("evener-native")
         .invoke_handler(tauri::generate_handler![
             commands::ping,
-            commands::scan_and_preview_pairing
+            commands::scan_and_preview_pairing,
+            commands::haptic_perform,
+            commands::content_size_get,
         ])
         .setup(move |app, api| {
             #[cfg(mobile)]
@@ -63,7 +65,9 @@ pub fn init<R: Runtime>() -> TauriPlugin<R> {
     Builder::new("evener-native")
         .invoke_handler(tauri::generate_handler![
             commands::ping,
-            commands::scan_and_preview_pairing
+            commands::scan_and_preview_pairing,
+            commands::haptic_perform,
+            commands::content_size_get,
         ])
         .setup(|app, api| {
             #[cfg(mobile)]

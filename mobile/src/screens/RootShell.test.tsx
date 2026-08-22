@@ -116,11 +116,11 @@ describe("RootShell — server switcher flows", () => {
         name: /laptop.*active server|active server/i,
       }),
     );
-    // Click switch on the "server" row.
+    // Click the "server" profile row to open its detail view.
+    fireEvent.click(await screen.findByRole("button", { name: /^server/i }));
+    // Click "Use This Server" in the detail view.
     fireEvent.click(
-      await screen.findByRole("button", {
-        name: /switch.*server|use.*server/i,
-      }),
+      await screen.findByRole("button", { name: /use this server/i }),
     );
     await vi.waitFor(() =>
       expect(stores.connection.getState().activeProfileId).toBe("p2"),
@@ -143,10 +143,11 @@ describe("RootShell — server switcher flows", () => {
         name: /laptop.*active server|active server/i,
       }),
     );
+    // Click the "server" profile row to open its detail view.
+    fireEvent.click(await screen.findByRole("button", { name: /^server/i }));
+    // Click "Use This Server" in the detail view.
     fireEvent.click(
-      await screen.findByRole("button", {
-        name: /switch.*server|use.*server/i,
-      }),
+      await screen.findByRole("button", { name: /use this server/i }),
     );
     await vi.waitFor(() =>
       expect(stores.connection.getState().__serverScopedState).toBeNull(),
@@ -164,11 +165,12 @@ describe("RootShell — server switcher flows", () => {
         name: /laptop.*active server|active server/i,
       }),
     );
+    // Click the "laptop" profile row to open its detail view.
     fireEvent.click(
-      await screen.findByRole("button", {
-        name: /remove.*laptop|delete.*laptop/i,
-      }),
+      await screen.findByRole("button", { name: /laptop.*hub\.example/i }),
     );
+    // Click "Remove" in the detail view.
+    fireEvent.click(await screen.findByRole("button", { name: /^remove/i }));
     // Confirmation required.
     const confirm = await screen.findByRole("button", {
       name: /confirm.*remove|delete.*confirm/i,
@@ -191,7 +193,7 @@ describe("RootShell — server switcher flows", () => {
       await screen.findByRole("button", { name: /add.*server|add.*hub/i }),
     );
     expect(
-      await screen.findByRole("button", { name: /scan qr/i }),
+      await screen.findByRole("button", { name: /scan qr code/i }),
     ).toBeInTheDocument();
   });
 });

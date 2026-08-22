@@ -4,6 +4,28 @@ use crate::models::*;
 use crate::EvenerNativeExt;
 use crate::Result;
 
+/// Perform a haptic feedback pattern. Delegates to the Swift
+/// `UIFeedbackGenerator` on mobile; a no-op on desktop. Never carries a
+/// secret or credential.
+#[command]
+pub(crate) async fn haptic_perform<R: Runtime>(
+    app: AppHandle<R>,
+    payload: HapticPerformRequest,
+) -> Result<HapticPerformResponse> {
+    app.evener_native().haptic_perform(payload)
+}
+
+/// Get the current `UIContentSizeCategory`. Returns a semantic category
+/// string that the renderer maps to a bounded type scale. On desktop,
+/// returns "large".
+#[command]
+pub(crate) async fn content_size_get<R: Runtime>(
+    app: AppHandle<R>,
+    payload: ContentSizeGetRequest,
+) -> Result<ContentSizeGetResponse> {
+    app.evener_native().content_size_get(payload)
+}
+
 #[command]
 pub(crate) async fn ping<R: Runtime>(
     app: AppHandle<R>,

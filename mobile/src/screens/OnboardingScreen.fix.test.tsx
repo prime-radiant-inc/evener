@@ -23,7 +23,7 @@ describe("C2: paste field clears and no raw retained", () => {
     const input = screen.getByLabelText(/authorization url|paste/i);
     fireEvent.change(input, { target: { value: SAMPLE_AUTH_URL_HTTPS } });
     fireEvent.click(
-      screen.getByRole("button", { name: /paste|preview|next/i }),
+      screen.getByRole("button", { name: /connect|preview|next/i }),
     );
     await screen.findByText(/hub\.example\.com:8443/i);
     // Unmount should cancel the pending preview (no leak).
@@ -38,7 +38,7 @@ describe("C3: QR scan uses native previewId directly", () => {
   it("scan sets preview from native result without calling previewPaste with a fake token", async () => {
     const services = createOnboardingServices();
     const { container } = render(<OnboardingScreen services={services} />);
-    fireEvent.click(screen.getByRole("button", { name: /scan qr/i }));
+    fireEvent.click(screen.getByRole("button", { name: /scan qr code/i }));
     await screen.findByText(/hub\.example\.com:8443/i);
     // No fake token string should appear in the DOM.
     expect(container.textContent).not.toContain("redacted-scan-token");
@@ -68,7 +68,9 @@ describe("C4: re-pair UI in server switcher", () => {
         onClose={() => {}}
       />,
     );
-    // Each profile row should have a re-pair button.
+    // Click the profile row to open the detail view.
+    fireEvent.click(await screen.findByRole("button", { name: /laptop/i }));
+    // Each profile row should have a re-pair button (in the detail view).
     expect(
       await screen.findByRole("button", { name: /re-?pair/i }),
     ).toBeInTheDocument();

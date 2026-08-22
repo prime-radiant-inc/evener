@@ -21,6 +21,9 @@
      `visualViewport` JS adjusts this; the token keeps layout declarative. */
   --keyboard-inset: env(keyboard-inset-height, 0px);
 
+  /* Constrained viewport — one screen, one scroller. */
+  --viewport-height: 100dvh;
+
   /* Spacing scale: 4/8/12/16/20/24/32 */
   --space-4: 4px;
   --space-8: 8px;
@@ -203,7 +206,8 @@ body {
 .evener-shell {
   display: flex;
   flex-direction: column;
-  min-height: 100dvh;
+  height: var(--viewport-height);
+  overflow: hidden;
   padding-top: var(--safe-area-top);
   padding-right: var(--safe-area-right);
   padding-bottom: var(--safe-area-bottom);
@@ -212,6 +216,7 @@ body {
 
 .evener-screen-scroll {
   flex: 1 1 auto;
+  min-height: 0;
   overflow-y: auto;
   -webkit-overflow-scrolling: touch;
   overscroll-behavior-y: contain;
@@ -626,17 +631,30 @@ body {
 .evener-onboarding {
   display: flex;
   flex-direction: column;
-  min-height: 100dvh;
+  min-height: var(--viewport-height);
   padding: var(--space-32) var(--space-16);
   padding-top: calc(var(--space-32) + var(--safe-area-top));
   padding-bottom: calc(var(--space-32) + var(--safe-area-bottom));
-  gap: var(--space-20);
+  gap: var(--space-16);
 }
 
 .evener-onboarding__identity {
-  font-size: 2em;
+  font-size: 1.5em;
   font-weight: 700;
   color: var(--accent-ink);
+}
+
+.evener-onboarding__divider {
+  text-align: center;
+  color: var(--secondary);
+  font-size: 0.9em;
+  margin: 0;
+}
+
+.evener-onboarding__warning {
+  font-size: 0.85em;
+  color: var(--secondary);
+  margin: 0;
 }
 
 /* ---------------------------------------------------------------------------

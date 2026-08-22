@@ -696,11 +696,77 @@ class EvenerNativePlugin: Plugin {
             "deleted": true,
         ] as [String: Any])
     }
+
+    /// Perform a haptic feedback pattern via UIFeedbackGenerator. The kind
+    /// string maps to a concrete generator. Never carries a secret.
+    @objc public func hapticPerform(_ invoke: Invoke) throws {
+        let args = try invoke.parseArgs(HapticPerformArgs.self)
+        DispatchQueue.main.async {
+            switch args.kind {
+            case "selection":
+                UISelectionFeedbackGenerator().selectionChanged()
+            case "impactLight":
+                UIImpactFeedbackGenerator(style: .light).impactOccurred()
+            case "impactMedium":
+                UIImpactFeedbackGenerator(style: .medium).impactOccurred()
+            case "impactHeavy":
+                UIImpactFeedbackGenerator(style: .heavy).impactOccurred()
+            case "notificationSuccess":
+                UINotificationFeedbackGenerator().notificationOccurred(.success)
+            case "notificationWarning":
+                UINotificationFeedbackGenerator().notificationOccurred(.warning)
+            case "notificationError":
+                UINotificationFeedbackGenerator().notificationOccurred(.error)
+            default:
+                break
+            }
+            invoke.resolve(["completed": true] as [String: Any])
+        }
+    }
+
+    /// Get the current UIContentSizeCategory and return it as a semantic
+    /// category string. The renderer maps this to a bounded type scale.
+    @objc public func contentSizeGet(_ invoke: Invoke) throws {
+        _ = try invoke.parseArgs(ContentSizeGetArgs.self)
+       // Get the content size category from the current scene's window.
+       let category: UIContentSizeCategory
+       if let scene = UIApplication.shared.connectedScenes.first as? UIWindowScene,
+          let window = scene.windows.first {
+           category = window.traitCollection.preferredContentSizeCategory
+       } else {
+           category = UIApplication.shared.preferredContentSizeCategory
+       }
+        let mapped: String
+        switch category {
+        case .extraSmall: mapped = "small"
+        case .small: mapped = "small"
+        case .medium: mapped = "medium"
+        case .large: mapped = "large"
+        case .extraLarge: mapped = "extraLarge"
+        case .extraExtraLarge: mapped = "extraExtraLarge"
+        case .extraExtraExtraLarge: mapped = "extraExtraExtraLarge"
+        case .accessibilityMedium: mapped = "accessibilityMedium"
+        case .accessibilityLarge: mapped = "accessibilityLarge"
+        case .accessibilityExtraLarge: mapped = "accessibilityExtraLarge"
+        case .accessibilityExtraExtraLarge: mapped = "accessibilityExtraExtraLarge"
+        case .accessibilityExtraExtraExtraLarge: mapped = "accessibilityExtraExtraExtraLarge"
+       default: mapped = "large"
+        }
+        invoke.resolve(["category": mapped] as [String: Any])
+    }
 }
 
 class SecureSetArgs: Decodable {
     let profileId: String
     let capability: String
+}
+
+class HapticPerformArgs: Decodable {
+    let kind: String
+}
+
+class ContentSizeGetArgs: Decodable {
+    // No payload
 }
 
 // ---------------------------------------------------------------------------
