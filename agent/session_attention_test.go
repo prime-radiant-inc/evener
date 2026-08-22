@@ -406,6 +406,7 @@ func TestDelegateAttention_ArmClaimSpansFoldAndOpen(t *testing.T) {
 	select {
 	case <-resolutionReached:
 		resolvedBeforeArmOpen = true
+	// TRIPWIRE: 100ms is only a deadlock detector while c.mu is held; it is never async pacing.
 	case <-time.After(100 * time.Millisecond):
 	}
 	c.mu.Unlock()

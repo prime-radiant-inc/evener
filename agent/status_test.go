@@ -213,9 +213,27 @@ func TestStableDelegateAttention_RestoreAndColdRead(t *testing.T) {
 				return
 			}
 			var release chan struct{}
+			var launchObserved chan error
 			if tt.owed {
 				release = make(chan struct{})
+				launchObserved = make(chan error, 1)
 				fixture.adapter.steps = []func(llm.Request) llm.Response{func(llm.Request) llm.Response {
+					events, err := delegatestore.ReadEvents(delegateResourceStorePath(fixture.stateDir, fixture.meta.ID))
+					if err == nil {
+						falseIndex, runIndex := -1, -1
+						for i, event := range events {
+							if event.Kind == delegatestore.EventDelegateAttentionChanged && event.AttentionChanged != nil && !event.AttentionChanged.NeedsAttention {
+								falseIndex = i
+							}
+							if event.Kind == delegatestore.EventDelegateRunStarted && event.RunStarted != nil && event.RunStarted.Generation == 1 {
+								runIndex = i
+							}
+						}
+						if falseIndex < 0 || runIndex < 0 || falseIndex >= runIndex {
+							err = fmt.Errorf("owed launch journal order = false attention at %d, generation 1 start at %d", falseIndex, runIndex)
+						}
+					}
+					launchObserved <- err
 					<-release
 					return communicateResponse(true, "owed attention restored")
 				}}
@@ -233,6 +251,11 @@ func TestStableDelegateAttention_RestoreAndColdRead(t *testing.T) {
 				}
 				restored.Close()
 			}()
+			if tt.owed {
+				if err := <-launchObserved; err != nil {
+					t.Fatalf("owed launch observed before attention repair: %v", err)
+				}
+			}
 
 			restored.delegateController.mu.Lock()
 			aggregate := restored.delegateController.durable[targetDelegateID]
