@@ -56,7 +56,14 @@ function recordingBridge(): TauriBridge & {
     },
     createChannel<T>(onMessage: (response: T) => void) {
       receiver = onMessage as (value: unknown) => void;
-      return { id: 1, onmessage: onMessage };
+      return {
+        id: 1,
+        onmessage: onMessage,
+        onclose: null,
+        dispose() {
+          this.onclose?.();
+        },
+      };
     },
   };
   return Object.assign(bridge, {

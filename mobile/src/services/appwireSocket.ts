@@ -155,6 +155,7 @@ class TauriSocket implements WebSocketLike {
   private closed = false;
   private backendCloseStarted = false;
   private closeNotified = false;
+  private channelDisposed = false;
   private closeCode = 1000;
   private readonly opening: Promise<void>;
 
@@ -186,6 +187,7 @@ class TauriSocket implements WebSocketLike {
       for (const event of queued) this.deliverEvent(event);
     } catch {
       if (!this.closed) this.onerror?.();
+      this.disposeChannel();
     }
   }
 
@@ -214,6 +216,7 @@ class TauriSocket implements WebSocketLike {
       case "closed":
         this.closed = true;
         this.closeCode = event.code;
+        this.disposeChannel();
         this.notifyClose();
         break;
       case "error":
@@ -261,7 +264,14 @@ class TauriSocket implements WebSocketLike {
         .catch(() => undefined);
     }
     this.queuedEvents.length = 0;
+    this.disposeChannel();
     this.notifyClose();
+  }
+
+  private disposeChannel(): void {
+    if (this.channelDisposed) return;
+    this.channelDisposed = true;
+    this.channel.dispose();
   }
 
   private notifyClose(): void {

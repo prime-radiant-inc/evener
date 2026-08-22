@@ -275,8 +275,15 @@ export function createHttpService(
       const body = requestBytes(input.body);
       const requestId = newRequestId();
 
+      let prepareStarted = false;
       let cancelStarted = false;
       let cancelSettlement: Promise<void> | undefined;
+      let nativeSettlement: Promise<unknown> | undefined;
+      let channel: ReturnType<TauriBridge["createChannel"]> | undefined;
+      let rejectAbort!: (cause: HttpServiceError) => void;
+      const abortPromise = new Promise<never>((_resolve, reject) => {
+        rejectAbort = reject;
+      });
       const cancelOnce = () => {
         if (cancelStarted) return;
         cancelStarted = true;
@@ -285,11 +292,16 @@ export function createHttpService(
           .then(() => undefined)
           .catch(() => undefined);
       };
-      const onAbort = () => cancelOnce();
+      const onAbort = () => {
+        cancelOnce();
+        rejectAbort(new HttpServiceError("cancelled", "request cancelled"));
+      };
       input.signal?.addEventListener("abort", onAbort, { once: true });
+      if (input.signal?.aborted) onAbort();
 
       try {
-        await bridge.invoke("hub_http_prepare", {
+        prepareStarted = true;
+        const prepare = bridge.invoke("hub_http_prepare", {
           request: {
             requestId,
             activeProfileId: input.activeProfileId,
@@ -299,41 +311,51 @@ export function createHttpService(
             mediaType: input.mediaType ?? null,
           },
         });
-        if (input.signal?.aborted) cancelOnce();
-        if (!cancelStarted && body.byteLength > 0) {
-          await bridge.invoke("hub_http_upload_body", body, {
+        nativeSettlement = prepare;
+        await Promise.race([prepare, abortPromise]);
+        if (body.byteLength > 0) {
+          const upload = bridge.invoke("hub_http_upload_body", body, {
             headers: { [REQUEST_ID_HEADER]: requestId },
           });
+          nativeSettlement = upload;
+          await Promise.race([upload, abortPromise]);
         }
-        if (input.signal?.aborted) cancelOnce();
 
         let settleMetadata: ((metadata: ResponseMetadata) => void) | undefined;
         let rejectMetadata: ((cause: unknown) => void) | undefined;
+        let metadataSettled = false;
         const metadataPromise = new Promise<ResponseMetadata>(
           (resolve, reject) => {
             settleMetadata = resolve;
             rejectMetadata = reject;
           },
         );
-        const channel = bridge.createChannel<unknown>((event) => {
+        channel = bridge.createChannel<unknown>((event) => {
+          if (metadataSettled || input.signal?.aborted) return;
           try {
+            metadataSettled = true;
             settleMetadata?.(decodeMetadata(event, requestId));
           } catch (cause) {
+            metadataSettled = true;
             rejectMetadata?.(cause);
           }
         });
-        let raw: unknown;
-        if (!cancelStarted) {
-          raw = await bridge.invoke("hub_http_request", {
-            request: { requestId },
-            onResponse: channel,
-          });
-        }
-        if (cancelSettlement) await cancelSettlement;
-        if (input.signal?.aborted || cancelStarted) {
-          throw new HttpServiceError("cancelled", "request cancelled");
-        }
-        const metadata = await metadataPromise;
+        channel.onclose = () => {
+          if (metadataSettled) return;
+          metadataSettled = true;
+          rejectMetadata?.(
+            new HttpServiceError("decode_failed", "response metadata missing"),
+          );
+        };
+        const execute = bridge.invoke("hub_http_request", {
+          request: { requestId },
+          onResponse: channel,
+        });
+        nativeSettlement = execute;
+        const [raw, metadata] = await Promise.race([
+          Promise.all([execute, metadataPromise]),
+          abortPromise,
+        ]);
         const responseBody = decodeRawBody(raw);
         if (responseBody.byteLength !== metadata.bodyLength) {
           throw new HttpServiceError(
@@ -348,9 +370,7 @@ export function createHttpService(
           body: responseBody,
         };
       } catch (cause) {
-        if (input.signal?.aborted || cancelStarted) {
-          cancelOnce();
-          if (cancelSettlement) await cancelSettlement;
+        if (input.signal?.aborted) {
           throw new HttpServiceError("cancelled", "request cancelled");
         }
         if (isHttpServiceError(cause)) throw cause;
@@ -358,6 +378,12 @@ export function createHttpService(
         throw new HttpServiceError("request_failed", "hub request failed");
       } finally {
         input.signal?.removeEventListener("abort", onAbort);
+        if (prepareStarted || cancelStarted) cancelOnce();
+        if (nativeSettlement) {
+          await Promise.allSettled([nativeSettlement]);
+        }
+        if (cancelSettlement) await cancelSettlement;
+        channel?.dispose();
       }
     },
   };

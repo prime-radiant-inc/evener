@@ -25,14 +25,21 @@ interface ResponseScript {
   readonly mediaType?: string | null;
   readonly headers?: Record<string, string>;
   readonly metadataExtra?: Record<string, unknown>;
+  readonly failAt?: "prepare" | "upload" | "execute";
+  readonly omitMetadata?: boolean;
 }
 
 function binaryBridge(script: ResponseScript): TauriBridge & {
   readonly invocations: Invocation[];
   readonly uploadedBodies: Uint8Array[];
+  activeRequestCount(): number;
+  activeCallbackCount(): number;
 } {
   const invocations: Invocation[] = [];
   const uploadedBodies: Uint8Array[] = [];
+  const activeRequests = new Set<string>();
+  const activeCallbacks = new Set<number>();
+  let nextChannelId = 1;
   const bridge: TauriBridge = {
     async invoke<T>(
       cmd: string,
@@ -40,8 +47,17 @@ function binaryBridge(script: ResponseScript): TauriBridge & {
       options?: { readonly headers: HeadersInit },
     ): Promise<T> {
       invocations.push({ cmd, args, options });
+      if (cmd === "hub_http_prepare") {
+        const requestId = (
+          (args as Record<string, unknown>).request as { requestId: string }
+        ).requestId;
+        activeRequests.add(requestId);
+        if (script.failAt === "prepare") throw new Error("prepare failed");
+        return undefined as T;
+      }
       if (cmd === "hub_http_upload_body") {
         uploadedBodies.push(new Uint8Array(args as Uint8Array));
+        if (script.failAt === "upload") throw new Error("upload failed");
         return undefined as T;
       }
       if (cmd === "hub_http_request") {
@@ -49,6 +65,11 @@ function binaryBridge(script: ResponseScript): TauriBridge & {
         const requestId = (objectArgs.request as { requestId: string })
           .requestId;
         const channel = objectArgs.onResponse as TauriChannel<unknown>;
+        if (script.failAt === "execute") throw new Error("execute failed");
+        if (script.omitMetadata) {
+          channel.onclose?.();
+          return script.body as T;
+        }
         channel.onmessage({
           requestId,
           status: script.status,
@@ -59,13 +80,38 @@ function binaryBridge(script: ResponseScript): TauriBridge & {
         });
         return script.body as T;
       }
+      if (cmd === "hub_http_cancel") {
+        const requestId = (
+          (args as Record<string, unknown>).request as { requestId: string }
+        ).requestId;
+        activeRequests.delete(requestId);
+        return undefined as T;
+      }
       return undefined as T;
     },
     createChannel<T>(onMessage: (response: T) => void) {
-      return { id: 1, onmessage: onMessage };
+      const id = nextChannelId++;
+      activeCallbacks.add(id);
+      let disposed = false;
+      return {
+        id,
+        onmessage: onMessage,
+        onclose: null,
+        dispose() {
+          if (disposed) return;
+          disposed = true;
+          activeCallbacks.delete(id);
+          this.onclose?.();
+        },
+      };
     },
   };
-  return Object.assign(bridge, { invocations, uploadedBodies });
+  return Object.assign(bridge, {
+    invocations,
+    uploadedBodies,
+    activeRequestCount: () => activeRequests.size,
+    activeCallbackCount: () => activeCallbacks.size,
+  });
 }
 
 const PROFILE = "11111111-1111-1111-1111-111111111111";
@@ -115,6 +161,13 @@ describe("nativeHttp — binary request and response fidelity", () => {
     expect(upload?.options?.headers).toEqual({
       [REQUEST_ID_HEADER]: REQUEST_ID,
     });
+    expect(bridge.activeRequestCount()).toBe(0);
+    expect(bridge.activeCallbackCount()).toBe(0);
+    expect(
+      bridge.invocations.filter(
+        (invocation) => invocation.cmd === "hub_http_cancel",
+      ),
+    ).toHaveLength(1);
   });
 
   it("keeps text and JSON as explicit caller codecs", async () => {
@@ -256,6 +309,50 @@ describe("nativeHttp — canonical path defense", () => {
 });
 
 describe("nativeHttp — native cancellation", () => {
+  it.each(["prepare", "upload", "execute"] as const)(
+    "cleans native request and callback state after %s failure",
+    async (failAt) => {
+      const bridge = binaryBridge({
+        status: 200,
+        body: new Uint8Array(),
+        failAt,
+      });
+      await expect(
+        service(bridge).request({
+          activeProfileId: PROFILE,
+          method: "POST",
+          path: "/api/upload",
+          body: new Uint8Array([0, 0xff, 7]),
+          mediaType: "image/jpeg",
+        }),
+      ).rejects.toMatchObject({ code: "request_failed" });
+      expect(bridge.activeRequestCount()).toBe(0);
+      expect(bridge.activeCallbackCount()).toBe(0);
+      expect(
+        bridge.invocations.filter(
+          (invocation) => invocation.cmd === "hub_http_cancel",
+        ),
+      ).toHaveLength(1);
+    },
+  );
+
+  it("rejects raw success without metadata and disposes all state", async () => {
+    const bridge = binaryBridge({
+      status: 200,
+      body: new Uint8Array([0, 0xff]),
+      omitMetadata: true,
+    });
+    await expect(
+      service(bridge).request({
+        activeProfileId: PROFILE,
+        method: "GET",
+        path: "/api/missing-metadata",
+      }),
+    ).rejects.toMatchObject({ code: "decode_failed" });
+    expect(bridge.activeRequestCount()).toBe(0);
+    expect(bridge.activeCallbackCount()).toBe(0);
+  });
+
   it("invokes cancel exactly once and waits for execute and cancel settlement", async () => {
     let requestReject: ((cause: unknown) => void) | undefined;
     let cancelResolve: (() => void) | undefined;
@@ -268,6 +365,8 @@ describe("nativeHttp — native cancellation", () => {
     const requestStarted = deferred<void>();
     const cancelStarted = deferred<void>();
     const calls: string[] = [];
+    let disposed = 0;
+    let responseChannel: TauriChannel<unknown> | undefined;
     const bridge: TauriBridge = {
       async invoke<T>(cmd: string): Promise<T> {
         calls.push(cmd);
@@ -282,7 +381,16 @@ describe("nativeHttp — native cancellation", () => {
         return undefined as T;
       },
       createChannel<T>(onmessage: (value: T) => void) {
-        return { id: 1, onmessage };
+        const channel = {
+          id: 1,
+          onmessage,
+          onclose: null,
+          dispose() {
+            disposed += 1;
+          },
+        };
+        responseChannel = channel as TauriChannel<unknown>;
+        return channel;
       },
     };
     const controller = new AbortController();
@@ -296,6 +404,13 @@ describe("nativeHttp — native cancellation", () => {
     controller.abort();
     controller.abort();
     await cancelStarted.promise;
+    responseChannel?.onmessage({
+      requestId: REQUEST_ID,
+      status: 200,
+      headers: { token: "must-not-decode-after-abort" },
+      mediaType: null,
+      bodyLength: 0,
+    });
     requestReject?.(new Error("native request cancelled"));
     let settled = false;
     void pending.catch(() => {
@@ -306,9 +421,10 @@ describe("nativeHttp — native cancellation", () => {
     cancelResolve?.();
     await expect(pending).rejects.toMatchObject({ code: "cancelled" });
     expect(calls.filter((cmd) => cmd === "hub_http_cancel")).toHaveLength(1);
+    expect(disposed).toBe(1);
   });
 
-  it("does not invoke when already aborted and ignores abort after completion", async () => {
+  it("does not invoke when already aborted and cleanup remains one-shot after completion", async () => {
     const controller = new AbortController();
     controller.abort();
     const bridge = binaryBridge({ status: 200, body: new Uint8Array() });
@@ -338,7 +454,9 @@ describe("nativeHttp — native cancellation", () => {
       completedBridge.invocations.filter(
         (invocation) => invocation.cmd === "hub_http_cancel",
       ),
-    ).toHaveLength(0);
+    ).toHaveLength(1);
+    expect(completedBridge.activeRequestCount()).toBe(0);
+    expect(completedBridge.activeCallbackCount()).toBe(0);
   });
 });
 
@@ -349,7 +467,12 @@ describe("nativeHttp — redacted errors", () => {
         throw new Error("Bearer raw-secret-token");
       },
       createChannel<T>(onmessage: (value: T) => void) {
-        return { id: 1, onmessage };
+        return {
+          id: 1,
+          onmessage,
+          onclose: null,
+          dispose() {},
+        };
       },
     };
     const error = await service(bridge)
