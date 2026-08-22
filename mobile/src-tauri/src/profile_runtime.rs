@@ -127,7 +127,7 @@ impl PreferencesStore for FilePreferences {
         // fsync, a power loss can retain neither the old nor the new name.
         self.directory_sync
             .sync(&self.dir)
-            .map_err(|e| ProfileError::Preferences(e.to_string()))?;
+            .map_err(|_| ProfileError::PreferencesDurabilityUncertain)?;
 
         Ok(())
     }
@@ -487,6 +487,7 @@ mod tests {
     use crate::profile::{
         MemoryPreferences, MemorySecureStore, OkProbe, RecordingCloseTransport, StepClock,
     };
+    use std::sync::atomic::AtomicBool;
     use std::sync::atomic::{AtomicUsize, Ordering};
 
     const TOKEN: &str = "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8";
@@ -679,6 +680,173 @@ mod tests {
         assert_eq!(prefs.load().unwrap(), profile::Preferences::default());
     }
 
+    struct FailingDirectorySync {
+        fail_next: AtomicBool,
+    }
+
+    impl FailingDirectorySync {
+        fn new() -> Self {
+            Self {
+                fail_next: AtomicBool::new(false),
+            }
+        }
+
+        fn fail_next(&self) {
+            self.fail_next.store(true, Ordering::SeqCst);
+        }
+    }
+
+    impl DirectorySync for FailingDirectorySync {
+        fn sync(&self, _directory: &std::path::Path) -> Result<(), std::io::Error> {
+            if self.fail_next.swap(false, Ordering::SeqCst) {
+                Err(std::io::Error::other("injected parent fsync failure"))
+            } else {
+                Ok(())
+            }
+        }
+    }
+
+    fn file_runtime_with_sync(
+        dir: &std::path::Path,
+        sync: Arc<FailingDirectorySync>,
+        secure: Arc<MemorySecureStore>,
+    ) -> ProfileRuntime {
+        let prefs: Arc<dyn PreferencesStore> =
+            Arc::new(FilePreferences::with_directory_sync(dir, sync));
+        make_runtime(
+            prefs,
+            secure,
+            Arc::new(OkProbe),
+            Arc::new(StepClock::new(0)),
+        )
+        .0
+    }
+
+    #[tokio::test]
+    async fn add_parent_fsync_failure_keeps_committed_preferences_and_keychain() {
+        let dir = tempfile::tempdir().unwrap();
+        let sync = Arc::new(FailingDirectorySync::new());
+        let secure = Arc::new(MemorySecureStore::new());
+        let runtime = file_runtime_with_sync(dir.path(), sync.clone(), secure.clone());
+        let preview = runtime
+            .serialized(|store| store.preview_pairing(&auth_url("add.example.com")))
+            .await
+            .unwrap();
+        sync.fail_next();
+        let error = runtime
+            .serialized(|store| {
+                store.confirm_pairing(&preview.preview_id, "Added", false, ReleaseMode::Release)
+            })
+            .await
+            .unwrap_err();
+        assert!(matches!(
+            &error,
+            ProfileError::PreferencesDurabilityUncertain
+        ));
+        assert!(!format!("{error}").contains(TOKEN));
+        assert!(!format!("{error:?}").contains(TOKEN));
+
+        let restarted = file_runtime_with_sync(dir.path(), sync, secure.clone());
+        let profiles = restarted.serialized(|store| store.list()).await.unwrap();
+        assert_eq!(profiles.len(), 1);
+        assert_eq!(profiles[0].origin, "https://add.example.com");
+        assert_eq!(secure.get_token(&profiles[0].id).as_deref(), Some(TOKEN));
+    }
+
+    #[tokio::test]
+    async fn repair_parent_fsync_failure_keeps_new_matching_preferences_and_keychain() {
+        const NEW_TOKEN: &str = "AQIDBAUGBwgJCgsMDQ4PEBESExQVFhcYGRobHB0eHyA";
+        let dir = tempfile::tempdir().unwrap();
+        let sync = Arc::new(FailingDirectorySync::new());
+        let secure = Arc::new(MemorySecureStore::new());
+        let runtime = file_runtime_with_sync(dir.path(), sync.clone(), secure.clone());
+        let preview = runtime
+            .serialized(|store| store.preview_pairing(&auth_url("old.example.com")))
+            .await
+            .unwrap();
+        let profile = runtime
+            .serialized(|store| {
+                store.confirm_pairing(&preview.preview_id, "Profile", false, ReleaseMode::Release)
+            })
+            .await
+            .unwrap();
+        let before_generation = runtime
+            .serialized(|store| store.select(&profile.id))
+            .await
+            .unwrap()
+            .generation;
+        let repair = runtime
+            .serialized(|store| {
+                store.preview_repair(
+                    &profile.id,
+                    &format!("https://new.example.com/auth?token={NEW_TOKEN}"),
+                )
+            })
+            .await
+            .unwrap();
+        sync.fail_next();
+        let error = runtime
+            .serialized(|store| {
+                store.confirm_pairing(&repair.preview_id, "Profile", false, ReleaseMode::Release)
+            })
+            .await
+            .unwrap_err();
+        assert!(matches!(
+            &error,
+            ProfileError::PreferencesDurabilityUncertain
+        ));
+        assert!(!format!("{error}").contains(TOKEN));
+        assert!(!format!("{error:?}").contains(NEW_TOKEN));
+        assert!(runtime.store().generation() > before_generation);
+
+        let restarted = file_runtime_with_sync(dir.path(), sync, secure.clone());
+        let profiles = restarted.serialized(|store| store.list()).await.unwrap();
+        assert_eq!(profiles[0].origin, "https://new.example.com");
+        assert_eq!(secure.get_token(&profile.id).as_deref(), Some(NEW_TOKEN));
+    }
+
+    #[tokio::test]
+    async fn remove_parent_fsync_failure_keeps_matching_committed_removal() {
+        let dir = tempfile::tempdir().unwrap();
+        let sync = Arc::new(FailingDirectorySync::new());
+        let secure = Arc::new(MemorySecureStore::new());
+        let runtime = file_runtime_with_sync(dir.path(), sync.clone(), secure.clone());
+        let preview = runtime
+            .serialized(|store| store.preview_pairing(&auth_url("remove.example.com")))
+            .await
+            .unwrap();
+        let profile = runtime
+            .serialized(|store| {
+                store.confirm_pairing(&preview.preview_id, "Removed", false, ReleaseMode::Release)
+            })
+            .await
+            .unwrap();
+        let before_generation = runtime
+            .serialized(|store| store.select(&profile.id))
+            .await
+            .unwrap()
+            .generation;
+        sync.fail_next();
+        let error = runtime
+            .serialized(|store| store.remove(&profile.id))
+            .await
+            .unwrap_err();
+        assert!(matches!(
+            &error,
+            ProfileError::PreferencesDurabilityUncertain
+        ));
+        assert!(!format!("{error}").contains(TOKEN));
+        assert!(runtime.store().generation() > before_generation);
+
+        let restarted = file_runtime_with_sync(dir.path(), sync, secure.clone());
+        assert!(restarted
+            .serialized(|store| store.list())
+            .await
+            .unwrap()
+            .is_empty());
+        assert!(!secure.has(&profile.id));
+    }
+
     // -- Serialized concurrent calls ---------------------------------------
 
     #[tokio::test]
@@ -718,10 +886,80 @@ mod tests {
         assert_eq!(list.len(), 2);
     }
 
+    struct SnapshotReadGate {
+        entered: std::sync::Barrier,
+        release: std::sync::Barrier,
+    }
+
+    struct BarrierSecureStore {
+        inner: Arc<MemorySecureStore>,
+        next_get_gate: std::sync::Mutex<Option<Arc<SnapshotReadGate>>>,
+    }
+
+    impl BarrierSecureStore {
+        fn new(inner: Arc<MemorySecureStore>) -> Self {
+            Self {
+                inner,
+                next_get_gate: std::sync::Mutex::new(None),
+            }
+        }
+
+        fn gate_next_get(&self) -> Arc<SnapshotReadGate> {
+            let gate = Arc::new(SnapshotReadGate {
+                entered: std::sync::Barrier::new(2),
+                release: std::sync::Barrier::new(2),
+            });
+            *self.next_get_gate.lock().unwrap() = Some(gate.clone());
+            gate
+        }
+    }
+
+    impl SecureStore for BarrierSecureStore {
+        fn get(&self, profile_id: &str) -> Result<Option<String>, ProfileError> {
+            if let Some(gate) = self.next_get_gate.lock().unwrap().take() {
+                gate.entered.wait();
+                gate.release.wait();
+            }
+            self.inner.get(profile_id)
+        }
+
+        fn set(&self, profile_id: &str, token: &str) -> Result<(), ProfileError> {
+            self.inner.set(profile_id, token)
+        }
+
+        fn delete(&self, profile_id: &str) -> Result<(), ProfileError> {
+            self.inner.delete(profile_id)
+        }
+    }
+
+    async fn serialized_after_waiter_registered<F, T>(
+        runtime: &ProfileRuntime,
+        registered: tokio::sync::oneshot::Sender<()>,
+        operation: F,
+    ) -> T
+    where
+        F: FnOnce(&ProfileStore) -> T,
+    {
+        let mut lock = Box::pin(runtime.lifecycle.lock());
+        assert!(futures_util::poll!(&mut lock).is_pending());
+        let _ = registered.send(());
+        let _guard = lock.await;
+        operation(&runtime.store)
+    }
+
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
     async fn concurrent_snapshot_repair_and_select_never_mix_origin_and_token() {
+        const BETA_TOKEN: &str = "AgMEBQYHCAkKCwwNDg8QERITFBUWFxgZGhscHR4fICE";
         const NEW_TOKEN: &str = "AQIDBAUGBwgJCgsMDQ4PEBESExQVFhcYGRobHB0eHyA";
-        let (runtime, _prefs, _secure) = make_memory_runtime();
+        let prefs = Arc::new(MemoryPreferences::new());
+        let memory_secure = Arc::new(MemorySecureStore::new());
+        let secure = Arc::new(BarrierSecureStore::new(memory_secure));
+        let (runtime, _) = make_runtime(
+            prefs,
+            secure.clone(),
+            Arc::new(OkProbe),
+            Arc::new(StepClock::new(0)),
+        );
 
         let alpha_preview = runtime
             .serialized(|store| store.preview_pairing(&auth_url("alpha.example.com")))
@@ -739,7 +977,9 @@ mod tests {
             .await
             .unwrap();
         let beta_preview = runtime
-            .serialized(|store| store.preview_pairing(&auth_url("beta.example.com")))
+            .serialized(|store| {
+                store.preview_pairing(&format!("https://beta.example.com/auth?token={BETA_TOKEN}"))
+            })
             .await
             .unwrap();
         let beta = runtime
@@ -753,7 +993,7 @@ mod tests {
             })
             .await
             .unwrap();
-        runtime
+        let selected_alpha = runtime
             .serialized(|store| store.select(&alpha.id))
             .await
             .unwrap();
@@ -764,53 +1004,89 @@ mod tests {
             .unwrap();
 
         let runtime = Arc::new(runtime);
-        let snapshots_runtime = runtime.clone();
-        let snapshots = tokio::spawn(async move {
-            let mut captured = Vec::new();
-            for _ in 0..100 {
-                if let Ok(snapshot) = snapshots_runtime
-                    .serialized(|store| store.active_snapshot_current())
-                    .await
-                {
-                    captured.push(snapshot.into_parts());
-                }
-                tokio::task::yield_now().await;
-            }
-            captured
+        let read_gate = secure.gate_next_get();
+        let snapshot_runtime = runtime.clone();
+        let snapshot = tokio::spawn(async move {
+            snapshot_runtime
+                .serialized(|store| store.active_snapshot_current())
+                .await
+                .unwrap()
+                .into_parts()
         });
+
+        // The snapshot has loaded the old profile summary and generation and is
+        // now blocked inside the Keychain read while still holding lifecycle.
+        read_gate.entered.wait();
+
+        let (repair_registered_tx, repair_registered_rx) = tokio::sync::oneshot::channel();
         let repair_runtime = runtime.clone();
         let repair = tokio::spawn(async move {
-            repair_runtime
-                .serialized(|store| {
-                    store.confirm_pairing(
-                        &repair_preview.preview_id,
-                        "Alpha",
-                        false,
-                        ReleaseMode::Release,
-                    )
-                })
-                .await
+            serialized_after_waiter_registered(&repair_runtime, repair_registered_tx, |store| {
+                store.confirm_pairing(
+                    &repair_preview.preview_id,
+                    "Alpha",
+                    false,
+                    ReleaseMode::Release,
+                )
+            })
+            .await
         });
+        let (select_registered_tx, select_registered_rx) = tokio::sync::oneshot::channel();
         let select_runtime = runtime.clone();
         let beta_id = beta.id.clone();
         let select = tokio::spawn(async move {
-            select_runtime
-                .serialized(|store| store.select(&beta_id))
-                .await
+            serialized_after_waiter_registered(&select_runtime, select_registered_tx, |store| {
+                store.select(&beta_id)
+            })
+            .await
         });
 
+        // Both mutations have been polled and registered as waiters on the
+        // lifecycle mutex. Releasing the Keychain gate deterministically makes
+        // their operation lifetimes overlap the in-progress snapshot.
+        repair_registered_rx.await.unwrap();
+        select_registered_rx.await.unwrap();
+        read_gate.release.wait();
+
+        let old_observation = snapshot.await.unwrap();
         repair.await.unwrap().unwrap();
         select.await.unwrap().unwrap();
-        let snapshots = snapshots.await.unwrap();
-        assert!(!snapshots.is_empty());
-        for (id, _generation, origin, token) in snapshots {
-            let is_alpha_old =
-                id == alpha.id && origin == "https://alpha.example.com" && token == TOKEN;
-            let is_alpha_new =
-                id == alpha.id && origin == "https://alpha-new.example.com" && token == NEW_TOKEN;
-            let is_beta = id == beta.id && origin == "https://beta.example.com" && token == TOKEN;
-            assert!(is_alpha_old || is_alpha_new || is_beta, "mixed snapshot");
-        }
+
+        let beta_observation = runtime
+            .serialized(|store| store.active_snapshot_current())
+            .await
+            .unwrap()
+            .into_parts();
+        runtime
+            .serialized(|store| store.select(&alpha.id))
+            .await
+            .unwrap();
+        let new_alpha_observation = runtime
+            .serialized(|store| store.active_snapshot_current())
+            .await
+            .unwrap()
+            .into_parts();
+
+        let (old_id, old_generation, old_origin, old_token) = old_observation;
+        assert_eq!(old_id, alpha.id);
+        assert_eq!(old_generation, selected_alpha.generation);
+        assert_eq!(old_origin, "https://alpha.example.com");
+        assert_eq!(old_token, TOKEN);
+
+        let (beta_id, beta_generation, beta_origin, beta_token) = beta_observation;
+        assert_eq!(beta_id, beta.id);
+        assert!(beta_generation > old_generation);
+        assert_eq!(beta_origin, "https://beta.example.com");
+        assert_eq!(beta_token, BETA_TOKEN);
+
+        let (new_id, new_generation, new_origin, new_token) = new_alpha_observation;
+        assert_eq!(new_id, alpha.id);
+        assert!(new_generation > beta_generation);
+        assert_eq!(new_origin, "https://alpha-new.example.com");
+        assert_eq!(new_token, NEW_TOKEN);
+
+        assert_ne!(old_token, new_token);
+        assert_ne!(old_origin, new_origin);
     }
 
     #[tokio::test]

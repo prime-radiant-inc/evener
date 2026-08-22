@@ -206,41 +206,286 @@ protocol QRScanning {
     func scan(completion: @escaping (Result<String, Error>) -> Void)
 }
 
-/// Production QR scanner. Camera permission is resolved before presenting a
-/// dedicated capture controller. The controller owns one AVCaptureSession,
-/// scans only QR metadata, and completes exactly once for scan/cancel/error.
+enum CameraPermissionState {
+    case authorized
+    case denied
+    case notDetermined
+}
+
+protocol CameraPermissionProviding {
+    var state: CameraPermissionState { get }
+    func request(completion: @escaping (Bool) -> Void)
+}
+
+protocol QRScanSession: AnyObject {
+    func installPreview(in view: UIView)
+    func start()
+    func stop()
+}
+
+protocol QRScanSessionBuilding {
+    func makeSession(
+        onCode: @escaping (String) -> Void,
+        onFailure: @escaping (Error) -> Void
+    ) throws -> QRScanSession
+}
+
+protocol QRScanPresenting: AnyObject {
+    func present(session: QRScanSession, onCancel: @escaping () -> Void) throws
+    func dismiss()
+}
+
+/// The real production scanner is driven through injectable permission,
+/// AVCapture-session, and presentation boundaries. The operation owns cleanup
+/// and accepts exactly one terminal event, even if scan/cancel/error race.
 final class SystemQRScanner: QRScanning {
+    private let permission: CameraPermissionProviding
+    private let sessionFactory: QRScanSessionBuilding
+    private let presenter: QRScanPresenting
+    private let lock = NSLock()
+    private var activeOperation: SystemQRScanOperation?
+
+    init(
+        permission: CameraPermissionProviding = SystemCameraPermission(),
+        sessionFactory: QRScanSessionBuilding = AVCaptureQRScanSessionFactory(),
+        presenter: QRScanPresenting = UIKitQRScanPresenter()
+    ) {
+        self.permission = permission
+        self.sessionFactory = sessionFactory
+        self.presenter = presenter
+    }
+
     func scan(completion: @escaping (Result<String, Error>) -> Void) {
-        switch AVCaptureDevice.authorizationStatus(for: .video) {
+        let operation = SystemQRScanOperation(
+            permission: permission,
+            sessionFactory: sessionFactory,
+            presenter: presenter,
+            completion: completion
+        )
+        operation.onFinished = { [weak self, weak operation] in
+            guard let self, let operation else { return }
+            self.lock.lock()
+            if self.activeOperation === operation {
+                self.activeOperation = nil
+            }
+            self.lock.unlock()
+        }
+
+        lock.lock()
+        guard activeOperation == nil else {
+            lock.unlock()
+            completion(.failure(QRScanError.cameraUnavailable))
+            return
+        }
+        activeOperation = operation
+        lock.unlock()
+        operation.start()
+    }
+}
+
+private final class SystemQRScanOperation {
+    private let permission: CameraPermissionProviding
+    private let sessionFactory: QRScanSessionBuilding
+    private let presenter: QRScanPresenting
+    private let completion: (Result<String, Error>) -> Void
+    private let lock = NSLock()
+    private var completed = false
+    private var session: QRScanSession?
+    private var presented = false
+    var onFinished: (() -> Void)?
+
+    init(
+        permission: CameraPermissionProviding,
+        sessionFactory: QRScanSessionBuilding,
+        presenter: QRScanPresenting,
+        completion: @escaping (Result<String, Error>) -> Void
+    ) {
+        self.permission = permission
+        self.sessionFactory = sessionFactory
+        self.presenter = presenter
+        self.completion = completion
+    }
+
+    func start() {
+        switch permission.state {
         case .authorized:
-            presentScanner(completion: completion)
+            beginCapture()
+        case .denied:
+            finish(.failure(QRScanError.permissionDenied))
         case .notDetermined:
-            AVCaptureDevice.requestAccess(for: .video) { [weak self] granted in
-                DispatchQueue.main.async {
-                    if granted {
-                        self?.presentScanner(completion: completion)
-                    } else {
-                        completion(.failure(QRScanError.permissionDenied))
-                    }
+            permission.request { [weak self] granted in
+                if granted {
+                    self?.beginCapture()
+                } else {
+                    self?.finish(.failure(QRScanError.permissionDenied))
                 }
             }
-        case .denied, .restricted:
-            completion(.failure(QRScanError.permissionDenied))
-        @unknown default:
-            completion(.failure(QRScanError.permissionDenied))
         }
     }
 
-    private func presentScanner(completion: @escaping (Result<String, Error>) -> Void) {
-        DispatchQueue.main.async {
-            guard let presenter = Self.topViewController() else {
-                completion(.failure(QRScanError.cameraUnavailable))
-                return
-            }
-            let scanner = QRScannerViewController(completion: completion)
-            scanner.modalPresentationStyle = .fullScreen
-            presenter.present(scanner, animated: true)
+    private func beginCapture() {
+        lock.lock()
+        let shouldStart = !completed
+        lock.unlock()
+        guard shouldStart else { return }
+        do {
+            let session = try sessionFactory.makeSession(
+                onCode: { [weak self] code in self?.finish(.success(code)) },
+                onFailure: { [weak self] error in self?.finish(.failure(error)) }
+            )
+            self.session = session
+            try presenter.present(
+                session: session,
+                onCancel: { [weak self] in self?.finish(.failure(QRScanError.cancelled)) }
+            )
+            presented = true
+            session.start()
+        } catch {
+            finish(.failure(error))
         }
+    }
+
+    private func finish(_ result: Result<String, Error>) {
+        lock.lock()
+        guard !completed else {
+            lock.unlock()
+            return
+        }
+        completed = true
+        let session = self.session
+        let shouldDismiss = presented
+        self.session = nil
+        presented = false
+        lock.unlock()
+
+        session?.stop()
+        if shouldDismiss { presenter.dismiss() }
+        onFinished?()
+        completion(result)
+    }
+}
+
+private struct SystemCameraPermission: CameraPermissionProviding {
+    var state: CameraPermissionState {
+        switch AVCaptureDevice.authorizationStatus(for: .video) {
+        case .authorized: return .authorized
+        case .notDetermined: return .notDetermined
+        case .denied, .restricted: return .denied
+        @unknown default: return .denied
+        }
+    }
+
+    func request(completion: @escaping (Bool) -> Void) {
+        AVCaptureDevice.requestAccess(for: .video) { granted in
+            DispatchQueue.main.async { completion(granted) }
+        }
+    }
+}
+
+private final class AVCaptureQRScanSessionFactory: QRScanSessionBuilding {
+    func makeSession(
+        onCode: @escaping (String) -> Void,
+        onFailure: @escaping (Error) -> Void
+    ) throws -> QRScanSession {
+        try AVCaptureQRScanSession(onCode: onCode, onFailure: onFailure)
+    }
+}
+
+private final class AVCaptureQRScanSession: NSObject, QRScanSession, AVCaptureMetadataOutputObjectsDelegate {
+    private let captureSession = AVCaptureSession()
+    private let sessionQueue = DispatchQueue(label: "com.primeradiant.evener.qr-session")
+    private let onCode: (String) -> Void
+    private let onFailure: (Error) -> Void
+    private var previewLayer: AVCaptureVideoPreviewLayer?
+    private var runtimeErrorObserver: NSObjectProtocol?
+
+    init(onCode: @escaping (String) -> Void, onFailure: @escaping (Error) -> Void) throws {
+        self.onCode = onCode
+        self.onFailure = onFailure
+        super.init()
+
+        guard let device = AVCaptureDevice.default(for: .video),
+              let input = try? AVCaptureDeviceInput(device: device),
+              captureSession.canAddInput(input)
+        else { throw QRScanError.cameraUnavailable }
+        captureSession.addInput(input)
+
+        let output = AVCaptureMetadataOutput()
+        guard captureSession.canAddOutput(output) else {
+            throw QRScanError.cameraUnavailable
+        }
+        captureSession.addOutput(output)
+        output.setMetadataObjectsDelegate(self, queue: .main)
+        output.metadataObjectTypes = [.qr]
+        runtimeErrorObserver = NotificationCenter.default.addObserver(
+            forName: AVCaptureSession.runtimeErrorNotification,
+            object: captureSession,
+            queue: .main
+        ) { [weak self] notification in
+            let error = notification.userInfo?[AVCaptureSessionErrorKey] as? Error
+                ?? QRScanError.cameraUnavailable
+            self?.onFailure(error)
+        }
+    }
+
+    deinit {
+        if let runtimeErrorObserver {
+            NotificationCenter.default.removeObserver(runtimeErrorObserver)
+        }
+    }
+
+    func installPreview(in view: UIView) {
+        let preview = AVCaptureVideoPreviewLayer(session: captureSession)
+        preview.videoGravity = .resizeAspectFill
+        preview.frame = view.bounds
+        view.layer.insertSublayer(preview, at: 0)
+        previewLayer = preview
+    }
+
+    func start() {
+        sessionQueue.async { [weak self] in
+            guard let self, !captureSession.isRunning else { return }
+            captureSession.startRunning()
+        }
+    }
+
+    func stop() {
+        sessionQueue.async { [weak self] in
+            guard let self, captureSession.isRunning else { return }
+            captureSession.stopRunning()
+        }
+    }
+
+    func metadataOutput(
+        _ output: AVCaptureMetadataOutput,
+        didOutput metadataObjects: [AVMetadataObject],
+        from connection: AVCaptureConnection
+    ) {
+        guard let object = metadataObjects.first as? AVMetadataMachineReadableCodeObject,
+              object.type == .qr,
+              let value = object.stringValue
+        else { return }
+        onCode(value)
+    }
+}
+
+private final class UIKitQRScanPresenter: QRScanPresenting {
+    private weak var scannerController: QRScannerViewController?
+
+    func present(session: QRScanSession, onCancel: @escaping () -> Void) throws {
+        guard let presenter = Self.topViewController() else {
+            throw QRScanError.cameraUnavailable
+        }
+        let scanner = QRScannerViewController(session: session, onCancel: onCancel)
+        scanner.modalPresentationStyle = .fullScreen
+        scannerController = scanner
+        presenter.present(scanner, animated: true)
+    }
+
+    func dismiss() {
+        let scanner = scannerController
+        scannerController = nil
+        scanner?.dismiss(animated: true)
     }
 
     private static func topViewController() -> UIViewController? {
@@ -262,14 +507,13 @@ final class SystemQRScanner: QRScanning {
     }
 }
 
-private final class QRScannerViewController: UIViewController, AVCaptureMetadataOutputObjectsDelegate {
-    private let session = AVCaptureSession()
-    private let completion: (Result<String, Error>) -> Void
-    private var completed = false
-    private var previewLayer: AVCaptureVideoPreviewLayer?
+private final class QRScannerViewController: UIViewController {
+    private let session: QRScanSession
+    private let onCancel: () -> Void
 
-    init(completion: @escaping (Result<String, Error>) -> Void) {
-        self.completion = completion
+    init(session: QRScanSession, onCancel: @escaping () -> Void) {
+        self.session = session
+        self.onCancel = onCancel
         super.init(nibName: nil, bundle: nil)
     }
 
@@ -279,55 +523,7 @@ private final class QRScannerViewController: UIViewController, AVCaptureMetadata
     override func viewDidLoad() {
         super.viewDidLoad()
         view.backgroundColor = .black
-        configureCapture()
-        configureCancelButton()
-    }
-
-    override func viewDidLayoutSubviews() {
-        super.viewDidLayoutSubviews()
-        previewLayer?.frame = view.bounds
-    }
-
-    override func viewDidAppear(_ animated: Bool) {
-        super.viewDidAppear(animated)
-        guard !completed else { return }
-        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
-            self?.session.startRunning()
-        }
-    }
-
-    override func viewWillDisappear(_ animated: Bool) {
-        super.viewWillDisappear(animated)
-        if session.isRunning { session.stopRunning() }
-    }
-
-    private func configureCapture() {
-        guard let device = AVCaptureDevice.default(for: .video),
-              let input = try? AVCaptureDeviceInput(device: device),
-              session.canAddInput(input)
-        else {
-            finish(.failure(QRScanError.cameraUnavailable))
-            return
-        }
-        session.addInput(input)
-
-        let output = AVCaptureMetadataOutput()
-        guard session.canAddOutput(output) else {
-            finish(.failure(QRScanError.cameraUnavailable))
-            return
-        }
-        session.addOutput(output)
-        output.setMetadataObjectsDelegate(self, queue: .main)
-        output.metadataObjectTypes = [.qr]
-
-        let preview = AVCaptureVideoPreviewLayer(session: session)
-        preview.videoGravity = .resizeAspectFill
-        preview.frame = view.bounds
-        view.layer.addSublayer(preview)
-        previewLayer = preview
-    }
-
-    private func configureCancelButton() {
+        session.installPreview(in: view)
         let button = UIButton(type: .system)
         button.setTitle("Cancel", for: .normal)
         button.setTitleColor(.white, for: .normal)
@@ -344,26 +540,7 @@ private final class QRScannerViewController: UIViewController, AVCaptureMetadata
         ])
     }
 
-    @objc private func cancel() { finish(.failure(QRScanError.cancelled)) }
-
-    func metadataOutput(
-        _ output: AVCaptureMetadataOutput,
-        didOutput metadataObjects: [AVMetadataObject],
-        from connection: AVCaptureConnection
-    ) {
-        guard let object = metadataObjects.first as? AVMetadataMachineReadableCodeObject,
-              object.type == .qr,
-              let value = object.stringValue
-        else { return }
-        finish(.success(value))
-    }
-
-    private func finish(_ result: Result<String, Error>) {
-        guard !completed else { return }
-        completed = true
-        if session.isRunning { session.stopRunning() }
-        dismiss(animated: true) { [completion] in completion(result) }
-    }
+    @objc private func cancel() { onCancel() }
 }
 
 final class QRScanCoordinator {
@@ -532,7 +709,7 @@ class SecureSetArgs: Decodable {
 
 struct SystemKeychainClient: KeychainClient {
     func get(service: String, account: String) throws -> Data? {
-        var query: [String: Any] = [
+        let query: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: service,
             kSecAttrAccount as String: account,

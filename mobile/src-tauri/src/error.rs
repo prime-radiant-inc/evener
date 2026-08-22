@@ -67,6 +67,8 @@ pub enum ProfileError {
     Preferences(String),
     #[error("preferences consistency failure: {reason}")]
     PreferencesConsistency { reason: &'static str },
+    #[error("preferences commit completed but durability is uncertain")]
+    PreferencesDurabilityUncertain,
     #[error("consistency error for profile {profile_id}: rollback failed after {operation} ({rollback_operation})")]
     Consistency {
         profile_id: String,
