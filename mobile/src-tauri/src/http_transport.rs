@@ -18,6 +18,82 @@ use crate::diagnostics::{Diagnostics, StatusClass};
 use crate::error::ReleaseMode;
 use crate::network_policy::{NetworkPolicy, PinnedOrigin};
 
+/// Shared pinning boundary for every HTTP client. It keeps the original
+/// hostname in the URL (therefore TLS SNI and certificate verification) while
+/// overriding only that hostname's resolver answer with validated socket
+/// addresses. Redirects are disabled on both async and blocking clients.
+#[derive(Clone)]
+pub struct PinnedHttpBoundary {
+    policy: Arc<NetworkPolicy>,
+    mode: ReleaseMode,
+    extra_roots: Vec<reqwest::Certificate>,
+}
+
+impl PinnedHttpBoundary {
+    pub fn new(policy: Arc<NetworkPolicy>, mode: ReleaseMode) -> Self {
+        Self {
+            policy,
+            mode,
+            extra_roots: Vec::new(),
+        }
+    }
+
+    pub fn with_root_certificate(mut self, certificate: reqwest::Certificate) -> Self {
+        self.extra_roots.push(certificate);
+        self
+    }
+
+    pub fn clone_with_mode(&self, mode: ReleaseMode) -> Self {
+        Self {
+            policy: self.policy.clone(),
+            mode,
+            extra_roots: self.extra_roots.clone(),
+        }
+    }
+
+    pub fn resolve(&self, origin: &str) -> Result<(url::Url, PinnedOrigin), HttpError> {
+        let origin_url = url::Url::parse(origin).map_err(|_| HttpError::PolicyRejected)?;
+        let pinned = self
+            .policy
+            .resolve(&origin_url, self.mode)
+            .map_err(|_| HttpError::PolicyRejected)?;
+        Ok((origin_url, pinned))
+    }
+
+    fn socket_addrs(pinned: &PinnedOrigin) -> Vec<std::net::SocketAddr> {
+        pinned
+            .addrs()
+            .iter()
+            .map(|ip| std::net::SocketAddr::new(*ip, pinned.port()))
+            .collect()
+    }
+
+    pub fn async_client(&self, pinned: &PinnedOrigin) -> Result<reqwest::Client, HttpError> {
+        let addrs = Self::socket_addrs(pinned);
+        let mut builder = reqwest::Client::builder()
+            .redirect(reqwest::redirect::Policy::none())
+            .resolve_to_addrs(pinned.host(), &addrs);
+        for certificate in &self.extra_roots {
+            builder = builder.add_root_certificate(certificate.clone());
+        }
+        builder.build().map_err(|_| HttpError::TransportError)
+    }
+
+    pub fn blocking_client(
+        &self,
+        pinned: &PinnedOrigin,
+    ) -> Result<reqwest::blocking::Client, HttpError> {
+        let addrs = Self::socket_addrs(pinned);
+        let mut builder = reqwest::blocking::Client::builder()
+            .redirect(reqwest::redirect::Policy::none())
+            .resolve_to_addrs(pinned.host(), &addrs);
+        for certificate in &self.extra_roots {
+            builder = builder.add_root_certificate(certificate.clone());
+        }
+        builder.build().map_err(|_| HttpError::TransportError)
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Request/Response DTOs
 // ---------------------------------------------------------------------------
@@ -106,9 +182,7 @@ pub enum HttpError {
 pub struct HubHttp {
     origin: String,
     token: String,
-    policy: Arc<NetworkPolicy>,
-    mode: ReleaseMode,
-    client: reqwest::Client,
+    boundary: PinnedHttpBoundary,
     diagnostics: Arc<Diagnostics>,
 }
 
@@ -124,40 +198,37 @@ impl HubHttp {
         policy: Arc<NetworkPolicy>,
         mode: ReleaseMode,
     ) -> Self {
-        let client = reqwest::Client::builder()
-            .redirect(reqwest::redirect::Policy::none())
-            .build()
-            .expect("failed to build reqwest client");
         Self {
             origin,
             token,
-            policy,
-            mode,
-            client,
+            boundary: PinnedHttpBoundary::new(policy, mode),
             diagnostics: Arc::new(Diagnostics::new()),
         }
     }
 
-    /// Construct an authenticated Hub HTTP client with a shared reqwest
-    /// client and shared diagnostics ring. Used by the managed
-    /// `TransportState` so all requests share one client (connection pool)
-    /// and one diagnostics ring.
-    pub fn with_client(
+    /// Construct an authenticated Hub HTTP client with a shared diagnostics
+    /// ring. The request client itself is built after policy resolution so its
+    /// DNS override is pinned to the newly approved address set.
+    pub fn with_diagnostics(
         origin: String,
         token: String,
         policy: Arc<NetworkPolicy>,
         mode: ReleaseMode,
-        client: reqwest::Client,
         diagnostics: Arc<Diagnostics>,
     ) -> Self {
         Self {
             origin,
             token,
-            policy,
-            mode,
-            client,
+            boundary: PinnedHttpBoundary::new(policy, mode),
             diagnostics,
         }
+    }
+
+    /// Test/enterprise trust seam; pinning, hostname validation, and redirect
+    /// policy remain identical.
+    pub fn with_root_certificate(mut self, certificate: reqwest::Certificate) -> Self {
+        self.boundary = self.boundary.with_root_certificate(certificate);
+        self
     }
 
     /// Borrow the diagnostics ring (for snapshot/export by commands).
@@ -219,33 +290,25 @@ impl HubHttp {
 
         // Re-resolve the origin through the network policy on every
         // connection. Pin the validated address; preserve the original Host.
-        let origin_url = url::Url::parse(&self.origin).map_err(|_| HttpError::PolicyRejected)?;
-        let pinned = self
-            .policy
-            .resolve(&origin_url, self.mode)
-            .map_err(|_| HttpError::PolicyRejected)?;
-
-        // Build the full URL using the pinned origin. We connect to the
-        // validated address while preserving the original Host header.
-        let url = build_url(&pinned, &request.path)?;
+        let (mut url, pinned) = self.boundary.resolve(&self.origin)?;
+        url.set_path("");
+        url.set_query(None);
+        url.set_fragment(None);
+        let url = url::Url::parse(&format!(
+            "{}{path}",
+            url.as_str().trim_end_matches('/'),
+            path = request.path
+        ))
+        .map_err(|_| HttpError::PolicyRejected)?;
+        let client = self.boundary.async_client(&pinned)?;
 
         let method = reqwest::Method::from_bytes(request.method.as_bytes())
             .map_err(|_| HttpError::MethodNotAllowed)?;
 
-        // Build the request. reqwest resolves the hostname in `url`; since we
-        // use the pinned IP in the URL authority, it connects to the validated
-        // address. We set the Host header to the original hostname to preserve
-        // TLS SNI/certificate identity.
-        let host_header = if is_default_port(pinned.scheme(), pinned.port()) {
-            pinned.host().to_owned()
-        } else {
-            format!("{}:{}", pinned.host(), pinned.port())
-        };
-
-        let mut builder = self
-            .client
+        // The URL keeps the original hostname for Host, SNI, and certificate
+        // identity. The client resolver override pins its socket addresses.
+        let mut builder = client
             .request(method, url.as_str())
-            .header("host", &host_header)
             .bearer_auth(&self.token);
 
         if let Some(bytes) = body_bytes {
@@ -340,10 +403,6 @@ fn status_class(status: u16) -> StatusClass {
     }
 }
 
-fn is_default_port(scheme: &str, port: u16) -> bool {
-    matches!((scheme, port), ("http", 80) | ("https", 443))
-}
-
 /// Validate a request path against the allowlist. Rejects dot segments
 /// (literal and percent-encoded), backslashes, double slashes, and
 /// non-allowlisted prefixes. Query strings on allowed paths are permitted.
@@ -421,26 +480,6 @@ fn hex_val(b: u8) -> Option<u8> {
         b'A'..=b'F' => Some(b - b'A' + 10),
         _ => None,
     }
-}
-
-/// Build a request URL from a pinned origin and a relative path. The URL
-/// authority is the pinned IP address; the Host header carries the original
-/// hostname separately. Returns an error if the URL cannot be parsed (no
-/// panic).
-fn build_url(pinned: &PinnedOrigin, path: &str) -> Result<url::Url, HttpError> {
-    let scheme = pinned.scheme();
-    let addr = pinned
-        .addrs()
-        .first()
-        .map(|ip| ip.to_string())
-        .ok_or(HttpError::PolicyRejected)?;
-    let port = pinned.port();
-    let authority = if is_default_port(scheme, port) {
-        addr
-    } else {
-        format!("{addr}:{port}")
-    };
-    url::Url::parse(&format!("{scheme}://{authority}{path}")).map_err(|_| HttpError::PolicyRejected)
 }
 
 // Suppress unused-import warning for Duration if not referenced on all

@@ -31,9 +31,6 @@ pub struct TransportState {
     /// Secure store bridge: retrieves the active profile's token from the
     /// native Keychain adapter. Never exposes the token to JavaScript.
     secure: Arc<dyn SecureStore>,
-    /// The shared reqwest client (redirects disabled). Reused across
-    /// requests; per-request origin/token come from the active profile.
-    http_client: reqwest::Client,
 }
 
 impl TransportState {
@@ -44,17 +41,12 @@ impl TransportState {
         appwire: Arc<AppwireManager>,
         secure: Arc<dyn SecureStore>,
     ) -> Self {
-        let http_client = reqwest::Client::builder()
-            .redirect(reqwest::redirect::Policy::none())
-            .build()
-            .expect("failed to build reqwest client");
         Self {
             policy,
             mode,
             diagnostics,
             appwire,
             secure,
-            http_client,
         }
     }
 
@@ -75,16 +67,15 @@ impl TransportState {
         self.diagnostics.clear_for_profile(profile_id);
     }
 
-    /// Build (or rebuild) a HubHttp for the active profile using the shared
-    /// reqwest client and diagnostics. Called by the HTTP command after the
-    /// lifecycle mutex has released the origin and token.
+    /// Build a HubHttp for one immutable active snapshot. Each request creates
+    /// a resolver-pinned client because the approved address set is refreshed
+    /// on every connection boundary; diagnostics remain shared.
     pub fn make_http(&self, origin: String, token: String) -> HubHttp {
-        HubHttp::with_client(
+        HubHttp::with_diagnostics(
             origin,
             token,
             self.policy.clone(),
             self.mode,
-            self.http_client.clone(),
             self.diagnostics.clone(),
         )
     }

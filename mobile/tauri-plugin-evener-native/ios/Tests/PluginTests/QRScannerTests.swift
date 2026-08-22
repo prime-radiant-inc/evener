@@ -3,6 +3,11 @@ import XCTest
 import Tauri
 
 final class QRScannerTests: XCTestCase {
+    func testProductionPluginInstallsConcreteScanner() {
+        let plugin = EvenerNativePlugin()
+        XCTAssertTrue(plugin.hasScannerForTesting)
+    }
+
     func testForwardsScannedTextOnlyToNativeRustCompletion() throws {
         let scanner = FakeQRScanner()
         let coordinator = QRScanCoordinator(scanner: scanner)
@@ -97,6 +102,34 @@ final class PluginScanIntegrationTests: XCTestCase {
         let json = try XCTUnwrap(capturedResponse.value)
         XCTAssertTrue(json.contains("\"error\""))
         XCTAssertTrue(json.contains("pairing_unavailable"))
+    }
+
+    func testScanAndPreviewMapsPermissionDenied() throws {
+        let scanner = FakePluginScanner()
+        let plugin = EvenerNativePlugin(
+            keychainClient: NoOpKeychainClient(),
+            scanner: scanner
+        )
+        let (invoke, capturedResponse) = makeInvoke(args: "{}")
+        try plugin.scanAndPreviewPairing(invoke)
+        scanner.complete(.failure(QRScanError.permissionDenied))
+
+        XCTAssertTrue(try XCTUnwrap(capturedResponse.value).contains("permission_denied"))
+    }
+
+    func testScanAndPreviewMapsUserCancellationWithoutRawText() throws {
+        let scanner = FakePluginScanner()
+        let plugin = EvenerNativePlugin(
+            keychainClient: NoOpKeychainClient(),
+            scanner: scanner
+        )
+        let (invoke, capturedResponse) = makeInvoke(args: "{}")
+        try plugin.scanAndPreviewPairing(invoke)
+        scanner.complete(.failure(QRScanError.cancelled))
+
+        let json = try XCTUnwrap(capturedResponse.value)
+        XCTAssertTrue(json.contains("Scan cancelled"))
+        XCTAssertFalse(json.contains("scanned"))
     }
 
     func testSecureGetCapabilityReturnsStoredToken() throws {
