@@ -57,33 +57,9 @@ func feedRechecks(ctx context.Context) <-chan time.Time {
 	return recheck
 }
 
-// runDrainToCompletion runs the REAL drain — kickDriveTree and ProcessInputKind,
-// no substitutes — and returns its result. Substituting the turn runner is how
-// two earlier attempts at this feature shipped inert; nothing here may stub it.
-func runDrainToCompletion(t *testing.T, sess *Session) (string, error) {
-	t.Helper()
-	type drainDone struct {
-		res string
-		err error
-	}
-	// TRIPWIRE: the escalation is turn-paced (each pass either runs a scripted
-	// model turn, parks for a fed recheck, or returns), so the drain finishes
-	// in milliseconds; 30s only fires on a genuine hang — which is the #297
-	// regression this suite exists to catch.
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
-	done := make(chan drainDone, 1)
-	go func() {
-		res, err := sess.drainJobTreeWith(ctx, feedRechecks(ctx), sess.kickDriveTree, sess.ProcessInputKind)
-		done <- drainDone{res, err}
-	}()
-	select {
-	case d := <-done:
-		return d.res, d.err
-	case <-ctx.Done():
-		t.Fatal("drain never returned with an undisposed background job: this is the #297 hang")
-		return "", nil
-	}
+type drainResult struct {
+	res string
+	err error
 }
 
 // TestOneShotDrainEscalatesAndExitsOnAnUndisposedBackgroundJob is the headline
@@ -105,7 +81,24 @@ func TestOneShotDrainEscalatesAndExitsOnAnUndisposedBackgroundJob(t *testing.T) 
 	}))
 	jobID := startUndisposedBackgroundShell(t, sess)
 
-	res, err := runDrainToCompletion(t, sess)
+	// TRIPWIRE: the escalation is turn-paced (each pass either runs a scripted
+	// model turn, parks for a fed recheck, or returns), so the drain finishes
+	// in milliseconds; 30s only fires on a genuine hang — which is the #297
+	// regression this suite exists to catch.
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	done := make(chan drainResult, 1)
+	go func() {
+		res, err := sess.drainJobTreeWith(ctx, feedRechecks(ctx), sess.kickDriveTree, sess.ProcessInputKind)
+		done <- drainResult{res, err}
+	}()
+	var result drainResult
+	select {
+	case result = <-done:
+	case <-ctx.Done():
+		t.Fatal("drain never returned with an undisposed background job: this is the #297 hang")
+	}
+	res, err := result.res, result.err
 	if err != nil {
 		t.Fatalf("drain error: %v", err)
 	}
@@ -200,10 +193,7 @@ func TestOneShotDrainAnnouncementStopResolves(t *testing.T) {
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
-	done := make(chan struct {
-		res string
-		err error
-	}, 1)
+	done := make(chan drainResult, 1)
 	finished := make(chan struct{})
 	releaseStopTurn := func() {
 		select {
@@ -221,10 +211,7 @@ func TestOneShotDrainAnnouncementStopResolves(t *testing.T) {
 	go func() {
 		defer close(finished)
 		res, err := sess.drainJobTreeWith(ctx, feedRechecks(ctx), sess.kickDriveTree, sess.ProcessInputKind)
-		done <- struct {
-			res string
-			err error
-		}{res, err}
+		done <- drainResult{res, err}
 	}()
 	// The fed rechecks advance the first-sighting arm and start the real
 	// ProcessInputKind announcement turn without a wall-clock park.
@@ -482,11 +469,7 @@ func TestClearedWatchStartsAFreshAnnouncementEpisode(t *testing.T) {
 	jobID = startUndisposedBackgroundShell(t, sess)
 
 	ctx, cancel := context.WithCancel(context.Background())
-	type drainDone struct {
-		res string
-		err error
-	}
-	done := make(chan drainDone, 1)
+	done := make(chan drainResult, 1)
 	finished := make(chan struct{})
 	t.Cleanup(func() {
 		cancel()
@@ -495,7 +478,7 @@ func TestClearedWatchStartsAFreshAnnouncementEpisode(t *testing.T) {
 	go func() {
 		defer close(finished)
 		res, err := sess.drainJobTreeWith(ctx, feedRechecks(ctx), sess.kickDriveTree, sess.ProcessInputKind)
-		done <- drainDone{res, err}
+		done <- drainResult{res, err}
 	}()
 	select {
 	case <-watchArmed:

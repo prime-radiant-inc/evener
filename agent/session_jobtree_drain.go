@@ -282,11 +282,12 @@ func (s *Session) backgroundDrainState() (undisposed, background []string, sole,
 		return nil, background, false, false, nil
 	}
 	sort.Strings(background)
+	undisposed = make([]string, 0, len(background))
 	allWatched = true
 	for _, id := range background {
 		if !s.jobManager.hasLiveWatchOnTarget(id) {
 			allWatched = false
-			break
+			undisposed = append(undisposed, id)
 		}
 	}
 	elsewhere, err := s.treeHasOutstandingWorkBesidesOwnJobs()
@@ -295,12 +296,6 @@ func (s *Session) backgroundDrainState() (undisposed, background []string, sole,
 	}
 	if elsewhere {
 		return nil, background, false, allWatched, nil
-	}
-	undisposed = background[:0]
-	for _, id := range background {
-		if !s.jobManager.hasLiveWatchOnTarget(id) {
-			undisposed = append(undisposed, id)
-		}
 	}
 	if len(undisposed) == 0 {
 		return nil, background, false, allWatched, nil
@@ -695,9 +690,11 @@ func (s *Session) drainJobTreeWith(ctx context.Context, recheck <-chan time.Time
 				switch bgAnnounced[setKey] {
 				case 0, 1:
 					canDetach := s.detachedShellAvailable()
-					text := undisposedBackgroundJobsAnnouncement(
-						undisposed, s.providerVisibleToolName("shell"), canDetach)
-					if bgAnnounced[setKey] == 1 {
+					var text string
+					if bgAnnounced[setKey] == 0 {
+						text = undisposedBackgroundJobsAnnouncement(
+							undisposed, s.providerVisibleToolName("shell"), canDetach)
+					} else {
 						text = undisposedBackgroundJobsFinalWarning(undisposed, canDetach)
 					}
 					bgAnnounced[setKey]++
