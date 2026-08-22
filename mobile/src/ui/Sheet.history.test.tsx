@@ -1,6 +1,12 @@
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { useState } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { __resetSheetHistory, __sheetHistorySettled, Sheet } from "./Sheet";
+import {
+  __resetSheetHistory,
+  __sheetHistoryDebug,
+  __sheetHistorySettled,
+  Sheet,
+} from "./Sheet";
 
 /**
  * Real browsers structured-clone `history.state` on `pushState`/`replaceState`,
@@ -11,22 +17,31 @@ import { __resetSheetHistory, __sheetHistorySettled, Sheet } from "./Sheet";
  * would fail under this seam exactly as they fail in real Chrome.
  */
 function installStructuredCloneSeam(): () => void {
-  const original = history.pushState.bind(history);
+  const originalPush = history.pushState.bind(history);
+  const originalReplace = history.replaceState.bind(history);
+  const clone = (state: unknown): unknown =>
+    state === null || state === undefined
+      ? state
+      : typeof structuredClone === "function"
+        ? structuredClone(state)
+        : JSON.parse(JSON.stringify(state));
   history.pushState = function patchedPushState(
     state: unknown,
     unused: string,
     url?: string | URL | null,
   ) {
-    const cloned =
-      state === null || state === undefined
-        ? state
-        : typeof structuredClone === "function"
-          ? structuredClone(state)
-          : JSON.parse(JSON.stringify(state));
-    return original.call(history, cloned, unused, url ?? null);
+    return originalPush.call(history, clone(state), unused, url ?? null);
+  };
+  history.replaceState = function patchedReplaceState(
+    state: unknown,
+    unused: string,
+    url?: string | URL | null,
+  ) {
+    return originalReplace.call(history, clone(state), unused, url ?? null);
   };
   return () => {
-    history.pushState = original;
+    history.pushState = originalPush;
+    history.replaceState = originalReplace;
   };
 }
 
@@ -68,16 +83,21 @@ function currentToken(): string | null {
   return null;
 }
 
+let restoreStructuredClone: (() => void) | null = null;
+
 beforeEach(() => {
-  installStructuredCloneSeam();
+  restoreStructuredClone = installStructuredCloneSeam();
 });
 
 afterEach(async () => {
   cleanup();
   await settled();
   __resetSheetHistory();
+  vi.restoreAllMocks();
   // Reset the current entry so the next test starts from a clean baseline.
   history.replaceState(null, "");
+  restoreStructuredClone?.();
+  restoreStructuredClone = null;
 });
 
 describe("Sheet — browser/system Back history semantics", () => {
@@ -122,6 +142,30 @@ describe("Sheet — browser/system Back history semantics", () => {
     expect(onClose).toHaveBeenCalledTimes(1);
     // The app did not navigate away: we are back at the pre-sheet entry.
     expect(history.state).toBeNull();
+  });
+
+  it("browser Back closes over an arbitrary non-null app state and restores it", async () => {
+    const appState = { route: "/servers", revision: 7 };
+    history.replaceState(appState, "");
+    const observedStates: unknown[] = [];
+    const observe = (event: PopStateEvent) => observedStates.push(event.state);
+    window.addEventListener("popstate", observe);
+    const onClose = vi.fn();
+    render(
+      <Sheet open onClose={onClose} title="Servers">
+        <p>body</p>
+      </Sheet>,
+    );
+
+    await browserBack();
+    window.removeEventListener("popstate", observe);
+
+    expect(onClose).toHaveBeenCalledTimes(1);
+    expect(observedStates).toHaveLength(1);
+    // Router fields remain top-level even before the coordinator unwraps its
+    // namespaced base metadata.
+    expect(observedStates[0]).toMatchObject(appState);
+    expect(history.state).toEqual(appState);
   });
 
   it("system Back closes once without another back", async () => {
@@ -222,6 +266,7 @@ describe("Sheet — browser/system Back history semantics", () => {
 
   it("external parent closure (open=false) unmounts portal and unwinds the sentinel", async () => {
     const onClose = vi.fn();
+    const backSpy = vi.spyOn(history, "back");
     const { rerender } = render(
       <Sheet open onClose={onClose} title="Servers">
         <p>body</p>
@@ -232,7 +277,10 @@ describe("Sheet — browser/system Back history semantics", () => {
         <p>body</p>
       </Sheet>,
     );
+    expect(backSpy).toHaveBeenCalledTimes(1);
     await settled();
+    expect(backSpy).toHaveBeenCalledTimes(1);
+    expect(onClose).not.toHaveBeenCalled();
     expect(history.state).toBeNull();
     expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
   });
@@ -305,6 +353,13 @@ describe("Sheet — browser/system Back history semantics", () => {
     // sheet's marker.
     await settled();
     expect(currentToken()).not.toBe(sentinelToken);
+    expect(__sheetHistoryDebug()).toEqual({
+      hasOwner: false,
+      queueLength: 0,
+      pendingBack: false,
+      buriedCount: 0,
+      listenerInstalled: false,
+    });
   });
 
   it("fresh token on reopen (no stale token reuse)", async () => {
@@ -399,6 +454,29 @@ describe("Sheet — browser/system Back history semantics", () => {
     expect(currentToken()).not.toBeNull();
   });
 
+  it("StrictMode replay followed by close requests exactly one unwind", async () => {
+    const { StrictMode } = await import("react");
+    const backSpy = vi.spyOn(history, "back");
+    const { rerender } = render(
+      <StrictMode>
+        <Sheet open onClose={() => {}} title="Servers">
+          <p>body</p>
+        </Sheet>
+      </StrictMode>,
+    );
+    backSpy.mockClear();
+    rerender(
+      <StrictMode>
+        <Sheet open={false} onClose={() => {}} title="Servers">
+          <p>body</p>
+        </Sheet>
+      </StrictMode>,
+    );
+    expect(backSpy).toHaveBeenCalledTimes(1);
+    await settled();
+    expect(backSpy).toHaveBeenCalledTimes(1);
+  });
+
   it("popstate followed by cleanup does not throw and leaves no sentinel", async () => {
     const onClose = vi.fn();
     const { unmount } = render(
@@ -448,50 +526,65 @@ describe("Sheet — browser/system Back history semantics", () => {
         <p>body</p>
       </Sheet>,
     );
+    // The reopen is queued and hidden until the old traversal actually lands.
+    expect(currentToken()).toBe(firstToken);
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+    await settled();
     const secondToken = currentToken();
     expect(secondToken).not.toBe(firstToken);
-    await settled();
-    // The old back must not have popped the new sentinel.
+    expect(secondToken).not.toBeNull();
+    expect(screen.getByRole("dialog")).toBeInTheDocument();
+    // The old back landed before the new sentinel was pushed.
     expect(currentToken()).toBe(secondToken);
   });
 
-  it("two concurrent instances: a second Sheet does not push another sentinel", () => {
+  it("two concurrent instances serialize visibility and ownership", async () => {
     const onClose1 = vi.fn();
     const onClose2 = vi.fn();
     const pushState = vi.spyOn(history, "pushState");
-    render(
-      <>
-        <Sheet open onClose={onClose1} title="First">
-          <p>first</p>
-        </Sheet>
-        <Sheet open onClose={onClose2} title="Second">
-          <p>second</p>
-        </Sheet>
-      </>,
-    );
+    function Harness() {
+      const [firstOpen, setFirstOpen] = useState(true);
+      const [secondOpen, setSecondOpen] = useState(true);
+      return (
+        <>
+          <Sheet
+            open={firstOpen}
+            onClose={() => {
+              onClose1();
+              setFirstOpen(false);
+            }}
+            title="First"
+          >
+            <p>first</p>
+          </Sheet>
+          <Sheet
+            open={secondOpen}
+            onClose={() => {
+              onClose2();
+              setSecondOpen(false);
+            }}
+            title="Second"
+          >
+            <p>second</p>
+          </Sheet>
+        </>
+      );
+    }
+    render(<Harness />);
     // Only one sentinel pushed (one global owner enforced).
     expect(pushState).toHaveBeenCalledTimes(1);
-    // Both sheets rendered their portals.
+    // Only the owner is visible; the queued sheet is not an orphan dialog.
     expect(screen.getByText("first")).toBeInTheDocument();
-    expect(screen.getByText("second")).toBeInTheDocument();
-  });
+    expect(screen.queryByText("second")).not.toBeInTheDocument();
 
-  it("two concurrent instances: one Back closes only the owner, not both", async () => {
-    const onClose1 = vi.fn();
-    const onClose2 = vi.fn();
-    render(
-      <>
-        <Sheet open onClose={onClose1} title="First">
-          <p>first</p>
-        </Sheet>
-        <Sheet open onClose={onClose2} title="Second">
-          <p>second</p>
-        </Sheet>
-      </>,
-    );
-    await browserBack();
-    // Exactly one onClose called (the owner), not both.
-    expect(onClose1.mock.calls.length + onClose2.mock.calls.length).toBe(1);
+    fireEvent.click(screen.getByRole("button", { name: "Done" }));
+    expect(onClose1).toHaveBeenCalledTimes(1);
+    expect(onClose2).not.toHaveBeenCalled();
+    await settled();
+
+    expect(screen.queryByText("first")).not.toBeInTheDocument();
+    expect(await screen.findByText("second")).toBeInTheDocument();
+    expect(pushState).toHaveBeenCalledTimes(2);
   });
 
   it("Escape remains capture-phase and overlay is noninteractive to AT", () => {
