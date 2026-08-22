@@ -1282,6 +1282,10 @@ func TestDelegateResourceSupervision_QuietAttentionAppendFailureRetriesSameIdent
 	owner.cfg.testOnly.delegateAttentionReadFold = nil
 	nestedClock.Advance(jobNotificationRetryInitialDelay)
 	<-retryWake
+	// The wake is emitted inside the retry callback before it clears the
+	// resolved arm ID. Wait for that callback to finish before inspecting its
+	// final bookkeeping state.
+	nestedClock.Drain()
 	controller.mu.Lock()
 	ownerAttention := controller.durable["dlg_owner"].NeedsAttention
 	controller.mu.Unlock()
