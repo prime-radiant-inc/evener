@@ -109,7 +109,7 @@ func (jm *jobManager) outstandingDrainJobIDsByBackground() (all, background []st
 		if isOwnedDrainJob(run.rec, jm.sessionID) {
 			counted[id] = true
 			ids = append(ids, id)
-			if run.rec.Background {
+			if run.rec.Background && run.stopStatus == "" {
 				background = append(background, id)
 			}
 		}
@@ -260,34 +260,83 @@ func (s *Session) treeHasOutstandingWorkBesidesOwnJobs() (bool, error) {
 // result", the one answer that means the drain should wait exactly as it
 // always has.
 func (s *Session) undisposedBackgroundDrainJobs() ([]string, bool, error) {
+	undisposed, _, sole, _, err := s.backgroundDrainState()
+	return undisposed, sole, err
+}
+
+// backgroundDrainState returns the current undisposed candidates, the sorted
+// background set they came from, whether those candidates are the sole reason
+// to wait, and whether every job in that set has a live watch. The last value
+// lets the drain distinguish a watch-excused episode from an ordinary
+// non-candidate pass, so clearing a watch can reset escalation state.
+func (s *Session) backgroundDrainState() (undisposed, background []string, sole, allWatched bool, err error) {
 	if s.jobManager == nil {
-		return nil, false, nil
+		return nil, nil, false, false, nil
 	}
-	all, background, err := s.jobManager.outstandingDrainJobIDsByBackground()
+	var all []string
+	all, background, err = s.jobManager.outstandingDrainJobIDsByBackground()
 	if err != nil {
-		return nil, false, err
+		return nil, nil, false, false, err
 	}
 	if len(background) == 0 || len(background) != len(all) {
-		return nil, false, nil
+		return nil, background, false, false, nil
+	}
+	sort.Strings(background)
+	allWatched = true
+	for _, id := range background {
+		if !s.jobManager.hasLiveWatchOnTarget(id) {
+			allWatched = false
+			break
+		}
 	}
 	elsewhere, err := s.treeHasOutstandingWorkBesidesOwnJobs()
 	if err != nil {
-		return nil, false, err
+		return nil, background, false, allWatched, err
 	}
 	if elsewhere {
-		return nil, false, nil
+		return nil, background, false, allWatched, nil
 	}
-	undisposed := background[:0]
+	undisposed = background[:0]
 	for _, id := range background {
 		if !s.jobManager.hasLiveWatchOnTarget(id) {
 			undisposed = append(undisposed, id)
 		}
 	}
 	if len(undisposed) == 0 {
-		return nil, false, nil
+		return nil, background, false, allWatched, nil
 	}
 	sort.Strings(undisposed)
-	return undisposed, true, nil
+	return undisposed, background, true, allWatched, nil
+}
+
+func (jm *jobManager) watchHistoryIDs() map[string]struct{} {
+	jm.mu.Lock()
+	defer jm.mu.Unlock()
+	seen := make(map[string]struct{}, len(jm.watchHistory))
+	for _, entry := range jm.watchHistory {
+		seen[entry.id] = struct{}{}
+	}
+	return seen
+}
+
+func (jm *jobManager) hasNewWatchEndOnTargets(targets []string, seen map[string]struct{}) bool {
+	jm.mu.Lock()
+	defer jm.mu.Unlock()
+	targetSet := make(map[string]struct{}, len(targets))
+	for _, target := range targets {
+		targetSet[target] = struct{}{}
+	}
+	newEnd := false
+	for _, entry := range jm.watchHistory {
+		if _, known := seen[entry.id]; known {
+			continue
+		}
+		seen[entry.id] = struct{}{}
+		if _, matches := targetSet[entry.target]; matches {
+			newEnd = true
+		}
+	}
+	return newEnd
 }
 
 // undisposedBackgroundJobsAnnouncement is the first escalation turn: the run
@@ -313,9 +362,13 @@ func undisposedBackgroundJobsAnnouncement(jobIDs []string, shellTool string, can
 }
 
 // undisposedBackgroundJobsFinalWarning is the second and last escalation turn.
-func undisposedBackgroundJobsFinalWarning(jobIDs []string) string {
-	return fmt.Sprintf("Final notice: background job(s) %s are still undisposed. Stop them (job_stop), detach them, or mark them awaited (job_watch) in THIS turn; otherwise this run exits now and they are killed, their output lost.",
-		strings.Join(jobIDs, ", "))
+func undisposedBackgroundJobsFinalWarning(jobIDs []string, canDetach bool) string {
+	remedy := "Stop them (job_stop), or mark them awaited (job_watch) and report what happened in THIS turn"
+	if canDetach {
+		remedy = "Stop them (job_stop), then detach them, or mark them awaited (job_watch) in THIS turn"
+	}
+	return fmt.Sprintf("Final notice: background job(s) %s are still undisposed. %s; otherwise this run exits now and they are killed, their output lost.",
+		strings.Join(jobIDs, ", "), remedy)
 }
 
 // detachedShellAvailable reports whether this session could actually relaunch
@@ -513,6 +566,8 @@ func (s *Session) drainJobTreeWith(ctx context.Context, recheck <-chan time.Time
 	// wake/recheck cadence.
 	bgAnnounced := make(map[string]int)
 	bgArmed := ""
+	watchSuppressed := ""
+	watchHistorySeen := s.jobManager.watchHistoryIDs()
 	for {
 		// Take this pass's wake edge before it reads any state. treeHasOutstandingWork
 		// consults eight independent signals in sequence, so it is not a snapshot, and
@@ -596,9 +651,38 @@ func (s *Session) drainJobTreeWith(ctx context.Context, recheck <-chan time.Time
 		// Under serve the session outlives the turn, background jobs genuinely
 		// report later, and none of this fires (TurnEndsProcess is the gate).
 		if s.cfg.TurnEndsProcess {
-			undisposed, sole, err := s.undisposedBackgroundDrainJobs()
+			undisposed, background, sole, allWatched, err := s.backgroundDrainState()
 			if err != nil {
 				return lastResult, err
+			}
+			backgroundSetKey := strings.Join(background, ",")
+			watchCleared := len(background) > 0 && s.jobManager.hasNewWatchEndOnTargets(background, watchHistorySeen)
+			if watchCleared {
+				if watchSuppressed != "" {
+					delete(bgAnnounced, watchSuppressed)
+					if bgArmed == watchSuppressed {
+						bgArmed = ""
+					}
+				} else {
+					delete(bgAnnounced, backgroundSetKey)
+					if bgArmed == backgroundSetKey {
+						bgArmed = ""
+					}
+				}
+				watchSuppressed = ""
+			}
+			// A live watch excuses a background set for an entire escalation
+			// episode. Once any watch in that set is cleared, forget the old
+			// escalation so the next episode starts with the first warning.
+			if watchSuppressed != "" && (backgroundSetKey != watchSuppressed || !allWatched) {
+				delete(bgAnnounced, watchSuppressed)
+				if bgArmed == watchSuppressed {
+					bgArmed = ""
+				}
+				watchSuppressed = ""
+			}
+			if allWatched {
+				watchSuppressed = backgroundSetKey
 			}
 			if !sole {
 				bgArmed = ""
@@ -610,10 +694,11 @@ func (s *Session) drainJobTreeWith(ctx context.Context, recheck <-chan time.Time
 			} else {
 				switch bgAnnounced[setKey] {
 				case 0, 1:
+					canDetach := s.detachedShellAvailable()
 					text := undisposedBackgroundJobsAnnouncement(
-						undisposed, s.providerVisibleToolName("shell"), s.detachedShellAvailable())
+						undisposed, s.providerVisibleToolName("shell"), canDetach)
 					if bgAnnounced[setKey] == 1 {
-						text = undisposedBackgroundJobsFinalWarning(undisposed)
+						text = undisposedBackgroundJobsFinalWarning(undisposed, canDetach)
 					}
 					bgAnnounced[setKey]++
 					// EntryNotification, not EntrySteeringCarrier: Steer enqueues

@@ -713,12 +713,16 @@ func TestClearedWatchStartsAFreshAnnouncementEpisode(t *testing.T) {
 // mode. The companion announcement assertions pin the available-host wording.
 func TestUndisposedBackgroundJobsFinalWarningUsesAvailableRemedy(t *testing.T) {
 	t.Parallel()
-	final := undisposedBackgroundJobsFinalWarning([]string{"job_sandbox"})
+	final := undisposedBackgroundJobsFinalWarning([]string{"job_sandbox"}, false)
 	if strings.Contains(final, "detach them") {
 		t.Fatalf("sandbox final warning advertises detached mode: %q", final)
 	}
 	if !strings.Contains(final, "stop") || !strings.Contains(final, "report") {
 		t.Fatalf("sandbox final warning must describe stop-and-report: %q", final)
+	}
+	finalAvailable := undisposedBackgroundJobsFinalWarning([]string{"job_host"}, true)
+	if !strings.Contains(finalAvailable, "detach") || !strings.Contains(finalAvailable, "job_stop") {
+		t.Fatalf("detached-capable final warning omitted stop-then-detach remedy: %q", finalAvailable)
 	}
 	available := undisposedBackgroundJobsAnnouncement([]string{"job_host"}, "shell", true)
 	if !strings.Contains(available, `mode="detached"`) {
