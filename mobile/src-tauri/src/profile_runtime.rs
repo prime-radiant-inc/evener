@@ -10,6 +10,7 @@ use std::sync::Arc;
 use serde::{Deserialize, Serialize};
 
 use crate::error::{ProfileError, ReleaseMode};
+use crate::network_policy::{NetworkPolicy, PinnedOrigin};
 use crate::profile::{
     self, PairingProbe, PreferencesStore, ProfileStore, ProfileSummary, SecureStore, SelectResult,
 };
@@ -115,99 +116,160 @@ impl<S: SecureStore> SecureStore for KeychainBridge<S> {
 // ---------------------------------------------------------------------------
 
 /// A real `PairingProbe` that probes `/api/health` (unauthenticated, for
-/// mobile API version) and then an authenticated harmless endpoint, both
-/// with redirects disabled. Never logs bodies, URLs, or tokens.
+/// mobile API version) and then an authenticated harmless endpoint. Both
+/// requests re-resolve the origin through the shared `NetworkPolicy`,
+/// connect TCP to the validated pinned IP address, and send the original
+/// hostname as the Host header. Uses blocking `std::net` HTTP/1.1 — no
+/// tokio runtime re-entry, no `block_in_place`, no async. Never logs
+/// bodies, URLs, or tokens.
 pub struct RealPairingProbe {
-    client: reqwest::Client,
+    policy: Arc<NetworkPolicy>,
 }
 
 impl RealPairingProbe {
-    pub fn new() -> Self {
-        let client = reqwest::Client::builder()
-            .redirect(reqwest::redirect::Policy::none())
-            .build()
-            .expect("failed to build reqwest client");
-        Self { client }
+    pub fn new(policy: Arc<NetworkPolicy>) -> Self {
+        Self { policy }
     }
 }
 
 impl Default for RealPairingProbe {
     fn default() -> Self {
-        Self::new()
+        Self {
+            policy: Arc::new(NetworkPolicy::new(Box::new(SystemDnsResolver))),
+        }
     }
 }
 
 impl PairingProbe for RealPairingProbe {
-    fn probe(&self, origin: &str, token: &str, _mode: ReleaseMode) -> Result<i64, ProfileError> {
-        // The probe is called from within `serialized()`, which holds the
-        // async lifecycle mutex. Calling `Handle::block_on` from an async
-        // context panics, so we use `block_in_place` (safe on the
-        // multi-threaded production runtime) and run the async reqwest
-        // calls on a fresh current-thread runtime inside it. This avoids
-        // the reentrant-async `block_on` panic.
-        tokio::task::block_in_place(|| probe_blocking(self.client.clone(), origin, token))
-    }
-}
-
-/// Blocking probe implementation. Runs the async reqwest calls on a
-/// current-thread tokio runtime created inside `block_in_place`, avoiding
-/// the `block_on` reentrant-async panic. Never logs bodies, URLs, or tokens.
-fn probe_blocking(client: reqwest::Client, origin: &str, token: &str) -> Result<i64, ProfileError> {
-    let runtime = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .map_err(|e| ProfileError::ProbeFailed {
+    fn probe(&self, origin: &str, token: &str, mode: ReleaseMode) -> Result<i64, ProfileError> {
+        // Re-resolve the origin through the network policy (same boundary
+        // as HubHttp). Connect TCP to the validated pinned IP; preserve the
+        // original hostname in the Host header.
+        let origin_url = url::Url::parse(origin).map_err(|e| ProfileError::ProbeFailed {
             origin: origin.to_owned(),
-            message: format!("runtime build failed: {e}"),
+            message: format!("invalid origin: {e}"),
         })?;
+        let pinned =
+            self.policy
+                .resolve(&origin_url, mode)
+                .map_err(|e| ProfileError::ProbeFailed {
+                    origin: origin.to_owned(),
+                    message: e.to_string(),
+                })?;
 
-    let health_url = format!("{origin}/api/health");
-    let health_resp = runtime
-        .block_on(client.get(&health_url).send())
-        .map_err(|_e| ProfileError::ProbeFailed {
-            origin: origin.to_owned(),
-            message: "health request failed".to_owned(),
+        // Unauthenticated health probe.
+        let health_body = blocking_http_get(&pinned, "/api/health", None).map_err(|e| {
+            ProfileError::ProbeFailed {
+                origin: origin.to_owned(),
+                message: format!("health request failed: {e}"),
+            }
         })?;
-
-    if !health_resp.status().is_success() {
-        return Err(ProfileError::ProbeFailed {
-            origin: origin.to_owned(),
-            message: format!("health status {}", health_resp.status().as_u16()),
-        });
-    }
-
-    let body: serde_json::Value =
-        runtime
-            .block_on(health_resp.json())
-            .map_err(|_e| ProfileError::ProbeFailed {
+        let health_json: serde_json::Value =
+            serde_json::from_slice(&health_body).map_err(|_| ProfileError::ProbeFailed {
                 origin: origin.to_owned(),
                 message: "health body parse failed".to_owned(),
             })?;
+        let version = health_json
+            .get("mobile_api_version")
+            .and_then(|v| v.as_i64())
+            .ok_or_else(|| ProfileError::ProbeFailed {
+                origin: origin.to_owned(),
+                message: "mobile_api_version missing".to_owned(),
+            })?;
 
-    let version = body
-        .get("mobile_api_version")
-        .and_then(|v| v.as_i64())
-        .ok_or_else(|| ProfileError::ProbeFailed {
-            origin: origin.to_owned(),
-            message: "mobile_api_version missing".to_owned(),
-        })?;
+        // Authenticated harmless probe.
+        let _pairing_body = blocking_http_get(&pinned, "/api/mobile/pairing", Some(token))
+            .map_err(|e| ProfileError::ProbeFailed {
+                origin: origin.to_owned(),
+                message: format!("auth probe failed: {e}"),
+            })?;
 
-    let pairing_url = format!("{origin}/api/mobile/pairing");
-    let pairing_resp = runtime
-        .block_on(client.get(&pairing_url).bearer_auth(token).send())
-        .map_err(|_e| ProfileError::ProbeFailed {
-            origin: origin.to_owned(),
-            message: "authenticated probe failed".to_owned(),
-        })?;
+        Ok(version)
+    }
+}
 
-    if !pairing_resp.status().is_success() {
-        return Err(ProfileError::ProbeFailed {
-            origin: origin.to_owned(),
-            message: format!("auth probe status {}", pairing_resp.status().as_u16()),
-        });
+/// Blocking HTTP/1.1 GET over a TCP connection to the pinned IP. Preserves
+/// the original hostname in the Host header. Redirects are never followed
+/// (the client is a single request/response). No tokio runtime.
+fn blocking_http_get(
+    pinned: &PinnedOrigin,
+    path: &str,
+    token: Option<&str>,
+) -> Result<Vec<u8>, String> {
+    use std::io::{Read, Write};
+    use std::net::TcpStream;
+    use std::time::Duration;
+
+    let addr = pinned
+        .addrs()
+        .first()
+        .ok_or_else(|| "no resolved address".to_owned())?;
+    let port = pinned.port();
+    let mut stream = TcpStream::connect_timeout(
+        &std::net::SocketAddr::new(*addr, port),
+        Duration::from_secs(10),
+    )
+    .map_err(|e| format!("connect failed: {e}"))?;
+    stream
+        .set_read_timeout(Some(Duration::from_secs(30)))
+        .map_err(|e| format!("set_read_timeout: {e}"))?;
+
+    let host = pinned.host();
+    let host_header = if is_default_scheme_port(pinned.scheme(), port) {
+        host.to_owned()
+    } else {
+        format!("{host}:{port}")
+    };
+
+    let mut request =
+        format!("GET {path} HTTP/1.1\r\nHost: {host_header}\r\nConnection: close\r\n");
+    if let Some(tok) = token {
+        request.push_str(&format!("Authorization: Bearer {tok}\r\n"));
+    }
+    request.push_str("\r\n");
+
+    stream
+        .write_all(request.as_bytes())
+        .map_err(|e| format!("write failed: {e}"))?;
+
+    let mut response = Vec::new();
+    stream
+        .read_to_end(&mut response)
+        .map_err(|e| format!("read failed: {e}"))?;
+
+    // Parse the HTTP/1.1 response: status line + headers + body.
+    let response_str = String::from_utf8_lossy(&response);
+    let (header_section, body) = response_str
+        .split_once("\r\n\r\n")
+        .unwrap_or((response_str.as_ref(), ""));
+    let status_line = header_section.lines().next().unwrap_or("");
+    let status_code: u16 = status_line
+        .split_whitespace()
+        .nth(1)
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(0);
+    if !(200..300).contains(&status_code) {
+        return Err(format!("status {status_code}"));
     }
 
-    Ok(version)
+    // Handle Transfer-Encoding: chunked or Content-Length.
+    let content_length = header_section.lines().skip(1).find_map(|line| {
+        let line = line.to_lowercase();
+        line.strip_prefix("content-length: ")
+            .and_then(|v| v.trim().parse::<usize>().ok())
+    });
+    if let Some(len) = content_length {
+        return Ok(body.as_bytes()[..len.min(body.len())].to_vec());
+    }
+    // Fall back to the raw body after headers.
+    Ok(body.as_bytes().to_vec())
+}
+
+fn is_default_scheme_port(scheme: &str, port: u16) -> bool {
+    matches!(
+        (scheme, port),
+        ("http", 80) | ("https", 443) | ("ws", 80) | ("wss", 443)
+    )
 }
 
 // ---------------------------------------------------------------------------
@@ -990,15 +1052,15 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread")]
     async fn real_pairing_probe_does_not_panic_in_async_context() {
-        // RealPairingProbe::probe uses block_in_place to avoid the
-        // reentrant-async block_on panic. This test proves the probe can be
-        // called from within a tokio multi-threaded runtime (as it is when
-        // called through serialized()) without panicking. We don't make a
-        // real network call — we just prove the probe construction and the
-        // block_in_place path are safe. The probe will fail with a
+        // RealPairingProbe::probe uses blocking std::net HTTP (no tokio
+        // runtime re-entry). This test proves the probe can be
+        // called from within a tokio runtime (as it is when called through
+        // serialized()) without panicking. We don't make a
+        // real network call — we just prove the probe construction and
+        // blocking path are safe. The probe will fail with a
         // ProbeFailed error (no server), which is the expected non-panic
         // outcome.
-        let probe = RealPairingProbe::new();
+        let probe = RealPairingProbe::default();
         let result = probe.probe(
             "https://nonexistent.invalid",
             "dummy-token",

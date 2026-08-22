@@ -14,9 +14,36 @@
 //! Uses exactly one or two scripted local WebSocket servers. No live Hub,
 //! Keychain, or provider network.
 
+use std::net::IpAddr;
+use std::sync::Arc;
 use std::time::Duration;
 
 use app_lib::appwire_transport::{AppwireEvent, AppwireManager};
+use app_lib::error::ReleaseMode;
+use app_lib::network_policy::{DnsResolver, NetworkPolicy};
+
+/// A loopback network policy for tests: resolves any hostname to 127.0.0.1
+/// and allows loopback in Debug mode so the scripted WebSocket server on
+/// 127.0.0.1 passes the policy.
+fn loopback_policy() -> Arc<NetworkPolicy> {
+    struct LoopbackResolver;
+    impl DnsResolver for LoopbackResolver {
+        fn resolve(&self, _host: &str) -> Result<Vec<IpAddr>, String> {
+            Ok(vec![IpAddr::V4(std::net::Ipv4Addr::new(127, 0, 0, 1))])
+        }
+    }
+    Arc::new(NetworkPolicy::new(Box::new(LoopbackResolver)))
+}
+
+/// A test AppwireManager configured with the loopback policy.
+fn test_manager() -> AppwireManager {
+    AppwireManager::new(
+        loopback_policy(),
+        ReleaseMode::Debug {
+            allow_loopback: true,
+        },
+    )
+}
 
 // ---------------------------------------------------------------------------
 // Scripted WebSocket server
@@ -210,7 +237,7 @@ async fn appwire_open_and_receive_ordered_frames() {
     server.enqueue_frame(r#"{"id":1,"method":"initialize","params":{}}"#.to_owned());
     server.enqueue_frame(r#"{"id":2,"method":"ping","params":{}}"#.to_owned());
 
-    let manager = AppwireManager::new();
+    let manager = test_manager();
     let (tx, mut rx) = tokio::sync::mpsc::channel::<_>(256);
 
     let conn_id = manager
@@ -245,7 +272,7 @@ async fn appwire_send_delivers_text_frame_to_server() {
     let server = ScriptedWsServer::start().await;
     let url = server.url.clone();
 
-    let manager = AppwireManager::new();
+    let manager = test_manager();
     let (tx, _rx) = tokio::sync::mpsc::channel::<_>(256);
 
     let conn_id = manager
@@ -301,7 +328,7 @@ async fn appwire_switch_closes_old_before_opening_new() {
     let server1 = ScriptedWsServer::start().await;
     let server2 = ScriptedWsServer::start().await;
 
-    let manager = AppwireManager::new();
+    let manager = test_manager();
     let (tx1, _rx1) = tokio::sync::mpsc::channel::<_>(256);
     let (tx2, _rx2) = tokio::sync::mpsc::channel::<_>(256);
 
@@ -361,7 +388,7 @@ async fn appwire_stale_generation_rejects_send() {
     use ws_server::ScriptedWsServer;
 
     let server = ScriptedWsServer::start().await;
-    let manager = AppwireManager::new();
+    let manager = test_manager();
     let (tx, _rx) = tokio::sync::mpsc::channel::<_>(256);
 
     let conn1 = manager
@@ -388,7 +415,7 @@ async fn appwire_one_socket_total_for_active_profile() {
     use ws_server::ScriptedWsServer;
 
     let server = ScriptedWsServer::start().await;
-    let manager = AppwireManager::new();
+    let manager = test_manager();
     let (tx, _rx) = tokio::sync::mpsc::channel::<_>(256);
 
     let conn1 = manager
@@ -441,7 +468,7 @@ async fn appwire_close_propagates_close_code() {
     use ws_server::ScriptedWsServer;
 
     let server = ScriptedWsServer::start().await;
-    let manager = AppwireManager::new();
+    let manager = test_manager();
     let (tx, _rx) = tokio::sync::mpsc::channel::<_>(256);
 
     let conn = manager
@@ -491,7 +518,7 @@ async fn appwire_bounded_overload_closes_connection() {
         server.enqueue_frame(format!(r#"{{"id":{i},"method":"ping","params":{{}}}}"#));
     }
 
-    let manager = AppwireManager::new();
+    let manager = test_manager();
     // Use a small bounded channel so overload triggers quickly. The reader
     // sends with try_send; on a full channel it closes with an error.
     let (tx, mut rx) = tokio::sync::mpsc::channel::<AppwireEvent>(8);
@@ -553,7 +580,7 @@ async fn appwire_cancellation_closes_connection() {
     use ws_server::ScriptedWsServer;
 
     let server = ScriptedWsServer::start().await;
-    let manager = AppwireManager::new();
+    let manager = test_manager();
     let (tx, _rx) = tokio::sync::mpsc::channel::<_>(256);
 
     let conn = manager
@@ -597,7 +624,7 @@ async fn appwire_injects_bearer_and_origin_upstream() {
     let server = ScriptedWsServer::start().await;
     let url = server.url.clone();
 
-    let manager = AppwireManager::new();
+    let manager = test_manager();
     let (tx, _rx) = tokio::sync::mpsc::channel::<_>(256);
 
     let token = "bearer-upstream-test-token";
@@ -641,6 +668,290 @@ async fn appwire_injects_bearer_and_origin_upstream() {
 }
 
 // ---------------------------------------------------------------------------
+// Tests: Origin policy — default Hub origin policy (absent or host==Host
+// accepted, tauri:// rejected)
+// ---------------------------------------------------------------------------
+
+/// A scripted WebSocket server that enforces the Hub's default origin
+/// policy: accept absent Origin, accept Origin whose host == request Host,
+/// reject `taur://` (tauri://) origins. The handshake is rejected with an
+/// HTTP 403 if the Origin fails the check.
+mod origin_policy_server {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    use std::sync::{Arc, Mutex};
+
+    use futures_util::StreamExt;
+    use tokio::net::TcpListener;
+    use tokio_tungstenite::tungstenite::Message;
+
+    pub struct OriginPolicyServer {
+        pub url: String,
+        pub connection_count: Arc<AtomicU64>,
+        pub accepted: Arc<AtomicU64>,
+        pub rejected_origin: Arc<Mutex<Option<String>>>,
+        received_origin: Arc<Mutex<Option<String>>>,
+        received_host: Arc<Mutex<Option<String>>>,
+    }
+
+    impl OriginPolicyServer {
+        pub async fn start() -> Self {
+            let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let port = listener.local_addr().unwrap().port();
+            let url = format!("ws://127.0.0.1:{port}/rpc");
+
+            let connection_count = Arc::new(AtomicU64::new(0));
+            let accepted = Arc::new(AtomicU64::new(0));
+            let rejected_origin: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(None));
+            let received_origin: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(None));
+            let received_host: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(None));
+
+            let cc = connection_count.clone();
+            let acc = accepted.clone();
+            let ro = rejected_origin.clone();
+            let rvo = received_origin.clone();
+            let rvh = received_host.clone();
+
+            tokio::spawn(async move {
+                loop {
+                    let (stream, _) = match listener.accept().await {
+                        Ok(s) => s,
+                        Err(_) => break,
+                    };
+                    cc.fetch_add(1, Ordering::SeqCst);
+
+                    let acc = acc.clone();
+                    let ro = ro.clone();
+                    let rvo = rvo.clone();
+                    let rvh = rvh.clone();
+
+                    tokio::spawn(async move {
+                        #[allow(clippy::result_large_err)]
+                        let callback = |req: &tokio_tungstenite::tungstenite::handshake::server::Request,
+                                         resp: tokio_tungstenite::tungstenite::handshake::server::Response| {
+                            let headers = req.headers();
+                            let origin = headers
+                                .get("origin")
+                                .map(|v| v.to_str().unwrap_or("").to_owned());
+                            let host = headers
+                                .get("host")
+                                .map(|v| v.to_str().unwrap_or("").to_owned())
+                                .unwrap_or_default();
+                            *rvo.lock().unwrap() = origin.clone();
+                            *rvh.lock().unwrap() = Some(host.clone());
+
+                            // Hub default policy: accept absent Origin, accept
+                            // Origin host == request Host, reject tauri://.
+                            let accepted = match &origin {
+                                None => true,
+                                Some(orig) => {
+                                    if orig.starts_with("tauri://") {
+                                        false
+                                    } else {
+                                        // Extract the host from the Origin.
+                                        // Origin is scheme://host[:port].
+                                        let origin_host = orig
+                                            .strip_prefix("ws://")
+                                            .or_else(|| orig.strip_prefix("wss://"))
+                                            .or_else(|| orig.strip_prefix("http://"))
+                                            .or_else(|| orig.strip_prefix("https://"))
+                                            .unwrap_or(orig)
+                                            .split(':')
+                                            .next()
+                                            .unwrap_or("");
+                                        // Compare with the request Host (may
+                                        // include :port, compare the host part).
+                                        let request_host = host.split(':').next().unwrap_or("");
+                                        origin_host == request_host
+                                    }
+                                }
+                            };
+                            if accepted {
+                                acc.fetch_add(1, Ordering::SeqCst);
+                                // Echo the subprotocol the client requested.
+                                let mut resp = resp;
+                                if let Some(proto) = headers
+                                    .get("sec-websocket-protocol")
+                                    .map(|v| v.to_str().unwrap_or("").to_owned())
+                                {
+                                    if let Ok(hv) = proto.as_str().try_into() {
+                                        resp.headers_mut().insert("sec-websocket-protocol", hv);
+                                    }
+                                }
+                                Ok(resp)
+                            } else {
+                                *ro.lock().unwrap() = origin;
+                                // Reject with 403.
+                                let reject = tokio_tungstenite::tungstenite::http::Response::builder()
+                                    .status(403)
+                                    .body(Some("origin rejected".to_owned()))
+                                    .unwrap();
+                                Err(reject)
+                            }
+                        };
+                        let ws_stream =
+                            match tokio_tungstenite::accept_hdr_async(stream, callback).await {
+                                Ok(s) => s,
+                                Err(_) => return,
+                            };
+                        let (_write, mut read) = ws_stream.split();
+                        // Read until closed.
+                        while let Some(Ok(msg)) = read.next().await {
+                            if matches!(msg, Message::Close(_)) {
+                                break;
+                            }
+                        }
+                    });
+                }
+            });
+
+            Self {
+                url,
+                connection_count,
+                accepted,
+                rejected_origin,
+                received_origin,
+                received_host,
+            }
+        }
+
+        pub fn connection_count(&self) -> u64 {
+            self.connection_count.load(Ordering::SeqCst)
+        }
+        pub fn accepted_count(&self) -> u64 {
+            self.accepted.load(Ordering::SeqCst)
+        }
+        pub fn rejected_origin(&self) -> Option<String> {
+            self.rejected_origin.lock().unwrap().clone()
+        }
+        pub fn received_origin(&self) -> Option<String> {
+            self.received_origin.lock().unwrap().clone()
+        }
+        pub fn received_host(&self) -> Option<String> {
+            self.received_host.lock().unwrap().clone()
+        }
+    }
+}
+
+/// The default Hub origin policy accepts the app's handshake because the
+/// app sends the server's own origin (ws://host:port), whose host matches
+/// the request Host. The handshake succeeds.
+#[tokio::test]
+async fn appwire_origin_policy_accepts_server_origin() {
+    use origin_policy_server::OriginPolicyServer;
+
+    let server = OriginPolicyServer::start().await;
+    let url = server.url.clone();
+
+    let manager = test_manager();
+    let (tx, _rx) = tokio::sync::mpsc::channel::<_>(256);
+
+    let conn = manager
+        .open("profile-1", url, "tok".to_owned(), tx)
+        .await
+        .unwrap();
+
+    // Wait for the server to see the connection.
+    let dl = deadline_secs(3);
+    loop {
+        if server.connection_count() >= 1 {
+            break;
+        }
+        if tokio::time::Instant::now() > dl {
+            panic!("server never accepted the connection");
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+
+    // The origin was accepted (not rejected).
+    assert_eq!(server.accepted_count(), 1, "handshake should be accepted");
+    assert!(
+        server.rejected_origin().is_none(),
+        "no origin should be rejected"
+    );
+
+    // The received Origin's host matches the request Host.
+    let origin = server.received_origin().expect("origin was sent");
+    let host = server.received_host().expect("host was sent");
+    let origin_host = origin
+        .strip_prefix("ws://")
+        .or_else(|| origin.strip_prefix("wss://"))
+        .unwrap_or(&origin)
+        .split(':')
+        .next()
+        .unwrap_or("");
+    let request_host = host.split(':').next().unwrap_or("");
+    assert_eq!(
+        origin_host, request_host,
+        "origin host must match request Host for default policy acceptance"
+    );
+
+    manager.close(conn).await;
+}
+
+/// A tauri:// origin would be rejected by the Hub's default policy. This
+/// test verifies the origin-policy server rejects tauri:// — proving the
+/// policy works (the app must NOT send tauri://, and the Hub would reject
+/// it if it did).
+#[tokio::test]
+async fn appwire_origin_policy_rejects_tauri_origin() {
+    use origin_policy_server::OriginPolicyServer;
+
+    let server = OriginPolicyServer::start().await;
+    let port = server
+        .url
+        .split(':')
+        .nth(2)
+        .unwrap()
+        .trim_end_matches("/rpc");
+
+    // Build a raw WebSocket connection with a tauri:// origin to verify
+    // the server rejects it. The app itself never sends tauri:// (it sends
+    // the server origin or omits), but this proves the policy would catch
+    // it.
+    use tokio_tungstenite::tungstenite::http::Request;
+    let request = Request::builder()
+        .uri(format!("ws://127.0.0.1:{port}/rpc"))
+        .header("Host", format!("127.0.0.1:{port}"))
+        .header("Origin", "tauri://localhost")
+        .header("Sec-WebSocket-Version", "13")
+        .header("Connection", "Upgrade")
+        .header("Upgrade", "websocket")
+        .header(
+            "Sec-WebSocket-Key",
+            tokio_tungstenite::tungstenite::handshake::client::generate_key(),
+        )
+        .body(())
+        .unwrap();
+
+    let result = tokio_tungstenite::connect_async(request).await;
+
+    // The handshake is rejected (403).
+    assert!(result.is_err(), "tauri:// origin must be rejected");
+
+    // Wait for the server to register the rejection.
+    let dl = deadline_secs(2);
+    loop {
+        if server.rejected_origin().is_some() {
+            break;
+        }
+        if tokio::time::Instant::now() > dl {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    assert_eq!(
+        server.rejected_origin().as_deref(),
+        Some("tauri://localhost"),
+        "rejected origin must be recorded"
+    );
+    assert_eq!(
+        server.accepted_count(),
+        0,
+        "no handshake should be accepted"
+    );
+}
+
+// ---------------------------------------------------------------------------
 // Tests: cross-profile race — late frames from old profile rejected
 // ---------------------------------------------------------------------------
 
@@ -651,7 +962,7 @@ async fn appwire_cross_profile_late_frames_rejected() {
     let server1 = ScriptedWsServer::start().await;
     let server2 = ScriptedWsServer::start().await;
 
-    let manager = AppwireManager::new();
+    let manager = test_manager();
     let (tx1, rx1) = tokio::sync::mpsc::channel::<_>(256);
     let (tx2, _rx2) = tokio::sync::mpsc::channel::<_>(256);
 
