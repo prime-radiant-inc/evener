@@ -60,16 +60,15 @@ func TestStableDelegateAttention_RestoreAndColdRead(t *testing.T) {
 		transcriptFailure string
 		wantAttention     bool
 		wantColdError     bool
-		wantRestore       bool
 	}{
-		{name: "stale false with pending attention", pending: true, wantAttention: true, wantRestore: true},
-		{name: "stale true without pending attention", journalAttention: true, wantRestore: true},
-		{name: "closed delegate is ineligible", journalAttention: true, lifecycle: "closed", transcriptFailure: "missing", wantRestore: true},
-		{name: "stopping delegate is ineligible", journalAttention: true, lifecycle: "stopping", transcriptFailure: "missing", wantRestore: true},
-		{name: "permanently fenced delegate is ineligible", journalAttention: true, lifecycle: "fenced", transcriptFailure: "missing", wantRestore: true},
+		{name: "stale false with pending attention", pending: true, wantAttention: true},
+		{name: "stale true without pending attention", journalAttention: true},
+		{name: "closed delegate is ineligible", journalAttention: true, lifecycle: "closed", transcriptFailure: "missing"},
+		{name: "stopping delegate is ineligible", journalAttention: true, lifecycle: "stopping", transcriptFailure: "missing"},
+		{name: "permanently fenced delegate is ineligible", journalAttention: true, lifecycle: "fenced", transcriptFailure: "missing"},
 		{name: "eligible missing transcript is an error", transcriptFailure: "missing", wantColdError: true},
 		{name: "eligible unreadable transcript is an error", transcriptFailure: "unreadable", wantColdError: true},
-		{name: "owed generation is admitted before boolean repair", owed: true, journalAttention: true, wantRestore: true},
+		{name: "owed generation is admitted before boolean repair", owed: true, journalAttention: true},
 	}
 
 	for i, tt := range tests {
@@ -209,9 +208,6 @@ func TestStableDelegateAttention_RestoreAndColdRead(t *testing.T) {
 				t.Fatalf("cold status wrote journal needs_attention=%t, want unchanged %t", got, wantJournalAttention)
 			}
 
-			if !tt.wantRestore {
-				return
-			}
 			var release chan struct{}
 			var launchObserved chan error
 			if tt.owed {

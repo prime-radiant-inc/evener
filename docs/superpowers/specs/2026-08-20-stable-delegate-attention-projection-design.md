@@ -53,7 +53,7 @@ Existing lifecycle events normalize `NeedsAttention=false` in the same fold when
 
 ## Serialized transitions
 
-Attention transitions use the existing controller claim pattern. A per-child claim spans transcript I/O and the delegate-journal commit so two transcript-derived proposals cannot publish out of order. It is not a generalized transaction framework.
+Delivery and acceptance use the existing per-child controller claim across transcript I/O and the delegate-journal commit, so transcript-derived proposals cannot publish out of order. The receiver session's attention claim also spans the pending-ID fold and controller open, serializing arm with durable answer resolution. These are narrow ordering boundaries, not a generalized transaction framework.
 
 ### Opening attention through delivery
 
