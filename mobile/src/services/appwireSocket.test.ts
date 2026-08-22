@@ -7,6 +7,7 @@ import {
   createAppwireSocketFactory,
   decodeAppwireChannelEvent,
 } from "./appwireSocket";
+import type { TauriBridge, TauriChannel } from "./tauri";
 
 // ---------------------------------------------------------------------------
 // Fake TauriBridge — captures the event channel and scripts invoke results
@@ -59,14 +60,16 @@ function fakeBridge(openScript: OpenScript): FakeBridge {
         } as T;
       }
       if (cmd === "appwire_send") {
-        const connId = args?.connectionId as string;
+        const request = args?.request as Record<string, unknown> | undefined;
+        const connId = request?.connectionId as string;
         const script = sendScripts.get(connId);
         if (script && !script.ok)
           throw new Error(script.error ?? "send failed");
         return null as T;
       }
       if (cmd === "appwire_close") {
-        const connId = args?.connectionId as string;
+        const request = args?.request as Record<string, unknown> | undefined;
+        const connId = request?.connectionId as string;
         const script = closeScripts.get(connId);
         if (script && !script.ok)
           throw new Error(script.error ?? "close failed");
@@ -183,7 +186,7 @@ describe("appwireSocket — TauriSocket implements WebSocketLike", () => {
     expect(bridge.invokes[0]).toEqual({
       cmd: "appwire_open",
       args: {
-        profileId: PROFILE,
+        request: { profileId: PROFILE },
         onEvent: expect.any(Object),
       },
     });
@@ -261,8 +264,9 @@ describe("appwireSocket — send", () => {
         bridge.invokes.some(
           (i) =>
             i.cmd === "appwire_send" &&
-            i.args.connectionId === "p1:3" &&
-            i.args.frame === "hello hub",
+            (i.args.request as Record<string, unknown>)?.connectionId ===
+              "p1:3" &&
+            (i.args.request as Record<string, unknown>)?.frame === "hello hub",
         ),
       ).toBe(true),
     );
@@ -555,7 +559,10 @@ describe("appwireSocket — retry-created socket", () => {
     await vi.waitFor(() =>
       expect(
         bridge2.invokes.some(
-          (i) => i.cmd === "appwire_send" && i.args.connectionId === "p1:4",
+          (i) =>
+            i.cmd === "appwire_send" &&
+            (i.args.request as Record<string, unknown>)?.connectionId ===
+              "p1:4",
         ),
       ).toBe(true),
     );
@@ -579,10 +586,16 @@ describe("appwireSocket — AppwireClient clientInfo", () => {
     const connectPromise = client.connect();
     const clientInfo = await vi.waitFor(() => {
       const send = bridge.invokes.find(
-        (i) => i.cmd === "appwire_send" && typeof i.args.frame === "string",
+        (i) =>
+          i.cmd === "appwire_send" &&
+          typeof (i.args.request as Record<string, unknown>)?.frame ===
+            "string",
       );
       expect(send).toBeDefined();
-      const parsed = JSON.parse((send?.args.frame as string) ?? "{}") as {
+      const parsed = JSON.parse(
+        ((send?.args.request as Record<string, unknown>)?.frame as string) ??
+          "{}",
+      ) as {
         method?: string;
         params?: { clientInfo?: { name: string; version: string } };
       };
@@ -617,59 +630,94 @@ describe("appwireSocket — AppwireClient clientInfo", () => {
   });
 });
 
-describe("appwireSocket — imported AppwireClient reconnect integration", () => {
-  it("open → notification → server Closed → backoff → fresh open rejects retired events", async () => {
+describe("appwireSocket — imported AppwireClient scripted Tauri integration", () => {
+  it("performs handshake, correlation, notification, close/reconnect, and profile switch", async () => {
     vi.useFakeTimers();
     try {
-      const identities = [
-        { connectionId: "p1:11", profileId: PROFILE, generation: 11 },
-        { connectionId: "p1:12", profileId: PROFILE, generation: 12 },
-      ];
+      const PROFILE_TWO = "22222222-2222-2222-2222-222222222222";
+      interface ScriptedConnection {
+        readonly identity: {
+          connectionId: string;
+          profileId: string;
+          generation: number;
+        };
+        readonly channel: TauriChannel<unknown>;
+        readonly clientFrames: Record<string, unknown>[];
+      }
       const invokes: { cmd: string; args: Record<string, unknown> }[] = [];
-      const channels: Array<(event: unknown) => void> = [];
-      let openIndex = 0;
-      const bridge = {
+      const connections: ScriptedConnection[] = [];
+      const closeWaiters = new Map<string, () => void>();
+      let generation = 10;
+      const bridge: TauriBridge = {
         async invoke<T>(
           cmd: string,
-          args?: Record<string, unknown>,
+          rawArgs?: Record<string, unknown> | ArrayBuffer | Uint8Array,
         ): Promise<T> {
-          const call = { cmd, args: args ?? {} };
+          const args = (rawArgs ?? {}) as Record<string, unknown>;
+          const call = { cmd, args };
           invokes.push(call);
           if (cmd === "appwire_open") {
-            const result = identities[openIndex++];
-            if (!result) throw new Error("unexpected extra socket");
-            return result as T;
+            expect(Object.keys(args).sort()).toEqual(["onEvent", "request"]);
+            const request = args.request as { profileId: string };
+            const identity = {
+              connectionId: `${request.profileId}:${++generation}`,
+              profileId: request.profileId,
+              generation,
+            };
+            connections.push({
+              identity,
+              channel: args.onEvent as TauriChannel<unknown>,
+              clientFrames: [],
+            });
+            return identity as T;
           }
           if (cmd === "appwire_send") {
-            const connectionId = call.args.connectionId as string;
-            const frame = JSON.parse(call.args.frame as string) as {
+            expect(Object.keys(args)).toEqual(["request"]);
+            const request = args.request as Record<string, unknown>;
+            const connectionId = request.connectionId as string;
+            const connection = connections.find(
+              (candidate) => candidate.identity.connectionId === connectionId,
+            );
+            if (!connection) throw new Error("unknown scripted connection");
+            const frame = JSON.parse(request.frame as string) as Record<
+              string,
+              unknown
+            > & {
               id?: number;
               method?: string;
             };
-            if (frame.method === "initialize" && frame.id !== undefined) {
-              const index = identities.findIndex(
-                (item) => item.connectionId === connectionId,
-              );
-              const current = identities[index];
-              queueMicrotask(() =>
-                channels[index]?.({
+            connection.clientFrames.push(frame);
+            if (frame.id !== undefined) {
+              queueMicrotask(() => {
+                const result =
+                  frame.method === "initialize"
+                    ? { protocolVersion: "evener-appwire-v3" }
+                    : {};
+                connection.channel.onmessage({
                   type: "text",
-                  ...current,
+                  ...connection.identity,
                   data: JSON.stringify({
                     id: frame.id,
-                    result: { protocolVersion: "evener-appwire-v3" },
+                    result,
                   }),
-                }),
-              );
+                });
+              });
             }
             return undefined as T;
           }
-          if (cmd === "appwire_close") return undefined as T;
+          if (cmd === "appwire_close") {
+            expect(Object.keys(args)).toEqual(["request"]);
+            const request = args.request as { connectionId: string };
+            closeWaiters.get(request.connectionId)?.();
+            return undefined as T;
+          }
           throw new Error(`unexpected command ${cmd}`);
         },
         createChannel<T>(onMessage: (event: T) => void) {
-          channels.push(onMessage as (event: unknown) => void);
-          return { id: channels.length, onmessage: onMessage };
+          return {
+            id: connections.length + 1,
+            onmessage: onMessage,
+          };
         },
       };
 
@@ -684,48 +732,113 @@ describe("appwireSocket — imported AppwireClient reconnect integration", () =>
       );
       await client.connect();
       expect(client.state).toBe("ready");
+      const first = connections[0];
+      expect(first).toBeDefined();
+      const initialize = first?.clientFrames[0];
+      expect(initialize).toMatchObject({
+        method: "initialize",
+        params: {
+          protocolVersion: "evener-appwire-v3",
+          clientInfo: { name: "evener-mobile", version: "0.1.0" },
+        },
+      });
+      expect(first?.clientFrames[1]).toEqual({
+        method: "initialized",
+        params: {},
+      });
+      await expect(client.request("ping", {})).resolves.toEqual({});
 
-      channels[0]?.({
+      first?.channel.onmessage({
         type: "text",
-        ...identities[0],
+        ...first.identity,
         data: JSON.stringify({ method: "treeChanged", params: {} }),
       });
       expect(notifications).toEqual(["treeChanged"]);
 
-      const secondReady = new Promise<void>((resolve) => {
-        let readyCount = 0;
-        client.onReady(() => {
-          readyCount += 1;
-          if (readyCount === 1) resolve();
-        });
-      });
-      channels[0]?.({
+      const secondReady = deferred<void>();
+      const stopReady = client.onReady(() => secondReady.resolve(undefined));
+      first?.channel.onmessage({
         type: "closed",
-        ...identities[0],
+        ...first.identity,
         code: 1012,
         reason: "service restart",
       });
       expect(client.state).toBe("reconnecting");
       await vi.advanceTimersByTimeAsync(250);
-      await secondReady;
+      await secondReady.promise;
+      stopReady();
       expect(client.state).toBe("ready");
-      expect(
-        invokes.filter((call) => call.cmd === "appwire_open"),
-      ).toHaveLength(2);
+      const second = connections[1];
+      expect(second?.identity.generation).toBeGreaterThan(
+        first?.identity.generation ?? 0,
+      );
 
-      channels[0]?.({
+      first?.channel.onmessage({
         type: "text",
-        ...identities[0],
+        ...first.identity,
         data: JSON.stringify({ method: "staleNotification", params: {} }),
       });
-      channels[1]?.({
+      second?.channel.onmessage({
         type: "text",
-        ...identities[1],
+        ...second.identity,
         data: JSON.stringify({ method: "currentNotification", params: {} }),
       });
       expect(notifications).toEqual(["treeChanged", "currentNotification"]);
+
+      const closeSettled = deferred<void>();
+      if (second) {
+        closeWaiters.set(second.identity.connectionId, () =>
+          closeSettled.resolve(undefined),
+        );
+      }
       client.close();
-      await vi.runAllTimersAsync();
+      await closeSettled.promise;
+
+      const profileTwoClient = createAppwireClient({
+        bridge,
+        url: "ignored",
+        profileId: PROFILE_TWO,
+      });
+      const profileTwoNotifications: string[] = [];
+      profileTwoClient.onNotification((notification) =>
+        profileTwoNotifications.push(notification.method),
+      );
+      await profileTwoClient.connect();
+      const third = connections[2];
+      expect(third?.identity.profileId).toBe(PROFILE_TWO);
+      second?.channel.onmessage({
+        type: "text",
+        ...second.identity,
+        data: JSON.stringify({ method: "staleProfileEvent", params: {} }),
+      });
+      third?.channel.onmessage({
+        type: "text",
+        ...third.identity,
+        data: JSON.stringify({ method: "profileTwoEvent", params: {} }),
+      });
+      expect(profileTwoNotifications).toEqual(["profileTwoEvent"]);
+
+      const finalClose = deferred<void>();
+      if (third) {
+        closeWaiters.set(third.identity.connectionId, () =>
+          finalClose.resolve(undefined),
+        );
+      }
+      profileTwoClient.close();
+      await finalClose.promise;
+      expect(
+        invokes.every((call) => {
+          if (call.cmd === "appwire_open") {
+            return "request" in call.args && "onEvent" in call.args;
+          }
+          if (call.cmd === "appwire_send" || call.cmd === "appwire_close") {
+            return (
+              Object.keys(call.args).length === 1 && "request" in call.args
+            );
+          }
+          return true;
+        }),
+      ).toBe(true);
     } finally {
       vi.useRealTimers();
     }

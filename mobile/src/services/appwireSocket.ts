@@ -170,7 +170,7 @@ class TauriSocket implements WebSocketLike {
   private async open(): Promise<void> {
     try {
       const raw = await this.bridge.invoke<unknown>("appwire_open", {
-        profileId: this.profileId,
+        request: { profileId: this.profileId },
         onEvent: this.channel,
       });
       const response = decodeOpenResponse(raw, this.profileId);
@@ -234,8 +234,7 @@ class TauriSocket implements WebSocketLike {
     if (!this.opened || this.closed || this.connectionId === null) return;
     void this.bridge
       .invoke("appwire_send", {
-        connectionId: this.connectionId,
-        frame: data,
+        request: { connectionId: this.connectionId, frame: data },
       })
       .catch(() => {
         if (!this.closed) this.onerror?.();
@@ -256,7 +255,9 @@ class TauriSocket implements WebSocketLike {
     if (this.connectionId !== null && !this.backendCloseStarted) {
       this.backendCloseStarted = true;
       await this.bridge
-        .invoke("appwire_close", { connectionId: this.connectionId })
+        .invoke("appwire_close", {
+          request: { connectionId: this.connectionId },
+        })
         .catch(() => undefined);
     }
     this.queuedEvents.length = 0;

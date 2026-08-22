@@ -12,7 +12,7 @@ use std::sync::Arc;
 use crate::appwire_transport::AppwireManager;
 use crate::diagnostics::Diagnostics;
 use crate::error::ReleaseMode;
-use crate::http_transport::HubHttp;
+use crate::http_transport::{HttpRequestRegistry, HubHttp};
 use crate::network_policy::NetworkPolicy;
 use crate::profile::SecureStore;
 
@@ -31,6 +31,8 @@ pub struct TransportState {
     /// Secure store bridge: retrieves the active profile's token from the
     /// native Keychain adapter. Never exposes the token to JavaScript.
     secure: Arc<dyn SecureStore>,
+    /// Prepared raw bodies and live HTTP cancellation handles.
+    http_requests: HttpRequestRegistry,
 }
 
 impl TransportState {
@@ -47,6 +49,7 @@ impl TransportState {
             diagnostics,
             appwire,
             secure,
+            http_requests: HttpRequestRegistry::new(),
         }
     }
 
@@ -58,6 +61,11 @@ impl TransportState {
     /// Borrow the AppWire manager.
     pub fn appwire(&self) -> &AppwireManager {
         &self.appwire
+    }
+
+    /// Borrow the HTTP request/cancellation registry.
+    pub fn http_requests(&self) -> &HttpRequestRegistry {
+        &self.http_requests
     }
 
     /// Clear diagnostics entries for a removed profile. Called by the

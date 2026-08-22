@@ -535,8 +535,8 @@ impl ProfileRuntime {
 // Command request/response DTOs (typed Tauri commands)
 // ---------------------------------------------------------------------------
 
-#[derive(Debug, Clone, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[derive(Clone, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct PreviewPasteRequest {
     pub raw: String,
 }
@@ -548,8 +548,8 @@ pub struct PreviewResponse {
     pub origin: String,
 }
 
-#[derive(Debug, Clone, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ConfirmPairingRequest {
     pub preview_id: String,
     pub name: String,
@@ -575,21 +575,21 @@ impl From<ProfileSummary> for ProfileSummaryResponse {
     }
 }
 
-#[derive(Debug, Clone, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct RenameRequest {
     pub profile_id: String,
     pub new_name: String,
 }
 
-#[derive(Debug, Clone, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct RemoveRequest {
     pub profile_id: String,
 }
 
-#[derive(Debug, Clone, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct SelectRequest {
     pub profile_id: String,
 }
@@ -618,15 +618,15 @@ pub struct HealthResponse {
     pub generation: u64,
 }
 
-#[derive(Debug, Clone, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[derive(Clone, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct PreviewRepairRequest {
     pub profile_id: String,
     pub raw: String,
 }
 
-#[derive(Debug, Clone, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct CancelPreviewRequest {
     pub preview_id: String,
 }

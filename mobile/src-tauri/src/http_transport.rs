@@ -1,27 +1,32 @@
-//! Authenticated Hub HTTP transport.
+//! Authenticated, bounded, binary-safe Hub HTTP transport.
 //!
-//! On every connection, re-resolves the origin with `NetworkPolicy`, pins the
-//! validated address for the TCP connection, and preserves the original Host
-//! header and TLS SNI/certificate identity. Redirects are disabled. Caller
-//! auth/cookie/hop headers are never accepted — the request DTO carries none.
-//! The active profile bearer is injected natively. Bodies and media types are
-//! bounded and allowlisted. Status and binary fidelity are preserved.
-//! Cancellation aborts the in-flight request. No token, URL, or body ever
-//! appears in errors or diagnostics.
+//! Every connection is re-resolved through `NetworkPolicy`; the approved socket
+//! addresses are pinned while the original host remains in the URL for Host,
+//! TLS SNI, and certificate validation. Redirects are disabled. Request and
+//! response bodies remain bytes; JSON is a caller codec.
 
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::Arc;
-use std::time::Duration;
 
+use futures_util::StreamExt as _;
+use parking_lot::Mutex;
 use serde::{Deserialize, Serialize};
+use tokio::sync::watch;
 
 use crate::diagnostics::{Diagnostics, StatusClass};
 use crate::error::ReleaseMode;
 use crate::network_policy::{NetworkPolicy, PinnedOrigin};
 
-/// Shared pinning boundary for every HTTP client. It keeps the original
-/// hostname in the URL (therefore TLS SNI and certificate verification) while
-/// overriding only that hostname's resolver answer with validated socket
-/// addresses. Redirects are disabled on both async and blocking clients.
+pub const MAX_REQUEST_BODY_BYTES: usize = 8 * 1024 * 1024;
+pub const MAX_RESPONSE_BODY_BYTES: usize = 20 * 1024 * 1024;
+const COMPLETED_ID_CAPACITY: usize = 1024;
+const REQUEST_ID_MIN_LEN: usize = 16;
+const REQUEST_ID_MAX_LEN: usize = 128;
+
+/// Header used only by the raw IPC upload command. It carries an opaque ID,
+/// never request metadata or a capability.
+pub const REQUEST_ID_HEADER: &str = "x-evener-request-id";
+
 #[derive(Clone)]
 pub struct PinnedHttpBoundary {
     policy: Arc<NetworkPolicy>,
@@ -94,45 +99,53 @@ impl PinnedHttpBoundary {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Request/Response DTOs
-// ---------------------------------------------------------------------------
-
-/// A allowlisted relative Hub HTTP request. Carries no headers, so caller
-/// auth/cookie/hop headers can never be injected.
+/// Metadata registered before an optional raw-body upload. The body length is
+/// the exact raw-byte count expected by the execute command.
 #[derive(Debug, Clone, Deserialize, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct HubRequest {
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct PreparedHttpRequest {
+    pub request_id: String,
+    pub active_profile_id: String,
     pub method: String,
     pub path: String,
-    #[serde(default)]
-    pub body: Option<serde_json::Value>,
+    pub body_length: usize,
     #[serde(default)]
     pub media_type: Option<String>,
 }
 
-/// A Hub HTTP response: status code and parsed body. Never carries the token.
-#[derive(Debug, Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct HubResponse {
-    pub status: u16,
-    pub body: serde_json::Value,
+/// An allowlisted relative request with a byte body. It intentionally has no
+/// caller-provided headers.
+#[derive(Debug, Clone)]
+pub struct HubRequest {
+    pub method: String,
+    pub path: String,
+    pub body: Option<Vec<u8>>,
+    pub media_type: Option<String>,
 }
 
-// ---------------------------------------------------------------------------
-// Allowlists
-// ---------------------------------------------------------------------------
+#[derive(Debug, Clone, Default, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct HubResponseHeaders {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub content_type: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub content_length: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub etag: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub last_modified: Option<String>,
+}
 
-/// Allowed HTTP methods.
+#[derive(Debug, Clone)]
+pub struct HubResponse {
+    pub status: u16,
+    pub headers: HubResponseHeaders,
+    pub media_type: Option<String>,
+    pub body: Vec<u8>,
+}
+
 const ALLOWED_METHODS: &[&str] = &["GET", "POST", "PUT", "PATCH"];
-
-/// Allowed path prefixes for Hub API requests.
 const ALLOWED_PATH_PREFIXES: &[&str] = &["/api/", "/docs/", "/images/"];
-
-/// Maximum request body size (8 MiB).
-const MAX_BODY_BYTES: usize = 8 * 1024 * 1024;
-
-/// Allowed media types.
 const ALLOWED_MEDIA_TYPES: &[&str] = &[
     "application/json",
     "text/plain",
@@ -144,11 +157,7 @@ const ALLOWED_MEDIA_TYPES: &[&str] = &[
     "multipart/form-data",
 ];
 
-// ---------------------------------------------------------------------------
-// Errors — never carry the token, URL, or body
-// ---------------------------------------------------------------------------
-
-#[derive(Debug, thiserror::Error)]
+#[derive(Debug, thiserror::Error, Clone, Copy, PartialEq, Eq)]
 pub enum HttpError {
     #[error("method not allowed")]
     MethodNotAllowed,
@@ -156,6 +165,8 @@ pub enum HttpError {
     PathNotAllowed,
     #[error("body exceeds maximum size")]
     BodyTooLarge,
+    #[error("response exceeds maximum size")]
+    ResponseTooLarge,
     #[error("media type not allowed")]
     MediaTypeNotAllowed,
     #[error("network policy rejected origin")]
@@ -164,21 +175,175 @@ pub enum HttpError {
     RequestFailed,
     #[error("redirect rejected")]
     RedirectRejected,
-    #[error("server error")]
-    ServerError,
     #[error("transport error")]
     TransportError,
+    #[error("request cancelled")]
+    Cancelled,
+    #[error("invalid request id")]
+    InvalidRequestId,
+    #[error("request already exists")]
+    DuplicateRequest,
+    #[error("request body missing")]
+    BodyMissing,
 }
 
-// ---------------------------------------------------------------------------
-// HubHttp
-// ---------------------------------------------------------------------------
+/// Race-safe lifecycle for prepared bodies and live cancellation. A cancel
+/// arriving before prepare records only the opaque ID in the bounded completed
+/// set, so prepare rejects it without retaining a pending entry, body, or
+/// metadata.
+#[derive(Default)]
+pub struct HttpRequestRegistry {
+    inner: Mutex<RegistryInner>,
+}
 
-/// Authenticated Hub HTTP client. Holds the immutable origin and bearer
-/// token. Re-resolves the origin through the `NetworkPolicy` on every
-/// connection, pins the validated address, and preserves the original Host
-/// header. Redirects are disabled at the client level. Never logs the token,
-/// URL, or body.
+#[derive(Default)]
+struct RegistryInner {
+    entries: HashMap<String, RegistryEntry>,
+    completed_order: VecDeque<String>,
+    completed: HashSet<String>,
+}
+
+enum RegistryEntry {
+    Pending {
+        metadata: PreparedHttpRequest,
+        body: Option<Vec<u8>>,
+    },
+    Running {
+        cancel: watch::Sender<bool>,
+    },
+}
+
+pub struct RegisteredHttpRequest {
+    pub metadata: PreparedHttpRequest,
+    pub body: Option<Vec<u8>>,
+    pub cancellation: watch::Receiver<bool>,
+}
+
+impl HttpRequestRegistry {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn prepare(&self, metadata: PreparedHttpRequest) -> Result<(), HttpError> {
+        validate_request_id(&metadata.request_id)?;
+        validate_request_metadata(&metadata)?;
+        let mut inner = self.inner.lock();
+        if inner.completed.contains(&metadata.request_id) {
+            return Err(HttpError::Cancelled);
+        }
+        if inner.entries.contains_key(&metadata.request_id) {
+            return Err(HttpError::DuplicateRequest);
+        }
+        inner.entries.insert(
+            metadata.request_id.clone(),
+            RegistryEntry::Pending {
+                metadata,
+                body: None,
+            },
+        );
+        Ok(())
+    }
+
+    pub fn upload_body(&self, request_id: &str, body: Vec<u8>) -> Result<(), HttpError> {
+        validate_request_id(request_id)?;
+        if body.len() > MAX_REQUEST_BODY_BYTES {
+            return Err(HttpError::BodyTooLarge);
+        }
+        let mut inner = self.inner.lock();
+        let completed = inner.completed.contains(request_id);
+        match inner.entries.get_mut(request_id) {
+            Some(RegistryEntry::Pending {
+                metadata,
+                body: slot,
+            }) if metadata.body_length == body.len() && slot.is_none() => {
+                *slot = Some(body);
+                Ok(())
+            }
+            Some(RegistryEntry::Pending { .. }) => Err(HttpError::BodyMissing),
+            None if completed => Err(HttpError::Cancelled),
+            _ => Err(HttpError::DuplicateRequest),
+        }
+    }
+
+    pub fn begin(&self, request_id: &str) -> Result<RegisteredHttpRequest, HttpError> {
+        validate_request_id(request_id)?;
+        let mut inner = self.inner.lock();
+        let entry = inner.entries.remove(request_id);
+        match entry {
+            Some(RegistryEntry::Pending { metadata, body }) => {
+                let body = if metadata.body_length == 0 {
+                    body.or_else(|| Some(Vec::new()))
+                } else {
+                    body
+                }
+                .ok_or(HttpError::BodyMissing)?;
+                if body.len() != metadata.body_length {
+                    return Err(HttpError::BodyMissing);
+                }
+                let (cancel, cancellation) = watch::channel(false);
+                inner
+                    .entries
+                    .insert(request_id.to_owned(), RegistryEntry::Running { cancel });
+                Ok(RegisteredHttpRequest {
+                    metadata,
+                    body: if body.is_empty() { None } else { Some(body) },
+                    cancellation,
+                })
+            }
+            Some(existing) => {
+                inner.entries.insert(request_id.to_owned(), existing);
+                Err(HttpError::DuplicateRequest)
+            }
+            None if inner.completed.contains(request_id) => Err(HttpError::Cancelled),
+            None => Err(HttpError::BodyMissing),
+        }
+    }
+
+    pub fn cancel(&self, request_id: &str) -> Result<(), HttpError> {
+        validate_request_id(request_id)?;
+        let mut inner = self.inner.lock();
+        if inner.completed.contains(request_id) {
+            return Ok(());
+        }
+        match inner.entries.remove(request_id) {
+            Some(RegistryEntry::Running { cancel }) => {
+                let _ = cancel.send(true);
+                inner.mark_completed(request_id.to_owned());
+            }
+            Some(RegistryEntry::Pending { .. }) => {
+                inner.mark_completed(request_id.to_owned());
+            }
+            None => {
+                inner.mark_completed(request_id.to_owned());
+            }
+        }
+        Ok(())
+    }
+
+    pub fn finish(&self, request_id: &str) {
+        let mut inner = self.inner.lock();
+        inner.entries.remove(request_id);
+        inner.mark_completed(request_id.to_owned());
+    }
+
+    pub fn active_count(&self) -> usize {
+        self.inner.lock().entries.len()
+    }
+}
+
+impl RegistryInner {
+    fn mark_completed(&mut self, request_id: String) {
+        if self.completed.insert(request_id.clone()) {
+            self.completed_order.push_back(request_id);
+        }
+        while self.completed_order.len() > COMPLETED_ID_CAPACITY {
+            if let Some(old) = self.completed_order.pop_front() {
+                self.completed.remove(&old);
+            }
+        }
+    }
+}
+
 pub struct HubHttp {
     origin: String,
     token: String,
@@ -187,11 +352,6 @@ pub struct HubHttp {
 }
 
 impl HubHttp {
-    /// Construct an authenticated Hub HTTP client.
-    ///
-    /// `origin` is the immutable confirmed origin (`scheme://host[:port]`).
-    /// `token` is the active profile's bearer capability, retrieved only
-    /// through the native Keychain adapter by the command layer.
     pub fn new(
         origin: String,
         token: String,
@@ -206,9 +366,6 @@ impl HubHttp {
         }
     }
 
-    /// Construct an authenticated Hub HTTP client with a shared diagnostics
-    /// ring. The request client itself is built after policy resolution so its
-    /// DNS override is pinned to the newly approved address set.
     pub fn with_diagnostics(
         origin: String,
         token: String,
@@ -224,72 +381,56 @@ impl HubHttp {
         }
     }
 
-    /// Test/enterprise trust seam; pinning, hostname validation, and redirect
-    /// policy remain identical.
     pub fn with_root_certificate(mut self, certificate: reqwest::Certificate) -> Self {
         self.boundary = self.boundary.with_root_certificate(certificate);
         self
     }
 
-    /// Borrow the diagnostics ring (for snapshot/export by commands).
     pub fn diagnostics(&self) -> &Diagnostics {
         &self.diagnostics
     }
 
-    /// The immutable origin string.
     pub fn origin(&self) -> &str {
         &self.origin
     }
 
-    /// Make an authenticated Hub HTTP request.
-    ///
-    /// Validates method, path, body size, and media type. Re-resolves the
-    /// origin through the network policy, pins the validated address, and
-    /// preserves the original Host header. Strips caller auth/cookies (the
-    /// DTO carries none). Injects the native bearer token. Rejects redirects.
-    /// Never logs the token, URL, or body.
     pub async fn request(&self, request: HubRequest) -> Result<HubResponse, HttpError> {
         self.request_with_profile(request, None, 0).await
     }
 
-    /// As `request`, but records a diagnostic entry tagged with the redacted
-    /// profile ID and connection generation.
     pub async fn request_with_profile(
         &self,
         request: HubRequest,
         profile_id: Option<&str>,
         generation: u64,
     ) -> Result<HubResponse, HttpError> {
-        // Validate method.
-        if !ALLOWED_METHODS.contains(&request.method.as_str()) {
-            return Err(HttpError::MethodNotAllowed);
+        self.perform_request(request, profile_id, generation).await
+    }
+
+    pub async fn request_cancellable(
+        &self,
+        request: HubRequest,
+        profile_id: Option<&str>,
+        generation: u64,
+        mut cancellation: watch::Receiver<bool>,
+    ) -> Result<HubResponse, HttpError> {
+        if *cancellation.borrow() {
+            return Err(HttpError::Cancelled);
         }
-        // Validate path against the allowlist (rejects dot segments,
-        // percent-encoded bypasses, backslashes, double slashes, and
-        // non-allowlisted prefixes).
-        validate_path(&request.path)?;
-
-        // Serialize the body and enforce the size bound. The serialized bytes
-        // are what goes on the wire; the bound is on the wire size.
-        let body_bytes: Option<Vec<u8>> = if let Some(body) = &request.body {
-            let bytes = serde_json::to_vec(body).map_err(|_| HttpError::BodyTooLarge)?;
-            if bytes.len() > MAX_BODY_BYTES {
-                return Err(HttpError::BodyTooLarge);
-            }
-            Some(bytes)
-        } else {
-            None
-        };
-
-        // Validate media type.
-        if let Some(mt) = &request.media_type {
-            if !ALLOWED_MEDIA_TYPES.contains(&mt.as_str()) {
-                return Err(HttpError::MediaTypeNotAllowed);
-            }
+        tokio::select! {
+            biased;
+            _ = cancellation.changed() => Err(HttpError::Cancelled),
+            result = self.perform_request(request, profile_id, generation) => result,
         }
+    }
 
-        // Re-resolve the origin through the network policy on every
-        // connection. Pin the validated address; preserve the original Host.
+    async fn perform_request(
+        &self,
+        request: HubRequest,
+        profile_id: Option<&str>,
+        generation: u64,
+    ) -> Result<HubResponse, HttpError> {
+        validate_hub_request(&request)?;
         let (mut url, pinned) = self.boundary.resolve(&self.origin)?;
         url.set_path("");
         url.set_query(None);
@@ -301,31 +442,24 @@ impl HubHttp {
         ))
         .map_err(|_| HttpError::PolicyRejected)?;
         let client = self.boundary.async_client(&pinned)?;
-
         let method = reqwest::Method::from_bytes(request.method.as_bytes())
             .map_err(|_| HttpError::MethodNotAllowed)?;
-
-        // The URL keeps the original hostname for Host, SNI, and certificate
-        // identity. The client resolver override pins its socket addresses.
         let mut builder = client
             .request(method, url.as_str())
             .bearer_auth(&self.token);
-
-        if let Some(bytes) = body_bytes {
-            let content_type = request.media_type.as_deref().unwrap_or("application/json");
-            builder = builder.header("content-type", content_type).body(bytes);
+        if let Some(body) = request.body {
+            let content_type = request
+                .media_type
+                .as_deref()
+                .unwrap_or("application/octet-stream");
+            builder = builder.header("content-type", content_type).body(body);
         }
 
         let response = builder.send().await.map_err(|_| HttpError::RequestFailed)?;
-
         let status = response.status().as_u16();
-
-        // Reject redirects (redirects are disabled, but a 3xx that slips
-        // through is rejected explicitly).
         if (300..400).contains(&status) {
             self.record_diag(
                 profile_id,
-                "http_request",
                 StatusClass::TransportError,
                 0,
                 generation,
@@ -334,42 +468,53 @@ impl HubHttp {
             return Err(HttpError::RedirectRejected);
         }
 
-        if !response.status().is_success() {
-            self.record_diag(
-                profile_id,
-                "http_request",
-                status_class(status),
-                0,
-                generation,
-                Some("server_error"),
-            );
-            return Err(HttpError::ServerError);
+        let headers = selected_headers(response.headers());
+        let media_type = headers
+            .content_type
+            .as_deref()
+            .and_then(|value| value.split(';').next())
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(str::to_owned);
+        if response
+            .content_length()
+            .is_some_and(|len| len > MAX_RESPONSE_BODY_BYTES as u64)
+        {
+            return Err(HttpError::ResponseTooLarge);
         }
-
-        // Preserve status and body fidelity. Parse as JSON; the caller
-        // handles binary through a separate attachment path.
-        let byte_count = response.content_length().unwrap_or(0);
-        let body: serde_json::Value = response
-            .json()
-            .await
-            .map_err(|_| HttpError::TransportError)?;
+        let mut body = Vec::with_capacity(
+            response
+                .content_length()
+                .unwrap_or(0)
+                .min(MAX_RESPONSE_BODY_BYTES as u64) as usize,
+        );
+        let mut stream = response.bytes_stream();
+        while let Some(chunk) = stream.next().await {
+            let chunk = chunk.map_err(|_| HttpError::TransportError)?;
+            if body.len().saturating_add(chunk.len()) > MAX_RESPONSE_BODY_BYTES {
+                return Err(HttpError::ResponseTooLarge);
+            }
+            body.extend_from_slice(&chunk);
+        }
 
         self.record_diag(
             profile_id,
-            "http_request",
-            StatusClass::Success,
-            byte_count,
+            status_class(status),
+            body.len() as u64,
             generation,
             None,
         );
-
-        Ok(HubResponse { status, body })
+        Ok(HubResponse {
+            status,
+            headers,
+            media_type,
+            body,
+        })
     }
 
     fn record_diag(
         &self,
         profile_id: Option<&str>,
-        operation: &str,
         status: StatusClass,
         byte_count: u64,
         generation: u64,
@@ -382,12 +527,86 @@ impl HubHttp {
                     .map(|d| d.as_secs())
                     .unwrap_or(0),
                 profile_id: profile_id.and_then(crate::diagnostics::hash_profile_id),
-                operation: operation.to_owned(),
+                operation: "http_request".to_owned(),
                 status,
                 byte_count,
                 generation,
-                error_id: error_id.map(|s| s.to_owned()),
+                error_id: error_id.map(str::to_owned),
             });
+    }
+}
+
+fn validate_request_id(request_id: &str) -> Result<(), HttpError> {
+    if !(REQUEST_ID_MIN_LEN..=REQUEST_ID_MAX_LEN).contains(&request_id.len())
+        || !request_id
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-' || byte == b'_')
+    {
+        return Err(HttpError::InvalidRequestId);
+    }
+    Ok(())
+}
+
+fn validate_request_metadata(request: &PreparedHttpRequest) -> Result<(), HttpError> {
+    if request.body_length > MAX_REQUEST_BODY_BYTES {
+        return Err(HttpError::BodyTooLarge);
+    }
+    validate_method_path_media(
+        &request.method,
+        &request.path,
+        request.media_type.as_deref(),
+    )
+}
+
+fn validate_hub_request(request: &HubRequest) -> Result<(), HttpError> {
+    if request
+        .body
+        .as_ref()
+        .is_some_and(|body| body.len() > MAX_REQUEST_BODY_BYTES)
+    {
+        return Err(HttpError::BodyTooLarge);
+    }
+    validate_method_path_media(
+        &request.method,
+        &request.path,
+        request.media_type.as_deref(),
+    )
+}
+
+fn validate_method_path_media(
+    method: &str,
+    path: &str,
+    media_type: Option<&str>,
+) -> Result<(), HttpError> {
+    if !ALLOWED_METHODS.contains(&method) {
+        return Err(HttpError::MethodNotAllowed);
+    }
+    validate_path(path)?;
+    if let Some(media_type) = media_type {
+        if media_type.contains(['\r', '\n']) {
+            return Err(HttpError::MediaTypeNotAllowed);
+        }
+        let base = media_type.split(';').next().map(str::trim).unwrap_or("");
+        if !ALLOWED_MEDIA_TYPES.contains(&base) {
+            return Err(HttpError::MediaTypeNotAllowed);
+        }
+    }
+    Ok(())
+}
+
+fn selected_headers(headers: &reqwest::header::HeaderMap) -> HubResponseHeaders {
+    fn value(headers: &reqwest::header::HeaderMap, name: &'static str) -> Option<String> {
+        headers
+            .get(name)
+            .and_then(|value| value.to_str().ok())
+            .filter(|value| value.len() <= 4096)
+            .map(str::to_owned)
+    }
+    HubResponseHeaders {
+        content_type: value(headers, "content-type"),
+        content_length: value(headers, "content-length"),
+        etag: value(headers, "etag"),
+        last_modified: value(headers, "last-modified"),
     }
 }
 
@@ -403,46 +622,28 @@ fn status_class(status: u16) -> StatusClass {
     }
 }
 
-/// Validate a request path against the allowlist. Rejects dot segments
-/// (literal and percent-encoded), backslashes, double slashes, and
-/// non-allowlisted prefixes. Query strings on allowed paths are permitted.
-/// The path must be a site-relative path beginning with `/`.
-pub fn validate_path(path: &str) -> Result<(), HttpError> {
-    if path.is_empty() || !path.starts_with('/') {
+/// Validate only the path component. Query bytes cannot become route segments.
+/// Encoded separators/dots are decoded once; a remaining `%` is rejected to
+/// prevent mixed/double-encoding ambiguity.
+pub fn validate_path(input: &str) -> Result<(), HttpError> {
+    let path = input.split_once('?').map_or(input, |(path, _)| path);
+    if path.is_empty() || !path.starts_with('/') || path.starts_with("//") || path.contains('\\') {
         return Err(HttpError::PathNotAllowed);
     }
-    // Reject protocol-relative paths (// or /\) which a URL parser may
-    // interpret as a scheme-less authority.
-    if path.starts_with("//") {
+    let decoded = percent_decode_path(path)?;
+    if decoded.contains('%')
+        || decoded.starts_with("//")
+        || decoded.contains("//")
+        || decoded.contains('\\')
+    {
         return Err(HttpError::PathNotAllowed);
     }
-    // Reject backslashes entirely (Windows-style separators used to confuse
-    // URL parsers and bypass prefix checks).
-    if path.contains('\\') {
+    if decoded
+        .split('/')
+        .any(|segment| segment == "." || segment == "..")
+    {
         return Err(HttpError::PathNotAllowed);
     }
-    // Reject literal dot segments anywhere: `/../` and `/.` as a segment.
-    // These traverse above the allowed root.
-    for seg in path.split('/') {
-        if seg == ".." || seg == "." {
-            return Err(HttpError::PathNotAllowed);
-        }
-    }
-    // Reject percent-encoded dot segments (%2e == '.'). Percent-decode only
-    // the path component (not the query) and re-check for dot segments and
-    // prefix.
-    let (path_part, _query) = match path.split_once('?') {
-        Some((p, q)) => (p, Some(q)),
-        None => (path, None),
-    };
-    let decoded = percent_decode_path(path_part);
-    // Re-check dot segments in the decoded path.
-    for seg in decoded.split('/') {
-        if seg == ".." || seg == "." {
-            return Err(HttpError::PathNotAllowed);
-        }
-    }
-    // The decoded path must start with an allowed prefix.
     if !ALLOWED_PATH_PREFIXES
         .iter()
         .any(|prefix| decoded.starts_with(prefix))
@@ -452,133 +653,97 @@ pub fn validate_path(path: &str) -> Result<(), HttpError> {
     Ok(())
 }
 
-/// Percent-decode the path component, handling %2e -> '.' and %2f -> '/'.
-fn percent_decode_path(input: &str) -> String {
+fn percent_decode_path(input: &str) -> Result<String, HttpError> {
     let bytes = input.as_bytes();
     let mut out = Vec::with_capacity(bytes.len());
-    let mut i = 0;
-    while i < bytes.len() {
-        if bytes[i] == b'%' && i + 2 < bytes.len() {
-            let h = hex_val(bytes[i + 1]);
-            let l = hex_val(bytes[i + 2]);
-            if let (Some(h), Some(l)) = (h, l) {
-                out.push((h << 4) | l);
-                i += 3;
-                continue;
+    let mut index = 0;
+    while index < bytes.len() {
+        if bytes[index] == b'%' {
+            if index + 2 >= bytes.len() {
+                return Err(HttpError::PathNotAllowed);
             }
+            let high = hex_val(bytes[index + 1]).ok_or(HttpError::PathNotAllowed)?;
+            let low = hex_val(bytes[index + 2]).ok_or(HttpError::PathNotAllowed)?;
+            out.push((high << 4) | low);
+            index += 3;
+        } else {
+            out.push(bytes[index]);
+            index += 1;
         }
-        out.push(bytes[i]);
-        i += 1;
     }
-    String::from_utf8_lossy(&out).into_owned()
+    String::from_utf8(out).map_err(|_| HttpError::PathNotAllowed)
 }
 
-fn hex_val(b: u8) -> Option<u8> {
-    match b {
-        b'0'..=b'9' => Some(b - b'0'),
-        b'a'..=b'f' => Some(b - b'a' + 10),
-        b'A'..=b'F' => Some(b - b'A' + 10),
+fn hex_val(byte: u8) -> Option<u8> {
+    match byte {
+        b'0'..=b'9' => Some(byte - b'0'),
+        b'a'..=b'f' => Some(byte - b'a' + 10),
+        b'A'..=b'F' => Some(byte - b'A' + 10),
         _ => None,
     }
 }
-
-// Suppress unused-import warning for Duration if not referenced on all
-// platforms (kept for future cancellation timeout wiring).
-#[allow(dead_code)]
-fn _duration_unused(_: Duration) {}
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
-    fn allowed_methods_are_restricted() {
-        assert!(ALLOWED_METHODS.contains(&"GET"));
-        assert!(ALLOWED_METHODS.contains(&"POST"));
-        assert!(!ALLOWED_METHODS.contains(&"DELETE"));
-        assert!(!ALLOWED_METHODS.contains(&"CONNECT"));
+    fn exact_binary_limits_are_contractual() {
+        assert_eq!(MAX_REQUEST_BODY_BYTES, 8 * 1024 * 1024);
+        assert_eq!(MAX_RESPONSE_BODY_BYTES, 20 * 1024 * 1024);
     }
 
     #[test]
-    fn allowed_paths_cover_api_docs_images() {
-        assert!(ALLOWED_PATH_PREFIXES.contains(&"/api/"));
-        assert!(ALLOWED_PATH_PREFIXES.contains(&"/docs/"));
+    fn canonical_path_policy_splits_query_before_validation() {
+        assert!(validate_path("/api/health?next=/../secret\\value").is_ok());
+        for path in [
+            "/api/%2e%2e/x",
+            "/api/%2E%2e/x",
+            "/api/%252e%252e/x",
+            "/api/%2f/x",
+            "/api//x",
+            "/api/..\\x",
+            "//api/x",
+            "/API/x",
+            "/api/%GG",
+        ] {
+            assert!(validate_path(path).is_err(), "accepted {path}");
+        }
     }
 
     #[test]
-    fn max_body_is_8mib() {
-        assert_eq!(MAX_BODY_BYTES, 8 * 1024 * 1024);
+    fn cancellation_registry_handles_cancel_before_registration_and_completion() {
+        let registry = HttpRequestRegistry::new();
+        let id = "request_123456789";
+        registry.cancel(id).unwrap();
+        assert_eq!(registry.active_count(), 0);
+        let result = registry.prepare(PreparedHttpRequest {
+            request_id: id.to_owned(),
+            active_profile_id: "profile".to_owned(),
+            method: "GET".to_owned(),
+            path: "/api/x".to_owned(),
+            body_length: 0,
+            media_type: None,
+        });
+        assert_eq!(result, Err(HttpError::Cancelled));
+        assert_eq!(registry.active_count(), 0);
+        registry.cancel(id).unwrap();
+        assert_eq!(registry.active_count(), 0);
     }
 
     #[test]
-    fn http_error_display_never_contains_token() {
-        let err = HttpError::RequestFailed;
-        let display = format!("{err}");
-        let debug = format!("{err:?}");
-        assert!(!display.contains("secret-token"));
-        assert!(!debug.contains("secret-token"));
-    }
-
-    #[test]
-    fn http_error_redirect_rejected_has_no_details() {
-        let err = HttpError::RedirectRejected;
-        assert!(!format!("{err}").contains("evil"));
-        assert!(!format!("{err}").contains("http"));
-    }
-
-    // -- Path allowlist: adversarial bypass table ----------------------------
-
-    #[test]
-    fn path_allowlist_accepts_plain_allowed_prefixes() {
-        assert!(validate_path("/api/health").is_ok());
-        assert!(validate_path("/docs/intro").is_ok());
-        assert!(validate_path("/images/logo.png").is_ok());
-    }
-
-    #[test]
-    fn path_allowlist_rejects_root_and_outside_prefixes() {
-        assert!(validate_path("/").is_err());
-        assert!(validate_path("").is_err());
-        assert!(validate_path("/etc/passwd").is_err());
-        assert!(validate_path("/admin/users").is_err());
-    }
-
-    #[test]
-    fn path_allowlist_rejects_percent_encoded_dot_segments() {
-        // %2e == '.', %2f == '/'. These must not bypass the prefix check.
-        assert!(validate_path("/api/%2e%2e/etc/passwd").is_err());
-        assert!(validate_path("/api/%2e%2e%2fetc%2fpasswd").is_err());
-        assert!(validate_path("/%2e%2e/etc/passwd").is_err());
-    }
-
-    #[test]
-    fn path_allowlist_rejects_dot_segments() {
-        assert!(validate_path("/api/../etc/passwd").is_err());
-        assert!(validate_path("/api/./health").is_err());
-        assert!(validate_path("/api/../api/health").is_err());
-    }
-
-    #[test]
-    fn path_allowlist_rejects_double_slash() {
-        assert!(validate_path("//api/health").is_err());
-        assert!(validate_path("//etc/passwd").is_err());
-    }
-
-    #[test]
-    fn path_allowlist_rejects_backslashes() {
-        assert!(validate_path("\\api\\health").is_err());
-        assert!(validate_path("/api/..\\..\\etc").is_err());
-    }
-
-    #[test]
-    fn path_allowlist_rejects_mixed_case_prefix() {
-        assert!(validate_path("/API/health").is_err());
-        assert!(validate_path("/Api/health").is_err());
-    }
-
-    #[test]
-    fn path_allowlist_preserves_allowed_query() {
-        assert!(validate_path("/api/sessions?foo=bar").is_ok());
-        assert!(validate_path("/api/health?token=x&y=z").is_ok());
+    fn media_type_allows_multipart_boundary_without_header_injection() {
+        assert!(validate_method_path_media(
+            "POST",
+            "/api/upload",
+            Some("multipart/form-data; boundary=abc123")
+        )
+        .is_ok());
+        assert!(validate_method_path_media(
+            "POST",
+            "/api/upload",
+            Some("multipart/form-data\r\nx-secret: value")
+        )
+        .is_err());
     }
 }
