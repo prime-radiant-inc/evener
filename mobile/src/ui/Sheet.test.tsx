@@ -6,10 +6,13 @@ import {
   within,
 } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { Sheet } from "./Sheet";
+import { __resetSheetHistory, __sheetHistorySettled, Sheet } from "./Sheet";
 
-afterEach(() => {
+afterEach(async () => {
   cleanup();
+  await __sheetHistorySettled();
+  __resetSheetHistory();
+  history.replaceState(null, "");
 });
 
 describe("Sheet — lifecycle and accessibility", () => {
