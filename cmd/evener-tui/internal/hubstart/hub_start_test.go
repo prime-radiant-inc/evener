@@ -469,7 +469,7 @@ func TestStartLocalHubProtectsLogPath(t *testing.T) {
 	if err := os.Mkdir(permissiveDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	err = StartLocalHub(HubStartRequest{
+	err := StartLocalHub(HubStartRequest{
 		Binary:   bin,
 		BindAddr: "127.0.0.1:9180",
 		LogFile:  filepath.Join(permissiveDir, "hub.log"),
