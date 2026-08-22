@@ -12,10 +12,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"sort"
-	"strconv"
 	"strings"
-
-	"golang.org/x/net/idna"
 
 	"primeradiant.com/evener/agent/diagnostic"
 	"primeradiant.com/evener/appwire"
@@ -30,7 +27,6 @@ import (
 var (
 	webHubUpgrade            = hubUpgrade
 	gitCommand               = exec.CommandContext
-	mobileHostnameProfile    = idna.New(idna.MapForLookup(), idna.StrictDomainName(false), idna.CheckHyphens(false))
 	ensureAPIActionAvailable = func(s *WebServer, id, action string) error {
 		return s.ensureSessionActionAvailable(id, action)
 	}
@@ -207,22 +203,8 @@ func safeMobileOrigin(raw string) (string, bool) {
 	if err != nil {
 		return "", false
 	}
-	host := strings.TrimRight(u.Hostname(), ".")
-	if _, err := netip.ParseAddr(host); err != nil {
-		// Browsers apply UTS #46 mappings before interpreting a hostname. Do
-		// the same so Unicode spellings of numeric addresses cannot bypass the
-		// IP and legacy-numeric checks below. Canonical IP literals bypass IDNA
-		// because IPv6 colons are not valid domain-name runes.
-		host, err = mobileHostnameProfile.ToASCII(host)
-		if err != nil {
-			return "", false
-		}
-		host = strings.TrimRight(host, ".")
-	}
-	// Reject localhost and its reserved subdomains in all case and
-	// trailing-dot spellings.
-	hostLower := strings.ToLower(host)
-	if host == "" || hostLower == "localhost" || strings.HasSuffix(hostLower, ".localhost") {
+	host := u.Hostname()
+	if host == "" || strings.EqualFold(host, "localhost") {
 		return "", false
 	}
 	if addr, err := netip.ParseAddr(host); err == nil {
@@ -233,50 +215,10 @@ func safeMobileOrigin(raw string) (string, bool) {
 		if u.Scheme == "http" && !isPrivateMobileHTTPAddr(addr) {
 			return "", false
 		}
-	} else {
-		// Some clients accept inet_aton-style numeric addresses such as 127.1,
-		// 2130706433, or 0x7f000001. Reject those spellings deterministically
-		// rather than resolving a host while serving the pairing request.
-		if isLegacyIPv4Literal(host) {
-			return "", false
-		}
-		if u.Scheme == "http" && !strings.HasSuffix(hostLower, ".local") {
-			return "", false
-		}
+	} else if u.Scheme == "http" && !strings.HasSuffix(strings.ToLower(host), ".local") {
+		return "", false
 	}
 	return strings.TrimRight(raw, "/"), true
-}
-
-func isLegacyIPv4Literal(host string) bool {
-	parts := strings.Split(host, ".")
-	if len(parts) > 4 {
-		return false
-	}
-	for i, part := range parts {
-		base := 10
-		digits := part
-		if len(part) > 2 && part[0] == '0' && (part[1] == 'x' || part[1] == 'X') {
-			base = 16
-			digits = part[2:]
-		} else if len(part) > 1 && part[0] == '0' {
-			base = 8
-		}
-		if digits == "" {
-			return false
-		}
-		value, err := strconv.ParseUint(digits, base, 32)
-		if err != nil {
-			return false
-		}
-		bits := 8
-		if i == len(parts)-1 {
-			bits = 8 * (5 - len(parts))
-		}
-		if value >= uint64(1)<<bits {
-			return false
-		}
-	}
-	return true
 }
 
 func isPrivateMobileHTTPAddr(addr netip.Addr) bool {

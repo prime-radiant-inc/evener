@@ -3,8 +3,8 @@
 // and (via DEFAULT_SECTION_ID) what a bare /settings resolves to. Verified
 // against templates/partials/settings.html:13-31 (16 exact - "16 nav
 // sections" per the wave-7 plan's own Goal line) PLUS one section with no
-// legacy counterpart: "about" (design-language credits) and "mobile"
-// (browser-only dedicated-app pairing), added after that
+  // legacy counterpart: "about" (design-language credits) and "mobile"
+  // (browser-only dedicated-app pairing), added after that
 // baseline and deliberately placed last, in the Daemon cluster. The 16
 // legacy-parity sections are 5 ungrouped top links (General/Theme/
 // Transcript/Display/Notifications) plus 3 labeled clusters ("Agents &
