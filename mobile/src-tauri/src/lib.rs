@@ -36,20 +36,26 @@ pub fn run() {
                     native::NativeSecureStore::new(app.handle().clone()),
                 )));
 
-            // Real HTTP pairing probe (redirects disabled).
-            let probe: Arc<dyn profile::PairingProbe> =
-                Arc::new(profile_runtime::RealPairingProbe::new());
-
-            // System clock.
-            let clock: Arc<dyn profile::Clock> = Arc::new(SystemClock);
-
             // Network policy with system DNS resolver.
             let policy = Arc::new(network_policy::NetworkPolicy::new(Box::new(
                 profile_runtime::SystemDnsResolver,
             )));
 
-            // One AppWire manager for the active profile.
-            let appwire = Arc::new(appwire_transport::AppwireManager::new());
+            // Real HTTP pairing probe: re-resolves through the same network
+            // policy and connects TCP to the validated pinned IP using
+            // blocking std::net HTTP/1.1 (no tokio runtime re-entry).
+            let probe: Arc<dyn profile::PairingProbe> =
+                Arc::new(profile_runtime::RealPairingProbe::new(policy.clone()));
+
+            // System clock.
+            let clock: Arc<dyn profile::Clock> = Arc::new(SystemClock);
+
+            // One AppWire manager for the active profile. Shares the same
+            // network policy so every connection is re-resolved and pinned.
+            let appwire = Arc::new(appwire_transport::AppwireManager::new(
+                policy.clone(),
+                error::ReleaseMode::Release,
+            ));
 
             // Close-transport callback: closes the AppWire socket before the
             // active profile changes.

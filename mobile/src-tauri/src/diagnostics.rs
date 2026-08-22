@@ -85,11 +85,12 @@ impl Diagnostics {
         self.entries.lock().clear();
     }
 
-    /// Remove entries for a removed profile. Entries carry a redacted profile
-    /// ID, so only matching entries are evicted; order is otherwise preserved.
+    /// Remove entries for a removed profile. Entries carry a hashed profile
+    /// ID, so the input is hashed to match. Order is otherwise preserved.
     pub fn clear_for_profile(&self, profile_id: &str) {
+        let hashed = hash_profile_id(profile_id);
         let mut entries = self.entries.lock();
-        entries.retain(|e| e.profile_id.as_deref() != Some(profile_id));
+        entries.retain(|e| e.profile_id != hashed);
     }
 
     /// Number of entries currently in the ring.
@@ -101,6 +102,23 @@ impl Diagnostics {
     pub fn is_empty(&self) -> bool {
         self.entries.lock().is_empty()
     }
+}
+
+/// Hash a profile ID into a stable, redacted short identifier for
+/// diagnostics. Uses a simple FNV-1a hash to a 16-hex-character string so
+/// the full UUID never appears in exported diagnostics, but the same
+/// profile always maps to the same hash (for filtering/clearing).
+pub fn hash_profile_id(profile_id: &str) -> Option<String> {
+    if profile_id.is_empty() {
+        return None;
+    }
+    // FNV-1a 64-bit hash.
+    let mut hash: u64 = 0xcbf29ce484222325;
+    for &b in profile_id.as_bytes() {
+        hash ^= b as u64;
+        hash = hash.wrapping_mul(0x100000001b3);
+    }
+    Some(format!("{hash:016x}"))
 }
 
 impl Default for Diagnostics {
@@ -227,11 +245,70 @@ mod tests {
     }
 
     #[test]
+    fn hash_profile_id_is_stable_and_redacts() {
+        let h1 = hash_profile_id("550e8400-e29b-41d4-a716-446655440000").unwrap();
+        let h2 = hash_profile_id("550e8400-e29b-41d4-a716-446655440000").unwrap();
+        // Same input -> same hash (stable).
+        assert_eq!(h1, h2);
+        // 16 hex chars.
+        assert_eq!(h1.len(), 16);
+        // The full UUID does not appear in the hash.
+        assert!(!h1.contains("550e8400"));
+        // Different input -> different hash.
+        let h3 = hash_profile_id("different-id").unwrap();
+        assert_ne!(h1, h3);
+        // Empty -> None.
+        assert!(hash_profile_id("").is_none());
+    }
+
+    #[test]
+    fn hash_profile_id_never_contains_original() {
+        let secret = "SUPER_SECRET_PROFILE_UUID_12345";
+        let h = hash_profile_id(secret).unwrap();
+        assert!(!h.contains(secret));
+        assert!(!h.contains("UUID"));
+    }
+
+    #[test]
+    fn diagnostic_entry_profile_id_is_hashed_in_export_and_debug() {
+        let diag = Diagnostics::new();
+        let raw_uuid = "550e8400-e29b-41d4-a716-446655440000";
+        let hashed = hash_profile_id(raw_uuid).unwrap();
+        diag.record(DiagnosticEntry {
+            timestamp: 1000,
+            profile_id: Some(hashed.clone()),
+            operation: "http_request".to_owned(),
+            status: StatusClass::Success,
+            byte_count: 42,
+            generation: 1,
+            error_id: None,
+        });
+        let snap = diag.snapshot();
+        let json = serde_json::to_string(&snap).unwrap();
+        let debug = format!("{snap:?}");
+        // The hashed ID appears in both export and Debug.
+        assert!(json.contains(&hashed), "hash must appear in export");
+        assert!(debug.contains(&hashed), "hash must appear in Debug");
+        // The raw UUID does not appear.
+        assert!(
+            !json.contains(raw_uuid),
+            "raw UUID must not appear in export"
+        );
+        assert!(
+            !debug.contains(raw_uuid),
+            "raw UUID must not appear in Debug"
+        );
+    }
+
+    #[test]
     fn clear_for_profile_removes_only_matching_entries() {
         let diag = Diagnostics::new();
+        // Entries store hashed profile IDs (as the HTTP transport does).
+        let h1 = hash_profile_id("p1").unwrap();
+        let h2 = hash_profile_id("p2").unwrap();
         diag.record(DiagnosticEntry {
             timestamp: 1,
-            profile_id: Some("p1".to_owned()),
+            profile_id: Some(h1),
             operation: "a".to_owned(),
             status: StatusClass::Success,
             byte_count: 0,
@@ -240,7 +317,7 @@ mod tests {
         });
         diag.record(DiagnosticEntry {
             timestamp: 2,
-            profile_id: Some("p2".to_owned()),
+            profile_id: Some(h2),
             operation: "b".to_owned(),
             status: StatusClass::ClientError,
             byte_count: 0,
@@ -250,7 +327,8 @@ mod tests {
         diag.clear_for_profile("p1");
         let snap = diag.snapshot();
         assert_eq!(snap.len(), 1);
-        assert_eq!(snap[0].profile_id.as_deref(), Some("p2"));
+        // The remaining entry's profile_id is hashed, not the raw "p2".
+        assert_eq!(snap[0].profile_id, hash_profile_id("p2"));
     }
 
     #[test]

@@ -439,6 +439,70 @@ async fn http_rejects_disallowed_media_type() {
 }
 
 // ---------------------------------------------------------------------------
+// Tests: path allowlist bypass rejection (end-to-end)
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn http_rejects_dot_segment_traversal() {
+    let transport = make_transport("http://127.0.0.1:1", "tok");
+    let err = transport
+        .request(HubRequest {
+            method: "GET".to_owned(),
+            path: "/api/../etc/passwd".to_owned(),
+            body: None,
+            media_type: None,
+        })
+        .await
+        .unwrap_err();
+    assert!(!format!("{err}").contains("tok"));
+}
+
+#[tokio::test]
+async fn http_rejects_percent_encoded_traversal() {
+    let transport = make_transport("http://127.0.0.1:1", "tok");
+    let err = transport
+        .request(HubRequest {
+            method: "GET".to_owned(),
+            path: "/api/%2e%2e/etc/passwd".to_owned(),
+            body: None,
+            media_type: None,
+        })
+        .await
+        .unwrap_err();
+    assert!(!format!("{err}").contains("tok"));
+}
+
+#[tokio::test]
+async fn http_rejects_double_slash_path() {
+    let transport = make_transport("http://127.0.0.1:1", "tok");
+    let err = transport
+        .request(HubRequest {
+            method: "GET".to_owned(),
+            path: "//etc/passwd".to_owned(),
+            body: None,
+            media_type: None,
+        })
+        .await
+        .unwrap_err();
+    assert!(!format!("{err}").contains("tok"));
+}
+
+#[tokio::test]
+async fn http_rejects_backslash_path() {
+    let transport = make_transport("http://127.0.0.1:1", "tok");
+    let err = transport
+        .request(HubRequest {
+            method: "GET".to_owned(),
+            path: "\\api\\..\\..\\etc".to_owned(),
+            body: None,
+            media_type: None,
+        })
+        .await
+        .unwrap_err();
+    assert!(!format!("{err}").contains("tok"));
+}
+
+// ---------------------------------------------------------------------------
 // Tests: redirect rejection
 // ---------------------------------------------------------------------------
 
@@ -681,12 +745,22 @@ async fn http_real_cancellation_aborts_slow_request() {
     handle.abort();
 
     // The aborted task must resolve quickly to a JoinError (cancelled), not
-    // hang waiting on the never-responding server.
+    // hang waiting on the never-responding server. This proves task
+    // completion: the spawned request task is deterministically reaped.
     let outcome = tokio::time::timeout(Duration::from_secs(2), handle).await;
     assert!(outcome.is_ok(), "aborting the request future must not hang");
     assert!(
         outcome.unwrap().is_err(),
         "aborted task must be cancelled, not completed"
+    );
+
+    // The server saw exactly one connection (the cancelled request did not
+    // retry/reconnect). This proves socket completion: the TCP connection
+    // was established, then dropped on cancellation with no reconnect.
+    assert_eq!(
+        accepted.load(Ordering::SeqCst),
+        1,
+        "cancellation must not trigger a reconnect"
     );
 }
 

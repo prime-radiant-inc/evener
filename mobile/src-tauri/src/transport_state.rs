@@ -133,7 +133,7 @@ mod tests {
             crate::profile_runtime::SystemDnsResolver,
         )));
         let diagnostics = Arc::new(Diagnostics::new());
-        let appwire = Arc::new(AppwireManager::new());
+        let appwire = Arc::new(AppwireManager::new(policy.clone(), ReleaseMode::Release));
         let secure: Arc<dyn crate::profile::SecureStore> = Arc::new(
             crate::profile_runtime::KeychainBridge::new(Arc::new(TestNoopSecureStore)),
         );
@@ -145,9 +145,12 @@ mod tests {
             secure,
         );
 
+        // Entries store hashed profile IDs (as the HTTP transport does).
+        let h_removed = crate::diagnostics::hash_profile_id("p-removed").unwrap();
+        let h_kept = crate::diagnostics::hash_profile_id("p-kept").unwrap();
         diagnostics.record(DiagnosticEntry {
             timestamp: 1,
-            profile_id: Some("p-removed".to_owned()),
+            profile_id: Some(h_removed),
             operation: "http_request".to_owned(),
             status: StatusClass::Success,
             byte_count: 0,
@@ -156,7 +159,7 @@ mod tests {
         });
         diagnostics.record(DiagnosticEntry {
             timestamp: 2,
-            profile_id: Some("p-kept".to_owned()),
+            profile_id: Some(h_kept),
             operation: "http_request".to_owned(),
             status: StatusClass::Success,
             byte_count: 0,
@@ -168,7 +171,10 @@ mod tests {
 
         let snap = transport.diagnostics().snapshot();
         assert_eq!(snap.len(), 1);
-        assert_eq!(snap[0].profile_id.as_deref(), Some("p-kept"));
+        assert_eq!(
+            snap[0].profile_id,
+            crate::diagnostics::hash_profile_id("p-kept")
+        );
     }
 
     /// A no-op secure store for TransportState construction in tests.
