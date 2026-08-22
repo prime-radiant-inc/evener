@@ -1,0 +1,49 @@
+{
+  "version": 1,
+  "commands": {
+    "profile_list": { "args": {} },
+    "profile_preview_paste": { "args": { "request": { "raw": "<redacted>" } } },
+    "profile_preview_repair": { "args": { "request": { "profileId": "<profileId>", "raw": "<redacted>" } } },
+    "profile_confirm_pairing": { "args": { "request": { "previewId": "<previewId>", "name": "<name>", "allowDuplicateOrigin": false } } },
+    "profile_preview_cancel": { "args": { "request": { "previewId": "<previewId>" } } },
+    "profile_previews_clear": { "args": {} },
+    "profile_rename": { "args": { "request": { "profileId": "<profileId>", "newName": "<newName>" } } },
+    "profile_remove": { "args": { "request": { "profileId": "<profileId>" } } },
+    "profile_select": { "args": { "request": { "profileId": "<profileId>" } } },
+    "profile_health": { "args": {} },
+    "hub_http_prepare": { "args": { "request": { "requestId": "<requestId>", "activeProfileId": "<profileId>", "method": "GET", "path": "/api/example", "bodyLength": 0, "mediaType": null } } },
+    "hub_http_upload_body": { "payload": "raw", "headers": { "x-evener-request-id": "<requestId>" } },
+    "hub_http_request": { "args": { "request": { "requestId": "<requestId>" }, "onResponse": "<channel>" } },
+    "hub_http_cancel": { "args": { "request": { "requestId": "<requestId>" } } },
+    "appwire_open": { "args": { "request": { "profileId": "<profileId>" }, "onEvent": "<channel>" } },
+    "appwire_send": { "args": { "request": { "connectionId": "<connectionId>", "frame": "<frame>" } } },
+    "appwire_close": { "args": { "request": { "connectionId": "<connectionId>" } } },
+    "diagnostics_snapshot": { "args": {} }
+  },
+  "dtoFixtures": {
+    "httpResponseMetadata": {
+      "requestId": "<requestId>",
+      "status": 404,
+      "headers": {
+        "contentType": "image/jpeg",
+        "etag": "opaque-etag"
+      },
+      "mediaType": "image/jpeg",
+      "bodyLength": 6
+    },
+    "appwireCurrentText": {
+      "type": "text",
+      "connectionId": "<profileId>:7",
+      "profileId": "<profileId>",
+      "generation": 7,
+      "data": "current-frame"
+    },
+    "appwireStaleText": {
+      "type": "text",
+      "connectionId": "<profileId>:6",
+      "profileId": "<profileId>",
+      "generation": 6,
+      "data": "stale-frame"
+    }
+  }
+}

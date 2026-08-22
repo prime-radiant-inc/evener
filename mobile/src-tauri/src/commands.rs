@@ -12,6 +12,7 @@ use tauri::State;
 use crate::appwire_transport::{AppwireEvent, ConnectionId};
 use crate::diagnostics::DiagnosticEntry;
 use crate::error::ReleaseMode;
+use crate::http_transport::{HubResponseHeaders, PreparedHttpRequest, REQUEST_ID_HEADER};
 use crate::profile_runtime::{
     CancelPreviewRequest, ConfirmPairingRequest, HealthResponse, PreviewPasteRequest,
     PreviewRepairRequest, PreviewResponse, ProfileRuntime, ProfileSummaryResponse, RemoveRequest,
@@ -179,66 +180,119 @@ pub async fn profile_health(runtime: State<'_, ProfileRuntime>) -> Result<Health
 // HTTP transport command
 // ---------------------------------------------------------------------------
 
-#[derive(Debug, Clone, serde::Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct HubHttpRequest {
-    pub active_profile_id: String,
-    pub method: String,
-    pub path: String,
-    #[serde(default)]
-    pub body: Option<serde_json::Value>,
-    #[serde(default)]
-    pub media_type: Option<String>,
+#[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct HubHttpExecuteRequest {
+    pub request_id: String,
 }
 
-/// Redacted HTTP response DTO. Never carries the token, URL, or headers.
 #[derive(Debug, Clone, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
-pub struct HubHttpResponse {
+pub struct HubHttpResponseMetadata {
+    pub request_id: String,
     pub status: u16,
-    pub body: serde_json::Value,
+    pub headers: HubResponseHeaders,
+    pub media_type: Option<String>,
+    pub body_length: usize,
+}
+
+#[tauri::command]
+pub async fn hub_http_prepare(
+    transport: State<'_, TransportState>,
+    request: PreparedHttpRequest,
+) -> Result<(), String> {
+    transport
+        .http_requests()
+        .prepare(request)
+        .map_err(|error| error.to_string())
+}
+
+/// Store one raw IPC request body. Metadata was strictly decoded and validated
+/// by `hub_http_prepare`; the only raw-request header is an opaque request ID.
+#[tauri::command]
+pub async fn hub_http_upload_body(
+    transport: State<'_, TransportState>,
+    request: tauri::ipc::Request<'_>,
+) -> Result<(), String> {
+    let request_id = request
+        .headers()
+        .get(REQUEST_ID_HEADER)
+        .and_then(|value| value.to_str().ok())
+        .ok_or_else(|| "invalid request id".to_owned())?;
+    let body = match request.body() {
+        tauri::ipc::InvokeBody::Raw(body) => body.clone(),
+        tauri::ipc::InvokeBody::Json(_) => return Err("raw request body required".to_owned()),
+    };
+    transport
+        .http_requests()
+        .upload_body(request_id, body)
+        .map_err(|error| error.to_string())
 }
 
 #[tauri::command]
 pub async fn hub_http_request(
     runtime: State<'_, ProfileRuntime>,
     transport: State<'_, TransportState>,
-    request: HubHttpRequest,
-) -> Result<HubHttpResponse, String> {
-    // Capture ID, generation, origin, and token as one immutable snapshot
-    // while lifecycle serialization is held. Caller mismatch is rejected
-    // before any network operation begins.
-    let snapshot = runtime
-        .serialized(|store| {
-            store
-                .active_snapshot(&request.active_profile_id)
-                .map_err(|e| e.to_string())
-        })
-        .await?;
-    let (profile_id, generation, origin, token) = snapshot.into_parts();
+    request: HubHttpExecuteRequest,
+    on_response: tauri::ipc::Channel,
+) -> Result<tauri::ipc::Response, String> {
+    let registered = transport
+        .http_requests()
+        .begin(&request.request_id)
+        .map_err(|error| error.to_string())?;
+    let result = async {
+        let metadata = registered.metadata;
+        let snapshot = runtime
+            .serialized(|store| {
+                store
+                    .active_snapshot(&metadata.active_profile_id)
+                    .map_err(|error| error.to_string())
+            })
+            .await?;
+        let (profile_id, generation, origin, token) = snapshot.into_parts();
+        let response = transport
+            .make_http(origin, token)
+            .request_cancellable(
+                crate::http_transport::HubRequest {
+                    method: metadata.method,
+                    path: metadata.path,
+                    body: registered.body,
+                    media_type: metadata.media_type,
+                },
+                Some(&profile_id),
+                generation.0,
+                registered.cancellation,
+            )
+            .await
+            .map_err(|error| error.to_string())?;
+        let response_metadata = HubHttpResponseMetadata {
+            request_id: request.request_id.clone(),
+            status: response.status,
+            headers: response.headers,
+            media_type: response.media_type,
+            body_length: response.body.len(),
+        };
+        let json = serde_json::to_string(&response_metadata)
+            .map_err(|_| "response metadata unavailable".to_owned())?;
+        on_response
+            .send(tauri::ipc::InvokeResponseBody::Json(json))
+            .map_err(|_| "response metadata unavailable".to_owned())?;
+        Ok(tauri::ipc::Response::new(response.body))
+    }
+    .await;
+    transport.http_requests().finish(&request.request_id);
+    result
+}
 
-    // Construct a HubHttp with the active profile's origin and token, using
-    // the shared client and diagnostics. The network request runs outside
-    // the lifecycle mutex.
-    let http = transport.make_http(origin, token);
-    let response = http
-        .request_with_profile(
-            crate::http_transport::HubRequest {
-                method: request.method,
-                path: request.path,
-                body: request.body,
-                media_type: request.media_type,
-            },
-            Some(&profile_id),
-            generation.0,
-        )
-        .await
-        .map_err(|e| e.to_string())?;
-
-    Ok(HubHttpResponse {
-        status: response.status,
-        body: response.body,
-    })
+#[tauri::command]
+pub async fn hub_http_cancel(
+    transport: State<'_, TransportState>,
+    request: HubHttpExecuteRequest,
+) -> Result<(), String> {
+    transport
+        .http_requests()
+        .cancel(&request.request_id)
+        .map_err(|error| error.to_string())
 }
 
 // ---------------------------------------------------------------------------
@@ -277,8 +331,8 @@ pub enum AppwireChannelEvent {
     },
 }
 
-#[derive(Debug, Clone, serde::Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct AppwireOpenRequest {
     pub profile_id: String,
 }
@@ -370,8 +424,8 @@ pub async fn appwire_open(
     })
 }
 
-#[derive(Debug, Clone, serde::Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct AppwireSendRequest {
     pub connection_id: String,
     pub frame: String,
@@ -390,8 +444,8 @@ pub async fn appwire_send(
         .map_err(|e| e.to_string())
 }
 
-#[derive(Debug, Clone, serde::Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct AppwireCloseRequest {
     pub connection_id: String,
 }
@@ -451,7 +505,84 @@ fn decode_conn_id(s: &str) -> Result<ConnectionId, String> {
 
 #[cfg(test)]
 mod tests {
-    use super::AppwireChannelEvent;
+    use super::{
+        AppwireChannelEvent, AppwireCloseRequest, AppwireOpenRequest, AppwireSendRequest,
+        HubHttpExecuteRequest, HubHttpResponseMetadata,
+    };
+    use crate::http_transport::{HubResponseHeaders, PreparedHttpRequest, REQUEST_ID_HEADER};
+    use crate::profile_runtime::{
+        CancelPreviewRequest, ConfirmPairingRequest, PreviewPasteRequest, PreviewRepairRequest,
+        RemoveRequest, RenameRequest, SelectRequest,
+    };
+
+    #[test]
+    fn command_envelope_fixture_matches_rust_command_arguments() {
+        let request_id = "<requestId>".to_owned();
+        let fixture: serde_json::Value =
+            serde_json::from_str(include_str!("../fixtures/command-envelopes-v1.json")).unwrap();
+        let generated = serde_json::json!({
+            "version": 1,
+            "commands": {
+                "profile_list": { "args": {} },
+                "profile_preview_paste": { "args": { "request": PreviewPasteRequest { raw: "<redacted>".to_owned() } } },
+                "profile_preview_repair": { "args": { "request": PreviewRepairRequest { profile_id: "<profileId>".to_owned(), raw: "<redacted>".to_owned() } } },
+                "profile_confirm_pairing": { "args": { "request": ConfirmPairingRequest { preview_id: "<previewId>".to_owned(), name: "<name>".to_owned(), allow_duplicate_origin: false } } },
+                "profile_preview_cancel": { "args": { "request": CancelPreviewRequest { preview_id: "<previewId>".to_owned() } } },
+                "profile_previews_clear": { "args": {} },
+                "profile_rename": { "args": { "request": RenameRequest { profile_id: "<profileId>".to_owned(), new_name: "<newName>".to_owned() } } },
+                "profile_remove": { "args": { "request": RemoveRequest { profile_id: "<profileId>".to_owned() } } },
+                "profile_select": { "args": { "request": SelectRequest { profile_id: "<profileId>".to_owned() } } },
+                "profile_health": { "args": {} },
+                "hub_http_prepare": { "args": { "request": PreparedHttpRequest {
+                    request_id: request_id.clone(), active_profile_id: "<profileId>".to_owned(),
+                    method: "GET".to_owned(), path: "/api/example".to_owned(), body_length: 0,
+                    media_type: None,
+                } } },
+                "hub_http_upload_body": { "payload": "raw", "headers": { (REQUEST_ID_HEADER): request_id.clone() } },
+                "hub_http_request": { "args": { "request": HubHttpExecuteRequest { request_id: request_id.clone() }, "onResponse": "<channel>" } },
+                "hub_http_cancel": { "args": { "request": HubHttpExecuteRequest { request_id: request_id.clone() } } },
+                "appwire_open": { "args": { "request": AppwireOpenRequest { profile_id: "<profileId>".to_owned() }, "onEvent": "<channel>" } },
+                "appwire_send": { "args": { "request": AppwireSendRequest { connection_id: "<connectionId>".to_owned(), frame: "<frame>".to_owned() } } },
+                "appwire_close": { "args": { "request": AppwireCloseRequest { connection_id: "<connectionId>".to_owned() } } },
+                "diagnostics_snapshot": { "args": {} },
+            },
+            "dtoFixtures": {
+                "httpResponseMetadata": HubHttpResponseMetadata {
+                    request_id: request_id.clone(),
+                    status: 404,
+                    headers: HubResponseHeaders {
+                        content_type: Some("image/jpeg".to_owned()),
+                        content_length: None,
+                        etag: Some("opaque-etag".to_owned()),
+                        last_modified: None,
+                    },
+                    media_type: Some("image/jpeg".to_owned()),
+                    body_length: 6,
+                },
+                "appwireCurrentText": AppwireChannelEvent::Text {
+                    connection_id: "<profileId>:7".to_owned(),
+                    profile_id: "<profileId>".to_owned(),
+                    generation: 7,
+                    data: "current-frame".to_owned(),
+                },
+                "appwireStaleText": AppwireChannelEvent::Text {
+                    connection_id: "<profileId>:6".to_owned(),
+                    profile_id: "<profileId>".to_owned(),
+                    generation: 6,
+                    data: "stale-frame".to_owned(),
+                },
+            }
+        });
+        assert_eq!(fixture, generated);
+    }
+
+    #[test]
+    fn request_dtos_reject_secret_bearing_extra_fields() {
+        let extra = serde_json::json!({"profileId":"p", "token":"secret"});
+        assert!(serde_json::from_value::<AppwireOpenRequest>(extra).is_err());
+        let extra = serde_json::json!({"requestId":"request_123456789", "rawQr":"secret"});
+        assert!(serde_json::from_value::<HubHttpExecuteRequest>(extra).is_err());
+    }
 
     #[test]
     fn appwire_channel_dto_serializes_complete_identity_on_every_variant() {
