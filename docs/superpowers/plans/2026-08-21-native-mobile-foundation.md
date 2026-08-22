@@ -392,40 +392,48 @@ git commit -m "feat(mobile): secure Hub pairing policy"
 ### Task 6: Implement Native HTTP and Shared AppWire Transport
 
 **Files:**
-- Create: `mobile/src-tauri/src/http_transport.rs`, `appwire_transport.rs`, `commands.rs`, `diagnostics.rs`
-- Create: `mobile/src/services/nativeHttp.ts`, `mobile/src/services/appwireSocket.ts`
+- Create: `mobile/src-tauri/src/profile_runtime.rs`, `http_transport.rs`, `appwire_transport.rs`, `commands.rs`, `diagnostics.rs`
+- Create: `mobile/src/services/nativeProfiles.ts`, `nativeHttp.ts`, `appwireSocket.ts`
 - Test: Rust local-server integration tests and TypeScript socket tests
 
 **Interfaces:**
-- Produces: `HubHttp.request(activeProfileId, HubRequest) -> HubResponse`; `AppwireManager.select(profileId)` and `open(Channel<AppwireEvent>) -> ConnectionId`; `TauriSocket implements WebSocketLike` with profile and connection generations.
+- Produces: serialized Tauri profile commands backed by one persistent `ProfileStore`; `HubHttp.request(activeProfileId, HubRequest) -> HubResponse`; `AppwireManager.select(profileId)` and `open(Channel<AppwireEvent>) -> ConnectionId`; `TauriSocket implements WebSocketLike` with profile and connection generations.
 
-- [ ] **Step 1: Write failing HTTP integration tests**
+- [ ] **Step 1: Write failing production profile-state and command tests**
+
+Use temp app-data and fake Keychain/probe adapters to assert restart persistence, list/add/re-pair/rename/remove/select, serialized concurrent calls, active-generation changes, and redacted responses. Prove the managed `ProfileStore` instance is shared by paste previews, native QR previews, confirmation, and switching. Add a plugin integration test where Swift/native scan returns raw text to Rust, Rust consumes the installed `PreviewCoordinator`, and JS receives only `{previewId,origin}`; no installed coordinator returns structured unavailable.
+
+- [ ] **Step 2: Implement production profile state and commands**
+
+Add atomic file preferences under Tauri app-data, Keychain bridge adapter, real health/auth probe, one async lifecycle mutex, and managed app state. Expose only typed profile commands. `AppPreviewHandler` must delegate to that exact managed `ProfileStore`; remove the stateless parser-only handler. Change mobile scan internals so the stored coordinator is read and invoked after native scan; raw QR text remains Swift→Rust and never reaches JS.
+
+- [ ] **Step 3: Write failing HTTP integration tests**
 
 A local scripted server asserts pinned Host, bearer injection, removed cookie/authorization, allowlisted method/path/body, redirect rejection, cancellation, body fidelity, and no token in errors.
 
-- [ ] **Step 2: Write failing AppWire integration tests**
+- [ ] **Step 4: Write failing AppWire integration tests**
 
 Assert ordered text frames, close code propagation, exactly one total socket, switch closes the prior profile before opening the next, profile/generation rejection, bounded overload close, and cancellation using two scripted local WebSocket servers.
 
-- [ ] **Step 3: Verify failures**
+- [ ] **Step 5: Verify failures**
 
 Run: `cargo test --manifest-path mobile/src-tauri/Cargo.toml transport`
 
 Expected: FAIL because transport types are absent.
 
-- [ ] **Step 4: Implement minimal Rust transport**
+- [ ] **Step 6: Implement minimal Rust transport**
 
 Use Reqwest with redirects disabled and Tokio Tungstenite. Restrict requests to route/method tables; return binary through `tauri::ipc::Response`. Use one bounded MPSC queue and generation counter for AppWire. `diagnostics.rs` keeps exactly 200 metadata-only entries and exposes only timestamp, operation, status class, byte count, generation, and opaque error ID; tests assert headers, URLs, bodies, filenames, and text never enter the ring.
 
-- [ ] **Step 5: Write and run failing TypeScript adapter tests**
+- [ ] **Step 7: Write and run failing TypeScript adapter tests**
 
-Fake Tauri invoke/channel primitives; assert `onopen`, `onmessage`, `onclose`, `onerror`, `send`, and stale-generation behavior match `WebSocketLike`.
+Fake Tauri invoke/channel primitives; assert profile list/preview/confirm/edit/remove/select responses stay redacted, then assert `onopen`, `onmessage`, `onclose`, `onerror`, `send`, profile switch, and stale-generation behavior match `WebSocketLike`.
 
-- [ ] **Step 6: Implement TypeScript services**
+- [ ] **Step 8: Implement TypeScript services**
 
 The socket factory ignores browser WebSocket and identifies AppwireClient as `{name:"evener-mobile", version:"0.1.0"}`. No service imports Tauri directly except `nativeHttp.ts` and `appwireSocket.ts`.
 
-- [ ] **Step 7: Run focused gates**
+- [ ] **Step 9: Run focused gates**
 
 ```bash
 cargo test --manifest-path mobile/src-tauri/Cargo.toml transport
@@ -435,7 +443,7 @@ cargo clippy --manifest-path mobile/src-tauri/Cargo.toml --all-targets -- -D war
 
 Expected: PASS.
 
-- [ ] **Step 8: Commit**
+- [ ] **Step 10: Commit**
 
 ```bash
 git add mobile/src-tauri/src mobile/src-tauri/Cargo.toml mobile/src-tauri/Cargo.lock mobile/src/services
