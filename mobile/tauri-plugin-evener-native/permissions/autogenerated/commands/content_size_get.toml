@@ -1,0 +1,13 @@
+# Automatically generated - DO NOT EDIT!
+
+"$schema" = "../../schemas/schema.json"
+
+[[permission]]
+identifier = "allow-content-size-get"
+description = "Enables the content_size_get command without any pre-configured scope."
+commands.allow = ["content_size_get"]
+
+[[permission]]
+identifier = "deny-content-size-get"
+description = "Denies the content_size_get command without any pre-configured scope."
+commands.deny = ["content_size_get"]

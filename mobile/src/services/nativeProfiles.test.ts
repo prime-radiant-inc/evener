@@ -40,6 +40,9 @@ function fakeBridge(scripts: ScriptedInvoke[]): TauriBridge & {
     createChannel<T>(_onMessage: (response: T) => void) {
       return { id: 0, onmessage: _onMessage } as never;
     },
+    listen(): Promise<() => void> {
+      return Promise.resolve(() => {});
+    },
   };
   return Object.assign(bridge, { invocations });
 }
