@@ -64,7 +64,7 @@ fn pairing_url(ws_url: &str) -> String {
 // ---------------------------------------------------------------------------
 
 mod ws_server {
-    use std::sync::atomic::{AtomicU64, Ordering};
+    use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
     use std::sync::{Arc, Mutex};
 
     use futures_util::{SinkExt, StreamExt};
@@ -77,6 +77,10 @@ mod ws_server {
         frames_to_send: Arc<Mutex<Vec<String>>>,
         server_close: Arc<Mutex<Option<(u16, String)>>>,
         abrupt_close: Arc<Mutex<bool>>,
+        pause_after_frames: Arc<AtomicBool>,
+        frames_sent_count: Arc<AtomicU64>,
+        frames_sent: Arc<tokio::sync::Notify>,
+        resume_after_frames: Arc<tokio::sync::Notify>,
         received_frames: Arc<Mutex<Vec<String>>>,
         close_code: Arc<Mutex<Option<u16>>>,
         close_observed: Arc<tokio::sync::Notify>,
@@ -95,6 +99,10 @@ mod ws_server {
             let frames_to_send: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
             let server_close: Arc<Mutex<Option<(u16, String)>>> = Arc::new(Mutex::new(None));
             let abrupt_close = Arc::new(Mutex::new(false));
+            let pause_after_frames = Arc::new(AtomicBool::new(false));
+            let frames_sent_count = Arc::new(AtomicU64::new(0));
+            let frames_sent = Arc::new(tokio::sync::Notify::new());
+            let resume_after_frames = Arc::new(tokio::sync::Notify::new());
             let received_frames: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
             let close_code: Arc<Mutex<Option<u16>>> = Arc::new(Mutex::new(None));
             let close_observed = Arc::new(tokio::sync::Notify::new());
@@ -106,6 +114,10 @@ mod ws_server {
             let fts = frames_to_send.clone();
             let server_close_task = server_close.clone();
             let abrupt_close_task = abrupt_close.clone();
+            let pause_after_frames_task = pause_after_frames.clone();
+            let frames_sent_count_task = frames_sent_count.clone();
+            let frames_sent_task = frames_sent.clone();
+            let resume_after_frames_task = resume_after_frames.clone();
             let rf = received_frames.clone();
             let clc = close_code.clone();
             let close_observed_task = close_observed.clone();
@@ -124,6 +136,10 @@ mod ws_server {
                     let fts = fts.clone();
                     let server_close = server_close_task.clone();
                     let abrupt_close = abrupt_close_task.clone();
+                    let pause_after_frames = pause_after_frames_task.clone();
+                    let frames_sent_count = frames_sent_count_task.clone();
+                    let frames_sent = frames_sent_task.clone();
+                    let resume_after_frames = resume_after_frames_task.clone();
                     let rf = rf.clone();
                     let clc = clc.clone();
                     let close_observed = close_observed_task.clone();
@@ -167,6 +183,15 @@ mod ws_server {
                         let frames = fts.lock().unwrap().clone();
                         for frame in frames {
                             let _ = write.send(Message::Text(frame.into())).await;
+                        }
+                        frames_sent_count.fetch_add(1, Ordering::SeqCst);
+                        frames_sent.notify_waiters();
+                        loop {
+                            let resumed = resume_after_frames.notified();
+                            if !pause_after_frames.load(Ordering::SeqCst) {
+                                break;
+                            }
+                            resumed.await;
                         }
                         let should_abort = *abrupt_close.lock().unwrap();
                         if should_abort {
@@ -212,6 +237,10 @@ mod ws_server {
                 frames_to_send,
                 server_close,
                 abrupt_close,
+                pause_after_frames,
+                frames_sent_count,
+                frames_sent,
+                resume_after_frames,
                 received_frames,
                 close_code,
                 close_observed,
@@ -225,16 +254,40 @@ mod ws_server {
             self.frames_to_send.lock().unwrap().push(frame);
         }
 
+        pub fn clear_frames(&self) {
+            self.frames_to_send.lock().unwrap().clear();
+        }
+
         pub fn close_new_connections(&self, code: u16, reason: &str) {
             *self.server_close.lock().unwrap() = Some((code, reason.to_owned()));
         }
 
         pub fn keep_new_connections_open(&self) {
             *self.server_close.lock().unwrap() = None;
+            *self.abrupt_close.lock().unwrap() = false;
         }
 
         pub fn abort_new_connections(&self) {
             *self.abrupt_close.lock().unwrap() = true;
+        }
+
+        pub fn pause_new_connections_after_frames(&self) {
+            self.pause_after_frames.store(true, Ordering::SeqCst);
+        }
+
+        pub async fn await_frames_sent(&self, count: u64) {
+            loop {
+                let sent = self.frames_sent.notified();
+                if self.frames_sent_count.load(Ordering::SeqCst) >= count {
+                    return;
+                }
+                sent.await;
+            }
+        }
+
+        pub fn resume_new_connections_after_frames(&self) {
+            self.pause_after_frames.store(false, Ordering::SeqCst);
+            self.resume_after_frames.notify_waiters();
         }
 
         pub fn received_frames(&self) -> Vec<String> {
@@ -795,6 +848,116 @@ async fn appwire_close_propagates_close_code() {
 // ---------------------------------------------------------------------------
 // Tests: bounded overload closes without dropping/reordering
 // ---------------------------------------------------------------------------
+
+async fn saturated_terminal_reaps_before_reopen(abrupt: bool) {
+    use ws_server::ScriptedWsServer;
+
+    let server = ScriptedWsServer::start().await;
+    server.enqueue_frame("fills-the-only-nonterminal-slot".to_owned());
+    server.pause_new_connections_after_frames();
+
+    let manager = Arc::new(test_manager());
+    // Two of three slots are reserved by open for Error+Closed, leaving
+    // exactly one normal slot for the scripted text frame.
+    let (tx1, mut rx1) = tokio::sync::mpsc::channel::<AppwireEvent>(3);
+    let first = manager
+        .open("profile-1", 0, server.url.clone(), "tok".to_owned(), tx1)
+        .await
+        .unwrap();
+    server.await_frames_sent(1).await;
+    if abrupt {
+        server.abort_new_connections();
+    } else {
+        server.close_new_connections(1012, "saturated restart");
+    }
+
+    // join! polls the lifecycle waiter before releasing the scripted server,
+    // so the terminal-start notification cannot be missed.
+    let (started, ()) = tokio::join!(manager.wait_for_terminal_start(&first), async {
+        server.resume_new_connections_after_frames()
+    });
+    assert!(started);
+    assert!(manager
+        .send(first.clone(), "stale".to_owned())
+        .await
+        .is_err());
+    assert_eq!(
+        rx1.len(),
+        if abrupt { 3 } else { 2 },
+        "normal backlog plus reserved terminal outcome must already be queued",
+    );
+
+    // Reopen concurrently with old terminal cleanup, without draining the full
+    // queue. Reserved terminal permits prevent deadlock; open itself waits for
+    // the supervisor JoinHandle to be reaped and active state to be cleared.
+    server.keep_new_connections_open();
+    server.clear_frames();
+    let (tx2, mut rx2) = tokio::sync::mpsc::channel::<AppwireEvent>(8);
+    let second = tokio::time::timeout_at(
+        deadline_secs(3),
+        manager.open("profile-1", 0, server.url.clone(), "tok".to_owned(), tx2),
+    )
+    .await
+    .expect("reopen must not block on saturated old queue")
+    .unwrap();
+    assert_eq!(manager.reaped_connection_count(), 1);
+    assert!(!manager.is_active(&first));
+    assert!(manager.is_active(&second));
+    assert_eq!(server.connection_count(), 2);
+
+    assert!(matches!(
+        rx1.recv().await,
+        Some(AppwireEvent::Text {
+            ref connection_id,
+            ref data,
+        }) if connection_id == &first && data == "fills-the-only-nonterminal-slot"
+    ));
+    if abrupt {
+        assert!(matches!(
+            rx1.recv().await,
+            Some(AppwireEvent::Error { ref connection_id }) if connection_id == &first
+        ));
+        assert!(matches!(
+            rx1.recv().await,
+            Some(AppwireEvent::Closed {
+                ref connection_id,
+                code: 1006,
+                ref reason,
+            }) if connection_id == &first && reason == "transport read failed"
+        ));
+    } else {
+        assert!(matches!(
+            rx1.recv().await,
+            Some(AppwireEvent::Closed {
+                ref connection_id,
+                code: 1012,
+                ref reason,
+            }) if connection_id == &first && reason == "saturated restart"
+        ));
+    }
+    assert_eq!(
+        rx1.recv().await,
+        None,
+        "terminal outcome must be emitted once"
+    );
+    assert!(matches!(
+        rx2.try_recv(),
+        Err(tokio::sync::mpsc::error::TryRecvError::Empty)
+    ));
+
+    manager.close(second).await;
+    assert_eq!(manager.reaped_connection_count(), 2);
+}
+
+#[tokio::test]
+async fn server_close_with_full_event_queue_reaps_before_concurrent_reopen() {
+    saturated_terminal_reaps_before_reopen(false).await;
+}
+
+#[tokio::test]
+async fn reader_error_with_full_event_queue_reaps_before_concurrent_reopen() {
+    saturated_terminal_reaps_before_reopen(true).await;
+}
 
 #[tokio::test]
 async fn appwire_bounded_overload_closes_connection() {

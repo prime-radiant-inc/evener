@@ -3,10 +3,11 @@
 //!
 //! All manager lifecycle operations serialize through one async mutex. A
 //! connection is owned by one supervisor task, so close, profile switch, and
-//! terminal reader outcomes have one deterministic cleanup path. Terminal
-//! outcomes clear the active connection only when its full connection identity
-//! still matches, then emit ordered metadata-bearing events.
+//! terminal reader outcomes have one deterministic cleanup path. Reserved queue
+//! permits make terminal delivery nonblocking. Active state remains owned until
+//! a reaper has awaited the supervisor and observed socket-half drop.
 
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
 use futures_util::{SinkExt, StreamExt};
@@ -84,10 +85,51 @@ enum WriterCommand {
     Close { code: u16, reason: String },
 }
 
+#[derive(Clone)]
 struct ActiveConnection {
     conn_id: ConnectionId,
     command_tx: mpsc::UnboundedSender<WriterCommand>,
-    supervisor_handle: tokio::task::JoinHandle<()>,
+    lifecycle: Arc<ConnectionLifecycle>,
+}
+
+#[derive(Default)]
+struct ConnectionLifecycle {
+    terminal_started: AtomicBool,
+    terminal_started_notify: tokio::sync::Notify,
+    completed: AtomicBool,
+    completed_notify: tokio::sync::Notify,
+}
+
+impl ConnectionLifecycle {
+    fn mark_terminal_started(&self) {
+        self.terminal_started.store(true, Ordering::SeqCst);
+        self.terminal_started_notify.notify_waiters();
+    }
+
+    async fn wait_terminal_started(&self) {
+        loop {
+            let notified = self.terminal_started_notify.notified();
+            if self.terminal_started.load(Ordering::SeqCst) {
+                return;
+            }
+            notified.await;
+        }
+    }
+
+    fn mark_completed(&self) {
+        self.completed.store(true, Ordering::SeqCst);
+        self.completed_notify.notify_waiters();
+    }
+
+    async fn wait_completed(&self) {
+        loop {
+            let notified = self.completed_notify.notified();
+            if self.completed.load(Ordering::SeqCst) {
+                return;
+            }
+            notified.await;
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -107,6 +149,7 @@ struct ManagerState {
 /// preferences change. Opening and closing serialize with those transitions.
 pub struct AppwireManager {
     generation: std::sync::atomic::AtomicU64,
+    reaped_connections: Arc<std::sync::atomic::AtomicU64>,
     state: Arc<SyncMutex<ManagerState>>,
     lifecycle: tokio::sync::Mutex<()>,
     policy: Arc<NetworkPolicy>,
@@ -117,6 +160,7 @@ impl AppwireManager {
     pub fn new(policy: Arc<NetworkPolicy>, mode: ReleaseMode) -> Self {
         Self {
             generation: std::sync::atomic::AtomicU64::new(0),
+            reaped_connections: Arc::new(std::sync::atomic::AtomicU64::new(0)),
             state: Arc::new(SyncMutex::new(ManagerState::default())),
             lifecycle: tokio::sync::Mutex::new(()),
             policy,
@@ -139,6 +183,12 @@ impl AppwireManager {
             .map(|selected| (selected.profile_id.clone(), selected.profile_generation))
     }
 
+    /// Number of socket supervisors whose JoinHandle has completed and been
+    /// awaited by the manager reaper.
+    pub fn reaped_connection_count(&self) -> u64 {
+        self.reaped_connections.load(Ordering::SeqCst)
+    }
+
     /// Whether the given connection still owns the one active socket.
     pub fn is_active(&self, conn_id: &ConnectionId) -> bool {
         self.state
@@ -148,13 +198,33 @@ impl AppwireManager {
             .is_some_and(|active| active.conn_id == *conn_id)
     }
 
+    /// Await the exact point at which a connection has selected a terminal
+    /// outcome. Primarily useful to coordinate lifecycle observers without
+    /// polling; completion and active-state removal happen later, after socket
+    /// drop and supervisor reaping.
+    pub async fn wait_for_terminal_start(&self, conn_id: &ConnectionId) -> bool {
+        let lifecycle = {
+            let state = self.state.lock();
+            state
+                .active
+                .as_ref()
+                .filter(|active| active.conn_id == *conn_id)
+                .map(|active| active.lifecycle.clone())
+        };
+        let Some(lifecycle) = lifecycle else {
+            return false;
+        };
+        lifecycle.wait_terminal_started().await;
+        true
+    }
+
     /// Close and reap the old connection before changing the manager's selected
     /// profile identity. `None` represents no selected profile.
     pub async fn select(&self, profile_id: Option<&str>, profile_generation: u64) {
         let _lifecycle = self.lifecycle.lock().await;
-        let old = self.state.lock().active.take();
+        let old = self.active_control();
         if let Some(old) = old {
-            Self::close_and_reap(old, 1000, "profile selection changed").await;
+            Self::close_and_wait(old, 1000, "profile selection changed").await;
         }
         self.state.lock().selected = profile_id.map(|profile_id| SelectedProfile {
             profile_id: profile_id.to_owned(),
@@ -199,22 +269,39 @@ impl AppwireManager {
                         && selected.profile_generation == profile_generation => {}
                 Some(_) => return Err(AppwireError::ProfileMismatch),
             }
-            if state
-                .active
-                .as_ref()
-                .is_some_and(|active| active.conn_id.profile_id == profile_id)
+        }
+
+        // A terminal supervisor retains active ownership until its reaper has
+        // observed task exit and socket-half drop. A reconnect waits for that
+        // completion; a duplicate open against a healthy socket still fails.
+        loop {
+            let existing = self.active_control();
+            let Some(existing) = existing else {
+                break;
+            };
+            if existing.conn_id.profile_id == profile_id
+                && !existing.lifecycle.terminal_started.load(Ordering::SeqCst)
             {
                 return Err(AppwireError::AlreadyConnected);
             }
+            if existing.lifecycle.terminal_started.load(Ordering::SeqCst) {
+                existing.lifecycle.wait_completed().await;
+            } else {
+                Self::close_and_wait(existing, 1000, "connection replaced").await;
+            }
         }
 
-        // A selected-profile transition normally reaps before changing
-        // selection. Keep replacement safe for callers that explicitly
-        // reconciled manager state first.
-        let old = self.state.lock().active.take();
-        if let Some(old) = old {
-            Self::close_and_reap(old, 1000, "connection replaced").await;
-        }
+        // Permanently reserve two queue slots for terminal Error+Closed. Text
+        // frames can fill only the nonterminal capacity, so terminal delivery
+        // is nonblocking even when that backlog is saturated.
+        let error_permit = event_tx
+            .clone()
+            .try_reserve_owned()
+            .map_err(|_| AppwireError::ConnectionFailed)?;
+        let closed_permit = event_tx
+            .clone()
+            .try_reserve_owned()
+            .map_err(|_| AppwireError::ConnectionFailed)?;
 
         let generation = self.next_generation();
         let conn_id = ConnectionId::new(profile_id.to_owned(), generation);
@@ -254,8 +341,9 @@ impl AppwireManager {
         let (mut write, mut read) = ws_stream.split();
         let (command_tx, mut command_rx) = mpsc::unbounded_channel();
         let (start_tx, start_rx) = oneshot::channel();
-        let state = self.state.clone();
         let task_conn_id = conn_id.clone();
+        let connection_lifecycle = Arc::new(ConnectionLifecycle::default());
+        let supervisor_lifecycle = connection_lifecycle.clone();
 
         let supervisor_handle = tokio::spawn(async move {
             // The start gate prevents a terminal server frame from racing the
@@ -339,53 +427,33 @@ impl AppwireManager {
                 }
             };
 
-            // Server/error terminal outcomes may mutate lifecycle state only
-            // if this exact connection still owns it. Local close was already
-            // taken by its awaiting manager operation but still notifies its
-            // own channel.
-            let should_emit = match terminal {
-                Terminal::LocalClose { .. } => true,
-                _ => {
-                    let mut manager = state.lock();
-                    if manager
-                        .active
-                        .as_ref()
-                        .is_some_and(|active| active.conn_id == task_conn_id)
-                    {
-                        manager.active.take();
-                        true
-                    } else {
-                        false
-                    }
-                }
-            };
-            if !should_emit {
-                return;
-            }
+            supervisor_lifecycle.mark_terminal_started();
+
+            // Finish the WebSocket side before publishing terminal outcome.
+            // The reserved permits below cannot await queue capacity. Socket
+            // halves are explicitly dropped before the supervisor returns.
+            let _ = write.close().await;
+            drop(write);
+            drop(read);
 
             match terminal {
                 Terminal::Error { code, reason } => {
-                    let _ = event_tx
-                        .send(AppwireEvent::Error {
-                            connection_id: task_conn_id.clone(),
-                        })
-                        .await;
-                    let _ = event_tx
-                        .send(AppwireEvent::Closed {
-                            connection_id: task_conn_id,
-                            code,
-                            reason,
-                        })
-                        .await;
+                    error_permit.send(AppwireEvent::Error {
+                        connection_id: task_conn_id.clone(),
+                    });
+                    closed_permit.send(AppwireEvent::Closed {
+                        connection_id: task_conn_id,
+                        code,
+                        reason,
+                    });
                 }
                 Terminal::Closed { code, reason } | Terminal::LocalClose { code, reason } => {
-                    let _ = event_tx
-                        .send(AppwireEvent::Closed {
-                            connection_id: task_conn_id,
-                            code,
-                            reason,
-                        })
-                        .await;
+                    drop(error_permit);
+                    closed_permit.send(AppwireEvent::Closed {
+                        connection_id: task_conn_id,
+                        code,
+                        reason,
+                    });
                 }
             }
         });
@@ -393,7 +461,25 @@ impl AppwireManager {
         self.state.lock().active = Some(ActiveConnection {
             conn_id: conn_id.clone(),
             command_tx,
-            supervisor_handle,
+            lifecycle: connection_lifecycle.clone(),
+        });
+        let state = self.state.clone();
+        let reaped_connections = self.reaped_connections.clone();
+        let reaped_conn_id = conn_id.clone();
+        tokio::spawn(async move {
+            let _ = supervisor_handle.await;
+            reaped_connections.fetch_add(1, Ordering::SeqCst);
+            {
+                let mut state = state.lock();
+                if state
+                    .active
+                    .as_ref()
+                    .is_some_and(|active| active.conn_id == reaped_conn_id)
+                {
+                    state.active.take();
+                }
+            }
+            connection_lifecycle.mark_completed();
         });
         // The receiver cannot disappear before the task starts unless the task
         // was externally aborted, which this handle is not yet exposed for.
@@ -411,6 +497,9 @@ impl AppwireManager {
             if active.conn_id != conn_id {
                 return Err(AppwireError::StaleConnection);
             }
+            if active.lifecycle.terminal_started.load(Ordering::SeqCst) {
+                return Err(AppwireError::StaleConnection);
+            }
             active.command_tx.clone()
         };
         command_tx
@@ -421,19 +510,19 @@ impl AppwireManager {
     pub async fn close_with_code(&self, conn_id: ConnectionId, code: u16) {
         let _lifecycle = self.lifecycle.lock().await;
         let connection = {
-            let mut state = self.state.lock();
+            let state = self.state.lock();
             if state
                 .active
                 .as_ref()
                 .is_some_and(|active| active.conn_id == conn_id)
             {
-                state.active.take()
+                state.active.clone()
             } else {
                 None
             }
         };
         if let Some(connection) = connection {
-            Self::close_and_reap(connection, code, "client closed").await;
+            Self::close_and_wait(connection, code, "client closed").await;
         }
     }
 
@@ -441,12 +530,16 @@ impl AppwireManager {
         self.close_with_code(conn_id, 1000).await;
     }
 
-    async fn close_and_reap(connection: ActiveConnection, code: u16, reason: &str) {
+    fn active_control(&self) -> Option<ActiveConnection> {
+        self.state.lock().active.clone()
+    }
+
+    async fn close_and_wait(connection: ActiveConnection, code: u16, reason: &str) {
         let _ = connection.command_tx.send(WriterCommand::Close {
             code,
             reason: reason.to_owned(),
         });
-        let _ = connection.supervisor_handle.await;
+        connection.lifecycle.wait_completed().await;
     }
 }
 
