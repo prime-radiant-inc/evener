@@ -7,8 +7,38 @@ import { describe, expect, it } from "vitest";
 const cssPath = path.join(__dirname, "global.css");
 const css = readFileSync(cssPath, "utf8");
 
+// Read the HTML host page to assert viewport meta and root markup.
+const htmlPath = path.join(__dirname, "..", "..", "index.html");
+const html = readFileSync(htmlPath, "utf8");
+
 function has(rule: RegExp): boolean {
   return rule.test(css);
+}
+
+/**
+ * Extract the first rule block for a selector from the CSS source.
+ * Returns the declarations string (inside the braces) or null if not found.
+ * This is more precise than a loose substring search because it isolates
+ * which selector owns a declaration, preventing coincidental passes from
+ * an unrelated rule that happens to mention the same token.
+ */
+function ruleBlock(selector: string): string | null {
+  const escaped = selector.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  // Match the selector followed by its { ... } block. The /s flag lets the
+  // body span newlines. We capture the inside of the braces.
+  const re = new RegExp(`${escaped}\\s*\\{([^}]*)\\}`, "s");
+  const m = css.match(re);
+  return m ? m[1] : null;
+}
+
+/**
+ * Extract the viewport meta tag content from index.html.
+ */
+function viewportMeta(): string | null {
+  const m = html.match(
+    /<meta\s+name=["']viewport["']\s+content=["']([^"']*)["']/i,
+  );
+  return m ? m[1] : null;
 }
 
 describe("design tokens — semantic colors (forest-teal + summit-amber)", () => {
@@ -150,11 +180,10 @@ describe("fix round 1 — dark glyph contrast", () => {
 });
 
 describe("fix round 1 — no duplicate safe-area padding", () => {
-  it("screen-scroll does NOT apply safe-area (shell applies it once)", () => {
-    const scrollMatch = css.match(
-      /\.evener-screen-scroll\s*\{[^}]*safe-area[^}]*\}/s,
-    );
-    expect(scrollMatch).toBeFalsy();
+  it("shell does NOT apply safe-area insets (edge owners apply them once)", () => {
+    const shell = ruleBlock(".evener-shell");
+    expect(shell).not.toBeNull();
+    expect(shell).not.toContain("safe-area");
   });
 });
 
@@ -170,5 +199,245 @@ describe("fix round 1 — intrinsic rows at 375/AX", () => {
 describe("fix round 1 — tablist container", () => {
   it("bottom bar CSS class exists for tablist role", () => {
     expect(has(/evener-bottombar/i)).toBe(true);
+  });
+});
+
+/* ---------------------------------------------------------------------------
+ * Foundation 7C lane D — safe-area ownership, dynamic type, onboarding scroll,
+ * keyboard-ready geometry. These tests parse rule blocks (not loose
+ * substrings) to reject duplicate inset ownership, missing scrolling,
+ * inherited font failure, and missing viewport meta.
+ * ------------------------------------------------------------------------- */
+
+describe("7C lane D — viewport meta honors safe areas and keyboard", () => {
+  it("index.html has a viewport meta tag", () => {
+    expect(viewportMeta()).not.toBeNull();
+  });
+
+  it("viewport meta includes viewport-fit=cover", () => {
+    expect(viewportMeta()).toMatch(/viewport-fit\s*=\s*cover/i);
+  });
+
+  it("viewport meta includes interactive-widget=resizes-content", () => {
+    expect(viewportMeta()).toMatch(/interactive-widget\s*=\s*resizes-content/i);
+  });
+
+  it("viewport meta preserves width=device-width", () => {
+    expect(viewportMeta()).toMatch(/width\s*=\s*device-width/i);
+  });
+
+  it("viewport meta preserves initial-scale=1", () => {
+    expect(viewportMeta()).toMatch(/initial-scale\s*=\s*1(\.0)?/i);
+  });
+});
+
+describe("7C lane D — one unambiguous safe-area owner per edge", () => {
+  it("shell owns viewport height/overflow but NOT safe-area padding", () => {
+    const shell = ruleBlock(".evener-shell");
+    expect(shell).not.toBeNull();
+    expect(shell).toContain("var(--viewport-height)");
+    expect(shell).toContain("overflow");
+    expect(shell).not.toContain("safe-area");
+  });
+
+  it("TopBar owns top + horizontal safe edges", () => {
+    const topbar = ruleBlock(".evener-topbar");
+    expect(topbar).not.toBeNull();
+    expect(topbar).toContain("var(--safe-area-top)");
+    // horizontal edges
+    const horizMatch =
+      topbar.includes("var(--safe-area-left)") ||
+      topbar.includes("var(--safe-area-right)");
+    expect(horizMatch).toBe(true);
+  });
+
+  it("TopBar does NOT own the bottom safe edge", () => {
+    const topbar = ruleBlock(".evener-topbar");
+    expect(topbar).not.toBeNull();
+    expect(topbar).not.toContain("var(--safe-area-bottom)");
+  });
+
+  it("BottomBar owns the bottom safe edge", () => {
+    const bottombar = ruleBlock(".evener-bottombar");
+    expect(bottombar).not.toBeNull();
+    expect(bottombar).toContain("var(--safe-area-bottom)");
+  });
+
+  it("BottomBar does NOT own the top safe edge", () => {
+    const bottombar = ruleBlock(".evener-bottombar");
+    expect(bottombar).not.toBeNull();
+    expect(bottombar).not.toContain("var(--safe-area-top)");
+  });
+
+  it("onboarding owns all four safe edges", () => {
+    const onboarding = ruleBlock(".evener-onboarding");
+    expect(onboarding).not.toBeNull();
+    expect(onboarding).toContain("var(--safe-area-top)");
+    expect(onboarding).toContain("var(--safe-area-bottom)");
+    const horiz =
+      onboarding.includes("var(--safe-area-left)") ||
+      onboarding.includes("var(--safe-area-right)");
+    expect(horiz).toBe(true);
+  });
+
+  it("Sheet owns bottom + horizontal safe edges", () => {
+    const sheet = ruleBlock(".evener-sheet");
+    expect(sheet).not.toBeNull();
+    expect(sheet).toContain("var(--safe-area-bottom)");
+    const horiz =
+      sheet.includes("var(--safe-area-left)") ||
+      sheet.includes("var(--safe-area-right)");
+    expect(horiz).toBe(true);
+  });
+
+  it("Sheet does NOT own the top safe edge", () => {
+    const sheet = ruleBlock(".evener-sheet");
+    expect(sheet).not.toBeNull();
+    expect(sheet).not.toContain("var(--safe-area-top)");
+  });
+
+  it("screen-scroll gets horizontal safety without top/bottom double counting", () => {
+    const scroll = ruleBlock(".evener-screen-scroll");
+    expect(scroll).not.toBeNull();
+    // horizontal safety is allowed (and expected) for content that may
+    // exceed the shell's lateral bounds, but vertical insets must NOT be
+    // doubled here — TopBar/BottomBar own the vertical edges.
+    expect(scroll).not.toContain("var(--safe-area-top)");
+    expect(scroll).not.toContain("var(--safe-area-bottom)");
+  });
+
+  it("a simulated 34px bottom inset yields 34px total, never 68px (no double application)", () => {
+    // Count how many distinct top-level layout rule blocks apply BOTH
+    // --safe-area-bottom AND --keyboard-inset in the same padding
+    // declaration. A dock should use max() — not calc(+) — so the inset
+    // never stacks keyboard + safe-area into 68px when only 34px is real.
+    const dock = ruleBlock(".evener-dock");
+    expect(dock).not.toBeNull();
+    // The dock must NOT use calc(x + y) which would double-count.
+    const doubleCount =
+      /calc\s*\([^)]*--keyboard-inset[^)]*\+\s*var\(--safe-area-bottom\)/;
+    expect(dock).not.toMatch(doubleCount);
+    // Instead it should use max() so only the larger of keyboard/safe applies.
+    expect(dock).toMatch(/max\s*\(/);
+    expect(dock).toContain("--keyboard-inset");
+    expect(dock).toContain("--safe-area-bottom");
+  });
+});
+
+describe("7C lane D — onboarding is the one vertical scroller", () => {
+  it("onboarding uses flex:1 so it participates in shell flex geometry", () => {
+    const onboarding = ruleBlock(".evener-onboarding");
+    expect(onboarding).not.toBeNull();
+    expect(onboarding).toMatch(/flex\s*:\s*1/i);
+  });
+
+  it("onboarding uses min-height:0 to allow shrinking below content", () => {
+    const onboarding = ruleBlock(".evener-onboarding");
+    expect(onboarding).not.toBeNull();
+    expect(onboarding).toMatch(/min-height\s*:\s*0/i);
+  });
+
+  it("onboarding has overflow-y:auto for vertical scrolling", () => {
+    const onboarding = ruleBlock(".evener-onboarding");
+    expect(onboarding).not.toBeNull();
+    expect(onboarding).toMatch(/overflow-y\s*:\s*auto/i);
+  });
+
+  it("onboarding does NOT use min-height:viewport-height (would clip instead of scroll)", () => {
+    const onboarding = ruleBlock(".evener-onboarding");
+    expect(onboarding).not.toBeNull();
+    expect(onboarding).not.toMatch(
+      /min-height\s*:\s*var\(--viewport-height\)/i,
+    );
+  });
+});
+
+describe("7C lane D — dynamic type recomputes root font and line height", () => {
+  it("root :root sets font-size and line-height from type tokens", () => {
+    const root = ruleBlock(":root");
+    expect(root).not.toBeNull();
+    expect(root).toContain("font-size");
+    expect(root).toContain("line-height");
+  });
+
+  it("all 11 bounded content-size categories are defined", () => {
+    const categories = [
+      "small",
+      "medium",
+      "large",
+      "extraLarge",
+      "extraExtraLarge",
+      "extraExtraExtraLarge",
+      "accessibilityMedium",
+      "accessibilityLarge",
+      "accessibilityExtraLarge",
+      "accessibilityExtraExtraLarge",
+      "accessibilityExtraExtraExtraLarge",
+    ];
+    for (const cat of categories) {
+      expect(has(new RegExp(`\\[data-content-size="${cat}"\\]`, "i"))).toBe(
+        true,
+      );
+    }
+  });
+
+  it("each content-size category sets --type-base and --type-leading", () => {
+    const categories = [
+      "small",
+      "medium",
+      "large",
+      "extraLarge",
+      "extraExtraLarge",
+      "extraExtraExtraLarge",
+      "accessibilityMedium",
+      "accessibilityLarge",
+      "accessibilityExtraLarge",
+      "accessibilityExtraExtraLarge",
+      "accessibilityExtraExtraExtraLarge",
+    ];
+    for (const cat of categories) {
+      const block = ruleBlock(`[data-content-size="${cat}"]`);
+      expect(block).not.toBeNull();
+      expect(block).toContain("--type-base");
+      expect(block).toContain("--type-leading");
+    }
+  });
+
+  it("AX5 (accessibilityExtraExtraExtraLarge) maps to 30px base", () => {
+    const block = ruleBlock(
+      '[data-content-size="accessibilityExtraExtraExtraLarge"]',
+    );
+    expect(block).not.toBeNull();
+    expect(block).toMatch(/--type-base\s*:\s*30px/i);
+  });
+
+  it("body does NOT override font-size (portal descendants inherit root)", () => {
+    const body = ruleBlock("body");
+    expect(body).not.toBeNull();
+    expect(body).not.toMatch(/font-size\s*:/i);
+  });
+});
+
+describe("7C lane D — conversation participates in shell flex geometry", () => {
+  it("conversation uses flex:1 not position:fixed inset:0", () => {
+    const conv = ruleBlock(".evener-conversation");
+    expect(conv).not.toBeNull();
+    expect(conv).toMatch(/flex\s*:\s*1/i);
+    expect(conv).not.toMatch(/position\s*:\s*fixed/i);
+  });
+
+  it("conversation keeps one scroller (screen-scroll) for content", () => {
+    // The conversation markup reuses evener-screen-scroll; the CSS class must
+    // still exist and remain a scroller.
+    const scroll = ruleBlock(".evener-screen-scroll");
+    expect(scroll).not.toBeNull();
+    expect(scroll).toMatch(/overflow-y\s*:\s*auto/i);
+  });
+
+  it("conversation preserves reduced-motion animation override", () => {
+    const reduced = css.match(
+      /data-reduced-motion.*?\.evener-conversation\s*\{[^}]*animation\s*:\s*none/s,
+    );
+    expect(reduced).toBeTruthy();
   });
 });
