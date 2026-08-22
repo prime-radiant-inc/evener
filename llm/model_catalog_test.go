@@ -1311,3 +1311,91 @@ func TestMaxOutputTokensFor(t *testing.T) {
 		t.Errorf("nil catalog: got %d, want 0", got)
 	}
 }
+
+// TestVisibleLiveModel_OpenRouterBareLiveID is the regression test for the bug
+// where an OpenRouter provider showed only ~10 models instead of the full
+// catalog. OpenRouter's /v1/models endpoint returns bare IDs like
+// "anthropic/claude-sonnet-4.5", but the embedded LiteLLM catalog keys OpenRouter
+// models as "openrouter/anthropic/claude-sonnet-4.5". The launch-check path did an
+// exact GetModelInfo(bareID) that returned nil, dropping nearly every model.
+// VisibleLiveModel resolves the bare ID via the tag-qualified fallback.
+func TestVisibleLiveModel_OpenRouterBareLiveID(t *testing.T) {
+	cat := EmbeddedModelCatalog()
+
+	// Premise: the catalog keys this model under the openrouter/ prefix only.
+	if cat.GetModelInfo("anthropic/claude-sonnet-4.5") != nil {
+		t.Fatal("test premise broken: bare anthropic/claude-sonnet-4.5 now exists as a key")
+	}
+	if cat.GetModelInfo("openrouter/anthropic/claude-sonnet-4.5") == nil {
+		t.Fatal("test premise broken: openrouter/anthropic/claude-sonnet-4.5 missing from catalog")
+	}
+
+	// The bare live ID must be visible: ResolveLiveModelInfo's tag-qualified
+	// fallback resolves it, and the entry supports tools.
+	if !cat.VisibleLiveModel("openrouter", "anthropic/claude-sonnet-4.5") {
+		t.Error("VisibleLiveModel(openrouter, anthropic/claude-sonnet-4.5) = false, want true")
+	}
+}
+
+// TestVisibleLiveModel_NonChatAndNonToolHidden verifies the two non-openrouter
+// gates: non-chat IDs are always hidden, and openrouter models without tool
+// support are hidden.
+func TestVisibleLiveModel_NonChatAndNonToolHidden(t *testing.T) {
+	cat := EmbeddedModelCatalog()
+
+	// Non-chat IDs are hidden regardless of tag.
+	for _, id := range []string{"text-embedding-3-small", "whisper-1", "tts-1"} {
+		if cat.VisibleLiveModel("openrouter", id) {
+			t.Errorf("non-chat model %q should be hidden", id)
+		}
+		if cat.VisibleLiveModel("openai", id) {
+			t.Errorf("non-chat model %q should be hidden for openai tag", id)
+		}
+	}
+
+	// An OpenRouter model that resolves but lacks tool support is hidden.
+	// openrouter/mistralai/mistral-7b-instruct has supports_function_calling=nil.
+	if mi := cat.ResolveLiveModelInfo("openrouter", "mistralai/mistral-7b-instruct"); mi == nil {
+		t.Skip("catalog changed: mistralai/mistral-7b-instruct no longer resolves via openrouter/ fallback")
+	} else if mi.SupportsTools {
+		t.Skip("catalog changed: mistralai/mistral-7b-instruct now supports tools")
+	}
+	if cat.VisibleLiveModel("openrouter", "mistralai/mistral-7b-instruct") {
+		t.Error("non-tool openrouter model should be hidden")
+	}
+
+	// A non-openrouter tag does not gate on the catalog: a chat model is visible
+	// even when absent from the catalog.
+	if !cat.VisibleLiveModel("openai", "some-uncataloged-chat-model") {
+		t.Error("uncataloged chat model should be visible for non-openrouter tag")
+	}
+
+	// Nil catalog: non-chat IDs are still hidden (IsChatModelID needs no catalog);
+	// chat IDs for openrouter are hidden (cannot resolve tools); chat IDs for
+	// other tags are visible.
+	var nilCat *ModelCatalog
+	if nilCat.VisibleLiveModel("openrouter", "text-embedding-3-small") {
+		t.Error("nil catalog: non-chat model should be hidden")
+	}
+	if nilCat.VisibleLiveModel("openrouter", "gpt-5") {
+		t.Error("nil catalog: openrouter chat model should be hidden (cannot verify tools)")
+	}
+	if !nilCat.VisibleLiveModel("openai", "gpt-5") {
+		t.Error("nil catalog: non-openrouter chat model should be visible")
+	}
+}
+
+// TestResolveLiveModelInfo_OllamaSuppressesBareLookup mirrors the hub's ollama
+// rule: a local ollama model named like an upstream catalog entry must not
+// inherit that entry's metadata — only an explicit ollama/<model> key counts.
+func TestResolveLiveModelInfo_OllamaSuppressesBareLookup(t *testing.T) {
+	cat := EmbeddedModelCatalog()
+	// glm-5.2 exists as a bare catalog key; an ollama instance serving "glm-5.2"
+	// must not pick it up.
+	if cat.GetModelInfo("glm-5.2") == nil {
+		t.Skip("catalog changed: glm-5.2 no longer a bare key")
+	}
+	if mi := cat.ResolveLiveModelInfo("ollama", "glm-5.2"); mi != nil {
+		t.Fatalf("ollama local model inherited upstream metadata: %+v", mi)
+	}
+}
