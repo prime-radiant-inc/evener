@@ -207,14 +207,15 @@ export const ToolCallItem = memo(function ToolCallItem({ item, live, sessionRef 
 
   // Every row with a body starts collapsed (parity-m4-transcript.md's own
   // Highlights: "every tool row, including diffs, starts collapsed" - the
-  // only default-expanded state anywhere is a failed call once it settles,
-  // via descriptor.autoExpand OR a tool error/denial (item.error, parity §11:
-  // "only failure earns the eye"; §2:100's force-open on error)). autoExpand
-  // only means anything once the call has actually finished (e.g. shell's own
-  // exit-code heuristic can't resolve mid-stream), so it is consulted exactly
-  // once, at the live -> settled transition, and stashed as autoDefault -
-  // never re-consulted on every render (both to honor that "once" contract and
-  // so a settled row's later re-renders never re-fight the reader's toggle).
+  // only default-expanded states are descriptor.autoExpand (a failed shell
+  // call once it settles, and an image read whose picture IS its output) OR
+  // a tool error/denial (item.error, parity §11: "only failure earns the
+  // eye"; §2:100's force-open on error)). autoExpand only means anything once
+  // the call has actually finished (e.g. shell's own exit-code heuristic
+  // can't resolve mid-stream), so it is consulted exactly once, at the live
+  // -> settled transition, and stashed as autoDefault - never re-consulted
+  // on every render (both to honor that "once" contract and so a settled
+  // row's later re-renders never re-fight the reader's toggle).
   //
   // The open/closed state itself lives in the shared disclosureStore keyed by
   // session ref plus item id, so it survives the VirtualList/dockview remount
