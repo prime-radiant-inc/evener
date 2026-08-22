@@ -36,11 +36,22 @@ function readLineRange(args: Record<string, unknown>, output: string): string {
 // phrase (and minus any payload an older daemon left in output).
 const BINARY_PAYLOAD_HEADER = /^\[(image|document): [^\]]+, base64 data follows\]/;
 
+// isImageRead is the single source of truth for "this read_file call's output
+// is a picture, not text": the body renders nothing for it (the ImageGallery
+// carries the picture below), and autoExpand opens the row by default so the
+// picture is visible without a click. Sharing one predicate keeps the two
+// decisions from ever disagreeing - the body that renders nothing and the
+// auto-open that shows it both answer the same question.
+function isImageRead(item: ItemModel): boolean {
+  const match = BINARY_PAYLOAD_HEADER.exec(item.output ?? "");
+  return match !== null && match[1] === "image";
+}
+
 function ReadFileOutputBody({ item, live }: ToolRenderProps) {
   const output = item.output ?? "";
   const match = BINARY_PAYLOAD_HEADER.exec(output);
   if (match === null) return <TailFoldedOutputBody item={item} live={live} />;
-  if (match[1] === "image") return null;
+  if (isImageRead(item)) return null;
   return <CodeBlock text={match[0].replace(", base64 data follows]", "]")} copyLabel="Copy output" />;
 }
 
@@ -62,6 +73,12 @@ registerToolRenderer({
   // An image read displays the picture itself at up to 600px square, not a
   // 96px thumbnail - the picture IS this call's output.
   outputImageSize: "large",
+  // An image read auto-expands: the picture is the call's whole output, so it
+  // should be visible without a click. A text or PDF read keeps the usual
+  // collapsed default - isImageRead shares the body's own detection so the
+  // auto-open and the empty body can never disagree (the one can't open while
+  // the other still renders text for the same call).
+  autoExpand: isImageRead,
   summary(item: ItemModel) {
     const args = parseArgs(item.argumentsJSON);
     return `Read ${readFileTarget(item)} · ${readLineRange(args, item.output ?? "")}`;

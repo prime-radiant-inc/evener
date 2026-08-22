@@ -346,7 +346,8 @@ test("a read_file image read renders its output image at the large (up-to-600px)
       live={false}
     />,
   );
-  expandRow();
+  // An image read auto-expands (the picture is the call's whole output), so
+  // the gallery is already mounted - no expandRow() toggle needed.
   const thumb = screen.getByTestId("image-gallery-thumb");
   expect(thumb.className.split(/\s+/)).toContain(galleryStyles.thumbLarge);
 });
