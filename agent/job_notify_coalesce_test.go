@@ -8,6 +8,7 @@ import (
 	"sync"
 	"testing"
 
+	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/agent/internal/jobstore"
 )
 
@@ -115,6 +116,67 @@ func TestWatchedJobCompletionWakesTheSessionOnce(t *testing.T) {
 	rec := loadShellRecord(t, s.jobManager, jobID)
 	if rec.NotifyState != jobstore.NotifyPending {
 		t.Fatalf("terminal_notification_state = %q, want %q (still awaiting its turn)", rec.NotifyState, jobstore.NotifyPending)
+	}
+}
+
+func TestWatchBudgetClearCoalescesWithMatchedEvent(t *testing.T) {
+	t.Parallel()
+	s := newTestSession(t)
+	jobID := startBackgroundShellJob(t, s, "sleep 300")
+	t.Cleanup(func() {
+		_, _ = s.jobManager.stop(jobID)
+		waitForShellDone(t, s.jobManager, jobID)
+	})
+
+	if _, err := jobWatchTool(s, map[string]any{
+		"operation": "create",
+		"source":    jobID,
+		"events":    []any{"job.notification"},
+	}, jobToolResultDefaultMaxChar); err != nil {
+		t.Fatalf("job_watch create: %v", err)
+	}
+	s.jobManager.mu.Lock()
+	var watched *watchConfig
+	for _, cfg := range s.jobManager.watches {
+		if cfg != nil && cfg.target == jobID {
+			watched = cfg
+			break
+		}
+	}
+	if watched == nil {
+		s.jobManager.mu.Unlock()
+		t.Fatalf("watch for %s not installed", jobID)
+	}
+	watched.deliveries = watchDeliveryBudget - 1
+	s.jobManager.mu.Unlock()
+
+	log := &notificationWakeLog{}
+	watcher := newJobNotifyWatcher(s, func() { log.observe(s) })
+	onSessionEventKD(s.jobManager, events.EventJobFinished, events.JobFinishedData{
+		JobID: jobID, JobType: "shell", Status: "completed",
+	})
+	watcher.await(t, "matched event and budget-clear notices queued", func() bool {
+		s.pendingJobNotifsMu.Lock()
+		defer s.pendingJobNotifsMu.Unlock()
+		return len(s.pendingJobNotifs) >= 2
+	})
+
+	wakes := log.snapshot()
+	if len(wakes) != 1 {
+		t.Fatalf("notification wakes = %d, want 1 (matched event and budget clear are one event); wake contents: %s",
+			len(wakes), describeWakes(wakes))
+	}
+	var matched, cleared bool
+	for _, n := range wakes[0] {
+		if n.JobID == jobID && n.Status != jobNotificationEventWatch {
+			matched = true
+		}
+		if n.Status == jobNotificationEventWatch && strings.Contains(n.Reason, "watch cleared") {
+			cleared = true
+		}
+	}
+	if !matched || !cleared {
+		t.Fatalf("single wake carried matched=%t cleared=%t, want both: notices=%+v", matched, cleared, wakes[0])
 	}
 }
 

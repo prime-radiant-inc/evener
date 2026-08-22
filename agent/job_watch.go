@@ -1531,23 +1531,23 @@ func watchKeyForConfigLocked(jm *jobManager, cfg *watchConfig) (watchKey, bool) 
 	return watchKey{}, false
 }
 
-// autoClearWatchOverBudget tears down exactly the one watch config that tripped
-// the delivery budget and emits ONE final cleared notification (spec §4 F1). It
-// is the circuit breaker's teardown: jm-state mutation + durable drop of pending
-// sends + one enqueue + one kick — NO delivery from observation (spec §3). It
-// mirrors clearWatch's terminal-snapshot machinery but operates on a single
-// (key, cfg) pair, so a no-send watch sharing a target with other watches does
-// not over-clear its neighbors.
+// autoClearWatchOverBudgetNotification tears down exactly the one watch config
+// that tripped the delivery budget and returns its ONE final cleared notification
+// without enqueuing or waking. It is the circuit breaker's teardown: jm-state
+// mutation plus durable drop of pending sends — NO delivery from observation
+// (spec §3). It mirrors clearWatch's terminal-snapshot machinery but operates on
+// a single (key, cfg) pair, so a no-send watch sharing a target with other watches
+// does not over-clear its neighbors.
 //
 // The reverse lookup under jm.mu doubles as the no-double-fire latch: once the
 // cfg is detached, a later in-flight settle that increments past the budget
 // finds no live key and returns without re-notifying.
-func (jm *jobManager) autoClearWatchOverBudget(cfg *watchConfig) {
+func (jm *jobManager) autoClearWatchOverBudgetNotification(cfg *watchConfig) (jobNotification, bool) {
 	jm.mu.Lock()
 	key, ok := watchKeyForConfigLocked(jm, cfg)
 	if !ok {
 		jm.mu.Unlock()
-		return
+		return jobNotification{}, false
 	}
 	targets := []watchConfigTerminalSnapshot{{
 		key:       key,
@@ -1561,14 +1561,22 @@ func (jm *jobManager) autoClearWatchOverBudget(cfg *watchConfig) {
 	dropped := terminalSnapshots(targets)
 	if err := jm.appendWatchTeardownBatch(dropped, targets); err != nil {
 		jm.rollbackWatchConfigSnapshotsRejecting(targets)
-		return
+		return jobNotification{}, false
 	}
 	jm.detachWatchConfigSnapshots(targets)
 	jm.removeWatchSendTerminalSnapshots(dropped)
 
-	jm.enqueueWatchNotifications([]jobNotification{
-		jm.watchNotificationFromWatch(cfg, "", watchBudgetClearedMessage(cfg.target), nil),
-	})
+	return jm.watchNotificationFromWatch(cfg, "", watchBudgetClearedMessage(cfg.target), nil), true
+}
+
+// autoClearWatchOverBudget is the standalone wrapper for attach scans and watch
+// sends, where there is no same-event notification batch to extend.
+func (jm *jobManager) autoClearWatchOverBudget(cfg *watchConfig) {
+	notification, ok := jm.autoClearWatchOverBudgetNotification(cfg)
+	if !ok {
+		return
+	}
+	jm.enqueueWatchNotifications([]jobNotification{notification})
 	jm.kick()
 }
 
@@ -2188,9 +2196,13 @@ func (jm *jobManager) onSessionEvent(ev events.SessionEvent) {
 
 	// Called from Session.emit; only persist + wake here so watch delivery does
 	// not re-enter session event emission (spec §3).
+	for _, cfg := range overBudget {
+		if notification, ok := jm.autoClearWatchOverBudgetNotification(cfg); ok {
+			notifications = append(notifications, notification)
+		}
+	}
 	jm.enqueueWatchNotifications(notifications)
 	jm.recordWatchSendsAndKick(deliveries)
-	jm.autoClearOverBudgetWatches(overBudget)
 }
 
 // watchEventSnapshot is a read-only copy of the per-watch fields that decide
