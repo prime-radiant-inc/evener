@@ -49,7 +49,7 @@ describe("I: tablist/tab/panel semantics", () => {
     const sessionsTab = screen.getByRole("tab", { name: /sessions/i });
     const controls = sessionsTab.getAttribute("aria-controls");
     expect(controls).toBeTruthy();
-    const panel = document.getElementById(controls!);
+    const panel = controls ? document.getElementById(controls) : null;
     expect(panel).not.toBeNull();
     expect(panel?.getAttribute("role")).toBe("tabpanel");
   });

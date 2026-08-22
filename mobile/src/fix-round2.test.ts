@@ -12,17 +12,6 @@ describe("C-native: production transport uses real command names", () => {
     expect(src).not.toMatch(/native_bridge/);
     expect(src).not.toMatch(/native_subscribe_lifecycle/);
   });
-
-  it("production-services.ts invokes actual registered commands", () => {
-    // The production path wires the extracted transport (production-transport.ts),
-    // which references the real plugin command routes. Assert against the
-    // transport module where the route names live after the 7A extraction.
-    const transportSrc = readSrc("screens/production-transport.ts");
-    // Must reference real plugin commands: scanAndPreviewPairing, hapticPerform, contentSizeGet
-    expect(transportSrc).toMatch(
-      /scanAndPreviewPairing|haptic_perform|hapticPerform/,
-    );
-  });
 });
 
 describe("C-haptic: pairing success commits even if haptic fails", () => {

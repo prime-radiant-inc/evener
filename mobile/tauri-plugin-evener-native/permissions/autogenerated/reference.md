@@ -6,6 +6,8 @@ Default permissions for the plugin
 
 - `allow-ping`
 - `allow-scan-and-preview-pairing`
+- `allow-haptic-perform`
+- `allow-content-size-get`
 
 ## Permission Table
 

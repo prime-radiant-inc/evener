@@ -1,14 +1,17 @@
 /**
- * RED test 1: Production transport — exact routes and envelopes.
+ * Production transport — exact routes, envelopes, and real raw shapes.
  *
  * Drives the real production adapter through an injected fake `TauriBridge`
  * to assert that `NativeBridge.scanAndPreviewPairing`, `hapticPerform`, and
  * `getContentSize` call the exact Tauri plugin routes with exact envelopes.
- * Asserts decoded bridge-visible responses, not source substrings.
+ *
+ * Raw response shapes are pinned to what the Rust commands actually return:
+ * - scan_and_preview_pairing → `{version, type, previewId, origin}` (versioned)
+ * - haptic_perform            → `{completed: boolean}`                 (NOT versioned)
+ * - content_size_get          → `{category: string}`                   (NOT versioned)
+ * The adapter must decode each to the typed NativeResponse the client expects.
  */
-import { describe, expect, it, vi } from "vitest";
-import type { NativeTransport } from "../native/client";
-import { createNativeBridge, type NativeBridge } from "../native/client";
+import { describe, expect, it } from "vitest";
 import type { TauriBridge } from "../services/tauri";
 
 // ---------------------------------------------------------------------------
@@ -41,7 +44,7 @@ function fakeTauriBridge(scripts: ScriptedInvoke[]): TauriBridge & {
       }
       return next.result as T;
     },
-    createChannel<T>() {
+    createChannel() {
       return {
         id: 0,
         onmessage: () => {},
@@ -60,10 +63,11 @@ function fakeTauriBridge(scripts: ScriptedInvoke[]): TauriBridge & {
 // The real production transport adapter — imported from the source
 // ---------------------------------------------------------------------------
 
+import { createNativeBridge, NativeBridgeError } from "../native/client";
 import { createTauriNativeTransport } from "./production-transport";
 
 // ---------------------------------------------------------------------------
-// Tests
+// Routes and envelopes
 // ---------------------------------------------------------------------------
 
 describe("7A transport: scanAndPreviewPairing route and response", () => {
@@ -94,12 +98,13 @@ describe("7A transport: scanAndPreviewPairing route and response", () => {
   });
 });
 
-describe("7A transport: hapticPerform route and response", () => {
+describe("7A transport: hapticPerform route and real raw shape", () => {
   it("invokes plugin:evener-native|haptic_perform with {payload:{kind}}", async () => {
     const bridge = fakeTauriBridge([
       {
         route: "plugin:evener-native|haptic_perform",
-        result: { version: 1, type: "haptic.completed" },
+        // Real Rust HapticPerformResponse: {completed: true}
+        result: { completed: true },
       },
     ]);
     const transport = createTauriNativeTransport(bridge);
@@ -113,18 +118,77 @@ describe("7A transport: hapticPerform route and response", () => {
       payload: { kind: "notificationSuccess" },
     });
   });
+
+  it("accepts the real raw shape {completed:true} and resolves", async () => {
+    const bridge = fakeTauriBridge([
+      {
+        route: "plugin:evener-native|haptic_perform",
+        result: { completed: true },
+      },
+    ]);
+    const transport = createTauriNativeTransport(bridge);
+    const native = createNativeBridge(transport);
+    // Must not throw — the adapter maps {completed:true} to haptic.completed.
+    await expect(native.hapticPerform("impactLight")).resolves.toBeUndefined();
+  });
+
+  it("rejects {completed:false} as a haptic failure", async () => {
+    const bridge = fakeTauriBridge([
+      {
+        route: "plugin:evener-native|haptic_perform",
+        result: { completed: false },
+      },
+    ]);
+    const transport = createTauriNativeTransport(bridge);
+    const native = createNativeBridge(transport);
+    // completed:false means the haptic did not perform — must surface as an error.
+    await expect(native.hapticPerform("selection")).rejects.toThrow();
+  });
+
+  it("rejects missing `completed` field", async () => {
+    const bridge = fakeTauriBridge([
+      {
+        route: "plugin:evener-native|haptic_perform",
+        result: {},
+      },
+    ]);
+    const transport = createTauriNativeTransport(bridge);
+    const native = createNativeBridge(transport);
+    await expect(native.hapticPerform("selection")).rejects.toThrow();
+  });
+
+  it("rejects wrong-typed `completed` field", async () => {
+    const bridge = fakeTauriBridge([
+      {
+        route: "plugin:evener-native|haptic_perform",
+        result: { completed: "yes" },
+      },
+    ]);
+    const transport = createTauriNativeTransport(bridge);
+    const native = createNativeBridge(transport);
+    await expect(native.hapticPerform("selection")).rejects.toThrow();
+  });
+
+  it("rejects extra fields in the haptic raw shape", async () => {
+    const bridge = fakeTauriBridge([
+      {
+        route: "plugin:evener-native|haptic_perform",
+        result: { completed: true, extra: "no" },
+      },
+    ]);
+    const transport = createTauriNativeTransport(bridge);
+    const native = createNativeBridge(transport);
+    await expect(native.hapticPerform("selection")).rejects.toThrow();
+  });
 });
 
-describe("7A transport: getContentSize route and response", () => {
+describe("7A transport: getContentSize route and real raw shape", () => {
   it("invokes plugin:evener-native|content_size_get with {payload:{}}", async () => {
     const bridge = fakeTauriBridge([
       {
         route: "plugin:evener-native|content_size_get",
-        result: {
-          version: 1,
-          type: "contentSize.value",
-          category: "extraExtraLarge",
-        },
+        // Real Rust ContentSizeGetResponse: {category: "extraExtraLarge"}
+        result: { category: "extraExtraLarge" },
       },
     ]);
     const transport = createTauriNativeTransport(bridge);
@@ -137,9 +201,75 @@ describe("7A transport: getContentSize route and response", () => {
     );
     expect(bridge.invocations[0]?.args).toEqual({ payload: {} });
   });
+
+  it("accepts the real raw shape {category:string} and returns the category", async () => {
+    const bridge = fakeTauriBridge([
+      {
+        route: "plugin:evener-native|content_size_get",
+        result: { category: "accessibilityLarge" },
+      },
+    ]);
+    const transport = createTauriNativeTransport(bridge);
+    const native = createNativeBridge(transport);
+    const result = await native.getContentSize();
+    expect(result).toBe("accessibilityLarge");
+    expect(typeof result).toBe("string");
+  });
+
+  it("rejects a category string outside the ContentSizeCategory union", async () => {
+    const bridge = fakeTauriBridge([
+      {
+        route: "plugin:evener-native|content_size_get",
+        result: { category: "invalidCategory" },
+      },
+    ]);
+    const transport = createTauriNativeTransport(bridge);
+    const native = createNativeBridge(transport);
+    await expect(native.getContentSize()).rejects.toThrow();
+  });
+
+  it("rejects a missing `category` field", async () => {
+    const bridge = fakeTauriBridge([
+      {
+        route: "plugin:evener-native|content_size_get",
+        result: {},
+      },
+    ]);
+    const transport = createTauriNativeTransport(bridge);
+    const native = createNativeBridge(transport);
+    await expect(native.getContentSize()).rejects.toThrow();
+  });
+
+  it("rejects a wrong-typed `category` field", async () => {
+    const bridge = fakeTauriBridge([
+      {
+        route: "plugin:evener-native|content_size_get",
+        result: { category: 42 },
+      },
+    ]);
+    const transport = createTauriNativeTransport(bridge);
+    const native = createNativeBridge(transport);
+    await expect(native.getContentSize()).rejects.toThrow();
+  });
+
+  it("rejects extra fields in the content-size raw shape", async () => {
+    const bridge = fakeTauriBridge([
+      {
+        route: "plugin:evener-native|content_size_get",
+        result: { category: "large", extra: "no" },
+      },
+    ]);
+    const transport = createTauriNativeTransport(bridge);
+    const native = createNativeBridge(transport);
+    await expect(native.getContentSize()).rejects.toThrow();
+  });
 });
 
-describe("7A transport: no `as never` masking — decoded responses", () => {
+// ---------------------------------------------------------------------------
+// Decoded responses — no version/type leak from versioned scan response
+// ---------------------------------------------------------------------------
+
+describe("7A transport: decoded scan result has no version/type leak", () => {
   it("scan result is a decoded PairingPreview, not a raw shape", async () => {
     const bridge = fakeTauriBridge([
       {
@@ -155,7 +285,6 @@ describe("7A transport: no `as never` masking — decoded responses", () => {
     const transport = createTauriNativeTransport(bridge);
     const native = createNativeBridge(transport);
     const result = await native.scanAndPreviewPairing();
-    // The result should have exactly {previewId, origin}, no version/type leak.
     expect(result).toEqual({
       previewId: "pv-2",
       origin: "https://hub.test:9000",
@@ -163,22 +292,80 @@ describe("7A transport: no `as never` masking — decoded responses", () => {
     expect(result).not.toHaveProperty("version");
     expect(result).not.toHaveProperty("type");
   });
+});
 
-  it("contentSize result is a decoded category string", async () => {
+// ---------------------------------------------------------------------------
+// Native error propagation — versioned scan error becomes NativeBridgeError
+// ---------------------------------------------------------------------------
+
+describe("7A transport: native error propagation", () => {
+  it("a versioned scan error response becomes NativeBridgeError", async () => {
     const bridge = fakeTauriBridge([
       {
-        route: "plugin:evener-native|content_size_get",
+        route: "plugin:evener-native|scan_and_preview_pairing",
         result: {
           version: 1,
-          type: "contentSize.value",
-          category: "accessibilityLarge",
+          type: "error",
+          error: {
+            id: "scan-and-preview",
+            kind: "pairing_unavailable",
+            message: "Pairing scan is unavailable on this platform",
+          },
         },
       },
     ]);
     const transport = createTauriNativeTransport(bridge);
     const native = createNativeBridge(transport);
-    const result = await native.getContentSize();
-    expect(result).toBe("accessibilityLarge");
-    expect(typeof result).toBe("string");
+    try {
+      await native.scanAndPreviewPairing();
+      expect.unreachable("should have thrown");
+    } catch (err) {
+      expect(err).toBeInstanceOf(NativeBridgeError);
+      expect((err as NativeBridgeError).error.kind).toBe("pairing_unavailable");
+      expect((err as NativeBridgeError).error.message).toBe(
+        "Pairing scan is unavailable on this platform",
+      );
+    }
+  });
+
+  it("rejects a malformed error kind", async () => {
+    const bridge = fakeTauriBridge([
+      {
+        route: "plugin:evener-native|scan_and_preview_pairing",
+        result: {
+          version: 1,
+          type: "error",
+          error: {
+            id: "scan-and-preview",
+            kind: "totally_made_up",
+            message: "bad kind",
+          },
+        },
+      },
+    ]);
+    const transport = createTauriNativeTransport(bridge);
+    const native = createNativeBridge(transport);
+    await expect(native.scanAndPreviewPairing()).rejects.toThrow();
+  });
+
+  it("rejects an error with extra fields on the error object", async () => {
+    const bridge = fakeTauriBridge([
+      {
+        route: "plugin:evener-native|scan_and_preview_pairing",
+        result: {
+          version: 1,
+          type: "error",
+          error: {
+            id: "scan-and-preview",
+            kind: "internal",
+            message: "ok",
+            token: "must-not-cross",
+          },
+        },
+      },
+    ]);
+    const transport = createTauriNativeTransport(bridge);
+    const native = createNativeBridge(transport);
+    await expect(native.scanAndPreviewPairing()).rejects.toThrow();
   });
 });
