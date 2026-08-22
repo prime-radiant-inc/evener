@@ -1,28 +1,25 @@
 # Evener
 
-A non-interactive coding agent. Give it a prompt, it does the work.
+A coding agent run through a hub. The `evener-hub` orchestrator serves the
+web UI — Evener's default interactive surface — where you start sessions,
+watch the agent read files, run commands, and edit code, and steer it with
+follow-up messages. The hub tracks many concurrent sessions at once, and
+`evener-tui` gives the same hub a terminal dashboard. A non-interactive
+command line handles scripting and automation.
 
-Evener uses the LLM's native tool-calling to read files, write files, run commands, and search code in a loop until the work is complete. It supports OpenAI, Anthropic, and Google models.
+**New here? [docs/getting-started.md](docs/getting-started.md) walks from
+install to your first session.**
 
-For how the code is organized — modules, layout, and the build workspace — see [docs/architecture.md](docs/architecture.md). For the runtime contracts subagents, plugins, hooks, and helpers operate under (capability policy, lifecycle hooks, helper isolation, lineage), see [docs/subagent-runtime-contracts.md](docs/subagent-runtime-contracts.md); for background jobs and the job-control tools, see [docs/job-control.md](docs/job-control.md). To confine a session's file, process, and network access with `--sandbox`, see [docs/sandboxing.md](docs/sandboxing.md). For building, testing, linting, coverage, and fuzzing this repo, see [docs/developing-evener/README.md](docs/developing-evener/README.md) — or run `make help` for every target with a one-line summary.
-
-## Build
-
-```bash
-make build
-```
-
-Build the standalone one-shot client (no agent loop):
-
-```bash
-make build-llmcall
-```
-
-Build the multi-session web orchestrator:
-
-```bash
-make build-hub
-```
+Evener uses the LLM's native tool-calling and supports OpenAI, Anthropic,
+Google, and [other providers](docs/llm-providers.md). For how the code is
+organized, see [docs/architecture.md](docs/architecture.md). For the runtime
+contracts that subagents, plugins, and hooks operate under, see
+[docs/subagent-runtime-contracts.md](docs/subagent-runtime-contracts.md). For
+background jobs, see [docs/job-control.md](docs/job-control.md). To confine a
+session's file, process, and network access with `--sandbox`, see
+[docs/sandboxing.md](docs/sandboxing.md). To build, test, and lint this repo,
+see [docs/developing-evener/README.md](docs/developing-evener/README.md) — or
+run `make help` for every target with a one-line summary.
 
 ## Install
 
@@ -32,27 +29,10 @@ Install the latest release on Linux x64 or macOS Apple silicon:
 curl -fsSL https://raw.githubusercontent.com/prime-radiant-inc/evener/main/install.sh | sh
 ```
 
-The release installer downloads the matching GitHub release archive, installs
+The installer verifies the release archive's SHA-256 checksum and installs
 `evener`, `evener-hub`, `evener-tui`, `evener-doctor`, and `evener-migrate`
-under `~/.local/share/evener/bin`, and symlinks them into `~/.local/bin`.
-
-Install a specific tagged release:
-
-```bash
-curl -fsSL https://raw.githubusercontent.com/prime-radiant-inc/evener/main/install.sh | env EVENER_INSTALL_VERSION=v1.2.3 sh
-```
-
-Install the latest successful build from `main`:
-
-```bash
-curl -fsSL https://raw.githubusercontent.com/prime-radiant-inc/evener/main/install.sh | env EVENER_INSTALL_VERSION=snapshot sh
-```
-
-Override the install prefix, using `sudo` for system-owned paths:
-
-```bash
-curl -fsSL https://raw.githubusercontent.com/prime-radiant-inc/evener/main/install.sh | sudo env PREFIX=/usr/local sh
-```
+under `~/.local/share/evener/bin`, symlinked into `~/.local/bin`. Make sure
+`~/.local/bin` is on your `PATH`.
 
 From a source checkout:
 
@@ -60,49 +40,22 @@ From a source checkout:
 make install
 ```
 
-This builds `evener`, `evener-hub`, `evener-tui`, `evener-doctor`, and
-`evener-migrate`, installs the binaries under `~/.local/share/evener/bin`, and
-symlinks them into `~/.local/bin`. `make install-home` is an alias for the
-same layout.
+For tagged releases, snapshot builds, alternate prefixes, and a system-style
+install under `/usr/local`, see
+[docs/getting-started.md](docs/getting-started.md#install). Verify any install
+with `evener --version`.
 
-System-style install:
-
-```bash
-sudo make install-system
-```
-
-This uses the same layout under `/usr/local` by default. Override `PREFIX` to
-stage elsewhere.
-
-The installer only installs binaries and symlinks. Runtime/config directories
-are created by Evener when the relevant binary runs.
-
-Verify the installed commands with:
-
-```bash
-evener --version
-evener-tui --help
-evener-doctor --help
-```
-
-Upgrade installed binaries manually:
-
-```bash
-evener upgrade
-```
-
-`evener upgrade` follows the binary's install channel: release builds upgrade to
-the latest release, and snapshot builds upgrade to the latest successful
-`main` build. You can override the target with `evener upgrade release`,
-`evener upgrade snapshot`, or a tagged version such as `evener upgrade v1.2.3`.
-The TUI and web UI also expose a manual `/upgrade` command that calls through
-the hub and uses the same channel tracking.
+Upgrade installed binaries with `evener upgrade`. The command follows the
+binary's install channel: release builds upgrade to the latest release, and
+snapshot builds upgrade to the latest successful `main` build. Pass
+`release`, `snapshot`, or a tag such as `v1.2.3` to switch tracks. The TUI
+and web UI expose the same mechanism through their `/upgrade` command.
 
 On first use, Evener creates:
 
 - `${XDG_STATE_HOME:-~/.local/state}/evener/run` for live daemon rendezvous
   files and per-daemon logs.
-- `${XDG_STATE_HOME:-~/.local/state}/evener/auth-token` for the local Hub/TUI
+- `${XDG_STATE_HOME:-~/.local/state}/evener/auth-token` for the local hub/TUI
   bearer token.
 - `${XDG_STATE_HOME:-~/.local/state}/evener/projects/<project-id>/` for saved
   per-project session state. The project ID is readable (derived from the
@@ -117,57 +70,156 @@ does not automatically enable their contents. Add standalone skill paths to
 corresponding CLI flags for a single run. Plugin-contained skills live under
 that plugin and become available through the plugin path.
 
-Provider credentials are not created by install. Configure them through the Hub
+Install does not create provider credentials. Configure them through the hub
 or TUI credentials UI, `${XDG_CONFIG_HOME:-~/.config}/evener/credentials.toml`,
 provider environment variables such as `OPENAI_API_KEY`, or OpenAI OAuth. See
 [docs/developing-evener/environment.md](docs/developing-evener/environment.md) for the complete environment variable
 reference.
 
-### Migrating from Serf
+## Quick start: the hub and web UI
 
-Evener was previously named Serf, and — before that — its home-directory
-layout went through an interim `~/.evener` step that has since been
-consolidated into the XDG config/state layout described above. If you have an
-existing Serf install, or a machine still on that interim `~/.evener` layout,
-run `evener-migrate` once, before your first Evener launch:
+Start the hub:
 
 ```bash
-evener-migrate
+evener-hub
 ```
 
-It moves `${XDG_CONFIG_HOME:-~/.config}/serf` to `.../evener`,
-`${XDG_STATE_HOME:-~/.local/state}/serf` to `.../evener`, and any per-project
-`.serf` directory (in the current directory or a Git ancestor) to `.evener`.
-It also retires `~/.serf` and the interim `~/.evener`: whichever one exists,
-each file they held — `providers.toml`, `credentials.toml`, `hub.toml`, and
-`launch.toml` (user config) plus `auth-token`, `index.db`, `hub.lock`,
-`run/`, and `deletions/` (machine state) — moves individually into the config
-or state root above; there is no `~/.evener` in the final layout. It refuses
-to overwrite a destination that already exists, so it's safe to run more than
-once. Pass `--dry-run` to preview the moves first, or `--verbose` to see every
-path it checked.
+The hub listens on `127.0.0.1:9180` and prints an authorization URL at
+startup:
 
-Re-running it is also how you repair a machine that migrated before a fix
-landed: after moving each root or file (or finding it already moved),
-`evener-migrate` walks the destination and rewrites any leftover absolute
-references to the old `serf`/`~/.evener` path it finds inside text files
-there — for example a plugin marketplace registry that still points
-`git pull` at `.../config/serf/plugins/marketplaces/<name>`, or a
-hand-edited `hub.toml` whose `run_dir`/`past_index_db` still name the old
-`~/.evener` location. It skips binaries and anything inside a Git working
-tree (a plugin marketplace clone, or a nested project checkout), so it's safe
-to run against a live install; files with nothing to rewrite are left
-untouched.
+```
+[hub] auth URL (visit once per browser): http://127.0.0.1:9180/auth?token=...
+```
 
-If you skip this, the first Evener binary you run creates a fresh, empty
-XDG config/state layout — and once that exists, `evener-migrate` treats the
-config and state roots as already migrated and skips them, leaving your old
-Serf data stranded with no further warning. To prevent that, Evener refuses
-to start when it finds legacy Serf or interim `~/.evener` data with no
-matching final home yet, and its error names the path and points back to
-`evener-migrate`.
+Open that URL. It sets a cookie that authorizes the browser; later visits to
+`http://127.0.0.1:9180` need no token. Add a provider credential at
+`http://127.0.0.1:9180/credentials`, then open
+`http://127.0.0.1:9180/new`, type a prompt, pick a model and working
+directory, and click Start. The full walkthrough — resume, forking, and
+search included — lives in
+[docs/getting-started.md](docs/getting-started.md).
 
-## Usage
+## Evener Hub (Web Orchestrator)
+
+`evener-hub` runs alongside `evener serve` daemons and gives you a single
+browser-based interface for many concurrent sessions.
+
+### Build & run
+
+```bash
+make build-hub
+evener-hub  # default 127.0.0.1:9180
+```
+
+For production-style setup, credentials, Codex app-server sources, and smoke
+checks, see [`docs/evener-hub.md`](docs/evener-hub.md).
+
+### What's there
+
+- **Sidebar** with a Live section (every running session sorted by who needs you) and a Projects section (sessions grouped by working directory, subagents indented under the session that spawned them).
+- **Workspace pane** with a two-tier conversation: messages (user pills + assistant body) at the primary reading tier, tool calls and diffs as muted margin annotations.
+- **New session** at `/new` — prompt-first, pick model and working dir, click Start.
+- **Fork from here**: every message you sent carries a fork button. Click it to branch the session at that point; the original message lands in the composer for you to edit, and the original line is preserved as a sibling fork.
+- **Aside**: `/aside` (TUI) or the *Aside: fork to side thread* palette command (web UI) forks the current session at its tip into a side thread with the same permissions and config — for asking a distracting question without derailing the main session.
+- **Transparent resume**: click any closed session, type, send. The daemon spawns from where it left off — same identity throughout.
+- **⌘K search** (Ctrl+K on Linux) across live + past sessions.
+- **Settings** for theme (light/dark/system), notification preferences, and provider and MCP configuration.
+
+### Configuration
+
+`${XDG_CONFIG_HOME:-~/.config}/evener/hub.toml` (optional):
+
+```toml
+addr = "127.0.0.1:9180"
+spawn_timeout = "30s"
+past_results_per_page = 50
+# Optional; default is $XDG_STATE_HOME/evener/index.db (~/.local/state/evener/index.db).
+past_index_db = "/Users/you/.local/state/evener/index.db"
+```
+
+The hub's launch model choices come from the Evener launch harness contract
+(`evener launch-check --models`), not from a static model roster in `hub.toml`.
+Launch defaults live in layered launch config files. For user-wide defaults,
+create `${XDG_CONFIG_HOME:-~/.config}/evener/launch.toml`:
+
+```toml
+app_replay_size = 4096
+
+[env]
+OPENAI_API_KEY = "..."
+```
+
+### Architecture
+
+Daemons are loopback-only. Each writes a private rendezvous file to `${XDG_STATE_HOME:-~/.local/state}/evener/run/<pid>.json`; the hub watches the directory, probes daemons for state, and proxies AppWire/REST so the browser only ever talks to the hub origin. The hub requires a capability token on every route except `/auth`, `/api/health`, and the PWA icons: browsers authorize once through the auth URL printed at startup (which sets a long-lived cookie), and scripted clients send the token as `Authorization: Bearer`. Daemons spawned by the hub require the per-hub bearer token recorded in their rendezvous file. A strict content security policy and a SameSite=Lax auth cookie defend against cross-origin attacks.
+
+### Operating notes
+
+- **Daemons keep the binary they were spawned from.** Rebuilding `evener` does not update already-running daemons; live sessions continue to run the old code until they shut down. To pick up changes mid-session, end the session (which terminates its daemon), rebuild, and resume — resume reads the new binary. This matches typical daemonized-server behavior.
+- **Remote hosts**: see `docs/evener-hub-remote-operations.md` for the current deployment runbook, including credential handling, state directories, browser/TUI access, health checks, and Codex app-server sources.
+- **Rebuild and restart a launchd-managed hub**: `scripts/ops/deploy-hub.sh` builds this worktree's `evener-hub` and `kickstart -k`s its launchd job, never stopping the old process until the new one is built and healthy — see `scripts/ops/deploy-hub.sh --help`.
+
+Design spec, plans, and notes live under `docs/superpowers/`.
+
+## Evener TUI (Terminal User Interface)
+
+`evener-tui` is a hub-backed terminal dashboard for Evener sessions. It connects to `evener-hub`, lists live and saved sessions, lets you drill into a transcript, and sends session actions through the hub API.
+
+### Build
+
+```bash
+make build-tui
+```
+
+### Usage
+
+Start the dashboard:
+
+```bash
+evener-tui
+```
+
+By default `evener-tui` connects to `http://127.0.0.1:9180`. If no local hub is running, it starts `evener-hub` automatically and waits for `/api/health`.
+
+Connect to a specific hub:
+
+```bash
+evener-tui --hub-addr http://127.0.0.1:9180
+```
+
+Use a specific hub binary or disable auto-start:
+
+```bash
+evener-tui --hub-bin /path/to/evener-hub
+evener-tui --no-auto-start-hub
+```
+
+### Flags
+
+| Flag | Description |
+|---|---|
+| `--hub-addr <url>` | Hub URL or host:port (default: `127.0.0.1:9180`) |
+| `--hub-bin <path>` | Hub binary to auto-start when the local hub is down |
+| `--no-auto-start-hub` | Fail instead of starting a missing local hub |
+| `--auth-token <token>` | Hub capability token (overrides the token file and env var) |
+| `--state-dir <path>` | Override the Evener state directory |
+| `--log-file <path>` | Write auto-started hub logs to this file |
+| `--debug` | Disable the alternate screen |
+
+### Features
+
+- **Dashboard**: Browse live and saved sessions from the hub roster and past-session index
+- **Session drill-in**: Open a session transcript from the dashboard
+- **Hub actions**: Send input, view tasks/details, interrupt, compact, clear, and switch models through hub endpoints
+- **Streaming**: Follow session AppWire streams through the hub
+- **Markdown rendering**: Format-aware display of assistant messages
+- **Tool inspection**: Collapse/expand tool calls and view arguments
+
+## Non-interactive CLI
+
+Use the `evener` command directly for one-shot, non-interactive runs —
+scripts, CI, and pipelines where no human steers the session. For interactive
+work, prefer the hub and web UI above.
 
 ```
 evener --model <provider/model> [flags] <prompt>
@@ -183,45 +235,13 @@ evener --model openai/gpt-5.2 "add input validation to the signup handler"
 echo "refactor auth to use JWT" | evener --model anthropic/claude-opus-4-6
 ```
 
-For a shell command that must outlive the current Evener session, use detached
-mode. Detached commands are not jobs; redirect their own logs when needed:
+Shell commands run by the agent normally end with their Evener session. When
+a command must outlive the session, the agent passes `mode: "detached"` to
+its shell tool and redirects the command's own logs:
 
 ```json
 {"command":"long-task > /tmp/long-task.log 2>&1","mode":"detached"}
 ```
-
-## llmcall (One-Shot LLM Client)
-
-This repo also includes `llmcall`, a minimal CLI wrapper around the unified `llm` library for single “throwaway” calls.
-
-Properties:
-
-- Exactly one LLM call (no agent loop).
-- Tool calls are forbidden (`tool_choice=none`). If the model returns tool calls, `llmcall` fails.
-- No system prompt by default. You can optionally provide one, or force-disable with `--no-system`.
-
-Build:
-
-```bash
-make build-llmcall
-```
-
-Examples:
-
-```bash
-./llmcall --provider openai --model gpt-5-mini-2025-08-07 "Write a haiku about build pipelines."
-
-# JSON mode: parses and re-prints as JSON (fails if output isn't valid JSON)
-echo 'Return JSON: {"ok": true}' | ./llmcall --provider openai --model gpt-5-mini-2025-08-07 --format json
-
-# JSON Schema mode: enforces + validates structured output
-./llmcall --provider openai --model gpt-5-mini-2025-08-07 --schema /path/to/schema.json "Return an object matching the schema."
-```
-
-`llmcall` resolves provider/model from env if omitted:
-
-- `LLM_PROVIDER` or `EVENER_PROVIDER`
-- `LLM_MODEL` or `EVENER_MODEL`
 
 ### Provider and model
 
@@ -278,7 +298,7 @@ The supplied schema replaces `output` wholesale — the default `message`/`data`
 - **Anthropic** strips `anyOf`/`oneOf`/`allOf` at the top level of the output schema.
 - **Gemini** drops `additionalProperties` during sanitization.
 
-## Output
+### Output
 
 **stdout** always receives only the final result text.
 
@@ -301,7 +321,7 @@ evener --model openai/gpt-5.2 --verbose "fix the bug" 2>events.ndjson
 
 NDJSON events include: `SESSION_START`, `ASSISTANT_TEXT_END` (with usage, reasoning, finish_reason), `TOOL_CALL_START` (with arguments), `TOOL_CALL_END`, `WARNING`, `ERROR`, and others.
 
-## Session persistence
+### Session persistence
 
 Evener auto-saves session state under
 `${XDG_STATE_HOME:-~/.local/state}/evener/projects/<project-id>/sessions/`
@@ -324,7 +344,7 @@ needs one.
 # List saved sessions
 evener --list-sessions
 
-# Resume the most recent session (provider and model from the original session are used)
+# Resume the most recent session
 evener --resume-last
 
 # Resume a specific session
@@ -334,131 +354,40 @@ evener --resume 02wLIRxqmq3AUo6vl2OW37
 evener --model openai/gpt-5.2 --resume-with 02wLIRxqmq3AUo6vl2OW37 "now add tests"
 ```
 
-When resuming, the provider and model from the original session are used by default. You can override them with `--model <provider/model>`.
+Resume reuses the original session's provider and model; override them with `--model <provider/model>`.
 
-## Evener TUI (Terminal User Interface)
+## llmcall (One-Shot LLM Client)
 
-`evener-tui` is a hub-backed terminal dashboard for Evener sessions. It connects to `evener-hub`, lists live and saved sessions, lets you drill into a transcript, and sends session actions through the hub API.
+This repo also includes `llmcall`, a minimal CLI wrapper around the unified `llm` library for single “throwaway” calls.
 
-### Build
+Properties:
 
-```bash
-make build-tui
-```
+- Exactly one LLM call (no agent loop).
+- Tool calls are forbidden (`tool_choice=none`). If the model returns tool calls, `llmcall` fails.
+- No system prompt by default. You can optionally provide one, or force-disable with `--no-system`.
 
-### Usage
-
-Start the dashboard:
+Build:
 
 ```bash
-evener-tui
+make build-llmcall
 ```
 
-By default `evener-tui` connects to `http://127.0.0.1:9180`. If no local hub is running, it starts `evener-hub` automatically and waits for `/api/health`.
-
-Connect to a specific hub:
+Examples:
 
 ```bash
-evener-tui --hub-addr http://127.0.0.1:9180
+./llmcall --provider openai --model gpt-5-mini-2025-08-07 "Write a haiku about build pipelines."
+
+# JSON mode: parses and re-prints as JSON (fails if output isn't valid JSON)
+echo 'Return JSON: {"ok": true}' | ./llmcall --provider openai --model gpt-5-mini-2025-08-07 --format json
+
+# JSON Schema mode: enforces + validates structured output
+./llmcall --provider openai --model gpt-5-mini-2025-08-07 --schema /path/to/schema.json "Return an object matching the schema."
 ```
 
-Use a specific hub binary or disable auto-start:
+`llmcall` resolves provider/model from env if omitted:
 
-```bash
-evener-tui --hub-bin /path/to/evener-hub
-evener-tui --no-auto-start-hub
-```
-
-### Flags
-
-| Flag | Description |
-|---|---|
-| `--hub-addr <url>` | Hub URL or host:port (default: `127.0.0.1:9180`) |
-| `--hub-bin <path>` | Hub binary to auto-start when the local hub is down |
-| `--no-auto-start-hub` | Fail instead of starting a missing local hub |
-| `--log-file <path>` | Write auto-started hub logs to this file |
-| `--debug` | Disable the alternate screen |
-
-### Features
-
-- **Dashboard**: Browse live and saved sessions from the hub roster and past-session index
-- **Session drill-in**: Open a session transcript from the dashboard
-- **Hub actions**: Send input, view tasks/details, interrupt, compact, clear, and switch models through hub endpoints
-- **Streaming**: Follow session AppWire streams through the hub
-- **Markdown rendering**: Format-aware display of assistant messages
-- **Tool inspection**: Collapse/expand tool calls and view arguments
-
-## Evener Hub (Web Orchestrator)
-
-`evener-hub` is a sibling binary that runs alongside `evener serve` daemons and gives you a single browser-based interface for many concurrent sessions.
-
-### Build & run
-
-```bash
-make build-hub
-evener-hub  # default 127.0.0.1:9180
-```
-
-Open `http://127.0.0.1:9180` in your browser.
-For production-style setup, credentials, Codex app-server sources, and smoke
-checks, see [`cmd/evener-hub/README.md`](cmd/evener-hub/README.md).
-
-### What's there
-
-- **Sidebar** with a Live section (every running session sorted by who needs you) and a Projects section (sessions grouped by working directory; subagents indented under origin; forks immediately following with the `⎇` glyph).
-- **Workspace pane** with a two-tier conversation: messages (user pills + assistant body) at the primary reading tier, tool calls and diffs as muted margin annotations.
-- **New session** at `/new` — prompt-first, pick model and working dir, click spawn.
-- **Edit-to-fork**: hover any prior user message, click `✎ edit`, hit ⌘↵, label the original branch, confirm. The new branch becomes active; the original is preserved as a sibling fork.
-- **Aside**: `/aside` (TUI) or the *Aside: fork to side thread* palette command (web UI) forks the current session at its tip into a side thread with the same permissions and config — for asking a distracting question without derailing the main session.
-- **Transparent resume**: click any closed session, type, send. The daemon spawns from where it left off — same identity throughout.
-- **⌘K search** across live + past sessions.
-- **Settings** for theme (light/dark/system), notification preferences (all opt-in), and read-only inspection of providers and MCP setup.
-
-### Configuration
-
-`${XDG_CONFIG_HOME:-~/.config}/evener/hub.toml` (optional):
-
-```toml
-addr = "127.0.0.1:9180"
-spawn_timeout = "30s"
-past_results_per_page = 50
-# Optional; default is $XDG_STATE_HOME/evener/index.db (~/.local/state/evener/index.db).
-past_index_db = "/Users/you/.local/state/evener/index.db"
-```
-
-Hub launch model choices come from the Evener launch harness contract
-(`evener launch-check --models`), not from a static model roster in `hub.toml`.
-Launch defaults live in layered launch config files. For user-wide defaults,
-create `${XDG_CONFIG_HOME:-~/.config}/evener/launch.toml`:
-
-```toml
-app_replay_size = 4096
-
-[env]
-OPENAI_API_KEY = "..."
-```
-
-### Architecture
-
-Daemons are loopback-only. Each writes a private rendezvous file to `${XDG_STATE_HOME:-~/.local/state}/evener/run/<pid>.json`; the hub watches the directory, probes daemons for state, and proxies AppWire/REST so the browser only ever talks to the hub origin. Hub-spawned daemons require the per-hub bearer token recorded in their rendezvous file. Daemon and Hub same-origin guards plus strict Hub CSP defend against DNS-rebinding and cross-origin attacks.
-
-### Operating notes
-
-- **Daemons keep the binary they were spawned from.** Rebuilding `evener` does not update already-running daemons; live sessions continue to run the old code until they shut down. To pick up changes mid-session, end the session (which terminates its daemon), rebuild, and resume — resume reads the new binary. This matches typical daemonized-server behavior and is the same model as restarting a long-lived service after a deploy.
-- **Remote hosts**: see `docs/evener-hub-remote-operations.md` for the current deployment runbook, including credential handling, state directories, browser/TUI access, health checks, and Codex app-server sources.
-- **Rebuild and restart a launchd-managed hub**: `scripts/ops/deploy-hub.sh` builds this worktree's `evener-hub` and `kickstart -k`s its launchd job, never stopping the old process until the new one is built and healthy — see `scripts/ops/deploy-hub.sh --help`.
-
-Design spec, plans, and notes live under `docs/superpowers/`.
-
-## Linting
-
-The repo enforces a single naming rule across wire formats:
-
-- **JSON tags** must be `snake_case`, except for documented AppWire/Codex protocol carve-outs that require `camelCase`.
-- **TOML tags and keys** must be `snake_case`.
-- **CLI flags** are `kebab-case` (enforced at the flag registry).
-
-Struct tags are gated by golangci-lint's `tagliatelle` (see `.golangci.yml` for the camelCase carve-outs); TOML data files are gated by `make lint-naming` (`go run ./cmd/evener-tomlcheck`). Both run in CI inside `make lint`. A struct field can opt out with a trailing `//nolint:tagliatelle // <reason>`; a TOML key with a `# evener:naming-ignore` marker on the preceding line — use sparingly, and explain why.
+- `LLM_PROVIDER` or `EVENER_PROVIDER`
+- `LLM_MODEL` or `EVENER_MODEL`
 
 ## Acknowledgments
 

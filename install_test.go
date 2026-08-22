@@ -556,9 +556,9 @@ esac
 }
 
 // TestInstallScriptWarnsAboutLegacySerf pins install.sh's completion-message
-// nudge toward evener-migrate (README.md, "Migrating from Serf"): a machine
-// with an existing ~/.serf or interim ~/.evener gets told to migrate before
-// first launch, and a clean machine gets no such nudge.
+// nudge toward evener-migrate: a machine with an existing ~/.serf or interim
+// ~/.evener gets told to migrate before first launch, and a clean machine
+// gets no such nudge.
 func TestInstallScriptWarnsAboutLegacySerf(t *testing.T) {
 	t.Parallel()
 	if testing.Short() {
