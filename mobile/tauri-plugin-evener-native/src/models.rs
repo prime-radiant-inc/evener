@@ -261,6 +261,47 @@ impl fmt::Debug for SensitiveScannedCode {
 }
 
 // ---------------------------------------------------------------------------
+// Secure store request/response DTOs for the app Keychain bridge
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SecureGetRequest {
+    pub profile_id: String,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SecureGetResponse {
+    pub present: bool,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SecureSetRequest {
+    pub profile_id: String,
+    pub capability: String,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SecureSetResponse {
+    pub stored: bool,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SecureDeleteRequest {
+    pub profile_id: String,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SecureDeleteResponse {
+    pub deleted: bool,
+}
+
+// ---------------------------------------------------------------------------
 // Preview handler — injected so tests can substitute
 // ---------------------------------------------------------------------------
 
@@ -286,5 +327,11 @@ impl PreviewCoordinator {
         scanned: SensitiveScannedCode,
     ) -> Result<PairingPreview, NativeError> {
         self.handler.preview(scanned.as_str())
+    }
+
+    /// Returns a reference to the handler so the app can delegate preview
+    /// calls directly (e.g. from paste pairing).
+    pub fn handler(&self) -> &Arc<dyn PreviewHandler> {
+        &self.handler
     }
 }

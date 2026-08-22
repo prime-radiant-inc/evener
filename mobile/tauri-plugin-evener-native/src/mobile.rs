@@ -37,6 +37,10 @@ impl<R: Runtime> EvenerNative<R> {
         *self.preview.lock().unwrap() = Some(coordinator);
     }
 
+    pub fn preview_coordinator(&self) -> Option<Arc<PreviewCoordinator>> {
+        self.preview.lock().unwrap().clone()
+    }
+
     pub fn ping(&self, payload: PingRequest) -> crate::Result<PingResponse> {
         self.handle
             .run_mobile_plugin("ping", payload)
@@ -54,6 +58,28 @@ impl<R: Runtime> EvenerNative<R> {
     ) -> crate::Result<ScanAndPreviewResponse> {
         self.handle
             .run_mobile_plugin("scanAndPreviewPairing", payload)
+            .map_err(Into::into)
+    }
+
+    /// Secure store: delegates to the Swift Keychain via the mobile plugin.
+    pub fn secure_get(&self, payload: SecureGetRequest) -> crate::Result<SecureGetResponse> {
+        self.handle
+            .run_mobile_plugin("secureGet", payload)
+            .map_err(Into::into)
+    }
+
+    pub fn secure_set(&self, payload: SecureSetRequest) -> crate::Result<SecureSetResponse> {
+        self.handle
+            .run_mobile_plugin("secureSet", payload)
+            .map_err(Into::into)
+    }
+
+    pub fn secure_delete(
+        &self,
+        payload: SecureDeleteRequest,
+    ) -> crate::Result<SecureDeleteResponse> {
+        self.handle
+            .run_mobile_plugin("secureDelete", payload)
             .map_err(Into::into)
     }
 }
