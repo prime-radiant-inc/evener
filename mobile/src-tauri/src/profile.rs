@@ -88,12 +88,6 @@ pub trait Clock: Send + Sync {
     fn now_secs(&self) -> u64;
 }
 
-/// Callback invoked before the active profile changes, to close the old
-/// transport generation. Returns the generation that was closed.
-pub trait CloseTransport: Send + Sync {
-    fn close_current(&self) -> ProfileGeneration;
-}
-
 /// Maximum preview lifetime in seconds (5 minutes).
 pub const PREVIEW_TTL_SECS: u64 = 300;
 
@@ -302,8 +296,6 @@ pub struct ProfileStore {
     expiry_scheduler: Arc<dyn PreviewExpiryScheduler>,
     /// Monotonic generation counter.
     generation: AtomicU64,
-    /// Close-current-transport callback invoked before active ID changes.
-    close_transport: Arc<dyn CloseTransport>,
 }
 
 impl ProfileStore {
@@ -313,7 +305,6 @@ impl ProfileStore {
         probe: Arc<dyn PairingProbe>,
         clock: Arc<dyn Clock>,
         policy: Arc<NetworkPolicy>,
-        close_transport: Arc<dyn CloseTransport>,
     ) -> Self {
         Self::new_with_scheduler(
             prefs,
@@ -321,7 +312,6 @@ impl ProfileStore {
             probe,
             clock,
             policy,
-            close_transport,
             Arc::new(OwnedPreviewExpiryScheduler::new()),
         )
     }
@@ -332,7 +322,6 @@ impl ProfileStore {
         probe: Arc<dyn PairingProbe>,
         clock: Arc<dyn Clock>,
         policy: Arc<NetworkPolicy>,
-        close_transport: Arc<dyn CloseTransport>,
         expiry_scheduler: Arc<dyn PreviewExpiryScheduler>,
     ) -> Self {
         Self {
@@ -344,7 +333,6 @@ impl ProfileStore {
             pending: Arc::new(Mutex::new(HashMap::new())),
             expiry_scheduler,
             generation: AtomicU64::new(0),
-            close_transport,
         }
     }
 
@@ -470,6 +458,19 @@ impl ProfileStore {
         Ok(PairingPreview { preview_id, origin })
     }
 
+    /// Return the redacted profile target of a pending repair preview. The
+    /// capability remains inside `PendingPreview`; lifecycle orchestration uses
+    /// only this ID to decide whether the active socket must be retired.
+    pub fn preview_profile_id(&self, preview_id: &str) -> Result<Option<String>, ProfileError> {
+        self.expire_pending();
+        self.pending
+            .lock()
+            .unwrap()
+            .get(preview_id)
+            .map(|preview| preview.existing_id.clone())
+            .ok_or_else(|| ProfileError::PreviewNotFound(preview_id.to_owned()))
+    }
+
     /// Phase 2: confirm a preview. Names the profile, performs the authenticated
     /// probe with redirects disabled, then atomically adds or replaces only
     /// that profile. On failure the old profile remains fully usable.
@@ -570,7 +571,6 @@ impl ProfileStore {
                 if pending.existing_id.is_some()
                     && new_prefs.active_id.as_deref() == Some(&profile_id)
                 {
-                    self.close_transport.close_current();
                     self.bump_generation();
                 }
                 return Err(prefs_err);
@@ -587,7 +587,6 @@ impl ProfileStore {
         }
 
         if pending.existing_id.is_some() && new_prefs.active_id.as_deref() == Some(&profile_id) {
-            self.close_transport.close_current();
             self.bump_generation();
         }
 
@@ -640,8 +639,6 @@ impl ProfileStore {
         let was_active = prefs.active_id.as_deref() == Some(profile_id);
 
         if was_active {
-            // Close the current transport generation before changing active ID.
-            self.close_transport.close_current();
             new_prefs.active_id = new_prefs.profiles.first().map(|p| p.id.clone());
         }
 
@@ -683,9 +680,6 @@ impl ProfileStore {
         if !prefs.profiles.iter().any(|p| p.id == profile_id) {
             return Err(ProfileError::NotFound(profile_id.to_owned()));
         }
-
-        // Close the current transport generation before active ID changes.
-        self.close_transport.close_current();
 
         let mut new_prefs = prefs.clone();
         new_prefs.active_id = Some(profile_id.to_owned());
@@ -1044,24 +1038,6 @@ impl Clock for StepClock {
     }
 }
 
-#[derive(Default)]
-pub struct RecordingCloseTransport {
-    close_count: AtomicU64,
-}
-
-impl RecordingCloseTransport {
-    pub fn close_count(&self) -> u64 {
-        self.close_count.load(Ordering::SeqCst)
-    }
-}
-
-impl CloseTransport for RecordingCloseTransport {
-    fn close_current(&self) -> ProfileGeneration {
-        self.close_count.fetch_add(1, Ordering::SeqCst);
-        ProfileGeneration(0)
-    }
-}
-
 #[cfg(test)]
 fn make_store(
     prefs: Arc<MemoryPreferences>,
@@ -1076,8 +1052,7 @@ fn make_store(
     let policy = Arc::new(NetworkPolicy::new(Box::new(
         crate::network_policy::AlwaysPrivateResolver,
     )));
-    let close = Arc::new(RecordingCloseTransport::default());
-    ProfileStore::new(prefs, secure, probe, clock, policy, close)
+    ProfileStore::new(prefs, secure, probe, clock, policy)
 }
 
 #[cfg(test)]
@@ -1151,7 +1126,6 @@ mod tests {
             Arc::new(NetworkPolicy::new(Box::new(
                 crate::network_policy::AlwaysPrivateResolver,
             ))),
-            Arc::new(RecordingCloseTransport::default()),
             scheduler,
         )
     }
@@ -1213,7 +1187,6 @@ mod tests {
             Arc::new(NetworkPolicy::new(Box::new(
                 crate::network_policy::AlwaysPrivateResolver,
             ))),
-            Arc::new(RecordingCloseTransport::default()),
             scheduler.clone(),
         );
 
@@ -1637,7 +1610,7 @@ mod tests {
     }
 
     #[test]
-    fn select_closes_transport_before_active_id_changes() {
+    fn select_updates_active_id_and_generation() {
         let prefs = Arc::new(MemoryPreferences::new());
         let secure = Arc::new(MemorySecureStore::new());
         let probe = Arc::new(OkProbe);
@@ -1645,8 +1618,7 @@ mod tests {
         let policy = Arc::new(NetworkPolicy::new(Box::new(
             crate::network_policy::AlwaysPrivateResolver,
         )));
-        let close = Arc::new(RecordingCloseTransport::default());
-        let store = ProfileStore::new(prefs.clone(), secure, probe, clock, policy, close.clone());
+        let store = ProfileStore::new(prefs.clone(), secure, probe, clock, policy);
 
         let p1 = store
             .confirm_pairing(
@@ -1671,11 +1643,9 @@ mod tests {
             )
             .unwrap();
 
-        store.select(&p1.id).unwrap();
-        assert_eq!(close.close_count(), 1);
-        store.select(&p2.id).unwrap();
-        assert_eq!(close.close_count(), 2);
-        // Active ID changed to p2.
+        let first = store.select(&p1.id).unwrap();
+        let second = store.select(&p2.id).unwrap();
+        assert!(second.generation > first.generation);
         assert_eq!(store.active_id().unwrap().as_deref(), Some(p2.id.as_str()));
     }
 

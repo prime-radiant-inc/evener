@@ -1,15 +1,7 @@
 /**
- * AppWire transport service — a Tauri-backed `WebSocketLike` and an
- * `AppwireClient` factory that dials the Rust `appwire_open`/`appwire_send`/
- * `appwire_close` commands in `mobile/src-tauri/src/commands.rs`.
- *
- * The Rust layer holds the token, pins the origin via NetworkPolicy, and
- * relays server frames to JavaScript through a Tauri `Channel` as redacted
- * `AppwireChannelEvent`s (`text`/`closed`/`error`). This module adapts that
- * channel to the `WebSocketLike` surface the headless `AppwireClient` expects,
- * so the mobile app reuses the exact same protocol client as the web app —
- * only the socket factory differs. No service outside `tauri.ts` imports
- * `@tauri-apps/api`.
+ * Tauri-backed AppWire `WebSocketLike` adapter. Rust owns credentials and the
+ * upstream socket; this adapter strictly decodes identity-bearing channel
+ * events and rejects stale queued events before they reach AppwireClient.
  */
 
 import { AppwireClient } from "../../../cmd/evener-hub/frontend/src/protocol/client";
@@ -17,35 +9,136 @@ import { AppwireClient } from "../../../cmd/evener-hub/frontend/src/protocol/cli
 import type { WebSocketLike } from "../../../cmd/evener-hub/frontend/src/protocol/transport";
 import type { TauriBridge, TauriChannel } from "./tauri";
 
-// ---------------------------------------------------------------------------
-// Channel events — mirror the Rust `AppwireChannelEvent` (camelCase, tag=type)
-// The Rust enum serializes as `{type:"text",data}`, `{type:"closed",code}`,
-// or `{type:"error"}`. Never carries the token or URL.
-// ---------------------------------------------------------------------------
-
-export type AppwireChannelEvent =
-  | { readonly type: "text"; readonly data: string }
-  | { readonly type: "closed"; readonly code: number }
-  | { readonly type: "error" };
-
-// ---------------------------------------------------------------------------
-// Open response — mirror the Rust `AppwireOpenResponse` (camelCase)
-// ---------------------------------------------------------------------------
-
-interface AppwireOpenResponse {
+interface EventIdentity {
   readonly connectionId: string;
+  readonly profileId: string;
   readonly generation: number;
 }
 
-// ---------------------------------------------------------------------------
-// TauriSocket — implements WebSocketLike over Tauri invoke + Channel
-// ---------------------------------------------------------------------------
+export type AppwireChannelEvent =
+  | (EventIdentity & { readonly type: "text"; readonly data: string })
+  | (EventIdentity & {
+      readonly type: "closed";
+      readonly code: number;
+      readonly reason: string;
+    })
+  | (EventIdentity & { readonly type: "error" });
 
-/**
- * A `WebSocketLike` backed by Tauri AppWire commands. The `url` argument is
- * ignored: the Rust side derives the WebSocket URL from the selected profile's
- * origin, so the client never sees the URL or token.
- */
+interface AppwireOpenResponse extends EventIdentity {}
+
+function record(value: unknown): Record<string, unknown> {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    throw new Error("invalid AppWire payload");
+  }
+  return value as Record<string, unknown>;
+}
+
+function hasExactKeys(
+  value: Record<string, unknown>,
+  keys: readonly string[],
+): boolean {
+  const actual = Object.keys(value).sort();
+  const expected = [...keys].sort();
+  return (
+    actual.length === expected.length &&
+    actual.every((key, index) => key === expected[index])
+  );
+}
+
+function identity(value: Record<string, unknown>): EventIdentity {
+  if (
+    typeof value.connectionId !== "string" ||
+    value.connectionId.length === 0 ||
+    typeof value.profileId !== "string" ||
+    value.profileId.length === 0 ||
+    typeof value.generation !== "number" ||
+    !Number.isSafeInteger(value.generation) ||
+    value.generation < 1
+  ) {
+    throw new Error("invalid AppWire identity");
+  }
+  return {
+    connectionId: value.connectionId,
+    profileId: value.profileId,
+    generation: value.generation,
+  };
+}
+
+function decodeOpenResponse(
+  value: unknown,
+  expectedProfileId: string,
+): AppwireOpenResponse {
+  const decoded = record(value);
+  if (!hasExactKeys(decoded, ["connectionId", "profileId", "generation"])) {
+    throw new Error("invalid AppWire open response");
+  }
+  const result = identity(decoded);
+  if (result.profileId !== expectedProfileId) {
+    throw new Error("AppWire profile mismatch");
+  }
+  return result;
+}
+
+/** Strict Rust DTO decoder. Unknown fields and incomplete identities fail closed. */
+export function decodeAppwireChannelEvent(value: unknown): AppwireChannelEvent {
+  const decoded = record(value);
+  const type = decoded.type;
+  if (type === "text") {
+    if (
+      !hasExactKeys(decoded, [
+        "type",
+        "connectionId",
+        "profileId",
+        "generation",
+        "data",
+      ]) ||
+      typeof decoded.data !== "string"
+    ) {
+      throw new Error("invalid AppWire text event");
+    }
+    return { type, ...identity(decoded), data: decoded.data };
+  }
+  if (type === "closed") {
+    if (
+      !hasExactKeys(decoded, [
+        "type",
+        "connectionId",
+        "profileId",
+        "generation",
+        "code",
+        "reason",
+      ]) ||
+      typeof decoded.code !== "number" ||
+      !Number.isInteger(decoded.code) ||
+      decoded.code < 0 ||
+      decoded.code > 65535 ||
+      typeof decoded.reason !== "string"
+    ) {
+      throw new Error("invalid AppWire closed event");
+    }
+    return {
+      type,
+      ...identity(decoded),
+      code: decoded.code,
+      reason: decoded.reason,
+    };
+  }
+  if (type === "error") {
+    if (
+      !hasExactKeys(decoded, [
+        "type",
+        "connectionId",
+        "profileId",
+        "generation",
+      ])
+    ) {
+      throw new Error("invalid AppWire error event");
+    }
+    return { type, ...identity(decoded) };
+  }
+  throw new Error("unknown AppWire event");
+}
+
 class TauriSocket implements WebSocketLike {
   onopen: (() => void) | null = null;
   onmessage: ((ev: { data: unknown }) => void) | null = null;
@@ -54,50 +147,74 @@ class TauriSocket implements WebSocketLike {
 
   private readonly bridge: TauriBridge;
   private readonly profileId: string;
-  private readonly channel: TauriChannel<AppwireChannelEvent>;
+  private readonly channel: TauriChannel<unknown>;
+  private readonly queuedEvents: AppwireChannelEvent[] = [];
   private connectionId: string | null = null;
+  private generation: number | null = null;
   private opened = false;
   private closed = false;
-  private opening: Promise<void>;
+  private backendCloseStarted = false;
+  private closeNotified = false;
+  private closeCode = 1000;
+  private readonly opening: Promise<void>;
 
   constructor(bridge: TauriBridge, profileId: string, _url: string) {
     this.bridge = bridge;
     this.profileId = profileId;
-    // Create the channel before opening so server frames are never dropped.
-    this.channel = bridge.createChannel<AppwireChannelEvent>((event) =>
-      this.handleEvent(event),
+    this.channel = bridge.createChannel<unknown>((event) =>
+      this.receiveEvent(event),
     );
     this.opening = this.open();
   }
 
   private async open(): Promise<void> {
     try {
-      const res = await this.bridge.invoke<AppwireOpenResponse>(
-        "appwire_open",
-        {
-          profileId: this.profileId,
-          onEvent: this.channel,
-        },
-      );
+      const raw = await this.bridge.invoke<unknown>("appwire_open", {
+        profileId: this.profileId,
+        onEvent: this.channel,
+      });
+      const response = decodeOpenResponse(raw, this.profileId);
+      // Capture identity even after frontend close. finishClose() needs it to
+      // close the backend socket created by the resolved open exactly once.
+      this.connectionId = response.connectionId;
+      this.generation = response.generation;
       if (this.closed) return;
-      this.connectionId = res.connectionId;
+
       this.opened = true;
       this.onopen?.();
+      const queued = this.queuedEvents.splice(0);
+      for (const event of queued) this.deliverEvent(event);
     } catch {
-      if (this.closed) return;
-      this.onerror?.();
+      if (!this.closed) this.onerror?.();
     }
   }
 
-  private handleEvent(event: AppwireChannelEvent): void {
+  private receiveEvent(raw: unknown): void {
     if (this.closed) return;
+    let event: AppwireChannelEvent;
+    try {
+      event = decodeAppwireChannelEvent(raw);
+    } catch {
+      this.onerror?.();
+      return;
+    }
+    if (this.connectionId === null || this.generation === null) {
+      this.queuedEvents.push(event);
+      return;
+    }
+    this.deliverEvent(event);
+  }
+
+  private deliverEvent(event: AppwireChannelEvent): void {
+    if (this.closed || !this.matchesCurrent(event)) return;
     switch (event.type) {
       case "text":
         this.onmessage?.({ data: event.data });
         break;
       case "closed":
-        this.markClosed();
-        this.onclose?.({ code: event.code });
+        this.closed = true;
+        this.closeCode = event.code;
+        this.notifyClose();
         break;
       case "error":
         this.onerror?.();
@@ -105,24 +222,22 @@ class TauriSocket implements WebSocketLike {
     }
   }
 
-  private markClosed(): void {
-    this.closed = true;
+  private matchesCurrent(event: EventIdentity): boolean {
+    return (
+      event.connectionId === this.connectionId &&
+      event.profileId === this.profileId &&
+      event.generation === this.generation
+    );
   }
 
   send(data: string): void {
-    if (!this.opened || this.closed || this.connectionId === null) {
-      // Before open completes or after close, sends are dropped. A send whose
-      // backend rejects (stale connection) surfaces via the error event.
-      return;
-    }
+    if (!this.opened || this.closed || this.connectionId === null) return;
     void this.bridge
       .invoke("appwire_send", {
         connectionId: this.connectionId,
         frame: data,
       })
       .catch(() => {
-        // A rejected send (e.g. stale connection after a profile switch) is
-        // reported as an error, mirroring a transport failure.
         if (!this.closed) this.onerror?.();
       });
   }
@@ -130,25 +245,30 @@ class TauriSocket implements WebSocketLike {
   close(code?: number): void {
     if (this.closed) return;
     this.closed = true;
-    const connId = this.connectionId;
-    // Ensure the open promise has settled before reporting close so onclose
-    // never fires before onopen/error.
-    void this.opening.finally(() => {
-      if (connId !== null) {
-        void this.bridge
-          .invoke("appwire_close", { connectionId: connId })
-          .catch(() => {
-            // Best-effort: the connection may already be closed server-side.
-          });
-      }
-      this.onclose?.({ code: code ?? 1000 });
-    });
+    this.closeCode = code ?? 1000;
+    void this.finishClose();
+  }
+
+  private async finishClose(): Promise<void> {
+    // Await the actual open completion. If it resolved after close(), open()
+    // captured the backend connection ID without dispatching any handler.
+    await this.opening.catch(() => undefined);
+    if (this.connectionId !== null && !this.backendCloseStarted) {
+      this.backendCloseStarted = true;
+      await this.bridge
+        .invoke("appwire_close", { connectionId: this.connectionId })
+        .catch(() => undefined);
+    }
+    this.queuedEvents.length = 0;
+    this.notifyClose();
+  }
+
+  private notifyClose(): void {
+    if (this.closeNotified) return;
+    this.closeNotified = true;
+    this.onclose?.({ code: this.closeCode });
   }
 }
-
-// ---------------------------------------------------------------------------
-// Socket factory — used by AppwireClient
-// ---------------------------------------------------------------------------
 
 export function createAppwireSocketFactory(
   bridge: TauriBridge,
@@ -157,10 +277,6 @@ export function createAppwireSocketFactory(
   return (url: string) => new TauriSocket(bridge, profileId, url);
 }
 
-// ---------------------------------------------------------------------------
-// AppwireClient factory — mobile clientInfo
-// ---------------------------------------------------------------------------
-
 export interface CreateAppwireClientInput {
   readonly bridge: TauriBridge;
   readonly url: string;
@@ -168,7 +284,6 @@ export interface CreateAppwireClientInput {
   readonly now?: () => number;
 }
 
-/** The mobile AppWire client. clientInfo identifies the app to the Hub. */
 export const MOBILE_CLIENT_INFO = {
   name: "evener-mobile",
   version: "0.1.0",
