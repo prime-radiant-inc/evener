@@ -8,7 +8,7 @@
 use std::collections::HashMap;
 use std::fmt;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Condvar, Mutex};
 
 use serde::{Deserialize, Serialize};
 
@@ -105,20 +105,174 @@ struct PendingPreview {
     existing_id: Option<String>,
 }
 
-/// Schedules secret-free expiry callbacks. Production uses a sleeping worker;
-/// tests inject a deterministic scheduler and trigger callbacks manually.
+/// Schedules secret-free expiry callbacks in one owned cancellable queue.
 pub trait PreviewExpiryScheduler: Send + Sync {
-    fn schedule(&self, delay_secs: u64, callback: Box<dyn FnOnce() + Send>);
+    fn schedule(&self, preview_id: String, delay_secs: u64, callback: Box<dyn FnOnce() + Send>);
+    fn cancel(&self, preview_id: &str);
+    fn clear(&self);
 }
 
-pub struct ThreadPreviewExpiryScheduler;
+struct ScheduledExpiryTask {
+    deadline: std::time::Instant,
+    callback: Box<dyn FnOnce() + Send>,
+}
 
-impl PreviewExpiryScheduler for ThreadPreviewExpiryScheduler {
-    fn schedule(&self, delay_secs: u64, callback: Box<dyn FnOnce() + Send>) {
-        std::thread::spawn(move || {
-            std::thread::sleep(std::time::Duration::from_secs(delay_secs));
-            callback();
-        });
+#[derive(Default)]
+struct SchedulerQueue {
+    tasks: HashMap<String, ScheduledExpiryTask>,
+    shutdown: bool,
+}
+
+#[derive(Default)]
+struct SchedulerWorker {
+    queue: Mutex<SchedulerQueue>,
+    changed: Condvar,
+}
+
+/// Production preview expiry scheduler. Exactly one worker owns all timers.
+/// Shutdown clears the queue, wakes the worker, and joins it deterministically.
+pub struct OwnedPreviewExpiryScheduler {
+    worker: Arc<SchedulerWorker>,
+    worker_handle: Mutex<Option<std::thread::JoinHandle<()>>>,
+    worker_count: Arc<AtomicU64>,
+}
+
+impl OwnedPreviewExpiryScheduler {
+    pub fn new() -> Self {
+        let worker = Arc::new(SchedulerWorker::default());
+        let worker_thread = worker.clone();
+        let worker_count = Arc::new(AtomicU64::new(1));
+        let thread_count = worker_count.clone();
+        let handle = std::thread::Builder::new()
+            .name("preview-expiry".to_owned())
+            .spawn(move || {
+                Self::run_worker(&worker_thread);
+                thread_count.store(0, Ordering::SeqCst);
+            })
+            .expect("failed to start preview expiry worker");
+        Self {
+            worker,
+            worker_handle: Mutex::new(Some(handle)),
+            worker_count,
+        }
+    }
+
+    fn run_worker(worker: &SchedulerWorker) {
+        loop {
+            let callback = {
+                let mut queue = worker.queue.lock().unwrap();
+                loop {
+                    if queue.shutdown {
+                        queue.tasks.clear();
+                        return;
+                    }
+                    let Some((next_id, deadline)) = queue
+                        .tasks
+                        .iter()
+                        .min_by_key(|(_, task)| task.deadline)
+                        .map(|(id, task)| (id.clone(), task.deadline))
+                    else {
+                        queue = worker.changed.wait(queue).unwrap();
+                        continue;
+                    };
+                    let now = std::time::Instant::now();
+                    if deadline > now {
+                        let (new_queue, _) = worker
+                            .changed
+                            .wait_timeout(queue, deadline.duration_since(now))
+                            .unwrap();
+                        queue = new_queue;
+                        continue;
+                    }
+                    break queue.tasks.remove(&next_id).map(|task| task.callback);
+                }
+            };
+            if let Some(callback) = callback {
+                callback();
+            }
+        }
+    }
+
+    pub fn schedule_in(
+        &self,
+        preview_id: String,
+        delay: std::time::Duration,
+        callback: Box<dyn FnOnce() + Send>,
+    ) {
+        let mut queue = self.worker.queue.lock().unwrap();
+        if queue.shutdown {
+            return;
+        }
+        queue.tasks.insert(
+            preview_id,
+            ScheduledExpiryTask {
+                deadline: std::time::Instant::now() + delay,
+                callback,
+            },
+        );
+        drop(queue);
+        self.worker.changed.notify_one();
+    }
+
+    pub fn shutdown(&self) {
+        let handle = {
+            let mut handle = self.worker_handle.lock().unwrap();
+            let mut queue = self.worker.queue.lock().unwrap();
+            queue.shutdown = true;
+            queue.tasks.clear();
+            drop(queue);
+            self.worker.changed.notify_one();
+            handle.take()
+        };
+        if let Some(handle) = handle {
+            let _ = handle.join();
+        }
+    }
+
+    #[cfg(test)]
+    fn pending_count(&self) -> usize {
+        self.worker.queue.lock().unwrap().tasks.len()
+    }
+
+    pub fn worker_count(&self) -> u64 {
+        self.worker_count.load(Ordering::SeqCst)
+    }
+
+    #[cfg(test)]
+    fn worker_counter(&self) -> Arc<AtomicU64> {
+        self.worker_count.clone()
+    }
+}
+
+impl Default for OwnedPreviewExpiryScheduler {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl Drop for OwnedPreviewExpiryScheduler {
+    fn drop(&mut self) {
+        self.shutdown();
+    }
+}
+
+impl PreviewExpiryScheduler for OwnedPreviewExpiryScheduler {
+    fn schedule(&self, preview_id: String, delay_secs: u64, callback: Box<dyn FnOnce() + Send>) {
+        self.schedule_in(
+            preview_id,
+            std::time::Duration::from_secs(delay_secs),
+            callback,
+        );
+    }
+
+    fn cancel(&self, preview_id: &str) {
+        self.worker.queue.lock().unwrap().tasks.remove(preview_id);
+        self.worker.changed.notify_one();
+    }
+
+    fn clear(&self) {
+        self.worker.queue.lock().unwrap().tasks.clear();
+        self.worker.changed.notify_one();
     }
 }
 
@@ -168,7 +322,7 @@ impl ProfileStore {
             clock,
             policy,
             close_transport,
-            Arc::new(ThreadPreviewExpiryScheduler),
+            Arc::new(OwnedPreviewExpiryScheduler::new()),
         )
     }
 
@@ -198,7 +352,9 @@ impl ProfileStore {
         let pending = self.pending.clone();
         let clock = self.clock.clone();
         let preview_id = preview_id.to_owned();
+        let timer_id = preview_id.clone();
         self.expiry_scheduler.schedule(
+            timer_id,
             PREVIEW_TTL_SECS,
             Box::new(move || {
                 let now = clock.now_secs();
@@ -233,8 +389,18 @@ impl ProfileStore {
         let now = self.clock.now_secs();
         let mut pending = self.pending.lock().unwrap();
         let before = pending.len();
+        let expired: Vec<String> = pending
+            .iter()
+            .filter(|(_, preview)| now.saturating_sub(preview.created_at) >= PREVIEW_TTL_SECS)
+            .map(|(id, _)| id.clone())
+            .collect();
         pending.retain(|_, p| now.saturating_sub(p.created_at) < PREVIEW_TTL_SECS);
-        before - pending.len()
+        let removed = before - pending.len();
+        drop(pending);
+        for id in expired {
+            self.expiry_scheduler.cancel(&id);
+        }
+        removed
     }
 
     /// Cancel a pending preview, clearing its held secret from native memory.
@@ -244,12 +410,14 @@ impl ProfileStore {
             .unwrap()
             .remove(preview_id)
             .ok_or_else(|| ProfileError::PreviewNotFound(preview_id.to_owned()))?;
+        self.expiry_scheduler.cancel(preview_id);
         Ok(())
     }
 
     /// Clear all pending previews (background/foreground transition).
     pub fn clear_previews(&self) {
         self.pending.lock().unwrap().clear();
+        self.expiry_scheduler.clear();
     }
 
     /// Phase 1: preview a pasted or scanned auth URL. Holds the parsed secret
@@ -322,6 +490,7 @@ impl ProfileStore {
             .unwrap()
             .remove(preview_id)
             .ok_or_else(|| ProfileError::PreviewNotFound(preview_id.to_owned()))?;
+        self.expiry_scheduler.cancel(preview_id);
 
         let name = name.trim();
         if name.is_empty() {
@@ -394,6 +563,18 @@ impl ProfileStore {
         }
 
         if let Err(prefs_err) = self.prefs.save(&new_prefs) {
+            if matches!(prefs_err, ProfileError::PreferencesDurabilityUncertain) {
+                // Rename already committed the matching preferences. Keep the
+                // new Keychain value and surface the durability uncertainty;
+                // rolling back here would create an origin/token mismatch.
+                if pending.existing_id.is_some()
+                    && new_prefs.active_id.as_deref() == Some(&profile_id)
+                {
+                    self.close_transport.close_current();
+                    self.bump_generation();
+                }
+                return Err(prefs_err);
+            }
             // Compensating rollback: undo the Keychain mutation so no orphan
             // secret remains and the old profile stays usable.
             let operation = if pending.existing_id.is_some() {
@@ -465,6 +646,14 @@ impl ProfileStore {
         }
 
         if let Err(prefs_err) = self.prefs.save(&new_prefs) {
+            if matches!(prefs_err, ProfileError::PreferencesDurabilityUncertain) {
+                // The visible preferences and Keychain deletion already match.
+                // Never restore the old token after the rename committed.
+                if was_active {
+                    self.bump_generation();
+                }
+                return Err(prefs_err);
+            }
             // Compensating rollback: restore the deleted token so the old
             // profile remains usable.
             self.rollback_keychain(profile_id, prior_token.as_deref(), "remove")?;
@@ -500,7 +689,12 @@ impl ProfileStore {
 
         let mut new_prefs = prefs.clone();
         new_prefs.active_id = Some(profile_id.to_owned());
-        self.prefs.save(&new_prefs)?;
+        if let Err(error) = self.prefs.save(&new_prefs) {
+            if matches!(error, ProfileError::PreferencesDurabilityUncertain) {
+                self.bump_generation();
+            }
+            return Err(error);
+        }
 
         Ok(SelectResult {
             profile_id: Some(profile_id.to_owned()),
@@ -902,12 +1096,28 @@ mod tests {
 
     #[derive(Default)]
     struct DeterministicScheduler {
-        scheduled: Mutex<Vec<ScheduledExpiry>>,
+        scheduled: Mutex<HashMap<String, ScheduledExpiry>>,
     }
 
     impl PreviewExpiryScheduler for DeterministicScheduler {
-        fn schedule(&self, delay_secs: u64, callback: Box<dyn FnOnce() + Send>) {
-            self.scheduled.lock().unwrap().push((delay_secs, callback));
+        fn schedule(
+            &self,
+            preview_id: String,
+            delay_secs: u64,
+            callback: Box<dyn FnOnce() + Send>,
+        ) {
+            self.scheduled
+                .lock()
+                .unwrap()
+                .insert(preview_id, (delay_secs, callback));
+        }
+
+        fn cancel(&self, preview_id: &str) {
+            self.scheduled.lock().unwrap().remove(preview_id);
+        }
+
+        fn clear(&self) {
+            self.scheduled.lock().unwrap().clear();
         }
     }
 
@@ -916,14 +1126,14 @@ mod tests {
             self.scheduled
                 .lock()
                 .unwrap()
-                .iter()
+                .values()
                 .map(|(delay, _)| *delay)
                 .collect()
         }
 
         fn run_all(&self) {
             let callbacks = std::mem::take(&mut *self.scheduled.lock().unwrap());
-            for (_, callback) in callbacks {
+            for (_, (_, callback)) in callbacks {
                 callback();
             }
         }
@@ -988,6 +1198,70 @@ mod tests {
         store.clear_previews();
         assert!(store.cancel_preview(&first.preview_id).is_err());
         assert!(store.cancel_preview(&second.preview_id).is_err());
+    }
+
+    #[test]
+    fn owned_scheduler_uses_one_worker_for_one_hundred_previews_and_cleans_up() {
+        let scheduler = Arc::new(OwnedPreviewExpiryScheduler::new());
+        let worker_counter = scheduler.worker_counter();
+        let clock = Arc::new(StepClock::new(0));
+        let store = ProfileStore::new_with_scheduler(
+            Arc::new(MemoryPreferences::new()),
+            Arc::new(MemorySecureStore::new()),
+            Arc::new(OkProbe),
+            clock,
+            Arc::new(NetworkPolicy::new(Box::new(
+                crate::network_policy::AlwaysPrivateResolver,
+            ))),
+            Arc::new(RecordingCloseTransport::default()),
+            scheduler.clone(),
+        );
+
+        let mut ids = Vec::new();
+        for _ in 0..100 {
+            ids.push(
+                store
+                    .preview_pairing(&auth_url("hub.example.com"))
+                    .unwrap()
+                    .preview_id,
+            );
+        }
+        assert_eq!(scheduler.worker_count(), 1);
+        assert_eq!(scheduler.pending_count(), 100);
+
+        store
+            .confirm_pairing(&ids[0], "Confirmed", false, ReleaseMode::Release)
+            .unwrap();
+        assert_eq!(scheduler.pending_count(), 99);
+        for id in ids.iter().skip(1).take(50) {
+            store.cancel_preview(id).unwrap();
+        }
+        assert_eq!(scheduler.pending_count(), 49);
+        store.clear_previews();
+        assert_eq!(scheduler.pending_count(), 0);
+
+        drop(store);
+        drop(scheduler);
+        assert_eq!(worker_counter.load(Ordering::SeqCst), 0);
+    }
+
+    #[test]
+    fn owned_scheduler_never_runs_cancelled_callback() {
+        let scheduler = OwnedPreviewExpiryScheduler::new();
+        let fired = Arc::new(AtomicU64::new(0));
+        let fired_callback = fired.clone();
+        scheduler.schedule_in(
+            "cancelled".to_owned(),
+            std::time::Duration::from_millis(25),
+            Box::new(move || {
+                fired_callback.fetch_add(1, Ordering::SeqCst);
+            }),
+        );
+        scheduler.cancel("cancelled");
+        std::thread::sleep(std::time::Duration::from_millis(75));
+        assert_eq!(fired.load(Ordering::SeqCst), 0);
+        scheduler.shutdown();
+        assert_eq!(scheduler.worker_count(), 0);
     }
 
     // -- Two profiles with separate Keychain accounts -----------------------

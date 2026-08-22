@@ -1,6 +1,7 @@
 import XCTest
 @testable import EvenerNativePlugin
 import Tauri
+import UIKit
 
 final class QRScannerTests: XCTestCase {
     func testProductionPluginInstallsConcreteScanner() {
@@ -32,6 +33,188 @@ final class QRScannerTests: XCTestCase {
 
         XCTAssertThrowsError(try XCTUnwrap(result).get())
     }
+
+    func testSystemScannerAuthorizedSuccessAndDoubleCompletionCleanup() throws {
+        let permission = FakeCameraPermission(state: .authorized)
+        let sessionFactory = FakeQRScanSessionFactory()
+        let presenter = FakeQRScanPresenter()
+        let scanner = SystemQRScanner(
+            permission: permission,
+            sessionFactory: sessionFactory,
+            presenter: presenter
+        )
+        var results: [Result<String, Error>] = []
+
+        scanner.scan { results.append($0) }
+        let session = try XCTUnwrap(sessionFactory.session)
+        XCTAssertEqual(session.startCount, 1)
+        XCTAssertEqual(presenter.presentCount, 1)
+
+        session.emitCode("https://hub.example.test/auth?token=native-only")
+        presenter.cancel()
+        session.emitFailure(QRScanError.cameraUnavailable)
+
+        XCTAssertEqual(results.count, 1)
+        XCTAssertEqual(
+            try results[0].get(),
+            "https://hub.example.test/auth?token=native-only"
+        )
+        XCTAssertEqual(session.stopCount, 1)
+        XCTAssertEqual(presenter.dismissCount, 1)
+
+        // Completion cleanup releases the active operation so the same
+        // production scanner type can start another scan.
+        scanner.scan { _ in }
+        XCTAssertEqual(sessionFactory.makeCount, 2)
+    }
+
+    func testSystemScannerDeniedNeverBuildsOrPresentsSession() throws {
+        let permission = FakeCameraPermission(state: .denied)
+        let sessionFactory = FakeQRScanSessionFactory()
+        let presenter = FakeQRScanPresenter()
+        let scanner = SystemQRScanner(
+            permission: permission,
+            sessionFactory: sessionFactory,
+            presenter: presenter
+        )
+        var result: Result<String, Error>?
+
+        scanner.scan { result = $0 }
+
+        XCTAssertThrowsError(try XCTUnwrap(result).get()) { error in
+            XCTAssertTrue(error is QRScanError)
+        }
+        XCTAssertEqual(sessionFactory.makeCount, 0)
+        XCTAssertEqual(presenter.presentCount, 0)
+    }
+
+    func testSystemScannerPermissionRequestDenialCleansUp() throws {
+        let permission = FakeCameraPermission(state: .notDetermined)
+        let sessionFactory = FakeQRScanSessionFactory()
+        let presenter = FakeQRScanPresenter()
+        let scanner = SystemQRScanner(
+            permission: permission,
+            sessionFactory: sessionFactory,
+            presenter: presenter
+        )
+        var result: Result<String, Error>?
+
+        scanner.scan { result = $0 }
+        XCTAssertEqual(permission.requestCount, 1)
+        permission.resolve(false)
+
+        XCTAssertThrowsError(try XCTUnwrap(result).get())
+        XCTAssertEqual(sessionFactory.makeCount, 0)
+        XCTAssertEqual(presenter.dismissCount, 0)
+    }
+
+    func testSystemScannerSetupFailureCompletesOnceWithoutPresentation() throws {
+        let permission = FakeCameraPermission(state: .authorized)
+        let sessionFactory = FakeQRScanSessionFactory()
+        sessionFactory.error = QRScanError.cameraUnavailable
+        let presenter = FakeQRScanPresenter()
+        let scanner = SystemQRScanner(
+            permission: permission,
+            sessionFactory: sessionFactory,
+            presenter: presenter
+        )
+        var results: [Result<String, Error>] = []
+
+        scanner.scan { results.append($0) }
+
+        XCTAssertEqual(results.count, 1)
+        XCTAssertThrowsError(try results[0].get())
+        XCTAssertEqual(presenter.presentCount, 0)
+        XCTAssertEqual(presenter.dismissCount, 0)
+    }
+
+    func testSystemScannerCancelStopsSessionAndDismissesOnce() throws {
+        let permission = FakeCameraPermission(state: .authorized)
+        let sessionFactory = FakeQRScanSessionFactory()
+        let presenter = FakeQRScanPresenter()
+        let scanner = SystemQRScanner(
+            permission: permission,
+            sessionFactory: sessionFactory,
+            presenter: presenter
+        )
+        var results: [Result<String, Error>] = []
+
+        scanner.scan { results.append($0) }
+        let session = try XCTUnwrap(sessionFactory.session)
+        presenter.cancel()
+        presenter.cancel()
+
+        XCTAssertEqual(results.count, 1)
+        XCTAssertThrowsError(try results[0].get())
+        XCTAssertEqual(session.stopCount, 1)
+        XCTAssertEqual(presenter.dismissCount, 1)
+    }
+}
+
+private final class FakeCameraPermission: CameraPermissionProviding {
+    var state: CameraPermissionState
+    var requestCount = 0
+    private var completion: ((Bool) -> Void)?
+
+    init(state: CameraPermissionState) {
+        self.state = state
+    }
+
+    func request(completion: @escaping (Bool) -> Void) {
+        requestCount += 1
+        self.completion = completion
+    }
+
+    func resolve(_ granted: Bool) {
+        state = granted ? .authorized : .denied
+        completion?(granted)
+    }
+}
+
+private final class FakeQRScanSession: QRScanSession {
+    var startCount = 0
+    var stopCount = 0
+    var onCode: ((String) -> Void)?
+    var onFailure: ((Error) -> Void)?
+
+    func installPreview(in view: UIView) {}
+    func start() { startCount += 1 }
+    func stop() { stopCount += 1 }
+    func emitCode(_ code: String) { onCode?(code) }
+    func emitFailure(_ error: Error) { onFailure?(error) }
+}
+
+private final class FakeQRScanSessionFactory: QRScanSessionBuilding {
+    var makeCount = 0
+    var error: Error?
+    var session: FakeQRScanSession?
+
+    func makeSession(
+        onCode: @escaping (String) -> Void,
+        onFailure: @escaping (Error) -> Void
+    ) throws -> QRScanSession {
+        makeCount += 1
+        if let error { throw error }
+        let session = FakeQRScanSession()
+        session.onCode = onCode
+        session.onFailure = onFailure
+        self.session = session
+        return session
+    }
+}
+
+private final class FakeQRScanPresenter: QRScanPresenting {
+    var presentCount = 0
+    var dismissCount = 0
+    private var onCancel: (() -> Void)?
+
+    func present(session: QRScanSession, onCancel: @escaping () -> Void) throws {
+        presentCount += 1
+        self.onCancel = onCancel
+    }
+
+    func dismiss() { dismissCount += 1 }
+    func cancel() { onCancel?() }
 }
 
 private final class FakeQRScanner: QRScanning {
