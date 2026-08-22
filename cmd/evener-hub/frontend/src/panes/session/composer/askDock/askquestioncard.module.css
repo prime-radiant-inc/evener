@@ -49,76 +49,45 @@
 }
 
 .option {
-  display: flex;
-  /* wrap, because the detail text is arbitrarily long: on a phone the
-   * detail's natural width alone exceeds the row, and without wrapping the
-   * row's shrink math squeezed the chip down to its longest WORD - the
-   * label then wrapped inside the chip's fixed 24px height and painted
-   * above/below the box (layoutguard askdock-mobile-tall-crush, measured
-   * 3-5 line boxes in a 50-62px chip). With wrap, an item that no longer
-   * fits beside the chip drops to its own line instead. Wide rows are
-   * unchanged: everything still fits on one line there. */
-  flex-wrap: wrap;
-  align-items: center;
-  gap: var(--space-1) var(--space-2);
+  /* A plain block whose contents are one continuous inline flow: radio,
+   * bold label, recommended marker, and detail all set like prose, so a
+   * wrapped detail continues at the row's left edge instead of forming an
+   * indented flex column (ask-dialog UX rework). */
+  display: block;
+  /* Unbroken over-long words in model-provided labels/details still wrap
+   * instead of escaping the card. */
+  overflow-wrap: break-word;
   /* Touch target (UX fix, real-phone measurement): an option WITH a detail
    * line stood ~46-68px tall from its own wrapped content, but a short
-   * option with no detail collapsed to ~21px - just the chip's line height.
+   * option with no detail collapsed to ~21px - just the label's line height.
    * Vertical padding gives every row the same comfortable size regardless
    * of whether it carries a detail, at every pointer type; the (pointer:
    * coarse) block below grows it the rest of the way to --tap-min on touch. */
   padding: var(--space-2) 0;
 }
 
-.optionChip {
-  display: inline-flex;
-  /* The label is the option's identity - it never shrinks (see .option's
-   * comment); the detail is what gives way. max-width guards a label
-   * longer than the whole row from pushing sideways. */
-  flex: none;
-  min-width: 0;
-  max-width: 100%;
+/* The option's identity is inline bold text (ask-dialog UX rework, replacing
+ * the old pill treatment): ordinary wrapping text, so a long valid label
+ * takes as many lines as it needs instead of being crushed into a
+ * fixed-height box. */
+.optionLabel {
+  font-weight: var(--font-weight-semibold);
+  color: var(--ink-hi);
 }
 
-/* Chip owns a fixed-height control for ordinary short labels. An option label
- * is model-provided content, though, so keep that control one line and make
- * the loss explicit when the label is wider than its row. The radio's full
- * aria-label still preserves the complete value for assistive technology. */
-.optionChip > span {
-  min-width: 0;
-  max-width: 100%;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-/* Checked ring is --accent, not --attention: this is ordinary control
- * selection ("--accent ... carries selection" - design-system.md §4), not a
- * needs-you signal, so it never touches the token-contract allowlist. */
-.option input:checked + .optionChip {
-  outline: var(--focus-ring);
-  outline-offset: 1px;
-  border-radius: var(--radius-control);
+/* The recommended marker is a quiet accent suffix directly after the bold
+ * label, replacing the old far-right uppercase tag. --accent (not
+ * --attention): a pre-selected default is ordinary selection state
+ * ("--accent ... carries selection" - design-system.md §4), not a
+ * needs-you signal, so this never touches the token-contract allowlist. */
+.optionRecommended {
+  font-size: var(--font-size-caption);
+  color: var(--accent);
 }
 
 .optionDetail {
-  /* 1 1 12rem, not 0 1 auto: wrapping decisions use the flex BASIS, and an
-   * auto basis is the detail's full natural width - which exceeds even a
-   * desktop row once the sentence is long, so the detail would drop below
-   * the chip everywhere, not just where space is genuinely tight. A 12rem
-   * basis keeps it beside the chip (growing into the remaining width)
-   * whenever that much still fits, and sends it to its own full-width line
-   * only below that - phone widths. */
-  flex: 1 1 12rem;
   font-size: var(--font-size-caption);
   color: var(--ink-mid);
-}
-
-.optionTag {
-  font-size: var(--font-size-caption);
-  color: var(--ink-mid);
-  text-transform: uppercase;
-  letter-spacing: 0.02em;
 }
 
 .alternativeRow {
@@ -137,25 +106,6 @@
   padding: var(--space-1) var(--space-2);
 }
 
-.altRow {
-  display: flex;
-  gap: var(--space-2);
-}
-
-.toggleButton {
-  font-size: var(--font-size-ui);
-  color: var(--ink-mid);
-  background: var(--surface-0);
-  border: 1px solid var(--edge);
-  border-radius: var(--radius-control);
-  padding: var(--space-1) var(--space-2);
-}
-
-.toggleButton[aria-pressed="true"] {
-  color: var(--ink-hi);
-  border-color: var(--ink-mid);
-}
-
 .noteRow {
   display: flex;
 }
@@ -171,16 +121,12 @@
 
 /* Touch target floor (2026-07-30-mobile-session-layout-design.md, decision
  * 4; UX fix, real-phone measurement: an option row with no detail measured
- * ~21px tall, and the skip/fallback .toggleButton pair measured 41x25) -
- * min-height, not height, so the desktop sizing above stays the desktop
- * rule and this only ever grows it. Same (pointer: coarse) pattern as
- * askdock.module.css's own .tab rule, since neither .option nor
- * .toggleButton is a widgets/button consumer. */
+ * ~21px tall) - min-height, not height, so the desktop sizing above stays
+ * the desktop rule and this only ever grows it. Same (pointer: coarse)
+ * pattern as askdock.module.css's own .tab rule, since .option is not a
+ * widgets/button consumer. */
 @media (pointer: coarse) {
   .option {
-    min-height: var(--tap-min);
-  }
-  .toggleButton {
     min-height: var(--tap-min);
   }
 }

@@ -501,3 +501,125 @@ describe("active tab (kata 99yf)", () => {
     expect(activeFor(batchId)).toBeUndefined();
   });
 });
+
+// --- recommended default seeding (ask-dialog UX rework) -------------------
+//
+// A question whose options include a recommended one starts ANSWERED with
+// that option - the reader edits a pre-selected default instead of building
+// every answer from nothing (and the multi-question footer can require a
+// walk through every question before Send, since every one of them already
+// has a real answer). Seeding happens at reconcile time and only fills
+// keys with NO existing entry, so it never clobbers an in-progress answer
+// or re-seeds one the reader deliberately cleared.
+
+const RECOMMENDED_QUESTION = [
+  {
+    header: "Design",
+    question: "Approve?",
+    options: [
+      { label: "Approve", detail: "go", recommended: true },
+      { label: "Revise", detail: "change" },
+    ],
+  },
+];
+
+const RECOMMENDED_MULTI = [
+  {
+    header: "Pick",
+    question: "Which?",
+    multi_select: true,
+    options: [
+      { label: "a", detail: "b", recommended: true },
+      { label: "c", detail: "d" },
+    ],
+  },
+];
+
+describe("recommended default seeding", () => {
+  test("a question with a recommended option starts with that option as its answer", async () => {
+    const fake = connectFakeClient();
+    fake.on("thread/read", () => readResponse("ref_a"));
+    await threadsStore.getState().ensureThread("ref_a");
+    startTurn(fake, "ref_a", "turn_1");
+    ackAskUserCallWith(fake, "ref_a", "turn_1", "item_1", "call_1", RECOMMENDED_QUESTION);
+
+    expect(askDockStore.getState().byRef.get("ref_a")?.answers["call_1:0"]).toEqual({
+      resolution: { kind: "option", labels: ["Approve"] },
+      note: "",
+    });
+  });
+
+  test("a multi_select question pre-checks its recommended option", async () => {
+    const fake = connectFakeClient();
+    fake.on("thread/read", () => readResponse("ref_a"));
+    await threadsStore.getState().ensureThread("ref_a");
+    startTurn(fake, "ref_a", "turn_1");
+    ackAskUserCallWith(fake, "ref_a", "turn_1", "item_1", "call_1", RECOMMENDED_MULTI);
+
+    expect(askDockStore.getState().byRef.get("ref_a")?.answers["call_1:0"]).toEqual({
+      resolution: { kind: "option", labels: ["a"] },
+      note: "",
+    });
+  });
+
+  test("a question with no recommended option starts unanswered", async () => {
+    const fake = connectFakeClient();
+    fake.on("thread/read", () => readResponse("ref_a"));
+    await threadsStore.getState().ensureThread("ref_a");
+    startTurn(fake, "ref_a", "turn_1");
+    ackAskUserCallWith(fake, "ref_a", "turn_1", "item_1", "call_1", ONE_QUESTION);
+
+    expect(askDockStore.getState().byRef.get("ref_a")?.answers["call_1:0"]).toBeUndefined();
+  });
+
+  test("a late-arriving question seeds its own default without clobbering an in-progress answer", async () => {
+    const fake = connectFakeClient();
+    fake.on("thread/read", () => readResponse("ref_a"));
+    await threadsStore.getState().ensureThread("ref_a");
+    startTurn(fake, "ref_a", "turn_1");
+    ackAskUserCallWith(fake, "ref_a", "turn_1", "item_1", "call_1", ONE_QUESTION);
+    askDockStore.getState().setAnswer("ref_a", "call_1:0", { kind: "free", text: "partial" });
+
+    ackAskUserCallWith(fake, "ref_a", "turn_1", "item_2", "call_2", RECOMMENDED_QUESTION);
+
+    const answers = askDockStore.getState().byRef.get("ref_a")?.answers;
+    expect(answers?.["call_1:0"]).toEqual({ resolution: { kind: "free", text: "partial" }, note: "" });
+    expect(answers?.["call_2:0"]).toEqual({ resolution: { kind: "option", labels: ["Approve"] }, note: "" });
+  });
+
+  test("a deliberately cleared answer is not reseeded on the next reconcile", async () => {
+    const fake = connectFakeClient();
+    fake.on("thread/read", () => readResponse("ref_a"));
+    await threadsStore.getState().ensureThread("ref_a");
+    startTurn(fake, "ref_a", "turn_1");
+    ackAskUserCallWith(fake, "ref_a", "turn_1", "item_1", "call_1", RECOMMENDED_QUESTION);
+    askDockStore.getState().setAnswer("ref_a", "call_1:0", null);
+
+    ackAskUserCallWith(fake, "ref_a", "turn_1", "item_2", "call_2", ONE_QUESTION);
+
+    expect(askDockStore.getState().byRef.get("ref_a")?.answers["call_1:0"]).toEqual({
+      resolution: null,
+      note: "",
+    });
+  });
+
+  test("a seeded default composes into the [answers] reply exactly like a picked option", async () => {
+    const fake = connectFakeClient();
+    fake.on("thread/read", () => readResponse("ref_a"));
+    await threadsStore.getState().ensureThread("ref_a");
+    startTurn(fake, "ref_a", "turn_1");
+    ackAskUserCallWith(fake, "ref_a", "turn_1", "item_1", "call_1", RECOMMENDED_QUESTION);
+    const batchId = askDockStore.getState().byRef.get("ref_a")?.batches[0]?.id;
+    if (!batchId) throw new Error("test setup: expected one batch to exist");
+    fake.on("turn/start", () => new Promise(() => {}));
+
+    const outcome = await askDockStore.getState().sendBatch("ref_a", batchId);
+
+    expect(outcome).toEqual({ outcome: "sent" });
+    const [record] = (await readMutationPersistence("ref_a")).outbox;
+    expect(record?.payload).toMatchObject({
+      ref: "ref_a",
+      input: [{ type: "text", text: '[answers]\n1. [Design] → "Approve"' }],
+    });
+  });
+});

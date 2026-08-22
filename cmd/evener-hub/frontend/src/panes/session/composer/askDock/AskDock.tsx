@@ -16,20 +16,15 @@
 // the next unanswered question (see askDockStore.setAnswer). A
 // single-question batch has nothing to switch to, so it gets no strip.
 //
-// The footer's primary button follows the same one-question-at-a-time
-// model (kata w2zy): a multi-select/free-text/"let evener decide" answer
-// never auto-advances (askDockStore's advancesOnAnswer - more typing or
-// more boxes may follow), so without this the reader's only move was the
-// button that ALWAYS submitted the whole batch, silently skipping whatever
-// they had not gotten to yet. AskBatchCard now computes an advance target
-// (askDockStore.nextUnansweredKey, same helper setAnswer's auto-advance
-// uses) from the VISIBLE question: once it has an answer and another
-// question remains open, the button moves the reader on instead of
-// sending, and relabels to say so. It reverts to Send once nothing is left
-// to advance to - every question answered (the final advance position) or
-// a single-question batch, which keeps its original always-send contract
-// (parity-m5-composer.md §C: Send is always enabled, an unanswered
-// question composes as skipped) since there is nowhere else to advance.
+// The footer's primary button turns a multi-question batch into a walk
+// (ask-dialog UX rework): it reads "Next question" on every question but
+// the last - answered or not - wraps from the last question back to the
+// first still-unanswered one, and only becomes an enabled "Send answers"
+// once every question has an answer, so a batch can never be submitted
+// past unseen or unanswered questions. A single-question batch keeps the
+// original always-send contract (parity-m5-composer.md §C: Send is always
+// enabled, an unanswered question composes as skipped) since there is
+// nowhere else to walk.
 //
 // Mount expectations for whoever wires this into Composer.tsx's tree (T2,
 // at merge - see that file's own header, "T3/T4 render inside Composer's
@@ -116,17 +111,26 @@ function AskBatchCard({ sessionRef, batch, answers, onSend }: AskBatchCardProps)
   const activeIndex = batch.questions.findIndex((q) => q.key === activeKey);
   const activeQuestion = activeIndex >= 0 ? batch.questions[activeIndex] : undefined;
 
-  // The footer's primary-button target (kata w2zy): a question key to move
-  // to, or undefined to send. Only ever set when there is somewhere else to
-  // go - more than one question, the visible one already answered, and a
-  // still-unanswered question elsewhere in the batch - so a single-question
-  // batch, an unanswered current question, or the final answered question
-  // (nextUnansweredKey finds nothing left) all fall through to undefined,
-  // i.e. keep sending, exactly like the button's original always-send
-  // behavior.
-  const activeAnswer = activeQuestion !== undefined ? answerFor(answers, activeQuestion.key) : UNTOUCHED_ANSWER;
-  const advanceTarget =
-    total > 1 && activeAnswer.resolution !== null ? nextUnansweredKey(batch, answers, activeIndex) : undefined;
+  // The footer's primary-button target: a question key to move to, or
+  // undefined to send. Ask-dialog UX rework: a multi-question batch is a
+  // WALK, not a form the reader can submit past - on every question but the
+  // last the button is "Next question" and moves one question forward,
+  // answered or not; on the last question it wraps back to the first
+  // still-unanswered one, and only when every question has an answer does
+  // it become "Send answers". If the last question itself is the only
+  // unanswered one there is nowhere to advance to, so Send stays but is
+  // DISABLED - skipping through a multi-question batch is impossible. A
+  // single-question batch keeps its original always-send contract
+  // (parity-m5-composer.md §C: Send is always enabled, an unanswered
+  // question composes as skipped) since there is nowhere else to walk.
+  const anyUnanswered = batch.questions.some((q) => answerFor(answers, q.key).resolution === null);
+  const isLast = activeIndex === total - 1;
+  let advanceTarget: string | undefined;
+  if (total > 1) {
+    if (!isLast) advanceTarget = batch.questions[activeIndex + 1]?.key;
+    else if (anyUnanswered) advanceTarget = nextUnansweredKey(batch, answers, activeIndex);
+  }
+  const sendDisabled = batch.sending || (total > 1 && anyUnanswered && advanceTarget === undefined);
 
   const tabId = (index: number) => `${baseId}-tab-${index}`;
   const panelId = `${baseId}-panel`;
@@ -147,17 +151,17 @@ function AskBatchCard({ sessionRef, batch, answers, onSend }: AskBatchCardProps)
   }
 
   // Keyboard submit (UX fix): Mod+Enter anywhere in the batch invokes the
-  // SAME primary action the footer button does (send, or advance while
-  // another question is still open - handlePrimaryAction's own doc comment
-  // above), so a keyboard-only reader never has to reach for the mouse. A
-  // bare Enter does the same, but ONLY from the question's own free-text
-  // answer input (data-ask-free-input, AskQuestionCard.tsx's own doc
-  // comment on that attribute) - it is a plain <input>, not a <textarea>, so
-  // there is no newline for a bare Enter to otherwise insert, unlike the
-  // main composer's own Shift+Enter-newlines contract. Guarded on
-  // isComposing both ways: an IME composition's own confirm keystroke also
-  // fires as "Enter", and must never be read as a submit (same guard
-  // Composer.tsx's own handleKeyDown applies to its Enter-to-send path).
+  // SAME primary action the footer button does (send, or advance to the
+  // next question in the walk - the advanceTarget computation above), so a
+  // keyboard-only reader never has to reach for the mouse. A bare Enter
+  // does the same, but ONLY from the question's own free-text answer input
+  // (data-ask-free-input, AskQuestionCard.tsx's own doc comment on that
+  // attribute) - it is a plain <input>, not a <textarea>, so there is no
+  // newline for a bare Enter to otherwise insert, unlike the main
+  // composer's own Shift+Enter-newlines contract. Guarded on isComposing
+  // both ways: an IME composition's own confirm keystroke also fires as
+  // "Enter", and must never be read as a submit (same guard Composer.tsx's
+  // own handleKeyDown applies to its Enter-to-send path).
   function handleBatchKeyDown(event: React.KeyboardEvent) {
     if (event.key !== "Enter" || event.nativeEvent.isComposing) return;
     const isPrimaryChord = event.metaKey || event.ctrlKey;
@@ -271,10 +275,11 @@ function AskBatchCard({ sessionRef, batch, answers, onSend }: AskBatchCardProps)
             (topic 16: amber owns the container above, blue owns the one
             action that resolves it) - Button's own primary variant is the
             token-contract-ungated --accent, so this needs no allowlisting.
-            Label follows advanceTarget (kata w2zy) so the button never
-            claims "Send answers" while actually just moving the reader to
-            another question. */}
-        <Button variant="primary" size="sm" disabled={batch.sending} onClick={handlePrimaryAction}>
+            Label follows advanceTarget so the button never claims
+            "Send answers" while actually just moving the reader to another
+            question, and Send stays disabled while a multi-question batch
+            still has an unanswered question nobody is being walked to. */}
+        <Button variant="primary" size="sm" disabled={sendDisabled} onClick={handlePrimaryAction}>
           {advanceTarget !== undefined ? "Next question" : "Send answers"}
         </Button>
       </div>
