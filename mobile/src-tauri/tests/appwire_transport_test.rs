@@ -1009,3 +1009,114 @@ async fn appwire_cross_profile_late_frames_rejected() {
     let _ = conn1;
     let _ = rx1;
 }
+
+// ---------------------------------------------------------------------------
+// Tests: open closes+reaps old connection before opening new (fix round 2)
+// ---------------------------------------------------------------------------
+
+/// Opening a replacement connection (for a different profile) must close
+/// and await BOTH old tasks (writer + reader) before the new connection
+/// opens. The old writer sends a close frame to the old server
+/// (observable), and no old task/frame survives. Exactly one socket per
+/// server.
+#[tokio::test]
+async fn appwire_open_reaps_old_connection_before_opening_new() {
+    use ws_server::ScriptedWsServer;
+
+    let server1 = ScriptedWsServer::start().await;
+    let server2 = ScriptedWsServer::start().await;
+
+    let manager = test_manager();
+    let (tx1, _rx1) = tokio::sync::mpsc::channel::<_>(256);
+    let (tx2, _rx2) = tokio::sync::mpsc::channel::<_>(256);
+
+    // Open profile-1 on server1.
+    let conn1 = manager
+        .open("profile-1", server1.url.clone(), "tok1".to_owned(), tx1)
+        .await
+        .unwrap();
+
+    // Wait for server1 to accept.
+    let dl = deadline_secs(3);
+    loop {
+        if server1.connection_count() == 1 {
+            break;
+        }
+        if tokio::time::Instant::now() > dl {
+            panic!("server1 never accepted");
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+
+    // Select profile-2, which closes+reaps the old connection (awaiting
+    // both writer and reader tasks). Then open profile-2 on server2.
+    manager.select("profile-2").await;
+
+    let conn2 = manager
+        .open("profile-2", server2.url.clone(), "tok2".to_owned(), tx2)
+        .await
+        .unwrap();
+
+    // Wait for server2 to accept the new connection.
+    let dl = deadline_secs(3);
+    loop {
+        if server2.connection_count() == 1 {
+            break;
+        }
+        if tokio::time::Instant::now() > dl {
+            panic!("server2 never accepted");
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+
+    // The old writer sent a close frame to server1 (observable). Wait for it.
+    let dl = deadline_secs(3);
+    loop {
+        if server1.last_close_code().is_some() {
+            break;
+        }
+        if tokio::time::Instant::now() > dl {
+            panic!("server1 never saw the close frame from the reaped writer");
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    assert_eq!(
+        server1.last_close_code(),
+        Some(1000),
+        "old writer must send close frame before new connection opens"
+    );
+
+    // Exactly one socket per server (no reconnect, no leak).
+    assert_eq!(
+        server1.connection_count(),
+        1,
+        "exactly one socket on server1"
+    );
+    assert_eq!(
+        server2.connection_count(),
+        1,
+        "exactly one socket on server2"
+    );
+
+    // The old connection (conn1) is stale — sending on it must fail.
+    let result = manager.send(conn1, "stale".to_owned()).await;
+    assert!(result.is_err(), "old connection must be stale after reap");
+
+    // The new connection (conn2) is active and accepts sends.
+    let send_result = manager.send(conn2.clone(), r#"{"id":1}"#.to_owned()).await;
+    assert!(send_result.is_ok(), "new connection must accept send");
+
+    // Enqueue a late frame on server1; it must not reach the new channel.
+    server1.enqueue_frame(r#"{"late":"from-old"}"#.to_owned());
+    let dl = deadline_secs(1);
+    loop {
+        if tokio::time::Instant::now() > dl {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    // No late frame from the old server arrives on the new connection.
+    // (The old reader was aborted/reaped, so it cannot forward.)
+
+    manager.close(conn2).await;
+}

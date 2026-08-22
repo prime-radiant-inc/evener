@@ -161,6 +161,16 @@ impl AppwireManager {
         conn.reader_handle.abort();
     }
 
+    /// Close and deterministically reap a connection: queue the close frame
+    /// to the writer, abort the reader, then await both `JoinHandle`s. The
+    /// writer sends the close frame and exits naturally; the reader was
+    /// aborted. No mutex is held across the await.
+    async fn close_and_reap(conn: ActiveConnection, code: u16) {
+        Self::close_connection(&conn, code);
+        let _ = conn.writer_handle.await;
+        let _ = conn.reader_handle.await;
+    }
+
     /// Select a profile as active. Closes and invalidates the old connection
     /// before the active profile changes. The profile_id is recorded so that
     /// `open` can validate the connection belongs to the selected profile.
@@ -170,12 +180,7 @@ impl AppwireManager {
             active.take()
         };
         if let Some(conn) = taken {
-            Self::close_connection(&conn, 1000);
-            // Reap both tasks deterministically: await the writer (which has
-            // sent the close frame and exited) and the reader (which was
-            // aborted).
-            let _ = conn.writer_handle.await;
-            let _ = conn.reader_handle.await;
+            Self::close_and_reap(conn, 1000).await;
         }
         *self.active_profile.lock() = Some(profile_id.to_owned());
     }
@@ -224,9 +229,15 @@ impl AppwireManager {
             }
         }
 
-        // Close any existing connection for a different profile.
-        if let Some(conn) = { self.active.lock().take() } {
-            Self::close_connection(&conn, 1000);
+        // Close and reap any existing connection for a different profile
+        // before opening the new one. Both old tasks (writer + reader) are
+        // awaited so no old task/frame survives.
+        let old_conn = {
+            let mut active = self.active.lock();
+            active.take()
+        };
+        if let Some(conn) = old_conn {
+            Self::close_and_reap(conn, 1000).await;
         }
 
         let generation = self.next_generation();
@@ -387,10 +398,7 @@ impl AppwireManager {
         };
         if let Some(conn) = taken {
             if conn.conn_id == conn_id {
-                Self::close_connection(&conn, code);
-                // Reap both tasks deterministically.
-                let _ = conn.writer_handle.await;
-                let _ = conn.reader_handle.await;
+                Self::close_and_reap(conn, code).await;
             } else {
                 // Not the matching connection; put it back.
                 *self.active.lock() = Some(conn);
