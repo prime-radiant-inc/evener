@@ -225,8 +225,8 @@ test("suppress returning false renders the row normally", () => {
 
 // --- expand/collapse: collapsed by default, descriptor.autoExpand can pop
 // it open at settle (parity-m4-transcript.md's own Highlights: "every tool
-// row, including diffs, starts collapsed" - the only default-expanded
-// state anywhere is a failed shell call once it settles) ------------------
+// row, including diffs, starts collapsed" - the default-expanded states are
+// a failed shell call and an image read whose picture IS its output) -------
 
 test("a row with a body starts collapsed", () => {
   registerToolRenderer({ match: "tci_collapsed", summary: () => "s", body: () => <div>body text</div> });
@@ -346,7 +346,8 @@ test("a read_file image read renders its output image at the large (up-to-600px)
       live={false}
     />,
   );
-  expandRow();
+  // An image read auto-expands (the picture is the call's whole output), so
+  // the gallery is already mounted - no expandRow() toggle needed.
   const thumb = screen.getByTestId("image-gallery-thumb");
   expect(thumb.className.split(/\s+/)).toContain(galleryStyles.thumbLarge);
 });

@@ -15,6 +15,7 @@
     "check": "biome check --write src",
     "layoutguard": "node scripts/layoutguard/run.mjs",
     "overflowguard": "node scripts/overflowguard/run.mjs",
+    "shellguard": "node scripts/shellguard/run.mjs",
     "spawnguard": "node scripts/spawnguard/run.mjs"
   },
   "license": "ISC",
