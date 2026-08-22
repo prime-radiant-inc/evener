@@ -739,9 +739,23 @@ func TestDelegateControllerReserveAttentionRequiresResidentRuntimeAndPendingID(t
 	if turns, drives := c.capacityInUse(); turns != 0 || drives != 1 {
 		t.Fatalf("attention capacity = (%d, %d), want (0, 1)", turns, drives)
 	}
+	if _, err := c.CommitStart(reservation); !errors.Is(err, errDelegateTargetBusy) {
+		t.Fatalf("unprepared CommitStart attention = %v, want busy", err)
+	}
+	if turns, drives := c.capacityInUse(); turns != 0 || drives != 0 || len(c.reservations) != 0 {
+		t.Fatalf("unprepared attention start retained state = capacity:(%d,%d) reservations:%d", turns, drives, len(c.reservations))
+	}
+	attachDelegateAttentionTranscriptForTest(t, c, runtime, "dlg_target", "attention-1")
+	reservation, err = c.ReserveAttention(runtime, "attention-1")
+	if err != nil {
+		t.Fatalf("ReserveAttention prepared retry: %v", err)
+	}
+	if err := runtime.acceptDelegateAttention(reservation); err != nil {
+		t.Fatalf("accept attention: %v", err)
+	}
 	attention, err := c.CommitStart(reservation)
 	if err != nil {
-		t.Fatalf("CommitStart attention: %v", err)
+		t.Fatalf("CommitStart prepared attention: %v", err)
 	}
 	if aggregate := c.durable["dlg_target"]; aggregate.Trigger != delegatestore.TriggerAttention || aggregate.Generation != 2 {
 		t.Fatalf("attention aggregate = %#v, want generation 2 attention", aggregate)
@@ -756,27 +770,70 @@ func TestDelegateControllerReserveAttentionRequiresResidentRuntimeAndPendingID(t
 }
 
 func TestDelegateControllerAttentionCommitBindsSelectedPendingTranscriptEntry(t *testing.T) {
-	c, _ := newDelegateControllerTestHarness(t, 1, 1)
-	seedDelegateControllerIdle(t, c, "dlg_target", "")
-	started, runtime := commitAttachedDelegateControllerStart(t, c, "dlg_target")
-	if _, err := c.AdmitStartInput(started.lease, func() error { return nil }); err != nil {
-		t.Fatalf("AdmitStartInput: %v", err)
-	}
-	if _, err := c.FinishGeneration(started.lease, delegateFinish{outcome: delegatestore.OutcomeCompleted, reason: "completed"}); err != nil {
-		t.Fatalf("FinishGeneration: %v", err)
-	}
-
-	reservation, err := c.ReserveAttention(runtime, "attention-exact")
+	const (
+		sessionID   = "child-dlg_target"
+		attentionID = "attention-exact"
+	)
+	c, runtime, transcriptPath := newDelegateAttentionAcceptanceHarness(t, sessionID, nil, attentionID)
+	reservation, err := c.ReserveAttention(runtime, attentionID)
 	if err != nil {
 		t.Fatalf("ReserveAttention: %v", err)
 	}
-	if _, err := c.CommitStart(reservation); err != nil {
-		t.Fatalf("CommitStart: %v", err)
+	storePath := filepath.Join(c.stateDir, "delegate-events.jsonl")
+	beforeJournal := readDelegateControllerFile(t, storePath)
+	if err := c.store.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
 	}
-
+	if err := runtime.acceptDelegateAttention(reservation); err != nil {
+		t.Fatalf("persist accepted attention before injected journal failure: %v", err)
+	}
+	if _, err := c.CommitStart(reservation); err == nil {
+		t.Fatal("attention generation commit succeeded after delegate store close")
+	}
+	fold, err := readDelegateAttentionFold(transcriptPath, sessionID)
+	if err != nil {
+		t.Fatalf("read consumed attention: %v", err)
+	}
+	if fold.resolutions[attentionID] != delegateAttentionConsumed || fold.resumeGenerations[attentionID] != 1 {
+		t.Fatalf("consumed marker = %q generation %d, want exact selected ID/generation 1", fold.resolutions[attentionID], fold.resumeGenerations[attentionID])
+	}
+	if got := readDelegateControllerFile(t, storePath); !bytes.Equal(got, beforeJournal) {
+		t.Fatal("failed post-consumption append changed delegate journal")
+	}
+	if aggregate := c.durable["dlg_target"]; aggregate.Generation != 0 || !aggregate.NeedsAttention || aggregate.CurrentRunOpen {
+		t.Fatalf("failed post-consumption append published aggregate: %#v", aggregate)
+	}
+	if len(c.reservations) != 1 || len(c.attentionWakeIDs["dlg_target"]) != 1 || c.live["dlg_target"].binding != nil {
+		t.Fatalf("failed acceptance did not retain narrow retry state: reservations=%#v unresolved=%#v live=%#v", c.reservations, c.attentionWakeIDs["dlg_target"], c.live["dlg_target"])
+	}
+	reopened, err := delegatestore.Open(storePath)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	t.Cleanup(func() { _ = reopened.Close() })
+	c.mu.Lock()
+	c.store = reopened
+	c.mu.Unlock()
+	if err := runtime.acceptDelegateAttention(reservation); err != nil {
+		t.Fatalf("retry accepted attention: %v", err)
+	}
+	started, err := c.CommitStart(reservation)
+	if err != nil {
+		t.Fatalf("retry committed attention: %v", err)
+	}
 	live := c.live["dlg_target"]
-	if live == nil || !reflect.DeepEqual(live.attentionIDs, []string{"attention-exact"}) {
-		t.Fatalf("bound pending transcript entries = %#v, want exact selected attention ID", live)
+	if started.lease.generation != 1 || live == nil || live.binding == nil || live.binding.lease != started.lease || live.binding.runtime != runtime || !live.binding.ready || len(live.attentionIDs) != 0 {
+		t.Fatalf("retried attention binding = started:%#v live:%#v", started, live)
+	}
+	entries := readAttentionTranscriptEntries(t, transcriptPath)
+	resolutionCount := 0
+	for _, entry := range entries {
+		if entry.Turn.AttentionResolution != nil && entry.Turn.AttentionResolution.AttentionID == attentionID {
+			resolutionCount++
+		}
+	}
+	if resolutionCount != 1 {
+		t.Fatalf("attention retry appended %d exact resolution markers, want 1", resolutionCount)
 	}
 }
 

@@ -1045,7 +1045,7 @@ func appwireDelegateInfo(data events.DelegateUpdatedData) appwire.EvenerDelegate
 		DelegateID: data.DelegateID, OwnerSessionID: data.OwnerSessionID, RootSessionID: data.RootSessionID,
 		ChildSessionID: data.ChildSessionID, TranscriptRef: data.TranscriptRef, ParentDelegateID: data.ParentDelegateID,
 		Type: data.Type, Lifecycle: data.Lifecycle, Phase: data.Phase, Status: data.Status, Outcome: data.Outcome,
-		Reason: data.Reason, Terminal: data.Terminal, Resumable: data.Resumable, NotResumableReason: data.NotResumableReason,
+		Reason: data.Reason, Terminal: data.Terminal, Resumable: data.Resumable, NeedsAttention: data.NeedsAttention, NotResumableReason: data.NotResumableReason,
 		ProjectionRevision: data.ProjectionRevision, Task: data.Task, Description: data.Description, AgentType: data.AgentType,
 		RequestedModel: data.RequestedModel, ResolvedProfileID: data.ResolvedProfileID, ResolvedModel: data.ResolvedModel,
 		Model: data.Model, ReasoningEffort: data.ReasoningEffort, OriginTurnID: data.OriginTurnID,

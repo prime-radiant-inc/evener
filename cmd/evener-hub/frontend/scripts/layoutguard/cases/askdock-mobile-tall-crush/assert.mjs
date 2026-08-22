@@ -1,10 +1,15 @@
 // Geometric contract for the mobile ask dock (see case.json's description).
 //
-//   A. Every option label chip renders on ONE line box: a chip squeezed by
-//      the option row's flex layout wraps its label inside the chip's fixed
-//      24px height, painting text above/below the box (the screenshot this
-//      case reproduces).
-//   B. The chip never overlaps its option's detail text.
+//   A. An option's label never overlaps its own detail text, compared
+//      LINE BOX by line box: label and detail are inline siblings in one
+//      prose flow (ask-dialog UX rework), so their element bounding boxes
+//      are unions over wrapped lines and intersect by construction - only
+//      same-line glyph boxes are a meaningful overlap signal.
+//   B. No option row escapes the card horizontally: option labels are
+//      inline bold text (the fixed-height chip this case was originally
+//      authored against is gone), so a long valid label WRAPS onto as many
+//      lines as it needs instead of painting outside its box or pushing
+//      the row past the card's edge.
 //   C. The dock's own box stays inside the host pane: the pane clips
 //      overflow:hidden, so a dock taller than the pane puts its own bottom
 //      (note row, batch footer, Send answers) out of reach entirely.
@@ -21,11 +26,11 @@ export default function assert(m) {
   }
 
   for (const opt of m.options) {
-    if (opt.chipLineBoxes !== 1) {
-      failures.push(`option "${opt.label}": chip label wrapped onto ${opt.chipLineBoxes} line boxes (chip width ${opt.chipWidth}px in a ${opt.rowWidth}px row)`);
+    if (opt.labelOverlapsDetail) {
+      failures.push(`option "${opt.label}": label box overlaps its detail text`);
     }
-    if (opt.chipOverlapsDetail) {
-      failures.push(`option "${opt.label}": chip box overlaps its detail text`);
+    if (opt.escapesCard) {
+      failures.push(`option "${opt.label}": row (${opt.rowWidth}px) or its label escapes the card horizontally`);
     }
   }
 

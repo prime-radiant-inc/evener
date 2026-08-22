@@ -1,26 +1,28 @@
-// AskQuestionCard renders one ask_user question's full interactive control
-// set (parity-m5-composer.md §C / test-ask-card.js): recommended-first
-// option chips (checkboxes when multi_select, else radios so native
-// keyboard nav and AT semantics both work), a free-text row, a "let evener
-// decide" row with an optional leaning, a fallback button when
-// if_unanswered is present, a skip button, a dim `why` line, and a
-// per-question note. Every control funnels through the two callback props
-// so exactly one resolution kind is ever active - the parent (AskDock)
-// owns the actual answer state (askDockStore), this component is a pure
-// controlled view over it, same convention as every other controlled
+// AskQuestionCard renders one ask_user question's interactive control set:
+// recommended-first option rows (checkboxes when multi_select, else radios
+// so native keyboard nav and AT semantics both work) whose labels are plain
+// inline BOLD text - not pills - with an accent "· recommended" suffix on
+// the recommended row (ask-dialog UX rework, replacing the old chip +
+// far-right RECOMMENDED tag treatment), a "Something else…" alternative
+// that turns the question's one text field into the free-text answer
+// (instead of adding a second input), and that same field serving as the
+// per-question note the rest of the time. The recommended option arrives
+// pre-selected (askDockStore seeds it at reconcile time), so there is no
+// "let evener decide" row and no skip/fallback pills: every question always
+// has a real answer to edit. Every control funnels through the two callback
+// props so exactly one resolution kind is ever active - the parent
+// (AskDock) owns the actual answer state (askDockStore), this component is
+// a pure controlled view over it, same convention as every other controlled
 // widget in this codebase (Input, Switch).
 //
 // No RadioGroup/Checkbox widget exists in widgets/** for this wave to
 // build on (verified: src/widgets/index.ts's barrel has no such export),
-// and Input's fixed prop list has no aria-labelledby passthrough, nor does
-// Button accept a caller className (it computes its own) - all three are
+// and Input's fixed prop list has no aria-labelledby passthrough - both are
 // hard requirements here (recommended-first radiogroup, aria-labelledby
-// wiring, a visibly distinct pressed state for the fallback/skip toggles),
-// so this file uses plain semantic <input>/<button> elements with its own
+// wiring), so this file uses plain semantic <input> elements with its own
 // CSS module throughout rather than forcing a widget that cannot express
 // them.
 import { useEffect, useId, useRef } from "react";
-import { Chip } from "../../../../widgets";
 import { requireClass } from "../../../../widgets/internal/requireClass";
 import type { AskResolution } from "./askCompose";
 import type { AskAnswerState } from "./askDockStore";
@@ -36,13 +38,11 @@ const CLASS = {
   why: requireClass(styles.why, "askquestioncard.module.css", "why"),
   options: requireClass(styles.options, "askquestioncard.module.css", "options"),
   option: requireClass(styles.option, "askquestioncard.module.css", "option"),
-  optionChip: requireClass(styles.optionChip, "askquestioncard.module.css", "optionChip"),
+  optionLabel: requireClass(styles.optionLabel, "askquestioncard.module.css", "optionLabel"),
+  optionRecommended: requireClass(styles.optionRecommended, "askquestioncard.module.css", "optionRecommended"),
   optionDetail: requireClass(styles.optionDetail, "askquestioncard.module.css", "optionDetail"),
-  optionTag: requireClass(styles.optionTag, "askquestioncard.module.css", "optionTag"),
   alternativeRow: requireClass(styles.alternativeRow, "askquestioncard.module.css", "alternativeRow"),
   textInput: requireClass(styles.textInput, "askquestioncard.module.css", "textInput"),
-  altRow: requireClass(styles.altRow, "askquestioncard.module.css", "altRow"),
-  toggleButton: requireClass(styles.toggleButton, "askquestioncard.module.css", "toggleButton"),
   noteRow: requireClass(styles.noteRow, "askquestioncard.module.css", "noteRow"),
   visuallyHidden: requireClass(styles.visuallyHidden, "askquestioncard.module.css", "visuallyHidden"),
 };
@@ -79,26 +79,23 @@ export function AskQuestionCard({ question, number, answer, onResolutionChange, 
   const textId = `${id}-text`;
   const groupName = `${id}-group`;
   const freeLabelId = `${id}-free-label`;
-  const decideLabelId = `${id}-decide-label`;
   const noteLabelId = `${id}-note-label`;
 
-  const freeInputRef = useRef<HTMLInputElement>(null);
-  const decideInputRef = useRef<HTMLInputElement>(null);
+  const noteInputRef = useRef<HTMLInputElement>(null);
   const prevKindRef = useRef<AskResolution["kind"] | null>(null);
 
-  // Focuses the alternative's own text input the moment it becomes active -
-  // edge-triggered on the kind actually changing TO free/decide (never on
-  // every render, so typing in an already-active input never yanks focus
-  // back to itself, and a resolution set by some other means - e.g. a
-  // fresh dock rebuild restoring a prior answer - doesn't steal focus a
-  // user has already moved on from).
+  // Focuses the shared text field the moment Something else becomes active
+  // - edge-triggered on the kind actually changing TO free (never on every
+  // render, so typing in the already-active field never yanks focus back to
+  // itself, and a resolution set by some other means - e.g. a fresh dock
+  // rebuild restoring a prior answer - doesn't steal focus a user has
+  // already moved on from).
   useEffect(() => {
     const kind = answer.resolution?.kind ?? null;
     const prev = prevKindRef.current;
     prevKindRef.current = kind;
     if (kind === prev) return;
-    if (kind === "free") freeInputRef.current?.focus();
-    else if (kind === "decide") decideInputRef.current?.focus();
+    if (kind === "free") noteInputRef.current?.focus();
   }, [answer.resolution?.kind]);
 
   const resolution = answer.resolution;
@@ -118,17 +115,11 @@ export function AskQuestionCard({ question, number, answer, onResolutionChange, 
   function activateFree() {
     onResolutionChange({ kind: "free", text: "" });
   }
-  function activateDecide() {
-    onResolutionChange({ kind: "decide", leaning: "" });
-  }
   function deactivate() {
     onResolutionChange(null);
   }
 
   const freeActive = resolution?.kind === "free";
-  const decideActive = resolution?.kind === "decide";
-  const fallbackActive = resolution?.kind === "fallback";
-  const skipActive = resolution?.kind === "skip";
   const optionsLabelledBy = `${headerId} ${textId}`;
   const radioName = multiSelect ? undefined : groupName;
 
@@ -150,16 +141,16 @@ export function AskQuestionCard({ question, number, answer, onResolutionChange, 
                 : resolution?.kind === "option" && resolution.labels[0] === opt.label
             }
             onChange={(e) => handleOptionChange(opt.label, e.target.checked)}
-          />
-          {/* Quick-reply chip (topic 16 Alt D), replacing plain label text -
-              widgets/chip is already token-contract-allowlisted for its own
-              tone prop, so this needs no allowlist change of its own; the
-              checked ring beside it is --accent (askquestioncard.module.css). */}
-          <span className={CLASS.optionChip}>
-            <Chip tone="neutral">{opt.label}</Chip>
-          </span>
+          />{" "}
+          {/* Inline bold label (ask-dialog UX rework), replacing the chip
+              pill - the whole row is one continuous inline flow (see
+              .option in the stylesheet), so label, marker, and detail set
+              like prose and wrap at the row's left edge. The explicit
+              spaces are load-bearing: JSX concatenates adjacent elements,
+              and inline flow needs real whitespace between them. */}
+          <span className={CLASS.optionLabel}>{opt.label}</span>
+          {opt.recommended && <span className={CLASS.optionRecommended}> · recommended</span>}{" "}
           <span className={CLASS.optionDetail}>{opt.detail}</span>
-          {opt.recommended && <span className={CLASS.optionTag}>recommended</span>}
         </label>
       ))}
 
@@ -182,57 +173,6 @@ export function AskQuestionCard({ question, number, answer, onResolutionChange, 
           />
           <span id={freeLabelId}>Something else…</span>
         </label>
-        {freeActive && (
-          <input
-            ref={freeInputRef}
-            type="text"
-            className={CLASS.textInput}
-            placeholder="type your answer"
-            aria-labelledby={`${freeLabelId} ${headerId} ${textId}`}
-            value={resolution?.kind === "free" ? resolution.text : ""}
-            onChange={(e) => onResolutionChange({ kind: "free", text: e.target.value })}
-            // Marks this as THE question's own free-text answer input (not
-            // the "let evener decide" leaning input or the per-question note,
-            // both also plain single-line <input type="text"> elements
-            // sitting in the same batch) - AskDock's own batch-level keydown
-            // handler reads this to decide whether a bare Enter here should
-            // invoke the primary action (askdock's own keyboard-submit UX
-            // fix), since only this field is the question's actual answer.
-            data-ask-free-input="true"
-          />
-        )}
-      </div>
-
-      <div className={CLASS.alternativeRow}>
-        <label>
-          <input
-            type="radio"
-            name={radioName}
-            aria-label="let evener decide"
-            checked={decideActive}
-            onClick={(e) => {
-              if (decideActive) {
-                e.preventDefault();
-                deactivate();
-              }
-            }}
-            onChange={() => {
-              if (!decideActive) activateDecide();
-            }}
-          />
-          <span id={decideLabelId}>let evener decide</span>
-        </label>
-        {decideActive && (
-          <input
-            ref={decideInputRef}
-            type="text"
-            className={CLASS.textInput}
-            placeholder="leaning (optional)"
-            aria-labelledby={`${decideLabelId} ${headerId} ${textId}`}
-            value={resolution?.kind === "decide" ? resolution.leaning : ""}
-            onChange={(e) => onResolutionChange({ kind: "decide", leaning: e.target.value })}
-          />
-        )}
       </div>
     </>
   );
@@ -260,38 +200,28 @@ export function AskQuestionCard({ question, number, answer, onResolutionChange, 
         </div>
       )}
 
-      <div className={CLASS.altRow}>
-        {question.ifUnanswered && (
-          <button
-            type="button"
-            className={CLASS.toggleButton}
-            aria-pressed={fallbackActive}
-            onClick={() => onResolutionChange(fallbackActive ? null : { kind: "fallback" })}
-          >
-            do that: {question.ifUnanswered}
-          </button>
-        )}
-        <button
-          type="button"
-          className={CLASS.toggleButton}
-          aria-pressed={skipActive}
-          onClick={() => onResolutionChange(skipActive ? null : { kind: "skip" })}
-        >
-          skip
-        </button>
-      </div>
-
+      {/* The question's ONE text field (ask-dialog UX rework): the
+          free-text answer while Something else is active (answer-mode
+          placeholder, resolution-editing onChange, and data-ask-free-input
+          so AskDock's batch-level keydown handler gives a bare Enter here
+          the primary action), the per-question note the rest of the time.
+          Always mounted, so activating/deactivating the alternative never
+          remounts the element mid-edit. */}
       <div className={CLASS.noteRow}>
         <span className={CLASS.visuallyHidden} id={noteLabelId}>
           note
         </span>
         <input
+          ref={noteInputRef}
           type="text"
           className={CLASS.textInput}
-          placeholder="note (optional)"
-          aria-labelledby={`${headerId} ${textId} ${noteLabelId}`}
-          value={answer.note}
-          onChange={(e) => onNoteChange(e.target.value)}
+          placeholder={freeActive ? "type your answer" : "note (optional)"}
+          aria-labelledby={freeActive ? `${freeLabelId} ${headerId} ${textId}` : `${headerId} ${textId} ${noteLabelId}`}
+          data-ask-free-input={freeActive ? "true" : undefined}
+          value={freeActive && resolution?.kind === "free" ? resolution.text : answer.note}
+          onChange={(e) =>
+            freeActive ? onResolutionChange({ kind: "free", text: e.target.value }) : onNoteChange(e.target.value)
+          }
         />
       </div>
     </div>

@@ -183,6 +183,7 @@ export interface EvenerDelegateInfo {
   reason?: string;
   terminal?: boolean;
   resumable: boolean;
+  needsAttention: boolean;
   notResumableReason?: string;
   projectionRevision: number;
   task?: string;

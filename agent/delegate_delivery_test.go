@@ -1,13 +1,18 @@
 package agent
 
 import (
+	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"reflect"
 	"sync"
 	"testing"
 
 	"primeradiant.com/evener/agent/internal/delegatestore"
+	"primeradiant.com/evener/agent/schema"
+	"primeradiant.com/evener/agent/transcript"
+	"primeradiant.com/evener/llm"
 )
 
 func TestDelegateControllerTwoGenerationsCanFinishBeforeFirstAck(t *testing.T) {
@@ -167,6 +172,28 @@ func TestDelegateControllerInlineCommitReleasesNPlusOneOnlyAfterN(t *testing.T) 
 	if len(pending) != 1 || pending[0].DeliveryID != "dlg_target/delivery/2" {
 		t.Fatalf("pending after N commit = %#v", pending)
 	}
+
+	nested, nestedPlan, nestedWaiter := nestedInlineDelegateDelivery(t)
+	if _, err := deliverDelegatePacket(nestedPlan, nil); err != nil {
+		t.Fatalf("deliver nested inline packet: %v", err)
+	}
+	nestedResolution := <-nestedWaiter.resolution
+	if nestedResolution.commit == nil {
+		t.Fatal("nested inline delivery returned no commit")
+	}
+	if _, err := nestedResolution.commit.Complete(true); err != nil {
+		t.Fatalf("commit nested inline delivery: %v", err)
+	}
+	if nested.durable["dlg_owner"].NeedsAttention || len(nested.attentionWakeIDs["dlg_owner"]) != 0 {
+		t.Fatalf("inline DelegateDeliveryCommit opened owner attention: owner=%#v unresolved=%#v", nested.durable["dlg_owner"], nested.attentionWakeIDs["dlg_owner"])
+	}
+	events, err := nested.store.Load()
+	if err != nil {
+		t.Fatalf("load nested inline journal: %v", err)
+	}
+	if tail := events[len(events)-1]; tail.Kind != delegatestore.EventDelegateDeliveryAcknowledged || tail.DeliveryAcknowledged == nil || tail.DeliveryAcknowledged.DeliveryID != nestedPlan.deliveryID {
+		t.Fatalf("nested inline completion tail = %#v, want sender acknowledgment only", tail)
+	}
 }
 
 func TestDelegateControllerInlineReplayAfterReceiverCommitIsIdempotent(t *testing.T) {
@@ -192,6 +219,46 @@ func TestDelegateControllerInlineReplayAfterReceiverCommitIsIdempotent(t *testin
 	}
 	if receiver.writes != 0 || len(c.durable["dlg_target"].PendingDeliveries) != 0 {
 		t.Fatalf("idempotent replay writes=%d pending=%#v", receiver.writes, c.durable["dlg_target"].PendingDeliveries)
+	}
+
+	nested, nestedPlan, nestedWaiter := nestedInlineDelegateDelivery(t)
+	if _, err := deliverDelegatePacket(nestedPlan, nil); err != nil {
+		t.Fatalf("deliver nested inline packet: %v", err)
+	}
+	nestedResolution := <-nestedWaiter.resolution
+	if _, err := nestedResolution.commit.Complete(false); err != nil {
+		t.Fatalf("leave nested inline acknowledgement pending: %v", err)
+	}
+	ownerSessionID := nested.durable["dlg_owner"].Descriptor.ChildSessionID
+	writer, err := transcript.NewWriter(transcriptPath(nested.stateDir, ownerSessionID), transcript.Header{SessionID: ownerSessionID})
+	if err != nil {
+		t.Fatalf("create nested caller transcript: %v", err)
+	}
+	commit := schema.NewTurn(schema.TurnToolResults, llm.ToolResultNamed("delegate-call", "delegate", "nested inline", false))
+	commit.DelegateDeliveryCommits = []schema.DelegateDeliveryCommit{{ToolCallID: "delegate-call", DeliveryID: nestedPlan.deliveryID}}
+	if err := writer.AppendDurable(commit); err != nil {
+		_ = writer.Close()
+		t.Fatalf("append nested caller commit: %v", err)
+	}
+	if err := writer.Close(); err != nil {
+		t.Fatalf("close nested caller transcript: %v", err)
+	}
+	pending, err := prepareColdDelegateDeliveryReplay(nested, nested.ReplayDeliveries())
+	if err != nil {
+		t.Fatalf("replay caller-committed nested delivery: %v", err)
+	}
+	if len(pending) != 0 {
+		t.Fatalf("caller-committed nested replay remained pending: %#v", pending)
+	}
+	if nested.durable["dlg_owner"].NeedsAttention || len(nested.attentionWakeIDs["dlg_owner"]) != 0 {
+		t.Fatalf("caller-committed nested replay opened owner attention: owner=%#v unresolved=%#v", nested.durable["dlg_owner"], nested.attentionWakeIDs["dlg_owner"])
+	}
+	events, err := nested.store.Load()
+	if err != nil {
+		t.Fatalf("load caller-committed nested replay journal: %v", err)
+	}
+	if tail := events[len(events)-1]; tail.Kind != delegatestore.EventDelegateDeliveryAcknowledged || tail.DeliveryAcknowledged == nil || tail.DeliveryAcknowledged.DeliveryID != nestedPlan.deliveryID {
+		t.Fatalf("caller-committed nested replay tail = %#v, want sender acknowledgment only", tail)
 	}
 }
 
@@ -341,30 +408,79 @@ func TestDelegateControllerFailedDeliveryCompletionLeavesHeadPending(t *testing.
 }
 
 func TestDelegateControllerCommittedDeliveryCompletionAcknowledgesExactHead(t *testing.T) {
-	c, firstPlan, _, _, _ := controllerWithTwoDelegateDeliveries(t, false, false)
+	c, path, firstPlan := controllerWithNestedDelegateDeliveries(t)
+	before := readDelegateControllerFile(t, path)
+	beforeRevision := c.durable["dlg_owner"].ProjectionRevision
 	token, admitted, err := c.BeginDelivery(firstPlan)
 	if err != nil || !admitted {
 		t.Fatalf("BeginDelivery = admitted:%t err:%v", admitted, err)
 	}
-	if _, err := c.CompleteDelivery(token, true); err != nil {
+	plans, err := c.CompleteDelivery(token, true)
+	if err != nil {
 		t.Fatalf("CompleteDelivery(true): %v", err)
 	}
 	pending := c.durable["dlg_target"].PendingDeliveries
 	if len(pending) != 1 || pending[0].DeliveryID != "dlg_target/delivery/2" {
 		t.Fatalf("pending after exact ack = %#v", pending)
 	}
+	owner := c.durable["dlg_owner"]
+	attentionID := delegateAttentionID(firstPlan.deliveryID)
+	if !owner.NeedsAttention || owner.ProjectionRevision != beforeRevision+1 {
+		t.Fatalf("owner attention projection = needs:%t revision:%d, want true/%d", owner.NeedsAttention, owner.ProjectionRevision, beforeRevision+1)
+	}
+	if _, present := c.attentionWakeIDs["dlg_owner"][attentionID]; !present || len(c.attentionWakeIDs["dlg_owner"]) != 1 {
+		t.Fatalf("published unresolved attention = %#v, want only %q", c.attentionWakeIDs["dlg_owner"], attentionID)
+	}
+	if got := readDelegateControllerFile(t, path); bytes.Count(got, []byte{'\n'}) != bytes.Count(before, []byte{'\n'})+1 {
+		t.Fatalf("attention open and delivery ack did not share one journal batch:\n%s", got)
+	}
+	events, err := c.store.Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	tail := events[len(events)-2:]
+	if tail[0].Kind != delegatestore.EventDelegateAttentionChanged || tail[0].DelegateID != "dlg_owner" || tail[0].AttentionChanged == nil || !tail[0].AttentionChanged.NeedsAttention || tail[1].Kind != delegatestore.EventDelegateDeliveryAcknowledged || tail[1].DelegateID != "dlg_target" || tail[1].DeliveryAcknowledged == nil || tail[1].DeliveryAcknowledged.DeliveryID != firstPlan.deliveryID {
+		t.Fatalf("serialized delivery batch tail = %#v", tail)
+	}
+	if len(plans.updates) != 2 {
+		t.Fatalf("delivery updates = %#v, want owner open and sender ack", plans.updates)
+	}
 }
 
 func TestDelegateControllerDeliveryAckRemovesOnlyExactID(t *testing.T) {
-	c, firstPlan, _, _, _ := controllerWithTwoDelegateDeliveries(t, false, false)
+	c, _, firstPlan := controllerWithNestedDelegateDeliveries(t)
 	beforeSecond := cloneDelegateTerminalPacket(c.durable["dlg_target"].PendingDeliveries[1].Packet)
 	token, _, _ := c.BeginDelivery(firstPlan)
-	if _, err := c.CompleteDelivery(token, true); err != nil {
+	plans, err := c.CompleteDelivery(token, true)
+	if err != nil {
 		t.Fatalf("CompleteDelivery: %v", err)
 	}
 	pending := c.durable["dlg_target"].PendingDeliveries
 	if len(pending) != 1 || pending[0].DeliveryID != "dlg_target/delivery/2" || !reflect.DeepEqual(pending[0].Packet, beforeSecond) {
 		t.Fatalf("ack removed or changed non-head delivery: %#v", pending)
+	}
+	if len(plans.deliveries) != 1 {
+		t.Fatalf("next delivery plans = %#v", plans.deliveries)
+	}
+	beforeRevision := c.durable["dlg_owner"].ProjectionRevision
+	secondPlan := plans.deliveries[0]
+	secondToken, admitted, err := c.BeginDelivery(secondPlan)
+	if err != nil || !admitted {
+		t.Fatalf("BeginDelivery second = admitted:%t err:%v", admitted, err)
+	}
+	if _, err := c.CompleteDelivery(secondToken, true); err != nil {
+		t.Fatalf("CompleteDelivery second: %v", err)
+	}
+	owner := c.durable["dlg_owner"]
+	if !owner.NeedsAttention || owner.ProjectionRevision != beforeRevision {
+		t.Fatalf("additional unresolved ID changed attention projection = needs:%t revision:%d, want true/%d", owner.NeedsAttention, owner.ProjectionRevision, beforeRevision)
+	}
+	wantIDs := map[string]struct{}{
+		delegateAttentionID(firstPlan.deliveryID):  {},
+		delegateAttentionID(secondPlan.deliveryID): {},
+	}
+	if !reflect.DeepEqual(c.attentionWakeIDs["dlg_owner"], wantIDs) {
+		t.Fatalf("exact unresolved attention = %#v, want %#v", c.attentionWakeIDs["dlg_owner"], wantIDs)
 	}
 }
 
@@ -465,23 +581,125 @@ func TestDelegateControllerRunFinishedAppendFailureKeepsPreparedAndWaiter(t *tes
 }
 
 func TestDelegateControllerDeliveryAcknowledgedAppendFailureKeepsReceiptAndHead(t *testing.T) {
-	c, firstPlan, _, _, _ := controllerWithTwoDelegateDeliveries(t, false, false)
-	token, admitted, err := c.BeginDelivery(firstPlan)
-	if err != nil || !admitted {
-		t.Fatalf("BeginDelivery = admitted:%t err:%v", admitted, err)
-	}
+	c, path, firstPlan := controllerWithNestedDelegateDeliveries(t)
+	writeEmptyAttentionTranscript(t, transcriptPath(c.stateDir, "child-dlg_owner"), "child-dlg_owner")
+	before := readDelegateControllerFile(t, path)
+	beforeOwner := captureDelegateSnapshot(c.durable["dlg_owner"])
 	if err := c.store.Close(); err != nil {
 		t.Fatalf("Close: %v", err)
 	}
-	plans, err := c.CompleteDelivery(token, true)
+	plans, err := deliverColdDelegatePacket(firstPlan)
 	if err == nil {
-		t.Fatal("CompleteDelivery succeeded after store close")
+		t.Fatal("delivery acknowledgment succeeded after store close")
 	}
 	c.mu.Lock()
-	receipt := c.deliveries[token.processID]
+	var receipt *delegateDeliveryAdmission
+	for _, candidate := range c.deliveries {
+		receipt = candidate
+	}
 	c.mu.Unlock()
-	if len(plans.deliveries) != 0 || receipt != nil || c.durable["dlg_target"].PendingDeliveries[0].DeliveryID != firstPlan.deliveryID {
+	if len(plans.deliveries) != 0 || receipt == nil || c.durable["dlg_target"].PendingDeliveries[0].DeliveryID != firstPlan.deliveryID {
 		t.Fatalf("failed ack state plans=%#v receipt=%#v pending=%#v", plans, receipt, c.durable["dlg_target"].PendingDeliveries)
+	}
+	if got := captureDelegateSnapshot(c.durable["dlg_owner"]); got.needsAttention != beforeOwner.needsAttention || got.revision != beforeOwner.revision || len(c.attentionWakeIDs["dlg_owner"]) != 0 {
+		t.Fatalf("failed batch published owner attention: before=%#v after=%#v unresolved=%#v", beforeOwner, got, c.attentionWakeIDs["dlg_owner"])
+	}
+	if got := readDelegateControllerFile(t, path); !bytes.Equal(got, before) {
+		t.Fatalf("failed delivery batch changed journal bytes")
+	}
+	reopened, err := delegatestore.Open(path)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	t.Cleanup(func() { _ = reopened.Close() })
+	c.mu.Lock()
+	c.store = reopened
+	c.mu.Unlock()
+	ownerWriter, _, err := transcript.OpenWriterForSession(transcriptPath(c.stateDir, "child-dlg_owner"), "child-dlg_owner")
+	if err != nil {
+		t.Fatalf("open current owner receiver: %v", err)
+	}
+	t.Cleanup(func() { _ = ownerWriter.Close() })
+	ownerRuntime := &Session{id: "child-dlg_owner", stateDir: c.stateDir, delegateController: c, owningDelegateID: "dlg_owner"}
+	ownerRuntime.attachTranscript(ownerWriter)
+	c.mu.Lock()
+	c.live["dlg_owner"] = &delegateLiveState{runtime: ownerRuntime}
+	c.mu.Unlock()
+	replay := c.ReplayDeliveries()
+	if len(replay) != 1 || replay[0].deliveryID != firstPlan.deliveryID || replay[0].waiter != nil || replay[0].receiver != ownerRuntime {
+		t.Fatalf("public replay plans = %#v, want rebuilt exact head without a spent waiter", replay)
+	}
+	if _, err := deliverColdDelegatePacket(replay[0]); err != nil {
+		t.Fatalf("retry through public delivery path: %v", err)
+	}
+	if len(c.durable["dlg_target"].PendingDeliveries) != 1 || !c.durable["dlg_owner"].NeedsAttention || len(c.attentionWakeIDs["dlg_owner"]) != 1 {
+		t.Fatalf("retried delivery did not publish atomically: sender=%#v owner=%#v unresolved=%#v", c.durable["dlg_target"], c.durable["dlg_owner"], c.attentionWakeIDs["dlg_owner"])
+	}
+
+	inline, inlineStorePath := newDelegateControllerTestHarness(t, 2, 1)
+	inlineIDs := []string{"dlg_inline_a", "dlg_inline_b"}
+	inlinePlans := make([]delegateDeliveryPlan, 0, len(inlineIDs))
+	inlineCommits := make([]delegateToolCallDeliveryCommit, 0, len(inlineIDs))
+	for index, delegateID := range inlineIDs {
+		seedDelegateControllerIdle(t, inline, delegateID, "")
+		lease, waiter := startDelegateDeliveryGeneration(t, inline, delegateID, true)
+		plan := finishDelegateDeliveryGeneration(t, inline, lease, "inline").deliveries[0]
+		if _, err := deliverDelegatePacket(plan, nil); err != nil {
+			t.Fatalf("handoff inline delivery %s: %v", delegateID, err)
+		}
+		resolution := <-waiter.resolution
+		if resolution.commit == nil {
+			t.Fatalf("inline handoff %s returned no delivery commit", delegateID)
+		}
+		inlinePlans = append(inlinePlans, plan)
+		inlineCommits = append(inlineCommits, delegateToolCallDeliveryCommit{toolCallID: fmt.Sprintf("inline-call-%d", index+1), commit: resolution.commit})
+	}
+	rootWriter, err := transcript.NewWriter(transcriptPath(inline.stateDir, "root-session"), transcript.Header{SessionID: "root-session"})
+	if err != nil {
+		t.Fatalf("create inline owner transcript: %v", err)
+	}
+	t.Cleanup(func() { _ = rootWriter.Close() })
+	root := &Session{id: "root-session", stateDir: inline.stateDir, state: SessionIdle, delegateController: inline}
+	root.attachTranscript(rootWriter)
+	inline.rootRuntime = root
+	if err := inline.store.Close(); err != nil {
+		t.Fatalf("close inline store: %v", err)
+	}
+	result := llm.ToolResultNamed("inline-call-1", "delegate_send", "done one", false)
+	secondResult := llm.ToolResultNamed("inline-call-2", "delegate_send", "done two", false)
+	result.Content = append(result.Content, secondResult.Content...)
+	err = root.appendToolResultsWithDeliveryCommitsDurably(result, result, inlineCommits)
+	if err == nil {
+		t.Fatal("inline tool-result acknowledgment succeeded after store close")
+	}
+	root.delegateDeliveryMu.Lock()
+	scheduled := append([]delegateDeliveryPlan(nil), root.pendingDelegateDeliveries...)
+	root.delegateDeliveryMu.Unlock()
+	if len(scheduled) != 2 || scheduled[0].deliveryID != inlinePlans[0].deliveryID || scheduled[1].deliveryID != inlinePlans[1].deliveryID || scheduled[0].waiter != nil || scheduled[1].waiter != nil {
+		t.Fatalf("scheduled inline replay = %#v, want both public rebuilt plans", scheduled)
+	}
+	inlineReopened, err := delegatestore.Open(inlineStorePath)
+	if err != nil {
+		t.Fatalf("reopen inline store: %v", err)
+	}
+	t.Cleanup(func() { _ = inlineReopened.Close() })
+	inline.mu.Lock()
+	inline.store = inlineReopened
+	inline.mu.Unlock()
+	if err := root.flushPendingDelegateDeliveries(); err != nil {
+		t.Fatalf("drain scheduled inline replay: %v", err)
+	}
+	for _, delegateID := range inlineIDs {
+		if len(inline.durable[delegateID].PendingDeliveries) != 0 {
+			t.Fatalf("scheduled inline replay left %s head: %#v", delegateID, inline.durable[delegateID].PendingDeliveries)
+		}
+	}
+	rootFold, err := readDelegateAttentionFold(transcriptPath(inline.stateDir, "root-session"), "root-session")
+	if err != nil {
+		t.Fatalf("read inline owner transcript: %v", err)
+	}
+	if rootFold.deliveryCommits[inlinePlans[0].deliveryID] != "inline-call-1" || rootFold.deliveryCommits[inlinePlans[1].deliveryID] != "inline-call-2" || len(rootFold.content) != 0 {
+		t.Fatalf("inline retry fold = commits:%#v unresolved:%#v", rootFold.deliveryCommits, rootFold.content)
 	}
 }
 
@@ -560,6 +778,59 @@ func controllerWithTwoDelegateDeliveries(t *testing.T, firstWaiter, secondWaiter
 		secondPlan = &secondPlans.deliveries[0]
 	}
 	return c, firstPlans.deliveries[0], first, secondPlan, second
+}
+
+func controllerWithNestedDelegateDeliveries(t *testing.T) (*delegateTreeController, string, delegateDeliveryPlan) {
+	t.Helper()
+	c, path := newDelegateControllerTestHarness(t, 2, 1)
+	seedDelegateControllerIdle(t, c, "dlg_owner", "")
+	seedDelegateControllerIdle(t, c, "dlg_target", "dlg_owner")
+	seedDelegateControllerDelivery(t, c, "dlg_target")
+	seedDelegateControllerDelivery(t, c, "dlg_target")
+	plans := c.ReplayDeliveries()
+	if len(plans) != 1 {
+		t.Fatalf("first nested delivery plans = %#v", plans)
+	}
+	return c, path, plans[0]
+}
+
+func nestedInlineDelegateDelivery(t *testing.T) (*delegateTreeController, delegateDeliveryPlan, *delegateInlineWaiter) {
+	t.Helper()
+	c, _ := newDelegateControllerTestHarness(t, 2, 1)
+	seedDelegateControllerIdle(t, c, "dlg_owner", "")
+	seedDelegateControllerIdle(t, c, "dlg_target", "dlg_owner")
+	ownerReservation, err := c.ReserveStart(rootDelegateActor("root-session"), "dlg_owner")
+	if err != nil {
+		t.Fatalf("ReserveStart owner: %v", err)
+	}
+	owner, err := c.CommitStart(ownerReservation)
+	if err != nil {
+		t.Fatalf("CommitStart owner: %v", err)
+	}
+	ownerRuntime := &Session{}
+	if err := c.AttachRuntime(owner.lease, ownerRuntime); err != nil {
+		t.Fatalf("AttachRuntime owner: %v", err)
+	}
+	if _, err := c.AdmitStartInput(owner.lease, func() error { return nil }); err != nil {
+		t.Fatalf("AdmitStartInput owner: %v", err)
+	}
+	reservation, err := c.ReserveStart(delegateActor{lease: &owner.lease}, "dlg_target")
+	if err != nil {
+		t.Fatalf("ReserveStart nested target: %v", err)
+	}
+	waiter, err := c.RegisterInlineWaiter(reservation)
+	if err != nil {
+		t.Fatalf("RegisterInlineWaiter nested target: %v", err)
+	}
+	started, err := c.CommitStart(reservation)
+	if err != nil {
+		t.Fatalf("CommitStart nested target: %v", err)
+	}
+	plans := finishDelegateDeliveryGeneration(t, c, started.lease, "nested inline")
+	if len(plans.deliveries) != 1 {
+		t.Fatalf("nested inline delivery plans = %#v", plans.deliveries)
+	}
+	return c, plans.deliveries[0], waiter
 }
 
 func restartDelegateDeliveryController(t *testing.T, c *delegateTreeController, path string) *delegateTreeController {

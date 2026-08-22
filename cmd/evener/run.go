@@ -239,6 +239,7 @@ func run(ctx context.Context, cfg runConfig) error {
 		ExportATIFPath:              cfg.exportATIF,
 		ExportATIFProviderHandles:   cfg.exportATIFProviderHandles,
 		NonInteractive:              true,
+		TurnEndsProcess:             true,
 		SystemPromptAsUser:          cfg.systemPromptAsUser,
 		OpenAIResponsesContinuation: openAIResponsesContinuation,
 		ResolveProfile:              cmdutil.BuildResolveProfile(provCfg, hasProvConfig),
@@ -274,6 +275,7 @@ func run(ctx context.Context, cfg runConfig) error {
 			ResolveProfile:              baseSessionCfg.ResolveProfile,
 			AcquireSessionOwnership:     reserveSession,
 			OpenAIResponsesContinuation: openAIResponsesContinuation,
+			TurnEndsProcess:             baseSessionCfg.TurnEndsProcess,
 		})
 		if err != nil {
 			return fmt.Errorf("restore session: %w", err)

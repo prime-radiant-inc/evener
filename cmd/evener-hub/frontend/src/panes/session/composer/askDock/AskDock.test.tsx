@@ -496,11 +496,12 @@ test("a late-arriving question growing the batch keeps the in-progress answer's 
 // submitted the WHOLE batch on click, even with other questions still
 // unanswered - correct for a single question (there is nothing else to do
 // with it) but wrong once kata 99yf's one-question-at-a-time tab strip
-// shipped: a free-text/multi-select/decide answer (askDockStore's
-// advancesOnAnswer intentionally never auto-advances those - more typing or
-// more boxes may follow) leaves the reader looking at the question they
-// just answered, and the only button on screen would silently submit
-// everything else as skipped.
+// shipped: a free-text/multi-select answer (askDockStore's advancesOnAnswer
+// intentionally never auto-advances those - more typing or more boxes may
+// follow) leaves the reader looking at the question they just answered, and
+// the only button on screen would silently submit everything else as
+// skipped. (The ask-dialog UX rework later widened this into the full walk
+// model - see the next section.)
 
 test("the primary button advances to the next unanswered question, not sends, once the current one is answered", async () => {
   const user = userEvent.setup();
@@ -536,7 +537,8 @@ test("the primary button sends once the last unanswered question is answered - t
 
   // Answer Q2 with another non-auto-advancing resolution kind - nothing is
   // left unanswered once this lands, so the button's job reverts to send.
-  await user.click(screen.getByRole("radio", { name: /let evener decide/i }));
+  await user.click(screen.getByRole("radio", { name: /something else/i }));
+  await user.type(screen.getByPlaceholderText(/type your answer/i), "second");
 
   const persisted = nextMutationPersistence("ref_a");
   await user.click(screen.getByRole("button", { name: /send answers/i }));
@@ -544,6 +546,74 @@ test("the primary button sends once the last unanswered question is answered - t
 
   const [record] = (await readMutationPersistence("ref_a")).outbox;
   expect(record?.payload).toMatchObject({ ref: "ref_a" });
+});
+
+// --- ask-dialog UX rework: the primary button walks every question --------
+//
+// The button is "Next question" on every question but the last - answered or
+// not - so a multi-question batch is a walk the reader takes, not a form
+// they can submit past. "Send answers" only appears on the last question,
+// and stays DISABLED while any question lacks an answer (the last one
+// included): with every recommended default pre-selected, walking the batch
+// is all it takes, and skipping through it is impossible.
+
+test("the primary button reads Next question on any question but the last, answered or not", async () => {
+  const user = userEvent.setup();
+  const fake = connectFakeClient();
+  await hydrateWithTwoAsk(fake);
+  fake.on("turn/start", () => new Promise(() => {}));
+  render(<AskDock ref="ref_a" />);
+
+  // Q1 is unanswered, yet the only move the footer offers is onward.
+  await user.click(screen.getByRole("button", { name: /next question/i }));
+
+  expect(screen.getByText("q2")).toBeTruthy();
+  expect(screen.queryByText("q1")).toBeNull();
+  expect(fake.calls.some((c) => c.method === "turn/start")).toBe(false);
+});
+
+test("on the last question with an earlier one still unanswered, the button wraps back to it", async () => {
+  const user = userEvent.setup();
+  const fake = connectFakeClient();
+  await hydrateWithTwoAsk(fake);
+  render(<AskDock ref="ref_a" />);
+
+  await user.click(screen.getByRole("button", { name: /next question/i })); // -> q2
+  expect(screen.getByText("q2")).toBeTruthy();
+
+  await user.click(screen.getByRole("button", { name: /next question/i })); // q1 still open: wrap
+  expect(screen.getByText("q1")).toBeTruthy();
+  expect(screen.queryByText("q2")).toBeNull();
+});
+
+test("Send is disabled on the last question while it is the only unanswered one", async () => {
+  const user = userEvent.setup();
+  const fake = connectFakeClient();
+  await hydrateWithTwoAsk(fake);
+  render(<AskDock ref="ref_a" />);
+
+  await user.click(screen.getByRole("radio", { name: "a" })); // auto-advances to q2
+
+  const sendBtn = screen.getByRole("button", { name: /send answers/i });
+  expect(sendBtn).toHaveProperty("disabled", true);
+});
+
+test("a recommended option starts selected and counts as answered", async () => {
+  const fake = connectFakeClient();
+  await hydrateWithTwoAsk(fake, [
+    {
+      header: "Design",
+      question: "Approve?",
+      options: [
+        { label: "Approve", detail: "go", recommended: true },
+        { label: "Revise", detail: "no" },
+      ],
+    },
+  ]);
+  render(<AskDock ref="ref_a" />);
+
+  expect(screen.getByRole("radio", { name: "Approve" })).toHaveProperty("checked", true);
+  expect(screen.getByText(/1 of 1 question answered/i)).toBeTruthy();
 });
 
 // --- keyboard submit (UX fix): Mod+Enter on the batch, plain Enter in the

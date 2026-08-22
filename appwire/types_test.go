@@ -139,7 +139,7 @@ func TestEvenerDiagnosticsDelegatesJSONRoundTrip(t *testing.T) {
 	in := EvenerDiagnostics{
 		Delegates: []EvenerDelegateInfo{{
 			DelegateID: "dlg_1", OwnerSessionID: "owner", RootSessionID: "root", ChildSessionID: "child", TranscriptRef: "local:child",
-			ParentDelegateID: "dlg_parent", Type: "delegate", Lifecycle: "idle", Phase: "idle", Status: "idle", Resumable: true,
+			ParentDelegateID: "dlg_parent", Type: "delegate", Lifecycle: "idle", Phase: "idle", Status: "idle", Resumable: true, NeedsAttention: true,
 			ProjectionRevision: 9, Message: json.RawMessage("null"), StructuredResult: json.RawMessage("null"), StructuredValid: &valid,
 			StructuredReason: "valid null", ExhaustionBudget: "max_tool_rounds_per_input", ExhaustionLimit: 4,
 			ExhaustionResumable: &exhaustionResumable, RunningForMS: &runningForMS, Warnings: []string{"warning"}, Diagnostics: []string{"diagnostic"},
@@ -152,7 +152,7 @@ func TestEvenerDiagnosticsDelegatesJSONRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatalf("marshal delegates diagnostics: %v", err)
 	}
-	for _, want := range []string{`"delegates"`, `"delegateId":"dlg_1"`, `"message":null`, `"structuredResult":null`, `"projectionRevision":9`, `"turnSlots"`} {
+	for _, want := range []string{`"delegates"`, `"delegateId":"dlg_1"`, `"message":null`, `"structuredResult":null`, `"needsAttention":true`, `"projectionRevision":9`, `"turnSlots"`} {
 		if !strings.Contains(string(raw), want) {
 			t.Fatalf("marshal=%s missing %s", raw, want)
 		}
@@ -166,7 +166,7 @@ func TestEvenerDiagnosticsDelegatesJSONRoundTrip(t *testing.T) {
 	if err := json.Unmarshal(raw, &out); err != nil {
 		t.Fatalf("unmarshal delegates diagnostics: %v", err)
 	}
-	if len(out.Delegates) != 1 || out.Delegates[0].DelegateID != "dlg_1" || string(out.Delegates[0].Message) != "null" ||
+	if len(out.Delegates) != 1 || out.Delegates[0].DelegateID != "dlg_1" || !out.Delegates[0].NeedsAttention || string(out.Delegates[0].Message) != "null" ||
 		out.Delegates[0].Usage == nil || out.Delegates[0].Usage.TotalTokens != 5 || out.Delegates[0].Worktree == nil || !out.Delegates[0].Worktree.Dirty ||
 		out.TurnSlots == nil || out.TurnSlots.InUse != 2 || out.TurnSlots.Drives != 1 {
 		t.Fatalf("roundtrip delegates diagnostics = %+v", out)

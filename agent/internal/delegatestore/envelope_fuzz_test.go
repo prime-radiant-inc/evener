@@ -20,6 +20,7 @@ var envelopeKinds = []struct {
 	{EventDelegateSubtreeStopRequested, func(e *Event) { e.SubtreeStopRequested = &SubtreeStopRequested{} }},
 	{EventDelegateSubtreeStopCompleted, func(e *Event) { e.SubtreeStopCompleted = &SubtreeStopCompleted{} }},
 	{EventDelegateDeliveryAcknowledged, func(e *Event) { e.DeliveryAcknowledged = &DeliveryAcknowledged{} }},
+	{EventDelegateAttentionChanged, func(e *Event) { e.AttentionChanged = &DelegateAttentionChanged{} }},
 }
 
 // FuzzDelegateEventEnvelope drives the envelope rule over the cross product of
@@ -31,20 +32,21 @@ var envelopeKinds = []struct {
 // RunStarted payload rode along on a differently-kinded event, say. The rule is
 // deliberately strict: exactly one payload, and it must be the kind's own.
 //
-// Enumerating the cross product is the point. Eight kinds against 256 payload
+// Enumerating the cross product is the point. Nine kinds against 512 payload
 // combinations is far more than a table of hand-written cases covers, and the
 // switch in validateEventEnvelope is maintained by hand — a kind added to the
 // enum but forgotten there is exactly what this finds.
 func FuzzDelegateEventEnvelope(f *testing.F) {
-	f.Add(0, uint8(1), "dlg_1")   // created, matching payload
-	f.Add(0, uint8(0), "dlg_1")   // created, no payload
-	f.Add(0, uint8(3), "dlg_1")   // created, two payloads
-	f.Add(1, uint8(1), "dlg_1")   // run started, created's payload
-	f.Add(0, uint8(1), "")        // matching payload, no delegate id
-	f.Add(99, uint8(1), "dlg_1")  // unknown kind
-	f.Add(3, uint8(255), "dlg_1") // every payload at once
+	f.Add(0, uint16(1), "dlg_1")   // created, matching payload
+	f.Add(0, uint16(0), "dlg_1")   // created, no payload
+	f.Add(0, uint16(3), "dlg_1")   // created, two payloads
+	f.Add(1, uint16(1), "dlg_1")   // run started, created's payload
+	f.Add(0, uint16(1), "")        // matching payload, no delegate id
+	f.Add(99, uint16(1), "dlg_1")  // unknown kind
+	f.Add(3, uint16(511), "dlg_1") // every payload at once
+	f.Add(8, uint16(256), "dlg_1") // attention changed, matching payload
 
-	f.Fuzz(func(t *testing.T, kindIndex int, payloadMask uint8, delegateID string) {
+	f.Fuzz(func(t *testing.T, kindIndex int, payloadMask uint16, delegateID string) {
 		if len(delegateID) > 256 {
 			t.Skip()
 		}

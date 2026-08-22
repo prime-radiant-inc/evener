@@ -1760,6 +1760,16 @@ func (e *LocalExecutionEnvironment) StreamCommand(ctx context.Context, command, 
 	}, nil
 }
 
+// DetachSupported reports whether DetachCommand can disown a process here: the
+// platform must supply detached-process attributes AND no sandbox wrapper may be
+// provisioned, because a command that runs through a wrapper cannot be disowned
+// from it. DetachCommand refuses on exactly this predicate, so the advertised
+// capability and the actual refusal cannot drift.
+func (e *LocalExecutionEnvironment) DetachSupported() bool {
+	_, ok := detachedProcessSysProcAttr()
+	return ok && e.Wrapper == nil
+}
+
 // DetachCommand starts command outside the environment's managed process set
 // with its standard streams disconnected from the launching session.
 func (e *LocalExecutionEnvironment) DetachCommand(ctx context.Context, command, workingDir string, envVars map[string]string) (DetachedProcess, error) {
@@ -1775,8 +1785,8 @@ func (e *LocalExecutionEnvironment) DetachCommand(ctx context.Context, command, 
 		}
 	}
 
-	sysProcAttr, ok := detachedProcessSysProcAttr()
-	if !ok || e.Wrapper != nil {
+	sysProcAttr, _ := detachedProcessSysProcAttr()
+	if !e.DetachSupported() {
 		return DetachedProcess{}, ErrDetachUnsupported
 	}
 

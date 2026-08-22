@@ -65,10 +65,13 @@
   </div>
   <div class="paneFooter">
     <!-- Mirrors AskDock.tsx's rendered tree with the real class names from
-         askdock/askquestioncard/chip .module.css, seeded with the exact
-         content from the reported screenshot: three options whose detail
-         text is many lines long at phone width, a recommended tag, both
-         alternative rows, a long fallback, and the note row. -->
+         askdock/askquestioncard .module.css, seeded with the exact content
+         from the reported screenshot: three options whose detail text is
+         many lines long at phone width, an inline bold label per option
+         (ask-dialog UX rework - no chip pills), an accent recommended
+         suffix on the first, the Something else alternative, and the note
+         row. The recommended option arrives pre-selected, so the footer
+         count reads 1 of 1. -->
     <div class="dock" data-ask-response-dock>
       <div class="anchor" role="status">Answer the agent’s questions.</div>
       <div class="batch">
@@ -86,42 +89,35 @@
           <div class="options" role="radiogroup">
             <label class="option">
               <input type="radio" name="g" checked>
-              <span class="optionChip"><span class="chip neutral">Wait for green</span></span>
+              <span class="optionLabel">Wait for green</span>
+              <span class="optionRecommended">· recommended</span>
               <span class="optionDetail">The background run (reduced workers, 1h cap) is going now. I retire the worktree and delete tasklist-checklist-card only after it comes back green — the by-the-book finish.</span>
-              <span class="optionTag">recommended</span>
             </label>
             <label class="option">
               <input type="radio" name="g">
-              <span class="optionChip"><span class="chip neutral">Finish cleanup now</span></span>
+              <span class="optionLabel">Finish cleanup now</span>
               <span class="optionDetail">Retire the worktree and delete the branch now. Justification: identical branch content passed the full suite 5291/5291 pre-merge, the merge was conflict-free, and all 342 tests covering this change pass on the merged checkout. The merge commit stays either way.</span>
             </label>
             <label class="option">
               <input type="radio" name="g">
-              <span class="optionChip"><span class="chip neutral">I'll quiet the other session</span></span>
+              <span class="optionLabel">I'll quiet the other session</span>
               <span class="optionDetail">The kata-flake session's vitest farm (load avg 101) is the interference. If you stop it, I re-run the full suite on a quiet machine and finish normally.</span>
             </label>
             <label class="option">
               <input type="radio" name="g">
-              <span class="optionChip"><span class="chip neutral">A deliberately long valid option label that must remain inside its chip without escaping the card</span></span>
+              <span class="optionLabel">A deliberately long valid option label that must wrap onto as many lines as it needs without escaping the card</span>
               <span class="optionDetail">The option label is valid content, not a reason for the card or pane to overflow.</span>
             </label>
             <div class="alternativeRow">
               <label><input type="radio" name="g"><span>Something else…</span></label>
             </div>
-            <div class="alternativeRow">
-              <label><input type="radio" name="g"><span>let evener decide</span></label>
-            </div>
-          </div>
-          <div class="altRow">
-            <button type="button" class="toggleButton">do that: Wait for the background full-suite run; I'll finish cleanup when it reports green.</button>
-            <button type="button" class="toggleButton">skip</button>
           </div>
           <div class="noteRow">
             <input type="text" class="textInput" placeholder="note (optional)">
           </div>
         </div>
         <div class="footer">
-          <span class="count">0 of 1 question answered</span>
+          <span class="count">1 of 1 question answered</span>
           <button type="button" class="sendButton" id="send-button">Send answers</button>
         </div>
       </div>
@@ -134,40 +130,45 @@ function rectOf(el) {
   return { top: r.top, bottom: r.bottom, left: r.left, right: r.right, width: r.width, height: r.height };
 }
 
-// Line boxes of a chip's label text: a label squeezed below its natural
-// width wraps onto multiple lines inside the chip's FIXED 24px box, and
-// the overflow paints above/below the box (the reported screenshot). One
-// box = the label got its natural single line.
-function chipLineBoxes(chip) {
-  const text = chip.firstChild;
-  const range = document.createRange();
-  range.selectNodeContents(text);
-  return range.getClientRects().length;
-}
-
 function intersects(a, b) {
   const x = Math.min(a.right, b.right) - Math.max(a.left, b.left);
   const y = Math.min(a.bottom, b.bottom) - Math.max(a.top, b.top);
   return x > 1 && y > 1;
 }
 
+// Per-line-box rectangles of an inline element's text. With the ask-dialog
+// rework's inline-flow option rows, getBoundingClientRect on a WRAPPING
+// inline element returns the union of its line boxes - a big box spanning
+// the row - so sibling unions "overlap" by construction. Line boxes are the
+// honest granularity for an overlap check between inline siblings.
+function lineBoxesOf(el) {
+  const range = document.createRange();
+  range.selectNodeContents(el);
+  return Array.from(range.getClientRects());
+}
+
 window.measure = function () {
   const host = document.querySelector(".host");
   const transcript = document.getElementById("transcript");
   const dock = document.querySelector(".dock");
+  const card = document.querySelector(".card");
   const sendButton = document.getElementById("send-button");
+  const cardRect = rectOf(card);
 
   const options = Array.from(document.querySelectorAll(".option")).map((option) => {
-    const chip = option.querySelector(".optionChip .chip");
+    const label = option.querySelector(".optionLabel");
     const detail = option.querySelector(".optionDetail");
-    const chipRect = rectOf(chip);
-    const detailRect = rectOf(detail);
+    const labelBoxes = lineBoxesOf(label);
+    const detailBoxes = lineBoxesOf(detail);
     return {
-      label: chip.textContent,
+      label: label.textContent,
       rowWidth: rectOf(option).width,
-      chipWidth: chipRect.width,
-      chipLineBoxes: chipLineBoxes(chip),
-      chipOverlapsDetail: intersects(chipRect, detailRect),
+      labelOverlapsDetail: labelBoxes.some((a) => detailBoxes.some((b) => intersects(a, b))),
+      // The whole row - label included, however long - stays inside the
+      // card: inline text WRAPS instead of escaping, which is what replaced
+      // the old fixed-height chip this case was authored against.
+      escapesCard:
+        rectOf(option).right > cardRect.right + 1 || labelBoxes.some((b) => b.right > cardRect.right + 1),
     };
   });
 

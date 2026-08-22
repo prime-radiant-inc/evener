@@ -12,6 +12,7 @@ import (
 
 	"github.com/spf13/afero"
 	"primeradiant.com/evener/agent/events"
+	"primeradiant.com/evener/agent/internal/delegatestore"
 	"primeradiant.com/evener/agent/internal/jobstore"
 	"primeradiant.com/evener/agent/transcript"
 )
@@ -373,7 +374,7 @@ func TestStableDelegateWatch_ReceiverFsyncPrecedesDeliveredAck(t *testing.T) {
 	}
 }
 
-func TestStableDelegateWatch_RootWakeWaitsForSourceAcknowledgement(t *testing.T) {
+func TestStableDelegateWatch_SourceAcknowledgementWaitsForRootWakeArm(t *testing.T) {
 	fixture := newStableWatchRuntimeFixture(t, nil)
 	onSessionEventKD(fixture.sourceJM, events.EventCommunicate, events.CommunicateData{Message: "ordered receiver wake"})
 	ackEntered := make(chan struct{}, 1)
@@ -402,18 +403,22 @@ func TestStableDelegateWatch_RootWakeWaitsForSourceAcknowledgement(t *testing.T)
 	<-ackEntered
 	select {
 	case <-wakes:
-		t.Fatal("root attention woke before the source acknowledgement and receipt release")
 	default:
+		close(releaseAck)
+		released = true
+		<-done
+		t.Fatal("source acknowledgement began before root attention was armed")
+	}
+	if receipt := fixture.sourceJM.stableWatchReceipt(fixture.requireOnePending(t).state.DeliveryID); receipt == nil {
+		close(releaseAck)
+		released = true
+		<-done
+		t.Fatal("source acknowledgement released its receipt before durable settlement")
 	}
 	close(releaseAck)
 	released = true
 	if err := <-done; err != nil {
 		t.Fatalf("deliver watch frame: %v", err)
-	}
-	select {
-	case <-wakes:
-	default:
-		t.Fatal("root attention did not wake after source acknowledgement and receipt release")
 	}
 }
 
@@ -511,7 +516,7 @@ func TestStableDelegateWatch_CoalescingRetainsInflightReceiverReceipt(t *testing
 	}
 }
 
-func TestStableDelegateWatch_SupersededAckFailureRetriesBeforeCurrentCursor(t *testing.T) {
+func TestStableDelegateWatch_SupersededAckFailureRetainsArmedAttentionBeforeCurrentCursor(t *testing.T) {
 	fs := newAttentionSyncBarrierFS()
 	fixture := newStableWatchRuntimeFixture(t, fs)
 	wakes := make(chan struct{}, 2)
@@ -520,8 +525,8 @@ func TestStableDelegateWatch_SupersededAckFailureRetriesBeforeCurrentCursor(t *t
 
 	select {
 	case <-wakes:
-		t.Fatal("failed old source acknowledgement armed receiver attention")
 	default:
+		t.Fatal("failed old source acknowledgement did not retain already-armed receiver attention")
 	}
 	if receipt := fixture.sourceJM.stableWatchReceipt(old.DeliveryID); receipt == nil {
 		t.Fatal("failed old source acknowledgement released its delivery receipt")
@@ -587,11 +592,6 @@ func TestStableDelegateWatch_SupersededAckFailureRetriesBeforeCurrentCursor(t *t
 	}
 	if !oldArmed {
 		t.Fatalf("old attention %q was not armed after exact acknowledgement retry", stableWatchAttentionID(old))
-	}
-	select {
-	case <-wakes:
-	default:
-		t.Fatal("old attention did not wake after exact acknowledgement retry")
 	}
 }
 
@@ -817,6 +817,80 @@ func TestStableDelegateWatch_RestartRepairsReceiverDurableSourceUnacked(t *testi
 	if len(folded.Pending) != 0 {
 		t.Fatalf("source pending after restart repair = %#v", folded.Pending)
 	}
+
+	t.Run("cold arm failure retains source", func(t *testing.T) {
+		fixture := newStableWatchRuntimeBase(t, nil)
+		seedDelegateControllerIdle(t, fixture.controller, "dlg_receiver", "dlg_source")
+		receiverID := fixture.controller.durable["dlg_receiver"].Descriptor.ChildSessionID
+		receiverPath := transcriptPath(fixture.controller.stateDir, receiverID)
+		writer, err := transcript.NewWriter(receiverPath, transcript.Header{SessionID: receiverID})
+		if err != nil {
+			t.Fatalf("create cold watch receiver transcript: %v", err)
+		}
+		if err := writer.Close(); err != nil {
+			t.Fatalf("close cold watch receiver transcript: %v", err)
+		}
+		if _, err := fixture.sourceJM.configureWatch(watchArgs{
+			Source:               "dlg_source",
+			Target:               runtimeMessageAliasCaller,
+			Events:               []string{"communicate"},
+			ReceiverSessionID:    receiverID,
+			ReceiverDelegateID:   "dlg_receiver",
+			StableReceiver:       true,
+			ReceiverSendInternal: true,
+			SourceDelegateID:     "dlg_source",
+			SourceGeneration:     1,
+		}); err != nil {
+			t.Fatalf("configure cold receiver watch: %v", err)
+		}
+		onSessionEventKD(fixture.sourceJM, events.EventCommunicate, events.CommunicateData{Message: "cold arm retry"})
+		pending := fixture.requireOnePending(t)
+		if err := fixture.controller.store.Close(); err != nil {
+			t.Fatalf("close controller before cold arm: %v", err)
+		}
+		if _, err := fixture.source.drainJobManagerWatchSends(context.Background(), fixture.sourceJM, ""); err == nil {
+			t.Fatal("cold watch arm unexpectedly succeeded with closed delegate journal")
+		}
+		if got := fixture.sourceJM.pendingWatchSendDeliveries(nil); len(got) != 1 || got[0].state.DeliveryID != pending.state.DeliveryID {
+			t.Fatalf("failed cold watch arm source = %#v, want exact pending delivery", got)
+		}
+		if receipt := fixture.sourceJM.stableWatchReceipt(pending.state.DeliveryID); receipt == nil {
+			t.Fatal("failed cold watch arm released its delivery receipt")
+		}
+		reopened, err := delegatestore.Open(fixture.controllerStorePath)
+		if err != nil {
+			t.Fatalf("reopen delegate journal: %v", err)
+		}
+		restarted, err := openDelegateTreeController(delegateTreeControllerConfig{
+			store:         reopened,
+			rootRuntime:   fixture.root,
+			rootSessionID: fixture.root.ID(),
+			stateDir:      fixture.controller.stateDir,
+			turnLimit:     2,
+			driveLimit:    1,
+			now:           fixture.controller.now,
+		})
+		if err != nil {
+			_ = reopened.Close()
+			t.Fatalf("restart delegate controller: %v", err)
+		}
+		t.Cleanup(func() { _ = restarted.store.Close() })
+		fixture.root.delegateController = restarted
+		fixture.source.delegateController = restarted
+		fixture.sourceJM.delegateController = restarted
+		if _, err := fixture.source.drainJobManagerWatchSends(context.Background(), fixture.sourceJM, ""); err != nil {
+			t.Fatalf("retry cold watch arm: %v", err)
+		}
+		if got := fixture.sourceJM.pendingWatchSendDeliveries(nil); len(got) != 0 {
+			t.Fatalf("retried cold watch source remained pending: %#v", got)
+		}
+		restarted.mu.Lock()
+		armed := restarted.durable["dlg_receiver"].NeedsAttention
+		restarted.mu.Unlock()
+		if !armed {
+			t.Fatal("retried cold watch attention was not journaled")
+		}
+	})
 }
 
 func TestStableDelegateWatch_RestartRepairsSupersededReceiverDurableSourceUnacked(t *testing.T) {

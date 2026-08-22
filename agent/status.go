@@ -64,6 +64,7 @@ type DelegateStatusInfo struct {
 	Reason              string                       `json:"reason,omitempty"`
 	Terminal            bool                         `json:"terminal,omitempty"`
 	Resumable           bool                         `json:"resumable"`
+	NeedsAttention      bool                         `json:"needs_attention"`
 	NotResumableReason  string                       `json:"not_resumable_reason,omitempty"`
 	ProjectionRevision  uint64                       `json:"projection_revision"`
 	Task                string                       `json:"task,omitempty"`
@@ -253,7 +254,7 @@ func LoadSessionDelegateStatus(stateDir, sessionID string) ([]DelegateStatusInfo
 		return nil, nil, err
 	}
 	rootID := activityRootIDFromMeta(sessionID, meta)
-	rows, diagnostics, err := loadHistoricalStableActivity(stateDir, rootID, sessionID)
+	rows, diagnostics, err := loadHistoricalStableActivityWithAttention(stateDir, rootID, sessionID)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -285,6 +286,7 @@ func delegateStatusInfoFromSnapshot(now time.Time, rootID string, row delegateSn
 		Phase:               string(row.phase),
 		Status:              string(row.lifecycle),
 		Resumable:           row.resumable,
+		NeedsAttention:      row.needsAttention,
 		NotResumableReason:  row.notResumableReason,
 		ProjectionRevision:  row.revision,
 		Task:                descriptor.Task,
@@ -355,7 +357,7 @@ func delegateUpdatedDataFromStatus(info DelegateStatusInfo) events.DelegateUpdat
 		DelegateID: info.DelegateID, OwnerSessionID: info.OwnerSessionID, RootSessionID: info.RootSessionID,
 		ChildSessionID: info.ChildSessionID, TranscriptRef: info.TranscriptRef, ParentDelegateID: info.ParentDelegateID,
 		Type: info.Type, Lifecycle: info.Lifecycle, Phase: info.Phase, Status: info.Status, Outcome: info.Outcome,
-		Reason: info.Reason, Terminal: info.Terminal, Resumable: info.Resumable, NotResumableReason: info.NotResumableReason,
+		Reason: info.Reason, Terminal: info.Terminal, Resumable: info.Resumable, NeedsAttention: info.NeedsAttention, NotResumableReason: info.NotResumableReason,
 		ProjectionRevision: info.ProjectionRevision, Task: info.Task, Description: info.Description, AgentType: info.AgentType,
 		RequestedModel: info.RequestedModel, ResolvedProfileID: info.ResolvedProfileID, ResolvedModel: info.ResolvedModel,
 		Model: info.Model, ReasoningEffort: info.ReasoningEffort, OriginTurnID: info.OriginTurnID,

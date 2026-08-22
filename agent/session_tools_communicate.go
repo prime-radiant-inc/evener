@@ -108,7 +108,7 @@ func registerCommunicateTool(reg *tool.Registry, deps *toolDeps) {
 			}
 			if endTurn && deps.runningJobIDs != nil {
 				if ids := deps.runningJobIDs(); len(ids) > 0 {
-					resp["warning"] = runningJobsEndTurnWarning(ids)
+					resp["warning"] = runningJobsEndTurnWarning(ids, deps.turnEndsProcess)
 				}
 			}
 			b, _ := json.Marshal(resp)
@@ -119,13 +119,25 @@ func registerCommunicateTool(reg *tool.Registry, deps *toolDeps) {
 
 // runningJobsEndTurnWarning builds the end_turn=true warning naming this
 // session's still-running jobs. Warn-first (2026-08-06 ruling): the
-// communicate call still succeeds, there is no refusal path. The warning
-// complements docs/job-control.md's notification contract rather than
-// duplicating it — those jobs remain notification-armed and will report on
-// their own when they finish.
-func runningJobsEndTurnWarning(jobIDs []string) string {
-	return fmt.Sprintf("ending turn while %d job(s) are still running: %s. The call still succeeds; each job remains notification-armed and will report separately on completion.",
-		len(jobIDs), strings.Join(jobIDs, ", "))
+// communicate call still succeeds, there is no refusal path.
+//
+// The promise the warning can make depends on whether the session outlives the
+// turn. Where it does, the warning complements docs/job-control.md's
+// notification contract rather than duplicating it — those jobs remain
+// notification-armed and report on their own when they finish.
+//
+// Where turnEndsProcess holds, that promise is false: a one-shot `evener run`
+// exits once the turn's work is drained, so a job that keeps running is killed
+// rather than reported on. The drain gives such a job a further turn to be
+// disposed of (see undisposedBackgroundJobsMessage), which is a remedy, not a
+// reprieve — so this warning must not imply the job is safe.
+func runningJobsEndTurnWarning(jobIDs []string, turnEndsProcess bool) string {
+	outcome := "each job remains notification-armed and will report separately on completion."
+	if turnEndsProcess {
+		outcome = "a job that finishes is reported in a further turn, but this run's process exits once that work is drained, so a job that keeps running is killed at exit rather than reported on later."
+	}
+	return fmt.Sprintf("ending turn while %d job(s) are still running: %s. The call still succeeds; %s",
+		len(jobIDs), strings.Join(jobIDs, ", "), outcome)
 }
 
 func registerSkillTool(reg *tool.Registry, deps *toolDeps) {

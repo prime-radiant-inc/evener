@@ -101,6 +101,11 @@ linters:
           - pkg: cmd/evener-hub/internal/launchconfig
             rules:
               json: camel
+          # Google's REST API wire format is camelCase; these structs mirror
+          # its ListModels response verbatim.
+          - pkg: providers/google
+            rules:
+              json: camel
     gocritic:
       enabled-tags:
         - diagnostic

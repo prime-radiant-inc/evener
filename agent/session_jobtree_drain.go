@@ -3,10 +3,12 @@ package agent
 import (
 	"context"
 	"fmt"
+	"sort"
 	"strings"
 	"time"
 
 	"primeradiant.com/evener/agent/events"
+	"primeradiant.com/evener/agent/execenv"
 	"primeradiant.com/evener/agent/internal/jobstore"
 )
 
@@ -77,11 +79,29 @@ func (jm *jobManager) outstandingDrainJobCount() (int, error) {
 // uses the ids to name the stuck managed job(s) in its warning; the count is just
 // len() of this list, so the two can never disagree.
 func (jm *jobManager) outstandingDrainJobIDs() ([]string, error) {
+	ids, _, err := jm.outstandingDrainJobIDsByBackground()
+	return ids, err
+}
+
+// outstandingDrainJobIDsByBackground returns outstandingDrainJobIDs together
+// with the subset of them that are LIVE background shells, under a single jm.mu
+// hold so the two lists can never disagree.
+//
+// background is read off the RUNNING MAP's own record. JobRecord.Background is
+// json:"-" — no event carries it, it is stamped in memory at launch or
+// promotion and nowhere else — so a record folded from the store always reads
+// false whatever the job did. That is what isOwnedDrainJob's "does not
+// reliably preserve a shell's original execution mode" comment refers to, and
+// it is why the durable NotifyPending half below contributes to `all` only: a
+// terminal job still owing a notification is deliverable work the drain
+// resolves on its own, and calling it background would let the undisposed-job
+// announcement fire while real progress was one turn away.
+func (jm *jobManager) outstandingDrainJobIDsByBackground() (all, background []string, err error) {
 	jm.mu.Lock()
 	defer jm.mu.Unlock()
 	recs, err := jm.store.Load()
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	counted := make(map[string]bool)
 	var ids []string
@@ -89,6 +109,9 @@ func (jm *jobManager) outstandingDrainJobIDs() ([]string, error) {
 		if isOwnedDrainJob(run.rec, jm.sessionID) {
 			counted[id] = true
 			ids = append(ids, id)
+			if run.rec.Background && run.stopStatus == "" {
+				background = append(background, id)
+			}
 		}
 	}
 	for id, rec := range recs {
@@ -106,7 +129,7 @@ func (jm *jobManager) outstandingDrainJobIDs() ([]string, error) {
 			ids = append(ids, id)
 		}
 	}
-	return ids, nil
+	return ids, background, nil
 }
 
 // hasRunningDrainJob reports whether any managed job is still in the running
@@ -154,9 +177,27 @@ func (s *Session) treeHasOutstandingWork() (bool, error) {
 		if err != nil {
 			return false, err
 		}
-		if n > 0 || s.jobManager.hasPendingWatchSends() {
+		if n > 0 {
 			return true, nil
 		}
+	}
+	return s.treeHasOutstandingWorkBesidesOwnJobs()
+}
+
+// treeHasOutstandingWorkBesidesOwnJobs is treeHasOutstandingWork with this
+// session's OWN outstanding managed jobs left out — every other signal, at every
+// level, including a descendant's managed jobs.
+//
+// The undisposed-background-job announcement needs exactly this question. It
+// fires only when the drain's sole remaining reason to wait is a background
+// shell of this session's, and it measures that on this session's own
+// outstanding set; but the drain blocks on the whole SUBTREE. A live child
+// keeps treeHasOutstandingWork true while this session's own set is just the
+// background shell, so without this split the announcement would name a false
+// reason to the model.
+func (s *Session) treeHasOutstandingWorkBesidesOwnJobs() (bool, error) {
+	if s.jobManager != nil && s.jobManager.hasPendingWatchSends() {
+		return true, nil
 	}
 	if s.peekNotifications() > 0 {
 		return true, nil
@@ -200,6 +241,163 @@ func (s *Session) treeHasOutstandingWork() (bool, error) {
 		}
 	}
 	return false, nil
+}
+
+// undisposedBackgroundDrainJobs reports the background shells that are the
+// ONLY remaining reason this drain is still waiting AND that the model has not
+// marked awaited with a watch — sorted, so callers can key escalation state on
+// the set — and sole=false whenever anything else is outstanding.
+//
+// The conditions are each load-bearing. Restricting it to BACKGROUND shells
+// separates a service the model started from a foreground command still
+// finishing, which the drain resolves on its own. Requiring that ALL of this
+// session's outstanding jobs are background keeps a live background job from
+// suppressing a drain that legitimately owes a completion turn elsewhere.
+// Requiring that nothing else in the subtree is outstanding keeps the claim
+// honest: a live child is a real reason to wait, and telling the model
+// otherwise would announce a false alarm. And an ARMED WATCH excuses a job
+// entirely — it is the model's explicit "this terminates and I need its
+// result", the one answer that means the drain should wait exactly as it
+// always has.
+func (s *Session) undisposedBackgroundDrainJobs() ([]string, bool, error) {
+	undisposed, _, sole, _, err := s.backgroundDrainState()
+	return undisposed, sole, err
+}
+
+// backgroundDrainState returns the current undisposed candidates, the sorted
+// background set they came from, whether those candidates are the sole reason
+// to wait, and whether every job in that set has a live watch. The last value
+// lets the drain distinguish a watch-excused episode from an ordinary
+// non-candidate pass, so clearing a watch can reset escalation state.
+func (s *Session) backgroundDrainState() (undisposed, background []string, sole, allWatched bool, err error) {
+	if s.jobManager == nil {
+		return nil, nil, false, false, nil
+	}
+	var all []string
+	all, background, err = s.jobManager.outstandingDrainJobIDsByBackground()
+	if err != nil {
+		return nil, nil, false, false, err
+	}
+	if len(background) == 0 || len(background) != len(all) {
+		return nil, background, false, false, nil
+	}
+	sort.Strings(background)
+	undisposed = make([]string, 0, len(background))
+	allWatched = true
+	for _, id := range background {
+		if !s.jobManager.hasLiveWatchOnTarget(id) {
+			allWatched = false
+			undisposed = append(undisposed, id)
+		}
+	}
+	elsewhere, err := s.treeHasOutstandingWorkBesidesOwnJobs()
+	if err != nil {
+		return nil, background, false, allWatched, err
+	}
+	if elsewhere {
+		return nil, background, false, allWatched, nil
+	}
+	if len(undisposed) == 0 {
+		return nil, background, false, allWatched, nil
+	}
+	sort.Strings(undisposed)
+	return undisposed, background, true, allWatched, nil
+}
+
+func (jm *jobManager) watchHistoryIDs() map[string]struct{} {
+	jm.mu.Lock()
+	defer jm.mu.Unlock()
+	seen := make(map[string]struct{}, len(jm.watchHistory))
+	for _, entry := range jm.watchHistory {
+		seen[entry.id] = struct{}{}
+	}
+	return seen
+}
+
+func (jm *jobManager) hasNewWatchEndOnTargets(targets []string, seen map[string]struct{}) bool {
+	jm.mu.Lock()
+	defer jm.mu.Unlock()
+	targetSet := make(map[string]struct{}, len(targets))
+	for _, target := range targets {
+		targetSet[target] = struct{}{}
+	}
+	newEnd := false
+	for _, entry := range jm.watchHistory {
+		if _, known := seen[entry.id]; known {
+			continue
+		}
+		seen[entry.id] = struct{}{}
+		if _, matches := targetSet[entry.target]; matches {
+			newEnd = true
+		}
+	}
+	return newEnd
+}
+
+// undisposedBackgroundJobsAnnouncement is the first escalation turn: the run
+// cannot finish while these jobs are outstanding, and the model — the only
+// party who knows what each job is — must pick one of three dispositions.
+// Never a duration question: models are bad at estimating how long their own
+// jobs take (the withdrawn max_runtime_ms taught that), and each remedy here
+// is a categorical act. job_stop is deliberately framed as the SCRATCH answer,
+// never the default: the destructive action must not be the cheap path.
+func undisposedBackgroundJobsAnnouncement(jobIDs []string, shellTool string, canDetach bool) string {
+	var b strings.Builder
+	fmt.Fprintf(&b, "This run cannot finish with undisposed background job(s): %s. The process exits once this turn's work is drained; a job still running then is killed and its output lost. Decide what each job is:\n",
+		strings.Join(jobIDs, ", "))
+	b.WriteString("- Scratch work you no longer need: stop it with job_stop.\n")
+	if canDetach {
+		fmt.Fprintf(&b, "- A process that must outlive this run (a server, a watcher): stop it with job_stop FIRST, then relaunch the same command with %s mode=\"detached\". Stop first — relaunching without stopping leaves the original running, and anything bound to a port will fail to rebind. A detached process's output is discarded (redirect to a file if you need it) and it sends no completion notification.\n", shellTool)
+	} else {
+		b.WriteString("- A process that must outlive this run: this environment cannot disown a process, so nothing can outlive it. Stop the job and say so plainly in your final answer.\n")
+	}
+	b.WriteString("- A command that terminates on its own whose result you need: create job_watch(operation=\"create\", source=\"<job_id>\", progress_interval_ms=120000) and the run will wait for it.\n")
+	b.WriteString("If you do nothing, this run will ask once more and then exit, killing the job(s).")
+	return b.String()
+}
+
+// undisposedBackgroundJobsFinalWarning is the second and last escalation turn.
+func undisposedBackgroundJobsFinalWarning(jobIDs []string, canDetach bool) string {
+	remedy := "Stop them (job_stop), or mark them awaited (job_watch) and report what happened in THIS turn"
+	if canDetach {
+		remedy = "Stop them (job_stop), then detach them, or mark them awaited (job_watch) in THIS turn"
+	}
+	return fmt.Sprintf("Final notice: background job(s) %s are still undisposed. %s; otherwise this run exits now and they are killed, their output lost.",
+		strings.Join(jobIDs, ", "), remedy)
+}
+
+// detachedShellAvailable reports whether this session could actually relaunch
+// a command with mode:"detached". An environment that does not report the
+// capability is treated as unable: recommending a call that returns
+// ErrDetachUnsupported is worse than not offering it.
+func (s *Session) detachedShellAvailable() bool {
+	reporter, ok := s.currentEnv().(execenv.DetachSupportReporter)
+	return ok && reporter.DetachSupported()
+}
+
+// describeUndisposedJobs renders the killed-jobs report: id, command text,
+// runtime, and quiet time per job, off the live record. A bare job id is not
+// diagnosable after the process has exited; the command is what tells an
+// operator what actually died.
+func (jm *jobManager) describeUndisposedJobs(ids []string) string {
+	jm.mu.Lock()
+	defer jm.mu.Unlock()
+	now := jm.clock.Now()
+	parts := make([]string, 0, len(ids))
+	for _, id := range ids {
+		run := jm.running[id]
+		if run == nil || run.rec == nil {
+			parts = append(parts, id)
+			continue
+		}
+		quiet := now.Sub(run.rec.StartedAt)
+		if run.rec.LastActivity != nil {
+			quiet = now.Sub(*run.rec.LastActivity)
+		}
+		parts = append(parts, fmt.Sprintf("%s (%q, ran %s, quiet %s)",
+			id, run.rec.Command, now.Sub(run.rec.StartedAt).Round(time.Second), quiet.Round(time.Second)))
+	}
+	return strings.Join(parts, ", ")
 }
 
 // drainSubtreeIsStalled reports whether the subtree is GENUINELY WEDGED: it
@@ -347,6 +545,24 @@ func (s *Session) drainJobTreeWith(ctx context.Context, recheck <-chan time.Time
 
 	lastResult := ""
 	var stallStart time.Time
+	// bgAnnounced counts undisposed-background-job announcements per job SET
+	// (sorted ids joined). Keying on the set, not a bool, is what lets a job
+	// started during an announcement turn get its own full escalation instead of
+	// inheriting a spent count — and what stops a stop-and-relaunch from being
+	// nagged as if it had already been warned.
+	//
+	// bgArmed is the set observed by the previous pass that went on to block in
+	// waitDrainWake: the FIRST announcement fires only when the condition
+	// survives one park. A job that is finishing right now — the ordinary
+	// launch-background-and-end-turn handoff — finalizes during that park and
+	// its completion wake delivers a notification turn instead, so it is never
+	// announced; a job that is genuinely not finishing meets the next recheck
+	// tick still running. No new constant: the park is the drain's existing
+	// wake/recheck cadence.
+	bgAnnounced := make(map[string]int)
+	bgArmed := ""
+	watchSuppressed := ""
+	watchHistorySeen := s.jobManager.watchHistoryIDs()
 	for {
 		// Take this pass's wake edge before it reads any state. treeHasOutstandingWork
 		// consults eight independent signals in sequence, so it is not a snapshot, and
@@ -409,6 +625,106 @@ func (s *Session) drainJobTreeWith(ctx context.Context, recheck <-chan time.Time
 			}
 			return lastResult, nil
 		}
+		// A one-shot run cannot finish with an undisposed background job: the
+		// process exits when this drain returns, so a job still running dies
+		// with it, unreported. When such jobs are the drain's SOLE remaining
+		// reason to wait, tell the model — the only party who knows whether
+		// each job is scratch (stop it), a service (detach it), or bounded
+		// work whose result the answer needs (watch it). The escalation is
+		// paced by the model's own turns, never a clock: each announcement IS
+		// a turn, and the count advances only when a turn completes with the
+		// set still undisposed. Announce; announce again naming the
+		// consequence; then stop waiting so Close()'s kill path can run.
+		//
+		// The announcement turns are housekeeping, so their replies never fold
+		// into lastResult (a run's printed answer must not become "I stopped
+		// job_2"), and their errors never fail the drain — a provider error on
+		// a housekeeping turn must not convert a successful run into a failed
+		// one. A failed turn still advances the escalation: the alternative is
+		// retrying a broken provider forever with the process held open.
+		//
+		// Under serve the session outlives the turn, background jobs genuinely
+		// report later, and none of this fires (TurnEndsProcess is the gate).
+		if s.cfg.TurnEndsProcess {
+			undisposed, background, sole, allWatched, err := s.backgroundDrainState()
+			if err != nil {
+				return lastResult, err
+			}
+			backgroundSetKey := strings.Join(background, ",")
+			watchCleared := len(background) > 0 && s.jobManager.hasNewWatchEndOnTargets(background, watchHistorySeen)
+			if watchCleared {
+				if watchSuppressed != "" {
+					delete(bgAnnounced, watchSuppressed)
+					if bgArmed == watchSuppressed {
+						bgArmed = ""
+					}
+				} else {
+					delete(bgAnnounced, backgroundSetKey)
+					if bgArmed == backgroundSetKey {
+						bgArmed = ""
+					}
+				}
+				watchSuppressed = ""
+			}
+			// A live watch excuses a background set for an entire escalation
+			// episode. Once any watch in that set is cleared, forget the old
+			// escalation so the next episode starts with the first warning.
+			if watchSuppressed != "" && (backgroundSetKey != watchSuppressed || !allWatched) {
+				delete(bgAnnounced, watchSuppressed)
+				if bgArmed == watchSuppressed {
+					bgArmed = ""
+				}
+				watchSuppressed = ""
+			}
+			if allWatched {
+				watchSuppressed = backgroundSetKey
+			}
+			if !sole {
+				bgArmed = ""
+			} else if setKey := strings.Join(undisposed, ","); bgArmed != setKey && bgAnnounced[setKey] == 0 {
+				// First sighting of this set: arm, and let the pass fall through
+				// to waitDrainWake. A completion in flight beats the recheck tick
+				// and is delivered instead of announced.
+				bgArmed = setKey
+			} else {
+				switch bgAnnounced[setKey] {
+				case 0, 1:
+					canDetach := s.detachedShellAvailable()
+					var text string
+					if bgAnnounced[setKey] == 0 {
+						text = undisposedBackgroundJobsAnnouncement(
+							undisposed, s.providerVisibleToolName("shell"), canDetach)
+					} else {
+						text = undisposedBackgroundJobsFinalWarning(undisposed, canDetach)
+					}
+					bgAnnounced[setKey]++
+					// EntryNotification, not EntrySteeringCarrier: Steer enqueues
+					// DAEMON-sourced steering, and the carrier's entry gate counts
+					// only user-sourced steering, so a carrier turn stands down
+					// before any model call — which is exactly how an earlier
+					// attempt at this shipped inert.
+					s.SteerKind(text, events.SteeringKindNotification)
+					if _, perr := process(ctx, "", nil, EntryNotification); perr != nil {
+						s.emit(events.EventWarning, events.WarningData{Message: fmt.Sprintf(
+							"undisposed-background-job announcement turn failed: %v", perr)})
+					}
+					stallStart = time.Time{}
+					continue
+				default:
+					// Told twice, declined twice. Same wake-edge protocol as every
+					// other return that lets Close() cancel the subtree: a wake
+					// raised mid-scan means the tree moved, so re-run the pass
+					// rather than killing work that armed while this pass looked.
+					if takeDrainWake(wake) {
+						continue
+					}
+					s.emit(events.EventWarning, events.WarningData{Message: fmt.Sprintf(
+						"exiting with %d undisposed background job(s) after two declined announcements; they die with the process: %s",
+						len(undisposed), s.jobManager.describeUndisposedJobs(undisposed))})
+					return lastResult, nil
+				}
+			}
+		}
 		// Defense-in-depth stall watchdog. Outstanding work with NO live or
 		// deliverable component anywhere is a genuine wedge (drainSubtreeIsStalled);
 		// track how long that condition holds continuously on the injected clock and
@@ -426,6 +742,15 @@ func (s *Session) drainJobTreeWith(ctx context.Context, recheck <-chan time.Time
 			if stallStart.IsZero() {
 				stallStart = now
 			} else if now.Sub(stallStart) >= drainStallTimeout {
+				// The stall verdict was assembled across sequential reads, not a
+				// snapshot. A wake raised since this pass took its edge means the
+				// tree moved mid-verdict — the same straddle the quiescence return
+				// guards against — so re-run the pass rather than letting Close()
+				// SIGKILL work that armed while the scan ran. A genuinely wedged
+				// tree raises no wake, so the confirming pass gives up cleanly.
+				if takeDrainWake(wake) {
+					continue
+				}
 				// The drain is wedged on undelivered work the machinery is not
 				// converting. Warn (naming the stuck managed job(s)) and return the last
 				// result with nil error so cmd/evener/run.go prints the coordinator's

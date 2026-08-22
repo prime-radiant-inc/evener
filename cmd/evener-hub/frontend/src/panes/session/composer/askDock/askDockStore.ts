@@ -289,6 +289,23 @@ function reconcileRef(ref: string, model: ThreadModel): void {
     for (const [key, value] of Object.entries(refState.answers)) {
       if (trackedKeys.has(key)) nextAnswers[key] = value;
     }
+    // Recommended default seeding (ask-dialog UX rework): a question whose
+    // options name a recommended one starts ANSWERED with it, so the reader
+    // edits a pre-selected default instead of building every answer from
+    // nothing - and AskDock's footer can require a walk through every
+    // question before Send, since each already has a real answer. Only keys
+    // with NO entry are filled: an in-progress answer is never clobbered,
+    // and a deliberately cleared one (setAnswer null leaves an entry
+    // behind) is never re-seeded.
+    for (const batch of nextBatches) {
+      for (const q of batch.questions) {
+        if (nextAnswers[q.key]) continue;
+        const recommended = q.options.filter((o) => o.recommended).map((o) => o.label);
+        if (recommended.length > 0) {
+          nextAnswers[q.key] = { resolution: { kind: "option", labels: recommended }, note: "" };
+        }
+      }
+    }
     // An active-tab entry is valid only while its batch still exists AND its
     // question still belongs to that batch - otherwise drop it so the dock
     // falls back to its render-time default rather than pointing at a tab

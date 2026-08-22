@@ -73,6 +73,16 @@ func TestStableDelegateTools_StatusReadsMetadataWithoutPacketOrAck(t *testing.T)
 	s := newSession(t, withoutGitSnapshot())
 	id := "dlg_status_metadata"
 	seedStableToolDelegate(t, s, id, "", time.Unix(10, 0).UTC(), time.Unix(20, 0).UTC())
+	s.delegateController.mu.Lock()
+	_, err := s.delegateController.appendLocked(delegatestore.Event{
+		Kind:             delegatestore.EventDelegateAttentionChanged,
+		DelegateID:       id,
+		AttentionChanged: &delegatestore.DelegateAttentionChanged{NeedsAttention: true},
+	})
+	s.delegateController.mu.Unlock()
+	if err != nil {
+		t.Fatalf("seed stable delegate attention: %v", err)
+	}
 	before, err := s.delegateController.store.Load()
 	if err != nil {
 		t.Fatal(err)
@@ -87,7 +97,7 @@ func TestStableDelegateTools_StatusReadsMetadataWithoutPacketOrAck(t *testing.T)
 		t.Fatalf("job_status stable delegate: %v", err)
 	}
 	state := stableToolStateMap(t, value)
-	if state["id"] != id || state["type"] != "delegate" || state["status"] != "idle" {
+	if state["id"] != id || state["type"] != "delegate" || state["status"] != "idle" || state["needs_attention"] != true {
 		t.Fatalf("stable status metadata = %#v", state)
 	}
 	encoded := string(handlerJSON(t, value))

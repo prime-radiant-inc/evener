@@ -630,14 +630,14 @@ func TestSubagentTimestamps_ResetOnResume(t *testing.T) {
 // delegate_send for caller-route messages while root-only controls stay unavailable.
 func TestSubagentCannotCallRootOnlyControlTools(t *testing.T) {
 	t.Parallel()
-	if len(rootOnlyJobPresenceTools) != 2 || rootOnlyJobPresenceTools[0] != "delegate" || rootOnlyJobPresenceTools[1] != "job_watch" {
-		t.Fatalf("rootOnlyJobPresenceTools = %v, want exactly [delegate job_watch]", rootOnlyJobPresenceTools)
+	if len(rootOnlyJobPresenceTools) != 1 || rootOnlyJobPresenceTools[0] != "delegate" {
+		t.Fatalf("rootOnlyJobPresenceTools = %v, want exactly [delegate]", rootOnlyJobPresenceTools)
 	}
 	if !isRootOnlyJobPresenceTool("delegate") {
 		t.Fatal("delegate must be a root-only job-presence tool")
 	}
-	if !isRootOnlyJobPresenceTool("job_watch") {
-		t.Fatal("job_watch must be a root-only job-presence tool")
+	if isRootOnlyJobPresenceTool("job_watch") {
+		t.Fatal("job_watch must NOT be a root-only job-presence tool: a session that can run jobs watches its own jobs")
 	}
 	if isRootOnlyJobPresenceTool("delegate_send") {
 		t.Fatal("delegate_send must not be a root-only job-presence tool")
@@ -645,8 +645,8 @@ func TestSubagentCannotCallRootOnlyControlTools(t *testing.T) {
 	if !isRootOnlySubagentTool("delegate") {
 		t.Fatal("delegate must be a root-only subagent tool")
 	}
-	if !isRootOnlySubagentTool("job_watch") {
-		t.Fatal("job_watch must be a root-only subagent tool")
+	if isRootOnlySubagentTool("job_watch") {
+		t.Fatal("job_watch must NOT be a root-only subagent tool: each cross-session watch source authorizes itself")
 	}
 	if !isRootOnlySubagentTool("manage_worktree") {
 		t.Fatal("manage_worktree must be a root-only subagent tool")
@@ -666,8 +666,8 @@ func TestSubagentCannotCallRootOnlyControlTools(t *testing.T) {
 	if child.reg.Get("delegate") != nil {
 		t.Fatal("depth>0 child must not have delegate registered")
 	}
-	if child.reg.Get("job_watch") != nil {
-		t.Fatal("depth>0 child must not have job_watch registered")
+	if child.reg.Get("job_watch") == nil {
+		t.Fatal("depth>0 child must keep job_watch registered: it can run jobs, so it can watch its own")
 	}
 	if child.reg.Get("manage_worktree") != nil {
 		t.Fatal("depth>0 child must not have manage_worktree registered")
@@ -680,8 +680,8 @@ func TestSubagentCannotCallRootOnlyControlTools(t *testing.T) {
 			t.Fatalf("depth>0 child must keep %s registered", name)
 		}
 	}
-	if hasCachedCallableToolDefinition(child, "job_watch") {
-		t.Fatal("depth>0 child must not advertise job_watch")
+	if !hasCachedCallableToolDefinition(child, "job_watch") {
+		t.Fatal("depth>0 child must advertise job_watch")
 	}
 	if hasCachedCallableToolDefinition(child, "manage_worktree") {
 		t.Fatal("depth>0 child must not advertise manage_worktree")
@@ -890,12 +890,13 @@ func TestBaseSubagentPolicyAllowsDelegateWithAllowance(t *testing.T) {
 		}
 	})
 
-	t.Run("default child with canDelegate=false: delegate and job_watch are denied", func(t *testing.T) {
+	t.Run("default child with canDelegate=false: delegate denied, job_watch kept", func(t *testing.T) {
 		_, _, denied := baseSubagentToolPolicy(nil, false)
-		for _, tool := range []string{"delegate", "job_watch"} {
-			if !slices.Contains(denied, tool) {
-				t.Errorf("default child with canDelegate=false: %q must be in denied list (got %v)", tool, denied)
-			}
+		if !slices.Contains(denied, "delegate") {
+			t.Errorf("default child with canDelegate=false: delegate must be in denied list (got %v)", denied)
+		}
+		if slices.Contains(denied, "job_watch") {
+			t.Errorf("default child with canDelegate=false: job_watch must NOT be denied — a session that can run jobs watches its own jobs (got %v)", denied)
 		}
 	})
 

@@ -14,6 +14,22 @@ import (
 	"primeradiant.com/evener/agent/task"
 )
 
+func TestCloneEventAttentionChangedIsolated(t *testing.T) {
+	original := Event{
+		Kind:             EventDelegateAttentionChanged,
+		DelegateID:       "dlg_alpha",
+		AttentionChanged: &DelegateAttentionChanged{NeedsAttention: true},
+	}
+	clone := cloneEvent(original)
+	if clone.AttentionChanged == original.AttentionChanged {
+		t.Fatal("clone aliased AttentionChanged payload")
+	}
+	clone.AttentionChanged.NeedsAttention = false
+	if !original.AttentionChanged.NeedsAttention {
+		t.Fatal("mutating clone changed original AttentionChanged payload")
+	}
+}
+
 func TestStoreAppendBatchIsOneCrashAtomicLine(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "sessions", "root", "delegates.jsonl")
 	store, err := Open(path)

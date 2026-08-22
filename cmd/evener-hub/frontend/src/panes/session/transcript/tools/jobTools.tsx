@@ -1,5 +1,5 @@
 // Descriptors for job_* and delegate_send follow-up calls.
-import { useEffect, useLayoutEffect, useState } from "react";
+import { useEffect, useState } from "react";
 import type { ItemModel } from "../../../../protocol/model";
 import { IconButton } from "../../../../widgets";
 import { UserMessageView } from "../messages/UserMessageItem";
@@ -7,47 +7,9 @@ import type { ToolRenderProps } from "../toolRenderers";
 import { registerToolRenderer } from "../toolRenderers";
 import { HeadClippedOutputBody } from "./bodies";
 import { clip, clipJobID, parseArgs, parseJSONObject, str, trailingBracketFooter } from "./helpers";
-import { classifyJobStatus, resolveRowKey, statusWordFromText } from "./subagentModule";
-import { turnScopeKey, updateSubagentRowIfExists } from "./subagentModuleStore";
+import { statusWordFromText } from "./subagentModule";
 
 const ID_CLIP = 26;
-
-// Follow-up calls may patch an existing delegate row but never create one.
-type CorrelationResolvers = {
-  resolveKey: (item: ItemModel) => string;
-  resolveKind: (item: ItemModel) => ReturnType<typeof classifyJobStatus> | undefined;
-  resolvePreview: (item: ItemModel) => string;
-};
-
-function useCorrelateSubagentRow(
-  { item, sessionRef }: Pick<ToolRenderProps, "item" | "sessionRef">,
-  { resolveKey, resolveKind, resolvePreview }: CorrelationResolvers,
-): void {
-  useLayoutEffect(() => {
-    const kind = resolveKind(item);
-    if (kind === undefined) return; // nothing settled to report yet
-    updateSubagentRowIfExists(turnScopeKey(sessionRef, item.turnId), resolveKey(item), {
-      kind,
-      resultPreview: resolvePreview(item),
-      completedAt: item.completedAt,
-    });
-  });
-}
-
-function CorrelatingBody({
-  item,
-  sessionRef,
-  resolveKey,
-  resolveKind,
-  resolvePreview,
-}: ToolRenderProps & {
-  resolveKey: (item: ItemModel) => string;
-  resolveKind: (item: ItemModel) => ReturnType<typeof classifyJobStatus> | undefined;
-  resolvePreview: (item: ItemModel) => string;
-}) {
-  useCorrelateSubagentRow({ item, sessionRef }, { resolveKey, resolveKind, resolvePreview });
-  return <HeadClippedOutputBody item={item} live={false} />;
-}
 
 type JsonObject = Record<string, unknown>;
 
@@ -178,28 +140,6 @@ function jobControlTarget(item: ItemModel): string {
   );
 }
 
-function resourceRowKey(target: string, fallback: string): string {
-  return target.startsWith("dlg_")
-    ? resolveRowKey(target, undefined, fallback)
-    : resolveRowKey(undefined, target, fallback);
-}
-
-function jobStatusKind(item: ItemModel): ReturnType<typeof classifyJobStatus> | undefined {
-  const parsed = parseJSONObject(item.output);
-  if (!parsed) return undefined;
-  const status = str(parsed, "status");
-  if (str(parsed, "type") !== "delegate" || status !== "idle") return classifyJobStatus(status);
-  const latest = asJsonObject(parsed.last_outcome);
-  return classifyJobStatus((latest && str(latest, "status")) ?? status);
-}
-
-function jobStatusReason(item: ItemModel): string {
-  const parsed = parseJSONObject(item.output);
-  if (!parsed) return "";
-  const latest = asJsonObject(parsed.last_outcome);
-  return str(parsed, "reason") ?? (latest && str(latest, "reason")) ?? "";
-}
-
 registerToolRenderer({
   match: (name) => name === "job_status" || name === "job_read_output",
   icon: "job",
@@ -209,16 +149,7 @@ registerToolRenderer({
     const status = parsedOutput ? str(parsedOutput, "status") : undefined;
     return status ? `Checked ${clipJobID(jobId)} · ${status}` : `Checked ${clipJobID(jobId)}`;
   },
-  body(props: ToolRenderProps) {
-    return (
-      <CorrelatingBody
-        {...props}
-        resolveKey={(item) => resourceRowKey(jobControlTarget(item), item.callId ?? item.id)}
-        resolveKind={jobStatusKind}
-        resolvePreview={jobStatusReason}
-      />
-    );
-  },
+  body: HeadClippedOutputBody,
 });
 
 registerToolRenderer({
@@ -242,19 +173,7 @@ registerToolRenderer({
     const footer = trailingBracketFooter(item.output ?? "");
     return footer ? `Stopped ${clipJobID(jobId)} · ${footer}` : `Stopped ${clipJobID(jobId)}`;
   },
-  body(props: ToolRenderProps) {
-    return (
-      <CorrelatingBody
-        {...props}
-        resolveKey={(item) => resourceRowKey(jobControlTarget(item), item.callId ?? item.id)}
-        resolveKind={(item) => {
-          const footer = trailingBracketFooter(item.output ?? "");
-          return footer ? classifyJobStatus(statusWordFromText(footer)) : undefined;
-        }}
-        resolvePreview={(item) => trailingBracketFooter(item.output ?? "") ?? ""}
-      />
-    );
-  },
+  body: HeadClippedOutputBody,
 });
 
 function delegateSendTarget(args: Record<string, unknown>): string {
@@ -423,16 +342,6 @@ function DelegateSendBody(props: ToolRenderProps) {
   const response = delegateSendResponse(item);
   const waitIgnoredReason = delegateSendWaitIgnoredReason(item);
   const target = clip(delegateSendTarget(args), ID_CLIP);
-
-  useCorrelateSubagentRow(props, {
-    resolveKey: (item) =>
-      resolveRowKey(delegateSendTarget(parseArgs(item.argumentsJSON)), undefined, item.callId ?? item.id),
-    resolveKind: (item) => {
-      const footer = delegateSendFooter(item.output ?? "");
-      return footer ? classifyJobStatus(statusWordFromText(footer.text)) : undefined;
-    },
-    resolvePreview: (item) => delegateSendFooter(item.output ?? "")?.text ?? "",
-  });
 
   if (!message && !response) return null;
   return (

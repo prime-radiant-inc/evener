@@ -11,6 +11,7 @@ import (
 	"primeradiant.com/evener/agent/internal/delegatestore"
 	"primeradiant.com/evener/agent/internal/jobstore"
 	"primeradiant.com/evener/agent/schema"
+	"primeradiant.com/evener/agent/transcript"
 	"primeradiant.com/evener/appwire"
 )
 
@@ -26,6 +27,12 @@ func TestLoadSessionJobActivityTree_FollowsOnlyStableDelegateChildren(t *testing
 		pastStableDescriptor(rootID, childID, "child task"),
 		pastStableDescriptor(rootID, strayID, "stray task"),
 	)
+	if err := os.WriteFile(transcriptPath(stateDir, childID), []byte("malformed eligible child transcript\n"), 0o600); err != nil {
+		t.Fatalf("corrupt child transcript: %v", err)
+	}
+	if err := os.Remove(transcriptPath(stateDir, strayID)); err != nil {
+		t.Fatalf("remove stray transcript: %v", err)
+	}
 	s1cov_writeJobLog(t, stateDir, rootID,
 		jobstore.Event{Kind: jobstore.EventJobStarted, TS: started, JobID: "job_root_shell", Type: jobstore.JobShell, OwnerSessionID: rootID, VisibleToSession: rootID, StartedAt: &started, Description: "root shell"},
 	)
@@ -132,6 +139,21 @@ func pastStableDescriptor(ownerSessionID, childSessionID, task string) delegates
 
 func writePastStableDelegates(t *testing.T, stateDir, rootSessionID string, descriptors ...delegatestore.Descriptor) {
 	t.Helper()
+	if err := os.MkdirAll(filepath.Join(stateDir, sessionsSubdir), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	for _, descriptor := range descriptors {
+		writer, err := transcript.NewWriter(transcriptPath(stateDir, descriptor.ChildSessionID), transcript.Header{
+			SessionID:       descriptor.ChildSessionID,
+			ParentSessionID: descriptor.OwnerSessionID,
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := writer.Close(); err != nil {
+			t.Fatal(err)
+		}
+	}
 	store, err := delegatestore.Open(filepath.Join(jobsDir(stateDir, rootSessionID), "delegates.jsonl"))
 	if err != nil {
 		t.Fatal(err)
