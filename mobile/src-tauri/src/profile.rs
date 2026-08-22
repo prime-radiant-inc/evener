@@ -299,7 +299,7 @@ impl ProfileStore {
         // Capture the prior token (if editing) before the Keychain write so we
         // can compensate a preferences-save failure.
         let prior_token = match &pending.existing_id {
-            Some(_) => self.secure.get(&profile_id).unwrap_or(None),
+            Some(_) => self.secure.get(&profile_id)?,
             None => None,
         };
 
@@ -370,7 +370,7 @@ impl ProfileStore {
 
         // Capture the prior token before deleting so we can restore it if the
         // preferences save fails.
-        let prior_token = self.secure.get(profile_id).unwrap_or(None);
+        let prior_token = self.secure.get(profile_id)?;
 
         // Keychain delete first: if it fails, preferences are untouched.
         self.secure.delete(profile_id)?;
@@ -555,7 +555,10 @@ impl PreferencesStore for MemoryPreferences {
 pub struct MemorySecureStore {
     map: Mutex<HashMap<String, String>>,
     fail_set: Mutex<Option<String>>,
+    fail_set_after_n: Mutex<Option<(String, u64)>>,
     fail_delete: Mutex<Option<String>>,
+    fail_get: Mutex<Option<String>>,
+    fail_all_delete: Mutex<bool>,
 }
 
 impl MemorySecureStore {
@@ -565,8 +568,18 @@ impl MemorySecureStore {
     pub fn fail_next_set(&self, id: String) {
         *self.fail_set.lock().unwrap() = Some(id);
     }
+    pub fn fail_set_after_n(&self, id: String, n: u64) {
+        // Fail the Nth-from-now set call for this id (1-based: n=1 fails the next set).
+        *self.fail_set_after_n.lock().unwrap() = Some((id, n));
+    }
     pub fn fail_next_delete(&self, id: String) {
         *self.fail_delete.lock().unwrap() = Some(id);
+    }
+    pub fn fail_next_get(&self, id: String) {
+        *self.fail_get.lock().unwrap() = Some(id);
+    }
+    pub fn fail_all_next_delete(&self) {
+        *self.fail_all_delete.lock().unwrap() = true;
     }
     pub fn has(&self, id: &str) -> bool {
         self.map.lock().unwrap().contains_key(id)
@@ -578,6 +591,11 @@ impl MemorySecureStore {
 
 impl SecureStore for MemorySecureStore {
     fn get(&self, profile_id: &str) -> Result<Option<String>, ProfileError> {
+        if let Some(fail_id) = self.fail_get.lock().unwrap().take() {
+            if fail_id == profile_id {
+                return Err(ProfileError::SecureStore("injected get failure".to_owned()));
+            }
+        }
         Ok(self.map.lock().unwrap().get(profile_id).cloned())
     }
     fn set(&self, profile_id: &str, token: &str) -> Result<(), ProfileError> {
@@ -585,6 +603,28 @@ impl SecureStore for MemorySecureStore {
             if fail_id == profile_id {
                 return Err(ProfileError::SecureStore("injected set failure".to_owned()));
             }
+        }
+        // Decrement the after-n counter; fail when it reaches zero.
+        let should_fail = {
+            let mut guard = self.fail_set_after_n.lock().unwrap();
+            if let Some((fail_id, n)) = guard.as_mut() {
+                if *fail_id == profile_id {
+                    *n -= 1;
+                    if *n == 0 {
+                        *guard = None;
+                        true
+                    } else {
+                        false
+                    }
+                } else {
+                    false
+                }
+            } else {
+                false
+            }
+        };
+        if should_fail {
+            return Err(ProfileError::SecureStore("injected set failure".to_owned()));
         }
         self.map
             .lock()
@@ -599,6 +639,12 @@ impl SecureStore for MemorySecureStore {
                     "injected delete failure".to_owned(),
                 ));
             }
+        }
+        if *self.fail_all_delete.lock().unwrap() {
+            *self.fail_all_delete.lock().unwrap() = false;
+            return Err(ProfileError::SecureStore(
+                "injected delete failure".to_owned(),
+            ));
         }
         self.map.lock().unwrap().remove(profile_id);
         Ok(())
@@ -1505,6 +1551,208 @@ mod tests {
         assert_eq!(store.list().unwrap().len(), 1);
         assert!(secure.has(&p.id));
         assert_eq!(secure.get_token(&p.id).unwrap(), original_token);
+    }
+
+    // -- Defect 1: secure.get failure aborts before mutation -----------------
+
+    #[test]
+    fn repair_aborts_when_secure_get_fails() {
+        let prefs = Arc::new(MemoryPreferences::new());
+        let secure = Arc::new(MemorySecureStore::new());
+        let probe = Arc::new(OkProbe);
+        let clock = Arc::new(StepClock::new(0));
+        let store = make_store(prefs.clone(), secure.clone(), probe, clock);
+
+        let p = store
+            .confirm_pairing(
+                &store
+                    .preview_pairing(&auth_url("hub.example.com"))
+                    .unwrap()
+                    .preview_id,
+                "Alpha",
+                false,
+                ReleaseMode::Release,
+            )
+            .unwrap();
+        let original_token = secure.get_token(&p.id).unwrap();
+
+        // Make secure.get fail for this profile during re-pair.
+        secure.fail_next_get(p.id.clone());
+        const NEW_TOKEN: &str = "AQIDBAUGBwgJCgsMDQ4PEBESExQVFhcYGRobHB0eHyA";
+        let new_url = format!("https://hub.example.com:8443/auth?token={NEW_TOKEN}");
+        let pv = store.preview_repair(&p.id, &new_url).unwrap();
+        let err = store
+            .confirm_pairing(&pv.preview_id, "Alpha", true, ReleaseMode::Release)
+            .unwrap_err();
+
+        // Operation aborted before set/delete: prefs unchanged, token unchanged.
+        assert!(matches!(err, ProfileError::SecureStore(_)));
+        assert_eq!(store.list().unwrap().len(), 1);
+        assert_eq!(secure.get_token(&p.id).unwrap(), original_token);
+        assert_ne!(secure.get_token(&p.id).unwrap(), NEW_TOKEN);
+        // Error message must not contain the token.
+        assert!(!format!("{err}").contains(NEW_TOKEN));
+        assert!(!format!("{err:?}").contains(NEW_TOKEN));
+    }
+
+    #[test]
+    fn remove_aborts_when_secure_get_fails() {
+        let prefs = Arc::new(MemoryPreferences::new());
+        let secure = Arc::new(MemorySecureStore::new());
+        let probe = Arc::new(OkProbe);
+        let clock = Arc::new(StepClock::new(0));
+        let store = make_store(prefs.clone(), secure.clone(), probe, clock);
+
+        let p = store
+            .confirm_pairing(
+                &store
+                    .preview_pairing(&auth_url("hub.example.com"))
+                    .unwrap()
+                    .preview_id,
+                "Alpha",
+                false,
+                ReleaseMode::Release,
+            )
+            .unwrap();
+        let original_token = secure.get_token(&p.id).unwrap();
+
+        // Make secure.get fail during remove.
+        secure.fail_next_get(p.id.clone());
+        let err = store.remove(&p.id).unwrap_err();
+
+        // Operation aborted before delete: prefs unchanged, token unchanged.
+        assert!(matches!(err, ProfileError::SecureStore(_)));
+        assert_eq!(store.list().unwrap().len(), 1);
+        assert!(secure.has(&p.id));
+        assert_eq!(secure.get_token(&p.id).unwrap(), original_token);
+    }
+
+    // -- Defect 2: Consistency rollback-failure -------------------------------
+
+    #[test]
+    fn consistency_error_on_new_add_when_rollback_delete_fails_v2() {
+        let prefs = Arc::new(MemoryPreferences::new());
+        let secure = Arc::new(MemorySecureStore::new());
+        let probe = Arc::new(OkProbe);
+        let clock = Arc::new(StepClock::new(0));
+        let store = make_store(prefs.clone(), secure.clone(), probe, clock);
+
+        // New add: prefs.save fails, then rollback delete also fails.
+        // Use fail_next_save + fail_all_next_delete.
+        prefs.fail_next_save();
+        secure.fail_all_next_delete();
+        let pv = store.preview_pairing(&auth_url("hub.example.com")).unwrap();
+        let err = store
+            .confirm_pairing(&pv.preview_id, "Alpha", false, ReleaseMode::Release)
+            .unwrap_err();
+
+        match &err {
+            ProfileError::Consistency {
+                profile_id,
+                operation,
+                rollback_operation,
+            } => {
+                assert!(!profile_id.is_empty());
+                assert_eq!(operation, "add");
+                assert_eq!(rollback_operation, "delete");
+            }
+            _ => panic!("expected Consistency error, got {err:?}"),
+        }
+    }
+
+    #[test]
+    fn consistency_error_on_repair_when_rollback_restore_fails() {
+        let prefs = Arc::new(MemoryPreferences::new());
+        let secure = Arc::new(MemorySecureStore::new());
+        let probe = Arc::new(OkProbe);
+        let clock = Arc::new(StepClock::new(0));
+        let store = make_store(prefs.clone(), secure.clone(), probe, clock);
+
+        let p = store
+            .confirm_pairing(
+                &store
+                    .preview_pairing(&auth_url("hub.example.com"))
+                    .unwrap()
+                    .preview_id,
+                "Alpha",
+                false,
+                ReleaseMode::Release,
+            )
+            .unwrap();
+        let original_token = secure.get_token(&p.id).unwrap();
+
+        // Re-pair: prefs.save fails, then rollback set (restore) also fails.
+        const NEW_TOKEN: &str = "AQIDBAUGBwgJCgsMDQ4PEBESExQVFhcYGRobHB0eHyA";
+        let new_url = format!("https://hub.example.com:8443/auth?token={NEW_TOKEN}");
+        let pv = store.preview_repair(&p.id, &new_url).unwrap();
+        prefs.fail_next_save();
+        // The initial confirm did 1 set; the re-pair confirm does a 2nd set
+        // (main write); the rollback does a 3rd set (restore). Fail on the 3rd.
+        secure.fail_set_after_n(p.id.clone(), 2); // 1st=main write, 2nd=rollback restore
+        let err = store
+            .confirm_pairing(&pv.preview_id, "Alpha", true, ReleaseMode::Release)
+            .unwrap_err();
+
+        match &err {
+            ProfileError::Consistency {
+                profile_id,
+                operation,
+                rollback_operation,
+            } => {
+                assert_eq!(profile_id, &p.id);
+                assert_eq!(operation, "repair");
+                assert_eq!(rollback_operation, "restore");
+            }
+            _ => panic!("expected Consistency error, got {err:?}"),
+        }
+        // No token in Display/Debug/serialization.
+        assert!(!format!("{err}").contains(NEW_TOKEN));
+        assert!(!format!("{err:?}").contains(NEW_TOKEN));
+        assert!(!format!("{err}").contains(&original_token));
+    }
+
+    #[test]
+    fn consistency_error_on_remove_when_rollback_restore_fails() {
+        let prefs = Arc::new(MemoryPreferences::new());
+        let secure = Arc::new(MemorySecureStore::new());
+        let probe = Arc::new(OkProbe);
+        let clock = Arc::new(StepClock::new(0));
+        let store = make_store(prefs.clone(), secure.clone(), probe, clock);
+
+        let p = store
+            .confirm_pairing(
+                &store
+                    .preview_pairing(&auth_url("hub.example.com"))
+                    .unwrap()
+                    .preview_id,
+                "Alpha",
+                false,
+                ReleaseMode::Release,
+            )
+            .unwrap();
+        let original_token = secure.get_token(&p.id).unwrap();
+
+        // Remove: prefs.save fails, then rollback set (restore) also fails.
+        prefs.fail_next_save();
+        // The initial confirm did 1 set; the rollback does a 2nd set (restore).
+        // Fail on the 2nd.
+        secure.fail_set_after_n(p.id.clone(), 1); // 1st=rollback restore
+        let err = store.remove(&p.id).unwrap_err();
+
+        match &err {
+            ProfileError::Consistency {
+                profile_id,
+                operation,
+                rollback_operation,
+            } => {
+                assert_eq!(profile_id, &p.id);
+                assert_eq!(operation, "remove");
+                assert_eq!(rollback_operation, "restore");
+            }
+            _ => panic!("expected Consistency error, got {err:?}"),
+        }
+        assert!(!format!("{err}").contains(&original_token));
+        assert!(!format!("{err:?}").contains(&original_token));
     }
 
     fn p2_id(store: &ProfileStore, name: &str) -> String {
