@@ -5,8 +5,10 @@
   "type": "module",
   "scripts": {
     "check": "biome ci src && tsc --noEmit --incremental false",
-    "pretest": "node scripts/build-appwire-harness.mjs",
+    "check:ios": "node scripts/check-ios-config.mjs",
+    "pretest": "node --test scripts/check-ios-config.test.mjs && node scripts/build-appwire-harness.mjs",
     "test": "vitest run --maxWorkers=4",
+    "test:ios": "node --test scripts/check-ios-config.test.mjs",
     "build": "tsc --noEmit --incremental false && vite build",
     "boundary": "node scripts/check-boundary.mjs",
     "tauri": "tauri"
