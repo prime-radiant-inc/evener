@@ -1,10 +1,10 @@
 # Getting Started with Evener
 
-Evener is a coding agent. You drive it interactively from your browser: the
-`evener-hub` orchestrator serves a web UI where you start sessions, watch the
-agent work, and steer it with follow-up messages. A non-interactive command
-line exists for scripting and automation, but the hub is the everyday way to
-use Evener.
+Evener is a coding agent. Its default interactive surface is the browser:
+the `evener-hub` orchestrator serves a web UI where you start sessions,
+watch the agent work, and steer it with follow-up messages. The `evener-tui`
+terminal dashboard and a non-interactive command line serve other workflows,
+but the hub is the everyday way to use Evener.
 
 This guide walks a new user from install to a working session. It points to
 reference docs for details that change; follow the links where you need
@@ -44,9 +44,6 @@ Verify the install:
 evener --version
 ```
 
-If you used Evener under its former name, Serf, run `evener-migrate` once
-before your first launch. See [Migrating from Serf](../README.md#migrating-from-serf).
-
 ## Start the hub
 
 Run the hub in a terminal you can leave open:
@@ -59,7 +56,7 @@ The hub binds to loopback and listens on `127.0.0.1:9180` by default; a lock
 file keeps it to one instance per hub state root. Keep the hub running —
 sessions you start from the browser live behind it. To bind another address,
 run under a supervisor, or deploy on a remote host, see the
-[hub runbook](../cmd/evener-hub/README.md) and
+[hub runbook](evener-hub.md) and
 [docs/evener-hub-remote-operations.md](evener-hub-remote-operations.md).
 
 The hub guards the web UI with a token. At startup it prints an authorization
@@ -154,7 +151,7 @@ and resume it to pick up the new build.
 - [docs/sandboxing.md](sandboxing.md) — confine a session's file, process,
   and network access.
 - [docs/skills.md](skills.md) — extend Evener with skills.
-- [cmd/evener-hub/README.md](../cmd/evener-hub/README.md) — production-style
-  hub setup, launch configuration layering, and smoke checks.
+- [docs/evener-hub.md](evener-hub.md) — production-style hub setup, launch
+  configuration layering, and smoke checks.
 - [docs/developing-evener/README.md](developing-evener/README.md) — building
   and testing Evener itself.

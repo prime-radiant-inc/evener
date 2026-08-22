@@ -1,10 +1,11 @@
 # Evener
 
-A coding agent you drive from your browser. The `evener-hub` orchestrator
-serves a web UI where you start sessions, watch the agent read files, run
-commands, and edit code, and steer it with follow-up messages. The hub tracks
-many concurrent sessions at once. A non-interactive command line handles
-scripting and automation.
+A coding agent run through a hub. The `evener-hub` orchestrator serves the
+web UI — Evener's default interactive surface — where you start sessions,
+watch the agent read files, run commands, and edit code, and steer it with
+follow-up messages. The hub tracks many concurrent sessions at once, and
+`evener-tui` gives the same hub a terminal dashboard. A non-interactive
+command line handles scripting and automation.
 
 **New here? [docs/getting-started.md](docs/getting-started.md) walks from
 install to your first session.**
@@ -42,8 +43,7 @@ make install
 For tagged releases, snapshot builds, alternate prefixes, and a system-style
 install under `/usr/local`, see
 [docs/getting-started.md](docs/getting-started.md#install). Verify any install
-with `evener --version`. If you used Evener under its former name, Serf, see
-[Migrating from Serf](#migrating-from-serf) before your first launch.
+with `evener --version`.
 
 Upgrade installed binaries with `evener upgrade`. The command follows the
 binary's install channel: release builds upgrade to the latest release, and
@@ -55,7 +55,7 @@ On first use, Evener creates:
 
 - `${XDG_STATE_HOME:-~/.local/state}/evener/run` for live daemon rendezvous
   files and per-daemon logs.
-- `${XDG_STATE_HOME:-~/.local/state}/evener/auth-token` for the local Hub/TUI
+- `${XDG_STATE_HOME:-~/.local/state}/evener/auth-token` for the local hub/TUI
   bearer token.
 - `${XDG_STATE_HOME:-~/.local/state}/evener/projects/<project-id>/` for saved
   per-project session state. The project ID is readable (derived from the
@@ -70,7 +70,7 @@ does not automatically enable their contents. Add standalone skill paths to
 corresponding CLI flags for a single run. Plugin-contained skills live under
 that plugin and become available through the plugin path.
 
-Provider credentials are not created by install. Configure them through the Hub
+Install does not create provider credentials. Configure them through the hub
 or TUI credentials UI, `${XDG_CONFIG_HOME:-~/.config}/evener/credentials.toml`,
 provider environment variables such as `OPENAI_API_KEY`, or OpenAI OAuth. See
 [docs/developing-evener/environment.md](docs/developing-evener/environment.md) for the complete environment variable
@@ -112,7 +112,7 @@ evener-hub  # default 127.0.0.1:9180
 ```
 
 For production-style setup, credentials, Codex app-server sources, and smoke
-checks, see [`cmd/evener-hub/README.md`](cmd/evener-hub/README.md).
+checks, see [`docs/evener-hub.md`](docs/evener-hub.md).
 
 ### What's there
 
@@ -137,7 +137,7 @@ past_results_per_page = 50
 past_index_db = "/Users/you/.local/state/evener/index.db"
 ```
 
-Hub launch model choices come from the Evener launch harness contract
+The hub's launch model choices come from the Evener launch harness contract
 (`evener launch-check --models`), not from a static model roster in `hub.toml`.
 Launch defaults live in layered launch config files. For user-wide defaults,
 create `${XDG_CONFIG_HOME:-~/.config}/evener/launch.toml`:
@@ -151,11 +151,11 @@ OPENAI_API_KEY = "..."
 
 ### Architecture
 
-Daemons are loopback-only. Each writes a private rendezvous file to `${XDG_STATE_HOME:-~/.local/state}/evener/run/<pid>.json`; the hub watches the directory, probes daemons for state, and proxies AppWire/REST so the browser only ever talks to the hub origin. The hub requires a capability token on every route except `/auth`, `/api/health`, and the PWA icons: browsers authorize once through the auth URL printed at startup (which sets a long-lived cookie), and scripted clients send the token as `Authorization: Bearer`. Hub-spawned daemons require the per-hub bearer token recorded in their rendezvous file. A strict content security policy and a SameSite=Lax auth cookie defend against cross-origin attacks.
+Daemons are loopback-only. Each writes a private rendezvous file to `${XDG_STATE_HOME:-~/.local/state}/evener/run/<pid>.json`; the hub watches the directory, probes daemons for state, and proxies AppWire/REST so the browser only ever talks to the hub origin. The hub requires a capability token on every route except `/auth`, `/api/health`, and the PWA icons: browsers authorize once through the auth URL printed at startup (which sets a long-lived cookie), and scripted clients send the token as `Authorization: Bearer`. Daemons spawned by the hub require the per-hub bearer token recorded in their rendezvous file. A strict content security policy and a SameSite=Lax auth cookie defend against cross-origin attacks.
 
 ### Operating notes
 
-- **Daemons keep the binary they were spawned from.** Rebuilding `evener` does not update already-running daemons; live sessions continue to run the old code until they shut down. To pick up changes mid-session, end the session (which terminates its daemon), rebuild, and resume — resume reads the new binary. This matches typical daemonized-server behavior and is the same model as restarting a long-lived service after a deploy.
+- **Daemons keep the binary they were spawned from.** Rebuilding `evener` does not update already-running daemons; live sessions continue to run the old code until they shut down. To pick up changes mid-session, end the session (which terminates its daemon), rebuild, and resume — resume reads the new binary. This matches typical daemonized-server behavior.
 - **Remote hosts**: see `docs/evener-hub-remote-operations.md` for the current deployment runbook, including credential handling, state directories, browser/TUI access, health checks, and Codex app-server sources.
 - **Rebuild and restart a launchd-managed hub**: `scripts/ops/deploy-hub.sh` builds this worktree's `evener-hub` and `kickstart -k`s its launchd job, never stopping the old process until the new one is built and healthy — see `scripts/ops/deploy-hub.sh --help`.
 
@@ -201,6 +201,8 @@ evener-tui --no-auto-start-hub
 | `--hub-addr <url>` | Hub URL or host:port (default: `127.0.0.1:9180`) |
 | `--hub-bin <path>` | Hub binary to auto-start when the local hub is down |
 | `--no-auto-start-hub` | Fail instead of starting a missing local hub |
+| `--auth-token <token>` | Hub capability token (overrides the token file and env var) |
+| `--state-dir <path>` | Override the Evener state directory |
 | `--log-file <path>` | Write auto-started hub logs to this file |
 | `--debug` | Disable the alternate screen |
 
@@ -342,7 +344,7 @@ needs one.
 # List saved sessions
 evener --list-sessions
 
-# Resume the most recent session (provider and model from the original session are used)
+# Resume the most recent session
 evener --resume-last
 
 # Resume a specific session
@@ -352,7 +354,7 @@ evener --resume 02wLIRxqmq3AUo6vl2OW37
 evener --model openai/gpt-5.2 --resume-with 02wLIRxqmq3AUo6vl2OW37 "now add tests"
 ```
 
-When resuming, the provider and model from the original session are used by default. You can override them with `--model <provider/model>`.
+Resume reuses the original session's provider and model; override them with `--model <provider/model>`.
 
 ## llmcall (One-Shot LLM Client)
 
@@ -386,45 +388,6 @@ echo 'Return JSON: {"ok": true}' | ./llmcall --provider openai --model gpt-5-min
 
 - `LLM_PROVIDER` or `EVENER_PROVIDER`
 - `LLM_MODEL` or `EVENER_MODEL`
-
-## Migrating from Serf
-
-Evener was previously named Serf. Between the two names, its home-directory
-layout passed through an interim `~/.evener` step, since consolidated into
-the XDG config/state layout described under [Install](#install). If you have
-an existing Serf install or a machine still on the interim layout, run
-`evener-migrate` once before your first Evener launch:
-
-```bash
-evener-migrate
-```
-
-The migrator moves `${XDG_CONFIG_HOME:-~/.config}/serf` to `.../evener`,
-`${XDG_STATE_HOME:-~/.local/state}/serf` to `.../evener`, and any per-project
-`.serf` directory (in the current directory or a Git ancestor) to `.evener`.
-It also retires `~/.serf` and the interim `~/.evener`: each file they held —
-`providers.toml`, `credentials.toml`, `hub.toml`, and `launch.toml` (user
-config) plus `auth-token`, `index.db`, `hub.lock`, `run/`, and `deletions/`
-(machine state) — moves individually into the config or state root above. It
-refuses to overwrite a destination that already exists, so it's safe to run
-more than once. Pass `--dry-run` to preview the moves first, or `--verbose`
-to see every path it checked.
-
-Re-running the migrator also repairs a machine that migrated before a fix
-landed. After moving each root or file, `evener-migrate` walks the
-destination and rewrites leftover absolute references to the old
-`serf`/`~/.evener` paths it finds inside text files there — a plugin
-marketplace registry that still points `git pull` at
-`.../config/serf/plugins/marketplaces/<name>`, for example, or a hand-edited
-`hub.toml` whose `run_dir` still names the old location. It skips binaries
-and anything inside a Git working tree, so it's safe to run against a live
-install; files with nothing to rewrite are left untouched.
-
-If you skip migration, the first Evener binary you run creates a fresh, empty
-XDG layout, and `evener-migrate` then treats those roots as already migrated,
-leaving your old Serf data stranded. To prevent that, Evener refuses to start
-when it finds legacy Serf or interim `~/.evener` data with no matching final
-home; its error names the path and points back to `evener-migrate`.
 
 ## Acknowledgments
 
