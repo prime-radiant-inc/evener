@@ -19,12 +19,25 @@ import { NATIVE_BRIDGE_VERSION } from "./contract";
 export interface FakeNativeBridgeOptions {
   readonly contentSize?: ContentSizeCategory;
   readonly permissions?: Partial<Record<PermissionKind, boolean>>;
+  /**
+   * When set, `pairing.scanAndPreview` returns a redacted preview
+   * `{previewId, origin}` instead of `pairing_unavailable`. Never carries a
+   * token — the real bridge returns only an opaque preview id + origin.
+   */
+  readonly scanPreview?: {
+    readonly previewId: string;
+    readonly origin: string;
+  };
 }
 
 export class FakeNativeBridge implements NativeTransport {
   readonly version = NATIVE_BRIDGE_VERSION;
   private contentSize: ContentSizeCategory;
   private readonly permissions: Partial<Record<PermissionKind, boolean>>;
+  private scanPreview: {
+    readonly previewId: string;
+    readonly origin: string;
+  } | null;
   private readonly secureStore = new Map<string, string>();
   private readonly lifecycleHandlers = new Set<
     (e: { state: LifecycleState }) => void
@@ -34,6 +47,7 @@ export class FakeNativeBridge implements NativeTransport {
   constructor(options: FakeNativeBridgeOptions = {}) {
     this.contentSize = options.contentSize ?? "large";
     this.permissions = options.permissions ?? {};
+    this.scanPreview = options.scanPreview ?? null;
   }
 
   // -- NativeTransport ------------------------------------------------------
@@ -69,6 +83,17 @@ export class FakeNativeBridge implements NativeTransport {
     this.contentSize = category;
   }
 
+  /**
+   * Configure the scan+preview result. Pass null to restore the default
+   * pairing_unavailable behavior. The preview carries only an opaque id and
+   * origin — never a token or raw QR text.
+   */
+  setScanPreview(
+    preview: { readonly previewId: string; readonly origin: string } | null,
+  ): void {
+    this.scanPreview = preview;
+  }
+
   hasProfile(profileId: string): boolean {
     return this.secureStore.has(profileId);
   }
@@ -95,8 +120,17 @@ export class FakeNativeBridge implements NativeTransport {
         this.secureStore.delete(command.profileId);
         return { version: 1, type: "secure.deleted", deleted: true };
       case "pairing.scanAndPreview":
-        // Until Task 5 wires real pairing, production returns structured
-        // pairing_unavailable; the fake returns it too so tests mirror prod.
+        // When a scan preview is configured, return a redacted preview (opaque
+        // id + origin only — never a token or raw QR text). Otherwise mirror
+        // production: a structured pairing_unavailable error.
+        if (this.scanPreview) {
+          return {
+            version: 1,
+            type: "pairing.preview",
+            previewId: this.scanPreview.previewId,
+            origin: this.scanPreview.origin,
+          };
+        }
         return {
           version: 1,
           type: "error",
