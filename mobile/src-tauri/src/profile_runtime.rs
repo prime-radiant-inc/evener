@@ -10,7 +10,8 @@ use std::sync::Arc;
 use serde::{Deserialize, Serialize};
 
 use crate::error::{ProfileError, ReleaseMode};
-use crate::network_policy::{NetworkPolicy, PinnedOrigin};
+use crate::http_transport::PinnedHttpBoundary;
+use crate::network_policy::NetworkPolicy;
 use crate::profile::{
     self, PairingProbe, PreferencesStore, ProfileStore, ProfileSummary, SecureStore, SelectResult,
 };
@@ -24,6 +25,19 @@ use crate::profile::{
 pub struct FilePreferences {
     dir: std::path::PathBuf,
     path: std::path::PathBuf,
+    directory_sync: Arc<dyn DirectorySync>,
+}
+
+trait DirectorySync: Send + Sync {
+    fn sync(&self, directory: &std::path::Path) -> Result<(), std::io::Error>;
+}
+
+struct SystemDirectorySync;
+
+impl DirectorySync for SystemDirectorySync {
+    fn sync(&self, directory: &std::path::Path) -> Result<(), std::io::Error> {
+        std::fs::File::open(directory)?.sync_all()
+    }
 }
 
 impl FilePreferences {
@@ -32,20 +46,55 @@ impl FilePreferences {
     pub fn new(dir: impl AsRef<std::path::Path>) -> Self {
         let dir = dir.as_ref().to_path_buf();
         let path = dir.join("preferences.json");
-        Self { dir, path }
+        Self {
+            dir,
+            path,
+            directory_sync: Arc::new(SystemDirectorySync),
+        }
     }
 
-    fn load_from(path: &std::path::Path) -> profile::Preferences {
+    #[cfg(test)]
+    fn with_directory_sync(
+        dir: impl AsRef<std::path::Path>,
+        directory_sync: Arc<dyn DirectorySync>,
+    ) -> Self {
+        let dir = dir.as_ref().to_path_buf();
+        let path = dir.join("preferences.json");
+        Self {
+            dir,
+            path,
+            directory_sync,
+        }
+    }
+
+    fn load_from(path: &std::path::Path) -> Result<profile::Preferences, ProfileError> {
         match std::fs::read(path) {
-            Ok(bytes) => serde_json::from_slice(&bytes).unwrap_or_default(),
-            Err(_) => profile::Preferences::default(),
+            Ok(bytes) => {
+                let prefs: profile::Preferences = serde_json::from_slice(&bytes).map_err(|_| {
+                    ProfileError::PreferencesConsistency {
+                        reason: "malformed preferences",
+                    }
+                })?;
+                if prefs.version != profile::PREFERENCES_VERSION {
+                    return Err(ProfileError::PreferencesConsistency {
+                        reason: "unsupported preferences version",
+                    });
+                }
+                Ok(prefs)
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                Ok(profile::Preferences::default())
+            }
+            Err(_) => Err(ProfileError::PreferencesConsistency {
+                reason: "preferences unreadable",
+            }),
         }
     }
 }
 
 impl PreferencesStore for FilePreferences {
     fn load(&self) -> Result<profile::Preferences, ProfileError> {
-        Ok(Self::load_from(&self.path))
+        Self::load_from(&self.path)
     }
 
     fn save(&self, prefs: &profile::Preferences) -> Result<(), ProfileError> {
@@ -73,6 +122,12 @@ impl PreferencesStore for FilePreferences {
         }
 
         std::fs::rename(&tmp, &self.path).map_err(|e| ProfileError::Preferences(e.to_string()))?;
+
+        // Persist the directory entry containing the rename. Without this
+        // fsync, a power loss can retain neither the old nor the new name.
+        self.directory_sync
+            .sync(&self.dir)
+            .map_err(|e| ProfileError::Preferences(e.to_string()))?;
 
         Ok(())
     }
@@ -117,159 +172,112 @@ impl<S: SecureStore> SecureStore for KeychainBridge<S> {
 
 /// A real `PairingProbe` that probes `/api/health` (unauthenticated, for
 /// mobile API version) and then an authenticated harmless endpoint. Both
-/// requests re-resolve the origin through the shared `NetworkPolicy`,
-/// connect TCP to the validated pinned IP address, and send the original
-/// hostname as the Host header. Uses blocking `std::net` HTTP/1.1 — no
-/// tokio runtime re-entry, no `block_in_place`, no async. Never logs
-/// bodies, URLs, or tokens.
+/// requests use the shared pinned reqwest boundary: the original hostname
+/// remains in the URL for Host/TLS SNI/certificate identity while DNS is
+/// overridden with the policy-approved socket address. Blocking reqwest runs
+/// on a dedicated OS thread, never re-entering Tokio. Never logs bodies, URLs,
+/// or tokens.
 pub struct RealPairingProbe {
-    policy: Arc<NetworkPolicy>,
+    boundary: PinnedHttpBoundary,
 }
 
 impl RealPairingProbe {
     pub fn new(policy: Arc<NetworkPolicy>) -> Self {
-        Self { policy }
+        Self {
+            boundary: PinnedHttpBoundary::new(policy, ReleaseMode::Release),
+        }
+    }
+
+    pub fn with_root_certificate(mut self, certificate: reqwest::Certificate) -> Self {
+        self.boundary = self.boundary.with_root_certificate(certificate);
+        self
     }
 }
 
 impl Default for RealPairingProbe {
     fn default() -> Self {
         Self {
-            policy: Arc::new(NetworkPolicy::new(Box::new(SystemDnsResolver))),
+            boundary: PinnedHttpBoundary::new(
+                Arc::new(NetworkPolicy::new(Box::new(SystemDnsResolver))),
+                ReleaseMode::Release,
+            ),
         }
     }
 }
 
 impl PairingProbe for RealPairingProbe {
     fn probe(&self, origin: &str, token: &str, mode: ReleaseMode) -> Result<i64, ProfileError> {
-        // Re-resolve the origin through the network policy (same boundary
-        // as HubHttp). Connect TCP to the validated pinned IP; preserve the
-        // original hostname in the Host header.
-        let origin_url = url::Url::parse(origin).map_err(|e| ProfileError::ProbeFailed {
-            origin: origin.to_owned(),
-            message: format!("invalid origin: {e}"),
-        })?;
-        let pinned =
-            self.policy
-                .resolve(&origin_url, mode)
-                .map_err(|e| ProfileError::ProbeFailed {
+        // reqwest's blocking client owns a runtime, so execute it on a fresh
+        // OS thread rather than constructing/dropping it inside Tauri's Tokio
+        // runtime. The thread receives only an immutable boundary/origin/token.
+        // Preserve the resolver and any additional roots configured on this
+        // probe while applying the caller's release/debug address policy.
+        let boundary = self.boundary.clone_with_mode(mode);
+        let origin_owned = origin.to_owned();
+        let token_owned = token.to_owned();
+        let result =
+            std::thread::spawn(move || probe_blocking(&boundary, &origin_owned, &token_owned))
+                .join()
+                .map_err(|_| ProfileError::ProbeFailed {
                     origin: origin.to_owned(),
-                    message: e.to_string(),
+                    message: "probe worker failed".to_owned(),
                 })?;
-
-        // Unauthenticated health probe.
-        let health_body = blocking_http_get(&pinned, "/api/health", None).map_err(|e| {
-            ProfileError::ProbeFailed {
-                origin: origin.to_owned(),
-                message: format!("health request failed: {e}"),
-            }
-        })?;
-        let health_json: serde_json::Value =
-            serde_json::from_slice(&health_body).map_err(|_| ProfileError::ProbeFailed {
-                origin: origin.to_owned(),
-                message: "health body parse failed".to_owned(),
-            })?;
-        let version = health_json
-            .get("mobile_api_version")
-            .and_then(|v| v.as_i64())
-            .ok_or_else(|| ProfileError::ProbeFailed {
-                origin: origin.to_owned(),
-                message: "mobile_api_version missing".to_owned(),
-            })?;
-
-        // Authenticated harmless probe.
-        let _pairing_body = blocking_http_get(&pinned, "/api/mobile/pairing", Some(token))
-            .map_err(|e| ProfileError::ProbeFailed {
-                origin: origin.to_owned(),
-                message: format!("auth probe failed: {e}"),
-            })?;
-
-        Ok(version)
+        result.map_err(|message| ProfileError::ProbeFailed {
+            origin: origin.to_owned(),
+            message,
+        })
     }
 }
 
-/// Blocking HTTP/1.1 GET over a TCP connection to the pinned IP. Preserves
-/// the original hostname in the Host header. Redirects are never followed
-/// (the client is a single request/response). No tokio runtime.
+fn probe_blocking(boundary: &PinnedHttpBoundary, origin: &str, token: &str) -> Result<i64, String> {
+    let health_body = blocking_http_get(boundary, origin, "/api/health", None)
+        .map_err(|e| format!("health request failed: {e}"))?;
+    let health_json: serde_json::Value =
+        serde_json::from_slice(&health_body).map_err(|_| "health body parse failed".to_owned())?;
+    let version = health_json
+        .get("mobile_api_version")
+        .and_then(|v| v.as_i64())
+        .ok_or_else(|| "mobile_api_version missing".to_owned())?;
+
+    // Authenticated harmless probe.
+    let _pairing_body = blocking_http_get(boundary, origin, "/api/mobile/pairing", Some(token))
+        .map_err(|e| format!("auth probe failed: {e}"))?;
+
+    Ok(version)
+}
+
+/// Blocking HTTP GET through the same pinned resolver/TLS boundary as HubHttp.
+/// Redirects are disabled and rejected explicitly. No Tokio runtime.
 fn blocking_http_get(
-    pinned: &PinnedOrigin,
+    boundary: &PinnedHttpBoundary,
+    origin: &str,
     path: &str,
     token: Option<&str>,
 ) -> Result<Vec<u8>, String> {
-    use std::io::{Read, Write};
-    use std::net::TcpStream;
-    use std::time::Duration;
-
-    let addr = pinned
-        .addrs()
-        .first()
-        .ok_or_else(|| "no resolved address".to_owned())?;
-    let port = pinned.port();
-    let mut stream = TcpStream::connect_timeout(
-        &std::net::SocketAddr::new(*addr, port),
-        Duration::from_secs(10),
-    )
-    .map_err(|e| format!("connect failed: {e}"))?;
-    stream
-        .set_read_timeout(Some(Duration::from_secs(30)))
-        .map_err(|e| format!("set_read_timeout: {e}"))?;
-
-    let host = pinned.host();
-    let host_header = if is_default_scheme_port(pinned.scheme(), port) {
-        host.to_owned()
-    } else {
-        format!("{host}:{port}")
-    };
-
-    let mut request =
-        format!("GET {path} HTTP/1.1\r\nHost: {host_header}\r\nConnection: close\r\n");
-    if let Some(tok) = token {
-        request.push_str(&format!("Authorization: Bearer {tok}\r\n"));
+    let (mut url, pinned) = boundary
+        .resolve(origin)
+        .map_err(|_| "policy rejected".to_owned())?;
+    url.set_path(path);
+    url.set_query(None);
+    let client = boundary
+        .blocking_client(&pinned)
+        .map_err(|_| "client creation failed".to_owned())?;
+    let mut request = client.get(url);
+    if let Some(token) = token {
+        request = request.bearer_auth(token);
     }
-    request.push_str("\r\n");
-
-    stream
-        .write_all(request.as_bytes())
-        .map_err(|e| format!("write failed: {e}"))?;
-
-    let mut response = Vec::new();
-    stream
-        .read_to_end(&mut response)
-        .map_err(|e| format!("read failed: {e}"))?;
-
-    // Parse the HTTP/1.1 response: status line + headers + body.
-    let response_str = String::from_utf8_lossy(&response);
-    let (header_section, body) = response_str
-        .split_once("\r\n\r\n")
-        .unwrap_or((response_str.as_ref(), ""));
-    let status_line = header_section.lines().next().unwrap_or("");
-    let status_code: u16 = status_line
-        .split_whitespace()
-        .nth(1)
-        .and_then(|s| s.parse().ok())
-        .unwrap_or(0);
+    let response = request.send().map_err(|_| "request failed".to_owned())?;
+    let status_code = response.status().as_u16();
+    if (300..400).contains(&status_code) {
+        return Err("redirect rejected".to_owned());
+    }
     if !(200..300).contains(&status_code) {
         return Err(format!("status {status_code}"));
     }
-
-    // Handle Transfer-Encoding: chunked or Content-Length.
-    let content_length = header_section.lines().skip(1).find_map(|line| {
-        let line = line.to_lowercase();
-        line.strip_prefix("content-length: ")
-            .and_then(|v| v.trim().parse::<usize>().ok())
-    });
-    if let Some(len) = content_length {
-        return Ok(body.as_bytes()[..len.min(body.len())].to_vec());
-    }
-    // Fall back to the raw body after headers.
-    Ok(body.as_bytes().to_vec())
-}
-
-fn is_default_scheme_port(scheme: &str, port: u16) -> bool {
-    matches!(
-        (scheme, port),
-        ("http", 80) | ("https", 443) | ("ws", 80) | ("wss", 443)
-    )
+    response
+        .bytes()
+        .map(|bytes| bytes.to_vec())
+        .map_err(|_| "body read failed".to_owned())
 }
 
 // ---------------------------------------------------------------------------
@@ -460,6 +468,12 @@ pub struct PreviewRepairRequest {
     pub raw: String,
 }
 
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CancelPreviewRequest {
+    pub preview_id: String,
+}
+
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
@@ -473,6 +487,7 @@ mod tests {
     use crate::profile::{
         MemoryPreferences, MemorySecureStore, OkProbe, RecordingCloseTransport, StepClock,
     };
+    use std::sync::atomic::{AtomicUsize, Ordering};
 
     const TOKEN: &str = "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8";
 
@@ -601,6 +616,69 @@ mod tests {
         }
     }
 
+    #[test]
+    fn file_preferences_missing_is_default_but_corrupt_is_consistency_error() {
+        let dir = tempfile::tempdir().unwrap();
+        let prefs = FilePreferences::new(dir.path());
+        assert_eq!(prefs.load().unwrap(), profile::Preferences::default());
+
+        std::fs::write(dir.path().join("preferences.json"), b"{broken").unwrap();
+        assert!(matches!(
+            prefs.load(),
+            Err(ProfileError::PreferencesConsistency {
+                reason: "malformed preferences"
+            })
+        ));
+    }
+
+    #[test]
+    fn file_preferences_unreadable_is_not_treated_as_empty() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir(dir.path().join("preferences.json")).unwrap();
+        let prefs = FilePreferences::new(dir.path());
+        assert!(matches!(
+            prefs.load(),
+            Err(ProfileError::PreferencesConsistency {
+                reason: "preferences unreadable"
+            })
+        ));
+    }
+
+    #[test]
+    fn file_preferences_rejects_invalid_version_without_rewrite() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("preferences.json");
+        let bytes = br#"{"version":99,"profiles":[],"active_id":null}"#;
+        std::fs::write(&path, bytes).unwrap();
+        let prefs = FilePreferences::new(dir.path());
+        assert!(matches!(
+            prefs.load(),
+            Err(ProfileError::PreferencesConsistency {
+                reason: "unsupported preferences version"
+            })
+        ));
+        assert_eq!(std::fs::read(path).unwrap(), bytes);
+    }
+
+    struct RecordingDirectorySync(AtomicUsize);
+
+    impl DirectorySync for RecordingDirectorySync {
+        fn sync(&self, _directory: &std::path::Path) -> Result<(), std::io::Error> {
+            self.0.fetch_add(1, Ordering::SeqCst);
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn file_preferences_fsyncs_parent_after_atomic_rename() {
+        let dir = tempfile::tempdir().unwrap();
+        let sync = Arc::new(RecordingDirectorySync(AtomicUsize::new(0)));
+        let prefs = FilePreferences::with_directory_sync(dir.path(), sync.clone());
+        prefs.save(&profile::Preferences::default()).unwrap();
+        assert_eq!(sync.0.load(Ordering::SeqCst), 1);
+        assert_eq!(prefs.load().unwrap(), profile::Preferences::default());
+    }
+
     // -- Serialized concurrent calls ---------------------------------------
 
     #[tokio::test]
@@ -638,6 +716,125 @@ mod tests {
 
         let list = rt3.serialized(|store| store.list()).await.unwrap();
         assert_eq!(list.len(), 2);
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn concurrent_snapshot_repair_and_select_never_mix_origin_and_token() {
+        const NEW_TOKEN: &str = "AQIDBAUGBwgJCgsMDQ4PEBESExQVFhcYGRobHB0eHyA";
+        let (runtime, _prefs, _secure) = make_memory_runtime();
+
+        let alpha_preview = runtime
+            .serialized(|store| store.preview_pairing(&auth_url("alpha.example.com")))
+            .await
+            .unwrap();
+        let alpha = runtime
+            .serialized(|store| {
+                store.confirm_pairing(
+                    &alpha_preview.preview_id,
+                    "Alpha",
+                    false,
+                    ReleaseMode::Release,
+                )
+            })
+            .await
+            .unwrap();
+        let beta_preview = runtime
+            .serialized(|store| store.preview_pairing(&auth_url("beta.example.com")))
+            .await
+            .unwrap();
+        let beta = runtime
+            .serialized(|store| {
+                store.confirm_pairing(
+                    &beta_preview.preview_id,
+                    "Beta",
+                    false,
+                    ReleaseMode::Release,
+                )
+            })
+            .await
+            .unwrap();
+        runtime
+            .serialized(|store| store.select(&alpha.id))
+            .await
+            .unwrap();
+        let repair_url = format!("https://alpha-new.example.com/auth?token={NEW_TOKEN}");
+        let repair_preview = runtime
+            .serialized(|store| store.preview_repair(&alpha.id, &repair_url))
+            .await
+            .unwrap();
+
+        let runtime = Arc::new(runtime);
+        let snapshots_runtime = runtime.clone();
+        let snapshots = tokio::spawn(async move {
+            let mut captured = Vec::new();
+            for _ in 0..100 {
+                if let Ok(snapshot) = snapshots_runtime
+                    .serialized(|store| store.active_snapshot_current())
+                    .await
+                {
+                    captured.push(snapshot.into_parts());
+                }
+                tokio::task::yield_now().await;
+            }
+            captured
+        });
+        let repair_runtime = runtime.clone();
+        let repair = tokio::spawn(async move {
+            repair_runtime
+                .serialized(|store| {
+                    store.confirm_pairing(
+                        &repair_preview.preview_id,
+                        "Alpha",
+                        false,
+                        ReleaseMode::Release,
+                    )
+                })
+                .await
+        });
+        let select_runtime = runtime.clone();
+        let beta_id = beta.id.clone();
+        let select = tokio::spawn(async move {
+            select_runtime
+                .serialized(|store| store.select(&beta_id))
+                .await
+        });
+
+        repair.await.unwrap().unwrap();
+        select.await.unwrap().unwrap();
+        let snapshots = snapshots.await.unwrap();
+        assert!(!snapshots.is_empty());
+        for (id, _generation, origin, token) in snapshots {
+            let is_alpha_old =
+                id == alpha.id && origin == "https://alpha.example.com" && token == TOKEN;
+            let is_alpha_new =
+                id == alpha.id && origin == "https://alpha-new.example.com" && token == NEW_TOKEN;
+            let is_beta = id == beta.id && origin == "https://beta.example.com" && token == TOKEN;
+            assert!(is_alpha_old || is_alpha_new || is_beta, "mixed snapshot");
+        }
+    }
+
+    #[tokio::test]
+    async fn active_snapshot_rejects_caller_profile_mismatch() {
+        let (runtime, _prefs, _secure) = make_memory_runtime();
+        let preview = runtime
+            .serialized(|store| store.preview_pairing(&auth_url("hub.example.com")))
+            .await
+            .unwrap();
+        let profile = runtime
+            .serialized(|store| {
+                store.confirm_pairing(&preview.preview_id, "Alpha", false, ReleaseMode::Release)
+            })
+            .await
+            .unwrap();
+        runtime
+            .serialized(|store| store.select(&profile.id))
+            .await
+            .unwrap();
+
+        assert!(runtime
+            .serialized(|store| store.active_snapshot("different-profile"))
+            .await
+            .is_err());
     }
 
     // -- Active generation changes -----------------------------------------

@@ -65,6 +65,8 @@ pub enum ProfileError {
     SecureStore(String),
     #[error("preferences failure: {0}")]
     Preferences(String),
+    #[error("preferences consistency failure: {reason}")]
+    PreferencesConsistency { reason: &'static str },
     #[error("consistency error for profile {profile_id}: rollback failed after {operation} ({rollback_operation})")]
     Consistency {
         profile_id: String,

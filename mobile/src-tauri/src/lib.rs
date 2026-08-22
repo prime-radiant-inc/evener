@@ -2,7 +2,7 @@
 pub fn run() {
     use std::sync::Arc;
 
-    use tauri::Manager;
+    use tauri::{Listener, Manager};
     use tauri_plugin_evener_native::EvenerNativeExt;
 
     // Construct production adapters. The app owns one persistent ProfileStore
@@ -75,6 +75,14 @@ pub fn run() {
             // Managed runtime with async lifecycle mutex.
             let runtime = profile_runtime::ProfileRuntime::new(store.clone());
 
+            // Tauri maps iOS applicationWillResignActive to the mobile window
+            // suspended event. Clear every pending native secret immediately
+            // on that production lifecycle boundary.
+            let background_store = store.clone();
+            app.listen("tauri://suspended", move |_| {
+                background_store.clear_previews()
+            });
+
             // Managed preview handler backed by the exact same store.
             let handler = Arc::new(profile_runtime::ManagedPreviewHandler::new(store));
 
@@ -109,6 +117,8 @@ pub fn run() {
             commands::profile_preview_paste,
             commands::profile_preview_repair,
             commands::profile_confirm_pairing,
+            commands::profile_preview_cancel,
+            commands::profile_previews_clear,
             commands::profile_rename,
             commands::profile_remove,
             commands::profile_select,
