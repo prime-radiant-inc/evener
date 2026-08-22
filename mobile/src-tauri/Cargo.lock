@@ -51,9 +51,15 @@ checksum = "330a5ed07fa54e4702c9d6c4174f74427fc0ef6e214bbd677ae50a5099946470"
 name = "app"
 version = "0.1.0"
 dependencies = [
+ "base64 0.21.7",
+ "serde",
+ "serde_json",
  "tauri",
  "tauri-build",
  "tauri-plugin-evener-native",
+ "thiserror 2.0.20",
+ "url",
+ "uuid",
 ]
 
 [[package]]

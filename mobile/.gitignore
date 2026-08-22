@@ -1,0 +1,15 @@
+# Mobile project build and dependency artifacts
+dist/
+node_modules/
+
+# Local Rust / Tauri build output
+src-tauri/target/
+src-tauri/gen/schemas/
+
+# Local test / coverage artifacts
+*.log
+coverage/
+.vite/
+
+# OS / editor cruft
+.DS_Store
