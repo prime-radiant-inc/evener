@@ -160,10 +160,12 @@ type JobRecord struct {
 	ExhaustionLimit  int     `json:"exhaustion_limit,omitempty"`
 	Description      string  `json:"description,omitempty"`
 	Command          string  `json:"command,omitempty"`
-	// Background reports that a shell job was launched to run in the background
-	// rather than waited on inline. No event carries it, so it is stamped on the
-	// in-memory record at launch and nowhere else: a record folded from the store
-	// always reads false, whatever the job did. Live-only, like LastActivity.
+	// Background reports that a shell job is running in the background rather
+	// than being waited on inline: stamped at launch for mode:"background", and
+	// at promotion when a foreground command outlives its block timeout. No
+	// event carries it, so it lives only on the in-memory record: a record
+	// folded from the store always reads false, whatever the job did.
+	// Live-only, like LastActivity.
 	Background bool `json:"-"`
 	// WorkingDir is the launch-time working directory of a background shell
 	// job, recorded so manage_worktree remove/prune's live-work guard

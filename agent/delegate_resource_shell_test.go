@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"path/filepath"
 	"strings"
 	"sync/atomic"
@@ -72,6 +73,41 @@ func TestStableDelegateShell_CompletionAttentionReachesDirectOwner(t *testing.T)
 	}
 	if got := tree.child.peekNotifications(); got != 0 {
 		t.Fatalf("direct owner retained %d legacy shell notifications", got)
+	}
+
+	retryTree := newStableDelegateShellTree(t)
+	retryRec := createStableDelegateShell(t, retryTree.childJM, "retry direct owner arm")
+	readCalls := 0
+	injected := errors.New("injected stable shell arm failure")
+	retryTree.child.cfg.testOnly.delegateAttentionReadFold = func(path, sessionID string) (delegateAttentionFold, error) {
+		readCalls++
+		if readCalls == 3 {
+			return delegateAttentionFold{}, injected
+		}
+		return readDelegateAttentionFold(path, sessionID)
+	}
+	code := 0
+	if err := retryTree.childJM.finalize(retryRec.JobID, jobstore.StatusCompleted, "exit_zero", &code); !errors.Is(err, injected) {
+		t.Fatalf("first shell finalization error = %v, want %v", err, injected)
+	}
+	retryStored := loadStableShellRecord(t, retryTree.childJM, retryRec.JobID)
+	if retryStored.NotifyState != jobstore.NotifyPending {
+		t.Fatalf("failed shell arm notify state = %q, want pending", retryStored.NotifyState)
+	}
+	retryTree.childJM.mu.Lock()
+	_, running := retryTree.childJM.running[retryRec.JobID]
+	retryTree.childJM.mu.Unlock()
+	if !running {
+		t.Fatal("failed shell arm removed its finalization source")
+	}
+	retryTree.child.cfg.testOnly.delegateAttentionReadFold = nil
+	if err := retryTree.childJM.finalize(retryRec.JobID, jobstore.StatusCompleted, "exit_zero", &code); err != nil {
+		t.Fatalf("retry shell finalization: %v", err)
+	}
+	retryStored = loadStableShellRecord(t, retryTree.childJM, retryRec.JobID)
+	retryAttentionID := stableShellAttentionID(retryRec.JobID, retryStored.TerminalGen)
+	if retryStored.NotifyState != jobstore.NotifyDelivered || countAttentionEntries(t, transcriptPath(retryTree.controller.stateDir, retryTree.child.ID()), retryAttentionID) != 1 {
+		t.Fatalf("retried shell source = state:%q attention:%d, want delivered/1", retryStored.NotifyState, countAttentionEntries(t, transcriptPath(retryTree.controller.stateDir, retryTree.child.ID()), retryAttentionID))
 	}
 }
 

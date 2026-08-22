@@ -456,13 +456,24 @@ func (c *delegateTreeController) FinishGeneration(lease delegateLease, finish de
 	}
 	events = delegateFinishMetadataEvents(events, lease, finish, outcome, reason)
 
-	if _, err := c.appendLocked(events...); err != nil {
+	closure := outcome == delegatestore.OutcomeExhausted && finish.exhaustionResumable != nil && !*finish.exhaustionResumable
+	var closurePlan delegateUpdatePlan
+	var appendErr error
+	if closure {
+		closurePlan, appendErr = c.appendResumabilityClosureLocked(lease.delegateID, events...)
+	} else {
+		_, appendErr = c.appendLocked(events...)
+	}
+	if appendErr != nil {
 		live.recoveryRequired = true
 		live.finalizationRecoveryRequired = true
 		live.recoveryRunnerPending = true
-		return delegateMutationPlans{}, err
+		return delegateMutationPlans{}, appendErr
 	}
 	plans, generationCancel := c.generationFinishedPlansLocked(lease, deliveryID)
+	if closure {
+		plans.updates[0] = closurePlan
+	}
 	cancel = generationCancel
 	return plans, nil
 }

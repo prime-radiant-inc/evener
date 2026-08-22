@@ -12,9 +12,6 @@ export type SubagentRowKind = "running" | "done" | "stopped" | "failed" | "unkno
 export interface SubagentRow {
   rowKey: string;
   kind: SubagentRowKind;
-  // Live follow-up fields survive re-renders of the frozen tool item.
-  liveKind?: SubagentRowKind;
-  liveReason?: string;
   resumable?: boolean;
   exhaustionBudget?: string;
   exhaustionLimit?: number;
@@ -50,30 +47,20 @@ export function rowKeyForDelegateItem(item: ItemModel): string {
   return resolveRowKey(delegateId, undefined, item.callId ?? item.id);
 }
 
-// effectiveRowKind is the kind a row actually displays: stable projection,
-// then live child watch, then the frozen delegate tool output.
+// The stable projection owns lifecycle after hydration. Frozen tool output is
+// the pre-hydration fallback.
 export function effectiveRowKind(row: SubagentRow, stable?: EvenerDelegateInfo): SubagentRowKind {
   if (stable) return classifyJobStatus(stableDelegateDisplayStatus(stable));
-  return row.liveKind ?? row.kind;
+  return row.kind;
 }
 
-// The delegate call creates a row; later renders and follow-up events update it
-// in place. A call-keyed placeholder may migrate to its durable delegate key.
+// The delegate call creates a row; later renders update it in place. A
+// call-keyed placeholder may migrate to its durable delegate key.
 export function upsertSubagentRow(scopeKey: string, row: SubagentRow, migrateFromRowKey?: string): void {
   moduleStore.setState((s) => {
-    const existingForTurn = s.turnRowsByKey.get(scopeKey);
-    const rows = new Map(existingForTurn ?? []);
-    const existingRow = rows.get(row.rowKey) ?? (migrateFromRowKey ? rows.get(migrateFromRowKey) : undefined);
+    const rows = new Map(s.turnRowsByKey.get(scopeKey) ?? []);
     if (migrateFromRowKey && migrateFromRowKey !== row.rowKey) rows.delete(migrateFromRowKey);
-    const next: SubagentRow = {
-      liveKind: existingRow?.liveKind,
-      liveReason: existingRow?.liveReason,
-      resumable: existingRow?.resumable,
-      exhaustionBudget: existingRow?.exhaustionBudget,
-      exhaustionLimit: existingRow?.exhaustionLimit,
-      ...row,
-    };
-    rows.set(row.rowKey, next);
+    rows.set(row.rowKey, row);
 
     const turnRowsByKey = new Map(s.turnRowsByKey);
     turnRowsByKey.set(scopeKey, rows);
@@ -97,20 +84,6 @@ export function removeSubagentRow(scopeKey: string, rowKey: string): void {
   });
 }
 
-// Follow-up tools may patch a delegate but never create one.
-export function updateSubagentRowIfExists(scopeKey: string, rowKey: string, patch: Partial<SubagentRow>): void {
-  moduleStore.setState((s) => {
-    const existingForTurn = s.turnRowsByKey.get(scopeKey);
-    const existingRow = existingForTurn?.get(rowKey);
-    if (!existingForTurn || !existingRow) return s;
-    const rows = new Map(existingForTurn);
-    rows.set(rowKey, { ...existingRow, ...patch });
-    const turnRowsByKey = new Map(s.turnRowsByKey);
-    turnRowsByKey.set(scopeKey, rows);
-    return { turnRowsByKey };
-  });
-}
-
 // A deliberate stop is terminal but distinct from success or failure.
 export function classifyJobStatus(status: string | undefined): SubagentRowKind {
   if (status === undefined) return "running";
@@ -126,17 +99,6 @@ export function resolveRowKey(delegateId: string | undefined, jobId: string | un
   if (delegateId) return `dlg:${delegateId}`;
   if (jobId) return `job:${jobId}`;
   return `call:${fallback}`;
-}
-
-const TERMINAL_KINDS: ReadonlySet<SubagentRowKind> = new Set(["done", "stopped", "failed", "unknown"]);
-
-// A lagging child watch cannot resurrect terminal row state.
-export function setWatchedLiveKind(scopeKey: string, rowKey: string, liveKind: SubagentRowKind): void {
-  if (liveKind === "running") {
-    const existingRow = moduleStore.getState().turnRowsByKey.get(scopeKey)?.get(rowKey);
-    if (existingRow && TERMINAL_KINDS.has(effectiveRowKind(existingRow))) return;
-  }
-  updateSubagentRowIfExists(scopeKey, rowKey, { liveKind });
 }
 
 export function useSubagentRow(scopeKey: string, rowKey: string): SubagentRow | undefined {

@@ -166,7 +166,7 @@ branch on `type` and `id`; only shell rows carry `job_id`.
 
 **The grant rule.** A session may grant a child a `delegation_allowance` strictly less than its own allowance, so the chain always shortens and allowance 0 is a leaf. A grant `>=` the granter's own allowance is rejected with `invalid_request: delegation_allowance must be less than your own allowance (<A>); valid grants: <range>`, where `<A>` is the granter's allowance and `<range>` enumerates the grantable values (`0` at allowance 1, otherwise `0..<A-1>`). A session's own allowance is persisted in the delegate restore descriptor, so it survives restore. The current allowance is also reported on every `job_list` result (see `job_list`), so an agent can read its budget without re-reading its system prompt.
 
-**Availability matrix (allowance-gated).** Whether a child receives the delegation surface is governed by its granted allowance, not by a fixed depth gate. At allowance 0 the child is a leaf: it does not receive `delegate`/`job_watch`, agent-type listings that require those tools are filtered out of its prompt, and its system prompt shows the leaf limits block. At allowance > 0 the child receives `delegate` + `job_watch` (added to the default surface for an untyped child; a typed agent gets them only if its tool list names them), may grant onward allowances strictly smaller than its own, is told its allowance in its prompt, and sees the delegation + background-jobs prompt sections. A typed agent's tool list governs *what* the child gets; allowance governs *whether* the delegation tools are grantable at all — allowance never injects tools into a type that does not list them.
+**Availability matrix (allowance-gated).** Whether a child receives the delegation surface is governed by its granted allowance, not by a fixed depth gate. At allowance 0 the child is a leaf: it does not receive `delegate`, agent-type listings that require delegation are filtered out of its prompt, and its system prompt shows the leaf limits block. `job_watch` is present at every allowance — a session that can run jobs can always watch its own jobs — with each cross-session source authorizing itself (`parent` requires the `watch_parent:true` grant; a concrete job id must be owned by the watching session). At allowance > 0 the child receives `delegate` (added to the default surface for an untyped child; a typed agent gets it only if its tool list names it), may grant onward allowances strictly smaller than its own, is told its allowance in its prompt, and sees the delegation + background-jobs prompt sections. A typed agent's tool list governs *what* the child gets; allowance governs *whether* the delegation tools are grantable at all — allowance never injects tools into a type that does not list them.
 
 **Double opt-in (dark by default).** A root session's allowance equals `MaxSubagentDepth` (default 1). Under defaults the root's allowance is 1, so the root may grant only 0 — every delegate is a leaf and recursion never happens. Enabling recursion requires **both** raising `MaxSubagentDepth` in config **and** passing a non-zero `delegation_allowance` per create. Neither alone unlocks it; recursion stays dark until an operator deliberately does both.
 
@@ -253,15 +253,15 @@ Canonical foreground shape for ordinary commands:
 }
 ```
 
-Shell defaults to `mode="foreground"` because most shell calls are short and decision-producing. It waits up to the session command timeout (120s standard), then promotes the command to a durable background job if it is still running. Set `mode="background"` to launch-and-return immediately for deliberate background work such as a dev server or a long command the agent should not wait on. Set `mode="detached"` to immediately disown a process; it returns only a PID and cannot be discovered or controlled through job tools.
+Shell defaults to `mode="foreground"` because most shell calls are short and decision-producing. It waits up to the session command timeout (120s standard), then promotes the command to a durable background job if it is still running. Set `mode="background"` to launch-and-return immediately for deliberate background work that terminates on its own, such as a long build or test run the agent should not wait on inline. A background job is session-owned and dies with the session — a server or any other process that must keep running belongs in `mode="detached"`, which immediately disowns the process; it returns only a PID and cannot be discovered or controlled through job tools.
 
 Launch-and-return (immediate background) shape:
 
 ```json
 {
-  "command": "npm run dev",
+  "command": "npm test",
   "mode": "background",
-  "description": "start dev server"
+  "description": "run the test suite"
 }
 ```
 
@@ -1092,7 +1092,7 @@ The v1 model-facing tool matrix is:
 | Caller context | Available job tools | Notes |
 | --- | --- | --- |
 | Root session | shell, `delegate`, `job_watch`, `delegate_send`, `job_status`, `job_list`, `job_stop` | Root may create delegates and watches, and message its direct delegate conversations by `delegate_id`. |
-| Delegate/subagent session | shell, `delegate_send`, `job_status`, `job_list`, `job_stop` | Delegates may start shell jobs. `delegate` and `job_watch` are allowance-gated, with the separate `watch_parent:true` grant exposing `job_watch(source="parent")` to observer leaves. Concrete `delegate_id` targets are scoped to the session's **own direct delegates** at every level — a coordinator may message its own worker delegate by `delegate_id`, but not an arbitrary descendant's delegate (which fails `not_controllable`). |
+| Delegate/subagent session | shell, `job_watch`, `delegate_send`, `job_status`, `job_list`, `job_stop` | Delegates may start shell jobs and watch their own jobs at any allowance. `delegate` is allowance-gated; `job_watch`'s cross-session sources authorize themselves, with the separate `watch_parent:true` grant exposing `job_watch(source="parent")` to observer leaves. Concrete `delegate_id` targets are scoped to the session's **own direct delegates** at every level — a coordinator may message its own worker delegate by `delegate_id`, but not an arbitrary descendant's delegate (which fails `not_controllable`). |
 | Root session, interactive only | `ask_user` | Not a job-control tool, but the same root/delegate split governs it: never available to a non-interactive root (`--non-interactive`, one-shot `evener <prompt>`) or to any delegate/subagent — root-only, hard-enforced; `grant_tools` rejects an explicit attempt to grant it. |
 
 Job output is not in this matrix because it is not a job tool: `read_transcript` is available to every session, including a leaf delegate, and an exact `job:<job_id>` ref reads any uniquely resolved job persisted under the local Evener state home. This does not widen `job_list`, `job_status`, `job_stop`, `job_watch`, or `delegate_send` scope.
@@ -1330,6 +1330,12 @@ Rules:
   by `delegate_id`; fresh activity re-arms it. The watchdog only reports—it
   never steers, resumes, or stops the delegate.
 - Notification delivery state is internal; there is no `job_ack`.
+- The `end_turn=true` warning naming still-running jobs depends on whether the
+  session outlives the turn. Where it does, the warning keeps promising each
+  job reports separately on completion. Where the process exits with the turn
+  (one-shot `evener run`, and any session it delegates to), it says instead
+  that a job which keeps running is killed at exit rather than reported on
+  later, because promising a later report there is simply false.
 
 Shell terminal delivery keeps its existing durable pending/delivered/consumed
 state and dedupe key. Stable delegate packet delivery is ordered in the

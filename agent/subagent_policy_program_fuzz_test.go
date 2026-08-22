@@ -122,8 +122,10 @@ func assertSubagentPolicyHelpers(t *testing.T, selector byte) {
 	if !isRootOnlyJobPresenceTool("delegate") || isRootOnlyJobPresenceTool("read_file") {
 		t.Fatal("root-only job presence classification changed")
 	}
-	if got := removeRootOnlySubagentTools([]string{"read_file", "delegate", "job_watch"}); len(got) != 1 || got[0] != "read_file" {
-		t.Fatalf("root-only removal = %v", got)
+	// job_watch is available to subagents; only delegation is root-only job
+	// control under the current policy.
+	if got := removeRootOnlySubagentTools([]string{"read_file", "delegate", "job_watch"}); len(got) != 2 || got[0] != "read_file" || got[1] != "job_watch" {
+		t.Fatalf("root-only removal = %v, want [read_file job_watch]", got)
 	}
 	if got := removeStrings([]string{"a", "b"}, nil); len(got) != 2 || got[0] != "a" || got[1] != "b" {
 		t.Fatalf("nil removal changed input: %v", got)

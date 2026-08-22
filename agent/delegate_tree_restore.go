@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"maps"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -67,6 +68,120 @@ type delegateAttentionTransferPlan struct {
 	sourceRef        string
 	targetDelegateID string
 	targetRef        string
+}
+
+type delegateOwedAttentionStart struct {
+	delegateID  string
+	parentID    string
+	attentionID string
+	generation  uint64
+	pendingIDs  []string
+}
+
+func (c *delegateTreeController) takeOwedAttentionAdmission() bool {
+	if c == nil {
+		return false
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if !c.owedAdmission {
+		return false
+	}
+	c.owedAdmission = false
+	return true
+}
+
+// owedAttentionStartsFromTranscripts finds accepted attention generations that
+// survived in a child transcript but not in the delegate journal. A zero
+// generation is historical resolution metadata and never creates work.
+func (c *delegateTreeController) owedAttentionStartsFromTranscripts() ([]delegateOwedAttentionStart, error) {
+	if c == nil {
+		return nil, errors.New("delegate controller is nil")
+	}
+	c.mu.Lock()
+	refs := make([]coldDelegateAttentionRef, 0, len(c.durable))
+	generations := make(map[string]uint64, len(c.durable))
+	parents := make(map[string]string, len(c.durable))
+	runStarts := make(map[delegateLease]delegatestore.RunTrigger, len(c.runStarts))
+	maps.Copy(runStarts, c.runStarts)
+	stateDir := c.stateDir
+	for id, aggregate := range c.durable {
+		if aggregate == nil || aggregate.Phase != delegatestore.PhaseIdle || !delegateAttentionProjectionEligible(c.durable, id) {
+			continue
+		}
+		refs = append(refs, coldDelegateAttentionRef{delegateID: id, transcriptRef: aggregate.Descriptor.TranscriptRef})
+		generations[id] = aggregate.Generation
+		parents[id] = aggregate.Descriptor.ParentDelegateID
+	}
+	c.mu.Unlock()
+	sort.Slice(refs, func(i, j int) bool { return refs[i].delegateID < refs[j].delegateID })
+
+	owed := make([]delegateOwedAttentionStart, 0)
+	for _, ref := range refs {
+		path, sessionID, err := delegateTranscriptPathFromRef(stateDir, ref.transcriptRef)
+		if err != nil {
+			return nil, err
+		}
+		fold, err := readExistingDelegateAttentionFold(path, sessionID)
+		if err != nil {
+			return nil, fmt.Errorf("delegate %s attention transcript: %w", ref.delegateID, err)
+		}
+		resumes := make([]struct {
+			attentionID string
+			generation  uint64
+		}, 0, len(fold.resumeGenerations))
+		for attentionID, generation := range fold.resumeGenerations {
+			if generation != 0 {
+				resumes = append(resumes, struct {
+					attentionID string
+					generation  uint64
+				}{attentionID: attentionID, generation: generation})
+			}
+		}
+		sort.Slice(resumes, func(i, j int) bool {
+			if resumes[i].generation != resumes[j].generation {
+				return resumes[i].generation < resumes[j].generation
+			}
+			return resumes[i].attentionID < resumes[j].attentionID
+		})
+		journalGeneration := generations[ref.delegateID]
+		for _, resume := range resumes {
+			lease := delegateLease{delegateID: ref.delegateID, generation: resume.generation}
+			if trigger, exists := runStarts[lease]; exists {
+				if trigger != delegatestore.TriggerAttention {
+					return nil, fmt.Errorf("delegate %s attention %q resume generation %d matches run trigger %q, want %q", ref.delegateID, resume.attentionID, resume.generation, trigger, delegatestore.TriggerAttention)
+				}
+				continue
+			}
+			if resume.generation <= journalGeneration {
+				return nil, fmt.Errorf("delegate %s attention %q resume generation %d has no exact RunStarted at journal generation %d", ref.delegateID, resume.attentionID, resume.generation, journalGeneration)
+			}
+			if resume.generation != journalGeneration+1 {
+				return nil, fmt.Errorf("delegate %s attention %q owes generation %d after journal generation %d", ref.delegateID, resume.attentionID, resume.generation, journalGeneration)
+			}
+			if len(owed) != 0 && owed[len(owed)-1].delegateID == ref.delegateID {
+				return nil, fmt.Errorf("delegate %s owes multiple attention generations", ref.delegateID)
+			}
+			owed = append(owed, delegateOwedAttentionStart{
+				delegateID:  ref.delegateID,
+				parentID:    parents[ref.delegateID],
+				attentionID: resume.attentionID,
+				generation:  resume.generation,
+				pendingIDs:  fold.pendingIDs(),
+			})
+		}
+	}
+	return owed, nil
+}
+
+func delegateRunStartIndex(events []delegatestore.Event) map[delegateLease]delegatestore.RunTrigger {
+	index := make(map[delegateLease]delegatestore.RunTrigger)
+	for _, event := range events {
+		if event.RunStarted != nil {
+			index[delegateLease{delegateID: event.DelegateID, generation: event.RunStarted.Generation}] = event.RunStarted.Trigger
+		}
+	}
+	return index
 }
 
 func (c *delegateTreeController) ReconcileRequirements() delegateReconcileRequirements {
@@ -285,15 +400,16 @@ func (c *delegateTreeController) closeMissingRestoreInputs(reasons map[string]st
 		if aggregate == nil || aggregate.Phase != delegatestore.PhaseIdle || !aggregate.Resumable || strings.TrimSpace(reason) == "" {
 			continue
 		}
-		if _, err := c.appendLocked(delegatestore.Event{
+		plan, err := c.appendResumabilityClosureLocked(id, delegatestore.Event{
 			Kind:               delegatestore.EventDelegateResumabilityClosed,
 			DelegateID:         id,
 			ResumabilityClosed: &delegatestore.ResumabilityClosed{Reason: reason},
-		}); err != nil {
+		})
+		if err != nil {
 			return delegateMutationPlans{}, err
 		}
 		c.evidenceVersion++
-		plans.updates = append(plans.updates, c.capturedPlanLocked(id))
+		plans.updates = append(plans.updates, plan)
 	}
 	return plans, nil
 }

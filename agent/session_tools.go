@@ -376,8 +376,27 @@ func (s *Session) canonicalizeToolNames(names []string) []string {
 	return canonicalizeToolNames(names, s.currentProfile().ToolNameMap())
 }
 
+// providerVisibleToolNames reads s.profile directly: its prompt-composition
+// caller chain (buildPromptData -> availableAgentEntries ->
+// defaultToolSummaryForAgent) already runs under a held s.mu, and s.mu is not
+// reentrant, so taking the lock here would deadlock prompt rendering.
 func (s *Session) providerVisibleToolNames(names []string) []string {
 	return providerVisibleToolNames(names, s.profile.ToolNameMap())
+}
+
+// providerVisibleToolName is providerVisibleToolNames for a single name, for
+// prose that must address one tool by the name this model actually has. An
+// unknown name passes through, so the caller never renders an empty tool name.
+//
+// It takes s.mu for the profile read (via currentProfile) rather than going
+// through the method above, because its callers are OFF the turn goroutine —
+// the job-tree drain — where a model switch could otherwise race the read.
+func (s *Session) providerVisibleToolName(name string) string {
+	visible := providerVisibleToolNames([]string{name}, s.currentProfile().ToolNameMap())
+	if len(visible) == 0 {
+		return name
+	}
+	return visible[0]
 }
 
 // canonicalToolName resolves a single tool name to its canonical form: a
@@ -907,19 +926,26 @@ func (s *Session) appendToolResultsWithDeliveryCommitsDurably(live, persisted ll
 	s.mu.Lock()
 	s.history = append(s.history, liveTurn)
 	s.mu.Unlock()
+	var completionErrs []error
+	requeue := false
 	for _, binding := range commits {
 		if binding.commit == nil {
 			continue
 		}
 		plans, err := binding.commit.Complete(true)
 		if err != nil {
-			return err
+			completionErrs = append(completionErrs, err)
+			requeue = true
+			continue
 		}
 		if err := s.executeDelegateMutationPlans(plans); err != nil {
-			return err
+			completionErrs = append(completionErrs, err)
 		}
 	}
-	return nil
+	if requeue {
+		s.requeueReplayableDelegateDeliveries(nil)
+	}
+	return errors.Join(completionErrs...)
 }
 
 // announceReadableToolResultImages names the round's tool calls whose result

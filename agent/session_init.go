@@ -477,6 +477,15 @@ type RestoreSessionConfig struct {
 	clock    clock.Clock
 	testOnly testConfig
 
+	// TurnEndsProcess carries through to the restored Session's SessionConfig,
+	// REPLACING the persisted value rather than merging with it. Whether the
+	// process outlives the turn belongs to whoever is restoring the session, not
+	// to the session on disk: the same session id resumed by one-shot `evener run`
+	// dies with its turn, and resumed by the daemon does not. The persisted field
+	// exists so a CHILD session inherits its parent's answer (children are built
+	// from the parent's own toSnapshot), which is a different question.
+	TurnEndsProcess bool
+
 	// ForceRealIO carries through to the restored Session's SessionConfig.
 	// See SessionConfig.ForceRealIO's own comment (session_config.go) - the
 	// same exported escape valve for a black-box/live test in another
@@ -559,6 +568,7 @@ func RestoreSessionFromMetaWithConfig(client *llm.Client, profile *provider.Prof
 		cfg.clock = restoreCfg.clock
 	}
 	cfg.testOnly = restoreCfg.testOnly
+	cfg.TurnEndsProcess = restoreCfg.TurnEndsProcess
 	cfg.ForceRealIO = restoreCfg.ForceRealIO
 	cfg.SessionStartKind = plugin.SessionStartKindResume
 	cfg.applyDefaults()
@@ -1182,9 +1192,6 @@ func (s *Session) initSessionState(sessionStartKind plugin.SessionStartKind, run
 	}
 	if s.delegationAllowance <= 0 {
 		for _, name := range rootOnlySubagentTools() {
-			if s.cfg.spawn.parentWatchGranted && name == "job_watch" {
-				continue
-			}
 			s.reg.Remove(name)
 		}
 	}

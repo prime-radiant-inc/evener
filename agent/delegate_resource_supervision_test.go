@@ -1224,6 +1224,73 @@ func TestDelegateResourceSupervision_QuietAttentionAppendFailureRetriesSameIdent
 	if got := pendingQuietAttention(t, root); len(got) != 1 || got[0] != delegateQuietAttentionID(lease) {
 		t.Fatalf("retried quiet attention identities = %#v", got)
 	}
+
+	controller, _ := newDelegateControllerTestHarness(t, 2, 1)
+	seedDelegateControllerRunning(t, controller, "dlg_owner", "")
+	seedDelegateControllerRunning(t, controller, "dlg_nested", "dlg_owner")
+	nestedClock := agenttest.NewFakeClockAt(time.Date(2026, 8, 14, 10, 0, 0, 0, time.UTC))
+	ownerSessionID := controller.durable["dlg_owner"].Descriptor.ChildSessionID
+	ownerWriter, err := transcript.NewWriter(transcriptPath(controller.stateDir, ownerSessionID), transcript.Header{SessionID: ownerSessionID})
+	if err != nil {
+		t.Fatalf("create nested quiet owner transcript: %v", err)
+	}
+	t.Cleanup(func() { _ = ownerWriter.Close() })
+	owner := &Session{
+		id:                    ownerSessionID,
+		stateDir:              controller.stateDir,
+		clock:                 nestedClock,
+		delegateController:    controller,
+		delegateRootSessionID: "root-session",
+		owningDelegateID:      "dlg_owner",
+		state:                 SessionIdle,
+	}
+	owner.attachTranscript(ownerWriter)
+	retryWake := make(chan struct{}, 1)
+	owner.SetNotifyFunc(func() { retryWake <- struct{}{} })
+	controller.mu.Lock()
+	controller.rootRuntime = &Session{id: "root-session", delegateController: controller}
+	controller.live["dlg_owner"].runtime = owner
+	controller.live["dlg_owner"].binding.runtime = owner
+	controller.live["dlg_nested"].runtime = &Session{delegateController: controller}
+	controller.live["dlg_nested"].binding.runtime = controller.live["dlg_nested"].runtime
+	controller.live["dlg_nested"].activityAt = nestedClock.Now()
+	controller.mu.Unlock()
+	readCalls := 0
+	injected := errors.New("injected nested quiet arm fold failure")
+	owner.cfg.testOnly.delegateAttentionReadFold = func(path, sessionID string) (delegateAttentionFold, error) {
+		readCalls++
+		if readCalls == 3 {
+			return delegateAttentionFold{}, injected
+		}
+		return readDelegateAttentionFold(path, sessionID)
+	}
+	nestedClock.Advance(delegateQuietWindow)
+	nestedLease := delegateLease{delegateID: "dlg_nested", generation: 1}
+	if err := owner.runDelegateQuietWatchdogTick(nestedLease, nestedClock.Now()); !errors.Is(err, injected) {
+		t.Fatalf("nested quiet arm error = %v, want %v", err, injected)
+	}
+	nestedAttentionID := delegateQuietAttentionID(nestedLease)
+	owner.attentionMu.Lock()
+	_, retrying := owner.delegateAttentionArmIDs[nestedAttentionID]
+	owner.attentionMu.Unlock()
+	controller.mu.Lock()
+	quietNotified := controller.live["dlg_nested"].quietNotified
+	controller.mu.Unlock()
+	if !retrying || !quietNotified {
+		t.Fatalf("failed nested quiet arm retention = retrying:%t quietNotified:%t", retrying, quietNotified)
+	}
+	owner.cfg.testOnly.delegateAttentionReadFold = nil
+	nestedClock.Advance(jobNotificationRetryInitialDelay)
+	<-retryWake
+	controller.mu.Lock()
+	ownerAttention := controller.durable["dlg_owner"].NeedsAttention
+	controller.mu.Unlock()
+	owner.attentionMu.Lock()
+	_, retrying = owner.delegateAttentionArmIDs[nestedAttentionID]
+	owner.attentionMu.Unlock()
+	if !ownerAttention || retrying {
+		t.Fatalf("nested quiet arm retry = attention:%t retrying:%t, want true/false", ownerAttention, retrying)
+	}
 }
 
 func TestDelegateResourceSupervision_QuietAttentionWaitsForOwnerTurnBoundary(t *testing.T) {

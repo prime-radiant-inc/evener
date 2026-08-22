@@ -276,3 +276,68 @@ func assertDrainNotCut(t *testing.T, sess *Session, clk *agenttest.FakeClock) {
 		t.Fatal("drain did not exit after context cancellation")
 	}
 }
+
+// TestDrainStallGiveUpRechecksTheWakeEdge pins the PRI-2441 B1 protocol on the
+// stall watchdog's give-up path. The stall verdict is assembled across eight
+// signals read in sequence, so it is not a snapshot; a wake raised while the
+// pass scanned means the tree moved mid-verdict (e.g. a delegate packet armed
+// root attention between the early and late reads). Returning on a torn verdict
+// lets Close() SIGKILL an armed completion. The give-up must re-run the pass
+// when the wake edge is set, exactly as the quiescence return already does.
+func TestDrainStallGiveUpRechecksTheWakeEdge(t *testing.T) {
+	clk := agenttest.NewFakeClock()
+	sess := newSession(t, withConfig(SessionConfig{clock: clk, NoProjectPrompts: true}))
+	seedOwnedDurablePending(t, sess.jobManager, "shell-wedge", jobstore.JobShell)
+
+	// TRIPWIRE: the driver single-steps a frozen fake clock with
+	// hand-synchronized channels; nothing here waits on real I/O or a real
+	// clock. 30s only bounds a genuine hang.
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	d := newStallDriver(ctx, sess)
+	d.releaseKick(t)
+	d.assertParked(t, "iteration 1 must park, not fire before the timeout")
+
+	clk.Advance(drainStallTimeout + time.Second)
+	d.recheck <- time.Time{}
+	// Release the pass whose stall check will read the expired clock, raising a
+	// wake AFTER the pass consumed its top-of-loop edge (the kick blocks after
+	// takeDrainWake) and BEFORE its stall check runs.
+	select {
+	case <-d.top:
+	case <-d.done:
+		t.Fatal("drain returned before reaching the give-up pass")
+	}
+	sess.notify()
+	d.release <- struct{}{}
+
+	// The pass saw a mid-scan wake: it must re-run, not return.
+	select {
+	case <-d.top:
+	case <-d.done:
+		t.Fatal("stall give-up returned on a torn verdict: a wake was raised mid-pass and the drain did not re-check it")
+	// TRIPWIRE: waits for the drain to arrive at the NEXT iteration's kick,
+	// which the fake-clock driver reaches immediately after the continue. 30s
+	// only fires on a genuine hang.
+	case <-time.After(30 * time.Second):
+		t.Fatal("drain neither returned nor re-ran the pass")
+	}
+	d.release <- struct{}{}
+
+	// The confirming pass finds the edge clear and the stall persisting: NOW it
+	// gives up, with the one warning.
+	select {
+	case <-d.done:
+	// TRIPWIRE: awaits the drain goroutine's completion signal. 30s only
+	// fires on a genuine hang.
+	case <-time.After(30 * time.Second):
+		t.Fatal("drain did not return on the confirming pass")
+	}
+	if d.err != nil {
+		t.Fatalf("give-up must return nil error, got %v", d.err)
+	}
+	warnings := collectStallWarnings(sess)
+	if len(warnings) != 1 || !strings.Contains(warnings[0].Data.(events.WarningData).Message, "shell-wedge") {
+		t.Fatalf("want one stall warning naming shell-wedge, got %+v", warnings)
+	}
+}

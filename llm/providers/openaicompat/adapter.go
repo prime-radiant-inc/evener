@@ -231,6 +231,7 @@ func (a *Adapter) Complete(ctx context.Context, req llm.Request) (llm.Response, 
 }
 
 func (a *Adapter) completeViaChatCompletions(ctx context.Context, req llm.Request) (result llm.Response, resultErr error) {
+	req = requestWithoutToolResultImages(req)
 	if a.Client == nil {
 		a.Client = &http.Client{Timeout: 0}
 	}
@@ -294,6 +295,7 @@ func (a *Adapter) Stream(ctx context.Context, req llm.Request) (llm.Stream, erro
 }
 
 func (a *Adapter) streamViaChatCompletions(ctx context.Context, req llm.Request) (llm.Stream, error) {
+	req = requestWithoutToolResultImages(req)
 	if a.Client == nil {
 		a.Client = &http.Client{Timeout: 0}
 	}

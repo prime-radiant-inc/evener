@@ -72,7 +72,6 @@ type delegateTreeController struct {
 	deliveryClaims      map[string]*delegateDeliveryClaim
 	quietClaims         map[uint64]*delegateQuietAttentionClaim
 	attentionWakeIDs    map[string]map[string]struct{}
-	coldAttentionArmIDs map[string]map[string]struct{}
 	watchEnqueues       map[uint64]*delegateWatchReceipt
 	watchDeliveries     map[uint64]*delegateWatchReceipt
 	reclamations        map[uint64]*delegateRuntimeReclamationClaim
@@ -82,6 +81,8 @@ type delegateTreeController struct {
 	evidenceVersion     uint64
 	closing             bool
 	reconcileOrder      []delegateLease
+	runStarts           map[delegateLease]delegatestore.RunTrigger
+	owedAdmission       bool
 	emitUpdate          func(delegateUpdatePlan)
 	attentionOpen       delegateAttentionWriterOpener
 }
@@ -148,6 +149,7 @@ type delegateSnapshot struct {
 	currentRunOpen     bool
 	runStartedAt       time.Time
 	resumable          bool
+	needsAttention     bool
 	revision           uint64
 	transcriptRef      string
 	notResumableReason string
@@ -240,12 +242,13 @@ func openDelegateTreeController(cfg delegateTreeControllerConfig) (*delegateTree
 		deliveryClaims:      make(map[string]*delegateDeliveryClaim),
 		quietClaims:         make(map[uint64]*delegateQuietAttentionClaim),
 		attentionWakeIDs:    make(map[string]map[string]struct{}),
-		coldAttentionArmIDs: make(map[string]map[string]struct{}),
 		watchEnqueues:       make(map[uint64]*delegateWatchReceipt),
 		watchDeliveries:     make(map[uint64]*delegateWatchReceipt),
 		reclamations:        make(map[uint64]*delegateRuntimeReclamationClaim),
 		reclaiming:          make(map[string]uint64),
 		reconcileOrder:      delegateOpenRunOrder(events, durable),
+		runStarts:           delegateRunStartIndex(events),
+		owedAdmission:       true,
 	}
 	if err := c.restorePendingStop(events); err != nil {
 		return nil, err
@@ -258,11 +261,21 @@ func rootDelegateActor(rootSessionID string) delegateActor {
 }
 
 func (c *delegateTreeController) appendLocked(events ...delegatestore.Event) ([]delegatestore.Event, error) {
+	for _, event := range events {
+		if event.ResumabilityClosed != nil && c.attentionStartBlockerLocked(event.DelegateID, true) != nil {
+			return nil, errDelegateTargetBusy
+		}
+	}
 	appended, next, err := c.store.AppendBatch(c.durable, events)
 	if err != nil {
 		return nil, err
 	}
 	c.durable = next
+	for _, event := range appended {
+		if event.RunStarted != nil {
+			c.runStarts[delegateLease{delegateID: event.DelegateID, generation: event.RunStarted.Generation}] = event.RunStarted.Trigger
+		}
+	}
 	return appended, nil
 }
 
@@ -403,10 +416,20 @@ func (c *delegateTreeController) closeStableWorktreeResumability(owner *Session,
 		return stableDelegateWorktreeSnapshot{}, false, delegateMutationPlans{}, errDelegateNotControllable
 	}
 	c.mu.Lock()
-	defer c.mu.Unlock()
-	if c.closing && !allowControllerClose {
-		return stableDelegateWorktreeSnapshot{}, false, delegateMutationPlans{}, errDelegateTargetBusy
+	for {
+		if c.closing && !allowControllerClose {
+			c.mu.Unlock()
+			return stableDelegateWorktreeSnapshot{}, false, delegateMutationPlans{}, errDelegateTargetBusy
+		}
+		if blocker := c.attentionStartBlockerLocked(delegateID, true); blocker != nil {
+			c.mu.Unlock()
+			<-blocker
+			c.mu.Lock()
+			continue
+		}
+		break
 	}
+	defer c.mu.Unlock()
 	aggregate := c.durable[delegateID]
 	if aggregate == nil || !c.stableDelegateOwnedBySessionLocked(owner, aggregate) {
 		return stableDelegateWorktreeSnapshot{}, false, delegateMutationPlans{}, errDelegateNotControllable
@@ -424,17 +447,18 @@ func (c *delegateTreeController) closeStableWorktreeResumability(owner *Session,
 	if !aggregate.Resumable {
 		return c.stableWorktreeSnapshotLocked(delegateID, aggregate), true, delegateMutationPlans{}, nil
 	}
-	if _, err := c.appendLocked(delegatestore.Event{
+	plan, err := c.appendResumabilityClosureLocked(delegateID, delegatestore.Event{
 		Kind:       delegatestore.EventDelegateResumabilityClosed,
 		DelegateID: delegateID,
 		ResumabilityClosed: &delegatestore.ResumabilityClosed{
 			Reason: reason,
 		},
-	}); err != nil {
+	})
+	if err != nil {
 		return stableDelegateWorktreeSnapshot{}, false, delegateMutationPlans{}, err
 	}
 	row := c.stableWorktreeSnapshotLocked(delegateID, c.durable[delegateID])
-	return row, false, delegateMutationPlans{updates: []delegateUpdatePlan{c.capturedPlanLocked(delegateID)}}, nil
+	return row, false, delegateMutationPlans{updates: []delegateUpdatePlan{plan}}, nil
 }
 
 func (c *delegateTreeController) exactLeaseLocked(lease delegateLease) (*delegatestore.Aggregate, *delegateLiveState, error) {
@@ -538,6 +562,29 @@ func (c *delegateTreeController) capturedPlanLocked(id string) delegateUpdatePla
 	return delegateUpdatePlan{rows: []delegateSnapshot{c.captureDelegateSnapshotLocked(id)}}
 }
 
+func (c *delegateTreeController) appendResumabilityClosureLocked(delegateID string, events ...delegatestore.Event) (delegateUpdatePlan, error) {
+	members := c.subtreeMembersLocked(delegateID)
+	revisions := make(map[string]uint64, len(members))
+	for id := range members {
+		revisions[id] = c.durable[id].ProjectionRevision
+	}
+	if _, err := c.appendLocked(events...); err != nil {
+		return delegateUpdatePlan{}, err
+	}
+	ids := make([]string, 0, len(members))
+	for id, revision := range revisions {
+		if c.durable[id].ProjectionRevision != revision {
+			ids = append(ids, id)
+		}
+	}
+	sort.Strings(ids)
+	rows := make([]delegateSnapshot, 0, len(ids))
+	for _, id := range ids {
+		rows = append(rows, c.captureDelegateSnapshotLocked(id))
+	}
+	return delegateUpdatePlan{rows: rows}, nil
+}
+
 func (c *delegateTreeController) captureDelegateSnapshotLocked(id string) delegateSnapshot {
 	snapshot := captureDelegateSnapshot(c.durable[id])
 	if live := c.live[id]; live != nil && live.activityAt.After(snapshot.latestActivityAt) {
@@ -570,6 +617,7 @@ func captureDelegateSnapshot(aggregate *delegatestore.Aggregate) delegateSnapsho
 		currentRunOpen:     aggregate.CurrentRunOpen,
 		runStartedAt:       aggregate.RunStartedAt,
 		resumable:          aggregate.Resumable,
+		needsAttention:     aggregate.NeedsAttention,
 		revision:           aggregate.ProjectionRevision,
 		transcriptRef:      aggregate.Descriptor.TranscriptRef,
 		notResumableReason: aggregate.NotResumableReason,

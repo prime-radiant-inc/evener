@@ -5,12 +5,13 @@ import { afterAll, afterEach, beforeEach, expect, test, vi } from "vitest";
 import { resetDisclosureStoreForTests } from "../../../../widgets/disclosure/disclosureStore";
 import { ToolCallItem } from "../ToolCallItem";
 import { toolRendererFor } from "../toolRenderers";
-import { classifyJobStatus, resolveRowKey, rowFromDelegateItem, rowKindFromChildStatus } from "./subagentModule";
-import { resetSubagentModuleStoreForTests, turnScopeKey, updateSubagentRowIfExists } from "./subagentModuleStore";
+import { classifyJobStatus, resolveRowKey, rowFromDelegateItem } from "./subagentModule";
+import { resetSubagentModuleStoreForTests } from "./subagentModuleStore";
 import "./subagentModule";
 import type { DockviewApi } from "dockview-core";
-import { type ItemModel, SYSTEM_PRELUDE_TURN_ID, type TurnModel } from "../../../../protocol/model";
+import { type ItemModel, SYSTEM_PRELUDE_TURN_ID, type ThreadModel, type TurnModel } from "../../../../protocol/model";
 import { FakeClient } from "../../../../protocol/testing/fakeClient";
+import type { EvenerDelegateInfo } from "../../../../protocol/types.gen";
 import { registerPaneForTests } from "../../../../shell/paneRegistry";
 import { registerDockviewApi, resetWorkspaceStoreForTests, workspaceStore } from "../../../../shell/workspace";
 import { connectionStore } from "../../../../stores/connection";
@@ -124,34 +125,6 @@ test("rowFromDelegateItem uses stable delegate_id and rejects activation-only jo
   ).toBeNull();
 });
 
-// --- rowKindFromChildStatus (pure, unit-level) -----------------------------
-
-test("rowKindFromChildStatus: a live child (working/needs-you/idle) reads as running", () => {
-  expect(rowKindFromChildStatus("active")).toBe("running");
-  expect(rowKindFromChildStatus("awaiting")).toBe("running");
-  expect(rowKindFromChildStatus("warning")).toBe("running");
-  expect(rowKindFromChildStatus("idle")).toBe("running");
-});
-
-test("rowKindFromChildStatus: systemError reads as failed, closed reads as done", () => {
-  expect(rowKindFromChildStatus("systemError")).toBe("failed");
-  expect(rowKindFromChildStatus("closed")).toBe("done");
-});
-
-// g5kf: notLoaded means the child left the daemon's live roster entirely -
-// evicted, orphaned, or lost to a hub restart (cmd/evener-hub/app_threadread.go's
-// pastEntryThread stamps it) - not "still going". cadenceStateForStatus folds
-// it into the same "idle" family a genuinely-idle-but-still-live child gets
-// (deliberately, for the Cadence dot's own "nothing to animate" purposes - see
-// liveness.ts's own doc comment and its test), so rowKindFromChildStatus can't
-// tell the two apart once it only looks at that folded state. It must check
-// the literal wire status before folding, the same way Composer.tsx/
-// StatusRow.tsx each keep their own separate notLoaded check alongside
-// cadenceStateForStatus rather than trusting its output alone.
-test("g5kf: rowKindFromChildStatus reads notLoaded as unknown, never running forever", () => {
-  expect(rowKindFromChildStatus("notLoaded")).toBe("unknown");
-});
-
 // --- delegate descriptor: summary ----------------------------------------
 
 test("delegate: summary is the human description", () => {
@@ -202,83 +175,6 @@ test("two delegate ToolCallItems each retain their own card and open action", ()
   expect(within(toolRows[1]!).getAllByTestId("subagent-row")).toHaveLength(1);
   expect(within(toolRows[0]!).getByRole("button", { name: "Open transcript" })).toBeTruthy();
   expect(within(toolRows[1]!).getByRole("button", { name: "Open transcript" })).toBeTruthy();
-});
-
-test("a collapsed live delegate updates its top-level status when the child settles", async () => {
-  const fake = new FakeClient("ready");
-  fake.on("thread/read", (params) => childThreadRead(params, "active"));
-  connectionStore.getState().connect(fake);
-
-  const turn: TurnModel = { id: "turn_collapsed_live", status: "completed", items: [] };
-  const started = delegateItem({
-    id: "d_collapsed_live",
-    turnId: turn.id,
-    callId: "call_collapsed_live",
-    description: "Collapsed live delegate",
-    argumentsJSON: JSON.stringify({ task: "wait for child" }),
-    output: JSON.stringify({
-      delegate_id: "job_collapsed_live",
-      status: "running",
-      transcript_ref: "ref_collapsed_live",
-    }),
-  });
-  render(<ToolCallItem item={started} turn={turn} live={false} />);
-
-  const details = screen.getByTestId("tool-call-item") as HTMLDetailsElement;
-  expect(details.open).toBe(true);
-  expect(screen.getByRole("img", { name: "Working" })).toBeTruthy();
-
-  const user = userEvent.setup();
-  await user.click(screen.getByTestId("tool-row"));
-  expect(details.open).toBe(false);
-
-  await act(async () => {
-    fake.emitNotification({
-      method: "thread/status/changed",
-      params: { threadId: "thr_child", ref: "ref_collapsed_live", status: { type: "closed" } },
-    } as never);
-  });
-
-  expect(screen.getByRole("img", { name: "Ended" })).toBeTruthy();
-});
-
-test("a genuinely live collapsed delegate has a status row before its child settles", async () => {
-  const fake = new FakeClient("ready");
-  fake.on("thread/read", (params) => childThreadRead(params, "active"));
-  connectionStore.getState().connect(fake);
-
-  const turn: TurnModel = { id: "turn_live_collapsed_initial", status: "inProgress", items: [] };
-  const liveItem = delegateItem({
-    id: "d_live_collapsed_initial",
-    turnId: turn.id,
-    callId: "call_live_collapsed_initial",
-    description: "Genuinely live delegate",
-    argumentsJSON: JSON.stringify({ task: "keep working" }),
-    output: JSON.stringify({
-      delegate_id: "job_live_collapsed_initial",
-      status: "running",
-      transcript_ref: "ref_live_collapsed_initial",
-    }),
-  });
-  render(<ToolCallItem item={liveItem} turn={turn} live={true} />);
-
-  const details = screen.getByTestId("tool-call-item") as HTMLDetailsElement;
-  expect(details.open).toBe(false);
-  expect(screen.getByRole("img", { name: "Working" })).toBeTruthy();
-  await waitFor(() => expect(fake.calls.filter((call) => call.method === "thread/read")).toHaveLength(1));
-
-  await act(async () => {
-    fake.emitNotification({
-      method: "thread/status/changed",
-      params: {
-        threadId: "thr_child",
-        ref: "ref_live_collapsed_initial",
-        status: { type: "closed" },
-      },
-    } as never);
-  });
-
-  expect(screen.getByRole("img", { name: "Ended" })).toBeTruthy();
 });
 
 // --- row content ----------------------------------------------------------
@@ -757,79 +653,6 @@ test("the Activity feed elides round_timings items and ordinals count only real 
   expect(items.map((li) => li.value)).toEqual([2, 3, 4, 5, 6]);
 });
 
-// g5kf: the honest-clock bug. A foreground_timeout freezes the delegate's own
-// tool output at status:"running" forever (agent/job_delegate.go's mainline
-// path for any non-trivial delegate, not an edge case), so the watched
-// child's live thread status is the ONLY remaining signal - and once that
-// child leaves the daemon's live roster entirely, it must demote off
-// "running" rather than reading as though it were still genuinely working.
-test("g5kf: a child that leaves the live roster (notLoaded) demotes off running to unknown, not stuck running forever", async () => {
-  const fake = new FakeClient("ready");
-  fake.on("thread/read", (params) => childThreadRead(params, "notLoaded"));
-  connectionStore.getState().connect(fake);
-
-  const turn: TurnModel = { id: "turn_notloaded", status: "completed", items: [] };
-  const running = delegateItem({
-    id: "d_notloaded",
-    turnId: turn.id,
-    callId: "call_notloaded",
-    argumentsJSON: JSON.stringify({ task: "orphaned by a hub restart" }),
-    output: JSON.stringify({ delegate_id: "job_nl", status: "running", transcript_ref: "ref_notloaded_child" }),
-  });
-  render(<ToolCallItem item={running} turn={turn} live={false} />);
-
-  const row = screen.getByTestId("subagent-row");
-  await waitFor(() => expect(row.dataset.kind).toBe("unknown"));
-  expect(within(row).queryByText("unknown")).toBeNull();
-  expect(within(row).queryByText("running")).toBeNull();
-});
-
-// --- dr7e: evener/job/finished's own reason/resumable/exhaustion detail -----
-
-test("the collapsed preview prefers a live overlay reason over the frozen tool-output reason", () => {
-  const turn: TurnModel = { id: "turn_1", status: "completed", items: [] };
-  const running = delegateItem({
-    id: "d_livereason",
-    callId: "call_livereason",
-    argumentsJSON: JSON.stringify({ task: "still working" }),
-    output: JSON.stringify({ delegate_id: "job_lr", status: "running", reason: "frozen reason" }),
-  });
-  render(<ToolCallItem item={running} turn={turn} live={false} />);
-  act(() =>
-    updateSubagentRowIfExists(turnScopeKey(undefined, "turn_1"), "dlg:job_lr", { liveReason: "exhausted budget" }),
-  );
-
-  const row = screen.getByTestId("subagent-row");
-  expect(within(row).getByText("exhausted budget")).toBeTruthy();
-  expect(within(row).queryByText("frozen reason")).toBeNull();
-});
-
-test("an expanded card shows stable exhaustion budget, limit, and resumable evidence", async () => {
-  const turn: TurnModel = { id: "turn_1", status: "completed", items: [] };
-  const settled = delegateItem({
-    id: "d_exhaust",
-    callId: "call_exhaust",
-    argumentsJSON: JSON.stringify({ task: "long running task" }),
-    output: JSON.stringify({ delegate_id: "job_ex", status: "exhausted" }),
-  });
-  const user = userEvent.setup();
-  render(<ToolCallItem item={settled} turn={turn} live={false} />);
-  act(() =>
-    updateSubagentRowIfExists(turnScopeKey(undefined, "turn_1"), "dlg:job_ex", {
-      resumable: true,
-      exhaustionBudget: "30m",
-      exhaustionLimit: 60,
-    }),
-  );
-
-  // The Job detail lives in the expanded region, behind the card's chevron.
-  const row = screen.getByTestId("subagent-row");
-  await user.click(within(row).getByRole("button", { name: /show recent activity/i }));
-  const detail = await screen.findByTestId("subagent-job-detail");
-  expect(within(detail).getByText("Exhaustion budget: 30m of 60")).toBeTruthy();
-  expect(within(detail).getByText("Resumable")).toBeTruthy();
-});
-
 test("dr7e: no Job detail section renders when neither resumable nor exhaustion fields are set", async () => {
   const d = toolRendererFor("delegate");
   const Body = d.body!;
@@ -955,23 +778,93 @@ test("a running card's stats line closes with a live elapsed clock from its star
   expect(stats.textContent).toContain("3m41s");
 });
 
-test("a child awaiting input earns the attention rail while staying kind=running", async () => {
+test("stable delegate attention and lifecycle own the card while child content status changes", async () => {
   const fake = new FakeClient("ready");
-  fake.on("thread/read", (params) => childThreadRead(params, "awaiting"));
+  fake.on("thread/read", (params) => childThreadRead(params, "active"));
   connectionStore.getState().connect(fake);
 
-  const Body = toolRendererFor("delegate").body!;
+  const stable = {
+    delegateId: "dlg_attention",
+    status: "running",
+    outcome: "running",
+    terminal: false,
+    resumable: true,
+    needsAttention: true,
+    projectionRevision: 1,
+  } as EvenerDelegateInfo;
+  threadsStore.setState((state) => ({
+    threads: new Map(state.threads).set("ref_attention_parent", { delegates: [stable] } as ThreadModel),
+  }));
+
+  const turn: TurnModel = { id: "turn_attention", status: "completed", items: [] };
   const running = delegateItem({
     id: "d_await",
+    turnId: turn.id,
     callId: "call_await",
     argumentsJSON: JSON.stringify({ task: "needs an answer" }),
-    output: JSON.stringify({ delegate_id: "job_await", status: "running", transcript_ref: "ref_await_child" }),
+    output: JSON.stringify({
+      delegate_id: stable.delegateId,
+      status: "running",
+      transcript_ref: "ref_await_child",
+    }),
   });
-  render(<Body item={running} live={false} />);
+  render(<ToolCallItem item={running} turn={turn} live={false} sessionRef="ref_attention_parent" />);
 
   const row = screen.getByTestId("subagent-row");
   await waitFor(() => expect(row.dataset.attention).toBe("true"));
   expect(row.dataset.kind).toBe("running");
+  expect(within(row).getByText("Status: needs attention")).toBeTruthy();
+  expect(within(row).getByTestId("subagent-status-glyph").textContent).toBe("◆");
+
+  for (const status of ["idle", "awaiting"]) {
+    await act(async () => {
+      fake.emitNotification({
+        method: "thread/status/changed",
+        params: { threadId: "thr_child", ref: "ref_await_child", status: { type: status } },
+      } as never);
+    });
+    expect(row.dataset.attention).toBe("true");
+    expect(row.dataset.kind).toBe("running");
+    expect(within(row).getByText("Status: needs attention")).toBeTruthy();
+    expect(within(row).getByTestId("subagent-status-glyph").textContent).toBe("◆");
+  }
+
+  act(() => {
+    threadsStore.setState((state) => ({
+      threads: new Map(state.threads).set("ref_attention_parent", {
+        delegates: [{ ...stable, needsAttention: false, projectionRevision: 2 }],
+      } as ThreadModel),
+    }));
+  });
+  expect(row.dataset.attention).toBeUndefined();
+  expect(row.dataset.kind).toBe("running");
+  expect(within(row).getByText("Status: running")).toBeTruthy();
+  expect(within(row).getByTestId("subagent-status-glyph").textContent).toBe("●");
+
+  await act(async () => {
+    fake.emitNotification({
+      method: "thread/status/changed",
+      params: { threadId: "thr_child", ref: "ref_await_child", status: { type: "active" } },
+    } as never);
+    threadsStore.setState((state) => ({
+      threads: new Map(state.threads).set("ref_attention_parent", {
+        delegates: [
+          {
+            ...stable,
+            status: "idle",
+            outcome: "completed",
+            terminal: true,
+            needsAttention: false,
+            projectionRevision: 3,
+          },
+        ],
+      } as ThreadModel),
+    }));
+  });
+  expect(row.dataset.attention).toBeUndefined();
+  expect(row.dataset.kind).toBe("done");
+  expect(within(row).getByText("Status: done")).toBeTruthy();
+  expect(within(row).getByTestId("subagent-status-glyph").textContent).toBe("✓");
 });
 
 // The card's head (tag + open) duplicated the delegate tool row it sits under.
@@ -1118,6 +1011,7 @@ test("a historical session read hydrates a card's kind, tokens, and clock from t
                   outcome: "completed",
                   terminal: true,
                   resumable: true,
+                  needsAttention: false,
                   projectionRevision: 3,
                   // No originTurnId - deliberately. Real stored projections
                   // can lack it (the delegate descriptor records
@@ -1168,44 +1062,6 @@ test("a historical session read hydrates a card's kind, tokens, and clock from t
 
 // --- live-data lessons (2026-08-20): real delegates exposed three fixture-blind
 // spots ---------------------------------------------------------------------
-
-// A foreground_timeout delegate's ITEM timestamps bracket the spawn
-// round-trip (seconds), not the child's run (minutes). The stable
-// projection's runStartedAt/runEndedAt is the child's real window and must
-// win whenever it exists.
-// With no stable projection in play (a historical session read, where no
-// delegate notifications arrive), the next-best honest window is the child
-// transcript's own turn span - the card already holds the full-turns watch.
-// Only the item's own spawn-call stamps remain otherwise, and those bracket
-// seconds of RPC, not the child's work.
-test("the clock falls back to the child transcript's turn span when no stable run window exists", async () => {
-  const fake = new FakeClient("ready");
-  const t0 = new Date(2026, 7, 19, 15, 0, 0);
-  fake.on("thread/read", (params) => {
-    const base = childThreadRead(params, "closed");
-    if ((params as { includeTurns: boolean }).includeTurns) {
-      const turn = base.thread.turns[0] as { startedAt?: string; completedAt?: string };
-      turn.startedAt = t0.toISOString();
-      turn.completedAt = new Date(t0.getTime() + 22 * 60_000).toISOString();
-    }
-    return base;
-  });
-  connectionStore.getState().connect(fake);
-
-  const Body = toolRendererFor("delegate").body!;
-  const done = delegateItem({
-    id: "d_childspan",
-    callId: "call_childspan",
-    argumentsJSON: JSON.stringify({ task: "historical child" }),
-    output: JSON.stringify({ delegate_id: "job_span", status: "completed", transcript_ref: "ref_span_child" }),
-    startedAt: new Date(t0).toISOString(),
-    completedAt: new Date(t0.getTime() + 4_000).toISOString(), // spawn round-trip
-  });
-  render(<Body item={done} live={false} />);
-
-  const stats = await within(screen.getByTestId("subagent-row")).findByTestId("subagent-stats");
-  await waitFor(() => expect(stats.textContent).toContain("22m00s"));
-});
 
 // A final report is markdown: "## Summary\n\nFixed 9 files…". Flattened raw,
 // the heading markers are noise in a one-line quote. The quote lands on the

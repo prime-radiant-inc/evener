@@ -1,15 +1,11 @@
 import { cleanup, render, screen, within } from "@testing-library/react";
 import { afterEach, expect, test } from "vitest";
-import { ToolCallItem } from "../ToolCallItem";
 import { toolRendererFor } from "../toolRenderers";
 import "./jobTools";
-import "./subagentModule"; // registers `delegate` too - needed for the row-correlation tests below
-import type { ItemModel, TurnModel } from "../../../../protocol/model";
-import { resetSubagentModuleStoreForTests } from "./subagentModuleStore";
+import type { ItemModel } from "../../../../protocol/model";
 
 afterEach(() => {
   cleanup();
-  resetSubagentModuleStoreForTests();
 });
 
 function item(overrides: Partial<ItemModel> = {}): ItemModel {
@@ -423,141 +419,4 @@ test("the generic job_* descriptor degrades to the bare tool name with no operat
 
 test("the generic job_* descriptor never wins over an exact match", () => {
   expect(toolRendererFor("job_stop")).not.toBe(toolRendererFor("job_watch"));
-});
-
-// --- follow-up calls patch existing delegate rows only --------------------
-
-function spawnRow(turnId: string, delegateId: string, transcriptRef: string) {
-  const turn: TurnModel = { id: turnId, status: "completed", items: [] };
-  render(
-    <ToolCallItem
-      item={item({
-        id: `spawn_${delegateId}`,
-        turnId,
-        callId: `call_spawn_${delegateId}`,
-        toolName: "delegate",
-        argumentsJSON: JSON.stringify({ task: "spawn" }),
-        output: JSON.stringify({ delegate_id: delegateId, status: "running", transcript_ref: transcriptRef }),
-      })}
-      turn={turn}
-      live={false}
-    />,
-  );
-}
-
-test("stored job_status activation shape never updates a stable delegate row", () => {
-  spawnRow("turn_wire_status", "job_wired", "ref_wired");
-  expect(screen.getByTestId("subagent-row").dataset.kind).toBe("running");
-
-  const d = toolRendererFor("job_status");
-  const Body = d.body!;
-  const output = JSON.stringify({ job_id: "job_wired", status: "failed", reason: "crashed" });
-  render(
-    <Body
-      item={item({
-        id: "check_1",
-        turnId: "turn_wire_status",
-        callId: "call_check_1",
-        toolName: "job_status",
-        argumentsJSON: JSON.stringify({ job_id: "job_wired" }),
-        output,
-      })}
-      live={false}
-    />,
-  );
-
-  expect(screen.getByTestId("subagent-row").dataset.kind).toBe("running");
-});
-
-test("job_status current delegate result updates the dlg-keyed stable row from last_outcome", () => {
-  spawnRow("turn_wire_stable_status", "dlg_wired", "ref_wired");
-
-  const d = toolRendererFor("job_status");
-  const Body = d.body!;
-  const output = JSON.stringify({
-    id: "dlg_wired",
-    type: "delegate",
-    status: "idle",
-    last_outcome: { status: "failed", reason: "crashed" },
-  });
-  render(
-    <Body
-      item={item({
-        id: "check_stable",
-        turnId: "turn_wire_stable_status",
-        callId: "call_check_stable",
-        toolName: "job_status",
-        argumentsJSON: JSON.stringify({ target: "dlg_wired" }),
-        output,
-      })}
-      live={false}
-    />,
-  );
-
-  expect(screen.getByTestId("subagent-row").dataset.kind).toBe("failed");
-});
-
-test("stored job_stop activation shape never updates a stable delegate row", () => {
-  spawnRow("turn_wire_stop", "job_stopme", "ref_stopme");
-
-  const d = toolRendererFor("job_stop");
-  const Body = d.body!;
-  render(
-    <Body
-      item={item({
-        id: "stop_1",
-        turnId: "turn_wire_stop",
-        callId: "call_stop_1",
-        toolName: "job_stop",
-        argumentsJSON: JSON.stringify({ job_id: "job_stopme" }),
-        output: "[job job_stopme · cancelled · cancelled_by_request]",
-      })}
-      live={false}
-    />,
-  );
-
-  expect(screen.getByTestId("subagent-row").dataset.kind).toBe("running");
-});
-
-test("delegate_send checking on a delegate (by delegate_id) updates its existing row", () => {
-  spawnRow("turn_wire_send", "dlg_wired", "ref_x");
-
-  const d = toolRendererFor("delegate_send");
-  const Body = d.body!;
-  render(
-    <Body
-      item={item({
-        id: "send_1",
-        turnId: "turn_wire_send",
-        callId: "call_send_1",
-        toolName: "delegate_send",
-        argumentsJSON: JSON.stringify({ to: "dlg_wired", message: "status?" }),
-        output: "on it\n[delegate_id dlg_wired · delivered · completed]",
-      })}
-      live={false}
-    />,
-  );
-
-  expect(screen.getByTestId("subagent-row").dataset.kind).toBe("done");
-  expect(within(screen.getByTestId("delegate-send-message")).getByTestId("user-bubble").textContent).toBe("status?");
-  expect(within(screen.getByTestId("delegate-send-response")).getByTestId("user-bubble").textContent).toBe("on it");
-});
-
-test("a stored follow-up call for a job_id that was never spawned this turn creates no row", () => {
-  const d = toolRendererFor("job_status");
-  const Body = d.body!;
-  render(
-    <Body
-      item={item({
-        id: "orphan_1",
-        turnId: "turn_wire_orphan",
-        callId: "call_orphan_1",
-        toolName: "job_status",
-        argumentsJSON: JSON.stringify({ job_id: "job_never_spawned" }),
-        output: JSON.stringify({ job_id: "job_never_spawned", status: "completed" }),
-      })}
-      live={false}
-    />,
-  );
-  expect(screen.queryByTestId("subagent-row")).toBeNull();
 });

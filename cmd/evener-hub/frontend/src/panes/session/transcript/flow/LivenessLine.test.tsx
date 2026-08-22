@@ -85,33 +85,6 @@ test("a done/failed row alone does not explain a wait - falls back to the ordina
   expect(screen.getByTestId("liveness-line").textContent!.toLowerCase()).toContain("stalled");
 });
 
-test("prefers the live liveKind overlay over the frozen kind when counting running children (matches SubagentRowView's own displayKind)", () => {
-  // The frozen tool-output kind says "done" but a faster live watch/
-  // notification (dr7e) has already overlaid liveKind "running" - the row is
-  // genuinely still running and must count.
-  upsertSubagentRow(turnScopeKey("s1", "turn_0"), {
-    rowKey: "dlg:1",
-    kind: "done",
-    liveKind: "running",
-    resultPreview: "",
-  });
-  // Below the stall threshold, so this asserts the overlay preference alone
-  // rather than entangling it with the past-threshold wording above.
-  render(<LivenessLine lastFrameAt={0} now={60_000} active={true} sessionRef="s1" turnId="turn_0" />);
-  expect(screen.getByTestId("liveness-line").textContent).toBe("Waiting on 1 subagent");
-});
-
-test("the inverse overlay also applies: a liveKind of 'done' over a frozen 'running' kind does not count as running", () => {
-  upsertSubagentRow(turnScopeKey("s1", "turn_0"), {
-    rowKey: "dlg:1",
-    kind: "running",
-    liveKind: "done",
-    resultPreview: "ok",
-  });
-  render(<LivenessLine lastFrameAt={0} now={185_000} active={true} sessionRef="s1" turnId="turn_0" />);
-  expect(screen.getByTestId("liveness-line").textContent!.toLowerCase()).toContain("stalled");
-});
-
 test("an undefined turnId (no active turn yet) reads as zero running children even if rows exist for a real turn in the same session", () => {
   upsertSubagentRow(turnScopeKey("s1", "turn_0"), { rowKey: "dlg:1", kind: "running", resultPreview: "" });
   render(<LivenessLine lastFrameAt={0} now={185_000} active={true} sessionRef="s1" turnId={undefined} />);

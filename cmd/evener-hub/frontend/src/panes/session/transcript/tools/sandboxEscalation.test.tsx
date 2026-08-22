@@ -84,8 +84,7 @@ function readResponse(ref: string, overrides: Partial<Thread> = {}): ThreadReadR
 
 // connectFakeClient wires a fresh FakeClient through connectionStore
 // directly - the threads store's own requireClient() rides that, not React
-// context, so no <ClientProvider> is needed anywhere in this file anymore
-// (mirrors watchedChild.test.tsx's identical setup for the same reason).
+// context, so no <ClientProvider> is needed anywhere in this file.
 function connectFakeClient(): FakeClient {
   const fake = new FakeClient("ready");
   connectionStore.getState().connect(fake);

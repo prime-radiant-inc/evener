@@ -496,9 +496,11 @@ type jobNotification struct {
 	// receiverSessionID/receiverNotify route no-send watch notifications for
 	// concrete descendant watches back to the ancestor session that installed
 	// them. They are in-memory only; active watches are not restored without a
-	// live installer.
+	// live installer. receiverHoldWake is the matching in-memory receiver rail
+	// hold; it is nil for restored or otherwise non-live callbacks.
 	receiverSessionID string
 	receiverNotify    func(jobNotification)
+	receiverHoldWake  func() func()
 	// watchSendFrame is the rendered frame, populated only between filter and
 	// format inside one accept pass (never persisted, never enqueued).
 	watchSendFrame string
@@ -1957,7 +1959,7 @@ func (jm *jobManager) armFinalizedJob(run *runningJob, terminal *terminalJob) er
 		flushNotices()
 		return err
 	}
-	stableAttentionID, stableOwner, err := jm.persistStableShellAttention(run.rec.JobID)
+	_, stableOwner, err := jm.persistStableShellAttention(run.rec.JobID)
 	if err != nil {
 		flushNotices()
 		return err
@@ -1997,11 +1999,6 @@ func (jm *jobManager) armFinalizedJob(run *runningJob, terminal *terminalJob) er
 	}
 	flushNotices()
 	run.delegateShell.finish()
-	if stableOwner != nil {
-		if err := stableOwner.armDelegateAttention(stableAttentionID); err != nil {
-			stableOwner.emit(events.EventWarning, warningDataFromError("arm stable shell attention", err))
-		}
-	}
 	run.closeDoneDurable()
 	return nil
 }
@@ -2030,6 +2027,9 @@ func (jm *jobManager) persistStableShellAttention(jobID string) (string, *Sessio
 	notification := jobNotificationFromRecord(record)
 	content := owner.formatJobNotificationReminder([]deliverableJobNotification{{notification: notification, terminalGen: record.TerminalGen}})
 	if _, err := owner.appendDelegateNotificationDurably(attentionID, content); err != nil {
+		return "", owner, err
+	}
+	if err := owner.armDelegateAttention(attentionID); err != nil {
 		return "", owner, err
 	}
 	if record.NotifyState != jobstore.NotifyDelivered {
@@ -2129,14 +2129,11 @@ func (jm *jobManager) armPendingTerminalNotifications() error {
 				return err
 			}
 		}
-		attentionID, owner, err := jm.persistStableShellAttention(rec.JobID)
+		_, owner, err := jm.persistStableShellAttention(rec.JobID)
 		if err != nil {
 			return err
 		}
 		if owner != nil {
-			if err := owner.armDelegateAttention(attentionID); err != nil {
-				return err
-			}
 			continue
 		}
 		if jm.enqueue != nil {

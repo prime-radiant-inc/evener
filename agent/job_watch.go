@@ -164,6 +164,7 @@ type watchConfig struct {
 	receiverSessionID  string
 	receiverDelegateID string
 	receiverNotify     func(jobNotification)
+	receiverHoldWake   func() func()
 	sourceDelegateID   string
 	sourceGeneration   uint64
 	stableReceiver     bool
@@ -210,6 +211,7 @@ type watchArgs struct {
 	ReceiverSessionID    string
 	ReceiverDelegateID   string
 	ReceiverNotify       func(jobNotification)
+	ReceiverHoldWake     func() func()
 	OutputMatch          string
 	ProgressIntervalMS   int
 	Events               []string
@@ -980,6 +982,7 @@ func newWatchConfig(a watchArgs, createdAt time.Time) (*watchConfig, error) {
 		receiverSessionID:  strings.TrimSpace(a.ReceiverSessionID),
 		receiverDelegateID: strings.TrimSpace(a.ReceiverDelegateID),
 		receiverNotify:     a.ReceiverNotify,
+		receiverHoldWake:   a.ReceiverHoldWake,
 		target:             a.Target,
 		outputMatch:        a.OutputMatch,
 		progressIntervalMS: a.ProgressIntervalMS,
@@ -1531,23 +1534,23 @@ func watchKeyForConfigLocked(jm *jobManager, cfg *watchConfig) (watchKey, bool) 
 	return watchKey{}, false
 }
 
-// autoClearWatchOverBudget tears down exactly the one watch config that tripped
-// the delivery budget and emits ONE final cleared notification (spec §4 F1). It
-// is the circuit breaker's teardown: jm-state mutation + durable drop of pending
-// sends + one enqueue + one kick — NO delivery from observation (spec §3). It
-// mirrors clearWatch's terminal-snapshot machinery but operates on a single
-// (key, cfg) pair, so a no-send watch sharing a target with other watches does
-// not over-clear its neighbors.
+// autoClearWatchOverBudgetNotification tears down exactly the one watch config
+// that tripped the delivery budget and returns its ONE final cleared notification
+// without enqueuing or waking. It is the circuit breaker's teardown: jm-state
+// mutation plus durable drop of pending sends — NO delivery from observation
+// (spec §3). It mirrors clearWatch's terminal-snapshot machinery but operates on
+// a single (key, cfg) pair, so a no-send watch sharing a target with other watches
+// does not over-clear its neighbors.
 //
 // The reverse lookup under jm.mu doubles as the no-double-fire latch: once the
 // cfg is detached, a later in-flight settle that increments past the budget
 // finds no live key and returns without re-notifying.
-func (jm *jobManager) autoClearWatchOverBudget(cfg *watchConfig) {
+func (jm *jobManager) autoClearWatchOverBudgetNotification(cfg *watchConfig) (jobNotification, bool) {
 	jm.mu.Lock()
 	key, ok := watchKeyForConfigLocked(jm, cfg)
 	if !ok {
 		jm.mu.Unlock()
-		return
+		return jobNotification{}, false
 	}
 	targets := []watchConfigTerminalSnapshot{{
 		key:       key,
@@ -1561,14 +1564,22 @@ func (jm *jobManager) autoClearWatchOverBudget(cfg *watchConfig) {
 	dropped := terminalSnapshots(targets)
 	if err := jm.appendWatchTeardownBatch(dropped, targets); err != nil {
 		jm.rollbackWatchConfigSnapshotsRejecting(targets)
-		return
+		return jobNotification{}, false
 	}
 	jm.detachWatchConfigSnapshots(targets)
 	jm.removeWatchSendTerminalSnapshots(dropped)
 
-	jm.enqueueWatchNotifications([]jobNotification{
-		jm.watchNotificationFromWatch(cfg, "", watchBudgetClearedMessage(cfg.target), nil),
-	})
+	return jm.watchNotificationFromWatch(cfg, "", watchBudgetClearedMessage(cfg.target), nil), true
+}
+
+// autoClearWatchOverBudget is the standalone wrapper for attach scans and watch
+// sends, where there is no same-event notification batch to extend.
+func (jm *jobManager) autoClearWatchOverBudget(cfg *watchConfig) {
+	notification, ok := jm.autoClearWatchOverBudgetNotification(cfg)
+	if !ok {
+		return
+	}
+	jm.enqueueWatchNotifications([]jobNotification{notification})
 	jm.kick()
 }
 
@@ -2188,9 +2199,13 @@ func (jm *jobManager) onSessionEvent(ev events.SessionEvent) {
 
 	// Called from Session.emit; only persist + wake here so watch delivery does
 	// not re-enter session event emission (spec §3).
+	for _, cfg := range overBudget {
+		if notification, ok := jm.autoClearWatchOverBudgetNotification(cfg); ok {
+			notifications = append(notifications, notification)
+		}
+	}
 	jm.enqueueWatchNotifications(notifications)
 	jm.recordWatchSendsAndKick(deliveries)
-	jm.autoClearOverBudgetWatches(overBudget)
 }
 
 // watchEventSnapshot is a read-only copy of the per-watch fields that decide
@@ -3080,6 +3095,7 @@ func (jm *jobManager) watchNotificationFromWatch(cfg *watchConfig, jobID, reason
 	if cfg.receiverSessionID != "" {
 		n.receiverSessionID = cfg.receiverSessionID
 		n.receiverNotify = cfg.receiverNotify
+		n.receiverHoldWake = cfg.receiverHoldWake
 	}
 	return n
 }
@@ -3338,19 +3354,22 @@ func (jm *jobManager) deliverStableWatchSend(cfg *watchConfig, state jobstore.Wa
 			jm.releaseStableWatchReceipt(state.DeliveryID)
 			return false, appendErr
 		}
+		if err := armStableWatchAttention(controller, receiver, state.ReceiverDelegateID, attentionID); err != nil {
+			return false, err
+		}
 		if err := jm.settleWatchSendDelivered(cfg, state); err != nil {
 			jm.rememberStableWatchSettlementRetry(cfg, state)
 			return false, err
 		}
-		return false, armStableWatchAttention(controller, receiver, state.ReceiverDelegateID, attentionID)
+		return false, nil
 	}
 	if appendErr != nil {
 		return false, appendErr
 	}
-	if err := jm.settleWatchSendDelivered(cfg, state); err != nil {
+	if err := armStableWatchAttention(controller, receiver, state.ReceiverDelegateID, attentionID); err != nil {
 		return false, err
 	}
-	if err := armStableWatchAttention(controller, receiver, state.ReceiverDelegateID, attentionID); err != nil {
+	if err := jm.settleWatchSendDelivered(cfg, state); err != nil {
 		return false, err
 	}
 	return true, nil
@@ -4571,6 +4590,24 @@ func (jm *jobManager) kick() {
 	}
 }
 
+// hasLiveWatchOnTarget reports whether any ARMED watch targets jobID. The
+// undisposed-background-job announcement reads it directly rather than
+// inferring "watched" from watch frames in the notification queue: on a long
+// progress interval the queue is empty between frames, and inferring from it
+// would re-announce — and eventually kill — a job the model explicitly said it
+// was waiting on. A cleared watch (model-cleared, or the delivery-budget
+// auto-clear) leaves this map, so the job counts as undisposed again.
+func (jm *jobManager) hasLiveWatchOnTarget(jobID string) bool {
+	jm.mu.Lock()
+	defer jm.mu.Unlock()
+	for key := range jm.watches {
+		if key.Target == jobID {
+			return true
+		}
+	}
+	return false
+}
+
 // hasPendingWatchSends reports whether any live or terminal-flush watch config
 // holds undelivered pending sends. Drain-loop tails use it to decide whether a
 // wake needs a drain pass.
@@ -4876,17 +4913,51 @@ func (jm *jobManager) routeWatchNotifications(notifications []jobNotification) [
 		return nil
 	}
 	var own []jobNotification
+	type receiverGroup struct {
+		sessionID string
+		notify    func(jobNotification)
+		hold      func() func()
+		notices   []jobNotification
+	}
+	var receiverGroups []receiverGroup
+	groupBySession := make(map[string]int)
 	for _, n := range notifications {
 		if n.receiverNotify != nil {
-			enqueue := n.receiverNotify
+			if n.receiverHoldWake == nil {
+				enqueue := n.receiverNotify
+				n.receiverNotify = nil
+				n.receiverHoldWake = nil
+				enqueue(n)
+				continue
+			}
+			group, ok := groupBySession[n.receiverSessionID]
+			if !ok {
+				group = len(receiverGroups)
+				groupBySession[n.receiverSessionID] = group
+				receiverGroups = append(receiverGroups, receiverGroup{
+					sessionID: n.receiverSessionID,
+					notify:    n.receiverNotify,
+					hold:      n.receiverHoldWake,
+				})
+			}
 			n.receiverNotify = nil
-			enqueue(n)
+			n.receiverHoldWake = nil
+			receiverGroups[group].notices = append(receiverGroups[group].notices, n)
 			continue
 		}
 		if n.receiverSessionID != "" && n.receiverSessionID != jm.sessionID {
 			continue
 		}
 		own = append(own, n)
+	}
+	for _, group := range receiverGroups {
+		release := group.hold()
+		func() {
+			defer release()
+			for _, n := range group.notices {
+				group.notify(n)
+			}
+		}()
 	}
 	return own
 }
