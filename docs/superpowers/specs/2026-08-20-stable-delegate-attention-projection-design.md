@@ -1,7 +1,7 @@
 # Stable Delegate Attention Projection
 
 - **Issue:** [#307](https://github.com/prime-radiant-inc/evener/issues/307)
-- **Status:** Approved design, revised after adversarial review
+- **Status:** Implemented design record
 - **Date:** 2026-08-20
 
 ## Problem
