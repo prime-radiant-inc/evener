@@ -1,60 +1,690 @@
+/*
+ * Evener mobile design system — dedicated tokens, typography, and primitives.
+ *
+ * Does not import or reuse Hub web tokens, components, or styles. Mobile-only
+ * semantic system: forest-teal accent on iOS grouped neutrals, summit-amber
+ * attention, with light/dark, Dynamic Type, reduced motion, safe areas, and a
+ * keyboard viewport dock. 44px minimum controls, one scroller per screen, no
+ * desktop cards/rail/panes/hover.
+ */
+
 :root {
   color-scheme: light dark;
+
+  /* Safe-area insets — read from the platform. */
   --safe-area-top: env(safe-area-inset-top, 0px);
   --safe-area-right: env(safe-area-inset-right, 0px);
   --safe-area-bottom: env(safe-area-inset-bottom, 0px);
   --safe-area-left: env(safe-area-inset-left, 0px);
-  --color-background: #f7f7fa;
-  --color-surface: #ffffff;
-  --color-text: #17171b;
-  --color-action: #2457c5;
-  --color-action-text: #ffffff;
+
+  /* Keyboard viewport — bottom dock sits above the software keyboard.
+     `visualViewport` JS adjusts this; the token keeps layout declarative. */
+  --keyboard-inset: env(keyboard-inset-height, 0px);
+
+  /* Spacing scale: 4/8/12/16/20/24/32 */
+  --space-4: 4px;
+  --space-8: 8px;
+  --space-12: 12px;
+  --space-16: 16px;
+  --space-20: 20px;
+  --space-24: 24px;
+  --space-32: 32px;
+
+  /* Radii: 10 controls / 14 rows / 20 sheets */
+  --radius-control: 10px;
+  --radius-row: 14px;
+  --radius-sheet: 20px;
+
+  /* Tap target — 44px iOS minimum. */
   --tap-target: 44px;
+
+  /* Light theme — iOS grouped neutrals with forest-teal accent. */
+  --canvas: #f2f2f7;
+  --raised: #ffffff;
+  --primary: #1c1c1e;
+  --secondary: #6c6c70;
+  --accent: #0a7d62;
+  --accent-ink: #0b6b54;
+  --accent-contrast: #ffffff;
+  --live: #1e7a3f;
+  --attention: #8a4d00;
+  --attention-ink: #6c3d00;
+  --danger: #c22f28;
+  --danger-ink: #ffffff;
+  --hairline: rgba(60, 60, 67, 0.18);
+  --hairline-strong: rgba(60, 60, 67, 0.29);
+  --sheet-overlay: rgba(0, 0, 0, 0.4);
+  --sheet-shadow: 0 -2px 20px rgba(0, 0, 0, 0.16);
+
+  /* Status glyph colors derive from status tokens, but status is never
+     color alone — every status mark carries a unique glyph + label. */
+  --status-reachable-glyph: "✓";
+  --status-reconnecting-glyph: "↻";
+  --status-offline-glyph: "✕";
+  --status-attention-glyph: "!";
+
   font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  font-size: var(--type-base, 17px);
+  line-height: var(--type-leading, 1.4);
+  color: var(--primary);
+  background: var(--canvas);
 }
 
 @media (prefers-color-scheme: dark) {
   :root {
-    --color-background: #121317;
-    --color-surface: #1c1d22;
-    --color-text: #f4f4f7;
-    --color-action: #90b4ff;
-    --color-action-text: #101a30;
+    --canvas: #000000;
+    --raised: #1c1c1e;
+    --primary: #ffffff;
+    --secondary: #8e8e93;
+    --accent: #3dd6a8;
+    --accent-ink: #3dd6a8;
+    --accent-contrast: #000000;
+    --live: #45db85;
+    --attention: #ffb84d;
+    --attention-ink: #ffb84d;
+    --danger: #ff6d63;
+    --danger-ink: #000000;
+    --hairline: rgba(84, 84, 88, 0.6);
+    --hairline-strong: rgba(84, 84, 88, 0.78);
+    --sheet-overlay: rgba(0, 0, 0, 0.6);
+    --sheet-shadow: 0 -2px 24px rgba(0, 0, 0, 0.5);
   }
+}
+
+/* Explicit theme overrides via data-theme on the root shell. */
+[data-theme="light"] {
+  --canvas: #f2f2f7;
+  --raised: #ffffff;
+  --primary: #1c1c1e;
+  --secondary: #6c6c70;
+  --accent: #0a7d62;
+  --accent-ink: #0b6b54;
+  --accent-contrast: #ffffff;
+  --live: #1e7a3f;
+  --attention: #8a4d00;
+  --attention-ink: #6c3d00;
+  --danger: #c22f28;
+  --danger-ink: #ffffff;
+  --hairline: rgba(60, 60, 67, 0.18);
+  --hairline-strong: rgba(60, 60, 67, 0.29);
+  --sheet-overlay: rgba(0, 0, 0, 0.4);
+  --sheet-shadow: 0 -2px 20px rgba(0, 0, 0, 0.16);
+}
+
+[data-theme="dark"] {
+  --canvas: #000000;
+  --raised: #1c1c1e;
+  --primary: #ffffff;
+  --secondary: #8e8e93;
+  --accent: #3dd6a8;
+  --accent-ink: #3dd6a8;
+  --accent-contrast: #000000;
+  --live: #45db85;
+  --attention: #ffb84d;
+  --attention-ink: #ffb84d;
+  --danger: #ff6d63;
+  --danger-ink: #000000;
+  --hairline: rgba(84, 84, 88, 0.6);
+  --hairline-strong: rgba(84, 84, 88, 0.78);
+  --sheet-overlay: rgba(0, 0, 0, 0.6);
+  --sheet-shadow: 0 -2px 24px rgba(0, 0, 0, 0.5);
+}
+
+/* Dynamic Type — map UIContentSizeCategory to a bounded semantic type scale.
+   The native bridge reports the category; JS sets data-content-size on the
+   root. Each step scales base size and leading. */
+[data-content-size="small"] {
+  --type-base: 15px;
+  --type-leading: 1.35;
+}
+[data-content-size="medium"] {
+  --type-base: 16px;
+  --type-leading: 1.35;
+}
+[data-content-size="large"] {
+  --type-base: 17px;
+  --type-leading: 1.4;
+}
+[data-content-size="extraLarge"] {
+  --type-base: 19px;
+  --type-leading: 1.4;
+}
+[data-content-size="extraExtraLarge"] {
+  --type-base: 21px;
+  --type-leading: 1.45;
+}
+[data-content-size="extraExtraExtraLarge"] {
+  --type-base: 23px;
+  --type-leading: 1.45;
+}
+[data-content-size="accessibilityMedium"] {
+  --type-base: 20px;
+  --type-leading: 1.45;
+}
+[data-content-size="accessibilityLarge"] {
+  --type-base: 22px;
+  --type-leading: 1.5;
+}
+[data-content-size="accessibilityExtraLarge"] {
+  --type-base: 24px;
+  --type-leading: 1.5;
+}
+[data-content-size="accessibilityExtraExtraLarge"] {
+  --type-base: 27px;
+  --type-leading: 1.5;
+}
+[data-content-size="accessibilityExtraExtraExtraLarge"] {
+  --type-base: 30px;
+  --type-leading: 1.55;
 }
 
 * {
   box-sizing: border-box;
 }
 
+html,
 body {
   margin: 0;
-  background: var(--color-background);
-  color: var(--color-text);
-}
-
-main {
-  display: flex;
+  padding: 0;
   min-height: 100dvh;
+  background: var(--canvas);
+  color: var(--primary);
+  -webkit-text-size-adjust: 100%;
+}
+
+body {
+  font-family: inherit;
+}
+
+/* One scroller per screen — the shell owns the single vertical scroll. */
+.evener-shell {
+  display: flex;
   flex-direction: column;
-  gap: 1rem;
-  padding: calc(1rem + var(--safe-area-top)) calc(1rem + var(--safe-area-right))
-    calc(1rem + var(--safe-area-bottom)) calc(1rem + var(--safe-area-left));
+  min-height: 100dvh;
+  padding-top: var(--safe-area-top);
+  padding-right: var(--safe-area-right);
+  padding-bottom: var(--safe-area-bottom);
+  padding-left: var(--safe-area-left);
 }
 
-nav {
-  display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 0.5rem;
-  margin-top: auto;
+.evener-screen-scroll {
+  flex: 1 1 auto;
+  overflow-y: auto;
+  -webkit-overflow-scrolling: touch;
+  overscroll-behavior-y: contain;
 }
 
-button {
+/* ---------------------------------------------------------------------------
+ * Button
+ * ------------------------------------------------------------------------- */
+
+.evener-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-8);
   min-width: var(--tap-target);
   min-height: var(--tap-target);
+  padding: var(--space-12) var(--space-16);
   border: 0;
-  border-radius: 0.75rem;
-  background: var(--color-action);
-  color: var(--color-action-text);
+  border-radius: var(--radius-control);
   font: inherit;
+  font-weight: 600;
+  cursor: pointer;
+  background: var(--raised);
+  color: var(--primary);
+  transition:
+    background 0.18s ease,
+    opacity 0.18s ease;
+}
+
+.evener-button.primary {
+  background: var(--accent);
+  color: var(--accent-contrast);
+}
+
+.evener-button.secondary {
+  background: transparent;
+  color: var(--accent-ink);
+  box-shadow: inset 0 0 0 1px var(--hairline-strong);
+}
+
+.evener-button.tertiary {
+  background: transparent;
+  color: var(--secondary);
+}
+
+.evener-button.danger {
+  background: var(--danger);
+  color: var(--danger-ink);
+}
+
+.evener-button:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.evener-button:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+/* ---------------------------------------------------------------------------
+ * IconButton
+ * ------------------------------------------------------------------------- */
+
+.evener-icon-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: var(--tap-target);
+  min-height: var(--tap-target);
+  padding: var(--space-8);
+  border: 0;
+  border-radius: var(--radius-control);
+  background: transparent;
+  color: var(--primary);
+  font: inherit;
+  cursor: pointer;
+  transition: background 0.18s ease;
+}
+
+.evener-icon-button:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+/* ---------------------------------------------------------------------------
+ * TopBar
+ * ------------------------------------------------------------------------- */
+
+.evener-topbar {
+  display: flex;
+  align-items: center;
+  gap: var(--space-8);
+  min-height: var(--tap-target);
+  padding: var(--space-8) var(--space-16);
+  background: var(--canvas);
+}
+
+.evener-topbar__title {
+  flex: 1 1 auto;
+  min-width: 0;
+  font-size: var(--type-base);
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* ---------------------------------------------------------------------------
+ * BottomBar (three-tab)
+ * ------------------------------------------------------------------------- */
+
+.evener-bottombar {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 0;
+  background: var(--raised);
+  border-top: 1px solid var(--hairline);
+  padding-bottom: var(--safe-area-bottom);
+}
+
+.evener-tab {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-4);
+  min-height: var(--tap-target);
+  padding: var(--space-8) 0;
+  border: 0;
+  background: transparent;
+  color: var(--secondary);
+  font: inherit;
+  font-size: 0.8em;
+  cursor: pointer;
+}
+
+.evener-tab[aria-selected="true"] {
+  color: var(--accent-ink);
+}
+
+.evener-tab:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+
+/* ---------------------------------------------------------------------------
+ * ListRow / FormRow — inset grouped lists, not floating cards
+ * ------------------------------------------------------------------------- */
+
+.evener-list-group {
+  margin: var(--space-16) var(--space-16) 0;
+  background: var(--raised);
+  border-radius: var(--radius-row);
+  overflow: hidden;
+}
+
+.evener-list-group__header {
+  padding: var(--space-8) var(--space-16);
+  font-size: 0.78em;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  color: var(--secondary);
+}
+
+.evener-list-row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-12);
+  min-height: var(--tap-target);
+  padding: var(--space-12) var(--space-16);
+  border-top: 1px solid var(--hairline);
+  background: var(--raised);
+  color: var(--primary);
+  width: 100%;
+  border-left: 0;
+  border-right: 0;
+  border-bottom: 0;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.evener-list-row:first-child {
+  border-top: 0;
+}
+
+.evener-list-row__main {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.evener-list-row__title {
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.evener-list-row__subtitle {
+  font-size: 0.85em;
+  color: var(--secondary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.evener-form-row {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+  min-height: var(--tap-target);
+  padding: var(--space-12) var(--space-16);
+  border-top: 1px solid var(--hairline);
+  background: var(--raised);
+}
+
+.evener-form-row:first-child {
+  border-top: 0;
+}
+
+.evener-form-row__label {
+  font-size: 0.78em;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  color: var(--secondary);
+}
+
+/* ---------------------------------------------------------------------------
+ * Input
+ * ------------------------------------------------------------------------- */
+
+.evener-input {
+  min-height: var(--tap-target);
+  padding: var(--space-12) var(--space-16);
+  border: 1px solid var(--hairline-strong);
+  border-radius: var(--radius-control);
+  background: var(--raised);
+  color: var(--primary);
+  font: inherit;
+  width: 100%;
+}
+
+.evener-input:focus {
+  border-color: var(--accent);
+  outline: none;
+}
+
+/* ---------------------------------------------------------------------------
+ * StatusMark — unique glyph + label, never color alone
+ * ------------------------------------------------------------------------- */
+
+.evener-status-mark {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-8);
+  font-size: 0.85em;
+}
+
+.evener-status-mark__glyph {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 1.5em;
+  height: 1.5em;
+  border-radius: 50%;
+  font-weight: 700;
+  font-size: 0.85em;
+}
+
+.evener-status-mark[data-status="reachable"] .evener-status-mark__glyph {
+  background: var(--live);
+  color: #fff;
+}
+.evener-status-mark[data-status="reconnecting"] .evener-status-mark__glyph {
+  background: var(--attention);
+  color: #fff;
+}
+.evener-status-mark[data-status="offline"] .evener-status-mark__glyph {
+  background: var(--danger);
+  color: var(--danger-ink);
+}
+.evener-status-mark[data-status="attention"] .evener-status-mark__glyph {
+  background: var(--attention);
+  color: #fff;
+}
+
+/* ---------------------------------------------------------------------------
+ * Sheet — detent portal with focus trap, Escape/back, reduced-motion fallback
+ * ------------------------------------------------------------------------- */
+
+.evener-sheet-overlay {
+  position: fixed;
+  inset: 0;
+  background: var(--sheet-overlay);
+  z-index: 100;
+}
+
+.evener-sheet {
+  position: fixed;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  max-height: 85dvh;
+  background: var(--raised);
+  border-radius: var(--radius-sheet) var(--radius-sheet) 0 0;
+  box-shadow: var(--sheet-shadow);
+  z-index: 101;
+  display: flex;
+  flex-direction: column;
+  padding-bottom: var(--safe-area-bottom);
+  /* Deterministic upward motion (no spring under default). */
+  animation: evener-sheet-up 0.24s ease-out;
+}
+
+@keyframes evener-sheet-up {
+  from {
+    transform: translateY(100%);
+  }
+  to {
+    transform: translateY(0);
+  }
+}
+
+.evener-sheet__grabber {
+  align-self: center;
+  width: 36px;
+  height: 5px;
+  border-radius: 3px;
+  background: var(--hairline-strong);
+  margin: var(--space-8) 0 var(--space-4);
+  flex: 0 0 auto;
+}
+
+.evener-sheet__header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-8);
+  padding: var(--space-8) var(--space-16);
+  flex: 0 0 auto;
+}
+
+.evener-sheet__title {
+  font-size: var(--type-base);
+  font-weight: 600;
+}
+
+.evener-sheet__body {
+  flex: 1 1 auto;
+  overflow-y: auto;
+  -webkit-overflow-scrolling: touch;
+  padding: 0 var(--space-16) var(--space-16);
+}
+
+/* ---------------------------------------------------------------------------
+ * Empty / Error / Loading — honest states
+ * ------------------------------------------------------------------------- */
+
+.evener-empty,
+.evener-error,
+.evener-loading {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-12);
+  padding: var(--space-32) var(--space-16);
+  text-align: center;
+  color: var(--secondary);
+}
+
+.evener-error {
+  color: var(--danger);
+}
+
+/* ---------------------------------------------------------------------------
+ * Conversation — full-screen push above tab bar
+ * ------------------------------------------------------------------------- */
+
+.evener-conversation {
+  position: fixed;
+  inset: 0;
+  z-index: 50;
+  display: flex;
+  flex-direction: column;
+  background: var(--canvas);
+  padding-top: var(--safe-area-top);
+  animation: evener-conversation-in 0.24s ease-out;
+}
+
+@keyframes evener-conversation-in {
+  from {
+    transform: translateX(100%);
+  }
+  to {
+    transform: translateX(0);
+  }
+}
+
+/* ---------------------------------------------------------------------------
+ * Onboarding — full-screen
+ * ------------------------------------------------------------------------- */
+
+.evener-onboarding {
+  display: flex;
+  flex-direction: column;
+  min-height: 100dvh;
+  padding: var(--space-32) var(--space-16);
+  padding-top: calc(var(--space-32) + var(--safe-area-top));
+  padding-bottom: calc(var(--space-32) + var(--safe-area-bottom));
+  gap: var(--space-20);
+}
+
+.evener-onboarding__identity {
+  font-size: 2em;
+  font-weight: 700;
+  color: var(--accent-ink);
+}
+
+/* ---------------------------------------------------------------------------
+ * Reduced motion — remove all spatial movement/pulse
+ * ------------------------------------------------------------------------- */
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    /* biome-ignore lint/complexity/noImportantStyles: reduced-motion override must win over all animations */
+    animation-duration: 0.01ms !important;
+    /* biome-ignore lint/complexity/noImportantStyles: reduced-motion override must win over all animations */
+    animation-iteration-count: 1 !important;
+    /* biome-ignore lint/complexity/noImportantStyles: reduced-motion override must win over all animations */
+    transition-duration: 0.01ms !important;
+    /* biome-ignore lint/complexity/noImportantStyles: reduced-motion override must win over all animations */
+    scroll-behavior: auto !important;
+  }
+  .evener-sheet,
+  .evener-conversation {
+    animation: none;
+    transform: none;
+  }
+}
+
+[data-reduced-motion="true"] *,
+[data-reduced-motion="true"] *::before,
+[data-reduced-motion="true"] *::after {
+  animation-duration: 0.01ms;
+  animation-iteration-count: 1;
+  transition-duration: 0.01ms;
+  scroll-behavior: auto;
+}
+[data-reduced-motion="true"] .evener-sheet,
+[data-reduced-motion="true"] .evener-conversation {
+  animation: none;
+  transform: none;
+}
+
+/* Live activity pulse — removed under reduced motion (handled above). */
+.evener-pulse {
+  animation: evener-pulse 1.8s ease-in-out infinite;
+}
+@keyframes evener-pulse {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.5;
+  }
+}
+
+/* ---------------------------------------------------------------------------
+ * Keyboard dock — composer/primary stays above keyboard
+ * ------------------------------------------------------------------------- */
+
+.evener-dock {
+  padding-bottom: calc(var(--keyboard-inset) + var(--safe-area-bottom));
 }
