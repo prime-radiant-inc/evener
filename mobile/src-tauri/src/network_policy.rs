@@ -261,7 +261,7 @@ fn is_cgnat_v4(ip: &Ipv4Addr) -> bool {
 }
 
 fn is_unique_local_v6(ip: &Ipv6Addr) -> bool {
-    // fc00::/7 — first byte high 7 bits zero: 0xfc..0xfd
+    // fc00::/7 — first byte 0xfc or 0xfd (top 7 bits fixed, low bit varies)
     let seg = ip.segments()[0];
     (seg & 0xfe00) == 0xfc00
 }

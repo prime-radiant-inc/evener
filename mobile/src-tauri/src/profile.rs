@@ -296,6 +296,13 @@ impl ProfileStore {
             origin: origin.clone(),
         };
 
+        // Capture the prior token (if editing) before the Keychain write so we
+        // can compensate a preferences-save failure.
+        let prior_token = match &pending.existing_id {
+            Some(_) => self.secure.get(&profile_id).unwrap_or(None),
+            None => None,
+        };
+
         // Keychain write FIRST: if it fails, preferences are untouched and the
         // old profile (if editing) remains fully usable.
         self.secure.set(&profile_id, token)?;
@@ -310,7 +317,17 @@ impl ProfileStore {
             }
         }
 
-        self.prefs.save(&new_prefs)?;
+        if let Err(prefs_err) = self.prefs.save(&new_prefs) {
+            // Compensating rollback: undo the Keychain mutation so no orphan
+            // secret remains and the old profile stays usable.
+            let operation = if pending.existing_id.is_some() {
+                "repair"
+            } else {
+                "add"
+            };
+            self.rollback_keychain(&profile_id, prior_token.as_deref(), operation)?;
+            return Err(prefs_err);
+        }
 
         Ok(summary)
     }
@@ -351,10 +368,11 @@ impl ProfileStore {
 
         new_prefs.profiles.remove(idx);
 
-        // Keychain delete BEFORE preferences save so a failed delete leaves
-        // preferences consistent (profile still listed). Actually: to keep the
-        // old profile usable on failure, delete Keychain first; if it fails we
-        // abort and preferences are untouched.
+        // Capture the prior token before deleting so we can restore it if the
+        // preferences save fails.
+        let prior_token = self.secure.get(profile_id).unwrap_or(None);
+
+        // Keychain delete first: if it fails, preferences are untouched.
         self.secure.delete(profile_id)?;
 
         let was_active = prefs.active_id.as_deref() == Some(profile_id);
@@ -365,7 +383,12 @@ impl ProfileStore {
             new_prefs.active_id = new_prefs.profiles.first().map(|p| p.id.clone());
         }
 
-        self.prefs.save(&new_prefs)?;
+        if let Err(prefs_err) = self.prefs.save(&new_prefs) {
+            // Compensating rollback: restore the deleted token so the old
+            // profile remains usable.
+            self.rollback_keychain(profile_id, prior_token.as_deref(), "remove")?;
+            return Err(prefs_err);
+        }
 
         let result = if was_active {
             SelectResult {
@@ -407,6 +430,39 @@ impl ProfileStore {
     fn bump_generation(&self) -> ProfileGeneration {
         let g = self.generation.fetch_add(1, Ordering::SeqCst) + 1;
         ProfileGeneration(g)
+    }
+
+    /// Compensating rollback for a preferences-save failure that occurred
+    /// after a Keychain mutation.
+    ///
+    /// - `prior_token` is `None` for a new add (delete the orphan token).
+    /// - `prior_token` is `Some(old_token)` for re-pair or remove (restore it).
+    ///
+    /// If the rollback itself fails, returns a [`ProfileError::Consistency`]
+    /// error identifying only the profile ID and both operation classes. The
+    /// token is never logged.
+    fn rollback_keychain(
+        &self,
+        profile_id: &str,
+        prior_token: Option<&str>,
+        operation: &str,
+    ) -> Result<(), ProfileError> {
+        let rollback_result = match prior_token {
+            Some(old_token) => self.secure.set(profile_id, old_token),
+            None => self.secure.delete(profile_id),
+        };
+        match rollback_result {
+            Ok(()) => Ok(()),
+            Err(_) => Err(ProfileError::Consistency {
+                profile_id: profile_id.to_owned(),
+                operation: operation.to_owned(),
+                rollback_operation: if prior_token.is_some() {
+                    "restore".to_owned()
+                } else {
+                    "delete".to_owned()
+                },
+            }),
+        }
     }
 }
 
@@ -463,6 +519,7 @@ fn validate_origin_unique(
 pub struct MemoryPreferences {
     inner: Mutex<Preferences>,
     save_count: AtomicU64,
+    fail_next_save: Mutex<bool>,
 }
 
 impl MemoryPreferences {
@@ -472,6 +529,9 @@ impl MemoryPreferences {
     pub fn save_count(&self) -> u64 {
         self.save_count.load(Ordering::SeqCst)
     }
+    pub fn fail_next_save(&self) {
+        *self.fail_next_save.lock().unwrap() = true;
+    }
 }
 
 impl PreferencesStore for MemoryPreferences {
@@ -479,6 +539,12 @@ impl PreferencesStore for MemoryPreferences {
         Ok(self.inner.lock().unwrap().clone())
     }
     fn save(&self, prefs: &Preferences) -> Result<(), ProfileError> {
+        if *self.fail_next_save.lock().unwrap() {
+            *self.fail_next_save.lock().unwrap() = false;
+            return Err(ProfileError::Preferences(
+                "injected save failure".to_owned(),
+            ));
+        }
         *self.inner.lock().unwrap() = prefs.clone();
         self.save_count.fetch_add(1, Ordering::SeqCst);
         Ok(())
@@ -489,6 +555,7 @@ impl PreferencesStore for MemoryPreferences {
 pub struct MemorySecureStore {
     map: Mutex<HashMap<String, String>>,
     fail_set: Mutex<Option<String>>,
+    fail_delete: Mutex<Option<String>>,
 }
 
 impl MemorySecureStore {
@@ -497,6 +564,9 @@ impl MemorySecureStore {
     }
     pub fn fail_next_set(&self, id: String) {
         *self.fail_set.lock().unwrap() = Some(id);
+    }
+    pub fn fail_next_delete(&self, id: String) {
+        *self.fail_delete.lock().unwrap() = Some(id);
     }
     pub fn has(&self, id: &str) -> bool {
         self.map.lock().unwrap().contains_key(id)
@@ -523,6 +593,13 @@ impl SecureStore for MemorySecureStore {
         Ok(())
     }
     fn delete(&self, profile_id: &str) -> Result<(), ProfileError> {
+        if let Some(fail_id) = self.fail_delete.lock().unwrap().take() {
+            if fail_id == profile_id {
+                return Err(ProfileError::SecureStore(
+                    "injected delete failure".to_owned(),
+                ));
+            }
+        }
         self.map.lock().unwrap().remove(profile_id);
         Ok(())
     }
@@ -1329,6 +1406,105 @@ mod tests {
         let res = store.select(&p.id).unwrap();
         assert_eq!(res.profile_id.as_deref(), Some(p.id.as_str()));
         assert!(res.generation.0 > 0);
+    }
+
+    // -- Preferences-save failure rollback -------------------------------------
+
+    #[test]
+    fn prefs_save_failure_on_new_add_deletes_new_token() {
+        let prefs = Arc::new(MemoryPreferences::new());
+        let secure = Arc::new(MemorySecureStore::new());
+        let probe = Arc::new(OkProbe);
+        let clock = Arc::new(StepClock::new(0));
+        let store = make_store(prefs.clone(), secure.clone(), probe, clock);
+
+        // No existing profiles. Confirm a new add; make prefs.save fail.
+        prefs.fail_next_save();
+        let pv = store.preview_pairing(&auth_url("hub.example.com")).unwrap();
+        let err = store
+            .confirm_pairing(&pv.preview_id, "Alpha", false, ReleaseMode::Release)
+            .unwrap_err();
+        assert!(matches!(err, ProfileError::Preferences(_)));
+
+        // No profile was added and no orphan token should remain.
+        assert_eq!(store.list().unwrap().len(), 0);
+        assert_eq!(secure.map.lock().unwrap().len(), 0);
+    }
+
+    #[test]
+    fn prefs_save_failure_on_repair_restores_prior_token() {
+        let prefs = Arc::new(MemoryPreferences::new());
+        let secure = Arc::new(MemorySecureStore::new());
+        let probe = Arc::new(OkProbe);
+        let clock = Arc::new(StepClock::new(0));
+        let store = make_store(prefs.clone(), secure.clone(), probe, clock);
+
+        // Establish a profile with a known token.
+        let p = store
+            .confirm_pairing(
+                &store
+                    .preview_pairing(&auth_url("hub.example.com"))
+                    .unwrap()
+                    .preview_id,
+                "Alpha",
+                false,
+                ReleaseMode::Release,
+            )
+            .unwrap();
+        let original_token = secure.get_token(&p.id).unwrap();
+
+        // Re-pair with a different token (same origin, allow duplicate).
+        // Use a distinct 43-char base64url token so the rollback assertion is
+        // meaningful: after prefs failure, the original token must be restored.
+        const NEW_TOKEN: &str = "AQIDBAUGBwgJCgsMDQ4PEBESExQVFhcYGRobHB0eHyA";
+        assert_eq!(NEW_TOKEN.len(), 43);
+        let new_url = format!("https://hub.example.com:8443/auth?token={NEW_TOKEN}");
+        let pv = store.preview_repair(&p.id, &new_url).unwrap();
+        // Make prefs.save fail after the Keychain write.
+        prefs.fail_next_save();
+        let err = store
+            .confirm_pairing(&pv.preview_id, "Alpha", true, ReleaseMode::Release)
+            .unwrap_err();
+        assert!(matches!(err, ProfileError::Preferences(_)));
+
+        // Old profile remains fully usable: still listed, original token restored.
+        assert_eq!(store.list().unwrap().len(), 1);
+        assert_eq!(store.list().unwrap()[0].name, "Alpha");
+        assert_eq!(secure.get_token(&p.id).unwrap(), original_token);
+        assert_ne!(secure.get_token(&p.id).unwrap(), NEW_TOKEN);
+    }
+
+    #[test]
+    fn prefs_save_failure_on_remove_restores_deleted_token() {
+        let prefs = Arc::new(MemoryPreferences::new());
+        let secure = Arc::new(MemorySecureStore::new());
+        let probe = Arc::new(OkProbe);
+        let clock = Arc::new(StepClock::new(0));
+        let store = make_store(prefs.clone(), secure.clone(), probe, clock);
+
+        // Establish a profile.
+        let p = store
+            .confirm_pairing(
+                &store
+                    .preview_pairing(&auth_url("hub.example.com"))
+                    .unwrap()
+                    .preview_id,
+                "Alpha",
+                false,
+                ReleaseMode::Release,
+            )
+            .unwrap();
+        let original_token = secure.get_token(&p.id).unwrap();
+
+        // Remove; make prefs.save fail after the Keychain delete.
+        prefs.fail_next_save();
+        let err = store.remove(&p.id).unwrap_err();
+        assert!(matches!(err, ProfileError::Preferences(_)));
+
+        // Profile still listed (prefs unchanged), token restored.
+        assert_eq!(store.list().unwrap().len(), 1);
+        assert!(secure.has(&p.id));
+        assert_eq!(secure.get_token(&p.id).unwrap(), original_token);
     }
 
     fn p2_id(store: &ProfileStore, name: &str) -> String {
