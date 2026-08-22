@@ -7,13 +7,20 @@
  * only until native preview is invoked, then clears immediately. The raw URL
  * or token is never persisted or echoed in errors. After a successful add the
  * screen fires a success haptic and calls `onConnected`.
+ *
+ * QR scanning uses the native `scanAndPreviewPairing` result directly: the
+ * opaque previewId and redacted origin are fed to the store's `setScanPreview`
+ * without fabricating a paste URL or touching a token. On unmount or cancel,
+ * the active preview is cancelled so no native preview leaks.
  */
 import {
   type ChangeEvent,
   type JSX,
   type KeyboardEvent,
   useCallback,
+  useEffect,
   useMemo,
+  useRef,
   useState,
 } from "react";
 import { createConnectionStore } from "../state/connection";
@@ -24,6 +31,7 @@ import type { OnboardingServiceBundle } from "./fixture-services";
 export interface OnboardingScreenProps {
   readonly services: OnboardingServiceBundle;
   readonly onConnected?: () => void;
+  readonly onCancel?: () => void;
 }
 
 type Phase = "actions" | "previewing" | "confirming" | "error";
@@ -31,6 +39,7 @@ type Phase = "actions" | "previewing" | "confirming" | "error";
 export function OnboardingScreen({
   services,
   onConnected,
+  onCancel,
 }: OnboardingScreenProps): JSX.Element {
   const [store] = useState(() => createConnectionStore(services.profile));
   const [phase, setPhase] = useState<Phase>("actions");
@@ -39,12 +48,21 @@ export function OnboardingScreen({
   const [consent, setConsent] = useState(false);
   const [confirmError, setConfirmError] = useState<string | null>(null);
   const [pendingSave, setPendingSave] = useState(false);
+  const mounted = useRef(true);
 
   const preview = store((s) => s.preview);
   const previewError = store((s) => s.previewError);
   const profiles = store((s) => s.profiles);
 
-  // Validate the server name against existing profiles (derived, not stored).
+  // Cancel the active preview on unmount so no native preview leaks.
+  useEffect(() => {
+    mounted.current = true;
+    return () => {
+      mounted.current = false;
+      void store.getState().cancelPreview();
+    };
+  }, [store]);
+
   const nameError = useMemo(() => {
     const trimmed = serverName.trim();
     if (trimmed === "") return null;
@@ -59,7 +77,6 @@ export function OnboardingScreen({
 
   const nameValid = serverName.trim() !== "" && nameError === null;
 
-  // Duplicate origin detection for the consent prompt.
   const duplicateOrigin = useMemo(() => {
     if (preview === null) return false;
     return profiles.some((p) => p.origin === preview.origin);
@@ -85,23 +102,26 @@ export function OnboardingScreen({
           .getState()
           .previewPaste(raw)
           .then(() => {
-            setPhase("confirming");
+            if (mounted.current) setPhase("confirming");
           }),
       );
   }, [pasteUrl, store]);
 
+  // QR scan: use the native result directly — no fabricated paste URL.
   const handleScan = useCallback(async () => {
     setPhase("previewing");
     setConfirmError(null);
     try {
       await store.getState().refresh();
-      const scanPreview = await services.native.scanAndPreviewPairing();
-      await store
-        .getState()
-        .previewPaste(`${scanPreview.origin}/auth?token=redacted-scan-token`);
-      setPhase("confirming");
+      const scanResult = await services.native.scanAndPreviewPairing();
+      // Feed the scan preview directly to the store — no raw URL or token in JS.
+      await store.getState().setScanPreview({
+        previewId: scanResult.previewId,
+        origin: scanResult.origin,
+      });
+      if (mounted.current) setPhase("confirming");
     } catch {
-      setPhase("error");
+      if (mounted.current) setPhase("error");
     }
   }, [services, store]);
 
@@ -173,6 +193,11 @@ export function OnboardingScreen({
               {previewError} — unable to preview the authorization URL.
             </p>
           ) : null}
+          {onCancel ? (
+            <Button variant="tertiary" onClick={onCancel}>
+              Cancel
+            </Button>
+          ) : null}
         </>
       ) : null}
 
@@ -213,6 +238,11 @@ export function OnboardingScreen({
           <Button variant="primary" disabled={!canSave} onClick={handleSave}>
             Add
           </Button>
+          {onCancel ? (
+            <Button variant="tertiary" onClick={onCancel}>
+              Cancel
+            </Button>
+          ) : null}
           {confirmError !== null ? (
             <p role="alert">{confirmError} — unable to complete pairing.</p>
           ) : null}

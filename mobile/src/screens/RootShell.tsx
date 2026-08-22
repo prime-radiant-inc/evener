@@ -7,24 +7,27 @@
  * switcher sheet. The shell applies the resolved theme, Dynamic Type category,
  * and reduced-motion attribute to the root element. No desktop cards, rail,
  * panes, or hover behavior.
+ *
+ * While profiles are loading (status "initial"), the shell shows a loading
+ * indicator — not onboarding — to prevent an onboarding flash when the store
+ * has saved profiles that haven't been read yet.
  */
 import { type JSX, useEffect, useState } from "react";
 import type { RootTab } from "../state/navigation";
 import { BottomBar, type BottomTab } from "../ui/BottomBar";
 import { Sheet } from "../ui/Sheet";
-import type { ShellServiceBundle } from "./fixture-services";
+import { Loading } from "../ui/States";
 import { NewSessionScreen } from "./NewSessionScreen";
 import { OnboardingScreen } from "./OnboardingScreen";
 import type {
   ConnectionStore,
   NavigationStore,
   PreferencesStore,
+  ShellServiceBundle,
 } from "./root-types";
 import { ServerSwitcherSheet } from "./ServerSwitcherSheet";
 import { SessionsScreen } from "./SessionsScreen";
 import { SettingsScreen } from "./SettingsScreen";
-
-export interface ShellServices extends ShellServiceBundle {}
 
 export interface RootShellProps {
   readonly services: ShellServiceBundle;
@@ -41,11 +44,13 @@ const TABS: readonly BottomTab[] = [
   { id: "settings", label: "Settings", glyph: "⚙" },
 ];
 
+const PANEL_ID = "evener-tab-panel";
+
 export function RootShell({ services, stores }: RootShellProps): JSX.Element {
   const { connection, navigation, preferences } = stores;
   const profiles = connection((s) => s.profiles);
   const activeProfileId = connection((s) => s.activeProfileId);
-  const _status = connection((s) => s.status);
+  const status = connection((s) => s.status);
   const tab = navigation((s) => s.tab);
   const conversationStack = navigation((s) => s.conversationStack);
   const theme = preferences((s) => s.theme);
@@ -60,27 +65,45 @@ export function RootShell({ services, stores }: RootShellProps): JSX.Element {
     void connection.getState().refresh();
   }, [connection]);
 
+  const isLoading = status === "initial" || status === "loading";
   const hasProfiles = profiles.length > 0 && activeProfileId !== null;
   const inConversation = conversationStack.length > 0;
 
-  // Resolve theme to a data attribute.
   const resolvedTheme = theme === "system" ? undefined : theme;
 
-  // If onboarding or adding a server with no active profile, show full-screen onboarding.
+  const shellAttrs = {
+    className: "evener-shell",
+    "data-theme": resolvedTheme,
+    "data-content-size": contentSize,
+    "data-reduced-motion": reducedMotion ? "true" : undefined,
+  };
+
+  // Loading state — prevents onboarding flash while profiles load.
+  if (isLoading && !addingServer && !hasProfiles) {
+    return (
+      <div {...shellAttrs}>
+        <Loading label="Loading…" />
+      </div>
+    );
+  }
+
+  // Onboarding or adding a server.
   if (!hasProfiles || addingServer) {
     return (
-      <div
-        className="evener-shell"
-        data-theme={resolvedTheme}
-        data-content-size={contentSize}
-        data-reduced-motion={reducedMotion ? "true" : undefined}
-      >
+      <div {...shellAttrs}>
         <OnboardingScreen
           services={services}
           onConnected={() => {
             setAddingServer(false);
             void connection.getState().refresh();
           }}
+          onCancel={
+            addingServer
+              ? () => {
+                  setAddingServer(false);
+                }
+              : undefined
+          }
         />
       </div>
     );
@@ -90,12 +113,7 @@ export function RootShell({ services, stores }: RootShellProps): JSX.Element {
   if (inConversation) {
     const activeConv = navigation.getState().activeConversation;
     return (
-      <div
-        className="evener-shell"
-        data-theme={resolvedTheme}
-        data-content-size={contentSize}
-        data-reduced-motion={reducedMotion ? "true" : undefined}
-      >
+      <div {...shellAttrs}>
         <main className="evener-conversation">
           <div className="evener-topbar">
             <button
@@ -121,13 +139,13 @@ export function RootShell({ services, stores }: RootShellProps): JSX.Element {
   }
 
   return (
-    <div
-      className="evener-shell"
-      data-theme={resolvedTheme}
-      data-content-size={contentSize}
-      data-reduced-motion={reducedMotion ? "true" : undefined}
-    >
-      <main className="evener-screen-scroll">
+    <div {...shellAttrs}>
+      <main
+        className="evener-screen-scroll"
+        role="tabpanel"
+        id={PANEL_ID}
+        aria-labelledby={`${PANEL_ID}-tab-${tab}`}
+      >
         {tab === "sessions" ? (
           <SessionsScreen
             connection={connection}
@@ -147,6 +165,7 @@ export function RootShell({ services, stores }: RootShellProps): JSX.Element {
         tabs={TABS}
         activeId={tab}
         onSelect={(id) => navigation.getState().setTab(id as RootTab)}
+        panelId={PANEL_ID}
       />
       <Sheet
         open={switcherOpen}
