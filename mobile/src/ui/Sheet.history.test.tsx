@@ -590,7 +590,10 @@ describe("Sheet — browser/system Back history semantics", () => {
   });
 
   it("queues an unrelated app push until the pending Back completes", async () => {
-    const onClose = vi.fn();
+    const callbackEntry = { route: "/after-close", revision: 9 };
+    const onClose = vi.fn(() => {
+      history.pushState(callbackEntry, "");
+    });
     const backSpy = vi.spyOn(history, "back");
     const forwardSpy = vi.spyOn(history, "forward");
     const pushSpy = vi.spyOn(history, "pushState");
@@ -621,8 +624,11 @@ describe("Sheet — browser/system Back history semantics", () => {
 
     expect(forwardSpy).not.toHaveBeenCalled();
     expect(backSpy).toHaveBeenCalledTimes(1);
-    expect(pushSpy).toHaveBeenCalledTimes(1);
-    expect(history.state).toEqual(appEntry);
+    expect(pushSpy.mock.calls.map(([state]) => state)).toEqual([
+      appEntry,
+      callbackEntry,
+    ]);
+    expect(history.state).toEqual(callbackEntry);
     expect(onClose).toHaveBeenCalledTimes(1);
     expect(__sheetHistoryDebug()).toEqual({
       hasOwner: false,
