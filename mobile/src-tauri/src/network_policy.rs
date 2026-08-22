@@ -148,8 +148,8 @@ fn validate_ranges(
     mode: ReleaseMode,
     origin: &str,
 ) -> Result<(), NetworkError> {
-    let is_https = scheme == "https";
-    let is_http = scheme == "http";
+    let is_https = scheme == "https" || scheme == "wss";
+    let is_http = scheme == "http" || scheme == "ws";
 
     // For HTTP: every resolved address must be private (or loopback per mode).
     // For HTTPS: public or private both allowed; no range restriction.

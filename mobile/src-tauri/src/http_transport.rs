@@ -193,13 +193,10 @@ impl HubHttp {
         if !ALLOWED_METHODS.contains(&request.method.as_str()) {
             return Err(HttpError::MethodNotAllowed);
         }
-        // Validate path.
-        if !ALLOWED_PATH_PREFIXES
-            .iter()
-            .any(|prefix| request.path.starts_with(prefix))
-        {
-            return Err(HttpError::PathNotAllowed);
-        }
+        // Validate path against the allowlist (rejects dot segments,
+        // percent-encoded bypasses, backslashes, double slashes, and
+        // non-allowlisted prefixes).
+        validate_path(&request.path)?;
 
         // Serialize the body and enforce the size bound. The serialized bytes
         // are what goes on the wire; the bound is on the wire size.
@@ -230,7 +227,7 @@ impl HubHttp {
 
         // Build the full URL using the pinned origin. We connect to the
         // validated address while preserving the original Host header.
-        let url = build_url(&pinned, &request.path);
+        let url = build_url(&pinned, &request.path)?;
 
         let method = reqwest::Method::from_bytes(request.method.as_bytes())
             .map_err(|_| HttpError::MethodNotAllowed)?;
@@ -239,19 +236,11 @@ impl HubHttp {
         // use the pinned IP in the URL authority, it connects to the validated
         // address. We set the Host header to the original hostname to preserve
         // TLS SNI/certificate identity.
-        let host_header = format!(
-            "{}{}",
-            pinned.host(),
-            pinned
-                .port()
-                .checked_sub(0)
-                .map(|p| format!(":{p}"))
-                .filter(|_| {
-                    // Omit the port if it's the scheme default.
-                    !is_default_port(pinned.scheme(), pinned.port())
-                })
-                .unwrap_or_default()
-        );
+        let host_header = if is_default_port(pinned.scheme(), pinned.port()) {
+            pinned.host().to_owned()
+        } else {
+            format!("{}:{}", pinned.host(), pinned.port())
+        };
 
         let mut builder = self
             .client
@@ -329,7 +318,7 @@ impl HubHttp {
                     .duration_since(std::time::UNIX_EPOCH)
                     .map(|d| d.as_secs())
                     .unwrap_or(0),
-                profile_id: profile_id.map(|s| s.to_owned()),
+                profile_id: profile_id.and_then(crate::diagnostics::hash_profile_id),
                 operation: operation.to_owned(),
                 status,
                 byte_count,
@@ -355,24 +344,103 @@ fn is_default_port(scheme: &str, port: u16) -> bool {
     matches!((scheme, port), ("http", 80) | ("https", 443))
 }
 
+/// Validate a request path against the allowlist. Rejects dot segments
+/// (literal and percent-encoded), backslashes, double slashes, and
+/// non-allowlisted prefixes. Query strings on allowed paths are permitted.
+/// The path must be a site-relative path beginning with `/`.
+pub fn validate_path(path: &str) -> Result<(), HttpError> {
+    if path.is_empty() || !path.starts_with('/') {
+        return Err(HttpError::PathNotAllowed);
+    }
+    // Reject protocol-relative paths (// or /\) which a URL parser may
+    // interpret as a scheme-less authority.
+    if path.starts_with("//") {
+        return Err(HttpError::PathNotAllowed);
+    }
+    // Reject backslashes entirely (Windows-style separators used to confuse
+    // URL parsers and bypass prefix checks).
+    if path.contains('\\') {
+        return Err(HttpError::PathNotAllowed);
+    }
+    // Reject literal dot segments anywhere: `/../` and `/.` as a segment.
+    // These traverse above the allowed root.
+    for seg in path.split('/') {
+        if seg == ".." || seg == "." {
+            return Err(HttpError::PathNotAllowed);
+        }
+    }
+    // Reject percent-encoded dot segments (%2e == '.'). Percent-decode only
+    // the path component (not the query) and re-check for dot segments and
+    // prefix.
+    let (path_part, _query) = match path.split_once('?') {
+        Some((p, q)) => (p, Some(q)),
+        None => (path, None),
+    };
+    let decoded = percent_decode_path(path_part);
+    // Re-check dot segments in the decoded path.
+    for seg in decoded.split('/') {
+        if seg == ".." || seg == "." {
+            return Err(HttpError::PathNotAllowed);
+        }
+    }
+    // The decoded path must start with an allowed prefix.
+    if !ALLOWED_PATH_PREFIXES
+        .iter()
+        .any(|prefix| decoded.starts_with(prefix))
+    {
+        return Err(HttpError::PathNotAllowed);
+    }
+    Ok(())
+}
+
+/// Percent-decode the path component, handling %2e -> '.' and %2f -> '/'.
+fn percent_decode_path(input: &str) -> String {
+    let bytes = input.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'%' && i + 2 < bytes.len() {
+            let h = hex_val(bytes[i + 1]);
+            let l = hex_val(bytes[i + 2]);
+            if let (Some(h), Some(l)) = (h, l) {
+                out.push((h << 4) | l);
+                i += 3;
+                continue;
+            }
+        }
+        out.push(bytes[i]);
+        i += 1;
+    }
+    String::from_utf8_lossy(&out).into_owned()
+}
+
+fn hex_val(b: u8) -> Option<u8> {
+    match b {
+        b'0'..=b'9' => Some(b - b'0'),
+        b'a'..=b'f' => Some(b - b'a' + 10),
+        b'A'..=b'F' => Some(b - b'A' + 10),
+        _ => None,
+    }
+}
+
 /// Build a request URL from a pinned origin and a relative path. The URL
 /// authority is the pinned IP address; the Host header carries the original
-/// hostname separately.
-fn build_url(pinned: &PinnedOrigin, path: &str) -> url::Url {
+/// hostname separately. Returns an error if the URL cannot be parsed (no
+/// panic).
+fn build_url(pinned: &PinnedOrigin, path: &str) -> Result<url::Url, HttpError> {
     let scheme = pinned.scheme();
     let addr = pinned
         .addrs()
         .first()
         .map(|ip| ip.to_string())
-        .unwrap_or_default();
+        .ok_or(HttpError::PolicyRejected)?;
     let port = pinned.port();
     let authority = if is_default_port(scheme, port) {
         addr
     } else {
         format!("{addr}:{port}")
     };
-    url::Url::parse(&format!("{scheme}://{authority}{path}"))
-        .unwrap_or_else(|_| url::Url::parse(&format!("{scheme}://{authority}{path}")).unwrap())
+    url::Url::parse(&format!("{scheme}://{authority}{path}")).map_err(|_| HttpError::PolicyRejected)
 }
 
 // Suppress unused-import warning for Duration if not referenced on all
@@ -417,5 +485,61 @@ mod tests {
         let err = HttpError::RedirectRejected;
         assert!(!format!("{err}").contains("evil"));
         assert!(!format!("{err}").contains("http"));
+    }
+
+    // -- Path allowlist: adversarial bypass table ----------------------------
+
+    #[test]
+    fn path_allowlist_accepts_plain_allowed_prefixes() {
+        assert!(validate_path("/api/health").is_ok());
+        assert!(validate_path("/docs/intro").is_ok());
+        assert!(validate_path("/images/logo.png").is_ok());
+    }
+
+    #[test]
+    fn path_allowlist_rejects_root_and_outside_prefixes() {
+        assert!(validate_path("/").is_err());
+        assert!(validate_path("").is_err());
+        assert!(validate_path("/etc/passwd").is_err());
+        assert!(validate_path("/admin/users").is_err());
+    }
+
+    #[test]
+    fn path_allowlist_rejects_percent_encoded_dot_segments() {
+        // %2e == '.', %2f == '/'. These must not bypass the prefix check.
+        assert!(validate_path("/api/%2e%2e/etc/passwd").is_err());
+        assert!(validate_path("/api/%2e%2e%2fetc%2fpasswd").is_err());
+        assert!(validate_path("/%2e%2e/etc/passwd").is_err());
+    }
+
+    #[test]
+    fn path_allowlist_rejects_dot_segments() {
+        assert!(validate_path("/api/../etc/passwd").is_err());
+        assert!(validate_path("/api/./health").is_err());
+        assert!(validate_path("/api/../api/health").is_err());
+    }
+
+    #[test]
+    fn path_allowlist_rejects_double_slash() {
+        assert!(validate_path("//api/health").is_err());
+        assert!(validate_path("//etc/passwd").is_err());
+    }
+
+    #[test]
+    fn path_allowlist_rejects_backslashes() {
+        assert!(validate_path("\\api\\health").is_err());
+        assert!(validate_path("/api/..\\..\\etc").is_err());
+    }
+
+    #[test]
+    fn path_allowlist_rejects_mixed_case_prefix() {
+        assert!(validate_path("/API/health").is_err());
+        assert!(validate_path("/Api/health").is_err());
+    }
+
+    #[test]
+    fn path_allowlist_preserves_allowed_query() {
+        assert!(validate_path("/api/sessions?foo=bar").is_ok());
+        assert!(validate_path("/api/health?token=x&y=z").is_ok());
     }
 }
