@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
-# deploy-hub.sh — build and restart THIS worktree's launchd-managed evener-hub,
-# without ever taking the old hub down before the new one is confirmed built
-# and healthy (kata mssy).
+# deploy-hub.sh — build and restart THIS worktree's launchd-managed evener-hub.
+# The build runs while the old hub remains up; kickstart replaces it, and the
+# health probe verifies the replacement afterward (kata mssy).
 #
 # Why this exists: shipping a WebUI fix live used to mean manually finding
 # the launchd label and binary path, building embedded assets by hand,
