@@ -71,8 +71,14 @@ export interface ConnectionState {
     readonly profileId: string;
     readonly raw: string;
   }): Promise<void>;
-  /** Set a preview directly from a native scan result (no raw URL in JS). */
-  setScanPreview(result: ScanPreviewResult): Promise<void>;
+  /**
+   * Run the native scan callback inside the preview generation protocol. The
+   * callback returns an opaque preview ID + redacted origin; the store
+   * publishes the result only if the operation is still current (not
+   * superseded or cancelled). Any visible prior preview is cancelled with the
+   * service before the scan starts.
+   */
+  previewScan(scan: () => Promise<ScanPreviewResult>): Promise<void>;
   cancelPreview(): Promise<void>;
   confirmPairing(
     previewId: string,
@@ -97,6 +103,36 @@ function toRaw(input: string | PreviewInput): string {
 
 export function createConnectionStore(service: ProfileService) {
   let previewGen = 0;
+  // The preview ID of the in-flight operation (not yet published). cancelPreview
+  // uses this to cancel a pending preview that hasn't reached the visible state.
+  let inFlightPreviewId: string | null = null;
+
+  // Cancel the visible preview and any in-flight preview with the service
+  // (best-effort), then clear the visible state. Passed `get`/`set` from the
+  // store callback so this closure is not part of the public store surface.
+  async function cancelVisiblePreview(
+    get: () => ConnectionState,
+    set: (partial: Partial<ConnectionState>) => void,
+  ): Promise<void> {
+    const preview = get().preview;
+    if (preview !== null) {
+      try {
+        await service.cancelPreview({ previewId: preview.previewId });
+      } catch {
+        // best-effort; preview is transient
+      }
+    }
+    if (inFlightPreviewId !== null) {
+      const id = inFlightPreviewId;
+      inFlightPreviewId = null;
+      try {
+        await service.cancelPreview({ previewId: id });
+      } catch {
+        // best-effort
+      }
+    }
+    set({ preview: null });
+  }
 
   return create<ConnectionState>((set, get) => ({
     profiles: [],
@@ -127,11 +163,13 @@ export function createConnectionStore(service: ProfileService) {
     async previewPaste(input: string | PreviewInput) {
       const gen = ++previewGen;
       set({ previewError: null });
+      await cancelVisiblePreview(get, set);
       try {
         const result: ProfilePreview = await service.previewPaste({
           raw: toRaw(input),
         });
         if (gen !== previewGen) return; // stale — superseded or cancelled
+        inFlightPreviewId = null;
         set({
           preview: {
             previewId: result.previewId,
@@ -140,6 +178,7 @@ export function createConnectionStore(service: ProfileService) {
           },
         });
       } catch (cause) {
+        inFlightPreviewId = null;
         if (gen !== previewGen) return;
         set({ preview: null, previewError: redactError(cause) });
       }
@@ -148,12 +187,14 @@ export function createConnectionStore(service: ProfileService) {
     async previewRepair(input) {
       const gen = ++previewGen;
       set({ previewError: null });
+      await cancelVisiblePreview(get, set);
       try {
         const result: ProfilePreview = await service.previewRepair({
           profileId: input.profileId,
           raw: input.raw,
         });
         if (gen !== previewGen) return;
+        inFlightPreviewId = null;
         set({
           preview: {
             previewId: result.previewId,
@@ -162,36 +203,37 @@ export function createConnectionStore(service: ProfileService) {
           },
         });
       } catch (cause) {
+        inFlightPreviewId = null;
         if (gen !== previewGen) return;
         set({ preview: null, previewError: redactError(cause) });
       }
     },
 
-    async setScanPreview(result: ScanPreviewResult) {
+    async previewScan(scan: () => Promise<ScanPreviewResult>) {
       const gen = ++previewGen;
       set({ previewError: null });
-      // No raw URL crosses this boundary — the native layer returns only the
-      // opaque previewId and redacted origin. We set the preview directly.
-      if (gen !== previewGen) return;
-      set({
-        preview: {
-          previewId: result.previewId,
-          origin: result.origin,
-          isPrivateNetwork: isPrivateNetwork(result.origin),
-        },
-      });
+      await cancelVisiblePreview(get, set);
+      try {
+        const result = await scan();
+        if (gen !== previewGen) return; // stale — superseded or cancelled
+        inFlightPreviewId = null;
+        set({
+          preview: {
+            previewId: result.previewId,
+            origin: result.origin,
+            isPrivateNetwork: isPrivateNetwork(result.origin),
+          },
+        });
+      } catch (cause) {
+        inFlightPreviewId = null;
+        if (gen !== previewGen) return;
+        set({ preview: null, previewError: redactError(cause) });
+      }
     },
 
     async cancelPreview() {
       ++previewGen; // invalidate any in-flight preview
-      const preview = get().preview;
-      if (preview === null) return;
-      try {
-        await service.cancelPreview({ previewId: preview.previewId });
-      } catch {
-        // best-effort; preview is transient
-      }
-      set({ preview: null });
+      await cancelVisiblePreview(get, set);
     },
 
     async confirmPairing(previewId, name, allowDuplicateOrigin) {

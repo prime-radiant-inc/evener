@@ -49,6 +49,8 @@ export function ServerSwitcherSheet({
   const [repairError, setRepairError] = useState<string | null>(null);
   const [pendingRepair, setPendingRepair] = useState(false);
   const [switchError, setSwitchError] = useState<string | null>(null);
+  const [removeError, setRemoveError] = useState<string | null>(null);
+  const [pendingRemove, setPendingRemove] = useState(false);
 
   const handleSwitch = async (id: string) => {
     setSwitchError(null);
@@ -64,13 +66,21 @@ export function ServerSwitcherSheet({
   };
 
   const handleRemove = async (id: string) => {
+    setRemoveError(null);
+    setPendingRemove(true);
     try {
       await connection.getState().remove(id);
+      // Success only — close the sheet and return to the list.
+      setMode(null);
+      setRemoveError(null);
+      onClose();
     } catch {
-      // keep state, show inline error in detail
+      // Stay in the confirm-remove view; show an inline error so the user
+      // can retry. The profile is preserved and the sheet stays open.
+      setRemoveError("remove failed — try again");
+    } finally {
+      setPendingRemove(false);
     }
-    setMode(null);
-    onClose();
   };
 
   const handleRename = async (id: string) => {
@@ -125,7 +135,7 @@ export function ServerSwitcherSheet({
     if (r === "reachable") return "reachable";
     if (r === "reconnecting") return "reconnecting";
     if (r === "unreachable") return "offline";
-    return "reconnecting";
+    return "unknown";
   };
 
   return (
@@ -265,11 +275,15 @@ export function ServerSwitcherSheet({
                       ? "Another saved server will be activated."
                       : "This cannot be undone."}
                   </p>
+                  {removeError !== null ? (
+                    <p role="alert">{removeError}</p>
+                  ) : null}
                   <div style={{ display: "flex", gap: "8px" }}>
                     <Button
                       variant="danger"
                       aria-label={`confirm remove ${p.name}`}
                       onClick={() => handleRemove(p.id)}
+                      disabled={pendingRemove}
                     >
                       Confirm Remove
                     </Button>

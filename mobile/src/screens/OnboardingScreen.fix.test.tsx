@@ -1,6 +1,5 @@
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, describe, expect, it } from "vitest";
-import { SAMPLE_AUTH_URL_HTTPS } from "../test/fakeProfileService";
 import { createOnboardingServices } from "./fixture-services";
 import { OnboardingScreen } from "./OnboardingScreen";
 
@@ -15,22 +14,6 @@ describe("C2: paste field clears and no raw retained", () => {
     expect(
       (services.profile as unknown as Record<string, unknown>).recordedRaws,
     ).toBeUndefined();
-  });
-
-  it("on unmount, the active preview is cancelled", async () => {
-    const services = createOnboardingServices();
-    const { unmount } = render(<OnboardingScreen services={services} />);
-    const input = screen.getByLabelText(/authorization url|paste/i);
-    fireEvent.change(input, { target: { value: SAMPLE_AUTH_URL_HTTPS } });
-    fireEvent.click(
-      screen.getByRole("button", { name: /connect|preview|next/i }),
-    );
-    await screen.findByText(/hub\.example\.com:8443/i);
-    // Unmount should cancel the pending preview (no leak).
-    unmount();
-    // If cancelPreview was called, the service's preview map no longer has it.
-    // We can't assert on the private map, but we can assert no throw.
-    expect(true).toBe(true);
   });
 });
 
