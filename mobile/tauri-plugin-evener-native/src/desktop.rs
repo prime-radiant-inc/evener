@@ -26,6 +26,10 @@ impl<R: Runtime> EvenerNative<R> {
         *self.preview.lock().unwrap() = Some(coordinator);
     }
 
+    pub fn preview_coordinator(&self) -> Option<Arc<PreviewCoordinator>> {
+        self.preview.lock().unwrap().clone()
+    }
+
     pub fn ping(&self, payload: PingRequest) -> crate::Result<PingResponse> {
         Ok(PingResponse {
             value: payload.value,
@@ -50,5 +54,22 @@ impl<R: Runtime> EvenerNative<R> {
                 message: "Pairing scan is unavailable on this platform".to_owned(),
             },
         })
+    }
+
+    /// Secure store: desktop has no Keychain. Returns empty/not-stored.
+    /// Production mobile uses the Swift Keychain via run_mobile_plugin.
+    pub fn secure_get(&self, _payload: SecureGetRequest) -> crate::Result<SecureGetResponse> {
+        Ok(SecureGetResponse { present: false })
+    }
+
+    pub fn secure_set(&self, _payload: SecureSetRequest) -> crate::Result<SecureSetResponse> {
+        Ok(SecureSetResponse { stored: false })
+    }
+
+    pub fn secure_delete(
+        &self,
+        _payload: SecureDeleteRequest,
+    ) -> crate::Result<SecureDeleteResponse> {
+        Ok(SecureDeleteResponse { deleted: false })
     }
 }
