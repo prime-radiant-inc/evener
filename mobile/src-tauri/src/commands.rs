@@ -186,8 +186,8 @@ pub struct HubHttpExecuteRequest {
     pub request_id: String,
 }
 
-#[derive(Debug, Clone, serde::Serialize)]
-#[serde(rename_all = "camelCase")]
+#[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct HubHttpResponseMetadata {
     pub request_id: String,
     pub status: u16,
@@ -505,76 +505,7 @@ fn decode_conn_id(s: &str) -> Result<ConnectionId, String> {
 
 #[cfg(test)]
 mod tests {
-    use super::{
-        AppwireChannelEvent, AppwireCloseRequest, AppwireOpenRequest, AppwireSendRequest,
-        HubHttpExecuteRequest, HubHttpResponseMetadata,
-    };
-    use crate::http_transport::{HubResponseHeaders, PreparedHttpRequest, REQUEST_ID_HEADER};
-    use crate::profile_runtime::{
-        CancelPreviewRequest, ConfirmPairingRequest, PreviewPasteRequest, PreviewRepairRequest,
-        RemoveRequest, RenameRequest, SelectRequest,
-    };
-
-    #[test]
-    fn command_envelope_fixture_matches_rust_command_arguments() {
-        let request_id = "<requestId>".to_owned();
-        let fixture: serde_json::Value =
-            serde_json::from_str(include_str!("../fixtures/command-envelopes-v1.json")).unwrap();
-        let generated = serde_json::json!({
-            "version": 1,
-            "commands": {
-                "profile_list": { "args": {} },
-                "profile_preview_paste": { "args": { "request": PreviewPasteRequest { raw: "<redacted>".to_owned() } } },
-                "profile_preview_repair": { "args": { "request": PreviewRepairRequest { profile_id: "<profileId>".to_owned(), raw: "<redacted>".to_owned() } } },
-                "profile_confirm_pairing": { "args": { "request": ConfirmPairingRequest { preview_id: "<previewId>".to_owned(), name: "<name>".to_owned(), allow_duplicate_origin: false } } },
-                "profile_preview_cancel": { "args": { "request": CancelPreviewRequest { preview_id: "<previewId>".to_owned() } } },
-                "profile_previews_clear": { "args": {} },
-                "profile_rename": { "args": { "request": RenameRequest { profile_id: "<profileId>".to_owned(), new_name: "<newName>".to_owned() } } },
-                "profile_remove": { "args": { "request": RemoveRequest { profile_id: "<profileId>".to_owned() } } },
-                "profile_select": { "args": { "request": SelectRequest { profile_id: "<profileId>".to_owned() } } },
-                "profile_health": { "args": {} },
-                "hub_http_prepare": { "args": { "request": PreparedHttpRequest {
-                    request_id: request_id.clone(), active_profile_id: "<profileId>".to_owned(),
-                    method: "GET".to_owned(), path: "/api/example".to_owned(), body_length: 0,
-                    media_type: None,
-                } } },
-                "hub_http_upload_body": { "payload": "raw", "headers": { (REQUEST_ID_HEADER): request_id.clone() } },
-                "hub_http_request": { "args": { "request": HubHttpExecuteRequest { request_id: request_id.clone() }, "onResponse": "<channel>" } },
-                "hub_http_cancel": { "args": { "request": HubHttpExecuteRequest { request_id: request_id.clone() } } },
-                "appwire_open": { "args": { "request": AppwireOpenRequest { profile_id: "<profileId>".to_owned() }, "onEvent": "<channel>" } },
-                "appwire_send": { "args": { "request": AppwireSendRequest { connection_id: "<connectionId>".to_owned(), frame: "<frame>".to_owned() } } },
-                "appwire_close": { "args": { "request": AppwireCloseRequest { connection_id: "<connectionId>".to_owned() } } },
-                "diagnostics_snapshot": { "args": {} },
-            },
-            "dtoFixtures": {
-                "httpResponseMetadata": HubHttpResponseMetadata {
-                    request_id: request_id.clone(),
-                    status: 404,
-                    headers: HubResponseHeaders {
-                        content_type: Some("image/jpeg".to_owned()),
-                        content_length: None,
-                        etag: Some("opaque-etag".to_owned()),
-                        last_modified: None,
-                    },
-                    media_type: Some("image/jpeg".to_owned()),
-                    body_length: 6,
-                },
-                "appwireCurrentText": AppwireChannelEvent::Text {
-                    connection_id: "<profileId>:7".to_owned(),
-                    profile_id: "<profileId>".to_owned(),
-                    generation: 7,
-                    data: "current-frame".to_owned(),
-                },
-                "appwireStaleText": AppwireChannelEvent::Text {
-                    connection_id: "<profileId>:6".to_owned(),
-                    profile_id: "<profileId>".to_owned(),
-                    generation: 6,
-                    data: "stale-frame".to_owned(),
-                },
-            }
-        });
-        assert_eq!(fixture, generated);
-    }
+    use super::{AppwireChannelEvent, AppwireOpenRequest, HubHttpExecuteRequest};
 
     #[test]
     fn request_dtos_reject_secret_bearing_extra_fields() {

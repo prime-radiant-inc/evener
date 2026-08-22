@@ -102,28 +102,37 @@ pub fn run() {
 
             Ok(())
         })
-        .invoke_handler(tauri::generate_handler![
-            commands::profile_list,
-            commands::profile_preview_paste,
-            commands::profile_preview_repair,
-            commands::profile_confirm_pairing,
-            commands::profile_preview_cancel,
-            commands::profile_previews_clear,
-            commands::profile_rename,
-            commands::profile_remove,
-            commands::profile_select,
-            commands::profile_health,
-            commands::hub_http_prepare,
-            commands::hub_http_upload_body,
-            commands::hub_http_request,
-            commands::hub_http_cancel,
-            commands::appwire_open,
-            commands::appwire_send,
-            commands::appwire_close,
-            commands::diagnostics_snapshot,
-        ])
+        .invoke_handler(command_handler())
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
+}
+
+/// The single production command-registration source used by the app and
+/// cross-boundary test harnesses. The syntax-derived fixture test parses this
+/// exact `generate_handler!` invocation and compares it with every actual
+/// `#[tauri::command]` signature.
+pub fn command_handler<R: tauri::Runtime>(
+) -> impl Fn(tauri::ipc::Invoke<R>) -> bool + Send + Sync + 'static {
+    tauri::generate_handler![
+        commands::profile_list,
+        commands::profile_preview_paste,
+        commands::profile_preview_repair,
+        commands::profile_confirm_pairing,
+        commands::profile_preview_cancel,
+        commands::profile_previews_clear,
+        commands::profile_rename,
+        commands::profile_remove,
+        commands::profile_select,
+        commands::profile_health,
+        commands::hub_http_prepare,
+        commands::hub_http_upload_body,
+        commands::hub_http_request,
+        commands::hub_http_cancel,
+        commands::appwire_open,
+        commands::appwire_send,
+        commands::appwire_close,
+        commands::diagnostics_snapshot,
+    ]
 }
 
 const MOBILE_SUSPENDED_EVENT: &str = "tauri://suspended";
