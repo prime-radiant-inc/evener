@@ -2,13 +2,14 @@ package openaicompat
 
 import (
 	"bytes"
+	"encoding/base64"
 	"encoding/json"
-	"fmt"
 	"image"
 	"image/png"
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"primeradiant.com/evener/llm"
@@ -30,26 +31,13 @@ func TestRequestWithoutToolResultImagesCopiesOnlyWireImageFields(t *testing.T) {
 	if got.Content != "screenshot" || got.ToolCallID != "call_img" || got.Name != "read_file" {
 		t.Fatalf("sanitized metadata = %+v", got)
 	}
-	original := req.Messages[0].Content[0].ToolResult
-	if !bytes.Equal(original.ImageData, imageData) || original.ImageMediaType != "image/png" {
-		t.Fatalf("input was mutated: %+v", original)
-	}
+	assertToolResultImage(t, req, imageData)
 }
 
 func TestAdapter_Complete_ToolResultImage_ChatDispatchesTextOnly(t *testing.T) {
-	var gotBody map[string]any
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/chat/completions" {
-			http.Error(w, "unexpected endpoint", http.StatusNotFound)
-			return
-		}
-		if err := json.NewDecoder(r.Body).Decode(&gotBody); err != nil {
-			t.Errorf("decode request: %v", err)
-		}
-		w.Header().Set("Content-Type", "application/json")
-		_, _ = io.WriteString(w, `{"id":"chatcmpl-image","model":"compat","choices":[{"index":0,"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}]}`)
-	}))
-	t.Cleanup(srv.Close)
+	srv := newImageTestServer(t, map[string]imageTestResponse{
+		"/chat/completions": jsonTestResponse(`{"id":"chatcmpl-image","model":"compat","choices":[{"index":0,"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}]}`),
+	})
 
 	req := toolResultImageRequest(t)
 	original := append([]byte(nil), req.Messages[1].Content[0].ToolResult.ImageData...)
@@ -61,32 +49,18 @@ func TestAdapter_Complete_ToolResultImage_ChatDispatchesTextOnly(t *testing.T) {
 	if got := resp.Text(); got != "ok" {
 		t.Fatalf("response text = %q, want ok", got)
 	}
-	tool := toolMessageFromBody(t, gotBody)
-	if tool["content"] != "screenshot" {
-		t.Fatalf("tool content = %#v, want screenshot", tool["content"])
-	}
-	if req.Messages[1].Content[0].ToolResult.ImageMediaType != "image/png" ||
-		!bytes.Equal(req.Messages[1].Content[0].ToolResult.ImageData, original) {
-		t.Fatal("Complete mutated the original request")
-	}
+	assertChatToolMessage(t, srv.requestBody("/chat/completions"))
+	assertToolResultImage(t, req, original)
 }
 
 func TestAdapter_Stream_ToolResultImage_ChatDispatchesTextOnly(t *testing.T) {
-	var gotBody map[string]any
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/chat/completions" {
-			http.Error(w, "unexpected endpoint", http.StatusNotFound)
-			return
-		}
-		if err := json.NewDecoder(r.Body).Decode(&gotBody); err != nil {
-			t.Errorf("decode request: %v", err)
-		}
-		w.Header().Set("Content-Type", "text/event-stream")
-		_, _ = fmt.Fprint(w, "data: {\"id\":\"chatcmpl-image\",\"model\":\"compat\",\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\",\"content\":\"ok\"},\"finish_reason\":\"stop\"}]}\n\ndata: [DONE]\n\n")
-	}))
-	t.Cleanup(srv.Close)
+	srv := newImageTestServer(t, map[string]imageTestResponse{
+		"/chat/completions": sseTestResponse("data: {\"id\":\"chatcmpl-image\",\"model\":\"compat\",\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\",\"content\":\"ok\"},\"finish_reason\":\"stop\"}]}\n\ndata: [DONE]\n\n"),
+	})
 
-	stream, err := (&Adapter{APIKey: "key", BaseURL: srv.URL, Client: srv.Client()}).Stream(t.Context(), toolResultImageRequest(t))
+	req := toolResultImageRequest(t)
+	original := append([]byte(nil), req.Messages[1].Content[0].ToolResult.ImageData...)
+	stream, err := (&Adapter{APIKey: "key", BaseURL: srv.URL, Client: srv.Client()}).Stream(t.Context(), req)
 	if err != nil {
 		t.Fatalf("Stream: %v", err)
 	}
@@ -102,34 +76,15 @@ func TestAdapter_Stream_ToolResultImage_ChatDispatchesTextOnly(t *testing.T) {
 	if !finished {
 		t.Fatal("stream did not finish")
 	}
-	tool := toolMessageFromBody(t, gotBody)
-	if tool["content"] != "screenshot" {
-		t.Fatalf("tool content = %#v, want screenshot", tool["content"])
-	}
+	assertChatToolMessage(t, srv.requestBody("/chat/completions"))
+	assertToolResultImage(t, req, original)
 }
 
 func TestAdapter_AdaptiveComplete_ToolResultImage_SanitizesChatFallback(t *testing.T) {
-	var responsesBody, chatBody map[string]any
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		switch r.URL.Path {
-		case "/responses":
-			if err := json.NewDecoder(r.Body).Decode(&responsesBody); err != nil {
-				t.Errorf("decode Responses request: %v", err)
-			}
-			w.Header().Set("Content-Type", "application/json")
-			w.WriteHeader(http.StatusNotFound)
-			_, _ = io.WriteString(w, `{"error":{"message":"responses unavailable"}}`)
-		case "/chat/completions":
-			if err := json.NewDecoder(r.Body).Decode(&chatBody); err != nil {
-				t.Errorf("decode Chat request: %v", err)
-			}
-			w.Header().Set("Content-Type", "application/json")
-			_, _ = io.WriteString(w, `{"id":"chatcmpl-image","model":"compat","choices":[{"index":0,"message":{"role":"assistant","content":"fallback ok"},"finish_reason":"stop"}]}`)
-		default:
-			http.Error(w, "unexpected endpoint", http.StatusNotFound)
-		}
-	}))
-	t.Cleanup(srv.Close)
+	srv := newImageTestServer(t, map[string]imageTestResponse{
+		"/responses":        jsonTestResponseWithStatus(http.StatusNotFound, `{"error":{"message":"responses unavailable"}}`),
+		"/chat/completions": jsonTestResponse(`{"id":"chatcmpl-image","model":"compat","choices":[{"index":0,"message":{"role":"assistant","content":"fallback ok"},"finish_reason":"stop"}]}`),
+	})
 
 	req := toolResultImageRequest(t)
 	original := append([]byte(nil), req.Messages[1].Content[0].ToolResult.ImageData...)
@@ -141,44 +96,117 @@ func TestAdapter_AdaptiveComplete_ToolResultImage_SanitizesChatFallback(t *testi
 	if resp.Text() != "fallback ok" {
 		t.Fatalf("response text = %q, want fallback ok", resp.Text())
 	}
-	if responsesBody == nil {
+	if srv.requestBody("/responses") == nil {
 		t.Fatal("adaptive Responses attempt was not made")
 	}
-	tool := toolMessageFromBody(t, chatBody)
-	if tool["content"] != "screenshot" {
-		t.Fatalf("fallback tool content = %#v, want screenshot", tool["content"])
-	}
-	if req.Messages[1].Content[0].ToolResult.ImageMediaType != "image/png" ||
-		!bytes.Equal(req.Messages[1].Content[0].ToolResult.ImageData, original) {
-		t.Fatal("fallback mutated the original request")
-	}
+	assertChatToolMessage(t, srv.requestBody("/chat/completions"))
+	assertToolResultImage(t, req, original)
 }
 
 func TestAdapter_AdaptiveComplete_ToolResultImage_PreservesResponsesImage(t *testing.T) {
-	var responsesBody map[string]any
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/responses" {
-			http.Error(w, "unexpected endpoint", http.StatusNotFound)
-			return
-		}
-		if err := json.NewDecoder(r.Body).Decode(&responsesBody); err != nil {
-			t.Errorf("decode Responses request: %v", err)
-		}
-		w.Header().Set("Content-Type", "application/json")
-		_, _ = io.WriteString(w, `{"id":"resp-image","model":"compat","output":[{"type":"message","content":[{"type":"output_text","text":"responses ok"}]}]}`)
-	}))
-	t.Cleanup(srv.Close)
+	srv := newImageTestServer(t, map[string]imageTestResponse{
+		"/responses": jsonTestResponse(`{"id":"resp-image","model":"compat","output":[{"type":"message","content":[{"type":"output_text","text":"responses ok"}]}]}`),
+	})
 
-	resp, err := (&Adapter{APIKey: "key", BaseURL: srv.URL, Client: srv.Client(), Adaptive: true}).Complete(t.Context(), toolResultImageRequest(t))
+	req := toolResultImageRequest(t)
+	original := append([]byte(nil), req.Messages[1].Content[0].ToolResult.ImageData...)
+	resp, err := (&Adapter{APIKey: "key", BaseURL: srv.URL, Client: srv.Client(), Adaptive: true}).Complete(t.Context(), req)
 	if err != nil {
 		t.Fatalf("Complete: %v", err)
 	}
 	if resp.Text() != "responses ok" {
 		t.Fatalf("response text = %q, want responses ok", resp.Text())
 	}
-	if !responsesBodyHasInputImage(responsesBody) {
-		t.Fatalf("Responses request lost input_image: %#v", responsesBody)
+	assertResponsesInputImage(t, srv.requestBody("/responses"), original)
+	assertToolResultImage(t, req, original)
+}
+
+type imageTestResponse struct {
+	status      int
+	contentType string
+	body        string
+}
+
+type imageTestServer struct {
+	*httptest.Server
+	bodies map[string]map[string]any
+}
+
+func newImageTestServer(t *testing.T, routes map[string]imageTestResponse) *imageTestServer {
+	t.Helper()
+	srv := &imageTestServer{bodies: make(map[string]map[string]any)}
+	srv.Server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		response, ok := routes[r.URL.Path]
+		if !ok {
+			http.Error(w, "unexpected endpoint", http.StatusNotFound)
+			return
+		}
+		srv.bodies[r.URL.Path] = decodeImageTestRequest(t, r)
+		writeImageTestResponse(w, response)
+	}))
+	t.Cleanup(srv.Close)
+	return srv
+}
+
+func (s *imageTestServer) requestBody(path string) map[string]any {
+	return s.bodies[path]
+}
+
+func decodeImageTestRequest(t *testing.T, r *http.Request) map[string]any {
+	t.Helper()
+	var body map[string]any
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		t.Errorf("decode %s request: %v", r.URL.Path, err)
 	}
+	return body
+}
+
+func jsonTestResponse(body string) imageTestResponse {
+	return jsonTestResponseWithStatus(http.StatusOK, body)
+}
+
+func jsonTestResponseWithStatus(status int, body string) imageTestResponse {
+	return imageTestResponse{status: status, contentType: "application/json", body: body}
+}
+
+func sseTestResponse(body string) imageTestResponse {
+	return imageTestResponse{status: http.StatusOK, contentType: "text/event-stream", body: body}
+}
+
+func writeImageTestResponse(w http.ResponseWriter, response imageTestResponse) {
+	w.Header().Set("Content-Type", response.contentType)
+	w.WriteHeader(response.status)
+	_, _ = io.WriteString(w, response.body)
+}
+
+func assertChatToolMessage(t *testing.T, body map[string]any) {
+	t.Helper()
+	tool := toolMessageFromBody(t, body)
+	if tool["content"] != "screenshot" {
+		t.Fatalf("tool content = %#v, want screenshot", tool["content"])
+	}
+	for _, field := range []string{"image_url", "input_image", "ImageData", "ImageMediaType"} {
+		if _, ok := tool[field]; ok {
+			t.Errorf("tool message contains %q: %#v", field, tool)
+		}
+	}
+}
+
+func assertToolResultImage(t *testing.T, req llm.Request, expected []byte) {
+	t.Helper()
+	for _, message := range req.Messages {
+		for _, part := range message.Content {
+			if part.ToolResult == nil {
+				continue
+			}
+			result := part.ToolResult
+			if result.ImageMediaType != "image/png" || !bytes.Equal(result.ImageData, expected) {
+				t.Fatalf("source tool result image = %q/%x, want image/png/%x", result.ImageMediaType, result.ImageData, expected)
+			}
+			return
+		}
+	}
+	t.Fatal("source request has no tool result image")
 }
 
 func toolResultImageRequest(t *testing.T) llm.Request {
@@ -214,22 +242,39 @@ func toolMessageFromBody(t *testing.T, body map[string]any) map[string]any {
 	return nil
 }
 
-func responsesBodyHasInputImage(body map[string]any) bool {
-	items, _ := body["input"].([]any)
-	for _, raw := range items {
+func assertResponsesInputImage(t *testing.T, body map[string]any, expected []byte) {
+	t.Helper()
+	input, ok := body["input"].([]any)
+	if !ok {
+		t.Fatalf("input = %#v", body["input"])
+	}
+	for _, raw := range input {
 		item, _ := raw.(map[string]any)
 		if item["type"] != "function_call_output" {
 			continue
 		}
-		parts, _ := item["output"].([]any)
-		for _, partRaw := range parts {
+		output, _ := item["output"].([]any)
+		for _, partRaw := range output {
 			part, _ := partRaw.(map[string]any)
-			if part["type"] == "input_image" {
-				return true
+			if part["type"] != "input_image" {
+				continue
 			}
+			imageURL, ok := part["image_url"].(string)
+			const prefix = "data:image/png;base64,"
+			if !ok || !strings.HasPrefix(imageURL, prefix) {
+				t.Fatalf("input image URL = %#v, want %s...", part["image_url"], prefix)
+			}
+			decoded, err := base64.StdEncoding.DecodeString(strings.TrimPrefix(imageURL, prefix))
+			if err != nil {
+				t.Fatalf("decode input image URL: %v", err)
+			}
+			if !bytes.Equal(decoded, expected) {
+				t.Fatalf("input image payload = %x, want %x", decoded, expected)
+			}
+			return
 		}
 	}
-	return false
+	t.Fatalf("no image-bearing function_call_output in %#v", input)
 }
 
 func testPNG(t *testing.T) []byte {
