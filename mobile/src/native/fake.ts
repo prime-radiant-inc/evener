@@ -9,7 +9,6 @@
 import type { NativeTransport } from "./client";
 import type {
   ContentSizeCategory,
-  HapticKind,
   LifecycleState,
   NativeCommand,
   NativeResponse,
