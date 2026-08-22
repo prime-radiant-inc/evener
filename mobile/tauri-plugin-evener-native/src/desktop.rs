@@ -36,30 +36,29 @@ impl<R: Runtime> EvenerNative<R> {
         })
     }
 
-    /// When a preview coordinator is installed, the scan path delegates to
-    /// it. Desktop has no camera scanner, so the command returns
+    /// Desktop has no camera scanner, so the scan command returns
     /// `pairing_unavailable` for the scan trigger; the app crate's paste
     /// pairing goes through `ProfileStore::preview_pairing` directly.
-    pub fn scan_and_preview_pairing(
+    pub fn scan_raw_text(
         &self,
         _payload: ScanAndPreviewRequest,
-    ) -> crate::Result<ScanAndPreviewResponse> {
+    ) -> crate::Result<MobileScanResult> {
         let _ = self.handle.clone();
-        Ok(ScanAndPreviewResponse {
-            version: crate::NATIVE_BRIDGE_VERSION,
-            response_type: "error".to_owned(),
-            error: NativeError {
-                id: "scan-and-preview".to_owned(),
-                kind: NativeErrorKind::PairingUnavailable,
-                message: "Pairing scan is unavailable on this platform".to_owned(),
-            },
-        })
+        Ok(MobileScanResult::unavailable())
     }
 
     /// Secure store: desktop has no Keychain. Returns empty/not-stored.
     /// Production mobile uses the Swift Keychain via run_mobile_plugin.
     pub fn secure_get(&self, _payload: SecureGetRequest) -> crate::Result<SecureGetResponse> {
         Ok(SecureGetResponse { present: false })
+    }
+
+    /// Desktop has no Keychain, so capability retrieval returns None.
+    pub fn secure_get_capability(
+        &self,
+        _payload: SecureGetRequest,
+    ) -> crate::Result<SecureGetCapabilityResponse> {
+        Ok(SecureGetCapabilityResponse { capability: None })
     }
 
     pub fn secure_set(&self, _payload: SecureSetRequest) -> crate::Result<SecureSetResponse> {

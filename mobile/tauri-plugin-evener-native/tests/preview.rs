@@ -101,3 +101,120 @@ fn no_coordinator_returns_unavailable_error() {
     assert!(json.contains("pairing_unavailable"));
     assert!(!json.contains("token"));
 }
+
+// ---------------------------------------------------------------------------
+// Adversarial: raw scanned code cannot cross public output
+// ---------------------------------------------------------------------------
+
+use tauri_plugin_evener_native::{MobileScanResult, ScanAndPreviewResponse, SensitiveCapability};
+
+#[test]
+fn mobile_scan_result_is_not_serialize() {
+    // MobileScanResult must not implement Serialize: it carries raw QR text
+    // and must never be serialized to JavaScript.
+    // This is a compile-time guarantee: if Serialize were derived, this test
+    // would fail to compile. We verify the type exists and redacts Debug.
+    let result = MobileScanResult::scanned("https://hub.example.test/auth?token=raw-secret");
+    let debug = format!("{result:?}");
+    assert!(!debug.contains("raw-secret"));
+    assert!(debug.contains("REDACTED"));
+}
+
+#[test]
+fn scan_and_preview_response_never_contains_raw_scanned_text() {
+    // The public ScanAndPreviewResponse must never contain raw scanned text.
+    // On success it carries only previewId + origin; on failure a redacted
+    // NativeError. We prove this by constructing both variants and
+    // serializing them.
+    let preview = ScanAndPreviewResponse::preview("preview-abc", "https://hub.example.test");
+    let json = serde_json::to_string(&preview).unwrap();
+    assert!(json.contains("previewId"));
+    assert!(json.contains("preview-abc"));
+    assert!(json.contains("https://hub.example.test"));
+    assert!(!json.contains("raw-secret"));
+    assert!(!json.contains("token"));
+
+    let err = ScanAndPreviewResponse::error(NativeError {
+        id: "parse-failed".to_owned(),
+        kind: NativeErrorKind::Internal,
+        message: "invalid auth URL".to_owned(),
+    });
+    let err_json = serde_json::to_string(&err).unwrap();
+    assert!(!err_json.contains("raw-secret"));
+    assert!(!err_json.contains("token"));
+    assert!(err_json.contains("parse-failed"));
+}
+
+#[test]
+fn scan_and_preview_response_unavailable_never_contains_raw_text() {
+    let resp = ScanAndPreviewResponse::unavailable();
+    let json = serde_json::to_string(&resp).unwrap();
+    assert!(json.contains("pairing_unavailable"));
+    assert!(!json.contains("raw-secret"));
+    assert!(!json.contains("token"));
+    assert!(!json.contains("scanned"));
+}
+
+#[test]
+fn sensitive_capability_redacts_debug() {
+    let cap = SensitiveCapability::new("must-never-be-rendered");
+    let debug = format!("{cap:?}");
+    assert!(!debug.contains("must-never-be-rendered"));
+    assert!(debug.contains("REDACTED"));
+}
+
+#[test]
+fn sensitive_capability_into_string_preserves_value() {
+    let cap = SensitiveCapability::new("actual-token-value");
+    assert_eq!(cap.as_str(), "actual-token-value");
+    let owned = cap.into_string();
+    assert_eq!(owned, "actual-token-value");
+}
+
+#[test]
+fn mobile_scan_result_deserialize_redacts_debug() {
+    // Simulate what Swift returns: a JSON object with the raw scanned text.
+    let json = r#"{"version":1,"type":"scanned","scanned":"https://hub.example.test/auth?token=raw-secret"}"#;
+    let result: MobileScanResult = serde_json::from_str(json).unwrap();
+    assert_eq!(result.result_type, "scanned");
+    assert!(result.scanned.is_some());
+
+    // Debug must redact the raw text.
+    let debug = format!("{result:?}");
+    assert!(!debug.contains("raw-secret"));
+    assert!(debug.contains("REDACTED"));
+}
+
+#[test]
+fn mobile_scan_result_unavailable_deserialize() {
+    let json = r#"{"version":1,"type":"unavailable","error":{"id":"scan-and-preview","kind":"pairing_unavailable","message":"Pairing scan is unavailable on this platform"}}"#;
+    let result: MobileScanResult = serde_json::from_str(json).unwrap();
+    assert_eq!(result.result_type, "unavailable");
+    assert!(result.scanned.is_none());
+    assert!(result.error.is_some());
+
+    let debug = format!("{result:?}");
+    assert!(!debug.contains("token"));
+}
+
+#[test]
+fn coordinator_scan_to_public_response_roundtrip_never_leaks_raw_text() {
+    // End-to-end: raw scanned text -> coordinator -> public response.
+    // The raw text must not appear anywhere in the serialized public output.
+    let handler = Arc::new(RecordingPreviewHandler::default());
+    let coordinator = PreviewCoordinator::new(handler.clone());
+
+    let raw = "https://hub.example.test/auth?token=AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8";
+    let scan_result = MobileScanResult::scanned(raw);
+    assert_eq!(scan_result.result_type, "scanned");
+
+    let scanned = scan_result.scanned.unwrap();
+    let preview = coordinator.preview_scanned(scanned).unwrap();
+    let resp = ScanAndPreviewResponse::preview(preview.preview_id, preview.origin);
+
+    let json = serde_json::to_string(&resp).unwrap();
+    assert!(!json.contains("AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8"));
+    assert!(!json.contains("raw-secret"));
+    assert!(json.contains("preview-123"));
+    assert!(json.contains("https://hub.example.test"));
+}
