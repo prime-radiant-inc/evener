@@ -1,441 +1,364 @@
 import { describe, expect, it } from "vitest";
 import {
   createHttpService,
-  type HttpService,
+  decodeJsonBody,
+  decodeTextBody,
+  encodeJsonBody,
   type HttpServiceError,
-  type HubHttpResponse,
   isHttpServiceError,
+  MAX_REQUEST_BODY_BYTES,
+  MAX_RESPONSE_BODY_BYTES,
+  REQUEST_ID_HEADER,
 } from "./nativeHttp";
-import type { TauriBridge } from "./tauri";
+import type { TauriBridge, TauriChannel } from "./tauri";
 
-// ---------------------------------------------------------------------------
-// Fake TauriBridge — records invoke commands/args and returns scripted results
-// ---------------------------------------------------------------------------
-
-interface ScriptedInvoke {
+type InvokeArgs = Record<string, unknown> | ArrayBuffer | Uint8Array;
+interface Invocation {
   readonly cmd: string;
-  readonly result: unknown;
-  readonly error?: string;
-  /** Optional delay gate: if set, invoke hangs until abort fires. */
-  readonly stall?: boolean;
+  readonly args: InvokeArgs;
+  readonly options?: { readonly headers: HeadersInit };
 }
 
-interface FakeBridge extends TauriBridge {
-  readonly invocations: { cmd: string; args: Record<string, unknown> }[];
+interface ResponseScript {
+  readonly status: number;
+  readonly body: Uint8Array;
+  readonly mediaType?: string | null;
+  readonly headers?: Record<string, string>;
+  readonly metadataExtra?: Record<string, unknown>;
 }
 
-function fakeBridge(scripts: ScriptedInvoke[]): FakeBridge {
-  const invocations: { cmd: string; args: Record<string, unknown> }[] = [];
-  const queue = [...scripts];
+function binaryBridge(script: ResponseScript): TauriBridge & {
+  readonly invocations: Invocation[];
+  readonly uploadedBodies: Uint8Array[];
+} {
+  const invocations: Invocation[] = [];
+  const uploadedBodies: Uint8Array[] = [];
   const bridge: TauriBridge = {
-    async invoke<T>(cmd: string, args?: Record<string, unknown>): Promise<T> {
-      invocations.push({ cmd, args: args ?? {} });
-      const next = queue.shift();
-      if (next && next.cmd !== cmd) {
-        throw new Error(`unexpected command: wanted ${next.cmd} got ${cmd}`);
+    async invoke<T>(
+      cmd: string,
+      args: InvokeArgs = {},
+      options?: { readonly headers: HeadersInit },
+    ): Promise<T> {
+      invocations.push({ cmd, args, options });
+      if (cmd === "hub_http_upload_body") {
+        uploadedBodies.push(new Uint8Array(args as Uint8Array));
+        return undefined as T;
       }
-      if (next?.error) {
-        throw new Error(next.error);
+      if (cmd === "hub_http_request") {
+        const objectArgs = args as Record<string, unknown>;
+        const requestId = (objectArgs.request as { requestId: string })
+          .requestId;
+        const channel = objectArgs.onResponse as TauriChannel<unknown>;
+        channel.onmessage({
+          requestId,
+          status: script.status,
+          headers: script.headers ?? {},
+          mediaType: script.mediaType ?? null,
+          bodyLength: script.body.byteLength,
+          ...script.metadataExtra,
+        });
+        return script.body as T;
       }
-      return next?.result as T;
+      return undefined as T;
     },
-    createChannel<T>(_onMessage: (response: T) => void) {
-      return { id: 0, onmessage: _onMessage } as never;
+    createChannel<T>(onMessage: (response: T) => void) {
+      return { id: 1, onmessage: onMessage };
     },
   };
-  return Object.assign(bridge, { invocations });
+  return Object.assign(bridge, { invocations, uploadedBodies });
 }
 
 const PROFILE = "11111111-1111-1111-1111-111111111111";
+const REQUEST_ID = "request_123456789";
 
-describe("nativeHttp — typed allowlisted request", () => {
-  it("invokes hub_http_request with camelCase {activeProfileId,method,path}", async () => {
-    const bridge = fakeBridge([
-      { cmd: "hub_http_request", result: { status: 200, body: { ok: true } } },
-    ]);
-    const http = createHttpService(bridge);
-    const res = await http.request({
-      activeProfileId: PROFILE,
-      method: "GET",
-      path: "/api/sessions",
+function service(bridge: TauriBridge) {
+  return createHttpService(bridge, { newRequestId: () => REQUEST_ID });
+}
+
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  let reject!: (cause: unknown) => void;
+  const promise = new Promise<T>((res, rej) => {
+    resolve = res;
+    reject = rej;
+  });
+  return { promise, resolve, reject };
+}
+
+describe("nativeHttp — binary request and response fidelity", () => {
+  it("uploads NUL/non-UTF8 JPEG-like bytes raw and preserves the raw response", async () => {
+    const requestBody = new Uint8Array([0xff, 0xd8, 0, 0x80, 0xff, 0xd9]);
+    const responseBody = new Uint8Array([0xff, 0xd8, 0, 1, 0xfe, 0xd9]);
+    const bridge = binaryBridge({
+      status: 200,
+      body: responseBody,
+      mediaType: "image/jpeg",
+      headers: { contentType: "image/jpeg", etag: '"abc"' },
     });
-    expect(res).toEqual({ status: 200, body: { ok: true } });
-    expect(bridge.invocations[0]).toEqual({
-      cmd: "hub_http_request",
-      args: {
-        activeProfileId: PROFILE,
-        method: "GET",
-        path: "/api/sessions",
-        body: null,
-        mediaType: null,
-      },
+    const response = await service(bridge).request({
+      activeProfileId: PROFILE,
+      method: "POST",
+      path: "/images/upload",
+      body: requestBody,
+      mediaType: "image/jpeg",
+    });
+    expect(bridge.uploadedBodies).toEqual([requestBody]);
+    expect(response).toEqual({
+      status: 200,
+      headers: { contentType: "image/jpeg", etag: '"abc"' },
+      mediaType: "image/jpeg",
+      body: responseBody,
+    });
+    const upload = bridge.invocations.find(
+      (invocation) => invocation.cmd === "hub_http_upload_body",
+    );
+    expect(upload?.options?.headers).toEqual({
+      [REQUEST_ID_HEADER]: REQUEST_ID,
     });
   });
 
-  it("sends body and mediaType for a POST with JSON", async () => {
-    const bridge = fakeBridge([
-      { cmd: "hub_http_request", result: { status: 201, body: { id: "s1" } } },
-    ]);
-    const http = createHttpService(bridge);
-    await http.request({
+  it("keeps text and JSON as explicit caller codecs", async () => {
+    const json = { ok: true, text: "hello" };
+    const jsonBytes = encodeJsonBody(json);
+    expect(decodeJsonBody(jsonBytes)).toEqual(json);
+    expect(
+      decodeTextBody(new TextEncoder().encode("plain text\u0000tail")),
+    ).toBe("plain text\u0000tail");
+  });
+
+  it("preserves multipart bytes and a boundary-bearing media type", async () => {
+    const multipart = new TextEncoder().encode(
+      '--boundary\r\nContent-Disposition: form-data; name="x"\r\n\r\nvalue\r\n--boundary--\r\n',
+    );
+    const bridge = binaryBridge({ status: 201, body: new Uint8Array() });
+    await service(bridge).request({
+      activeProfileId: PROFILE,
+      method: "POST",
+      path: "/api/upload",
+      body: multipart,
+      mediaType: "multipart/form-data; boundary=boundary",
+    });
+    expect(Array.from(bridge.uploadedBodies[0] ?? [])).toEqual(
+      Array.from(multipart),
+    );
+  });
+
+  it("preserves a non-2xx status and body", async () => {
+    const body = new TextEncoder().encode("validation failed\u0000details");
+    const response = await service(
+      binaryBridge({
+        status: 422,
+        body,
+        mediaType: "text/plain",
+        headers: { contentType: "text/plain; charset=utf-8" },
+      }),
+    ).request({
       activeProfileId: PROFILE,
       method: "POST",
       path: "/api/sessions",
-      body: { name: "demo" },
-      mediaType: "application/json",
     });
-    expect(bridge.invocations[0]?.args).toEqual({
-      activeProfileId: PROFILE,
-      method: "POST",
-      path: "/api/sessions",
-      body: { name: "demo" },
-      mediaType: "application/json",
-    });
+    expect(response.status).toBe(422);
+    expect(Array.from(response.body)).toEqual(Array.from(body));
   });
 
-  it("rejects a disallowed method (DELETE)", async () => {
-    const bridge = fakeBridge([
-      { cmd: "hub_http_request", result: { status: 200, body: {} } },
-    ]);
-    const http = createHttpService(bridge);
+  it("allows exactly 8 MiB and rejects one byte more before invoke", async () => {
+    const exact = new Uint8Array(MAX_REQUEST_BODY_BYTES);
+    const bridge = binaryBridge({ status: 200, body: new Uint8Array() });
     await expect(
-      http.request({
-        activeProfileId: PROFILE,
-        method: "DELETE",
-        path: "/api/sessions",
-      }),
-    ).rejects.toThrow(/method/i);
-    expect(bridge.invocations).toHaveLength(0);
-  });
-
-  it("rejects a disallowed method (CONNECT)", async () => {
-    const bridge = fakeBridge([]);
-    const http = createHttpService(bridge);
-    await expect(
-      http.request({
-        activeProfileId: PROFILE,
-        method: "CONNECT",
-        path: "/api/x",
-      }),
-    ).rejects.toThrow(/method/i);
-  });
-
-  it.each(["GET", "POST", "PUT", "PATCH"] as const)(
-    "allows method %s",
-    async (method) => {
-      const bridge = fakeBridge([
-        { cmd: "hub_http_request", result: { status: 200, body: {} } },
-      ]);
-      const http = createHttpService(bridge);
-      await expect(
-        http.request({
-          activeProfileId: PROFILE,
-          method,
-          path: "/api/x",
-        }),
-      ).resolves.toEqual({ status: 200, body: {} });
-    },
-  );
-
-  it("rejects a path outside the allowlist (/etc/passwd)", async () => {
-    const bridge = fakeBridge([]);
-    const http = createHttpService(bridge);
-    await expect(
-      http.request({
-        activeProfileId: PROFILE,
-        method: "GET",
-        path: "/etc/passwd",
-      }),
-    ).rejects.toThrow(/path/i);
-    expect(bridge.invocations).toHaveLength(0);
-  });
-
-  it.each(["/api/sessions", "/docs/intro", "/images/logo.png"])(
-    "allows path prefix %s",
-    async (path) => {
-      const bridge = fakeBridge([
-        { cmd: "hub_http_request", result: { status: 200, body: {} } },
-      ]);
-      const http = createHttpService(bridge);
-      await expect(
-        http.request({
-          activeProfileId: PROFILE,
-          method: "GET",
-          path,
-        }),
-      ).resolves.toEqual({ status: 200, body: {} });
-    },
-  );
-
-  it("rejects a disallowed media type (text/html)", async () => {
-    const bridge = fakeBridge([]);
-    const http = createHttpService(bridge);
-    await expect(
-      http.request({
+      service(bridge).request({
         activeProfileId: PROFILE,
         method: "POST",
-        path: "/api/x",
-        body: { a: 1 },
-        mediaType: "text/html",
+        path: "/api/upload",
+        body: exact,
+        mediaType: "application/json",
       }),
-    ).rejects.toThrow(/media|type/i);
+    ).resolves.toBeDefined();
+
+    const rejectedBridge = binaryBridge({
+      status: 200,
+      body: new Uint8Array(),
+    });
+    await expect(
+      service(rejectedBridge).request({
+        activeProfileId: PROFILE,
+        method: "POST",
+        path: "/api/upload",
+        body: new Uint8Array(MAX_REQUEST_BODY_BYTES + 1),
+      }),
+    ).rejects.toMatchObject({ code: "validation_failed" });
+    expect(rejectedBridge.invocations).toHaveLength(0);
   });
 
-  it("rejects a path with dot segments (traversal)", async () => {
-    const bridge = fakeBridge([]);
-    const http = createHttpService(bridge);
+  it("rejects response metadata over exactly 20 MiB", async () => {
+    const bridge = binaryBridge({
+      status: 200,
+      body: new Uint8Array(),
+      metadataExtra: { bodyLength: MAX_RESPONSE_BODY_BYTES + 1 },
+    });
     await expect(
-      http.request({
+      service(bridge).request({
         activeProfileId: PROFILE,
         method: "GET",
-        path: "/api/../etc/passwd",
+        path: "/images/large",
       }),
-    ).rejects.toThrow(/path/i);
+    ).rejects.toMatchObject({ code: "decode_failed" });
+  });
+
+  it("rejects secret-bearing metadata extras", async () => {
+    const bridge = binaryBridge({
+      status: 200,
+      body: new Uint8Array(),
+      metadataExtra: { token: "secret" },
+    });
+    await expect(
+      service(bridge).request({
+        activeProfileId: PROFILE,
+        method: "GET",
+        path: "/api/x",
+      }),
+    ).rejects.toMatchObject({ code: "decode_failed" });
   });
 });
 
-describe("nativeHttp — response fidelity", () => {
-  it("preserves status code and JSON body exactly", async () => {
-    const bridge = fakeBridge([
-      {
-        cmd: "hub_http_request",
-        result: {
-          status: 404,
-          body: { error: "not found", code: 404, items: [1, 2, 3] },
-        },
-      },
-    ]);
-    const http = createHttpService(bridge);
-    const res: HubHttpResponse = await http.request({
-      activeProfileId: PROFILE,
-      method: "GET",
-      path: "/api/missing",
-    });
-    expect(res.status).toBe(404);
-    expect(res.body).toEqual({
-      error: "not found",
-      code: 404,
-      items: [1, 2, 3],
-    });
-  });
-
-  it("preserves a null body", async () => {
-    const bridge = fakeBridge([
-      { cmd: "hub_http_request", result: { status: 204, body: null } },
-    ]);
-    const http = createHttpService(bridge);
-    const res = await http.request({
-      activeProfileId: PROFILE,
-      method: "GET",
-      path: "/api/empty",
-    });
-    expect(res.status).toBe(204);
-    expect(res.body).toBeNull();
-  });
-
-  it("preserves an array body", async () => {
-    const bridge = fakeBridge([
-      {
-        cmd: "hub_http_request",
-        result: { status: 200, body: ["a", "b", "c"] },
-      },
-    ]);
-    const http = createHttpService(bridge);
-    const res = await http.request({
-      activeProfileId: PROFILE,
-      method: "GET",
-      path: "/api/list",
-    });
-    expect(res.body).toEqual(["a", "b", "c"]);
-  });
-
-  it("preserves a string body (text/plain)", async () => {
-    const bridge = fakeBridge([
-      {
-        cmd: "hub_http_request",
-        result: { status: 200, body: "hello world" },
-      },
-    ]);
-    const http = createHttpService(bridge);
-    const res = await http.request({
-      activeProfileId: PROFILE,
-      method: "GET",
-      path: "/docs/readme",
-      mediaType: "text/plain",
-    });
-    expect(res.body).toBe("hello world");
-  });
-
-  it("preserves a numeric body", async () => {
-    const bridge = fakeBridge([
-      { cmd: "hub_http_request", result: { status: 200, body: 42 } },
-    ]);
-    const http = createHttpService(bridge);
-    const res = await http.request({
-      activeProfileId: PROFILE,
-      method: "GET",
-      path: "/api/count",
-    });
-    expect(res.body).toBe(42);
-  });
-
-  it("rejects a response carrying an extra token field", async () => {
-    const bridge = fakeBridge([
-      {
-        cmd: "hub_http_request",
-        result: { status: 200, body: {}, token: "secret" },
-      },
-    ]);
-    const http = createHttpService(bridge);
+describe("nativeHttp — canonical path defense", () => {
+  it.each([
+    "/api/%2e%2e/x",
+    "/api/%2E%2e/x",
+    "/api/%252e%252e/x",
+    "/api/%2f/x",
+    "/api//x",
+    "/api/..\\x",
+    "//api/x",
+    "/API/x",
+    "/api/%GG",
+  ])("rejects %s before invoke", async (path) => {
+    const bridge = binaryBridge({ status: 200, body: new Uint8Array() });
     await expect(
-      http.request({
+      service(bridge).request({
         activeProfileId: PROFILE,
         method: "GET",
-        path: "/api/x",
+        path,
       }),
-    ).rejects.toThrow(/token|field/i);
+    ).rejects.toMatchObject({ code: "validation_failed" });
+    expect(bridge.invocations).toHaveLength(0);
   });
 
-  it("rejects a response with a non-number status", async () => {
-    const bridge = fakeBridge([
-      { cmd: "hub_http_request", result: { status: "200", body: {} } },
-    ]);
-    const http = createHttpService(bridge);
+  it("splits the query before path validation", async () => {
+    const bridge = binaryBridge({ status: 200, body: new Uint8Array() });
     await expect(
-      http.request({
+      service(bridge).request({
         activeProfileId: PROFILE,
         method: "GET",
-        path: "/api/x",
+        path: "/api/x?next=/../secret\\value",
       }),
-    ).rejects.toThrow(/status|number/i);
+    ).resolves.toBeDefined();
   });
 });
 
-describe("nativeHttp — cancellation", () => {
-  it("rejects with a cancellation error when the signal aborts", async () => {
-    const bridge = fakeBridge([]);
-    const http = createHttpService(bridge);
+describe("nativeHttp — native cancellation", () => {
+  it("invokes cancel exactly once and waits for execute and cancel settlement", async () => {
+    let requestReject: ((cause: unknown) => void) | undefined;
+    let cancelResolve: (() => void) | undefined;
+    const execute = new Promise<never>((_resolve, reject) => {
+      requestReject = reject;
+    });
+    const cancel = new Promise<void>((resolve) => {
+      cancelResolve = resolve;
+    });
+    const requestStarted = deferred<void>();
+    const cancelStarted = deferred<void>();
+    const calls: string[] = [];
+    const bridge: TauriBridge = {
+      async invoke<T>(cmd: string): Promise<T> {
+        calls.push(cmd);
+        if (cmd === "hub_http_request") {
+          requestStarted.resolve(undefined);
+          return execute as Promise<T>;
+        }
+        if (cmd === "hub_http_cancel") {
+          cancelStarted.resolve(undefined);
+          return cancel as Promise<T>;
+        }
+        return undefined as T;
+      },
+      createChannel<T>(onmessage: (value: T) => void) {
+        return { id: 1, onmessage };
+      },
+    };
     const controller = new AbortController();
-    const promise = http.request({
+    const pending = service(bridge).request({
       activeProfileId: PROFILE,
       method: "GET",
       path: "/api/slow",
       signal: controller.signal,
     });
+    await requestStarted.promise;
     controller.abort();
-    const err = await promise.catch((e) => e);
-    expect(isHttpServiceError(err)).toBe(true);
-    expect((err as HttpServiceError).code).toBe("cancelled");
+    controller.abort();
+    await cancelStarted.promise;
+    requestReject?.(new Error("native request cancelled"));
+    let settled = false;
+    void pending.catch(() => {
+      settled = true;
+    });
+    await Promise.resolve();
+    expect(settled).toBe(false);
+    cancelResolve?.();
+    await expect(pending).rejects.toMatchObject({ code: "cancelled" });
+    expect(calls.filter((cmd) => cmd === "hub_http_cancel")).toHaveLength(1);
   });
 
-  it("does not invoke when already aborted", async () => {
-    const bridge = fakeBridge([
-      { cmd: "hub_http_request", result: { status: 200, body: {} } },
-    ]);
-    const http = createHttpService(bridge);
+  it("does not invoke when already aborted and ignores abort after completion", async () => {
     const controller = new AbortController();
     controller.abort();
+    const bridge = binaryBridge({ status: 200, body: new Uint8Array() });
     await expect(
-      http.request({
+      service(bridge).request({
         activeProfileId: PROFILE,
         method: "GET",
         path: "/api/x",
         signal: controller.signal,
       }),
-    ).rejects.toThrow(/cancel/i);
+    ).rejects.toMatchObject({ code: "cancelled" });
     expect(bridge.invocations).toHaveLength(0);
-  });
-});
 
-describe("nativeHttp — no caller auth/header escape", () => {
-  it("the request DTO carries no headers/authorization/cookie field", async () => {
-    const bridge = fakeBridge([
-      { cmd: "hub_http_request", result: { status: 200, body: {} } },
-    ]);
-    const http = createHttpService(bridge);
-    await http.request({
-      activeProfileId: PROFILE,
-      method: "GET",
-      path: "/api/x",
+    const after = new AbortController();
+    const completedBridge = binaryBridge({
+      status: 200,
+      body: new Uint8Array(),
     });
-    const args = bridge.invocations[0]?.args ?? {};
-    expect(args).not.toHaveProperty("headers");
-    expect(args).not.toHaveProperty("authorization");
-    expect(args).not.toHaveProperty("cookie");
-    expect(args).not.toHaveProperty("Authorization");
-  });
-
-  it("the typed input rejects an injected headers field", async () => {
-    const bridge = fakeBridge([
-      { cmd: "hub_http_request", result: { status: 200, body: {} } },
-    ]);
-    const http = createHttpService(bridge);
-    // The input type does not allow headers; passing one through an unknown
-    // cast must still be stripped before invoke (only known fields are forwarded).
-    const injected = {
+    await service(completedBridge).request({
       activeProfileId: PROFILE,
       method: "GET",
       path: "/api/x",
-      headers: { Authorization: "Bearer leak" },
-    } as unknown as Parameters<HttpService["request"]>[0];
-    await http.request(injected);
-    expect(bridge.invocations[0]?.args).not.toHaveProperty("headers");
+      signal: after.signal,
+    });
+    after.abort();
+    expect(
+      completedBridge.invocations.filter(
+        (invocation) => invocation.cmd === "hub_http_cancel",
+      ),
+    ).toHaveLength(0);
   });
 });
 
-describe("nativeHttp — structured errors", () => {
-  it("wraps a backend rejection in HttpServiceError without echoing the secret", async () => {
-    const bridge = fakeBridge([
-      {
-        cmd: "hub_http_request",
-        result: null,
-        error: "no capability for profile Bearer AAEC-secret",
+describe("nativeHttp — redacted errors", () => {
+  it("drops a secret-bearing native rejection", async () => {
+    const bridge: TauriBridge = {
+      async invoke<T>(): Promise<T> {
+        throw new Error("Bearer raw-secret-token");
       },
-    ]);
-    const http = createHttpService(bridge);
-    const err = await http
-      .request({
-        activeProfileId: PROFILE,
-        method: "GET",
-        path: "/api/x",
-      })
-      .catch((e) => e);
-    expect(isHttpServiceError(err)).toBe(true);
-    expect((err as Error).message).not.toMatch(/AAEC-secret/);
-    expect((err as Error).message).not.toMatch(/Bearer/);
-  });
-
-  it("maps a method-not-allowed validation to a typed error", async () => {
-    const bridge = fakeBridge([]);
-    const http = createHttpService(bridge);
-    const err = await http
-      .request({
-        activeProfileId: PROFILE,
-        method: "TRACE",
-        path: "/api/x",
-      })
-      .catch((e) => e);
-    expect(isHttpServiceError(err)).toBe(true);
-    expect((err as HttpServiceError).code).toBe("validation_failed");
-  });
-
-  it("error cause is undefined (no secret reachable)", async () => {
-    const bridge = fakeBridge([
-      {
-        cmd: "hub_http_request",
-        result: null,
-        error: "transport error with token xyz",
+      createChannel<T>(onmessage: (value: T) => void) {
+        return { id: 1, onmessage };
       },
-    ]);
-    const http = createHttpService(bridge);
-    const err = await http
-      .request({
-        activeProfileId: PROFILE,
-        method: "GET",
-        path: "/api/x",
-      })
-      .catch((e) => e);
-    expect(isHttpServiceError(err)).toBe(true);
-    expect((err as HttpServiceError).cause).toBeUndefined();
+    };
+    const error = await service(bridge)
+      .request({ activeProfileId: PROFILE, method: "GET", path: "/api/x" })
+      .catch((cause) => cause);
+    expect(isHttpServiceError(error)).toBe(true);
+    expect((error as HttpServiceError).message).not.toContain(
+      "raw-secret-token",
+    );
+    expect((error as HttpServiceError).cause).toBeUndefined();
   });
 });

@@ -255,6 +255,8 @@ export interface ProfileService {
   previewPaste(input: PreviewPasteInput): Promise<ProfilePreview>;
   previewRepair(input: PreviewRepairInput): Promise<ProfilePreview>;
   confirmPairing(input: ConfirmPairingInput): Promise<ProfileRedacted>;
+  cancelPreview(input: { readonly previewId: string }): Promise<void>;
+  clearPreviews(): Promise<void>;
   rename(input: RenameInput): Promise<ProfileRedacted>;
   remove(input: ProfileIdInput): Promise<SelectResult>;
   select(input: ProfileIdInput): Promise<SelectResult>;
@@ -275,7 +277,9 @@ export function createProfileService(bridge: TauriBridge): ProfileService {
     async previewPaste(input) {
       try {
         return decodePreview(
-          await bridge.invoke("profile_preview_paste", { raw: input.raw }),
+          await bridge.invoke("profile_preview_paste", {
+            request: { raw: input.raw },
+          }),
         );
       } catch (cause) {
         if (isProfileServiceError(cause)) throw cause;
@@ -291,8 +295,7 @@ export function createProfileService(bridge: TauriBridge): ProfileService {
       try {
         return decodePreview(
           await bridge.invoke("profile_preview_repair", {
-            profileId: input.profileId,
-            raw: input.raw,
+            request: { profileId: input.profileId, raw: input.raw },
           }),
         );
       } catch (cause) {
@@ -309,9 +312,11 @@ export function createProfileService(bridge: TauriBridge): ProfileService {
       try {
         return decodeProfile(
           await bridge.invoke("profile_confirm_pairing", {
-            previewId: input.previewId,
-            name: input.name,
-            allowDuplicateOrigin: input.allowDuplicateOrigin ?? false,
+            request: {
+              previewId: input.previewId,
+              name: input.name,
+              allowDuplicateOrigin: input.allowDuplicateOrigin ?? false,
+            },
           }),
         );
       } catch (cause) {
@@ -324,12 +329,37 @@ export function createProfileService(bridge: TauriBridge): ProfileService {
       }
     },
 
+    async cancelPreview(input) {
+      try {
+        await bridge.invoke("profile_preview_cancel", {
+          request: { previewId: input.previewId },
+        });
+      } catch (cause) {
+        throw redactedInvokeError(
+          "command_failed",
+          "profile_preview_cancel",
+          cause,
+        );
+      }
+    },
+
+    async clearPreviews() {
+      try {
+        await bridge.invoke("profile_previews_clear");
+      } catch (cause) {
+        throw redactedInvokeError(
+          "command_failed",
+          "profile_previews_clear",
+          cause,
+        );
+      }
+    },
+
     async rename(input) {
       try {
         return decodeProfile(
           await bridge.invoke("profile_rename", {
-            profileId: input.profileId,
-            newName: input.newName,
+            request: { profileId: input.profileId, newName: input.newName },
           }),
         );
       } catch (cause) {
@@ -341,7 +371,9 @@ export function createProfileService(bridge: TauriBridge): ProfileService {
     async remove(input) {
       try {
         return decodeSelectResult(
-          await bridge.invoke("profile_remove", { profileId: input.profileId }),
+          await bridge.invoke("profile_remove", {
+            request: { profileId: input.profileId },
+          }),
         );
       } catch (cause) {
         if (isProfileServiceError(cause)) throw cause;
@@ -352,7 +384,9 @@ export function createProfileService(bridge: TauriBridge): ProfileService {
     async select(input) {
       try {
         return decodeSelectResult(
-          await bridge.invoke("profile_select", { profileId: input.profileId }),
+          await bridge.invoke("profile_select", {
+            request: { profileId: input.profileId },
+          }),
         );
       } catch (cause) {
         if (isProfileServiceError(cause)) throw cause;

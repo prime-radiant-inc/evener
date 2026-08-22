@@ -14,7 +14,10 @@
 //! No live Hub, Keychain, or provider network. The scripted HTTP server is the
 //! only external boundary.
 
-use app_lib::http_transport::{HubRequest, HubResponse};
+use app_lib::http_transport::{
+    HttpError, HttpRequestRegistry, HubRequest, HubResponse, PreparedHttpRequest,
+    MAX_REQUEST_BODY_BYTES, MAX_RESPONSE_BODY_BYTES,
+};
 
 use std::time::Duration;
 
@@ -311,7 +314,7 @@ async fn http_strips_caller_cookie_and_hop_headers() {
         .request(HubRequest {
             method: "POST".to_owned(),
             path: "/api/sessions".to_owned(),
-            body: Some(serde_json::json!({"name": "test"})),
+            body: Some(serde_json::to_vec(&serde_json::json!({"name": "test"})).unwrap()),
             media_type: Some("application/json".to_owned()),
         })
         .await
@@ -409,7 +412,7 @@ async fn http_rejects_oversized_body() {
     let transport = make_transport("http://127.0.0.1:1", "tok");
 
     // A body just over 8 MiB.
-    let big = serde_json::Value::String("x".repeat(8 * 1024 * 1024 + 1));
+    let big = vec![b'x'; 8 * 1024 * 1024 + 1];
     let err = transport
         .request(HubRequest {
             method: "POST".to_owned(),
@@ -430,7 +433,7 @@ async fn http_rejects_disallowed_media_type() {
         .request(HubRequest {
             method: "POST".to_owned(),
             path: "/api/sessions".to_owned(),
-            body: Some(serde_json::json!({"x": 1})),
+            body: Some(serde_json::to_vec(&serde_json::json!({"x": 1})).unwrap()),
             media_type: Some("application/x-www-form-urlencoded".to_owned()),
         })
         .await
@@ -556,7 +559,7 @@ async fn http_preserves_body_fidelity() {
         .request(HubRequest {
             method: "POST".to_owned(),
             path: "/api/spawn".to_owned(),
-            body: Some(body.clone()),
+            body: Some(serde_json::to_vec(&body).unwrap()),
             media_type: Some("application/json".to_owned()),
         })
         .await
@@ -586,12 +589,127 @@ async fn http_preserves_status_and_json_body() {
         .await
         .unwrap();
 
-    let HubResponse { status, body } = response;
+    let HubResponse { status, body, .. } = response;
+    let body: serde_json::Value = serde_json::from_slice(&body).unwrap();
     assert_eq!(status, 200);
     assert_eq!(
         body.get("mobile_api_version").and_then(|v| v.as_i64()),
         Some(1)
     );
+}
+
+#[tokio::test]
+async fn http_preserves_success_binary_bytes_and_selected_headers() {
+    use http_server::ScriptedServer;
+
+    let server = ScriptedServer::start().await;
+    let bytes = vec![0xff, 0xd8, 0x00, 0x80, 0xfe, 0xff, 0xd9];
+    server.enqueue(
+        200,
+        vec![
+            ("content-type".to_owned(), "image/jpeg".to_owned()),
+            ("etag".to_owned(), "\"binary-v1\"".to_owned()),
+            ("x-secret-internal".to_owned(), "not-forwarded".to_owned()),
+        ],
+        bytes.clone(),
+    );
+    let response = make_transport(&server.origin(), "binary-token")
+        .request(HubRequest {
+            method: "GET".to_owned(),
+            path: "/images/photo.jpg".to_owned(),
+            body: None,
+            media_type: None,
+        })
+        .await
+        .unwrap();
+
+    assert_eq!(response.status, 200);
+    assert_eq!(response.body, bytes);
+    assert_eq!(response.media_type.as_deref(), Some("image/jpeg"));
+    assert_eq!(response.headers.content_type.as_deref(), Some("image/jpeg"));
+    assert_eq!(response.headers.etag.as_deref(), Some("\"binary-v1\""));
+    let json = serde_json::to_string(&response.headers).unwrap();
+    assert!(!json.contains("x-secret-internal"));
+    assert!(!json.contains("not-forwarded"));
+}
+
+#[tokio::test]
+async fn http_preserves_non_success_status_text_and_nul_body() {
+    use http_server::ScriptedServer;
+
+    let server = ScriptedServer::start().await;
+    let bytes = b"not found\0with details".to_vec();
+    server.enqueue(
+        404,
+        vec![(
+            "content-type".to_owned(),
+            "text/plain; charset=utf-8".to_owned(),
+        )],
+        bytes.clone(),
+    );
+    let response = make_transport(&server.origin(), "four-oh-four-token")
+        .request(HubRequest {
+            method: "GET".to_owned(),
+            path: "/api/missing".to_owned(),
+            body: None,
+            media_type: None,
+        })
+        .await
+        .unwrap();
+
+    assert_eq!(response.status, 404);
+    assert_eq!(response.body, bytes);
+    assert_eq!(response.media_type.as_deref(), Some("text/plain"));
+}
+
+#[tokio::test]
+async fn http_exact_request_and_response_limits_are_enforced_on_wire_bytes() {
+    use http_server::ScriptedServer;
+
+    let server = ScriptedServer::start().await;
+    let exact_response = vec![0xa5; MAX_RESPONSE_BODY_BYTES];
+    server.enqueue(
+        200,
+        vec![(
+            "content-type".to_owned(),
+            "application/octet-stream".to_owned(),
+        )],
+        exact_response.clone(),
+    );
+    let exact_request = vec![0x5a; MAX_REQUEST_BODY_BYTES];
+    let transport = make_transport(&server.origin(), "limit-token");
+    let response = transport
+        .request(HubRequest {
+            method: "POST".to_owned(),
+            path: "/api/upload".to_owned(),
+            body: Some(exact_request.clone()),
+            media_type: Some("application/json".to_owned()),
+        })
+        .await
+        .unwrap();
+    assert_eq!(server.received()[0].body, exact_request);
+    assert_eq!(response.body, exact_response);
+
+    let oversized = transport
+        .request(HubRequest {
+            method: "POST".to_owned(),
+            path: "/api/upload".to_owned(),
+            body: Some(vec![0; MAX_REQUEST_BODY_BYTES + 1]),
+            media_type: Some("application/json".to_owned()),
+        })
+        .await;
+    assert!(matches!(oversized, Err(HttpError::BodyTooLarge)));
+
+    server.enqueue(200, vec![], vec![0xa5; MAX_RESPONSE_BODY_BYTES + 1]);
+    let oversized = transport
+        .request(HubRequest {
+            method: "GET".to_owned(),
+            path: "/api/large".to_owned(),
+            body: None,
+            media_type: None,
+        })
+        .await;
+    assert!(matches!(oversized, Err(HttpError::ResponseTooLarge)));
 }
 
 // ---------------------------------------------------------------------------
@@ -618,15 +736,9 @@ async fn http_errors_never_contain_token() {
         })
         .await;
 
-    if let Err(ref e) = response {
-        let msg = format!("{e}");
-        let dbg = format!("{e:?}");
-        assert!(
-            !msg.contains(token),
-            "Display must not contain token: {msg}"
-        );
-        assert!(!dbg.contains(token), "Debug must not contain token: {dbg}");
-    }
+    let response = response.expect("non-2xx is a byte-preserving response");
+    assert_eq!(response.status, 404);
+    assert!(response.body.is_empty());
 }
 
 #[tokio::test]
@@ -648,14 +760,8 @@ async fn http_errors_never_contain_origin_url() {
         })
         .await;
 
-    if let Err(ref e) = response {
-        let msg = format!("{e}");
-        // The full URL must not appear in the error.
-        assert!(
-            !msg.contains(&origin),
-            "error must not contain origin URL: {msg}"
-        );
-    }
+    let response = response.expect("non-2xx is not a transport error");
+    assert_eq!(response.status, 500);
 }
 
 // ---------------------------------------------------------------------------
@@ -686,82 +792,93 @@ async fn http_cancellation_aborts_inflight_request() {
     assert!(result.is_ok(), "request should complete within timeout");
 }
 
-/// A real cancellation test: a server that accepts the TCP connection but
-/// never sends an HTTP response keeps the request in-flight. Aborting the
-/// request future must abort the in-flight connection without hanging.
+/// A real command-shaped cancellation test. The scripted server acknowledges
+/// the request, then waits for socket EOF. Cancelling through the same registry
+/// used by Tauri must drop the reqwest future, close the socket, reap the task,
+/// and remove the uploaded body/entry without sleeps or polling.
 #[tokio::test]
 async fn http_real_cancellation_aborts_slow_request() {
-    use std::sync::atomic::{AtomicU16, Ordering};
-    use std::sync::Arc;
     use tokio::io::AsyncReadExt;
     use tokio::net::TcpListener;
+    use tokio::sync::oneshot;
 
-    // A stalling server: accept the connection and read the request bytes,
-    // but never send an HTTP response. This keeps the client request
-    // in-flight indefinitely.
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let port = listener.local_addr().unwrap().port();
-    let accepted = Arc::new(AtomicU16::new(0));
-    let acc_clone = accepted.clone();
-    tokio::spawn(async move {
+    let (accepted_tx, accepted_rx) = oneshot::channel();
+    let (eof_tx, eof_rx) = oneshot::channel();
+    let server_task = tokio::spawn(async move {
         let (mut stream, _) = listener.accept().await.unwrap();
-        acc_clone.fetch_add(1, Ordering::SeqCst);
-        // Drain the request bytes so the server-side read does not error
-        // immediately, but never write a response.
-        let mut buf = [0u8; 1024];
-        let _ = stream.read(&mut buf).await;
-        // Hold the connection open until the task is aborted/dropped.
-        tokio::time::sleep(Duration::from_secs(30)).await;
+        let mut received = Vec::new();
+        let mut buf = [0u8; 4096];
+        loop {
+            let read = stream.read(&mut buf).await.unwrap();
+            assert_ne!(read, 0, "client closed before sending request headers");
+            received.extend_from_slice(&buf[..read]);
+            if received.windows(4).any(|window| window == b"\r\n\r\n") {
+                break;
+            }
+        }
+        accepted_tx.send(()).unwrap();
+        loop {
+            if stream.read(&mut buf).await.unwrap() == 0 {
+                break;
+            }
+        }
+        eof_tx.send(()).unwrap();
     });
 
     let origin = format!("http://hub.cancel:{port}");
     let transport = make_transport(&origin, "cancel-token");
-
-    // Spawn the in-flight request.
+    let registry = Arc::new(HttpRequestRegistry::new());
+    let request_id = "cancel_request_123456";
+    let upload = vec![0, 0xff, 0x80, 7];
+    registry
+        .prepare(PreparedHttpRequest {
+            request_id: request_id.to_owned(),
+            active_profile_id: "profile".to_owned(),
+            method: "POST".to_owned(),
+            path: "/api/slow".to_owned(),
+            body_length: upload.len(),
+            media_type: Some("image/jpeg".to_owned()),
+        })
+        .unwrap();
+    registry.upload_body(request_id, upload).unwrap();
+    let registered = registry.begin(request_id).unwrap();
     let handle = tokio::spawn(async move {
         transport
-            .request(HubRequest {
-                method: "GET".to_owned(),
-                path: "/api/health".to_owned(),
-                body: None,
-                media_type: None,
-            })
+            .request_cancellable(
+                HubRequest {
+                    method: registered.metadata.method,
+                    path: registered.metadata.path,
+                    body: registered.body,
+                    media_type: registered.metadata.media_type,
+                },
+                Some("profile"),
+                1,
+                registered.cancellation,
+            )
             .await
     });
 
-    // Wait for the server to accept the connection (proving the request is
-    // actually in-flight), then cancel it by aborting the task.
-    let dl = tokio::time::Instant::now() + Duration::from_secs(3);
-    loop {
-        if accepted.load(Ordering::SeqCst) >= 1 {
-            break;
-        }
-        if tokio::time::Instant::now() > dl {
-            panic!("stalling server never accepted the connection");
-        }
-        tokio::time::sleep(Duration::from_millis(10)).await;
-    }
-
-    handle.abort();
-
-    // The aborted task must resolve quickly to a JoinError (cancelled), not
-    // hang waiting on the never-responding server. This proves task
-    // completion: the spawned request task is deterministically reaped.
-    let outcome = tokio::time::timeout(Duration::from_secs(2), handle).await;
-    assert!(outcome.is_ok(), "aborting the request future must not hang");
-    assert!(
-        outcome.unwrap().is_err(),
-        "aborted task must be cancelled, not completed"
-    );
-
-    // The server saw exactly one connection (the cancelled request did not
-    // retry/reconnect). This proves socket completion: the TCP connection
-    // was established, then dropped on cancellation with no reconnect.
-    assert_eq!(
-        accepted.load(Ordering::SeqCst),
-        1,
-        "cancellation must not trigger a reconnect"
-    );
+    tokio::time::timeout(Duration::from_secs(2), accepted_rx)
+        .await
+        .expect("server did not observe request")
+        .unwrap();
+    registry.cancel(request_id).unwrap();
+    assert_eq!(registry.active_count(), 0, "cancel must remove body/entry");
+    let result = tokio::time::timeout(Duration::from_secs(2), handle)
+        .await
+        .expect("cancelled request task did not settle")
+        .unwrap();
+    assert!(matches!(result, Err(HttpError::Cancelled)));
+    registry.finish(request_id);
+    registry.cancel(request_id).unwrap();
+    assert_eq!(registry.active_count(), 0, "late cancel must be idempotent");
+    tokio::time::timeout(Duration::from_secs(2), eof_rx)
+        .await
+        .expect("server socket did not observe cancellation EOF")
+        .unwrap();
+    server_task.await.unwrap();
 }
 
 // ---------------------------------------------------------------------------

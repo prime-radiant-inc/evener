@@ -125,7 +125,7 @@ describe("nativeProfiles — preview paste", () => {
     });
     expect(bridge.invocations[0]).toEqual({
       cmd: "profile_preview_paste",
-      args: { raw: "evener://pair/abc" },
+      args: { request: { raw: "evener://pair/abc" } },
     });
   });
 
@@ -183,7 +183,7 @@ describe("nativeProfiles — preview repair (re-pair)", () => {
     });
     expect(bridge.invocations[0]).toEqual({
       cmd: "profile_preview_repair",
-      args: { profileId: "p1", raw: "evener://pair/def" },
+      args: { request: { profileId: "p1", raw: "evener://pair/def" } },
     });
   });
 });
@@ -210,7 +210,13 @@ describe("nativeProfiles — confirm pairing (add / re-pair)", () => {
     });
     expect(bridge.invocations[0]).toEqual({
       cmd: "profile_confirm_pairing",
-      args: { previewId: "pv1", name: "laptop", allowDuplicateOrigin: true },
+      args: {
+        request: {
+          previewId: "pv1",
+          name: "laptop",
+          allowDuplicateOrigin: true,
+        },
+      },
     });
   });
 
@@ -224,9 +230,11 @@ describe("nativeProfiles — confirm pairing (add / re-pair)", () => {
     const svc = createProfileService(bridge);
     await svc.confirmPairing({ previewId: "pv1", name: "laptop" });
     expect(bridge.invocations[0]?.args).toEqual({
-      previewId: "pv1",
-      name: "laptop",
-      allowDuplicateOrigin: false,
+      request: {
+        previewId: "pv1",
+        name: "laptop",
+        allowDuplicateOrigin: false,
+      },
     });
   });
 
@@ -267,7 +275,7 @@ describe("nativeProfiles — rename", () => {
     });
     expect(bridge.invocations[0]).toEqual({
       cmd: "profile_rename",
-      args: { profileId: "p1", newName: "phone" },
+      args: { request: { profileId: "p1", newName: "phone" } },
     });
   });
 });
@@ -285,7 +293,7 @@ describe("nativeProfiles — remove", () => {
     expect(res).toEqual({ profileId: "p2", generation: 7 });
     expect(bridge.invocations[0]).toEqual({
       cmd: "profile_remove",
-      args: { profileId: "p1" },
+      args: { request: { profileId: "p1" } },
     });
   });
 
@@ -322,7 +330,7 @@ describe("nativeProfiles — select", () => {
     expect(res).toEqual({ profileId: "p1", generation: 3 });
     expect(bridge.invocations[0]).toEqual({
       cmd: "profile_select",
-      args: { profileId: "p1" },
+      args: { request: { profileId: "p1" } },
     });
   });
 });
