@@ -18,10 +18,19 @@ import {
   SAMPLE_AUTH_URL_HTTP,
   SAMPLE_AUTH_URL_HTTPS,
 } from "../test/fakeProfileService";
-import { createConnectionStore, type ScanPreviewResult } from "./connection";
+import {
+  type ConnectionPreview,
+  createConnectionStore,
+  type ScanPreviewResult,
+} from "./connection";
 
 function storeWith(service: ProfileService) {
   return createConnectionStore(service);
+}
+
+function exactPreviewId(preview: ConnectionPreview | null): string {
+  expect(preview).not.toBeNull();
+  return (preview as ConnectionPreview).previewId;
 }
 
 const HTTPS_ORIGIN = "https://hub.example.com:8443";
@@ -39,8 +48,8 @@ describe("preview protocol — new op cancels visible prior (exact IDs)", () => 
     });
     const store = storeWith(service);
     await store.getState().previewPaste(SAMPLE_AUTH_URL_HTTPS);
-    const firstId = store.getState().preview?.previewId;
-    expect(firstId).toBeDefined();
+    const firstId = exactPreviewId(store.getState().preview);
+    expect(firstId).toMatch(/^pv-/);
 
     await store.getState().previewPaste(SAMPLE_AUTH_URL_HTTP);
     // Exact ID cancelled — no conditional.
@@ -55,8 +64,8 @@ describe("preview protocol — new op cancels visible prior (exact IDs)", () => 
     });
     const store = storeWith(service);
     await store.getState().previewPaste(SAMPLE_AUTH_URL_HTTPS);
-    const firstId = store.getState().preview?.previewId;
-    expect(firstId).toBeDefined();
+    const firstId = exactPreviewId(store.getState().preview);
+    expect(firstId).toMatch(/^pv-/);
 
     await store.getState().previewRepair({
       profileId: "p1",
@@ -73,8 +82,8 @@ describe("preview protocol — new op cancels visible prior (exact IDs)", () => 
     });
     const store = storeWith(service);
     await store.getState().previewPaste(SAMPLE_AUTH_URL_HTTPS);
-    const firstId = store.getState().preview?.previewId;
-    expect(firstId).toBeDefined();
+    const firstId = exactPreviewId(store.getState().preview);
+    expect(firstId).toMatch(/^pv-/);
 
     const scan: ScanPreviewResult = {
       previewId: "scan-1",
@@ -287,8 +296,8 @@ describe("preview protocol — visible replacement and duplicate-cancel race", (
     });
     const store = storeWith(service);
     await store.getState().previewPaste(SAMPLE_AUTH_URL_HTTPS);
-    const firstId = store.getState().preview?.previewId;
-    expect(firstId).toBeDefined();
+    const firstId = exactPreviewId(store.getState().preview);
+    expect(firstId).toMatch(/^pv-/);
 
     await store.getState().previewPaste(SAMPLE_AUTH_URL_HTTP);
     const cancels = service.cancelPreviewCalls.filter((id) => id === firstId);
@@ -303,8 +312,8 @@ describe("preview protocol — visible replacement and duplicate-cancel race", (
     });
     const store = storeWith(service);
     await store.getState().previewPaste(SAMPLE_AUTH_URL_HTTPS);
-    const firstId = store.getState().preview?.previewId;
-    expect(firstId).toBeDefined();
+    const firstId = exactPreviewId(store.getState().preview);
+    expect(firstId).toMatch(/^pv-/);
 
     // Cancel clears the visible preview.
     await store.getState().cancelPreview();
@@ -389,6 +398,58 @@ describe("preview protocol — cancelPreview clears UI synchronously", () => {
     expect(store.getState().preview).toBeNull();
     await cancelP;
   });
+
+  it("superseding during blocked visible cancellation never invokes obsolete paste", async () => {
+    const service = new FakeProfileService({
+      profiles: [],
+      activeProfileId: null,
+    });
+    const store = storeWith(service);
+    await store.getState().previewPaste(SAMPLE_AUTH_URL_HTTPS);
+    const visibleId = exactPreviewId(store.getState().preview);
+    expect(visibleId).toMatch(/^pv-/);
+
+    service.gateCancelPreview();
+    const obsolete = store.getState().previewPaste(SAMPLE_AUTH_URL_HTTPS);
+    expect(store.getState().preview).toBeNull();
+    await waitFor(() =>
+      expect(service.isCancelPreviewGatePending()).toBe(true),
+    );
+
+    await store.getState().previewPaste(SAMPLE_AUTH_URL_HTTP);
+    expect(service.previewPasteCallCount).toBe(2);
+    service.resolveCancelPreviewGate();
+    await obsolete;
+
+    expect(service.previewPasteCallCount).toBe(2);
+    expect(service.cancelPreviewCalls).toEqual([visibleId]);
+    expect(store.getState().preview?.origin).toBe(HTTP_ORIGIN);
+  });
+
+  it("cancel generation during blocked visible cancellation never invokes obsolete paste", async () => {
+    const service = new FakeProfileService({
+      profiles: [],
+      activeProfileId: null,
+    });
+    const store = storeWith(service);
+    await store.getState().previewPaste(SAMPLE_AUTH_URL_HTTPS);
+    const visibleId = exactPreviewId(store.getState().preview);
+    expect(visibleId).toMatch(/^pv-/);
+
+    service.gateCancelPreview();
+    const obsolete = store.getState().previewPaste(SAMPLE_AUTH_URL_HTTP);
+    expect(store.getState().preview).toBeNull();
+    await waitFor(() =>
+      expect(service.isCancelPreviewGatePending()).toBe(true),
+    );
+    await store.getState().cancelPreview();
+    service.resolveCancelPreviewGate();
+    await obsolete;
+
+    expect(service.previewPasteCallCount).toBe(1);
+    expect(service.cancelPreviewCalls).toEqual([visibleId]);
+    expect(store.getState().preview).toBeNull();
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -403,10 +464,11 @@ describe("preview protocol — confirm consumes preview without cancelling", () 
     });
     const store = storeWith(service);
     await store.getState().previewPaste(SAMPLE_AUTH_URL_HTTPS);
-    const previewId = store.getState().preview?.previewId;
-    expect(previewId).toBeDefined();
+    const previewId = exactPreviewId(store.getState().preview);
+    expect(previewId).toMatch(/^pv-/);
 
-    await store.getState().confirmPairing(previewId ?? "", "my hub", false);
+    await store.getState().confirmPairing(previewId, "my hub", false);
+    await store.getState().cancelPreview();
 
     // Preview is cleared.
     expect(store.getState().preview).toBeNull();
@@ -425,14 +487,29 @@ describe("preview protocol — confirm consumes preview without cancelling", () 
       profileId: "p1",
       raw: SAMPLE_AUTH_URL_HTTPS,
     });
-    const previewId = store.getState().preview?.previewId;
-    expect(previewId).toBeDefined();
+    const previewId = exactPreviewId(store.getState().preview);
+    expect(previewId).toMatch(/^pv-/);
 
-    await store.getState().rePair("p1", previewId ?? "", "laptop", false);
+    await store.getState().rePair("p1", previewId, "laptop", false);
+    await store.getState().cancelPreview();
 
     expect(store.getState().preview).toBeNull();
     expect(store.getState().previewError).toBeNull();
     expect(service.cancelPreviewCalls).not.toContain(previewId);
+  });
+
+  it("an intentional no-result scan publishes and cancels nothing", async () => {
+    const service = new FakeProfileService({
+      profiles: [],
+      activeProfileId: null,
+    });
+    const store = storeWith(service);
+
+    await store.getState().previewScan(async () => null);
+
+    expect(store.getState().preview).toBeNull();
+    expect(store.getState().previewError).toBeNull();
+    expect(service.cancelPreviewCalls).toEqual([]);
   });
 
   it("confirmPairing failure preserves preview for retry", async () => {
@@ -443,12 +520,12 @@ describe("preview protocol — confirm consumes preview without cancelling", () 
     service.failOnce("confirmPairing");
     const store = storeWith(service);
     await store.getState().previewPaste(SAMPLE_AUTH_URL_HTTPS);
-    const previewId = store.getState().preview?.previewId;
-    expect(previewId).toBeDefined();
+    const previewId = exactPreviewId(store.getState().preview);
+    expect(previewId).toMatch(/^pv-/);
 
     await store
       .getState()
-      .confirmPairing(previewId ?? "", "my hub", false)
+      .confirmPairing(previewId, "my hub", false)
       .catch(() => {});
 
     // Preview preserved for retry.

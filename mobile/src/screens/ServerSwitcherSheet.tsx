@@ -223,8 +223,8 @@ export function ServerSwitcherSheet({
                         <Button
                           variant="tertiary"
                           onClick={() => {
-                            setMode({ id: p.id, mode: "detail" });
                             void connection.getState().cancelPreview();
+                            setMode({ id: p.id, mode: "detail" });
                             setRepairUrl("");
                             setRepairError(null);
                           }}
@@ -245,7 +245,7 @@ export function ServerSwitcherSheet({
                         autoCapitalize="off"
                         autoCorrect="off"
                         spellCheck={false}
-                        placeholder="https://hub.example.com/auth?token=…"
+                        placeholder="https://hub.example.com/authorization"
                       />
                       <div style={{ display: "flex", gap: "8px" }}>
                         <Button
@@ -258,6 +258,7 @@ export function ServerSwitcherSheet({
                         <Button
                           variant="tertiary"
                           onClick={() => {
+                            void connection.getState().cancelPreview();
                             setMode({ id: p.id, mode: "detail" });
                             setRepairUrl("");
                             setRepairError(null);
@@ -367,7 +368,13 @@ export function ServerSwitcherSheet({
                     >
                       Remove
                     </Button>
-                    <Button variant="tertiary" onClick={() => setMode(null)}>
+                    <Button
+                      variant="tertiary"
+                      onClick={() => {
+                        void connection.getState().cancelPreview();
+                        setMode(null);
+                      }}
+                    >
                       Back
                     </Button>
                   </div>

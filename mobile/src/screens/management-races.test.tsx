@@ -21,8 +21,14 @@ import {
   waitFor,
 } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { App } from "../App";
+import { createFixture, type FixtureRoute } from "../fixture";
 import type { ProfileRedacted } from "../services/nativeProfiles";
-import { createConnectionStore } from "../state/connection";
+import {
+  type ConnectionPreview,
+  createConnectionStore,
+  type Reachability,
+} from "../state/connection";
 import { createNavigationStore } from "../state/navigation";
 import type { FakeProfileService } from "../test/fakeProfileService";
 import {
@@ -47,6 +53,32 @@ const PROFILES: readonly ProfileRedacted[] = [
   { id: "p2", name: "server", origin: "http://192.168.1.10:8080" },
 ];
 
+const QUERY_TEXT = new URL(SAMPLE_AUTH_URL_HTTPS).search;
+
+function deferred<T>(): {
+  readonly promise: Promise<T>;
+  readonly resolve: (value: T) => void;
+} {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((done) => {
+    resolve = done;
+  });
+  return { promise, resolve };
+}
+
+function expectRedacted(...values: readonly string[]): void {
+  const combined = values.join("\n");
+  expect(combined).not.toContain(SECRET_TOKEN);
+  expect(combined).not.toContain("token=");
+  expect(combined).not.toContain(SAMPLE_AUTH_URL_HTTPS);
+  expect(combined).not.toContain(QUERY_TEXT);
+}
+
+function exactPreviewId(preview: ConnectionPreview | null): string {
+  expect(preview).not.toBeNull();
+  return (preview as ConnectionPreview).previewId;
+}
+
 function fakeOf(
   services: ReturnType<typeof createShellServices>,
 ): FakeProfileService {
@@ -58,60 +90,61 @@ function fakeOf(
 // ---------------------------------------------------------------------------
 
 describe("Onboarding — generation established before refresh", () => {
-  it("scan then paste with refresh resolving reverse order obeys click order", async () => {
-    // Both refresh and scan are gated so we can control resolution order.
+  it("scan then paste while refresh is gated never starts the native scan", async () => {
     const services = createOnboardingServices();
     const fake = services.profile as FakeProfileService;
-    // Gate health so refresh blocks.
     fake.gateHealth();
 
-    let resolveScan:
-      | ((r: { previewId: string; origin: string }) => void)
-      | null = null;
-    services.native.scanAndPreviewPairing = () =>
-      new Promise((res) => {
-        resolveScan = res;
-      });
+    const nativeScan = vi.fn().mockResolvedValue({
+      previewId: "must-not-start",
+      origin: "http://192.168.1.10:8080",
+    });
+    services.native.scanAndPreviewPairing = nativeScan;
 
     const onConnected = vi.fn();
     render(<OnboardingScreen services={services} onConnected={onConnected} />);
 
-    // Click scan — starts refresh (gated), then scan (gated).
     fireEvent.click(screen.getByRole("button", { name: /scan qr code/i }));
-    // Wait for refresh to be blocked.
     await waitFor(() => expect(fake.isHealthGatePending()).toBe(true));
 
-    // Meanwhile, type a paste URL and click Connect.
     const input = screen.getByLabelText(/authorization url/i);
     fireEvent.change(input, { target: { value: SAMPLE_AUTH_URL_HTTPS } });
     fireEvent.click(screen.getByRole("button", { name: /connect/i }));
 
-    // The paste resolves immediately (previewPaste is not gated). The paste
-    // wins because it was the latest click and claimed a new generation.
-    // The scan's refresh is still blocked.
     fake.resolveHealthGate();
     await waitFor(() => expect(fake.isHealthGatePending()).toBe(false));
-
-    // Wait for the scan to be called (refresh resolved, scan callback runs).
-    await waitFor(() => expect(resolveScan).not.toBeNull());
-    const resolve: (r: { previewId: string; origin: string }) => void =
-      resolveScan ??
-      (() => {
-        throw new Error("scan was never invoked");
-      });
-    resolve({
-      previewId: "stale-scan",
-      origin: "http://192.168.1.10:8080",
-    });
-
-    // Wait for the confirm view to show the scan origin.
     await waitFor(() =>
       expect(screen.getByText(/hub\.example\.com:8443/i)).toBeInTheDocument(),
     );
-    // The DOM never contains the token.
-    expect(
-      screen.getByText(/hub\.example\.com:8443/i).textContent,
-    ).not.toContain(SECRET_TOKEN);
+    expect(nativeScan).not.toHaveBeenCalled();
+    expect(fake.cancelPreviewCalls).toEqual([]);
+    expectRedacted(document.documentElement.outerHTML);
+  });
+
+  it("scan then direct Cancel while refresh is gated never starts native", async () => {
+    const services = createOnboardingServices();
+    const fake = services.profile as FakeProfileService;
+    fake.gateHealth();
+    const nativeScan = vi.fn().mockResolvedValue({
+      previewId: "must-not-start",
+      origin: "https://hub.example.com:8443",
+    });
+    services.native.scanAndPreviewPairing = nativeScan;
+    const onCancel = vi.fn(() => fake.resolveHealthGate());
+    render(<OnboardingScreen services={services} onCancel={onCancel} />);
+
+    fireEvent.click(screen.getByRole("button", { name: /scan qr code/i }));
+    await waitFor(() => expect(fake.isHealthGatePending()).toBe(true));
+    fireEvent.click(screen.getByRole("button", { name: /^cancel$/i }));
+    expect(onCancel).toHaveBeenCalledTimes(1);
+    await waitFor(() => expect(fake.isHealthGatePending()).toBe(false));
+
+    expect(nativeScan).not.toHaveBeenCalled();
+    expect(fake.cancelPreviewCalls).toEqual([]);
+    expectRedacted(
+      document.documentElement.outerHTML,
+      JSON.stringify(fake.cancelPreviewCalls),
+    );
   });
 
   it("unmount while refresh pending never calls native preview service", async () => {
@@ -119,30 +152,43 @@ describe("Onboarding — generation established before refresh", () => {
     const fake = services.profile as FakeProfileService;
     fake.gateHealth();
 
-    let scanCalled = false;
-    services.native.scanAndPreviewPairing = () => {
-      scanCalled = true;
-      return Promise.resolve({
-        previewId: "scan-1",
-        origin: "https://hub.example.com:8443",
-      });
-    };
+    const nativeScan = vi.fn().mockResolvedValue({
+      previewId: "scan-1",
+      origin: "https://hub.example.com:8443",
+    });
+    services.native.scanAndPreviewPairing = nativeScan;
 
     const { unmount } = render(<OnboardingScreen services={services} />);
     fireEvent.click(screen.getByRole("button", { name: /scan qr code/i }));
     await waitFor(() => expect(fake.isHealthGatePending()).toBe(true));
 
-    // Unmount before refresh resolves.
     unmount();
-
-    // Now resolve refresh — the scan must NOT be called.
     fake.resolveHealthGate();
     await waitFor(() => expect(fake.isHealthGatePending()).toBe(false));
-    // Allow any trailing microtasks to settle.
-    await waitFor(() => {
-      // The scan callback must never have been invoked.
-      expect(scanCalled).toBe(false);
+    expect(nativeScan).not.toHaveBeenCalled();
+    expect(fake.cancelPreviewCalls).toEqual([]);
+  });
+
+  it("unmount after native scan starts cancels its eventual real ID once", async () => {
+    const services = createOnboardingServices();
+    const fake = services.profile as FakeProfileService;
+    const scan = deferred<{ previewId: string; origin: string }>();
+    const nativeScan = vi.fn(() => scan.promise);
+    services.native.scanAndPreviewPairing = nativeScan;
+    const { unmount } = render(<OnboardingScreen services={services} />);
+
+    fireEvent.click(screen.getByRole("button", { name: /scan qr code/i }));
+    await waitFor(() => expect(nativeScan).toHaveBeenCalledTimes(1));
+    unmount();
+    scan.resolve({
+      previewId: "native-started",
+      origin: "https://hub.example.com:8443",
     });
+
+    await waitFor(() =>
+      expect(fake.cancelPreviewCalls).toEqual(["native-started"]),
+    );
+    expectRedacted(JSON.stringify(fake.cancelPreviewCalls));
   });
 
   it("paste raw is not retained or submitted after cancel", async () => {
@@ -174,8 +220,10 @@ describe("Onboarding — generation established before refresh", () => {
     expect(
       (screen.getByLabelText(/authorization url/i) as HTMLInputElement).value,
     ).toBe("");
-    // The token never appears in the DOM.
-    expect(document.body.textContent).not.toContain(SECRET_TOKEN);
+    expectRedacted(
+      document.documentElement.outerHTML,
+      JSON.stringify(fake.cancelPreviewCalls),
+    );
   });
 });
 
@@ -184,6 +232,101 @@ describe("Onboarding — generation established before refresh", () => {
 // ---------------------------------------------------------------------------
 
 describe("Repair sheet — unmount cleanup invalidates preview", () => {
+  function renderRepairSheet() {
+    const services = createShellServices({
+      profiles: PROFILES,
+      activeProfileId: "p1",
+    });
+    const connection = createConnectionStore(services.profile);
+    const onClose = vi.fn();
+    const view = render(
+      <ServerSwitcherSheet
+        connection={connection}
+        navigation={createNavigationStore()}
+        onSwitch={vi.fn()}
+        onAdd={vi.fn()}
+        onClose={onClose}
+      />,
+    );
+    void connection.getState().refresh();
+    return { services, connection, onClose, ...view };
+  }
+
+  async function openLaptopRepair(): Promise<void> {
+    fireEvent.click(await screen.findByRole("button", { name: /^laptop/i }));
+    fireEvent.click(await screen.findByRole("button", { name: /^re-?pair/i }));
+  }
+
+  async function startGatedRepair(fake: FakeProfileService): Promise<void> {
+    fake.gatePreview("previewRepair");
+    const urlInput = screen.getByLabelText(/paste new authorization url/i);
+    fireEvent.change(urlInput, { target: { value: SAMPLE_AUTH_URL_HTTPS } });
+    fireEvent.click(screen.getByRole("button", { name: /preview/i }));
+    await waitFor(() => expect(fake.isPreviewGatePending()).toBe(true));
+  }
+
+  it("in-flight repair Cancel invalidates before a preview is visible", async () => {
+    const { services, connection } = renderRepairSheet();
+    const fake = fakeOf(services);
+    await openLaptopRepair();
+    await startGatedRepair(fake);
+
+    fireEvent.click(screen.getByRole("button", { name: /^cancel$/i }));
+    expect(connection.getState().preview).toBeNull();
+    fake.resolvePreviewGate({
+      previewId: "repair-after-cancel",
+      origin: "https://hub.example.com:8443",
+    });
+
+    await waitFor(() =>
+      expect(fake.cancelPreviewCalls).toEqual(["repair-after-cancel"]),
+    );
+    expect(connection.getState().preview).toBeNull();
+    expectRedacted(
+      document.documentElement.outerHTML,
+      JSON.stringify(fake.cancelPreviewCalls),
+    );
+  });
+
+  it("detail Back defensively invalidates an in-flight repair", async () => {
+    const { services, connection } = renderRepairSheet();
+    const fake = fakeOf(services);
+    fireEvent.click(await screen.findByRole("button", { name: /^laptop/i }));
+    fake.gatePreview("previewRepair");
+    const repair = connection.getState().previewRepair({
+      profileId: "p1",
+      raw: SAMPLE_AUTH_URL_HTTPS,
+    });
+    await waitFor(() => expect(fake.isPreviewGatePending()).toBe(true));
+
+    fireEvent.click(screen.getByRole("button", { name: /^back$/i }));
+    fake.resolvePreviewGate({
+      previewId: "repair-after-back",
+      origin: "https://hub.example.com:8443",
+    });
+    await repair;
+
+    expect(fake.cancelPreviewCalls).toEqual(["repair-after-back"]);
+    expect(connection.getState().preview).toBeNull();
+  });
+
+  it("full sheet unmount invalidates an in-flight repair", async () => {
+    const { services, connection, unmount } = renderRepairSheet();
+    const fake = fakeOf(services);
+    await openLaptopRepair();
+    await startGatedRepair(fake);
+
+    unmount();
+    fake.resolvePreviewGate({
+      previewId: "repair-after-unmount",
+      origin: "https://hub.example.com:8443",
+    });
+    await waitFor(() =>
+      expect(fake.cancelPreviewCalls).toEqual(["repair-after-unmount"]),
+    );
+    expect(connection.getState().preview).toBeNull();
+  });
+
   it("unmount while repair preview visible cancels the preview", async () => {
     const services = createShellServices({
       profiles: PROFILES,
@@ -209,13 +352,49 @@ describe("Repair sheet — unmount cleanup invalidates preview", () => {
     });
     fireEvent.click(screen.getByRole("button", { name: /preview/i }));
     await waitFor(() => expect(connection.getState().preview).not.toBeNull());
-    const previewId = connection.getState().preview?.previewId;
-    expect(previewId).toBeDefined();
+    const previewId = exactPreviewId(connection.getState().preview);
+    expect(previewId).toMatch(/^pv-/);
 
     // Unmount — the cleanup effect should cancel the preview.
     cleanup();
     await waitFor(() => expect(connection.getState().preview).toBeNull());
-    expect(fakeOf(services).cancelPreviewCalls).toContain(previewId);
+    expect(fakeOf(services).cancelPreviewCalls).toEqual([previewId]);
+  });
+
+  it("visible repair Cancel cancels its exact preview ID once", async () => {
+    const { services, connection } = renderRepairSheet();
+    const fake = fakeOf(services);
+    await openLaptopRepair();
+    const urlInput = screen.getByLabelText(/paste new authorization url/i);
+    fireEvent.change(urlInput, { target: { value: SAMPLE_AUTH_URL_HTTPS } });
+    fireEvent.click(screen.getByRole("button", { name: /preview/i }));
+    await waitFor(() => expect(connection.getState().preview).not.toBeNull());
+    const previewId = exactPreviewId(connection.getState().preview);
+    expect(previewId).toMatch(/^pv-/);
+
+    fireEvent.click(screen.getByRole("button", { name: /^cancel$/i }));
+    await waitFor(() => expect(connection.getState().preview).toBeNull());
+
+    expect(fake.cancelPreviewCalls).toEqual([previewId]);
+  });
+
+  it("confirmed re-pair ID is consumed and never cancelled by cleanup", async () => {
+    const { services, connection, unmount } = renderRepairSheet();
+    const fake = fakeOf(services);
+    await openLaptopRepair();
+    const urlInput = screen.getByLabelText(/paste new authorization url/i);
+    fireEvent.change(urlInput, { target: { value: SAMPLE_AUTH_URL_HTTPS } });
+    fireEvent.click(screen.getByRole("button", { name: /preview/i }));
+    await waitFor(() => expect(connection.getState().preview).not.toBeNull());
+    const consumedId = exactPreviewId(connection.getState().preview);
+    expect(consumedId).toMatch(/^pv-/);
+
+    fireEvent.click(screen.getByRole("button", { name: /confirm re-pair/i }));
+    await waitFor(() => expect(connection.getState().preview).toBeNull());
+    unmount();
+    await connection.getState().cancelPreview();
+
+    expect(fake.cancelPreviewCalls).not.toContain(consumedId);
   });
 });
 
@@ -235,36 +414,17 @@ describe("Onboarding — confirmed preview not cancelled on unmount", () => {
     fireEvent.change(input, { target: { value: SAMPLE_AUTH_URL_HTTPS } });
     fireEvent.click(screen.getByRole("button", { name: /connect/i }));
     await screen.findByText(/hub\.example\.com:8443/i);
-    const previewId = services.profile
-      ? (services as unknown as { profile: { previews: Map<string, string> } })
-          .profile.previews
-      : null;
-    // Get the visible preview ID from the store via the confirm text.
-    // Actually, confirmPairing consumes the preview; after success the ID
-    // should not be in cancelPreviewCalls.
+    const consumedId = fake.previewIdsIssued[0] as string;
+    expect(consumedId).toMatch(/^pv-/);
     fireEvent.change(screen.getByLabelText(/server name/i), {
       target: { value: "my hub" },
     });
     fireEvent.click(screen.getByRole("button", { name: /^connect/i }));
     await waitFor(() => expect(onConnected).toHaveBeenCalled());
 
-    // Unmount — should not cancel the consumed preview ID.
     unmount();
-    // The consumed preview ID was never sent to cancelPreview.
-    // We check that cancelPreviewCalls does not contain any preview ID
-    // that was consumed by confirmPairing. Since the fake deletes the
-    // preview from its map on confirm, the consumed ID is gone.
-    // The unmount cancelPreview call should find no visible preview.
-    // So cancelPreviewCalls should be empty (no visible preview to cancel).
-    await waitFor(() => {
-      // After confirm, the store's preview is null, so unmount's cancelPreview
-      // has nothing to cancel. cancelPreviewCalls should not include the
-      // consumed ID.
-      const consumedId = previewId ? [...previewId.keys()][0] : null;
-      if (consumedId !== null) {
-        expect(fake.cancelPreviewCalls).not.toContain(consumedId);
-      }
-    });
+    expect(fake.cancelPreviewCalls).not.toContain(consumedId);
+    expectRedacted(JSON.stringify(fake.cancelPreviewCalls));
   });
 });
 
@@ -319,6 +479,46 @@ describe("Honest reachability — explicit fixture seeds", () => {
     expect(screen.queryByText(/reconnecting/i)).not.toBeInTheDocument();
   });
 
+  it("every saved fixture profile has an explicit allowed reachability", () => {
+    const routes: readonly FixtureRoute[] = [
+      "onboarding",
+      "servers",
+      "sessions",
+      "new",
+      "settings",
+    ];
+    const allowed: readonly Reachability[] = [
+      "reachable",
+      "reconnecting",
+      "unreachable",
+      "unknown",
+    ];
+    const observed = new Set<Reachability>();
+
+    for (const route of routes) {
+      const fixture = createFixture(route);
+      expect(Object.keys(fixture.reachabilitySeed).sort()).toEqual(
+        fixture.seedProfiles.map((profile) => profile.id).sort(),
+      );
+      for (const state of Object.values(fixture.reachabilitySeed)) {
+        expect(allowed).toContain(state);
+        observed.add(state);
+      }
+    }
+
+    expect(observed).toEqual(new Set(allowed));
+  });
+
+  it("fixture ShellHost applies explicit reachability to saved profiles", async () => {
+    render(<App fixtureRoute="sessions" />);
+    await screen.findByText(/not checked/i);
+    fireEvent.click(
+      await screen.findByRole("button", { name: /laptop active server/i }),
+    );
+    await screen.findByRole("dialog", { name: /servers/i });
+    expect(screen.getByText(/reconnecting/i)).toBeInTheDocument();
+  });
+
   it("StatusMark unknown has data-status=unknown and ? glyph", () => {
     const { container } = render(<StatusMark status="unknown" />);
     const mark = container.querySelector(
@@ -339,13 +539,13 @@ describe("Honest reachability — explicit fixture seeds", () => {
 // ---------------------------------------------------------------------------
 
 describe("Remove failure then retry — preserves state, closes exactly once", () => {
-  it("first failure: inline alert, onClose not called, profile+active unchanged, confirm UI retained", async () => {
+  it("failure retains exact state and confirm UI; retry closes exactly once", async () => {
     const services = createShellServices({
       profiles: PROFILES,
       activeProfileId: "p1",
     });
-    (services.profile as FakeProfileService).failOnce("remove");
     const onClose = vi.fn();
+    const onSwitch = vi.fn();
     const connection = createConnectionStore(services.profile);
     const navigation = createNavigationStore();
     void connection.getState().refresh();
@@ -353,64 +553,44 @@ describe("Remove failure then retry — preserves state, closes exactly once", (
       <ServerSwitcherSheet
         connection={connection}
         navigation={navigation}
-        onSwitch={vi.fn()}
+        onSwitch={onSwitch}
         onAdd={() => {}}
         onClose={onClose}
       />,
     );
-    // Open laptop row detail → Remove → Confirm Remove.
-    fireEvent.click(await screen.findByRole("button", { name: /^laptop/i }));
-    fireEvent.click(await screen.findByRole("button", { name: /^remove$/i }));
-    fireEvent.click(
-      await screen.findByRole("button", { name: /confirm.*remove/i }),
-    );
-
-    // Inline error appears.
-    await screen.findByText(/remove.*failed|failed.*remove/i);
-    // onClose not called on failure.
-    expect(onClose).not.toHaveBeenCalled();
-    // Profile still present and active unchanged.
-    expect(connection.getState().profiles.map((p) => p.id)).toContain("p1");
-    expect(connection.getState().activeProfileId).toBe("p1");
-    // Confirm-remove UI retained (Cancel button still visible).
-    expect(screen.getByRole("button", { name: /cancel/i })).toBeInTheDocument();
-  });
-
-  it("retry succeeds: closes exactly once, expected fallback is active", async () => {
-    const services = createShellServices({
-      profiles: PROFILES,
-      activeProfileId: "p1",
-    });
-    const onClose = vi.fn();
-    const connection = createConnectionStore(services.profile);
-    const navigation = createNavigationStore();
-    void connection.getState().refresh();
-    render(
-      <ServerSwitcherSheet
-        connection={connection}
-        navigation={navigation}
-        onSwitch={vi.fn()}
-        onAdd={() => {}}
-        onClose={onClose}
-      />,
-    );
-    // First attempt fails.
     (services.profile as FakeProfileService).failOnce("remove");
     fireEvent.click(await screen.findByRole("button", { name: /^laptop/i }));
+    const profileBefore = connection
+      .getState()
+      .profiles.find((p) => p.id === "p1");
+    expect(profileBefore).toEqual(PROFILES[0]);
+    const activeBefore = connection.getState().activeProfileId;
     fireEvent.click(await screen.findByRole("button", { name: /^remove$/i }));
     fireEvent.click(
       await screen.findByRole("button", { name: /confirm.*remove/i }),
     );
-    await screen.findByText(/remove.*failed/i);
+    const failure = await screen.findByText(/remove.*failed/i);
 
-    // Retry — succeeds (no more failures queued).
+    expect(connection.getState().profiles.find((p) => p.id === "p1")).toEqual(
+      profileBefore,
+    );
+    expect(connection.getState().activeProfileId).toBe(activeBefore);
+    expect(
+      screen.getByRole("button", { name: /confirm.*remove/i }),
+    ).toBeEnabled();
+    expect(
+      screen.getByRole("button", { name: /^cancel$/i }),
+    ).toBeInTheDocument();
+    expect(onClose).toHaveBeenCalledTimes(0);
+    expect(onSwitch).toHaveBeenCalledTimes(0);
+    expectRedacted(document.documentElement.outerHTML, failure.outerHTML);
+
     fireEvent.click(screen.getByRole("button", { name: /confirm.*remove/i }));
     await waitFor(() =>
       expect(connection.getState().activeProfileId).toBe("p2"),
     );
-    // onClose called exactly once.
     expect(onClose).toHaveBeenCalledTimes(1);
-    // Profile p1 is gone.
+    expect(onSwitch).toHaveBeenCalledTimes(0);
     expect(connection.getState().profiles.map((p) => p.id)).not.toContain("p1");
   });
 });

@@ -10,6 +10,7 @@
 import { createShellServices } from "./screens/fixture-services";
 import type { ShellServiceBundle } from "./screens/root-types";
 import type { ProfileRedacted } from "./services/nativeProfiles";
+import type { Reachability } from "./state/connection";
 
 export type FixtureRoute =
   | "onboarding"
@@ -28,14 +29,12 @@ const OFFLINE_PROFILES: readonly ProfileRedacted[] = [
   { id: "p2", name: "staging", origin: "http://10.0.0.5:8080" },
 ];
 
-import type { Reachability } from "./state/connection";
-
 /** Explicit per-profile reachability seed for each fixture route. */
 const REACHABILITY_SEEDS: Record<FixtureRoute, Record<string, Reachability>> = {
   onboarding: {},
   servers: { p1: "reachable", p2: "unreachable" },
-  sessions: { p1: "unknown" },
-  new: { p1: "reachable" },
+  sessions: { p1: "unknown", p2: "reconnecting" },
+  new: { p1: "reachable", p2: "unknown" },
   settings: { p1: "unreachable", p2: "reconnecting" },
 };
 

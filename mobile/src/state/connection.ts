@@ -57,6 +57,12 @@ export interface ScanPreviewResult {
   readonly origin: string;
 }
 
+/** Generation-bound context for cancellation-aware preview callbacks. */
+export interface PreviewOperationContext {
+  /** True only while this exact preview operation is current. */
+  isCurrent(): boolean;
+}
+
 export interface ConnectionState {
   readonly profiles: readonly ProfileRedacted[];
   readonly activeProfileId: string | null;
@@ -84,7 +90,11 @@ export interface ConnectionState {
    * superseded or cancelled). Any visible prior preview is cancelled with the
    * service before the scan starts.
    */
-  previewScan(scan: () => Promise<ScanPreviewResult>): Promise<void>;
+  previewScan(
+    scan: (
+      context: PreviewOperationContext,
+    ) => Promise<ScanPreviewResult | null>,
+  ): Promise<void>;
   cancelPreview(): Promise<void>;
   confirmPairing(
     previewId: string,
@@ -217,15 +227,23 @@ export function createConnectionStore(service: ProfileService) {
       }
     },
 
-    async previewScan(scan: () => Promise<ScanPreviewResult>) {
+    async previewScan(
+      scan: (
+        context: PreviewOperationContext,
+      ) => Promise<ScanPreviewResult | null>,
+    ) {
       const gen = ++previewGen;
+      const context: PreviewOperationContext = {
+        isCurrent: () => gen === previewGen,
+      };
       set({ previewError: null });
       const claimedId = claimVisiblePreview(get, set);
       if (claimedId !== null) await bestEffortCancel(claimedId);
-      if (gen !== previewGen) return;
+      if (!context.isCurrent()) return;
       try {
-        const result = await scan();
-        if (gen !== previewGen) {
+        const result = await scan(context);
+        if (result === null) return;
+        if (!context.isCurrent()) {
           await bestEffortCancel(result.previewId);
           return;
         }
@@ -237,7 +255,7 @@ export function createConnectionStore(service: ProfileService) {
           },
         });
       } catch (cause) {
-        if (gen !== previewGen) return;
+        if (!context.isCurrent()) return;
         set({ preview: null, previewError: redactError(cause) });
       }
     },

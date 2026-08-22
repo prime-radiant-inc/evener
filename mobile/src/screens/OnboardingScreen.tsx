@@ -122,7 +122,7 @@ export function OnboardingScreen({
     // Establish the store generation synchronously at user intent, before
     // awaiting refresh. previewScan increments the generation immediately;
     // a late refresh cannot reverse click order or launch after cancel.
-    const scanP = store.getState().previewScan(async () => {
+    const scanP = store.getState().previewScan(async (context) => {
       // Await the mount refresh BEFORE calling the native scan. If unmount
       // happens during refresh, mounted.current is false and the native
       // scan is NOT called. The store generation guard also rejects any
@@ -130,9 +130,7 @@ export function OnboardingScreen({
       await (refreshPromise.current ?? Promise.resolve());
       // If unmounted/cancelled during refresh, don't call the native scan.
       // The store's generation guard will best-effort cancel any late result.
-      if (!mounted.current) {
-        return { previewId: "aborted", origin: "aborted" };
-      }
+      if (!mounted.current || !context.isCurrent()) return null;
       const scanResult = await services.native.scanAndPreviewPairing();
       return { previewId: scanResult.previewId, origin: scanResult.origin };
     });
@@ -201,7 +199,7 @@ export function OnboardingScreen({
           <Input
             label="Authorization URL"
             name="auth-url"
-            placeholder="https://hub.example.com/auth?token=…"
+            placeholder="https://hub.example.com/authorization"
             value={pasteUrl}
             onChange={(e) => setPasteUrl(e.target.value)}
             autoCapitalize="off"

@@ -55,6 +55,8 @@ export class FakeProfileService implements ProfileService {
     readonly resolve: (value: ProfilePreview) => void;
     readonly reject: (cause: unknown) => void;
   } | null = null;
+  private cancelGateArmed = false;
+  private pendingCancelResolve: (() => void) | null = null;
 
   constructor(seed: FakeProfileServiceSeed = {}) {
     this.activeProfileId = seed.activeProfileId ?? null;
@@ -101,6 +103,27 @@ export class FakeProfileService implements ProfileService {
   /** True if a gated preview call is in flight (blocked, not yet resolved). */
   isPreviewGatePending(): boolean {
     return this.pendingPreview !== null;
+  }
+
+  /** Block the next cancel call at the external service boundary. */
+  gateCancelPreview(): void {
+    if (this.cancelGateArmed) {
+      throw new Error("cancel gate already armed");
+    }
+    this.cancelGateArmed = true;
+  }
+
+  /** Resolve the in-flight gated cancel call. */
+  resolveCancelPreviewGate(): void {
+    const resolve = this.pendingCancelResolve;
+    if (resolve === null) throw new Error("no cancel gate pending");
+    this.pendingCancelResolve = null;
+    resolve();
+  }
+
+  /** True if a cancel call is blocked at the service boundary. */
+  isCancelPreviewGatePending(): boolean {
+    return this.pendingCancelResolve !== null;
   }
 
   /**
@@ -160,17 +183,20 @@ export class FakeProfileService implements ProfileService {
   }
 
   async previewPaste(input: { readonly raw: string }): Promise<ProfilePreview> {
+    this.previewPasteCallCount += 1;
     this.checkFail("previewPaste");
     if (this.previewGateArmed?.op === "previewPaste") {
       this.previewGateArmed = null;
       const result = await this.awaitGatedPreview();
       this.previews.set(result.previewId, result.origin);
+      this.previewIdsIssued.push(result.previewId);
       return result;
     }
     const previewId = `pv-${++this.previewCounter}`;
     // Parse a minimal http(s)://host[:port]/auth?token=... to extract origin.
     const origin = parseOrigin(input.raw);
     this.previews.set(previewId, origin);
+    this.previewIdsIssued.push(previewId);
     return { previewId, origin };
   }
 
@@ -181,12 +207,14 @@ export class FakeProfileService implements ProfileService {
       const result = await this.awaitGatedPreview();
       this.previews.set(result.previewId, result.origin);
       this.repairProfileIds.set(result.previewId, input.profileId);
+      this.previewIdsIssued.push(result.previewId);
       return result;
     }
     const previewId = `pv-${++this.previewCounter}`;
     const origin = parseOrigin(input.raw);
     this.previews.set(previewId, origin);
     this.repairProfileIds.set(previewId, input.profileId);
+    this.previewIdsIssued.push(previewId);
     return { previewId, origin };
   }
 
@@ -208,9 +236,15 @@ export class FakeProfileService implements ProfileService {
   }
 
   async cancelPreview(_input: { readonly previewId: string }): Promise<void> {
+    this.cancelPreviewCalls.push(_input.previewId);
+    if (this.cancelGateArmed) {
+      this.cancelGateArmed = false;
+      await new Promise<void>((resolve) => {
+        this.pendingCancelResolve = resolve;
+      });
+    }
     this.previews.delete(_input.previewId);
     this.repairProfileIds.delete(_input.previewId);
-    this.cancelPreviewCalls.push(_input.previewId);
   }
 
   async clearPreviews(): Promise<void> {
@@ -270,6 +304,10 @@ export class FakeProfileService implements ProfileService {
 
   /** Recorded previewIds passed to cancelPreview, in call order. */
   readonly cancelPreviewCalls: string[] = [];
+  /** Redacted opaque IDs returned by preview calls, in issue order. */
+  readonly previewIdsIssued: string[] = [];
+  /** Number of sensitive paste invocations that crossed the service boundary. */
+  previewPasteCallCount = 0;
 
   snapshot(): {
     profiles: ProfileRedacted[];
