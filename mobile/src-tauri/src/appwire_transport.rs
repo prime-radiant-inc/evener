@@ -1,61 +1,25 @@
-//! Shared AppWire transport: exactly one WebSocket socket for the active
+//! Shared AppWire transport: exactly one WebSocket socket for the selected
 //! profile.
 //!
-//! Switching profiles closes the old socket and invalidates its connection
-//! generation before opening the new one. Profile and connection generations
-//! reject stale frames. A bounded MPSC queue closes on overload rather than
-//! dropping or reordering frames. The bearer token and correct upstream
-//! Origin are sent on the handshake. The Tauri channel is ordered. Close
-//! codes are exact. No token ever appears in errors.
-//!
-//! Every connection re-resolves the origin through the shared
-//! `NetworkPolicy`, connects TCP to the validated pinned IP address, and
-//! performs the WebSocket handshake (and TLS, for `wss://`) over that
-//! stream while retaining the original hostname for TLS SNI/certificate
-//! identity and the Host header. Mixed/public HTTP addresses are rejected
-//! by the policy before any TCP connection is made.
+//! All manager lifecycle operations serialize through one async mutex. A
+//! connection is owned by one supervisor task, so close, profile switch, and
+//! terminal reader outcomes have one deterministic cleanup path. Terminal
+//! outcomes clear the active connection only when its full connection identity
+//! still matches, then emit ordered metadata-bearing events.
 
 use std::sync::Arc;
 
 use futures_util::{SinkExt, StreamExt};
 use parking_lot::Mutex as SyncMutex;
 use tokio::net::TcpStream;
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, oneshot};
 use tokio_tungstenite::tungstenite::Message;
 
 use crate::error::ReleaseMode;
 use crate::network_policy::{NetworkPolicy, PinnedOrigin};
 
-// ---------------------------------------------------------------------------
-// Events delivered to the Tauri channel
-// ---------------------------------------------------------------------------
-
-/// Events emitted to the JS channel. Only text frames, close, and error are
-/// delivered — no raw binary, URLs, or tokens.
-#[derive(Debug, Clone)]
-pub enum AppwireEvent {
-    /// A text frame from the server.
-    Text(String),
-    /// The connection closed with a code.
-    Closed(u16),
-    /// An error occurred (no details that could leak a token).
-    Error,
-}
-
-// ---------------------------------------------------------------------------
-// Internal control messages to the writer task
-// ---------------------------------------------------------------------------
-
-enum WriterCommand {
-    Send(String),
-    Close(u16),
-}
-
-// ---------------------------------------------------------------------------
-// Connection ID and generation
-// ---------------------------------------------------------------------------
-
-/// A connection identifier. Stale connections reject sends.
+/// A connection identifier. Profile and connection generation reject stale
+/// commands and events.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ConnectionId {
     profile_id: String,
@@ -66,9 +30,11 @@ impl ConnectionId {
     pub fn profile_id(&self) -> &str {
         &self.profile_id
     }
+
     pub fn generation(&self) -> u64 {
         self.generation
     }
+
     pub fn new(profile_id: String, generation: u64) -> Self {
         Self {
             profile_id,
@@ -77,9 +43,23 @@ impl ConnectionId {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Errors — never carry the token
-// ---------------------------------------------------------------------------
+/// Events delivered to JavaScript. Every variant carries the complete routing
+/// identity, allowing both Rust and TypeScript to reject stale queued events.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum AppwireEvent {
+    Text {
+        connection_id: ConnectionId,
+        data: String,
+    },
+    Closed {
+        connection_id: ConnectionId,
+        code: u16,
+        reason: String,
+    },
+    Error {
+        connection_id: ConnectionId,
+    },
+}
 
 #[derive(Debug, thiserror::Error)]
 pub enum AppwireError {
@@ -99,48 +79,46 @@ pub enum AppwireError {
     PolicyRejected,
 }
 
-// ---------------------------------------------------------------------------
-// Active connection
-// ---------------------------------------------------------------------------
+enum WriterCommand {
+    Send(String),
+    Close { code: u16, reason: String },
+}
 
 struct ActiveConnection {
     conn_id: ConnectionId,
-    /// Channel to send commands to the writer task.
-    writer_tx: mpsc::UnboundedSender<WriterCommand>,
-    /// Task handle for the reader, aborted on close/switch.
-    reader_handle: tokio::task::JoinHandle<()>,
-    /// Task handle for the writer. Stored (not aborted) so the close frame
-    /// reaches the server; the task exits naturally after sending it. The
-    /// handle reaps the task when the connection is dropped.
-    writer_handle: tokio::task::JoinHandle<()>,
+    command_tx: mpsc::UnboundedSender<WriterCommand>,
+    supervisor_handle: tokio::task::JoinHandle<()>,
 }
 
-// ---------------------------------------------------------------------------
-// AppwireManager
-// ---------------------------------------------------------------------------
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct SelectedProfile {
+    profile_id: String,
+    profile_generation: u64,
+}
 
-/// Manages exactly one AppWire WebSocket socket for the active profile.
-/// Switching profiles closes and invalidates the old socket before the new
-/// one opens. Every connection re-resolves the origin through the shared
-/// `NetworkPolicy` and connects TCP to the validated pinned address.
+#[derive(Default)]
+struct ManagerState {
+    selected: Option<SelectedProfile>,
+    active: Option<ActiveConnection>,
+}
+
+/// Manages exactly one AppWire socket. `profile_select` and active-profile
+/// removal call [`select`] while holding the profile lifecycle lock, before
+/// preferences change. Opening and closing serialize with those transitions.
 pub struct AppwireManager {
-    /// The active profile ID. `open` rejects a profile that does not match
-    /// the selected profile.
-    active_profile: SyncMutex<Option<String>>,
     generation: std::sync::atomic::AtomicU64,
-    active: SyncMutex<Option<ActiveConnection>>,
-    /// Shared network policy: re-resolves on every connection.
+    state: Arc<SyncMutex<ManagerState>>,
+    lifecycle: tokio::sync::Mutex<()>,
     policy: Arc<NetworkPolicy>,
-    /// Release mode for address validation.
     mode: ReleaseMode,
 }
 
 impl AppwireManager {
     pub fn new(policy: Arc<NetworkPolicy>, mode: ReleaseMode) -> Self {
         Self {
-            active_profile: SyncMutex::new(None),
             generation: std::sync::atomic::AtomicU64::new(0),
-            active: SyncMutex::new(None),
+            state: Arc::new(SyncMutex::new(ManagerState::default())),
+            lifecycle: tokio::sync::Mutex::new(()),
             policy,
             mode,
         }
@@ -152,126 +130,110 @@ impl AppwireManager {
             + 1
     }
 
-    /// Queue the close frame to the writer and abort the reader. The writer
-    /// sends the close frame and exits its loop naturally; it is not aborted
-    /// so the frame reaches the server. Returns both `JoinHandle`s so the
-    /// caller can await them for deterministic reaping.
-    fn close_connection(conn: &ActiveConnection, code: u16) {
-        let _ = conn.writer_tx.send(WriterCommand::Close(code));
-        conn.reader_handle.abort();
+    /// Selected profile identity as understood by the transport manager.
+    pub fn selected_profile(&self) -> Option<(String, u64)> {
+        self.state
+            .lock()
+            .selected
+            .as_ref()
+            .map(|selected| (selected.profile_id.clone(), selected.profile_generation))
     }
 
-    /// Close and deterministically reap a connection: queue the close frame
-    /// to the writer, abort the reader, then await both `JoinHandle`s. The
-    /// writer sends the close frame and exits naturally; the reader was
-    /// aborted. No mutex is held across the await.
-    async fn close_and_reap(conn: ActiveConnection, code: u16) {
-        Self::close_connection(&conn, code);
-        let _ = conn.writer_handle.await;
-        let _ = conn.reader_handle.await;
+    /// Whether the given connection still owns the one active socket.
+    pub fn is_active(&self, conn_id: &ConnectionId) -> bool {
+        self.state
+            .lock()
+            .active
+            .as_ref()
+            .is_some_and(|active| active.conn_id == *conn_id)
     }
 
-    /// Select a profile as active. Closes and invalidates the old connection
-    /// before the active profile changes. The profile_id is recorded so that
-    /// `open` can validate the connection belongs to the selected profile.
-    pub async fn select(&self, profile_id: &str) {
-        let taken = {
-            let mut active = self.active.lock();
-            active.take()
-        };
-        if let Some(conn) = taken {
-            Self::close_and_reap(conn, 1000).await;
+    /// Close and reap the old connection before changing the manager's selected
+    /// profile identity. `None` represents no selected profile.
+    pub async fn select(&self, profile_id: Option<&str>, profile_generation: u64) {
+        let _lifecycle = self.lifecycle.lock().await;
+        let old = self.state.lock().active.take();
+        if let Some(old) = old {
+            Self::close_and_reap(old, 1000, "profile selection changed").await;
         }
-        *self.active_profile.lock() = Some(profile_id.to_owned());
+        self.state.lock().selected = profile_id.map(|profile_id| SelectedProfile {
+            profile_id: profile_id.to_owned(),
+            profile_generation,
+        });
     }
 
-    /// Open a WebSocket connection for the given profile.
-    ///
-    /// If a connection already exists for this profile, returns
-    /// `AlreadyConnected` (one socket total). If a connection exists for a
-    /// different profile, it is closed and invalidated first. The profile
-    /// must match the currently selected profile (`select`), otherwise
-    /// `ProfileMismatch` is returned.
-    ///
-    /// The origin is re-resolved through the `NetworkPolicy` on every call.
-    /// TCP connects to the validated pinned IP address; the WebSocket
-    /// handshake (and TLS for `wss://`) runs over that stream while
-    /// retaining the original hostname for TLS SNI/certificate identity and
-    /// the Host header.
+    /// Reconcile selection after a persistence transition succeeds or rolls
+    /// back. The transition already reaped the socket, so this never creates a
+    /// duplicate close path.
+    pub async fn reconcile_selection(&self, profile_id: Option<&str>, profile_generation: u64) {
+        let _lifecycle = self.lifecycle.lock().await;
+        debug_assert!(self.state.lock().active.is_none());
+        self.state.lock().selected = profile_id.map(|profile_id| SelectedProfile {
+            profile_id: profile_id.to_owned(),
+            profile_generation,
+        });
+    }
+
+    /// Open a connection from one immutable active-profile snapshot.
     pub async fn open(
         &self,
         profile_id: &str,
+        profile_generation: u64,
         url: String,
         token: String,
         event_tx: mpsc::Sender<AppwireEvent>,
     ) -> Result<ConnectionId, AppwireError> {
-        // Validate the profile matches the selected profile.
+        let _lifecycle = self.lifecycle.lock().await;
+
         {
-            let active_profile = self.active_profile.lock();
-            match active_profile.as_deref() {
+            let mut state = self.state.lock();
+            match state.selected.as_ref() {
                 None => {
-                    // No profile selected yet; accept this one as the active.
-                    drop(active_profile);
-                    *self.active_profile.lock() = Some(profile_id.to_owned());
+                    state.selected = Some(SelectedProfile {
+                        profile_id: profile_id.to_owned(),
+                        profile_generation,
+                    });
                 }
-                Some(selected) if selected == profile_id => {}
+                Some(selected)
+                    if selected.profile_id == profile_id
+                        && selected.profile_generation == profile_generation => {}
                 Some(_) => return Err(AppwireError::ProfileMismatch),
             }
-        }
-
-        // One socket total: reject a duplicate open for the same profile.
-        {
-            let active = self.active.lock();
-            if let Some(conn) = active.as_ref() {
-                if conn.conn_id.profile_id == profile_id {
-                    return Err(AppwireError::AlreadyConnected);
-                }
+            if state
+                .active
+                .as_ref()
+                .is_some_and(|active| active.conn_id.profile_id == profile_id)
+            {
+                return Err(AppwireError::AlreadyConnected);
             }
         }
 
-        // Close and reap any existing connection for a different profile
-        // before opening the new one. Both old tasks (writer + reader) are
-        // awaited so no old task/frame survives.
-        let old_conn = {
-            let mut active = self.active.lock();
-            active.take()
-        };
-        if let Some(conn) = old_conn {
-            Self::close_and_reap(conn, 1000).await;
+        // A selected-profile transition normally reaps before changing
+        // selection. Keep replacement safe for callers that explicitly
+        // reconciled manager state first.
+        let old = self.state.lock().active.take();
+        if let Some(old) = old {
+            Self::close_and_reap(old, 1000, "connection replaced").await;
         }
 
         let generation = self.next_generation();
-        let conn_id = ConnectionId {
-            profile_id: profile_id.to_owned(),
-            generation,
-        };
-
-        // Re-resolve the origin through the network policy on every
-        // connection. Pin the validated address; preserve the original
-        // hostname for Host/TLS SNI.
+        let conn_id = ConnectionId::new(profile_id.to_owned(), generation);
         let ws_url = url::Url::parse(&url).map_err(|_| AppwireError::ConnectionFailed)?;
         let pinned = self
             .policy
             .resolve(&ws_url, self.mode)
             .map_err(|_| AppwireError::PolicyRejected)?;
-
-        // Connect TCP to the validated pinned IP address.
         let addr = pinned.addrs().first().ok_or(AppwireError::PolicyRejected)?;
-        let port = pinned.port();
-        let socket = TcpStream::connect((*addr, port))
+        let socket = TcpStream::connect((*addr, pinned.port()))
             .await
             .map_err(|_| AppwireError::ConnectionFailed)?;
         socket
             .set_nodelay(true)
             .map_err(|_| AppwireError::ConnectionFailed)?;
 
-        // Build the WebSocket handshake request with the original hostname
-        // in the URI (for TLS SNI) and the Host header. The TCP stream is
-        // already connected to the validated IP.
-        let host_header = host_with_port(&pinned);
         let request = tokio_tungstenite::tungstenite::http::Request::builder()
             .uri(ws_url.as_str())
-            .header("Host", &host_header)
+            .header("Host", host_with_port(&pinned))
             .header("Authorization", format!("Bearer {token}"))
             .header("Origin", ws_url.origin().ascii_serialization())
             .header("Sec-WebSocket-Protocol", "evener-appwire-v3")
@@ -285,142 +247,206 @@ impl AppwireManager {
             .body(())
             .map_err(|_| AppwireError::ConnectionFailed)?;
 
-        // Perform the WebSocket handshake (and TLS for wss://) over the
-        // already-connected TCP stream. tungstenite uses the request's
-        // scheme to decide plain vs TLS and the request's host for SNI.
-        let (ws_stream, _response) =
+        let (ws_stream, _) =
             tokio_tungstenite::client_async_tls_with_config(request, socket, None, None)
                 .await
                 .map_err(|_| AppwireError::ConnectionFailed)?;
+        let (mut write, mut read) = ws_stream.split();
+        let (command_tx, mut command_rx) = mpsc::unbounded_channel();
+        let (start_tx, start_rx) = oneshot::channel();
+        let state = self.state.clone();
+        let task_conn_id = conn_id.clone();
 
-        let (write, mut read) = ws_stream.split();
+        let supervisor_handle = tokio::spawn(async move {
+            // The start gate prevents a terminal server frame from racing the
+            // manager's insertion of this connection.
+            if start_rx.await.is_err() {
+                return;
+            }
 
-        // Writer task: receives commands from the writer channel and sends to
-        // the WebSocket.
-        let (writer_tx, mut writer_rx) = mpsc::unbounded_channel::<WriterCommand>();
-        let writer_handle = tokio::spawn(async move {
-            let mut write = write;
-            while let Some(cmd) = writer_rx.recv().await {
-                match cmd {
-                    WriterCommand::Send(text) => {
-                        if write.send(Message::Text(text.into())).await.is_err() {
-                            break;
-                        }
-                    }
-                    WriterCommand::Close(code) => {
-                        let _ = write
-                            .send(Message::Close(Some(
-                                tokio_tungstenite::tungstenite::protocol::CloseFrame {
+            enum Terminal {
+                Closed { code: u16, reason: String },
+                Error { code: u16, reason: String },
+                LocalClose { code: u16, reason: String },
+            }
+
+            let terminal = loop {
+                tokio::select! {
+                    command = command_rx.recv() => {
+                        match command {
+                            Some(WriterCommand::Send(text)) => {
+                                if write.send(Message::Text(text.into())).await.is_err() {
+                                    break Terminal::Error {
+                                        code: 1006,
+                                        reason: "transport send failed".to_owned(),
+                                    };
+                                }
+                            }
+                            Some(WriterCommand::Close { code, reason }) => {
+                                let frame = tokio_tungstenite::tungstenite::protocol::CloseFrame {
                                     code: code.into(),
-                                    reason: "".into(),
-                                },
-                            )))
-                            .await;
-                        break;
-                    }
-                }
-            }
-        });
-
-        // Reader task: reads frames from the WebSocket and forwards directly
-        // to the bounded event channel. On overload (channel full), it sends
-        // an error and closes instead of dropping or reordering frames. The
-        // bounded channel preserves order.
-        let reader_handle = tokio::spawn(async move {
-            loop {
-                let msg = match read.next().await {
-                    Some(m) => m,
-                    None => break,
-                };
-                match msg {
-                    Ok(Message::Text(text)) => {
-                        let text_string = text.to_string();
-                        // try_send preserves order; on a full bounded
-                        // channel we close with an error rather than
-                        // dropping the frame.
-                        if event_tx.try_send(AppwireEvent::Text(text_string)).is_err() {
-                            // Channel full (overload) or closed. Try to send
-                            // an error; if that also fails, just close.
-                            let _ = event_tx.send(AppwireEvent::Error).await;
-                            break;
+                                    reason: reason.clone().into(),
+                                };
+                                let _ = write.send(Message::Close(Some(frame))).await;
+                                break Terminal::LocalClose { code, reason };
+                            }
+                            None => {
+                                break Terminal::Error {
+                                    code: 1006,
+                                    reason: "transport command channel closed".to_owned(),
+                                };
+                            }
                         }
                     }
-                    Ok(Message::Close(close_frame)) => {
-                        let code = close_frame.map(|cf| u16::from(cf.code)).unwrap_or(1000);
-                        let _ = event_tx.send(AppwireEvent::Closed(code)).await;
-                        break;
+                    message = read.next() => {
+                        match message {
+                            Some(Ok(Message::Text(text))) => {
+                                let event = AppwireEvent::Text {
+                                    connection_id: task_conn_id.clone(),
+                                    data: text.to_string(),
+                                };
+                                if event_tx.try_send(event).is_err() {
+                                    break Terminal::Error {
+                                        code: 1013,
+                                        reason: "event queue overloaded".to_owned(),
+                                    };
+                                }
+                            }
+                            Some(Ok(Message::Close(frame))) => {
+                                let (code, reason) = frame
+                                    .map(|frame| (u16::from(frame.code), frame.reason.to_string()))
+                                    .unwrap_or((1005, String::new()));
+                                break Terminal::Closed { code, reason };
+                            }
+                            Some(Ok(Message::Binary(_)
+                                | Message::Ping(_)
+                                | Message::Pong(_)
+                                | Message::Frame(_))) => {}
+                            Some(Err(_)) => {
+                                break Terminal::Error {
+                                    code: 1006,
+                                    reason: "transport read failed".to_owned(),
+                                };
+                            }
+                            None => {
+                                break Terminal::Closed {
+                                    code: 1006,
+                                    reason: "connection ended without a close frame".to_owned(),
+                                };
+                            }
+                        }
                     }
-                    Ok(Message::Binary(_))
-                    | Ok(Message::Ping(_))
-                    | Ok(Message::Pong(_))
-                    | Ok(Message::Frame(_)) => {}
-                    Err(_) => {
-                        let _ = event_tx.send(AppwireEvent::Error).await;
-                        break;
+                }
+            };
+
+            // Server/error terminal outcomes may mutate lifecycle state only
+            // if this exact connection still owns it. Local close was already
+            // taken by its awaiting manager operation but still notifies its
+            // own channel.
+            let should_emit = match terminal {
+                Terminal::LocalClose { .. } => true,
+                _ => {
+                    let mut manager = state.lock();
+                    if manager
+                        .active
+                        .as_ref()
+                        .is_some_and(|active| active.conn_id == task_conn_id)
+                    {
+                        manager.active.take();
+                        true
+                    } else {
+                        false
                     }
+                }
+            };
+            if !should_emit {
+                return;
+            }
+
+            match terminal {
+                Terminal::Error { code, reason } => {
+                    let _ = event_tx
+                        .send(AppwireEvent::Error {
+                            connection_id: task_conn_id.clone(),
+                        })
+                        .await;
+                    let _ = event_tx
+                        .send(AppwireEvent::Closed {
+                            connection_id: task_conn_id,
+                            code,
+                            reason,
+                        })
+                        .await;
+                }
+                Terminal::Closed { code, reason } | Terminal::LocalClose { code, reason } => {
+                    let _ = event_tx
+                        .send(AppwireEvent::Closed {
+                            connection_id: task_conn_id,
+                            code,
+                            reason,
+                        })
+                        .await;
                 }
             }
         });
 
-        let conn = ActiveConnection {
+        self.state.lock().active = Some(ActiveConnection {
             conn_id: conn_id.clone(),
-            writer_tx,
-            reader_handle,
-            writer_handle,
-        };
-
-        *self.active.lock() = Some(conn);
+            command_tx,
+            supervisor_handle,
+        });
+        // The receiver cannot disappear before the task starts unless the task
+        // was externally aborted, which this handle is not yet exposed for.
+        start_tx
+            .send(())
+            .map_err(|_| AppwireError::ConnectionFailed)?;
 
         Ok(conn_id)
     }
 
-    /// Send a text frame on the active connection. Rejects stale connections.
     pub async fn send(&self, conn_id: ConnectionId, frame: String) -> Result<(), AppwireError> {
-        let writer_tx = {
-            let active = self.active.lock();
-            let conn = active.as_ref().ok_or(AppwireError::NotFound)?;
-            if conn.conn_id != conn_id {
+        let command_tx = {
+            let state = self.state.lock();
+            let active = state.active.as_ref().ok_or(AppwireError::NotFound)?;
+            if active.conn_id != conn_id {
                 return Err(AppwireError::StaleConnection);
             }
-            conn.writer_tx.clone()
+            active.command_tx.clone()
         };
-
-        writer_tx
+        command_tx
             .send(WriterCommand::Send(frame))
             .map_err(|_| AppwireError::SendFailed)
     }
 
-    /// Close the active connection with a specific close code.
     pub async fn close_with_code(&self, conn_id: ConnectionId, code: u16) {
-        let taken = {
-            let mut active = self.active.lock();
-            active.take()
-        };
-        if let Some(conn) = taken {
-            if conn.conn_id == conn_id {
-                Self::close_and_reap(conn, code).await;
+        let _lifecycle = self.lifecycle.lock().await;
+        let connection = {
+            let mut state = self.state.lock();
+            if state
+                .active
+                .as_ref()
+                .is_some_and(|active| active.conn_id == conn_id)
+            {
+                state.active.take()
             } else {
-                // Not the matching connection; put it back.
-                *self.active.lock() = Some(conn);
+                None
             }
+        };
+        if let Some(connection) = connection {
+            Self::close_and_reap(connection, code, "client closed").await;
         }
     }
 
-    /// Close the active connection with default code 1000.
     pub async fn close(&self, conn_id: ConnectionId) {
         self.close_with_code(conn_id, 1000).await;
     }
 
-    /// Close the current connection (called by the CloseTransport callback
-    /// before the active profile changes). Invalidates the generation.
-    pub fn close_current(&self) -> u64 {
-        if let Some(conn) = { self.active.lock().take() } {
-            let gen = conn.conn_id.generation;
-            Self::close_connection(&conn, 1000);
-            gen
-        } else {
-            0
-        }
+    async fn close_and_reap(connection: ActiveConnection, code: u16, reason: &str) {
+        let _ = connection.command_tx.send(WriterCommand::Close {
+            code,
+            reason: reason.to_owned(),
+        });
+        let _ = connection.supervisor_handle.await;
     }
 }
 
@@ -435,16 +461,11 @@ impl Default for AppwireManager {
     }
 }
 
-/// Build the Host header (host:port, omitting the port if it is the scheme
-/// default) from a pinned origin.
 fn host_with_port(pinned: &PinnedOrigin) -> String {
-    let scheme = pinned.scheme();
-    let host = pinned.host();
-    let port = pinned.port();
-    if is_default_port(scheme, port) {
-        host.to_owned()
+    if is_default_port(pinned.scheme(), pinned.port()) {
+        pinned.host().to_owned()
     } else {
-        format!("{host}:{port}")
+        format!("{}:{}", pinned.host(), pinned.port())
     }
 }
 
@@ -462,14 +483,8 @@ mod tests {
 
     #[test]
     fn connection_id_is_stale_after_generation_bump() {
-        let a = ConnectionId {
-            profile_id: "p1".to_owned(),
-            generation: 1,
-        };
-        let b = ConnectionId {
-            profile_id: "p1".to_owned(),
-            generation: 2,
-        };
+        let a = ConnectionId::new("p1".to_owned(), 1);
+        let b = ConnectionId::new("p1".to_owned(), 2);
         assert_ne!(a, b);
     }
 
@@ -501,28 +516,40 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn open_rejects_profile_mismatch_when_other_selected() {
+    async fn open_rejects_profile_or_profile_generation_mismatch() {
         let policy = Arc::new(NetworkPolicy::new(Box::new(
             crate::network_policy::AlwaysPrivateResolver,
         )));
         let manager = AppwireManager::new(policy, ReleaseMode::Release);
-        // Select profile-1, then try to open profile-2.
-        manager.select("profile-1").await;
+        manager.select(Some("profile-1"), 7).await;
         let (tx, _rx) = tokio::sync::mpsc::channel::<AppwireEvent>(8);
-        let result = manager
+        let wrong_profile = manager
             .open(
                 "profile-2",
+                7,
+                "ws://hub.example.com/rpc".to_owned(),
+                "tok".to_owned(),
+                tx.clone(),
+            )
+            .await;
+        assert!(matches!(wrong_profile, Err(AppwireError::ProfileMismatch)));
+        let wrong_generation = manager
+            .open(
+                "profile-1",
+                8,
                 "ws://hub.example.com/rpc".to_owned(),
                 "tok".to_owned(),
                 tx,
             )
             .await;
-        assert!(matches!(result, Err(AppwireError::ProfileMismatch)));
+        assert!(matches!(
+            wrong_generation,
+            Err(AppwireError::ProfileMismatch)
+        ));
     }
 
     #[tokio::test]
     async fn open_rejects_public_http_address() {
-        // A resolver that returns a public address for HTTP.
         struct PublicResolver;
         impl crate::network_policy::DnsResolver for PublicResolver {
             fn resolve(&self, _host: &str) -> Result<Vec<IpAddr>, String> {
@@ -535,6 +562,7 @@ mod tests {
         let result = manager
             .open(
                 "profile-1",
+                0,
                 "ws://hub.example.com/rpc".to_owned(),
                 "tok".to_owned(),
                 tx,

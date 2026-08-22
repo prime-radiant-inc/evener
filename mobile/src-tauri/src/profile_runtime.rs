@@ -9,6 +9,7 @@ use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
 
+use crate::appwire_transport::AppwireManager;
 use crate::error::{ProfileError, ReleaseMode};
 use crate::http_transport::PinnedHttpBoundary;
 use crate::network_policy::NetworkPolicy;
@@ -363,6 +364,162 @@ impl ProfileRuntime {
         f(&self.store)
     }
 
+    /// Select a profile through the single async lifecycle path. The old
+    /// AppWire supervisor is closed and awaited before preferences change.
+    /// Manager selection is reconciled to the old durable state on an atomic
+    /// save failure and to the new visible state on durability uncertainty.
+    pub async fn select_profile(
+        &self,
+        appwire: &AppwireManager,
+        profile_id: &str,
+    ) -> Result<SelectResult, ProfileError> {
+        let _guard = self.lifecycle.lock().await;
+        if !self
+            .store
+            .list()?
+            .iter()
+            .any(|profile| profile.id == profile_id)
+        {
+            return Err(ProfileError::NotFound(profile_id.to_owned()));
+        }
+
+        let previous_id = self.store.active_id()?;
+        let previous_generation = self.store.generation();
+        let next_generation = previous_generation.0.saturating_add(1);
+        appwire.select(Some(profile_id), next_generation).await;
+
+        match self.store.select(profile_id) {
+            Ok(result) => {
+                appwire
+                    .reconcile_selection(result.profile_id.as_deref(), result.generation.0)
+                    .await;
+                Ok(result)
+            }
+            Err(error) => {
+                if matches!(error, ProfileError::PreferencesDurabilityUncertain) {
+                    appwire
+                        .reconcile_selection(Some(profile_id), self.store.generation().0)
+                        .await;
+                } else {
+                    appwire
+                        .reconcile_selection(previous_id.as_deref(), previous_generation.0)
+                        .await;
+                }
+                Err(error)
+            }
+        }
+    }
+
+    /// Remove a profile while keeping ProfileStore and AppwireManager in one
+    /// lifecycle transaction. Removing the active profile closes and reaps the
+    /// old socket before the active preference changes.
+    pub async fn remove_profile(
+        &self,
+        appwire: &AppwireManager,
+        profile_id: &str,
+    ) -> Result<SelectResult, ProfileError> {
+        let _guard = self.lifecycle.lock().await;
+        let profiles = self.store.list()?;
+        if !profiles.iter().any(|profile| profile.id == profile_id) {
+            return Err(ProfileError::NotFound(profile_id.to_owned()));
+        }
+        let previous_id = self.store.active_id()?;
+        let previous_generation = self.store.generation();
+        let was_active = previous_id.as_deref() == Some(profile_id);
+        let next_id = was_active.then(|| {
+            profiles
+                .iter()
+                .find(|profile| profile.id != profile_id)
+                .map(|profile| profile.id.clone())
+        });
+        let next_id = next_id.flatten();
+
+        if was_active {
+            appwire
+                .select(next_id.as_deref(), previous_generation.0.saturating_add(1))
+                .await;
+        }
+
+        match self.store.remove(profile_id) {
+            Ok(result) => {
+                if was_active {
+                    appwire
+                        .reconcile_selection(result.profile_id.as_deref(), result.generation.0)
+                        .await;
+                }
+                Ok(result)
+            }
+            Err(error) => {
+                if was_active {
+                    if matches!(error, ProfileError::PreferencesDurabilityUncertain) {
+                        appwire
+                            .reconcile_selection(next_id.as_deref(), self.store.generation().0)
+                            .await;
+                    } else {
+                        appwire
+                            .reconcile_selection(previous_id.as_deref(), previous_generation.0)
+                            .await;
+                    }
+                }
+                Err(error)
+            }
+        }
+    }
+
+    /// Confirm pairing while synchronizing an active re-pair with AppWire.
+    /// The old supervisor is reaped before an active profile's durable
+    /// origin/capability revision can change.
+    pub async fn confirm_pairing(
+        &self,
+        appwire: &AppwireManager,
+        preview_id: &str,
+        name: &str,
+        allow_duplicate_origin: bool,
+        mode: ReleaseMode,
+    ) -> Result<ProfileSummary, ProfileError> {
+        let _guard = self.lifecycle.lock().await;
+        let target_id = self.store.preview_profile_id(preview_id)?;
+        let previous_id = self.store.active_id()?;
+        let previous_generation = self.store.generation();
+        let changes_active = target_id.as_deref() == previous_id.as_deref() && target_id.is_some();
+        if changes_active {
+            appwire
+                .select(
+                    previous_id.as_deref(),
+                    previous_generation.0.saturating_add(1),
+                )
+                .await;
+        }
+
+        match self
+            .store
+            .confirm_pairing(preview_id, name, allow_duplicate_origin, mode)
+        {
+            Ok(summary) => {
+                if changes_active {
+                    appwire
+                        .reconcile_selection(previous_id.as_deref(), self.store.generation().0)
+                        .await;
+                }
+                Ok(summary)
+            }
+            Err(error) => {
+                if changes_active {
+                    let generation =
+                        if matches!(error, ProfileError::PreferencesDurabilityUncertain) {
+                            self.store.generation()
+                        } else {
+                            previous_generation
+                        };
+                    appwire
+                        .reconcile_selection(previous_id.as_deref(), generation.0)
+                        .await;
+                }
+                Err(error)
+            }
+        }
+    }
+
     /// Direct access to the store (for read-only operations like list/active_id).
     pub fn store(&self) -> &ProfileStore {
         &self.store
@@ -484,9 +641,7 @@ mod tests {
     use crate::network_policy::AlwaysPrivateResolver;
     use crate::network_policy::NetworkPolicy;
     use crate::profile::Clock;
-    use crate::profile::{
-        MemoryPreferences, MemorySecureStore, OkProbe, RecordingCloseTransport, StepClock,
-    };
+    use crate::profile::{MemoryPreferences, MemorySecureStore, OkProbe, StepClock};
     use std::sync::atomic::AtomicBool;
     use std::sync::atomic::{AtomicUsize, Ordering};
 
@@ -501,18 +656,10 @@ mod tests {
         secure: Arc<dyn SecureStore>,
         probe: Arc<dyn PairingProbe>,
         clock: Arc<dyn Clock>,
-    ) -> (ProfileRuntime, Arc<RecordingCloseTransport>) {
+    ) -> (ProfileRuntime, ()) {
         let policy = Arc::new(NetworkPolicy::new(Box::new(AlwaysPrivateResolver)));
-        let close = Arc::new(RecordingCloseTransport::default());
-        let store = Arc::new(ProfileStore::new(
-            prefs,
-            secure,
-            probe,
-            clock,
-            policy,
-            close.clone(),
-        ));
-        (ProfileRuntime::new(store), close)
+        let store = Arc::new(ProfileStore::new(prefs, secure, probe, clock, policy));
+        (ProfileRuntime::new(store), ())
     }
 
     fn make_memory_runtime() -> (
@@ -1470,11 +1617,15 @@ mod tests {
         assert_eq!(list[0].name, "Gamma");
     }
 
-    // -- Switch closes old transport before active change ------------------
+    // -- Runtime transport selection agreement -----------------------------
 
     #[tokio::test]
-    async fn switch_closes_transport_before_active_change() {
+    async fn switch_updates_store_and_manager_generation_together() {
         let (rt, _prefs, _secure) = make_memory_runtime();
+        let manager = AppwireManager::new(
+            Arc::new(NetworkPolicy::new(Box::new(AlwaysPrivateResolver))),
+            ReleaseMode::Release,
+        );
 
         let pv = rt
             .serialized(|store| store.preview_pairing(&auth_url("hub1.example.com")))
@@ -1498,12 +1649,58 @@ mod tests {
             .await
             .unwrap();
 
-        rt.serialized(|store| store.select(&alpha.id))
+        rt.select_profile(&manager, &alpha.id).await.unwrap();
+        let result = rt.select_profile(&manager, &beta.id).await.unwrap();
+        let gen = rt.store().generation();
+        assert_eq!(gen, result.generation);
+        assert_eq!(
+            manager.selected_profile(),
+            Some((beta.id, result.generation.0))
+        );
+    }
+
+    #[tokio::test]
+    async fn active_repair_updates_store_and_manager_generation_together() {
+        let (rt, _prefs, _secure) = make_memory_runtime();
+        let manager = AppwireManager::new(
+            Arc::new(NetworkPolicy::new(Box::new(AlwaysPrivateResolver))),
+            ReleaseMode::Release,
+        );
+        let preview = rt
+            .serialized(|store| store.preview_pairing(&auth_url("hub1.example.com")))
             .await
             .unwrap();
-        let _ = rt.serialized(|store| store.select(&beta.id)).await.unwrap();
-        let gen = rt.store().generation();
-        assert!(gen.0 > 0);
+        let profile = rt
+            .confirm_pairing(
+                &manager,
+                &preview.preview_id,
+                "Alpha",
+                false,
+                ReleaseMode::Release,
+            )
+            .await
+            .unwrap();
+        let selected = rt.select_profile(&manager, &profile.id).await.unwrap();
+
+        const NEW_TOKEN: &str = "AQIDBAUGBwgJCgsMDQ4PEBESExQVFhcYGRobHB0eHyA";
+        let repair_url = format!("https://hub1.example.com:8443/auth?token={NEW_TOKEN}");
+        let repair = rt
+            .serialized(|store| store.preview_repair(&profile.id, &repair_url))
+            .await
+            .unwrap();
+        rt.confirm_pairing(
+            &manager,
+            &repair.preview_id,
+            "Alpha",
+            true,
+            ReleaseMode::Release,
+        )
+        .await
+        .unwrap();
+
+        let generation = rt.store().generation();
+        assert!(generation > selected.generation);
+        assert_eq!(manager.selected_profile(), Some((profile.id, generation.0)));
     }
 
     // -- KeychainBridge never silently downgrades failures ------------------

@@ -72,20 +72,19 @@ pub async fn profile_preview_repair(
 #[tauri::command]
 pub async fn profile_confirm_pairing(
     runtime: State<'_, ProfileRuntime>,
+    transport: State<'_, TransportState>,
     request: ConfirmPairingRequest,
 ) -> Result<ProfileSummaryResponse, String> {
     runtime
-        .serialized(|store| {
-            store
-                .confirm_pairing(
-                    &request.preview_id,
-                    &request.name,
-                    request.allow_duplicate_origin,
-                    ReleaseMode::Release,
-                )
-                .map_err(|e| e.to_string())
-        })
+        .confirm_pairing(
+            transport.appwire(),
+            &request.preview_id,
+            &request.name,
+            request.allow_duplicate_origin,
+            ReleaseMode::Release,
+        )
         .await
+        .map_err(|error| error.to_string())
         .map(ProfileSummaryResponse::from)
 }
 
@@ -131,8 +130,9 @@ pub async fn profile_remove(
     request: RemoveRequest,
 ) -> Result<SelectResponse, String> {
     let result = runtime
-        .serialized(|store| store.remove(&request.profile_id).map_err(|e| e.to_string()))
-        .await;
+        .remove_profile(transport.appwire(), &request.profile_id)
+        .await
+        .map_err(|error| error.to_string());
     // Clear diagnostics for the removed profile (spec: entries for a removed
     // profile are deleted). Only cleared after a successful removal.
     if result.is_ok() {
@@ -146,11 +146,13 @@ pub async fn profile_remove(
 #[tauri::command]
 pub async fn profile_select(
     runtime: State<'_, ProfileRuntime>,
+    transport: State<'_, TransportState>,
     request: SelectRequest,
 ) -> Result<SelectResponse, String> {
     runtime
-        .serialized(|store| store.select(&request.profile_id).map_err(|e| e.to_string()))
+        .select_profile(transport.appwire(), &request.profile_id)
         .await
+        .map_err(|error| error.to_string())
         .map(SelectResponse::from)
 }
 
@@ -246,14 +248,33 @@ pub async fn hub_http_request(
 /// A serializable AppWire channel event delivered to JavaScript. Never
 /// carries the token or URL.
 #[derive(Debug, Clone, serde::Serialize)]
-#[serde(rename_all = "camelCase", tag = "type")]
+#[serde(
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase",
+    tag = "type"
+)]
 pub enum AppwireChannelEvent {
     /// A text frame from the server.
-    Text { data: String },
+    Text {
+        connection_id: String,
+        profile_id: String,
+        generation: u64,
+        data: String,
+    },
     /// The connection closed with a code.
-    Closed { code: u16 },
+    Closed {
+        connection_id: String,
+        profile_id: String,
+        generation: u64,
+        code: u16,
+        reason: String,
+    },
     /// An error occurred (no details that could leak a token).
-    Error,
+    Error {
+        connection_id: String,
+        profile_id: String,
+        generation: u64,
+    },
 }
 
 #[derive(Debug, Clone, serde::Deserialize)]
@@ -270,6 +291,8 @@ pub struct AppwireOpenRequest {
 pub struct AppwireOpenResponse {
     /// Opaque connection identifier (base64 of profile_id:generation).
     pub connection_id: String,
+    /// The selected profile ID (redacted routing identity, never a capability).
+    pub profile_id: String,
     /// The connection generation.
     pub generation: u64,
 }
@@ -288,7 +311,7 @@ pub async fn appwire_open(
                 .map_err(|e| e.to_string())
         })
         .await?;
-    let (profile_id, _generation, origin, token) = snapshot.into_parts();
+    let (profile_id, profile_generation, origin, token) = snapshot.into_parts();
 
     // Build the WebSocket URL from the origin.
     let ws_url = appwire_url(&origin);
@@ -303,9 +326,31 @@ pub async fn appwire_open(
     tokio::spawn(async move {
         while let Some(event) = rx.recv().await {
             let payload = match event {
-                AppwireEvent::Text(text) => AppwireChannelEvent::Text { data: text },
-                AppwireEvent::Closed(code) => AppwireChannelEvent::Closed { code },
-                AppwireEvent::Error => AppwireChannelEvent::Error,
+                AppwireEvent::Text {
+                    connection_id,
+                    data,
+                } => AppwireChannelEvent::Text {
+                    connection_id: encode_conn_id(&connection_id),
+                    profile_id: connection_id.profile_id().to_owned(),
+                    generation: connection_id.generation(),
+                    data,
+                },
+                AppwireEvent::Closed {
+                    connection_id,
+                    code,
+                    reason,
+                } => AppwireChannelEvent::Closed {
+                    connection_id: encode_conn_id(&connection_id),
+                    profile_id: connection_id.profile_id().to_owned(),
+                    generation: connection_id.generation(),
+                    code,
+                    reason,
+                },
+                AppwireEvent::Error { connection_id } => AppwireChannelEvent::Error {
+                    connection_id: encode_conn_id(&connection_id),
+                    profile_id: connection_id.profile_id().to_owned(),
+                    generation: connection_id.generation(),
+                },
             };
             let json = serde_json::to_string(&payload).unwrap_or_default();
             let _ = channel.send(tauri::ipc::InvokeResponseBody::Json(json));
@@ -314,12 +359,13 @@ pub async fn appwire_open(
 
     let conn_id = transport
         .appwire()
-        .open(&profile_id, ws_url, token, tx)
+        .open(&profile_id, profile_generation.0, ws_url, token, tx)
         .await
         .map_err(|e| e.to_string())?;
 
     Ok(AppwireOpenResponse {
         connection_id: encode_conn_id(&conn_id),
+        profile_id,
         generation: conn_id.generation(),
     })
 }
@@ -401,4 +447,65 @@ fn decode_conn_id(s: &str) -> Result<ConnectionId, String> {
         .parse::<u64>()
         .map_err(|_| "invalid generation".to_owned())?;
     Ok(ConnectionId::new(profile_id.to_owned(), generation))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::AppwireChannelEvent;
+
+    #[test]
+    fn appwire_channel_dto_serializes_complete_identity_on_every_variant() {
+        let text = serde_json::to_value(AppwireChannelEvent::Text {
+            connection_id: "profile:7".to_owned(),
+            profile_id: "profile".to_owned(),
+            generation: 7,
+            data: "frame".to_owned(),
+        })
+        .unwrap();
+        let closed = serde_json::to_value(AppwireChannelEvent::Closed {
+            connection_id: "profile:7".to_owned(),
+            profile_id: "profile".to_owned(),
+            generation: 7,
+            code: 1012,
+            reason: "service restart".to_owned(),
+        })
+        .unwrap();
+        let error = serde_json::to_value(AppwireChannelEvent::Error {
+            connection_id: "profile:7".to_owned(),
+            profile_id: "profile".to_owned(),
+            generation: 7,
+        })
+        .unwrap();
+
+        assert_eq!(
+            text,
+            serde_json::json!({
+                "type": "text",
+                "connectionId": "profile:7",
+                "profileId": "profile",
+                "generation": 7,
+                "data": "frame",
+            })
+        );
+        assert_eq!(
+            closed,
+            serde_json::json!({
+                "type": "closed",
+                "connectionId": "profile:7",
+                "profileId": "profile",
+                "generation": 7,
+                "code": 1012,
+                "reason": "service restart",
+            })
+        );
+        assert_eq!(
+            error,
+            serde_json::json!({
+                "type": "error",
+                "connectionId": "profile:7",
+                "profileId": "profile",
+                "generation": 7,
+            })
+        );
+    }
 }
