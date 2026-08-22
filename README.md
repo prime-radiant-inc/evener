@@ -70,11 +70,14 @@ does not automatically enable their contents. Add standalone skill paths to
 corresponding CLI flags for a single run. Plugin-contained skills live under
 that plugin and become available through the plugin path.
 
-Install does not create provider credentials. Configure them through the hub
-or TUI credentials UI, `${XDG_CONFIG_HOME:-$HOME/.config}/evener/credentials.toml`,
-provider environment variables such as `OPENAI_API_KEY`, or OpenAI OAuth. See
-[docs/developing-evener/environment.md](docs/developing-evener/environment.md) for the complete environment variable
-reference.
+Install does not create provider credentials. Hosted/auth-required providers
+can be configured through the hub or TUI credentials UI, supported provider
+environment variables such as `OPENAI_API_KEY`, or OpenAI OAuth. Local/auth-none
+providers such as Ollama may not need credentials. The default credentials file
+is `${XDG_CONFIG_HOME:-$HOME/.config}/evener/credentials.toml`; when
+`EVENER_PROVIDERS_CONFIG` points to a custom `providers.toml`, the credentials
+file is beside it. See [docs/developing-evener/environment.md](docs/developing-evener/environment.md)
+for the complete environment variable reference.
 
 ## Quick start: the hub and web UI
 
@@ -92,8 +95,9 @@ startup:
 ```
 
 Open that URL. It sets a cookie that authorizes the browser; later visits to
-`http://127.0.0.1:9180` need no token. Add a provider credential at
-`http://127.0.0.1:9180/credentials`, then open
+`http://127.0.0.1:9180` need no token. For a hosted provider that requires a
+credential, add it at `http://127.0.0.1:9180/credentials`; local/auth-none
+providers such as Ollama can skip this step. Then open
 `http://127.0.0.1:9180/new`, type a prompt, pick a model and working
 directory, and click Start. The full walkthrough — resume, forking, and
 search included — lives in
@@ -106,12 +110,8 @@ browser-based interface for many concurrent sessions.
 
 ### Build & run
 
-From a source checkout, run `make build-hub`; then run `evener-hub` (default
-`127.0.0.1:9180`). Installed users can skip the build.
-
-For production-style setup, credentials, Codex app-server sources, and smoke
-checks, see [`docs/evener-hub.md`](docs/evener-hub.md). Keep this short build
-and run recipe; the runbook is the detailed operational reference.
+From a source checkout, run `make build-hub`, then `./evener-hub` (default
+`127.0.0.1:9180`). Installed users can run `evener-hub` from `PATH`.
 
 ### What's there
 
@@ -127,54 +127,13 @@ and run recipe; the runbook is the detailed operational reference.
 - **⌘K search** (Ctrl+K on Linux) across live + past sessions.
 - **Settings** for theme (light/dark/system), notification preferences, and provider and MCP configuration.
 
-### Configuration
+### Configuration and operation
 
-`${XDG_CONFIG_HOME:-$HOME/.config}/evener/hub.toml` (optional):
-
-```toml
-addr = "127.0.0.1:9180"
-spawn_timeout = "30s"
-past_results_per_page = 50
-# Optional; default is $XDG_STATE_HOME/evener/index.db (~/.local/state/evener/index.db).
-past_index_db = "/Users/you/.local/state/evener/index.db"
-```
-
-The hub's launch model choices come from the Evener launch harness contract
-(`evener launch-check --models`), not from a static model roster in `hub.toml`.
-Launch defaults live in layered launch config files. For user-wide defaults,
-create `${XDG_CONFIG_HOME:-$HOME/.config}/evener/launch.toml`:
-
-```toml
-app_replay_size = 4096
-
-[env]
-# Non-secret runtime setting; do not put credentials in launch.toml.
-OLLAMA_BASE_URL = "http://localhost:11434/v1"
-```
-
-Credential-like keys are rejected in every launch-config layer. Add provider
-keys in the hub/TUI credentials UI or `credentials.toml`, export supported
-provider environment variables before starting the hub, or use OpenAI OAuth.
-
-### Architecture
-
-Hub-spawned daemons are forced to loopback and each writes a private
-rendezvous file to `${XDG_STATE_HOME:-$HOME/.local/state}/evener/run/<pid>.json`;
-direct `evener serve` defaults to loopback but `--addr` can override it. The
-hub watches the directory, probes daemons for state, and proxies AppWire/REST
-so the browser only ever talks to the hub origin. The hub requires a capability
-token on every route except `/auth`, `/api/health`, and the PWA icons: browsers
-authorize once through the auth URL printed at startup (which sets a long-lived
-cookie), and scripted clients send the token as `Authorization: Bearer`.
-Daemons spawned by the hub require the per-hub bearer token recorded in their
-rendezvous file. A strict content security policy and a SameSite=Lax auth cookie
-defend against cross-origin attacks.
-
-### Operating notes
-
-- **Daemons keep the binary they were spawned from.** Rebuilding `evener` does not update already-running daemons; live sessions continue to run the old code until they shut down. To pick up changes mid-session, end the session (which terminates its daemon), rebuild, and resume — resume reads the new binary. This matches typical daemonized-server behavior.
-- **Remote hosts**: see `docs/evener-hub-remote-operations.md` for the current deployment runbook, including credential handling, state directories, browser/TUI access, health checks, and Codex app-server sources.
-- **Rebuild and restart a launchd-managed hub**: `scripts/ops/deploy-hub.sh` builds while the old hub remains running, kickstarts the job to replace it, then verifies health — see `scripts/ops/deploy-hub.sh --help`.
+The hub uses layered launch configuration, loopback defaults, capability-token
+authentication, and XDG state/config roots. For the authoritative configuration,
+credential, smoke-check, remote-operation, and deploy guidance, see
+[`docs/evener-hub.md`](docs/evener-hub.md) and
+[`docs/evener-hub-remote-operations.md`](docs/evener-hub-remote-operations.md).
 
 Design spec, plans, and notes live under `docs/superpowers/`.
 
@@ -190,11 +149,13 @@ make build-tui
 
 ### Usage
 
-Start the dashboard:
+Start the dashboard from an installed `PATH` command:
 
 ```bash
 evener-tui
 ```
+
+After `make build-tui` in a source checkout, use `./evener-tui` instead.
 
 By default `evener-tui` connects to `http://127.0.0.1:9180`. If no local hub is
 running, it starts `evener-hub` automatically and waits for an authenticated

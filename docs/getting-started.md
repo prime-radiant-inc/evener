@@ -106,8 +106,9 @@ editing code while the transcript streams live.
 
 Steer the session as it runs. Send follow-up messages in the conversation,
 or interrupt when it heads the wrong way. The sidebar's Live section sorts
-running sessions by which one needs you first, so several sessions can run
-in parallel without losing track of any of them.
+running sessions by which one needs you first, excluding archived running
+sessions, so several sessions can run in parallel without losing track of any
+of them.
 
 ## Everyday workflow
 

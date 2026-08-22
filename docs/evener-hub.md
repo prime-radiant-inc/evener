@@ -16,12 +16,13 @@ operation, and smoke checks. For non-local hosts, see
 ## Trust boundary
 
 The hub requires a capability token on every route except `/auth`,
-`/api/health`, and the PWA icons. At startup it loads the token at
-`${XDG_STATE_HOME:-$HOME/.local/state}/evener/auth-token` as-is, or creates a
-fresh 256-bit token when the file is absent. A newly created token file is
-written mode 0600; an existing file is loaded as-is, so check and correct its
-permissions when hardening an older installation. The hub logs an
-authorization URL:
+`/api/health`, and the PWA icons. At startup it loads
+`<hub_state_root>/auth-token`; the default `hub_state_root` is
+`${XDG_STATE_HOME:-$HOME/.local/state}/evener`, and `hub.toml` may override it.
+It creates a fresh 256-bit token when the file is absent. A newly created token
+file is written mode 0600; a non-empty existing file is accepted after
+surrounding whitespace is trimmed, without format or mode enforcement. The hub
+logs an authorization URL:
 
 ```
 [hub] auth URL (visit once per browser): http://127.0.0.1:9180/auth?token=...
@@ -228,12 +229,17 @@ for the full resolution detail.
 Foreground run with logs:
 
 ```bash
+set -o pipefail
 umask 077
-mkdir -p "$HOME/.local/state/evener/log"
-chmod 700 "$HOME/.local/state/evener/log"
-touch "$HOME/.local/state/evener/log/hub.log"
-chmod 600 "$HOME/.local/state/evener/log/hub.log"
-evener-hub 2>&1 | tee -a "$HOME/.local/state/evener/log/hub.log"
+hub_config="${XDG_CONFIG_HOME:-$HOME/.config}/evener/hub.toml"
+hub_state_root="${XDG_STATE_HOME:-$HOME/.local/state}/evener"
+# If hub.toml sets hub_state_root, set hub_state_root above to that same value.
+log_file="$hub_state_root/log/hub.log"
+mkdir -p "$(dirname "$log_file")"
+chmod 700 "$(dirname "$log_file")"
+touch "$log_file"
+chmod 600 "$log_file"
+evener-hub --config "$hub_config" 2>&1 | tee -a "$log_file"
 ```
 
 The hub listens on `127.0.0.1:9180` unless `addr` in `hub.toml` says
@@ -250,9 +256,11 @@ before starting:
 set -a; source "${XDG_CONFIG_HOME:-$HOME/.config}/evener/hub.env"; set +a
 ```
 
-Production deployments should run the same command under a supervisor and
-capture stdout/stderr. The hub logs config errors, past-index rebuild errors,
-roster watch errors, child-process launch diagnostics, and the auth URL there.
+This Bash recipe uses `pipefail` so a hub failure is not hidden by `tee`.
+Production deployments should preferably execute `evener-hub --config
+"$hub_config"` directly under a supervisor and let it capture stdout/stderr.
+The hub logs config errors, past-index rebuild errors, roster watch errors,
+child-process launch diagnostics, and the auth URL there.
 On macOS, [`scripts/ops/deploy-hub.sh`](../scripts/ops/deploy-hub.sh) builds
 while the old hub remains running, kickstarts its launchd job to replace it,
 then verifies health; see
@@ -287,23 +295,14 @@ curl -fsS http://127.0.0.1:9180/api/health | jq .
 ```
 
 Other API routes need the auth token. Check the spawn-scoped Evener model
-list. This resolves the default XDG state root and also honors an explicit
-`hub_state_root` in `hub.toml`:
+list. Use the same `hub_config` and `hub_state_root` values as in the start
+recipe above; the defaults below are the XDG defaults. For a custom
+`evener-hub --config /path/to/hub.toml`, set `hub_config` to that path and set
+`hub_state_root` to the exact `hub_state_root` value in that file.
 
 ```bash
 hub_config="${XDG_CONFIG_HOME:-$HOME/.config}/evener/hub.toml"
 hub_state_root="${XDG_STATE_HOME:-$HOME/.local/state}/evener"
-if [ -f "$hub_config" ]; then
-  configured_hub_state_root=$(python3 - "$hub_config" <<'PY'
-import sys, tomllib
-with open(sys.argv[1], "rb") as f:
-    print(tomllib.load(f).get("hub_state_root", ""))
-PY
-  )
-  if [ -n "$configured_hub_state_root" ]; then
-    hub_state_root="$configured_hub_state_root"
-  fi
-fi
 curl -fsS \
   -H "Authorization: Bearer $(cat "$hub_state_root/auth-token")" \
   "http://127.0.0.1:9180/api/models?cwd=$(python3 -c 'import urllib.parse,sys; print(urllib.parse.quote(sys.argv[1]))' /path/to/project)" \
