@@ -1,5 +1,5 @@
 // Vite dev-server config for the browser guards (layoutguard, overflowguard,
-// spawnguard - all spawned through browserGuardProcess.mjs's
+// shellguard, spawnguard - all spawned through browserGuardProcess.mjs's
 // startBrowserGuard). Extends the app's own config so the guards exercise the
 // real plugin/transform pipeline, with two deviations that make a guard run
 // hermetic:

@@ -21,6 +21,11 @@
   gap: var(--space-2);
   width: 100%;
   min-width: 0;
+  /* Keep the actions menu's visually-hidden accessible name inside its row.
+   * Without a containing block here, its position:absolute rule resolves
+   * against the rail, bypasses the body's scroll clipping, and grows the page
+   * to the full expanded tree height. */
+  position: relative;
   /* The leading padding is the signal dot's home: .signal outdents into it
    * (negative margin, below), so the dot hangs LEFT of the text and every
    * row's text starts at this one x - dotted or not. 14px = 4px edge
