@@ -1183,9 +1183,7 @@ test("Cadence's frame trace grows as live notifications arrive, sourced from the
 });
 
 // cadenceStateForStatus's own direct unit tests now live in
-// liveness.test.ts, alongside the function itself (hoisted out of this
-// file so transcript/tools/watchedChild.tsx can share it - see liveness.ts's
-// own header for why).
+// liveness.test.ts, alongside the function itself.
 
 // --- transcript/flow integration (wave 4 T4) -----------------------------
 //

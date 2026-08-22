@@ -352,5 +352,9 @@ func cloneEvent(event Event) Event {
 		payload := *event.DeliveryAcknowledged
 		clone.DeliveryAcknowledged = &payload
 	}
+	if event.AttentionChanged != nil {
+		payload := *event.AttentionChanged
+		clone.AttentionChanged = &payload
+	}
 	return clone
 }
