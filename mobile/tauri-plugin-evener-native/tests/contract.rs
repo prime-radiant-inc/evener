@@ -6,6 +6,80 @@ use tauri_plugin_evener_native::{
 
 const FIXTURE: &str = include_str!("../ios/Tests/PluginTests/Fixtures/contract-v1.json");
 
+// ---------------------------------------------------------------------------
+// Pin the exact public model shapes that cross to JavaScript via serde.
+// The TS transport adapter must match these raw shapes — not the versioned
+// NativeResponse union. These tests prevent the fake from drifting from Rust.
+// ---------------------------------------------------------------------------
+
+use tauri_plugin_evener_native::{
+    ContentSizeGetResponse, HapticPerformResponse, NativeError, NativeErrorKind,
+    ScanAndPreviewResponse,
+};
+
+#[test]
+fn haptic_perform_response_serializes_to_completed_boolean() {
+    let response = HapticPerformResponse { completed: true };
+    let json = serde_json::to_value(&response).unwrap();
+    assert_eq!(json, json!({ "completed": true }));
+    // No version or type field — the TS adapter must decode {completed:true}.
+    assert!(json.get("version").is_none());
+    assert!(json.get("type").is_none());
+}
+
+#[test]
+fn content_size_get_response_serializes_to_category_string() {
+    let response = ContentSizeGetResponse {
+        category: "extraExtraLarge".to_owned(),
+    };
+    let json = serde_json::to_value(&response).unwrap();
+    assert_eq!(json, json!({ "category": "extraExtraLarge" }));
+    assert!(json.get("version").is_none());
+    assert!(json.get("type").is_none());
+}
+
+#[test]
+fn scan_and_preview_response_serializes_versioned_pairing_preview() {
+    let response = ScanAndPreviewResponse::preview("pv-1", "https://hub.example.com:8443");
+    let json = serde_json::to_value(&response).unwrap();
+    assert_eq!(
+        json,
+        json!({
+            "version": NATIVE_BRIDGE_VERSION,
+            "type": "pairing.preview",
+            "previewId": "pv-1",
+            "origin": "https://hub.example.com:8443"
+        })
+    );
+    // error field is skipped when None.
+    assert!(json.get("error").is_none());
+}
+
+#[test]
+fn scan_and_preview_response_serializes_versioned_error() {
+    let response = ScanAndPreviewResponse::error(NativeError {
+        id: "scan-and-preview".to_owned(),
+        kind: NativeErrorKind::PairingUnavailable,
+        message: "Pairing scan is unavailable on this platform".to_owned(),
+    });
+    let json = serde_json::to_value(&response).unwrap();
+    assert_eq!(
+        json,
+        json!({
+            "version": NATIVE_BRIDGE_VERSION,
+            "type": "error",
+            "error": {
+                "id": "scan-and-preview",
+                "kind": "pairing_unavailable",
+                "message": "Pairing scan is unavailable on this platform"
+            }
+        })
+    );
+    // previewId and origin are skipped when None.
+    assert!(json.get("previewId").is_none());
+    assert!(json.get("origin").is_none());
+}
+
 #[test]
 fn decodes_every_v1_fixture_variant() {
     let fixture: ContractFixture = serde_json::from_str(FIXTURE).expect("fixture is JSON");

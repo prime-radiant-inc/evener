@@ -65,32 +65,44 @@ export function RootShell({ services, stores }: RootShellProps): JSX.Element {
     void connection.getState().refresh();
   }, [connection]);
 
-  // Consume the native content-size category on mount. Best-effort: a getter
-  // failure must not break profile loading or render the shell unusable.
+  // Content-size consumption and lifecycle refresh under one monotonic guard.
+  // A generation counter prevents unmount and an older/slower read from
+  // overwriting a newer foreground result.
   useEffect(() => {
+    let generation = 0;
     let cancelled = false;
-    void services.native
-      .getContentSize()
-      .then((category) => {
-        if (!cancelled) preferences.getState().setContentSize(category);
-      })
-      .catch(() => {
-        // contentSize is best-effort; keep the store default.
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [services.native, preferences]);
 
-  // Refresh connection state when the app returns to the foreground.
-  useEffect(() => {
+    function refreshContentSize(gen: number): void {
+      void services.native
+        .getContentSize()
+        .then((category) => {
+          // Only commit if this is the latest generation and not cancelled.
+          if (!cancelled && gen === generation) {
+            preferences.getState().setContentSize(category);
+          }
+        })
+        .catch(() => {
+          // contentSize is best-effort; keep the store default.
+        });
+    }
+
+    // Initial mount read.
+    refreshContentSize(generation);
+
+    // Lifecycle subscription: foreground refreshes both profiles and content size.
     const unsubscribe = services.native.onLifecycle((state) => {
       if (state === "foreground") {
+        generation += 1;
         void connection.getState().refresh();
+        refreshContentSize(generation);
       }
     });
-    return unsubscribe;
-  }, [services.native, connection]);
+
+    return () => {
+      cancelled = true;
+      unsubscribe();
+    };
+  }, [services.native, connection, preferences]);
 
   const isLoading = status === "initial" || status === "loading";
   const hasProfiles = profiles.length > 0 && activeProfileId !== null;
