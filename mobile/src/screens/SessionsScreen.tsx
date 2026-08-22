@@ -1,18 +1,19 @@
 /**
- * Sessions screen — honest placeholder for Task 8.
+ * Sessions screen — responsive server header (Foundation 7C lane C).
  *
- * Shows the active server in the top bar (name + full origin + status), an
- * honest empty state when no sessions exist, and a loading state while the
- * roster loads. No session implementation yet — Task 8 replaces the
- * placeholder with the live roster.
+ * One full-width server disclosure control replaces the redundant competing
+ * title row. It shows the active profile name, full origin (scheme/host/port),
+ * an honest status glyph+text, and a chevron — all in a robust grid layout
+ * that wraps long names and origins without ellipsis or horizontal overflow.
  *
  * Reachability is honest: without real health data it shows "Not checked"
- * (unknown), never fabricated "Connected" or "Reconnecting".
+ * (unknown), never fabricated "Connected" or "Reconnecting". The status state
+ * logic is owned by 7B; this screen only reads it.
  */
 import { type JSX, useEffect } from "react";
 import { Empty, ErrorState, Loading } from "../ui/States";
 import { type StatusKind, StatusMark } from "../ui/StatusMark";
-import { TopBar } from "../ui/TopBar";
+import "./SessionsScreen.css";
 import type { ConnectionStore } from "./root-types";
 
 export interface SessionsScreenProps {
@@ -47,25 +48,31 @@ export function SessionsScreen({
     }
   }, [status, connection]);
 
+  const statusLabel = STATUS_LABELS[reachState];
+
   return (
     <div>
-      <TopBar
-        title="Sessions"
-        trailing={
-          <button
-            type="button"
-            className="evener-button secondary"
-            aria-label={`${activeName} active server`}
-            onClick={onOpenSwitcher}
-            style={{ minHeight: "var(--tap-target)" }}
-          >
-            {activeName} {activeOrigin ? `· ${activeOrigin}` : ""}
-          </button>
-        }
-      />
-      <div style={{ padding: "16px" }}>
-        <StatusMark status={reachState} />
-      </div>
+      <button
+        type="button"
+        className="evener-sessions-header"
+        aria-label={`${activeOrigin ? `${activeOrigin}, ` : ""}${activeName} active server, ${statusLabel}`}
+        onClick={onOpenSwitcher}
+      >
+        <span className="evener-sessions-header__text">
+          <span className="evener-sessions-header__name">{activeName}</span>
+          {activeOrigin ? (
+            <span className="evener-sessions-header__origin">
+              {activeOrigin}
+            </span>
+          ) : null}
+          <span className="evener-sessions-header__status">
+            <StatusMark status={reachState} />
+          </span>
+        </span>
+        <span className="evener-sessions-header__chevron" aria-hidden="true">
+          ›
+        </span>
+      </button>
       {status === "loading" ? (
         <Loading label="Loading sessions…" />
       ) : status === "error" ? (
@@ -82,3 +89,11 @@ export function SessionsScreen({
     </div>
   );
 }
+
+const STATUS_LABELS: Record<StatusKind, string> = {
+  reachable: "Connected",
+  reconnecting: "Reconnecting",
+  offline: "Offline",
+  unknown: "Not checked",
+  attention: "Needs attention",
+};
