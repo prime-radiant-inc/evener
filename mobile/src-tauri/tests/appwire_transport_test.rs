@@ -21,6 +21,8 @@ use std::time::Duration;
 use app_lib::appwire_transport::{AppwireEvent, AppwireManager};
 use app_lib::error::ReleaseMode;
 use app_lib::network_policy::{DnsResolver, NetworkPolicy};
+use app_lib::profile::{MemoryPreferences, MemorySecureStore, OkProbe, ProfileStore, StepClock};
+use app_lib::profile_runtime::ProfileRuntime;
 
 /// A loopback network policy for tests: resolves any hostname to 127.0.0.1
 /// and allows loopback in Debug mode so the scripted WebSocket server on
@@ -45,6 +47,18 @@ fn test_manager() -> AppwireManager {
     )
 }
 
+const PROFILE_TOKEN: &str = "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8";
+
+fn pairing_url(ws_url: &str) -> String {
+    format!(
+        "{}/auth?token={PROFILE_TOKEN}",
+        ws_url
+            .strip_prefix("ws://")
+            .map(|rest| format!("http://{}", rest.trim_end_matches("/rpc")))
+            .unwrap()
+    )
+}
+
 // ---------------------------------------------------------------------------
 // Scripted WebSocket server
 // ---------------------------------------------------------------------------
@@ -61,8 +75,11 @@ mod ws_server {
         pub url: String,
         pub connection_count: Arc<AtomicU64>,
         frames_to_send: Arc<Mutex<Vec<String>>>,
+        server_close: Arc<Mutex<Option<(u16, String)>>>,
+        abrupt_close: Arc<Mutex<bool>>,
         received_frames: Arc<Mutex<Vec<String>>>,
         close_code: Arc<Mutex<Option<u16>>>,
+        close_observed: Arc<tokio::sync::Notify>,
         received_authorization: Arc<Mutex<Option<String>>>,
         received_origin: Arc<Mutex<Option<String>>>,
         received_protocol: Arc<Mutex<Option<String>>>,
@@ -76,16 +93,22 @@ mod ws_server {
 
             let connection_count = Arc::new(AtomicU64::new(0));
             let frames_to_send: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
+            let server_close: Arc<Mutex<Option<(u16, String)>>> = Arc::new(Mutex::new(None));
+            let abrupt_close = Arc::new(Mutex::new(false));
             let received_frames: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
             let close_code: Arc<Mutex<Option<u16>>> = Arc::new(Mutex::new(None));
+            let close_observed = Arc::new(tokio::sync::Notify::new());
             let received_authorization: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(None));
             let received_origin: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(None));
             let received_protocol: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(None));
 
             let cc = connection_count.clone();
             let fts = frames_to_send.clone();
+            let server_close_task = server_close.clone();
+            let abrupt_close_task = abrupt_close.clone();
             let rf = received_frames.clone();
             let clc = close_code.clone();
+            let close_observed_task = close_observed.clone();
             let ra = received_authorization.clone();
             let ro = received_origin.clone();
             let rp = received_protocol.clone();
@@ -99,8 +122,11 @@ mod ws_server {
                     cc.fetch_add(1, Ordering::SeqCst);
 
                     let fts = fts.clone();
+                    let server_close = server_close_task.clone();
+                    let abrupt_close = abrupt_close_task.clone();
                     let rf = rf.clone();
                     let clc = clc.clone();
+                    let close_observed = close_observed_task.clone();
                     let ra = ra.clone();
                     let ro = ro.clone();
                     let rp = rp.clone();
@@ -142,6 +168,22 @@ mod ws_server {
                         for frame in frames {
                             let _ = write.send(Message::Text(frame.into())).await;
                         }
+                        let should_abort = *abrupt_close.lock().unwrap();
+                        if should_abort {
+                            return;
+                        }
+                        let close = server_close.lock().unwrap().clone();
+                        if let Some((code, reason)) = close {
+                            let _ = write
+                                .send(Message::Close(Some(
+                                    tokio_tungstenite::tungstenite::protocol::CloseFrame {
+                                        code: code.into(),
+                                        reason: reason.into(),
+                                    },
+                                )))
+                                .await;
+                            return;
+                        }
 
                         // Read frames until closed.
                         while let Some(msg) = read.next().await {
@@ -153,6 +195,7 @@ mod ws_server {
                                     if let Some(cf) = close_frame {
                                         *clc.lock().unwrap() = Some(u16::from(cf.code));
                                     }
+                                    close_observed.notify_waiters();
                                     break;
                                 }
                                 Ok(_) => {}
@@ -167,8 +210,11 @@ mod ws_server {
                 url,
                 connection_count,
                 frames_to_send,
+                server_close,
+                abrupt_close,
                 received_frames,
                 close_code,
+                close_observed,
                 received_authorization,
                 received_origin,
                 received_protocol,
@@ -177,6 +223,18 @@ mod ws_server {
 
         pub fn enqueue_frame(&self, frame: String) {
             self.frames_to_send.lock().unwrap().push(frame);
+        }
+
+        pub fn close_new_connections(&self, code: u16, reason: &str) {
+            *self.server_close.lock().unwrap() = Some((code, reason.to_owned()));
+        }
+
+        pub fn keep_new_connections_open(&self) {
+            *self.server_close.lock().unwrap() = None;
+        }
+
+        pub fn abort_new_connections(&self) {
+            *self.abrupt_close.lock().unwrap() = true;
         }
 
         pub fn received_frames(&self) -> Vec<String> {
@@ -189,6 +247,15 @@ mod ws_server {
 
         pub fn last_close_code(&self) -> Option<u16> {
             *self.close_code.lock().unwrap()
+        }
+
+        pub async fn await_close_code(&self) -> u16 {
+            loop {
+                if let Some(code) = self.last_close_code() {
+                    return code;
+                }
+                self.close_observed.notified().await;
+            }
         }
 
         pub fn received_authorization(&self) -> Option<String> {
@@ -241,7 +308,7 @@ async fn appwire_open_and_receive_ordered_frames() {
     let (tx, mut rx) = tokio::sync::mpsc::channel::<_>(256);
 
     let conn_id = manager
-        .open("profile-1", url, "test-token".to_owned(), tx)
+        .open("profile-1", 0, url, "test-token".to_owned(), tx)
         .await
         .unwrap();
 
@@ -250,15 +317,237 @@ async fn appwire_open_and_receive_ordered_frames() {
     let frame2 = next_event(&mut rx, dl).await.expect("second frame");
 
     match &frame1 {
-        AppwireEvent::Text(t) => assert!(t.contains("initialize"), "first frame: {t:?}"),
+        AppwireEvent::Text { data: t, .. } => {
+            assert!(t.contains("initialize"), "first frame: {t:?}")
+        }
         other => panic!("expected Text, got {other:?}"),
     }
     match &frame2 {
-        AppwireEvent::Text(t) => assert!(t.contains("ping"), "second frame: {t:?}"),
+        AppwireEvent::Text { data: t, .. } => assert!(t.contains("ping"), "second frame: {t:?}"),
         other => panic!("expected Text, got {other:?}"),
     }
 
     manager.close(conn_id).await;
+}
+
+#[tokio::test]
+async fn server_close_clears_active_emits_exact_identity_then_allows_immediate_reopen() {
+    use ws_server::ScriptedWsServer;
+
+    let server = ScriptedWsServer::start().await;
+    server.enqueue_frame("first-generation-message".to_owned());
+    server.close_new_connections(1012, "scripted service restart");
+    let manager = test_manager();
+    let (tx1, mut rx1) = tokio::sync::mpsc::channel(16);
+    let first = manager
+        .open("profile-1", 0, server.url.clone(), "tok".to_owned(), tx1)
+        .await
+        .unwrap();
+
+    let message = next_event(&mut rx1, deadline_secs(3)).await.unwrap();
+    assert!(matches!(
+        message,
+        AppwireEvent::Text {
+            ref connection_id,
+            ref data,
+        } if connection_id == &first && data == "first-generation-message"
+    ));
+    let closed = next_event(&mut rx1, deadline_secs(3)).await.unwrap();
+    assert!(matches!(
+        closed,
+        AppwireEvent::Closed {
+            ref connection_id,
+            code: 1012,
+            ref reason,
+        } if connection_id == &first && reason == "scripted service restart"
+    ));
+    assert!(!manager.is_active(&first));
+
+    server.keep_new_connections_open();
+    let (tx2, _rx2) = tokio::sync::mpsc::channel(16);
+    let second = manager
+        .open("profile-1", 0, server.url.clone(), "tok".to_owned(), tx2)
+        .await
+        .unwrap();
+    assert!(second.generation() > first.generation());
+    assert!(manager.is_active(&second));
+    assert_eq!(server.connection_count(), 2);
+    manager.close(second).await;
+}
+
+#[tokio::test]
+async fn abnormal_reader_error_emits_error_before_closed_and_releases_socket() {
+    use ws_server::ScriptedWsServer;
+
+    let server = ScriptedWsServer::start().await;
+    server.abort_new_connections();
+    let manager = test_manager();
+    let (tx, mut rx) = tokio::sync::mpsc::channel(16);
+    let connection = manager
+        .open("profile-1", 0, server.url.clone(), "tok".to_owned(), tx)
+        .await
+        .unwrap();
+
+    assert!(matches!(
+        next_event(&mut rx, deadline_secs(3)).await,
+        Some(AppwireEvent::Error { ref connection_id }) if connection_id == &connection
+    ));
+    assert!(matches!(
+        next_event(&mut rx, deadline_secs(3)).await,
+        Some(AppwireEvent::Closed {
+            ref connection_id,
+            code: 1006,
+            ref reason,
+        }) if connection_id == &connection && reason == "transport read failed"
+    ));
+    assert!(!manager.is_active(&connection));
+}
+
+#[tokio::test]
+async fn two_profile_runtime_switch_reaps_before_persist_and_rolls_manager_back_on_failure() {
+    use app_lib::profile::PreferencesStore;
+    use ws_server::ScriptedWsServer;
+
+    let server1 = ScriptedWsServer::start().await;
+    let server2 = ScriptedWsServer::start().await;
+    let prefs = Arc::new(MemoryPreferences::new());
+    let secure = Arc::new(MemorySecureStore::new());
+    let store = Arc::new(ProfileStore::new(
+        prefs.clone(),
+        secure,
+        Arc::new(OkProbe),
+        Arc::new(StepClock::new(0)),
+        loopback_policy(),
+    ));
+    let runtime = ProfileRuntime::new(store.clone());
+    let mode = ReleaseMode::Debug {
+        allow_loopback: true,
+    };
+    let profile1 = runtime
+        .serialized(|store| {
+            let preview = store.preview_pairing(&pairing_url(&server1.url))?;
+            store.confirm_pairing(&preview.preview_id, "One", false, mode)
+        })
+        .await
+        .unwrap();
+    let profile2 = runtime
+        .serialized(|store| {
+            let preview = store.preview_pairing(&pairing_url(&server2.url))?;
+            store.confirm_pairing(&preview.preview_id, "Two", false, mode)
+        })
+        .await
+        .unwrap();
+
+    let manager = test_manager();
+    let first_selection = runtime
+        .select_profile(&manager, &profile1.id)
+        .await
+        .unwrap();
+    let (tx1, mut rx1) = tokio::sync::mpsc::channel(16);
+    let first = manager
+        .open(
+            &profile1.id,
+            first_selection.generation.0,
+            server1.url.clone(),
+            PROFILE_TOKEN.to_owned(),
+            tx1,
+        )
+        .await
+        .unwrap();
+
+    // A pre-rename persistence failure closes/reaps the socket first, but then
+    // restores manager selection to the still-durable old profile/generation.
+    prefs.fail_next_save();
+    let error = runtime
+        .select_profile(&manager, &profile2.id)
+        .await
+        .unwrap_err();
+    assert!(matches!(
+        error,
+        app_lib::error::ProfileError::Preferences(_)
+    ));
+    assert!(!manager.is_active(&first));
+    assert_eq!(
+        store.active_id().unwrap().as_deref(),
+        Some(profile1.id.as_str())
+    );
+    assert_eq!(
+        manager.selected_profile(),
+        Some((profile1.id.clone(), first_selection.generation.0))
+    );
+    assert!(matches!(
+        next_event(&mut rx1, deadline_secs(3)).await,
+        Some(AppwireEvent::Closed { ref connection_id, .. }) if connection_id == &first
+    ));
+    assert_eq!(
+        tokio::time::timeout_at(deadline_secs(3), server1.await_close_code())
+            .await
+            .expect("server observed close"),
+        1000
+    );
+
+    // Reopen the rolled-back profile, then perform the real switch. The old
+    // supervisor is fully gone before preferences and manager agree on Two.
+    let (tx1b, mut rx1b) = tokio::sync::mpsc::channel(16);
+    let reopened = manager
+        .open(
+            &profile1.id,
+            first_selection.generation.0,
+            server1.url.clone(),
+            PROFILE_TOKEN.to_owned(),
+            tx1b,
+        )
+        .await
+        .unwrap();
+    let second_selection = runtime
+        .select_profile(&manager, &profile2.id)
+        .await
+        .unwrap();
+    assert!(matches!(
+        next_event(&mut rx1b, deadline_secs(3)).await,
+        Some(AppwireEvent::Closed { ref connection_id, .. }) if connection_id == &reopened
+    ));
+    assert_eq!(
+        store.active_id().unwrap().as_deref(),
+        Some(profile2.id.as_str())
+    );
+    assert_eq!(
+        manager.selected_profile(),
+        Some((profile2.id.clone(), second_selection.generation.0))
+    );
+    assert!(manager.send(reopened, "stale".to_owned()).await.is_err());
+
+    let (tx2, _rx2) = tokio::sync::mpsc::channel(16);
+    let second = manager
+        .open(
+            &profile2.id,
+            second_selection.generation.0,
+            server2.url.clone(),
+            PROFILE_TOKEN.to_owned(),
+            tx2,
+        )
+        .await
+        .unwrap();
+    assert_eq!(server1.connection_count(), 2);
+    assert_eq!(server2.connection_count(), 1);
+    let removal = runtime
+        .remove_profile(&manager, &profile2.id)
+        .await
+        .unwrap();
+    assert!(!manager.is_active(&second));
+    assert_eq!(removal.profile_id.as_deref(), Some(profile1.id.as_str()));
+    assert_eq!(
+        store.active_id().unwrap().as_deref(),
+        Some(profile1.id.as_str())
+    );
+    assert_eq!(
+        manager.selected_profile(),
+        Some((profile1.id.clone(), removal.generation.0))
+    );
+    assert_eq!(
+        prefs.load().unwrap().active_id.as_deref(),
+        Some(profile1.id.as_str())
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -276,7 +565,7 @@ async fn appwire_send_delivers_text_frame_to_server() {
     let (tx, _rx) = tokio::sync::mpsc::channel::<_>(256);
 
     let conn_id = manager
-        .open("profile-1", url, "tok".to_owned(), tx)
+        .open("profile-1", 0, url, "tok".to_owned(), tx)
         .await
         .unwrap();
 
@@ -334,7 +623,7 @@ async fn appwire_switch_closes_old_before_opening_new() {
 
     // Open first connection for profile-1.
     let conn1 = manager
-        .open("profile-1", server1.url.clone(), "tok1".to_owned(), tx1)
+        .open("profile-1", 0, server1.url.clone(), "tok1".to_owned(), tx1)
         .await
         .unwrap();
 
@@ -350,10 +639,10 @@ async fn appwire_switch_closes_old_before_opening_new() {
     }
 
     // Switch: select profile-2, which closes conn1 before opening conn2.
-    manager.select("profile-2").await;
+    manager.select(Some("profile-2"), 0).await;
 
     let conn2 = manager
-        .open("profile-2", server2.url.clone(), "tok2".to_owned(), tx2)
+        .open("profile-2", 0, server2.url.clone(), "tok2".to_owned(), tx2)
         .await
         .unwrap();
 
@@ -392,12 +681,12 @@ async fn appwire_stale_generation_rejects_send() {
     let (tx, _rx) = tokio::sync::mpsc::channel::<_>(256);
 
     let conn1 = manager
-        .open("profile-1", server.url.clone(), "tok".to_owned(), tx)
+        .open("profile-1", 0, server.url.clone(), "tok".to_owned(), tx)
         .await
         .unwrap();
 
     // Switch profile — old connection generation is stale.
-    manager.select("profile-2").await;
+    manager.select(Some("profile-2"), 0).await;
 
     let result = manager.send(conn1, "stale-frame".to_owned()).await;
     assert!(result.is_err(), "stale generation should reject send");
@@ -419,7 +708,7 @@ async fn appwire_one_socket_total_for_active_profile() {
     let (tx, _rx) = tokio::sync::mpsc::channel::<_>(256);
 
     let conn1 = manager
-        .open("profile-1", server.url.clone(), "tok".to_owned(), tx)
+        .open("profile-1", 0, server.url.clone(), "tok".to_owned(), tx)
         .await
         .unwrap();
 
@@ -437,7 +726,7 @@ async fn appwire_one_socket_total_for_active_profile() {
     // A second open for the same profile must not create a second socket.
     let (tx2, _rx2) = tokio::sync::mpsc::channel::<_>(256);
     let conn2_result = manager
-        .open("profile-1", server.url.clone(), "tok".to_owned(), tx2)
+        .open("profile-1", 0, server.url.clone(), "tok".to_owned(), tx2)
         .await;
 
     // Either it returns an error (AlreadyConnected) or replaces — but the
@@ -472,7 +761,7 @@ async fn appwire_close_propagates_close_code() {
     let (tx, _rx) = tokio::sync::mpsc::channel::<_>(256);
 
     let conn = manager
-        .open("profile-1", server.url.clone(), "tok".to_owned(), tx)
+        .open("profile-1", 0, server.url.clone(), "tok".to_owned(), tx)
         .await
         .unwrap();
 
@@ -524,7 +813,7 @@ async fn appwire_bounded_overload_closes_connection() {
     let (tx, mut rx) = tokio::sync::mpsc::channel::<AppwireEvent>(8);
 
     let conn = manager
-        .open("profile-1", server.url.clone(), "tok".to_owned(), tx)
+        .open("profile-1", 0, server.url.clone(), "tok".to_owned(), tx)
         .await
         .unwrap();
 
@@ -546,7 +835,7 @@ async fn appwire_bounded_overload_closes_connection() {
     let dl = deadline_secs(5);
     while let Some(event) = next_event(&mut rx, dl).await {
         match event {
-            AppwireEvent::Text(t) => {
+            AppwireEvent::Text { data: t, .. } => {
                 let id = serde_json::from_str::<serde_json::Value>(&t)
                     .ok()
                     .and_then(|v| v.get("id").and_then(|i| i.as_i64()))
@@ -559,7 +848,7 @@ async fn appwire_bounded_overload_closes_connection() {
                 last_id = id;
                 received += 1;
             }
-            AppwireEvent::Closed(_) | AppwireEvent::Error => {
+            AppwireEvent::Closed { .. } | AppwireEvent::Error { .. } => {
                 got_close = true;
                 break;
             }
@@ -584,7 +873,7 @@ async fn appwire_cancellation_closes_connection() {
     let (tx, _rx) = tokio::sync::mpsc::channel::<_>(256);
 
     let conn = manager
-        .open("profile-1", server.url.clone(), "tok".to_owned(), tx)
+        .open("profile-1", 0, server.url.clone(), "tok".to_owned(), tx)
         .await
         .unwrap();
 
@@ -629,7 +918,7 @@ async fn appwire_injects_bearer_and_origin_upstream() {
 
     let token = "bearer-upstream-test-token";
     let conn = manager
-        .open("profile-1", url, token.to_owned(), tx)
+        .open("profile-1", 0, url, token.to_owned(), tx)
         .await
         .unwrap();
 
@@ -846,7 +1135,7 @@ async fn appwire_origin_policy_accepts_server_origin() {
     let (tx, _rx) = tokio::sync::mpsc::channel::<_>(256);
 
     let conn = manager
-        .open("profile-1", url, "tok".to_owned(), tx)
+        .open("profile-1", 0, url, "tok".to_owned(), tx)
         .await
         .unwrap();
 
@@ -968,7 +1257,7 @@ async fn appwire_cross_profile_late_frames_rejected() {
 
     // Open profile-1 on server1.
     let conn1 = manager
-        .open("profile-1", server1.url.clone(), "tok1".to_owned(), tx1)
+        .open("profile-1", 0, server1.url.clone(), "tok1".to_owned(), tx1)
         .await
         .unwrap();
 
@@ -985,9 +1274,9 @@ async fn appwire_cross_profile_late_frames_rejected() {
 
     // Switch to profile-2 and open on server2. This invalidates conn1's
     // generation.
-    manager.select("profile-2").await;
+    manager.select(Some("profile-2"), 0).await;
     let conn2 = manager
-        .open("profile-2", server2.url.clone(), "tok2".to_owned(), tx2)
+        .open("profile-2", 0, server2.url.clone(), "tok2".to_owned(), tx2)
         .await
         .unwrap();
 
@@ -1032,7 +1321,7 @@ async fn appwire_open_reaps_old_connection_before_opening_new() {
 
     // Open profile-1 on server1.
     let conn1 = manager
-        .open("profile-1", server1.url.clone(), "tok1".to_owned(), tx1)
+        .open("profile-1", 0, server1.url.clone(), "tok1".to_owned(), tx1)
         .await
         .unwrap();
 
@@ -1050,10 +1339,10 @@ async fn appwire_open_reaps_old_connection_before_opening_new() {
 
     // Select profile-2, which closes+reaps the old connection (awaiting
     // both writer and reader tasks). Then open profile-2 on server2.
-    manager.select("profile-2").await;
+    manager.select(Some("profile-2"), 0).await;
 
     let conn2 = manager
-        .open("profile-2", server2.url.clone(), "tok2".to_owned(), tx2)
+        .open("profile-2", 0, server2.url.clone(), "tok2".to_owned(), tx2)
         .await
         .unwrap();
 

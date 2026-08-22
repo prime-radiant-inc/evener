@@ -8,8 +8,7 @@ pub fn run() {
     // Construct production adapters. The app owns one persistent ProfileStore
     // backed by atomic file preferences (app-data), a Keychain bridge to the
     // native plugin, a real HTTP pairing probe, system DNS, and a
-    // close-transport callback that closes the AppWire socket before the
-    // active profile changes.
+    // AppWire lifecycle manager used by the serialized profile commands.
     //
     // One managed TransportState owns the shared NetworkPolicy, Diagnostics,
     // AppwireManager, and the Keychain bridge for token retrieval. One
@@ -57,11 +56,6 @@ pub fn run() {
                 error::ReleaseMode::Release,
             ));
 
-            // Close-transport callback: closes the AppWire socket before the
-            // active profile changes.
-            let close: Arc<dyn profile::CloseTransport> =
-                Arc::new(transport_state::AppwireCloseTransport::new(appwire.clone()));
-
             // One managed ProfileStore.
             let store = Arc::new(profile::ProfileStore::new(
                 prefs,
@@ -69,7 +63,6 @@ pub fn run() {
                 probe,
                 clock,
                 policy.clone(),
-                close,
             ));
 
             // Managed runtime with async lifecycle mutex.
@@ -294,7 +287,6 @@ mod tests {
             Arc::new(crate::network_policy::NetworkPolicy::new(Box::new(
                 crate::network_policy::AlwaysPrivateResolver,
             ))),
-            Arc::new(crate::profile::RecordingCloseTransport::default()),
         ));
         let preview = store
             .preview_pairing(&format!("https://hub.example.com/auth?token={TOKEN}"))

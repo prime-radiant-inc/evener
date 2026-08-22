@@ -90,26 +90,6 @@ impl TransportState {
     }
 }
 
-/// CloseTransport callback that closes the AppWire manager's current
-/// connection before the active profile changes. Registered as the
-/// ProfileStore's close callback in `lib.rs`.
-pub struct AppwireCloseTransport {
-    appwire: Arc<AppwireManager>,
-}
-
-impl AppwireCloseTransport {
-    pub fn new(appwire: Arc<AppwireManager>) -> Self {
-        Self { appwire }
-    }
-}
-
-impl crate::profile::CloseTransport for AppwireCloseTransport {
-    fn close_current(&self) -> crate::profile::ProfileGeneration {
-        let gen = self.appwire.close_current();
-        crate::profile::ProfileGeneration(gen)
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
