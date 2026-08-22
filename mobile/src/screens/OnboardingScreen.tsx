@@ -26,10 +26,12 @@ import {
 import { createConnectionStore } from "../state/connection";
 import { Button } from "../ui/Button";
 import { Input } from "../ui/Input";
-import type { ShellServices } from "./root-types";
+import type { ConnectionStore, ShellServices } from "./root-types";
 
 export interface OnboardingScreenProps {
   readonly services: ShellServices;
+  /** Optional shared connection store; otherwise this screen owns one. */
+  readonly connection?: ConnectionStore;
   readonly onConnected?: () => void;
   readonly onCancel?: () => void;
 }
@@ -38,10 +40,12 @@ type Phase = "actions" | "previewing" | "confirming" | "error";
 
 export function OnboardingScreen({
   services,
+  connection,
   onConnected,
   onCancel,
 }: OnboardingScreenProps): JSX.Element {
-  const [store] = useState(() => createConnectionStore(services.profile));
+  const [ownedStore] = useState(() => createConnectionStore(services.profile));
+  const store = connection ?? ownedStore;
   const [phase, setPhase] = useState<Phase>("actions");
   const [pasteUrl, setPasteUrl] = useState("");
   const [serverName, setServerName] = useState("");
