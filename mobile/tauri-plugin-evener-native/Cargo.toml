@@ -1,0 +1,18 @@
+[package]
+name = "tauri-plugin-evener-native"
+version = "0.1.0"
+authors = [ "You" ]
+description = ""
+edition = "2021"
+rust-version = "1.77.2"
+exclude = ["/examples", "/dist-js", "/guest-js", "/node_modules"]
+links = "tauri-plugin-evener-native"
+
+[dependencies]
+tauri = { version = "2.11.3" }
+serde = "1.0"
+serde_json = "1.0"
+thiserror = "2"
+
+[build-dependencies]
+tauri-plugin = { version = "2.6.3", features = ["build"] }
