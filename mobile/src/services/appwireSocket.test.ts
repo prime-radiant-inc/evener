@@ -30,6 +30,8 @@ interface FakeBridge {
   createChannel: <T>(onMessage: (response: T) => void) => {
     id: number;
     onmessage: (response: T) => void;
+    onclose: (() => void) | null;
+    dispose(): void;
   };
   /** Captured channel emit helper (typed for AppwireChannelEvent). */
   emit: (event: AppwireChannelEvent) => void;
@@ -38,6 +40,7 @@ interface FakeBridge {
   sendResult: (connId: string, ok: boolean, error?: string) => void;
   /** Script the close result per connectionId. */
   closeResult: (connId: string, ok: boolean, error?: string) => void;
+  disposedChannelCount(): number;
 }
 
 function fakeBridge(openScript: OpenScript): FakeBridge {
@@ -46,6 +49,7 @@ function fakeBridge(openScript: OpenScript): FakeBridge {
     null;
   const sendScripts = new Map<string, { ok: boolean; error?: string }>();
   const closeScripts = new Map<string, { ok: boolean; error?: string }>();
+  let disposedChannels = 0;
 
   const bridge: FakeBridge = {
     async invoke<T>(cmd: string, args?: Record<string, unknown>): Promise<T> {
@@ -81,7 +85,15 @@ function fakeBridge(openScript: OpenScript): FakeBridge {
       channel = {
         onmessage: onMessage as unknown as (r: AppwireChannelEvent) => void,
       };
-      return { id: 1, onmessage: onMessage };
+      return {
+        id: 1,
+        onmessage: onMessage,
+        onclose: null,
+        dispose() {
+          disposedChannels += 1;
+          this.onclose?.();
+        },
+      };
     },
     emit(event) {
       channel?.onmessage(event);
@@ -92,6 +104,9 @@ function fakeBridge(openScript: OpenScript): FakeBridge {
     },
     closeResult(connId, ok, error) {
       closeScripts.set(connId, { ok, error });
+    },
+    disposedChannelCount() {
+      return disposedChannels;
     },
   };
   return bridge;
@@ -206,6 +221,7 @@ describe("appwireSocket — TauriSocket implements WebSocketLike", () => {
     socket.onerror = errored;
     await vi.waitFor(() => expect(errored).toHaveBeenCalledTimes(1));
     expect(opened).not.toHaveBeenCalled();
+    expect(bridge.disposedChannelCount()).toBe(1);
   });
 });
 
@@ -303,6 +319,7 @@ describe("appwireSocket — close", () => {
     await vi.waitFor(() => expect(closed).toHaveBeenCalledTimes(1));
     expect(closed).toHaveBeenCalledWith({ code: 1000 });
     expect(bridge.invokes.some((i) => i.cmd === "appwire_close")).toBe(true);
+    expect(bridge.disposedChannelCount()).toBe(1);
   });
 
   it("close is idempotent — second close does not invoke appwire_close again", async () => {
@@ -349,6 +366,7 @@ describe("appwireSocket — close", () => {
       reason: "server restart",
     });
     expect(closed).toHaveBeenCalledWith({ code: 1011 });
+    expect(bridge.disposedChannelCount()).toBe(1);
   });
 
   it("close-before-open-resolution closes the backend exactly once and suppresses handlers", async () => {
@@ -717,6 +735,10 @@ describe("appwireSocket — imported AppwireClient scripted Tauri integration", 
           return {
             id: connections.length + 1,
             onmessage: onMessage,
+            onclose: null,
+            dispose() {
+              this.onclose?.();
+            },
           };
         },
       };

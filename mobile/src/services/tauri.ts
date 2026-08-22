@@ -18,6 +18,9 @@ import { Channel, invoke } from "@tauri-apps/api/core";
 export interface TauriChannel<T = unknown> {
   readonly id: number;
   onmessage: (response: T) => void;
+  onclose: (() => void) | null;
+  /** Idempotently unregister the underlying Tauri callback. */
+  dispose(): void;
 }
 
 /**
@@ -44,7 +47,26 @@ export function createTauriBridge(): TauriBridge {
   return {
     invoke,
     createChannel<T>(onMessage: (response: T) => void): TauriChannel<T> {
-      return new Channel<T>(onMessage);
+      const channel = new Channel<T>(onMessage);
+      const internal = channel as unknown as {
+        cleanupCallback(): void;
+      };
+      const cleanup = internal.cleanupCallback.bind(channel);
+      const exposed = channel as unknown as TauriChannel<T>;
+      let disposed = false;
+      exposed.onclose = null;
+      exposed.dispose = () => {
+        if (disposed) return;
+        disposed = true;
+        cleanup();
+        exposed.onclose?.();
+      };
+      // Tauri 2.11 Channel has no public close method, but its runtime invokes
+      // this callback when Rust drops the last Channel owner. Wrap that pinned
+      // implementation hook so service code can observe end-of-channel and the
+      // explicit dispose path shares the same idempotent unregister operation.
+      internal.cleanupCallback = exposed.dispose;
+      return exposed;
     },
   };
 }

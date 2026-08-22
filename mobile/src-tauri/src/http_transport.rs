@@ -123,8 +123,8 @@ pub struct HubRequest {
     pub media_type: Option<String>,
 }
 
-#[derive(Debug, Clone, Default, Serialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase")]
+#[derive(Debug, Clone, Default, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct HubResponseHeaders {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub content_type: Option<String>,
