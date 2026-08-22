@@ -380,6 +380,7 @@ func TestDelegateAttention_ArmClaimSpansFoldAndOpen(t *testing.T) {
 		consumeDone <- err
 	}()
 	close(releaseFold)
+	// TRIPWIRE: this one-second ceiling only detects a deadlock; normal arm and acceptance completion is awaited on channels, never paced by the timer.
 	timeout := time.NewTimer(time.Second)
 	defer timeout.Stop()
 	select {
