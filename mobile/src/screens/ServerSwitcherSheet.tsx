@@ -1,3 +1,4 @@
+import { type ChangeEvent, type JSX, useEffect, useState } from "react";
 /**
  * Server switcher sheet — lists multiple redacted profiles with reachability
  * state. Tapping a row opens a profile detail view with actions to switch,
@@ -13,7 +14,6 @@
  * same profile, preserving the old profile on failure. Rename preserves the
  * draft and shows inline errors.
  */
-import { type ChangeEvent, type JSX, useState } from "react";
 import type { ProfileRedacted } from "../services/nativeProfiles";
 import { Button } from "../ui/Button";
 import { Input } from "../ui/Input";
@@ -51,6 +51,14 @@ export function ServerSwitcherSheet({
   const [switchError, setSwitchError] = useState<string | null>(null);
   const [removeError, setRemoveError] = useState<string | null>(null);
   const [pendingRemove, setPendingRemove] = useState(false);
+
+  // Invalidate any repair preview on unmount so a late result never leaks.
+  // This covers Done/overlay/Escape dismiss paths that unmount the sheet.
+  useEffect(() => {
+    return () => {
+      void connection.getState().cancelPreview();
+    };
+  }, [connection]);
 
   const handleSwitch = async (id: string) => {
     setSwitchError(null);

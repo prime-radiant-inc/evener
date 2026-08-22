@@ -28,14 +28,25 @@ const OFFLINE_PROFILES: readonly ProfileRedacted[] = [
   { id: "p2", name: "staging", origin: "http://10.0.0.5:8080" },
 ];
 
+import type { Reachability } from "./state/connection";
+
+/** Explicit per-profile reachability seed for each fixture route. */
+const REACHABILITY_SEEDS: Record<FixtureRoute, Record<string, Reachability>> = {
+  onboarding: {},
+  servers: { p1: "reachable", p2: "unreachable" },
+  sessions: { p1: "unknown" },
+  new: { p1: "reachable" },
+  settings: { p1: "unreachable", p2: "reconnecting" },
+};
+
 export interface FixtureBundle {
   readonly services: ShellServiceBundle;
   readonly route: FixtureRoute;
   readonly initialTab: "sessions" | "new" | "settings";
   readonly seedProfiles: readonly ProfileRedacted[];
   readonly seedActiveProfileId: string | null;
-  /** Profiles to mark unreachable for offline-state fixtures. */
-  readonly offlineProfileIds: readonly string[];
+  /** Explicit per-profile reachability seed (no missing-map accidents). */
+  readonly reachabilitySeed: Record<string, Reachability>;
 }
 
 export function isFixtureRoute(value: string | null): value is FixtureRoute {
@@ -57,7 +68,7 @@ export function createFixture(route: FixtureRoute): FixtureBundle {
         initialTab: "sessions",
         seedProfiles: [],
         seedActiveProfileId: null,
-        offlineProfileIds: [],
+        reachabilitySeed: REACHABILITY_SEEDS.onboarding,
       };
     case "servers":
       return {
@@ -69,7 +80,7 @@ export function createFixture(route: FixtureRoute): FixtureBundle {
         initialTab: "sessions",
         seedProfiles: TWO_PROFILES,
         seedActiveProfileId: "p1",
-        offlineProfileIds: ["p2"],
+        reachabilitySeed: REACHABILITY_SEEDS.servers,
       };
     case "sessions":
       return {
@@ -81,7 +92,7 @@ export function createFixture(route: FixtureRoute): FixtureBundle {
         initialTab: "sessions",
         seedProfiles: TWO_PROFILES,
         seedActiveProfileId: "p1",
-        offlineProfileIds: [],
+        reachabilitySeed: REACHABILITY_SEEDS.sessions,
       };
     case "new":
       return {
@@ -93,7 +104,7 @@ export function createFixture(route: FixtureRoute): FixtureBundle {
         initialTab: "new",
         seedProfiles: TWO_PROFILES,
         seedActiveProfileId: "p1",
-        offlineProfileIds: [],
+        reachabilitySeed: REACHABILITY_SEEDS.new,
       };
     case "settings":
       return {
@@ -105,7 +116,7 @@ export function createFixture(route: FixtureRoute): FixtureBundle {
         initialTab: "settings",
         seedProfiles: OFFLINE_PROFILES,
         seedActiveProfileId: "p1",
-        offlineProfileIds: ["p1"],
+        reachabilitySeed: REACHABILITY_SEEDS.settings,
       };
   }
 }

@@ -6,7 +6,6 @@
  * roster loads. No session implementation yet — Task 8 replaces the
  * placeholder with the live roster.
  *
- * Reachability is honest: without real health data it shows "Reconnecting"
  * Reachability is honest: without real health data it shows "Not checked"
  * (unknown), never fabricated "Connected" or "Reconnecting".
  */

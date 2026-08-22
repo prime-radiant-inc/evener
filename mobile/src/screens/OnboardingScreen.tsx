@@ -9,7 +9,7 @@
  * screen fires a success haptic and calls `onConnected`.
  *
  * QR scanning uses the native `scanAndPreviewPairing` result directly: the
- * opaque previewId and redacted origin are fed to the store's `setScanPreview`
+ * opaque previewId and redacted origin are fed to the store's `previewScan`
  * without fabricating a paste URL or touching a token. On unmount or cancel,
  * the active preview is cancelled so no native preview leaks.
  */
@@ -49,6 +49,7 @@ export function OnboardingScreen({
   const [confirmError, setConfirmError] = useState<string | null>(null);
   const [pendingSave, setPendingSave] = useState(false);
   const mounted = useRef(true);
+  const refreshPromise = useRef<Promise<void> | null>(null);
 
   const preview = store((s) => s.preview);
   const previewError = store((s) => s.previewError);
@@ -57,6 +58,11 @@ export function OnboardingScreen({
   // Cancel the active preview on unmount so no native preview leaks.
   useEffect(() => {
     mounted.current = true;
+    // Load profiles on mount so the name uniqueness check has data. The
+    // promise is captured so the scan callback can await it before calling
+    // the native scan — ensuring the scan doesn't fire before profiles load
+    // and, critically, doesn't fire after unmount if refresh is still pending.
+    refreshPromise.current = store.getState().refresh();
     return () => {
       mounted.current = false;
       void store.getState().cancelPreview();
@@ -94,31 +100,44 @@ export function OnboardingScreen({
     setPasteUrl("");
     setPhase("previewing");
     setConfirmError(null);
+    // Start previewPaste immediately — it increments the store generation
+    // synchronously at user intent. No refresh is needed for paste: the
+    // name uniqueness check runs at confirmPairing time (loadProfiles). If
+    // the user cancels, cancelPreview invalidates the generation and the
+    // paste result is never published.
     void store
       .getState()
-      .refresh()
-      .then(() =>
-        store
-          .getState()
-          .previewPaste(raw)
-          .then(() => {
-            if (mounted.current) setPhase("confirming");
-          }),
-      );
+      .previewPaste(raw)
+      .then(() => {
+        if (mounted.current && store.getState().preview !== null) {
+          setPhase("confirming");
+        }
+      });
   }, [pasteUrl, store]);
 
   // QR scan: use the native result directly — no fabricated paste URL.
   const handleScan = useCallback(async () => {
     setPhase("previewing");
     setConfirmError(null);
+    // Establish the store generation synchronously at user intent, before
+    // awaiting refresh. previewScan increments the generation immediately;
+    // a late refresh cannot reverse click order or launch after cancel.
+    const scanP = store.getState().previewScan(async () => {
+      // Await the mount refresh BEFORE calling the native scan. If unmount
+      // happens during refresh, mounted.current is false and the native
+      // scan is NOT called. The store generation guard also rejects any
+      // late result if cancelled.
+      await (refreshPromise.current ?? Promise.resolve());
+      // If unmounted/cancelled during refresh, don't call the native scan.
+      // The store's generation guard will best-effort cancel any late result.
+      if (!mounted.current) {
+        return { previewId: "aborted", origin: "aborted" };
+      }
+      const scanResult = await services.native.scanAndPreviewPairing();
+      return { previewId: scanResult.previewId, origin: scanResult.origin };
+    });
     try {
-      await store.getState().refresh();
-      // Route the scan through the store's preview protocol so the generation
-      // guard rejects stale/cancelled scan results (e.g. after unmount).
-      await store.getState().previewScan(async () => {
-        const scanResult = await services.native.scanAndPreviewPairing();
-        return { previewId: scanResult.previewId, origin: scanResult.origin };
-      });
+      await scanP;
       if (mounted.current && store.getState().preview !== null) {
         setPhase("confirming");
       }
@@ -157,6 +176,13 @@ export function OnboardingScreen({
       handleSave();
     }
   };
+
+  // Cancel invalidates the preview before calling the parent, so a late
+  // preview result never publishes after the user navigates away.
+  const handleCancel = useCallback(() => {
+    void store.getState().cancelPreview();
+    onCancel?.();
+  }, [store, onCancel]);
 
   const showConfirm = preview !== null && phase !== "previewing";
   const showActions = !showConfirm;
@@ -199,7 +225,7 @@ export function OnboardingScreen({
             </p>
           ) : null}
           {onCancel ? (
-            <Button variant="tertiary" onClick={onCancel}>
+            <Button variant="tertiary" onClick={handleCancel}>
               Cancel
             </Button>
           ) : null}
@@ -244,7 +270,7 @@ export function OnboardingScreen({
             Connect
           </Button>
           {onCancel ? (
-            <Button variant="tertiary" onClick={onCancel}>
+            <Button variant="tertiary" onClick={handleCancel}>
               Cancel
             </Button>
           ) : null}
