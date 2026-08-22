@@ -2,7 +2,7 @@
 pub fn run() {
     use std::sync::Arc;
 
-    use tauri::{Listener, Manager};
+    use tauri::Manager;
     use tauri_plugin_evener_native::EvenerNativeExt;
 
     // Construct production adapters. The app owns one persistent ProfileStore
@@ -78,10 +78,7 @@ pub fn run() {
             // Tauri maps iOS applicationWillResignActive to the mobile window
             // suspended event. Clear every pending native secret immediately
             // on that production lifecycle boundary.
-            let background_store = store.clone();
-            app.listen("tauri://suspended", move |_| {
-                background_store.clear_previews()
-            });
+            install_suspended_preview_clear(app.handle(), store.clone());
 
             // Managed preview handler backed by the exact same store.
             let handler = Arc::new(profile_runtime::ManagedPreviewHandler::new(store));
@@ -131,6 +128,16 @@ pub fn run() {
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
+}
+
+const MOBILE_SUSPENDED_EVENT: &str = "tauri://suspended";
+
+fn install_suspended_preview_clear<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+    store: std::sync::Arc<profile::ProfileStore>,
+) {
+    use tauri::Listener;
+    app.listen_any(MOBILE_SUSPENDED_EVENT, move |_| store.clear_previews());
 }
 
 pub mod appwire_transport;
@@ -219,6 +226,10 @@ mod native {
 // the parser-only handler.
 #[cfg(test)]
 mod tests {
+    use std::sync::Arc;
+
+    use super::{install_suspended_preview_clear, MOBILE_SUSPENDED_EVENT};
+    use tauri::Emitter;
     use tauri_plugin_evener_native::{
         NativeError, NativeErrorKind, PairingPreview, PreviewHandler,
     };
@@ -270,5 +281,37 @@ mod tests {
         let preview = handler.preview(&raw).unwrap();
         let json = serde_json::to_string(&preview).unwrap();
         assert!(!json.contains(TOKEN));
+    }
+
+    #[test]
+    fn window_targeted_mobile_suspended_event_clears_pending_previews() {
+        let app = tauri::test::mock_app();
+        let store = Arc::new(crate::profile::ProfileStore::new(
+            Arc::new(crate::profile::MemoryPreferences::new()),
+            Arc::new(crate::profile::MemorySecureStore::new()),
+            Arc::new(crate::profile::OkProbe),
+            Arc::new(crate::profile::StepClock::new(0)),
+            Arc::new(crate::network_policy::NetworkPolicy::new(Box::new(
+                crate::network_policy::AlwaysPrivateResolver,
+            ))),
+            Arc::new(crate::profile::RecordingCloseTransport::default()),
+        ));
+        let preview = store
+            .preview_pairing(&format!("https://hub.example.com/auth?token={TOKEN}"))
+            .unwrap();
+        install_suspended_preview_clear(app.handle(), store.clone());
+
+        app.handle()
+            .emit_to(
+                tauri::EventTarget::webview_window("main"),
+                MOBILE_SUSPENDED_EVENT,
+                (),
+            )
+            .unwrap();
+
+        assert!(matches!(
+            store.cancel_preview(&preview.preview_id),
+            Err(crate::error::ProfileError::PreviewNotFound(_))
+        ));
     }
 }
