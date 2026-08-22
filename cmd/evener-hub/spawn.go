@@ -320,6 +320,7 @@ func spawnDaemon(ctx context.Context, evenerBinary string, runDir string, req hu
 	// runs independently until killed or sent /shutdown). ctx scopes only the
 	// rendezvous wait below; on timeout we kill the process explicitly.
 	cmd := exec.Command(evenerBinary, args...) //nolint:noctx // detached daemon must outlive ctx (see comment)
+	cmd.SysProcAttr = daemonSysProcAttr()
 	cmd.Env = req.Env
 	// A fresh spawn cannot name the log after its session yet: the daemon mints
 	// the id and reports it through rendezvous, so the file is adopted below.
@@ -398,6 +399,7 @@ func resumeDaemon(ctx context.Context, evenerBinary, runDir string, req hubcore.
 	// runs independently until killed or sent /shutdown). ctx scopes only the
 	// rendezvous wait below; on timeout we kill the process explicitly.
 	cmd := exec.Command(evenerBinary, args...) //nolint:noctx // detached daemon must outlive ctx (see comment)
+	cmd.SysProcAttr = daemonSysProcAttr()
 	cmd.Env = req.Env
 	// A resume keeps its session's id, so it keeps — and appends to — that
 	// session's own log.
