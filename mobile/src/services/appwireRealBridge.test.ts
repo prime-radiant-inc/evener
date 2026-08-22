@@ -1,7 +1,7 @@
 import { type ChildProcessWithoutNullStreams, spawn } from "node:child_process";
 import path from "node:path";
 import { createInterface } from "node:readline";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { describe, expect, it } from "vitest";
 import { createAppwireClient } from "./appwireSocket";
 import type { TauriBridge, TauriChannel } from "./tauri";
 
@@ -189,14 +189,9 @@ interface ServerSnapshot {
   readonly requestMethods: string[];
 }
 
-afterEach(() => {
-  vi.useRealTimers();
-});
-
 describe("AppwireClient + TauriSocket + real Rust command/AppwireManager", () => {
   it("performs real handshake, correlation, reconnect, profile switch, and stale rejection", async () => {
     const bridge = await RustHarnessBridge.start();
-    vi.useFakeTimers();
     try {
       const [profileOne, profileTwo] = bridge.profiles;
       expect(profileOne).toBeDefined();
@@ -252,7 +247,7 @@ describe("AppwireClient + TauriSocket + real Rust command/AppwireManager", () =>
       });
       await bridge.control("serverClose");
       await reconnecting.promise;
-      await vi.advanceTimersByTimeAsync(250);
+      client.retryNow();
       await reconnected.promise;
       await secondCurrent.promise;
       stopState();
@@ -329,7 +324,6 @@ describe("AppwireClient + TauriSocket + real Rust command/AppwireManager", () =>
         }),
       ).toBe(true);
     } finally {
-      vi.clearAllTimers();
       await bridge.stop();
     }
   });

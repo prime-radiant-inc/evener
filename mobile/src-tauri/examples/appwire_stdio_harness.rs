@@ -254,12 +254,15 @@ async fn run_connection(
     loop {
         tokio::select! {
             command = control.recv() => {
-                if matches!(command, Some(ConnectionControl::ServerClose)) {
-                    let _ = socket.send(Message::Close(Some(CloseFrame {
-                        code: 1012.into(),
-                        reason: "scripted restart".into(),
-                    }))).await;
-                    break;
+                match command {
+                    Some(ConnectionControl::ServerClose) => {
+                        let _ = socket.send(Message::Close(Some(CloseFrame {
+                            code: 1012.into(),
+                            reason: "scripted restart".into(),
+                        }))).await;
+                        break;
+                    }
+                    None => break,
                 }
             }
             message = socket.next() => {
