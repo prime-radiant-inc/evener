@@ -27,6 +27,7 @@ export interface SheetProps {
 /** Structured-clone-safe marker keys stored in browser History state. */
 const SHEET_KEY = "__evener_sheet";
 const SHEET_BASE_KEY = "__evener_sheet_base";
+const SHEET_DEAD_KEY = "__evener_sheet_dead";
 
 interface SheetMarker {
   readonly __evener_sheet: true;
@@ -38,6 +39,11 @@ interface SheetBaseMarker {
     readonly token: string;
     readonly previous: unknown;
   };
+}
+
+interface SheetDeadMarker {
+  readonly __evener_sheet_dead: true;
+  readonly token: string;
 }
 
 function isSheetMarker(value: unknown): value is SheetMarker {
@@ -61,6 +67,16 @@ function isSheetBaseMarker(value: unknown): value is SheetBaseMarker {
   );
 }
 
+function isSheetDeadMarker(value: unknown): value is SheetDeadMarker {
+  return (
+    typeof value === "object" &&
+    value !== null &&
+    (value as Record<string, unknown>)[SHEET_DEAD_KEY] === true &&
+    typeof (value as Record<string, unknown>).token === "string" &&
+    ((value as Record<string, unknown>).token as string).length > 0
+  );
+}
+
 type Grant = (token: string) => void;
 type Revoke = (token: string) => void;
 
@@ -72,6 +88,7 @@ interface SheetOwner {
   revoke: Revoke;
   dismissed: boolean;
   closing: boolean;
+  notifyOnComplete: boolean;
 }
 
 interface SheetWaiter {
@@ -82,7 +99,7 @@ interface SheetWaiter {
 }
 
 interface PendingBack {
-  readonly kind: "owner" | "dead";
+  readonly kind: "owner" | "dead" | "recover";
   readonly token: string;
   readonly instanceId: string | null;
 }
@@ -92,6 +109,7 @@ interface SheetCoordinator {
   queue: SheetWaiter[];
   pendingBack: PendingBack | null;
   buriedCount: number;
+  forwardDead: boolean;
   listenerInstalled: boolean;
   settledResolvers: Set<() => void>;
 }
@@ -101,6 +119,7 @@ const coordinator: SheetCoordinator = {
   queue: [],
   pendingBack: null,
   buriedCount: 0,
+  forwardDead: false,
   listenerInstalled: false,
   settledResolvers: new Set(),
 };
@@ -130,7 +149,8 @@ function removeListenerIfIdle(): void {
     coordinator.owner !== null ||
     coordinator.pendingBack !== null ||
     coordinator.queue.length > 0 ||
-    coordinator.buriedCount > 0
+    coordinator.buriedCount > 0 ||
+    coordinator.forwardDead
   ) {
     return;
   }
@@ -146,6 +166,18 @@ function ensureListener(): void {
 
 function startBack(pending: PendingBack): void {
   if (coordinator.pendingBack !== null) return;
+  const state = history.state;
+  if (
+    (isSheetMarker(state) || isSheetDeadMarker(state)) &&
+    state.token === pending.token
+  ) {
+    history.replaceState(
+      pending.kind === "owner"
+        ? ({ [SHEET_DEAD_KEY]: true, token: pending.token } as SheetDeadMarker)
+        : null,
+      "",
+    );
+  }
   coordinator.pendingBack = pending;
   history.back();
 }
@@ -168,11 +200,13 @@ function grant(waiter: SheetWaiter): void {
     "",
   );
   history.pushState({ [SHEET_KEY]: true, token } as SheetMarker, "");
+  coordinator.forwardDead = false;
   coordinator.owner = {
     ...waiter,
     token,
     dismissed: false,
     closing: false,
+    notifyOnComplete: false,
   };
   waiter.grant(token);
 }
@@ -244,6 +278,10 @@ function finishOwnerFromBack(token: string): void {
   if (owner?.token === token) {
     coordinator.owner = null;
     owner.revoke(token);
+    if (owner.notifyOnComplete) {
+      owner.notifyOnComplete = false;
+      owner.onClose();
+    }
   }
 }
 
@@ -251,21 +289,54 @@ function onPopState(): void {
   const state = history.state;
   const pending = coordinator.pendingBack;
   if (pending !== null) {
-    coordinator.pendingBack = null;
-    if (
-      isSheetBaseMarker(state) &&
-      state.__evener_sheet_base.token === pending.token
-    ) {
-      restoreBaseMarker(state);
+    if (pending.kind === "recover") {
+      coordinator.pendingBack = null;
+      const owner = coordinator.owner;
+      if (owner?.token === pending.token) {
+        coordinator.owner = null;
+        coordinator.buriedCount += 1;
+        owner.revoke(owner.token);
+        if (owner.notifyOnComplete) {
+          owner.notifyOnComplete = false;
+          owner.onClose();
+        }
+      }
+      coordinator.forwardDead = false;
+      pumpQueue();
+      return;
     }
+
+    const landedOnBase =
+      isSheetBaseMarker(state) &&
+      state.__evener_sheet_base.token === pending.token;
+    if (pending.kind === "owner" && !landedOnBase) {
+      // A newer unrelated entry was pushed after Back was requested, so the
+      // late traversal popped that entry instead of our dead sentinel. Reverse
+      // exactly that traversal before finishing the close; never pop farther.
+      coordinator.pendingBack = {
+        kind: "recover",
+        token: pending.token,
+        instanceId: pending.instanceId,
+      };
+      history.forward();
+      return;
+    }
+
+    coordinator.pendingBack = null;
+    if (landedOnBase) restoreBaseMarker(state);
     if (pending.kind === "owner") {
+      coordinator.forwardDead = true;
       finishOwnerFromBack(pending.token);
     } else {
       coordinator.buriedCount = Math.max(0, coordinator.buriedCount - 1);
+      coordinator.forwardDead = false;
     }
     // A dead marker may be immediately below another dead marker.
     const current = history.state;
-    if (isSheetMarker(current) && coordinator.owner?.token !== current.token) {
+    if (
+      (isSheetMarker(current) || isSheetDeadMarker(current)) &&
+      coordinator.owner?.token !== current.token
+    ) {
       startBack({ kind: "dead", token: current.token, instanceId: null });
       return;
     }
@@ -287,6 +358,7 @@ function onPopState(): void {
       restoreBaseMarker(state);
       coordinator.owner = null;
       owner.revoke(owner.token);
+      coordinator.forwardDead = true;
       if (!owner.dismissed) {
         owner.dismissed = true;
         owner.onClose();
@@ -299,7 +371,7 @@ function onPopState(): void {
     return;
   }
 
-  if (isSheetMarker(state)) {
+  if (isSheetMarker(state) || isSheetDeadMarker(state)) {
     // A retired sentinel was exposed by Back/Forward. Skip it once; no Sheet is
     // notified because there is no live owner.
     startBack({ kind: "dead", token: state.token, instanceId: null });
@@ -312,25 +384,26 @@ function onPopState(): void {
   pumpQueue();
 }
 
-/** Close the current owner once. Explicit closes notify immediately for UI
- * responsiveness, then serialize the history unwind before another owner is
- * granted. */
+/** Close the current owner once. The portal is revoked immediately, while the
+ * parent callback waits for the matching history completion so router effects
+ * cannot race a still-pending Back. */
 function requestClose(token: string | null): void {
   if (token === null) return;
   const owner = coordinator.owner;
   if (owner === null || owner.token !== token || owner.dismissed) return;
   owner.dismissed = true;
   owner.revoke(token);
-  owner.onClose();
   const state = history.state;
   if (isSheetMarker(state) && state.token === token) {
     owner.closing = true;
+    owner.notifyOnComplete = true;
     startBack({ kind: "owner", token, instanceId: owner.instanceId });
   } else {
     // An unrelated app entry is above the sentinel. Do not pop it. The old
     // sentinel is inert and will be skipped if later traversal exposes it.
     coordinator.owner = null;
     coordinator.buriedCount += 1;
+    owner.onClose();
     pumpQueue();
   }
 }
@@ -378,6 +451,7 @@ function resetCoordinator(): void {
   coordinator.queue = [];
   coordinator.pendingBack = null;
   coordinator.buriedCount = 0;
+  coordinator.forwardDead = false;
   coordinator.listenerInstalled = false;
   coordinator.settledResolvers = new Set();
 }
@@ -398,6 +472,7 @@ export function __sheetHistoryDebug(): {
   readonly queueLength: number;
   readonly pendingBack: boolean;
   readonly buriedCount: number;
+  readonly forwardDead: boolean;
   readonly listenerInstalled: boolean;
 } {
   return {
@@ -405,6 +480,7 @@ export function __sheetHistoryDebug(): {
     queueLength: coordinator.queue.length,
     pendingBack: coordinator.pendingBack !== null,
     buriedCount: coordinator.buriedCount,
+    forwardDead: coordinator.forwardDead,
     listenerInstalled: coordinator.listenerInstalled,
   };
 }

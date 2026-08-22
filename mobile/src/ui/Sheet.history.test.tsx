@@ -63,6 +63,13 @@ async function browserBack(): Promise<void> {
   await pending;
 }
 
+/** Drive browser Forward and await the exposed entry's popstate. */
+async function browserForward(): Promise<void> {
+  const pending = nextPopstate();
+  history.forward();
+  await pending;
+}
+
 /**
  * Await all pending coordinator traversals (unwinds, skips) so the history
  * stack is quiescent before the next assertion or test teardown.
@@ -144,7 +151,7 @@ describe("Sheet — browser/system Back history semantics", () => {
     expect(history.state).toBeNull();
   });
 
-  it("browser Back closes over an arbitrary non-null app state and restores it", async () => {
+  it("browser Back preserves plain router fields and restores non-null app state", async () => {
     const appState = { route: "/servers", revision: 7 };
     history.replaceState(appState, "");
     const observedStates: unknown[] = [];
@@ -168,6 +175,22 @@ describe("Sheet — browser/system Back history semantics", () => {
     expect(history.state).toEqual(appState);
   });
 
+  it("browser Back restores a non-object structured-clone state exactly", async () => {
+    const appState = ["/servers", 7, true];
+    history.replaceState(appState, "");
+    const onClose = vi.fn();
+    render(
+      <Sheet open onClose={onClose} title="Servers">
+        <p>body</p>
+      </Sheet>,
+    );
+
+    await browserBack();
+
+    expect(onClose).toHaveBeenCalledTimes(1);
+    expect(history.state).toEqual(appState);
+  });
+
   it("system Back closes once without another back", async () => {
     const onClose = vi.fn();
     const backSpy = vi.spyOn(history, "back");
@@ -186,6 +209,32 @@ describe("Sheet — browser/system Back history semantics", () => {
     // System Back must not schedule an additional history.back (no double nav).
     expect(backSpy).not.toHaveBeenCalled();
     expect(history.state).toBeNull();
+  });
+
+  it("Forward cannot expose a closed sentinel as a live history stop", async () => {
+    const onClose = vi.fn();
+    render(
+      <Sheet open onClose={onClose} title="Servers">
+        <p>body</p>
+      </Sheet>,
+    );
+    await browserBack();
+    expect(__sheetHistoryDebug().forwardDead).toBe(true);
+
+    await browserForward();
+    await settled();
+
+    expect(onClose).toHaveBeenCalledTimes(1);
+    expect(currentToken()).toBeNull();
+    expect(history.state).toBeNull();
+    expect(__sheetHistoryDebug()).toEqual({
+      hasOwner: false,
+      queueLength: 0,
+      pendingBack: false,
+      buriedCount: 0,
+      forwardDead: false,
+      listenerInstalled: false,
+    });
   });
 
   it("popstate does not double-call onClose", async () => {
@@ -211,7 +260,8 @@ describe("Sheet — browser/system Back history semantics", () => {
       </Sheet>,
     );
     fireEvent.click(screen.getByRole("button", { name: "Done" }));
-    expect(onClose).toHaveBeenCalledTimes(1);
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+    expect(onClose).not.toHaveBeenCalled();
     await settled();
     expect(onClose).toHaveBeenCalledTimes(1);
     expect(history.state).toBeNull();
@@ -227,7 +277,8 @@ describe("Sheet — browser/system Back history semantics", () => {
     fireEvent.click(
       document.querySelector(".evener-sheet-overlay") as HTMLElement,
     );
-    expect(onClose).toHaveBeenCalledTimes(1);
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+    expect(onClose).not.toHaveBeenCalled();
     await settled();
     expect(onClose).toHaveBeenCalledTimes(1);
     expect(history.state).toBeNull();
@@ -241,7 +292,8 @@ describe("Sheet — browser/system Back history semantics", () => {
       </Sheet>,
     );
     fireEvent.keyDown(document, { key: "Escape" });
-    expect(onClose).toHaveBeenCalledTimes(1);
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+    expect(onClose).not.toHaveBeenCalled();
     await settled();
     expect(onClose).toHaveBeenCalledTimes(1);
     expect(history.state).toBeNull();
@@ -358,6 +410,7 @@ describe("Sheet — browser/system Back history semantics", () => {
       queueLength: 0,
       pendingBack: false,
       buriedCount: 0,
+      forwardDead: false,
       listenerInstalled: false,
     });
   });
@@ -491,7 +544,7 @@ describe("Sheet — browser/system Back history semantics", () => {
     expect(onClose).toHaveBeenCalledTimes(1);
   });
 
-  it("history.back() asynchronous ordering: sentinel unwound after onClose", async () => {
+  it("history.back() completion precedes the parent close callback", async () => {
     const onClose = vi.fn();
     render(
       <Sheet open onClose={onClose} title="Servers">
@@ -499,11 +552,59 @@ describe("Sheet — browser/system Back history semantics", () => {
       </Sheet>,
     );
     fireEvent.click(screen.getByRole("button", { name: "Done" }));
-    expect(onClose).toHaveBeenCalledTimes(1);
-    // onClose fires synchronously, before the async history.back() popstate lands.
+    expect(onClose).not.toHaveBeenCalled();
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+    // The active sentinel is already inert while the traversal is pending.
+    expect(currentToken()).toBeNull();
     expect(history.state).not.toBeNull();
     await settled();
+    expect(onClose).toHaveBeenCalledTimes(1);
     expect(history.state).toBeNull();
+  });
+
+  it("recovers an unrelated app entry pushed after Back was requested", async () => {
+    const onClose = vi.fn();
+    const backSpy = vi.spyOn(history, "back").mockImplementation(() => {});
+    const forwardSpy = vi
+      .spyOn(history, "forward")
+      .mockImplementation(() => {});
+    render(
+      <Sheet open onClose={onClose} title="Servers">
+        <p>body</p>
+      </Sheet>,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "Done" }));
+    expect(backSpy).toHaveBeenCalledTimes(1);
+    expect(onClose).not.toHaveBeenCalled();
+    const deadState = history.state;
+    expect((deadState as Record<string, unknown>).__evener_sheet_dead).toBe(
+      true,
+    );
+
+    const appEntry = { route: "/new", revision: 8 };
+    history.pushState(appEntry, "");
+    // The already-requested Back lands late on our dead entry, popping the new
+    // app entry. The coordinator must reverse that one traversal, not back again.
+    history.replaceState(deadState, "");
+    window.dispatchEvent(new PopStateEvent("popstate", { state: deadState }));
+    expect(forwardSpy).toHaveBeenCalledTimes(1);
+    expect(backSpy).toHaveBeenCalledTimes(1);
+    expect(onClose).not.toHaveBeenCalled();
+
+    // Forward recovery restores the unrelated entry before close completion.
+    history.replaceState(appEntry, "");
+    window.dispatchEvent(new PopStateEvent("popstate", { state: appEntry }));
+    await settled();
+    expect(history.state).toEqual(appEntry);
+    expect(onClose).toHaveBeenCalledTimes(1);
+    expect(__sheetHistoryDebug()).toMatchObject({
+      hasOwner: false,
+      pendingBack: false,
+      buriedCount: 1,
+      forwardDead: false,
+      listenerInstalled: true,
+    });
   });
 
   it("rapid close/reopen while unwind is pending does not let the old back pop the new sentinel", async () => {
@@ -527,7 +628,7 @@ describe("Sheet — browser/system Back history semantics", () => {
       </Sheet>,
     );
     // The reopen is queued and hidden until the old traversal actually lands.
-    expect(currentToken()).toBe(firstToken);
+    expect(currentToken()).toBeNull();
     expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
     await settled();
     const secondToken = currentToken();
@@ -578,16 +679,17 @@ describe("Sheet — browser/system Back history semantics", () => {
     expect(screen.queryByText("second")).not.toBeInTheDocument();
 
     fireEvent.click(screen.getByRole("button", { name: "Done" }));
-    expect(onClose1).toHaveBeenCalledTimes(1);
+    expect(onClose1).not.toHaveBeenCalled();
     expect(onClose2).not.toHaveBeenCalled();
     await settled();
 
+    expect(onClose1).toHaveBeenCalledTimes(1);
     expect(screen.queryByText("first")).not.toBeInTheDocument();
     expect(await screen.findByText("second")).toBeInTheDocument();
     expect(pushState).toHaveBeenCalledTimes(2);
   });
 
-  it("Escape remains capture-phase and overlay is noninteractive to AT", () => {
+  it("Escape remains capture-phase and overlay is noninteractive to AT", async () => {
     const onClose = vi.fn();
     render(
       <Sheet open onClose={onClose} title="Servers">
@@ -598,6 +700,8 @@ describe("Sheet — browser/system Back history semantics", () => {
     expect(overlay?.getAttribute("aria-hidden")).toBe("true");
     // Escape handler is registered on capture phase.
     fireEvent.keyDown(document, { key: "Escape" });
+    expect(onClose).not.toHaveBeenCalled();
+    await settled();
     expect(onClose).toHaveBeenCalledTimes(1);
   });
 });
