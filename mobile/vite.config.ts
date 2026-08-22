@@ -23,5 +23,8 @@ export default defineConfig({
   test: {
     environment: "jsdom",
     setupFiles: ["./src/test/setup.ts"],
+    // `scripts/` holds node:test files (e.g. check-boundary.test.mjs) run via
+    // `node --test`, not vitest; exclude them so `vitest run` stays pristine.
+    exclude: ["**/node_modules/**", "**/dist/**", "scripts/**"],
   },
 });
