@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>NSCameraUsageDescription</key>
+  <string>Evener scans Hub pairing QR codes.</string>
+  <key>NSMicrophoneUsageDescription</key>
+  <string>Evener uses the microphone for voice conversations.</string>
+  <key>NSSpeechRecognitionUsageDescription</key>
+  <string>Evener transcribes speech during voice conversations.</string>
+  <key>NSLocalNetworkUsageDescription</key>
+  <string>Evener connects to Hubs on your local network.</string>
+</dict>
+</plist>
