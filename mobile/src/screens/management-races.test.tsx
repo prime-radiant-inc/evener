@@ -85,6 +85,25 @@ function fakeOf(
   return services.profile as FakeProfileService;
 }
 
+/** Capture and return the exact next previewScan operation promise. */
+function trackPreviewScan(
+  connection: ReturnType<typeof createConnectionStore>,
+): () => Promise<void> {
+  const originalPreviewScan = connection.getState().previewScan;
+  let operation: Promise<void> | null = null;
+  connection.setState({
+    previewScan: (scan) => {
+      const pending = originalPreviewScan(scan);
+      operation = pending;
+      return pending;
+    },
+  });
+  return () => {
+    expect(operation).not.toBeNull();
+    return operation as Promise<void>;
+  };
+}
+
 // ---------------------------------------------------------------------------
 // CRITICAL 2: click order/unmount reversed by refresh
 // ---------------------------------------------------------------------------
@@ -93,6 +112,8 @@ describe("Onboarding — generation established before refresh", () => {
   it("scan then paste while refresh is gated never starts the native scan", async () => {
     const services = createOnboardingServices();
     const fake = services.profile as FakeProfileService;
+    const connection = createConnectionStore(fake);
+    const scanOperation = trackPreviewScan(connection);
     fake.gateHealth();
 
     const nativeScan = vi.fn().mockResolvedValue({
@@ -102,9 +123,16 @@ describe("Onboarding — generation established before refresh", () => {
     services.native.scanAndPreviewPairing = nativeScan;
 
     const onConnected = vi.fn();
-    render(<OnboardingScreen services={services} onConnected={onConnected} />);
+    render(
+      <OnboardingScreen
+        services={services}
+        connection={connection}
+        onConnected={onConnected}
+      />,
+    );
 
     fireEvent.click(screen.getByRole("button", { name: /scan qr code/i }));
+    const scanSettled = scanOperation();
     await waitFor(() => expect(fake.isHealthGatePending()).toBe(true));
 
     const input = screen.getByLabelText(/authorization url/i);
@@ -112,7 +140,7 @@ describe("Onboarding — generation established before refresh", () => {
     fireEvent.click(screen.getByRole("button", { name: /connect/i }));
 
     fake.resolveHealthGate();
-    await waitFor(() => expect(fake.isHealthGatePending()).toBe(false));
+    await scanSettled;
     await waitFor(() =>
       expect(screen.getByText(/hub\.example\.com:8443/i)).toBeInTheDocument(),
     );
@@ -124,6 +152,8 @@ describe("Onboarding — generation established before refresh", () => {
   it("scan then direct Cancel while refresh is gated never starts native", async () => {
     const services = createOnboardingServices();
     const fake = services.profile as FakeProfileService;
+    const connection = createConnectionStore(fake);
+    const scanOperation = trackPreviewScan(connection);
     fake.gateHealth();
     const nativeScan = vi.fn().mockResolvedValue({
       previewId: "must-not-start",
@@ -131,13 +161,20 @@ describe("Onboarding — generation established before refresh", () => {
     });
     services.native.scanAndPreviewPairing = nativeScan;
     const onCancel = vi.fn(() => fake.resolveHealthGate());
-    render(<OnboardingScreen services={services} onCancel={onCancel} />);
+    render(
+      <OnboardingScreen
+        services={services}
+        connection={connection}
+        onCancel={onCancel}
+      />,
+    );
 
     fireEvent.click(screen.getByRole("button", { name: /scan qr code/i }));
+    const scanSettled = scanOperation();
     await waitFor(() => expect(fake.isHealthGatePending()).toBe(true));
     fireEvent.click(screen.getByRole("button", { name: /^cancel$/i }));
     expect(onCancel).toHaveBeenCalledTimes(1);
-    await waitFor(() => expect(fake.isHealthGatePending()).toBe(false));
+    await scanSettled;
 
     expect(nativeScan).not.toHaveBeenCalled();
     expect(fake.cancelPreviewCalls).toEqual([]);
@@ -150,6 +187,8 @@ describe("Onboarding — generation established before refresh", () => {
   it("unmount while refresh pending never calls native preview service", async () => {
     const services = createOnboardingServices();
     const fake = services.profile as FakeProfileService;
+    const connection = createConnectionStore(fake);
+    const scanOperation = trackPreviewScan(connection);
     fake.gateHealth();
 
     const nativeScan = vi.fn().mockResolvedValue({
@@ -158,13 +197,16 @@ describe("Onboarding — generation established before refresh", () => {
     });
     services.native.scanAndPreviewPairing = nativeScan;
 
-    const { unmount } = render(<OnboardingScreen services={services} />);
+    const { unmount } = render(
+      <OnboardingScreen services={services} connection={connection} />,
+    );
     fireEvent.click(screen.getByRole("button", { name: /scan qr code/i }));
+    const scanSettled = scanOperation();
     await waitFor(() => expect(fake.isHealthGatePending()).toBe(true));
 
     unmount();
     fake.resolveHealthGate();
-    await waitFor(() => expect(fake.isHealthGatePending()).toBe(false));
+    await scanSettled;
     expect(nativeScan).not.toHaveBeenCalled();
     expect(fake.cancelPreviewCalls).toEqual([]);
   });
@@ -191,7 +233,7 @@ describe("Onboarding — generation established before refresh", () => {
     expectRedacted(JSON.stringify(fake.cancelPreviewCalls));
   });
 
-  it("paste raw is not retained or submitted after cancel", async () => {
+  it("paste raw is cleared and its late result is cancelled", async () => {
     const services = createOnboardingServices();
     const fake = services.profile as FakeProfileService;
     // Gate previewPaste so the paste result arrives late.

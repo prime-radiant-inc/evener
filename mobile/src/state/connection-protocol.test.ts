@@ -75,7 +75,7 @@ describe("preview protocol — new op cancels visible prior (exact IDs)", () => 
     expect(store.getState().preview?.origin).toBe(HTTP_ORIGIN);
   });
 
-  it("scan superseded by paste: scan cancels visible paste ID, publishes scan", async () => {
+  it("scan replaces paste: scan cancels visible paste ID and publishes", async () => {
     const service = new FakeProfileService({
       profiles: [],
       activeProfileId: null,
