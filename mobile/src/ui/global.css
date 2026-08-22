@@ -208,10 +208,6 @@ body {
   flex-direction: column;
   height: var(--viewport-height);
   overflow: hidden;
-  padding-top: var(--safe-area-top);
-  padding-right: var(--safe-area-right);
-  padding-bottom: var(--safe-area-bottom);
-  padding-left: var(--safe-area-left);
 }
 
 .evener-screen-scroll {
@@ -220,6 +216,10 @@ body {
   overflow-y: auto;
   -webkit-overflow-scrolling: touch;
   overscroll-behavior-y: contain;
+  /* Horizontal safety for content that exceeds the shell's lateral bounds.
+     Vertical insets are NOT doubled here — TopBar/BottomBar own those edges. */
+  padding-left: var(--safe-area-left);
+  padding-right: var(--safe-area-right);
 }
 
 /* ---------------------------------------------------------------------------
@@ -312,6 +312,9 @@ body {
   gap: var(--space-8);
   min-height: var(--tap-target);
   padding: var(--space-8) var(--space-16);
+  padding-top: calc(var(--space-8) + var(--safe-area-top));
+  padding-left: calc(var(--space-16) + var(--safe-area-left));
+  padding-right: calc(var(--space-16) + var(--safe-area-right));
   background: var(--canvas);
 }
 
@@ -333,6 +336,8 @@ body {
   background: var(--raised);
   border-top: 1px solid var(--hairline);
   padding-bottom: var(--safe-area-bottom);
+  padding-left: var(--safe-area-left);
+  padding-right: var(--safe-area-right);
 }
 
 .evener-bottombar__tablist {
@@ -539,6 +544,8 @@ body {
   display: flex;
   flex-direction: column;
   padding-bottom: var(--safe-area-bottom);
+  padding-left: var(--safe-area-left);
+  padding-right: var(--safe-area-right);
   /* Deterministic upward motion (no spring under default). */
   animation: evener-sheet-up 0.24s ease-out;
 }
@@ -609,13 +616,14 @@ body {
  * ------------------------------------------------------------------------- */
 
 .evener-conversation {
-  position: fixed;
-  inset: 0;
   z-index: 50;
   display: flex;
   flex-direction: column;
+  flex: 1 1 auto;
+  min-height: 0;
   background: var(--canvas);
   padding-top: var(--safe-area-top);
+  padding-bottom: var(--safe-area-bottom);
   animation: evener-conversation-in 0.24s ease-out;
 }
 
@@ -635,10 +643,16 @@ body {
 .evener-onboarding {
   display: flex;
   flex-direction: column;
-  min-height: var(--viewport-height);
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  -webkit-overflow-scrolling: touch;
+  overscroll-behavior-y: contain;
   padding: var(--space-32) var(--space-16);
   padding-top: calc(var(--space-32) + var(--safe-area-top));
   padding-bottom: calc(var(--space-32) + var(--safe-area-bottom));
+  padding-left: calc(var(--space-16) + var(--safe-area-left));
+  padding-right: calc(var(--space-16) + var(--safe-area-right));
   gap: var(--space-16);
 }
 
@@ -718,5 +732,7 @@ body {
  * ------------------------------------------------------------------------- */
 
 .evener-dock {
-  padding-bottom: calc(var(--keyboard-inset) + var(--safe-area-bottom));
+  /* Use max() so the dock sits above the larger of the keyboard or the
+     safe-area bottom inset — never both stacked (34px, never 68px). */
+  padding-bottom: max(var(--keyboard-inset), var(--safe-area-bottom));
 }
