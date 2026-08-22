@@ -52,7 +52,7 @@ That proves the test failed specifically because the production `App` implementa
 
 ## Commit
 
-Commit hash: pending final commit.
+Scaffold commit: `17ded29bfe0c4713594b214d453e86bbc2b43c70` (`feat(mobile): scaffold dedicated Tauri client`).
 
 ## Concerns
 
