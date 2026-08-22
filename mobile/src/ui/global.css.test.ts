@@ -1,6 +1,15 @@
 import { readFileSync } from "node:fs";
 import path from "node:path";
-import { describe, expect, it } from "vitest";
+import { cleanup, render } from "@testing-library/react";
+import { createElement } from "react";
+import { afterEach, describe, expect, it } from "vitest";
+import { createShellServices } from "../screens/fixture-services";
+import { RootShell } from "../screens/RootShell";
+import { createConnectionStore } from "../state/connection";
+import { createNavigationStore } from "../state/navigation";
+import { createPreferencesStore } from "../state/preferences";
+
+afterEach(() => cleanup());
 
 /* ---------------------------------------------------------------------------
  * Foundation 7C lane D — parser-based contract tests.
@@ -97,6 +106,15 @@ function parseSheet(source: string): SheetModel {
 
 const sheet = parseSheet(cssSource);
 
+function must<T>(value: T | undefined, label: string): T {
+  if (value === undefined) throw new Error(`missing ${label}`);
+  return value;
+}
+
+function selectorMembers(selector: string): string[] {
+  return selector.split(",").map((member) => member.trim());
+}
+
 /** All top-level (non-media) style rules whose selectorText exactly equals
  *  `selector`. Media-scoped rules are matched via `rulesInMedia` so that a
  *  `:root` inside `@media` cannot satisfy a top-level `:root` ownership check. */
@@ -113,7 +131,15 @@ function oneRule(selector: string): StyleRuleEntry {
     matches.length,
     `expected exactly one rule for ${selector}, found ${matches.length}`,
   ).toBe(1);
-  return matches[0]!;
+  return must(matches[0], `rule ${selector}`);
+}
+
+/** All top-level rules that apply to this selector, including grouped rules. */
+function effectiveRulesFor(selector: string): StyleRuleEntry[] {
+  return sheet.styleRules.filter(
+    (rule) =>
+      rule.media === "" && selectorMembers(rule.selector).includes(selector),
+  );
 }
 
 /** Style rules for an exact selector inside a given media condition. */
@@ -135,26 +161,34 @@ function parseHtml(source: string): Document {
 const doc = parseHtml(htmlSource);
 
 function viewportMetas(): HTMLMetaElement[] {
-  return Array.from(doc.querySelectorAll('meta[name="viewport"]'));
+  return Array.from(doc.querySelectorAll("meta")).filter(
+    (meta) => meta.getAttribute("name")?.toLowerCase() === "viewport",
+  );
 }
 
-/** Split a viewport content string into an ordered key->value map. */
-function viewportDirectives(): Map<string, string> {
-  const metas = viewportMetas();
-  expect(metas.length, "exactly one viewport meta").toBe(1);
-  const content = metas[0]!.getAttribute("content") ?? "";
+/** Split a viewport content string and reject duplicate normalized keys. */
+function parseViewportDirectives(content: string): Map<string, string> {
   const map = new Map<string, string>();
   for (const part of content.split(",")) {
     const trimmed = part.trim();
     if (trimmed === "") continue;
     const eq = trimmed.indexOf("=");
-    if (eq === -1) {
-      map.set(trimmed, "");
-    } else {
-      map.set(trimmed.slice(0, eq).trim(), trimmed.slice(eq + 1).trim());
-    }
+    const key = (
+      eq === -1 ? trimmed : trimmed.slice(0, eq).trim()
+    ).toLowerCase();
+    if (map.has(key)) throw new Error(`duplicate viewport directive: ${key}`);
+    const value = eq === -1 ? "" : trimmed.slice(eq + 1).trim();
+    map.set(key, value);
   }
   return map;
+}
+
+function viewportDirectives(): Map<string, string> {
+  const metas = viewportMetas();
+  expect(metas.length, "exactly one viewport meta").toBe(1);
+  return parseViewportDirectives(
+    must(metas[0], "viewport meta").getAttribute("content") ?? "",
+  );
 }
 
 /* -------------------------------------------------------------------------
@@ -170,6 +204,61 @@ function safeEdges(decls: Record<string, string>): Set<string> {
   if (all.includes("--safe-area-left")) edges.add("left");
   if (all.includes("--safe-area-right")) edges.add("right");
   return edges;
+}
+
+function safeEdgeConsumers(): Record<string, string[]> {
+  const result: Record<string, string[]> = {
+    top: [],
+    bottom: [],
+    left: [],
+    right: [],
+  };
+  for (const rule of sheet.styleRules) {
+    if (rule.media !== "") continue;
+    const edges = safeEdges(rule.decls);
+    for (const selector of selectorMembers(rule.selector)) {
+      for (const edge of edges) result[edge]?.push(selector);
+    }
+  }
+  for (const values of Object.values(result)) values.sort();
+  return result;
+}
+
+const STRUCTURE_PROFILE = {
+  id: "p1",
+  name: "workstation",
+  origin: "https://hub.example.com:8443",
+} as const;
+
+function renderRootStructure(mode: "onboarding" | "conversation" | "new") {
+  const profiles = mode === "onboarding" ? [] : [STRUCTURE_PROFILE];
+  const services = createShellServices({
+    profiles,
+    activeProfileId: mode === "onboarding" ? null : STRUCTURE_PROFILE.id,
+  });
+  const connection = createConnectionStore(services.profile);
+  connection.setState({
+    profiles,
+    activeProfileId: mode === "onboarding" ? null : STRUCTURE_PROFILE.id,
+    status: "ready",
+    refresh: async () => {},
+  });
+  const navigation = createNavigationStore();
+  if (mode === "conversation") {
+    navigation.getState().pushConversation({
+      sessionId: "session-1",
+      title: "Conversation",
+    });
+  } else if (mode === "new") {
+    navigation.getState().setTab("new");
+  }
+  const preferences = createPreferencesStore();
+  return render(
+    createElement(RootShell, {
+      services,
+      stores: { connection, navigation, preferences },
+    }),
+  ).container;
 }
 
 /* =========================================================================
@@ -190,7 +279,7 @@ describe("design tokens — semantic colors (forest-teal + summit-amber)", () =>
   it("dark media defines teal-light accent #3dd6a8", () => {
     const dark = rulesInMedia(":root", "(prefers-color-scheme: dark)");
     expect(dark.length).toBe(1);
-    expect(dark[0]!.decls["--accent"]).toBe("#3dd6a8");
+    expect(must(dark[0], "dark root rule").decls["--accent"]).toBe("#3dd6a8");
   });
 
   it("root defines canvas #f2f2f7 and raised #ffffff", () => {
@@ -295,11 +384,21 @@ describe("7C lane D — viewport meta honors safe areas and keyboard", () => {
   });
 
   it("rejects a duplicate viewport meta (parser counts all)", () => {
-    // Sanity check that the helper would catch a second meta if present.
     const dup = parseHtml(
-      '<head><meta name="viewport" content="width=device-width"><meta name="viewport" content="viewport-fit=cover"></head>',
+      '<head><meta name="viewport" content="width=device-width"><meta name="Viewport" content="viewport-fit=cover"></head>',
     );
-    expect(dup.querySelectorAll('meta[name="viewport"]').length).toBe(2);
+    const metas = Array.from(dup.querySelectorAll("meta")).filter(
+      (meta) => meta.getAttribute("name")?.toLowerCase() === "viewport",
+    );
+    expect(metas.length).toBe(2);
+  });
+
+  it("rejects duplicate directives before map insertion", () => {
+    expect(() =>
+      parseViewportDirectives(
+        "width=device-width, WIDTH=device-width, initial-scale=1.0",
+      ),
+    ).toThrow(/duplicate viewport directive: width/);
   });
 });
 
@@ -310,8 +409,8 @@ describe("7C lane D — viewport meta honors safe areas and keyboard", () => {
 describe("7C lane D — one unambiguous safe-area owner per edge", () => {
   it("shell owns viewport height/overflow but NOT any safe-area padding", () => {
     const shell = oneRule(".evener-shell");
-    expect(shell.decls["height"]).toBe("var(--viewport-height)");
-    expect(shell.decls["overflow"]).toBe("hidden");
+    expect(shell.decls.height).toBe("var(--viewport-height)");
+    expect(shell.decls.overflow).toBe("hidden");
     expect(shell.decls["padding-top"]).toBeUndefined();
     expect(shell.decls["padding-bottom"]).toBeUndefined();
     expect(shell.decls["padding-left"]).toBeUndefined();
@@ -418,24 +517,46 @@ describe("7C lane D — one unambiguous safe-area owner per edge", () => {
     expect(dock.decls["padding-bottom"]).not.toContain("calc(");
   });
 
-  it("a simulated 34px bottom inset composes to exactly 34px, never 68px", () => {
-    // Composition table: count each vertical edge owner once for the bottom.
-    // Conversation contributes 0 (no safe-area). Dock contributes max(0,34)=34
-    // when keyboard=0 and safe=34. BottomBar contributes 34 only on tab screens,
-    // never stacked with the dock. No rule adds bottom safe-area twice.
-    const bottomOwners = sheet.styleRules.filter((r) =>
-      safeEdges(r.decls).has("bottom"),
-    );
-    // Each owner is a distinct screen region; the conversation has none.
+  it("enumerates every effective safe-edge consumer, including grouped selectors", () => {
+    expect(safeEdgeConsumers()).toEqual({
+      top: [".evener-onboarding", ".evener-topbar"],
+      bottom: [
+        ".evener-bottombar",
+        ".evener-dock",
+        ".evener-onboarding",
+        ".evener-sheet",
+      ],
+      left: [
+        ".evener-bottombar",
+        ".evener-onboarding",
+        ".evener-screen-scroll",
+        ".evener-screen-scroll .evener-topbar",
+        ".evener-sheet",
+        ".evener-topbar",
+      ],
+      right: [
+        ".evener-bottombar",
+        ".evener-onboarding",
+        ".evener-screen-scroll",
+        ".evener-screen-scroll .evener-topbar",
+        ".evener-sheet",
+        ".evener-topbar",
+      ],
+    });
+  });
+
+  it("a 34px safe bottom composes to exactly 34px for the conversation dock", () => {
     const conv = oneRule(".evener-conversation");
     expect(safeEdges(conv.decls).has("bottom")).toBe(false);
-    // Dock arithmetic: max(0, 34) = 34, not 0 + 34 stacked on top of safe.
-    const dockVal = oneRule(".evener-dock").decls["padding-bottom"];
-    expect(dockVal).toBe("max(var(--keyboard-inset), var(--safe-area-bottom))");
-    // If keyboard=0 and safe=34: max(0,34)=34. If keyboard=34,safe=0: max(34,0)=34.
-    // calc(0 + 34) would also be 34 here, BUT calc(keyboard + safe) when both
-    // are 34 yields 68 — that is the double-count the max() formula prevents.
-    expect(dockVal).not.toMatch(/\+\s*var\(--safe-area-bottom\)/);
+    const dockValue = oneRule(".evener-dock").decls["padding-bottom"];
+    expect(dockValue).toBe(
+      "max(var(--keyboard-inset), var(--safe-area-bottom))",
+    );
+    const composedBottom = (keyboard: number, safe: number): number =>
+      Math.max(keyboard, safe);
+    expect(composedBottom(0, 34)).toBe(34);
+    expect(composedBottom(34, 34)).toBe(34);
+    expect(composedBottom(300, 34)).toBe(300);
   });
 });
 
@@ -444,8 +565,17 @@ describe("7C lane D — one unambiguous safe-area owner per edge", () => {
  * ====================================================================== */
 
 describe("7C lane D — onboarding is the one vertical scroller", () => {
+  it("real RootShell onboarding has exactly one flow scroller and no screen-scroll ancestor", () => {
+    const container = renderRootStructure("onboarding");
+    const onboarding = container.querySelector(".evener-onboarding");
+    expect(onboarding).not.toBeNull();
+    expect(container.querySelectorAll(".evener-onboarding").length).toBe(1);
+    expect(container.querySelectorAll(".evener-screen-scroll").length).toBe(0);
+    expect(onboarding?.parentElement).toHaveClass("evener-shell");
+  });
+
   it("onboarding uses flex:1 to participate in shell flex geometry", () => {
-    expect(oneRule(".evener-onboarding").decls["flex"]).toBe("1 1 auto");
+    expect(oneRule(".evener-onboarding").decls.flex).toBe("1 1 auto");
   });
 
   it("onboarding uses min-height:0 to allow shrinking below content", () => {
@@ -508,19 +638,25 @@ describe("7C lane D — dynamic type recomputes root font and line height", () =
   });
 
   it("defines exactly 11 bounded content-size categories as :root[data-content-size]", () => {
-    expect(CONTENT_SIZE_CATEGORIES.length).toBe(11);
-    for (const cat of CONTENT_SIZE_CATEGORIES) {
-      const selector = `:root[data-content-size="${cat}"]`;
-      // Exact selector, exactly one rule.
-      const matches = rulesFor(selector);
-      expect(matches.length, `${selector} count`).toBe(1);
-    }
+    const actual = sheet.styleRules
+      .filter((rule) => rule.media === "")
+      .flatMap((rule) => selectorMembers(rule.selector))
+      .filter(
+        (selector) =>
+          selector.startsWith(':root[data-content-size="') &&
+          selector.endsWith('"]'),
+      )
+      .sort();
+    const expected = CONTENT_SIZE_CATEGORIES.map(
+      (category) => `:root[data-content-size="${category}"]`,
+    ).sort();
+    expect(actual).toEqual(expected);
   });
 
   it("each content-size category sets bounded --type-base and --type-leading", () => {
     for (const cat of CONTENT_SIZE_CATEGORIES) {
       const rule = oneRule(`:root[data-content-size="${cat}"]`);
-      const expected = CONTENT_SIZE_VALUES[cat]!;
+      const expected = must(CONTENT_SIZE_VALUES[cat], `values for ${cat}`);
       expect(rule.decls["--type-base"]).toBe(expected.base);
       expect(rule.decls["--type-leading"]).toBe(expected.leading);
     }
@@ -554,11 +690,11 @@ describe("7C lane D — dynamic type recomputes root font and line height", () =
 
   it("controls use font:inherit so they share the Dynamic Type scale", () => {
     const button = oneRule(".evener-button");
-    expect(button.decls["font"]).toBe("inherit");
+    expect(button.decls.font).toBe("inherit");
     const input = oneRule(".evener-input");
-    expect(input.decls["font"]).toBe("inherit");
+    expect(input.decls.font).toBe("inherit");
     const tab = oneRule(".evener-tab");
-    expect(tab.decls["font"]).toBe("inherit");
+    expect(tab.decls.font).toBe("inherit");
   });
 });
 
@@ -570,9 +706,10 @@ describe("7C lane D — system and explicit theme variables on html", () => {
   it("dark media sets color-scheme: dark on :root", () => {
     const dark = rulesInMedia(":root", "(prefers-color-scheme: dark)");
     expect(dark.length).toBe(1);
-    expect(dark[0]!.decls["color-scheme"]).toBe("dark");
-    expect(dark[0]!.decls["--canvas"]).toBe("#000000");
-    expect(dark[0]!.decls["--raised"]).toBe("#1c1c1e");
+    const darkRoot = must(dark[0], "dark root rule");
+    expect(darkRoot.decls["color-scheme"]).toBe("dark");
+    expect(darkRoot.decls["--canvas"]).toBe("#000000");
+    expect(darkRoot.decls["--raised"]).toBe("#1c1c1e");
   });
 
   it("explicit light theme is :root[data-theme=light] with color-scheme: light", () => {
@@ -597,8 +734,8 @@ describe("7C lane D — system and explicit theme variables on html", () => {
   it("html/body background follows canvas token", () => {
     // jsdom normalizes the grouped selector to "html,\nbody".
     const htmlBody = oneRule("html,\nbody");
-    expect(htmlBody.decls["background"]).toBe("var(--canvas)");
-    expect(htmlBody.decls["color"]).toBe("var(--primary)");
+    expect(htmlBody.decls.background).toBe("var(--canvas)");
+    expect(htmlBody.decls.color).toBe("var(--primary)");
   });
 
   it("root :root declares color-scheme: light dark", () => {
@@ -611,17 +748,40 @@ describe("7C lane D — system and explicit theme variables on html", () => {
  * ====================================================================== */
 
 describe("7C lane D — conversation participates in shell flex geometry", () => {
+  it("real RootShell conversation has one scroller beside a direct TopBar", () => {
+    const container = renderRootStructure("conversation");
+    const conversation = container.querySelector(".evener-conversation");
+    expect(conversation).not.toBeNull();
+    expect(
+      conversation?.querySelectorAll(":scope > .evener-screen-scroll").length,
+    ).toBe(1);
+    expect(
+      conversation?.querySelectorAll(":scope > .evener-topbar").length,
+    ).toBe(1);
+    expect(conversation?.querySelectorAll(".evener-screen-scroll").length).toBe(
+      1,
+    );
+  });
+
+  it("real tab screen nests TopBar under the compensated screen scroller", () => {
+    const container = renderRootStructure("new");
+    expect(
+      container.querySelectorAll(".evener-screen-scroll .evener-topbar").length,
+    ).toBe(1);
+    expect(container.querySelectorAll(".evener-conversation").length).toBe(0);
+  });
+
   it("conversation uses flex:1, not position:fixed", () => {
     const conv = oneRule(".evener-conversation");
-    expect(conv.decls["flex"]).toBe("1 1 auto");
-    expect(conv.decls["position"]).toBeUndefined();
-    expect(conv.decls["inset"]).toBeUndefined();
+    expect(conv.decls.flex).toBe("1 1 auto");
+    expect(conv.decls.position).toBeUndefined();
+    expect(conv.decls.inset).toBeUndefined();
   });
 
   it("conversation keeps background and reduced-motion-compatible animation", () => {
     const conv = oneRule(".evener-conversation");
-    expect(conv.decls["background"]).toBe("var(--canvas)");
-    expect(conv.decls["animation"]).toContain("evener-conversation-in");
+    expect(conv.decls.background).toBe("var(--canvas)");
+    expect(conv.decls.animation).toContain("evener-conversation-in");
   });
 
   it("conversation keeps one scroller via evener-screen-scroll", () => {
@@ -635,14 +795,14 @@ describe("7C lane D — conversation participates in shell flex geometry", () =>
     const reducedMedia = sheet.styleRules.find(
       (r) =>
         r.media.includes("prefers-reduced-motion") &&
-        r.selector.includes(".evener-conversation"),
+        selectorMembers(r.selector).includes(".evener-conversation"),
     );
     expect(
       reducedMedia,
       "reduced-motion .evener-conversation rule",
     ).toBeTruthy();
-    expect(reducedMedia?.decls["animation"]).toBe("none");
-    expect(reducedMedia?.decls["transform"]).toBe("none");
+    expect(reducedMedia?.decls.animation).toBe("none");
+    expect(reducedMedia?.decls.transform).toBe("none");
     // The exact single selector ".evener-conversation" is NOT present inside
     // the media — only the grouped form is. This proves a grouped selector
     // does not satisfy an exact-selector check.
@@ -665,8 +825,8 @@ describe("parser rigor — exact selectors, duplicates, comments, grouping", () 
     const model = parseSheet(".x { color: red; } .x { color: blue; }");
     const xs = model.styleRules.filter((r) => r.selector === ".x");
     expect(xs.length).toBe(2);
-    expect(xs[0]!.decls["color"]).toBe("red");
-    expect(xs[1]!.decls["color"]).toBe("blue");
+    expect(must(xs[0], "first .x rule").decls.color).toBe("red");
+    expect(must(xs[1], "second .x rule").decls.color).toBe("blue");
   });
 
   it("a grouped selector does not satisfy an exact single-selector check", () => {
@@ -675,7 +835,7 @@ describe("parser rigor — exact selectors, duplicates, comments, grouping", () 
     expect(model.styleRules.filter((r) => r.selector === ".a").length).toBe(0);
     const grouped = model.styleRules.filter((r) => r.selector === ".a, .b");
     expect(grouped.length).toBe(1);
-    expect(grouped[0]!.decls["color"]).toBe("red");
+    expect(must(grouped[0], "grouped rule").decls.color).toBe("red");
   });
 
   it("a comment cannot satisfy a declaration check", () => {
@@ -684,9 +844,10 @@ describe("parser rigor — exact selectors, duplicates, comments, grouping", () 
     const model = parseSheet("/* color: red; */ .x { margin: 0; }");
     const x = model.styleRules.filter((r) => r.selector === ".x");
     expect(x.length).toBe(1);
-    expect(x[0]!.decls["color"]).toBeUndefined();
+    const xRule = must(x[0], ".x rule");
+    expect(xRule.decls.color).toBeUndefined();
     // jsdom normalizes unitless 0 to 0px.
-    expect(x[0]!.decls["margin"]).toBe("0px");
+    expect(xRule.decls.margin).toBe("0px");
   });
 
   it("@media nested rules are collected with their media context", () => {
@@ -696,16 +857,14 @@ describe("parser rigor — exact selectors, duplicates, comments, grouping", () 
     const y = model.styleRules.find(
       (r) => r.selector === ".y" && r.media === "(min-width: 1px)",
     );
-    expect(y?.decls["color"]).toBe("green");
+    expect(y?.decls.color).toBe("green");
   });
 
-  it("real sheet has no duplicate .evener-shell rules (single owner)", () => {
-    expect(rulesFor(".evener-shell").length).toBe(1);
+  it("real sheet has one effective .evener-shell rule, including grouped selectors", () => {
+    expect(effectiveRulesFor(".evener-shell").length).toBe(1);
   });
 
-  it("real sheet has no duplicate .evener-topbar base rules", () => {
-    // The nested descendant rule has a different exact selector, so the
-    // base .evener-topbar must appear exactly once.
-    expect(rulesFor(".evener-topbar").length).toBe(1);
+  it("real sheet has one effective .evener-topbar base rule", () => {
+    expect(effectiveRulesFor(".evener-topbar").length).toBe(1);
   });
 });
