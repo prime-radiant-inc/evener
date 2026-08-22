@@ -104,12 +104,22 @@ interface PendingBack {
   readonly instanceId: string | null;
 }
 
+interface QueuedHistoryWrite {
+  readonly kind: "push" | "replace";
+  readonly data: unknown;
+  readonly unused: string;
+  readonly url: string | null;
+}
+
 interface SheetCoordinator {
   owner: SheetOwner | null;
   queue: SheetWaiter[];
   pendingBack: PendingBack | null;
   buriedCount: number;
   forwardDead: boolean;
+  restorePushObserver: (() => void) | null;
+  queuedHistoryWrites: QueuedHistoryWrite[];
+  restoreHistoryGate: (() => void) | null;
   listenerInstalled: boolean;
   settledResolvers: Set<() => void>;
 }
@@ -120,6 +130,9 @@ const coordinator: SheetCoordinator = {
   pendingBack: null,
   buriedCount: 0,
   forwardDead: false,
+  restorePushObserver: null,
+  queuedHistoryWrites: [],
+  restoreHistoryGate: null,
   listenerInstalled: false,
   settledResolvers: new Set(),
 };
@@ -141,6 +154,99 @@ function notifySettled(): void {
   const resolvers = coordinator.settledResolvers;
   coordinator.settledResolvers = new Set();
   for (const resolve of resolvers) resolve();
+}
+
+function stopObservingPushState(): void {
+  coordinator.restorePushObserver?.();
+  coordinator.restorePushObserver = null;
+}
+
+/** A push from the restored base truncates its Forward branch. Observe exactly
+ * that bounded period so the dead-forward listener can tear down even when the
+ * next write comes from the app/router rather than another Sheet. */
+function observeForwardTruncation(): void {
+  if (coordinator.restorePushObserver !== null) return;
+  const previousPushState = history.pushState;
+  const observedPushState: History["pushState"] = function observed(
+    data: unknown,
+    unused: string,
+    url?: string | URL | null,
+  ): void {
+    previousPushState.call(history, data, unused, url ?? null);
+    if (coordinator.forwardDead) {
+      setForwardDead(false);
+      removeListenerIfIdle();
+    }
+  };
+  history.pushState = observedPushState;
+  coordinator.restorePushObserver = () => {
+    if (history.pushState === observedPushState) {
+      history.pushState = previousPushState;
+    }
+  };
+}
+
+function setForwardDead(value: boolean): void {
+  coordinator.forwardDead = value;
+  if (value) observeForwardTruncation();
+  else stopObservingPushState();
+}
+
+function cloneHistoryData(data: unknown): unknown {
+  return typeof structuredClone === "function" ? structuredClone(data) : data;
+}
+
+/** Queue app/router History writes during one coordinator-owned Back. This
+ * preserves their order while preventing a synchronous push from racing and
+ * being popped by the already-requested asynchronous traversal. */
+function gateHistoryWrites(): void {
+  if (coordinator.restoreHistoryGate !== null) return;
+  const previousPushState = history.pushState;
+  const previousReplaceState = history.replaceState;
+  history.pushState = function queuedPush(
+    data: unknown,
+    unused: string,
+    url?: string | URL | null,
+  ): void {
+    coordinator.queuedHistoryWrites.push({
+      kind: "push",
+      data: cloneHistoryData(data),
+      unused,
+      url: url?.toString() ?? null,
+    });
+  };
+  history.replaceState = function queuedReplace(
+    data: unknown,
+    unused: string,
+    url?: string | URL | null,
+  ): void {
+    coordinator.queuedHistoryWrites.push({
+      kind: "replace",
+      data: cloneHistoryData(data),
+      unused,
+      url: url?.toString() ?? null,
+    });
+  };
+  coordinator.restoreHistoryGate = () => {
+    history.pushState = previousPushState;
+    history.replaceState = previousReplaceState;
+  };
+}
+
+function takeQueuedHistoryWrites(): QueuedHistoryWrite[] {
+  const writes = coordinator.queuedHistoryWrites;
+  coordinator.queuedHistoryWrites = [];
+  coordinator.restoreHistoryGate?.();
+  coordinator.restoreHistoryGate = null;
+  return writes;
+}
+
+function replayHistoryWrites(writes: readonly QueuedHistoryWrite[]): void {
+  for (const write of writes) {
+    const method =
+      write.kind === "push" ? history.pushState : history.replaceState;
+    method.call(history, write.data, write.unused, write.url);
+  }
 }
 
 function removeListenerIfIdle(): void {
@@ -179,12 +285,20 @@ function startBack(pending: PendingBack): void {
     );
   }
   coordinator.pendingBack = pending;
+  gateHistoryWrites();
   history.back();
 }
 
 function grant(waiter: SheetWaiter): void {
   ensureListener();
   const token = newToken("owner");
+  coordinator.owner = {
+    ...waiter,
+    token,
+    dismissed: false,
+    closing: false,
+    notifyOnComplete: false,
+  };
   const previous = history.state;
   const preservedFields =
     typeof previous === "object" &&
@@ -200,14 +314,7 @@ function grant(waiter: SheetWaiter): void {
     "",
   );
   history.pushState({ [SHEET_KEY]: true, token } as SheetMarker, "");
-  coordinator.forwardDead = false;
-  coordinator.owner = {
-    ...waiter,
-    token,
-    dismissed: false,
-    closing: false,
-    notifyOnComplete: false,
-  };
+  setForwardDead(false);
   waiter.grant(token);
 }
 
@@ -291,6 +398,7 @@ function onPopState(): void {
   if (pending !== null) {
     if (pending.kind === "recover") {
       coordinator.pendingBack = null;
+      const queuedWrites = takeQueuedHistoryWrites();
       const owner = coordinator.owner;
       if (owner?.token === pending.token) {
         coordinator.owner = null;
@@ -301,7 +409,8 @@ function onPopState(): void {
           owner.onClose();
         }
       }
-      coordinator.forwardDead = false;
+      setForwardDead(false);
+      replayHistoryWrites(queuedWrites);
       pumpQueue();
       return;
     }
@@ -323,14 +432,16 @@ function onPopState(): void {
     }
 
     coordinator.pendingBack = null;
+    const queuedWrites = takeQueuedHistoryWrites();
     if (landedOnBase) restoreBaseMarker(state);
     if (pending.kind === "owner") {
-      coordinator.forwardDead = true;
+      setForwardDead(true);
       finishOwnerFromBack(pending.token);
     } else {
       coordinator.buriedCount = Math.max(0, coordinator.buriedCount - 1);
-      coordinator.forwardDead = false;
+      setForwardDead(false);
     }
+    replayHistoryWrites(queuedWrites);
     // A dead marker may be immediately below another dead marker.
     const current = history.state;
     if (
@@ -358,7 +469,7 @@ function onPopState(): void {
       restoreBaseMarker(state);
       coordinator.owner = null;
       owner.revoke(owner.token);
-      coordinator.forwardDead = true;
+      setForwardDead(true);
       if (!owner.dismissed) {
         owner.dismissed = true;
         owner.onClose();
@@ -444,6 +555,8 @@ function settled(): Promise<void> {
 
 /** Test-only reset after all pending traversals have settled. */
 function resetCoordinator(): void {
+  stopObservingPushState();
+  coordinator.restoreHistoryGate?.();
   if (coordinator.listenerInstalled) {
     window.removeEventListener("popstate", onPopState);
   }
@@ -452,6 +565,9 @@ function resetCoordinator(): void {
   coordinator.pendingBack = null;
   coordinator.buriedCount = 0;
   coordinator.forwardDead = false;
+  coordinator.restorePushObserver = null;
+  coordinator.queuedHistoryWrites = [];
+  coordinator.restoreHistoryGate = null;
   coordinator.listenerInstalled = false;
   coordinator.settledResolvers = new Set();
 }
