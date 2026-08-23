@@ -43,7 +43,6 @@ func Run(args []string, _ io.Reader, stdout, stderr io.Writer) int {
 	return run(args, stdout, stderr)
 }
 
-var osExit = os.Exit
 var harvestDiscoverSources = discoverSources
 var harvestCoreToolNames = agent.CoreToolNames
 var harvestGitleaksScan = gitleaksScan

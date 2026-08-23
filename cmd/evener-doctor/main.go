@@ -29,7 +29,6 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
-	"os"
 	"path"
 	"strings"
 	"time"
@@ -44,7 +43,6 @@ func Run(args []string, _ io.Reader, stdout, stderr io.Writer) int {
 	return run(args, stdout, stderr)
 }
 
-var osExit = os.Exit
 var doctorLocate = doctor.Locate
 
 func run(args []string, stdout, stderr io.Writer) int {

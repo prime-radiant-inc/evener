@@ -29,11 +29,11 @@ func scenarioEmitWritesDedupsAndIsIdempotent(t *testing.T) {
 	dir := t.TempDir()
 	e := NewEmitter(false, 32768)
 
-	if _, err := e.EmitBytes(dir, []byte("hello")); err != nil {
+	if _, err := e.emitBytes(dir, []byte("hello")); err != nil {
 		t.Fatal(err)
 	}
 	// Same content again -> deduped, not rewritten.
-	if _, err := e.EmitBytes(dir, []byte("hello")); err != nil {
+	if _, err := e.emitBytes(dir, []byte("hello")); err != nil {
 		t.Fatal(err)
 	}
 	if e.written != 1 || e.deduped != 1 {
@@ -47,7 +47,7 @@ func scenarioEmitWritesDedupsAndIsIdempotent(t *testing.T) {
 
 	// A fresh emitter over the same dir must skip the existing file (no diff).
 	e2 := NewEmitter(false, 32768)
-	if _, err := e2.EmitBytes(dir, []byte("hello")); err != nil {
+	if _, err := e2.emitBytes(dir, []byte("hello")); err != nil {
 		t.Fatal(err)
 	}
 	if e2.written != 0 || e2.deduped != 1 {
@@ -58,7 +58,7 @@ func scenarioEmitWritesDedupsAndIsIdempotent(t *testing.T) {
 func scenarioEmitDropsOversize(t *testing.T) {
 	dir := t.TempDir()
 	e := NewEmitter(false, 16)
-	if _, err := e.EmitBytes(dir, []byte(strings.Repeat("A", 100))); err != nil {
+	if _, err := e.emitBytes(dir, []byte(strings.Repeat("A", 100))); err != nil {
 		t.Fatal(err)
 	}
 	if e.oversized != 1 || e.written != 0 {
@@ -72,7 +72,7 @@ func scenarioEmitDropsOversize(t *testing.T) {
 func scenarioEmitDryRunWritesNothing(t *testing.T) {
 	dir := t.TempDir()
 	e := NewEmitter(true, 32768)
-	if _, err := e.EmitIntBytes(dir, 3, []byte("x")); err != nil {
+	if _, err := e.emitIntBytes(dir, 3, []byte("x")); err != nil {
 		t.Fatal(err)
 	}
 	if e.wouldWrite != 1 || e.written != 0 {
@@ -90,7 +90,7 @@ func scenarioEmitDryRunWritesNothing(t *testing.T) {
 func scenarioEmitIntBytesShape(t *testing.T) {
 	dir := t.TempDir()
 	e := NewEmitter(false, 32768)
-	if _, err := e.EmitIntBytes(dir, 5, []byte(`{"a":1}`)); err != nil {
+	if _, err := e.emitIntBytes(dir, 5, []byte(`{"a":1}`)); err != nil {
 		t.Fatal(err)
 	}
 	files, _ := os.ReadDir(dir)

@@ -28,8 +28,6 @@ import (
 	"strings"
 )
 
-var exitProcess = os.Exit
-
 // target is one registry entry: the fuzz target's identity plus the optional
 // coverpkg override naming the package(s) it really exercises.
 type target struct {
@@ -105,7 +103,7 @@ func runGapOnlyE(stdout, stderr io.Writer, registryPath, repoRoot string, module
 	gaps := gapMap(universe, fuzzed, ignore)
 
 	if len(gaps) == 0 {
-		fmt.Fprintf(stdout, "fuzz gap check: all %d decode/parse package(s) have a registered target or a reasoned ignore\n", len(universe))
+		_, _ = fmt.Fprintf(stdout, "fuzz gap check: all %d decode/parse package(s) have a registered target or a reasoned ignore\n", len(universe))
 		return 0, nil
 	}
 	_, _ = fmt.Fprintln(stderr, "GAP MAP — decode/parse packages with NO registered fuzz target")

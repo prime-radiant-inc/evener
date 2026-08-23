@@ -60,6 +60,6 @@ site; it is not required for the rest of the file to keep earning its lines.
 
 | Command | Summary |
 | --- | --- |
-| `make e2e-cover` | Measure end-to-end coverage of the real evener/evener-tui binaries via `go build -cover` + GOCOVERDIR, unioned with the unit profile. EVENER_E2E_LIVE=1 additionally runs the live provider scripts. Local and on-demand, not a gate. |
+| `make e2e-cover` | Measure end-to-end coverage of the real evener binary via `go build -cover` + GOCOVERDIR, unioned with the unit profile. EVENER_E2E_LIVE=1 additionally runs the live provider scripts. Local and on-demand, not a gate. |
 | `make coverage-gaps` | Rank a coverage profile's uncovered statements by count, not percentage, so coverage work targets the largest real gaps. Takes a profile: `make coverage-gaps PROFILE=path/to.cov GAP_ARGS="--by file"`. |
 <!-- END GENERATED -->

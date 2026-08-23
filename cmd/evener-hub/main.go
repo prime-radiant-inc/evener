@@ -56,7 +56,6 @@ var (
 	hubProcessArgs = func() []string { return os.Args }
 	hubHostname    = os.Hostname
 	hubRunMain     = runMain
-	hubExit        = os.Exit
 )
 
 type hubHTTPServer interface {

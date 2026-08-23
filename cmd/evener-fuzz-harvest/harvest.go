@@ -100,7 +100,7 @@ func (r *runner) recordEmit(st *surfaceStat, status emitStatus) {
 // emitBytesTo scrubs+emits a single-arg seed to one or more target dirs.
 func (r *runner) emitBytesTo(st *surfaceStat, out []byte, dirs ...string) {
 	for _, d := range dirs {
-		status, err := r.emit.EmitBytes(d, out)
+		status, err := r.emit.emitBytes(d, out)
 		if err != nil {
 			r.logf("emit error %s: %v", d, err)
 			continue

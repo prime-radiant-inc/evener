@@ -1,5 +1,5 @@
 // Package appwire defines the JSON-RPC wire protocol shared by the evener
-// binaries: the browser and evener-tui speak it to evener-hub, and evener-hub speaks
+// binaries: the browser and evener tui speak it to evener hub, and evener hub speaks
 // it to each evener serve daemon (and to Codex app-server sources). It carries
 // the message envelope (request/response/notification), the request-method and
 // notification catalogs, the param/result types, and the WebSocket transport

@@ -24,7 +24,7 @@ type tuiProgram interface {
 }
 
 var (
-	exitProcess                     = os.Exit
+	exitProcess                     = os.Exit //nolint:unused // swapped in fuzz tests (main_fuzz_test.go)
 	processArgs                     = func() []string { return os.Args }
 	processExecutable               = os.Executable
 	processGetenv                   = os.Getenv
