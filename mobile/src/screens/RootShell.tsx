@@ -145,7 +145,23 @@ export function RootShell({ services, stores }: RootShellProps): JSX.Element {
           services={services}
           onConnected={() => {
             setAddingServer(false);
-            void connection.getState().refresh();
+            // Refresh the shared store to pick up the new profile. Don't set
+            // loading state — that would flash the loading screen. The store's
+            // refresh() sets status to "loading" then "ready"/"error". Instead,
+            // call health() and update profiles/activeProfileId directly.
+            void services.profile
+              .health()
+              .then((health) => {
+                connection.setState({
+                  profiles: health.profiles,
+                  activeProfileId: health.activeProfileId,
+                  generation: health.generation,
+                  status: "ready",
+                });
+              })
+              .catch(() => {
+                // If health fails, keep current state — onboarding will re-show.
+              });
           }}
           onCancel={
             addingServer
