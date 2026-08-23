@@ -24,7 +24,7 @@ secret-scan:
 ## requires: None beyond the Go toolchain; deterministic, no provider calls.
 ## fails-when: Any TOML file has a non-snake_case key.
 lint-naming:
-	$(call run_quiet_lint,go run ./cmd/evener-tomlcheck)
+	$(call run_quiet_lint,go run ./cmd/evener-dev/bin tomlcheck)
 
 ## The compile floor for the //go:build evenerfuzz sources: go vet under the
 ## tag, plus a tagliatelle-only golangci-lint pass. See "Why two tagged lint
@@ -77,7 +77,7 @@ lint-eval:
 ## fails-when: cmd/evener-internalcheck finds an exported symbol naming an
 ##   internal type.
 lint-internal:
-	$(call run_quiet_lint,go run ./cmd/evener-internalcheck)
+	$(call run_quiet_lint,go run ./cmd/evener-dev/bin internalcheck)
 
 # golangci-lint across every module (./... is per-module under go.work).
 # The runner lives in Go (cmd/evener-dev); MODULES and LINT_PARALLEL keep the
@@ -106,7 +106,7 @@ lint-internal:
 ##   the fuzz module's ordinary Go is covered too.
 ## fails-when: Either golangci-lint run fails for any module.
 lint-golangci:
-	@MODULES="$(FUZZ_GO_MODULES)" go run ./cmd/evener-dev module-lint
+	@MODULES="$(FUZZ_GO_MODULES)" go run ./cmd/evener-dev/bin dev module-lint
 	$(call run_quiet_lint,golangci-lint run --allow-parallel-runners --config .golangci-appwire.yml ./server/...)
 
 # lint-gofmt keeps EVERY tracked Go source formatter-clean, including the ~250

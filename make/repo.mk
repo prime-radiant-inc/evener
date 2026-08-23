@@ -38,7 +38,7 @@ generate:
 
 ## Remove the built binaries from the repo root.
 clean:
-	rm -f evener evener-hub evener-tui evener-doctor llmcall evener-migrate evener-linux-amd64
+	rm -f evener evener-dev llmcall evener-linux-amd64
 
 ## Print every make target, grouped by family, with its one-line summary.
 help:

@@ -1,4 +1,4 @@
-.PHONY: build build-runtime build-go build-hub web-preflight build-web build-tui build-doctor build-all build-linux build-llmcall build-migrate dist install install-home install-system test-install
+.PHONY: build build-runtime build-go build-hub web-preflight build-web build-dev build-all build-linux build-llmcall dist install install-home install-system test-install
 
 LDFLAGS := -X primeradiant.com/evener/buildinfo.GitSHA=$$(git rev-parse --short HEAD) \
            -X primeradiant.com/evener/buildinfo.GitDirty=$$(git --no-optional-locks diff-files --quiet && echo "" || echo "true") \
@@ -9,13 +9,12 @@ PREFIX ?= $(HOME)/.local
 BINDIR ?= $(PREFIX)/bin
 EVENER_SHARE_BINDIR ?= $(PREFIX)/share/evener/bin
 INSTALL_BUILD_DIR ?= .build/install
-EVENER_INSTALL_BINS := evener evener-hub evener-tui evener-doctor evener-migrate
+EVENER_INSTALL_BINS := evener evener-dev
 BUILD_CHANNEL ?=
 
-## Build the runtime pair (evener, evener-hub) with a fresh embedded SPA. The
-## default goal.
-## proves: build-web completes before the evener/evener-hub pair is built, so
-##   the runtime pair contains the fresh SPA.
+## Build the evener binary with a fresh embedded SPA. The default goal.
+## proves: build-web completes before evener is built, so the binary contains
+##   the fresh SPA embedded by the hub subcommand.
 ## trigger: Local pre-merge; required CI together with make build-go.
 ## requires: Go, Node/npm, the frontend install, and enough disk. Build
 ##   metadata includes the current SHA, dirty state, time, and channel.
@@ -26,10 +25,9 @@ build: build-runtime
 # build-runtime depends on build-web (not the reverse): make guarantees a
 # target's prerequisites COMPLETE before its recipe runs — even under
 # parallel make (-j) — so hanging build-web off build-runtime structurally
-# guarantees every evener/evener-hub pair build embeds the dist build-web just
-# produced. No target may ship a evener-hub binary with a stale or empty
-# embedded web UI.
-## The actual recipe `build` runs: builds the evener/evener-hub pair via
+# guarantees every evener build embeds the dist build-web just produced. No
+# target may ship an evener binary with a stale or empty embedded web UI.
+## The actual recipe `build` runs: builds evener via
 ## scripts/ops/build-runtime-pair.sh.
 build-runtime: build-web
 	LDFLAGS="$(LDFLAGS)" scripts/ops/build-runtime-pair.sh
@@ -62,11 +60,11 @@ web-preflight:
 	@NODE_DISABLE_COMPILE_CACHE=1 scripts/web/web-preflight.sh
 
 # build-web builds the frontend TypeScript/React app (cmd/evener-hub/frontend)
-# into frontend/dist, which build-hub embeds via go:embed. The vite build
-# itself stays unconditional — dist freshness is the entire point, the
-# install step is the only cacheable part. vite's emptyOutDir wipes the
-# tracked dist/PLACEHOLDER on every build; vite.config.ts writes it back at
-# closeBundle, so no recipe here restores it and `git status` stays clean
+# into frontend/dist, which evener embeds via go:embed (the hub subcommand).
+# The vite build itself stays unconditional — dist freshness is the entire
+# point, the install step is the only cacheable part. vite's emptyOutDir wipes
+# the tracked dist/PLACEHOLDER on every build; vite.config.ts writes it back
+# at closeBundle, so no recipe here restores it and `git status` stays clean
 # after a build however vite was invoked (kata 88nn).
 ## Build the frontend (TypeScript typecheck + Vite production build) into
 ## frontend/dist for Go embedding.
@@ -79,35 +77,29 @@ web-preflight:
 build-web: web-preflight
 	cd cmd/evener-hub/frontend && NODE_DISABLE_COMPILE_CACHE=1 npm run build
 
-## Build the standalone TUI binary (evener-tui).
-build-tui:
-	go build -o evener-tui ./cmd/evener-tui/
-
-# evener-doctor: the read-only forensic inspector (data plane of the doctoring system).
-## Build evener-doctor, the read-only forensic inspector.
-build-doctor:
-	go build -o evener-doctor ./cmd/evener-doctor/
-
-## Build every runtime binary: the runtime pair, the TUI, evener-doctor, and
-## evener-migrate.
-build-all: build-runtime build-tui build-doctor build-migrate
-
 ## Build the llmcall standalone CLI binary.
 build-llmcall:
 	go build -o llmcall ./cmd/llmcall/
 
-## Build evener-migrate.
-build-migrate:
-	go build -o evener-migrate ./cmd/evener-migrate/
+## Build the evener-dev dev/test infrastructure binary (agent-shards,
+## module-lint, fuzz-harvest, fuzzcov, fuzzregistry, internalcheck,
+## test-dev-tooling, tomlcheck, transcript-v2-upgrade). Not installed for
+## end users; used by make targets and go run ./cmd/evener-dev/bin.
+build-dev:
+	go build -o evener-dev ./cmd/evener-dev/bin/
+
+# build-all builds both the runtime binary and the dev binary.
+## Build every binary: the evener runtime binary and the evener-dev
+## dev/test infrastructure binary.
+build-all: build-runtime build-dev
 
 # dist builds the release artifacts with goreleaser in snapshot mode (no tag,
 # no publish): dist/ holds evener_<os>_<arch>.tar.gz plus checksums.txt — the
 # same layout the release workflow ships and install.sh consumes. The web
-# build runs as goreleaser's before hook, so the hub binary embeds a fresh
-# SPA rather than the tracked PLACEHOLDER.
+# build runs as goreleaser's before hook, so the binary embeds a fresh SPA
+# rather than the tracked PLACEHOLDER.
 ## Build release/distribution binaries with goreleaser in snapshot mode.
-## proves: goreleaser builds evener, evener-hub, evener-tui, evener-doctor,
-##   and evener-migrate for linux/amd64 and darwin/arm64 into
+## proves: goreleaser builds evener for linux/amd64 and darwin/arm64 into
 ##   directory-wrapped archives plus checksums.txt, with a fresh SPA embedded
 ##   via the before hook.
 ## trigger: Release/snapshot CI; manual distribution verification.
@@ -118,17 +110,15 @@ build-migrate:
 dist:
 	goreleaser release --snapshot --clean
 
-# An installed hub must embed a fresh SPA, not the tracked PLACEHOLDER (install-home/install-system inherit via install).
-## Install the runtime binaries into PREFIX (default ~/.local), building
-## a fresh SPA first so the installed evener-hub never embeds the tracked
-## placeholder.
+# An installed evener must embed a fresh SPA, not the tracked PLACEHOLDER
+# (install-home/install-system inherit via install).
+## Install the evener and evener-dev binaries into PREFIX (default ~/.local),
+## building a fresh SPA first so the installed evener never embeds the
+## tracked placeholder.
 install: build-web
 	install -d "$(INSTALL_BUILD_DIR)"
 	go build -ldflags "$(LDFLAGS)" -o "$(INSTALL_BUILD_DIR)/evener" ./cmd/evener/
-	go build -o "$(INSTALL_BUILD_DIR)/evener-hub" ./cmd/evener-hub/
-	go build -o "$(INSTALL_BUILD_DIR)/evener-tui" ./cmd/evener-tui/
-	go build -o "$(INSTALL_BUILD_DIR)/evener-doctor" ./cmd/evener-doctor/
-	go build -o "$(INSTALL_BUILD_DIR)/evener-migrate" ./cmd/evener-migrate/
+	go build -o "$(INSTALL_BUILD_DIR)/evener-dev" ./cmd/evener-dev/bin/
 	install -d "$(EVENER_SHARE_BINDIR)" "$(BINDIR)"
 	@for bin in $(EVENER_INSTALL_BINS); do \
 		install -m 0755 "$(INSTALL_BUILD_DIR)/$$bin" "$(EVENER_SHARE_BINDIR)/$$bin"; \
@@ -150,15 +140,16 @@ test-install:
 	go test -count=1 -run '^TestInstallHomeGeneratedHome$$' .
 
 # build-go compiles every non-fuzz Go workspace module. Keep it separate from
-# build: the runtime pair owns the embedded frontend, while this target makes
-# the workspace-wide compile contract explicit for CI and local diagnostics.
+# build: the runtime binary owns the embedded frontend, while this target
+# makes the workspace-wide compile contract explicit for CI and local
+# diagnostics.
 ## Compile every non-fuzz Go workspace module.
 ## proves: All packages in the seven GO_MODULES compile, including packages
 ##   root-level `go build ./...` does not visit under go.work.
 ## trigger: Required CI build job; local compile diagnostic.
 ## requires: Deterministic Go compilation; no provider calls or
 ##   frontend/browser requirements.
-## fails-when: Any module or package compilation failure is nonzero; the
-##   loop stops at the first failing module.
+## fails-when: Any module or package compilation failure is nonzero; the loop
+##   stops at the first failing module.
 build-go:
 	@for m in $(GO_MODULES); do (cd $$m && go build ./...) || exit 1; done
