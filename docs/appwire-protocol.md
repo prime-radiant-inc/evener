@@ -435,8 +435,8 @@ _(no fields)_
 | `quietForMs` | `*int64` | yes |  |
 | `durationMs` | `*int64` | yes |  |
 | `packetKind` | `string` | yes |  |
-| `message` | `json.RawMessage` | yes |  |
-| `structuredResult` | `json.RawMessage` | yes |  |
+| `message` | `jsontext.Value` | yes |  |
+| `structuredResult` | `jsontext.Value` | yes |  |
 | `structuredResultValid` | `*bool` | yes |  |
 | `structuredResultReason` | `string` | yes |  |
 | `warnings` | `[]string` | yes |  |
@@ -662,8 +662,8 @@ _(no fields)_
 | `quietForMs` | `*int64` | yes |  |
 | `durationMs` | `*int64` | yes |  |
 | `packetKind` | `string` | yes |  |
-| `message` | `json.RawMessage` | yes |  |
-| `structuredResult` | `json.RawMessage` | yes |  |
+| `message` | `jsontext.Value` | yes |  |
+| `structuredResult` | `jsontext.Value` | yes |  |
 | `structuredResultValid` | `*bool` | yes |  |
 | `structuredResultReason` | `string` | yes |  |
 | `warnings` | `[]string` | yes |  |

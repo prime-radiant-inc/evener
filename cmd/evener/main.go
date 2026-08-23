@@ -124,7 +124,8 @@ func mainWithDeps(deps mainDeps) {
 			// subcommandExit carries the exit code from a library-style
 			// subcommand (Run returning a non-zero int). The subcommand
 			// already printed its own diagnostics; propagate the code.
-			if code, ok := err.(subcommandExit); ok {
+			var code subcommandExitError
+			if errors.As(err, &code) {
 				if code != 0 {
 					deps.exit(int(code))
 				}
@@ -346,12 +347,13 @@ func printRunEnvVars(w io.Writer) {
 	_ = tw.Flush()
 }
 
-// subcommandExit carries a non-zero exit code from a library-style subcommand
-// (Run returning int) through the error-returning dispatch contract. It is
-// not an error to print — the subcommand already wrote its own diagnostics.
-type subcommandExit int
+// subcommandExitError carries a non-zero exit code from a library-style
+// subcommand (Run returning int) through the error-returning dispatch
+// contract. It is not an error to print — the subcommand already wrote its
+// own diagnostics.
+type subcommandExitError int
 
-func (c subcommandExit) Error() string { return fmt.Sprintf("exit code %d", int(c)) }
+func (c subcommandExitError) Error() string { return fmt.Sprintf("exit code %d", int(c)) }
 
 func dispatchCLICommand(args []string, stdin io.Reader, stdout, stderr io.Writer) (bool, string, error) {
 	return dispatchCLICommandWith(args, stdin, stdout, stderr, cliCommandRunners{
@@ -366,25 +368,25 @@ func dispatchCLICommand(args []string, stdin io.Reader, stdout, stderr io.Writer
 		plugin: runPlugin,
 		hub: func(args []string, _ io.Reader, _ io.Writer, stderr io.Writer) error {
 			if code := hubcmd.Run(args, nil, nil, stderr); code != 0 {
-				return subcommandExit(code)
+				return subcommandExitError(code)
 			}
 			return nil
 		},
 		tui: func(args []string, stdin io.Reader, stdout, stderr io.Writer) error {
 			if code := tuicmd.Run(args, stdin, stdout, stderr); code != 0 {
-				return subcommandExit(code)
+				return subcommandExitError(code)
 			}
 			return nil
 		},
 		doctor: func(args []string, stdin io.Reader, stdout, stderr io.Writer) error {
 			if code := doctorcmd.Run(args, stdin, stdout, stderr); code != 0 {
-				return subcommandExit(code)
+				return subcommandExitError(code)
 			}
 			return nil
 		},
 		migrate: func(args []string, stdin io.Reader, stdout, stderr io.Writer) error {
 			if code := migratecmd.Run(args, stdin, stdout, stderr); code != 0 {
-				return subcommandExit(code)
+				return subcommandExitError(code)
 			}
 			return nil
 		},

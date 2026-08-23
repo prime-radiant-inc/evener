@@ -183,7 +183,7 @@ func scenarioEmitterWriteFileFailure(t *testing.T) {
 	if err := os.Mkdir(p, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := e.EmitBytes(d, []byte("x")); err == nil {
+	if _, err := e.emitBytes(d, []byte("x")); err == nil {
 		t.Fatal("write file")
 	}
 }
