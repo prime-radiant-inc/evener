@@ -32,7 +32,7 @@ func (e *snapshotCountingEnv) EditFile(string, string, string, bool) (string, er
 	return "", nil
 }
 func (e *snapshotCountingEnv) FileExists(string) bool { return false }
-func (e *snapshotCountingEnv) Glob(string, string, ...bool) ([]string, error) {
+func (e *snapshotCountingEnv) Glob(context.Context, string, string, ...bool) ([]string, error) {
 	return nil, nil
 }
 func (e *snapshotCountingEnv) Grep(string, string, string, bool, int, string, ...int) (string, error) {

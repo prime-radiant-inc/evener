@@ -20,7 +20,6 @@ import (
 	"sync"
 	"time"
 
-	"github.com/bmatcuk/doublestar/v4"
 	"github.com/spf13/afero"
 	"primeradiant.com/evener/agent/internal/tool/repair"
 	"primeradiant.com/evener/agent/sandbox"
@@ -1272,8 +1271,12 @@ func (e *LocalExecutionEnvironment) ListDirectory(path string, depth int) ([]Dir
 // Dotfiles/dirs (.git, .claude/worktrees/x, ...) and gitignored paths are
 // excluded by default, matching grepNative's long-standing hidden-file skip
 // plus new .gitignore awareness; pass includeIgnored(true) to restore them.
-func (e *LocalExecutionEnvironment) Glob(pattern string, basePath string, includeIgnored ...bool) ([]string, error) {
-	matches, _, err := e.GlobWithExclusions(pattern, basePath, len(includeIgnored) > 0 && includeIgnored[0])
+//
+// The walk is bounded by ctx: cancelling it aborts an in-flight glob and
+// returns ctx's error. Directory symlinks are never traversed, so a `**`
+// pattern over a tree that links back into itself still terminates.
+func (e *LocalExecutionEnvironment) Glob(ctx context.Context, pattern string, basePath string, includeIgnored ...bool) ([]string, error) {
+	matches, _, err := e.GlobWithExclusions(ctx, pattern, basePath, len(includeIgnored) > 0 && includeIgnored[0])
 	return matches, err
 }
 
@@ -1284,7 +1287,7 @@ func (e *LocalExecutionEnvironment) Glob(pattern string, basePath string, includ
 // count never includes matches dropped by sandbox masking — that's a
 // separate security boundary, not something to describe to the caller as
 // "gitignored".
-func (e *LocalExecutionEnvironment) GlobWithExclusions(pattern string, basePath string, includeIgnored bool) ([]string, int, error) {
+func (e *LocalExecutionEnvironment) GlobWithExclusions(ctx context.Context, pattern string, basePath string, includeIgnored bool) ([]string, int, error) {
 	patterns, err := expandSearchPattern(pattern)
 	if err != nil {
 		return nil, 0, err
@@ -1299,9 +1302,9 @@ func (e *LocalExecutionEnvironment) GlobWithExclusions(pattern string, basePath 
 	if sfs := e.sandbox(); sfs != nil {
 		// Sandboxed: the base is policy-checked and the walk refuses symlink
 		// traversal (no out-of-root match) and drops masked matches.
-		return sfs.glob("glob", base, pattern, includeIgnored)
+		return sfs.glob(ctx, "glob", base, pattern, includeIgnored)
 	}
-	fsys := os.DirFS(base)
+	fsys := cancelFS{ctx: ctx, fsys: os.DirFS(base)}
 	var ignores *ignoreSet
 	if !includeIgnored {
 		// No masking concept off the sandboxed path: no-op skip.
@@ -1311,7 +1314,7 @@ func (e *LocalExecutionEnvironment) GlobWithExclusions(pattern string, basePath 
 	var abs []string
 	excluded := 0
 	for _, pattern := range patterns {
-		matches, err := doublestar.Glob(fsys, pattern)
+		matches, err := globMatches(ctx, fsys, pattern)
 		if err != nil {
 			return nil, 0, err
 		}

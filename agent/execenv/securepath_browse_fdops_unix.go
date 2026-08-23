@@ -4,6 +4,7 @@ package execenv
 
 import (
 	"bytes"
+	"context"
 	"errors"
 	"fmt"
 	"io/fs"
@@ -11,7 +12,6 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/bmatcuk/doublestar/v4"
 	"golang.org/x/sys/unix"
 )
 
@@ -91,7 +91,7 @@ func toFsErr(err error) error {
 //
 // Dotfiles/dirs and gitignored paths are excluded by default (matching the
 // off path's Glob), unless includeIgnored is set.
-func (s *sandboxFS) glob(tool, base, pattern string, includeIgnored bool) ([]string, int, error) {
+func (s *sandboxFS) glob(ctx context.Context, tool, base, pattern string, includeIgnored bool) ([]string, int, error) {
 	patterns, err := expandSearchPattern(pattern)
 	if err != nil {
 		return nil, 0, err
@@ -102,7 +102,7 @@ func (s *sandboxFS) glob(tool, base, pattern string, includeIgnored bool) ([]str
 	}
 	defer func() { _ = unix.Close(baseFd) }()
 
-	fsys := &secureDirFS{baseFd: baseFd, basePath: canonical, fs: s}
+	fsys := cancelFS{ctx: ctx, fsys: &secureDirFS{baseFd: baseFd, basePath: canonical, fs: s}}
 	var ignores *ignoreSet
 	if !includeIgnored {
 		// Never list or read into a masked subtree while collecting
@@ -116,7 +116,7 @@ func (s *sandboxFS) glob(tool, base, pattern string, includeIgnored bool) ([]str
 	var abs []string
 	excluded := 0
 	for _, pattern := range patterns {
-		matches, err := doublestar.Glob(fsys, pattern)
+		matches, err := globMatches(ctx, fsys, pattern)
 		if err != nil {
 			return nil, 0, err
 		}

@@ -232,7 +232,6 @@ func registerShellTools(reg *tool.Registry, s *Session, deps *toolDeps) error {
 	if err := register(tool.RegisteredTool{
 		Tool: llm.Tool{Definition: tool.DefGlob(), ReadOnly: true},
 		Exec: func(ctx context.Context, env execenv.ExecutionEnvironment, args map[string]any) (any, error) {
-			_ = ctx
 			pat := stringArg(args, "pattern")
 			path := stringArg(args, "path")
 			includeIgnored := false
@@ -243,9 +242,9 @@ func registerShellTools(reg *tool.Registry, s *Session, deps *toolDeps) error {
 			var excluded int
 			var err error
 			if ge, ok := env.(execenv.GlobExcluder); ok {
-				matches, excluded, err = ge.GlobWithExclusions(pat, path, includeIgnored)
+				matches, excluded, err = ge.GlobWithExclusions(ctx, pat, path, includeIgnored)
 			} else {
-				matches, err = env.Glob(pat, path, includeIgnored)
+				matches, err = env.Glob(ctx, pat, path, includeIgnored)
 			}
 			if err != nil {
 				return "", err
