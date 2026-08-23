@@ -107,7 +107,7 @@ combobox, as a real gesture.
 
 4. **Set the model and prompt, then submit.** The model control is the
    shared combobox: click its trigger (the `<button>` whose accessible
-   name ends `— change model`, `widgets/modelCatalog/index.tsx:388-406`),
+   name ends `— change model`, `widgets/modelCatalog/index.tsx:395-413`),
    type the exact qualified id into the panel's
    `input[role="combobox"][aria-label="Model"]`, and press Enter —
    typing sets the active row to the first match, and Enter picks it
@@ -195,7 +195,7 @@ combobox, as a real gesture.
   (`SID` is a 22-character UUIDv7 base62 payload). Falsify: it stays on
   `/new` with an error toast in
   `section[aria-live="polite"][aria-label="Notifications"]` — most
-  usefully `Image attachment is still processing.` (`Spawn.tsx:615`,
+  usefully `Image attachment is still processing.` (`Spawn.tsx:641`,
   the `hasPending` submit gate) or a `Spawn failed: …` line.
 - **Step 6 (composer staging)**: `view` is `View red.png`, `remove` is
   `Remove red.png`, `thumbSrc` starts `data:image/png;base64,`

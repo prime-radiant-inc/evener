@@ -2,7 +2,7 @@
 
 **What this covers**: kata `ytpa`. The spawn pane's prompt placeholder
 reads `What should the agent work on? Leave blank to start it dormant.`
-(`panes/spawn/Spawn.tsx:730`). Submitting with the prompt empty must
+(`panes/spawn/Spawn.tsx:756`). Submitting with the prompt empty must
 honour that promise: create the session, start no turn, open it, and
 say so on the rail row.
 
