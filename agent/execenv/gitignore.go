@@ -1,6 +1,7 @@
 package execenv
 
 import (
+	"context"
 	"io/fs"
 	"path"
 	"strings"
@@ -123,13 +124,38 @@ func (s *ignoreSet) matches(relPath string, isDir bool) bool {
 }
 
 // globMatchIsDir reports whether m (a path relative to fsys, as returned by
-// doublestar.Glob) names a directory. doublestar's match strings carry no
-// type information of their own, so this stats the entry; a stat failure is
-// treated as "not a directory" (best-effort, matching the rest of this file's
-// error handling).
-func globMatchIsDir(fsys fs.FS, m string) bool {
+// the glob walk) names a directory. doublestar's match strings carry no type
+// information of their own, so this stats the entry; a stat failure is treated
+// as "not a directory" (best-effort, matching the rest of this file's error
+// handling).
+//
+// A cancelled walk is the exception. Reading the cancellation as "not a
+// directory" would quietly turn off every directory-only .gitignore rule and
+// hand the caller a plausible list with a nil error, which is the failure mode
+// the glob walk itself no longer has — so the cancellation is reported.
+func globMatchIsDir(ctx context.Context, fsys fs.FS, m string) (bool, error) {
 	info, err := fs.Stat(fsys, m)
-	return err == nil && info.IsDir()
+	if err != nil {
+		if cerr := ctx.Err(); cerr != nil {
+			return false, cerr
+		}
+		return false, nil
+	}
+	return info.IsDir(), nil
+}
+
+// globMatchExcluded reports whether the default dotfile/gitignore exclusion
+// drops the glob match m. Shared by the off and sandboxed glob so the two
+// arms exclude — and report a cancellation — identically.
+func globMatchExcluded(ctx context.Context, fsys fs.FS, ignores *ignoreSet, m string) (bool, error) {
+	if isDotPath(m) {
+		return true, nil
+	}
+	isDir, err := globMatchIsDir(ctx, fsys, m)
+	if err != nil {
+		return false, err
+	}
+	return ignores.matches(m, isDir), nil
 }
 
 // isDotPath reports whether any path component of relPath (slash-separated)
