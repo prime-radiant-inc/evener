@@ -521,3 +521,99 @@ func TestBuildRequestBody_ToolChoiceAutoUnderReasoning(t *testing.T) {
 		t.Fatalf("tool_choice = %#v, want required without reasoning", got)
 	}
 }
+
+// TestThinkingFormat_ThinkingAlwaysOn_EmitsDefaultEffort reproduces the
+// ox-alpha failure: a model with ThinkingAlwaysOn=true (OpenRouter
+// reasoning.mandatory=true, e.g. stealth/ox-alpha) must receive a reasoning
+// field on the wire even when the session has no explicit reasoning effort
+// configured. Without this, a mandatory-reasoning model gets a request with
+// no reasoning field and the provider rejects it (400) or produces no output.
+//
+// The fix: applyThinkingFormat must emit a default effort when
+// ThinkingAlwaysOn is set and the request carries no explicit effort. The
+// default is the model's first supported effort level (from ThinkingLevels
+// keys, ordered minimal→max), falling back to "medium" when no levels are
+// declared.
+func TestThinkingFormat_ThinkingAlwaysOn_EmitsDefaultEffort(t *testing.T) {
+	// OpenRouter thinking format: body["reasoning"] = {"effort": wire}
+	quirks := QuirksPreset("openrouter")
+
+	// No explicit reasoning effort on the request — the session default is "".
+	req := plainReq("stealth/ox-alpha")
+
+	// ThinkingAlwaysOn model with declared effort levels ["max","high","low"]
+	// (the order OpenRouter returns them in the test fixture).
+	mc := ModelCompat{
+		Quirks:           quirks,
+		ThinkingAlwaysOn: true,
+		ThinkingLevels:   map[string]string{"low": "low", "high": "high", "max": "max"},
+	}
+
+	body, err := buildRequestBody(req, false, mc)
+	if err != nil {
+		t.Fatalf("buildRequestBody: %v", err)
+	}
+
+	reasoning, ok := body["reasoning"].(map[string]any)
+	if !ok {
+		t.Fatalf("body[\"reasoning\"] = %#v, want a map with an effort key "+
+			"(ThinkingAlwaysOn model must get reasoning even with no explicit effort)", body["reasoning"])
+	}
+	effort, ok := reasoning["effort"].(string)
+	if !ok || effort == "" {
+		t.Fatalf("reasoning.effort = %#v, want a non-empty default effort "+
+			"(ThinkingAlwaysOn model with no explicit effort)", reasoning["effort"])
+	}
+}
+
+// TestThinkingFormat_ThinkingAlwaysOn_NoLevels_FallsBackToMedium verifies
+// that a ThinkingAlwaysOn model with no declared effort levels still gets
+// a reasoning field, defaulting to "medium".
+func TestThinkingFormat_ThinkingAlwaysOn_NoLevels_FallsBackToMedium(t *testing.T) {
+	quirks := QuirksPreset("openrouter")
+	req := plainReq("stealth/ox-alpha")
+
+	mc := ModelCompat{
+		Quirks:           quirks,
+		ThinkingAlwaysOn: true,
+		// No ThinkingLevels — the model declares no specific effort levels.
+	}
+
+	body, err := buildRequestBody(req, false, mc)
+	if err != nil {
+		t.Fatalf("buildRequestBody: %v", err)
+	}
+
+	reasoning, ok := body["reasoning"].(map[string]any)
+	if !ok {
+		t.Fatalf("body[\"reasoning\"] missing, want a map with effort=medium "+
+			"(ThinkingAlwaysOn with no levels defaults to medium): got %#v", body["reasoning"])
+	}
+	if effort, _ := reasoning["effort"].(string); effort != "medium" {
+		t.Errorf("reasoning.effort = %q, want medium (default for ThinkingAlwaysOn with no levels)", effort)
+	}
+}
+
+// TestThinkingFormat_NotThinkingAlwaysOn_NoEffort_OmitsReasoning confirms the
+// existing behavior is preserved: a non-mandatory reasoning model with no
+// explicit effort still omits the reasoning field (evener's none-clears
+// convention).
+func TestThinkingFormat_NotThinkingAlwaysOn_NoEffort_OmitsReasoning(t *testing.T) {
+	quirks := QuirksPreset("openrouter")
+	req := plainReq("anthropic/claude-sonnet-4.5")
+
+	mc := ModelCompat{
+		Quirks:           quirks,
+		ThinkingAlwaysOn: false,
+		ThinkingLevels:   map[string]string{"low": "low", "medium": "medium", "high": "high"},
+	}
+
+	body, err := buildRequestBody(req, false, mc)
+	if err != nil {
+		t.Fatalf("buildRequestBody: %v", err)
+	}
+
+	if _, present := body["reasoning"]; present {
+		t.Errorf("body[\"reasoning\"] = %#v, want absent (non-mandatory model with no effort)", body["reasoning"])
+	}
+}
