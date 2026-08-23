@@ -1,4 +1,4 @@
-package main
+package fuzzharvest
 
 import (
 	"crypto/sha256"
