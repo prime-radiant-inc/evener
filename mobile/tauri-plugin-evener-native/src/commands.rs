@@ -4,6 +4,16 @@ use crate::models::*;
 use crate::EvenerNativeExt;
 use crate::Result;
 
+/// Paste from the clipboard. On mobile, Swift reads from the system
+/// `UIPasteboard`. On desktop, returns an empty string.
+#[command]
+pub(crate) async fn clipboard_paste<R: Runtime>(
+    app: AppHandle<R>,
+    payload: ClipboardPasteRequest,
+) -> Result<ClipboardPasteResponse> {
+    app.evener_native().clipboard_paste(payload)
+}
+
 /// Perform a haptic feedback pattern. Delegates to the Swift
 /// `UIFeedbackGenerator` on mobile; a no-op on desktop. Never carries a
 /// secret or credential.

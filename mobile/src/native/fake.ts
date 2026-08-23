@@ -159,6 +159,12 @@ export class FakeNativeBridge implements NativeTransport {
         return { version: 1, type: "synthesis.stopped" };
       case "haptic.perform":
         return { version: 1, type: "haptic.completed" };
+      case "clipboard.paste":
+        return {
+          version: 1,
+          type: "clipboard.pasted",
+          text: "",
+        };
       case "contentSize.get":
         return {
           version: 1,
