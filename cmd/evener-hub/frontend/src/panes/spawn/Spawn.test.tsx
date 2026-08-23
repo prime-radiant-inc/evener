@@ -1184,6 +1184,61 @@ test("the classic ladder remains when the hub can't enumerate the model's own le
   await waitFor(() => expect(effortOptionLabels()).toEqual(["(default)", "minimal", "low", "medium", "high", "none"]));
 });
 
+// The pane-level modelCatalog (the Effort select's source of
+// reasoningEffortLevels) loads via a debounced /api/models enrichment, while
+// the picker loads its OWN catalog on open. If the pane-level enrichment
+// fails (transient 502, network blip) while the picker's succeeds, the picker
+// shows models WITH effort levels, but the pane-level catalog degrades to
+// label-only entries (no reasoningEffortLevels). Picking a model discards the
+// picker's entry metadata - only the qualified string reaches
+// handleModelChange - so the Effort select falls back to the generic ladder
+// instead of the model's own, even though the picker just displayed it.
+test("the Effort select uses the picked model's own ladder even when the pane-level catalog enrichment failed", async () => {
+  const user = userEvent.setup();
+  const models = [
+    {
+      provider: "openai",
+      model: "gpt-5",
+      supports_reasoning: true,
+      reasoning_effort_levels: ["minimal", "low", "medium", "high", "xhigh", "max"],
+    },
+  ];
+  // The picker opens before the 250ms debounce fires, so its /api/models call
+  // is the FIRST. Make it succeed (full enrichment). The pane-level debounced
+  // call is the SECOND — make it fail (502), so modelCatalog degrades to
+  // label-only entries with no reasoningEffortLevels.
+  let modelsApiCallCount = 0;
+  vi.stubGlobal(
+    "fetch",
+    vi.fn((url: string) => {
+      if (url.startsWith("/api/git/head")) {
+        return Promise.resolve({ ok: true, status: 200, json: () => Promise.resolve({ branch: "main" }) } as Response);
+      }
+      if (url.startsWith("/api/models")) {
+        modelsApiCallCount += 1;
+        if (modelsApiCallCount === 2) {
+          // Pane-level enrichment fails: the catalog degrades to label-only.
+          return Promise.resolve({ ok: false, status: 502, json: () => Promise.resolve({}) } as Response);
+        }
+        return Promise.resolve({
+          ok: true,
+          status: 200,
+          json: () => Promise.resolve({ models, recent: [], diagnostics: [] }),
+        } as Response);
+      }
+      return Promise.resolve({ ok: false, status: 404, json: () => Promise.resolve({}) } as Response);
+    }),
+  );
+  renderSpawn(readyClient());
+  await settled();
+
+  await pickModel(user, "gpt-5", "openai/gpt-5");
+  // The picker had the model's own ladder; the Effort select must show it too
+  // immediately, not the generic fallback - the picker already loaded the
+  // entry with reasoningEffortLevels and must not discard that metadata.
+  expect(effortOptionLabels()).toEqual(["(default)", "minimal", "low", "medium", "high", "xhigh", "max", "none"]);
+});
+
 // --- post-success reset (floor §1.14 L186, wave6-report.md gap) -----------
 //
 // The spawn pane is a dockview singleton (paneRegistry.ts: "focus existing

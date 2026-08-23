@@ -37,7 +37,7 @@ func TestGlob_DefaultBase_NewestFirstTiesByPath(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	got, err := env.Glob("*.go", "")
+	got, err := env.Glob(t.Context(), "*.go", "")
 	if err != nil {
 		t.Fatalf("Glob: %v", err)
 	}
@@ -67,7 +67,7 @@ func TestGlob_RelativeAndAbsoluteBase(t *testing.T) {
 	}
 	env := NewLocalExecutionEnvironment(dir)
 
-	rel, err := env.Glob("*.txt", "sub")
+	rel, err := env.Glob(t.Context(), "*.txt", "sub")
 	if err != nil {
 		t.Fatalf("Glob relative base: %v", err)
 	}
@@ -75,7 +75,7 @@ func TestGlob_RelativeAndAbsoluteBase(t *testing.T) {
 		t.Fatalf("Glob relative base = %v, want [%s]", rel, filepath.Join(sub, "c.txt"))
 	}
 
-	abs, err := env.Glob("*.txt", sub)
+	abs, err := env.Glob(t.Context(), "*.txt", sub)
 	if err != nil {
 		t.Fatalf("Glob absolute base: %v", err)
 	}
@@ -98,7 +98,7 @@ func TestGlob_DoublestarPattern(t *testing.T) {
 	}
 	env := NewLocalExecutionEnvironment(dir)
 
-	got, err := env.Glob("**/*.txt", "")
+	got, err := env.Glob(t.Context(), "**/*.txt", "")
 	if err != nil {
 		t.Fatalf("Glob doublestar: %v", err)
 	}
@@ -124,7 +124,7 @@ func TestGlob_BraceAlternatives(t *testing.T) {
 		}
 	}
 
-	got, err := NewLocalExecutionEnvironment(dir).Glob("*.{ts,tsx,css}", "")
+	got, err := NewLocalExecutionEnvironment(dir).Glob(t.Context(), "*.{ts,tsx,css}", "")
 	if err != nil {
 		t.Fatalf("Glob brace alternatives: %v", err)
 	}
@@ -136,7 +136,7 @@ func TestGlob_BraceAlternatives(t *testing.T) {
 func TestGlob_InvalidPattern(t *testing.T) {
 	dir := t.TempDir()
 	env := NewLocalExecutionEnvironment(dir)
-	if _, err := env.Glob("[", ""); err == nil {
+	if _, err := env.Glob(t.Context(), "[", ""); err == nil {
 		t.Fatal("expected error for malformed glob pattern")
 	}
 }

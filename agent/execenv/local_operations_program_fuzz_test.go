@@ -179,25 +179,25 @@ func runLocalFilesystemOperationProgram(t *testing.T, program []byte) localFiles
 			t.Fatalf("set fixture mtime: %v", err)
 		}
 	}
-	ordered, err := env.Glob("order-*.txt", "")
+	ordered, err := env.Glob(t.Context(), "order-*.txt", "")
 	if err != nil {
 		t.Fatalf("Glob ordered = %v", err)
 	}
 	if got, want := localFilesystemProgramRelativePaths(t, root, ordered), []string{"order-new.txt", "order-b.txt", "order-a.txt"}; !reflect.DeepEqual(got, want) {
 		t.Fatalf("Glob mtime order = %v, want %v", got, want)
 	}
-	relativeGo, err := env.Glob("*.go", "pkg")
+	relativeGo, err := env.Glob(t.Context(), "*.go", "pkg")
 	if err != nil || !reflect.DeepEqual(localFilesystemProgramRelativePaths(t, root, relativeGo), []string{filepath.Join("pkg", "main.go")}) {
 		t.Fatalf("Glob relative base = %v, %v", relativeGo, err)
 	}
-	absoluteGo, err := env.Glob("*.go", filepath.Join(root, "pkg"))
+	absoluteGo, err := env.Glob(t.Context(), "*.go", filepath.Join(root, "pkg"))
 	if err != nil || !reflect.DeepEqual(localFilesystemProgramRelativePaths(t, root, absoluteGo), []string{filepath.Join("pkg", "main.go")}) {
 		t.Fatalf("Glob absolute base = %v, %v", absoluteGo, err)
 	}
-	if matches, err := env.Glob("no-match-*.txt", ""); err != nil || len(matches) != 0 {
+	if matches, err := env.Glob(t.Context(), "no-match-*.txt", ""); err != nil || len(matches) != 0 {
 		t.Fatalf("Glob no-match = %v, %v", matches, err)
 	}
-	if _, err := env.Glob("[", ""); err == nil {
+	if _, err := env.Glob(t.Context(), "[", ""); err == nil {
 		t.Fatal("Glob malformed pattern unexpectedly succeeded")
 	}
 	trace.Globs = append(trace.Globs,

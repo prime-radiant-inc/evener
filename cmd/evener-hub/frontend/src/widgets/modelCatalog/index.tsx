@@ -82,6 +82,12 @@ export interface ModelCatalogProps {
   value: string;
   onChange: (qualified: string) => void;
   loadCatalog: () => Promise<ModelCatalog>;
+  /** Reports the full picked entry (with reasoningEffortLevels /
+   * supportsReasoning) the moment a model is selected, so a caller that
+   * derives per-model metadata (e.g. the spawn form's Effort ladder) doesn't
+   * have to wait for its own independently-loaded catalog to catch up — the
+   * picker already loaded the entry and must not discard that metadata. */
+  onPickEntry?: (entry: ModelCatalogEntry) => void;
   /** The closed trigger's text when `value` is "" - "(default)" unless a
    * caller overrides it. Every field with a real fallback (Advanced options,
    * Settings) keeps the default; the spawn form's top-level Model field
@@ -325,6 +331,7 @@ export function ModelCatalog({
   value,
   onChange,
   loadCatalog,
+  onPickEntry,
   emptyLabel = "(default)",
 }: ModelCatalogProps): JSX.Element {
   const [open, setOpen] = useState(false);
@@ -368,6 +375,7 @@ export function ModelCatalog({
   // tabbing onward through the form.
   function pick(entry: ModelCatalogEntry) {
     setOpen(false);
+    onPickEntry?.(entry);
     onChange(`${entry.provider}/${entry.model}`);
   }
 

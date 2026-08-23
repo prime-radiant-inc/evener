@@ -597,11 +597,11 @@ func pfsAssertGlob(t *testing.T, env *LocalExecutionEnvironment, fixture pfsFixt
 	t.Helper()
 	patterns := []string{"*.txt", "**/*.txt", "docs/**/*.txt", "masked/**/*.txt", "escape/**/*.txt"}
 	pattern := patterns[int(selector)%len(patterns)]
-	matches, err := env.Glob(pattern, ".")
+	matches, err := env.Glob(t.Context(), pattern, ".")
 	if err != nil {
 		t.Fatalf("glob(%q): %v", pattern, err)
 	}
-	again, err := env.Glob(pattern, ".")
+	again, err := env.Glob(t.Context(), pattern, ".")
 	if err != nil {
 		t.Fatalf("repeat glob(%q): %v", pattern, err)
 	}

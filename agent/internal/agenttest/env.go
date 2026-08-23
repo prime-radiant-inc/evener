@@ -31,11 +31,11 @@ func (f *FakeEnv) ExecCommand(_ context.Context, command string, _ int, _ string
 	return execenv.ExecResult{ExitCode: 1}, nil
 }
 
-func (f *FakeEnv) ReadFile(string, *int, *int) (string, error)           { return "", nil }
-func (f *FakeEnv) WriteFile(string, string) (string, error)              { return "", nil }
-func (f *FakeEnv) EditFile(string, string, string, bool) (string, error) { return "", nil }
-func (f *FakeEnv) FileExists(string) bool                                { return false }
-func (f *FakeEnv) Glob(string, string, ...bool) ([]string, error)        { return nil, nil }
+func (f *FakeEnv) ReadFile(string, *int, *int) (string, error)                     { return "", nil }
+func (f *FakeEnv) WriteFile(string, string) (string, error)                        { return "", nil }
+func (f *FakeEnv) EditFile(string, string, string, bool) (string, error)           { return "", nil }
+func (f *FakeEnv) FileExists(string) bool                                          { return false }
+func (f *FakeEnv) Glob(context.Context, string, string, ...bool) ([]string, error) { return nil, nil }
 func (f *FakeEnv) Grep(string, string, string, bool, int, string, ...int) (string, error) {
 	return "", nil
 }

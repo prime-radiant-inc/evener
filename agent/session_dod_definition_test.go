@@ -194,7 +194,7 @@ func TestSessionConfig_ApplyDefaults_MaxToolRounds(t *testing.T) {
 		input int
 		want  int
 	}{
-		{"zero defaults to 200", 0, 200},
+		{"zero defaults to unlimited", 0, -1},
 		{"positive preserved", 50, 50},
 		{"negative preserved (unlimited)", -1, -1},
 	}

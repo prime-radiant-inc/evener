@@ -710,7 +710,7 @@ func TestGlobRestrictedOutsideRefused(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(home, "x.txt"), []byte("y"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	_, err := env.Glob("*.txt", home)
+	_, err := env.Glob(t.Context(), "*.txt", home)
 	mustDenied(t, err, "restricted glob outside worktree")
 }
 
@@ -733,7 +733,7 @@ func TestGlobSymlinkNoEscape(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(worktree, "real.txt"), []byte("ok"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	matches, err := env.Glob("**/*.txt", worktree)
+	matches, err := env.Glob(t.Context(), "**/*.txt", worktree)
 	if err != nil {
 		t.Fatalf("glob: %v", err)
 	}
@@ -760,7 +760,7 @@ func TestGlobSkipsMaskedMatches(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(home, "visible.txt"), []byte("y"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	matches, err := env.Glob("**/*.txt", home)
+	matches, err := env.Glob(t.Context(), "**/*.txt", home)
 	if err != nil {
 		t.Fatalf("glob: %v", err)
 	}
@@ -840,7 +840,7 @@ func TestSandboxBrowseBraceAlternatives(t *testing.T) {
 		}
 	}
 
-	matches, err := env.Glob("*.{ts,css}", worktree)
+	matches, err := env.Glob(t.Context(), "*.{ts,css}", worktree)
 	if err != nil {
 		t.Fatalf("sandbox glob brace alternatives: %v", err)
 	}
@@ -1014,7 +1014,7 @@ func TestGlobGrepOffIdentical(t *testing.T) {
 	}
 	off := NewLocalExecutionEnvironment(worktree)
 
-	matches, err := off.Glob("*.txt", worktree)
+	matches, err := off.Glob(t.Context(), "*.txt", worktree)
 	if err != nil || len(matches) != 1 || !strings.HasSuffix(matches[0], "a.txt") {
 		t.Fatalf("off glob = %v err %v", matches, err)
 	}

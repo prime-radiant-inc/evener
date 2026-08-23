@@ -39,7 +39,9 @@ type SessionConfig struct {
 	Project identifier.Project `json:"-"`
 	// MaxToolRoundsPerInput caps how many tool-call rounds a single
 	// ProcessInput may run before the turn stops with a TURN_LIMIT event.
-	// Zero defaults to 200.
+	// Zero defaults to unlimited; set an explicit positive value to cap it.
+	// Negative means unlimited. Loop detection (enabled by default) guards
+	// against runaway repeated tool calls even without a round cap.
 	MaxToolRoundsPerInput int `json:"max_tool_rounds_per_input,omitempty"`
 
 	// MaxTurns caps the number of user inputs the session will accept over its
@@ -595,8 +597,13 @@ type spawnConfig struct {
 }
 
 func (c *SessionConfig) applyDefaults() {
+	// MaxToolRoundsPerInput: zero or negative means unlimited. The previous
+	// default of 200 killed long-running agentic sessions doing real work from
+	// a single prompt. Loop detection (enabled by default) still guards against
+	// runaway repeated tool calls; an explicit --max-rounds N cap is still
+	// honored when set.
 	if c.MaxToolRoundsPerInput == 0 {
-		c.MaxToolRoundsPerInput = 200
+		c.MaxToolRoundsPerInput = -1
 	}
 	if c.DefaultCommandTimeoutMS <= 0 {
 		c.DefaultCommandTimeoutMS = 10_000
