@@ -532,6 +532,32 @@ export default function Spawn(_props: PaneProps<SpawnPaneParams>) {
     if (next !== "") setStaleNotice(null); // any new model clears the discard notice (floor §1.10)
   }
 
+  // The picker already loaded the picked entry's catalog (with
+  // reasoningEffortLevels / supportsReasoning) when the user selected a model;
+  // merge that entry into the pane-level modelCatalog so the Effort ladder is
+  // correct immediately. Without this, the Effort select waits for the
+  // pane-level debounced catalog load (which may have failed enrichment, or
+  // not landed yet) and falls back to the generic ladder instead of the
+  // model's own.
+  function handleModelPickEntry(entry: ModelCatalogEntry): void {
+    handleModelChange(`${entry.provider}/${entry.model}`);
+    setModelCatalog((prev) => {
+      const models = prev?.models ?? [];
+      const recent = prev?.recent ?? [];
+      const diagnostics = prev?.diagnostics ?? [];
+      const key = `${entry.provider}/${entry.model}`;
+      const idx = models.findIndex((m) => `${m.provider}/${m.model}` === key);
+      if (idx >= 0) {
+        // Replace the existing entry (which may be label-only from a failed
+        // enrichment) with the picker's fully-enriched one.
+        const nextModels = [...models];
+        nextModels[idx] = entry;
+        return { models: nextModels, recent, diagnostics };
+      }
+      return { models: [...models, entry], recent, diagnostics };
+    });
+  }
+
   function handlePromptKeyDown(event: React.KeyboardEvent<HTMLTextAreaElement>): void {
     // ⌘/Ctrl+Enter submits (floor §1.12, spawn.js:1204-1211).
     if (event.key === "Enter" && (event.metaKey || event.ctrlKey)) {
@@ -771,7 +797,7 @@ export default function Spawn(_props: PaneProps<SpawnPaneParams>) {
                     label={modelRequired ? MODEL_CHOOSE_LABEL : model || "(default)"}
                     value={model}
                     loadCatalog={loadCatalog}
-                    onPick={(entry) => handleModelChange(`${entry.provider}/${entry.model}`)}
+                    onPick={handleModelPickEntry}
                     data-testid="spawn-model-trigger"
                     valueTestId="spawn-model-value"
                   />
@@ -867,6 +893,7 @@ export default function Spawn(_props: PaneProps<SpawnPaneParams>) {
             <ModelField
               value={model}
               onChange={handleModelChange}
+              onPickEntry={handleModelPickEntry}
               loadModels={loadModels}
               harness={harness || undefined}
               cwd={cwd || undefined}
