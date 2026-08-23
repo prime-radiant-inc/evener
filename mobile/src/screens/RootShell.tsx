@@ -116,6 +116,24 @@ export function RootShell({ services, stores }: RootShellProps): JSX.Element {
   }, [services.native, connection, preferences]);
 
   const isLoading = status === "initial" || status === "loading";
+  // Auto-select the first profile if profiles exist but none is active.
+  // This handles the case where a profile was paired before auto-select
+  // was added, or where the active profile was deleted.
+  useEffect(() => {
+    if (profiles.length > 0 && activeProfileId === null) {
+      void services.profile
+        .select({ profileId: profiles[0]?.id ?? "" })
+        .then((result) => {
+          if (result.profileId !== null) {
+            connection.setState({
+              activeProfileId: result.profileId,
+              generation: result.generation,
+            });
+          }
+        })
+        .catch(() => {});
+    }
+  }, [profiles, activeProfileId, services.profile, connection]);
   const hasProfiles = profiles.length > 0 && activeProfileId !== null;
   const inConversation = conversationStack.length > 0;
 
