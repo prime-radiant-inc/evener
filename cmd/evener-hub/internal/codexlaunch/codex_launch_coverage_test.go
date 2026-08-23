@@ -22,7 +22,9 @@ func TestCloseOnceReadCloser(t *testing.T) {
 
 func TestStopTimerAlreadyFired(t *testing.T) {
 	timer := time.NewTimer(1 * time.Millisecond)
-	time.Sleep(5 * time.Millisecond)
+	// Wait for the timer to fire by reading from its channel, rather than
+	// sleeping a fixed duration that could flake under load.
+	<-timer.C
 	// The timer has already fired — Stop returns false, and we need to drain C
 	stopTimer(timer)
 }

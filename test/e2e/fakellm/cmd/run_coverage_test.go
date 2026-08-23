@@ -22,15 +22,9 @@ func TestRunBindsAndServes(t *testing.T) {
 		done <- run("127.0.0.1:0", 0, 1, "")
 	}()
 
-	// Give the server a moment to bind, then cancel via signal-like approach:
-	// we can't send a signal to ourselves safely, so instead we connect to
-	// the server to verify it started, then cancel the run by sending SIGTERM.
-	// Actually, run() blocks on serve() which blocks on ctx (signal context).
-	// We need to send a signal to stop it.
-	time.Sleep(200 * time.Millisecond)
-
-	// Send SIGTERM to ourselves to trigger signal.NotifyContext cancellation.
-	// This is safe because signal.NotifyContext catches it.
+	// Send SIGINT to ourselves to trigger signal.NotifyContext cancellation.
+	// The signal handler catches it regardless of whether the server has
+	// finished binding, so no sleep is needed.
 	p, err := os.FindProcess(os.Getpid())
 	if err != nil {
 		t.Fatalf("find process: %v", err)
