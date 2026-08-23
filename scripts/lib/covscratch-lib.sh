@@ -7,7 +7,7 @@
 #
 # Why it exists: this project cleans up at the source, and nothing sweeps TMPDIR
 # on these runners' behalf — the last janitor retired when its one remaining
-# debris class moved to a self-reclaiming owner (cmd/evener-dev agent-shards).
+# debris class moved to a self-reclaiming owner (evener dev agent-shards).
 # Two exit paths still leave a directory behind. A run killed by
 # SIGKILL (or an OOM kill, or a power cut) never reaches its trap. And
 # coverage-floor.sh KEEPS its scratch on a failed run on purpose: the failure

@@ -9,7 +9,7 @@
 #
 # Usage:
 #   scripts/fuzz/fuzz-gap-check.sh   # exit non-zero on an un-targeted parse package
-# Any extra flags are forwarded to evener-fuzzcov.
+# Any extra flags are forwarded to evener fuzzcov.
 set -uo pipefail
 
 repo_root="$(cd "$(dirname "$0")/../.." && pwd)"
@@ -17,4 +17,4 @@ registry="$(mktemp -t evener-fuzz-registry.XXXXXX)"
 trap 'rm -f "$registry"' EXIT
 
 bash "$repo_root/scripts/fuzz/run-fuzz.sh" --list >"$registry"
-( cd "$repo_root" && go run ./cmd/evener-fuzzcov -gap-only -registry "$registry" -repo-root "$repo_root" "$@" )
+( cd "$repo_root" && go run ./cmd/evener-dev/bin fuzzcov -gap-only -registry "$registry" -repo-root "$repo_root" "$@" )

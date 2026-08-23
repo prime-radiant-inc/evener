@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# e2e-ratelimited-provider.sh — stand up a disposable evener-hub whose only
+# e2e-ratelimited-provider.sh — stand up a disposable evener hub whose only
 # provider is fake429 (test/e2e/fake429), a fake OpenAI-compatible backend
 # that answers /v1/models normally and 429s every completion request.
 #
@@ -10,17 +10,17 @@
 # in Claude session scratchpads and was rebuilt from scratch twice (kata
 # 3mn9) before landing here; it live-verified kata 4zn8 and e79v's fixes.
 #
-# WHAT IT DOES: builds fresh fake429/evener/evener-hub/evener-tui binaries into a
-# throwaway run directory, starts fake429 and a HOME-isolated evener-hub (kata
+# WHAT IT DOES: builds fresh fake429/evener binaries into a
+# throwaway run directory, starts fake429 and a HOME-isolated evener hub (kata
 # av1j — a second hub needs its own $HOME or it collides with, or silently
 # adopts, your real one) each on a kernel-assigned port (kata 68fm — never a
 # hardcoded one), points the hub's providers.toml at fake429, and prints the
-# evener-tui command to attach. It does NOT drive evener-tui itself — that needs
+# evener tui command to attach. It does NOT drive evener tui itself — that needs
 # a terminal (tmux) and is the caller's next step.
 #
 # USAGE:
 #   scripts/e2e/e2e-ratelimited-provider.sh                  # start; print the
-#                                                         # evener-tui command
+#                                                         # evener tui command
 #   scripts/e2e/e2e-ratelimited-provider.sh --retry-after 3  # tune the 429
 #                                                         # Retry-After (default 8)
 #   scripts/e2e/e2e-ratelimited-provider.sh --stop RUN_DIR   # kill fake429 + hub
@@ -29,7 +29,7 @@
 #
 # OUTPUT: fake429 and the hub keep running in the background after this
 # script exits (like scripts/ops/agent-chrome.sh) — that is the point, so a
-# follow-up evener-tui or REST call has something to attach to. Nothing here
+# follow-up evener tui or REST call has something to attach to. Nothing here
 # needs, reads, or sets a real provider credential.
 set -euo pipefail
 
@@ -98,8 +98,6 @@ e2e_setup_reaper "$run" "$SCRIPT_NAME" "$repo_root"
 cd "$repo_root"
 e2e_build_binary fake429 "$run/fake429" "$repo_root/test/e2e/fake429"
 e2e_build_binary evener "$run/evener" "$repo_root/cmd/evener"
-e2e_build_binary evener-hub "$run/evener-hub" "$repo_root/cmd/evener-hub"
-e2e_build_binary evener-tui "$run/evener-tui" "$repo_root/cmd/evener-tui"
 
 e2e_isolate_home "$run"
 
@@ -117,8 +115,8 @@ fake429_addr="127.0.0.1:$e2e_port"
 # the file.
 sed "s|FAKE429_ADDR|$fake429_addr|" "$fixtures_dir/providers.toml" >"$HOME/.config/evener/providers.toml"
 
-echo "==> starting evener-hub" >&2
-"$run/evener-hub" -addr 127.0.0.1:0 -config "$fixtures_dir/hub.toml" -evener "$run/evener" >"$run/hub.log" 2>&1 &
+echo "==> starting evener hub" >&2
+"$run/evener" hub -addr 127.0.0.1:0 -config "$fixtures_dir/hub.toml" -evener "$run/evener" >"$run/hub.log" 2>&1 &
 hub_pid=$!
 echo "$hub_pid" >"$run/hub.pid"
 
@@ -139,7 +137,7 @@ Ready. Every completion call through this hub will 429 after ${retry_after}s
 Retry-After; /v1/models still resolves so launch-check succeeds.
 
   Attach a TUI:
-    "$run/evener-tui" --hub-addr "$hub_addr" --auth-token "$token" --no-auto-start-hub
+    "$run/evener" tui --hub-addr "$hub_addr" --auth-token "$token" --no-auto-start-hub
 
   Or drive the REST shim directly (see docs/developing-evener/agentic-testing.md):
     curl -H "Authorization: Bearer $token" "$hub_addr/api/..."

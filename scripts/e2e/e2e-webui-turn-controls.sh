@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# e2e-webui-turn-controls.sh — stand up a disposable evener-hub with a real web
+# e2e-webui-turn-controls.sh — stand up a disposable evener hub with a real web
 # UI whose only provider is fakellm (test/e2e/fakellm), a fake
 # OpenAI-compatible backend that holds every model round open for a
 # configurable interval.
@@ -13,8 +13,8 @@
 # exactly what reached the model each round — so "the steer never got
 # through" is falsifiable rather than a feeling.
 #
-# WHAT IT DOES: builds fresh fakellm/evener/evener-hub binaries and the SPA into
-# a throwaway run directory, starts fakellm and a HOME-isolated evener-hub
+# WHAT IT DOES: builds fresh fakellm/evener binaries and the SPA into
+# a throwaway run directory, starts fakellm and a HOME-isolated evener hub
 # (kata av1j — a second hub needs its own $HOME or it collides with, or
 # silently adopts, your real one) each on a kernel-assigned port (kata 68fm —
 # never a hardcoded one), points the hub's providers.toml at fakellm, and
@@ -131,7 +131,6 @@ fi
 cd "$repo_root"
 e2e_build_binary fakellm "$run/fakellm" "$repo_root/test/e2e/fakellm/cmd"
 e2e_build_binary evener "$run/evener" "$repo_root/cmd/evener"
-e2e_build_binary evener-hub "$run/evener-hub" "$repo_root/cmd/evener-hub"
 
 e2e_isolate_home "$run"
 
@@ -169,8 +168,8 @@ api_key = "fakellm-not-a-secret"
 send_session_affinity_headers = true
 EOF
 
-echo "==> starting evener-hub" >&2
-"$run/evener-hub" -addr 127.0.0.1:0 -evener "$run/evener" >"$run/hub.log" 2>&1 &
+echo "==> starting evener hub" >&2
+"$run/evener" hub -addr 127.0.0.1:0 -evener "$run/evener" >"$run/hub.log" 2>&1 &
 hub_pid=$!
 echo "$hub_pid" >"$run/hub.pid"
 
