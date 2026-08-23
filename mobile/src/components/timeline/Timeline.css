@@ -1,0 +1,327 @@
+/*
+ * Timeline — virtualized conversation timeline styles.
+ *
+ * One scroller (the scroll container below the fixed top bar). Uses
+ * @tanstack/react-virtual for windowing; each virtual item is absolutely
+ * positioned by the virtualizer. The new-activity pill floats at the bottom
+ * edge of the scroller. Every item family uses plain text except
+ * AssistantMessage (sanitized HTML). No desktop cards, rail, or hover.
+ */
+
+.evener-timeline {
+  display: flex;
+  flex-direction: column;
+  flex: 1 1 auto;
+  min-height: 0;
+  position: relative;
+  background: var(--canvas);
+}
+
+.evener-timeline__scroll {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  -webkit-overflow-scrolling: touch;
+  position: relative;
+  padding: var(--space-8) var(--space-16);
+  padding-bottom: calc(var(--space-8) + var(--safe-area-bottom));
+}
+
+.evener-timeline__inner {
+  position: relative;
+  width: 100%;
+}
+
+.evener-timeline__item {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 100%;
+  padding: var(--space-4) 0;
+}
+
+/* --- User message — trailing bubble --------------------------------------- */
+
+.evener-user-message {
+  display: flex;
+  justify-content: flex-end;
+  padding: var(--space-4) 0;
+}
+
+.evener-user-message__bubble {
+  max-width: 80%;
+  background: var(--accent);
+  color: var(--accent-contrast);
+  border-radius: var(--radius-row);
+  padding: var(--space-8) var(--space-12);
+  overflow-wrap: anywhere;
+}
+
+/* --- Assistant message ---------------------------------------------------- */
+
+.evener-assistant-message {
+  padding: var(--space-4) 0;
+  max-width: 100%;
+  overflow-wrap: anywhere;
+}
+
+.evener-assistant-message[data-streaming="true"] {
+  position: relative;
+}
+
+.evener-assistant-message[data-streaming="true"]::after {
+  content: "▋";
+  display: inline-block;
+  margin-left: 2px;
+  animation: evener-cursor-blink 1s steps(2) infinite;
+}
+
+@keyframes evener-cursor-blink {
+  0%,
+  50% {
+    opacity: 1;
+  }
+  50.01%,
+  100% {
+    opacity: 0;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .evener-assistant-message[data-streaming="true"]::after {
+    animation: none;
+  }
+}
+
+/* --- Activity row --------------------------------------------------------- */
+
+.evener-activity-row {
+  padding: var(--space-4) 0;
+}
+
+.evener-activity-row__summary {
+  display: flex;
+  align-items: center;
+  gap: var(--space-8);
+  min-height: var(--tap-target);
+  padding: var(--space-4) var(--space-8);
+  border-radius: var(--radius-row);
+  background: var(--raised);
+  border: 1px solid var(--hairline);
+  cursor: pointer;
+}
+
+.evener-activity-row__summary:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+
+.evener-activity-row__glyph {
+  font-size: 0.9em;
+  flex-shrink: 0;
+}
+
+.evener-activity-row[data-state="running"] .evener-activity-row__glyph {
+  color: var(--accent);
+}
+
+.evener-activity-row[data-state="completed"] .evener-activity-row__glyph {
+  color: var(--live);
+}
+
+.evener-activity-row[data-state="failed"] .evener-activity-row__glyph {
+  color: var(--danger);
+}
+
+.evener-activity-row__label {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.evener-activity-row__chevron {
+  flex-shrink: 0;
+  color: var(--secondary);
+}
+
+.evener-activity-row__detail {
+  padding: var(--space-8) var(--space-12);
+  background: var(--raised);
+  border: 1px solid var(--hairline);
+  border-top: 0;
+  border-radius: 0 0 var(--radius-row) var(--radius-row);
+  overflow-wrap: anywhere;
+}
+
+.evener-activity-row__section {
+  padding: var(--space-4) 0;
+  font-family: ui-monospace, monospace;
+  font-size: 0.85em;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.evener-activity-row__error {
+  color: var(--danger);
+}
+
+.evener-activity-row__meta {
+  padding: var(--space-4) 0;
+  color: var(--secondary);
+  font-size: 0.85em;
+}
+
+/* --- Notice row ---------------------------------------------------------- */
+
+.evener-notice-row {
+  padding: var(--space-4) var(--space-8);
+  border-radius: var(--radius-row);
+  overflow-wrap: anywhere;
+}
+
+.evener-notice-row[data-tone="info"] {
+  color: var(--secondary);
+}
+
+.evener-notice-row[data-tone="warning"] {
+  color: var(--attention);
+  background: color-mix(in srgb, var(--attention) 10%, transparent);
+}
+
+.evener-notice-row[data-tone="system"] {
+  color: var(--secondary);
+  font-style: italic;
+}
+
+/* --- Failure row ---------------------------------------------------------- */
+
+.evener-failure-row {
+  padding: var(--space-8) var(--space-12);
+  border-radius: var(--radius-row);
+  background: color-mix(in srgb, var(--danger) 10%, transparent);
+  border-left: 3px solid var(--danger);
+  overflow-wrap: anywhere;
+}
+
+.evener-failure-row__title {
+  font-weight: 600;
+  color: var(--danger);
+}
+
+.evener-failure-row__detail {
+  color: var(--primary);
+  font-size: 0.9em;
+  white-space: pre-wrap;
+}
+
+/* --- Question row (placeholder) ------------------------------------------ */
+
+.evener-question-row {
+  padding: var(--space-8) var(--space-12);
+  border-radius: var(--radius-row);
+  background: var(--raised);
+  border: 1px solid var(--hairline);
+}
+
+.evener-question-row__item {
+  padding: var(--space-4) 0;
+}
+
+.evener-question-row__item + .evener-question-row__item {
+  border-top: 1px solid var(--hairline);
+}
+
+.evener-question-row__header {
+  font-weight: 600;
+}
+
+.evener-question-row__text {
+  padding: var(--space-4) 0;
+  color: var(--primary);
+}
+
+.evener-question-row__options {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+}
+
+.evener-question-row__option {
+  display: flex;
+  flex-direction: column;
+  padding: var(--space-4) 0;
+}
+
+.evener-question-row__option-label {
+  font-weight: 500;
+}
+
+.evener-question-row__option-detail {
+  color: var(--secondary);
+  font-size: 0.9em;
+}
+
+/* --- Attachments row ------------------------------------------------------ */
+
+.evener-attachments-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-8);
+  padding: var(--space-4) 0;
+}
+
+.evener-attachments-row__item {
+  display: flex;
+  align-items: center;
+  padding: var(--space-4) var(--space-8);
+  border-radius: var(--radius-control);
+  background: var(--raised);
+  border: 1px solid var(--hairline);
+  min-height: var(--tap-target);
+}
+
+.evener-attachments-row__name {
+  overflow-wrap: anywhere;
+}
+
+/* --- New activity button -------------------------------------------------- */
+
+.evener-new-activity {
+  position: absolute;
+  bottom: calc(var(--space-16) + var(--safe-area-bottom));
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 10;
+}
+
+.evener-new-activity__button {
+  min-height: var(--tap-target);
+  padding: var(--space-4) var(--space-16);
+  border: 0;
+  border-radius: var(--radius-control);
+  background: var(--accent);
+  color: var(--accent-contrast);
+  font: inherit;
+  font-weight: 600;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.15);
+  cursor: pointer;
+}
+
+.evener-new-activity__button:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+/* --- Load older sentinel -------------------------------------------------- */
+
+.evener-timeline__load-older {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: var(--tap-target);
+  padding: var(--space-8);
+  color: var(--secondary);
+  font-size: 0.9em;
+}

@@ -12,7 +12,8 @@
  * indicator — not onboarding — to prevent an onboarding flash when the store
  * has saved profiles that haven't been read yet.
  */
-import { type JSX, useEffect, useState } from "react";
+import { type JSX, useEffect, useRef, useState } from "react";
+import { createConversationStore } from "../state/conversation";
 import type { RootTab } from "../state/navigation";
 import { BottomBar, type BottomTab } from "../ui/BottomBar";
 import {
@@ -21,6 +22,7 @@ import {
 } from "../ui/platformPresentation";
 import { Sheet } from "../ui/Sheet";
 import { Loading } from "../ui/States";
+import { ConversationScreen } from "./ConversationScreen";
 import { NewSessionScreen } from "./NewSessionScreen";
 import { OnboardingScreen } from "./OnboardingScreen";
 import type {
@@ -70,6 +72,11 @@ export function RootShell({ services, stores }: RootShellProps): JSX.Element {
 
   const [switcherOpen, setSwitcherOpen] = useState(false);
   const [addingServer, setAddingServer] = useState(false);
+
+  // Conversation store created once and reused across re-renders. The store is
+  // always created (hook order must be stable); it stays idle until a
+  // conversation is pushed. A real ConversationService is wired in a later task.
+  const conversationStoreRef = useRef(createConversationStore());
 
   // Load profiles on mount.
   useEffect(() => {
@@ -193,31 +200,17 @@ export function RootShell({ services, stores }: RootShellProps): JSX.Element {
     );
   }
 
-  // Conversation push above the tab bar (placeholder — Task 8 implements content).
+  // Conversation push above the tab bar. ConversationScreen owns the top bar,
+  // virtualized timeline, and composer placeholder. The conversation store is
+  // created lazily on first use and reused across re-renders; a real
+  // ConversationService is wired in a later task.
   if (inConversation) {
-    const activeConv = navigation.getState().activeConversation;
     return (
       <div {...shellAttrs}>
-        <main className="evener-conversation">
-          <div className="evener-topbar">
-            <button
-              type="button"
-              className="evener-icon-button"
-              aria-label="Back"
-              onClick={() => navigation.getState().popConversation()}
-            >
-              ‹
-            </button>
-            <span className="evener-topbar__title">
-              {activeConv?.title ?? "Conversation"}
-            </span>
-          </div>
-          <div className="evener-screen-scroll">
-            <p style={{ padding: "32px", color: "var(--secondary)" }}>
-              Conversation content arrives in Task 8.
-            </p>
-          </div>
-        </main>
+        <ConversationScreen
+          conversationStore={conversationStoreRef.current}
+          navigationStore={navigation}
+        />
       </div>
     );
   }
