@@ -18,6 +18,10 @@ export interface SheetProps {
   readonly children: ReactNode;
   /** When true, Escape is captured (default true). Back-button JS calls onClose. */
   readonly dismissOnEscape?: boolean;
+  /** Optional className appended to the dialog element (e.g. for detent sizing). */
+  readonly dialogClassName?: string;
+  /** Optional data attributes spread onto the dialog element (e.g. data-activity-detent). */
+  readonly dialogDataAttrs?: Record<string, string>;
 }
 
 // ---------------------------------------------------------------------------
@@ -633,6 +637,8 @@ export function Sheet({
   title,
   children,
   dismissOnEscape = true,
+  dialogClassName,
+  dialogDataAttrs,
 }: SheetProps): JSX.Element | null {
   const dialogRef = useRef<HTMLDivElement>(null);
   const previouslyFocused = useRef<HTMLElement | null>(null);
@@ -758,11 +764,12 @@ export function Sheet({
       />
       <div
         ref={dialogRef}
-        className="evener-sheet"
+        className={`evener-sheet${dialogClassName ? ` ${dialogClassName}` : ""}`}
         role="dialog"
         aria-modal="true"
         aria-label={title}
         onKeyDown={handleKeyDown}
+        {...dialogDataAttrs}
       >
         <div className="evener-sheet__grabber" aria-hidden="true" />
         <div className="evener-sheet__header">
