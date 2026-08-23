@@ -8,10 +8,12 @@ import type { ProfileService } from "../services/nativeProfiles";
 import type { ConnectionState } from "../state/connection";
 import type { NavigationState } from "../state/navigation";
 import type { PreferencesState } from "../state/preferences";
+import type { RosterState } from "../state/roster";
 
 export type ConnectionStore = UseBoundStore<StoreApi<ConnectionState>>;
 export type NavigationStore = UseBoundStore<StoreApi<NavigationState>>;
 export type PreferencesStore = UseBoundStore<StoreApi<PreferencesState>>;
+export type RosterStore = UseBoundStore<StoreApi<RosterState>>;
 
 /** Service bundle shared by fixture and production paths. */
 export interface ShellServiceBundle {
