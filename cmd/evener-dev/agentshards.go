@@ -1,4 +1,4 @@
-package main
+package dev
 
 // agent-shards runs the agent package's tests as cost-balanced shards. It is
 // the port of scripts/agent-test-shards.sh, whose header carried the

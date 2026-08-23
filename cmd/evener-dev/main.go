@@ -4,12 +4,11 @@
 // scripts as `go run ./cmd/evener-dev <subcommand> ...`. Subcommand env and
 // output contracts are the retired scripts' contracts; their Go tests are the
 // selftests those scripts used to fake with PATH stubs.
-package main
+package dev
 
 import (
 	"fmt"
 	"io"
-	"os"
 	"sort"
 	"strings"
 )
@@ -19,18 +18,18 @@ var subcommands = map[string]func(args []string) int{
 	"module-lint":  lintMain,
 }
 
-func main() {
-	if len(os.Args) < 2 {
-		usage(os.Stderr)
-		os.Exit(2)
+func Run(args []string, _ io.Reader, stdout, stderr io.Writer) int {
+	if len(args) < 1 {
+		usage(stderr)
+		return 2
 	}
-	run, ok := subcommands[os.Args[1]]
+	run, ok := subcommands[args[0]]
 	if !ok {
-		_, _ = fmt.Fprintf(os.Stderr, "evener-dev: unknown subcommand %q\n", os.Args[1])
-		usage(os.Stderr)
-		os.Exit(2)
+		_, _ = fmt.Fprintf(stderr, "evener dev: unknown subcommand %q\n", args[0])
+		usage(stderr)
+		return 2
 	}
-	os.Exit(run(os.Args[2:]))
+	return run(args[1:])
 }
 
 func usage(w io.Writer) {
@@ -39,5 +38,5 @@ func usage(w io.Writer) {
 		names = append(names, name)
 	}
 	sort.Strings(names)
-	_, _ = fmt.Fprintf(w, "usage: evener-dev <subcommand> [args]\nsubcommands: %s\n", strings.Join(names, " "))
+	_, _ = fmt.Fprintf(w, "usage: evener dev <subcommand> [args]\nsubcommands: %s\n", strings.Join(names, " "))
 }
