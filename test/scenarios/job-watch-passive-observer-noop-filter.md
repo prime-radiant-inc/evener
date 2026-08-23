@@ -142,18 +142,18 @@ terminal `communicate(end_turn:true)` callbacks.
 
 ## Manual Inspection Recipe
 
-Use `evener-doctor` rather than a one-off transcript or jobs parser.
+Use `evener doctor` rather than a one-off transcript or jobs parser.
 Replace the selectors with the parent session id and observer
 transcript ref from the run:
 
 ```bash
-go run ./cmd/evener-doctor watches "$SID"
-go run ./cmd/evener-doctor tree "$SID" --observers
-go run ./cmd/evener-doctor transcript "$SID" --format outline --range last:30
-go run ./cmd/evener-doctor transcript "$OBSERVER_REF" --format outline --range last:40
-go run ./cmd/evener-doctor transcript "$OBSERVER_REF" --count communicate
-go run ./cmd/evener-doctor transcript "$OBSERVER_REF" --count delegate_send  # expect 0
-go run ./cmd/evener-doctor transcript "$OBSERVER_REF" --count job_list
+go run ./cmd/evener doctor watches "$SID"
+go run ./cmd/evener doctor tree "$SID" --observers
+go run ./cmd/evener doctor transcript "$SID" --format outline --range last:30
+go run ./cmd/evener doctor transcript "$OBSERVER_REF" --format outline --range last:40
+go run ./cmd/evener doctor transcript "$OBSERVER_REF" --count communicate
+go run ./cmd/evener doctor transcript "$OBSERVER_REF" --count delegate_send  # expect 0
+go run ./cmd/evener doctor transcript "$OBSERVER_REF" --count job_list
 ```
 
 The parent watch report should show the broad watch ended as

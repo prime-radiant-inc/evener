@@ -2,7 +2,7 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Make `evener-tui` open on a live-only project-grouped dashboard, support project drill-down, preserve `esc` for session transcript browse/fork focus, and provide explicit dashboard return via `ctrl+o` and `/dashboard`.
+**Goal:** Make `evener tui` open on a live-only project-grouped dashboard, support project drill-down, preserve `esc` for session transcript browse/fork focus, and provide explicit dashboard return via `ctrl+o` and `/dashboard`.
 
 **Architecture:** Keep the existing hub-backed `hubModel`, but split its row model into dashboard/project/session concerns. Derive dashboard and project rows from `GET /api/tree`, use existing session detail and stream APIs for drill-in, and add a typed fork call to `internal/hubapi.Client`. Session browse uses the existing embedded session model's scroll/tool focus fields instead of creating a second viewport implementation.
 
@@ -96,7 +96,7 @@ Expected: pass.
 
 ```bash
 git add cmd/evener-tui/hub_model.go cmd/evener-tui/hub_model_test.go
-git commit -m "feat: add evener-tui live dashboard rows"
+git commit -m "feat: add evener tui live dashboard rows"
 ```
 
 ## Task 2: Dashboard, Project, And Session Navigation
@@ -158,7 +158,7 @@ Expected: pass.
 
 ```bash
 git add cmd/evener-tui/hub_model.go cmd/evener-tui/hub_model_test.go
-git commit -m "feat: wire evener-tui dashboard navigation"
+git commit -m "feat: wire evener tui dashboard navigation"
 ```
 
 ## Task 3: Transcript Browse Fork Draft
@@ -236,7 +236,7 @@ Expected: pass.
 
 ```bash
 git add internal/hubapi/types.go internal/hubapi/client.go cmd/evener-hub/web.go cmd/evener-tui/message.go cmd/evener-tui/model.go cmd/evener-tui/hub_commands.go cmd/evener-tui/hub_model.go cmd/evener-tui/hub_model_test.go cmd/evener-hub/web_test.go
-git commit -m "feat: support evener-tui transcript fork drafts"
+git commit -m "feat: support evener tui transcript fork drafts"
 ```
 
 ## Task 4: UX Polish, Help Text, And Regression Sweep
@@ -300,7 +300,7 @@ Expected: pass.
 
 ```bash
 git add cmd/evener-tui/hub_model.go cmd/evener-tui/input.go cmd/evener-tui/hub_model_test.go cmd/evener-tui/input_test.go
-git commit -m "polish: update evener-tui hub dashboard UX"
+git commit -m "polish: update evener tui hub dashboard UX"
 ```
 
 ## Final Verification

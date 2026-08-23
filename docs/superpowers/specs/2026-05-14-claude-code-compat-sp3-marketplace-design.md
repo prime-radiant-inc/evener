@@ -648,7 +648,7 @@ Atomic write semantics identical to the registry (§6.1).
 This is the open question §11.1 resolves. Decision:
 
 - **CLI (`evener plugin ...`, `evener` foreground task mode):** prompts inline on stderr/stdin.
-- **`evener-tui` / `evener-hub` / `evener serve`:** non-interactive. Project marketplaces remain *listed but uncloned* until explicitly trusted. The session emits a single warning event (`marketplace_trust_required`) and proceeds without those marketplaces' plugins.
+- **`evener tui` / `evener hub` / `evener serve`:** non-interactive. Project marketplaces remain *listed but uncloned* until explicitly trusted. The session emits a single warning event (`marketplace_trust_required`) and proceeds without those marketplaces' plugins.
 - **Scripted CLI (no tty on stdin):** identical to the non-interactive surfaces. To trust from CI/scripts, use one of:
   - `--trust-marketplace <name>` flag on `evener plugin marketplace add` and on `evener` (top-level), repeatable. Implies a "this session only" trust.
   - `EVENER_TRUST_MARKETPLACES=<name>,<name>` env var. Same semantics — session-scoped, not persisted.
@@ -881,7 +881,7 @@ Every exported function in §2 has at least one direct test. Every error in §8 
 
 ### 11.1 Trust prompt UX in non-interactive surfaces
 
-**Decision.** CLI `evener plugin marketplace add` and foreground `evener` (when stdin is a tty) prompt inline as described in §7.2. Non-interactive surfaces — `evener-tui`, `evener-hub`, `evener serve`, and any CLI invocation without a tty on stdin — *refuse* untrusted project marketplaces: they are listed but not cloned, a `marketplace_trust_required` event is emitted, and the session proceeds without their plugins. To trust without a prompt, scripts pass one of: the repeatable `--trust-marketplace <name>` flag on `evener plugin marketplace add` and on the top-level `evener` command (session-scoped); the `EVENER_TRUST_MARKETPLACES=<name>,<name>` env var (session-scoped); or the dedicated `evener plugin marketplace trust <name>` subcommand (persisted to `trusted_projects.json`).
+**Decision.** CLI `evener plugin marketplace add` and foreground `evener` (when stdin is a tty) prompt inline as described in §7.2. Non-interactive surfaces — `evener tui`, `evener hub`, `evener serve`, and any CLI invocation without a tty on stdin — *refuse* untrusted project marketplaces: they are listed but not cloned, a `marketplace_trust_required` event is emitted, and the session proceeds without their plugins. To trust without a prompt, scripts pass one of: the repeatable `--trust-marketplace <name>` flag on `evener plugin marketplace add` and on the top-level `evener` command (session-scoped); the `EVENER_TRUST_MARKETPLACES=<name>,<name>` env var (session-scoped); or the dedicated `evener plugin marketplace trust <name>` subcommand (persisted to `trusted_projects.json`).
 
 **Rationale.** A blocking prompt inside `evener serve` would deadlock an HTTP-driven session. Refusing-until-trusted is the safe default; the env var covers ephemeral CI; the explicit `trust` subcommand covers operators who want a one-time persistent decision without an interactive run. `EVENER_TRUST_ALL_MARKETPLACES=1` exists as an emergency hatch for sandboxed environments and logs a startup warning.
 

@@ -371,7 +371,7 @@ go build ./...                  → EXIT=0  (repo root)
 go test ./cmd/evener-hub/...      → EXIT=0  (11 packages, all ok)
 ```
 
-Live proof: real hub (`EVENER_HUB_WEB=new`, `evener-hub -addr 127.0.0.1:19280 -evener <fresh evener
+Live proof: real hub (`EVENER_HUB_WEB=new`, `evener hub -addr 127.0.0.1:19280 -evener <fresh evener
 binary>`) + a real `openai/gpt-5.5` session, driven via the Chrome skill. Evidence:
 `.superpowers/sdd/t5b-evidence/` (13 files). All spawned sessions shut down, hub process killed,
 scratch state directories and built binaries removed, browser tabs closed — confirmed via `pgrep`

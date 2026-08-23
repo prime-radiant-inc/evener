@@ -1047,10 +1047,10 @@ functions; the inventory below was built by grepping the tree, not from memory.
   (`case "spawn_agent"` output-truncation limit → add `delegate`/job-tool cases); and
   `agent/internal/contextmgr/context_manager.go:583` (`case "spawn_agent"` compaction render that
   extracts `agent_id` → repoint to `delegate`/`job_id`).
-- **evener-tui renderers** keyed on the old tool names: `cmd/evener-tui/internal/msgrender/tool_renderers.go`,
+- **evener tui renderers** keyed on the old tool names: `cmd/evener-tui/internal/msgrender/tool_renderers.go`,
   `cmd/evener-tui/internal/msgrender/tool_bodies.go`, `cmd/evener-tui/internal/toolsummary/tool_summary.go`
   → repoint to the job tools.
-- **evener-hub web client JS assets** (`go:embed`-ed, served live — gate-token hits the static gate would
+- **evener hub web client JS assets** (`go:embed`-ed, served live — gate-token hits the static gate would
   otherwise leave red): `cmd/evener-hub/assets/renderer.js` (`case "SUBAGENT_START"`/`"SUBAGENT_END"` and
   `"spawn_agent"`/`"resume_agent"`/`"close_agent"` renderers) and `cmd/evener-hub/assets/appwire.js`
   (the `evener/subagent/started|completed` → `SUBAGENT_*` mapping). Repoint to the job lifecycle +

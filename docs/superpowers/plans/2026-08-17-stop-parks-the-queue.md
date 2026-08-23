@@ -94,7 +94,7 @@ func (s *clientMutationStore) queueHeld() bool {
 Run: `go test ./agent/ -run TestQueueHeldIsReadableWithoutCloningTheSnapshot -count=1`
 Expected: PASS.
 
-- [ ] **Step 5: Update evener-doctor's mirror of this schema**
+- [ ] **Step 5: Update evener doctor's mirror of this schema**
 
 `agent/doctor/mutations.go` decodes the snapshot with unknown-field rejection, so this will otherwise fail `TestClientMutationSnapshotStaysReadableByTheDoctor`. Add to `clientMutationStoreFile` after `InputQueue`:
 

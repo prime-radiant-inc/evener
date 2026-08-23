@@ -62,13 +62,13 @@ browser half must go through the real UI, and the exact assertions go to
   credentials/token/lock paths above:
   ```bash
   run=$(mktemp -d -t evener-e2e-goal-XXXXXX)
-  go build -o "$run/evener-hub" ./cmd/evener-hub
+  go build -o "$run/evener" hub ./cmd/evener-hub
   go build -o "$run/evener" ./cmd/evener
-  pgrep -f 'evener-hub.*:9180' >/dev/null && \
+  pgrep -f 'evener.*hub.*:9180' >/dev/null && \
     { echo "Jesse's real hub is running on 9180 — this card cannot start until it stops (flock at ~/.evener/hub.lock)" >&2; exit 1; }
   export XDG_STATE_HOME="$run/state"
   mkdir -p "$XDG_STATE_HOME"
-  "$run/evener-hub" -addr 127.0.0.1:0 -evener "$run/evener" 2>"$run/hub.log" &
+  "$run/evener" hub -addr 127.0.0.1:0 -evener "$run/evener" 2>"$run/hub.log" &
   HUBPID=$!
   for i in $(seq 1 50); do
     PORT=$(grep -oE 'listening on 127\.0\.0\.1:[0-9]+' "$run/hub.log" 2>/dev/null | grep -oE '[0-9]+$') || true
@@ -177,7 +177,7 @@ done
    Cross-check against the daemon's authoritative record — the steering turns
    it actually sent the model:
    ```bash
-   go run ./cmd/evener-doctor transcript "$SID" --format outline --range last:40
+   go run ./cmd/evener doctor transcript "$SID" --format outline --range last:40
    ```
    **Expected:** every entry in `goalNotices` is the short one-line marker
    `Continuing toward: Create a file seed.txt …`. It must **not** contain the

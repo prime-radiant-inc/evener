@@ -107,8 +107,8 @@ Three approved fixes:
   `job_status`, then the session goes idle: no later notification turn
   for that job. The consumed state is durably recorded as its own value
   ("caller learned via status read") so the jobstore's told-the-caller
-  invariant and evener-doctor diagnostics stay truthful — extend the
-  terminal-notification-state vocabulary, and check `evener-doctor`'s
+  invariant and evener doctor diagnostics stay truthful — extend the
+  terminal-notification-state vocabulary, and check `evener doctor`'s
   readers tolerate the new value (loud, not confident-zero).
 - [ ] **Step 2 (failing test, coalesce):** a watched job completing
   produces ONE notification turn carrying both the watch settlement and
@@ -149,7 +149,7 @@ Three approved fixes:
 - A watched short job produces exactly one notification turn; a
   status-read job produces zero; a saturated notify channel delays
   delivery only until the slot frees.
-- `evener-doctor transcript --health` on a fresh session shows
+- `evener doctor transcript --health` on a fresh session shows
   `stale_notifications=0` where the old code produced them.
 - No new tools, no schema changes to shell, job-control.md updated where
   wording is now sharper — and contradicted nowhere.

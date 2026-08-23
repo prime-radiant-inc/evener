@@ -6,7 +6,7 @@
 
 ## Problem
 
-Two field-reported symptoms in the evener-hub web UI:
+Two field-reported symptoms in the evener hub web UI:
 
 1. **Interactive sessions silently desync** — the transcript stops receiving
    events. Manifests as the liveness line ("working · quiet …" → "no updates for

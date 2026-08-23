@@ -32,7 +32,7 @@ every stored tool result must have its assistant call.
 - Change provider request serializers or canonical API logging.
 - Add generic reverse-orphan history repair.
 - Change transcript schemas or repair other historical sessions.
-- Change `evener-doctor`.
+- Change `evener doctor`.
 
 ## Design
 
@@ -125,7 +125,7 @@ filesystem, as required by `docs/testing.md`.
 - `go test ./agent -count=1`.
 - `go test ./... -count=1`.
 - Relevant lint and `git diff --check`.
-- `evener-doctor transcript` confirms the repaired real session has no orphan
+- `evener doctor transcript` confirms the repaired real session has no orphan
   result at turn 3071.
 - Resume the repaired session and send a message successfully.
 

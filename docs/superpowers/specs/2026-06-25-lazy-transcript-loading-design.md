@@ -45,7 +45,7 @@ reached).
    `limit` turns older than `cursor`, newest-first, returning `nextCursor`.
 3. Flip `FeatureSet.ThreadTurnsList` to true.
 
-### Hub (`evener-hub`)
+### Hub (`evener hub`)
 
 1. Route `thread/turns/list` to the resolved source:
    - **local daemon / live:** the new daemon handler.

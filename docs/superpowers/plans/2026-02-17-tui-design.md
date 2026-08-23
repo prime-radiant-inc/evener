@@ -15,7 +15,7 @@ An interactive TUI for evener built as a daemon/client architecture. The evener 
 
 ```
 ┌─────────────────┐         HTTP          ┌─────────────────┐
-│   evener-tui      │◄──── SSE events ─────►│   evener serve    │
+│   evener tui      │◄──── SSE events ─────►│   evener serve    │
 │  (Bubble Tea)   │──── REST input ──────►│  (HTTP server)  │
 │                 │                        │                 │
 │  cmd/evener-tui/  │                        │  cmd/evener/      │
@@ -29,7 +29,7 @@ An interactive TUI for evener built as a daemon/client architecture. The evener 
 
 Two binaries:
 - `evener serve` — subcommand on the existing evener binary. Starts HTTP server, creates/manages a single session.
-- `evener-tui` — separate binary. Pure display client connecting to the server.
+- `evener tui` — separate binary. Pure display client connecting to the server.
 
 ## Server API
 

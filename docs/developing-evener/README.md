@@ -23,7 +23,7 @@ gates themselves — building, testing, linting, coverage, and fuzzing.
 - **[worktrees.md](worktrees.md)** — the `manage_worktree` tool and delegate
   worktree isolation: what a worktree is for here and how it's cleaned up.
 - **[agentic-testing.md](agentic-testing.md)** — the practical guide for
-  running a `test/scenarios/` card against a live `evener-hub` + `evener`:
+  running a `test/scenarios/` card against a live `evener hub` + `evener`:
   hermetic workdirs, the setup checklist, and recipes for common scenario
   shapes.
 - **[agent-test-serial-prefix.md](agent-test-serial-prefix.md)** — measured

@@ -335,7 +335,7 @@ func TestRetryStream_FastRejectTransparent_AndDisabledWhenZero(t *testing.T) {
 - Modify: `docs/agentic-testing.md` (append the new forensics surfaces: typed in-band errors in api.jsonl, salvaged turns in transcripts) — keep to the file's existing voice
 - Test: the new file
 
-- [ ] **Step 1: Write both incident-shape scenarios against a scripted fake provider:** (a) stall streak → settle ~4 attempts → steering persisted → resumed turn's `buildHistory` carries it; (b) cap shape (two ≥60s-window attempts with big partials) → 2-attempt stop → salvage + steering persisted → resume → history contains draft; assert the transcript outline (`evener-doctor transcript` rendering path — use the doctor package's renderer directly) shows the salvaged ASSISTANT turn and TURN_FAILURE.
+- [ ] **Step 1: Write both incident-shape scenarios against a scripted fake provider:** (a) stall streak → settle ~4 attempts → steering persisted → resumed turn's `buildHistory` carries it; (b) cap shape (two ≥60s-window attempts with big partials) → 2-attempt stop → salvage + steering persisted → resume → history contains draft; assert the transcript outline (`evener doctor transcript` rendering path — use the doctor package's renderer directly) shows the salvaged ASSISTANT turn and TURN_FAILURE.
 - [ ] **Step 2: Green everything:** `go test ./... -count=1` (respect the repo's flake/timeout policy in `docs/` if a suite is known-slow).
 - [ ] **Step 3: Commit** `test(agent): provider-failure end-to-end scenarios + forensics doc sync`
 

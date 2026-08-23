@@ -75,7 +75,7 @@ list.
    (`cmd/evener-hub/internal/launchconfig/schema.go:85,87`). Open the one
    whose block label reads exactly `Model`; only one panel is open at a
    time, so the listbox query above is unambiguous once it is.
-4. In a tmux session running `evener-tui --hub-addr 127.0.0.1:$PORT`,
+4. In a tmux session running `evener tui --hub-addr 127.0.0.1:$PORT`,
    press `n` (opens the spawn form focused on Prompt,
    `cmd/evener-tui/hub_keys.go:95`, `hub_spawn.go:300-311`), then
    `BTab BTab` to reach the Model field (field order is

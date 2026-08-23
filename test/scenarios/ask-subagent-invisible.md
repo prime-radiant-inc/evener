@@ -48,14 +48,14 @@ delegation-only tools for a coordinator.
    ```
 2. Find the delegate's own session ID from the parent's job tree:
    ```bash
-   go run ./cmd/evener-doctor tree "$SID" --json | jq -r '.children[0].session_id'
-   DELEGATE_SID=$(go run ./cmd/evener-doctor tree "$SID" --json | jq -r '.children[0].session_id')
+   go run ./cmd/evener doctor tree "$SID" --json | jq -r '.children[0].session_id'
+   DELEGATE_SID=$(go run ./cmd/evener doctor tree "$SID" --json | jq -r '.children[0].session_id')
    echo "DELEGATE_SID=$DELEGATE_SID"
    ```
 3. Confirm the delegate's **own** transcript never advertised `ask_user` to the provider,
    and never structurally invoked it:
    ```bash
-   go run ./cmd/evener-doctor transcript "$DELEGATE_SID" --count ask_user
+   go run ./cmd/evener doctor transcript "$DELEGATE_SID" --count ask_user
    ```
 4. Read the delegate's own final `communicate` tool-call argument directly from its own
    transcript, rather than the parent's paraphrase of it — the parent's transcript shares a
@@ -127,7 +127,7 @@ rm -rf "$tmpdir"
 Leave the hub and `$run` alone — `ask-web-answer.md` started them and its Cleanup
 kills `$HUBPID` and removes `$run`. If you had to start the hub yourself because
 `EVENER_E2E_RUN` was unset, you own it: `kill "$HUBPID"; rm -rf "$run"`. Never
-`pkill -f evener-hub`, which takes out every other concurrent agent's hub too
+`pkill -f evener hub`, which takes out every other concurrent agent's hub too
 (`docs/developing-evener/agentic-testing.md`, "Cleanup recipe").
 
 ## Sharp edges
@@ -139,7 +139,7 @@ kills `$HUBPID` and removes `$run`. If you had to start the hub yourself because
   has long since finished with a clean `communicate(end_turn=true)`. Confirmed live in this
   run: a root session whose transcript already showed a completed `delegate` round-trip and
   final `communicate` result (and whose delegate's own status read `idle` via
-  `evener-doctor tree --json`) still reported `state: "active"` at both the hub's
+  `evener doctor tree --json`) still reported `state: "active"` at both the hub's
   `/api/sessions` and the daemon's own `/status` for several minutes, purely because the
   delegate's daemon process hadn't exited yet. Step 1's poll target (`awaiting`) is still the
   correct end state to wait for, but budget a generous timeout — settling can take
@@ -157,7 +157,7 @@ kills `$HUBPID` and removes `$run`. If you had to start the hub yourself because
   rejected — asserting a rejection error on that path would be testing a fiction). If a
   future task wires `grant_tools` into the live `delegate` schema, this step should be
   upgraded to drive it for real and the deterministic-only note removed.
-- `go run ./cmd/evener-doctor tree` lists delegate children by default (`edge: "delegate"`);
+- `go run ./cmd/evener doctor tree` lists delegate children by default (`edge: "delegate"`);
   `--observers` is only needed for observer sidecars, not plain delegates, so it's omitted
   above.
 - The delegate's task text is built as a plain bash variable, then threaded into the JSON

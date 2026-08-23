@@ -106,7 +106,7 @@ Recent — spawn real sessions.
 
 ### TUI
 
-7. `evener-tui --hub-addr 127.0.0.1:$PORT`, `n` → `BTab BTab` (focus
+7. `evener tui --hub-addr 127.0.0.1:$PORT`, `n` → `BTab BTab` (focus
    Model) → `Enter` to open the picker; `capture-pane` and read the
    `RECENT` group's rows.
 

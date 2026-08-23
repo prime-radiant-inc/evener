@@ -1,4 +1,4 @@
-# tui-workspace-navigation: evener-tui dashboard + session keyboard nav
+# tui-workspace-navigation: evener tui dashboard + session keyboard nav
 
 **What this covers**: kata `57be`. The Bubble Tea TUI in
 `cmd/evener-tui/` is fully covered by Go unit tests (`tmux_e2e_test.go`
@@ -10,11 +10,11 @@ dashboard ↔ session transitions described in the action bars.
 ## Pre-state
 
 - `tmux` installed (`which tmux` returns a path; tested on tmux 3.4).
-- `evener-hub` reachable on an isolated `$HOME` and free port
+- `evener hub` reachable on an isolated `$HOME` and free port
   (never Jesse's port `9180` — see the Setup checklist in
   `docs/developing-evener/agentic-testing.md`). Token at
   `$HOME/.evener/auth-token`.
-- `./evener-tui` built and in repo root (`go build -o evener-tui ./cmd/evener-tui`).
+- `./evener` built and in repo root (`go build -o ./evener ./cmd/evener/`).
 - At least one live or recent session visible on the dashboard. If
   empty, spawn one first via `~/go/bin/evener spawn ...` or accept that
   the leaf-enter step is skipped.
@@ -32,7 +32,7 @@ Use `tmux send-keys -t "$TMUX_SESSION" KEY ...` to drive input and
    ```
    TMUX_SESSION="evener-nav-$$"
    tmux new-session -d -s "$TMUX_SESSION" -x 200 -y 50 \
-     "./evener-tui --hub-addr 127.0.0.1:$PORT --debug"
+     "./evener tui --hub-addr 127.0.0.1:$PORT --debug"
    sleep 1
    tmux capture-pane -t "$TMUX_SESSION" -p
    ```

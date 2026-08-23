@@ -118,9 +118,9 @@ Use `tmux send-keys -t "$TMUX_SESSION" ...` to drive input and
    OWNED_HUBPID="$RECORDED_HUBPID"
    RUN_OWNED=1
 
-   test -x "$RUN_ROOT/evener-hub"
    test -x "$RUN_ROOT/evener"
-   test -x "$RUN_ROOT/evener-tui"
+   test -x "$RUN_ROOT/evener"
+   test -x "$RUN_ROOT/evener"
    test -f "$RUN_ROOT/hub.log"
 
    WORKDIR="$RUN_ROOT/work"

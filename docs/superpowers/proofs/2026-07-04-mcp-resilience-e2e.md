@@ -57,7 +57,7 @@ skipped, it does not abort client construction. No `.env` sourcing and no
 
 ### Isolation recipe
 
-Ran a real, isolated `evener serve` + `evener-hub` pair — never the main checkout,
+Ran a real, isolated `evener serve` + `evener hub` pair — never the main checkout,
 never Jesse's real `~/.evener`. Both processes ran under a fake HOME
 (`$SCRATCH/hubhome`) so the hub's `hostlock` (`~/.evener/hub.lock`, hard-coded to
 `os.UserHomeDir()` with no config override) and default paths never touched
@@ -130,7 +130,7 @@ and captured the `--verbose` NDJSON event stream:
 ```
 
 Web UI (`http://127.0.0.1:29180/s/<session-id>`) rendered the turn in plain
-text, no error marker: `echo: PROOF_A_12345`. TUI (`evener-tui --hub-addr
+text, no error marker: `echo: PROOF_A_12345`. TUI (`evener tui --hub-addr
 127.0.0.1:29180 ...`) rendered the same turn with a green `✓` and an `ok`
 right-aligned label:
 
@@ -340,8 +340,8 @@ proving the MCP-resilience behavior) — noted here only so it isn't lost.
 
 `evener serve` was killed first (SIGTERM); this closed stdin to its stdio MCP
 children and both `intgmcpserver` and the Server C fixture exited on their
-own — confirmed via `ps` immediately after, no orphaned processes. `evener-hub`
-and `evener-tui` were killed next. The temporary `agent/testdata/mcperrsvc/`
+own — confirmed via `ps` immediately after, no orphaned processes. `evener hub`
+and `evener tui` were killed next. The temporary `agent/testdata/mcperrsvc/`
 directory was deleted (never staged). The unrelated, pre-existing
 `evener-hub-sr`/`evener-sr` process on port 9573 (another agent's concurrent,
 unrelated work) and its browser tab were never touched. All scratch state
@@ -406,7 +406,7 @@ state). `git status` on the worktree is clean before and after.
   live-call-outcome field, and a reviewer should not read a non-empty `Error`
   on a `connected` server as "currently broken" without also checking
   `Status`.
-- **`evener-hub`'s host lock is unconditionally keyed on real `$HOME`**
+- **`evener hub`'s host lock is unconditionally keyed on real `$HOME`**
   (`cmd/evener-hub/main.go`'s `hostlock.AcquireLock(filepath.Join(home,
   ".evener", "hub.lock"))`, `home` from `os.UserHomeDir()`), with no
   `hub.toml`/flag override. Isolating a second hub instance on one host

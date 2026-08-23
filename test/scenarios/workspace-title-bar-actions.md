@@ -139,10 +139,10 @@ head and runs it as a fresh user turn.
    done
    echo "post-queue settled state=$state turn_count=$tc baseline=$tc_baseline"
    # Confirm the queued text appears in the transcript as a USER turn AFTER
-   # the interrupted turn's cancellation marker. Use evener-doctor rather than
+   # the interrupted turn's cancellation marker. Use evener doctor rather than
    # hand-parsing JSONL (see docs/developing-evener/agentic-testing.md, "Inspecting transcript
    # and meta on disk"):
-   go run ./cmd/evener-doctor transcript "$SID" --format outline --range last:20
+   go run ./cmd/evener doctor transcript "$SID" --format outline --range last:20
    ```
 
    **Expected**: `queue_cap=True` mid-turn (kata `111a` capability
@@ -192,7 +192,7 @@ head and runs it as a fresh user turn.
      [ "$state" = "idle" ] && break
      sleep 1
    done
-   go run ./cmd/evener-doctor transcript "$SID" --format outline --range last:5
+   go run ./cmd/evener doctor transcript "$SID" --format outline --range last:5
    ```
 
 5. **[browser-free] Shutdown**. Capture pre-state (daemon pid via rendezvous,

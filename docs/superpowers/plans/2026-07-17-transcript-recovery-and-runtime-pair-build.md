@@ -2,7 +2,7 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Make transcript read failures honest in the Hub UI, safely convert selected recent v1 transcript artifacts to v2, and make ordinary builds publish a same-checkout `evener`/`evener-hub` pair.
+**Goal:** Make transcript read failures honest in the Hub UI, safely convert selected recent v1 transcript artifacts to v2, and make ordinary builds publish a same-checkout `evener`/`evener hub` pair.
 
 **Architecture:** The renderer classifies existing AppWire-coded errors separately from plain transport failures. A standalone, uninstalled Go command performs strict per-file conversion and backup-preserving replacement. A shell behavior boundary stages both runtime binaries before Make publishes either compiled result.
 
@@ -15,7 +15,7 @@
 - Apply mode retains a sibling `.v1.bak` and never overwrites an existing backup.
 - Reject malformed, unknown, oversized, or incomplete transcript records without mutating the original.
 - Do not modify `.api.jsonl`, `.meta.json`, or transcripts older than the selected cutoff.
-- Do not install, distribute, or release `evener-transcript-v2-upgrade`.
+- Do not install, distribute, or release `evener transcript-v2-upgrade`.
 - Default tests are deterministic and follow `docs/testing.md`.
 - Tests assert behavior and structured results, not large rendered scripts or command strings.
 
@@ -233,7 +233,7 @@ Run:
 
 ```bash
 go test ./cmd/evener-transcript-v2-upgrade -count=1
-go run ./cmd/evener-transcript-v2-upgrade --help
+go run ./cmd/evener transcript-v2-upgrade --help
 ```
 
 Expected: tests pass; help shows required `--root`, default `--since 120h`, and
@@ -313,7 +313,7 @@ build_one() {
 }
 
 build_one evener ./cmd/evener/
-build_one evener-hub ./cmd/evener-hub/
+build_one evener hub ./cmd/evener-hub/
 mv "$stage/evener" "$repo_root/evener"
 mv "$stage/evener-hub" "$repo_root/evener-hub"
 ```
@@ -347,7 +347,7 @@ Run:
 go test . -run 'TestRuntimePairBuild|TestMakeRuntimeAliases' -count=1
 make build
 go version -m ./evener
-go version -m ./evener-hub
+go version -m ./evener
 ```
 
 Expected: behavior tests pass; both binaries build; their embedded VCS revision
@@ -393,7 +393,7 @@ Stop `com.primeradiant.evener-hub.codex` and confirm no managed `evener` writer
 processes remain. Then run:
 
 ```bash
-go run ./cmd/evener-transcript-v2-upgrade --root "$HOME/.local/state/evener/projects" --since 120h
+go run ./cmd/evener transcript-v2-upgrade --root "$HOME/.local/state/evener/projects" --since 120h
 ```
 
 Expected: exit 0 with eligible/skipped/removal counts and no unexplained errors.

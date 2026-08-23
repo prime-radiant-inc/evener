@@ -26,7 +26,7 @@ inline banner.
 
 ## Pre-state
 
-- `evener-hub` running on an isolated `$HOME` and free port
+- `evener hub` running on an isolated `$HOME` and free port
   (never `9180`, Jesse's real one — see the Setup checklist in
   `docs/developing-evener/agentic-testing.md`). Token at `$HOME/.evener/auth-token`.
 - `anthropic/claude-haiku-4-5-20251001` or `openai/gpt-5.5` reachable
@@ -132,11 +132,11 @@ inline banner.
      [ "$state" = "idle" ] && break
      sleep 2
    done
-   go run ./cmd/evener-doctor transcript "$SID" --format outline --range last:20
+   go run ./cmd/evener doctor transcript "$SID" --format outline --range last:20
    ```
    For the byte-level check that an image part really landed (the one case
    the runbook sanctions reading raw JSONL for), locate the file with
-   `go run ./cmd/evener-doctor locate "$SID"` and grep it for `"kind":"image"`.
+   `go run ./cmd/evener doctor locate "$SID"` and grep it for `"kind":"image"`.
 
 ## Expected
 

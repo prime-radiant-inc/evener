@@ -168,7 +168,7 @@ and response bodies, but never preloads them with a transcript.
 
 ## Related Surface Updates
 
-- `evener-doctor apilog` reads the canonical API-log records.
+- `evener doctor apilog` reads the canonical API-log records.
 - Transcript find/outline/tree operations do not scan API bodies.
 - Hub and browser transcript readers reject unsupported mixed-format transcripts
   and do not retain API-bearing transcript indexes or cold-load API logs.

@@ -185,7 +185,7 @@ Real hub + a real `evener serve` daemon + a real `oai-work/gpt-5.4-mini` session
 `oai-work/gpt-5-nano`), driven end to end through Chrome. No mocks. Evidence:
 `.superpowers/sdd/w5-close-t6-evidence/` (10 screenshots).
 
-**Environment note (coordination finding for Jesse).** evener-hub takes a **host-global flock at
+**Environment note (coordination finding for Jesse).** evener hub takes a **host-global flock at
 `$HOME/.evener/hub.lock`** (`cmd/evener-hub/main.go:133-135`, "single hub per host"). At run time the
 parallel **W7 close's own live-proof hub was already holding that flock**, so a normal hub on the
 wave-4 precedent port could not start. Rather than disturb a sibling's in-flight run, I launched a
@@ -300,7 +300,7 @@ queue now"`), then this report + the parity-sweep + evidence artifacts.
 **Live-proof housekeeping.** The isolated hub (PID, port 19281) and its `evener serve` daemon (port
 19351) were both killed and confirmed gone (`ps`/`pgrep` show no evener/evener-hub binaries; ports 19281
 and 19351 free); the goal engine was cleared before teardown; the browser tab was released to
-`about:blank`; the built `evener`/`evener-hub` binaries were removed; the worktree is clean except this
+`about:blank`; the built `evener`/`evener hub` binaries were removed; the worktree is clean except this
 report and its artifacts. The parallel W7 hub was never touched (verified up and unaffected on its own
 port throughout, then observed to exit on its own). No credential material was echoed into logs or
 screenshots.

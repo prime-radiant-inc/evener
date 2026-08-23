@@ -1,4 +1,4 @@
-# tui-paste-image-from-clipboard: Ctrl+V attaches a clipboard image in evener-tui
+# tui-paste-image-from-clipboard: Ctrl+V attaches a clipboard image in evener tui
 
 **What this covers**: kata `2frx` (live e2e for image attachments) over
 the TUI clipboard pipeline — kata `c7pv` (the multi-source clipboard
@@ -18,16 +18,16 @@ Companion scenarios: `web-paste-image-from-clipboard.md`,
 ## Pre-state
 
 - `tmux` installed (tested on tmux 3.4).
-- `evener-hub` reachable on an isolated `$HOME` and free port
+- `evener hub` reachable on an isolated `$HOME` and free port
   (never Jesse's port `9180` — see the Setup checklist in
   `docs/developing-evener/agentic-testing.md`). Token at
   `$HOME/.evener/auth-token`.
-- `./evener-tui` and `./evener-hub` built in repo root.
+- `./evener` and `./evener` built in repo root.
 - `anthropic/claude-haiku-4-5-20251001` (or `openai/gpt-5.5`)
   reachable through configured credentials; both accept image
   inputs.
 - A display server reachable from the TUI process AND a clipboard
-  tool evener-tui knows about — one of:
+  tool evener tui knows about — one of:
   - X11 with `xclip` on PATH (handled by
     `clipboard_system.go:readImageBytesX11`).
   - Wayland with `wl-paste` on PATH (`readImageBytesWayland`).
@@ -81,11 +81,11 @@ Companion scenarios: `web-paste-image-from-clipboard.md`,
    done
    ```
 
-3. **Launch evener-tui in tmux** with the display server visible to its
+3. **Launch evener tui in tmux** with the display server visible to its
    subprocess (else `xclip` will return `ErrClipboardUnavailable`):
    ```bash
    tmux new-session -d -s "$TMUX_SESSION" -x 200 -y 50 \
-     "DISPLAY=:99 ./evener-tui --hub-addr 127.0.0.1:$PORT --debug"
+     "DISPLAY=:99 ./evener tui --hub-addr 127.0.0.1:$PORT --debug"
    sleep 1
    ```
    (On native X11 with `DISPLAY=:0` already set, omit the `DISPLAY=:99`
@@ -189,8 +189,8 @@ rm -rf "$FIXDIR" "$WORKDIR"
 
 - **`DISPLAY` must be exported into the TUI's process**, not just the
   shell that called `tmux new-session`. The session-creation form
-  `tmux new-session -d -s … "DISPLAY=:99 ./evener-tui …"` does this.
-  If you instead `tmux new-session -d -s … "./evener-tui …"`, the
+  `tmux new-session -d -s … "DISPLAY=:99 ./evener tui …"` does this.
+  If you instead `tmux new-session -d -s … "./evener tui …"`, the
   process inherits the controlling terminal's environment — which
   in a sandboxed agent context often lacks `DISPLAY`, and `xclip
   -selection clipboard -t image/png -o` will fail with

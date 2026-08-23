@@ -34,7 +34,7 @@ orientation `job_status` call (ideally zero) and then goes idle.
 
 3. Capture the parent's tool calls from the moment `delegate` returns a
    `delegate_id` up to the point it stops producing tool calls (goes idle). Use
-   the on-disk transcript as ground truth — `evener-doctor transcript <id> --count
+   the on-disk transcript as ground truth — `evener doctor transcript <id> --count
    job_status` and `--format outline` — not just the rendered UI.
 4. Wait for the delegate to finish, for Evener to inject the
    `<delegate-notification>`, and for the parent's follow-up turn.

@@ -210,7 +210,7 @@ Because evener already has machine-readable schemas (§3), two routes:
   in-process, in Go, drives the real seams (`ExecuteCall`/`Dispatch`), and integrates with
   the §5 promoter. No external service, no spec-drift.
 - **External route (optional, HTTP only):** generate an OpenAPI doc from the appwire
-  catalog + hub routes and point **schemathesis** or **RESTler** at a running `evener-hub`.
+  catalog + hub routes and point **schemathesis** or **RESTler** at a running `evener hub`.
   RESTler's producer-consumer dependency inference (create a thread → use its id) maps
   naturally onto evener's `threadId`/`turnId` flow and would find resource-ordering bugs the
   in-process fuzzer might miss. Cost: an OpenAPI generator (~200 LoC) + harness to boot a

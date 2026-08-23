@@ -1167,7 +1167,7 @@ go test ./cmd/evener-hub -run 'TestWeb_ThreadDocument' -count=1 -v
 
 Expected: pass after adjusting fixture setup if needed.
 
-- [ ] **Step 3: Run all evener-hub JS tests**
+- [ ] **Step 3: Run all evener hub JS tests**
 
 Run:
 

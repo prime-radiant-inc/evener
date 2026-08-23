@@ -23,7 +23,7 @@ longer on it".
 - Isolated fake `$HOME` per attempt (real `~/.evener` untouched), and a
   kernel-assigned port — the hub binds `127.0.0.1:0` and logs the port
   it actually got, so nothing here collides with a concurrent run:
-  `env -i HOME="$FAKE_HOME" PATH="$PATH" ./evener-hub -addr 127.0.0.1:0
+  `env -i HOME="$FAKE_HOME" PATH="$PATH" ./evener hub -addr 127.0.0.1:0
   -evener <evener-binary-path> 2>"$FAKE_HOME/hub.log"`. Read `$PORT` back
   out of that log per the Setup checklist.
 - `TOKEN=$(cat "$FAKE_HOME/.evener/auth-token")` (auto-generated on first
@@ -105,7 +105,7 @@ response). Neither was observed.
 ## Cleanup
 
 - Both test hub processes killed by the PIDs you captured (never a
-  `pkill -f evener-hub` pattern, which would take out any concurrent
+  `pkill -f evener hub` pattern, which would take out any concurrent
   agent's test hub too); both fake `$HOME` tmpdirs removed (`rm -r`).
 - No sessions/daemons were actually spawned in this card — every
   attempt was rejected before `SpawnDaemon` ran, so there was nothing

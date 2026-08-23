@@ -5,9 +5,9 @@ the area they exercise.
 
 ## CLI surface
 
-- `cli-help.md` — `--help` prints proper usage across evener-tui +
+- `cli-help.md` — `--help` prints proper usage across evener tui +
   evener subcommands (kata `hsmm`).
-- `cli-sibling-binary.md` — evener-tui finds evener-hub next to itself
+- `cli-sibling-binary.md` — evener tui finds evener hub next to itself
   via `os.Executable` + `EvalSymlinks` (kata `a4w6`).
 
 ## Authentication
@@ -50,7 +50,7 @@ the area they exercise.
 
 ## Session workspace
 
-- `tui-workspace-navigation.md` — evener-tui dashboard + session
+- `tui-workspace-navigation.md` — evener tui dashboard + session
   keyboard navigation via tmux send-keys / capture-pane: arrow
   movement, project collapse/expand, command palette, browse vs
   compose mode, double-Ctrl+C exit (kata `57be`).
@@ -89,7 +89,7 @@ the area they exercise.
 - `web-queue-then-drain-as-steer.md` — web counterpart: Shift+Enter
   (or the `send as steer` button) drains the pending queue as a
   steer event.
-- `tui-interrupt-live-turn.md` — evener-tui `/interrupt` palette
+- `tui-interrupt-live-turn.md` — evener tui `/interrupt` palette
   command fires against a real mid-turn session via
   `tmux send-keys`; verifies state transitions to `closed` and
   transcript preserves partial output (kata `9sck`; surfaced kata
@@ -132,13 +132,13 @@ the area they exercise.
 - `web-model-switch-mid-session.md` — two web clients converge on a
   live `thread/model/set` switch without reload; mid-turn and
   queued-input switches stay rejected with no state change.
-- `tui-model-switch.md` — evener-tui `/model` switches live, header
+- `tui-model-switch.md` — evener tui `/model` switches live, header
   and dashboard row update from `thread/model/changed`, and the
   switch marker (`Switched model: <old> → <new>`) survives a fresh
   attach.
 - `model-switch-resume.md` — switch → kill the daemon → resume runs
   the next turn on the switched model (N3 persistence).
-- `tui-effort-command.md` — evener-tui `/effort` and the web `⌘K`
+- `tui-effort-command.md` — evener tui `/effort` and the web `⌘K`
   "Set reasoning effort" command both show only the current model's
   levels; both surfaces render current model + effort on a cold
   attach.
@@ -441,7 +441,7 @@ shape (refs, snippets, scan stats, window headers, Turn numbering).
 - `sidecar-quality-auditor-communicate.md` - quality auditor flags a
   TODO left in a deliverable draft.
 
-## evener-doctor & forensics
+## evener doctor & forensics
 
 The read-only inspector (`cmd/evener-doctor` over `agent/doctor`) and the
 `doctor` agent type that drives it. The watch/provenance material these
@@ -623,12 +623,12 @@ model to do the right thing, so they are also where model tiers separate.
 
 - `96pr` — legacy diagnostics with stored source=evener never get
   reclassified (sharp edge).
-- `6bdb` — evener-hub doesn't find sibling evener binary either
+- `6bdb` — evener hub doesn't find sibling evener binary either
   (same shape as a4w6, sharp edge).
 - `k7t8` — workspace interrupt button is non-functional
   (`cancelFunc` never wired in `cmd/evener/serve.go`); covered by
   `workspace-title-bar-actions.md`.
-- `4yvd` — evener-tui palette gates `/interrupt` on stale
+- `4yvd` — evener tui palette gates `/interrupt` on stale
   capabilities cached at session-open; needs a `/status` refresh
   to unlock mid-turn (workaround documented in
   `tui-interrupt-live-turn.md`).

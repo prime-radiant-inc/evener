@@ -72,7 +72,7 @@ suite says what the close already proved and what M9 adds on top.
 
 ## 3. Isolation recipe (every suite obeys this)
 
-The host-global-flock lesson is load-bearing: `evener-hub` takes a **host-global flock at
+The host-global-flock lesson is load-bearing: `evener hub` takes a **host-global flock at
 `$HOME/.evener/hub.lock`** (`cmd/evener-hub/main.go:133-135`, "single hub per host"). Two hubs under the
 same `$HOME` cannot coexist, and a parallel suite that shares `$HOME` will collide (W5/W6 closes hit
 exactly this against each other). Therefore:

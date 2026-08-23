@@ -16,11 +16,11 @@ Scope: **pure relocation + import rewrites. No logic changes.** Gate after every
 ## 0. Findings up front (read before executing)
 
 1. **The spec §4 annotation is contradicted by the import graph.** §4's layout comment says
-   "evener-hub ← appprojector, apptranscript, appserver … sink here." The actual importers show:
+   "evener hub ← appprojector, apptranscript, appserver … sink here." The actual importers show:
    - `appprojector` is imported **only by `server/`** (the engine's per-session HTTP/AppWire
-     server) — **never by evener-hub**.
-   - `appserver` is imported by `server/` **and** evener-hub **and** evener-tui (3 products).
-   - `apptranscript` is imported by `server/` **and** evener-hub (2 products).
+     server) — **never by evener hub**.
+   - `appserver` is imported by `server/` **and** evener hub **and** evener tui (3 products).
+   - `apptranscript` is imported by `server/` **and** evener hub (2 products).
    `server/` is a **top-level engine package** (`package server`, imported by `cmd/evener/serve.go`
    and `cmdutil/cmdutil.go`). It is part of the **engine product** but it does **not** live under
    `cmd/evener/`. Therefore these three packages **cannot** sink into `cmd/evener-hub/internal/` — they
@@ -44,9 +44,9 @@ Scope: **pure relocation + import rewrites. No logic changes.** Gate after every
    packages only `appsource` and `launchconfig` are in that list (appwire/appserver/appprojector do
    **not** move in M1). `cmd/evener-internalcheck/` references no internal/ paths.
 
-4. **Only 4 of the 12 packages actually relocate in M1:** `appsource` → evener-hub, `binresolve`
-   (judgment call → evener-hub, see §5), `credentials` (judgment call → evener-hub, see §5),
-   `launchconfig` (→ evener-hub, after cutting the agent-test smell). Two are **promoted** (`appwire`,
+4. **Only 4 of the 12 packages actually relocate in M1:** `appsource` → evener hub, `binresolve`
+   (judgment call → evener hub, see §5), `credentials` (judgment call → evener hub, see §5),
+   `launchconfig` (→ evener hub, after cutting the agent-test smell). Two are **promoted** (`appwire`,
    `hubapi` → top-level contracts). The remaining six **stay put in M1** because they're
    multi-importer / cross-layer (`appprojector`, `appserver`, `apptranscript`, `auth`, `diagnostic`,
    `httpguard`) — each with a documented reason and a deferred target.
@@ -55,7 +55,7 @@ Scope: **pure relocation + import rewrites. No logic changes.** Gate after every
    `agent/session_fallback_test.go` imports `internal/appwire` **and** `internal/launchconfig`
    (test-only; confirmed the only agent file touching either). This blocks M3 (agent can't import
    the app module). It does **not** block M1's relocations, but `launchconfig` can't fully "belong
-   to evener-hub" while an agent test imports it. Recommendation: cut this test's app-package
+   to evener hub" while an agent test imports it. Recommendation: cut this test's app-package
    dependency as **step 0 of M1** (rewrite against agent primitives) so `launchconfig` becomes
    cleanly evener-hub-owned. See §4 step 0 and §6.
 
@@ -70,24 +70,24 @@ Classifications: **CONTRACT** (promote to top-level) · **OWNED-BY-ONE-BINARY** 
 see §5) · **CROSS-LAYER** (imported by a library module — `llm`/`agent` — non-test).
 
 Importer products are derived by mapping each importer file to its owner:
-`cmd/evener-hub/*`→evener-hub · `cmd/evener-tui/*`→evener-tui · `cmd/evener/*`→evener(engine) ·
+`cmd/evener-hub/*`→evener hub · `cmd/evener-tui/*`→evener tui · `cmd/evener/*`→evener(engine) ·
 `server/*`→engine (server pkg) · `cmdutil/*`→**shared** (all 3 bins import cmdutil) ·
 `agent/*`→agent lib · `llm/*`→llm lib · `internal/<x>/*`→another app-side internal pkg.
 (Self-imports within the same package are omitted from "products".)
 
 | # | Package | Importer set (file → product) | Classification | Target path (M1) |
 |---|---------|-------------------------------|----------------|------------------|
-| 1 | **appwire** (+ `appwire/appwiretest`) | 122 files across **agent**(test: `session_fallback_test.go`), **evener-hub**(×39), **evener-tui**(×43), **evener(engine)**(×4: `internal/launchcheck/*`, `launch_check_dispatch_test.go`, `serve.go`), **engine `server/`**(×7), and app-internal selves (appprojector, appserver, appsource, apptranscript, launchconfig). All 3 binaries + engine + a lib test. | **CONTRACT** | `appwire/` (+ `appwire/appwiretest/`) — top-level |
-| 2 | **hubapi** | **evener-hub**(×7: `web_api*.go`, `web_session.go`, `web_spawn.go`, `web_types.go`, `web_workspace.go`, `web_test.go`), **evener-tui**(×1: `internal/hubstart/hub_start.go`), self(×2 test). Hub serves it, tui consumes it. | **CONTRACT** | `hubapi/` — top-level |
-| 3 | **appsource** | **evener-hub ONLY** (×14: `app_compact.go`, `app_models.go`, `app_rpc{,_test}.go`, `app_sources.go`, `app_threadlifecycle.go`, `app_threadlist.go`, `app_transcripts.go`, `codex_launch_real_test.go`, `config.go`, `image_attachments_test.go`, `internal/codexlaunch/codex_launch.go`, `web{,_test}.go`). No engine/tui/lib importer. | **OWNED-BY-ONE-BINARY** | `cmd/evener-hub/internal/appsource/` |
-| 4 | **launchconfig** | **evener-hub**(×7: `app_launch{,_test}.go`, `app_threadlifecycle.go`, `e2e_test.go`, `internal/claudeplugins/claude_plugins.go`, `spawn{,_test}.go`), **agent**(test-only: `session_fallback_test.go`). Self-imported by appwire? No. | **OWNED-BY-ONE-BINARY** (after cutting agent-test smell) | `cmd/evener-hub/internal/launchconfig/` |
-| 5 | **binresolve** | **evener-hub**(×1: `main.go`), **evener-tui**(×1: `internal/hubstart/hub_start.go`). 2 binaries. | **MULTI-IMPORTER** → resolved to evener-hub (§5) | `cmd/evener-hub/internal/binresolve/` |
-| 6 | **credentials** | **evener-hub**(×8: `app_auth{,_test}.go`, `app_auth_instance_test.go`, `app_instances_test.go`, `main.go`, `spawn{,_test}.go`, `web.go`), **shared cmdutil**(×1: `load_client.go`). cmdutil is imported by all 3 bins. | **MULTI-IMPORTER** (shared via cmdutil) → resolved to evener-hub (§5) | `cmd/evener-hub/internal/credentials/` |
-| 7 | **appprojector** | **engine `server/` ONLY** (×2: `appwire_runtime.go`, `server.go`). Self-imports apptranscript+diagnostic+appwire. **NOT** imported by evener-hub (contra §4 annotation). | **MULTI-IMPORTER** (sole importer is top-level engine `server/`, not under `cmd/evener/`) | **STAY** `internal/appprojector/` in M1; → engine in M4 (§5) |
-| 8 | **appserver** | **engine `server/`**(×3: `appwire_runtime.go`, `appwire_turns.go`, `server.go`), **evener-hub**(×6: `app_rpc{,_test}.go`, `codex_launch_test.go`, `image_attachments_test.go`, `web{,_test}.go`), **evener-tui**(×7, all `*_test.go`: `hub_agents_test.go`, `hub_appwire_test.go`, `hub_auth_test.go`, `hub_composer_test.go`, `hub_model_test.go`, `hub_send_attachments_test.go`, `tmux_e2e_test.go`), self(appsource tests). **3 products.** | **MULTI-IMPORTER** | **STAY** `internal/appserver/` in M1 (§5) |
-| 9 | **apptranscript** | **engine `server/`**(×1: `appwire_turns.go`), **evener-hub**(×1: `app_threadread.go`), self(appprojector). 2 products. | **MULTI-IMPORTER** | **STAY** `internal/apptranscript/` in M1 (§5) |
-| 10 | **auth** (only subpkgs `auth/openai`, `auth/openai/oaitest`; no root `.go`) | **llm**(NON-TEST: `providers/openai/adapter.go`; +test `adapter_test.go`), **agent**(test: `provider_instance_1b_integration_test.go`), **evener-hub**(×8), **evener-tui**(×1: `auth.go`), **evener(engine)**(×6: `internal/launchcheck/launchcheck_test.go`, `main_test.go`, `openai_login.go`, `openai_logout.go`, `openai_status.go`, `run_test.go`), **shared cmdutil**(test: `materialize_test.go`), self. | **CROSS-LAYER** (imported by `llm` lib, non-test) + multi-importer | **STAY** `internal/auth/` in M1; home decided in M2/M3 (§5) |
-| 11 | **diagnostic** | **agent**(NON-TEST: `diagnostics.go`), **evener-hub**(×3: `app_rpc_test.go`, `web_api.go`, `web_spawn.go`), **evener(engine)**(×1: `internal/launchcheck/launchcheck.go`), **engine `server/`**(test: `appwire_server_test.go`), self(appprojector, apptranscript). | **CROSS-LAYER** — spec §6 **DECIDED: duplicate** | **STAY** `internal/diagnostic/` in M1; duplicate per product in M3 (§5) |
+| 1 | **appwire** (+ `appwire/appwiretest`) | 122 files across **agent**(test: `session_fallback_test.go`), **evener hub**(×39), **evener tui**(×43), **evener(engine)**(×4: `internal/launchcheck/*`, `launch_check_dispatch_test.go`, `serve.go`), **engine `server/`**(×7), and app-internal selves (appprojector, appserver, appsource, apptranscript, launchconfig). All 3 binaries + engine + a lib test. | **CONTRACT** | `appwire/` (+ `appwire/appwiretest/`) — top-level |
+| 2 | **hubapi** | **evener hub**(×7: `web_api*.go`, `web_session.go`, `web_spawn.go`, `web_types.go`, `web_workspace.go`, `web_test.go`), **evener tui**(×1: `internal/hubstart/hub_start.go`), self(×2 test). Hub serves it, tui consumes it. | **CONTRACT** | `hubapi/` — top-level |
+| 3 | **appsource** | **evener hub ONLY** (×14: `app_compact.go`, `app_models.go`, `app_rpc{,_test}.go`, `app_sources.go`, `app_threadlifecycle.go`, `app_threadlist.go`, `app_transcripts.go`, `codex_launch_real_test.go`, `config.go`, `image_attachments_test.go`, `internal/codexlaunch/codex_launch.go`, `web{,_test}.go`). No engine/tui/lib importer. | **OWNED-BY-ONE-BINARY** | `cmd/evener-hub/internal/appsource/` |
+| 4 | **launchconfig** | **evener hub**(×7: `app_launch{,_test}.go`, `app_threadlifecycle.go`, `e2e_test.go`, `internal/claudeplugins/claude_plugins.go`, `spawn{,_test}.go`), **agent**(test-only: `session_fallback_test.go`). Self-imported by appwire? No. | **OWNED-BY-ONE-BINARY** (after cutting agent-test smell) | `cmd/evener-hub/internal/launchconfig/` |
+| 5 | **binresolve** | **evener hub**(×1: `main.go`), **evener tui**(×1: `internal/hubstart/hub_start.go`). 2 binaries. | **MULTI-IMPORTER** → resolved to evener hub (§5) | `cmd/evener-hub/internal/binresolve/` |
+| 6 | **credentials** | **evener hub**(×8: `app_auth{,_test}.go`, `app_auth_instance_test.go`, `app_instances_test.go`, `main.go`, `spawn{,_test}.go`, `web.go`), **shared cmdutil**(×1: `load_client.go`). cmdutil is imported by all 3 bins. | **MULTI-IMPORTER** (shared via cmdutil) → resolved to evener hub (§5) | `cmd/evener-hub/internal/credentials/` |
+| 7 | **appprojector** | **engine `server/` ONLY** (×2: `appwire_runtime.go`, `server.go`). Self-imports apptranscript+diagnostic+appwire. **NOT** imported by evener hub (contra §4 annotation). | **MULTI-IMPORTER** (sole importer is top-level engine `server/`, not under `cmd/evener/`) | **STAY** `internal/appprojector/` in M1; → engine in M4 (§5) |
+| 8 | **appserver** | **engine `server/`**(×3: `appwire_runtime.go`, `appwire_turns.go`, `server.go`), **evener hub**(×6: `app_rpc{,_test}.go`, `codex_launch_test.go`, `image_attachments_test.go`, `web{,_test}.go`), **evener tui**(×7, all `*_test.go`: `hub_agents_test.go`, `hub_appwire_test.go`, `hub_auth_test.go`, `hub_composer_test.go`, `hub_model_test.go`, `hub_send_attachments_test.go`, `tmux_e2e_test.go`), self(appsource tests). **3 products.** | **MULTI-IMPORTER** | **STAY** `internal/appserver/` in M1 (§5) |
+| 9 | **apptranscript** | **engine `server/`**(×1: `appwire_turns.go`), **evener hub**(×1: `app_threadread.go`), self(appprojector). 2 products. | **MULTI-IMPORTER** | **STAY** `internal/apptranscript/` in M1 (§5) |
+| 10 | **auth** (only subpkgs `auth/openai`, `auth/openai/oaitest`; no root `.go`) | **llm**(NON-TEST: `providers/openai/adapter.go`; +test `adapter_test.go`), **agent**(test: `provider_instance_1b_integration_test.go`), **evener hub**(×8), **evener tui**(×1: `auth.go`), **evener(engine)**(×6: `internal/launchcheck/launchcheck_test.go`, `main_test.go`, `openai_login.go`, `openai_logout.go`, `openai_status.go`, `run_test.go`), **shared cmdutil**(test: `materialize_test.go`), self. | **CROSS-LAYER** (imported by `llm` lib, non-test) + multi-importer | **STAY** `internal/auth/` in M1; home decided in M2/M3 (§5) |
+| 11 | **diagnostic** | **agent**(NON-TEST: `diagnostics.go`), **evener hub**(×3: `app_rpc_test.go`, `web_api.go`, `web_spawn.go`), **evener(engine)**(×1: `internal/launchcheck/launchcheck.go`), **engine `server/`**(test: `appwire_server_test.go`), self(appprojector, apptranscript). | **CROSS-LAYER** — spec §6 **DECIDED: duplicate** | **STAY** `internal/diagnostic/` in M1; duplicate per product in M3 (§5) |
 | 12 | **httpguard** | **engine `server/` ONLY** (×1: `server.go`). | OWNED-BY-ENGINE, but sole importer is top-level `server/` (not under `cmd/evener/`) | **STAY** `internal/httpguard/` in M1; → engine in M4 (§5) |
 
 **Authoritative real-import file counts** (sanity): appprojector 2, appserver 18, appsource 14,
@@ -109,7 +109,7 @@ git mv internal/appwire appwire        # moves appwire/ AND appwire/appwiretest/
 git mv internal/hubapi  hubapi
 ```
 
-**Sink to owning binary (evener-hub):**
+**Sink to owning binary (evener hub):**
 
 ```
 git mv internal/appsource     cmd/evener-hub/internal/appsource
@@ -153,7 +153,7 @@ Files needing rewrite (**122** real-import files — full set):
 
 *agent (lib test):* `agent/session_fallback_test.go`
 
-*evener-hub (39):* `cmd/evener-hub/app_auth_instance_test.go`, `app_auth_test.go`, `app_auth.go`,
+*evener hub (39):* `cmd/evener-hub/app_auth_instance_test.go`, `app_auth_test.go`, `app_auth.go`,
 `app_compact.go`, `app_instances_test.go`, `app_instances.go`, `app_launch_test.go`,
 `app_launch.go`, `app_models.go`, `app_paths.go`, `app_rpc_test.go`, `app_rpc.go`,
 `app_sources.go`, `app_threadlifecycle.go`, `app_threadlist.go`, `app_threadread.go`,
@@ -164,7 +164,7 @@ Files needing rewrite (**122** real-import files — full set):
 `web_session.go`, `web_settings.go`, `web_spawn.go`, `web_test.go`, `web_types.go`,
 `web_workspace.go`, `web.go` (all under `cmd/evener-hub/`)
 
-*evener-tui (43):* `cmd/evener-tui/command_palette.go`, `credentials_panel_test.go`,
+*evener tui (43):* `cmd/evener-tui/command_palette.go`, `credentials_panel_test.go`,
 `credentials_panel.go`, `details_drawer.go`, `hub_agents_test.go`, `hub_appwire_test.go`,
 `hub_auth_test.go`, `hub_auth.go`, `hub_browse.go`, `hub_commands.go`, `hub_composer_test.go`,
 `hub_dashboard.go`, `hub_model_test.go`, `hub_model.go`, `hub_notice_test.go`,
@@ -209,7 +209,7 @@ Files needing rewrite (**122** real-import files — full set):
 — **Note:** after `git mv internal/appwire appwire`, these files live at `appwire/…`; rewrite their
 own import strings there.
 
-> NOTE on `appsource`/`launchconfig` self-files: those packages also **move to evener-hub** in this
+> NOTE on `appsource`/`launchconfig` self-files: those packages also **move to evener hub** in this
 > phase. Their internal appwire-import rewrite (to top-level `appwire`) is the same regardless of
 > where they land; sequence appwire's promotion (step 2) so it is already top-level when you rewrite
 > them, or rewrite appwire-refs in the same pass.
@@ -252,7 +252,7 @@ agent test) — leave it at `internal/launchconfig/` until M3.
 
 Files (**2**): `cmd/evener-hub/main.go`, `cmd/evener-tui/internal/hubstart/hub_start.go`.
 **Cross-binary importer:** `cmd/evener-tui/internal/hubstart/hub_start.go` would lose access (a
-evener-hub-private package can't be imported by evener-tui). **See §5 for the required duplication** —
+evener-hub-private package can't be imported by evener tui). **See §5 for the required duplication** —
 this rewrite line applies to the **hub** copy; the **tui** importer points at a duplicated tui copy.
 
 ### 3.6 credentials → cmd/evener-hub/internal/credentials (sink; see §5 resolution)
@@ -339,7 +339,7 @@ Per the spec placement rule (§3): a package imported by 2+ binaries, or by a to
 package (`server/`, `cmdutil/`), or by a library module (`llm`/`agent`), **cannot** live in a single
 `cmd/<bin>/internal/`. Each below lists its importer set and the recommended M1 disposition.
 
-### 5.1 `appserver` — imported by **3 products** (engine `server/`, evener-hub, evener-tui)
+### 5.1 `appserver` — imported by **3 products** (engine `server/`, evener hub, evener tui)
 Importers: `server/{appwire_runtime,appwire_turns,server}.go` (engine) · `cmd/evener-hub/{app_rpc,
 app_rpc_test,codex_launch_test,image_attachments_test,web,web_test}.go` · `cmd/evener-tui/*_test.go`
 (×7, test-only) · self `internal/appsource/*_test.go`.
@@ -350,14 +350,14 @@ are then either (a) re-pointed at the engine's exported surface or (b) recognize
 contract. **Do not sink into `cmd/evener-hub/internal/` — that would break `server/` (engine).**
 Flag for M4 decision: "is appserver part of the AppWire contract, or engine-private re-used by hub?"
 
-### 5.2 `apptranscript` — imported by **2 products** (engine `server/`, evener-hub)
+### 5.2 `apptranscript` — imported by **2 products** (engine `server/`, evener hub)
 Importers: `server/appwire_turns.go` (engine) · `cmd/evener-hub/app_threadread.go` · self
 `internal/appprojector/appwire_projection.go`.
 **Resolution: LEAVE as top-level `internal/apptranscript/` in M1.** Same shape as appserver: shared
-engine↔hub. Sinking to evener-hub breaks the engine `server/` importer. Defer to M4 with `server/`.
+engine↔hub. Sinking to evener hub breaks the engine `server/` importer. Defer to M4 with `server/`.
 
 ### 5.3 `appprojector` — imported by **engine `server/` only** (but `server/` is top-level)
-Importers: `server/{appwire_runtime,server}.go` only. **Not** imported by evener-hub (the §4
+Importers: `server/{appwire_runtime,server}.go` only. **Not** imported by evener hub (the §4
 annotation is wrong). Self-imports apptranscript, diagnostic, appwire.
 **Resolution: LEAVE as top-level `internal/appprojector/` in M1.** It is engine-owned, but its only
 importer is the top-level `server/` package, which M1 does not move. It will travel **with `server/`
@@ -391,7 +391,7 @@ decided: agent keeps `agent/internal/diagnostic`; each app product gets its own 
 happens when agent carves (**M3**), not in M1 (M1 has no agent module yet to duplicate into). Do not
 move in M1.
 
-### 5.7 `binresolve` — **2 binaries** (evener-hub, evener-tui)
+### 5.7 `binresolve` — **2 binaries** (evener hub, evener tui)
 Importers: `cmd/evener-hub/main.go` · `cmd/evener-tui/internal/hubstart/hub_start.go`. Tiny utility
 (resolves a sibling binary path).
 **Resolution (recommend): DUPLICATE** per the spec's standing "duplicate small cross-cutting utils"
@@ -402,9 +402,9 @@ shared `internal/`. **Alternative (if Jesse prefers no duplication):** leave at 
 recommendation is duplicate (matches the §6 precedent and removes a shared-internal). **Needs
 Jesse's nod** since duplication is a (small) logic-shape decision.
 
-### 5.8 `credentials` — **shared via `cmdutil`** (evener-hub + shared cmdutil)
+### 5.8 `credentials` — **shared via `cmdutil`** (evener hub + shared cmdutil)
 Importers: `cmd/evener-hub/*` (×8) · **`cmdutil/load_client.go`** (shared — `cmdutil` is imported by
-evener, evener-hub, **and** llmcall). The `cmdutil` usage (`credentials.LoadStore`) means credentials is
+evener, evener hub, **and** llmcall). The `cmdutil` usage (`credentials.LoadStore`) means credentials is
 effectively reachable by all three binaries.
 **Resolution (recommend): LEAVE as top-level `internal/credentials/` in M1.** Because `cmdutil` is
 the cross-cutting glue (dissolved in M4), sinking credentials to `cmd/evener-hub/internal/` now would
@@ -418,8 +418,8 @@ serialization-format-bearing package. **Needs Jesse's decision**; default = leav
 
 | Package | Why it's a judgment call | M1 disposition | Deferred to |
 |---------|--------------------------|----------------|-------------|
-| `appserver` | imported by engine `server/` + evener-hub + evener-tui (3) | **stay** top-level | M4 (with `server/`) |
-| `apptranscript` | engine `server/` + evener-hub (2) | **stay** top-level | M4 |
+| `appserver` | imported by engine `server/` + evener hub + evener tui (3) | **stay** top-level | M4 (with `server/`) |
+| `apptranscript` | engine `server/` + evener hub (2) | **stay** top-level | M4 |
 | `appprojector` | sole importer is top-level engine `server/` | **stay** top-level | M4 |
 | `httpguard` | sole importer is top-level engine `server/` | **stay** top-level | M4 |
 | `auth` | imported by **`llm` lib (non-test)** + 3 bins + cmdutil | **stay** top-level | M2 (with `llm`) |

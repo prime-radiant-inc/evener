@@ -623,7 +623,7 @@ On non-Windows when `shell: "powershell"` is requested, falls back to `bash` wit
 
 ### 5.6 `statusMessage`
 
-`string`. UI surface only. Plumbed through to `HookStartData.StatusMessage` so consumers (`evener-tui`, `evener-hub`) can render a spinner caption while the hook runs. Empty = default behavior ("Running hook…"). Not interpreted; not substituted.
+`string`. UI surface only. Plumbed through to `HookStartData.StatusMessage` so consumers (`evener tui`, `evener hub`) can render a spinner caption while the hook runs. Empty = default behavior ("Running hook…"). Not interpreted; not substituted.
 
 ## 6. New Output Fields
 
@@ -721,7 +721,7 @@ The active reasoning effort level. Source: same as `effort.level` in §7.3. Empt
 
 ### 8.3 `CLAUDE_CODE_REMOTE`
 
-Set to `"true"` when the session runs in `evener-hub` or any future remote/web embedding. Source: a session flag `cfg.IsRemote` populated by the embedder. Unset (not present in environment, not empty string) for CLI / TUI / SDK sessions.
+Set to `"true"` when the session runs in `evener hub` or any future remote/web embedding. Source: a session flag `cfg.IsRemote` populated by the embedder. Unset (not present in environment, not empty string) for CLI / TUI / SDK sessions.
 
 The flag has no effect on hook semantics; it's a signal for plugins that need to choose between interactive and non-interactive output formats.
 
@@ -911,7 +911,7 @@ No SP5-level re-decision. SP5 records the firing order in `EventHookStart` paylo
 
 Implemented. One-time warning per plugin per hook at config-parse time. No runtime gate; users opting into the experimental hook accept the risk.
 
-The warning is logged at `level: info` to stderr and emitted as a structured event (`EventPluginWarning` with payload identifying plugin + event + hook type) so `evener-hub` can surface it in the UI.
+The warning is logged at `level: info` to stderr and emitted as a structured event (`EventPluginWarning` with payload identifying plugin + event + hook type) so `evener hub` can surface it in the UI.
 
 ### 14.3 `asyncRewake` main-loop integration — addressed in §3.10
 

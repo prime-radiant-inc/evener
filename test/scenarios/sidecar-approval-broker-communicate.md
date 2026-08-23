@@ -12,7 +12,7 @@ hand it back as an observer callback. Driving mechanism:
 
 ## Pre-state
 
-- Fresh `evener` and `evener-hub` from the branch under test.
+- Fresh `evener` and `evener hub` from the branch under test.
 - Hub running on a free port, never Jesse's real hub on `9180` (see
   the Setup checklist in `docs/developing-evener/agentic-testing.md`);
   `TOKEN=$(cat "$HOME/.evener/auth-token")`.
@@ -25,7 +25,7 @@ hand it back as an observer callback. Driving mechanism:
   the normal XDG state home so OAuth remains visible — that means this run
   shares Jesse's real `~/.evener/hub.lock`, auth-token, and credentials with
   his real hub (it will fail to start at all while his real hub already
-  holds the flock — check `pgrep -f 'evener-hub.*:9180'` first rather than
+  holds the flock — check `pgrep -f 'evener.*hub.*:9180'` first rather than
   debugging a mysterious startup failure). Session history does NOT have
   to be shared even then: export `XDG_STATE_HOME=$(mktemp -d -t
   evener-e2e-approval-broker-state-XXXXX)` before starting the hub to keep
@@ -102,14 +102,14 @@ hand it back as an observer callback. Driving mechanism:
 ## Doctor audit
 
 ```bash
-go run ./cmd/evener-doctor watches "$SID"
-go run ./cmd/evener-doctor tree "$SID" --observers
-go run ./cmd/evener-doctor transcript "$SID" --format outline --range last:30
-go run ./cmd/evener-doctor transcript "$OBSERVER_REF" --format outline --range last:30
-go run ./cmd/evener-doctor transcript "$SID" --count job_list
-go run ./cmd/evener-doctor transcript "$SID" --count job_status
-go run ./cmd/evener-doctor transcript "$OBSERVER_REF" --count communicate
-go run ./cmd/evener-doctor transcript "$OBSERVER_REF" --count delegate_send  # expect 0
+go run ./cmd/evener doctor watches "$SID"
+go run ./cmd/evener doctor tree "$SID" --observers
+go run ./cmd/evener doctor transcript "$SID" --format outline --range last:30
+go run ./cmd/evener doctor transcript "$OBSERVER_REF" --format outline --range last:30
+go run ./cmd/evener doctor transcript "$SID" --count job_list
+go run ./cmd/evener doctor transcript "$SID" --count job_status
+go run ./cmd/evener doctor transcript "$OBSERVER_REF" --count communicate
+go run ./cmd/evener doctor transcript "$OBSERVER_REF" --count delegate_send  # expect 0
 ```
 
 ## Cleanup

@@ -156,7 +156,7 @@ are not published.
 ```make
 ## Remove the built binaries from the repo root.
 clean:
-	rm -f evener evener-hub evener-tui evener-doctor llmcall evener-migrate evener-linux-amd64
+	rm -f evener evener hub evener tui evener doctor llmcall evener migrate evener-linux-amd64
 
 ## Go lint, formatting, tagged floors, generated outputs, and secrets.
 ## proves: TOML naming; gofmt over every tracked .go file; the evenerfuzz and

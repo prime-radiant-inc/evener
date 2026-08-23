@@ -1747,7 +1747,7 @@ Expected: both succeed; `git status --short` shows no stray change under `cmd/ev
 
 - [ ] **Step 3: Start the hub and open the SPA**
 
-Run: `./evener-hub` (from the repo root; it prints `[hub] evener-hub … listening on <addr>` and an `[hub] auth URL (visit once per browser): http://<host>/auth?token=…` line to stderr). Open that auth URL in the browser (the superpowers-chrome `use_browser` tool, `action: "navigate"`), which sets the capability cookie and lands on the SPA.
+Run: `./evener` (from the repo root; it prints `[hub] evener hub … listening on <addr>` and an `[hub] auth URL (visit once per browser): http://<host>/auth?token=…` line to stderr). Open that auth URL in the browser (the superpowers-chrome `use_browser` tool, `action: "navigate"`), which sets the capability cookie and lands on the SPA.
 
 - [ ] **Step 4: Verify the spawn-pane picker**
 

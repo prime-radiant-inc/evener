@@ -26,7 +26,7 @@ the trimmed value is empty (`Rail.tsx:639`).
 
 ## Pre-state
 
-- A freshly built `evener-hub` on an isolated `$HOME` and a kernel-assigned port
+- A freshly built `evener hub` on an isolated `$HOME` and a kernel-assigned port
   — the Setup checklist in `docs/developing-evener/agentic-testing.md`. Never a real hub. Build
   the frontend (`make build-web`) before the hub for the browser half.
 - A **live** session against a real, credentialed model (step 4's compaction is
@@ -140,7 +140,7 @@ optimistic overlay.
 - **Compaction on a short transcript can finish before your first poll.** Don't
   read "already done at poll #1" as "didn't run"; confirm via the
   `context_used` / `context_pressure` drop, or
-  `go run ./cmd/evener-doctor transcript <SID> --format outline`.
+  `go run ./cmd/evener doctor transcript <SID> --format outline`.
 - **Don't stub `window.confirm`.** Nothing in the rail's rename or delete paths
   uses it; every confirmation is an in-app `Dialog`. A stub silently does
   nothing and makes a skipped interaction look handled.

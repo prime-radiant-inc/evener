@@ -122,7 +122,7 @@ HUB=http://127.0.0.1:$PORT
    hand-parse the JSONL — use the doctor:
    ```bash
    wait_state idle
-   go run ./cmd/evener-doctor transcript "$SID" --format outline --range last:40 | grep STEERING
+   go run ./cmd/evener doctor transcript "$SID" --format outline --range last:40 | grep STEERING
    ```
 
 ## Expected

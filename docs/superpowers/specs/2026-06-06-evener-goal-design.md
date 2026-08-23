@@ -26,7 +26,7 @@
 >   the model as a steering turn.
 > - **Capability-gated surface.** `goal/set` is gated by a `Goal` thread capability like every
 >   sibling action (rejected uniformly on sources without the engine, e.g. codex). Full
->   surface: status chip on evener-tui (header) and evener-hub web (pill); web can set/clear via
+>   surface: status chip on evener tui (header) and evener hub web (pill); web can set/clear via
 >   the ⌘K palette.
 
 ## Summary
@@ -76,7 +76,7 @@ level.)
    leaves a goal silently `active` after it has effectively stopped.
 3. The user can see goal state (`/goal status`) and is **told when and why** the loop ended.
 4. `/goal clear` works. The objective is honored as data, not as instructions.
-5. Logic is server-side (UI-agnostic); evener-tui surfaces it first.
+5. Logic is server-side (UI-agnostic); evener tui surfaces it first.
 
 ## Non-goals / deferred
 
@@ -345,7 +345,7 @@ unconditional promise). Full text:
 
 ### 5. Surfacing — set, clear, status, terminal report (reusing existing channels)
 
-Logic is server-side. evener-tui surfaces it first.
+Logic is server-side. evener tui surfaces it first.
 
 **Set / clear.** `goal/set { objective }` (empty = clear) is a thin appwire forwarder to a
 `Session` method (`Session.SetGoal` / `ClearGoal`), exactly like evener's `SetSteerFunc`/
@@ -357,7 +357,7 @@ continuation. If idle, `SetGoal` requests a best-effort kick (a `Continuation`-k
 already pending and its gate is the reliable backstop, so `goal/set` reports "goal set; starts
 after the current turn" rather than implying immediate start.
 
-**Status (`/goal status`).** evener-tui is a separate process; status arrives over the wire.
+**Status (`/goal status`).** evener tui is a separate process; status arrives over the wire.
 **Do not use `ThreadStatus.ActiveFlags`** — it has zero non-test consumers (dead wire-compat
 scaffolding), so using it means building the consumer anyway and string-parsing structured
 data back out. Instead add a typed `Goal *GoalStatus {status, iterations, max}` to

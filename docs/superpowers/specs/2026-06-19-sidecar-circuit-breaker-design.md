@@ -32,7 +32,7 @@ The causal-provenance data plane (`provenance.Causal` = the deduped `WatchKeys` 
 
 Depth must be **the count of distinct *delivered* prior deliveries of this watch in the lineage** — NOT raw `Chain` hop count. Coalescing unions provenance by design (`agent/job_watch.go:~2730`, `state.Provenance = provenance.Union(existing.Provenance, state.Provenance)`, "the coalesced frame stands in for both the superseded delivery and this one"), so a survivor's `Chain` carries superseded same-slot predecessors that never independently delivered. Counting raw hops trips the fuse on a false runaway.
 
-This is exactly the correction shipped in evener-doctor (`fix(doctor): self-loop verdict must not flag coalesced-away predecessors`, commit `8990c8da`): a prior `Chain` hop counts only when its `delivery_id` actually delivered. **Reuse that logic** for the depth metric.
+This is exactly the correction shipped in evener doctor (`fix(doctor): self-loop verdict must not flag coalesced-away predecessors`, commit `8990c8da`): a prior `Chain` hop counts only when its `delivery_id` actually delivered. **Reuse that logic** for the depth metric.
 
 **Two keyings, two purposes:**
 - The **inform / self-detection** keys on `(watch_id, generation)` (`ContainsWatch`) — a genuine re-arm (new generation) is genuinely fresh and resets the inform.
@@ -59,7 +59,7 @@ So the per-watch inform+fuse *composes* to arbitrary cycle lengths with no cross
 
 ## 6. Consequences (must land with or right after the policy flip)
 
-- **evener-doctor's self-loop concept inverts.** Today the doctor's invariant is "healthy ⇒ zero self-loop deliveries." Under inform+breaker, self-influenced deliveries are *normal and expected*. Re-point `evener-doctor watches --self-loops` from "find a bug" to **depth & breaker telemetry**: report per-watch max depth, whether the fuse fired (`runaway` drops), and flag only *unbounded* depth / fuse trips. The coalescing-aware depth logic is already in `agent/doctor/watches.go`.
+- **evener doctor's self-loop concept inverts.** Today the doctor's invariant is "healthy ⇒ zero self-loop deliveries." Under inform+breaker, self-influenced deliveries are *normal and expected*. Re-point `evener doctor watches --self-loops` from "find a bug" to **depth & breaker telemetry**: report per-watch max depth, whether the fuse fired (`runaway` drops), and flag only *unbounded* depth / fuse trips. The coalescing-aware depth logic is already in `agent/doctor/watches.go`.
 - **Re-baseline the suppression-era e2e scenarios.** `test/scenarios/job-watch-actually-monty-python-injection.md` and `job-watch-observer-snide-thread.md` were written to prove echoes get **dropped**; they now prove echoes get **delivered-and-bounded** (the inform line appears; depth climbs; the fuse caps a runaway). Rewrite the cards + assertions.
 - **Prompt docs.** Add a **breaker paragraph** to the agent system prompt: how a sidecar reads the depth line and is expected to disengage as it climbs. The broader **"how to use sidecar agents and subagents"** guide is a separate, meatier follow-up task (its own spec), not smuggled into this change.
 
@@ -68,7 +68,7 @@ So the per-watch inform+fuse *composes* to arbitrary cycle lengths with no cross
 ## 7. Build plan
 
 1. **Policy flip** (the core): in `onSessionEvent`, stop dropping on `ContainsWatch`; instead compute the coalescing-aware depth (§3), inject the depth-gradient `<system-reminder>` line (§2.2) on self-influenced deliveries, and apply the hard fuse at depth N (§2.4, drop with reason `runaway`). Relax line 931 (§5). Pick N (start ~16? reuse `maxDiagnosticChain` or a dedicated config — decide at build).
-2. **Re-baseline + re-point** (§6): rewrite the two e2e scenario cards; re-point `evener-doctor watches --self-loops` to depth/breaker telemetry; update the doctoring-evener `failure-modes.md`/runbooks where they assert "zero self-loops."
+2. **Re-baseline + re-point** (§6): rewrite the two e2e scenario cards; re-point `evener doctor watches --self-loops` to depth/breaker telemetry; update the doctoring-evener `failure-modes.md`/runbooks where they assert "zero self-loops."
 3. **Prompt** (§6): the breaker paragraph now; the sidecar/subagent usage guide as its own task.
 
 ---

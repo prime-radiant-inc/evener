@@ -2,7 +2,7 @@
 
 Date: 2026-06-19
 Status: draft for Jesse review (UNCOMMITTED)
-Sibling: `docs/superpowers/specs/2026-06-19-evener-doctoring-tools.md` (the TOOLS half).
+Sibling: `docs/superpowers/specs/2026-06-19-evener doctoring-tools.md` (the TOOLS half).
 This is the DOCS half: are evener's debugging docs good and evergreen, and how do we make them so. It is an audit + proposal, not a docs rewrite and not tool design. It assumes the `evener doctor` tools from the sibling spec **will exist** and references them; it does not design them.
 
 ## TL;DR

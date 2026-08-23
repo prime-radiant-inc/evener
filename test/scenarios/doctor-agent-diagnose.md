@@ -2,7 +2,7 @@
 
 **What this covers**: the `doctor` agent type (`internal/bundled/agents/doctor.md`) driving
 a live diagnosis loop — loading the `doctoring-evener` skill, invoking the
-`evener-doctor` tools via the shell tool, classifying results, and emitting (or
+`evener doctor` tools via the shell tool, classifying results, and emitting (or
 withholding) structured Findings. This is the full collapse the design bets on:
 **evener is the agentic loop; the doctor is a persona + a skill + compiled tools.**
 
@@ -16,8 +16,8 @@ carries the skill + shell/edit tools). This card proves the *behavior*.
 
 ## Pre-state
 
-- Built `evener` and `evener-doctor` (`make build && make build-doctor`), with
-  `evener-doctor` reachable from the doctor's shell (on `PATH` or in cwd).
+- Built `evener` and `evener doctor` (`make build && make build-doctor`), with
+  `evener doctor` reachable from the doctor's shell (on `PATH` or in cwd).
 - A working provider (e.g. `openai/gpt-5.4-mini`).
 - Run from the evener repo root with a Evener binary that includes the bundled
   `doctoring-evener` skill.
@@ -32,7 +32,7 @@ not a fault). Run the doctor persona directly:
 ```bash
 PATH="$PWD:$PATH" evener --agent doctor --model openai/gpt-5.4-mini \
   "Diagnose evener session <SID> for watch runaways and delivery health.
-   Use the evener-doctor tools and the doctoring-evener skill. Report findings;
+   Use the evener doctor tools and the doctoring-evener skill. Report findings;
    a healthy run emits zero findings."
 ```
 
@@ -43,7 +43,7 @@ leading words would be silently joined into the prompt text by
 `cliprompt.Read` (`cmd/evener/main.go:166`) rather than erroring.)
 
 ASSERT the doctor:
-- invokes `evener-doctor watches <SID> --json` (and/or `--self-loops`) via the shell
+- invokes `evener doctor watches <SID> --json` (and/or `--self-loops`) via the shell
   tool — it does NOT hand-parse `jobs.jsonl`;
 - reports **zero findings**, and explicitly treats coalescing
   (`pending_lines > distinct_deliveries`) AND bounded self-influence (depth
@@ -51,7 +51,7 @@ ASSERT the doctor:
 - emits a structured result with `findings: []`.
 
 Observed (real run, session `01KVF40N0MV1R492KM4QJY7QN0`): the doctor ran
-`evener-doctor watches … --json`, then reported *"No findings: watch self-loops
+`evener doctor watches … --json`, then reported *"No findings: watch self-loops
 were not detected … 8 pending lines coalesced into 4 distinct deliveries"* and
 `{"findings":[]}`. **PASS.**
 
@@ -63,7 +63,7 @@ depth up to the fuse: a delivered send plus a send DROPPED with
 is normal; the diagnosable event is the fired fuse):
 
 ```bash
-# BSID must be a REAL session id: evener-doctor validates the selector before
+# BSID must be a REAL session id: evener doctor validates the selector before
 # reading anything (identifier.ValidateSessionID -> 22-char base62 UUIDv7,
 # identifier/uuid.go:12,64-73), so a readable fake like 01BROKENLOOP... is
 # rejected with `invalid session id` and nothing below runs. This literal is
@@ -94,7 +94,7 @@ ASSERT the doctor emits **exactly one** Finding conforming to the contract:
 - `signature: watch_runaway:<SID>:wLOOP` (the structural-defect signature format);
 - `evidence.deliveryIds` includes `"dl3"` (the runaway-dropped send; citing
   the depth-7 delivered `dl2` as supporting evidence is acceptable) and
-  `evidence.doctorCommand` is the `evener-doctor watches … --self-loops --json`
+  `evidence.doctorCommand` is the `evener doctor watches … --self-loops --json`
   invocation it actually ran;
 - `suggestedFix.type: diagnosis` (a fired fuse means a runaway feedback loop
   ran to the machinery floor — report the loop's participants; the drop itself
@@ -104,7 +104,7 @@ Observed (real run 2026-07-03, merged main, openai/gpt-5.4-mini — recorded
 verbatim, so its session id is the pre-identifier-refactor 26-char form this
 card no longer uses; a re-run's signature carries `$BSID` instead): the doctor
 read the runbook + data-model references, ran exactly
-`evener-doctor watches 01BROKENLOOPAAAAAAAAAAAAAAA --state-dir $SCR
+`evener doctor watches 01BROKENLOOPAAAAAAAAAAAAAAA --state-dir $SCR
 --self-loops --json`, and emitted ONE Finding verbatim to the contract:
 `signature: watch_runaway:01BROKENLOOPAAAAAAAAAAAAAAA:wLOOP`,
 `category: watch_runaway`, `severity: high`,
@@ -120,5 +120,5 @@ participants): `--self-loops` returned no watches and the doctor reported
   (visibility ≠ violation).
 - If half B emitted zero findings, either the breaker telemetry (`runaway_drops`
   on the `--self-loops` filter) or the runbook's CLASSIFY step would be broken.
-- If the doctor read `jobs.jsonl` by hand instead of running `evener-doctor`, it
+- If the doctor read `jobs.jsonl` by hand instead of running `evener doctor`, it
   would be violating the HARD GATE.

@@ -33,7 +33,7 @@ shipped workstreams live beside them and are the house style to imitate.
   invariant); run tests per module (`cd agent && go test ./...`).
 - `make lint` = golangci across modules (tag casing via tagliatelle, library
   doc comments via revive's exported rule)
-  + evener-tomlcheck + internalcheck + codegen check. JSON/TOML keys are
+  + evener tomlcheck + internalcheck + codegen check. JSON/TOML keys are
   snake_case; deliberate camelCase (e.g. Claude Code plugin schema interop in
   internal/plugins/) takes a trailing `//nolint:tagliatelle // <reason>`.
 - jstest (cmd/evener-hub/jstest) is agent-run, not in CI:
@@ -46,7 +46,7 @@ shipped workstreams live beside them and are the house style to imitate.
   token (partial provider availability is tolerated; no .env needed unless
   targeting oai-work). Cheap e2e model: openai/gpt-5.4-mini. Never print .env
   contents.
-- appwire: new METHODS need catalog + BOTH routers (server + evener-hub) in ONE
+- appwire: new METHODS need catalog + BOTH routers (server + evener hub) in ONE
   commit (bidirectional cross-check tests); new struct fields don't.
   docs/appwire-protocol.md is generated (`make generate`).
 - Known flake: TestReconnect_FailedReconnect_BackoffSuppressesImmediateRetry

@@ -25,7 +25,7 @@ missed note costs nothing; a spurious finding makes a human triage noise.
 | `suggestedFix` | object | yes | the **routing** directive (below). |
 
 `evidence` sub-fields: `sessionRefs[]`, `watchIds[]`, `deliveryIds[]`,
-`transcriptTurns[]`, `doctorCommand` (the exact `evener-doctor <cmd> …` that
+`transcriptTurns[]`, `doctorCommand` (the exact `evener doctor <cmd> …` that
 surfaces it — so a human can reproduce), `logSnippets[]`. Redact secrets from
 evidence.
 
@@ -37,7 +37,7 @@ Adopt the diagnostic categories from Contract 3 where they apply — `validation
 shapes this skill adds: `watch_runaway`, `dropped_delivery`, `provenance_gap`,
 `stuck_processing`, `orphaned_runtime`, `legacy_state`. Use `legacy_state` only
 for the exact fail-closed `legacy_delegate_state` or
-`legacy_delegate_watch_state` codes reported by `evener-doctor`; do not infer it
+`legacy_delegate_watch_state` codes reported by `evener doctor`; do not infer it
 from prose or historical transcript rendering. The category routes and groups.
 
 ### Signature formats
@@ -87,7 +87,7 @@ code. That is an honest limit of an on-demand forensic doctor.
     "sessionRefs": ["proj:6f…:01JABCWORKER"],
     "watchIds": ["w_42"],
     "deliveryIds": ["dl_9"],
-    "doctorCommand": "evener-doctor watches proj:6f…:01JABCWORKER --self-loops"
+    "doctorCommand": "evener doctor watches proj:6f…:01JABCWORKER --self-loops"
   },
   "suggestedFix": { "type": "diagnosis" }
 }

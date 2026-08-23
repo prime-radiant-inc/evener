@@ -63,7 +63,7 @@ HUB=http://127.0.0.1:$PORT
    `turn_count`.
 6. **Read the durable record**:
    ```bash
-   go run ./cmd/evener-doctor transcript "$SID" --format outline --range last:30
+   go run ./cmd/evener doctor transcript "$SID" --format outline --range last:30
    ```
 
 ## Expected

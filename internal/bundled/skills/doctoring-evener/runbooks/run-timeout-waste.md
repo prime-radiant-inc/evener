@@ -5,7 +5,7 @@ over, discarding the run's output each time, instead of adapting?
 
 ## HEALTHY
 
-- Few or no terminal jobs ended by `run_timeout`. `evener-doctor transcript
+- Few or no terminal jobs ended by `run_timeout`. `evener doctor transcript
   --health` reports `jobs.run_timeout` below the threshold.
 - Note: a single `run_timeout` is not itself a Finding — it becomes a
   wasted-budget pattern only once the session keeps re-running a doomed
@@ -17,9 +17,9 @@ over, discarding the run's output each time, instead of adapting?
 Take the target session id from the runbook invocation — never hardcode one.
 
 ```
-evener-doctor transcript <selector> --health --json
+evener doctor transcript <selector> --health --json
 # per-job command/output_bytes detail, if the summary count needs unpacking:
-evener-doctor jobs <selector> --json
+evener doctor jobs <selector> --json
 ```
 
 ## CLASSIFY
@@ -40,7 +40,7 @@ audit:
   which is what turns the retries into blind repeats instead of informed
   ones (`0341CrVzn6z2CM0sgd87F2`: 90 of 145 jobs ended `run_timeout`, 89 with
   zero output, ~90 minutes lost; `0340xUxn3kwKp6BNy6J7Tj`: 15 timeouts then
-  committed without ever seeing a pass). `evener-doctor jobs <sel>` shows each
+  committed without ever seeing a pass). `evener doctor jobs <sel>` shows each
   job's own command, so confirm the flagged session was actually re-running
   the *same* command rather than five distinct long-but-legitimate jobs.
 - Fewer than the threshold's `run_timeout` jobs is not a Finding — a session

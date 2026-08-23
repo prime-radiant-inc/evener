@@ -2481,7 +2481,7 @@ Retry link.
 
 ## Setup
 
-1. `evener-hub serve --listen 127.0.0.1:0` in one shell; capture port.
+1. `evener hub serve --listen 127.0.0.1:0` in one shell; capture port.
 2. Spawn a session with `anthropic/claude-haiku-4-5-20251001` and
    prompt `please call the read_file tool once on README.md then stop`.
    Wait for the session to reach IDLE.
@@ -2529,7 +2529,7 @@ tmux against the TUI.
 ## Driver
 
 ```
-tmux new-session -d -s testbed 'evener-hub serve & evener-tui'
+tmux new-session -d -s testbed 'evener hub serve & evener tui'
 tmux send-keys -t testbed ':spawn anthropic/claude-haiku-4-5-20251001 ...'
 # Wait for IDLE
 tmux send-keys -t testbed 'this should fail visibly'
@@ -2577,7 +2577,7 @@ scenarios: optimistic rendering fails-fast + reconciles paths
 
 Four live e2e scenarios covering the new optimistic-rendering
 pattern: web + TUI, success + failure. Each drives against a real
-evener-hub + evener daemon spawning anthropic/claude-haiku-4-5-20251001
+evener hub + evener daemon spawning anthropic/claude-haiku-4-5-20251001
 sessions.
 
 Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>

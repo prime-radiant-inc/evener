@@ -24,11 +24,11 @@ The wiring lives in:
 ## Pre-state
 
 - `tmux` installed (tested on tmux 3.4).
-- `evener-hub` reachable on an isolated `$HOME` and free port
+- `evener hub` reachable on an isolated `$HOME` and free port
   (never Jesse's port `9180` — see the Setup checklist in
   `docs/developing-evener/agentic-testing.md`). Token at
   `$HOME/.evener/auth-token`.
-- `./evener-tui` and `./evener-hub` built in repo root.
+- `./evener` and `./evener` built in repo root.
 - Anthropic OAuth or API key configured so
   `anthropic/claude-haiku-4-5-20251001` can be invoked.
 - The tmux session name is derived from this run's own scratch dir
@@ -44,7 +44,7 @@ The wiring lives in:
    TMUX_SESSION="evener-drain-$(basename "$WORKDIR")"
    cp README.md "$WORKDIR/README.md"
    tmux new-session -d -s "$TMUX_SESSION" -x 200 -y 50 \
-     "./evener-tui --hub-addr 127.0.0.1:$PORT --debug"
+     "./evener tui --hub-addr 127.0.0.1:$PORT --debug"
    sleep 1
    tmux send-keys -t "$TMUX_SESSION" "n"
    sleep 0.5

@@ -813,7 +813,7 @@ design lives in
 
 **Phase 2 (next, terminal — no Phase 3):** one provider/instance **CRUD UI**
 replacing the duplicate Providers + Credentials screens — **in both the web hub
-and `evener-tui`** — with the model picker routing/displaying by instance name.
+and `evener tui`** — with the model picker routing/displaying by instance name.
 Until then those settings screens stay type-based.
 
 ## Adding or changing a provider

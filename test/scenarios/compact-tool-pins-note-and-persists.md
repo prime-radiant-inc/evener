@@ -23,7 +23,7 @@ compaction runs.
   ```bash
   cd <this worktree>
   run=$(mktemp -d -t evener-e2e-compact-XXXXXX)
-  go build -o "$run/evener-hub" ./cmd/evener-hub
+  go build -o "$run/evener" hub ./cmd/evener-hub
   go build -o "$run/evener"     ./cmd/evener
   REALEVENER=~/.evener
   TH="$run/home"                               # isolated HOME
@@ -43,7 +43,7 @@ compaction runs.
   spawn_timeout = "30s"
   EOF
   HOME="$TH" XDG_STATE_HOME="$TH/.local/state" \
-    "$run/evener-hub" -addr 127.0.0.1:0 -evener "$run/evener" \
+    "$run/evener" hub -addr 127.0.0.1:0 -evener "$run/evener" \
     >"$run/hub.log" 2>&1 &
   HUBPID=$!
   echo "$HUBPID" >"$run/hub.pid"
@@ -149,8 +149,8 @@ Leave the real `~/.evener` hub and sibling worktrees untouched — the isolated
 
 - **Kill the hub by pid, never by pattern.** Two independent ways a pattern
   match goes wrong here, which is why `$HUBPID` (and `$run/hub.pid` for a
-  second shell) exists: `pkill -f evener-hub` also kills every *other* concurrent
-  agent's test hub, since they are all called `evener-hub` now that each lives
+  second shell) exists: `pkill -f evener hub` also kills every *other* concurrent
+  agent's test hub, since they are all called `evener hub` now that each lives
   under its own run directory; and a `pkill -f` whose pattern appears in your
   own shell's argv kills the shell running the cleanup, so the command dies
   mid-way with no output and the hub survives anyway. Verify the kill took with

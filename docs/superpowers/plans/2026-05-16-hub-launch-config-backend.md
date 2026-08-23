@@ -2766,7 +2766,7 @@ Expected: PASS.
 
 ```bash
 git add cmd/evener-hub/app_launch.go cmd/evener-hub/app_launch_test.go internal/launchconfig/merge.go
-git commit -m "evener-hub: launch-config RPC handlers"
+git commit -m "evener hub: launch-config RPC handlers"
 ```
 
 ---
@@ -3040,7 +3040,7 @@ Expected: PASS.
 
 ```bash
 git add cmd/evener-hub/app_auth.go cmd/evener-hub/app_auth_test.go internal/appwire/types.go
-git commit -m "evener-hub: auth controller manages credentials store"
+git commit -m "evener hub: auth controller manages credentials store"
 ```
 
 ---
@@ -3184,7 +3184,7 @@ go build ./...
 
 ```bash
 git add cmd/evener-hub/app_rpc.go cmd/evener-hub/main.go cmd/evener-hub/config.go
-git commit -m "evener-hub: register launch + auth RPCs and notifications"
+git commit -m "evener hub: register launch + auth RPCs and notifications"
 ```
 
 ---
@@ -3365,7 +3365,7 @@ Expected: PASS + clean build.
 
 ```bash
 git add cmd/evener-hub/spawn.go cmd/evener-hub/spawn_test.go
-git commit -m "evener-hub: spawn.go consumes launchconfig.Resolved"
+git commit -m "evener hub: spawn.go consumes launchconfig.Resolved"
 ```
 
 ---
@@ -3475,7 +3475,7 @@ Expected: PASS.
 
 ```bash
 git add cmd/evener-hub/app_rpc.go cmd/evener-hub/app_rpc_test.go
-git commit -m "evener-hub: ThreadStart honors launchOverrides via Resolve"
+git commit -m "evener hub: ThreadStart honors launchOverrides via Resolve"
 ```
 
 ---
@@ -3556,7 +3556,7 @@ Expected: PASS.
 
 ```bash
 git add cmd/evener-hub/config.go cmd/evener-hub/config_test.go cmd/evener-hub/main.go
-git commit -m "evener-hub: drop legacy [evener_launch] config, add hub_state_root"
+git commit -m "evener hub: drop legacy [evener_launch] config, add hub_state_root"
 ```
 
 ---
@@ -3663,7 +3663,7 @@ Expected: PASS.
 
 ```bash
 git add cmd/evener-hub/e2e_test.go
-git commit -m "evener-hub: e2e test for layered launch config"
+git commit -m "evener hub: e2e test for layered launch config"
 ```
 
 ---
@@ -3700,7 +3700,7 @@ go test ./... && go build ./...
 
 ```bash
 git add cmd/evener-hub/README.md
-git commit -m "evener-hub: README points at new launch-config layout"
+git commit -m "evener hub: README points at new launch-config layout"
 ```
 
 ---

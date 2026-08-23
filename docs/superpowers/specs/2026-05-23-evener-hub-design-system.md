@@ -1,6 +1,6 @@
 # Evener-Hub Design System
 
-> Reference for engineers and designers extending the evener-hub UI.
+> Reference for engineers and designers extending the evener hub UI.
 > Captures the system AS BUILT after Pass 1-8 of the responsive UI overhaul (May 2026).
 > Source of truth: `cmd/evener-hub/assets/style.css` + the partials under `cmd/evener-hub/templates/`.
 

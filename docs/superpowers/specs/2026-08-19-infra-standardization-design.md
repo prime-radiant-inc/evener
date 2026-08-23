@@ -81,7 +81,7 @@ compiles, and the tag-free run compiles none of the ~250 `//go:build
 evenerfuzz` / `eval` sources. `lint-gofmt` (`gofmt -l` over every tracked
 `.go` file) stays. See "Corrections after review".
 
-**1d. Keep `evener-internalcheck`.** No standard linter checks "exported API
+**1d. Keep `evener internalcheck`.** No standard linter checks "exported API
 must not name internal types." It stays as-is.
 
 ### 2. Makefile mechanics
@@ -111,9 +111,9 @@ must not name internal types." It stays as-is.
 
 New `.goreleaser.yml`:
 
-- `before` hook runs `make build-web` (evener-hub embeds the SPA).
-- Five builds (evener, evener-hub, evener-tui, evener-doctor,
-  evener-migrate), targets linux/amd64 + darwin/arm64, `CGO_ENABLED=0`.
+- `before` hook runs `make build-web` (evener hub embeds the SPA).
+- Five builds (evener, evener hub, evener tui, evener doctor,
+  evener migrate), targets linux/amd64 + darwin/arm64, `CGO_ENABLED=0`.
   The evener build carries the buildinfo ldflags (GitSHA, GitDirty,
   BuildTime, Channel) via goreleaser templates.
 - Archives: `evener_<os>_<arch>.tar.gz`, directory-wrapped, five binaries —
@@ -263,7 +263,7 @@ commit catches strays.
    deleted exact-text pins would otherwise fail every later commit. The two
    surviving safety audits keep their lockstep rule.
 2. tagliatelle replaces namingcheck-Go; namingcheck shrinks to
-   evener-tomlcheck; `build-namingcheck` dies.
+   evener tomlcheck; `build-namingcheck` dies.
 3. revive `exported` replaces docscheck; `lint-docs` dies.
 4. Drop `lint-gofmt`.
 5. Extract test-web / test-web-browser to scripts/web/.
@@ -303,7 +303,7 @@ had to reverse.
 
 **Four defects, all execution-proven by the reviewer:**
 
-1. A 3.9 MB compiled `evener-fuzzregistry` was committed. Dropped by
+1. A 3.9 MB compiled `evener fuzzregistry` was committed. Dropped by
    rewriting the branch; `.gitignore` now lists every `cmd/` binary.
 2. `binaries.yml`'s snapshot job lost `actions/checkout`, so its `git` and
    `gh` steps would have run in a workspace with no repository. It fires

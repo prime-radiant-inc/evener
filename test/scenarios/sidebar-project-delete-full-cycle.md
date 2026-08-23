@@ -29,7 +29,7 @@ than dropped.
 
 ## Pre-state
 
-- A freshly built `evener-hub` on an isolated `$HOME` and a kernel-assigned port
+- A freshly built `evener hub` on an isolated `$HOME` and a kernel-assigned port
   — the Setup checklist in `docs/developing-evener/agentic-testing.md`. Never a real hub. Build
   the frontend (`make build-web`) before the hub for step 5.
 - Three disposable scratch directories, **none of them inside a git repo** (see

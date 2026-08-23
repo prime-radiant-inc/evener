@@ -815,7 +815,7 @@ The blessed way to run a second, disposable hub — an e2e harness, a scratch
 verification hub — is a fresh HOME:
 
 ```sh
-HOME=$(mktemp -d) ./evener-hub -addr 127.0.0.1:0 -evener ./evener
+HOME=$(mktemp -d) ./evener hub -addr 127.0.0.1:0 -evener ./evener
 ```
 
 Never point a test hub at the real HOME "just for a quick check": if the

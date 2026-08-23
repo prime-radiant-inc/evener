@@ -1777,7 +1777,7 @@ EOF
 
 ## Post-Migration Cleanup (Not in This Plan)
 
-The `--pad: 12px` legacy alias on `:root` (line 33) stays defined after this pass — its usages are gone, but other token-migration passes (color, typography) may still reference it via `--panel`/`--border`/etc. The alias is removed in the final consolidation step of the broader evener-hub UI overhaul (after Pass 6 completes), not here.
+The `--pad: 12px` legacy alias on `:root` (line 33) stays defined after this pass — its usages are gone, but other token-migration passes (color, typography) may still reference it via `--panel`/`--border`/etc. The alias is removed in the final consolidation step of the broader evener hub UI overhaul (after Pass 6 completes), not here.
 
 ---
 

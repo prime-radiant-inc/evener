@@ -1,10 +1,10 @@
 # Evener
 
-A coding agent run through a hub. The `evener-hub` orchestrator serves the
+A coding agent run through a hub. The `evener hub` orchestrator serves the
 web UI — Evener's default interactive surface — where you start sessions,
 watch the agent read files, run commands, and edit code, and steer it with
 follow-up messages. The hub tracks many concurrent sessions at once, and
-`evener-tui` gives the same hub a terminal dashboard. A non-interactive
+`evener tui` gives the same hub a terminal dashboard. A non-interactive
 command line handles scripting and automation.
 
 **New here? [docs/getting-started.md](docs/getting-started.md) walks from
@@ -30,7 +30,7 @@ curl -fsSL https://raw.githubusercontent.com/prime-radiant-inc/evener/main/insta
 ```
 
 The installer verifies the release archive's SHA-256 checksum and installs
-`evener`, `evener-hub`, `evener-tui`, `evener-doctor`, and `evener-migrate`
+`evener`, `evener hub`, `evener tui`, `evener doctor`, and `evener migrate`
 under `~/.local/share/evener/bin`, symlinked into `~/.local/bin`. Make sure
 `~/.local/bin` is on your `PATH`.
 
@@ -45,11 +45,11 @@ install under `/usr/local`, see
 [docs/getting-started.md](docs/getting-started.md#install). Verify any install
 with `evener --version`.
 
-Upgrade `evener`, `evener-hub`, `evener-tui`, and `evener-doctor` with
+Upgrade `evener`, `evener hub`, `evener tui`, and `evener doctor` with
 `evener upgrade`. The command follows the binary's install channel: release
 builds upgrade to the latest release, and snapshot builds upgrade to the latest
 successful `main` build. Pass `release`, `snapshot`, or a tag such as `v1.2.3`
-to switch tracks. `evener-migrate` is not updated by `evener upgrade`; rerun
+to switch tracks. `evener migrate` is not updated by `evener upgrade`; rerun
 the installer, or run `make install` (or `sudo make install-system`), to refresh
 it. The TUI and web UI expose the same mechanism through their `/upgrade`
 command.
@@ -87,7 +87,7 @@ for the complete environment variable reference.
 Start the hub:
 
 ```bash
-evener-hub
+evener hub
 ```
 
 The hub listens on `127.0.0.1:9180` and prints an authorization URL at
@@ -108,13 +108,13 @@ search included — lives in
 
 ## Evener Hub (Web Orchestrator)
 
-`evener-hub` runs alongside `evener serve` daemons and gives you a single
+`evener hub` runs alongside `evener serve` daemons and gives you a single
 browser-based interface for many concurrent sessions.
 
 ### Build & run
 
-From a source checkout, run `make build-hub`, then `./evener-hub` (default
-`127.0.0.1:9180`). Installed users can run `evener-hub` from `PATH`.
+From a source checkout, run `make build-hub`, then `./evener` (default
+`127.0.0.1:9180`). Installed users can run `evener hub` from `PATH`.
 
 ### What's there
 
@@ -142,7 +142,7 @@ Design spec, plans, and notes live under `docs/superpowers/`.
 
 ## Evener TUI (Terminal User Interface)
 
-`evener-tui` is a hub-backed terminal dashboard for Evener sessions. It connects to `evener-hub`, lists live and saved sessions, lets you drill into a transcript, and sends session actions through the hub API.
+`evener tui` is a hub-backed terminal dashboard for Evener sessions. It connects to `evener hub`, lists live and saved sessions, lets you drill into a transcript, and sends session actions through the hub API.
 
 ### Build
 
@@ -155,27 +155,27 @@ make build-tui
 Start the dashboard from an installed `PATH` command:
 
 ```bash
-evener-tui
+evener tui
 ```
 
-After `make build-tui` in a source checkout, use `./evener-tui` instead.
+After `make build-tui` in a source checkout, use `./evener` instead.
 
-By default `evener-tui` connects to `http://127.0.0.1:9180`. If no local hub is
-running, it starts `evener-hub` automatically and waits for an authenticated
+By default `evener tui` connects to `http://127.0.0.1:9180`. If no local hub is
+running, it starts `evener hub` automatically and waits for an authenticated
 AppWire `/rpc` connection. When `--state-dir` is explicit, it also checks
 `/api/health` for state-environment compatibility.
 
 Connect to a specific hub:
 
 ```bash
-evener-tui --hub-addr http://127.0.0.1:9180
+evener tui --hub-addr http://127.0.0.1:9180
 ```
 
 Use a specific hub binary or disable auto-start:
 
 ```bash
-evener-tui --hub-bin /path/to/evener-hub
-evener-tui --no-auto-start-hub
+evener tui --hub-bin /path/to/evener-hub
+evener tui --no-auto-start-hub
 ```
 
 ### Flags

@@ -72,8 +72,8 @@ available to turn it off).
    It must parse the expanded JSON request structurally: list the names in `tools[]`, report
    whether `ask_user` is present, and confirm the non-interactive prompt section is present.
    ```bash
-   go run ./cmd/evener-doctor transcript "$SID1" --count ask_user
-   go run ./cmd/evener-doctor transcript "$SID2" --count ask_user
+   go run ./cmd/evener doctor transcript "$SID1" --count ask_user
+   go run ./cmd/evener doctor transcript "$SID2" --count ask_user
    "$run/evener" --model openai/gpt-5.5 --dir "$tmpdir1" \
      "Audit session $SID1. Use an explicit API-log summary and request-body expansion as described in this scenario; report the structured tools array and non-interactive prompt evidence."
    "$run/evener" --model openai/gpt-5.5 --dir "$tmpdir2" \
@@ -82,7 +82,7 @@ available to turn it off).
 
 ## Expected
 
-- Step 3: `evener-doctor ... --count ask_user` prints `ask_user: 0 calls` for **both**
+- Step 3: `evener doctor ... --count ask_user` prints `ask_user: 0 calls` for **both**
   sessions. An assistant-text mention is reported separately and is not an invocation.
 - Each explicit request-body expansion has no tool definition whose structured name is
   `ask_user`, and does contain the non-interactive prompt section
@@ -102,7 +102,7 @@ rm -rf "$tmpdir1" "$tmpdir2"
 Leave the hub and `$run` alone — `ask-web-answer.md` started them and its Cleanup
 kills `$HUBPID` and removes `$run`. If you had to start the hub yourself because
 `EVENER_E2E_RUN` was unset, you own it: `kill "$HUBPID"; rm -rf "$run"`. Never
-`pkill -f evener-hub`, which takes out every other concurrent agent's hub too
+`pkill -f evener hub`, which takes out every other concurrent agent's hub too
 (`docs/developing-evener/agentic-testing.md`, "Cleanup recipe").
 
 ## Sharp edges
@@ -111,10 +111,10 @@ kills `$HUBPID` and removes `$run`. If you had to start the hub yourself because
   providers will not let the model structurally invoke a tool absent from the request's
   tool list at all, so the far more likely outcome is prose ("I don't have an ask_user
   tool..."). If the model *does* somehow manage to emit a structural `ask_user` tool call
-  (`evener-doctor`'s `calls` field nonzero), the daemon's exec-time guard
+  (`evener doctor`'s `calls` field nonzero), the daemon's exec-time guard
   (`agent/session_tools_ask.go`) should still have produced an error result containing
   `unknown tool: ask_user` for it — check the outline
-  (`go run ./cmd/evener-doctor transcript "$SIDn" --format outline --range last:4`) if `calls`
+  (`go run ./cmd/evener doctor transcript "$SIDn" --format outline --range last:4`) if `calls`
   is unexpectedly nonzero. Either outcome is consistent with gating working; the
   deterministic, always-applicable check is the `--count` invariant above, not the model's
   prose.

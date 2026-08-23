@@ -14,7 +14,7 @@ coverage.
 1. Read `tools/tool-fluency/README.md`.
 2. Read `docs/developing-evener/agentic-testing.md` if the Go runner cannot exercise the live
    session shape you need.
-3. For session/job/watch forensics, use `evener-doctor` or the `agent/doctor`
+3. For session/job/watch forensics, use `evener doctor` or the `agent/doctor`
    package. Do not hand-parse transcript JSONL.
 
 ## Core rules
@@ -23,7 +23,7 @@ coverage.
 - Use structured probes and semantic oracles. Do not make assertions whose main
   claim is "the transcript contains this phrase."
 - Do not write custom Python or jq glue to count tool calls, watches, or
-  delegate sends. Improve the Go runner or `evener-doctor` when a needed
+  delegate sends. Improve the Go runner or `evener doctor` when a needed
   inspection is missing.
 - Separate task success from fluency. A run can complete the task while still
   showing tool churn, invalid first arguments, polling, or wrong-tool recovery.
@@ -162,10 +162,10 @@ The runner writes `result.json`, `stdout.txt`, and `stderr.ndjson` under each
 probe repetition directory. For session/job/watch inspection, prefer:
 
 ```sh
-go run ./cmd/evener-doctor transcript "$SID" --state-dir "$STATE" -format outline
-go run ./cmd/evener-doctor transcript "$SID" --state-dir "$STATE" -count communicate
-go run ./cmd/evener-doctor tree "$SID" --state-dir "$STATE" --observers
-go run ./cmd/evener-doctor watches "$SID" --state-dir "$STATE"
+go run ./cmd/evener doctor transcript "$SID" --state-dir "$STATE" -format outline
+go run ./cmd/evener doctor transcript "$SID" --state-dir "$STATE" -count communicate
+go run ./cmd/evener doctor tree "$SID" --state-dir "$STATE" --observers
+go run ./cmd/evener doctor watches "$SID" --state-dir "$STATE"
 ```
 
 If a live observer/callback scenario needs a session to remain open across

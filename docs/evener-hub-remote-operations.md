@@ -1,11 +1,11 @@
 # Evener Hub Remote Operations
 
-This runbook covers running `evener-hub` on a host that is not the laptop/browser
+This runbook covers running `evener hub` on a host that is not the laptop/browser
 host. It describes the current code, not a future deployment system.
 
 ## Trust Boundary
 
-`evener-hub` authenticates its web edge with a long-lived random capability
+`evener hub` authenticates its web edge with a long-lived random capability
 token. On startup, Hub loads or creates `auth-token` under `hub_state_root`
 (`~/.local/state/evener/auth-token` by default) and prints a browser authorization URL. A new
 token file is created with mode `0600`; Hub does not repair the mode of an
@@ -54,13 +54,13 @@ make build-tui
 Start Hub with the Evener binary it should spawn:
 
 ```bash
-evener-hub --config /etc/evener/hub.toml --evener /usr/local/bin/evener
+evener hub --config /etc/evener/hub.toml --evener /usr/local/bin/evener
 ```
 
 For loopback plus LAN/VPN access:
 
 ```bash
-evener-hub --addr 0.0.0.0:9180 --evener /usr/local/bin/evener
+evener hub --addr 0.0.0.0:9180 --evener /usr/local/bin/evener
 ```
 
 Authorize each browser once with the startup log's `/auth?token=...` URL. For a
@@ -68,7 +68,7 @@ remote TUI, pass the same capability out of band:
 
 ```bash
 EVENER_HUB_AUTH_TOKEN='<token>' \
-  evener-tui --hub-addr http://hubbox.example:9180 --no-auto-start-hub
+  evener tui --hub-addr http://hubbox.example:9180 --no-auto-start-hub
 ```
 
 The TUI otherwise looks for the local machine's `~/.local/state/evener/auth-token`, which is
@@ -82,10 +82,10 @@ reboot, `launchctl submit` can keep Hub running without a plist:
 ```bash
 launchctl submit \
   -l com.example.evener-hub \
-  -p /absolute/path/to/evener-hub \
+  -p /absolute/path/to/evener \
   -o /absolute/path/to/evener-hub.log \
   -e /absolute/path/to/evener-hub.log \
-  -- /absolute/path/to/evener-hub \
+  -- /absolute/path/to/evener hub \
   -addr 0.0.0.0:9180 \
   -evener /absolute/path/to/evener
 ```
@@ -103,15 +103,15 @@ launchctl remove com.example.evener-hub
 
 Current flags verified from source:
 
-- `evener-hub --config <path>` loads Hub TOML config.
-- `evener-hub --addr <host:port>` overrides `addr`.
-- `evener-hub --evener <path>` selects the `evener serve` binary Hub launches.
+- `evener hub --config <path>` loads Hub TOML config.
+- `evener hub --addr <host:port>` overrides `addr`.
+- `evener hub --evener <path>` selects the `evener serve` binary Hub launches.
 - `evener launch-check --protocol evener-appwire-v1 --model <provider/model> --json`
   validates the binary/protocol/model contract before spawn.
-- `evener-tui --hub-addr <url-or-host-port>` connects the TUI to a Hub.
-- `evener-tui --auth-token <token>` overrides `EVENER_HUB_AUTH_TOKEN` and the local
+- `evener tui --hub-addr <url-or-host-port>` connects the TUI to a Hub.
+- `evener tui --auth-token <token>` overrides `EVENER_HUB_AUTH_TOKEN` and the local
   token file.
-- `evener-tui --no-auto-start-hub` prevents local auto-start, which is usually
+- `evener tui --no-auto-start-hub` prevents local auto-start, which is usually
   what you want when targeting a remote Hub.
 
 ## Hub Config
@@ -259,13 +259,13 @@ Then open `http://127.0.0.1:9180` locally.
 For TUI access to a remote Hub:
 
 ```bash
-evener-tui --hub-addr http://127.0.0.1:9180 --no-auto-start-hub
+evener tui --hub-addr http://127.0.0.1:9180 --no-auto-start-hub
 ```
 
 If you connect directly over a private network:
 
 ```bash
-evener-tui --hub-addr http://hubbox.example:9180 --no-auto-start-hub
+evener tui --hub-addr http://hubbox.example:9180 --no-auto-start-hub
 ```
 
 ## Health Checks And Manual Verification
@@ -284,7 +284,7 @@ Manual spawn/resume verification:
 4. Refresh the browser and confirm the transcript replays from the past index.
 5. Shut down the session from Hub.
 6. Send another message to the ended session and confirm Hub resumes it.
-7. Open `evener-tui --hub-addr ... --no-auto-start-hub` and confirm the same
+7. Open `evener tui --hub-addr ... --no-auto-start-hub` and confirm the same
    session appears with source label `evener`.
 8. If Codex is configured, spawn or open a Codex source and confirm unsupported
    Evener-only actions are hidden or return structured action-unavailable errors.
@@ -318,7 +318,7 @@ anywhere.
 If Hub was submitted to launchd as its own job, `scripts/ops/deploy-hub.sh`
 automates the rebuild-and-restart sequence below for the current worktree: it
 finds the job's label, confirms its binary matches this checkout, builds
-`evener-hub` (leaving the old process running untouched if the build fails),
+`evener hub` (leaving the old process running untouched if the build fails),
 `kickstart -k`s only that job, and polls `/api/health` to confirm the restart
 actually took (an interrupted `kickstart` can report failure even when the
 restart succeeded, so the health probe — not `kickstart`'s exit status — is
@@ -348,7 +348,7 @@ If that comes up empty, it's a bare process. Recover it in four steps:
 **1. Find the pid.**
 
 ```bash
-pgrep -x evener-hub
+pgrep -x evener
 ```
 
 Hub takes an exclusive `flock` on `hub.lock` under `hub_state_root` at startup
@@ -402,7 +402,7 @@ frees the lock the instant the process is torn down. Either way, a relaunch
 that lands in the gap fails with:
 
 ```
-[hub] flock /path/to/.local/state/evener/hub.lock: resource temporarily unavailable (another evener-hub may already be running; a disposable hub needs its own HOME)
+[hub] flock /path/to/.local/state/evener/hub.lock: resource temporarily unavailable (another evener hub may already be running; a disposable hub needs its own HOME)
 ```
 
 That's the death overlap, not corruption or a stuck lock; wait a moment and
@@ -421,11 +421,11 @@ Relaunch with the flags from step 2, appending (`>>`, not `>`) to the log
 from step 3:
 
 ```bash
-nohup /path/to/evener-hub -addr 0.0.0.0:9180 -evener /path/to/evener \
+nohup /path/to/evener hub -addr 0.0.0.0:9180 -evener /path/to/evener \
   >>/path/to/evener-hub.log 2>&1 &
 ```
 
-Confirm: `pgrep -x evener-hub` shows a new pid, `/api/health`'s `started_at` is
+Confirm: `pgrep -x evener` shows a new pid, `/api/health`'s `started_at` is
 after the restart (and its `version` matches if you rebuilt), and the log
 file is still growing.
 

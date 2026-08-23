@@ -30,11 +30,11 @@ For the queue-only and queue+composer drain paths, see
 ## Pre-state
 
 - `tmux` installed (tested on tmux 3.4).
-- `evener-hub` reachable on an isolated `$HOME` and free port
+- `evener hub` reachable on an isolated `$HOME` and free port
   (never Jesse's port `9180` — see the Setup checklist in
   `docs/developing-evener/agentic-testing.md`). Token at
   `$HOME/.evener/auth-token`.
-- `./evener-tui` and `./evener-hub` (or `./evener`) built in repo root.
+- `./evener` and `./evener` (or `./evener`) built in repo root.
 - Anthropic OAuth or API key configured so the default
   `anthropic/claude-haiku-4-5-20251001` model can be invoked.
 - The tmux session name is derived from this run's own scratch dir
@@ -54,7 +54,7 @@ For the queue-only and queue+composer drain paths, see
 2. **Launch in tmux**:
    ```
    tmux new-session -d -s "$TMUX_SESSION" -x 200 -y 50 \
-     "./evener-tui --hub-addr 127.0.0.1:$PORT --debug"
+     "./evener tui --hub-addr 127.0.0.1:$PORT --debug"
    sleep 1
    tmux capture-pane -t "$TMUX_SESSION" -p
    ```

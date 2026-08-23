@@ -484,7 +484,7 @@ Expected: the commit contains only the two new executable scripts. Do not bypass
 - Modify: `Makefile:284-329`
 
 **Interfaces:**
-- Consumes: `GO_MODULES := . agent llm auth envvars invariant identifier` exactly as already defined at `Makefile:79`; existing commands `go run ./cmd/evener-namingcheck`, `go run ./cmd/evener-internalcheck`, `go run ./cmd/evener-docscheck`, `golangci-lint run ./...`, `go generate ./appwire/...`, `git diff --exit-code -- docs/appwire-protocol.md`, and `scripts/ops/gitleaks-scan.sh repo` with unchanged arguments.
+- Consumes: `GO_MODULES := . agent llm auth envvars invariant identifier` exactly as already defined at `Makefile:79`; existing commands `go run ./cmd/evener-namingcheck`, `go run ./cmd/evener internalcheck`, `go run ./cmd/evener-docscheck`, `golangci-lint run ./...`, `go generate ./appwire/...`, `git diff --exit-code -- docs/appwire-protocol.md`, and `scripts/ops/gitleaks-scan.sh repo` with unchanged arguments.
 - Produces: `lint-golangci` invokes `MODULES="$(GO_MODULES)" scripts/run-module-lint.sh`; `lint` retains the exact dependency families `lint-naming lint-internal lint-docs lint-golangci lint-generated secret-scan`.
 - Quiet-check contract: `run_quiet_lint` redirects a check's combined stdout/stderr to one private log, removes the log on success, and prints it in full before returning the original nonzero status on failure. Its optional second argument, `preserve-gitleaks-warning`, replays the existing `warning: gitleaks not installed; ...` line on a successful skipped scan, because that warning is policy-relevant rather than routine green chatter.
 
@@ -554,7 +554,7 @@ assert_not_has "$out" "success-chatter" "all successful lint-family chatter is h
 assert_eq "$(cut -f1 "$state/modules" | sort | tr '\n' ' ' | sed 's/ $//')" ". agent auth envvars identifier invariant llm" "Makefile passes every canonical non-fuzz module"
 assert_eq "$(cut -f2 "$state/modules" | sort -u)" "run ./..." "Makefile wiring preserves golangci-lint run ./..."
 assert_has "$state/families" "go run ./cmd/evener-namingcheck" "make lint retains naming checks"
-assert_has "$state/families" "go run ./cmd/evener-internalcheck" "make lint retains internal dependency checks"
+assert_has "$state/families" "go run ./cmd/evener internalcheck" "make lint retains internal dependency checks"
 assert_has "$state/families" "go run ./cmd/evener-docscheck" "make lint retains docs checks"
 assert_has "$state/families" "go generate ./appwire/..." "make lint retains generation"
 assert_has "$state/families" "git diff --exit-code -- docs/appwire-protocol.md" "make lint retains generated-file verification"
@@ -620,7 +620,7 @@ lint-naming:
 # lint-internal fails if any exported symbol in the agent/llm/providercfg
 # libraries names a evener-internal type — keeping them externally importable.
 lint-internal:
-	$(call run_quiet_lint,go run ./cmd/evener-internalcheck)
+	$(call run_quiet_lint,go run ./cmd/evener internalcheck)
 
 # lint-docs fails if any exported package-level declaration in the published
 # library packages (llm, agent, agent/events, auth/openai) lacks a doc comment.

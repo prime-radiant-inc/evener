@@ -1,4 +1,4 @@
-# evener-hub UI Pass 4 — Sidebar Restructure + Workspace Header + Slide-over A11y
+# evener hub UI Pass 4 — Sidebar Restructure + Workspace Header + Slide-over A11y
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
@@ -193,7 +193,7 @@ Create `cmd/evener-hub/assets/focus-trap.js` with this exact content:
 //
 // The handle is opaque; callers pass it back to deactivate. Each activate
 // produces a fresh handle, so multiple traps can be active concurrently and
-// torn down in any order — though in practice evener-hub opens one at a time.
+// torn down in any order — though in practice evener hub opens one at a time.
 (function () {
   "use strict";
 
@@ -856,7 +856,7 @@ Expected: `PASS: sidebar collapse — toggle, persist, restore`.
 
 ```bash
 git add cmd/evener-hub/templates/partials/sidebar.html cmd/evener-hub/assets/style.css cmd/evener-hub/web_test.go cmd/evener-hub/jstest/test-sidebar-collapse.js
-git commit -m "feat(evener-hub): restructure sidebar to .sb-row with dot/text columns
+git commit -m "feat(evener hub): restructure sidebar to .sb-row with dot/text columns
 
 Sidebar rows become a 2-column grid (dot + text) with 2-line title wrap
 and a mono meta line. Replaces .session-row/.live-row/.subagent-row/
@@ -1021,7 +1021,7 @@ Expected: `PASS: sidebar collapse — toggle, persist, restore`.
 
 ```bash
 git add cmd/evener-hub/assets/sidebar.js
-git commit -m "feat(evener-hub): add sidebar rail toggle with ⌘B keybinding
+git commit -m "feat(evener hub): add sidebar rail toggle with ⌘B keybinding
 
 Rail mode collapses the sidebar to 56px (icons + status dots only),
 persisted to localStorage[\"evener-hub.sidebar.rail\"]. Toggled via the
@@ -1143,7 +1143,7 @@ Expected: a FAIL line — likely `rowB should be marked active after swap to /s/
 
 ```bash
 git add cmd/evener-hub/jstest/test-sidebar-active.js
-git commit -m "test(evener-hub): add failing jstest for sidebar data-active wiring"
+git commit -m "test(evener hub): add failing jstest for sidebar data-active wiring"
 ```
 
 ---
@@ -1218,7 +1218,7 @@ Expected: every test prints `PASS: ...` and exits 0.
 
 ```bash
 git add cmd/evener-hub/assets/sidebar.js
-git commit -m "feat(evener-hub): wire sidebar [data-active] from htmx:afterSwap
+git commit -m "feat(evener hub): wire sidebar [data-active] from htmx:afterSwap
 
 After every swap into #workspace (or a re-render of #sidebar), parse
 window.location.pathname; if it matches /s/<id>, find the .sb-row
@@ -1592,7 +1592,7 @@ Expected: every test prints `PASS: ...`. The existing `test-panels.js` does not 
 
 ```bash
 git add cmd/evener-hub/templates/app.html cmd/evener-hub/templates/partials/workspace.html cmd/evener-hub/assets/style.css
-git commit -m "feat(evener-hub): inline workspace hamburger; status pill → status badge
+git commit -m "feat(evener hub): inline workspace hamburger; status pill → status badge
 
 The hamburger moves from a body-level fixed-position button into the
 workspace-header title row (phone only), so partials no longer need
@@ -1673,7 +1673,7 @@ Expected: both pass.
 
 ```bash
 git add cmd/evener-hub/assets/sidebar.js
-git commit -m "feat(evener-hub): trap focus inside mobile sidebar drawer
+git commit -m "feat(evener hub): trap focus inside mobile sidebar drawer
 
 When setSidebarOpen(true) fires on a phone breakpoint, call
 EvenerFocusTrap.activate(sidebar, hamburgerTrigger). Restore focus on
@@ -1910,7 +1910,7 @@ Expected: every test passes.
 
 ```bash
 git add cmd/evener-hub/assets/renderer.js cmd/evener-hub/jstest/test-panels.js
-git commit -m "feat(evener-hub): trap focus inside tasks and details slide-overs
+git commit -m "feat(evener hub): trap focus inside tasks and details slide-overs
 
 toggleTasksPanel and toggleDetailsPanel now accept the trigger element
 and pass it to EvenerFocusTrap.activate. The trap deactivates on close
@@ -1936,7 +1936,7 @@ cd /home/jesse/git/prime-radiant/evener
 make build-hub
 ```
 
-Expected: no errors. The Go binary lands at `./evener-hub` (or wherever the Makefile puts it).
+Expected: no errors. The Go binary lands at `./evener` (or wherever the Makefile puts it).
 
 - [ ] **Step 2: Run all Go tests**
 
@@ -1971,7 +1971,7 @@ Start the hub locally and walk these scenarios:
 
 ```bash
 cd /home/jesse/git/prime-radiant/evener
-./evener-hub
+./evener hub
 ```
 
 Open `http://127.0.0.1:9180` and verify:
@@ -2016,7 +2016,7 @@ cd /home/jesse/git/prime-radiant/evener
 gh pr create --title "ui: restructure sidebar rows; add rail mode, workspace header refactor, slide-over focus trap" --body "$(cat <<'EOF'
 ## Summary
 
-Pass 4 of the evener-hub UI overhaul (per the responsive-ui-design spec's ship-order; "Pass 5" by migration-order numbering — see the spec's Rollout section for the re-sequencing).
+Pass 4 of the evener hub UI overhaul (per the responsive-ui-design spec's ship-order; "Pass 5" by migration-order numbering — see the spec's Rollout section for the re-sequencing).
 
 - Sidebar rows restructured to a `.sb-row` grid with dot-col + text-col. Titles wrap to 2 lines via `-webkit-line-clamp`; meta line is mono. Old `.session-row` / `.live-row` / `.subagent-row` / `.fork-row` class names removed entirely (not co-applied transitionally).
 - Sidebar gains a 56px rail mode, persisted to `localStorage["evener-hub.sidebar.rail"]`, toggled by the new ⇤/⇥ button or `⌘B` / `Ctrl+B`.

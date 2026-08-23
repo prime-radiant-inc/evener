@@ -2,7 +2,7 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: superpowers:subagent-driven-development. Steps use `- [ ]` checkboxes.
 
-**Goal:** One instance-CRUD screen in both the web hub and `evener-tui`, replacing the duplicate Providers + Credentials screens.
+**Goal:** One instance-CRUD screen in both the web hub and `evener tui`, replacing the duplicate Providers + Credentials screens.
 
 **Architecture:** New instance-CRUD RPCs operate on the hub's `providers.toml` (`ProvidersConfigPath`); the existing credential RPCs are re-keyed by instance name; both UIs bind to a new instance-list shape; pickers display by instance name. Backend (tasks 1–5) lands first, then the two UIs (6–8), then picker display (9), then closeout (10).
 

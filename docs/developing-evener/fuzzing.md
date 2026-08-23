@@ -350,7 +350,7 @@ every field with a distinguishable value, decode the same bytes through
 both paths, and report divergent fields by name.
 
 `agent/session_client_mutation_doctor_drift_test.go` is the worked
-example. `clientMutationSnapshot` is unexported, so evener-doctor's
+example. `clientMutationSnapshot` is unexported, so evener doctor's
 mutations reader mirrors the persisted shape and decodes it with
 `DisallowUnknownFields`; the test walks the snapshot type with
 reflection and marshals it the way the save path does, so a field the

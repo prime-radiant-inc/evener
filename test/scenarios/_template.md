@@ -9,7 +9,7 @@ that was broken before and the surface that should now hold.
 - <commands to reach that state if not already there — say nothing about
   the hub and the card inherits `docs/developing-evener/agentic-testing.md`'s Setup
   checklist, which builds the SPA before the hub binary; a card that
-  builds its own `evener-hub` has to `make build-web` first or every page
+  builds its own `evener hub` has to `make build-web` first or every page
   route answers 503 and only the browser steps notice>
 
 ## Steps

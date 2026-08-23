@@ -169,8 +169,8 @@ func PromptForUserConfig(
     secureStore SecureStore,
 ) (*ResolvedUserConfig, error)
 
-// UserConfigPrompter is the surface-specific UX. CLI, evener-tui, and
-// evener-hub each ship their own implementation. A non-interactive
+// UserConfigPrompter is the surface-specific UX. CLI, evener tui, and
+// evener hub each ship their own implementation. A non-interactive
 // prompter (NonInteractivePrompter) reads from --plugin-option flags.
 type UserConfigPrompter interface {
     // Prompt is called once per option in declaration order. The prompter
@@ -206,7 +206,7 @@ func PluginBinPATH(plugins []LoadedPlugin) string
 // mcpServers (map replace by key at the plugin-id level).
 ```
 
-`UserConfigPrompter` is intentionally one method. Multi-field UX (forms in evener-hub) builds a form from the option list before calling `Prompt` per field, or — for richer UIs — implements `Prompt` as a no-op and runs its own loop, then constructs the `ResolvedUserConfig` directly. The interface stays small so non-interactive callers (`NonInteractivePrompter`) are trivial.
+`UserConfigPrompter` is intentionally one method. Multi-field UX (forms in evener hub) builds a form from the option list before calling `Prompt` per field, or — for richer UIs — implements `Prompt` as a no-op and runs its own loop, then constructs the `ResolvedUserConfig` directly. The interface stays small so non-interactive callers (`NonInteractivePrompter`) are trivial.
 
 ## 3. `userConfig` Schema
 
@@ -318,8 +318,8 @@ The trigger picks the prompt source. Once values are persisted, subsequent sessi
 | Surface | Prompter implementation | Mode |
 |---|---|---|
 | `evener` CLI (interactive) | `CLIPrompter` — line-oriented `bufio.Scanner` on stdin, `golang.org/x/term.ReadPassword` for `sensitive: true` | inline, blocking |
-| `evener-tui` | `TUIPrompter` — modal form rendered by the existing tui-form widget set | inline, blocking, with masked input for sensitive fields |
-| `evener-hub` web UI | `HubPrompter` — HTTP form bound to the plugin-enable workflow; submits to a per-plugin endpoint that calls `PromptForUserConfig` server-side with a static `MapPrompter` wrapping the form payload | out-of-band; the session waits for the user to complete the form before plugin init completes |
+| `evener tui` | `TUIPrompter` — modal form rendered by the existing tui-form widget set | inline, blocking, with masked input for sensitive fields |
+| `evener hub` web UI | `HubPrompter` — HTTP form bound to the plugin-enable workflow; submits to a per-plugin endpoint that calls `PromptForUserConfig` server-side with a static `MapPrompter` wrapping the form payload | out-of-band; the session waits for the user to complete the form before plugin init completes |
 | Non-interactive (`-p`, piped input, scripts) | `NonInteractivePrompter` — reads from a pre-parsed `map[plugin]map[key]string` populated from `--plugin-option <plugin>.<key>=<value>` flags | no prompts; missing required keys error out |
 
 `--plugin-option` may repeat. The key form is `<plugin>.<option>=<value>` where `<plugin>` matches an `enabledPlugins` key (`<name>` or `<name>@<marketplace>`). Mismatched plugin names produce a single warning, not an error, so users can re-use a script across machines with different marketplace names.
@@ -566,7 +566,7 @@ Each warning is captured on `LoadedPlugin.Warnings` so the structured output of 
 evener: plugin "<plugin-id>": ignoring unsupported field "<field>"
 ```
 
-The evener-hub web UI surfaces them in the plugin-detail card. The TUI surfaces them in a one-line collapsible.
+The evener hub web UI surfaces them in the plugin-detail card. The TUI surfaces them in a one-line collapsible.
 
 ## 12. Error Contracts
 
@@ -759,9 +759,9 @@ Every exported function in §2 has at least one direct test row. Every error pat
 
 Three surfaces, three prompter implementations:
 
-- **CLI**: inline prompts, line-by-line, masked input for `sensitive: true`. Implemented in SP4's `evener plugin install/enable` flow. Default for `evener` invoked without `evener-tui` or `evener-hub`.
-- **`evener-tui`**: modal form rendered by the existing tui-form widget; submits all fields at once.
-- **`evener-hub`**: web form on a per-plugin endpoint, gated by the existing session-auth path; submission returns to the plugin-enable flow.
+- **CLI**: inline prompts, line-by-line, masked input for `sensitive: true`. Implemented in SP4's `evener plugin install/enable` flow. Default for `evener` invoked without `evener tui` or `evener hub`.
+- **`evener tui`**: modal form rendered by the existing tui-form widget; submits all fields at once.
+- **`evener hub`**: web form on a per-plugin endpoint, gated by the existing session-auth path; submission returns to the plugin-enable flow.
 
 Non-interactive sessions read from `--plugin-option <plugin>.<key>=<value>` (may repeat). Missing required keys with no flag value produce a startup error that names the plugin, the key, and the suggested command to fix it.
 

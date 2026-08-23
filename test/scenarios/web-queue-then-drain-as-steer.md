@@ -91,7 +91,7 @@ HUB=http://127.0.0.1:$PORT
    ```
 5. Let the turn settle and read the durable record:
    ```bash
-   go run ./cmd/evener-doctor transcript "$SID" --format outline --range last:40
+   go run ./cmd/evener doctor transcript "$SID" --format outline --range last:40
    ```
 
 ## Expected

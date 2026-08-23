@@ -82,7 +82,7 @@ Expected: every new token line is present, indentation matches the surrounding t
 
 Run: `cd /home/jesse/git/prime-radiant/evener && make build-hub`
 
-Expected: build succeeds, produces `./evener-hub` binary. The Go build does not parse CSS, but a successful build is the prerequisite for the manual verify at the end of the pass.
+Expected: build succeeds, produces `./evener` binary. The Go build does not parse CSS, but a successful build is the prerequisite for the manual verify at the end of the pass.
 
 - [ ] **Step 5: Commit**
 
@@ -1135,7 +1135,7 @@ The acceptance bar for this pass is:
 
 Run: `cd /home/jesse/git/prime-radiant/evener && make build-hub`
 
-Expected: build succeeds in a few seconds; `./evener-hub` exists.
+Expected: build succeeds in a few seconds; `./evener` exists.
 
 - [ ] **Step 2: Run the hub locally in the background**
 
@@ -1192,7 +1192,7 @@ Reset: switch the emulation back to `no-preference` for the rest of the verifica
 
 - [ ] **Step 8: Stop the hub**
 
-In the terminal running `./evener-hub`, send `Ctrl+C`. Or if it was backgrounded, `kill %1` (or whichever job number).
+In the terminal running `./evener`, send `Ctrl+C`. Or if it was backgrounded, `kill %1` (or whichever job number).
 
 Expected: clean shutdown, prompt returns.
 

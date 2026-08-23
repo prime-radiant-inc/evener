@@ -1034,7 +1034,7 @@ Expected: PASS
 
 ```bash
 git add cmd/evener-tui/statusbar.go cmd/evener-tui/hub_status.go cmd/evener-tui/statusbar_test.go
-git commit -m "fix(evener-tui): source compaction thresholds from config, drop hardcoded 0.90"
+git commit -m "fix(evener tui): source compaction thresholds from config, drop hardcoded 0.90"
 ```
 
 ---

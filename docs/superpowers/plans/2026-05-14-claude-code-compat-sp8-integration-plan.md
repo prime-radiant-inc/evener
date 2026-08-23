@@ -400,7 +400,7 @@ type BootstrapFlags struct {
 	PluginOptions     map[string]map[string]string // --plugin-option <plugin>.<key>=<value>
 	Prompter          UserConfigPrompter           // surface-specific prompter from SP7 §4.2
 	AskFallback       AskFallback                  // surface-specific ask resolution from SP2 §9
-	IsRemote          bool                         // evener-hub spawns set this true
+	IsRemote          bool                         // evener hub spawns set this true
 	WatchConfig       bool                         // starts the SP5 §3.9 watcher when true
 }
 ```
@@ -2939,7 +2939,7 @@ Add `--config` flag registration to TUI's flag set if it doesn't already have on
 - [ ] **Step 2: Build**
 
 ```bash
-go build ./cmd/evener-tui
+go build ./cmd/evener/
 ```
 
 Expected: clean.
@@ -2983,7 +2983,7 @@ If the Hub spawns evener as a subprocess (per spec §5.3), this is the simplest 
 - [ ] **Step 3: Build**
 
 ```bash
-go build ./cmd/evener-hub
+go build ./cmd/evener/
 ```
 
 Expected: clean.

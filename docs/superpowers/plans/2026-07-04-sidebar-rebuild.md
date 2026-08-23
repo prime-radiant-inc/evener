@@ -1524,7 +1524,7 @@ After constructing `past`, `roster`, `archive`, `favorite`, `inputs`:
 
 - [ ] **Step 6: Run tests to verify they pass**
 
-Run: `go test ./cmd/evener-hub/internal/hubcore/ -run 'TestPastIndexOnChange|TestRoster|TestArchive|TestFavorite' -v && go build ./cmd/evener-hub/...`
+Run: `go test ./cmd/evener-hub/internal/hubcore/ -run 'TestPastIndexOnChange|TestRoster|TestArchive|TestFavorite' -v && go build ./cmd/evener/...`
 Expected: PASS + build OK.
 
 - [ ] **Step 7: Commit**
@@ -1870,7 +1870,7 @@ When `RemoteThreadCache` is nil (tests), `remoteTreeThreads` falls back to the o
 
 - [ ] **Step 5: Run tests to verify they pass**
 
-Run: `go test ./cmd/evener-hub/... ./cmd/evener-hub/internal/hubcore/ -run 'TestRemoteThreadCache|TestAPITree' -v && go build ./cmd/evener-hub/...`
+Run: `go test ./cmd/evener-hub/... ./cmd/evener-hub/internal/hubcore/ -run 'TestRemoteThreadCache|TestAPITree' -v && go build ./cmd/evener/...`
 Expected: PASS + build OK.
 
 - [ ] **Step 6: Commit**
@@ -3794,7 +3794,7 @@ Delete `cmd/evener-hub/templates/partials/sidebar.html`. In `cmd/evener-hub/web.
 
 - [ ] **Step 3: Verify build + tests + jstest**
 
-Run: `go build ./cmd/evener-hub/... && go test ./cmd/evener-hub/... && sh cmd/evener-hub/jstest/run-all.sh`
+Run: `go build ./cmd/evener/... && go test ./cmd/evener-hub/... && sh cmd/evener-hub/jstest/run-all.sh`
 Expected: PASS. `grep -rn "_partials/sidebar\|sidebarTmpl\|handleSidebar" cmd/evener-hub` returns nothing.
 
 - [ ] **Step 4: Commit**
