@@ -9,8 +9,8 @@ import (
 	"strings"
 	"testing"
 
-	"primeradiant.com/evener/identifier"
 	"primeradiant.com/evener/agent/internal/worktree"
+	"primeradiant.com/evener/identifier"
 )
 
 // ---------------------------------------------------------------------------
@@ -24,7 +24,7 @@ func TestShortSHA(t *testing.T) {
 		{"abcdef1234567890", "abcdef123456"},
 		{"abcdef", "abcdef"},
 		{"", ""},
-		{"abcdef123456", "abcdef123456"}, // exactly 12
+		{"abcdef123456", "abcdef123456"},  // exactly 12
 		{"abcdef1234567", "abcdef123456"}, // 13 chars
 	}
 	for _, tc := range tests {
@@ -506,7 +506,7 @@ func TestWorktreeUnmanagedEntryToMap(t *testing.T) {
 		Current:        true,
 		Locked:         true,
 		LockReason:     "session_a",
-		Prunable:        true,
+		Prunable:       true,
 		PrunableReason: "stale",
 	}
 	m := worktreeUnmanagedEntryToMap(e)
@@ -638,16 +638,16 @@ func TestWorktreeListSummaryWithUnmanaged(t *testing.T) {
 
 func TestWorktreeListEntryToMap(t *testing.T) {
 	e := WorktreeListEntry{
-		Name:              "wt1",
-		Path:              "/path",
-		Branch:            "main",
-		Current:           true,
-		Locked:            false,
-		HasMetadata:       true,
-		CreatorSession:    "sess_1",
-		DelegateID:        "dlg_1",
-		AheadCommits:      3,
-		Merged:            true,
+		Name:           "wt1",
+		Path:           "/path",
+		Branch:         "main",
+		Current:        true,
+		Locked:         false,
+		HasMetadata:    true,
+		CreatorSession: "sess_1",
+		DelegateID:     "dlg_1",
+		AheadCommits:   3,
+		Merged:         true,
 	}
 	m := worktreeListEntryToMap(e)
 	if m["name"] != "wt1" {

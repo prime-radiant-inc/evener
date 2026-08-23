@@ -39,11 +39,11 @@ func TestValidateSettlementKindError(t *testing.T) {
 // version error (line 166-167).
 func TestValidateSettlementSchemaVersionError(t *testing.T) {
 	r := APIAttemptGroupSettlement{
-		Kind:            settlementRecordKind,
-		SchemaVersion:   99,
-		AttemptGroupID:  "ag_test",
+		Kind:              settlementRecordKind,
+		SchemaVersion:     99,
+		AttemptGroupID:    "ag_test",
 		FinalAttemptCount: 0,
-		Outcome:         AttemptSuccess,
+		Outcome:           AttemptSuccess,
 	}
 	if err := r.validateRecord(DecodeStrict); err == nil {
 		t.Fatal("wrong settlement schema version should error")

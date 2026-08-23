@@ -27,11 +27,11 @@ func TestDelegateWatchSourceBindingStruct(t *testing.T) {
 func TestDelegateWatchReceiptStruct(t *testing.T) {
 	r := delegateWatchReceipt{
 		token:              42,
-		sourceDelegateID:    "dlg_src",
-		sourceGeneration:    3,
+		sourceDelegateID:   "dlg_src",
+		sourceGeneration:   3,
 		receiverDelegateID: "dlg_recv",
-		deliveryID:          "del_1",
-		updateSeq:           10,
+		deliveryID:         "del_1",
+		updateSeq:          10,
 	}
 	if r.token != 42 || r.sourceDelegateID != "dlg_src" {
 		t.Fatalf("struct wrong: %+v", r)
@@ -425,8 +425,8 @@ func TestExactUnacknowledgedStableWatchSendsDropped(t *testing.T) {
 		{
 			Kind: jobstore.EventWatchSendDropped,
 			WatchSend: &jobstore.WatchSendState{
-				DeliveryID:     "del_1",
-				UpdateSeq:      1,
+				DeliveryID: "del_1",
+				UpdateSeq:  1,
 			},
 		},
 	}
@@ -449,8 +449,8 @@ func TestExactUnacknowledgedStableWatchSendsEvicted(t *testing.T) {
 		{
 			Kind: jobstore.EventWatchSendEvicted,
 			WatchSend: &jobstore.WatchSendState{
-				DeliveryID:     "del_1",
-				UpdateSeq:      1,
+				DeliveryID: "del_1",
+				UpdateSeq:  1,
 			},
 		},
 	}

@@ -292,7 +292,7 @@ func TestNotifyStableDelegateAttentionNil(t *testing.T) {
 func TestHasDeliveryWorkForOwnerLockedEmpty(t *testing.T) {
 	c := &delegateTreeController{
 		deliveryClaims: map[string]*delegateDeliveryClaim{},
-		deliveries:      map[uint64]*delegateDeliveryAdmission{},
+		deliveries:     map[uint64]*delegateDeliveryAdmission{},
 	}
 	if c.hasDeliveryWorkForOwnerLocked("dlg_1") {
 		t.Fatalf("expected false with empty claims and deliveries")
@@ -335,7 +335,7 @@ func TestHasDeliveryWorkForOwnerLockedWithDelivery(t *testing.T) {
 func TestHasColdDeliveryWorkForOwnerLockedEmpty(t *testing.T) {
 	c := &delegateTreeController{
 		deliveryClaims: map[string]*delegateDeliveryClaim{},
-		deliveries:      map[uint64]*delegateDeliveryAdmission{},
+		deliveries:     map[uint64]*delegateDeliveryAdmission{},
 	}
 	if c.hasColdDeliveryWorkForOwnerLocked("dlg_1") {
 		t.Fatalf("expected false with empty claims and deliveries")

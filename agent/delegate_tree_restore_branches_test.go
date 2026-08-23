@@ -179,9 +179,9 @@ func TestNearestReachableAttentionAncestorLocked(t *testing.T) {
 	t.Run("parent has pending stop", func(t *testing.T) {
 		state := delegatestore.State{
 			"dlg_parent": &delegatestore.Aggregate{
-				Resumable:       true,
-				Phase:           delegatestore.PhaseIdle,
-				PendingStopSeq:  5,
+				Resumable:      true,
+				Phase:          delegatestore.PhaseIdle,
+				PendingStopSeq: 5,
 			},
 		}
 		id := nearestReachableAttentionAncestorLocked(state, "dlg_parent")
@@ -201,8 +201,8 @@ func TestNearestReachableAttentionAncestorLocked(t *testing.T) {
 	t.Run("grandparent reachable", func(t *testing.T) {
 		state := delegatestore.State{
 			"dlg_parent": &delegatestore.Aggregate{
-				Resumable: false,
-				Phase:     delegatestore.PhaseClosed,
+				Resumable:  false,
+				Phase:      delegatestore.PhaseClosed,
 				Descriptor: delegatestore.Descriptor{ParentDelegateID: "dlg_grand"},
 			},
 			"dlg_grand": &delegatestore.Aggregate{
@@ -218,13 +218,13 @@ func TestNearestReachableAttentionAncestorLocked(t *testing.T) {
 	t.Run("chain all unreachable", func(t *testing.T) {
 		state := delegatestore.State{
 			"dlg_a": &delegatestore.Aggregate{
-				Resumable: false,
-				Phase:     delegatestore.PhaseClosed,
+				Resumable:  false,
+				Phase:      delegatestore.PhaseClosed,
 				Descriptor: delegatestore.Descriptor{ParentDelegateID: "dlg_b"},
 			},
 			"dlg_b": &delegatestore.Aggregate{
-				Resumable: false,
-				Phase:     delegatestore.PhaseClosed,
+				Resumable:  false,
+				Phase:      delegatestore.PhaseClosed,
 				Descriptor: delegatestore.Descriptor{ParentDelegateID: ""},
 			},
 		}
@@ -383,7 +383,7 @@ func TestDelegateAttentionCleanupPlanStruct(t *testing.T) {
 	plan := delegateAttentionCleanupPlan{
 		requestSeq:      5,
 		evidenceVersion: 10,
-		delegateID:     "dlg_1",
+		delegateID:      "dlg_1",
 		transcriptRef:   "local:abc",
 		attentionID:     "att_1",
 		disposition:     delegateAttentionDiscarded,
@@ -451,8 +451,8 @@ func TestShellRuntimeLossEvidenceStruct(t *testing.T) {
 
 func TestDelegateReconcileRequirementsStruct(t *testing.T) {
 	req := delegateReconcileRequirements{
-		evidenceVersion: 5,
-		shellStores: map[string]string{"dlg_1": "/path/jobs.jsonl"},
+		evidenceVersion:      5,
+		shellStores:          map[string]string{"dlg_1": "/path/jobs.jsonl"},
 		attentionTranscripts: map[string]string{"dlg_1": "local:abc"},
 	}
 	if req.evidenceVersion != 5 {
@@ -470,8 +470,8 @@ func TestDelegateReconcileRequirementsStruct(t *testing.T) {
 func TestDelegateReconcileEvidenceStruct(t *testing.T) {
 	ev := delegateReconcileEvidence{
 		evidenceVersion: 3,
-		shells: map[string]shellRuntimeLossEvidence{"dlg_1": {}},
-		attention: map[string][]string{"dlg_1": {"att_1"}},
+		shells:          map[string]shellRuntimeLossEvidence{"dlg_1": {}},
+		attention:       map[string][]string{"dlg_1": {"att_1"}},
 	}
 	if ev.evidenceVersion != 3 {
 		t.Fatalf("evidenceVersion = %d", ev.evidenceVersion)

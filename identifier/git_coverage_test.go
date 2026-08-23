@@ -96,7 +96,7 @@ func TestMainCheckoutLocal_SubmodulePointer_NonGitDir(t *testing.T) {
 	mustDir(t, target)
 	work := filepath.Join(dir, "work")
 	mustDir(t, work)
-	if err := os.WriteFile(filepath.Join(work, ".git"), []byte("gitdir: " + target + "\n"), 0o600); err != nil {
+	if err := os.WriteFile(filepath.Join(work, ".git"), []byte("gitdir: "+target+"\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	// validateSubmodulePointer passes (submodule shape), so we reach
@@ -128,7 +128,7 @@ func TestMainCheckoutLocal_SubmodulePointer_RealGitRepo(t *testing.T) {
 	mustDir(t, modulesDir)
 	runGit(t, modulesDir, "init", "--bare", ".")
 	submoduleWork := mustMkdir(t, filepath.Join(root, "submodule-work"))
-	if err := os.WriteFile(filepath.Join(submoduleWork, ".git"), []byte("gitdir: " + modulesDir + "\n"), 0o600); err != nil {
+	if err := os.WriteFile(filepath.Join(submoduleWork, ".git"), []byte("gitdir: "+modulesDir+"\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	// validateSubmodulePointer passes (shape check), then gitBinaryMainRootLocal

@@ -23,7 +23,7 @@ func TestStableDelegateOutcomeJobStatus(t *testing.T) {
 	t.Parallel()
 	for _, tc := range []struct {
 		outcome delegatestore.OutcomeStatus
-		want   jobstore.Status
+		want    jobstore.Status
 	}{
 		{delegatestore.OutcomeCompleted, jobstore.StatusCompleted},
 		{delegatestore.OutcomeCancelled, jobstore.StatusCancelled},
@@ -77,9 +77,9 @@ func TestDelegatePermanentStartFailure(t *testing.T) {
 func TestStableDelegateResult(t *testing.T) {
 	t.Parallel()
 	descriptor := delegatestore.Descriptor{
-		ChildSessionID:  "child",
-		TranscriptRef:   "local:child",
-		ResolvedModel:   "gpt-5.2",
+		ChildSessionID:    "child",
+		TranscriptRef:     "local:child",
+		ResolvedModel:     "gpt-5.2",
 		ResolvedProfileID: "openai",
 	}
 	committed := delegateUpdatePlan{rows: []delegateSnapshot{
@@ -295,12 +295,12 @@ func TestMissingDelegateRestoreInputReason(t *testing.T) {
 
 	// Malformed transcript ref (childID mismatch).
 	desc := delegatestore.Descriptor{
-		ChildSessionID:      "child",
-		Task:                "task",
-		AgentType:           "general",
-		ResolvedProfileID:   "openai",
-		ResolvedModel:        "gpt-5.2",
-		TranscriptRef:       "local:other",
+		ChildSessionID:    "child",
+		Task:              "task",
+		AgentType:         "general",
+		ResolvedProfileID: "openai",
+		ResolvedModel:     "gpt-5.2",
+		TranscriptRef:     "local:other",
 	}
 	reason, err = missingDelegateRestoreInputReason("/tmp", desc, stat, readFile)
 	if err != nil || reason != notResumableParentLinkageUnavailable {
@@ -461,30 +461,30 @@ func TestPopulateStableDelegateSendResult(t *testing.T) {
 	resumable := false
 	valid := true
 	metadata, _ := json.Marshal(delegateTerminalPacketMetadata{
-		Task:            "inspect",
-		Description:     "desc",
-		AgentType:       "general",
-		RequestedModel:  "gpt-5.2",
-		ResolvedProfileID: "openai",
-		ResolvedModel:   "gpt-5.2",
-		ReasoningEffort: "high",
-		RunStartedAt:    "2026-01-01T00:00:00Z",
-		RunEndedAt:      "2026-01-01T00:10:00Z",
-		LatestActivityAt: "2026-01-01T00:09:00Z",
-		CumulativeUsage: &schema.CumulativeUsage{InputTokens: 100, OutputTokens: 50, TotalTokens: 150},
-		Worktree:        &delegateTerminalWorktreeReport{Path: "/wt", Branch: "br", HeadSHA: "abc", Ahead: 2, Dirty: true},
-		ExhaustionBudget: delegatestore.ExhaustionBudgetTurns,
-		ExhaustionLimit:  5,
+		Task:                "inspect",
+		Description:         "desc",
+		AgentType:           "general",
+		RequestedModel:      "gpt-5.2",
+		ResolvedProfileID:   "openai",
+		ResolvedModel:       "gpt-5.2",
+		ReasoningEffort:     "high",
+		RunStartedAt:        "2026-01-01T00:00:00Z",
+		RunEndedAt:          "2026-01-01T00:10:00Z",
+		LatestActivityAt:    "2026-01-01T00:09:00Z",
+		CumulativeUsage:     &schema.CumulativeUsage{InputTokens: 100, OutputTokens: 50, TotalTokens: 150},
+		Worktree:            &delegateTerminalWorktreeReport{Path: "/wt", Branch: "br", HeadSHA: "abc", Ahead: 2, Dirty: true},
+		ExhaustionBudget:    delegatestore.ExhaustionBudgetTurns,
+		ExhaustionLimit:     5,
 		ExhaustionResumable: &resumable,
 	})
 	packet := delegatestore.TerminalPacket{
-		Kind:                  delegatestore.PacketReported,
-		Message:               json.RawMessage(`"output text"`),
+		Kind:                   delegatestore.PacketReported,
+		Message:                json.RawMessage(`"output text"`),
 		StructuredResult:       json.RawMessage(`{"ok":true}`),
 		StructuredResultValid:  &valid,
 		StructuredResultReason: "validated",
-		Warnings:              []string{"w1", "w2"},
-		Metadata:              metadata,
+		Warnings:               []string{"w1", "w2"},
+		Metadata:               metadata,
 	}
 	var result sendMessageResult
 	populateStableDelegateSendResult(&result, packet)

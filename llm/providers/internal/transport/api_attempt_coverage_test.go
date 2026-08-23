@@ -14,8 +14,8 @@ import (
 // in explicitAPIAttemptErrorClass that fire when the error has no declared kind.
 func TestExplicitAPIAttemptErrorClassStatusCodes(t *testing.T) {
 	tests := []struct {
-		status    int
-		want      string
+		status int
+		want   string
 	}{
 		{http.StatusBadRequest, llm.KindInvalidRequest.String()},
 		{http.StatusUnprocessableEntity, llm.KindInvalidRequest.String()},

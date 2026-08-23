@@ -298,7 +298,7 @@ func TestQueueResponseFromRecord(t *testing.T) {
 func TestQueuedInputFromClientMutation(t *testing.T) {
 	t.Run("text only", func(t *testing.T) {
 		entry := clientMutationQueueEntry{
-			ID:   "q_1",
+			ID:    "q_1",
 			Input: []appwire.InputItem{{Type: "text", Text: "hello"}},
 		}
 		queued := queuedInputFromClientMutation(entry)
@@ -990,7 +990,7 @@ func TestReturnClaimedQueuedMutation(t *testing.T) {
 			InputQueue: []clientMutationQueueEntry{
 				{ID: "q_other", ClientMutationID: "cm_other"},
 			},
-			AcceptedTurns: 5,
+			AcceptedTurns:      5,
 			BudgetReservations: map[string]clientMutationBudgetReservation{},
 			PendingExecutions: map[string]appwire.PendingMutation{
 				"cm_1": {
@@ -1054,7 +1054,7 @@ func TestReturnClaimedQueuedMutation(t *testing.T) {
 	})
 	t.Run("zero accepted turns stays zero", func(t *testing.T) {
 		snap := &clientMutationSnapshot{
-			AcceptedTurns: 0,
+			AcceptedTurns:      0,
 			BudgetReservations: map[string]clientMutationBudgetReservation{},
 			PendingExecutions: map[string]appwire.PendingMutation{
 				"cm_1": {

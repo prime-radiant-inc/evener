@@ -64,7 +64,7 @@ func TestActivityOwnedRecords(t *testing.T) {
 		{JobID: "a", OwnerSessionID: "root"},
 		{JobID: "b", OwnerSessionID: "other"},
 		{JobID: "c", OwnerSessionID: ""}, // empty owner = owned by all
-		nil, // nil record is skipped
+		nil,                              // nil record is skipped
 	}
 	got := activityOwnedRecords("root", recs)
 	if len(got) != 2 {
@@ -150,16 +150,16 @@ func TestProjectStableActivityDelegate_TerminalPacketMetadata(t *testing.T) {
 	valid := true
 	metadata, _ := json.Marshal(delegateTerminalPacketMetadata{
 		CumulativeUsage: &schema.CumulativeUsage{InputTokens: 200, OutputTokens: 30, TotalTokens: 230},
-		Worktree:         &delegateTerminalWorktreeReport{Path: "/wt", Branch: "br", HeadSHA: "abc", Ahead: 2, Dirty: true},
+		Worktree:        &delegateTerminalWorktreeReport{Path: "/wt", Branch: "br", HeadSHA: "abc", Ahead: 2, Dirty: true},
 	})
 	packet := &delegatestore.TerminalPacket{
-		Kind:                  "result",
-		Message:               json.RawMessage(`{}`),
+		Kind:                   "result",
+		Message:                json.RawMessage(`{}`),
 		StructuredResult:       json.RawMessage(`{"ok":true}`),
 		StructuredResultValid:  &valid,
 		StructuredResultReason: "validated",
-		Warnings:              []string{"w1"},
-		Metadata:              metadata,
+		Warnings:               []string{"w1"},
+		Metadata:               metadata,
 	}
 	outcome := &delegatestore.Outcome{
 		Status:           delegatestore.OutcomeCompleted,
@@ -235,7 +235,7 @@ func TestProjectStableActivityDelegate_ChildMismatchErrors(t *testing.T) {
 	snap := activitySessionSnapshot{
 		SessionID: "root", Ref: "local:root", RootID: "root",
 		StableDelegates: map[string]delegateSnapshot{"dlg_1": row},
-		Children: map[string]*activitySessionSnapshot{"child": {SessionID: "wrong", Ref: "local:wrong"}},
+		Children:        map[string]*activitySessionSnapshot{"child": {SessionID: "wrong", Ref: "local:wrong"}},
 	}
 	delegate := projectStableActivityDelegate(snap, row, newActivityBudget(), 0, nil)
 	if delegate.Branch.Error == "" || !strings.Contains(delegate.Branch.Error, "child link does not match") {
@@ -313,7 +313,7 @@ func TestProjectStableActivityDelegate_ErrorFromParentSnapshot(t *testing.T) {
 	snap := activitySessionSnapshot{
 		SessionID: "root", Ref: "local:root", RootID: "root",
 		StableDelegates: map[string]delegateSnapshot{"dlg_1": row},
-		Errors:           map[string]error{"child": errActivityHistoryUnavailable},
+		Errors:          map[string]error{"child": errActivityHistoryUnavailable},
 	}
 	delegate := projectStableActivityDelegate(snap, row, newActivityBudget(), 0, nil)
 	if delegate.Branch.Error != errActivityHistoryUnavailable.Error() {

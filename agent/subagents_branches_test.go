@@ -519,9 +519,9 @@ func TestRestoreFrozenSkillBodiesValid(t *testing.T) {
 func TestPreparedSubagentRunStruct(t *testing.T) {
 	p := &preparedSubagentRun{
 		task:       "do the work",
-		agentType:   "default",
-		workingDir:  "/path",
-		isolation:    "worktree",
+		agentType:  "default",
+		workingDir: "/path",
+		isolation:  "worktree",
 	}
 	if p.task != "do the work" || p.agentType != "default" {
 		t.Fatalf("struct wrong: %+v", p)
@@ -556,8 +556,8 @@ func TestDisposeUnadoptedSubagentSessionNil(t *testing.T) {
 
 func TestSubagentStruct(t *testing.T) {
 	sub := &subagent{
-		id:       "dlg_1",
-		status:   SubagentRunning,
+		id:        "dlg_1",
+		status:    SubagentRunning,
 		turnsUsed: 3,
 	}
 	if sub.id != "dlg_1" || sub.status != SubagentRunning {

@@ -55,9 +55,9 @@ func TestCloneCodexCachedThreadNoTurns(t *testing.T) {
 func TestCloneCodexCachedThreadWithTurns(t *testing.T) {
 	startedAt := int64(1000)
 	thread := appwire.Thread{
-		ID:     "th1",
+		ID: "th1",
 		Turns: []appwire.Turn{{
-			ID:       "turn1",
+			ID:        "turn1",
 			StartedAt: &startedAt,
 		}},
 	}
@@ -79,8 +79,8 @@ func TestCloneCodexCachedTurnWithError(t *testing.T) {
 	raw := json.RawMessage(`{"code":"x"}`)
 	turn := appwire.Turn{
 		Error: &appwire.TurnError{
-			Message:         "fail",
-			CodexErrorInfo:  raw,
+			Message:        "fail",
+			CodexErrorInfo: raw,
 		},
 	}
 	clone := cloneCodexCachedTurn(turn)
@@ -116,9 +116,9 @@ func TestCloneCodexCachedItem(t *testing.T) {
 	exitCode := int64(0)
 	item := appwire.ThreadItem{
 		Type:      "commandExecution",
-		StartedAt:  &startedAt,
-		ExitCode:   &exitCode,
-		Raw:        json.RawMessage(`{"x":1}`),
+		StartedAt: &startedAt,
+		ExitCode:  &exitCode,
+		Raw:       json.RawMessage(`{"x":1}`),
 		Images: []appwire.InputItem{
 			{Data: []byte("img"), Metadata: map[string]string{"w": "10"}},
 		},

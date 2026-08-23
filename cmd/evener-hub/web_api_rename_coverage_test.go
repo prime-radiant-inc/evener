@@ -87,8 +87,8 @@ func TestRenameEndedSessionPokeAttention(t *testing.T) {
 
 	poked := false
 	web := NewWebServer(hubcore.WebConfig{
-		Past:         past,
-		Roster:       hubcore.NewRosterWithEntries(),
+		Past:          past,
+		Roster:        hubcore.NewRosterWithEntries(),
 		PokeAttention: func() { poked = true },
 	})
 
@@ -215,8 +215,8 @@ func TestRefreshRenamedMetaPokeAttention(t *testing.T) {
 
 	poked := false
 	web := NewWebServer(hubcore.WebConfig{
-		Past:         past,
-		Roster:       hubcore.NewRosterWithEntries(),
+		Past:          past,
+		Roster:        hubcore.NewRosterWithEntries(),
 		PokeAttention: func() { poked = true },
 	})
 

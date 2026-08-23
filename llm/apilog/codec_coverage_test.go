@@ -176,7 +176,7 @@ func TestMarshalRecordUnsupportedType(t *testing.T) {
 
 type unsupportedRecord struct{}
 
-func (unsupportedRecord) RecordKind() string { return "unsupported" }
+func (unsupportedRecord) RecordKind() string              { return "unsupported" }
 func (unsupportedRecord) validateRecord(DecodeMode) error { return nil }
 
 // TestMarshalRecordMarshalError covers the json.Marshal error path

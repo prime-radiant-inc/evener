@@ -226,10 +226,10 @@ func TestDelegateControllerRunStartedEvent(t *testing.T) {
 func TestCloneDelegateStartDescriptor(t *testing.T) {
 	t.Run("basic", func(t *testing.T) {
 		desc := delegatestore.Descriptor{
-			Task:         "do something",
-			AgentType:    "default",
-			Resumable:    true,
-			WorkingDir:   "/path",
+			Task:       "do something",
+			AgentType:  "default",
+			Resumable:  true,
+			WorkingDir: "/path",
 		}
 		clone := cloneDelegateStartDescriptor(desc)
 		if clone.Task != "do something" || clone.AgentType != "default" {
@@ -273,11 +273,11 @@ func TestCloneDelegateStartDescriptor(t *testing.T) {
 		network := true
 		desc := delegatestore.Descriptor{
 			Sandbox: &delegatestore.SandboxSnapshot{
-				Network:          &network,
-				DenylistAdd:       []string{"x"},
-				DenylistRemove:    []string{"y"},
+				Network:            &network,
+				DenylistAdd:        []string{"x"},
+				DenylistRemove:     []string{"y"},
 				ExtraWritableRoots: []string{"/w"},
-				ExtraReadRoots:    []string{"/r"},
+				ExtraReadRoots:     []string{"/r"},
 			},
 		}
 		clone := cloneDelegateStartDescriptor(desc)

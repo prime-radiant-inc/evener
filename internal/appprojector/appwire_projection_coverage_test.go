@@ -86,12 +86,12 @@ func TestCloneInt64PointerValue(t *testing.T) {
 
 func TestCloneAppwireDelegateInfo(t *testing.T) {
 	original := appwire.EvenerDelegateInfo{
-		DelegateID:       "dlg_1",
-		Message:          json.RawMessage(`{"x":1}`),
-		Warnings:         []string{"w1", "w2"},
-		StructuredValid:  &[]bool{true}[0],
-		Usage:            &appwire.EvenerUsage{InputTokens: 100},
-		Worktree:         &appwire.JobActivityWorktree{Path: "/tmp"},
+		DelegateID:      "dlg_1",
+		Message:         json.RawMessage(`{"x":1}`),
+		Warnings:        []string{"w1", "w2"},
+		StructuredValid: &[]bool{true}[0],
+		Usage:           &appwire.EvenerUsage{InputTokens: 100},
+		Worktree:        &appwire.JobActivityWorktree{Path: "/tmp"},
 	}
 	clone := cloneAppwireDelegateInfo(original)
 	if clone.DelegateID != "dlg_1" {

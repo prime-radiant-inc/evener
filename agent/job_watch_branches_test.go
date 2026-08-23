@@ -766,7 +766,7 @@ func TestWatchResultStruct(t *testing.T) {
 		Source:             "self",
 		Target:             "job_123",
 		Watching:           true,
-		OutputMatch:         "ERROR",
+		OutputMatch:        "ERROR",
 		Events:             []string{"job.notification"},
 		ProgressIntervalMS: 5000,
 	}
@@ -783,7 +783,7 @@ func TestWatchKeyStruct(t *testing.T) {
 	k := watchKey{
 		VisibleSessionID:   "sess_1",
 		Target:             "job_1",
-		SendTo:              "dlg_1",
+		SendTo:             "dlg_1",
 		ReceiverSessionID:  "sess_2",
 		ReceiverDelegateID: "dlg_2",
 	}

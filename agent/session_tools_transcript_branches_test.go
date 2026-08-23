@@ -27,9 +27,9 @@ func TestTranscriptToolsNilDeps(t *testing.T) {
 	if len(tools) != 1 {
 		t.Fatalf("expected 1 tool (read_transcript only), got %d", len(tools))
 	}
-		if tools[0].Tool.Definition.Name != "read_transcript" {
-			t.Fatalf("expected read_transcript, got %q", tools[0].Tool.Definition.Name)
-		}
+	if tools[0].Tool.Definition.Name != "read_transcript" {
+		t.Fatalf("expected read_transcript, got %q", tools[0].Tool.Definition.Name)
+	}
 	for _, tl := range tools {
 		if tl.Limit.MaxChars != transcriptToolMaxChars {
 			t.Fatalf("expected MaxChars=%d, got %d", transcriptToolMaxChars, tl.Limit.MaxChars)
@@ -237,7 +237,7 @@ func TestValidArtifactTranscriptRef(t *testing.T) {
 		{"artifact:" + strings.Repeat("0", 32), true},
 		{"artifact:" + strings.Repeat("f", 32), true},
 		{"artifact:" + strings.Repeat("9", 32), true},
-		{"artifact:abc", false},                    // too short
+		{"artifact:abc", false},                        // too short
 		{"artifact:" + strings.Repeat("g", 32), false}, // non-hex char
 		{"artifact:" + strings.Repeat("A", 32), false}, // uppercase not hex lowercase
 		{"notartifact:" + strings.Repeat("a", 32), false},
@@ -312,14 +312,14 @@ func TestRenderJobTranscriptDispatch(t *testing.T) {
 func TestRenderDelegateJobTranscriptAllFields(t *testing.T) {
 	valid := true
 	rec := &jobstore.JobRecord{
-		JobID:                   "dlg_abc",
-		Type:                    "delegate",
-		Status:                  "completed",
-		Reason:                  "finished ok",
-		Task:                    "do the thing\nwith newlines",
-		StructuredResult:        map[string]any{"key": "val"},
-		StructuredResultValid:   &valid,
-		StructuredResultReason:  "parsed successfully",
+		JobID:                  "dlg_abc",
+		Type:                   "delegate",
+		Status:                 "completed",
+		Reason:                 "finished ok",
+		Task:                   "do the thing\nwith newlines",
+		StructuredResult:       map[string]any{"key": "val"},
+		StructuredResultValid:  &valid,
+		StructuredResultReason: "parsed successfully",
 	}
 	out := renderDelegateJobTranscript(rec, "delegate output", 500, 10)
 	for _, want := range []string{"Delegate Job dlg_abc", "status: completed", "reason: finished ok", "task: do the thing with newlines", "total_bytes: 500", "dropped_bytes: 10", "delegate output", "structured_result", "valid=true", `"key":"val"`, "structured_result_reason: parsed successfully"} {
@@ -348,8 +348,8 @@ func TestRenderDelegateJobTranscriptStructuredResultInvalid(t *testing.T) {
 	rec := &jobstore.JobRecord{
 		JobID:                 "dlg_inv",
 		Type:                  "delegate",
-		StructuredResult:       map[string]any{"x": 1},
-		StructuredResultValid:  &invalid,
+		StructuredResult:      map[string]any{"x": 1},
+		StructuredResultValid: &invalid,
 	}
 	out := renderDelegateJobTranscript(rec, "out", 10, 0)
 	if !strings.Contains(out, "valid=false") {
@@ -460,11 +460,11 @@ func TestRetainedPageResult(t *testing.T) {
 
 func TestRetainedPageResultNoContinuation(t *testing.T) {
 	page := retainedPage{
-		OffsetBytes:  0,
+		OffsetBytes:   0,
 		BytesReturned: 5,
-		TotalBytes:   5,
-		Encoding:     "utf8",
-		Data:         "hello",
+		TotalBytes:    5,
+		Encoding:      "utf8",
+		Data:          "hello",
 	}
 	env := retainedPageResult("job:xyz", 0, "", page)
 	if env.Continuation != nil {
@@ -799,7 +799,7 @@ func TestBoundReadMarkdownEnvelopeWithHintExpansionFits(t *testing.T) {
 func TestBoundReadMarkdownEnvelopeWithHintExpansionNeedsShrinking(t *testing.T) {
 	// Expansion is small enough to fit after content is trimmed
 	env := readMarkdownEnvelope{
-		Content: strings.Repeat("x", hardCapChars+5000),
+		Content:   strings.Repeat("x", hardCapChars+5000),
 		Expansion: &transcriptTurnExpansion{ExpandTurn: 0, OffsetBytes: 0, TotalBytes: 5, Encoding: "utf8", Data: "hello"},
 	}
 	out, err := boundReadMarkdownEnvelopeWithHint(env, "hint")
@@ -815,7 +815,7 @@ func TestBoundReadMarkdownEnvelopeWithHintExpansionDecodeError(t *testing.T) {
 	// Content is large enough to exceed hardCapChars, forcing the expansion
 	// decode path which will fail on invalid base64.
 	env := readMarkdownEnvelope{
-		Content: strings.Repeat("x", hardCapChars+5000),
+		Content:   strings.Repeat("x", hardCapChars+5000),
 		Expansion: &transcriptTurnExpansion{Encoding: "base64", Data: "!!!invalid!!!", TotalBytes: 5},
 	}
 	_, err := boundReadMarkdownEnvelopeWithHint(env, "hint")
@@ -872,9 +872,9 @@ func TestPublicTranscriptEntry(t *testing.T) {
 		entry := transcript.Entry{
 			Seq: 3,
 			Turn: schema.Turn{
-				Kind:                  schema.TurnAssistant,
-				AttentionID:           "att_123",
-				AttentionResolution:   &schema.AttentionResolutionInfo{},
+				Kind:                    schema.TurnAssistant,
+				AttentionID:             "att_123",
+				AttentionResolution:     &schema.AttentionResolutionInfo{},
 				DelegateDeliveryCommits: []schema.DelegateDeliveryCommit{},
 			},
 		}
@@ -1062,9 +1062,9 @@ func TestSpliceRangeWarning(t *testing.T) {
 
 func TestBucketAndSessionFromPath(t *testing.T) {
 	tests := []struct {
-		path     string
-		bucket   string
-		session  string
+		path    string
+		bucket  string
+		session string
 	}{
 		{"/state/bucket/sessions/abc.transcript.jsonl", "/state/bucket", "abc"},
 		{"/tmp/evener/sessions/xyz123.transcript.jsonl", "/tmp/evener", "xyz123"},
@@ -1138,7 +1138,7 @@ func TestProjectToolResultsForTranscriptWithProjection(t *testing.T) {
 	// Call with source=api_log triggers projection
 	resultJSON := `{"source":"api_log","transcript_ref":"local:abc","attempt":{"attempt_id":"att_1"}}`
 	calls := []llm.ToolCallData{{
-		Name:     "read_session_transcript",
+		Name:      "read_session_transcript",
 		Arguments: json.RawMessage(`{"source":"api_log"}`),
 	}}
 	results := []tool.ExecResult{{ToolName: "read_session_transcript", Output: resultJSON}}
@@ -1190,7 +1190,7 @@ func TestApiLogResultTranscriptPlaceholderNotAPILog(t *testing.T) {
 func TestApiLogResultTranscriptPlaceholderCallIsAPILog(t *testing.T) {
 	call := llm.ToolCallData{
 		Name:      "read_session_transcript",
-		Arguments:  json.RawMessage(`{"source":"api_log"}`),
+		Arguments: json.RawMessage(`{"source":"api_log"}`),
 	}
 	result := tool.ExecResult{ToolName: "read_session_transcript", Output: `{"source":"transcript"}`}
 	placeholder, ok := apiLogResultTranscriptPlaceholder(call, result)
@@ -1208,7 +1208,7 @@ func TestApiLogResultTranscriptPlaceholderCallIsAPILog(t *testing.T) {
 func TestApiLogResultTranscriptPlaceholderCallWithAttemptID(t *testing.T) {
 	call := llm.ToolCallData{
 		Name:      "other_tool",
-		Arguments:  json.RawMessage(`{"attempt_id":"att_123"}`),
+		Arguments: json.RawMessage(`{"attempt_id":"att_123"}`),
 	}
 	result := tool.ExecResult{ToolName: "read_session_transcript", Output: `{"source":"transcript"}`}
 	_, ok := apiLogResultTranscriptPlaceholder(call, result)
@@ -2458,7 +2458,7 @@ func TestExecReadTranscriptJobSearchFormatRejected(t *testing.T) {
 	_, err := execReadTranscript(deps, map[string]any{
 		"transcript_ref": "job:abc",
 		"output_match":   "x",
-		"format":          "markdown",
+		"format":         "markdown",
 	})
 	if err == nil || !strings.Contains(err.Error(), "format cannot be combined") {
 		t.Fatalf("expected format+search error, got %v", err)
@@ -2676,10 +2676,10 @@ func TestRetainedPageWithContinuation(t *testing.T) {
 
 func TestRetainedSearchEnvelope(t *testing.T) {
 	env := retainedSearchEnvelope{
-		OffsetBytes:        10,
-		RetainedStartBytes:  0,
-		TotalBytes:         100,
-		SearchComplete:      true,
+		OffsetBytes:          10,
+		RetainedStartBytes:   0,
+		TotalBytes:           100,
+		SearchComplete:       true,
 		SkippedPartialPrefix: true,
 		Matches: []retainedSearchMatch{
 			{Line: "match", Before: []string{"before"}, After: []string{"after"}},
@@ -2850,9 +2850,9 @@ func TestFindSessionTranscriptsToolRegistration(t *testing.T) {
 func TestSpliceWindowLineEmptyContent(t *testing.T) {
 	out := spliceWindowLine("", readMeta{
 		TurnsRendered: 3,
-		FirstRendered:  0,
-		LastRendered:   2,
-		TurnsTotal:     10,
+		FirstRendered: 0,
+		LastRendered:  2,
+		TurnsTotal:    10,
 	})
 	if !strings.Contains(out, "Showing turns") {
 		t.Fatalf("expected window line even in empty content: %q", out)
@@ -3033,9 +3033,9 @@ func (s *shortReadArtifactReader) Close() error { return nil }
 
 func TestFmtSprintfInRenderDelegateJobTranscript(t *testing.T) {
 	rec := &jobstore.JobRecord{
-		JobID:   "dlg_task",
-		Type:    "delegate",
-		Task:    "  spaced task  ",
+		JobID: "dlg_task",
+		Type:  "delegate",
+		Task:  "  spaced task  ",
 	}
 	out := renderDelegateJobTranscript(rec, "output", 10, 0)
 	if !strings.Contains(out, "task: spaced task") {
@@ -3050,9 +3050,9 @@ func TestFmtSprintfInRenderDelegateJobTranscript(t *testing.T) {
 func TestParseReadSessionTranscriptArgsWhitespaceTrimming(t *testing.T) {
 	parsed, err := parseReadSessionTranscriptArgs(map[string]any{
 		"transcript_ref": "  local:abc  ",
-		"source":          "  api_log  ",
-		"attempt_id":      "  att_1  ",
-		"body":            "  request  ",
+		"source":         "  api_log  ",
+		"attempt_id":     "  att_1  ",
+		"body":           "  request  ",
 	})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -3078,8 +3078,8 @@ func TestParseReadSessionTranscriptArgsWhitespaceTrimming(t *testing.T) {
 func TestParseReadSessionTranscriptArgsWhitespaceTrimmingTranscript(t *testing.T) {
 	parsed, err := parseReadSessionTranscriptArgs(map[string]any{
 		"transcript_ref": "  local:abc  ",
-		"format":          "  markdown  ",
-		"range":           "  1-5  ",
+		"format":         "  markdown  ",
+		"range":          "  1-5  ",
 	})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)

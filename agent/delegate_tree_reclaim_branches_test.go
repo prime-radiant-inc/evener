@@ -59,7 +59,7 @@ func TestReclamationCoversLockedAncestor(t *testing.T) {
 	c := &delegateTreeController{
 		reclaiming: map[string]uint64{"dlg_parent": 1},
 		durable: map[string]*delegatestore.Aggregate{
-			"dlg_1":     {Descriptor: delegatestore.Descriptor{ParentDelegateID: "dlg_parent"}},
+			"dlg_1":      {Descriptor: delegatestore.Descriptor{ParentDelegateID: "dlg_parent"}},
 			"dlg_parent": {},
 		},
 	}
@@ -189,9 +189,9 @@ func TestIsResidentTerminalRuntimeLockedClosedPhase(t *testing.T) {
 
 func TestRuntimeReclamationIntersectsProcessWorkLockedNoStop(t *testing.T) {
 	c := &delegateTreeController{
-		reclaiming:    map[string]uint64{},
-		reservations:  map[uint64]*delegateStartRecord{},
-		inputClaims:   map[uint64]delegateLease{},
+		reclaiming:   map[string]uint64{},
+		reservations: map[uint64]*delegateStartRecord{},
+		inputClaims:  map[uint64]delegateLease{},
 	}
 	if c.runtimeReclamationIntersectsProcessWorkLocked(map[string]struct{}{"dlg_1": {}}) {
 		t.Fatalf("expected false with no process work")
@@ -200,7 +200,7 @@ func TestRuntimeReclamationIntersectsProcessWorkLockedNoStop(t *testing.T) {
 
 func TestRuntimeReclamationIntersectsProcessWorkLockedWithStop(t *testing.T) {
 	c := &delegateTreeController{
-		stop: &delegateStopState{members: map[string]struct{}{"dlg_1": {}}},
+		stop:       &delegateStopState{members: map[string]struct{}{"dlg_1": {}}},
 		reclaiming: map[string]uint64{},
 	}
 	if !c.runtimeReclamationIntersectsProcessWorkLocked(map[string]struct{}{"dlg_1": {}}) {
@@ -246,7 +246,7 @@ func TestReclaimDelegateRuntimeCapacityNilController(t *testing.T) {
 
 func TestDelegateRuntimeReclamationEntryStruct(t *testing.T) {
 	e := delegateRuntimeReclamationEntry{
-		delegateID:    "dlg_1",
+		delegateID:     "dlg_1",
 		childSessionID: "sess_1",
 	}
 	if e.delegateID != "dlg_1" || e.childSessionID != "sess_1" {

@@ -177,8 +177,8 @@ func TestNoteDelegateAttentionLockedNilAggregate(t *testing.T) {
 
 func TestNoteDelegateAttentionLockedNew(t *testing.T) {
 	c := &delegateTreeController{
-		durable:           map[string]*delegatestore.Aggregate{"dlg_1": {}},
-		attentionWakeIDs:  map[string]map[string]struct{}{},
+		durable:          map[string]*delegatestore.Aggregate{"dlg_1": {}},
+		attentionWakeIDs: map[string]map[string]struct{}{},
 	}
 	if !c.noteDelegateAttentionLocked("dlg_1", "att_1") {
 		t.Fatalf("expected true for new attention")

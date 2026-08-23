@@ -1,10 +1,10 @@
 package openai
 
 import (
+	"bytes"
 	"image"
 	"image/color"
 	"image/gif"
-	"bytes"
 	"testing"
 )
 

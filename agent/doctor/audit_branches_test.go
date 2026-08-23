@@ -531,7 +531,7 @@ func TestRenderAudit_FindingsWithManual(t *testing.T) {
 		SessionsChecked: 1,
 		Findings: []Finding{{
 			Signature: "sig", Severity: "high", Category: "cat", Title: "title",
-			Description: "desc",
+			Description:  "desc",
 			SuggestedFix: SuggestedFix{Type: "diagnosis"},
 		}},
 		Summary: []AuditSummaryRow{{Title: "title", Severity: "high", Sessions: 1}},

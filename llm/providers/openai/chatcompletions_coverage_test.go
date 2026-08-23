@@ -17,8 +17,8 @@ import (
 func TestStreamViaChatCompletionsJSONMarshalError(t *testing.T) {
 	a := &Adapter{BaseURL: "https://example.test", Client: &http.Client{Transport: chatCoverageRoundTripper{status: 200}}}
 	req := llm.Request{
-		Model:    "test-model",
-		Messages: []llm.Message{llm.User("hi")},
+		Model:           "test-model",
+		Messages:        []llm.Message{llm.User("hi")},
 		ProviderOptions: map[string]any{"openai": map[string]any{"bad": func() {}}},
 	}
 	_, err := a.streamViaChatCompletions(context.Background(), req)

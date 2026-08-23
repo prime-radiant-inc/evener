@@ -243,7 +243,7 @@ func TestSubtreeMembersLockedWithChildren(t *testing.T) {
 func TestSubtreeMembersLockedNilAggregates(t *testing.T) {
 	c := &delegateTreeController{
 		durable: map[string]*delegatestore.Aggregate{
-			"dlg_1": {Descriptor: delegatestore.Descriptor{ParentDelegateID: ""}},
+			"dlg_1":   {Descriptor: delegatestore.Descriptor{ParentDelegateID: ""}},
 			"dlg_nil": nil,
 		},
 	}

@@ -205,8 +205,8 @@ func TestDelegatePreparedFinishWithMetadata(t *testing.T) {
 	now := time.Now().UTC()
 	metadata := delegateTerminalPacketMetadata{
 		RunEndedAt: now.Format(time.RFC3339Nano),
-		Outcome:   delegatestore.OutcomeFailed,
-		Reason:    "custom failure",
+		Outcome:    delegatestore.OutcomeFailed,
+		Reason:     "custom failure",
 	}
 	raw, _ := json.Marshal(metadata)
 	packet := delegatestore.TerminalPacket{Kind: delegatestore.PacketTerminalError, Metadata: raw}
@@ -268,8 +268,8 @@ func TestDelegatePreparedFinishInvalidMetadata(t *testing.T) {
 
 func TestCloneDelegateTerminalPacket(t *testing.T) {
 	original := delegatestore.TerminalPacket{
-		Kind:    delegatestore.PacketTerminalError,
-		Message: json.RawMessage(`"original"`),
+		Kind:     delegatestore.PacketTerminalError,
+		Message:  json.RawMessage(`"original"`),
 		Warnings: []string{"w1"},
 		Metadata: json.RawMessage(`{"key":"val"}`),
 	}
@@ -530,7 +530,7 @@ func TestReleaseSettlementClaimLocked(t *testing.T) {
 func TestReleaseSettlementClaimLockedWithStop(t *testing.T) {
 	c := &delegateTreeController{
 		settlementClaims: map[uint64]*delegateSettlementClaim{1: {}},
-		stop: &delegateStopState{settlementClaims: map[uint64]struct{}{1: {}}},
+		stop:             &delegateStopState{settlementClaims: map[uint64]struct{}{1: {}}},
 	}
 	c.releaseSettlementClaimLocked(1)
 	if _, exists := c.stop.settlementClaims[1]; exists {
