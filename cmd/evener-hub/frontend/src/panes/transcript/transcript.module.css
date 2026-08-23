@@ -20,11 +20,13 @@
 }
 
 /* When the Session Rail is active, the body is a row (list + rail) and the
- * native scrollbar is hidden — the rail IS the scrollbar. */
+ * native scrollbar is hidden — the rail IS the scrollbar. Container context
+ * for the rail's responsive container queries. */
 .bodyRow {
   height: 100%;
   display: flex;
   flex-direction: row;
+  container-type: inline-size;
 }
 
 .listWithRail {

@@ -1,4 +1,8 @@
 .rail {
+  /* Container-query driven width: ≥900px pane → 156px full encoding,
+   * 560–899px → 96px (reduced), <560px → 40px minimal strip (burn line +
+   * errors + anchors, drag still works). The parent transcriptContent is
+   * the container (see session.module.css / transcript.module.css). */
   width: 156px;
   min-width: 156px;
   height: 100%;
@@ -7,6 +11,22 @@
   border-left: 1px solid var(--edge);
   background: var(--surface-canvas);
   overflow: hidden;
+}
+
+/* Tablet band: 560–899px pane → 96px rail */
+@container (min-width: 560px) and (max-width: 899px) {
+  .rail {
+    width: 96px;
+    min-width: 96px;
+  }
+}
+
+/* Phone strip: <560px pane → 40px minimal rail */
+@container (max-width: 559px) {
+  .rail {
+    width: 40px;
+    min-width: 40px;
+  }
 }
 
 .railMap {
@@ -80,4 +100,39 @@
   pointer-events: none;
   font: 9.5px/1.4 var(--font-mono);
   white-space: pre-line;
+}
+
+/* Respect prefers-reduced-motion: disable the anchor entrance animation and
+ * any FLIP/follow animations when the user has requested reduced motion. */
+@media (prefers-reduced-motion: reduce) {
+  .promptAnchor {
+    animation: none;
+  }
+}
+
+/* Phone strip: enlarge anchor tap targets to ≥44px for spawnguard
+ * compliance at <560px. The visible diamond stays 9px but the button's
+ * touch area expands via padding. */
+@container (max-width: 559px) {
+  .promptAnchor {
+    width: 44px;
+    height: 44px;
+    border: 0;
+    background: transparent;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
+
+  .promptAnchor::after {
+    content: "";
+    width: 9px;
+    height: 9px;
+    transform: rotate(45deg);
+    background: var(--accent);
+  }
+
+  .steerAnchor::after {
+    background: var(--attention);
+  }
 }

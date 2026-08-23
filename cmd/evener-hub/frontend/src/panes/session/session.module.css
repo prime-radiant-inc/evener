@@ -7,6 +7,9 @@
   flex-direction: row;
   height: 100%;
   min-height: 0;
+  /* Container context for the Session Rail's responsive container queries
+   * (rail width: 156px at ≥900px, 96px at 560–899px, 40px at <560px). */
+  container-type: inline-size;
   /* Same containment chain as .turn's own min-width: 0 - every flex link
    * between PaneScaffold's clipped body and the virtual list must be able
    * to shrink below its widest child. */

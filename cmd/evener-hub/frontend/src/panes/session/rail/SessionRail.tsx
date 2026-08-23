@@ -240,7 +240,7 @@ export function SessionRail({
   const pl = promptLayout(V, mapRef.current?.clientHeight ?? 0, events);
 
   return (
-    <div className={styles.rail} style={{ width }}>
+    <section className={styles.rail} style={{ width }} aria-label="Session rail">
       <div className={styles.railMap} ref={mapRef}>
         <canvas
           ref={canvasRef}
@@ -249,7 +249,7 @@ export function SessionRail({
           onPointerMove={handlePointerMove}
           onPointerUp={handlePointerUp}
           onPointerLeave={() => setTooltip(null)}
-          aria-label="Session rail scrollbar"
+          aria-label="Session timeline and token usage visualization"
           role="img"
         />
         <div className={styles.promptLayer}>
@@ -280,7 +280,7 @@ export function SessionRail({
           {tooltip.text}
         </div>
       )}
-    </div>
+    </section>
   );
 }
 
