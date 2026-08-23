@@ -768,3 +768,5 @@ func TestActivityFilterSnapshotToDelegate(t *testing.T) {
 		t.Fatalf("missing delegate should produce empty maps")
 	}
 }
+
+func ptrActivityJob(j appwire.JobActivityJob) *appwire.JobActivityJob { return &j }

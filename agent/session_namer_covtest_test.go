@@ -215,3 +215,5 @@ func TestSessionNamerEnabled_NilProfile(t *testing.T) {
 
 // Ensure llm import is used.
 var _ = llm.Kind
+
+func ptrString(s string) *string { return &s }

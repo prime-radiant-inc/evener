@@ -1,6 +1,7 @@
 package execenv
 
 import (
+	"context"
 	"os"
 	"testing"
 	"testing/fstest"
@@ -126,13 +127,13 @@ func TestGlobMatchIsDir(t *testing.T) {
 		"file.txt": {Data: []byte("hello")},
 		"subdir":   {Data: []byte(""), Mode: os.ModeDir | 0o755},
 	}
-	if globMatchIsDir(fsys, "file.txt") {
+	if isDir, _ := globMatchIsDir(context.Background(), fsys, "file.txt"); isDir {
 		t.Fatal("expected file.txt NOT to be a directory")
 	}
-	if !globMatchIsDir(fsys, "subdir") {
+	if isDir, _ := globMatchIsDir(context.Background(), fsys, "subdir"); !isDir {
 		t.Fatal("expected subdir to be a directory")
 	}
-	if globMatchIsDir(fsys, "nonexistent") {
+	if isDir, _ := globMatchIsDir(context.Background(), fsys, "nonexistent"); isDir {
 		t.Fatal("expected nonexistent NOT to be a directory")
 	}
 }

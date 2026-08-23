@@ -553,3 +553,5 @@ func utf8ValidString(s string) bool {
 	}
 	return true
 }
+
+func intPtr(value int) *int { return &value }

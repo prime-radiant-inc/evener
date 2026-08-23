@@ -142,7 +142,7 @@ func TestDenyEnvFileExists(t *testing.T) {
 // TestDenyEnvGlob covers Glob (lines 102-109).
 func TestDenyEnvGlob(t *testing.T) {
 	d := &DenyEnv{Seed: 1}
-	results, err := d.Glob("*.go", "/base", true)
+	results, err := d.Glob(context.Background(), "*.go", "/base", true)
 	if err != nil {
 		t.Fatalf("Glob: %v", err)
 	}
