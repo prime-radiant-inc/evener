@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# e2e-lib.sh — shared harness logic for the disposable evener-hub e2e scripts
+# e2e-lib.sh — shared harness logic for the disposable evener hub e2e scripts
 # (scripts/e2e-webui-turn-controls.sh, scripts/e2e-ratelimited-provider.sh).
 #
 # This file is SOURCED, never executed. It defines functions only; the caller
@@ -7,7 +7,7 @@
 # name themselves) and `repo_root` before calling into the harness, and sources
 # this file after its own `set -euo pipefail`.
 #
-# The two harnesses are near-duplicates that stand up a disposable evener-hub
+# The two harnesses are near-duplicates that stand up a disposable evener hub
 # plus a fake backend on kernel-assigned ports. The webui harness matured first
 # and fixed several bugs the ratelimited harness still carried; centralising
 # the logic here is what keeps the second copy from drifting again.
@@ -110,7 +110,7 @@ e2e_make_run_dir() {
 #
 # Nothing below here may leave a half-built stack behind. Every failure
 # between this line and the "Ready" banner (disarmed by e2e_disarm_reaper) is
-# a bare exit, and the operator who just read "build evener-hub failed" is the
+# a bare exit, and the operator who just read "build evener hub failed" is the
 # least likely person to go looking for a backend still running or a run
 # directory still on disk. The directory itself is deliberately NOT removed —
 # its logs are the only record of what failed — so the reaper prints the one

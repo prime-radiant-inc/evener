@@ -300,7 +300,7 @@ run_module() {
 	if [ "$m" = "agent" ] && [ "$AGENT_SHARDS" -ne 0 ]; then
 		# The agent module's wall time is dominated by its top-level package, one
 		# binary holding ~3550 tests whose git-driving and CPU-bound halves want
-		# opposite -parallel settings. evener-dev agent-shards runs those halves as
+		# opposite -parallel settings. evener dev agent-shards runs those halves as
 		# two concurrently-scheduled invocations of one prebuilt binary (~32s ->
 		# ~26s). Its subpackages are small and already concurrent internally, but
 		# they run AFTER the shards finish, not alongside them (~22s shards then
@@ -313,7 +313,7 @@ run_module() {
 		# one as an "exit status N" line on stderr, so the runner's 129/130/143
 		# signal exits survive in the binary but not through this call. Only
 		# zero-vs-nonzero is read below, so nothing here depends on them.
-		(cd .. && go run ./cmd/evener-dev agent-shards $test_flags) || shardStatus=$?
+		(cd .. && go run ./cmd/evener-dev/bin dev agent-shards $test_flags) || shardStatus=$?
 		local subpkgs=()
 		local pkg
 		while IFS= read -r pkg; do

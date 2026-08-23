@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # gate-surface-lib.sh — the single definition of WHICH tests the deterministic
 # non-fuzz gate runs, shared by the gate itself (run-module-tests.sh) and by the
-# ratchets that must measure the same surface (evener-dev coverage-floor,
+# ratchets that must measure the same surface (evener dev coverage-floor,
 # test-timing-budget.sh).
 #
 # Sourced, never executed. Deliberately pure declaration: it sets variables

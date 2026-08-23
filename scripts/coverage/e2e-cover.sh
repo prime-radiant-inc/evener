@@ -1,14 +1,14 @@
 #!/usr/bin/env bash
-# e2e-cover.sh — measure END-TO-END coverage of the real evener/evener-tui binaries.
+# e2e-cover.sh — measure END-TO-END coverage of the real evener binary.
 #
 # WHY: unit tests can't reach main(), the CLI dispatchers, flag parsing, help/
 # error exits, or the full run/serve wiring — that code only executes in the
-# shipping binary. This harness builds instrumented binaries (`go build -cover`,
-# Go 1.20+), drives them through a battery of real invocations, and collects the
+# shipping binary. This harness builds an instrumented binary (`go build -cover`,
+# Go 1.20+), drives it through a battery of real invocations, and collects the
 # coverage the binary emits via GOCOVERDIR. It is the measured complement to the
 # `go test` unit coverage: together they show what ALL tests + real e2e reach.
 #
-# WHAT IT RUNS: a no-network, no-credential battery covering every evener/evener-tui
+# WHAT IT RUNS: a no-network, no-credential battery covering every evener
 # subcommand's help/dispatch/error path (the bulk of the cmd/* surface). With
 # EVENER_E2E_LIVE=1 it also runs the live scenario scripts in test/ (which need
 # real provider credentials) under the same GOCOVERDIR.
@@ -42,14 +42,13 @@ done
 
 workdir="$(mktemp -d -t evener-e2e-cover.XXXXXX)"
 covdir="$workdir/gocov"; mkdir -p "$covdir"
-evener="$workdir/evener"; tui="$workdir/evener-tui"
+evener="$workdir/evener"
 
 echo "==> building web UI (frontend/dist with Vite hashed assets)"
 make build-web >/dev/null 2>&1 || { echo "build-web failed" >&2; exit 1; }
 
-echo "==> building instrumented binaries (go build -cover)"
+echo "==> building instrumented binary (go build -cover)"
 go build -cover -o "$evener" ./cmd/evener || { echo "build evener failed" >&2; exit 1; }
-go build -cover -o "$tui" ./cmd/evener-tui || { echo "build evener-tui failed" >&2; exit 1; }
 
 # run CMD under GOCOVERDIR, ignoring its exit code (error paths are on purpose).
 run() { GOCOVERDIR="$covdir" "$@" >/dev/null 2>&1 || true; }
@@ -71,10 +70,10 @@ run "$evener" openai status
 run "$evener" openai bogus-subcommand
 run "$evener" --bogus-flag
 run "$evener" totally-unknown-command
-# evener-tui: help + error path.
-run "$tui" --help
-run "$tui" -h
-run "$tui" --bogus
+# evener tui: help + error path.
+run "$evener" tui --help
+run "$evener" tui -h
+run "$evener" tui --bogus
 
 # Web-hub battery: start the real hub HTTP server (instrumented) on a loopback
 # port, drive its routes with curl, then stop it. Captures the web handler /
@@ -83,51 +82,46 @@ run "$tui" --bogus
 # ensure asset coverage exercises actual Vite hashed paths, not stale routes.
 if command -v curl >/dev/null 2>&1; then
 	echo "==> driving the web-hub HTTP battery"
-	hub="$workdir/evener-hub"
-	if go build -cover -o "$hub" ./cmd/evener-hub 2>/dev/null; then
-		hub_run="$workdir/hubrun"; mkdir -p "$hub_run"
-		port=$(( (RANDOM % 2000) + 9300 ))
-		GOCOVERDIR="$covdir" HOME="$workdir" "$hub" --addr "127.0.0.1:$port" >"$workdir/hub.log" 2>&1 &
-		hub_pid=$!
-		# wait up to ~5s for the listener line.
-		for _ in $(seq 1 50); do grep -q 'listening on' "$workdir/hub.log" 2>/dev/null && break; sleep 0.1; done
-		base="http://127.0.0.1:$port"
+	hub_run="$workdir/hubrun"; mkdir -p "$hub_run"
+	port=$(( (RANDOM % 2000) + 9300 ))
+	GOCOVERDIR="$covdir" HOME="$workdir" "$evener" hub --addr "127.0.0.1:$port" >"$workdir/hub.log" 2>&1 &
+	hub_pid=$!
+	# wait up to ~5s for the listener line.
+	for _ in $(seq 1 50); do grep -q 'listening on' "$workdir/hub.log" 2>/dev/null && break; sleep 0.1; done
+	base="http://127.0.0.1:$port"
 
-		# Extract real asset paths from the built index.html to verify /webassets/ routes work.
-		# Vite outputs hashed filenames like /webassets/index-<hash>.js; grep index.html to find them.
-		if [ -f "cmd/evener-hub/frontend/dist/index.html" ]; then
-			# Extract all /webassets/* paths from index.html (e.g., src="/webassets/index-CmdW429A.js")
-			webasset_routes=$(grep -oE '"/webassets/[^"]+' "cmd/evener-hub/frontend/dist/index.html" | tr -d '"' | sort -u)
-		else
-			webasset_routes=""
-		fi
-
-		for route in / /api/health /api/models /api/tree "/api/search?q=x" \
-			/api/spawn-schema /credentials /auth \
-			/api/sessions/nonexistent /doc/file /nonexistent-route; do
-			curl -fsS --max-time 5 "$base$route" >/dev/null 2>&1 || true
-		done
-
-		# Test real /webassets/* routes (Vite-hashed assets, only available after build-web).
-		# These are auth-gated so expect 401, not 404. A 404 would indicate stale coverage.
-		if [ -n "$webasset_routes" ]; then
-			for asset_route in $webasset_routes; do
-				http_code=$(curl -s -w '%{http_code}' --max-time 5 "$base$asset_route" -o /dev/null 2>&1)
-				case "$http_code" in
-					401|200) ;; # auth-gated (401) or open (200) — both OK, route exists
-					404) echo "    ERR: /webassets route returned 404 (stale/missing): $asset_route" >&2; exit 1 ;;
-					*) echo "    WARN: /webassets route returned HTTP $http_code: $asset_route" >&2 ;;
-				esac
-			done
-		fi
-
-		# a couple of POSTs against validate/create (error paths, no real spawn).
-		curl -fsS --max-time 5 -X POST "$base/api/path/validate" -d '{}' >/dev/null 2>&1 || true
-		kill -TERM "$hub_pid" 2>/dev/null || true
-		wait "$hub_pid" 2>/dev/null || true
+	# Extract real asset paths from the built index.html to verify /webassets/ routes work.
+	# Vite outputs hashed filenames like /webassets/index-<hash>.js; grep index.html to find them.
+	if [ -f "cmd/evener-hub/frontend/dist/index.html" ]; then
+		# Extract all /webassets/* paths from index.html (e.g., src="/webassets/index-CmdW429A.js")
+		webasset_routes=$(grep -oE '"/webassets/[^"]+' "cmd/evener-hub/frontend/dist/index.html" | tr -d '"' | sort -u)
 	else
-		echo "    (evener-hub build failed; skipping hub battery)"
+		webasset_routes=""
 	fi
+
+	for route in / /api/health /api/models /api/tree "/api/search?q=x" \
+		/api/spawn-schema /credentials /auth \
+		/api/sessions/nonexistent /doc/file /nonexistent-route; do
+		curl -fsS --max-time 5 "$base$route" >/dev/null 2>&1 || true
+	done
+
+	# Test real /webassets/* routes (Vite-hashed assets, only available after build-web).
+	# These are auth-gated so expect 401, not 404. A 404 would indicate stale coverage.
+	if [ -n "$webasset_routes" ]; then
+		for asset_route in $webasset_routes; do
+			http_code=$(curl -s -w '%{http_code}' --max-time 5 "$base$asset_route" -o /dev/null 2>&1)
+			case "$http_code" in
+				401|200) ;; # auth-gated (401) or open (200) — both OK, route exists
+				404) echo "    ERR: /webassets route returned 404 (stale/missing): $asset_route" >&2; exit 1 ;;
+				*) echo "    WARN: /webassets route returned HTTP $http_code: $asset_route" >&2 ;;
+			esac
+		done
+	fi
+
+	# a couple of POSTs against validate/create (error paths, no real spawn).
+	curl -fsS --max-time 5 -X POST "$base/api/path/validate" -d '{}' >/dev/null 2>&1 || true
+	kill -TERM "$hub_pid" 2>/dev/null || true
+	wait "$hub_pid" 2>/dev/null || true
 fi
 
 if [ "${EVENER_E2E_LIVE:-0}" = "1" ]; then
@@ -140,9 +134,10 @@ if [ "${EVENER_E2E_LIVE:-0}" = "1" ]; then
 fi
 
 # TUI battery: drive the real terminal UI in tmux (slow; needs tmux). The
-# tmux e2e tests build evener-tui with -cover and launch it with GOCOVERDIR set to
-# our covdir when EVENER_E2E_COVER is exported, so the TUI subprocess's paint /
-# interaction coverage — which units give 0% for — merges into this run.
+# tmux e2e tests build the evener binary's TUI subcommand with -cover and launch
+# it with GOCOVERDIR set to our covdir when EVENER_E2E_COVER is exported, so the
+# TUI subprocess's paint / interaction coverage — which units give 0% for —
+# merges into this run.
 if $run_tui; then
 	if command -v tmux >/dev/null 2>&1; then
 		echo "==> driving the TUI tmux battery under coverage (slow)"

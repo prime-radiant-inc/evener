@@ -18,7 +18,7 @@
 #   go test -count=1 -short -coverpkg="$(go list ./... | paste -sd, -)" \
 #     -coverprofile="$prof" -run "$GATE_TEST_RUN" -skip "$GATE_FUZZ_TEST_SKIP" ./...
 #   scripts/coverage/coverage-gaps.sh "$prof"
-# (the same selection and module scoping `evener-dev coverage-floor` measures;
+# (the same selection and module scoping `evener dev coverage-floor` measures;
 # see scripts/lib/gate-surface-lib.sh).
 #
 # Duplicate blocks from -coverpkg are deduped by position, a block counting as

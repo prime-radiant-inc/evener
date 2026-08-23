@@ -7,7 +7,7 @@
 # docs/superpowers/specs/2026-08-01-test-gate-runtime-design.md (kata b6rv).
 #
 # It measures the SAME surface ROOT_FULL=1 make test proves, reusing
-# gate-surface-lib.sh exactly like `evener-dev coverage-floor`: -short on every
+# gate-surface-lib.sh exactly like `evener dev coverage-floor`: -short on every
 # module except root, the gate's Test/Example filter, and the fuzz-owned name
 # skip. Go durations come from `go test -json`'s per-test Elapsed field, summed
 # per PACKAGE (the import path go test -json already reports — no extra
@@ -54,7 +54,7 @@
 # fails on a per-package ratio over 1.5x or any ceiling breach; warn-only
 # prints the identical diagnostics, labeled, and always exits 0. Bare
 # measurement (no --check) never fails either way — it is a report, like
-# `evener-dev coverage-floor` with neither --check nor --bless.
+# `evener dev coverage-floor` with neither --check nor --bless.
 #
 # The budget file is a hand-reviewed artifact: raising a package's number is an
 # edit to testing-budget.json in the same commit as whatever earned it, exactly
@@ -91,7 +91,7 @@ while [ $# -gt 0 ]; do
 done
 
 # The gate's test-selection surface, shared with run-module-tests.sh and
-# `evener-dev coverage-floor` so this ratchet cannot drift into measuring a
+# `evener dev coverage-floor` so this ratchet cannot drift into measuring a
 # surface no gate reproduces.
 . "$(dirname "${BASH_SOURCE[0]}")/../lib/gate-surface-lib.sh"
 . "$(dirname "${BASH_SOURCE[0]}")/../lib/scratch-lib.sh"
