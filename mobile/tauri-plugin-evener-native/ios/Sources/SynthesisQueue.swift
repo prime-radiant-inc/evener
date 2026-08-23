@@ -49,19 +49,23 @@ final class SynthesisQueue {
     }
 
     /// Stop current speech and clear the pending queue. Late callbacks
-    /// for the previously-current chunk are ignored.
+    /// for the previously-current chunk are ignored. Clears known IDs so
+    /// previously enqueued chunks can be re-queued after a stop/barge-in.
     func stop() {
         synthesizer.stopSpeaking()
         pending.removeAll()
+        knownIds.removeAll()
         currentChunkId = nil
         currentStarted = false
     }
 
     /// Clear the pending queue and stop current speech without emitting
-    /// a finish for the interrupted chunk.
+    /// a finish for the interrupted chunk. Clears known IDs so previously
+    /// enqueued chunks can be re-queued after an interruption.
     func handleInterruption() {
         synthesizer.stopSpeaking()
         pending.removeAll()
+        knownIds.removeAll()
         currentChunkId = nil
         currentStarted = false
     }
