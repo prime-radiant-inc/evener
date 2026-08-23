@@ -45,7 +45,7 @@ selector map there is the single place these hooks are maintained. This
 card names only `spawn-prompt-card`, `spawn-submit`, the picker's ARIA
 roles (`role="combobox"` with `aria-label="Model"`, `role="listbox"`,
 `role="option"`), and the trigger's own screen-reader text
-(`— change model`, `modelCatalog/index.tsx:405`). Anything else, grep
+(`— change model`, `modelCatalog/index.tsx:413`). Anything else, grep
 `data-testid` in `cmd/evener-hub/frontend/src` rather than inventing one.
 
 ## Pre-state

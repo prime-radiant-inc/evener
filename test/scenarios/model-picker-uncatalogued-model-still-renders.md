@@ -68,7 +68,7 @@ So the assertion is **absence of the element**, not an empty one.
 
 4. Open `/new`, open the Model field's trigger (the `<button>` whose
    accessible name ends `— change model`,
-   `widgets/modelCatalog/index.tsx:388-406`), and inspect the row:
+   `widgets/modelCatalog/index.tsx:395-413`), and inspect the row:
    ```javascript
    (() => {
      const rows = [...document.querySelectorAll('[role="listbox"][aria-label="Model"] li[role="option"]')];
