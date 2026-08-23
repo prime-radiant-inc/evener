@@ -262,7 +262,9 @@ describe("ConversationScreen — composer placeholder", () => {
 });
 
 describe("ConversationScreen — composer integration", () => {
-  function createFakeAttachmentStore(): UseBoundStore<StoreApi<AttachmentState>> {
+  function createFakeAttachmentStore(): UseBoundStore<
+    StoreApi<AttachmentState>
+  > {
     return create<AttachmentState>(() => ({
       attachments: [],
       error: null,
