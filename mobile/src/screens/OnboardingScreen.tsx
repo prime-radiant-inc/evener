@@ -100,12 +100,26 @@ export function OnboardingScreen({
 
   const handlePasteFromClipboard = useCallback(async () => {
     try {
-      const text = await services.native.clipboardPaste();
+      // Use the standard Web Clipboard API. In iOS WKWebView, this works
+      // when called in response to a user gesture (tap). Falls back to the
+      // native bridge if the Web API is unavailable.
+      let text: string;
+      if (
+        typeof navigator !== "undefined" &&
+        navigator.clipboard &&
+        typeof navigator.clipboard.readText === "function"
+      ) {
+        text = await navigator.clipboard.readText();
+      } else {
+        text = await services.native.clipboardPaste();
+      }
       if (text) {
         setPasteUrl(text);
       }
-    } catch {
-      // best-effort: ignore errors
+    } catch (cause) {
+      const message = cause instanceof Error ? cause.message : String(cause);
+      setConfirmError(`Clipboard paste failed: ${message}`);
+      setPhase("error");
     }
   }, [services]);
 
