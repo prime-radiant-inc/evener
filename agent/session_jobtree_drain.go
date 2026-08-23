@@ -423,7 +423,9 @@ func (jm *jobManager) describeUndisposedJobs(ids []string) string {
 // drive/recheck machinery is not converting — a stranded wedge. It walks the
 // same liveDirectSubagents / child gate path treeHasOutstandingWork does,
 // skipping stop-gated and fatally failed children identically (they are never
-// driven, so their leftover state is not a stall the drain can act on).
+// driven, so their leftover state is not a stall the drain can act on) — plus
+// a stop-requested child that has gone unresponsive, which is not live work
+// either (childStopRequestedAndUnresponsive).
 func (s *Session) drainSubtreeIsStalled() (bool, error) {
 	outstanding, err := s.treeHasOutstandingWork()
 	if err != nil {
@@ -468,7 +470,7 @@ func (s *Session) subtreeHasLiveComponent() (bool, error) {
 		active := sub.running || sub.finalizing || sub.driving
 		child := sub.sess
 		sub.mu.Unlock()
-		if child != nil && (s.childStopGated(child.id) || s.childFatalRunGated(child.id)) {
+		if child != nil && (s.childStopGated(child.id) || s.childFatalRunGated(child.id) || s.childStopRequestedAndUnresponsive(child.id)) {
 			continue
 		}
 		if active {
@@ -485,6 +487,70 @@ func (s *Session) subtreeHasLiveComponent() (bool, error) {
 		}
 	}
 	return false, nil
+}
+
+// childStopRequestedAndUnresponsive reports whether the direct stable delegate
+// backing childSessionID has a stop request pending against it and has shown no
+// parent-observable activity for drainStallTimeout.
+//
+// This is the delegate-shaped sibling of childStopGated. A stop that COMPLETES
+// leaves the settled outcome childStopGated recognizes; a stop the target
+// cannot honour leaves nothing at all — the delegate stays "running" forever
+// while job_stop reports stop_pending, because it is parked inside a tool call
+// that will never return. The drain then counts it as live work and waits for
+// the process to be killed from outside (#317, and the 109-minute field hang in
+// #369). A stop request the target has not acknowledged in that long is not
+// disposable by waiting, so it stops counting as a live component and the
+// existing stall watchdog announces the give-up.
+//
+// Activity is the signal the quiet watchdog already reads — the delegate's
+// latest transcript turn, API attempt or state write, folded into
+// latestActivityAt. A stop-requested delegate that is still winding down keeps
+// stamping it and keeps counting as live, so the drain still waits on it. The
+// bound is drainStallTimeout rather than a new knob: this is the same
+// "outstanding but nothing is happening" judgement the stall watchdog makes,
+// applied one level up. The watchdog then measures its own continuous-stall
+// window on top, so an abandonment needs two consecutive stall windows of
+// silence — deliberately conservative.
+func (s *Session) childStopRequestedAndUnresponsive(childSessionID string) bool {
+	row, ok := s.directStableDelegateForChildSession(childSessionID)
+	if !ok || row.pendingStopSeq == 0 {
+		return false
+	}
+	since := row.latestActivityAt
+	if since.IsZero() {
+		since = row.runStartedAt
+	}
+	if since.IsZero() {
+		// No activity stamp at all: nothing to measure silence against, so this
+		// says nothing and the delegate keeps its ordinary live/not-live verdict.
+		return false
+	}
+	return s.sclock().Now().Sub(since) >= drainStallTimeout
+}
+
+// subtreeUndisposableStoppedDelegates names the stop-requested, unresponsive
+// delegates (childStopRequestedAndUnresponsive) across this session and every
+// live, non-gated descendant, so the stall watchdog's give-up can say what it
+// abandoned rather than reporting an empty set of stuck managed jobs.
+func (s *Session) subtreeUndisposableStoppedDelegates() []string {
+	var ids []string
+	for _, sub := range s.liveDirectSubagents() {
+		sub.mu.Lock()
+		child := sub.sess
+		sub.mu.Unlock()
+		if child == nil || s.childStopGated(child.id) || s.childFatalRunGated(child.id) {
+			continue
+		}
+		if s.childStopRequestedAndUnresponsive(child.id) {
+			if row, ok := s.directStableDelegateForChildSession(child.id); ok {
+				ids = append(ids, row.id)
+			}
+			continue
+		}
+		ids = append(ids, child.subtreeUndisposableStoppedDelegates()...)
+	}
+	return ids
 }
 
 // subtreeOutstandingDrainJobIDs collects the outstanding managed job ids across
@@ -507,6 +573,23 @@ func (s *Session) subtreeOutstandingDrainJobIDs() []string {
 		ids = append(ids, child.subtreeOutstandingDrainJobIDs()...)
 	}
 	return ids
+}
+
+// drainStallGiveUpMessage renders the stall watchdog's give-up warning. It
+// names both kinds of thing the drain can be left holding — managed jobs the
+// machinery never delivered, and delegates that were told to stop and never
+// answered — and says "none" for an empty set rather than trailing off after a
+// colon, so the warning can never read as if it gave up on nothing.
+func drainStallGiveUpMessage(stuckJobs, undisposableDelegates []string) string {
+	describe := func(ids []string) string {
+		if len(ids) == 0 {
+			return "none"
+		}
+		return strings.Join(ids, ", ")
+	}
+	return fmt.Sprintf(
+		"job-tree drain stalled for %s with no live work; giving up so shutdown can proceed (stuck managed jobs: %s; undisposable stop-requested delegates: %s)",
+		drainStallTimeout, describe(stuckJobs), describe(undisposableDelegates))
 }
 
 // DrainJobTree keeps re-driving the coordinator on managed-job completions until no
@@ -752,13 +835,12 @@ func (s *Session) drainJobTreeWith(ctx context.Context, recheck <-chan time.Time
 					continue
 				}
 				// The drain is wedged on undelivered work the machinery is not
-				// converting. Warn (naming the stuck managed job(s)) and return the last
-				// result with nil error so cmd/evener/run.go prints the coordinator's
-				// last answer and proceeds to Close(), rather than aborting the run.
-				ids := s.subtreeOutstandingDrainJobIDs()
-				s.emit(events.EventWarning, events.WarningData{Message: fmt.Sprintf(
-					"job-tree drain stalled for %s with no live work; giving up so shutdown can proceed (stuck managed jobs: %s)",
-					drainStallTimeout, strings.Join(ids, ", "))})
+				// converting. Warn (naming the stuck managed job(s) and any delegate
+				// abandoned as undisposable) and return the last result with nil error
+				// so cmd/evener/run.go prints the coordinator's last answer and
+				// proceeds to Close(), rather than aborting the run.
+				s.emit(events.EventWarning, events.WarningData{Message: drainStallGiveUpMessage(
+					s.subtreeOutstandingDrainJobIDs(), s.subtreeUndisposableStoppedDelegates())})
 				return lastResult, nil
 			}
 		}

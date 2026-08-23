@@ -154,8 +154,12 @@ type delegateSnapshot struct {
 	transcriptRef      string
 	notResumableReason string
 	latestActivityAt   time.Time
-	lastOutcome        *delegatestore.Outcome
-	latestPacket       *delegatestore.TerminalPacket
+	// pendingStopSeq is the sequence of a subtree stop admitted against this
+	// delegate and not yet completed; 0 when no stop is outstanding. It is what
+	// distinguishes a delegate that was ASKED to stop from one that has.
+	pendingStopSeq uint64
+	lastOutcome    *delegatestore.Outcome
+	latestPacket   *delegatestore.TerminalPacket
 }
 
 // stableDelegateWorktreeSnapshot is the process-local read model used by
@@ -622,6 +626,7 @@ func captureDelegateSnapshot(aggregate *delegatestore.Aggregate) delegateSnapsho
 		transcriptRef:      aggregate.Descriptor.TranscriptRef,
 		notResumableReason: aggregate.NotResumableReason,
 		latestActivityAt:   aggregate.LatestActivityAt,
+		pendingStopSeq:     aggregate.PendingStopSeq,
 		lastOutcome:        outcome,
 		latestPacket:       cloneStableTerminalPacket(aggregate.LatestPacket),
 	}
