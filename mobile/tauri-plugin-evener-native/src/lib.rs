@@ -45,6 +45,7 @@ pub fn init_with_preview_handler<R: Runtime>(handler: Arc<dyn PreviewHandler>) -
             commands::scan_and_preview_pairing,
             commands::haptic_perform,
             commands::content_size_get,
+            commands::clipboard_paste,
         ])
         .setup(move |app, api| {
             #[cfg(mobile)]
@@ -68,6 +69,7 @@ pub fn init<R: Runtime>() -> TauriPlugin<R> {
             commands::scan_and_preview_pairing,
             commands::haptic_perform,
             commands::content_size_get,
+            commands::clipboard_paste,
         ])
         .setup(|app, api| {
             #[cfg(mobile)]
