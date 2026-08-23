@@ -1,4 +1,4 @@
-package main
+package internalcheck
 
 import (
 	"bytes"
@@ -25,12 +25,11 @@ func TestRunWithAllResults(t *testing.T) {
 }
 
 func TestMainUsesExit(t *testing.T) {
-	oldExit, oldPkgs := osExit, libraryPackages
-	t.Cleanup(func() { osExit, libraryPackages = oldExit, oldPkgs })
+	oldPkgs := libraryPackages
+	t.Cleanup(func() { libraryPackages = oldPkgs })
 	libraryPackages = nil
-	got := -1
-	osExit = func(code int) { got = code }
-	main()
+	var out, errOut bytes.Buffer
+	got := Run(nil, nil, &out, &errOut)
 	if got != 0 {
 		t.Fatalf("exit = %d", got)
 	}

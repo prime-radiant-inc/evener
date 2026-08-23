@@ -18,13 +18,12 @@
 //
 // Run via `make lint-internal` (or directly: `go run ./cmd/evener-internalcheck`).
 // Exits non-zero, one `message` per line, when a leak exists.
-package main
+package internalcheck
 
 import (
 	"fmt"
 	"go/types"
 	"io"
-	"os"
 	"sort"
 	"strings"
 
@@ -48,11 +47,10 @@ var libraryPackages = []string{
 	"primeradiant.com/evener/llm/providercfg",
 }
 
-func main() {
-	osExit(runWith(findLeaks, os.Stdout, os.Stderr))
+func Run(args []string, _ io.Reader, stdout, stderr io.Writer) int {
+	return runWith(findLeaks, stdout, stderr)
 }
 
-var osExit = os.Exit
 var packagesLoad = packages.Load
 var packagesVisit = packages.Visit
 
