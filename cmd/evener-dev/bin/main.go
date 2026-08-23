@@ -1,0 +1,78 @@
+// Command evener-dev is the dev/test infrastructure binary: it dispatches
+// the dev and test tooling subcommands that an end-user install never needs
+// (agent-shards, module-lint, fuzz-harvest, fuzzcov, fuzzregistry,
+// internalcheck, test-dev-tooling, tomlcheck, transcript-v2-upgrade).
+//
+// The end-user binary is `evener`; this binary is built and used by repo
+// contributors via `make` targets and `go run ./cmd/evener-dev/bin`.
+package main
+
+import (
+	"fmt"
+	"io"
+	"os"
+	"text/tabwriter"
+
+	devcmd "primeradiant.com/evener/cmd/evener-dev"
+	fuzzharvestcmd "primeradiant.com/evener/cmd/evener-fuzz-harvest"
+	fuzzcovcmd "primeradiant.com/evener/cmd/evener-fuzzcov"
+	fuzzregistrycmd "primeradiant.com/evener/cmd/evener-fuzzregistry"
+	internalcheckcmd "primeradiant.com/evener/cmd/evener-internalcheck"
+	devtoolingcmd "primeradiant.com/evener/cmd/evener-test-dev-tooling"
+	tomlcheckcmd "primeradiant.com/evener/cmd/evener-tomlcheck"
+	transcriptv2cmd "primeradiant.com/evener/cmd/evener-transcript-v2-upgrade"
+)
+
+func main() {
+	os.Exit(dispatch(os.Args[1:], os.Stdin, os.Stdout, os.Stderr))
+}
+
+func dispatch(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
+	if len(args) == 0 {
+		usage(stderr)
+		return 2
+	}
+
+	// subcommandExit-like: each runner returns an int exit code directly.
+	run := func(code int) int { return code }
+
+	switch args[0] {
+	case "dev":
+		return run(devcmd.Run(args[1:], stdin, stdout, stderr))
+	case "fuzz-harvest":
+		return run(fuzzharvestcmd.Run(args[1:], stdin, stdout, stderr))
+	case "fuzzcov":
+		return run(fuzzcovcmd.Run(args[1:], stdin, stdout, stderr))
+	case "fuzzregistry":
+		return run(fuzzregistrycmd.Run(args[1:], stdin, stdout, stderr))
+	case "internalcheck":
+		return run(internalcheckcmd.Run(args[1:], stdin, stdout, stderr))
+	case "test-dev-tooling":
+		return run(devtoolingcmd.Run(args[1:], stdin, stdout, stderr))
+	case "tomlcheck":
+		return run(tomlcheckcmd.Run(args[1:], stdin, stdout, stderr))
+	case "transcript-v2-upgrade":
+		return run(transcriptv2cmd.Run(args[1:], stdin, stdout, stderr))
+	case "-h", "--help", "help":
+		usage(stdout)
+		return 0
+	default:
+		fmt.Fprintf(stderr, "evener-dev: unknown subcommand %q\n", args[0])
+		usage(stderr)
+		return 2
+	}
+}
+
+func usage(w io.Writer) {
+	tw := tabwriter.NewWriter(w, 0, 0, 2, ' ', 0)
+	fmt.Fprintf(w, "Usage: evener-dev <subcommand> [flags]\n\nSubcommands:\n")
+	fmt.Fprintf(tw, "  dev\t\t\tDev tooling (agent-shards, module-lint)\n")
+	fmt.Fprintf(tw, "  fuzz-harvest\t\tHarvest fuzz seed corpora from recorded traffic\n")
+	fmt.Fprintf(tw, "  fuzzcov\t\tStatic fuzz gap gate\n")
+	fmt.Fprintf(tw, "  fuzzregistry\t\tAudit the fuzz target registry\n")
+	fmt.Fprintf(tw, "  internalcheck\t\tCheck public packages don't leak internal types\n")
+	fmt.Fprintf(tw, "  test-dev-tooling\tRun dev-tooling selftest suites as a wave\n")
+	fmt.Fprintf(tw, "  tomlcheck\t\tEnforce TOML wire-format naming conventions\n")
+	fmt.Fprintf(tw, "  transcript-v2-upgrade\tConvert legacy transcript v1 files to v2\n")
+	_ = tw.Flush()
+}
