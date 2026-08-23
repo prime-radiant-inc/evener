@@ -59,7 +59,7 @@ func TestCovWebCoreAPIHelpersAndRoutes(t *testing.T) {
 		{12345, 418},
 	} {
 		if got := statusForWireError(appwire.WireError{Code: tc.code}, 418); got != tc.want {
-			t.Fatalf("statusForWireError(%q)=%d, want %d", tc.code, got, tc.want)
+			t.Fatalf("statusForWireError(%d)=%d, want %d", tc.code, got, tc.want)
 		}
 	}
 	if got := evenerErrorInfoFromData(map[string]any{"evenerErrorInfo": "map"}); got != "map" {
