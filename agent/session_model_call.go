@@ -786,6 +786,16 @@ func (s *Session) buildModelRequest(profile *provider.Profile, sys string, histo
 		// effort straight through and 400.
 		v := llm.ClampReasoningEffort(reasoningEffort, profile.ReasoningEffortLevels())
 		req.ReasoningEffort = &v
+	} else if profile.ThinkingAlwaysOn() {
+		// A mandatory-reasoning model (OpenRouter reasoning.mandatory=true)
+		// rejects a reasoning-less request. When the session has no
+		// --reasoning-effort configured, emit a default ("medium", clamped to
+		// the model's supported levels) so the adapter always has an effort to
+		// put on the wire. Without this, mandatory-reasoning models like
+		// stealth/ox-alpha get a request with no reasoning field and the
+		// provider 400s or produces no output.
+		v := llm.ClampReasoningEffort("medium", profile.ReasoningEffortLevels())
+		req.ReasoningEffort = &v
 	}
 	s.applyModelRequestMetadata(profile, &req)
 	return req
@@ -889,6 +899,20 @@ func (s *Session) callModelWithFallback(ctx context.Context, profile *provider.P
 					}
 				}
 				clamped := llm.ClampReasoningEffort(origEffort, fbLevels)
+				fbReq.ReasoningEffort = &clamped
+			} else if fbProfile.ThinkingAlwaysOn() {
+				// A mandatory-reasoning fallback model needs a default effort
+				// even when the session has no --reasoning-effort configured.
+				// Mirrors the primary path's ThinkingAlwaysOn handling.
+				fbLevels := fbProfile.ReasoningEffortLevels()
+				if fbProfile.CatalogEffortFallbackEligible() {
+					if cat := llm.EmbeddedModelCatalog(); cat != nil {
+						if mi := cat.LookupModelInfo(fbProfile.Model()); mi != nil && len(mi.ReasoningEffortLevels) > 0 {
+							fbLevels = mi.ReasoningEffortLevels
+						}
+					}
+				}
+				clamped := llm.ClampReasoningEffort("medium", fbLevels)
 				fbReq.ReasoningEffort = &clamped
 			} else {
 				fbReq.ReasoningEffort = nil

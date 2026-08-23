@@ -29,6 +29,15 @@ type ModelCompat struct {
 	// llm.Client caller can't force reasoning controls onto a declared
 	// non-reasoning model.
 	ReasoningOff bool
+	// ThinkingAlwaysOn marks models whose thinking cannot be disabled
+	// (OpenRouter reasoning.mandatory=true). For these models, omitting the
+	// reasoning field is an API error — the provider rejects the request or
+	// produces no output. When set, applyThinkingFormat emits a default
+	// effort even when the request carries no explicit ReasoningEffort, so a
+	// mandatory-reasoning model never gets a reasoning-less request. The
+	// default is "medium" clamped to the model's declared levels (ceil),
+	// falling back to "medium" when no levels are declared.
+	ThinkingAlwaysOn bool
 }
 
 // wireEffort translates a evener effort level to the provider's wire value.
@@ -293,6 +302,9 @@ func fillFromCatalog(mc *ModelCompat, lookup func(string) *llm.ModelInfo, catalo
 	if mi.SupportsEffortParameter && mc.Quirks.SupportsReasoningEffort == nil && !mc.ReasoningOff {
 		on := true
 		mc.Quirks.SupportsReasoningEffort = &on
+	}
+	if mi.ThinkingAlwaysOn && !mc.ReasoningOff {
+		mc.ThinkingAlwaysOn = true
 	}
 	if mc.DefaultMaxTokens == 0 && mi.MaxOutputTokens != nil && *mi.MaxOutputTokens > 0 {
 		// An output cap that equals or exceeds the context window is junk

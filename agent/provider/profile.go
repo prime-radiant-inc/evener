@@ -57,7 +57,12 @@ type Profile struct {
 	providerOpts    map[string]any
 	effortLevels    []string
 	webSearch       bool
-	cheapModel      string
+	// thinkingAlwaysOn marks a model whose thinking cannot be disabled
+	// (OpenRouter reasoning.mandatory=true). When set, the session emits a
+	// default reasoning effort even when none is configured so a
+	// mandatory-reasoning model never gets a reasoning-less request.
+	thinkingAlwaysOn bool
+	cheapModel       string
 	// cheapProvider routes auxiliary "side calls" (naming, summarization,
 	// web_fetch Q&A) to a different provider instance than the main model. Empty
 	// means same provider as the main model. Set via WithCheapModel("provider/model").
@@ -345,6 +350,12 @@ func (p *Profile) ProviderOptions() map[string]any { return p.providerOpts }
 // control.
 func (p *Profile) SupportsReasoning() bool { return p.reasoning }
 
+// ThinkingAlwaysOn reports whether the model's thinking cannot be disabled
+// (OpenRouter reasoning.mandatory=true). When true, the session must emit a
+// default reasoning effort even when none is configured — omitting the
+// reasoning field is an API error for these models.
+func (p *Profile) ThinkingAlwaysOn() bool { return p.thinkingAlwaysOn }
+
 // ReasoningEffortLevels returns the valid effort strings this provider
 // accepts, in ascending order. Returns an empty slice when the provider
 // does not support reasoning control.
@@ -476,6 +487,9 @@ func (p *Profile) WithLiveModelInfo(info llm.ModelInfo) *Profile {
 	}
 	if info.SupportsReasoning && !reasoningOff {
 		clone.reasoning = true
+	}
+	if info.ThinkingAlwaysOn && !reasoningOff {
+		clone.thinkingAlwaysOn = true
 	}
 	if info.SupportsWebSearch != nil {
 		clone.webSearch = *info.SupportsWebSearch

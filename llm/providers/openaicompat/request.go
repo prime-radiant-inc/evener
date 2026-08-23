@@ -218,6 +218,14 @@ func promptCacheKey(req llm.Request) string {
 // (mc.ReasoningOff) emits nothing regardless of the request's effort: the
 // adapter enforces its own declared non-reasoning models rather than relying
 // on the caller (e.g. the session-side profile clamp) to have done so.
+//
+// The one exception to "no effort → send nothing" is ThinkingAlwaysOn: a model
+// whose thinking cannot be disabled (OpenRouter reasoning.mandatory=true)
+// rejects a reasoning-less request. When ThinkingAlwaysOn is set and the
+// request carries no explicit effort, a default effort ("medium", clamped to
+// the model's declared levels and translated to the provider's wire value)
+// is emitted so a mandatory-reasoning model never gets a reasoning-less
+// request — even when the session has no --reasoning-effort configured.
 func applyThinkingFormat(body map[string]any, req llm.Request, mc ModelCompat) {
 	if mc.ReasoningOff {
 		return
@@ -228,7 +236,14 @@ func applyThinkingFormat(body map[string]any, req llm.Request, mc ModelCompat) {
 		wire = mc.wireEffort(*req.ReasoningEffort)
 	}
 	if wire == "" {
-		return
+		if !mc.ThinkingAlwaysOn {
+			return
+		}
+		// Mandatory-reasoning model with no explicit effort: emit a default
+		// so the provider doesn't reject the request. "medium" is the safe
+		// default — wireEffort clamps it to the model's declared levels and
+		// translates it to the provider's wire value.
+		wire = mc.wireEffort("medium")
 	}
 	switch quirks.ThinkingFormat {
 	case "", "openai":
