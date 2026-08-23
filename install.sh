@@ -2,7 +2,7 @@
 set -eu
 
 repo="https://github.com/prime-radiant-inc/evener"
-bins="evener evener-hub evener-tui evener-doctor evener-migrate"
+bins="evener evener-dev"
 
 if [ -n "${PREFIX:-}" ]; then
 	prefix=$PREFIX
@@ -135,6 +135,6 @@ echo "Symlinked commands into $bindir"
 
 if [ -n "${HOME:-}" ] && { [ -e "$HOME/.serf" ] || [ -e "$HOME/.evener" ]; }; then
 	echo ""
-	echo "Found an existing ~/.serf or ~/.evener: run 'evener-migrate' once before"
+	echo "Found an existing ~/.serf or ~/.evener: run 'evener migrate' once before"
 	echo "your first Evener launch to move it into place (pass --dry-run to preview)."
 fi
