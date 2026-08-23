@@ -92,11 +92,11 @@ func ParseTUIStartupOptions(args []string, getenv func(string) string) (TUIStart
 	fs.BoolVar(&opts.Debug, "debug", opts.Debug, "disable alternate screen")
 	fs.Usage = func() {
 		// Write failures to the flag usage writer are unactionable.
-		_, _ = fmt.Fprintf(fs.Output(), "Usage: evener-tui [flags]\n\n"+
+		_, _ = fmt.Fprintf(fs.Output(), "Usage: evener tui [flags]\n\n"+
 			"Evener TUI — interactive terminal UI for the evener hub.\n\n"+
 			"Flags:\n"+
 			"  --hub-addr <addr>        evener hub address (default: %s)\n"+
-			"  --hub-bin <path>         path to evener-hub binary\n"+
+			"  --hub-bin <path>         path to evener binary (for the hub subcommand)\n"+
 			"  --no-auto-start-hub      do not start a local hub when unreachable\n"+
 			"  --state-dir <path>       override Evener state directory\n"+
 			"  --log-file <path>        write startup diagnostics to this file\n"+

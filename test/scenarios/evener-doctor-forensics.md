@@ -34,7 +34,7 @@ card proves it against a built binary on a real state-dir shape.
 
 - Build the binary into this run's own directory — never a fixed
   `/tmp/evener` that a second card running at the same time would
-  overwrite mid-run (kata `k2rx`). `make build-doctor` works too; it
+  overwrite mid-run (kata `k2rx`). `make build` works too; it
   writes `./evener` in the worktree, so substitute that path in the
   steps below if you use it.
 

@@ -25,7 +25,6 @@ submitting through the overlay does.
 - This card adds `evener tui` to that recipe's binaries — into the same run directory, never
   a fixed `/tmp` name a second concurrent build would overwrite mid-run (kata `k2rx`):
   ```bash
-  go build -o "$run/evener-tui" ./cmd/evener-tui
   ```
 - `tmux` available.
 

@@ -23,7 +23,7 @@ compaction runs.
   ```bash
   cd <this worktree>
   run=$(mktemp -d -t evener-e2e-compact-XXXXXX)
-  go build -o "$run/evener" hub ./cmd/evener-hub
+  go build -o "$run/evener" ./cmd/evener
   go build -o "$run/evener"     ./cmd/evener
   REALEVENER=~/.evener
   TH="$run/home"                               # isolated HOME

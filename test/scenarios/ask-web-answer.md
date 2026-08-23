@@ -34,7 +34,7 @@ gesture.
   ```bash
   run=$(mktemp -d -t evener-e2e-ask-web-XXXXXX)
   go build -o "$run/evener"     ./cmd/evener
-  go build -o "$run/evener" hub ./cmd/evener-hub
+  go build -o "$run/evener" ./cmd/evener
   ```
 - Export credentials from the MAIN checkout (not this worktree):
   ```bash

@@ -16,7 +16,7 @@ carries the skill + shell/edit tools). This card proves the *behavior*.
 
 ## Pre-state
 
-- Built `evener` and `evener doctor` (`make build && make build-doctor`), with
+- Built `evener` and `evener doctor` (`make build && make build`), with
   `evener doctor` reachable from the doctor's shell (on `PATH` or in cwd).
 - A working provider (e.g. `openai/gpt-5.4-mini`).
 - Run from the evener repo root with a Evener binary that includes the bundled

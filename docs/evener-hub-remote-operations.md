@@ -48,7 +48,7 @@ Build and install matching binaries on the Hub host:
 ```bash
 make build
 make build-hub
-make build-tui
+make build
 ```
 
 Start Hub with the Evener binary it should spawn:

@@ -147,7 +147,7 @@ Design spec, plans, and notes live under `docs/superpowers/`.
 ### Build
 
 ```bash
-make build-tui
+make build
 ```
 
 ### Usage
@@ -158,7 +158,7 @@ Start the dashboard from an installed `PATH` command:
 evener tui
 ```
 
-After `make build-tui` in a source checkout, use `./evener` instead.
+After `make build` in a source checkout, use `./evener` instead.
 
 By default `evener tui` connects to `http://127.0.0.1:9180`. If no local hub is
 running, it starts `evener hub` automatically and waits for an authenticated

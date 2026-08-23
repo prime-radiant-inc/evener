@@ -60,7 +60,7 @@ already enforced: the build version is **injected**, not imported (`openai.Clien
 ## Building — the go.work workspace
 
 The repo is a Go workspace (`go.work`, committed). `make build` / `make build-hub` /
-`make build-tui` / `make build-llmcall` work as before; import paths are unchanged
+`make build` / `make build-llmcall` work as before; import paths are unchanged
 (`primeradiant.com/evener/…`).
 
 The unpublished sibling modules are wired with **versioned `replace … v0.0.0 => ./dir`
