@@ -12,7 +12,7 @@ import (
 	"primeradiant.com/evener/agent/internal/jobstore"
 )
 
-// drainStallTimeout bounds how long the one-shot drain will keep blocking on a
+// DrainStallTimeout bounds how long the one-shot drain will keep blocking on a
 // subtree that is outstanding but has NO live or deliverable component anywhere
 // (a genuine stall — see drainSubtreeIsStalled). It is a defense-in-depth
 // backstop for an unknown future stranding class: in a correct build the drain
@@ -21,8 +21,13 @@ import (
 // a stalled tree owes no live work, so waiting two minutes before giving up
 // costs nothing but guarantees an otherwise-forever hang cannot survive it.
 // A package var (not a const) so tests override and restore it without wall
-// time, matching laneClosePassBudget in jobs.go.
-var drainStallTimeout = 2 * time.Minute
+// time, matching LaneClosePassBudget in jobs.go. It is EXPORTED because the
+// drain's only end-to-end shape is a whole one-shot `evener run`, which lives
+// in another module (cmd/evener) and so cannot reach an unexported var — the
+// same reason SessionConfig.LLMRetryPolicy is exported. Nothing in production
+// assigns it; the drain is a process-wide policy, so a process-wide var is its
+// home and no per-session plumbing is needed for descendants.
+var DrainStallTimeout = 2 * time.Minute
 
 // drainRecheckInterval bounds how long DrainJobTree blocks between explicit
 // completion wakes. The outstanding count is race-free, so a re-check can never
@@ -219,12 +224,22 @@ func (s *Session) treeHasOutstandingWorkBesidesOwnJobs() (bool, error) {
 		active := sub.running || sub.finalizing || sub.driving
 		child := sub.sess
 		sub.mu.Unlock()
-		if child != nil && (s.childStopGated(child.id) || s.childFatalRunGated(child.id)) {
+		if child != nil && (s.childStopGated(child.id) || s.childFatalRunGated(child.id) || s.childDrainAbandoned(child.id)) {
 			// A deliberately stopped or fatally failed child is never driven —
-			// driveChildrenWithUndeliveredAttention skips both gates — so its
+			// driveChildrenWithUndeliveredAttention skips all three gates — so its
 			// attention will never be
 			// delivered. Counting it (or its subtree) would hang the drain forever,
 			// so match the drive gate and skip it.
+			//
+			// The abandoned gate belongs here as much as in
+			// subtreeHasLiveComponent, and #382 item 3 is why: the
+			// undisposed-background-job announcement fires only when those jobs
+			// are the SOLE reason to wait, and it measures "sole" through this
+			// function. With the gate only on the liveness side, one running
+			// background shell kept subtreeHasLiveComponent true (so the stall
+			// watchdog never armed) while one wedged delegate kept this true (so
+			// the announce ladder never armed): each escape suppressed by the
+			// other family's work, both dead, forever.
 			continue
 		}
 		if active {
@@ -424,8 +439,8 @@ func (jm *jobManager) describeUndisposedJobs(ids []string) string {
 // same liveDirectSubagents / child gate path treeHasOutstandingWork does,
 // skipping stop-gated and fatally failed children identically (they are never
 // driven, so their leftover state is not a stall the drain can act on) — plus
-// a stop-requested child that has gone unresponsive, which is not live work
-// either (childStopRequestedAndUnresponsive).
+// a child this drain has given up on (childDrainAbandoned), which is not live
+// work either.
 func (s *Session) drainSubtreeIsStalled() (bool, error) {
 	outstanding, err := s.treeHasOutstandingWork()
 	if err != nil {
@@ -470,7 +485,7 @@ func (s *Session) subtreeHasLiveComponent() (bool, error) {
 		active := sub.running || sub.finalizing || sub.driving
 		child := sub.sess
 		sub.mu.Unlock()
-		if child != nil && (s.childStopGated(child.id) || s.childFatalRunGated(child.id) || s.childStopRequestedAndUnresponsive(child.id)) {
+		if child != nil && (s.childStopGated(child.id) || s.childFatalRunGated(child.id) || s.childDrainAbandoned(child.id)) {
 			continue
 		}
 		if active {
@@ -489,50 +504,149 @@ func (s *Session) subtreeHasLiveComponent() (bool, error) {
 	return false, nil
 }
 
-// childStopRequestedAndUnresponsive reports whether the direct stable delegate
-// backing childSessionID has a stop request pending against it and has shown no
-// parent-observable activity for drainStallTimeout.
+// delegateAbandonedByDrain is the drain's verdict on ONE delegate row: the run
+// is still open and a stop has been pending against it, unanswered, for at
+// least DrainStallTimeout.
 //
-// This is the delegate-shaped sibling of childStopGated. A stop that COMPLETES
-// leaves the settled outcome childStopGated recognizes; a stop the target
-// cannot honour leaves nothing at all — the delegate stays "running" forever
-// while job_stop reports stop_pending, because it is parked inside a tool call
-// that will never return. The drain then counts it as live work and waits for
-// the process to be killed from outside (#317, and the 109-minute field hang in
-// #369). A stop request the target has not acknowledged in that long is not
-// disposable by waiting, so it stops counting as a live component and the
-// existing stall watchdog announces the give-up.
+// TIME, NOT ACTIVITY. #378 measured silence instead, and could not: every
+// producer of a delegate's activity stamp runs through admitLeaseLocked, which
+// rejects on PendingStopSeq != 0, so a stop-requested delegate CANNOT report
+// activity at all. "Keeps stamping and keeps counting as live" was unreachable,
+// and the clock in fact ran from the last PRE-stop stamp — an unconditional
+// post-stop timer wearing a liveness signal's clothes. The honest question is
+// the one this asks: how long has the stop gone unanswered.
 //
-// Activity is the signal the quiet watchdog already reads — the delegate's
-// latest transcript turn, API attempt or state write, folded into
-// latestActivityAt. A stop-requested delegate that is still winding down keeps
-// stamping it and keeps counting as live, so the drain still waits on it. The
-// bound is drainStallTimeout rather than a new knob: this is the same
+// NO RUN COMPLETION. currentRunOpen is the "with no run-completion" half: a
+// delegate whose run has finished is not wedged, it is done, and its terminal
+// packet is deliverable work the drain must still resolve — abandoning it would
+// drop a real delivery.
+//
+// WHY drainStartedAt STANDS IN FOR AN ABSENT REQUEST. In a one-shot run the
+// drain begins at the instant the root issued its terminal communicate: the
+// root has declared the work over. From that instant the whole delegate subtree
+// is treated as stop-requested, which is what brings #317's PRIMARY shape — the
+// delegates the root never stopped at all (video-processing xXLyvs9,
+// count-dataset-tokens MCJx5Pg, filter-js YUcy8do) — inside this predicate. It
+// is also the conservative reading of a journal written before PendingStopAt
+// existed, whose pending stop folds with a zero timestamp: unknown becomes "no
+// earlier than this drain", never "long ago".
+//
+// The bound is DrainStallTimeout rather than a new knob: this is the same
 // "outstanding but nothing is happening" judgement the stall watchdog makes,
-// applied one level up. The watchdog then measures its own continuous-stall
-// window on top, so an abandonment needs two consecutive stall windows of
-// silence — deliberately conservative.
-func (s *Session) childStopRequestedAndUnresponsive(childSessionID string) bool {
-	row, ok := s.directStableDelegateForChildSession(childSessionID)
-	if !ok || row.pendingStopSeq == 0 {
+// asked about one delegate instead of a whole subtree. The watchdog then
+// measures its own continuous-stall window on top, so an abandonment needs two
+// consecutive stall windows — deliberately conservative.
+func delegateAbandonedByDrain(row delegateSnapshot, now, drainStartedAt time.Time) bool {
+	if !row.currentRunOpen {
 		return false
 	}
-	since := row.latestActivityAt
+	since := row.pendingStopAt
 	if since.IsZero() {
-		since = row.runStartedAt
+		since = drainStartedAt
 	}
 	if since.IsZero() {
-		// No activity stamp at all: nothing to measure silence against, so this
-		// says nothing and the delegate keeps its ordinary live/not-live verdict.
 		return false
 	}
-	return s.sclock().Now().Sub(since) >= drainStallTimeout
+	return !now.Before(since.Add(DrainStallTimeout))
 }
 
-// subtreeUndisposableStoppedDelegates names the stop-requested, unresponsive
-// delegates (childStopRequestedAndUnresponsive) across this session and every
-// live, non-gated descendant, so the stall watchdog's give-up can say what it
-// abandoned rather than reporting an empty set of stuck managed jobs.
+// markDrainAbandonedDelegates records, across this session and every live
+// descendant it has not already given up on, the direct delegate children this
+// drain pass will stop waiting on, and announces each one exactly once.
+//
+// It is what makes the verdict a RECORD rather than a repeated computation.
+// #378 asked the question per predicate call, which cost a deep-clone
+// Snapshot() per child per call at 4 Hz and — worse — let the drain's liveness
+// check, its sole-reason check and its drive paths disagree about the same
+// child. Marking once per pass gives every reader one answer for the cost of
+// one snapshot per session per pass.
+//
+// It is gated on TurnEndsProcess. Under serve the session outlives the turn, a
+// stop-requested delegate is nobody's shutdown problem, and DrainJobTree runs
+// for nested delegates too — so without the gate #378 abandoned interactive
+// grandchildren with "so shutdown can proceed" wording, in a process that was
+// not shutting down.
+//
+// The mark is monotone: a delegate whose stop has gone unanswered for the bound
+// does not become answerable by waiting longer, and time only moves forward, so
+// re-deriving it every pass could only ever return the same answer. A terminal
+// packet that arrives from an abandoned delegate anyway is still delivered —
+// deliveries land in the PARENT's own pending set, which this skip never hides.
+func (s *Session) markDrainAbandonedDelegates(now, drainStartedAt time.Time) {
+	if s == nil || !s.cfg.TurnEndsProcess {
+		return
+	}
+	rows := make(map[string]delegateSnapshot)
+	for _, visible := range stableDelegateRowsForSession(s, false) {
+		if childID := visible.snapshot.descriptor.ChildSessionID; childID != "" {
+			rows[childID] = visible.snapshot
+		}
+	}
+	for _, sub := range s.liveDirectSubagents() {
+		sub.mu.Lock()
+		child := sub.sess
+		sub.mu.Unlock()
+		if child == nil {
+			continue
+		}
+		row, tracked := rows[child.id]
+		// Already given up on, or already skipped by every walk: a gated child's
+		// subtree is nobody's reason to wait, so announcing an abandonment
+		// underneath it would report giving up on something already given up on.
+		// The gate is read off the row this pass already holds, not by
+		// re-snapshotting the controller for each question.
+		if s.childDrainAbandoned(child.id) || s.childFatalRunGated(child.id) || tracked && delegateRowStopGated(row) {
+			continue
+		}
+		if tracked && delegateAbandonedByDrain(row, now, drainStartedAt) {
+			s.recordDrainAbandonedChild(child.id, row.id)
+			continue
+		}
+		child.markDrainAbandonedDelegates(now, drainStartedAt)
+	}
+}
+
+// recordDrainAbandonedChild stamps one abandonment and announces it. The
+// announcement is here rather than at the drain's return because the return
+// path varies: once the last live component is abandoned the subtree is no
+// longer outstanding at all, and the drain quiesces normally instead of
+// reaching the stall watchdog's give-up. Warning at the decision point is the
+// only placement that reports the abandonment on every path.
+func (s *Session) recordDrainAbandonedChild(childSessionID, delegateID string) {
+	s.drainAbandonedMu.Lock()
+	if s.drainAbandonedChildren == nil {
+		s.drainAbandonedChildren = make(map[string]string)
+	}
+	_, already := s.drainAbandonedChildren[childSessionID]
+	s.drainAbandonedChildren[childSessionID] = delegateID
+	s.drainAbandonedMu.Unlock()
+	if already {
+		return
+	}
+	s.emit(events.EventWarning, events.WarningData{Message: fmt.Sprintf(
+		"no longer waiting on delegate %s: its stop has been pending %s with the run still open, so waiting cannot dispose of it",
+		delegateID, DrainStallTimeout)})
+}
+
+// childDrainAbandoned reports whether the one-shot drain has given up waiting on
+// the direct child session childSessionID. Every consumer — the liveness check,
+// the outstanding-work check the undisposed-job announcement's sole-reason test
+// reads, the drive paths, and the give-up warning — asks this one question, so
+// the drain can never declare a child dead while still driving it every 250ms.
+func (s *Session) childDrainAbandoned(childSessionID string) bool {
+	if s == nil || childSessionID == "" {
+		return false
+	}
+	s.drainAbandonedMu.Lock()
+	defer s.drainAbandonedMu.Unlock()
+	_, abandoned := s.drainAbandonedChildren[childSessionID]
+	return abandoned
+}
+
+// subtreeUndisposableStoppedDelegates names the delegates this session and its
+// live, non-gated descendants have been given up on, so the stall watchdog's
+// give-up can say what it abandoned rather than reporting an empty set of stuck
+// managed jobs. Sorted, so the warning text is stable.
 func (s *Session) subtreeUndisposableStoppedDelegates() []string {
 	var ids []string
 	for _, sub := range s.liveDirectSubagents() {
@@ -542,14 +656,15 @@ func (s *Session) subtreeUndisposableStoppedDelegates() []string {
 		if child == nil || s.childStopGated(child.id) || s.childFatalRunGated(child.id) {
 			continue
 		}
-		if s.childStopRequestedAndUnresponsive(child.id) {
-			if row, ok := s.directStableDelegateForChildSession(child.id); ok {
-				ids = append(ids, row.id)
-			}
+		if s.childDrainAbandoned(child.id) {
+			s.drainAbandonedMu.Lock()
+			ids = append(ids, s.drainAbandonedChildren[child.id])
+			s.drainAbandonedMu.Unlock()
 			continue
 		}
 		ids = append(ids, child.subtreeUndisposableStoppedDelegates()...)
 	}
+	sort.Strings(ids)
 	return ids
 }
 
@@ -567,7 +682,7 @@ func (s *Session) subtreeOutstandingDrainJobIDs() []string {
 		sub.mu.Lock()
 		child := sub.sess
 		sub.mu.Unlock()
-		if child == nil || s.childStopGated(child.id) || s.childFatalRunGated(child.id) {
+		if child == nil || s.childStopGated(child.id) || s.childFatalRunGated(child.id) || s.childDrainAbandoned(child.id) {
 			continue
 		}
 		ids = append(ids, child.subtreeOutstandingDrainJobIDs()...)
@@ -589,7 +704,7 @@ func drainStallGiveUpMessage(stuckJobs, undisposableDelegates []string) string {
 	}
 	return fmt.Sprintf(
 		"job-tree drain stalled for %s with no live work; giving up so shutdown can proceed (stuck managed jobs: %s; undisposable stop-requested delegates: %s)",
-		drainStallTimeout, describe(stuckJobs), describe(undisposableDelegates))
+		DrainStallTimeout, describe(stuckJobs), describe(undisposableDelegates))
 }
 
 // DrainJobTree keeps re-driving the coordinator on managed-job completions until no
@@ -628,6 +743,11 @@ func (s *Session) drainJobTreeWith(ctx context.Context, recheck <-chan time.Time
 
 	lastResult := ""
 	var stallStart time.Time
+	// drainStartedAt is the instant the root declared the work over: in a
+	// one-shot run this loop starts the moment the coordinator's terminal
+	// communicate ended its turn. It is the reference delegateAbandonedByDrain
+	// uses for a delegate nobody stopped — see its doc.
+	drainStartedAt := s.sclock().Now()
 	// bgAnnounced counts undisposed-background-job announcements per job SET
 	// (sorted ids joined). Keying on the set, not a bool, is what lets a job
 	// started during an announcement turn get its own full escalation instead of
@@ -663,6 +783,10 @@ func (s *Session) drainJobTreeWith(ctx context.Context, recheck <-chan time.Time
 		// and nothing moved while I looked" — the only claim that justifies letting
 		// Close() cancel the subtree.
 		takeDrainWake(wake)
+		// Take this pass's abandonment verdict BEFORE the kick below, so a
+		// child this pass gives up on is not also driven by this same pass.
+		// One snapshot per session per pass serves every reader after it.
+		s.markDrainAbandonedDelegates(s.sclock().Now(), drainStartedAt)
 		// Deliver pending watch sends and kick drive-down at EVERY level of the
 		// subtree, not just direct children: outstanding work isolated in a
 		// grandchild (e.g. a restored or lost-wake watch send whose signal never
@@ -811,7 +935,7 @@ func (s *Session) drainJobTreeWith(ctx context.Context, recheck <-chan time.Time
 		// Defense-in-depth stall watchdog. Outstanding work with NO live or
 		// deliverable component anywhere is a genuine wedge (drainSubtreeIsStalled);
 		// track how long that condition holds continuously on the injected clock and
-		// give up once it exceeds drainStallTimeout so Close() can proceed. Live work
+		// give up once it exceeds DrainStallTimeout so Close() can proceed. Live work
 		// (a running managed job, a driving child, a pending watch send, a queued
 		// notification) resets the stall clock, so legitimate long work is never cut.
 		stalled, err := s.drainSubtreeIsStalled()
@@ -824,7 +948,7 @@ func (s *Session) drainJobTreeWith(ctx context.Context, recheck <-chan time.Time
 			now := s.sclock().Now()
 			if stallStart.IsZero() {
 				stallStart = now
-			} else if now.Sub(stallStart) >= drainStallTimeout {
+			} else if now.Sub(stallStart) >= DrainStallTimeout {
 				// The stall verdict was assembled across sequential reads, not a
 				// snapshot. A wake raised since this pass took its edge means the
 				// tree moved mid-verdict — the same straddle the quiescence return
@@ -1044,7 +1168,7 @@ func (s *Session) kickDriveTreeWithFlush(ctx context.Context, drain func(*Sessio
 		childBusy := sub.running || sub.driving || sub.finalizing
 		child := sub.sess
 		sub.mu.Unlock()
-		if child == nil || s.childStopGated(child.id) || s.childFatalRunGated(child.id) {
+		if child == nil || s.childStopGated(child.id) || s.childFatalRunGated(child.id) || s.childDrainAbandoned(child.id) {
 			continue
 		}
 		if err := child.kickDriveTreeWithFlush(ctx, drain, !childBusy); err != nil {

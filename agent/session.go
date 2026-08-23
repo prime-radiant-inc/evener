@@ -233,7 +233,16 @@ type Session struct {
 	// responseSideEffectsMu serializes a response's user-visible side-effect
 	// bundle (emit + appendTurn + counter bump) against teardown.
 	// LOCK ORDER: responseSideEffectsMu > mu (Close acquires it before mu).
-	responseSideEffectsMu         sync.Mutex
+	responseSideEffectsMu sync.Mutex
+	// drainAbandonedMu guards drainAbandonedChildren. It is a lock of its own,
+	// not mu, because every drain walk and every drive path reads the set while
+	// holding a subagent row's lock, and mu sits above those.
+	// LOCK ORDER: drainAbandonedMu is a leaf — nothing is acquired under it.
+	drainAbandonedMu sync.Mutex
+	// drainAbandonedChildren maps a direct child SESSION id to the delegate id
+	// the one-shot drain gave up waiting on, recorded by
+	// markDrainAbandonedDelegates. Empty in every serve/interactive session.
+	drainAbandonedChildren        map[string]string
 	toolEventsWG                  sync.WaitGroup  // in-flight ToolCallStart/End emit pairs; Close() joins before closing events
 	sendersWG                     sync.WaitGroup  // detached event emitters (subagent runs, session namer); Add happens under mu gated on closing so it happens-before Close()'s join
 	disposeWG                     sync.WaitGroup  // in-flight in-turn dispose ops (manage_worktree op=dispose); admitted via beginDispose() under mu gated on closing so the Add happens-before Close()'s join, then Close() joins before draining (spec §P1)

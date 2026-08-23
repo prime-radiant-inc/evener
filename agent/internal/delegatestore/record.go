@@ -123,7 +123,14 @@ type Aggregate struct {
 	LatestPacket       *TerminalPacket   `json:"latest_packet,omitempty"`
 	PendingDeliveries  []PendingDelivery `json:"pending_deliveries,omitempty"`
 	PendingStopSeq     uint64            `json:"pending_stop_seq,omitempty"`
-	ProjectionRevision uint64            `json:"projection_revision"`
+	// PendingStopAt is when the pending subtree stop was REQUESTED, taken from
+	// the request event's own timestamp, and zero whenever PendingStopSeq is.
+	// PendingStopSeq answers "was a stop asked for"; only this answers "how long
+	// ago", which is what a caller deciding whether the target can still honour
+	// it needs. A journal written before this field existed folds it zero, so
+	// readers must treat zero as "unknown", never as "just now".
+	PendingStopAt      time.Time `json:"pending_stop_at,omitzero"`
+	ProjectionRevision uint64    `json:"projection_revision"`
 }
 
 type Outcome struct {
