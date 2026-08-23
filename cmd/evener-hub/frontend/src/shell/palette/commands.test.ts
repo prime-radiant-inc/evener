@@ -242,11 +242,11 @@ test("with no focused session, only the 9 global commands are in scope", () => {
   expect(inScope).toHaveLength(9);
 });
 
-test("a live focused session exposes global + session (all 24 commands)", () => {
+test("a live focused session exposes global + session (all 25 commands)", () => {
   focusSession("ref_a");
   seedModel("ref_a", { status: { type: "active" }, activeTurnId: "t1" });
   const inScope = commandsInScope(buildPaletteContext());
-  expect(inScope).toHaveLength(24);
+  expect(inScope).toHaveLength(25);
   expect(inScope.some((c) => c.id === "steer")).toBe(true);
   expect(inScope.some((c) => c.id === "project")).toBe(true);
 });
@@ -263,7 +263,7 @@ test("an ended focused session still lists every command; only the wire's own fa
     capabilities: { ...CAPS, steer: false, interrupt: false, queue: false },
   });
   const inScope = commandsInScope(buildPaletteContext());
-  expect(inScope).toHaveLength(24);
+  expect(inScope).toHaveLength(25);
   const byId = new Map(inScope.map((c) => [c.id, c]));
   for (const id of ["model", "goal", "clear", "compact", "aside", "shutdown", "copy-id"]) {
     expect(byId.get(id)?.unavailableReason).toBeUndefined();
@@ -307,7 +307,7 @@ test("a session command with no wire capability is never capability-gated", () =
 test("a focused session whose model has not hydrated yet leaves every command enabled", () => {
   focusSession("ref_a");
   const inScope = commandsInScope(buildPaletteContext());
-  expect(inScope).toHaveLength(24);
+  expect(inScope).toHaveLength(25);
   expect(inScope.every((c) => c.unavailableReason === undefined)).toBe(true);
 });
 

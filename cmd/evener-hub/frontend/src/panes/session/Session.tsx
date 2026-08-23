@@ -55,6 +55,7 @@ import { useTranscript } from "./transcript/useTranscript";
 // principle as TurnBlock.tsx's own ToolCallItem import).
 import "./transcript/messages";
 import "./transcript/tools";
+import { ComprehensionView } from "./rail/ComprehensionView";
 import { railModelFromTurns } from "./rail/railModel";
 import { SessionRail } from "./rail/SessionRail";
 import { useRailScrollSync } from "./rail/useRailScrollSync";
@@ -336,6 +337,20 @@ export default function Session({ params, paneId, focused: paneFocused }: PanePr
     },
   });
 
+  // Comprehension View (Mode 2): full-screen overlay showing the session
+  // tree's rails side-by-side on a shared live clock. Entry: ⌘⇧R + button.
+  const [compViewOpen, setCompViewOpen] = useState(false);
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if ((e.metaKey || e.ctrlKey) && e.shiftKey && (e.key === "R" || e.key === "r")) {
+        e.preventDefault();
+        setCompViewOpen((v) => !v);
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, []);
+
   // Same fallback chain, and same shared resolver, as DockHost's dockview
   // tab title (shell/threadTitle's own doc comment) - the live thread name
   // wins once hydrated, else the rail's already-loaded tree store's title
@@ -423,9 +438,20 @@ export default function Session({ params, paneId, focused: paneFocused }: PanePr
       />
       <FlowOverlay
         top={
-          model.olderCursor && (
-            <LoadOlderRow onLoad={loadOlderReportingError} loading={loadingOlder} error={olderError} />
-          )
+          <>
+            {model.olderCursor && (
+              <LoadOlderRow onLoad={loadOlderReportingError} loading={loadingOlder} error={olderError} />
+            )}
+            <button
+              type="button"
+              className={styles.comprehensionBtn}
+              onClick={() => setCompViewOpen(true)}
+              aria-label="Open comprehension view (⌘⇧R)"
+              title="Comprehension view (⌘⇧R)"
+            >
+              ⤢
+            </button>
+          </>
         }
         pill={
           <NewContentPill
@@ -583,6 +609,21 @@ export default function Session({ params, paneId, focused: paneFocused }: PanePr
         <EmptyTranscript active={model.status.type === "active"} />
       ) : (
         transcript
+      )}
+      {railEnabled && (
+        <ComprehensionView
+          open={compViewOpen}
+          onClose={() => setCompViewOpen(false)}
+          parentRef={ref}
+          onOpenSession={(sessionRef, turnIdx) => {
+            setCompViewOpen(false);
+            if (sessionRef === ref && turnIdx !== undefined && turnIdx >= 0 && turnIdx < viewRows.length) {
+              virtualListRef.current?.scrollToIndex(turnIdx, { align: "center" });
+            } else if (sessionRef !== ref) {
+              navigate(paneToURL("transcript", { ref: sessionRef }) ?? "");
+            }
+          }}
+        />
       )}
     </PaneScaffold>
   );

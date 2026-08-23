@@ -611,6 +611,18 @@ export function buildCommands(): Command[] {
         if (ctx.sessionRef) revealSessionInRail(ctx.sessionRef);
       },
     },
+    {
+      id: "comprehension",
+      title: "Comprehension view",
+      hint: "multi-session rails (⌘⇧R)",
+      keywords: ["rail", "minimap", "overview", "tree"],
+      scope: "session",
+      run: (ctx) => {
+        if (!ctx.sessionRef) return blocked("no session focused");
+        // Dispatch the ⌘⇧R keyboard shortcut the Session pane listens for.
+        window.dispatchEvent(new KeyboardEvent("keydown", { key: "R", shiftKey: true, metaKey: true }));
+      },
+    },
   ];
 }
 

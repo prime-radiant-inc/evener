@@ -187,3 +187,27 @@
   flex-direction: column;
   gap: var(--space-2);
 }
+
+.comprehensionBtn {
+  position: absolute;
+  right: 0;
+  top: 0;
+  height: 26px;
+  min-width: 26px;
+  padding: 0 6px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--surface-2);
+  border: 1px solid var(--edge-strong);
+  border-radius: 5px;
+  color: var(--ink-mid);
+  cursor: pointer;
+  font: 600 13px var(--font-mono);
+  z-index: var(--z-raised);
+}
+
+.comprehensionBtn:hover {
+  border-color: var(--hover-2);
+  color: var(--ink-hi);
+}
