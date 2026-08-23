@@ -1,5 +1,7 @@
-// Command evener-migrate migrates user data to the final evener layout. It
-// handles three source generations:
+// Command evener-migrate migrates user data to the final evener layout. It is
+// invoked as `evener migrate` (see cmd/evener); this package holds its logic.
+//
+// It handles three source generations:
 //
 //   - legacy (pre-rename): ~/.serf, ~/.config/serf, ~/.local/state/serf, and
 //     per-project .serf directories.
@@ -17,7 +19,7 @@
 // they held moves individually into the config or state root — see
 // homeRootFiles. Per-project .serf directories also move wholesale to
 // .evener.
-package main
+package migrate
 
 import (
 	"errors"
@@ -95,12 +97,12 @@ var homeRootFiles = []homeRootFile{
 	{name: "deletions", xdg: "state", kind: "deletion-fence state"},
 }
 
-func main() {
-	os.Exit(run(os.Args[1:], os.Stdout, os.Stderr))
+func Run(args []string, _ io.Reader, stdout, stderr io.Writer) int {
+	return run(args, stdout, stderr)
 }
 
 func run(args []string, stdout, stderr io.Writer) int {
-	flags := flag.NewFlagSet("evener-migrate", flag.ContinueOnError)
+	flags := flag.NewFlagSet("evener migrate", flag.ContinueOnError)
 	flags.SetOutput(stderr)
 	dryRun := flags.Bool("dry-run", false, "preview changes without moving anything")
 	verbose := flags.Bool("verbose", false, "print detailed output including skipped paths")
