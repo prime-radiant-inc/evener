@@ -51,3 +51,17 @@ func TestResolveLiveModelInfoNotFound(t *testing.T) {
 		t.Fatalf("ResolveLiveModelInfo for missing = %v, want nil", mi)
 	}
 }
+
+// TestResolveLiveModelInfoEmptyBehaviorTag covers the empty-behavior-tag nil
+// return path (line 291).
+func TestResolveLiveModelInfoEmptyBehaviorTag(t *testing.T) {
+	c := &ModelCatalog{
+		Models: []ModelInfo{
+			{ID: "other-model"},
+		},
+	}
+	mi := c.ResolveLiveModelInfo("", "missing")
+	if mi != nil {
+		t.Fatalf("ResolveLiveModelInfo with empty tag for missing = %v, want nil", mi)
+	}
+}
