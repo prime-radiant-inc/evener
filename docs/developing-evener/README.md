@@ -34,6 +34,9 @@ gates themselves — building, testing, linting, coverage, and fuzzing.
 - **[dev-checklist.md](dev-checklist.md)** — the manual checklist that runs
   against your own real dev hub and session history, not an isolated
   checkout; skip it when running the automated scenario sweep.
+- **[issue-triage.md](issue-triage.md)** — how open GitHub issues are
+  categorized, labeled, and ranked: the label vocabulary, the eval-only
+  test, and the triage procedure.
 - **[conventions/](conventions/)** — naming conventions for serialized
   identifiers, working in the `go.work` multi-module workspace, and running
   a fleet of agents against this repo without them stepping on each other.
