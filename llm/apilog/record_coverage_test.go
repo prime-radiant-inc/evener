@@ -88,6 +88,7 @@ func TestValidateRecordNegativeCacheReadTokens(t *testing.T) {
 	negTokens := -1
 	r := validRecordForValidation(t)
 	r.Response = &APIAttemptResponse{
+		Body:  EncodeBody([]byte(`{}`)),
 		Usage: Usage{CacheReadTokens: &negTokens},
 	}
 	if err := r.validateRecord(DecodeStrict); err == nil {
@@ -101,6 +102,7 @@ func TestValidateRecordNegativeCacheWriteTokens(t *testing.T) {
 	negTokens := -1
 	r := validRecordForValidation(t)
 	r.Response = &APIAttemptResponse{
+		Body:  EncodeBody([]byte(`{}`)),
 		Usage: Usage{CacheWriteTokens: &negTokens},
 	}
 	if err := r.validateRecord(DecodeStrict); err == nil {
@@ -114,6 +116,7 @@ func TestValidateRecordNegativeInputTokens(t *testing.T) {
 	negTokens := -1
 	r := validRecordForValidation(t)
 	r.Response = &APIAttemptResponse{
+		Body:  EncodeBody([]byte(`{}`)),
 		Usage: Usage{InputTokens: &negTokens},
 	}
 	if err := r.validateRecord(DecodeStrict); err == nil {
@@ -126,6 +129,7 @@ func TestValidateRecordNegativeOutputTokens(t *testing.T) {
 	negTokens := -1
 	r := validRecordForValidation(t)
 	r.Response = &APIAttemptResponse{
+		Body:  EncodeBody([]byte(`{}`)),
 		Usage: Usage{OutputTokens: &negTokens},
 	}
 	if err := r.validateRecord(DecodeStrict); err == nil {
