@@ -59,6 +59,8 @@ func (a *Adapter) ListModels(ctx context.Context) ([]llm.ModelInfo, error) {
 		Models []struct {
 			Name                       string   `json:"name"`
 			DisplayName                string   `json:"displayName"`
+			InputTokenLimit            int      `json:"inputTokenLimit"`
+			OutputTokenLimit           int      `json:"outputTokenLimit"`
 			SupportedGenerationMethods []string `json:"supportedGenerationMethods"`
 		} `json:"models"`
 	}
@@ -79,11 +81,22 @@ func (a *Adapter) ListModels(ctx context.Context) ([]llm.ModelInfo, error) {
 		if displayName == "" {
 			displayName = id
 		}
-		models = append(models, llm.ModelInfo{
-			ID:          id,
-			Provider:    "google",
-			DisplayName: displayName,
-		})
+		info := llm.ModelInfo{
+			ID:            id,
+			Provider:      "google",
+			DisplayName:   displayName,
+			ContextWindow: m.InputTokenLimit,
+		}
+		// Google's supportedGenerationMethods lists API methods the model
+		// accepts (generateContent, embedContent, etc.), not function-calling
+		// capability. TTS and native-audio models also list generateContent
+		// but don't support tools. Leave SupportsTools at its zero value
+		// (false); the catalog fills it in for known models.
+		if m.OutputTokenLimit > 0 {
+			maxOut := m.OutputTokenLimit
+			info.MaxOutputTokens = &maxOut
+		}
+		models = append(models, info)
 	}
 	sort.Slice(models, func(i, j int) bool { return models[i].ID < models[j].ID })
 	return models, nil

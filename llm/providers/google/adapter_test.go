@@ -2825,11 +2825,15 @@ func TestAdapter_ListModels(t *testing.T) {
 				{
 					"name": "models/gemini-2.5-flash",
 					"displayName": "Gemini 2.5 Flash",
+					"inputTokenLimit": 1048576,
+					"outputTokenLimit": 65536,
 					"supportedGenerationMethods": ["generateContent", "countTokens"]
 				},
 				{
 					"name": "models/gemini-2.5-pro",
 					"displayName": "Gemini 2.5 Pro",
+					"inputTokenLimit": 1048576,
+					"outputTokenLimit": 65536,
 					"supportedGenerationMethods": ["generateContent", "countTokens"]
 				},
 				{
@@ -2856,6 +2860,18 @@ func TestAdapter_ListModels(t *testing.T) {
 	}
 	if models[0].DisplayName != "Gemini 2.5 Flash" {
 		t.Errorf("models[0].DisplayName = %q", models[0].DisplayName)
+	}
+	if models[0].ContextWindow != 1048576 {
+		t.Errorf("models[0].ContextWindow = %d, want 1048576", models[0].ContextWindow)
+	}
+	if models[0].MaxOutputTokens == nil || *models[0].MaxOutputTokens != 65536 {
+		t.Errorf("models[0].MaxOutputTokens = %v, want 65536", models[0].MaxOutputTokens)
+	}
+	// SupportsTools should NOT be inferred from generateContent — Google's
+	// supportedGenerationMethods lists API methods, not function-calling
+	// capability. The catalog fills it in for known models.
+	if models[0].SupportsTools {
+		t.Errorf("models[0].SupportsTools = true, want false (generateContent is not a tools capability flag)")
 	}
 	for _, m := range models {
 		if m.Provider != "google" {

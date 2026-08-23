@@ -51,7 +51,15 @@ type ModelInfo struct {
 	CacheReadInputCostPerMillion  *float64 `json:"cache_read_input_cost_per_million,omitempty"`
 	CacheCreation5mCostPerMillion *float64 `json:"cache_creation_5m_cost_per_million,omitempty"`
 	CacheCreation1hCostPerMillion *float64 `json:"cache_creation_1h_cost_per_million,omitempty"`
-	Aliases                       []string `json:"aliases,omitempty"`
+	// CapabilitiesAdvertised marks that the live /models endpoint reported
+	// capability metadata (e.g. OpenRouter's supported_parameters). When true,
+	// SupportsTools/SupportsVision/SupportsReasoning are authoritative values
+	// from the provider, not zero-value defaults — an explicit false means the
+	// provider says the model does NOT support that capability, and callers
+	// must not fall back to the catalog. When false (the provider didn't
+	// return capability metadata), callers should fall back to the catalog.
+	CapabilitiesAdvertised bool     `json:"capabilities_advertised,omitempty"`
+	Aliases                []string `json:"aliases,omitempty"`
 }
 
 // ModelCatalog holds a set of ModelInfo entries and a lazily-built index for
@@ -285,22 +293,40 @@ func (c *ModelCatalog) ResolveLiveModelInfo(behaviorTag, modelID string) *ModelI
 
 // VisibleLiveModel reports whether modelID should appear in a live model list for
 // a provider with the given behavior tag. It returns false for non-chat model IDs
-// (IsChatModelID) and, for the "openrouter" tag, for models that do not resolve in
-// the catalog (ResolveLiveModelInfo) or lack tool support. Other behavior tags do
-// not gate on the catalog: a live /models entry is visible as long as it is a
-// chat model.
+// (IsChatModelID) and, for the "openrouter" tag, for models that lack tool
+// support. When the live ModelInfo has CapabilitiesAdvertised=true (the
+// provider's /models response reported capability metadata, e.g.
+// OpenRouter's supported_parameters list), the live SupportsTools value is
+// authoritative — an explicit false hides the model even if the catalog says
+// it supports tools. When CapabilitiesAdvertised is false (the provider didn't
+// return capability metadata), it falls back to the embedded catalog
+// (ResolveLiveModelInfo). Other behavior tags do not gate on the catalog: a
+// live /models entry is visible as long as it is a chat model.
 //
 // This consolidates the visibility rule previously duplicated (and drifted)
 // between cmd/evener/internal/launchcheck.launchCheckModelVisible and
 // cmd/evener-hub/web_spawn.go's fetchLiveModels.
-func (c *ModelCatalog) VisibleLiveModel(behaviorTag, modelID string) bool {
-	if !IsChatModelID(modelID) {
+//
+// live is the ModelInfo returned by the provider's ListModels call. It carries
+// capability data parsed from the live /models response (SupportsTools,
+// SupportsVision, etc.) which takes priority over the catalog for visibility
+// when the provider actually reported them.
+func (c *ModelCatalog) VisibleLiveModel(behaviorTag string, live ModelInfo) bool {
+	if !IsChatModelID(live.ID) {
 		return false
 	}
 	if behaviorTag != "openrouter" {
 		return true
 	}
-	mi := c.ResolveLiveModelInfo(behaviorTag, modelID)
+	// When the provider reported capability metadata, the live SupportsTools
+	// value is authoritative — true means visible, false means hidden, even
+	// if the catalog disagrees.
+	if live.CapabilitiesAdvertised {
+		return live.SupportsTools
+	}
+	// Fall back to the catalog when the live response doesn't report
+	// capability metadata — some providers' /models endpoints omit it.
+	mi := c.ResolveLiveModelInfo(behaviorTag, live.ID)
 	return mi != nil && mi.SupportsTools
 }
 
