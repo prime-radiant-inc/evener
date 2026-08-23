@@ -563,6 +563,12 @@ impl ProfileStore {
             }
         }
 
+        // Auto-select the new profile when there is no active profile.
+        // This is the common case for first-time pairing.
+        if new_prefs.active_id.is_none() {
+            new_prefs.active_id = Some(profile_id.clone());
+        }
+
         if let Err(prefs_err) = self.prefs.save(&new_prefs) {
             if matches!(prefs_err, ProfileError::PreferencesDurabilityUncertain) {
                 // Rename already committed the matching preferences. Keep the
