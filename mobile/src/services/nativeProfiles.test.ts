@@ -401,26 +401,29 @@ describe("nativeProfiles — health", () => {
 });
 
 describe("nativeProfiles — structured errors", () => {
-  it("error message never echoes a secret-bearing invoke failure", async () => {
+  it("surfaces safe ProfileError text from a failed select", async () => {
     const bridge = fakeBridge([
       {
         cmd: "profile_select",
         result: null,
-        error: "no capability for profile AAEC-secret-token",
+        error: "profile not found: p1",
       },
     ]);
     const svc = createProfileService(bridge);
     const err = await svc.select({ profileId: "p1" }).catch((e) => e);
     expect(isProfileServiceError(err)).toBe(true);
-    expect(String((err as Error).message)).not.toMatch(/AAEC-secret-token/);
+    expect(String((err as Error).message)).toBe("profile not found: p1");
   });
 
-  it("redacts error text from a failed confirm", async () => {
+  it("passes through safe ProfileError text from a failed confirm", async () => {
+    // Rust ProfileError::Display never includes the token; only the origin.
+    // The service should surface this safe diagnostic to the UI.
     const bridge = fakeBridge([
       {
         cmd: "profile_confirm_pairing",
         result: null,
-        error: "duplicate origin https://hub.example.com with token xyz",
+        error:
+          "probe failed for http://192.168.0.5:9181: health request failed: connection refused",
       },
     ]);
     const svc = createProfileService(bridge);
@@ -428,7 +431,9 @@ describe("nativeProfiles — structured errors", () => {
       .confirmPairing({ previewId: "pv1", name: "laptop" })
       .catch((e) => e);
     expect(isProfileServiceError(err)).toBe(true);
-    expect(String((err as Error).message)).not.toMatch(/xyz/);
+    expect(String((err as Error).message)).toMatch(/probe failed/);
+    // The safe origin is preserved for diagnostics.
+    expect(String((err as Error).message)).toMatch(/192\.168\.0\.5/);
   });
 
   it("ProfileServiceError has a stable code and is throwable", async () => {
