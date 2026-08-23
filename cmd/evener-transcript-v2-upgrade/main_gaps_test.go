@@ -1,4 +1,4 @@
-package main
+package transcriptv2upgrade
 
 import (
 	"bytes"
