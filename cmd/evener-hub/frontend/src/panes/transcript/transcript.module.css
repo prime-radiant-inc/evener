@@ -19,6 +19,28 @@
   min-height: 0;
 }
 
+/* When the Session Rail is active, the body is a row (list + rail) and the
+ * native scrollbar is hidden — the rail IS the scrollbar. */
+.bodyRow {
+  height: 100%;
+  display: flex;
+  flex-direction: row;
+}
+
+.listWithRail {
+  flex: 1 1 auto;
+  min-height: 0;
+}
+
+.listWithRail > div {
+  scrollbar-width: none;
+}
+
+.listWithRail > div::-webkit-scrollbar {
+  width: 0;
+  display: none;
+}
+
 /* JobLog ("job:<id>" refs): the shell transcript is one bounded tail, not a
  * virtualized turn list, so a scrolling mono <pre> replaces .list. */
 .joblog {

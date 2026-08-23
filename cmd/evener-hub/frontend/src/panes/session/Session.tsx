@@ -55,6 +55,11 @@ import { useTranscript } from "./transcript/useTranscript";
 // principle as TurnBlock.tsx's own ToolCallItem import).
 import "./transcript/messages";
 import "./transcript/tools";
+import { railModelFromTurns } from "./rail/railModel";
+import { SessionRail } from "./rail/SessionRail";
+import { useRailScrollSync } from "./rail/useRailScrollSync";
+import { useRailSetting } from "./rail/useRailSetting";
+import { useRailTheme } from "./rail/useRailTheme";
 import styles from "./session.module.css";
 import { FlowOverlay } from "./transcript/flow/FlowOverlay";
 import { LivenessLine } from "./transcript/flow/LivenessLine";
@@ -298,6 +303,39 @@ export default function Session({ params, paneId, focused: paneFocused }: PanePr
   // this pane was last open, so a reopened session shows where to pick up.
   const seenDividerTurnId = useSeenDivider(ref, model);
 
+  // Session Rail: the 156px canvas rail that replaces the transcript's
+  // native scrollbar. Feature-flagged, default-ON on desktop. The rail
+  // derives its model from the thread's turns (live-faithful: only revealed
+  // data) and syncs bidirectionally with VirtualList's scroll element.
+  const [railEnabled] = useRailSetting();
+  const railTheme = useRailTheme();
+  const railModel = useMemo(
+    () => (model && railEnabled ? railModelFromTurns(model.turns, now) : null),
+    [model, railEnabled, now],
+  );
+  const railView = useMemo(
+    () =>
+      railModel
+        ? {
+            kind: "time" as const,
+            nowMs: now,
+            startMs: railModel.startMs,
+            ap: { end: Math.max(now, railModel.startMs + 600000) },
+          }
+        : null,
+    [railModel, now],
+  );
+  const { thumb } = useRailScrollSync({
+    listRef: virtualListRef,
+    view: railView ?? { kind: "time", nowMs: 0, startMs: 0, ap: { end: 600000 } },
+    events: railModel?.events ?? [],
+    onJump: (idx) => {
+      if (idx >= 0 && idx < viewRows.length) {
+        virtualListRef.current?.scrollToIndex(idx, { align: "center" });
+      }
+    },
+  });
+
   // Same fallback chain, and same shared resolver, as DockHost's dockview
   // tab title (shell/threadTitle's own doc comment) - the live thread name
   // wins once hydrated, else the rail's already-loaded tree store's title
@@ -400,7 +438,7 @@ export default function Session({ params, paneId, focused: paneFocused }: PanePr
         }
       >
         <div className={styles.transcriptContent}>
-          <div className={styles.transcriptList}>
+          <div className={railEnabled && railModel ? styles.transcriptListWithRail : styles.transcriptList}>
             <VirtualList
               ref={virtualListRef}
               dynamic
@@ -477,6 +515,22 @@ export default function Session({ params, paneId, focused: paneFocused }: PanePr
               onChange={flow.restoreViewAnchorAfterMeasurement}
             />
           </div>
+          {railModel && railView && railEnabled && (
+            <SessionRail
+              model={railModel}
+              nowMs={now}
+              axis="time"
+              theme={railTheme}
+              thumb={thumb}
+              playing={model?.status?.type === "active"}
+              ended={model?.status?.type === "ended"}
+              onJump={(idx) => {
+                if (idx >= 0 && idx < viewRows.length) {
+                  virtualListRef.current?.scrollToIndex(idx, { align: "center" });
+                }
+              }}
+            />
+          )}
           {showColdStartSkeleton && <ColdStartSkeleton />}
         </div>
       </FlowOverlay>
