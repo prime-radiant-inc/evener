@@ -479,10 +479,307 @@ describe("SessionsScreen.css — structural header contract", () => {
       "calc(-1 * var(--safe-area-left))",
     );
   });
-
   it("header negative margin-right compensates shell safe-area-right", () => {
     expect(getDecl(cssBlocks, ".evener-sessions-header", "margin-right")).toBe(
       "calc(-1 * var(--safe-area-right))",
     );
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Roster display tests — grouped list, search, tap to open
+// ---------------------------------------------------------------------------
+
+import type { StoreApi, UseBoundStore } from "zustand";
+import { create } from "zustand";
+import type { RosterEntry, RosterService } from "../services/roster";
+import type { NavigationState } from "../state/navigation";
+import type { RosterState } from "../state/roster";
+import { createRosterStore } from "../state/roster";
+
+// --- fake roster service for screen tests -----------------------------------
+
+class FakeRosterService implements RosterService {
+  threads: RosterEntry[] = [];
+  shouldReject: Error | null = null;
+  listCalls = 0;
+
+  async list(): Promise<{ threads: RosterEntry[]; nextCursor?: string }> {
+    this.listCalls += 1;
+    if (this.shouldReject !== null) throw this.shouldReject;
+    return { threads: this.threads };
+  }
+  async refresh(): Promise<void> {
+    await this.list();
+  }
+}
+
+type RosterStoreHook = UseBoundStore<StoreApi<RosterState>>;
+type NavigationStoreHook = UseBoundStore<StoreApi<NavigationState>>;
+
+function makeRosterEntry(over: Partial<RosterEntry> = {}): RosterEntry {
+  return {
+    ref: "ref-1",
+    title: "Test Session",
+    project: "/tmp/project",
+    status: "idle",
+    updatedAt: Date.now(),
+    attention: "recent",
+    ...over,
+  };
+}
+
+function createFakeNavigationStore(): NavigationStoreHook {
+  return create<NavigationState>((set, get) => ({
+    tab: "sessions",
+    conversationStack: [],
+    activeConversation: null,
+    setTab: () => {},
+    pushConversation: vi.fn((entry) =>
+      set((state) => ({
+        conversationStack: [...state.conversationStack, entry],
+        activeConversation: entry,
+      })),
+    ) as NavigationState["pushConversation"],
+    popConversation: () => {},
+    popAllConversations: () => {},
+    clearConversations: () => {},
+    canGoBack: () => get().conversationStack.length > 0,
+  }));
+}
+
+function renderSessionsWithRoster(
+  opts: {
+    rosterService?: FakeRosterService;
+    rosterStore?: RosterStoreHook;
+    navigation?: NavigationStoreHook;
+  } = {},
+) {
+  const rosterService = opts.rosterService ?? new FakeRosterService();
+  const rosterStore = opts.rosterStore ?? createRosterStore();
+  const navigation = opts.navigation ?? createFakeNavigationStore();
+  const connection = createConnectionStore(
+    createShellServices({ profiles: PROFILES, activeProfileId: "p1" }).profile,
+  );
+  void connection.getState().refresh();
+
+  const onOpenSwitcher = vi.fn();
+  render(
+    <SessionsScreen
+      connection={connection}
+      onOpenSwitcher={onOpenSwitcher}
+      rosterService={rosterService}
+      rosterStore={rosterStore}
+      navigation={navigation}
+    />,
+  );
+  return { rosterService, rosterStore, navigation, connection, onOpenSwitcher };
+}
+
+describe("SessionsScreen — roster display", () => {
+  it("shows roster entries grouped by attention", async () => {
+    const service = new FakeRosterService();
+    service.threads = [
+      makeRosterEntry({
+        ref: "n1",
+        title: "Needs You 1",
+        attention: "needsYou",
+      }),
+      makeRosterEntry({ ref: "r1", title: "Running 1", attention: "running" }),
+      makeRosterEntry({ ref: "rec1", title: "Recent 1", attention: "recent" }),
+      makeRosterEntry({
+        ref: "n2",
+        title: "Needs You 2",
+        attention: "needsYou",
+      }),
+    ];
+    renderSessionsWithRoster({ rosterService: service });
+
+    expect(await screen.findByText("Needs You 1")).toBeInTheDocument();
+    expect(screen.getByText("Needs You 2")).toBeInTheDocument();
+    expect(screen.getByText("Running 1")).toBeInTheDocument();
+    expect(screen.getByText("Recent 1")).toBeInTheDocument();
+  });
+
+  it("shows group headers Needs You, Running, Recent", async () => {
+    const service = new FakeRosterService();
+    service.threads = [
+      makeRosterEntry({ ref: "n1", title: "Need", attention: "needsYou" }),
+      makeRosterEntry({ ref: "r1", title: "Run", attention: "running" }),
+      makeRosterEntry({ ref: "rec1", title: "Done", attention: "recent" }),
+    ];
+    renderSessionsWithRoster({ rosterService: service });
+
+    expect(await screen.findByText(/needs you/i)).toBeInTheDocument();
+    expect(screen.getByText(/running/i)).toBeInTheDocument();
+    expect(screen.getByText(/^recent$/i)).toBeInTheDocument();
+  });
+
+  it("each row shows title, project, and status", async () => {
+    const service = new FakeRosterService();
+    service.threads = [
+      makeRosterEntry({
+        ref: "t1",
+        title: "My Bug Fix",
+        project: "/home/jesse/work",
+        status: "active",
+        attention: "running",
+      }),
+    ];
+    renderSessionsWithRoster({ rosterService: service });
+
+    expect(await screen.findByText("My Bug Fix")).toBeInTheDocument();
+    expect(screen.getByText("/home/jesse/work")).toBeInTheDocument();
+  });
+
+  it("shows loading state while roster loads", () => {
+    const service = new FakeRosterService();
+    renderSessionsWithRoster({ rosterService: service });
+    // Before the async resolves, loading is true
+    expect(screen.getByRole("status")).toBeInTheDocument();
+  });
+
+  it("shows error state when roster load fails", async () => {
+    const service = new FakeRosterService();
+    service.shouldReject = new Error("Failed to load roster");
+    renderSessionsWithRoster({ rosterService: service });
+
+    expect(
+      await screen.findByText(/failed to load roster/i),
+    ).toBeInTheDocument();
+  });
+
+  it("shows empty state when no sessions exist", async () => {
+    const service = new FakeRosterService();
+    service.threads = [];
+    renderSessionsWithRoster({ rosterService: service });
+
+    expect(await screen.findByText(/no sessions yet/i)).toBeInTheDocument();
+  });
+
+  it("omits empty groups", async () => {
+    const service = new FakeRosterService();
+    service.threads = [
+      makeRosterEntry({
+        ref: "r1",
+        title: "Running Only",
+        attention: "running",
+      }),
+    ];
+    renderSessionsWithRoster({ rosterService: service });
+
+    expect(await screen.findByText("Running Only")).toBeInTheDocument();
+    expect(screen.queryByText(/^needs you$/i)).not.toBeInTheDocument();
+    expect(screen.queryByText(/^recent$/i)).not.toBeInTheDocument();
+  });
+});
+
+describe("SessionsScreen — search", () => {
+  it("search filters entries locally by title", async () => {
+    const service = new FakeRosterService();
+    service.threads = [
+      makeRosterEntry({ ref: "r1", title: "Fix billing", attention: "recent" }),
+      makeRosterEntry({
+        ref: "r2",
+        title: "Refactor auth",
+        attention: "recent",
+      }),
+    ];
+    renderSessionsWithRoster({ rosterService: service });
+
+    await screen.findByText("Fix billing");
+    const searchInput = screen.getByPlaceholderText(/search/i);
+    fireEvent.change(searchInput, { target: { value: "billing" } });
+
+    expect(screen.getByText("Fix billing")).toBeInTheDocument();
+    expect(screen.queryByText("Refactor auth")).not.toBeInTheDocument();
+  });
+
+  it("search filters entries locally by project", async () => {
+    const service = new FakeRosterService();
+    service.threads = [
+      makeRosterEntry({
+        ref: "r1",
+        title: "Alpha",
+        project: "/home/work",
+        attention: "recent",
+      }),
+      makeRosterEntry({
+        ref: "r2",
+        title: "Beta",
+        project: "/home/play",
+        attention: "recent",
+      }),
+    ];
+    renderSessionsWithRoster({ rosterService: service });
+
+    await screen.findByText("Alpha");
+    const searchInput = screen.getByPlaceholderText(/search/i);
+    fireEvent.change(searchInput, { target: { value: "play" } });
+
+    expect(screen.getByText("Beta")).toBeInTheDocument();
+    expect(screen.queryByText("Alpha")).not.toBeInTheDocument();
+  });
+
+  it("clearing search shows all entries", async () => {
+    const service = new FakeRosterService();
+    service.threads = [
+      makeRosterEntry({ ref: "r1", title: "Alpha", attention: "recent" }),
+      makeRosterEntry({ ref: "r2", title: "Beta", attention: "recent" }),
+    ];
+    renderSessionsWithRoster({ rosterService: service });
+
+    await screen.findByText("Alpha");
+    const searchInput = screen.getByPlaceholderText(/search/i);
+    fireEvent.change(searchInput, { target: { value: "alpha" } });
+    expect(screen.queryByText("Beta")).not.toBeInTheDocument();
+
+    fireEvent.change(searchInput, { target: { value: "" } });
+    expect(screen.getByText("Alpha")).toBeInTheDocument();
+    expect(screen.getByText("Beta")).toBeInTheDocument();
+  });
+});
+
+describe("SessionsScreen — tap to open", () => {
+  it("tapping a session row calls navigation.pushConversation", async () => {
+    const service = new FakeRosterService();
+    service.threads = [
+      makeRosterEntry({
+        ref: "ref-open1",
+        title: "Tap Me",
+        attention: "recent",
+      }),
+    ];
+    const navigation = createFakeNavigationStore();
+    renderSessionsWithRoster({ rosterService: service, navigation });
+
+    const row = await screen.findByText("Tap Me");
+    fireEvent.click(row);
+
+    expect(navigation.getState().pushConversation).toHaveBeenCalledWith({
+      sessionId: "ref-open1",
+      title: "Tap Me",
+    });
+  });
+
+  it("tapping a needsYou session row opens it", async () => {
+    const service = new FakeRosterService();
+    service.threads = [
+      makeRosterEntry({
+        ref: "ref-needs",
+        title: "Needs Attention",
+        attention: "needsYou",
+      }),
+    ];
+    const navigation = createFakeNavigationStore();
+    renderSessionsWithRoster({ rosterService: service, navigation });
+
+    const row = await screen.findByText("Needs Attention");
+    fireEvent.click(row);
+
+    expect(navigation.getState().pushConversation).toHaveBeenCalledWith({
+      sessionId: "ref-needs",
+      title: "Needs Attention",
+    });
   });
 });
