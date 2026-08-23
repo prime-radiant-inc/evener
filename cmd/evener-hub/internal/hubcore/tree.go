@@ -334,6 +334,13 @@ type TreeNode struct {
 	CreatedAt     time.Time
 	UpdatedAt     time.Time
 	Age           string // pre-formatted "now", "2m", "3h", "5d"
+	// LastActivityAt is the session's most recent real activity time, sourced
+	// from the session meta's UpdatedAt (updated on every turn write) for past
+	// sessions, and from the live roster's StartedAt (or now) for live
+	// sessions. Unlike UpdatedAt (which is also used for ordering/age display),
+	// this field is the dedicated epoch-ms value the comprehension view consumes
+	// for recency ordering — not a file-write proxy for display.
+	LastActivityAt time.Time
 	Children      []TreeNode
 }
 
@@ -868,8 +875,9 @@ func BuildTreeAtWithProjects(metas []schema.SessionMeta, live []LiveEntry, decis
 			Dormant:    dormantFor(m.ID),
 			Kind:       kind,
 			CreatedAt:  OrderCreatedAt(m.CreatedAt, m.UpdatedAt),
-			UpdatedAt:  OrderUpdatedAt(m.UpdatedAt, m.CreatedAt),
-			Age:        AgeString(OrderUpdatedAt(m.UpdatedAt, m.CreatedAt)),
+			UpdatedAt:      OrderUpdatedAt(m.UpdatedAt, m.CreatedAt),
+			Age:            AgeString(OrderUpdatedAt(m.UpdatedAt, m.CreatedAt)),
+			LastActivityAt: m.UpdatedAt,
 		}
 
 		childMetas := childrenByParent[m.ID]

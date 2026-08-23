@@ -33,9 +33,15 @@ test("usage present but both token counts are zero/absent yields no tokens segme
   expect(turnMetaParts(turn({ usage: { inputTokens: 0, outputTokens: 0 } })).tokens).toBeUndefined();
 });
 
-test("a non-object usage value (defensively narrowed) yields no tokens segment", () => {
-  expect(turnMetaParts(turn({ usage: "garbage" })).tokens).toBeUndefined();
-  expect(turnMetaParts(turn({ usage: null })).tokens).toBeUndefined();
+test("a non-EvenerUsage usage value (defensively narrowed at runtime) yields no tokens segment", () => {
+  // TurnModel.usage is typed EvenerUsage | undefined, but the wire could
+  // carry unexpected shapes from old daemons or bridged sessions. The
+  // narrowing in turnUsageTokens is defensive at runtime regardless of the
+  // static type, so cast through unknown to exercise that path.
+  expect(
+    turnMetaParts(turn({ usage: "garbage" } as unknown as undefined) as unknown as TurnModel).tokens,
+  ).toBeUndefined();
+  expect(turnMetaParts(turn({ usage: null } as unknown as undefined) as unknown as TurnModel).tokens).toBeUndefined();
 });
 
 test("cost passes through verbatim when it's a non-empty string", () => {

@@ -1547,6 +1547,10 @@ func (s *WebServer) apiTreeNode(scope, projectKey string, n hubcore.TreeNode, li
 		Dormant:       n.Dormant,
 		MoreSubagents: n.MoreSubagents,
 	}
+	if !n.LastActivityAt.IsZero() {
+		ms := n.LastActivityAt.UnixMilli()
+		out.LastActivityAt = &ms
+	}
 	if le, ok := s.liveEntry(n.ID); ok {
 		out.Model = le.Model
 	}

@@ -910,6 +910,37 @@ export interface QueueState {
   texts?: string[];
 }
 
+export interface RailSummaryJob {
+  jobId: string;
+  startedAt: number;
+  finishedAt?: number;
+  exitCode?: number;
+  status: string;
+}
+
+export interface RailSummaryParams {
+  ref: string;
+}
+
+export interface RailSummaryResponse {
+  turns: RailSummaryTurn[];
+  jobs?: RailSummaryJob[];
+  totalTokens: number;
+  resultBytes: number;
+  startedAt: number;
+  endedAt?: number;
+}
+
+export interface RailSummaryTurn {
+  startedAt: number;
+  in: number;
+  out: number;
+  resultBytes: number;
+  error: boolean;
+  userInput: boolean;
+  steering: boolean;
+}
+
 export interface ReasoningSummaryDeltaParams {
   threadId: string;
   ref: string;
@@ -1501,6 +1532,7 @@ export const METHOD_NAMES = [
   "evener/jobs/list",
   "evener/jobs/output",
   "evener/thread/transcripts/list",
+  "evener/thread/railSummary",
   "evener/subagentPreview",
   "evener/paths/complete",
   "evener/projects/recent",
@@ -1656,6 +1688,7 @@ export interface MethodTypes {
   "evener/jobs/list": { params: JobsListParams; result: JobsListResponse };
   "evener/jobs/output": { params: JobsOutputParams; result: JobsOutputResponse };
   "evener/thread/transcripts/list": { params: ThreadTranscriptListParams; result: ThreadTranscriptListResponse };
+  "evener/thread/railSummary": { params: RailSummaryParams; result: RailSummaryResponse };
   "evener/subagentPreview": { params: EvenerSubagentPreviewParams; result: EvenerSubagentPreviewResponse };
   "evener/paths/complete": { params: PathsCompleteParams; result: PathsCompleteResponse };
   "evener/projects/recent": { params: ProjectsRecentParams; result: ProjectsRecentResponse };

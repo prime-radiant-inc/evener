@@ -131,7 +131,13 @@ export interface TurnModel {
   startedAt?: string;
   completedAt?: string;
   durationMs?: number;
-  usage?: unknown;
+  // The turn's token usage, passed straight through from the wire's
+  // Turn.usage (types.gen.ts: EvenerUsage | undefined) by reducer.ts's
+  // wireToTurnModel. Narrowed to EvenerUsage | undefined: the real runtime
+  // shape the rail's railModel.ts deriver consumes for per-turn token strata
+  // and cumulative burn. undefined (not a zero-valued object) when the
+  // turn carries no token data at all.
+  usage?: EvenerUsage;
   cost?: unknown;
   error?: unknown;
 }

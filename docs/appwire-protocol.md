@@ -112,6 +112,7 @@ no router (reserved).
 | `evener/jobs/list` | both | `JobsListParams` | `JobsListResponse` | Returns the current-session activity tree. Hub-served for exited sessions via the persisted jobs.jsonl fallback; older daemons may still return a flat array in JobsListResponse.Data. |
 | `evener/jobs/output` | both | `JobsOutputParams` | `JobsOutputResponse` | Reads a byte tail of one job's output. Hub-served for exited sessions via the persisted jobs.jsonl fallback. |
 | `evener/thread/transcripts/list` | hub | `ThreadTranscriptListParams` | `ThreadTranscriptListResponse` | Lists transcript targets (subagents/related threads) for a ref. |
+| `evener/thread/railSummary` | hub | `RailSummaryParams` | `RailSummaryResponse` | Per-session compact full-history summary for the Session Rail: per-turn token/result tuples, job intervals, and totals. |
 | `evener/subagentPreview` | hub | `EvenerSubagentPreviewParams` | `EvenerSubagentPreviewResponse` | Reads a bounded lazy preview of a subagent transcript's latest direct items. |
 | `evener/paths/complete` | hub | `PathsCompleteParams` | `PathsCompleteResponse` | Path autocompletion for a prefix. |
 | `evener/projects/recent` | hub | `ProjectsRecentParams` | `ProjectsRecentResponse` | Lists the most recently used project working directories (session creation path-dropdown options; default cap 15). |
@@ -1012,6 +1013,25 @@ _(no fields)_
 | Field | Go type | Omitempty | Embedded |
 |-------|---------|-----------|----------|
 | `data` | `[]string` |  |  |
+
+
+### `RailSummaryParams`
+
+| Field | Go type | Omitempty | Embedded |
+|-------|---------|-----------|----------|
+| `ref` | `string` |  |  |
+
+
+### `RailSummaryResponse`
+
+| Field | Go type | Omitempty | Embedded |
+|-------|---------|-----------|----------|
+| `turns` | `[]appwire.RailSummaryTurn` |  |  |
+| `jobs` | `[]appwire.RailSummaryJob` | yes |  |
+| `totalTokens` | `int` |  |  |
+| `resultBytes` | `int64` |  |  |
+| `startedAt` | `int64` |  |  |
+| `endedAt` | `int64` | yes |  |
 
 
 ### `ReasoningSummaryDeltaParams`

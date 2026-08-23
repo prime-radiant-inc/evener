@@ -116,6 +116,7 @@ var Methods = []MethodSpec{
 	{MethodEvenerJobsList, JobsListParams{}, JobsListResponse{}, ScopeBoth, "Returns the current-session activity tree. Hub-served for exited sessions via the persisted jobs.jsonl fallback; older daemons may still return a flat array in JobsListResponse.Data."},
 	{MethodEvenerJobsOutput, JobsOutputParams{}, JobsOutputResponse{}, ScopeBoth, "Reads a byte tail of one job's output. Hub-served for exited sessions via the persisted jobs.jsonl fallback."},
 	{MethodEvenerThreadTranscriptsList, ThreadTranscriptListParams{}, ThreadTranscriptListResponse{}, ScopeHub, "Lists transcript targets (subagents/related threads) for a ref."},
+	{MethodEvenerThreadRailSummary, RailSummaryParams{}, RailSummaryResponse{}, ScopeHub, "Per-session compact full-history summary for the Session Rail: per-turn token/result tuples, job intervals, and totals."},
 	{MethodEvenerSubagentPreview, EvenerSubagentPreviewParams{}, EvenerSubagentPreviewResponse{}, ScopeHub, "Reads a bounded lazy preview of a subagent transcript's latest direct items."},
 	{MethodEvenerPathsComplete, PathsCompleteParams{}, PathsCompleteResponse{}, ScopeHub, "Path autocompletion for a prefix."},
 	{MethodEvenerProjectsRecent, ProjectsRecentParams{}, ProjectsRecentResponse{}, ScopeHub, "Lists the most recently used project working directories (session creation path-dropdown options; default cap 15)."},
