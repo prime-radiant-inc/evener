@@ -3,6 +3,7 @@ package main
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -188,5 +189,240 @@ func TestOpenDaemonLogWithSessionID(t *testing.T) {
 	}
 	if l.launchOffset != 0 {
 		t.Fatalf("launchOffset for new log should be 0, got %d", l.launchOffset)
+	}
+}
+
+// TestDaemonLogAdoptRenamesPending covers the adopt path where a pending log
+// is renamed to the session's canonical name.
+func TestDaemonLogAdoptRenamesPending(t *testing.T) {
+	dir := t.TempDir()
+	l, err := openDaemonLog(dir, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = l.file.Close() }()
+	l.adopt("033z7k96Nj0LLiLImAqa9s")
+	if l.pending {
+		t.Fatalf("adopt should clear pending")
+	}
+	if filepath.Base(l.path) != "daemon-033z7k96Nj0LLiLImAqa9s.log" {
+		t.Fatalf("adopt should rename to canonical name, got %q", filepath.Base(l.path))
+	}
+}
+
+// TestDaemonLogAdoptSamePath covers the early-return path when the target
+// path is the same as the current path.
+func TestDaemonLogAdoptSamePath(t *testing.T) {
+	dir := t.TempDir()
+	f, err := os.CreateTemp(dir, "daemon-*.log")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = f.Close() }()
+	l := &daemonLog{file: f, path: f.Name(), pending: true}
+	// Set path to the canonical name it would adopt to.
+	canonical := filepath.Join(filepath.Dir(f.Name()), daemonLogName("mysession"))
+	l.path = canonical
+	l.adopt("mysession")
+	// Should have cleared pending but not renamed (same path).
+	if l.pending {
+		t.Fatalf("adopt should clear pending")
+	}
+}
+
+// TestDaemonLogPromoteRenames covers the promote path with a replacement
+// target that succeeds.
+func TestDaemonLogPromoteRenames(t *testing.T) {
+	dir := t.TempDir()
+	f, err := os.CreateTemp(dir, "daemon-replacement-*.log")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = f.Close() }()
+	target := filepath.Join(dir, "daemon-target.log")
+	l := &daemonLog{file: f, path: f.Name(), replacementTarget: target}
+	if err := l.promote(); err != nil {
+		t.Fatalf("promote should succeed: %v", err)
+	}
+	if l.path != target {
+		t.Fatalf("promote should set path to target, got %q", l.path)
+	}
+	if l.replacementTarget != "" {
+		t.Fatalf("promote should clear replacementTarget")
+	}
+}
+
+// TestDaemonLogRemoveIfPending covers the removeIfPending path for a pending
+// log.
+func TestDaemonLogRemoveIfPending(t *testing.T) {
+	dir := t.TempDir()
+	f, err := os.CreateTemp(dir, "daemon-pending-*.log")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = f.Close()
+	path := f.Name()
+	l := &daemonLog{path: path, pending: true}
+	l.removeIfPending()
+	if _, err := os.Stat(path); !os.IsNotExist(err) {
+		t.Fatalf("removeIfPending should delete the file")
+	}
+}
+
+// TestDaemonLogRemoveIfPendingNotPending covers the no-op path when the log
+// is not pending.
+func TestDaemonLogRemoveIfPendingNotPending(t *testing.T) {
+	dir := t.TempDir()
+	f, err := os.CreateTemp(dir, "daemon-*.log")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = f.Close()
+	path := f.Name()
+	l := &daemonLog{path: path, pending: false}
+	l.removeIfPending()
+	if _, err := os.Stat(path); err != nil {
+		t.Fatalf("removeIfPending on non-pending should leave the file")
+	}
+}
+
+// TestDaemonLogRemoveIfUncommittedReplacement covers the replacement-candidate
+// removal path.
+func TestDaemonLogRemoveIfUncommittedReplacement(t *testing.T) {
+	dir := t.TempDir()
+	f, err := os.CreateTemp(dir, "daemon-replacement-*.log")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = f.Close()
+	path := f.Name()
+	l := &daemonLog{path: path, replacementTarget: filepath.Join(dir, "target.log")}
+	l.removeIfUncommitted()
+	if _, err := os.Stat(path); !os.IsNotExist(err) {
+		t.Fatalf("removeIfUncommitted should delete replacement candidate")
+	}
+}
+
+// TestDaemonLogRemoveIfUncommittedPending covers the pending-log removal path
+// via removeIfUncommitted.
+func TestDaemonLogRemoveIfUncommittedPending(t *testing.T) {
+	dir := t.TempDir()
+	f, err := os.CreateTemp(dir, "daemon-pending-*.log")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = f.Close()
+	path := f.Name()
+	l := &daemonLog{path: path, pending: true}
+	l.removeIfUncommitted()
+	if _, err := os.Stat(path); !os.IsNotExist(err) {
+		t.Fatalf("removeIfUncommitted should delete pending log")
+	}
+}
+
+// TestDaemonLogTailWithContent covers the tail function with actual content.
+func TestDaemonLogTailWithContent(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "daemon-test.log")
+	content := "line1\nline2\nline3\n"
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	l := &daemonLog{path: path, launchOffset: 0}
+	got := l.tail(1024)
+	if got != content {
+		t.Fatalf("tail = %q, want %q", got, content)
+	}
+}
+
+// TestDaemonLogTailWithLaunchOffset covers tail with a non-zero launchOffset.
+func TestDaemonLogTailWithLaunchOffset(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "daemon-test.log")
+	content := "old content\nnew content\n"
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	l := &daemonLog{path: path, launchOffset: 12} // skip "old content\n"
+	got := l.tail(1024)
+	if got != "new content\n" {
+		t.Fatalf("tail = %q, want 'new content\\n'", got)
+	}
+}
+
+// TestDaemonLogClose covers the close function.
+func TestDaemonLogClose(t *testing.T) {
+	dir := t.TempDir()
+	f, err := os.CreateTemp(dir, "daemon-*.log")
+	if err != nil {
+		t.Fatal(err)
+	}
+	l := &daemonLog{file: f}
+	l.close()
+	// File should be closed; a second close should error.
+	if err := f.Close(); err == nil {
+		t.Fatalf("close should have closed the file")
+	}
+}
+
+// TestWriteDaemonLogSnapshotLargeSource covers the trimming path for a source
+// larger than daemonLogRetainedBytes.
+func TestWriteDaemonLogSnapshotLargeSource(t *testing.T) {
+	dir := t.TempDir()
+	srcPath := filepath.Join(dir, "large.log")
+	// Write a source larger than daemonLogRetainedBytes.
+	big := make([]byte, daemonLogRetainedBytes+100)
+	for i := range big {
+		big[i] = 'x'
+	}
+	big[daemonLogRetainedBytes+50] = '\n'
+	if err := os.WriteFile(srcPath, big, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	dst, err := os.CreateTemp(dir, "dst-*.log")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = dst.Close() }()
+	if err := writeDaemonLogSnapshot(dst, srcPath); err != nil {
+		t.Fatalf("writeDaemonLogSnapshot on large source: %v", err)
+	}
+	info, _ := dst.Stat()
+	if info.Size() > daemonLogRetainedBytes {
+		t.Fatalf("snapshot size = %d, should be <= %d", info.Size(), daemonLogRetainedBytes)
+	}
+}
+
+// TestCopyDaemonLogSnapshotUnexpectedEOF covers the short-copy path.
+func TestCopyDaemonLogSnapshotUnexpectedEOF(t *testing.T) {
+	// A reader that returns 0 bytes with io.EOF immediately.
+	src := strings.NewReader("")
+	var sb tailBuffer
+	err := copyDaemonLogSnapshot(&sb, src, 100)
+	if err == nil {
+		t.Fatalf("copyDaemonLogSnapshot with empty reader should error")
+	}
+}
+
+// TestOpenDaemonLogResumeWithExistingLog covers the resume path where an
+// existing log is snapshotted into a replacement.
+func TestOpenDaemonLogResumeWithExistingLog(t *testing.T) {
+	dir := t.TempDir()
+	sessionID := "033z7k96Nj0LLiLImAqa9s"
+	// Create an existing canonical log.
+	canonicalPath := filepath.Join(dir, daemonLogDirName, daemonLogName(sessionID))
+	if err := os.MkdirAll(filepath.Dir(canonicalPath), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(canonicalPath, []byte("old daemon output\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	l, err := openDaemonLog(dir, sessionID)
+	if err != nil {
+		t.Fatalf("openDaemonLog resume: %v", err)
+	}
+	defer func() { _ = l.file.Close() }()
+	if l.launchOffset != 18 { // len("old daemon output\n")
+		t.Fatalf("launchOffset = %d, want 18", l.launchOffset)
 	}
 }
