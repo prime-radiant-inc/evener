@@ -1160,13 +1160,6 @@ func TestRecoverClientMutationFailuresNilStore(t *testing.T) {
 // (nil store path)
 // ---------------------------------------------------------------------------
 
-func TestCompleteClientMutationTurnNilStore(t *testing.T) {
-	s := &Session{}
-	// This will panic because clientMutations is nil and mutate is called on it.
-	// We can't test this directly without a store. Skip.
-	_ = s
-}
-
 // ---------------------------------------------------------------------------
 // fmt error message verification
 // ---------------------------------------------------------------------------

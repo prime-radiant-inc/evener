@@ -127,21 +127,6 @@ func TestStableDelegateDisposalHint_NonDelegateID(t *testing.T) {
 	}
 }
 
-// TestUseDelegateWorktreeControlPolicy_NilPolicy covers the default path
-// when delegateWorktreeControlPolicy is nil (line 248-251).
-func TestUseDelegateWorktreeControlPolicy_DefaultPolicy(t *testing.T) {
-	orig := delegateWorktreeControlPolicy
-	delegateWorktreeControlPolicy = nil
-	defer func() { delegateWorktreeControlPolicy = orig }()
-
-	// With nil policy, it delegates to env.UseControlPolicy. We just verify
-	// no panic with a nil env (it will panic on nil env, so pass a real one).
-	s := &Session{}
-	_ = s // ensure session is used
-	// This will call env.UseControlPolicy with a nil env — skip it to avoid
-	// a panic; the nil policy path is covered by the nil check alone.
-}
-
 // TestUseDelegateWorktreeControlPolicy_CustomPolicy covers the custom policy
 // path (lines 248-249).
 func TestUseDelegateWorktreeControlPolicy_CustomPolicy(t *testing.T) {
