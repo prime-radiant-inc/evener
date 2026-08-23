@@ -1,4 +1,4 @@
-package main
+package fuzzregistry
 
 import (
 	"bytes"
@@ -73,12 +73,8 @@ func scenarioRegistryMainAndReaderWriterErrors(t *testing.T) {
 	if err := EmitPlan(registryErrorWriter{}, []Target{{Kind: "native", Module: ".", Package: ".", Name: "F"}}); err == nil {
 		t.Fatal("writer error")
 	}
-	oldExit, oldArgs := osExit, os.Args
-	t.Cleanup(func() { osExit, os.Args = oldExit, oldArgs })
-	os.Args = []string{"evener-fuzzregistry"}
-	got := -1
-	osExit = func(code int) { got = code }
-	main()
+	var out, errOut bytes.Buffer
+	got := Run(nil, nil, &out, &errOut)
 	if got != 1 {
 		t.Fatalf("exit=%d", got)
 	}
