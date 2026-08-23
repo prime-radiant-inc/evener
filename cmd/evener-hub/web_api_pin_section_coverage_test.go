@@ -166,3 +166,39 @@ func TestSessionPinMutationResponse(t *testing.T) {
 		t.Fatalf("SessionPinMutationResponse = %+v", resp)
 	}
 }
+
+// TestHandleAPIPinSectionDecodeError covers the JSON decode error path.
+func TestHandleAPIPinSectionDecodeError(t *testing.T) {
+	s := &WebServer{cfg: hubcoreConfigWithPinSections()}
+	rec := httptest.NewRecorder()
+	s.handleAPIPinSection(rec, httptest.NewRequest("PATCH", "/api/pin-sections/x", errorReader{}))
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400", rec.Code)
+	}
+}
+
+// TestHandleAPISessionPinDecodeError covers the JSON decode error path.
+func TestHandleAPISessionPinDecodeError(t *testing.T) {
+	s := &WebServer{cfg: hubcoreConfigWithPinSections()}
+	rec := httptest.NewRecorder()
+	s.handleAPISessionPin(rec, httptest.NewRequest("POST", "/api/session-pin", errorReader{}))
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400", rec.Code)
+	}
+}
+
+// TestHandleAPISessionPinDeleteMethod covers the DELETE method dispatch.
+func TestHandleAPISessionPinDeleteMethod(t *testing.T) {
+	s := &WebServer{cfg: hubcoreConfigWithPinSections()}
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest("DELETE", "/api/session-pin?ref=nonexistent", nil)
+	s.handleAPISessionPin(rec, req)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400", rec.Code)
+	}
+}
+
+// errorReader is an io.Reader that always returns a read error.
+type errorReader struct{}
+
+func (errorReader) Read(_ []byte) (int, error) { return 0, errors.New("read error") }
