@@ -87,10 +87,11 @@ func (a *Adapter) ListModels(ctx context.Context) ([]llm.ModelInfo, error) {
 			DisplayName:   displayName,
 			ContextWindow: m.InputTokenLimit,
 		}
-		// Gemini models support tools when generateContent is in their
-		// supportedGenerationMethods list — the API doesn't expose a separate
-		// tools capability flag, so infer it from the generation method.
-		info.SupportsTools = true
+		// Google's supportedGenerationMethods lists API methods the model
+		// accepts (generateContent, embedContent, etc.), not function-calling
+		// capability. TTS and native-audio models also list generateContent
+		// but don't support tools. Leave SupportsTools at its zero value
+		// (false); the catalog fills it in for known models.
 		if m.OutputTokenLimit > 0 {
 			maxOut := m.OutputTokenLimit
 			info.MaxOutputTokens = &maxOut

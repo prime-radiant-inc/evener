@@ -2867,8 +2867,11 @@ func TestAdapter_ListModels(t *testing.T) {
 	if models[0].MaxOutputTokens == nil || *models[0].MaxOutputTokens != 65536 {
 		t.Errorf("models[0].MaxOutputTokens = %v, want 65536", models[0].MaxOutputTokens)
 	}
-	if !models[0].SupportsTools {
-		t.Errorf("models[0].SupportsTools = false, want true (generateContent implies tool support)")
+	// SupportsTools should NOT be inferred from generateContent — Google's
+	// supportedGenerationMethods lists API methods, not function-calling
+	// capability. The catalog fills it in for known models.
+	if models[0].SupportsTools {
+		t.Errorf("models[0].SupportsTools = true, want false (generateContent is not a tools capability flag)")
 	}
 	for _, m := range models {
 		if m.Provider != "google" {

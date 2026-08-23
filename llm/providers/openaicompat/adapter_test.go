@@ -1483,8 +1483,9 @@ func TestAdapter_ListModels(t *testing.T) {
 
 // TestAdapter_ListModels_OpenRouterRichFields verifies that the openai-compatible
 // adapter parses OpenRouter's extended /v1/models response fields:
-// supported_parameters (→ SupportsTools), architecture.input_modalities
-// (→ SupportsVision), reasoning (→ SupportsReasoning, ReasoningEffortLevels),
+// supported_parameters (→ SupportsTools, CapabilitiesAdvertised),
+// architecture.input_modalities (→ SupportsVision), reasoning
+// (→ SupportsReasoning, ReasoningEffortLevels, ThinkingAlwaysOn),
 // pricing.prompt/completion (→ InputCostPerMillion/OutputCostPerMillion),
 // and top_provider.max_completion_tokens (→ MaxOutputTokens).
 func TestAdapter_ListModels_OpenRouterRichFields(t *testing.T) {
@@ -1500,6 +1501,15 @@ func TestAdapter_ListModels_OpenRouterRichFields(t *testing.T) {
 					"reasoning": {"mandatory": false, "default_enabled": true, "supported_efforts": ["max", "high", "medium", "low"]},
 					"pricing": {"prompt": "0.000003", "completion": "0.000015"},
 					"top_provider": {"max_completion_tokens": 128000}
+				},
+				{
+					"id": "stealth/ox-alpha",
+					"context_length": 1048576,
+					"supported_parameters": ["tools", "reasoning", "reasoning_effort", "temperature"],
+					"architecture": {"input_modalities": ["text", "image", "video"]},
+					"reasoning": {"mandatory": true, "default_enabled": true, "supported_efforts": ["max", "high", "low"]},
+					"pricing": {"prompt": "0", "completion": "0"},
+					"top_provider": {"max_completion_tokens": 131072}
 				},
 				{
 					"id": "tencent/hy-mt2-1.8b",
@@ -1523,8 +1533,8 @@ func TestAdapter_ListModels_OpenRouterRichFields(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ListModels: %v", err)
 	}
-	if len(models) != 3 {
-		t.Fatalf("got %d models, want 3", len(models))
+	if len(models) != 4 {
+		t.Fatalf("got %d models, want 4", len(models))
 	}
 
 	// Model 0 (alphabetical): anthropic/claude-sonnet-4.5 — rich fields parsed.
@@ -1534,6 +1544,9 @@ func TestAdapter_ListModels_OpenRouterRichFields(t *testing.T) {
 	}
 	if m.ContextWindow != 1000000 {
 		t.Errorf("ContextWindow = %d, want 1000000", m.ContextWindow)
+	}
+	if !m.CapabilitiesAdvertised {
+		t.Errorf("CapabilitiesAdvertised = false, want true (supported_parameters present)")
 	}
 	if !m.SupportsTools {
 		t.Errorf("SupportsTools = false, want true (supported_parameters includes \"tools\")")
@@ -1568,6 +1581,9 @@ func TestAdapter_ListModels_OpenRouterRichFields(t *testing.T) {
 	if m.ContextWindow != 262144 {
 		t.Errorf("ContextWindow = %d, want 262144", m.ContextWindow)
 	}
+	if m.CapabilitiesAdvertised {
+		t.Errorf("CapabilitiesAdvertised = true, want false (no supported_parameters)")
+	}
 	if m.SupportsTools {
 		t.Errorf("SupportsTools = true, want false (no supported_parameters)")
 	}
@@ -1581,10 +1597,45 @@ func TestAdapter_ListModels_OpenRouterRichFields(t *testing.T) {
 		t.Errorf("MaxOutputTokens = %v, want nil", m.MaxOutputTokens)
 	}
 
-	// Model 2: tencent/hy-mt2-1.8b — has fields but no "tools" in supported_parameters.
+	// Model 2: stealth/ox-alpha — mandatory reasoning, zero pricing (known-free).
 	m = models[2]
+	if m.ID != "stealth/ox-alpha" {
+		t.Fatalf("models[2].ID = %q, want stealth/ox-alpha", m.ID)
+	}
+	if !m.CapabilitiesAdvertised {
+		t.Errorf("CapabilitiesAdvertised = false, want true")
+	}
+	if !m.SupportsTools {
+		t.Errorf("SupportsTools = false, want true (supported_parameters includes \"tools\")")
+	}
+	if !m.SupportsReasoning {
+		t.Errorf("SupportsReasoning = false, want true (reasoning.mandatory is true)")
+	}
+	if !m.ThinkingAlwaysOn {
+		t.Errorf("ThinkingAlwaysOn = false, want true (reasoning.mandatory is true)")
+	}
+	// Zero pricing should be a pointer to 0.0, not nil — the model is known-free.
+	if m.InputCostPerMillion == nil {
+		t.Errorf("InputCostPerMillion = nil, want pointer to 0.0 (zero pricing is known-free)")
+	} else if *m.InputCostPerMillion != 0.0 {
+		t.Errorf("InputCostPerMillion = %v, want 0.0", *m.InputCostPerMillion)
+	}
+	if m.OutputCostPerMillion == nil {
+		t.Errorf("OutputCostPerMillion = nil, want pointer to 0.0 (zero pricing is known-free)")
+	} else if *m.OutputCostPerMillion != 0.0 {
+		t.Errorf("OutputCostPerMillion = %v, want 0.0", *m.OutputCostPerMillion)
+	}
+	if m.MaxOutputTokens == nil || *m.MaxOutputTokens != 131072 {
+		t.Errorf("MaxOutputTokens = %v, want 131072", m.MaxOutputTokens)
+	}
+
+	// Model 3: tencent/hy-mt2-1.8b — has supported_parameters but no "tools".
+	m = models[3]
 	if m.ID != "tencent/hy-mt2-1.8b" {
-		t.Fatalf("models[2].ID = %q, want tencent/hy-mt2-1.8b", m.ID)
+		t.Fatalf("models[3].ID = %q, want tencent/hy-mt2-1.8b", m.ID)
+	}
+	if !m.CapabilitiesAdvertised {
+		t.Errorf("CapabilitiesAdvertised = false, want true (supported_parameters present)")
 	}
 	if m.SupportsTools {
 		t.Errorf("SupportsTools = true, want false (supported_parameters lacks \"tools\")")
@@ -1593,10 +1644,64 @@ func TestAdapter_ListModels_OpenRouterRichFields(t *testing.T) {
 		t.Errorf("SupportsVision = true, want false (input_modalities is text-only)")
 	}
 	if m.SupportsReasoning {
-		t.Errorf("SupportsReasoning = true, want false (no reasoning object)")
+		t.Errorf("SupportsReasoning = true, want false (no reasoning object, no reasoning in supported_parameters)")
 	}
 	if m.MaxOutputTokens == nil || *m.MaxOutputTokens != 4096 {
 		t.Errorf("MaxOutputTokens = %v, want 4096", m.MaxOutputTokens)
+	}
+}
+
+// TestAdapter_ListModels_OptionalReasoning verifies that a reasoning object
+// with mandatory=false and default_enabled=false still sets SupportsReasoning
+// to true — the model CAN do reasoning, it's just opt-in. This was a reviewer
+// finding: the original code only set SupportsReasoning when mandatory=true or
+// default_enabled=true, missing the opt-in case.
+func TestAdapter_ListModels_OptionalReasoning(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`{
+			"data": [
+				{
+					"id": "deepseek/deepseek-v4-flash",
+					"supported_parameters": ["reasoning", "temperature", "tools"],
+					"reasoning": {"mandatory": false, "default_enabled": false}
+				},
+				{
+					"id": "openrouter/auto",
+					"supported_parameters": ["reasoning", "reasoning_effort", "tools", "temperature"]
+				}
+			]
+		}`))
+	}))
+	t.Cleanup(srv.Close)
+
+	a := &Adapter{BaseURL: srv.URL, Client: srv.Client()}
+	models, err := a.ListModels(context.Background())
+	if err != nil {
+		t.Fatalf("ListModels: %v", err)
+	}
+
+	// deepseek/deepseek-v4-flash: reasoning object present with all-false →
+	// SupportsReasoning should be true (reasoning is supported, just opt-in).
+	m := models[0]
+	if m.ID != "deepseek/deepseek-v4-flash" {
+		t.Fatalf("models[0].ID = %q, want deepseek/deepseek-v4-flash", m.ID)
+	}
+	if !m.SupportsReasoning {
+		t.Errorf("SupportsReasoning = false, want true (reasoning object present = reasoning is supported)")
+	}
+	if m.ThinkingAlwaysOn {
+		t.Errorf("ThinkingAlwaysOn = true, want false (reasoning.mandatory is false)")
+	}
+
+	// openrouter/auto: no reasoning object but supported_parameters includes
+	// "reasoning" → SupportsReasoning should be true.
+	m = models[1]
+	if m.ID != "openrouter/auto" {
+		t.Fatalf("models[1].ID = %q, want openrouter/auto", m.ID)
+	}
+	if !m.SupportsReasoning {
+		t.Errorf("SupportsReasoning = false, want true (supported_parameters includes \"reasoning\")")
 	}
 }
 

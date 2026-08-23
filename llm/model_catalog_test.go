@@ -1340,10 +1340,10 @@ func TestVisibleLiveModel_OpenRouterBareLiveID(t *testing.T) {
 }
 
 // TestVisibleLiveModel_OpenRouterLiveToolsShortCircuits verifies that when the
-// live /models response reports SupportsTools (e.g. OpenRouter's
-// supported_parameters includes "tools"), the model is visible even if it is
-// absent from the embedded catalog entirely. This is the live-API-first rule:
-// the catalog is enrichment, not the gate.
+// live /models response reports SupportsTools with CapabilitiesAdvertised
+// (e.g. OpenRouter's supported_parameters includes "tools"), the model is
+// visible even if it is absent from the embedded catalog entirely. This is the
+// live-API-first rule: the catalog is enrichment, not the gate.
 func TestVisibleLiveModel_OpenRouterLiveToolsShortCircuits(t *testing.T) {
 	cat := EmbeddedModelCatalog()
 	// A model OpenRouter serves that the embedded catalog doesn't know about.
@@ -1351,9 +1351,34 @@ func TestVisibleLiveModel_OpenRouterLiveToolsShortCircuits(t *testing.T) {
 	if cat.GetModelInfo("stealth/ox-alpha") != nil {
 		t.Skip("catalog changed: stealth/ox-alpha now exists")
 	}
-	live := ModelInfo{ID: "stealth/ox-alpha", SupportsTools: true}
+	live := ModelInfo{ID: "stealth/ox-alpha", CapabilitiesAdvertised: true, SupportsTools: true}
 	if !cat.VisibleLiveModel("openrouter", live) {
 		t.Error("live SupportsTools=true model should be visible even when absent from catalog")
+	}
+}
+
+// TestVisibleLiveModel_OpenRouterExplicitFalseOverridesCatalog verifies that
+// when the live /models response explicitly reports SupportsTools=false with
+// CapabilitiesAdvertised=true, the model is hidden even if the catalog says it
+// supports tools. This prevents stale catalog data from overriding the
+// provider's live capability report.
+func TestVisibleLiveModel_OpenRouterExplicitFalseOverridesCatalog(t *testing.T) {
+	cat := EmbeddedModelCatalog()
+	// Find a catalog model that supports tools (per openrouter/ key).
+	var catalogModelID string
+	for _, m := range cat.Models {
+		if m.Provider == "openrouter" && m.SupportsTools {
+			catalogModelID = m.ID
+			break
+		}
+	}
+	if catalogModelID == "" {
+		t.Skip("catalog changed: no openrouter model with SupportsTools found")
+	}
+	// Simulate the live API saying this model does NOT support tools.
+	live := ModelInfo{ID: catalogModelID, CapabilitiesAdvertised: true, SupportsTools: false}
+	if cat.VisibleLiveModel("openrouter", live) {
+		t.Errorf("live SupportsTools=false should override catalog SupportsTools=true for %q", catalogModelID)
 	}
 }
 

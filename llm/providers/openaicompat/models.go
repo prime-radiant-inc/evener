@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"math"
 	"net/http"
 	"sort"
 	"strconv"
@@ -104,22 +105,36 @@ type openaiCompatModelEntry struct {
 // gaps.
 func (m openaiCompatModelEntry) modelInfo() llm.ModelInfo {
 	info := llm.ModelInfo{
-		ID:             m.ID,
-		Provider:       "openai-compatible",
-		DisplayName:    m.ID,
-		ContextWindow:  m.ContextLength,
-		SupportsTools:  openRouterSupportsTools(m.SupportedParameters),
-		SupportsVision: inputModalitiesIncludeVision(m.Architecture.InputModalities),
+		ID:            m.ID,
+		Provider:      "openai-compatible",
+		DisplayName:   m.ID,
+		ContextWindow: m.ContextLength,
 	}
-	if m.Reasoning.Mandatory != nil && *m.Reasoning.Mandatory {
-		info.SupportsReasoning = true
-		info.ThinkingAlwaysOn = true
-	} else if m.Reasoning.DefaultEnabled != nil && *m.Reasoning.DefaultEnabled {
-		info.SupportsReasoning = true
+	// When the provider returns supported_parameters, capability fields are
+	// authoritative — set CapabilitiesAdvertised so callers don't fall back
+	// to the catalog and override explicit values (including false).
+	if len(m.SupportedParameters) > 0 {
+		info.CapabilitiesAdvertised = true
+		info.SupportsTools = openRouterSupportsTools(m.SupportedParameters)
+		info.SupportsVision = inputModalitiesIncludeVision(m.Architecture.InputModalities)
+		// "reasoning" or "reasoning_effort" in supported_parameters indicates
+		// reasoning support even when the reasoning object is absent or all
+		// its fields are false/opt-in.
+		if openRouterSupportsReasoning(m.SupportedParameters) {
+			info.SupportsReasoning = true
+		}
 	}
-	if len(m.Reasoning.SupportedEfforts) > 0 {
+	// The reasoning object, when present, refines reasoning metadata. Its
+	// presence alone (even all-false) means reasoning is supported — the
+	// model can do reasoning, it's just opt-in.
+	if m.Reasoning.Mandatory != nil || m.Reasoning.DefaultEnabled != nil || len(m.Reasoning.SupportedEfforts) > 0 {
 		info.SupportsReasoning = true
-		info.ReasoningEffortLevels = dedupStrings(m.Reasoning.SupportedEfforts)
+		if m.Reasoning.Mandatory != nil && *m.Reasoning.Mandatory {
+			info.ThinkingAlwaysOn = true
+		}
+		if len(m.Reasoning.SupportedEfforts) > 0 {
+			info.ReasoningEffortLevels = dedupStrings(m.Reasoning.SupportedEfforts)
+		}
 	}
 	if cost := perTokenCostToPerMillion(m.Pricing.Prompt); cost != nil {
 		info.InputCostPerMillion = cost
@@ -145,6 +160,19 @@ func openRouterSupportsTools(params []string) bool {
 	return false
 }
 
+// openRouterSupportsReasoning reports whether the model's supported_parameters
+// list includes "reasoning" or "reasoning_effort", indicating the model can
+// produce reasoning/thinking output even when the reasoning object is absent.
+func openRouterSupportsReasoning(params []string) bool {
+	for _, p := range params {
+		isReasoning := strings.EqualFold(strings.TrimSpace(p), "reasoning")
+		if isReasoning || strings.EqualFold(strings.TrimSpace(p), "reasoning_effort") {
+			return true
+		}
+	}
+	return false
+}
+
 // inputModalitiesIncludeVision reports whether the modality list includes
 // image input.
 func inputModalitiesIncludeVision(modalities []string) bool {
@@ -159,14 +187,19 @@ func inputModalitiesIncludeVision(modalities []string) bool {
 
 // perTokenCostToPerMillion parses a per-token cost string (as returned by
 // OpenRouter's pricing fields, e.g. "0.000002") and converts it to
-// per-million-token cost. Returns nil for empty, "0", or unparseable values.
+// per-million-token cost. Returns nil for empty or unparseable values. A valid
+// "0" or "0.0" returns a pointer to 0.0 — the model is known-free, which is
+// distinct from "no pricing data." Non-finite results (NaN, +Inf) are rejected.
 func perTokenCostToPerMillion(perToken string) *float64 {
 	perToken = strings.TrimSpace(perToken)
-	if perToken == "" || perToken == "0" || perToken == "0.0" {
+	if perToken == "" {
 		return nil
 	}
 	v, err := strconv.ParseFloat(perToken, 64)
-	if err != nil || v <= 0 {
+	if err != nil {
+		return nil
+	}
+	if math.IsNaN(v) || math.IsInf(v, 0) {
 		return nil
 	}
 	perMillion := v * 1_000_000

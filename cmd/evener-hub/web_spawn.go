@@ -390,9 +390,9 @@ func (s *WebServer) fetchLiveModels(ctx context.Context) []map[string]any {
 		}
 		for _, m := range models {
 			// VisibleLiveModel applies the shared non-chat skip rule and, for
-			// the openrouter tag, the catalog tools-capability filter. This is
-			// the same rule the launch-check path uses (llm.VisibleLiveModel),
-			// so the two live-model paths cannot drift.
+			// the openrouter tag, the live/catalog tool-capability filter.
+			// This is the same rule the launch-check path uses
+			// (llm.VisibleLiveModel), so the two live-model paths cannot drift.
 			if !cat.VisibleLiveModel(tag, m) {
 				continue
 			}
@@ -407,44 +407,67 @@ func (s *WebServer) fetchLiveModels(ctx context.Context) []map[string]any {
 				"model":        m.ID,
 				"display_name": prettifyModelDisplayName(m.ID),
 			}
+			// --- Live-first population: values parsed from the provider's
+			// /models response are authoritative when the provider reported
+			// them. The catalog only fills gaps the live response left open.
 			if m.ContextWindow > 0 {
 				entry["context_window"] = m.ContextWindow
 			}
-			if m.SupportsTools {
-				entry["supports_tools"] = true
+			if m.CapabilitiesAdvertised {
+				// The provider explicitly reported capabilities — emit them
+				// even when false (e.g. SupportsTools=false means the provider
+				// says no tools, which is different from "unknown").
+				entry["supports_tools"] = m.SupportsTools
+				entry["supports_vision"] = m.SupportsVision
+				entry["supports_reasoning"] = m.SupportsReasoning
+			} else {
+				// Provider didn't report capabilities — emit only the true
+				// values (zero-value false is not authoritative).
+				if m.SupportsTools {
+					entry["supports_tools"] = true
+				}
+				if m.SupportsReasoning {
+					entry["supports_reasoning"] = true
+				}
 			}
-			if m.SupportsReasoning {
-				entry["supports_reasoning"] = true
-			}
-			// Prefer effort levels the provider advertised live; fall back to the
-			// catalog below.
 			if len(m.ReasoningEffortLevels) > 0 {
 				entry["reasoning_effort_levels"] = m.ReasoningEffortLevels
 			}
-			// Keep catalog enrichment for metadata the live endpoint omits, but
-			// never replace a live token limit with a catalog value.
+			if m.InputCostPerMillion != nil {
+				entry["input_cost_per_million"] = *m.InputCostPerMillion
+			}
+			if m.OutputCostPerMillion != nil {
+				entry["output_cost_per_million"] = *m.OutputCostPerMillion
+			}
+			if m.MaxOutputTokens != nil {
+				entry["max_output_tokens"] = *m.MaxOutputTokens
+			}
+			// --- Catalog enrichment: fill fields the live response didn't
+			// provide. Never overwrite a live value with a catalog value.
 			if mi != nil {
 				if _, ok := entry["context_window"]; !ok && mi.ContextWindow > 0 {
 					entry["context_window"] = mi.ContextWindow
 				}
-				entry["input_cost_per_million"] = mi.InputCostPerMillion
-				entry["output_cost_per_million"] = mi.OutputCostPerMillion
-				if _, ok := entry["supports_tools"]; !ok {
+				if _, ok := entry["input_cost_per_million"]; !ok && mi.InputCostPerMillion != nil {
+					entry["input_cost_per_million"] = *mi.InputCostPerMillion
+				}
+				if _, ok := entry["output_cost_per_million"]; !ok && mi.OutputCostPerMillion != nil {
+					entry["output_cost_per_million"] = *mi.OutputCostPerMillion
+				}
+				if _, ok := entry["supports_tools"]; !ok && mi.SupportsTools {
 					entry["supports_tools"] = mi.SupportsTools
 				}
-				if _, ok := entry["supports_reasoning"]; !ok {
+				if _, ok := entry["supports_reasoning"]; !ok && mi.SupportsReasoning {
 					entry["supports_reasoning"] = mi.SupportsReasoning
 				}
 				if _, ok := entry["reasoning_effort_levels"]; !ok && len(mi.ReasoningEffortLevels) > 0 {
 					entry["reasoning_effort_levels"] = mi.ReasoningEffortLevels
 				}
-				if _, ok := entry["supports_vision"]; !ok {
+				if _, ok := entry["supports_vision"]; !ok && mi.SupportsVision {
 					entry["supports_vision"] = mi.SupportsVision
 				}
-				if mi.MaxOutputTokens != nil {
-					if _, ok := entry["max_output_tokens"]; !ok {
-						entry["max_output_tokens"] = *mi.MaxOutputTokens
-					}
+				if _, ok := entry["max_output_tokens"]; !ok && mi.MaxOutputTokens != nil {
+					entry["max_output_tokens"] = *mi.MaxOutputTokens
 				}
 				if mi.SupportsWebSearch != nil {
 					if _, ok := entry["supports_web_search"]; !ok {
