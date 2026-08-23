@@ -6,7 +6,7 @@
  * response, error, or recorded state.
  */
 
-import type { NativeTransport } from "./client";
+import type { NativeTransport, VoiceBridgeEvent } from "./client";
 import type {
   ContentSizeCategory,
   LifecycleState,
@@ -42,6 +42,10 @@ export class FakeNativeBridge implements NativeTransport {
   private readonly lifecycleHandlers = new Set<
     (e: { state: LifecycleState }) => void
   >();
+  private voiceSessionId: string | null = null;
+  private readonly voiceEventHandlers = new Set<
+    (event: VoiceBridgeEvent) => void
+  >();
   readonly commands: NativeCommand[] = [];
 
   constructor(options: FakeNativeBridgeOptions = {}) {
@@ -58,12 +62,34 @@ export class FakeNativeBridge implements NativeTransport {
   }
 
   subscribe(
-    _type: "lifecycle.changed",
+    type: "lifecycle.changed",
     handler: (e: { state: LifecycleState }) => void,
+  ): () => void;
+  subscribe(
+    type: "voice.event",
+    handler: (event: VoiceBridgeEvent) => void,
+  ): () => void;
+  subscribe(
+    type: "lifecycle.changed" | "voice.event",
+    handler:
+      | ((e: { state: LifecycleState }) => void)
+      | ((event: VoiceBridgeEvent) => void),
   ): () => void {
-    this.lifecycleHandlers.add(handler);
+    if (type === "lifecycle.changed") {
+      this.lifecycleHandlers.add(
+        handler as (e: { state: LifecycleState }) => void,
+      );
+      return () => {
+        this.lifecycleHandlers.delete(
+          handler as (e: { state: LifecycleState }) => void,
+        );
+      };
+    }
+    this.voiceEventHandlers.add(handler as (event: VoiceBridgeEvent) => void);
     return () => {
-      this.lifecycleHandlers.delete(handler);
+      this.voiceEventHandlers.delete(
+        handler as (event: VoiceBridgeEvent) => void,
+      );
     };
   }
 
@@ -72,6 +98,12 @@ export class FakeNativeBridge implements NativeTransport {
   emitLifecycle(state: LifecycleState): void {
     for (const h of this.lifecycleHandlers) {
       h({ state });
+    }
+  }
+
+  emitVoiceEvent(event: VoiceBridgeEvent): void {
+    for (const h of this.voiceEventHandlers) {
+      h(event);
     }
   }
 
@@ -171,6 +203,29 @@ export class FakeNativeBridge implements NativeTransport {
           type: "contentSize.value",
           category: this.contentSize,
         };
+      case "voice.permissions":
+        return { version: 1, type: "voice.permissions", granted: true };
+      case "voice.start":
+        this.voiceSessionId = `voice-session-${Date.now()}`;
+        return {
+          version: 1,
+          type: "voice.ready",
+          voiceSessionId: this.voiceSessionId,
+        };
+      case "voice.stop":
+        this.voiceSessionId = null;
+        return { version: 1, type: "voice.stopped" };
+      case "voice.speak":
+        return {
+          version: 1,
+          type: "voice.queued",
+          chunkId: command.chunkId,
+        };
+      case "voice.stopSpeaking":
+        return { version: 1, type: "voice.speakingStopped" };
+      case "voice.setRate":
+        this.voiceRate = command.rate;
+        return { version: 1, type: "voice.rateSet", rate: command.rate };
       default: {
         // Exhaustiveness check
         const _exhaustive: never = command;

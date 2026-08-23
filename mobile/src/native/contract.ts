@@ -135,7 +135,36 @@ export type NativeCommand =
       readonly version: 1;
       readonly type: "clipboard.paste";
     }
-  | { readonly version: 1; readonly type: "contentSize.get" };
+  | { readonly version: 1; readonly type: "contentSize.get" }
+  | { readonly version: 1; readonly type: "voice.permissions" }
+  | {
+      readonly version: 1;
+      readonly type: "voice.start";
+      readonly locale: string;
+    }
+  | {
+      readonly version: 1;
+      readonly type: "voice.stop";
+      readonly voiceSessionId: string;
+    }
+  | {
+      readonly version: 1;
+      readonly type: "voice.speak";
+      readonly voiceSessionId: string;
+      readonly chunkId: string;
+      readonly text: string;
+    }
+  | {
+      readonly version: 1;
+      readonly type: "voice.stopSpeaking";
+      readonly voiceSessionId: string;
+    }
+  | {
+      readonly version: 1;
+      readonly type: "voice.setRate";
+      readonly voiceSessionId: string;
+      readonly rate: number;
+    };
 
 export type NativeCommandType = NativeCommand["type"];
 
@@ -188,6 +217,28 @@ export type NativeResponse =
     }
   | {
       readonly version: 1;
+      readonly type: "voice.permissions";
+      readonly granted: boolean;
+    }
+  | {
+      readonly version: 1;
+      readonly type: "voice.ready";
+      readonly voiceSessionId: string;
+    }
+  | { readonly version: 1; readonly type: "voice.stopped" }
+  | {
+      readonly version: 1;
+      readonly type: "voice.queued";
+      readonly chunkId: string;
+    }
+  | { readonly version: 1; readonly type: "voice.speakingStopped" }
+  | {
+      readonly version: 1;
+      readonly type: "voice.rateSet";
+      readonly rate: number;
+    }
+  | {
+      readonly version: 1;
       readonly type: "error";
       readonly error: NativeError;
     };
@@ -214,7 +265,72 @@ export type NativeEvent =
       readonly type: "speech.final";
       readonly text: string;
     }
-  | { readonly version: 1; readonly type: "barge.in" };
+  | { readonly version: 1; readonly type: "barge.in" }
+  | {
+      readonly version: 1;
+      readonly type: "voice.level";
+      readonly voiceSessionId: string;
+      readonly seq: number;
+      readonly timestamp: number;
+      readonly level: number;
+    }
+  | {
+      readonly version: 1;
+      readonly type: "voice.partial";
+      readonly voiceSessionId: string;
+      readonly seq: number;
+      readonly timestamp: number;
+      readonly text: string;
+      readonly locale: string;
+    }
+  | {
+      readonly version: 1;
+      readonly type: "voice.final";
+      readonly voiceSessionId: string;
+      readonly seq: number;
+      readonly timestamp: number;
+      readonly text: string;
+      readonly locale: string;
+    }
+  | {
+      readonly version: 1;
+      readonly type: "voice.speechStarted";
+      readonly voiceSessionId: string;
+      readonly seq: number;
+      readonly timestamp: number;
+      readonly chunkId: string;
+    }
+  | {
+      readonly version: 1;
+      readonly type: "voice.speechFinished";
+      readonly voiceSessionId: string;
+      readonly seq: number;
+      readonly timestamp: number;
+      readonly chunkId: string;
+    }
+  | {
+      readonly version: 1;
+      readonly type: "voice.bargeIn";
+      readonly voiceSessionId: string;
+      readonly seq: number;
+      readonly timestamp: number;
+      readonly partial: string;
+    }
+  | {
+      readonly version: 1;
+      readonly type: "voice.interrupted";
+      readonly voiceSessionId: string;
+      readonly seq: number;
+      readonly timestamp: number;
+    }
+  | {
+      readonly version: 1;
+      readonly type: "voice.error";
+      readonly voiceSessionId: string;
+      readonly seq: number;
+      readonly timestamp: number;
+      readonly error: NativeError;
+    };
 
 export type NativeEventType = NativeEvent["type"];
 
@@ -269,6 +385,12 @@ function assertString(obj: Record<string, unknown>, field: string): void {
 function assertBoolean(obj: Record<string, unknown>, field: string): void {
   if (typeof obj[field] !== "boolean") {
     throw new Error(`Field "${field}" must be a boolean`);
+  }
+}
+
+function assertNumber(obj: Record<string, unknown>, field: string): void {
+  if (typeof obj[field] !== "number" || !Number.isFinite(obj[field])) {
+    throw new Error(`Field "${field}" must be a finite number`);
   }
 }
 
@@ -362,8 +484,62 @@ export function decodeNativeCommand(obj: unknown): NativeCommand {
       assertRequiredFields(obj, ["kind"], "command");
       assertString(obj, "kind");
       return obj as NativeCommand;
+    case "clipboard.paste":
+      assertNoExtraFields(obj, ["version", "type"], "command");
+      return obj as NativeCommand;
     case "contentSize.get":
       assertNoExtraFields(obj, ["version", "type"], "command");
+      return obj as NativeCommand;
+    case "voice.permissions":
+      assertNoExtraFields(obj, ["version", "type"], "command");
+      return obj as NativeCommand;
+    case "voice.start":
+      assertNoExtraFields(obj, ["version", "type", "locale"], "command");
+      assertRequiredFields(obj, ["locale"], "command");
+      assertString(obj, "locale");
+      return obj as NativeCommand;
+    case "voice.stop":
+      assertNoExtraFields(
+        obj,
+        ["version", "type", "voiceSessionId"],
+        "command",
+      );
+      assertRequiredFields(obj, ["voiceSessionId"], "command");
+      assertString(obj, "voiceSessionId");
+      return obj as NativeCommand;
+    case "voice.speak":
+      assertNoExtraFields(
+        obj,
+        ["version", "type", "voiceSessionId", "chunkId", "text"],
+        "command",
+      );
+      assertRequiredFields(
+        obj,
+        ["voiceSessionId", "chunkId", "text"],
+        "command",
+      );
+      assertString(obj, "voiceSessionId");
+      assertString(obj, "chunkId");
+      assertString(obj, "text");
+      return obj as NativeCommand;
+    case "voice.stopSpeaking":
+      assertNoExtraFields(
+        obj,
+        ["version", "type", "voiceSessionId"],
+        "command",
+      );
+      assertRequiredFields(obj, ["voiceSessionId"], "command");
+      assertString(obj, "voiceSessionId");
+      return obj as NativeCommand;
+    case "voice.setRate":
+      assertNoExtraFields(
+        obj,
+        ["version", "type", "voiceSessionId", "rate"],
+        "command",
+      );
+      assertRequiredFields(obj, ["voiceSessionId", "rate"], "command");
+      assertString(obj, "voiceSessionId");
+      assertNumber(obj, "rate");
       return obj as NativeCommand;
     default:
       throw new Error(`Unknown command type: ${String(obj.type)}`);
@@ -424,6 +600,11 @@ export function decodeNativeResponse(obj: unknown): NativeResponse {
     case "haptic.completed":
       assertNoExtraFields(obj, ["version", "type"], "response");
       return obj as NativeResponse;
+    case "clipboard.pasted":
+      assertNoExtraFields(obj, ["version", "type", "text"], "response");
+      assertRequiredFields(obj, ["text"], "response");
+      assertString(obj, "text");
+      return obj as NativeResponse;
     case "contentSize.value":
       assertNoExtraFields(obj, ["version", "type", "category"], "response");
       assertRequiredFields(obj, ["category"], "response");
@@ -431,6 +612,36 @@ export function decodeNativeResponse(obj: unknown): NativeResponse {
       if (!isContentSizeCategory(obj.category)) {
         throw new Error(`Unknown content size category: ${obj.category}`);
       }
+      return obj as NativeResponse;
+    case "voice.permissions":
+      assertNoExtraFields(obj, ["version", "type", "granted"], "response");
+      assertRequiredFields(obj, ["granted"], "response");
+      assertBoolean(obj, "granted");
+      return obj as NativeResponse;
+    case "voice.ready":
+      assertNoExtraFields(
+        obj,
+        ["version", "type", "voiceSessionId"],
+        "response",
+      );
+      assertRequiredFields(obj, ["voiceSessionId"], "response");
+      assertString(obj, "voiceSessionId");
+      return obj as NativeResponse;
+    case "voice.stopped":
+      assertNoExtraFields(obj, ["version", "type"], "response");
+      return obj as NativeResponse;
+    case "voice.queued":
+      assertNoExtraFields(obj, ["version", "type", "chunkId"], "response");
+      assertRequiredFields(obj, ["chunkId"], "response");
+      assertString(obj, "chunkId");
+      return obj as NativeResponse;
+    case "voice.speakingStopped":
+      assertNoExtraFields(obj, ["version", "type"], "response");
+      return obj as NativeResponse;
+    case "voice.rateSet":
+      assertNoExtraFields(obj, ["version", "type", "rate"], "response");
+      assertRequiredFields(obj, ["rate"], "response");
+      assertNumber(obj, "rate");
       return obj as NativeResponse;
     case "error":
       assertNoExtraFields(obj, ["version", "type", "error"], "response");
@@ -463,6 +674,151 @@ export function decodeNativeEvent(obj: unknown): NativeEvent {
       return obj as NativeEvent;
     case "barge.in":
       assertNoExtraFields(obj, ["version", "type"], "event");
+      return obj as NativeEvent;
+    case "voice.level":
+      assertNoExtraFields(
+        obj,
+        ["version", "type", "voiceSessionId", "seq", "timestamp", "level"],
+        "event",
+      );
+      assertRequiredFields(
+        obj,
+        ["voiceSessionId", "seq", "timestamp", "level"],
+        "event",
+      );
+      assertString(obj, "voiceSessionId");
+      assertNumber(obj, "seq");
+      assertNumber(obj, "timestamp");
+      assertNumber(obj, "level");
+      return obj as NativeEvent;
+    case "voice.partial":
+      assertNoExtraFields(
+        obj,
+        [
+          "version",
+          "type",
+          "voiceSessionId",
+          "seq",
+          "timestamp",
+          "text",
+          "locale",
+        ],
+        "event",
+      );
+      assertRequiredFields(
+        obj,
+        ["voiceSessionId", "seq", "timestamp", "text", "locale"],
+        "event",
+      );
+      assertString(obj, "voiceSessionId");
+      assertNumber(obj, "seq");
+      assertNumber(obj, "timestamp");
+      assertString(obj, "text");
+      assertString(obj, "locale");
+      return obj as NativeEvent;
+    case "voice.final":
+      assertNoExtraFields(
+        obj,
+        [
+          "version",
+          "type",
+          "voiceSessionId",
+          "seq",
+          "timestamp",
+          "text",
+          "locale",
+        ],
+        "event",
+      );
+      assertRequiredFields(
+        obj,
+        ["voiceSessionId", "seq", "timestamp", "text", "locale"],
+        "event",
+      );
+      assertString(obj, "voiceSessionId");
+      assertNumber(obj, "seq");
+      assertNumber(obj, "timestamp");
+      assertString(obj, "text");
+      assertString(obj, "locale");
+      return obj as NativeEvent;
+    case "voice.speechStarted":
+      assertNoExtraFields(
+        obj,
+        ["version", "type", "voiceSessionId", "seq", "timestamp", "chunkId"],
+        "event",
+      );
+      assertRequiredFields(
+        obj,
+        ["voiceSessionId", "seq", "timestamp", "chunkId"],
+        "event",
+      );
+      assertString(obj, "voiceSessionId");
+      assertNumber(obj, "seq");
+      assertNumber(obj, "timestamp");
+      assertString(obj, "chunkId");
+      return obj as NativeEvent;
+    case "voice.speechFinished":
+      assertNoExtraFields(
+        obj,
+        ["version", "type", "voiceSessionId", "seq", "timestamp", "chunkId"],
+        "event",
+      );
+      assertRequiredFields(
+        obj,
+        ["voiceSessionId", "seq", "timestamp", "chunkId"],
+        "event",
+      );
+      assertString(obj, "voiceSessionId");
+      assertNumber(obj, "seq");
+      assertNumber(obj, "timestamp");
+      assertString(obj, "chunkId");
+      return obj as NativeEvent;
+    case "voice.bargeIn":
+      assertNoExtraFields(
+        obj,
+        ["version", "type", "voiceSessionId", "seq", "timestamp", "partial"],
+        "event",
+      );
+      assertRequiredFields(
+        obj,
+        ["voiceSessionId", "seq", "timestamp", "partial"],
+        "event",
+      );
+      assertString(obj, "voiceSessionId");
+      assertNumber(obj, "seq");
+      assertNumber(obj, "timestamp");
+      assertString(obj, "partial");
+      return obj as NativeEvent;
+    case "voice.interrupted":
+      assertNoExtraFields(
+        obj,
+        ["version", "type", "voiceSessionId", "seq", "timestamp"],
+        "event",
+      );
+      assertRequiredFields(
+        obj,
+        ["voiceSessionId", "seq", "timestamp"],
+        "event",
+      );
+      assertString(obj, "voiceSessionId");
+      assertNumber(obj, "seq");
+      assertNumber(obj, "timestamp");
+      return obj as NativeEvent;
+    case "voice.error":
+      assertNoExtraFields(
+        obj,
+        ["version", "type", "voiceSessionId", "seq", "timestamp", "error"],
+        "event",
+      );
+      assertRequiredFields(
+        obj,
+        ["voiceSessionId", "seq", "timestamp", "error"],
+        "event",
+      );
+      assertString(obj, "voiceSessionId");
+      assertNumber(obj, "seq");
+      assertNumber(obj, "timestamp");
+      assertErrorObject(obj, "error");
       return obj as NativeEvent;
     default:
       throw new Error(`Unknown event type: ${String(obj.type)}`);

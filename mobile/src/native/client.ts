@@ -11,6 +11,7 @@ import type {
   LifecycleState,
   NativeCommand,
   NativeError,
+  NativeEvent,
   NativeResponse,
   PermissionKind,
 } from "./contract";
@@ -36,6 +37,17 @@ export interface NativeBridge {
   hapticPerform(kind: HapticKind): Promise<void>;
   getContentSize(): Promise<ContentSizeCategory>;
   onLifecycle(handler: (state: LifecycleState) => void): () => void;
+  voicePermissions(): Promise<boolean>;
+  voiceStart(locale: string): Promise<VoiceReady>;
+  voiceStop(voiceSessionId: string): Promise<void>;
+  voiceSpeak(
+    voiceSessionId: string,
+    chunkId: string,
+    text: string,
+  ): Promise<VoiceQueued>;
+  voiceStopSpeaking(voiceSessionId: string): Promise<void>;
+  voiceSetRate(voiceSessionId: string, rate: number): Promise<number>;
+  onVoiceEvent(handler: VoiceEventHandler): () => void;
 }
 
 export interface SecureState {
@@ -60,6 +72,31 @@ export interface PermissionStatus {
   readonly granted: boolean;
 }
 
+export interface VoiceReady {
+  readonly voiceSessionId: string;
+}
+
+export interface VoiceQueued {
+  readonly chunkId: string;
+}
+
+export type VoiceEventHandler = (event: VoiceBridgeEvent) => void;
+
+export type VoiceBridgeEvent = Extract<
+  NativeEvent,
+  {
+    readonly type:
+      | "voice.level"
+      | "voice.partial"
+      | "voice.final"
+      | "voice.speechStarted"
+      | "voice.speechFinished"
+      | "voice.bargeIn"
+      | "voice.interrupted"
+      | "voice.error";
+  }
+>;
+
 // ---------------------------------------------------------------------------
 // Error
 // ---------------------------------------------------------------------------
@@ -82,6 +119,10 @@ export interface NativeTransport {
   subscribe(
     type: "lifecycle.changed",
     handler: (event: { state: LifecycleState }) => void,
+  ): () => void;
+  subscribe(
+    type: "voice.event",
+    handler: (event: VoiceBridgeEvent) => void,
   ): () => void;
 }
 
@@ -229,6 +270,97 @@ export function createNativeBridge(transport: NativeTransport): NativeBridge {
 
     onLifecycle(handler) {
       return transport.subscribe("lifecycle.changed", (e) => handler(e.state));
+    },
+
+    async voicePermissions() {
+      const res = unwrap(
+        await transport.send({ version: 1, type: "voice.permissions" }),
+      );
+      if (res.type !== "voice.permissions") {
+        throw new NativeBridgeError({
+          id: "client",
+          kind: "internal",
+          message: "unexpected response",
+        });
+      }
+      return res.granted;
+    },
+
+    async voiceStart(locale) {
+      const res = unwrap(
+        await transport.send({ version: 1, type: "voice.start", locale }),
+      );
+      if (res.type !== "voice.ready") {
+        throw new NativeBridgeError({
+          id: "client",
+          kind: "internal",
+          message: "unexpected response",
+        });
+      }
+      return { voiceSessionId: res.voiceSessionId };
+    },
+
+    async voiceStop(voiceSessionId) {
+      unwrap(
+        await transport.send({
+          version: 1,
+          type: "voice.stop",
+          voiceSessionId,
+        }),
+      );
+    },
+
+    async voiceSpeak(voiceSessionId, chunkId, text) {
+      const res = unwrap(
+        await transport.send({
+          version: 1,
+          type: "voice.speak",
+          voiceSessionId,
+          chunkId,
+          text,
+        }),
+      );
+      if (res.type !== "voice.queued") {
+        throw new NativeBridgeError({
+          id: "client",
+          kind: "internal",
+          message: "unexpected response",
+        });
+      }
+      return { chunkId: res.chunkId };
+    },
+
+    async voiceStopSpeaking(voiceSessionId) {
+      unwrap(
+        await transport.send({
+          version: 1,
+          type: "voice.stopSpeaking",
+          voiceSessionId,
+        }),
+      );
+    },
+
+    async voiceSetRate(voiceSessionId, rate) {
+      const res = unwrap(
+        await transport.send({
+          version: 1,
+          type: "voice.setRate",
+          voiceSessionId,
+          rate,
+        }),
+      );
+      if (res.type !== "voice.rateSet") {
+        throw new NativeBridgeError({
+          id: "client",
+          kind: "internal",
+          message: "unexpected response",
+        });
+      }
+      return res.rate;
+    },
+
+    onVoiceEvent(handler) {
+      return transport.subscribe("voice.event", handler);
     },
   };
 }
