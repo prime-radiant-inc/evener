@@ -219,7 +219,10 @@ function decodeHealth(value: unknown): HealthSnapshot {
 }
 
 // ---------------------------------------------------------------------------
-// Error wrapping — never echo the raw backend message (it may carry a secret)
+// Error wrapping — the Rust ProfileError Display output is designed to be
+// secret-free (it exposes only the normalized origin, never the token, auth
+// URL query, or raw scan text). Pass it through so the UI can show a useful
+// diagnostic. The code still gives the UI a stable category to switch on.
 // ---------------------------------------------------------------------------
 
 function redactedInvokeError(
@@ -228,11 +231,11 @@ function redactedInvokeError(
   cause: unknown,
 ): ProfileServiceError {
   // Tauri commands return `Result<T, String>`; the rejection's message is the
-  // Rust error text, which could embed a token/origin/path. Never surface it —
-  // map to a stable, secret-free code + message. The raw cause is dropped
-  // deliberately: it may carry a secret and must not be reachable.
-  void cause;
-  return new ProfileServiceError(code, humanize(code));
+  // Rust ProfileError::to_string() output, which is safe to surface because
+  // ProfileError's Display impl never includes the token or raw auth URL.
+  const detail = cause instanceof Error ? cause.message : String(cause);
+  const message = detail || humanize(code);
+  return new ProfileServiceError(code, message);
 }
 
 function humanize(code: ProfileServiceErrorCode): string {
