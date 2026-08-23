@@ -1,6 +1,6 @@
 // Command evener-fuzzregistry audits scripts/fuzz/run-fuzz.sh's target manifest against
 // the native and explicitly marked Rapid fuzz surfaces declared in the workspace.
-package main
+package fuzzregistry
 
 import (
 	"bufio"
@@ -53,11 +53,10 @@ type workspaceModule struct {
 	dir   string
 }
 
-func main() {
-	osExit(runRegistry(os.Args[1:], os.Stdout, os.Stderr))
+func Run(args []string, _ io.Reader, stdout, stderr io.Writer) int {
+	return runRegistry(args, stdout, stderr)
 }
 
-var osExit = os.Exit
 var discoverWorkspace = DiscoverWorkspace
 var registryAbs = filepath.Abs
 var registryEvalSymlinks = filepath.EvalSymlinks
@@ -67,7 +66,7 @@ var registryPackagePath = packagePath
 var registryParseWork = modfile.ParseWork
 
 func runRegistry(args []string, stdout, stderr io.Writer) int {
-	fs := flag.NewFlagSet("evener-fuzzregistry", flag.ContinueOnError)
+	fs := flag.NewFlagSet("evener fuzzregistry", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	repoRoot := fs.String("repo-root", ".", "repository root containing go.work")
 	registryPath := fs.String("registry", "", "path to scripts/fuzz/run-fuzz.sh --list output")
