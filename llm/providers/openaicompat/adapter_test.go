@@ -1481,6 +1481,125 @@ func TestAdapter_ListModels(t *testing.T) {
 	}
 }
 
+// TestAdapter_ListModels_OpenRouterRichFields verifies that the openai-compatible
+// adapter parses OpenRouter's extended /v1/models response fields:
+// supported_parameters (→ SupportsTools), architecture.input_modalities
+// (→ SupportsVision), reasoning (→ SupportsReasoning, ReasoningEffortLevels),
+// pricing.prompt/completion (→ InputCostPerMillion/OutputCostPerMillion),
+// and top_provider.max_completion_tokens (→ MaxOutputTokens).
+func TestAdapter_ListModels_OpenRouterRichFields(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`{
+			"data": [
+				{
+					"id": "anthropic/claude-sonnet-4.5",
+					"context_length": 1000000,
+					"supported_parameters": ["tools", "reasoning", "reasoning_effort", "temperature"],
+					"architecture": {"input_modalities": ["text", "image", "file"]},
+					"reasoning": {"mandatory": false, "default_enabled": true, "supported_efforts": ["max", "high", "medium", "low"]},
+					"pricing": {"prompt": "0.000003", "completion": "0.000015"},
+					"top_provider": {"max_completion_tokens": 128000}
+				},
+				{
+					"id": "tencent/hy-mt2-1.8b",
+					"context_length": 8192,
+					"supported_parameters": ["max_tokens", "stop", "temperature"],
+					"architecture": {"input_modalities": ["text"]},
+					"pricing": {"prompt": "0.000000044", "completion": "0.000000177"},
+					"top_provider": {"max_completion_tokens": 4096}
+				},
+				{
+					"id": "kimi-for-coding",
+					"context_length": 262144
+				}
+			]
+		}`))
+	}))
+	t.Cleanup(srv.Close)
+
+	a := &Adapter{BaseURL: srv.URL, Client: srv.Client()}
+	models, err := a.ListModels(context.Background())
+	if err != nil {
+		t.Fatalf("ListModels: %v", err)
+	}
+	if len(models) != 3 {
+		t.Fatalf("got %d models, want 3", len(models))
+	}
+
+	// Model 0 (alphabetical): anthropic/claude-sonnet-4.5 — rich fields parsed.
+	m := models[0]
+	if m.ID != "anthropic/claude-sonnet-4.5" {
+		t.Fatalf("models[0].ID = %q, want anthropic/claude-sonnet-4.5", m.ID)
+	}
+	if m.ContextWindow != 1000000 {
+		t.Errorf("ContextWindow = %d, want 1000000", m.ContextWindow)
+	}
+	if !m.SupportsTools {
+		t.Errorf("SupportsTools = false, want true (supported_parameters includes \"tools\")")
+	}
+	if !m.SupportsVision {
+		t.Errorf("SupportsVision = false, want true (input_modalities includes \"image\")")
+	}
+	if !m.SupportsReasoning {
+		t.Errorf("SupportsReasoning = false, want true (reasoning.default_enabled is true)")
+	}
+	if m.ThinkingAlwaysOn {
+		t.Errorf("ThinkingAlwaysOn = true, want false (reasoning.mandatory is false)")
+	}
+	if len(m.ReasoningEffortLevels) != 4 {
+		t.Errorf("ReasoningEffortLevels = %v, want 4 entries", m.ReasoningEffortLevels)
+	}
+	if m.InputCostPerMillion == nil || *m.InputCostPerMillion != 3.0 {
+		t.Errorf("InputCostPerMillion = %v, want 3.0", m.InputCostPerMillion)
+	}
+	if m.OutputCostPerMillion == nil || *m.OutputCostPerMillion != 15.0 {
+		t.Errorf("OutputCostPerMillion = %v, want 15.0", m.OutputCostPerMillion)
+	}
+	if m.MaxOutputTokens == nil || *m.MaxOutputTokens != 128000 {
+		t.Errorf("MaxOutputTokens = %v, want 128000", m.MaxOutputTokens)
+	}
+
+	// Model 1: kimi-for-coding — no OpenRouter extensions, zero values.
+	m = models[1]
+	if m.ID != "kimi-for-coding" {
+		t.Fatalf("models[1].ID = %q, want kimi-for-coding", m.ID)
+	}
+	if m.ContextWindow != 262144 {
+		t.Errorf("ContextWindow = %d, want 262144", m.ContextWindow)
+	}
+	if m.SupportsTools {
+		t.Errorf("SupportsTools = true, want false (no supported_parameters)")
+	}
+	if m.SupportsVision {
+		t.Errorf("SupportsVision = true, want false (no input_modalities)")
+	}
+	if m.InputCostPerMillion != nil {
+		t.Errorf("InputCostPerMillion = %v, want nil", m.InputCostPerMillion)
+	}
+	if m.MaxOutputTokens != nil {
+		t.Errorf("MaxOutputTokens = %v, want nil", m.MaxOutputTokens)
+	}
+
+	// Model 2: tencent/hy-mt2-1.8b — has fields but no "tools" in supported_parameters.
+	m = models[2]
+	if m.ID != "tencent/hy-mt2-1.8b" {
+		t.Fatalf("models[2].ID = %q, want tencent/hy-mt2-1.8b", m.ID)
+	}
+	if m.SupportsTools {
+		t.Errorf("SupportsTools = true, want false (supported_parameters lacks \"tools\")")
+	}
+	if m.SupportsVision {
+		t.Errorf("SupportsVision = true, want false (input_modalities is text-only)")
+	}
+	if m.SupportsReasoning {
+		t.Errorf("SupportsReasoning = true, want false (no reasoning object)")
+	}
+	if m.MaxOutputTokens == nil || *m.MaxOutputTokens != 4096 {
+		t.Errorf("MaxOutputTokens = %v, want 4096", m.MaxOutputTokens)
+	}
+}
+
 func TestAdapter_Complete_Metadata_Propagated(t *testing.T) {
 	var sentBody map[string]any
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

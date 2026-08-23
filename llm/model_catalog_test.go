@@ -1332,8 +1332,28 @@ func TestVisibleLiveModel_OpenRouterBareLiveID(t *testing.T) {
 
 	// The bare live ID must be visible: ResolveLiveModelInfo's tag-qualified
 	// fallback resolves it, and the entry supports tools.
-	if !cat.VisibleLiveModel("openrouter", "anthropic/claude-sonnet-4.5") {
-		t.Error("VisibleLiveModel(openrouter, anthropic/claude-sonnet-4.5) = false, want true")
+	// The live ModelInfo doesn't report SupportsTools (simulating an older
+	// /models response), so the catalog fallback determines visibility.
+	if !cat.VisibleLiveModel("openrouter", ModelInfo{ID: "anthropic/claude-sonnet-4.5"}) {
+		t.Error("VisibleLiveModel(openrouter, {anthropic/claude-sonnet-4.5}) = false, want true")
+	}
+}
+
+// TestVisibleLiveModel_OpenRouterLiveToolsShortCircuits verifies that when the
+// live /models response reports SupportsTools (e.g. OpenRouter's
+// supported_parameters includes "tools"), the model is visible even if it is
+// absent from the embedded catalog entirely. This is the live-API-first rule:
+// the catalog is enrichment, not the gate.
+func TestVisibleLiveModel_OpenRouterLiveToolsShortCircuits(t *testing.T) {
+	cat := EmbeddedModelCatalog()
+	// A model OpenRouter serves that the embedded catalog doesn't know about.
+	// (If it does exist, skip — the live-tools path is the point.)
+	if cat.GetModelInfo("stealth/ox-alpha") != nil {
+		t.Skip("catalog changed: stealth/ox-alpha now exists")
+	}
+	live := ModelInfo{ID: "stealth/ox-alpha", SupportsTools: true}
+	if !cat.VisibleLiveModel("openrouter", live) {
+		t.Error("live SupportsTools=true model should be visible even when absent from catalog")
 	}
 }
 
@@ -1345,10 +1365,10 @@ func TestVisibleLiveModel_NonChatAndNonToolHidden(t *testing.T) {
 
 	// Non-chat IDs are hidden regardless of tag.
 	for _, id := range []string{"text-embedding-3-small", "whisper-1", "tts-1"} {
-		if cat.VisibleLiveModel("openrouter", id) {
+		if cat.VisibleLiveModel("openrouter", ModelInfo{ID: id}) {
 			t.Errorf("non-chat model %q should be hidden", id)
 		}
-		if cat.VisibleLiveModel("openai", id) {
+		if cat.VisibleLiveModel("openai", ModelInfo{ID: id}) {
 			t.Errorf("non-chat model %q should be hidden for openai tag", id)
 		}
 	}
@@ -1360,13 +1380,13 @@ func TestVisibleLiveModel_NonChatAndNonToolHidden(t *testing.T) {
 	} else if mi.SupportsTools {
 		t.Skip("catalog changed: mistralai/mistral-7b-instruct now supports tools")
 	}
-	if cat.VisibleLiveModel("openrouter", "mistralai/mistral-7b-instruct") {
+	if cat.VisibleLiveModel("openrouter", ModelInfo{ID: "mistralai/mistral-7b-instruct"}) {
 		t.Error("non-tool openrouter model should be hidden")
 	}
 
 	// A non-openrouter tag does not gate on the catalog: a chat model is visible
 	// even when absent from the catalog.
-	if !cat.VisibleLiveModel("openai", "some-uncataloged-chat-model") {
+	if !cat.VisibleLiveModel("openai", ModelInfo{ID: "some-uncataloged-chat-model"}) {
 		t.Error("uncataloged chat model should be visible for non-openrouter tag")
 	}
 
@@ -1374,13 +1394,13 @@ func TestVisibleLiveModel_NonChatAndNonToolHidden(t *testing.T) {
 	// chat IDs for openrouter are hidden (cannot resolve tools); chat IDs for
 	// other tags are visible.
 	var nilCat *ModelCatalog
-	if nilCat.VisibleLiveModel("openrouter", "text-embedding-3-small") {
+	if nilCat.VisibleLiveModel("openrouter", ModelInfo{ID: "text-embedding-3-small"}) {
 		t.Error("nil catalog: non-chat model should be hidden")
 	}
-	if nilCat.VisibleLiveModel("openrouter", "gpt-5") {
+	if nilCat.VisibleLiveModel("openrouter", ModelInfo{ID: "gpt-5"}) {
 		t.Error("nil catalog: openrouter chat model should be hidden (cannot verify tools)")
 	}
-	if !nilCat.VisibleLiveModel("openai", "gpt-5") {
+	if !nilCat.VisibleLiveModel("openai", ModelInfo{ID: "gpt-5"}) {
 		t.Error("nil catalog: non-openrouter chat model should be visible")
 	}
 }

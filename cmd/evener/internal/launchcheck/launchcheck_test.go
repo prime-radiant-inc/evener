@@ -337,11 +337,11 @@ func TestLaunchCheckModelVisibleFiltersByBehaviorTag(t *testing.T) {
 	cat := llm.EmbeddedModelCatalog()
 
 	// With the canonical tag "openrouter", a model absent from the catalog is hidden.
-	if launchCheckModelVisible("openrouter", "not-in-catalog-xyz", cat) {
+	if launchCheckModelVisible("openrouter", llm.ModelInfo{ID: "not-in-catalog-xyz"}, cat) {
 		t.Error("model not in catalog should be hidden when behaviorTag is openrouter")
 	}
 	// With a non-openrouter tag, any non-media model is visible.
-	if !launchCheckModelVisible("some-other-tag", "not-in-catalog-xyz", cat) {
+	if !launchCheckModelVisible("some-other-tag", llm.ModelInfo{ID: "not-in-catalog-xyz"}, cat) {
 		t.Error("model should be visible when behaviorTag is not openrouter")
 	}
 }
@@ -372,7 +372,7 @@ func TestLaunchCheckModelVisible_OpenRouterBareLiveID(t *testing.T) {
 	}
 
 	// The bare live ID must now survive the launch-check visibility filter.
-	if !launchCheckModelVisible("openrouter", "anthropic/claude-sonnet-4.5", cat) {
+	if !launchCheckModelVisible("openrouter", llm.ModelInfo{ID: "anthropic/claude-sonnet-4.5"}, cat) {
 		t.Error("bare OpenRouter live ID should be visible after the shared-helper fix")
 	}
 }

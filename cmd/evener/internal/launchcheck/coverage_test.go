@@ -137,7 +137,7 @@ func TestLaunchCheckPureHelpersRemainingBranches(t *testing.T) {
 		t.Fatal("nil error reported unavailable")
 	}
 	for _, id := range []string{"embedding", "whisper", "tts", "dall-e", "moderation", "audio", "transcribe", "image"} {
-		if launchCheckModelVisible("other", id, nil) {
+		if launchCheckModelVisible("other", llm.ModelInfo{ID: id}, nil) {
 			t.Fatalf("media model %q visible", id)
 		}
 	}
@@ -150,7 +150,7 @@ func FuzzLaunchCheckClassifiers(f *testing.F) {
 	f.Add("openrouter", "text-embedding-3-small", "http 403")
 	f.Add("openai", "gpt-5", "connection refused")
 	f.Fuzz(func(t *testing.T, tag, modelID, message string) {
-		_ = launchCheckModelVisible(tag, modelID, llm.EmbeddedModelCatalog())
+		_ = launchCheckModelVisible(tag, llm.ModelInfo{ID: modelID}, llm.EmbeddedModelCatalog())
 		_ = launchCheckModelListUnavailable(errors.New(message))
 	})
 }
@@ -279,13 +279,13 @@ func FuzzLaunchCheckProgram(f *testing.F) {
 			}
 		case 17:
 			for _, id := range []string{"embedding", "whisper", "tts", "dall-e", "moderation", "audio", "transcribe", "image"} {
-				if launchCheckModelVisible("other", id, nil) {
+				if launchCheckModelVisible("other", llm.ModelInfo{ID: id}, nil) {
 					t.Fatalf("media model %q visible", id)
 				}
 			}
 		case 18:
-			_ = launchCheckModelVisible("openrouter", "not-in-catalog", llm.EmbeddedModelCatalog())
-			_ = launchCheckModelVisible("openrouter", "gpt-5", llm.EmbeddedModelCatalog())
+			_ = launchCheckModelVisible("openrouter", llm.ModelInfo{ID: "not-in-catalog"}, llm.EmbeddedModelCatalog())
+			_ = launchCheckModelVisible("openrouter", llm.ModelInfo{ID: "gpt-5"}, llm.EmbeddedModelCatalog())
 			_ = launchCheckCatalogModelInfo(nil, "model")
 		case 19:
 			if len(value) < 8 {

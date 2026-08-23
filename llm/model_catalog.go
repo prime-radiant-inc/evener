@@ -285,22 +285,36 @@ func (c *ModelCatalog) ResolveLiveModelInfo(behaviorTag, modelID string) *ModelI
 
 // VisibleLiveModel reports whether modelID should appear in a live model list for
 // a provider with the given behavior tag. It returns false for non-chat model IDs
-// (IsChatModelID) and, for the "openrouter" tag, for models that do not resolve in
-// the catalog (ResolveLiveModelInfo) or lack tool support. Other behavior tags do
-// not gate on the catalog: a live /models entry is visible as long as it is a
-// chat model.
+// (IsChatModelID) and, for the "openrouter" tag, for models that lack tool
+// support. Tool support is determined from the live ModelInfo first (parsed
+// from the provider's /models response — e.g. OpenRouter's supported_parameters
+// list), falling back to the embedded catalog (ResolveLiveModelInfo) when the
+// live response doesn't report it. Other behavior tags do not gate on the
+// catalog: a live /models entry is visible as long as it is a chat model.
 //
 // This consolidates the visibility rule previously duplicated (and drifted)
 // between cmd/evener/internal/launchcheck.launchCheckModelVisible and
 // cmd/evener-hub/web_spawn.go's fetchLiveModels.
-func (c *ModelCatalog) VisibleLiveModel(behaviorTag, modelID string) bool {
-	if !IsChatModelID(modelID) {
+//
+// live is the ModelInfo returned by the provider's ListModels call. It carries
+// capability data parsed from the live /models response (SupportsTools,
+// SupportsVision, etc.) which takes priority over the catalog for visibility.
+func (c *ModelCatalog) VisibleLiveModel(behaviorTag string, live ModelInfo) bool {
+	if !IsChatModelID(live.ID) {
 		return false
 	}
 	if behaviorTag != "openrouter" {
 		return true
 	}
-	mi := c.ResolveLiveModelInfo(behaviorTag, modelID)
+	// Prefer live capability data: if the provider's /models response reports
+	// tool support (OpenRouter's supported_parameters includes "tools"), the
+	// model is visible regardless of whether the catalog knows about it.
+	if live.SupportsTools {
+		return true
+	}
+	// Fall back to the catalog when the live response doesn't report tool
+	// support — some providers' /models endpoints omit capability metadata.
+	mi := c.ResolveLiveModelInfo(behaviorTag, live.ID)
 	return mi != nil && mi.SupportsTools
 }
 

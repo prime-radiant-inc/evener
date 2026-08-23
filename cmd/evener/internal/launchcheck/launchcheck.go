@@ -174,7 +174,7 @@ func launchCheckModels() ([]launchCheckModel, []appwire.ModelListDiagnostic, err
 		}
 		sort.Slice(models, func(i, j int) bool { return models[i].ID < models[j].ID })
 		for _, model := range models {
-			if !launchCheckModelVisible(tag, model.ID, cat) {
+			if !launchCheckModelVisible(tag, model, cat) {
 				continue
 			}
 			out = append(out, launchCheckModel{Provider: provider, Model: model.ID})
@@ -236,7 +236,7 @@ func validateLaunchCheckModel(ref cmdutil.ModelRef) error {
 	cat := llm.EmbeddedModelCatalog()
 	tag := client.BehaviorTagOf(ref.Provider)
 	for _, model := range models {
-		if model.ID == ref.Model && launchCheckModelVisible(tag, model.ID, cat) {
+		if model.ID == ref.Model && launchCheckModelVisible(tag, model, cat) {
 			return nil
 		}
 	}
@@ -267,13 +267,13 @@ func launchCheckModelListUnavailable(err error) bool {
 		strings.Contains(msg, "network is unreachable")
 }
 
-// launchCheckModelVisible reports whether modelID should appear in the launch
-// model list for a provider with the given behavior tag. It delegates to the
-// shared llm.ModelCatalog.VisibleLiveModel rule so the launch-check path and the
-// hub /api/models path cannot drift. See VisibleLiveModel for the OpenRouter
-// bare-live-ID vs prefix-keyed-catalog resolution this fixes.
-func launchCheckModelVisible(behaviorTag, modelID string, cat *llm.ModelCatalog) bool {
-	return cat.VisibleLiveModel(behaviorTag, modelID)
+// launchCheckModelVisible reports whether a live model should appear in the
+// launch model list for a provider with the given behavior tag. It delegates to
+// the shared llm.ModelCatalog.VisibleLiveModel rule so the launch-check path and
+// the hub /api/models path cannot drift. See VisibleLiveModel for the
+// live-API-first tool-support resolution this implements.
+func launchCheckModelVisible(behaviorTag string, live llm.ModelInfo, cat *llm.ModelCatalog) bool {
+	return cat.VisibleLiveModel(behaviorTag, live)
 }
 
 // launchCheckCatalogModelInfo resolves catalog metadata for a live model ID,

@@ -59,6 +59,8 @@ func (a *Adapter) ListModels(ctx context.Context) ([]llm.ModelInfo, error) {
 		Models []struct {
 			Name                       string   `json:"name"`
 			DisplayName                string   `json:"displayName"`
+			InputTokenLimit            int      `json:"inputTokenLimit"`
+			OutputTokenLimit           int      `json:"outputTokenLimit"`
 			SupportedGenerationMethods []string `json:"supportedGenerationMethods"`
 		} `json:"models"`
 	}
@@ -79,11 +81,21 @@ func (a *Adapter) ListModels(ctx context.Context) ([]llm.ModelInfo, error) {
 		if displayName == "" {
 			displayName = id
 		}
-		models = append(models, llm.ModelInfo{
-			ID:          id,
-			Provider:    "google",
-			DisplayName: displayName,
-		})
+		info := llm.ModelInfo{
+			ID:            id,
+			Provider:      "google",
+			DisplayName:   displayName,
+			ContextWindow: m.InputTokenLimit,
+		}
+		// Gemini models support tools when generateContent is in their
+		// supportedGenerationMethods list — the API doesn't expose a separate
+		// tools capability flag, so infer it from the generation method.
+		info.SupportsTools = true
+		if m.OutputTokenLimit > 0 {
+			maxOut := m.OutputTokenLimit
+			info.MaxOutputTokens = &maxOut
+		}
+		models = append(models, info)
 	}
 	sort.Slice(models, func(i, j int) bool { return models[i].ID < models[j].ID })
 	return models, nil

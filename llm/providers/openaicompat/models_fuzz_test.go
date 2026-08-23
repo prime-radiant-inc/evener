@@ -23,6 +23,7 @@ import (
 func FuzzOpenaicompatListModels(f *testing.F) {
 	f.Add(200, []byte(`{"data":[{"id":"kimi-for-coding","context_length":262144},{"id":"llama3","context_length":8192}]}`))
 	f.Add(200, []byte(`{"data":[{"id":"m1"},{"id":"m0"}]}`))
+	f.Add(200, []byte(`{"data":[{"id":"anthropic/claude-sonnet-4.5","context_length":1000000,"supported_parameters":["tools","reasoning"],"architecture":{"input_modalities":["text","image"]},"reasoning":{"mandatory":false,"default_enabled":true,"supported_efforts":["high","low"]},"pricing":{"prompt":"0.000003","completion":"0.000015"},"top_provider":{"max_completion_tokens":128000}}]}`))
 	f.Add(200, []byte(`{"data":[]}`))
 	f.Add(200, []byte(`{}`))
 	f.Add(200, []byte(`not json`))

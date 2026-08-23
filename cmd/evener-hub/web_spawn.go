@@ -393,7 +393,7 @@ func (s *WebServer) fetchLiveModels(ctx context.Context) []map[string]any {
 			// the openrouter tag, the catalog tools-capability filter. This is
 			// the same rule the launch-check path uses (llm.VisibleLiveModel),
 			// so the two live-model paths cannot drift.
-			if !cat.VisibleLiveModel(tag, m.ID) {
+			if !cat.VisibleLiveModel(tag, m) {
 				continue
 			}
 			mi := catalogModelInfo(cat, tag, m.ID)

@@ -119,7 +119,7 @@ func validateModelSwitchMembership(client *llm.Client, profile *provider.Profile
 	tag := client.BehaviorTagOf(profile.ID())
 	cat := llm.EmbeddedModelCatalog()
 	for _, m := range models {
-		if m.ID == profile.Model() && modelSwitchVisible(tag, m.ID, cat) {
+		if m.ID == profile.Model() && modelSwitchVisible(tag, m, cat) {
 			return nil
 		}
 	}
@@ -144,7 +144,7 @@ func formatModelAlternatives(models []llm.ModelInfo, tag string, cat *llm.ModelC
 	seen := make(map[string]bool, len(models))
 	var ids []string
 	for _, m := range models {
-		if !modelSwitchVisible(tag, m.ID, cat) || seen[m.ID] {
+		if !modelSwitchVisible(tag, m, cat) || seen[m.ID] {
 			continue
 		}
 		seen[m.ID] = true
@@ -164,7 +164,8 @@ func formatModelAlternatives(models []llm.ModelInfo, tag string, cat *llm.ModelC
 // modelSwitchVisible delegates to the shared llm.ModelCatalog.VisibleLiveModel
 // rule so the in-session model-switch path, the launch-check path, and the hub
 // /api/models path share one visibility rule and cannot drift. See
-// VisibleLiveModel for the OpenRouter bare-live-ID resolution this fixes.
-func modelSwitchVisible(behaviorTag, modelID string, cat *llm.ModelCatalog) bool {
-	return cat.VisibleLiveModel(behaviorTag, modelID)
+// VisibleLiveModel for the live-API-first tool-support resolution this
+// implements.
+func modelSwitchVisible(behaviorTag string, live llm.ModelInfo, cat *llm.ModelCatalog) bool {
+	return cat.VisibleLiveModel(behaviorTag, live)
 }
