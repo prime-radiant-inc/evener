@@ -23,7 +23,7 @@ func TestRuntimePairBuildPublishesBothWithSameLinkerFlags(t *testing.T) {
 	}
 
 	assertTextFile(t, filepath.Join(fixture.root, "evener"), "./cmd/evener/\n")
-	assertTextFile(t, filepath.Join(fixture.root, "evener-hub"), "./cmd/evener-hub/\n")
+	assertTextFile(t, filepath.Join(fixture.root, "evener-dev"), "./cmd/evener-dev/bin/\n")
 	logData, err := os.ReadFile(fixture.logPath)
 	if err != nil {
 		t.Fatalf("read fake go log: %v", err)
@@ -111,14 +111,12 @@ func TestRuntimeBuildFixtureEnvironmentDropsAmbientHarnessControls(t *testing.T)
 func TestRuntimePairBuildFailureLeavesExistingPairUntouched(t *testing.T) {
 	fixture := newRuntimeBuildFixture(t)
 	writeTestFile(t, filepath.Join(fixture.root, "evener"), []byte("old-evener\n"), 0o755)
-	writeTestFile(t, filepath.Join(fixture.root, "evener-hub"), []byte("old-evener-hub\n"), 0o755)
 
-	if output, err := runRuntimePairBuild(fixture, "./cmd/evener-hub/"); err == nil {
-		t.Fatalf("build runtime pair succeeded, want hub compiler failure; output = %q", output)
+	if output, err := runRuntimePairBuild(fixture, "./cmd/evener/"); err == nil {
+		t.Fatalf("build runtime pair succeeded, want evener compiler failure; output = %q", output)
 	}
 
 	assertTextFile(t, filepath.Join(fixture.root, "evener"), "old-evener\n")
-	assertTextFile(t, filepath.Join(fixture.root, "evener-hub"), "old-evener-hub\n")
 }
 
 func TestMakeRuntimeAliasesBuildThePair(t *testing.T) {
@@ -134,7 +132,6 @@ func TestMakeRuntimeAliasesBuildThePair(t *testing.T) {
 			}
 
 			assertTextFile(t, filepath.Join(fixture.root, "evener"), "./cmd/evener/\n")
-			assertTextFile(t, filepath.Join(fixture.root, "evener-hub"), "./cmd/evener-hub/\n")
 
 			// build must build the web too: build-runtime depends on
 			// build-web (Makefile), so both aliases order the same way.
@@ -1301,7 +1298,7 @@ func countNpmInvocations(t *testing.T, logPath string) (npmCiCount, npmBuildCoun
 }
 
 // assertNpmPrecedesHubGoBuild pins the load-bearing prerequisite order at
-// make/building.mk:34: build-web must run before build-runtime so the evener-hub
+// make/building.mk:34: build-web must run before build-runtime so the evener
 // go build embeds the dist build-web just produced. It tolerates the
 // DIST_GOOS/DIST_GOARCH parse-time "go env" pollution lines that the
 // Makefile's ?= assignments trigger against the fake go shim.
@@ -1315,13 +1312,13 @@ func assertNpmPrecedesHubGoBuild(t *testing.T, logPath string) {
 
 	hubBuildLine := -1
 	for i, line := range lines {
-		if strings.HasPrefix(line, "go-env\t./cmd/evener-hub/\t") {
+		if strings.HasPrefix(line, "go-env\t./cmd/evener/\t") {
 			hubBuildLine = i
 			break
 		}
 	}
 	if hubBuildLine == -1 {
-		t.Fatalf("fake go/npm log has no evener-hub go build; log = %q", logData)
+		t.Fatalf("fake go/npm log has no evener go build; log = %q", logData)
 	}
 
 	sawNpm := false
@@ -1331,7 +1328,7 @@ func assertNpmPrecedesHubGoBuild(t *testing.T, logPath string) {
 		}
 		sawNpm = true
 		if i > hubBuildLine {
-			t.Fatalf("npm call %q ran after the evener-hub go build; build-web must run before build-runtime (make/building.mk:34); log = %q", line, logData)
+			t.Fatalf("npm call %q ran after the evener go build; build-web must run before build-runtime (make/building.mk:34); log = %q", line, logData)
 		}
 	}
 	if !sawNpm {
@@ -1341,7 +1338,7 @@ func assertNpmPrecedesHubGoBuild(t *testing.T, logPath string) {
 
 // assertNpmBuildPrecedesHubGoBuild pins the dist/install prerequisite graph:
 // both now depend on build-web, so a `make -n` dry run must print the vite
-// build before the evener-hub go build. make -n also forces the Makefile's
+// build before the evener go build. make -n also forces the Makefile's
 // parse-time `$(shell go env GOOS)`/GOARCH assignments (EVENER_DIST_NAME's
 // immediate `:=`) against the fake go shim, which doesn't understand the
 // `env` subcommand; the resulting noise log lines and stderr complaints are
@@ -1356,7 +1353,7 @@ func assertNpmBuildPrecedesHubGoBuild(t *testing.T, target string, output []byte
 		if npmBuildLine == -1 && strings.Contains(line, "npm run build") {
 			npmBuildLine = i
 		}
-		if hubBuildLine == -1 && strings.Contains(line, "./cmd/evener-hub/") {
+		if hubBuildLine == -1 && strings.Contains(line, "./cmd/evener/") {
 			hubBuildLine = i
 		}
 	}
@@ -1364,10 +1361,10 @@ func assertNpmBuildPrecedesHubGoBuild(t *testing.T, target string, output []byte
 		t.Fatalf("make -n %s has no npm run build line; output = %s", target, output)
 	}
 	if hubBuildLine == -1 {
-		t.Fatalf("make -n %s has no ./cmd/evener-hub/ go build line; output = %s", target, output)
+		t.Fatalf("make -n %s has no ./cmd/evener/ go build line; output = %s", target, output)
 	}
 	if npmBuildLine > hubBuildLine {
-		t.Fatalf("make -n %s: npm run build (line %d) printed after the evener-hub go build (line %d); %s must build the web first; output = %s", target, npmBuildLine, hubBuildLine, target, output)
+		t.Fatalf("make -n %s: npm run build (line %d) printed after the evener go build (line %d); %s must build the web first; output = %s", target, npmBuildLine, hubBuildLine, target, output)
 	}
 }
 

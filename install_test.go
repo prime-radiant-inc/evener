@@ -121,7 +121,7 @@ func TestInstallHomeGeneratedHome(t *testing.T) {
 
 	binDir := filepath.Join(home, ".local", "bin")
 	shareBinDir := filepath.Join(home, ".local", "share", "evener", "bin")
-	for _, bin := range []string{"evener", "evener-hub", "evener-tui", "evener-doctor", "evener-migrate"} {
+	for _, bin := range []string{"evener", "evener-dev"} {
 		installed := filepath.Join(shareBinDir, bin)
 		info, err := os.Stat(installed)
 		if err != nil {
@@ -157,10 +157,10 @@ func TestInstallHomeGeneratedHome(t *testing.T) {
 
 	evenerBin := filepath.Join(binDir, "evener")
 	runCommand(t, fixtureRoot, env, evenerBin, "--version")
-	runCommand(t, fixtureRoot, env, filepath.Join(binDir, "evener-hub"), "--help")
-	runCommand(t, fixtureRoot, env, filepath.Join(binDir, "evener-tui"), "--help")
-	runCommand(t, fixtureRoot, env, filepath.Join(binDir, "evener-doctor"), "--help")
-	runCommand(t, fixtureRoot, env, filepath.Join(binDir, "evener-migrate"), "--dry-run")
+	runCommand(t, fixtureRoot, env, evenerBin, "hub", "--help")
+	runCommand(t, fixtureRoot, env, evenerBin, "tui", "--help")
+	runCommand(t, fixtureRoot, env, evenerBin, "doctor", "help")
+	runCommand(t, fixtureRoot, env, evenerBin, "migrate", "--dry-run")
 	runCommand(t, fixtureRoot, env, evenerBin, "--list-sessions")
 
 	for _, dir := range []string{
@@ -299,7 +299,7 @@ func TestInstallScriptInstallsReleaseArchive(t *testing.T) {
 
 			binDir := filepath.Join(home, ".local", "bin")
 			shareBinDir := filepath.Join(home, ".local", "share", "evener", "bin")
-			for _, bin := range []string{"evener", "evener-hub", "evener-tui", "evener-doctor", "evener-migrate"} {
+			for _, bin := range []string{"evener", "evener-dev"} {
 				installed := filepath.Join(shareBinDir, bin)
 				info, err := os.Stat(installed)
 				if err != nil {
@@ -556,7 +556,7 @@ esac
 }
 
 // TestInstallScriptWarnsAboutLegacySerf pins install.sh's completion-message
-// nudge toward evener-migrate: a machine with an existing ~/.serf or interim
+// nudge toward evener migrate: a machine with an existing ~/.serf or interim
 // ~/.evener gets told to migrate before first launch, and a clean machine
 // gets no such nudge.
 func TestInstallScriptWarnsAboutLegacySerf(t *testing.T) {
@@ -618,9 +618,9 @@ func TestInstallScriptWarnsAboutLegacySerf(t *testing.T) {
 			}
 
 			output := string(out)
-			gotMessage := strings.Contains(output, "evener-migrate")
+			gotMessage := strings.Contains(output, "evener migrate")
 			if gotMessage != tc.wantMessage {
-				t.Fatalf("evener-migrate mention in output = %v, want %v\noutput:\n%s", gotMessage, tc.wantMessage, out)
+				t.Fatalf("evener migrate mention in output = %v, want %v\noutput:\n%s", gotMessage, tc.wantMessage, out)
 			}
 			if tc.wantMessage {
 				if !strings.Contains(output, "--dry-run") {
@@ -1111,7 +1111,7 @@ func writeInstallReleaseArchive(t *testing.T, path, root string) {
 	tw := tar.NewWriter(gz)
 	defer tw.Close()
 
-	for _, bin := range []string{"evener", "evener-hub", "evener-tui", "evener-doctor", "evener-migrate"} {
+	for _, bin := range []string{"evener", "evener-dev"} {
 		body := fmt.Sprintf("#!/bin/sh\necho %s\n", bin)
 		header := &tar.Header{
 			Name: filepath.ToSlash(filepath.Join(root, bin)),
