@@ -1,0 +1,130 @@
+/* SafeViewer — authenticated document/image viewer. All states share a base
+ * container; phase modifiers adjust layout. The close button is always
+ * available so the user can dismiss any state. */
+
+.evener-viewer {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 0.75rem;
+  padding: 1rem;
+  min-height: 200px;
+  box-sizing: border-box;
+  background: var(--evener-surface, #ffffff);
+  color: var(--evener-text, #1a1a1a);
+  border-radius: 0.5rem;
+}
+
+.evener-viewer--loading {
+  text-align: center;
+}
+
+.evener-viewer__spinner {
+  width: 2rem;
+  height: 2rem;
+  border: 0.1875rem solid var(--evener-border, #d0d0d0);
+  border-top-color: var(--evener-accent, #3b82f6);
+  border-radius: 50%;
+  animation: evener-viewer-spin 0.8s linear infinite;
+}
+
+@keyframes evener-viewer-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+.evener-viewer__status {
+  margin: 0;
+  font-size: 0.9rem;
+  color: var(--evener-text-muted, #666666);
+}
+
+.evener-viewer--image {
+  padding: 0;
+}
+
+.evener-viewer__image {
+  max-width: 100%;
+  max-height: 70vh;
+  object-fit: contain;
+  border-radius: 0.25rem;
+}
+
+.evener-viewer--text {
+  align-items: stretch;
+}
+
+.evener-viewer__plaintext {
+  margin: 0;
+  padding: 0.75rem;
+  font-family: var(--evener-mono, ui-monospace, monospace);
+  font-size: 0.85rem;
+  line-height: 1.4;
+  white-space: pre-wrap;
+  word-break: break-word;
+  overflow-x: auto;
+  max-height: 70vh;
+  overflow-y: auto;
+  background: var(--evener-surface-alt, #f7f7f7);
+  border-radius: 0.25rem;
+}
+
+.evener-viewer__markdown {
+  font-size: 0.9rem;
+  line-height: 1.5;
+  max-height: 70vh;
+  overflow-y: auto;
+  width: 100%;
+}
+
+.evener-viewer__markdown a {
+  color: var(--evener-accent, #3b82f6);
+  text-decoration: underline;
+}
+
+.evener-viewer__markdown pre {
+  overflow-x: auto;
+  padding: 0.5rem;
+  background: var(--evener-surface-alt, #f7f7f7);
+  border-radius: 0.25rem;
+}
+
+.evener-viewer__markdown code {
+  font-family: var(--evener-mono, ui-monospace, monospace);
+  font-size: 0.85em;
+}
+
+.evener-viewer--unsupported,
+.evener-viewer--error,
+.evener-viewer--cancelled {
+  text-align: center;
+}
+
+.evener-viewer__error-title {
+  margin: 0;
+  font-weight: 600;
+  font-size: 0.95rem;
+}
+
+.evener-viewer__error-detail {
+  margin: 0;
+  font-size: 0.85rem;
+  color: var(--evener-text-muted, #666666);
+}
+
+.evener-viewer__close {
+  appearance: none;
+  border: 1px solid var(--evener-border, #d0d0d0);
+  background: var(--evener-surface, #ffffff);
+  color: var(--evener-text, #1a1a1a);
+  padding: 0.4rem 1rem;
+  font-size: 0.9rem;
+  border-radius: 0.375rem;
+  cursor: pointer;
+}
+
+.evener-viewer__close:active {
+  background: var(--evener-surface-alt, #f0f0f0);
+}
