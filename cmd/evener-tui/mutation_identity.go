@@ -1,4 +1,4 @@
-package main
+package tui
 
 import "primeradiant.com/evener/identifier"
 

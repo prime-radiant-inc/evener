@@ -58,7 +58,7 @@ func TestStartupError_ErrorMessagesPerKind(t *testing.T) {
 		kind   StartupErrorKind
 		prefix string
 	}{
-		{StartupErrorMissingHubBinary, "cannot find evener-hub binary: "},
+		{StartupErrorMissingHubBinary, "cannot find evener binary (hub subcommand): "},
 		{StartupErrorBindFailure, "hub failed to bind: "},
 		{StartupErrorUnhealthyHub, "hub is unhealthy: "},
 		{StartupErrorIncompatibleAPI, "hub API is incompatible: "},

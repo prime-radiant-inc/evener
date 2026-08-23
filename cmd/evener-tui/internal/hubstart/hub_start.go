@@ -83,7 +83,7 @@ func ParseTUIStartupOptions(args []string, getenv func(string) string) (TUIStart
 	fs := flag.NewFlagSet("evener-tui", flag.ContinueOnError)
 	fs.SetOutput(os.Stderr)
 	fs.StringVar(&opts.HubAddr, "hub-addr", opts.HubAddr, "evener hub address")
-	fs.StringVar(&opts.HubBin, "hub-bin", opts.HubBin, "path to evener-hub binary")
+	fs.StringVar(&opts.HubBin, "hub-bin", opts.HubBin, "path to evener binary (for the hub subcommand)")
 	noAutoStartHub := false
 	fs.BoolVar(&noAutoStartHub, "no-auto-start-hub", false, "do not start a local hub when unreachable")
 	fs.StringVar(&opts.StateDir, "state-dir", opts.StateDir, "override Evener state directory")
@@ -93,7 +93,7 @@ func ParseTUIStartupOptions(args []string, getenv func(string) string) (TUIStart
 	fs.Usage = func() {
 		// Write failures to the flag usage writer are unactionable.
 		_, _ = fmt.Fprintf(fs.Output(), "Usage: evener-tui [flags]\n\n"+
-			"Evener TUI — interactive terminal UI for evener-hub.\n\n"+
+			"Evener TUI — interactive terminal UI for the evener hub.\n\n"+
 			"Flags:\n"+
 			"  --hub-addr <addr>        evener hub address (default: %s)\n"+
 			"  --hub-bin <path>         path to evener-hub binary\n"+
@@ -221,7 +221,7 @@ func (e StartupError) Error() string {
 	}
 	switch e.Kind {
 	case StartupErrorMissingHubBinary:
-		return "cannot find evener-hub binary: " + detail
+		return "cannot find evener binary (hub subcommand): " + detail
 	case StartupErrorBindFailure:
 		return "hub failed to bind: " + detail
 	case StartupErrorUnhealthyHub:
@@ -332,7 +332,10 @@ func StartHubClient(ctx context.Context, cfg HubStartConfig) (HubRuntime, error)
 	if cfg.LookPath == nil {
 		cfg.LookPath = exec.LookPath
 	}
-	bin, err := binresolve.Resolve("evener-hub", cfg.HubBin, cfg.CurrentExecutable, cfg.LookPath)
+	// The hub is now a subcommand of the single evener binary, so resolve
+	// "evener" (the running binary itself or a sibling) and invoke it as
+	// `evener hub --addr ...`.
+	bin, err := binresolve.Resolve("evener", cfg.HubBin, cfg.CurrentExecutable, cfg.LookPath)
 	if err != nil {
 		return fail(StartupError{Kind: StartupErrorMissingHubBinary, Addr: addr.BaseURL, Err: err})
 	}
@@ -441,7 +444,7 @@ func StartLocalHub(req HubStartRequest) error {
 	// the TUI, so it must NOT be bound to a cancellable context that would
 	// kill it.
 	//nolint:noctx // launched process is deliberately released to run independently.
-	cmd := exec.Command(req.Binary, "--addr", req.BindAddr)
+	cmd := exec.Command(req.Binary, "hub", "--addr", req.BindAddr)
 	if req.StateDir != "" {
 		cmd.Env = append(os.Environ(),
 			envvars.EVENERStateDir.Assignment(req.StateDir),
@@ -471,7 +474,7 @@ func StartLocalHub(req HubStartRequest) error {
 	cmd.Stdout = cmdOut
 	cmd.Stderr = cmdOut
 	if err := cmd.Start(); err != nil {
-		return fmt.Errorf("start evener-hub: %w", err)
+		return fmt.Errorf("start evener hub: %w", err)
 	}
 	exited := make(chan error, 1)
 	go func() {
@@ -481,9 +484,9 @@ func StartLocalHub(req HubStartRequest) error {
 	case err := <-exited:
 		output := strings.TrimSpace(startupOutput.String())
 		if output != "" {
-			return fmt.Errorf("evener-hub exited during startup: %w: %s", err, output)
+			return fmt.Errorf("evener hub exited during startup: %w: %s", err, output)
 		}
-		return fmt.Errorf("evener-hub exited during startup: %w", err)
+		return fmt.Errorf("evener hub exited during startup: %w", err)
 	case <-time.After(LocalHubImmediateExitWindow):
 	}
 	// The hub survived the window: it's healthy and stays running detached
@@ -567,7 +570,7 @@ func StartupErrorScreen(err error) string {
 	}
 	switch startupErr.Kind {
 	case StartupErrorMissingHubBinary:
-		return fmt.Sprintf("Evener TUI startup failed\n\nCannot find evener-hub binary.\n%s\n", detail)
+		return fmt.Sprintf("Evener TUI startup failed\n\nCannot find evener binary (hub subcommand).\n%s\n", detail)
 	case StartupErrorBindFailure:
 		return fmt.Sprintf("Evener TUI startup failed\n\nHub failed to bind %s.\n%s\n", startupErr.Addr, detail)
 	case StartupErrorUnhealthyHub:
