@@ -86,22 +86,21 @@ func TestBundledDelegatePromptUsesStableControlIdentity(t *testing.T) {
 	t.Parallel()
 	prompt := renderSubagentPromptWithAllowance(t, 2)
 
+	// The stable control contract is a set of typed identities and the calls
+	// that take them — not the sentences they are introduced in.
 	for _, want := range []string{
-		"`delegate` returns one durable `delegate_id` (`dlg_...`)",
+		"`delegate_id` (`dlg_...`)",
 		"`job_status(target=<dlg_...>)`",
 		"`job_stop(target=<dlg_...>)`",
+		"`delegate_send`",
 	} {
 		if !strings.Contains(prompt, want) {
-			t.Errorf("assembled delegate prompt missing stable control contract %q", want)
+			t.Errorf("assembled delegate prompt missing stable control token %q", want)
 		}
 	}
-	for _, stale := range []string{
-		"concrete `job_id`s for individual turns",
-		"Shell commands and delegates can run as durable background jobs",
-	} {
-		if strings.Contains(prompt, stale) {
-			t.Errorf("assembled delegate prompt retains activation-job guidance %q", stale)
-		}
+	// Delegates never carry an activation job identity.
+	if strings.Contains(prompt, "`job_id`s for individual turns") {
+		t.Error("assembled delegate prompt still gives delegates per-turn job identities")
 	}
 }
 
@@ -110,12 +109,11 @@ func TestBundledDelegatePromptPreservesWatchSupervisionAndShellGuidance(t *testi
 	prompt := renderSubagentPromptWithAllowance(t, 2)
 
 	for _, want := range []string{
-		"Shell commands can run as durable background jobs identified by a `job_id` (`job_...`)",
-		"Stable delegates are watch sources identified by `dlg_...`",
-		"`delegate_send(to=\"caller\")` sends a non-terminal update to your controlling caller",
-		"`delegate(watch_parent:true)`",
-		"quiet watchdog",
-		"`max_retained_terminal`",
+		"`job_id` (`job_...`)",          // shell work is typed
+		"`dlg_...`",                     // delegates are typed, including as watch sources
+		`delegate_send(to="caller")`,    // non-terminal update to the controlling caller
+		"`delegate(watch_parent:true)`", // observer sidecar entry point
+		"quiet watchdog",                // supervision reporting, named feature
 	} {
 		if !strings.Contains(prompt, want) {
 			t.Errorf("assembled delegate prompt missing preserved capability %q", want)

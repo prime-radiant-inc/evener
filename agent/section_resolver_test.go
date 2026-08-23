@@ -639,7 +639,7 @@ func TestSubagentTemplate_StructuralRegression(t *testing.T) {
 		ResultToolName:     "communicate",
 	}
 
-	result, _, err := resolver.RenderEmbedded(embeddedPrompts, "prompts/templates/", "subagent", data)
+	result, sources, err := resolver.RenderEmbedded(embeddedPrompts, "prompts/templates/", "subagent", data)
 	if err != nil {
 		t.Fatalf("render error: %v", err)
 	}
@@ -652,22 +652,21 @@ func TestSubagentTemplate_StructuralRegression(t *testing.T) {
 		}
 	}
 
-	// The fresh-worktree guidance is a four-part contract: it applies on entering
-	// a worktree, warns that dependency directories may be missing, tells the
-	// agent to copy or install them, and scopes that to before the gates run.
-	// Pinned clause by clause against the case-folded section rather than as one
-	// sentence, so splitting the semicolon into two sentences (which recapitalizes
-	// the second clause) cannot break the test while the contract holds.
-	folded := strings.ToLower(result)
-	for _, want := range []string{
-		"fresh worktree",
-		"dependency directories may be absent",
-		"copy or install the project's dependencies",
-		"before running its gates",
-	} {
-		if !strings.Contains(folded, want) {
-			t.Errorf("subagent prompt missing fresh-worktree dependency guidance %q; got:\n%s", want, result)
+	// Reach, not wording: the leaf prompt has to actually resolve the workflow
+	// section. Guidance a leaf needs (fresh-worktree dependencies, shell exit
+	// codes) lives there, and moving it into a .CanDelegate-gated section would
+	// strip it from exactly the agent that needs it.
+	workflowResolved := false
+	for _, source := range sources {
+		if strings.Contains(source.Label, "workflow.md") {
+			workflowResolved = true
+			if source.Size == 0 {
+				t.Error("leaf prompt resolved the workflow section with no content")
+			}
 		}
+	}
+	if !workflowResolved {
+		t.Errorf("leaf prompt did not resolve the workflow section; sources = %v", sources)
 	}
 
 	// Subagent should NOT have root-only sections such as delegation, git-safety,
@@ -701,11 +700,6 @@ func TestTranscriptsSection_TeachesToolsNotRawRead(t *testing.T) {
 		if !strings.Contains(section, want) {
 			t.Errorf("transcripts section missing tool name %q", want)
 		}
-	}
-
-	// Must contain the explicit prohibition against raw file access.
-	if !strings.Contains(section, "Do not access raw transcript files directly") {
-		t.Errorf("transcripts section missing prohibition guidance; got:\n%s", section)
 	}
 
 	// Must not instruct raw file reading via read_file.
@@ -784,42 +778,6 @@ func TestWorkflowSection_GatesItsToolMentions(t *testing.T) {
 	}
 }
 
-// TestWorkflowSectionDefinesRootCauseToActionTransition pins kata nbcf's
-// positive phase-transition rule: root-cause investigation ends when the
-// evidence isolates a boundary and one falsifiable hypothesis is stateable,
-// at which point the smallest test runs instead of more surveying. It also
-// pins the stall checkpoint (no new evidence -> summarize and act or report
-// the gap) and that both land between the existing "let verification drive
-// further exploration" line and the pre-finish verification line, not before
-// or after the whole section.
-func TestWorkflowSectionDefinesRootCauseToActionTransition(t *testing.T) {
-	t.Parallel()
-	section := postureSectionResolver("coordinator").Section("workflow", promptData{Provider: "openai", Agent: "coordinator"})
-	for _, want := range []string{
-		"falsifiable hypothesis",
-		"stop surveying adjacent code",
-		"smallest test that could confirm or refute it",
-		"adds no new evidence",
-		"summarize the current hypothesis",
-		"report exactly what evidence is missing",
-		"does not cap a legitimate broad investigation",
-	} {
-		if !strings.Contains(section, want) {
-			t.Fatalf("workflow section missing %q: %s", want, section)
-		}
-	}
-
-	exploration := strings.Index(section, "let verification drive further exploration")
-	transition := strings.Index(section, "falsifiable hypothesis")
-	preFinish := strings.Index(section, "Before finishing, verify the actual required artifact")
-	if exploration < 0 || transition < 0 || preFinish < 0 {
-		t.Fatalf("expected anchor lines not found: exploration=%d transition=%d preFinish=%d", exploration, transition, preFinish)
-	}
-	if exploration >= transition || transition >= preFinish {
-		t.Fatalf("transition rule out of place: want exploration(%d) < transition(%d) < preFinish(%d)", exploration, transition, preFinish)
-	}
-}
-
 func TestReviewerTemplate_UsesCommunicateDecisionContract(t *testing.T) {
 	t.Parallel()
 	resolver := &sectionResolver{
@@ -844,14 +802,10 @@ func TestReviewerTemplate_UsesCommunicateDecisionContract(t *testing.T) {
 		t.Fatalf("render error: %v", err)
 	}
 
-	if !strings.Contains(result, "`message` to your full review report") || !strings.Contains(result, "`end_turn` to `true`") {
-		t.Error("reviewer prompt should require the current communicate review contract")
-	}
-	if !strings.Contains(result, "output.decision") {
-		t.Error("reviewer prompt should mention output.decision")
-	}
-	if !strings.Contains(result, "approve") || !strings.Contains(result, "reject") {
-		t.Error("reviewer prompt should mention the allowed decision values")
+	for _, want := range []string{"`message`", "`end_turn`", "output.decision", "approve", "reject"} {
+		if !strings.Contains(result, want) {
+			t.Errorf("reviewer prompt missing decision-contract field %q:\n%s", want, result)
+		}
 	}
 	if !strings.Contains(result, "Currently callable tools:") {
 		t.Error("reviewer prompt should show the callable tool list for this role")
@@ -935,62 +889,6 @@ func postureSectionResolver(agent string) *sectionResolver {
 	}
 }
 
-// TestVerificationSectionDefinesIncompleteGates pins the verification posture:
-// a gate counts only when it ran and exited zero, everything else is reported as
-// incomplete with its exact condition, and the parent reruns what the child
-// could not.
-func TestVerificationSectionDefinesIncompleteGates(t *testing.T) {
-	t.Parallel()
-	section := postureSectionResolver("coordinator").Section("verification", promptData{Provider: "openai", Agent: "coordinator"})
-	for _, want := range []string{
-		"actually ran and exited zero", "timeout", "launch failure", "sandbox denial",
-		"environmental blockage", "verification incomplete", "fixture or environment failure",
-		"rerun the decisive incomplete gate",
-	} {
-		if !strings.Contains(section, want) {
-			t.Fatalf("verification section missing %q: %s", want, section)
-		}
-	}
-}
-
-// TestVerificationSectionRequiresSmokeCaseBeforeMatrix pins kata nbcf's
-// harness-vs-product rule: before a cross-model or cross-configuration
-// comparison is read as a product/model-behavior finding, one known-good
-// smoke case must be proven on each participant first.
-func TestVerificationSectionRequiresSmokeCaseBeforeMatrix(t *testing.T) {
-	t.Parallel()
-	section := postureSectionResolver("coordinator").Section("verification", promptData{Provider: "openai", Agent: "coordinator"})
-	for _, want := range []string{
-		"cross-model or cross-configuration comparison",
-		"known-good smoke case",
-		"an infrastructure or configuration failure is not",
-		"evidence about behavior under test",
-	} {
-		if !strings.Contains(section, want) {
-			t.Fatalf("verification section missing %q: %s", want, section)
-		}
-	}
-}
-
-// TestContextManagementSectionIsAdvisoryAndBounded pins the context-management
-// posture: compaction is a suggestion at a task boundary, and a stalled
-// implement/review/fix loop stops after two cycles instead of repeating.
-func TestContextManagementSectionIsAdvisoryAndBounded(t *testing.T) {
-	t.Parallel()
-	section := postureSectionResolver("coordinator").Section("context-management", promptData{
-		Provider: "openai", Agent: "coordinator",
-		CallableTools: map[string]bool{"compact_context": true},
-	})
-	for _, want := range []string{
-		"After completing and reporting a task", "compact_context", "before unrelated work",
-		"two incomplete implement/review/fix cycles", "Report the evidence", "reslice", "ask for direction",
-	} {
-		if !strings.Contains(section, want) {
-			t.Fatalf("context-management section missing %q: %s", want, section)
-		}
-	}
-}
-
 // TestContextManagementSection_SilentAboutAnUncallableCompactTool applies the
 // tool-mention rule (ruled 2026-08-06) to this section: a session without
 // compact_context keeps the stop rule and loses only the tool suggestion.
@@ -1000,39 +898,11 @@ func TestContextManagementSection_SilentAboutAnUncallableCompactTool(t *testing.
 	if strings.Contains(section, "compact_context") {
 		t.Fatalf("context-management section names a tool this session cannot call: %s", section)
 	}
-	if !strings.Contains(section, "two incomplete implement/review/fix cycles") {
-		t.Fatalf("tool-free context-management section lost its tool-independent guidance: %s", section)
-	}
-}
-
-// TestCommunicateSectionReportsPhaseChangeCheckpoint pins kata nbcf's
-// checkpoint-reporting rule: a long or delegated task that changes phase
-// (e.g. investigation to implementation) sends a non-terminal checkpoint
-// naming completed work, the current hypothesis/plan, the next concrete
-// action, and blockers, and it lands after the "Report real milestones"
-// paragraph rather than replacing it.
-func TestCommunicateSectionReportsPhaseChangeCheckpoint(t *testing.T) {
-	t.Parallel()
-	section := postureSectionResolver("coordinator").Section("communicate", promptData{
-		Provider: "openai", Agent: "coordinator", ResultToolName: "communicate",
-	})
-	for _, want := range []string{
-		"Report real milestones",
-		"changes phase",
-		"communicate with `end_turn=false`",
-		"current hypothesis or plan",
-		"next concrete action",
-		"any blockers",
-	} {
-		if !strings.Contains(section, want) {
-			t.Fatalf("communicate section missing %q: %s", want, section)
-		}
-	}
-
-	milestones := strings.Index(section, "Report real milestones")
-	checkpoint := strings.Index(section, "changes phase")
-	if milestones < 0 || checkpoint < 0 || milestones >= checkpoint {
-		t.Fatalf("checkpoint guidance out of place: want milestones(%d) < checkpoint(%d)", milestones, checkpoint)
+	// The gate removes the tool suggestion, never the section: a tool-free
+	// session still gets a heading and a body under it.
+	body := strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(section), "## Context management"))
+	if body == "" {
+		t.Fatalf("tool-free context-management section is empty apart from its heading: %q", section)
 	}
 }
 

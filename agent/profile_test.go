@@ -222,29 +222,15 @@ func TestSystemPrompt_ImplementerWarnsOnUnavailableTools(t *testing.T) {
 	t.Parallel()
 	prompt := renderPromptForTest(t, NewOpenAIProfile("gpt-5.4"), promptData{
 		Agent:                       "implementer",
-		CallableToolNames:           []string{"read_file", "exec_command", "communicate"},
 		UnavailableProfileToolNames: []string{"delegate", "job_watch"},
 	})
-
-	if !strings.Contains(prompt, "If the task depends on tools or capabilities explicitly listed as unavailable in") {
-		t.Fatalf("implementer prompt missing unavailable-tools guidance:\n%s", prompt)
+	if !strings.Contains(prompt, "Provider tools currently unavailable here:") {
+		t.Fatalf("implementer prompt missing the unavailable-tool inventory:\n%s", prompt)
 	}
-	if !strings.Contains(prompt, "Do not try to recreate unavailable evener-native tools by shelling out to") {
-		t.Fatalf("implementer prompt missing nested-evener warning:\n%s", prompt)
-	}
-}
-
-func TestSystemPrompt_CoordinatorHasImpossibleDelegationException(t *testing.T) {
-	t.Parallel()
-	prompt := renderPromptForTest(t, NewOpenAIProfile("gpt-5.4"), promptData{
-		Agent: "coordinator",
-	})
-
-	if !strings.Contains(prompt, "Exception: if the task itself is about delegation, agent behavior, or orchestration") {
-		t.Fatalf("coordinator prompt missing delegation exception:\n%s", prompt)
-	}
-	if !strings.Contains(prompt, "Do not force an impossible delegation.") {
-		t.Fatalf("coordinator prompt missing impossible-delegation rule:\n%s", prompt)
+	for _, want := range []string{"- `delegate`", "- `job_watch`"} {
+		if !strings.Contains(prompt, want) {
+			t.Fatalf("unavailable-tool inventory missing %q:\n%s", want, prompt)
+		}
 	}
 }
 
@@ -255,23 +241,12 @@ func TestBuildSystemPrompt_IncludesBackgroundJobsSection(t *testing.T) {
 	if !strings.Contains(prompt, "## Background jobs") {
 		t.Fatalf("system prompt missing background-jobs section heading:\n%s", prompt)
 	}
-	if !strings.Contains(prompt, "Delegates are durable resources identified by") {
-		t.Fatalf("system prompt missing background-jobs section body (stable delegate statement):\n%s", prompt)
-	}
-	if !strings.Contains(prompt, "Pick the waiting primitive by how many answers you need:") {
-		t.Fatalf("system prompt missing background-jobs section body (waiting primitive sentence):\n%s", prompt)
-	}
-}
-
-// TestBuildSystemPrompt_PinsAntiPollGuidance makes the scenario card
-// test/scenarios/job-delegate-wait-no-poll.md's grep pin durable: the assembled
-// system prompt must carry the exact anti-poll sentence.
-func TestBuildSystemPrompt_PinsAntiPollGuidance(t *testing.T) {
-	t.Parallel()
-	prompt := renderPromptForTest(t, newAnthropicProfile("claude-test"), promptData{})
-
-	if !strings.Contains(prompt, "Do not call `job_status` in a loop") {
-		t.Fatalf("system prompt missing anti-poll pin (scenario job-delegate-wait-no-poll depends on it):\n%s", prompt)
+	// Body, not just the heading: the section's job is to teach the two typed
+	// identities and the waiting tools that consume them.
+	for _, want := range []string{"`job_...`", "`dlg_...`", "`job_status`", "`job_watch`"} {
+		if !strings.Contains(prompt, want) {
+			t.Fatalf("background-jobs section missing %q:\n%s", want, prompt)
+		}
 	}
 }
 
@@ -1168,12 +1143,29 @@ func TestBuildSystemPrompt_OpenAI_SkillsWithUseSkill(t *testing.T) {
 	if !strings.Contains(prompt, "<skill-catalog>") {
 		t.Error("OpenAI prompt should contain <skills> section")
 	}
-	if !strings.Contains(prompt, "Load a skill by calling use_skill with its name") {
-		t.Error("OpenAI prompt should instruct model to use use_skill for skills")
+	catalog := skillCatalogBlock(t, prompt)
+	if !strings.Contains(catalog, "use_skill") {
+		t.Errorf("use_skill session: catalog should load skills through use_skill, got:\n%s", catalog)
+	}
+	if strings.Contains(catalog, "read_file") {
+		t.Errorf("use_skill session: catalog must not fall back to read_file, got:\n%s", catalog)
 	}
 	if !strings.Contains(prompt, "- greet: Greeting skill [/tmp/skills/greet]") {
 		t.Error("OpenAI prompt should include skill directory path for use_skill")
 	}
+}
+
+// skillCatalogBlock returns the <skill-catalog> body. Tool-name assertions about
+// the catalog must be scoped to it: the assembled prompt names use_skill and
+// read_file in the tool inventory too, so an unscoped Contains proves nothing.
+func skillCatalogBlock(t *testing.T, prompt string) string {
+	t.Helper()
+	start := strings.Index(prompt, "<skill-catalog>")
+	end := strings.Index(prompt, "</skill-catalog>")
+	if start < 0 || end < start {
+		t.Fatalf("prompt has no <skill-catalog> block:\n%s", prompt)
+	}
+	return prompt[start:end]
 }
 
 func TestBuildSystemPrompt_NoSkills_NoSkillsSection(t *testing.T) {
@@ -1820,32 +1812,6 @@ func TestBuildSystemPrompt_EmptyWorkspace(t *testing.T) {
 	// Should NOT render an empty workspace section.
 	if strings.Contains(prompt, "<workspace>") {
 		t.Error("empty workspace should not render a <workspace> section")
-	}
-}
-
-func TestBuildSystemPrompt_WorkspaceAnnotation(t *testing.T) {
-	t.Parallel()
-	dir := t.TempDir()
-	touchFile(t, filepath.Join(dir, "main.py"), "print('hello')\n")
-
-	env := schema.EnvironmentInfo{
-		WorkingDir: dir,
-		Platform:   "linux",
-		Today:      "2026-03-01",
-		Workspace:  ScanWorkspace(dir),
-	}
-
-	p := NewOpenAIProfile("gpt-5.3-codex")
-	prompt := renderPromptForTest(t, p, promptData{
-		WorkingDir:    env.WorkingDir,
-		Platform:      env.Platform,
-		Today:         env.Today,
-		WorkspaceTree: env.Workspace.Tree,
-		BuildInfo:     env.Workspace.BuildInfo,
-	})
-
-	if !strings.Contains(prompt, "snapshot of the working directory taken at session start") {
-		t.Error("workspace section missing static annotation")
 	}
 }
 

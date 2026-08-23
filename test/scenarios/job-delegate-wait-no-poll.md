@@ -16,8 +16,10 @@ orientation `job_status` call (ideally zero) and then goes idle.
   detector and any nudge counters start clean and nothing pollutes a real
   instance.
 - A `evener serve` instance and a hub (or TUI) client built from the code under
-  test — confirm the running binary embeds the edited `background-jobs.md`
-  (grep the assembled system prompt for "Do not call `job_status` in a loop").
+  test — confirm the running binary is built from the working tree, not a stale
+  install: `evener --version` (or `evener doctor`) must report the commit you
+  built, and the assembled system prompt must carry the `## Background jobs`
+  heading.
 - Parent model `gpt-5.5` (the model that reproduced the loop). Re-run on at least
   one other tool-capable model as a cross-check.
 

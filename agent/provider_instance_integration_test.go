@@ -29,8 +29,32 @@ import (
 
 	"primeradiant.com/evener/agent/execenv"
 	"primeradiant.com/evener/agent/provider"
+	"primeradiant.com/evener/internal/bundled"
 	"primeradiant.com/evener/llm"
 )
+
+// promptResolvedSection reports whether the session's prompt render resolved a
+// section file by that stem. Section presence is a resolver fact; grepping the
+// section's prose for a marker sentence is not.
+func promptResolvedSection(t *testing.T, s *Session, stem string) bool {
+	t.Helper()
+	resolver := &sectionResolver{
+		provider: s.profile.BehaviorTag(),
+		agent:    defaultAgentName,
+		agentFS:  bundled.Agents(),
+		sources:  []sectionSource{embedSource{fs: embeddedPrompts, prefix: "prompts/sections/"}},
+	}
+	_, sources, err := resolver.RenderEmbedded(embeddedPrompts, "prompts/templates/", "system", s.buildPromptData(s.currentEnv()))
+	if err != nil {
+		t.Fatalf("render for source tracking: %v", err)
+	}
+	for _, src := range sources {
+		if strings.Contains(src.Label, stem) {
+			return true
+		}
+	}
+	return false
+}
 
 // ── Shared resolver for cross-instance switch tests ───────────────────────────
 
@@ -118,11 +142,12 @@ func TestProviderInstance_RenamedOpenAI_IdentityAndBehavior(t *testing.T) {
 		t.Fatalf("req.Provider = %q, want work (llm.Client must stamp the instance name)", got)
 	}
 
-	// ── Assertion 3: behavior by tag — openai prompt section in system prompt ──
-	const openAIMarker = "they execute in the order you"
-	prompt, _ := sess.renderSystemPrompt(sess.env)
-	if !strings.Contains(prompt, openAIMarker) {
-		t.Fatalf("system prompt missing openai section marker %q — renamed openai instance must get openai-tagged behavior", openAIMarker)
+	// ── Assertion 3: behavior by tag — the openai append is resolved ──
+	if got := sess.profile.BehaviorTag(); got != "openai" {
+		t.Fatalf("BehaviorTag() = %q, want openai (renamed openai instance must keep openai-tagged behavior)", got)
+	}
+	if !promptResolvedSection(t, sess, "tools.provider-openai_append") {
+		t.Fatal("openai-tagged session did not resolve the openai tools append")
 	}
 
 	// ── Assertion 4: behavior by tag — 24h prompt-cache eligibility ──
@@ -161,11 +186,12 @@ func TestProviderInstance_OpenAICompatible_NoOpenAIBehavior(t *testing.T) {
 	}
 	defer sess.Close()
 
-	// System prompt must NOT contain the openai-only section.
-	const openAIMarker = "they execute in the order you"
-	prompt, _ := sess.renderSystemPrompt(sess.env)
-	if strings.Contains(prompt, openAIMarker) {
-		t.Fatalf("system prompt contains openai section marker %q — openai-compatible must NOT load the openai section", openAIMarker)
+	// The openai-only section must NOT be resolved for this tag.
+	if got := sess.profile.BehaviorTag(); got == "openai" {
+		t.Fatalf("BehaviorTag() = %q, want a non-openai tag for an openai-compatible instance", got)
+	}
+	if promptResolvedSection(t, sess, "tools.provider-openai_append") {
+		t.Fatal("openai-compatible session resolved the openai-only tools append")
 	}
 
 	// Prompt-cache eligibility must be blocked by the tag.
