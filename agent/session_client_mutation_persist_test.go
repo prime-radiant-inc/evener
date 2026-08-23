@@ -651,8 +651,9 @@ func TestClientMutationPersist_RestoreRejectsMalformedSnapshot(t *testing.T) {
 	}
 }
 
+//go:fix inline
 func uint64Pointer(value uint64) *uint64 {
-	return &value
+	return new(value)
 }
 
 func requestInput(t *testing.T, raw json.RawMessage) []appwire.InputItem {

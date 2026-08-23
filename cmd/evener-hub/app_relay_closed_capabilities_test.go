@@ -170,7 +170,7 @@ func relayedNotificationClient(
 ) *appwire.Client {
 	t.Helper()
 	source := &relaySessionTestSource{
-		relayLifecycleSource: relayLifecycleSource{thread: thread},
+		thread: thread,
 		lease: &scriptedRelaySessionLease{
 			readResult: appsource.RelayReadResult{
 				Response: appwire.ThreadReadResponse{Thread: thread},

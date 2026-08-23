@@ -6,7 +6,6 @@ import (
 
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/appwire"
-	"primeradiant.com/evener/rendezvous"
 )
 
 // A session can now exist having never run a turn: an empty-prompt spawn starts
@@ -70,7 +69,7 @@ func fuzzScenarioBuildTree_MarksNeverRunSessionDormant(t *testing.T) {
 			meta.UpdatedAt = now
 			meta.EnvInfo = schema.EnvironmentInfo{WorkingDir: "/projects/evener"}
 			live := []LiveEntry{{
-				Entry:     rendezvous.Entry{PID: 1},
+				PID:       1,
 				SessionID: "01DORMANCY",
 				Status:    appwire.ThreadStatusIdle,
 			}}
@@ -109,7 +108,7 @@ func fuzzScenarioBuildTree_LiveAndProjectRowsAgreeOnDormancy(t *testing.T) {
 		EnvInfo:   schema.EnvironmentInfo{WorkingDir: "/projects/evener"},
 	}}
 	live := []LiveEntry{{
-		Entry:     rendezvous.Entry{PID: 1},
+		PID:       1,
 		SessionID: "01NEVERRAN",
 		Status:    appwire.ThreadStatusIdle,
 	}}

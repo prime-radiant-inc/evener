@@ -880,9 +880,9 @@ func fuzzScenarioRoster_StatusChangeDrivesPastIndexRefreshAndVersionBump(t *test
 
 func fuzzScenarioNewRosterWithEntries(t *testing.T) {
 	r := NewRosterWithEntries(
-		LiveEntry{Entry: rendezvous.Entry{PID: 1, Address: "127.0.0.1:1"}, SessionID: "01A"},
-		LiveEntry{Entry: rendezvous.Entry{PID: 2, Address: "127.0.0.1:2"}, SessionID: "01B"},
-		LiveEntry{Entry: rendezvous.Entry{PID: 3, Address: "127.0.0.1:3"}, SessionID: ""},
+		LiveEntry{PID: 1, Address: "127.0.0.1:1", SessionID: "01A"},
+		LiveEntry{PID: 2, Address: "127.0.0.1:2", SessionID: "01B"},
+		LiveEntry{PID: 3, Address: "127.0.0.1:3", SessionID: ""},
 	)
 	got := r.List()
 	if len(got) != 3 {

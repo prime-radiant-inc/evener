@@ -6,9 +6,6 @@ import (
 	"primeradiant.com/evener/appwire"
 )
 
-func intPtr(v int) *int    { return &v }
-func boolPtr(v bool) *bool { return &v }
-
 // TestLaunchOptionValue_AllFields drives every field branch of the
 // launchOptionValue switch, checking both the display value and the edit value.
 func TestLaunchOptionValue_AllFields(t *testing.T) {
@@ -19,10 +16,10 @@ func TestLaunchOptionValue_AllFields(t *testing.T) {
 		FastCheapModel:              "mini",
 		ContextStrategy:             "trim",
 		OpenAIResponsesContinuation: "on",
-		MaxRounds:                   intPtr(10),
-		MaxSubagentDepth:            intPtr(3),
-		NoProjectPrompts:            boolPtr(true),
-		AppReplaySize:               intPtr(5),
+		MaxRounds:                   new(10),
+		MaxSubagentDepth:            new(3),
+		NoProjectPrompts:            new(true),
+		AppReplaySize:               new(5),
 		SystemPromptMode:            "custom",
 		SystemPromptFile:            "/p",
 		SystemPromptText:            "line1\nline2",
@@ -34,7 +31,7 @@ func TestLaunchOptionValue_AllFields(t *testing.T) {
 		MCPConfigs:                  []string{"m1.json"},
 		ModelFallbacks:              []string{"f1", "f2"},
 		Env:                         map[string]string{"B": "2", "A": "1"},
-		Verbose:                     boolPtr(false),
+		Verbose:                     new(false),
 		TraceFile:                   "/t",
 		CPUProfile:                  "/c",
 		ExportATIFPath:              "/e",

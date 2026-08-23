@@ -143,17 +143,17 @@ func (k *oresp_knobs) next() byte {
 	return v
 }
 
-func oresp_ptrFloat(v float64) *float64 { return &v }
-func oresp_ptrInt(v int) *int           { return &v }
-func oresp_ptrBool(v bool) *bool        { return &v }
-func oresp_ptrStr(v string) *string     { return &v }
-
 // oresp_safeInstanceName reduces a fuzzed string to a filesystem-safe instance
 // identifier, modeling real instance names (they are TOML config keys under
 // [instances.NAME], never arbitrary bytes). NewForInstance derives the per-
 // instance OAuth file path auth/<name>.json from this, so a NUL or "/" would make
 // the path unopenable — a filename concern outside the credential-resolution
 // branches this fuzzer targets. Empty input maps to "openai".
+//
+//go:fix inline
+//go:fix inline
+//go:fix inline
+//go:fix inline
 func oresp_safeInstanceName(s string) string {
 	var b []byte
 	for i := 0; i < len(s) && len(b) < 32; i++ {
@@ -272,13 +272,13 @@ func oresp_buildRequest(tmpDir, model, sys, user string, control, blob []byte) l
 
 	// Scalar optionals.
 	if k.next()%2 == 1 {
-		req.Temperature = oresp_ptrFloat(0.7)
+		req.Temperature = new(0.7)
 	}
 	if k.next()%2 == 1 {
-		req.TopP = oresp_ptrFloat(0.9)
+		req.TopP = new(0.9)
 	}
 	if k.next()%2 == 1 {
-		req.MaxTokens = oresp_ptrInt(128)
+		req.MaxTokens = new(128)
 	}
 	if k.next()%2 == 1 {
 		req.StopSequences = []string{"stop", user}
@@ -305,16 +305,16 @@ func oresp_buildRequest(tmpDir, model, sys, user string, control, blob []byte) l
 		req.Truncation = "auto"
 	}
 	if k.next()%2 == 1 {
-		req.MaxToolCalls = oresp_ptrInt(3)
+		req.MaxToolCalls = new(3)
 	}
 	if k.next()%2 == 1 {
-		req.Background = oresp_ptrBool(true)
+		req.Background = new(true)
 	}
 	switch k.next() % 3 {
 	case 1:
-		req.Store = oresp_ptrBool(true)
+		req.Store = new(true)
 	case 2:
-		req.Store = oresp_ptrBool(false)
+		req.Store = new(false)
 	}
 	if k.next()%2 == 1 {
 		req.Metadata = map[string]string{"a": "1", "b": user}
@@ -324,11 +324,11 @@ func oresp_buildRequest(tmpDir, model, sys, user string, control, blob []byte) l
 	}
 	switch k.next() % 4 {
 	case 1:
-		req.ReasoningEffort = oresp_ptrStr("low")
+		req.ReasoningEffort = new("low")
 	case 2:
-		req.ReasoningEffort = oresp_ptrStr("medium")
+		req.ReasoningEffort = new("medium")
 	case 3:
-		req.ReasoningEffort = oresp_ptrStr("high")
+		req.ReasoningEffort = new("high")
 	}
 	if k.next()%2 == 1 {
 		req.Include = []string{"reasoning.encrypted_content", "message.output_text.logprobs"}

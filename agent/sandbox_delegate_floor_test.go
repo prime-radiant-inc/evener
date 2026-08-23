@@ -7,12 +7,12 @@ import (
 	"primeradiant.com/evener/agent/sandbox"
 )
 
-func boolPtr(v bool) *bool { return &v }
-
 // TestBuildDelegateSandboxPolicy_ModeFloor: a delegate may only request a box at
 // least as confining as its parent's. Under a restricted parent every looser mode
 // is refused with a legible invalid_request error; under an off parent every mode
 // is allowed (off is loosest).
+//
+//go:fix inline
 func TestBuildDelegateSandboxPolicy_ModeFloor(t *testing.T) {
 	t.Parallel()
 
@@ -87,7 +87,7 @@ func TestBuildDelegateSandboxPolicy_FloorErrorNamesAxisAndAllowedSet(t *testing.
 // believes egress is off. It must be refused loudly, not silently accepted.
 func TestBuildDelegateSandboxPolicy_OffWithNetRefused(t *testing.T) {
 	t.Parallel()
-	for _, net := range []*bool{boolPtr(false), boolPtr(true)} {
+	for _, net := range []*bool{new(false), new(true)} {
 		if _, err := buildDelegateSandboxPolicy("off", net, sandbox.ModeOff, true); err == nil {
 			t.Errorf("sandbox=off with an explicit sandbox_net (%v) must be refused", *net)
 		} else if !strings.Contains(err.Error(), "invalid_request:") || !strings.Contains(err.Error(), `no effect with sandbox="off"`) {
@@ -100,7 +100,7 @@ func TestBuildDelegateSandboxPolicy_OffWithNetRefused(t *testing.T) {
 	}
 	// resolveDelegateSandboxRequest routes an explicit off+net through the same
 	// refusal (the mode is present, so it does not hit the mode-absent guard).
-	if _, err := resolveDelegateSandboxRequest("off", boolPtr(false), sandbox.ModeOff, true); err == nil {
+	if _, err := resolveDelegateSandboxRequest("off", new(false), sandbox.ModeOff, true); err == nil {
 		t.Error("resolveDelegateSandboxRequest must refuse an explicit sandbox=off + sandbox_net")
 	} else if !strings.Contains(err.Error(), `no effect with sandbox="off"`) {
 		t.Errorf("refusal must name the off+net contradiction, got %v", err)
@@ -123,14 +123,14 @@ func TestBuildDelegateSandboxPolicy_NetworkFloor(t *testing.T) {
 	}
 
 	// Explicit net-on under a net-off parent is refused.
-	if _, err := buildDelegateSandboxPolicy("restricted", boolPtr(true), sandbox.ModeRestricted, false); err == nil {
+	if _, err := buildDelegateSandboxPolicy("restricted", new(true), sandbox.ModeRestricted, false); err == nil {
 		t.Error("explicit sandbox_net=on under a net-off parent must be refused")
 	} else if !strings.Contains(err.Error(), "invalid_request:") {
 		t.Errorf("network escalation refusal must be an invalid_request error, got %v", err)
 	}
 
 	// Explicit net-off under a net-on parent is allowed (tightening).
-	pol, err = buildDelegateSandboxPolicy("restricted", boolPtr(false), sandbox.ModeRestricted, true)
+	pol, err = buildDelegateSandboxPolicy("restricted", new(false), sandbox.ModeRestricted, true)
 	if err != nil {
 		t.Fatalf("explicit net-off under a net-on parent must be allowed: %v", err)
 	}
@@ -163,7 +163,7 @@ func TestResolveDelegateSandboxRequest_NetOnlyInheritsMode(t *testing.T) {
 	}
 
 	// Net-only under a sandboxed parent inherits the mode + tightens the network.
-	pol, err = resolveDelegateSandboxRequest("", boolPtr(false), sandbox.ModeRestricted, true)
+	pol, err = resolveDelegateSandboxRequest("", new(false), sandbox.ModeRestricted, true)
 	if err != nil {
 		t.Fatalf("net-only tightening under a sandboxed parent must be allowed: %v", err)
 	}
@@ -175,14 +175,14 @@ func TestResolveDelegateSandboxRequest_NetOnlyInheritsMode(t *testing.T) {
 	}
 
 	// Net-only under an UNSANDBOXED parent is an error, not a silent no-op.
-	if _, err := resolveDelegateSandboxRequest("", boolPtr(false), sandbox.ModeOff, true); err == nil {
+	if _, err := resolveDelegateSandboxRequest("", new(false), sandbox.ModeOff, true); err == nil {
 		t.Error("sandbox_net without a mode under an unsandboxed parent must be refused")
 	} else if !strings.Contains(err.Error(), "invalid_request:") || !strings.Contains(err.Error(), "requires a sandbox mode") {
 		t.Errorf("refusal must explain sandbox_net requires a sandbox mode, got %v", err)
 	}
 
 	// Net-only cannot ESCALATE the network (net-on under a net-off sandboxed parent).
-	if _, err := resolveDelegateSandboxRequest("", boolPtr(true), sandbox.ModeRestricted, false); err == nil {
+	if _, err := resolveDelegateSandboxRequest("", new(true), sandbox.ModeRestricted, false); err == nil {
 		t.Error("net-only sandbox_net=on under a net-off parent must be refused")
 	}
 

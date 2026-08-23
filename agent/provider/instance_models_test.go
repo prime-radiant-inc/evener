@@ -9,21 +9,20 @@ import (
 	"primeradiant.com/evener/llm/providercfg"
 )
 
-func testBool(v bool) *bool { return &v }
-
+//go:fix inline
 func lunarouteModels() map[string]providercfg.ModelConfig {
 	return map[string]providercfg.ModelConfig{
 		"glm-5.2-nvfp4": {
 			ContextWindow:   1_048_576,
 			MaxOutputTokens: 131_072,
-			Reasoning:       testBool(true),
+			Reasoning:       new(true),
 			ThinkingLevels: map[string]string{
 				"minimal": "high", "low": "high", "medium": "high", "high": "high", "xhigh": "max",
 			},
 		},
 		"tiny-chat": {
 			ContextWindow: 32_000,
-			Reasoning:     testBool(false),
+			Reasoning:     new(false),
 		},
 	}
 }

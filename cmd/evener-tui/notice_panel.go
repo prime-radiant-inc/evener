@@ -156,8 +156,7 @@ func classifyWarningCategory(message string, cause *appwire.DiagnosticCause) str
 }
 
 func noticeCategoryForError(err error, fallback string) string {
-	var wire appwire.WireError
-	if errors.As(err, &wire) {
+	if wire, ok := errors.AsType[appwire.WireError](err); ok {
 		if data, ok := wire.Data.(appwire.ErrorData); ok {
 			switch data.EvenerErrorInfo {
 			case appwire.ErrorProviderUnavailable:
@@ -178,8 +177,7 @@ func noticeCategoryForError(err error, fallback string) string {
 }
 
 func noticeSummaryForError(err error, fallback string) string {
-	var wire appwire.WireError
-	if errors.As(err, &wire) {
+	if wire, ok := errors.AsType[appwire.WireError](err); ok {
 		if data, ok := wire.Data.(appwire.ErrorData); ok && data.EvenerErrorInfo == appwire.ErrorProviderUnavailable {
 			return "Check provider auth and runtime readiness."
 		}

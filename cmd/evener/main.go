@@ -124,8 +124,7 @@ func mainWithDeps(deps mainDeps) {
 			// subcommandExit carries the exit code from a library-style
 			// subcommand (Run returning a non-zero int). The subcommand
 			// already printed its own diagnostics; propagate the code.
-			var code subcommandExitError
-			if errors.As(err, &code) {
+			if code, ok := errors.AsType[subcommandExitError](err); ok {
 				if code != 0 {
 					deps.exit(int(code))
 				}

@@ -82,7 +82,7 @@ func TestPrepareSubagentRun_PerDelegateSandboxEnforced(t *testing.T) {
 	facts := sbxBwrapFacts(home)
 	s := sbxDelegateSession(t, facts) // parent env is off
 
-	prepared := prepareWithDelegateSandbox(t, s, lane, &sandbox.SandboxPolicy{Mode: sandbox.ModeRestricted, Network: boolPtr(true)})
+	prepared := prepareWithDelegateSandbox(t, s, lane, &sandbox.SandboxPolicy{Mode: sandbox.ModeRestricted, Network: new(true)})
 
 	// Persisted snapshot reflects the requested box.
 	if prepared.sandboxSnapshot == nil || prepared.sandboxSnapshot.Mode != "restricted" {
@@ -118,7 +118,7 @@ func TestPrepareSubagentRun_TerminalFinishCapturesScratchPath(t *testing.T) {
 	facts := sbxBwrapFacts(home)
 	s := sbxDelegateSession(t, facts)
 
-	prepared := prepareWithDelegateSandbox(t, s, lane, &sandbox.SandboxPolicy{Mode: sandbox.ModeRestricted, Network: boolPtr(true)})
+	prepared := prepareWithDelegateSandbox(t, s, lane, &sandbox.SandboxPolicy{Mode: sandbox.ModeRestricted, Network: new(true)})
 
 	le, ok := prepared.sub.sess.currentEnv().(*execenv.LocalExecutionEnvironment)
 	if !ok || le.Wrapper == nil {
@@ -146,7 +146,7 @@ func TestPrepareSubagentRun_PerDelegateSandboxOverridesSandboxedParent(t *testin
 	s := sbxDelegateSession(t, facts)
 	parentExtra := sbxSandboxedParent(t, s, facts, lane) // parent is workspace-write + extra root
 
-	prepared := prepareWithDelegateSandbox(t, s, lane, &sandbox.SandboxPolicy{Mode: sandbox.ModeRestricted, Network: boolPtr(true)})
+	prepared := prepareWithDelegateSandbox(t, s, lane, &sandbox.SandboxPolicy{Mode: sandbox.ModeRestricted, Network: new(true)})
 
 	le := prepared.sub.sess.currentEnv().(*execenv.LocalExecutionEnvironment)
 	if le.Sandbox == nil || le.Sandbox.Mode != sandbox.ModeRestricted {
@@ -215,7 +215,7 @@ func TestPrepareSubagentRun_PerDelegateSandboxCleansScratchOnSpawnFailure(t *tes
 	}
 
 	ctx := context.WithValue(context.Background(), ctxDelegationAllowance, 0)
-	ctx = context.WithValue(ctx, ctxDelegateSandboxPolicy, &sandbox.SandboxPolicy{Mode: sandbox.ModeRestricted, Network: boolPtr(true)})
+	ctx = context.WithValue(ctx, ctxDelegateSandboxPolicy, &sandbox.SandboxPolicy{Mode: sandbox.ModeRestricted, Network: new(true)})
 
 	prepared, err := s.prepareSubagentRun(ctx, "child task", "", lane, 0, "", "", nil, nil)
 	if err == nil {
@@ -246,7 +246,7 @@ func TestPrepareSubagentRun_PerDelegateSandboxCleansScratchOnGrantFailure(t *tes
 	}
 
 	ctx := context.WithValue(context.Background(), ctxDelegationAllowance, 0)
-	ctx = context.WithValue(ctx, ctxDelegateSandboxPolicy, &sandbox.SandboxPolicy{Mode: sandbox.ModeRestricted, Network: boolPtr(true)})
+	ctx = context.WithValue(ctx, ctxDelegateSandboxPolicy, &sandbox.SandboxPolicy{Mode: sandbox.ModeRestricted, Network: new(true)})
 	_, err := s.prepareSubagentRun(ctx, "child task", "", lane, 0, "", "", nil, []string{"parent_only_tool"})
 	if err == nil || !strings.Contains(err.Error(), "cannot grant tool(s)") {
 		t.Fatalf("prepareSubagentRun error = %v, want missing child grant", err)
@@ -268,7 +268,7 @@ func TestSpawnAgent_PerDelegateSandboxCleansScratchWhenLaunchIsRejected(t *testi
 	s := sbxDelegateSession(t, facts)
 	s.cfg.testOnly.subagentAfterPrepare = func(parent *Session) { parent.Close() }
 
-	ctx := context.WithValue(context.Background(), ctxDelegateSandboxPolicy, &sandbox.SandboxPolicy{Mode: sandbox.ModeRestricted, Network: boolPtr(true)})
+	ctx := context.WithValue(context.Background(), ctxDelegateSandboxPolicy, &sandbox.SandboxPolicy{Mode: sandbox.ModeRestricted, Network: new(true)})
 	if _, err := s.spawnAgent(ctx, "child task", "", lane, 0, "", "", nil, nil); err == nil || !strings.Contains(err.Error(), "session is closed") {
 		t.Fatalf("spawnAgent error = %v, want session-closed launch rejection", err)
 	}
@@ -565,7 +565,7 @@ func TestCreateDelegate_ResultEchoesSandboxBox(t *testing.T) {
 	res := s.createDelegate(context.Background(), delegateArgs{
 		Task:       "do sandboxed work",
 		Sandbox:    "restricted",
-		SandboxNet: boolPtr(false),
+		SandboxNet: new(false),
 	})
 	if res.Err != nil {
 		t.Fatalf("createDelegate: %v", res.Err)
@@ -644,7 +644,7 @@ func TestPrepareSubagentRun_PerDelegateSandboxWithoutIsolationDoesNotMutateParen
 	}
 
 	ctx := context.WithValue(context.Background(), ctxDelegationAllowance, 0)
-	ctx = context.WithValue(ctx, ctxDelegateSandboxPolicy, &sandbox.SandboxPolicy{Mode: sandbox.ModeRestricted, Network: boolPtr(true)})
+	ctx = context.WithValue(ctx, ctxDelegateSandboxPolicy, &sandbox.SandboxPolicy{Mode: sandbox.ModeRestricted, Network: new(true)})
 
 	// workingDir == "" : a per-delegate sandbox WITHOUT an isolation lane.
 	prepared, err := s.prepareSubagentRun(ctx, "child task", "", "", 0, "", "", nil, nil)
@@ -686,7 +686,7 @@ func TestCreateDelegate_SandboxNetWithoutModeRefusedEarly(t *testing.T) {
 	facts := sbxBwrapFacts(home)
 	s := sbxDelegateSession(t, facts) // parent env is off
 
-	res := s.createDelegate(context.Background(), delegateArgs{Task: "do work", SandboxNet: boolPtr(false)})
+	res := s.createDelegate(context.Background(), delegateArgs{Task: "do work", SandboxNet: new(false)})
 	if res.Err == nil {
 		t.Fatal("sandbox_net without a mode under an unsandboxed parent must be refused")
 	}

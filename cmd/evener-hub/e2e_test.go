@@ -170,7 +170,7 @@ context_strategy = "ooda"
 	}
 	if err := launchconfig.SaveMeta(filepath.Join(stateRoot, "projects", pid, "meta.toml"), launchconfig.Meta{
 		Schema: 1, CWD: cwd,
-		Trust: launchconfig.MetaTrust{Hash: hash, Decision: "trusted"},
+		Trust: launchconfig.MetaTrust{Hashes: []string{hash}, Decision: "trusted"},
 	}); err != nil {
 		t.Fatal(err)
 	}

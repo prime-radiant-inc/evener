@@ -7,7 +7,6 @@ import (
 	"primeradiant.com/evener/agent/execenv"
 	"primeradiant.com/evener/agent/internal/tool"
 	"primeradiant.com/evener/agent/sandbox"
-	"primeradiant.com/evener/llm"
 )
 
 // egressDeniedByNet returns a typed DeniedError when env is a sandboxed session
@@ -37,7 +36,7 @@ func egressDeniedByNet(env execenv.ExecutionEnvironment, toolName string) error 
 func registerWebTools(reg *tool.Registry, deps *toolDeps) {
 	// Web fetch.
 	_ = reg.Register(tool.RegisteredTool{
-		Tool: llm.Tool{Definition: tool.DefWebFetch()},
+		Definition: tool.DefWebFetch(),
 		Exec: func(ctx context.Context, env execenv.ExecutionEnvironment, args map[string]any) (any, error) {
 			if err := egressDeniedByNet(env, "web_fetch"); err != nil {
 				return nil, err
@@ -54,7 +53,7 @@ func registerWebTools(reg *tool.Registry, deps *toolDeps) {
 	// causes a duplicate name collision with the adapter-injected server tool.
 	if deps.webSearchEnabled {
 		_ = reg.Register(tool.RegisteredTool{
-			Tool: llm.Tool{Definition: tool.DefWebSearch()},
+			Definition: tool.DefWebSearch(),
 			Exec: func(ctx context.Context, env execenv.ExecutionEnvironment, args map[string]any) (any, error) {
 				if err := egressDeniedByNet(env, "web_search"); err != nil {
 					return nil, err

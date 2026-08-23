@@ -40,11 +40,11 @@ func TestSession_ProcessInputRepairsOrphanedAssistantToolCallsBeforeModelRequest
 
 	var dangerousRuns atomic.Int32
 	if err := sess.reg.Register(tool.RegisteredTool{
-		Tool: llm.Tool{Definition: llm.ToolDefinition{
+		Definition: llm.ToolDefinition{
 			Name:        "dangerous",
 			Description: "side-effecting test tool that must not be replayed during history repair",
 			Parameters:  map[string]any{"type": "object", "properties": map[string]any{}},
-		}},
+		},
 		Exec: func(context.Context, execenv.ExecutionEnvironment, map[string]any) (any, error) {
 			dangerousRuns.Add(1)
 			return "ran", nil

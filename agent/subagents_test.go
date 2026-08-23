@@ -35,8 +35,8 @@ func TestEnsureRecoveryReaderPreservesPolicyShape(t *testing.T) {
 	register := func(name string, limit schema.ToolOutputLimit) {
 		t.Helper()
 		if err := reg.Register(tool.RegisteredTool{
-			Tool:  llm.Tool{Definition: llm.ToolDefinition{Name: name, Description: "test tool"}},
-			Limit: limit,
+			Definition: llm.ToolDefinition{Name: name, Description: "test tool"},
+			Limit:      limit,
 			Exec: func(context.Context, execenv.ExecutionEnvironment, map[string]any) (any, error) {
 				return "ok", nil
 			},

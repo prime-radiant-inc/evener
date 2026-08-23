@@ -6,7 +6,6 @@ import (
 
 	"primeradiant.com/evener/agent/execenv"
 	"primeradiant.com/evener/agent/internal/tool"
-	"primeradiant.com/evener/llm"
 )
 
 func registerFileTools(reg *tool.Registry, deps *toolDeps) error {
@@ -18,7 +17,7 @@ func registerFileTools(reg *tool.Registry, deps *toolDeps) error {
 	}
 	// read_file
 	if err := register(tool.RegisteredTool{
-		Tool: llm.Tool{Definition: tool.DefReadFile(), ReadOnly: true},
+		Definition: tool.DefReadFile(), ReadOnly: true,
 		Exec: func(ctx context.Context, env execenv.ExecutionEnvironment, args map[string]any) (any, error) {
 			_ = ctx
 			path := fmt.Sprint(args["file_path"])
@@ -47,7 +46,7 @@ func registerFileTools(reg *tool.Registry, deps *toolDeps) error {
 
 	// write_file
 	if err := register(tool.RegisteredTool{
-		Tool: llm.Tool{Definition: tool.DefWriteFile()},
+		Definition: tool.DefWriteFile(),
 		Exec: func(ctx context.Context, env execenv.ExecutionEnvironment, args map[string]any) (any, error) {
 			_ = ctx
 			path := fmt.Sprint(args["file_path"])
@@ -67,7 +66,7 @@ func registerFileTools(reg *tool.Registry, deps *toolDeps) error {
 
 	// edit_file
 	_ = register(tool.RegisteredTool{
-		Tool: llm.Tool{Definition: tool.DefEditFile()},
+		Definition: tool.DefEditFile(),
 		Exec: func(ctx context.Context, env execenv.ExecutionEnvironment, args map[string]any) (any, error) {
 			_ = ctx
 			path := fmt.Sprint(args["file_path"])

@@ -537,7 +537,7 @@ func TestRunAudit_APIHealthMetricsAreAddressable(t *testing.T) {
 		}
 		attempt := apiHealthAttempt("ag_storm", i, outcome)
 		if outcome == apilog.AttemptSuccess {
-			attempt.Response = &apilog.APIAttemptResponse{StatusCode: intp(200), Body: apilog.EncodeBody([]byte("{}")), TextLength: intp(1), ToolCallCount: intp(0)}
+			attempt.Response = &apilog.APIAttemptResponse{StatusCode: new(200), Body: apilog.EncodeBody([]byte("{}")), TextLength: new(1), ToolCallCount: new(0)}
 			stormFinal = attempt
 		} else {
 			attempt.ErrorClass = "timeout"
@@ -547,16 +547,16 @@ func TestRunAudit_APIHealthMetricsAreAddressable(t *testing.T) {
 	records = append(records, doctorSettlement(stormFinal, 4))
 
 	tail := apiHealthAttempt("ag_tail", 1, apilog.AttemptSuccess)
-	tail.Response = &apilog.APIAttemptResponse{StatusCode: intp(200), Body: apilog.EncodeBody([]byte("{}")), TextLength: intp(1), ToolCallCount: intp(0)}
+	tail.Response = &apilog.APIAttemptResponse{StatusCode: new(200), Body: apilog.EncodeBody([]byte("{}")), TextLength: new(1), ToolCallCount: new(0)}
 	records = append(records, tail)
 
 	forbidden := apiHealthAttempt("ag_403", 1, apilog.AttemptProviderReject)
 	forbidden.ErrorClass = "access_denied"
-	forbidden.Response = &apilog.APIAttemptResponse{StatusCode: intp(403), Body: apilog.EncodeBody([]byte("{}"))}
+	forbidden.Response = &apilog.APIAttemptResponse{StatusCode: new(403), Body: apilog.EncodeBody([]byte("{}"))}
 	records = append(records, forbidden, doctorSettlement(forbidden, 1))
 
 	empty := apiHealthAttempt("ag_empty", 1, apilog.AttemptSuccess)
-	empty.Response = &apilog.APIAttemptResponse{StatusCode: intp(200), Body: apilog.EncodeBody([]byte("{}")), TextLength: intp(0), ToolCallCount: intp(0)}
+	empty.Response = &apilog.APIAttemptResponse{StatusCode: new(200), Body: apilog.EncodeBody([]byte("{}")), TextLength: new(0), ToolCallCount: new(0)}
 	records = append(records, empty, doctorSettlement(empty, 1))
 
 	writeRichSession(t, bucket, sidA, nil, records, schema.SessionMeta{})

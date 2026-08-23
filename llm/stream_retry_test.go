@@ -205,8 +205,7 @@ func TestRetryStream_FastRejectTransparent_AndDisabledWhenZero(t *testing.T) {
 	err := RetryStream(context.Background(), RetryStreamOptions{
 		Policy: RetryPolicy{MaxRetries: 3, BaseDelay: time.Nanosecond, BackoffMultiplier: 1},
 	}, attempt)
-	var pu *ProviderUnhealthyError
-	if errors.As(err, &pu) {
+	if _, ok := errors.AsType[*ProviderUnhealthyError](err); ok {
 		t.Fatal("FailFastAfter=0 must not early-stop")
 	}
 	if *calls != 4 {
@@ -230,8 +229,7 @@ func TestRetryStream_FastRejectTransparent(t *testing.T) {
 		Policy:        RetryPolicy{MaxRetries: 7, BaseDelay: time.Nanosecond, BackoffMultiplier: 1},
 		FailFastAfter: 4,
 	}, attempt)
-	var pu *ProviderUnhealthyError
-	if errors.As(err, &pu) {
+	if _, ok := errors.AsType[*ProviderUnhealthyError](err); ok {
 		t.Fatalf("fast-reject attempts must not trip ProviderUnhealthyError, got %v", err)
 	}
 	if *calls != 8 {
@@ -277,8 +275,7 @@ func TestRetryStream_CapStreakDoesNotTripAcrossReset(t *testing.T) {
 		Policy:        RetryPolicy{MaxRetries: 2, BaseDelay: time.Nanosecond, BackoffMultiplier: 1},
 		FailFastAfter: 4,
 	}, attempt)
-	var pu *ProviderUnhealthyError
-	if errors.As(err, &pu) {
+	if _, ok := errors.AsType[*ProviderUnhealthyError](err); ok {
 		t.Fatalf("cap rule must not trip across a reset, got %v", err)
 	}
 	if *calls != 3 {
@@ -296,8 +293,7 @@ func TestRetryStream_CapDetectionDisabledWhenZero(t *testing.T) {
 	err := RetryStream(context.Background(), RetryStreamOptions{
 		Policy: RetryPolicy{MaxRetries: 3, BaseDelay: time.Nanosecond, BackoffMultiplier: 1},
 	}, attempt)
-	var pu *ProviderUnhealthyError
-	if errors.As(err, &pu) {
+	if _, ok := errors.AsType[*ProviderUnhealthyError](err); ok {
 		t.Fatal("FailFastAfter=0 must not early-stop even for cap-shaped attempts")
 	}
 	if *calls != 4 {
@@ -317,8 +313,7 @@ func TestRetryStream_UnhealthyWinsOverPartialOutputBlock(t *testing.T) {
 		Policy:        RetryPolicy{MaxRetries: 10, BaseDelay: time.Nanosecond, BackoffMultiplier: 1},
 		FailFastAfter: 1,
 	}, attempt)
-	var pu *ProviderUnhealthyError
-	if !errors.As(err, &pu) {
+	if _, ok := errors.AsType[*ProviderUnhealthyError](err); !ok {
 		t.Fatalf("want ProviderUnhealthyError (must win over partial-output block), got %v", err)
 	}
 	if *calls != 1 {

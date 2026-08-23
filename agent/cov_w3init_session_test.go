@@ -33,7 +33,7 @@ func (w3init_badToolStrategy) Name() string { return "w3init-bad-tool" }
 
 func (w3init_badToolStrategy) Tools() []tool.RegisteredTool {
 	return []tool.RegisteredTool{{
-		Tool: llm.Tool{Definition: llm.ToolDefinition{Name: ""}},
+		Definition: llm.ToolDefinition{Name: ""},
 		Exec: func(context.Context, execenv.ExecutionEnvironment, map[string]any) (any, error) {
 			return nil, nil
 		},

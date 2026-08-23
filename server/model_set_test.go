@@ -56,8 +56,7 @@ func TestHandleAppThreadModelSet_HookErrorSurfacesAsWireError(t *testing.T) {
 	if !strings.Contains(err.Error(), hookErr.Error()) {
 		t.Fatalf("wire error should carry the hook message, got: %v", err)
 	}
-	var wireErr appwire.WireError
-	if !errors.As(err, &wireErr) {
+	if _, ok := errors.AsType[appwire.WireError](err); !ok {
 		t.Fatalf("expected a structured appwire.WireError, got %T: %v", err, err)
 	}
 }

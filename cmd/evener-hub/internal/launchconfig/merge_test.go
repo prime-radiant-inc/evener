@@ -6,9 +6,6 @@ import (
 	"testing"
 )
 
-func ptrInt(v int) *int    { return &v }
-func ptrBool(v bool) *bool { return &v }
-
 func checkMerge_ScalarPrecedence(t *testing.T) {
 	g := Layer{Model: "g-model", FastCheapModel: "g-fast", ReasoningEffort: "low", OpenAIResponsesContinuation: "off"}
 	r := Layer{Model: "r-model", FastCheapModel: "r-fast"}
@@ -49,7 +46,7 @@ func checkMerge_ScalarPrecedence(t *testing.T) {
 func checkMerge_Sandbox(t *testing.T) {
 	// Global restricted + launch unset → inherit restricted.
 	got, _ := mergeLayers(map[LayerName]Layer{
-		LayerGlobal: {Sandbox: "restricted", SandboxNet: ptrBool(true)},
+		LayerGlobal: {Sandbox: "restricted", SandboxNet: new(true)},
 		LayerLaunch: {},
 	})
 	if got.Effective.Sandbox != "restricted" {
@@ -65,8 +62,8 @@ func checkMerge_Sandbox(t *testing.T) {
 	// Global restricted + launch explicit off → override to off (a launch layer
 	// must be able to turn a global default back off).
 	got, _ = mergeLayers(map[LayerName]Layer{
-		LayerGlobal: {Sandbox: "restricted", SandboxNet: ptrBool(true)},
-		LayerLaunch: {Sandbox: "off", SandboxNet: ptrBool(false)},
+		LayerGlobal: {Sandbox: "restricted", SandboxNet: new(true)},
+		LayerLaunch: {Sandbox: "off", SandboxNet: new(false)},
 	})
 	if got.Effective.Sandbox != "off" {
 		t.Errorf("Sandbox = %q, want off (launch override)", got.Effective.Sandbox)
@@ -96,7 +93,7 @@ func checkMerge_SandboxNetWithoutModeDiagnostic(t *testing.T) {
 	}
 
 	// net set, no mode → diagnostic (attributed to the layer that set net).
-	got, diags := mergeLayers(map[LayerName]Layer{LayerGlobal: {SandboxNet: ptrBool(false)}})
+	got, diags := mergeLayers(map[LayerName]Layer{LayerGlobal: {SandboxNet: new(false)}})
 	if !hasNetDiag(diags) {
 		t.Errorf("sandbox_net with no mode must warn, diags=%v", diags)
 	}
@@ -105,13 +102,13 @@ func checkMerge_SandboxNetWithoutModeDiagnostic(t *testing.T) {
 	}
 
 	// net set + explicit off mode → diagnostic.
-	_, diags = mergeLayers(map[LayerName]Layer{LayerGlobal: {Sandbox: "off", SandboxNet: ptrBool(true)}})
+	_, diags = mergeLayers(map[LayerName]Layer{LayerGlobal: {Sandbox: "off", SandboxNet: new(true)}})
 	if !hasNetDiag(diags) {
 		t.Errorf("sandbox_net with an off mode must warn, diags=%v", diags)
 	}
 
 	// net set + non-off mode → NO diagnostic.
-	_, diags = mergeLayers(map[LayerName]Layer{LayerGlobal: {Sandbox: "restricted", SandboxNet: ptrBool(true)}})
+	_, diags = mergeLayers(map[LayerName]Layer{LayerGlobal: {Sandbox: "restricted", SandboxNet: new(true)}})
 	if hasNetDiag(diags) {
 		t.Errorf("sandbox_net with a non-off mode must not warn, diags=%v", diags)
 	}
@@ -120,7 +117,7 @@ func checkMerge_SandboxNetWithoutModeDiagnostic(t *testing.T) {
 	// would miss) → NO diagnostic, because the effective config has both.
 	_, diags = mergeLayers(map[LayerName]Layer{
 		LayerGlobal: {Sandbox: "workspace-write"},
-		LayerLaunch: {SandboxNet: ptrBool(false)},
+		LayerLaunch: {SandboxNet: new(false)},
 	})
 	if hasNetDiag(diags) {
 		t.Errorf("cross-layer mode+net must not warn, diags=%v", diags)
@@ -163,8 +160,8 @@ func checkMerge_UnknownSandboxModeDiagnostic(t *testing.T) {
 }
 
 func checkMerge_ScalarPointerSemantics(t *testing.T) {
-	g := Layer{MaxRounds: ptrInt(200), NonInteractive: ptrBool(true)}
-	l := Layer{NonInteractive: ptrBool(false)}
+	g := Layer{MaxRounds: new(200), NonInteractive: new(true)}
+	l := Layer{NonInteractive: new(false)}
 	got, _ := mergeLayers(map[LayerName]Layer{LayerGlobal: g, LayerLaunch: l})
 	if got.Effective.MaxRounds == nil || *got.Effective.MaxRounds != 200 {
 		t.Errorf("MaxRounds = %v, want 200 (launch did not override)", got.Effective.MaxRounds)
@@ -341,16 +338,16 @@ func checkMerge_CoversRemainingScalarAndListFields(t *testing.T) {
 	g := Layer{
 		Agent:            "global-agent",
 		ContextStrategy:  "global-ctx",
-		MaxSubagentDepth: ptrInt(3),
-		NoProjectPrompts: ptrBool(false),
+		MaxSubagentDepth: new(3),
+		NoProjectPrompts: new(false),
 		PluginDirs:       []string{"/g/plugin"},
 		MCPConfigs:       []string{"/g/mcp.json"},
 	}
 	l := Layer{
 		Agent:            "launch-agent",
 		ContextStrategy:  "launch-ctx",
-		MaxSubagentDepth: ptrInt(5),
-		NoProjectPrompts: ptrBool(true),
+		MaxSubagentDepth: new(5),
+		NoProjectPrompts: new(true),
 		PluginDirs:       []string{"/l/plugin"},
 		MCPConfigs:       []string{"/l/mcp.json"},
 	}
@@ -378,7 +375,7 @@ func checkMerge_CoversRemainingScalarAndListFields(t *testing.T) {
 }
 
 func checkMerge_AppReplaySizeNonGlobalDiagnostic(t *testing.T) {
-	l := Layer{AppReplaySize: ptrInt(10)}
+	l := Layer{AppReplaySize: new(10)}
 	got, diags := mergeLayers(map[LayerName]Layer{LayerLaunch: l})
 	var seen bool
 	for _, d := range diags {
@@ -398,7 +395,7 @@ func checkMerge_AppReplaySizeNonGlobalDiagnostic(t *testing.T) {
 }
 
 func checkMerge_AppReplaySizeGlobalApplied(t *testing.T) {
-	g := Layer{AppReplaySize: ptrInt(10)}
+	g := Layer{AppReplaySize: new(10)}
 	got, diags := mergeLayers(map[LayerName]Layer{LayerGlobal: g})
 	for _, d := range diags {
 		if d.Field == "app_replay_size" {

@@ -335,10 +335,10 @@ func TestDeletionFenceRejectsRelayBeforeSubscribe(t *testing.T) {
 		t.Fatal(err)
 	}
 	source := &deletionFenceRelaySource{
-		relayLifecycleSource: relayLifecycleSource{thread: appwire.Thread{
+		thread: appwire.Thread{
 			ID:     threadID,
 			Evener: appwire.EvenerThread{Ref: ref},
-		}},
+		},
 	}
 	cfg := hubcore.WebConfig{
 		DeletionStore: store,
@@ -365,10 +365,10 @@ func TestDeletionFenceCanCommitDuringInitialRelayIOAndBlocksPublication(t *testi
 	ref := localAppRef(threadID)
 	resumeLocks := hubcore.NewResumeLocks()
 	source := &deletionOwnershipProbeRelaySource{
-		relayLifecycleSource: relayLifecycleSource{thread: appwire.Thread{
+		thread: appwire.Thread{
 			ID:     threadID,
 			Evener: appwire.EvenerThread{Ref: ref},
-		}},
+		},
 		store:       store,
 		resumeLocks: resumeLocks,
 		projectID:   "project-relay-initial-0123456789",
@@ -407,10 +407,10 @@ func TestDeletionFenceCanCommitDuringRecoveryRelayIOAndStopsPublication(t *testi
 	resumeLocks := hubcore.NewResumeLocks()
 	initialNotifications := make(chan appwire.Notification)
 	source := &deletionOwnershipProbeRelaySource{
-		relayLifecycleSource: relayLifecycleSource{thread: appwire.Thread{
+		thread: appwire.Thread{
 			ID:     threadID,
 			Evener: appwire.EvenerThread{Ref: ref},
-		}},
+		},
 		store:                store,
 		resumeLocks:          resumeLocks,
 		projectID:            "project-relay-recovery-0123456789",
@@ -448,12 +448,12 @@ func TestDeletionFenceTurnStartDoesNotWaitForRelayWhileOwningTarget(t *testing.T
 	placeholderPublished := make(chan struct{})
 	releaseInitializer := make(chan struct{})
 	source := &inheritedDeletionOwnershipRelaySource{
-		relayLifecycleSource: relayLifecycleSource{thread: appwire.Thread{
+		thread: appwire.Thread{
 			ID:        threadID,
 			SessionID: threadID,
 			Source:    "local",
 			Evener:    appwire.EvenerThread{Ref: ref},
-		}},
+		},
 		notifications: make(chan appwire.Notification),
 		subscribed:    make(chan struct{}, 1),
 	}
@@ -1696,8 +1696,8 @@ func TestHubRPCSubscribedAtomicFailuresDoNotFallBackToPastAndCanRetry(t *testing
 		},
 	}
 	source := &relaySessionTestSource{
-		relayLifecycleSource: relayLifecycleSource{thread: thread},
-		lease:                lease,
+		thread: thread,
+		lease:  lease,
 	}
 	sources := appsource.NewRegistry()
 	sources.Add(source)
@@ -1761,7 +1761,7 @@ func TestHubRPCNonSubscribedAtomicReadFailureCanReturnPastTranscript(t *testing.
 		Evener:    appwire.EvenerThread{Ref: "local:" + sessionID},
 	}
 	source := &relaySessionTestSource{
-		relayLifecycleSource: relayLifecycleSource{thread: thread},
+		thread: thread,
 		lease: &scriptedRelaySessionLease{
 			readErr:    appwire.SessionUnavailable("canonical actor read failed"),
 			deliveries: make(chan appsource.RelayDelivery),
@@ -1811,8 +1811,8 @@ func TestHubRPCSubscribedNonAtomicReadFailureCanReturnPastTranscript(t *testing.
 	}
 	sources := appsource.NewRegistry()
 	sources.Add(&pastFallbackRelaySource{
-		relayLifecycleSource: relayLifecycleSource{thread: thread},
-		readErr:              appwire.SessionUnavailable("non-atomic live read failed"),
+		thread:  thread,
+		readErr: appwire.SessionUnavailable("non-atomic live read failed"),
 	})
 	appServer := newHubAppServer(hubcore.WebConfig{
 		HubStateRoot: t.TempDir(),
@@ -2585,18 +2585,16 @@ func TestHubRPCThreadReadRelaysNotificationsBySourceQualifiedThread(t *testing.T
 func TestHubRPCThreadReadSubscribeOverridesSourceReadRelayPolicy(t *testing.T) {
 	threadID := "th_codex_live"
 	source := &readRelayDisabledSource{
-		relayBroadcastSource: relayBroadcastSource{
-			id: "codex",
-			thread: appwire.Thread{
-				ID:        threadID,
-				SessionID: threadID,
-				Source:    "codex",
-				Evener:    appwire.EvenerThread{Ref: "codex:" + threadID, Capabilities: appwire.ThreadCapabilities{Send: true}},
-			},
-			notifications: make(chan appwire.Notification, 4),
-			subscribed:    make(chan struct{}, 1),
-			canceled:      make(chan struct{}, 1),
+		id: "codex",
+		thread: appwire.Thread{
+			ID:        threadID,
+			SessionID: threadID,
+			Source:    "codex",
+			Evener:    appwire.EvenerThread{Ref: "codex:" + threadID, Capabilities: appwire.ThreadCapabilities{Send: true}},
 		},
+		notifications: make(chan appwire.Notification, 4),
+		subscribed:    make(chan struct{}, 1),
+		canceled:      make(chan struct{}, 1),
 	}
 	srv := httptest.NewUnstartedServer(nil)
 	web := NewWebServer(hubcore.WebConfig{HubAddr: srv.Listener.Addr().String(), Past: hubcore.NewPastIndex("")})
@@ -2641,12 +2639,12 @@ func TestHubRPCThreadReadRecoversEstablishedRelayAfterSourceClose(t *testing.T) 
 	results := make(chan relaySubscribeResult)
 	subscribeCalls := make(chan struct{})
 	source := &scriptedRelaySource{
-		relayLifecycleSource: relayLifecycleSource{thread: appwire.Thread{
+		thread: appwire.Thread{
 			ID:        threadID,
 			SessionID: threadID,
 			Source:    "codex",
 			Evener:    appwire.EvenerThread{Ref: "codex:" + threadID, Capabilities: appwire.ThreadCapabilities{Send: true}},
-		}},
+		},
 		results:        results,
 		subscribeCalls: subscribeCalls,
 	}
@@ -2698,12 +2696,12 @@ func TestHubRelayRecoveryEmitsThreadResyncBeforeReplacementNotifications(t *test
 	subscribeCalls := make(chan struct{})
 	retryClock := newScriptedRelayRetryClock()
 	source := &scriptedRelaySource{
-		relayLifecycleSource: relayLifecycleSource{thread: appwire.Thread{
+		thread: appwire.Thread{
 			ID:        threadID,
 			SessionID: threadID,
 			Source:    "codex",
 			Evener:    appwire.EvenerThread{Ref: "codex:" + threadID, Capabilities: appwire.ThreadCapabilities{Send: true}},
-		}},
+		},
 		results:        results,
 		subscribeCalls: subscribeCalls,
 	}
@@ -2792,12 +2790,12 @@ func TestHubRPCThreadReadRelayRecoveryBackoffAndReset(t *testing.T) {
 	subscribeCalls := make(chan struct{})
 	retryClock := newScriptedRelayRetryClock()
 	source := &scriptedRelaySource{
-		relayLifecycleSource: relayLifecycleSource{thread: appwire.Thread{
+		thread: appwire.Thread{
 			ID:        threadID,
 			SessionID: threadID,
 			Source:    "codex",
 			Evener:    appwire.EvenerThread{Ref: "codex:" + threadID, Capabilities: appwire.ThreadCapabilities{Send: true}},
-		}},
+		},
 		results:        results,
 		subscribeCalls: subscribeCalls,
 	}
@@ -2917,12 +2915,12 @@ func TestHubRelaySynthesizesConnectionFailureForActiveTurnAfterRepeatedRedialFai
 	subscribeCalls := make(chan struct{})
 	retryClock := newScriptedRelayRetryClock()
 	source := &scriptedRelaySource{
-		relayLifecycleSource: relayLifecycleSource{thread: appwire.Thread{
+		thread: appwire.Thread{
 			ID:        threadID,
 			SessionID: threadID,
 			Source:    "codex",
 			Evener:    appwire.EvenerThread{Ref: "codex:" + threadID, Capabilities: appwire.ThreadCapabilities{Send: true}},
-		}},
+		},
 		results:        results,
 		subscribeCalls: subscribeCalls,
 	}
@@ -3013,12 +3011,12 @@ func TestHubRelayNoSyntheticFailureWithoutActiveTurn(t *testing.T) {
 	subscribeCalls := make(chan struct{})
 	retryClock := newScriptedRelayRetryClock()
 	source := &scriptedRelaySource{
-		relayLifecycleSource: relayLifecycleSource{thread: appwire.Thread{
+		thread: appwire.Thread{
 			ID:        threadID,
 			SessionID: threadID,
 			Source:    "codex",
 			Evener:    appwire.EvenerThread{Ref: "codex:" + threadID, Capabilities: appwire.ThreadCapabilities{Send: true}},
-		}},
+		},
 		results:        results,
 		subscribeCalls: subscribeCalls,
 	}
@@ -3077,12 +3075,12 @@ func TestHubRPCThreadReadRecoveryBacksOffUnusableChannelsWithoutDroppingFirstNot
 	subscribeCalls := make(chan struct{})
 	retryClock := newScriptedRelayRetryClock()
 	source := &scriptedRelaySource{
-		relayLifecycleSource: relayLifecycleSource{thread: appwire.Thread{
+		thread: appwire.Thread{
 			ID:        threadID,
 			SessionID: threadID,
 			Source:    "codex",
 			Evener:    appwire.EvenerThread{Ref: "codex:" + threadID, Capabilities: appwire.ThreadCapabilities{Send: true}},
-		}},
+		},
 		results:        results,
 		subscribeCalls: subscribeCalls,
 	}
@@ -3147,12 +3145,12 @@ func TestHubRPCThreadReadClientCloseCancelsRelayRecoveryWait(t *testing.T) {
 	subscribeCalls := make(chan struct{})
 	retryClock := newScriptedRelayRetryClock()
 	source := &scriptedRelaySource{
-		relayLifecycleSource: relayLifecycleSource{thread: appwire.Thread{
+		thread: appwire.Thread{
 			ID:        threadID,
 			SessionID: threadID,
 			Source:    "codex",
 			Evener:    appwire.EvenerThread{Ref: "codex:" + threadID, Capabilities: appwire.ThreadCapabilities{Send: true}},
-		}},
+		},
 		results:        results,
 		subscribeCalls: subscribeCalls,
 	}
@@ -3259,12 +3257,12 @@ func TestHubRPCThreadReadClientCloseCancelsBlockingRecoverySubscribe(t *testing.
 	established := make(chan appwire.Notification)
 	replacementResults := make(chan relaySubscribeResult)
 	source := &blockingRecoveryRelaySource{
-		relayLifecycleSource: relayLifecycleSource{thread: appwire.Thread{
+		thread: appwire.Thread{
 			ID:        threadID,
 			SessionID: threadID,
 			Source:    "codex",
 			Evener:    appwire.EvenerThread{Ref: "codex:" + threadID, Capabilities: appwire.ThreadCapabilities{Send: true}},
-		}},
+		},
 		established:        established,
 		recoveryStarted:    make(chan struct{}),
 		recoveryCanceled:   make(chan struct{}),
@@ -3364,12 +3362,12 @@ func TestHubRPCThreadReadRereadJoinsRelayRecovery(t *testing.T) {
 	subscribeCalls := make(chan struct{})
 	retryClock := newScriptedRelayRetryClock()
 	source := &scriptedRelaySource{
-		relayLifecycleSource: relayLifecycleSource{thread: appwire.Thread{
+		thread: appwire.Thread{
 			ID:        threadID,
 			SessionID: threadID,
 			Source:    "codex",
 			Evener:    appwire.EvenerThread{Ref: "codex:" + threadID, Capabilities: appwire.ThreadCapabilities{Send: true}},
-		}},
+		},
 		results:        results,
 		subscribeCalls: subscribeCalls,
 	}
@@ -3434,12 +3432,12 @@ func TestHubRPCThreadReadReplacementStopsOldRelayRecovery(t *testing.T) {
 	subscribeCalls := make(chan struct{})
 	retryClock := newScriptedRelayRetryClock()
 	oldSource := &scriptedRelaySource{
-		relayLifecycleSource: relayLifecycleSource{thread: appwire.Thread{
+		thread: appwire.Thread{
 			ID:        oldThreadID,
 			SessionID: oldThreadID,
 			Source:    "codex-a",
 			Evener:    appwire.EvenerThread{Ref: "codex-a:" + oldThreadID, Capabilities: appwire.ThreadCapabilities{Send: true}},
-		}},
+		},
 		id:             "codex-a",
 		results:        results,
 		subscribeCalls: subscribeCalls,
@@ -3539,12 +3537,12 @@ func TestHubRelayCanceledRecoveryDoesNotSubscribeAgain(t *testing.T) {
 	results := make(chan relaySubscribeResult)
 	subscribeCalls := make(chan struct{})
 	source := &scriptedRelaySource{
-		relayLifecycleSource: relayLifecycleSource{thread: appwire.Thread{
+		thread: appwire.Thread{
 			ID:        threadID,
 			SessionID: threadID,
 			Source:    "codex",
 			Evener:    appwire.EvenerThread{Ref: "codex:" + threadID, Capabilities: appwire.ThreadCapabilities{Send: true}},
-		}},
+		},
 		results:        results,
 		subscribeCalls: subscribeCalls,
 	}
@@ -3566,12 +3564,12 @@ func TestHubRelayStopDuringInitializationCancelsSharedHandleAndAllowsFreshStart(
 	results := make(chan relaySubscribeResult)
 	subscribeCalls := make(chan struct{})
 	source := &scriptedRelaySource{
-		relayLifecycleSource: relayLifecycleSource{thread: appwire.Thread{
+		thread: appwire.Thread{
 			ID:        threadID,
 			SessionID: threadID,
 			Source:    "codex",
 			Evener:    appwire.EvenerThread{Ref: "codex:" + threadID, Capabilities: appwire.ThreadCapabilities{Send: true}},
-		}},
+		},
 		results:        results,
 		subscribeCalls: subscribeCalls,
 	}
@@ -3662,12 +3660,12 @@ func TestHubRelayInitiatingRequestCancellationStopsInitialSubscribeAndAllowsFres
 	initialRelease := make(chan struct{})
 	var releaseInitial sync.Once
 	source := &initialRequestCancelRelaySource{
-		relayLifecycleSource: relayLifecycleSource{thread: appwire.Thread{
+		thread: appwire.Thread{
 			ID:        threadID,
 			SessionID: threadID,
 			Source:    "codex",
 			Evener:    appwire.EvenerThread{Ref: "codex:" + threadID, Capabilities: appwire.ThreadCapabilities{Send: true}},
-		}},
+		},
 		initialStarted:     make(chan struct{}),
 		initialCanceled:    make(chan struct{}),
 		initialRelease:     initialRelease,
@@ -3843,12 +3841,12 @@ func TestHubRelayStoppedInitializerRejectsSuccessfulSubscribeAndLeavesReplacemen
 	oldNotifications := make(chan appwire.Notification)
 	freshNotifications := make(chan appwire.Notification)
 	source := &successfulAfterCancelRelaySource{
-		relayLifecycleSource: relayLifecycleSource{thread: appwire.Thread{
+		thread: appwire.Thread{
 			ID:        threadID,
 			SessionID: threadID,
 			Source:    "codex",
 			Evener:    appwire.EvenerThread{Ref: "codex:" + threadID, Capabilities: appwire.ThreadCapabilities{Send: true}},
-		}},
+		},
 		initialStarted:     make(chan struct{}),
 		initialCanceled:    make(chan struct{}),
 		releaseInitial:     make(chan struct{}),
@@ -3949,12 +3947,12 @@ func TestHubRelayStopImmediatelyAfterReadinessAllowsFreshStart(t *testing.T) {
 	results := make(chan relaySubscribeResult)
 	subscribeCalls := make(chan struct{})
 	source := &scriptedRelaySource{
-		relayLifecycleSource: relayLifecycleSource{thread: appwire.Thread{
+		thread: appwire.Thread{
 			ID:        threadID,
 			SessionID: threadID,
 			Source:    "codex",
 			Evener:    appwire.EvenerThread{Ref: "codex:" + threadID, Capabilities: appwire.ThreadCapabilities{Send: true}},
-		}},
+		},
 		results:        results,
 		subscribeCalls: subscribeCalls,
 	}
@@ -4031,12 +4029,12 @@ func TestHubRelayStopBeforeLaunchCommitPreventsSupervisorAndAllowsFreshStart(t *
 	results := make(chan relaySubscribeResult)
 	subscribeCalls := make(chan struct{})
 	source := &scriptedRelaySource{
-		relayLifecycleSource: relayLifecycleSource{thread: appwire.Thread{
+		thread: appwire.Thread{
 			ID:        threadID,
 			SessionID: threadID,
 			Source:    "codex",
 			Evener:    appwire.EvenerThread{Ref: "codex:" + threadID, Capabilities: appwire.ThreadCapabilities{Send: true}},
-		}},
+		},
 		results:        results,
 		subscribeCalls: subscribeCalls,
 	}
@@ -4717,9 +4715,9 @@ func TestHubRPCThreadReadPropagatesInFlightRelaySubscribeFailure(t *testing.T) {
 		Evener:    appwire.EvenerThread{Ref: "codex:th_subscribe_fail", Capabilities: appwire.ThreadCapabilities{Send: true}},
 	}
 	source := &blockingFailingRelaySource{
-		relayLifecycleSource: relayLifecycleSource{thread: thread},
-		started:              make(chan struct{}),
-		release:              make(chan struct{}),
+		thread:  thread,
+		started: make(chan struct{}),
+		release: make(chan struct{}),
 	}
 	waiterJoined := make(chan struct{}, 1)
 	previousObserveWait := observeHubRelayWait
@@ -4784,16 +4782,14 @@ func TestHubRPCThreadReadPropagatesInFlightRelaySubscribeFailure(t *testing.T) {
 func TestHubRPCThreadReadSubscribeFailureDoesNotLeaveClientSubscribed(t *testing.T) {
 	threadID := "th_retry_subscribe"
 	source := &failFirstRelaySource{
-		relayBroadcastSource: relayBroadcastSource{
-			thread: appwire.Thread{
-				ID:        threadID,
-				SessionID: threadID,
-				Source:    "codex",
-				Evener:    appwire.EvenerThread{Ref: "codex:" + threadID, Capabilities: appwire.ThreadCapabilities{Send: true}},
-			},
-			notifications: make(chan appwire.Notification, 4),
-			canceled:      make(chan struct{}, 2),
+		thread: appwire.Thread{
+			ID:        threadID,
+			SessionID: threadID,
+			Source:    "codex",
+			Evener:    appwire.EvenerThread{Ref: "codex:" + threadID, Capabilities: appwire.ThreadCapabilities{Send: true}},
 		},
+		notifications: make(chan appwire.Notification, 4),
+		canceled:      make(chan struct{}, 2),
 	}
 	srv := httptest.NewUnstartedServer(nil)
 	web := NewWebServer(hubcore.WebConfig{HubAddr: srv.Listener.Addr().String(), Past: hubcore.NewPastIndex("")})
@@ -7004,17 +7000,15 @@ func TestHubRPCThreadStartUsesGlobalLaunchDefaultModel(t *testing.T) {
 	}
 	var got hubcore.SpawnRequest
 	spawner := &fakeRPCModelContractSpawner{
-		fakeRPCSpawner: fakeRPCSpawner{
-			spawn: func(_ context.Context, req hubcore.SpawnRequest) (rendezvous.Entry, error) {
-				got = req
-				return rendezvous.Entry{
-					PID:       201,
-					Protocol:  appwire.ProtocolVersion,
-					SourceID:  "local",
-					ThreadID:  "th_default_model",
-					SessionID: "sess_default_model",
-				}, nil
-			},
+		spawn: func(_ context.Context, req hubcore.SpawnRequest) (rendezvous.Entry, error) {
+			got = req
+			return rendezvous.Entry{
+				PID:       201,
+				Protocol:  appwire.ProtocolVersion,
+				SourceID:  "local",
+				ThreadID:  "th_default_model",
+				SessionID: "sess_default_model",
+			}, nil
 		},
 		contract: appwire.ModelListResponse{Data: []appwire.ModelDescriptor{{
 			Provider: "openai",
@@ -7904,18 +7898,16 @@ func TestHubRPCThreadForkRoutesConfiguredCodexSource(t *testing.T) {
 
 func TestHubRPCThreadStartRelaysReturnedSourceThread(t *testing.T) {
 	source := &startResumeRelaySource{
-		relayBroadcastSource: relayBroadcastSource{
-			id: "codex",
-			thread: appwire.Thread{
-				ID:        "th_start_relay",
-				SessionID: "th_start_relay",
-				Source:    "codex",
-				Evener:    appwire.EvenerThread{Ref: "codex:th_start_relay", Capabilities: appwire.ThreadCapabilities{Send: true}},
-			},
-			notifications: make(chan appwire.Notification, 4),
-			subscribed:    make(chan struct{}, 1),
-			canceled:      make(chan struct{}, 1),
+		id: "codex",
+		thread: appwire.Thread{
+			ID:        "th_start_relay",
+			SessionID: "th_start_relay",
+			Source:    "codex",
+			Evener:    appwire.EvenerThread{Ref: "codex:th_start_relay", Capabilities: appwire.ThreadCapabilities{Send: true}},
 		},
+		notifications: make(chan appwire.Notification, 4),
+		subscribed:    make(chan struct{}, 1),
+		canceled:      make(chan struct{}, 1),
 	}
 	srv := httptest.NewUnstartedServer(nil)
 	web := NewWebServer(hubcore.WebConfig{HubAddr: srv.Listener.Addr().String(), Past: hubcore.NewPastIndex("")})
@@ -7960,16 +7952,12 @@ func TestHubRPCThreadStartRelaysReturnedSourceThread(t *testing.T) {
 
 func TestHubRPCThreadStartReturnsThreadWhenPostStartRelayFails(t *testing.T) {
 	source := &startRelayFailureSource{
-		startResumeRelaySource: startResumeRelaySource{
-			relayBroadcastSource: relayBroadcastSource{
-				id: "codex",
-				thread: appwire.Thread{
-					ID:        "th_start_relay_fail",
-					SessionID: "th_start_relay_fail",
-					Source:    "codex",
-					Evener:    appwire.EvenerThread{Ref: "codex:th_start_relay_fail", Capabilities: appwire.ThreadCapabilities{Send: true}},
-				},
-			},
+		id: "codex",
+		thread: appwire.Thread{
+			ID:        "th_start_relay_fail",
+			SessionID: "th_start_relay_fail",
+			Source:    "codex",
+			Evener:    appwire.EvenerThread{Ref: "codex:th_start_relay_fail", Capabilities: appwire.ThreadCapabilities{Send: true}},
 		},
 	}
 	srv := httptest.NewUnstartedServer(nil)
@@ -8010,18 +7998,16 @@ func TestHubRPCThreadStartReturnsThreadWhenPostStartRelayFails(t *testing.T) {
 
 func TestHubRPCThreadResumeRelaysReturnedSourceThread(t *testing.T) {
 	source := &startResumeRelaySource{
-		relayBroadcastSource: relayBroadcastSource{
-			id: "codex",
-			thread: appwire.Thread{
-				ID:        "th_resume_relay",
-				SessionID: "th_resume_relay",
-				Source:    "codex",
-				Evener:    appwire.EvenerThread{Ref: "codex:th_resume_relay", Capabilities: appwire.ThreadCapabilities{Send: true}},
-			},
-			notifications: make(chan appwire.Notification, 4),
-			subscribed:    make(chan struct{}, 1),
-			canceled:      make(chan struct{}, 1),
+		id: "codex",
+		thread: appwire.Thread{
+			ID:        "th_resume_relay",
+			SessionID: "th_resume_relay",
+			Source:    "codex",
+			Evener:    appwire.EvenerThread{Ref: "codex:th_resume_relay", Capabilities: appwire.ThreadCapabilities{Send: true}},
 		},
+		notifications: make(chan appwire.Notification, 4),
+		subscribed:    make(chan struct{}, 1),
+		canceled:      make(chan struct{}, 1),
 	}
 	srv := httptest.NewUnstartedServer(nil)
 	web := NewWebServer(hubcore.WebConfig{HubAddr: srv.Listener.Addr().String(), Past: hubcore.NewPastIndex("")})
@@ -8214,15 +8200,13 @@ func TestHubRPCTurnStartResumesPastThreadAfterRelaySubscribeUnavailable(t *testi
 	}
 
 	source := &resumeAfterSubscribeUnavailableSource{
-		relayBroadcastSource: relayBroadcastSource{
-			thread: appwire.Thread{
-				ID:        sessionID,
-				SessionID: sessionID,
-				Source:    "local",
-				Evener:    appwire.EvenerThread{Ref: "local:" + sessionID, Capabilities: appwire.ThreadCapabilities{Send: true}},
-			},
-			notifications: make(chan appwire.Notification, 1),
+		thread: appwire.Thread{
+			ID:        sessionID,
+			SessionID: sessionID,
+			Source:    "local",
+			Evener:    appwire.EvenerThread{Ref: "local:" + sessionID, Capabilities: appwire.ThreadCapabilities{Send: true}},
 		},
+		notifications: make(chan appwire.Notification, 1),
 	}
 	spawner := &fakeRPCSpawner{
 		resume: func(_ context.Context, req hubcore.ResumeRequest) (rendezvous.Entry, error) {
@@ -8626,8 +8610,8 @@ func seedManagedSource(t *testing.T, launcher *codexlaunch.CodexLauncher, source
 func TestHubRPCTurnStartResumesManagedLaunchRefOnSessionUnavailable(t *testing.T) {
 	launcher := codexlaunch.NewCodexLauncher([]codexlaunch.CodexLaunchConfig{{ID: "codex-managed"}})
 	fake := &resumeAfterSessionUnavailableManagedSource{
-		relayLifecycleSource: relayLifecycleSource{canceled: make(chan struct{}, 1)},
-		id:                   "codex-managed",
+		canceled: make(chan struct{}, 1),
+		id:       "codex-managed",
 		thread: appwire.Thread{
 			ID:        "th_managed",
 			SessionID: "th_managed",
@@ -8721,8 +8705,8 @@ func TestHubRPCTurnStartDoesNotResumeUnknownNonLocalRef(t *testing.T) {
 	srv := httptest.NewUnstartedServer(nil)
 	web := NewWebServer(hubcore.WebConfig{HubAddr: srv.Listener.Addr().String(), Past: hubcore.NewPastIndex("")})
 	fake := &sessionUnavailableOnceSource{
-		relayLifecycleSource: relayLifecycleSource{canceled: make(chan struct{}, 1)},
-		id:                   "codex",
+		canceled: make(chan struct{}, 1),
+		id:       "codex",
 		thread: appwire.Thread{
 			ID:        "th_unknown",
 			SessionID: "th_unknown",
@@ -8913,17 +8897,15 @@ func TestHubRPCProjectsRecentEmptyMarshalsAsEmptyArray(t *testing.T) {
 
 func TestHubRPCThreadForkRoutesNonLocalCapableSource(t *testing.T) {
 	source := &forkingRelaySource{
-		relayBroadcastSource: relayBroadcastSource{
-			id: "codex",
-			thread: appwire.Thread{
-				ID:        "th_fork",
-				SessionID: "th_fork",
-				Source:    "codex",
-				Evener:    appwire.EvenerThread{Ref: "codex:th_fork", Capabilities: appwire.ThreadCapabilities{ForkFromTurn: true}},
-			},
-			notifications: make(chan appwire.Notification, 1),
-			canceled:      make(chan struct{}, 1),
+		id: "codex",
+		thread: appwire.Thread{
+			ID:        "th_fork",
+			SessionID: "th_fork",
+			Source:    "codex",
+			Evener:    appwire.EvenerThread{Ref: "codex:th_fork", Capabilities: appwire.ThreadCapabilities{ForkFromTurn: true}},
 		},
+		notifications: make(chan appwire.Notification, 1),
+		canceled:      make(chan struct{}, 1),
 		response: appwire.ThreadForkResponse{Thread: appwire.Thread{
 			ID:        "th_child",
 			SessionID: "th_child",
@@ -8964,17 +8946,15 @@ func TestHubRPCThreadForkRoutesNonLocalCapableSource(t *testing.T) {
 
 func TestHubRPCThreadForkRoutesNonLocalWholeThreadForkWithoutTurnForkCapability(t *testing.T) {
 	source := &forkingRelaySource{
-		relayBroadcastSource: relayBroadcastSource{
-			id: "codex",
-			thread: appwire.Thread{
-				ID:        "th_whole_fork",
-				SessionID: "th_whole_fork",
-				Source:    "codex",
-				Evener:    appwire.EvenerThread{Ref: "codex:th_whole_fork", Capabilities: appwire.ThreadCapabilities{Send: true}},
-			},
-			notifications: make(chan appwire.Notification, 1),
-			canceled:      make(chan struct{}, 1),
+		id: "codex",
+		thread: appwire.Thread{
+			ID:        "th_whole_fork",
+			SessionID: "th_whole_fork",
+			Source:    "codex",
+			Evener:    appwire.EvenerThread{Ref: "codex:th_whole_fork", Capabilities: appwire.ThreadCapabilities{Send: true}},
 		},
+		notifications: make(chan appwire.Notification, 1),
+		canceled:      make(chan struct{}, 1),
 		response: appwire.ThreadForkResponse{Thread: appwire.Thread{
 			ID:        "th_whole_child",
 			SessionID: "th_whole_child",
@@ -9011,17 +8991,15 @@ func TestHubRPCThreadForkRoutesNonLocalWholeThreadForkWithoutTurnForkCapability(
 
 func TestHubRPCThreadForkReturnsUnavailableWhenNonLocalSourceCannotFork(t *testing.T) {
 	source := &forkingRelaySource{
-		relayBroadcastSource: relayBroadcastSource{
-			id: "codex",
-			thread: appwire.Thread{
-				ID:        "th_no_fork",
-				SessionID: "th_no_fork",
-				Source:    "codex",
-				Evener:    appwire.EvenerThread{Ref: "codex:th_no_fork", Capabilities: appwire.ThreadCapabilities{Send: true}},
-			},
-			notifications: make(chan appwire.Notification, 1),
-			canceled:      make(chan struct{}, 1),
+		id: "codex",
+		thread: appwire.Thread{
+			ID:        "th_no_fork",
+			SessionID: "th_no_fork",
+			Source:    "codex",
+			Evener:    appwire.EvenerThread{Ref: "codex:th_no_fork", Capabilities: appwire.ThreadCapabilities{Send: true}},
 		},
+		notifications: make(chan appwire.Notification, 1),
+		canceled:      make(chan struct{}, 1),
 	}
 	srv := httptest.NewUnstartedServer(nil)
 	web := NewWebServer(hubcore.WebConfig{HubAddr: srv.Listener.Addr().String(), Past: hubcore.NewPastIndex("")})

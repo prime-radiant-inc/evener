@@ -425,7 +425,7 @@ func testEvents() []events.SessionEvent {
 			Reasoning:    "let me think carefully",
 			FinishReason: "stop",
 			Model:        "gpt-5.2",
-			Usage:        llm.Usage{InputTokens: 100, OutputTokens: 50, TotalTokens: 150, CacheReadTokens: intPtr(80), CacheWriteTokens: intPtr(20)},
+			Usage:        llm.Usage{InputTokens: 100, OutputTokens: 50, TotalTokens: 150, CacheReadTokens: new(80), CacheWriteTokens: new(20)},
 		}},
 		{Kind: events.EventToolCallStart, Timestamp: now, SessionID: "sess1", Data: events.ToolCallStartData{
 			ToolName:      "write_file",
@@ -633,8 +633,6 @@ func TestDrainEventsHuman_CommunicateEchoesAssistantText(t *testing.T) {
 		}
 	})
 }
-
-func intPtr(v int) *int { return &v }
 
 // TestRunPluginDirsPassthrough verifies that pluginDirs on runConfig flows
 // through to SessionConfig.PluginDirs, causing the named plugin to be loaded.

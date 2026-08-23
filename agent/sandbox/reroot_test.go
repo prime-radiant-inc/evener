@@ -107,8 +107,7 @@ func TestReRootRefusesUnsatisfiable(t *testing.T) {
 	if rerootErr == nil {
 		t.Fatalf("re-root onto an unclassifiable target must refuse, got nil")
 	}
-	var ref *RefusalError
-	if !errors.As(rerootErr, &ref) {
+	if _, ok := errors.AsType[*RefusalError](rerootErr); !ok {
 		t.Fatalf("re-root refusal must be a typed *RefusalError, got %T: %v", rerootErr, rerootErr)
 	}
 }
@@ -318,8 +317,7 @@ func FuzzReRoot(f *testing.F) {
 		cwd, wantWorktree, wantRefusal := fixture.cwd(raw)
 		rerooted, err := base.ReRoot(cwd)
 		if err != nil {
-			var ref *RefusalError
-			if !errors.As(err, &ref) {
+			if _, ok := errors.AsType[*RefusalError](err); !ok {
 				t.Fatalf("re-root error must be a typed *RefusalError, got %T: %v", err, err)
 			}
 			if !wantRefusal {

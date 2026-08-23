@@ -10,11 +10,11 @@ func TestGetPrice_ExactMatch(t *testing.T) {
 			{
 				ID:                            "claude-opus-4-5",
 				Provider:                      "anthropic",
-				InputCostPerMillion:           f64(5.0),
-				OutputCostPerMillion:          f64(25.0),
-				CacheReadInputCostPerMillion:  f64(0.5),
-				CacheCreation5mCostPerMillion: f64(6.25),
-				CacheCreation1hCostPerMillion: f64(10.0),
+				InputCostPerMillion:           new(5.0),
+				OutputCostPerMillion:          new(25.0),
+				CacheReadInputCostPerMillion:  new(0.5),
+				CacheCreation5mCostPerMillion: new(6.25),
+				CacheCreation1hCostPerMillion: new(10.0),
 			},
 		},
 	}
@@ -39,9 +39,9 @@ func TestGetPrice_ExactMatch(t *testing.T) {
 func TestGetPrice_LongestPrefix(t *testing.T) {
 	cat := &ModelCatalog{
 		Models: []ModelInfo{
-			{ID: "claude-opus-4-5", InputCostPerMillion: f64(5.0), OutputCostPerMillion: f64(25.0)},
-			{ID: "claude-opus-4", InputCostPerMillion: f64(15.0), OutputCostPerMillion: f64(75.0)},
-			{ID: "claude", InputCostPerMillion: f64(100.0), OutputCostPerMillion: f64(500.0)},
+			{ID: "claude-opus-4-5", InputCostPerMillion: new(5.0), OutputCostPerMillion: new(25.0)},
+			{ID: "claude-opus-4", InputCostPerMillion: new(15.0), OutputCostPerMillion: new(75.0)},
+			{ID: "claude", InputCostPerMillion: new(100.0), OutputCostPerMillion: new(500.0)},
 		},
 	}
 	// "claude-opus-4-5-20260101" should resolve to claude-opus-4-5 (longer prefix wins over claude-opus-4).
@@ -57,7 +57,7 @@ func TestGetPrice_LongestPrefix(t *testing.T) {
 func TestGetPrice_ProviderQualifiedRef(t *testing.T) {
 	cat := &ModelCatalog{
 		Models: []ModelInfo{
-			{ID: "claude-opus-4-5", InputCostPerMillion: f64(5.0), OutputCostPerMillion: f64(25.0)},
+			{ID: "claude-opus-4-5", InputCostPerMillion: new(5.0), OutputCostPerMillion: new(25.0)},
 		},
 	}
 	// Real stored session model ids can carry a provider namespace the
@@ -75,7 +75,7 @@ func TestGetPrice_ProviderQualifiedRef(t *testing.T) {
 func TestGetPrice_OneMillionContextSuffix(t *testing.T) {
 	cat := &ModelCatalog{
 		Models: []ModelInfo{
-			{ID: "claude-opus-4-5", InputCostPerMillion: f64(5.0), OutputCostPerMillion: f64(25.0)},
+			{ID: "claude-opus-4-5", InputCostPerMillion: new(5.0), OutputCostPerMillion: new(25.0)},
 		},
 	}
 	// The "[1m]" suffix (agent/provider/profile.go:743,
@@ -103,7 +103,7 @@ func TestGetPrice_OneMillionContextSuffix(t *testing.T) {
 func TestGetPrice_UnknownModel(t *testing.T) {
 	cat := &ModelCatalog{
 		Models: []ModelInfo{
-			{ID: "claude-opus-4-5", InputCostPerMillion: f64(5.0), OutputCostPerMillion: f64(25.0)},
+			{ID: "claude-opus-4-5", InputCostPerMillion: new(5.0), OutputCostPerMillion: new(25.0)},
 		},
 	}
 	if _, ok := cat.GetPrice("totally-different-provider-model"); ok {
@@ -120,7 +120,7 @@ func TestGetPrice_MissingBaseRates(t *testing.T) {
 			// known model but no pricing (like claude-sonnet-4-6 in the real catalog)
 			{ID: "claude-sonnet-4-6", Provider: "anthropic"},
 			// parent family with pricing
-			{ID: "claude-sonnet-4-5", InputCostPerMillion: f64(3.0), OutputCostPerMillion: f64(15.0)},
+			{ID: "claude-sonnet-4-5", InputCostPerMillion: new(3.0), OutputCostPerMillion: new(15.0)},
 		},
 	}
 	// Exact match fails (no base rates); no prefix fallback either since claude-sonnet-4-6
@@ -176,7 +176,7 @@ func TestDefaultPrice_DatedSnapshot(t *testing.T) {
 }
 
 func TestEstimateCost_BlendsCacheReadAtItsOwnRate(t *testing.T) {
-	price := Price{InputPerM: 5.0, OutputPerM: 25.0, CacheReadPerM: f64(0.5)}
+	price := Price{InputPerM: 5.0, OutputPerM: 25.0, CacheReadPerM: new(0.5)}
 	got := EstimateCost(1_000_000, 1_000_000, 1_000_000, price)
 	want := 5.0 + 0.5 + 25.0 // one million tokens of each tier
 	if !approxF(got, want) {

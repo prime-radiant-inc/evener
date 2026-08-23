@@ -213,7 +213,7 @@ func parseAskQuestions(args map[string]any) ([]askQuestion, error) {
 // below is defense in depth for config drift (spec §7 point 4).
 func registerAskTool(reg *tool.Registry, s *Session, deps *toolDeps) {
 	_ = reg.Register(tool.RegisteredTool{
-		Tool: llm.Tool{Definition: tool.DefAskUser()},
+		Definition: tool.DefAskUser(),
 		Exec: func(ctx context.Context, env execenv.ExecutionEnvironment, args map[string]any) (any, error) {
 			_ = env
 			if err := deps.abort(ctx); err != nil {

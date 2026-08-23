@@ -100,8 +100,8 @@ type stableDelegateCreateResult struct {
 func registerStableDelegateTool(reg *tool.Registry, s *Session) error {
 	reg.Remove("delegate")
 	if err := reg.Register(tool.RegisteredTool{
-		Tool:  llm.Tool{Definition: tool.DefDelegate(s.delegateAgentTypeNames())},
-		Limit: schema.ToolOutputLimit{MaxChars: jobToolResultDefaultMaxChar, Strategy: schema.TruncTail},
+		Definition: tool.DefDelegate(s.delegateAgentTypeNames()),
+		Limit:      schema.ToolOutputLimit{MaxChars: jobToolResultDefaultMaxChar, Strategy: schema.TruncTail},
 		Exec: func(ctx context.Context, env execenv.ExecutionEnvironment, args map[string]any) (any, error) {
 			_ = env
 			return stableDelegateCreateTool(ctx, s, args, jobToolResultMaxChars(reg, "delegate"))
@@ -111,8 +111,8 @@ func registerStableDelegateTool(reg *tool.Registry, s *Session) error {
 	}
 	reg.Remove("delegate_send")
 	return reg.Register(tool.RegisteredTool{
-		Tool:  llm.Tool{Definition: tool.DefDelegateSend()},
-		Limit: schema.ToolOutputLimit{MaxChars: jobToolResultDefaultMaxChar, Strategy: schema.TruncTail},
+		Definition: tool.DefDelegateSend(),
+		Limit:      schema.ToolOutputLimit{MaxChars: jobToolResultDefaultMaxChar, Strategy: schema.TruncTail},
 		Exec: func(ctx context.Context, env execenv.ExecutionEnvironment, args map[string]any) (any, error) {
 			_ = env
 			return stableDelegateSendTool(ctx, s, args, jobToolResultMaxChars(reg, "delegate_send"))
@@ -243,12 +243,10 @@ func (s *Session) RegisterTool(name, description string, params map[string]any, 
 	// SetModel's pattern, so they can't race a concurrent env swap or model
 	// switch.
 	_ = s.reg.Register(tool.RegisteredTool{
-		Tool: llm.Tool{
-			Definition: llm.ToolDefinition{
-				Name:        name,
-				Description: description,
-				Parameters:  params,
-			},
+		Definition: llm.ToolDefinition{
+			Name:        name,
+			Description: description,
+			Parameters:  params,
 		},
 		Exec: func(ctx context.Context, env execenv.ExecutionEnvironment, args map[string]any) (any, error) {
 			return fn(ctx, args)

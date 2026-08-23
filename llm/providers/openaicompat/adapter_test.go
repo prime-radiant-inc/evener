@@ -573,8 +573,7 @@ func TestBuildRequestBody_RejectsToolResultImage(t *testing.T) {
 			if !strings.Contains(err.Error(), "tool-result images") {
 				t.Fatalf("error=%v, want tool-result image explanation", err)
 			}
-			var configErr *llm.ConfigurationError
-			if !errors.As(err, &configErr) {
+			if _, ok := errors.AsType[*llm.ConfigurationError](err); !ok {
 				t.Fatalf("expected ConfigurationError, got %T: %v", err, err)
 			}
 		})
@@ -973,8 +972,7 @@ func TestComplete_WrapsContextCanceled(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error")
 	}
-	var abortErr *llm.AbortError
-	if !errors.As(err, &abortErr) {
+	if _, ok := errors.AsType[*llm.AbortError](err); !ok {
 		t.Errorf("expected AbortError, got %T: %v", err, err)
 	}
 }
@@ -1331,8 +1329,7 @@ func TestAdapter_Complete_UnknownToolChoiceMode_ReturnsError(t *testing.T) {
 		Tools:      []llm.ToolDefinition{{Name: "t", Parameters: map[string]any{"type": "object"}}},
 		ToolChoice: &llm.ToolChoice{Mode: "bogus"},
 	})
-	var unsupported *llm.UnsupportedToolChoiceError
-	if !errors.As(err, &unsupported) {
+	if _, ok := errors.AsType[*llm.UnsupportedToolChoiceError](err); !ok {
 		t.Fatalf("expected UnsupportedToolChoiceError, got %T: %v", err, err)
 	}
 }
@@ -1348,8 +1345,7 @@ func TestAdapter_Complete_NamedToolChoice_EmptyName_ReturnsError(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error for named mode with empty name")
 	}
-	var configErr *llm.ConfigurationError
-	if !errors.As(err, &configErr) {
+	if _, ok := errors.AsType[*llm.ConfigurationError](err); !ok {
 		t.Fatalf("expected ConfigurationError, got %T: %v", err, err)
 	}
 }

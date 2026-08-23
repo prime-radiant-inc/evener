@@ -867,8 +867,7 @@ func TestSession_ProviderAbortKeepsSessionIdle(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected abort error")
 	}
-	var abort *llm.AbortError
-	if !errors.As(err, &abort) {
+	if _, ok := errors.AsType[*llm.AbortError](err); !ok {
 		t.Fatalf("err=%T %v, want AbortError", err, err)
 	}
 	if got := sess.State(); got != SessionIdle {
@@ -1612,8 +1611,7 @@ func TestSession_ProvideErrorReturnsErrorToCaller(t *testing.T) {
 	}
 	// The underlying llm.Error must remain reachable via errors.As so callers
 	// inspecting status codes / provider names continue to work.
-	var le llm.Error
-	if !errors.As(err, &le) {
+	if _, ok := errors.AsType[llm.Error](err); !ok {
 		t.Fatalf("ProcessInput error does not unwrap to llm.Error: %v", err)
 	}
 }
@@ -1662,8 +1660,7 @@ func TestSession_NonRetryableProviderErrorLeavesSessionIdle(t *testing.T) {
 	if processErr == nil || !strings.Contains(processErr.Error(), "billing-cycle quota exhausted") {
 		t.Fatalf("ProcessInput error = %v, want quota detail", processErr)
 	}
-	var providerErr llm.Error
-	if !errors.As(processErr, &providerErr) {
+	if _, ok := errors.AsType[llm.Error](processErr); !ok {
 		t.Fatalf("ProcessInput error does not unwrap to llm.Error: %v", processErr)
 	}
 	if got := len(adapter.Requests()); got != 1 {

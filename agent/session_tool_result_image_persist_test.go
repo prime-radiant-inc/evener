@@ -23,11 +23,11 @@ import (
 func registerFixtureTool(t *testing.T, sess *Session, name string, exec func() (any, error)) {
 	t.Helper()
 	if err := sess.reg.Register(tool.RegisteredTool{
-		Tool: llm.Tool{Definition: llm.ToolDefinition{
+		Definition: llm.ToolDefinition{
 			Name:        name,
 			Description: "fixture",
 			Parameters:  map[string]any{"type": "object"},
-		}},
+		},
 		Exec: func(context.Context, execenv.ExecutionEnvironment, map[string]any) (any, error) {
 			return exec()
 		},

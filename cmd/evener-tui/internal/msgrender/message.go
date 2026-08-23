@@ -61,28 +61,26 @@ func themedGlamourStyle() ansi.StyleConfig {
 
 	// Inline code: very subtle raised tone — just enough to register as a
 	// distinct span without reading as a highlighted block.
-	base.Code.BackgroundColor = strPtr(bgRaised)
-	base.Code.Color = strPtr(text)
+	base.Code.BackgroundColor = new(bgRaised)
+	base.Code.Color = new(text)
 
 	// Code block container: deep-clone Chroma so we don't mutate the
 	// package-level styles.LightStyleConfig / DarkStyleConfig.
 	if base.CodeBlock.Chroma != nil {
 		chromaCopy := *base.CodeBlock.Chroma
-		chromaCopy.Background.BackgroundColor = strPtr(bgRaised)
-		chromaCopy.Background.Color = strPtr(text)
-		chromaCopy.Text.Color = strPtr(text)
+		chromaCopy.Background.BackgroundColor = new(bgRaised)
+		chromaCopy.Background.Color = new(text)
+		chromaCopy.Text.Color = new(text)
 		base.CodeBlock.Chroma = &chromaCopy
 	}
-	base.CodeBlock.BackgroundColor = strPtr(bgRaised)
-	base.CodeBlock.Color = strPtr(text)
+	base.CodeBlock.BackgroundColor = new(bgRaised)
+	base.CodeBlock.Color = new(text)
 
 	// Block quote: muted text in the theme tone.
-	base.BlockQuote.Color = strPtr(textMuted)
+	base.BlockQuote.Color = new(textMuted)
 
 	return base
 }
-
-func strPtr(s string) *string { return &s }
 
 func renderMarkdown(text string, width int) string {
 	if !containsMarkdownSyntax(text) {

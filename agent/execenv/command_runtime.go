@@ -239,8 +239,7 @@ func (c *systemCommandRuntime) outputResult() (bool, error) {
 }
 
 func (c *systemCommandRuntime) forcedCloseOutputError(err error) error {
-	var writeErr *commandOutputWriteError
-	if errors.As(err, &writeErr) {
+	if _, ok := errors.AsType[*commandOutputWriteError](err); ok {
 		return err
 	}
 	if errors.Is(err, os.ErrClosed) {
@@ -267,8 +266,7 @@ func (c *systemCommandRuntime) PID() int {
 }
 
 func (c *systemCommandRuntime) ExitCode(err error) (int, bool) {
-	var exitErr *exec.ExitError
-	if errors.As(err, &exitErr) {
+	if exitErr, ok := errors.AsType[*exec.ExitError](err); ok {
 		return processExitCode(exitErr), true
 	}
 	return 0, false

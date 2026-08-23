@@ -153,11 +153,11 @@ func mkFixtureFifos(t *testing.T, names ...string) string {
 // on purpose, so a loaded machine never trips it before the real signal lands.
 const fifoReadTripwire = 60 * time.Second
 
-// postExitGraceMin is the minimum grace for descendants that outlived the wave.
+// postExitGrace is the minimum grace for descendants that outlived the wave.
 // An orphan already past its TERM trap writes within milliseconds, so this
 // only elapses when no writer exists at all. It is also the whole grace for a
 // caller with no deadline to scale against.
-const postExitGraceMin = 5 * time.Second
+const postExitGrace = 5 * time.Second
 
 // postExitGraceMax caps how far the deadline can stretch the grace. Without a
 // ceiling, one absent writer spends nearly the entire remaining test budget
@@ -176,14 +176,14 @@ const deadlineReportReserve = 15 * time.Second
 // graceFor is how long readFifoLineOrExit keeps waiting after the wave has
 // exited: the time left until the test's own deadline, less the reserve that
 // keeps the report ahead of the runner's panic, clamped between
-// postExitGraceMin and postExitGraceMax. A zero deadline means the caller has
+// postExitGrace and postExitGraceMax. A zero deadline means the caller has
 // none (`go test` without -timeout), which is the floor case, as is a deadline
 // already inside the reserve.
 func graceFor(deadline, now time.Time) time.Duration {
 	if deadline.IsZero() {
-		return postExitGraceMin
+		return postExitGrace
 	}
-	return min(max(deadline.Sub(now)-deadlineReportReserve, postExitGraceMin), postExitGraceMax)
+	return min(max(deadline.Sub(now)-deadlineReportReserve, postExitGrace), postExitGraceMax)
 }
 
 // waveRun is a running wave whose exit any number of waiters can observe.
@@ -520,10 +520,10 @@ func TestGraceFor(t *testing.T) {
 		deadline time.Time
 		want     time.Duration
 	}{
-		{"no deadline is the floor", time.Time{}, postExitGraceMin},
-		{"a deadline inside the reserve is the floor", now.Add(deadlineReportReserve / 2), postExitGraceMin},
-		{"an expired deadline is the floor", now.Add(-time.Minute), postExitGraceMin},
-		{"less than the floor past the reserve is still the floor", now.Add(deadlineReportReserve + time.Second), postExitGraceMin},
+		{"no deadline is the floor", time.Time{}, postExitGrace},
+		{"a deadline inside the reserve is the floor", now.Add(deadlineReportReserve / 2), postExitGrace},
+		{"an expired deadline is the floor", now.Add(-time.Minute), postExitGrace},
+		{"less than the floor past the reserve is still the floor", now.Add(deadlineReportReserve + time.Second), postExitGrace},
 		{"the remainder past the reserve becomes the grace", now.Add(deadlineReportReserve + 30*time.Second), 30 * time.Second},
 		{"a distant deadline is capped", now.Add(deadlineReportReserve + 9*time.Minute), postExitGraceMax},
 	} {
@@ -549,7 +549,7 @@ func TestReadFifoLineGraceFollowsTheTestDeadline(t *testing.T) {
 	dead := &waveRun{done: make(chan struct{}), code: 9}
 	close(dead.done) // the wave is already over; nobody will ever open for write
 
-	grace := postExitGraceMin + 2*time.Second
+	grace := postExitGrace + 2*time.Second
 	start := time.Now()
 	_, err := readFifoLineOrExit(filepath.Join(fx, "never-written"), dead, time.Minute,
 		start.Add(deadlineReportReserve+grace))
@@ -558,9 +558,9 @@ func TestReadFifoLineGraceFollowsTheTestDeadline(t *testing.T) {
 	if err == nil {
 		t.Fatalf("expected an error when the wave exited without writing")
 	}
-	if elapsed < postExitGraceMin+time.Second {
+	if elapsed < postExitGrace+time.Second {
 		t.Errorf("waited %v: the deadline's %v of grace was ignored and the floor (%v) was used instead: %v",
-			elapsed, grace, postExitGraceMin, err)
+			elapsed, grace, postExitGrace, err)
 	}
 	if elapsed > grace+10*time.Second {
 		t.Errorf("waited %v, well past the %v of grace the deadline allows: %v", elapsed, grace, err)

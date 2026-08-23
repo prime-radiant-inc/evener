@@ -71,8 +71,7 @@ func mustDenied(t *testing.T, err error, whatf string, args ...any) {
 	if err == nil {
 		t.Fatalf("%s: expected a denial, got nil", what)
 	}
-	var denied *sandbox.DeniedError
-	if !errors.As(err, &denied) {
+	if _, ok := errors.AsType[*sandbox.DeniedError](err); !ok {
 		t.Fatalf("%s: expected *sandbox.DeniedError, got %T: %v", what, err, err)
 	}
 }

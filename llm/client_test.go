@@ -198,8 +198,7 @@ func TestClient_UnknownProviderError(t *testing.T) {
 	if err == nil {
 		t.Fatalf("expected error, got nil")
 	}
-	var ce *ConfigurationError
-	if !errors.As(err, &ce) {
+	if _, ok := errors.AsType[*ConfigurationError](err); !ok {
 		t.Fatalf("expected ConfigurationError, got %T", err)
 	}
 }
@@ -212,8 +211,7 @@ func TestClient_NoProviderConfiguredError(t *testing.T) {
 	if err == nil {
 		t.Fatalf("expected error, got nil")
 	}
-	var ce *ConfigurationError
-	if !errors.As(err, &ce) {
+	if _, ok := errors.AsType[*ConfigurationError](err); !ok {
 		t.Fatalf("expected ConfigurationError, got %T", err)
 	}
 }
@@ -263,8 +261,7 @@ func TestClient_PlanResponsesContinuation_UnknownProvider(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error, got nil")
 	}
-	var ce *ConfigurationError
-	if !errors.As(err, &ce) {
+	if _, ok := errors.AsType[*ConfigurationError](err); !ok {
 		t.Fatalf("expected ConfigurationError, got %T", err)
 	}
 }
@@ -278,8 +275,7 @@ func TestClient_PlanResponsesContinuation_UnsupportedProvider(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error, got nil")
 	}
-	var ce *ConfigurationError
-	if !errors.As(err, &ce) {
+	if _, ok := errors.AsType[*ConfigurationError](err); !ok {
 		t.Fatalf("expected ConfigurationError, got %T", err)
 	}
 }
@@ -513,7 +509,7 @@ func (a *toolChoiceFakeAdapter) SupportsToolChoice(mode string) bool {
 
 func TestClient_Close_CallsClosableAdapters(t *testing.T) {
 	c := NewClient()
-	closable := &closableFakeAdapter{fakeAdapter: fakeAdapter{name: "closable"}}
+	closable := &closableFakeAdapter{name: "closable"}
 	nonClosable := &fakeAdapter{name: "nonclosable"}
 	c.Register(closable)
 	c.Register(nonClosable)
@@ -528,7 +524,7 @@ func TestClient_Close_CallsClosableAdapters(t *testing.T) {
 
 func TestClient_Initialize_CallsInitializableAdapters(t *testing.T) {
 	c := NewClient()
-	initable := &initializableFakeAdapter{fakeAdapter: fakeAdapter{name: "initable"}}
+	initable := &initializableFakeAdapter{name: "initable"}
 	nonInitable := &fakeAdapter{name: "plain"}
 	c.Register(initable)
 	c.Register(nonInitable)
@@ -542,7 +538,7 @@ func TestClient_Initialize_CallsInitializableAdapters(t *testing.T) {
 }
 
 func TestClient_Register_CallsInitialize(t *testing.T) {
-	adapter := &initializableFakeAdapter{fakeAdapter: fakeAdapter{name: "test"}}
+	adapter := &initializableFakeAdapter{name: "test"}
 	c := NewClient()
 	c.Register(adapter)
 	if !adapter.initialized {
@@ -609,7 +605,7 @@ func TestNormalizeProviderName_GeminiNoRewrite(t *testing.T) {
 
 func TestClient_SupportsToolChoice(t *testing.T) {
 	c := NewClient()
-	c.Register(&toolChoiceFakeAdapter{fakeAdapter: fakeAdapter{name: "openai"}})
+	c.Register(&toolChoiceFakeAdapter{name: "openai"})
 
 	if !c.SupportsToolChoice("openai", "auto") {
 		t.Fatalf("expected auto to be supported")

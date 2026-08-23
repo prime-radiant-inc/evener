@@ -1678,8 +1678,8 @@ func TestDelegateResourceRuntime_StructuredResultExplicitNullIsPresent(t *testin
 	properties["output"] = map[string]any{"type": "null"}
 	def.Parameters = parameters
 	if err := reg.Register(toolpkg.RegisteredTool{
-		Tool: llm.Tool{Definition: def},
-		Exec: func(context.Context, execenv.ExecutionEnvironment, map[string]any) (any, error) { return nil, nil },
+		Definition: def,
+		Exec:       func(context.Context, execenv.ExecutionEnvironment, map[string]any) (any, error) { return nil, nil },
 	}); err != nil {
 		t.Fatalf("register custom communicate schema: %v", err)
 	}

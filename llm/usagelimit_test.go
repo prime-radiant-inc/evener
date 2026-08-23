@@ -59,8 +59,7 @@ func TestUsageLimit429IsQuotaExceededAndNotRetryable(t *testing.T) {
 	raw := rawBody(t, chatGPTUsageLimitBody)
 	err := ErrorFromHTTPStatus("openai", 429, "responses.create(stream) failed", raw, nil)
 
-	var target *quotaExceededError
-	if !errors.As(err, &target) {
+	if _, ok := errors.AsType[*quotaExceededError](err); !ok {
 		t.Fatalf("got %T, want *quotaExceededError", err)
 	}
 	if got := Kind(err); got != KindQuotaExceeded {
@@ -111,8 +110,7 @@ func TestPlainRateLimit429StaysRetryable(t *testing.T) {
 	raw := rawBody(t, `{"error":{"type":"rate_limit_exceeded","message":"Slow down"}}`)
 	err := ErrorFromHTTPStatus("openai", 429, "responses.create(stream) failed", raw, nil)
 
-	var target *rateLimitError
-	if !errors.As(err, &target) {
+	if _, ok := errors.AsType[*rateLimitError](err); !ok {
 		t.Fatalf("got %T, want *rateLimitError", err)
 	}
 	if got := Kind(err); got != KindRateLimit {

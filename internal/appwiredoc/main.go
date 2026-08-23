@@ -162,8 +162,7 @@ func fieldsOf(t reflect.Type) []fieldView {
 		return nil
 	}
 	var out []fieldView
-	for i := 0; i < t.NumField(); i++ {
-		f := t.Field(i)
+	for f := range t.Fields() {
 		if !f.IsExported() {
 			continue
 		}

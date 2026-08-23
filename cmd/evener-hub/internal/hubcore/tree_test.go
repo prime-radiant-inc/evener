@@ -13,7 +13,6 @@ import (
 	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/hubapi"
 	"primeradiant.com/evener/identifier"
-	"primeradiant.com/evener/rendezvous"
 )
 
 func TestBuildTreeCanonicalProjectAggregation(t *testing.T) {
@@ -94,8 +93,8 @@ func fuzzScenarioBuildTree_GroupsByProjectWithSubagentsAndForks(t *testing.T) {
 			EnvInfo: schema.EnvironmentInfo{WorkingDir: "/projects/evener-hub"}},
 	}
 	live := []LiveEntry{
-		{Entry: rendezvous.Entry{PID: 1}, SessionID: "01ACTIVE", Status: appwire.ThreadStatusActive},
-		{Entry: rendezvous.Entry{PID: 2}, SessionID: "01SUB1", Status: appwire.ThreadStatusActive},
+		{PID: 1, SessionID: "01ACTIVE", Status: appwire.ThreadStatusActive},
+		{PID: 2, SessionID: "01SUB1", Status: appwire.ThreadStatusActive},
 	}
 
 	tree := buildTree(metas, live)
@@ -161,7 +160,7 @@ func fuzzScenarioBuildTree_ProjectsRunningSubagentOnChild(t *testing.T) {
 		{ID: "01CHILD", CreatedAt: now, UpdatedAt: now, ParentSessionID: "01PARENT", IsSubagent: true, EnvInfo: schema.EnvironmentInfo{WorkingDir: "/projects/evener"}},
 	}
 	live := []LiveEntry{{
-		Entry:              rendezvous.Entry{PID: 1},
+		PID:                1,
 		SessionID:          "01PARENT",
 		Status:             appwire.ThreadStatusIdle,
 		RunningSubagentIDs: []string{"01CHILD"},
@@ -186,7 +185,7 @@ func fuzzScenarioBuildTree_ProjectsRunningSubagentOnChild(t *testing.T) {
 		t.Fatalf("project rollup = state %q live %d expanded %v, want active/1/true", project.RollupState, project.RollupLive, project.Expanded)
 	}
 
-	tree = BuildTreeAt(metas, []LiveEntry{{Entry: rendezvous.Entry{PID: 1}, SessionID: "01PARENT", Status: appwire.ThreadStatusIdle}}, nil, now)
+	tree = BuildTreeAt(metas, []LiveEntry{{PID: 1, SessionID: "01PARENT", Status: appwire.ThreadStatusIdle}}, nil, now)
 	project = tree.Projects[0]
 	sessions = allSessions(project)
 	if sessions[0].Children[0].State != "ended" || project.RollupState != "idle" || project.RollupLive != 0 || project.Expanded {
@@ -209,7 +208,7 @@ func fuzzScenarioBuildTree_RunningSubagentUsesCarriedState(t *testing.T) {
 		{ID: "01NOSTATE", CreatedAt: now, UpdatedAt: now, ParentSessionID: "01PARENT", IsSubagent: true, EnvInfo: schema.EnvironmentInfo{WorkingDir: "/projects/evener"}},
 	}
 	live := []LiveEntry{{
-		Entry:                 rendezvous.Entry{PID: 1},
+		PID:                   1,
 		SessionID:             "01PARENT",
 		Status:                appwire.ThreadStatusIdle,
 		RunningSubagentIDs:    []string{"01IDLE", "01BUSY", "01NOSTATE"},
@@ -348,9 +347,9 @@ func fuzzScenarioBuildTree_AttentionSortsLive(t *testing.T) {
 			EnvInfo: schema.EnvironmentInfo{WorkingDir: "/projects/alpha"}},
 	}
 	live := []LiveEntry{
-		{Entry: rendezvous.Entry{PID: 1}, SessionID: "01IDLE", Status: "idle"},
-		{Entry: rendezvous.Entry{PID: 2}, SessionID: "01AWAIT", Status: "awaiting"},
-		{Entry: rendezvous.Entry{PID: 3}, SessionID: "01PROC", Status: appwire.ThreadStatusActive},
+		{PID: 1, SessionID: "01IDLE", Status: "idle"},
+		{PID: 2, SessionID: "01AWAIT", Status: "awaiting"},
+		{PID: 3, SessionID: "01PROC", Status: appwire.ThreadStatusActive},
 	}
 
 	tree := buildTree(metas, live)
@@ -409,10 +408,10 @@ func fuzzScenarioBuildTree_OrdersProjectSessionsByUpdatedCreatedTitleAndID(t *te
 func fuzzScenarioBuildTree_OrdersLiveRowsWithoutMetasByStartedAtAndID(t *testing.T) {
 	base := time.Date(2026, 5, 11, 12, 0, 0, 0, time.UTC)
 	live := []LiveEntry{
-		{Entry: rendezvous.Entry{PID: 1, StartedAt: base.Add(-time.Hour)}, SessionID: "02wMz5Txv2enqVTitaig6F", Status: appwire.ThreadStatusIdle},
-		{Entry: rendezvous.Entry{PID: 2, StartedAt: base}, SessionID: "02wMz5Txv1C3Hut0M8GCeB", Status: appwire.ThreadStatusIdle},
-		{Entry: rendezvous.Entry{PID: 3, StartedAt: base.Add(-2 * time.Hour)}, SessionID: "02wMz5Txv8Vo4rqb3QYZuV", Status: appwire.ThreadStatusIdle},
-		{Entry: rendezvous.Entry{PID: 4, StartedAt: base.Add(-2 * time.Hour)}, SessionID: "02wMz5Txv733WHFsVy66SR", Status: appwire.ThreadStatusIdle},
+		{PID: 1, StartedAt: base.Add(-time.Hour), SessionID: "02wMz5Txv2enqVTitaig6F", Status: appwire.ThreadStatusIdle},
+		{PID: 2, StartedAt: base, SessionID: "02wMz5Txv1C3Hut0M8GCeB", Status: appwire.ThreadStatusIdle},
+		{PID: 3, StartedAt: base.Add(-2 * time.Hour), SessionID: "02wMz5Txv8Vo4rqb3QYZuV", Status: appwire.ThreadStatusIdle},
+		{PID: 4, StartedAt: base.Add(-2 * time.Hour), SessionID: "02wMz5Txv733WHFsVy66SR", Status: appwire.ThreadStatusIdle},
 	}
 
 	tree := buildTree(nil, live)
@@ -435,8 +434,8 @@ func fuzzScenarioBuildTree_OrdersMixedLiveRowsByMergedMetadata(t *testing.T) {
 		OriginalPrompt: "meta-backed live row",
 	}}
 	live := []LiveEntry{
-		{Entry: rendezvous.Entry{PID: 1, StartedAt: base.Add(-2 * time.Hour)}, SessionID: "01META", Status: appwire.ThreadStatusIdle},
-		{Entry: rendezvous.Entry{PID: 2, StartedAt: base}, SessionID: "02FRESH", Status: appwire.ThreadStatusIdle},
+		{PID: 1, StartedAt: base.Add(-2 * time.Hour), SessionID: "01META", Status: appwire.ThreadStatusIdle},
+		{PID: 2, StartedAt: base, SessionID: "02FRESH", Status: appwire.ThreadStatusIdle},
 	}
 
 	// Pinned clock: BuildTree's wall clock would auto-archive the fixed-date
@@ -731,11 +730,11 @@ func fuzzScenarioBuildTree_RollupMagnitudeCountsLiveAndAttention(t *testing.T) {
 			EnvInfo: schema.EnvironmentInfo{WorkingDir: "/projects/evener"}},
 	}
 	live := []LiveEntry{
-		{Entry: rendezvous.Entry{PID: 1}, SessionID: "01WORK1", Status: appwire.ThreadStatusActive},
-		{Entry: rendezvous.Entry{PID: 2}, SessionID: "01WORK2", Status: appwire.ThreadStatusActive},
-		{Entry: rendezvous.Entry{PID: 3}, SessionID: "01ASK", Status: appwire.ThreadStatusAwaiting},
-		{Entry: rendezvous.Entry{PID: 4}, SessionID: "01WARN", Status: appwire.ThreadStatusWarning},
-		{Entry: rendezvous.Entry{PID: 5}, SessionID: "01ZZZ", Status: appwire.ThreadStatusIdle},
+		{PID: 1, SessionID: "01WORK1", Status: appwire.ThreadStatusActive},
+		{PID: 2, SessionID: "01WORK2", Status: appwire.ThreadStatusActive},
+		{PID: 3, SessionID: "01ASK", Status: appwire.ThreadStatusAwaiting},
+		{PID: 4, SessionID: "01WARN", Status: appwire.ThreadStatusWarning},
+		{PID: 5, SessionID: "01ZZZ", Status: appwire.ThreadStatusIdle},
 	}
 	proj := projectByName(t, buildTree(metas, live), "evener")
 	// 2 working (active) sessions. Idle does not count toward either magnitude.
@@ -762,9 +761,9 @@ func fuzzScenarioBuildTree_NeedsYouAggregatesAwaitingAcrossProjects(t *testing.T
 			EnvInfo: schema.EnvironmentInfo{WorkingDir: "/projects/evener"}},
 	}
 	live := []LiveEntry{
-		{Entry: rendezvous.Entry{PID: 1}, SessionID: "01A_NEW", Status: appwire.ThreadStatusAwaiting},
-		{Entry: rendezvous.Entry{PID: 2}, SessionID: "01A_OLD", Status: appwire.ThreadStatusAwaiting},
-		{Entry: rendezvous.Entry{PID: 3}, SessionID: "01LIVE", Status: appwire.ThreadStatusActive},
+		{PID: 1, SessionID: "01A_NEW", Status: appwire.ThreadStatusAwaiting},
+		{PID: 2, SessionID: "01A_OLD", Status: appwire.ThreadStatusAwaiting},
+		{PID: 3, SessionID: "01LIVE", Status: appwire.ThreadStatusActive},
 	}
 	tree := buildTree(metas, live)
 	if len(tree.NeedsYou) != 2 {
@@ -793,7 +792,7 @@ func fuzzScenarioBuildTree_NeedsYouEmptyWhenNothingAwaits(t *testing.T) {
 			EnvInfo: schema.EnvironmentInfo{WorkingDir: "/projects/evener"}},
 	}
 	live := []LiveEntry{
-		{Entry: rendezvous.Entry{PID: 1}, SessionID: "01LIVE", Status: appwire.ThreadStatusActive},
+		{PID: 1, SessionID: "01LIVE", Status: appwire.ThreadStatusActive},
 	}
 	if got := len(buildTree(metas, live).NeedsYou); got != 0 {
 		t.Errorf("NeedsYou should be empty when nothing awaits, got %d", got)
@@ -859,7 +858,7 @@ func fuzzScenarioBuildTree_DoesNotClusterLiveRepeatedTitles(t *testing.T) {
 		})
 	}
 	live := []LiveEntry{
-		{Entry: rendezvous.Entry{PID: 1}, SessionID: "01DUPA", Status: appwire.ThreadStatusActive},
+		{PID: 1, SessionID: "01DUPA", Status: appwire.ThreadStatusActive},
 	}
 	proj := projectByName(t, buildTree(metas, live), "evener-docs")
 	sessions := allSessions(proj)
@@ -887,7 +886,7 @@ func fuzzScenarioBuildTree_ClampsSubagentsOfDeadParent(t *testing.T) {
 	}
 	// Parent is NOT live (ended); the subagent lingers as "active" in the map.
 	live := []LiveEntry{
-		{Entry: rendezvous.Entry{PID: 9}, SessionID: "01STALESUB", Status: appwire.ThreadStatusActive},
+		{PID: 9, SessionID: "01STALESUB", Status: appwire.ThreadStatusActive},
 	}
 	proj := projectByName(t, buildTree(metas, live), "evener")
 	sessions := allSessions(proj)
@@ -909,8 +908,8 @@ func fuzzScenarioBuildTree_KeepsSubagentStateWhenParentLive(t *testing.T) {
 			EnvInfo: schema.EnvironmentInfo{WorkingDir: "/projects/evener"}},
 	}
 	live := []LiveEntry{
-		{Entry: rendezvous.Entry{PID: 1}, SessionID: "01LIVEP", Status: appwire.ThreadStatusActive},
-		{Entry: rendezvous.Entry{PID: 2}, SessionID: "01RUNSUB", Status: appwire.ThreadStatusActive},
+		{PID: 1, SessionID: "01LIVEP", Status: appwire.ThreadStatusActive},
+		{PID: 2, SessionID: "01RUNSUB", Status: appwire.ThreadStatusActive},
 	}
 	proj := projectByName(t, buildTree(metas, live), "evener")
 	if got := allSessions(proj)[0].Children[0].State; got != "active" {
@@ -925,8 +924,8 @@ func TestBuildTree_ExcludesNestedForkFromNeedsYou(t *testing.T) {
 		{ID: "fork", ForkLabel: "before edit", UpdatedAt: now, EnvInfo: schema.EnvironmentInfo{WorkingDir: "/projects/evener"}},
 	}
 	live := []LiveEntry{
-		{Entry: rendezvous.Entry{PID: 1}, SessionID: "branch", Status: appwire.ThreadStatusActive},
-		{Entry: rendezvous.Entry{PID: 2}, SessionID: "fork", Status: appwire.ThreadStatusAwaiting},
+		{PID: 1, SessionID: "branch", Status: appwire.ThreadStatusActive},
+		{PID: 2, SessionID: "fork", Status: appwire.ThreadStatusAwaiting},
 	}
 
 	tree := BuildTreeAt(metas, live, nil, now)
@@ -1090,8 +1089,8 @@ func fuzzScenarioBuildTree_ExpandedOnlyForLiveProjects(t *testing.T) {
 			EnvInfo: schema.EnvironmentInfo{WorkingDir: "/projects/archived-proj"}},
 	}
 	live := []LiveEntry{
-		{Entry: rendezvous.Entry{PID: 1}, SessionID: "01LIVE", Status: appwire.ThreadStatusActive},
-		{Entry: rendezvous.Entry{PID: 2}, SessionID: "01IDLE", Status: appwire.ThreadStatusIdle},
+		{PID: 1, SessionID: "01LIVE", Status: appwire.ThreadStatusActive},
+		{PID: 2, SessionID: "01IDLE", Status: appwire.ThreadStatusIdle},
 	}
 	tree := buildTree(metas, live)
 
@@ -1126,7 +1125,7 @@ func fuzzScenarioBuildTree_ExpandedForAwaitingProject(t *testing.T) {
 			EnvInfo: schema.EnvironmentInfo{WorkingDir: "/projects/asking"}},
 	}
 	live := []LiveEntry{
-		{Entry: rendezvous.Entry{PID: 1}, SessionID: "01ASK", Status: appwire.ThreadStatusAwaiting},
+		{PID: 1, SessionID: "01ASK", Status: appwire.ThreadStatusAwaiting},
 	}
 	proj := projectByName(t, buildTree(metas, live), "asking")
 	if !proj.Expanded {
@@ -1501,7 +1500,7 @@ func fuzzScenarioBuildTree_UnnamedSessionTitleSurvivesItsMetaLanding(t *testing.
 	const id = "033vq9Kif27AzZgnbjr55t"
 	now := time.Date(2026, 7, 25, 20, 0, 0, 0, time.UTC)
 	live := []LiveEntry{{
-		Entry:     rendezvous.Entry{PID: 1},
+		PID:       1,
 		SessionID: id,
 		Status:    appwire.ThreadStatusIdle,
 	}}
@@ -1589,9 +1588,9 @@ func fuzzScenarioNeedsYou_AdmitsErroredAndWarning_RanksErroredFirst(t *testing.T
 		{ID: "01WARN", UpdatedAt: now.Add(-2 * time.Hour), EnvInfo: schema.EnvironmentInfo{WorkingDir: "/p/x"}},
 	}
 	live := []LiveEntry{
-		{Entry: rendezvous.Entry{PID: 1}, SessionID: "01AWAIT", Status: appwire.ThreadStatusAwaiting},
-		{Entry: rendezvous.Entry{PID: 2}, SessionID: "01ERR", Status: appwire.ThreadStatusSystemError},
-		{Entry: rendezvous.Entry{PID: 3}, SessionID: "01WARN", Status: appwire.ThreadStatusWarning},
+		{PID: 1, SessionID: "01AWAIT", Status: appwire.ThreadStatusAwaiting},
+		{PID: 2, SessionID: "01ERR", Status: appwire.ThreadStatusSystemError},
+		{PID: 3, SessionID: "01WARN", Status: appwire.ThreadStatusWarning},
 	}
 	tree := buildTree(metas, live)
 	if len(tree.NeedsYou) != 3 {
@@ -1609,7 +1608,7 @@ func fuzzScenarioNeedsYou_AdmitsErroredAndWarning_RanksErroredFirst(t *testing.T
 func fuzzScenarioNeedsYou_ArchivedLiveAwaitingExcluded(t *testing.T) {
 	now := time.Now()
 	metas := []schema.SessionMeta{{ID: "01ARCH", UpdatedAt: now, EnvInfo: schema.EnvironmentInfo{WorkingDir: "/p/x"}}}
-	live := []LiveEntry{{Entry: rendezvous.Entry{PID: 1}, SessionID: "01ARCH", Status: appwire.ThreadStatusAwaiting}}
+	live := []LiveEntry{{PID: 1, SessionID: "01ARCH", Status: appwire.ThreadStatusAwaiting}}
 	tree := BuildTree(metas, live, map[ArchiveKey]bool{{Kind: "session", ID: "01ARCH"}: true})
 	if len(tree.NeedsYou) != 0 {
 		t.Fatalf("archived live awaiting session must not appear in NeedsYou; got %d", len(tree.NeedsYou))
@@ -1823,7 +1822,7 @@ func fuzzScenarioAllTestSessionsClassifyAsTestRun(t *testing.T) {
 func fuzzScenarioNeedsYou_CarriesAskPendingFromLiveEntry(t *testing.T) {
 	now := time.Now()
 	metas := []schema.SessionMeta{{ID: "01A", UpdatedAt: now, EnvInfo: schema.EnvironmentInfo{WorkingDir: "/p/x"}}}
-	live := []LiveEntry{{Entry: rendezvous.Entry{PID: 1}, SessionID: "01A", Status: appwire.ThreadStatusAwaiting, PendingAsk: true}}
+	live := []LiveEntry{{PID: 1, SessionID: "01A", Status: appwire.ThreadStatusAwaiting, PendingAsk: true}}
 	tree := buildTree(metas, live)
 	if len(tree.NeedsYou) != 1 || !tree.NeedsYou[0].AskPending {
 		t.Fatalf("NeedsYou node must carry AskPending=true, got %+v", tree.NeedsYou)
@@ -1837,7 +1836,7 @@ func fuzzScenarioNeedsYou_CarriesAskPendingFromLiveEntry(t *testing.T) {
 func fuzzScenarioLiveTier_CarriesAskPendingFromLiveEntry(t *testing.T) {
 	now := time.Now()
 	metas := []schema.SessionMeta{{ID: "01A", UpdatedAt: now, EnvInfo: schema.EnvironmentInfo{WorkingDir: "/p/x"}}}
-	live := []LiveEntry{{Entry: rendezvous.Entry{PID: 1}, SessionID: "01A", Status: appwire.ThreadStatusAwaiting, PendingAsk: true}}
+	live := []LiveEntry{{PID: 1, SessionID: "01A", Status: appwire.ThreadStatusAwaiting, PendingAsk: true}}
 	tree := buildTree(metas, live)
 	if len(tree.Live) != 1 || !tree.Live[0].AskPending {
 		t.Fatalf("Live node must carry AskPending=true, got %+v", tree.Live)
@@ -1851,7 +1850,7 @@ func fuzzScenarioLiveTier_CarriesAskPendingFromLiveEntry(t *testing.T) {
 func fuzzScenarioProjectTier_CarriesAskPendingFromLiveEntry(t *testing.T) {
 	now := time.Now()
 	metas := []schema.SessionMeta{{ID: "01A", UpdatedAt: now, EnvInfo: schema.EnvironmentInfo{WorkingDir: "/p/x"}}}
-	live := []LiveEntry{{Entry: rendezvous.Entry{PID: 1}, SessionID: "01A", Status: appwire.ThreadStatusAwaiting, PendingAsk: true}}
+	live := []LiveEntry{{PID: 1, SessionID: "01A", Status: appwire.ThreadStatusAwaiting, PendingAsk: true}}
 	tree := buildTree(metas, live)
 	if len(tree.Projects) != 1 {
 		t.Fatalf("expected 1 project, got %d: %+v", len(tree.Projects), tree.Projects)
@@ -1870,9 +1869,9 @@ func fuzzScenarioNeedsYou_AskPendingBandsBetweenErroredAndYourMove(t *testing.T)
 		{ID: "01ERR", UpdatedAt: now.Add(-2 * time.Hour), EnvInfo: schema.EnvironmentInfo{WorkingDir: "/p/x"}},
 	}
 	live := []LiveEntry{
-		{Entry: rendezvous.Entry{PID: 1}, SessionID: "01OLD_YOURMOVE", Status: appwire.ThreadStatusAwaiting, PendingAsk: false},
-		{Entry: rendezvous.Entry{PID: 2}, SessionID: "01ASK", Status: appwire.ThreadStatusAwaiting, PendingAsk: true},
-		{Entry: rendezvous.Entry{PID: 3}, SessionID: "01ERR", Status: appwire.ThreadStatusSystemError},
+		{PID: 1, SessionID: "01OLD_YOURMOVE", Status: appwire.ThreadStatusAwaiting, PendingAsk: false},
+		{PID: 2, SessionID: "01ASK", Status: appwire.ThreadStatusAwaiting, PendingAsk: true},
+		{PID: 3, SessionID: "01ERR", Status: appwire.ThreadStatusSystemError},
 	}
 	tree := buildTree(metas, live)
 	if len(tree.NeedsYou) != 3 {
@@ -1909,9 +1908,9 @@ func fuzzScenarioNeedsYou_PendingEscalationUnifiesWithAttentionSummary(t *testin
 		{ID: "01ARCH", UpdatedAt: now, EnvInfo: schema.EnvironmentInfo{WorkingDir: "/p/x"}},
 	}
 	live := []LiveEntry{
-		{Entry: rendezvous.Entry{PID: 1}, SessionID: "01A", Status: appwire.ThreadStatusActive, PendingEscalation: true},
-		{Entry: rendezvous.Entry{PID: 2}, SessionID: "01SUB", Status: appwire.ThreadStatusActive, PendingEscalation: true},
-		{Entry: rendezvous.Entry{PID: 3}, SessionID: "01ARCH", Status: appwire.ThreadStatusActive, PendingEscalation: true},
+		{PID: 1, SessionID: "01A", Status: appwire.ThreadStatusActive, PendingEscalation: true},
+		{PID: 2, SessionID: "01SUB", Status: appwire.ThreadStatusActive, PendingEscalation: true},
+		{PID: 3, SessionID: "01ARCH", Status: appwire.ThreadStatusActive, PendingEscalation: true},
 	}
 	decisions := map[ArchiveKey]bool{{Kind: "session", ID: "01ARCH"}: true}
 
@@ -1960,8 +1959,8 @@ func fuzzScenarioNeedsYou_ForkSupersededParentUnifiesWithAttentionSummary(t *tes
 		{ID: "fork", ForkLabel: "before edit", UpdatedAt: now, EnvInfo: schema.EnvironmentInfo{WorkingDir: "/projects/evener"}},
 	}
 	live := []LiveEntry{
-		{Entry: rendezvous.Entry{PID: 1}, SessionID: "branch", Status: appwire.ThreadStatusActive},
-		{Entry: rendezvous.Entry{PID: 2}, SessionID: "fork", Status: appwire.ThreadStatusAwaiting},
+		{PID: 1, SessionID: "branch", Status: appwire.ThreadStatusActive},
+		{PID: 2, SessionID: "fork", Status: appwire.ThreadStatusAwaiting},
 	}
 
 	tree := BuildTreeAt(metas, live, nil, now)

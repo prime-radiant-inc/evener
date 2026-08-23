@@ -93,8 +93,7 @@ func (e *delegateCommittedStartFailureError) Unwrap() error {
 }
 
 func committedStartFailureDisposition(err error) delegateCommittedStartFailureDisposition {
-	var failure *delegateCommittedStartFailureError
-	if errors.As(err, &failure) {
+	if failure, ok := errors.AsType[*delegateCommittedStartFailureError](err); ok {
 		return failure.disposition
 	}
 	return 0

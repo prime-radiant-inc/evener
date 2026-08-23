@@ -103,8 +103,7 @@ func (s *WebServer) handleApiSpawn(w http.ResponseWriter, r *http.Request) {
 
 func writeSpawnError(w http.ResponseWriter, err error) {
 	status := http.StatusInternalServerError
-	var wire appwire.WireError
-	if errors.As(err, &wire) {
+	if wire, ok := errors.AsType[appwire.WireError](err); ok {
 		switch wire.Code {
 		case appwire.CodeInvalidParams:
 			status = http.StatusBadRequest

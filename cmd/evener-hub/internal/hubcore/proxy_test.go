@@ -6,8 +6,6 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
-
-	"primeradiant.com/evener/rendezvous"
 )
 
 // fakeRoster lets proxy tests resolve session_id -> addr without scanning.
@@ -23,7 +21,7 @@ func (f fakeRoster) Find(sessionID string) (LiveEntry, bool) {
 	}
 	return LiveEntry{
 		SessionID: f.id,
-		Entry:     rendezvous.Entry{PID: 1, Address: f.addr, HubToken: f.token},
+		PID:       1, Address: f.addr, HubToken: f.token,
 	}, true
 }
 

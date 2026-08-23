@@ -250,11 +250,11 @@ func TestSession_PersistsImageToolResultFromExecResult(t *testing.T) {
 	const toolName = "image_fixture"
 	imageBytes := validPNGFixture(t)
 	if err := sess.reg.Register(tool.RegisteredTool{
-		Tool: llm.Tool{Definition: llm.ToolDefinition{
+		Definition: llm.ToolDefinition{
 			Name:        toolName,
 			Description: "returns deterministic image bytes",
 			Parameters:  map[string]any{"type": "object"},
-		}},
+		},
 		Exec: func(context.Context, execenv.ExecutionEnvironment, map[string]any) (any, error) {
 			return tool.ImageResult{Text: "read image", Data: imageBytes, MediaType: "image/png"}, nil
 		},

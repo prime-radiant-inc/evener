@@ -198,8 +198,8 @@ func TestSetModel_UnknownModelOnEnumerableInstance_Rejected(t *testing.T) {
 		withProfile(NewOpenAIProfile("gpt-5.4")),
 		withAdapter(&fakeAdapter{name: "openai"}),
 		withAdapter(&fakeEnumerableAdapter{
-			fakeAdapter: fakeAdapter{name: "anthropic"},
-			models:      []llm.ModelInfo{{ID: "claude-opus-4-6", Provider: "anthropic"}},
+			name:   "anthropic",
+			models: []llm.ModelInfo{{ID: "claude-opus-4-6", Provider: "anthropic"}},
 		}),
 		withConfig(SessionConfig{
 			NoProjectPrompts: true,
@@ -254,8 +254,8 @@ func TestSetModel_EnumerationFailure_FailsOpenUnconditionally(t *testing.T) {
 		withProfile(NewOpenAIProfile("gpt-5.4")),
 		withAdapter(&fakeAdapter{name: "openai"}),
 		withAdapter(&fakeUnenumerableAdapter{
-			fakeAdapter: fakeAdapter{name: "anthropic"},
-			err:         errors.New("401 unauthorized: invalid api key"), // not on launchcheck's allowlist
+			name: "anthropic",
+			err:  errors.New("401 unauthorized: invalid api key"), // not on launchcheck's allowlist
 		}),
 		withConfig(SessionConfig{
 			NoProjectPrompts: true,
@@ -299,13 +299,11 @@ func TestSetModel_StaticCompatibilityRejection_RunsBeforeLiveEnumeration(t *test
 		withProfile(NewOpenAIProfile("gpt-5.4")),
 		withAdapter(&fakeAdapter{name: "openai"}),
 		withAdapter(&fakeCompatValidatingAdapter{
-			fakeEnumerableAdapter: fakeEnumerableAdapter{
-				fakeAdapter: fakeAdapter{name: "anthropic"},
-				// The live list includes the model that will be statically
-				// rejected below, proving the static check isn't merely
-				// redundant with a correctly-scripted live list.
-				models: []llm.ModelInfo{{ID: "gpt-5.6-mini", Provider: "anthropic"}},
-			},
+			name: "anthropic",
+			// The live list includes the model that will be statically
+			// rejected below, proving the static check isn't merely
+			// redundant with a correctly-scripted live list.
+			models:      []llm.ModelInfo{{ID: "gpt-5.6-mini", Provider: "anthropic"}},
 			rejectModel: "gpt-5.6-mini",
 			err:         errors.New("model gpt-5.6-mini is not supported (supported: gpt-5.6-luna, gpt-5.6-sol, gpt-5.6-terra)"),
 		}),
@@ -617,8 +615,8 @@ func TestSetModel_RejectionLeavesProfileMetaAndHistoryUnchanged(t *testing.T) {
 		c.Register(&fakeAdapter{name: "openai"})
 		c.Register(&fakeAdapter{name: "anthropic"})
 		c.Register(&fakeEnumerableAdapter{
-			fakeAdapter: fakeAdapter{name: "google"},
-			models:      []llm.ModelInfo{{ID: "gemini-3-pro", Provider: "google"}},
+			name:   "google",
+			models: []llm.ModelInfo{{ID: "gemini-3-pro", Provider: "google"}},
 		})
 		sess, err := NewSession(c, NewOpenAIProfile("gpt-5.4"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{
 			NoProjectPrompts: true,

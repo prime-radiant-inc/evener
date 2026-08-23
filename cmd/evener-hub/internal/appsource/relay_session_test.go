@@ -167,9 +167,9 @@ func TestRelaySessionSnapshotCutFlushesPreCutAndHoldsPostCut(t *testing.T) {
 
 	read := readRelayAsync(context.Background(), lease, params)
 	call := <-daemon.reads
-	call.transport.recv <- appwire.Message{Notification: notificationPointer(relayDelta("thread-1", "before"))}
+	call.transport.recv <- appwire.Message{Notification: new(relayDelta("thread-1", "before"))}
 	call.transport.recv <- appwire.ResponseMessage(call.request.ID, relaySnapshot("thread-1", "snapshot includes before"))
-	call.transport.recv <- appwire.Message{Notification: notificationPointer(relayDelta("thread-1", "after"))}
+	call.transport.recv <- appwire.Message{Notification: new(relayDelta("thread-1", "after"))}
 
 	before := <-deliveries
 	if got := decodeRelayDelta(t, before.Notification); got != "before" {
@@ -238,7 +238,7 @@ func TestRelaySessionSnapshotCutWaitsForQueuedPreCaptureNotification(t *testing.
 	epoch := lease.session.connection.epoch
 	lease.session.mu.Unlock()
 	lease.session.observe(epoch, appwire.Message{
-		Notification: notificationPointer(relayDelta("thread-1", "blocker")),
+		Notification: new(relayDelta("thread-1", "blocker")),
 	}, nil)
 	blocker := <-deliveries
 	defer blocker.Acknowledge()
@@ -249,7 +249,7 @@ func TestRelaySessionSnapshotCutWaitsForQueuedPreCaptureNotification(t *testing.
 	// This notification is accepted while no capture exists and queues behind
 	// the unacknowledged delivery. The next snapshot already contains it.
 	lease.session.observe(epoch, appwire.Message{
-		Notification: notificationPointer(relayDelta("thread-1", "included")),
+		Notification: new(relayDelta("thread-1", "included")),
 	}, nil)
 	read := readRelayAsync(t.Context(), lease, params)
 	call := <-daemon.reads
@@ -361,7 +361,7 @@ func TestRelaySessionCanceledListenerCannotStrandPreCutFlush(t *testing.T) {
 
 	read := readRelayAsync(context.Background(), lease, params)
 	call := <-daemon.reads
-	call.transport.recv <- appwire.Message{Notification: notificationPointer(relayDelta("thread-1", "before"))}
+	call.transport.recv <- appwire.Message{Notification: new(relayDelta("thread-1", "before"))}
 	call.transport.recv <- appwire.ResponseMessage(call.request.ID, relaySnapshot("thread-1", "snapshot"))
 	<-deliveries
 	cancelListener()
@@ -441,7 +441,7 @@ func TestRelaySessionCancellationBeforeCutResumesFeedAndFencesLateResponse(t *te
 	second := readRelayAsync(context.Background(), lease, params)
 	secondCall := <-daemon.reads
 	firstCall.transport.recv <- appwire.ResponseMessage(firstCall.request.ID, relaySnapshot("thread-1", "stale response"))
-	secondCall.transport.recv <- appwire.Message{Notification: notificationPointer(relayDelta("thread-1", "second pre-cut"))}
+	secondCall.transport.recv <- appwire.Message{Notification: new(relayDelta("thread-1", "second pre-cut"))}
 	secondCall.transport.recv <- appwire.ResponseMessage(secondCall.request.ID, relaySnapshot("thread-1", "current response"))
 	secondPreCut := <-deliveries
 	if got := decodeRelayDelta(t, secondPreCut.Notification); got != "second pre-cut" {
@@ -475,7 +475,7 @@ func TestRelaySessionAbortAfterCutReleasesPostCutFeedOnce(t *testing.T) {
 	read := readRelayAsync(context.Background(), lease, params)
 	call := <-daemon.reads
 	call.transport.recv <- appwire.ResponseMessage(call.request.ID, relaySnapshot("thread-1", "snapshot"))
-	call.transport.recv <- appwire.Message{Notification: notificationPointer(relayDelta("thread-1", "after"))}
+	call.transport.recv <- appwire.Message{Notification: new(relayDelta("thread-1", "after"))}
 	result := <-read
 	if result.err != nil {
 		t.Fatal(result.err)
@@ -799,7 +799,7 @@ func TestRelaySessionStaleEpochNotificationCannotPublish(t *testing.T) {
 	staleEpoch := lease.session.connection.epoch
 	lease.session.mu.Unlock()
 	lease.session.disconnect(staleEpoch)
-	lease.session.observe(staleEpoch, appwire.Message{Notification: notificationPointer(relayDelta("thread-1", "stale"))}, nil)
+	lease.session.observe(staleEpoch, appwire.Message{Notification: new(relayDelta("thread-1", "stale"))}, nil)
 	select {
 	case delivery := <-deliveries:
 		t.Fatalf("stale epoch published %+v", delivery.Notification)
@@ -1017,7 +1017,7 @@ func TestRelaySessionCanonicalFeedDoesNotOverflowUnusedClientNotificationBuffer(
 	initialResult.result.Handoff.Commit()
 
 	for range 4097 {
-		initialCall.transport.recv <- appwire.Message{Notification: notificationPointer(relayDelta("thread-1", "x"))}
+		initialCall.transport.recv <- appwire.Message{Notification: new(relayDelta("thread-1", "x"))}
 	}
 	<-received
 
@@ -1068,7 +1068,7 @@ func TestRelaySessionRecoversCanonicalFeedAndEmitsResyncWithoutAnotherRead(t *te
 		t.Fatalf("recovery delivery method = %q, want %q", resync.Notification.Method, appwire.NotifyEvenerThreadResync)
 	}
 	resync.Acknowledge()
-	recoveryCall.transport.recv <- appwire.Message{Notification: notificationPointer(relayDelta("thread-1", "live again"))}
+	recoveryCall.transport.recv <- appwire.Message{Notification: new(relayDelta("thread-1", "live again"))}
 	live := <-deliveries
 	if got := decodeRelayDelta(t, live.Notification); got != "live again" {
 		t.Fatalf("recovered live delta = %q", got)
@@ -1136,17 +1136,13 @@ func TestRelaySessionRecoveryDisconnectBeforeHandoffResolutionStartsSuccessor(t 
 	}
 	successorResync.Acknowledge()
 	successor.transport.recv <- appwire.Message{
-		Notification: notificationPointer(relayDelta("thread-1", "live after successor")),
+		Notification: new(relayDelta("thread-1", "live after successor")),
 	}
 	live := <-deliveries
 	if got := decodeRelayDelta(t, live.Notification); got != "live after successor" {
 		t.Fatalf("successor live delta = %q", got)
 	}
 	live.Acknowledge()
-}
-
-func notificationPointer(notification appwire.Notification) *appwire.Notification {
-	return &notification
 }
 
 func decodeRelayDelta(t *testing.T, notification appwire.Notification) string {
@@ -1229,7 +1225,7 @@ func TestRelaySessionCommandReadResyncsListenersOnReplacementConnection(t *testi
 	replacementRead := readRelayAsync(context.Background(), lease, params)
 	replacementCall := <-daemon.reads
 	replacementCall.transport.recv <- appwire.Message{
-		Notification: notificationPointer(relayDelta("thread-1", "generation 2")),
+		Notification: new(relayDelta("thread-1", "generation 2")),
 	}
 	replacementCall.transport.recv <- appwire.ResponseMessage(
 		replacementCall.request.ID,

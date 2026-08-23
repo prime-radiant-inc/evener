@@ -46,7 +46,7 @@ func TestSelectSubagentModel_BuiltinExplorerUsesSelectedModel(t *testing.T) {
 	t.Parallel()
 
 	adapter := &pluginModelListAdapter{
-		fakeAdapter: fakeAdapter{name: "openai"},
+		name: "openai",
 		models: []llm.ModelInfo{
 			{ID: "gpt-5.6-luna"},
 			{ID: "gpt-5.6-sol"},
@@ -197,9 +197,9 @@ func TestSelectSubagentModel_PluginAvailabilityPrecedence(t *testing.T) {
 			t.Parallel()
 
 			adapter := &pluginModelListAdapter{
-				fakeAdapter: fakeAdapter{name: "openai"},
-				models:      tc.liveModels,
-				err:         tc.listErr,
+				name:   "openai",
+				models: tc.liveModels,
+				err:    tc.listErr,
 			}
 			resolverCalls := 0
 			sess := newSession(t,
@@ -267,7 +267,7 @@ func TestSelectSubagentModel_RenamedAnthropicAliasStaysOnInstance(t *testing.T) 
 
 	base := WithProviderID(newAnthropicProfile("claude-opus-4-6"), "work")
 	adapter := &pluginModelListAdapter{
-		fakeAdapter: fakeAdapter{name: "work"},
+		name: "work",
 		models: []llm.ModelInfo{
 			// The launch profile's own model must be live-enumerable too:
 			// NewSession now validates it (Task 3).
@@ -299,7 +299,7 @@ func TestSelectSubagentModel_KimiRejectsAnthropicAliasWithoutEnumeration(t *test
 	t.Parallel()
 
 	adapter := &pluginModelListAdapter{
-		fakeAdapter: fakeAdapter{name: "kimi-anthropic"},
+		name: "kimi-anthropic",
 		// "k3" (the launch profile's own model, and here also the explicit
 		// override) must be live-enumerable: NewSession validates it, and so
 		// does the explicit-override call site (Task 3).
@@ -325,7 +325,7 @@ func TestSelectSubagentModel_QualifiedPluginRefNeverUsesSessionResolver(t *testi
 
 	resolverCalls := 0
 	adapter := &pluginModelListAdapter{
-		fakeAdapter: fakeAdapter{name: "kimi-anthropic"},
+		name: "kimi-anthropic",
 		// "k3" (the launch profile's own model, and here also the explicit
 		// override) must be live-enumerable: NewSession validates it, and so
 		// does the explicit-override call site (Task 3).
@@ -363,7 +363,7 @@ func TestSelectSubagentModel_OpenRouterAliasKeepsUpstreamNamespace(t *testing.T)
 
 	base := newOpenRouterAnthropicProfile("anthropic/claude-opus-4-6")
 	adapter := &pluginModelListAdapter{
-		fakeAdapter: fakeAdapter{name: "openrouter-anthropic"},
+		name: "openrouter-anthropic",
 		models: []llm.ModelInfo{{
 			ID:            "anthropic/claude-sonnet-4-6",
 			ContextWindow: 775_003,
@@ -418,8 +418,8 @@ func TestResolvePluginAgentModel_CustomAndExactMembership(t *testing.T) {
 			t.Parallel()
 
 			adapter := &pluginModelListAdapter{
-				fakeAdapter: fakeAdapter{name: "anthropic"},
-				models:      tc.models,
+				name:   "anthropic",
+				models: tc.models,
 			}
 			sess := newPluginModelSelectionSession(
 				t,
@@ -470,7 +470,7 @@ func TestResolvePluginAgentModel_NormalizedMatchFreezesAdvertisedWireID(t *testi
 	base = WithAllowedDecisions(base, []string{"keep_config"})
 	wantCommunicate := subagentModelCommunicateDefinition(t, base)
 	adapter := &pluginModelListAdapter{
-		fakeAdapter: fakeAdapter{name: "work"},
+		name: "work",
 		models: []llm.ModelInfo{
 			// The launch profile's own model (gpt-5.2) must also be
 			// live-enumerable: NewSession validates it (Task 3).
@@ -541,7 +541,7 @@ func TestSelectSubagentModel_AllowanceGuardPrecedesEnumeration(t *testing.T) {
 	t.Parallel()
 
 	adapter := &pluginModelListAdapter{
-		fakeAdapter: fakeAdapter{name: "openai"},
+		name: "openai",
 		// The launch profile's own model (gpt-5.2) must also be
 		// live-enumerable: NewSession validates it (Task 3).
 		models: []llm.ModelInfo{{ID: "gpt-5.2"}, {ID: "gpt-5.3"}},
@@ -569,7 +569,7 @@ func TestSelectSubagentModel_ExplicitModelRejectedWhenAbsentFromLiveList(t *test
 	t.Parallel()
 
 	adapter := &pluginModelListAdapter{
-		fakeAdapter: fakeAdapter{name: "openai"},
+		name: "openai",
 		// The launch profile's own model (gpt-5.2) must be live-enumerable;
 		// the requested override (gpt-9.9-does-not-exist) is deliberately
 		// absent.
@@ -604,8 +604,8 @@ func TestSelectSubagentModel_ExplicitModelEnumerationFailure_FailsOpen(t *testin
 	t.Parallel()
 
 	adapter := &pluginModelListAdapter{
-		fakeAdapter: fakeAdapter{name: "openai"},
-		models:      []llm.ModelInfo{{ID: "gpt-5.2"}},
+		name:   "openai",
+		models: []llm.ModelInfo{{ID: "gpt-5.2"}},
 	}
 	sess := newSession(t,
 		withProfile(NewOpenAIProfile("gpt-5.2")),

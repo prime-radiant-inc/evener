@@ -63,7 +63,7 @@ func TestRenderMarkdown_JobDelegateResult(t *testing.T) {
 		Type:          "delegate",
 		Status:        "completed",
 		TranscriptRef: childRef,
-		Resumable:     boolPtr(true),
+		Resumable:     new(true),
 	}, 0)
 	if err != nil {
 		t.Fatalf("marshalStableDelegateCreateResult: %v", err)

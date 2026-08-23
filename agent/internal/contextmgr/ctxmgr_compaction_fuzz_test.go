@@ -101,7 +101,7 @@ func ctxmgr_buildHistory(r *ctxmgr_reader) []schema.Turn {
 			msg := r.str(200)
 			history = append(history,
 				schema.NewTurn(schema.TurnAssistant, llm.Message{Role: llm.RoleAssistant, Content: []llm.ContentPart{
-					{Kind: llm.ContentToolCall, ToolCall: ctxmgr_ptrToolCall(communicateCall(cid, msg))},
+					{Kind: llm.ContentToolCall, ToolCall: new(communicateCall(cid, msg))},
 				}}),
 				schema.NewTurn(schema.TurnToolResults, llm.ToolResultNamed(cid, "communicate", "ok", false)),
 			)
@@ -137,10 +137,11 @@ func ctxmgr_buildHistory(r *ctxmgr_reader) []schema.Turn {
 
 // ctxmgr_ptrToolCall copies a ToolCallData onto the heap so it can be embedded
 // in a ContentPart.
-func ctxmgr_ptrToolCall(tc llm.ToolCallData) *llm.ToolCallData { return &tc }
-
+//
 // ctxmgr_toolCallMsg builds an assistant message carrying a single tool call for
 // one of the file/skill tools collectCheckpointData recognizes.
+//
+//go:fix inline
 func ctxmgr_toolCallMsg(r *ctxmgr_reader, id string) llm.Message {
 	var name string
 	var args map[string]any

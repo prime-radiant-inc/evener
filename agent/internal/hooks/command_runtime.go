@@ -119,8 +119,7 @@ func (r systemCommandHookRuntime) Run(ctx context.Context, invocation commandHoo
 	if ctx.Err() != nil {
 		return result, fmt.Errorf("hook command killed: %w", ctx.Err())
 	}
-	var exitErr commandHookExitCoder
-	if errors.As(err, &exitErr) {
+	if exitErr, ok := errors.AsType[commandHookExitCoder](err); ok {
 		result.ExitCode = exitErr.ExitCode()
 		return result, nil
 	}

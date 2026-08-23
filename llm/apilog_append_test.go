@@ -1368,7 +1368,8 @@ func standaloneCanonicalAttempt(groupID string, index int) apilog.APIAttemptReco
 	}
 }
 
-func apiLogTestInt(value int) *int { return &value }
+//go:fix inline
+func apiLogTestInt(value int) *int { return new(value) }
 
 func assertPathMode(t *testing.T, path string, want os.FileMode) {
 	t.Helper()

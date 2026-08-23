@@ -59,16 +59,16 @@ func zeroedResponsesAttempt(group string) apilog.APIAttemptRecord {
 		},
 		Outcome: apilog.AttemptSuccess,
 		Response: &apilog.APIAttemptResponse{
-			StatusCode:    intp(200),
+			StatusCode:    new(200),
 			Body:          apilog.EncodeBody([]byte(syntheticZeroedResponsesSSE())),
 			Model:         "gpt-5.2",
 			FinishReason:  "stop",
-			TextLength:    intp(0),
-			ToolCallCount: intp(0),
+			TextLength:    new(0),
+			ToolCallCount: new(0),
 			Usage: apilog.Usage{
-				InputTokens:  intp(1),
-				OutputTokens: intp(2),
-				TotalTokens:  intp(3),
+				InputTokens:  new(1),
+				OutputTokens: new(2),
+				TotalTokens:  new(3),
 			},
 		},
 	}

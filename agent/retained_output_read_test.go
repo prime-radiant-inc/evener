@@ -113,8 +113,8 @@ func TestSearchRetainedContextLinesZeroOneAndTen(t *testing.T) {
 	for _, contextLines := range []int{0, 1, 10} {
 		t.Run(fmt.Sprintf("context_%d", contextLines), func(t *testing.T) {
 			envelope, err := searchRetainedOutput(newMemorySearchSource(data, 0), retainedSearchOptions{
-				Regexp:        regexp.MustCompile(`HIT`),
-				SearchOptions: jobstore.SearchOptions{ContextLines: contextLines},
+				Regexp:       regexp.MustCompile(`HIT`),
+				ContextLines: contextLines,
 			})
 			if err != nil {
 				t.Fatalf("searchRetainedOutput: %v", err)
@@ -156,8 +156,8 @@ func TestSearchRetainedStopsBeforeThe101stMatch(t *testing.T) {
 	}
 
 	last, err := searchRetainedOutput(source, retainedSearchOptions{
-		Regexp:        regexp.MustCompile(`^hit-`),
-		SearchOptions: jobstore.SearchOptions{StartOffset: envelope.Continuation.OffsetBytes},
+		Regexp:      regexp.MustCompile(`^hit-`),
+		StartOffset: envelope.Continuation.OffsetBytes,
 	})
 	if err != nil {
 		t.Fatalf("continued search: %v", err)
@@ -170,8 +170,8 @@ func TestSearchRetainedStopsBeforeThe101stMatch(t *testing.T) {
 func TestSearchRetainedHonorsSmallerSuppliedMatchCap(t *testing.T) {
 	data := []byte("hit-0\nignore\nhit-1\nignore\nhit-2\n")
 	envelope, err := searchRetainedOutput(newMemorySearchSource(data, 0), retainedSearchOptions{
-		Regexp:        regexp.MustCompile(`^hit-`),
-		SearchOptions: jobstore.SearchOptions{MaxMatches: 2},
+		Regexp:     regexp.MustCompile(`^hit-`),
+		MaxMatches: 2,
 	})
 	if err != nil {
 		t.Fatalf("searchRetainedOutput: %v", err)
@@ -186,8 +186,8 @@ func TestSearchRetainedHonorsSmallerSuppliedSerializedCap(t *testing.T) {
 	line := "HIT-" + strings.Repeat("x", 220)
 	data := []byte(line + "\n" + line + "\n")
 	envelope, err := searchRetainedOutput(newMemorySearchSource(data, 0), retainedSearchOptions{
-		Regexp:        regexp.MustCompile(`^HIT-`),
-		SearchOptions: jobstore.SearchOptions{MaxSerializedBytes: 400},
+		Regexp:             regexp.MustCompile(`^HIT-`),
+		MaxSerializedBytes: 400,
 	})
 	if err != nil {
 		t.Fatalf("searchRetainedOutput: %v", err)
@@ -208,8 +208,8 @@ func TestSearchRetainedSerializedCapBelowFirstRecordSkipsAndProgresses(t *testin
 	data := []byte("HIT-first-record\nHIT-second-record\n")
 	const capBytes = 8
 	envelope, err := searchRetainedOutput(newMemorySearchSource(data, 0), retainedSearchOptions{
-		Regexp:        regexp.MustCompile(`^HIT-`),
-		SearchOptions: jobstore.SearchOptions{MaxSerializedBytes: capBytes},
+		Regexp:             regexp.MustCompile(`^HIT-`),
+		MaxSerializedBytes: capBytes,
 	})
 	if err != nil {
 		t.Fatalf("searchRetainedOutput: %v", err)
@@ -232,8 +232,8 @@ func TestSearchRetainedSerializedCapCountsJSONEscapingForProgress(t *testing.T) 
 	}
 
 	envelope, err := searchRetainedOutput(newMemorySearchSource([]byte(line+"\n"), 0), retainedSearchOptions{
-		Regexp:        regexp.MustCompile(`^HIT-`),
-		SearchOptions: jobstore.SearchOptions{MaxSerializedBytes: capBytes},
+		Regexp:             regexp.MustCompile(`^HIT-`),
+		MaxSerializedBytes: capBytes,
 	})
 	if err != nil {
 		t.Fatalf("searchRetainedOutput: %v", err)
@@ -266,11 +266,9 @@ func TestSearchRetainedSerializedCapRepeatedContinuationCannotLoop(t *testing.T)
 		}
 		seenOffsets[offset] = true
 		envelope, err := searchRetainedOutput(source, retainedSearchOptions{
-			Regexp: regexp.MustCompile(`^HIT-`),
-			SearchOptions: jobstore.SearchOptions{
-				StartOffset:        offset,
-				MaxSerializedBytes: capBytes,
-			},
+			Regexp:             regexp.MustCompile(`^HIT-`),
+			StartOffset:        offset,
+			MaxSerializedBytes: capBytes,
 		})
 		if err != nil {
 			t.Fatalf("search call %d: %v", call, err)
@@ -320,8 +318,8 @@ func TestSearchRetainedSerializedCapExactJSONBoundaries(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			envelope, err := searchRetainedOutput(newMemorySearchSource(data, 0), retainedSearchOptions{
-				Regexp:        regexp.MustCompile(`^HIT-`),
-				SearchOptions: jobstore.SearchOptions{MaxSerializedBytes: tc.capBytes},
+				Regexp:             regexp.MustCompile(`^HIT-`),
+				MaxSerializedBytes: tc.capBytes,
 			})
 			if err != nil {
 				t.Fatalf("searchRetainedOutput: %v", err)
@@ -358,8 +356,8 @@ func TestSearchRetainedContextRecordOver64KiBSkipsAndProgresses(t *testing.T) {
 	data := []byte("HIT\n" + strings.Join(context, "\n") + "\n")
 
 	envelope, err := searchRetainedOutput(newMemorySearchSource(data, 0), retainedSearchOptions{
-		Regexp:        regexp.MustCompile(`^HIT$`),
-		SearchOptions: jobstore.SearchOptions{ContextLines: 10},
+		Regexp:       regexp.MustCompile(`^HIT$`),
+		ContextLines: 10,
 	})
 	if err != nil {
 		t.Fatalf("searchRetainedOutput: %v", err)
@@ -387,8 +385,8 @@ func TestSearchRetainedStopsBefore64KiBOfSerializedMatchContext(t *testing.T) {
 	data := []byte(strings.Join(lines, "\n") + "\n")
 	source := newMemorySearchSource(data, 0)
 	envelope, err := searchRetainedOutput(source, retainedSearchOptions{
-		Regexp:        regexp.MustCompile(`^HIT-`),
-		SearchOptions: jobstore.SearchOptions{ContextLines: 10},
+		Regexp:       regexp.MustCompile(`^HIT-`),
+		ContextLines: 10,
 	})
 	if err != nil {
 		t.Fatalf("searchRetainedOutput: %v", err)
@@ -403,8 +401,8 @@ func TestSearchRetainedStopsBefore64KiBOfSerializedMatchContext(t *testing.T) {
 	}
 
 	next, err := searchRetainedOutput(source, retainedSearchOptions{
-		Regexp:        regexp.MustCompile(`^HIT-`),
-		SearchOptions: jobstore.SearchOptions{StartOffset: wantContinuation, ContextLines: 10},
+		Regexp:      regexp.MustCompile(`^HIT-`),
+		StartOffset: wantContinuation, ContextLines: 10,
 	})
 	if err != nil {
 		t.Fatalf("continued search: %v", err)
@@ -417,8 +415,8 @@ func TestSearchRetainedStopsBefore64KiBOfSerializedMatchContext(t *testing.T) {
 func TestSearchRetainedContinuationIsFirstLineNotEvaluatedAsMatch(t *testing.T) {
 	data := []byte("hit-one\nboring-a\nboring-b\nhit-two\n")
 	envelope, err := searchRetainedOutput(newMemorySearchSource(data, 0), retainedSearchOptions{
-		Regexp:        regexp.MustCompile(`^hit-`),
-		SearchOptions: jobstore.SearchOptions{MaxMatches: 1},
+		Regexp:     regexp.MustCompile(`^hit-`),
+		MaxMatches: 1,
 	})
 	if err != nil {
 		t.Fatalf("searchRetainedOutput: %v", err)
@@ -436,8 +434,8 @@ func TestSearchRetainedLookaheadContextDoesNotSkipLaterMatches(t *testing.T) {
 	var offset int64
 	for i := range 3 {
 		envelope, err := searchRetainedOutput(source, retainedSearchOptions{
-			Regexp:        regexp.MustCompile(`^hit-`),
-			SearchOptions: jobstore.SearchOptions{StartOffset: offset, MaxMatches: 1, ContextLines: 1},
+			Regexp:      regexp.MustCompile(`^hit-`),
+			StartOffset: offset, MaxMatches: 1, ContextLines: 1,
 		})
 		if err != nil {
 			t.Fatalf("search %d: %v", i, err)
@@ -483,8 +481,8 @@ func TestSearchRetainedSkipsPrunedInitialPartialFragment(t *testing.T) {
 	const retainedStart = int64(100)
 	data := []byte("fragment\nHIT\n")
 	envelope, err := searchRetainedOutput(newMemorySearchSource(data, retainedStart), retainedSearchOptions{
-		Regexp:        regexp.MustCompile(`fragment|HIT`),
-		SearchOptions: jobstore.SearchOptions{StartOffset: retainedStart, SkipPartialPrefix: true},
+		Regexp:      regexp.MustCompile(`fragment|HIT`),
+		StartOffset: retainedStart, SkipPartialPrefix: true,
 	})
 	if err != nil {
 		t.Fatalf("searchRetainedOutput: %v", err)
@@ -498,8 +496,8 @@ func TestSearchRetainedRunningDefersEOFFragment(t *testing.T) {
 	data := []byte("HIT-complete\nHIT-growing")
 	fragmentAt := int64(len("HIT-complete\n"))
 	envelope, err := searchRetainedOutput(newMemorySearchSource(data, 0), retainedSearchOptions{
-		Regexp:        regexp.MustCompile(`HIT`),
-		SearchOptions: jobstore.SearchOptions{DeferEOFFragment: true},
+		Regexp:           regexp.MustCompile(`HIT`),
+		DeferEOFFragment: true,
 	})
 	if err != nil {
 		t.Fatalf("searchRetainedOutput: %v", err)
@@ -513,12 +511,10 @@ func TestSearchRetainedRunningPrunedUnterminatedPrefixDefersUntilNewline(t *test
 	const retainedStart = int64(100)
 	source := newMemorySearchSource([]byte("HIT-growing"), retainedStart)
 	opts := retainedSearchOptions{
-		Regexp: regexp.MustCompile(`HIT`),
-		SearchOptions: jobstore.SearchOptions{
-			StartOffset:       retainedStart,
-			SkipPartialPrefix: true,
-			DeferEOFFragment:  true,
-		},
+		Regexp:            regexp.MustCompile(`HIT`),
+		StartOffset:       retainedStart,
+		SkipPartialPrefix: true,
+		DeferEOFFragment:  true,
 	}
 
 	deferred, err := searchRetainedOutput(source, opts)

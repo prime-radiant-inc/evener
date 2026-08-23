@@ -414,8 +414,7 @@ func dialHubRPC(ctx context.Context, addr HubAddress, httpClient *http.Client, o
 		ClientInfo: appwire.ClientInfo{Name: "evener-tui", Version: "tui"},
 	}); err != nil {
 		_ = client.Close()
-		var mismatch appwire.ProtocolVersionMismatchError
-		if errors.As(err, &mismatch) {
+		if mismatch, ok := errors.AsType[appwire.ProtocolVersionMismatchError](err); ok {
 			return nil, StartupError{
 				Kind:   StartupErrorIncompatibleAPI,
 				Addr:   addr.BaseURL,
@@ -600,8 +599,7 @@ func WriteStartupDiagnostic(logFile string, err error) {
 	}
 	defer func() { _ = f.Close() }()
 	kind := StartupErrorKind("unknown")
-	var startupErr StartupError
-	if errors.As(err, &startupErr) {
+	if startupErr, ok := errors.AsType[StartupError](err); ok {
 		kind = startupErr.Kind
 	}
 	// Best-effort diagnostic; a write failure here is unactionable.

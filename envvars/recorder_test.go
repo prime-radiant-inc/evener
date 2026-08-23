@@ -28,12 +28,12 @@ func TestRecorderEnabled(t *testing.T) {
 		want        bool
 	}{
 		{"nothing set -> off", nil, nil, false},
-		{"master on, recorder unset -> on", ptr("1"), nil, true},
-		{"master on, recorder off -> off (override)", ptr("true"), ptr("0"), false},
-		{"master off, recorder on -> on (override)", ptr("0"), ptr("yes"), true},
-		{"master unset, recorder on -> on (back-compat)", nil, ptr("on"), true},
-		{"master unset, recorder empty -> off (explicit)", nil, ptr(""), false},
-		{"master on, recorder empty -> off (explicit)", ptr("1"), ptr(""), false},
+		{"master on, recorder unset -> on", new("1"), nil, true},
+		{"master on, recorder off -> off (override)", new("true"), new("0"), false},
+		{"master off, recorder on -> on (override)", new("0"), new("yes"), true},
+		{"master unset, recorder on -> on (back-compat)", nil, new("on"), true},
+		{"master unset, recorder empty -> off (explicit)", nil, new(""), false},
+		{"master on, recorder empty -> off (explicit)", new("1"), new(""), false},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -60,4 +60,4 @@ func TestRecorderEnabled(t *testing.T) {
 	}
 }
 
-func ptr(s string) *string { return &s }
+//go:fix inline
