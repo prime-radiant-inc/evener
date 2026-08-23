@@ -72,7 +72,7 @@ there is one markup to assert against, not two.
 
 2. Open `/new`, click the Model field's trigger (the `<button>` whose
    accessible name ends `— change model`,
-   `widgets/modelCatalog/index.tsx:395-413`), and read the group heads:
+   `widgets/modelCatalog/index.tsx:388-406`), and read the group heads:
    ```javascript
    ({
      port: location.port,
