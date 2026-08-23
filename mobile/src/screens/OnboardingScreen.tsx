@@ -98,6 +98,17 @@ export function OnboardingScreen({
     (!duplicateOrigin || consent) &&
     !pendingSave;
 
+  const handlePasteFromClipboard = useCallback(async () => {
+    try {
+      const text = await services.native.clipboardPaste();
+      if (text) {
+        setPasteUrl(text);
+      }
+    } catch {
+      // best-effort: ignore errors
+    }
+  }, [services]);
+
   // Clear paste input synchronously after dispatching preview.
   const handlePaste = useCallback(() => {
     const raw = pasteUrl;
@@ -211,6 +222,9 @@ export function OnboardingScreen({
             autoCorrect="off"
             spellCheck={false}
           />
+          <Button variant="tertiary" onClick={handlePasteFromClipboard}>
+            Paste from Clipboard
+          </Button>
           <Button
             variant="secondary"
             onClick={handlePaste}

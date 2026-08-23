@@ -697,6 +697,16 @@ class EvenerNativePlugin: Plugin {
         ] as [String: Any])
     }
 
+    /// Paste from the system clipboard via UIPasteboard. Returns the
+    /// text or an empty string when the clipboard is empty.
+    @objc public func clipboardPaste(_ invoke: Invoke) throws {
+        let text = UIPasteboard.general.string ?? ""
+        invoke.resolve([
+            "version": ContractV1.version,
+            "text": text,
+        ] as [String: Any])
+    }
+
     /// Perform a haptic feedback pattern via UIFeedbackGenerator. The kind
     /// string maps to a concrete generator. Never carries a secret.
     @objc public func hapticPerform(_ invoke: Invoke) throws {

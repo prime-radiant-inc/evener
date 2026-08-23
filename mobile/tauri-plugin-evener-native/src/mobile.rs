@@ -94,6 +94,16 @@ impl<R: Runtime> EvenerNative<R> {
             .map_err(Into::into)
     }
 
+    /// Paste from the clipboard via the Swift UIPasteboard.
+    pub fn clipboard_paste(
+        &self,
+        payload: ClipboardPasteRequest,
+    ) -> crate::Result<ClipboardPasteResponse> {
+        self.handle
+            .run_mobile_plugin("clipboardPaste", payload)
+            .map_err(Into::into)
+    }
+
     /// Perform a haptic feedback pattern via the Swift UIFeedbackGenerator.
     pub fn haptic_perform(
         &self,

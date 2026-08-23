@@ -131,6 +131,10 @@ export type NativeCommand =
       readonly type: "haptic.perform";
       readonly kind: HapticKind;
     }
+  | {
+      readonly version: 1;
+      readonly type: "clipboard.paste";
+    }
   | { readonly version: 1; readonly type: "contentSize.get" };
 
 export type NativeCommandType = NativeCommand["type"];
@@ -172,6 +176,11 @@ export type NativeResponse =
   | { readonly version: 1; readonly type: "synthesis.started" }
   | { readonly version: 1; readonly type: "synthesis.stopped" }
   | { readonly version: 1; readonly type: "haptic.completed" }
+  | {
+      readonly version: 1;
+      readonly type: "clipboard.pasted";
+      readonly text: string;
+    }
   | {
       readonly version: 1;
       readonly type: "contentSize.value";

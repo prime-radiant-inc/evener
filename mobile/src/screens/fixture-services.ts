@@ -67,6 +67,9 @@ export function createOnboardingServices(
         origin: "https://hub.example.com:8443",
       };
     },
+    async clipboardPaste() {
+      return "";
+    },
     async requestPermission(kind) {
       return { kind, granted: true };
     },
@@ -129,6 +132,9 @@ export function createShellServices(
         previewId: "scan-preview",
         origin: "https://hub.example.com:8443",
       };
+    },
+    async clipboardPaste() {
+      return "";
     },
     async requestPermission(kind) {
       return { kind, granted: true };

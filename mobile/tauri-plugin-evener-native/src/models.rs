@@ -50,6 +50,20 @@ pub struct HapticPerformResponse {
 }
 
 // ---------------------------------------------------------------------------
+// clipboardPaste command
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ClipboardPasteRequest {}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ClipboardPasteResponse {
+    pub text: String,
+}
+
+// ---------------------------------------------------------------------------
 // contentSizeGet command
 // ---------------------------------------------------------------------------
 

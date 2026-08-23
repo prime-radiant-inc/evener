@@ -80,7 +80,17 @@ impl<R: Runtime> EvenerNative<R> {
         Ok(HapticPerformResponse { completed: true })
     }
 
-    /// Desktop has no Dynamic Type; return the default "large" category.
+    /// Desktop clipboard paste. Returns an empty string.
+    pub fn clipboard_paste(
+        &self,
+        _payload: ClipboardPasteRequest,
+    ) -> crate::Result<ClipboardPasteResponse> {
+        Ok(ClipboardPasteResponse {
+            text: "".to_owned(),
+        })
+    }
+
+    /// Desktop has no Dynamic Type. return the default "large" category.
     pub fn content_size_get(
         &self,
         _payload: ContentSizeGetRequest,
