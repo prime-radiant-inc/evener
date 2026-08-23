@@ -74,6 +74,8 @@ function commandToRoute(command: NativeCommand): string {
       return "haptic_perform";
     case "contentSize.get":
       return "content_size_get";
+    case "clipboard.paste":
+      return "clipboard_paste";
     default:
       // secure.*, speech.*, synthesis.*, permission.* are NOT exposed to JS.
       throw new Error(`unsupported native command: ${command.type}`);
@@ -87,6 +89,8 @@ function commandToPayload(command: NativeCommand): Record<string, unknown> {
     case "haptic.perform":
       return { kind: command.kind };
     case "contentSize.get":
+      return {};
+    case "clipboard.paste":
       return {};
     default:
       throw new Error(`unsupported native command: ${command.type}`);
@@ -114,6 +118,8 @@ function decodeRawResponse(
       return decodeHapticResponse(raw);
     case "contentSize.get":
       return decodeContentSizeResponse(raw);
+    case "clipboard.paste":
+      return decodeClipboardPasteResponse(raw);
     default:
       throw new Error(`unsupported native command: ${command.type}`);
   }
@@ -158,6 +164,27 @@ function decodeContentSizeResponse(raw: unknown): NativeResponse {
     version: 1,
     type: "contentSize.value",
     category: obj.category,
+  };
+}
+
+/**
+ * Decode the raw `ClipboardPasteResponse` `{text: string}` into a typed
+ * `clipboard.pasted` response. Strict: rejects missing/wrong-typed/extra
+ * fields. The text may be an empty string (clipboard empty).
+ */
+function decodeClipboardPasteResponse(raw: unknown): NativeResponse {
+  assertRawObject(raw, "clipboard paste response");
+  const obj = raw as Record<string, unknown>;
+  assertNoExtraFields(obj, ["text"], "clipboard paste response");
+  if (typeof obj.text !== "string") {
+    throw new Error(
+      'Field "text" must be a string in clipboard paste response',
+    );
+  }
+  return {
+    version: 1,
+    type: "clipboard.pasted",
+    text: obj.text,
   };
 }
 
