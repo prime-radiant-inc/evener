@@ -1,0 +1,238 @@
+/* VoiceScreen — focused full-screen duplex voice experience. */
+
+.screen {
+  display: flex;
+  flex-direction: column;
+  height: var(--viewport-height);
+  background: var(--canvas);
+  color: var(--primary);
+  overflow: hidden;
+}
+
+.header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-12);
+  min-height: var(--tap-target);
+  padding: var(--space-8) var(--space-16);
+  padding-top: calc(var(--space-8) + var(--safe-area-top));
+  padding-left: calc(var(--space-16) + var(--safe-area-left));
+  padding-right: calc(var(--space-16) + var(--safe-area-right));
+  background: var(--canvas);
+}
+
+.body {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-20);
+  padding: var(--space-16);
+  overflow-y: auto;
+  -webkit-overflow-scrolling: touch;
+  overscroll-behavior-y: contain;
+}
+
+.footer {
+  flex: 0 0 auto;
+  background: var(--canvas);
+}
+
+/* --- Session title + connection mark (always visible) --------------------- */
+
+.sessionTitle {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-8);
+  min-width: 0;
+  flex: 1 1 auto;
+}
+
+.sessionTitleText {
+  font-size: var(--type-base);
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Accessibility sizes wrap instead of clip. */
+:root[data-content-size^="accessibility"] .sessionTitleText {
+  overflow-wrap: anywhere;
+  white-space: normal;
+}
+
+/* --- Level waveform ------------------------------------------------------- */
+
+.level {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 100%;
+  flex: 0 0 auto;
+}
+
+/* --- Captions ------------------------------------------------------------- */
+
+.captions {
+  width: 100%;
+  display: flex;
+  justify-content: center;
+}
+
+/* --- Latest assistant sentence -------------------------------------------- */
+
+.assistant {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+  width: 100%;
+  max-width: 32em;
+  padding: var(--space-12) var(--space-16);
+  border-radius: var(--radius-row);
+  background: var(--raised);
+}
+
+.assistantLabel {
+  font-size: 0.75em;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--secondary);
+}
+
+.assistantText {
+  margin: 0;
+  font-size: var(--type-base);
+  line-height: var(--type-leading);
+  color: var(--primary);
+  overflow-wrap: anywhere;
+}
+
+/* --- Ask-mode disabled reason --------------------------------------------- */
+
+.askDisabled {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--space-8);
+  width: 100%;
+  max-width: 32em;
+  padding: var(--space-12) var(--space-16);
+  border-radius: var(--radius-row);
+  background: var(--raised);
+  border: 1px solid var(--attention);
+}
+
+.askDisabledGlyph {
+  flex: 0 0 auto;
+  color: var(--attention-ink);
+  font-size: 1.1em;
+}
+
+.askDisabledText {
+  font-size: 0.9em;
+  color: var(--primary);
+  overflow-wrap: anywhere;
+}
+
+/* --- Error state ----------------------------------------------------------- */
+
+.error {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: var(--space-12);
+  width: 100%;
+  max-width: 32em;
+  padding: var(--space-16);
+  border-radius: var(--radius-row);
+  background: var(--raised);
+  border: 1px solid var(--danger);
+}
+
+.errorText {
+  font-size: var(--type-base);
+  color: var(--danger);
+  overflow-wrap: anywhere;
+}
+
+.errorAction {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: var(--tap-target);
+  min-height: var(--tap-target);
+  padding: var(--space-12) var(--space-16);
+  border: 0;
+  border-radius: var(--radius-control);
+  background: var(--accent);
+  color: var(--accent-contrast);
+  font: inherit;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.errorAction:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+/* --- Permission rationale -------------------------------------------------- */
+
+.rationaleTitle {
+  margin: 0;
+  font-size: var(--type-base);
+  font-weight: 600;
+  flex: 1 1 auto;
+}
+
+.rationale {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-12);
+  max-width: 32em;
+  text-align: center;
+}
+
+.rationaleText {
+  margin: 0;
+  font-size: var(--type-base);
+  line-height: var(--type-leading);
+  color: var(--primary);
+}
+
+.rationaleError {
+  margin: 0;
+  font-size: 0.9em;
+  color: var(--danger);
+}
+
+.openSettings {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: var(--tap-target);
+  min-height: var(--tap-target);
+  padding: var(--space-12) var(--space-16);
+  border: 0;
+  border-radius: var(--radius-control);
+  background: var(--accent);
+  color: var(--accent-contrast);
+  font: inherit;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.openSettings:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+/* --- Placeholder (permission check) --------------------------------------- */
+
+.placeholder {
+  color: var(--secondary);
+  font-size: var(--type-base);
+}

@@ -1,0 +1,66 @@
+/* VoiceControls — End and Keyboard buttons, both 44px tap targets. */
+
+.controls {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-20);
+  padding: var(--space-16);
+  padding-bottom: calc(var(--space-16) + var(--safe-area-bottom));
+}
+
+.keyboard,
+.end {
+  display: inline-flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-4);
+  min-width: var(--tap-target);
+  min-height: var(--tap-target);
+  padding: var(--space-12);
+  border: 0;
+  border-radius: var(--radius-control);
+  font: inherit;
+  font-size: 0.85em;
+  font-weight: 600;
+  cursor: pointer;
+  transition:
+    background 0.18s ease,
+    opacity 0.18s ease;
+}
+
+.keyboard {
+  background: transparent;
+  color: var(--secondary);
+  box-shadow: inset 0 0 0 1px var(--hairline-strong);
+}
+
+.end {
+  background: var(--danger);
+  color: var(--danger-ink);
+  min-width: calc(var(--tap-target) * 1.6);
+}
+
+.keyboard:focus-visible,
+.end:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.keyboard:disabled,
+.end:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.label {
+  display: block;
+}
+
+/* Accessibility text sizes scale without clipping. */
+:root[data-content-size^="accessibility"] .keyboard,
+:root[data-content-size^="accessibility"] .end {
+  flex-direction: row;
+  gap: var(--space-8);
+}
