@@ -1,4 +1,4 @@
-package main
+package dev
 
 import (
 	"errors"
@@ -7,17 +7,17 @@ import (
 	"testing"
 )
 
-// The dispatcher lives entirely in main(), so its contract is pinned the
-// real-process way: build the actual binary and read its exit code and
-// stderr directly. Not `go run`, which reports 1 whatever the child exited
-// with, erasing exactly the codes under test. The per-test build rides the
-// build cache.
+// The dispatcher lives entirely in Run(), so its contract is pinned the
+// real-process way: build the actual evener binary and invoke `evener dev`
+// to read its exit code and stderr directly. Not `go run`, which reports 1
+// whatever the child exited with, erasing exactly the codes under test. The
+// per-test build rides the build cache.
 func runEvenerDev(t *testing.T, args ...string) (int, string) {
 	t.Helper()
 	if testing.Short() {
-		t.Skip("integration: builds and runs the evener-dev binary")
+		t.Skip("integration: builds and runs the evener binary")
 	}
-	cmd := exec.Command(buildEvenerDev(t), args...) //nolint:noctx // one short-lived run, reaped by Run — buildEvenerDev is the shard runner's shared helper
+	cmd := exec.Command(buildEvenerDev(t), append([]string{"dev"}, args...)...) //nolint:noctx // one short-lived run, reaped by Run — buildEvenerDev is the shard runner's shared helper
 	var errOut strings.Builder
 	cmd.Stderr = &errOut
 	err := cmd.Run()
@@ -26,7 +26,7 @@ func runEvenerDev(t *testing.T, args ...string) (int, string) {
 	}
 	var exit *exec.ExitError
 	if !errors.As(err, &exit) {
-		t.Fatalf("running evener-dev: %v", err)
+		t.Fatalf("running evener dev: %v", err)
 	}
 	return exit.ExitCode(), errOut.String()
 }
@@ -36,7 +36,7 @@ func TestDispatchRejectsMissingSubcommand(t *testing.T) {
 	if code != 2 {
 		t.Errorf("no subcommand exits %d, want 2", code)
 	}
-	if !strings.Contains(stderr, "usage: evener-dev") {
+	if !strings.Contains(stderr, "usage: evener dev") {
 		t.Errorf("usage missing from stderr: %q", stderr)
 	}
 	if !strings.Contains(stderr, "module-lint") {

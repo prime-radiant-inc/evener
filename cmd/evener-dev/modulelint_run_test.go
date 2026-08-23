@@ -1,6 +1,6 @@
 //go:build linux || darwin
 
-package main
+package dev
 
 import (
 	"fmt"
