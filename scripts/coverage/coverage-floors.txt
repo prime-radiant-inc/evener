@@ -23,8 +23,8 @@
 # branch deleted ~5.5k lines of audit tests plus the namingcheck/docscheck
 # packages and the fuzzcov coverage modes — all root-module, all well-covered —
 # so the root and llm floors move down to the post-deletion basis.
-. 95.0
-agent 93.5
+. 97.2
+agent 94.2
 auth 100.0
 envvars 100.0
 fuzz 100.0
