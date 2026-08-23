@@ -1,11 +1,11 @@
 .PHONY: e2e-cover coverage-floor coverage-gaps coverage-gaps-selftest
 
-# e2e-cover measures END-TO-END coverage of the real evener/evener-tui binaries via
+# e2e-cover measures END-TO-END coverage of the real evener binary via
 # `go build -cover` + GOCOVERDIR — the main()/CLI/dispatch/serve paths unit tests
 # structurally can't reach. --merge-unit unions it with the unit profile for a
 # combined whole-repo number; EVENER_E2E_LIVE=1 additionally runs the live provider
 # scripts (needs real credentials). Local/on-demand, not a gate.
-## Measure end-to-end coverage of the real evener/evener-tui binaries via
+## Measure end-to-end coverage of the real evener binary via
 ## `go build -cover` + GOCOVERDIR, unioned with the unit profile.
 ## EVENER_E2E_LIVE=1 additionally runs the live provider scripts. Local and
 ## on-demand, not a gate.

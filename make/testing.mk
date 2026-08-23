@@ -55,7 +55,7 @@ test-web-browser: web-preflight
 ## fails-when: Any suite exit nonzero, or a passing suite leaving files
 ##   behind, is nonzero.
 test-dev-tooling:
-	@go run ./cmd/evener-test-dev-tooling $(DEV_TOOLING_TEST_SCRIPTS)
+	@go run ./cmd/evener-dev/bin test-dev-tooling $(DEV_TOOLING_TEST_SCRIPTS)
 
 # test covers the Go modules AND the frontend. The frontend gate runs as a third
 # concurrent stream inside run-module-tests.sh (MAKE is passed through so it can
