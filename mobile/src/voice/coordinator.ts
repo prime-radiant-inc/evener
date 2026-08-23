@@ -102,6 +102,8 @@ interface CoordinatorState {
   fallbackToTyped: boolean;
   /** Active assistant item id being streamed (the latest streaming one). */
   activeAssistantItemId: string | null;
+  /** Number of speech chunks started but not yet finished. */
+  inflightSpeechChunks: number;
   /** Active turn id (derived from the streaming item's turn). */
   activeTurnId: string | null;
 }
@@ -119,6 +121,7 @@ function initialState(): CoordinatorState {
     idleStartReported: false,
     fallbackToTyped: false,
     activeAssistantItemId: null,
+    inflightSpeechChunks: 0,
     activeTurnId: null,
   };
 }
@@ -341,12 +344,18 @@ export class VoiceCoordinator {
         break;
 
       case "voice.speechStarted":
+        this.state.inflightSpeechChunks++;
         this.callbacks.onSpeaking(true);
         break;
 
       case "voice.speechFinished":
-        // A chunk finished; if no more pending, stop speaking state.
-        this.callbacks.onSpeaking(false);
+        // A chunk finished; only stop speaking when no more chunks are in flight.
+        if (this.state.inflightSpeechChunks > 0) {
+          this.state.inflightSpeechChunks--;
+        }
+        if (this.state.inflightSpeechChunks === 0) {
+          this.callbacks.onSpeaking(false);
+        }
         break;
 
       case "voice.bargeIn":
@@ -354,6 +363,7 @@ export class VoiceCoordinator {
         break;
 
       case "voice.interrupted":
+        this.state.inflightSpeechChunks = 0;
         this.callbacks.onInterrupted(false);
         this.callbacks.onSpeaking(false);
         break;
@@ -444,6 +454,7 @@ export class VoiceCoordinator {
   private handleBargeIn(partial: string): void {
     this.state.barge.pending = true;
     this.state.barge.partial = partial;
+    this.state.inflightSpeechChunks = 0;
     this.callbacks.onInterrupted(true);
     this.callbacks.onSpeaking(false);
     const sid = this.state.voiceSessionId;
