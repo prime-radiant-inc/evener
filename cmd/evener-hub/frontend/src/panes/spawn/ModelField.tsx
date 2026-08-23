@@ -9,7 +9,7 @@
 // value/onChange are unchanged, so the spawn form's call site stays untouched.
 import { useCallback } from "react";
 import type { ModelDescriptor } from "../../protocol/types.gen";
-import { ModelCatalog } from "../../widgets";
+import { ModelCatalog, type ModelCatalogEntry } from "../../widgets";
 import { fetchModelCatalog } from "../../widgets/modelCatalog/catalogClient";
 import { mergeScopedCatalog } from "../../widgets/modelCatalog/scopedCatalog";
 
@@ -27,9 +27,13 @@ export interface ModelFieldProps {
    * caller overrides it) - the spawn form passes a real-required label when
    * the daemon has no default model to fall back to (kata xgk8). */
   emptyLabel?: string;
+  /** Reports the full picked entry (with reasoningEffortLevels /
+   * supportsReasoning) so the spawn form's Effort ladder is correct
+   * immediately, without waiting for the pane-level catalog to catch up. */
+  onPickEntry?: (entry: ModelCatalogEntry) => void;
 }
 
-export function ModelField({ value, onChange, loadModels, harness, cwd, emptyLabel }: ModelFieldProps) {
+export function ModelField({ value, onChange, loadModels, harness, cwd, emptyLabel, onPickEntry }: ModelFieldProps) {
   const loadCatalog = useCallback(async (): Promise<ModelCatalog> => {
     // The scoped model/list is the authoritative launchable SET; the /api/models
     // catalog only enriches it (badges/cost/Recent), scoped to the SAME
@@ -45,5 +49,13 @@ export function ModelField({ value, onChange, loadModels, harness, cwd, emptyLab
     return mergeScopedCatalog(scoped, enrichment);
   }, [loadModels, harness, cwd]);
 
-  return <ModelCatalog value={value} onChange={onChange} loadCatalog={loadCatalog} emptyLabel={emptyLabel} />;
+  return (
+    <ModelCatalog
+      value={value}
+      onChange={onChange}
+      loadCatalog={loadCatalog}
+      onPickEntry={onPickEntry}
+      emptyLabel={emptyLabel}
+    />
+  );
 }
