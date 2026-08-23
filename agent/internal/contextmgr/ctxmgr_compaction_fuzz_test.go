@@ -135,9 +135,6 @@ func ctxmgr_buildHistory(r *ctxmgr_reader) []schema.Turn {
 	return history
 }
 
-// ctxmgr_ptrToolCall copies a ToolCallData onto the heap so it can be embedded
-// in a ContentPart.
-//
 // ctxmgr_toolCallMsg builds an assistant message carrying a single tool call for
 // one of the file/skill tools collectCheckpointData recognizes.
 //

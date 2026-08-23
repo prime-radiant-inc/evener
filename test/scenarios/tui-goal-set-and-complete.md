@@ -28,9 +28,8 @@ command and the header chip are wired to it.
   Setup checklist:
   ```bash
   run=$(mktemp -d -t evener-e2e-goaltui-XXXXXX)
-  go build -o "$run/evener" hub ./cmd/evener-hub
+  go build -o "$run/evener" ./cmd/evener
   go build -o "$run/evener"     ./cmd/evener
-  go build -o "$run/evener-tui" ./cmd/evener-tui
   "$run/evener" hub -addr 127.0.0.1:0 -evener "$run/evener" 2>"$run/hub.log" &
   HUBPID=$!
   for i in $(seq 1 50); do

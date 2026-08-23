@@ -12,9 +12,6 @@ import (
 
 const testHome = "/home/tester"
 
-// netPtr returns a *bool for the tri-state SandboxPolicy.Network field (nil =
-// unset default; a non-nil value = explicit choice).
-//
 // netStr renders a tri-state network value for test diagnostics.
 //
 //go:fix inline

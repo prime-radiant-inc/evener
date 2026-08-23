@@ -62,7 +62,7 @@ var (
 	EVENERFluencyModel                = Var{Name: "EVENER_FLUENCY_MODEL", Summary: "Default model for the tool-fluency development harness.", Visibility: Tooling}
 	EVENERHubAddr                     = Var{Name: "EVENER_HUB_ADDR", Summary: "Default hub address for evener-tui.", Visibility: Public}
 	EVENERHubAuthToken                = Var{Name: "EVENER_HUB_AUTH_TOKEN", Summary: "Hub capability token for evener-tui.", Secret: true, Visibility: Public}
-	EVENERHubBin                      = Var{Name: "EVENER_HUB_BIN", Summary: "Path to the evener-hub binary used by evener-tui autostart.", Visibility: Public}
+	EVENERHubBin                      = Var{Name: "EVENER_HUB_BIN", Summary: "Path to the evener binary (for the hub subcommand) used by evener tui autostart.", Visibility: Public}
 	EVENERHubSpawned                  = Var{Name: "EVENER_HUB_SPAWNED", Summary: "Set by evener-hub for spawned evener serve daemons.", Visibility: Internal}
 	EVENERHubSpawnedCodex             = Var{Name: "EVENER_HUB_SPAWNED_CODEX", Summary: "Set by evener-hub for spawned Codex app-server processes.", Visibility: Internal}
 	EVENERHubToken                    = Var{Name: "EVENER_HUB_TOKEN", Summary: "Per-hub bearer token passed to spawned evener serve daemons.", Secret: true, Visibility: Internal}

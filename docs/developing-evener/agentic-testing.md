@@ -55,9 +55,8 @@ run=$(mktemp -d -t evener-e2e-XXXXXX)
 #    built from a different package-lock.json, see the rebuild matrix
 #    under "Falsification debugging".
 make build-web
-go build -o "$run/evener" hub ./cmd/evener-hub
 go build -o "$run/evener" ./cmd/evener
-go build -o "$run/evener-tui" ./cmd/evener-tui
+go build -o "$run/evener" ./cmd/evener
 
 # 3. Isolate. A throwaway $HOME keeps hub.lock, auth-token, and session
 #    history off Jesse's real ~/.local/state/evener, and credentials.toml/
@@ -906,9 +905,8 @@ the offending layer, rebuild, rerun, grep the log. The full pipeline
 has six rebuild points:
 
 1. **Daemon** — `cmd/evener/` and `agent/`. Rebuild: `go build -o "$run/evener" ./cmd/evener`. The hub re-spawns it per session, so the next spawned session picks up the new binary.
-2. **Hub** — `cmd/evener-hub/` and `server/`. Rebuild + kill the running hub by PID (not `pkill -f`, which would also kill any other concurrent agent's hub), then restart it the same way as step 4 of the setup checklist — it binds a *new* ephemeral port, so re-read `$run/hub.log` for the new `PORT`/`HUB`: `kill "$HUBPID"; go build -o "$run/evener" hub ./cmd/evener-hub && "$run/evener" hub -addr 127.0.0.1:0 -evener "$run/evener" 2>"$run/hub.log" & HUBPID=$!`.
+2. **Hub** — `cmd/evener-hub/` and `server/`. Rebuild + kill the running hub by PID (not `pkill -f`, which would also kill any other concurrent agent's hub), then restart it the same way as step 4 of the setup checklist — it binds a *new* ephemeral port, so re-read `$run/hub.log` for the new `PORT`/`HUB`: `kill "$HUBPID"; go build -o "$run/evener" ./cmd/evener && "$run/evener" hub -addr 127.0.0.1:0 -evener "$run/evener" 2>"$run/hub.log" & HUBPID=$!`.
 3. **Web UI** — `cmd/evener-hub/frontend/src/` (TypeScript/React). Two steps, and skipping the first is the classic "my change didn't take": `make build-web` compiles it into `cmd/evener-hub/frontend/dist`, which `webnext.go`'s `//go:embed all:frontend/dist` bakes into the hub binary. So rebuild the frontend, **then** rebuild and restart the hub, then hard-refresh the tab. When in doubt whether a live tab is running the fix, grep the served bundle for a symbol the fix introduced (`curl -s "$HUB/assets/…"` or view-source) — a tab picks nothing up until the hub binary was rebuilt, restarted, AND the tab reloaded. A checkout that has never run `make build-web` has a one-line `dist/PLACEHOLDER` and serves no app at all. Agent worktrees symlink `node_modules` to a shared install; `make web-preflight` accepts that install when the `package-lock.json` beside it is byte-identical to this worktree's (mtime cannot answer the question — a fresh worktree's lockfile is always newer than the shared install). When the two lockfiles differ it refuses to `npm ci` through the symlink on purpose, because that would empty the install for every other worktree: refresh the shared install where it lives, or give this worktree its own real `node_modules`.
-4. **TUI** — `cmd/evener-tui/`. Rebuild: `go build -o "$run/evener-tui" ./cmd/evener-tui`. The running TUI keeps the old binary in memory — kill the tmux session (`tmux kill-session -t "$TMUX_SESSION"`) and restart for the new code.
 5. **AppWire types** — `appwire/`. Both daemon and hub statically link these; rebuild both. The generated TypeScript mirror (`frontend/src/protocol/types.gen.ts`) is a third consumer — a wire change that only rebuilds the Go side leaves the browser decoding the old shape.
 6. **Optimistic-mutation plumbing** — the TUI's pending coordinator and the web's durable outbox (`frontend/src/stores/mutationOutbox.ts`, `panes/session/composer/queue/pendingTurnsStore.ts`); same rebuild rules as 4 and 3 respectively.
 

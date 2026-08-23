@@ -62,7 +62,7 @@ browser half must go through the real UI, and the exact assertions go to
   credentials/token/lock paths above:
   ```bash
   run=$(mktemp -d -t evener-e2e-goal-XXXXXX)
-  go build -o "$run/evener" hub ./cmd/evener-hub
+  go build -o "$run/evener" ./cmd/evener
   go build -o "$run/evener" ./cmd/evener
   pgrep -f 'evener.*hub.*:9180' >/dev/null && \
     { echo "Jesse's real hub is running on 9180 — this card cannot start until it stops (flock at ~/.evener/hub.lock)" >&2; exit 1; }

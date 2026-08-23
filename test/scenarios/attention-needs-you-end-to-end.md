@@ -44,7 +44,7 @@ Part B (steps 5-7) and Part C are **fully browser-free**. Part A (steps 1-4) nee
   ```bash
   run=$(mktemp -d -t evener-e2e-attn-XXXXXX)
   go build -o "$run/evener"     ./cmd/evener
-  go build -o "$run/evener" hub ./cmd/evener-hub
+  go build -o "$run/evener" ./cmd/evener
   export HOME="$run/home"
   mkdir -p "$HOME"
   unset XDG_STATE_HOME
