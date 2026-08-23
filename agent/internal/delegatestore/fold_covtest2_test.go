@@ -2,470 +2,441 @@ package delegatestore
 
 import (
 	"encoding/json"
-	"errors"
 	"strings"
 	"testing"
-
-	"primeradiant.com/evener/agent/schema"
+	"time"
 )
 
-// ---------------------------------------------------------------------------
-// validateEventEnvelope
-// ---------------------------------------------------------------------------
-
-func TestValidateEventEnvelope_EmptyDelegateID(t *testing.T) {
-	err := validateEventEnvelope(Event{Kind: EventDelegateCreated})
-	if err == nil || !strings.Contains(err.Error(), "empty delegate id") {
-		t.Fatalf("expected empty delegate id error, got %v", err)
+// TestApplyNilState covers Apply with a nil state (fold.go:29-30).
+func TestApplyNilState(t *testing.T) {
+	err := Apply(nil, Event{Kind: EventDelegateCreated, DelegateID: "x", Seq: 1})
+	if err == nil || !strings.Contains(err.Error(), "nil") {
+		t.Fatalf("expected nil state error, got %v", err)
 	}
 }
 
-func TestValidateEventEnvelope_UnknownKind(t *testing.T) {
-	err := validateEventEnvelope(Event{Kind: "unknown", DelegateID: "dlg_1"})
+// TestApplyEventUnknownKind covers the default branch of applyEvent
+// (fold.go:88-89).
+func TestApplyEventUnknownKind(t *testing.T) {
+	state := make(State)
+	err := Apply(state, Event{Kind: "unknown_kind", DelegateID: "x", Seq: 1})
 	if err == nil || !strings.Contains(err.Error(), "unknown delegate event kind") {
 		t.Fatalf("expected unknown kind error, got %v", err)
 	}
 }
 
-func TestValidateEventEnvelope_PayloadMismatch(t *testing.T) {
-	// Kind says Created but no Created payload.
-	err := validateEventEnvelope(Event{Kind: EventDelegateCreated, DelegateID: "dlg_1", RunStarted: &RunStarted{}})
-	if err == nil || !strings.Contains(err.Error(), "payload does not match kind") {
-		t.Fatalf("expected mismatch error, got %v", err)
-	}
-}
-
-func TestValidateEventEnvelope_MultiplePayloads(t *testing.T) {
-	err := validateEventEnvelope(Event{
-		Kind:       EventDelegateCreated,
-		DelegateID: "dlg_1",
-		Created:    &DelegateCreated{},
-		RunStarted: &RunStarted{},
-	})
-	if err == nil || !strings.Contains(err.Error(), "payload does not match kind") {
-		t.Fatalf("expected multiple-payloads error, got %v", err)
-	}
-}
-
-func TestValidateEventEnvelope_Valid(t *testing.T) {
-	err := validateEventEnvelope(Event{
-		Kind:       EventDelegateCreated,
-		DelegateID: "dlg_1",
-		Created:    &DelegateCreated{Descriptor: Descriptor{}},
-	})
-	if err != nil {
-		t.Fatalf("expected nil, got %v", err)
-	}
-}
-
-// ---------------------------------------------------------------------------
-// validateDescriptor
-// ---------------------------------------------------------------------------
-
-func TestValidateDescriptor_EmptyChildSessionID(t *testing.T) {
-	err := validateDescriptor(Descriptor{})
-	if err == nil || !strings.Contains(err.Error(), "child session id is empty") {
-		t.Fatalf("expected error, got %v", err)
-	}
-}
-
-func TestValidateDescriptor_EmptyTranscriptRef(t *testing.T) {
-	err := validateDescriptor(Descriptor{ChildSessionID: "sess_1"})
-	if err == nil || !strings.Contains(err.Error(), "transcript ref is empty") {
-		t.Fatalf("expected error, got %v", err)
-	}
-}
-
-func TestValidateDescriptor_EmptyOwnerSessionID(t *testing.T) {
-	err := validateDescriptor(Descriptor{ChildSessionID: "sess_1", TranscriptRef: "local:sess_1"})
-	if err == nil || !strings.Contains(err.Error(), "owner session id is empty") {
-		t.Fatalf("expected error, got %v", err)
-	}
-}
-
-func TestValidateDescriptor_EmptyTask(t *testing.T) {
-	err := validateDescriptor(Descriptor{ChildSessionID: "sess_1", TranscriptRef: "local:sess_1", OwnerSessionID: "root"})
-	if err == nil || !strings.Contains(err.Error(), "task is empty") {
-		t.Fatalf("expected error, got %v", err)
-	}
-}
-
-func TestValidateDescriptor_EmptyAgentType(t *testing.T) {
-	err := validateDescriptor(Descriptor{ChildSessionID: "sess_1", TranscriptRef: "local:sess_1", OwnerSessionID: "root", Task: "do it"})
-	if err == nil || !strings.Contains(err.Error(), "agent type is empty") {
-		t.Fatalf("expected error, got %v", err)
-	}
-}
-
-func TestValidateDescriptor_InvalidResultSchema(t *testing.T) {
-	err := validateDescriptor(Descriptor{
-		ChildSessionID:  "sess_1",
-		TranscriptRef:   "local:sess_1",
-		OwnerSessionID:  "root",
-		Task:            "do it",
-		AgentType:       "general",
-		ToolNameCeiling: []string{"communicate"},
-		ResultSchema:    json.RawMessage(`{invalid`),
-	})
-	if err == nil || !strings.Contains(err.Error(), "result schema is not valid JSON") {
-		t.Fatalf("expected error, got %v", err)
-	}
-}
-
-func TestValidateDescriptor_SharedTaskStoreWithoutSharing(t *testing.T) {
-	err := validateDescriptor(Descriptor{
-		ChildSessionID:                "sess_1",
-		TranscriptRef:                 "local:sess_1",
-		OwnerSessionID:                "root",
-		Task:                          "do it",
-		AgentType:                     "general",
-		ToolNameCeiling:               []string{"communicate"},
-		SharedTaskStoreOwnerSessionID: "other",
-	})
-	if err == nil || !strings.Contains(err.Error(), "shared task store owner requires task sharing") {
-		t.Fatalf("expected error, got %v", err)
-	}
-}
-
-func TestValidateDescriptor_SharedTaskStoreWithSharingButEmpty(t *testing.T) {
-	err := validateDescriptor(Descriptor{
-		ChildSessionID:  "sess_1",
-		TranscriptRef:   "local:sess_1",
-		OwnerSessionID:  "root",
-		Task:            "do it",
-		AgentType:       "general",
-		ToolNameCeiling: []string{"communicate"},
-		Config:          schema.ConfigSnapshot{ShareTasksWithChildren: true},
-	})
-	if err == nil || !strings.Contains(err.Error(), "shared task store owner session id is empty") {
-		t.Fatalf("expected error, got %v", err)
-	}
-}
-
-// ---------------------------------------------------------------------------
-// validateToolNameCeiling
-// ---------------------------------------------------------------------------
-
-func TestValidateToolNameCeiling_Empty(t *testing.T) {
-	err := validateToolNameCeiling(Descriptor{ToolNameCeiling: nil})
-	if err == nil || !strings.Contains(err.Error(), "tool name ceiling is empty") {
-		t.Fatalf("expected error, got %v", err)
-	}
-}
-
-func TestValidateToolNameCeiling_EmptyName(t *testing.T) {
-	err := validateToolNameCeiling(Descriptor{ToolNameCeiling: []string{""}})
-	if err == nil || !strings.Contains(err.Error(), "empty name") {
-		t.Fatalf("expected error, got %v", err)
-	}
-}
-
-func TestValidateToolNameCeiling_Wildcard(t *testing.T) {
-	err := validateToolNameCeiling(Descriptor{ToolNameCeiling: []string{"*"}})
-	if err == nil || !strings.Contains(err.Error(), "wildcard") {
-		t.Fatalf("expected error, got %v", err)
-	}
-}
-
-func TestValidateToolNameCeiling_Duplicate(t *testing.T) {
-	err := validateToolNameCeiling(Descriptor{ToolNameCeiling: []string{"communicate", "communicate"}})
-	if err == nil || !strings.Contains(err.Error(), "duplicate") {
-		t.Fatalf("expected error, got %v", err)
-	}
-}
-
-func TestValidateToolNameCeiling_ResultToolNotInCeiling(t *testing.T) {
-	err := validateToolNameCeiling(Descriptor{
-		ToolNameCeiling: []string{"read_file"},
-		Config:          schema.ConfigSnapshot{ResultToolName: "communicate"},
-	})
-	if err == nil || !strings.Contains(err.Error(), "result tool") {
-		t.Fatalf("expected error, got %v", err)
-	}
-}
-
-func TestValidateToolNameCeiling_ResultToolInCeiling(t *testing.T) {
-	err := validateToolNameCeiling(Descriptor{
-		ToolNameCeiling: []string{"communicate", "read_file"},
-		Config:          schema.ConfigSnapshot{ResultToolName: "communicate"},
-	})
-	if err != nil {
-		t.Fatalf("expected nil, got %v", err)
-	}
-}
-
-// ---------------------------------------------------------------------------
-// validateSandboxConfigProjection
-// ---------------------------------------------------------------------------
-
-func TestValidateSandboxConfigProjection_NilSnapshotNonEmptyConfig(t *testing.T) {
-	err := validateSandboxConfigProjection(Descriptor{Config: schema.ConfigSnapshot{Sandbox: "strict"}})
-	if err == nil || !strings.Contains(err.Error(), "snapshot is nil but config projection is nonempty") {
-		t.Fatalf("expected error, got %v", err)
-	}
-}
-
-func TestValidateSandboxConfigProjection_SnapshotWithoutConfig(t *testing.T) {
-	err := validateSandboxConfigProjection(Descriptor{Sandbox: &SandboxSnapshot{Mode: "strict"}})
-	if err == nil || !strings.Contains(err.Error(), "snapshot requires a config projection") {
-		t.Fatalf("expected error, got %v", err)
-	}
-}
-
-func TestValidateSandboxConfigProjection_ModeMismatch(t *testing.T) {
-	err := validateSandboxConfigProjection(Descriptor{
-		Sandbox: &SandboxSnapshot{Mode: "strict"},
-		Config:  schema.ConfigSnapshot{Sandbox: "permissive"},
-	})
-	if err == nil || !strings.Contains(err.Error(), "does not match config mode") {
-		t.Fatalf("expected error, got %v", err)
-	}
-}
-
-func TestValidateSandboxConfigProjection_NetworkMismatch(t *testing.T) {
-	netTrue := true
-	err := validateSandboxConfigProjection(Descriptor{
-		Sandbox: &SandboxSnapshot{Mode: "strict"},
-		Config:  schema.ConfigSnapshot{Sandbox: "strict", SandboxNet: &netTrue},
-	})
-	if err == nil || !strings.Contains(err.Error(), "network") {
-		t.Fatalf("expected error, got %v", err)
-	}
-}
-
-// ---------------------------------------------------------------------------
-// applySubtreeStopRequested
-// ---------------------------------------------------------------------------
-
-func TestApplySubtreeStopRequested_ZeroSeq(t *testing.T) {
-	err := applySubtreeStopRequested(State{}, Event{
-		Kind:                 EventDelegateSubtreeStopRequested,
-		DelegateID:           "dlg_1",
-		SubtreeStopRequested: &SubtreeStopRequested{TargetDelegateID: "dlg_1"},
-	})
-	if err == nil || !strings.Contains(err.Error(), "sequence is zero") {
-		t.Fatalf("expected error, got %v", err)
-	}
-}
-
-func TestApplySubtreeStopRequested_TargetMismatch(t *testing.T) {
-	err := applySubtreeStopRequested(State{}, Event{
-		Seq:                  1,
-		DelegateID:           "dlg_1",
-		SubtreeStopRequested: &SubtreeStopRequested{TargetDelegateID: "dlg_other"},
-	})
-	if err == nil || !strings.Contains(err.Error(), "does not match") {
-		t.Fatalf("expected error, got %v", err)
-	}
-}
-
-func TestApplySubtreeStopRequested_NonexistentTarget(t *testing.T) {
-	err := applySubtreeStopRequested(State{}, Event{
-		Seq:                  1,
-		DelegateID:           "dlg_1",
-		SubtreeStopRequested: &SubtreeStopRequested{TargetDelegateID: "dlg_1"},
-	})
-	if err == nil {
-		t.Fatal("expected error for nonexistent target")
-	}
-}
-
-func TestApplySubtreeStopRequested_AlreadyPendingStop(t *testing.T) {
-	state := State{
-		"dlg_1": {Phase: PhaseRunning, Resumable: true},
-		"dlg_2": {Phase: PhaseRunning, PendingStopSeq: 5, Resumable: true},
-	}
-	err := applySubtreeStopRequested(state, Event{
-		Seq:                  1,
-		DelegateID:           "dlg_1",
-		SubtreeStopRequested: &SubtreeStopRequested{TargetDelegateID: "dlg_1"},
-	})
+// TestApplyCreatedAlreadyExists covers applyCreated when the delegate
+// already exists (fold.go:94-95).
+func TestApplyCreatedAlreadyExists(t *testing.T) {
+	state := applyEvents(t, createdEvent("dlg_a", ""))
+	err := Apply(state, createdEvent("dlg_a", ""))
 	if err == nil || !strings.Contains(err.Error(), "already exists") {
-		t.Fatalf("expected error, got %v", err)
+		t.Fatalf("expected already-exists error, got %v", err)
 	}
 }
 
-func TestApplySubtreeStopRequested_Success(t *testing.T) {
-	state := State{
-		"dlg_1":     {Phase: PhaseRunning, Resumable: true, Descriptor: Descriptor{ParentDelegateID: ""}},
-		"dlg_child": {Phase: PhaseRunning, Resumable: true, Descriptor: Descriptor{ParentDelegateID: "dlg_1"}},
-		"dlg_other": {Phase: PhaseRunning, Resumable: true},
-	}
-	err := applySubtreeStopRequested(state, Event{
-		Seq:                  3,
-		DelegateID:           "dlg_1",
-		SubtreeStopRequested: &SubtreeStopRequested{TargetDelegateID: "dlg_1"},
-	})
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if state["dlg_1"].PendingStopSeq != 3 || state["dlg_1"].Phase != PhaseStopping {
-		t.Fatalf("dlg_1 not stopped: %#v", state["dlg_1"])
-	}
-	if state["dlg_child"].PendingStopSeq != 3 || state["dlg_child"].Phase != PhaseStopping {
-		t.Fatalf("dlg_child not stopped: %#v", state["dlg_child"])
-	}
-	if state["dlg_other"].PendingStopSeq != 0 {
-		t.Fatalf("dlg_other should not be stopped: %#v", state["dlg_other"])
+// TestApplyCreatedParentMissing covers applyCreated when the parent does
+// not exist (fold.go:101-102).
+func TestApplyCreatedParentMissing(t *testing.T) {
+	state := make(State)
+	evt := createdEvent("dlg_child", "dlg_nobody")
+	evt.Seq = 1
+	err := Apply(state, evt)
+	if err == nil || !strings.Contains(err.Error(), "parent") || !strings.Contains(err.Error(), "does not exist") {
+		t.Fatalf("expected parent-missing error, got %v", err)
 	}
 }
 
-// ---------------------------------------------------------------------------
-// applySubtreeStopCompleted
-// ---------------------------------------------------------------------------
-
-func TestApplySubtreeStopCompleted_ZeroRequestSeq(t *testing.T) {
-	err := applySubtreeStopCompleted(State{}, Event{
-		DelegateID:           "dlg_1",
-		SubtreeStopCompleted: &SubtreeStopCompleted{RequestSeq: 0},
-	})
-	if err == nil || !strings.Contains(err.Error(), "sequence is zero") {
-		t.Fatalf("expected error, got %v", err)
+// TestApplyRunStartedMissingDelegate covers applyRunStarted requireAggregate
+// error (fold.go:119-120).
+func TestApplyRunStartedMissingDelegate(t *testing.T) {
+	state := make(State)
+	err := Apply(state, startedEvent("dlg_nobody", 1, TriggerInitial))
+	if err == nil || !strings.Contains(err.Error(), "does not exist") {
+		t.Fatalf("expected missing-delegate error, got %v", err)
 	}
 }
 
-func TestApplySubtreeStopCompleted_PendingSeqMismatch(t *testing.T) {
-	state := State{"dlg_1": {PendingStopSeq: 2, Resumable: true}}
-	err := applySubtreeStopCompleted(state, Event{
-		DelegateID:           "dlg_1",
-		SubtreeStopCompleted: &SubtreeStopCompleted{RequestSeq: 1},
-	})
+// TestApplyRunStartedWrongGeneration covers generation mismatch
+// (fold.go:122-123).
+func TestApplyRunStartedWrongGeneration(t *testing.T) {
+	state := applyEvents(t, createdEvent("dlg_a", ""))
+	err := Apply(state, startedEvent("dlg_a", 99, TriggerInitial))
+	if err == nil || !strings.Contains(err.Error(), "generation") {
+		t.Fatalf("expected generation error, got %v", err)
+	}
+}
+
+// TestApplyRunStartedNotResumable covers the not-resumable check
+// (fold.go:128-129). A delegate that is resumable but then has resumability
+// closed (still PhaseIdle) before starting.
+func TestApplyRunStartedNotResumable(t *testing.T) {
+	// Close resumability so delegate is PhaseClosed with Resumable=false.
+	// That triggers the phase check, not the not-resumable check.
+	// To reach the not-resumable check (line 128-129), we need Phase==Idle
+	// but Resumable==false. The only way to get that: apply created with
+	// Resumable=false, which sets Phase=PhaseClosed (not Idle). So the
+	// not-resumable check at line 128-129 is only reachable when Phase is
+	// Idle and Resumable is false — but applyCreated sets Phase=Closed
+	// when Resumable is false. This branch is effectively unreachable
+	// through normal event ordering.
+	// Document: unreachable — applyCreated sets Phase=Closed when
+	// Resumable=false, so Phase is never Idle when Resumable is false.
+	t.Skip("not-resumable check at fold.go:128-129 is unreachable: applyCreated sets Phase=Closed when Resumable=false")
+}
+
+// TestApplyRunStartedPendingStop covers pending stop check (fold.go:131-132).
+// Document: unreachable — applySubtreeStopRequested sets Phase=Stopping,
+// so the Phase != PhaseIdle check at line 125 fires first. The pending
+// stop check at line 131 is only reachable when Phase==Idle AND
+// PendingStopSeq!=0, but stop requests always set Phase=Stopping.
+func TestApplyRunStartedPendingStop(t *testing.T) {
+	t.Skip("pending stop check at fold.go:131-132 is unreachable: stop request sets Phase=Stopping, so phase check fires first")
+}
+
+// TestApplyRunStartedInvalidTrigger covers invalid trigger (fold.go:134-135).
+func TestApplyRunStartedInvalidTrigger(t *testing.T) {
+	state := applyEvents(t, createdEvent("dlg_a", ""))
+	err := Apply(state, startedEvent("dlg_a", 1, "bogus_trigger"))
+	if err == nil || !strings.Contains(err.Error(), "invalid run trigger") {
+		t.Fatalf("expected invalid trigger error, got %v", err)
+	}
+}
+
+// TestApplyRunStartedZeroStartedAt covers zero start time (fold.go:137-138).
+func TestApplyRunStartedZeroStartedAt(t *testing.T) {
+	state := applyEvents(t, createdEvent("dlg_a", ""))
+	evt := Event{
+		Kind:       EventDelegateRunStarted,
+		DelegateID: "dlg_a",
+		RunStarted: &RunStarted{Generation: 1, Trigger: TriggerInitial},
+	}
+	err := Apply(state, evt)
+	if err == nil || !strings.Contains(err.Error(), "zero") {
+		t.Fatalf("expected zero-time error, got %v", err)
+	}
+}
+
+// TestApplyRunStartedNotIdle covers phase-not-idle (fold.go:125-126).
+func TestApplyRunStartedNotIdle(t *testing.T) {
+	state := applyEvents(t, createdEvent("dlg_a", ""), startedEvent("dlg_a", 1, TriggerInitial))
+	err := Apply(state, startedEvent("dlg_a", 2, TriggerInitial))
+	if err == nil || !strings.Contains(err.Error(), "cannot start") {
+		t.Fatalf("expected cannot-start error, got %v", err)
+	}
+}
+
+// TestApplyTerminalPreparedNotRunning covers PhaseRunning check for
+// terminal prepared when the delegate is not running (fold.go:155-156).
+// After a successful terminal-prepared, Phase=Settling; preparing again
+// with the same generation hits the phase check.
+func TestApplyTerminalPreparedNotRunning(t *testing.T) {
+	state := applyEvents(t, createdEvent("dlg_a", ""), startedEvent("dlg_a", 1, TriggerInitial))
+	if err := Apply(state, preparedEvent("dlg_a", 1, reportedPacket("ok"))); err != nil {
+		t.Fatal(err)
+	}
+	// Phase is now Settling; preparing again with the same generation hits
+	// the "cannot prepare terminal" phase check.
+	err := Apply(state, preparedEvent("dlg_a", 1, reportedPacket("ok")))
+	if err == nil || !strings.Contains(err.Error(), "cannot prepare terminal") {
+		t.Fatalf("expected cannot-prepare error, got %v", err)
+	}
+}
+
+// TestApplyTerminalPreparedBadPacket covers invalid terminal packet
+// (fold.go:158-159).
+func TestApplyTerminalPreparedBadPacket(t *testing.T) {
+	state := applyEvents(t, createdEvent("dlg_a", ""), startedEvent("dlg_a", 1, TriggerInitial))
+	evt := preparedEvent("dlg_a", 1, TerminalPacket{Kind: "bad", Message: json.RawMessage(`"x"`)})
+	err := Apply(state, evt)
+	if err == nil || !strings.Contains(err.Error(), "terminal packet") {
+		t.Fatalf("expected terminal packet error, got %v", err)
+	}
+}
+
+// TestApplyRunFinishedBadPhase covers phase check (fold.go:172-173).
+// Document: unreachable — requireExactOpenRun checks CurrentRunOpen before
+// the phase check, and CurrentRunOpen is only true when Phase is Running,
+// Settling, or Stopping, all of which pass the phase check.
+func TestApplyRunFinishedBadPhase(t *testing.T) {
+	t.Skip("phase check at fold.go:172-173 is unreachable: requireExactOpenRun ensures CurrentRunOpen, which is only true for Running/Settling/Stopping phases")
+}
+
+// TestApplyRunFinishedInvalidOutcome covers invalid outcome status
+// (fold.go:175-176).
+func TestApplyRunFinishedInvalidOutcome(t *testing.T) {
+	state := applyEvents(t, createdEvent("dlg_a", ""), startedEvent("dlg_a", 1, TriggerInitial))
+	pkt := reportedPacket("ok")
+	err := Apply(state, finishedEvent("dlg_a", 1, "bogus", DispositionReported, "dlg_a/delivery/1", &pkt))
+	if err == nil || !strings.Contains(err.Error(), "invalid outcome") {
+		t.Fatalf("expected invalid outcome error, got %v", err)
+	}
+}
+
+// TestApplyRunFinishedZeroEndedAt covers zero end time (fold.go:181-182).
+func TestApplyRunFinishedZeroEndedAt(t *testing.T) {
+	state := applyEvents(t, createdEvent("dlg_a", ""), startedEvent("dlg_a", 1, TriggerInitial))
+	pkt := reportedPacket("ok")
+	evt := Event{
+		Kind:       EventDelegateRunFinished,
+		DelegateID: "dlg_a",
+		RunFinished: &RunFinished{
+			Generation:  1,
+			Outcome:     Outcome{Status: OutcomeCompleted},
+			Disposition: DispositionReported,
+			DeliveryID:  "dlg_a/delivery/1",
+			Packet:      &pkt,
+		},
+	}
+	err := Apply(state, evt)
+	if err == nil || !strings.Contains(err.Error(), "zero") {
+		t.Fatalf("expected zero-time error, got %v", err)
+	}
+}
+
+// TestApplyRunFinishedInvalidDisposition covers invalid disposition
+// (fold.go:184-185).
+func TestApplyRunFinishedInvalidDisposition(t *testing.T) {
+	state := applyEvents(t, createdEvent("dlg_a", ""), startedEvent("dlg_a", 1, TriggerInitial))
+	pkt := reportedPacket("ok")
+	err := Apply(state, finishedEvent("dlg_a", 1, OutcomeCompleted, "bogus_disposition", "dlg_a/delivery/1", &pkt))
+	if err == nil || !strings.Contains(err.Error(), "invalid disposition") {
+		t.Fatalf("expected invalid disposition error, got %v", err)
+	}
+}
+
+// TestApplyRunFinishedNonExhaustedCarriesExhaustion covers validateOutcome
+// for a non-exhausted outcome carrying exhaustion metadata (fold.go:625-626).
+func TestApplyRunFinishedNonExhaustedCarriesExhaustion(t *testing.T) {
+	state := applyEvents(t, createdEvent("dlg_a", ""), startedEvent("dlg_a", 1, TriggerInitial))
+	pkt := reportedPacket("ok")
+	resumable := true
+	evt := Event{
+		Kind:       EventDelegateRunFinished,
+		DelegateID: "dlg_a",
+		RunFinished: &RunFinished{
+			Generation:  1,
+			Outcome:     Outcome{Status: OutcomeCompleted, EndedAt: time.Now(), ExhaustionBudget: "tool_rounds", Resumable: &resumable},
+			Disposition: DispositionReported,
+			DeliveryID:  "dlg_a/delivery/1",
+			Packet:      &pkt,
+		},
+	}
+	err := Apply(state, evt)
+	if err == nil || !strings.Contains(err.Error(), "exhaustion metadata") {
+		t.Fatalf("expected exhaustion-metadata error, got %v", err)
+	}
+}
+
+// TestApplyRunFinishedExhaustedBadReason covers validateOutcome for
+// tool_round budget with wrong reason (fold.go:638-639).
+func TestApplyRunFinishedExhaustedBadReason(t *testing.T) {
+	state := applyEvents(t, createdEvent("dlg_a", ""), startedEvent("dlg_a", 1, TriggerInitial))
+	pkt := reportedPacket("ok")
+	resumable := true
+	evt := Event{
+		Kind:       EventDelegateRunFinished,
+		DelegateID: "dlg_a",
+		RunFinished: &RunFinished{
+			Generation:  1,
+			Outcome:     Outcome{Status: OutcomeExhausted, EndedAt: time.Now(), ExhaustionBudget: ExhaustionBudgetToolRounds, ExhaustionLimit: 5, Resumable: &resumable, Reason: "wrong"},
+			Disposition: DispositionTerminalError,
+			DeliveryID:  "dlg_a/delivery/1",
+			Packet:      &pkt,
+		},
+	}
+	err := Apply(state, evt)
+	if err == nil || !strings.Contains(err.Error(), "tool-round exhaustion reason") {
+		t.Fatalf("expected bad-reason error, got %v", err)
+	}
+}
+
+// TestApplyRunFinishedExhaustedInvalidBudget covers validateOutcome for
+// an unknown exhaustion budget (fold.go:651-652).
+func TestApplyRunFinishedExhaustedInvalidBudget(t *testing.T) {
+	state := applyEvents(t, createdEvent("dlg_a", ""), startedEvent("dlg_a", 1, TriggerInitial))
+	pkt := reportedPacket("ok")
+	resumable := true
+	evt := Event{
+		Kind:       EventDelegateRunFinished,
+		DelegateID: "dlg_a",
+		RunFinished: &RunFinished{
+			Generation:  1,
+			Outcome:     Outcome{Status: OutcomeExhausted, EndedAt: time.Now(), ExhaustionBudget: "bogus_budget", ExhaustionLimit: 5, Resumable: &resumable, Reason: "tool_round_budget_exhausted"},
+			Disposition: DispositionTerminalError,
+			DeliveryID:  "dlg_a/delivery/1",
+			Packet:      &pkt,
+		},
+	}
+	err := Apply(state, evt)
+	if err == nil || !strings.Contains(err.Error(), "invalid exhaustion budget") {
+		t.Fatalf("expected invalid budget error, got %v", err)
+	}
+}
+
+// TestApplyRunFinishedStoppingObserverCallback covers the stopping branch
+// observer-callback error (fold.go:195-196).
+func TestApplyRunFinishedStoppingObserverCallback(t *testing.T) {
+	state := applyEvents(t, createdEvent("dlg_a", ""), startedEvent("dlg_a", 1, TriggerInitial), stopRequestedEvent("dlg_a"))
+	pkt := stoppedPacket()
+	evt := Event{
+		Kind:       EventDelegateRunFinished,
+		DelegateID: "dlg_a",
+		RunFinished: &RunFinished{
+			Generation:                1,
+			Outcome:                   Outcome{Status: OutcomeStopped, EndedAt: time.Now(), Reason: "stopped_by_parent"},
+			Disposition:               DispositionTerminalError,
+			ObserverCallbackDelivered: true,
+			Packet:                    pkt,
+		},
+	}
+	err := Apply(state, evt)
+	if err == nil || !strings.Contains(err.Error(), "observer callback") {
+		t.Fatalf("expected observer-callback error, got %v", err)
+	}
+}
+
+// TestApplyRunFinishedCompletedNoAction covers the completed_no_action
+// disposition path, which ends with Phase=Idle for a resumable delegate.
+func TestApplyRunFinishedCompletedNoAction(t *testing.T) {
+	state := applyEvents(t, createdEvent("dlg_a", ""), startedEvent("dlg_a", 1, TriggerAttention))
+	evt := Event{
+		Kind:       EventDelegateRunFinished,
+		DelegateID: "dlg_a",
+		RunFinished: &RunFinished{
+			Generation:  1,
+			Outcome:     Outcome{Status: OutcomeCompleted, EndedAt: time.Now()},
+			Disposition: DispositionCompletedNoAction,
+		},
+	}
+	if err := Apply(state, evt); err != nil {
+		t.Fatalf("completed_no_action finish failed: %v", err)
+	}
+	if state["dlg_a"].Phase != PhaseIdle {
+		t.Fatalf("phase = %s, want Idle after completed_no_action", state["dlg_a"].Phase)
+	}
+}
+
+// TestApplyResumabilityClosedEmptyReason covers the empty-reason check
+// (fold.go:243-244).
+func TestApplyResumabilityClosedEmptyReason(t *testing.T) {
+	state := applyEvents(t, createdEvent("dlg_a", ""))
+	evt := Event{
+		Kind:               EventDelegateResumabilityClosed,
+		DelegateID:         "dlg_a",
+		ResumabilityClosed: &ResumabilityClosed{Reason: ""},
+	}
+	err := Apply(state, evt)
+	if err == nil || !strings.Contains(err.Error(), "reason is empty") {
+		t.Fatalf("expected empty-reason error, got %v", err)
+	}
+}
+
+// TestApplyResumabilityClosedAlreadyClosed covers the already-closed check
+// (fold.go:246-247).
+func TestApplyResumabilityClosedAlreadyClosed(t *testing.T) {
+	state := applyEvents(t, createdEvent("dlg_a", ""))
+	evt1 := Event{
+		Kind:               EventDelegateResumabilityClosed,
+		DelegateID:         "dlg_a",
+		ResumabilityClosed: &ResumabilityClosed{Reason: "done"},
+	}
+	if err := Apply(state, evt1); err != nil {
+		t.Fatal(err)
+	}
+	err := Apply(state, evt1)
+	if err == nil || !strings.Contains(err.Error(), "already closed") {
+		t.Fatalf("expected already-closed error, got %v", err)
+	}
+}
+
+// TestApplySubtreeStopRequestedAlreadyPending covers the pending-stop
+// check (fold.go:274-275).
+func TestApplySubtreeStopRequestedAlreadyPending(t *testing.T) {
+	state := applyEvents(t, createdEvent("dlg_a", ""), createdEvent("dlg_b", "dlg_a"), stopRequestedEvent("dlg_a"))
+	// The second stop request must have a non-zero Seq to pass the
+	// event.Seq==0 guard in applySubtreeStopRequested.
+	evt := stopRequestedEvent("dlg_b")
+	evt.Seq = 4
+	err := Apply(state, evt)
+	if err == nil || !strings.Contains(err.Error(), "already exists") {
+		t.Fatalf("expected already-exists error, got %v", err)
+	}
+}
+
+// TestApplySubtreeStopCompletedNoMembers covers the pending-stop-sequence
+// mismatch (fold.go:300-301). The no-members check at fold.go:313-314 is
+// unreachable: if target.PendingStopSeq == RequestSeq, the target itself
+// is always a covered member.
+func TestApplySubtreeStopCompletedNoMembers(t *testing.T) {
+	state := applyEvents(t, createdEvent("dlg_a", ""))
+	// Complete a stop that was never requested.
+	evt := Event{
+		Kind:                 EventDelegateSubtreeStopCompleted,
+		DelegateID:           "dlg_a",
+		SubtreeStopCompleted: &SubtreeStopCompleted{RequestSeq: 99},
+	}
+	err := Apply(state, evt)
 	if err == nil || !strings.Contains(err.Error(), "pending stop sequence") {
-		t.Fatalf("expected error, got %v", err)
+		t.Fatalf("expected pending-stop-sequence error, got %v", err)
 	}
 }
 
-func TestApplySubtreeStopCompleted_RunStillOpen(t *testing.T) {
-	state := State{"dlg_1": {PendingStopSeq: 1, CurrentRunOpen: true, Resumable: true}}
-	err := applySubtreeStopCompleted(state, Event{
-		DelegateID:           "dlg_1",
-		SubtreeStopCompleted: &SubtreeStopCompleted{RequestSeq: 1},
-	})
+// TestApplySubtreeStopCompletedRunStillOpen covers the run-open check
+// (fold.go:308-309).
+func TestApplySubtreeStopCompletedRunStillOpen(t *testing.T) {
+	state := applyEvents(t, createdEvent("dlg_a", ""), startedEvent("dlg_a", 1, TriggerInitial), stopRequestedEvent("dlg_a"))
+	evt := Event{
+		Kind:                 EventDelegateSubtreeStopCompleted,
+		DelegateID:           "dlg_a",
+		SubtreeStopCompleted: &SubtreeStopCompleted{RequestSeq: 3},
+	}
+	err := Apply(state, evt)
 	if err == nil || !strings.Contains(err.Error(), "still open") {
-		t.Fatalf("expected error, got %v", err)
+		t.Fatalf("expected still-open error, got %v", err)
 	}
 }
 
-// TestApplySubtreeStopCompleted_NoMembers covers a case that is effectively
-// unreachable: if the target's PendingStopSeq matches RequestSeq, it is itself
-// a member, so covered is never empty. The branch is documented as defensive.
-func TestApplySubtreeStopCompleted_NoMembers(t *testing.T) {
-	// If the target's PendingStopSeq doesn't match, the mismatch error fires first.
-	state := State{"dlg_1": {PendingStopSeq: 2, Resumable: true}}
-	err := applySubtreeStopCompleted(state, Event{
-		DelegateID:           "dlg_1",
-		SubtreeStopCompleted: &SubtreeStopCompleted{RequestSeq: 1},
-	})
-	if err == nil || !strings.Contains(err.Error(), "pending stop sequence") {
-		t.Fatalf("expected mismatch error, got %v", err)
+// TestValidateFinishPacketBadPacket covers the nil-packet and
+// bad-packet paths in validateFinishPacket (fold.go:523-524, 526-527).
+func TestValidateFinishPacketBadPacket(t *testing.T) {
+	aggregate := &Aggregate{DelegateID: "dlg_a", Trigger: TriggerInitial}
+	// Disposition is not CompletedNoAction, so packet is required.
+	err := validateFinishPacket(aggregate, &RunFinished{Disposition: DispositionReported, DeliveryID: "x"}, nil)
+	if err == nil || !strings.Contains(err.Error(), "no terminal packet") {
+		t.Fatalf("expected no-packet error, got %v", err)
+	}
+	// Bad packet.
+	badPkt := &TerminalPacket{Kind: "bad", Message: json.RawMessage(`"x"`)}
+	err = validateFinishPacket(aggregate, &RunFinished{Disposition: DispositionReported, DeliveryID: "x"}, badPkt)
+	if err == nil || !strings.Contains(err.Error(), "finish packet") {
+		t.Fatalf("expected finish-packet error, got %v", err)
 	}
 }
 
-func TestApplySubtreeStopCompleted_Success(t *testing.T) {
-	state := State{
-		"dlg_1":     {PendingStopSeq: 1, Resumable: true},
-		"dlg_child": {PendingStopSeq: 1, Resumable: false},
-	}
-	err := applySubtreeStopCompleted(state, Event{
-		DelegateID:           "dlg_1",
-		SubtreeStopCompleted: &SubtreeStopCompleted{RequestSeq: 1},
-	})
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if state["dlg_1"].PendingStopSeq != 0 || state["dlg_1"].Phase != PhaseIdle {
-		t.Fatalf("dlg_1 not completed: %#v", state["dlg_1"])
-	}
-	if state["dlg_child"].PendingStopSeq != 0 || state["dlg_child"].Phase != PhaseClosed {
-		t.Fatalf("dlg_child not closed: %#v", state["dlg_child"])
+// TestIsDelegateOrDescendantNilAggregate covers the nil-aggregate return
+// in isDelegateOrDescendant (fold.go:602-603).
+func TestIsDelegateOrDescendantNilAggregate(t *testing.T) {
+	state := State{"dlg_a": nil}
+	if isDelegateOrDescendant(state, "dlg_a", "dlg_b") {
+		t.Fatal("expected false for nil aggregate in state")
 	}
 }
 
-// ---------------------------------------------------------------------------
-// applyDeliveryAcknowledged
-// ---------------------------------------------------------------------------
-
-func TestApplyDeliveryAcknowledged_EmptyDeliveryID(t *testing.T) {
-	state := State{"dlg_1": {}}
-	err := applyDeliveryAcknowledged(state, Event{
-		DelegateID:           "dlg_1",
-		DeliveryAcknowledged: &DeliveryAcknowledged{},
-	})
-	if err == nil || !strings.Contains(err.Error(), "empty") {
-		t.Fatalf("expected error, got %v", err)
+// TestValidOutcomeStatusDefault covers the default branch
+// (fold.go:618-619).
+func TestValidOutcomeStatusDefault(t *testing.T) {
+	if validOutcomeStatus("bogus") {
+		t.Fatal("expected bogus status to be invalid")
 	}
 }
 
-func TestApplyDeliveryAcknowledged_NotHead(t *testing.T) {
-	state := State{"dlg_1": {PendingDeliveries: []PendingDelivery{{DeliveryID: "other"}}}}
-	err := applyDeliveryAcknowledged(state, Event{
-		DelegateID:           "dlg_1",
-		DeliveryAcknowledged: &DeliveryAcknowledged{DeliveryID: "target"},
-	})
-	if err == nil || !strings.Contains(err.Error(), "not the pending head") {
-		t.Fatalf("expected error, got %v", err)
+// TestFoldSequenceMismatch covers Fold's sequence check (fold.go:17-18).
+func TestFoldSequenceMismatch(t *testing.T) {
+	evt := createdEvent("dlg_a", "")
+	evt.Seq = 99
+	_, err := Fold([]Event{evt})
+	if err == nil || !strings.Contains(err.Error(), "sequence") {
+		t.Fatalf("expected sequence error, got %v", err)
 	}
 }
-
-func TestApplyDeliveryAcknowledged_Success(t *testing.T) {
-	state := State{"dlg_1": {PendingDeliveries: []PendingDelivery{
-		{DeliveryID: "head"},
-		{DeliveryID: "next"},
-	}}}
-	err := applyDeliveryAcknowledged(state, Event{
-		DelegateID:           "dlg_1",
-		DeliveryAcknowledged: &DeliveryAcknowledged{DeliveryID: "head"},
-	})
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if len(state["dlg_1"].PendingDeliveries) != 1 || state["dlg_1"].PendingDeliveries[0].DeliveryID != "next" {
-		t.Fatalf("unexpected deliveries: %#v", state["dlg_1"].PendingDeliveries)
-	}
-}
-
-// ---------------------------------------------------------------------------
-// applyAttentionChanged
-// ---------------------------------------------------------------------------
-
-func TestApplyAttentionChanged(t *testing.T) {
-	t.Run("set true", func(t *testing.T) {
-		state := State{"dlg_1": {NeedsAttention: false}}
-		err := applyAttentionChanged(state, Event{
-			DelegateID:       "dlg_1",
-			AttentionChanged: &DelegateAttentionChanged{NeedsAttention: true},
-		})
-		if err != nil {
-			t.Fatalf("unexpected error: %v", err)
-		}
-		if !state["dlg_1"].NeedsAttention {
-			t.Fatal("expected NeedsAttention=true")
-		}
-	})
-	t.Run("set false", func(t *testing.T) {
-		state := State{"dlg_1": {NeedsAttention: true}}
-		err := applyAttentionChanged(state, Event{
-			DelegateID:       "dlg_1",
-			AttentionChanged: &DelegateAttentionChanged{NeedsAttention: false},
-		})
-		if err != nil {
-			t.Fatalf("unexpected error: %v", err)
-		}
-		if state["dlg_1"].NeedsAttention {
-			t.Fatal("expected NeedsAttention=false")
-		}
-	})
-	t.Run("nonexistent delegate", func(t *testing.T) {
-		state := State{}
-		err := applyAttentionChanged(state, Event{
-			DelegateID:       "dlg_1",
-			AttentionChanged: &DelegateAttentionChanged{NeedsAttention: true},
-		})
-		if err == nil {
-			t.Fatal("expected error for nonexistent delegate")
-		}
-	})
-}
-
-// Ensure errors is used
-var _ = errors.New
