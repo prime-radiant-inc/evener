@@ -86,6 +86,23 @@ export function createOnboardingServices(
     onLifecycle() {
       return () => {};
     },
+    async voicePermissions() {
+      return true;
+    },
+    async voiceStart() {
+      return { voiceSessionId: "fixture-voice-session" };
+    },
+    async voiceStop() {},
+    async voiceSpeak(_voiceSessionId: string, _chunkId: string, _text: string) {
+      return { chunkId: _chunkId };
+    },
+    async voiceStopSpeaking() {},
+    async voiceSetRate(_voiceSessionId: string, rate: number) {
+      return rate;
+    },
+    onVoiceEvent() {
+      return () => {};
+    },
   };
 
   return {
@@ -150,6 +167,23 @@ export function createShellServices(
       return "large";
     },
     onLifecycle() {
+      return () => {};
+    },
+    async voicePermissions() {
+      return true;
+    },
+    async voiceStart() {
+      return { voiceSessionId: "fixture-voice-session" };
+    },
+    async voiceStop() {},
+    async voiceSpeak(_voiceSessionId: string, _chunkId: string, _text: string) {
+      return { chunkId: _chunkId };
+    },
+    async voiceStopSpeaking() {},
+    async voiceSetRate(_voiceSessionId: string, rate: number) {
+      return rate;
+    },
+    onVoiceEvent() {
       return () => {};
     },
   };

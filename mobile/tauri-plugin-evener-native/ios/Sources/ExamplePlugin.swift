@@ -82,6 +82,9 @@ enum ContractV1 {
         case "event":
             let allowed: Set<String> = [
                 "lifecycle.changed", "speech.partial", "speech.final", "barge.in",
+                "voice.level", "voice.partial", "voice.final",
+                "voice.speechStarted", "voice.speechFinished",
+                "voice.bargeIn", "voice.interrupted", "voice.error",
             ]
             if !allowed.contains(typeValue) { throw ContractError.unknownType }
         case "response":
@@ -90,6 +93,8 @@ enum ContractV1 {
                 "pairing.preview", "permission.status", "speech.ready",
                 "speech.stopped", "synthesis.started", "synthesis.stopped",
                 "haptic.completed", "contentSize.value", "clipboard.pasted",
+                "voice.permissions", "voice.ready", "voice.stopped",
+                "voice.queued", "voice.speakingStopped", "voice.rateSet",
                 "error",
             ]
             if !allowed.contains(typeValue) { throw ContractError.unknownType }

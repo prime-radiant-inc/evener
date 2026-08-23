@@ -104,7 +104,14 @@ fn decodes_every_v1_fixture_variant() {
             NativeCommand::SynthesisSpeak { .. },
             NativeCommand::SynthesisStop { .. },
             NativeCommand::HapticPerform { .. },
+            NativeCommand::ClipboardPaste { .. },
             NativeCommand::ContentSizeGet { .. },
+            NativeCommand::VoicePermissions { .. },
+            NativeCommand::VoiceStart { .. },
+            NativeCommand::VoiceStop { .. },
+            NativeCommand::VoiceSpeak { .. },
+            NativeCommand::VoiceStopSpeaking { .. },
+            NativeCommand::VoiceSetRate { .. },
         ]
     ));
 
@@ -127,7 +134,14 @@ fn decodes_every_v1_fixture_variant() {
             NativeResponse::SynthesisStarted { .. },
             NativeResponse::SynthesisStopped { .. },
             NativeResponse::HapticCompleted { .. },
+            NativeResponse::ClipboardPasted { .. },
             NativeResponse::ContentSizeValue { .. },
+            NativeResponse::VoicePermissionsResponse { .. },
+            NativeResponse::VoiceReady { .. },
+            NativeResponse::VoiceStopped { .. },
+            NativeResponse::VoiceQueued { .. },
+            NativeResponse::VoiceSpeakingStopped { .. },
+            NativeResponse::VoiceRateSet { .. },
             NativeResponse::Error { .. },
         ]
     ));
@@ -145,6 +159,14 @@ fn decodes_every_v1_fixture_variant() {
             NativeEvent::SpeechPartial { .. },
             NativeEvent::SpeechFinal { .. },
             NativeEvent::BargeIn { .. },
+            NativeEvent::VoiceLevel { .. },
+            NativeEvent::VoicePartial { .. },
+            NativeEvent::VoiceFinal { .. },
+            NativeEvent::VoiceSpeechStarted { .. },
+            NativeEvent::VoiceSpeechFinished { .. },
+            NativeEvent::VoiceBargeIn { .. },
+            NativeEvent::VoiceInterrupted { .. },
+            NativeEvent::VoiceErrorEvent { .. },
         ]
     ));
 }

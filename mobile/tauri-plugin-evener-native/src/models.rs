@@ -312,8 +312,42 @@ pub enum NativeCommand {
     SynthesisStop { version: u8 },
     #[serde(rename = "haptic.perform")]
     HapticPerform { version: u8, kind: String },
+    #[serde(rename = "clipboard.paste")]
+    ClipboardPaste { version: u8 },
     #[serde(rename = "contentSize.get")]
     ContentSizeGet { version: u8 },
+    #[serde(rename = "voice.permissions")]
+    VoicePermissions { version: u8 },
+    #[serde(rename = "voice.start")]
+    VoiceStart { version: u8, locale: String },
+    #[serde(rename = "voice.stop")]
+    VoiceStop {
+        version: u8,
+        #[serde(rename = "voiceSessionId")]
+        voice_session_id: String,
+    },
+    #[serde(rename = "voice.speak")]
+    VoiceSpeak {
+        version: u8,
+        #[serde(rename = "voiceSessionId")]
+        voice_session_id: String,
+        #[serde(rename = "chunkId")]
+        chunk_id: String,
+        text: String,
+    },
+    #[serde(rename = "voice.stopSpeaking")]
+    VoiceStopSpeaking {
+        version: u8,
+        #[serde(rename = "voiceSessionId")]
+        voice_session_id: String,
+    },
+    #[serde(rename = "voice.setRate")]
+    VoiceSetRate {
+        version: u8,
+        #[serde(rename = "voiceSessionId")]
+        voice_session_id: String,
+        rate: f64,
+    },
 }
 
 // ---------------------------------------------------------------------------
@@ -352,8 +386,30 @@ pub enum NativeResponse {
     SynthesisStopped { version: u8 },
     #[serde(rename = "haptic.completed")]
     HapticCompleted { version: u8 },
+    #[serde(rename = "clipboard.pasted")]
+    ClipboardPasted { version: u8, text: String },
     #[serde(rename = "contentSize.value")]
     ContentSizeValue { version: u8, category: String },
+    #[serde(rename = "voice.permissions")]
+    VoicePermissionsResponse { version: u8, granted: bool },
+    #[serde(rename = "voice.ready")]
+    VoiceReady {
+        version: u8,
+        #[serde(rename = "voiceSessionId")]
+        voice_session_id: String,
+    },
+    #[serde(rename = "voice.stopped")]
+    VoiceStopped { version: u8 },
+    #[serde(rename = "voice.queued")]
+    VoiceQueued {
+        version: u8,
+        #[serde(rename = "chunkId")]
+        chunk_id: String,
+    },
+    #[serde(rename = "voice.speakingStopped")]
+    VoiceSpeakingStopped { version: u8 },
+    #[serde(rename = "voice.rateSet")]
+    VoiceRateSet { version: u8, rate: f64 },
     #[serde(rename = "error")]
     Error { version: u8, error: NativeError },
 }
@@ -373,6 +429,81 @@ pub enum NativeEvent {
     SpeechFinal { version: u8, text: String },
     #[serde(rename = "barge.in")]
     BargeIn { version: u8 },
+    #[serde(rename = "voice.level")]
+    VoiceLevel {
+        version: u8,
+        #[serde(rename = "voiceSessionId")]
+        voice_session_id: String,
+        seq: u64,
+        timestamp: i64,
+        level: f64,
+    },
+    #[serde(rename = "voice.partial")]
+    VoicePartial {
+        version: u8,
+        #[serde(rename = "voiceSessionId")]
+        voice_session_id: String,
+        seq: u64,
+        timestamp: i64,
+        text: String,
+        locale: String,
+    },
+    #[serde(rename = "voice.final")]
+    VoiceFinal {
+        version: u8,
+        #[serde(rename = "voiceSessionId")]
+        voice_session_id: String,
+        seq: u64,
+        timestamp: i64,
+        text: String,
+        locale: String,
+    },
+    #[serde(rename = "voice.speechStarted")]
+    VoiceSpeechStarted {
+        version: u8,
+        #[serde(rename = "voiceSessionId")]
+        voice_session_id: String,
+        seq: u64,
+        timestamp: i64,
+        #[serde(rename = "chunkId")]
+        chunk_id: String,
+    },
+    #[serde(rename = "voice.speechFinished")]
+    VoiceSpeechFinished {
+        version: u8,
+        #[serde(rename = "voiceSessionId")]
+        voice_session_id: String,
+        seq: u64,
+        timestamp: i64,
+        #[serde(rename = "chunkId")]
+        chunk_id: String,
+    },
+    #[serde(rename = "voice.bargeIn")]
+    VoiceBargeIn {
+        version: u8,
+        #[serde(rename = "voiceSessionId")]
+        voice_session_id: String,
+        seq: u64,
+        timestamp: i64,
+        partial: String,
+    },
+    #[serde(rename = "voice.interrupted")]
+    VoiceInterrupted {
+        version: u8,
+        #[serde(rename = "voiceSessionId")]
+        voice_session_id: String,
+        seq: u64,
+        timestamp: i64,
+    },
+    #[serde(rename = "voice.error")]
+    VoiceErrorEvent {
+        version: u8,
+        #[serde(rename = "voiceSessionId")]
+        voice_session_id: String,
+        seq: u64,
+        timestamp: i64,
+        error: NativeError,
+    },
 }
 
 // ---------------------------------------------------------------------------

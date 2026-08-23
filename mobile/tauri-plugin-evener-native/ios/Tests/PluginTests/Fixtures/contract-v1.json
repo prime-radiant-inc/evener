@@ -16,7 +16,14 @@
     { "version": 1, "type": "synthesis.speak", "text": "fixture-text-not-spoken" },
     { "version": 1, "type": "synthesis.stop" },
     { "version": 1, "type": "haptic.perform", "kind": "selection" },
-    { "version": 1, "type": "contentSize.get" }
+    { "version": 1, "type": "clipboard.paste" },
+    { "version": 1, "type": "contentSize.get" },
+    { "version": 1, "type": "voice.permissions" },
+    { "version": 1, "type": "voice.start", "locale": "en-US" },
+    { "version": 1, "type": "voice.stop", "voiceSessionId": "voice-fixture-session" },
+    { "version": 1, "type": "voice.speak", "voiceSessionId": "voice-fixture-session", "chunkId": "chunk-fixture-1", "text": "fixture-text-not-spoken" },
+    { "version": 1, "type": "voice.stopSpeaking", "voiceSessionId": "voice-fixture-session" },
+    { "version": 1, "type": "voice.setRate", "voiceSessionId": "voice-fixture-session", "rate": 0.5 }
   ],
   "responses": [
     { "version": 1, "type": "secure.state", "present": true },
@@ -34,7 +41,14 @@
     { "version": 1, "type": "synthesis.started" },
     { "version": 1, "type": "synthesis.stopped" },
     { "version": 1, "type": "haptic.completed" },
+    { "version": 1, "type": "clipboard.pasted", "text": "" },
     { "version": 1, "type": "contentSize.value", "category": "large" },
+    { "version": 1, "type": "voice.permissions", "granted": true },
+    { "version": 1, "type": "voice.ready", "voiceSessionId": "voice-fixture-session" },
+    { "version": 1, "type": "voice.stopped" },
+    { "version": 1, "type": "voice.queued", "chunkId": "chunk-fixture-1" },
+    { "version": 1, "type": "voice.speakingStopped" },
+    { "version": 1, "type": "voice.rateSet", "rate": 0.5 },
     {
       "version": 1,
       "type": "error",
@@ -49,6 +63,25 @@
     { "version": 1, "type": "lifecycle.changed", "state": "active" },
     { "version": 1, "type": "speech.partial", "text": "fixture-partial-not-spoken" },
     { "version": 1, "type": "speech.final", "text": "fixture-final-not-spoken" },
-    { "version": 1, "type": "barge.in" }
+    { "version": 1, "type": "barge.in" },
+    { "version": 1, "type": "voice.level", "voiceSessionId": "voice-fixture-session", "seq": 1, "timestamp": 1000, "level": 0.5 },
+    { "version": 1, "type": "voice.partial", "voiceSessionId": "voice-fixture-session", "seq": 2, "timestamp": 1100, "text": "fixture-partial-not-spoken", "locale": "en-US" },
+    { "version": 1, "type": "voice.final", "voiceSessionId": "voice-fixture-session", "seq": 3, "timestamp": 1200, "text": "fixture-final-not-spoken", "locale": "en-US" },
+    { "version": 1, "type": "voice.speechStarted", "voiceSessionId": "voice-fixture-session", "seq": 4, "timestamp": 1300, "chunkId": "chunk-fixture-1" },
+    { "version": 1, "type": "voice.speechFinished", "voiceSessionId": "voice-fixture-session", "seq": 5, "timestamp": 1400, "chunkId": "chunk-fixture-1" },
+    { "version": 1, "type": "voice.bargeIn", "voiceSessionId": "voice-fixture-session", "seq": 6, "timestamp": 1500, "partial": "fixture-barge-partial-not-spoken" },
+    { "version": 1, "type": "voice.interrupted", "voiceSessionId": "voice-fixture-session", "seq": 7, "timestamp": 1600 },
+    {
+      "version": 1,
+      "type": "voice.error",
+      "voiceSessionId": "voice-fixture-session",
+      "seq": 8,
+      "timestamp": 1700,
+      "error": {
+        "id": "voice-error-fixture",
+        "kind": "internal",
+        "message": "Voice error fixture"
+      }
+    }
   ]
 }

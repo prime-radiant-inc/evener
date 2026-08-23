@@ -21,7 +21,14 @@ final class ContractTests: XCTestCase {
                 "synthesis.speak",
                 "synthesis.stop",
                 "haptic.perform",
+                "clipboard.paste",
                 "contentSize.get",
+                "voice.permissions",
+                "voice.start",
+                "voice.stop",
+                "voice.speak",
+                "voice.stopSpeaking",
+                "voice.setRate",
             ]
         )
         XCTAssertEqual(
@@ -37,13 +44,25 @@ final class ContractTests: XCTestCase {
                 "synthesis.started",
                 "synthesis.stopped",
                 "haptic.completed",
+                "clipboard.pasted",
                 "contentSize.value",
+                "voice.permissions",
+                "voice.ready",
+                "voice.stopped",
+                "voice.queued",
+                "voice.speakingStopped",
+                "voice.rateSet",
                 "error",
             ]
         )
         XCTAssertEqual(
             fixture.events.map(\.kind),
-            ["lifecycle.changed", "speech.partial", "speech.final", "barge.in"]
+            [
+                "lifecycle.changed", "speech.partial", "speech.final", "barge.in",
+                "voice.level", "voice.partial", "voice.final",
+                "voice.speechStarted", "voice.speechFinished",
+                "voice.bargeIn", "voice.interrupted", "voice.error",
+            ]
         )
     }
 

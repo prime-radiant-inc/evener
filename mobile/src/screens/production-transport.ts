@@ -31,6 +31,7 @@ import type {
   NativeResponse,
 } from "../native/contract";
 import {
+  decodeNativeEvent,
   decodeNativeResponse,
   isContentSizeCategory,
 } from "../native/contract";
@@ -54,10 +55,19 @@ export function createTauriNativeTransport(
     },
 
     subscribe(type, handler) {
-      if (type !== "lifecycle.changed") {
-        return () => {};
+      if (type === "lifecycle.changed") {
+        return subscribeLifecycle(
+          bridge,
+          handler as (event: { state: LifecycleState }) => void,
+        );
       }
-      return subscribeLifecycle(bridge, handler);
+      if (type === "voice.event") {
+        return subscribeVoiceEvents(
+          bridge,
+          handler as (event: import("../native/contract").NativeEvent) => void,
+        );
+      }
+      return () => {};
     },
   };
 }
@@ -76,6 +86,18 @@ function commandToRoute(command: NativeCommand): string {
       return "content_size_get";
     case "clipboard.paste":
       return "clipboard_paste";
+    case "voice.permissions":
+      return "voice_permissions";
+    case "voice.start":
+      return "voice_start";
+    case "voice.stop":
+      return "voice_stop";
+    case "voice.speak":
+      return "voice_speak";
+    case "voice.stopSpeaking":
+      return "voice_stop_speaking";
+    case "voice.setRate":
+      return "voice_set_rate";
     default:
       // secure.*, speech.*, synthesis.*, permission.* are NOT exposed to JS.
       throw new Error(`unsupported native command: ${command.type}`);
@@ -92,6 +114,22 @@ function commandToPayload(command: NativeCommand): Record<string, unknown> {
       return {};
     case "clipboard.paste":
       return {};
+    case "voice.permissions":
+      return {};
+    case "voice.start":
+      return { locale: command.locale };
+    case "voice.stop":
+      return { voiceSessionId: command.voiceSessionId };
+    case "voice.speak":
+      return {
+        voiceSessionId: command.voiceSessionId,
+        chunkId: command.chunkId,
+        text: command.text,
+      };
+    case "voice.stopSpeaking":
+      return { voiceSessionId: command.voiceSessionId };
+    case "voice.setRate":
+      return { voiceSessionId: command.voiceSessionId, rate: command.rate };
     default:
       throw new Error(`unsupported native command: ${command.type}`);
   }
@@ -120,6 +158,18 @@ function decodeRawResponse(
       return decodeContentSizeResponse(raw);
     case "clipboard.paste":
       return decodeClipboardPasteResponse(raw);
+    case "voice.permissions":
+      return decodeVoicePermissionsResponse(raw);
+    case "voice.start":
+      return decodeVoiceReadyResponse(raw);
+    case "voice.stop":
+      return { version: 1, type: "voice.stopped" };
+    case "voice.speak":
+      return decodeVoiceQueuedResponse(raw);
+    case "voice.stopSpeaking":
+      return { version: 1, type: "voice.speakingStopped" };
+    case "voice.setRate":
+      return decodeVoiceRateSetResponse(raw);
     default:
       throw new Error(`unsupported native command: ${command.type}`);
   }
@@ -186,6 +236,70 @@ function decodeClipboardPasteResponse(raw: unknown): NativeResponse {
     type: "clipboard.pasted",
     text: obj.text,
   };
+}
+
+/**
+ * Decode the raw voice permissions response `{granted: boolean}`.
+ */
+function decodeVoicePermissionsResponse(raw: unknown): NativeResponse {
+  assertRawObject(raw, "voice permissions response");
+  const obj = raw as Record<string, unknown>;
+  assertNoExtraFields(obj, ["granted"], "voice permissions response");
+  if (typeof obj.granted !== "boolean") {
+    throw new Error(
+      'Field "granted" must be a boolean in voice permissions response',
+    );
+  }
+  return { version: 1, type: "voice.permissions", granted: obj.granted };
+}
+
+/**
+ * Decode the raw voice ready response `{voiceSessionId: string}`.
+ */
+function decodeVoiceReadyResponse(raw: unknown): NativeResponse {
+  assertRawObject(raw, "voice ready response");
+  const obj = raw as Record<string, unknown>;
+  assertNoExtraFields(obj, ["voiceSessionId"], "voice ready response");
+  if (typeof obj.voiceSessionId !== "string") {
+    throw new Error(
+      'Field "voiceSessionId" must be a string in voice ready response',
+    );
+  }
+  return {
+    version: 1,
+    type: "voice.ready",
+    voiceSessionId: obj.voiceSessionId,
+  };
+}
+
+/**
+ * Decode the raw voice queued response `{chunkId: string}`.
+ */
+function decodeVoiceQueuedResponse(raw: unknown): NativeResponse {
+  assertRawObject(raw, "voice queued response");
+  const obj = raw as Record<string, unknown>;
+  assertNoExtraFields(obj, ["chunkId"], "voice queued response");
+  if (typeof obj.chunkId !== "string") {
+    throw new Error(
+      'Field "chunkId" must be a string in voice queued response',
+    );
+  }
+  return { version: 1, type: "voice.queued", chunkId: obj.chunkId };
+}
+
+/**
+ * Decode the raw voice rate-set response `{rate: number}`.
+ */
+function decodeVoiceRateSetResponse(raw: unknown): NativeResponse {
+  assertRawObject(raw, "voice rate-set response");
+  const obj = raw as Record<string, unknown>;
+  assertNoExtraFields(obj, ["rate"], "voice rate-set response");
+  if (typeof obj.rate !== "number" || !Number.isFinite(obj.rate)) {
+    throw new Error(
+      'Field "rate" must be a finite number in voice rate-set response',
+    );
+  }
+  return { version: 1, type: "voice.rateSet", rate: obj.rate };
 }
 
 // ---------------------------------------------------------------------------
@@ -269,4 +383,46 @@ function mapLifecycleEvent(eventName: string): LifecycleState | null {
   if (eventName === "tauri://suspended") return "background";
   if (eventName === "tauri://resumed") return "foreground";
   return null;
+}
+
+// ---------------------------------------------------------------------------
+// Voice event subscription — Tauri event → typed NativeEvent
+// ---------------------------------------------------------------------------
+
+function subscribeVoiceEvents(
+  bridge: TauriBridge,
+  handler: (event: import("../native/contract").NativeEvent) => void,
+): () => void {
+  let unsubscribed = false;
+  const unlistenFns: Array<() => void> = [];
+
+  const onEvent = (payload: { event: string; payload: unknown }) => {
+    if (unsubscribed) return;
+    try {
+      const decoded = decodeNativeEvent(payload.payload);
+      handler(decoded);
+    } catch {
+      // Ignore malformed voice events rather than crashing the subscription.
+    }
+  };
+
+  void bridge
+    .listen("voice://event", onEvent as never)
+    .then((fn) => {
+      if (unsubscribed) {
+        fn();
+      } else {
+        unlistenFns.push(fn);
+      }
+    })
+    .catch(() => {});
+
+  return () => {
+    if (unsubscribed) return;
+    unsubscribed = true;
+    for (const fn of unlistenFns) {
+      fn();
+    }
+    unlistenFns.length = 0;
+  };
 }
