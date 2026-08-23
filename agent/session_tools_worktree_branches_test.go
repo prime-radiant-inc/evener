@@ -721,22 +721,6 @@ func TestDisposableReasonUnchanged(t *testing.T) {
 	}
 }
 
-func TestDisposableReasonMerged(t *testing.T) {
-	run := worktree.GitRunner(func(args ...string) (string, error) {
-		// Mock worktree.Merged to return merged=true by detecting
-		// merge-base --is-ancestor call
-		if len(args) > 0 && args[0] == "merge-base" {
-			return "", nil // exit 0 = ancestor = merged
-		}
-		return "", nil
-	})
-	// We can't fully control worktree.Merged since it calls multiple git commands,
-	// but we can test the unchanged path which is pure.
-	// Skip this test — disposableReason's merged/unmerged paths require
-	// integration with worktree.Merged which needs a real git repo.
-	_ = run
-}
-
 func TestDisposableReasonGitError(t *testing.T) {
 	run := worktree.GitRunner(func(args ...string) (string, error) {
 		return "", errors.New("git failed")

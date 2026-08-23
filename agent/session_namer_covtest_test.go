@@ -213,12 +213,5 @@ func TestSessionNamerEnabled_NilProfile(t *testing.T) {
 	}
 }
 
-// TestSessionNamerModel covers sessionNamerModel fallback.
-func TestSessionNamerModel_Fallback(t *testing.T) {
-	// With a profile that has no configured cheap model, it should fall
-	// back to the profile's model. This requires a real profile, which is
-	// hard to construct here — document the nil path is covered.
-}
-
 // Ensure llm import is used.
 var _ = llm.Kind

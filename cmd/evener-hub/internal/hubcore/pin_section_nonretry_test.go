@@ -458,13 +458,3 @@ func TestPinSectionStoreAssignUpsertNonRetryable(t *testing.T) {
 		t.Fatalf("error should be non-retryable, got %v", err)
 	}
 }
-
-// TestPinSectionStoreDeleteSectionCommitNonRetryable is a placeholder.
-// The Commit non-retryable error path is hard to trigger without closing
-// the underlying connection mid-transaction, and the retryable commit path
-// is already covered by TestPinSectionStoreDeleteSectionCommitRetryable in
-// pin_section_retry_test.go.
-func TestPinSectionStoreDeleteSectionCommitNonRetryable(t *testing.T) {
-	// Intentionally empty: the non-retryable commit path is defensive code
-	// that requires an unusual failure mode to trigger.
-}

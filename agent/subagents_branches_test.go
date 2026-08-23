@@ -582,13 +582,6 @@ func TestSandboxSnapshotFromEnvNilEnv(t *testing.T) {
 // rootOnlyJobControlTools variable
 // ---------------------------------------------------------------------------
 
-func TestRootOnlyJobControlToolsExists(t *testing.T) {
-	// Just verify it's accessible and non-nil
-	if rootOnlyJobControlTools == nil {
-		// It may be nil if not defined in this file, but rootOnlySubagentTools uses it
-	}
-}
-
 // ---------------------------------------------------------------------------
 // defaultSubagentInstructions constant
 // ---------------------------------------------------------------------------

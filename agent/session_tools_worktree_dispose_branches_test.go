@@ -232,12 +232,6 @@ func TestWatchesTargetingEmpty(t *testing.T) {
 // delegateDisposeControlEnv: requires a local env (tested via the error path)
 // ---------------------------------------------------------------------------
 
-func TestDelegateDisposeControlEnvNonLocal(t *testing.T) {
-	// We can't test this without a valid session env - skip the nil case
-	// which would panic.
-	_ = errors.New("test")
-}
-
 // ---------------------------------------------------------------------------
 // laneAheadCount: whitespace trimming
 // ---------------------------------------------------------------------------

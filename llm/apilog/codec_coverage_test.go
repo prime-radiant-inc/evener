@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"io"
 	"strings"
 	"testing"
@@ -178,17 +177,6 @@ type unsupportedRecord struct{}
 
 func (unsupportedRecord) RecordKind() string              { return "unsupported" }
 func (unsupportedRecord) validateRecord(DecodeMode) error { return nil }
-
-// TestMarshalRecordMarshalError covers the json.Marshal error path
-// (line 291-292). We need a record that passes validation but fails to marshal.
-func TestMarshalRecordMarshalError(t *testing.T) {
-	// APIAttemptRecord with a channel in a field would fail to marshal, but
-	// the struct doesn't have channels. Instead, we can create a settlement
-	// with a circular reference... but settlements don't have maps.
-	// Actually, we can't easily cause json.Marshal to fail on these structs.
-	// Let's skip this one — it's likely unreachable with valid records.
-	_ = fmt.Sprintf // suppress unused import
-}
 
 // TestDecodeStrictMultipleJSONValues covers the multiple-JSON-values path
 // (lines 303-305).
