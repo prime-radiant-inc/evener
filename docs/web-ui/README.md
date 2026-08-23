@@ -22,6 +22,10 @@ Design documentation for the web hub (`cmd/evener-hub`). Started 2026-06-16.
 - **[specs/](specs/)** — two dated feasibility designs (multi-pane workspace,
   observer auto-open). Point-in-time; the multi-pane one is still named as
   source of truth by its implementation plan.
+- **[session-rail.md](session-rail.md)** — the Session Rail: a 156px canvas
+  that replaces the transcript's native scrollbar, encoding time, token cost,
+  and errors at once. Plus the Comprehension View overlay for multi-session
+  understanding.
 
 ## The examples are the running app
 
