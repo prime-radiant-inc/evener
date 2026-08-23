@@ -6,32 +6,37 @@
 // group, escalating to KILL after -kill-grace. Invoked by the Makefile
 // test-dev-tooling target as
 // `go run ./cmd/evener-test-dev-tooling $(DEV_TOOLING_TEST_SCRIPTS)`.
-package main
+package devtoolingtest
 
 import (
 	"flag"
 	"fmt"
+	"io"
 	"os"
 	"os/signal"
 	"syscall"
 	"time"
 )
 
-func main() {
-	scriptsDir := flag.String("scripts-dir", "scripts", "directory holding <name>-selftest.sh suites")
-	killGrace := flag.Duration("kill-grace", 5*time.Second, "how long a TERMed suite gets before KILL")
-	flag.Parse()
-	if flag.NArg() == 0 {
-		fmt.Fprintln(os.Stderr, "usage: evener-test-dev-tooling [-scripts-dir dir] [-kill-grace d] suite...")
-		os.Exit(2)
+func Run(args []string, _ io.Reader, stdout, stderr io.Writer) int {
+	fs := flag.NewFlagSet("evener test-dev-tooling", flag.ContinueOnError)
+	fs.SetOutput(stderr)
+	scriptsDir := fs.String("scripts-dir", "scripts", "directory holding <name>-selftest.sh suites")
+	killGrace := fs.Duration("kill-grace", 5*time.Second, "how long a TERMed suite gets before KILL")
+	if err := fs.Parse(args); err != nil {
+		return 2
+	}
+	if fs.NArg() == 0 {
+		_, _ = fmt.Fprintln(stderr, "usage: evener test-dev-tooling [-scripts-dir dir] [-kill-grace d] suite...")
+		return 2
 	}
 	signals := make(chan os.Signal, 1)
 	signal.Notify(signals, syscall.SIGHUP, syscall.SIGINT, syscall.SIGTERM)
-	os.Exit(runWave(waveConfig{
+	return runWave(waveConfig{
 		ScriptsDir: *scriptsDir,
-		Suites:     flag.Args(),
+		Suites:     fs.Args(),
 		KillGrace:  *killGrace,
-		Out:        os.Stdout,
+		Out:        stdout,
 		Signals:    signals,
-	}))
+	})
 }
