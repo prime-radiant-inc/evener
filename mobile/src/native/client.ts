@@ -27,6 +27,7 @@ export interface NativeBridge {
   secureSet(profileId: string, capability: string): Promise<SecureUpdated>;
   secureDelete(profileId: string): Promise<SecureDeleted>;
   scanAndPreviewPairing(): Promise<PairingPreview>;
+  clipboardPaste(): Promise<string>;
   requestPermission(kind: PermissionKind): Promise<PermissionStatus>;
   speechStart(): Promise<void>;
   speechStop(): Promise<void>;
@@ -158,6 +159,20 @@ export function createNativeBridge(transport: NativeTransport): NativeBridge {
         });
       }
       return { previewId: res.previewId, origin: res.origin };
+    },
+
+    async clipboardPaste() {
+      const res = unwrap(
+        await transport.send({ version: 1, type: "clipboard.paste" }),
+      );
+      if (res.type !== "clipboard.pasted") {
+        throw new NativeBridgeError({
+          id: "client",
+          kind: "internal",
+          message: "unexpected response",
+        });
+      }
+      return res.text ?? "";
     },
 
     async requestPermission(kind) {
