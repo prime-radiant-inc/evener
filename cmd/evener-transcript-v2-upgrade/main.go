@@ -1,6 +1,6 @@
 // Command evener-transcript-v2-upgrade converts selected legacy transcript v1
 // files into the semantic-only transcript v2 format.
-package main
+package transcriptv2upgrade
 
 import (
 	"bufio"
@@ -45,12 +45,12 @@ type preparedTranscript struct {
 	removedAPICalls int
 }
 
-func main() {
-	os.Exit(run(os.Args[1:], time.Now(), os.Stdout, os.Stderr))
+func Run(args []string, _ io.Reader, stdout, stderr io.Writer) int {
+	return run(args, time.Now(), stdout, stderr)
 }
 
 func run(args []string, now time.Time, stdout, stderr io.Writer) int {
-	flags := flag.NewFlagSet("evener-transcript-v2-upgrade", flag.ContinueOnError)
+	flags := flag.NewFlagSet("evener transcript-v2-upgrade", flag.ContinueOnError)
 	flags.SetOutput(stderr)
 	root := flags.String("root", "", "projects root containing */sessions/*.transcript.jsonl (required)")
 	since := flags.Duration("since", 120*time.Hour, "upgrade v1 transcripts modified within this rolling window")
