@@ -14,6 +14,10 @@ import (
 	"primeradiant.com/evener/buildinfo"
 	"primeradiant.com/evener/cmd/evener/internal/cliprompt"
 	"primeradiant.com/evener/cmd/evener/internal/launchcheck"
+	doctorcmd "primeradiant.com/evener/cmd/evener-doctor"
+	hubcmd "primeradiant.com/evener/cmd/evener-hub"
+	migratecmd "primeradiant.com/evener/cmd/evener-migrate"
+	tuicmd "primeradiant.com/evener/cmd/evener-tui"
 	"primeradiant.com/evener/cmdutil"
 	"primeradiant.com/evener/envvars"
 	openaiprovider "primeradiant.com/evener/llm/providers/openai"
@@ -115,6 +119,15 @@ func mainWithDeps(deps mainDeps) {
 		if err != nil {
 			if errors.Is(err, flag.ErrHelp) {
 				// Subcommand printed usage via fs.Usage; exit cleanly.
+				return
+			}
+			// subcommandExit carries the exit code from a library-style
+			// subcommand (Run returning a non-zero int). The subcommand
+			// already printed its own diagnostics; propagate the code.
+			if code, ok := err.(subcommandExit); ok {
+				if code != 0 {
+					deps.exit(int(code))
+				}
 				return
 			}
 			_, _ = fmt.Fprintf(deps.stderr, "%s: %v\n", label, err)
@@ -289,6 +302,10 @@ func printRunCommands(w io.Writer) {
 	_, _ = fmt.Fprintf(tw, "  launch-check\tValidate launch contract for a provider/model\n")
 	_, _ = fmt.Fprintf(tw, "  upgrade\tUpgrade installed Evener binaries\n")
 	_, _ = fmt.Fprintf(tw, "  plugin\tManage plugin marketplaces and plugins\n")
+	_, _ = fmt.Fprintf(tw, "  hub\tRun the evener-hub web orchestrator\n")
+	_, _ = fmt.Fprintf(tw, "  tui\tRun the evener-tui terminal UI\n")
+	_, _ = fmt.Fprintf(tw, "  doctor\tRead-only forensic inspector for sessions/jobs/watches\n")
+	_, _ = fmt.Fprintf(tw, "  migrate\tMigrate user data to the final evener layout\n")
 	_ = tw.Flush()
 }
 
@@ -329,6 +346,13 @@ func printRunEnvVars(w io.Writer) {
 	_ = tw.Flush()
 }
 
+// subcommandExit carries a non-zero exit code from a library-style subcommand
+// (Run returning int) through the error-returning dispatch contract. It is
+// not an error to print — the subcommand already wrote its own diagnostics.
+type subcommandExit int
+
+func (c subcommandExit) Error() string { return fmt.Sprintf("exit code %d", int(c)) }
+
 func dispatchCLICommand(args []string, stdin io.Reader, stdout, stderr io.Writer) (bool, string, error) {
 	return dispatchCLICommandWith(args, stdin, stdout, stderr, cliCommandRunners{
 		serve: runServe,
@@ -340,6 +364,30 @@ func dispatchCLICommand(args []string, stdin io.Reader, stdout, stderr io.Writer
 			return runUpgrade(args, stdout, stderr)
 		},
 		plugin: runPlugin,
+		hub: func(args []string, _ io.Reader, _ io.Writer, stderr io.Writer) error {
+			if code := hubcmd.Run(args, nil, nil, stderr); code != 0 {
+				return subcommandExit(code)
+			}
+			return nil
+		},
+		tui: func(args []string, stdin io.Reader, stdout, stderr io.Writer) error {
+			if code := tuicmd.Run(args, stdin, stdout, stderr); code != 0 {
+				return subcommandExit(code)
+			}
+			return nil
+		},
+		doctor: func(args []string, stdin io.Reader, stdout, stderr io.Writer) error {
+			if code := doctorcmd.Run(args, stdin, stdout, stderr); code != 0 {
+				return subcommandExit(code)
+			}
+			return nil
+		},
+		migrate: func(args []string, stdin io.Reader, stdout, stderr io.Writer) error {
+			if code := migratecmd.Run(args, stdin, stdout, stderr); code != 0 {
+				return subcommandExit(code)
+			}
+			return nil
+		},
 	})
 }
 
@@ -349,6 +397,10 @@ type cliCommandRunners struct {
 	openAI      func([]string, io.Reader, io.Writer, io.Writer) error
 	upgrade     func([]string, io.Reader, io.Writer, io.Writer) error
 	plugin      func([]string, io.Reader, io.Writer, io.Writer) error
+	hub         func([]string, io.Reader, io.Writer, io.Writer) error
+	tui         func([]string, io.Reader, io.Writer, io.Writer) error
+	doctor      func([]string, io.Reader, io.Writer, io.Writer) error
+	migrate     func([]string, io.Reader, io.Writer, io.Writer) error
 }
 
 func dispatchCLICommandWith(args []string, stdin io.Reader, stdout, stderr io.Writer, runners cliCommandRunners) (bool, string, error) {
@@ -367,6 +419,14 @@ func dispatchCLICommandWith(args []string, stdin io.Reader, stdout, stderr io.Wr
 		return true, "evener upgrade", runners.upgrade(args[1:], stdin, stdout, stderr)
 	case "plugin":
 		return true, "evener plugin", runners.plugin(args[1:], stdin, stdout, stderr)
+	case "hub":
+		return true, "evener hub", runners.hub(args[1:], stdin, stdout, stderr)
+	case "tui":
+		return true, "evener tui", runners.tui(args[1:], stdin, stdout, stderr)
+	case "doctor":
+		return true, "evener doctor", runners.doctor(args[1:], stdin, stdout, stderr)
+	case "migrate":
+		return true, "evener migrate", runners.migrate(args[1:], stdin, stdout, stderr)
 	default:
 		return false, "", nil
 	}

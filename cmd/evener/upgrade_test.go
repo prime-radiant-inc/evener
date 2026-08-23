@@ -47,7 +47,7 @@ func TestUpgradeSubcommandInstallsSnapshot(t *testing.T) {
 	}
 
 	out := stdout.String()
-	for _, want := range []string{"upgraded evener to snapshot", "Restart evener-tui and evener-hub"} {
+	for _, want := range []string{"upgraded evener to snapshot", "Restart evener to use the upgraded binary"} {
 		if !strings.Contains(out, want) {
 			t.Fatalf("stdout = %q, want %q", out, want)
 		}
@@ -78,7 +78,7 @@ func testReleaseArchive(t *testing.T, root string) []byte {
 	var buf bytes.Buffer
 	gz := gzip.NewWriter(&buf)
 	tw := tar.NewWriter(gz)
-	for _, bin := range []string{"evener", "evener-hub", "evener-tui", "evener-doctor"} {
+	for _, bin := range []string{"evener", "evener-dev"} {
 		body := fmt.Sprintf("#!/bin/sh\necho archive %s\n", bin)
 		header := &tar.Header{
 			Name: filepath.ToSlash(filepath.Join(root, bin)),
