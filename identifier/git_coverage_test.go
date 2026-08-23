@@ -11,6 +11,9 @@ import (
 // TestGitEntryResolvesToCommon_ReadError covers the branch where a `.git` file
 // can be stat'd but not read (permissions changed between stat and read).
 func TestGitEntryResolvesToCommon_ReadError(t *testing.T) {
+	if os.Getuid() == 0 {
+		t.Skip("running as root bypasses filesystem permission checks")
+	}
 	dir := t.TempDir()
 	gitFile := filepath.Join(dir, ".git")
 	if err := os.WriteFile(gitFile, []byte("gitdir: /some/path\n"), 0o644); err != nil {
@@ -61,6 +64,9 @@ func TestGitEntryResolvesToCommon_RelativeGitdir(t *testing.T) {
 // TestMainCheckoutLocal_ReadError covers the branch in mainCheckoutLocal where
 // a .git file exists but cannot be read.
 func TestMainCheckoutLocal_ReadError(t *testing.T) {
+	if os.Getuid() == 0 {
+		t.Skip("running as root bypasses filesystem permission checks")
+	}
 	dir := t.TempDir()
 	gitFile := filepath.Join(dir, ".git")
 	if err := os.WriteFile(gitFile, []byte("gitdir: /some/path\n"), 0o644); err != nil {
