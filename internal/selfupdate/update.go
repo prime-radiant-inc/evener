@@ -17,7 +17,7 @@ import (
 
 const defaultRepoURL = "https://github.com/prime-radiant-inc/evener"
 
-var installBinaries = []string{"evener", "evener-hub", "evener-tui", "evener-doctor"}
+var installBinaries = []string{"evener", "evener-dev"}
 
 var (
 	copyStream = io.Copy
@@ -133,7 +133,7 @@ func Upgrade(ctx context.Context, opts Options) (Result, error) {
 		BinDir:         binDir,
 		ShareBinDir:    shareBinDir,
 		Installed:      installed,
-		RestartMessage: "Restart evener-tui and evener-hub to use the upgraded binaries.",
+		RestartMessage: "Restart evener to use the upgraded binary.",
 	}, nil
 }
 
