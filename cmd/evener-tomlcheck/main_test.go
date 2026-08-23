@@ -1,4 +1,4 @@
-package main
+package tomlcheck
 
 import (
 	"bytes"
@@ -232,7 +232,7 @@ func TestRun_SkipsExcludedPaths(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	vs, err := Run(root, false)
+	vs, err := scanTOML(root, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -256,7 +256,7 @@ func TestRunVerbose(t *testing.T) {
 		t.Fatalf("seed toml: %v", err)
 	}
 
-	vs, err := Run(root, true)
+	vs, err := scanTOML(root, true)
 	if err != nil {
 		t.Fatalf("Run: %v", err)
 	}
@@ -273,7 +273,7 @@ func TestRunVerbose(t *testing.T) {
 
 func TestRunFilesystemFailuresAndSorting(t *testing.T) {
 	missing := filepath.Join(t.TempDir(), "missing")
-	if _, err := Run(missing, false); err == nil {
+	if _, err := scanTOML(missing, false); err == nil {
 		t.Fatal("missing root")
 	}
 	d := t.TempDir()
@@ -286,7 +286,7 @@ func TestRunFilesystemFailuresAndSorting(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(d, "plain.txt"), []byte("x"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	got, err := Run(d, true)
+	got, err := scanTOML(d, true)
 	if err != nil || len(got) != 2 || got[0].File > got[1].File {
 		t.Fatalf("got=%v err=%v", got, err)
 	}
@@ -297,7 +297,7 @@ func TestRunInjectedWalkerFailures(t *testing.T) {
 	t.Cleanup(func() { filepathWalkDir, filepathRel, tomlFileChecker = oldWalk, oldRel, oldTOML })
 	boom := errors.New("boom")
 	filepathWalkDir = func(_ string, fn fs.WalkDirFunc) error { return fn("x", nil, boom) }
-	if _, err := Run(".", false); !errors.Is(err, boom) {
+	if _, err := scanTOML(".", false); !errors.Is(err, boom) {
 		t.Fatalf("walk callback err = %v", err)
 	}
 	info, err := os.Stat(t.TempDir())
@@ -307,7 +307,7 @@ func TestRunInjectedWalkerFailures(t *testing.T) {
 	dir := fs.FileInfoToDirEntry(info)
 	filepathWalkDir = func(_ string, fn fs.WalkDirFunc) error { return fn("x", dir, nil) }
 	filepathRel = func(string, string) (string, error) { return "", boom }
-	if _, err := Run(".", false); !errors.Is(err, boom) {
+	if _, err := scanTOML(".", false); !errors.Is(err, boom) {
 		t.Fatalf("rel err = %v", err)
 	}
 	filepathRel = oldRel
@@ -322,11 +322,11 @@ func TestRunInjectedWalkerFailures(t *testing.T) {
 	file := fs.FileInfoToDirEntry(fileInfo)
 	filepathWalkDir = func(_ string, fn fs.WalkDirFunc) error { return fn(filePath, file, nil) }
 	tomlFileChecker = func(string, string) ([]Violation, error) { return nil, boom }
-	if _, err := Run(filepath.Dir(filePath), false); !errors.Is(err, boom) {
+	if _, err := scanTOML(filepath.Dir(filePath), false); !errors.Is(err, boom) {
 		t.Fatalf("toml err = %v", err)
 	}
 	filepathWalkDir = func(string, fs.WalkDirFunc) error { return boom }
-	if _, err := Run(".", false); !errors.Is(err, boom) {
+	if _, err := scanTOML(".", false); !errors.Is(err, boom) {
 		t.Fatalf("walk err = %v", err)
 	}
 }
@@ -347,14 +347,14 @@ func TestRunExcludedFileAndSameFileSort(t *testing.T) {
 	filepathRel = func(string, string) (string, error) { return "vendor/x.toml", nil }
 	called := false
 	tomlFileChecker = func(string, string) ([]Violation, error) { called = true; return nil, nil }
-	if _, err := Run(".", false); err != nil || called {
+	if _, err := scanTOML(".", false); err != nil || called {
 		t.Fatalf("excluded called=%v err=%v", called, err)
 	}
 	filepathRel = func(string, string) (string, error) { return "x.toml", nil }
 	tomlFileChecker = func(string, string) ([]Violation, error) {
 		return []Violation{{File: "x.toml", Line: 9}, {File: "x.toml", Line: 1}}, nil
 	}
-	got, err := Run(".", false)
+	got, err := scanTOML(".", false)
 	if err != nil || got[0].Line != 1 {
 		t.Fatalf("sort=%v err=%v", got, err)
 	}
@@ -375,8 +375,8 @@ func TestIsExcludedHiddenSegment(t *testing.T) {
 }
 
 func TestRunTOMLResultsAndMain(t *testing.T) {
-	oldAbs, oldRun, oldExit, oldArgs := filepathAbs, tomlRun, osExit, os.Args
-	t.Cleanup(func() { filepathAbs, tomlRun, osExit, os.Args = oldAbs, oldRun, oldExit, oldArgs })
+	oldAbs, oldRun := filepathAbs, tomlRun
+	t.Cleanup(func() { filepathAbs, tomlRun = oldAbs, oldRun })
 	var out, errOut bytes.Buffer
 	if got := runTOML([]string{"--bad"}, &out, &errOut); got != 2 {
 		t.Fatalf("flags = %d", got)
@@ -395,13 +395,9 @@ func TestRunTOMLResultsAndMain(t *testing.T) {
 		t.Fatalf("violation = %d %q", got, out.String())
 	}
 	tomlRun = func(string, bool) ([]Violation, error) { return nil, nil }
-	if got := runTOML(nil, &out, &errOut); got != 0 {
-		t.Fatalf("clean = %d", got)
-	}
-	os.Args = []string{"evener-tomlcheck"}
-	exit := -1
-	osExit = func(code int) { exit = code }
-	main()
+	out.Reset()
+	errOut.Reset()
+	exit := Run(nil, nil, &out, &errOut)
 	if exit != 0 {
 		t.Fatalf("exit = %d", exit)
 	}

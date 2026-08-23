@@ -13,7 +13,7 @@
 // A single key can opt out with a `# evener:naming-ignore` marker on the
 // immediately preceding line. Use sparingly — every opt-out should also
 // carry a comment explaining why.
-package main
+package tomlcheck
 
 import (
 	"flag"
@@ -54,13 +54,12 @@ var excludeSuffixes = []string{
 	"/.git/",
 }
 
-func main() {
-	osExit(runTOML(os.Args[1:], os.Stdout, os.Stderr))
+func Run(args []string, _ io.Reader, stdout, stderr io.Writer) int {
+	return runTOML(args, stdout, stderr)
 }
 
-var osExit = os.Exit
 var filepathAbs = filepath.Abs
-var tomlRun = Run
+var tomlRun = scanTOML
 var filepathWalkDir = filepath.WalkDir
 var filepathRel = filepath.Rel
 var tomlFileChecker = checkTOMLFile
@@ -70,7 +69,7 @@ func runTOML(args []string, stdout, stderr io.Writer) int {
 		root    string
 		verbose bool
 	)
-	fs := flag.NewFlagSet("evener-tomlcheck", flag.ContinueOnError)
+	fs := flag.NewFlagSet("evener tomlcheck", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	fs.StringVar(&root, "root", ".", "repo root to scan")
 	fs.BoolVar(&verbose, "v", false, "print scanned files")
@@ -98,9 +97,9 @@ func runTOML(args []string, stdout, stderr io.Writer) int {
 	return 0
 }
 
-// Run walks root and returns every TOML violation it finds. Exposed for
+// scanTOML walks root and returns every TOML violation it finds. Exposed for
 // tests.
-func Run(root string, verbose bool) ([]Violation, error) {
+func scanTOML(root string, verbose bool) ([]Violation, error) {
 	var out []Violation
 	err := filepathWalkDir(root, func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
