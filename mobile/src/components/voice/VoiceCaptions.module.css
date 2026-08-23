@@ -1,0 +1,50 @@
+/* VoiceCaptions — recognition text with throttled live region. */
+
+.captions {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-4);
+  width: 100%;
+  min-height: var(--tap-target);
+  padding: var(--space-12) var(--space-16);
+  text-align: center;
+}
+
+.visible {
+  margin: 0;
+  font-size: var(--type-base);
+  line-height: var(--type-leading);
+  color: var(--primary);
+  max-width: 32em;
+  overflow-wrap: anywhere;
+}
+
+/* Partial recognition is dimmed; final is clear. */
+.captions[data-tone="partial"] .visible {
+  color: var(--secondary);
+}
+
+.captions[data-tone="final"] .visible {
+  color: var(--primary);
+  font-weight: 500;
+}
+
+.captions[data-tone="idle"] .visible {
+  color: var(--secondary);
+  font-style: italic;
+}
+
+/* The announced region is visually hidden but present for assistive tech. */
+.announced {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
