@@ -26,6 +26,30 @@ func TestValidateRecordSchemaVersionError(t *testing.T) {
 	}
 }
 
+// TestValidateSettlementKindError covers the settlement kind validation error
+// (line 164-165).
+func TestValidateSettlementKindError(t *testing.T) {
+	r := APIAttemptGroupSettlement{Kind: "wrong"}
+	if err := r.validateRecord(DecodeStrict); err == nil {
+		t.Fatal("wrong settlement kind should error")
+	}
+}
+
+// TestValidateSettlementSchemaVersionError covers the settlement schema
+// version error (line 166-167).
+func TestValidateSettlementSchemaVersionError(t *testing.T) {
+	r := APIAttemptGroupSettlement{
+		Kind:            settlementRecordKind,
+		SchemaVersion:   99,
+		AttemptGroupID:  "ag_test",
+		FinalAttemptCount: 0,
+		Outcome:         AttemptSuccess,
+	}
+	if err := r.validateRecord(DecodeStrict); err == nil {
+		t.Fatal("wrong settlement schema version should error")
+	}
+}
+
 // TestValidateRecordNegativeStatusCode covers the negative status code path
 // (lines 193-194).
 func TestValidateRecordNegativeStatusCode(t *testing.T) {
@@ -129,6 +153,7 @@ func validRecordForValidation(t *testing.T) APIAttemptRecord {
 		Timestamp:        time.Unix(1, 0).UTC(),
 		ProviderInstance: "test",
 		RequestModel:     "model",
+		Outcome:          AttemptProviderReject,
 		Request: APIAttemptRequest{
 			Method:   "POST",
 			Endpoint: "https://provider.test",
