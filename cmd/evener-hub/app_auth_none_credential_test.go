@@ -1,4 +1,4 @@
-package main
+package hub
 
 // A provider whose only auth mode is "none" has no key to resolve, so an empty
 // resolution is not a missing credential. credentials.Store.List has carried

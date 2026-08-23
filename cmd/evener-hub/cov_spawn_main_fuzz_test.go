@@ -1,4 +1,4 @@
-package main
+package hub
 
 import (
 	"bytes"
@@ -144,7 +144,7 @@ func FuzzSpawnMainHelpers(f *testing.F) {
 			if got := resolveEvenerBinaryPath("", "/x/evener-hub", func(string) (string, error) { return "/path/evener", nil }); got == "" {
 				t.Fatal("binary path unresolved")
 			}
-			_ = resolveEvenerBinaryPath("", "evener-hub", func(string) (string, error) { return "", errors.New("missing") })
+			_ = resolveEvenerBinaryPath("", "evener", func(string) (string, error) { return "", errors.New("missing") })
 			if envToMap([]string{"A=1", "bad", "A=2"})["A"] != "2" {
 				t.Fatal("environment map did not keep last value")
 			}

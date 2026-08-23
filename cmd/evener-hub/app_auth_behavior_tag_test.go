@@ -1,4 +1,4 @@
-package main
+package hub
 
 // How an instance authenticates is decided by its behavior tag —
 // providercfg.BehaviorTag, "the internal behavior identity every

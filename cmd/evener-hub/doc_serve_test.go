@@ -1,4 +1,4 @@
-package main
+package hub
 
 // Tests for the /doc/file document-pane route. The route resolves a LOCAL
 // session's cwd and serves a read-only view of a file inside that cwd:

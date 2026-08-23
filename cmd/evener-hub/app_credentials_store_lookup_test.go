@@ -1,4 +1,4 @@
-package main
+package hub
 
 // evener/auth/test decides whether to probe at all by asking whether the instance
 // has an effective credential. There is exactly one right answer to that

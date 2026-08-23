@@ -1,4 +1,4 @@
-package main
+package hub
 
 // Tests for POST /s/<id>/promote-queued (issue #22): the hub REST fallback
 // for the queue-preview row's promote action. The hub relays the index to

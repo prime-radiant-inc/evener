@@ -1,6 +1,6 @@
 //go:build evenerfuzz
 
-package main
+package hub
 
 import (
 	"bytes"
