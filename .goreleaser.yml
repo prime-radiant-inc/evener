@@ -1,16 +1,18 @@
 version: 2
 
-# goreleaser owns the release pipeline: the five binaries, both supported
-# targets, the archives, and the checksums. The artifact contract install.sh
-# and the snapshot channel consume is unchanged — evener_<os>_<arch>.tar.gz,
-# directory-wrapped, the five binaries at the root. `files: []` does not mean
+# goreleaser owns the release pipeline: the single evener binary (all former
+# evener-<x> binaries are now subcommands), both supported targets, the
+# archive, and the checksums. The artifact contract install.sh and the
+# snapshot channel consume is unchanged — evener_<os>_<arch>.tar.gz,
+# directory-wrapped, the evener binary at the root. `files: []` does not mean
 # an empty file list: goreleaser falls back to its defaults there, so the
-# archives also carry README.md and LICENSE-kilroy. Intentional; install.sh
-# reads the five binaries by name and ignores the rest.
+# archive also carries README.md and LICENSE-kilroy. Intentional; install.sh
+# reads the binary by name and ignores the rest.
 
 before:
   hooks:
-    # evener-hub embeds the SPA; the archive must never ship a stale one.
+    # evener embeds the SPA via the hub subcommand; the archive must never
+    # ship a stale one.
     - make build-web
 
 builds:
@@ -34,48 +36,9 @@ builds:
       # is the intended local value (buildinfo.BuildChannel() reads it as "dev").
       - -X primeradiant.com/evener/buildinfo.GitSHA={{ .ShortCommit }} -X primeradiant.com/evener/buildinfo.GitDirty={{ .IsGitDirty }} -X primeradiant.com/evener/buildinfo.BuildTime={{ .Date }} -X primeradiant.com/evener/buildinfo.Channel={{ envOrDefault "BUILD_CHANNEL" "" }}
 
-  - id: evener-hub
-    main: ./cmd/evener-hub/
-    binary: evener-hub
-    env:
-      - CGO_ENABLED=0
-    goos: [linux, darwin]
-    goarch: [amd64, arm64]
-    ignore:
-      - goos: linux
-        goarch: arm64
-      - goos: darwin
-        goarch: amd64
-
-  - id: evener-tui
-    main: ./cmd/evener-tui/
-    binary: evener-tui
-    env:
-      - CGO_ENABLED=0
-    goos: [linux, darwin]
-    goarch: [amd64, arm64]
-    ignore:
-      - goos: linux
-        goarch: arm64
-      - goos: darwin
-        goarch: amd64
-
-  - id: evener-doctor
-    main: ./cmd/evener-doctor/
-    binary: evener-doctor
-    env:
-      - CGO_ENABLED=0
-    goos: [linux, darwin]
-    goarch: [amd64, arm64]
-    ignore:
-      - goos: linux
-        goarch: arm64
-      - goos: darwin
-        goarch: amd64
-
-  - id: evener-migrate
-    main: ./cmd/evener-migrate/
-    binary: evener-migrate
+  - id: evener-dev
+    main: ./cmd/evener-dev/bin/
+    binary: evener-dev
     env:
       - CGO_ENABLED=0
     goos: [linux, darwin]
@@ -88,6 +51,9 @@ builds:
 
 archives:
   - id: evener
+    ids:
+      - evener
+      - evener-dev
     formats: ["tar.gz"]
     name_template: "evener_{{ .Os }}_{{ .Arch }}"
     wrap_in_directory: true
