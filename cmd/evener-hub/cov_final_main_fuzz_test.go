@@ -50,7 +50,7 @@ func FuzzFinalMainBootstrap(f *testing.F) {
 		}
 		if mode == 6 {
 			oldExecutable := hubExecutable
-				hubExecutable = func() (string, error) { return filepath.Join(root, "evener"), nil }
+			hubExecutable = func() (string, error) { return filepath.Join(root, "evener"), nil }
 			t.Cleanup(func() { hubExecutable = oldExecutable })
 			if err := os.WriteFile(filepath.Join(root, "evener"), []byte("#!/bin/sh\n"), 0o755); err != nil {
 				t.Fatal(err)
