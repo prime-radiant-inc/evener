@@ -160,8 +160,9 @@ export function OnboardingScreen({
       // even if the haptic call rejects.
       void services.native.hapticPerform("notificationSuccess").catch(() => {});
       onConnected?.();
-    } catch {
-      setConfirmError("pairing failed");
+    } catch (cause) {
+      const message = cause instanceof Error ? cause.message : String(cause);
+      setConfirmError(message);
       setPhase("error");
     } finally {
       setPendingSave(false);
