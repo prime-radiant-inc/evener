@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"primeradiant.com/evener/agent/events"
+	"primeradiant.com/evener/agent/internal/cheapmodel"
 	"primeradiant.com/evener/agent/internal/sessionlog"
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/llm"
@@ -42,7 +43,7 @@ func TestOODAStrategy_Tools_InheritsFromSessionLogStrategy(t *testing.T) {
 func TestOODAStrategy_ManageContext_NoOrientMessageWhenLogEmpty(t *testing.T) {
 	client := llm.NewClient()
 	profile := testOpenAIProfileWithContextWindow(1000)
-	cm := NewManager(profile, client)
+	cm := NewManager(profile, client, cheapmodel.New(client))
 
 	// Set thresholds high so no compaction occurs.
 	cm.ObservationMaskThreshold = 0.99
@@ -82,7 +83,7 @@ func TestOODAStrategy_ManageContext_NoOrientMessageWhenLogEmpty(t *testing.T) {
 func TestOODAStrategy_ManageContext_InjectsOrientMessageWhenLogHasEntries(t *testing.T) {
 	client := llm.NewClient()
 	profile := testOpenAIProfileWithContextWindow(1000)
-	cm := NewManager(profile, client)
+	cm := NewManager(profile, client, cheapmodel.New(client))
 
 	// Set thresholds high so no compaction occurs.
 	cm.ObservationMaskThreshold = 0.99
@@ -157,7 +158,7 @@ func TestOODAStrategy_ManageContext_InjectsOrientMessageWhenLogHasEntries(t *tes
 func TestOODAStrategy_ManageContext_OrientTextUsesTranscriptTools(t *testing.T) {
 	client := llm.NewClient()
 	profile := testOpenAIProfileWithContextWindow(1000)
-	cm := NewManager(profile, client)
+	cm := NewManager(profile, client, cheapmodel.New(client))
 
 	cm.ObservationMaskThreshold = 0.99
 	cm.ThinkingClearThreshold = 0.99
@@ -209,7 +210,7 @@ func TestOODAStrategy_ManageContext_OrientTextUsesTranscriptTools(t *testing.T) 
 func TestOODAStrategy_ManageContext_TruncatesVeryLargeLog(t *testing.T) {
 	client := llm.NewClient()
 	profile := testOpenAIProfileWithContextWindow(1000)
-	cm := NewManager(profile, client)
+	cm := NewManager(profile, client, cheapmodel.New(client))
 
 	// Set thresholds high so no compaction occurs.
 	cm.ObservationMaskThreshold = 0.99
@@ -269,7 +270,7 @@ func TestOODAStrategy_ManageContext_TruncatesVeryLargeLog(t *testing.T) {
 func TestOODAStrategy_ManageContext_AppliesCompactionLayers(t *testing.T) {
 	client := llm.NewClient()
 	profile := testOpenAIProfileWithContextWindow(1000)
-	cm := NewManager(profile, client)
+	cm := NewManager(profile, client, cheapmodel.New(client))
 
 	// Set low thresholds to trigger compaction.
 	cm.ObservationMaskThreshold = 0.05
@@ -379,7 +380,7 @@ func TestOODAStrategy_AfterAction_InheritsFromSessionLogStrategy(t *testing.T) {
 
 	ooda := &OODAStrategy{
 		SessionLogStrategy: &SessionLogStrategy{
-			cm:      NewManager(profile, client),
+			cm:      NewManager(profile, client, cheapmodel.New(client)),
 			log:     mustNewSessionLog(t, logPath),
 			session: &fakeStrategyHost{profile: profile},
 		},

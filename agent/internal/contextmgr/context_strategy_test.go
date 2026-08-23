@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"primeradiant.com/evener/agent/events"
+	"primeradiant.com/evener/agent/internal/cheapmodel"
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/llm"
 )
@@ -32,7 +33,7 @@ func TestCompactStrategyManageContext_Delegation(t *testing.T) {
 	// the 80% checkpoint threshold.
 	client := llm.NewClient()
 	profile := testProfile("openai", "test", 500)
-	cm := NewManager(profile, client)
+	cm := NewManager(profile, client, cheapmodel.New(client))
 	cm.PreserveRecentTurns = 2
 
 	cs := NewCompactStrategy(cm)

@@ -241,8 +241,10 @@ func extractOriginalPromptLine(text, prefix string) string {
 }
 
 // AfterAction forks a summarization of the recent turns and appends the
-// result to the session log. Errors from the LLM are non-fatal.
-func (s *SessionLogStrategy) AfterAction(ctx context.Context, history []schema.Turn, client *llm.Client) error {
+// result to the session log. Errors from the LLM are non-fatal. The fork runs
+// on the manager's shared cheap caller, not on the client the host passes, so
+// that a cheap model the provider refuses is learned once per session.
+func (s *SessionLogStrategy) AfterAction(ctx context.Context, history []schema.Turn, _ *llm.Client) error {
 	if s.session == nil || s.session.Profile() == nil {
 		return nil
 	}
@@ -253,7 +255,7 @@ func (s *SessionLogStrategy) AfterAction(ctx context.Context, history []schema.T
 	if len(recent) > 10 {
 		recent = recent[len(recent)-10:]
 	}
-	entry, err := forkSummarize(ctx, client, s.session.Profile(), recent, len(history))
+	entry, err := forkSummarize(ctx, s.cm.cheap, s.session.Profile(), recent, len(history))
 	if err != nil {
 		return nil //nolint:nilerr // fork summarization is best-effort; failure must not fail the session
 	}

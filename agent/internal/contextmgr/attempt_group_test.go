@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"primeradiant.com/evener/agent/internal/cheapmodel"
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/llm"
 	apilog "primeradiant.com/evener/llm/apilog"
@@ -68,7 +69,7 @@ func TestElicitNoteOwnsOneLogicalAttemptGroupAcrossRouteFallback(t *testing.T) {
 		&contextManagerAttemptAdapter{name: "anthropic", err: cheapErr},
 		&contextManagerAttemptAdapter{name: "openai", text: "- survived"},
 	)
-	cm := NewManager(WithCheapModel(NewOpenAIProfile("gpt-5.2"), "anthropic/claude-haiku-4-5-20251001"), client)
+	cm := NewManager(WithCheapModel(NewOpenAIProfile("gpt-5.2"), "anthropic/claude-haiku-4-5-20251001"), client, cheapmodel.New(client))
 
 	got, err := cm.ElicitNote(context.Background(), []schema.Turn{
 		{Kind: schema.TurnUserInput, Message: llm.User("preserve this")},
@@ -89,7 +90,7 @@ func TestSummarizeWithLLMOwnsOneLogicalAttemptGroupWhenAllRoutesFail(t *testing.
 		&contextManagerAttemptAdapter{name: "anthropic", err: cheapErr},
 		&contextManagerAttemptAdapter{name: "openai", err: activeErr},
 	)
-	cm := NewManager(WithCheapModel(NewOpenAIProfile("gpt-5.2"), "anthropic/claude-haiku-4-5-20251001"), client)
+	cm := NewManager(WithCheapModel(NewOpenAIProfile("gpt-5.2"), "anthropic/claude-haiku-4-5-20251001"), client, cheapmodel.New(client))
 	history := []schema.Turn{
 		{Kind: schema.TurnUserInput, Message: llm.User("task")},
 		{Kind: schema.TurnAssistant, Message: llm.Assistant("old")},

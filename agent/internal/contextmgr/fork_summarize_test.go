@@ -6,6 +6,7 @@ import (
 	"errors"
 	"testing"
 
+	"primeradiant.com/evener/agent/internal/cheapmodel"
 	"primeradiant.com/evener/agent/internal/sessionlog"
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/llm"
@@ -45,7 +46,7 @@ func TestForkSummarize_RoutesToCheapProvider(t *testing.T) {
 		{Kind: schema.TurnToolResults, Message: llm.ToolResultNamed("c1", "shell", "PASS", false)},
 	}
 
-	if _, err := forkSummarize(context.Background(), client, profile, turns, 1); err != nil {
+	if _, err := forkSummarize(context.Background(), cheapmodel.New(client), profile, turns, 1); err != nil {
 		t.Fatalf("forkSummarize: %v", err)
 	}
 	if cheapAdapter.lastReq.Provider != "anthropic" {
@@ -86,7 +87,7 @@ func TestForkSummarize_Success(t *testing.T) {
 		{Kind: schema.TurnToolResults, Message: llm.ToolResultNamed("c1", "shell", "PASS", false)},
 	}
 
-	got, err := forkSummarize(context.Background(), client, profile, turns, 7)
+	got, err := forkSummarize(context.Background(), cheapmodel.New(client), profile, turns, 7)
 	if err != nil {
 		t.Fatalf("forkSummarize: %v", err)
 	}
@@ -142,7 +143,7 @@ func TestForkSummarize_Failure(t *testing.T) {
 		{Kind: schema.TurnToolResults, Message: llm.ToolResultNamed("c1", "shell", "./main.go:42:5: undefined: foo", true)},
 	}
 
-	got, err := forkSummarize(context.Background(), client, profile, turns, 12)
+	got, err := forkSummarize(context.Background(), cheapmodel.New(client), profile, turns, 12)
 	if err != nil {
 		t.Fatalf("forkSummarize: %v", err)
 	}
@@ -176,7 +177,7 @@ func TestForkSummarize_MalformedJSON(t *testing.T) {
 		{Kind: schema.TurnAssistant, Message: llm.Assistant("I'll read the file")},
 	}
 
-	_, err := forkSummarize(context.Background(), client, profile, turns, 1)
+	_, err := forkSummarize(context.Background(), cheapmodel.New(client), profile, turns, 1)
 	if err == nil {
 		t.Fatal("expected error for malformed JSON response, got nil")
 	}
@@ -214,7 +215,7 @@ func TestForkSummarize_ExtractsAction(t *testing.T) {
 		{Kind: schema.TurnToolResults, Message: llm.ToolResultNamed("c1", "edit_file", "OK", false)},
 	}
 
-	got, err := forkSummarize(context.Background(), client, profile, turns, 3)
+	got, err := forkSummarize(context.Background(), cheapmodel.New(client), profile, turns, 3)
 	if err != nil {
 		t.Fatalf("forkSummarize: %v", err)
 	}
@@ -252,7 +253,7 @@ func TestForkSummarize_UsesCheapModel(t *testing.T) {
 		{Kind: schema.TurnAssistant, Message: llm.Assistant("done")},
 	}
 
-	_, err := forkSummarize(context.Background(), client, profile, turns, 1)
+	_, err := forkSummarize(context.Background(), cheapmodel.New(client), profile, turns, 1)
 	if err != nil {
 		t.Fatalf("forkSummarize: %v", err)
 	}
@@ -273,7 +274,7 @@ func TestForkSummarize_LLMError(t *testing.T) {
 		{Kind: schema.TurnAssistant, Message: llm.Assistant("hello")},
 	}
 
-	_, err := forkSummarize(context.Background(), client, profile, turns, 1)
+	_, err := forkSummarize(context.Background(), cheapmodel.New(client), profile, turns, 1)
 	if err == nil {
 		t.Fatal("expected error when LLM returns error, got nil")
 	}

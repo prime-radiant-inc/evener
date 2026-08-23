@@ -9,6 +9,7 @@ import (
 
 	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/agent/internal/agenttest"
+	"primeradiant.com/evener/agent/internal/cheapmodel"
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/fuzz/fault"
 	"primeradiant.com/evener/llm"
@@ -351,7 +352,7 @@ func FuzzCtxmgrSummarizeSteered(f *testing.F) {
 				profile = WithCheapModel(profile, "cheap-model")
 			}
 			client := ctxmgr_scriptedClient(profile.ID(), "handoff summary body", faultPlan)
-			cm := NewManager(profile, client)
+			cm := NewManager(profile, client, cheapmodel.New(client))
 
 			result, err := cm.summarizeWithLLMSteered(context.Background(), history, preserve, instructions)
 			return result, history, err
@@ -443,7 +444,7 @@ func FuzzCtxmgrCheckpointPredManageContext(f *testing.F) {
 
 			profile := testOpenAIProfileWithContextWindow(1000)
 			client := ctxmgr_scriptedClient(profile.ID(), "predicted checkpoint body", faultPlan)
-			cm := NewManager(profile, client)
+			cm := NewManager(profile, client, cheapmodel.New(client))
 			ctxmgr_manageThresholds(cm, thrSel, preserveSel)
 
 			s := NewCheckpointPredStrategy(cm)
@@ -488,7 +489,7 @@ func FuzzCtxmgrSessionLogManageContext(f *testing.F) {
 
 			profile := testOpenAIProfileWithContextWindow(1000)
 			client := ctxmgr_scriptedClient(profile.ID(), "session summary body", faultPlan)
-			cm := NewManager(profile, client)
+			cm := NewManager(profile, client, cheapmodel.New(client))
 			ctxmgr_manageThresholds(cm, thrSel, preserveSel)
 
 			host := &fakeStrategyHost{stateDir: t.TempDir(), id: "CTXMGR-FUZZ", profile: profile}

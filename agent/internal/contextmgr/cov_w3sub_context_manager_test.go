@@ -6,6 +6,7 @@ import (
 	"strings"
 	"testing"
 
+	"primeradiant.com/evener/agent/internal/cheapmodel"
 	"primeradiant.com/evener/agent/provider"
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/llm"
@@ -40,7 +41,7 @@ func TestW3Sub_SummarizeSteered_DigestArms(t *testing.T) {
 
 	profile := testOpenAIProfileWithContextWindow(1000)
 	client := ctxmgr_scriptedClient(profile.ID(), "handoff summary body", nil)
-	cm := NewManager(profile, client)
+	cm := NewManager(profile, client, cheapmodel.New(client))
 
 	result, err := cm.summarizeWithLLMSteered(context.Background(), history, 1, "keep the plan")
 	if err != nil {
@@ -72,7 +73,7 @@ func TestW3Sub_SummarizeSteered_HistoryCharCap(t *testing.T) {
 
 	profile := testOpenAIProfileWithContextWindow(1000)
 	client := ctxmgr_scriptedClient(profile.ID(), "summary", nil)
-	cm := NewManager(profile, client)
+	cm := NewManager(profile, client, cheapmodel.New(client))
 
 	result, err := cm.summarizeWithLLMSteered(context.Background(), history, 1, "")
 	if err != nil {
@@ -93,7 +94,7 @@ func TestW3Sub_SummarizeSteered_NoRoutes(t *testing.T) {
 	}
 	profile := provider.NewOpenAIProfile("") // empty model -> no routes
 	client := ctxmgr_scriptedClient("openai", "unused", nil)
-	cm := NewManager(profile, client)
+	cm := NewManager(profile, client, cheapmodel.New(client))
 
 	if _, err := cm.summarizeWithLLMSteered(context.Background(), history, 1, ""); err == nil {
 		t.Fatalf("expected an empty-model error")
@@ -105,7 +106,7 @@ func TestW3Sub_SummarizeSteered_NoRoutes(t *testing.T) {
 // and a subsequent AddUsage accumulates on top of the seed rather than
 // replacing it.
 func TestSetCumulativeUsage(t *testing.T) {
-	cm := NewManager(NewOpenAIProfile("gpt-5.2"), nil)
+	cm := NewManager(NewOpenAIProfile("gpt-5.2"), nil, cheapmodel.New(nil))
 
 	cm.SetCumulativeUsage(llm.Usage{InputTokens: 10, OutputTokens: 20})
 	got := cm.CumulativeUsage()

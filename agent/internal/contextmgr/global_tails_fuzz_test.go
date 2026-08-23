@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	"primeradiant.com/evener/agent/internal/agenttest"
+	"primeradiant.com/evener/agent/internal/cheapmodel"
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/llm"
 )
@@ -109,7 +110,7 @@ func gctManagerTails(t *testing.T, token string) {
 		Provider:       profile.ID(),
 		FaultResponder: func(llm.Request) error { return errors.New("scripted failure") },
 	})
-	cm := NewManager(profile, failing)
+	cm := NewManager(profile, failing, cheapmodel.New(failing))
 	if _, err := cm.ElicitNote(ctx, []schema.Turn{schema.NewTurn(schema.TurnUserInput, llm.User(token))}); err == nil {
 		t.Fatal("elicitation failure was swallowed")
 	}
@@ -118,7 +119,7 @@ func gctManagerTails(t *testing.T, token string) {
 	nonFallback.Register(&agenttest.ScriptedAdapter{Provider: profile.ID(), FaultResponder: func(llm.Request) error {
 		return errors.New("non-fallback")
 	}})
-	if _, err := NewManager(profile, nonFallback).ElicitNote(ctx, nil); err == nil {
+	if _, err := NewManager(profile, nonFallback, cheapmodel.New(nonFallback)).ElicitNote(ctx, nil); err == nil {
 		t.Fatal("non-fallback elicitation failure was swallowed")
 	}
 
@@ -156,7 +157,7 @@ func gctStrategyTails(t *testing.T, token string) {
 		schema.NewTurn(schema.TurnUserInput, llm.User("recent")),
 	}
 
-	cpCM := NewManager(profile, client)
+	cpCM := NewManager(profile, client, cheapmodel.New(client))
 	cpCM.PreserveRecentTurns = 1
 	cpCM.ObservationMaskThreshold = 0
 	cpCM.ThinkingClearThreshold = 0
@@ -169,7 +170,7 @@ func gctStrategyTails(t *testing.T, token string) {
 		t.Fatalf("checkpoint strategy callbacks=%d err=%v", cpCallbacks, err)
 	}
 
-	obsCM := NewManager(profile, nil)
+	obsCM := NewManager(profile, nil, cheapmodel.New(nil))
 	obsCM.PreserveRecentTurns = 1
 	obsCM.ObservationMaskThreshold = 0
 	obsCM.CheckpointThreshold = 0
@@ -180,20 +181,21 @@ func gctStrategyTails(t *testing.T, token string) {
 		t.Fatalf("obs strategy callbacks=%d err=%v", obsCallbacks, err)
 	}
 
-	rd := NewRecursiveDistillStrategy(NewManager(profile, client))
+	rd := NewRecursiveDistillStrategy(NewManager(profile, client, cheapmodel.New(client)))
 	rd.microSummaries = []string{"micro"}
-	if _, err := rd.microSummarize(ctx, client, append(longHistory, schema.NewTurn(schema.TurnToolResults, llm.ToolResultNamed("id", "shell", strings.Repeat("x", 101), false)))); err != nil {
+	if _, err := rd.microSummarize(ctx, append(longHistory, schema.NewTurn(schema.TurnToolResults, llm.ToolResultNamed("id", "shell", strings.Repeat("x", 101), false)))); err != nil {
 		t.Fatalf("micro summarize: %v", err)
 	}
-	if _, err := rd.macroSummarize(ctx, client, []string{strings.Repeat("m", 501)}); err != nil {
+	if _, err := rd.macroSummarize(ctx, []string{strings.Repeat("m", 501)}); err != nil {
 		t.Fatalf("macro summarize: %v", err)
 	}
 	failing := llm.NewClient()
 	failing.Register(&agenttest.ScriptedAdapter{Provider: profile.ID(), FaultResponder: func(llm.Request) error { return errors.New("distill failure") }})
-	if _, err := rd.microSummarize(ctx, failing, longHistory); err == nil {
+	failingRD := NewRecursiveDistillStrategy(NewManager(profile, failing, cheapmodel.New(failing)))
+	if _, err := failingRD.microSummarize(ctx, longHistory); err == nil {
 		t.Fatal("micro summarization failure was swallowed")
 	}
-	if _, err := rd.macroSummarize(ctx, failing, []string{"micro"}); err == nil {
+	if _, err := failingRD.macroSummarize(ctx, []string{"micro"}); err == nil {
 		t.Fatal("macro summarization failure was swallowed")
 	}
 
@@ -201,13 +203,13 @@ func gctStrategyTails(t *testing.T, token string) {
 	for i := 0; i < 110; i++ {
 		largePrediction = append(largePrediction, schema.NewTurn(schema.TurnAssistant, llm.Assistant(strings.Repeat("p", 300))))
 	}
-	if _, err := NewCheckpointPredStrategy(NewManager(profile, client)).predictiveCheckpoint(ctx, largePrediction, 0); err != nil {
+	if _, err := NewCheckpointPredStrategy(NewManager(profile, client, cheapmodel.New(client))).predictiveCheckpoint(ctx, largePrediction, 0); err != nil {
 		t.Fatalf("large predictive checkpoint: %v", err)
 	}
 	aggressiveMaskObservations([]schema.Turn{schema.NewTurn(schema.TurnToolResults, llm.ToolResultNamed("error", "shell", "keep", true))}, 0)
 
 	goodHost := &fakeStrategyHost{stateDir: t.TempDir(), id: "good", profile: profile}
-	sls, err := NewSessionLogStrategy(NewManager(profile, client), goodHost)
+	sls, err := NewSessionLogStrategy(NewManager(profile, client, cheapmodel.New(client)), goodHost)
 	if err != nil {
 		t.Fatalf("new session-log strategy: %v", err)
 	}
@@ -240,10 +242,10 @@ func gctStrategyTails(t *testing.T, token string) {
 		t.Fatalf("create unreadable session log: %v", err)
 	}
 	badHost := &fakeStrategyHost{stateDir: blockedRoot, id: "child", profile: profile}
-	if _, err := NewSessionLogStrategy(NewManager(profile, client), badHost); err == nil {
+	if _, err := NewSessionLogStrategy(NewManager(profile, client, cheapmodel.New(client)), badHost); err == nil {
 		t.Fatal("invalid nested session log path unexpectedly succeeded")
 	}
-	if _, err := NewOODAStrategy(NewManager(profile, client), badHost); err == nil {
+	if _, err := NewOODAStrategy(NewManager(profile, client, cheapmodel.New(client)), badHost); err == nil {
 		t.Fatal("invalid OODA session log path unexpectedly succeeded")
 	}
 
@@ -252,7 +254,7 @@ func gctStrategyTails(t *testing.T, token string) {
 		t.Fatalf("create append-blocked root: %v", err)
 	}
 	appendHost := &fakeStrategyHost{stateDir: appendRoot, id: "child", profile: profile}
-	appendSLS, err := NewSessionLogStrategy(NewManager(profile, client), appendHost)
+	appendSLS, err := NewSessionLogStrategy(NewManager(profile, client, cheapmodel.New(client)), appendHost)
 	if err != nil {
 		t.Fatalf("construct append-failing session log: %v", err)
 	}

@@ -35,6 +35,7 @@ import (
 	"testing"
 	"time"
 
+	"primeradiant.com/evener/agent/internal/cheapmodel"
 	"primeradiant.com/evener/agent/provider"
 	"primeradiant.com/evener/envvars"
 	"primeradiant.com/evener/llm"
@@ -239,7 +240,7 @@ func managerForModel(t *testing.T, client *llm.Client, cfg providercfg.Config, m
 	if err != nil {
 		t.Fatalf("ResolveProfileFromConfig openai/%s: %v", model, err)
 	}
-	return NewManager(prof, client)
+	return NewManager(prof, client, cheapmodel.New(client))
 }
 
 // retention returns the fraction of the case's facts present in out.

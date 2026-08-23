@@ -651,19 +651,6 @@ func (p *Profile) CrossProviderRef(ref string) bool {
 	return decidePrefixAction(p.behaviorTag, p.id, prefix) == prefixActionSwitch
 }
 
-// WithCommunicateOverridesFrom carries forward caller-applied tool-schema
-// overrides from original onto p, a freshly-rebuilt profile. The constructor for
-// the new profile/model handles model-derived state (context window, effort
-// levels, providerOpts, the new provider's default toolset); this layers caller
-// modifications back on top so WithCommunicateOutputSchema / WithAllowedDecisions
-// overrides survive both same-provider WithModel rebuilds AND cross-provider
-// switches performed by a resolver.
-//
-// Only the "communicate" tool is preserved — both With* helpers modify that tool
-// exclusively. Other tools recompute from the new constructor so the new
-// provider's defaults (toolNameMap, etc.) take effect.
-//
-// p is returned unchanged when either profile is nil.
 // withCheapModelFrom carries the cheap-model routing (set via WithCheapModel)
 // from original onto p. A constructor rebuild resets these to empty, so a
 // rebuild-based WithModel must restore them or side calls (naming, summarization,

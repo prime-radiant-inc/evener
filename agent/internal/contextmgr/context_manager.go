@@ -17,6 +17,7 @@ import (
 	"sync"
 
 	"primeradiant.com/evener/agent/events"
+	"primeradiant.com/evener/agent/internal/cheapmodel"
 	"primeradiant.com/evener/agent/provider"
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/llm"
@@ -72,6 +73,7 @@ func WithCompactionTurnCallback(ctx context.Context, callback func(schema.Turn))
 type Manager struct {
 	profile  *provider.Profile
 	client   *llm.Client
+	cheap    *cheapmodel.Caller
 	cumUsage llm.Usage
 	mu       sync.Mutex
 
@@ -120,11 +122,15 @@ func (cm *Manager) handleCompactionTurn(ctx context.Context, turn schema.Turn) {
 	}
 }
 
-// NewManager creates a Manager with default thresholds.
-func NewManager(profile *provider.Profile, client *llm.Client) *Manager {
+// NewManager creates a Manager with default thresholds. cheap is the session's
+// auxiliary caller; it must be the one the rest of the session shares, so that
+// a model the provider refuses is learned once for the whole session rather
+// than once per compaction layer.
+func NewManager(profile *provider.Profile, client *llm.Client, cheap *cheapmodel.Caller) *Manager {
 	return &Manager{
 		profile:                  profile,
 		client:                   client,
+		cheap:                    cheap,
 		ObservationMaskThreshold: 0.60,
 		ThinkingClearThreshold:   0.70,
 		WarnThreshold:            0.75,
@@ -132,6 +138,10 @@ func NewManager(profile *provider.Profile, client *llm.Client) *Manager {
 		SummarizeThreshold:       0.95,
 		PreserveRecentTurns:      6,
 	}
+}
+
+func (cm *Manager) completeCheap(ctx context.Context, req llm.Request) (llm.Response, error) {
+	return cm.cheap.Complete(ctx, cm.currentProfile(), req)
 }
 
 func (cm *Manager) resultToolName() string {
@@ -1087,6 +1097,31 @@ func shouldFallbackSummarizationModel(ctx context.Context, err error) bool {
 	}
 }
 
+// completeSummarization runs prompt on the summarizer's routes. The cheap
+// caller owns the first rung — it picks the configured cheap model, or the
+// session model when none is configured, and handles a refused cheap model
+// itself. This adds the second rung: summarization treats a wider class of
+// failures than a model refusal as worth another model, and retries on the
+// session model — but only when the cheap caller has not already run it.
+func (cm *Manager) completeSummarization(ctx context.Context, profile *provider.Profile, prompt string) (llm.Response, error) {
+	routes := summarizationModels(profile)
+	if len(routes) == 0 {
+		return llm.Response{}, errors.New("summarization model is empty")
+	}
+	req := llm.Request{Messages: []llm.Message{llm.User(prompt)}}
+	callCtx, attemptGroupScope := llm.BeginAPIAttemptGroupScope(ctx)
+	resp, ranSessionModel, err := cm.cheap.CompleteConfigured(callCtx, profile, req)
+	if err != nil && !ranSessionModel && len(routes) > 1 && shouldFallbackSummarizationModel(ctx, err) {
+		// More than one route means the second is the session model, distinct
+		// from the configured cheap one; the caller ran only the cheap one.
+		sessionRoute := routes[len(routes)-1]
+		req.Provider, req.Model = sessionRoute.provider, sessionRoute.model
+		resp, err = cm.client.Complete(callCtx, req)
+	}
+	attemptGroupScope.SettleResult(err)
+	return resp, err
+}
+
 // defaultSummaryPrefix is the instruction block used when no caller instructions
 // are provided. It mandates seven specific sections and directs the LLM to
 // err on the side of verbosity.
@@ -1181,31 +1216,13 @@ func (cm *Manager) ElicitNote(ctx context.Context, history []schema.Turn) (strin
 		return "", errors.New("note elicitation requires an LLM client")
 	}
 	prof := cm.currentProfile()
-	routes := summarizationModels(prof)
-	if len(routes) == 0 {
+	if len(summarizationModels(prof)) == 0 {
 		return "", errors.New("no model available for note elicitation")
 	}
 	prompt := noteElicitationPrompt + "\n\n--- CONVERSATION SO FAR ---\n" + renderHistoryForElicit(history, noteElicitChars)
-	var resp llm.Response
-	var lastErr error
-	callCtx, attemptGroupScope := llm.BeginAPIAttemptGroupScope(ctx)
-	for _, route := range routes {
-		req := llm.Request{
-			Model:    route.model,
-			Provider: route.provider,
-			Messages: []llm.Message{llm.User(prompt)},
-		}
-		resp, lastErr = cm.client.Complete(callCtx, req)
-		if lastErr == nil {
-			break
-		}
-		if route != routes[len(routes)-1] && !shouldFallbackSummarizationModel(ctx, lastErr) {
-			break
-		}
-	}
-	attemptGroupScope.SettleResult(lastErr)
-	if lastErr != nil {
-		return "", lastErr
+	resp, err := cm.completeSummarization(ctx, prof, prompt)
+	if err != nil {
+		return "", err
 	}
 	return strings.TrimSpace(resp.Text()), nil
 }
@@ -1376,30 +1393,9 @@ func (cm *Manager) summarizeWithLLMSteered(ctx context.Context, history []schema
 	prompt := buildSummaryPrompt(b.String(), instructions)
 
 	sumProfile := cm.currentProfile()
-	routes := summarizationModels(sumProfile)
-	if len(routes) == 0 {
-		return nil, errors.New("summarization model is empty")
-	}
-	var resp llm.Response
-	var lastErr error
-	callCtx, attemptGroupScope := llm.BeginAPIAttemptGroupScope(ctx)
-	for _, route := range routes {
-		req := llm.Request{
-			Model:    route.model,
-			Provider: route.provider,
-			Messages: []llm.Message{llm.User(prompt)},
-		}
-		resp, lastErr = cm.client.Complete(callCtx, req)
-		if lastErr == nil {
-			break
-		}
-		if route != routes[len(routes)-1] && !shouldFallbackSummarizationModel(ctx, lastErr) {
-			break
-		}
-	}
-	attemptGroupScope.SettleResult(lastErr)
-	if lastErr != nil {
-		return nil, lastErr
+	resp, err := cm.completeSummarization(ctx, sumProfile, prompt)
+	if err != nil {
+		return nil, err
 	}
 
 	summaryText := "[CONTEXT SUMMARY]\n" + resp.Text() + "\n[END SUMMARY]"

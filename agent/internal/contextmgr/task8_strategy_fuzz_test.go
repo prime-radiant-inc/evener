@@ -12,6 +12,7 @@ import (
 	"testing"
 
 	"primeradiant.com/evener/agent/events"
+	"primeradiant.com/evener/agent/internal/cheapmodel"
 	"primeradiant.com/evener/agent/internal/sessionlog"
 	"primeradiant.com/evener/agent/provider"
 	"primeradiant.com/evener/agent/schema"
@@ -85,7 +86,7 @@ func t8RunStrategyProgram(t *testing.T, program []byte, evidence string) {
 
 func t8RunMemoryCrystals(ctx context.Context, t *testing.T, profile *provider.Profile, client *llm.Client, history []schema.Turn, program []byte, userEvidence, terminalEvidence string) {
 	t.Helper()
-	strategy := NewMemoryCrystalsStrategy(NewManager(profile, client))
+	strategy := NewMemoryCrystalsStrategy(NewManager(profile, client, cheapmodel.New(client)))
 	steps := 1 + int(t8ProgramByte(program, 0)%24)
 	for step := 1; step <= steps; step++ {
 		if err := strategy.AfterAction(ctx, history[:step*3], client); err != nil {
@@ -110,7 +111,7 @@ func t8RunMemoryCrystals(ctx context.Context, t *testing.T, profile *provider.Pr
 
 func t8RunRecursiveDistill(ctx context.Context, t *testing.T, profile *provider.Profile, client *llm.Client, history []schema.Turn, program []byte, userEvidence, terminalEvidence string) {
 	t.Helper()
-	strategy := NewRecursiveDistillStrategy(NewManager(profile, client))
+	strategy := NewRecursiveDistillStrategy(NewManager(profile, client, cheapmodel.New(client)))
 	steps := 1 + int(t8ProgramByte(program, 1)%6)
 	for step := 1; step <= steps; step++ {
 		if err := strategy.AfterAction(ctx, history[:step*10], client); err != nil {
@@ -144,7 +145,7 @@ func t8RunRecursiveDistill(ctx context.Context, t *testing.T, profile *provider.
 func t8RunOODA(ctx context.Context, t *testing.T, profile *provider.Profile, client *llm.Client, history []schema.Turn, userEvidence, terminalEvidence string) {
 	t.Helper()
 	host := &fakeStrategyHost{stateDir: t.TempDir(), id: "task8-ooda", profile: profile}
-	strategy, err := NewOODAStrategy(NewManager(profile, client), host)
+	strategy, err := NewOODAStrategy(NewManager(profile, client, cheapmodel.New(client)), host)
 	if err != nil {
 		t.Fatalf("NewOODAStrategy: %v", err)
 	}
@@ -183,7 +184,7 @@ func t8RunOODA(ctx context.Context, t *testing.T, profile *provider.Profile, cli
 	if !strings.Contains(string(persisted), userEvidence) || !strings.Contains(string(persisted), terminalEvidence) {
 		t.Fatalf("persisted OODA log lost evidence: %q", persisted)
 	}
-	reopened, err := NewOODAStrategy(NewManager(profile, client), host)
+	reopened, err := NewOODAStrategy(NewManager(profile, client, cheapmodel.New(client)), host)
 	if err != nil {
 		t.Fatalf("reopen OODA strategy: %v", err)
 	}
@@ -202,7 +203,7 @@ func t8RunOODA(ctx context.Context, t *testing.T, profile *provider.Profile, cli
 
 func t8AssertUsageAndMetrics(t *testing.T, profile *provider.Profile, history []schema.Turn, program []byte) {
 	t.Helper()
-	cm := NewManager(profile, nil)
+	cm := NewManager(profile, nil, cheapmodel.New(nil))
 	base := int(t8ProgramByte(program, 3))
 	cm.SetCumulativeUsage(llm.Usage{InputTokens: base, OutputTokens: base / 2, TotalTokens: base + base/2})
 	cm.AddUsage(llm.Usage{InputTokens: 3, OutputTokens: 2, TotalTokens: 5})

@@ -113,7 +113,7 @@ func (s *RecursiveDistillStrategy) AfterAction(ctx context.Context, history []sc
 
 	// Micro-summary every 10 turns.
 	if turnCount-s.lastMicroAt >= 10 {
-		micro, err := s.microSummarize(ctx, client, history)
+		micro, err := s.microSummarize(ctx, history)
 		if err == nil {
 			s.microSummaries = append(s.microSummaries, micro)
 			s.lastMicroAt = turnCount
@@ -121,7 +121,7 @@ func (s *RecursiveDistillStrategy) AfterAction(ctx context.Context, history []sc
 
 		// Macro-summary every 50 turns (when we've accumulated 5 micro-summaries).
 		if len(s.microSummaries) >= 5 && turnCount-s.lastMacroAt >= 50 {
-			macro, err := s.macroSummarize(ctx, client, s.microSummaries)
+			macro, err := s.macroSummarize(ctx, s.microSummaries)
 			if err == nil {
 				s.macroSummaries = append(s.macroSummaries, macro)
 				s.microSummaries = nil // Reset after folding into macro.
@@ -134,7 +134,7 @@ func (s *RecursiveDistillStrategy) AfterAction(ctx context.Context, history []sc
 }
 
 // microSummarize distills the last 10 turns into 1-2 sentences.
-func (s *RecursiveDistillStrategy) microSummarize(ctx context.Context, client *llm.Client, history []schema.Turn) (string, error) {
+func (s *RecursiveDistillStrategy) microSummarize(ctx context.Context, history []schema.Turn) (string, error) {
 	recent := history
 	if len(recent) > 10 {
 		recent = recent[len(recent)-10:]
@@ -165,15 +165,11 @@ func (s *RecursiveDistillStrategy) microSummarize(ctx context.Context, client *l
 %s
 Status update:`, b.String())
 
-	cp := s.cm.currentProfile()
-	cheapProvider, cheapModel := cp.CheapModelRef()
 	req := llm.Request{
-		Model:    cheapModel,
-		Provider: cheapProvider,
 		Messages: []llm.Message{llm.User(prompt)},
 	}
 
-	resp, err := client.Complete(ctx, req)
+	resp, err := s.cm.completeCheap(ctx, req)
 	if err != nil {
 		return "", err
 	}
@@ -182,7 +178,7 @@ Status update:`, b.String())
 }
 
 // macroSummarize folds multiple micro-summaries into a single overview sentence.
-func (s *RecursiveDistillStrategy) macroSummarize(ctx context.Context, client *llm.Client, micros []string) (string, error) {
+func (s *RecursiveDistillStrategy) macroSummarize(ctx context.Context, micros []string) (string, error) {
 	var b strings.Builder
 	for i, m := range micros {
 		fmt.Fprintf(&b, "%d. %s\n", i+1, m)
@@ -196,15 +192,11 @@ func (s *RecursiveDistillStrategy) macroSummarize(ctx context.Context, client *l
 %s
 Progress report:`, b.String())
 
-	cp := s.cm.currentProfile()
-	cheapProvider, cheapModel := cp.CheapModelRef()
 	req := llm.Request{
-		Model:    cheapModel,
-		Provider: cheapProvider,
 		Messages: []llm.Message{llm.User(prompt)},
 	}
 
-	resp, err := client.Complete(ctx, req)
+	resp, err := s.cm.completeCheap(ctx, req)
 	if err != nil {
 		return "", err
 	}

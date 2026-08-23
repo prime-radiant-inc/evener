@@ -243,8 +243,8 @@ head and runs it as a fresh user turn.
 - **Step 3 (compact)**: hub returns `204 No Content`. The transcript grows by
   one entry of `turn.kind = "CHECKPOINT"` (`agent/schema/turn.go:28`) whose
   text starts with `[CONTEXT CHECKPOINT]`
-  (`agent/internal/contextmgr/context_manager.go:998-1000`, the final
-  assembly that writes it first — not the old-format reader at `:802`)
+  (`agent/internal/contextmgr/context_manager.go:1010`, the final
+  assembly that writes it first — not the old-format reader at `:812`)
   and includes the prior
   user messages and agent replies summarized. `turn_count` is unchanged. The
   POST is synchronous over the whole compaction, which is **two** layers, not

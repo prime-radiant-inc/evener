@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"primeradiant.com/evener/agent/events"
+	"primeradiant.com/evener/agent/internal/cheapmodel"
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/llm"
 )
@@ -48,7 +49,7 @@ func TestPredictiveCheckpoint_AttentionResolutionDoesNotConsumeRecentSlots(t *te
 	client.Register(&fakeAdapter{name: "openai", steps: []func(llm.Request) llm.Response{
 		func(llm.Request) llm.Response { return llm.Response{Message: llm.Assistant("unexpected checkpoint")} },
 	}})
-	cm := NewManager(testOpenAIProfileWithContextWindow(1000), client)
+	cm := NewManager(testOpenAIProfileWithContextWindow(1000), client, cheapmodel.New(client))
 	got, err := NewCheckpointPredStrategy(cm).predictiveCheckpoint(context.Background(), history, 2)
 	if err != nil {
 		t.Fatalf("predictiveCheckpoint: %v", err)
@@ -61,7 +62,7 @@ func TestPredictiveCheckpoint_AttentionResolutionDoesNotConsumeRecentSlots(t *te
 func TestCheckpointPredStrategy_ManageContext_NoCompactionBelowThreshold(t *testing.T) {
 	client := llm.NewClient()
 	profile := testOpenAIProfileWithContextWindow(1000)
-	cm := NewManager(profile, client)
+	cm := NewManager(profile, client, cheapmodel.New(client))
 	s := NewCheckpointPredStrategy(cm)
 
 	history := []schema.Turn{
@@ -86,7 +87,7 @@ func TestCheckpointPredStrategy_PredictiveCheckpoint_FallbackOnError(t *testing.
 	// to deterministic checkpoint.
 	client := llm.NewClient()
 	profile := testOpenAIProfileWithContextWindow(1000)
-	cm := NewManager(profile, client)
+	cm := NewManager(profile, client, cheapmodel.New(client))
 	// Set very low thresholds so compaction fires.
 	cm.ObservationMaskThreshold = 0.0001
 	cm.ThinkingClearThreshold = 0.0001
@@ -161,7 +162,7 @@ func TestCheckpointPredStrategy_PredictiveCheckpoint_WithLLM(t *testing.T) {
 	client.Register(f)
 
 	profile := testOpenAIProfileWithContextWindow(1000)
-	cm := NewManager(profile, client)
+	cm := NewManager(profile, client, cheapmodel.New(client))
 	cm.ObservationMaskThreshold = 0.0001
 	cm.ThinkingClearThreshold = 0.0001
 	cm.CheckpointThreshold = 0.0001
@@ -214,7 +215,7 @@ func TestCheckpointPredStrategy_PredictiveCheckpoint_TurnKind(t *testing.T) {
 	client.Register(f)
 
 	profile := testOpenAIProfileWithContextWindow(1000)
-	cm := NewManager(profile, client)
+	cm := NewManager(profile, client, cheapmodel.New(client))
 	cm.ObservationMaskThreshold = 0.0001
 	cm.ThinkingClearThreshold = 0.0001
 	cm.CheckpointThreshold = 0.0001
@@ -250,7 +251,7 @@ func TestCheckpointPredStrategy_FiresOnCompactionTurn_FallbackCheckpoint(t *test
 	// the callback should fire with the checkpoint turn.
 	client := llm.NewClient()
 	profile := testOpenAIProfileWithContextWindow(1000)
-	cm := NewManager(profile, client)
+	cm := NewManager(profile, client, cheapmodel.New(client))
 	cm.ObservationMaskThreshold = 0.0001
 	cm.ThinkingClearThreshold = 0.0001
 	cm.CheckpointThreshold = 0.0001
@@ -308,7 +309,7 @@ func TestCheckpointPredStrategy_FiresOnCompactionTurn_PredictiveCheckpoint(t *te
 	client.Register(f)
 
 	profile := testOpenAIProfileWithContextWindow(1000)
-	cm := NewManager(profile, client)
+	cm := NewManager(profile, client, cheapmodel.New(client))
 	cm.ObservationMaskThreshold = 0.0001
 	cm.ThinkingClearThreshold = 0.0001
 	cm.CheckpointThreshold = 0.0001
@@ -380,7 +381,7 @@ func TestCheckpointPredStrategy_FiresOnCompactionTurn_Summarize(t *testing.T) {
 	client.Register(f)
 
 	profile := testOpenAIProfileWithContextWindow(1000)
-	cm := NewManager(profile, client)
+	cm := NewManager(profile, client, cheapmodel.New(client))
 	// All thresholds very low so all layers fire.
 	cm.ObservationMaskThreshold = 0.0001
 	cm.ThinkingClearThreshold = 0.0001

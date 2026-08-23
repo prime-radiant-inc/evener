@@ -107,7 +107,7 @@ func (s *MemoryCrystalsStrategy) AfterAction(ctx context.Context, history []sche
 		recent = recent[len(recent)-6:]
 	}
 
-	crystal, err := s.crystallize(ctx, client, recent, turnCount)
+	crystal, err := s.crystallize(ctx, recent, turnCount)
 	if err != nil {
 		return nil //nolint:nilerr // crystallization is a best-effort optimization; failure is non-fatal
 	}
@@ -119,7 +119,7 @@ func (s *MemoryCrystalsStrategy) AfterAction(ctx context.Context, history []sche
 }
 
 // crystallize calls the cheap model to extract key facts from recent turns.
-func (s *MemoryCrystalsStrategy) crystallize(ctx context.Context, client *llm.Client, recent []schema.Turn, turnNumber int) (MemoryCrystal, error) {
+func (s *MemoryCrystalsStrategy) crystallize(ctx context.Context, recent []schema.Turn, turnNumber int) (MemoryCrystal, error) {
 	var b strings.Builder
 	for _, t := range recent {
 		switch t.Kind {
@@ -147,15 +147,11 @@ Recent action:
 %s
 Key facts (one line):`, b.String())
 
-	cp := s.cm.currentProfile()
-	cheapProvider, cheapModel := cp.CheapModelRef()
 	req := llm.Request{
-		Model:    cheapModel,
-		Provider: cheapProvider,
 		Messages: []llm.Message{llm.User(prompt)},
 	}
 
-	resp, err := client.Complete(ctx, req)
+	resp, err := s.cm.completeCheap(ctx, req)
 	if err != nil {
 		return MemoryCrystal{}, err
 	}

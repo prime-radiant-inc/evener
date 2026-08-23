@@ -7,6 +7,7 @@ import (
 	"strings"
 	"testing"
 
+	"primeradiant.com/evener/agent/internal/cheapmodel"
 	"primeradiant.com/evener/agent/provider"
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/fuzz/oracle"
@@ -143,7 +144,7 @@ func FuzzCxjsObsMaskManageContext(f *testing.F) {
 		run := func() []schema.Turn {
 			h := cxjs_cloneHistory(history)
 			profile := testOpenAIProfileWithContextWindow(1000)
-			cm := NewManager(profile, llm.NewClient())
+			cm := NewManager(profile, llm.NewClient(), cheapmodel.New(llm.NewClient()))
 			// Layer 1 always fires; Layer 2 (checkpoint) toggles via cpSel so both
 			// the mask-only and mask-then-checkpoint pipelines are exercised.
 			cm.ObservationMaskThreshold = 0
@@ -191,7 +192,7 @@ func cxjs_checkGuards(t *testing.T, history []schema.Turn, sysChars int) {
 	}
 
 	// Non-positive context window guard: a zero-value profile reports window 0.
-	cm := NewManager(&provider.Profile{}, llm.NewClient())
+	cm := NewManager(&provider.Profile{}, llm.NewClient(), cheapmodel.New(llm.NewClient()))
 	cm.ObservationMaskThreshold = 0
 	cm.CheckpointThreshold = 0
 	zeroStrat := NewObsMaskStrategy(cm)

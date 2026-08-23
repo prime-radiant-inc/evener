@@ -9,6 +9,7 @@ import (
 
 	"pgregory.net/rapid"
 
+	"primeradiant.com/evener/agent/internal/cheapmodel"
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/llm"
 
@@ -114,7 +115,7 @@ type fc1MaybeCompactModel struct {
 
 func newFc1MaybeCompactModel(preserveRecent int) *fc1MaybeCompactModel {
 	// nil client: only the deterministic checkpoint layer can fire.
-	cm := NewManager(testProfile("openai", "test", fc1MaybeCompactWindow), nil)
+	cm := NewManager(testProfile("openai", "test", fc1MaybeCompactWindow), nil, cheapmodel.New(nil))
 	cm.PreserveRecentTurns = preserveRecent
 	return &fc1MaybeCompactModel{preserveRecent: preserveRecent, cm: cm}
 }

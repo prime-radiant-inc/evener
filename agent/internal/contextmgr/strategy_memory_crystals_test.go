@@ -5,6 +5,7 @@ import (
 	"strings"
 	"testing"
 
+	"primeradiant.com/evener/agent/internal/cheapmodel"
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/llm"
 )
@@ -34,7 +35,7 @@ func TestMemoryCrystalsStrategy_AfterAction_SkipsNonThirdTurn(t *testing.T) {
 	client.Register(spy)
 
 	profile := NewOpenAIProfile("gpt-5.2")
-	cm := NewManager(profile, client)
+	cm := NewManager(profile, client, cheapmodel.New(client))
 	s := NewMemoryCrystalsStrategy(cm)
 
 	// 2 turns — not a multiple of 3, so no crystallization.
@@ -60,7 +61,7 @@ func TestMemoryCrystalsStrategy_AttentionResolutionDoesNotAdvanceCadence(t *test
 	client := llm.NewClient()
 	spy := &fakeAdapter{name: "openai"}
 	client.Register(spy)
-	s := NewMemoryCrystalsStrategy(NewManager(NewOpenAIProfile("gpt-5.2"), client))
+	s := NewMemoryCrystalsStrategy(NewManager(NewOpenAIProfile("gpt-5.2"), client, cheapmodel.New(client)))
 	marker := schema.NewTurn(schema.TurnAttentionResolution, llm.System("private marker"))
 	marker.AttentionResolution = &schema.AttentionResolutionInfo{AttentionID: "private", Disposition: "consumed"}
 	history := []schema.Turn{
@@ -94,7 +95,7 @@ func TestMemoryCrystalsStrategy_AfterAction_CrystallizesEveryThird(t *testing.T)
 	client.Register(f)
 
 	profile := NewOpenAIProfile("gpt-5.2")
-	cm := NewManager(profile, client)
+	cm := NewManager(profile, client, cheapmodel.New(client))
 	s := NewMemoryCrystalsStrategy(cm)
 
 	// 3 turns — multiple of 3, should trigger crystallization.
@@ -128,7 +129,7 @@ func TestMemoryCrystalsStrategy_AfterAction_CrystallizesEveryThird(t *testing.T)
 }
 
 func TestMemoryCrystalsStrategy_InjectCrystals(t *testing.T) {
-	cm := NewManager(NewOpenAIProfile("gpt-5.2"), nil)
+	cm := NewManager(NewOpenAIProfile("gpt-5.2"), nil, cheapmodel.New(nil))
 	s := NewMemoryCrystalsStrategy(cm)
 	s.crystals = []MemoryCrystal{
 		{Turn: 3, Action: "read_file", Facts: "Read auth.go, 200 lines"},
@@ -165,7 +166,7 @@ func TestMemoryCrystalsStrategy_InjectCrystals(t *testing.T) {
 }
 
 func TestMemoryCrystalsStrategy_InjectCrystals_RemovesOld(t *testing.T) {
-	cm := NewManager(NewOpenAIProfile("gpt-5.2"), nil)
+	cm := NewManager(NewOpenAIProfile("gpt-5.2"), nil, cheapmodel.New(nil))
 	s := NewMemoryCrystalsStrategy(cm)
 	s.crystals = []MemoryCrystal{
 		{Turn: 3, Action: "test", Facts: "new crystal"},
@@ -198,7 +199,7 @@ func TestMemoryCrystalsStrategy_InjectCrystals_RemovesOld(t *testing.T) {
 }
 
 func TestMemoryCrystalsStrategy_PruneOldCrystals(t *testing.T) {
-	cm := NewManager(NewOpenAIProfile("gpt-5.2"), nil)
+	cm := NewManager(NewOpenAIProfile("gpt-5.2"), nil, cheapmodel.New(nil))
 	s := NewMemoryCrystalsStrategy(cm)
 
 	// Add 25 crystals.

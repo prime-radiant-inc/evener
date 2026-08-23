@@ -12,6 +12,7 @@ import (
 	"testing"
 
 	"primeradiant.com/evener/agent/events"
+	"primeradiant.com/evener/agent/internal/cheapmodel"
 	"primeradiant.com/evener/agent/internal/sessionlog"
 	"primeradiant.com/evener/agent/provider"
 	"primeradiant.com/evener/agent/schema"
@@ -64,11 +65,11 @@ func cmgpRunManagerLifecycle(t *testing.T, program []byte) {
 	}
 	client := cmgpClient(active, cheap)
 	profile := WithCheapModel(testOpenAIProfileWithContextWindow(64), "anthropic/cheap")
-	cm := NewManager(profile, client)
+	cm := NewManager(profile, client, cheapmodel.New(client))
 	cm.PreserveRecentTurns = 2
 	cm.Meta = CompactionMeta{SessionID: "cmgp-" + token, ActivatedSkills: []string{"testing", "fuzzing"}}
 
-	if !cm.HasClient() || NewManager(profile, nil).HasClient() {
+	if !cm.HasClient() || NewManager(profile, nil, cheapmodel.New(nil)).HasClient() {
 		t.Fatal("HasClient did not reflect the configured client")
 	}
 	if cm.resultToolName() != "communicate" {
@@ -133,7 +134,7 @@ func cmgpRunManagerLifecycle(t *testing.T, program []byte) {
 		respond: func(llm.Request) (llm.Response, error) { return llm.Response{}, errors.New("scripted summary failure") },
 	}, nil)
 	failureHistory := cmgpHistory(token + "-failure")
-	failureCM := NewManager(testOpenAIProfileWithContextWindow(64), failureClient)
+	failureCM := NewManager(testOpenAIProfileWithContextWindow(64), failureClient, cheapmodel.New(failureClient))
 	failureCM.PreserveRecentTurns = 2
 	failureCM.CheckpointThreshold = 0.0001
 	failureCM.SummarizeThreshold = 0.0001
@@ -145,7 +146,7 @@ func cmgpRunManagerLifecycle(t *testing.T, program []byte) {
 
 	// ForceCompact must apply the same two layers regardless of pressure.
 	forceHistory := cmgpHistory(token + "-force")
-	forceCM := NewManager(profile, client)
+	forceCM := NewManager(profile, client, cheapmodel.New(client))
 	forceCM.PreserveRecentTurns = 2
 	var forced cmgpEventLog
 	var forcedTurns []schema.Turn
@@ -161,7 +162,7 @@ func cmgpRunManagerLifecycle(t *testing.T, program []byte) {
 	}
 
 	nilHistory := cmgpHistory(token + "-nil")
-	nilCM := NewManager(profile, nil)
+	nilCM := NewManager(profile, nil, cheapmodel.New(nil))
 	nilCM.PreserveRecentTurns = 2
 	if nilCM.ForceCompact(ctx, &nilHistory, "", cmgpNoopEmit) {
 		t.Fatal("ForceCompact reported a summary without an LLM client")
@@ -173,14 +174,14 @@ func cmgpRunManagerLifecycle(t *testing.T, program []byte) {
 		schema.NewTurn(schema.TurnSummary, llm.User("[CONTEXT SUMMARY]\nprior\n[END SUMMARY]")),
 		schema.NewTurn(schema.TurnUserInput, llm.User("recent "+token)),
 	}
-	shortSummaryCM := NewManager(profile, client)
+	shortSummaryCM := NewManager(profile, client, cheapmodel.New(client))
 	shortSummaryCM.PreserveRecentTurns = len(shortSummaryHistory)
 	if shortSummaryCM.ForceCompact(ctx, &shortSummaryHistory, "", cmgpNoopEmit) {
 		t.Fatal("ForceCompact reported a pre-existing short summary as newly generated")
 	}
 
 	forceFailureHistory := cmgpHistory(token + "-force-failure")
-	forceFailureCM := NewManager(testOpenAIProfileWithContextWindow(64), failureClient)
+	forceFailureCM := NewManager(testOpenAIProfileWithContextWindow(64), failureClient, cheapmodel.New(failureClient))
 	forceFailureCM.PreserveRecentTurns = 2
 	var forceFailure cmgpEventLog
 	summarized := forceFailureCM.ForceCompact(ctx, &forceFailureHistory, "", forceFailure.emit)
@@ -190,7 +191,7 @@ func cmgpRunManagerLifecycle(t *testing.T, program []byte) {
 
 	cmgpCheckElicitNote(t, ctx, token, cm, cheap, active, profile, client)
 
-	zeroCM := NewManager(&provider.Profile{}, nil)
+	zeroCM := NewManager(&provider.Profile{}, nil, cheapmodel.New(nil))
 	zeroHistory := cmgpHistory(token + "-zero")
 	zeroCM.MaybeCompact(ctx, &zeroHistory, 0, cmgpNoopEmit)
 	if got := zeroCM.EstimateUsage(zeroHistory, 0); got != (schema.ContextMetrics{}) || zeroCM.Pressure(zeroHistory, 0) != 0 {
@@ -201,7 +202,7 @@ func cmgpRunManagerLifecycle(t *testing.T, program []byte) {
 func cmgpCheckThresholdScaling(t *testing.T, profile *provider.Profile) {
 	t.Helper()
 	for _, scale := range []float64{0, 1, 0.25, 0.5} {
-		cm := NewManager(profile, nil)
+		cm := NewManager(profile, nil, cheapmodel.New(nil))
 		ApplyThresholdScale(cm, scale)
 		if scale == 0 || scale == 1 {
 			if cm.ObservationMaskThreshold != 0.60 || cm.SummarizeThreshold != 0.95 {
@@ -218,10 +219,10 @@ func cmgpCheckThresholdScaling(t *testing.T, profile *provider.Profile) {
 func cmgpCheckElicitNote(t *testing.T, ctx context.Context, token string, cm *Manager, cheap, active *cmgpAdapter, profile *provider.Profile, client *llm.Client) {
 	t.Helper()
 	history := cmgpHistory(token)
-	if _, err := NewManager(profile, nil).ElicitNote(ctx, history); err == nil {
+	if _, err := NewManager(profile, nil, cheapmodel.New(nil)).ElicitNote(ctx, history); err == nil {
 		t.Fatal("ElicitNote without a client unexpectedly succeeded")
 	}
-	if _, err := NewManager(&provider.Profile{}, client).ElicitNote(ctx, history); err == nil {
+	if _, err := NewManager(&provider.Profile{}, client, cheapmodel.New(client)).ElicitNote(ctx, history); err == nil {
 		t.Fatal("ElicitNote without a model unexpectedly succeeded")
 	}
 	note, err := cm.ElicitNote(ctx, history)
@@ -345,7 +346,7 @@ func cmgpCheckSummarizerBehavior(t *testing.T, ctx context.Context, token string
 		schema.NewTurn(schema.TurnAssistant, llm.Assistant("tail assistant "+token)),
 		schema.NewTurn(schema.TurnUserInput, llm.User("tail user "+token)),
 	}
-	cm := NewManager(profile, client)
+	cm := NewManager(profile, client, cheapmodel.New(client))
 	result, err := cm.summarizeWithLLMSteered(ctx, input, 2, "retain "+token)
 	if err != nil || len(result) != 3 || result[0].Kind != schema.TurnSummary || result[1].Message.Text() != input[len(input)-2].Message.Text() || result[2].Message.Text() != input[len(input)-1].Message.Text() {
 		t.Fatalf("scripted summary result = %#v, err=%v", cmgpKinds(result), err)
@@ -365,7 +366,7 @@ func cmgpCheckSummarizerBehavior(t *testing.T, ctx context.Context, token string
 	if err != nil || len(unchanged) != len(unsafe) || unchanged[0].Kind != schema.TurnUserInput {
 		t.Fatalf("unsafe summary cutoff = %#v, err=%v", cmgpKinds(unchanged), err)
 	}
-	if _, err := NewManager(&provider.Profile{}, client).summarizeWithLLMSteered(ctx, input, 2, ""); err == nil {
+	if _, err := NewManager(&provider.Profile{}, client, cheapmodel.New(client)).summarizeWithLLMSteered(ctx, input, 2, ""); err == nil {
 		t.Fatal("summary without a model unexpectedly succeeded")
 	}
 
@@ -375,7 +376,7 @@ func cmgpCheckSummarizerBehavior(t *testing.T, ctx context.Context, token string
 	fallbackActive := &cmgpAdapter{name: "openai", respond: func(llm.Request) (llm.Response, error) {
 		return llm.Response{Message: llm.Assistant("fallback " + token)}, nil
 	}}
-	fallbackCM := NewManager(profile, cmgpClient(fallbackActive, fallbackCheap))
+	fallbackCM := NewManager(profile, cmgpClient(fallbackActive, fallbackCheap), cheapmodel.New(cmgpClient(fallbackActive, fallbackCheap)))
 	if got, err := fallbackCM.summarizeWithLLMSteered(ctx, input, 2, ""); err != nil || len(got) == 0 || got[0].Kind != schema.TurnSummary || len(fallbackCheap.requests) != 1 || len(fallbackActive.requests) != 1 {
 		t.Fatalf("summary fallback = head:%v cheap:%d active:%d err:%v", cmgpHeadKind(got), len(fallbackCheap.requests), len(fallbackActive.requests), err)
 	}
@@ -385,7 +386,7 @@ func cmgpCheckSummarizerBehavior(t *testing.T, ctx context.Context, token string
 	stopActive := &cmgpAdapter{name: "openai", respond: func(llm.Request) (llm.Response, error) {
 		return llm.Response{Message: llm.Assistant("should not run")}, nil
 	}}
-	if _, err := NewManager(profile, cmgpClient(stopActive, stopCheap)).summarizeWithLLMSteered(ctx, input, 2, ""); err == nil || len(stopActive.requests) != 0 {
+	if _, err := NewManager(profile, cmgpClient(stopActive, stopCheap), cheapmodel.New(cmgpClient(stopActive, stopCheap))).summarizeWithLLMSteered(ctx, input, 2, ""); err == nil || len(stopActive.requests) != 0 {
 		t.Fatalf("non-fallback summary error used active route: err=%v active=%d", err, len(stopActive.requests))
 	}
 }
@@ -423,7 +424,7 @@ func cmgpRunStrategyContracts(t *testing.T, program []byte) {
 
 func cmgpCheckCompactAndCheckpointStrategies(t *testing.T, ctx context.Context, token string, profile *provider.Profile, client *llm.Client, history []schema.Turn) {
 	t.Helper()
-	compactCM := NewManager(profile, client)
+	compactCM := NewManager(profile, client, cheapmodel.New(client))
 	compact := NewCompactStrategy(compactCM)
 	if compact.Name() != "compact" || len(compact.Tools()) != 0 || compact.AfterAction(ctx, history, client) != nil {
 		t.Fatal("compact strategy contract changed")
@@ -436,11 +437,11 @@ func cmgpCheckCompactAndCheckpointStrategies(t *testing.T, ctx context.Context, 
 	if err := (&CheckpointPredStrategy{}).ManageContext(ctx, &compactHistory, 0, cmgpNoopEmit); err != nil {
 		t.Fatalf("nil checkpoint strategy: %v", err)
 	}
-	zeroCheckpoint := NewCheckpointPredStrategy(NewManager(&provider.Profile{}, nil))
+	zeroCheckpoint := NewCheckpointPredStrategy(NewManager(&provider.Profile{}, nil, cheapmodel.New(nil)))
 	if err := zeroCheckpoint.ManageContext(ctx, &compactHistory, 0, cmgpNoopEmit); err != nil {
 		t.Fatalf("zero-window checkpoint strategy: %v", err)
 	}
-	predCM := NewManager(profile, client)
+	predCM := NewManager(profile, client, cheapmodel.New(client))
 	cmgpAggressiveThresholds(predCM)
 	pred := NewCheckpointPredStrategy(predCM)
 	if pred.Name() != "checkpoint-pred" || len(pred.Tools()) != 0 || pred.AfterAction(ctx, history, client) != nil {
@@ -458,11 +459,11 @@ func cmgpCheckCompactAndCheckpointStrategies(t *testing.T, ctx context.Context, 
 	if err := (&ObsMaskStrategy{}).ManageContext(ctx, &compactHistory, 0, cmgpNoopEmit); err != nil {
 		t.Fatalf("nil observation-mask strategy: %v", err)
 	}
-	zeroObs := NewObsMaskStrategy(NewManager(&provider.Profile{}, nil))
+	zeroObs := NewObsMaskStrategy(NewManager(&provider.Profile{}, nil, cheapmodel.New(nil)))
 	if err := zeroObs.ManageContext(ctx, &compactHistory, 0, cmgpNoopEmit); err != nil {
 		t.Fatalf("zero-window observation-mask strategy: %v", err)
 	}
-	obsCM := NewManager(profile, client)
+	obsCM := NewManager(profile, client, cheapmodel.New(client))
 	cmgpAggressiveThresholds(obsCM)
 	obs := NewObsMaskStrategy(obsCM)
 	if obs.Name() != "obs-mask" || len(obs.Tools()) != 0 || obs.AfterAction(ctx, history, client) != nil {
@@ -483,7 +484,7 @@ func cmgpCheckMemoryStrategies(t *testing.T, ctx context.Context, token string, 
 	if err := NewMemoryCrystalsStrategy(nil).AfterAction(ctx, history, client); err != nil {
 		t.Fatalf("nil memory-crystal strategy: %v", err)
 	}
-	mem := NewMemoryCrystalsStrategy(NewManager(profile, client))
+	mem := NewMemoryCrystalsStrategy(NewManager(profile, client, cheapmodel.New(client)))
 	if mem.Name() != "memory-crystals" || len(mem.Tools()) != 0 {
 		t.Fatal("memory-crystal strategy contract changed")
 	}
@@ -504,7 +505,7 @@ func cmgpCheckMemoryStrategies(t *testing.T, ctx context.Context, token string, 
 	badClient := cmgpClient(&cmgpAdapter{name: "openai", respond: func(llm.Request) (llm.Response, error) {
 		return llm.Response{}, errors.New("crystal failure")
 	}}, nil)
-	badMem := NewMemoryCrystalsStrategy(NewManager(profile, badClient))
+	badMem := NewMemoryCrystalsStrategy(NewManager(profile, badClient, cheapmodel.New(badClient)))
 	if err := badMem.AfterAction(ctx, history[:3], badClient); err != nil || len(badMem.crystals) != 0 {
 		t.Fatalf("failed crystal action = crystals:%d err:%v", len(badMem.crystals), err)
 	}
@@ -512,7 +513,7 @@ func cmgpCheckMemoryStrategies(t *testing.T, ctx context.Context, token string, 
 	if err := NewRecursiveDistillStrategy(nil).AfterAction(ctx, history, client); err != nil {
 		t.Fatalf("nil recursive-distill strategy: %v", err)
 	}
-	distill := NewRecursiveDistillStrategy(NewManager(profile, client))
+	distill := NewRecursiveDistillStrategy(NewManager(profile, client, cheapmodel.New(client)))
 	if distill.Name() != "recursive-distill" || len(distill.Tools()) != 0 {
 		t.Fatal("recursive-distill strategy contract changed")
 	}
@@ -520,10 +521,10 @@ func cmgpCheckMemoryStrategies(t *testing.T, ctx context.Context, token string, 
 	if err := distill.AfterAction(ctx, longHistory, client); err != nil || len(distill.microSummaries) != 1 {
 		t.Fatalf("recursive micro distill = micros:%d err:%v", len(distill.microSummaries), err)
 	}
-	if _, err := distill.microSummarize(ctx, client, longHistory); err != nil {
+	if _, err := distill.microSummarize(ctx, longHistory); err != nil {
 		t.Fatalf("recursive direct micro summary: %v", err)
 	}
-	if _, err := distill.macroSummarize(ctx, client, []string{"one", "two"}); err != nil {
+	if _, err := distill.macroSummarize(ctx, []string{"one", "two"}); err != nil {
 		t.Fatalf("recursive direct macro summary: %v", err)
 	}
 	distillHistory := append([]schema.Turn(nil), history[:4]...)
@@ -542,7 +543,7 @@ func cmgpCheckSessionLogAndOODAStrategies(t *testing.T, ctx context.Context, tok
 		t.Fatalf("nil session-log strategy: %v", err)
 	}
 	zeroHost := &fakeStrategyHost{stateDir: t.TempDir(), id: "zero", profile: &provider.Profile{}}
-	zeroLog, err := NewSessionLogStrategy(NewManager(&provider.Profile{}, nil), zeroHost)
+	zeroLog, err := NewSessionLogStrategy(NewManager(&provider.Profile{}, nil, cheapmodel.New(nil)), zeroHost)
 	if err != nil {
 		t.Fatalf("NewSessionLogStrategy zero profile: %v", err)
 	}
@@ -551,7 +552,7 @@ func cmgpCheckSessionLogAndOODAStrategies(t *testing.T, ctx context.Context, tok
 	}
 
 	host := &fakeStrategyHost{stateDir: t.TempDir(), id: "session-log", profile: profile}
-	sls, err := NewSessionLogStrategy(NewManager(profile, client), host)
+	sls, err := NewSessionLogStrategy(NewManager(profile, client, cheapmodel.New(client)), host)
 	if err != nil {
 		t.Fatalf("NewSessionLogStrategy: %v", err)
 	}
@@ -590,13 +591,13 @@ func cmgpCheckSessionLogAndOODAStrategies(t *testing.T, ctx context.Context, tok
 		t.Fatalf("nil profile AfterAction: %v", err)
 	}
 	badHost := &fakeStrategyHost{stateDir: t.TempDir(), id: "bad", profile: profile}
-	badSLS, err := NewSessionLogStrategy(NewManager(profile, client), badHost)
-	if err != nil {
-		t.Fatalf("NewSessionLogStrategy bad response: %v", err)
-	}
 	badForkClient := cmgpClient(&cmgpAdapter{name: "openai", respond: func(llm.Request) (llm.Response, error) {
 		return llm.Response{Message: llm.Assistant("not JSON")}, nil
 	}}, nil)
+	badSLS, err := NewSessionLogStrategy(NewManager(profile, badForkClient, cheapmodel.New(badForkClient)), badHost)
+	if err != nil {
+		t.Fatalf("NewSessionLogStrategy bad response: %v", err)
+	}
 	if err := badSLS.AfterAction(ctx, cmgpLongHistory(token, 12), badForkClient); err != nil || badHost.sideFx != 0 || badSLS.log.Len() != 0 {
 		t.Fatalf("failed fork result = sidefx:%d log:%d err:%v", badHost.sideFx, badSLS.log.Len(), err)
 	}
@@ -605,7 +606,7 @@ func cmgpCheckSessionLogAndOODAStrategies(t *testing.T, ctx context.Context, tok
 	}
 
 	oodaHost := &fakeStrategyHost{stateDir: t.TempDir(), id: "ooda", profile: profile}
-	ooda, err := NewOODAStrategy(NewManager(profile, client), oodaHost)
+	ooda, err := NewOODAStrategy(NewManager(profile, client, cheapmodel.New(client)), oodaHost)
 	if err != nil {
 		t.Fatalf("NewOODAStrategy: %v", err)
 	}
@@ -638,20 +639,20 @@ func cmgpCheckSessionLogAndOODAStrategies(t *testing.T, ctx context.Context, tok
 
 func cmgpCheckForkSummarize(t *testing.T, ctx context.Context, token string, profile *provider.Profile, client *llm.Client, history []schema.Turn) {
 	t.Helper()
-	entry, err := forkSummarize(ctx, client, profile, history, 17)
+	entry, err := forkSummarize(ctx, cheapmodel.New(client), profile, history, 17)
 	if err != nil || entry.Turn != 17 || entry.Action != "shell" {
 		t.Fatalf("fork summary = %+v, %v", entry, err)
 	}
 	badJSON := cmgpClient(&cmgpAdapter{name: "openai", respond: func(llm.Request) (llm.Response, error) {
 		return llm.Response{Message: llm.Assistant("not JSON")}, nil
 	}}, nil)
-	if _, err := forkSummarize(ctx, badJSON, profile, history, 1); err == nil {
+	if _, err := forkSummarize(ctx, cheapmodel.New(badJSON), profile, history, 1); err == nil {
 		t.Fatal("invalid fork JSON unexpectedly succeeded")
 	}
 	failed := cmgpClient(&cmgpAdapter{name: "openai", respond: func(llm.Request) (llm.Response, error) {
 		return llm.Response{}, errors.New("fork failure")
 	}}, nil)
-	if _, err := forkSummarize(ctx, failed, profile, history, 1); err == nil {
+	if _, err := forkSummarize(ctx, cheapmodel.New(failed), profile, history, 1); err == nil {
 		t.Fatal("failed fork completion unexpectedly succeeded")
 	}
 	prompt := buildSummarizePrompt([]schema.Turn{

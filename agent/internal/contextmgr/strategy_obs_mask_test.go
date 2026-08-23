@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"primeradiant.com/evener/agent/events"
+	"primeradiant.com/evener/agent/internal/cheapmodel"
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/llm"
 )
@@ -39,7 +40,7 @@ func TestObsMaskStrategy_AfterAction_Noop(t *testing.T) {
 func TestObsMaskStrategy_ManageContext_NoCompactionBelowThreshold(t *testing.T) {
 	client := llm.NewClient()
 	profile := testOpenAIProfileWithContextWindow(1000)
-	cm := NewManager(profile, client)
+	cm := NewManager(profile, client, cheapmodel.New(client))
 	s := NewObsMaskStrategy(cm)
 
 	history := []schema.Turn{
@@ -156,7 +157,7 @@ func TestAggressiveMaskObservations_SkipsAlreadyMasked(t *testing.T) {
 func TestObsMaskStrategy_ManageContext_FiresOnCompactionTurn_Checkpoint(t *testing.T) {
 	client := llm.NewClient()
 	profile := testOpenAIProfileWithContextWindow(1000)
-	cm := NewManager(profile, client)
+	cm := NewManager(profile, client, cheapmodel.New(client))
 	// Set thresholds so both layers fire.
 	cm.ObservationMaskThreshold = 0.0001
 	cm.CheckpointThreshold = 0.0001

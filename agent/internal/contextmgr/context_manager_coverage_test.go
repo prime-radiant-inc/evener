@@ -5,6 +5,7 @@ import (
 	"strings"
 	"testing"
 
+	"primeradiant.com/evener/agent/internal/cheapmodel"
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/llm"
 )
@@ -15,7 +16,7 @@ import (
 // the system-prompt budget, and Remaining is the window minus that.
 func TestEstimateUsage_NoPriorMeasurement(t *testing.T) {
 	const window = 1_000_000
-	cm := NewManager(testProfile("openai", "gpt-5.2", window), nil)
+	cm := NewManager(testProfile("openai", "gpt-5.2", window), nil, cheapmodel.New(nil))
 	history := []schema.Turn{
 		{Kind: schema.TurnUserInput, Message: llm.User("write a parser for the config file")},
 		{Kind: schema.TurnAssistant, Message: llm.Assistant("Sure, here is the plan.")},
@@ -40,7 +41,7 @@ func TestEstimateUsage_NoPriorMeasurement(t *testing.T) {
 // the window, and Remaining must floor at 0 rather than go negative.
 func TestEstimateUsage_RemainingClampedToZero(t *testing.T) {
 	const window = 1_000
-	cm := NewManager(testProfile("openai", "gpt-5.2", window), nil)
+	cm := NewManager(testProfile("openai", "gpt-5.2", window), nil, cheapmodel.New(nil))
 	m := cm.EstimateUsage(nil, window*8)
 	if m.Used <= window {
 		t.Fatalf("Used = %d, want > window %d for this case", m.Used, window)
@@ -57,7 +58,7 @@ func TestApplyThresholdScale(t *testing.T) {
 	const eps = 1e-9
 
 	t.Run("scales every threshold, no clamp needed", func(t *testing.T) {
-		cm := NewManager(testProfile("openai", "gpt-5.2", 1_000), nil)
+		cm := NewManager(testProfile("openai", "gpt-5.2", 1_000), nil, cheapmodel.New(nil))
 		ApplyThresholdScale(cm, 0.5)
 		for _, c := range []struct {
 			name string
@@ -77,7 +78,7 @@ func TestApplyThresholdScale(t *testing.T) {
 	})
 
 	t.Run("clamps thresholds below the 0.20 floor", func(t *testing.T) {
-		cm := NewManager(testProfile("openai", "gpt-5.2", 1_000), nil)
+		cm := NewManager(testProfile("openai", "gpt-5.2", 1_000), nil, cheapmodel.New(nil))
 		ApplyThresholdScale(cm, 0.25) // 0.60*0.25=0.15 -> floor, 0.95*0.25=0.2375 stays
 		if d := cm.ObservationMaskThreshold - 0.20; d > eps || d < -eps {
 			t.Errorf("ObservationMask = %v, want clamped to 0.20", cm.ObservationMaskThreshold)
@@ -89,7 +90,7 @@ func TestApplyThresholdScale(t *testing.T) {
 
 	for _, scale := range []float64{0, 1.0} {
 		t.Run("no-op", func(t *testing.T) {
-			cm := NewManager(testProfile("openai", "gpt-5.2", 1_000), nil)
+			cm := NewManager(testProfile("openai", "gpt-5.2", 1_000), nil, cheapmodel.New(nil))
 			ApplyThresholdScale(cm, scale)
 			if cm.ObservationMaskThreshold != 0.60 || cm.SummarizeThreshold != 0.95 {
 				t.Errorf("scale %v changed thresholds: obs=%v sum=%v", scale, cm.ObservationMaskThreshold, cm.SummarizeThreshold)
@@ -101,10 +102,10 @@ func TestApplyThresholdScale(t *testing.T) {
 // TestHasClient covers the HasClient predicate (gremlins flagged
 // context_manager.go:1057 as not covered).
 func TestHasClient(t *testing.T) {
-	if NewManager(testProfile("openai", "gpt-5.2", 1_000), nil).HasClient() {
+	if NewManager(testProfile("openai", "gpt-5.2", 1_000), nil, cheapmodel.New(nil)).HasClient() {
 		t.Error("HasClient() = true for a nil client, want false")
 	}
-	if !NewManager(testProfile("openai", "gpt-5.2", 1_000), llm.NewClient()).HasClient() {
+	if !NewManager(testProfile("openai", "gpt-5.2", 1_000), llm.NewClient(), cheapmodel.New(llm.NewClient())).HasClient() {
 		t.Error("HasClient() = false with a client, want true")
 	}
 }
@@ -112,7 +113,7 @@ func TestHasClient(t *testing.T) {
 // TestElicitNote_RequiresClient covers the no-client guard in ElicitNote
 // (context_manager.go:1069).
 func TestElicitNote_RequiresClient(t *testing.T) {
-	cm := NewManager(testProfile("openai", "gpt-5.2", 1_000), nil)
+	cm := NewManager(testProfile("openai", "gpt-5.2", 1_000), nil, cheapmodel.New(nil))
 	if _, err := cm.ElicitNote(context.Background(), nil); err == nil {
 		t.Fatal("ElicitNote with no client: want an error")
 	}
@@ -132,7 +133,7 @@ func TestElicitNote_Success(t *testing.T) {
 	}
 	client := llm.NewClient()
 	client.Register(adapter)
-	cm := NewManager(NewOpenAIProfile("gpt-5.2"), client)
+	cm := NewManager(NewOpenAIProfile("gpt-5.2"), client, cheapmodel.New(client))
 
 	history := []schema.Turn{
 		{Kind: schema.TurnToolResults, Message: llm.ToolResultNamed("c1", "shell", "API key is secret-token-XYZ", false)},
@@ -170,7 +171,7 @@ func TestElicitNote_FallsBackAcrossModels(t *testing.T) {
 	client.Register(active)
 
 	profile := WithCheapModel(NewOpenAIProfile("gpt-5.2"), "anthropic/claude-haiku-4-5-20251001")
-	cm := NewManager(profile, client)
+	cm := NewManager(profile, client, cheapmodel.New(client))
 
 	got, err := cm.ElicitNote(context.Background(), []schema.Turn{
 		{Kind: schema.TurnUserInput, Message: llm.User("do the thing")},
@@ -183,6 +184,65 @@ func TestElicitNote_FallsBackAcrossModels(t *testing.T) {
 	}
 	if got != "- survived" {
 		t.Errorf("note = %q, want the active-route result", got)
+	}
+}
+
+func TestElicitNoteRemembersARefusedCheapModel(t *testing.T) {
+	cheapCalls, activeCalls := 0, 0
+	cheap := &stubSummarizeAdapter{name: "anthropic", respFn: func(llm.Request) (llm.Response, error) {
+		cheapCalls++
+		return llm.Response{}, llm.ErrorFromHTTPStatus("anthropic", 400, "The provided model identifier is invalid.", nil, nil)
+	}}
+	active := &stubSummarizeAdapter{name: "openai", respFn: func(llm.Request) (llm.Response, error) {
+		activeCalls++
+		return llm.Response{Message: llm.Assistant("- survived")}, nil
+	}}
+	client := llm.NewClient()
+	client.Register(cheap)
+	client.Register(active)
+	cm := NewManager(WithCheapModel(NewOpenAIProfile("gpt-5.2"), "anthropic/haiku"), client, cheapmodel.New(client))
+
+	for range 2 {
+		if _, err := cm.ElicitNote(context.Background(), nil); err != nil {
+			t.Fatalf("ElicitNote: %v", err)
+		}
+	}
+	if cheapCalls != 1 || activeCalls != 2 {
+		t.Fatalf("calls = cheap:%d active:%d, want cheap:1 active:2", cheapCalls, activeCalls)
+	}
+}
+
+// TestElicitNoteDoesNotRepeatARouteTheCheapCallerAlreadyRan pins the seam
+// between the two fallback ladders: once the cheap model is latched as refused,
+// the cheap caller runs the session model itself, so a fallback-eligible failure
+// there is terminal. Re-running the summarizer's own session-model route on top
+// would bill the same doomed request twice.
+func TestElicitNoteDoesNotRepeatARouteTheCheapCallerAlreadyRan(t *testing.T) {
+	activeCalls := 0
+	cheap := &stubSummarizeAdapter{name: "anthropic", respFn: func(llm.Request) (llm.Response, error) {
+		return llm.Response{}, llm.ErrorFromHTTPStatus("anthropic", 400, "The provided model identifier is invalid.", nil, nil)
+	}}
+	active := &stubSummarizeAdapter{name: "openai", respFn: func(llm.Request) (llm.Response, error) {
+		activeCalls++
+		if activeCalls == 1 {
+			return llm.Response{Message: llm.Assistant("- survived")}, nil
+		}
+		return llm.Response{}, llm.ErrorFromHTTPStatus("openai", 400, "active unavailable", nil, nil)
+	}}
+	client := llm.NewClient()
+	client.Register(cheap)
+	client.Register(active)
+	cm := NewManager(WithCheapModel(NewOpenAIProfile("gpt-5.2"), "anthropic/haiku"), client, cheapmodel.New(client))
+
+	// First call latches the cheap refusal by succeeding on the session model.
+	if _, err := cm.ElicitNote(context.Background(), nil); err != nil {
+		t.Fatalf("first ElicitNote: %v", err)
+	}
+	if _, err := cm.ElicitNote(context.Background(), nil); err == nil {
+		t.Fatal("second ElicitNote succeeded, want the session-model failure")
+	}
+	if activeCalls != 2 {
+		t.Fatalf("session-model calls = %d, want 2 (one per elicitation)", activeCalls)
 	}
 }
 

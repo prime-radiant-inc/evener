@@ -5,6 +5,7 @@ import (
 	"strings"
 	"testing"
 
+	"primeradiant.com/evener/agent/internal/cheapmodel"
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/llm"
 )
@@ -36,7 +37,7 @@ func TestRecursiveDistillStrategy_AfterAction_NoMicroBelowThreshold(t *testing.T
 	client.Register(f)
 
 	profile := NewOpenAIProfile("gpt-5.2")
-	cm := NewManager(profile, client)
+	cm := NewManager(profile, client, cheapmodel.New(client))
 	s := NewRecursiveDistillStrategy(cm)
 
 	// 5 turns — not enough for micro-summary (needs 10).
@@ -62,7 +63,7 @@ func TestRecursiveDistillStrategy_AttentionResolutionDoesNotAdvanceCadence(t *te
 	client := llm.NewClient()
 	spy := &fakeAdapter{name: "openai"}
 	client.Register(spy)
-	s := NewRecursiveDistillStrategy(NewManager(NewOpenAIProfile("gpt-5.2"), client))
+	s := NewRecursiveDistillStrategy(NewManager(NewOpenAIProfile("gpt-5.2"), client, cheapmodel.New(client)))
 	history := make([]schema.Turn, 9, 10)
 	for i := range history {
 		history[i] = schema.NewTurn(schema.TurnAssistant, llm.Assistant("visible action"))
@@ -96,7 +97,7 @@ func TestRecursiveDistillStrategy_AfterAction_MicroAt10Turns(t *testing.T) {
 	client.Register(f)
 
 	profile := NewOpenAIProfile("gpt-5.2")
-	cm := NewManager(profile, client)
+	cm := NewManager(profile, client, cheapmodel.New(client))
 	s := NewRecursiveDistillStrategy(cm)
 
 	// 10 turns — should trigger micro-summary.
@@ -149,7 +150,7 @@ func TestRecursiveDistillStrategy_AfterAction_MacroAt50Turns(t *testing.T) {
 	client.Register(f)
 
 	profile := NewOpenAIProfile("gpt-5.2")
-	cm := NewManager(profile, client)
+	cm := NewManager(profile, client, cheapmodel.New(client))
 	s := NewRecursiveDistillStrategy(cm)
 
 	// Pre-populate with 4 micro-summaries (simulating turns 10-40).
@@ -189,7 +190,7 @@ func TestRecursiveDistillStrategy_AfterAction_MacroAt50Turns(t *testing.T) {
 }
 
 func TestRecursiveDistillStrategy_InjectDistilledContext(t *testing.T) {
-	cm := NewManager(NewOpenAIProfile("gpt-5.2"), nil)
+	cm := NewManager(NewOpenAIProfile("gpt-5.2"), nil, cheapmodel.New(nil))
 	s := NewRecursiveDistillStrategy(cm)
 	s.macroSummaries = []string{"Phase 1: investigated and found root cause."}
 	s.microSummaries = []string{"Applied fix to auth.go.", "Running tests."}
@@ -225,7 +226,7 @@ func TestRecursiveDistillStrategy_InjectDistilledContext(t *testing.T) {
 }
 
 func TestRecursiveDistillStrategy_InjectDistilledContext_RemovesOld(t *testing.T) {
-	cm := NewManager(NewOpenAIProfile("gpt-5.2"), nil)
+	cm := NewManager(NewOpenAIProfile("gpt-5.2"), nil, cheapmodel.New(nil))
 	s := NewRecursiveDistillStrategy(cm)
 	s.microSummaries = []string{"new summary"}
 

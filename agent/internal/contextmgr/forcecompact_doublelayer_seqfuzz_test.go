@@ -10,6 +10,7 @@ import (
 	"sync/atomic"
 	"testing"
 
+	"primeradiant.com/evener/agent/internal/cheapmodel"
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/llm"
 
@@ -186,7 +187,7 @@ func newDoubleLayerModel(preserveRecent int, sawLayer2 *atomic.Bool) *doubleLaye
 	client := llm.NewClient()
 	client.Register(adapter)
 
-	cm := NewManager(testProfile("openai", "test", 1_000_000), client)
+	cm := NewManager(testProfile("openai", "test", 1_000_000), client, cheapmodel.New(client))
 	cm.PreserveRecentTurns = preserveRecent
 	return &doubleLayerModel{preserveRecent: preserveRecent, cm: cm, sawLayer2: sawLayer2}
 }

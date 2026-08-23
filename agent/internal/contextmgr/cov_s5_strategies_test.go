@@ -6,12 +6,13 @@ import (
 	"strings"
 	"testing"
 
+	"primeradiant.com/evener/agent/internal/cheapmodel"
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/llm"
 )
 
 func TestCov_LastInputTokens(t *testing.T) {
-	cm := NewManager(testOpenAIProfileWithContextWindow(1000), llm.NewClient())
+	cm := NewManager(testOpenAIProfileWithContextWindow(1000), llm.NewClient(), cheapmodel.New(llm.NewClient()))
 	if got := cm.LastInputTokens(); got != 0 {
 		t.Errorf("fresh manager LastInputTokens = %d, want 0", got)
 	}
@@ -22,7 +23,7 @@ func TestCov_LastInputTokens(t *testing.T) {
 }
 
 func TestCov_CompactStrategy_AfterActionNoop(t *testing.T) {
-	cm := NewManager(testOpenAIProfileWithContextWindow(1000), llm.NewClient())
+	cm := NewManager(testOpenAIProfileWithContextWindow(1000), llm.NewClient(), cheapmodel.New(llm.NewClient()))
 	s := NewCompactStrategy(cm)
 	if err := s.AfterAction(context.Background(), nil, llm.NewClient()); err != nil {
 		t.Errorf("CompactStrategy.AfterAction should be a nil no-op, got %v", err)
@@ -37,7 +38,7 @@ func TestCov_CompactStrategy_AfterActionNoop(t *testing.T) {
 func TestCov_NewOODAStrategyConstructor(t *testing.T) {
 	profile := testOpenAIProfileWithContextWindow(1000)
 	host := &fakeStrategyHost{stateDir: t.TempDir(), id: "OODA-1", profile: profile}
-	ooda, err := NewOODAStrategy(NewManager(profile, llm.NewClient()), host)
+	ooda, err := NewOODAStrategy(NewManager(profile, llm.NewClient(), cheapmodel.New(llm.NewClient())), host)
 	if err != nil {
 		t.Fatalf("NewOODAStrategy: %v", err)
 	}
@@ -49,7 +50,7 @@ func TestCov_NewOODAStrategyConstructor(t *testing.T) {
 // MemoryCrystalsStrategy.ManageContext runs base compaction, then injects the
 // crystal bank when crystals are present.
 func TestCov_MemoryCrystals_ManageContextInjects(t *testing.T) {
-	cm := NewManager(testOpenAIProfileWithContextWindow(1_000_000), llm.NewClient())
+	cm := NewManager(testOpenAIProfileWithContextWindow(1_000_000), llm.NewClient(), cheapmodel.New(llm.NewClient()))
 	s := NewMemoryCrystalsStrategy(cm)
 
 	history := []schema.Turn{
@@ -112,14 +113,14 @@ func TestCov_RecursiveDistill_MicroSummarize(t *testing.T) {
 	client := llm.NewClient()
 	client.Register(adapter)
 
-	cm := NewManager(testOpenAIProfileWithContextWindow(1000), client)
+	cm := NewManager(testOpenAIProfileWithContextWindow(1000), client, cheapmodel.New(client))
 	s := NewRecursiveDistillStrategy(cm)
 
 	history := []schema.Turn{
 		{Kind: schema.TurnAssistant, Message: llm.Assistant("ran the build")},
 		{Kind: schema.TurnToolResults, Message: llm.ToolResultNamed("c1", "shell", "PASS", false)},
 	}
-	got, err := s.microSummarize(context.Background(), client, history)
+	got, err := s.microSummarize(context.Background(), history)
 	if err != nil {
 		t.Fatalf("microSummarize: %v", err)
 	}
@@ -136,7 +137,7 @@ func TestCov_RecursiveDistill_MicroSummarize(t *testing.T) {
 // RecursiveDistillStrategy.ManageContext injects the distilled hierarchy when
 // micro/macro summaries exist.
 func TestCov_RecursiveDistill_ManageContextInjects(t *testing.T) {
-	cm := NewManager(testOpenAIProfileWithContextWindow(1_000_000), llm.NewClient())
+	cm := NewManager(testOpenAIProfileWithContextWindow(1_000_000), llm.NewClient(), cheapmodel.New(llm.NewClient()))
 	s := NewRecursiveDistillStrategy(cm)
 	s.microSummaries = append(s.microSummaries, "did a thing")
 
