@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -94,7 +95,22 @@ func (h *HubSpawner) ListLaunchModelContract(ctx context.Context) (appwire.Model
 func (h *HubSpawner) ListLaunchModelContractForWorkingDir(ctx context.Context, workingDir string) (appwire.ModelListResponse, error) {
 	stateDir, err := resolveEvenerLaunchStateDir(workingDir, nil)
 	if err != nil {
-		return appwire.ModelListResponse{}, err
+		// The spawn form lets a user type a working directory that does not
+		// exist yet (preflight offers to create it on submit), and the model
+		// picker loads its launchable set scoped by that cwd. A not-yet-created
+		// directory fails project resolution at EvalSymlinks with fs.ErrNotExist;
+		// failing the whole model list here empties the picker before the
+		// directory is ever created. Fall back to the unscoped state dir — the
+		// same resolveEvenerLaunchStateDir("", nil) ListLaunchModelContract
+		// uses — so the launchable set loads against the default project
+		// identity. A non-NotExist error (permissions, etc.) still propagates.
+		if !errors.Is(err, fs.ErrNotExist) {
+			return appwire.ModelListResponse{}, err
+		}
+		stateDir, err = resolveEvenerLaunchStateDir("", nil)
+		if err != nil {
+			return appwire.ModelListResponse{}, err
+		}
 	}
 	env := launchconfig.ToEnv(launchconfig.EnvInputs{
 		Resolved:            launchconfig.Resolved{},

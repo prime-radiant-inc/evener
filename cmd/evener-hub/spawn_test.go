@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"primeradiant.com/evener/agent/diagnostic"
+	"primeradiant.com/evener/appwire"
 	authopenai "primeradiant.com/evener/auth/openai"
 	"primeradiant.com/evener/auth/openai/oaitest"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hubcore"
@@ -1667,4 +1668,47 @@ func envMap(env []string) map[string]string {
 		out[k] = v
 	}
 	return out
+}
+
+// TestHubSpawnerListLaunchModelContract_NonexistentWorkingDir verifies the
+// model picker keeps working before the spawn form's working directory has
+// been created. The spawn flow lets a user type a not-yet-existing directory
+// (preflight offers to create it on submit), and the model selector loads its
+// launchable set scoped by that cwd. Resolving the project state dir for a
+// non-existent path fails at EvalSymlinks; the lister must fall back to the
+// unscoped (default) model contract instead of returning an error that empties
+// the picker. See ModelField.tsx: a rejected model/list surfaces
+// "Couldn't load models" in the catalog.
+func TestHubSpawnerListLaunchModelContract_NonexistentWorkingDir(t *testing.T) {
+	dir := t.TempDir()
+	// A working directory that does not (yet) exist on disk.
+	nonexistent := filepath.Join(dir, "never", "created")
+
+	var capturedStateDir string
+	oldFn := listEvenerLaunchModelContractFn
+	listEvenerLaunchModelContractFn = func(_ context.Context, _ string, env []string) (appwire.ModelListResponse, error) {
+		capturedStateDir = envMap(env)["EVENER_STATE_DIR"]
+		return appwire.ModelListResponse{
+			Data: []appwire.ModelDescriptor{{Provider: "openai", Model: "gpt-5.2"}},
+		}, nil
+	}
+	t.Cleanup(func() { listEvenerLaunchModelContractFn = oldFn })
+
+	h := &HubSpawner{}
+	resp, err := h.ListLaunchModelContractForWorkingDir(context.Background(), nonexistent)
+	if err != nil {
+		t.Fatalf("ListLaunchModelContractForWorkingDir(nonexistent) = err %v, want nil (fall back to unscoped contract)", err)
+	}
+	if len(resp.Data) == 0 {
+		t.Fatalf("resp.Data empty; want the fallback model contract")
+	}
+	// The fallback must use the unscoped state dir (resolved from an empty
+	// workDir, i.e. the hub's own cwd), NOT a path derived from the
+	// non-existent directory.
+	if capturedStateDir == "" {
+		t.Fatalf("EVENER_STATE_DIR not set in spawned env")
+	}
+	if strings.Contains(capturedStateDir, nonexistent) {
+		t.Fatalf("EVENER_STATE_DIR = %q, must not be derived from the non-existent working dir", capturedStateDir)
+	}
 }
