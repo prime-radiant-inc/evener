@@ -1,0 +1,34 @@
+/* VoiceLevel — decorative waveform. CSS transforms only, no canvas/SVG. */
+
+.waveform {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-8);
+  width: 100%;
+  height: 96px;
+  pointer-events: none;
+}
+
+.bar {
+  display: block;
+  width: 6px;
+  height: 100%;
+  border-radius: 3px;
+  background: var(--accent);
+  transform-origin: center;
+  /* The transform is set inline by the component from the live level. */
+  transition: transform 0.08s linear;
+  will-change: transform;
+}
+
+/* When not active, the bars rest near-flat. */
+.waveform[data-active="false"] .bar {
+  opacity: 0.4;
+  background: var(--secondary);
+}
+
+/* Reduced-motion: drop the transform transition so bars do not animate. */
+.waveform[data-reduced-motion="true"] .bar {
+  transition: none;
+}

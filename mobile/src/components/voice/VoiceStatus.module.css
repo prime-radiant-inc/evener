@@ -1,0 +1,52 @@
+/* VoiceStatus — status mark with distinct glyph + label per status. */
+
+.status {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-8);
+  min-height: var(--tap-target);
+  padding: var(--space-8) var(--space-16);
+  border-radius: var(--radius-control);
+  background: var(--raised);
+  font-size: 0.9em;
+  font-weight: 600;
+}
+
+.glyph {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 1.5em;
+  height: 1.5em;
+  border-radius: 50%;
+  font-size: 1em;
+  line-height: 1;
+  background: var(--secondary);
+  color: var(--accent-contrast);
+}
+
+.label {
+  color: var(--primary);
+}
+
+.status[data-status="listening"] .glyph {
+  background: var(--accent);
+}
+
+.status[data-status="speaking"] .glyph {
+  background: var(--live);
+}
+
+.status[data-status="interrupted"] .glyph {
+  background: var(--attention);
+}
+
+.status[data-status="error"] .glyph {
+  background: var(--danger);
+  color: var(--danger-ink);
+}
+
+.status[data-status="disabled"] .glyph {
+  background: var(--secondary);
+}
