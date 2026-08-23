@@ -69,13 +69,13 @@ func selectResponsesContinuationAnchorCandidate(cfg SessionConfig, history []sch
 	}
 
 	return responsesContinuationAnchorCandidate{
-		TurnIndex: anchorIndex,
-		Turn:      anchor,
-		Delta:     delta,
-	}, llm.ResponsesContinuationDecision{
-		HistoryMode: llm.HistoryModeResponsesDelta,
-		Reason:      "continuation_anchor_candidate",
-	}
+			TurnIndex: anchorIndex,
+			Turn:      anchor,
+			Delta:     delta,
+		}, llm.ResponsesContinuationDecision{
+			HistoryMode: llm.HistoryModeResponsesDelta,
+			Reason:      "continuation_anchor_candidate",
+		}
 }
 
 func responsesContinuationDeltaIneligibleReason(anchor schema.Turn, delta []schema.Turn) string {
