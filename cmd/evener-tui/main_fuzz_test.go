@@ -1,6 +1,6 @@
 //go:build evenerfuzz
 
-package main
+package tui
 
 import (
 	"bytes"
@@ -135,17 +135,15 @@ func TestRootTUIMainAndExecutableBoundaries(t *testing.T) {
 }
 
 func testRootTUIMainAndExecutableBoundaries(t *testing.T) {
-	oldExit, oldArgs, oldExe, oldParse := exitProcess, processArgs, processExecutable, parseStartupOptions
+	oldArgs, oldExe, oldParse := processArgs, processExecutable, parseStartupOptions
 	t.Cleanup(func() {
-		exitProcess, processArgs, processExecutable, parseStartupOptions = oldExit, oldArgs, oldExe, oldParse
+		processArgs, processExecutable, parseStartupOptions = oldArgs, oldExe, oldParse
 	})
 	processArgs = func() []string { return nil }
 	parseStartupOptions = func([]string, func(string) string) (hubstart.TUIStartupOptions, error) {
 		return hubstart.TUIStartupOptions{}, flag.ErrHelp
 	}
-	exited := -1
-	exitProcess = func(code int) { exited = code }
-	main()
+	exited := run()
 	if exited != 0 {
 		t.Fatalf("exit=%d", exited)
 	}

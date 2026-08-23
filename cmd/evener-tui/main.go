@@ -1,4 +1,4 @@
-package main
+package tui
 
 import (
 	"context"
@@ -43,12 +43,22 @@ var (
 	}
 )
 
-func main() {
-	// All shutdown work goes through run() so deferred cleanup (notably
-	// tuitheme.ResetTerminalBg, which restores OSC 10/11 colors the user expected
-	// before we started) actually fires on every exit path. Calling
-	// os.Exit directly from main would skip those defers.
-	exitProcess(run())
+// Run is the library entry point used by the `evener tui` subcommand. It
+// temporarily installs args/stdout/stderr onto the package-level swappable
+// vars that run() and the tests already use, so the existing test hooks
+// (processArgs, standardError, standardOutput, exitProcess) keep working
+// unchanged.
+func Run(args []string, _ io.Reader, stdout, stderr io.Writer) int {
+	oldArgs, oldOut, oldErr := processArgs, standardOutput, standardError
+	processArgs = func() []string { return append([]string{"evener-tui"}, args...) }
+	standardOutput = stdout
+	standardError = stderr
+	defer func() {
+		processArgs = oldArgs
+		standardOutput = oldOut
+		standardError = oldErr
+	}()
+	return run()
 }
 
 func run() int {

@@ -68,7 +68,7 @@ func TestAuthTokenFilePathWithoutHome(t *testing.T) {
 
 func TestStartupErrorScreenAllKinds(t *testing.T) {
 	kinds := map[StartupErrorKind]string{
-		StartupErrorMissingHubBinary:  "Cannot find evener-hub binary",
+		StartupErrorMissingHubBinary:  "Cannot find evener binary (hub subcommand)",
 		StartupErrorBindFailure:       "Hub failed to bind",
 		StartupErrorUnhealthyHub:      "did not become healthy",
 		StartupErrorIncompatibleAPI:   "Hub API is incompatible",
