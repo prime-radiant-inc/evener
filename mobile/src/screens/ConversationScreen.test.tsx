@@ -12,6 +12,8 @@ import type {
   MobileConversation,
   MobileTimelineItem,
 } from "../conversation/model";
+import type { ConversationService } from "../services/conversation";
+import type { AttachmentState } from "../state/attachments";
 import type { ConversationState } from "../state/conversation";
 import type { NavigationState } from "../state/navigation";
 import { ConversationScreen } from "./ConversationScreen";
@@ -246,7 +248,7 @@ describe("ConversationScreen — timeline", () => {
 });
 
 describe("ConversationScreen — composer placeholder", () => {
-  it("renders a composer slot placeholder", () => {
+  it("renders a composer slot placeholder when no service/attachment store", () => {
     const conversationStore = createFakeConversationStore(makeConversation());
     const navigationStore = createFakeNavigationStore("Chat");
     render(
@@ -256,6 +258,72 @@ describe("ConversationScreen — composer placeholder", () => {
       />,
     );
     expect(screen.getByTestId("composer-placeholder")).toBeInTheDocument();
+  });
+});
+
+describe("ConversationScreen — composer integration", () => {
+  function createFakeAttachmentStore(): UseBoundStore<StoreApi<AttachmentState>> {
+    return create<AttachmentState>(() => ({
+      attachments: [],
+      error: null,
+      add: vi.fn(),
+      remove: vi.fn(),
+      clear: vi.fn(),
+      setError: vi.fn(),
+    }));
+  }
+
+  function createFakeService(): ConversationService {
+    return {
+      open: vi.fn(),
+      loadOlder: vi.fn(),
+      subscribeNotifications: vi.fn(() => () => {}),
+      send: vi.fn(),
+      steer: vi.fn(),
+      queue: vi.fn(),
+      interrupt: vi.fn(),
+      compact: vi.fn(),
+      shutdown: vi.fn(),
+      changeModel: vi.fn(),
+      setReasoningEffort: vi.fn(),
+      rename: vi.fn(),
+      cancelQueued: vi.fn(),
+      close: vi.fn(),
+    };
+  }
+
+  it("renders the Composer when service and attachment store are provided", () => {
+    const conversationStore = createFakeConversationStore(makeConversation());
+    const navigationStore = createFakeNavigationStore("Chat");
+    const conversationService = createFakeService();
+    const attachmentStore = createFakeAttachmentStore();
+    render(
+      <ConversationScreen
+        conversationStore={conversationStore}
+        navigationStore={navigationStore}
+        conversationService={conversationService}
+        attachmentStore={attachmentStore}
+      />,
+    );
+    expect(screen.getByTestId("composer")).toBeInTheDocument();
+  });
+
+  it("renders the AskComposer when askPending is true", () => {
+    const conversationStore = createFakeConversationStore(
+      makeConversation([], { askPending: true }),
+    );
+    const navigationStore = createFakeNavigationStore("Chat");
+    const conversationService = createFakeService();
+    const attachmentStore = createFakeAttachmentStore();
+    render(
+      <ConversationScreen
+        conversationStore={conversationStore}
+        navigationStore={navigationStore}
+        conversationService={conversationService}
+        attachmentStore={attachmentStore}
+      />,
+    );
+    expect(screen.getByTestId("ask-composer")).toBeInTheDocument();
   });
 });
 
