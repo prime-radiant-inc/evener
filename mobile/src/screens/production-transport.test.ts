@@ -265,6 +265,89 @@ describe("7A transport: getContentSize route and real raw shape", () => {
   });
 });
 
+describe("7A transport: clipboardPaste route and real raw shape", () => {
+  it("invokes plugin:evener-native|clipboard_paste with {payload:{}}", async () => {
+    const bridge = fakeTauriBridge([
+      {
+        route: "plugin:evener-native|clipboard_paste",
+        // Real Rust ClipboardPasteResponse: {text: "..."}
+        result: { text: "http://192.168.1.5:9181/auth?token=abc" },
+      },
+    ]);
+    const transport = createTauriNativeTransport(bridge);
+    const native = createNativeBridge(transport);
+    const result = await native.clipboardPaste();
+    expect(result).toBe("http://192.168.1.5:9181/auth?token=abc");
+    expect(bridge.invocations.length).toBe(1);
+    expect(bridge.invocations[0]?.route).toBe(
+      "plugin:evener-native|clipboard_paste",
+    );
+    expect(bridge.invocations[0]?.args).toEqual({ payload: {} });
+  });
+
+  it("accepts the real raw shape {text:string} and returns the text", async () => {
+    const bridge = fakeTauriBridge([
+      {
+        route: "plugin:evener-native|clipboard_paste",
+        result: { text: "hello" },
+      },
+    ]);
+    const transport = createTauriNativeTransport(bridge);
+    const native = createNativeBridge(transport);
+    const result = await native.clipboardPaste();
+    expect(result).toBe("hello");
+  });
+
+  it("accepts an empty string when clipboard is empty", async () => {
+    const bridge = fakeTauriBridge([
+      {
+        route: "plugin:evener-native|clipboard_paste",
+        result: { text: "" },
+      },
+    ]);
+    const transport = createTauriNativeTransport(bridge);
+    const native = createNativeBridge(transport);
+    const result = await native.clipboardPaste();
+    expect(result).toBe("");
+  });
+
+  it("rejects a missing `text` field", async () => {
+    const bridge = fakeTauriBridge([
+      {
+        route: "plugin:evener-native|clipboard_paste",
+        result: {},
+      },
+    ]);
+    const transport = createTauriNativeTransport(bridge);
+    const native = createNativeBridge(transport);
+    await expect(native.clipboardPaste()).rejects.toThrow();
+  });
+
+  it("rejects a wrong-typed `text` field", async () => {
+    const bridge = fakeTauriBridge([
+      {
+        route: "plugin:evener-native|clipboard_paste",
+        result: { text: 42 },
+      },
+    ]);
+    const transport = createTauriNativeTransport(bridge);
+    const native = createNativeBridge(transport);
+    await expect(native.clipboardPaste()).rejects.toThrow();
+  });
+
+  it("rejects extra fields in the clipboard paste raw shape", async () => {
+    const bridge = fakeTauriBridge([
+      {
+        route: "plugin:evener-native|clipboard_paste",
+        result: { text: "hello", extra: "no" },
+      },
+    ]);
+    const transport = createTauriNativeTransport(bridge);
+    const native = createNativeBridge(transport);
+    await expect(native.clipboardPaste()).rejects.toThrow();
+  });
+});
+
 // ---------------------------------------------------------------------------
 // Decoded responses — no version/type leak from versioned scan response
 // ---------------------------------------------------------------------------

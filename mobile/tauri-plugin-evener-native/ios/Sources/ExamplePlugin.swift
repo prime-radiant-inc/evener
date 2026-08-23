@@ -89,7 +89,8 @@ enum ContractV1 {
                 "secure.state", "secure.updated", "secure.deleted",
                 "pairing.preview", "permission.status", "speech.ready",
                 "speech.stopped", "synthesis.started", "synthesis.stopped",
-                "haptic.completed", "contentSize.value", "error",
+                "haptic.completed", "contentSize.value", "clipboard.pasted",
+                "error",
             ]
             if !allowed.contains(typeValue) { throw ContractError.unknownType }
             // Reject secret-bearing extra fields on responses
