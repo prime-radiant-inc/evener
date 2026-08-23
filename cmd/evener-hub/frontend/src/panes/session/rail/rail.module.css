@@ -13,6 +13,58 @@
   overflow: hidden;
 }
 
+.railHead {
+  flex: 0 0 auto;
+  padding: 6px 7px 5px;
+  border-bottom: 1px solid var(--edge);
+  background: var(--surface-inset);
+}
+
+.axisToggle {
+  display: flex;
+  height: 19px;
+  margin-bottom: 5px;
+  border: 1px solid var(--edge-strong);
+  border-radius: 3px;
+  overflow: hidden;
+}
+
+.axisBtn,
+.axisBtnOn {
+  flex: 1;
+  border: 0;
+  border-right: 1px solid var(--edge);
+  background: var(--surface-1);
+  color: var(--ink-low);
+  cursor: pointer;
+  font: 700 8px var(--font-mono);
+  letter-spacing: 0.06em;
+}
+
+.axisBtn:last-child,
+.axisBtnOn:last-child {
+  border-right: 0;
+}
+
+.axisBtnOn {
+  background: var(--accent-bg);
+  color: var(--ink-hi);
+}
+
+.burnLine {
+  display: flex;
+  align-items: baseline;
+  gap: 4px;
+  color: var(--ink-low);
+  font: 8.5px var(--font-mono);
+}
+
+.burnNow {
+  color: var(--ink-hi);
+  font: 700 14px var(--font-mono);
+  letter-spacing: -0.03em;
+}
+
 /* Tablet band: 560–899px pane → 96px rail */
 @container (min-width: 560px) and (max-width: 899px) {
   .rail {

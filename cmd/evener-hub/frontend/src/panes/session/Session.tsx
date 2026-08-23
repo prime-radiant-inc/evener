@@ -309,6 +309,7 @@ export default function Session({ params, paneId, focused: paneFocused }: PanePr
   // derives its model from the thread's turns (live-faithful: only revealed
   // data) and syncs bidirectionally with VirtualList's scroll element.
   const [railEnabled] = useRailSetting();
+  const [railAxis, setRailAxis] = useState<"time" | "turn">("time");
   const railTheme = useRailTheme();
   const railModel = useMemo(
     () => (model && railEnabled ? railModelFromTurns(model.turns, now) : null),
@@ -318,13 +319,16 @@ export default function Session({ params, paneId, focused: paneFocused }: PanePr
     () =>
       railModel
         ? {
-            kind: "time" as const,
+            kind: railAxis,
             nowMs: now,
             startMs: railModel.startMs,
-            ap: { end: Math.max(now, railModel.startMs + 600000) },
+            ap:
+              railAxis === "turn"
+                ? { denom: Math.max(1, railModel.events.length - 1) }
+                : { end: Math.max(now, railModel.startMs + 600000) },
           }
         : null,
-    [railModel, now],
+    [railModel, now, railAxis],
   );
   const { thumb } = useRailScrollSync({
     listRef: virtualListRef,
@@ -545,11 +549,12 @@ export default function Session({ params, paneId, focused: paneFocused }: PanePr
             <SessionRail
               model={railModel}
               nowMs={now}
-              axis="time"
+              axis={railAxis}
               theme={railTheme}
               thumb={thumb}
               playing={model?.status?.type === "active"}
               ended={model?.status?.type === "ended"}
+              onAxisChange={(a) => setRailAxis(a === "turn" ? "turn" : "time")}
               onJump={(idx) => {
                 if (idx >= 0 && idx < viewRows.length) {
                   virtualListRef.current?.scrollToIndex(idx, { align: "center" });

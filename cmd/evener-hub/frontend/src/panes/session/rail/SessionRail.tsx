@@ -94,6 +94,8 @@ export interface SessionRailProps {
   ended: boolean;
   /** Called when the user clicks an anchor or anomaly. */
   onJump?: (eventIndex: number) => void;
+  /** Called when the user toggles the axis (time ↔ turn). */
+  onAxisChange?: (axis: AxisKind) => void;
   /** Width in px (default 156). */
   width?: number;
 }
@@ -107,6 +109,7 @@ export function SessionRail({
   playing,
   ended,
   onJump,
+  onAxisChange,
   width = 156,
 }: SessionRailProps) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
@@ -241,6 +244,29 @@ export function SessionRail({
 
   return (
     <section className={styles.rail} style={{ width }} aria-label="Session rail">
+      {onAxisChange && (
+        <div className={styles.railHead}>
+          <div className={styles.axisToggle}>
+            <button
+              type="button"
+              className={axis === "time" ? styles.axisBtnOn : styles.axisBtn}
+              onClick={() => onAxisChange("time")}
+            >
+              TIME
+            </button>
+            <button
+              type="button"
+              className={axis === "turn" ? styles.axisBtnOn : styles.axisBtn}
+              onClick={() => onAxisChange("turn")}
+            >
+              TURN
+            </button>
+          </div>
+          <div className={styles.burnLine}>
+            <b className={styles.burnNow}>{fmtK(model.live.burn)}</b> tokens
+          </div>
+        </div>
+      )}
       <div className={styles.railMap} ref={mapRef}>
         <canvas
           ref={canvasRef}
@@ -282,6 +308,13 @@ export function SessionRail({
       )}
     </section>
   );
+}
+
+/** Format a number with k/M suffix for compact display. */
+function fmtK(n: number): string {
+  if (n >= 1e6) return `${(n / 1e6).toFixed(2)}M`;
+  if (n >= 1000) return `${(n / 1000).toFixed(1)}k`;
+  return String(Math.round(n));
 }
 
 // --- the combined rail renderer (ported from reference drawCombinedRail) ---
