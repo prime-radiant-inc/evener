@@ -1137,7 +1137,7 @@ func buildTUIBinary(t *testing.T) string {
 			errTUIBinary = err
 			return
 		}
-		bin := filepath.Join(dir, "evener-tui")
+		bin := filepath.Join(dir, "evener")
 		buildArgs := []string{"build", "-o", bin}
 		// EVENER_E2E_COVER=<dir>: build an instrumented binary so the tmux'd TUI
 		// subprocess emits coverage into that GOCOVERDIR (see tuiCoverEnvPrefix).
@@ -1145,7 +1145,7 @@ func buildTUIBinary(t *testing.T) string {
 		if os.Getenv("EVENER_E2E_COVER") != "" {
 			buildArgs = append(buildArgs, "-cover")
 		}
-		buildArgs = append(buildArgs, "./cmd/evener-tui")
+		buildArgs = append(buildArgs, "./cmd/evener/")
 		cmd := exec.Command("go", buildArgs...)
 		cmd.Dir = repoRoot
 		if out, err := cmd.CombinedOutput(); err != nil {
@@ -1227,7 +1227,7 @@ func startTUITmuxSized(t *testing.T, bin string, hub *tuiE2EHub, width, height i
 	session := uniqueTmuxSessionName()
 	socket := session
 	stateDir := t.TempDir()
-	command := tuiCoverEnvPrefix() + tuiIsolatedEnvPrefix(t) + shellQuote(bin) + " -debug -no-auto-start-hub -hub-addr " + shellQuote(hub.URL()) + " -state-dir " + shellQuote(stateDir)
+	command := tuiCoverEnvPrefix() + tuiIsolatedEnvPrefix(t) + shellQuote(bin) + " tui -debug -no-auto-start-hub -hub-addr " + shellQuote(hub.URL()) + " -state-dir " + shellQuote(stateDir)
 	runTmux(t, socket, "new-session", "-d", "-x", strconv.Itoa(width), "-y", strconv.Itoa(height), "-s", session, command)
 	// Register cleanup the instant the session (and its dedicated server)
 	// exist, before any later setup step below that can itself t.Fatalf: a
@@ -1259,7 +1259,7 @@ func startTUITmuxAltScreen(t *testing.T, bin string, hub *tuiE2EHub, width, heig
 	// scrollback comes back blank). Blocking the shell on a read it never
 	// receives holds the pty open so tmux drains and renders the message; the
 	// test reads it via WaitForHistory and Close() tears the session down.
-	command := tuiCoverEnvPrefix() + tuiIsolatedEnvPrefix(t) + shellQuote(bin) + " -no-auto-start-hub -hub-addr " + shellQuote(hub.URL()) + " -state-dir " + shellQuote(stateDir) + "; read _"
+	command := tuiCoverEnvPrefix() + tuiIsolatedEnvPrefix(t) + shellQuote(bin) + " tui -no-auto-start-hub -hub-addr " + shellQuote(hub.URL()) + " -state-dir " + shellQuote(stateDir) + "; read _"
 	runTmux(t, socket, "new-session", "-d", "-x", strconv.Itoa(width), "-y", strconv.Itoa(height), "-s", session, command)
 	// See the matching comment in startTUITmuxSized: register cleanup as
 	// soon as the session/server exist, not only once the tmuxTUI value
