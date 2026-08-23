@@ -20,7 +20,7 @@
 //
 // A selector is "", local:<id>, proj:<project-id>:<id>, or a bare <id>. Common flags:
 // --state-dir <path> (overrides EVENER_STATE_DIR / XDG default) and --json.
-package main
+package doctor
 
 import (
 	"encoding/json"
@@ -40,8 +40,8 @@ import (
 	"primeradiant.com/evener/internal/plugins"
 )
 
-func main() {
-	osExit(run(os.Args[1:], os.Stdout, os.Stderr))
+func Run(args []string, _ io.Reader, stdout, stderr io.Writer) int {
+	return run(args, stdout, stderr)
 }
 
 var osExit = os.Exit
