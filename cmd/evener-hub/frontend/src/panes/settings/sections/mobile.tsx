@@ -1,5 +1,5 @@
-import { useEffect, useState } from "react";
 import { QRCodeSVG } from "qrcode.react";
+import { useEffect, useState } from "react";
 import { Button, EmptyState, Skeleton } from "../../../widgets";
 import { copyText } from "./credentials/clipboard";
 
@@ -68,7 +68,7 @@ async function loadPairingURL(): Promise<PairingState> {
     const payload: unknown = await response.json();
     if (!isPairingResponse(payload)) return { kind: "error" };
     return { kind: "ready", authURL: payload.auth_url };
-  } catch (error) {
+  } catch {
     return { kind: "error" };
   }
 }
