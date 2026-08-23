@@ -43,6 +43,7 @@ export class FakeNativeBridge implements NativeTransport {
     (e: { state: LifecycleState }) => void
   >();
   private voiceSessionId: string | null = null;
+  voiceRate: number | null = null;
   private readonly voiceEventHandlers = new Set<
     (event: VoiceBridgeEvent) => void
   >();
