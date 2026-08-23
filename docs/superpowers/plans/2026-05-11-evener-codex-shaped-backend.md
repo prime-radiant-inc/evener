@@ -4,7 +4,7 @@
 
 **Goal:** Replace Evener's current REST/SSE hub and daemon backend contract with a Codex-shaped JSON-RPC app-server protocol, including Evener extensions for clear, fork-from-turn, tasks, subagents, provider-neutral models, and directory completion.
 
-**Architecture:** Add a new app-wire protocol package and reusable app-server plumbing, convert `evener serve` into an app-wire source, make `evener-hub` a JSON-RPC multiplexer over local daemon sources, then move TUI and browser clients onto the same wire protocol. This is a breaking plan with no REST/SSE or `internal/hubapi` compatibility path.
+**Architecture:** Add a new app-wire protocol package and reusable app-server plumbing, convert `evener serve` into an app-wire source, make `evener hub` a JSON-RPC multiplexer over local daemon sources, then move TUI and browser clients onto the same wire protocol. This is a breaking plan with no REST/SSE or `internal/hubapi` compatibility path.
 
 **Tech Stack:** Go, `net/http`, gorilla-free websocket if the repo already has a websocket dependency, otherwise `nhooyr.io/websocket`; existing Bubble Tea TUI; existing browser assets; existing Evener agent/session packages.
 
@@ -1286,7 +1286,7 @@ import (
 
 func TestServerRequiresInitialize(t *testing.T) {
 	server := NewServer(ServerConfig{
-		ServerName: "evener-hub",
+		ServerName: "evener hub",
 		Version:    "test",
 		SourceID:  "local",
 	})
@@ -1297,7 +1297,7 @@ func TestServerRequiresInitialize(t *testing.T) {
 }
 
 func TestServerInitializeAllowsLaterRequests(t *testing.T) {
-	server := NewServer(ServerConfig{ServerName: "evener-hub", Version: "test", SourceID: "local"})
+	server := NewServer(ServerConfig{ServerName: "evener hub", Version: "test", SourceID: "local"})
 	HandleTyped(server.Router(), appwire.MethodThreadList, func(ctx context.Context, params appwire.ThreadListParams) (appwire.ThreadListResponse, error) {
 		return appwire.ThreadListResponse{}, nil
 	})
@@ -1859,7 +1859,7 @@ git commit -m "feat(hub): route local daemon appwire sources"
 
 ---
 
-## Task 8: Convert `evener-hub` To Public `/rpc`
+## Task 8: Convert `evener hub` To Public `/rpc`
 
 **Files:**
 - Modify: `cmd/evener-hub/main.go`
@@ -1941,7 +1941,7 @@ git commit -m "feat(hub): expose appwire rpc"
 
 ---
 
-## Task 9: Move `evener-tui` To App-Wire Client
+## Task 9: Move `evener tui` To App-Wire Client
 
 **Files:**
 - Modify: `cmd/evener-tui/main.go`
@@ -2275,8 +2275,8 @@ Run:
 
 ```bash
 go build ./cmd/evener
-go build ./cmd/evener-hub
-go build ./cmd/evener-tui
+go build ./cmd/evener/
+go build ./cmd/evener/
 ```
 
 Expected: all builds complete with no output.
@@ -2296,8 +2296,8 @@ git commit -m "test: verify appwire backend end to end"
 - [ ] `go test ./...` passes.
 - [ ] `cd cmd/evener-hub/jstest && npm test` passes.
 - [ ] `go build ./cmd/evener ./cmd/evener-hub ./cmd/evener-tui` passes.
-- [ ] Starting `evener-hub` and connecting a browser uses `/rpc`.
-- [ ] Starting `evener-tui` initializes app-wire and shows threads from `thread/list`.
+- [ ] Starting `evener hub` and connecting a browser uses `/rpc`.
+- [ ] Starting `evener tui` initializes app-wire and shows threads from `thread/list`.
 - [ ] A live turn streams typed notifications without SSE.
 - [ ] Clear returns a new source-qualified ref.
 - [ ] Fork-from-turn works through Evener's `thread/fork` extension.

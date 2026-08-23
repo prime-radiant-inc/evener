@@ -39,7 +39,7 @@
 >
 > maybeAutoSave (agent/session.go) writes Meta() on every autosave. So resuming a delegate writes is_subagent:false back into its meta.json, and the flag is gone for every later reader and every subsequent resume. It is a one-way erasure of durable lineage.
 >
-> Impact today: anything keying on the persisted flag misclassifies a resumed delegate as a root session. evener-doctor sessions reads it; so would any future gate on "is this session someone's delegate".
+> Impact today: anything keying on the persisted flag misclassifies a resumed delegate as a root session. evener doctor sessions reads it; so would any future gate on "is this session someone's delegate".
 >
 > Found independently by two reviewers auditing a separate design. Neither reproduced it at runtime -- this is a code reading of Meta(), isSubagentSession() and maybeAutoSave. VERIFY BY REPRODUCTION FIRST: resume a delegate with 'serve --resume', let an autosave land, and diff meta.json. If a guard elsewhere prevents the rewrite, close this with that evidence.
 >

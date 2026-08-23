@@ -4,12 +4,12 @@
 # AppWire protocol reference
 
 AppWire is the JSON-RPC wire protocol that connects the three evener binaries:
-the browser and `evener-tui` talk to `evener-hub`, and `evener-hub` talks to each
+the browser and `evener tui` talk to `evener hub`, and `evener hub` talks to each
 `evener serve` daemon (and to Codex app-server sources). The same message shapes
 and method catalog ride every hop.
 
 ```
-browser / evener-tui  ──WS /rpc──▶  evener-hub  ──WS──▶  evener serve daemon
+browser / evener tui  ──WS /rpc──▶  evener hub  ──WS──▶  evener serve daemon
 ```
 
 This document is **generated** from the declarative catalog in
@@ -77,7 +77,7 @@ unmarshal), invalid-request (e.g. a request before `initialize`).
 ## Request methods
 
 `Scope` is which binaries expose the method: **both** (hub and daemon), **hub**
-(evener-hub only — auth, launch config, provider instances, model listing), or
+(evener hub only — auth, launch config, provider instances, model listing), or
 **daemon** (the `evener serve` engine only). **connection** methods (`initialize`,
 `ping`) are handled by the connection itself on every server, outside the
 router. **unimplemented** methods are defined with a client stub but served by

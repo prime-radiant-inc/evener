@@ -35,7 +35,7 @@ process restart.
    ```bash
    kill "$HUBPID" 2>/dev/null; sleep 1
    HOME="$TH" XDG_STATE_HOME="$TH/.local/state" \
-     "$run/evener-hub" -addr 127.0.0.1:0 -evener "$run/evener" \
+     "$run/evener" hub -addr 127.0.0.1:0 -evener "$run/evener" \
      >"$run/hub2.log" 2>&1 &
    HUBPID=$!
    echo "$HUBPID" >"$run/hub.pid"
@@ -85,7 +85,7 @@ rm -rf "$run"                 # $TH, both logs and the binaries all live under i
 ```
 
 Kill by the recorded pid, and remove `$run` by name — never `pkill -f
-'evener-hub …'` (it takes out every other concurrent agent's test hub) and never
+'evener hub …'` (it takes out every other concurrent agent's test hub) and never
 an `rm -rf /tmp/evener-sc-home-*` glob (it deletes every other concurrent run of
 this same card, kata `k2rx`).
 

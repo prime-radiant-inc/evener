@@ -179,7 +179,7 @@ bottom of each group where relevant.
 - the dedicated dir-picker button (as opposed to the inline input) opens the shared `.chip-picker-dir` popover listing children of its sibling text input's current value; browsing rows there doesn't touch the sibling input until Accept, which writes the browsed path and fires exactly one input and one change event (test-settings-dir-picker.js)
 
 ### test-settings-loudscope.js
-- the loudScope setting is a 2-option radio (asks default / all) wired through the same `data-notif-form` change delegate as the notification checkboxes; selecting "all" persists `loudScope=all`, dispatches `evener-hub:notifications-changed`, and toasts success (test-settings-loudscope.js)
+- the loudScope setting is a 2-option radio (asks default / all) wired through the same `data-notif-form` change delegate as the notification checkboxes; selecting "all" persists `loudScope=all`, dispatches `evener hub:notifications-changed`, and toasts success (test-settings-loudscope.js)
 - on restore, the stored loudScope radio is checked and the other unchecked; an unset/default preference reflects to the "asks" radio (test-settings-loudscope.js)
 
 ### test-settings-mcp-status.js
@@ -190,7 +190,7 @@ bottom of each group where relevant.
 - the settings model picker fetches the diagnostics-envelope endpoint (`diagnostics=1`); its "Recent" tab is pinned first among providers, is active by default, and shows the most recent model with the same prettified-name+badge treatment as other provider tabs (test-settings-model-picker.js)
 
 ### test-settings-notifications.js
-- toggling the title-count preference persists it, flips its ON/OFF label, dispatches `evener-hub:notifications-changed`, and a committed change toasts success (test-settings-notifications.js)
+- toggling the title-count preference persists it, flips its ON/OFF label, dispatches `evener hub:notifications-changed`, and a committed change toasts success (test-settings-notifications.js)
 - toggling OS notifications on requests permission; once granted the checkbox stays checked and its label reflects "granted"; if permission is denied instead, the checkbox reverts to unchecked, its label reverts to OFF, it is not persisted as on, and a warning toast explains why (test-settings-notifications.js)
 - on restore, a previously-saved toggle is checked and an unset one stays unchecked (test-settings-notifications.js)
 
@@ -226,7 +226,7 @@ bottom of each group where relevant.
 - when the tab is focused (`document.hasFocus()` true), an into-transition still updates counts but suppresses the OS notification (test-notifications-attention.js)
 - a broadcast that arrives before the baseline fetch has resolved must not fire an OS notification (no baseline yet → no edge firing) (test-notifications-attention.js)
 - the sound preference plays a tone (via `AudioContext`) on the same into-transition that would trigger an OS notification (test-notifications-attention.js)
-- dispatching `evener-hub:notifications-changed` re-reads prefs and re-applies the title immediately in both directions (title off strips the `"(N)"` prefix, title on restores it from the current summary); an `htmx:afterSettle` on body re-applies the title if a swap clobbered it (test-notifications-attention.js)
+- dispatching `evener hub:notifications-changed` re-reads prefs and re-applies the title immediately in both directions (title off strips the `"(N)"` prefix, title on restores it from the current summary); an `htmx:afterSettle` on body re-applies the title if a swap clobbered it (test-notifications-attention.js)
 
 ### test-notifications-loudscope.js
 - an existing v2 prefs blob with no `loudScope` key backfills `loudScope` to `"asks"` (not "off") on load and bumps the stored version to `"3"` so the migration doesn't re-run; a fresh install with no stored blob at all also defaults straight to `loudScope="asks"` (test-notifications-loudscope.js)

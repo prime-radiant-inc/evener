@@ -111,7 +111,7 @@ between runs if you care about a clean past index.
 - The `launch_overrides.pluginDirs` field is a per-session
   override that takes precedence over global / in-repo launch
   config. To make a plugin available across all sessions, set it
-  in `$HOME/.evener/launch.toml` or via `evener-hub`'s settings UI under
+  in `$HOME/.evener/launch.toml` or via `evener hub`'s settings UI under
   Settings → Extensions → Plugins, in the "Plugin directories" list
   (`panes/settings/sections.ts:30,49`;
   `panes/settings/sections/pluginsDirs.tsx:11-12`). There is no

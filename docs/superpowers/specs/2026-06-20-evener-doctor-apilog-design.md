@@ -1,4 +1,4 @@
-# evener-doctor `apilog` — API-call diagnostics
+# evener doctor `apilog` — API-call diagnostics
 
 Status: implemented (2026-06-20). Extends [2026-06-19-evener-doctor-unified-design.md](2026-06-19-evener-doctor-unified-design.md).
 
@@ -8,8 +8,8 @@ Status: implemented (2026-06-20). Extends [2026-06-19-evener-doctor-unified-desi
 had nowhere else. It answered evener-quality/cost questions — "which calls came back empty?",
 "which errored?", "where is cache spend leaking?", "how many tokens did this session burn?" —
 that matter regardless of any benchmark. The rest of the transcript scripts were either
-already covered (evener-doctor `transcript`/`tree`, evener-hub HTML, `evener --resume-with`) or
-purely terminal-bench. So this capability folds into evener-doctor; the scripts are removed.
+already covered (evener doctor `transcript`/`tree`, evener hub HTML, `evener --resume-with`) or
+purely terminal-bench. So this capability folds into evener doctor; the scripts are removed.
 
 ## Data source
 
@@ -19,7 +19,7 @@ evener already records every LLM round to the transcript as an `api_call` line
 model, provider, reasoning effort), `Response` (`llm.APILogResponse`: finish reason,
 text length, tool-call count, `llm.Usage`), and `Error`/diagnostic fields on failure.
 
-evener-doctor already reads these lines (verbatim, for the `--count` mention scan). `apilog`
+evener doctor already reads these lines (verbatim, for the `--count` mention scan). `apilog`
 parses them into `transcript.APICall` — evener's own type, so a schema change flows through
 or fails to compile. The standalone `api.jsonl` latency log is **not** read; the in-transcript
 `api_call` lines carry the same request/response/usage snapshot and keep the read-only,
@@ -29,7 +29,7 @@ single-session, canonical-types design intact. Malformed `api_call` lines are sk
 ## Surface
 
 ```
-evener-doctor apilog <selector> [--empty] [--errors] [--cache-spikes [--threshold N]]
+evener doctor apilog <selector> [--empty] [--errors] [--cache-spikes [--threshold N]]
                               [--summary] [--validate] [--json]
 ```
 
@@ -58,7 +58,7 @@ evener-doctor apilog <selector> [--empty] [--errors] [--cache-spikes [--threshol
 
 Filters narrow the displayed rows; `totals` always reflects the whole session. Single-session
 by selector, like every other subcommand; for a coordinator+subagents picture, walk
-`evener-doctor tree` and run `apilog` per session.
+`evener doctor tree` and run `apilog` per session.
 
 Dropped from the Python tool as out-of-scope: directory recursion / multi-session scan
-(eval-shaped), `--raw` (use `evener-doctor transcript`), `--session` (you select the session).
+(eval-shaped), `--raw` (use `evener doctor transcript`), `--session` (you select the session).

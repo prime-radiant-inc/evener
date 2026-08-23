@@ -4,11 +4,11 @@
 
 **Goal:** Rebuild `cmd/evener-hub` UI per the 2026-05-08 redesign spec. Add fork support and a few small data-model fields.
 
-**Architecture:** 8 phases (A–H), each shippable. Phase A is data-model and fork-operation in shared packages; B is theming infra; C is the sidebar rewrite; D is the workspace rewrite; E is the spawn surface; F is search; G is settings; H is cleanup. Daemons are unchanged except for one bug-fix to `evener-hub`'s resume redirect.
+**Architecture:** 8 phases (A–H), each shippable. Phase A is data-model and fork-operation in shared packages; B is theming infra; C is the sidebar rewrite; D is the workspace rewrite; E is the spawn surface; F is search; G is settings; H is cleanup. Daemons are unchanged except for one bug-fix to `evener hub`'s resume redirect.
 
 **Tech Stack:** Go (`primeradiant.com/evener` module). htmx 2.0 + vanilla JS (`renderer.js`). `embed.FS` for assets and templates. `html/template` per-page sets. CSS custom properties for theming. Vendored htmx + marked, no other JS deps.
 
-**Working from:** branch `evener-hub` in worktree `.worktrees/evener-hub`. Changes commit there. Tests must pass at every commit boundary.
+**Working from:** branch `evener hub` in worktree `.worktrees/evener-hub`. Changes commit there. Tests must pass at every commit boundary.
 
 ---
 
@@ -488,7 +488,7 @@ func TestBuildTree_GroupsByProjectWithSubagentsAndForks(t *testing.T) {
         t.Fatalf("projects: %d", len(tree.Projects))
     }
     proj := tree.Projects[0]
-    if proj.Name != "evener-hub" {
+    if proj.Name != "evener hub" {
         t.Errorf("project name: %q", proj.Name)
     }
 
@@ -726,7 +726,7 @@ func ageString(t time.Time) string {
 
 ```bash
 git add cmd/evener-hub/tree.go cmd/evener-hub/tree_test.go cmd/evener-hub/roster.go agent/snapshot.go
-git commit -m "feat(evener-hub): tree builder for sidebar (live + projects with subagents/forks)"
+git commit -m "feat(evener hub): tree builder for sidebar (live + projects with subagents/forks)"
 ```
 
 ### Task A-4: Drop ?from= from resume redirect
@@ -757,7 +757,7 @@ Remove `ForkedFrom: r.URL.Query().Get("from")` from the live drive page handler'
 - [ ] **Step 4: Commit**
 
 ```bash
-git commit -m "refactor(evener-hub): drop ?from= cruft from resume redirect — resume is invisible per redesign"
+git commit -m "refactor(evener hub): drop ?from= cruft from resume redirect — resume is invisible per redesign"
 ```
 
 ---
@@ -851,7 +851,7 @@ In `cmd/evener-hub/templates/base.html`, before any other script, in `<head>` (a
 - [ ] **Step 4: Commit**
 
 ```bash
-git commit -m "feat(evener-hub): introduce light/dark theme tokens via CSS custom properties"
+git commit -m "feat(evener hub): introduce light/dark theme tokens via CSS custom properties"
 ```
 
 ### Task B-2: Replace hardcoded colors with tokens (existing styles)
@@ -882,7 +882,7 @@ git commit -m "feat(evener-hub): introduce light/dark theme tokens via CSS custo
 - [ ] **Step 3: Commit**
 
 ```bash
-git commit -m "style(evener-hub): replace hardcoded colors with CSS custom property tokens"
+git commit -m "style(evener hub): replace hardcoded colors with CSS custom property tokens"
 ```
 
 ### Task B-3: Theme picker placeholder
@@ -914,7 +914,7 @@ A real Settings page comes in Phase G. For now, expose a programmatic theme togg
 - [ ] **Step 3: Commit**
 
 ```bash
-git commit -m "feat(evener-hub): add window.evenerHub.setTheme(theme) helper for dev/settings use"
+git commit -m "feat(evener hub): add window.evenerHub.setTheme(theme) helper for dev/settings use"
 ```
 
 ---
@@ -1066,7 +1066,7 @@ func TestWeb_SidebarPartial_RendersTree(t *testing.T) {
 - [ ] **Step 5: Commit**
 
 ```bash
-git commit -m "feat(evener-hub): sidebar partial — live + projects tree with subagents and forks"
+git commit -m "feat(evener hub): sidebar partial — live + projects tree with subagents and forks"
 ```
 
 ### Task C-2: htmx-driven sidebar refresh
@@ -1091,7 +1091,7 @@ git commit -m "feat(evener-hub): sidebar partial — live + projects tree with s
 - [ ] **Step 3: Commit**
 
 ```bash
-git commit -m "feat(evener-hub): sidebar auto-refreshes every 5s and on demand"
+git commit -m "feat(evener hub): sidebar auto-refreshes every 5s and on demand"
 ```
 
 ### Task C-3: Roll-up dot on collapsed projects
@@ -1113,7 +1113,7 @@ When a project section is collapsed (user toggled), show a roll-up dot in the pr
 - [ ] **Step 4: Commit**
 
 ```bash
-git commit -m "feat(evener-hub): roll-up dot on collapsed project headers"
+git commit -m "feat(evener hub): roll-up dot on collapsed project headers"
 ```
 
 ### Task C-4: Click handlers — open session in workspace
@@ -1137,7 +1137,7 @@ Clicking a row sets the workspace to that session. Use htmx swap on the workspac
 - [ ] **Step 3: Commit**
 
 ```bash
-git commit -m "feat(evener-hub): wire sidebar row clicks to workspace pane via htmx"
+git commit -m "feat(evener hub): wire sidebar row clicks to workspace pane via htmx"
 ```
 
 ### Task C-5: App shell template (replaces landing.html)
@@ -1180,7 +1180,7 @@ git commit -m "feat(evener-hub): wire sidebar row clicks to workspace pane via h
 - [ ] **Step 4: Commit**
 
 ```bash
-git commit -m "feat(evener-hub): single-page app shell with htmx-driven sidebar + workspace panes"
+git commit -m "feat(evener hub): single-page app shell with htmx-driven sidebar + workspace panes"
 ```
 
 ---
@@ -1291,7 +1291,7 @@ func (s *WebServer) handleSession(w http.ResponseWriter, r *http.Request) {
 - [ ] **Step 5: Commit**
 
 ```bash
-git commit -m "feat(evener-hub): workspace partial — title, conversation, input strip"
+git commit -m "feat(evener hub): workspace partial — title, conversation, input strip"
 ```
 
 ### Task D-2: Two-tier conversation rendering in renderer.js
@@ -1667,7 +1667,7 @@ Read spec section "Settings".
 - [ ] **Step 3: Final commit.**
 
 ```bash
-git commit -m "verify(evener-hub): end-to-end browser demo of redesigned UX"
+git commit -m "verify(evener hub): end-to-end browser demo of redesigned UX"
 ```
 
 ---

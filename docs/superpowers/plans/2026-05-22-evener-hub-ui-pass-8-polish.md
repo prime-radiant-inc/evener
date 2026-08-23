@@ -1,8 +1,8 @@
-# evener-hub UI Pass 8 — Polish (toasts + skeletons + empty states + stagger) Implementation Plan
+# evener hub UI Pass 8 — Polish (toasts + skeletons + empty states + stagger) Implementation Plan
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Ship the final 10% of the evener-hub UI overhaul — top-center toasts wired across the app, skeleton loading on htmx swaps, per-surface empty states with CTAs, first-paint sidebar stagger, `:active` press states on every button variant, reduced-motion fallbacks for optimistic indicators, spawn-chip overflow, and removal of remaining `.rule-dot` separators.
+**Goal:** Ship the final 10% of the evener hub UI overhaul — top-center toasts wired across the app, skeleton loading on htmx swaps, per-surface empty states with CTAs, first-paint sidebar stagger, `:active` press states on every button variant, reduced-motion fallbacks for optimistic indicators, spawn-chip overflow, and removal of remaining `.rule-dot` separators.
 
 **Architecture:** All work is additive CSS + a handful of small JS modules — no Go changes, no template restructuring beyond per-surface empty-state markup and `#toast-region` insertion. New JS files (`toast.js`, `skeleton.js`, `chip-overflow.js`) are pure side-effect IIFEs registered in `app.html`; they expose `window.EvenerToast` (the only new global), follow the same shape as `notifications.js`/`pending.js`, and never re-fetch from the server. Empty-state CSS reuses tokens from Pass 1; reduced-motion fallbacks add non-animated border/shadow signals to compensate for `*` killing animations.
 
@@ -532,7 +532,7 @@ Replace the `change` handler body so each successful save fires a toast:
       if (key === "os" && target.checked && "Notification" in window) {
         Notification.requestPermission().catch(() => {});
       }
-      document.dispatchEvent(new CustomEvent("evener-hub:notifications-changed", {
+      document.dispatchEvent(new CustomEvent("evener hub:notifications-changed", {
         detail: { key, value: target.checked },
       }));
       if (window.EvenerToast) window.EvenerToast.show("Settings saved", "success");
@@ -601,10 +601,10 @@ And in the corresponding `catch (err)` branch:
 
 (Copy the same `if (window.EvenerToast) …` pair into the project.html submit handler at the matching success and failure points.)
 
-- [ ] **Step 3: Build evener-hub to confirm templates parse**
+- [ ] **Step 3: Build evener hub to confirm templates parse**
 
 ```bash
-cd /home/jesse/git/prime-radiant/evener && go build ./cmd/evener-hub
+cd /home/jesse/git/prime-radiant/evener && go build ./cmd/evener/
 ```
 
 Expected: clean build.
@@ -865,10 +865,10 @@ In `app.html`, just before the closing `</body>` (after all other `<script>` tag
   </script>
 ```
 
-- [ ] **Step 2: Build evener-hub**
+- [ ] **Step 2: Build evener hub**
 
 ```bash
-cd /home/jesse/git/prime-radiant/evener && go build ./cmd/evener-hub
+cd /home/jesse/git/prime-radiant/evener && go build ./cmd/evener/
 ```
 
 Expected: clean build.
@@ -1238,10 +1238,10 @@ Replace the contents of `partials/sidebar.html` with:
 {{end}}
 ```
 
-- [ ] **Step 2: Build evener-hub**
+- [ ] **Step 2: Build evener hub**
 
 ```bash
-cd /home/jesse/git/prime-radiant/evener && go build ./cmd/evener-hub
+cd /home/jesse/git/prime-radiant/evener && go build ./cmd/evener/
 ```
 
 Expected: clean build.
@@ -1320,10 +1320,10 @@ Then append to `style.css`:
 
 The renderer removes `.empty-state-conversation` (via `data-empty-placeholder`) the moment a real message arrives — the existing logic already does this.
 
-- [ ] **Step 2: Build evener-hub**
+- [ ] **Step 2: Build evener hub**
 
 ```bash
-cd /home/jesse/git/prime-radiant/evener && go build ./cmd/evener-hub
+cd /home/jesse/git/prime-radiant/evener && go build ./cmd/evener/
 ```
 
 Expected: clean build.
@@ -1363,7 +1363,7 @@ Replace with:
 
 ```go
 	fmt.Fprint(w, `<div class="empty-state empty-state-workspace">
-  <p class="empty-state-title">Welcome to evener-hub</p>
+  <p class="empty-state-title">Welcome to evener hub</p>
   <p class="empty-state-body">Spawn a session to start working with an agent, or search across live and past sessions. The hub keeps every session alive in the sidebar — pick one to jump in.</p>
   <div class="empty-state-actions">
     <a class="btn btn-secondary" href="/new" hx-get="/_partials/workspace/spawn" hx-target="#workspace" hx-swap="innerHTML" hx-push-url="/new">＋ New session</a>
@@ -1423,7 +1423,7 @@ Replace with:
 - [ ] **Step 3: Build and run Go tests**
 
 ```bash
-cd /home/jesse/git/prime-radiant/evener && go build ./cmd/evener-hub && go test ./cmd/evener-hub/...
+cd /home/jesse/git/prime-radiant/evener && go build ./cmd/evener/ && go test ./cmd/evener-hub/...
 ```
 
 Expected: clean.
@@ -1735,10 +1735,10 @@ Append to `style.css`:
 .btn-chip:active { background: var(--surface-secondary); border-color: var(--accent); }
 ```
 
-- [ ] **Step 2: Build evener-hub**
+- [ ] **Step 2: Build evener hub**
 
 ```bash
-cd /home/jesse/git/prime-radiant/evener && go build ./cmd/evener-hub
+cd /home/jesse/git/prime-radiant/evener && go build ./cmd/evener/
 ```
 
 Expected: clean build.
@@ -2095,10 +2095,10 @@ with:
         }
 ```
 
-- [ ] **Step 2: Build evener-hub**
+- [ ] **Step 2: Build evener hub**
 
 ```bash
-cd /home/jesse/git/prime-radiant/evener && go build ./cmd/evener-hub
+cd /home/jesse/git/prime-radiant/evener && go build ./cmd/evener/
 ```
 
 Expected: clean.
@@ -2158,7 +2158,7 @@ Expected: zero matches (or only matches inside `vendor/`, generated files, or th
 - [ ] **Step 5: Build + run jstests**
 
 ```bash
-cd /home/jesse/git/prime-radiant/evener && go build ./cmd/evener-hub && cd cmd/evener-hub/jstest && ./run-all.sh
+cd /home/jesse/git/prime-radiant/evener && go build ./cmd/evener/ && cd cmd/evener-hub/jstest && ./run-all.sh
 ```
 
 Expected: PASS.
@@ -2179,15 +2179,15 @@ git commit -m "ui(pass-8): remove .rule-dot separators (gap carries the work)"
 - [ ] **Step 1: Build + run the full Go + JS test suites**
 
 ```bash
-cd /home/jesse/git/prime-radiant/evener && go build ./cmd/evener-hub && go test ./cmd/evener-hub/... && cd cmd/evener-hub/jstest && ./run-all.sh
+cd /home/jesse/git/prime-radiant/evener && go build ./cmd/evener/ && go test ./cmd/evener-hub/... && cd cmd/evener-hub/jstest && ./run-all.sh
 ```
 
 Expected: all green.
 
-- [ ] **Step 2: Launch `evener-hub` and verify each toast trigger by hand**
+- [ ] **Step 2: Launch `evener hub` and verify each toast trigger by hand**
 
 ```bash
-cd /home/jesse/git/prime-radiant/evener && go run ./cmd/evener-hub
+cd /home/jesse/git/prime-radiant/evener && go run ./cmd/evener hub
 ```
 
 Then in a browser tab at `http://localhost:9180`:

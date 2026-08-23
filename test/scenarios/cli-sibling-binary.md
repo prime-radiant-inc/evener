@@ -1,65 +1,65 @@
-# cli-sibling-binary: evener-tui finds evener-hub next to itself
+# cli-sibling-binary: evener tui finds evener hub next to itself
 
 **What this covers**: kata `a4w6`, helper landed in commit `07fdd02`,
-tests in `bc00781`. Before the fix, running `./evener-tui` when
-`evener-hub` was in the same directory but not on `$PATH` failed with
-`exec: "evener-hub": executable file not found in $PATH`. The fix
+tests in `bc00781`. Before the fix, running `./evener` when
+`evener hub` was in the same directory but not on `$PATH` failed with
+`exec: "evener hub": executable file not found in $PATH`. The fix
 resolves `filepath.Dir(os.Executable())` (via `EvalSymlinks`) and
 tries the sibling before falling back to `$PATH` lookup, returning an
 absolute path so Go's `exec.ErrDot` restriction doesn't trip.
 
 ## Pre-state
 
-- Repo built: `go build -o evener-tui ./cmd/evener-tui && go build -o evener-hub ./cmd/evener-hub`.
+- Repo built: `go build -o ./evener ./cmd/evener/ && go build -o ./evener ./cmd/evener/`.
 - A fresh `mktemp -d` directory the test will copy binaries into.
 - `EVENER_HUB_BIN` unset in the environment.
 - `python3` on PATH (step 4 uses it to take a port from the kernel).
 
 ## Steps
 
-1. `tmpdir=$(mktemp -d); cp evener-tui evener-hub "$tmpdir/"`.
+1. `tmpdir=$(mktemp -d); cp evener tui evener hub "$tmpdir/"`.
 2. `cd "$tmpdir" && unset EVENER_HUB_BIN`.
 3. Confirm `$PATH` does NOT include the tmpdir (it shouldn't — fresh
-   shell). `which evener-hub` should fail.
+   shell). `which evener hub` should fail.
 4. Take an address nothing answers on, without choosing a number: bind
    `127.0.0.1:0`, read back the port the kernel handed out, and close
    the listener so that port is free again.
    ```bash
    PORT=$(python3 -c 'import socket; s = socket.socket(); s.bind(("127.0.0.1", 0)); port = s.getsockname()[1]; s.close(); print(port)')
    ```
-5. Run `./evener-tui --hub-addr 127.0.0.1:$PORT` with a 3-5 second
+5. Run `./evener tui --hub-addr 127.0.0.1:$PORT` with a 3-5 second
    timeout. Nothing is listening there, so the TUI's health check fails
-   immediately and it resolves `evener-hub` and execs it — the sibling
+   immediately and it resolves `evener hub` and execs it — the sibling
    lookup this card is about.
 6. Capture stderr.
 7. Record the hub this run caused, if it started one. The TUI execs
-   `evener-hub --addr <the address you passed>` and deliberately releases
+   `evener hub --addr <the address you passed>` and deliberately releases
    it (`cmd/evener-tui/internal/hubstart/hub_start.go`, `StartLocalHub`),
    so on a machine where the flock was free a detached hub is now
    holding the REAL `~/.evener/hub.lock` — this card runs on the real
    `$HOME` on purpose. `$PORT` came from the kernel in step 4, so that
    argv names this run's hub and nobody else's:
    ```bash
-   pgrep -f "evener-hub --addr 127.0.0.1:$PORT" | head -1 > "$tmpdir/hub.pid" || true
+   pgrep -f "evener hub --addr 127.0.0.1:$PORT" | head -1 > "$tmpdir/hub.pid" || true
    ```
-   An empty `hub.pid` is the other legal outcome (another evener-hub held
+   An empty `hub.pid` is the other legal outcome (another evener hub held
    the lock, so the sibling exec failed before listening) and Cleanup
    handles it.
 
 ## Expected
 
-- The error message names a real exec attempt (`evener-hub exited
+- The error message names a real exec attempt (`evener hub exited
   during startup: ...`), not "executable file not found in $PATH".
-- Specifically: if another evener-hub is already running, stderr
+- Specifically: if another evener hub is already running, stderr
   contains the substring `resource temporarily unavailable (another
-  evener-hub may already be running` — that proves the sibling binary
+  evener hub may already be running` — that proves the sibling binary
   was exec'd. Match on the substring, not the whole sentence: the
   real message names the lock path and continues past that point
-  (`flock <path>: resource temporarily unavailable (another evener-hub
+  (`flock <path>: resource temporarily unavailable (another evener hub
   may already be running; a disposable hub needs its own HOME)`,
   `cmd/evener-hub/internal/hostlock/hostlock.go:32`).
-  If no other evener-hub holds that flock, the sibling hub starts
-  instead of failing and the TUI attaches to it — no `evener-hub exited
+  If no other evener hub holds that flock, the sibling hub starts
+  instead of failing and the TUI attaches to it — no `evener hub exited
   during startup` line at all, which is still a pass, since the
   falsification below is the only failure this card reads. A port
   conflict is not one of the outcomes any more: step 4's port was free
@@ -91,7 +91,7 @@ fi
 rm -rf "$tmpdir"
 ```
 
-Confirm nothing survives: `pgrep -f "evener-hub --addr 127.0.0.1:$PORT"`
+Confirm nothing survives: `pgrep -f "evener hub --addr 127.0.0.1:$PORT"`
 prints nothing. If it still does, say so in the run record rather than
 walking away — a held `hub.lock` is the failure this cleanup exists to
 prevent, and the next card to start a hub is the one that pays for it.
@@ -110,7 +110,7 @@ prevent, and the next card to start a hub is the one that pays for it.
   reads. Between the close and the TUI's connect there is a window in
   which something else could take the port; on loopback that costs a
   rerun of a card that only inspects an error message.
-- This test is implicitly racy with whatever evener-hub is running on
+- This test is implicitly racy with whatever evener hub is running on
   the system. The flock-failure signal works because the hub uses a
   shared run-dir; on a clean machine the test still passes via a
   different startup error path.
@@ -124,7 +124,7 @@ prevent, and the next card to start a hub is the one that pays for it.
   isolating `$HOME` without replacing the assertion first.
 - A symlink variant is worth adding: `ln -s real/path/evener-tui
   $tmpdir/evener-tui` and confirm the EvalSymlinks branch resolves to
-  the symlink target's directory and finds evener-hub there. Covered
+  the symlink target's directory and finds evener hub there. Covered
   in the unit test `TestResolveFollowsSymlinkedExecutable`
   (`internal/binresolve/sibling_test.go#TestResolveFollowsSymlinkedExecutable`) but not exercised
   end-to-end here.

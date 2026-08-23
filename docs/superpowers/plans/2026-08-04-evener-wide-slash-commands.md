@@ -1047,7 +1047,7 @@ Expected: PASS, including the existing catalog tests.
 
 ```bash
 git add cmd/evener-hub/app_rpc.go cmd/evener-hub/app_command_list_test.go
-git commit -m "evener-hub: serve evener-wide commands in evener/command/list"
+git commit -m "evener hub: serve evener-wide commands in evener/command/list"
 ```
 
 ---

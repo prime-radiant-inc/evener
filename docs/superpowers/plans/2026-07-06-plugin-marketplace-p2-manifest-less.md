@@ -23,7 +23,7 @@ with no shape translation. The fallback is realized by **synthesizing a real
 before validation — not by threading the catalog entry into `Load` itself. This keeps `Load`'s
 contract exactly as it is today (dir in, `Instance` out) and means every other consumer that calls
 `Load`/`validatePluginDir` on that directory afterward — this same install's own validation, a
-later session's `EnabledPluginDirs()` load, `evener plugin list`'s `Broken` check, `evener-doctor` —
+later session's `EnabledPluginDirs()` load, `evener plugin list`'s `Broken` check, `evener doctor` —
 sees an ordinary on-disk manifest and needs no special-casing. The synthesis only ever writes into
 a cache directory evener materialized itself (a `staged` fetch); a directory-source plugin
 referenced in place (a local-dev/test convenience) is never written into, since it is a directory
@@ -558,7 +558,7 @@ Run: `go test ./internal/plugins/... -run 'TestEnsureManifestFallback' -count=1`
 //     .claude-plugin/plugin.json built from the entry's fields, so every
 //     later Load() of dir (this install's own validation, a future
 //     session's EnabledPluginDirs(), `evener plugin list`'s Broken check,
-//     evener-doctor) finds an ordinary on-disk manifest and needs no
+//     evener doctor) finds an ordinary on-disk manifest and needs no
 //     special-casing.
 //   - and the entry declares components but dir is NOT a cache directory
 //     (staged=false — a directory-source plugin referenced in place, a

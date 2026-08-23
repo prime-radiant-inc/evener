@@ -172,7 +172,7 @@ func cmdAuthLogout(client *appwire.Client, provider string) tea.Cmd {
 - [ ] **Step 3: Build**
 
 ```bash
-go build ./cmd/evener-tui/...
+go build ./cmd/evener/...
 ```
 
 - [ ] **Step 4: Commit**
@@ -650,7 +650,7 @@ case authApiKeySetResultMsg:
 
 Build and run TUI:
 ```bash
-go run ./cmd/evener-tui --hub-addr http://127.0.0.1:9180
+go run ./cmd/evener tui --hub-addr http://127.0.0.1:9180
 ```
 
 In TUI:

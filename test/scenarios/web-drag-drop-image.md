@@ -24,7 +24,7 @@ is no REST fallback on this path either: `startThread` goes to appwire
 
 ## Pre-state
 
-- `evener-hub` running on an isolated `$HOME` and a kernel-assigned port
+- `evener hub` running on an isolated `$HOME` and a kernel-assigned port
   (never `9180`, Jesse's real one — see the Setup checklist in
   `docs/developing-evener/agentic-testing.md`). Token at `$HOME/.evener/auth-token`.
 - `make build-web` before building the hub; a checkout that has never run it
@@ -101,7 +101,7 @@ is no REST fallback on this path either: `startThread` goes to appwire
      [ "$s" = "idle" ] && break
      sleep 2
    done
-   go run ./cmd/evener-doctor transcript "$SID" --format outline --range last:20
+   go run ./cmd/evener doctor transcript "$SID" --format outline --range last:20
    TS=$(find "$HOME/.local/state/evener/projects" -name "$SID.transcript.jsonl")
    jq -r 'select(.turn.kind=="USER_INPUT") | .turn.message.content[]
           | select(.kind=="image")

@@ -2,7 +2,7 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Replace `evener-tui`'s embedded/direct single-session flow with a hub-backed dashboard client that auto-starts a local hub, lists sessions, drills into sessions, and drives write actions through hub APIs.
+**Goal:** Replace `evener tui`'s embedded/direct single-session flow with a hub-backed dashboard client that auto-starts a local hub, lists sessions, drills into sessions, and drives write actions through hub APIs.
 
 **Architecture:** Add a small shared `internal/hubapi` package for JSON DTOs, refs, and a typed client. Extend `cmd/evener-hub` with JSON endpoints that wrap existing roster, past index, replay, send, spawn, and session action behavior. Replace `cmd/evener-tui/main.go` with hub startup and a new Bubble Tea app model that uses the hub client while reusing existing message rendering and reducer concepts.
 
@@ -176,7 +176,7 @@ Implement address normalization, local detection, binary resolution, detached hu
 
 - [ ] **Step 4: Replace main flags**
 
-Change `evener-tui` flags to `--hub-addr`, `--hub-bin`, `--no-auto-start-hub`, `--log-file`, and `--debug`. Remove direct calls to `startEmbedded`, `pickSession`, `newModel(addr, ...)`, and `streamSSE(... daemon addr ...)` from `main.go`.
+Change `evener tui` flags to `--hub-addr`, `--hub-bin`, `--no-auto-start-hub`, `--log-file`, and `--debug`. Remove direct calls to `startEmbedded`, `pickSession`, `newModel(addr, ...)`, and `streamSSE(... daemon addr ...)` from `main.go`.
 
 - [ ] **Step 5: Run green**
 
@@ -190,7 +190,7 @@ Run:
 
 ```bash
 git add cmd/evener-tui
-git commit -m "Start evener-tui from hub"
+git commit -m "Start evener tui from hub"
 ```
 
 ## Task 4: TUI Dashboard And Session Drill-in
@@ -246,7 +246,7 @@ Run:
 
 ```bash
 git add cmd/evener-tui
-git commit -m "Add evener-tui hub dashboard"
+git commit -m "Add evener tui hub dashboard"
 ```
 
 ## Task 5: TUI Write Actions
@@ -289,7 +289,7 @@ Run:
 
 ```bash
 git add cmd/evener-tui
-git commit -m "Wire evener-tui hub actions"
+git commit -m "Wire evener tui hub actions"
 ```
 
 ## Task 6: Docs And Final Verification
@@ -300,7 +300,7 @@ git commit -m "Wire evener-tui hub actions"
 
 - [ ] **Step 1: Update docs**
 
-Replace old `evener-tui --resume`, `--addr`, and embedded-session usage with hub-dashboard usage.
+Replace old `evener tui --resume`, `--addr`, and embedded-session usage with hub-dashboard usage.
 
 - [ ] **Step 2: Run verification**
 
@@ -321,7 +321,7 @@ Run:
 
 ```bash
 git add README.md docs/superpowers/specs/2026-05-09-evener-tui-universal-hub-client-design.md
-git commit -m "Document hub-backed evener-tui"
+git commit -m "Document hub-backed evener tui"
 ```
 
 ## Self-review Checklist

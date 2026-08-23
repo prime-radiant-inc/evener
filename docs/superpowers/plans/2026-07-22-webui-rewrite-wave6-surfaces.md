@@ -201,7 +201,7 @@ edit a chokepoint. Steps:
    (renders nothing until T3), `notifications/index.ts` (no-op), `shell/rail/railController.ts`
    (no-op) + `shell/rail/RailHost.tsx` (pass-through to `<Rail/>`).
 5. **Gate:** full suite (tsc→vitest, count up); `npm run build`+restore placeholder; Biome; **live
-   smoke** against a fake-`$HOME` hub (`evener-hub` holds a host-global flock at `$HOME/.evener/hub.lock`
+   smoke** against a fake-`$HOME` hub (`evener hub` holds a host-global flock at `$HOME/.evener/hub.lock`
    — `.superpowers/project_web_rearchitecture_study`; W5 close lesson): `/new` opens the spawn shell,
    a bare-prompt spawn creates a session and routes to `/s/{ref}`, ⌘K opens an (empty) overlay.
    Suggested tier: **opus** (contract-establishing; the seam signatures every stream imports).

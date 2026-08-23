@@ -3,7 +3,7 @@
 **Status:** Draft 2 · 2026-05-22
 **Companion spec:** [2026-05-22-evener-hub-responsive-ui-design.md](./2026-05-22-evener-hub-responsive-ui-design.md)
 
-This document defines the design language of the evener-hub web interface. It is the authoritative source for tokens, typography, components, patterns, state conventions, and responsive behavior. Every rule documented here either exists today or has a planned migration path described in the companion implementation spec.
+This document defines the design language of the evener hub web interface. It is the authoritative source for tokens, typography, components, patterns, state conventions, and responsive behavior. Every rule documented here either exists today or has a planned migration path described in the companion implementation spec.
 
 The hub UI is **dense by default, with room to breathe at the touchpoints**. The aesthetic is *workshop log* — the structured page of someone who keeps records. Two type voices, one palette, a fine paper-grain texture, and short, quiet motion. Color is functional (status, severity, accent); type carries identity. The interface should feel like a tool whose maker cared about typography, not a chat app with a dark theme.
 

@@ -95,7 +95,7 @@ and assert what each tab converges to.
    for i in $(seq 1 15); do [ "$(state)" = "active" ] && break; sleep 1; done   # turn claimed
    for i in $(seq 1 90); do [ "$(state)" = "active" ] || break; sleep 1; done   # turn done
    sleep 2   # let the transcript tail flush
-   go run ./cmd/evener-doctor transcript "$SID" --format outline --range last:8
+   go run ./cmd/evener doctor transcript "$SID" --format outline --range last:8
    ```
 4. **(browser)** Now repeat the gesture from two tabs, to check what each *client* shows.
    Spawn a second asking session the same way as step 1 (call it `SID2`), wait for
@@ -141,7 +141,7 @@ and assert what each tab converges to.
    })
    ```
    ```bash
-   go run ./cmd/evener-doctor transcript "$SID2" --format outline --range last:8
+   go run ./cmd/evener doctor transcript "$SID2" --format outline --range last:8
    ```
 
 ## Expected

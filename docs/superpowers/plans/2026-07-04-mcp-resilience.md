@@ -1030,7 +1030,7 @@ Invoke the `e2e-scenario-testing` skill. One server cannot be both startup-faile
   - **Server C (connected but Channel-B-erroring):** an http/stdio server that connects but returns `IsError:true` on every `tools/call` → the tool result renders **red** in web + TUI (error marker / error body); `Servers()` shows C `connected` with `Error` populated; status is still `connected` (Decision 3).
   - **Reconnect:** kill + restart Server A's process, then issue the next call → it reconnects **immediately** (zero-init backoff) and succeeds; a reconnect diagnostic line renders.
 
-- [ ] **Step 2: Build + run** a live `evener-hub` + `evener serve` (per `reference_evener_live_run`: `go build -o /tmp/evener ./cmd/evener`; source the repo `.env`; use a real `--model oai-work/<model>`). Drive the web UI (and TUI where cheap) capturing screenshots/DOM + event-stream excerpts proving each assertion. Record any assertion that fails as a defect, not a pass.
+- [ ] **Step 2: Build + run** a live `evener hub` + `evener serve` (per `reference_evener_live_run`: `go build -o /tmp/evener ./cmd/evener`; source the repo `.env`; use a real `--model oai-work/<model>`). Drive the web UI (and TUI where cheap) capturing screenshots/DOM + event-stream excerpts proving each assertion. Record any assertion that fails as a defect, not a pass.
 
 - [ ] **Step 3: Commit** the proof:
 - `git add docs/superpowers/proofs/2026-07-04-mcp-resilience-e2e.md`

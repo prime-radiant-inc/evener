@@ -3,7 +3,7 @@
 Date: 2026-06-19
 Status: audit + adoption catalog for Jesse review (UNCOMMITTED)
 Siblings:
-- `docs/superpowers/specs/2026-06-19-evener-doctoring-tools.md` — the `evener doctor` CLI data-plane (the tools the skill references).
+- `docs/superpowers/specs/2026-06-19-evener doctoring-tools.md` — the `evener doctor` CLI data-plane (the tools the skill references).
 - `docs/superpowers/specs/2026-06-19-evener-debugging-docs.md` — the earlier DEBUGGING-doc audit (staleness/gaps/principles). This audit is BROADER (all of `docs/`) and ADOPTION-focused. It **extends** that one; it does not repeat its scenario-recipe drift findings.
 
 ## What this is

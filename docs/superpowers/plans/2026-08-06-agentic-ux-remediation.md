@@ -16,15 +16,15 @@ have made it visible.
 **Architecture:** Defense in depth, same as the output-caps work. Example:
 the use_browser incident gets three independent fixes — the MCP tool's error
 is upstream (plugin), but evener's dispatch layer gains a failure-aware breaker
-so *no* tool can fail identically 300 times (WS2), and evener-doctor gains a
+so *no* tool can fail identically 300 times (WS2), and evener doctor gains a
 mechanical loop detector so the next study finds survivors in minutes (WS9).
 
-**Tech stack:** Go (agent runtime, llm providers, evener-doctor), existing test
+**Tech stack:** Go (agent runtime, llm providers, evener doctor), existing test
 conventions per `docs/testing.md`. All root causes below were verified against
 the code on 2026-08-06; file:line references are to current main.
 
 **Provenance:** Every symptom cites session ids from the study; re-check any
-with `evener-doctor transcript <sid>`.
+with `evener doctor transcript <sid>`.
 
 ## Global Constraints
 
@@ -45,8 +45,8 @@ with `evener-doctor transcript <sid>`.
 
 ## WS1 — Responses-API response recording + apilog throughput
 
-**Was reported as:** "evener-doctor's apilog decoder is blind to OpenAI"
-(study §0, ~248 sessions). **Verified root cause is different:** evener-doctor
+**Was reported as:** "evener doctor's apilog decoder is blind to OpenAI"
+(study §0, ~248 sessions). **Verified root cause is different:** evener doctor
 never parses bodies. `text_length`/`tool_call_count` are computed once at
 call time — `llm/api_attempt.go:519-520` from `result.Response.Text()` /
 `.ToolCalls()` — and the doctor only copies them
@@ -82,7 +82,7 @@ accumulated stream; only the persisted record sees the empty terminal shape.
    `apilog.Decoder` (skip body materialization and the byte-count
    revalidation) and use it from `doctor.APILog` summarization paths;
    `--validate` keeps the strict full decode.
-4. evener-doctor forensics for historical logs: where a record has
+4. evener doctor forensics for historical logs: where a record has
    `text_length=0 ∧ tool_call_count=0` and a stored body, `apilog` gains a
    `--recompute` flag that re-extracts via `openai.fromResponses` /
    the chat-completions parser against the stored body, so pre-fix sessions
@@ -90,7 +90,7 @@ accumulated stream; only the persisted record sees the empty terminal shape.
    disagree are labeled `recorded=0 recomputed=N`.
 
 **Acceptance:** affected fixture decodes with real counts; a fresh session on
-gpt-5.4-mini shows nonzero `tool_call_count` in `evener-doctor apilog`;
+gpt-5.4-mini shows nonzero `tool_call_count` in `evener doctor apilog`;
 `apilog --summary` on a ≥500MB log completes in single-digit minutes;
 `--recompute` corrects a known-bad historical session (0340eCRdIZ5UJ4oIgD2Jrw:
 150 calls, currently 150 "empty").
@@ -240,7 +240,7 @@ contradicted it. Corrected scope:
    (a) terminal state returned by `job_status` marks that job's pending
    owner notification consumed — with its own recorded state ("caller
    learned via status read") so the jobstore's told-the-caller invariant
-   and evener-doctor's diagnostics stay truthful;
+   and evener doctor's diagnostics stay truthful;
    (b) coalesce in `armFinalizedJob`: build the watch-expiry and terminal
    notices together, enqueue once (today they enqueue at two moments with
    I/O between — the two-turns-per-completion bug);
@@ -553,18 +553,18 @@ compact_context present; nudge-gating tests for present/absent registry
 states.
 
 **Size:** ~450 loc.
-## WS9 — evener-doctor: make the next study mechanical
+## WS9 — evener doctor: make the next study mechanical
 
 This study cost ~16M subagent tokens because agents re-derived mechanical
 facts per session. The doctor should compute those; LLM judgment then only
 reads flagged sessions. (Direct response to Jesse's ask.)
 
-1. **`evener-doctor sessions [--since DUR] [--bucket B|--all]`** — enumerate
+1. **`evener doctor sessions [--since DUR] [--bucket B|--all]`** — enumerate
    sessions with started/ended, model(s), turn count, transcript bytes,
    outcome hint (final communicate status if present), parent/delegate
    links. The study's enumeration was `find`+`wc` by hand; this is the
    entry point every batch analysis needs. `--json` first-class.
-2. **`evener-doctor transcript <sel> --health`** — mechanical per-session
+2. **`evener doctor transcript <sel> --health`** — mechanical per-session
    metrics, all cheap folds over existing canonical readers:
    - tool-call and tool-error counts by tool and error class;
    - longest run of consecutive identical calls (name+argshash) and whether
@@ -575,7 +575,7 @@ reads flagged sessions. (Direct response to Jesse's ask.)
    - notifications delivered after the last end_turn (staleness metric);
    - user STEERING messages that follow a completed communicate
      (the user-correction proxy).
-3. **`evener-doctor audit --runbook R --sessions <set|--since DUR>`** — batch
+3. **`evener doctor audit --runbook R --sessions <set|--since DUR>`** — batch
    driver: run a runbook's mechanical checks across a session set, emit
    Finding JSON per the existing contract with `signature` dedup across
    sessions, and a summary table (pattern × session count). The

@@ -78,7 +78,7 @@ and the session pane's empty state; anything else, grep `data-testid` in
      | jq --arg ref "local:$SID" '[.. | objects | select(.ref? == $ref)
          | {ref, state, dormant, age}] | .[0]'
    ```
-4. Read the on-disk transcript: `go run ./cmd/evener-doctor transcript
+4. Read the on-disk transcript: `go run ./cmd/evener doctor transcript
    "$SID" --state-dir "$state" --format outline --range last:20`.
 5. Repeat step 1 with a whitespace-only prompt (`"   \n  "`). The
    outcome must be identical — that is `inputItemsForText`'s

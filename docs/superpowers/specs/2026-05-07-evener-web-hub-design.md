@@ -14,7 +14,7 @@ The hub is a small htmx-based shell that:
 - Browses and searches past saved sessions across the user's evener state.
 - **Reverse-proxies** REST and SSE between the browser and each daemon. The browser only ever speaks to the hub origin.
 
-The hub does not transform the daemon's SSE events. It proxies the raw event stream and a small client-side `renderer.js` parses it. Server-side HTML-fragment rendering is explicitly avoided: htmx-sse's per-event-swap semantics fight delta streaming, and a JS renderer can mirror `evener-tui`'s coalescing logic directly.
+The hub does not transform the daemon's SSE events. It proxies the raw event stream and a small client-side `renderer.js` parses it. Server-side HTML-fragment rendering is explicitly avoided: htmx-sse's per-event-swap semantics fight delta streaming, and a JS renderer can mirror `evener tui`'s coalescing logic directly.
 
 ## Goals
 
@@ -85,7 +85,7 @@ Hub-side liveness check:
                   ALL traffic via hub
                              ▼
         ┌────────────────────────────────────┐
-        │ evener-hub          (127.0.0.1:9180) │
+        │ evener hub          (127.0.0.1:9180) │
         │   • roster (lazy scan + fsnotify)  │
         │   • REST proxy   (httputil)        │
         │   • SSE passthrough (flush:-1)     │
@@ -119,7 +119,7 @@ The browser's drive URL is keyed by **session_id**, not pid. PIDs reuse on long-
 - htmx for navigation and form submission of hub-served pages.
 - A small client-side `renderer.js` (vendored, no build pipeline) that:
   - Opens `EventSource('/live/<session_id>/events')` against the hub.
-  - Maintains the same coalescing state machines `evener-tui` already implements (`cmd/evener-tui/model.go:735-820`): per-message text delta append, per-call_id tool stream tracking, subagent grouping, communicate-tool elision, context-pressure derivation from `ASSISTANT_TEXT_END.usage`.
+  - Maintains the same coalescing state machines `evener tui` already implements (`cmd/evener-tui/model.go:735-820`): per-message text delta append, per-call_id tool stream tracking, subagent grouping, communicate-tool elision, context-pressure derivation from `ASSISTANT_TEXT_END.usage`.
   - Renders into the transcript pane via direct DOM ops.
   - Sends user input via `fetch('/live/<session_id>/input', ...)` against the hub.
   - Renders markdown using a small client-side library (`marked.js` or `markdown-it`, vendored).
@@ -127,9 +127,9 @@ The browser's drive URL is keyed by **session_id**, not pid. PIDs reuse on long-
 
 The browser never learns the daemon address. All browser ↔ daemon traffic flows through the hub.
 
-### Hub (`evener-hub`, new sibling binary at `cmd/evener-hub/`)
+### Hub (`evener hub`, new sibling binary at `cmd/evener-hub/`)
 
-Following the existing pattern in the repo (`evener-tui`, `evenereval`, `llmcall` are all sibling binaries; the `evener` binary stays focused on agent operations). The hub spawns `evener serve` subprocesses; it does not import the agent loop itself.
+Following the existing pattern in the repo (`evener tui`, `evenereval`, `llmcall` are all sibling binaries; the `evener` binary stays focused on agent operations). The hub spawns `evener serve` subprocesses; it does not import the agent loop itself.
 
 Default bind: `127.0.0.1:9180` (chosen to avoid the daemon's `:9131` neighborhood).
 

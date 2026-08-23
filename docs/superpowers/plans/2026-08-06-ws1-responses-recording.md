@@ -4,7 +4,7 @@
 
 **Goal:** Recorded `llm.Response`s for OpenAI Responses-API sessions carry the
 real text/tool-call content (fixing the fleet-wide `text_length=0,
-tool_call_count=0, empty=true` apilog records), and evener-doctor's apilog
+tool_call_count=0, empty=true` apilog records), and evener doctor's apilog
 commands become fast on large logs and able to recompute historical records.
 
 **Architecture:** Fix the recording at its source — `decodeResponsesStream`
@@ -21,7 +21,7 @@ pre-fix logs stay diagnosable.
 **Context (verified 2026-08-06, file:line on main):**
 - Counts are computed once at call time: `llm/api_attempt.go:519-520`
   (`response.TextLength = optionalAPILogInt(len(result.Response.Text()), true)`
-  and the ToolCalls equivalent). evener-doctor only copies them
+  and the ToolCalls equivalent). evener doctor only copies them
   (`agent/doctor/apilog.go:464-492`, `rowFromAttempt`; `Empty` computed at
   483-485).
 - The Responses-API SSE state machine is
@@ -56,7 +56,7 @@ pre-fix logs stay diagnosable.
   work changes only what gets *recorded/settled*, plus doctor-side reading.
 - Multi-module gates per `docs/conventions/go-workspace.md`: build and test
   every touched module (`llm`, `agent`, `cmd/evener-doctor`) before commit.
-- Error messages and new flags follow existing evener-doctor conventions
+- Error messages and new flags follow existing evener doctor conventions
   (`cmd/evener-doctor/main.go` flag patterns, `--json` support where output is
   structured).
 
@@ -137,7 +137,7 @@ pre-fix logs stay diagnosable.
 - [ ] **Step 5: All touched module tests green; commit**
   (`perf(apilog): metadata-only decode for doctor summarization`).
 
-### Task 3: `evener-doctor apilog --recompute` for historical logs
+### Task 3: `evener doctor apilog --recompute` for historical logs
 
 **Files:**
 - Modify: `agent/doctor/apilog.go`, `cmd/evener-doctor/main.go` (flag)
@@ -148,7 +148,7 @@ pre-fix logs stay diagnosable.
 - Consumes: Task 2's decoder (recompute needs full bodies — it uses strict
   or a body-on-demand read, not metadata-only), Task 1's shared conversion
   helper.
-- Produces: `--recompute` on `evener-doctor apilog`: for rows with
+- Produces: `--recompute` on `evener doctor apilog`: for rows with
   `TextLength==0 && ToolCalls==0` and a stored response body, re-extract
   via the provider-shape parser (Responses-API SSE or chat-completions JSON,
   dispatched on the recorded endpoint/body shape) and report
@@ -166,13 +166,13 @@ pre-fix logs stay diagnosable.
   currently 150 "empty") from local state; expect a large majority
   recomputed non-empty. Do not commit any session data.
 - [ ] **Step 4: All gates green; commit**
-  (`feat(evener-doctor): apilog --recompute re-extracts zeroed historical records`).
+  (`feat(evener doctor): apilog --recompute re-extracts zeroed historical records`).
 
 ## Acceptance (whole workstream)
 
 - Task 1 fixture decodes with real counts; terminal-wins pinned.
 - A fresh session on an OpenAI-family model records nonzero
-  `tool_call_count` (manual check via `evener-doctor apilog` after merge).
+  `tool_call_count` (manual check via `evener doctor apilog` after merge).
 - `apilog --summary` on a multi-hundred-MB log completes in minutes
   (benchmark ratio recorded).
 - `--recompute` corrects the known-bad historical session.

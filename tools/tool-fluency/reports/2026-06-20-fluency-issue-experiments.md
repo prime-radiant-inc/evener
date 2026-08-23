@@ -13,7 +13,7 @@ For each experiment:
 1. State the smallest hypothesis.
 2. Run the smallest probe or catalog command that can falsify it.
 3. Store artifacts under a unique `/tmp/evener-fluency-issue-*` directory.
-4. Use `evener-fluency` summaries and `evener-doctor` for session forensics.
+4. Use `evener-fluency` summaries and `evener doctor` for session forensics.
 5. Classify findings using the tool-fluency categories: `schema`,
    `availability`, `selection`, `arguments`, `repair`, `interpretation`,
    `churn`, `polling`, `plain_message`, or `infra`.
@@ -23,7 +23,7 @@ For each experiment:
 
 No experiment in this file should depend on ad-hoc Python, jq, or transcript
 JSONL parsing. If an inspection is hard, improve the Go runner or
-`evener-doctor`.
+`evener doctor`.
 
 ## Current Issue Matrix
 
@@ -129,7 +129,7 @@ Result:
   `RESULT_JOB_WATCH`.
 - Both parent sessions had one observer child, and both child sessions ended
   `stopped`.
-- `evener-doctor watches` showed one delivered watch frame for both models:
+- `evener doctor watches` showed one delivered watch frame for both models:
   - GPT: `watch_01KVK0YD510J697PZ2TH92RRVZ`, one delivered frame, no self-loop.
   - Kimi: `watch_01KVK0ZCW0GTGNTNA4MWCF7E70`, one delivered frame, no self-loop.
 - Both observer transcripts had the delivered watch frame as user input, then a
@@ -191,7 +191,7 @@ Result:
   - The parent sent extra `delegate_send` messages to the observer instead of
     simply installing the watch and waiting for callback delivery.
 - GPT doctor evidence:
-  - `evener-doctor watches` showed one delivered watch frame and no self-loop:
+  - `evener doctor watches` showed one delivered watch frame and no self-loop:
     `watch_01KVK1BHGPAFFV3RZA3Z24RFKY`.
   - The observer was idle at the end, not stopped by parent teardown.
   - The parent transcript completed through `communicate`, then emitted a
@@ -220,7 +220,7 @@ the parent installed the watch.
 Commands:
 
 ```sh
-# No new model run. Analyze E02 live callback transcripts with evener-doctor.
+# No new model run. Analyze E02 live callback transcripts with evener doctor.
 ```
 
 Artifacts:
@@ -857,7 +857,7 @@ F04 changes:
   output envelope.
 - Allowed `null` for optional `job_watch` integer fields so a nullable omitted
   value reaches the existing handler path instead of failing schema validation.
-- Improved `evener-doctor transcript` to show bounded tool-result previews, so
+- Improved `evener doctor transcript` to show bounded tool-result previews, so
   future transcript reads do not require ad hoc JSON parsing.
 
 Focused verification:

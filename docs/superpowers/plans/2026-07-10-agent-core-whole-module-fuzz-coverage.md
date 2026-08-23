@@ -35,7 +35,7 @@
 | cmd/evener-fuzzcov/global.go | Package-profile union, file exclusions, raw threshold accounting |
 | cmd/evener-fuzzcov/global_test.go | Global accounting and exclusion validation tests |
 | scripts/fuzz/run-fuzz.sh | Authoritative native and rapid target manifest |
-| scripts/fuzz-registry-check.sh | Thin wrapper around evener-fuzzregistry |
+| scripts/fuzz-registry-check.sh | Thin wrapper around evener fuzzregistry |
 | scripts/fuzz/fuzz-coverage-global.sh | Replay validated local targets and emit package profiles |
 | scripts/fuzz-coverage-global-selftest.sh | Stubbed deterministic runner tests |
 | scripts/fuzzcov-global-exclusions.txt | Initially empty file-only exclusion manifest |
@@ -159,7 +159,7 @@ rows remain support checks and do not count toward global coverage.
 The wrapper writes the run-fuzz manifest to a temporary file and executes:
 
 ~~~sh
-go run ./cmd/evener-fuzzregistry --repo-root "$repo_root" --registry "$registry" --check --emit-plan
+go run ./cmd/evener fuzzregistry --repo-root "$repo_root" --registry "$registry" --check --emit-plan
 ~~~
 
 Add make fuzz-registry-check. It may not run search, ordinary tests, or network traffic.
@@ -268,7 +268,7 @@ For each module in go.work, group validated rows by module/package. Invoke each 
 go test -tags evenerfuzz -run "^Name$" -coverprofile="$profile" "$pkg"
 ~~~
 
-Run native targets once in seed-replay mode. Run Rapid targets once per fixed seed. Concatenate only profiles from one package and pass module/package/profile rows to evener-fuzzcov global accounting.
+Run native targets once in seed-replay mode. Run Rapid targets once per fixed seed. Concatenate only profiles from one package and pass module/package/profile rows to evener fuzzcov global accounting.
 
 - [ ] **Step 3: Make missing local surfaces fatal**
 

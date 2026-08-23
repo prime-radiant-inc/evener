@@ -22,7 +22,7 @@ submitting through the overlay does.
   HUBPID=$(cat "$run/hub.pid")
   kill -0 "$HUBPID" 2>/dev/null || { echo "that hub is gone — re-run ask-web-answer.md's Pre-state" >&2; exit 1; }
   ```
-- This card adds `evener-tui` to that recipe's binaries — into the same run directory, never
+- This card adds `evener tui` to that recipe's binaries — into the same run directory, never
   a fixed `/tmp` name a second concurrent build would overwrite mid-run (kata `k2rx`):
   ```bash
   go build -o "$run/evener-tui" ./cmd/evener-tui
@@ -62,7 +62,7 @@ submitting through the overlay does.
    ```bash
    tmux kill-session -t evener-ask-tui 2>/dev/null
    tmux new-session -d -s evener-ask-tui -x 200 -y 50 \
-     "$run/evener-tui --hub-addr 127.0.0.1:$PORT --debug 2>$run/ask-tui-stderr.log"
+     "$run/evener" tui --hub-addr 127.0.0.1:$PORT --debug 2>$run/ask-tui-stderr.log"
    sleep 2
    suffix=${SID: -8}
    tmux send-keys -t evener-ask-tui "/"
@@ -125,7 +125,7 @@ submitting through the overlay does.
    done
    echo "state=$state"
    tmux capture-pane -t evener-ask-tui -p | grep -E "question waiting" && echo "STILL WAITING (unexpected)" || echo "chip cleared"
-   go run ./cmd/evener-doctor transcript "$SID" --format outline --range last:4
+   go run ./cmd/evener doctor transcript "$SID" --format outline --range last:4
    ```
 
 ## Expected
@@ -158,9 +158,9 @@ rm -rf "$tmpdir"
 ```
 
 Leave the hub and `$run` alone — `ask-web-answer.md` started them and its Cleanup
-kills `$HUBPID` and removes `$run` (including this card's `evener-tui` and stderr log).
+kills `$HUBPID` and removes `$run` (including this card's `evener tui` and stderr log).
 If you had to start the hub yourself because `EVENER_E2E_RUN` was unset, you own it:
-`kill "$HUBPID"; rm -rf "$run"`. Never `pkill -f evener-hub`, which takes out every
+`kill "$HUBPID"; rm -rf "$run"`. Never `pkill -f evener hub`, which takes out every
 other concurrent agent's hub too (`docs/developing-evener/agentic-testing.md`, "Cleanup recipe").
 
 ## Sharp edges
@@ -186,7 +186,7 @@ other concurrent agent's hub too (`docs/developing-evener/agentic-testing.md`, "
   depending on terminal/locale encoding (e.g. `—` re-emerging as a `?`/mojibake substitution
   or a differently-normalized Unicode form). Step 8's typed reply contains one; a byte-exact
   string match on a captured pane line containing `—` is fragile for that reason alone. The
-  outline check in step 9 reads the transcript via `evener-doctor` (plain UTF-8 JSON), not
+  outline check in step 9 reads the transcript via `evener doctor` (plain UTF-8 JSON), not
   `capture-pane`, so it is not affected — but if a future check ever needs to confirm the
   em-dash chip/composer text via `capture-pane`, match on a substring that excludes the
   em-dash (e.g. `"let's go with descriptive"` / `"clearer for new hires"`) or normalize

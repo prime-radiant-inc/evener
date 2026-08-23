@@ -18,7 +18,7 @@ settling as expected, with coalescing recognised as normal and drops explained?
 Take the target session id from the runbook invocation.
 
 ```
-evener-doctor watches <selector> --json
+evener doctor watches <selector> --json
 ```
 
 Per watch, read: `distinct_deliveries`, `delivered` / `dropped` / `evicted`,

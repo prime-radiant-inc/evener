@@ -21,11 +21,11 @@ Companion scenarios: `tui-paste-image-from-clipboard.md`,
   `tmux paste-buffer -p` is the path that emits bracketed-paste
   start/end markers — required for the TUI's `KeyMsg.Paste` branch
   to fire.
-- `evener-hub` reachable on an isolated `$HOME` and free port
+- `evener hub` reachable on an isolated `$HOME` and free port
   (never Jesse's port `9180` — see the Setup checklist in
   `docs/developing-evener/agentic-testing.md`). Token at
   `$HOME/.evener/auth-token`.
-- `./evener-tui` and `./evener-hub` built in repo root.
+- `./evener` built in repo root.
 - `anthropic/claude-haiku-4-5-20251001` (or `openai/gpt-5.5`)
   reachable through configured credentials.
 - The tmux session name is derived from this run's own scratch dir
@@ -69,10 +69,10 @@ Companion scenarios: `tui-paste-image-from-clipboard.md`,
    done
    ```
 
-3. **Launch evener-tui in tmux**:
+3. **Launch evener tui in tmux**:
    ```bash
    tmux new-session -d -s "$TMUX_SESSION" -x 200 -y 50 \
-     "./evener-tui --hub-addr 127.0.0.1:$PORT --debug"
+     "./evener tui --hub-addr 127.0.0.1:$PORT --debug"
    sleep 1
    ```
 

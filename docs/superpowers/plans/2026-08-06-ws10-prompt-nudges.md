@@ -91,12 +91,12 @@ doctoring-evener skill markdown in-repo.
   `grep -rn "doctoring-evener" --include="*.md" .` from the worktree root;
   the WS9 work already touched its SKILL.md)
 - Reference: `docs/superpowers/plans/2026-08-06-ws9-doctor-batch.md` and
-  the merged evener-doctor subcommands (`sessions`, `transcript --health`,
+  the merged evener doctor subcommands (`sessions`, `transcript --health`,
   `apilog --health/--recompute/--validate`, `jobs`, `mutations`,
   `watches`, `tree`, `audit`)
 
 - [ ] **Step 1:** verify each WS9 command exists on main (run
-  `go run ./cmd/evener-doctor --help` or read `agent/doctor/`) — document
+  `go run ./cmd/evener doctor --help` or read `agent/doctor/`) — document
   only what is real.
 - [ ] **Step 2:** update the skill's tool table with the batch `audit`
   driver and any WS9 commands it lacks; add the caveat that api logs

@@ -6,7 +6,7 @@
 
 **Architecture:** The subagent record's run outcome lives in a single immutable `status` field; close-ness becomes two booleans (`closed`, `close_timed_out`) instead of overwriting `status`. `subagent_output` returns child output raw (no redaction layer). The `00` doc is rewritten to describe the merged model and the removed redactor.
 
-**Tech Stack:** Go (go.work multi-module: `agent`, `llm`, `server`, `cmd/evener`). Gates: `make test` and `make lint` (golangci + `evener-namingcheck`/`evener-internalcheck`/`evener-docscheck`) — run the FULL `make lint`, not just golangci. Live agentic tests live in `test/scenarios/`.
+**Tech Stack:** Go (go.work multi-module: `agent`, `llm`, `server`, `cmd/evener`). Gates: `make test` and `make lint` (golangci + `evener-namingcheck`/`evener internalcheck`/`evener-docscheck`) — run the FULL `make lint`, not just golangci. Live agentic tests live in `test/scenarios/`.
 
 **Branch / worktree:** Work on `docs-fix-notification-goal` in the worktree `/Users/jesse/prime-radiant/toil-suite/evener-wt-docfix` (off `main` `579be5ba`; it already carries the notification/goal doc fix `e3a26d56` and the design spec `460814ed`). **Do NOT merge** — `main` has branch protection; pause for Jesse's review after Task 4.
 

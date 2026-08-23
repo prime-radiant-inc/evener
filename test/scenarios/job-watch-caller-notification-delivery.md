@@ -62,7 +62,7 @@ Run 1 — idle wake:
 4. Keep polling through the fire: watch for the state to leave `idle`
    with NO user input sent, then inspect the transcript
    (`$SID_A.transcript.jsonl`) and read
-   `evener-doctor watches $SID_A --state-dir <state base>`.
+   `evener doctor watches $SID_A --state-dir <state base>`.
 
 Run 2 — busy session, three fires, one rendered notification:
 
@@ -82,7 +82,7 @@ Run 2 — busy session, three fires, one rendered notification:
    >    stays busy for at least 40 more seconds.
    > 4. End your turn after the essay.
 7. After the busy turn ends, inspect session B's transcript for the
-   notification turn and read `evener-doctor watches $SID_B` for the
+   notification turn and read `evener doctor watches $SID_B` for the
    watch's delivery count.
 
 ## Expected
@@ -110,7 +110,7 @@ Run 1:
   `agent/job_watch.go:2855`; rendered by `agent/job_notify.go:178-190`).
 - An assistant turn follows the notification turn (the model received
   the wake and reacted), and the session returns to `idle`.
-- `evener-doctor watches $SID_A` shows the watch with a delivery count of
+- `evener doctor watches $SID_A` shows the watch with a delivery count of
   at least 1 and no self-loop verdict. There are NO `watch_send_*` rows
   in `jobs.jsonl` for this watch, and their absence is not a failure: a
   watch with no delivery target enqueues a notification directly

@@ -1512,7 +1512,7 @@ adds the toggle control and the CSS gate.
 ### Task Y2 — End-to-end scenario cards
 
 Use the e2e-scenario-testing skill. Build fresh binaries
-(`go build -o /tmp/evener ./cmd/evener`, `evener-hub`, `evener-tui`), run a live model per
+(`go build -o /tmp/evener ./cmd/evener`, `evener hub`, `evener tui`), run a live model per
 `reference_evener_live_run`, author falsifiable scenario cards:
 
 - [ ] **Card: cost estimate appears and is gateable.** Start a session, send one prompt to

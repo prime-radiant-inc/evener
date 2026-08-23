@@ -221,7 +221,7 @@ Rendering rules:
 The bounded transcript-v2 JSONL for the range: one header followed only by semantic
 entries. It contains neither the system prompt nor provider request/response records.
 This is rarely what you want: reserve it for debugging transcript structure. For
-comprehension, use markdown; for provider forensics, use `evener-doctor apilog <selector>`.
+comprehension, use markdown; for provider forensics, use `evener doctor apilog <selector>`.
 
 ```
 { "transcript_ref", "format":"jsonl", "content_type":"application/x-ndjson",
@@ -258,7 +258,7 @@ range, or turn expansion. It omits `job_status`; expired capabilities report
 ### Provider forensics
 
 The model-facing `read_transcript` tool does not expose API-log selectors or request/
-response bodies. Use `evener-doctor apilog <selector>` for private attempt metadata and
+response bodies. Use `evener doctor apilog <selector>` for private attempt metadata and
 aggregates. Credential values remain excluded from that diagnostic surface.
 
 ## Truncation and size budgets (markdown)

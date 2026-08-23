@@ -283,7 +283,7 @@ The single most important property, and the reason for the form-factor choice:
 ## Non-goals / out of scope
 
 - **Not a live TUI / monitor.** These read settled on-disk state after (or during) a
-  run. Live observation is the appwire stream + `evener-tui` + the web hub; this is
+  run. Live observation is the appwire stream + `evener tui` + the web hub; this is
   post-hoc forensics, not a replacement for them.
 - **Not a replacement for the appwire projection.** The hub/TUI consume the live
   `events.SessionEvent` stream for rendering; doctoring reads the durable transcript

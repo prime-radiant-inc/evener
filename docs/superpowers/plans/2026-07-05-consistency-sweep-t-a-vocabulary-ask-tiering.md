@@ -2900,7 +2900,7 @@ Add the radio-commit handler to `cmd/evener-hub/assets/settings.js`, in the same
       const cur = readNotifPrefs();
       cur[key] = desired;
       writeNotifPrefs(cur);
-      document.dispatchEvent(new CustomEvent("evener-hub:notifications-changed", {
+      document.dispatchEvent(new CustomEvent("evener hub:notifications-changed", {
         detail: { key, value: desired },
       }));
       if (window.EvenerToast) window.EvenerToast.show("Settings saved", "success");
@@ -3136,7 +3136,7 @@ Idle/Ended).
 ## Pre-state
 
 - Hub running with a fresh `$HOME` (isolated `~/.evener`), real credentials, no prior sessions.
-- A TUI (`evener-tui`) pointed at the same hub, in a tmux session for scriptable interaction.
+- A TUI (`evener tui`) pointed at the same hub, in a tmux session for scriptable interaction.
 - `superpowers-chrome:browsing` available for the web assertions.
 
 ## Steps

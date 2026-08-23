@@ -15,7 +15,7 @@ This item is reframed from "nightly CI automation" to **local, on-demand tooling
 
 ## 1. What exists today (verified against the tree)
 
-**CI = GitHub Actions, one gate (`ci.yml`).** Triggers `push`/`pull_request` on `main`. Steps: `go build ./...`, `make vet`, `evener-namingcheck`, `evener-internalcheck`, `evener-docscheck`, `make lint-golangci`, `make test-race`. `permissions: contents: read` (verified). **There is no `make fuzz` step in the gate yet** — the charter says `make fuzz` *should* run seed corpora in the gate; wiring that one-line step (§5, step 0) is the *only* CI change this item makes. (`binaries.yml` and `trigger-build.yml` exist but are untouched here — we add no new workflow and no scheduler.)
+**CI = GitHub Actions, one gate (`ci.yml`).** Triggers `push`/`pull_request` on `main`. Steps: `go build ./...`, `make vet`, `evener-namingcheck`, `evener internalcheck`, `evener-docscheck`, `make lint-golangci`, `make test-race`. `permissions: contents: read` (verified). **There is no `make fuzz` step in the gate yet** — the charter says `make fuzz` *should* run seed corpora in the gate; wiring that one-line step (§5, step 0) is the *only* CI change this item makes. (`binaries.yml` and `trigger-build.yml` exist but are untouched here — we add no new workflow and no scheduler.)
 
 **No `schedule:` trigger exists anywhere in the repo, and this item adds none.** Everything below is a local command a developer runs on demand.
 

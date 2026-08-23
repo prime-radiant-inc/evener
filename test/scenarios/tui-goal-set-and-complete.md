@@ -1,6 +1,6 @@
 # tui-goal-set-and-complete: set a /goal from the TUI and watch it drive to completion
 
-**What this covers**: the `/goal` objective engine on the evener-tui surface
+**What this covers**: the `/goal` objective engine on the evener tui surface
 (branch `goal-objective-engine`; `cmd/evener-tui/hub_commands.go` `runHubGoal`,
 command registered in `hub_command_registry.go` as `/goal`, header chip in
 `hub_session_view.go:60`). The TUI counterpart to
@@ -28,10 +28,10 @@ command and the header chip are wired to it.
   Setup checklist:
   ```bash
   run=$(mktemp -d -t evener-e2e-goaltui-XXXXXX)
-  go build -o "$run/evener-hub" ./cmd/evener-hub
+  go build -o "$run/evener" hub ./cmd/evener-hub
   go build -o "$run/evener"     ./cmd/evener
   go build -o "$run/evener-tui" ./cmd/evener-tui
-  "$run/evener-hub" -addr 127.0.0.1:0 -evener "$run/evener" 2>"$run/hub.log" &
+  "$run/evener" hub -addr 127.0.0.1:0 -evener "$run/evener" 2>"$run/hub.log" &
   HUBPID=$!
   for i in $(seq 1 50); do
     PORT=$(grep -oE 'listening on 127\.0\.0\.1:[0-9]+' "$run/hub.log" 2>/dev/null | grep -oE '[0-9]+$') || true
@@ -57,7 +57,7 @@ command and the header chip are wired to it.
    tmpdir=$(mktemp -d -t evener-e2e-goaltui-work-XXXXX)
    TMUX_SESSION="evener-goal-$(basename "$tmpdir")"
    tmux new-session -d -s "$TMUX_SESSION" -x 200 -y 50 \
-     "$run/evener-tui --hub-addr 127.0.0.1:$PORT --debug 2>$run/goaltui-stderr.log"
+     "$run/evener" tui --hub-addr 127.0.0.1:$PORT --debug 2>$run/goaltui-stderr.log"
    sleep 2
    ```
 
@@ -129,7 +129,7 @@ command and the header chip are wired to it.
 
 ```bash
 tmux kill-session -t "$TMUX_SESSION" 2>/dev/null
-kill "$HUBPID" 2>/dev/null   # by pid: `pkill -f evener-hub` would take out
+kill "$HUBPID" 2>/dev/null   # by pid: `pkill -f evener hub` would take out
                              # another agent's hub too (docs/developing-evener/agentic-testing.md)
 rm -rf "$run" "$tmpdir"
 ```

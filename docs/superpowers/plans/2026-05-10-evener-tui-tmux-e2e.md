@@ -2,9 +2,9 @@
 
 > **For agentic workers:** REQUIRED: Use superpowers:test-driven-development when expanding this suite. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Build a fully automated end-to-end test suite that drives the real `evener-tui` binary in a terminal and verifies the hub-backed universal-client UX.
+**Goal:** Build a fully automated end-to-end test suite that drives the real `evener tui` binary in a terminal and verifies the hub-backed universal-client UX.
 
-**Architecture:** The suite runs a deterministic in-process fake hub server, builds the real `evener-tui` binary, launches it inside `tmux`, sends real terminal keys, captures the pane, and asserts both screen output and hub API calls. The fake hub owns `/api/tree`, `/api/sessions/*`, transcript-follow SSE, spawn, send, tasks, interrupt, compact, model, clear, and fork endpoints so tests need no LLM credentials or network.
+**Architecture:** The suite runs a deterministic in-process fake hub server, builds the real `evener tui` binary, launches it inside `tmux`, sends real terminal keys, captures the pane, and asserts both screen output and hub API calls. The fake hub owns `/api/tree`, `/api/sessions/*`, transcript-follow SSE, spawn, send, tasks, interrupt, compact, model, clear, and fork endpoints so tests need no LLM credentials or network.
 
 **Tech Stack:** Go tests, `httptest`, `tmux`, Bubble Tea debug mode, hub JSON API, Server-Sent Events.
 
@@ -14,7 +14,7 @@
 
 | Area | User behavior | Automated assertion |
 | --- | --- | --- |
-| Startup | Launch `evener-tui -debug -no-auto-start-hub -hub-addr <fake hub>` | TUI reaches dashboard through real health and tree API calls |
+| Startup | Launch `evener tui -debug -no-auto-start-hub -hub-addr <fake hub>` | TUI reaches dashboard through real health and tree API calls |
 | Dashboard live-only default | Dashboard opens with live sessions grouped by project | Live project/session rows are visible and ended-only history is not visible |
 | Dashboard navigation | Arrow/j-k selection, `enter`, `p`, `r`, `q` | Selection opens project/session, refresh re-fetches tree, quit exits process |
 | Project drilldown | Enter project from dashboard | Project view shows live sessions first and recent ended sessions below |
@@ -39,7 +39,7 @@
 
 - The suite lives in `cmd/evener-tui/tmux_e2e_test.go`.
 - Tests run by default when `tmux` is installed; otherwise they skip with a precise message.
-- Each test builds a temp `evener-tui` binary from `./cmd/evener-tui`.
+- Each test builds a temp `evener tui` binary from `./cmd/evener-tui`.
 - Each test starts a unique tmux session with `-debug` to avoid alternate-screen opacity.
 - The fake hub records every state-changing API call so assertions are made on behavior, not only screen text.
 - Failures dump the visible pane and recent scrollback to make terminal-state failures debuggable.

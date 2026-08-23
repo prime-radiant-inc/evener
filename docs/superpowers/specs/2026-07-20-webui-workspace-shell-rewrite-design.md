@@ -48,12 +48,12 @@ daemon, and TUI stay as they are, except for the small server-side items in §7.
 - No offline mode / queued-send-while-disconnected (explicit non-goal today; unchanged).
 - No visual-pixel parity with the old UI. Behavior parity, yes; look, no.
 - No SSR/Next.js. Static assets from the Go binary + WS.
-- No changes to evener-tui or the REST endpoints it uses (§7 keep-list).
+- No changes to evener tui or the REST endpoints it uses (§7 keep-list).
 
 ## 4. Constraints and invariants
 
 - **Single binary.** Built assets embed via `go:embed`; `make build-hub` produces a self-contained
-  `evener-hub`. Node is a build-time dependency only.
+  `evener hub`. Node is a build-time dependency only.
 - **Remote hub.** Everything works over an SSH tunnel / Tailscale with the cookie or Bearer
   capability token; no absolute-origin assumptions; WS URL derives from page origin.
 - **TUI coupling.** `hubapi.Client` consumes: `/api/health`, `/api/tree`, `/api/sessions/{ref}`

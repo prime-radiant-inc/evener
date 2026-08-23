@@ -14,8 +14,8 @@ This is a breaking design. There is no compatibility mode for the current REST/S
 The current Evener stack has three different API layers:
 
 - `evener serve` exposes REST endpoints such as `/status`, `/input`, `/steer`, `/interrupt`, `/compact`, `/clear`, `/model`, `/models`, `/tasks`, `/shutdown`, and `/events`.
-- `evener-hub` discovers live daemons through rendezvous files, probes `/status`, reverse-proxies daemon actions, reconstructs replay streams from transcript JSONL, and exposes hub JSON under `/api/*`.
-- `evener-tui` talks to `internal/hubapi` for dashboard and actions, then follows hub-proxied SSE streams for session rendering.
+- `evener hub` discovers live daemons through rendezvous files, probes `/status`, reverse-proxies daemon actions, reconstructs replay streams from transcript JSONL, and exposes hub JSON under `/api/*`.
+- `evener tui` talks to `internal/hubapi` for dashboard and actions, then follows hub-proxied SSE streams for session rendering.
 
 Codex's app-server has a cleaner app boundary:
 
@@ -31,7 +31,7 @@ The Codex shape is better for Evener's hub and TUI than the current REST/SSE sha
 
 - Replace Evener's backend API with a Codex-shaped JSON-RPC app protocol.
 - Use the same protocol between web UI, TUI, hub, and live session runtimes.
-- Keep `evener-hub` as the host-level control plane for discovery, spawn, local source aggregation, and later remote sources.
+- Keep `evener hub` as the host-level control plane for discovery, spawn, local source aggregation, and later remote sources.
 - Keep `evener serve` as the local runtime process boundary, but replace its REST/SSE control plane with the app protocol.
 - Make replay and live streaming use the same typed event vocabulary.
 - Represent Evener sessions as app-server threads and Evener inputs as turns.
@@ -73,18 +73,18 @@ This is the chosen design.
 ## Architecture
 
 ```text
-web UI / evener-tui
+web UI / evener tui
        |
        | JSON-RPC over websocket or Unix socket
        v
-evener-hub app server
+evener hub app server
        |
        | JSON-RPC over local daemon websocket or Unix socket
        v
 evener serve app runtimes
 ```
 
-`evener-hub` remains the user-facing app server. It owns:
+`evener hub` remains the user-facing app server. It owns:
 
 - Static web assets.
 - Client JSON-RPC websocket endpoint.
@@ -192,7 +192,7 @@ Params:
 
 ```json
 {
-  "clientInfo": {"name":"evener-tui","version":"0.1.0"},
+  "clientInfo": {"name":"evener tui","version":"0.1.0"},
   "capabilities": {
     "experimentalApi": false,
     "optOutNotificationMethods": []
@@ -204,7 +204,7 @@ Response:
 
 ```json
 {
-  "serverInfo": {"name":"evener-hub","version":"0.1.0"},
+  "serverInfo": {"name":"evener hub","version":"0.1.0"},
   "protocolVersion": "evener-appwire-v1",
   "sourceId": "local",
   "features": {
@@ -733,7 +733,7 @@ Rendezvous files stop pointing at REST daemon addresses. They point at app-wire 
   "modelProvider": "openai",
   "model": "gpt-5.2",
   "startedAt": "2026-05-11T12:00:00Z",
-  "spawnedBy": "evener-hub"
+  "spawnedBy": "evener hub"
 }
 ```
 
@@ -755,7 +755,7 @@ HTMX can remain only for static page shell or settings panes that do not need li
 
 ## TUI
 
-`evener-tui` stops using `internal/hubapi` and stops parsing SSE. It uses `internal/appwire.Client`.
+`evener tui` stops using `internal/hubapi` and stops parsing SSE. It uses `internal/appwire.Client`.
 
 Startup:
 

@@ -324,7 +324,7 @@ Expected: `jstest: all tests passed`.
 
 - [ ] **Step 4: Manual HTTP smoke test**
 
-Start a local isolated `evener-hub` binary with temporary config and fetch `/s/manual` and `/thread/manual` using the auth token. Assert:
+Start a local isolated `evener hub` binary with temporary config and fetch `/s/manual` and `/thread/manual` using the auth token. Assert:
 
 ```text
 /s/manual includes id="sidebar"

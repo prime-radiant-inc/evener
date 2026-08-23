@@ -105,7 +105,7 @@ Replace the separate `make build-web` and `go build ./...` steps with one named 
         run: make build && go build ./...
 ```
 
-`make build` owns `build-runtime`, which owns `build-web` and the `evener`/`evener-hub` pair script; `go build ./...` retains the existing all-package compile check.
+`make build` owns `build-runtime`, which owns `build-web` and the `evener`/`evener hub` pair script; `go build ./...` retains the existing all-package compile check.
 
 - [x] **Step 2: Add the browser gate to the web job.**
 

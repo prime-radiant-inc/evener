@@ -271,7 +271,7 @@ Two domains share the word and only one is the rename target:
 - README and docs
 
 **Wire / storage (deferred to #47):**
-- POST `/api/spawn` JSON field `"task"` — consumed by evener-tui via `hubapi.SpawnRequest`
+- POST `/api/spawn` JSON field `"task"` — consumed by evener tui via `hubapi.SpawnRequest`
 - `.meta.json` field `"original_task"` — every saved session has it
 - HTML form field `<textarea name="task">` — consumed by spawn.go + spawn.js (internal-scope, but observable through DOM)
 

@@ -36,7 +36,7 @@ real corpus), then **B/C/D in parallel** via fanned-out subagents.
   (`llm/apilog.go:EnableRawLogging`, attached via `cmdutil.AttachAPILogger`). All registered
   in `envvars/envvars.go` with `Visibility: Tooling`.
 - **The provider-traffic harvest path is already complete end-to-end.**
-  `evener-fuzz-harvest --surface sse` reads `api-raw.jsonl`, takes streaming `ResponseBody`,
+  `evener fuzz-harvest --surface sse` reads `api-raw.jsonl`, takes streaming `ResponseBody`,
   and routes by provider into the per-provider metamorphic seed dirs
   (`cmd/evener-fuzz-harvest/raw.go:harvestSSE`, `main.go:112`). Surfaces: `sse, toolargs,
   appwire, http, jobs`.
@@ -131,7 +131,7 @@ sandboxed workdirs, then invokes the harvester. Requirements:
 - **Isolation + safety**: each run in its own `t.TempDir`-style scratch repo; `--max-rounds`
   capped; per-provider rate-limit backoff; a cost ceiling (mini is cheap — surface est. token
   spend from `--verbose` events).
-- **Pipeline**: after the batch, run `evener-fuzz-harvest` (shape-scrub default) → gitleaks gate
+- **Pipeline**: after the batch, run `evener fuzz-harvest` (shape-scrub default) → gitleaks gate
   → stage seeds (D3). Wrap under `scripts/fuzz/run-capped.sh`.
 - *~250–400 LoC. This is the one genuinely new build in Phase A; do it serial/first.*
 

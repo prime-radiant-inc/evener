@@ -6,7 +6,7 @@ for implementation planning
 **Scope:** Give evener — CLI, web hub, and TUI — full support for Claude Code plugin
 marketplaces: add/remove/list marketplaces, explore plugins in a marketplace,
 and install / upgrade / auto-upgrade / disable / remove plugins. Bundle a couple
-of standard marketplaces. Integrate plugin health into `evener-doctor`.
+of standard marketplaces. Integrate plugin health into `evener doctor`.
 
 **v2 revision (adversarial review).** Two competing reviewers verified this spec
 against the code; 15 legitimate findings were folded in. Material changes from v1:
@@ -93,7 +93,7 @@ their manifest, skills, subagents, hooks, and MCP server configs."
   no `discoverPluginCommands`, no `Commands` field on `Instance`, no `commands/`
   scan, and no slash-command execution model anywhere in evener.
 - Web + TUI management surfaces for all of the above.
-- `evener-doctor` plugin health checks.
+- `evener doctor` plugin health checks.
 
 **Prior art (designed, never built).** A Claude-Code-compat effort
 (`docs/superpowers/{plans,specs}/2026-05-14-claude-code-compat-*`) planned but did
@@ -269,7 +269,7 @@ category, source, homepage}` — "explore plugins in a marketplace").
 
 **Fetching = shell out to `git`** (present on dev machines; Claude Code does the
 same; avoids a `go-git` dependency). Missing `git` → clear error, reported by
-`evener-doctor` (§13). `git.go` centralizes clone, **partial/sparse clone** for
+`evener doctor` (§13). `git.go` centralizes clone, **partial/sparse clone** for
 `git-subdir`, pinned checkout (`git checkout <ref|sha>`), and `pull --ff-only`.
 The manifest's `renames` map (old→new plugin name) is recorded and followed across
 an upgrade.
@@ -376,7 +376,7 @@ merged and deduped with registry-enabled dirs.
 
 ### 9.1 Auto-upgrade daemon
 
-Lives in the **hub** (`evener-hub`) — the only persistent process; it already hosts
+Lives in the **hub** (`evener hub`) — the only persistent process; it already hosts
 background goroutines on the signal context (`cmd/evener-hub/main.go`).
 
 - A background goroutine on a configurable interval (proposed default ~12h, plus
@@ -522,11 +522,11 @@ API do not need to change for it.
 
 ---
 
-## 13. Doctoring (`evener-doctor plugins`)
+## 13. Doctoring (`evener doctor plugins`)
 
-`evener-doctor` is a read-only forensic inspector (`locate` / `transcript` /
+`evener doctor` is a read-only forensic inspector (`locate` / `transcript` /
 `apilog` / `watches` / `tree`), a thin `main` over a checker package, human summary
-+ `--json`. Plugin doctoring lands as a new **`evener-doctor plugins`** subcommand
++ `--json`. Plugin doctoring lands as a new **`evener doctor plugins`** subcommand
 backed by `internal/plugins/doctor.go` (reusing `plugin.Load` for component
 validity — the root module already imports `agent/plugin`), plus a
 `evener plugin doctor` alias. Read-only; not session-scoped (takes `--json`, not a
@@ -570,7 +570,7 @@ One design spec, built in independently-shippable phases; each gets its own plan
 | **P4 Auto-upgrade** | hub daemon + `hub.toml` config + sweep-based GC (`evener plugin gc` + hub-start sweep) + `evener/plugin/updated` + manual check-now | P1 |
 | **P5 Web** | appwire methods + `hubPluginsController` + Marketplaces & Plugins page + `plugins.js` (autocomplete menu deferred, §1) | P1–P4 RPCs, **P3** |
 | **P6 TUI** | `PluginsPanel`; **plugin-command dispatch/forwarding change** (§10) so `/name` routes to the session (palette-merge polish deferred, §1) | P1–P4 RPCs, **P3** |
-| **P7 Doctoring** | `evener-doctor plugins` + `internal/plugins/doctor.go` + `evener plugin doctor` alias | P1 |
+| **P7 Doctoring** | `evener doctor plugins` + `internal/plugins/doctor.go` + `evener plugin doctor` alias | P1 |
 
 ---
 

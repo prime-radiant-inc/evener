@@ -206,7 +206,7 @@ Edit it to add `btn btn-primary` to the class list, keeping the old classes:
 Run:
 
 ```bash
-cd /home/jesse/git/prime-radiant/evener && go build ./cmd/evener-hub && ./cmd/evener-hub/evener-hub &
+cd /home/jesse/git/prime-radiant/evener && go build ./cmd/evener/ && ./cmd/evener-hub/evener-hub &
 ```
 
 Open a session in the web UI in both light and dark theme. Confirm the Send button:
@@ -304,7 +304,7 @@ Immediately after the `.btn-primary` block added in Task 1, append:
 - [ ] **Step 2: Build and confirm no parse errors**
 
 ```bash
-cd /home/jesse/git/prime-radiant/evener && go build ./cmd/evener-hub
+cd /home/jesse/git/prime-radiant/evener && go build ./cmd/evener/
 ```
 
 Expected: clean build. No template touches yet — visual smoke verification deferred to the migration tasks (Tasks 7–11).
@@ -358,7 +358,7 @@ After the `.btn-secondary` block, append:
 - [ ] **Step 2: Build**
 
 ```bash
-cd /home/jesse/git/prime-radiant/evener && go build ./cmd/evener-hub
+cd /home/jesse/git/prime-radiant/evener && go build ./cmd/evener/
 ```
 
 Expected: clean build.
@@ -415,7 +415,7 @@ After the `.btn-ghost` block, append:
 - [ ] **Step 2: Build**
 
 ```bash
-cd /home/jesse/git/prime-radiant/evener && go build ./cmd/evener-hub
+cd /home/jesse/git/prime-radiant/evener && go build ./cmd/evener/
 ```
 
 Expected: clean build.
@@ -469,7 +469,7 @@ After the `.btn-danger` block, append:
 - [ ] **Step 2: Build**
 
 ```bash
-cd /home/jesse/git/prime-radiant/evener && go build ./cmd/evener-hub
+cd /home/jesse/git/prime-radiant/evener && go build ./cmd/evener/
 ```
 
 Expected: clean build.
@@ -545,7 +545,7 @@ After the `.btn-icon` block, append:
 - [ ] **Step 2: Build**
 
 ```bash
-cd /home/jesse/git/prime-radiant/evener && go build ./cmd/evener-hub
+cd /home/jesse/git/prime-radiant/evener && go build ./cmd/evener/
 ```
 
 Expected: clean build.
@@ -742,7 +742,7 @@ In `cmd/evener-hub/jstest/test-queue-and-drain.js` lines 36–38, apply the same
 - [ ] **Step 9: Build and test**
 
 ```bash
-cd /home/jesse/git/prime-radiant/evener && go build ./cmd/evener-hub && go test ./cmd/evener-hub -count=1
+cd /home/jesse/git/prime-radiant/evener && go build ./cmd/evener/ && go test ./cmd/evener-hub -count=1
 ```
 
 Expected: PASS.
@@ -944,7 +944,7 @@ Line 373 — `formDom.window.document.querySelector(".spawn-btn")` — leave unc
 - [ ] **Step 6: Build and test**
 
 ```bash
-cd /home/jesse/git/prime-radiant/evener && go build ./cmd/evener-hub && go test ./cmd/evener-hub -count=1
+cd /home/jesse/git/prime-radiant/evener && go build ./cmd/evener/ && go test ./cmd/evener-hub -count=1
 cd cmd/evener-hub/jstest && node test-spawn.js
 ```
 
@@ -1085,7 +1085,7 @@ If existing JS in `sidebar.js` selects `.project-chevron` and handles `click` ev
 - [ ] **Step 5: Build and test**
 
 ```bash
-cd /home/jesse/git/prime-radiant/evener && go build ./cmd/evener-hub && go test ./cmd/evener-hub -count=1
+cd /home/jesse/git/prime-radiant/evener && go build ./cmd/evener/ && go test ./cmd/evener-hub -count=1
 cd cmd/evener-hub/jstest && node test-sidebar.js
 ```
 
@@ -1201,7 +1201,7 @@ Change to:
 - [ ] **Step 4: Build and verify**
 
 ```bash
-cd /home/jesse/git/prime-radiant/evener && go build ./cmd/evener-hub && go test ./cmd/evener-hub -count=1
+cd /home/jesse/git/prime-radiant/evener && go build ./cmd/evener/ && go test ./cmd/evener-hub -count=1
 ```
 
 Expected: PASS.
@@ -1354,7 +1354,7 @@ In `cmd/evener-hub/templates/partials/settings/mcp.html`:
 - [ ] **Step 7: Build and smoke-test**
 
 ```bash
-cd /home/jesse/git/prime-radiant/evener && go build ./cmd/evener-hub && go test ./cmd/evener-hub -count=1
+cd /home/jesse/git/prime-radiant/evener && go build ./cmd/evener/ && go test ./cmd/evener-hub -count=1
 ```
 
 Expected: PASS.
@@ -1457,7 +1457,7 @@ Also delete:
 - [ ] **Step 3: Build and full regression**
 
 ```bash
-cd /home/jesse/git/prime-radiant/evener && go build ./cmd/evener-hub && go test ./cmd/evener-hub -count=1
+cd /home/jesse/git/prime-radiant/evener && go build ./cmd/evener/ && go test ./cmd/evener-hub -count=1
 cd cmd/evener-hub/jstest && for f in *.js; do node "$f" || { echo "FAIL: $f"; break; }; done
 ```
 
@@ -1554,7 +1554,7 @@ Below the button-system block, append:
 - [ ] **Step 2: Build**
 
 ```bash
-cd /home/jesse/git/prime-radiant/evener && go build ./cmd/evener-hub
+cd /home/jesse/git/prime-radiant/evener && go build ./cmd/evener/
 ```
 
 Expected: clean build.
@@ -1644,7 +1644,7 @@ Add a small replacement so the badge keeps a left margin inside settings rows:
 - [ ] **Step 4: Build and test**
 
 ```bash
-cd /home/jesse/git/prime-radiant/evener && go build ./cmd/evener-hub && go test ./cmd/evener-hub -count=1
+cd /home/jesse/git/prime-radiant/evener && go build ./cmd/evener/ && go test ./cmd/evener-hub -count=1
 ```
 
 Expected: PASS.
@@ -1793,7 +1793,7 @@ Change to (inline the pulse logic — search rows render in a tight loop, simple
 - [ ] **Step 6: Build + test**
 
 ```bash
-cd /home/jesse/git/prime-radiant/evener && go build ./cmd/evener-hub && go test ./cmd/evener-hub -count=1
+cd /home/jesse/git/prime-radiant/evener && go build ./cmd/evener/ && go test ./cmd/evener-hub -count=1
 cd cmd/evener-hub/jstest && node test-sidebar.js && node test-search.js 2>/dev/null || true
 ```
 
@@ -1877,7 +1877,7 @@ In `cmd/evener-hub/assets/style.css`, locate the existing `.spawn-attach-btn:foc
 - [ ] **Step 4: Build**
 
 ```bash
-cd /home/jesse/git/prime-radiant/evener && go build ./cmd/evener-hub
+cd /home/jesse/git/prime-radiant/evener && go build ./cmd/evener/
 ```
 
 - [ ] **Step 5: Verify focus rings with the keyboard**
@@ -1949,7 +1949,7 @@ Change to:
 - [ ] **Step 2: Build and test**
 
 ```bash
-cd /home/jesse/git/prime-radiant/evener && go build ./cmd/evener-hub && go test ./cmd/evener-hub -count=1
+cd /home/jesse/git/prime-radiant/evener && go build ./cmd/evener/ && go test ./cmd/evener-hub -count=1
 cd cmd/evener-hub/jstest && node test-panels.js && node test-renderer.js
 ```
 

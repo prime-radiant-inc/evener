@@ -1848,7 +1848,7 @@ Expected: full suite passes. If a known slow/live test fails due to missing exte
 Start hub bound for remote access:
 
 ```bash
-go run ./cmd/evener-hub serve --addr 0.0.0.0:7777
+go run ./cmd/evener hub serve --addr 0.0.0.0:7777
 ```
 
 Open `/new` and verify:
@@ -1868,7 +1868,7 @@ Open `/new` and verify:
 Run:
 
 ```bash
-go run ./cmd/evener-tui
+go run ./cmd/evener tui
 ```
 
 Verify:

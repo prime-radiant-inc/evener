@@ -9,7 +9,7 @@ complete AppWire protocol core (generated types, client, reducer, stores) proven
 hub.
 
 **Architecture:** New app lives in `cmd/evener-hub/frontend/` (Vite 8 + React 19 + TS strict),
-embedded into `evener-hub` via `go:embed all:frontend/dist` and served only when `EVENER_HUB_WEB=new`;
+embedded into `evener hub` via `go:embed all:frontend/dist` and served only when `EVENER_HUB_WEB=new`;
 the legacy UI stays untouched until the M10 deletion wave. TS wire types are generated from the
 `appwire` Go catalog with a drift test. One `AppwireClient` per browser window; one pure
 `reducer.ts` turns notifications into `ThreadModel`s; zustand stores wire them together.
@@ -335,7 +335,7 @@ func serveSPAIndex(w http.ResponseWriter, r *http.Request, dist fs.FS) {
 	if err != nil {
 		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 		w.WriteHeader(http.StatusServiceUnavailable)
-		_, _ = w.Write([]byte("evener-hub web app not built: run `make build-web` and rebuild\n"))
+		_, _ = w.Write([]byte("evener hub web app not built: run `make build-web` and rebuild\n"))
 		return
 	}
 	w.Header().Set("Cache-Control", "no-store")

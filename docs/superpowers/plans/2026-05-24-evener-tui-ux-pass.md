@@ -2,7 +2,7 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Port the workshop-log identity from the web UI to the evener-tui — state-colored row bars, typographic status badges, per-tool renderer registry with diff color bars and rich bodies, unified overlays with focus traps, composer chip strip + persistent statusbar — driven by a configurable theme registry covering dark + light at parity.
+**Goal:** Port the workshop-log identity from the web UI to the evener tui — state-colored row bars, typographic status badges, per-tool renderer registry with diff color bars and rich bodies, unified overlays with focus traps, composer chip strip + persistent statusbar — driven by a configurable theme registry covering dark + light at parity.
 
 **Architecture:** Wave-by-wave migration on branch `tui-ux-pass`. Wave 1 establishes the `Theme` struct + token registry + golden-corpus theme isolation. Wave 2 ships rendering primitives (`StateBar`, `StatusBadge`, `SectionDivider`, `KbdHint`, `Overlay`, `DotLeader`). Waves 3–10 adopt the primitives across surfaces (dashboard, session header, tool renderers, composer, overlays, focus traps, MCP fallback). Each wave is independently shippable: build + tests green at every commit, golden snapshots updated inline.
 
@@ -597,7 +597,7 @@ func renderSample(name string, width int, view string, contains ...string) tuiSa
 
 - [ ] **Step 4: Run build**
 
-Run: `go build ./cmd/evener-tui/...`
+Run: `go build ./cmd/evener/...`
 Expected: success (the struct addition + default-value population should not break callers).
 
 - [ ] **Step 5: Run tests**
@@ -1489,7 +1489,7 @@ You may need an `abbreviateModel(s string) string` and `abbreviatePath(s string,
 
 Run: `grep -n "func abbreviateModel\|func abbreviatePath" cmd/evener-tui/*.go`
 
-If `abbreviateModel` does not exist in evener-tui yet (it exists in the web's `spawn.js`), port it as part of this task. Add it to a new `cmd/evener-tui/model_display.go`:
+If `abbreviateModel` does not exist in evener tui yet (it exists in the web's `spawn.js`), port it as part of this task. Add it to a new `cmd/evener-tui/model_display.go`:
 
 ```go
 // cmd/evener-tui/model_display.go
@@ -1646,7 +1646,7 @@ type statusBarInfo struct {
 	CtxUsed   int     // tokens used
 	CtxLimit  int     // window size
 	Cost      float64 // dollars; 0 hides
-	Version   string  // evener-tui version
+	Version   string  // evener tui version
 	Width     int
 }
 

@@ -76,11 +76,11 @@ For each `sessions/<SID>/jobs.jsonl`: read it line by line; each non-empty line 
 
 **Location: `cmd/evener-fuzz-harvest` (a evener-module command), reusing `agent/doctor`'s session locator.** Rationale:
 - The harvester must import evener types — `llm.APIRawLogEntry`, `agent/transcript.{Header,Entry,APICall}`, `llm.ToolCallData`, the core-tool registry. So it **cannot** live in the dep-free `fuzz/` module (§5 portability rule: "nothing in `fuzz/` imports evener"). The promoter/schemagen stay pure; the harvester is evener-coupled by nature.
-- `evener-doctor` already walks sessions/transcripts/jobs via `agent/doctor` (`agent/doctor/locate.go`) and reads recorded state; reuse its locator for multi-bucket discovery instead of re-implementing path-walking. The transcript types in `agent/transcript` are exported, so the harvester reads the NDJSON directly with stock `encoding/json` (no unexported reader needed).
+- `evener doctor` already walks sessions/transcripts/jobs via `agent/doctor` (`agent/doctor/locate.go`) and reads recorded state; reuse its locator for multi-bucket discovery instead of re-implementing path-walking. The transcript types in `agent/transcript` are exported, so the harvester reads the NDJSON directly with stock `encoding/json` (no unexported reader needed).
 
 Surface:
 ```
-evener-fuzz-harvest \
+evener fuzz-harvest \
   [--state-dir DIR ...]            # default: cmdutil.DefaultStateRoot(); repeatable for multi-bucket
   [--out-root DIR]                 # default: repo root; seeds land under each target's testdata/fuzz/<Name>/
   [--surface sse,toolargs,appwire,http,jobs]  # default: all surfaces with a present source
@@ -159,7 +159,7 @@ go test fuzz v1
 10. **`emit.go`** — corpus-literal encoder, content-hash filenames, dedup, size bound, write to `testdata/fuzz/<Name>/`. (~50 LoC)
 
 **Phase C — gates & docs.**
-11. **`.gitleaks.toml` + Makefile** — the shared gitleaks ruleset; add `make secret-scan` (whole repo) and `make fuzz-corpus-scan` (corpus dirs), wire both into the gate; document `evener-fuzz-harvest` + the two recorder env vars in `fuzz/README.md`. (~30 LoC)
+11. **`.gitleaks.toml` + Makefile** — the shared gitleaks ruleset; add `make secret-scan` (whole repo) and `make fuzz-corpus-scan` (corpus dirs), wire both into the gate; document `evener fuzz-harvest` + the two recorder env vars in `fuzz/README.md`. (~30 LoC)
 12. **Tests** — unit tests per file + recorder tests (frame/request round-trips to the JSONL) + the adversarial planted-secret end-to-end test against gitleaks (§3.3) + a determinism test that harvests a fixture and asserts `go test -run '^Fuzz'` loads the output clean.
 
 ## 6. Dependencies & risks
@@ -181,7 +181,7 @@ go test fuzz v1
 ## 7. Acceptance
 
 - **Recorders (Phase A):** with `EVENER_RECORD_APPWIRE=1` / `EVENER_RECORD_HTTP=1` set, a driven hub/daemon session writes `appwire-frames.jsonl` and `hub-http.jsonl`; with them unset, neither file appears and there is no behavior change (a recorder-off regression test asserts byte-identical handler/transport behavior).
-- **Harvest + load:** `evener-fuzz-harvest` over a fixture `~/.evener` (incl. fixture recorder logs + a `jobs.jsonl`) writes seeds; `go test -run '^Fuzz' ./...` in `llm`, `llm/providers/...`, `agent`, `appwire`, and the root module (`cmd/evener-hub`) loads and runs every harvested seed **green** (determinism + format correctness).
+- **Harvest + load:** `evener fuzz-harvest` over a fixture `~/.evener` (incl. fixture recorder logs + a `jobs.jsonl`) writes seeds; `go test -run '^Fuzz' ./...` in `llm`, `llm/providers/...`, `agent`, `appwire`, and the root module (`cmd/evener-hub`) loads and runs every harvested seed **green** (determinism + format correctness).
 - **Known recorded edge case appears as a seed:** a captured `response.completed` stream with `status:"incomplete"` / `max_output_tokens` harvested from a fixture raw-log shows up in `llm/providers/openai/testdata/fuzz/FuzzOpenAIResponsesMetamorphic/`; a captured appwire request frame shows up in `appwire/testdata/fuzz/FuzzMessageDecode/`; an allowlisted GET shows up reverse-mapped in `cmd/evener-hub/testdata/fuzz/FuzzWebHandler/`.
 - **jobs surface (decision 7):** `--surface jobs` over a fixture `jobs.jsonl` emits scrubbed `jobstore.Event` seeds (to staging until 8.1 registers its target dir), exercised in a test so 8.1 can consume them.
 - **Secret-scan passes (gitleaks, decision 5):** `make secret-scan` and `make fuzz-corpus-scan` are green, and the adversarial planted-secret test proves the pipeline strips a real `sk-…` key (gitleaks red before, key absent from the written seed + gitleaks green after).

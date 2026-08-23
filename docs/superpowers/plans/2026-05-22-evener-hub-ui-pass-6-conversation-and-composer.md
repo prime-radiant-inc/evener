@@ -2,7 +2,7 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Tighten the evener-hub conversation transcript (less padding, snugger line-height, smaller gaps, scrollable diff bodies) and declutter the composer (one attachment rail, three-zone controls row, mono single-line status row).
+**Goal:** Tighten the evener hub conversation transcript (less padding, snugger line-height, smaller gaps, scrollable diff bodies) and declutter the composer (one attachment rail, three-zone controls row, mono single-line status row).
 
 **Architecture:** All work lives in `cmd/evener-hub/assets/style.css`, `cmd/evener-hub/templates/partials/workspace.html`, `cmd/evener-hub/templates/partials/input_strip.html`, and minor verification touches in `cmd/evener-hub/assets/renderer.js` + `cmd/evener-hub/jstest/test-input-area.js`. The conversation becomes a container-query host (`#workspace`) so phone-density rules narrow tool-cluster indent without re-asserting media queries. The composer's two attachment rails collapse to one container that the paste handler renders into. The controls row gets explicit `.controls-left / .controls-center / .controls-right` zones so layout intent matches markup.
 
@@ -129,7 +129,7 @@ Bottom margin from `12px` to `var(--space-4)` (also 12 — same value, but token
 Run:
 
 ```bash
-go build ./cmd/evener-hub && ./evener-hub --help >/dev/null
+go build ./cmd/evener/ && ./evener hub --help >/dev/null
 ```
 
 Expected: no build errors. Then launch a hub locally and open a session with at least 3 user/assistant turns. Eyeball it: the transcript should breathe less between turns, line-height is noticeably tighter, but text doesn't read as cramped. The user pill caps at 540px even when the workspace is wide.
@@ -331,7 +331,7 @@ Keep `.user-message .pill { max-width: 90%; }` in the phone block — that's a w
 - [ ] **Step 7: Build + verify glyph alignment at both widths**
 
 ```bash
-go build ./cmd/evener-hub
+go build ./cmd/evener/
 ```
 
 Resize the workspace pane in the browser. The tool-call status glyph should sit in the gutter and shift inward as the pane narrows below 600px. Diff bodies should sit on the inset surface (slightly darker than the page bg), with horizontal scrollbars appearing when a single line exceeds the pane width.
@@ -727,7 +727,7 @@ Make the equivalent change in `cmd/evener-hub/jstest/test-queue-and-drain.js` if
 - [ ] **Step 5: Build + run jstest**
 
 ```bash
-go build ./cmd/evener-hub
+go build ./cmd/evener/
 cd cmd/evener-hub/jstest && npm test
 ```
 
@@ -881,7 +881,7 @@ The old `.queue-preview-hint` rule (with its `kbd` styling) is gone — no more 
 - [ ] **Step 3: Build + verify the queue preview by queuing during an active turn**
 
 ```bash
-go build ./cmd/evener-hub
+go build ./cmd/evener/
 ```
 
 Open a session, start a turn, then type a message and press ⌘↵. The message queues. The queue preview strip should show `queued 1` on the left, the `?` glyph on the right (or just after the label), and the queued items below. Hover the `?` — the browser tooltip should show the explanation. Tab to the `?` with the keyboard — it should focus visibly via `:focus-visible`.
@@ -1021,7 +1021,7 @@ If `.running-indicator` shows up in `input_strip.html`, the template edit in Ste
 - [ ] **Step 4: Build + load a session and watch the status row**
 
 ```bash
-go build ./cmd/evener-hub
+go build ./cmd/evener/
 ```
 
 Open a workspace. The status row should read `cwd <path>   branch <name>   ctx [bar] <numbers>   cost <amount>`, all in mono, with dim keys and full-strength values. No `·` separators. When a turn is active, the running indicator appears in the controls row above, NOT in the status row.

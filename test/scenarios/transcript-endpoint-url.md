@@ -30,7 +30,7 @@ provider forensics come from `sessions/<SID>.api.jsonl` or explicit
 3. Wait ~10s for the turn to complete.
 4. Resolve the session with Evener's own state model and inspect its API attempts:
    ```bash
-   APIFILE=$(evener-doctor locate <session_id> --json | jq -r '.api_log_path')
+   APIFILE=$(evener doctor locate <session_id> --json | jq -r '.api_log_path')
    jq 'select(.kind == "api_attempt") | {attempt_id, attempt_group_id, attempt_index, endpoint: .request.endpoint, outcome}' "$APIFILE"
    ```
 5. Confirm the underlying `sessions/<session_id>.api.jsonl` contains one

@@ -1,7 +1,7 @@
-# doctor-forensics: evener-doctor inspects settled state and the doctor agent diagnoses it
+# doctor-forensics: evener doctor inspects settled state and the doctor agent diagnoses it
 
 **What this covers**: the evener doctoring system end-to-end. (a) The
-`evener-doctor` forensic tools — `locate`, `watches`, `transcript --count`,
+`evener doctor` forensic tools — `locate`, `watches`, `transcript --count`,
 `apilog`, `tree`, `jobs` — read settled on-disk state (transcript / private API log /
 meta / jobs.jsonl) through
 evener's own folds and types, and report the numbers a hand-parser got wrong:
@@ -19,7 +19,7 @@ and `job-watch-observer-snide-thread.md`.
 
 - Fresh binaries from the branch under test: `make build build-doctor` →
   `./evener` and `./evener-doctor`. Put the worktree on `PATH` so the doctor agent's
-  shell tool resolves `evener-doctor` (`PATH="$PWD:$PATH"`).
+  shell tool resolves `evener doctor` (`PATH="$PWD:$PATH"`).
 - A credentialed model (e.g. `--model kimi/kimi-for-coding`).
 - An **observer-watch session** to inspect. Either reuse an existing one (run
   `job-watch-actually-monty-python-injection.md` first and capture its caller
@@ -32,7 +32,7 @@ and `job-watch-observer-snide-thread.md`.
 ### 1 — locate resolves the on-disk layout (the find-tax killer)
 
 ```
-evener-doctor locate $SID
+evener doctor locate $SID
 ```
 
 Assert the output names: `transcript:` = `<bucket>/sessions/$SID.transcript.jsonl`,
@@ -45,10 +45,10 @@ jobs_path, api_log_path, project_id}`.
 ### 2 — watches collapses coalescing and reads the breaker verdict
 
 ```
-evener-doctor watches $SID
-evener-doctor watches $SID --self-loops
-evener-doctor watches $SID --json | jq '.watches[0] | {pending_lines, distinct_deliveries, delivered, dropped, evicted, max_self_influence_depth, runaway_drops}'
-evener-doctor watches $SID --json | jq '.watches[] | {watch_id, target, target_job: (.target_job | if . == null then null else {status, reason, exit_code, output_bytes} end), target_job_missing}'
+evener doctor watches $SID
+evener doctor watches $SID --self-loops
+evener doctor watches $SID --json | jq '.watches[0] | {pending_lines, distinct_deliveries, delivered, dropped, evicted, max_self_influence_depth, runaway_drops}'
+evener doctor watches $SID --json | jq '.watches[] | {watch_id, target, target_job: (.target_job | if . == null then null else {status, reason, exit_code, output_bytes} end), target_job_missing}'
 ```
 
 Assert, for the observer watch:
@@ -63,7 +63,7 @@ Assert, for the observer watch:
   report at all: bounded self-influence is normal under the inform+breaker
   policy, so what the verdict turns on is whether the depth fuse fired, read
   from the runtime's stamps rather than re-derived from the provenance `Chain`.
-- `evener-doctor watches $SID --self-loops` returns **no watches**, with the
+- `evener doctor watches $SID --self-loops` returns **no watches**, with the
   message `no watches where the runaway fuse fired (self-influence is
   bounded)` (`watches.go:315`) — distinct from `no watches recorded` (`:319`),
   which would mean the session never registered one and the fixture is wrong.
@@ -79,8 +79,8 @@ Assert, for the observer watch:
 ### 3 — transcript --count separates calls from mentions
 
 ```
-evener-doctor transcript $SID --count communicate
-evener-doctor transcript $SID --count delegate_send
+evener doctor transcript $SID --count communicate
+evener doctor transcript $SID --count delegate_send
 ```
 
 Assert `communicate` reports the real structural call count and `delegate_send`
@@ -90,10 +90,10 @@ reports that separately as text rather than treating it as an invocation.
 ### 4 — apilog preserves structured failure and settlement evidence without bodies
 
 ```
-evener-doctor apilog $SID
-evener-doctor apilog $SID --errors
-evener-doctor apilog $SID --json | jq '.calls[] | {attempt_id, attempt_group_id, status_code, error_class, outcome, final_attempt_count}'
-evener-doctor apilog $SID --json | jq '.settlements | {total, truncated, records: [.records[] | {attempt_group_id, final_attempt_id, final_attempt_count, outcome, forensic_incomplete}]}'
+evener doctor apilog $SID
+evener doctor apilog $SID --errors
+evener doctor apilog $SID --json | jq '.calls[] | {attempt_id, attempt_group_id, status_code, error_class, outcome, final_attempt_count}'
+evener doctor apilog $SID --json | jq '.settlements | {total, truncated, records: [.records[] | {attempt_group_id, final_attempt_id, final_attempt_count, outcome, forensic_incomplete}]}'
 ```
 
 Assert the unfiltered human table has distinct `status`, `error_class`, and
@@ -109,7 +109,7 @@ without fabricating a provider call row.
 ### 5 — tree links parent ↔ delegate/observer across buckets
 
 ```
-evener-doctor tree $SID --observers
+evener doctor tree $SID --observers
 ```
 
 Assert the caller session roots a tree with its delegate child (`delegate <SID>
@@ -120,9 +120,9 @@ cross-project child still links.
 ### 6 — jobs answers "what did this session run, and how did each end"
 
 ```
-evener-doctor jobs $SID
-evener-doctor jobs $SID --job <a-job-id-from-the-list>
-evener-doctor jobs $SID --json | jq '.jobs[] | {job_id, type, status, reason, exit_code, output_bytes, terminal_notification_state}'
+evener doctor jobs $SID
+evener doctor jobs $SID --job <a-job-id-from-the-list>
+evener doctor jobs $SID --json | jq '.jobs[] | {job_id, type, status, reason, exit_code, output_bytes, terminal_notification_state}'
 ```
 
 Assert every job the session ran appears in the log's own append order, each
@@ -144,14 +144,14 @@ recorded`, which would wrongly say the session ran nothing
 ```
 PATH="$PWD:$PATH" ./evener --model kimi/kimi-for-coding --agent doctor \
   --skills-dir "$PWD/docs/skills" --dir "$(mktemp -d)" --max-rounds 40 \
-  "Diagnose evener session $SID using the evener-doctor tools. Run the
+  "Diagnose evener session $SID using the evener doctor tools. Run the
    watch-delivery-health and observer-self-loop checks; report distinct
    deliveries, the breaker verdict, the communicate/delegate_send counts, and
    any Findings (healthy ⇒ zero)."
 ```
 
 Assert the run log shows: `agent:doctor` loaded, `[skill] activated
-doctoring-evener`, `shell` calls to `evener-doctor watches/transcript`, and a final
+doctoring-evener`, `shell` calls to `evener doctor watches/transcript`, and a final
 `communicate` reporting the session is **healthy with zero findings**, citing the
 distinct-delivery count and zero runaway drops. The doctor must NOT emit a
 finding for the expected coalescing, nor for bounded self-influence depth —
@@ -169,14 +169,14 @@ fixture). A delivered send whose provenance `Chain` merely repeats the same
 inform+breaker policy and `--self-loops` will not list it. Then:
 
 ```
-evener-doctor watches $BROKEN_SID --state-dir "$SCRATCH" --self-loops   # flags the fired fuse
+evener doctor watches $BROKEN_SID --state-dir "$SCRATCH" --self-loops   # flags the fired fuse
 PATH="$PWD:$PATH" ./evener --model kimi/kimi-for-coding --agent doctor \
   --skills-dir "$PWD/docs/skills" --dir "$(mktemp -d)" --max-rounds 40 \
-  "Diagnose session $BROKEN_SID with evener-doctor (use --state-dir $SCRATCH).
+  "Diagnose session $BROKEN_SID with evener doctor (use --state-dir $SCRATCH).
    Report whether it is healthy and emit a Finding for any confirmed problem."
 ```
 
-Assert `evener-doctor watches … --self-loops` lists the watch with
+Assert `evener doctor watches … --self-loops` lists the watch with
 `breaker: FIRED — 1 runaway drop(s) (depth fuse); max self-influence depth N`
 (`agent/doctor/watches.go:263`), and the doctor emits exactly one structured
 Finding with `category: watch_runaway`, `severity: high`,
@@ -190,7 +190,7 @@ There is no `watch_self_loop` category.
 
 ## Out of scope
 
-`evener-doctor` is read-only forensics over settled state — not a live monitor
+`evener doctor` is read-only forensics over settled state — not a live monitor
 (that is appwire + tui + hub), not a mutator (mutation is the hub REST surface),
 and not a test harness (it exposes numbers; scenarios assert them with `jq`).
 The doctor's repair authority is graduated (`repair-guardrails.md`): diagnosis is

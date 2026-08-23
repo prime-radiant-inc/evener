@@ -171,7 +171,7 @@ code-level verification, not covered by any prior ruling.
 
 ## Live proof
 
-Real hub (built `evener-hub`, `EVENER_HUB_WEB=new`) under an **isolated fake `$HOME`** (its own
+Real hub (built `evener hub`, `EVENER_HUB_WEB=new`) under an **isolated fake `$HOME`** (its own
 `$HOME/.evener/hub.lock`, run dir, state root — the real host hub was never touched) on
 `127.0.0.1:19286`, spawning real `evener serve` daemons via the built `evener` binary, driving the
 cheapest real model **`openai/gpt-5-nano`** (materialized from the repo `.env`), through Chrome. No
@@ -250,8 +250,8 @@ go test ./cmd/evener-hub/...    → ok (all packages; root suite 29.9s, rest cac
 report + the parity-sweep record + evidence artifacts.
 
 **Live-proof housekeeping.** The isolated hub (port 19286) and its spawned `evener serve` daemon (port
-52537, session `033u6kjm…`) were both stopped and confirmed gone (no `evener`/`evener-hub` process, ports
+52537, session `033u6kjm…`) were both stopped and confirmed gone (no `evener`/`evener hub` process, ports
 free, isolated run dir empty). The real host hub was never touched (the fake `$HOME` gave it its own
 `hub.lock`). The browser tab was released to `about:blank`. No credential material was echoed into
-logs, screenshots, or this report. The built `evener`/`evener-hub` binaries and the fake `$HOME` remain
+logs, screenshots, or this report. The built `evener`/`evener hub` binaries and the fake `$HOME` remain
 under the session scratchpad (outside the repo).

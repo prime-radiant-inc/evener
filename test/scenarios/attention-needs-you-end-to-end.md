@@ -44,11 +44,11 @@ Part B (steps 5-7) and Part C are **fully browser-free**. Part A (steps 1-4) nee
   ```bash
   run=$(mktemp -d -t evener-e2e-attn-XXXXXX)
   go build -o "$run/evener"     ./cmd/evener
-  go build -o "$run/evener-hub" ./cmd/evener-hub
+  go build -o "$run/evener" hub ./cmd/evener-hub
   export HOME="$run/home"
   mkdir -p "$HOME"
   unset XDG_STATE_HOME
-  "$run/evener-hub" -addr 127.0.0.1:0 -evener "$run/evener" 2>"$run/hub.log" &
+  "$run/evener" hub -addr 127.0.0.1:0 -evener "$run/evener" 2>"$run/hub.log" &
   HUBPID=$!
   for i in $(seq 1 50); do
     PORT=$(grep -oE 'listening on 127\.0\.0\.1:[0-9]+' "$run/hub.log" 2>/dev/null | grep -oE '[0-9]+$') || true
@@ -250,7 +250,7 @@ kill "$HUBPID" 2>/dev/null
 rm -rf "$run" "$tmpdir" "$tmpdir2"
 ```
 
-Kill the hub by the PID you captured — never `pkill -f evener-hub`, which would also kill a
+Kill the hub by the PID you captured — never `pkill -f evener hub`, which would also kill a
 concurrent agent's test hub.
 
 ## Sharp edges

@@ -73,14 +73,14 @@ reference card `job-watch-observer-snide-thread.md`.
 ## Doctor audit
 
 ```bash
-go run ./cmd/evener-doctor watches "$SID"
-go run ./cmd/evener-doctor tree "$SID" --observers
-go run ./cmd/evener-doctor transcript "$SID" --format outline --range last:30
-go run ./cmd/evener-doctor transcript "$OBSERVER_REF" --format outline --range last:30
-go run ./cmd/evener-doctor transcript "$SID" --count job_list
-go run ./cmd/evener-doctor transcript "$SID" --count job_status
-go run ./cmd/evener-doctor transcript "$OBSERVER_REF" --count communicate
-go run ./cmd/evener-doctor transcript "$OBSERVER_REF" --count delegate_send  # expect 0
+go run ./cmd/evener doctor watches "$SID"
+go run ./cmd/evener doctor tree "$SID" --observers
+go run ./cmd/evener doctor transcript "$SID" --format outline --range last:30
+go run ./cmd/evener doctor transcript "$OBSERVER_REF" --format outline --range last:30
+go run ./cmd/evener doctor transcript "$SID" --count job_list
+go run ./cmd/evener doctor transcript "$SID" --count job_status
+go run ./cmd/evener doctor transcript "$OBSERVER_REF" --count communicate
+go run ./cmd/evener doctor transcript "$OBSERVER_REF" --count delegate_send  # expect 0
 ```
 
 ## Sharp edges

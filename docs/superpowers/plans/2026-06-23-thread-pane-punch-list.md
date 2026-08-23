@@ -136,7 +136,7 @@ cd cmd/evener-hub/jstest && NODE_PATH=${NODE_PATH:-/tmp/evener-jstest-jsdom/node
 
 ### Manual smoke
 
-Use a local `evener-hub` server and verify:
+Use a local `evener hub` server and verify:
 
 - Full `/s/<id>` workspace still has normal title/header behavior.
 - Side-pane `/thread/<id>` iframe hides the redundant inner title row.
