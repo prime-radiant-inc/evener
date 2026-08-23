@@ -1,5 +1,6 @@
 import { type JSX, useEffect, useRef, useState } from "react";
 import type { StoreApi, UseBoundStore } from "zustand";
+import { ActivitySheet } from "../components/activity/ActivitySheet";
 import { AskComposer } from "../components/composer/AskComposer";
 import { Composer } from "../components/composer/Composer";
 import { Timeline } from "../components/timeline/Timeline";
@@ -10,6 +11,7 @@ import {
   onTapNewActivity,
 } from "../conversation/follow";
 import type { MobileTimelineItem } from "../conversation/model";
+import type { ActivityView } from "../services/activity";
 import type { ConversationService } from "../services/conversation";
 import type { AttachmentState } from "../state/attachments";
 import type { ConversationState } from "../state/conversation";
@@ -24,6 +26,8 @@ export interface ConversationScreenProps {
   readonly conversationService?: ConversationService;
   /** The attachment store hook (Zustand) — pending image attachments. */
   readonly attachmentStore?: UseBoundStore<StoreApi<AttachmentState>>;
+  /** The activity view to display in the sheet. Optional; when absent the sheet builds from the conversation. */
+  readonly activityView?: ActivityView | null;
 }
 
 /**
@@ -42,6 +46,7 @@ export function ConversationScreen({
   navigationStore,
   conversationService,
   attachmentStore,
+  activityView: activityViewProp,
 }: ConversationScreenProps): JSX.Element {
   const conversation = conversationStore((s) => s.conversation);
   const status = conversationStore((s) => s.status);
@@ -50,6 +55,7 @@ export function ConversationScreen({
     navigationStore((s) => s.activeConversation?.title) ?? "Conversation";
 
   const [follow, setFollow] = useState<FollowState>(createFollowState);
+  const [activityOpen, setActivityOpen] = useState(false);
   const prevItemCount = useRef(0);
 
   // Reset follow mode when the conversation changes (session/profile switch).
@@ -58,6 +64,7 @@ export function ConversationScreen({
   useEffect(() => {
     setFollow(() => createFollowState());
     prevItemCount.current = 0;
+    setActivityOpen(false);
   }, [convId]);
 
   // Track new items for the unseen count.
@@ -90,6 +97,7 @@ export function ConversationScreen({
           title={navTitle}
           status="unknown"
           onBack={() => navigationStore.getState().popConversation()}
+          onActivity={() => setActivityOpen(true)}
         />
         <div className="evener-conversation__loading">Loading…</div>
       </main>
@@ -104,6 +112,7 @@ export function ConversationScreen({
           title={navTitle}
           status="attention"
           onBack={() => navigationStore.getState().popConversation()}
+          onActivity={() => setActivityOpen(true)}
         />
         <div className="evener-conversation__error" role="alert">
           {error ?? "Failed to open conversation"}
@@ -119,12 +128,23 @@ export function ConversationScreen({
   const title = conversation?.name ?? navTitle;
   const statusKind = conversation ? mapStatus(conversation.status) : "unknown";
 
+  // Build the activity view from the conversation projection. Tasks and work
+  // data come from the raw Thread via the activity service (when available);
+  // capabilities, usage, and reasoning come from the MobileConversation.
+  const activityView: ActivityView | null =
+    activityViewProp !== undefined
+      ? activityViewProp
+      : conversation !== null
+        ? activityViewFromConversation(conversation)
+        : null;
+
   return (
     <main className="evener-conversation">
       <TopBar
         title={title}
         status={statusKind}
         onBack={() => navigationStore.getState().popConversation()}
+        onActivity={() => setActivityOpen(true)}
       />
       <Timeline
         items={items}
@@ -158,6 +178,14 @@ export function ConversationScreen({
           />
         </div>
       )}
+      {conversationService !== undefined ? (
+        <ActivitySheet
+          open={activityOpen}
+          onClose={() => setActivityOpen(false)}
+          view={activityView}
+          conversationService={conversationService}
+        />
+      ) : null}
     </main>
   );
 }
@@ -190,9 +218,15 @@ interface TopBarProps {
   readonly title: string;
   readonly status: StatusKind;
   readonly onBack: () => void;
+  readonly onActivity: () => void;
 }
 
-function TopBar({ title, status, onBack }: TopBarProps): JSX.Element {
+function TopBar({
+  title,
+  status,
+  onBack,
+  onActivity,
+}: TopBarProps): JSX.Element {
   return (
     <header className="evener-conversation__topbar">
       <button
@@ -213,6 +247,15 @@ function TopBar({ title, status, onBack }: TopBarProps): JSX.Element {
       >
         <span aria-hidden="true">{statusGlyph(status)}</span>
       </span>
+      <button
+        type="button"
+        className="evener-icon-button evener-conversation__activity"
+        aria-label="Activity"
+        data-testid="activity-button"
+        onClick={onActivity}
+      >
+        ☰
+      </button>
     </header>
   );
 }
@@ -245,4 +288,33 @@ function statusLabel(status: StatusKind): string {
     default:
       return "Unknown";
   }
+}
+
+// Build an ActivityView from the MobileConversation projection. Tasks and work
+// are not carried in the MobileConversation (they come from the raw Thread's
+// diagnostics), so they are empty here. Capabilities, usage, and reasoning are
+// projected 1:1. When the full Thread is available, use createActivityService()
+// .projectActivity(thread) instead for complete task/work data.
+function activityViewFromConversation(
+  conv: NonNullable<ConversationState["conversation"]>,
+): ActivityView {
+  return {
+    tasks: [],
+    work: [],
+    usage: {
+      inputTokens: conv.usage.inputTokens,
+      outputTokens: conv.usage.outputTokens,
+      cacheReadTokens: conv.usage.cacheReadTokens,
+      totalTokens: conv.usage.totalTokens,
+      cost: conv.usage.cost,
+      contextUsed: conv.usage.contextUsed,
+      contextWindow: conv.usage.contextWindow,
+      contextRemaining: conv.usage.contextRemaining,
+      contextPressure: conv.usage.contextPressure,
+    },
+    capabilities: conv.capabilities,
+    reasoningEffort: conv.reasoningEffort,
+    reasoningEffortLevels: conv.reasoningEffortLevels,
+    supportsReasoning: conv.supportsReasoning,
+  };
 }
