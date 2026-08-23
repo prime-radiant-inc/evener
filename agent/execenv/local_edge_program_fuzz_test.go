@@ -189,7 +189,7 @@ func runLocalEdgeContractProgram(t *testing.T, program []byte) localEdgeTrace {
 	} else {
 		trace.GrepError = "best-effort-empty"
 	}
-	if _, err := env.Glob("[", ""); err == nil {
+	if _, err := env.Glob(t.Context(), "[", ""); err == nil {
 		t.Fatal("Glob malformed pattern unexpectedly succeeded")
 	}
 

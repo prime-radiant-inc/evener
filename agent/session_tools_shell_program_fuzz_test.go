@@ -453,7 +453,7 @@ func (e *stpEnv) Grep(pattern, path, globFilter string, caseInsensitive bool, ma
 	return e.grepOutput, e.grepErr
 }
 
-func (e *stpEnv) Glob(pattern, path string, includeIgnored ...bool) ([]string, error) {
+func (e *stpEnv) Glob(_ context.Context, pattern, path string, includeIgnored ...bool) ([]string, error) {
 	e.globCalls = append(e.globCalls, stpGlobCall{pattern: pattern, path: path})
 	return append([]string(nil), e.globMatches...), e.globErr
 }

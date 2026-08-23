@@ -224,7 +224,7 @@ func assertAgenttestFakeEnv(t *testing.T, root string) {
 	if env.FileExists("x") {
 		t.Fatal("FakeEnv.FileExists = true")
 	}
-	if got, err := env.Glob("*", root); err != nil || got != nil {
+	if got, err := env.Glob(t.Context(), "*", root); err != nil || got != nil {
 		t.Fatalf("FakeEnv.Glob = %#v, %v", got, err)
 	}
 	if got, err := env.Grep("x", root, "", false, 1, ""); err != nil || got != "" {
@@ -308,7 +308,7 @@ func FuzzDenyEnvProgram(f *testing.F) {
 		if got := env.boundedText(0); got != "" {
 			t.Fatalf("DenyEnv.boundedText(0) = %q", got)
 		}
-		if matches, err := env.Glob("*", path); err != nil || len(matches) > 3 {
+		if matches, err := env.Glob(t.Context(), "*", path); err != nil || len(matches) > 3 {
 			t.Fatalf("DenyEnv.Glob = %#v, %v", matches, err)
 		}
 		if entries, err := env.ListDirectory(path, 0); err != nil || len(entries) > 3 {

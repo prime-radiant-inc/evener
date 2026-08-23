@@ -89,13 +89,15 @@ type argvOnlyEnv struct {
 	gotWorkingDir string
 }
 
-func (e *argvOnlyEnv) Initialize() error                              { return nil }
-func (e *argvOnlyEnv) Cleanup()                                       {}
-func (e *argvOnlyEnv) WorkingDirectory() string                       { return "" }
-func (e *argvOnlyEnv) Platform() string                               { return "test" }
-func (e *argvOnlyEnv) OSVersion() string                              { return "test" }
-func (e *argvOnlyEnv) FileExists(string) bool                         { return false }
-func (e *argvOnlyEnv) Glob(string, string, ...bool) ([]string, error) { return nil, nil }
+func (e *argvOnlyEnv) Initialize() error        { return nil }
+func (e *argvOnlyEnv) Cleanup()                 {}
+func (e *argvOnlyEnv) WorkingDirectory() string { return "" }
+func (e *argvOnlyEnv) Platform() string         { return "test" }
+func (e *argvOnlyEnv) OSVersion() string        { return "test" }
+func (e *argvOnlyEnv) FileExists(string) bool   { return false }
+func (e *argvOnlyEnv) Glob(context.Context, string, string, ...bool) ([]string, error) {
+	return nil, nil
+}
 func (e *argvOnlyEnv) Grep(string, string, string, bool, int, string, ...int) (string, error) {
 	return "", nil
 }
@@ -126,13 +128,15 @@ type shellOnlyEnv struct {
 	gotWorkingDir string
 }
 
-func (e *shellOnlyEnv) Initialize() error                              { return nil }
-func (e *shellOnlyEnv) Cleanup()                                       {}
-func (e *shellOnlyEnv) WorkingDirectory() string                       { return "" }
-func (e *shellOnlyEnv) Platform() string                               { return "test" }
-func (e *shellOnlyEnv) OSVersion() string                              { return "test" }
-func (e *shellOnlyEnv) FileExists(string) bool                         { return false }
-func (e *shellOnlyEnv) Glob(string, string, ...bool) ([]string, error) { return nil, nil }
+func (e *shellOnlyEnv) Initialize() error        { return nil }
+func (e *shellOnlyEnv) Cleanup()                 {}
+func (e *shellOnlyEnv) WorkingDirectory() string { return "" }
+func (e *shellOnlyEnv) Platform() string         { return "test" }
+func (e *shellOnlyEnv) OSVersion() string        { return "test" }
+func (e *shellOnlyEnv) FileExists(string) bool   { return false }
+func (e *shellOnlyEnv) Glob(context.Context, string, string, ...bool) ([]string, error) {
+	return nil, nil
+}
 func (e *shellOnlyEnv) Grep(string, string, string, bool, int, string, ...int) (string, error) {
 	return "", nil
 }

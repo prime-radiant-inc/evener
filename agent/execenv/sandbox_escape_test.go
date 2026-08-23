@@ -132,7 +132,7 @@ func TestEscape_DenylistReadEveryTool(t *testing.T) {
 			if env.FileExists(key) {
 				t.Error("file_exists(denylisted): must be false")
 			}
-			if _, err := env.Glob("*", ssh); !isDeniedErr(err) {
+			if _, err := env.Glob(t.Context(), "*", ssh); !isDeniedErr(err) {
 				t.Errorf("glob(denylisted base): want denial, got %v", err)
 			}
 			if _, err := env.Grep("KEY", ssh, "", false, 10, "content"); !isDeniedErr(err) {

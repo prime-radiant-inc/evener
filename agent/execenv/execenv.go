@@ -143,7 +143,9 @@ type ExecutionEnvironment interface {
 	// Glob returns paths matching the shell-style pattern, rooted at basePath.
 	// Dotfiles/dirs (.git, .claude/worktrees/x, ...) and gitignored paths are
 	// excluded by default; pass includeIgnored(true) to restore them.
-	Glob(pattern string, basePath string, includeIgnored ...bool) ([]string, error)
+	// A `**` walk over a large tree can run for minutes, so ctx bounds it:
+	// cancelling ctx aborts the walk and returns ctx's error.
+	Glob(ctx context.Context, pattern string, basePath string, includeIgnored ...bool) ([]string, error)
 	// Grep searches files for pattern and returns matches formatted per
 	// outputMode ("content" (default), "files_with_matches", or "count").
 	// contextLines, when given (0-10), includes that many lines of context
@@ -169,5 +171,5 @@ type GlobExcluder interface {
 	// GlobWithExclusions behaves like Glob but also returns the number of
 	// candidate matches dropped by the default dotfile/gitignore exclusion
 	// (always 0 when includeIgnored is true).
-	GlobWithExclusions(pattern, basePath string, includeIgnored bool) (matches []string, excluded int, err error)
+	GlobWithExclusions(ctx context.Context, pattern, basePath string, includeIgnored bool) (matches []string, excluded int, err error)
 }

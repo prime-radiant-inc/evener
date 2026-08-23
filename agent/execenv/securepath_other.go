@@ -3,6 +3,7 @@
 package execenv
 
 import (
+	"context"
 	"fmt"
 	"os"
 )
@@ -70,7 +71,7 @@ func (s *sandboxFS) listDir(tool, abs string, depth int) ([]DirEntry, error) {
 	return nil, errSandboxUnsupported()
 }
 
-func (s *sandboxFS) glob(tool, base, pattern string, includeIgnored bool) ([]string, int, error) {
+func (s *sandboxFS) glob(ctx context.Context, tool, base, pattern string, includeIgnored bool) ([]string, int, error) {
 	return nil, 0, errSandboxUnsupported()
 }
 

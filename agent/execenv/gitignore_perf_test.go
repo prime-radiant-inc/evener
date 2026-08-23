@@ -22,7 +22,7 @@ func BenchmarkGlobRepoTree(b *testing.B) {
 	}
 	env := NewLocalExecutionEnvironment(repoRoot)
 	for b.Loop() {
-		matches, err := env.Glob("agent/*.go", "")
+		matches, err := env.Glob(b.Context(), "agent/*.go", "")
 		if err != nil {
 			b.Fatalf("Glob: %v", err)
 		}
