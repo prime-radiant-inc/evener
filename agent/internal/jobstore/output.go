@@ -717,7 +717,7 @@ func (o *OutputStore) outputMetaLocked() (outputMeta, error) {
 	meta := outputMeta{
 		TotalBytes:           o.total,
 		RetainedStart:        o.retainedStart,
-		RetainedStartPartial: boolPointer(o.retainedStartPartial),
+		RetainedStartPartial: new(o.retainedStartPartial),
 	}
 	hash, err := outputFileSHA256(o.fs, o.path)
 	if err != nil {
@@ -727,11 +727,11 @@ func (o *OutputStore) outputMetaLocked() (outputMeta, error) {
 	return meta, nil
 }
 
-func boolPointer(v bool) *bool { return &v }
-
 // writeOutputMetaFile atomically writes meta on the OS filesystem.
 // writeOutputMetaFileFs carries the injectable seam; this preserves the
 // os-backed signature the package's callers and tests already use.
+//
+//go:fix inline
 func writeOutputMetaFile(path string, meta outputMeta) error {
 	return writeOutputMetaFileFs(afero.NewOsFs(), path, meta)
 }

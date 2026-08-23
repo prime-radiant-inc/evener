@@ -133,8 +133,7 @@ func TestFallbackChain_MidChainProviderUnhealthyAbortsWalk(t *testing.T) {
 
 	_, _, _, err := sess.callModelWithFallback(context.Background(), NewOpenAIProfile("primary"), unhealthyChainRequest(), "", 1)
 
-	var pu *llm.ProviderUnhealthyError
-	if !errors.As(err, &pu) {
+	if _, ok := errors.AsType[*llm.ProviderUnhealthyError](err); !ok {
 		t.Fatalf("terminal error = %v (%T), want *llm.ProviderUnhealthyError from the fallback-b group", err, err)
 	}
 	got := a.Models()
@@ -310,8 +309,7 @@ func TestContinuationRecovery_SkippedOnProviderUnhealthyVerdict(t *testing.T) {
 
 	_, _, _, err := sess.callModelWithFallback(context.Background(), NewOpenAIProfile("primary"), continuationRecoveryRequest(), "", 1)
 
-	var pu *llm.ProviderUnhealthyError
-	if !errors.As(err, &pu) {
+	if _, ok := errors.AsType[*llm.ProviderUnhealthyError](err); !ok {
 		t.Fatalf("terminal error = %v (%T), want *llm.ProviderUnhealthyError", err, err)
 	}
 	reqs := a.Requests()

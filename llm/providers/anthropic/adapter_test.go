@@ -2410,8 +2410,7 @@ func TestComplete_WrapsContextCanceled(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error")
 	}
-	var abortErr *llm.AbortError
-	if !errors.As(err, &abortErr) {
+	if _, ok := errors.AsType[*llm.AbortError](err); !ok {
 		t.Fatalf("expected AbortError, got %T: %v", err, err)
 	}
 }
@@ -2862,9 +2861,9 @@ func TestComplete_ReasoningEffort_AdjustsMaxTokens(t *testing.T) {
 		// > medium budget (8192): no adjustment.
 		{"medium", nil, 32000},
 		// Explicit maxTokens (1024) < medium budget (8192): adjusted to budget + explicit.
-		{"medium", ptrInt(1024), 8192 + 1024},
+		{"medium", new(1024), 8192 + 1024},
 		// Explicit maxTokens (10000) > medium budget (8192): no adjustment.
-		{"medium", ptrInt(10000), 10000},
+		{"medium", new(10000), 10000},
 		// Low budget (1024) < default maxTokens (32000 fallback): no adjustment.
 		{"low", nil, 32000},
 	}
@@ -3720,8 +3719,7 @@ func TestAdapter_Complete_WebSearchWithTools_NoDuplicateNames(t *testing.T) {
 	}
 }
 
-func ptrInt(i int) *int { return &i }
-
+//go:fix inline
 // ================== Catalog-driven adaptive/hybrid thinking tests ==================
 
 func TestBuildRequestBody_AdaptiveThinking_Opus46(t *testing.T) {

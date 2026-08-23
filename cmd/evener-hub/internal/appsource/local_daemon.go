@@ -660,8 +660,7 @@ func localDaemonDialError(err error) error {
 
 	// Websocket close error during the handshake: the daemon answered the
 	// HTTP upgrade but the connection died before Initialize completed.
-	var closeErr websocket.CloseError
-	if errors.As(err, &closeErr) {
+	if _, ok := errors.AsType[websocket.CloseError](err); ok {
 		return appwire.SessionUnavailable("local daemon unavailable: " + err.Error())
 	}
 

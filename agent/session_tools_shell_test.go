@@ -184,7 +184,7 @@ func TestShellDetachedBypassesJobManager(t *testing.T) {
 	s := newTestSession(t)
 	workDir := t.TempDir()
 	env := &detachedShellEnv{
-		FakeEnv: agenttest.FakeEnv{WorkDir: workDir},
+		WorkDir: workDir,
 		process: execenv.DetachedProcess{PID: 4242},
 	}
 
@@ -229,7 +229,7 @@ func TestShellDetachedBypassesJobManager(t *testing.T) {
 func TestShellDetachedRejectsUnsupportedExecutor(t *testing.T) {
 	t.Parallel()
 	s := newTestSession(t)
-	env := &streamingShellEnv{FakeEnv: agenttest.FakeEnv{WorkDir: t.TempDir()}}
+	env := &streamingShellEnv{WorkDir: t.TempDir()}
 
 	res := s.reg.ExecuteCall(context.Background(), env, llm.ToolCallData{
 		ID:        "c1",
@@ -244,7 +244,7 @@ func TestShellDetachedRejectsUnsupportedExecutor(t *testing.T) {
 func TestShellDetachedRejectsZeroPID(t *testing.T) {
 	t.Parallel()
 	s := newTestSession(t)
-	env := &detachedShellEnv{FakeEnv: agenttest.FakeEnv{WorkDir: t.TempDir()}}
+	env := &detachedShellEnv{WorkDir: t.TempDir()}
 
 	res := s.reg.ExecuteCall(context.Background(), env, llm.ToolCallData{
 		ID:        "c1",
@@ -259,7 +259,7 @@ func TestShellDetachedRejectsZeroPID(t *testing.T) {
 func TestShellDetachedRejectsInvalidCwdBeforeDetach(t *testing.T) {
 	t.Parallel()
 	s := newTestSession(t)
-	env := &detachedShellEnv{FakeEnv: agenttest.FakeEnv{WorkDir: t.TempDir()}, process: execenv.DetachedProcess{PID: 4242}}
+	env := &detachedShellEnv{WorkDir: t.TempDir(), process: execenv.DetachedProcess{PID: 4242}}
 
 	res := s.reg.ExecuteCall(context.Background(), env, llm.ToolCallData{
 		ID:        "c1",

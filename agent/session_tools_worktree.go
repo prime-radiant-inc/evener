@@ -16,7 +16,6 @@ import (
 	"primeradiant.com/evener/agent/internal/tool"
 	"primeradiant.com/evener/agent/internal/worktree"
 	"primeradiant.com/evener/identifier"
-	"primeradiant.com/evener/llm"
 )
 
 // worktreeGitTimeoutMS bounds each git lifecycle subprocess the manage_worktree
@@ -328,7 +327,7 @@ func (s *Session) serveDisposeOnlyWorktreeTool() {
 // currently return a clear "not yet implemented" error.
 func registerWorktreeTool(reg *tool.Registry, deps *toolDeps) {
 	_ = reg.Register(tool.RegisteredTool{
-		Tool: llm.Tool{Definition: tool.DefManageWorktree()},
+		Definition: tool.DefManageWorktree(),
 		Exec: func(ctx context.Context, env execenv.ExecutionEnvironment, args map[string]any) (any, error) {
 			_ = env // the guard reads/writes the session env under s.mu; the passed env is currentEnv()
 			operation, _ := args["operation"].(string)

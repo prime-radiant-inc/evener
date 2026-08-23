@@ -1287,8 +1287,7 @@ func modelFallbackEligible(err error, policy llm.RetryPolicy) bool {
 	// and transport, which every same-provider fallback entry shares. Decided
 	// here rather than left to llm.Classify, which would walk into the wrapped
 	// attempt error and land wherever that happens to classify.
-	var unhealthy *llm.ProviderUnhealthyError
-	if errors.As(err, &unhealthy) {
+	if _, ok := errors.AsType[*llm.ProviderUnhealthyError](err); ok {
 		return false
 	}
 	switch llm.Classify(err) {

@@ -925,8 +925,7 @@ func (s *Session) callModelWithFallback(ctx context.Context, profile *provider.P
 			// remaining entry can route around it. Stopping here also preserves
 			// the verdict as the round's terminal error instead of letting a
 			// later entry's failure win.
-			var unhealthy *llm.ProviderUnhealthyError
-			if errors.As(err, &unhealthy) {
+			if _, ok := errors.AsType[*llm.ProviderUnhealthyError](err); ok {
 				break
 			}
 		}
@@ -955,8 +954,7 @@ func shouldRetryResponsesContinuationAsFullHistory(req llm.Request, err error) b
 	// RetryStream just indicted. Checked before the llm.Error match because the
 	// verdict unwraps to its last attempt error, so an anchor-missing attempt
 	// error would otherwise be read straight through the verdict.
-	var unhealthy *llm.ProviderUnhealthyError
-	if errors.As(err, &unhealthy) {
+	if _, ok := errors.AsType[*llm.ProviderUnhealthyError](err); ok {
 		return false
 	}
 	var llmErr llm.Error

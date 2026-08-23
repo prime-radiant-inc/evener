@@ -101,7 +101,7 @@ func NewStreamError(provider, message string, cause error) error {
 // the model output. cause is the underlying parse/validation error, exposed via
 // Unwrap; pass nil when none applies.
 func NewNoObjectGeneratedError(message string, rawText string, cause error) error {
-	return &NoObjectGeneratedError{nonHTTPBaseError: nonHTTPBaseError{message: message, retryable: false, cause: cause}, RawText: rawText}
+	return &NoObjectGeneratedError{message: message, retryable: false, cause: cause, RawText: rawText}
 }
 
 // NewUnsupportedToolChoiceError reports that the given tool_choice mode is not

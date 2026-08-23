@@ -1822,8 +1822,7 @@ func TestComplete_WrapsContextCanceled(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error")
 	}
-	var abortErr *llm.AbortError
-	if !errors.As(err, &abortErr) {
+	if _, ok := errors.AsType[*llm.AbortError](err); !ok {
 		t.Fatalf("expected AbortError, got %T: %v", err, err)
 	}
 }
@@ -3253,8 +3252,7 @@ func TestComplete_ToolResultImage_ModelSupport(t *testing.T) {
 			if err == nil {
 				t.Fatalf("expected an error for model %q", tc.model)
 			}
-			var ce *llm.ConfigurationError
-			if !errors.As(err, &ce) {
+			if _, ok := errors.AsType[*llm.ConfigurationError](err); !ok {
 				t.Fatalf("expected ConfigurationError, got %T (%v)", err, err)
 			}
 			if !strings.Contains(err.Error(), "tool-result images") {
@@ -3304,8 +3302,7 @@ func TestToolResultImage_UnsupportedModel_RejectedOnEveryDispatchPath(t *testing
 			if err == nil {
 				t.Fatalf("expected an error")
 			}
-			var ce *llm.ConfigurationError
-			if !errors.As(err, &ce) {
+			if _, ok := errors.AsType[*llm.ConfigurationError](err); !ok {
 				t.Fatalf("expected ConfigurationError, got %T (%v)", err, err)
 			}
 			if c.callCount() != 0 {

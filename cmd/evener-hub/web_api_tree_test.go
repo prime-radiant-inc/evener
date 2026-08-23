@@ -753,8 +753,8 @@ func TestAPITreeDoesNotReprojectLiveNestedForkAsTopLevel(t *testing.T) {
 		{ID: "fork", ForkLabel: "before edit", UpdatedAt: now, EnvInfo: schema.EnvironmentInfo{WorkingDir: "/w/proj"}},
 	}
 	roster := hubcore.NewRosterWithEntries(
-		hubcore.LiveEntry{Entry: rendezvous.Entry{PID: 1}, SessionID: "branch", Status: appwire.ThreadStatusActive},
-		hubcore.LiveEntry{Entry: rendezvous.Entry{PID: 2}, SessionID: "fork", Status: appwire.ThreadStatusAwaiting},
+		hubcore.LiveEntry{PID: 1, SessionID: "branch", Status: appwire.ThreadStatusActive},
+		hubcore.LiveEntry{PID: 2, SessionID: "fork", Status: appwire.ThreadStatusAwaiting},
 	)
 	web := NewWebServer(hubcore.WebConfig{Past: hubcore.NewPastIndex(""), Roster: roster})
 	web.injectMetasForTest(metas)

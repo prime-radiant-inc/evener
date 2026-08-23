@@ -58,8 +58,7 @@ func rawFieldsOf(t reflect.Type) []rawField {
 		return nil
 	}
 	var out []rawField
-	for i := 0; i < t.NumField(); i++ {
-		f := t.Field(i)
+	for f := range t.Fields() {
 		if !f.IsExported() {
 			continue
 		}

@@ -111,13 +111,11 @@ func FuzzRPCLifecyclePass4(f *testing.F) {
 		localRegistry := appsource.NewRegistry()
 		localRegistry.Add(local)
 		spawner := &fakeRPCModelContractSpawner{
-			fakeRPCSpawner: fakeRPCSpawner{
-				spawn: func(context.Context, hubcore.SpawnRequest) (rendezvous.Entry, error) {
-					return rendezvous.Entry{ThreadID: "thread", SessionID: "thread", PID: 7}, nil
-				},
-				resume: func(context.Context, hubcore.ResumeRequest) (rendezvous.Entry, error) {
-					return rendezvous.Entry{ThreadID: "thread", SessionID: "thread", PID: 7}, nil
-				},
+			spawn: func(context.Context, hubcore.SpawnRequest) (rendezvous.Entry, error) {
+				return rendezvous.Entry{ThreadID: "thread", SessionID: "thread", PID: 7}, nil
+			},
+			resume: func(context.Context, hubcore.ResumeRequest) (rendezvous.Entry, error) {
+				return rendezvous.Entry{ThreadID: "thread", SessionID: "thread", PID: 7}, nil
 			},
 			contract: appwire.ModelListResponse{Data: []appwire.ModelDescriptor{{Provider: "openai", Model: "gpt-5"}}},
 		}

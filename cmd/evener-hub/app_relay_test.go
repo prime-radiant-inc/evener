@@ -34,8 +34,8 @@ func TestHubAtomicRejoinUsesRelaySessionRead(t *testing.T) {
 		deliveries: make(chan appsource.RelayDelivery),
 	}
 	source := &relaySessionTestSource{
-		relayLifecycleSource: relayLifecycleSource{thread: thread},
-		lease:                lease,
+		thread: thread,
+		lease:  lease,
 	}
 
 	sources := appsource.NewRegistry()
@@ -122,8 +122,8 @@ func TestHubAtomicRejoinFansOutAndAcknowledgesAfterResponse(t *testing.T) {
 		deliveries: deliveries,
 	}
 	source := &relaySessionTestSource{
-		relayLifecycleSource: relayLifecycleSource{thread: thread},
-		lease:                lease,
+		thread: thread,
+		lease:  lease,
 	}
 	sources := appsource.NewRegistry()
 	sources.Add(source)
@@ -183,7 +183,7 @@ func TestHubAtomicRejoinWritesResponseBeforePostCutNotification(t *testing.T) {
 		},
 	}
 	source := &relaySessionTestSource{
-		relayLifecycleSource: relayLifecycleSource{thread: thread},
+		thread: thread,
 		lease: &scriptedRelaySessionLease{
 			readResult: appsource.RelayReadResult{
 				Response: appwire.ThreadReadResponse{Thread: thread},
@@ -256,8 +256,8 @@ func TestHubAtomicRejoinRejectsSnapshotWithoutLiveHandoff(t *testing.T) {
 		deliveries: make(chan appsource.RelayDelivery),
 	}
 	source := &relaySessionTestSource{
-		relayLifecycleSource: relayLifecycleSource{thread: thread},
-		lease:                lease,
+		thread: thread,
+		lease:  lease,
 	}
 	relays := newHubRelayFunctions(
 		appserver.NewServer(appserver.ServerConfig{ServerName: "relay-test", SourceID: "local"}),
@@ -294,8 +294,8 @@ func TestHubAtomicRejoinDoesNotConfirmSnapshotWhenLiveHandoffCannotPrepare(t *te
 		deliveries: make(chan appsource.RelayDelivery),
 	}
 	source := &relaySessionTestSource{
-		relayLifecycleSource: relayLifecycleSource{thread: thread},
-		lease:                lease,
+		thread: thread,
+		lease:  lease,
 	}
 	sources := appsource.NewRegistry()
 	sources.Add(source)
@@ -381,8 +381,8 @@ func TestHubTurnStartPreparesCanonicalRelaySession(t *testing.T) {
 		deliveries: make(chan appsource.RelayDelivery),
 	}
 	source := &relaySessionTestSource{
-		relayLifecycleSource: relayLifecycleSource{thread: thread},
-		lease:                lease,
+		thread: thread,
+		lease:  lease,
 	}
 	relays := newHubRelayFunctions(
 		appserver.NewServer(appserver.ServerConfig{ServerName: "relay-test", SourceID: "local"}),
@@ -453,8 +453,8 @@ func TestHubTurnStartStopsBeforeMutationWhenRelayHandoffCannotCommit(t *testing.
 				deliveries: make(chan appsource.RelayDelivery),
 			}
 			source := &relaySessionTestSource{
-				relayLifecycleSource: relayLifecycleSource{thread: thread},
-				lease:                lease,
+				thread: thread,
+				lease:  lease,
 			}
 			registered := false
 			relays := newHubRelayFunctions(
@@ -515,8 +515,8 @@ func TestHubLifecycleRelaySetupUsesCanonicalRelaySession(t *testing.T) {
 		deliveries: make(chan appsource.RelayDelivery),
 	}
 	source := &relaySessionTestSource{
-		relayLifecycleSource: relayLifecycleSource{thread: thread},
-		lease:                lease,
+		thread: thread,
+		lease:  lease,
 	}
 	sources := appsource.NewRegistry()
 	sources.Add(source)
@@ -570,8 +570,8 @@ func TestHubRelayIdleRetirementYieldsToConcurrentActorCommand(t *testing.T) {
 		deliveries: make(chan appsource.RelayDelivery),
 	}
 	source := &relaySessionTestSource{
-		relayLifecycleSource: relayLifecycleSource{thread: thread},
-		lease:                lease,
+		thread: thread,
+		lease:  lease,
 	}
 	idleEntered := make(chan struct{})
 	releaseIdle := make(chan struct{})
@@ -641,14 +641,14 @@ func TestHubRelayBlockedActorDoesNotBlockUnrelatedThread(t *testing.T) {
 		deliveries: make(chan appsource.RelayDelivery),
 	}
 	blockedSource := &relaySessionTestSource{
-		relayLifecycleSource: relayLifecycleSource{thread: blockedThread},
-		id:                   "local-a",
-		lease:                blockedLease,
+		thread: blockedThread,
+		id:     "local-a",
+		lease:  blockedLease,
 	}
 	fastSource := &relaySessionTestSource{
-		relayLifecycleSource: relayLifecycleSource{thread: fastThread},
-		id:                   "local-b",
-		lease:                fastLease,
+		thread: fastThread,
+		id:     "local-b",
+		lease:  fastLease,
 	}
 	relays := newHubRelayFunctions(
 		appserver.NewServer(appserver.ServerConfig{ServerName: "relay-test", SourceID: "local"}),
@@ -719,8 +719,8 @@ func TestHubAtomicRelayReadLetsDeletionWinAndAbortsHandoff(t *testing.T) {
 		},
 	}
 	source := &relaySessionTestSource{
-		relayLifecycleSource: relayLifecycleSource{thread: lease.readResult.Response.Thread},
-		lease:                lease,
+		thread: lease.readResult.Response.Thread,
+		lease:  lease,
 	}
 	relays := newHubRelayFunctions(
 		appserver.NewServer(appserver.ServerConfig{ServerName: "relay-test", SourceID: "local"}),
@@ -781,7 +781,7 @@ func TestHubAtomicRejoinExcludesDeletionAtHandoffPrepareBoundary(t *testing.T) {
 		Evener:    appwire.EvenerThread{Ref: ref},
 	}
 	source := &relaySessionTestSource{
-		relayLifecycleSource: relayLifecycleSource{thread: thread},
+		thread: thread,
 		lease: &scriptedRelaySessionLease{
 			readResult: appsource.RelayReadResult{
 				Response: appwire.ThreadReadResponse{Thread: thread},
@@ -836,7 +836,7 @@ func TestHubAtomicRelayPublicationStopsAfterDeletionWins(t *testing.T) {
 	}
 	deliveries := make(chan appsource.RelayDelivery, 1)
 	source := &relaySessionTestSource{
-		relayLifecycleSource: relayLifecycleSource{thread: thread},
+		thread: thread,
 		lease: &scriptedRelaySessionLease{
 			readResult: appsource.RelayReadResult{
 				Response: appwire.ThreadReadResponse{Thread: thread},

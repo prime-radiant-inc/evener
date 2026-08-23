@@ -168,8 +168,8 @@ func TestParseBoolPtrHelper(t *testing.T) {
 		want *bool
 	}{
 		{"nil is absent", nil, nil},
-		{"explicit bool false", false, boolPtr(false)},
-		{"string one is true", "1", boolPtr(true)},
+		{"explicit bool false", false, new(false)},
+		{"string one is true", "1", new(true)},
 		{"string unparseable is absent", "nope", nil},
 		{"unsupported type is absent", 3, nil},
 	}
@@ -194,11 +194,11 @@ func TestParseFloatPtrHelper(t *testing.T) {
 		in   any
 		want *float64
 	}{
-		{"json.Number", json.Number("1.5"), floatPtr(1.5)},
+		{"json.Number", json.Number("1.5"), new(1.5)},
 		{"json.Number invalid", json.Number("notafloat"), nil},
-		{"float64", float64(2.0), floatPtr(2.0)},
-		{"int widens", 3, floatPtr(3.0)},
-		{"string", "4.5", floatPtr(4.5)},
+		{"float64", float64(2.0), new(2.0)},
+		{"int widens", 3, new(3.0)},
+		{"string", "4.5", new(4.5)},
 		{"string invalid", "nope", nil},
 		{"unsupported type", true, nil},
 	}
@@ -217,9 +217,8 @@ func TestParseFloatPtrHelper(t *testing.T) {
 	}
 }
 
-func boolPtr(b bool) *bool        { return &b }
-func floatPtr(f float64) *float64 { return &f }
-
+//go:fix inline
+//go:fix inline
 func TestStripMarkdownCodeFenceNested(t *testing.T) {
 	// The opening line is dropped and content is trimmed at the LAST closing
 	// fence, so an interior fence survives.

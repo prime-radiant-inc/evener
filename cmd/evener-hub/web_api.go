@@ -100,8 +100,7 @@ func writeAPIWireError(w http.ResponseWriter, fallbackStatus int, err error) {
 }
 
 func wireErrorFromError(err error) (appwire.WireError, bool) {
-	var wire appwire.WireError
-	if errors.As(err, &wire) {
+	if wire, ok := errors.AsType[appwire.WireError](err); ok {
 		return wire, true
 	}
 	return appwire.WireError{}, false

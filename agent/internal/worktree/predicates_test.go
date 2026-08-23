@@ -53,8 +53,7 @@ func (e *gitRunError) Error() string {
 func (e *gitRunError) Unwrap() error { return e.err }
 
 func (e *gitRunError) ExitCode() int {
-	var ee *exec.ExitError
-	if errors.As(e.err, &ee) {
+	if ee, ok := errors.AsType[*exec.ExitError](e.err); ok {
 		return ee.ExitCode()
 	}
 	return -1

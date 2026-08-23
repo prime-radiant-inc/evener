@@ -540,7 +540,7 @@ func TestCommunicateCapturesEmptyRawStructuredOutputForCustomSchema(t *testing.T
 	}
 	def.Parameters = params
 	if err := reg.Register(tool.RegisteredTool{
-		Tool: llm.Tool{Definition: def},
+		Definition: def,
 		Exec: func(context.Context, execenv.ExecutionEnvironment, map[string]any) (any, error) {
 			return nil, nil
 		},

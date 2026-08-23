@@ -74,13 +74,11 @@ func Classify(err error) ErrorClass {
 	if errors.Is(err, context.Canceled) {
 		return ErrorClassPermanent
 	}
-	var abort *AbortError
-	if errors.As(err, &abort) {
+	if _, ok := errors.AsType[*AbortError](err); ok {
 		return ErrorClassPermanent
 	}
 
-	var le Error
-	if errors.As(err, &le) {
+	if le, ok := errors.AsType[Error](err); ok {
 		if isEndpointFallbackSignal(err, le) {
 			return ErrorClassFallback
 		}

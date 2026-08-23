@@ -44,8 +44,7 @@ func applyDenied(t *testing.T, env execenv.FileMutator, patch, whatf string) {
 	if err == nil {
 		t.Fatalf("%s: expected a denial, got nil", whatf)
 	}
-	var denied *sandbox.DeniedError
-	if !errors.As(err, &denied) {
+	if _, ok := errors.AsType[*sandbox.DeniedError](err); !ok {
 		t.Fatalf("%s: expected *sandbox.DeniedError, got %T: %v", whatf, err, err)
 	}
 }

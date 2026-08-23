@@ -60,8 +60,7 @@ func (r *runner) logf(format string, args ...any) {
 func (r *runner) scrub(st *surfaceStat, san *Sanitizer, raw []byte, sse bool) ([]byte, bool) {
 	out, err := sanitizerProcess(san, raw, sse)
 	if err != nil {
-		var leak *SecretLeakError
-		if errors.As(err, &leak) {
+		if _, ok := errors.AsType[*SecretLeakError](err); ok {
 			st.leaks++
 			r.leaks++
 			r.logf("LEAK dropped seed: %v", err)

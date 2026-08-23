@@ -998,7 +998,7 @@ func (s *Session) reapplyProviderSpecificTools(oldTag, newTag string) {
 		// (registerWebTools) — a mid-session provider switch must not make web
 		// egress reachable in a sandboxed session whose network is off.
 		_ = s.reg.Register(tool.RegisteredTool{
-			Tool: llm.Tool{Definition: tool.DefWebSearch()},
+			Definition: tool.DefWebSearch(),
 			Exec: func(ctx context.Context, env execenv.ExecutionEnvironment, args map[string]any) (any, error) {
 				if err := egressDeniedByNet(env, "web_search"); err != nil {
 					return nil, err

@@ -585,8 +585,7 @@ func TestClientWithAdapterTimeout_PreservesCallerDeadline(t *testing.T) {
 		if !errors.Is(err, context.DeadlineExceeded) {
 			t.Fatalf("Do error = %v, want caller deadline", err)
 		}
-		var responseHeaderTimeout *responseHeaderTimeoutError
-		if errors.As(err, &responseHeaderTimeout) {
+		if _, ok := errors.AsType[*responseHeaderTimeoutError](err); ok {
 			t.Fatalf("caller deadline was reclassified as response-header timeout: %v", err)
 		}
 	case <-time.After(2 * time.Second):

@@ -124,7 +124,7 @@ func toolProgramRegistry(t *testing.T) (*Registry, *int, *bool) {
 	readFileSawPurpose := new(bool)
 
 	if err := reg.Register(RegisteredTool{
-		Tool: llm.Tool{Definition: llm.ToolDefinition{
+		Definition: llm.ToolDefinition{
 			Name:        "echo_program",
 			Description: "deterministic fuzz registry executor",
 			Parameters: map[string]any{
@@ -137,7 +137,7 @@ func toolProgramRegistry(t *testing.T) (*Registry, *int, *bool) {
 				},
 				"required": []string{"value", "mode"},
 			},
-		}},
+		},
 		Exec: func(_ context.Context, _ execenv.ExecutionEnvironment, args map[string]any) (any, error) {
 			*calls++
 			if _, found := args["purpose"]; found {
@@ -165,7 +165,7 @@ func toolProgramRegistry(t *testing.T) (*Registry, *int, *bool) {
 	}
 
 	if err := reg.Register(RegisteredTool{
-		Tool: llm.Tool{Definition: llm.ToolDefinition{
+		Definition: llm.ToolDefinition{
 			Name:        "read_file",
 			Description: "program read_file purpose witness",
 			Parameters: map[string]any{
@@ -173,7 +173,7 @@ func toolProgramRegistry(t *testing.T) (*Registry, *int, *bool) {
 				"properties": map[string]any{"value": map[string]any{"type": "string"}, "mode": map[string]any{"type": "integer"}, "block": map[string]any{"type": "boolean"}},
 				"required":   []string{"value", "mode"},
 			},
-		}},
+		},
 		Exec: func(_ context.Context, _ execenv.ExecutionEnvironment, args map[string]any) (any, error) {
 			_, *readFileSawPurpose = args["purpose"]
 			return "read:" + fmt.Sprint(args["value"]), nil
@@ -183,7 +183,7 @@ func toolProgramRegistry(t *testing.T) (*Registry, *int, *bool) {
 	}
 
 	if err := reg.Register(RegisteredTool{
-		Tool: llm.Tool{Definition: llm.ToolDefinition{Name: "communicate", Description: "program result tool", Parameters: map[string]any{"type": "object", "properties": map[string]any{}}}},
+		Definition: llm.ToolDefinition{Name: "communicate", Description: "program result tool", Parameters: map[string]any{"type": "object", "properties": map[string]any{}}},
 		Exec: func(_ context.Context, _ execenv.ExecutionEnvironment, _ map[string]any) (any, error) {
 			return "communicated", nil
 		},
@@ -192,11 +192,11 @@ func toolProgramRegistry(t *testing.T) (*Registry, *int, *bool) {
 	}
 
 	if err := reg.Register(RegisteredTool{
-		Tool: llm.Tool{Definition: llm.ToolDefinition{
+		Definition: llm.ToolDefinition{
 			Name:        "apply_patch",
 			Description: "program FileMutator boundary",
 			Parameters:  map[string]any{"type": "object", "properties": map[string]any{"patch": map[string]any{"type": "string"}}, "required": []string{"patch"}},
-		}},
+		},
 		Exec: func(_ context.Context, env execenv.ExecutionEnvironment, args map[string]any) (any, error) {
 			fm, ok := env.(execenv.FileMutator)
 			if !ok {
@@ -369,15 +369,15 @@ func toolProgramRegistryEdges(t *testing.T) {
 	}
 	emptyBacking := &Registry{}
 	if err := emptyBacking.Register(RegisteredTool{
-		Tool: llm.Tool{Definition: llm.ToolDefinition{Name: "late_map", Description: "late map", Parameters: map[string]any{"type": "object"}}},
-		Exec: func(context.Context, execenv.ExecutionEnvironment, map[string]any) (any, error) { return "ok", nil },
+		Definition: llm.ToolDefinition{Name: "late_map", Description: "late map", Parameters: map[string]any{"type": "object"}},
+		Exec:       func(context.Context, execenv.ExecutionEnvironment, map[string]any) (any, error) { return "ok", nil },
 	}); err != nil || emptyBacking.Get("late_map") == nil {
 		t.Fatalf("register into nil backing map: err=%v names=%v", err, emptyBacking.Names())
 	}
 	for _, bad := range []RegisteredTool{
-		{Tool: llm.Tool{Definition: llm.ToolDefinition{Name: "bad name", Parameters: map[string]any{"type": "object"}}}, Exec: func(context.Context, execenv.ExecutionEnvironment, map[string]any) (any, error) { return nil, nil }},
-		{Tool: llm.Tool{Definition: llm.ToolDefinition{Name: "missing_exec", Description: "missing executor", Parameters: map[string]any{"type": "object"}}}},
-		{Tool: llm.Tool{Definition: llm.ToolDefinition{Name: "bad_root", Description: "bad root", Parameters: map[string]any{"type": "array"}}}, Exec: func(context.Context, execenv.ExecutionEnvironment, map[string]any) (any, error) { return nil, nil }},
+		{Definition: llm.ToolDefinition{Name: "bad name", Parameters: map[string]any{"type": "object"}}, Exec: func(context.Context, execenv.ExecutionEnvironment, map[string]any) (any, error) { return nil, nil }},
+		{Definition: llm.ToolDefinition{Name: "missing_exec", Description: "missing executor", Parameters: map[string]any{"type": "object"}}},
+		{Definition: llm.ToolDefinition{Name: "bad_root", Description: "bad root", Parameters: map[string]any{"type": "array"}}, Exec: func(context.Context, execenv.ExecutionEnvironment, map[string]any) (any, error) { return nil, nil }},
 	} {
 		if err := NewRegistry().Register(bad); err == nil {
 			t.Fatalf("invalid registration unexpectedly succeeded: %+v", bad.Definition)
@@ -387,7 +387,7 @@ func toolProgramRegistryEdges(t *testing.T) {
 	params := map[string]any{"type": "object", "properties": map[string]any{"value": map[string]any{"type": "string"}}}
 	reuse := NewRegistry()
 	firstExec := func(context.Context, execenv.ExecutionEnvironment, map[string]any) (any, error) { return "first", nil }
-	if err := reuse.Register(RegisteredTool{Tool: llm.Tool{Definition: llm.ToolDefinition{Name: "schema_reuse", Description: "reuse", Parameters: params}}, Exec: firstExec}); err != nil {
+	if err := reuse.Register(RegisteredTool{Definition: llm.ToolDefinition{Name: "schema_reuse", Description: "reuse", Parameters: params}, Exec: firstExec}); err != nil {
 		t.Fatalf("initial schema registration: %v", err)
 	}
 	first := reuse.Get("schema_reuse")
@@ -400,7 +400,7 @@ func toolProgramRegistryEdges(t *testing.T) {
 	if out, err := first.Execute(context.Background(), map[string]any{"value": "x"}); err != nil || out != "first" {
 		t.Fatalf("bridged Execute = %v, %v", out, err)
 	}
-	if err := reuse.Register(RegisteredTool{Tool: llm.Tool{Definition: llm.ToolDefinition{Name: "schema_reuse", Description: "reuse", Parameters: params}}, Exec: firstExec}); err != nil {
+	if err := reuse.Register(RegisteredTool{Definition: llm.ToolDefinition{Name: "schema_reuse", Description: "reuse", Parameters: params}, Exec: firstExec}); err != nil {
 		t.Fatalf("schema re-registration: %v", err)
 	}
 	if second := reuse.Get("schema_reuse"); second == nil || second.Schema != first.Schema {

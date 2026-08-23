@@ -14,7 +14,7 @@ import (
 // regTool builds a RegisteredTool with a no-op executor so registration succeeds.
 func regTool(def llm.ToolDefinition) tool.RegisteredTool {
 	return tool.RegisteredTool{
-		Tool: llm.Tool{Definition: def},
+		Definition: def,
 		Exec: func(ctx context.Context, env execenv.ExecutionEnvironment, args map[string]any) (any, error) {
 			return "ok", nil
 		},

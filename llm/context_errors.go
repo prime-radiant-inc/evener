@@ -12,8 +12,7 @@ func WrapContextError(provider string, err error) error {
 	if err == nil {
 		return nil
 	}
-	var responseHeaderTimeout *responseHeaderTimeoutError
-	if errors.As(err, &responseHeaderTimeout) {
+	if responseHeaderTimeout, ok := errors.AsType[*responseHeaderTimeoutError](err); ok {
 		return newResponseHeaderTimeoutError(provider, responseHeaderTimeout.message, err)
 	}
 	if errors.Is(err, context.Canceled) {

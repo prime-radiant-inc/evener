@@ -25,7 +25,7 @@ func (a *liveModelMetadataAdapter) ListModels(ctx context.Context) ([]llm.ModelI
 func TestNewSessionAppliesLiveOpenAIModelContextWindow(t *testing.T) {
 	t.Parallel()
 	adapter := &liveModelMetadataAdapter{
-		fakeAdapter: fakeAdapter{name: "openai"},
+		name: "openai",
 		models: []llm.ModelInfo{{
 			ID:            "gpt-5.5",
 			Provider:      "openai",
@@ -54,7 +54,7 @@ func TestNewSessionAppliesLiveOpenAIModelContextWindow(t *testing.T) {
 func TestSessionSetModelAppliesLiveOpenAIModelContextWindow(t *testing.T) {
 	t.Parallel()
 	adapter := &liveModelMetadataAdapter{
-		fakeAdapter: fakeAdapter{name: "openai"},
+		name: "openai",
 		models: []llm.ModelInfo{
 			{ID: "gpt-5.4", Provider: "openai", ContextWindow: 400_000},
 			{ID: "gpt-5.5", Provider: "openai", ContextWindow: 1_000_000},
@@ -88,7 +88,7 @@ func TestSessionSetModelAppliesLiveOpenAIModelContextWindow(t *testing.T) {
 func TestSessionSetModelFetchesModelListExactlyOnce(t *testing.T) {
 	t.Parallel()
 	adapter := &liveModelMetadataAdapter{
-		fakeAdapter: fakeAdapter{name: "openai"},
+		name: "openai",
 		models: []llm.ModelInfo{
 			{ID: "gpt-5.4", Provider: "openai", ContextWindow: 400_000},
 			{ID: "gpt-5.5", Provider: "openai", ContextWindow: 1_000_000},
@@ -120,8 +120,8 @@ func TestSessionSetModelFetchesModelListExactlyOnce(t *testing.T) {
 func TestNewSession_RejectsModelAbsentFromEnumerableInstance(t *testing.T) {
 	t.Parallel()
 	adapter := &liveModelMetadataAdapter{
-		fakeAdapter: fakeAdapter{name: "openai"},
-		models:      []llm.ModelInfo{{ID: "gpt-5.5", Provider: "openai"}},
+		name:   "openai",
+		models: []llm.ModelInfo{{ID: "gpt-5.5", Provider: "openai"}},
 	}
 	client := llm.NewClient()
 	client.Register(adapter)

@@ -25,7 +25,7 @@ func registerCommunicateTool(reg *tool.Registry, deps *toolDeps) {
 		resultToolDef = existing.Definition
 	}
 	_ = reg.Register(tool.RegisteredTool{
-		Tool:        llm.Tool{Definition: resultToolDef},
+		Definition:  resultToolDef,
 		OmitPurpose: true,
 		Exec: func(ctx context.Context, env execenv.ExecutionEnvironment, args map[string]any) (any, error) {
 			_ = env
@@ -145,7 +145,7 @@ func registerSkillTool(reg *tool.Registry, deps *toolDeps) {
 	// Present for provider profiles that include the use_skill tool definition.
 	if reg.Get("use_skill") != nil {
 		_ = reg.Register(tool.RegisteredTool{
-			Tool: llm.Tool{Definition: tool.DefUseSkill()},
+			Definition: tool.DefUseSkill(),
 			Exec: func(ctx context.Context, env execenv.ExecutionEnvironment, args map[string]any) (any, error) {
 				_ = ctx
 				_ = env

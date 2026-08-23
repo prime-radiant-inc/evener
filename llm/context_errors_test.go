@@ -15,8 +15,7 @@ func TestWrapContextError_AbortUnwrapsToCanceled(t *testing.T) {
 	if !errors.Is(err, context.Canceled) {
 		t.Fatal("errors.Is(WrapContextError(Canceled), context.Canceled) = false, want true")
 	}
-	var abort *AbortError
-	if !errors.As(err, &abort) {
+	if _, ok := errors.AsType[*AbortError](err); !ok {
 		t.Fatal("WrapContextError(Canceled) is not *AbortError")
 	}
 }
@@ -26,8 +25,7 @@ func TestWrapContextError_TimeoutUnwrapsToDeadline(t *testing.T) {
 	if !errors.Is(err, context.DeadlineExceeded) {
 		t.Fatal("errors.Is(WrapContextError(DeadlineExceeded), context.DeadlineExceeded) = false, want true")
 	}
-	var rt *requestTimeoutError
-	if !errors.As(err, &rt) {
+	if _, ok := errors.AsType[*requestTimeoutError](err); !ok {
 		t.Fatal("WrapContextError(DeadlineExceeded) is not *RequestTimeoutError")
 	}
 }
@@ -40,8 +38,7 @@ func TestWrapContextError_ResponseHeaderTimeoutPreservesRetryability(t *testing.
 	)
 	wrapped := WrapContextError("openai", original)
 
-	var timeout *responseHeaderTimeoutError
-	if !errors.As(wrapped, &timeout) {
+	if _, ok := errors.AsType[*responseHeaderTimeoutError](wrapped); !ok {
 		t.Fatalf("WrapContextError(response-header timeout) = %T, want *responseHeaderTimeoutError", wrapped)
 	}
 	var providerErr Error

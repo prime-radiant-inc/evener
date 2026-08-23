@@ -100,8 +100,7 @@ func (s *Session) emitModelRetry(policy llm.RetryPolicy, req llm.Request, group 
 		if err != nil {
 			data.Message = err.Error()
 		}
-		var le llm.Error
-		if errors.As(err, &le) {
+		if le, ok := errors.AsType[llm.Error](err); ok {
 			data.StatusCode = le.StatusCode()
 		}
 		s.emit(events.EventModelRetry, data)
@@ -210,8 +209,7 @@ func isTurnCancellation(ctx context.Context, err error) bool {
 	// RequestTimeoutError from an adapter-level timeout while this turn's ctx is
 	// still alive) is a retryable failure, not the turn being interrupted —
 	// only a bare context sentinel counts as a cancellation here.
-	var le llm.Error
-	if errors.As(err, &le) {
+	if _, ok := errors.AsType[llm.Error](err); ok {
 		return false
 	}
 	return errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded)

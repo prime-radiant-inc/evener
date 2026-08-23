@@ -14,12 +14,10 @@ func TestRegisteredTool_EmbedsLLMTool(t *testing.T) {
 	t.Parallel()
 	var execCalled bool
 	rt := tool.RegisteredTool{
-		Tool: llm.Tool{
-			Definition: llm.ToolDefinition{
-				Name:        "test_embed",
-				Description: "embedded tool",
-				Parameters:  map[string]any{"type": "object", "properties": map[string]any{}},
-			},
+		Definition: llm.ToolDefinition{
+			Name:        "test_embed",
+			Description: "embedded tool",
+			Parameters:  map[string]any{"type": "object", "properties": map[string]any{}},
 		},
 		Exec: func(ctx context.Context, env execenv.ExecutionEnvironment, args map[string]any) (any, error) {
 			execCalled = true
@@ -65,15 +63,13 @@ func TestRegisteredTool_ExecuteNotBridgedWhenAlreadySet(t *testing.T) {
 	t.Parallel()
 	var executeCalled bool
 	rt := tool.RegisteredTool{
-		Tool: llm.Tool{
-			Definition: llm.ToolDefinition{
-				Name:        "preset_exec",
-				Description: "tool with execute already set",
-			},
-			Execute: func(ctx context.Context, args any) (any, error) {
-				executeCalled = true
-				return "direct-execute", nil
-			},
+		Definition: llm.ToolDefinition{
+			Name:        "preset_exec",
+			Description: "tool with execute already set",
+		},
+		Execute: func(ctx context.Context, args any) (any, error) {
+			executeCalled = true
+			return "direct-execute", nil
 		},
 		Exec: func(ctx context.Context, env execenv.ExecutionEnvironment, args map[string]any) (any, error) {
 			return "agent-exec", nil
@@ -105,11 +101,9 @@ func TestRegisteredTool_ExecuteNotBridgedWhenAlreadySet(t *testing.T) {
 func TestRegisteredTool_BridgedExecute_RejectsNonMapArgs(t *testing.T) {
 	t.Parallel()
 	rt := tool.RegisteredTool{
-		Tool: llm.Tool{
-			Definition: llm.ToolDefinition{
-				Name:        "bridge_reject",
-				Description: "tool for testing non-map arg rejection",
-			},
+		Definition: llm.ToolDefinition{
+			Name:        "bridge_reject",
+			Description: "tool for testing non-map arg rejection",
 		},
 		Exec: func(ctx context.Context, env execenv.ExecutionEnvironment, args map[string]any) (any, error) {
 			return "ok", nil

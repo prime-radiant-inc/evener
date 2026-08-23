@@ -237,8 +237,8 @@ func callSamplerUnderHeldLock(t *testing.T, sess *Session, method, lockName stri
 func envelopeSamplingMethodNames() []string {
 	iface := reflect.TypeFor[EnvelopeSampling]()
 	names := make([]string, 0, iface.NumMethod())
-	for i := range iface.NumMethod() {
-		names = append(names, iface.Method(i).Name)
+	for method := range iface.Methods() {
+		names = append(names, method.Name)
 	}
 	return names
 }
@@ -263,8 +263,7 @@ func mutexFieldNames(typ reflect.Type) []string {
 	mutex := reflect.TypeFor[sync.Mutex]()
 	rwMutex := reflect.TypeFor[sync.RWMutex]()
 	var names []string
-	for i := range typ.NumField() {
-		field := typ.Field(i)
+	for field := range typ.Fields() {
 		if field.Type == mutex || field.Type == rwMutex {
 			names = append(names, field.Name)
 		}

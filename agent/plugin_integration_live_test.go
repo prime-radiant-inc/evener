@@ -785,11 +785,11 @@ func TestLive_ToolRestriction_PluginAgent(t *testing.T) {
 	for _, name := range []string{"read_file", "grep", "glob", "shell", "write_file", "edit_file", "communicate"} {
 		n := name
 		if err := reg.Register(tool.RegisteredTool{
-			Tool: llm.Tool{Definition: llm.ToolDefinition{
+			Definition: llm.ToolDefinition{
 				Name:        n,
 				Description: "test tool " + n,
 				Parameters:  map[string]any{"type": "object", "properties": map[string]any{}},
-			}},
+			},
 			Exec: func(ctx context.Context, env execenv.ExecutionEnvironment, args map[string]any) (any, error) {
 				return n + " called", nil
 			},

@@ -11,7 +11,6 @@ import (
 	"primeradiant.com/evener/agent/execenv"
 	"primeradiant.com/evener/agent/internal/tool"
 	taskpkg "primeradiant.com/evener/agent/task"
-	"primeradiant.com/evener/llm"
 )
 
 // formatTaskList renders the task list as plain text, like a to-do list: one task
@@ -91,7 +90,7 @@ func taskToolStateSnapshot(tasks []taskpkg.Task, inProgressUpdates map[int]struc
 func registerTaskTools(reg *tool.Registry, deps *toolDeps) {
 	// Task management.
 	_ = reg.Register(tool.RegisteredTool{
-		Tool: llm.Tool{Definition: tool.DefTaskList(deps.reasoningEffortLevels)},
+		Definition: tool.DefTaskList(deps.reasoningEffortLevels),
 		Exec: func(ctx context.Context, env execenv.ExecutionEnvironment, args map[string]any) (any, error) {
 			_ = ctx
 			deps.taskGuard.MarkUsed()

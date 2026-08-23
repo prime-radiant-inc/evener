@@ -9,12 +9,9 @@ import (
 	"primeradiant.com/evener/llm/providercfg"
 )
 
-func boolp(v bool) *bool { return &v }
-func intp(v int) *int    { return &v }
-func strp(v string) *string {
-	return &v
-}
-
+//go:fix inline
+//go:fix inline
+//go:fix inline
 func TestApplyCompatConfig_NilLeavesQuirksUnchanged(t *testing.T) {
 	base := QuirksPreset("glm-5")
 	got := ApplyCompatConfig(base, nil)
@@ -31,21 +28,21 @@ func TestApplyCompatConfig_OverlaysFieldByField(t *testing.T) {
 	}
 	got := ApplyCompatConfig(base, &providercfg.CompatConfig{
 		ThinkingFormat:                      "openai",
-		SupportsReasoningEffort:             boolp(true),
+		SupportsReasoningEffort:             new(true),
 		MaxTokensField:                      "max_completion_tokens",
-		ToolStream:                          boolp(true),
-		SupportsStore:                       boolp(true),
-		SupportsDeveloperRole:               boolp(true),
-		SupportsUsageInStreaming:            boolp(false),
-		RequiresToolResultName:              boolp(true),
-		RequiresAssistantAfterToolResult:    boolp(true),
-		RequiresThinkingAsText:              boolp(true),
-		RequiresReasoningContentOnAssistant: boolp(true),
+		ToolStream:                          new(true),
+		SupportsStore:                       new(true),
+		SupportsDeveloperRole:               new(true),
+		SupportsUsageInStreaming:            new(false),
+		RequiresToolResultName:              new(true),
+		RequiresAssistantAfterToolResult:    new(true),
+		RequiresThinkingAsText:              new(true),
+		RequiresReasoningContentOnAssistant: new(true),
 		CacheControlFormat:                  "anthropic",
-		LockTemperature:                     boolp(false),
-		MaxStopSequences:                    intp(2),
+		LockTemperature:                     new(false),
+		MaxStopSequences:                    new(2),
 		FinishReasonMap:                     map[string]string{"end": "stop"},
-		TranslateMaxToXHigh:                 boolp(true),
+		TranslateMaxToXHigh:                 new(true),
 	})
 	if got.ThinkingFormat != "openai" {
 		t.Errorf("ThinkingFormat = %q, want openai", got.ThinkingFormat)
@@ -99,7 +96,7 @@ func TestNewForInstance_ResolvesPerModelCompat(t *testing.T) {
 					"minimal": "high", "low": "high", "medium": "high", "high": "high", "xhigh": "max",
 				},
 				Compat: &providercfg.CompatConfig{
-					SupportsReasoningEffort: boolp(true),
+					SupportsReasoningEffort: new(true),
 				},
 			},
 		},
@@ -180,7 +177,7 @@ func TestChatCompletionsBody_NormalizedModelConfigLookup(t *testing.T) {
 				Models:  tc.models,
 			})
 			req := plainReq("GPT-5.3")
-			req.ReasoningEffort = strp("high")
+			req.ReasoningEffort = new("high")
 
 			body, err := a.ChatCompletionsBody(req, false)
 			if err != nil {
@@ -302,7 +299,7 @@ func TestGLMCatalogDefaults_WireBody(t *testing.T) {
 
 	// glm-5.2 with effort max: thinking enabled + reasoning_effort:"max" + catalog max_tokens.
 	req52 := plainReq("glm-5.2")
-	req52.ReasoningEffort = strp("max")
+	req52.ReasoningEffort = new("max")
 	body52 := requestBody(t, req52, false, a.compatFor("glm-5.2"))
 	wantThinking := map[string]any{"type": "enabled", "clear_thinking": false}
 	if got := body52["thinking"]; !reflect.DeepEqual(got, wantThinking) {
@@ -317,7 +314,7 @@ func TestGLMCatalogDefaults_WireBody(t *testing.T) {
 
 	// glm-4.7 with effort high: thinking enabled, NO reasoning_effort, catalog max_tokens.
 	req47 := plainReq("glm-4.7")
-	req47.ReasoningEffort = strp("high")
+	req47.ReasoningEffort = new("high")
 	body47 := requestBody(t, req47, false, a.compatFor("glm-4.7"))
 	if got := body47["thinking"]; !reflect.DeepEqual(got, wantThinking) {
 		t.Errorf("glm-4.7 thinking = %#v, want %#v", got, wantThinking)
@@ -339,12 +336,12 @@ func TestGLMCatalogDefaults_WireBody(t *testing.T) {
 // model.
 func TestReasoningOff_SuppressesAllThinkingFormats(t *testing.T) {
 	req := plainReq("m")
-	req.ReasoningEffort = strp("high")
+	req.ReasoningEffort = new("high")
 
 	for _, format := range []string{"", "openai", "zai", "deepseek", "openrouter", "together", "qwen", "string-thinking"} {
 		t.Run(format, func(t *testing.T) {
 			mc := ModelCompat{
-				Quirks:       ProviderQuirks{ThinkingFormat: format, SupportsReasoningEffort: boolp(true)},
+				Quirks:       ProviderQuirks{ThinkingFormat: format, SupportsReasoningEffort: new(true)},
 				ReasoningOff: true,
 			}
 			body := requestBody(t, req, false, mc)
@@ -366,8 +363,8 @@ func TestReasoningOff_FromModelConfig(t *testing.T) {
 		BaseURL: "https://api.z.ai/api/coding/paas/v4",
 		Quirks:  QuirksPreset("glm-5"),
 		Models: map[string]providercfg.ModelConfig{
-			"glm-flash": {Reasoning: boolp(false)},
-			"glm-5.2":   {Reasoning: boolp(true)},
+			"glm-flash": {Reasoning: new(false)},
+			"glm-5.2":   {Reasoning: new(true)},
 			"glm-4.7":   {},
 		},
 	})
@@ -384,7 +381,7 @@ func TestReasoningOff_FromModelConfig(t *testing.T) {
 	// End-to-end: buildRequestBody for the declared non-reasoning model emits
 	// nothing even with an explicit request effort.
 	req := plainReq("glm-flash")
-	req.ReasoningEffort = strp("high")
+	req.ReasoningEffort = new("high")
 	body := requestBody(t, req, false, a.compatFor("glm-flash"))
 	for _, key := range []string{"reasoning_effort", "thinking"} {
 		if got, present := body[key]; present {
@@ -434,7 +431,7 @@ func plainReq(model string) llm.Request {
 
 func TestThinkingFormats_WireShapes(t *testing.T) {
 	effortReq := plainReq("m")
-	effortReq.ReasoningEffort = strp("high")
+	effortReq.ReasoningEffort = new("high")
 
 	cases := []struct {
 		name   string
@@ -450,7 +447,7 @@ func TestThinkingFormats_WireShapes(t *testing.T) {
 		},
 		{
 			name:   "openai format respects supports_reasoning_effort=false",
-			quirks: ProviderQuirks{SupportsReasoningEffort: boolp(false)},
+			quirks: ProviderQuirks{SupportsReasoningEffort: new(false)},
 			req:    effortReq,
 			want:   map[string]any{"reasoning_effort": nil},
 		},
@@ -465,7 +462,7 @@ func TestThinkingFormats_WireShapes(t *testing.T) {
 		},
 		{
 			name:   "zai with supports_reasoning_effort also sends effort",
-			quirks: ProviderQuirks{ThinkingFormat: "zai", SupportsReasoningEffort: boolp(true)},
+			quirks: ProviderQuirks{ThinkingFormat: "zai", SupportsReasoningEffort: new(true)},
 			req:    effortReq,
 			want: map[string]any{
 				"thinking":         map[string]any{"type": "enabled", "clear_thinking": false},
@@ -543,9 +540,9 @@ func TestThinkingFormats_WireShapes(t *testing.T) {
 
 func TestThinkingLevels_TranslateEffortToWireValue(t *testing.T) {
 	req := plainReq("m")
-	req.ReasoningEffort = strp("xhigh")
+	req.ReasoningEffort = new("xhigh")
 	mc := ModelCompat{
-		Quirks:         ProviderQuirks{ThinkingFormat: "zai", SupportsReasoningEffort: boolp(true)},
+		Quirks:         ProviderQuirks{ThinkingFormat: "zai", SupportsReasoningEffort: new(true)},
 		ThinkingLevels: map[string]string{"high": "high", "xhigh": "max"},
 	}
 	body := requestBody(t, req, false, mc)
@@ -554,7 +551,7 @@ func TestThinkingLevels_TranslateEffortToWireValue(t *testing.T) {
 	}
 
 	// "max" input clamps down to the xhigh row when the map tops out there.
-	req.ReasoningEffort = strp("max")
+	req.ReasoningEffort = new("max")
 	body = requestBody(t, req, false, mc)
 	if got := body["reasoning_effort"]; got != "max" {
 		t.Errorf("reasoning_effort for input max = %v, want max", got)
@@ -562,15 +559,15 @@ func TestThinkingLevels_TranslateEffortToWireValue(t *testing.T) {
 
 	// A map with distinct xhigh and max rows keeps the tiers apart.
 	tiered := ModelCompat{
-		Quirks:         ProviderQuirks{ThinkingFormat: "zai", SupportsReasoningEffort: boolp(true)},
+		Quirks:         ProviderQuirks{ThinkingFormat: "zai", SupportsReasoningEffort: new(true)},
 		ThinkingLevels: map[string]string{"xhigh": "ultra_think", "max": "max_think"},
 	}
-	req.ReasoningEffort = strp("xhigh")
+	req.ReasoningEffort = new("xhigh")
 	body = requestBody(t, req, false, tiered)
 	if got := body["reasoning_effort"]; got != "ultra_think" {
 		t.Errorf("reasoning_effort for xhigh = %v, want ultra_think (distinct from max)", got)
 	}
-	req.ReasoningEffort = strp("max")
+	req.ReasoningEffort = new("max")
 	body = requestBody(t, req, false, tiered)
 	if got := body["reasoning_effort"]; got != "max_think" {
 		t.Errorf("reasoning_effort for max = %v, want max_think (distinct from xhigh)", got)
@@ -596,7 +593,7 @@ func TestThinkingLevels_TranslateEffortToWireValue(t *testing.T) {
 	// {"high":"high","xhigh":"max"} has no level at or below "low", so it
 	// clamps up to the map's lowest declared level, "high", which then
 	// translates to wire "high".
-	req.ReasoningEffort = strp("low")
+	req.ReasoningEffort = new("low")
 	body = requestBody(t, req, false, mc)
 	if got := body["reasoning_effort"]; got != "high" {
 		t.Errorf("unmapped level = %v, want clamped-to-high", got)

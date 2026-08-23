@@ -46,7 +46,7 @@ func defCompact() llm.ToolDefinition {
 
 func registerCompactTool(reg *tool.Registry, deps *toolDeps) {
 	_ = reg.Register(tool.RegisteredTool{
-		Tool: llm.Tool{Definition: defCompact()},
+		Definition: defCompact(),
 		Exec: func(ctx context.Context, env execenv.ExecutionEnvironment, args map[string]any) (any, error) {
 			_ = ctx
 			_ = env

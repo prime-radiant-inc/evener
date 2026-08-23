@@ -333,11 +333,11 @@ func TestPreToolUseHookDoesNotDuplicateResultInNextModelRequest(t *testing.T) {
 		}
 	}()
 	if err := sess.reg.Register(tool.RegisteredTool{
-		Tool: llm.Tool{Definition: llm.ToolDefinition{
+		Definition: llm.ToolDefinition{
 			Name:        "hook_probe",
 			Description: "return a deterministic successful result",
 			Parameters:  map[string]any{"type": "object", "properties": map[string]any{}},
-		}},
+		},
 		Exec: func(context.Context, execenv.ExecutionEnvironment, map[string]any) (any, error) {
 			return "probe succeeded", nil
 		},

@@ -54,13 +54,11 @@ func FuzzFinalRPCLifecycle(f *testing.F) {
 		_, _ = hubThreadStart(ctx, hubcore.WebConfig{}, registry, appwire.ThreadStartParams{Input: []appwire.InputItem{{Type: "input_image", Data: make([]byte, hubcore.SendMaxImageBytes+1)}}})
 		_, _ = hubThreadStart(ctx, hubcore.WebConfig{}, registry, appwire.ThreadStartParams{Harness: "missing"})
 		spawner := &fakeRPCModelContractSpawner{
-			fakeRPCSpawner: fakeRPCSpawner{
-				spawn: func(context.Context, hubcore.SpawnRequest) (rendezvous.Entry, error) {
-					return rendezvous.Entry{}, errors.New("spawn failed")
-				},
-				resume: func(context.Context, hubcore.ResumeRequest) (rendezvous.Entry, error) {
-					return rendezvous.Entry{}, errors.New("resume failed")
-				},
+			spawn: func(context.Context, hubcore.SpawnRequest) (rendezvous.Entry, error) {
+				return rendezvous.Entry{}, errors.New("spawn failed")
+			},
+			resume: func(context.Context, hubcore.ResumeRequest) (rendezvous.Entry, error) {
+				return rendezvous.Entry{}, errors.New("resume failed")
 			},
 			contract: appwire.ModelListResponse{Data: []appwire.ModelDescriptor{{Provider: "openai", Model: "gpt-5"}}},
 		}

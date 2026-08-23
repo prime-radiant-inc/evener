@@ -107,8 +107,7 @@ func FuzzSecurePathResolve(f *testing.F) {
 					t.Fatalf("mode=%v input=%q escaped the worktree and read the out-of-root secret", mode, raw)
 				}
 			} else if isRefusalClass(rerr) {
-				var denied *sandbox.DeniedError
-				if !errors.As(rerr, &denied) {
+				if _, ok := errors.AsType[*sandbox.DeniedError](rerr); !ok {
 					s.close()
 					t.Fatalf("mode=%v input=%q refusal is not a *sandbox.DeniedError: %T %v", mode, raw, rerr, rerr)
 				}

@@ -110,7 +110,7 @@ type findSessionsEnvelope struct {
 
 func findSessionTranscriptsTool(deps *toolDeps) tool.RegisteredTool {
 	return tool.RegisteredTool{
-		Tool: llm.Tool{Definition: tool.DefFindSessionTranscripts(), ReadOnly: true},
+		Definition: tool.DefFindSessionTranscripts(), ReadOnly: true,
 		Exec: func(ctx context.Context, _ execenv.ExecutionEnvironment, args map[string]any) (any, error) {
 			_ = ctx
 			v, err := execFindSessionTranscripts(deps, args)

@@ -26,8 +26,7 @@ func gitleaksScan(dir string, stderr io.Writer) (clean, available bool) {
 	if err == nil {
 		return true, true
 	}
-	var exitErr *exec.ExitError
-	if errors.As(err, &exitErr) {
+	if _, ok := errors.AsType[*exec.ExitError](err); ok {
 		// gitleaks exits non-zero when it finds leaks; surface its report.
 		fmt.Fprintf(stderr, "gitleaks: %s\n", out) //nolint:errcheck
 		return false, true

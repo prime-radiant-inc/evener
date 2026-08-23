@@ -224,7 +224,7 @@ type readSessionTranscriptArgs struct {
 
 func readTranscriptTool(deps *toolDeps) tool.RegisteredTool {
 	return tool.RegisteredTool{
-		Tool: llm.Tool{Definition: tool.DefReadTranscript(), ReadOnly: true},
+		Definition: tool.DefReadTranscript(), ReadOnly: true,
 		Exec: func(ctx context.Context, _ execenv.ExecutionEnvironment, args map[string]any) (any, error) {
 			_ = ctx
 			return execReadTranscript(deps, args)
@@ -501,11 +501,9 @@ func searchArtifactTranscript(deps *toolDeps, args retainedReadArgs) (any, error
 		return nil, fmt.Errorf("invalid_request: offset_bytes %d is beyond EOF %d; valid byte interval is [0,%d]", args.OffsetBytes, total, total)
 	}
 	result, err := searchRetainedOutput(artifactSearchSource{reader: reader, total: total}, retainedSearchOptions{
-		Regexp: compiled,
-		SearchOptions: jobstore.SearchOptions{
-			StartOffset:  args.OffsetBytes,
-			ContextLines: args.ContextLines,
-		},
+		Regexp:       compiled,
+		StartOffset:  args.OffsetBytes,
+		ContextLines: args.ContextLines,
 	})
 	if err != nil {
 		return nil, errors.New(artifactUnavailableReadError)
@@ -572,13 +570,11 @@ func searchJobTranscript(deps *toolDeps, args retainedReadArgs) (any, error) {
 		)
 	}
 	result, err := searchRetainedOutput(localJobSearchSource{target: target}, retainedSearchOptions{
-		Regexp: compiled,
-		SearchOptions: jobstore.SearchOptions{
-			StartOffset:       offset,
-			ContextLines:      args.ContextLines,
-			SkipPartialPrefix: metadata.RetainedStartPartial && offset == metadata.RetainedStart,
-			DeferEOFFragment:  target.Record != nil && !target.Record.Status.IsTerminal(),
-		},
+		Regexp:            compiled,
+		StartOffset:       offset,
+		ContextLines:      args.ContextLines,
+		SkipPartialPrefix: metadata.RetainedStartPartial && offset == metadata.RetainedStart,
+		DeferEOFFragment:  target.Record != nil && !target.Record.Status.IsTerminal(),
 	})
 	if err != nil {
 		return nil, err

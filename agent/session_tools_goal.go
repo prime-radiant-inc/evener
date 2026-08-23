@@ -7,13 +7,12 @@ import (
 	"primeradiant.com/evener/agent/execenv"
 	"primeradiant.com/evener/agent/internal/goal"
 	"primeradiant.com/evener/agent/internal/tool"
-	"primeradiant.com/evener/llm"
 )
 
 // registerGoalTools registers the update_goal tool into reg, mirroring registerTaskTools.
 func registerGoalTools(reg *tool.Registry, deps *toolDeps) {
 	_ = reg.Register(tool.RegisteredTool{
-		Tool: llm.Tool{Definition: tool.DefUpdateGoal()},
+		Definition: tool.DefUpdateGoal(),
 		Exec: func(ctx context.Context, env execenv.ExecutionEnvironment, args map[string]any) (any, error) {
 			_ = ctx
 			_ = env

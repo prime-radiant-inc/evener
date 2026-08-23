@@ -16,9 +16,9 @@ func checkFromWire(t *testing.T) {
 		Model:                       "openai/gpt-5",
 		FastCheapModel:              "openai/gpt-5-mini",
 		OpenAIResponsesContinuation: "auto",
-		Schema:                      ptrInt(1),
+		Schema:                      new(1),
 		MCPs:                        []appwire.MCPServerSpec{{Name: "x", Command: "y", Args: []string{"z"}}},
-		MaxRounds:                   ptrInt(50),
+		MaxRounds:                   new(50),
 		Agent:                       "myagent",
 		ReasoningEffort:             "high",
 		ContextStrategy:             "compact",
@@ -78,7 +78,7 @@ func checkFromWire(t *testing.T) {
 }
 
 func checkToWire(t *testing.T) {
-	in := Layer{Model: "openai/gpt-5", FastCheapModel: "openai/gpt-5-mini", OpenAIResponsesContinuation: "auto", MaxRounds: ptrInt(50)}
+	in := Layer{Model: "openai/gpt-5", FastCheapModel: "openai/gpt-5-mini", OpenAIResponsesContinuation: "auto", MaxRounds: new(50)}
 	got := ToWire(in)
 	if got.Model != "openai/gpt-5" {
 		t.Errorf("Model")
@@ -139,7 +139,7 @@ func checkWire_SystemPromptAndDebugFieldsRoundTrip(t *testing.T) {
 // *bool) survive FromWire∘ToWire for all three SandboxNet states — nil (unset),
 // explicit false, and explicit true must stay distinct across the wire.
 func checkWire_SandboxRoundTrips(t *testing.T) {
-	for _, net := range []*bool{nil, ptrBool(false), ptrBool(true)} {
+	for _, net := range []*bool{nil, new(false), new(true)} {
 		in := Layer{Sandbox: "restricted", SandboxNet: net}
 		got := FromWire(ToWire(in))
 		if got.Sandbox != "restricted" {

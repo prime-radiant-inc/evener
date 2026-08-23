@@ -529,11 +529,11 @@ func lifecycleOracleRunInjected(art lifecycleArtifact, inj lifecycleInject) *pro
 	}
 	if inj.panicTool {
 		_ = sess.reg.Register(tool.RegisteredTool{
-			Tool: llm.Tool{Definition: llm.ToolDefinition{
+			Definition: llm.ToolDefinition{
 				Name:        lifecycleBoomTool,
 				Description: "fixture tool whose handler panics; determinism test only",
 				Parameters:  map[string]any{"type": "object", "properties": map[string]any{}},
-			}},
+			},
 			Exec: func(context.Context, execenv.ExecutionEnvironment, map[string]any) (any, error) {
 				panic("lifecycle-fuzz boom")
 			},

@@ -140,7 +140,7 @@ func FuzzSessionMetadataHelpers(f *testing.F) {
 		if schema := sessionNameSchema(); schema["type"] != "object" {
 			t.Fatalf("session-name schema type=%v", schema["type"])
 		}
-		if *ptrString(text) != text || sessionNameSourceLabel(string(mode)) != normalizeSessionNameSource(string(mode)) {
+		if *new(text) != text || sessionNameSourceLabel(string(mode)) != normalizeSessionNameSource(string(mode)) {
 			t.Fatal("session-name source helpers disagree")
 		}
 		if _, err := nameSession(context.Background(), nil, nil, string(mode), text, nil); err == nil {

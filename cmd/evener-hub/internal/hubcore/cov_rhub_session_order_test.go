@@ -6,7 +6,6 @@ import (
 
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/appwire"
-	"primeradiant.com/evener/rendezvous"
 )
 
 func fuzzScenarioUnixTime(t *testing.T) {
@@ -75,7 +74,7 @@ func fuzzScenarioAppwireThreadOrderKeyTitleFallback(t *testing.T) {
 
 func liveEntry(sessionID, address string, started time.Time) LiveEntry {
 	return LiveEntry{
-		Entry:     rendezvous.Entry{Address: address, StartedAt: started},
+		Address: address, StartedAt: started,
 		SessionID: sessionID,
 	}
 }
@@ -112,11 +111,11 @@ func fuzzScenarioLiveEntryWithPastLessUsesPastMeta(t *testing.T) {
 
 func fuzzScenarioLiveEntryOrderKeyFallbackID(t *testing.T) {
 	// Fallback id preference: SessionID, then ThreadID, then Address.
-	le := LiveEntry{Entry: rendezvous.Entry{Address: "addr", ThreadID: "th"}}
+	le := LiveEntry{Address: "addr", ThreadID: "th"}
 	if got := liveEntryFallbackOrderKey(le); got.id != "th" {
 		t.Fatalf("id=%q, want ThreadID when SessionID empty", got.id)
 	}
-	le = LiveEntry{Entry: rendezvous.Entry{Address: "addr"}}
+	le = LiveEntry{Address: "addr"}
 	if got := liveEntryFallbackOrderKey(le); got.id != "addr" {
 		t.Fatalf("id=%q, want Address as last resort", got.id)
 	}

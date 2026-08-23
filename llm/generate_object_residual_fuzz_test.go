@@ -24,8 +24,8 @@ func FuzzGenerateObjectResidual(f *testing.F) {
 				streamGenerateObjectStartMu.Unlock()
 			})
 			if _, err := StreamGenerateObject(context.Background(), GenerateObjectOptions{
-				GenerateOptions: GenerateOptions{Model: "m", Messages: []Message{User("x")}},
-				Schema:          map[string]any{"type": "object"},
+				Model: "m", Messages: []Message{User("x")},
+				Schema: map[string]any{"type": "object"},
 			}); err == nil {
 				t.Fatal("injected start error was lost")
 			}
@@ -34,9 +34,8 @@ func FuzzGenerateObjectResidual(f *testing.F) {
 		opts := func(schema map[string]any, adapter ProviderAdapter) GenerateObjectOptions {
 			c := NewClient()
 			c.Register(adapter)
-			return GenerateObjectOptions{GenerateOptions: GenerateOptions{
-				Client: c, Provider: adapter.Name(), Model: "m", Prompt: &prompt, Sleep: noSleep,
-			}, Schema: schema}
+			return GenerateObjectOptions{
+				Client: c, Provider: adapter.Name(), Model: "m", Prompt: &prompt, Sleep: noSleep, Schema: schema}
 		}
 		valid := map[string]any{"type": "object"}
 

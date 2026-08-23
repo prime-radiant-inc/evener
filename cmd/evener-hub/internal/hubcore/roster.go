@@ -271,7 +271,7 @@ func (r *Roster) Refresh() {
 	var wg sync.WaitGroup
 	for i, e := range entries {
 		if r.prober == nil {
-			results[i] = probeResult{entry: e, ProbeResult: ProbeResult{OK: true}}
+			results[i] = probeResult{entry: e, OK: true}
 			continue
 		}
 		wg.Add(1)

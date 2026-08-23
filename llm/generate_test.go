@@ -140,8 +140,7 @@ func TestGenerate_RejectsPromptAndMessagesTogether(t *testing.T) {
 	if err == nil {
 		t.Fatalf("expected error")
 	}
-	var ce *ConfigurationError
-	if !errors.As(err, &ce) {
+	if _, ok := errors.AsType[*ConfigurationError](err); !ok {
 		t.Fatalf("expected ConfigurationError, got %T (%v)", err, err)
 	}
 }

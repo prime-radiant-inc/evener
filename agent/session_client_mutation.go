@@ -30,8 +30,7 @@ func NormalizeClientMutationError(clientMutationID string, err error) error {
 	if err == nil {
 		return nil
 	}
-	var wire appwire.WireError
-	if errors.As(err, &wire) {
+	if _, ok := errors.AsType[appwire.WireError](err); ok {
 		return err
 	}
 	if errors.Is(err, errClientMutationMismatch) {

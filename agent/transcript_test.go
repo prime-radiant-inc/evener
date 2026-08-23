@@ -2021,8 +2021,7 @@ func TestReadSessionTranscriptRejectsInvalidSourceCombinationsBeforeOpeningTrans
 	}
 }
 
-func testAPILogInt(value int) *int { return &value }
-
+//go:fix inline
 func testAPIAttemptRecord(groupID string, index int, request, response []byte) apilog.APIAttemptRecord {
 	return apilog.APIAttemptRecord{
 		Kind:             "api_attempt",
@@ -2042,7 +2041,7 @@ func testAPIAttemptRecord(groupID string, index int, request, response []byte) a
 			HistoryMode: "messages",
 		},
 		Response: &apilog.APIAttemptResponse{
-			StatusCode: testAPILogInt(200),
+			StatusCode: new(200),
 			Body:       apilog.EncodeBody(response),
 			Model:      "gpt-test-result",
 		},
@@ -2150,11 +2149,11 @@ func TestReadSessionTranscriptAPILogPreservesNumericEvidencePresence(t *testing.
 	writeFindSession(t, dir, findMetaSpec{id: sessionID, updated: time.Now().UTC()}, "semantic turn")
 
 	present := testAPIAttemptRecord("ag_numeric_present", 1, nil, nil)
-	present.Response.StatusCode = testAPILogInt(0)
+	present.Response.StatusCode = new(0)
 	present.Response.Usage = apilog.Usage{
-		InputTokens:  testAPILogInt(0),
-		OutputTokens: testAPILogInt(0),
-		TotalTokens:  testAPILogInt(0),
+		InputTokens:  new(0),
+		OutputTokens: new(0),
+		TotalTokens:  new(0),
 	}
 	absent := testAPIAttemptRecord("ag_numeric_absent", 1, nil, nil)
 	absent.Response.StatusCode = nil

@@ -6,7 +6,6 @@ import (
 
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/appwire"
-	"primeradiant.com/evener/rendezvous"
 )
 
 func fuzzScenarioDeriveAttention_SummaryCountsTierEligibleOnly(t *testing.T) {
@@ -19,11 +18,11 @@ func fuzzScenarioDeriveAttention_SummaryCountsTierEligibleOnly(t *testing.T) {
 		{ID: "01WORK", UpdatedAt: now, EnvInfo: schema.EnvironmentInfo{WorkingDir: "/p/x"}},
 	}
 	live := []LiveEntry{
-		{Entry: rendezvous.Entry{PID: 1}, SessionID: "01A", Status: appwire.ThreadStatusAwaiting},
-		{Entry: rendezvous.Entry{PID: 2}, SessionID: "01SUB", Status: appwire.ThreadStatusAwaiting},
-		{Entry: rendezvous.Entry{PID: 3}, SessionID: "01ARCH", Status: appwire.ThreadStatusAwaiting},
-		{Entry: rendezvous.Entry{PID: 4}, SessionID: "01ERR", Status: appwire.ThreadStatusSystemError},
-		{Entry: rendezvous.Entry{PID: 5}, SessionID: "01WORK", Status: appwire.ThreadStatusActive},
+		{PID: 1, SessionID: "01A", Status: appwire.ThreadStatusAwaiting},
+		{PID: 2, SessionID: "01SUB", Status: appwire.ThreadStatusAwaiting},
+		{PID: 3, SessionID: "01ARCH", Status: appwire.ThreadStatusAwaiting},
+		{PID: 4, SessionID: "01ERR", Status: appwire.ThreadStatusSystemError},
+		{PID: 5, SessionID: "01WORK", Status: appwire.ThreadStatusActive},
 	}
 	decisions := map[ArchiveKey]bool{{Kind: "session", ID: "01ARCH"}: true}
 	m, sum := DeriveAttention(metas, live, decisions)
@@ -55,8 +54,8 @@ func fuzzScenarioDeriveAttention_StaleUnarchivedNeverDecays(t *testing.T) {
 		{ID: "01STALEUN", UpdatedAt: stale, CreatedAt: stale, EnvInfo: schema.EnvironmentInfo{WorkingDir: "/p/x"}},
 	}
 	live := []LiveEntry{
-		{Entry: rendezvous.Entry{PID: 1}, SessionID: "01STALE", Status: appwire.ThreadStatusAwaiting},
-		{Entry: rendezvous.Entry{PID: 2}, SessionID: "01STALEUN", Status: appwire.ThreadStatusAwaiting},
+		{PID: 1, SessionID: "01STALE", Status: appwire.ThreadStatusAwaiting},
+		{PID: 2, SessionID: "01STALEUN", Status: appwire.ThreadStatusAwaiting},
 	}
 	// 01STALE has NO decision; 01STALEUN has an explicit un-archive (false)
 	// decision. Both are tier-eligible: only decision==true suppresses.

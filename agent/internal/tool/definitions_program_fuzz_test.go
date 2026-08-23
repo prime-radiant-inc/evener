@@ -79,7 +79,7 @@ func FuzzToolDefinitionsProgram(f *testing.F) {
 			}
 
 			if err := reg.Register(RegisteredTool{
-				Tool:        llm.Tool{Definition: def},
+				Definition:  def,
 				OmitPurpose: i%2 == 0,
 				Exec: func(_ context.Context, _ execenv.ExecutionEnvironment, _ map[string]any) (any, error) {
 					return "definition program", nil
