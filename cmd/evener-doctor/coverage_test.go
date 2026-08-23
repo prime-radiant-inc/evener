@@ -1,4 +1,4 @@
-package main
+package doctor
 
 import (
 	"bytes"
@@ -25,12 +25,8 @@ func (w *failAfterWriter) Write(p []byte) (int, error) {
 }
 
 func TestMainAndWriterFailures(t *testing.T) {
-	oldExit, oldArgs := osExit, os.Args
-	t.Cleanup(func() { osExit, os.Args = oldExit, oldArgs })
-	os.Args = []string{"evener-doctor", "help"}
-	got := -1
-	osExit = func(code int) { got = code }
-	main()
+	var out, errOut bytes.Buffer
+	got := Run([]string{"help"}, nil, &out, &errOut)
 	if got != 0 {
 		t.Fatalf("exit = %d", got)
 	}
