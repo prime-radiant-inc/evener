@@ -262,7 +262,7 @@ func ResolveReasoningEffort(cliValue, envValue string) (ReasoningEffortResolutio
 
 // MaxRoundsToConfig converts a --max-rounds CLI value to a SessionConfig value.
 //
-//	-1 (not specified) → 0 (applyDefaults sets to 200)
+//	-1 (not specified) → 0 (applyDefaults sets to -1, unlimited)
 //	 0 (unlimited)     → -1 (negative means no limit)
 //	>0 (explicit)      → that value
 func MaxRoundsToConfig(cliValue int) int {
