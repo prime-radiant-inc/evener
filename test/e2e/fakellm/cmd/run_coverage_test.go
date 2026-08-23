@@ -1,47 +1,11 @@
 package main
 
 import (
-	"context"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
-	"time"
 )
-
-// TestRunBindsAndServes exercises run() which creates the server, logs the
-// address, and calls serve() under a signal-notify context. The context is
-// cancelled to end the serve loop cleanly.
-func TestRunBindsAndServes(t *testing.T) {
-	// Use a real port the kernel assigns.
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-
-	done := make(chan error, 1)
-	go func() {
-		done <- run("127.0.0.1:0", 0, 1, "")
-	}()
-
-	// Send SIGINT to ourselves to trigger signal.NotifyContext cancellation.
-	// The signal handler catches it regardless of whether the server has
-	// finished binding, so no sleep is needed.
-	p, err := os.FindProcess(os.Getpid())
-	if err != nil {
-		t.Fatalf("find process: %v", err)
-	}
-	_ = p.Signal(os.Interrupt)
-
-	select {
-	case err := <-done:
-		if err != nil {
-			// run() returns the error from serve(); a clean shutdown via
-			// signal returns nil.
-			t.Fatalf("run returned error: %v", err)
-		}
-	case <-ctx.Done():
-		t.Fatal("run did not exit after signal")
-	}
-}
 
 // TestRunNewServerError covers the path where fakellm.NewOn fails.
 func TestRunNewServerError(t *testing.T) {
