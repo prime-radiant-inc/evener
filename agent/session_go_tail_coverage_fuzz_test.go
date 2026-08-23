@@ -14,6 +14,7 @@ import (
 	"github.com/spf13/afero"
 	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/agent/execenv"
+	"primeradiant.com/evener/agent/internal/cheapmodel"
 	"primeradiant.com/evener/agent/internal/clock"
 	"primeradiant.com/evener/agent/internal/contextmgr"
 	"primeradiant.com/evener/agent/internal/tool"
@@ -224,7 +225,7 @@ func FuzzSessionGoTailCoverage(f *testing.F) {
 				id:         "autosave",
 				stateDir:   blocker,
 				profile:    profile,
-				contextMgr: contextmgr.NewManager(profile, nil),
+				contextMgr: contextmgr.NewManager(profile, nil, cheapmodel.New(nil)),
 				clock:      newTailCoverageClock(),
 				events:     make(chan events.SessionEvent, 1),
 			}

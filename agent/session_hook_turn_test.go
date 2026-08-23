@@ -13,6 +13,7 @@ import (
 
 	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/agent/execenv"
+	"primeradiant.com/evener/agent/internal/cheapmodel"
 	"primeradiant.com/evener/agent/internal/contextmgr"
 	"primeradiant.com/evener/agent/internal/tool"
 	"primeradiant.com/evener/agent/schema"
@@ -261,7 +262,7 @@ func TestCompactedHookToolExchangeProjectsValidProviderMessages(t *testing.T) {
 				schema.NewTurn(schema.TurnToolResults, llm.ToolResultNamed(callID, "probe", "ok", false)),
 				schema.Turn{Kind: schema.TurnAssistant, Message: llm.Assistant("recent")},
 			)
-			cm := contextmgr.NewManager(NewOpenAIProfile("gpt-5.2"), nil)
+			cm := contextmgr.NewManager(NewOpenAIProfile("gpt-5.2"), nil, cheapmodel.New(nil))
 			cm.PreserveRecentTurns = tc.preserveRecent
 			cm.ForceCompact(context.Background(), &history, "", func(events.EventKind, events.EventData) {})
 

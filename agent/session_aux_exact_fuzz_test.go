@@ -15,6 +15,7 @@ import (
 
 	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/agent/execenv"
+	"primeradiant.com/evener/agent/internal/cheapmodel"
 	"primeradiant.com/evener/agent/internal/contextmgr"
 	"primeradiant.com/evener/agent/internal/hooks"
 	"primeradiant.com/evener/agent/plugin"
@@ -55,7 +56,7 @@ func FuzzSessionAuxExactProgram(f *testing.F) {
 			s := newSession(t)
 			s.contextMgr.CheckpointThreshold = 0
 			s.contextMgr.PreserveRecentTurns = 0
-			s.contextMgr = contextmgr.NewManager(s.profile, nil)
+			s.contextMgr = contextmgr.NewManager(s.profile, nil, cheapmodel.New(nil))
 			s.contextMgr.CheckpointThreshold = 0
 			s.contextMgr.PreserveRecentTurns = 0
 			s.maybeElicitNoteBeforeCompaction(context.Background(), []schema.Turn{schema.NewTurn(schema.TurnUserInput, llm.User("x"))}, 0)

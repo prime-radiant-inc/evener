@@ -21,6 +21,7 @@ import (
 	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/agent/execenv"
 	"primeradiant.com/evener/agent/internal/agenttest"
+	"primeradiant.com/evener/agent/internal/cheapmodel"
 	"primeradiant.com/evener/agent/internal/contextmgr"
 	"primeradiant.com/evener/agent/internal/delegatestore"
 	"primeradiant.com/evener/agent/schema"
@@ -967,7 +968,7 @@ func TestDelegateAttention_ResolutionMarkerDoesNotSplitToolCallAndResult(t *test
 				schema.NewTurn(schema.TurnToolResults, llm.ToolResultNamed(callID, "probe", "real result", false)),
 				schema.NewTurn(schema.TurnAssistant, llm.Assistant("recent")),
 			}
-			manager := contextmgr.NewManager(NewOpenAIProfile("gpt-5.2"), nil)
+			manager := contextmgr.NewManager(NewOpenAIProfile("gpt-5.2"), nil, cheapmodel.New(nil))
 			manager.PreserveRecentTurns = test.preserveRecent
 			manager.ForceCompact(context.Background(), &history, "", func(events.EventKind, events.EventData) {})
 
@@ -2434,7 +2435,7 @@ func TestDelegateAttention_FailedTerminalDeliveryRetriesFromRootPump(t *testing.
 	t.Cleanup(func() { _ = rootWriter.Close() })
 	clock := agenttest.NewFakeClock()
 	root := &Session{id: "root-session", stateDir: c.stateDir, delegateController: c, events: make(chan events.SessionEvent, 16), profile: NewOpenAIProfile("gpt-5.2"), clock: clock}
-	root.contextMgr = contextmgr.NewManager(root.profile, nil)
+	root.contextMgr = contextmgr.NewManager(root.profile, nil, cheapmodel.New(nil))
 	root.sessionCtx, root.cancelFunc = context.WithCancel(context.Background())
 	t.Cleanup(root.cancelFunc)
 	root.attachTranscript(rootWriter)

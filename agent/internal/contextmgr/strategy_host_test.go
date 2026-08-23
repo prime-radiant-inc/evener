@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"primeradiant.com/evener/agent/events"
+	"primeradiant.com/evener/agent/internal/cheapmodel"
 	"primeradiant.com/evener/agent/internal/sessionlog"
 	"primeradiant.com/evener/agent/provider"
 	"primeradiant.com/evener/agent/schema"
@@ -75,7 +76,7 @@ func TestSessionLogStrategy_OperatesWithFakeHost(t *testing.T) {
 
 	// Constructor accepts the fake host (not a real Session) and uses
 	// StateDir/ID to build the log path.
-	sls, err := NewSessionLogStrategy(NewManager(profile, client), host)
+	sls, err := NewSessionLogStrategy(NewManager(profile, client, cheapmodel.New(client)), host)
 	if err != nil {
 		t.Fatalf("newSessionLogStrategy with fake host: %v", err)
 	}
@@ -127,7 +128,7 @@ func TestSessionLogStrategy_AttentionResolutionDoesNotDisplaceRecentContext(t *t
 	client.Register(adapter)
 	profile := testOpenAIProfileWithContextWindow(1000)
 	host := &fakeStrategyHost{stateDir: t.TempDir(), id: "marker-window", profile: profile}
-	strategy, err := NewSessionLogStrategy(NewManager(profile, client), host)
+	strategy, err := NewSessionLogStrategy(NewManager(profile, client, cheapmodel.New(client)), host)
 	if err != nil {
 		t.Fatalf("NewSessionLogStrategy: %v", err)
 	}

@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"primeradiant.com/evener/agent/events"
+	"primeradiant.com/evener/agent/internal/cheapmodel"
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/llm"
 
@@ -134,7 +135,7 @@ type compactionModel struct {
 }
 
 func newCompactionModel(preserveRecent int) *compactionModel {
-	cm := NewManager(testProfile("openai", "test", 1_000_000), nil)
+	cm := NewManager(testProfile("openai", "test", 1_000_000), nil, cheapmodel.New(nil))
 	cm.PreserveRecentTurns = preserveRecent
 	return &compactionModel{preserveRecent: preserveRecent, cm: cm}
 }

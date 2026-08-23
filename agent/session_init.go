@@ -19,6 +19,7 @@ import (
 	"primeradiant.com/evener/agent/envctx"
 	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/agent/execenv"
+	"primeradiant.com/evener/agent/internal/cheapmodel"
 	"primeradiant.com/evener/agent/internal/clock"
 	"primeradiant.com/evener/agent/internal/contextmgr"
 	"primeradiant.com/evener/agent/internal/goal"
@@ -1054,6 +1055,7 @@ func cacheReadPtr(n int64) *int {
 // The Session struct fields (client, profile, env, cfg) must already be set.
 // Returns the prompt sources so the caller can emit events after SessionStart.
 func (s *Session) initSessionState(sessionStartKind plugin.SessionStartKind, runSessionStartHooks bool) ([]promptSource, error) {
+	s.cheap = cheapmodel.New(s.client)
 	env := s.currentEnv()
 	ei := s.snapshotEnvironmentInfo(env)
 	ei.KnowledgeCutoff = s.profile.KnowledgeCutoff()
@@ -1135,7 +1137,7 @@ func (s *Session) initSessionState(sessionStartKind plugin.SessionStartKind, run
 		return nil, err
 	}
 
-	s.contextMgr = contextmgr.NewManager(s.profile, s.client)
+	s.contextMgr = contextmgr.NewManager(s.profile, s.client, s.cheap)
 	s.contextMgr.ResultToolName = s.resultToolName()
 
 	var reg *tool.Registry

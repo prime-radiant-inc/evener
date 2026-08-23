@@ -11,6 +11,7 @@ import (
 	"testing"
 
 	"primeradiant.com/evener/agent/events"
+	"primeradiant.com/evener/agent/internal/cheapmodel"
 	"primeradiant.com/evener/agent/internal/sessionlog"
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/llm"
@@ -37,7 +38,7 @@ func TestSessionLogStrategy_Tools_Empty(t *testing.T) {
 func TestSessionLogStrategy_ManageContext_ObservationMaskAtHighPressure(t *testing.T) {
 	client := llm.NewClient()
 	profile := testOpenAIProfileWithContextWindow(1000)
-	cm := NewManager(profile, client)
+	cm := NewManager(profile, client, cheapmodel.New(client))
 
 	// Set a low observation mask threshold so compaction triggers on our test data.
 	cm.ObservationMaskThreshold = 0.05
@@ -114,7 +115,7 @@ func TestSessionLogStrategy_ManageContext_ObservationMaskAtHighPressure(t *testi
 func TestSessionLogStrategy_ManageContext_SessionLogCheckpointAtHighPressure(t *testing.T) {
 	client := llm.NewClient()
 	profile := testOpenAIProfileWithContextWindow(1000)
-	cm := NewManager(profile, client)
+	cm := NewManager(profile, client, cheapmodel.New(client))
 
 	// Set thresholds so checkpoint triggers but not summarize.
 	cm.ObservationMaskThreshold = 0.01
@@ -240,7 +241,7 @@ func TestSessionLogStrategy_AfterAction_CallsForkSummarizeAndAppendsToLog(t *tes
 	logPath := filepath.Join(dir, "test.log.jsonl")
 
 	sls := &SessionLogStrategy{
-		cm:      NewManager(profile, client),
+		cm:      NewManager(profile, client, cheapmodel.New(client)),
 		log:     mustNewSessionLog(t, logPath),
 		session: &fakeStrategyHost{profile: profile},
 	}
@@ -297,7 +298,7 @@ func TestSessionLogStrategy_AfterAction_LLMErrorIsNonFatal(t *testing.T) {
 	logPath := filepath.Join(dir, "test.log.jsonl")
 
 	sls := &SessionLogStrategy{
-		cm:      NewManager(profile, client),
+		cm:      NewManager(profile, client, cheapmodel.New(client)),
 		log:     mustNewSessionLog(t, logPath),
 		session: &fakeStrategyHost{profile: profile},
 	}
@@ -423,7 +424,7 @@ func TestSessionLogStrategy_SessionLogCheckpoint_ContainsTranscriptRecoveryPoint
 	logPath := filepath.Join(dir, "test.log.jsonl")
 
 	const sessionID = "sess-abc-123"
-	cm := NewManager(nil, nil)
+	cm := NewManager(nil, nil, cheapmodel.New(nil))
 	cm.Meta.AvailableTranscriptTools = []string{"read_transcript", "find_session_transcripts"}
 	sls := &SessionLogStrategy{
 		cm:      cm,
@@ -495,7 +496,7 @@ func TestSessionLogCheckpoint_AttentionResolutionDoesNotConsumeRecentSlots(t *te
 func TestSessionLogStrategy_FiresOnCompactionTurn_Checkpoint(t *testing.T) {
 	client := llm.NewClient()
 	profile := testOpenAIProfileWithContextWindow(1000)
-	cm := NewManager(profile, client)
+	cm := NewManager(profile, client, cheapmodel.New(client))
 	cm.ObservationMaskThreshold = 0.0001
 	cm.ThinkingClearThreshold = 0.0001
 	cm.CheckpointThreshold = 0.0001
@@ -557,7 +558,7 @@ func TestSessionLogStrategy_FiresOnCompactionTurn_Summarize(t *testing.T) {
 	client.Register(f)
 
 	profile := testOpenAIProfileWithContextWindow(1000)
-	cm := NewManager(profile, client)
+	cm := NewManager(profile, client, cheapmodel.New(client))
 	// All thresholds very low so all layers fire.
 	cm.ObservationMaskThreshold = 0.0001
 	cm.ThinkingClearThreshold = 0.0001

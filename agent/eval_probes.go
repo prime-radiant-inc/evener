@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"strings"
 
+	"primeradiant.com/evener/agent/internal/cheapmodel"
 	"primeradiant.com/evener/agent/provider"
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/llm"
@@ -37,11 +38,12 @@ func runRetentionProbes(ctx context.Context, client *llm.Client, profile *provid
 
 	// Build message history from session turns.
 	history := turnsToMessages(sessionHistory)
+	cheap := cheapmodel.New(client)
 
 	var correct int
 	results := make([]probeResult, 0, len(probeQuestions))
 	for _, pq := range probeQuestions {
-		isCorrect, err := runOneProbe(ctx, client, profile, history, pq)
+		isCorrect, err := runOneProbe(ctx, client, cheap, profile, history, pq)
 		if err != nil {
 			return 0, nil, fmt.Errorf("retention probe %q: %w", pq.Question, err)
 		}
@@ -61,7 +63,7 @@ func runRetentionProbes(ctx context.Context, client *llm.Client, profile *provid
 
 // runOneProbe sends a single probe question to the agent, then judges the
 // response against the expected answer. Returns true if the judge says correct.
-func runOneProbe(ctx context.Context, client *llm.Client, profile *provider.Profile, history []llm.Message, pq probeQuestion) (bool, error) {
+func runOneProbe(ctx context.Context, client *llm.Client, cheap *cheapmodel.Caller, profile *provider.Profile, history []llm.Message, pq probeQuestion) (bool, error) {
 	// Step 1: Ask the agent the probe question with the session history.
 	agentMessages := append(append([]llm.Message{}, history...), llm.User(pq.Question))
 	agentReq := llm.Request{
@@ -78,14 +80,11 @@ func runOneProbe(ctx context.Context, client *llm.Client, profile *provider.Prof
 
 	// Step 2: Judge the response using the cheap model with binary scoring.
 	judgePrompt := buildBinaryJudgePrompt(pq.Question, pq.Expected, agentAnswer)
-	cheapProvider, cheapModel := profile.CheapModelRef()
 	judgeReq := llm.Request{
-		Model:    cheapModel,
-		Provider: cheapProvider,
 		Messages: []llm.Message{llm.User(judgePrompt)},
 	}
 
-	judgeResp, err := client.Complete(ctx, judgeReq)
+	judgeResp, err := cheap.Complete(ctx, profile, judgeReq)
 	if err != nil {
 		return false, fmt.Errorf("judge call: %w", err)
 	}

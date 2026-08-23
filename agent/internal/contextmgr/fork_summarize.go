@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"strings"
 
+	"primeradiant.com/evener/agent/internal/cheapmodel"
 	"primeradiant.com/evener/agent/internal/sessionlog"
 	"primeradiant.com/evener/agent/provider"
 	"primeradiant.com/evener/agent/schema"
@@ -16,17 +17,14 @@ import (
 // sessionlog.SessionLogEntry summarizing the most recent action in turns. The
 // prompt explicitly preserves failure signals so errors are not lost during
 // summarization.
-func forkSummarize(ctx context.Context, client *llm.Client, profile *provider.Profile, turns []schema.Turn, turnNumber int) (sessionlog.SessionLogEntry, error) {
+func forkSummarize(ctx context.Context, cheap *cheapmodel.Caller, profile *provider.Profile, turns []schema.Turn, turnNumber int) (sessionlog.SessionLogEntry, error) {
 	prompt := buildSummarizePrompt(turns)
 
-	cheapProvider, cheapModel := profile.CheapModelRef()
 	req := llm.Request{
-		Model:    cheapModel,
-		Provider: cheapProvider,
 		Messages: []llm.Message{llm.User(prompt)},
 	}
 
-	resp, err := client.Complete(ctx, req)
+	resp, err := cheap.Complete(ctx, profile, req)
 	if err != nil {
 		return sessionlog.SessionLogEntry{}, fmt.Errorf("fork summarize: %w", err)
 	}

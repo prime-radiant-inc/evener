@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"primeradiant.com/evener/agent/events"
+	"primeradiant.com/evener/agent/internal/cheapmodel"
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/llm"
 )
@@ -47,7 +48,7 @@ func TestSummarizeWithLLM_UsesTurnSummaryKind(t *testing.T) {
 	client := llm.NewClient()
 	client.Register(adapter)
 
-	cm := NewManager(NewOpenAIProfile("gpt-5.2"), client)
+	cm := NewManager(NewOpenAIProfile("gpt-5.2"), client, cheapmodel.New(client))
 
 	history := []schema.Turn{
 		{Kind: schema.TurnUserInput, Message: llm.User("Fix the auth bug")},
@@ -102,7 +103,7 @@ func TestSummarizeWithLLM_RoutesToCheapProvider(t *testing.T) {
 	client.Register(cheapAdapter)
 
 	profile := WithCheapModel(NewOpenAIProfile("gpt-5.2"), "anthropic/claude-haiku-4-5-20251001")
-	cm := NewManager(profile, client)
+	cm := NewManager(profile, client, cheapmodel.New(client))
 
 	history := []schema.Turn{
 		{Kind: schema.TurnUserInput, Message: llm.User("Fix the auth bug")},
@@ -119,7 +120,7 @@ func TestSummarizeWithLLM_RoutesToCheapProvider(t *testing.T) {
 func TestMaybeCompact_CallsOnCompactionTurn(t *testing.T) {
 	// Use a tiny context window to force checkpoint (L3).
 	profile := testProfile("openai", "test", 500)
-	cm := NewManager(profile, nil)
+	cm := NewManager(profile, nil, cheapmodel.New(nil))
 	cm.PreserveRecentTurns = 2
 
 	// Use assistant text (not tool results) so observation masking can't reduce pressure.

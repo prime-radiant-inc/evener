@@ -154,17 +154,14 @@ func (s *Session) webFetchWithRuntime(ctx context.Context, rawURL string, questi
 
 	// Call cheap model to answer the question.
 	p := s.currentProfile()
-	cheapProvider, cheapModel := p.CheapModelRef()
 	cheapReq := llm.Request{
-		Model:    cheapModel,
-		Provider: cheapProvider,
 		Messages: []llm.Message{
 			llm.System("You are a web content analyst. Read the provided content and answer the user's question concisely."),
 			llm.User(fmt.Sprintf("URL: %s\n\nQuestion: %s\n\nContent:\n%s", rawURL, question, readableContent)),
 		},
 	}
 
-	cheapResp, err := s.client.Complete(ctx, cheapReq)
+	cheapResp, err := s.cheap.Complete(ctx, p, cheapReq)
 	if err != nil {
 		return nil, fmt.Errorf("cheap model call failed: %w", err)
 	}

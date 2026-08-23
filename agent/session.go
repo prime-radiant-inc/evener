@@ -13,6 +13,7 @@ import (
 	"primeradiant.com/evener/agent/envctx"
 	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/agent/execenv"
+	"primeradiant.com/evener/agent/internal/cheapmodel"
 	"primeradiant.com/evener/agent/internal/clock"
 	"primeradiant.com/evener/agent/internal/contextmgr"
 	"primeradiant.com/evener/agent/internal/goal"
@@ -72,6 +73,7 @@ type Session struct {
 	artifactStore          artifactStore
 	ownsArtifactStore      bool
 	client                 *llm.Client
+	cheap                  *cheapmodel.Caller
 	profile                *provider.Profile
 	resolveProfile         func(ref string) (*provider.Profile, error) // cross-provider resolver; may be nil
 	// lastDroppedModelFallbacks records the cfg.ModelFallbacks entries dropped

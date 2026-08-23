@@ -17,6 +17,7 @@ import (
 	"testing"
 	"time"
 
+	"primeradiant.com/evener/agent/internal/cheapmodel"
 	"primeradiant.com/evener/agent/internal/liveeval"
 	"primeradiant.com/evener/agent/provider"
 	"primeradiant.com/evener/agent/schema"
@@ -362,7 +363,7 @@ func newRealSummarizerManager(t *testing.T) *Manager {
 		t.Skip("no profile could be built for available provider")
 	}
 
-	return NewManager(prof, client)
+	return NewManager(prof, client, cheapmodel.New(client))
 }
 
 // turnsFromText converts a raw text string into a slice of schema.Turns large
