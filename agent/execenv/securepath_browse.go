@@ -1,6 +1,7 @@
 package execenv
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -8,6 +9,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"time"
 )
 
 // This file holds the platform-independent browse logic (the writability
@@ -169,18 +171,48 @@ func (a *grepAccum) finish() string {
 	return strings.Join(a.results, "\n")
 }
 
-// sortPathsByMtimeDesc sorts paths newest-modification-first, ties broken by path.
-// Shared by the off and sandboxed glob so their ordering is identical.
-func sortPathsByMtimeDesc(paths []string) {
-	sort.SliceStable(paths, func(i, j int) bool {
-		fi, _ := os.Stat(paths[i])
-		fj, _ := os.Stat(paths[j])
-		if fi == nil || fj == nil {
-			return paths[i] < paths[j]
+// sortPathStat is the stat the glob result ordering runs on; a variable so
+// tests can observe how many times each path is stat'ed.
+var sortPathStat = os.Stat
+
+// sortPathsByMtimeDesc sorts paths newest-modification-first, ties broken by
+// path. Shared by the off and sandboxed glob so their ordering is identical.
+//
+// Every path is stat'ed once up front rather than from inside the comparator,
+// which stat'ed O(n log n) times and left a large result set sorting for
+// seconds with nothing watching ctx. The stat loop checks ctx between paths,
+// so a cancelled glob stops here too and says so instead of handing back a
+// half-ordered list.
+func sortPathsByMtimeDesc(ctx context.Context, paths []string) error {
+	type dated struct {
+		path     string
+		mod      time.Time
+		modKnown bool
+	}
+	entries := make([]dated, len(paths))
+	for i, p := range paths {
+		if err := ctx.Err(); err != nil {
+			return err
 		}
-		if fi.ModTime() != fj.ModTime() {
-			return fi.ModTime().After(fj.ModTime())
+		entries[i] = dated{path: p}
+		if info, err := sortPathStat(p); err == nil {
+			entries[i].mod, entries[i].modKnown = info.ModTime(), true
 		}
-		return paths[i] < paths[j]
+	}
+	sort.SliceStable(entries, func(i, j int) bool {
+		a, b := entries[i], entries[j]
+		// A path whose stat failed has no modification time to order by, so
+		// it falls back to path order — as it did when the comparator stat'ed.
+		if !a.modKnown || !b.modKnown {
+			return a.path < b.path
+		}
+		if !a.mod.Equal(b.mod) {
+			return a.mod.After(b.mod)
+		}
+		return a.path < b.path
 	})
+	for i, e := range entries {
+		paths[i] = e.path
+	}
+	return nil
 }

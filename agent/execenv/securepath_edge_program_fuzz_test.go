@@ -424,7 +424,9 @@ func runSecurePathEdgeContractProgram(t *testing.T, program []byte) securePathEd
 
 	// The sort fallback must be deterministic even when stat fails for every path.
 	missing := []string{filepath.Join(base, "missing-b"), filepath.Join(base, "missing-a")}
-	sortPathsByMtimeDesc(missing)
+	if err := sortPathsByMtimeDesc(t.Context(), missing); err != nil {
+		t.Fatalf("missing-path sort: %v", err)
+	}
 	if !sort.StringsAreSorted(missing) {
 		t.Fatalf("missing-path sort = %v, want lexical order", missing)
 	}

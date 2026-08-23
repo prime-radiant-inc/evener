@@ -121,9 +121,15 @@ func (s *sandboxFS) glob(ctx context.Context, tool, base, pattern string, includ
 			return nil, 0, err
 		}
 		for _, m := range matches {
-			if !includeIgnored && (isDotPath(m) || ignores.matches(m, globMatchIsDir(fsys, m))) {
-				excluded++
-				continue
+			if !includeIgnored {
+				drop, err := globMatchExcluded(ctx, fsys, ignores, m)
+				if err != nil {
+					return nil, 0, err
+				}
+				if drop {
+					excluded++
+					continue
+				}
 			}
 			p := filepath.Join(canonical, m)
 			if s.underMasked(p) {
@@ -136,7 +142,9 @@ func (s *sandboxFS) glob(ctx context.Context, tool, base, pattern string, includ
 			abs = append(abs, p)
 		}
 	}
-	sortPathsByMtimeDesc(abs)
+	if err := sortPathsByMtimeDesc(ctx, abs); err != nil {
+		return nil, 0, err
+	}
 	return abs, excluded, nil
 }
 
