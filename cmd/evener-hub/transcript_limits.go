@@ -1,3 +1,3 @@
-package main
+package hub
 
 const transcriptJSONLMaxLineBytes = 128 << 20

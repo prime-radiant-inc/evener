@@ -1,4 +1,4 @@
-package main
+package hub
 
 // Tests for evener/command/list (design §10 / P3): the hub RPC handler that
 // flattens loaded plugins' slash commands into a catalog for autocomplete

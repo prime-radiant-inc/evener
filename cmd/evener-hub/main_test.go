@@ -1,4 +1,4 @@
-package main
+package hub
 
 import (
 	"bytes"
@@ -141,12 +141,9 @@ func TestResolveEvenerBinaryPath(t *testing.T) {
 		if err := os.WriteFile(evenerPath, []byte("#!/bin/sh\n"), 0o755); err != nil {
 			t.Fatal(err)
 		}
-		// currentExecutable is the hub binary in the same directory.
-		hubPath := filepath.Join(dir, "evener-hub")
-		if err := os.WriteFile(hubPath, []byte("#!/bin/sh\n"), 0o755); err != nil {
-			t.Fatal(err)
-		}
-		got := resolveEvenerBinaryPath("", hubPath, func(string) (string, error) {
+		// currentExecutable is the evener binary itself (the hub runs as
+		// `evener hub`, so the running binary is `evener`).
+		got := resolveEvenerBinaryPath("", evenerPath, func(string) (string, error) {
 			return "", errors.New("should not call lookPath")
 		})
 		if got != evenerPath {

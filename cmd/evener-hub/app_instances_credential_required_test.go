@@ -1,4 +1,4 @@
-package main
+package hub
 
 // Whether an instance needs a credential at all is a fact the hub already
 // derives: credentialRequired is the gate evener/auth/test asks before it decides

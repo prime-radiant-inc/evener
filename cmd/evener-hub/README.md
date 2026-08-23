@@ -1,6 +1,6 @@
 # Evener Hub
 
-`evener-hub` is Evener's orchestrator. Its web UI is the default interactive
+The `evener hub` subcommand is Evener's orchestrator. Its web UI is the default interactive
 surface for driving the agent.
 
 - New users: start with [docs/getting-started.md](../../docs/getting-started.md).

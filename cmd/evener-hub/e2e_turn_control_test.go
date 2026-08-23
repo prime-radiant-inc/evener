@@ -1,4 +1,4 @@
-package main
+package hub
 
 import (
 	"context"
@@ -647,7 +647,7 @@ func startHubStackOnProvider(t *testing.T, providersTOML, model string) hubStack
 		t.Fatalf("release hub port: %v", err)
 	}
 
-	hub := exec.Command(filepath.Join(binDir, "evener-hub"), "--addr", hubAddr, "--evener", filepath.Join(binDir, "evener"))
+	hub := exec.Command(filepath.Join(binDir, "evener"), "hub", "--addr", hubAddr, "--evener", filepath.Join(binDir, "evener"))
 	hub.Env = append(os.Environ(),
 		"HOME="+home,
 		"XDG_CONFIG_HOME="+configDir,
