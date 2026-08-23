@@ -1,0 +1,162 @@
+/*
+ * Composer — the primary input dock at the bottom of ConversationScreen.
+ *
+ * Phone-first layout: a single row with attach + text field + voice + primary
+ * action, sitting above the software keyboard (--keyboard-inset) with
+ * safe-area bottom padding. Stop appears as a separate full-width control
+ * during generating. Attachment chips stack above the row. No desktop cards,
+ * rail, or hover. 44px minimum tap targets.
+ */
+
+.evener-composer {
+  flex-shrink: 0;
+  background: var(--raised);
+  border-top: 1px solid var(--hairline);
+}
+
+.evener-composer__dock {
+  padding: var(--space-8) var(--space-16);
+  padding-bottom: calc(
+    var(--space-8) +
+    var(--safe-area-bottom) +
+    var(--keyboard-inset)
+  );
+}
+
+.evener-composer__summary {
+  font-size: 0.75rem;
+  color: var(--secondary);
+  padding: 0 var(--space-4) var(--space-4);
+  text-transform: capitalize;
+}
+
+.evener-composer__row {
+  display: flex;
+  align-items: flex-end;
+  gap: var(--space-8);
+}
+
+.evener-composer__field {
+  flex: 1 1 auto;
+  min-height: var(--tap-target);
+  max-height: 120px;
+  resize: none;
+  border: 1px solid var(--hairline);
+  border-radius: var(--radius-control);
+  padding: var(--space-8) var(--space-12);
+  font: inherit;
+  color: var(--primary);
+  background: var(--canvas);
+  line-height: var(--type-leading, 1.4);
+}
+
+.evener-composer__field:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+
+.evener-composer__field:disabled {
+  opacity: 0.5;
+}
+
+.evener-composer__action {
+  flex-shrink: 0;
+  min-width: var(--tap-target);
+  min-height: var(--tap-target);
+  border: none;
+  border-radius: var(--radius-control);
+  background: transparent;
+  color: var(--accent-ink);
+  font-size: 1.25rem;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
+}
+
+.evener-composer__action:disabled {
+  opacity: 0.4;
+}
+
+.evener-composer__action--primary {
+  background: var(--accent);
+  color: var(--accent-contrast);
+  font-size: 1rem;
+  font-weight: 600;
+  padding: 0 var(--space-16);
+}
+
+.evener-composer__action--primary:disabled {
+  background: var(--hairline-strong);
+  color: var(--secondary);
+}
+
+.evener-composer__action--attach,
+.evener-composer__action--voice {
+  background: var(--canvas);
+  font-size: 1.5rem;
+}
+
+.evener-composer__stop {
+  width: 100%;
+  min-height: var(--tap-target);
+  margin-top: var(--space-8);
+  border: 1px solid var(--danger);
+  border-radius: var(--radius-control);
+  background: transparent;
+  color: var(--danger);
+  font-weight: 600;
+  font-size: 1rem;
+  cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
+}
+
+.evener-composer__unavailable {
+  font-size: 0.75rem;
+  color: var(--secondary);
+  padding: var(--space-4) var(--space-4) 0;
+  font-style: italic;
+}
+
+.evener-composer__attachments {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-8);
+  padding-top: var(--space-8);
+}
+
+.evener-composer__attachment-chip {
+  display: flex;
+  align-items: center;
+  gap: var(--space-4);
+  background: var(--canvas);
+  border: 1px solid var(--hairline);
+  border-radius: var(--radius-control);
+  padding: var(--space-4) var(--space-8);
+  font-size: 0.8rem;
+  color: var(--primary);
+  max-width: 160px;
+}
+
+.evener-composer__attachment-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.evener-composer__attachment-remove {
+  flex-shrink: 0;
+  border: none;
+  background: transparent;
+  color: var(--secondary);
+  font-size: 1.1rem;
+  line-height: 1;
+  min-width: 24px;
+  min-height: 24px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
+}

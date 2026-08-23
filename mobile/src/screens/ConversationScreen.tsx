@@ -1,5 +1,7 @@
 import { type JSX, useEffect, useRef, useState } from "react";
 import type { StoreApi, UseBoundStore } from "zustand";
+import { AskComposer } from "../components/composer/AskComposer";
+import { Composer } from "../components/composer/Composer";
 import { Timeline } from "../components/timeline/Timeline";
 import {
   createFollowState,
@@ -9,6 +11,7 @@ import {
 } from "../conversation/follow";
 import type { MobileTimelineItem } from "../conversation/model";
 import type { ConversationService } from "../services/conversation";
+import type { AttachmentState } from "../state/attachments";
 import type { ConversationState } from "../state/conversation";
 import type { NavigationState } from "../state/navigation";
 
@@ -17,15 +20,18 @@ export interface ConversationScreenProps {
   readonly conversationStore: UseBoundStore<StoreApi<ConversationState>>;
   /** The navigation store hook (Zustand) — provides the back action and title fallback. */
   readonly navigationStore: UseBoundStore<StoreApi<NavigationState>>;
-  /** The conversation service (for loadOlder). Optional during placeholder wiring. */
+  /** The conversation service (for loadOlder, send/steer/queue/interrupt). */
   readonly conversationService?: ConversationService;
+  /** The attachment store hook (Zustand) — pending image attachments. */
+  readonly attachmentStore?: UseBoundStore<StoreApi<AttachmentState>>;
 }
 
 /**
  * The focused conversation destination pushed above the tab bar. Layout:
  * - Top bar: back button (44px), title, status indicator, activity-sheet action.
  * - Timeline fills the remaining space (one scroller).
- * - Composer slot at the bottom (placeholder — Task 5 implements the real composer).
+ * - Composer dock at the bottom — AskComposer replaces the normal Composer
+ *   while askPending is true so structured ask_user questions take over.
  *
  * The Timeline is the sole scroller; the top bar and composer are fixed flex
  * children. Follow mode and the new-activity pill are driven by the local
@@ -35,6 +41,7 @@ export function ConversationScreen({
   conversationStore,
   navigationStore,
   conversationService,
+  attachmentStore,
 }: ConversationScreenProps): JSX.Element {
   const conversation = conversationStore((s) => s.conversation);
   const status = conversationStore((s) => s.status);
@@ -126,16 +133,31 @@ export function ConversationScreen({
         onTapNewActivity={handleTapNewActivity}
         loadOlder={handleLoadOlder}
       />
-      <div
-        className="evener-conversation__composer"
-        data-testid="composer-placeholder"
-      >
-        {/* Composer placeholder — Task 5 implements the real composer */}
+      {conversationService !== undefined && attachmentStore !== undefined ? (
+        conversation?.askPending ? (
+          <AskComposer
+            conversationStore={conversationStore}
+            conversationService={conversationService}
+            attachmentStore={attachmentStore}
+          />
+        ) : (
+          <Composer
+            conversationStore={conversationStore}
+            conversationService={conversationService}
+            attachmentStore={attachmentStore}
+          />
+        )
+      ) : (
         <div
-          className="evener-conversation__composer-slot"
-          aria-hidden="true"
-        />
-      </div>
+          className="evener-conversation__composer"
+          data-testid="composer-placeholder"
+        >
+          <div
+            className="evener-conversation__composer-slot"
+            aria-hidden="true"
+          />
+        </div>
+      )}
     </main>
   );
 }
