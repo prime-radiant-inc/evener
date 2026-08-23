@@ -219,11 +219,17 @@ var defaultCloseGrace = 5 * time.Second
 // Package vars, not consts, so tests can override and restore them without
 // waiting wall-clock time.
 var (
-	// laneClosePassBudget bounds the P0 close disposal and the P3 close pass
-	// TOGETHER — one shared deadline per close cascade. It bounds git/history
-	// work only; the budget-exempt touch+unlock tail runs after expiry, so
-	// shutdown never blocks on git yet no lane is left locked.
-	laneClosePassBudget = 30 * time.Second
+	// LaneClosePassBudget bounds the P0 close disposal and the P3 close pass
+	// TOGETHER — one shared deadline per close cascade (ensureCloseBudget mints
+	// it), and since #382 it also bounds close's WaitGroup joins. It bounds
+	// git/history work only; the budget-exempt touch+unlock tail runs after
+	// expiry, so shutdown never blocks on git yet no lane is left locked.
+	//
+	// Exported for the same reason as DrainStallTimeout: the only end-to-end
+	// shape that exercises a teardown blocked on an uncancellable operation is a
+	// whole one-shot `evener run`, which lives in another module. Nothing in
+	// production assigns it.
+	LaneClosePassBudget = 30 * time.Second
 	// laneTailWarnThreshold is the lane count above which the budget-exempt
 	// touch+unlock tail earns a second aggregated warning (a pathological
 	// session leaked far more lanes than a close pass can collect).
