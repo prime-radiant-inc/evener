@@ -53,3 +53,5 @@ func TestMergeLayersBothOptionalFields(t *testing.T) {
 		t.Fatalf("MaxRetainedTerminal = %v, want 5", got.Effective.MaxRetainedTerminal)
 	}
 }
+
+func ptrInt(v int) *int { return &v }

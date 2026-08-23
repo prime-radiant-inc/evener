@@ -110,7 +110,7 @@ func TestLocalDaemonMutationCallErrorSessionUnavailable(t *testing.T) {
 		t.Fatalf("mapped error should be a WireError, got %T: %v", mapped, mapped)
 	}
 	if wire.Code != appwire.CodeInternalError {
-		t.Fatalf("expected CodeInternalError, got %q", wire.Code)
+		t.Fatalf("expected CodeInternalError, got %d", wire.Code)
 	}
 	data, ok := wire.Data.(appwire.ErrorData)
 	if !ok {

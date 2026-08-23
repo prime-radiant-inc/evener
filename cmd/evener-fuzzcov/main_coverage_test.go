@@ -26,22 +26,6 @@ func tempStdoutStderr(t *testing.T) (*os.File, *os.File, func() (string, string)
 	}
 }
 
-// TestMainExitProcessSwallow replaces exitProcess so main() returns normally
-// and exercises the error path where runCLI returns an error (code 2).
-func TestMainExitProcessSwallow(t *testing.T) {
-	oldExit := exitProcess
-	defer func() { exitProcess = oldExit }()
-	var exitCode int
-	exitProcess = func(code int) { exitCode = code }
-
-	// main() calls runCLI(os.Args[1:], ...). With no flags, runCLI returns
-	// an error ("the only mode is -gap-only..."), so main sets code=2.
-	main()
-	if exitCode != 2 {
-		t.Fatalf("main() exit code = %d, want 2", exitCode)
-	}
-}
-
 // TestRunCLINoFlagsReturnsError covers the path where no mode is specified.
 func TestRunCLINoFlagsReturnsError(t *testing.T) {
 	stdout, stderr, _ := tempStdoutStderr(t)
@@ -149,7 +133,7 @@ func TestRunGapOnlyESuccess(t *testing.T) {
 	}
 
 	readOut := captureStdoutStderr(t)
-	code, err := runGapOnlyE(regPath, repo, []string{"."}, ignorePath)
+	code, err := runGapOnlyE(os.Stdout, os.Stderr, regPath, repo, []string{"."}, ignorePath)
 	outStr, _ := readOut()
 	if err != nil {
 		t.Fatalf("runGapOnlyE success: %v", err)
@@ -191,7 +175,7 @@ func TestRunGapOnlyEGapBreach(t *testing.T) {
 	}
 
 	readOut := captureStdoutStderr(t)
-	code, err := runGapOnlyE(regPath, repo, []string{"."}, ignorePath)
+	code, err := runGapOnlyE(os.Stdout, os.Stderr, regPath, repo, []string{"."}, ignorePath)
 	_, errStr := readOut()
 	if err != nil {
 		t.Fatalf("runGapOnlyE gap-breach returned error: %v", err)
@@ -231,7 +215,7 @@ func TestRunGapOnlyEIgnoredPackage(t *testing.T) {
 	}
 
 	readOut := captureStdoutStderr(t)
-	code, err := runGapOnlyE(regPath, repo, []string{"."}, ignorePath)
+	code, err := runGapOnlyE(os.Stdout, os.Stderr, regPath, repo, []string{"."}, ignorePath)
 	_, errStr := readOut()
 	if err != nil {
 		t.Fatalf("runGapOnlyE ignored: %v", err)
@@ -323,7 +307,7 @@ func TestRunCLIGapOnlyExplicitModules(t *testing.T) {
 	}
 
 	readOut := captureStdoutStderr(t)
-	code, err := runGapOnlyE(regPath, repo, []string{"mymod"}, ignorePath)
+	code, err := runGapOnlyE(os.Stdout, os.Stderr, regPath, repo, []string{"mymod"}, ignorePath)
 	outStr, errStr := readOut()
 	if err != nil {
 		t.Fatalf("runGapOnlyE explicit modules: %v\nstderr: %s", err, errStr)

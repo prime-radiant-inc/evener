@@ -18,7 +18,7 @@ func TestBlockedUnknownMutationError(t *testing.T) {
 		t.Fatalf("expected WireError, got %T: %v", err, err)
 	}
 	if wire.Code != appwire.CodeInternalError {
-		t.Fatalf("expected CodeInternalError, got %q", wire.Code)
+		t.Fatalf("expected CodeInternalError, got %d", wire.Code)
 	}
 	data, ok := wire.Data.(appwire.ErrorData)
 	if !ok {
