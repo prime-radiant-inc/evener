@@ -59,6 +59,8 @@ export interface VoiceScreenProps {
   readonly onKeyboard: () => void;
   /** Connection status mark shown beside the title. */
   readonly connectionStatus: StatusMarkProps["status"];
+  /** Whether reduced motion is enabled (disables waveform animation). */
+  readonly reducedMotion?: boolean;
 }
 
 type StatusMarkProps = {
@@ -76,6 +78,7 @@ export function VoiceScreen({
   onEnd,
   onKeyboard,
   connectionStatus,
+  reducedMotion = false,
 }: VoiceScreenProps): JSX.Element {
   const conversation = conversationStore((s) => s.conversation);
   const ref = conversationStore((s) => s.ref);
@@ -267,7 +270,11 @@ export function VoiceScreen({
 
       <div className={styles.body}>
         <div className={styles.level}>
-          <VoiceLevel level={level} reducedMotion={false} active={active} />
+          <VoiceLevel
+            level={level}
+            reducedMotion={reducedMotion}
+            active={active}
+          />
         </div>
 
         <section className={styles.captions}>
