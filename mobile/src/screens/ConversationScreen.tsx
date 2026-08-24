@@ -28,6 +28,8 @@ export interface ConversationScreenProps {
   readonly attachmentStore?: UseBoundStore<StoreApi<AttachmentState>>;
   /** The activity view to display in the sheet. Optional; when absent the sheet builds from the conversation. */
   readonly activityView?: ActivityView | null;
+  /** Called when the user taps the voice button in the composer. */
+  readonly onShowVoice?: () => void;
 }
 
 /**
@@ -47,6 +49,7 @@ export function ConversationScreen({
   conversationService,
   attachmentStore,
   activityView: activityViewProp,
+  onShowVoice,
 }: ConversationScreenProps): JSX.Element {
   const conversation = conversationStore((s) => s.conversation);
   const status = conversationStore((s) => s.status);
@@ -165,6 +168,7 @@ export function ConversationScreen({
             conversationStore={conversationStore}
             conversationService={conversationService}
             attachmentStore={attachmentStore}
+            onVoice={onShowVoice}
           />
         )
       ) : (

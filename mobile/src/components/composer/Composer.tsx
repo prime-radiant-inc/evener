@@ -26,6 +26,8 @@ export interface ComposerProps {
   readonly conversationStore: UseBoundStore<StoreApi<ConversationState>>;
   readonly conversationService: ConversationService;
   readonly attachmentStore: UseBoundStore<StoreApi<AttachmentState>>;
+  /** Called when the user taps the voice button. */
+  readonly onVoice?: () => void;
 }
 
 // The primary action kind, derived from conversation status and queue state.
@@ -46,6 +48,7 @@ export function Composer({
   conversationStore,
   conversationService,
   attachmentStore,
+  onVoice,
 }: ComposerProps): JSX.Element {
   const conversation = conversationStore((s) => s.conversation);
   const status = conversationStore((s) => s.status);
@@ -167,6 +170,7 @@ export function Composer({
             data-testid="composer-voice"
             aria-label="Voice input"
             disabled={!connected}
+            onClick={onVoice}
           >
             🎤
           </button>
