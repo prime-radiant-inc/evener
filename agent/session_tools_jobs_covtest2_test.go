@@ -2,13 +2,14 @@ package agent
 
 import (
 	"context"
-	"encoding/json"
+	"reflect"
 	"strings"
 	"testing"
+	"time"
 
 	"primeradiant.com/evener/agent/events"
+	"primeradiant.com/evener/agent/internal/delegatestore"
 	"primeradiant.com/evener/agent/internal/jobstore"
-	"primeradiant.com/evener/agent/provenance"
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/llm"
 )
@@ -29,22 +30,6 @@ func TestCovClearDescendantReceiverWatchByID(t *testing.T) {
 	if res.Watching {
 		t.Fatal("result should not be watching")
 	}
-}
-
-// TestCovClearDescendantReceiverWatchByID_NilSession covers the nil session
-// path through clearStableReceiverWatchByID.
-func TestCovClearDescendantReceiverWatchByID_NilSession(t *testing.T) {
-	// A bare Session with no delegateController — stableWatchSourceSessions
-	// falls back to liveDescendantSessions, which returns nil.
-	s := &Session{}
-	res, found, err := s.clearDescendantReceiverWatchByID("watch_1")
-	if err != nil {
-		t.Fatalf("nil session: %v", err)
-	}
-	if found {
-		t.Fatal("nil session should not find watch")
-	}
-	_ = res
 }
 
 // TestCovLiveSteerWaitIgnoredReason covers liveSteerWaitIgnoredReason
@@ -257,8 +242,8 @@ func TestCovJobStatusArrayArg2(t *testing.T) {
 	if err != nil {
 		t.Fatalf("valid statuses: %v", err)
 	}
-	if len(statuses) != 2 {
-		t.Fatalf("want 2 statuses, got %d", len(statuses))
+	if want := []jobstore.Status{jobstore.StatusRunning, jobstore.StatusCompleted}; !reflect.DeepEqual(statuses, want) {
+		t.Fatalf("statuses = %v, want %v", statuses, want)
 	}
 
 	// Invalid status value.
@@ -276,8 +261,14 @@ func TestCovJobStatusArrayArg2(t *testing.T) {
 	if err != nil {
 		t.Fatalf("all valid: %v", err)
 	}
-	if len(statuses) != 10 {
-		t.Fatalf("want 10 statuses, got %d", len(statuses))
+	wantStatuses := []jobstore.Status{
+		jobstore.StatusRunning, jobstore.Status("idle"), jobstore.Status("settling"),
+		jobstore.Status("stopping"), jobstore.Status("closed"), jobstore.StatusCompleted,
+		jobstore.StatusFailed, jobstore.StatusExhausted, jobstore.StatusCancelled,
+		jobstore.StatusStopped,
+	}
+	if !reflect.DeepEqual(statuses, wantStatuses) {
+		t.Fatalf("all statuses = %v, want %v", statuses, wantStatuses)
 	}
 }
 
@@ -301,8 +292,8 @@ func TestCovJobTypeArrayArg2(t *testing.T) {
 	if err != nil {
 		t.Fatalf("valid types: %v", err)
 	}
-	if len(types) != 2 {
-		t.Fatalf("want 2 types, got %d", len(types))
+	if want := []jobstore.JobType{jobstore.JobShell, jobstore.JobType(delegateResourceType)}; !reflect.DeepEqual(types, want) {
+		t.Fatalf("types = %v, want %v", types, want)
 	}
 
 	// Invalid type.
@@ -394,6 +385,7 @@ func TestCovWatchArgsFromToolArgs2(t *testing.T) {
 		"output_match":         "ready",
 		"progress_interval_ms": 5000,
 		"events":               []any{"communicate"},
+		"event_filter":         map[string]any{"tool_name": "communicate", "status": "ok"},
 		"every":                2,
 	})
 	if err != nil {
@@ -407,6 +399,9 @@ func TestCovWatchArgsFromToolArgs2(t *testing.T) {
 	}
 	if args.Every != 2 {
 		t.Fatalf("every = %d, want 2", args.Every)
+	}
+	if !reflect.DeepEqual(args.Events, []string{"communicate"}) || args.EventFilter == nil || args.EventFilter.ToolName != "communicate" || args.EventFilter.Status != "ok" {
+		t.Fatalf("event arguments mismatch: %+v", args)
 	}
 
 	// Valid list.
@@ -512,7 +507,7 @@ func TestCovStringArrayArg2(t *testing.T) {
 
 	// Valid.
 	arr, err = stringArrayArg(map[string]any{"events": []any{"a", "b"}}, "events")
-	if err != nil || len(arr) != 2 {
+	if err != nil || !reflect.DeepEqual(arr, []string{"a", "b"}) {
 		t.Fatalf("valid: arr=%v err=%v", arr, err)
 	}
 }
@@ -682,9 +677,12 @@ func TestCovSteeringMessageToLLM(t *testing.T) {
 	if msg.Role != llm.RoleUser {
 		t.Fatalf("role = %q, want %q", msg.Role, llm.RoleUser)
 	}
-	// Should have at least 2 content parts (text + image).
-	if len(msg.Content) < 2 {
-		t.Fatalf("image message should have multiple parts, got %d", len(msg.Content))
+	want := llm.Message{Role: llm.RoleUser, Content: []llm.ContentPart{
+		{Kind: llm.ContentText, Text: "see this"},
+		{Kind: llm.ContentImage, Image: &llm.ImageData{MediaType: "image/png", Data: []byte("data")}},
+	}}
+	if !reflect.DeepEqual(msg, want) {
+		t.Fatalf("image message = %#v, want %#v", msg, want)
 	}
 }
 
@@ -721,6 +719,9 @@ func TestCovRouteSystemNotification(t *testing.T) {
 	called := false
 	s4 := &Session{id: "sess_4"}
 	s4.cfg.spawn.parentSystemNotification = func(receiver, msg string) bool {
+		if receiver != "ancestor_session" || msg != "msg" {
+			t.Fatalf("parent router arguments = (%q, %q)", receiver, msg)
+		}
 		called = true
 		return true
 	}
@@ -1264,25 +1265,77 @@ func TestCovConsumeTerminalJobNotification(t *testing.T) {
 		NotifyState:    jobstore.NotifyPending,
 		OwnerSessionID: "other_session",
 	})
+
+	// An owner read consumes the pending generation durably and clears its wake.
+	jm = newTestJM(t)
+	startedAt := jm.now()
+	jobID := "job_" + jm.sessionID + "_consume"
+	if err := jm.appendEvent(jobstore.Event{Kind: jobstore.EventJobStarted, TS: startedAt, JobID: jobID, Type: jobstore.JobShell, OwnerSessionID: jm.sessionID, StartedAt: &startedAt}); err != nil {
+		t.Fatalf("append start: %v", err)
+	}
+	endedAt := startedAt.Add(time.Second)
+	exitCode := 0
+	if err := jm.appendEvent(jobstore.Event{Kind: jobstore.EventJobFinished, TS: endedAt, JobID: jobID, Status: jobstore.StatusCompleted, EndedAt: &endedAt, ExitCode: &exitCode, TerminalGen: "gen_consume"}); err != nil {
+		t.Fatalf("append finish: %v", err)
+	}
+	if err := jm.appendEvent(jobstore.Event{Kind: jobstore.EventJobNotificationPending, TS: endedAt, JobID: jobID, TerminalGen: "gen_consume"}); err != nil {
+		t.Fatalf("append pending: %v", err)
+	}
+	records, err := jm.store.Load()
+	if err != nil {
+		t.Fatalf("load pending record: %v", err)
+	}
+	rec := records[jobID]
+	var consumedID string
+	jm.consume = func(id string) { consumedID = id }
+	s = &Session{id: jm.sessionID, events: make(chan events.SessionEvent, 1)}
+	consumeTerminalJobNotification(s, jm, rec)
+	if rec.NotifyState != jobstore.NotifyConsumed || consumedID != jobID {
+		t.Fatalf("consumed state/callback = (%q, %q), want (%q, %q)", rec.NotifyState, consumedID, jobstore.NotifyConsumed, jobID)
+	}
+	records, err = jm.store.Load()
+	if err != nil {
+		t.Fatalf("reload consumed record: %v", err)
+	}
+	if records[jobID].NotifyState != jobstore.NotifyConsumed {
+		t.Fatalf("durable notify state = %q, want consumed", records[jobID].NotifyState)
+	}
 }
 
 // TestCovProjectStableDelegateListItem is a helper test covering the projection
 // of a stable delegate into a job list entry (used by job_list).
 func TestCovProjectStableDelegateListItem(t *testing.T) {
-	// This is tested indirectly through job_list integration tests,
-	// but verify the type is usable.
-	entry := jobListEntry{
-		ID:     "dlg_1",
-		JobID:  "dlg_1",
-		Kind:   "agent",
-		Status: "running",
+	now := time.Date(2026, 8, 24, 12, 0, 0, 0, time.UTC)
+	startedAt := now.Add(-10 * time.Second)
+	endedAt := now.Add(-2 * time.Second)
+	latestActivityAt := now.Add(-3 * time.Second)
+	entry := projectStableDelegateListItem(now, stableDelegateVisibleRow{
+		depth: 2,
+		snapshot: delegateSnapshot{
+			id: "dlg_1", parentID: "dlg_parent", lifecycle: delegateLifecycleIdle,
+			runStartedAt: startedAt, latestActivityAt: latestActivityAt,
+			resumable: false, notResumableReason: "exhausted", transcriptRef: "local:child_1",
+			descriptor: delegatestore.Descriptor{
+				Description: "worker", OwnerSessionID: "owner", VisibleSessionID: "visible",
+				Task: "do work", AgentType: "researcher", ResolvedModel: "model-x",
+			},
+			lastOutcome: &delegatestore.Outcome{Reason: "budget", EndedAt: endedAt, ExhaustionBudget: delegatestore.ExhaustionBudgetTurns, ExhaustionLimit: 42},
+		},
+	})
+	if entry.ID != "dlg_1" || entry.Kind != "delegate" || entry.Type != "delegate" || entry.Status != string(delegateLifecycleIdle) || entry.Description != "worker" || entry.OwnerSessionID != "owner" || entry.VisibleToSessionID != "visible" {
+		t.Fatalf("projected identity = %+v", entry)
 	}
-	b, err := json.Marshal(entry)
-	if err != nil {
-		t.Fatalf("marshal: %v", err)
+	if entry.TranscriptRef == nil || *entry.TranscriptRef != "local:child_1" || entry.Resumable == nil || *entry.Resumable || entry.NotResumableReason == nil || *entry.NotResumableReason != "exhausted" {
+		t.Fatalf("projected resume fields = %+v", entry)
 	}
-	if !strings.Contains(string(b), "dlg_1") {
-		t.Fatalf("entry should contain dlg_1: %s", b)
+	if entry.StartedAt != startedAt.Format(time.RFC3339Nano) || entry.DurationMS == nil || *entry.DurationMS != 8000 || entry.LastActivity == nil || *entry.LastActivity != latestActivityAt.Format(time.RFC3339Nano) || !entry.LatestActivitySortAt.Equal(latestActivityAt) {
+		t.Fatalf("projected timing = %+v", entry)
+	}
+	if entry.Depth != 2 || entry.Task != "do work" || entry.AgentType != "researcher" || entry.Model != "model-x" || entry.ParentDelegateID == nil || *entry.ParentDelegateID != "dlg_parent" {
+		t.Fatalf("projected delegate fields = %+v", entry)
+	}
+	if entry.Reason == nil || *entry.Reason != "budget" || entry.EndedAt == nil || *entry.EndedAt != endedAt.Format(time.RFC3339Nano) || entry.ExhaustionBudget != string(delegatestore.ExhaustionBudgetTurns) || entry.ExhaustionLimit != 42 {
+		t.Fatalf("projected outcome = %+v", entry)
 	}
 }
 
@@ -1357,41 +1410,35 @@ func TestCovDeliverHookContext(t *testing.T) {
 	s.mu.Unlock()
 }
 
-// TestCovDeliverHookUserMessage covers deliverHookUserMessage
-// (session_queue.go lines 295-300).
-func TestCovDeliverHookUserMessage(t *testing.T) {
-	s := &Session{}
-	// Empty text — no-op.
-	s.deliverHookUserMessage("")
-	// Whitespace — no-op.
-	s.deliverHookUserMessage("  ")
-	// Valid text — should not panic (bare Session with emit).
-	s.deliverHookUserMessage("user warning message")
-}
-
 // TestCovAppendSteeringTurn covers appendSteeringTurn
 // (session_queue.go lines 942-947).
 func TestCovAppendSteeringTurn(t *testing.T) {
-	// This requires a full session to call recordTurn; just verify it
-	// doesn't panic on the type. The actual behavior is tested elsewhere.
-	// Skip if it requires too much setup.
+	s := &Session{id: "session_1", events: make(chan events.SessionEvent, 2)}
+	s.appendSteeringTurn("steer now", events.SteeringKindHookContext)
+	if len(s.history) != 1 || s.history[0].Kind != schema.TurnSteering || s.history[0].SteeringKind != events.SteeringKindHookContext || s.history[0].Message.Text() != "steer now" {
+		t.Fatalf("steering history = %+v", s.history)
+	}
+	if len(s.pendingTranscriptTurns) != 1 || s.pendingTranscriptTurns[0].SteeringKind != events.SteeringKindHookContext || s.pendingTranscriptTurns[0].Message.Text() != "steer now" {
+		t.Fatalf("persisted steering queue = %+v", s.pendingTranscriptTurns)
+	}
+	event := <-s.events
+	data, ok := event.Data.(events.SteeringInjectedData)
+	if !ok || event.Kind != events.EventSteeringInjected || event.SessionID != "session_1" || data.Text != "steer now" || data.Kind != events.SteeringKindHookContext {
+		t.Fatalf("steering event = %#v with data %#v", event, event.Data)
+	}
 }
 
 // TestCovAppendSteeringTurnDurably covers appendSteeringTurnDurably
-// (session_queue.go lines 956-967) — just verify the function exists and
-// the error path is reachable with a nil session.
-func TestCovAppendSteeringTurnDurably_NilSession(t *testing.T) {
-	// appendSteeringTurnDurably calls s.writeTranscriptDurable which requires
-	// a real session. This is covered by integration tests.
-	// We just verify the function signature is correct.
-	_ = schema.TurnSteering
-	_ = llm.User("test")
-}
-
-// TestCovProvenanceClone verifies provenance.Clone used in consumeTerminalJobNotification
-// doesn't panic on nil.
-func TestCovProvenanceClone_Nil(t *testing.T) {
-	if provenance.Clone(nil) != nil {
-		t.Fatal("Clone(nil) should return nil")
+// (session_queue.go lines 956-967): successful durable-queue and history state.
+func TestCovAppendSteeringTurnDurably(t *testing.T) {
+	s := &Session{id: "session_1"}
+	if err := s.appendSteeringTurnDurably("durable steer", events.SteeringKindNotification); err != nil {
+		t.Fatalf("appendSteeringTurnDurably: %v", err)
+	}
+	if len(s.history) != 1 || s.history[0].Kind != schema.TurnSteering || s.history[0].SteeringKind != events.SteeringKindNotification || s.history[0].Message.Text() != "durable steer" {
+		t.Fatalf("durable steering history = %+v", s.history)
+	}
+	if len(s.pendingTranscriptTurns) != 1 || s.pendingTranscriptTurns[0].SteeringKind != events.SteeringKindNotification || s.pendingTranscriptTurns[0].Message.Text() != "durable steer" {
+		t.Fatalf("durable persisted steering queue = %+v", s.pendingTranscriptTurns)
 	}
 }

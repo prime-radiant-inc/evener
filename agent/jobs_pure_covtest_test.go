@@ -2,6 +2,9 @@ package agent
 
 import (
 	"errors"
+	"os"
+	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -29,12 +32,13 @@ func TestCovJobsDir(t *testing.T) {
 		t.Fatalf("jobsDir with stateDir = %q", got)
 	}
 	got = jobsDir("", "SESS")
-	if !strings.Contains(got, "evener-jobs") || !strings.HasSuffix(got, "SESS") {
-		t.Fatalf("jobsDir without stateDir = %q", got)
+	wantFallback := filepath.Join(os.TempDir(), "evener-jobs", "SESS")
+	if got != wantFallback {
+		t.Fatalf("jobsDir without stateDir = %q, want %q", got, wantFallback)
 	}
 	got = jobsDir("  ", "SESS")
-	if !strings.Contains(got, "evener-jobs") {
-		t.Fatalf("jobsDir with whitespace stateDir = %q", got)
+	if got != wantFallback {
+		t.Fatalf("jobsDir with whitespace stateDir = %q, want %q", got, wantFallback)
 	}
 }
 
@@ -238,168 +242,8 @@ func TestCovJobListFilterFromArgs(t *testing.T) {
 		"include_nested":      true,
 		"include_descendants": true,
 	})
-	if err != nil || len(f.Statuses) != 2 || len(f.Types) != 1 || !f.IncludeNested || !f.IncludeDescendants {
+	if err != nil || !reflect.DeepEqual(f.Statuses, []jobstore.Status{jobstore.StatusRunning, jobstore.StatusCompleted}) || !reflect.DeepEqual(f.Types, []jobstore.JobType{jobstore.JobShell}) || !f.IncludeNested || !f.IncludeDescendants {
 		t.Fatalf("statuses/types filter = %+v, err = %v", f, err)
-	}
-}
-
-// TestCovJobStatusArrayArg covers jobStatusArrayArg (session_tools_jobs.go lines 1701-1723).
-func TestCovJobStatusArrayArg(t *testing.T) {
-	// Missing key.
-	got, err := jobStatusArrayArg(map[string]any{}, "status")
-	if err != nil || got != nil {
-		t.Fatalf("missing key: got=%v, err=%v", got, err)
-	}
-
-	// Not an array.
-	_, err = jobStatusArrayArg(map[string]any{"status": "running"}, "status")
-	if err == nil || !strings.Contains(err.Error(), "must be an array") {
-		t.Fatalf("expected array error, got %v", err)
-	}
-
-	// Valid statuses.
-	got, err = jobStatusArrayArg(map[string]any{"status": []any{"running", "completed", "failed", "idle", "settling", "stopping", "closed", "exhausted", "cancelled", "stopped"}}, "status")
-	if err != nil || len(got) != 10 {
-		t.Fatalf("valid statuses: got=%v, err=%v", got, err)
-	}
-
-	// Invalid status.
-	_, err = jobStatusArrayArg(map[string]any{"status": []any{"bogus"}}, "status")
-	if err == nil || !strings.Contains(err.Error(), "invalid job status") {
-		t.Fatalf("expected invalid status error, got %v", err)
-	}
-}
-
-// TestCovJobTypeArrayArg covers jobTypeArrayArg (session_tools_jobs.go lines 1867-1887).
-func TestCovJobTypeArrayArg(t *testing.T) {
-	// Missing key.
-	got, err := jobTypeArrayArg(map[string]any{}, "type")
-	if err != nil || got != nil {
-		t.Fatalf("missing key: got=%v, err=%v", got, err)
-	}
-
-	// Not an array.
-	_, err = jobTypeArrayArg(map[string]any{"type": "shell"}, "type")
-	if err == nil || !strings.Contains(err.Error(), "must be an array") {
-		t.Fatalf("expected array error, got %v", err)
-	}
-
-	// Valid types.
-	got, err = jobTypeArrayArg(map[string]any{"type": []any{"shell", "delegate"}}, "type")
-	if err != nil || len(got) != 2 {
-		t.Fatalf("valid types: got=%v, err=%v", got, err)
-	}
-
-	// Invalid type.
-	_, err = jobTypeArrayArg(map[string]any{"type": []any{"bogus"}}, "type")
-	if err == nil || !strings.Contains(err.Error(), "invalid job type") {
-		t.Fatalf("expected invalid type error, got %v", err)
-	}
-}
-
-// TestCovStringArrayArg covers stringArrayArg (session_tools_jobs.go lines 1816-1834).
-func TestCovStringArrayArg(t *testing.T) {
-	// Missing key.
-	got, err := stringArrayArg(map[string]any{}, "key")
-	if err != nil || got != nil {
-		t.Fatalf("missing key: got=%v, err=%v", got, err)
-	}
-
-	// Not an array.
-	_, err = stringArrayArg(map[string]any{"key": "val"}, "key")
-	if err == nil || !strings.Contains(err.Error(), "must be an array") {
-		t.Fatalf("expected array error, got %v", err)
-	}
-
-	// Valid.
-	got, err = stringArrayArg(map[string]any{"key": []any{"a", "b"}}, "key")
-	if err != nil || len(got) != 2 {
-		t.Fatalf("valid: got=%v, err=%v", got, err)
-	}
-
-	// Non-string value.
-	_, err = stringArrayArg(map[string]any{"key": []any{123}}, "key")
-	if err == nil || !strings.Contains(err.Error(), "must be strings") {
-		t.Fatalf("expected string error, got %v", err)
-	}
-}
-
-// TestCovWatchEventFilterArg covers watchEventFilterArg (session_tools_jobs.go lines 1786-1813).
-func TestCovWatchEventFilterArg(t *testing.T) {
-	// Missing key.
-	f, err := watchEventFilterArg(map[string]any{})
-	if err != nil || f != nil {
-		t.Fatalf("missing key: f=%v, err=%v", f, err)
-	}
-
-	// Not an object.
-	_, err = watchEventFilterArg(map[string]any{"event_filter": "val"})
-	if err == nil || !strings.Contains(err.Error(), "must be an object") {
-		t.Fatalf("expected object error, got %v", err)
-	}
-
-	// Non-string value.
-	_, err = watchEventFilterArg(map[string]any{"event_filter": map[string]any{"tool_name": 123}})
-	if err == nil || !strings.Contains(err.Error(), "must be a string") {
-		t.Fatalf("expected string error, got %v", err)
-	}
-
-	// Unknown field.
-	_, err = watchEventFilterArg(map[string]any{"event_filter": map[string]any{"bogus": "val"}})
-	if err == nil || !strings.Contains(err.Error(), "unknown event_filter field") {
-		t.Fatalf("expected unknown field error, got %v", err)
-	}
-
-	// Valid tool_name.
-	f, err = watchEventFilterArg(map[string]any{"event_filter": map[string]any{"tool_name": "exec_command"}})
-	if err != nil || f == nil || f.ToolName != "exec_command" {
-		t.Fatalf("tool_name: f=%v, err=%v", f, err)
-	}
-
-	// Valid status.
-	f, err = watchEventFilterArg(map[string]any{"event_filter": map[string]any{"status": "ok"}})
-	if err != nil || f == nil || f.Status != "ok" {
-		t.Fatalf("status: f=%v, err=%v", f, err)
-	}
-
-	// Both empty after trim → nil filter.
-	f, err = watchEventFilterArg(map[string]any{"event_filter": map[string]any{"tool_name": "  ", "status": ""}})
-	if err != nil || f != nil {
-		t.Fatalf("empty filter: f=%v, err=%v", f, err)
-	}
-}
-
-// TestCovWatchArgsFromToolArgs covers watchArgsFromToolArgs error paths
-// (session_tools_jobs.go lines 1725+).
-func TestCovWatchArgsFromToolArgs(t *testing.T) {
-	// Missing operation.
-	_, err := watchArgsFromToolArgs(map[string]any{})
-	if err == nil || !strings.Contains(err.Error(), "operation is required") {
-		t.Fatalf("expected operation error, got %v", err)
-	}
-
-	// Has target — rejected.
-	_, err = watchArgsFromToolArgs(map[string]any{"operation": "create", "target": "self"})
-	if err == nil || !strings.Contains(err.Error(), "uses source, not target") {
-		t.Fatalf("expected target error, got %v", err)
-	}
-
-	// Has send — rejected.
-	_, err = watchArgsFromToolArgs(map[string]any{"operation": "create", "send": map[string]any{}})
-	if err == nil || !strings.Contains(err.Error(), "send is not a public argument") {
-		t.Fatalf("expected send error, got %v", err)
-	}
-
-	// Has receiver_session_id — rejected.
-	_, err = watchArgsFromToolArgs(map[string]any{"operation": "create", "receiver_session_id": "sess"})
-	if err == nil || !strings.Contains(err.Error(), "derives its receiver") {
-		t.Fatalf("expected receiver error, got %v", err)
-	}
-
-	// Has receiver_delegate_id — rejected.
-	_, err = watchArgsFromToolArgs(map[string]any{"operation": "create", "receiver_delegate_id": "dlg"})
-	if err == nil || !strings.Contains(err.Error(), "derives its receiver") {
-		t.Fatalf("expected receiver error, got %v", err)
 	}
 }
 

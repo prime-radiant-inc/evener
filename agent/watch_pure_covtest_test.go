@@ -1,15 +1,15 @@
 package agent
 
 import (
-	"context"
 	"errors"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
 
 	"primeradiant.com/evener/agent/events"
-	"primeradiant.com/evener/agent/internal/delegatestore"
 	"primeradiant.com/evener/agent/internal/jobstore"
+	"primeradiant.com/evener/agent/provenance"
 )
 
 // ---- job_watch.go pure functions ----
@@ -17,8 +17,8 @@ import (
 // TestCovAvailableEventKindNames covers availableEventKindNames (job_watch.go line 29).
 func TestCovAvailableEventKindNames(t *testing.T) {
 	names := availableEventKindNames()
-	if len(names) != len(WatchEventKindNames) {
-		t.Fatalf("len = %d, want %d", len(names), len(WatchEventKindNames))
+	if !reflect.DeepEqual(names, WatchEventKindNames) {
+		t.Fatalf("event names = %v, want %v", names, WatchEventKindNames)
 	}
 	// Verify it returns a copy.
 	names[0] = "modified"
@@ -585,11 +585,12 @@ func TestCovInheritWatchLineage(t *testing.T) {
 	}
 	cfg = &watchConfig{watchID: "w_new", lineageWatchIDs: long}
 	got = inheritWatchLineage(cfg)
-	if len(got) > watchLineageCap {
-		t.Fatalf("over cap = %d, want at most %d", len(got), watchLineageCap)
+	if len(got) != watchLineageCap {
+		t.Fatalf("over cap = %d, want exactly %d", len(got), watchLineageCap)
 	}
-	if got[len(got)-1] != "w_new" {
-		t.Fatalf("last should be w_new: %v", got)
+	want := append(append([]string{}, long[len(long)-watchLineageCap+1:]...), "w_new")
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("retained lineage = %v, want most-recent lineage %v", got, want)
 	}
 }
 
@@ -708,9 +709,10 @@ func TestCovCloneJobRecord(t *testing.T) {
 // TestCovStringOutputResult covers stringOutputResult (jobs.go lines 2168-2173).
 func TestCovStringOutputResult(t *testing.T) {
 	// With error.
-	_, _, _, err := stringOutputResult(nil, 100, false, errors.New("read error"))
-	if err == nil {
-		t.Fatal("expected error")
+	wantErr := errors.New("read error")
+	out, total, truncated, err := stringOutputResult(nil, 100, true, wantErr)
+	if !errors.Is(err, wantErr) || out != "" || total != 100 || !truncated {
+		t.Fatalf("error result = (%q, %d, %v, %v)", out, total, truncated, err)
 	}
 
 	// Without error.
@@ -741,6 +743,22 @@ func TestCovCurrentCausalProvenance(t *testing.T) {
 	jm = &jobManager{}
 	if got := jm.currentCausalProvenance(); got != nil {
 		t.Fatal("nil provenance source should return nil")
+	}
+
+	source := &provenance.Causal{
+		WatchKeys:      []provenance.WatchKey{{WatchID: "watch_1", WatchGeneration: "gen_1"}},
+		Chain:          []provenance.Entry{{Kind: "watch", DeliveryID: "delivery_1"}},
+		ChainTruncated: true,
+	}
+	jm.currentProvenance = func() *provenance.Causal { return source }
+	got := jm.currentCausalProvenance()
+	if !reflect.DeepEqual(got, source) || got == source {
+		t.Fatalf("provenance snapshot = %#v, want independent %#v", got, source)
+	}
+	got.WatchKeys[0].WatchID = "changed"
+	got.Chain[0].DeliveryID = "changed"
+	if source.WatchKeys[0].WatchID != "watch_1" || source.Chain[0].DeliveryID != "delivery_1" {
+		t.Fatalf("mutating snapshot changed source: %#v", source)
 	}
 }
 
@@ -847,29 +865,6 @@ func TestCovDelegateQuietAttentionContent(t *testing.T) {
 	}
 }
 
-// TestCovDelegatePermanentStartFailure covers delegatePermanentStartFailure
-// (delegate_runtime.go lines 1800+).
-func TestCovDelegatePermanentStartFailure(t *testing.T) {
-	finish := delegatePermanentStartFailure(errors.New("boom"), "construction_failed")
-	if finish.outcome != delegatestore.OutcomeFailed {
-		t.Fatalf("outcome = %v", finish.outcome)
-	}
-	if finish.reason != "construction_failed" {
-		t.Fatalf("reason = %q", finish.reason)
-	}
-
-	// Nil error.
-	finish = delegatePermanentStartFailure(nil, "start_failed")
-	if finish.reason != "start_failed" {
-		t.Fatalf("nil err reason = %q", finish.reason)
-	}
-
-	// Very long error message → truncated to 512.
-	long := strings.Repeat("x", 600)
-	finish = delegatePermanentStartFailure(errors.New(long), "start_failed")
-	_ = finish
-}
-
 // ---- subagents.go pure functions ----
 
 // TestCovCommunicateNudge covers communicateNudge (subagents.go lines 1475-1480).
@@ -913,6 +908,16 @@ func TestCovChildFatalRunGated(t *testing.T) {
 	s = &Session{}
 	if s.childFatalRunGated("") {
 		t.Fatal("empty child should return false")
+	}
+
+	s.subagents = newSubagentManager(nil, 1)
+	child := &subagent{id: "child1", fatalRunGated: true}
+	s.subagents.track(child)
+	if !s.childFatalRunGated("child1") {
+		t.Fatal("tracked fatal-gated child should return true")
+	}
+	if s.childFatalRunGated("other") {
+		t.Fatal("unknown child should return false")
 	}
 }
 
@@ -975,38 +980,5 @@ func TestCovKeepIncomingDescendantRow(t *testing.T) {
 	// Seen, neither is owner → don't keep (keep shallower).
 	if keepIncomingDescendantRow(true, false, false) {
 		t.Fatal("non-owner vs non-owner should not keep")
-	}
-}
-
-// ---- session_queue.go ----
-
-// TestCovNextTurnContext covers nextTurnContext (session_queue.go lines 781-790).
-func TestCovNextTurnContext(t *testing.T) {
-	rootCtx := context.Background()
-
-	// Nil nextCtx → returns rootCtx.
-	cfg := queuedInputDrainConfig{rootCtx: rootCtx}
-	if cfg.nextTurnContext() != rootCtx {
-		t.Fatal("nil nextCtx should return rootCtx")
-	}
-
-	// nextCtx returns non-nil → returns that.
-	called := false
-	cfg.nextCtx = func(ctx context.Context) (context.Context, context.CancelFunc) {
-		called = true
-		return context.Background(), nil
-	}
-	got := cfg.nextTurnContext()
-	if !called {
-		t.Fatal("nextCtx should be called")
-	}
-	_ = got
-
-	// nextCtx returns nil → returns rootCtx.
-	cfg.nextCtx = func(ctx context.Context) (context.Context, context.CancelFunc) {
-		return nil, nil
-	}
-	if cfg.nextTurnContext() != rootCtx {
-		t.Fatal("nil from nextCtx should return rootCtx")
 	}
 }

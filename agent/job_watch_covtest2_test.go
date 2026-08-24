@@ -3,11 +3,13 @@ package agent
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
 
 	"primeradiant.com/evener/agent/events"
+	clockpkg "primeradiant.com/evener/agent/internal/clock"
 	"primeradiant.com/evener/agent/internal/jobstore"
 	"primeradiant.com/evener/agent/internal/tool"
 	"primeradiant.com/evener/agent/provenance"
@@ -223,14 +225,26 @@ func TestCovRemoveRuntimePendingWatchSend(t *testing.T) {
 // TestCovChildResumable covers childResumable (job_watch.go lines 4406-4409)
 // and directStableDelegateForChildSession (lines 4411-4421).
 func TestCovChildResumable(t *testing.T) {
-	s := &Session{}
 	// nil session / no controller — returns false.
+	s := &Session{}
 	if s.childResumable("child_1") {
 		t.Fatal("nil controller should return false")
 	}
 	// Empty child session ID.
 	if s.childResumable("") {
 		t.Fatal("empty child ID should return false")
+	}
+
+	// A settled direct delegate whose durable descriptor is resumable is found
+	// by child session ID, not by delegate ID.
+	s = newSession(t, withoutGitSnapshot())
+	now := s.clock.Now()
+	seedStableToolDelegate(t, s, "dlg_resumable", "", now.Add(-time.Second), now)
+	if !s.childResumable("child-dlg_resumable") {
+		t.Fatal("resumable direct child should return true")
+	}
+	if s.childResumable("dlg_resumable") {
+		t.Fatal("delegate ID should not be accepted as a child session ID")
 	}
 }
 
@@ -452,17 +466,14 @@ func TestCovInspectWatchByID(t *testing.T) {
 		t.Fatal("source should be non-empty for a live watch")
 	}
 
-	// Inspect a watch from history (after clearing).
-	jm.mu.Lock()
-	for key, cfg := range jm.watches {
-		jm.recordWatchEndedLocked(key, cfg, "test_ended")
+	// Clear the watch so the live entry cannot mask the history lookup.
+	if _, err := jm.clearWatchByID(watchID); err != nil {
+		t.Fatalf("clearWatchByID: %v", err)
 	}
-	jm.mu.Unlock()
 
 	result = jm.inspectWatchByID(watchID)
-	// The watch should now be found in history.
-	if result.WatchID != watchID {
-		t.Fatalf("history watch_id = %q, want %q", result.WatchID, watchID)
+	if result.WatchID != watchID || result.Watching || result.Source != "job_inspect" || result.EndReason != "cleared" {
+		t.Fatalf("historical watch = %+v, want cleared job_inspect watch", result)
 	}
 }
 
@@ -551,14 +562,24 @@ func TestCovSettleWatchSendLocked(t *testing.T) {
 		t.Fatalf("settledOrder len = %d, want 2", len(cfg.settledOrder))
 	}
 
-	// Fill beyond the cap to test eviction.
+	// Fill beyond the cap with distinct keys to test actual eviction.
 	for i := range defaultWatchSendPendingCap + 5 {
-		k := jobstore.WatchSendKey{WatchTarget: "job_overflow"}
+		k := jobstore.WatchSendKey{WatchTarget: fmt.Sprintf("job_overflow_%d", i)}
 		settleWatchSendLocked(cfg, k, uint64(i))
 	}
-	// The settledOrder should be capped.
-	if len(cfg.settledOrder) > defaultWatchSendPendingCap {
-		t.Fatalf("settledOrder len = %d, should be <= %d", len(cfg.settledOrder), defaultWatchSendPendingCap)
+	if len(cfg.settledOrder) != defaultWatchSendPendingCap || len(cfg.settledUpdateSeq) != defaultWatchSendPendingCap {
+		t.Fatalf("settled state sizes = (%d, %d), want (%d, %d)", len(cfg.settledOrder), len(cfg.settledUpdateSeq), defaultWatchSendPendingCap, defaultWatchSendPendingCap)
+	}
+	if _, ok := cfg.settledUpdateSeq[key1]; ok {
+		t.Fatal("oldest settled key was not evicted")
+	}
+	if _, ok := cfg.settledUpdateSeq[key2]; ok {
+		t.Fatal("second-oldest settled key was not evicted")
+	}
+	wantFirst := jobstore.WatchSendKey{WatchTarget: "job_overflow_5"}
+	wantLast := jobstore.WatchSendKey{WatchTarget: fmt.Sprintf("job_overflow_%d", defaultWatchSendPendingCap+4)}
+	if cfg.settledOrder[0] != wantFirst || cfg.settledOrder[len(cfg.settledOrder)-1] != wantLast {
+		t.Fatalf("retained settled range = (%+v, %+v), want (%+v, %+v)", cfg.settledOrder[0], cfg.settledOrder[len(cfg.settledOrder)-1], wantFirst, wantLast)
 	}
 }
 
@@ -748,8 +769,18 @@ func TestCovAppendWatchFrameJobRead(t *testing.T) {
 	}
 }
 
+type waitStartedClock struct {
+	clockpkg.Clock
+	started chan<- struct{}
+}
+
+func (c waitStartedClock) NewTimer(d time.Duration) clockpkg.Timer {
+	c.started <- struct{}{}
+	return c.Clock.NewTimer(d)
+}
+
 // TestCovWaitForJobDone covers waitForJobDone (session_tools_jobs.go lines 1902-1917).
-// It uses the clock abstraction so no real sleep is needed.
+// It synchronizes on timer creation to prove the wait begins before completion.
 func TestCovWaitForJobDone(t *testing.T) {
 	jm := newTestJM(t)
 
@@ -758,22 +789,31 @@ func TestCovWaitForJobDone(t *testing.T) {
 		t.Fatal("non-existent job should return true (already done)")
 	}
 
-	// Create a running job and immediately finalize it — waitForJobDone should
-	// return true because the done channel closes.
+	// Create a running job and start the wait while it is still running.
 	rec, err := jm.createShell(createShellOpts{Command: "x"})
 	if err != nil {
 		t.Fatalf("createShell: %v", err)
 	}
 	jobID := rec.JobID
-	code := 0
-	done := make(chan struct{})
+	started := make(chan struct{}, 1)
+	jm.clock = waitStartedClock{Clock: jm.clock, started: started}
+	result := make(chan bool, 1)
 	go func() {
-		jm.finalize(jobID, jobstore.StatusCompleted, "done", &code)
-		close(done)
+		result <- waitForJobDone(context.Background(), jm, jobID, 5*time.Second)
 	}()
-	<-done
-	if !waitForJobDone(context.Background(), jm, jobID, 5*time.Second) {
-		t.Fatal("finalized job should return true")
+	<-started
+	select {
+	case got := <-result:
+		t.Fatalf("wait returned %v before job completion", got)
+	default:
+	}
+
+	code := 0
+	if err := jm.finalize(jobID, jobstore.StatusCompleted, "done", &code); err != nil {
+		t.Fatalf("finalize: %v", err)
+	}
+	if got := <-result; !got {
+		t.Fatal("wait should return true when the running job completes")
 	}
 }
 

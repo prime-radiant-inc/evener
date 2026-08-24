@@ -11,7 +11,6 @@ import (
 	"github.com/santhosh-tekuri/jsonschema/v5"
 
 	"primeradiant.com/evener/agent/internal/jobstore"
-	"primeradiant.com/evener/agent/provenance"
 	"primeradiant.com/evener/identifier"
 )
 
@@ -20,6 +19,8 @@ import (
 // complete-or-handle kept shells.
 func TestCovFinalizeWithRunNoNotification(t *testing.T) {
 	jm := newTestJM(t)
+	var notifications []jobNotification
+	jm.enqueue = func(n jobNotification) { notifications = append(notifications, n) }
 	rec, err := jm.createShell(createShellOpts{Command: "x"})
 	if err != nil {
 		t.Fatalf("createShell: %v", err)
@@ -38,6 +39,17 @@ func TestCovFinalizeWithRunNoNotification(t *testing.T) {
 	jm.mu.Unlock()
 	if stillRunning {
 		t.Fatal("job should be removed from running after no-notification finalize")
+	}
+	records, err := jm.store.Load()
+	if err != nil {
+		t.Fatalf("load finalized job: %v", err)
+	}
+	got := records[jobID]
+	if got == nil || got.Status != jobstore.StatusCompleted || got.Reason != "exit_zero" || got.ExitCode == nil || *got.ExitCode != 0 {
+		t.Fatalf("finalized record = %+v, want completed exit_zero with exit code 0", got)
+	}
+	if got.NotifyState != jobstore.NotifyNotArmed || len(notifications) != 0 {
+		t.Fatalf("no-notification finalize produced notify state %q and %d enqueues", got.NotifyState, len(notifications))
 	}
 }
 
@@ -117,6 +129,16 @@ func TestCovStopChildren(t *testing.T) {
 	}
 	if len(stopped) != 2 {
 		t.Fatalf("want 2 stopped, got %d", len(stopped))
+	}
+	stoppedByID := make(map[string]*jobstore.JobRecord, len(stopped))
+	for _, rec := range stopped {
+		stoppedByID[rec.JobID] = rec
+	}
+	for _, id := range []string{rec1.JobID, rec2.JobID} {
+		got := stoppedByID[id]
+		if got == nil || got.Status != jobstore.StatusCancelled || got.Reason != "stopped_by_parent" || got.ParentJobID != "parent_job_1" {
+			t.Fatalf("stopped child %s = %+v, want parent-cancelled child of parent_job_1", id, got)
+		}
 	}
 }
 
@@ -307,10 +329,15 @@ func TestCovRearmTerminalNotificationDecision(t *testing.T) {
 // (jobs.go lines 2094-2155).
 func TestCovArmPendingTerminalNotifications(t *testing.T) {
 	jm := newTestJM(t)
+	var notifications []jobNotification
+	jm.enqueue = func(n jobNotification) { notifications = append(notifications, n) }
 
 	// No terminal jobs — no error.
 	if err := jm.armPendingTerminalNotifications(); err != nil {
 		t.Fatalf("no terminal jobs: %v", err)
+	}
+	if len(notifications) != 0 {
+		t.Fatalf("empty restore enqueued %d notifications", len(notifications))
 	}
 
 	// Create a terminal job with NotifyNotArmed state.
@@ -350,25 +377,16 @@ func TestCovArmPendingTerminalNotifications(t *testing.T) {
 		t.Fatalf("appendEvent pending: %v", err)
 	}
 
-	// armPendingTerminalNotifications should process the terminal job.
-	// Since jm.enqueue is nil (from newTestJM), it just processes silently.
+	// Restore should re-enqueue the exact still-pending terminal notification.
 	if err := jm.armPendingTerminalNotifications(); err != nil {
 		t.Fatalf("armPendingTerminalNotifications: %v", err)
 	}
-}
-
-// TestCovArmPendingTerminalNotifications_WithEnqueue covers the enqueue path.
-func TestCovArmPendingTerminalNotifications_WithEnqueue(t *testing.T) {
-	jm := newTestJM(t)
-	var notifications []jobNotification
-	jm.enqueue = func(n jobNotification) { notifications = append(notifications, n) }
-
-	// No terminal jobs — no notifications.
-	if err := jm.armPendingTerminalNotifications(); err != nil {
-		t.Fatalf("no terminal: %v", err)
+	if len(notifications) != 1 {
+		t.Fatalf("restore enqueued %d notifications, want 1", len(notifications))
 	}
-	if len(notifications) != 0 {
-		t.Fatalf("expected 0 notifications, got %d", len(notifications))
+	got := notifications[0]
+	if got.JobID != jobID || got.JobType != string(jobstore.JobShell) || got.Status != string(jobstore.StatusCompleted) || got.Reason != "done" || got.ExitCode == nil || *got.ExitCode != 0 {
+		t.Fatalf("restored notification = %+v, want completed shell %s", got, jobID)
 	}
 }
 
@@ -431,57 +449,6 @@ func TestCovValidatedOutputStatsForRecord(t *testing.T) {
 	}
 }
 
-// TestCovStringOutputResult covers stringOutputResult (jobs.go lines 2168-2173).
-func TestCovStringOutputResult2(t *testing.T) {
-	// Error case.
-	out, total, truncated, err := stringOutputResult(nil, 100, true, errors.New("read error"))
-	if err == nil || out != "" {
-		t.Fatalf("error case: out=%q err=%v", out, err)
-	}
-	if total != 100 || truncated != true {
-		t.Fatalf("error case: total=%d truncated=%v", total, truncated)
-	}
-
-	// Success case.
-	out, total, truncated, err = stringOutputResult([]byte("hello"), 5, false, nil)
-	if err != nil || out != "hello" {
-		t.Fatalf("success case: out=%q err=%v", out, err)
-	}
-	if total != 5 || truncated != false {
-		t.Fatalf("success case: total=%d truncated=%v", total, truncated)
-	}
-}
-
-// TestCovCloneJobRecord covers cloneJobRecord (jobs.go lines 2355+).
-func TestCovCloneJobRecord2(t *testing.T) {
-	original := &jobstore.JobRecord{
-		JobID:          "job_test",
-		Type:           jobstore.JobShell,
-		Status:         jobstore.StatusCompleted,
-		Reason:         "done",
-		Command:        "echo hi",
-		OwnerSessionID: "sess_1",
-	}
-	cloned := cloneJobRecord(original)
-	if cloned == original {
-		t.Fatal("clone should not be the same pointer")
-	}
-	if cloned.JobID != original.JobID || cloned.Type != original.Type || cloned.Status != original.Status {
-		t.Fatalf("clone fields mismatch: %+v", cloned)
-	}
-
-	// Mutating the clone should not affect the original.
-	cloned.Reason = "changed"
-	if original.Reason == "changed" {
-		t.Fatal("mutating clone should not affect original")
-	}
-
-	// Nil record — should return nil.
-	if cloneJobRecord(nil) != nil {
-		t.Fatal("nil record should clone to nil")
-	}
-}
-
 // TestCovTailOutputFileWithOpen covers tailOutputFileWithOpen
 // (jobs.go lines 2252+): negative tailBytes error and open error.
 func TestCovTailOutputFileWithOpen(t *testing.T) {
@@ -521,17 +488,8 @@ func TestCovTailOutputFileWithOpen(t *testing.T) {
 	if truncated {
 		t.Fatal("should not be truncated")
 	}
-	if !strings.Contains(out, "line3") {
-		t.Fatalf("output should contain last line: %q", out)
-	}
-}
-
-// TestCovJobIDForSession validates the job ID construction.
-func TestCovJobsDir_TempDirFallback(t *testing.T) {
-	// Verify the temp dir fallback path uses the correct separator.
-	got := jobsDir("", "SESS")
-	if !strings.HasSuffix(got, filepath.Join("evener-jobs", "SESS")) {
-		t.Fatalf("temp dir fallback = %q", got)
+	if out != content {
+		t.Fatalf("output = %q, want complete content %q", out, content)
 	}
 }
 
@@ -554,35 +512,6 @@ func TestCovForwardDisabled(t *testing.T) {
 	run.forwardDisabled = true
 	if !jm.forwardDisabled(run) {
 		t.Fatal("forwardDisabled=true should return true")
-	}
-}
-
-// TestCovCurrentCausalProvenance covers currentCausalProvenance
-// (jobs.go lines 283-288): nil manager, nil source, and non-nil source.
-func TestCovCurrentCausalProvenance2(t *testing.T) {
-	// nil manager.
-	var jm *jobManager
-	if jm.currentCausalProvenance() != nil {
-		t.Fatal("nil manager should return nil")
-	}
-
-	// Manager with nil source.
-	jm = &jobManager{}
-	if jm.currentCausalProvenance() != nil {
-		t.Fatal("nil source should return nil")
-	}
-
-	// Manager with non-nil source.
-	called := false
-	jm = &jobManager{
-		currentProvenance: func() *provenance.Causal {
-			called = true
-			return nil
-		},
-	}
-	jm.currentCausalProvenance()
-	if !called {
-		t.Fatal("currentProvenance should be called")
 	}
 }
 
@@ -808,16 +737,6 @@ func TestCovCreateJobOutputForID_ValidID(t *testing.T) {
 	// Verify the file exists.
 	if _, err := os.Stat(path); err != nil {
 		t.Fatalf("output file should exist: %v", err)
-	}
-}
-
-// TestCovJobsDir covers jobsDir (already partially covered, but add the temp
-// dir path structure assertion).
-func TestCovJobsDir_StateDir(t *testing.T) {
-	got := jobsDir("/state/dir", "SESS")
-	expected := "/state/dir/sessions/SESS"
-	if got != expected {
-		t.Fatalf("jobsDir = %q, want %q", got, expected)
 	}
 }
 
