@@ -33,7 +33,6 @@ func TestTaskTool_AppendEmitsTaskUpdated(t *testing.T) {
 		taskGuard: taskGuard{
 			getOrCreateTaskStore: func() *taskpkg.TaskStore { return store },
 			markUsed:             func() {},
-			setReasoningEffort:   func(string) {},
 		},
 	}
 	reg := tool.NewRegistry()
@@ -79,7 +78,6 @@ func TestTaskTool_UpdateToDoneEmitsTaskUpdated(t *testing.T) {
 		taskGuard: taskGuard{
 			getOrCreateTaskStore: func() *taskpkg.TaskStore { return store },
 			markUsed:             func() {},
-			setReasoningEffort:   func(string) {},
 		},
 	}
 	reg := tool.NewRegistry()
