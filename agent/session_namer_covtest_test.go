@@ -158,7 +158,7 @@ func TestSuppressSessionNamerIfQuotaExhausted_NonQuota(t *testing.T) {
 	if s.suppressSessionNamerIfQuotaExhausted(nil) {
 		t.Fatal("expected false for nil error")
 	}
-	if s.suppressSessionNamerIfQuotaExhausted(errAbort("some error")) {
+	if s.suppressSessionNamerIfQuotaExhausted(abortError("some error")) {
 		t.Fatal("expected false for non-quota error")
 	}
 }
