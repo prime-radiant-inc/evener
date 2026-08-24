@@ -299,8 +299,8 @@ func TestStableDelegateTools_LiveSteerRejectsIgnoredWait(t *testing.T) {
 		Name:      "delegate_send",
 		Arguments: json.RawMessage(`{"to":"dlg_live_wait","message":"steer now","max_wait_ms":1000}`),
 	})
-	if !call.IsError || !strings.Contains(call.Output, "max_wait_ms") {
-		t.Fatalf("live steer with ignored max_wait_ms was not rejected: %#v", call)
+	if !call.IsError || call.Output != "target_busy" {
+		t.Fatalf("live steer with positive max_wait_ms was not rejected as busy: %#v", call)
 	}
 }
 

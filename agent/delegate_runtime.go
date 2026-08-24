@@ -789,26 +789,24 @@ func (runtime delegateRuntime) send(ctx context.Context, delegateID, message str
 		return failed(err)
 	}
 	if maxWaitMS > 0 {
-		canSteer, steerCheckErr := s.delegateController.canSteer(actor, delegateID)
-		if steerCheckErr != nil && !errors.Is(steerCheckErr, errDelegateTargetBusy) {
-			return failed(steerCheckErr)
-		}
-		if canSteer {
-			return failed(errors.New("invalid_request: max_wait_ms is not supported when steering a running delegate; no message was delivered"))
+		if observe := s.cfg.testOnly.delegateSendBeforePositiveWaitAdmission; observe != nil {
+			observe()
 		}
 	}
-	if plans, steerErr := s.delegateController.Steer(ctx, actor, delegateID, message); steerErr == nil {
-		_ = s.executeDelegateMutationPlans(plans)
-		return stableDelegateSendOutcome{result: sendMessageResult{
-			Target:              delegateID,
-			DelegateID:          delegateID,
-			Type:                delegateResourceType,
-			Status:              jobstore.StatusRunning,
-			RunningInBackground: true,
-			Action:              "steered",
-		}}
-	} else if !errors.Is(steerErr, errDelegateTargetBusy) {
-		return failed(steerErr)
+	if maxWaitMS == 0 {
+		if plans, steerErr := s.delegateController.Steer(ctx, actor, delegateID, message); steerErr == nil {
+			_ = s.executeDelegateMutationPlans(plans)
+			return stableDelegateSendOutcome{result: sendMessageResult{
+				Target:              delegateID,
+				DelegateID:          delegateID,
+				Type:                delegateResourceType,
+				Status:              jobstore.StatusRunning,
+				RunningInBackground: true,
+				Action:              "steered",
+			}}
+		} else if !errors.Is(steerErr, errDelegateTargetBusy) {
+			return failed(steerErr)
+		}
 	}
 	reservation, err := s.delegateController.ReserveStart(actor, delegateID)
 	if err != nil {

@@ -227,7 +227,7 @@ own `transcript_ref`, the `delegate_send` result, or `delegates.jsonl`.
   `action:"steered"` against the same `delegate_id` you sent to, and no
   successor generation.
   The behaviour is pinned by
-  `agent/delegate_resource_tools_test.go#TestStableDelegateTools_LiveSteerReportsExactWaitIgnoredReason`,
+  `agent/delegate_resource_tools_test.go#TestStableDelegateTools_LiveSteerRejectsIgnoredWait`,
   which asserts the `wait_ignored_reason` a live steer reports; note it
   does NOT assert `action` or the delegate identity, so do not read it as
   a pin on the whole result shape. Scoring a steer as a failure here

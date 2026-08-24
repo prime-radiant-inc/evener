@@ -276,6 +276,9 @@ type testConfig struct {
 	// delegateInlineWaitReady observes the exact context and duration supplied to
 	// a stable delegate inline wait. Nil preserves the production wait.
 	delegateInlineWaitReady func(context.Context, time.Duration)
+	// delegateSendBeforePositiveWaitAdmission observes the boundary immediately
+	// before a positive-wait send reserves its start. Nil preserves production.
+	delegateSendBeforePositiveWaitAdmission func()
 	// delegateAttentionReadFold replaces only resident attention verification
 	// reads. Nil preserves the production transcript fold.
 	delegateAttentionReadFold func(string, string) (delegateAttentionFold, error)

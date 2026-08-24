@@ -105,28 +105,6 @@ func (c *delegateTreeController) BeginSteerPersistence(actor delegateActor, dele
 	return c.beginSteerPersistenceLocked(delegateID, nil)
 }
 
-// canSteer reports whether a target is currently on the live steer path without
-// admitting or persisting a message. Callers use it to reject wait requests
-// that live steering cannot honor before any delivery side effect occurs.
-func (c *delegateTreeController) canSteer(actor delegateActor, delegateID string) (bool, error) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	if err := c.authorizeMutationLocked(actor, delegateID); err != nil {
-		return false, err
-	}
-	live := c.live[delegateID]
-	if live == nil || live.binding == nil || live.binding.runtime == nil {
-		return false, errDelegateTargetBusy
-	}
-	if _, _, err := c.admitLeaseLocked(live.binding.lease, delegatestore.PhaseRunning); err != nil {
-		return false, err
-	}
-	if c.hasSettlementClaimLocked(live.binding.lease) {
-		return false, errDelegateTargetBusy
-	}
-	return true, nil
-}
-
 func (c *delegateTreeController) beginCallerSteerPersistence(actor delegateActor, p *provenance.Causal) (*delegateSteeringClaim, *Session, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
