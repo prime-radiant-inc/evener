@@ -3,8 +3,11 @@ package hub
 import (
 	"errors"
 	"fmt"
+	"net/url"
 	"os"
 	"path/filepath"
+	"strconv"
+	"strings"
 	"time"
 
 	"github.com/BurntSushi/toml"
@@ -27,6 +30,7 @@ type ProviderConfig struct {
 // DefaultConfigPath).
 type Config struct {
 	Addr               string                          `toml:"addr"`
+	MobileBaseURL      string                          `toml:"mobile_base_url"`
 	HubStateRoot       string                          `toml:"hub_state_root"`
 	StateGlob          string                          `toml:"state_glob"`
 	RunDir             string                          `toml:"run_dir"`
@@ -117,7 +121,48 @@ func LoadConfig(path string) (Config, error) {
 		return cfg, fmt.Errorf("parse config: %w", err)
 	}
 	applyConfigDefaults(&cfg)
+	if err := validateMobileBaseURL(cfg.MobileBaseURL); err != nil {
+		return cfg, fmt.Errorf("validate mobile_base_url: %w", err)
+	}
 	return cfg, nil
+}
+
+// validateMobileBaseURL accepts only an HTTP(S) origin. The pairing endpoint
+// appends the capability path and token itself, so a configured path or query
+// would either be discarded or accidentally extend the public contract.
+func validateMobileBaseURL(raw string) error {
+	if raw == "" {
+		return nil
+	}
+	u, err := url.ParseRequestURI(raw)
+	if err != nil {
+		return fmt.Errorf("must be an http(s) origin: %w", err)
+	}
+	if u.Scheme != "http" && u.Scheme != "https" {
+		return errors.New("must use http or https")
+	}
+	if u.Host == "" || u.Hostname() == "" || u.User != nil || u.Opaque != "" {
+		return errors.New("must be an origin without userinfo")
+	}
+	if u.Path != "" && u.Path != "/" {
+		return errors.New("must not include a path")
+	}
+	if u.RawQuery != "" || u.ForceQuery {
+		return errors.New("must not include a query")
+	}
+	if u.Fragment != "" {
+		return errors.New("must not include a fragment")
+	}
+	if strings.HasSuffix(u.Host, ":") {
+		return errors.New("port must not be empty")
+	}
+	if port := u.Port(); port != "" {
+		p, err := strconv.Atoi(port)
+		if err != nil || p < 1 || p > 65535 {
+			return errors.New("port must be between 1 and 65535")
+		}
+	}
+	return nil
 }
 
 func applyConfigDefaults(cfg *Config) {
