@@ -82,6 +82,24 @@ func (s *Session) parentSandboxModeNet() (sandbox.Mode, bool) {
 	return sandbox.ModeOff, true
 }
 
+// readOnlyDelegateSandbox returns the enforced box for a structured read-only
+// delegate scope. A restricted parent already has a narrower read surface than
+// ModeReadOnly, so the two modes are incomparable; in that case the child keeps
+// ModeRestricted and removes every persistent write root instead of widening its
+// reads. The ordinary off/workspace-write/read-only parent cases can safely
+// tighten to ModeReadOnly.
+func (s *Session) readOnlyDelegateSandbox() (*sandbox.SandboxPolicy, error) {
+	parentMode, parentNetwork := s.parentSandboxModeNet()
+	if parentMode == sandbox.ModeRestricted {
+		return &sandbox.SandboxPolicy{
+			Mode:         sandbox.ModeRestricted,
+			WriteBlocked: true,
+			Network:      &parentNetwork,
+		}, nil
+	}
+	return resolveDelegateSandboxRequest(sandbox.ModeReadOnly.String(), nil, parentMode, parentNetwork)
+}
+
 // resolveDelegateSandboxRequest turns a delegate's (sandbox, sandbox_net) request
 // plus the parent's effective (mode, network) into the policy to enforce, or an
 // invalid_request error. It returns (nil, nil) when NEITHER arg is set — the
@@ -239,6 +257,7 @@ func sandboxSnapshotFromInputs(in sandbox.SandboxPolicy) *delegatestore.SandboxS
 	}
 	snap := &delegatestore.SandboxSnapshot{
 		Mode:               in.Mode.String(),
+		WriteBlocked:       in.WriteBlocked,
 		DenylistAdd:        append([]string(nil), in.DenylistAdd...),
 		DenylistRemove:     append([]string(nil), in.DenylistRemove...),
 		ExtraWritableRoots: append([]string(nil), in.ExtraWritableRoots...),
@@ -262,6 +281,7 @@ func cloneSandboxSnapshot(in *delegatestore.SandboxSnapshot) *delegatestore.Sand
 	}
 	out := &delegatestore.SandboxSnapshot{
 		Mode:               in.Mode,
+		WriteBlocked:       in.WriteBlocked,
 		DenylistAdd:        append([]string(nil), in.DenylistAdd...),
 		DenylistRemove:     append([]string(nil), in.DenylistRemove...),
 		ExtraWritableRoots: append([]string(nil), in.ExtraWritableRoots...),
@@ -290,6 +310,7 @@ func sandboxPolicyFromSnapshot(snap *delegatestore.SandboxSnapshot) (sandbox.San
 	}
 	pol := sandbox.SandboxPolicy{
 		Mode:               mode,
+		WriteBlocked:       snap.WriteBlocked,
 		DenylistAdd:        append([]string(nil), snap.DenylistAdd...),
 		DenylistRemove:     append([]string(nil), snap.DenylistRemove...),
 		ExtraWritableRoots: append([]string(nil), snap.ExtraWritableRoots...),

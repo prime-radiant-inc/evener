@@ -1135,11 +1135,20 @@ func (runtime delegateRuntime) create(ctx context.Context, args delegateArgs) de
 		s.emitDiagnosticWarning(*selection.warning)
 	}
 	var requestedSandbox *sandbox.SandboxPolicy
-	if strings.TrimSpace(args.Sandbox) != "" || args.SandboxNet != nil {
+	explicitSandbox := strings.TrimSpace(args.Sandbox) != "" || args.SandboxNet != nil
+	if explicitSandbox {
 		parentMode, parentNetwork := s.parentSandboxModeNet()
 		requestedSandbox, err = resolveDelegateSandboxRequest(args.Sandbox, args.SandboxNet, parentMode, parentNetwork)
 		if err != nil {
 			return delegateStartFailed(err)
+		}
+	} else {
+		allTools, allowedTools, _ := baseSubagentToolPolicy(selection.agent, args.DelegationAllowance > 0)
+		if subagentToolScopeIsReadOnly(allTools, allowedTools) {
+			requestedSandbox, err = s.readOnlyDelegateSandbox()
+			if err != nil {
+				return delegateStartFailed(fmt.Errorf("read-only delegate sandbox: %w", err))
+			}
 		}
 	}
 	descriptor, worktreeProject, err := runtime.describe(ctx, args, task, isolationName, requestedSandbox, selection)
@@ -1371,6 +1380,7 @@ func stableDelegateSandboxSnapshot(policy *sandbox.SandboxPolicy) *delegatestore
 	}
 	result := &delegatestore.SandboxSnapshot{
 		Mode:               policy.Mode.String(),
+		WriteBlocked:       policy.WriteBlocked,
 		DenylistAdd:        append([]string(nil), policy.DenylistAdd...),
 		DenylistRemove:     append([]string(nil), policy.DenylistRemove...),
 		ExtraWritableRoots: append([]string(nil), policy.ExtraWritableRoots...),
@@ -1653,6 +1663,7 @@ func sandboxPolicyFromStableSnapshot(snapshot *delegatestore.SandboxSnapshot) *s
 	}
 	policy := &sandbox.SandboxPolicy{
 		Mode:               mode,
+		WriteBlocked:       snapshot.WriteBlocked,
 		DenylistAdd:        append([]string(nil), snapshot.DenylistAdd...),
 		DenylistRemove:     append([]string(nil), snapshot.DenylistRemove...),
 		ExtraWritableRoots: append([]string(nil), snapshot.ExtraWritableRoots...),
