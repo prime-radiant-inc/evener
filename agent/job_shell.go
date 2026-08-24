@@ -726,17 +726,6 @@ func (jm *jobManager) shellTerminalWithSignal(run *runningJob, exitCode int, sig
 	return status, reason, &code
 }
 
-// shellTerminalDecision is the pure terminal-classification core of shellTerminal:
-// given a shell run's stop request (if any) and its process outcome, it maps to the
-// terminal status and reason. Precedence: an explicit stop wins over everything,
-// then a runtime timeout, then a wait error, then the exit code (zero = completed,
-// negative = signal-killed, other non-zero = failed). It takes only value snapshots
-// (the caller reads run.stopStatus under jm.mu; the exit-code passthrough stays in
-// the wrapper), so the classification is fuzzable in isolation.
-func shellTerminalDecision(stopStatus jobstore.Status, stopReason string, exitCode int, timedOut bool, waitErr error) (jobstore.Status, string) {
-	return shellTerminalDecisionWithSignal(stopStatus, stopReason, exitCode, "", timedOut, waitErr)
-}
-
 func shellTerminalDecisionWithSignal(stopStatus jobstore.Status, stopReason string, exitCode int, signalName string, timedOut bool, waitErr error) (jobstore.Status, string) {
 	if stopStatus != "" {
 		return stopStatus, stopReason
