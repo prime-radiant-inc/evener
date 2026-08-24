@@ -169,7 +169,6 @@ func (g readGuard) ReadBeforeWriteWarning(path string) string {
 type taskGuard struct {
 	getOrCreateTaskStore func() *taskpkg.TaskStore
 	markUsed             func()
-	setReasoningEffort   func(effort string)
 }
 
 func (g taskGuard) Store() *taskpkg.TaskStore { return g.getOrCreateTaskStore() }
@@ -177,8 +176,6 @@ func (g taskGuard) Store() *taskpkg.TaskStore { return g.getOrCreateTaskStore() 
 // MarkUsed records that the task_list tool was invoked this round (updates the
 // reminder counters under s.mu).
 func (g taskGuard) MarkUsed() { g.markUsed() }
-
-func (g taskGuard) SetReasoningEffort(effort string) { g.setReasoningEffort(effort) }
 
 // goalGuard is a thin lazy-accessor facade over the session's goal store.
 // The goal store carries its own mutex (unlike taskGuard which uses s.mu).
@@ -224,7 +221,6 @@ func newToolDeps(s *Session) *toolDeps {
 				s.taskToolLastRound = s.totalRounds
 				s.mu.Unlock()
 			},
-			setReasoningEffort: s.SetReasoningEffort,
 		},
 		blockingDelegateIDs: func() []string {
 			if s.delegateController == nil {

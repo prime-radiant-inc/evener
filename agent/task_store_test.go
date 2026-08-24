@@ -528,6 +528,10 @@ func TestTaskListSchema_ReasoningEffortEnumPerProvider(t *testing.T) {
 			if got := tc.profile.ReasoningEffortLevels(); !reflect.DeepEqual(got, tc.want) {
 				t.Fatalf("ReasoningEffortLevels: got %v, want %v", got, tc.want)
 			}
+			// The schema enum additionally carries the "inherit" sentinel so
+			// strict-mode providers (which force-require the property) let the
+			// model decline to override the session's effort.
+			wantEnum := append(append([]string(nil), tc.want...), "inherit")
 			// The enum should surface in the task_list update schema.
 			var td *llm.ToolDefinition
 			for i := range tc.profile.ToolDefinitions() {
@@ -550,8 +554,8 @@ func TestTaskListSchema_ReasoningEffortEnumPerProvider(t *testing.T) {
 			if !ok {
 				t.Fatalf("append enum missing from reasoning_effort schema: %v", appendEffort)
 			}
-			if !reflect.DeepEqual(appendEnum, tc.want) {
-				t.Fatalf("append schema enum: got %v, want %v", appendEnum, tc.want)
+			if !reflect.DeepEqual(appendEnum, wantEnum) {
+				t.Fatalf("append schema enum: got %v, want %v", appendEnum, wantEnum)
 			}
 			gotTypes, ok := taskProps["type"].(map[string]any)["enum"].([]string)
 			if !ok {
@@ -569,8 +573,8 @@ func TestTaskListSchema_ReasoningEffortEnumPerProvider(t *testing.T) {
 			if !ok {
 				t.Fatalf("enum missing from reasoning_effort schema: %v", effort)
 			}
-			if !reflect.DeepEqual(gotEnum, tc.want) {
-				t.Fatalf("schema enum: got %v, want %v", gotEnum, tc.want)
+			if !reflect.DeepEqual(gotEnum, wantEnum) {
+				t.Fatalf("schema enum: got %v, want %v", gotEnum, wantEnum)
 			}
 		})
 	}
