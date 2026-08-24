@@ -9,6 +9,7 @@ import (
 
 	"primeradiant.com/evener/agent/execenv"
 	"primeradiant.com/evener/agent/plugin"
+	"primeradiant.com/evener/agent/sandbox"
 	"primeradiant.com/evener/llm"
 )
 
@@ -151,7 +152,7 @@ func TestAgentTypeRosterKeyedOnAllowance(t *testing.T) {
 	})
 }
 
-func TestDelegateSurfaceDescribesEffectiveAgentCapabilities(t *testing.T) {
+func TestDelegateSurfaceUsesAgentRegistryCapabilities(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
 	c := llm.NewClient()
@@ -178,89 +179,98 @@ func TestDelegateSurfaceDescribesEffectiveAgentCapabilities(t *testing.T) {
 	}
 	props := delegate.Parameters["properties"].(map[string]any)
 	agentType := props["agent_type"].(map[string]any)
-	description := agentType["description"].(string)
-	if !strings.Contains(delegate.Description, "Role capabilities are listed in the agent_type schema") {
-		t.Fatalf("delegate description omits generated capability roster: %q", delegate.Description)
+	enum, ok := agentType["enum"].([]string)
+	if !ok {
+		t.Fatalf("agent_type enum = %T(%v), want []string", agentType["enum"], agentType["enum"])
 	}
-	if !strings.Contains(description, "explorer") || !strings.Contains(description, "exec_command") {
-		t.Fatalf("delegate agent_type description omits explorer's effective shell capability: %q", description)
-	}
-	if !strings.Contains(description, "write_file") {
-		t.Fatalf("delegate agent_type description omits broader role capability: %q", description)
-	}
-	entries := sess.availableAgentEntries()
-	var explorerTools, defaultTools string
-	for _, entry := range entries {
-		if strings.Contains(entry.DefaultTools, "ask_user") {
-			t.Fatalf("agent %q advertises ask_user although subagents cannot receive it: %q", entry.Name, entry.DefaultTools)
-		}
-		switch entry.Name {
-		case "explorer":
-			explorerTools = entry.DefaultTools
-			if description := strings.ToLower(entry.Description); !strings.Contains(description, "network") || !strings.Contains(description, "sandbox") {
-				t.Fatalf("assembled explorer description omits environment-bounded network reach: %q", entry.Description)
-			}
-		case "default":
-			defaultTools = entry.DefaultTools
-		}
-	}
-	if strings.Contains(explorerTools, "write_file") || !strings.Contains(explorerTools, "exec_command") {
-		t.Fatalf("assembled explorer capabilities = %q, want shell reach without write_file", explorerTools)
-	}
-	if !strings.Contains(defaultTools, "write_file") {
-		t.Fatalf("assembled default capabilities = %q, want broader write capability", defaultTools)
+	if want := sess.delegateAgentTypeNames(); !slices.Equal(enum, want) {
+		t.Fatalf("agent_type enum = %v, want registry names %v", enum, want)
 	}
 
-	prompt := sess.cachedSystemPrompt
-	if !strings.Contains(prompt, "Capabilities:") || !strings.Contains(prompt, "explorer") {
-		t.Fatalf("available-agents prompt omits generated capability summaries: %q", prompt)
+	sandboxParam := props["sandbox"].(map[string]any)
+	sandboxEnum, ok := sandboxParam["enum"].([]string)
+	if !ok {
+		t.Fatalf("sandbox enum = %T(%v), want []string", sandboxParam["enum"], sandboxParam["enum"])
+	}
+	wantSandboxEnum := []string{
+		sandbox.ModeOff.String(),
+		sandbox.ModeReadOnly.String(),
+		sandbox.ModeWorkspaceWrite.String(),
+		sandbox.ModeRestricted.String(),
+	}
+	if !slices.Equal(sandboxEnum, wantSandboxEnum) {
+		t.Fatalf("sandbox enum = %v, want %v", sandboxEnum, wantSandboxEnum)
+	}
+	if got := props["sandbox_net"].(map[string]any)["type"]; got != "boolean" {
+		t.Fatalf("sandbox_net type = %v, want boolean", got)
+	}
+
+	data := sess.buildPromptData(sess.currentEnv())
+	entryNames := make([]string, 0, len(data.AvailableAgents))
+	for _, entry := range data.AvailableAgents {
+		entryNames = append(entryNames, entry.Name)
+	}
+	if !slices.Equal(entryNames, enum) {
+		t.Fatalf("available-agents typed input = %v, want schema enum %v", entryNames, enum)
+	}
+	const availableAgentsSection = "embedded:prompts/sections/available-agents.md.tmpl"
+	if !slices.ContainsFunc(sess.promptSourceLog, func(source promptSource) bool {
+		return source.Label == availableAgentsSection
+	}) {
+		t.Fatalf("prompt sources = %#v, want %q section", sess.promptSourceLog, availableAgentsSection)
+	}
+
+	explorerTools := delegateToolsForRegisteredAgent(t, sess, "explorer")
+	defaultTools := delegateToolsForRegisteredAgent(t, sess, "default")
+	if !slices.Contains(explorerTools, "shell") || slices.Contains(explorerTools, "write_file") {
+		t.Fatalf("explorer tools = %v, want shell without write_file", explorerTools)
+	}
+	if !slices.Contains(defaultTools, "write_file") {
+		t.Fatalf("default tools = %v, want write_file", defaultTools)
+	}
+	for name, tools := range map[string][]string{"explorer": explorerTools, "default": defaultTools} {
+		if slices.Contains(tools, "ask_user") {
+			t.Fatalf("%s tools = %v, ask_user is root-only", name, tools)
+		}
 	}
 }
 
 func TestDelegateCallResponseReportsSelectedAgentCapabilities(t *testing.T) {
 	root, _, _ := newDelegateResourceBootstrapSession(t)
-	root.pluginAgents = map[string]plugin.Agent{
-		"explorer": {
-			Name:        "explorer",
-			Description: "read-only scout",
-			Tools:       []string{"glob", "grep", "read_file", "shell"},
-			PluginName:  "test-plugin",
-		},
-		"implementer": {
-			Name:        "implementer",
-			Description: "broader implementation agent",
-			Tools:       []string{"glob", "grep", "read_file", "write_file", "shell"},
-			PluginName:  "test-plugin",
-		},
-	}
-	root.rebuildToolDefsCache()
+	wantTools := delegateToolsForRegisteredAgent(t, root, "explorer")
 
 	call := root.reg.ExecuteCall(context.Background(), root.currentEnv(), llm.ToolCallData{
 		ID:   "delegate-capability-response",
 		Name: "delegate",
 		Arguments: json.RawMessage(`{
-			"task":"report your capability surface",
+			"task":"TASK_SENTINEL",
 			"agent_type":"explorer"
 		}`),
 	})
 	if call.IsError {
 		t.Fatalf("delegate call: %s", call.Output)
 	}
-	state := map[string]any{}
+	var state stableDelegateCreateResult
 	if err := json.Unmarshal(toolResultJSON(call), &state); err != nil {
 		t.Fatalf("decode delegate result: %v", err)
 	}
-	if got := state["agent_type"]; got != "explorer" {
-		t.Fatalf("delegate result agent_type = %#v, want explorer", got)
+	if state.AgentType != "explorer" {
+		t.Fatalf("delegate result agent_type = %q, want explorer", state.AgentType)
 	}
-	tools, ok := state["tools"].([]any)
+	if !slices.Equal(state.Tools, wantTools) {
+		t.Fatalf("delegate result tools = %v, want registry-derived %v", state.Tools, wantTools)
+	}
+	if state.Sandbox != nil {
+		t.Fatalf("delegate result sandbox = %#v, want inherited unsandboxed metadata", state.Sandbox)
+	}
+}
+
+func delegateToolsForRegisteredAgent(t *testing.T, sess *Session, name string) []string {
+	t.Helper()
+	agent, ok := sess.pluginAgents[name]
 	if !ok {
-		t.Fatalf("delegate result tools = %#v, want array", state["tools"])
+		t.Fatalf("agent registry missing %q", name)
 	}
-	if !slices.Contains(toStringSlice(tools), "shell") {
-		t.Fatalf("explorer result tools = %#v, want shell", tools)
-	}
-	if slices.Contains(toStringSlice(tools), "write_file") {
-		t.Fatalf("explorer result tools = %#v, must not claim broader write capability", tools)
-	}
+	allTools, allowed, denied := baseSubagentToolPolicy(&agent, false)
+	return stableDelegateToolNameCeiling(sess.reg, sess.resultToolName(), allTools, allowed, denied, false, false, "")
 }
