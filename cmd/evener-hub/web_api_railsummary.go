@@ -1,8 +1,9 @@
-package main
+package hub
 
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"time"
 
@@ -116,11 +117,11 @@ func railSummaryFromTranscript(entry hubcore.PastEntry) (appwire.RailSummaryResp
 		resp.TotalTokens += totalTok
 
 		st := appwire.RailSummaryTurn{
-			StartedAt:   ts,
-			InTokens:    inTok,
-			OutTokens:   outTok,
-			UserInput:   turn.Kind == schema.TurnUserInput,
-			Steering:    turn.Kind == schema.TurnSteering,
+			StartedAt: ts,
+			InTokens:  inTok,
+			OutTokens: outTok,
+			UserInput: turn.Kind == schema.TurnUserInput,
+			Steering:  turn.Kind == schema.TurnSteering,
 		}
 
 		// Result bytes: sum of JSON-encoded tool result content sizes on
@@ -199,7 +200,7 @@ func collectRailJobsFromSession(session *appwire.JobActivitySession, jobs *[]app
 // fractional seconds) and returns epoch milliseconds.
 func parseRFC3339Milli(s string) (int64, error) {
 	if s == "" {
-		return 0, fmt.Errorf("empty timestamp")
+		return 0, errors.New("empty timestamp")
 	}
 	t, err := time.Parse(time.RFC3339Nano, s)
 	if err != nil {

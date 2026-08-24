@@ -143,18 +143,18 @@ type TreeNode struct {
 	// dormant session reports State "idle", exactly like a session that ran and
 	// went quiet, and the two are only distinguishable by this field. See
 	// hubcore.TreeNode.Dormant for why it is not a state value.
-	Dormant       bool       `json:"dormant,omitempty"`
-	UpdatedAt     time.Time  `json:"updated_at"`
-	Age           string     `json:"age,omitempty"`
+	Dormant   bool      `json:"dormant,omitempty"`
+	UpdatedAt time.Time `json:"updated_at"`
+	Age       string    `json:"age,omitempty"`
 	// LastActivityAt is the session's most recent real activity as epoch
 	// milliseconds, sourced from the last event/turn timestamp rather than the
 	// file-write updated_at proxy. The comprehension view consumes this for
 	// recency ordering of subagent rails. Zero/absent for sessions with no
 	// known activity.
 	LastActivityAt *int64     `json:"last_activity_at,omitempty"`
-	Model         string     `json:"model,omitempty"`
-	MoreSubagents int        `json:"more_subagents,omitempty"`
-	Children      []TreeNode `json:"children,omitempty"`
+	Model          string     `json:"model,omitempty"`
+	MoreSubagents  int        `json:"more_subagents,omitempty"`
+	Children       []TreeNode `json:"children,omitempty"`
 }
 
 // SessionDetail is returned by GET /api/sessions/{ref}.

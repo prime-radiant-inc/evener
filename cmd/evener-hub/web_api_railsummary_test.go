@@ -1,4 +1,4 @@
-package main
+package hub
 
 import (
 	"os"
@@ -23,7 +23,7 @@ func TestHubThreadRailSummaryReturnsTurnTuples(t *testing.T) {
 	start := time.Unix(1700000000, 0).UTC()
 	if err := schema.SaveSessionMeta(stateDir, schema.SessionMeta{
 		ID: sessionID, ProfileID: "openai", Model: "gpt-5",
-		EnvInfo: schema.EnvironmentInfo{WorkingDir: "/tmp/project"},
+		EnvInfo:   schema.EnvironmentInfo{WorkingDir: "/tmp/project"},
 		CreatedAt: start, UpdatedAt: start,
 	}); err != nil {
 		t.Fatal(err)
@@ -46,9 +46,9 @@ func TestHubThreadRailSummaryReturnsTurnTuples(t *testing.T) {
 	}
 	// Turn 2: assistant with usage
 	if err := w.Append(schema.Turn{
-		Kind:    schema.TurnAssistant,
-		Message: llm.Message{Role: llm.RoleAssistant, Content: []llm.ContentPart{{Kind: llm.ContentText, Text: "hi there"}}},
-		Usage:   llm.Usage{InputTokens: 100, OutputTokens: 200, TotalTokens: 300},
+		Kind:      schema.TurnAssistant,
+		Message:   llm.Message{Role: llm.RoleAssistant, Content: []llm.ContentPart{{Kind: llm.ContentText, Text: "hi there"}}},
+		Usage:     llm.Usage{InputTokens: 100, OutputTokens: 200, TotalTokens: 300},
 		Timestamp: start.Add(5 * time.Second),
 	}); err != nil {
 		t.Fatal(err)
@@ -66,10 +66,10 @@ func TestHubThreadRailSummaryReturnsTurnTuples(t *testing.T) {
 	}
 	// Turn 4: assistant with error
 	if err := w.Append(schema.Turn{
-		Kind:    schema.TurnFailure,
-		Message: llm.Message{Role: llm.RoleAssistant, Content: []llm.ContentPart{{Kind: llm.ContentText, Text: "oops"}}},
-		Usage:   llm.Usage{InputTokens: 50, OutputTokens: 0, TotalTokens: 50},
-		Error:   &schema.TurnFailureInfo{Message: "provider error"},
+		Kind:      schema.TurnFailure,
+		Message:   llm.Message{Role: llm.RoleAssistant, Content: []llm.ContentPart{{Kind: llm.ContentText, Text: "oops"}}},
+		Usage:     llm.Usage{InputTokens: 50, OutputTokens: 0, TotalTokens: 50},
+		Error:     &schema.TurnFailureInfo{Message: "provider error"},
 		Timestamp: start.Add(15 * time.Second),
 	}); err != nil {
 		t.Fatal(err)
@@ -92,7 +92,7 @@ func TestHubThreadRailSummaryReturnsTurnTuples(t *testing.T) {
 		t.Fatal(err)
 	}
 	cfg := hubcore.WebConfig{Past: idx}
-	resp, err := hubThreadRailSummary(nil, cfg, nil, appwire.RailSummaryParams{Ref: "local:" + sessionID})
+	resp, err := hubThreadRailSummary(t.Context(), cfg, nil, appwire.RailSummaryParams{Ref: "local:" + sessionID})
 	if err != nil {
 		t.Fatalf("hubThreadRailSummary: %v", err)
 	}
@@ -151,7 +151,7 @@ func TestHubThreadRailSummaryNotFound(t *testing.T) {
 		t.Fatal(err)
 	}
 	cfg := hubcore.WebConfig{Past: idx}
-	_, err := hubThreadRailSummary(nil, cfg, nil, appwire.RailSummaryParams{Ref: "local:nonexistent"})
+	_, err := hubThreadRailSummary(t.Context(), cfg, nil, appwire.RailSummaryParams{Ref: "local:nonexistent"})
 	if err == nil {
 		t.Fatal("expected error for nonexistent session")
 	}
@@ -167,7 +167,7 @@ func TestHubThreadRailSummaryEmptySession(t *testing.T) {
 	start := time.Unix(1700000000, 0).UTC()
 	if err := schema.SaveSessionMeta(stateDir, schema.SessionMeta{
 		ID: sessionID, ProfileID: "openai", Model: "gpt-5",
-		EnvInfo: schema.EnvironmentInfo{WorkingDir: "/tmp/project"},
+		EnvInfo:   schema.EnvironmentInfo{WorkingDir: "/tmp/project"},
 		CreatedAt: start, UpdatedAt: start,
 	}); err != nil {
 		t.Fatal(err)
@@ -187,7 +187,7 @@ func TestHubThreadRailSummaryEmptySession(t *testing.T) {
 		t.Fatal(err)
 	}
 	cfg := hubcore.WebConfig{Past: idx}
-	resp, err := hubThreadRailSummary(nil, cfg, nil, appwire.RailSummaryParams{Ref: "local:" + sessionID})
+	resp, err := hubThreadRailSummary(t.Context(), cfg, nil, appwire.RailSummaryParams{Ref: "local:" + sessionID})
 	if err != nil {
 		t.Fatalf("hubThreadRailSummary: %v", err)
 	}

@@ -341,7 +341,7 @@ type TreeNode struct {
 	// this field is the dedicated epoch-ms value the comprehension view consumes
 	// for recency ordering — not a file-write proxy for display.
 	LastActivityAt time.Time
-	Children      []TreeNode
+	Children       []TreeNode
 }
 
 // AgeString formats a duration since t as a human-readable string.
@@ -866,15 +866,15 @@ func BuildTreeAtWithProjects(metas []schema.SessionMeta, live []LiveEntry, decis
 			}
 		}
 		node := TreeNode{
-			ID:         m.ID,
-			Title:      nodeTitle(m, kind),
-			Project:    acc.name,
-			Branch:     m.EnvInfo.GitBranch,
-			State:      state,
-			AskPending: askPending,
-			Dormant:    dormantFor(m.ID),
-			Kind:       kind,
-			CreatedAt:  OrderCreatedAt(m.CreatedAt, m.UpdatedAt),
+			ID:             m.ID,
+			Title:          nodeTitle(m, kind),
+			Project:        acc.name,
+			Branch:         m.EnvInfo.GitBranch,
+			State:          state,
+			AskPending:     askPending,
+			Dormant:        dormantFor(m.ID),
+			Kind:           kind,
+			CreatedAt:      OrderCreatedAt(m.CreatedAt, m.UpdatedAt),
 			UpdatedAt:      OrderUpdatedAt(m.UpdatedAt, m.CreatedAt),
 			Age:            AgeString(OrderUpdatedAt(m.UpdatedAt, m.CreatedAt)),
 			LastActivityAt: m.UpdatedAt,
