@@ -1,6 +1,7 @@
 package execenv
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 
@@ -20,6 +21,10 @@ func (e *LocalExecutionEnvironment) ReadFileRaw(path string) ([]byte, error) {
 	if sfs := e.sandbox(); sfs != nil {
 		return sfs.readFile("apply_patch", e.resolve(path))
 	}
+	abs := e.resolve(path)
+	if sfs := e.scratchSandboxFor(abs); sfs != nil {
+		return sfs.readFile("apply_patch", abs)
+	}
 	abs, err := e.resolveWrite(path)
 	if err != nil {
 		return nil, err
@@ -32,6 +37,10 @@ func (e *LocalExecutionEnvironment) ReadFileRaw(path string) ([]byte, error) {
 func (e *LocalExecutionEnvironment) WriteFileRaw(path string, data []byte, perm os.FileMode) error {
 	if sfs := e.sandbox(); sfs != nil {
 		return sfs.writeFile("apply_patch", e.resolve(path), data, perm)
+	}
+	abs := e.resolve(path)
+	if sfs := e.scratchSandboxFor(abs); sfs != nil {
+		return sfs.writeFile("apply_patch", abs, data, perm)
 	}
 	abs, err := e.resolveWrite(path)
 	if err != nil {
@@ -49,6 +58,10 @@ func (e *LocalExecutionEnvironment) RemovePath(path string) error {
 	if sfs := e.sandbox(); sfs != nil {
 		return sfs.remove("apply_patch", e.resolve(path))
 	}
+	abs := e.resolve(path)
+	if sfs := e.scratchSandboxFor(abs); sfs != nil {
+		return sfs.remove("apply_patch", abs)
+	}
 	abs, err := e.resolveWrite(path)
 	if err != nil {
 		return err
@@ -63,11 +76,25 @@ func (e *LocalExecutionEnvironment) RenamePath(oldPath, newPath string) error {
 	if sfs := e.sandbox(); sfs != nil {
 		return sfs.rename("apply_patch", e.resolve(oldPath), e.resolve(newPath))
 	}
-	oldAbs, err := e.resolveWrite(oldPath)
+	oldAbs := e.resolve(oldPath)
+	newAbs := e.resolve(newPath)
+	if sfs := e.scratchSandboxFor(oldAbs); sfs != nil {
+		if targetFS := e.scratchSandboxFor(newAbs); targetFS != nil {
+			// Both endpoints are inside the same one-session scratch root. Reuse
+			// the first layer's cached root fd; its policy root is identical.
+			return sfs.rename("apply_patch", oldAbs, newAbs)
+		}
+		return fmt.Errorf("%s: cannot rename from the session scratch root outside that root", newPath)
+	}
+	if targetFS := e.scratchSandboxFor(newAbs); targetFS != nil {
+		return fmt.Errorf("%s: cannot rename into the session scratch root from outside that root", newPath)
+	}
+	var err error
+	oldAbs, err = e.resolveWrite(oldPath)
 	if err != nil {
 		return err
 	}
-	newAbs, err := e.resolveWrite(newPath)
+	newAbs, err = e.resolveWrite(newPath)
 	if err != nil {
 		return err
 	}
