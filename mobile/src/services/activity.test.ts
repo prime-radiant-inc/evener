@@ -92,6 +92,7 @@ function delegate(over: Partial<EvenerDelegateInfo> = {}): EvenerDelegateInfo {
     status: "running",
     resumable: true,
     projectionRevision: 1,
+    needsAttention: false,
     ...over,
   };
 }
