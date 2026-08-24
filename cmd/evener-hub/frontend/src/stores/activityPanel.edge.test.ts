@@ -69,60 +69,48 @@ describe("retainedActivityTree", () => {
 describe("activityPanelStore continuation paths", () => {
   test("beginFetch + publishFetch ready stores the tree", () => {
     resetActivityPanelStoreForTests();
+    const tree = makeTree();
     const req = activityPanelStore.getState().beginFetch("ref_a");
-    activityPanelStore.getState().publishFetch("ref_a", req, { kind: "ready", tree: makeTree() });
+    activityPanelStore.getState().publishFetch("ref_a", req, { kind: "ready", tree });
     const entry = activityPanelStore.getState().entries.get("ref_a");
-    expect(entry).toBeTruthy();
-    expect(entry?.load.kind).toBe("ready");
-  });
-
-  test("beginFetch + publishFetch with delegate tree stores it", () => {
-    resetActivityPanelStoreForTests();
-    const req = activityPanelStore.getState().beginFetch("ref_a");
-    activityPanelStore.getState().publishFetch("ref_a", req, { kind: "ready", tree: makeTreeWithDelegate() });
-    const entry = activityPanelStore.getState().entries.get("ref_a");
-    expect(entry).toBeTruthy();
-    expect(entry?.load.kind).toBe("ready");
-    if (entry?.load.kind === "ready") {
-      expect(entry.load.tree.root.entries).toHaveLength(1);
-    }
+    expect(entry?.load).toEqual({ kind: "ready", tree });
+    expect(entry?.established).toBe(true);
+    expect(entry?.pending).toBeUndefined();
   });
 
   test("publishFetch with ended result retains the tree", () => {
     resetActivityPanelStoreForTests();
+    const tree = makeTree();
     const req = activityPanelStore.getState().beginFetch("ref_a");
-    activityPanelStore.getState().publishFetch("ref_a", req, { kind: "ready", tree: makeTree() });
+    activityPanelStore.getState().publishFetch("ref_a", req, { kind: "ready", tree });
     const req2 = activityPanelStore.getState().beginFetch("ref_a");
     activityPanelStore.getState().publishFetch("ref_a", req2, { kind: "ended" });
     const entry = activityPanelStore.getState().entries.get("ref_a");
-    expect(entry?.load.kind).toBe("ended");
+    expect(entry?.load).toEqual({ kind: "ended", tree });
+    expect(entry?.pending).toBeUndefined();
   });
 
   test("publishFetch with failed result shows error", () => {
     resetActivityPanelStoreForTests();
+    const error = { headline: "Network error", sentence: "network error", detail: "connection lost" };
     const req = activityPanelStore.getState().beginFetch("ref_a");
-    activityPanelStore.getState().publishFetch("ref_a", req, {
-      kind: "failed",
-      error: { headline: "Network error", sentence: "network error", detail: "connection lost" },
-    });
+    activityPanelStore.getState().publishFetch("ref_a", req, { kind: "failed", error });
     const entry = activityPanelStore.getState().entries.get("ref_a");
-    expect(entry?.load.kind).toBe("failed");
+    expect(entry?.load).toEqual({ kind: "failed", error });
+    expect(entry?.pending).toBeUndefined();
   });
 
   test("publishFetch with failed result retains existing tree as stale", () => {
     resetActivityPanelStoreForTests();
+    const tree = makeTree();
+    const error = { headline: "Reconnect failed", sentence: "reconnect failed", detail: "timeout" };
     const req = activityPanelStore.getState().beginFetch("ref_a");
-    activityPanelStore.getState().publishFetch("ref_a", req, { kind: "ready", tree: makeTree() });
+    activityPanelStore.getState().publishFetch("ref_a", req, { kind: "ready", tree });
     const req2 = activityPanelStore.getState().beginFetch("ref_a");
-    activityPanelStore.getState().publishFetch("ref_a", req2, {
-      kind: "failed",
-      error: { headline: "Reconnect failed", sentence: "reconnect failed", detail: "timeout" },
-    });
+    activityPanelStore.getState().publishFetch("ref_a", req2, { kind: "failed", error });
     const entry = activityPanelStore.getState().entries.get("ref_a");
-    expect(entry?.load.kind).toBe("ready");
-    if (entry?.load.kind === "ready") {
-      expect(entry.load.staleError?.sentence).toBe("reconnect failed");
-    }
+    expect(entry?.load).toEqual({ kind: "ready", tree, staleError: error });
+    expect(entry?.pending).toBeUndefined();
   });
 
   test("publishFetch with unsupported result sets unsupported load", () => {
@@ -130,7 +118,8 @@ describe("activityPanelStore continuation paths", () => {
     const req = activityPanelStore.getState().beginFetch("ref_a");
     activityPanelStore.getState().publishFetch("ref_a", req, { kind: "unsupported" });
     const entry = activityPanelStore.getState().entries.get("ref_a");
-    expect(entry?.load.kind).toBe("unsupported");
+    expect(entry?.load).toEqual({ kind: "unsupported" });
+    expect(entry?.pending).toBeUndefined();
   });
 
   test("continuation fetch with ready result grafts the tree", () => {
@@ -142,42 +131,47 @@ describe("activityPanelStore continuation paths", () => {
     // Start a continuation fetch
     const contReq = activityPanelStore.getState().beginFetch("ref_a", { nodeID: "delegate:dlg_1" });
 
-    // Build a continuation patch for the child session
-    const patch: ActivityTree = {
-      revision: 2,
-      root: {
-        kind: "session",
-        sessionId: "sess_child",
-        ref: "ref_child",
-        label: "Child",
-        aggregate: "running",
-        counts: { active: 0, failed: 0, completed: 0, complete: true },
-        entries: [
-          {
-            kind: "shell",
-            job: {
-              jobId: "job_1",
-              ownerSessionId: "sess_child",
-              ownerRef: "ref_child",
-              type: "shell",
-              status: "running",
-              terminal: false,
-              background: false,
-              hasOutput: false,
-              description: "test job",
-              startedAt: "2026-01-01T00:00:00Z",
-              outputBytes: 0,
-            },
-          },
-        ],
-        branch: {},
+    // A continuation patch preserves the root-to-target path and replaces the
+    // targeted delegate with its newer projection.
+    const patch = makeTreeWithDelegate();
+    patch.revision = 2;
+    const patchDelegate = patch.root.entries[0];
+    if (patchDelegate?.kind !== "delegate" || !patchDelegate.delegate.child) {
+      throw new Error("continuation fixture is missing its delegate child");
+    }
+    patchDelegate.delegate.projectionRevision = 2;
+    patchDelegate.delegate.child.entries = [
+      {
+        kind: "shell",
+        job: {
+          jobId: "job_1",
+          ownerSessionId: "sess_child",
+          ownerRef: "ref_child",
+          type: "shell",
+          status: "running",
+          terminal: false,
+          background: false,
+          hasOutput: false,
+          description: "test job",
+          startedAt: "2026-01-01T00:00:00Z",
+          outputBytes: 0,
+        },
       },
-    };
+    ];
 
     activityPanelStore.getState().publishFetch("ref_a", contReq, { kind: "ready", tree: patch });
     const entry = activityPanelStore.getState().entries.get("ref_a");
     expect(entry?.load.kind).toBe("ready");
+    if (entry?.load.kind === "ready") {
+      const delegate = entry.load.tree.root.entries[0];
+      expect(entry.load.tree.revision).toBe(2);
+      expect(delegate?.kind).toBe("delegate");
+      if (delegate?.kind === "delegate") {
+        expect(delegate.delegate.child?.entries).toEqual(patchDelegate.delegate.child.entries);
+      }
+    }
     expect(entry?.continuationLoadingID).toBeUndefined();
+    expect(entry?.pending).toBeUndefined();
   });
 
   test("continuation fetch with failed result records failure", () => {
@@ -193,8 +187,11 @@ describe("activityPanelStore continuation paths", () => {
     });
 
     const entry = activityPanelStore.getState().entries.get("ref_a");
-    expect(entry?.continuationFailures["delegate:dlg_1"]).toBe("Couldn't load more retained activity for this branch.");
+    expect(entry?.continuationFailures).toEqual({
+      "delegate:dlg_1": "Couldn't load more retained activity for this branch.",
+    });
     expect(entry?.continuationLoadingID).toBeUndefined();
+    expect(entry?.pending).toBeUndefined();
   });
 
   test("setExpanded and setSelected update disclosure", () => {
@@ -212,10 +209,12 @@ describe("activityPanelStore continuation paths", () => {
     resetActivityPanelStoreForTests();
     const req1 = activityPanelStore.getState().beginFetch("ref_a");
     const req2 = activityPanelStore.getState().beginFetch("ref_a");
+    const before = activityPanelStore.getState().entries.get("ref_a");
     // Publish with old requestID — should be ignored
     activityPanelStore.getState().publishFetch("ref_a", req1, { kind: "ready", tree: makeTree() });
     // The entry should still be in loading state (req2 is the active one)
     const entry = activityPanelStore.getState().entries.get("ref_a");
-    expect(entry?.requestID).toBe(req2);
+    expect(entry).toBe(before);
+    expect(entry).toMatchObject({ requestID: req2, load: { kind: "loading" }, pending: { kind: "root" } });
   });
 });

@@ -50,6 +50,7 @@ describe("mergeProjectPage tier coverage", () => {
     expect(result.more_recent).toBe(1);
     expect(result.more_current).toBe(0);
     expect(result.more_archived).toBe(0);
+    expect(result.sessions.map((session) => session.row_id)).toEqual(["r1", "r2"]);
   });
 
   test("archived tier page updates more_archived flag", () => {
@@ -60,6 +61,7 @@ describe("mergeProjectPage tier coverage", () => {
     expect(result.more_archived).toBe(1);
     expect(result.more_current).toBe(0);
     expect(result.more_recent).toBe(0);
+    expect(result.sessions.map((session) => session.row_id)).toEqual(["r1", "r2"]);
   });
 
   test("current tier page updates more_current flag", () => {
@@ -70,6 +72,7 @@ describe("mergeProjectPage tier coverage", () => {
     expect(result.more_current).toBe(1);
     expect(result.more_recent).toBe(0);
     expect(result.more_archived).toBe(0);
+    expect(result.sessions.map((session) => session.row_id)).toEqual(["r2", "r1"]);
   });
 
   test("all three tiers can coexist in one project", () => {
@@ -78,12 +81,12 @@ describe("mergeProjectPage tier coverage", () => {
     page.remaining = 1;
     const result = mergeProjectPage(project, page);
     expect(result.more_recent).toBe(1);
-    expect(result.sessions).toHaveLength(4);
-    // current comes first, then recent, then archived
-    expect(result.sessions[0]?.tier).toBe("current");
-    expect(result.sessions[1]?.tier).toBe("recent");
-    expect(result.sessions[2]?.tier).toBe("recent");
-    expect(result.sessions[3]?.tier).toBe("archived");
+    expect(result.sessions.map(({ row_id, tier }) => ({ row_id, tier }))).toEqual([
+      { row_id: "c1", tier: "current" },
+      { row_id: "r1", tier: "recent" },
+      { row_id: "r2", tier: "recent" },
+      { row_id: "a1", tier: "archived" },
+    ]);
   });
 
   test("existing row in page replaces the matching row by row_id", () => {

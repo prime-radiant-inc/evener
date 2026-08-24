@@ -1,6 +1,6 @@
-// Unit tests for subagentModuleStore's removeSubagentRow and related functions
-// that close the remaining uncovered lines (75-83: removeSubagentRow body).
+// @vitest-environment jsdom
 
+import { act, cleanup, renderHook } from "@testing-library/react";
 import { afterEach, expect, test } from "vitest";
 import {
   classifyJobStatus,
@@ -10,9 +10,11 @@ import {
   type SubagentRow,
   turnScopeKey,
   upsertSubagentRow,
+  useSubagentRow,
 } from "./subagentModuleStore";
 
 afterEach(() => {
+  cleanup();
   resetSubagentModuleStoreForTests();
 });
 
@@ -25,40 +27,35 @@ function makeRow(rowKey: string, overrides: Partial<SubagentRow> = {}): Subagent
   };
 }
 
-test("removeSubagentRow removes a row and cleans up the scope when it becomes empty", () => {
+test("removeSubagentRow removes only the requested row", () => {
   const scopeKey = turnScopeKey("session_a", "turn_1");
-  upsertSubagentRow(scopeKey, makeRow("dlg:test1"));
-  removeSubagentRow(scopeKey, "dlg:test1");
-  // After removal, the scope should be cleaned up (no rows)
-  // We verify by re-adding and ensuring it's a fresh state
-  upsertSubagentRow(scopeKey, makeRow("dlg:test2"));
-  expect(true).toBe(true); // no crash means the store is consistent
+  const first = renderHook(() => useSubagentRow(scopeKey, "dlg:first"));
+  const second = renderHook(() => useSubagentRow(scopeKey, "dlg:second"));
+
+  act(() => {
+    upsertSubagentRow(scopeKey, makeRow("dlg:first", { resultPreview: "first" }));
+    upsertSubagentRow(scopeKey, makeRow("dlg:second", { resultPreview: "second" }));
+  });
+  expect(first.result.current?.resultPreview).toBe("first");
+  expect(second.result.current?.resultPreview).toBe("second");
+
+  act(() => removeSubagentRow(scopeKey, "dlg:first"));
+  expect(first.result.current).toBeUndefined();
+  expect(second.result.current).toEqual(makeRow("dlg:second", { resultPreview: "second" }));
 });
 
-test("removeSubagentRow removes a row but keeps the scope when other rows remain", () => {
+test("removing an unknown row preserves the existing row", () => {
   const scopeKey = turnScopeKey("session_a", "turn_1");
-  upsertSubagentRow(scopeKey, makeRow("dlg:test1"));
-  upsertSubagentRow(scopeKey, makeRow("dlg:test2"));
-  removeSubagentRow(scopeKey, "dlg:test1");
-  // The scope still exists with the remaining row
-  // Re-adding should work without issues
-  upsertSubagentRow(scopeKey, makeRow("dlg:test3"));
-  expect(true).toBe(true);
+  const existing = renderHook(() => useSubagentRow(scopeKey, "dlg:existing"));
+  const row = makeRow("dlg:existing", { kind: "done", resultPreview: "complete" });
+
+  act(() => upsertSubagentRow(scopeKey, row));
+  act(() => removeSubagentRow(scopeKey, "dlg:missing"));
+
+  expect(existing.result.current).toBe(row);
 });
 
-test("removeSubagentRow is a no-op when the scope does not exist", () => {
-  removeSubagentRow("nonexistent_scope", "dlg:test1");
-  expect(true).toBe(true); // no crash
-});
-
-test("removeSubagentRow is a no-op when the row does not exist", () => {
-  const scopeKey = turnScopeKey("session_a", "turn_1");
-  upsertSubagentRow(scopeKey, makeRow("dlg:test1"));
-  removeSubagentRow(scopeKey, "dlg:nonexistent");
-  expect(true).toBe(true); // no crash
-});
-
-test("classifyJobStatus covers all status branches", () => {
+test("classifyJobStatus maps protocol synonyms to presentation states", () => {
   expect(classifyJobStatus(undefined)).toBe("running");
   expect(classifyJobStatus("failed")).toBe("failed");
   expect(classifyJobStatus("errored")).toBe("failed");
@@ -74,19 +71,23 @@ test("classifyJobStatus covers all status branches", () => {
   expect(classifyJobStatus("")).toBe("running");
 });
 
-test("resolveRowKey uses delegate prefix, then job, then call fallback", () => {
+test("resolveRowKey gives durable identities precedence over call identities", () => {
   expect(resolveRowKey("dlg_1", undefined, "fallback")).toBe("dlg:dlg_1");
   expect(resolveRowKey(undefined, "job_1", "fallback")).toBe("job:job_1");
   expect(resolveRowKey(undefined, undefined, "call_1")).toBe("call:call_1");
   expect(resolveRowKey("dlg_1", "job_1", "call_1")).toBe("dlg:dlg_1");
 });
 
-test("upsertSubagentRow with migrateFromRowKey removes the old key", () => {
+test("upsertSubagentRow migrates a call-keyed placeholder to its durable delegate key", () => {
   const scopeKey = turnScopeKey("session_a", "turn_1");
-  upsertSubagentRow(scopeKey, makeRow("call:call_1"));
-  // Migrate from call:call_1 to dlg:dlg_1
-  upsertSubagentRow(scopeKey, makeRow("dlg:dlg_1"), "call:call_1");
-  // The old key should be gone; we can verify by removing it (no-op)
-  removeSubagentRow(scopeKey, "call:call_1"); // should not crash
-  expect(true).toBe(true);
+  const placeholder = renderHook(() => useSubagentRow(scopeKey, "call:call_1"));
+  const durable = renderHook(() => useSubagentRow(scopeKey, "dlg:dlg_1"));
+
+  act(() => upsertSubagentRow(scopeKey, makeRow("call:call_1", { resultPreview: "starting" })));
+  act(() =>
+    upsertSubagentRow(scopeKey, makeRow("dlg:dlg_1", { delegateId: "dlg_1", resultPreview: "running" }), "call:call_1"),
+  );
+
+  expect(placeholder.result.current).toBeUndefined();
+  expect(durable.result.current).toEqual(makeRow("dlg:dlg_1", { delegateId: "dlg_1", resultPreview: "running" }));
 });

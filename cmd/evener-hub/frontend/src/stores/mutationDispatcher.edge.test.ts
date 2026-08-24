@@ -153,33 +153,20 @@ describe("MutationDispatcher edge cases", () => {
     expect(recoveryRecord?.recoveryReason).toBe("sessionUnavailable");
   });
 
-  // Line 198: rejectionReason fallback to data?.mutationOutcome when error
-  // is not a WireError (e.g. a plain Error with matching data shape is
-  // impossible since mutationErrorData requires WireError, so this path
-  // hits when error IS a WireError but has no message and no evenerErrorInfo,
-  // OR when error is NOT a WireError and data is undefined — returning undefined)
-  test("non-WireError rejection with matching clientMutationId and notAccepted outcome transfers to recovery", async () => {
+  test("a plain Error cannot authoritatively reject a mutation", async () => {
     const indexedDB = new IDBFactory();
-    const outbox = storage(indexedDB, "non-wire-notaccepted", ["mutation-a"]);
+    const outbox = storage(indexedDB, "plain-error", ["mutation-a"]);
     const record = await outbox.enqueueIntent(queueIntent());
     const client = new FakeClient("ready");
-    client.on("turn/queue", (params) => {
-      // Throw a plain Error — mutationErrorData returns undefined,
-      // so data?.clientMutationId is undefined !== record's id → stop.
-      // But if we make it a WireError with matching clientMutationId and
-      // mutationOutcome "notAccepted", we hit line 137-138 instead.
-      throw new WireError("msg", -32013, {
-        clientMutationId: params.clientMutationId,
-        mutationOutcome: "notAccepted",
-      });
+    client.on("turn/queue", () => {
+      throw new Error("transport failed");
     });
     const dispatcher = new MutationDispatcher(outbox, { getClient: () => client });
 
     await dispatcher.dispatchTargets(["ref-a"]);
 
-    const recoveryRecord = await outbox.getRecovery(record.clientMutationId);
-    expect(recoveryRecord).toBeTruthy();
-    expect(recoveryRecord?.recoveryKind).toBe("rejected");
+    expect(await outbox.getOutbox(record.clientMutationId)).toMatchObject({ state: "submitting" });
+    expect(await outbox.getRecovery(record.clientMutationId)).toBeUndefined();
   });
 
   // Line 198: rejectionReason fallback to data?.mutationOutcome when WireError

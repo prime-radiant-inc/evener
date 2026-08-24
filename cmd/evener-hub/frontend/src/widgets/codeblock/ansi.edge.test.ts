@@ -19,7 +19,7 @@ function plainText(lines: AnsiLine[]): string {
 // Line 124: code === 38 with 256-color (code 5) — background variant (code 48)
 test("256-color background sets the background color", () => {
   const [line] = parseAnsiLines("\u001b[48;5;42mbg\u001b[49m");
-  expect(line).toMatchObject([{ text: "bg", background: { kind: "rgb" } }]);
+  expect(line).toMatchObject([{ text: "bg", background: { kind: "rgb", value: "0, 215, 135" } }]);
 });
 
 // Lines 153-155: code 49 (default background reset)
@@ -34,7 +34,14 @@ test("background reset code 49 clears an active background", () => {
 // Line 181: unknown code that falls through to the default normalized.push(code)
 test("an unknown SGR code passes through without affecting state", () => {
   const [line] = parseAnsiLines("\u001b[99mtext\u001b[0m");
-  expect(line).toMatchObject([{ text: "text" }]);
+  expect(plainText([line ?? []])).toBe("text");
+  expect(line?.[0]).toMatchObject({
+    text: "text",
+    foreground: undefined,
+    background: undefined,
+    bold: false,
+    dim: false,
+  });
 });
 
 // Line 181: code 22 resets both bold and dim
@@ -133,8 +140,7 @@ test("AnsiTailBuffer resets when source shrinks", () => {
 test("AnsiTailBuffer marks truncated when source exceeds max", () => {
   const buf = new AnsiTailBuffer(5);
   const snap = buf.update("a very long string that exceeds the max");
-  expect(snap.truncated).toBe(true);
-  expect(snap.copyText.length).toBeLessThanOrEqual(5);
+  expect(snap).toEqual({ renderedText: "e max", copyText: "e max", truncated: true });
 });
 
 // AnsiTailBuffer: incremental update
@@ -142,15 +148,21 @@ test("AnsiTailBuffer handles incremental appends", () => {
   const buf = new AnsiTailBuffer(50);
   buf.update("first ");
   const snap = buf.update("first second");
-  expect(snap.renderedText).toContain("first second");
+  expect(snap).toEqual({ renderedText: "first second", copyText: "first second", truncated: false });
 });
 
-// AnsiTailBuffer: SGR state carries across updates
-test("AnsiTailBuffer carries SGR state across incremental updates", () => {
-  const buf = new AnsiTailBuffer(50);
-  buf.update("\u001b[31mr");
-  const snap = buf.update("\u001b[31mred text\u001b[0m");
-  expect(snap.renderedText).toContain("red text");
+// The raw SGR opener falls outside the retained tail, so the rendered tail must
+// reconstruct that boundary state rather than losing the color.
+test("AnsiTailBuffer carries SGR state across a truncation boundary", () => {
+  const buf = new AnsiTailBuffer(5);
+  buf.update("\u001b[31mabcdef");
+  const snap = buf.update("\u001b[31mabcdefg");
+
+  expect(snap.copyText).toBe("cdefg");
+  expect(snap.truncated).toBe(true);
+  expect(parseAnsiLines(snap.renderedText)[0]).toMatchObject([
+    { text: "cdefg", foreground: { kind: "named", name: "red" } },
+  ]);
 });
 
 // parseAnsiLines: empty string produces one empty line
@@ -163,5 +175,5 @@ test("parseAnsiLines with empty string produces one empty line", () => {
 // parseAnsiLines: a bundle with only newlines creates empty lines
 test("parseAnsiLines handles content that is only newlines", () => {
   const lines = parseAnsiLines("\n\n");
-  expect(lines.length).toBe(3);
+  expect(lines).toEqual([[], [], []]);
 });

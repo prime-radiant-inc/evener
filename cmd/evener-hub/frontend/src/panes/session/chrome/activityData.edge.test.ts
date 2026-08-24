@@ -11,6 +11,7 @@
 import { describe, expect, it } from "vitest";
 import {
   type ActivityDisclosureState,
+  type ActivitySessionNode,
   activityNodeID,
   parseActivityTree,
   reconcileActivityState,
@@ -70,7 +71,7 @@ describe("parseStringArray edge cases", () => {
       ]),
     );
     expect(tree?.root.entries).toHaveLength(0);
-    expect(tree?.root.branch.error).toBeDefined();
+    expect(tree?.root.branch.error).toBe("incomplete");
   });
 
   it("accepts a valid string array", () => {
@@ -100,7 +101,7 @@ describe("parseWorktree edge cases", () => {
       ]),
     );
     expect(tree?.root.entries).toHaveLength(0);
-    expect(tree?.root.branch.error).toBeDefined();
+    expect(tree?.root.branch.error).toBe("incomplete");
   });
 
   it("rejects a worktree with missing required fields", () => {
@@ -113,7 +114,7 @@ describe("parseWorktree edge cases", () => {
       ]),
     );
     expect(tree?.root.entries).toHaveLength(0);
-    expect(tree?.root.branch.error).toBeDefined();
+    expect(tree?.root.branch.error).toBe("incomplete");
   });
 
   it("accepts a valid worktree", () => {
@@ -164,7 +165,7 @@ describe("copyOptionalInteger nullable", () => {
       ]),
     );
     expect(tree?.root.entries).toHaveLength(0);
-    expect(tree?.root.branch.error).toBeDefined();
+    expect(tree?.root.branch.error).toBe("incomplete");
   });
 });
 
@@ -172,7 +173,7 @@ describe("parseJob missing required fields", () => {
   it("rejects a job missing jobId", () => {
     const tree = parseActivityTree(treeFixture([{ kind: "shell", job: jobFixture({ jobId: undefined }) }]));
     expect(tree?.root.entries).toHaveLength(0);
-    expect(tree?.root.branch.error).toBeDefined();
+    expect(tree?.root.branch.error).toBe("incomplete");
   });
 
   it("rejects a job missing ownerSessionId", () => {
@@ -200,13 +201,13 @@ describe("parseEntry unknown kind", () => {
   it("rejects an entry with an unknown kind", () => {
     const tree = parseActivityTree(treeFixture([{ kind: "unknown", job: {} }]));
     expect(tree?.root.entries).toHaveLength(0);
-    expect(tree?.root.branch.error).toBeDefined();
+    expect(tree?.root.branch.error).toBe("incomplete");
   });
 
   it("rejects an entry that is not a plain object", () => {
     const tree = parseActivityTree(treeFixture(["not-an-object"]));
     expect(tree?.root.entries).toHaveLength(0);
-    expect(tree?.root.branch.error).toBeDefined();
+    expect(tree?.root.branch.error).toBe("incomplete");
   });
 });
 
@@ -237,7 +238,7 @@ describe("parseDelegate mandate validation", () => {
   it("rejects a delegate with a non-string mandate", () => {
     const tree = parseActivityTree(treeFixture([{ kind: "delegate", delegate: delegateFixture({ mandate: 123 }) }]));
     expect(tree?.root.entries).toHaveLength(0);
-    expect(tree?.root.branch.error).toBeDefined();
+    expect(tree?.root.branch.error).toBe("incomplete");
   });
 
   it("accepts a delegate with a string mandate", () => {
@@ -252,8 +253,7 @@ describe("parseDelegate mandate validation", () => {
 });
 
 describe("parseDelegate depth limit", () => {
-  it("applies depth limit when child nesting exceeds MAX_RECURSION_DEPTH", () => {
-    // Build a deeply nested delegate chain that exceeds the depth limit
+  it("annotates and truncates the delegate at MAX_RECURSION_DEPTH", () => {
     let child: Record<string, unknown> | undefined;
     for (let i = 0; i < 70; i++) {
       child = {
@@ -274,22 +274,19 @@ describe("parseDelegate depth limit", () => {
       };
     }
     const tree = parseActivityTree(treeFixture([{ kind: "delegate", delegate: delegateFixture({ child }) }]));
-    // The tree should parse; the deepest child should have a depth-limit error
-    expect(tree).toBeTruthy();
-    const entry = tree?.root.entries[0];
-    if (entry?.kind === "delegate") {
-      // Walk down to find the depth-limited node
-      let current = entry.delegate;
-      while (current.child) {
-        current =
-          current.child.entries.find((e) => e.kind === "delegate")?.kind === "delegate"
-            ? (current.child.entries.find((e) => e.kind === "delegate") as { delegate: typeof current }).delegate
-            : current.child.entries[0]?.kind === "delegate"
-              ? (current.child.entries[0] as { delegate: typeof current }).delegate
-              : current;
-        if (!current.child) break;
-      }
+
+    const delegates = [];
+    let session: ActivitySessionNode | undefined = tree?.root;
+    while (session) {
+      const entry = session.entries.find((candidate) => candidate.kind === "delegate");
+      if (entry?.kind !== "delegate") break;
+      delegates.push(entry.delegate);
+      session = entry.delegate.child;
     }
+
+    expect(delegates).toHaveLength(64);
+    expect(delegates.at(-1)?.branch).toEqual({ truncated: true, error: "depth limit exceeded" });
+    expect(delegates.at(-1)?.child).toBeUndefined();
   });
 });
 

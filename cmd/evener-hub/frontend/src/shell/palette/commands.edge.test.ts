@@ -18,33 +18,42 @@ test("copyToClipboard uses navigator.clipboard.writeText when available", async 
   const writeText = vi.fn().mockResolvedValue(undefined);
   vi.stubGlobal("navigator", { clipboard: { writeText } });
   await copyToClipboard("test text");
-  expect(writeText).toHaveBeenCalledWith("test text");
+  expect(writeText).toHaveBeenCalledExactlyOnceWith("test text");
+  expect(document.querySelector("textarea")).toBeNull();
 });
 
 test("copyToClipboard falls back to execCommand when clipboard API rejects", async () => {
   const writeText = vi.fn().mockRejectedValue(new Error("not allowed"));
-  const execCommand = vi.fn().mockReturnValue(true);
+  const execCommand = vi.fn().mockImplementation(() => {
+    expect(document.querySelector("textarea")?.value).toBe("fallback text");
+    return true;
+  });
   // jsdom already has document.execCommand, but we need to control it
   vi.stubGlobal("navigator", { clipboard: { writeText } });
   const originalExecCommand = document.execCommand;
   document.execCommand = execCommand;
   try {
     await copyToClipboard("fallback text");
-    expect(writeText).toHaveBeenCalled();
-    expect(execCommand).toHaveBeenCalledWith("copy");
+    expect(writeText).toHaveBeenCalledExactlyOnceWith("fallback text");
+    expect(execCommand).toHaveBeenCalledExactlyOnceWith("copy");
+    expect(document.querySelector("textarea")).toBeNull();
   } finally {
     document.execCommand = originalExecCommand;
   }
 });
 
 test("copyToClipboard uses execCommand fallback when clipboard API is unavailable", async () => {
-  const execCommand = vi.fn().mockReturnValue(true);
+  const execCommand = vi.fn().mockImplementation(() => {
+    expect(document.querySelector("textarea")?.value).toBe("fallback text");
+    return true;
+  });
   vi.stubGlobal("navigator", {});
   const originalExecCommand = document.execCommand;
   document.execCommand = execCommand;
   try {
     await copyToClipboard("fallback text");
-    expect(execCommand).toHaveBeenCalledWith("copy");
+    expect(execCommand).toHaveBeenCalledExactlyOnceWith("copy");
+    expect(document.querySelector("textarea")).toBeNull();
   } finally {
     document.execCommand = originalExecCommand;
   }
@@ -56,7 +65,8 @@ test("copyToClipboard rejects when execCommand returns false", async () => {
   const originalExecCommand = document.execCommand;
   document.execCommand = execCommand;
   try {
-    await expect(copyToClipboard("text")).rejects.toThrow();
+    await expect(copyToClipboard("text")).rejects.toThrow("execCommand copy returned false");
+    expect(document.querySelector("textarea")).toBeNull();
   } finally {
     document.execCommand = originalExecCommand;
   }

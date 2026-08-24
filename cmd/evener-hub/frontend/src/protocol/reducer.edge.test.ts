@@ -99,15 +99,29 @@ test("delegate/updated adds a new delegate when none exist", () => {
 
 test("delegate/updated merges an existing delegate with higher projectionRevision", () => {
   const model = testHydrate();
-  // First: add a delegate
-  const dlg1 = delegateInfo({ delegateId: "dlg_1", projectionRevision: 1, latestActivityAt: "2026-01-01T00:00:00Z" });
+  const dlg1 = delegateInfo({
+    delegateId: "dlg_1",
+    projectionRevision: 1,
+    status: "running",
+    outcome: undefined,
+    latestActivityAt: "2026-01-03T00:00:00Z",
+  });
   let result = applyNotification(model, delegateNotification("ref_t", dlg1), 2000);
-  // Then: update with higher revision
-  const dlg2 = delegateInfo({ delegateId: "dlg_1", projectionRevision: 2, latestActivityAt: "2026-01-02T00:00:00Z" });
+  const dlg2 = delegateInfo({
+    delegateId: "dlg_1",
+    projectionRevision: 2,
+    status: "idle",
+    outcome: "completed",
+    latestActivityAt: "2026-01-02T00:00:00Z",
+  });
   result = applyNotification(result, delegateNotification("ref_t", dlg2), 3000);
-  expect(result.delegates).toHaveLength(1);
-  expect(result.delegates?.[0]?.projectionRevision).toBe(2);
-  expect(result.delegates?.[0]?.latestActivityAt).toBe("2026-01-02T00:00:00Z");
+  expect(result.delegates?.[0]).toMatchObject({
+    delegateId: "dlg_1",
+    projectionRevision: 2,
+    status: "idle",
+    outcome: "completed",
+    latestActivityAt: "2026-01-03T00:00:00Z",
+  });
 });
 
 test("delegate/updated with same projectionRevision and later activity updates latestActivityAt", () => {
@@ -115,6 +129,7 @@ test("delegate/updated with same projectionRevision and later activity updates l
   const dlg1 = delegateInfo({
     delegateId: "dlg_1",
     projectionRevision: 1,
+    status: "running",
     latestActivityAt: "2026-01-01T00:00:00Z",
   });
   let result = applyNotification(model, delegateNotification("ref_t", dlg1), 2000);
@@ -122,10 +137,15 @@ test("delegate/updated with same projectionRevision and later activity updates l
   const dlg2 = delegateInfo({
     delegateId: "dlg_1",
     projectionRevision: 1,
+    status: "idle",
     latestActivityAt: "2026-01-03T00:00:00Z",
   });
   result = applyNotification(result, delegateNotification("ref_t", dlg2), 3000);
-  expect(result.delegates?.[0]?.latestActivityAt).toBe("2026-01-03T00:00:00Z");
+  expect(result.delegates?.[0]).toMatchObject({
+    projectionRevision: 1,
+    status: "running",
+    latestActivityAt: "2026-01-03T00:00:00Z",
+  });
 });
 
 test("delegate/updated with same projectionRevision and earlier activity keeps current activity", () => {
@@ -136,6 +156,7 @@ test("delegate/updated with same projectionRevision and earlier activity keeps c
     latestActivityAt: "2026-01-03T00:00:00Z",
   });
   let result = applyNotification(model, delegateNotification("ref_t", dlg1), 2000);
+  const delegatesBefore = result.delegates;
   // Same revision, earlier activity
   const dlg2 = delegateInfo({
     delegateId: "dlg_1",
@@ -143,7 +164,10 @@ test("delegate/updated with same projectionRevision and earlier activity keeps c
     latestActivityAt: "2026-01-01T00:00:00Z",
   });
   result = applyNotification(result, delegateNotification("ref_t", dlg2), 3000);
+  expect(result.delegates).toBe(delegatesBefore);
   expect(result.delegates?.[0]?.latestActivityAt).toBe("2026-01-03T00:00:00Z");
+  expect(result.jobsUpdatedAt).toBe(3000);
+  expect(result.lastFrameAt).toBe(3000);
 });
 
 test("delegate/updated with NaN incoming activity keeps current activity", () => {
@@ -229,7 +253,7 @@ test("delegate/updated for a different ref is a no-op", () => {
   const model = testHydrate();
   const dlg = delegateInfo({ delegateId: "dlg_1" });
   const result = applyNotification(model, delegateNotification("ref_other", dlg), 2000);
-  expect(result.delegates).toEqual([]);
+  expect(result).toBe(model);
 });
 
 // --- evener/jobs/treeUpdated ---
@@ -251,15 +275,17 @@ test("jobs/treeUpdated with higher revision updates jobsTreeRevision", () => {
 test("jobs/treeUpdated with stale revision is a no-op", () => {
   const model = testHydrate();
   let result = applyNotification(model, jobsTreeNotification("ref_t", 10), 2000);
-  const before = result.jobsTreeRevision;
+  const before = result;
   result = applyNotification(result, jobsTreeNotification("ref_t", 5), 3000);
-  expect(result.jobsTreeRevision).toBe(before);
+  expect(result).toBe(before);
+  expect(result.jobsTreeRevision).toBe(10);
+  expect(result.jobsUpdatedAt).toBe(2000);
 });
 
 test("jobs/treeUpdated for a different ref is a no-op", () => {
   const model = testHydrate();
   const result = applyNotification(model, jobsTreeNotification("ref_other", 5), 2000);
-  expect(result.jobsTreeRevision).toBeNull();
+  expect(result).toBe(model);
 });
 
 // --- prependOlderTurns edge case (line 307) ---
@@ -277,7 +303,11 @@ test("prependOlderTurns keeps an unmatched item in the turn", () => {
   const currentTurn: TurnModel = { id: "current", status: "completed", items: [] };
   const model = testHydrate();
   const result = prependOlderTurns({ ...model, turns: [currentTurn] }, { data: [wireTurn], nextCursor: undefined });
-  // The old turn with the unmatched item should be prepended
-  expect(result.turns.length).toBe(2);
-  expect(result.turns[0]?.id).toBe("old_turn");
+  expect(result.turns.map((turn) => turn.id)).toEqual(["old_turn", "current"]);
+  expect(result.turns[0]).toMatchObject({
+    id: "old_turn",
+    status: "completed",
+    items: [{ id: "old_item", type: "message", text: "old message" }],
+  });
+  expect(result.turns[1]).toBe(currentTurn);
 });
