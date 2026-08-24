@@ -248,7 +248,7 @@ func TestScanRecoveryCleanTrailingNewline(t *testing.T) {
 	// A file with one complete record followed by a newline.
 	rec := validAPIAttemptRecord(t)
 	line, _ := json.Marshal(rec)
-	data = append(line, '\n')
+	data := append(line, '\n') //nolint:gocritic // appendAssign: data is a new variable, not reassigning to an existing slice
 	offset, partialTail, err := ScanRecovery(bytes.NewReader(data), len(line)+1)
 	if err != nil {
 		t.Fatalf("ScanRecovery: %v", err)
