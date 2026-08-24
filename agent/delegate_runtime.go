@@ -1136,6 +1136,9 @@ func (runtime delegateRuntime) create(ctx context.Context, args delegateArgs) de
 	}
 	var requestedSandbox *sandbox.SandboxPolicy
 	if strings.TrimSpace(args.Sandbox) != "" || args.SandboxNet != nil {
+		if args.SandboxNet != nil && strings.TrimSpace(args.Sandbox) == "" && !delegateSandboxBackendAvailable(s.sandboxHostFacts()) {
+			return delegateStartFailed(errors.New("invalid_request: sandbox_net cannot be enforced on this host because no sandbox backend is available; omit sandbox_net"))
+		}
 		parentMode, parentNetwork := s.parentSandboxModeNet()
 		requestedSandbox, err = resolveDelegateSandboxRequest(args.Sandbox, args.SandboxNet, parentMode, parentNetwork)
 		if err != nil {
@@ -1162,6 +1165,7 @@ func (runtime delegateRuntime) create(ctx context.Context, args delegateArgs) de
 	}
 	isolation, err := runtime.prepareIsolation(ctx, reservation, worktreeProject, requestedSandbox)
 	if err != nil {
+		err = delegateSandboxFallbackHint(s, args, err)
 		abortErr := s.delegateController.AbortStart(reservation)
 		isolation.cleanup(s, reservation.delegateID)
 		return delegateStartFailed(errors.Join(err, abortErr))
@@ -1407,6 +1411,22 @@ func (runtime delegateRuntime) prepareIsolation(ctx context.Context, reservation
 	isolation.env = env
 	isolation.ownsFreshEnv = ownsFresh
 	return isolation, nil
+}
+
+// delegateSandboxFallbackHint closes the host-capability repair loop in the
+// first rejection. When no backend can enforce a requested sandbox and the
+// caller also supplied sandbox_net, the only enforceable fallback is
+// sandbox="off" with sandbox_net omitted. The explicit value is never dropped;
+// this only makes the rejection actionable before a retry.
+func delegateSandboxFallbackHint(s *Session, args delegateArgs, err error) error {
+	if err == nil || s == nil || args.SandboxNet == nil || delegateSandboxBackendAvailable(s.sandboxHostFacts()) {
+		return err
+	}
+	var refusal *sandbox.RefusalError
+	if !errors.As(err, &refusal) {
+		return err
+	}
+	return fmt.Errorf(`%w; change sandbox to "off" and omit sandbox_net`, err)
 }
 
 func (isolation delegateIsolation) cleanup(s *Session, delegateID string) {

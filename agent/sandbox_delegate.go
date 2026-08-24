@@ -7,6 +7,7 @@ import (
 
 	"primeradiant.com/evener/agent/execenv"
 	"primeradiant.com/evener/agent/internal/delegatestore"
+	"primeradiant.com/evener/agent/internal/tool"
 	"primeradiant.com/evener/agent/sandbox"
 )
 
@@ -17,6 +18,58 @@ type delegatePreparedEnvironment struct {
 }
 
 type delegatePreparedEnvironmentContextKey struct{}
+
+// delegateSandboxSchema derives the provider-facing sandbox surface from the
+// same host facts and parent floor used by delegate validation. A host without
+// an enforcing backend gets no sandbox knobs; a confined parent narrows the
+// mode enum and a network-off parent narrows sandbox_net to false. The handler
+// still rejects explicit values supplied by stale callers, so hiding a knob
+// never turns an invalid request into a silent no-op.
+func (s *Session) delegateSandboxSchema() tool.DelegateSandboxSchema {
+	return s.delegateSandboxSchemaForEnv(s.currentEnv())
+}
+
+// delegateSandboxSchemaForEnv is the lock-safe form used while tool/prompt
+// caches are rebuilt under s.mu. Callers must pass the environment snapshot
+// they already own instead of calling currentEnv again.
+func (s *Session) delegateSandboxSchemaForEnv(env execenv.ExecutionEnvironment) tool.DelegateSandboxSchema {
+	host := s.sandboxHostFacts()
+	if !delegateSandboxBackendAvailable(host) {
+		return tool.DelegateSandboxSchema{Available: false}
+	}
+	parentMode, parentNetwork := parentSandboxModeNetForEnv(env)
+	modes := make([]string, 0, len(sandbox.AllModes()))
+	for _, mode := range sandbox.AllModes() {
+		if mode.AtLeastAsConfining(parentMode) {
+			modes = append(modes, mode.String())
+		}
+	}
+	result := tool.DelegateSandboxSchema{
+		Available:          true,
+		Modes:              modes,
+		SandboxDescription: fmt.Sprintf("The current parent floor permits only these explicit modes: %s.", strings.Join(modes, ", ")),
+	}
+	if !parentNetwork {
+		result.NetworkValues = []bool{false}
+		result.SandboxNetDescription = "Your session has network disabled, so only sandbox_net=false is enforceable."
+	}
+	if parentMode == sandbox.ModeOff {
+		result.RequireNonOffModeForNetwork = true
+		result.SandboxNetDescription += " When sandbox is omitted or set to off, omit sandbox_net; a network setting requires a non-off sandbox mode."
+	}
+	return result
+}
+
+func delegateSandboxBackendAvailable(host sandbox.HostFacts) bool {
+	switch host.OS {
+	case "linux":
+		return host.BwrapCapable
+	case "darwin":
+		return host.SeatbeltAvailable()
+	default:
+		return false
+	}
+}
 
 func (s *Session) prepareSubagentEnvironment(workingDir string, requested *sandbox.SandboxPolicy) (execenv.ExecutionEnvironment, bool, error) {
 	subEnv := s.currentEnv()
@@ -76,7 +129,11 @@ func (s *Session) prepareSubagentEnvironment(workingDir string, requested *sandb
 // (nil/non-enforced policy, or a non-local env) is off with unrestricted network,
 // so a delegate under an off parent may request any box.
 func (s *Session) parentSandboxModeNet() (sandbox.Mode, bool) {
-	if le, ok := s.currentEnv().(*execenv.LocalExecutionEnvironment); ok && le.Sandbox != nil && le.Sandbox.Enforced() {
+	return parentSandboxModeNetForEnv(s.currentEnv())
+}
+
+func parentSandboxModeNetForEnv(env execenv.ExecutionEnvironment) (sandbox.Mode, bool) {
+	if le, ok := env.(*execenv.LocalExecutionEnvironment); ok && le.Sandbox != nil && le.Sandbox.Enforced() {
 		return le.Sandbox.Mode, le.Sandbox.Network
 	}
 	return sandbox.ModeOff, true

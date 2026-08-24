@@ -100,7 +100,7 @@ type stableDelegateCreateResult struct {
 func registerStableDelegateTool(reg *tool.Registry, s *Session) error {
 	reg.Remove("delegate")
 	if err := reg.Register(tool.RegisteredTool{
-		Definition: tool.DefDelegate(s.delegateAgentTypeNames()),
+		Definition: tool.DefDelegateWithSandbox(s.delegateAgentTypeNames(), s.delegateSandboxSchemaForEnv(s.env)),
 		Limit:      schema.ToolOutputLimit{MaxChars: jobToolResultDefaultMaxChar, Strategy: schema.TruncTail},
 		Exec: func(ctx context.Context, env execenv.ExecutionEnvironment, args map[string]any) (any, error) {
 			_ = env
@@ -1090,6 +1090,9 @@ func (s *Session) profileWireToolDefs() []llm.ToolDefinition {
 	nameMap := s.profile.ToolNameMap()
 	defs := s.profile.ToolDefinitions()
 	for i := range defs {
+		if defs[i].Name == "delegate" {
+			defs[i] = tool.DefDelegateWithSandbox(s.delegateAgentTypeNames(), s.delegateSandboxSchemaForEnv(s.env))
+		}
 		defs[i] = wireToolDef(defs[i], nameMap, s.resultToolName())
 	}
 	return defs
@@ -1111,7 +1114,7 @@ func (s *Session) rebuildToolDefsCache() {
 	for _, td := range s.profile.ToolDefinitions() {
 		if registered[td.Name] {
 			if td.Name == "delegate" {
-				td = tool.DefDelegate(s.delegateAgentTypeNames())
+				td = tool.DefDelegateWithSandbox(s.delegateAgentTypeNames(), s.delegateSandboxSchemaForEnv(s.env))
 				// When this session can only grant allowance 0 (own allowance 1),
 				// delegation_allowance has a single legal value — a no-op knob. Hide it
 				// so the model is not offered a parameter it cannot meaningfully set.

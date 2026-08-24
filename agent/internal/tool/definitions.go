@@ -97,13 +97,41 @@ func DefShell() llm.ToolDefinition {
 	}
 }
 
+// DelegateSandboxSchema describes the sandbox controls that the current
+// session can actually enforce. Available=false removes both sandbox knobs;
+// explicit values are still rejected by the handler rather than ignored.
+// Modes and NetworkValues are copied into the returned definition. An empty
+// NetworkValues leaves sandbox_net as an unconstrained boolean, which is the
+// portable full-capability schema used by DefDelegate.
+type DelegateSandboxSchema struct {
+	Available                   bool
+	Modes                       []string
+	NetworkValues               []bool
+	RequireNonOffModeForNetwork bool
+	SandboxDescription          string
+	SandboxNetDescription       string
+}
+
 // DefDelegate defines the delegate tool, which starts a NEW delegate
 // conversation (independent agentic work) and returns its durable stable identity.
 // agentTypes constrains the agent_type enum to the session's
 // available roles; pass nil to omit the enum (free-form). reasoning_effort uses
 // the delegate contract's portable low/medium/high enum; the handler resolves
-// provider-specific details.
+// provider-specific details. The legacy constructor exposes the full sandbox
+// surface; session-owned callers should use DefDelegateWithSandbox so the
+// advertised controls match the host and parent capabilities.
 func DefDelegate(agentTypes []string) llm.ToolDefinition {
+	return DefDelegateWithSandbox(agentTypes, DelegateSandboxSchema{
+		Available: true,
+		Modes:     []string{"off", "read-only", "workspace-write", "restricted"},
+	})
+}
+
+// DefDelegateWithSandbox is DefDelegate with a capability-honest sandbox
+// surface. It keeps the stable delegate contract identical for unrelated
+// parameters while removing or constraining sandbox values the session cannot
+// enforce.
+func DefDelegateWithSandbox(agentTypes []string, sandboxSchema DelegateSandboxSchema) llm.ToolDefinition {
 	strictFalse := false
 	agentTypeSchema := map[string]any{
 		"type":        "string",
@@ -112,7 +140,7 @@ func DefDelegate(agentTypes []string) llm.ToolDefinition {
 	if len(agentTypes) > 0 {
 		agentTypeSchema["enum"] = append([]string(nil), agentTypes...)
 	}
-	return llm.ToolDefinition{
+	def := llm.ToolDefinition{
 		Name: "delegate",
 		Description: "Start a NEW delegate conversation to do independent agentic work; returns one durable `delegate_id` " +
 			"and stable conversation metadata, never an activation job identity. `delegate` never resumes an existing " +
@@ -157,6 +185,43 @@ func DefDelegate(agentTypes []string) llm.ToolDefinition {
 			"required": []string{"task"},
 		},
 	}
+	props := def.Parameters["properties"].(map[string]any)
+	if !sandboxSchema.Available {
+		delete(props, "sandbox")
+		delete(props, "sandbox_net")
+		def.Description += " This session's host cannot enforce per-delegate sandboxing, so `sandbox` and `sandbox_net` are unavailable; do not send them."
+		return def
+	}
+	if len(sandboxSchema.Modes) > 0 {
+		props["sandbox"].(map[string]any)["enum"] = append([]string(nil), sandboxSchema.Modes...)
+	}
+	if len(sandboxSchema.NetworkValues) > 0 {
+		props["sandbox_net"].(map[string]any)["enum"] = append([]bool(nil), sandboxSchema.NetworkValues...)
+	}
+	if sandboxSchema.RequireNonOffModeForNetwork {
+		nonOffModes := make([]string, 0, len(sandboxSchema.Modes))
+		for _, mode := range sandboxSchema.Modes {
+			if mode != "off" {
+				nonOffModes = append(nonOffModes, mode)
+			}
+		}
+		def.Parameters["oneOf"] = []any{
+			map[string]any{"not": map[string]any{"required": []string{"sandbox_net"}}},
+			map[string]any{
+				"required": []string{"sandbox", "sandbox_net"},
+				"properties": map[string]any{
+					"sandbox": map[string]any{"enum": nonOffModes},
+				},
+			},
+		}
+	}
+	if sandboxSchema.SandboxDescription != "" {
+		props["sandbox"].(map[string]any)["description"] = strings.TrimSpace(props["sandbox"].(map[string]any)["description"].(string) + " " + sandboxSchema.SandboxDescription)
+	}
+	if sandboxSchema.SandboxNetDescription != "" {
+		props["sandbox_net"].(map[string]any)["description"] = strings.TrimSpace(props["sandbox_net"].(map[string]any)["description"].(string) + " " + sandboxSchema.SandboxNetDescription)
+	}
+	return def
 }
 
 // DefDelegateSend defines the delegate_send tool, the single follow-up surface
