@@ -402,7 +402,8 @@ func (s *Session) describeImageCall(ctx context.Context, r tool.ExecResult) visi
 
 	// Snapshot the profile under s.mu: the vision side-channel runs during the
 	// round, so a concurrent SetModel (which mutates it under s.mu) must not race
-	// this read (PRI-1958 A2/A4).
+	// this read (PRI-1958 A2/A4). The fixed low vision cap below is deliberately
+	// independent of the session/task reasoning effort.
 	s.mu.Lock()
 	profile := s.profile
 	s.mu.Unlock()

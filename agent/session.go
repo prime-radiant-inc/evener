@@ -579,6 +579,11 @@ type Session struct {
 
 	// stuck detection
 	loopDetectionCount int // how many times loop detection has fired
+	// loopEffortEscalated records that loop detection bumped the session's
+	// reasoning effort ("Your reasoning effort has been increased"). While set,
+	// a lower per-task effort override no longer wins over the escalated
+	// configured effort — the steering message must not lie. Guarded by s.mu.
+	loopEffortEscalated bool
 
 	// transcript writer (nil when StateDir is empty, or when opening it failed)
 	transcript *transcript.Writer
