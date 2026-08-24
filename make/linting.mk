@@ -1,4 +1,4 @@
-.PHONY: lint lint-naming lint-gofmt lint-evenerfuzz lint-eval lint-internal lint-golangci lint-generated lint-fuzz-registry secret-scan
+.PHONY: lint lint-naming lint-gofmt lint-evenerfuzz lint-eval lint-internal lint-golangci lint-generated lint-fuzz-registry lint-cache-clean secret-scan
 
 # secret-scan runs gitleaks over the whole working tree using the committed
 # .gitleaks.toml ruleset. Part of the gate (`make lint`); skips with a warning
@@ -39,8 +39,8 @@ lint-naming:
 ## fails-when: go vet -tags evenerfuzz fails for any module, or the
 ##   tagliatelle pass reports a casing violation.
 lint-evenerfuzz:
-	$(call run_quiet_lint,for m in $(FUZZ_GO_MODULES); do (cd $$m && go vet -tags evenerfuzz ./...) || exit 1; done)
-	$(call run_quiet_lint,for m in $(FUZZ_GO_MODULES); do (cd $$m && golangci-lint run --allow-parallel-runners --build-tags evenerfuzz --enable-only tagliatelle ./...) || exit 1; done)
+	$(call run_quiet_lint,export GOLANGCI_LINT_CACHE="$(GOLANGCI_LINT_CACHE)"; for m in $(FUZZ_GO_MODULES); do (cd $$m && go vet -tags evenerfuzz ./...) || exit 1; done)
+	$(call run_quiet_lint,export GOLANGCI_LINT_CACHE="$(GOLANGCI_LINT_CACHE)"; for m in $(FUZZ_GO_MODULES); do (cd $$m && golangci-lint run --allow-parallel-runners --build-tags evenerfuzz --enable-only tagliatelle ./...) || exit 1; done)
 
 # lint-eval is the same compile floor for the //go:build eval sources: the
 # live-provider eval suites (context-compaction quality, forced notes). This tag
@@ -63,8 +63,8 @@ lint-evenerfuzz:
 ## fails-when: go vet -tags eval fails for any module, or the tagliatelle
 ##   pass reports a casing violation.
 lint-eval:
-	$(call run_quiet_lint,for m in $(FUZZ_GO_MODULES); do (cd $$m && go vet -tags eval ./...) || exit 1; done)
-	$(call run_quiet_lint,for m in $(FUZZ_GO_MODULES); do (cd $$m && golangci-lint run --allow-parallel-runners --build-tags eval --enable-only tagliatelle ./...) || exit 1; done)
+	$(call run_quiet_lint,export GOLANGCI_LINT_CACHE="$(GOLANGCI_LINT_CACHE)"; for m in $(FUZZ_GO_MODULES); do (cd $$m && go vet -tags eval ./...) || exit 1; done)
+	$(call run_quiet_lint,export GOLANGCI_LINT_CACHE="$(GOLANGCI_LINT_CACHE)"; for m in $(FUZZ_GO_MODULES); do (cd $$m && golangci-lint run --allow-parallel-runners --build-tags eval --enable-only tagliatelle ./...) || exit 1; done)
 
 # lint-internal fails if any exported symbol in the agent/llm/providercfg
 # libraries names a evener-internal type — keeping them externally importable.
@@ -106,8 +106,18 @@ lint-internal:
 ##   the fuzz module's ordinary Go is covered too.
 ## fails-when: Either golangci-lint run fails for any module.
 lint-golangci:
-	@MODULES="$(FUZZ_GO_MODULES)" go run ./cmd/evener-dev/bin dev module-lint
-	$(call run_quiet_lint,golangci-lint run --allow-parallel-runners --config .golangci-appwire.yml ./server/...)
+	@MODULES="$(FUZZ_GO_MODULES)" GOLANGCI_LINT_CACHE="$(GOLANGCI_LINT_CACHE)" go run ./cmd/evener-dev/bin dev module-lint
+	$(call run_quiet_lint,GOLANGCI_LINT_CACHE="$(GOLANGCI_LINT_CACHE)" golangci-lint run --allow-parallel-runners --config .golangci-appwire.yml ./server/...)
+
+## Remove the current worktree's golangci-lint cache without touching sibling
+## worktrees or the user's global golangci-lint cache.
+## proves: The current worktree's isolated cache can be reclaimed on demand.
+## trigger: Local cleanup after a tool upgrade or cache diagnosis.
+## requires: golangci-lint.
+## fails-when: golangci-lint cannot clean the configured worktree cache.
+# lint-cache-clean is an intentional local cleanup action; keep it out of LINT_TARGETS so required lint runs can reuse the cache they are checking.
+lint-cache-clean:
+	@GOLANGCI_LINT_CACHE="$(GOLANGCI_LINT_CACHE)" golangci-lint cache clean
 
 # lint-gofmt keeps EVERY tracked Go source formatter-clean, including the ~250
 # files behind //go:build evenerfuzz / eval. It is not redundant with the gofmt
