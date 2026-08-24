@@ -15,6 +15,7 @@
 import { type JSX, useEffect, useRef, useState } from "react";
 import { createConversationStore } from "../state/conversation";
 import type { RootTab } from "../state/navigation";
+import { createVoiceStore } from "../state/voice";
 import { BottomBar, type BottomTab } from "../ui/BottomBar";
 import {
   usePlatformPresentation,
@@ -34,6 +35,7 @@ import type {
 import { ServerSwitcherSheet } from "./ServerSwitcherSheet";
 import { SessionsScreen } from "./SessionsScreen";
 import { SettingsScreen } from "./SettingsScreen";
+import { VoiceScreen } from "./VoiceScreen";
 
 export interface RootShellProps {
   readonly services: ShellServices;
@@ -72,11 +74,13 @@ export function RootShell({ services, stores }: RootShellProps): JSX.Element {
 
   const [switcherOpen, setSwitcherOpen] = useState(false);
   const [addingServer, setAddingServer] = useState(false);
+  const [showVoice, setShowVoice] = useState(false);
 
   // Conversation store created once and reused across re-renders. The store is
   // always created (hook order must be stable); it stays idle until a
   // conversation is pushed. A real ConversationService is wired in a later task.
   const conversationStoreRef = useRef(createConversationStore());
+  const voiceStoreRef = useRef(createVoiceStore());
 
   // Load profiles on mount.
   useEffect(() => {
@@ -205,11 +209,28 @@ export function RootShell({ services, stores }: RootShellProps): JSX.Element {
   // created lazily on first use and reused across re-renders; a real
   // ConversationService is wired in a later task.
   if (inConversation) {
+    if (showVoice) {
+      return (
+        <div {...shellAttrs}>
+          <VoiceScreen
+            conversationStore={conversationStoreRef.current}
+            voiceStore={voiceStoreRef.current}
+            bridge={services.native}
+            composerFocusRef={{ current: null }}
+            onEnd={() => setShowVoice(false)}
+            onKeyboard={() => setShowVoice(false)}
+            connectionStatus="unknown"
+            reducedMotion={reducedMotion}
+          />
+        </div>
+      );
+    }
     return (
       <div {...shellAttrs}>
         <ConversationScreen
           conversationStore={conversationStoreRef.current}
           navigationStore={navigation}
+          onShowVoice={() => setShowVoice(true)}
         />
       </div>
     );
