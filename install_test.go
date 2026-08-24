@@ -325,6 +325,78 @@ func TestInstallScriptInstallsReleaseArchive(t *testing.T) {
 // TestInstallScriptRejectsTamperedArchive feeds install.sh a checksums.txt
 // whose digest cannot match the served archive: the install must fail closed
 // at verification, before anything is installed.
+// TestInstallScriptReportsMissingLatestReleaseAsset pins install.sh's
+// behavior when the default ("latest") download 404s: the documented
+// quickstart one-liner sets no EVENER_INSTALL_VERSION, so a release whose
+// "latest" tag has no matching evener_<os>_<arch>.tar.gz asset must fail
+// with an actionable message pointing at EVENER_INSTALL_VERSION=snapshot,
+// not a bare curl error.
+func TestInstallScriptReportsMissingLatestReleaseAsset(t *testing.T) {
+	t.Parallel()
+	if testing.Short() {
+		t.Skip("release archive install integration test")
+	}
+	if runtime.GOOS == "windows" {
+		t.Skip("install.sh requires a Unix shell")
+	}
+
+	repoRoot, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("getwd: %v", err)
+	}
+	script := filepath.Join(repoRoot, "install.sh")
+
+	home, out, runErr := runInstallScript(t, script, "Darwin", "arm64", map[string]string{
+		"EVENER_INSTALL_VERSION": "latest",
+		"EVENER_FAKE_CURL_404":   "evener_darwin_arm64.tar.gz",
+	})
+	if runErr == nil {
+		t.Fatalf("install succeeded despite a 404 on the release asset; output = %s", out)
+	}
+	if !strings.Contains(out, "Failed to download") {
+		t.Fatalf("failure does not report the download error; output = %s", out)
+	}
+	if !strings.Contains(out, "EVENER_INSTALL_VERSION=snapshot") {
+		t.Fatalf("failure does not point at the snapshot workaround; output = %s", out)
+	}
+	assertNothingInstalled(t, home, out)
+}
+
+// TestInstallScriptReportsMissingPinnedReleaseAsset pins that a 404 against
+// an explicitly pinned version (not "latest") gets the download-failure
+// message without the "latest" nudge — pointing at snapshot would be wrong
+// advice when the user already asked for a specific tag.
+func TestInstallScriptReportsMissingPinnedReleaseAsset(t *testing.T) {
+	t.Parallel()
+	if testing.Short() {
+		t.Skip("release archive install integration test")
+	}
+	if runtime.GOOS == "windows" {
+		t.Skip("install.sh requires a Unix shell")
+	}
+
+	repoRoot, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("getwd: %v", err)
+	}
+	script := filepath.Join(repoRoot, "install.sh")
+
+	home, out, runErr := runInstallScript(t, script, "Darwin", "arm64", map[string]string{
+		"EVENER_INSTALL_VERSION": "v0.1.0",
+		"EVENER_FAKE_CURL_404":   "evener_darwin_arm64.tar.gz",
+	})
+	if runErr == nil {
+		t.Fatalf("install succeeded despite a 404 on the release asset; output = %s", out)
+	}
+	if !strings.Contains(out, "Failed to download") {
+		t.Fatalf("failure does not report the download error; output = %s", out)
+	}
+	if strings.Contains(out, "EVENER_INSTALL_VERSION=snapshot") {
+		t.Fatalf("pinned-version failure should not suggest snapshot; output = %s", out)
+	}
+	assertNothingInstalled(t, home, out)
+}
+
 func TestInstallScriptRejectsTamperedArchive(t *testing.T) {
 	t.Parallel()
 	if testing.Short() {
@@ -526,6 +598,9 @@ if [ -z "$out" ]; then
   exit 2
 fi
 printf '%s\n' "$url" >> "$EVENER_FAKE_CURL_URL_FILE"
+if [ -n "${EVENER_FAKE_CURL_404:-}" ] && [ "$(basename "$url")" = "$EVENER_FAKE_CURL_404" ]; then
+  exit 22
+fi
 case "$(basename "$url")" in
   checksums.txt)
     # Serve the archive's real digest so verification passes; the tamper knob

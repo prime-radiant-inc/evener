@@ -69,8 +69,19 @@ trap cleanup EXIT HUP INT TERM
 
 archive="$tmpdir/$archive_name"
 echo "Downloading $url"
-curl -fsSL "$url" -o "$archive"
-curl -fsSL "$base_url/checksums.txt" -o "$tmpdir/checksums.txt"
+if ! curl -fsSL "$url" -o "$archive"; then
+	echo "Failed to download $url" >&2
+	if [ "$version" = "latest" ]; then
+		echo "The latest tagged release may not have a matching binary yet. Try the" >&2
+		echo "continuous build from main instead:" >&2
+		echo "  EVENER_INSTALL_VERSION=snapshot sh install.sh" >&2
+	fi
+	exit 1
+fi
+if ! curl -fsSL "$base_url/checksums.txt" -o "$tmpdir/checksums.txt"; then
+	echo "Failed to download $base_url/checksums.txt" >&2
+	exit 1
+fi
 
 # The release publishes checksums.txt; installing an unverified archive is
 # not an option. Fail closed when no sha256 tool exists.
