@@ -207,8 +207,10 @@ func TestCovComposerPanelView_ScrollBrowseFooter(t *testing.T) {
 		Width:       80,
 	}
 	got2 := p2.View()
-	if got != got2 {
-		t.Fatalf("views should differ: got %q, got2 %q", got, got2)
+	// The BROWSE mode panel renders a browse indicator; the default
+	// panel does not. The views must differ.
+	if got == got2 {
+		t.Fatalf("views should differ between BROWSE mode and default")
 	}
 }
 
