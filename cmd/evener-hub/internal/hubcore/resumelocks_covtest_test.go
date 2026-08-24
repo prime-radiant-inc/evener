@@ -37,6 +37,11 @@ func TestCovNewResumeLocks(t *testing.T) {
 
 	// The returned mutex must be lockable.
 	m1.Lock()
+	// Verify a second For on the same id returns the same mutex while locked.
+	m1Again := r.For("s1")
+	if m1Again != m1 {
+		t.Fatal("For(s1) returned a different mutex while locked")
+	}
 	m1.Unlock()
 }
 
