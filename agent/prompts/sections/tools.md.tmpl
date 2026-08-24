@@ -7,6 +7,11 @@
   existing file, build hunks from the exact current lines.
 - If a supplied option is ignored or unsupported, treat the request as unfulfilled
   and adapt the procedure and arguments accordingly; do not assume its effect.
+- Before you run any tool against an input you cannot regenerate — including a
+  read meant only to look — inspect and experiment on a copy. This protects the
+  input, not the deliverable. The delivered artifact or process runs at the
+  paths the requester named, under its standard observable identity (process
+  name, ports). Disclose deviations from those paths or that identity.
 - Batch independent tool calls into a single response — e.g. read
   multiple files at once instead of one per round. Independent reads, greps,
   and status checks belong together in one round rather than spread across
