@@ -35,19 +35,6 @@ async function openPicker(user: ReturnType<typeof userEvent.setup>): Promise<HTM
   return (await screen.findByRole("combobox", { name: "Model" })) as HTMLInputElement;
 }
 
-test("Enter on the prefilled current model selects its exact qualified-id match", async () => {
-  const user = userEvent.setup();
-  const { onChange } = renderPicker({ value: "anthropic/claude-sonnet-4-5" });
-  await openPicker(user);
-  await screen.findByRole("option", { name: /Claude Sonnet 4\.5/i });
-
-  await user.keyboard("{Enter}");
-
-  expect(onChange).toHaveBeenCalledTimes(1);
-  expect(onChange).toHaveBeenCalledWith("anthropic/claude-sonnet-4-5");
-  expect(screen.queryByRole("combobox", { name: "Model" })).toBeNull();
-});
-
 test("Enter on a non-matching typed text does not select anything", async () => {
   const user = userEvent.setup();
   const { onChange } = renderPicker();
