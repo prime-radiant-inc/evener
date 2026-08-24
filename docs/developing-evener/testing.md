@@ -33,6 +33,26 @@ When a test needs a model, name that as the behavior under test and keep it out
 of the default suite. When the model is only a way to drive Evener, replace it with
 a scripted `llm.ProviderAdapter` response and assert the Evener side effects.
 
+### Prompt Prose Is Not a Test Oracle
+
+Do not test the presence, absence, equality, order, regex match, token count, or
+snapshot of words or clauses in assembled/system prompts, prompt sections,
+model-facing tool or agent descriptions, or natural-language steering,
+reminder, warning, or tool-result prose. These assertions pin copy, not
+behavior. If a test's only claim is that the prose contains a sentence, delete
+it rather than replacing it with another textual disguise.
+
+Replace prompt-prose assertions with structural or behavioral ones: typed
+template inputs, section identity and order, schema properties and enums,
+capability metadata, route or branch selection, structured event or data
+fields, provider request shape, or downstream side effects. An opaque sentinel
+may prove that user or task data crosses a plumbing boundary, but it must not
+encode or pin natural-language copy.
+
+Exact text assertions are allowed only when the text is itself a machine or API
+contract value, such as a JSON field name, enum token, error code, or CLI flag.
+Prefer asserting such values through their structured representation.
+
 ## Flakes and Timeouts
 
 Two standing rules (Jesse, 2026-07-20/21), both absolute:
