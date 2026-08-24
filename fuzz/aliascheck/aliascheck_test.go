@@ -186,3 +186,58 @@ func TestPopulateFillsEveryReferenceKind(t *testing.T) {
 		t.Error("depth bound did not stop the walk")
 	}
 }
+
+// TestFindSharedStorageFindsSharedPointerInsideSliceElement covers the
+// branch at line 97-99: a slice whose backing arrays differ but whose
+// elements share a nested pointer, so the recursion into Index(i) finds it.
+func TestFindSharedStorageFindsSharedPointerInsideSliceElement(t *testing.T) {
+	count := 42
+	src := outer{Slice: []inner{{Count: &count}}}
+	dst := deepCopy(t, src)
+	// Reintroduce a shared pointer inside a slice element (not the backing
+	// array itself, which the outer check at line 93 would catch first).
+	dst.Slice[0].Count = src.Slice[0].Count
+
+	shared := FindSharedStorage(reflect.ValueOf(src), reflect.ValueOf(dst), "outer")
+	if shared == "" {
+		t.Fatal("shared pointer inside a slice element went unreported")
+	}
+	if !strings.Contains(shared, "outer.Slice[]") {
+		t.Fatalf("report %q does not name the slice element path", shared)
+	}
+}
+
+// TestFindSharedStorageHandlesMismatchedMapKeys covers the branch at line
+// 115-116: a key present in map a but absent from map b, so bv.IsValid()
+// is false and the loop continues past it.
+func TestFindSharedStorageHandlesMismatchedMapKeys(t *testing.T) {
+	val := inner{Count: new(int)}
+	src := outer{Map: map[string]*inner{"shared": &val, "only-in-src": &val}}
+	// Build a dst map that has "shared" (with a genuine copy) but is missing
+	// "only-in-src", so MapIndex returns an invalid Value for the missing key.
+	dst := outer{Map: map[string]*inner{"shared": {Count: new(int)}}}
+	// Make the "shared" entry actually share storage so FindSharedStorage has
+	// something to find after passing the mismatched key.
+	dst.Map["shared"] = src.Map["shared"]
+
+	shared := FindSharedStorage(reflect.ValueOf(src), reflect.ValueOf(dst), "outer")
+	if shared == "" {
+		t.Fatal("expected a shared storage report for the matching key")
+	}
+	if !strings.Contains(shared, "outer.Map[") {
+		t.Fatalf("report %q does not name the map path", shared)
+	}
+}
+
+// TestFindSharedStorageAllKeysAbsentFromDst covers the continue branch at
+// line 116 directly: every key in map a is absent from map b, so bv.IsValid()
+// is false for each key and the loop falls through to return "".
+func TestFindSharedStorageAllKeysAbsentFromDst(t *testing.T) {
+	src := outer{Map: map[string]*inner{"a": {Count: new(int)}, "b": {Count: new(int)}}}
+	dst := outer{Map: map[string]*inner{"c": {Count: new(int)}, "d": {Count: new(int)}}}
+
+	shared := FindSharedStorage(reflect.ValueOf(src), reflect.ValueOf(dst), "outer")
+	if shared != "" {
+		t.Fatalf("maps with disjoint keys reported sharing: %s", shared)
+	}
+}

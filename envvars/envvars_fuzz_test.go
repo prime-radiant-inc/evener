@@ -189,6 +189,15 @@ func fuzzProviders(t *testing.T, raw string, selector uint8) {
 	if AuthModes("evener-envvars-fuzz-missing") != nil {
 		t.Fatal("AuthModes(missing) did not return nil")
 	}
+
+	// RequiresNoCredential is true only for providers whose sole auth mode is
+	// "none". An unknown provider reports false.
+	if RequiresNoCredential(selected.Name) != (len(selected.AuthModes) == 1 && selected.AuthModes[0] == "none") {
+		t.Fatalf("RequiresNoCredential(%q) mismatch", selected.Name)
+	}
+	if RequiresNoCredential("evener-envvars-fuzz-missing") {
+		t.Fatal("RequiresNoCredential(missing) should be false")
+	}
 }
 
 func fuzzRecorderConfig(t *testing.T, raw string) {

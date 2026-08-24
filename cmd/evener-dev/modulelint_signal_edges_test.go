@@ -1,0 +1,114 @@
+//go:build linux || darwin
+
+package dev
+
+import (
+	"os"
+	"strings"
+	"syscall"
+	"testing"
+	"time"
+
+	"primeradiant.com/evener/internal/devtool/report"
+)
+
+// TestPendingSignalNonSyscall covers the non-syscall signal path in
+// pendingSignal (line 300-301).
+func TestPendingSignalNonSyscall(t *testing.T) {
+	t.Setenv("TMPDIR", t.TempDir())
+	signals := make(chan os.Signal, 1)
+	signals <- fakeLintSignal{}
+	r := &lintRun{
+		modules:  []string{"agent"},
+		parallel: 1,
+		stdout:   &strings.Builder{},
+		stderr:   &strings.Builder{},
+		linter:   "sh",
+		newCmd:   echoCmd(nil),
+		grace:    time.Second,
+		signals:  signals,
+	}
+	rep := report.New(r.stdout, "lint")
+	code, interrupted := r.pendingSignal(rep)
+	if !interrupted {
+		t.Fatalf("pendingSignal should return interrupted=true for non-syscall signal")
+	}
+	if code != 143 {
+		t.Fatalf("non-syscall signal exit = %d, want 143 (128+SIGTERM)", code)
+	}
+}
+
+// TestPendingSignalSyscall covers the normal syscall signal path in
+// pendingSignal.
+func TestPendingSignalSyscall(t *testing.T) {
+	t.Setenv("TMPDIR", t.TempDir())
+	signals := make(chan os.Signal, 1)
+	signals <- syscall.SIGINT
+	r := &lintRun{
+		modules:  []string{"agent"},
+		parallel: 1,
+		stdout:   &strings.Builder{},
+		stderr:   &strings.Builder{},
+		linter:   "sh",
+		newCmd:   echoCmd(nil),
+		grace:    time.Second,
+		signals:  signals,
+	}
+	rep := report.New(r.stdout, "lint")
+	code, interrupted := r.pendingSignal(rep)
+	if !interrupted {
+		t.Fatalf("pendingSignal should return interrupted=true")
+	}
+	if code != 130 {
+		t.Fatalf("SIGINT exit = %d, want 130", code)
+	}
+}
+
+// TestPendingSignalNoSignal covers the no-signal path.
+func TestPendingSignalNoSignal(t *testing.T) {
+	t.Setenv("TMPDIR", t.TempDir())
+	signals := make(chan os.Signal, 1)
+	r := &lintRun{
+		modules:  []string{"agent"},
+		parallel: 1,
+		stdout:   &strings.Builder{},
+		stderr:   &strings.Builder{},
+		linter:   "sh",
+		newCmd:   echoCmd(nil),
+		grace:    time.Second,
+		signals:  signals,
+	}
+	rep := report.New(r.stdout, "lint")
+	_, interrupted := r.pendingSignal(rep)
+	if interrupted {
+		t.Fatalf("pendingSignal should return interrupted=false when no signal")
+	}
+}
+
+// TestRunWaveNonSyscallSignal covers the non-syscall signal path in runWave
+// (line 278-279).
+func TestRunWaveNonSyscallSignal(t *testing.T) {
+	t.Setenv("TMPDIR", t.TempDir())
+	signals := make(chan os.Signal, 1)
+	// Send a non-syscall signal before the wave starts
+	signals <- fakeLintSignal{}
+	r := &lintRun{
+		modules:  []string{"agent"},
+		parallel: 1,
+		stdout:   &strings.Builder{},
+		stderr:   &strings.Builder{},
+		linter:   "sh",
+		newCmd:   echoCmd(nil),
+		grace:    time.Second,
+		signals:  signals,
+	}
+	code := r.run()
+	if code != 130 && code != 143 {
+		t.Fatalf("code = %d, want 130 (SIGINT) or 143 (SIGTERM via non-syscall signal)", code)
+	}
+}
+
+type fakeLintSignal struct{}
+
+func (fakeLintSignal) String() string { return "FAKE" }
+func (fakeLintSignal) Signal()        {}
