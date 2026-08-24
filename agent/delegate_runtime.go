@@ -788,6 +788,15 @@ func (runtime delegateRuntime) send(ctx context.Context, delegateID, message str
 	if err != nil {
 		return failed(err)
 	}
+	if maxWaitMS > 0 {
+		canSteer, steerCheckErr := s.delegateController.canSteer(actor, delegateID)
+		if steerCheckErr != nil && !errors.Is(steerCheckErr, errDelegateTargetBusy) {
+			return failed(steerCheckErr)
+		}
+		if canSteer {
+			return failed(errors.New("invalid_request: max_wait_ms is not supported when steering a running delegate; no message was delivered"))
+		}
+	}
 	if plans, steerErr := s.delegateController.Steer(ctx, actor, delegateID, message); steerErr == nil {
 		_ = s.executeDelegateMutationPlans(plans)
 		return stableDelegateSendOutcome{result: sendMessageResult{

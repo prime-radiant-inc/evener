@@ -30,6 +30,39 @@ func editTool(t *testing.T) *tool.RegisteredTool {
 	return reg.Get("edit_file")
 }
 
+func TestExecTool_DelegateRejectsUnsupportedWaitWithoutStarting(t *testing.T) {
+	s := newSession(t, withoutGitSnapshot())
+	s.stateDir = t.TempDir()
+
+	for _, tc := range []struct {
+		name string
+		args string
+	}{
+		{name: "max_wait_ms", args: `{"task":"must not start","max_wait_ms":1000}`},
+		{name: "block", args: `{"task":"must not start","block":true}`},
+		{name: "block_timeout_ms", args: `{"task":"must not start","block_timeout_ms":1000}`},
+		{name: "background", args: `{"task":"must not start","background":true}`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			before := len(s.delegateController.Snapshot().rows)
+			res := s.execTool(context.Background(), llm.ToolCallData{
+				ID:        "delegate-unsupported-" + tc.name,
+				Name:      "delegate",
+				Arguments: json.RawMessage(tc.args),
+			}, "")
+			if !res.IsError {
+				t.Fatalf("delegate with unsupported %s succeeded: %s", tc.name, res.FullOutput)
+			}
+			if !strings.Contains(res.FullOutput, tc.name) {
+				t.Fatalf("delegate error omitted unsupported parameter %s: %s", tc.name, res.FullOutput)
+			}
+			if got := len(s.delegateController.Snapshot().rows); got != before {
+				t.Fatalf("invalid delegate call started %d delegate(s), want none", got-before)
+			}
+		})
+	}
+}
+
 func TestPrepareToolCall_AliasesArgs(t *testing.T) {
 	et := editTool(t)
 	call := llm.ToolCallData{ID: "c1", Name: "edit_file",
