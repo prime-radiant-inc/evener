@@ -1,10 +1,17 @@
 package agent
 
 import (
+	"encoding/json"
 	"fmt"
 	"strings"
 
+	"primeradiant.com/evener/agent/events"
 	taskpkg "primeradiant.com/evener/agent/task"
+)
+
+const (
+	taskCompletionMachineBlockStart = "<evener-task-completion>"
+	taskCompletionMachineBlockEnd   = "</evener-task-completion>"
 )
 
 // formatCurrentTaskSteering wraps a Task into a SYSTEM-REMINDER block that
@@ -90,15 +97,37 @@ func taskReminderAllDone(resultTool string) string {
 // controller's live inline waiters; background and terminal delegates are not
 // included.
 func taskReminderAllDoneWhileDelegatesRun(resultTool string, delegateIDs []string) string {
+	var reminder string
 	if len(delegateIDs) == 0 {
-		return taskReminderAllDone(resultTool)
+		reminder = taskReminderAllDone(resultTool)
+	} else {
+		reminder = "<SYSTEM-REMINDER>\n" +
+			"You have completed all tasks on your task list, but delegate(s) " + strings.Join(delegateIDs, ", ") +
+			" are still running. Wait for their result before deciding whether to finish. " +
+			"If you have other work to do, add it to the task list after the delegate result arrives. " +
+			"Otherwise, deliver your final output with the " + resultTool + " tool after that result.\n" +
+			"</SYSTEM-REMINDER>"
 	}
-	return "<SYSTEM-REMINDER>\n" +
-		"You have completed all tasks on your task list, but delegate(s) " + strings.Join(delegateIDs, ", ") +
-		" are still running. Wait for their result before deciding whether to finish. " +
-		"If you have other work to do, add it to the task list after the delegate result arrives. " +
-		"Otherwise, deliver your final output with the " + resultTool + " tool after that result.\n" +
-		"</SYSTEM-REMINDER>"
+	return reminder + "\n" + formatTaskCompletionMachineBlock(taskCompletionSteeringData(delegateIDs))
+}
+
+func taskCompletionSteeringData(delegateIDs []string) events.TaskCompletionSteeringData {
+	state := events.TaskCompletionReadyForFinalOutput
+	if len(delegateIDs) != 0 {
+		state = events.TaskCompletionWaitingForBlockingDelegates
+	}
+	return events.TaskCompletionSteeringData{
+		CompletionState:     state,
+		BlockingDelegateIDs: append([]string{}, delegateIDs...),
+	}
+}
+
+func formatTaskCompletionMachineBlock(completion events.TaskCompletionSteeringData) string {
+	payload, err := json.Marshal(completion)
+	if err != nil {
+		panic(fmt.Sprintf("marshal task completion steering: %v", err))
+	}
+	return taskCompletionMachineBlockStart + string(payload) + taskCompletionMachineBlockEnd
 }
 
 // taskReminderNudge generates the one-time suggestion to use task_list, wrapped

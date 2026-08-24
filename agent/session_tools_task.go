@@ -280,7 +280,7 @@ func registerTaskTools(reg *tool.Registry, deps *toolDeps) {
 								if deps.blockingDelegateIDs != nil {
 									blockingDelegateIDs = deps.blockingDelegateIDs()
 								}
-								deps.steerTaskCompletion(taskReminderAllDoneWhileDelegatesRun(deps.resultToolName(), blockingDelegateIDs), blockingDelegateIDs)
+								deps.sendTaskCompletionSteering(taskReminderAllDoneWhileDelegatesRun(deps.resultToolName(), blockingDelegateIDs), blockingDelegateIDs)
 								if len(blockingDelegateIDs) == 0 {
 									msg.WriteString("All tasks complete. ")
 								} else {

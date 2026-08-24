@@ -130,6 +130,20 @@ type toolDeps struct {
 	openArtifact func(ref string) (artifactReadSeekCloser, error)
 }
 
+// sendTaskCompletionSteering keeps direct toolDeps constructions compatible
+// with the pre-metadata contract: their generic steer callback still delivers
+// the model-visible machine payload and tasks-done kind. Normal sessions take
+// the typed callback branch and retain the parallel event metadata as well.
+func (d *toolDeps) sendTaskCompletionSteering(msg string, blockingDelegateIDs []string) {
+	if d.steerTaskCompletion != nil {
+		d.steerTaskCompletion(msg, blockingDelegateIDs)
+		return
+	}
+	if d.steer != nil {
+		d.steer(msg, events.SteeringKindTasksDone)
+	}
+}
+
 type artifactReadSeekCloser interface {
 	io.ReaderAt
 	io.Seeker

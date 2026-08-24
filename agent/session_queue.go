@@ -115,7 +115,8 @@ func cloneTaskCompletionSteeringData(data *events.TaskCompletionSteeringData) *e
 		return nil
 	}
 	return &events.TaskCompletionSteeringData{
-		BlockingDelegateIDs: append([]string(nil), data.BlockingDelegateIDs...),
+		CompletionState:     data.CompletionState,
+		BlockingDelegateIDs: append([]string{}, data.BlockingDelegateIDs...),
 	}
 }
 
@@ -135,12 +136,11 @@ func (s *Session) SteerKind(msg, kind string) {
 // SteerTaskCompletion queues tasks-done steering with its blocking delegate
 // dependencies available as typed data as well as rendered model context.
 func (s *Session) SteerTaskCompletion(msg string, blockingDelegateIDs []string) {
+	completion := taskCompletionSteeringData(blockingDelegateIDs)
 	_ = s.trySteerMessage(steeringMessage{
-		Text: msg,
-		Kind: events.SteeringKindTasksDone,
-		TaskCompletion: &events.TaskCompletionSteeringData{
-			BlockingDelegateIDs: append([]string(nil), blockingDelegateIDs...),
-		},
+		Text:           msg,
+		Kind:           events.SteeringKindTasksDone,
+		TaskCompletion: &completion,
 	})
 }
 

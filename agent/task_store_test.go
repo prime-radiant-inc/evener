@@ -1653,12 +1653,12 @@ func TestTaskListTool_UpdateShowsAllComplete(t *testing.T) {
 		t.Fatalf("update error: %s", updateRes.Output)
 	}
 	assertTaskListDone(t, sess)
-	completion := singleTaskCompletionData(t, sess)
-	if completion.TaskCompletion == nil {
-		t.Fatal("tasks-done steering has no structured completion data")
+	completion := singleTaskCompletionLLMPayload(t, sess)
+	if completion.CompletionState != "ready_for_final_output" {
+		t.Fatalf("completion state = %q, want ready_for_final_output", completion.CompletionState)
 	}
-	if len(completion.TaskCompletion.BlockingDelegateIDs) != 0 {
-		t.Fatalf("blocking delegate IDs = %v, want none", completion.TaskCompletion.BlockingDelegateIDs)
+	if len(completion.BlockingDelegateIDs) != 0 {
+		t.Fatalf("blocking delegate IDs = %v, want none", completion.BlockingDelegateIDs)
 	}
 }
 
@@ -1692,9 +1692,12 @@ func TestTaskListTool_UpdateNamesBlockingDelegateDependency(t *testing.T) {
 	if got := root.delegateController.blockingDelegateIDs(root.delegateRootSessionID, root.owningDelegateID); !reflect.DeepEqual(got, []string{fixture.delegateID}) {
 		t.Fatalf("live blocking delegate IDs = %v, want [%s]", got, fixture.delegateID)
 	}
-	completion := singleTaskCompletionData(t, root)
-	if completion.TaskCompletion == nil || !reflect.DeepEqual(completion.TaskCompletion.BlockingDelegateIDs, []string{fixture.delegateID}) {
-		t.Fatalf("tasks-done completion data = %v, want blocking delegate %s", completion.TaskCompletion, fixture.delegateID)
+	completion := singleTaskCompletionLLMPayload(t, root)
+	if completion.CompletionState != "waiting_for_blocking_delegates" {
+		t.Fatalf("completion state = %q, want waiting_for_blocking_delegates", completion.CompletionState)
+	}
+	if !reflect.DeepEqual(completion.BlockingDelegateIDs, []string{fixture.delegateID}) {
+		t.Fatalf("model completion payload = %+v, want blocking delegate %s", completion, fixture.delegateID)
 	}
 
 	close(release)
@@ -1735,9 +1738,9 @@ func TestTaskListTool_UpdateLeavesBackgroundDelegateOutOfDependencyReminder(t *t
 	if got := root.delegateController.blockingDelegateIDs(root.delegateRootSessionID, root.owningDelegateID); len(got) != 0 {
 		t.Fatalf("live blocking delegate IDs = %v, want none", got)
 	}
-	completion := singleTaskCompletionData(t, root)
-	if completion.TaskCompletion == nil || len(completion.TaskCompletion.BlockingDelegateIDs) != 0 {
-		t.Fatalf("tasks-done completion data = %v, want no blocking delegates", completion.TaskCompletion)
+	completion := singleTaskCompletionLLMPayload(t, root)
+	if completion.CompletionState != "ready_for_final_output" || len(completion.BlockingDelegateIDs) != 0 {
+		t.Fatalf("model completion payload = %+v, want ready with no blocking delegates", completion)
 	}
 
 	close(release)
@@ -1811,9 +1814,9 @@ func TestTaskListTool_UpdateIgnoresTerminalDelegates(t *testing.T) {
 			if got := root.delegateController.blockingDelegateIDs(root.delegateRootSessionID, root.owningDelegateID); len(got) != 0 {
 				t.Fatalf("live blocking delegate IDs = %v, want none", got)
 			}
-			completion := singleTaskCompletionData(t, root)
-			if completion.TaskCompletion == nil || len(completion.TaskCompletion.BlockingDelegateIDs) != 0 {
-				t.Fatalf("tasks-done completion data = %v, want no blocking delegates", completion.TaskCompletion)
+			completion := singleTaskCompletionLLMPayload(t, root)
+			if completion.CompletionState != "ready_for_final_output" || len(completion.BlockingDelegateIDs) != 0 {
+				t.Fatalf("model completion payload = %+v, want ready with no blocking delegates", completion)
 			}
 		})
 	}
@@ -1827,20 +1830,57 @@ func assertTaskListDone(t *testing.T, sess *Session) {
 	}
 }
 
-func singleTaskCompletionData(t *testing.T, sess *Session) events.SteeringInjectedData {
+type taskCompletionLLMPayload struct {
+	CompletionState     string   `json:"completion_state"`
+	BlockingDelegateIDs []string `json:"blocking_delegate_ids"`
+}
+
+func singleTaskCompletionLLMPayload(t *testing.T, sess *Session) taskCompletionLLMPayload {
 	t.Helper()
 	sess.mu.Lock()
-	defer sess.mu.Unlock()
 	var matches []steeringMessage
 	for _, message := range sess.steeringQueue {
 		if message.Kind == events.SteeringKindTasksDone {
 			matches = append(matches, message)
 		}
 	}
+	sess.mu.Unlock()
 	if len(matches) != 1 {
 		t.Fatalf("tasks-done steering count = %d, want 1", len(matches))
 	}
-	return steeringInjectedDataFromMessage(matches[0])
+	return parseTaskCompletionLLMPayload(t, steeringMessageToLLM(matches[0]))
+}
+
+func parseTaskCompletionLLMPayload(t *testing.T, message llm.Message) taskCompletionLLMPayload {
+	t.Helper()
+	const (
+		start = "<evener-task-completion>"
+		end   = "</evener-task-completion>"
+	)
+	text := message.Text()
+	if strings.Count(text, start) != 1 || strings.Count(text, end) != 1 {
+		t.Fatalf("model-consumed tasks-done message has no unique machine payload")
+	}
+	jsonStart := strings.Index(text, start) + len(start)
+	jsonEnd := strings.Index(text[jsonStart:], end)
+	if jsonEnd < 0 {
+		t.Fatal("model-consumed tasks-done message has an unterminated machine payload")
+	}
+	raw := text[jsonStart : jsonStart+jsonEnd]
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal([]byte(raw), &fields); err != nil {
+		t.Fatalf("decode model-consumed task completion payload: %v", err)
+	}
+	for _, field := range []string{"completion_state", "blocking_delegate_ids"} {
+		if _, ok := fields[field]; !ok {
+			t.Fatalf("model-consumed task completion payload missing machine field %q", field)
+		}
+	}
+	var payload taskCompletionLLMPayload
+	if err := json.Unmarshal([]byte(raw), &payload); err != nil {
+		t.Fatalf("decode typed model-consumed task completion payload: %v", err)
+	}
+	return payload
 }
 
 func TestTaskListTool_UpdateStaysMinimalWhenBlocked(t *testing.T) {
