@@ -246,7 +246,7 @@ func (e *LocalExecutionEnvironment) scratchSandboxFor(abs string) *sandboxFS {
 		e.scratchFSRoot = ""
 	}
 	sfs := newScratchSandboxFS(root)
-	if _, err := sfs.rootFd(root); err != nil {
+	if err := pinScratchSandboxRoot(sfs, root); err != nil {
 		sfs.close()
 		return nil
 	}

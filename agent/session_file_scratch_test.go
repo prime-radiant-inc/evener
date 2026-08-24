@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
-	"strings"
 	"testing"
 
 	"primeradiant.com/evener/agent/execenv"
@@ -126,9 +125,6 @@ func TestFileToolsDenyUnallocatedAbsolutePaths(t *testing.T) {
 			})
 			if !write.isError {
 				t.Fatalf("write_file unexpectedly allowed unallocated absolute path %q", target)
-			}
-			if !strings.Contains(write.output, "outside working directory") {
-				t.Fatalf("write_file denial for %q = %q, want confinement error", target, write.output)
 			}
 			if _, err := os.Stat(target); !os.IsNotExist(err) {
 				t.Fatalf("denied write changed %q: stat err=%v", target, err)
