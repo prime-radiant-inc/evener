@@ -1137,7 +1137,10 @@ func (runtime delegateRuntime) create(ctx context.Context, args delegateArgs) de
 	var requestedSandbox *sandbox.SandboxPolicy
 	if strings.TrimSpace(args.Sandbox) != "" || args.SandboxNet != nil {
 		if args.SandboxNet != nil && strings.TrimSpace(args.Sandbox) == "" && !delegateSandboxBackendAvailable(s.sandboxHostFacts()) {
-			return delegateStartFailed(errors.New("invalid_request: sandbox_net cannot be enforced on this host because no sandbox backend is available; omit sandbox_net"))
+			return delegateStartFailed(newDelegateSandboxRequestError(
+				errors.New("invalid_request: sandbox_net cannot be enforced on this host because no sandbox backend is available; omit sandbox_net"),
+				"sandbox_net",
+			))
 		}
 		parentMode, parentNetwork := s.parentSandboxModeNet()
 		requestedSandbox, err = resolveDelegateSandboxRequest(args.Sandbox, args.SandboxNet, parentMode, parentNetwork)
@@ -1422,11 +1425,13 @@ func delegateSandboxFallbackHint(s *Session, args delegateArgs, err error) error
 	if err == nil || s == nil || args.SandboxNet == nil || delegateSandboxBackendAvailable(s.sandboxHostFacts()) {
 		return err
 	}
-	var refusal *sandbox.RefusalError
-	if !errors.As(err, &refusal) {
+	if _, ok := errors.AsType[*sandbox.RefusalError](err); !ok {
 		return err
 	}
-	return fmt.Errorf(`%w; change sandbox to "off" and omit sandbox_net`, err)
+	return newDelegateSandboxRequestError(
+		fmt.Errorf(`%w; change sandbox to "off" and omit sandbox_net`, err),
+		"sandbox", "sandbox_net",
+	)
 }
 
 func (isolation delegateIsolation) cleanup(s *Session, delegateID string) {
