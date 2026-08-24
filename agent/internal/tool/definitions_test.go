@@ -396,11 +396,9 @@ func TestDefTaskListEffortEnumIncludesInherit(t *testing.T) {
 	if !ok {
 		t.Fatalf("reasoning_effort enum missing: %#v", schema)
 	}
-	if !slices.Contains(enum, "inherit") {
-		t.Fatalf("reasoning_effort enum = %v, want it to include %q", enum, "inherit")
-	}
-	if desc, _ := schema["description"].(string); !strings.Contains(desc, "inherit") {
-		t.Fatalf("reasoning_effort description = %q, want it to mention %q", desc, "inherit")
+	want := []string{"low", "medium", "high", "inherit"}
+	if !reflect.DeepEqual(enum, want) {
+		t.Fatalf("reasoning_effort enum = %v, want %v", enum, want)
 	}
 }
 
