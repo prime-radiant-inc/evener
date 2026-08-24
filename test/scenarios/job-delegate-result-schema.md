@@ -205,33 +205,36 @@ own `transcript_ref`, the `delegate_send` result, or `delegates.jsonl`.
   remains normative for any payload that reaches capture invalid; that
   path is unit-covered
   (`agent/delegate_resource_runtime_test.go#TestDelegateResourceRuntime_InvalidStructuredResultIsBoundedAndExplained`).
-- Arm (c) must wait for the arm-(a) run to be terminal. Creation is
-  asynchronous, so nothing about turn 1 proves it: DLG1 is terminal once
-  its notification frame has rendered, which is what turn 2 establishes.
-  `job_status(target=<DLG1>)` orients you (`type`, lifecycle `status`,
-  `transcript_ref`) but is NOT the way to learn a result — its own
-  description says delegate status "never returns terminal packet
-  contents" and "Completion is notification-driven; do not poll this
-  waiting for completed". Do **not** expect a busy-refusal failure if
-  you race it: `docs/job-control.md`'s reason vocabulary has no code
-  for this case (kata xmag retired the busy-session code it used to
-  name here, once it was clear no Go source emitted it), and a
-  `delegate_send` aimed at a delegate that is still running
-  live-steers it instead.
-  That result is addressed by `delegate_id`, not `job_id` — the wire
-  result carries `delegate_id`, `type`, `status` and `action:"steered"`
-  and exposes no job identity at all
-  (`agent/session_tools_jobs.go#marshalDelegateSendResult`, which is
-  also where `sendMessageResult.Target` is dropped: the delegate you
-  addressed is the `to` you sent, not a field that comes back). Expect
-  `action:"steered"` against the same `delegate_id` you sent to, and no
-  successor generation.
-  The behaviour is pinned by
+- Arm (c) must wait for the arm-(a) run to be terminal before sending.
+  Creation is asynchronous, so nothing about turn 1 proves it: DLG1 is
+  terminal once its notification frame has rendered, which is what turn 2
+  establishes. `job_status(target=<DLG1>)` orients you (`type`, lifecycle
+  `status`, `transcript_ref`) but is NOT the way to learn a result — its own
+  description says delegate status "never returns terminal packet contents"
+  and "Completion is notification-driven; do not poll this waiting for
+  completed".
+  Arm (c) requests a positive `max_wait_ms` (60000), so it must never be
+  scored as a live steer. Positive-wait `delegate_send` atomically attempts
+  to reserve an idle start; if the target is still running at that admission
+  point, the call is an error whose output is exactly `target_busy`. That
+  rejection delivers no message, has no `action:"steered"`, and has no
+  `wait_ignored_reason`; retry the same follow-up after DLG1's terminal
+  notification instead of treating the refusal as schema loss. The race
+  guarantee is pinned by
+  `agent/delegate_resource_runtime_test.go#TestDelegateResourceRuntime_PositiveWaitCannotSteerAfterIdleToRunningTransition`
+  and the tool-facing fields by
   `agent/delegate_resource_tools_test.go#TestStableDelegateTools_LiveSteerRejectsIgnoredWait`,
-  which asserts the `wait_ignored_reason` a live steer reports; note it
-  does NOT assert `action` or the delegate identity, so do not read it as
-  a pin on the whole result shape. Scoring a steer as a failure here
-  would be scoring shipped behaviour as a bug.
+  which asserts the positive-wait running-target refusal (`call.IsError` and
+  `call.Output == "target_busy"`).
+  By contrast, a zero/omitted-wait send to a running delegate may live-steer:
+  its result is addressed by `delegate_id`, not `job_id`, and carries
+  `delegate_id`, `type`, `status:"running"`, `action:"steered"`, and
+  `running_in_background:true`, with no successor generation. That branch is
+  pinned by
+  `agent/delegate_resource_runtime_test.go#TestDelegateResourceRuntime_RunningSendDoesNotStartSuccessor`.
+  Once DLG1 is terminal, the positive-wait send takes the idle
+  `ReserveStart`/`CommitStart` path and may return the normal completed or
+  timed-out started result described above; it is not a live-steer result.
 - `structured_result` larger than the persistence cap downgrades to
   valid:false + `schema_result_too_large`; keep test payloads tiny so
   the size path never triggers here.
