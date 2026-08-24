@@ -286,6 +286,27 @@ type visionSideChannelResult struct {
 	usage       llm.Usage
 }
 
+// visionSideChannelStats is the machine-readable accounting contract carried
+// in successful image-description steering. Token fields are present only when
+// the provider reported usage; usage_available distinguishes an unavailable
+// report from a real report whose counters happen to be zero.
+type visionSideChannelStats struct {
+	ElapsedMS                int64 `json:"elapsed_ms"`
+	UsageAvailable           bool  `json:"usage_available"`
+	InputTokens              *int  `json:"input_tokens,omitempty"`
+	OutputTokens             *int  `json:"output_tokens,omitempty"`
+	ReasoningTokens          *int  `json:"reasoning_tokens,omitempty"`
+	ReasoningTokensEstimated *int  `json:"reasoning_tokens_estimated,omitempty"`
+	CacheReadTokens          *int  `json:"cache_read_tokens,omitempty"`
+	CacheWriteTokens         *int  `json:"cache_write_tokens,omitempty"`
+	CacheWrite1hTokens       *int  `json:"cache_write_1h_tokens,omitempty"`
+}
+
+const (
+	visionSideChannelStatsOpen  = "<evener:vision_side_channel_stats>"
+	visionSideChannelStatsClose = "</evener:vision_side_channel_stats>"
+)
+
 // describeImage makes a side-channel API call with no tools to describe an image
 // using the model's native vision. Returns the text description, or "" on error.
 // The call includes context from the current task so the description is relevant.
@@ -294,42 +315,36 @@ func (s *Session) describeImage(ctx context.Context, r tool.ExecResult) string {
 }
 
 // describeImageSteering preserves describeImage's text contract while appending
-// side-channel accounting for the model-facing steering message. The accounting
-// is emitted only after a non-empty response succeeds, so failures cannot claim
-// successful usage or latency.
-func (s *Session) describeImageSteering(ctx context.Context, r tool.ExecResult) (string, visionSideChannelResult) {
+// machine-readable side-channel accounting to the model-facing steering
+// message. The accounting is emitted only after a non-empty response succeeds,
+// so failures cannot claim successful usage or latency.
+func (s *Session) describeImageSteering(ctx context.Context, r tool.ExecResult) string {
 	result := s.describeImageCall(ctx, r)
 	if result.description == "" {
-		return "", result
+		return ""
 	}
-	return result.description + "\n" + formatVisionSideChannelSignal(result), result
+	return result.description + "\n" + formatVisionSideChannelStats(result)
 }
 
-func formatVisionSideChannelSignal(result visionSideChannelResult) string {
-	var b strings.Builder
-	fmt.Fprintf(&b, "[vision side-channel: elapsed=%s", result.elapsed)
-	if !visionUsageAvailable(result.usage) {
-		b.WriteString("; usage=unavailable]")
-		return b.String()
+func formatVisionSideChannelStats(result visionSideChannelResult) string {
+	stats := visionSideChannelStats{
+		ElapsedMS:      result.elapsed.Milliseconds(),
+		UsageAvailable: visionUsageAvailable(result.usage),
 	}
-	fmt.Fprintf(&b, "; usage input_tokens=%d output_tokens=%d", result.usage.InputTokens, result.usage.OutputTokens)
-	if result.usage.ReasoningTokens != nil {
-		fmt.Fprintf(&b, " reasoning_tokens=%d", *result.usage.ReasoningTokens)
+	if stats.UsageAvailable {
+		stats.InputTokens = new(result.usage.InputTokens)
+		stats.OutputTokens = new(result.usage.OutputTokens)
+		stats.ReasoningTokens = result.usage.ReasoningTokens
+		stats.ReasoningTokensEstimated = result.usage.ReasoningTokensEstimated
+		stats.CacheReadTokens = result.usage.CacheReadTokens
+		stats.CacheWriteTokens = result.usage.CacheWriteTokens
+		stats.CacheWrite1hTokens = result.usage.CacheWrite1hTokens
 	}
-	if result.usage.ReasoningTokensEstimated != nil {
-		fmt.Fprintf(&b, " reasoning_tokens_estimated=%d", *result.usage.ReasoningTokensEstimated)
+	payload, err := json.Marshal(stats)
+	if err != nil {
+		return ""
 	}
-	if result.usage.CacheReadTokens != nil {
-		fmt.Fprintf(&b, " cache_read_tokens=%d", *result.usage.CacheReadTokens)
-	}
-	if result.usage.CacheWriteTokens != nil {
-		fmt.Fprintf(&b, " cache_write_tokens=%d", *result.usage.CacheWriteTokens)
-	}
-	if result.usage.CacheWrite1hTokens != nil {
-		fmt.Fprintf(&b, " cache_write_1h_tokens=%d", *result.usage.CacheWrite1hTokens)
-	}
-	b.WriteByte(']')
-	return b.String()
+	return visionSideChannelStatsOpen + string(payload) + visionSideChannelStatsClose
 }
 
 func visionUsageAvailable(usage llm.Usage) bool {

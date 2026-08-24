@@ -261,7 +261,7 @@ func (s *Session) persistToolResults(ctx context.Context, calls []llm.ToolCallDa
 
 	for i, r := range results {
 		if len(r.ImageData) > 0 {
-			if desc, sideChannel := s.describeImageSteering(ctx, r); desc != "" {
+			if desc := s.describeImageSteering(ctx, r); desc != "" {
 				// Include the file path so the agent can correlate descriptions to
 				// specific files when multiple images/documents are read in one round.
 				label := "Image description (from vision)"
@@ -279,9 +279,6 @@ func (s *Session) persistToolResults(ctx context.Context, calls []llm.ToolCallDa
 				if abortErr := s.withResponseSideEffects(ctx, func() {
 					s.SteerKind(label+": "+desc+"\n<system-reminder>Visual descriptions are summaries. They may miss or mischaracterize details.</system-reminder>",
 						events.SteeringKindImageDescription)
-					if observe := s.cfg.testOnly.visionSteeringDelivered; observe != nil {
-						observe(sideChannel)
-					}
 				}); abortErr != nil {
 					return abortErr
 				}

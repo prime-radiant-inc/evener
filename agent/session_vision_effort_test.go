@@ -2,8 +2,10 @@ package agent
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
-	"reflect"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -120,10 +122,12 @@ func TestPersistToolResults_VisionSteeringIncludesLatencyAndUsage(t *testing.T) 
 	cacheRead := 9
 	cacheWrite := 10
 	cacheWrite1h := 11
-	var delivered []visionSideChannelResult
 	adapter := &fakeAdapter{
 		name: "openai",
 		steps: []func(req llm.Request) llm.Response{
+			func(req llm.Request) llm.Response {
+				return visionReadFileResponse(filepath.Join(dir, "image.png"))
+			},
 			func(req llm.Request) llm.Response {
 				fakeClock.Advance(125 * time.Millisecond)
 				return llm.Response{
@@ -140,6 +144,7 @@ func TestPersistToolResults_VisionSteeringIncludesLatencyAndUsage(t *testing.T) 
 					},
 				}
 			},
+			func(req llm.Request) llm.Response { return finalResponse("done") },
 		},
 	}
 	c := llm.NewClient()
@@ -147,11 +152,6 @@ func TestPersistToolResults_VisionSteeringIncludesLatencyAndUsage(t *testing.T) 
 	sess, err := NewSession(c, NewOpenAIProfile("m"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{
 		StateDir: dir,
 		clock:    fakeClock,
-		testOnly: testConfig{
-			visionSteeringDelivered: func(result visionSideChannelResult) {
-				delivered = append(delivered, result)
-			},
-		},
 	})
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)
@@ -162,59 +162,43 @@ func TestPersistToolResults_VisionSteeringIncludesLatencyAndUsage(t *testing.T) 
 		}
 	}()
 
-	calls := []llm.ToolCallData{{
-		ID:        "c1",
-		Name:      "read_file",
-		Arguments: []byte(`{"file_path":"/tmp/a.png"}`),
-	}}
-	results := []tool.ExecResult{{
-		CallID:         "c1",
-		ToolName:       "read_file",
-		Output:         toolResultSentinel,
-		ImageData:      []byte("png"),
-		ImageMediaType: "image/png",
-	}}
-	if err := sess.persistToolResults(context.Background(), calls, results); err != nil {
-		t.Fatalf("persistToolResults: %v", err)
+	imagePath := filepath.Join(dir, "image.png")
+	if err := os.WriteFile(imagePath, validPNGFixture(t), 0o600); err != nil {
+		t.Fatalf("write image fixture: %v", err)
 	}
-
-	steered := sess.drainSteering()
-	if len(steered) != 1 {
-		t.Fatalf("steering messages = %d, want 1", len(steered))
+	// TRIPWIRE: scripted in-process provider and local fixture; only fires on a genuine turn-loop hang.
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	if _, err := sess.ProcessInput(ctx, "inspect the image", nil); err != nil {
+		t.Fatalf("ProcessInput: %v", err)
 	}
-	if steered[0].Kind != events.SteeringKindImageDescription || !strings.Contains(steered[0].Text, visionOutputSentinel) {
-		t.Fatalf("vision steering did not carry the structured kind and opaque output sentinel: %#v", steered[0])
+	requests := adapter.Requests()
+	if len(requests) != 3 {
+		t.Fatalf("provider requests = %d, want primary, vision, and post-tool primary requests", len(requests))
 	}
-	if len(delivered) != 1 {
-		t.Fatalf("delivered side-channel results = %d, want 1", len(delivered))
+	stats, fields := parseVisionStatsFromModelRequest(t, requests[2])
+	if stats.ElapsedMS != 125 || !stats.UsageAvailable {
+		t.Fatalf("vision stats = %#v, want elapsed_ms=125 and usage_available=true", stats)
 	}
-	wantUsage := llm.Usage{
-		InputTokens:              101,
-		OutputTokens:             13,
-		TotalTokens:              123,
-		ReasoningTokens:          &reasoning,
-		ReasoningTokensEstimated: &reasoningEstimated,
-		CacheReadTokens:          &cacheRead,
-		CacheWriteTokens:         &cacheWrite,
-		CacheWrite1hTokens:       &cacheWrite1h,
+	wantFields := map[string]int{
+		"input_tokens":               101,
+		"output_tokens":              13,
+		"reasoning_tokens":           7,
+		"reasoning_tokens_estimated": 8,
+		"cache_read_tokens":          9,
+		"cache_write_tokens":         10,
+		"cache_write_1h_tokens":      11,
 	}
-	if delivered[0].elapsed != 125*time.Millisecond || !reflect.DeepEqual(delivered[0].usage, wantUsage) {
-		t.Fatalf("delivered side-channel stats = %#v, want elapsed 125ms and usage %#v", delivered[0], wantUsage)
+	for name, want := range wantFields {
+		var got int
+		if raw, ok := fields[name]; !ok {
+			t.Errorf("model-visible vision stats omitted %q", name)
+		} else if err := json.Unmarshal(raw, &got); err != nil || got != want {
+			t.Errorf("model-visible vision stat %q = %s, want %d", name, raw, want)
+		}
 	}
-	if !visionUsageAvailable(delivered[0].usage) {
-		t.Fatal("populated side-channel usage reported unavailable")
-	}
-
-	// The model-visible metrics must not replace or rewrite the existing raw
-	// tool-result contract persisted before the side-channel steering.
-	sess.mu.Lock()
-	defer sess.mu.Unlock()
-	if len(sess.history) == 0 || len(sess.history[len(sess.history)-1].Message.Content) != 1 {
-		t.Fatalf("tool-result history = %#v", sess.history)
-	}
-	toolResult := sess.history[len(sess.history)-1].Message.Content[0].ToolResult
-	if toolResult == nil || toolResult.Content != toolResultSentinel || string(toolResult.ImageData) != "png" || toolResult.ImageMediaType != "image/png" {
-		t.Fatalf("persisted tool result = %#v", toolResult)
+	if !historyHasSteeringKind(sess, events.SteeringKindImageDescription) {
+		t.Fatal("vision stats reached the provider without an image-description steering turn")
 	}
 }
 
@@ -222,14 +206,17 @@ func TestPersistToolResults_VisionSteeringOmitsAbsentUsage(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
 	fakeClock := agenttest.NewFakeClock()
-	var delivered []visionSideChannelResult
 	adapter := &fakeAdapter{
 		name: "openai",
 		steps: []func(req llm.Request) llm.Response{
 			func(req llm.Request) llm.Response {
+				return visionReadFileResponse(filepath.Join(dir, "image.png"))
+			},
+			func(req llm.Request) llm.Response {
 				fakeClock.Advance(7 * time.Millisecond)
 				return llm.Response{Message: llm.Assistant(visionOutputSentinel), Usage: llm.Usage{}}
 			},
+			func(req llm.Request) llm.Response { return finalResponse("done") },
 		},
 	}
 	c := llm.NewClient()
@@ -237,11 +224,6 @@ func TestPersistToolResults_VisionSteeringOmitsAbsentUsage(t *testing.T) {
 	sess, err := NewSession(c, NewOpenAIProfile("m"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{
 		StateDir: dir,
 		clock:    fakeClock,
-		testOnly: testConfig{
-			visionSteeringDelivered: func(result visionSideChannelResult) {
-				delivered = append(delivered, result)
-			},
-		},
 	})
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)
@@ -252,42 +234,115 @@ func TestPersistToolResults_VisionSteeringOmitsAbsentUsage(t *testing.T) {
 		}
 	}()
 
-	if err := sess.persistToolResults(context.Background(), []llm.ToolCallData{{
-		ID:        "c1",
-		Name:      "read_file",
-		Arguments: []byte(`{"file_path":"/tmp/a.png"}`),
-	}}, []tool.ExecResult{{
-		CallID:         "c1",
-		ToolName:       "read_file",
-		Output:         toolResultSentinel,
-		ImageData:      []byte("png"),
-		ImageMediaType: "image/png",
-	}}); err != nil {
-		t.Fatalf("persistToolResults: %v", err)
+	imagePath := filepath.Join(dir, "image.png")
+	if err := os.WriteFile(imagePath, validPNGFixture(t), 0o600); err != nil {
+		t.Fatalf("write image fixture: %v", err)
 	}
+	// TRIPWIRE: scripted in-process provider and local fixture; only fires on a genuine turn-loop hang.
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	if _, err := sess.ProcessInput(ctx, "inspect the image", nil); err != nil {
+		t.Fatalf("ProcessInput: %v", err)
+	}
+	requests := adapter.Requests()
+	if len(requests) != 3 {
+		t.Fatalf("provider requests = %d, want primary, vision, and post-tool primary requests", len(requests))
+	}
+	stats, fields := parseVisionStatsFromModelRequest(t, requests[2])
+	if stats.ElapsedMS != 7 || stats.UsageAvailable {
+		t.Fatalf("vision stats = %#v, want elapsed_ms=7 and usage_available=false", stats)
+	}
+	if len(fields) != 2 {
+		t.Fatalf("unavailable usage fields = %v, want only elapsed_ms and usage_available", fields)
+	}
+	if !historyHasSteeringKind(sess, events.SteeringKindImageDescription) {
+		t.Fatal("vision stats reached the provider without an image-description steering turn")
+	}
+}
 
-	steered := sess.drainSteering()
-	if len(steered) != 1 {
-		t.Fatalf("steering messages = %d, want 1", len(steered))
+func visionReadFileResponse(path string) llm.Response {
+	return llm.Response{Message: llm.Message{
+		Role: llm.RoleAssistant,
+		Content: []llm.ContentPart{{
+			Kind: llm.ContentToolCall,
+			ToolCall: &llm.ToolCallData{
+				ID:        "call-image",
+				Name:      "read_file",
+				Arguments: []byte(`{"file_path":` + string(visionJSONString(path)) + `}`),
+			},
+		}},
+	}}
+}
+
+func visionJSONString(value string) []byte {
+	encoded, err := json.Marshal(value)
+	if err != nil {
+		panic(err)
 	}
-	if steered[0].Kind != events.SteeringKindImageDescription || !strings.Contains(steered[0].Text, visionOutputSentinel) {
-		t.Fatalf("vision steering did not carry the structured kind and opaque output sentinel: %#v", steered[0])
+	return encoded
+}
+
+type observedVisionStats struct {
+	ElapsedMS      int64 `json:"elapsed_ms"`
+	UsageAvailable bool  `json:"usage_available"`
+}
+
+func parseVisionStatsFromModelRequest(t *testing.T, req llm.Request) (observedVisionStats, map[string]json.RawMessage) {
+	t.Helper()
+	const (
+		openTag  = "<evener:vision_side_channel_stats>"
+		closeTag = "</evener:vision_side_channel_stats>"
+	)
+	var modelText string
+	for _, message := range req.Messages {
+		if text := message.Text(); strings.Contains(text, visionOutputSentinel) {
+			modelText = text
+			break
+		}
 	}
-	if len(delivered) != 1 {
-		t.Fatalf("delivered side-channel results = %d, want 1", len(delivered))
+	if modelText == "" {
+		t.Fatal("post-tool provider request omitted opaque vision description sentinel")
 	}
-	if delivered[0].elapsed != 7*time.Millisecond || !reflect.DeepEqual(delivered[0].usage, llm.Usage{}) {
-		t.Fatalf("delivered side-channel stats = %#v, want elapsed 7ms and zero usage", delivered[0])
+	start := strings.Index(modelText, openTag)
+	end := strings.Index(modelText, closeTag)
+	if start < 0 || end < start {
+		t.Fatal("post-tool provider request omitted machine-readable vision stats block")
 	}
-	if visionUsageAvailable(delivered[0].usage) {
-		t.Fatal("zero side-channel usage reported available")
+	raw := modelText[start+len(openTag) : end]
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal([]byte(raw), &fields); err != nil {
+		t.Fatalf("model-visible vision stats are not JSON: %v", err)
 	}
+	for name := range fields {
+		switch name {
+		case "elapsed_ms", "usage_available", "input_tokens", "output_tokens",
+			"reasoning_tokens", "reasoning_tokens_estimated", "cache_read_tokens",
+			"cache_write_tokens", "cache_write_1h_tokens":
+		default:
+			t.Errorf("model-visible vision stats contain unsupported field %q", name)
+		}
+	}
+	var stats observedVisionStats
+	if err := json.Unmarshal([]byte(raw), &stats); err != nil {
+		t.Fatalf("decode model-visible vision stats: %v", err)
+	}
+	return stats, fields
+}
+
+func historyHasSteeringKind(sess *Session, kind string) bool {
+	sess.mu.Lock()
+	defer sess.mu.Unlock()
+	for _, turn := range sess.history {
+		if turn.SteeringKind == kind {
+			return true
+		}
+	}
+	return false
 }
 
 func TestPersistToolResults_VisionErrorDoesNotClaimSuccessfulUsage(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
-	deliveries := 0
 	adapter := &fakeErrAdapter{
 		name: "openai",
 		steps: []func(req llm.Request) (llm.Response, error){
@@ -304,9 +359,6 @@ func TestPersistToolResults_VisionErrorDoesNotClaimSuccessfulUsage(t *testing.T)
 	c.Register(adapter)
 	sess, err := NewSession(c, NewOpenAIProfile("m"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{
 		StateDir: dir,
-		testOnly: testConfig{
-			visionSteeringDelivered: func(visionSideChannelResult) { deliveries++ },
-		},
 	})
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)
@@ -332,9 +384,6 @@ func TestPersistToolResults_VisionErrorDoesNotClaimSuccessfulUsage(t *testing.T)
 	}
 	if steered := sess.drainSteering(); len(steered) != 0 {
 		t.Fatalf("failed vision call produced model steering: %#v", steered)
-	}
-	if deliveries != 0 {
-		t.Fatalf("failed vision call produced %d structured deliveries", deliveries)
 	}
 }
 
