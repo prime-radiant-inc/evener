@@ -55,12 +55,6 @@ import { useTranscript } from "./transcript/useTranscript";
 // principle as TurnBlock.tsx's own ToolCallItem import).
 import "./transcript/messages";
 import "./transcript/tools";
-import { ComprehensionView } from "./rail/ComprehensionView";
-import { railModelFromTurns } from "./rail/railModel";
-import { SessionRail } from "./rail/SessionRail";
-import { useRailScrollSync } from "./rail/useRailScrollSync";
-import { useRailSetting } from "./rail/useRailSetting";
-import { useRailTheme } from "./rail/useRailTheme";
 import styles from "./session.module.css";
 import { FlowOverlay } from "./transcript/flow/FlowOverlay";
 import { LivenessLine } from "./transcript/flow/LivenessLine";
@@ -304,57 +298,6 @@ export default function Session({ params, paneId, focused: paneFocused }: PanePr
   // this pane was last open, so a reopened session shows where to pick up.
   const seenDividerTurnId = useSeenDivider(ref, model);
 
-  // Session Rail: the 156px canvas rail that replaces the transcript's
-  // native scrollbar. Feature-flagged, default-ON on desktop. The rail
-  // derives its model from the thread's turns (live-faithful: only revealed
-  // data) and syncs bidirectionally with VirtualList's scroll element.
-  const [railEnabled] = useRailSetting();
-  const [railAxis, setRailAxis] = useState<"time" | "turn">("time");
-  const railTheme = useRailTheme();
-  const railModel = useMemo(
-    () => (model && railEnabled ? railModelFromTurns(model.turns, now) : null),
-    [model, railEnabled, now],
-  );
-  const railView = useMemo(
-    () =>
-      railModel
-        ? {
-            kind: railAxis,
-            nowMs: now,
-            startMs: railModel.startMs,
-            ap:
-              railAxis === "turn"
-                ? { denom: Math.max(1, railModel.events.length - 1) }
-                : { end: Math.max(now, railModel.startMs + 600000) },
-          }
-        : null,
-    [railModel, now, railAxis],
-  );
-  const { thumb } = useRailScrollSync({
-    listRef: virtualListRef,
-    view: railView ?? { kind: "time", nowMs: 0, startMs: 0, ap: { end: 600000 } },
-    events: railModel?.events ?? [],
-    onJump: (idx) => {
-      if (idx >= 0 && idx < viewRows.length) {
-        virtualListRef.current?.scrollToIndex(idx, { align: "center" });
-      }
-    },
-  });
-
-  // Comprehension View (Mode 2): full-screen overlay showing the session
-  // tree's rails side-by-side on a shared live clock. Entry: ⌘⇧R + button.
-  const [compViewOpen, setCompViewOpen] = useState(false);
-  useEffect(() => {
-    const onKey = (e: KeyboardEvent) => {
-      if ((e.metaKey || e.ctrlKey) && e.shiftKey && (e.key === "R" || e.key === "r")) {
-        e.preventDefault();
-        setCompViewOpen((v) => !v);
-      }
-    };
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, []);
-
   // Same fallback chain, and same shared resolver, as DockHost's dockview
   // tab title (shell/threadTitle's own doc comment) - the live thread name
   // wins once hydrated, else the rail's already-loaded tree store's title
@@ -442,20 +385,9 @@ export default function Session({ params, paneId, focused: paneFocused }: PanePr
       />
       <FlowOverlay
         top={
-          <>
-            {model.olderCursor && (
-              <LoadOlderRow onLoad={loadOlderReportingError} loading={loadingOlder} error={olderError} />
-            )}
-            <button
-              type="button"
-              className={styles.comprehensionBtn}
-              onClick={() => setCompViewOpen(true)}
-              aria-label="Open comprehension view (⌘⇧R)"
-              title="Comprehension view (⌘⇧R)"
-            >
-              ⤢
-            </button>
-          </>
+          model.olderCursor && (
+            <LoadOlderRow onLoad={loadOlderReportingError} loading={loadingOlder} error={olderError} />
+          )
         }
         pill={
           <NewContentPill
@@ -468,7 +400,7 @@ export default function Session({ params, paneId, focused: paneFocused }: PanePr
         }
       >
         <div className={styles.transcriptContent}>
-          <div className={railEnabled && railModel ? styles.transcriptListWithRail : styles.transcriptList}>
+          <div className={styles.transcriptList}>
             <VirtualList
               ref={virtualListRef}
               dynamic
@@ -545,23 +477,6 @@ export default function Session({ params, paneId, focused: paneFocused }: PanePr
               onChange={flow.restoreViewAnchorAfterMeasurement}
             />
           </div>
-          {railModel && railView && railEnabled && (
-            <SessionRail
-              model={railModel}
-              nowMs={now}
-              axis={railAxis}
-              theme={railTheme}
-              thumb={thumb}
-              playing={model?.status?.type === "active"}
-              ended={model?.status?.type === "ended"}
-              onAxisChange={(a) => setRailAxis(a === "turn" ? "turn" : "time")}
-              onJump={(idx) => {
-                if (idx >= 0 && idx < viewRows.length) {
-                  virtualListRef.current?.scrollToIndex(idx, { align: "center" });
-                }
-              }}
-            />
-          )}
           {showColdStartSkeleton && <ColdStartSkeleton />}
         </div>
       </FlowOverlay>
@@ -614,21 +529,6 @@ export default function Session({ params, paneId, focused: paneFocused }: PanePr
         <EmptyTranscript active={model.status.type === "active"} />
       ) : (
         transcript
-      )}
-      {railEnabled && (
-        <ComprehensionView
-          open={compViewOpen}
-          onClose={() => setCompViewOpen(false)}
-          parentRef={ref}
-          onOpenSession={(sessionRef, turnIdx) => {
-            setCompViewOpen(false);
-            if (sessionRef === ref && turnIdx !== undefined && turnIdx >= 0 && turnIdx < viewRows.length) {
-              virtualListRef.current?.scrollToIndex(turnIdx, { align: "center" });
-            } else if (sessionRef !== ref) {
-              navigate(paneToURL("transcript", { ref: sessionRef }) ?? "");
-            }
-          }}
-        />
       )}
     </PaneScaffold>
   );

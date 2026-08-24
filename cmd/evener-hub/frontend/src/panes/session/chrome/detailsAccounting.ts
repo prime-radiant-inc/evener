@@ -14,19 +14,19 @@ export interface TokenPair {
 // turnUsageTokens narrows one turn's usage to its up/down counts, or null when
 // the turn carries no token data at all.
 //
-// TurnModel.usage is typed `EvenerUsage | undefined` (reducer.ts's
-// wireToTurnModel passes the wire's Turn.usage straight through), so the
-// narrowing here is defensive - shared with the transcript's own per-turn
-// stamp (messages/turnMeta.ts) so both surfaces read a turn's tokens by
-// exactly one rule. The real runtime shape is types.gen.ts's EvenerUsage;
-// anything else on the wire is treated as no data, and so is a pair of
-// zeroes (Go's unset zero value, not a measurement of zero - the same rule
-// EvenerThread.Usage's own contract states).
+// TurnModel.usage is typed `unknown` (reducer.ts's wireToTurnModel passes the
+// wire's Turn.usage straight through without re-typing it), so the narrowing
+// lives here - shared with the transcript's own per-turn stamp (messages/
+// turnMeta.ts) so both surfaces read a turn's tokens by exactly one rule. The
+// real runtime shape is types.gen.ts's EvenerUsage; anything else on the wire is
+// treated as no data, and so is a pair of zeroes (Go's unset zero value, not a
+// measurement of zero - the same rule EvenerThread.Usage's own contract states).
 export function turnUsageTokens(turn: TurnModel): TokenPair | null {
   const usage = turn.usage;
-  if (!usage) return null;
-  const input = usage.inputTokens ?? 0;
-  const output = usage.outputTokens ?? 0;
+  if (typeof usage !== "object" || usage === null) return null;
+  const { inputTokens, outputTokens } = usage as { inputTokens?: unknown; outputTokens?: unknown };
+  const input = typeof inputTokens === "number" ? inputTokens : 0;
+  const output = typeof outputTokens === "number" ? outputTokens : 0;
   if (input === 0 && output === 0) return null;
   return { inputTokens: input, outputTokens: output };
 }

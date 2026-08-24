@@ -25,11 +25,6 @@ import { threadsStore } from "../../stores/threads";
 import { EmptyState, PaneScaffold, VirtualList, type VirtualListHandle } from "../../widgets";
 import { requireClass } from "../../widgets/internal/requireClass";
 import { NOW_TICK_MS, SessionNowContext, useNowTick } from "../session/liveness";
-import { railModelFromTurns } from "../session/rail/railModel";
-import { SessionRail } from "../session/rail/SessionRail";
-import { useRailScrollSync } from "../session/rail/useRailScrollSync";
-import { useRailSetting } from "../session/rail/useRailSetting";
-import { useRailTheme } from "../session/rail/useRailTheme";
 import { exchangeOpenersFor } from "../session/transcript/exchangeOpeners";
 import { LoadOlderRow } from "../session/transcript/flow/LoadOlderRow";
 import { TurnBlock } from "../session/transcript/TurnBlock";
@@ -57,9 +52,7 @@ export interface TranscriptParams {
 
 const CLASS = {
   body: requireClass(styles.body, "transcript.module.css", "body"),
-  bodyRow: requireClass(styles.bodyRow, "transcript.module.css", "bodyRow"),
   list: requireClass(styles.list, "transcript.module.css", "list"),
-  listWithRail: requireClass(styles.listWithRail, "transcript.module.css", "listWithRail"),
 };
 
 // Same average-turn guess SessionPane feeds VirtualList's `dynamic` mode - real
@@ -129,36 +122,6 @@ function ThreadTranscript({ params }: { params: TranscriptParams }) {
     }
   }, [turnCount]);
 
-  // Session Rail (read-only transcript gets the same rail, minus follow-live).
-  const [railEnabled] = useRailSetting();
-  const railTheme = useRailTheme();
-  const railModel = useMemo(
-    () => (model && railEnabled ? railModelFromTurns(model.turns, now) : null),
-    [model, railEnabled, now],
-  );
-  const railView = useMemo(
-    () =>
-      railModel
-        ? {
-            kind: "time" as const,
-            nowMs: now,
-            startMs: railModel.startMs,
-            ap: { end: Math.max(now, railModel.startMs + 600000) },
-          }
-        : null,
-    [railModel, now],
-  );
-  const { thumb } = useRailScrollSync({
-    listRef,
-    view: railView ?? { kind: "time", nowMs: 0, startMs: 0, ap: { end: 600000 } },
-    events: railModel?.events ?? [],
-    onJump: (idx) => {
-      if (idx >= 0 && idx < turnCount) {
-        listRef.current?.scrollToIndex(idx, { align: "center" });
-      }
-    },
-  });
-
   if (!model) {
     return (
       <PaneScaffold title={ref}>
@@ -182,11 +145,11 @@ function ThreadTranscript({ params }: { params: TranscriptParams }) {
       {model.turns.length === 0 ? (
         <EmptyState title="No turns yet" hint="This thread hasn't sent or received anything yet." />
       ) : (
-        <div className={railEnabled && railModel ? CLASS.bodyRow : CLASS.body}>
+        <div className={CLASS.body}>
           {model.olderCursor && (
             <LoadOlderRow onLoad={loadOlderReportingError} loading={loadingOlder} error={olderError} />
           )}
-          <div className={railEnabled && railModel ? CLASS.listWithRail : CLASS.list}>
+          <div className={CLASS.list}>
             <VirtualList
               ref={listRef}
               dynamic
@@ -197,22 +160,6 @@ function ThreadTranscript({ params }: { params: TranscriptParams }) {
               renderRow={(index) => <TurnBlock turn={turnAt(index)} sessionRef={ref} exchangeOpeners={openers} />}
             />
           </div>
-          {railModel && railView && railEnabled && (
-            <SessionRail
-              model={railModel}
-              nowMs={now}
-              axis="time"
-              theme={railTheme}
-              thumb={thumb}
-              playing={false}
-              ended={true}
-              onJump={(idx) => {
-                if (idx >= 0 && idx < model.turns.length) {
-                  listRef.current?.scrollToIndex(idx, { align: "center" });
-                }
-              }}
-            />
-          )}
         </div>
       )}
     </PaneScaffold>

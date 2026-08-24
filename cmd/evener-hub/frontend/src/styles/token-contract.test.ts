@@ -516,7 +516,6 @@ const SEMANTIC_PATH_EXCEPTIONS = new Set([
   "panes/session/chrome/activitypanel.module.css",
   "panes/session/chrome/taskspanel.module.css",
   "panes/session/transcript/tools/sandboxescalation.module.css",
-  "panes/session/rail/rail.module.css",
 ]);
 
 for (const [path, text] of OTHER_STYLESHEETS) {

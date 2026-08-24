@@ -145,16 +145,6 @@ func TestClientRequestWrappersRoundTrip(t *testing.T) {
 			}
 			return nil
 		}},
-		{"ThreadRailSummary", MethodEvenerThreadRailSummary, `{"ref":"local:th"}`, RailSummaryResponse{TotalTokens: 100}, func(ctx context.Context, c *Client) error {
-			out, err := c.ThreadRailSummary(ctx, RailSummaryParams{Ref: "local:th"})
-			if err != nil {
-				return err
-			}
-			if out.TotalTokens != 100 {
-				return errors.New("ThreadRailSummary decode mismatch")
-			}
-			return nil
-		}},
 		{"ThreadStart", MethodThreadStart, `{"harness":"evener","cwd":"/tmp"}`, ThreadStartResponse{Thread: Thread{ID: "th_3"}}, func(ctx context.Context, c *Client) error {
 			out, err := c.ThreadStart(ctx, ThreadStartParams{CWD: "/tmp", Harness: "evener"})
 			if err != nil {

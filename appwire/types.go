@@ -48,7 +48,6 @@ const (
 	MethodEvenerJobsOutput            = "evener/jobs/output"
 	MethodEvenerThreadNameSet         = "evener/thread/name/set"
 	MethodEvenerThreadTranscriptsList = "evener/thread/transcripts/list"
-	MethodEvenerThreadRailSummary     = "evener/thread/railSummary"
 	MethodEvenerSubagentPreview       = "evener/subagentPreview"
 	MethodEvenerPathsComplete         = "evener/paths/complete"
 	MethodEvenerProjectsRecent        = "evener/projects/recent"
@@ -946,45 +945,6 @@ type ThreadTranscriptTarget struct {
 
 type ThreadTranscriptListResponse struct {
 	Data []ThreadTranscriptTarget `json:"data"`
-}
-
-// RailSummaryParams reads the compact full-history summary the Session Rail
-// needs to render a session without paging N windows of full turn text. One
-// bounded response (~60B/turn) instead of the windowed thread/read.
-type RailSummaryParams struct {
-	Ref string `json:"ref"`
-}
-
-// RailSummaryTurn is one per-turn tuple in the summary: when it started, its
-// token strata, result size, and error/user-input/steering flags. Enough for
-// the rail's per-turn visual encoding without carrying turn text.
-type RailSummaryTurn struct {
-	StartedAt   int64 `json:"startedAt"`
-	InTokens    int   `json:"in"`
-	OutTokens   int   `json:"out"`
-	ResultBytes int64 `json:"resultBytes"`
-	Error       bool  `json:"error"`
-	UserInput   bool  `json:"userInput"`
-	Steering    bool  `json:"steering"`
-}
-
-// RailSummaryJob is one job interval for the rail's job micro-lanes.
-type RailSummaryJob struct {
-	JobID      string `json:"jobId"`
-	StartedAt  int64  `json:"startedAt"`
-	FinishedAt int64  `json:"finishedAt,omitempty"`
-	ExitCode   *int   `json:"exitCode,omitempty"`
-	Status     string `json:"status"`
-}
-
-// RailSummaryResponse is the bounded full-history payload for the Session Rail.
-type RailSummaryResponse struct {
-	Turns       []RailSummaryTurn `json:"turns"`
-	Jobs        []RailSummaryJob  `json:"jobs,omitempty"`
-	TotalTokens int               `json:"totalTokens"`
-	ResultBytes int64             `json:"resultBytes"`
-	StartedAt   int64             `json:"startedAt"`
-	EndedAt     int64             `json:"endedAt,omitempty"`
 }
 
 type EvenerSubagentPreviewParams struct {

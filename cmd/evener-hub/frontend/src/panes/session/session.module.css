@@ -4,12 +4,9 @@
 
 .transcriptContent {
   display: flex;
-  flex-direction: row;
+  flex-direction: column;
   height: 100%;
   min-height: 0;
-  /* Container context for the Session Rail's responsive container queries
-   * (rail width: 156px at ≥900px, 96px at 560–899px, 40px at <560px). */
-  container-type: inline-size;
   /* Same containment chain as .turn's own min-width: 0 - every flex link
    * between PaneScaffold's clipped body and the virtual list must be able
    * to shrink below its widest child. */
@@ -20,23 +17,6 @@
   flex: 1;
   min-height: 0;
   min-width: 0;
-}
-
-/* When the Session Rail is active, hide the native scrollbar on the
- * VirtualList's scroll element — the rail IS the scrollbar. */
-.transcriptListWithRail {
-  flex: 1;
-  min-height: 0;
-  min-width: 0;
-}
-
-.transcriptListWithRail > div {
-  scrollbar-width: none;
-}
-
-.transcriptListWithRail > div::-webkit-scrollbar {
-  width: 0;
-  display: none;
 }
 
 .viewSelector > div {
@@ -186,28 +166,4 @@
   display: flex;
   flex-direction: column;
   gap: var(--space-2);
-}
-
-.comprehensionBtn {
-  position: absolute;
-  right: 0;
-  top: 0;
-  height: 26px;
-  min-width: 26px;
-  padding: 0 6px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  background: var(--surface-2);
-  border: 1px solid var(--edge-strong);
-  border-radius: 5px;
-  color: var(--ink-mid);
-  cursor: pointer;
-  font: 600 13px var(--font-mono);
-  z-index: var(--z-raised);
-}
-
-.comprehensionBtn:hover {
-  border-color: var(--hover-2);
-  color: var(--ink-hi);
 }

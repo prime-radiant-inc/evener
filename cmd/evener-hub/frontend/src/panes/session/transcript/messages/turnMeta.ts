@@ -1,13 +1,14 @@
 // Extracts a TurnSeparator's displayable parts from a TurnModel.
 //
-// TurnModel.usage is typed `EvenerUsage | undefined` and TurnModel.cost is
-// `unknown` in protocol/model.ts (reducer.ts passes the wire's Turn.usage/
-// Turn.cost straight through - see wireToTurnModel). usage is narrowed at the
-// point of use via turnUsageTokens (chrome/detailsAccounting.ts), shared with
-// the session-details panel's own token derivation so the two surfaces read
-// one turn's tokens by exactly one rule. cost is narrowed here: its REAL
-// runtime shape, per protocol/types.gen.ts's own Turn interface, is
-// `cost?: string` (already formatted server-side, e.g. "$0.0234").
+// TurnModel.usage/cost are typed `unknown` in protocol/model.ts (reducer.ts
+// passes the wire's Turn.usage/Turn.cost straight through without re-typing
+// them - see wireToTurnModel), so both are narrowed at the point of use. Their
+// REAL runtime shape, per protocol/types.gen.ts's own Turn interface, is
+// `usage?: EvenerUsage` ({inputTokens?, outputTokens?, cacheReadTokens?,
+// totalTokens?}) and `cost?: string` (already formatted server-side, e.g.
+// "$0.0234"). turnUsageTokens (chrome/detailsAccounting.ts) owns the usage
+// narrowing, shared with the session-details panel's own token derivation so
+// the two surfaces read one turn's tokens by exactly one rule.
 import type { TurnModel } from "../../../../protocol/model";
 import { turnUsageTokens } from "../../chrome/detailsAccounting";
 import { formatDurationMs, formatTokenCount } from "./format";

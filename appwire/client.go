@@ -371,12 +371,6 @@ func (c *Client) ThreadTranscriptList(ctx context.Context, params ThreadTranscri
 	return out, err
 }
 
-func (c *Client) ThreadRailSummary(ctx context.Context, params RailSummaryParams) (RailSummaryResponse, error) {
-	var out RailSummaryResponse
-	err := c.request(ctx, MethodEvenerThreadRailSummary, params, &out)
-	return out, err
-}
-
 func (c *Client) ThreadStart(ctx context.Context, params ThreadStartParams) (ThreadStartResponse, error) {
 	var out ThreadStartResponse
 	err := c.request(ctx, MethodThreadStart, params, &out)

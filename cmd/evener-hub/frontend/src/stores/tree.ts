@@ -50,11 +50,6 @@ export interface TreeNode {
   dormant?: boolean;
   updated_at?: string;
   age?: string;
-  // The session's most recent real activity as epoch milliseconds, sourced
-  // from the last event/turn timestamp rather than the file-write updated_at
-  // proxy. The comprehension view consumes this for recency ordering of
-  // subagent rails. Absent for sessions with no known activity.
-  last_activity_at?: number;
   model?: string;
   // Normalized: the wire's `children,omitempty` (absent when there are none)
   // is always a real array here, never absent/undefined - see normalizeNode.

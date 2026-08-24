@@ -771,9 +771,6 @@ func registerMiscHandlers(server *appserver.Server, cfg hubcore.WebConfig, sourc
 	appserver.HandleTyped(server.Router(), appwire.MethodEvenerThreadTranscriptsList, func(ctx context.Context, params appwire.ThreadTranscriptListParams) (appwire.ThreadTranscriptListResponse, error) {
 		return hubThreadTranscriptList(ctx, cfg, sources, params)
 	})
-	appserver.HandleTyped(server.Router(), appwire.MethodEvenerThreadRailSummary, func(ctx context.Context, params appwire.RailSummaryParams) (appwire.RailSummaryResponse, error) {
-		return hubThreadRailSummary(ctx, cfg, sources, params)
-	})
 	appserver.HandleTyped(server.Router(), appwire.MethodEvenerPathsComplete, func(_ context.Context, params appwire.PathsCompleteParams) (appwire.PathsCompleteResponse, error) {
 		return fspaths.CompletePaths(params)
 	})
