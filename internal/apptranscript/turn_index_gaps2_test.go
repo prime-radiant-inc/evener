@@ -152,8 +152,8 @@ func TestScanTurnIndexBlankLine(t *testing.T) {
 		t.Fatal(err)
 	}
 	// header + blank line + entry
-	data := append(headerLine, '\n')
-	data = append(data, '\n') // blank line
+	data := append(headerLine, '\n') //nolint:gocritic // appendAssign: intentional new slice from header
+	data = append(data, '\n')        // blank line
 	data = append(data, entryLine...)
 	data = append(data, '\n')
 	if err := os.WriteFile(path, data, 0o644); err != nil {
@@ -943,7 +943,7 @@ func TestScanTurnIndexStartAtEOF(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	data := append(headerLine, '\n')
+	data := append(headerLine, '\n') //nolint:gocritic // appendAssign: intentional new slice
 	if err := os.WriteFile(path, data, 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -992,7 +992,7 @@ func TestScanTurnIndexMissingHeader(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	data := append(entryLine, '\n')
+	data := append(entryLine, '\n') //nolint:gocritic // appendAssign: intentional new slice
 	if err := os.WriteFile(path, data, 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -1042,7 +1042,7 @@ func TestScanTurnIndexBadEntry(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	data := append(headerLine, '\n')
+	data := append(headerLine, '\n') //nolint:gocritic // appendAssign: intentional new slice
 	// Invalid JSON for entry
 	data = append(data, []byte("{bad entry}\n")...)
 	if err := os.WriteFile(path, data, 0o644); err != nil {

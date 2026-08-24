@@ -74,7 +74,7 @@ func TestWriteDaemonLogSnapshotStatError(t *testing.T) {
 		t.Fatal(err)
 	}
 	if !contains(data, []byte("[hub] earlier output dropped")) {
-		t.Fatalf("snapshot should contain trim notice: %q", data[:min(len(data), 200)])
+		t.Fatalf("snapshot should contain trim notice: %q", data[:minVal(len(data), 200)])
 	}
 }
 
@@ -152,7 +152,7 @@ func TestCopyDaemonLogSnapshotShortRead(t *testing.T) {
 type daemonLogShortReader struct{}
 
 func (*daemonLogShortReader) Read(p []byte) (int, error) {
-	copy(p, []byte("short"))
+	copy(p, "short")
 	return 5, errDaemonLogEOF
 }
 
@@ -174,7 +174,7 @@ func bytesIndex(haystack, needle []byte) int {
 	}
 	for i := 0; i <= len(haystack)-len(needle); i++ {
 		match := true
-		for j := 0; j < len(needle); j++ {
+		for j := range len(needle) {
 			if haystack[i+j] != needle[j] {
 				match = false
 				break
@@ -187,7 +187,7 @@ func bytesIndex(haystack, needle []byte) int {
 	return -1
 }
 
-func min(a, b int) int {
+func minVal(a, b int) int {
 	if a < b {
 		return a
 	}

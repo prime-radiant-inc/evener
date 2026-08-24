@@ -408,7 +408,7 @@ func TestRecomputeActivitySession(t *testing.T) {
 	// A session with a delegate child recomputes recursively.
 	child := &appwire.JobActivitySession{
 		SessionID: "child",
-		Entries:   []appwire.JobActivityEntry{{Kind: "shell", Job: ptrActivityJob(appwire.JobActivityJob{JobID: "j1", Status: "running"})}},
+		Entries:   []appwire.JobActivityEntry{{Kind: "shell", Job: new(appwire.JobActivityJob{JobID: "j1", Status: "running"})}},
 	}
 	root := &appwire.JobActivitySession{
 		SessionID: "root",
@@ -432,7 +432,7 @@ func TestTrimActivityTreeToFit(t *testing.T) {
 		Revision: 1,
 		Root: appwire.JobActivitySession{
 			SessionID: "root", Ref: "local:root",
-			Entries: []appwire.JobActivityEntry{{Kind: "shell", Job: ptrActivityJob(appwire.JobActivityJob{JobID: "j1"})}},
+			Entries: []appwire.JobActivityEntry{{Kind: "shell", Job: new(appwire.JobActivityJob{JobID: "j1"})}},
 		},
 	}
 	got, err := trimActivityTreeToFit(tree, "root")
@@ -456,7 +456,7 @@ func TestTrimActivityTreeToFit_TrimsExcessEntries(t *testing.T) {
 	for range 600 {
 		entries = append(entries, appwire.JobActivityEntry{
 			Kind: "shell",
-			Job:  ptrActivityJob(appwire.JobActivityJob{JobID: "j", Description: big, Status: "completed", Terminal: true}),
+			Job:  new(appwire.JobActivityJob{JobID: "j", Description: big, Status: "completed", Terminal: true}),
 		})
 	}
 	tree := appwire.JobActivityTree{
@@ -497,7 +497,7 @@ func TestTrimActivityTrailingEntry_DelegateChildRecurses(t *testing.T) {
 	child := &appwire.JobActivitySession{
 		SessionID: "child",
 		Entries: []appwire.JobActivityEntry{
-			{Kind: "shell", Job: ptrActivityJob(appwire.JobActivityJob{JobID: "j1"})},
+			{Kind: "shell", Job: new(appwire.JobActivityJob{JobID: "j1"})},
 		},
 	}
 	session := &appwire.JobActivitySession{
@@ -768,5 +768,3 @@ func TestActivityFilterSnapshotToDelegate(t *testing.T) {
 		t.Fatalf("missing delegate should produce empty maps")
 	}
 }
-
-func ptrActivityJob(j appwire.JobActivityJob) *appwire.JobActivityJob { return &j }

@@ -284,8 +284,8 @@ func TestDelegateRestoreOperationalIOError(t *testing.T) {
 
 func TestMissingDelegateRestoreInputReason(t *testing.T) {
 	t.Parallel()
-	stat := func(path string) (os.FileInfo, error) { return os.Stat(path) }
-	readFile := func(path string) ([]byte, error) { return os.ReadFile(path) }
+	stat := os.Stat
+	readFile := os.ReadFile
 
 	// Missing resume metadata (empty child session ID).
 	reason, err := missingDelegateRestoreInputReason("/tmp", delegatestore.Descriptor{}, stat, readFile)
@@ -447,7 +447,7 @@ func TestStableDelegateRole(t *testing.T) {
 	// Agent with empty system prompt falls through.
 	emptyAgent := &plugin.Agent{Name: "empty", SystemPrompt: "  "}
 	selection = subagentModelSelection{agent: emptyAgent}
-	name, prompt = stableDelegateRole(selection, false, s)
+	name, _ = stableDelegateRole(selection, false, s)
 	if name == "empty" {
 		t.Fatalf("name=%q, should fall through empty-prompt agent", name)
 	}

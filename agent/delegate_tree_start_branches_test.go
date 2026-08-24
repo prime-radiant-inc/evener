@@ -572,7 +572,7 @@ func TestInputPersistFailureBatch(t *testing.T) {
 }
 
 func TestInputPersistFailureBatchNilErr(t *testing.T) {
-	c := &delegateTreeController{now: func() time.Time { return time.Now() }}
+	c := &delegateTreeController{now: time.Now}
 	lease := delegateLease{delegateID: "dlg_2", generation: 2}
 	terminal, _ := c.inputPersistFailureBatch(lease, nil)
 	var msg string
@@ -585,7 +585,7 @@ func TestInputPersistFailureBatchNilErr(t *testing.T) {
 }
 
 func TestInputPersistFailureBatchLongMessage(t *testing.T) {
-	c := &delegateTreeController{now: func() time.Time { return time.Now() }}
+	c := &delegateTreeController{now: time.Now}
 	lease := delegateLease{delegateID: "dlg_3", generation: 3}
 	longErr := errors.New(strings.Repeat("x", 600))
 	terminal, _ := c.inputPersistFailureBatch(lease, longErr)
@@ -604,7 +604,7 @@ func TestInputPersistFailureBatchLongMessage(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestStartInputFailureBatch(t *testing.T) {
-	c := &delegateTreeController{now: func() time.Time { return time.Now() }}
+	c := &delegateTreeController{now: time.Now}
 	lease := delegateLease{delegateID: "dlg_1", generation: 1}
 	terminal, finish := c.startInputFailureBatch(lease, delegateFinish{})
 	if terminal.Kind != delegatestore.EventDelegateTerminalPrepared {
@@ -623,7 +623,7 @@ func TestStartInputFailureBatch(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestCommittedStartFailureBatch(t *testing.T) {
-	c := &delegateTreeController{now: func() time.Time { return time.Now() }}
+	c := &delegateTreeController{now: time.Now}
 	lease := delegateLease{delegateID: "dlg_1", generation: 1}
 	terminal, finish := c.committedStartFailureBatch(lease, delegateFinish{})
 	if terminal.Kind != delegatestore.EventDelegateTerminalPrepared {

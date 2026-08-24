@@ -2,6 +2,7 @@ package hub
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
 
@@ -40,7 +41,7 @@ func TestRelayTimerClockWaitCancelledContext(t *testing.T) {
 	clock := relayTimerClock{}
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	if err := clock.Wait(ctx, 10*time.Millisecond); err != context.Canceled {
+	if err := clock.Wait(ctx, 10*time.Millisecond); !errors.Is(err, context.Canceled) {
 		t.Fatalf("Wait with cancelled context should return context.Canceled, got %v", err)
 	}
 }
@@ -115,7 +116,7 @@ func TestSubscribeRelayRecoveryCancelledContext(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 	_, err := subscribeRelayRecovery(ctx, nil, appwire.ThreadReadParams{})
-	if err != context.Canceled {
+	if !errors.Is(err, context.Canceled) {
 		t.Fatalf("expected context.Canceled, got %v", err)
 	}
 }

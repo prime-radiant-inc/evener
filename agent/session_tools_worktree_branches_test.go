@@ -104,14 +104,14 @@ func TestPathEqualOrUnderMore(t *testing.T) {
 
 func TestMetaDirForProject(t *testing.T) {
 	result := metaDirForProject("/project/dir")
-	if result != filepath.Join("/project/dir", ".meta") {
+	if result != filepath.Join("/project/dir", ".meta") { //nolint:gocritic // test needs absolute path
 		t.Fatalf("metaDir = %q", result)
 	}
 }
 
 func TestMetaDirForLaneMore(t *testing.T) {
 	result := metaDirForLane("/project/dir/lane")
-	if result != filepath.Join("/project/dir", ".meta") {
+	if result != filepath.Join("/project/dir", ".meta") { //nolint:gocritic // test needs absolute path
 		t.Fatalf("metaDir = %q", result)
 	}
 }
@@ -753,8 +753,8 @@ func TestWorktreeCreateCoreResultStruct(t *testing.T) {
 
 func TestManagedEntryStruct(t *testing.T) {
 	e := managedEntry{
-		PorcelainEntry: worktree.PorcelainEntry{Path: "/path"},
-		Name:           "wt1",
+		Path: "/path",
+		Name: "wt1",
 	}
 	if e.Name != "wt1" || e.Path != "/path" {
 		t.Fatalf("struct wrong: %+v", e)

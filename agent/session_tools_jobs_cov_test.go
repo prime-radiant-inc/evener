@@ -136,7 +136,7 @@ func TestMarshalBoundedJSON(t *testing.T) {
 		t.Fatalf("happy path: got=%q err=%v", got, err)
 	}
 	// Max chars exceeded.
-	got, err = marshalBoundedJSON(map[string]any{"big": "value"}, 5)
+	_, err = marshalBoundedJSON(map[string]any{"big": "value"}, 5)
 	if err == nil {
 		t.Fatal("should exceed max chars")
 	}
@@ -259,7 +259,7 @@ func TestProjectJobStatus(t *testing.T) {
 		StartedAt: started,
 		EndedAt:   &endedAt,
 		Reason:    "exit_zero",
-		ExitCode:  jobIntPtr(0),
+		ExitCode:  new(0),
 	})
 	if result.JobID != "job_1" || result.Status != "completed" {
 		t.Fatalf("terminal result = %+v", result)
@@ -445,10 +445,4 @@ func TestShellTranscriptRef(t *testing.T) {
 	if got := shellTranscriptRef("job_abc"); got != "job:job_abc" {
 		t.Fatalf("shellTranscriptRef = %q", got)
 	}
-}
-
-func jobIntPtr(v int) *int { return &v }
-
-func shellTranscriptRefTest(jobID string) string {
-	return shellTranscriptRef(jobID)
 }

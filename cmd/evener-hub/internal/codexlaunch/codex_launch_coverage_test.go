@@ -5,6 +5,7 @@ import (
 	"context"
 	"io"
 	"os/exec"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -73,14 +74,7 @@ func TestCodexReadyWaitErrorTimeout(t *testing.T) {
 func TestBuildCodexLaunchArgsDefaultAppServer(t *testing.T) {
 	args := buildCodexLaunchArgs("codex", nil, "ws://127.0.0.1:0")
 	// Should contain "app-server" since no configured args and binary is not "codex-app-server"
-	found := false
-	for _, a := range args {
-		if a == "app-server" {
-			found = true
-			break
-		}
-	}
-	if !found {
+	if !slices.Contains(args, "app-server") {
 		t.Fatalf("expected 'app-server' in args for bare codex binary, got %v", args)
 	}
 	if !argsContainFlag(args, "--listen") {
@@ -153,14 +147,7 @@ func TestCodexLaunchEnvIncludesSpawnedFlag(t *testing.T) {
 
 func TestCodexLaunchEnvOverrides(t *testing.T) {
 	env := codexLaunchEnv(map[string]string{"CUSTOM_VAR": "custom_value"})
-	found := false
-	for _, e := range env {
-		if e == "CUSTOM_VAR=custom_value" {
-			found = true
-			break
-		}
-	}
-	if !found {
+	if !slices.Contains(env, "CUSTOM_VAR=custom_value") {
 		t.Fatal("expected CUSTOM_VAR=custom_value in env")
 	}
 }

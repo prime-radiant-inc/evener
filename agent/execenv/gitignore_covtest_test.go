@@ -3,6 +3,7 @@ package execenv
 import (
 	"context"
 	"os"
+	"strings"
 	"testing"
 	"testing/fstest"
 )
@@ -142,10 +143,12 @@ func TestGlobMatchIsDir(t *testing.T) {
 // in the given directory and returns the loaded ignoreSet.
 func loadIgnoreSetFromLines(t *testing.T, dir string, lines ...string) *ignoreSet {
 	t.Helper()
-	content := ""
+	var sb strings.Builder
 	for _, l := range lines {
-		content += l + "\n"
+		sb.WriteString(l)
+		sb.WriteByte('\n')
 	}
+	content := sb.String()
 	path := ".gitignore"
 	if dir != "." {
 		path = dir + "/.gitignore"

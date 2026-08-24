@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"errors"
 	"testing"
 
 	"primeradiant.com/evener/agent/internal/delegatestore"
@@ -81,7 +82,7 @@ func TestAttentionResolutionPlansLocked_WithIDs(t *testing.T) {
 
 func TestFinalizationReadyLocked_NilClaim(t *testing.T) {
 	c := &delegateTreeController{}
-	if err := c.finalizationReadyLocked(nil); err != errDelegateStaleLease {
+	if err := c.finalizationReadyLocked(nil); !errors.Is(err, errDelegateStaleLease) {
 		t.Fatalf("expected stale lease for nil claim, got %v", err)
 	}
 }
@@ -91,7 +92,7 @@ func TestFinalizationReadyLocked_ClaimNotInMap(t *testing.T) {
 		settlementClaims: map[uint64]*delegateSettlementClaim{},
 	}
 	claim := &delegateSettlementClaim{token: 1}
-	if err := c.finalizationReadyLocked(claim); err != errDelegateStaleLease {
+	if err := c.finalizationReadyLocked(claim); !errors.Is(err, errDelegateStaleLease) {
 		t.Fatalf("expected stale lease, got %v", err)
 	}
 }
@@ -102,7 +103,7 @@ func TestFinalizationReadyLocked_NotReady(t *testing.T) {
 	c := &delegateTreeController{
 		settlementClaims: map[uint64]*delegateSettlementClaim{1: claim},
 	}
-	if err := c.finalizationReadyLocked(claim); err != errDelegateTargetBusy {
+	if err := c.finalizationReadyLocked(claim); !errors.Is(err, errDelegateTargetBusy) {
 		t.Fatalf("expected target busy, got %v", err)
 	}
 }
@@ -114,7 +115,7 @@ func TestFinalizationReadyLocked_NoLiveBinding(t *testing.T) {
 	c := &delegateTreeController{
 		settlementClaims: map[uint64]*delegateSettlementClaim{1: claim},
 	}
-	if err := c.finalizationReadyLocked(claim); err != errDelegateStaleLease {
+	if err := c.finalizationReadyLocked(claim); !errors.Is(err, errDelegateStaleLease) {
 		t.Fatalf("expected stale lease for no live binding, got %v", err)
 	}
 }
@@ -129,7 +130,7 @@ func TestFinalizationReadyLocked_LeaseMismatch(t *testing.T) {
 			"dlg_1": {binding: &delegateRuntimeBinding{lease: delegateLease{delegateID: "dlg_1", generation: 2}}},
 		},
 	}
-	if err := c.finalizationReadyLocked(claim); err != errDelegateStaleLease {
+	if err := c.finalizationReadyLocked(claim); !errors.Is(err, errDelegateStaleLease) {
 		t.Fatalf("expected stale lease for lease mismatch, got %v", err)
 	}
 }
@@ -148,7 +149,7 @@ func TestFinalizationReadyLocked_QuietClaimActive(t *testing.T) {
 			},
 		},
 	}
-	if err := c.finalizationReadyLocked(claim); err != errDelegateTargetBusy {
+	if err := c.finalizationReadyLocked(claim); !errors.Is(err, errDelegateTargetBusy) {
 		t.Fatalf("expected target busy for quiet claim, got %v", err)
 	}
 }
@@ -176,7 +177,7 @@ func TestFinalizationReadyLocked_Ready(t *testing.T) {
 func TestFinalizationReadyForLeaseLocked_QuietClaimActive(t *testing.T) {
 	c := &delegateTreeController{}
 	live := &delegateLiveState{quietClaim: &delegateQuietAttentionClaim{}}
-	if err := c.finalizationReadyForLeaseLocked(delegateLease{delegateID: "dlg_1"}, live); err != errDelegateTargetBusy {
+	if err := c.finalizationReadyForLeaseLocked(delegateLease{delegateID: "dlg_1"}, live); !errors.Is(err, errDelegateTargetBusy) {
 		t.Fatalf("expected target busy, got %v", err)
 	}
 }

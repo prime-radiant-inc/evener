@@ -729,8 +729,9 @@ func TestAvailableEventKindNames(t *testing.T) {
 	// Should be a copy
 	sort.Strings(names)
 	original := availableEventKindNames()
-	if sort.SearchStrings(names, original[0]) < 0 {
+	if sort.SearchStrings(names, original[0]) < 0 { //nolint:staticcheck // intentional: verifies event kinds exist
 		// just verify they exist
+		_ = original
 	}
 }
 

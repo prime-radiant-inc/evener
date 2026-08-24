@@ -264,7 +264,7 @@ func TestNormalizeDeletionLookup(t *testing.T) {
 		t.Fatalf("ref = %q, want local:%s", ref, covTestThreadID)
 	}
 	// Empty ref with valid session-id threadID — ref derived from threadID.
-	ref, threadID = normalizeDeletionLookup("", covTestThreadID)
+	ref, _ = normalizeDeletionLookup("", covTestThreadID)
 	if ref != "local:"+covTestThreadID {
 		t.Fatalf("ref = %q, want local:%s", ref, covTestThreadID)
 	}

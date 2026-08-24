@@ -215,7 +215,7 @@ func TestFindSharedStorageHandlesMismatchedMapKeys(t *testing.T) {
 	src := outer{Map: map[string]*inner{"shared": &val, "only-in-src": &val}}
 	// Build a dst map that has "shared" (with a genuine copy) but is missing
 	// "only-in-src", so MapIndex returns an invalid Value for the missing key.
-	dst := outer{Map: map[string]*inner{"shared": &inner{Count: new(int)}}}
+	dst := outer{Map: map[string]*inner{"shared": {Count: new(int)}}}
 	// Make the "shared" entry actually share storage so FindSharedStorage has
 	// something to find after passing the mismatched key.
 	dst.Map["shared"] = src.Map["shared"]

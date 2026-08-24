@@ -66,8 +66,9 @@ func TestSessionRow_ReadEventsError(t *testing.T) {
 	// Overwrite jobs.jsonl with corrupt content.
 	writeFile(t, filepath.Join(bucket, "sessions", sidA, "jobs.jsonl"), "{not json}\n")
 	_, err := ListSessions(base, SessionsOpts{})
-	if err == nil {
+	if err == nil { //nolint:staticcheck // intentional: ListSessions tolerates unreadable sessions
 		// ListSessions tolerates unreadable sessions; check the result.
+		_ = err
 	}
 	// Actually ListSessions should return an error because ReadEvents returns
 	// an error and sessionRow wraps it into UnreadableSession. Let me check

@@ -43,7 +43,7 @@ func TestValidateDelegateGrant(t *testing.T) {
 func TestDelegateStartFailed(t *testing.T) {
 	err := errors.New("boom")
 	result := delegateStartFailed(err)
-	if result.Type != delegateResourceType || result.Status != jobstore.StatusFailed || result.Reason != "start_failed" || result.Err != err {
+	if result.Type != delegateResourceType || result.Status != jobstore.StatusFailed || result.Reason != "start_failed" || !errors.Is(result.Err, err) {
 		t.Fatalf("delegateStartFailed = %+v", result)
 	}
 }
@@ -53,7 +53,7 @@ func TestDelegateStartFailed(t *testing.T) {
 func TestSendMessageFailed(t *testing.T) {
 	err := errors.New("send failed")
 	result := sendMessageFailed("caller", err)
-	if result.Target != "caller" || result.Err != err {
+	if result.Target != "caller" || !errors.Is(result.Err, err) {
 		t.Fatalf("sendMessageFailed = %+v", result)
 	}
 }

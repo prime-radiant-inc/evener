@@ -7,7 +7,7 @@ import (
 // TestMergeLayersMaxConcurrentDelegateTurns covers the MaxConcurrentDelegateTurns
 // merge path (line 130-134).
 func TestMergeLayersMaxConcurrentDelegateTurns(t *testing.T) {
-	l := Layer{MaxConcurrentDelegateTurns: ptrInt(4)}
+	l := Layer{MaxConcurrentDelegateTurns: new(4)}
 	got, diags := mergeLayers(map[LayerName]Layer{
 		LayerLaunch: l,
 	})
@@ -25,7 +25,7 @@ func TestMergeLayersMaxConcurrentDelegateTurns(t *testing.T) {
 // TestMergeLayersMaxRetainedTerminal covers the MaxRetainedTerminal merge path
 // (line 136-140).
 func TestMergeLayersMaxRetainedTerminal(t *testing.T) {
-	l := Layer{MaxRetainedTerminal: ptrInt(10)}
+	l := Layer{MaxRetainedTerminal: new(10)}
 	got, diags := mergeLayers(map[LayerName]Layer{
 		LayerLaunch: l,
 	})
@@ -42,7 +42,7 @@ func TestMergeLayersMaxRetainedTerminal(t *testing.T) {
 
 // TestMergeLayersBothOptionalFields covers both fields set together.
 func TestMergeLayersBothOptionalFields(t *testing.T) {
-	l := Layer{MaxConcurrentDelegateTurns: ptrInt(2), MaxRetainedTerminal: ptrInt(5)}
+	l := Layer{MaxConcurrentDelegateTurns: new(2), MaxRetainedTerminal: new(5)}
 	got, _ := mergeLayers(map[LayerName]Layer{
 		LayerLaunch: l,
 	})
@@ -53,5 +53,3 @@ func TestMergeLayersBothOptionalFields(t *testing.T) {
 		t.Fatalf("MaxRetainedTerminal = %v, want 5", got.Effective.MaxRetainedTerminal)
 	}
 }
-
-func ptrInt(v int) *int { return &v }

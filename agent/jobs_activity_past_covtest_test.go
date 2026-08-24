@@ -3,6 +3,7 @@ package agent
 import (
 	"os"
 	"path/filepath"
+	"slices"
 	"testing"
 
 	"primeradiant.com/evener/agent/internal/delegatestore"
@@ -244,7 +245,7 @@ func TestLoadHistoricalStableActivityWithAttention_TornTailDiagnostic(t *testing
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := f.Write([]byte(`{"events":[{"kind`)); err != nil {
+	if _, err := f.WriteString(`{"events":[{"kind`); err != nil {
 		_ = f.Close()
 		t.Fatal(err)
 	}
@@ -254,14 +255,7 @@ func TestLoadHistoricalStableActivityWithAttention_TornTailDiagnostic(t *testing
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	found := false
-	for _, d := range diags {
-		if d == "delegate_journal_torn_tail: ignored unterminated trailing batch" {
-			found = true
-			break
-		}
-	}
-	if !found {
+	if !slices.Contains(diags, "delegate_journal_torn_tail: ignored unterminated trailing batch") {
 		t.Fatalf("expected torn tail diagnostic, got %v", diags)
 	}
 }
@@ -358,7 +352,7 @@ func TestLoadHistoricalStableActivity_TornTailDiagnostic(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := f.Write([]byte(`{"events":[{"kind`)); err != nil {
+	if _, err := f.WriteString(`{"events":[{"kind`); err != nil {
 		_ = f.Close()
 		t.Fatal(err)
 	}
@@ -368,14 +362,7 @@ func TestLoadHistoricalStableActivity_TornTailDiagnostic(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	found := false
-	for _, d := range diags {
-		if d == "delegate_journal_torn_tail: ignored unterminated trailing batch" {
-			found = true
-			break
-		}
-	}
-	if !found {
+	if !slices.Contains(diags, "delegate_journal_torn_tail: ignored unterminated trailing batch") {
 		t.Fatalf("expected torn tail diagnostic, got %v", diags)
 	}
 }

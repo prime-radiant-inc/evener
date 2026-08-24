@@ -571,7 +571,7 @@ func TestRewriteRegionWithCRLF(t *testing.T) {
 	marker := beginMarker("building")
 	body := "new content"
 	// Build a CRLF doc with a proper marked region.
-	doc := []byte("# Prose\r\n" + string(marker[:len(marker)-1]) + "\r\nold\r\n" + endMarker + "\r\nmore\r\n")
+	doc := []byte("# Prose\r\n" + marker[:len(marker)-1] + "\r\nold\r\n" + endMarker + "\r\nmore\r\n")
 	out, err := RewriteRegion(doc, "building", body)
 	if err != nil {
 		t.Fatalf("RewriteRegion with CRLF: %v", err)

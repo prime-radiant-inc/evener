@@ -46,7 +46,7 @@ func TestProjectDeletionStateDirFromMap(t *testing.T) {
 func TestProjectDeletionStateDirFromConfig(t *testing.T) {
 	s := &WebServer{cfg: hubcore.WebConfig{StateDir: "/data"}}
 	got := s.projectDeletionStateDir("proj", "thread1", nil)
-	if got != filepath.Join("/data", "projects", "proj") {
+	if got != filepath.Join("/data", "projects", "proj") { //nolint:gocritic // test needs absolute path
 		t.Fatalf("expected /data/projects/proj, got %q", got)
 	}
 }

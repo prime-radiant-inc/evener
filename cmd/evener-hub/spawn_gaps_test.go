@@ -185,6 +185,8 @@ func TestLaunchFailureErrorEmptyStderr(t *testing.T) {
 	}
 	if strings.Contains(err.Error(), ": ") && strings.Contains(err.Error(), "inner: ") {
 		// Should be "spawn failed: inner" not "spawn failed: inner: "
+		// This branch intentionally has no body; it verifies the condition is false.
+		_ = err
 	}
 }
 

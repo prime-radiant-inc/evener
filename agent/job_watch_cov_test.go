@@ -240,7 +240,7 @@ func TestRememberWatchLineageEviction(t *testing.T) {
 	jm := newTestJM(t)
 
 	// Fill the lineage beyond the cap to trigger eviction.
-	for i := 0; i < watchLineageKeyCap+2; i++ {
+	for i := range watchLineageKeyCap + 2 {
 		key := watchKey{
 			VisibleSessionID: jm.sessionID,
 			Target:           "job_evict_" + string(rune('a'+i%26)) + string(rune('a'+i/26)),

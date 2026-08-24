@@ -17,7 +17,7 @@ func TestNormalizeClientMutationError(t *testing.T) {
 	}
 	// WireError passes through.
 	wireErr := appwire.InvalidParams("bad input")
-	if err := NormalizeClientMutationError("id_1", wireErr); err != wireErr {
+	if err := NormalizeClientMutationError("id_1", wireErr); !errors.Is(err, wireErr) {
 		t.Fatalf("WireError should pass through: got %v", err)
 	}
 	// Mismatch error -> InvalidRequest.
@@ -31,12 +31,9 @@ func TestNormalizeClientMutationError(t *testing.T) {
 		t.Fatal("generic error should return error")
 	}
 	// Verify the internal error is a WireError with CodeInternalError.
-	we, ok := resultErr.(appwire.WireError)
+	we, ok := errors.AsType[appwire.WireError](resultErr)
 	if !ok {
-		// The WireError might be wrapped — use errors.As.
-		if !errors.As(resultErr, &we) {
-			t.Fatal("generic error should be a WireError")
-		}
+		t.Fatal("generic error should be a WireError")
 	}
 	if we.Code != appwire.CodeInternalError {
 		t.Fatalf("code = %v, want %v", we.Code, appwire.CodeInternalError)

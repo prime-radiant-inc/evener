@@ -114,8 +114,7 @@ func TestSearchRetainedOutput_NilRegexp(t *testing.T) {
 // StartOffset guard (line 129-130).
 func TestSearchRetainedOutput_NegativeStartOffset(t *testing.T) {
 	src := &mockSearchSource{}
-	opts := retainedSearchOptions{Regexp: regexp.MustCompile("x")}
-	opts.StartOffset = -1
+	opts := retainedSearchOptions{Regexp: regexp.MustCompile("x"), StartOffset: -1}
 	_, err := searchRetainedOutput(src, opts)
 	if !errors.Is(err, jobstore.ErrInvalidOffset) {
 		t.Fatalf("expected ErrInvalidOffset, got %v", err)
@@ -126,8 +125,7 @@ func TestSearchRetainedOutput_NegativeStartOffset(t *testing.T) {
 // MaxMatches guard (line 132-133).
 func TestSearchRetainedOutput_NegativeMaxMatches(t *testing.T) {
 	src := &mockSearchSource{}
-	opts := retainedSearchOptions{Regexp: regexp.MustCompile("x")}
-	opts.MaxMatches = -1
+	opts := retainedSearchOptions{Regexp: regexp.MustCompile("x"), MaxMatches: -1}
 	_, err := searchRetainedOutput(src, opts)
 	if !errors.Is(err, jobstore.ErrInvalidLimit) {
 		t.Fatalf("expected ErrInvalidLimit, got %v", err)
@@ -138,8 +136,7 @@ func TestSearchRetainedOutput_NegativeMaxMatches(t *testing.T) {
 // MaxSerializedBytes guard (line 135-136).
 func TestSearchRetainedOutput_NegativeMaxSerializedBytes(t *testing.T) {
 	src := &mockSearchSource{}
-	opts := retainedSearchOptions{Regexp: regexp.MustCompile("x")}
-	opts.MaxSerializedBytes = -1
+	opts := retainedSearchOptions{Regexp: regexp.MustCompile("x"), MaxSerializedBytes: -1}
 	_, err := searchRetainedOutput(src, opts)
 	if !errors.Is(err, jobstore.ErrInvalidLimit) {
 		t.Fatalf("expected ErrInvalidLimit, got %v", err)
@@ -150,8 +147,7 @@ func TestSearchRetainedOutput_NegativeMaxSerializedBytes(t *testing.T) {
 // ContextLines guard (line 138-139).
 func TestSearchRetainedOutput_InvalidContextLines(t *testing.T) {
 	src := &mockSearchSource{}
-	opts := retainedSearchOptions{Regexp: regexp.MustCompile("x")}
-	opts.ContextLines = -1
+	opts := retainedSearchOptions{Regexp: regexp.MustCompile("x"), ContextLines: -1}
 	if _, err := searchRetainedOutput(src, opts); err == nil {
 		t.Fatal("expected error for negative context lines")
 	}

@@ -11,7 +11,7 @@ import (
 func TestFake429HandlerModels(t *testing.T) {
 	h := handler("5")
 	rec := httptest.NewRecorder()
-	req := httptest.NewRequest("GET", "/v1/models", nil)
+	req := httptest.NewRequest(http.MethodGet, "/v1/models", nil)
 	h.ServeHTTP(rec, req)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("models status = %d, want 200", rec.Code)
@@ -25,7 +25,7 @@ func TestFake429HandlerModels(t *testing.T) {
 func TestFake429HandlerCompletion(t *testing.T) {
 	h := handler("10")
 	rec := httptest.NewRecorder()
-	req := httptest.NewRequest("POST", "/v1/chat/completions", nil)
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
 	h.ServeHTTP(rec, req)
 	if rec.Code != http.StatusTooManyRequests {
 		t.Fatalf("completion status = %d, want 429", rec.Code)
@@ -41,9 +41,9 @@ func TestFake429HandlerCompletion(t *testing.T) {
 // TestFake429HandlerMultipleHits covers the counter incrementing.
 func TestFake429HandlerMultipleHits(t *testing.T) {
 	h := handler("3")
-	for i := 0; i < 3; i++ {
+	for i := range 3 {
 		rec := httptest.NewRecorder()
-		req := httptest.NewRequest("POST", "/v1/chat/completions", nil)
+		req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
 		h.ServeHTTP(rec, req)
 		if rec.Code != http.StatusTooManyRequests {
 			t.Fatalf("hit %d status = %d, want 429", i, rec.Code)

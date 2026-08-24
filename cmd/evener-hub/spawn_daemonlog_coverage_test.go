@@ -422,7 +422,7 @@ func TestOpenDaemonLogResumeWithExistingLog(t *testing.T) {
 		t.Fatalf("openDaemonLog resume: %v", err)
 	}
 	defer func() { _ = l.file.Close() }()
-	if l.launchOffset != 18 { // len("old daemon output\n")
+	if l.launchOffset != 18 {
 		t.Fatalf("launchOffset = %d, want 18", l.launchOffset)
 	}
 }

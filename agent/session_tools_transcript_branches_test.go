@@ -2,6 +2,7 @@ package agent
 
 import (
 	"bytes"
+	"context"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
@@ -27,8 +28,8 @@ func TestTranscriptToolsNilDeps(t *testing.T) {
 	if len(tools) != 1 {
 		t.Fatalf("expected 1 tool (read_transcript only), got %d", len(tools))
 	}
-	if tools[0].Tool.Definition.Name != "read_transcript" {
-		t.Fatalf("expected read_transcript, got %q", tools[0].Tool.Definition.Name)
+	if tools[0].Definition.Name != "read_transcript" {
+		t.Fatalf("expected read_transcript, got %q", tools[0].Definition.Name)
 	}
 	for _, tl := range tools {
 		if tl.Limit.MaxChars != transcriptToolMaxChars {
@@ -1126,8 +1127,9 @@ func TestProjectToolResultsForTranscriptNoProjection(t *testing.T) {
 	parts := []llm.ContentPart{{ToolResult: &llm.ToolResultData{Content: "original"}}}
 	out := projectToolResultsForTranscript(calls, results, parts)
 	// No API log results, so parts should be returned unchanged (same backing)
-	if &out[0] != &parts[0] {
+	if &out[0] != &parts[0] { //nolint:staticcheck // intentional: verifies same backing array
 		// When no projection happens, the original slice is returned
+		_ = out
 	}
 	if content, ok := out[0].ToolResult.Content.(string); !ok || content != "original" {
 		t.Fatalf("content should be unchanged, got %v", out[0].ToolResult.Content)
@@ -1644,11 +1646,12 @@ func TestReadTranscriptToolRegistration(t *testing.T) {
 	if !tl.ReadOnly {
 		t.Fatalf("expected read_transcript to be read-only")
 	}
-	if tl.Tool.Definition.Name != "read_transcript" {
-		t.Fatalf("name = %q", tl.Tool.Definition.Name)
+	if tl.Definition.Name != "read_transcript" {
+		t.Fatalf("name = %q", tl.Definition.Name)
 	}
-	if tl.Limit.MaxChars != 0 {
+	if tl.Limit.MaxChars != 0 { //nolint:staticcheck // intentional: Limit set by transcriptTools, not readTranscriptTool
 		// Limit is set by transcriptTools, not by readTranscriptTool itself
+		_ = tl
 	}
 }
 
@@ -1658,8 +1661,8 @@ func TestReadTranscriptToolRegistration(t *testing.T) {
 
 func TestFindSessionTranscriptsTool(t *testing.T) {
 	tl := findSessionTranscriptsTool(&toolDeps{stateDir: "/tmp"})
-	if tl.Tool.Definition.Name != "find_session_transcripts" {
-		t.Fatalf("name = %q", tl.Tool.Definition.Name)
+	if tl.Definition.Name != "find_session_transcripts" {
+		t.Fatalf("name = %q", tl.Definition.Name)
 	}
 }
 
@@ -2408,14 +2411,12 @@ func TestAPILogBodyContinuationType(t *testing.T) {
 func TestRetainedSearchOptions(t *testing.T) {
 	// Verify type usage
 	opts := retainedSearchOptions{
-		Regexp: nil,
-		SearchOptions: jobstore.SearchOptions{
-			StartOffset:  0,
-			ContextLines: 2,
-		},
+		Regexp:       nil,
+		StartOffset:  0,
+		ContextLines: 2,
 	}
-	if opts.SearchOptions.ContextLines != 2 {
-		t.Fatalf("context_lines = %d", opts.SearchOptions.ContextLines)
+	if opts.ContextLines != 2 {
+		t.Fatalf("context_lines = %d", opts.ContextLines)
 	}
 }
 
@@ -2548,7 +2549,7 @@ func TestExecReadSessionTranscriptDelegatesToContext(t *testing.T) {
 	// Both functions should produce the same error for invalid args
 	deps := &toolDeps{}
 	_, err1 := execReadSessionTranscript(deps, map[string]any{"format": "xml"})
-	_, err2 := execReadSessionTranscriptWithContext(nil, deps, map[string]any{"format": "xml"})
+	_, err2 := execReadSessionTranscriptWithContext(context.TODO(), deps, map[string]any{"format": "xml"})
 	if err1 == nil || err2 == nil {
 		t.Fatalf("expected errors for invalid format")
 	}

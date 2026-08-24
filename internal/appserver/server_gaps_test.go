@@ -3,6 +3,7 @@ package appserver
 import (
 	"context"
 	"encoding/json"
+	"slices"
 	"testing"
 
 	"primeradiant.com/evener/appwire"
@@ -96,14 +97,7 @@ func TestRouterMethods(t *testing.T) {
 		t.Fatalf("Methods returned %d, want at least 2", len(methods))
 	}
 	// Should contain MethodThreadList.
-	found := false
-	for _, m := range methods {
-		if m == appwire.MethodThreadList {
-			found = true
-			break
-		}
-	}
-	if !found {
+	if !slices.Contains(methods, appwire.MethodThreadList) {
 		t.Fatalf("Methods should contain %q: %v", appwire.MethodThreadList, methods)
 	}
 }

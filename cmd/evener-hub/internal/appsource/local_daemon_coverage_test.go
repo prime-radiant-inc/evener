@@ -132,8 +132,7 @@ func TestLocalDaemonMutationCallErrorOtherUnavailable(t *testing.T) {
 		t.Fatal("should not return nil")
 	}
 	// Should pass through as-is (not converted to InternalError)
-	var wire appwire.WireError
-	if errors.As(mapped, &wire) {
+	if wire, ok := errors.AsType[appwire.WireError](mapped); ok {
 		if wire.Code == appwire.CodeInternalError {
 			t.Fatal("non-SessionUnavailable error should not be converted to InternalError")
 		}

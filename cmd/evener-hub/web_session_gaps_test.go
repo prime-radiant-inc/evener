@@ -119,7 +119,7 @@ func TestInputItemsForTextNonEmpty(t *testing.T) {
 // writeSessionActionError (line 295-296).
 func TestWriteSessionActionErrorAPIPath(t *testing.T) {
 	w := httptest.NewRecorder()
-	r := httptest.NewRequest("POST", "/api/sessions/x/send", nil)
+	r := httptest.NewRequest(http.MethodPost, "/api/sessions/x/send", nil)
 	writeSessionActionError(w, r, errors.New("test error"))
 	if w.Code != http.StatusBadGateway {
 		t.Fatalf("expected status %d, got %d", http.StatusBadGateway, w.Code)
@@ -130,7 +130,7 @@ func TestWriteSessionActionErrorAPIPath(t *testing.T) {
 // writeSessionActionError (lines 299-306).
 func TestWriteSessionActionErrorNonAPIPath(t *testing.T) {
 	w := httptest.NewRecorder()
-	r := httptest.NewRequest("POST", "/sessions/x/send", nil)
+	r := httptest.NewRequest(http.MethodPost, "/sessions/x/send", nil)
 	writeSessionActionError(w, r, errors.New("test error"))
 	if w.Code != http.StatusBadGateway {
 		t.Fatalf("expected status %d, got %d", http.StatusBadGateway, w.Code)
@@ -141,7 +141,7 @@ func TestWriteSessionActionErrorNonAPIPath(t *testing.T) {
 // path.
 func TestWriteSessionActionErrorWireError(t *testing.T) {
 	w := httptest.NewRecorder()
-	r := httptest.NewRequest("POST", "/sessions/x/send", nil)
+	r := httptest.NewRequest(http.MethodPost, "/sessions/x/send", nil)
 	writeSessionActionError(w, r, appwire.InvalidParams("bad params"))
 	if w.Code == http.StatusBadGateway {
 		t.Fatalf("wire error should map to a non-502 status, got %d", w.Code)

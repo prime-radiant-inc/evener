@@ -54,7 +54,7 @@ func TestDenyEnvBoundedDenyResult(t *testing.T) {
 // (lines 79-83).
 func TestDenyEnvReadFile(t *testing.T) {
 	// Find a seed that produces h%5==0 (error).
-	for seed := uint64(0); seed < 100; seed++ {
+	for seed := range uint64(100) {
 		d := &DenyEnv{Seed: seed}
 		h := d.draw("read", "/test/path")
 		if h%5 == 0 {
@@ -67,7 +67,7 @@ func TestDenyEnvReadFile(t *testing.T) {
 	}
 
 	// Find a seed that produces h%5!=0 (success).
-	for seed := uint64(0); seed < 100; seed++ {
+	for seed := range uint64(100) {
 		d := &DenyEnv{Seed: seed}
 		h := d.draw("read", "/test/path")
 		if h%5 != 0 {
@@ -99,7 +99,7 @@ func TestDenyEnvWriteFile(t *testing.T) {
 // (lines 90-95).
 func TestDenyEnvEditFile(t *testing.T) {
 	// Find a seed that produces h%3==0 (error).
-	for seed := uint64(0); seed < 100; seed++ {
+	for seed := range uint64(100) {
 		d := &DenyEnv{Seed: seed}
 		h := d.draw("edit", "/test/path", "old")
 		if h%3 == 0 {
@@ -112,7 +112,7 @@ func TestDenyEnvEditFile(t *testing.T) {
 	}
 
 	// Find a seed that produces h%3!=0 (success).
-	for seed := uint64(0); seed < 100; seed++ {
+	for seed := range uint64(100) {
 		d := &DenyEnv{Seed: seed}
 		h := d.draw("edit", "/test/path", "old")
 		if h%3 != 0 {
@@ -202,7 +202,7 @@ func TestDenyEnvListDirectory(t *testing.T) {
 // (lines 141-151).
 func TestDenyEnvExecCommand(t *testing.T) {
 	// Find a seed that produces h%7==0 (error).
-	for seed := uint64(0); seed < 100; seed++ {
+	for seed := range uint64(100) {
 		d := &DenyEnv{Seed: seed}
 		h := d.draw("exec", "ls", "/wd")
 		if h%7 == 0 {
@@ -215,7 +215,7 @@ func TestDenyEnvExecCommand(t *testing.T) {
 	}
 
 	// Find a seed that produces h%7!=0 (success).
-	for seed := uint64(0); seed < 100; seed++ {
+	for seed := range uint64(100) {
 		d := &DenyEnv{Seed: seed}
 		h := d.draw("exec", "ls", "/wd")
 		if h%7 != 0 {

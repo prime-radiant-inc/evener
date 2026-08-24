@@ -86,7 +86,7 @@ type noRenameFs struct {
 	afero.Fs
 }
 
-func (fs *noRenameFs) Rename(old, new string) error {
+func (fs *noRenameFs) Rename(old, newName string) error {
 	return errors.New("injected rename failure")
 }
 

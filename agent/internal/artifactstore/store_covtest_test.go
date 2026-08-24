@@ -1,6 +1,8 @@
 package artifactstore
 
 import (
+	"bytes"
+	"errors"
 	"os"
 	"path/filepath"
 	"testing"
@@ -46,7 +48,7 @@ func TestPut_ClosedStore(t *testing.T) {
 		t.Fatalf("Close: %v", err)
 	}
 	_, err = s.Put([]byte("data"))
-	if err != ErrExpired {
+	if !errors.Is(err, ErrExpired) {
 		t.Fatalf("expected ErrExpired, got %v", err)
 	}
 }
@@ -60,7 +62,7 @@ func TestOpen_InvalidRef(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = s.Close() })
 	_, err = s.Open("not-a-valid-ref")
-	if err != ErrInvalidRef {
+	if !errors.Is(err, ErrInvalidRef) {
 		t.Fatalf("expected ErrInvalidRef, got %v", err)
 	}
 }
@@ -75,7 +77,7 @@ func TestOpen_Expired(t *testing.T) {
 	t.Cleanup(func() { _ = s.Close() })
 	// Valid format but never registered.
 	_, err = s.Open("artifact:0123456789abcdef0123456789abcdef")
-	if err != ErrExpired {
+	if !errors.Is(err, ErrExpired) {
 		t.Fatalf("expected ErrExpired, got %v", err)
 	}
 }
@@ -95,7 +97,7 @@ func TestOpen_AfterClose(t *testing.T) {
 		t.Fatalf("Close: %v", err)
 	}
 	_, err = s.Open(ref)
-	if err != ErrExpired {
+	if !errors.Is(err, ErrExpired) {
 		t.Fatalf("expected ErrExpired after close, got %v", err)
 	}
 }
@@ -122,7 +124,7 @@ func TestPutOpen_RoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read: %v", err)
 	}
-	if string(got) != string(data) {
+	if !bytes.Equal(got, data) {
 		t.Fatalf("data = %q, want %q", got, data)
 	}
 }
@@ -136,7 +138,7 @@ func TestOpen_ValidRef_NotRegistered(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = s.Close() })
 	_, err = s.Open("artifact:0123456789abcdef0123456789abcdef")
-	if err != ErrExpired {
+	if !errors.Is(err, ErrExpired) {
 		t.Fatalf("expected ErrExpired, got %v", err)
 	}
 }

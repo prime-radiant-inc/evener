@@ -123,7 +123,7 @@ func TestStampClosedThreadCapabilitiesZeroLengthStatusRaw(t *testing.T) {
 func TestRelayRetryBackoffCappedAtMax(t *testing.T) {
 	var b relayRetryBackoff
 	// Keep calling Next until delay exceeds max and gets capped
-	for i := 0; i < 10; i++ {
+	for range 10 {
 		b.Next()
 	}
 	if b.delay != relayRetryMaxDelay {

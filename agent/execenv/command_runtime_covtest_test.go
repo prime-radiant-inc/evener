@@ -42,8 +42,7 @@ func TestCommandOutputWriter(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error")
 	}
-	var writeErr *commandOutputWriteError
-	if !errors.As(err, &writeErr) {
+	if _, ok := errors.AsType[*commandOutputWriteError](err); !ok {
 		t.Fatalf("error = %T, want *commandOutputWriteError", err)
 	}
 }
@@ -56,17 +55,17 @@ func TestCommandWaitError(t *testing.T) {
 	lifecycleErr := errors.New("lifecycle failed")
 
 	// outputErr takes priority.
-	if got := commandWaitError(processErr, outputErr, lifecycleErr); got != outputErr {
+	if got := commandWaitError(processErr, outputErr, lifecycleErr); !errors.Is(got, outputErr) {
 		t.Fatalf("got %v, want outputErr", got)
 	}
 
 	// lifecycleErr is next.
-	if got := commandWaitError(processErr, nil, lifecycleErr); got != lifecycleErr {
+	if got := commandWaitError(processErr, nil, lifecycleErr); !errors.Is(got, lifecycleErr) {
 		t.Fatalf("got %v, want lifecycleErr", got)
 	}
 
 	// processErr is the fallback.
-	if got := commandWaitError(processErr, nil, nil); got != processErr {
+	if got := commandWaitError(processErr, nil, nil); !errors.Is(got, processErr) {
 		t.Fatalf("got %v, want processErr", got)
 	}
 }
@@ -78,7 +77,7 @@ func TestForcedCloseOutputError(t *testing.T) {
 
 	// commandOutputWriteError is returned as-is.
 	writeErr := &commandOutputWriteError{err: errors.New("write failed")}
-	if got := c.forcedCloseOutputError(writeErr); got != writeErr {
+	if got := c.forcedCloseOutputError(writeErr); !errors.Is(got, writeErr) {
 		t.Fatal("expected commandOutputWriteError to be returned as-is")
 	}
 
@@ -89,7 +88,7 @@ func TestForcedCloseOutputError(t *testing.T) {
 
 	// Other errors are returned as-is.
 	otherErr := errors.New("some other error")
-	if got := c.forcedCloseOutputError(otherErr); got != otherErr {
+	if got := c.forcedCloseOutputError(otherErr); !errors.Is(got, otherErr) {
 		t.Fatal("expected other error to be returned as-is")
 	}
 }
@@ -136,7 +135,7 @@ func TestPointerTarget(t *testing.T) {
 	// Valid gitdir pointer with relative path — resolved against ancestor.
 	content = "gitdir: relative/path"
 	got, ok = pointerTarget(content, "/ancestor")
-	if !ok || got != filepath.Clean(filepath.Join("/ancestor", "relative/path")) {
+	if !ok || got != filepath.Clean(filepath.Join("/ancestor", "relative/path")) { //nolint:gocritic // test needs absolute path
 		t.Fatalf("pointerTarget = %q, %v", got, ok)
 	}
 

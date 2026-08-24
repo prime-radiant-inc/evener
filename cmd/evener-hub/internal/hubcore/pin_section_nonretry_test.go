@@ -79,7 +79,7 @@ func (c *errorConn) Prepare(query string) (driver.Stmt, error) {
 func (c *errorConn) Close() error { return c.real.Close() }
 
 func (c *errorConn) Begin() (driver.Tx, error) {
-	tx, err := c.real.Begin()
+	tx, err := c.real.Begin() //nolint:staticcheck // deprecated driver.Conn.Begin used for test coverage
 	if err != nil {
 		return nil, err
 	}
@@ -120,7 +120,7 @@ func (c *errorConn) ExecContext(ctx context.Context, query string, args []driver
 		// Wrap the result so we can inject RowsAffected errors.
 		return &errorResult{real: result}, nil
 	}
-	if execer, ok := c.real.(driver.Execer); ok {
+	if execer, ok := c.real.(driver.Execer); ok { //nolint:staticcheck // deprecated driver.Execer used for test coverage
 		dargs := make([]driver.Value, len(args))
 		for i, a := range args {
 			dargs[i] = a.Value
@@ -144,7 +144,7 @@ func (c *errorConn) QueryContext(ctx context.Context, query string, args []drive
 	if queryerCtx, ok := c.real.(driver.QueryerContext); ok {
 		return queryerCtx.QueryContext(ctx, query, args)
 	}
-	if queryer, ok := c.real.(driver.Queryer); ok {
+	if queryer, ok := c.real.(driver.Queryer); ok { //nolint:staticcheck // deprecated driver.Queryer used for test coverage
 		dargs := make([]driver.Value, len(args))
 		for i, a := range args {
 			dargs[i] = a.Value

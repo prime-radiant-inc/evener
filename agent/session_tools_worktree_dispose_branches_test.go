@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"os"
@@ -153,13 +154,12 @@ func TestDisposeAlreadyDisposedGone(t *testing.T) {
 func TestMetaDirForLane(t *testing.T) {
 	t.Run("basic", func(t *testing.T) {
 		result := metaDirForLane("/path/to/lane")
-		if result != filepath.Join("/path/to", ".meta") {
+		if result != filepath.Join("/path/to", ".meta") { //nolint:gocritic // test needs absolute path
 			t.Fatalf("metaDir = %q", result)
 		}
 	})
 	t.Run("relative path", func(t *testing.T) {
 		result := metaDirForLane("lane")
-		// filepath.Dir("lane") = "."
 		expected := filepath.Join(".", ".meta")
 		if result != expected {
 			t.Fatalf("metaDir = %q, want %q", result, expected)
@@ -266,7 +266,7 @@ func TestWorktreeDisposeEmptyID(t *testing.T) {
 	// This will fail at beginDispose or earlier, depending on session state.
 	// We can't easily call worktreeDispose without a valid Session, but
 	// the validation for empty id happens before beginDispose.
-	_, err := s.worktreeDispose(nil, "", false, false)
+	_, err := s.worktreeDispose(context.TODO(), "", false, false)
 	if err == nil {
 		t.Fatalf("expected error for empty id")
 	}
@@ -277,7 +277,7 @@ func TestWorktreeDisposeEmptyID(t *testing.T) {
 
 func TestWorktreeDisposeNonDelegateID(t *testing.T) {
 	s := &Session{}
-	_, err := s.worktreeDispose(nil, "not_a_delegate_id", false, false)
+	_, err := s.worktreeDispose(context.TODO(), "not_a_delegate_id", false, false)
 	if err == nil {
 		t.Fatalf("expected error for non-delegate id")
 	}
@@ -289,7 +289,7 @@ func TestWorktreeDisposeNonDelegateID(t *testing.T) {
 func TestWorktreeDisposeWhitespaceID(t *testing.T) {
 	s := &Session{}
 	// Whitespace-only id should be trimmed to empty
-	_, err := s.worktreeDispose(nil, "   ", false, false)
+	_, err := s.worktreeDispose(context.TODO(), "   ", false, false)
 	if err == nil {
 		t.Fatalf("expected error for whitespace id")
 	}
@@ -302,7 +302,7 @@ func TestWorktreeDisposeValidDelegateID(t *testing.T) {
 	s := &Session{}
 	// A valid delegate id passes the id check but fails at disposeStableDelegateLane
 	// since delegateController is nil
-	_, err := s.worktreeDispose(nil, "dlg_abc123", false, false)
+	_, err := s.worktreeDispose(context.TODO(), "dlg_abc123", false, false)
 	if err == nil {
 		t.Fatalf("expected error (session not initialized)")
 	}

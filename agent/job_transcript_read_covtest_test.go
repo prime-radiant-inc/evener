@@ -149,7 +149,7 @@ func TestReadLocalJobRetainedMetadata(t *testing.T) {
 	// Use a path with a null byte which causes stat to fail.
 	target = localJobRetainedTarget{
 		JobID:      "job_bad",
-		OutputPath: filepath.Join(dir, "bad\x00name"),
+		OutputPath: filepath.Join(dir, "bad\x00name"), //nolint:gocritic // test needs null byte in path
 		Record:     &jobstore.JobRecord{Status: jobstore.StatusRunning},
 	}
 	_, err = readLocalJobRetainedMetadata(target)

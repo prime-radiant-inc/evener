@@ -77,7 +77,7 @@ func (c *lockedConn) Begin() (driver.Tx, error) {
 		return nil, errors.New("database is locked")
 	}
 	lockedBeginFailures.Add(1)
-	tx, err := c.real.Begin()
+	tx, err := c.real.Begin() //nolint:staticcheck // deprecated driver.Conn.Begin used for test coverage
 	if err != nil {
 		return nil, err
 	}
@@ -111,7 +111,7 @@ func (c *lockedConn) ExecContext(ctx context.Context, query string, args []drive
 	if execerCtx, ok := c.real.(driver.ExecerContext); ok {
 		return execerCtx.ExecContext(ctx, query, args)
 	}
-	if execer, ok := c.real.(driver.Execer); ok {
+	if execer, ok := c.real.(driver.Execer); ok { //nolint:staticcheck // deprecated driver.Execer used for test coverage
 		dargs := make([]driver.Value, len(args))
 		for i, a := range args {
 			dargs[i] = a.Value
@@ -131,7 +131,7 @@ func (c *lockedConn) QueryContext(ctx context.Context, query string, args []driv
 	if queryerCtx, ok := c.real.(driver.QueryerContext); ok {
 		return queryerCtx.QueryContext(ctx, query, args)
 	}
-	if queryer, ok := c.real.(driver.Queryer); ok {
+	if queryer, ok := c.real.(driver.Queryer); ok { //nolint:staticcheck // deprecated driver.Queryer used for test coverage
 		dargs := make([]driver.Value, len(args))
 		for i, a := range args {
 			dargs[i] = a.Value

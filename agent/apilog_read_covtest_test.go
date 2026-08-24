@@ -364,7 +364,7 @@ func TestAPILogAttemptSettlementLookup(t *testing.T) {
 func TestAPILogSummaryRetention(t *testing.T) {
 	t.Run("tail mode retains last N", func(t *testing.T) {
 		r := newAPILogSummaryRetention("last:5")
-		for i := 0; i < 10; i++ {
+		for i := range 10 {
 			if err := r.add(i, apilog.APIAttemptRecord{AttemptID: "a"}); err != nil {
 				t.Fatalf("add %d: %v", i, err)
 			}
@@ -377,7 +377,7 @@ func TestAPILogSummaryRetention(t *testing.T) {
 	})
 	t.Run("start mode retains first N", func(t *testing.T) {
 		r := newAPILogSummaryRetention("start:5")
-		for i := 0; i < 10; i++ {
+		for i := range 10 {
 			if err := r.add(i, apilog.APIAttemptRecord{AttemptID: "a"}); err != nil {
 				t.Fatalf("add %d: %v", i, err)
 			}
@@ -389,7 +389,7 @@ func TestAPILogSummaryRetention(t *testing.T) {
 	})
 	t.Run("exact range retains specified records", func(t *testing.T) {
 		r := newAPILogSummaryRetention("2-4")
-		for i := 0; i < 10; i++ {
+		for i := range 10 {
 			if err := r.add(i, apilog.APIAttemptRecord{AttemptID: "a"}); err != nil {
 				t.Fatalf("add %d: %v", i, err)
 			}
@@ -434,7 +434,7 @@ func TestSummarizeAPILogRecord(t *testing.T) {
 				},
 			},
 			Response: &apilog.APIAttemptResponse{
-				StatusCode:   intPtr(200),
+				StatusCode:   new(200),
 				Model:        "resp-model",
 				FinishReason: "stop",
 				Body: apilog.EncodedBody{
@@ -553,5 +553,3 @@ func utf8ValidString(s string) bool {
 	}
 	return true
 }
-
-func intPtr(value int) *int { return &value }

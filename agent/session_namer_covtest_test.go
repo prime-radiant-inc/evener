@@ -11,7 +11,7 @@ import (
 // TestPtrString covers ptrString (line 210).
 func TestPtrString(t *testing.T) {
 	s := "hello"
-	p := ptrString(s)
+	p := new(s)
 	if p == nil || *p != s {
 		t.Fatalf("ptrString(%q) = %v, want pointer to %q", s, p, s)
 	}
@@ -215,5 +215,3 @@ func TestSessionNamerEnabled_NilProfile(t *testing.T) {
 
 // Ensure llm import is used.
 var _ = llm.Kind
-
-func ptrString(s string) *string { return &s }

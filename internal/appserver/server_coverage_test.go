@@ -1,6 +1,7 @@
 package appserver
 
 import (
+	"context"
 	"testing"
 
 	"primeradiant.com/evener/appwire"
@@ -18,7 +19,7 @@ func TestServerBroadcastAllEvictsSlowConsumer(t *testing.T) {
 
 	// Don't drain the send channel — fill it to capacity, then BroadcastAll
 	// should evict the connection.
-	for i := 0; i < appwire.NotificationBufferCap; i++ {
+	for range appwire.NotificationBufferCap {
 		conn.send <- appwire.Message{}
 	}
 
@@ -116,7 +117,7 @@ func TestServerUnregisterConnectionAlreadyReplaced(t *testing.T) {
 
 func TestServerInitializeWithWrongProtocol(t *testing.T) {
 	server := NewServer(ServerConfig{ServerName: "test"})
-	_, err := server.initialize(nil, appwire.InitializeParams{ProtocolVersion: "wrong"})
+	_, err := server.initialize(context.TODO(), appwire.InitializeParams{ProtocolVersion: "wrong"})
 	if err == nil {
 		t.Fatal("wrong protocol version should return error")
 	}
@@ -124,7 +125,7 @@ func TestServerInitializeWithWrongProtocol(t *testing.T) {
 
 func TestServerInitializeWithCorrectProtocol(t *testing.T) {
 	server := NewServer(ServerConfig{ServerName: "test", Version: "1.0", SourceID: "src1"})
-	resp, err := server.initialize(nil, appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion})
+	resp, err := server.initialize(context.TODO(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion})
 	if err != nil {
 		t.Fatalf("correct protocol should not error: %v", err)
 	}
@@ -135,7 +136,7 @@ func TestServerInitializeWithCorrectProtocol(t *testing.T) {
 
 func TestServerInitializeAdapterNative(t *testing.T) {
 	server := NewServer(ServerConfig{AdapterNativeInitialize: true})
-	resp, err := server.initialize(nil, appwire.InitializeParams{ProtocolVersion: "anything"})
+	resp, err := server.initialize(context.TODO(), appwire.InitializeParams{ProtocolVersion: "anything"})
 	if err != nil {
 		t.Fatalf("adapter native initialize should not error: %v", err)
 	}

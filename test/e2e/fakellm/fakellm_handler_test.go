@@ -16,7 +16,7 @@ func TestHandleModels(t *testing.T) {
 	defer srv.Close()
 
 	rec := httptest.NewRecorder()
-	req := httptest.NewRequest("GET", "/v1/models", nil)
+	req := httptest.NewRequest(http.MethodGet, "/v1/models", nil)
 	srv.handleModels(rec, req)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("models status = %d, want 200", rec.Code)
@@ -35,7 +35,7 @@ func TestHandleChatDecodeError(t *testing.T) {
 	defer srv.Close()
 
 	rec := httptest.NewRecorder()
-	req := httptest.NewRequest("POST", "/v1/chat/completions", strings.NewReader("not json"))
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader("not json"))
 	srv.handleChat(rec, req)
 	if rec.Code != http.StatusBadRequest {
 		t.Fatalf("decode error status = %d, want 400", rec.Code)
@@ -52,7 +52,7 @@ func TestHandleChatNoTools(t *testing.T) {
 
 	body := `{"model":"test","messages":[{"role":"user","content":"name this"}]}`
 	rec := httptest.NewRecorder()
-	req := httptest.NewRequest("POST", "/v1/chat/completions", strings.NewReader(body))
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(body))
 	srv.handleChat(rec, req)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("no-tools status = %d, want 200", rec.Code)
@@ -72,7 +72,7 @@ func TestHandleChatStreamNoTools(t *testing.T) {
 
 	body := `{"model":"test","stream":true,"messages":[{"role":"user","content":"name this"}]}`
 	rec := httptest.NewRecorder()
-	req := httptest.NewRequest("POST", "/v1/chat/completions", strings.NewReader(body))
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(body))
 	srv.handleChat(rec, req)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("stream no-tools status = %d, want 200", rec.Code)
@@ -91,7 +91,7 @@ func TestHandleUnexpectedPath(t *testing.T) {
 	defer srv.Close()
 
 	rec := httptest.NewRecorder()
-	req := httptest.NewRequest("GET", "/unexpected", nil)
+	req := httptest.NewRequest(http.MethodGet, "/unexpected", nil)
 	srv.http.Handler.ServeHTTP(rec, req)
 	if rec.Code != http.StatusNotFound {
 		t.Fatalf("unexpected path status = %d, want 404", rec.Code)

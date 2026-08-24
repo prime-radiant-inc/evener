@@ -362,8 +362,7 @@ func TestParseExcerpt_SyntaxError(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected a parse error")
 	}
-	var se *json.SyntaxError
-	if !errors.As(err, &se) {
+	if _, ok := errors.AsType[*json.SyntaxError](err); !ok {
 		t.Fatalf("error = %T, want *json.SyntaxError", err)
 	}
 	got := parseExcerpt(err, raw)
@@ -378,8 +377,7 @@ func TestParseExcerpt_SyntaxError(t *testing.T) {
 func TestParseExcerpt_SyntaxErrorUnexpectedEOF(t *testing.T) {
 	raw := []byte(`{"key": "val`)
 	err := realJSONError(t, raw)
-	var se *json.SyntaxError
-	if !errors.As(err, &se) {
+	if _, ok := errors.AsType[*json.SyntaxError](err); !ok {
 		t.Fatalf("error = %T, want *json.SyntaxError", err)
 	}
 	got := parseExcerpt(err, raw)

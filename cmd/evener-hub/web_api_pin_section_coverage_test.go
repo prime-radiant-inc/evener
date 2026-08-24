@@ -60,7 +60,7 @@ func TestApiPinSection(t *testing.T) {
 func TestHandleAPIPinSectionsNilStore(t *testing.T) {
 	s := &WebServer{}
 	rec := httptest.NewRecorder()
-	s.handleAPIPinSections(rec, httptest.NewRequest("GET", "/api/pin-sections", nil))
+	s.handleAPIPinSections(rec, httptest.NewRequest(http.MethodGet, "/api/pin-sections", nil))
 	if rec.Code != http.StatusInternalServerError {
 		t.Fatalf("status = %d, want 500", rec.Code)
 	}
@@ -70,7 +70,7 @@ func TestHandleAPIPinSectionsNilStore(t *testing.T) {
 func TestHandleAPIPinSectionNilStore(t *testing.T) {
 	s := &WebServer{}
 	rec := httptest.NewRecorder()
-	s.handleAPIPinSection(rec, httptest.NewRequest("PATCH", "/api/pin-sections/x", nil))
+	s.handleAPIPinSection(rec, httptest.NewRequest(http.MethodPatch, "/api/pin-sections/x", nil))
 	if rec.Code != http.StatusInternalServerError {
 		t.Fatalf("status = %d, want 500", rec.Code)
 	}
@@ -80,7 +80,7 @@ func TestHandleAPIPinSectionNilStore(t *testing.T) {
 func TestHandleAPISessionPinNilStore(t *testing.T) {
 	s := &WebServer{}
 	rec := httptest.NewRecorder()
-	s.handleAPISessionPin(rec, httptest.NewRequest("POST", "/api/session-pin", nil))
+	s.handleAPISessionPin(rec, httptest.NewRequest(http.MethodPost, "/api/session-pin", nil))
 	if rec.Code != http.StatusInternalServerError {
 		t.Fatalf("status = %d, want 500", rec.Code)
 	}
@@ -90,7 +90,7 @@ func TestHandleAPISessionPinNilStore(t *testing.T) {
 func TestHandleAPIPinSectionBadMethod(t *testing.T) {
 	s := &WebServer{}
 	rec := httptest.NewRecorder()
-	s.handleAPIPinSection(rec, httptest.NewRequest("GET", "/api/pin-sections/x", nil))
+	s.handleAPIPinSection(rec, httptest.NewRequest(http.MethodGet, "/api/pin-sections/x", nil))
 	if rec.Code != http.StatusMethodNotAllowed {
 		t.Fatalf("status = %d, want 405", rec.Code)
 	}
@@ -100,7 +100,7 @@ func TestHandleAPIPinSectionBadMethod(t *testing.T) {
 func TestHandleAPISessionPinBadMethod(t *testing.T) {
 	s := &WebServer{}
 	rec := httptest.NewRecorder()
-	s.handleAPISessionPin(rec, httptest.NewRequest("GET", "/api/session-pin", nil))
+	s.handleAPISessionPin(rec, httptest.NewRequest(http.MethodGet, "/api/session-pin", nil))
 	if rec.Code != http.StatusMethodNotAllowed {
 		t.Fatalf("status = %d, want 405", rec.Code)
 	}
@@ -111,7 +111,7 @@ func TestHandleAPIPinSectionBadPath(t *testing.T) {
 	s := &WebServer{cfg: hubcoreConfigWithPinSections()}
 	rec := httptest.NewRecorder()
 	// Empty sectionID after trimming.
-	s.handleAPIPinSection(rec, httptest.NewRequest("PATCH", "/api/pin-sections/", nil))
+	s.handleAPIPinSection(rec, httptest.NewRequest(http.MethodPatch, "/api/pin-sections/", nil))
 	if rec.Code != http.StatusNotFound {
 		t.Fatalf("status = %d, want 404", rec.Code)
 	}
@@ -121,7 +121,7 @@ func TestHandleAPIPinSectionBadPath(t *testing.T) {
 func TestHandleAPIPinSectionBadPathWithSlash(t *testing.T) {
 	s := &WebServer{cfg: hubcoreConfigWithPinSections()}
 	rec := httptest.NewRecorder()
-	s.handleAPIPinSection(rec, httptest.NewRequest("PATCH", "/api/pin-sections/a/b", nil))
+	s.handleAPIPinSection(rec, httptest.NewRequest(http.MethodPatch, "/api/pin-sections/a/b", nil))
 	if rec.Code != http.StatusNotFound {
 		t.Fatalf("status = %d, want 404", rec.Code)
 	}
@@ -137,7 +137,7 @@ func TestHandleAPIPinSectionsWithStore(t *testing.T) {
 	store := hubcore.NewPinSectionStore(filepath.Join(t.TempDir(), "index.db"))
 	s := &WebServer{cfg: hubcore.WebConfig{PinSections: store}}
 	rec := httptest.NewRecorder()
-	s.handleAPIPinSections(rec, httptest.NewRequest("GET", "/api/pin-sections", nil))
+	s.handleAPIPinSections(rec, httptest.NewRequest(http.MethodGet, "/api/pin-sections", nil))
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200", rec.Code)
 	}
@@ -171,7 +171,7 @@ func TestSessionPinMutationResponse(t *testing.T) {
 func TestHandleAPIPinSectionDecodeError(t *testing.T) {
 	s := &WebServer{cfg: hubcoreConfigWithPinSections()}
 	rec := httptest.NewRecorder()
-	s.handleAPIPinSection(rec, httptest.NewRequest("PATCH", "/api/pin-sections/x", errorReader{}))
+	s.handleAPIPinSection(rec, httptest.NewRequest(http.MethodPatch, "/api/pin-sections/x", errorReader{}))
 	if rec.Code != http.StatusBadRequest {
 		t.Fatalf("status = %d, want 400", rec.Code)
 	}
@@ -181,7 +181,7 @@ func TestHandleAPIPinSectionDecodeError(t *testing.T) {
 func TestHandleAPISessionPinDecodeError(t *testing.T) {
 	s := &WebServer{cfg: hubcoreConfigWithPinSections()}
 	rec := httptest.NewRecorder()
-	s.handleAPISessionPin(rec, httptest.NewRequest("POST", "/api/session-pin", errorReader{}))
+	s.handleAPISessionPin(rec, httptest.NewRequest(http.MethodPost, "/api/session-pin", errorReader{}))
 	if rec.Code != http.StatusBadRequest {
 		t.Fatalf("status = %d, want 400", rec.Code)
 	}
@@ -191,7 +191,7 @@ func TestHandleAPISessionPinDecodeError(t *testing.T) {
 func TestHandleAPISessionPinDeleteMethod(t *testing.T) {
 	s := &WebServer{cfg: hubcoreConfigWithPinSections()}
 	rec := httptest.NewRecorder()
-	req := httptest.NewRequest("DELETE", "/api/session-pin?ref=nonexistent", nil)
+	req := httptest.NewRequest(http.MethodDelete, "/api/session-pin?ref=nonexistent", nil)
 	s.handleAPISessionPin(rec, req)
 	if rec.Code != http.StatusBadRequest {
 		t.Fatalf("status = %d, want 400", rec.Code)
