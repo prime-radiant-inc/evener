@@ -105,9 +105,10 @@ describe("MutationDispatcher edge cases", () => {
 
     await dispatcher.dispatchTargets(["ref-a"]);
 
+    expect(await outbox.getOutbox(record.clientMutationId)).toBeUndefined();
     const recoveryRecord = await outbox.getRecovery(record.clientMutationId);
-    expect(recoveryRecord).toBeTruthy();
     expect(recoveryRecord?.recoveryKind).toBe("rejected");
+    expect(recoveryRecord?.recoveryReason).toBe("Invalid request");
   });
 
   test("rejection with WireError message uses that message as rejection reason", async () => {

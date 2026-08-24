@@ -124,9 +124,25 @@ describe("activityPanelStore continuation paths", () => {
 
   test("continuation fetch with ready result grafts the tree", () => {
     resetActivityPanelStoreForTests();
-    // First establish the tree
+    const current = makeTreeWithDelegate();
+    current.root.entries.push({
+      kind: "shell",
+      job: {
+        jobId: "job_sibling",
+        ownerSessionId: "sess_a",
+        ownerRef: "ref_a",
+        type: "shell",
+        status: "completed",
+        terminal: true,
+        background: false,
+        hasOutput: true,
+        description: "unaffected sibling",
+        startedAt: "2026-01-01T00:00:00Z",
+        outputBytes: 17,
+      },
+    });
     const req = activityPanelStore.getState().beginFetch("ref_a");
-    activityPanelStore.getState().publishFetch("ref_a", req, { kind: "ready", tree: makeTreeWithDelegate() });
+    activityPanelStore.getState().publishFetch("ref_a", req, { kind: "ready", tree: current });
 
     // Start a continuation fetch
     const contReq = activityPanelStore.getState().beginFetch("ref_a", { nodeID: "delegate:dlg_1" });
@@ -167,8 +183,42 @@ describe("activityPanelStore continuation paths", () => {
       expect(entry.load.tree.revision).toBe(2);
       expect(delegate?.kind).toBe("delegate");
       if (delegate?.kind === "delegate") {
-        expect(delegate.delegate.child?.entries).toEqual(patchDelegate.delegate.child.entries);
+        expect(delegate.delegate.projectionRevision).toBe(2);
+        expect(delegate.delegate.child?.entries).toEqual([
+          {
+            kind: "shell",
+            job: {
+              jobId: "job_1",
+              ownerSessionId: "sess_child",
+              ownerRef: "ref_child",
+              type: "shell",
+              status: "running",
+              terminal: false,
+              background: false,
+              hasOutput: false,
+              description: "test job",
+              startedAt: "2026-01-01T00:00:00Z",
+              outputBytes: 0,
+            },
+          },
+        ]);
       }
+      expect(entry.load.tree.root.entries).toContainEqual({
+        kind: "shell",
+        job: {
+          jobId: "job_sibling",
+          ownerSessionId: "sess_a",
+          ownerRef: "ref_a",
+          type: "shell",
+          status: "completed",
+          terminal: true,
+          background: false,
+          hasOutput: true,
+          description: "unaffected sibling",
+          startedAt: "2026-01-01T00:00:00Z",
+          outputBytes: 17,
+        },
+      });
     }
     expect(entry?.continuationLoadingID).toBeUndefined();
     expect(entry?.pending).toBeUndefined();
@@ -176,8 +226,13 @@ describe("activityPanelStore continuation paths", () => {
 
   test("continuation fetch with failed result records failure", () => {
     resetActivityPanelStoreForTests();
+    const tree = makeTreeWithDelegate();
     const req = activityPanelStore.getState().beginFetch("ref_a");
-    activityPanelStore.getState().publishFetch("ref_a", req, { kind: "ready", tree: makeTreeWithDelegate() });
+    activityPanelStore.getState().publishFetch("ref_a", req, { kind: "ready", tree });
+    const readyEntry = activityPanelStore.getState().entries.get("ref_a");
+    if (readyEntry?.load.kind !== "ready") throw new Error("fixture did not establish a ready activity tree");
+    const readyLoad = readyEntry.load;
+    const readyTree = readyLoad.tree;
 
     const contReq = activityPanelStore.getState().beginFetch("ref_a", { nodeID: "delegate:dlg_1" });
     activityPanelStore.getState().publishFetch("ref_a", contReq, {
@@ -187,6 +242,10 @@ describe("activityPanelStore continuation paths", () => {
     });
 
     const entry = activityPanelStore.getState().entries.get("ref_a");
+    expect(entry?.established).toBe(true);
+    expect(entry?.load).toBe(readyLoad);
+    expect(entry?.load).toEqual({ kind: "ready", tree: readyTree });
+    if (entry?.load.kind === "ready") expect(entry.load.tree).toBe(readyTree);
     expect(entry?.continuationFailures).toEqual({
       "delegate:dlg_1": "Couldn't load more retained activity for this branch.",
     });

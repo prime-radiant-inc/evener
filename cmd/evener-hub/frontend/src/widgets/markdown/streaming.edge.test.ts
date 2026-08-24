@@ -1,6 +1,26 @@
 import { expect, test } from "vitest";
 import { closeOpenMarkdown } from "./streaming";
 
+test.each([
+  {
+    name: "top-level list scans its own emphasis after resetting the prior paragraph",
+    source: "**bold\n- item *emph",
+    expected: "**bold\n- item *emph*",
+  },
+  {
+    name: "nested quoted thematic break resets parent list emphasis",
+    source: "> - text **emph\n> > ---",
+    expected: "> - text **emph\n> > ---",
+  },
+  {
+    name: "nested quoted setext underline resets parent list emphasis",
+    source: "> - text **emph\n> > ===",
+    expected: "> - text **emph\n> > ===",
+  },
+])("$name", ({ source, expected }) => {
+  expect(closeOpenMarkdown(source)).toBe(expected);
+});
+
 test("a nested quoted heading resets the parent list emphasis and closes only its own emphasis", () => {
   const source = "> - text **parent\n> > ## heading *child";
 
