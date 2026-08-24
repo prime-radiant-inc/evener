@@ -6,19 +6,24 @@ set -uo pipefail
 repo_root="$(cd "$(dirname "$0")/../.." && pwd)"
 . "$repo_root/scripts/lib/selftest-lib.sh"
 
-scratch_dir work golangci-lint-cache-selftest
-
-seed="$work/seed"
-tree_a="$work/worktree A"
-tree_b="$work/worktree B"
+work=''
+seed=''
+tree_a=''
+tree_b=''
 cleanup() {
-	if [ -d "$seed/.git" ]; then
+	if [ -n "$seed" ] && [ -d "$seed/.git" ]; then
 		git -C "$seed" worktree remove --force "$tree_a" >/dev/null 2>&1 || :
 		git -C "$seed" worktree remove --force "$tree_b" >/dev/null 2>&1 || :
 	fi
 	scratch_rm
 }
 trap cleanup EXIT
+
+scratch_dir work golangci-lint-cache-selftest
+
+seed="$work/seed"
+tree_a="$work/worktree A"
+tree_b="$work/worktree B"
 
 helper="$repo_root/scripts/lib/golangci-lint-cache.sh"
 if [ ! -x "$helper" ]; then

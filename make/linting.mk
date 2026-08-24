@@ -115,6 +115,7 @@ lint-golangci:
 ## trigger: Local cleanup after a tool upgrade or cache diagnosis.
 ## requires: golangci-lint.
 ## fails-when: golangci-lint cannot clean the configured worktree cache.
+# lint-cache-clean is an intentional local cleanup action; keep it out of LINT_TARGETS so required lint runs can reuse the cache they are checking.
 lint-cache-clean:
 	@GOLANGCI_LINT_CACHE="$(GOLANGCI_LINT_CACHE)" golangci-lint cache clean
 
