@@ -5,51 +5,36 @@ import (
 	"time"
 )
 
-// TestCovTakeTerminalReport covers TakeTerminalReport (goal.go lines 112-120).
 func TestCovTakeTerminalReport(t *testing.T) {
 	s := NewStore()
 
-	// No goal → false.
-	snap, ok := s.TakeTerminalReport()
-	if ok || snap.Status != "" {
-		t.Fatalf("no goal: snap=%+v ok=%v", snap, ok)
+	if snap, ok := s.TakeTerminalReport(); ok || snap != (Snapshot{}) {
+		t.Fatalf("empty store TakeTerminalReport() = (%+v, %v), want zero snapshot and false", snap, ok)
 	}
 
-	// Active goal → false.
-	now := time.Now()
+	now := time.Unix(123, 0).UTC()
 	s.Set("test goal", now)
-	snap, ok = s.TakeTerminalReport()
-	if ok {
-		t.Fatalf("active goal: ok=%v", ok)
+	if snap, ok := s.TakeTerminalReport(); ok || snap != (Snapshot{}) {
+		t.Fatalf("active goal TakeTerminalReport() = (%+v, %v), want zero snapshot and false", snap, ok)
 	}
 
-	// SetTerminal to make the goal non-active, then TakeTerminalReport → true (first time).
-	s.SetTerminal(StatusComplete, "done", now)
-	snap, ok = s.TakeTerminalReport()
-	if !ok {
-		t.Fatal("terminated goal should return true on first TakeTerminalReport")
+	if !s.SetTerminal(StatusComplete, "done", now.Add(time.Minute)) {
+		t.Fatal("SetTerminal() = false, want true")
 	}
-	if snap.Status != StatusComplete {
-		t.Fatalf("snap.Status = %q", snap.Status)
+	want := Snapshot{Objective: "test goal", Status: StatusComplete, StopReason: "done"}
+	snap, ok := s.TakeTerminalReport()
+	if !ok || snap != want {
+		t.Fatalf("first terminal TakeTerminalReport() = (%+v, %v), want (%+v, true)", snap, ok, want)
 	}
 
-	// Second call → false (already reported).
-	_, ok = s.TakeTerminalReport()
-	if ok {
-		t.Fatal("second TakeTerminalReport should return false")
+	if snap, ok := s.TakeTerminalReport(); ok || snap != (Snapshot{}) {
+		t.Fatalf("second terminal TakeTerminalReport() = (%+v, %v), want zero snapshot and false", snap, ok)
 	}
 }
 
-// TestCovRecordContinuation covers RecordContinuation (goal.go lines 129+).
-func TestCovRecordContinuation(t *testing.T) {
-	s := NewStore()
-
-	// No goal → returns empty and false.
-	snap, active := s.RecordContinuation(true, time.Now())
-	if active {
-		t.Fatal("no goal should not be active")
-	}
-	if snap.Status != "" {
-		t.Fatalf("no goal snap = %+v", snap)
+func TestCovRecordContinuationWithoutGoal(t *testing.T) {
+	snap, active := NewStore().RecordContinuation(true, time.Unix(123, 0).UTC())
+	if active || snap != (Snapshot{}) {
+		t.Fatalf("RecordContinuation() without goal = (%+v, %v), want zero snapshot and false", snap, active)
 	}
 }

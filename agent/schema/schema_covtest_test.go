@@ -1,65 +1,63 @@
 package schema
 
 import (
-	"strings"
+	"reflect"
 	"testing"
+	"time"
 
 	"primeradiant.com/evener/llm"
 )
 
-// TestCovHookInfoAnnouncement covers HookInfo.Announcement
-// (turn.go lines 108-121).
 func TestCovHookInfoAnnouncement(t *testing.T) {
-	// Full fields.
-	h := HookInfo{
-		Event:      "pre",
-		PluginName: "myplugin",
-		Matcher:    "exec_command",
-		HookType:   "pre",
-		ExitCode:   0,
+	tests := []struct {
+		name string
+		info HookInfo
+		want string
+	}{
+		{
+			name: "all labels",
+			info: HookInfo{
+				Event:      "pre",
+				PluginName: "myplugin",
+				Matcher:    "exec_command",
+				HookType:   "pre",
+				ExitCode:   0,
+			},
+			want: "pre hook myplugin exec_command pre exit 0",
+		},
+		{
+			name: "default event label",
+			info: HookInfo{ExitCode: 1},
+			want: "hook hook exit 1",
+		},
+		{
+			name: "trim and omit empty labels",
+			info: HookInfo{Event: "  post  ", PluginName: "  ", ExitCode: 2},
+			want: "post hook exit 2",
+		},
 	}
-	got := h.Announcement()
-	if !strings.Contains(got, "pre hook") || !strings.Contains(got, "myplugin") || !strings.Contains(got, "exec_command") || !strings.Contains(got, "exit 0") {
-		t.Fatalf("full: %q", got)
-	}
-
-	// Empty event → defaults to "hook".
-	h = HookInfo{ExitCode: 1}
-	got = h.Announcement()
-	if !strings.Contains(got, "hook hook") {
-		t.Fatalf("empty event: %q", got)
-	}
-	if !strings.Contains(got, "exit 1") {
-		t.Fatalf("missing exit code: %q", got)
-	}
-
-	// Partial fields — whitespace trimmed.
-	h = HookInfo{
-		Event:      "  post  ",
-		PluginName: "  ",
-		ExitCode:   2,
-	}
-	got = h.Announcement()
-	if !strings.Contains(got, "post hook") {
-		t.Fatalf("trimmed event: %q", got)
-	}
-	// Empty/whitespace plugin name should be skipped.
-	if strings.Contains(got, "  ") || strings.Contains(got, " \t") {
-		t.Fatalf("announcement should not contain raw whitespace field: %q", got)
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := tc.info.Announcement(); got != tc.want {
+				t.Fatalf("Announcement() = %q, want %q", got, tc.want)
+			}
+		})
 	}
 }
 
-// TestCovNewTurn covers NewTurn (turn.go lines 200-202).
-func TestCovNewTurn(t *testing.T) {
+func TestCovNewTurnPreservesMessage(t *testing.T) {
 	msg := llm.User("hello")
 	turn := NewTurn(TurnUserInput, msg)
 	if turn.Kind != TurnUserInput {
-		t.Fatalf("Kind = %v", turn.Kind)
+		t.Fatalf("Kind = %v, want %v", turn.Kind, TurnUserInput)
 	}
-	if turn.Message.Role != llm.RoleUser {
-		t.Fatalf("Role = %v", turn.Message.Role)
+	if !reflect.DeepEqual(turn.Message, msg) {
+		t.Fatalf("Message = %#v, want %#v", turn.Message, msg)
 	}
-	if turn.Timestamp.IsZero() {
-		t.Fatal("Timestamp should be set")
+	if got := turn.Message.Text(); got != "hello" {
+		t.Fatalf("Message.Text() = %q, want %q", got, "hello")
+	}
+	if turn.Timestamp.IsZero() || turn.Timestamp.Location() != time.UTC {
+		t.Fatalf("Timestamp = %v, want non-zero UTC", turn.Timestamp)
 	}
 }

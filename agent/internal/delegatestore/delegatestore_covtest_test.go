@@ -1,25 +1,22 @@
 package delegatestore
 
 import (
+	"reflect"
 	"strings"
 	"testing"
 )
 
-// TestCovApplyDeliveryAcknowledged covers applyDeliveryAcknowledged
-// (fold.go lines 341-355).
 func TestCovApplyDeliveryAcknowledged(t *testing.T) {
 	state := State{}
 
-	// Missing aggregate (no delegate registered).
 	err := applyDeliveryAcknowledged(state, Event{
 		DelegateID:           "dlg_1",
 		DeliveryAcknowledged: &DeliveryAcknowledged{DeliveryID: "del_1"},
 	})
-	if err == nil {
-		t.Fatal("expected error for missing aggregate")
+	if err == nil || !strings.Contains(err.Error(), `delegate "dlg_1" does not exist`) {
+		t.Fatalf("missing aggregate error = %v", err)
 	}
 
-	// Register a delegate and test with empty delivery ID.
 	state["dlg_1"] = &Aggregate{DelegateID: "dlg_1"}
 	err = applyDeliveryAcknowledged(state, Event{
 		DelegateID:           "dlg_1",
@@ -29,7 +26,6 @@ func TestCovApplyDeliveryAcknowledged(t *testing.T) {
 		t.Fatalf("expected empty delivery id error, got %v", err)
 	}
 
-	// No pending deliveries.
 	err = applyDeliveryAcknowledged(state, Event{
 		DelegateID:           "dlg_1",
 		DeliveryAcknowledged: &DeliveryAcknowledged{DeliveryID: "del_1"},
@@ -38,10 +34,8 @@ func TestCovApplyDeliveryAcknowledged(t *testing.T) {
 		t.Fatalf("expected not-pending-head error, got %v", err)
 	}
 
-	// Delivery ID doesn't match pending head.
-	state["dlg_1"].PendingDeliveries = []PendingDelivery{
-		{DeliveryID: "del_other"},
-	}
+	pending := []PendingDelivery{{DeliveryID: "del_other"}}
+	state["dlg_1"].PendingDeliveries = append([]PendingDelivery(nil), pending...)
 	err = applyDeliveryAcknowledged(state, Event{
 		DelegateID:           "dlg_1",
 		DeliveryAcknowledged: &DeliveryAcknowledged{DeliveryID: "del_1"},
@@ -49,8 +43,10 @@ func TestCovApplyDeliveryAcknowledged(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "not the pending head") {
 		t.Fatalf("expected not-pending-head error, got %v", err)
 	}
+	if !reflect.DeepEqual(state["dlg_1"].PendingDeliveries, pending) {
+		t.Fatalf("mismatched acknowledgement mutated pending deliveries: %+v", state["dlg_1"].PendingDeliveries)
+	}
 
-	// Successful acknowledgement — removes head.
 	state["dlg_1"].PendingDeliveries = []PendingDelivery{
 		{DeliveryID: "del_1"},
 		{DeliveryID: "del_2"},
@@ -62,26 +58,23 @@ func TestCovApplyDeliveryAcknowledged(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if len(state["dlg_1"].PendingDeliveries) != 1 || state["dlg_1"].PendingDeliveries[0].DeliveryID != "del_2" {
-		t.Fatalf("after ack: pending = %+v", state["dlg_1"].PendingDeliveries)
+	want := []PendingDelivery{{DeliveryID: "del_2"}}
+	if !reflect.DeepEqual(state["dlg_1"].PendingDeliveries, want) {
+		t.Fatalf("after acknowledgement: pending = %+v, want %+v", state["dlg_1"].PendingDeliveries, want)
 	}
 }
 
-// TestCovApplyAttentionChanged covers applyAttentionChanged
-// (fold.go lines 357-364).
 func TestCovApplyAttentionChanged(t *testing.T) {
 	state := State{}
 
-	// Missing aggregate.
 	err := applyAttentionChanged(state, Event{
 		DelegateID:       "dlg_1",
 		AttentionChanged: &DelegateAttentionChanged{NeedsAttention: true},
 	})
-	if err == nil {
-		t.Fatal("expected error for missing aggregate")
+	if err == nil || !strings.Contains(err.Error(), `delegate "dlg_1" does not exist`) {
+		t.Fatalf("missing aggregate error = %v", err)
 	}
 
-	// Set attention.
 	state["dlg_1"] = &Aggregate{DelegateID: "dlg_1", NeedsAttention: false}
 	err = applyAttentionChanged(state, Event{
 		DelegateID:       "dlg_1",
@@ -94,7 +87,6 @@ func TestCovApplyAttentionChanged(t *testing.T) {
 		t.Fatal("NeedsAttention should be true")
 	}
 
-	// Clear attention.
 	err = applyAttentionChanged(state, Event{
 		DelegateID:       "dlg_1",
 		AttentionChanged: &DelegateAttentionChanged{NeedsAttention: false},

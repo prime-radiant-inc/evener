@@ -1,107 +1,116 @@
 package tool
 
 import (
-	"encoding/json"
+	"reflect"
 	"strings"
 	"testing"
 )
 
-// TestCovNormalizeAskUserArgs covers all branches of normalizeAskUserArgs
-// (registry.go lines 141-206).
 func TestCovNormalizeAskUserArgs(t *testing.T) {
-	// Case 1: questions present, no question/options → use as-is.
-	args := map[string]any{"questions": []any{map[string]any{"question": "Which?", "options": []any{}}}}
-	out, err := normalizeAskUserArgs(args)
-	if err != nil || out == nil {
-		t.Fatalf("case 1: out=%v err=%v", out, err)
+	batch := map[string]any{
+		"questions": []any{
+			map[string]any{
+				"question": "Which?",
+				"options":  []any{map[string]any{"label": "A", "detail": "first"}},
+			},
+		},
+	}
+	out, err := normalizeAskUserArgs(batch)
+	if err != nil {
+		t.Fatalf("batch form: %v", err)
+	}
+	if !reflect.DeepEqual(out, batch) {
+		t.Fatalf("batch form normalized to %#v, want %#v", out, batch)
 	}
 
-	// Case 2: question + options present, no questions → wrap into batch form.
-	args = map[string]any{
+	options := []any{
+		map[string]any{"label": "A", "detail": "first"},
+		map[string]any{"label": "B", "detail": "second"},
+	}
+	shorthand := map[string]any{
 		"question":      "Which one?",
-		"options":       []any{map[string]any{"label": "A"}},
+		"options":       options,
 		"why":           "need to know",
 		"if_unanswered": "skip",
 		"multi_select":  true,
 		"header":        "Choose",
 	}
-	out, err = normalizeAskUserArgs(args)
+	want := map[string]any{
+		"questions": []any{
+			map[string]any{
+				"question":      "Which one?",
+				"options":       options,
+				"why":           "need to know",
+				"if_unanswered": "skip",
+				"multi_select":  true,
+				"header":        "Choose",
+			},
+		},
+	}
+	out, err = normalizeAskUserArgs(shorthand)
 	if err != nil {
-		t.Fatalf("case 2: err=%v", err)
+		t.Fatalf("shorthand form: %v", err)
 	}
-	questions, ok := out["questions"].([]any)
-	if !ok || len(questions) != 1 {
-		t.Fatalf("case 2: questions=%v", out["questions"])
-	}
-	wrapped, ok := questions[0].(map[string]any)
-	if !ok {
-		t.Fatalf("case 2: wrapped type = %T", questions[0])
-	}
-	if wrapped["question"] != "Which one?" || wrapped["why"] != "need to know" ||
-		wrapped["if_unanswered"] != "skip" || wrapped["multi_select"] != true ||
-		wrapped["header"] != "Choose" {
-		t.Fatalf("case 2: wrapped = %+v", wrapped)
+	if !reflect.DeepEqual(out, want) {
+		t.Fatalf("shorthand normalized to %#v, want %#v", out, want)
 	}
 
-	// Case 2 without optional fields.
-	args = map[string]any{"question": "q", "options": []any{}}
-	out, err = normalizeAskUserArgs(args)
+	minimal := map[string]any{
+		"question":      "q",
+		"options":       []any{},
+		"why":           "",
+		"if_unanswered": "",
+		"multi_select":  false,
+		"header":        "",
+	}
+	wantMinimal := map[string]any{
+		"questions": []any{
+			map[string]any{"question": "q", "options": []any{}},
+		},
+	}
+	out, err = normalizeAskUserArgs(minimal)
 	if err != nil {
-		t.Fatalf("case 2 minimal: err=%v", err)
+		t.Fatalf("minimal shorthand: %v", err)
 	}
-	questions, _ = out["questions"].([]any)
-	if len(questions) != 1 {
-		t.Fatalf("case 2 minimal: questions = %v", out["questions"])
-	}
-
-	// Sub-case 3a: both questions and question present → error.
-	_, err = normalizeAskUserArgs(map[string]any{
-		"questions": []any{},
-		"question":  "q",
-	})
-	if err == nil || !strings.Contains(err.Error(), "both 'questions' and 'question'") {
-		t.Fatalf("case 3a: err=%v", err)
+	if !reflect.DeepEqual(out, wantMinimal) {
+		t.Fatalf("minimal shorthand normalized to %#v, want %#v", out, wantMinimal)
 	}
 
-	// Sub-case 3b: question present but options missing → error.
-	_, err = normalizeAskUserArgs(map[string]any{"question": "q"})
-	if err == nil || !strings.Contains(err.Error(), "'options' is required") {
-		t.Fatalf("case 3b: err=%v", err)
+	invalid := []struct {
+		name string
+		args map[string]any
+		want string
+	}{
+		{
+			name: "both forms",
+			args: map[string]any{"questions": []any{}, "question": "q"},
+			want: "both 'questions' and 'question'",
+		},
+		{
+			name: "shorthand without options",
+			args: map[string]any{"question": "q"},
+			want: "'options' is required",
+		},
+		{
+			name: "neither form",
+			args: map[string]any{},
+			want: "'questions' is required",
+		},
+		{
+			name: "batch plus top-level options",
+			args: map[string]any{"questions": []any{}, "options": []any{}},
+			want: "'questions' is required",
+		},
 	}
-
-	// Sub-case 3c: neither questions nor question+options → error.
-	_, err = normalizeAskUserArgs(map[string]any{})
-	if err == nil || !strings.Contains(err.Error(), "'questions' is required") {
-		t.Fatalf("case 3c: err=%v", err)
-	}
-
-	// Sub-case 3a: both questions and options present (no question).
-	_, err = normalizeAskUserArgs(map[string]any{
-		"questions": []any{},
-		"options":   []any{},
-	})
-	if err == nil || !strings.Contains(err.Error(), "'questions' is required") {
-		t.Fatalf("case questions+options: err=%v", err)
-	}
-}
-
-// TestCovDefManageWorktreeDisposeOnly covers DefManageWorktreeDisposeOnly
-// (definitions.go lines 684+).
-func TestCovDefManageWorktreeDisposeOnly(t *testing.T) {
-	def := DefManageWorktreeDisposeOnly()
-	if def.Name != "manage_worktree" {
-		t.Fatalf("Name = %q", def.Name)
-	}
-	if !strings.Contains(def.Description, "dispose") {
-		t.Fatalf("Description should mention dispose: %q", def.Description)
-	}
-	params := def.Parameters
-	if params["type"] != "object" {
-		t.Fatalf("type = %v", params["type"])
-	}
-	// Verify the schema is valid JSON.
-	_, err := json.Marshal(def)
-	if err != nil {
-		t.Fatalf("marshal error: %v", err)
+	for _, tc := range invalid {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := normalizeAskUserArgs(tc.args)
+			if err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("normalizeAskUserArgs() = (%#v, %v), want nil and error containing %q", got, err, tc.want)
+			}
+			if got != nil {
+				t.Fatalf("invalid arguments returned %#v, want nil", got)
+			}
+		})
 	}
 }

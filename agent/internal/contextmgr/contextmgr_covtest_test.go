@@ -2,50 +2,36 @@ package contextmgr
 
 import (
 	"context"
+	"reflect"
 	"testing"
 
 	"primeradiant.com/evener/agent/schema"
+	"primeradiant.com/evener/llm"
 )
 
-// TestCovWithCompactionTurnCallback covers WithCompactionTurnCallback
-// (context_manager.go lines 67-69).
-func TestCovWithCompactionTurnCallback(t *testing.T) {
-	ctx := context.Background()
-	var called bool
-	cb := func(turn schema.Turn) {
-		called = true
+func TestCovWithCompactionTurnCallbackRoutesThroughManager(t *testing.T) {
+	turn := schema.Turn{
+		Kind:    schema.TurnCheckpoint,
+		Message: llm.User("checkpoint payload"),
 	}
-	ctxWithCb := WithCompactionTurnCallback(ctx, cb)
-	if ctxWithCb == nil {
-		t.Fatal("WithCompactionTurnCallback should return non-nil context")
+	var operationTurns, fallbackTurns []schema.Turn
+	cm := &Manager{OnCompactionTurn: func(got schema.Turn) {
+		fallbackTurns = append(fallbackTurns, got)
+	}}
+	ctx := WithCompactionTurnCallback(context.Background(), func(got schema.Turn) {
+		operationTurns = append(operationTurns, got)
+	})
+
+	cm.handleCompactionTurn(ctx, turn)
+	if !reflect.DeepEqual(operationTurns, []schema.Turn{turn}) {
+		t.Fatalf("operation callback turns = %#v, want %#v", operationTurns, []schema.Turn{turn})
+	}
+	if len(fallbackTurns) != 0 {
+		t.Fatalf("fallback callback ran despite operation callback: %#v", fallbackTurns)
 	}
 
-	// Verify the callback is stored by retrieving it.
-	val := ctxWithCb.Value(compactionTurnCallbackKey{})
-	if val == nil {
-		t.Fatal("context should carry the callback")
-	}
-	if cbFn, ok := val.(func(schema.Turn)); !ok {
-		t.Fatalf("callback type = %T", val)
-	} else {
-		cbFn(schema.Turn{})
-		if !called {
-			t.Fatal("callback should have been called")
-		}
-	}
-
-	// Nil callback still works (returns a context that carries nil).
-	ctxNil := WithCompactionTurnCallback(ctx, nil)
-	if ctxNil == nil {
-		t.Fatal("nil callback should still return a context")
-	}
-}
-
-// TestCovWithCompactionTurnCallback_NoCallback covers the case where no callback
-// is installed — the context value should be nil.
-func TestCovWithCompactionTurnCallback_NoCallback(t *testing.T) {
-	ctx := context.Background()
-	if val := ctx.Value(compactionTurnCallbackKey{}); val != nil {
-		t.Fatalf("plain context should not carry callback: %v", val)
+	cm.handleCompactionTurn(context.Background(), turn)
+	if !reflect.DeepEqual(fallbackTurns, []schema.Turn{turn}) {
+		t.Fatalf("fallback turns without operation callback = %#v, want %#v", fallbackTurns, []schema.Turn{turn})
 	}
 }

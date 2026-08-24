@@ -2,101 +2,86 @@ package sandbox
 
 import (
 	"errors"
+	"reflect"
 	"testing"
 )
 
-// TestCovAsDenied covers AsDenied (denial.go lines 14-19).
 func TestCovAsDenied(t *testing.T) {
-	// Non-denied error.
-	d, ok := AsDenied(errors.New("other"))
-	if ok || d != nil {
-		t.Fatalf("non-denied: d=%v ok=%v", d, ok)
+	for _, err := range []error{nil, errors.New("other")} {
+		d, ok := AsDenied(err)
+		if ok || d != nil {
+			t.Fatalf("AsDenied(%v) = (%v, %v), want (nil, false)", err, d, ok)
+		}
 	}
 
-	// Nil error.
-	d, ok = AsDenied(nil)
-	if ok || d != nil {
-		t.Fatalf("nil: d=%v ok=%v", d, ok)
-	}
-
-	// DeniedError.
 	original := &DeniedError{Tool: "read_file", Reason: "outside read roots"}
-	d, ok = AsDenied(original)
+	d, ok := AsDenied(original)
 	if !ok || d != original {
-		t.Fatalf("denied: d=%v ok=%v", d, ok)
+		t.Fatalf("AsDenied(original) = (%v, %v), want original pointer and true", d, ok)
 	}
 
-	// Wrapped DeniedError.
-	wrapped := errors.Join(original)
-	_, ok = AsDenied(wrapped)
-	if !ok {
-		t.Fatal("wrapped denied should be found")
+	wrapped := errors.Join(errors.New("outer"), original)
+	d, ok = AsDenied(wrapped)
+	if !ok || d != original {
+		t.Fatalf("AsDenied(wrapped) = (%v, %v), want original pointer and true", d, ok)
 	}
 }
 
-// TestCovCurable covers DenialReason.Curable (denial.go lines 104-111).
 func TestCovCurable(t *testing.T) {
-	// Curable reasons.
-	if !DenialOutsideReadRoots.Curable() {
-		t.Fatal("DenialOutsideReadRoots should be curable")
+	tests := []struct {
+		reason DenialReason
+		want   bool
+	}{
+		{reason: DenialOutsideReadRoots, want: true},
+		{reason: DenialOutsideWriteRoots, want: true},
+		{reason: DenialWritesDisabled, want: true},
+		{reason: DenialRootTarget, want: false},
+		{reason: DenialMasked, want: false},
+		{reason: DenialGitProtected, want: false},
+		{reason: DenialSymlink, want: false},
+		{reason: DenialEscape, want: false},
+		{reason: DenialUnspecified, want: false},
 	}
-	if !DenialOutsideWriteRoots.Curable() {
-		t.Fatal("DenialOutsideWriteRoots should be curable")
-	}
-	if !DenialWritesDisabled.Curable() {
-		t.Fatal("DenialWritesDisabled should be curable")
-	}
-
-	// Not curable.
-	if DenialRootTarget.Curable() {
-		t.Fatal("DenialRootTarget should not be curable")
-	}
-	if DenialMasked.Curable() {
-		t.Fatal("DenialMasked should not be curable")
-	}
-	if DenialGitProtected.Curable() {
-		t.Fatal("DenialGitProtected should not be curable")
-	}
-	if DenialSymlink.Curable() {
-		t.Fatal("DenialSymlink should not be curable")
-	}
-	if DenialEscape.Curable() {
-		t.Fatal("DenialEscape should not be curable")
-	}
-	// Zero value.
-	if DenialUnspecified.Curable() {
-		t.Fatal("DenialUnspecified should not be curable")
+	for _, tc := range tests {
+		if got := tc.reason.Curable(); got != tc.want {
+			t.Errorf("%v.Curable() = %v, want %v", tc.reason, got, tc.want)
+		}
 	}
 }
 
-// TestCovPolicy covers Wrapper.Policy (backend.go line 61).
 func TestCovPolicy(t *testing.T) {
-	w := &Wrapper{policy: ResolvedPolicy{Mode: ModeOff}}
-	if got := w.Policy(); got.Mode != ModeOff {
-		t.Fatalf("Policy = %+v", got)
+	want := ResolvedPolicy{
+		Mode:    ModeWorkspaceWrite,
+		Backend: BackendBwrap,
+		Network: true,
+		Git:     GitLayout{WorktreeRoot: "/workspace"},
+	}
+	w := &Wrapper{policy: want}
+	if got := w.Policy(); !reflect.DeepEqual(got, want) {
+		t.Fatalf("Policy() = %+v, want %+v", got, want)
 	}
 }
 
-// TestCovSessionTmp covers Wrapper.SessionTmp (backend.go line 64).
 func TestCovSessionTmp(t *testing.T) {
 	w := &Wrapper{sessionTmp: "/tmp/scratch"}
 	if got := w.SessionTmp(); got != "/tmp/scratch" {
-		t.Fatalf("SessionTmp = %q", got)
+		t.Fatalf("SessionTmp() = %q, want %q", got, "/tmp/scratch")
 	}
 }
 
-// TestCovPolicyModeIsOff covers ModeIsOff (policy.go line 72).
 func TestCovPolicyModeIsOff(t *testing.T) {
-	if !ModeIsOff("off") {
-		t.Fatal("ModeIsOff(\"off\") should be true")
+	tests := []struct {
+		value string
+		want  bool
+	}{
+		{value: "off", want: true},
+		{value: "", want: true},
+		{value: "  OFF  ", want: true},
+		{value: "restricted", want: false},
 	}
-	if !ModeIsOff("") {
-		t.Fatal("ModeIsOff(\"\") should be true")
-	}
-	if !ModeIsOff("  OFF  ") {
-		t.Fatal("ModeIsOff(\"  OFF  \") should be true")
-	}
-	if ModeIsOff("restricted") {
-		t.Fatal("ModeIsOff(\"restricted\") should be false")
+	for _, tc := range tests {
+		if got := ModeIsOff(tc.value); got != tc.want {
+			t.Errorf("ModeIsOff(%q) = %v, want %v", tc.value, got, tc.want)
+		}
 	}
 }
