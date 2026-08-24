@@ -42,6 +42,8 @@ export function MobileSection() {
     return <EmptyState title="Couldn't create a mobile pairing link" hint="Reload this page to try again." />;
   }
 
+  const isPlaintextHTTP = state.authURL.toLowerCase().startsWith("http://");
+
   return (
     <section aria-labelledby="mobile-app-pairing-heading">
       <h2 id="mobile-app-pairing-heading">Mobile app</h2>
@@ -53,8 +55,10 @@ export function MobileSection() {
         Copy pairing link
       </Button>
       <p>
-        Private-network HTTP connection: anyone who can observe this network can observe the pairing capability. This
-        link remains valid and can be reused until the Hub auth token is rotated.
+        {isPlaintextHTTP && (
+          <>Private-network HTTP connection: anyone who can observe this network can observe the pairing capability. </>
+        )}
+        This link remains valid and can be reused until the Hub auth token is rotated.
       </p>
     </section>
   );

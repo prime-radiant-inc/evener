@@ -6,6 +6,8 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"strconv"
+	"strings"
 	"time"
 
 	"github.com/BurntSushi/toml"
@@ -137,19 +139,28 @@ func validateMobileBaseURL(raw string) error {
 		return fmt.Errorf("must be an http(s) origin: %w", err)
 	}
 	if u.Scheme != "http" && u.Scheme != "https" {
-		return fmt.Errorf("must use http or https")
+		return errors.New("must use http or https")
 	}
 	if u.Host == "" || u.Hostname() == "" || u.User != nil || u.Opaque != "" {
-		return fmt.Errorf("must be an origin without userinfo")
+		return errors.New("must be an origin without userinfo")
 	}
 	if u.Path != "" && u.Path != "/" {
-		return fmt.Errorf("must not include a path")
+		return errors.New("must not include a path")
 	}
 	if u.RawQuery != "" || u.ForceQuery {
-		return fmt.Errorf("must not include a query")
+		return errors.New("must not include a query")
 	}
 	if u.Fragment != "" {
-		return fmt.Errorf("must not include a fragment")
+		return errors.New("must not include a fragment")
+	}
+	if strings.HasSuffix(u.Host, ":") {
+		return errors.New("port must not be empty")
+	}
+	if port := u.Port(); port != "" {
+		p, err := strconv.Atoi(port)
+		if err != nil || p < 1 || p > 65535 {
+			return errors.New("port must be between 1 and 65535")
+		}
 	}
 	return nil
 }
