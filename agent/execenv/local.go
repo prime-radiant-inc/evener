@@ -1774,9 +1774,10 @@ func (e *LocalExecutionEnvironment) StreamCommand(ctx context.Context, command, 
 	}
 
 	return &StreamHandle{
-		Pid:    pid,
-		Wait:   wait,
-		Signal: signal,
+		Pid:        pid,
+		Wait:       wait,
+		Signal:     signal,
+		SignalName: func() string { return cmdSignalName(cmd) },
 	}, nil
 }
 

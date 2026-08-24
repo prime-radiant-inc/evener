@@ -111,10 +111,14 @@ type FileMutator interface {
 
 // StreamHandle is a running streamed process. Wait blocks until exit and returns
 // the exit code; Signal terminates the process group (SIGTERM then SIGKILL).
+// SignalName reports the signal that terminated the process, when the platform
+// exposes it; it must be called after Wait returns and may be nil for non-system
+// implementations.
 type StreamHandle struct {
-	Pid    int
-	Wait   func() (exitCode int, err error)
-	Signal func()
+	Pid        int
+	Wait       func() (exitCode int, err error)
+	Signal     func()
+	SignalName func() string
 }
 
 // ExecutionEnvironment abstracts the filesystem and command runner used by tools.

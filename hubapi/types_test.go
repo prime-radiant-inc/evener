@@ -41,6 +41,19 @@ func TestSpawnRequestMarshalCanEmitLegacyTaskField(t *testing.T) {
 	}
 }
 
+func TestMobileAPIHealthContract(t *testing.T) {
+	if MobileAPIVersion != 1 {
+		t.Fatalf("MobileAPIVersion = %d, want 1", MobileAPIVersion)
+	}
+	data, err := json.Marshal(HealthResponse{MobileAPIVersion: MobileAPIVersion})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(data), `"mobile_api_version":1`) {
+		t.Fatalf("health JSON missing mobile API version: %s", data)
+	}
+}
+
 func TestTreeNode_AskPendingRoundTrips(t *testing.T) {
 	n := TreeNode{SessionID: "01A", State: "awaiting", AskPending: true}
 	data, err := json.Marshal(n)
