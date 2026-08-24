@@ -99,7 +99,10 @@ done
 AGENT_SHARDS=${AGENT_SHARDS:-1}
 # The agent module's test count has grown past the point where 4 shards
 # (the agentshards default) keep each shard's -run pattern under the OS
-# argument-list limit. 8 shards keep the pattern small enough at ~900 tests each.
+# argument-list limit. The shard runner now writes the -run regex to a file
+# and hands the path via EVENER_SHARD_RUN_FILE (read by the test binary's
+# TestMain), so the pattern never touches the execve argument list. 8 shards
+# keep cost-balanced packing from putting too many cheap tests in one shard.
 export AGENT_SHARD_COUNT=${AGENT_SHARD_COUNT:-8}
 ROOT_P=${ROOT_P-6}
 AGENT_PARALLEL=${AGENT_PARALLEL-6}

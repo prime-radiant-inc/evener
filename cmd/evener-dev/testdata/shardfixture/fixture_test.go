@@ -5,14 +5,30 @@
 package shardfixture
 
 import (
+	"flag"
 	"fmt"
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strings"
 	"syscall"
 	"testing"
 	"time"
 )
+
+// TestMain picks up the shard's -test.run regex from EVENER_SHARD_RUN_FILE
+// when set, so agent-shards never puts the regex on the command line.
+func TestMain(m *testing.M) {
+	flag.Parse()
+	if runFile := os.Getenv("EVENER_SHARD_RUN_FILE"); runFile != "" {
+		if data, err := os.ReadFile(runFile); err == nil {
+			if pattern := strings.TrimSpace(string(data)); pattern != "" {
+				flag.Set("test.run", pattern)
+			}
+		}
+	}
+	os.Exit(m.Run())
+}
 
 func TestFixtureAlpha(t *testing.T) { time.Sleep(30 * time.Millisecond) }
 

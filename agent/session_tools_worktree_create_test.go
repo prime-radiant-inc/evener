@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"flag"
 	"fmt"
 	"io"
 	"maps"
@@ -59,6 +60,20 @@ func TestMain(m *testing.M) {
 		if out, err := exec.Command("go", "env", key).Output(); err == nil {
 			if v := strings.TrimSpace(string(out)); v != "" {
 				_ = os.Setenv(key, v)
+			}
+		}
+	}
+
+	// When evener dev agent-shards launches this binary as a shard, the
+	// -test.run regex is handed via EVENER_SHARD_RUN_FILE (a file path) to
+	// stay under the OS argument-list limit. flag.Parse must run before
+	// flag.Set so the command-line value (absent here) does not clobber
+	// the file contents after m.Run calls flag.Parse internally.
+	flag.Parse()
+	if runFile := os.Getenv("EVENER_SHARD_RUN_FILE"); runFile != "" {
+		if data, err := os.ReadFile(runFile); err == nil {
+			if pattern := strings.TrimSpace(string(data)); pattern != "" {
+				flag.Set("test.run", pattern)
 			}
 		}
 	}

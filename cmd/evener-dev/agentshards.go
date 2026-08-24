@@ -29,6 +29,12 @@ package dev
 // otherwise; the exit is nonzero on any shard failure or partition
 // discrepancy, and 129/130/143 on HUP/INT/TERM.
 //
+// The -test.run regex for each shard is written to a file (shardN.run in
+// the scratch dir) and the path handed via EVENER_SHARD_RUN_FILE so the
+// test binary's TestMain reads it in-process. This keeps the regex off
+// the execve argument list: a large shard's regex can exceed Linux's
+// MAX_ARG_STRLEN (128KB per single argument string).
+//
 // Scratch is "agent-test-shards.<pid>" under TMPDIR, reclaimed from dead
 // runs at startup (internal/devtool/scratch): the janitor this replaced is
 // gone, and a SIGKILLed run's debris lives exactly until the next run.
@@ -325,7 +331,19 @@ func runShards(cfg shardsConfig) int {
 	results := make([]chan shardResult, len(bins))
 	launchFailed := false
 	for i, bin := range bins {
-		args := []string{"-test.count=1", "-test.parallel", strconv.Itoa(cfg.parallel), "-test.run", nameRegex(bin)}
+		// The -test.run regex for a large shard can exceed Linux's
+		// MAX_ARG_STRLEN (128KB per single argument string). Write the
+		// regex to a file and hand the path via env so the test binary
+		// reads it in-process, never touching the execve argument list.
+		// The command-line -test.run is a permissive fallback for test
+		// binaries without TestMain env-var support; TestMain overrides
+		// it after flag.Parse by calling flag.Set with the file contents.
+		runFile := filepath.Join(logdir, fmt.Sprintf("shard%d.run", i))
+		if err := os.WriteFile(runFile, []byte(nameRegex(bin)), 0o644); err != nil {
+			_, _ = fmt.Fprintf(cfg.stderr, "agent-shards: %v\n", err)
+			return 1
+		}
+		args := []string{"-test.count=1", "-test.parallel", strconv.Itoa(cfg.parallel)}
 		args = append(args, extraFlags...)
 		log, err := os.Create(filepath.Join(logdir, fmt.Sprintf("shard%d.log", i)))
 		if err != nil {
@@ -335,6 +353,7 @@ func runShards(cfg shardsConfig) int {
 		cmd := exec.CommandContext(context.Background(), build, args...)
 		cmd.Dir = cfg.agentDir
 		cmd.Stdout, cmd.Stderr = log, log
+		cmd.Env = append(os.Environ(), "EVENER_SHARD_RUN_FILE="+runFile)
 		started := time.Now()
 		err = procgroup.Start(cmd)
 		_ = log.Close()
