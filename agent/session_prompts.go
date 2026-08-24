@@ -116,6 +116,8 @@ func (s *Session) buildPromptData(env execenv.ExecutionEnvironment) promptData {
 		Today:                    s.envInfo.Today,
 		Model:                    s.profile.Model(),
 		KnowledgeCutoff:          s.envInfo.KnowledgeCutoff,
+		CPUs:                     s.envInfo.CPUs,
+		MemoryMB:                 s.envInfo.MemoryMB,
 		Sandbox:                  sandboxPromptLine(env),
 		Capabilities:             capabilityPreambleLines(capabilityFactsFromEnv(env, s.capabilities)),
 		GitModifiedFiles:         s.envInfo.GitModifiedFiles,

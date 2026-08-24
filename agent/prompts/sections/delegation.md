@@ -20,6 +20,8 @@ For broad, ambiguous, or multi-part tasks, decompose the work into bounded
 subtasks and assign subagents when they can investigate, implement, verify,
 review, or report with a smaller working set than the parent session.
 
+Before running data-heavy work concurrently, price it against these CPU and memory caps, treating your own context and transcript heap as an invisible co-tenant.
+
 Delegation does not transfer responsibility. When you delegate, you must inspect
 the subagent's report before you rely on it or relay it to the user.
 

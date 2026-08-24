@@ -8,6 +8,8 @@ type EnvironmentInfo struct {
 	OSVersion             string        `json:"os_version"`                         // human-readable OS version
 	Today                 string        `json:"today"`                              // YYYY-MM-DD
 	KnowledgeCutoff       string        `json:"knowledge_cutoff"`                   // YYYY-MM-DD
+	CPUs                  float64       `json:"cpus,omitempty"`                     // effective CPU cap, when measured
+	MemoryMB              int64         `json:"memory_mb,omitempty"`                // effective memory cap in MiB, when measured
 	IsGitRepo             bool          `json:"is_git_repo"`                        // whether WorkingDir is inside a git repo
 	GitBranch             string        `json:"git_branch,omitempty"`               // current branch name
 	GitOriginURL          string        `json:"git_origin_url,omitempty"`           // "origin" remote URL
