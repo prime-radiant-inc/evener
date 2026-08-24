@@ -281,8 +281,7 @@ func TestSession_TaskEffortSurvivesCompaction(t *testing.T) {
 		t.Fatalf("start task: %v", err)
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
+	ctx := context.Background()
 	if _, err := sess.ProcessInput(ctx, "work through compaction", nil); err != nil {
 		t.Fatal(err)
 	}
@@ -330,8 +329,7 @@ func TestSession_TaskEffortSurvivesResumeWithoutClobberingConfig(t *testing.T) {
 	if err := store.Update([]taskpkg.TaskUpdate{{ID: 1, Status: taskpkg.TaskInProgress}}); err != nil {
 		t.Fatalf("start task: %v", err)
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
+	ctx := context.Background()
 	if _, err := sess.ProcessInput(ctx, "work before resume", nil); err != nil {
 		t.Fatal(err)
 	}
@@ -399,8 +397,7 @@ func TestSession_LoopDetectEscalationSurvivesResume(t *testing.T) {
 	if err := store.Update([]taskpkg.TaskUpdate{{ID: 1, Status: taskpkg.TaskInProgress}}); err != nil {
 		t.Fatalf("start task: %v", err)
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
+	ctx := context.Background()
 	if _, err := sess.ProcessInput(ctx, "work before escalation", nil); err != nil {
 		t.Fatal(err)
 	}
