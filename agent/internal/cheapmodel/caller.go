@@ -91,7 +91,7 @@ func (c *Caller) complete(ctx context.Context, profile *provider.Profile, cheap 
 	} else {
 		req.Provider, req.Model = cheap.provider, cheap.model
 		var skipped bool
-		resp, err, refusedProbe, skipped = c.probe(ctx, cheap, req)
+		resp, refusedProbe, skipped, err = c.probe(ctx, cheap, req)
 		if skipped {
 			// The route was latched after the first serves check but before the
 			// probe acquired c.mu. Re-run this request on the active model.
@@ -129,59 +129,59 @@ func (c *Caller) complete(ctx context.Context, profile *provider.Profile, cheap 
 // to reuse for different auxiliary prompts. A refusal call stays registered
 // until its fallback succeeds or fails so a caller arriving during the fallback
 // cannot send a second cheap probe.
-func (c *Caller) probe(ctx context.Context, r route, req llm.Request) (llm.Response, error, *probeCall, bool) {
-	for {
-		c.mu.Lock()
-		if _, refused := c.refused[r]; refused {
-			c.mu.Unlock()
-			return llm.Response{}, nil, nil, true
-		}
-		call, waiting := c.probes[r]
-		if !waiting {
-			call = &probeCall{ready: make(chan struct{})}
-			c.probes[r] = call
-		}
+func (c *Caller) probe(ctx context.Context, r route, req llm.Request) (llm.Response, *probeCall, bool, error) {
+	c.mu.Lock()
+	if _, refused := c.refused[r]; refused {
 		c.mu.Unlock()
-
-		if waiting {
-			if err := ctx.Err(); err != nil {
-				return llm.Response{}, err, nil, false
-			}
-			select {
-			case <-call.ready:
-				if err := ctx.Err(); err != nil {
-					return llm.Response{}, err, nil, false
-				}
-				c.mu.Lock()
-				refused := call.refused
-				callErr := call.err
-				c.mu.Unlock()
-				if refused {
-					return llm.Response{}, callErr, call, false
-				}
-				// The leader's response is not valid for this request. Start
-				// another route attempt, which may become the next leader.
-				continue
-			case <-ctx.Done():
-				return llm.Response{}, ctx.Err(), nil, false
-			}
-		}
-
-		resp, err := c.client.Complete(ctx, req)
-		refused := err != nil && refusesModel(err)
-		c.mu.Lock()
-		call.err = err
-		call.refused = refused
-		close(call.ready)
-		if !refused {
-			delete(c.probes, r)
-		}
-		c.mu.Unlock()
-		if refused {
-			return resp, err, call, false
-		}
-		return resp, err, nil, false
+		return llm.Response{}, nil, true, nil
 	}
+	call, waiting := c.probes[r]
+	if !waiting {
+		call = &probeCall{ready: make(chan struct{})}
+		c.probes[r] = call
+	}
+	c.mu.Unlock()
+
+	if waiting {
+		if err := ctx.Err(); err != nil {
+			return llm.Response{}, nil, false, err
+		}
+		select {
+		case <-call.ready:
+			if err := ctx.Err(); err != nil {
+				return llm.Response{}, nil, false, err
+			}
+			c.mu.Lock()
+			refused := call.refused
+			callErr := call.err
+			c.mu.Unlock()
+			if refused {
+				return llm.Response{}, call, false, callErr
+			}
+			// The leader's response is not valid for this request. Execute
+			// this request independently instead of electing another
+			// serialized probe leader.
+			resp, err := c.client.Complete(ctx, req)
+			return resp, nil, false, err
+		case <-ctx.Done():
+			return llm.Response{}, nil, false, ctx.Err()
+		}
+	}
+
+	resp, err := c.client.Complete(ctx, req)
+	refused := err != nil && refusesModel(err)
+	c.mu.Lock()
+	call.err = err
+	call.refused = refused
+	close(call.ready)
+	if !refused {
+		delete(c.probes, r)
+	}
+	c.mu.Unlock()
+	if refused {
+		return resp, call, false, err
+	}
+	return resp, nil, false, err
 }
 
 func (c *Caller) finishProbe(r route, call *probeCall, succeeded bool) {

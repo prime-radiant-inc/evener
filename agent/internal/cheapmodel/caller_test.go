@@ -103,7 +103,7 @@ func TestCallerDeduplicatesConcurrentCheapRefusalProbes(t *testing.T) {
 			<-start
 			resp, err := complete(t, caller, profile)
 			if err != nil || strings.TrimSpace(resp.Text()) != "answered" {
-				errs <- fmt.Errorf("Complete = (%q, %v), want answered", resp.Text(), err)
+				errs <- fmt.Errorf("Complete = (%q, %w), want answered", resp.Text(), err)
 			}
 		})
 	}
@@ -118,6 +118,122 @@ func TestCallerDeduplicatesConcurrentCheapRefusalProbes(t *testing.T) {
 	}
 	if got, want := len(adapter.Models()), callers+1; got != want {
 		t.Fatalf("provider calls = %d, want %d (one cheap probe plus one fallback per caller)", got, want)
+	}
+}
+
+func TestCallerRunsConcurrentSuccessfulCheapRequestsIndependently(t *testing.T) {
+	const callers = 8
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	started := make(chan struct{}, callers)
+	overlap := make(chan struct{})
+	releaseAll := make(chan struct{})
+	validated := make(chan struct{}, callers)
+	var current atomic.Int32
+	var maximum atomic.Int32
+	var cheapCalls atomic.Int32
+	var overlapOnce sync.Once
+	adapter := &contextTrackingAdapter{Provider: "openai"}
+	adapter.Validate = func(string) error {
+		validated <- struct{}{}
+		return nil
+	}
+	adapter.Respond = func(ctx context.Context, req llm.Request) (llm.Response, error) {
+		if req.Model != "gpt-4.1-nano" {
+			return llm.Response{Message: llm.Assistant(req.Messages[0].Text())}, nil
+		}
+		now := current.Add(1)
+		if now >= 2 {
+			overlapOnce.Do(func() { close(overlap) })
+		}
+		for {
+			old := maximum.Load()
+			if now <= old || maximum.CompareAndSwap(old, now) {
+				break
+			}
+		}
+		started <- struct{}{}
+		defer current.Add(-1)
+		if cheapCalls.Add(1) == 1 {
+			for range callers {
+				select {
+				case <-validated:
+				case <-ctx.Done():
+					return llm.Response{}, ctx.Err()
+				}
+			}
+			return llm.Response{Message: llm.Assistant(req.Messages[0].Text())}, nil
+		}
+		select {
+		case <-releaseAll:
+			return llm.Response{Message: llm.Assistant(req.Messages[0].Text())}, nil
+		case <-ctx.Done():
+			return llm.Response{}, ctx.Err()
+		}
+	}
+
+	caller := cheapmodel.New(clientWith(adapter))
+	profile := provider.NewOpenAIProfile("main")
+	start := make(chan struct{})
+	ready := make(chan struct{}, callers)
+	responses := make(chan string, callers)
+	errs := make(chan error, callers)
+	var wg sync.WaitGroup
+	expected := make(map[string]struct{}, callers)
+	for i := range callers {
+		prompt := fmt.Sprintf("request-%d", i)
+		expected[prompt] = struct{}{}
+		wg.Go(func() {
+			ready <- struct{}{}
+			<-start
+			resp, err := caller.Complete(ctx, profile, llm.Request{Messages: []llm.Message{llm.User(prompt)}})
+			if err != nil {
+				errs <- err
+				return
+			}
+			responses <- resp.Text()
+		})
+	}
+	for range callers {
+		<-ready
+	}
+	close(start)
+
+	select {
+	case <-started:
+	case <-ctx.Done():
+		t.Fatal("first cheap request did not start")
+	}
+	overlapped := false
+	select {
+	case <-overlap:
+		overlapped = true
+	case <-ctx.Done():
+		t.Errorf("healthy cheap requests never overlapped")
+	}
+	close(releaseAll)
+	wg.Wait()
+	close(errs)
+	close(responses)
+
+	for err := range errs {
+		t.Errorf("concurrent Complete: %v", err)
+	}
+	if got := maximum.Load(); got < 2 {
+		t.Fatalf("maximum concurrent healthy cheap calls = %d, want at least 2", got)
+	}
+	if !overlapped {
+		t.Fatalf("healthy cheap requests did not overlap")
+	}
+	for response := range responses {
+		if _, ok := expected[response]; !ok {
+			t.Errorf("unexpected response text = %q", response)
+		}
+		delete(expected, response)
+	}
+	if len(expected) != 0 {
+		t.Errorf("missing responses for prompts: %v", expected)
 	}
 }
 
@@ -328,6 +444,7 @@ func (a *declaredModelAdapter) ValidateModel(model string) error {
 type contextTrackingAdapter struct {
 	Provider string
 	Respond  func(context.Context, llm.Request) (llm.Response, error)
+	Validate func(string) error
 
 	mu     sync.Mutex
 	models []string
@@ -354,7 +471,12 @@ func (a *contextTrackingAdapter) Stream(context.Context, llm.Request) (llm.Strea
 	return nil, llm.ErrStreamUnsupported
 }
 
-func (a *contextTrackingAdapter) ValidateModel(string) error { return nil }
+func (a *contextTrackingAdapter) ValidateModel(model string) error {
+	if a.Validate != nil {
+		return a.Validate(model)
+	}
+	return nil
+}
 
 func (a *contextTrackingAdapter) Models() []string {
 	a.mu.Lock()
