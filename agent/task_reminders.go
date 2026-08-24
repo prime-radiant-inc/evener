@@ -84,6 +84,23 @@ func taskReminderAllDone(resultTool string) string {
 		"</SYSTEM-REMINDER>"
 }
 
+// taskReminderAllDoneWhileDelegatesRun keeps the completion signal from
+// becoming a premature close instruction when this session is synchronously
+// waiting for one or more delegates. The IDs come from the delegate
+// controller's live inline waiters; background and terminal delegates are not
+// included.
+func taskReminderAllDoneWhileDelegatesRun(resultTool string, delegateIDs []string) string {
+	if len(delegateIDs) == 0 {
+		return taskReminderAllDone(resultTool)
+	}
+	return "<SYSTEM-REMINDER>\n" +
+		"You have completed all tasks on your task list, but delegate(s) " + strings.Join(delegateIDs, ", ") +
+		" are still running. Wait for their result before deciding whether to finish. " +
+		"If you have other work to do, add it to the task list after the delegate result arrives. " +
+		"Otherwise, deliver your final output with the " + resultTool + " tool after that result.\n" +
+		"</SYSTEM-REMINDER>"
+}
+
 // taskReminderNudge generates the one-time suggestion to use task_list, wrapped
 // as a SYSTEM-REMINDER so all task reminders share a single envelope.
 func taskReminderNudge() string {

@@ -58,6 +58,10 @@ type toolDeps struct {
 	// all guarded by the session's own mutex.
 	taskGuard taskGuard
 
+	// blockingDelegateIDs reports this session's live inline-waited delegates.
+	// Background delegates and terminal delegates are intentionally excluded.
+	blockingDelegateIDs func() []string
+
 	// goalGuard exposes goal-store access. The goal store has its own mutex.
 	goalGuard goalGuard
 
@@ -205,6 +209,12 @@ func newToolDeps(s *Session) *toolDeps {
 				s.mu.Unlock()
 			},
 			setReasoningEffort: s.SetReasoningEffort,
+		},
+		blockingDelegateIDs: func() []string {
+			if s.delegateController == nil {
+				return nil
+			}
+			return s.delegateController.blockingDelegateIDs(s.delegateRootSessionID, s.owningDelegateID)
 		},
 		goalGuard: goalGuard{
 			getOrCreateGoalStore: s.getOrCreateGoalStore,

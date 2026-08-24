@@ -1674,6 +1674,193 @@ func TestTaskListTool_UpdateShowsAllComplete(t *testing.T) {
 	}
 }
 
+func TestTaskListTool_UpdateNamesBlockingDelegateDependency(t *testing.T) {
+	root, fixture, entered, release := newBlockingColdDelegateRuntime(t)
+
+	outcomes := make(chan stableDelegateSendOutcome, 1)
+	go func() {
+		outcomes <- (delegateRuntime{owner: root}).send(context.Background(), fixture.delegateID, "resolve the open question", 60_000)
+	}()
+	<-entered
+
+	ctx := context.Background()
+	root.reg.ExecuteCall(ctx, root.env, llm.ToolCallData{
+		ID:   "task-append",
+		Name: "task_list",
+		Arguments: json.RawMessage(`{
+			"action": "append",
+			"tasks": [{"type": "research", "description": "Finish the answer", "prompt": "Finish it"}]
+		}`),
+	})
+	updateRes := root.reg.ExecuteCall(ctx, root.env, llm.ToolCallData{
+		ID:        "task-done",
+		Name:      "task_list",
+		Arguments: json.RawMessage(`{"action": "update", "updates": [{"id": 1, "status": "done"}]}`),
+	})
+	if updateRes.IsError {
+		t.Fatalf("update error: %s", updateRes.Output)
+	}
+
+	root.mu.Lock()
+	queue := make([]string, 0, len(root.steeringQueue))
+	for _, message := range root.steeringQueue {
+		queue = append(queue, message.Text)
+	}
+	root.mu.Unlock()
+	if len(queue) == 0 {
+		t.Fatal("expected completion steering while blocking delegate is live")
+	}
+	last := queue[len(queue)-1]
+	if !strings.Contains(last, fixture.delegateID) {
+		t.Fatalf("completion steering should name blocking delegate %q: %s", fixture.delegateID, last)
+	}
+	if !strings.Contains(last, "before deciding whether to finish") {
+		t.Fatalf("completion steering should tell the agent to wait for the delegate: %s", last)
+	}
+	if !strings.Contains(updateRes.Output, fixture.delegateID) {
+		t.Fatalf("task update should name blocking delegate in its acknowledgement: %s", updateRes.Output)
+	}
+
+	close(release)
+	outcome := <-outcomes
+	if outcome.result.Err != nil || outcome.result.Status != "completed" {
+		t.Fatalf("blocking delegate outcome = %#v", outcome.result)
+	}
+	abortUnpersistedStableDelegateOutcome(t, outcome)
+}
+
+func TestTaskListTool_UpdateLeavesBackgroundDelegateOutOfDependencyReminder(t *testing.T) {
+	root, fixture, entered, release := newBlockingColdDelegateRuntime(t)
+
+	outcomes := make(chan stableDelegateSendOutcome, 1)
+	go func() {
+		outcomes <- (delegateRuntime{owner: root}).send(context.Background(), fixture.delegateID, "resolve in background", 0)
+	}()
+	<-entered
+
+	ctx := context.Background()
+	root.reg.ExecuteCall(ctx, root.env, llm.ToolCallData{
+		ID:   "task-append",
+		Name: "task_list",
+		Arguments: json.RawMessage(`{
+			"action": "append",
+			"tasks": [{"type": "research", "description": "Finish the answer", "prompt": "Finish it"}]
+		}`),
+	})
+	updateRes := root.reg.ExecuteCall(ctx, root.env, llm.ToolCallData{
+		ID:        "task-done",
+		Name:      "task_list",
+		Arguments: json.RawMessage(`{"action": "update", "updates": [{"id": 1, "status": "done"}]}`),
+	})
+	if updateRes.IsError {
+		t.Fatalf("update error: %s", updateRes.Output)
+	}
+	if strings.Contains(updateRes.Output, fixture.delegateID) {
+		t.Fatalf("background delegate should not appear in task acknowledgement: %s", updateRes.Output)
+	}
+
+	root.mu.Lock()
+	queue := make([]string, 0, len(root.steeringQueue))
+	for _, message := range root.steeringQueue {
+		queue = append(queue, message.Text)
+	}
+	root.mu.Unlock()
+	if len(queue) == 0 {
+		t.Fatal("expected completion steering while background delegate is live")
+	}
+	last := queue[len(queue)-1]
+	if strings.Contains(last, fixture.delegateID) || !strings.Contains(last, "completed all tasks") {
+		t.Fatalf("background delegate should keep generic completion reminder: %s", last)
+	}
+
+	close(release)
+	outcome := <-outcomes
+	if outcome.result.Err != nil || outcome.result.Action != "started" {
+		t.Fatalf("background delegate outcome = %#v", outcome.result)
+	}
+}
+
+func TestTaskListTool_UpdateIgnoresTerminalDelegates(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		failed bool
+	}{
+		{name: "completed"},
+		{name: "failed", failed: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			fixture := newColdStableDelegateFixture(t, "")
+			if tc.failed {
+				fixture.client.Register(&fakeErrAdapter{
+					name: "openai",
+					steps: []func(llm.Request) (llm.Response, error){
+						func(llm.Request) (llm.Response, error) {
+							return llm.Response{}, llm.ErrorFromHTTPStatus("openai", 403, "scripted delegate failure", nil, nil)
+						},
+					},
+				})
+			} else {
+				fixture.adapter.steps = []func(llm.Request) llm.Response{
+					func(llm.Request) llm.Response { return communicateResponse(true, "done") },
+				}
+			}
+			root, err := restoreDelegateResourceBootstrapSession(fixture.client, fixture.profile, fixture.workspace, fixture.meta, fixture.stateDir)
+			if err != nil {
+				t.Fatalf("restore root: %v", err)
+			}
+			defer root.Close()
+
+			outcome := (delegateRuntime{owner: root}).send(context.Background(), fixture.delegateID, "resolve terminally", 60_000)
+			if outcome.result.Err != nil {
+				t.Fatalf("terminal delegate error: %v", outcome.result.Err)
+			}
+			wantStatus := "completed"
+			if tc.failed {
+				wantStatus = "failed"
+			}
+			if got := string(outcome.result.Status); got != wantStatus {
+				t.Fatalf("terminal delegate status = %q, want %q", got, wantStatus)
+			}
+			abortUnpersistedStableDelegateOutcome(t, outcome)
+
+			ctx := context.Background()
+			root.reg.ExecuteCall(ctx, root.env, llm.ToolCallData{
+				ID:   "task-append",
+				Name: "task_list",
+				Arguments: json.RawMessage(`{
+					"action": "append",
+					"tasks": [{"type": "research", "description": "Finish the answer", "prompt": "Finish it"}]
+				}`),
+			})
+			updateRes := root.reg.ExecuteCall(ctx, root.env, llm.ToolCallData{
+				ID:        "task-done",
+				Name:      "task_list",
+				Arguments: json.RawMessage(`{"action": "update", "updates": [{"id": 1, "status": "done"}]}`),
+			})
+			if updateRes.IsError {
+				t.Fatalf("update error: %s", updateRes.Output)
+			}
+			if strings.Contains(updateRes.Output, fixture.delegateID) {
+				t.Fatalf("terminal delegate should not appear in task acknowledgement: %s", updateRes.Output)
+			}
+
+			root.mu.Lock()
+			queue := make([]string, 0, len(root.steeringQueue))
+			for _, message := range root.steeringQueue {
+				queue = append(queue, message.Text)
+			}
+			root.mu.Unlock()
+			if len(queue) == 0 {
+				t.Fatal("expected completion steering after terminal delegate")
+			}
+			last := queue[len(queue)-1]
+			if strings.Contains(last, fixture.delegateID) || !strings.Contains(last, "completed all tasks") {
+				t.Fatalf("terminal delegate should keep generic completion reminder: %s", last)
+			}
+		})
+	}
+}
+
 func TestTaskListTool_UpdateStaysMinimalWhenBlocked(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()

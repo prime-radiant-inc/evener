@@ -544,6 +544,40 @@ func (c *delegateTreeController) Snapshot() delegateUpdatePlan {
 	return delegateUpdatePlan{rows: rows}
 }
 
+// blockingDelegateIDs returns this session's direct child delegates whose
+// current run has a live inline waiter. The controller owns both pieces of
+// state, so this is the authoritative dependency check: a running delegate
+// without a waiter is background work, while a waiter that outlived its
+// current run is stale.
+func (c *delegateTreeController) blockingDelegateIDs(rootSessionID, parentDelegateID string) []string {
+	if c == nil {
+		return nil
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if rootSessionID == "" {
+		rootSessionID = c.rootSessionID
+	}
+	ids := make([]string, 0)
+	for id, aggregate := range c.durable {
+		if aggregate == nil || aggregate.Descriptor.OwnerSessionID != rootSessionID || aggregate.Descriptor.ParentDelegateID != parentDelegateID || !aggregate.CurrentRunOpen {
+			continue
+		}
+		live := c.live[id]
+		if live == nil || len(live.waiters) == 0 {
+			continue
+		}
+		for generation, waiter := range live.waiters {
+			if waiter != nil && generation == aggregate.Generation && waiter.generation == aggregate.Generation {
+				ids = append(ids, id)
+				break
+			}
+		}
+	}
+	sort.Strings(ids)
+	return ids
+}
+
 func (c *delegateTreeController) emitDelegateUpdate(plan delegateUpdatePlan) {
 	if c == nil {
 		return
