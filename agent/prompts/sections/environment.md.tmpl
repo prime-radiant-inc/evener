@@ -5,11 +5,8 @@ OS version: {{ .OSVersion }}
 Today's date: {{ .Today }}
 Model: {{ .Model }}
 Knowledge cutoff: {{ .KnowledgeCutoff }}
-{{- if .CPUs }}
-CPUs: {{ .CPUs }}
-{{- end }}
-{{- if .MemoryMB }}
-Memory: {{ .MemoryMB }} MB
+{{- if .ResourceCapsJSON }}
+<resource_caps>{{ .ResourceCapsJSON }}</resource_caps>
 {{- end }}
 {{- if .Sandbox }}
 Sandbox: {{ .Sandbox }}

@@ -26,8 +26,9 @@ type promptData struct {
 	Today           string
 	Model           string // from profile, not EnvironmentInfo
 	KnowledgeCutoff string
-	CPUs            float64
-	MemoryMB        int64
+	// ResourceCapsJSON is an omitted-when-empty machine payload for the environment
+	// section. It is derived from the trusted structured environment snapshot.
+	ResourceCapsJSON string
 	// Sandbox is the pre-rendered environment-section sandbox line for a sandboxed
 	// session ("<mode> (network on|off) — fixed for this session", plus the
 	// scratch directory path when one has been provisioned); empty when the

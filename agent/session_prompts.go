@@ -2,7 +2,9 @@ package agent
 
 import (
 	"embed"
+	"encoding/json"
 	"fmt"
+	"math"
 	"os"
 	"path/filepath"
 	"strings"
@@ -11,6 +13,7 @@ import (
 	"primeradiant.com/evener/agent/execenv"
 	"primeradiant.com/evener/agent/internal/promptpath"
 	"primeradiant.com/evener/agent/sandbox"
+	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/envvars"
 	"primeradiant.com/evener/internal/bundled"
 	"primeradiant.com/evener/llm"
@@ -26,6 +29,27 @@ var projectPromptDir = func(env execenv.ExecutionEnvironment, workingDir string)
 }
 
 var globalPromptDir = promptpath.GlobalPromptsDir
+
+func renderResourceCapsJSON(cpus float64, memoryMB int64) string {
+	if cpus <= 0 || math.IsNaN(cpus) || math.IsInf(cpus, 0) {
+		cpus = 0
+	}
+	if memoryMB < 0 {
+		memoryMB = 0
+	}
+	if cpus == 0 && memoryMB == 0 {
+		return ""
+	}
+	caps := schema.ResourceCaps{
+		CPUs:     cpus,
+		MemoryMB: memoryMB,
+	}
+	payload, err := json.Marshal(caps)
+	if err != nil {
+		return ""
+	}
+	return string(payload)
+}
 
 func prependSystemPromptToUserMessage(systemPrompt string, user llm.Message) llm.Message {
 	combined := user
@@ -101,11 +125,9 @@ func (s *Session) buildPromptData(env execenv.ExecutionEnvironment) promptData {
 	if agentName == "" {
 		agentName = defaultAgentName
 	}
-	var cpus float64
-	var memoryMB int64
+	var resourceCapsJSON string
 	if resources := s.envInfo.Resources; resources != nil {
-		cpus = resources.CPUs
-		memoryMB = resources.MemoryMB
+		resourceCapsJSON = renderResourceCapsJSON(resources.CPUs, resources.MemoryMB)
 	}
 
 	data := promptData{
@@ -122,8 +144,7 @@ func (s *Session) buildPromptData(env execenv.ExecutionEnvironment) promptData {
 		Today:                    s.envInfo.Today,
 		Model:                    s.profile.Model(),
 		KnowledgeCutoff:          s.envInfo.KnowledgeCutoff,
-		CPUs:                     cpus,
-		MemoryMB:                 memoryMB,
+		ResourceCapsJSON:         resourceCapsJSON,
 		Sandbox:                  sandboxPromptLine(env),
 		Capabilities:             capabilityPreambleLines(capabilityFactsFromEnv(env, s.capabilities)),
 		GitModifiedFiles:         s.envInfo.GitModifiedFiles,
