@@ -97,6 +97,10 @@ done
 # the sharded split. The -race gate uses it: under -race everything is ~10x
 # slower and CPU-bound, so two shards just oversubscribe each other.
 AGENT_SHARDS=${AGENT_SHARDS:-1}
+# The agent module's test count has grown past the point where 4 shards
+# (the agentshards default) keep each shard's -run pattern under the OS
+# argument-list limit. 8 shards keep the pattern small enough at ~900 tests each.
+export AGENT_SHARD_COUNT=${AGENT_SHARD_COUNT:-8}
 ROOT_P=${ROOT_P-6}
 AGENT_PARALLEL=${AGENT_PARALLEL-6}
 AGENT_P=${AGENT_P-4}
