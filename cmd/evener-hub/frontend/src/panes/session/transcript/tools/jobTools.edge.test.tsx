@@ -112,9 +112,13 @@ test("delegate_send copy button resets Copied state after timeout", async () => 
   expect(screen.getByRole("button", { name: "Copied" })).toBeTruthy();
 
   await act(async () => {
-    await vi.advanceTimersByTimeAsync(2_000);
+    await vi.advanceTimersByTimeAsync(1_999);
   });
+  expect(screen.getByRole("button", { name: "Copied" })).toBeTruthy();
 
+  await act(async () => {
+    await vi.advanceTimersByTimeAsync(1);
+  });
   expect(screen.queryByRole("button", { name: "Copied" })).toBeNull();
   expect(screen.getByRole("button", { name: "Copy message" })).toBeTruthy();
 });

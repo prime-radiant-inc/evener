@@ -6,17 +6,10 @@
 
 import { cleanup, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { afterAll, afterEach, beforeEach, expect, test, vi } from "vitest";
+import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import type { TreeNode as ApiTreeNode } from "../../stores/tree";
 import { resetToastStoreForTests } from "../../widgets/toast/store";
-import * as railActions from "../rail/actions";
 import { SessionMenu, type SessionMenuActions, type SessionMenuProps } from "./SessionMenu";
-
-let mockedListPinSections = vi.spyOn(railActions, "listPinSections");
-
-afterAll(() => {
-  mockedListPinSections.mockRestore();
-});
 
 function treeNode(overrides: Partial<ApiTreeNode> = {}): ApiTreeNode {
   return {
@@ -65,12 +58,24 @@ async function openMenu(user: ReturnType<typeof userEvent.setup>) {
 
 beforeEach(() => {
   resetToastStoreForTests();
-  mockedListPinSections = vi.spyOn(railActions, "listPinSections");
-  mockedListPinSections.mockResolvedValue([{ id: "sec_1", name: "Client", member_count: 0 }]);
+  vi.stubGlobal(
+    "fetch",
+    vi.fn(async (input: string | URL | Request) => {
+      const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
+      if (url !== "/api/pin-sections") throw new Error(`unexpected fetch: ${url}`);
+      return {
+        ok: true,
+        status: 200,
+        statusText: "OK",
+        json: async () => [{ id: "sec_1", name: "Client", member_count: 0 }],
+      } as Response;
+    }),
+  );
 });
 
 afterEach(() => {
   cleanup();
+  vi.unstubAllGlobals();
 });
 
 // Line 169: rename dialog onClose
