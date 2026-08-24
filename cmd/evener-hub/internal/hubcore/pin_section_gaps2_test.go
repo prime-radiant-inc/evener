@@ -35,38 +35,6 @@ func TestPinSectionStoreOpenPragmaForeignKeysQueryError(t *testing.T) {
 	}
 }
 
-// TestPinSectionStoreOpenCreateTableError covers the create-table exec error
-// path in openWithImmediateTransaction (lines 144-147). We create a DB file
-// that is read-only, so the CREATE TABLE statement fails.
-func TestPinSectionStoreOpenCreateTableError(t *testing.T) {
-	dir := t.TempDir()
-	dbPath := filepath.Join(dir, "index.db")
-	// Create a valid DB first, then make it read-only so CREATE TABLE fails.
-	seed := NewPinSectionStore(dbPath)
-	if _, err := seed.Sections(); err != nil {
-		t.Fatal(err)
-	}
-	// Make the file read-only so CREATE TABLE IF NOT EXISTS should still
-	// succeed since the tables already exist. Instead, let's use a custom
-	// openDB that returns a DB pointing to a directory (which will fail on
-	// table creation).
-	store := NewPinSectionStore(filepath.Join(dir, "subdir", "index.db"))
-	// MkdirAll will create the directory, but the DB file will be created
-	// in it. The CREATE TABLE should succeed. To make it fail, we need
-	// a corrupt or locked DB. Let's try a different approach: use a
-	// custom openDB that wraps the real DB but makes the table creation fail.
-
-	// Actually, the simplest way to hit the create-table error is to have
-	// the DB open successfully but then fail on CREATE TABLE. We can do
-	// this by pointing to an invalid DB path that still allows Open to
-	// succeed but Exec to fail. A read-only filesystem would do it, but
-	// that's hard in a test. Instead, we can test the foreign_keys pragma
-	// not being enabled (line 135-137) which is easier.
-
-	// Let's skip this and focus on more achievable targets.
-	_ = store
-}
-
 // TestPinSectionStoreRenamePostUpdateNotFound covers the path where the
 // post-update sectionByIDTx in Rename returns not-found (lines 412-415).
 // This can happen if the section is deleted between the UPDATE and the
@@ -200,26 +168,6 @@ func TestPinSectionStoreDeleteSessionBeginTxNonRetryable(t *testing.T) {
 	if err == nil {
 		t.Fatalf("DeleteSession with closed DB BeginTx should fail")
 	}
-}
-
-// TestPinSectionStoreAssignCommitNonRetryable covers the Commit non-retryable
-// error path in Assign (lines 242-248).
-func TestPinSectionStoreAssignCommitNonRetryable(t *testing.T) {
-	store := setupErrorStore(t)
-	resetErrorCounters()
-	section, _, err := store.CreateOrReuseAndAssign("CommitTest", "seed-a", time.Unix(1, 0))
-	if err != nil {
-		t.Fatal(err)
-	}
-	resetErrorCounters()
-	// We need to make Commit fail with a non-retryable error. The error driver
-	// doesn't inject Commit errors. Let's use a different approach: create
-	// a store that closes the DB after the transaction begins but before
-	// Commit. This is hard to do deterministically.
-	// Instead, let's test the Commit retryable path which is already covered
-	// by the retry test. The non-retryable commit path is defensive code.
-	// Let's test that the hook fires in Assign.
-	_ = section
 }
 
 // TestPinSectionStoreAssignHookFires covers the pinSectionBeforeAssignmentCommitHook
@@ -373,26 +321,6 @@ func TestPinSectionStoreUpsertSessionPinRowsAffectedError(t *testing.T) {
 	_, _, err = store.Assign(section.ID, "session-x", time.Unix(2, 0))
 	if err == nil {
 		t.Fatalf("Assign with RowsAffected error should fail")
-	}
-}
-
-// TestPinSectionStoreSectionsRowsErr covers the rows.Err() path in Sections
-// (line 185).
-func TestPinSectionStoreSectionsRowsErr(t *testing.T) {
-	// This is hard to trigger without a custom driver that injects errors
-	// during rows iteration. The existing test TestPinSectionStoreSectionsScanError
-	// covers the scan error path. Let's verify rows.Err() is exercised by
-	// a normal query that succeeds.
-	store := NewPinSectionStore(filepath.Join(t.TempDir(), "index.db"))
-	if _, _, err := store.CreateOrReuseAndAssign("Test", "s1", time.Unix(1, 0)); err != nil {
-		t.Fatal(err)
-	}
-	sections, err := store.Sections()
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(sections) != 1 {
-		t.Fatalf("expected 1 section, got %d", len(sections))
 	}
 }
 
