@@ -87,90 +87,66 @@ const MCP_OPT: LaunchOption = {
 };
 
 function renderForm(opts: LaunchOption[], current: LaunchConfigLayer = {}) {
-  return render(
+  const onSave = vi.fn().mockResolvedValue(RESOLVED);
+  const view = render(
     <LaunchConfigForm
       options={opts}
       layer="global"
       current={current}
       successToast="Launch defaults saved"
       validatePath={OK_VALIDATE}
-      onSave={async () => RESOLVED}
+      onSave={onSave}
     />,
   );
+  return { ...view, onSave };
 }
-
-// --- updateList (line 106): pathList field renders and collects ---
-
-test("pathList field collects values via updateList", () => {
-  renderForm([PATH_LIST_OPT], { skillsDirs: ["/opt/skills"] });
-  expect(screen.getByText("/opt/skills")).toBeTruthy();
-});
-
-// --- updateEnvMap (lines 112-113): envMap field renders and collects ---
-
-test("envMap field renders seeded values via updateEnvMap", () => {
-  renderForm([ENV_OPT], { env: { FOO: "bar", BAZ: "qux" } });
-  expect(screen.getByText("FOO=bar")).toBeTruthy();
-  expect(screen.getByText("BAZ=qux")).toBeTruthy();
-});
-
-// --- updateMcpList (lines 115): mcpServerList field renders ---
-
-test("mcpServerList field renders seeded values via updateMcpList", () => {
-  renderForm([MCP_OPT], {
-    mcps: [{ name: "myserver", command: "npx", args: ["-y", "server"] }],
-  });
-  // The MCP field renders entries; verify the server name appears
-  expect(screen.getAllByText(/myserver/i).length).toBeGreaterThan(0);
-});
 
 // --- renderOption pathList branch (line 192) ---
 
 test("pathList field allows removing entries", async () => {
   const user = userEvent.setup();
-  renderForm([PATH_LIST_OPT], { skillsDirs: ["/opt/skills"] });
+  const { onSave } = renderForm([PATH_LIST_OPT], { skillsDirs: ["/opt/skills"] });
   const removeBtn = screen.getByRole("button", { name: /Remove \/opt\/skills/i });
   await user.click(removeBtn);
-  await waitFor(() => expect(screen.queryByText("/opt/skills")).toBeNull());
+  await user.click(screen.getByRole("button", { name: "Save launch defaults" }));
+
+  await waitFor(() => expect(onSave).toHaveBeenCalledWith({}));
 });
 
 // --- renderOption envMap branch (line 211) ---
 
 test("envMap field allows removing entries", async () => {
   const user = userEvent.setup();
-  renderForm([ENV_OPT], { env: { FOO: "bar" } });
+  const { onSave } = renderForm([ENV_OPT], { env: { FOO: "bar" } });
   const removeBtn = screen.getByRole("button", { name: /Remove FOO/i });
   await user.click(removeBtn);
-  await waitFor(() => expect(screen.queryByText("FOO=bar")).toBeNull());
+  await user.click(screen.getByRole("button", { name: "Save launch defaults" }));
+
+  await waitFor(() => expect(onSave).toHaveBeenCalledWith({}));
 });
 
 // --- renderOption mcpServerList branch (lines 219-220) ---
 
 test("mcpServerList field allows removing entries", async () => {
   const user = userEvent.setup();
-  renderForm([MCP_OPT], {
+  const { onSave } = renderForm([MCP_OPT], {
     mcps: [{ name: "myserver", command: "npx", args: ["-y", "server"] }],
   });
   const removeBtn = screen.getByRole("button", { name: /Remove myserver/i });
   await user.click(removeBtn);
-  await waitFor(() => expect(screen.queryByText(/myserver/i)).toBeNull());
+  await user.click(screen.getByRole("button", { name: "Save launch defaults" }));
+
+  await waitFor(() => expect(onSave).toHaveBeenCalledWith({}));
 });
 
 // --- renderOption modelList with explicitEmpty (lines 201-203) ---
 
-test("modelList field renders with empty list", () => {
-  renderForm([MODEL_LIST_OPT], { modelFallbacks: [] });
-  expect(screen.getByText("Model fallbacks")).toBeTruthy();
-});
+test("modelList explicit-empty switch serializes an intentional empty list", async () => {
+  const user = userEvent.setup();
+  const { onSave } = renderForm([MODEL_LIST_OPT]);
 
-// --- all collection kinds render together ---
+  await user.click(screen.getByRole("switch", { name: "No model fallbacks" }));
+  await user.click(screen.getByRole("button", { name: "Save launch defaults" }));
 
-test("all collection kinds render together without errors", () => {
-  renderForm([PATH_LIST_OPT, MODEL_LIST_OPT, ENV_OPT, MCP_OPT], {
-    skillsDirs: ["/a"],
-    env: { X: "1" },
-    mcps: [{ name: "s", command: "c" }],
-  });
-  expect(screen.getByText("/a")).toBeTruthy();
-  expect(screen.getByText("X=1")).toBeTruthy();
+  await waitFor(() => expect(onSave).toHaveBeenCalledWith({ modelFallbacks: [] }));
 });

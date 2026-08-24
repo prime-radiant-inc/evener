@@ -4,14 +4,15 @@
 // - findInstance returns undefined for apiKey dialog when instance is gone (line 223)
 // - findInstance returns undefined for edit dialog when instance is gone (line 224)
 
-import { cleanup, render, screen, within } from "@testing-library/react";
+import { act, cleanup, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { afterEach, beforeEach, describe, test, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { FakeClient } from "../../../../protocol/testing/fakeClient";
 import type { InstanceEntry, InstanceListResponse } from "../../../../protocol/types.gen";
 import { connectionStore } from "../../../../stores/connection";
-import { resetCredentialsStoreForTests } from "../../../../stores/credentials";
+import { credentialsStore, resetCredentialsStoreForTests } from "../../../../stores/credentials";
 import { Toast } from "../../../../widgets";
+import { resetToastStoreForTests } from "../../../../widgets/toast/store";
 import { CredentialsSection } from "./CredentialsSection";
 
 function connectFakeClient(): FakeClient {
@@ -46,6 +47,7 @@ const LIST: InstanceListResponse = { instances: [WORK, PERSONAL], availableTypes
 beforeEach(() => {
   connectionStore.setState({ state: "idle", serverInfo: undefined, client: null });
   resetCredentialsStoreForTests();
+  resetToastStoreForTests();
 });
 
 afterEach(() => {
@@ -76,7 +78,8 @@ describe("CredentialsSection edge cases", () => {
     await user.click(clearButtons[0]!);
     const dialog = screen.getByRole("dialog");
     await user.click(within(dialog).getByRole("button", { name: "Clear" }));
-    await screen.findByText(/Clear failed/);
+    await screen.findByText("Clear failed: Something went wrong.");
+    expect(screen.getByRole("dialog", { name: "Clear credentials" })).toBeTruthy();
   });
 
   test("remove failure shows error toast", async () => {
@@ -97,25 +100,28 @@ describe("CredentialsSection edge cases", () => {
     await user.click(removeButtons[1]!);
     const dialog = screen.getByRole("dialog");
     await user.click(within(dialog).getByRole("button", { name: "Remove" }));
-    await screen.findByText(/Remove failed/);
+    await screen.findByText("Remove failed: Something went wrong.");
+    expect(screen.getByRole("dialog", { name: "Remove instance" })).toBeTruthy();
   });
 
-  // Lines 194, 223-224: onSetApiKey opens the API key dialog for the instance
-  test("clicking Replace key opens the API key dialog for the instance", async () => {
+  // Lines 194, 223-224: an open API-key editor stops rendering if its instance disappears.
+  test("an API key dialog closes when a refreshed list removes its instance", async () => {
     const fake = connectFakeClient();
     fake.on("evener/instance/list", () => LIST);
     render(<CredentialsSection sectionId="credentials" />);
     await screen.findByText("work");
     const user = userEvent.setup();
-    // WORK has hasStoredFile=true, so the button says "Replace key"
     const setKeyButtons = screen.getAllByRole("button", { name: /replace key/i });
     await user.click(setKeyButtons[0]!);
-    // The ApiKeyDialog should open with the instance name in its title
     await screen.findByRole("dialog", { name: "Set API key for work" });
+
+    act(() => credentialsStore.setState({ instances: [PERSONAL] }));
+
+    await waitFor(() => expect(screen.queryByRole("dialog", { name: "Set API key for work" })).toBeNull());
   });
 
-  // Lines 196, 228-229: onEdit opens the edit dialog for the instance
-  test("clicking Edit opens the edit dialog for the instance", async () => {
+  // Lines 196, 228-229: an open edit dialog stops rendering if its instance disappears.
+  test("an edit dialog closes when a refreshed list removes its instance", async () => {
     const fake = connectFakeClient();
     fake.on("evener/instance/list", () => LIST);
     render(<CredentialsSection sectionId="credentials" />);
@@ -124,5 +130,9 @@ describe("CredentialsSection edge cases", () => {
     const editButtons = screen.getAllByRole("button", { name: "Edit" });
     await user.click(editButtons[0]!);
     await screen.findByRole("dialog", { name: "Edit work" });
+
+    act(() => credentialsStore.setState({ instances: [PERSONAL] }));
+
+    await waitFor(() => expect(screen.queryByRole("dialog", { name: "Edit work" })).toBeNull());
   });
 });

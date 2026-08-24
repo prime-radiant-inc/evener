@@ -5,7 +5,7 @@
 // - delegateSendFooter with started_job_id empty (lines 255-256)
 // - delegateSendFooter with watching field (line 271)
 
-import { cleanup, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, expect, test, vi } from "vitest";
 import type { ItemModel } from "../../../../protocol/model";
@@ -14,6 +14,7 @@ import "./jobTools";
 
 afterEach(() => {
   cleanup();
+  vi.useRealTimers();
   vi.unstubAllGlobals();
   vi.restoreAllMocks();
 });
@@ -51,6 +52,8 @@ test("delegate_send copy button shows Copied feedback after successful clipboard
   await waitFor(() => {
     expect(screen.getByRole("button", { name: "Copied" })).toBeTruthy();
   });
+  expect(writeText).toHaveBeenCalledTimes(1);
+  expect(writeText).toHaveBeenCalledWith("hello world");
 });
 
 // --- CopyTextButton: clipboard guard (lines 59-60) ---
@@ -82,7 +85,7 @@ test("delegate_send copy button is a no-op when clipboard API is unavailable", a
 // --- CopyTextButton timer effect (line 47) ---
 
 test("delegate_send copy button resets Copied state after timeout", async () => {
-  vi.useFakeTimers({ shouldAdvanceTime: true });
+  vi.useFakeTimers();
   const writeText = vi.fn().mockResolvedValue(undefined);
   vi.stubGlobal("navigator", { clipboard: { writeText } });
 
@@ -100,23 +103,20 @@ test("delegate_send copy button resets Copied state after timeout", async () => 
   );
 
   const copyButton = screen.getByRole("button", { name: /copy message/i });
-  await new Promise<void>((resolve) => {
-    copyButton.onclick = () => resolve();
+  await act(async () => {
     copyButton.click();
+    await Promise.resolve();
   });
 
-  // Let the promise microtask resolve
-  await vi.waitFor(() => {
-    expect(screen.getByRole("button", { name: "Copied" })).toBeTruthy();
+  expect(writeText).toHaveBeenCalledWith("hello world");
+  expect(screen.getByRole("button", { name: "Copied" })).toBeTruthy();
+
+  await act(async () => {
+    await vi.advanceTimersByTimeAsync(2_000);
   });
 
-  // Advance past the 2s reset timer to trigger cleanup (line 48)
-  vi.advanceTimersByTime(2100);
-
-  await vi.waitFor(() => {
-    expect(screen.queryByRole("button", { name: "Copied" })).toBeNull();
-  });
-  vi.useRealTimers();
+  expect(screen.queryByRole("button", { name: "Copied" })).toBeNull();
+  expect(screen.getByRole("button", { name: "Copy message" })).toBeTruthy();
 });
 
 // --- jobListState early returns (lines 81, 87) ---
@@ -186,43 +186,24 @@ test("job_list body with item having empty id string renders no row for it", () 
   expect(rows[0]?.textContent).toContain("job_1");
 });
 
-// --- delegateSendFooter early returns (lines 245, 246, 250) ---
+// --- delegateSendFooter rejection paths ---
 
-test("delegate_send footer without delegate_id prefix returns undefined", () => {
+test.each([
+  ["missing delegate_id prefix", "not_delegate · some action · running in background"],
+  ["empty delegate_id", "delegate_id   · some action · running in background"],
+  ["empty action", "delegate_id dlg_1 ·   · running in background"],
+  ["empty started_job_id", "delegate_id dlg_1 · some action · started_job_id  · running in background"],
+  ["empty wait-ignored reason", "delegate_id dlg_1 · some action · running in background · wait ignored:  "],
+  ["unknown extra field", "delegate_id dlg_1 · some action · running in background · unknown_field"],
+])("delegate_send output with %s preserves the rejected footer as response text", (_case, footer) => {
   const d = toolRendererFor("delegate_send");
-  const output = "Started delegate\n[not_delegate · some action · running in background]";
-  const summary = d.summary(item({ toolName: "delegate_send", argumentsJSON: "{}", output }));
-  expect(summary).toContain("Sent a message to a delegate");
-});
+  const output = `Started delegate\n[${footer}]`;
+  const toolItem = item({ toolName: "delegate_send", argumentsJSON: "{}", output });
 
-test("delegate_send footer with empty delegate_id returns undefined", () => {
-  const d = toolRendererFor("delegate_send");
-  const output = "Started delegate\n[delegate_id   · some action · running in background]";
-  const summary = d.summary(item({ toolName: "delegate_send", argumentsJSON: "{}", output }));
-  expect(summary).toContain("Sent a message to a delegate");
-});
-
-test("delegate_send footer with empty action returns undefined", () => {
-  const d = toolRendererFor("delegate_send");
-  const output = "Started delegate\n[delegate_id dlg_1 ·   · running in background]";
-  const summary = d.summary(item({ toolName: "delegate_send", argumentsJSON: "{}", output }));
-  expect(summary).toContain("Sent a message to a delegate");
-});
-
-// --- delegateSendFooter wait_ignored empty (line 276) and field count mismatch (line 280) ---
-
-test("delegate_send footer with empty wait_ignored reason returns undefined", () => {
-  const d = toolRendererFor("delegate_send");
-  const output = "Started delegate\n[delegate_id dlg_1 · some action · running in background · wait ignored:  ]";
-  const summary = d.summary(item({ toolName: "delegate_send", argumentsJSON: "{}", output }));
-  expect(summary).toContain("Sent a message to a delegate");
-});
-
-test("delegate_send footer with extra fields returns undefined", () => {
-  const d = toolRendererFor("delegate_send");
-  const output = "Started delegate\n[delegate_id dlg_1 · some action · running in background · unknown_field]";
-  const summary = d.summary(item({ toolName: "delegate_send", argumentsJSON: "{}", output }));
-  expect(summary).toContain("Sent a message to a delegate");
+  expect(d.summary(toolItem)).toBe("Sent a message to a delegate");
+  const Body = d.body!;
+  render(<Body item={toolItem} live={false} />);
+  expect(screen.getByTestId("delegate-send-response").textContent).toContain(`[${footer}]`);
 });
 
 // --- delegateSendResponse with raw output (line 287) ---
@@ -266,29 +247,29 @@ test("delegate_send body returns null when no message and no response", () => {
   expect(container.firstChild).toBeNull();
 });
 
-// --- delegateSendFooter: started_job_id empty (lines 255-256) ---
-
-test("delegate_send footer with empty started_job_id returns undefined", () => {
-  const d = toolRendererFor("delegate_send");
-  const output = "Started delegate\n[delegate_id dlg_1 · some action · started_job_id  · running in background]";
-  const summary = d.summary(item({ toolName: "delegate_send", argumentsJSON: "{}", output }));
-  // When footer parsing fails (empty started_job_id), summary has no status word
-  expect(summary).toContain("Sent a message to a delegate");
-});
-
 // --- delegateSendFooter: watching field (line 271) ---
 
 test("delegate_send footer with watching field parses correctly", () => {
   const d = toolRendererFor("delegate_send");
   const output = "Started delegate\n[delegate_id dlg_1 · some action · running in background · watching]";
-  const summary = d.summary(item({ toolName: "delegate_send", argumentsJSON: "{}", output }));
-  expect(summary).toBeTruthy();
+  const toolItem = item({ toolName: "delegate_send", argumentsJSON: "{}", output });
+  expect(d.summary(toolItem)).toBe("Sent a message to a delegate · running");
+
+  const Body = d.body!;
+  render(<Body item={toolItem} live={false} />);
+  const response = screen.getByTestId("delegate-send-response");
+  expect(response.textContent).toContain("Started delegate");
+  expect(response.textContent).not.toContain("delegate_id dlg_1");
 });
 
 test("delegate_send footer with started_job_id and watching and running parses", () => {
   const d = toolRendererFor("delegate_send");
   const output =
     "Started delegate\n[delegate_id dlg_1 · some action · started_job_id job_42 · running in background · watching]";
-  const summary = d.summary(item({ toolName: "delegate_send", argumentsJSON: "{}", output }));
-  expect(summary).toBeTruthy();
+  const toolItem = item({ toolName: "delegate_send", argumentsJSON: "{}", output });
+  expect(d.summary(toolItem)).toBe("Sent a message to a delegate · running");
+
+  const Body = d.body!;
+  render(<Body item={toolItem} live={false} />);
+  expect(screen.getByTestId("delegate-send-response").textContent).not.toContain("started_job_id job_42");
 });

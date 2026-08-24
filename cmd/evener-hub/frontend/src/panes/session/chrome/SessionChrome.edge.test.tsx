@@ -5,7 +5,7 @@
 // - onToggleArchive error catch (207-208)
 // - onDelete error catch (221-222) + skipped warning (216-218)
 
-import { cleanup, render, screen, waitFor } from "@testing-library/react";
+import { cleanup, render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import { FakeClient } from "../../../protocol/testing/fakeClient";
@@ -147,10 +147,9 @@ test("rename failure toasts an error", async () => {
   await user.type(input, "New Name");
   await user.click(screen.getByRole("button", { name: "Rename" }));
 
-  // Wait for the error toast to appear in the Toast region
-  await waitFor(() => {
-    expect(screen.getByText(/couldn't rename session/i)).toBeTruthy();
-  });
+  expect(await screen.findByText("Couldn't rename session: name already taken")).toBeTruthy();
+  const openDialog = screen.getByRole("dialog", { name: "Rename session" });
+  expect(within(openDialog).getByRole("button", { name: "Rename" }).hasAttribute("disabled")).toBe(false);
 });
 
 // --- onShutdown error (lines 179-180) ---
@@ -178,9 +177,8 @@ test("shutdown failure toasts an error", async () => {
     }
   }
 
-  await waitFor(() => {
-    expect(screen.getByText(/couldn't shut down session/i)).toBeTruthy();
-  });
+  expect(await screen.findByText("Couldn't shut down session: shutdown failed")).toBeTruthy();
+  expect(screen.getByRole("dialog", { name: "Shut down this session?" })).toBeTruthy();
 });
 
 // --- onToggleArchive error (lines 207-208) ---
@@ -200,9 +198,14 @@ test("archive toggle failure toasts an error", async () => {
   await user.click(screen.getByRole("button", { name: /session actions/i }));
   await user.click(screen.getByRole("menuitem", { name: "Archive" }));
 
-  await waitFor(() => {
-    expect(screen.getByText(/couldn't update archive state/i)).toBeTruthy();
-  });
+  expect(await screen.findByText("Couldn't update archive state: archive failed")).toBeTruthy();
+  expect(fetchMock).toHaveBeenCalledWith(
+    "/api/archive",
+    expect.objectContaining({
+      method: "POST",
+      body: JSON.stringify({ kind: "session", id: "sess_ref_archive", archived: true }),
+    }),
+  );
 });
 
 // --- onDelete error (lines 221-222) ---
@@ -232,9 +235,8 @@ test("delete failure toasts an error", async () => {
     }
   }
 
-  await waitFor(() => {
-    expect(screen.getByText(/couldn't delete/i)).toBeTruthy();
-  });
+  expect(await screen.findByText('Couldn\'t delete "Del Session": delete failed')).toBeTruthy();
+  expect(screen.getByRole("dialog", { name: "Delete session?" })).toBeTruthy();
 });
 
 // --- onDelete with skipped sessions (lines 216-218) ---
@@ -268,7 +270,5 @@ test("delete with skipped sessions shows a warning toast", async () => {
     }
   }
 
-  await waitFor(() => {
-    expect(screen.getByText(/still in use/i)).toBeTruthy();
-  });
+  expect(await screen.findByText('Couldn\'t delete "Skip Session": still in use')).toBeTruthy();
 });

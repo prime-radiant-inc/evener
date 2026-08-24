@@ -41,13 +41,29 @@ afterEach(() => {
   vi.restoreAllMocks();
 });
 
-test("evaluate with a null container clears the selection", () => {
+test("a lost container clears an action bar created by an earlier selection", () => {
   const containerRef = createRef<HTMLDivElement>();
-  // Don't render the container — containerRef.current stays null
-  render(<SelectionQuote containerRef={containerRef} actions={[]} />);
+  render(
+    <div ref={containerRef}>
+      <div data-view-anchor-message="true" data-testid="message-node">
+        selectable text
+      </div>
+      <SelectionQuote containerRef={containerRef} actions={[{ label: "Quote", onInvoke: () => {} }]} />
+    </div>,
+  );
 
-  // The component should render nothing (no bar)
-  expect(screen.queryByRole("button")).toBeNull();
+  const container = containerRef.current;
+  if (!container) throw new Error("transcript container was not attached");
+  const messageNode = screen.getByTestId("message-node");
+  installFakeSelection({ text: "selected", anchorNode: messageNode.firstChild as Node });
+
+  act(() => container.dispatchEvent(new PointerEvent("pointerup", { bubbles: true })));
+  expect(screen.getByRole("button", { name: "Quote" })).toBeTruthy();
+
+  containerRef.current = null;
+  act(() => container.dispatchEvent(new PointerEvent("pointerup", { bubbles: true })));
+
+  expect(screen.queryByRole("button", { name: "Quote" })).toBeNull();
 });
 
 test("a whitespace-only selection does not show the action bar", () => {

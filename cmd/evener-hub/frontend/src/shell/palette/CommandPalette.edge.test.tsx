@@ -20,7 +20,6 @@ import { useCommandCatalog } from "../../stores/commandCatalog";
 import { connectionStore } from "../../stores/connection";
 import { resetThreadsStoreForTests, threadsStore } from "../../stores/threads";
 import { resetTreeStoreForTests } from "../../stores/tree";
-import { Toast } from "../../widgets";
 import { resetWorkspaceStoreForTests, workspaceStore } from "../workspace";
 import { CommandPalette, commandErrorMessage } from "./CommandPalette";
 import { openPalette, paletteStore } from "./paletteController";
@@ -165,6 +164,7 @@ test("a failed search shows 'Search failed' empty state", async () => {
 
 test("Shift+Enter on an in-session search result closes the palette without navigating", async () => {
   const user = userEvent.setup();
+  const openSpy = vi.spyOn(window, "open").mockImplementation(() => null);
   fetchMock.mockResolvedValue({
     ok: true,
     status: 200,
@@ -179,8 +179,9 @@ test("Shift+Enter on an in-session search result closes the palette without navi
   await waitFor(() => expect(screen.getByText("In session · 1")).toBeTruthy());
   await user.keyboard("{Shift>}{Enter}{/Shift}");
 
-  // Palette closes, no navigation
   expect(screen.queryByRole("dialog")).toBeNull();
+  expect(window.location.pathname).toBe("/");
+  expect(openSpy).not.toHaveBeenCalled();
 });
 
 // --- search result activation: live/past with newTab (lines 505-506) ---
@@ -205,8 +206,8 @@ test("Mod+Enter on a search result opens in a new tab via window.open", async ()
   await waitFor(() => expect(screen.getByText("Live")).toBeTruthy());
   await user.keyboard("{Meta>}{Enter}{/Meta}");
 
-  expect(openSpy).toHaveBeenCalledWith(expect.stringContaining("/s/"), "_blank");
-  openSpy.mockRestore();
+  expect(openSpy).toHaveBeenCalledTimes(1);
+  expect(openSpy).toHaveBeenCalledWith("/s/local%3Alive1", "_blank");
 });
 
 // --- enterPressed: handoff via arrow+Enter (lines 519-524) ---
@@ -275,17 +276,4 @@ test("/help command shows the help panel", async () => {
   await user.click(screen.getByRole("option", { name: /Show keyboard shortcuts/ }));
 
   expect(screen.getByText("Keyboard shortcuts")).toBeTruthy();
-});
-
-// --- mounting with Toast ---
-
-test("edge tests mount cleanly alongside a Toast region", () => {
-  render(
-    <>
-      <CommandPalette />
-      <Toast />
-    </>,
-  );
-  act(() => openPalette("/"));
-  expect(screen.getByRole("dialog")).toBeTruthy();
 });

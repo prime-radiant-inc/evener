@@ -1,5 +1,4 @@
-// Edge cases for modelCatalog that close the remaining uncovered lines:
-// - Enter key with exact match on display name (lines 217-223)
+// Edge behavior not already covered by modelCatalog.test.tsx.
 
 import { cleanup, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
@@ -36,18 +35,6 @@ async function openPicker(user: ReturnType<typeof userEvent.setup>): Promise<HTM
   return (await screen.findByRole("combobox", { name: "Model" })) as HTMLInputElement;
 }
 
-test("Enter on an exact display name match selects it", async () => {
-  const user = userEvent.setup();
-  const { onChange } = renderPicker();
-  const input = await openPicker(user);
-
-  // Type the exact display name
-  await user.type(input, "Claude Sonnet 4.5");
-  await user.keyboard("{Enter}");
-
-  expect(onChange).toHaveBeenCalledWith("anthropic/claude-sonnet-4-5");
-});
-
 test("Enter on a non-matching typed text does not select anything", async () => {
   const user = userEvent.setup();
   const { onChange } = renderPicker();
@@ -58,33 +45,4 @@ test("Enter on a non-matching typed text does not select anything", async () => 
   await user.keyboard("{Enter}");
 
   expect(onChange).not.toHaveBeenCalled();
-});
-
-test("End key moves to the last pick", async () => {
-  const user = userEvent.setup();
-  const { onChange } = renderPicker({
-    loadCatalog: vi.fn().mockResolvedValue({
-      models: [
-        SONNET,
-        {
-          provider: "openai",
-          model: "gpt-5",
-          displayName: "GPT-5",
-          supportsTools: true,
-          inputCostPerMillion: 1.25,
-          outputCostPerMillion: 10,
-          contextWindow: 400000,
-        },
-      ],
-      recent: [],
-    }),
-  });
-  const _input = await openPicker(user);
-
-  // Press End to jump to the last pick
-  await user.keyboard("{End}");
-  await user.keyboard("{Enter}");
-
-  // The last model should be selected
-  expect(onChange).toHaveBeenCalledWith("openai/gpt-5");
 });

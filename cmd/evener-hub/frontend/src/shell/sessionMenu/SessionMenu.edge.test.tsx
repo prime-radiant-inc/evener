@@ -76,43 +76,46 @@ afterEach(() => {
 // Line 169: rename dialog onClose
 test("rename dialog onClose closes the dialog", async () => {
   const user = userEvent.setup();
-  renderMenu();
+  const actions = renderMenu();
   await openMenu(user);
   await user.click(screen.getByRole("menuitem", { name: "Rename" }));
-  const _dialog = screen.getByRole("dialog", { name: "Rename session" });
-  // Trigger onClose by clicking the overlay (outside the dialog content)
+  expect(screen.getByRole("dialog", { name: "Rename session" })).toBeTruthy();
   await user.keyboard("{Escape}");
   await waitFor(() => expect(screen.queryByRole("dialog", { name: "Rename session" })).toBeNull());
+  expect(actions.onRename).not.toHaveBeenCalled();
 });
 
 // Line 205: shutdown dialog onClose
 test("shutdown dialog onClose closes the dialog", async () => {
   const user = userEvent.setup();
-  renderMenu();
+  const actions = renderMenu();
   await openMenu(user);
   await user.click(screen.getByRole("menuitem", { name: "Shut down" }));
   expect(screen.getByRole("dialog", { name: "Shut down this session?" })).toBeTruthy();
   await user.keyboard("{Escape}");
   await waitFor(() => expect(screen.queryByRole("dialog", { name: "Shut down this session?" })).toBeNull());
+  expect(actions.onShutdown).not.toHaveBeenCalled();
 });
 
 // Line 229: delete dialog onClose
 test("delete dialog onClose closes the dialog", async () => {
   const user = userEvent.setup();
-  renderMenu({ treeNode: treeNode() });
+  const actions = renderMenu({ treeNode: treeNode() });
   await openMenu(user);
   await user.click(screen.getByRole("menuitem", { name: /Delete/i }));
   expect(screen.getByRole("dialog", { name: "Delete session?" })).toBeTruthy();
   await user.keyboard("{Escape}");
   await waitFor(() => expect(screen.queryByRole("dialog", { name: "Delete session?" })).toBeNull());
+  expect(actions.onDelete).not.toHaveBeenCalled();
 });
 
 // Line 209: shutdown dialog Cancel button onClick
 test("shutdown dialog Cancel button closes the dialog", async () => {
   const user = userEvent.setup();
-  renderMenu();
+  const actions = renderMenu();
   await openMenu(user);
   await user.click(screen.getByRole("menuitem", { name: "Shut down" }));
   await user.click(screen.getByRole("button", { name: "Cancel" }));
   await waitFor(() => expect(screen.queryByRole("dialog", { name: "Shut down this session?" })).toBeNull());
+  expect(actions.onShutdown).not.toHaveBeenCalled();
 });

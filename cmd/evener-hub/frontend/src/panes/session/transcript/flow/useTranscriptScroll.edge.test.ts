@@ -1,7 +1,6 @@
 // Edge cases for useTranscriptScroll.ts uncovered lines:
 // - isAttentionWorthy with null model (line 182) — pillNeedsYou false when model is undefined
 // - isAttentionWorthy with warning status (line 183) — pillNeedsYou true with warning status
-// - captureTopAnchor with a crossing position (line 132 via topVisiblePosition)
 
 import { cleanup, renderHook } from "@testing-library/react";
 import { createRef } from "react";
@@ -11,7 +10,7 @@ import type { ThreadCapabilities } from "../../../../protocol/types.gen";
 import { resetThreadsStoreForTests } from "../../../../stores/threads";
 import type { VirtualListHandle } from "../../../../widgets/virtuallist";
 import type { ScrollMetrics } from "./scrollMetrics";
-import { captureTopAnchor, useTranscriptScroll, type ViewAnchorPosition } from "./useTranscriptScroll";
+import { useTranscriptScroll } from "./useTranscriptScroll";
 
 function item(id: string, turnId: string, overrides: Partial<ItemModel> = {}): ItemModel {
   return { id, turnId, type: "agentMessage", text: "x", status: "completed", ...overrides };
@@ -130,20 +129,4 @@ test("pillNeedsYou is true when model status is warning with new content below",
   // pillNeedsYou requires pillCount > 0 AND isAttentionWorthy(model) === true
   // isAttentionWorthy checks model.askPending || model.status.type === "awaiting" || "warning"
   expect(result.current.pillNeedsYou).toBe(true);
-});
-
-// Line 132: topVisiblePosition crossing sort — captureTopAnchor preserves the offset
-test("captureTopAnchor works with a crossing position (negative offset, positive height)", () => {
-  const position: ViewAnchorPosition = {
-    id: "anchor_1",
-    index: 0,
-    sourceIndex: 0,
-    offset: -50,
-    height: 100,
-    isMessage: true,
-  };
-  const anchor = captureTopAnchor(position);
-  expect(anchor.id).toBe("anchor_1");
-  expect(anchor.offset).toBe(-50);
-  expect(anchor.sourceIndex).toBe(0);
 });

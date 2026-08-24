@@ -59,42 +59,54 @@ function renderPanel(options: LaunchOption[], over: Partial<Parameters<typeof Ad
 
 test("a failing path validator clears the error (fail-open)", async () => {
   const user = userEvent.setup();
-  const validatePath = vi.fn().mockRejectedValue(new Error("network error"));
+  const validatePath = vi.fn((path: string) =>
+    path === "/invalid/path"
+      ? Promise.resolve({ valid: false, error: "path is invalid" })
+      : Promise.reject(new Error("network error")),
+  );
   const { onOverridesChange } = renderPanel(
     [option({ wireField: "traceFile", kind: "path", label: "Trace file", pathKind: "file" })],
     { validatePath },
   );
 
   await user.click(screen.getByRole("button", { name: "Advanced options" }));
-  // The path field renders as a browse trigger
-  const trigger = screen.getByRole("button", { name: /Trace file/i });
-  await user.click(trigger);
-  // Type a path and Enter
+  await user.click(screen.getByRole("button", { name: /Trace file/i }));
   await screen.findByRole("combobox", { name: "Path" });
-  await user.keyboard("/some/path{Enter}");
+  await user.keyboard("/invalid/path{Enter}");
+  expect(await screen.findByText("path is invalid")).toBeTruthy();
 
-  // The value should still be collected (fail-open)
-  await waitFor(() => expect(onOverridesChange).toHaveBeenCalled());
+  await user.click(screen.getByRole("button", { name: /Trace file/i }));
+  await screen.findByRole("combobox", { name: "Path" });
+  await user.keyboard("/unverifiable/path{Enter}");
+
+  await waitFor(() => expect(screen.queryByText("path is invalid")).toBeNull());
+  expect(validatePath).toHaveBeenLastCalledWith("/unverifiable/path", "file");
+  expect(onOverridesChange).toHaveBeenLastCalledWith({ traceFile: "/unverifiable/path" });
 });
 
 // --- updateScalar with empty path value (line 98) ---
 
 test("a path field with empty value clears the error", async () => {
   const user = userEvent.setup();
-  const { onOverridesChange } = renderPanel([
-    option({ wireField: "traceFile", kind: "path", label: "Trace file", pathKind: "file" }),
-  ]);
+  const validatePath = vi.fn().mockResolvedValue({ valid: false, error: "path is invalid" });
+  const { onOverridesChange } = renderPanel(
+    [option({ wireField: "traceFile", kind: "path", label: "Trace file", pathKind: "file" })],
+    { validatePath },
+  );
 
   await user.click(screen.getByRole("button", { name: "Advanced options" }));
-  // Open the browse and type nothing
-  const trigger = screen.getByRole("button", { name: /Trace file/i });
-  await user.click(trigger);
+  await user.click(screen.getByRole("button", { name: /Trace file/i }));
   await screen.findByRole("combobox", { name: "Path" });
-  // Just press Enter with the pre-filled value (which may be empty)
-  await user.keyboard("{Enter}");
+  await user.keyboard("/invalid/path{Enter}");
+  expect(await screen.findByText("path is invalid")).toBeTruthy();
 
-  // Should call onOverridesChange (value collected)
-  await waitFor(() => expect(onOverridesChange).toHaveBeenCalled());
+  await user.click(screen.getByRole("button", { name: /Trace file/i }));
+  await screen.findByRole("combobox", { name: "Path" });
+  await user.keyboard("{Backspace}{Enter}");
+
+  await waitFor(() => expect(screen.queryByText("path is invalid")).toBeNull());
+  expect(validatePath).toHaveBeenLastCalledWith("/invalid/path", "file");
+  expect(onOverridesChange).toHaveBeenLastCalledWith({});
 });
 
 // --- showResolved error (line 108) ---
@@ -179,7 +191,9 @@ test("a select control renders with choices and default option", async () => {
 
 test("env map control removes an entry", async () => {
   const user = userEvent.setup();
-  renderPanel([option({ wireField: "env", kind: "envMap", label: "Environment variables" })]);
+  const { onOverridesChange } = renderPanel([
+    option({ wireField: "env", kind: "envMap", label: "Environment variables" }),
+  ]);
 
   await user.click(screen.getByRole("button", { name: "Advanced options" }));
   // The env control renders inside a collection editor
@@ -187,14 +201,13 @@ test("env map control removes an entry", async () => {
   const addInput = screen.getByPlaceholderText("NAME=value");
   await user.type(addInput, "FOO=bar{Enter}");
 
-  // Wait for the entry to appear
-  await waitFor(() => expect(screen.getByText("FOO=bar")).toBeTruthy());
+  await waitFor(() => expect(onOverridesChange).toHaveBeenLastCalledWith({ env: { FOO: "bar" } }));
 
   // Remove it
   const removeButton = screen.getByRole("button", { name: /Remove FOO/i });
   await user.click(removeButton);
 
-  await waitFor(() => expect(screen.queryByText("FOO=bar")).toBeNull());
+  await waitFor(() => expect(onOverridesChange).toHaveBeenLastCalledWith({}));
 });
 
 // --- EnvControl onAdd with no equals (line 476) ---
@@ -215,20 +228,28 @@ test("env map add without equals sign shows error", async () => {
 
 test("mcp server list renders entries with name and command", async () => {
   const user = userEvent.setup();
-  renderPanel([option({ wireField: "mcpServers", kind: "mcpServerList", label: "MCP servers" })]);
+  const { onOverridesChange } = renderPanel([
+    option({ wireField: "mcpServers", kind: "mcpServerList", label: "MCP servers" }),
+  ]);
 
   await user.click(screen.getByRole("button", { name: "Advanced options" }));
   const addInput = screen.getByPlaceholderText("name=command arg1 arg2");
   await user.type(addInput, "myserver=npx -y server{Enter}");
 
-  await waitFor(() => expect(screen.getByText(/myserver: npx -y server/i)).toBeTruthy());
+  await waitFor(() =>
+    expect(onOverridesChange).toHaveBeenLastCalledWith({
+      mcpServers: [{ name: "myserver", command: "npx", args: ["-y", "server"] }],
+    }),
+  );
 });
 
 // --- McpControl onRemove (line 501) ---
 
 test("mcp server list removes an entry", async () => {
   const user = userEvent.setup();
-  renderPanel([option({ wireField: "mcpServers", kind: "mcpServerList", label: "MCP servers" })]);
+  const { onOverridesChange } = renderPanel([
+    option({ wireField: "mcpServers", kind: "mcpServerList", label: "MCP servers" }),
+  ]);
 
   await user.click(screen.getByRole("button", { name: "Advanced options" }));
   const addInput = screen.getByPlaceholderText("name=command arg1 arg2");
@@ -238,7 +259,7 @@ test("mcp server list removes an entry", async () => {
   const removeButton = screen.getByRole("button", { name: /Remove myserver/i });
   await user.click(removeButton);
 
-  await waitFor(() => expect(screen.queryByText(/myserver: npx -y server/i)).toBeNull());
+  await waitFor(() => expect(onOverridesChange).toHaveBeenLastCalledWith({}));
 });
 
 // --- McpControl onAdd validation (lines 505-516) ---
@@ -283,7 +304,9 @@ test("mcp add with duplicate name shows error", async () => {
 
 test("model list control removes an entry", async () => {
   const user = userEvent.setup();
-  renderPanel([option({ wireField: "modelFallbacks", kind: "modelList", label: "Model fallbacks" })]);
+  const { onOverridesChange } = renderPanel([
+    option({ wireField: "modelFallbacks", kind: "modelList", label: "Model fallbacks" }),
+  ]);
 
   await user.click(screen.getByRole("button", { name: "Advanced options" }));
   // Add a model
@@ -297,5 +320,5 @@ test("model list control removes an entry", async () => {
   const removeButton = screen.getByRole("button", { name: /Remove anthropic\/claude-sonnet-4-5/i });
   await user.click(removeButton);
 
-  await waitFor(() => expect(screen.queryByText("anthropic/claude-sonnet-4-5")).toBeNull());
+  await waitFor(() => expect(onOverridesChange).toHaveBeenLastCalledWith({}));
 });

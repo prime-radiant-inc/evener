@@ -59,6 +59,7 @@ test("adding a config file with invalid path shows error without saving", async 
   await user.keyboard("{Enter}");
   const addButtons = screen.getAllByRole("button", { name: "Add" });
   await user.click(addButtons[0]!);
+  expect(await screen.findByText("path does not exist")).toBeTruthy();
   expect(setLayerSpy).not.toHaveBeenCalled();
 });
 
@@ -116,7 +117,7 @@ test("removing an inline server when setLayer fails shows error toast", async ()
   await screen.findByText("srv → /usr/bin/srv");
   await user.click(screen.getByRole("button", { name: "Remove srv" }));
   await user.click(screen.getByRole("button", { name: "Remove" }));
-  await waitFor(() => expect(getToasts().some((t) => t.text.includes("Remove failed"))).toBe(true));
+  await waitFor(() => expect(getToasts().map((toast) => toast.text)).toContain("Remove failed: remove denied"));
 });
 
 // Line 311: ConfirmDialog onCancel
