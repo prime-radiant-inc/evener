@@ -1487,10 +1487,22 @@ func (e *LocalExecutionEnvironment) grepNative(ctx context.Context, pattern, pat
 	// output contract still treats the file as ".".
 	walkRoot := "."
 	singleFile := false
-	if info, statErr := os.Lstat(path); statErr == nil && !info.IsDir() {
-		walkRoot = filepath.Base(path)
-		singleFile = true
-		path = filepath.Dir(path)
+	if info, statErr := os.Lstat(path); statErr == nil {
+		if info.Mode()&os.ModeSymlink != 0 {
+			// fs.WalkDir follows a symlink when it is the walk root. Keep the
+			// recursive no-directory-symlink-follow contract by classifying the
+			// target before constructing the DirFS. A symlink to a regular file
+			// remains an explicitly named file and is read through as before.
+			target, targetErr := os.Stat(path)
+			if targetErr != nil || !target.Mode().IsRegular() {
+				return "", nil
+			}
+		}
+		if !info.IsDir() {
+			walkRoot = filepath.Base(path)
+			singleFile = true
+			path = filepath.Dir(path)
+		}
 	}
 	// fs.WalkDir does not descend through directory symlinks, matching the
 	// secureDirFS policy on the sandboxed arm while retaining file-symlink

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/base64"
+	"errors"
 	"io/fs"
 	"os"
 	"os/exec"
@@ -868,6 +869,57 @@ func TestGrepNative_SingleFileTargetOmitsFilenamePrefix(t *testing.T) {
 	}
 	if count != "2" {
 		t.Fatalf("count mode = %q, want %q", count, "2")
+	}
+}
+
+func TestGrepNative_ExplicitSymlinkRoots(t *testing.T) {
+	root := t.TempDir()
+	targetDir := filepath.Join(root, "target-dir")
+	if err := os.Mkdir(targetDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	targetFile := filepath.Join(targetDir, "target.txt")
+	if err := os.WriteFile(targetFile, []byte("needle in target\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	fileLink := filepath.Join(root, "file-link")
+	dirLink := filepath.Join(root, "dir-link")
+	if err := os.Symlink(targetFile, fileLink); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+	if err := os.Symlink(targetDir, dirLink); err != nil {
+		t.Skipf("directory symlinks unavailable: %v", err)
+	}
+
+	env := NewLocalExecutionEnvironment(root)
+	env.lookPath = func(string) (string, error) { return "", errors.New("rg unavailable") }
+	for _, tc := range []struct {
+		name string
+		mode string
+		want string
+	}{
+		{name: "default", mode: "", want: "1:needle in target"},
+		{name: "content", mode: "content", want: "1:needle in target"},
+		{name: "files", mode: "files_with_matches", want: "."},
+		{name: "count", mode: "count", want: "1"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := env.Grep(context.Background(), "needle", fileLink, "", false, 100, tc.mode)
+			if err != nil {
+				t.Fatalf("file symlink mode %q: %v", tc.mode, err)
+			}
+			if got != tc.want {
+				t.Fatalf("file symlink mode %q = %q, want %q", tc.mode, got, tc.want)
+			}
+
+			got, err = env.Grep(context.Background(), "needle", dirLink, "", false, 100, tc.mode)
+			if err != nil {
+				t.Fatalf("directory symlink mode %q: %v", tc.mode, err)
+			}
+			if got != "" {
+				t.Fatalf("directory symlink mode %q followed target: got %q", tc.mode, got)
+			}
+		})
 	}
 }
 

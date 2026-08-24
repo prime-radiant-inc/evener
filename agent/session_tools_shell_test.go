@@ -146,6 +146,53 @@ type bufferedShellEnv struct {
 	timeoutMS int
 }
 
+type cancellationGrepEnv struct {
+	agenttest.FakeEnv
+	started chan struct{}
+}
+
+func (e *cancellationGrepEnv) Grep(ctx context.Context, _ string, _ string, _ string, _ bool, _ int, _ string, _ ...int) (string, error) {
+	e.started <- struct{}{}
+	<-ctx.Done()
+	return "", ctx.Err()
+}
+
+func TestGrepFilesExecToolPassesCancellationContext(t *testing.T) {
+	s := newTestSession(t)
+	env := &cancellationGrepEnv{
+		FakeEnv: agenttest.FakeEnv{WorkDir: t.TempDir()},
+		started: make(chan struct{}, 1),
+	}
+	s.env = env
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	done := make(chan tool.ExecResult, 1)
+	go func() {
+		done <- s.execTool(ctx, llm.ToolCallData{
+			ID:        "grep-cancel",
+			Name:      "grep",
+			Arguments: json.RawMessage(`{"pattern":"needle","path":"."}`),
+		}, "")
+	}()
+
+	select {
+	case <-env.started:
+		cancel()
+	case <-time.After(2 * time.Second):
+		t.Fatal("grep_files did not reach ExecutionEnvironment.Grep")
+	}
+
+	select {
+	case result := <-done:
+		if !result.IsError || !strings.Contains(result.FullOutput, context.Canceled.Error()) {
+			t.Fatalf("grep_files cancellation result = %+v, want context.Canceled error", result)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("registered grep_files did not stop after context cancellation")
+	}
+}
+
 func (e *bufferedShellEnv) ExecCommand(_ context.Context, _ string, timeoutMS int, _ string, _ map[string]string) (execenv.ExecResult, error) {
 	e.timeoutMS = timeoutMS
 	return execenv.ExecResult{
