@@ -43,6 +43,38 @@ func (e *delegateSandboxRequestError) Error() string { return e.cause.Error() }
 
 func (e *delegateSandboxRequestError) Unwrap() error { return e.cause }
 
+// rejectUnavailableDelegateSandboxControls protects explicit confinement
+// requests from generic argument repair. Capability-derived delegate schemas
+// omit controls that the current session cannot enforce; because those schemas
+// also forbid additional properties, RepairArgs would otherwise classify the
+// controls as hallucinated keys and silently delete the requested boundary.
+// Inspect schema membership before repair and reject every supplied control the
+// schema cannot honor. Other tools, supported controls, and unrelated unknown
+// fields retain the generic repair behavior.
+func rejectUnavailableDelegateSandboxControls(toolName string, parameters, args map[string]any) error {
+	if toolName != "delegate" {
+		return nil
+	}
+	properties, _ := parameters["properties"].(map[string]any)
+	invalid := make([]string, 0, 2)
+	for _, field := range []string{"sandbox", "sandbox_net"} {
+		if _, supplied := args[field]; !supplied {
+			continue
+		}
+		if _, supported := properties[field]; supported {
+			continue
+		}
+		invalid = append(invalid, field)
+	}
+	if len(invalid) == 0 {
+		return nil
+	}
+	return newDelegateSandboxRequestError(
+		fmt.Errorf("invalid_request: delegate sandbox controls unavailable in this session: %s; omit every listed parameter", strings.Join(invalid, ", ")),
+		invalid...,
+	)
+}
+
 type delegatePreparedEnvironmentContextKey struct{}
 
 // delegateSandboxSchemaForEnv is the lock-safe form used while tool/prompt

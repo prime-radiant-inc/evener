@@ -19,6 +19,7 @@ type prepareResult struct {
 	Call      llm.ToolCallData
 	Changes   []repair.Change
 	PrevalErr string
+	Err       error
 }
 
 // prepareToolCall heals a tool call before dispatch. t is the resolved tool
@@ -58,6 +59,12 @@ func prepareToolCall(call llm.ToolCallData, t *tool.RegisteredTool, visibleNames
 				return res
 			}
 		}
+	}
+
+	if err := rejectUnavailableDelegateSandboxControls(t.Definition.Name, t.Definition.Parameters, args); err != nil {
+		res.PrevalErr = err.Error()
+		res.Err = err
+		return res
 	}
 
 	if err := t.Schema.Validate(args); err != nil {

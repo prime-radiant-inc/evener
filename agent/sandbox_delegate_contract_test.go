@@ -6,14 +6,230 @@ import (
 	"encoding/json"
 	"errors"
 	"maps"
+	"os"
 	"reflect"
 	"slices"
 	"testing"
 
 	"github.com/santhosh-tekuri/jsonschema/v5"
 	"primeradiant.com/evener/agent/execenv"
+	"primeradiant.com/evener/agent/internal/tool"
 	"primeradiant.com/evener/agent/sandbox"
+	"primeradiant.com/evener/llm"
 )
+
+func execDelegateForContract(t *testing.T, s *Session, args map[string]any) tool.ExecResult {
+	t.Helper()
+	encoded, err := json.Marshal(args)
+	if err != nil {
+		t.Fatalf("marshal delegate args: %v", err)
+	}
+	return s.execTool(context.Background(), llm.ToolCallData{
+		ID:        "delegate-sandbox-contract",
+		Name:      "delegate",
+		Arguments: encoded,
+	}, "")
+}
+
+func requireDelegateSandboxExecError(t *testing.T, result tool.ExecResult, invalidParameters []string) {
+	t.Helper()
+	if !result.IsError {
+		t.Fatalf("delegate exec result IsError = false; result = %#v", result)
+	}
+	if !result.PrevalOnly {
+		t.Fatalf("delegate exec result PrevalOnly = false; result = %#v", result)
+	}
+	requireDelegateSandboxRequestError(t, result.Err, invalidParameters)
+}
+
+func requireNoDelegatePreRepairState(t *testing.T, s *Session) {
+	t.Helper()
+	requireNoDelegateLaunch(t, s)
+
+	c := s.delegateController
+	c.mu.Lock()
+	admissionCounts := map[string]int{
+		"reservations":      len(c.reservations),
+		"input_claims":      len(c.inputClaims),
+		"steering_claims":   len(c.steeringClaims),
+		"model_claims":      len(c.modelClaims),
+		"settlement_claims": len(c.settlementClaims),
+		"work":              len(c.work),
+		"deliveries":        len(c.deliveries),
+		"delivery_claims":   len(c.deliveryClaims),
+		"quiet_claims":      len(c.quietClaims),
+		"watch_enqueues":    len(c.watchEnqueues),
+		"watch_deliveries":  len(c.watchDeliveries),
+		"reclamations":      len(c.reclamations),
+		"reclaiming":        len(c.reclaiming),
+		"run_starts":        len(c.runStarts),
+	}
+	turnsInUse := c.turnsInUse
+	drivesInUse := c.drivesInUse
+	nextToken := c.nextToken
+	worktreeRoot := c.worktreeRoot
+	c.mu.Unlock()
+	for name, count := range admissionCounts {
+		if count != 0 {
+			t.Errorf("delegate controller %s = %d, want 0", name, count)
+		}
+	}
+	if turnsInUse != 0 || drivesInUse != 0 || nextToken != 0 {
+		t.Errorf("delegate controller admission counters = {turns:%d drives:%d next_token:%d}, want zero", turnsInUse, drivesInUse, nextToken)
+	}
+
+	events, err := c.store.Load()
+	if err != nil {
+		t.Fatalf("load durable delegate events: %v", err)
+	}
+	if len(events) != 0 {
+		t.Errorf("durable delegate events = %d, want 0", len(events))
+	}
+
+	if s.subagents != nil {
+		s.subagents.mu.Lock()
+		liveRuntimes := len(s.subagents.subs)
+		reconstructions := len(s.subagents.reconstructing)
+		s.subagents.mu.Unlock()
+		if liveRuntimes != 0 || reconstructions != 0 {
+			t.Errorf("subagent runtime state = {live:%d reconstructing:%d}, want zero", liveRuntimes, reconstructions)
+		}
+	}
+
+	if worktreeRoot != "" {
+		entries, err := os.ReadDir(worktreeRoot)
+		if err != nil && !os.IsNotExist(err) {
+			t.Fatalf("read delegate worktree root: %v", err)
+		}
+		if len(entries) != 0 {
+			t.Errorf("delegate worktree entries = %d, want 0", len(entries))
+		}
+	}
+}
+
+func TestExecTool_UnsupportedHostRejectsExplicitSandboxControlsBeforeRepair(t *testing.T) {
+	tests := []struct {
+		name              string
+		args              map[string]any
+		invalidParameters []string
+	}{
+		{
+			name:              "sandbox",
+			args:              map[string]any{"sandbox": "read-only"},
+			invalidParameters: []string{"sandbox"},
+		},
+		{
+			name:              "sandbox_net",
+			args:              map[string]any{"sandbox_net": true},
+			invalidParameters: []string{"sandbox_net"},
+		},
+		{
+			name:              "sandbox and sandbox_net",
+			args:              map[string]any{"sandbox": "read-only", "sandbox_net": true},
+			invalidParameters: []string{"sandbox", "sandbox_net"},
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			home := t.TempDir()
+			s := sbxDelegateSession(t, sandbox.HostFacts{OS: "linux", Home: home})
+			args := map[string]any{"task": "do work"}
+			maps.Copy(args, tc.args)
+
+			result := execDelegateForContract(t, s, args)
+			requireDelegateSandboxExecError(t, result, tc.invalidParameters)
+			requireNoDelegatePreRepairState(t, s)
+		})
+	}
+}
+
+func TestExecTool_UnsupportedHostPreservesBenignRepairWithSandboxControlsOmitted(t *testing.T) {
+	home := t.TempDir()
+	s := sbxDelegateSession(t, sandbox.HostFacts{OS: "linux", Home: home})
+	result := execDelegateForContract(t, s, map[string]any{
+		"task":                "do work",
+		"unrelated_extra_arg": true,
+	})
+	if result.IsError {
+		t.Fatalf("delegate exec with omitted controls and repairable extra arg failed: %#v", result)
+	}
+	var created stableDelegateCreateResult
+	if err := json.Unmarshal([]byte(result.FullOutput), &created); err != nil {
+		t.Fatalf("decode delegate create result: %v", err)
+	}
+	if created.DelegateID == "" {
+		t.Fatal("delegate create result omitted durable delegate ID")
+	}
+	if created.Sandbox != nil {
+		t.Fatalf("omitted sandbox controls yielded sandbox report: %#v", created.Sandbox)
+	}
+}
+
+func TestExecTool_SupportedHostPreservesExplicitSandboxControls(t *testing.T) {
+	tests := []struct {
+		name        string
+		parentMode  sandbox.Mode
+		parentNet   bool
+		args        map[string]any
+		wantMode    sandbox.Mode
+		wantNetwork bool
+	}{
+		{
+			name:        "sandbox",
+			parentMode:  sandbox.ModeOff,
+			parentNet:   true,
+			args:        map[string]any{"sandbox": "read-only"},
+			wantMode:    sandbox.ModeReadOnly,
+			wantNetwork: true,
+		},
+		{
+			name:        "sandbox_net",
+			parentMode:  sandbox.ModeReadOnly,
+			parentNet:   true,
+			args:        map[string]any{"sandbox_net": false},
+			wantMode:    sandbox.ModeReadOnly,
+			wantNetwork: false,
+		},
+		{
+			name:        "sandbox and sandbox_net",
+			parentMode:  sandbox.ModeOff,
+			parentNet:   true,
+			args:        map[string]any{"sandbox": "workspace-write", "sandbox_net": false},
+			wantMode:    sandbox.ModeWorkspaceWrite,
+			wantNetwork: false,
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			lane, home := t.TempDir(), t.TempDir()
+			facts := sbxBwrapFacts(home)
+			s := sbxDelegateSession(t, facts)
+			if tc.parentMode != sandbox.ModeOff || !tc.parentNet {
+				setParentSandboxForContract(t, s, facts, lane, tc.parentMode, tc.parentNet)
+				if err := registerStableDelegateTool(s.reg, s); err != nil {
+					t.Fatalf("refresh delegate tool schema: %v", err)
+				}
+			}
+			args := map[string]any{"task": "do work"}
+			maps.Copy(args, tc.args)
+
+			result := execDelegateForContract(t, s, args)
+			if result.IsError {
+				t.Fatalf("supported delegate sandbox request failed: %#v", result)
+			}
+			var created stableDelegateCreateResult
+			if err := json.Unmarshal([]byte(result.FullOutput), &created); err != nil {
+				t.Fatalf("decode delegate create result: %v", err)
+			}
+			if created.Sandbox == nil {
+				t.Fatal("supported sandbox request omitted sandbox report")
+			}
+			if created.Sandbox.Mode != tc.wantMode.String() || created.Sandbox.Network != tc.wantNetwork {
+				t.Fatalf("sandbox result = %#v, want mode=%q network=%v", created.Sandbox, tc.wantMode, tc.wantNetwork)
+			}
+		})
+	}
+}
 
 func TestStableDelegateCreateTool_UnsupportedSandboxReportsInvalidParameters(t *testing.T) {
 	_, home := sbxLane(t)

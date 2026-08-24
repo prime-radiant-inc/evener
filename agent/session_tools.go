@@ -598,6 +598,7 @@ func (s *Session) execTool(ctx context.Context, call llm.ToolCallData, finishRea
 			FullOutput: prep.PrevalErr,
 			IsError:    true,
 			PrevalOnly: true,
+			Err:        prep.Err,
 		}
 	} else {
 		res = s.reg.ExecuteCall(ctx, s.currentEnv(), call)
