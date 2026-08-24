@@ -30,16 +30,16 @@ lint-naming:
 ## tag, plus a tagliatelle-only golangci-lint pass. See "Why two tagged lint
 ## passes exist" in docs/developing-evener/linting.md for the full rationale.
 ## proves: Every evenerfuzz-tagged source across FUZZ_GO_MODULES still
-##   compiles and passes its struct-tag casing floor, catching a production
-##   signature change that strands a tagged call site.
-## trigger: Required CI (via make lint); local pre-merge. ~4s warm across
-##   the workspace.
+##   compiles for the host and Linux and passes its struct-tag casing floor,
+##   catching a production signature change that strands a tagged call site.
+## trigger: Required CI (via make lint); local pre-merge. ~4s warm across the
+##   workspace on Linux; the extra cross-GOOS pass runs only off Linux.
 ## requires: golangci-lint. Reads .golangci.yml's casing rules, carve-outs,
 ##   and exclusions via --enable-only tagliatelle.
-## fails-when: go vet -tags evenerfuzz fails for any module, or the
-##   tagliatelle pass reports a casing violation.
+## fails-when: host or GOOS=linux go vet -tags evenerfuzz fails for any module,
+##   or the tagliatelle pass reports a casing violation.
 lint-evenerfuzz:
-	$(call run_quiet_lint,for m in $(FUZZ_GO_MODULES); do (cd $$m && go vet -tags evenerfuzz ./...) || exit 1; done)
+	$(call run_quiet_lint,host_goos="$$(go env GOOS)" || exit 1; for m in $(FUZZ_GO_MODULES); do (cd $$m && go vet -tags evenerfuzz ./...) || exit 1; done; if [ "$$host_goos" != linux ]; then for m in $(FUZZ_GO_MODULES); do (cd $$m && GOOS=linux go vet -tags evenerfuzz ./...) || exit 1; done; fi)
 	$(call run_quiet_lint,for m in $(FUZZ_GO_MODULES); do (cd $$m && golangci-lint run --allow-parallel-runners --build-tags evenerfuzz --enable-only tagliatelle ./...) || exit 1; done)
 
 # lint-eval is the same compile floor for the //go:build eval sources: the
@@ -56,14 +56,15 @@ lint-evenerfuzz:
 ## The compile floor for the //go:build eval sources: go vet under the tag,
 ## plus a tagliatelle-only golangci-lint pass.
 ## proves: The eval-tagged live-provider suites (context-compaction quality,
-##   forced notes) still compile.
-## trigger: Required CI (via make lint); local pre-merge. ~3.5s warm.
+##   forced notes) still compile for the host and Linux.
+## trigger: Required CI (via make lint); local pre-merge. ~3.5s warm on Linux;
+##   the extra cross-GOOS pass runs only off Linux.
 ## requires: golangci-lint. Covers all of FUZZ_GO_MODULES, since eval
 ##   sources could land in any module.
-## fails-when: go vet -tags eval fails for any module, or the tagliatelle
-##   pass reports a casing violation.
+## fails-when: host or GOOS=linux go vet -tags eval fails for any module, or the
+##   tagliatelle pass reports a casing violation.
 lint-eval:
-	$(call run_quiet_lint,for m in $(FUZZ_GO_MODULES); do (cd $$m && go vet -tags eval ./...) || exit 1; done)
+	$(call run_quiet_lint,host_goos="$$(go env GOOS)" || exit 1; for m in $(FUZZ_GO_MODULES); do (cd $$m && go vet -tags eval ./...) || exit 1; done; if [ "$$host_goos" != linux ]; then for m in $(FUZZ_GO_MODULES); do (cd $$m && GOOS=linux go vet -tags eval ./...) || exit 1; done; fi)
 	$(call run_quiet_lint,for m in $(FUZZ_GO_MODULES); do (cd $$m && golangci-lint run --allow-parallel-runners --build-tags eval --enable-only tagliatelle ./...) || exit 1; done)
 
 # lint-internal fails if any exported symbol in the agent/llm/providercfg
