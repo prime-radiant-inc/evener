@@ -561,11 +561,11 @@ func delegateAbandonedByDrain(row delegateSnapshot, now, drainStartedAt time.Tim
 // child. Marking once per pass gives every reader one answer for the cost of
 // one snapshot per session per pass.
 //
-// It is gated on TurnEndsProcess. Under serve the session outlives the turn, a
-// stop-requested delegate is nobody's shutdown problem, and DrainJobTree runs
-// for nested delegates too — so without the gate #378 abandoned interactive
-// grandchildren with "so shutdown can proceed" wording, in a process that was
-// not shutting down.
+// A pending stop is bounded in both one-shot and serve sessions: once a caller
+// has asked a delegate to stop, waiting forever is no longer useful to either
+// lifecycle. The implicit stop represented by drainStartedAt remains one-shot
+// only, because an interactive session may legitimately have a live delegate
+// that its caller has not stopped yet.
 //
 // The mark is monotone: a delegate whose stop has gone unanswered for the bound
 // does not become answerable by waiting longer, and time only moves forward, so
@@ -573,7 +573,7 @@ func delegateAbandonedByDrain(row delegateSnapshot, now, drainStartedAt time.Tim
 // packet that arrives from an abandoned delegate anyway is still delivered —
 // deliveries land in the PARENT's own pending set, which this skip never hides.
 func (s *Session) markDrainAbandonedDelegates(now, drainStartedAt time.Time) {
-	if s == nil || !s.cfg.TurnEndsProcess {
+	if s == nil {
 		return
 	}
 	rows := make(map[string]delegateSnapshot)
@@ -598,7 +598,7 @@ func (s *Session) markDrainAbandonedDelegates(now, drainStartedAt time.Time) {
 		if s.childDrainAbandoned(child.id) || s.childFatalRunGated(child.id) || tracked && delegateRowStopGated(row) {
 			continue
 		}
-		if tracked && delegateAbandonedByDrain(row, now, drainStartedAt) {
+		if tracked && (s.cfg.TurnEndsProcess || row.pendingStopSeq != 0) && delegateAbandonedByDrain(row, now, drainStartedAt) {
 			s.recordDrainAbandonedChild(child.id, row.id)
 			continue
 		}

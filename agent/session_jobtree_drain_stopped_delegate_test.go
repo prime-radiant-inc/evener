@@ -442,19 +442,11 @@ func TestDrainDoesNotDriveAChildItHasAbandoned(t *testing.T) {
 	}
 }
 
-// TestServeSessionNeverAbandonsAStopRequestedDelegate is #382 item 5's
-// serve-mode decision. DrainJobTree runs for nested delegates too, so with the
-// abandonment ungated a long-lived interactive session started giving up on
-// stop-requested grandchildren — announcing "so shutdown can proceed" in a
-// process that was not shutting down, and killing work a user could still steer.
-//
-// Abandonment is a ONE-SHOT policy: it exists because the process exits when
-// the turn's work is drained, so a delegate nothing can dispose of converts the
-// remaining wall clock into a hang. Under serve there is no such deadline, and
-// a stop-requested delegate stays exactly as live as it was. (The interactive
-// hang that leaves behind — an unbounded stop_pending in a serve session — is
-// left open deliberately; it needs a policy of its own, not this one.)
-func TestServeSessionNeverAbandonsAStopRequestedDelegate(t *testing.T) {
+// TestServeSessionAbandonsAStopRequestedDelegateAfterBound is the serve-mode
+// policy: an explicit stop request is bounded in a long-lived session too. The
+// one-shot-only fallback for a delegate the root never stopped remains covered
+// by the one-shot control below.
+func TestServeSessionAbandonsAStopRequestedDelegateAfterBound(t *testing.T) {
 	f := newWedgedDelegateFixtureIn(t, "dlg_serve_wedged", false)
 	f.requestStop(t)
 
@@ -462,14 +454,13 @@ func TestServeSessionNeverAbandonsAStopRequestedDelegate(t *testing.T) {
 	f.clk.Advance(DrainStallTimeout * 30)
 	f.root.markDrainAbandonedDelegates(f.clk.Now(), drainStartedAt)
 
-	if f.root.childDrainAbandoned(f.child.ID()) {
-		t.Fatal("a serve session abandoned a stop-requested delegate: nothing is shutting down, so nothing licenses giving up on it")
+	if !f.root.childDrainAbandoned(f.child.ID()) {
+		t.Fatal("a serve session kept waiting on a stop-requested delegate past the bound")
 	}
-	if live, err := f.root.subtreeHasLiveComponent(); err != nil || !live {
-		t.Fatalf("the delegate must stay live to a serve session, got live=%v err=%v", live, err)
+	if live, err := f.root.subtreeHasLiveComponent(); err != nil || live {
+		t.Fatalf("the abandoned delegate must no longer count as live, got live=%v err=%v", live, err)
 	}
-	// The same fixture in a one-shot run IS abandoned, so the gate is what made
-	// the difference, not the fixture.
+	// The same fixture in a one-shot run is abandoned as well.
 	oneShot := newWedgedDelegateFixture(t, "dlg_oneshot_wedged")
 	oneShot.requestStop(t)
 	oneShotStart := oneShot.clk.Now()

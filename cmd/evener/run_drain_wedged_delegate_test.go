@@ -132,6 +132,14 @@ func TestRunExitsWhenADelegateIsWedgedInAnUncancellableToolCall(t *testing.T) {
 	// watchdog's), so the whole give-up costs about a second of real time here.
 	shrinkDrainStallTimeout(t, 500*time.Millisecond)
 	shrinkCloseBudget(t, 3*time.Second)
+	drainReturned := make(chan time.Time, 1)
+	oldDrain := runDrainJobTree
+	runDrainJobTree = func(sess *agent.Session, ctx context.Context) (string, error) {
+		result, err := oldDrain(sess, ctx)
+		drainReturned <- time.Now()
+		return result, err
+	}
+	t.Cleanup(func() { runDrainJobTree = oldDrain })
 	wedge := newWedgedReadFileEnvironment()
 	installWedgedReadFileEnvironment(t, wedge)
 
@@ -206,6 +214,15 @@ func TestRunExitsWhenADelegateIsWedgedInAnUncancellableToolCall(t *testing.T) {
 	}
 	if !strings.Contains(stdout.String(), finalMsg) {
 		t.Fatalf("stdout = %q, want the root's answer %q: giving up on the delegate is worthless if the answer is never printed", stdout.String(), finalMsg)
+	}
+	var drainAt time.Time
+	select {
+	case drainAt = <-drainReturned:
+	case <-time.After(30 * time.Second):
+		t.Fatal("run returned without recording the real drain completion")
+	}
+	if elapsed := time.Since(drainAt); elapsed >= 2*time.Second {
+		t.Fatalf("Close spent %s after the drain returned; it should not consume the entire 3s close budget joining the hopeless stop before bounded joins", elapsed)
 	}
 }
 
