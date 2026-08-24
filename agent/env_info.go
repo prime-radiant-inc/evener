@@ -33,6 +33,7 @@ func envInfoFromEnvWithResourceCaps(env execenv.ExecutionEnvironment, clk clock.
 		CPUs:       caps.CPUs,
 		MemoryMB:   caps.MemoryMB,
 		Workspace:  ScanWorkspace(wd),
+		Resources:  resourceCapsFromEnv(env),
 	}
 }
 
