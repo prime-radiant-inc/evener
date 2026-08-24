@@ -508,12 +508,16 @@ const (
 	runNoToolCalls
 )
 
-// routeNoToolCalls decides the no-tool-calls route for a round from the input kind
-// and whether the round had no content. It is pure and total over EntryKind: only
-// a non-empty notification turn finishes idle; everything else (including any
-// empty round) routes through the retry budget.
-func routeNoToolCalls(kind EntryKind, noContent bool) noCallsRoute {
-	if kind == EntryNotification && !noContent {
+// routeNoToolCalls decides the no-tool-calls route for a round from the input
+// kind, whether the round had no content, and whether a terminal communicate
+// (end_turn under TurnEndsProcess) has already been accepted. It is pure and
+// total over EntryKind: a non-empty notification turn finishes idle, and once
+// the model has explicitly ended the process-ending turn an EMPTY notification
+// turn does too — the retry budget's "please continue" steering must not
+// resurrect a run the model already declared over (issue #329,
+// sanitize-git-repo). Everything else routes through the retry budget.
+func routeNoToolCalls(kind EntryKind, noContent bool, afterTerminalCommunicate bool) noCallsRoute {
+	if kind == EntryNotification && (!noContent || afterTerminalCommunicate) {
 		return finishIdle
 	}
 	return runNoToolCalls
@@ -1363,8 +1367,10 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 			// toward a no-op communicate — the text is already in the transcript, and a
 			// system-initiated turn carries no user awaiting a reply. A truly empty
 			// (no-content) response is a model glitch and still routes through the
-			// empty-retry path below.
-			if routeNoToolCalls(kind, noContent) == finishIdle {
+			// empty-retry path below — EXCEPT after a terminal communicate, where
+			// silence means "nothing to add to a finished run" and retrying would
+			// resurrect it (issue #329).
+			if routeNoToolCalls(kind, noContent, s.hasAcceptedTerminalCommunicate()) == finishIdle {
 				s.finishProcessingAtBoundary(ctx, SessionIdle)
 				return "", progressed, nil
 			}

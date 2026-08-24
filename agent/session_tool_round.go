@@ -497,6 +497,14 @@ func (s *Session) deliverIfCommunicated(ctx context.Context, askedThisRound bool
 			return false, ""
 		}
 	}
+	if delivered && s.cfg.TurnEndsProcess {
+		// The model has explicitly ended the turn that ends the process. Latch
+		// it before the boundary transition so the one-shot drain — which runs
+		// as soon as ProcessInput returns — can never miss it (issue #329).
+		s.mu.Lock()
+		s.terminalCommunicateAccepted = true
+		s.mu.Unlock()
+	}
 	s.finishProcessingAtBoundary(ctx, boundaryState)
 	return true, text
 }
