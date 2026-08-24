@@ -295,12 +295,10 @@ func TestActivityRevisionFromMeta(t *testing.T) {
 
 // TestActivityLabelFromMeta covers both branches (line 188-192).
 func TestActivityLabelFromMeta(t *testing.T) {
-	// No error — uses activitySessionLabel.
+	// No error — uses activitySessionLabel (which returns the session Name).
 	meta := schema.SessionMeta{ID: "sess", Name: "My Session"}
 	if got := activityLabelFromMeta("sess", meta, nil); got != "My Session" {
-		// activitySessionLabel may format differently; just ensure it's not
-		// the raw sessionID.
-		t.Logf("activityLabelFromMeta (no err) = %q", got)
+		t.Fatalf("activityLabelFromMeta (no err) = %q, want %q", got, "My Session")
 	}
 	// With error — falls back to sessionID.
 	if got := activityLabelFromMeta("mysession", schema.SessionMeta{}, os.ErrNotExist); got != "mysession" {
@@ -330,9 +328,7 @@ func TestLoadSessionJobActivityTree_ContinuationError(t *testing.T) {
 	// load the root's jobs and fail because there's no delegates.jsonl.
 	_, err := LoadSessionJobActivityTree(stateDir, rootID, appwire.JobsListParams{Continuation: "some/continuation"})
 	if err == nil {
-		// If it doesn't error, it means the empty-snapshot path succeeded.
-		// That's acceptable — the continuation branch was still exercised.
-		t.Logf("LoadSessionJobActivityTree with continuation succeeded; branch exercised")
+		t.Fatalf("LoadSessionJobActivityTree with continuation: expected error, got nil")
 	}
 }
 

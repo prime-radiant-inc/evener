@@ -30,4 +30,7 @@ func TestOpenTranscriptAppendFile_NotExist(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error for missing file")
 	}
+	if !strings.Contains(err.Error(), "no such file or directory") {
+		t.Fatalf("error = %v, want error containing 'no such file or directory'", err)
+	}
 }

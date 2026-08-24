@@ -153,11 +153,7 @@ func (l *failingReleaseLock) Release() error {
 	return errors.New("injected release failure")
 }
 
-// TestInstallationIDContentionWait_Default covers the default
-// installationIDContentionWait function (installation_id.go:23-25).
-// This exercises the time.Sleep call itself.
-func TestInstallationIDContentionWait_Default(t *testing.T) {
-	// The default function calls time.Sleep(5ms). We can verify it returns
-	// without panicking. We don't assert timing — just that it doesn't hang.
-	installationIDContentionWait(0)
-}
+// TestInstallationIDContentionWait_Default previously exercised the default
+// installationIDContentionWait function (installation_id.go:23-25), which
+// only calls time.Sleep(5ms). Removed: the test had zero assertions and could
+// never fail regardless of production behavior.

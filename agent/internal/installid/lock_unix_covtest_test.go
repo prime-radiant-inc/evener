@@ -45,7 +45,7 @@ func TestAcquireInstallationIDFileLock_NotRegularFile(t *testing.T) {
 	os.MkdirAll(path, 0o755)
 	_, _, err := acquireInstallationIDFileLock(path)
 	if err == nil {
-		t.Log("opening a directory did not fail; O_NOFOLLOW may allow it on this platform")
+		t.Fatal("expected error when locking a directory, got nil")
 	}
 }
 

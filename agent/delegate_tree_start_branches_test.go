@@ -522,10 +522,12 @@ func TestNormalizeDelegateStartFailureLongMessage(t *testing.T) {
 	now := time.Now()
 	longMessage := strings.Repeat("x", 600)
 	f := normalizeDelegateStartFailure(delegateFinish{reason: longMessage}, "fallback", longMessage, now)
+	// normalizeDelegateStartFailure does not truncate the reason; a long
+	// reason must be preserved intact.
 	if len(f.reason) != len(longMessage) {
-		// reason is NOT truncated (only the packet message is via json.Marshal)
+		t.Fatalf("reason truncated: got len %d, want %d", len(f.reason), len(longMessage))
 	}
-	// But the packet message should be the full message (json.Marshal doesn't truncate)
+	// The packet message should be the full message (json.Marshal doesn't truncate).
 	if f.packet == nil {
 		t.Fatalf("expected packet")
 	}

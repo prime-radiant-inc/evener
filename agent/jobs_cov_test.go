@@ -20,11 +20,34 @@ func TestNoteJobActivityTerminalJobGuard(t *testing.T) {
 	if err := jm.finalize(rec.JobID, jobstore.StatusCompleted, "exit_zero", &code); err != nil {
 		t.Fatalf("finalize: %v", err)
 	}
-	// After finalize the job is not in jm.running — re-add a terminal run
-	// shape by creating a fresh job and finalizing it, then calling
-	// noteJobActivity on a non-running id (which is a no-op).
+	// Capture the persisted record after finalize.
+	recs, err := jm.store.Load()
+	if err != nil {
+		t.Fatalf("store.Load: %v", err)
+	}
+	persisted, ok := recs[rec.JobID]
+	if !ok {
+		t.Fatalf("job %s not found in store after finalize", rec.JobID)
+	}
+	prevPhase := persisted.Phase
+	prevActivity := persisted.LastActivity
+	// After finalize the job is removed from jm.running, so noteJobActivity
+	// is a no-op. Verify it does not mutate the persisted record.
 	jm.noteJobActivity(rec.JobID, "newphase")
-	// The job is no longer running, so this is a no-op — verify no panic.
+	recs2, err := jm.store.Load()
+	if err != nil {
+		t.Fatalf("store.Load after note: %v", err)
+	}
+	after, ok := recs2[rec.JobID]
+	if !ok {
+		t.Fatalf("job %s disappeared from store after noteJobActivity", rec.JobID)
+	}
+	if after.Phase != prevPhase {
+		t.Fatalf("Phase changed by noteJobActivity on finalized job: got %q, want %q", after.Phase, prevPhase)
+	}
+	if after.LastActivity != prevActivity {
+		t.Fatalf("LastActivity changed by noteJobActivity on finalized job: got %v, want %v", after.LastActivity, prevActivity)
+	}
 }
 
 // TestReadOutputHeadLiveAndStorePaths covers readOutputHead (jobs.go:1217-1238)

@@ -42,12 +42,15 @@ func TestHasTopLevelComma_TruncatedEscape(t *testing.T) {
 func TestFindTopLevelBrace_TruncatedEscapeInClass(t *testing.T) {
 	t.Parallel()
 	// Pattern with truncated escape in char class should not find a brace
-	// expansion but should handle gracefully (no panic).
-	_, _, _, err := findExpandableGroup("[a\\{b}")
+	// expansion but should handle gracefully (no panic). The `{` is inside
+	// the character class, which is skipped, and the truncated escape at the
+	// end triggers the break path (line 81-82) without error.
+	start, end, alternatives, err := findExpandableGroup("[a\\{b}")
 	if err != nil {
-		// May return an unmatched opening brace error — that's fine.
-		// Just verify no panic.
-		_ = err
+		t.Fatalf("findExpandableGroup([a\\{b}) = err %v, want nil (truncated escape in class should be handled gracefully)", err)
+	}
+	if start != 0 || end != 0 || alternatives {
+		t.Fatalf("findExpandableGroup([a\\{b}) = start %d end %d alternatives %v, want no expansion", start, end, alternatives)
 	}
 }
 

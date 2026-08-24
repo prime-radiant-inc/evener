@@ -522,8 +522,7 @@ func TestStoreRecoverReadFailure(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = os.Chmod(path, 0o600) })
 	if err := store.initializeOrRecover(); err == nil {
-		// On some systems this may not fail; just ensure no panic.
-		t.Logf("initializeOrRecover succeeded despite chmod 0; acceptable on this platform")
+		t.Fatalf("initializeOrRecover after closing file handle and chmod 0: expected error, got nil")
 	}
 }
 
@@ -649,16 +648,14 @@ func TestStoreAppendBatchWithExistingState(t *testing.T) {
 func TestDecodeLogTolerateTailWithNewline(t *testing.T) {
 	// Header is valid, then a partial batch with no trailing newline.
 	raw := []byte("{\"version\":1}\n{\"events\":[{\"kind")
-	_, err := decodeLog(raw, true)
-	// Should decode the header line and skip the unterminated tail.
+	events, err := decodeLog(raw, true)
+	// With tolerance on, the unterminated trailing batch is trimmed as a
+	// torn tail, so decode succeeds and yields zero events.
 	if err != nil {
-		// The partial batch line `{"events":[{"kind` is malformed JSON, so
-		// decode may fail on it. That's acceptable — we're covering the
-		// tolerance path, not asserting success.
-		if !strings.Contains(err.Error(), "decode batch") {
-			// Could also be a decode error, which is fine.
-			t.Logf("decodeLog with tolerance = %v (expected some decode error for partial batch)", err)
-		}
+		t.Fatalf("decodeLog with tolerance: unexpected error: %v", err)
+	}
+	if len(events) != 0 {
+		t.Fatalf("decodeLog with tolerance: got %d events, want 0 (torn tail should be trimmed)", len(events))
 	}
 }
 
