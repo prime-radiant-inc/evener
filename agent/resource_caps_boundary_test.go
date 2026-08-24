@@ -49,7 +49,7 @@ func TestEnvironmentPromptUsesTrustedStructuredResourcesWhenModelShellMasked(t *
 func TestEnvironmentPromptOmitsUnknownOrUnlimitedResources(t *testing.T) {
 	for name, resources := range map[string]*schema.ResourceCaps{
 		"unknown":   nil,
-		"unlimited": &schema.ResourceCaps{},
+		"unlimited": {},
 	} {
 		t.Run(name, func(t *testing.T) {
 			info := schema.EnvironmentInfo{WorkingDir: t.TempDir(), Platform: "linux", Resources: resources}
