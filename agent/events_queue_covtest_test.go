@@ -7,6 +7,7 @@ import (
 	"strings"
 	"testing"
 
+	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/agent/execenv"
 	"primeradiant.com/evener/agent/internal/delegatestore"
 	"primeradiant.com/evener/agent/plugin"
@@ -36,10 +37,24 @@ func TestCovDeliverHookContext_Empty(t *testing.T) {
 // TestCovDeliverHookUserMessage_Empty covers the empty-text guard in
 // deliverHookUserMessage (session_queue.go lines 296-298).
 func TestCovDeliverHookUserMessage_Empty(t *testing.T) {
-	s := &Session{}
-	// These should not panic.
+	s := &Session{id: "session_1", events: make(chan events.SessionEvent, 4)}
 	s.deliverHookUserMessage("")
 	s.deliverHookUserMessage("  ")
+	if got := len(s.events); got != 0 {
+		t.Fatalf("empty hook user messages emitted %d warnings, want 0", got)
+	}
+
+	// Prove the sink is live so the zero count above observes the guard rather
+	// than an inert fixture.
+	s.deliverHookUserMessage("visible hook warning")
+	if got := len(s.events); got != 1 {
+		t.Fatalf("non-empty hook user message emitted %d warnings, want 1", got)
+	}
+	event := <-s.events
+	warning, ok := event.Data.(events.WarningData)
+	if !ok || event.Kind != events.EventWarning || event.SessionID != "session_1" || warning.Source != "hook" || warning.Message != "visible hook warning" {
+		t.Fatalf("hook warning event = %#v with data %#v", event, event.Data)
+	}
 }
 
 // TestCovFollowUp_Empty covers the empty-text and closed guards in FollowUp
@@ -186,8 +201,25 @@ func TestCovBuiltinAgents(t *testing.T) {
 	if len(agents) == 0 {
 		t.Fatal("expected at least one builtin agent")
 	}
+	doctor, ok := agents["doctor"]
+	if !ok || len(doctor.Tools) == 0 || len(doctor.Skills) == 0 {
+		t.Fatalf("builtin doctor lacks mutable tools/skills fixture: %+v", doctor)
+	}
+	explorer, ok := agents["explorer"]
+	if !ok || len(explorer.Tasks) == 0 {
+		t.Fatalf("builtin explorer lacks mutable tasks fixture: %+v", explorer)
+	}
+	wantDoctorTool := doctor.Tools[0]
+	wantDoctorSkill := doctor.Skills[0]
+	wantExplorerTask := explorer.Tasks[0]
+	doctor.Tools[0] = "mutated-api-tool"
+	doctor.Skills[0] = "mutated-api-skill"
+	explorer.Tasks[0].Title = "mutated-api-task"
+	agents["doctor"] = doctor
+	agents["explorer"] = explorer
 
-	// Mutating the returned map must not change the cached map returned next.
+	// Mutating the returned map and nested slices must not change the cached
+	// values returned by the API on its next call.
 	var cachedName string
 	for name := range agents {
 		cachedName = name
@@ -200,6 +232,11 @@ func TestCovBuiltinAgents(t *testing.T) {
 	}
 	if _, ok := agents2[cachedName]; !ok {
 		t.Fatalf("deleting %q from one result mutated the builtin cache", cachedName)
+	}
+	doctor2 := agents2["doctor"]
+	explorer2 := agents2["explorer"]
+	if doctor2.Tools[0] != wantDoctorTool || doctor2.Skills[0] != wantDoctorSkill || explorer2.Tasks[0] != wantExplorerTask {
+		t.Fatalf("builtinAgents returned cache-aliased nested values: doctor=%+v explorer task=%+v", doctor2, explorer2.Tasks[0])
 	}
 
 	// cloneBuiltinAgents must also copy every mutable slice in an Agent value.

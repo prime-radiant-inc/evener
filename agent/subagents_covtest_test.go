@@ -3,6 +3,8 @@ package agent
 import (
 	"context"
 	"errors"
+	"reflect"
+	"slices"
 	"strings"
 	"testing"
 
@@ -75,12 +77,8 @@ func TestCovRemoveStrings2(t *testing.T) {
 // (subagents.go lines 220-223).
 func TestCovRootOnlySubagentTools(t *testing.T) {
 	tools := rootOnlySubagentTools()
-	// Should contain "delegate" and "manage_worktree".
-	if !hasString(tools, "delegate") {
-		t.Fatal("should contain delegate")
-	}
-	if !hasString(tools, "manage_worktree") {
-		t.Fatal("should contain manage_worktree")
+	if want := []string{"delegate", "manage_worktree"}; !slices.Equal(tools, want) {
+		t.Fatalf("root-only tools = %v, want exact ordered list %v", tools, want)
 	}
 }
 
@@ -113,8 +111,8 @@ func TestCovIsRootOnlySubagentTool(t *testing.T) {
 // (subagents.go lines 240-246).
 func TestCovProtectedGrantTools(t *testing.T) {
 	tools := protectedGrantTools()
-	if !hasString(tools, "ask_user") {
-		t.Fatal("should contain ask_user")
+	if want := []string{"ask_user"}; !slices.Equal(tools, want) {
+		t.Fatalf("protected grant tools = %v, want exact ordered list %v", tools, want)
 	}
 	if !isProtectedGrantTool("ask_user") {
 		t.Fatal("ask_user should be protected")
@@ -128,11 +126,8 @@ func TestCovProtectedGrantTools(t *testing.T) {
 // (subagents.go lines 248-250).
 func TestCovRemoveRootOnlySubagentTools(t *testing.T) {
 	got := removeRootOnlySubagentTools([]string{"read_file", "delegate", "exec_command"})
-	if hasString(got, "delegate") {
-		t.Fatal("should remove delegate")
-	}
-	if !hasString(got, "read_file") || !hasString(got, "exec_command") {
-		t.Fatal("should keep non-root-only tools")
+	if want := []string{"read_file", "exec_command"}; !slices.Equal(got, want) {
+		t.Fatalf("tools after root-only removal = %v, want %v", got, want)
 	}
 }
 
@@ -147,8 +142,8 @@ func TestCovFrozenSubagentToolNames(t *testing.T) {
 	// Has allowed list.
 	allowed := []string{"read_file", "exec_command"}
 	got = frozenSubagentToolNames(false, allowed, nil)
-	if len(got) != 2 || got[0] != "read_file" {
-		t.Fatalf("allowed: %+v", got)
+	if !slices.Equal(got, []string{"read_file", "exec_command"}) {
+		t.Fatalf("allowed frozen names = %v, want [read_file exec_command]", got)
 	}
 	got[0] = "mutated"
 	if allowed[0] != "read_file" {
@@ -248,21 +243,38 @@ func TestCovCommunicateNudge2(t *testing.T) {
 func TestCovFollowUpProvenance(t *testing.T) {
 	// nil subagent — returns clone of input.
 	var a *subagent
-	input := &provenance.Causal{ChainTruncated: true}
-	got := a.followUpProvenance(input)
-	if got == nil || !got.ChainTruncated {
-		t.Fatal("nil subagent should return clone of input")
+	input := &provenance.Causal{
+		WatchKeys:      []provenance.WatchKey{{WatchID: "watch_original", WatchGeneration: "generation_original"}},
+		Chain:          []provenance.Entry{{Kind: "watch", DeliveryID: "delivery_original"}},
+		ChainTruncated: true,
 	}
+	wantInput := &provenance.Causal{
+		WatchKeys:      []provenance.WatchKey{{WatchID: "watch_original", WatchGeneration: "generation_original"}},
+		Chain:          []provenance.Entry{{Kind: "watch", DeliveryID: "delivery_original"}},
+		ChainTruncated: true,
+	}
+	got := a.followUpProvenance(input)
+	if got == nil || !reflect.DeepEqual(got, wantInput) {
+		t.Fatalf("nil-subagent provenance = %#v, want %#v", got, wantInput)
+	}
+	got.WatchKeys[0].WatchID = "watch_mutated"
+	got.Chain[0].DeliveryID = "delivery_mutated"
 	got.ChainTruncated = false
-	if !input.ChainTruncated {
-		t.Fatal("nil-subagent result shares storage with input provenance")
+	if !reflect.DeepEqual(input, wantInput) {
+		t.Fatalf("nil-subagent result shares storage with input: got %#v, want %#v", input, wantInput)
 	}
 
 	// Non-nil subagent with nil sess — returns clone of input.
 	a = &subagent{}
 	got = a.followUpProvenance(input)
-	if got == nil || !got.ChainTruncated {
-		t.Fatal("nil sess should return clone of input")
+	if got == nil || !reflect.DeepEqual(got, wantInput) {
+		t.Fatalf("nil-session provenance = %#v, want %#v", got, wantInput)
+	}
+	got.WatchKeys[0].WatchGeneration = "generation_mutated"
+	got.Chain[0].Kind = "mutated"
+	got.ChainTruncated = false
+	if !reflect.DeepEqual(input, wantInput) {
+		t.Fatalf("nil-session result shares storage with input: got %#v, want %#v", input, wantInput)
 	}
 
 	// nil input — nil result (Clone(nil) is nil).
@@ -456,14 +468,14 @@ func TestCovStableDelegateRowsForSession_NilSession(t *testing.T) {
 func TestCovEnsureRecoveryReader(t *testing.T) {
 	// nil registry — returns names unchanged.
 	got := ensureRecoveryReader([]string{"read_file", "exec_command"}, nil)
-	if len(got) != 2 {
-		t.Fatalf("nil registry: got %+v", got)
+	if !slices.Equal(got, []string{"read_file", "exec_command"}) {
+		t.Fatalf("nil registry tools = %v, want [read_file exec_command]", got)
 	}
 
 	// Non-nil registry without recovery requirement — unchanged.
 	reg := tool.NewRegistry()
 	got = ensureRecoveryReader([]string{"read_file"}, reg)
-	if len(got) != 1 || got[0] != "read_file" {
+	if !slices.Equal(got, []string{"read_file"}) {
 		t.Fatalf("no recovery needed: got %+v", got)
 	}
 }

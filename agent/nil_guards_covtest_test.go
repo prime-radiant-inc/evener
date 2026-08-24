@@ -86,9 +86,9 @@ func TestCovDrainSteering_Empty(t *testing.T) {
 // (session_queue.go lines 810-816).
 func TestCovPopSteeringHead_Empty(t *testing.T) {
 	s := &Session{}
-	_, ok := s.popSteeringHead()
-	if ok {
-		t.Fatal("empty queue should return false")
+	message, ok := s.popSteeringHead()
+	if ok || !reflect.DeepEqual(message, steeringMessage{}) {
+		t.Fatalf("empty pop = (%+v, %v), want zero message and false", message, ok)
 	}
 }
 

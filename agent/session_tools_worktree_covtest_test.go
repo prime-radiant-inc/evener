@@ -355,7 +355,7 @@ func TestCovForwardEvent(t *testing.T) {
 		TS:             jm.now(),
 		JobID:          "job_pending",
 		Type:           jobstore.JobShell,
-		OwnerSessionID: jm.sessionID,
+		OwnerSessionID: "child_session_2",
 		Description:    "pending shell",
 	}); err != nil {
 		t.Fatalf("forward pending start: %v", err)
@@ -386,47 +386,47 @@ func TestCovForwardEvent(t *testing.T) {
 		t.Fatalf("forwarded pending record = %+v", rec)
 	}
 
-	// NotificationPending event with enqueue — should append and enqueue.
+	// A forwarded descendant-owned notification is persisted for parent
+	// visibility but must never be enqueued on the parent's interruption rail.
 	var queued []jobNotification
 	jm.enqueue = func(n jobNotification) { queued = append(queued, n) }
 	e3 := jobstore.Event{
 		Kind:        jobstore.EventJobNotificationPending,
 		TS:          jm.now(),
-		JobID:       "job_enqueue",
+		JobID:       "job_descendant",
 		TerminalGen: "gen_2",
 	}
-	// First, create an owned terminal record so the enqueue finds it.
 	if err := jm.forwardEvent(jobstore.Event{
 		Kind:           jobstore.EventJobStarted,
 		TS:             jm.now(),
-		JobID:          "job_enqueue",
+		JobID:          "job_descendant",
 		Type:           jobstore.JobType(delegateResourceType),
-		OwnerSessionID: jm.sessionID,
-		Description:    "owned delegate",
+		OwnerSessionID: "child_session_3",
+		Description:    "descendant delegate",
 	}); err != nil {
 		t.Fatal(err)
 	}
 	if err := jm.appendEvent(jobstore.Event{
 		Kind:        jobstore.EventJobFinished,
 		TS:          jm.now(),
-		JobID:       "job_enqueue",
+		JobID:       "job_descendant",
 		Status:      jobstore.StatusCompleted,
 		TerminalGen: "gen_2",
 	}); err != nil {
 		t.Fatal(err)
 	}
 	if err := jm.forwardEvent(e3); err != nil {
-		t.Fatalf("forwardEvent with enqueue: %v", err)
+		t.Fatalf("forward descendant notification: %v", err)
 	}
-	if len(queued) != 1 || queued[0].JobID != "job_enqueue" || queued[0].Status != string(jobstore.StatusCompleted) || queued[0].Description != "owned delegate" {
-		t.Fatalf("queued notifications = %+v, want one completed job_enqueue", queued)
+	if len(queued) != 0 {
+		t.Fatalf("parent enqueued descendant-owned forwarded notifications: %+v", queued)
 	}
 	records, err = jm.store.Load()
 	if err != nil {
-		t.Fatalf("load enqueued forwarding: %v", err)
+		t.Fatalf("load descendant forwarding: %v", err)
 	}
-	if rec := records["job_enqueue"]; rec == nil || rec.VisibleToSession != jm.sessionID || rec.NotifyState != jobstore.NotifyPending || rec.TerminalGen != "gen_2" {
-		t.Fatalf("forwarded terminal record = %+v", rec)
+	if rec := records["job_descendant"]; rec == nil || rec.OwnerSessionID != "child_session_3" || rec.VisibleToSession != jm.sessionID || rec.Status != jobstore.StatusCompleted || rec.NotifyState != jobstore.NotifyPending || rec.TerminalGen != "gen_2" {
+		t.Fatalf("persisted descendant terminal record = %+v", rec)
 	}
 }
 
@@ -519,16 +519,6 @@ func TestCovDrainAsSteerWithInput_CanceledCtx(t *testing.T) {
 	cancel()
 	if err := s.DrainAsSteerWithInput(ctx, "", nil); err == nil {
 		t.Fatal("canceled context should return error")
-	}
-}
-
-// TestCovPopSteeringHead_Empty covers popSteeringHead
-// (session_queue.go lines 810-844): empty queue.
-func TestCovPopSteeringHead_Empty2(t *testing.T) {
-	s := &Session{}
-	_, ok := s.popSteeringHead()
-	if ok {
-		t.Fatal("empty queue should return false")
 	}
 }
 

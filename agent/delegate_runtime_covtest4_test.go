@@ -5,9 +5,13 @@ import (
 	"encoding/json"
 	"errors"
 	"os"
+	"reflect"
 	"strings"
 	"testing"
+	"time"
 
+	"primeradiant.com/evener/agent/events"
+	"primeradiant.com/evener/agent/internal/agenttest"
 	"primeradiant.com/evener/agent/internal/delegatestore"
 	"primeradiant.com/evener/agent/internal/jobstore"
 	"primeradiant.com/evener/agent/provenance"
@@ -19,32 +23,89 @@ import (
 // restored candidates in reverse, calling prepareDeferredOwedStart for each
 // not-done entry.
 func TestCovAbortOwedDelegateBootstrap(t *testing.T) {
-	s := &Session{}
-	// Empty gate — no iterations, returns nil.
-	gate := &owedBootstrapRestore{held: true, pending: make(map[*Session]func()), done: make(map[*subagent]bool)}
-	if err := s.abortOwedDelegateBootstrap(gate, errors.New("test abort")); err != nil {
-		t.Fatalf("empty gate: %v", err)
+	controller, _ := newDelegateControllerTestHarness(t, 3, 1)
+	root := &Session{
+		id:                 "root-session",
+		state:              SessionProcessing,
+		delegateController: controller,
+		subagents:          newSubagentManager(nil, 3),
+		events:             make(chan events.SessionEvent, 4),
+	}
+	controller.rootRuntime = root
+
+	newRestored := func(delegateID string) owedBootstrapRuntime {
+		t.Helper()
+		seedDelegateControllerRunning(t, controller, delegateID, "")
+		child := &Session{
+			id:        "child-" + delegateID,
+			subagents: newSubagentManager(nil, 1),
+			events:    make(chan events.SessionEvent, 1),
+		}
+		sub := &subagent{id: child.id, sess: child}
+		root.subagents.track(sub)
+		lease := delegateLease{delegateID: delegateID, generation: 1}
+		controller.mu.Lock()
+		controller.live[delegateID].binding.runtime = child
+		controller.live[delegateID].runtime = child
+		descriptor := controller.durable[delegateID].Descriptor
+		controller.mu.Unlock()
+		return owedBootstrapRuntime{deferredOwedDelegateAttentionStart: deferredOwedDelegateAttentionStart{
+			owner: root,
+			sub:   sub,
+			started: delegateStartCommit{
+				lease:      lease,
+				descriptor: descriptor,
+			},
+		}}
 	}
 
-	// Gate with restored entries but all done — no iterations.
-	sub := &subagent{}
-	gate2 := &owedBootstrapRestore{
-		restored: []owedBootstrapRuntime{{sub: sub}},
-		done:     make(map[*subagent]bool),
+	first := newRestored("dlg_first")
+	second := newRestored("dlg_second")
+	doneChild := &Session{id: "child-done", subagents: newSubagentManager(nil, 1), events: make(chan events.SessionEvent, 1)}
+	doneSub := &subagent{id: doneChild.id, sess: doneChild}
+	root.subagents.track(doneSub)
+	gate := &owedBootstrapRestore{
+		restored: []owedBootstrapRuntime{first, {deferredOwedDelegateAttentionStart: deferredOwedDelegateAttentionStart{sub: doneSub}}, second},
+		done:     map[*subagent]bool{doneSub: true},
 	}
-	gate2.done[sub] = true
-	if err := s.abortOwedDelegateBootstrap(gate2, nil); err != nil {
-		t.Fatalf("all done: %v", err)
+	if err := root.abortOwedDelegateBootstrap(gate, errors.New("test abort")); err != nil {
+		t.Fatalf("abort owed bootstrap: %v", err)
+	}
+
+	root.delegateDeliveryMu.Lock()
+	gotOrder := make([]string, 0, len(root.pendingDelegateDeliveries))
+	for _, delivery := range root.pendingDelegateDeliveries {
+		gotOrder = append(gotOrder, delivery.delegateID)
+	}
+	root.delegateDeliveryMu.Unlock()
+	if want := []string{"dlg_second", "dlg_first"}; !reflect.DeepEqual(gotOrder, want) {
+		t.Fatalf("cleanup delivery order = %v, want reverse restored order %v", gotOrder, want)
+	}
+	for _, restored := range []owedBootstrapRuntime{first, second} {
+		if got := root.subagents.get(restored.sub.id); got != nil {
+			t.Fatalf("unfinished restored subagent %q remained tracked", restored.sub.id)
+		}
+		restored.sub.sess.mu.Lock()
+		state := restored.sub.sess.state
+		restored.sub.sess.mu.Unlock()
+		if state != SessionClosed {
+			t.Fatalf("unfinished restored session %q state = %v, want closed", restored.sub.id, state)
+		}
+	}
+	if got := root.subagents.get(doneSub.id); got != doneSub {
+		t.Fatalf("done restored subagent = %p, want retained %p", got, doneSub)
+	}
+	doneChild.mu.Lock()
+	doneState := doneChild.state
+	doneChild.mu.Unlock()
+	if doneState == SessionClosed {
+		t.Fatal("done restored session was cleaned up")
 	}
 }
 
-// TestCovFailAdoptedStart covers failAdoptedStart
-// (delegate_runtime.go lines 1775-1786): nil/empty guards.
-// This requires a full delegateController setup, so we test the pure helper
-// delegatePermanentStartFailure that it calls.
-func TestCovFailAdoptedStart_DelegatePermanentStartFailure(t *testing.T) {
-	// delegatePermanentStartFailure is already at 100%, but verify its
-	// branches are used by failAdoptedStart/failCommittedStart.
+// TestCovDelegatePermanentStartFailurePacket pins the direct packet-construction
+// contract used by committed delegate start failure paths.
+func TestCovDelegatePermanentStartFailurePacket(t *testing.T) {
 	finish := delegatePermanentStartFailure(nil, "test_reason")
 	if finish.outcome != delegatestore.OutcomeFailed {
 		t.Fatalf("outcome = %v, want %v", finish.outcome, delegatestore.OutcomeFailed)
@@ -276,16 +337,21 @@ func TestCovDescriptorProvenance(t *testing.T) {
 		t.Fatal("nil provenance should return nil")
 	}
 
-	// Non-nil provenance — returns clone.
-	// Clone returns NilIfEmpty, so ChainTruncated=true keeps it non-empty.
-	desc.Provenance = &provenance.Causal{ChainTruncated: true}
-	got := descriptorProvenance(desc)
-	if got == nil || !got.ChainTruncated {
-		t.Fatal("should return cloned provenance")
+	// Non-nil provenance — returns a deep clone of every mutable field.
+	desc.Provenance = &provenance.Causal{
+		WatchKeys:      []provenance.WatchKey{{WatchID: "watch_original", WatchGeneration: "generation_original"}},
+		Chain:          []provenance.Entry{{Kind: "watch", DeliveryID: "delivery_original"}},
+		ChainTruncated: true,
 	}
+	got := descriptorProvenance(desc)
+	if got == nil || !reflect.DeepEqual(got, desc.Provenance) {
+		t.Fatalf("cloned provenance = %#v, want %#v", got, desc.Provenance)
+	}
+	got.WatchKeys[0].WatchID = "watch_mutated"
+	got.Chain[0].DeliveryID = "delivery_mutated"
 	got.ChainTruncated = false
-	if !desc.Provenance.ChainTruncated {
-		t.Fatal("mutating cloned provenance changed the descriptor")
+	if desc.Provenance.WatchKeys[0].WatchID != "watch_original" || desc.Provenance.Chain[0].DeliveryID != "delivery_original" || !desc.Provenance.ChainTruncated {
+		t.Fatalf("mutating cloned provenance changed descriptor: %#v", desc.Provenance)
 	}
 }
 
@@ -298,7 +364,19 @@ func TestCovStableDelegateResult(t *testing.T) {
 		ResolvedModel:     "gpt-5",
 		TranscriptRef:     "local:child_1",
 	}
-	result := stableDelegateResult(desc, "dlg_1", delegateUpdatePlan{}, delegateMutationPlans{}, nil)
+	committed := delegateUpdatePlan{rows: []delegateSnapshot{{
+		id:        "dlg_1",
+		lifecycle: delegateLifecycleRunning,
+		resumable: false,
+	}}}
+	latestOutcome := &delegatestore.Outcome{Status: delegatestore.OutcomeCompleted, Reason: "reported_result"}
+	plans := delegateMutationPlans{updates: []delegateUpdatePlan{{rows: []delegateSnapshot{{
+		id:          "dlg_1",
+		lifecycle:   delegateLifecycleIdle,
+		resumable:   true,
+		lastOutcome: latestOutcome,
+	}}}}}
+	result := stableDelegateResult(desc, "dlg_1", committed, plans, nil)
 	if result.DelegateID != "dlg_1" {
 		t.Fatalf("delegateID = %q", result.DelegateID)
 	}
@@ -308,8 +386,8 @@ func TestCovStableDelegateResult(t *testing.T) {
 	if result.Type != delegateResourceType {
 		t.Fatalf("type = %q", result.Type)
 	}
-	if result.Status != jobstore.StatusRunning {
-		t.Fatalf("status = %q, want %q", result.Status, jobstore.StatusRunning)
+	if result.Status != jobstore.Status(delegateLifecycleIdle) {
+		t.Fatalf("status = %q, want %q from latest durable snapshot", result.Status, delegateLifecycleIdle)
 	}
 	if result.Model != "openai/gpt-5" {
 		t.Fatalf("model = %q", result.Model)
@@ -317,8 +395,11 @@ func TestCovStableDelegateResult(t *testing.T) {
 	if result.TranscriptRef != "local:child_1" {
 		t.Fatalf("transcript ref = %q, want local:child_1", result.TranscriptRef)
 	}
-	if result.Resumable == nil || *result.Resumable {
-		t.Fatalf("resumable = %v, want explicit false", result.Resumable)
+	if result.Resumable == nil || !*result.Resumable {
+		t.Fatalf("resumable = %v, want explicit true from latest durable snapshot", result.Resumable)
+	}
+	if result.Reason != "reported_result" {
+		t.Fatalf("reason = %q, want reported_result from latest durable outcome", result.Reason)
 	}
 	if !result.RunningInBackground {
 		t.Fatal("should be running in background")
@@ -330,16 +411,16 @@ func TestCovStableDelegateResult(t *testing.T) {
 	// With sandbox snapshot.
 	network := true
 	desc.Sandbox = &delegatestore.SandboxSnapshot{Mode: "off", Network: &network}
-	result = stableDelegateResult(desc, "dlg_1", delegateUpdatePlan{}, delegateMutationPlans{}, nil)
+	result = stableDelegateResult(desc, "dlg_1", committed, plans, nil)
 	if result.Sandbox == nil || result.Sandbox.Mode != "off" || !result.Sandbox.Network {
 		t.Fatalf("sandbox = %+v, want mode=off network=true", result.Sandbox)
 	}
 
 	// With error.
 	wantErr := errors.New("fail")
-	result = stableDelegateResult(desc, "dlg_1", delegateUpdatePlan{}, delegateMutationPlans{}, wantErr)
-	if !errors.Is(result.Err, wantErr) {
-		t.Fatalf("err = %v", result.Err)
+	result = stableDelegateResult(desc, "dlg_1", committed, plans, wantErr)
+	if result.Err != wantErr {
+		t.Fatalf("error object = %p (%v), want exact input object %p", result.Err, result.Err, wantErr)
 	}
 }
 
@@ -641,16 +722,74 @@ func TestCovEmitStableDelegateUpdate2(t *testing.T) {
 	s.emitStableDelegateUpdate(delegateUpdatePlan{})
 }
 
-// TestCovEmitStableDelegateUpdate_WithRows covers the row iteration path
-// when there's no runtime and no descendant event forward.
+// TestCovEmitStableDelegateUpdate_WithRows covers forwarding a stable update
+// to the root callback when the delegate owner runtime is not resident.
 func TestCovEmitStableDelegateUpdate_WithRows(t *testing.T) {
-	s := &Session{}
+	now := time.Date(2026, 8, 24, 20, 30, 0, 0, time.UTC)
+	var forwarded []events.SessionEvent
+	s := &Session{
+		clock:              agenttest.NewFakeClockAt(now),
+		delegateController: &delegateTreeController{rootSessionID: "root-session"},
+		cfg: SessionConfig{spawn: spawnConfig{
+			descendantEvent: func(event events.SessionEvent) { forwarded = append(forwarded, event) },
+		}},
+	}
+	originalProvenance := &provenance.Causal{
+		WatchKeys: []provenance.WatchKey{{WatchID: "watch_1", WatchGeneration: "wg_1"}},
+		Chain:     []provenance.Entry{{Kind: "watch", DeliveryID: "delivery_1"}},
+	}
 	s.emitStableDelegateUpdate(delegateUpdatePlan{
 		rows: []delegateSnapshot{
-			{id: "dlg_1", descriptor: delegatestore.Descriptor{OwnerSessionID: "other"}},
+			{
+				id:        "dlg_remote",
+				lifecycle: delegateLifecycleIdle,
+				phase:     delegatestore.PhaseClosed,
+				resumable: true,
+				revision:  9,
+				lastOutcome: &delegatestore.Outcome{
+					Status: delegatestore.OutcomeCompleted,
+					Reason: "reported_result",
+				},
+				descriptor: delegatestore.Descriptor{
+					OwnerSessionID:    "owner-remote",
+					ChildSessionID:    "child-remote",
+					TranscriptRef:     "local:child-remote",
+					Task:              "inspect remote state",
+					Description:       "remote delegate",
+					AgentType:         "reviewer",
+					ResolvedProfileID: "openai",
+					ResolvedModel:     "gpt-5",
+					Provenance:        originalProvenance,
+				},
+			},
 		},
 	})
-	// Should not panic with no controller.
+	if len(forwarded) != 1 {
+		t.Fatalf("forwarded events = %d, want 1", len(forwarded))
+	}
+	event := forwarded[0]
+	if event.Kind != events.EventDelegateUpdated || event.SessionID != "owner-remote" || !event.Timestamp.Equal(now) {
+		t.Fatalf("forwarded envelope = kind:%q session:%q timestamp:%v", event.Kind, event.SessionID, event.Timestamp)
+	}
+	wantData := events.DelegateUpdatedData{
+		DelegateID: "dlg_remote", OwnerSessionID: "owner-remote", RootSessionID: "root-session",
+		ChildSessionID: "child-remote", TranscriptRef: "local:child-remote", Type: "delegate",
+		Lifecycle: "idle", Phase: "closed", Status: "idle", Outcome: "completed", Reason: "reported_result",
+		Terminal: true, Resumable: true, ProjectionRevision: 9, Task: "inspect remote state",
+		Description: "remote delegate", AgentType: "reviewer", ResolvedProfileID: "openai", ResolvedModel: "gpt-5", Model: "gpt-5",
+	}
+	gotData, ok := event.Data.(events.DelegateUpdatedData)
+	if !ok || !reflect.DeepEqual(gotData, wantData) {
+		t.Fatalf("forwarded data = %#v (%T), want %#v", event.Data, event.Data, wantData)
+	}
+	if event.Provenance == originalProvenance || !reflect.DeepEqual(event.Provenance, originalProvenance) {
+		t.Fatalf("forwarded provenance = %#v, want independent clone of %#v", event.Provenance, originalProvenance)
+	}
+	event.Provenance.WatchKeys[0].WatchID = "mutated"
+	event.Provenance.Chain[0].DeliveryID = "mutated"
+	if originalProvenance.WatchKeys[0].WatchID != "watch_1" || originalProvenance.Chain[0].DeliveryID != "delivery_1" {
+		t.Fatalf("forwarded provenance shares storage with descriptor: %#v", originalProvenance)
+	}
 }
 
 // TestCovDelegateRestoreStat covers delegateRestoreStat
