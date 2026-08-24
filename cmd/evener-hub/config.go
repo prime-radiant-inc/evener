@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/BurntSushi/toml"
@@ -151,6 +152,9 @@ func validateMobileBaseURL(raw string) error {
 	}
 	if u.Fragment != "" {
 		return errors.New("must not include a fragment")
+	}
+	if strings.HasSuffix(u.Host, ":") {
+		return errors.New("port must not be empty")
 	}
 	if port := u.Port(); port != "" {
 		p, err := strconv.Atoi(port)

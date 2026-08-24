@@ -89,25 +89,27 @@ func TestWeb_MobilePairingUsesConfiguredBaseURL(t *testing.T) {
 	}
 }
 
-func TestWeb_MobilePairingRejectsLoopbackAlternateSpellings(t *testing.T) {
-	web := NewWebServer(hubcore.WebConfig{AuthToken: "mobile-secret"})
-	// These alternate loopback spellings bypass netip.ParseAddr but resolve
-	// to 127.0.0.1 via the OS resolver.
+func TestSafeMobileOriginRejectsLoopbackAlternateSpellings(t *testing.T) {
 	for _, origin := range []string{
-		"https://localhost.",
+		"https://localhost",
+		"https://LOCALHOST.",
+		"https://LoCaLhOsT.",
 		"https://127.1",
 		"https://2130706433",
+		"https://0x7f000001",
 	} {
-		req := httptest.NewRequest(http.MethodGet, origin+"/api/mobile/pairing", nil)
-		req.Header.Set("Authorization", "Bearer mobile-secret")
-		rec := httptest.NewRecorder()
-		web.Handler().ServeHTTP(rec, req)
-		if rec.Code != http.StatusConflict {
-			t.Fatalf("origin %s: status = %d, want %d: %s", origin, rec.Code, http.StatusConflict, rec.Body.String())
-		}
-		if strings.Contains(rec.Body.String(), "mobile-secret") {
-			t.Fatalf("origin %s: response leaked token: %q", origin, rec.Body.String())
-		}
+		t.Run(origin, func(t *testing.T) {
+			if got, ok := safeMobileOrigin(origin); ok {
+				t.Fatalf("safeMobileOrigin(%q) = %q, true; want rejection", origin, got)
+			}
+		})
+	}
+}
+
+func TestSafeMobileOriginAllowsOrdinaryHTTPSDNSNameWithoutResolution(t *testing.T) {
+	const origin = "https://unresolvable.example.test:9443"
+	if got, ok := safeMobileOrigin(origin); !ok || got != origin {
+		t.Fatalf("safeMobileOrigin(%q) = %q, %v; want unchanged origin", origin, got, ok)
 	}
 }
 

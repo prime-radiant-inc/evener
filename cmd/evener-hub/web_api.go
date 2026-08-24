@@ -13,6 +13,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 
 	"primeradiant.com/evener/agent/diagnostic"
@@ -207,7 +208,7 @@ func safeMobileOrigin(raw string) (string, bool) {
 	host := u.Hostname()
 	// Strip trailing dot (FQDN form) before checking, then reject
 	// "localhost" and all its spellings.
-	host = strings.TrimSuffix(host, ".")
+	host = strings.TrimRight(host, ".")
 	if host == "" || strings.EqualFold(host, "localhost") {
 		return "", false
 	}
@@ -220,10 +221,10 @@ func safeMobileOrigin(raw string) (string, bool) {
 			return "", false
 		}
 	} else {
-		// Non-standard IP spellings (127.1, 2130706433, 0x7f000001) are
-		// not parsed by netip.ParseAddr but resolve to loopback via the
-		// OS resolver. Reject any hostname that resolves to loopback.
-		if ip, err := net.ResolveIPAddr("ip", host); err == nil && ip.IP.IsLoopback() {
+		// Some clients accept inet_aton-style numeric addresses such as 127.1,
+		// 2130706433, or 0x7f000001. Reject those spellings deterministically
+		// rather than resolving a host while serving the pairing request.
+		if isLegacyIPv4Literal(host) {
 			return "", false
 		}
 		if u.Scheme == "http" && !strings.HasSuffix(strings.ToLower(host), ".local") {
@@ -231,6 +232,38 @@ func safeMobileOrigin(raw string) (string, bool) {
 		}
 	}
 	return strings.TrimRight(raw, "/"), true
+}
+
+func isLegacyIPv4Literal(host string) bool {
+	parts := strings.Split(host, ".")
+	if len(parts) > 4 {
+		return false
+	}
+	for i, part := range parts {
+		base := 10
+		digits := part
+		if len(part) > 2 && part[0] == '0' && (part[1] == 'x' || part[1] == 'X') {
+			base = 16
+			digits = part[2:]
+		} else if len(part) > 1 && part[0] == '0' {
+			base = 8
+		}
+		if digits == "" {
+			return false
+		}
+		value, err := strconv.ParseUint(digits, base, 32)
+		if err != nil {
+			return false
+		}
+		bits := 8
+		if i == len(parts)-1 {
+			bits = 8 * (5 - len(parts))
+		}
+		if value >= uint64(1)<<bits {
+			return false
+		}
+	}
+	return true
 }
 
 func isPrivateMobileHTTPAddr(addr netip.Addr) bool {

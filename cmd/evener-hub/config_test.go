@@ -166,7 +166,10 @@ func TestMobileBaseURLConfig(t *testing.T) {
 		{name: "rejects other schemes", url: "ftp://hub.example.test", ok: false},
 		{name: "rejects port above 65535", url: "http://192.168.1.20:99999", ok: false},
 		{name: "rejects port zero", url: "http://192.168.1.20:0", ok: false},
-		{name: "accepts valid port", url: "http://192.168.1.20:8080", ok: true},
+		{name: "rejects explicit empty port", url: "http://host:", ok: false},
+		{name: "accepts omitted port", url: "http://host", ok: true},
+		{name: "accepts minimum valid port", url: "http://host:1", ok: true},
+		{name: "accepts maximum valid port", url: "http://host:65535", ok: true},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
