@@ -497,13 +497,15 @@ func DefCommunicateNamed(name string) llm.ToolDefinition {
 }
 
 func DefTaskList(effortLevels []string) llm.ToolDefinition {
-	reasoningDesc := "Raise or lower the reasoning budget for this task. Omit to leave unchanged."
+	reasoningDesc := "Raise or lower the reasoning budget for this task. Use \"inherit\" (or omit) to keep the session's configured effort."
 	reasoningSchema := map[string]any{
 		"type":        "string",
 		"description": reasoningDesc,
 	}
 	if len(effortLevels) > 0 {
-		reasoningSchema["enum"] = append([]string(nil), effortLevels...)
+		// "inherit" rides along so a strict-mode provider (which force-requires
+		// every property) still lets the model decline to override.
+		reasoningSchema["enum"] = append(append([]string(nil), effortLevels...), "inherit")
 	}
 	return llm.ToolDefinition{
 		Name:        "task_list",
