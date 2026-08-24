@@ -31,6 +31,9 @@ type DirEntry struct {
 // DetachedProcess identifies a command disowned by its execution environment.
 type DetachedProcess struct {
 	PID int `json:"pid"`
+	// Done closes when this exact process exits. It is intentionally not part of
+	// the tool result: callers use it for lifecycle ownership, not wire output.
+	Done <-chan struct{} `json:"-"`
 }
 
 // DetachedExecutor is an optional capability for immediately disowned commands.
