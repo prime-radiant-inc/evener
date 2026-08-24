@@ -179,6 +179,7 @@ func TestGrepFilesExecToolPassesCancellationContext(t *testing.T) {
 	select {
 	case <-env.started:
 		cancel()
+	// TRIPWIRE: this generous bound must fail a Background-context mutation without leaking the blocked tool goroutine.
 	case <-time.After(2 * time.Second):
 		t.Fatal("grep_files did not reach ExecutionEnvironment.Grep")
 	}
@@ -188,6 +189,7 @@ func TestGrepFilesExecToolPassesCancellationContext(t *testing.T) {
 		if !result.IsError || !strings.Contains(result.FullOutput, context.Canceled.Error()) {
 			t.Fatalf("grep_files cancellation result = %+v, want context.Canceled error", result)
 		}
+	// TRIPWIRE: this generous bound must fail a Background-context mutation without hanging the test indefinitely.
 	case <-time.After(2 * time.Second):
 		t.Fatal("registered grep_files did not stop after context cancellation")
 	}
