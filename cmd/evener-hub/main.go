@@ -349,6 +349,7 @@ func runMain(args []string, stderr io.Writer, deps mainDeps) error {
 	web := NewWebServer(hubcore.WebConfig{
 		HubAddr:             cfg.Addr,
 		AuthToken:           authToken,
+		MobileBaseURL:       cfg.MobileBaseURL,
 		HubStateRoot:        cfg.HubStateRoot,
 		LaunchConfigRoot:    cmdutil.DefaultConfigRoot(),
 		RunDir:              runDir,
