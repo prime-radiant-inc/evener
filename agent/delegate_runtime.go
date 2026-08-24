@@ -910,6 +910,8 @@ func (runtime delegateRuntime) send(ctx context.Context, delegateID, message str
 		DelegateID:          delegateID,
 		Type:                delegateResourceType,
 		Status:              jobstore.StatusRunning,
+		AgentType:           started.descriptor.AgentType,
+		Tools:               append([]string(nil), started.descriptor.ToolNameCeiling...),
 		RunningInBackground: true,
 		Action:              "started",
 		TranscriptRef:       started.descriptor.TranscriptRef,
@@ -970,6 +972,7 @@ func populateStableDelegateSendResult(result *sendMessageResult, packet delegate
 		result.Task = metadata.Task
 		result.Description = metadata.Description
 		result.AgentType = metadata.AgentType
+		result.Tools = append([]string(nil), metadata.Tools...)
 		result.RequestedModel = metadata.RequestedModel
 		result.ResolvedProfileID = metadata.ResolvedProfileID
 		result.ResolvedModel = metadata.ResolvedModel
@@ -1071,6 +1074,8 @@ func stableDelegateFailedSendResult(started delegateStartCommit, plans delegateM
 		DelegateID:          started.lease.delegateID,
 		Type:                delegateResourceType,
 		Status:              jobstore.StatusRunning,
+		AgentType:           started.descriptor.AgentType,
+		Tools:               append([]string(nil), started.descriptor.ToolNameCeiling...),
 		Resumable:           &resumable,
 		RunningInBackground: false,
 		Action:              "recovery_required",
@@ -1827,6 +1832,8 @@ func stableDelegateResult(descriptor delegatestore.Descriptor, delegateID string
 		ChildSessionID:      descriptor.ChildSessionID,
 		Type:                delegateResourceType,
 		Status:              status,
+		AgentType:           descriptor.AgentType,
+		Tools:               append([]string(nil), descriptor.ToolNameCeiling...),
 		Resumable:           &resumable,
 		RunningInBackground: true,
 		TranscriptRef:       descriptor.TranscriptRef,

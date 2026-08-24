@@ -1824,6 +1824,7 @@ type delegateTerminalPacketMetadata struct {
 	Task              string                          `json:"task,omitempty"`
 	Description       string                          `json:"description,omitempty"`
 	AgentType         string                          `json:"agent_type,omitempty"`
+	Tools             []string                        `json:"tools,omitempty"`
 	RequestedModel    string                          `json:"requested_model,omitempty"`
 	ResolvedProfileID string                          `json:"resolved_profile_id,omitempty"`
 	ResolvedModel     string                          `json:"resolved_model,omitempty"`
@@ -1946,6 +1947,7 @@ func delegateTerminalMetadataFromRun(inputs delegateTerminalRunInputs) delegateT
 		Task:              inputs.descriptor.Task,
 		Description:       inputs.descriptor.Description,
 		AgentType:         inputs.descriptor.AgentType,
+		Tools:             append([]string(nil), inputs.descriptor.ToolNameCeiling...),
 		RequestedModel:    inputs.descriptor.RequestedModel,
 		ResolvedProfileID: inputs.descriptor.ResolvedProfileID,
 		ResolvedModel:     inputs.descriptor.ResolvedModel,

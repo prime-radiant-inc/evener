@@ -232,6 +232,26 @@ func TestBuiltinAgents_ExplorerIsReadOnly(t *testing.T) {
 	}
 }
 
+func TestBuiltinAgents_ExplorerDoesNotSelfRestrictShellReach(t *testing.T) {
+	t.Parallel()
+	agents, err := builtinAgents()
+	if err != nil {
+		t.Fatalf("builtinAgents: %v", err)
+	}
+	explorer := agents["explorer"]
+	prompt := strings.ToLower(explorer.Description + "\n" + explorer.SystemPrompt)
+	for _, want := range []string{"network", "effects, not your reach", "unverified"} {
+		if !strings.Contains(prompt, want) {
+			t.Errorf("explorer capability contract missing %q:\n%s", want, prompt)
+		}
+	}
+	for _, stale := range []string{"query external apis", "use shell only for read-only commands"} {
+		if strings.Contains(prompt, stale) {
+			t.Errorf("explorer still claims a tool restriction it does not have: %q", stale)
+		}
+	}
+}
+
 func TestBuiltinAgents_ToolNamesAreCanonical(t *testing.T) {
 	t.Parallel()
 	agents, err := builtinAgents()
