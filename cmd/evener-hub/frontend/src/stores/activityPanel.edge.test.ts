@@ -93,7 +93,7 @@ describe("activityPanelStore continuation paths", () => {
     const req = activityPanelStore.getState().beginFetch("ref_a");
     activityPanelStore.getState().publishFetch("ref_a", req, { kind: "ready", tree: makeTree() });
     const req2 = activityPanelStore.getState().beginFetch("ref_a");
-    activityPanelStore.getState().publishFetch("ref_a", req2, { kind: "ended", tree: makeTree(2) });
+    activityPanelStore.getState().publishFetch("ref_a", req2, { kind: "ended" });
     const entry = activityPanelStore.getState().entries.get("ref_a");
     expect(entry?.load.kind).toBe("ended");
   });
@@ -103,7 +103,7 @@ describe("activityPanelStore continuation paths", () => {
     const req = activityPanelStore.getState().beginFetch("ref_a");
     activityPanelStore.getState().publishFetch("ref_a", req, {
       kind: "failed",
-      error: { sentence: "network error", detail: "connection lost" },
+      error: { headline: "Network error", sentence: "network error", detail: "connection lost" },
     });
     const entry = activityPanelStore.getState().entries.get("ref_a");
     expect(entry?.load.kind).toBe("failed");
@@ -116,7 +116,7 @@ describe("activityPanelStore continuation paths", () => {
     const req2 = activityPanelStore.getState().beginFetch("ref_a");
     activityPanelStore.getState().publishFetch("ref_a", req2, {
       kind: "failed",
-      error: { sentence: "reconnect failed", detail: "timeout" },
+      error: { headline: "Reconnect failed", sentence: "reconnect failed", detail: "timeout" },
     });
     const entry = activityPanelStore.getState().entries.get("ref_a");
     expect(entry?.load.kind).toBe("ready");

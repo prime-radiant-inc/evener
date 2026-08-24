@@ -4,7 +4,8 @@
 // - rememberableId for stayOpen and non-stayOpen commands
 
 import { afterEach, expect, test, vi } from "vitest";
-import type { Command, CommandDescriptor } from "./commands";
+import type { CommandDescriptor } from "../../protocol/types.gen";
+import type { Command } from "./commands";
 import { copyToClipboard, rememberableId, sessionScopedHandoffMatch, slashCommandInvocation } from "./commands";
 
 // --- copyToClipboard ---
@@ -64,12 +65,12 @@ test("copyToClipboard rejects when execCommand returns false", async () => {
 // --- rememberableId ---
 
 test("rememberableId returns empty string for stayOpen command", () => {
-  const cmd: Command = { id: "search", title: "Search", scope: "global", stayOpen: true };
+  const cmd: Command = { id: "search", title: "Search", scope: "global", stayOpen: true, hint: "", keywords: [] };
   expect(rememberableId(cmd)).toBe("");
 });
 
 test("rememberableId returns the id for non-stayOpen command", () => {
-  const cmd: Command = { id: "upgrade", title: "Upgrade", scope: "global" };
+  const cmd: Command = { id: "upgrade", title: "Upgrade", scope: "global", hint: "", keywords: [] };
   expect(rememberableId(cmd)).toBe("upgrade");
 });
 

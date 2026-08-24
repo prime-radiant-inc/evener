@@ -9,7 +9,7 @@ import { IDBFactory } from "fake-indexeddb";
 import { describe, expect, test } from "vitest";
 import { WireError } from "../protocol/errors";
 import { FakeClient } from "../protocol/testing/fakeClient";
-import type { MutationReceipt } from "../protocol/types.gen";
+import type { MutationReceipt, TurnQueueResponse } from "../protocol/types.gen";
 import { MutationDispatcher } from "./mutationDispatcher";
 import type { MutationIntent } from "./mutationOutbox";
 import { MutationOutboxIndexedDB } from "./mutationOutboxIndexedDB";
@@ -213,7 +213,7 @@ describe("MutationDispatcher edge cases", () => {
     const outbox = storage(indexedDB, "no-receipt", ["mutation-a"]);
     const record = await outbox.enqueueIntent(queueIntent());
     const client = new FakeClient("ready");
-    client.on("turn/queue", () => ({ notReceipt: true }));
+    client.on("turn/queue", () => ({ notReceipt: true }) as unknown as TurnQueueResponse);
     const dispatcher = new MutationDispatcher(outbox, { getClient: () => client });
 
     await dispatcher.dispatchTargets(["ref-a"]);
@@ -228,7 +228,7 @@ describe("MutationDispatcher edge cases", () => {
     const outbox = storage(indexedDB, "non-object-receipt", ["mutation-a"]);
     const record = await outbox.enqueueIntent(queueIntent());
     const client = new FakeClient("ready");
-    client.on("turn/queue", () => ({ receipt: "not-an-object" }));
+    client.on("turn/queue", () => ({ receipt: "not-an-object" as unknown as MutationReceipt }));
     const dispatcher = new MutationDispatcher(outbox, { getClient: () => client });
 
     await dispatcher.dispatchTargets(["ref-a"]);
@@ -243,7 +243,7 @@ describe("MutationDispatcher edge cases", () => {
     const record = await outbox.enqueueIntent(queueIntent());
     const client = new FakeClient("ready");
     client.on("turn/queue", () => ({
-      receipt: { clientMutationId: "mutation-a", disposition: "applied" },
+      receipt: { clientMutationId: "mutation-a", disposition: "applied" } as unknown as MutationReceipt,
       // missing threadId and projectionState
     }));
     const dispatcher = new MutationDispatcher(outbox, { getClient: () => client });

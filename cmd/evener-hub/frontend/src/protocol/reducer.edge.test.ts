@@ -54,9 +54,18 @@ function testHydrate(overrides: Partial<Thread> = {}): ThreadModel {
 function delegateInfo(overrides: Partial<EvenerDelegateInfo> = {}): EvenerDelegateInfo {
   return {
     delegateId: "dlg_1",
+    ownerSessionId: "sess_owner",
+    rootSessionId: "sess_root",
+    childSessionId: "sess_child",
+    transcriptRef: "local:01dlg_1",
+    type: "delegate",
+    lifecycle: "stable",
+    phase: "idle",
     status: "idle",
     outcome: "completed",
     terminal: true,
+    resumable: true,
+    needsAttention: false,
     projectionRevision: 1,
     ...overrides,
   };
@@ -262,11 +271,12 @@ test("prependOlderTurns keeps an unmatched item in the turn", () => {
   const wireTurn = {
     id: "old_turn",
     status: "completed" as const,
+    itemsView: "full",
     items: [{ id: "old_item", type: "message", text: "old message" }],
   };
   const currentTurn: TurnModel = { id: "current", status: "completed", items: [] };
   const model = testHydrate();
-  const result = prependOlderTurns({ ...model, turns: [currentTurn] }, { data: [wireTurn], nextCursor: null });
+  const result = prependOlderTurns({ ...model, turns: [currentTurn] }, { data: [wireTurn], nextCursor: undefined });
   // The old turn with the unmatched item should be prepended
   expect(result.turns.length).toBe(2);
   expect(result.turns[0]?.id).toBe("old_turn");

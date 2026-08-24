@@ -97,18 +97,6 @@ function okResponse(body: unknown): Response {
   return { ok: true, status: 200, statusText: "OK", json: () => Promise.resolve(body) } as Response;
 }
 
-// Capture toast pushes by wrapping useToasts. The toast store is a hook;
-// we spy on the push method the chrome's menu actions call.
-function _spyToasts() {
-  const pushes: { kind: string; message: string }[] = [];
-  const { result } = renderHookWithToast();
-  const _originalPush = result.current.push;
-  vi.spyOn(result.current, "push").mockImplementation((kind: string, message: string) => {
-    pushes.push({ kind, message });
-  });
-  return { pushes, restore: () => result.current.push.mockRestore() };
-}
-
 // We can't easily spy on the toast store from outside, so we mount Toast
 // and observe DOM output instead.
 function renderWithToast(ui: React.ReactElement) {
