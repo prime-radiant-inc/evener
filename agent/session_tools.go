@@ -274,14 +274,7 @@ func (s *Session) describeImage(ctx context.Context, r tool.ExecResult) string {
 
 	// Use the caller's stated purpose as the vision prompt. The calling LLM
 	// knows what it needs — we just ask the vision model to answer that question.
-	purpose := strings.TrimSpace(r.ImagePurpose)
-	if purpose == "" {
-		purpose = "Describe what you see in this image in thorough detail."
-	}
-
-	var prompt strings.Builder
-	prompt.WriteString(purpose)
-	prompt.WriteString("\n\nBe thorough — the reader cannot see the image and will rely entirely on your description.")
+	prompt := visionPromptForPurpose(r.ImagePurpose)
 
 	mt := r.ImageMediaType
 	if mt == "" {
@@ -328,7 +321,7 @@ func (s *Session) describeImage(ctx context.Context, r tool.ExecResult) string {
 			{
 				Role: llm.RoleUser,
 				Content: []llm.ContentPart{
-					{Kind: llm.ContentText, Text: prompt.String()},
+					{Kind: llm.ContentText, Text: prompt},
 					mediaPart,
 				},
 			},
@@ -364,6 +357,44 @@ func (s *Session) describeImage(ctx context.Context, r tool.ExecResult) string {
 	}
 
 	return strings.TrimSpace(resp.Message.Text())
+}
+
+// visionPromptForPurpose preserves the ordinary description prompt while
+// strengthening requests that explicitly ask for rendered text to be copied.
+// The extra wording is a best-effort model instruction, not an OCR guarantee;
+// the read_file tool contract carries that limitation to the calling agent.
+func visionPromptForPurpose(purpose string) string {
+	purpose = strings.TrimSpace(purpose)
+	if purpose == "" {
+		purpose = "Describe what you see in this image in thorough detail."
+	}
+	if requestsLiteralTranscription(purpose) {
+		return purpose + "\n\nFor this exact-transcription request, preserve every visible character exactly as rendered, including case, punctuation, spacing, repeated characters, and symbols. Do not correct, normalize, interpret, or replace uncertain characters with plausible words. If a glyph is unclear, mark it as uncertain instead of guessing."
+	}
+	return purpose + "\n\nBe thorough — the reader cannot see the image and will rely entirely on your description."
+}
+
+func requestsLiteralTranscription(purpose string) bool {
+	lower := strings.ToLower(purpose)
+	for _, marker := range []string{
+		"transcrib",
+		"verbatim",
+		"character-for-character",
+		"glyph-by-glyph",
+	} {
+		if strings.Contains(lower, marker) {
+			return true
+		}
+	}
+	if !strings.Contains(lower, "exact") {
+		return false
+	}
+	for _, subject := range []string{"text", "string", "character", "glyph", "symbol", "letter", "code"} {
+		if strings.Contains(lower, subject) {
+			return true
+		}
+	}
+	return false
 }
 
 func (s *Session) canonicalToolName(name string) string {
