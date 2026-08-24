@@ -2,8 +2,6 @@ package apptranscript
 
 import (
 	"encoding/json"
-	"errors"
-	"io"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -623,13 +621,8 @@ func TestFileIdentityWindowsStruct(t *testing.T) {
 	}
 	info := mockFileInfo{sys: winStat{VolumeSerialNumber: 42, FileIndexHigh: 7, FileIndexLow: 3}}
 	got := fileIdentity(info)
-	want := "volume:42:index:7440326912" // 7<<32|3 = 30064771075
-	// 7<<32 = 30064771072, +3 = 30064771075
-	if got != want {
-		// The exact value depends on the bit shift; just verify it starts with volume:
-		if !strings.HasPrefix(got, "volume:") {
-			t.Fatalf("expected 'volume:' prefix for Windows file identity, got %q", got)
-		}
+	if !strings.HasPrefix(got, "volume:") {
+		t.Fatalf("expected 'volume:' prefix for Windows file identity, got %q", got)
 	}
 }
 
@@ -1185,8 +1178,18 @@ func TestToolProjectionStateEmptyNameTouched(t *testing.T) {
 	// communicate result which deleted it). So it won't look up localNames
 	// because localDeleted is true.
 	seed, changes := toolProjectionState(entry, map[string]string{})
-	_ = seed
-	_ = changes
+	if seed != nil {
+		t.Fatalf("expected nil seed (touched path doesn't populate seed), got %v", seed)
+	}
+	if len(changes) != 2 {
+		t.Fatalf("expected 2 changes (delete + lookup), got %d: %v", len(changes), changes)
+	}
+	if !changes[0].Delete {
+		t.Fatalf("expected first change to be a delete for communicate, got %v", changes[0])
+	}
+	if changes[1].ID != "call-1" || changes[1].Name != "" || !changes[1].Lookup {
+		t.Fatalf("expected second change to be a lookup with empty name, got %v", changes[1])
+	}
 }
 
 // TestToolProjectionStateEmptyNameLookupLocal covers the path where a tool
@@ -1351,9 +1354,15 @@ func TestProjectIndexedRangeNoProjector(t *testing.T) {
 		t.Fatal(err)
 	}
 	turns, projected := projectIndexedRange(path, index, 0, index.logicalTurnCount(), nil)
-	// With nil projector, no items are produced, so turns should be prelude only
-	_ = turns
-	_ = projected
+	// With nil projector, no items are produced from records, so turns
+	// should be empty (no prelude without a system prompt) and projected
+	// counts only the records read.
+	if len(turns) != 0 {
+		t.Fatalf("expected 0 turns with nil projector and no prelude, got %d", len(turns))
+	}
+	if projected != 2 {
+		t.Fatalf("expected projected=2 (2 records read, no prelude), got %d", projected)
+	}
 }
 
 // TestPersistedTurnID covers the persistedTurnID helper.
@@ -1362,14 +1371,6 @@ func TestPersistedTurnID(t *testing.T) {
 	id := persistedTurnID(turn, 5)
 	if id == "" {
 		t.Fatalf("persistedTurnID should return non-empty ID")
-	}
-}
-
-// TestErrorsImportUsed ensures the errors package is referenced (for
-// coverage of error handling paths).
-func TestErrorsIsUsed(t *testing.T) {
-	if !errors.Is(io.EOF, io.EOF) {
-		t.Fatalf("errors.Is should return true for EOF")
 	}
 }
 

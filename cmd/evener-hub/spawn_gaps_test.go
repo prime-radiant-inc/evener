@@ -299,9 +299,11 @@ func TestOpenAIInstanceOAuthUsableNoStateDir(t *testing.T) {
 // TestOpenAIStateDirFromLaunchEnvNil covers the nil env path.
 func TestOpenAIStateDirFromLaunchEnvNil(t *testing.T) {
 	got := openAIStateDirFromLaunchEnv(nil)
-	// Should return default state dir
+	// Should return default state dir ending with "evener".
 	if got == "" {
-		// May return empty if no state home is set in test environment
+		t.Fatal("expected non-empty default state dir for nil env")
 	}
-	_ = got
+	if !strings.HasSuffix(got, "evener") {
+		t.Fatalf("expected state dir ending with 'evener', got %q", got)
+	}
 }

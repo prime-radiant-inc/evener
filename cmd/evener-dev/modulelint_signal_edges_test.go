@@ -104,14 +104,7 @@ func TestRunWaveNonSyscallSignal(t *testing.T) {
 	}
 	code := r.run()
 	if code != 130 && code != 143 {
-		// The non-syscall signal maps to SIGTERM (143), but the wave may
-		// complete before the signal is processed, in which case the exit
-		// is 0. If the signal IS processed, the exit should be 143.
-		// However, since the wave completes quickly with the echo command,
-		// the signal may arrive after the wave loop. In that case, the
-		// pendingSignal check after the waves should pick it up.
-		// Let's accept either 0 (signal arrived after pendingSignal) or 143.
-		t.Logf("code = %d (expected 0 or 143)", code)
+		t.Fatalf("code = %d, want 130 (SIGINT) or 143 (SIGTERM via non-syscall signal)", code)
 	}
 }
 

@@ -68,10 +68,11 @@ func TestStructuredCredentialHeaderValuesCookieEdgeCases(t *testing.T) {
 	// "noequals" has no =, so it should be skipped (line 159).
 	// "empty=" has empty value, so it should be skipped (line 163).
 	// "quoted=\"quoted-value\"" should yield the unquoted form (lines 168-169).
-	if found["quoted-value"] {
-		// The unquoted version should be present.
-	} else if len(values) == 0 {
-		t.Fatal("expected at least the quoted value to be extracted")
+	if !found["quoted-value"] {
+		t.Fatalf("expected quoted-value in extracted values, got %v", values)
+	}
+	if !found[`"quoted-value"`] {
+		t.Fatalf("expected raw quoted value in extracted values, got %v", values)
 	}
 }
 

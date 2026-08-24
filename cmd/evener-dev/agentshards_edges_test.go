@@ -179,18 +179,11 @@ func TestSignalHandlerNonSyscallSignal(t *testing.T) {
 	signals <- fakeSignal{}
 	// Wait for the run to complete (the signal will cause interruption)
 	rc := <-done
-	if rc != 143 {
-		// The signal handler converts the fake signal to SIGTERM, so rc
-		// should be 128+15=143. But if the run completes before the signal
-		// is processed, rc might be 0 — both are acceptable since the
-		// non-syscall path is exercised either way.
-		if rc != 0 {
-			t.Logf("rc = %d (expected 143 or 0)", rc)
-		}
+	if rc != 143 && rc != 0 {
+		t.Fatalf("rc = %d, want 143 (signal processed) or 0 (run completed first)", rc)
 	}
-	if !strings.Contains(stderr.String(), "interrupted by SIGTERM") {
-		// The signal might not have been processed before the run completed.
-		t.Logf("stderr = %q (signal may not have been processed before completion)", stderr.String())
+	if rc == 143 && !strings.Contains(stderr.String(), "interrupted by SIGTERM") {
+		t.Fatalf("rc=143 but stderr missing 'interrupted by SIGTERM': %q", stderr.String())
 	}
 }
 

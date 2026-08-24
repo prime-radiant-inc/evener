@@ -64,12 +64,9 @@ func TestFavoriteRemoteThreadRefWithInvalidEvenerRef(t *testing.T) {
 		Evener: appwire.EvenerThread{Ref: "not-a-valid-ref-format"},
 	}
 	_, ok := favoriteRemoteThreadRef(thread)
-	// ParseRef will succeed for single-segment refs (SourceID only)
-	// Let's use a clearly invalid ref
-	thread.Evener.Ref = ""
-	// No ref and no appThreadTreeRef → falls to appThreadTreeRef
-	// which may return false if Source is empty
-	_ = ok
+	if ok {
+		t.Fatal("expected ok=false for invalid Evener.Ref without ':' separator")
+	}
 }
 
 // TestFavoriteRemoteThreadRefFallsBackToAppThreadTreeRef covers the fallback
@@ -80,9 +77,12 @@ func TestFavoriteRemoteThreadRefFallsBackToAppThreadTreeRef(t *testing.T) {
 		Source: "remote",
 	}
 	ref, ok := favoriteRemoteThreadRef(thread)
-	_ = ref
-	_ = ok
-	// The result depends on appThreadTreeRef; just ensure no panic
+	if !ok {
+		t.Fatal("expected ok=true for fallback to appThreadTreeRef with valid Source and ID")
+	}
+	if ref.SourceID != "remote" || ref.ThreadID != "thread-1" {
+		t.Fatalf("expected remote:thread-1, got %v", ref)
+	}
 }
 
 // TestFavoriteRemoteOwnershipsLocalExcluded covers the path where local threads
