@@ -219,8 +219,10 @@ func safeMobileOrigin(raw string) (string, bool) {
 		}
 		host = strings.TrimRight(host, ".")
 	}
-	// Reject "localhost" and all its case and trailing-dot spellings.
-	if host == "" || strings.EqualFold(host, "localhost") {
+	// Reject localhost and its reserved subdomains in all case and
+	// trailing-dot spellings.
+	hostLower := strings.ToLower(host)
+	if host == "" || hostLower == "localhost" || strings.HasSuffix(hostLower, ".localhost") {
 		return "", false
 	}
 	if addr, err := netip.ParseAddr(host); err == nil {
@@ -238,7 +240,7 @@ func safeMobileOrigin(raw string) (string, bool) {
 		if isLegacyIPv4Literal(host) {
 			return "", false
 		}
-		if u.Scheme == "http" && !strings.HasSuffix(strings.ToLower(host), ".local") {
+		if u.Scheme == "http" && !strings.HasSuffix(hostLower, ".local") {
 			return "", false
 		}
 	}

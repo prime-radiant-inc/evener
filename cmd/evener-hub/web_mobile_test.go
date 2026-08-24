@@ -94,6 +94,9 @@ func TestSafeMobileOriginRejectsLoopbackAlternateSpellings(t *testing.T) {
 		"https://localhost",
 		"https://LOCALHOST.",
 		"https://LoCaLhOsT.",
+		"https://foo.localhost",
+		"https://FoO.LoCaLhOsT.",
+		"https://ｆｏｏ．ｌｏｃａｌｈｏｓｔ",
 		"https://127.1",
 		"https://2130706433",
 		"https://0x7f000001",
@@ -114,6 +117,7 @@ func TestSafeMobileOriginAllowsOrdinaryHTTPSDNSNameWithoutResolution(t *testing.
 	for _, origin := range []string{
 		"https://unresolvable.example.test:9443",
 		"https://bücher.example:9443",
+		"https://notlocalhost",
 		"https://foo_bar.example:9443",
 		"https://-foo.example:9443",
 		"https://foo-.example:9443",
