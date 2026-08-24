@@ -361,6 +361,15 @@ type SteeringInjectedData struct {
 	// Kind names what was injected (events.SteeringKind*). Optional and
 	// additive; absent means the daemon did not say, and the UI shows no kind.
 	Kind string `json:"kind,omitempty"`
+	// TaskCompletion carries the structured dependencies associated with a
+	// tasks-done steering message. It is nil for every other steering kind.
+	TaskCompletion *TaskCompletionSteeringData `json:"task_completion,omitempty"`
+}
+
+// TaskCompletionSteeringData identifies live work that still blocks session
+// completion after the task list itself reaches a terminal state.
+type TaskCompletionSteeringData struct {
+	BlockingDelegateIDs []string `json:"blocking_delegate_ids,omitempty"`
 }
 
 // QueueChangedData carries an authoritative snapshot of the per-session

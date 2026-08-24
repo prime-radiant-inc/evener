@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/agent/execenv"
 	"primeradiant.com/evener/agent/provider"
 	taskpkg "primeradiant.com/evener/agent/task"
@@ -1651,26 +1652,13 @@ func TestTaskListTool_UpdateShowsAllComplete(t *testing.T) {
 	if updateRes.IsError {
 		t.Fatalf("update error: %s", updateRes.Output)
 	}
-	if !strings.Contains(updateRes.Output, "All tasks complete") {
-		t.Fatalf("response should say 'All tasks complete': %s", updateRes.Output)
+	assertTaskListDone(t, sess)
+	completion := singleTaskCompletionData(t, sess)
+	if completion.TaskCompletion == nil {
+		t.Fatal("tasks-done steering has no structured completion data")
 	}
-
-	// Steering should be a SYSTEM-REMINDER so models treat it like other task steering.
-	sess.mu.Lock()
-	queue := make([]string, 0, len(sess.steeringQueue))
-	for _, m := range sess.steeringQueue {
-		queue = append(queue, m.Text)
-	}
-	sess.mu.Unlock()
-	if len(queue) == 0 {
-		t.Fatal("expected steering message after all tasks complete, got none")
-	}
-	last := queue[len(queue)-1]
-	if !strings.Contains(last, "<SYSTEM-REMINDER>") {
-		t.Fatalf("all-done steering should be wrapped in <SYSTEM-REMINDER>: %s", last)
-	}
-	if !strings.Contains(last, "completed all tasks") {
-		t.Fatalf("all-done steering should say 'completed all tasks': %s", last)
+	if len(completion.TaskCompletion.BlockingDelegateIDs) != 0 {
+		t.Fatalf("blocking delegate IDs = %v, want none", completion.TaskCompletion.BlockingDelegateIDs)
 	}
 }
 
@@ -1700,30 +1688,18 @@ func TestTaskListTool_UpdateNamesBlockingDelegateDependency(t *testing.T) {
 	if updateRes.IsError {
 		t.Fatalf("update error: %s", updateRes.Output)
 	}
-
-	root.mu.Lock()
-	queue := make([]string, 0, len(root.steeringQueue))
-	for _, message := range root.steeringQueue {
-		queue = append(queue, message.Text)
+	assertTaskListDone(t, root)
+	if got := root.delegateController.blockingDelegateIDs(root.delegateRootSessionID, root.owningDelegateID); !reflect.DeepEqual(got, []string{fixture.delegateID}) {
+		t.Fatalf("live blocking delegate IDs = %v, want [%s]", got, fixture.delegateID)
 	}
-	root.mu.Unlock()
-	if len(queue) == 0 {
-		t.Fatal("expected completion steering while blocking delegate is live")
-	}
-	last := queue[len(queue)-1]
-	if !strings.Contains(last, fixture.delegateID) {
-		t.Fatalf("completion steering should name blocking delegate %q: %s", fixture.delegateID, last)
-	}
-	if !strings.Contains(last, "before deciding whether to finish") {
-		t.Fatalf("completion steering should tell the agent to wait for the delegate: %s", last)
-	}
-	if !strings.Contains(updateRes.Output, fixture.delegateID) {
-		t.Fatalf("task update should name blocking delegate in its acknowledgement: %s", updateRes.Output)
+	completion := singleTaskCompletionData(t, root)
+	if completion.TaskCompletion == nil || !reflect.DeepEqual(completion.TaskCompletion.BlockingDelegateIDs, []string{fixture.delegateID}) {
+		t.Fatalf("tasks-done completion data = %v, want blocking delegate %s", completion.TaskCompletion, fixture.delegateID)
 	}
 
 	close(release)
 	outcome := <-outcomes
-	if outcome.result.Err != nil || outcome.result.Status != "completed" {
+	if outcome.result.Err != nil || outcome.result.Status != "completed" || outcome.commit == nil {
 		t.Fatalf("blocking delegate outcome = %#v", outcome.result)
 	}
 	abortUnpersistedStableDelegateOutcome(t, outcome)
@@ -1755,22 +1731,13 @@ func TestTaskListTool_UpdateLeavesBackgroundDelegateOutOfDependencyReminder(t *t
 	if updateRes.IsError {
 		t.Fatalf("update error: %s", updateRes.Output)
 	}
-	if strings.Contains(updateRes.Output, fixture.delegateID) {
-		t.Fatalf("background delegate should not appear in task acknowledgement: %s", updateRes.Output)
+	assertTaskListDone(t, root)
+	if got := root.delegateController.blockingDelegateIDs(root.delegateRootSessionID, root.owningDelegateID); len(got) != 0 {
+		t.Fatalf("live blocking delegate IDs = %v, want none", got)
 	}
-
-	root.mu.Lock()
-	queue := make([]string, 0, len(root.steeringQueue))
-	for _, message := range root.steeringQueue {
-		queue = append(queue, message.Text)
-	}
-	root.mu.Unlock()
-	if len(queue) == 0 {
-		t.Fatal("expected completion steering while background delegate is live")
-	}
-	last := queue[len(queue)-1]
-	if strings.Contains(last, fixture.delegateID) || !strings.Contains(last, "completed all tasks") {
-		t.Fatalf("background delegate should keep generic completion reminder: %s", last)
+	completion := singleTaskCompletionData(t, root)
+	if completion.TaskCompletion == nil || len(completion.TaskCompletion.BlockingDelegateIDs) != 0 {
+		t.Fatalf("tasks-done completion data = %v, want no blocking delegates", completion.TaskCompletion)
 	}
 
 	close(release)
@@ -1840,25 +1807,40 @@ func TestTaskListTool_UpdateIgnoresTerminalDelegates(t *testing.T) {
 			if updateRes.IsError {
 				t.Fatalf("update error: %s", updateRes.Output)
 			}
-			if strings.Contains(updateRes.Output, fixture.delegateID) {
-				t.Fatalf("terminal delegate should not appear in task acknowledgement: %s", updateRes.Output)
+			assertTaskListDone(t, root)
+			if got := root.delegateController.blockingDelegateIDs(root.delegateRootSessionID, root.owningDelegateID); len(got) != 0 {
+				t.Fatalf("live blocking delegate IDs = %v, want none", got)
 			}
-
-			root.mu.Lock()
-			queue := make([]string, 0, len(root.steeringQueue))
-			for _, message := range root.steeringQueue {
-				queue = append(queue, message.Text)
-			}
-			root.mu.Unlock()
-			if len(queue) == 0 {
-				t.Fatal("expected completion steering after terminal delegate")
-			}
-			last := queue[len(queue)-1]
-			if strings.Contains(last, fixture.delegateID) || !strings.Contains(last, "completed all tasks") {
-				t.Fatalf("terminal delegate should keep generic completion reminder: %s", last)
+			completion := singleTaskCompletionData(t, root)
+			if completion.TaskCompletion == nil || len(completion.TaskCompletion.BlockingDelegateIDs) != 0 {
+				t.Fatalf("tasks-done completion data = %v, want no blocking delegates", completion.TaskCompletion)
 			}
 		})
 	}
+}
+
+func assertTaskListDone(t *testing.T, sess *Session) {
+	t.Helper()
+	tasks := sess.getOrCreateTaskStore().View()
+	if len(tasks) != 1 || tasks[0].Status != taskpkg.TaskDone {
+		t.Fatalf("task list = %v, want one done task", tasks)
+	}
+}
+
+func singleTaskCompletionData(t *testing.T, sess *Session) events.SteeringInjectedData {
+	t.Helper()
+	sess.mu.Lock()
+	defer sess.mu.Unlock()
+	var matches []steeringMessage
+	for _, message := range sess.steeringQueue {
+		if message.Kind == events.SteeringKindTasksDone {
+			matches = append(matches, message)
+		}
+	}
+	if len(matches) != 1 {
+		t.Fatalf("tasks-done steering count = %d, want 1", len(matches))
+	}
+	return steeringInjectedDataFromMessage(matches[0])
 }
 
 func TestTaskListTool_UpdateStaysMinimalWhenBlocked(t *testing.T) {

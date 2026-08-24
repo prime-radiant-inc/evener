@@ -31,9 +31,10 @@ type toolDeps struct {
 	emit func(kind events.EventKind, data events.EventData)
 
 	// steering queue access for the communicate handler.
-	steer           func(msg, kind string)
-	drainSteering   func() []steeringMessage
-	prependSteering func(entries []steeringMessage)
+	steer               func(msg, kind string)
+	steerTaskCompletion func(msg string, blockingDelegateIDs []string)
+	drainSteering       func() []steeringMessage
+	prependSteering     func(entries []steeringMessage)
 
 	// abort returns a non-nil error when the session is closing (= Session.abortIfClosing).
 	abort func(ctx context.Context) error
@@ -186,13 +187,14 @@ type webDeps struct {
 // unchanged. Built once in registerCoreTools.
 func newToolDeps(s *Session) *toolDeps {
 	return &toolDeps{
-		registerTool:    s.cfg.testOnly.registerTool,
-		emit:            s.emit,
-		steer:           s.SteerKind,
-		drainSteering:   s.drainSteeringForCommunicate,
-		prependSteering: s.prependSteering,
-		abort:           s.abortIfClosing,
-		resultToolName:  s.resultToolName,
+		registerTool:        s.cfg.testOnly.registerTool,
+		emit:                s.emit,
+		steer:               s.SteerKind,
+		steerTaskCompletion: s.SteerTaskCompletion,
+		drainSteering:       s.drainSteeringForCommunicate,
+		prependSteering:     s.prependSteering,
+		abort:               s.abortIfClosing,
+		resultToolName:      s.resultToolName,
 		cmdTimeouts: func() (int, int) {
 			return s.cfg.DefaultCommandTimeoutMS, s.cfg.MaxCommandTimeoutMS
 		},

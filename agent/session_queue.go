@@ -93,6 +93,9 @@ type steeringMessage struct {
 	// the caller did not say. Surfaced on SteeringInjectedData and persisted on
 	// the turn so reload labels a steer the way the live path did.
 	Kind string `json:"kind,omitempty"`
+	// TaskCompletion carries typed dependency state for tasks-done steering so
+	// consumers do not need to parse the system-reminder prose.
+	TaskCompletion *events.TaskCompletionSteeringData `json:"task_completion,omitempty"`
 }
 
 func steeringInjectedDataFromMessage(msg steeringMessage) events.SteeringInjectedData {
@@ -103,6 +106,16 @@ func steeringInjectedDataFromMessage(msg steeringMessage) events.SteeringInjecte
 		StableTurnID:     msg.StableTurnID,
 		Source:           msg.Source,
 		Kind:             msg.Kind,
+		TaskCompletion:   cloneTaskCompletionSteeringData(msg.TaskCompletion),
+	}
+}
+
+func cloneTaskCompletionSteeringData(data *events.TaskCompletionSteeringData) *events.TaskCompletionSteeringData {
+	if data == nil {
+		return nil
+	}
+	return &events.TaskCompletionSteeringData{
+		BlockingDelegateIDs: append([]string(nil), data.BlockingDelegateIDs...),
 	}
 }
 
@@ -117,6 +130,18 @@ func (s *Session) Steer(msg string) {
 // the kind is what a reader's label is built from, and only the site knows it.
 func (s *Session) SteerKind(msg, kind string) {
 	_ = s.trySteerEnqueue(msg, nil, nil, "", kind)
+}
+
+// SteerTaskCompletion queues tasks-done steering with its blocking delegate
+// dependencies available as typed data as well as rendered model context.
+func (s *Session) SteerTaskCompletion(msg string, blockingDelegateIDs []string) {
+	_ = s.trySteerMessage(steeringMessage{
+		Text: msg,
+		Kind: events.SteeringKindTasksDone,
+		TaskCompletion: &events.TaskCompletionSteeringData{
+			BlockingDelegateIDs: append([]string(nil), blockingDelegateIDs...),
+		},
+	})
 }
 
 // routeSystemNotification delivers a daemon-authored system notification to
@@ -250,24 +275,28 @@ func (s *Session) trySteerWithImagesAndProvenance(msg string, images []ImageAtta
 // for human-sent steering, "" for daemon/system steering). kind names what the
 // daemon injected (events.SteeringKind*), "" when the caller did not say.
 func (s *Session) trySteerEnqueue(msg string, images []ImageAttachment, p *provenance.Causal, source string, kind string) bool {
+	entry := steeringMessage{Text: msg, Provenance: provenance.Clone(p), Source: source, Kind: kind}
+	if len(images) > 0 {
+		entry.Images = append([]ImageAttachment(nil), images...)
+	}
+	return s.trySteerMessage(entry)
+}
+
+func (s *Session) trySteerMessage(entry steeringMessage) bool {
 	s.mu.Lock()
 	if s.closingOrClosedLocked() {
 		s.mu.Unlock()
 		return false
 	}
-	if strings.TrimSpace(msg) == "" && len(images) == 0 {
+	if strings.TrimSpace(entry.Text) == "" && len(entry.Images) == 0 {
 		s.mu.Unlock()
 		return false
-	}
-	entry := steeringMessage{Text: msg, Provenance: provenance.Clone(p), Source: source, Kind: kind}
-	if len(images) > 0 {
-		entry.Images = append([]ImageAttachment(nil), images...)
 	}
 	s.steeringQueue = append(s.steeringQueue, entry)
 	s.mu.Unlock()
 	// Client-authored steering is persisted by the mutation store. The legacy
 	// snapshot has one remaining authority: daemon-authored steering.
-	if source != events.SteeringSourceUser {
+	if entry.Source != events.SteeringSourceUser {
 		s.persistQueuesSnapshot()
 	}
 	return true
