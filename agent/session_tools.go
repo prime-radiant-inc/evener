@@ -297,12 +297,12 @@ func (s *Session) describeImage(ctx context.Context, r tool.ExecResult) string {
 // side-channel accounting for the model-facing steering message. The accounting
 // is emitted only after a non-empty response succeeds, so failures cannot claim
 // successful usage or latency.
-func (s *Session) describeImageSteering(ctx context.Context, r tool.ExecResult) string {
+func (s *Session) describeImageSteering(ctx context.Context, r tool.ExecResult) (string, visionSideChannelResult) {
 	result := s.describeImageCall(ctx, r)
 	if result.description == "" {
-		return ""
+		return "", result
 	}
-	return result.description + "\n" + formatVisionSideChannelSignal(result)
+	return result.description + "\n" + formatVisionSideChannelSignal(result), result
 }
 
 func formatVisionSideChannelSignal(result visionSideChannelResult) string {
@@ -428,9 +428,7 @@ func (s *Session) describeImageCall(ctx context.Context, r tool.ExecResult) visi
 	start := s.sclock().Now()
 	resp, err := s.client.Complete(visionCtx, req)
 	elapsed := s.sclock().Now().Sub(start)
-	if elapsed < 0 {
-		elapsed = 0
-	}
+	elapsed = max(elapsed, 0)
 	if err != nil {
 		s.emit(events.EventWarning, events.WarningData{Message: fmt.Sprintf("vision side-channel failed: %v", err)})
 		return visionSideChannelResult{}

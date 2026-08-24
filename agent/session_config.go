@@ -264,6 +264,9 @@ type testConfig struct {
 	// visionSideChannelTimeout overrides the production vision timeout only for
 	// deterministic package tests. Zero preserves the production timeout.
 	visionSideChannelTimeout time.Duration
+	// visionSteeringDelivered observes the structured side-channel result only
+	// after its corresponding steering message has been queued.
+	visionSteeringDelivered func(visionSideChannelResult)
 
 	// sessionInitFault injects deterministic failures at external initialization
 	// boundaries. Nil preserves the production implementation.
