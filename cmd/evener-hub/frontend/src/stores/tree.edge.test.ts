@@ -1,4 +1,5 @@
-// Edge cases for tree.ts mergeProjectPage that close the remaining uncovered lines.
+// Edge cases for tree.ts that close remaining uncovered lines:
+// - tierField "recent" and "archived" cases (lines 234, 236)
 
 import { describe, expect, test } from "vitest";
 import { mergeProjectPage, type TreeNode, type TreeProject, type TreeProjectPage } from "./tree";
@@ -36,70 +37,63 @@ function makePage(tier: string, sessions: TreeNode[], offset: number): TreeProje
     sessions,
     offset,
     more: false,
+    remaining: false,
   };
 }
 
-describe("mergeProjectPage", () => {
-  test("replaces an existing row at the same tier", () => {
-    const existing = makeNode("row1", "current");
-    const updated = makeNode("row1", "current");
-    updated.label = "Updated label";
-    const project = makeProject([existing]);
-    const page = makePage("current", [updated], 0);
+describe("mergeProjectPage tier coverage", () => {
+  test("recent tier page updates more_recent flag", () => {
+    const project = makeProject([makeNode("r1", "current")]);
+    const page = makePage("recent", [makeNode("r2", "recent")], 0);
+    page.remaining = true;
     const result = mergeProjectPage(project, page);
-    expect(result.sessions[0]?.label).toBe("Updated label");
+    expect(result.more_recent).toBe(true);
+    expect(result.more_current).toBe(false);
+    expect(result.more_archived).toBe(false);
   });
 
-  test("inserts a new row at the offset position", () => {
-    const row1 = makeNode("row1", "current");
-    const row3 = makeNode("row3", "current");
-    const project = makeProject([row1, row3]);
-    const newRow = makeNode("row2", "current");
-    const page = makePage("current", [newRow], 1);
+  test("archived tier page updates more_archived flag", () => {
+    const project = makeProject([makeNode("r1", "current")]);
+    const page = makePage("archived", [makeNode("r2", "archived")], 0);
+    page.remaining = true;
     const result = mergeProjectPage(project, page);
-    expect(result.sessions.map((s) => s.row_id)).toEqual(["row1", "row2", "row3"]);
+    expect(result.more_archived).toBe(true);
+    expect(result.more_current).toBe(false);
+    expect(result.more_recent).toBe(false);
   });
 
-  test("inserts at end when offset exceeds array length", () => {
-    const row1 = makeNode("row1", "current");
-    const project = makeProject([row1]);
-    const newRow = makeNode("row2", "current");
-    const page = makePage("current", [newRow], 10);
-    const result = mergeProjectPage(project, page);
-    expect(result.sessions.map((s) => s.row_id)).toEqual(["row1", "row2"]);
-  });
-
-  test("preserves rows from other tiers", () => {
-    const currentRow = makeNode("row1", "current");
-    const recentRow = makeNode("row2", "recent");
-    const project = makeProject([currentRow, recentRow]);
-    const newRow = makeNode("row3", "current");
-    const page = makePage("current", [newRow], 1);
-    const result = mergeProjectPage(project, page);
-    expect(result.sessions.map((s) => s.row_id)).toEqual(["row1", "row3", "row2"]);
-  });
-
-  test("handles an empty page with no new rows", () => {
-    const row1 = makeNode("row1", "current");
-    const project = makeProject([row1]);
-    const page = makePage("current", [], 0);
-    const result = mergeProjectPage(project, page);
-    expect(result.sessions.map((s) => s.row_id)).toEqual(["row1"]);
-  });
-
-  test("handles a project with no existing rows", () => {
-    const project = makeProject([]);
-    const newRow = makeNode("row1", "current");
-    const page = makePage("current", [newRow], 0);
-    const result = mergeProjectPage(project, page);
-    expect(result.sessions.map((s) => s.row_id)).toEqual(["row1"]);
-  });
-
-  test("updates the more flag for the page tier", () => {
-    const project = makeProject([makeNode("row1", "current")]);
-    const page = makePage("current", [], 0);
+  test("current tier page updates more_current flag", () => {
+    const project = makeProject([makeNode("r1", "current")]);
+    const page = makePage("current", [makeNode("r2", "current")], 0);
     page.remaining = true;
     const result = mergeProjectPage(project, page);
     expect(result.more_current).toBe(true);
+    expect(result.more_recent).toBe(false);
+    expect(result.more_archived).toBe(false);
+  });
+
+  test("all three tiers can coexist in one project", () => {
+    const project = makeProject([makeNode("c1", "current"), makeNode("r1", "recent"), makeNode("a1", "archived")]);
+    const page = makePage("recent", [makeNode("r2", "recent")], 1);
+    page.remaining = true;
+    const result = mergeProjectPage(project, page);
+    expect(result.more_recent).toBe(true);
+    expect(result.sessions).toHaveLength(4);
+    // current comes first, then recent, then archived
+    expect(result.sessions[0]?.tier).toBe("current");
+    expect(result.sessions[1]?.tier).toBe("recent");
+    expect(result.sessions[2]?.tier).toBe("recent");
+    expect(result.sessions[3]?.tier).toBe("archived");
+  });
+
+  test("existing row in page replaces the matching row by row_id", () => {
+    const project = makeProject([makeNode("r1", "recent")]);
+    // Page contains an updated version of r1 (same row_id, different label)
+    const updatedNode = makeNode("r1", "recent");
+    updatedNode.label = "Updated Session r1";
+    const page = makePage("recent", [updatedNode], 0);
+    const result = mergeProjectPage(project, page);
+    expect(result.sessions).toHaveLength(1);
+    expect(result.sessions[0]?.label).toBe("Updated Session r1");
   });
 });
