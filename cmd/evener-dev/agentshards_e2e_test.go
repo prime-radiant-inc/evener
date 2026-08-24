@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"slices"
 	"strings"
 	"syscall"
@@ -100,6 +101,45 @@ func TestAgentShardsGreenRunSurveysPassesAndCleansUp(t *testing.T) {
 	}
 	if !strings.Contains(stdout2.String(), "PASS  agent:1") {
 		t.Fatalf("cached rerun did not pass:\n%s", &stdout2)
+	}
+}
+
+// TestAgentShardsRunFileHoldsRegex verifies that the -test.run regex for
+// each shard is written to a file (shardN.run) and handed via
+// EVENER_SHARD_RUN_FILE, not passed on the execve argument list. A
+// failing run retains the scratch dir, so we can inspect the files.
+func TestAgentShardsRunFileHoldsRegex(t *testing.T) {
+	cfg, stdout, _, tmp := e2eConfig(t)
+	cfg.noSurvey = true
+	t.Setenv("SHARD_FIXTURE_FAIL", "beta")
+
+	_ = runShards(cfg) // fails, retaining scratch
+
+	out := stdout.String()
+	if !strings.Contains(out, "FAIL  agent:") {
+		t.Fatalf("expected a failing shard:\n%s", out)
+	}
+	runFiles, err := filepath.Glob(filepath.Join(tmp, "agent-test-shards.*", "shard*.run"))
+	if err != nil || len(runFiles) != 2 {
+		t.Fatalf("expected 2 shard .run files, got %v: %v", runFiles, err)
+	}
+	for _, rf := range runFiles {
+		data, err := os.ReadFile(rf)
+		if err != nil {
+			t.Fatalf("reading %s: %v", rf, err)
+		}
+		pattern := strings.TrimSpace(string(data))
+		if !strings.HasPrefix(pattern, "^(") || !strings.HasSuffix(pattern, ")$") {
+			t.Fatalf("run file %s does not look like an anchored regex: %q", rf, pattern)
+		}
+		// The fixture has few tests; each pattern must match at least one.
+		re, err := regexp.Compile(pattern)
+		if err != nil {
+			t.Fatalf("run file %s regex does not compile: %v", rf, err)
+		}
+		if !re.MatchString("TestFixtureAlpha") && !re.MatchString("TestFixtureBeta") {
+			t.Fatalf("run file %s matches neither fixture test: %q", rf, pattern)
+		}
 	}
 }
 
