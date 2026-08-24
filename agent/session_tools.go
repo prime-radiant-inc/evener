@@ -369,9 +369,16 @@ func visionPromptForPurpose(purpose string) string {
 		purpose = "Describe what you see in this image in thorough detail."
 	}
 	if requestsLiteralTranscription(purpose) {
-		return purpose + "\n\nFor this exact-transcription request, preserve every visible character exactly as rendered, including case, punctuation, spacing, repeated characters, and symbols. Do not correct, normalize, interpret, or replace uncertain characters with plausible words. If a glyph is unclear, mark it as uncertain instead of guessing."
+		return purpose + "\n\nFor this exact-transcription request, preserve every visible character exactly as rendered, including case, punctuation, spacing, repeated characters, and symbols. Do not correct, normalize, interpret, or replace uncertain characters with plausible words. If a glyph is unclear, mark it as uncertain instead of guessing.\n\n" + tool.FormatVisionExactnessContract(tool.VisionRequestedModeExactTranscription)
 	}
 	return purpose + "\n\nBe thorough — the reader cannot see the image and will rely entirely on your description."
+}
+
+func visionRequestedModeForPurpose(purpose string) string {
+	if requestsLiteralTranscription(purpose) {
+		return tool.VisionRequestedModeExactTranscription
+	}
+	return tool.VisionRequestedModeDescription
 }
 
 func requestsLiteralTranscription(purpose string) bool {

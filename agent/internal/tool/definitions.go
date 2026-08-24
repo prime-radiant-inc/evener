@@ -9,7 +9,7 @@ import (
 func DefReadFile() llm.ToolDefinition {
 	return llm.ToolDefinition{
 		Name:        "read_file",
-		Description: "Read a file from the filesystem. Returns line-numbered content for text files. For image files (PNG, JPEG, GIF, WebP, BMP), returns the image for visual inspection. For PDF files, returns the document for content analysis. When reading an image or PDF, describe what you hope to learn — the system will provide a detailed description alongside the file. IMPORTANT: image/PDF descriptions are model-generated and are not byte-exact OCR. A model may omit, misread, or silently normalize rendered text even when asked to transcribe it. Do not use this output for exact-match or byte-exact transcription; use a real OCR tool or inspect the source instead.",
+		Description: "Read a file from the filesystem. Returns line-numbered content for text files. For image files (PNG, JPEG, GIF, WebP, BMP), returns the image for visual inspection. For PDF files, returns the document for content analysis. When reading an image or PDF, describe what you hope to learn — the system will provide a detailed description alongside the file. IMPORTANT: image/PDF descriptions are model-generated and are not byte-exact OCR. A model may omit, misread, or silently normalize rendered text even when asked to transcribe it. Do not use this output for exact-match or byte-exact transcription; use a real OCR tool or inspect the source instead.\n\n" + FormatVisionExactnessContract(VisionRequestedModePurposeDependent),
 		Parameters: map[string]any{
 			"type":                 "object",
 			"additionalProperties": false,
