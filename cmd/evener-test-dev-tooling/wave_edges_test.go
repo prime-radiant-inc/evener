@@ -66,17 +66,22 @@ func TestRunSuiteCreateLogFail(t *testing.T) {
 // TestRunWaveNonSyscallSignal covers the path where a non-syscall signal is
 // received by the wave's signal handler (line 86-87).
 func TestRunWaveNonSyscallSignal(t *testing.T) {
-	// We need to create a real suite script that runs long enough for us
-	// to send a signal. But to keep it simple, we'll use a missing script
-	// (which fails fast) and send a non-syscall signal.
+	// Use a real script that sleeps long enough for the signal handler
+	// goroutine to process the pre-sent signal before the suite exits.
+	// A nonexistent script fails instantly via fork/exec, racing the
+	// signal handler and making the exit code nondeterministic.
 	dir := t.TempDir()
+	script := filepath.Join(dir, "sleeping-selftest.sh")
+	if err := os.WriteFile(script, []byte("#!/bin/sh\nsleep 30\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
 	signals := make(chan os.Signal, 1)
 	var out bytes.Buffer
 	// Send a non-syscall signal before the wave starts
 	signals <- fakeWaveSignal{}
 	code := runWave(waveConfig{
 		ScriptsDir: dir,
-		Suites:     []string{"nonexistent"},
+		Suites:     []string{"sleeping"},
 		KillGrace:  time.Second,
 		Out:        &out,
 		Signals:    signals,
