@@ -1303,15 +1303,14 @@ func modelFallbackEligible(err error, policy llm.RetryPolicy) bool {
 // retryLoopDeclined reports whether the retry chain refused to retry err at all
 // because the server asked for a longer wait than the backoff cap allows.
 //
-// unified-llm-spec.md: "If Retry-After exceeds max_delay, do NOT retry. Raise
-// the error immediately with retry_after set on the exception. This prevents
-// silently waiting minutes for a rate limit to clear." The error therefore
-// reaches the fallback chain still classified Retryable but with zero retries
-// spent — retrying the same model is precisely what was just refused, so the
-// next model is the only route left. Mirrors llm.retryDelay's own condition; if
-// the two ever disagree, an error would be declined by one layer and ignored by
-// the other, which is the dead zone this closes.
+// Attempt-counted policies retain the unified-llm-spec refusal for a long
+// Retry-After. Wall-budgeted rate limits deliberately honor the provider's
+// longer wait in llm.retry_util, so they must not be redirected to a fallback
+// immediately by this helper.
 func retryLoopDeclined(err error, policy llm.RetryPolicy) bool {
+	if policy.WallBudgetedRateLimit(err) {
+		return false
+	}
 	if policy.MaxDelay <= 0 {
 		return false
 	}
