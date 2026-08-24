@@ -43,7 +43,6 @@ func newTaskToolHarness(t *testing.T, inputs []taskpkg.TaskInput) *taskToolHarne
 		taskGuard: taskGuard{
 			getOrCreateTaskStore: func() *taskpkg.TaskStore { return h.store },
 			markUsed:             func() {},
-			setReasoningEffort:   func(string) {},
 		},
 	}
 	h.reg = tool.NewRegistry()

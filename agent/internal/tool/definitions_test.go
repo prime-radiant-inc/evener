@@ -387,6 +387,21 @@ func TestDefTaskListDescriptionStatesInProgressInvariant(t *testing.T) {
 	}
 }
 
+func TestDefTaskListEffortEnumIncludesInherit(t *testing.T) {
+	def := DefTaskList([]string{"low", "medium", "high"})
+	tasks := def.Parameters["properties"].(map[string]any)["tasks"].(map[string]any)
+	item := tasks["items"].(map[string]any)
+	schema := item["properties"].(map[string]any)["reasoning_effort"].(map[string]any)
+	enum, ok := schema["enum"].([]string)
+	if !ok {
+		t.Fatalf("reasoning_effort enum missing: %#v", schema)
+	}
+	want := []string{"low", "medium", "high", "inherit"}
+	if !reflect.DeepEqual(enum, want) {
+		t.Fatalf("reasoning_effort enum = %v, want %v", enum, want)
+	}
+}
+
 func TestDefUpdateGoalShape(t *testing.T) {
 	def := DefUpdateGoal()
 	if def.Name != "update_goal" {
