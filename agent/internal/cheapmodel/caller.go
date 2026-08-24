@@ -21,6 +21,9 @@ type probeCall struct {
 	ready   chan struct{}
 	err     error
 	refused bool
+	// fallbacks counts callers that joined this flight and have not yet
+	// settled their cheap-to-session resolution.
+	fallbacks int
 }
 
 // Caller executes cheap-model requests for one session.
@@ -127,8 +130,9 @@ func (c *Caller) complete(ctx context.Context, profile *provider.Profile, cheap 
 // requests are never shared: callers need their own response and error. Only a
 // model refusal is shared, because that result is a route property and is safe
 // to reuse for different auxiliary prompts. A refusal call stays registered
-// until its fallback succeeds or fails so a caller arriving during the fallback
-// cannot send a second cheap probe.
+// until its first fallback succeeds or every fallback participant settles
+// without success, so a caller arriving during the fallback wave cannot send a
+// second cheap probe.
 func (c *Caller) probe(ctx context.Context, r route, req llm.Request) (llm.Response, *probeCall, bool, error) {
 	c.mu.Lock()
 	if _, refused := c.refused[r]; refused {
@@ -137,23 +141,30 @@ func (c *Caller) probe(ctx context.Context, r route, req llm.Request) (llm.Respo
 	}
 	call, waiting := c.probes[r]
 	if !waiting {
-		call = &probeCall{ready: make(chan struct{})}
+		call = &probeCall{ready: make(chan struct{}), fallbacks: 1}
 		c.probes[r] = call
+	} else {
+		call.fallbacks++
 	}
 	c.mu.Unlock()
 
 	if waiting {
 		if err := ctx.Err(); err != nil {
+			c.releaseProbeWaiter(r, call)
 			return llm.Response{}, nil, false, err
 		}
 		select {
 		case <-call.ready:
 			if err := ctx.Err(); err != nil {
+				c.releaseProbeWaiter(r, call)
 				return llm.Response{}, nil, false, err
 			}
 			c.mu.Lock()
 			refused := call.refused
 			callErr := call.err
+			if !refused {
+				c.releaseProbeWaiterLocked(r, call)
+			}
 			c.mu.Unlock()
 			if refused {
 				return llm.Response{}, call, false, callErr
@@ -164,6 +175,7 @@ func (c *Caller) probe(ctx context.Context, r route, req llm.Request) (llm.Respo
 			resp, err := c.client.Complete(ctx, req)
 			return resp, nil, false, err
 		case <-ctx.Done():
+			c.releaseProbeWaiter(r, call)
 			return llm.Response{}, nil, false, ctx.Err()
 		}
 	}
@@ -184,15 +196,39 @@ func (c *Caller) probe(ctx context.Context, r route, req llm.Request) (llm.Respo
 	return resp, nil, false, err
 }
 
-func (c *Caller) finishProbe(r route, call *probeCall, succeeded bool) {
+func (c *Caller) releaseProbeWaiter(r route, call *probeCall) {
 	c.mu.Lock()
-	if succeeded {
-		c.refused[r] = struct{}{}
+	defer c.mu.Unlock()
+	c.releaseProbeWaiterLocked(r, call)
+}
+
+func (c *Caller) releaseProbeWaiterLocked(r route, call *probeCall) {
+	if c.probes[r] != call {
+		return
 	}
-	if call != nil && c.probes[r] == call {
+	call.fallbacks--
+	if call.fallbacks == 0 {
 		delete(c.probes, r)
 	}
-	c.mu.Unlock()
+}
+
+func (c *Caller) finishProbe(r route, call *probeCall, succeeded bool) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if succeeded {
+		c.refused[r] = struct{}{}
+		if call != nil && c.probes[r] == call {
+			delete(c.probes, r)
+		}
+		return
+	}
+	if call != nil && c.probes[r] == call {
+		call.fallbacks--
+		if call.fallbacks != 0 {
+			return
+		}
+		delete(c.probes, r)
+	}
 }
 
 func sessionModel(profile *provider.Profile) route {

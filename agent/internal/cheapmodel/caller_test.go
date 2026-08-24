@@ -569,6 +569,94 @@ func TestCallerRetriesAfterCanceledProbe(t *testing.T) {
 	}
 }
 
+func TestCallerKeepsRefusalFlightUntilAllFallbacksSettle(t *testing.T) {
+	cheapStarted := make(chan struct{})
+	releaseCheap := make(chan struct{})
+	leaderFallbackStarted := make(chan struct{})
+	siblingFallbackStarted := make(chan struct{})
+	thirdFallbackStarted := make(chan struct{})
+	releaseFallbacks := make(chan struct{})
+	var cheapOnce sync.Once
+	var leaderOnce sync.Once
+	var siblingOnce sync.Once
+	var thirdOnce sync.Once
+	var cheapCalls atomic.Int32
+	adapter := &contextTrackingAdapter{Provider: "openai"}
+	adapter.Respond = func(ctx context.Context, req llm.Request) (llm.Response, error) {
+		if req.Model == "gpt-4.1-nano" {
+			cheapCalls.Add(1)
+			cheapOnce.Do(func() { close(cheapStarted) })
+			select {
+			case <-releaseCheap:
+				return llm.Response{}, refusal(400, "The provided model identifier is invalid.")("openai", req.Model)
+			case <-ctx.Done():
+				return llm.Response{}, ctx.Err()
+			}
+		}
+		switch req.Messages[0].Text() {
+		case "leader":
+			leaderOnce.Do(func() { close(leaderFallbackStarted) })
+			<-ctx.Done()
+			return llm.Response{}, ctx.Err()
+		case "sibling":
+			siblingOnce.Do(func() { close(siblingFallbackStarted) })
+			<-releaseFallbacks
+			return llm.Response{Message: llm.Assistant("sibling answered")}, nil
+		case "third":
+			thirdOnce.Do(func() { close(thirdFallbackStarted) })
+			<-releaseFallbacks
+			return llm.Response{Message: llm.Assistant("third answered")}, nil
+		default:
+			return llm.Response{}, fmt.Errorf("unexpected prompt %q", req.Messages[0].Text())
+		}
+	}
+	caller := cheapmodel.New(clientWith(adapter))
+	profile := provider.NewOpenAIProfile("main")
+
+	leaderCtx, cancelLeader := context.WithCancel(context.Background())
+	leaderDone := make(chan error, 1)
+	go func() {
+		_, err := caller.Complete(leaderCtx, profile, llm.Request{Messages: []llm.Message{llm.User("leader")}})
+		leaderDone <- err
+	}()
+	<-cheapStarted
+	close(releaseCheap)
+	<-leaderFallbackStarted
+
+	siblingDone := make(chan error, 1)
+	go func() {
+		_, err := caller.Complete(context.Background(), profile, llm.Request{Messages: []llm.Message{llm.User("sibling")}})
+		siblingDone <- err
+	}()
+	<-siblingFallbackStarted
+
+	cancelLeader()
+	if err := <-leaderDone; !errors.Is(err, context.Canceled) {
+		t.Fatalf("leader error = %v, want context.Canceled", err)
+	}
+
+	thirdDone := make(chan error, 1)
+	go func() {
+		_, err := caller.Complete(context.Background(), profile, llm.Request{Messages: []llm.Message{llm.User("third")}})
+		thirdDone <- err
+	}()
+	<-thirdFallbackStarted
+	if got := cheapCalls.Load(); got != 1 {
+		t.Fatalf("cheap probe calls = %d, want one while sibling fallback remains active; models = %v", got, adapter.Models())
+	}
+
+	close(releaseFallbacks)
+	if err := <-siblingDone; err != nil {
+		t.Fatalf("sibling error = %v, want success", err)
+	}
+	if err := <-thirdDone; err != nil {
+		t.Fatalf("third error = %v, want success", err)
+	}
+	if got, want := adapter.Models(), []string{"gpt-4.1-nano", "main", "main", "main"}; !slices.Equal(got, want) {
+		t.Fatalf("models = %v, want one cheap probe and three fallbacks", got)
+	}
+}
+
 func TestCallerRetriesAfterFallbackFailure(t *testing.T) {
 	var fallbackCalls atomic.Int32
 	adapter := &contextTrackingAdapter{Provider: "openai"}
