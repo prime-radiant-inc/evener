@@ -357,18 +357,11 @@ func TestPinSectionStoreRenameCaseFoldSameKeyReturnsUnchanged(t *testing.T) {
 	if err != nil {
 		t.Fatalf("case-fold same key rename should succeed: %v", err)
 	}
-	if changed {
-		// The display name changed but the key is the same. The code
-		// checks section.Name == display, which is "Research" != "research",
-		// so it should proceed with the rename. Let me re-read the code...
-		// Actually section.Name == display checks the EXACT display, not
-		// the key. So "research" != "Research" and the rename proceeds.
-		// The sectionIDByKeyTx lookup finds the same section (same key),
-		// and since otherID == sectionID, it doesn't conflict. Then it
-		// updates the name. So changed should be true.
-		if renamed.Name != "research" {
-			t.Fatalf("expected name 'research', got %q", renamed.Name)
-		}
+	if !changed {
+		t.Fatal("expected changed=true for case-only rename")
+	}
+	if renamed.Name != "research" {
+		t.Fatalf("expected name 'research', got %q", renamed.Name)
 	}
 }
 
