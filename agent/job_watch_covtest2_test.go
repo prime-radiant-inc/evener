@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -487,22 +488,25 @@ func TestCovLiveWatchSummaries(t *testing.T) {
 		t.Fatalf("no watches should yield empty, got %d", len(entries))
 	}
 
-	// Install two watches.
-	installWatchBelowValidation(t, jm, watchArgs{
-		Target: "job_a",
-		Events: []string{"communicate"},
-	})
-	installWatchBelowValidation(t, jm, watchArgs{
-		Target: "job_b",
-		Events: []string{"communicate"},
-	})
-	entries = jm.liveWatchSummaries()
-	if len(entries) != 2 {
-		t.Fatalf("want 2 entries, got %d", len(entries))
+	createdA := time.Date(2026, 8, 24, 10, 0, 0, 0, time.UTC)
+	createdB := createdA.Add(time.Second)
+	jm.mu.Lock()
+	jm.watches[watchKey{VisibleSessionID: jm.sessionID, Target: "job_b"}] = &watchConfig{
+		id: "watch_b", target: "job_b", sourcePublic: "job_b", progressIntervalMS: 5000,
+		deliveries: 2, createdAt: createdB,
 	}
-	// Entries should be sorted by Source.
-	if entries[0].Source > entries[1].Source {
-		t.Fatalf("entries not sorted: %q > %q", entries[0].Source, entries[1].Source)
+	jm.watches[watchKey{VisibleSessionID: jm.sessionID, Target: "job_a"}] = &watchConfig{
+		id: "watch_a", target: "job_a", sourcePublic: "job_a", outputMatch: "READY",
+		deliveries: 1, createdAt: createdA,
+	}
+	jm.mu.Unlock()
+	entries = jm.liveWatchSummaries()
+	want := []watchListEntry{
+		{ID: "watch_a", Source: "job_a", Condition: "output_match: READY", Deliveries: 1, CreatedAt: createdA.Format(time.RFC3339Nano)},
+		{ID: "watch_b", Source: "job_b", Condition: "progress_interval_ms: 5000", Deliveries: 2, CreatedAt: createdB.Format(time.RFC3339Nano)},
+	}
+	if !reflect.DeepEqual(entries, want) {
+		t.Fatalf("live summaries = %+v, want %+v", entries, want)
 	}
 
 	// A receiver-scoped watch (not visible to this session) should be excluded.
@@ -522,8 +526,8 @@ func TestCovLiveWatchSummaries(t *testing.T) {
 	jm.mu.Unlock()
 
 	entries = jm.liveWatchSummaries()
-	if len(entries) != 2 {
-		t.Fatalf("receiver-scoped watch should be excluded, got %d", len(entries))
+	if !reflect.DeepEqual(entries, want) {
+		t.Fatalf("hidden receiver changed visible summaries: got %+v, want %+v", entries, want)
 	}
 }
 

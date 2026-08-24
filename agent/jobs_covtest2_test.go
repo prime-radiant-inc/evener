@@ -5,12 +5,14 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 
 	"github.com/santhosh-tekuri/jsonschema/v5"
 
 	"primeradiant.com/evener/agent/internal/jobstore"
+	"primeradiant.com/evener/agent/provenance"
 	"primeradiant.com/evener/identifier"
 )
 
@@ -328,66 +330,99 @@ func TestCovRearmTerminalNotificationDecision(t *testing.T) {
 // TestCovArmPendingTerminalNotifications covers armPendingTerminalNotifications
 // (jobs.go lines 2094-2155).
 func TestCovArmPendingTerminalNotifications(t *testing.T) {
-	jm := newTestJM(t)
-	var notifications []jobNotification
-	jm.enqueue = func(n jobNotification) { notifications = append(notifications, n) }
+	t.Run("not armed persists pending before enqueue", func(t *testing.T) {
+		jm := newTestJM(t)
+		var notifications []jobNotification
+		jm.enqueue = func(n jobNotification) { notifications = append(notifications, n) }
 
-	// No terminal jobs — no error.
-	if err := jm.armPendingTerminalNotifications(); err != nil {
-		t.Fatalf("no terminal jobs: %v", err)
-	}
-	if len(notifications) != 0 {
-		t.Fatalf("empty restore enqueued %d notifications", len(notifications))
-	}
+		startedAt := jm.now()
+		jobID := "job_" + jm.sessionID + "_notarmed"
+		if err := jm.appendEvent(jobstore.Event{Kind: jobstore.EventJobStarted, TS: startedAt, JobID: jobID, Type: jobstore.JobShell, OwnerSessionID: jm.sessionID, StartedAt: &startedAt}); err != nil {
+			t.Fatalf("append start: %v", err)
+		}
+		endedAt := jm.now()
+		exitCode := 0
+		if err := jm.appendEvent(jobstore.Event{Kind: jobstore.EventJobFinished, TS: endedAt, JobID: jobID, Status: jobstore.StatusCompleted, Reason: "done", ExitCode: &exitCode, EndedAt: &endedAt, TerminalGen: "gen_notarmed"}); err != nil {
+			t.Fatalf("append finish: %v", err)
+		}
+		before, err := jm.store.Load()
+		if err != nil {
+			t.Fatalf("load before restore: %v", err)
+		}
+		if before[jobID].NotifyState != jobstore.NotifyNotArmed {
+			t.Fatalf("precondition notify state = %q, want not armed", before[jobID].NotifyState)
+		}
+		realAppend := jm.appendEvent
+		pendingAppends := 0
+		jm.appendEvent = func(event jobstore.Event) error {
+			if event.Kind == jobstore.EventJobNotificationPending {
+				pendingAppends++
+			}
+			return realAppend(event)
+		}
 
-	// Create a terminal job with NotifyNotArmed state.
-	startedAt := jm.now()
-	jobID := "job_" + jm.sessionID + "_000000000000"
-	if err := jm.appendEvent(jobstore.Event{
-		Kind:           jobstore.EventJobStarted,
-		TS:             startedAt,
-		JobID:          jobID,
-		Type:           jobstore.JobShell,
-		OwnerSessionID: jm.sessionID,
-		StartedAt:      &startedAt,
-	}); err != nil {
-		t.Fatalf("appendEvent started: %v", err)
-	}
-	endedAt := jm.now()
-	exitCode := 0
-	if err := jm.appendEvent(jobstore.Event{
-		Kind:        jobstore.EventJobFinished,
-		TS:          endedAt,
-		JobID:       jobID,
-		Status:      jobstore.StatusCompleted,
-		Reason:      "done",
-		ExitCode:    &exitCode,
-		EndedAt:     &endedAt,
-		TerminalGen: "gen_1",
-	}); err != nil {
-		t.Fatalf("appendEvent finished: %v", err)
-	}
-	// Add notification pending event.
-	if err := jm.appendEvent(jobstore.Event{
-		Kind:        jobstore.EventJobNotificationPending,
-		TS:          endedAt,
-		JobID:       jobID,
-		TerminalGen: "gen_1",
-	}); err != nil {
-		t.Fatalf("appendEvent pending: %v", err)
-	}
+		if err := jm.armPendingTerminalNotifications(); err != nil {
+			t.Fatalf("armPendingTerminalNotifications: %v", err)
+		}
+		if pendingAppends != 1 {
+			t.Fatalf("pending transitions appended = %d, want 1", pendingAppends)
+		}
+		reloaded, err := jm.store.Load()
+		if err != nil {
+			t.Fatalf("reload after restore: %v", err)
+		}
+		gotRecord := reloaded[jobID]
+		if gotRecord.NotifyState != jobstore.NotifyPending || gotRecord.TerminalGen != "gen_notarmed" {
+			t.Fatalf("restored record = %+v, want pending generation gen_notarmed", gotRecord)
+		}
+		if len(notifications) != 1 {
+			t.Fatalf("restore enqueued %d notifications, want 1", len(notifications))
+		}
+		got := notifications[0]
+		if got.JobID != jobID || got.JobType != string(jobstore.JobShell) || got.Status != string(jobstore.StatusCompleted) || got.Reason != "done" || got.ExitCode == nil || *got.ExitCode != 0 {
+			t.Fatalf("restored notification = %+v, want completed shell %s", got, jobID)
+		}
+	})
 
-	// Restore should re-enqueue the exact still-pending terminal notification.
-	if err := jm.armPendingTerminalNotifications(); err != nil {
-		t.Fatalf("armPendingTerminalNotifications: %v", err)
-	}
-	if len(notifications) != 1 {
-		t.Fatalf("restore enqueued %d notifications, want 1", len(notifications))
-	}
-	got := notifications[0]
-	if got.JobID != jobID || got.JobType != string(jobstore.JobShell) || got.Status != string(jobstore.StatusCompleted) || got.Reason != "done" || got.ExitCode == nil || *got.ExitCode != 0 {
-		t.Fatalf("restored notification = %+v, want completed shell %s", got, jobID)
-	}
+	t.Run("already pending re-enqueues without duplicate transition", func(t *testing.T) {
+		jm := newTestJM(t)
+		var notifications []jobNotification
+		jm.enqueue = func(n jobNotification) { notifications = append(notifications, n) }
+		startedAt := jm.now()
+		jobID := "job_" + jm.sessionID + "_pending"
+		if err := jm.appendEvent(jobstore.Event{Kind: jobstore.EventJobStarted, TS: startedAt, JobID: jobID, Type: jobstore.JobShell, OwnerSessionID: jm.sessionID, StartedAt: &startedAt}); err != nil {
+			t.Fatalf("append start: %v", err)
+		}
+		endedAt := jm.now()
+		exitCode := 7
+		if err := jm.appendEvent(jobstore.Event{Kind: jobstore.EventJobFinished, TS: endedAt, JobID: jobID, Status: jobstore.StatusFailed, Reason: "boom", ExitCode: &exitCode, EndedAt: &endedAt, TerminalGen: "gen_pending"}); err != nil {
+			t.Fatalf("append finish: %v", err)
+		}
+		if err := jm.appendEvent(jobstore.Event{Kind: jobstore.EventJobNotificationPending, TS: endedAt, JobID: jobID, TerminalGen: "gen_pending"}); err != nil {
+			t.Fatalf("append pending: %v", err)
+		}
+		realAppend := jm.appendEvent
+		pendingAppends := 0
+		jm.appendEvent = func(event jobstore.Event) error {
+			if event.Kind == jobstore.EventJobNotificationPending {
+				pendingAppends++
+			}
+			return realAppend(event)
+		}
+		if err := jm.armPendingTerminalNotifications(); err != nil {
+			t.Fatalf("armPendingTerminalNotifications: %v", err)
+		}
+		if pendingAppends != 0 {
+			t.Fatalf("already-pending restore appended %d duplicate transitions", pendingAppends)
+		}
+		if len(notifications) != 1 {
+			t.Fatalf("already-pending restore enqueued %d notifications, want 1", len(notifications))
+		}
+		got := notifications[0]
+		if got.JobID != jobID || got.JobType != string(jobstore.JobShell) || got.Status != string(jobstore.StatusFailed) || got.Reason != "boom" || got.ExitCode == nil || *got.ExitCode != 7 {
+			t.Fatalf("already-pending notification = %+v", got)
+		}
+	})
 }
 
 // TestCovValidatedOutputStatsForRecord covers validatedOutputStatsForRecord
@@ -524,19 +559,26 @@ func TestCovTreeReservationRelease(t *testing.T) {
 
 	// Normal release.
 	counter := newTreeCounter(1)
+	if !counter.reserve(slotKindJob) {
+		t.Fatal("failed to reserve available job slot")
+	}
+	total, jobs, _, _ := counter.occupancy()
+	if total != 1 || jobs != 1 {
+		t.Fatalf("occupied counter = (total=%d, jobs=%d), want (1, 1)", total, jobs)
+	}
 	r2 := &treeReservation{counter: counter, kind: slotKindJob}
 	r2.release()
 	// The slot should have been released (counter back to available).
-	_, jobs, _, _ := counter.occupancy()
-	if jobs != 0 {
-		t.Fatalf("after release, jobs = %d, want 0", jobs)
+	total, jobs, _, _ = counter.occupancy()
+	if total != 0 || jobs != 0 {
+		t.Fatalf("after release = (total=%d, jobs=%d), want (0, 0)", total, jobs)
 	}
 
 	// Double release — should not release twice.
 	r2.release()
-	_, jobs, _, _ = counter.occupancy()
-	if jobs != 0 {
-		t.Fatalf("after double release, jobs = %d, want 0", jobs)
+	total, jobs, _, _ = counter.occupancy()
+	if total != 0 || jobs != 0 {
+		t.Fatalf("after double release = (total=%d, jobs=%d), want (0, 0)", total, jobs)
 	}
 }
 
@@ -611,19 +653,26 @@ func TestCovEnqueueNotifications(t *testing.T) {
 	if !jm.enqueueNotifications([]jobNotification{{JobID: "j1"}, {JobID: "j2"}}) {
 		t.Fatal("non-empty notifs should return true")
 	}
-	if len(queued) != 2 {
-		t.Fatalf("queued %d, want 2", len(queued))
+	if want := []jobNotification{{JobID: "j1"}, {JobID: "j2"}}; !reflect.DeepEqual(queued, want) {
+		t.Fatalf("queued notifications = %+v, want %+v", queued, want)
 	}
 
 	// With holdWake.
 	holdCalled := false
+	releaseCalled := false
 	jm.holdWake = func() func() {
 		holdCalled = true
-		return func() {}
+		return func() { releaseCalled = true }
 	}
-	jm.enqueueNotifications([]jobNotification{{JobID: "j3"}})
-	if !holdCalled {
-		t.Fatal("holdWake should be called")
+	queued = nil
+	if !jm.enqueueNotifications([]jobNotification{{JobID: "j3"}, {JobID: "j4"}}) {
+		t.Fatal("held enqueue should return true")
+	}
+	if !holdCalled || !releaseCalled {
+		t.Fatalf("hold/release calls = (%v, %v), want (true, true)", holdCalled, releaseCalled)
+	}
+	if want := []jobNotification{{JobID: "j3"}, {JobID: "j4"}}; !reflect.DeepEqual(queued, want) {
+		t.Fatalf("held queued notifications = %+v, want %+v", queued, want)
 	}
 }
 
@@ -631,26 +680,26 @@ func TestCovEnqueueNotifications(t *testing.T) {
 // (jobs.go lines 1783-1802).
 func TestCovAppendStartForwardFailure(t *testing.T) {
 	jm := newTestJM(t)
-
-	// nil output — outputBytes stays 0.
-	err := jm.appendStartForwardFailure("job_1", nil, nil)
-	if err != nil {
-		t.Fatalf("nil output: %v", err)
-	}
-
-	// With output store — gets output bytes.
 	rec, err := jm.createShell(createShellOpts{Command: "x"})
 	if err != nil {
 		t.Fatalf("createShell: %v", err)
 	}
 	output := jm.running[rec.JobID].output
-	if _, err := jm.appendJobOutput(rec.JobID, output, []byte("some output\n")); err != nil {
+	content := []byte("some output\n")
+	if _, err := jm.appendJobOutput(rec.JobID, output, content); err != nil {
 		t.Fatalf("appendJobOutput: %v", err)
 	}
-	err = jm.appendStartForwardFailure(rec.JobID, output, nil)
+	wantEndedAt := jm.now()
+	sourceProvenance := &provenance.Causal{
+		WatchKeys: []provenance.WatchKey{{WatchID: "watch_1", WatchGeneration: "gen_1"}},
+		Chain:     []provenance.Entry{{Kind: "watch", DeliveryID: "delivery_1"}},
+	}
+	err = jm.appendStartForwardFailure(rec.JobID, output, sourceProvenance)
 	if err != nil {
 		t.Fatalf("with output: %v", err)
 	}
+	sourceProvenance.WatchKeys[0].WatchID = "mutated"
+	sourceProvenance.Chain[0].DeliveryID = "mutated"
 
 	// Verify the event was appended.
 	recs, err := jm.store.Load()
@@ -661,11 +710,18 @@ func TestCovAppendStartForwardFailure(t *testing.T) {
 	if failedRec == nil {
 		t.Fatal("failed job record should exist")
 	}
-	if failedRec.Status != jobstore.StatusFailed {
-		t.Fatalf("status = %q, want %q", failedRec.Status, jobstore.StatusFailed)
+	if failedRec.Status != jobstore.StatusFailed || failedRec.Reason != "forward_failed" || failedRec.OutputBytes != int64(len(content)) {
+		t.Fatalf("forward-failed outcome = %+v, want failed/forward_failed/%d bytes", failedRec, len(content))
 	}
-	if failedRec.Reason != "forward_failed" {
-		t.Fatalf("reason = %q, want forward_failed", failedRec.Reason)
+	if failedRec.TerminalGen == "" || failedRec.EndedAt == nil || !failedRec.EndedAt.Equal(wantEndedAt) {
+		t.Fatalf("terminal generation/end time = (%q, %v), want non-empty/%v", failedRec.TerminalGen, failedRec.EndedAt, wantEndedAt)
+	}
+	wantProvenance := &provenance.Causal{
+		WatchKeys: []provenance.WatchKey{{WatchID: "watch_1", WatchGeneration: "gen_1"}},
+		Chain:     []provenance.Entry{{Kind: "watch", DeliveryID: "delivery_1"}},
+	}
+	if !reflect.DeepEqual(failedRec.Provenance, wantProvenance) {
+		t.Fatalf("forward-failed provenance = %#v, want %#v", failedRec.Provenance, wantProvenance)
 	}
 }
 
@@ -698,12 +754,10 @@ func TestCovBoundedStructuredResult(t *testing.T) {
 	}
 
 	// Valid value, no schema — returns value, true, "".
-	v, valid, reason = boundedStructuredResult(map[string]any{"key": "val"}, nil, false)
-	if v == nil || valid == nil || *valid != true {
-		t.Fatal("valid value should return valid=true")
-	}
-	if reason != "" {
-		t.Fatalf("reason = %q, want empty", reason)
+	input := map[string]any{"key": "val", "count": 3}
+	v, valid, reason = boundedStructuredResult(input, nil, false)
+	if !reflect.DeepEqual(v, map[string]any{"key": "val", "count": 3}) || valid == nil || !*valid || reason != "" {
+		t.Fatalf("valid structured result = (%#v, %v, %q)", v, valid, reason)
 	}
 
 	// Value too large for JSON — returns nil, false, too_large.

@@ -2,6 +2,7 @@ package agent
 
 import (
 	"errors"
+	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
@@ -17,8 +18,9 @@ import (
 // TestCovAvailableEventKindNames covers availableEventKindNames (job_watch.go line 29).
 func TestCovAvailableEventKindNames(t *testing.T) {
 	names := availableEventKindNames()
-	if !reflect.DeepEqual(names, WatchEventKindNames) {
-		t.Fatalf("event names = %v, want %v", names, WatchEventKindNames)
+	want := []string{"assistant.tool", "communicate", "job.notification"}
+	if !reflect.DeepEqual(names, want) {
+		t.Fatalf("event names = %v, want literal vocabulary %v", names, want)
 	}
 	// Verify it returns a copy.
 	names[0] = "modified"
@@ -184,42 +186,54 @@ func TestCovNormalizeWatchArgs(t *testing.T) {
 
 	// Below minimum → clamped.
 	a := watchArgs{ProgressIntervalMS: 100}
-	_ = normalizeWatchArgs(&a)
+	if err := normalizeWatchArgs(&a); err != nil {
+		t.Fatalf("below-minimum normalization: %v", err)
+	}
 	if a.ProgressIntervalMS != minWatchProgressIntervalMS {
 		t.Fatalf("clamped to min = %d, want %d", a.ProgressIntervalMS, minWatchProgressIntervalMS)
 	}
 
 	// Above maximum → clamped.
 	a = watchArgs{ProgressIntervalMS: maxWatchProgressIntervalMS + 100}
-	_ = normalizeWatchArgs(&a)
+	if err := normalizeWatchArgs(&a); err != nil {
+		t.Fatalf("above-maximum normalization: %v", err)
+	}
 	if a.ProgressIntervalMS != maxWatchProgressIntervalMS {
 		t.Fatalf("clamped to max = %d, want %d", a.ProgressIntervalMS, maxWatchProgressIntervalMS)
 	}
 
 	// Every:1 → 0.
 	a = watchArgs{Every: 1}
-	_ = normalizeWatchArgs(&a)
+	if err := normalizeWatchArgs(&a); err != nil {
+		t.Fatalf("every normalization: %v", err)
+	}
 	if a.Every != 0 {
 		t.Fatalf("Every:1 should normalize to 0, got %d", a.Every)
 	}
 
 	// EventFilter with whitespace → trimmed and lowercased, empty → nil.
 	a = watchArgs{EventFilter: &watchEventFilter{ToolName: "  read_file  ", Status: "  OK  "}}
-	_ = normalizeWatchArgs(&a)
+	if err := normalizeWatchArgs(&a); err != nil {
+		t.Fatalf("filter normalization: %v", err)
+	}
 	if a.EventFilter.ToolName != "read_file" || a.EventFilter.Status != "ok" {
 		t.Fatalf("filter not trimmed: %+v", a.EventFilter)
 	}
 
 	// EventFilter both empty after trim → nil.
 	a = watchArgs{EventFilter: &watchEventFilter{ToolName: "  ", Status: ""}}
-	_ = normalizeWatchArgs(&a)
+	if err := normalizeWatchArgs(&a); err != nil {
+		t.Fatalf("empty-filter normalization: %v", err)
+	}
 	if a.EventFilter != nil {
 		t.Fatalf("empty filter should be nil: %+v", a.EventFilter)
 	}
 
 	// Nil EventFilter → stays nil.
 	a = watchArgs{}
-	_ = normalizeWatchArgs(&a)
+	if err := normalizeWatchArgs(&a); err != nil {
+		t.Fatalf("empty normalization: %v", err)
+	}
 	if a.EventFilter != nil {
 		t.Fatal("nil filter should stay nil")
 	}
@@ -548,17 +562,20 @@ func TestCovLimitWatchText(t *testing.T) {
 	// Exceeds limit → truncated with indicator.
 	long := strings.Repeat("x", 100)
 	got := limitWatchText(long, 20)
-	if !strings.Contains(got, "[truncated]") {
-		t.Fatalf("should contain truncated indicator: %q", got)
-	}
-	if len([]rune(got)) > 20 {
-		t.Fatalf("should be at most 20 runes: %d", len([]rune(got)))
+	if got != "xxxxxxxx\n[truncated]" || len([]rune(got)) != 20 {
+		t.Fatalf("20-rune truncation = %q (%d runes), want exact retained prefix and indicator", got, len([]rune(got)))
 	}
 
 	// Limit smaller than indicator → hard truncation.
 	got = limitWatchText(long, 3)
-	if len([]rune(got)) > 3 {
-		t.Fatalf("should be at most 3 runes: %d", len([]rune(got)))
+	if got != "xxx" || len([]rune(got)) != 3 {
+		t.Fatalf("hard truncation = %q (%d runes), want xxx", got, len([]rune(got)))
+	}
+
+	// Multibyte input retains whole runes before the same indicator.
+	got = limitWatchText("αβγδεζηθικλμνξοπρστυφχψω", 15)
+	if got != "αβγ\n[truncated]" || len([]rune(got)) != 15 {
+		t.Fatalf("multibyte truncation = %q (%d runes)", got, len([]rune(got)))
 	}
 }
 
@@ -935,8 +952,9 @@ func TestCovDelegateTranscriptPathFromRef(t *testing.T) {
 	if sessionID != "SESS123" {
 		t.Fatalf("sessionID = %q", sessionID)
 	}
-	if path == "" {
-		t.Fatal("path should not be empty")
+	wantPath := filepath.Join(stateDir, "sessions", "SESS123.transcript.jsonl")
+	if path != wantPath {
+		t.Fatalf("path = %q, want %q", path, wantPath)
 	}
 
 	// Invalid ref.

@@ -250,57 +250,57 @@ func TestCovJobListFilterFromArgs(t *testing.T) {
 // TestCovJobListItemActivity covers jobListItemActivity (session_tools_jobs.go lines 720-736).
 func TestCovJobListItemActivity(t *testing.T) {
 	// LatestActivitySortAt set — returned directly.
-	now := time.Now()
-	item := jobListEntry{LatestActivitySortAt: now}
-	if got := jobListItemActivity(item); !got.Equal(now) {
-		t.Fatal("should return LatestActivitySortAt")
+	sortAt := time.Date(2026, 8, 24, 12, 4, 0, 123, time.UTC)
+	lastAt := time.Date(2026, 8, 24, 12, 3, 0, 456, time.UTC)
+	endedAt := time.Date(2026, 8, 24, 12, 2, 0, 789, time.UTC)
+	startedAt := time.Date(2026, 8, 24, 12, 1, 0, 321, time.UTC)
+	lastRaw := lastAt.Format(time.RFC3339Nano)
+	endedRaw := endedAt.Format(time.RFC3339Nano)
+	startedRaw := startedAt.Format(time.RFC3339Nano)
+	item := jobListEntry{LatestActivitySortAt: sortAt, LastActivity: &lastRaw, EndedAt: &endedRaw, StartedAt: startedRaw}
+	if got := jobListItemActivity(item); !got.Equal(sortAt) {
+		t.Fatalf("sort activity = %v, want %v", got, sortAt)
 	}
 
-	// No sort time, LastActivity set.
-	lastAct := time.Now().Add(-time.Hour).Format(time.RFC3339Nano)
-	item = jobListEntry{LastActivity: &lastAct}
-	got := jobListItemActivity(item)
-	if got.IsZero() {
-		t.Fatal("should parse LastActivity")
+	// Without the explicit sort field, LastActivity wins over both fallbacks.
+	item.LatestActivitySortAt = time.Time{}
+	if got := jobListItemActivity(item); !got.Equal(lastAt) {
+		t.Fatalf("last activity = %v, want %v", got, lastAt)
 	}
 
-	// No sort time, no LastActivity, EndedAt set.
-	endedAt := time.Now().Add(-time.Hour).Format(time.RFC3339Nano)
-	item = jobListEntry{EndedAt: &endedAt}
-	got = jobListItemActivity(item)
-	if got.IsZero() {
-		t.Fatal("should parse EndedAt")
+	// EndedAt wins when LastActivity is absent.
+	item.LastActivity = nil
+	if got := jobListItemActivity(item); !got.Equal(endedAt) {
+		t.Fatalf("ended activity = %v, want %v", got, endedAt)
 	}
 
-	// No sort time, no LastActivity, no EndedAt, StartedAt set.
-	started := time.Now().Add(-2 * time.Hour).Format(time.RFC3339Nano)
-	item = jobListEntry{StartedAt: started}
-	got = jobListItemActivity(item)
-	if got.IsZero() {
-		t.Fatal("should parse StartedAt")
+	// StartedAt is the final timestamp fallback.
+	item.EndedAt = nil
+	if got := jobListItemActivity(item); !got.Equal(startedAt) {
+		t.Fatalf("started activity = %v, want %v", got, startedAt)
 	}
 
 	// Nothing set — zero time.
 	item = jobListEntry{}
-	got = jobListItemActivity(item)
+	got := jobListItemActivity(item)
 	if !got.IsZero() {
 		t.Fatal("should return zero time")
 	}
 
-	// Invalid LastActivity — falls through.
+	// Invalid LastActivity falls through to the exact EndedAt value.
 	bad := "not-a-time"
-	item = jobListEntry{LastActivity: &bad}
+	item = jobListEntry{LastActivity: &bad, EndedAt: &endedRaw, StartedAt: startedRaw}
 	got = jobListItemActivity(item)
-	if !got.IsZero() {
-		t.Fatal("invalid LastActivity should fall through to zero")
+	if !got.Equal(endedAt) {
+		t.Fatalf("invalid LastActivity fallback = %v, want %v", got, endedAt)
 	}
 
-	// Empty LastActivity string — falls through.
+	// Empty LastActivity also falls through to the exact EndedAt value.
 	empty := ""
-	item = jobListEntry{LastActivity: &empty}
+	item = jobListEntry{LastActivity: &empty, EndedAt: &endedRaw, StartedAt: startedRaw}
 	got = jobListItemActivity(item)
-	if !got.IsZero() {
-		t.Fatal("empty LastActivity should fall through")
+	if !got.Equal(endedAt) {
+		t.Fatalf("empty LastActivity fallback = %v, want %v", got, endedAt)
 	}
 }
 

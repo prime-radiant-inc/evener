@@ -11,6 +11,7 @@ import (
 	"primeradiant.com/evener/agent/internal/delegatestore"
 	"primeradiant.com/evener/agent/internal/jobstore"
 	"primeradiant.com/evener/agent/schema"
+	"primeradiant.com/evener/agent/transcript"
 	"primeradiant.com/evener/llm"
 )
 
@@ -35,19 +36,20 @@ func TestCovClearDescendantReceiverWatchByID(t *testing.T) {
 // TestCovLiveSteerWaitIgnoredReason covers liveSteerWaitIgnoredReason
 // (session_tools_jobs.go lines 129-134): all branches.
 func TestCovLiveSteerWaitIgnoredReason(t *testing.T) {
+	const wantIgnored = "live steer returns on delivery; max_wait_ms applies only to started jobs"
 	// blockTimeoutMS=0 — not requested, empty result.
 	if got := liveSteerWaitIgnoredReason(0, jobstore.StatusRunning, "steered"); got != "" {
 		t.Fatalf("zero timeout should return empty, got %q", got)
 	}
 
 	// blockTimeoutMS>0, status=running, action=steered — should return message.
-	if got := liveSteerWaitIgnoredReason(1000, jobstore.StatusRunning, "steered"); got == "" {
-		t.Fatal("running+steered should return non-empty")
+	if got := liveSteerWaitIgnoredReason(1000, jobstore.StatusRunning, "steered"); got != wantIgnored {
+		t.Fatalf("running+steered = %q, want %q", got, wantIgnored)
 	}
 
 	// blockTimeoutMS>0, action=delivered — should return message regardless of status.
-	if got := liveSteerWaitIgnoredReason(1000, jobstore.StatusCompleted, "delivered"); got == "" {
-		t.Fatal("delivered should return non-empty")
+	if got := liveSteerWaitIgnoredReason(1000, jobstore.StatusCompleted, "delivered"); got != wantIgnored {
+		t.Fatalf("delivered = %q, want %q", got, wantIgnored)
 	}
 
 	// blockTimeoutMS>0, status=completed, action=steered — NOT the condition.
@@ -93,8 +95,8 @@ func TestCovMarshalBoundedJSON2(t *testing.T) {
 	if err != nil {
 		t.Fatalf("marshalBoundedJSON: %v", err)
 	}
-	if !strings.Contains(got, "key") {
-		t.Fatalf("output should contain key: %q", got)
+	if got != `{"key":"val"}` {
+		t.Fatalf("bounded JSON = %q, want compact object", got)
 	}
 
 	// Exceeds bounds — error.
@@ -108,7 +110,7 @@ func TestCovMarshalBoundedJSON2(t *testing.T) {
 
 	// maxChars=0 — no bounding.
 	got, err = marshalBoundedJSON(map[string]any{"key": "val"}, 0)
-	if err != nil || !strings.Contains(got, "key") {
+	if err != nil || got != `{"key":"val"}` {
 		t.Fatalf("maxChars=0 should not bound: %q %v", got, err)
 	}
 
@@ -124,20 +126,20 @@ func TestCovMarshalBoundedJSON2(t *testing.T) {
 func TestCovMarshalBoundedJSONWithFit2(t *testing.T) {
 	// Fits within bounds.
 	got, fits, err := marshalBoundedJSONWithFit(map[string]any{"k": "v"}, 1000)
-	if err != nil || !fits {
+	if err != nil || !fits || got != `{"k":"v"}` {
 		t.Fatalf("should fit: got=%q fits=%v err=%v", got, fits, err)
 	}
 
 	// Does not fit.
-	_, fits, err = marshalBoundedJSONWithFit(map[string]any{"k": "v"}, 5)
-	if err != nil || fits {
-		t.Fatalf("should not fit: fits=%v err=%v", fits, err)
+	got, fits, err = marshalBoundedJSONWithFit(map[string]any{"k": "v"}, 5)
+	if err != nil || fits || got != "" {
+		t.Fatalf("should not fit: got=%q fits=%v err=%v", got, fits, err)
 	}
 
 	// maxChars<=0 — always fits.
-	_, fits, err = marshalBoundedJSONWithFit(map[string]any{"k": "v"}, -1)
-	if err != nil || !fits {
-		t.Fatal("negative maxChars should always fit")
+	got, fits, err = marshalBoundedJSONWithFit(map[string]any{"k": "v"}, -1)
+	if err != nil || !fits || got != `{"k":"v"}` {
+		t.Fatalf("negative maxChars = (%q, %v, %v), want exact JSON fit", got, fits, err)
 	}
 
 	// Marshal error.
@@ -1318,6 +1320,7 @@ func TestCovProjectStableDelegateListItem(t *testing.T) {
 			descriptor: delegatestore.Descriptor{
 				Description: "worker", OwnerSessionID: "owner", VisibleSessionID: "visible",
 				Task: "do work", AgentType: "researcher", ResolvedModel: "model-x",
+				Config: schema.ConfigSnapshot{ReasoningEffort: "high"},
 			},
 			lastOutcome: &delegatestore.Outcome{Reason: "budget", EndedAt: endedAt, ExhaustionBudget: delegatestore.ExhaustionBudgetTurns, ExhaustionLimit: 42},
 		},
@@ -1331,7 +1334,7 @@ func TestCovProjectStableDelegateListItem(t *testing.T) {
 	if entry.StartedAt != startedAt.Format(time.RFC3339Nano) || entry.DurationMS == nil || *entry.DurationMS != 8000 || entry.LastActivity == nil || *entry.LastActivity != latestActivityAt.Format(time.RFC3339Nano) || !entry.LatestActivitySortAt.Equal(latestActivityAt) {
 		t.Fatalf("projected timing = %+v", entry)
 	}
-	if entry.Depth != 2 || entry.Task != "do work" || entry.AgentType != "researcher" || entry.Model != "model-x" || entry.ParentDelegateID == nil || *entry.ParentDelegateID != "dlg_parent" {
+	if entry.Depth != 2 || entry.Task != "do work" || entry.AgentType != "researcher" || entry.Model != "model-x" || entry.ReasoningEffort != "high" || entry.ParentDelegateID == nil || *entry.ParentDelegateID != "dlg_parent" {
 		t.Fatalf("projected delegate fields = %+v", entry)
 	}
 	if entry.Reason == nil || *entry.Reason != "budget" || entry.EndedAt == nil || *entry.EndedAt != endedAt.Format(time.RFC3339Nano) || entry.ExhaustionBudget != string(delegatestore.ExhaustionBudgetTurns) || entry.ExhaustionLimit != 42 {
@@ -1429,16 +1432,62 @@ func TestCovAppendSteeringTurn(t *testing.T) {
 }
 
 // TestCovAppendSteeringTurnDurably covers appendSteeringTurnDurably
-// (session_queue.go lines 956-967): successful durable-queue and history state.
+// (session_queue.go lines 956-967): durable persistence and failure ordering.
 func TestCovAppendSteeringTurnDurably(t *testing.T) {
-	s := &Session{id: "session_1"}
-	if err := s.appendSteeringTurnDurably("durable steer", events.SteeringKindNotification); err != nil {
-		t.Fatalf("appendSteeringTurnDurably: %v", err)
-	}
-	if len(s.history) != 1 || s.history[0].Kind != schema.TurnSteering || s.history[0].SteeringKind != events.SteeringKindNotification || s.history[0].Message.Text() != "durable steer" {
-		t.Fatalf("durable steering history = %+v", s.history)
-	}
-	if len(s.pendingTranscriptTurns) != 1 || s.pendingTranscriptTurns[0].SteeringKind != events.SteeringKindNotification || s.pendingTranscriptTurns[0].Message.Text() != "durable steer" {
-		t.Fatalf("durable persisted steering queue = %+v", s.pendingTranscriptTurns)
-	}
+	t.Run("persists before history", func(t *testing.T) {
+		path := t.TempDir() + "/session.transcript.jsonl"
+		writer, err := transcript.NewWriter(path, transcript.Header{SessionID: "session_1"})
+		if err != nil {
+			t.Fatalf("NewWriter: %v", err)
+		}
+		t.Cleanup(func() { _ = writer.Close() })
+		s := &Session{id: "session_1", transcript: writer, transcriptReady: true, events: make(chan events.SessionEvent, 1)}
+		if err := s.appendSteeringTurnDurably("durable steer", events.SteeringKindNotification); err != nil {
+			t.Fatalf("appendSteeringTurnDurably: %v", err)
+		}
+		if len(s.history) != 1 || s.history[0].Kind != schema.TurnSteering || s.history[0].SteeringKind != events.SteeringKindNotification || s.history[0].Message.Text() != "durable steer" {
+			t.Fatalf("durable steering history = %+v", s.history)
+		}
+		loaded, err := readTranscriptFull(path)
+		if err != nil {
+			t.Fatalf("read persisted transcript: %v", err)
+		}
+		if len(loaded.Entries) != 1 {
+			t.Fatalf("persisted entries = %d, want 1", len(loaded.Entries))
+		}
+		turn := loaded.Entries[0].Turn
+		if turn.Kind != schema.TurnSteering || turn.SteeringKind != events.SteeringKindNotification || turn.Message.Role != llm.RoleUser || turn.Message.Text() != "durable steer" {
+			t.Fatalf("persisted durable turn = %+v", turn)
+		}
+	})
+
+	t.Run("sync failure warns and skips history", func(t *testing.T) {
+		path := t.TempDir() + "/failed.transcript.jsonl"
+		fs := newAttentionFailNextSyncFS()
+		writer, err := transcript.NewWriterWithFS(fs, path, transcript.Header{SessionID: "session_fail"})
+		if err != nil {
+			t.Fatalf("NewWriterWithFS: %v", err)
+		}
+		t.Cleanup(func() { _ = writer.Close() })
+		fs.failNextSync()
+		s := &Session{id: "session_fail", transcript: writer, transcriptReady: true, events: make(chan events.SessionEvent, 1)}
+		err = s.appendSteeringTurnDurably("must not enter history", events.SteeringKindNotification)
+		if err == nil || !strings.Contains(err.Error(), "injected attention resolution sync failure") {
+			t.Fatalf("durable append error = %v", err)
+		}
+		if len(s.history) != 0 {
+			t.Fatalf("failed durable append changed history: %+v", s.history)
+		}
+		event := <-s.events
+		warning, ok := event.Data.(events.WarningData)
+		wantWarning := events.WarningData{
+			Message: "transcript write failed: sync transcript entry: injected attention resolution sync failure",
+			Source:  "evener",
+			Title:   "Evener error",
+			Hint:    "Check the Evener session log and daemon state.",
+		}
+		if !ok || event.Kind != events.EventWarning || event.SessionID != "session_fail" || !reflect.DeepEqual(warning, wantWarning) {
+			t.Fatalf("durable failure warning = %#v with data %#v", event, event.Data)
+		}
+	})
 }
