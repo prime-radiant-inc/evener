@@ -5,7 +5,10 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"net"
 	"net/http"
+	"net/netip"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -17,6 +20,7 @@ import (
 	"primeradiant.com/evener/buildinfo"
 	"primeradiant.com/evener/cmd/evener-hub/internal/fspaths"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hubcore"
+	"primeradiant.com/evener/cmd/evener-hub/internal/hubedge"
 	"primeradiant.com/evener/envvars"
 	"primeradiant.com/evener/hubapi"
 )
@@ -141,13 +145,14 @@ func (s *WebServer) handleAPIHealth(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeAPIJSON(w, http.StatusOK, hubapi.HealthResponse{
-		Version:       buildinfo.Version(),
-		StartedAt:     s.startedAt,
-		HubAddr:       s.cfg.HubAddr,
-		RunDir:        s.cfg.RunDir,
-		StateGlob:     s.apiStateGlob(),
-		BackendGitSha: buildinfo.GitSHA,
-		FrontendHash:  s.frontendHash,
+		Version:          buildinfo.Version(),
+		MobileAPIVersion: hubapi.MobileAPIVersion,
+		StartedAt:        s.startedAt,
+		HubAddr:          s.cfg.HubAddr,
+		RunDir:           s.cfg.RunDir,
+		StateGlob:        s.apiStateGlob(),
+		BackendGitSha:    buildinfo.GitSHA,
+		FrontendHash:     s.frontendHash,
 		Capabilities: hubapi.HealthCapabilities{
 			Tree:             true,
 			TranscriptFollow: true,
@@ -157,6 +162,82 @@ func (s *WebServer) handleAPIHealth(w http.ResponseWriter, r *http.Request) {
 			RemoteSources:    len(s.cfg.CodexSources) > 0,
 		},
 	})
+}
+
+func (s *WebServer) handleAPIMobilePairing(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Cache-Control", "no-store")
+	if r.Method != http.MethodGet {
+		writeAPIError(w, http.StatusMethodNotAllowed, "GET required")
+		return
+	}
+	base, ok := s.mobilePairingBaseURL(r)
+	if !ok {
+		writeAPIError(w, http.StatusConflict, "mobile pairing requires a reachable non-loopback Hub origin")
+		return
+	}
+	writeAPIJSON(w, http.StatusOK, struct {
+		AuthURL string `json:"auth_url"`
+	}{AuthURL: hubedge.AuthURLFor(base, s.cfg.AuthToken)})
+}
+
+func (s *WebServer) mobilePairingBaseURL(r *http.Request) (string, bool) {
+	if s.cfg.MobileBaseURL != "" {
+		return safeMobileOrigin(s.cfg.MobileBaseURL)
+	}
+	scheme := "http"
+	if r.TLS != nil {
+		scheme = "https"
+	}
+	return safeMobileOrigin(scheme + "://" + r.Host)
+}
+
+// safeMobileOrigin applies the connection policy the mobile app enforces before
+// putting an origin in a QR code. HTTP may name only a private-network address
+// (or a .local name which the app resolves and validates); HTTPS may name a
+// public or private host. Neither may name loopback, which refers to the phone
+// after scanning rather than the Hub.
+func safeMobileOrigin(raw string) (string, bool) {
+	if err := validateMobileBaseURL(raw); err != nil {
+		return "", false
+	}
+	u, err := url.Parse(raw)
+	if err != nil {
+		return "", false
+	}
+	host := u.Hostname()
+	// Strip trailing dot (FQDN form) before checking, then reject
+	// "localhost" and all its spellings.
+	host = strings.TrimSuffix(host, ".")
+	if host == "" || strings.EqualFold(host, "localhost") {
+		return "", false
+	}
+	if addr, err := netip.ParseAddr(host); err == nil {
+		addr = addr.Unmap()
+		if addr.IsLoopback() {
+			return "", false
+		}
+		if u.Scheme == "http" && !isPrivateMobileHTTPAddr(addr) {
+			return "", false
+		}
+	} else {
+		// Non-standard IP spellings (127.1, 2130706433, 0x7f000001) are
+		// not parsed by netip.ParseAddr but resolve to loopback via the
+		// OS resolver. Reject any hostname that resolves to loopback.
+		if ip, err := net.ResolveIPAddr("ip", host); err == nil && ip.IP.IsLoopback() {
+			return "", false
+		}
+		if u.Scheme == "http" && !strings.HasSuffix(strings.ToLower(host), ".local") {
+			return "", false
+		}
+	}
+	return strings.TrimRight(raw, "/"), true
+}
+
+func isPrivateMobileHTTPAddr(addr netip.Addr) bool {
+	if addr.IsPrivate() || addr.IsLinkLocalUnicast() {
+		return true
+	}
+	return addr.Is4() && netip.MustParsePrefix("100.64.0.0/10").Contains(addr)
 }
 
 func (s *WebServer) handleAPIUpgrade(w http.ResponseWriter, r *http.Request) {

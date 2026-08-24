@@ -268,6 +268,27 @@ func checkAuthURLFor(t *testing.T) {
 	}
 }
 
+func TestAuthURLFor_EncodesSpecialCharacters(t *testing.T) {
+	got := AuthURLFor("http://hub.example.test:9180", "tok&en#frag%ile")
+	want := "http://hub.example.test:9180/auth?token=tok%26en%23frag%25ile"
+	if got != want {
+		t.Errorf("got %q, want %q", got, want)
+	}
+}
+
+func TestHandleAuth_RedirectIsNoStore(t *testing.T) {
+	h := HandleAuth("secret")
+	req := httptest.NewRequest(http.MethodGet, "/auth?token=secret", nil)
+	rec := httptest.NewRecorder()
+	h(rec, req)
+	if rec.Code != http.StatusFound {
+		t.Fatalf("code = %d, want 302", rec.Code)
+	}
+	if cc := rec.Header().Get("Cache-Control"); cc != "no-store" {
+		t.Fatalf("Cache-Control = %q, want no-store", cc)
+	}
+}
+
 func checkLoadOrCreateAuthToken_EmptyRoot(t *testing.T) {
 	_, err := LoadOrCreateAuthToken("")
 	if err == nil {
@@ -366,6 +387,9 @@ func checkAuthGuard_AcceptsQueryTokenOnAnyGET(t *testing.T) {
 	if rec.Code != http.StatusFound {
 		t.Fatalf("code = %d, want 302", rec.Code)
 	}
+	if cc := rec.Header().Get("Cache-Control"); cc != "no-store" {
+		t.Fatalf("Cache-Control = %q, want no-store", cc)
+	}
 	loc := rec.Header().Get("Location")
 	if strings.Contains(loc, "secret") {
 		t.Errorf("redirect Location leaks the token: %q", loc)
@@ -376,6 +400,19 @@ func checkAuthGuard_AcceptsQueryTokenOnAnyGET(t *testing.T) {
 	cookies := rec.Result().Cookies()
 	if len(cookies) != 1 || cookies[0].Name != cookieName("secret") || cookies[0].Value != "secret" {
 		t.Errorf("query-token auth should set the auth cookie, got %+v", cookies)
+	}
+}
+
+func TestAuthGuard_QueryTokenRedirectIsNoStore(t *testing.T) {
+	guard := AuthGuard("secret")
+	req := httptest.NewRequest(http.MethodGet, "/settings?token=secret", nil)
+	rec := httptest.NewRecorder()
+	guard(okHandler()).ServeHTTP(rec, req)
+	if rec.Code != http.StatusFound {
+		t.Fatalf("code = %d, want 302", rec.Code)
+	}
+	if cc := rec.Header().Get("Cache-Control"); cc != "no-store" {
+		t.Fatalf("Cache-Control = %q, want no-store", cc)
 	}
 }
 
