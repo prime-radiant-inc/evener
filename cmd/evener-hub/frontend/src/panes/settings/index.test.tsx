@@ -18,6 +18,8 @@ import { paneFor } from "../../shell/paneRegistry";
 // against a findBy budget that defaults to 1000ms. So render the component
 // once here too, in a hook whose ceiling is a tripwire rather than an
 // assertion window (same fix as App.test.tsx, commit c1a8616ea).
+const SETTINGS_WARMUP_TRIPWIRE_MS = 10_000;
+
 beforeAll(async () => {
   await import("./index");
   await import("./Settings");
@@ -29,7 +31,7 @@ beforeAll(async () => {
       <SettingsComponent params={{}} paneId="settings-warm" focused={true} />
     </Suspense>,
   );
-  await screen.findByRole("navigation", { name: "Settings sections" });
+  await screen.findByRole("navigation", { name: "Settings sections" }, { timeout: SETTINGS_WARMUP_TRIPWIRE_MS });
   cleanup();
   // @ts-expect-error test cleanup, matches the render test's own pattern
   delete window.matchMedia;
