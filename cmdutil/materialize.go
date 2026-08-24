@@ -2,6 +2,7 @@ package cmdutil
 
 import (
 	"fmt"
+	"strings"
 
 	"primeradiant.com/evener/envvars"
 	"primeradiant.com/evener/llm"
@@ -27,15 +28,7 @@ func seedConfigFromEnv(opts ...llm.EnvOption) (providercfg.Config, error) {
 
 	getBaseURL := func(typ string) string {
 		if typ == "ollama" {
-			// Match the ollama adapter's resolution order: OLLAMA_BASE_URL
-			// takes precedence over OLLAMA_HOST.
-			if v := envvars.OllamaBaseURL.Trimmed(); v != "" {
-				return v
-			}
-			if v := envvars.OllamaHost.Trimmed(); v != "" {
-				return v
-			}
-			return ""
+			return ollamaBaseURLFromEnv()
 		}
 		v := BaseURLEnvVar(typ)
 		if v == "" {
@@ -49,6 +42,27 @@ func seedConfigFromEnv(opts ...llm.EnvOption) (providercfg.Config, error) {
 	}
 
 	return Seed(names, def, getBaseURL), nil
+}
+
+// ollamaBaseURLFromEnv resolves the base_url to persist for the "ollama"
+// instance, matching the ollama adapter's own resolution order:
+// OLLAMA_BASE_URL wins outright; otherwise OLLAMA_HOST is normalized to a
+// full URL via envvars.NormalizeOllamaHost, the same normalization the
+// adapter itself applies, rather than being passed through raw.
+//
+// A bare value like "localhost" (the documented quickstart example) used
+// to be written straight into the instance's base_url. The ollama provider
+// then built its request against "localhost/chat/completions", which has
+// no scheme, and every attempt failed client-side with "unsupported
+// protocol scheme" before a socket was ever opened.
+func ollamaBaseURLFromEnv() string {
+	if v := envvars.OllamaBaseURL.Trimmed(); v != "" {
+		return strings.TrimRight(v, "/")
+	}
+	if v := envvars.OllamaHost.Trimmed(); v != "" {
+		return envvars.NormalizeOllamaHost(v)
+	}
+	return ""
 }
 
 // MaterializeProvidersConfig seeds a descriptors-only config from the environment

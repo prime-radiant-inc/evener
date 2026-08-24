@@ -6,6 +6,12 @@
 //  2. OLLAMA_HOST — Ollama's canonical env var; normalized to a /v1 URL
 //  3. http://localhost:11434/v1 — default
 //
+// envvars.ResolveOllamaBaseURL and envvars.NormalizeOllamaHost implement
+// this order; both live there, not here, so cmdutil's config materializer
+// (which seeds providers.json from the same two env vars) resolves
+// OLLAMA_HOST exactly the way this adapter does. They used to each carry
+// their own copy, and the copies drifted apart.
+//
 // OLLAMA_API_KEY is optional and used only for authenticated proxies or
 // Ollama Cloud. Local Ollama does not require a key.
 //
@@ -20,7 +26,6 @@ package ollama
 
 import (
 	"context"
-	"net"
 	"net/http"
 	"strings"
 
@@ -31,9 +36,13 @@ import (
 	"primeradiant.com/evener/llm/providers/openaicompat"
 )
 
-const defaultBaseURL = "http://localhost:11434/v1"
-
 const providerName = "ollama"
+
+// defaultBaseURL mirrors the "ollama" entry in envvars' provider table
+// (envvars.Provider("ollama").DefaultBaseURL). Kept as a local constant so
+// callers here read a literal rather than a lookup; ResolveOllamaBaseURL
+// and NormalizeOllamaHost are the actual source of truth for the value.
+const defaultBaseURL = "http://localhost:11434/v1"
 
 // adapter is the ollama provider adapter. It embeds the shared
 // openai-compatible forwarder for Name/Complete/Stream (promoted from the
@@ -84,52 +93,17 @@ func (a *adapter) ListModels(ctx context.Context) ([]llm.ModelInfo, error) {
 	return models, nil
 }
 
-// resolveBaseURL implements the documented resolution order.
+// resolveBaseURL implements the documented resolution order. It defers to
+// envvars.ResolveOllamaBaseURL so this adapter and cmdutil's config
+// materializer, which seeds providers.json from the same two env vars,
+// cannot drift apart the way they did before (see envvars/ollama_host.go).
 func resolveBaseURL(baseURLEnv, hostEnv string) string {
-	if b := strings.TrimSpace(baseURLEnv); b != "" {
-		return strings.TrimRight(b, "/")
-	}
-	if h := strings.TrimSpace(hostEnv); h != "" {
-		return normalizeHost(h)
-	}
-	return defaultBaseURL
+	return envvars.ResolveOllamaBaseURL(baseURLEnv, hostEnv)
 }
 
-// normalizeHost converts an OLLAMA_HOST value (host, host:port, or full URL)
-// into a complete base URL ending in /v1. IPv6 hosts are bracketed correctly:
-// bare "::1" becomes "[::1]:11434", which a naive strings.Contains(":") check
-// would have left as "::1" with the wrong scheme syntax. Values whose path
-// already terminates in /v1 are preserved so paths like
-// https://proxy.example/ollama/v1 are not double-suffixed.
+// normalizeHost defers to envvars.NormalizeOllamaHost — see resolveBaseURL.
 func normalizeHost(h string) string {
-	h = strings.TrimSpace(h)
-	h = strings.TrimRight(h, "/")
-	if h == "" {
-		return defaultBaseURL
-	}
-	if strings.Contains(h, "://") {
-		// Has scheme — append /v1 if not already present.
-		if strings.HasSuffix(h, "/v1") {
-			return h
-		}
-		return h + "/v1"
-	}
-	// No scheme. Determine whether a port is present and whether the host
-	// is a bare IPv6 literal that needs brackets.
-	if _, _, err := net.SplitHostPort(h); err != nil {
-		switch {
-		case strings.HasPrefix(h, "[") && strings.HasSuffix(h, "]"):
-			// Bracketed IPv6 with no port.
-			h += ":11434"
-		case strings.Count(h, ":") >= 2:
-			// Bare IPv6 with no port: "::1" or "fe80::1".
-			h = "[" + h + "]:11434"
-		default:
-			// Hostname or IPv4 without a port.
-			h += ":11434"
-		}
-	}
-	return "http://" + h + "/v1"
+	return envvars.NormalizeOllamaHost(h)
 }
 
 // InstanceParams holds the configuration for a single ollama adapter instance.

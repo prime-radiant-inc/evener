@@ -13,6 +13,43 @@ import (
 	"primeradiant.com/evener/llm/providercfg"
 )
 
+// TestOllamaBaseURLFromEnv pins the base_url the materializer persists for
+// the "ollama" instance against a bare OLLAMA_HOST, the value the
+// documented quickstart (docs/ollama.md) tells a new user to set:
+// OLLAMA_HOST=localhost. It must come out as a complete URL, not the raw
+// host string — a bare "localhost" written into base_url makes the ollama
+// provider post to "localhost/chat/completions", which has no scheme.
+func TestOllamaBaseURLFromEnv(t *testing.T) {
+	t.Setenv("OLLAMA_BASE_URL", "")
+	t.Setenv("OLLAMA_HOST", "localhost")
+	if got, want := ollamaBaseURLFromEnv(), "http://localhost:11434/v1"; got != want {
+		t.Fatalf("ollamaBaseURLFromEnv() = %q, want %q", got, want)
+	}
+}
+
+// TestOllamaBaseURLFromEnvPrefersBaseURL pins that OLLAMA_BASE_URL still
+// wins outright over OLLAMA_HOST, matching the ollama adapter's own
+// resolution order, and is used as-is (trailing slash stripped) rather than
+// normalized as a host.
+func TestOllamaBaseURLFromEnvPrefersBaseURL(t *testing.T) {
+	t.Setenv("OLLAMA_BASE_URL", "https://proxy.example/ollama/v1/")
+	t.Setenv("OLLAMA_HOST", "some-other-host")
+	if got, want := ollamaBaseURLFromEnv(), "https://proxy.example/ollama/v1"; got != want {
+		t.Fatalf("ollamaBaseURLFromEnv() = %q, want %q", got, want)
+	}
+}
+
+// TestOllamaBaseURLFromEnvUnset pins that both unset yields "", so Seed
+// leaves the instance's base_url empty and the adapter's own default
+// applies at construction time rather than a materializer-supplied value.
+func TestOllamaBaseURLFromEnvUnset(t *testing.T) {
+	t.Setenv("OLLAMA_BASE_URL", "")
+	t.Setenv("OLLAMA_HOST", "")
+	if got := ollamaBaseURLFromEnv(); got != "" {
+		t.Fatalf("ollamaBaseURLFromEnv() = %q, want \"\"", got)
+	}
+}
+
 func TestMaterializeProvidersConfig(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "providers.toml")
