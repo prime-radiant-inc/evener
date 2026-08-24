@@ -8,11 +8,13 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
 
 	"primeradiant.com/evener/agent/execenv"
+	"primeradiant.com/evener/agent/internal/agenttest"
 	"primeradiant.com/evener/llm"
 )
 
@@ -419,5 +421,100 @@ func TestWebFetchTool_HTTPErrorStatus(t *testing.T) {
 	}
 	if !strings.Contains(res.Output, "404") {
 		t.Fatalf("error should mention 404: %s", res.Output)
+	}
+}
+
+func TestWebFetch_RawFallbackWhenBothModelsRefuse(t *testing.T) {
+	const wantRawLimit = 20_000
+	page := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		_, _ = fmt.Fprintf(w, "<html><body><h1>Untrusted source</h1><p>%s</p></body></html>", strings.Repeat("converted-content ", wantRawLimit))
+	}))
+	t.Cleanup(page.Close)
+
+	adapter := &agenttest.ModelTrackingAdapter{Provider: "openai"}
+	adapter.Respond = func(req llm.Request) (llm.Response, error) {
+		return llm.Response{}, llm.ErrorFromHTTPStatus("openai", http.StatusBadRequest,
+			"The provided model identifier is invalid.", nil, nil)
+	}
+	client := llm.NewClient()
+	client.Register(adapter)
+	sess, err := NewSession(client, NewOpenAIProfile("test-model"),
+		execenv.NewLocalExecutionEnvironment(t.TempDir()), SessionConfig{})
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+	t.Cleanup(sess.Close)
+
+	got, err := sess.webFetch(context.Background(), page.URL, "What is this source?")
+	if err != nil {
+		t.Fatalf("webFetch: %v", err)
+	}
+	result, ok := got.(map[string]any)
+	if !ok {
+		t.Fatalf("webFetch result = %T, want map[string]any", got)
+	}
+	if result["fallback"] != "raw" {
+		t.Fatalf("fallback = %#v, want raw", result["fallback"])
+	}
+	if result["url"] != page.URL {
+		t.Fatalf("url = %#v, want %q", result["url"], page.URL)
+	}
+	if result["content_source"] != "converted_markdown" {
+		t.Fatalf("content_source = %#v, want converted_markdown", result["content_source"])
+	}
+	if result["fallback_reason"] != "both_models_refused" {
+		t.Fatalf("fallback_reason = %#v, want both_models_refused", result["fallback_reason"])
+	}
+	if result["content_untrusted"] != true {
+		t.Fatalf("content_untrusted = %#v, want true", result["content_untrusted"])
+	}
+	content, ok := result["content"].(string)
+	if !ok {
+		t.Fatalf("content = %T, want string", result["content"])
+	}
+	if got := len([]rune(content)); got != wantRawLimit {
+		t.Fatalf("raw content length = %d, want deterministic limit %d", got, wantRawLimit)
+	}
+	if strings.Contains(content, "<h1>") || !strings.Contains(content, "Untrusted source") {
+		t.Fatalf("raw fallback did not preserve converted source content: %q", content[:min(len(content), 80)])
+	}
+	if result["content_truncated"] != true {
+		t.Fatalf("content_truncated = %#v, want true", result["content_truncated"])
+	}
+	if result["content_limit"] != wantRawLimit {
+		t.Fatalf("content_limit = %#v, want %d", result["content_limit"], wantRawLimit)
+	}
+	if got, want := adapter.Models(), []string{"gpt-4.1-nano", "test-model"}; !slices.Equal(got, want) {
+		t.Fatalf("models addressed = %v, want first and second refusals %v", got, want)
+	}
+}
+
+func TestWebFetch_NonRefusalModelErrorRemainsError(t *testing.T) {
+	page := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/plain")
+		_, _ = fmt.Fprint(w, "content")
+	}))
+	t.Cleanup(page.Close)
+
+	adapter := &agenttest.ModelTrackingAdapter{Provider: "openai"}
+	adapter.Respond = func(req llm.Request) (llm.Response, error) {
+		return llm.Response{}, llm.ErrorFromHTTPStatus("openai", http.StatusBadRequest,
+			"invalid field: response_format", nil, nil)
+	}
+	client := llm.NewClient()
+	client.Register(adapter)
+	sess, err := NewSession(client, NewOpenAIProfile("test-model"),
+		execenv.NewLocalExecutionEnvironment(t.TempDir()), SessionConfig{})
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+	t.Cleanup(sess.Close)
+
+	if _, err := sess.webFetch(context.Background(), page.URL, "question"); err == nil {
+		t.Fatal("webFetch succeeded, want non-refusal model error")
+	}
+	if got, want := adapter.Models(), []string{"gpt-4.1-nano"}; !slices.Equal(got, want) {
+		t.Fatalf("models addressed = %v, want no fallback %v", got, want)
 	}
 }

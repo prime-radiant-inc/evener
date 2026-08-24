@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -13,13 +14,15 @@ import (
 
 	htmltomarkdown "github.com/JohannesKaufmann/html-to-markdown/v2"
 
+	"primeradiant.com/evener/agent/internal/cheapmodel"
 	"primeradiant.com/evener/llm"
 )
 
 const (
-	webFetchTimeout    = 30 * time.Second
-	webFetchMaxBytes   = 5 * 1024 * 1024 // 5 MiB
-	webFetchMaxContent = 100_000         // chars passed to cheap model
+	webFetchTimeout               = 30 * time.Second
+	webFetchMaxBytes              = 5 * 1024 * 1024 // 5 MiB
+	webFetchMaxContent            = 100_000         // chars passed to cheap model
+	webFetchRawFallbackMaxContent = 20_000          // chars returned when both models refuse
 )
 
 // webFetchCacheKey returns a deterministic 16-char hex key for a URL.
@@ -147,9 +150,11 @@ func (s *Session) webFetchWithRuntime(ctx context.Context, rawURL string, questi
 		readableContent = string(body)
 	}
 
-	// Truncate content for the cheap model.
-	if len(readableContent) > webFetchMaxContent {
-		readableContent = readableContent[:webFetchMaxContent]
+	// Truncate content for the cheap model, retaining the complete converted
+	// content for the bounded raw fallback below.
+	modelContent := readableContent
+	if len(modelContent) > webFetchMaxContent {
+		modelContent = modelContent[:webFetchMaxContent]
 	}
 
 	// Call cheap model to answer the question.
@@ -157,12 +162,35 @@ func (s *Session) webFetchWithRuntime(ctx context.Context, rawURL string, questi
 	cheapReq := llm.Request{
 		Messages: []llm.Message{
 			llm.System("You are a web content analyst. Read the provided content and answer the user's question concisely."),
-			llm.User(fmt.Sprintf("URL: %s\n\nQuestion: %s\n\nContent:\n%s", rawURL, question, readableContent)),
+			llm.User(fmt.Sprintf("URL: %s\n\nQuestion: %s\n\nContent:\n%s", rawURL, question, modelContent)),
 		},
 	}
 
 	cheapResp, err := s.cheap.Complete(ctx, p, cheapReq)
 	if err != nil {
+		if errors.Is(err, cheapmodel.ErrAllModelsRefused) {
+			fallbackContent, truncated := truncateWebFetchContent(readableContent, webFetchRawFallbackMaxContent)
+			result := map[string]any{
+				"fallback":          "raw",
+				"fallback_reason":   "both_models_refused",
+				"content":           fallbackContent,
+				"content_source":    "raw",
+				"content_truncated": truncated,
+				"content_limit":     webFetchRawFallbackMaxContent,
+				"content_untrusted": true,
+				"raw_file":          rawPath,
+				"url":               rawURL,
+				"source_url":        rawURL,
+				"question":          question,
+				"content_type":      contentType,
+				"size_bytes":        sizeBytes,
+			}
+			if mdPath != "" {
+				result["content_source"] = "converted_markdown"
+				result["markdown_file"] = mdPath
+			}
+			return result, nil
+		}
 		return nil, fmt.Errorf("cheap model call failed: %w", err)
 	}
 
@@ -178,6 +206,19 @@ func (s *Session) webFetchWithRuntime(ctx context.Context, rawURL string, questi
 	}
 
 	return result, nil
+}
+
+// truncateWebFetchContent bounds fallback content by Unicode characters so the
+// returned text is valid UTF-8 and the advertised limit is deterministic.
+func truncateWebFetchContent(content string, limit int) (string, bool) {
+	if limit <= 0 {
+		return content, false
+	}
+	runes := []rune(content)
+	if len(runes) <= limit {
+		return content, false
+	}
+	return string(runes[:limit]), true
 }
 
 // extFromContentType returns a file extension for a content type.
