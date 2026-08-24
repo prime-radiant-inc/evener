@@ -37,7 +37,7 @@ func TestCovNewResumeLocks(t *testing.T) {
 
 	// The returned mutex must be lockable.
 	m1.Lock()
-	defer m1.Unlock()
+	m1.Unlock()
 }
 
 // TestCovResumeLocksConcurrent verifies For is safe under concurrent access.
@@ -46,10 +46,10 @@ func TestCovResumeLocksConcurrent(t *testing.T) {
 	var wg sync.WaitGroup
 	for range 20 {
 		wg.Add(1)
-		go func() {
+		wg.Go(func() {
 			defer wg.Done()
 			_ = r.For("shared")
-		}()
+		})
 	}
 	wg.Wait()
 	if r.For("shared") == nil {

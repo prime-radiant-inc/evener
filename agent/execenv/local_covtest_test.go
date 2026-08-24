@@ -177,7 +177,7 @@ func TestCovFindExecutable(t *testing.T) {
 	// Look up a real executable.
 	got, err := e.findExecutable("ls")
 	if err != nil && got == "" {
-		_, err = e.findExecutable("echo")
+		_, _ = e.findExecutable("echo")
 	}
 	// Non-existent executable — should return error.
 	_, err = e.findExecutable("this_definitely_does_not_exist_xyz")
