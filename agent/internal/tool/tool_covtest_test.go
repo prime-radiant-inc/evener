@@ -15,12 +15,31 @@ func TestCovNormalizeAskUserArgs(t *testing.T) {
 			},
 		},
 	}
+	batchBefore := map[string]any{
+		"questions": []any{
+			map[string]any{
+				"question": "Which?",
+				"options":  []any{map[string]any{"label": "A", "detail": "first"}},
+			},
+		},
+	}
+	wantBatch := map[string]any{
+		"questions": []any{
+			map[string]any{
+				"question": "Which?",
+				"options":  []any{map[string]any{"label": "A", "detail": "first"}},
+			},
+		},
+	}
 	out, err := normalizeAskUserArgs(batch)
 	if err != nil {
 		t.Fatalf("batch form: %v", err)
 	}
-	if !reflect.DeepEqual(out, batch) {
-		t.Fatalf("batch form normalized to %#v, want %#v", out, batch)
+	if !reflect.DeepEqual(out, wantBatch) {
+		t.Fatalf("batch form normalized to %#v, want %#v", out, wantBatch)
+	}
+	if !reflect.DeepEqual(batch, batchBefore) {
+		t.Fatalf("batch normalization mutated input: got %#v, want original %#v", batch, batchBefore)
 	}
 
 	options := []any{
@@ -35,11 +54,25 @@ func TestCovNormalizeAskUserArgs(t *testing.T) {
 		"multi_select":  true,
 		"header":        "Choose",
 	}
+	shorthandBefore := map[string]any{
+		"question": "Which one?",
+		"options": []any{
+			map[string]any{"label": "A", "detail": "first"},
+			map[string]any{"label": "B", "detail": "second"},
+		},
+		"why":           "need to know",
+		"if_unanswered": "skip",
+		"multi_select":  true,
+		"header":        "Choose",
+	}
 	want := map[string]any{
 		"questions": []any{
 			map[string]any{
-				"question":      "Which one?",
-				"options":       options,
+				"question": "Which one?",
+				"options": []any{
+					map[string]any{"label": "A", "detail": "first"},
+					map[string]any{"label": "B", "detail": "second"},
+				},
 				"why":           "need to know",
 				"if_unanswered": "skip",
 				"multi_select":  true,
@@ -54,8 +87,19 @@ func TestCovNormalizeAskUserArgs(t *testing.T) {
 	if !reflect.DeepEqual(out, want) {
 		t.Fatalf("shorthand normalized to %#v, want %#v", out, want)
 	}
+	if !reflect.DeepEqual(shorthand, shorthandBefore) {
+		t.Fatalf("shorthand normalization mutated input: got %#v, want original %#v", shorthand, shorthandBefore)
+	}
 
 	minimal := map[string]any{
+		"question":      "q",
+		"options":       []any{},
+		"why":           "",
+		"if_unanswered": "",
+		"multi_select":  false,
+		"header":        "",
+	}
+	minimalBefore := map[string]any{
 		"question":      "q",
 		"options":       []any{},
 		"why":           "",
@@ -74,6 +118,9 @@ func TestCovNormalizeAskUserArgs(t *testing.T) {
 	}
 	if !reflect.DeepEqual(out, wantMinimal) {
 		t.Fatalf("minimal shorthand normalized to %#v, want %#v", out, wantMinimal)
+	}
+	if !reflect.DeepEqual(minimal, minimalBefore) {
+		t.Fatalf("minimal shorthand normalization mutated input: got %#v, want original %#v", minimal, minimalBefore)
 	}
 
 	invalid := []struct {
