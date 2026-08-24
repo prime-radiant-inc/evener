@@ -186,7 +186,7 @@ func TestDecodeStrictMultipleJSONValues(t *testing.T) {
 	// the second decode returns nil (not EOF) → "multiple JSON values".
 	line := marshalRecordLine(t, validSettlement(t))
 	// Append a second JSON value.
-	data := append(line, []byte(`{}`)...)
+	data = append(line, []byte(`{}`)...)
 	err := decodeStrict(data, &APIAttemptGroupSettlement{})
 	if err == nil {
 		t.Fatal("decodeStrict with multiple JSON values should error")
@@ -248,7 +248,7 @@ func TestScanRecoveryCleanTrailingNewline(t *testing.T) {
 	// A file with one complete record followed by a newline.
 	rec := validAPIAttemptRecord(t)
 	line, _ := json.Marshal(rec)
-	data := append(line, '\n')
+	data = append(line, '\n')
 	offset, partialTail, err := ScanRecovery(bytes.NewReader(data), len(line)+1)
 	if err != nil {
 		t.Fatalf("ScanRecovery: %v", err)

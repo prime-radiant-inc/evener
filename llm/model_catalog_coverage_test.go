@@ -45,7 +45,7 @@ func TestModelCatalogResolveAliasAmbiguous(t *testing.T) {
 // TestClassifyAPIAttemptOutcomeTransportFail covers the transport error path
 // in ClassifyAPIAttemptOutcome (line 87-88).
 func TestClassifyAPIAttemptOutcomeTransportFail(t *testing.T) {
-	got := ClassifyAPIAttemptOutcome(APIAttemptContextOwnership{}, 0, errSimple("transport fail"), nil, nil)
+	got := ClassifyAPIAttemptOutcome(APIAttemptContextOwnership{}, 0, simpleError("transport fail"), nil, nil)
 	if got != "transport_failure" {
 		t.Fatalf("got %q, want transport_failure", got)
 	}
@@ -53,7 +53,7 @@ func TestClassifyAPIAttemptOutcomeTransportFail(t *testing.T) {
 
 // TestAttemptOwnedTimeoutResponseHeader covers the ResponseHeader path (line 97).
 func TestAttemptOwnedTimeoutResponseHeader(t *testing.T) {
-	if !attemptOwnedTimeout(APIAttemptContextOwnership{TimeoutSource: APITimeoutResponseHeader}, nil, errSimple("transport fail")) {
+	if !attemptOwnedTimeout(APIAttemptContextOwnership{TimeoutSource: APITimeoutResponseHeader}, nil, simpleError("transport fail")) {
 		t.Fatal("ResponseHeader with transport error should be owned")
 	}
 	if attemptOwnedTimeout(APIAttemptContextOwnership{TimeoutSource: APITimeoutResponseHeader}, nil, nil) {
@@ -63,14 +63,14 @@ func TestAttemptOwnedTimeoutResponseHeader(t *testing.T) {
 
 // TestAttemptOwnedTimeoutSSERead covers the SSERead path (line 98-99).
 func TestAttemptOwnedTimeoutSSERead(t *testing.T) {
-	if !attemptOwnedTimeout(APIAttemptContextOwnership{TimeoutSource: APITimeoutSSERead}, errSimple("decode fail"), nil) {
+	if !attemptOwnedTimeout(APIAttemptContextOwnership{TimeoutSource: APITimeoutSSERead}, simpleError("decode fail"), nil) {
 		t.Fatal("SSERead with decode error should be owned")
 	}
-	if !attemptOwnedTimeout(APIAttemptContextOwnership{TimeoutSource: APITimeoutSSERead}, nil, errSimple("transport fail")) {
+	if !attemptOwnedTimeout(APIAttemptContextOwnership{TimeoutSource: APITimeoutSSERead}, nil, simpleError("transport fail")) {
 		t.Fatal("SSERead with transport error should be owned")
 	}
 }
 
-type errSimple string
+type simpleError string
 
-func (e errSimple) Error() string { return string(e) }
+func (e simpleError) Error() string { return string(e) }

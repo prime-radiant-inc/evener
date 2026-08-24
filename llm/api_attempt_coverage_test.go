@@ -108,7 +108,7 @@ func TestSettleNilGroup(t *testing.T) {
 // TestWaitForPriorAPIAttemptsNilContext covers the nil-ctx path in
 // apiAttemptGroupFromContext.
 func TestWaitForPriorAPIAttemptsNilContext(t *testing.T) {
-	WaitForPriorAPIAttempts(nil)
+	WaitForPriorAPIAttempts(context.TODO())
 	// No panic.
 }
 
@@ -121,7 +121,7 @@ func TestSanitizeAPILogErrorNil(t *testing.T) {
 
 // TestAPILogCredentialMaterialFromContextNil covers the nil-ctx path.
 func TestAPILogCredentialMaterialFromContextNil(t *testing.T) {
-	_, ok := apiLogCredentialMaterialFromContext(nil)
+	_, ok := apiLogCredentialMaterialFromContext(context.TODO())
 	if ok {
 		t.Fatal("nil context should report no credential material")
 	}

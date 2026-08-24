@@ -445,7 +445,7 @@ func TestRegisterAskTool_AbortError(t *testing.T) {
 	reg := tool.NewRegistry()
 	deps := &toolDeps{
 		abort: func(ctx context.Context) error {
-			return errAbort("aborted")
+			return abortError("aborted")
 		},
 	}
 	registerAskTool(reg, sess, deps)
@@ -491,7 +491,7 @@ func TestMinimalExampleQuestionsArray(t *testing.T) {
 	}
 }
 
-// errAbort is a simple error type for the abort test.
-type errAbort string
+// abortError is a simple error type for the abort test.
+type abortError string
 
-func (e errAbort) Error() string { return string(e) }
+func (e abortError) Error() string { return string(e) }

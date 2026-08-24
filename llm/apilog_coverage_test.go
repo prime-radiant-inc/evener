@@ -342,16 +342,3 @@ func TestStampEndpointURLNilResponse(t *testing.T) {
 	StampEndpointURL(nil, "https://example.invalid/api", APILogCredentialMaterial{})
 	// No panic.
 }
-
-// newChanStreamWithEvents creates a ChanStream that yields the given events
-// then closes.
-func newChanStreamWithEvents(events []StreamEvent) Stream {
-	s := NewChanStream(func() {})
-	go func() {
-		for _, ev := range events {
-			s.Send(ev)
-		}
-		s.CloseSend()
-	}()
-	return s
-}

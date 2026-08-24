@@ -58,7 +58,7 @@ func TestReleaseSessionAPILogWithMiddlewareError(t *testing.T) {
 // TestBeginProviderOperationNilContext covers the nil ctx path (lines 274-275).
 func TestBeginProviderOperationNilContext(t *testing.T) {
 	c := NewClient()
-	ctx, _ := c.beginProviderOperation(nil)
+	ctx, _ := c.beginProviderOperation(context.TODO())
 	if ctx == nil {
 		t.Fatal("ctx should not be nil")
 	}

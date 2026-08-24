@@ -153,10 +153,10 @@ type daemonLogShortReader struct{}
 
 func (*daemonLogShortReader) Read(p []byte) (int, error) {
 	copy(p, []byte("short"))
-	return 5, daemonLogErrEOF
+	return 5, errDaemonLogEOF
 }
 
-var daemonLogErrEOF = newDaemonLogSimpleError("unexpected EOF")
+var errDaemonLogEOF = newDaemonLogSimpleError("unexpected EOF")
 
 type daemonLogSimpleError struct{ msg string }
 
