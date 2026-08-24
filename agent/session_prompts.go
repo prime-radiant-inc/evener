@@ -101,6 +101,12 @@ func (s *Session) buildPromptData(env execenv.ExecutionEnvironment) promptData {
 	if agentName == "" {
 		agentName = defaultAgentName
 	}
+	var cpus float64
+	var memoryMB int64
+	if resources := s.envInfo.Resources; resources != nil {
+		cpus = resources.CPUs
+		memoryMB = resources.MemoryMB
+	}
 
 	data := promptData{
 		NonInteractive:           s.cfg.NonInteractive,
@@ -116,8 +122,8 @@ func (s *Session) buildPromptData(env execenv.ExecutionEnvironment) promptData {
 		Today:                    s.envInfo.Today,
 		Model:                    s.profile.Model(),
 		KnowledgeCutoff:          s.envInfo.KnowledgeCutoff,
-		CPUs:                     s.envInfo.CPUs,
-		MemoryMB:                 s.envInfo.MemoryMB,
+		CPUs:                     cpus,
+		MemoryMB:                 memoryMB,
 		Sandbox:                  sandboxPromptLine(env),
 		Capabilities:             capabilityPreambleLines(capabilityFactsFromEnv(env, s.capabilities)),
 		GitModifiedFiles:         s.envInfo.GitModifiedFiles,
