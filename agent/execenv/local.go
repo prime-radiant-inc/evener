@@ -1494,7 +1494,8 @@ func (e *LocalExecutionEnvironment) grepNative(ctx context.Context, pattern, pat
 			// target before constructing the DirFS. A symlink to a regular file
 			// remains an explicitly named file and is read through as before.
 			target, targetErr := os.Stat(path)
-			if targetErr != nil || !target.Mode().IsRegular() {
+			targetRegular := targetErr == nil && target.Mode().IsRegular()
+			if !targetRegular {
 				return "", nil
 			}
 		}

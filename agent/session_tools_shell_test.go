@@ -149,20 +149,28 @@ type bufferedShellEnv struct {
 type cancellationGrepEnv struct {
 	agenttest.FakeEnv
 	started chan struct{}
+	release chan struct{}
 }
 
 func (e *cancellationGrepEnv) Grep(ctx context.Context, _ string, _ string, _ string, _ bool, _ int, _ string, _ ...int) (string, error) {
 	e.started <- struct{}{}
-	<-ctx.Done()
+	select {
+	case <-ctx.Done():
+	case <-e.release:
+	}
 	return "", ctx.Err()
 }
 
 func TestGrepFilesExecToolPassesCancellationContext(t *testing.T) {
 	s := newTestSession(t)
 	env := &cancellationGrepEnv{
-		FakeEnv: agenttest.FakeEnv{WorkDir: t.TempDir()},
 		started: make(chan struct{}, 1),
+		release: make(chan struct{}),
 	}
+	env.FakeEnv = agenttest.FakeEnv{WorkDir: t.TempDir()}
+	// Register after newTestSession so this release runs before Session.Close's
+	// cleanup when a context.Background mutation leaves Grep blocked.
+	t.Cleanup(func() { close(env.release) })
 	s.env = env
 
 	ctx, cancel := context.WithCancel(context.Background())
