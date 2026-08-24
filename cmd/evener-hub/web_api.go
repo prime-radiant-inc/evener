@@ -31,6 +31,7 @@ import (
 var (
 	webHubUpgrade            = hubUpgrade
 	gitCommand               = exec.CommandContext
+	mobileHostnameProfile    = idna.New(idna.MapForLookup(), idna.StrictDomainName(false), idna.CheckHyphens(false))
 	ensureAPIActionAvailable = func(s *WebServer, id, action string) error {
 		return s.ensureSessionActionAvailable(id, action)
 	}
@@ -213,7 +214,7 @@ func safeMobileOrigin(raw string) (string, bool) {
 		// the same so Unicode spellings of numeric addresses cannot bypass the
 		// IP and legacy-numeric checks below. Canonical IP literals bypass IDNA
 		// because IPv6 colons are not valid domain-name runes.
-		host, err = idna.Lookup.ToASCII(host)
+		host, err = mobileHostnameProfile.ToASCII(host)
 		if err != nil {
 			return "", false
 		}
