@@ -16,6 +16,8 @@ import (
 	"strconv"
 	"strings"
 
+	"golang.org/x/net/idna"
+
 	"primeradiant.com/evener/agent/diagnostic"
 	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/buildinfo"
@@ -205,10 +207,19 @@ func safeMobileOrigin(raw string) (string, bool) {
 	if err != nil {
 		return "", false
 	}
-	host := u.Hostname()
-	// Strip trailing dot (FQDN form) before checking, then reject
-	// "localhost" and all its spellings.
-	host = strings.TrimRight(host, ".")
+	host := strings.TrimRight(u.Hostname(), ".")
+	if _, err := netip.ParseAddr(host); err != nil {
+		// Browsers apply UTS #46 mappings before interpreting a hostname. Do
+		// the same so Unicode spellings of numeric addresses cannot bypass the
+		// IP and legacy-numeric checks below. Canonical IP literals bypass IDNA
+		// because IPv6 colons are not valid domain-name runes.
+		host, err = idna.Lookup.ToASCII(host)
+		if err != nil {
+			return "", false
+		}
+		host = strings.TrimRight(host, ".")
+	}
+	// Reject "localhost" and all its case and trailing-dot spellings.
 	if host == "" || strings.EqualFold(host, "localhost") {
 		return "", false
 	}

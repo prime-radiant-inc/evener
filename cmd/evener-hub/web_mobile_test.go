@@ -97,6 +97,10 @@ func TestSafeMobileOriginRejectsLoopbackAlternateSpellings(t *testing.T) {
 		"https://127.1",
 		"https://2130706433",
 		"https://0x7f000001",
+		"https://１２７.０.０.１",
+		"https://１２７．１",
+		"https://０ｘ７ｆ０００００１",
+		"https://²¹³⁰⁷⁰⁶⁴³³",
 	} {
 		t.Run(origin, func(t *testing.T) {
 			if got, ok := safeMobileOrigin(origin); ok {
@@ -107,9 +111,22 @@ func TestSafeMobileOriginRejectsLoopbackAlternateSpellings(t *testing.T) {
 }
 
 func TestSafeMobileOriginAllowsOrdinaryHTTPSDNSNameWithoutResolution(t *testing.T) {
-	const origin = "https://unresolvable.example.test:9443"
-	if got, ok := safeMobileOrigin(origin); !ok || got != origin {
-		t.Fatalf("safeMobileOrigin(%q) = %q, %v; want unchanged origin", origin, got, ok)
+	for _, origin := range []string{
+		"https://unresolvable.example.test:9443",
+		"https://bücher.example:9443",
+	} {
+		t.Run(origin, func(t *testing.T) {
+			if got, ok := safeMobileOrigin(origin); !ok || got != origin {
+				t.Fatalf("safeMobileOrigin(%q) = %q, %v; want unchanged origin", origin, got, ok)
+			}
+		})
+	}
+}
+
+func TestSafeMobileOriginRejectsInvalidIDNAHostname(t *testing.T) {
+	const origin = "https://a\u200db.example"
+	if got, ok := safeMobileOrigin(origin); ok {
+		t.Fatalf("safeMobileOrigin(%q) = %q, true; want rejection", origin, got)
 	}
 }
 
