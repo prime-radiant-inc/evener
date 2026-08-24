@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -394,14 +395,33 @@ func TestWebFetchTool_InvalidURL(t *testing.T) {
 	}
 }
 
-func TestWebFetchTool_HTTPErrorStatus(t *testing.T) {
+func TestWebFetchTool_HTTP404RetriesWithAlternateUserAgent(t *testing.T) {
+	var requestCount int
+	var userAgents []string
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusNotFound)
+		requestCount++
+		userAgents = append(userAgents, r.Header.Get("User-Agent"))
+		if requestCount == 1 {
+			w.WriteHeader(http.StatusNotFound)
+			_, _ = fmt.Fprint(w, "doc-site wall")
+			return
+		}
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		_, _ = fmt.Fprint(w, `<html><body><h1>Recovered page</h1></body></html>`)
 	}))
 	defer srv.Close()
 
 	dir := t.TempDir()
-	fa := &fakeAdapter{name: "openai"}
+	cacheHome := t.TempDir()
+	t.Setenv("XDG_CACHE_HOME", cacheHome)
+	fa := &fakeAdapter{
+		name: "openai",
+		steps: []func(req llm.Request) llm.Response{
+			func(req llm.Request) llm.Response {
+				return llm.Response{Message: llm.Assistant("recovered answer")}
+			},
+		},
+	}
 	c := llm.NewClient()
 	c.Register(fa)
 
@@ -416,11 +436,171 @@ func TestWebFetchTool_HTTPErrorStatus(t *testing.T) {
 		Name:      "web_fetch",
 		Arguments: json.RawMessage(fmt.Sprintf(`{"url": %q, "question": "test"}`, srv.URL)),
 	})
-	if !res.IsError {
-		t.Fatalf("expected error for 404, got success: %s", res.Output)
+	if res.IsError {
+		t.Fatalf("web_fetch returned error after alternate-UA recovery: %s", res.Output)
 	}
-	if !strings.Contains(res.Output, "404") {
-		t.Fatalf("error should mention 404: %s", res.Output)
+	if !strings.Contains(res.Output, "recovered answer") {
+		t.Fatalf("output missing recovered answer: %s", res.Output)
+	}
+	if requestCount != 2 {
+		t.Fatalf("HTTP request count = %d, want one retry after 404", requestCount)
+	}
+	if len(userAgents) != 2 || userAgents[0] != "evener/1.0" {
+		t.Fatalf("User-Agent sequence = %q, want initial evener/1.0 then alternate", userAgents)
+	}
+	if !strings.HasPrefix(userAgents[1], "Mozilla/5.0") {
+		t.Fatalf("alternate User-Agent = %q, want browser-shaped User-Agent", userAgents[1])
+	}
+	rawPaths, err := filepath.Glob(filepath.Join(cacheHome, "evener", "web_cache", "*", "*", "raw.html"))
+	if err != nil {
+		t.Fatalf("glob recovered cache: %v", err)
+	}
+	if len(rawPaths) != 1 {
+		t.Fatalf("recovered raw cache paths = %v, want one successful-response cache", rawPaths)
+	}
+	raw, err := os.ReadFile(rawPaths[0])
+	if err != nil {
+		t.Fatalf("read recovered raw cache: %v", err)
+	}
+	if !strings.Contains(string(raw), "Recovered page") {
+		t.Fatalf("raw cache did not contain alternate-UA response: %q", raw)
+	}
+}
+
+type webFetchTrackingBody struct {
+	io.ReadCloser
+	closed bool
+}
+
+func (b *webFetchTrackingBody) Close() error {
+	b.closed = true
+	return b.ReadCloser.Close()
+}
+
+type webFetchTrackingTransport struct {
+	base                       http.RoundTripper
+	requests                   []*http.Request
+	bodies                     []*webFetchTrackingBody
+	firstBodyClosedBeforeRetry bool
+}
+
+func (t *webFetchTrackingTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	if len(t.requests) == 1 && len(t.bodies) == 1 {
+		t.firstBodyClosedBeforeRetry = t.bodies[0].closed
+	}
+	t.requests = append(t.requests, req)
+	resp, err := t.base.RoundTrip(req)
+	if err != nil {
+		return nil, err
+	}
+	body := &webFetchTrackingBody{ReadCloser: resp.Body}
+	t.bodies = append(t.bodies, body)
+	resp.Body = body
+	return resp, nil
+}
+
+func TestWebFetch_Retries403WithAlternateUserAgentAndClosesBodies(t *testing.T) {
+	var requestCount int
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requestCount++
+		if requestCount == 1 {
+			w.WriteHeader(http.StatusForbidden)
+			_, _ = fmt.Fprint(w, "doc-site wall")
+			return
+		}
+		if got := r.Header.Get("User-Agent"); !strings.HasPrefix(got, "Mozilla/5.0") {
+			w.WriteHeader(http.StatusForbidden)
+			return
+		}
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		_, _ = fmt.Fprint(w, `<html><body><h1>Recovered 403 page</h1></body></html>`)
+	}))
+	defer srv.Close()
+
+	transport := &webFetchTrackingTransport{base: http.DefaultTransport}
+	adapter := &agenttest.ModelTrackingAdapter{
+		Provider: "openai",
+		Respond: func(req llm.Request) (llm.Response, error) {
+			return llm.Response{Message: llm.Assistant("recovered 403 answer")}, nil
+		},
+	}
+	client := llm.NewClient()
+	client.Register(adapter)
+	sess, err := NewSession(client, NewOpenAIProfile("test-model"),
+		execenv.NewLocalExecutionEnvironment(t.TempDir()), SessionConfig{})
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+	t.Cleanup(sess.Close)
+	sess.httpClient = &http.Client{Transport: transport}
+
+	got, err := sess.webFetch(context.Background(), srv.URL, "What recovered?")
+	if err != nil {
+		t.Fatalf("webFetch: %v", err)
+	}
+	result, ok := got.(map[string]any)
+	if !ok || result["answer"] != "recovered 403 answer" {
+		t.Fatalf("webFetch result = %#v, want recovered answer", got)
+	}
+	if requestCount != 2 || len(transport.requests) != 2 {
+		t.Fatalf("HTTP requests = %d, transport requests = %d, want exactly one retry", requestCount, len(transport.requests))
+	}
+	if !transport.firstBodyClosedBeforeRetry {
+		t.Fatal("403 response body was not closed before the alternate-UA retry")
+	}
+	for i, body := range transport.bodies {
+		if !body.closed {
+			t.Errorf("response body %d was not closed", i)
+		}
+	}
+}
+
+func TestWebFetch_DocWallRetryIsBoundedAndOtherStatusIsNotRetried(t *testing.T) {
+	tests := []struct {
+		name   string
+		status int
+	}{
+		{name: "persistent 404", status: http.StatusNotFound},
+		{name: "500 control", status: http.StatusInternalServerError},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			var requestCount int
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				requestCount++
+				w.WriteHeader(tc.status)
+				_, _ = fmt.Fprint(w, "failure body")
+			}))
+			t.Cleanup(srv.Close)
+
+			adapter := &agenttest.ModelTrackingAdapter{
+				Provider: "openai",
+				Respond: func(req llm.Request) (llm.Response, error) {
+					return finalResponse("unexpected model call"), nil
+				},
+			}
+			client := llm.NewClient()
+			client.Register(adapter)
+			sess, err := NewSession(client, NewOpenAIProfile("test-model"),
+				execenv.NewLocalExecutionEnvironment(t.TempDir()), SessionConfig{})
+			if err != nil {
+				t.Fatalf("NewSession: %v", err)
+			}
+			t.Cleanup(sess.Close)
+
+			if _, err := sess.webFetch(context.Background(), srv.URL, "question"); err == nil {
+				t.Fatalf("webFetch succeeded for HTTP %d", tc.status)
+			} else if !strings.Contains(err.Error(), fmt.Sprintf("HTTP %d", tc.status)) {
+				t.Fatalf("webFetch error = %v, want HTTP %d", err, tc.status)
+			}
+			wantRequests := 1
+			if tc.status == http.StatusNotFound {
+				wantRequests = 2
+			}
+			if requestCount != wantRequests {
+				t.Fatalf("HTTP request count = %d, want %d", requestCount, wantRequests)
+			}
+		})
 	}
 }
 

@@ -23,6 +23,10 @@ const (
 	webFetchMaxBytes              = 5 * 1024 * 1024 // 5 MiB
 	webFetchMaxContent            = 100_000         // chars passed to cheap model
 	webFetchRawFallbackMaxContent = 20_000          // chars returned when both models refuse
+	webFetchUserAgent             = "evener/1.0"
+	// Documentation hosts observed in #349 distinguish the fetcher UA from a
+	// browser-shaped client; this is used for one deterministic 403/404 retry.
+	webFetchAlternateUserAgent = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
 )
 
 // webFetchCacheKey returns a deterministic 16-char hex key for a URL.
@@ -91,15 +95,38 @@ func (s *Session) webFetchWithRuntime(ctx context.Context, rawURL string, questi
 	httpCtx, cancel := context.WithTimeout(ctx, webFetchTimeout)
 	defer cancel()
 
-	req, err := rt.newRequest(httpCtx, http.MethodGet, rawURL, nil)
+	newRequest := func(userAgent string) (*http.Request, error) {
+		req, err := rt.newRequest(httpCtx, http.MethodGet, rawURL, nil)
+		if err != nil {
+			return nil, err
+		}
+		req.Header.Set("User-Agent", userAgent)
+		return req, nil
+	}
+
+	req, err := newRequest(webFetchUserAgent)
 	if err != nil {
 		return nil, fmt.Errorf("creating request: %w", err)
 	}
-	req.Header.Set("User-Agent", "evener/1.0")
 
 	resp, err := s.webFetchClient().Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("fetching URL: %w", err)
+	}
+
+	if resp.StatusCode == http.StatusForbidden || resp.StatusCode == http.StatusNotFound {
+		_ = resp.Body.Close()
+		if err := httpCtx.Err(); err != nil {
+			return nil, fmt.Errorf("fetching URL: %w", err)
+		}
+		retryReq, err := newRequest(webFetchAlternateUserAgent)
+		if err != nil {
+			return nil, fmt.Errorf("creating retry request: %w", err)
+		}
+		resp, err = s.webFetchClient().Do(retryReq)
+		if err != nil {
+			return nil, fmt.Errorf("fetching URL after alternate user agent: %w", err)
+		}
 	}
 	defer func() { _ = resp.Body.Close() }()
 
