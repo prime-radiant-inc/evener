@@ -10,11 +10,11 @@ import {
 
 // Section inventory verified against templates/partials/settings.html:13-31
 // (16 exact) - see the wave-7 floor doc's own citation of that range - plus
-// one section with no legacy counterpart, "about" (see sections.ts's own
-// doc comment).
+// two sections with no legacy counterpart, "about" and "mobile" (see
+// sections.ts's own doc comment).
 
-test("has exactly 17 sections", () => {
-  expect(SETTINGS_SECTIONS).toHaveLength(17);
+test("has exactly 18 sections", () => {
+  expect(SETTINGS_SECTIONS).toHaveLength(18);
 });
 
 test("every section id is unique", () => {
@@ -46,10 +46,10 @@ test('the "Extensions" cluster has exactly these 4 sections, in order, right aft
   expect(SETTINGS_SECTIONS.slice(10, 14)).toEqual(cluster);
 });
 
-test('the "Daemon" cluster has exactly these 3 sections, in order, last', () => {
+test('the "Daemon" cluster has exactly these 4 sections, in order, last', () => {
   const cluster = SETTINGS_SECTIONS.filter((s) => s.cluster === "daemon");
-  expect(cluster.map((s) => s.label)).toEqual(["Hub", "Storage", "About"]);
-  expect(SETTINGS_SECTIONS.slice(14, 17)).toEqual(cluster);
+  expect(cluster.map((s) => s.label)).toEqual(["Hub", "Mobile app", "Storage", "About"]);
+  expect(SETTINGS_SECTIONS.slice(14, 18)).toEqual(cluster);
 });
 
 test('"About" is the very last section overall', () => {
