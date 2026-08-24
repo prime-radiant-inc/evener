@@ -200,8 +200,6 @@ func TestPhase1b_CompatX_NoOpenAIBehavior(t *testing.T) {
 		t.Fatalf("compatProfile.BehaviorTag() = %q, want openai-compatible", got)
 	}
 
-	const openAIMarker = "they execute in the order you"
-
 	// ── work instance gets openai behavior ──
 	workSess, err := NewSession(c, workProfile, execenv.NewLocalExecutionEnvironment(dir), SessionConfig{
 		NoProjectPrompts: true,
@@ -211,9 +209,11 @@ func TestPhase1b_CompatX_NoOpenAIBehavior(t *testing.T) {
 	}
 	defer workSess.Close()
 
-	workPrompt, _ := workSess.renderSystemPrompt(workSess.env)
-	if !strings.Contains(workPrompt, openAIMarker) {
-		t.Errorf("work session (tag=openai): system prompt missing openai section marker %q", openAIMarker)
+	if got := workSess.profile.BehaviorTag(); got != "openai" {
+		t.Errorf("work session BehaviorTag() = %q, want openai", got)
+	}
+	if !promptResolvedSection(t, workSess, "tools.provider-openai_append") {
+		t.Error("work session (tag=openai): did not resolve the openai tools append")
 	}
 
 	workReq := llm.Request{Model: "gpt-5.2", Provider: workProfile.ID()}
@@ -234,9 +234,11 @@ func TestPhase1b_CompatX_NoOpenAIBehavior(t *testing.T) {
 	}
 	defer compatSess.Close()
 
-	compatPrompt, _ := compatSess.renderSystemPrompt(compatSess.env)
-	if strings.Contains(compatPrompt, openAIMarker) {
-		t.Errorf("compat-x session (tag=openai-compatible): system prompt must NOT contain openai section marker %q", openAIMarker)
+	if got := compatSess.profile.BehaviorTag(); got == "openai" {
+		t.Errorf("compat-x session BehaviorTag() = %q, want a non-openai tag", got)
+	}
+	if promptResolvedSection(t, compatSess, "tools.provider-openai_append") {
+		t.Error("compat-x session (tag=openai-compatible): resolved the openai-only tools append")
 	}
 
 	compatReq := llm.Request{Model: "gpt-4o", Provider: compatProfile.ID()}

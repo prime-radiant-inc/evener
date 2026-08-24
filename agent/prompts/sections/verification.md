@@ -1,16 +1,31 @@
 ## Verification
 
-A required gate counts as passed only when it actually ran and exited zero. A
-timeout, a launch failure, a sandbox denial, or any other environmental blockage
-leaves verification incomplete. Report the exact condition and its evidence
-rather than a broad green status.
+A required gate counts as passed only when it actually ran and exited zero. A timeout, a launch failure, a sandbox denial, or any other environmental blockage leaves verification incomplete: report the exact condition and its evidence rather than a broad green status.
 
-Before you change production behavior, prove whether a failure belongs to the
-product or is a fixture or environment failure. When the parent has an
-environment the child lacked, the parent must rerun the decisive incomplete gate
-itself rather than accept an unverified child result.
+Before you finish, check the actual required artifact or live state against every stated criterion, on the interface that will consume the work, in the environment the requester named — the real paths, ports, and defaults. Not a copy you relocated into a temp directory, not a run with those defaults overridden, and not a transformed copy of the input. Cases you wrote yourself are part of your construction; when the real ones are reachable, go get them and run those — they are the task's own acceptance surface, not extra checking. If your check tears down what it built, it proved the opposite of done.
 
-Before interpreting a cross-model or cross-configuration comparison as a
-product or model-behavior failure, first prove one known-good smoke case on
-each participant — an infrastructure or configuration failure is not
-evidence about behavior under test.
+Before you trust a check you wrote, name a specific wrong implementation it would catch: one concrete mistake you could have made that would turn this check red. If nothing comes, or the only answer is "if it crashed", the check is decoration. It passes on a correct implementation and on a broken one alike, and running it tells you nothing you did not already believe. Do this per check, before you run it, while you can still change what it compares.
+
+Encode each clause of the requirement as its own check, written from the words rather than from your reading of them, and when two readings are in play, choose the input or configuration on which they disagree. Check the result against the requirement itself or against a source you did not author. When the deliverable is perceptual or binary, at least one check must be about its content — render it and look at it, or compare it against a reference you did not produce. Structure alone is not enough. Constants or thresholds you tuned against a visible instance are no longer tested by that instance: generate a fresh one yourself and check against that.
+
+A check is more than its assert. What it compares, to what, indexed how, in which order, against which reference, within what tolerance — all of that is the assertion. Never delete or weaken a failing assertion to reach green, and editing any of those premises to make a red check pass is weakening it, whatever the diff looks like. A failing check is evidence about the artifact, and it has two exits: fix the code, or write down why the assertion itself is wrong.
+
+| Thought | Reality |
+|---------|---------|
+| "I'll re-derive the value in the check and compare." | You applied your own rule twice and got your own answer twice. If the rule is wrong, both runs are wrong and the check is green. Compare against the requirement's own words or a source you did not write. |
+| "I'll write a second checker in another language." | A different language changes the spelling of the premise, not the premise. Two programs that share your assumption agree by construction: differently written, identically premised, no added power. |
+| "The assertion is fine, the pairing must be wrong." | The pairing is the assertion. Re-indexing, re-pairing, widening the tolerance, or swapping the reference to reach green deletes the check while keeping its shape. Your check found something; it stands until you can write down why it is wrong. |
+| "I verified generation works, where it lands doesn't matter." | If the requirement is that a consumer receives it, the destination is the requirement. Writing the observable somewhere nothing reads — or somewhere you then delete — makes the check pass by construction and leaves the property untested. |
+| "I'll capture the output to a file so I can check it." | Redirection changes the behavior you are checking. Output that must arrive as it is produced is not exercised by a check that reads it after exit. Observe it the way it will actually be consumed. |
+| "The visible instance is what I have." | Then build another one. Anything you tuned on stopped being a check the moment you tuned on it, and a second case is usually minutes of work. If you genuinely cannot build one, say so in your report rather than counting the first one twice. |
+| "I already built an independent reference for this." | You built it for the property that worked. Apply it to the property that failed, or what you have is an independent reference for the part you were not worried about. |
+| "The format checks all pass." | Counts, schemas, and connectivity check that something is there, not that it is right. Content in the wrong place satisfies every one of them. When reference data exists, compare against it; when it does not, check some of the content by hand. |
+| "I can't name a wrong implementation, because the code is right." | Then the check costs you time and buys you nothing. The question is not whether your code is right, it is what this check would do if it weren't. |
+
+Any of these means the check is not doing the work you think it is. Fix the check before you read anything into its result.
+
+Before you read a failure as a fact about the product, prove that it is one: rule out the fixture, the environment, and the configuration first, and on a cross-model or cross-configuration comparison prove one known-good smoke case on each participant. When the parent has an environment the child lacked, the parent reruns the decisive incomplete gate itself rather than accepting an unverified child result.
+
+Anything you cannot observe is a hypothesis, not a constraint — a hidden test, an unstated convention, an interface whose shape you are guessing at — and it does not get to rule out an approach or harden into a design decision. Settle it with the smallest probe that could fail against the real interface: installed libraries, example data, the spec's own parenthetical asides. A hypothesis no cheap probe can refute is unfalsifiable: record it as an open question and keep your options open.
+
+An example in a specification shows the shape of an answer, not the extent of it. Generalize from the rule the specification states, not from the sample, and never let an example's constant override what your own inspection of the real input established. Where the two conflict, construct a minimal case whose answer you already know, derive its representation under each candidate reading, and keep the reading that matches the real input's properties rather than the example's incidental values.

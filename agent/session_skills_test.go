@@ -241,8 +241,8 @@ func TestOpenAI_SkillsSectionUsesUseSkill(t *testing.T) {
 	if !strings.Contains(capturedSystem, "<skill-catalog>") {
 		t.Error("OpenAI system prompt should contain <skills> section")
 	}
-	if !strings.Contains(capturedSystem, "Load a skill by calling use_skill with its name") {
-		t.Error("OpenAI system prompt should instruct model to use use_skill for skills")
+	if !strings.Contains(skillCatalogBlock(t, capturedSystem), "use_skill") {
+		t.Error("OpenAI system prompt should load skills through use_skill")
 	}
 	if !strings.Contains(capturedSystem, "greet: Greeting skill") {
 		t.Error("OpenAI system prompt missing greet skill entry")

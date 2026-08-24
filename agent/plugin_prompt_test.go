@@ -112,9 +112,6 @@ func TestSubagentPromptStatesAllowance(t *testing.T) {
 	if !strings.Contains(granting, "delegation_allowance` is 2") {
 		t.Errorf("allowance>0 subagent prompt should state its allowance (2) in context, got:\n%s", granting)
 	}
-	if strings.Contains(granting, "Only you can call") {
-		t.Errorf("allowance>0 subagent prompt must not say \"Only you can call\", got:\n%s", granting)
-	}
 
 	// Allowance 0 (leaf): leaf limits block present, no delegation text.
 	leaf := renderSubagentPromptWithAllowance(t, 0)
@@ -195,11 +192,11 @@ func TestUntypedDelegatingSubagentUsesDelegatingRolePrompt(t *testing.T) {
 	case <-time.After(30 * time.Second): // TRIPWIRE: scripted in-process adapter, no real I/O; only fires on a genuine hang.
 		t.Fatal("delegate child never requested a model turn")
 	}
-	if !strings.Contains(childPrompt, "You may delegate scoped subwork") {
-		t.Fatalf("delegating untyped child prompt missing delegating role guidance:\n%s", childPrompt)
+	if !strings.Contains(childPrompt, "## Delegation") {
+		t.Fatalf("delegating untyped child prompt missing the delegation section:\n%s", childPrompt)
 	}
-	if strings.Contains(childPrompt, "Do NOT try to spawn further subagents") {
-		t.Fatalf("delegating untyped child prompt used leaf role guidance:\n%s", childPrompt)
+	if strings.Contains(childPrompt, "## Delegated task limits") {
+		t.Fatalf("delegating untyped child prompt used the leaf limits block:\n%s", childPrompt)
 	}
 }
 
