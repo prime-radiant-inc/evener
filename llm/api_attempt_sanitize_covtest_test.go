@@ -2,6 +2,7 @@ package llm
 
 import (
 	"net/http"
+	"slices"
 	"testing"
 )
 
@@ -17,12 +18,9 @@ func TestCovNewAPILogCredentialMaterialStructuralHeaderNameFalse(t *testing.T) {
 		t.Fatal("missing custom credential header name")
 	}
 	// Verify secretNames were populated (lowercase variants).
-	for _, name := range m.secretNames {
-		if name == "x-custom-key" {
-			return
-		}
+	if !slices.Contains(m.secretNames, "x-custom-key") {
+		t.Fatalf("missing lowercase secret name, got %v", m.secretNames)
 	}
-	t.Fatalf("missing lowercase secret name, got %v", m.secretNames)
 }
 
 // TestCovNewAPILogCredentialMaterialStructuralQueryNameFalse covers the
@@ -33,12 +31,9 @@ func TestCovNewAPILogCredentialMaterialStructuralQueryNameFalse(t *testing.T) {
 	if _, ok := m.QueryNames["custom_param"]; !ok {
 		t.Fatal("missing custom credential query name")
 	}
-	for _, name := range m.secretNames {
-		if name == "custom_param" {
-			return
-		}
+	if !slices.Contains(m.secretNames, "custom_param") {
+		t.Fatalf("missing lowercase secret name, got %v", m.secretNames)
 	}
-	t.Fatalf("missing lowercase secret name, got %v", m.secretNames)
 }
 
 // TestCovStructuredCredentialHeaderValuesCookieDecoded covers the
@@ -151,12 +146,9 @@ func TestCovCredentialEvidencePatternsNilPatterns(t *testing.T) {
 		t.Fatal("expected patterns from Values")
 	}
 	// Verify "abc" is in the patterns.
-	for _, p := range patterns {
-		if p == "abc" {
-			return
-		}
+	if !slices.Contains(patterns, "abc") {
+		t.Fatalf("missing 'abc' pattern in %v", patterns)
 	}
-	t.Fatalf("missing 'abc' pattern in %v", patterns)
 }
 
 // TestCovNewAPILogCredentialMaterialEmptyValue covers the value == "" skip

@@ -68,11 +68,9 @@ func TestCovPluginCommandsCallTheirWireMethodAndCarryFailure(t *testing.T) {
 
 			msg := tc.run(client)
 
-			select {
-			case method := <-gotMethod:
-				if method != tc.wantMethod {
-					t.Fatalf("method = %q, want %q", method, tc.wantMethod)
-				}
+			method := <-gotMethod
+			if method != tc.wantMethod {
+				t.Fatalf("method = %q, want %q", method, tc.wantMethod)
 			}
 
 			if tc.errOf != nil {
@@ -118,8 +116,6 @@ func TestCovPluginCommandsDecodeSuccess(t *testing.T) {
 			transport.DeliverResponse(req.Request.ID, map[string]any{})
 			msg := <-result
 
-			// Verify no error in any message type
-			type hasErr interface{ getErr() error }
 			_ = msg // just ensure it doesn't panic; success decode is covered
 		})
 	}

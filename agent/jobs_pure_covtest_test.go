@@ -166,8 +166,7 @@ func TestCovNoteJobActivity_NilAndEmpty(t *testing.T) {
 	var jm *jobManager
 	jm.noteJobActivity("job1", "phase") // nil manager — no panic
 
-	nowFn := func() time.Time { return time.Now() }
-	jm = &jobManager{running: map[string]*runningJob{}, now: nowFn}
+	jm = &jobManager{running: map[string]*runningJob{}, now: time.Now}
 	jm.noteJobActivity("", "phase")            // empty jobID — no panic
 	jm.noteJobActivity("  ", "phase")          // whitespace jobID — no panic
 	jm.noteJobActivity("nonexistent", "phase") // no running job — no panic

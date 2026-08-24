@@ -1,6 +1,7 @@
 package dev
 
 import (
+	"slices"
 	"strings"
 	"testing"
 )
@@ -45,14 +46,7 @@ func TestCovGolangciCmd(t *testing.T) {
 		t.Error("cmd.Path should not be empty")
 	}
 	// Verify the args include the expected flags.
-	found := false
-	for _, arg := range cmd.Args {
-		if arg == "--allow-parallel-runners" {
-			found = true
-			break
-		}
-	}
-	if !found {
+	if !slices.Contains(cmd.Args, "--allow-parallel-runners") {
 		t.Errorf("cmd args %v should include --allow-parallel-runners", cmd.Args)
 	}
 }

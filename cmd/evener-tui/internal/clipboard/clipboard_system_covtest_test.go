@@ -34,7 +34,7 @@ func TestCovReadFilePathsDarwinMissingTool(t *testing.T) {
 	clipboardLookPath = func(string) (string, error) { return "", exec.ErrNotFound }
 	s := NewSystemClipboardSource()
 	_, err := s.ReadFilePaths()
-	if err != ErrClipboardUnavailable {
+	if !errors.Is(err, ErrClipboardUnavailable) {
 		t.Fatalf("err = %v, want ErrClipboardUnavailable", err)
 	}
 }
@@ -115,7 +115,7 @@ func TestCovReadFilePathsUnsupportedGOOS(t *testing.T) {
 	clipboardGOOS = "windows"
 	s := NewSystemClipboardSource()
 	_, err := s.ReadFilePaths()
-	if err != ErrClipboardUnavailable {
+	if !errors.Is(err, ErrClipboardUnavailable) {
 		t.Fatalf("err = %v, want ErrClipboardUnavailable", err)
 	}
 }
@@ -127,7 +127,7 @@ func TestCovReadImageBytesUnsupportedGOOS(t *testing.T) {
 	clipboardGOOS = "windows"
 	s := NewSystemClipboardSource()
 	_, _, err := s.ReadImageBytes()
-	if err != ErrClipboardUnavailable {
+	if !errors.Is(err, ErrClipboardUnavailable) {
 		t.Fatalf("err = %v, want ErrClipboardUnavailable", err)
 	}
 }
@@ -144,7 +144,7 @@ func TestCovReadImageBytesDarwinMissingTool(t *testing.T) {
 	clipboardLookPath = func(string) (string, error) { return "", exec.ErrNotFound }
 	s := NewSystemClipboardSource()
 	_, _, err := s.ReadImageBytes()
-	if err != ErrClipboardUnavailable {
+	if !errors.Is(err, ErrClipboardUnavailable) {
 		t.Fatalf("err = %v, want ErrClipboardUnavailable", err)
 	}
 }
@@ -187,7 +187,7 @@ func TestCovReadImageBytesDarwinNoImage(t *testing.T) {
 	clipboardCreateTemp = os.CreateTemp
 	s := NewSystemClipboardSource()
 	_, _, err := s.ReadImageBytes()
-	if err != ErrNoClipboardImage {
+	if !errors.Is(err, ErrNoClipboardImage) {
 		t.Fatalf("err = %v, want ErrNoClipboardImage", err)
 	}
 }
@@ -239,7 +239,7 @@ func TestCovReadImageBytesDarwinEmptyData(t *testing.T) {
 	clipboardRemove = func(string) error { return nil }
 	s := NewSystemClipboardSource()
 	_, _, err := s.ReadImageBytes()
-	if err != ErrNoClipboardImage {
+	if !errors.Is(err, ErrNoClipboardImage) {
 		t.Fatalf("err = %v, want ErrNoClipboardImage", err)
 	}
 }
@@ -288,7 +288,7 @@ func TestCovReadFilePathsX11MissingTool(t *testing.T) {
 	clipboardLookPath = func(string) (string, error) { return "", exec.ErrNotFound }
 	s := NewSystemClipboardSource()
 	_, err := s.ReadFilePaths()
-	if err != ErrClipboardUnavailable {
+	if !errors.Is(err, ErrClipboardUnavailable) {
 		t.Fatalf("err = %v, want ErrClipboardUnavailable", err)
 	}
 }
@@ -476,7 +476,7 @@ func TestCovReadImageBytesX11MissingTool(t *testing.T) {
 	clipboardLookPath = func(string) (string, error) { return "", exec.ErrNotFound }
 	s := NewSystemClipboardSource()
 	_, _, err := s.ReadImageBytes()
-	if err != ErrClipboardUnavailable {
+	if !errors.Is(err, ErrClipboardUnavailable) {
 		t.Fatalf("err = %v, want ErrClipboardUnavailable", err)
 	}
 }
@@ -496,7 +496,7 @@ func TestCovReadImageBytesX11NoPNG(t *testing.T) {
 	clipboardOutput = func(string, ...string) ([]byte, error) { return []byte("text/plain"), nil }
 	s := NewSystemClipboardSource()
 	_, _, err := s.ReadImageBytes()
-	if err != ErrNoClipboardImage {
+	if !errors.Is(err, ErrNoClipboardImage) {
 		t.Fatalf("err = %v, want ErrNoClipboardImage", err)
 	}
 }
@@ -553,7 +553,7 @@ func TestCovReadImageBytesX11EmptyData(t *testing.T) {
 	}
 	s := NewSystemClipboardSource()
 	_, _, err := s.ReadImageBytes()
-	if err != ErrNoClipboardImage {
+	if !errors.Is(err, ErrNoClipboardImage) {
 		t.Fatalf("err = %v, want ErrNoClipboardImage", err)
 	}
 }
@@ -603,7 +603,7 @@ func TestCovReadFilePathsWaylandMissingTool(t *testing.T) {
 	}
 	s := NewSystemClipboardSource()
 	_, err := s.ReadFilePaths()
-	if err != ErrClipboardUnavailable {
+	if !errors.Is(err, ErrClipboardUnavailable) {
 		t.Fatalf("err = %v, want ErrClipboardUnavailable", err)
 	}
 }
@@ -626,7 +626,7 @@ func TestCovReadImageBytesWaylandMissingTool(t *testing.T) {
 	}
 	s := NewSystemClipboardSource()
 	_, _, err := s.ReadImageBytes()
-	if err != ErrClipboardUnavailable {
+	if !errors.Is(err, ErrClipboardUnavailable) {
 		t.Fatalf("err = %v, want ErrClipboardUnavailable", err)
 	}
 }
@@ -647,7 +647,7 @@ func TestCovReadImageBytesWaylandNoPNG(t *testing.T) {
 	clipboardOutput = func(string, ...string) ([]byte, error) { return []byte("text/plain"), nil }
 	s := NewSystemClipboardSource()
 	_, _, err := s.ReadImageBytes()
-	if err != ErrNoClipboardImage {
+	if !errors.Is(err, ErrNoClipboardImage) {
 		t.Fatalf("err = %v, want ErrNoClipboardImage", err)
 	}
 }
@@ -706,7 +706,7 @@ func TestCovReadImageBytesWaylandEmptyData(t *testing.T) {
 	}
 	s := NewSystemClipboardSource()
 	_, _, err := s.ReadImageBytes()
-	if err != ErrNoClipboardImage {
+	if !errors.Is(err, ErrNoClipboardImage) {
 		t.Fatalf("err = %v, want ErrNoClipboardImage", err)
 	}
 }
@@ -746,7 +746,7 @@ func TestCovReadWindowsClipboardViaPowerShellNoTool(t *testing.T) {
 	clipboardLookPath = func(string) (string, error) { return "", exec.ErrNotFound }
 	s := NewSystemClipboardSource()
 	_, err := s.ReadWindowsClipboardViaPowerShell()
-	if err != ErrClipboardUnavailable {
+	if !errors.Is(err, ErrClipboardUnavailable) {
 		t.Fatalf("err = %v, want ErrClipboardUnavailable", err)
 	}
 }
@@ -783,7 +783,7 @@ func TestCovReadWindowsClipboardViaPowerShellEmptyPath(t *testing.T) {
 	clipboardPowerShellOutput = func(string, ...string) ([]byte, error) { return []byte("  \n"), nil }
 	s := NewSystemClipboardSource()
 	_, err := s.ReadWindowsClipboardViaPowerShell()
-	if err != ErrNoClipboardImage {
+	if !errors.Is(err, ErrNoClipboardImage) {
 		t.Fatalf("err = %v, want ErrNoClipboardImage", err)
 	}
 }

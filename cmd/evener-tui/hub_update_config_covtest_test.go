@@ -149,7 +149,7 @@ func TestCovHandleInstanceSetDefault(t *testing.T) {
 	client, cleanup := newTestHubClient(t, nil)
 	defer cleanup()
 	m = newHubModel(client, "http://hub.test")
-	got, cmd = m.handleInstanceSetDefault(launchconfig.InstanceSetDefaultMsg{Name: "inst1"})
+	_, cmd = m.handleInstanceSetDefault(launchconfig.InstanceSetDefaultMsg{Name: "inst1"})
 	if cmd == nil {
 		t.Fatal("cmd should not be nil with client")
 	}
@@ -158,7 +158,7 @@ func TestCovHandleInstanceSetDefault(t *testing.T) {
 // TestCovHandleInstanceRemove exercises both paths.
 func TestCovHandleInstanceRemove(t *testing.T) {
 	m := hubModel{}
-	got, cmd := m.handleInstanceRemove(launchconfig.InstanceRemoveMsg{Name: "inst1"})
+	_, cmd := m.handleInstanceRemove(launchconfig.InstanceRemoveMsg{Name: "inst1"})
 	if cmd != nil {
 		t.Fatal("cmd should be nil with no client")
 	}
@@ -166,17 +166,16 @@ func TestCovHandleInstanceRemove(t *testing.T) {
 	client, cleanup := newTestHubClient(t, nil)
 	defer cleanup()
 	m = newHubModel(client, "http://hub.test")
-	got, cmd = m.handleInstanceRemove(launchconfig.InstanceRemoveMsg{Name: "inst1"})
+	_, cmd = m.handleInstanceRemove(launchconfig.InstanceRemoveMsg{Name: "inst1"})
 	if cmd == nil {
 		t.Fatal("cmd should not be nil with client")
 	}
-	_ = got
 }
 
 // TestCovHandleInstanceCreateSubmit exercises both paths.
 func TestCovHandleInstanceCreateSubmit(t *testing.T) {
 	m := hubModel{}
-	got, cmd := m.handleInstanceCreateSubmit(launchconfig.InstanceCreateSubmitMsg{})
+	_, cmd := m.handleInstanceCreateSubmit(launchconfig.InstanceCreateSubmitMsg{})
 	if cmd != nil {
 		t.Fatal("cmd should be nil with no client")
 	}
@@ -184,19 +183,18 @@ func TestCovHandleInstanceCreateSubmit(t *testing.T) {
 	client, cleanup := newTestHubClient(t, nil)
 	defer cleanup()
 	m = newHubModel(client, "http://hub.test")
-	got, cmd = m.handleInstanceCreateSubmit(launchconfig.InstanceCreateSubmitMsg{
+	_, cmd = m.handleInstanceCreateSubmit(launchconfig.InstanceCreateSubmitMsg{
 		Params: appwire.InstanceCreateParams{Name: "new"},
 	})
 	if cmd == nil {
 		t.Fatal("cmd should not be nil with client")
 	}
-	_ = got
 }
 
 // TestCovHandleInstanceEditSubmit exercises both paths.
 func TestCovHandleInstanceEditSubmit(t *testing.T) {
 	m := hubModel{}
-	got, cmd := m.handleInstanceEditSubmit(launchconfig.InstanceEditSubmitMsg{})
+	_, cmd := m.handleInstanceEditSubmit(launchconfig.InstanceEditSubmitMsg{})
 	if cmd != nil {
 		t.Fatal("cmd should be nil with no client")
 	}
@@ -204,13 +202,12 @@ func TestCovHandleInstanceEditSubmit(t *testing.T) {
 	client, cleanup := newTestHubClient(t, nil)
 	defer cleanup()
 	m = newHubModel(client, "http://hub.test")
-	got, cmd = m.handleInstanceEditSubmit(launchconfig.InstanceEditSubmitMsg{
+	_, cmd = m.handleInstanceEditSubmit(launchconfig.InstanceEditSubmitMsg{
 		Params: appwire.InstanceEditParams{Name: "edit"},
 	})
 	if cmd == nil {
 		t.Fatal("cmd should not be nil with client")
 	}
-	_ = got
 }
 
 // TestCovHandleCredentialsAction exercises all action branches.
@@ -296,7 +293,7 @@ func TestCovHandleLaunchOverridesOpen(t *testing.T) {
 
 	// Without client: no schema cmd.
 	m = hubModel{session: newModel(nil)}
-	got, cmd := m.handleLaunchOverridesOpen(launchconfig.LaunchOverridesOpenMsg{})
+	_, cmd := m.handleLaunchOverridesOpen(launchconfig.LaunchOverridesOpenMsg{})
 	if cmd != nil {
 		t.Fatal("cmd should be nil without client")
 	}
@@ -305,11 +302,10 @@ func TestCovHandleLaunchOverridesOpen(t *testing.T) {
 	client, cleanup := newTestHubClient(t, nil)
 	defer cleanup()
 	m = newHubModel(client, "http://hub.test")
-	got, cmd = m.handleLaunchOverridesOpen(launchconfig.LaunchOverridesOpenMsg{})
+	_, cmd = m.handleLaunchOverridesOpen(launchconfig.LaunchOverridesOpenMsg{})
 	if cmd == nil {
 		t.Fatal("cmd should not be nil with client")
 	}
-	_ = got
 }
 
 // TestCovHandleLaunchOverridesResult exercises cancelled and non-cancelled paths.
@@ -437,7 +433,7 @@ func TestCovHandleTextInputResult(t *testing.T) {
 	// credential-set: valid value with client.
 	m = newHubModel(client, "http://hub.test")
 	m.followupModal = &tuipick.TextInputModal{}
-	got, cmd := m.handleTextInputResult(tuipick.TextInputResultMsg{Tag: "credential-set:openai", Value: "sk-xxx"})
+	_, cmd := m.handleTextInputResult(tuipick.TextInputResultMsg{Tag: "credential-set:openai", Value: "sk-xxx"})
 	if cmd == nil {
 		t.Fatal("cmd should not be nil for credential-set with client")
 	}
@@ -461,7 +457,7 @@ func TestCovHandleTextInputResult(t *testing.T) {
 	// oauth-redirect: valid value with client.
 	m = newHubModel(client, "http://hub.test")
 	m.followupModal = &tuipick.TextInputModal{}
-	got, cmd = m.handleTextInputResult(tuipick.TextInputResultMsg{Tag: "oauth-redirect:openai:flow1", Value: "http://redirect"})
+	_, cmd = m.handleTextInputResult(tuipick.TextInputResultMsg{Tag: "oauth-redirect:openai:flow1", Value: "http://redirect"})
 	if cmd == nil {
 		t.Fatal("cmd should not be nil for oauth-redirect with valid value and client")
 	}
@@ -469,7 +465,7 @@ func TestCovHandleTextInputResult(t *testing.T) {
 	// oauth-redirect: malformed tag (no second colon).
 	m = newHubModel(client, "http://hub.test")
 	m.followupModal = &tuipick.TextInputModal{}
-	got, _ = m.handleTextInputResult(tuipick.TextInputResultMsg{Tag: "oauth-redirect:malformed", Value: "http://redirect"})
+	_, _ = m.handleTextInputResult(tuipick.TextInputResultMsg{Tag: "oauth-redirect:malformed", Value: "http://redirect"})
 	// followupModal is cleared even when parts is too short.
 
 	// launch-override: cancelled.
@@ -499,7 +495,7 @@ func TestCovHandleTextInputResult(t *testing.T) {
 
 	// settings-edit: malformed (no second colon).
 	m = hubModel{session: newModel(nil)}
-	got, _ = m.handleTextInputResult(tuipick.TextInputResultMsg{Tag: "settings-edit:malformed", Value: "x"})
+	_, _ = m.handleTextInputResult(tuipick.TextInputResultMsg{Tag: "settings-edit:malformed", Value: "x"})
 	// Should not crash.
 
 	// settings-edit: cancelled.
@@ -544,7 +540,7 @@ func TestCovHandleAuthApiKeySetResult(t *testing.T) {
 	defer cleanup()
 	m = newHubModel(client, "http://hub.test")
 	m.credentialsPanel = newCredentialsPanelForTest()
-	got, cmd := m.handleAuthApiKeySetResult(launchconfig.AuthApiKeySetResultMsg{})
+	_, cmd := m.handleAuthApiKeySetResult(launchconfig.AuthApiKeySetResultMsg{})
 	if cmd == nil {
 		t.Fatal("cmd should not be nil with panel and client")
 	}
@@ -596,7 +592,7 @@ func TestCovHandleAuthLoginCompleteResult(t *testing.T) {
 	defer cleanup()
 	m = newHubModel(client, "http://hub.test")
 	m.credentialsPanel = newCredentialsPanelForTest()
-	got, cmd := m.handleAuthLoginCompleteResult(launchconfig.AuthLoginCompleteResultMsg{})
+	_, cmd := m.handleAuthLoginCompleteResult(launchconfig.AuthLoginCompleteResultMsg{})
 	if cmd == nil {
 		t.Fatal("cmd should not be nil with panel and client")
 	}
@@ -610,15 +606,6 @@ func TestCovHandleLaunchSetLayerResult(t *testing.T) {
 	if got.(hubModel).launchSettingsPanel != nil {
 		t.Fatal("should not set panel")
 	}
-
-	// With panel (needs one to forward to).
-	client, cleanup := newTestHubClient(t, nil)
-	defer cleanup()
-	m = newHubModel(client, "http://hub.test")
-	// LaunchSettingsPanel needs a client to construct; skip if not available,
-	// just exercise the nil-panel path which is the uncovered branch.
-	_ = client
-	_ = cleanup
 }
 
 // TestCovHandleMarketplaceListResult exercises nil-panel and panel paths.
@@ -652,7 +639,7 @@ func TestCovHandleMarketplaceBrowseResult(t *testing.T) {
 // TestCovHandleMarketplaceAddSubmit exercises both paths.
 func TestCovHandleMarketplaceAddSubmit(t *testing.T) {
 	m := hubModel{}
-	got, cmd := m.handleMarketplaceAddSubmit(launchconfig.MarketplaceAddSubmitMsg{})
+	_, cmd := m.handleMarketplaceAddSubmit(launchconfig.MarketplaceAddSubmitMsg{})
 	if cmd != nil {
 		t.Fatal("cmd should be nil without client")
 	}
@@ -660,19 +647,18 @@ func TestCovHandleMarketplaceAddSubmit(t *testing.T) {
 	client, cleanup := newTestHubClient(t, nil)
 	defer cleanup()
 	m = newHubModel(client, "http://hub.test")
-	got, cmd = m.handleMarketplaceAddSubmit(launchconfig.MarketplaceAddSubmitMsg{
+	_, cmd = m.handleMarketplaceAddSubmit(launchconfig.MarketplaceAddSubmitMsg{
 		Params: appwire.MarketplaceAddParams{Name: "mp1"},
 	})
 	if cmd == nil {
 		t.Fatal("cmd should not be nil with client")
 	}
-	_ = got
 }
 
 // TestCovHandleMarketplaceRemove exercises both paths.
 func TestCovHandleMarketplaceRemove(t *testing.T) {
 	m := hubModel{}
-	got, cmd := m.handleMarketplaceRemove(launchconfig.MarketplaceRemoveMsg{Name: "mp1"})
+	_, cmd := m.handleMarketplaceRemove(launchconfig.MarketplaceRemoveMsg{Name: "mp1"})
 	if cmd != nil {
 		t.Fatal("cmd should be nil without client")
 	}
@@ -680,17 +666,16 @@ func TestCovHandleMarketplaceRemove(t *testing.T) {
 	client, cleanup := newTestHubClient(t, nil)
 	defer cleanup()
 	m = newHubModel(client, "http://hub.test")
-	got, cmd = m.handleMarketplaceRemove(launchconfig.MarketplaceRemoveMsg{Name: "mp1"})
+	_, cmd = m.handleMarketplaceRemove(launchconfig.MarketplaceRemoveMsg{Name: "mp1"})
 	if cmd == nil {
 		t.Fatal("cmd should not be nil with client")
 	}
-	_ = got
 }
 
 // TestCovHandleMarketplaceRefresh exercises both paths.
 func TestCovHandleMarketplaceRefresh(t *testing.T) {
 	m := hubModel{}
-	got, cmd := m.handleMarketplaceRefresh(launchconfig.MarketplaceRefreshMsg{Name: "mp1"})
+	_, cmd := m.handleMarketplaceRefresh(launchconfig.MarketplaceRefreshMsg{Name: "mp1"})
 	if cmd != nil {
 		t.Fatal("cmd should be nil without client")
 	}
@@ -698,17 +683,16 @@ func TestCovHandleMarketplaceRefresh(t *testing.T) {
 	client, cleanup := newTestHubClient(t, nil)
 	defer cleanup()
 	m = newHubModel(client, "http://hub.test")
-	got, cmd = m.handleMarketplaceRefresh(launchconfig.MarketplaceRefreshMsg{Name: "mp1"})
+	_, cmd = m.handleMarketplaceRefresh(launchconfig.MarketplaceRefreshMsg{Name: "mp1"})
 	if cmd == nil {
 		t.Fatal("cmd should not be nil with client")
 	}
-	_ = got
 }
 
 // TestCovHandleMarketplaceBrowseRequest exercises both paths.
 func TestCovHandleMarketplaceBrowseRequest(t *testing.T) {
 	m := hubModel{}
-	got, cmd := m.handleMarketplaceBrowseRequest(launchconfig.MarketplaceBrowseRequestMsg{Name: "mp1"})
+	_, cmd := m.handleMarketplaceBrowseRequest(launchconfig.MarketplaceBrowseRequestMsg{Name: "mp1"})
 	if cmd != nil {
 		t.Fatal("cmd should be nil without client")
 	}
@@ -716,11 +700,10 @@ func TestCovHandleMarketplaceBrowseRequest(t *testing.T) {
 	client, cleanup := newTestHubClient(t, nil)
 	defer cleanup()
 	m = newHubModel(client, "http://hub.test")
-	got, cmd = m.handleMarketplaceBrowseRequest(launchconfig.MarketplaceBrowseRequestMsg{Name: "mp1"})
+	_, cmd = m.handleMarketplaceBrowseRequest(launchconfig.MarketplaceBrowseRequestMsg{Name: "mp1"})
 	if cmd == nil {
 		t.Fatal("cmd should not be nil with client")
 	}
-	_ = got
 }
 
 // TestCovHandlePluginListResult exercises nil-panel path.
@@ -772,7 +755,7 @@ func TestCovHandlePluginAction(t *testing.T) {
 // TestCovHandlePluginSetAutoUpgrade exercises both paths.
 func TestCovHandlePluginSetAutoUpgrade(t *testing.T) {
 	m := hubModel{}
-	got, cmd := m.handlePluginSetAutoUpgrade(launchconfig.PluginSetAutoUpgradeMsg{AutoUpgrade: true})
+	_, cmd := m.handlePluginSetAutoUpgrade(launchconfig.PluginSetAutoUpgradeMsg{AutoUpgrade: true})
 	if cmd != nil {
 		t.Fatal("cmd should be nil without client")
 	}
@@ -780,11 +763,10 @@ func TestCovHandlePluginSetAutoUpgrade(t *testing.T) {
 	client, cleanup := newTestHubClient(t, nil)
 	defer cleanup()
 	m = newHubModel(client, "http://hub.test")
-	got, cmd = m.handlePluginSetAutoUpgrade(launchconfig.PluginSetAutoUpgradeMsg{Plugin: "p", Marketplace: "mp", AutoUpgrade: true})
+	_, cmd = m.handlePluginSetAutoUpgrade(launchconfig.PluginSetAutoUpgradeMsg{Plugin: "p", Marketplace: "mp", AutoUpgrade: true})
 	if cmd == nil {
 		t.Fatal("cmd should not be nil with client")
 	}
-	_ = got
 }
 
 // TestCovHandleLaunchResult exercises the schema-result-with-modal path and the

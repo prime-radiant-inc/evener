@@ -609,19 +609,19 @@ func TestCovWatchFrameJob(t *testing.T) {
 	}
 
 	// Nil pointer.
-	jobID, delegateID, ok = watchFrameJob((*events.JobFinishedData)(nil))
+	_, _, ok = watchFrameJob((*events.JobFinishedData)(nil))
 	if ok {
 		t.Fatal("nil pointer should be false")
 	}
 
 	// Empty JobID → ok=false.
-	jobID, _, ok = watchFrameJob(events.JobFinishedData{JobID: ""})
+	_, _, ok = watchFrameJob(events.JobFinishedData{JobID: ""})
 	if ok {
 		t.Fatal("empty JobID should be false")
 	}
 
 	// Other event type → false.
-	jobID, delegateID, ok = watchFrameJob(events.WarningData{})
+	_, _, ok = watchFrameJob(events.WarningData{})
 	if ok {
 		t.Fatal("non-JobFinished should be false")
 	}

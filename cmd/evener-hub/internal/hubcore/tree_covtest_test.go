@@ -13,7 +13,7 @@ import (
 	"primeradiant.com/evener/identifier"
 )
 
-var covErrBoom = errors.New("boom")
+var errCovBoom = errors.New("boom")
 
 // --- tree.go: Page ---
 
@@ -556,7 +556,7 @@ func TestCovRosterSubagentStateEmptyID(t *testing.T) {
 // TestCovSaveDeletionSnapshotFSError covers saveDeletionSnapshotFS with a
 // failing filesystem (deletion_store.go:304-305).
 func TestCovSaveDeletionSnapshotFSError(t *testing.T) {
-	fs := failingFs{Fs: afero.NewMemMapFs(), mkdirErr: covErrBoom}
+	fs := failingFs{Fs: afero.NewMemMapFs(), mkdirErr: errCovBoom}
 	_, err := saveDeletionSnapshotFS(fs, "/nonexistent", deletionSnapshot{Version: deletionSnapshotVersion}, deletionStoreFaults{})
 	if err == nil {
 		t.Fatal("saveDeletionSnapshotFS should error with failing fs")
@@ -668,16 +668,16 @@ func TestCovPinSectionOpenWithImmediateTransactionImmediate(t *testing.T) {
 	if db == nil {
 		t.Fatal("expected non-nil db")
 	}
-	defer func() { _ = db.Close() }()
+	_ = db.Close()
 }
 
 // TestCovPinSectionOpenWithImmediateTransactionMkdirError covers the
 // MkdirAll error branch (pin_section.go:112-113).
 func TestCovPinSectionOpenWithImmediateTransactionMkdirError(t *testing.T) {
-	store := NewPinSectionStore(filepath.Join("/nonexistent-root", "index.db"))
-	store.fs = failingFs{Fs: afero.NewMemMapFs(), mkdirErr: covErrBoom}
+	store := NewPinSectionStore("/nonexistent-root/index.db")
+	store.fs = failingFs{Fs: afero.NewMemMapFs(), mkdirErr: errCovBoom}
 	_, err := store.openWithImmediateTransaction(false)
-	if !errors.Is(err, covErrBoom) {
-		t.Fatalf("expected covErrBoom, got %v", err)
+	if !errors.Is(err, errCovBoom) {
+		t.Fatalf("expected errCovBoom, got %v", err)
 	}
 }

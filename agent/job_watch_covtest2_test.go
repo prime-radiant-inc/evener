@@ -400,7 +400,7 @@ func TestCovPruneWatchedTargetWatchesLocked(t *testing.T) {
 		t.Fatalf("pruned target = %q, want job_target1", snapshots[0].key.Target)
 	}
 	if snapshots[0].endReason != "" {
-		// endReason is not set by prune; it's set by the caller.
+		t.Fatalf("endReason should be empty, got %q", snapshots[0].endReason)
 	}
 	// Verify the pruned config is now rejecting delivery.
 	if !snapshots[0].cfg.rejectingDelivery {
@@ -552,7 +552,7 @@ func TestCovSettleWatchSendLocked(t *testing.T) {
 	}
 
 	// Fill beyond the cap to test eviction.
-	for i := 0; i < defaultWatchSendPendingCap+5; i++ {
+	for i := range defaultWatchSendPendingCap + 5 {
 		k := jobstore.WatchSendKey{WatchTarget: "job_overflow"}
 		settleWatchSendLocked(cfg, k, uint64(i))
 	}

@@ -64,7 +64,7 @@ func TestCovLaunchOverridesDown(t *testing.T) {
 func TestCovLaunchOverridesDownAtBottom(t *testing.T) {
 	m := NewLaunchOverridesModalWith(appwire.LaunchConfigLayer{})
 	// Move cursor way down
-	for i := 0; i < 30; i++ {
+	for range 30 {
 		updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyDown})
 		m = updated.(LaunchOverridesModal)
 	}
@@ -192,8 +192,8 @@ func TestCovLaunchOverridesView(t *testing.T) {
 
 var errOOM = errorNew("out of memory")
 
-func errorNew(s string) error { return &strErr{s} }
+func errorNew(s string) error { return &strError{s} }
 
-type strErr struct{ s string }
+type strError struct{ s string }
 
-func (e *strErr) Error() string { return e.s }
+func (e *strError) Error() string { return e.s }

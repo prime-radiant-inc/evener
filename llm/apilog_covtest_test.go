@@ -103,7 +103,7 @@ func TestCovPumpClosingDuringForward(t *testing.T) {
 	<-inner.allSent
 	// Yield repeatedly to give the pump goroutine time to forward 128
 	// events and block on the 129th.
-	for i := 0; i < 200; i++ {
+	for range 200 {
 		runtime.Gosched()
 	}
 
@@ -187,7 +187,7 @@ func newTestStreamBlockingAfter(n int) *testStreamBlockingAfter {
 		allSent: make(chan struct{}),
 	}
 	go func() {
-		for i := 0; i < n; i++ {
+		for range n {
 			s.events <- StreamEvent{Type: StreamEventTextDelta, Delta: "x"}
 		}
 		close(s.allSent)

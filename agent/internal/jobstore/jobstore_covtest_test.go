@@ -27,10 +27,7 @@ func TestCovNotifyRank(t *testing.T) {
 
 // TestCovRegexp covers Regexp (watch.go line 95).
 func TestCovRegexp(t *testing.T) {
-	re, err := regexp.Compile("hello")
-	if err != nil {
-		t.Fatal(err)
-	}
+	re := regexp.MustCompile("hello")
 	m := NewOutputMatcher(re)
 	got := m.Regexp()
 	if got == nil || !got.MatchString("hello world") {

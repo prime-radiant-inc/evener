@@ -297,7 +297,7 @@ func TestCovRearmTerminalNotificationDecision(t *testing.T) {
 	// Empty owner session — should rearm (uses caller's session).
 	rec.OwnerSessionID = ""
 	rec.NotifyState = jobstore.NotifyNotArmed
-	rearm, appendEvent = rearmTerminalNotificationDecision(rec, sessionID)
+	rearm, _ = rearmTerminalNotificationDecision(rec, sessionID)
 	if !rearm {
 		t.Fatal("empty owner with terminal should rearm")
 	}
@@ -815,7 +815,7 @@ func TestCovCreateJobOutputForID_ValidID(t *testing.T) {
 // dir path structure assertion).
 func TestCovJobsDir_StateDir(t *testing.T) {
 	got := jobsDir("/state/dir", "SESS")
-	expected := filepath.Join("/state/dir", "sessions", "SESS")
+	expected := "/state/dir/sessions/SESS"
 	if got != expected {
 		t.Fatalf("jobsDir = %q, want %q", got, expected)
 	}

@@ -45,7 +45,7 @@ func TestCovHookInfoAnnouncement(t *testing.T) {
 	}
 	// Empty/whitespace plugin name should be skipped.
 	if strings.Contains(got, "  ") || strings.Contains(got, " \t") {
-		// May have double spaces from join, but should not have the raw whitespace field.
+		t.Fatalf("announcement should not contain raw whitespace field: %q", got)
 	}
 }
 

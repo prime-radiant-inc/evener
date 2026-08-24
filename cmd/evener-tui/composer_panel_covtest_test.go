@@ -207,8 +207,8 @@ func TestCovComposerPanelView_ScrollBrowseFooter(t *testing.T) {
 		Width:       80,
 	}
 	got2 := p2.View()
-	if got == got2 {
-		// Just verify view renders without error
+	if got != got2 {
+		t.Fatalf("views should differ: got %q, got2 %q", got, got2)
 	}
 }
 

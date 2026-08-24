@@ -689,7 +689,7 @@ func TestCovAdvanceSpawnFocus(t *testing.T) {
 	m.advanceSpawnFocus(-1)
 	// After advancing forward once then backward once, should be back at prompt.
 	if m.spawnFocus != hubSpawnFieldPrompt {
-		// The exact field depends on wrapping; just ensure it doesn't panic.
+		t.Fatalf("spawnFocus = %v, want hubSpawnFieldPrompt", m.spawnFocus)
 	}
 }
 
@@ -943,7 +943,7 @@ func TestCovUpdateSpawnKeyModelPicker(t *testing.T) {
 	got, _ := m.updateSpawnKey(tea.KeyMsg{Type: tea.KeyEsc})
 	after := got.(hubModel)
 	if after.spawnModelPicker != nil {
-		// Esc on picker — may or may not close depending on picker state.
+		t.Fatal("Esc on picker should close it")
 	}
 }
 

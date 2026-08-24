@@ -15,7 +15,7 @@ func TestCovBeginProviderOperationNilContext(t *testing.T) {
 	// Register a sink middleware so the function does not return early.
 	sink := &sinkMiddleware{sink: &recordingAPIAttemptSink{}}
 	c.Use(sink)
-	ctx, op := c.beginProviderOperation(nil)
+	ctx, op := c.beginProviderOperation(context.TODO())
 	if ctx == nil {
 		t.Fatal("beginProviderOperation(nil) should return a non-nil context")
 	}
@@ -61,7 +61,7 @@ func TestCovValidateModelCompatibilityWithValidator(t *testing.T) {
 // TestCovBeginAPIAttemptGroupScopeNilContext covers the nil-ctx path
 // (api_attempt_scope.go line 22-23).
 func TestCovBeginAPIAttemptGroupScopeNilContext(t *testing.T) {
-	ctx, scope := BeginAPIAttemptGroupScope(nil)
+	ctx, scope := BeginAPIAttemptGroupScope(context.TODO())
 	if ctx == nil {
 		t.Fatal("ctx should not be nil")
 	}

@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"testing"
 
@@ -134,7 +135,7 @@ func TestCovSessionScratchDir_NoWrapper(t *testing.T) {
 func TestCovToolBatchPanicError_Error(t *testing.T) {
 	err := context.DeadlineExceeded
 	got := toolBatchPanicError(err)
-	if got != err {
+	if !errors.Is(got, err) {
 		t.Fatalf("expected same error, got %v", got)
 	}
 }
@@ -319,7 +320,7 @@ func TestCovMarshalBoundedJSON(t *testing.T) {
 	if err != nil {
 		t.Fatalf("marshalBoundedJSON error: %v", err)
 	}
-	if !strings.Contains(string(got), "key") {
+	if !strings.Contains(got, "key") {
 		t.Fatalf("output missing key: %q", got)
 	}
 }
@@ -335,7 +336,7 @@ func TestCovMarshalBoundedJSONWithFit(t *testing.T) {
 	if !fit {
 		t.Fatal("should fit within 1024 bytes")
 	}
-	if !strings.Contains(string(got), "key") {
+	if !strings.Contains(got, "key") {
 		t.Fatalf("output missing key: %q", got)
 	}
 }

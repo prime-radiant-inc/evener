@@ -37,7 +37,7 @@ func TestCovRenderDoctorFindings(t *testing.T) {
 	if regIdx < 0 || mktIdx < 0 || compIdx < 0 {
 		t.Fatalf("missing category header in:\n%s", out)
 	}
-	if !(regIdx < mktIdx && mktIdx < compIdx) {
+	if regIdx >= mktIdx || mktIdx >= compIdx {
 		t.Fatalf("categories not in first-seen order in:\n%s", out)
 	}
 

@@ -209,17 +209,10 @@ func TestCovHandleChildActivityFrame(t *testing.T) {
 	}
 
 	// Matching ref, valid ref JSON but invalid item params: handled=true.
+	// Use a valid ref but make ItemLifecycleParams unmarshal fail by using wrong types.
 	n = appwire.Notification{
 		Method: appwire.NotifyItemStarted,
-		Params: append(mustJSON(appwire.NotificationRef{Ref: "local:child"}), []byte("garbage")...),
-	}
-	// This won't parse as ItemLifecycleParams because it has extra garbage,
-	// but the ref parse succeeds and childRef matches.
-	// Actually JSON with extra garbage will fail to parse. Use a valid ref
-	// but make ItemLifecycleParams unmarshal fail by using wrong types.
-	n = appwire.Notification{
-		Method: appwire.NotifyItemStarted,
-		Params: mustJSON(map[string]interface{}{
+		Params: mustJSON(map[string]any{
 			"ref":  "local:child",
 			"item": "not-an-object",
 		}),
@@ -605,7 +598,7 @@ func TestCovMergeSnapshotEscalations(t *testing.T) {
 	}
 }
 
-func mustJSON(v interface{}) json.RawMessage {
+func mustJSON(v any) json.RawMessage {
 	data, _ := json.Marshal(v)
 	return data
 }

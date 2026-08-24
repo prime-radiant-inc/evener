@@ -143,7 +143,7 @@ func TestCovAddHistory_EscapesNewlines(t *testing.T) {
 
 func TestCovAddHistory_CapsAtMaxEntries(t *testing.T) {
 	m := model{}
-	for i := 0; i < inputhistory.MaxHistoryEntries+10; i++ {
+	for range inputhistory.MaxHistoryEntries + 10 {
 		m.addHistory("entry")
 	}
 	if len(m.history) > inputhistory.MaxHistoryEntries {

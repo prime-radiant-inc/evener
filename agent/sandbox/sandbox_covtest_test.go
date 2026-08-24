@@ -28,7 +28,7 @@ func TestCovAsDenied(t *testing.T) {
 
 	// Wrapped DeniedError.
 	wrapped := errors.Join(original)
-	d, ok = AsDenied(wrapped)
+	_, ok = AsDenied(wrapped)
 	if !ok {
 		t.Fatal("wrapped denied should be found")
 	}

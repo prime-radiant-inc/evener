@@ -1,7 +1,6 @@
 package hubcore
 
 import (
-	"path/filepath"
 	"sync"
 	"testing"
 )
@@ -38,14 +37,14 @@ func TestCovNewResumeLocks(t *testing.T) {
 
 	// The returned mutex must be lockable.
 	m1.Lock()
-	m1.Unlock()
+	defer m1.Unlock()
 }
 
 // TestCovResumeLocksConcurrent verifies For is safe under concurrent access.
 func TestCovResumeLocksConcurrent(t *testing.T) {
 	r := NewResumeLocks()
 	var wg sync.WaitGroup
-	for i := 0; i < 20; i++ {
+	for range 20 {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
@@ -62,7 +61,7 @@ func TestCovResumeLocksConcurrent(t *testing.T) {
 // path-join helper.
 func TestCovSessionMetaPath(t *testing.T) {
 	got := sessionMetaPath("/projects/myproject", "01ABCDEF")
-	want := filepath.Join("/projects/myproject", "sessions", "01ABCDEF.meta.json")
+	want := "/projects/myproject/sessions/01ABCDEF.meta.json"
 	if got != want {
 		t.Errorf("sessionMetaPath = %q, want %q", got, want)
 	}

@@ -112,7 +112,7 @@ func TestCovWorktreeRootForProject(t *testing.T) {
 	if err != nil {
 		t.Fatalf("with stateDir: %v", err)
 	}
-	if !strings.HasSuffix(got, filepath.Join("/state", "worktrees")) && got != filepath.Join("/state", "worktrees") {
+	if !strings.HasSuffix(got, "/state/worktrees") && got != "/state/worktrees" {
 		t.Fatalf("got %q", got)
 	}
 

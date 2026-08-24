@@ -1045,11 +1045,12 @@ func TestCovQueueDepth(t *testing.T) {
 // TestCovDelegateSendResultFormat covers formatDelegateSend
 // (session_tools_jobs.go lines 1428-1470).
 func TestCovDelegateSendResultFormat(t *testing.T) {
+	output := "hello"
 	out := delegateSendResult{
 		DelegateID: "dlg_1",
 		Action:     "delivered",
 		Status:     "completed",
-		Output:     strPtr("hello"),
+		Output:     &output,
 	}
 	formatted := formatDelegateSend(out)
 	if !strings.Contains(formatted, "hello") {
@@ -1284,9 +1285,6 @@ func TestCovProjectStableDelegateListItem(t *testing.T) {
 		t.Fatalf("entry should contain dlg_1: %s", b)
 	}
 }
-
-// Helper: strPtr returns a pointer to s.
-func strPtr(s string) *string { return &s }
 
 // TestCovWithQueuedInputDrainOnInterrupt covers WithQueuedInputDrainOnInterrupt
 // (session_queue.go lines 49-51).

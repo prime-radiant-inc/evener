@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"context"
 	"errors"
 	"strings"
 	"testing"
@@ -153,7 +154,7 @@ func TestCovRunDelegateQuietWatchdogTick_NoController(t *testing.T) {
 // with nil context (delegate_runtime.go lines 137-140).
 func TestCovStartDelegateQuietWatchdog_NilCtx(t *testing.T) {
 	s := &Session{}
-	cancel := s.startDelegateQuietWatchdog(nil, delegateLease{})
+	cancel := s.startDelegateQuietWatchdog(context.TODO(), delegateLease{})
 	if cancel == nil {
 		t.Fatal("cancel should not be nil")
 	}

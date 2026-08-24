@@ -71,8 +71,7 @@ func TestCovResponseHeaderTimeoutTransportNonTimeoutErrorAfterWrite(t *testing.T
 	resp, err := client.Get("http://" + ln.Addr().String() + "/close")
 	// The error should pass through without being wrapped in
 	// responseHeaderTimeoutError.
-	var rhte *responseHeaderTimeoutError
-	if errors.As(err, &rhte) {
+	if _, ok := errors.AsType[*responseHeaderTimeoutError](err); ok {
 		t.Fatal("non-timeout error should not be wrapped in responseHeaderTimeoutError")
 	}
 	_ = resp
@@ -106,8 +105,7 @@ func TestCovResponseHeaderTimeoutTransportTimeoutAfterWrite(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected timeout error")
 	}
-	var rhte *responseHeaderTimeoutError
-	if !errors.As(err, &rhte) {
+	if _, ok := errors.AsType[*responseHeaderTimeoutError](err); !ok {
 		// On some platforms the error shape may differ. Check for timeout.
 		var netErr net.Error
 		if errors.As(err, &netErr) && netErr.Timeout() {
