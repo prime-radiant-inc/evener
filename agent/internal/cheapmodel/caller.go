@@ -17,17 +17,28 @@ type route struct {
 	model    string
 }
 
+type probeCall struct {
+	ready   chan struct{}
+	err     error
+	refused bool
+}
+
 // Caller executes cheap-model requests for one session.
 type Caller struct {
 	client *llm.Client
 
 	mu      sync.Mutex
 	refused map[route]struct{}
+	probes  map[route]*probeCall
 }
 
 // New returns a session-scoped cheap-model caller.
 func New(client *llm.Client) *Caller {
-	return &Caller{client: client, refused: make(map[route]struct{})}
+	return &Caller{
+		client:  client,
+		refused: make(map[route]struct{}),
+		probes:  make(map[route]*probeCall),
+	}
 }
 
 // Complete resolves and executes a cheap-model request, falling back once to
@@ -71,8 +82,24 @@ func (c *Caller) complete(ctx context.Context, profile *provider.Profile, cheap 
 		cheap = active
 	}
 
-	req.Provider, req.Model = cheap.provider, cheap.model
-	resp, err := c.client.Complete(ctx, req)
+	var refusedProbe *probeCall
+	var resp llm.Response
+	var err error
+	if cheap == active {
+		req.Provider, req.Model = active.provider, active.model
+		resp, err = c.client.Complete(ctx, req)
+	} else {
+		req.Provider, req.Model = cheap.provider, cheap.model
+		var skipped bool
+		resp, err, refusedProbe, skipped = c.probe(ctx, cheap, req)
+		if skipped {
+			// The route was latched after the first serves check but before the
+			// probe acquired c.mu. Re-run this request on the active model.
+			cheap = active
+			req.Provider, req.Model = active.provider, active.model
+			resp, err = c.client.Complete(ctx, req)
+		}
+	}
 	if err == nil || cheap == active || !refusesModel(err) {
 		return resp, cheap == active, err
 	}
@@ -89,10 +116,83 @@ func (c *Caller) complete(ctx context.Context, profile *provider.Profile, cheap 
 		// KindInvalidRequest — so a session model that ran out of time is not
 		// reported as a bad request.
 		fallbackErr = llm.WrapContextError(active.provider, fallbackErr)
+		c.finishProbe(cheap, refusedProbe, false)
 		return llm.Response{}, true, errors.Join(fallbackErr, err)
 	}
-	c.remember(cheap)
+	c.finishProbe(cheap, refusedProbe, true)
 	return fallbackResp, true, nil
+}
+
+// probe runs one request on a cheap route. Successful and ordinary failed
+// requests are never shared: callers need their own response and error. Only a
+// model refusal is shared, because that result is a route property and is safe
+// to reuse for different auxiliary prompts. A refusal call stays registered
+// until its fallback succeeds or fails so a caller arriving during the fallback
+// cannot send a second cheap probe.
+func (c *Caller) probe(ctx context.Context, r route, req llm.Request) (llm.Response, error, *probeCall, bool) {
+	for {
+		c.mu.Lock()
+		if _, refused := c.refused[r]; refused {
+			c.mu.Unlock()
+			return llm.Response{}, nil, nil, true
+		}
+		call, waiting := c.probes[r]
+		if !waiting {
+			call = &probeCall{ready: make(chan struct{})}
+			c.probes[r] = call
+		}
+		c.mu.Unlock()
+
+		if waiting {
+			if err := ctx.Err(); err != nil {
+				return llm.Response{}, err, nil, false
+			}
+			select {
+			case <-call.ready:
+				if err := ctx.Err(); err != nil {
+					return llm.Response{}, err, nil, false
+				}
+				c.mu.Lock()
+				refused := call.refused
+				callErr := call.err
+				c.mu.Unlock()
+				if refused {
+					return llm.Response{}, callErr, call, false
+				}
+				// The leader's response is not valid for this request. Start
+				// another route attempt, which may become the next leader.
+				continue
+			case <-ctx.Done():
+				return llm.Response{}, ctx.Err(), nil, false
+			}
+		}
+
+		resp, err := c.client.Complete(ctx, req)
+		refused := err != nil && refusesModel(err)
+		c.mu.Lock()
+		call.err = err
+		call.refused = refused
+		close(call.ready)
+		if !refused {
+			delete(c.probes, r)
+		}
+		c.mu.Unlock()
+		if refused {
+			return resp, err, call, false
+		}
+		return resp, err, nil, false
+	}
+}
+
+func (c *Caller) finishProbe(r route, call *probeCall, succeeded bool) {
+	c.mu.Lock()
+	if succeeded {
+		c.refused[r] = struct{}{}
+	}
+	if call != nil && c.probes[r] == call {
+		delete(c.probes, r)
+	}
+	c.mu.Unlock()
 }
 
 func sessionModel(profile *provider.Profile) route {
@@ -104,12 +204,6 @@ func (c *Caller) serves(r route) bool {
 	_, refused := c.refused[r]
 	c.mu.Unlock()
 	return !refused && c.client.ValidateModelCompatibility(r.provider, r.model) == nil
-}
-
-func (c *Caller) remember(r route) {
-	c.mu.Lock()
-	c.refused[r] = struct{}{}
-	c.mu.Unlock()
 }
 
 // refusesModel reports whether err is the provider saying it will not serve the
