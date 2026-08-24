@@ -199,3 +199,52 @@ test("quoted indented code continuing paragraph scans inline", () => {
   const result = closeOpenMarkdown("> para **emph\n>     code");
   expect(result).toMatch(/\*\*$/);
 });
+
+// --- scanQuotedListChild edge cases (lines 307, 309-310, 312, 353-354) ---
+// These require a blockquote > list > nested-quote structure to trigger
+// the scanQuotedListChild function.
+
+// Line 307: childQuote.content.trim() === "" inside a quoted list child
+// with a nested quote — resets the emphasis stack
+test("quoted list child with empty nested quote content resets emphasis", () => {
+  // > - text **emph
+  // > > (empty content in nested quote)
+  const result = closeOpenMarkdown("> - text **emph\n> > ");
+  expect(result).not.toMatch(/\*\*$/);
+});
+
+// Lines 309-310: childQuote.content is an ATX heading — resets and scans
+test("quoted list child with ATX heading in nested quote resets and scans", () => {
+  // > - text **emph
+  // > > ## heading
+  const result = closeOpenMarkdown("> - text **emph\n> > ## heading *emph");
+  // The ** should be closed (stack reset by heading), but *emph is scanned
+  expect(result).not.toMatch(/\*\*$/);
+});
+
+// Lines 309-310: childQuote.content is a thematic break — resets
+test("quoted list child with thematic break in nested quote resets emphasis", () => {
+  const result = closeOpenMarkdown("> - text **emph\n> > ---");
+  expect(result).not.toMatch(/\*\*$/);
+});
+
+// Line 312: childQuote.content is a setext underline — resets
+test("quoted list child with setext underline in nested quote resets emphasis", () => {
+  const result = closeOpenMarkdown("> - text **emph\n> > ===");
+  expect(result).not.toMatch(/\*\*$/);
+});
+
+// Lines 353-354: childLine is a thematic break (no nested quote) — resets
+test("quoted list child with thematic break (no nested quote) resets emphasis", () => {
+  // > - text **emph
+  // > ---
+  // The thematic break is at the SAME quote level but after the list child
+  const result = closeOpenMarkdown("> - **emph\n> ---");
+  expect(result).not.toMatch(/\*\*$/);
+});
+
+// Lines 353-354: childLine is a setext underline (no nested quote) — resets
+test("quoted list child with setext underline (no nested quote) resets emphasis", () => {
+  const result = closeOpenMarkdown("> - **emph\n> ===");
+  expect(result).not.toMatch(/\*\*$/);
+});
