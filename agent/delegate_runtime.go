@@ -1134,21 +1134,24 @@ func (runtime delegateRuntime) create(ctx context.Context, args delegateArgs) de
 	if selection.warning != nil {
 		s.emitDiagnosticWarning(*selection.warning)
 	}
+	allTools, allowedTools, _ := baseSubagentToolPolicy(selection.agent, args.DelegationAllowance > 0)
+	readOnlyScope := subagentToolScopeIsReadOnly(allTools, allowedTools)
 	var requestedSandbox *sandbox.SandboxPolicy
 	explicitSandbox := strings.TrimSpace(args.Sandbox) != "" || args.SandboxNet != nil
-	if explicitSandbox {
+	if readOnlyScope {
+		requestedSandbox, err = s.resolveReadOnlyDelegateSandboxRequest(args.Sandbox, args.SandboxNet)
+		if err != nil {
+			return delegateStartFailed(err)
+		}
+	} else if explicitSandbox {
 		parentMode, parentNetwork := s.parentSandboxModeNet()
 		requestedSandbox, err = resolveDelegateSandboxRequest(args.Sandbox, args.SandboxNet, parentMode, parentNetwork)
 		if err != nil {
 			return delegateStartFailed(err)
 		}
-	} else {
-		allTools, allowedTools, _ := baseSubagentToolPolicy(selection.agent, args.DelegationAllowance > 0)
-		if subagentToolScopeIsReadOnly(allTools, allowedTools) {
-			requestedSandbox, err = s.readOnlyDelegateSandbox()
-			if err != nil {
-				return delegateStartFailed(fmt.Errorf("read-only delegate sandbox: %w", err))
-			}
+		requestedSandbox, err = s.applyParentWriteBlockedFloor(args.Sandbox, requestedSandbox)
+		if err != nil {
+			return delegateStartFailed(err)
 		}
 	}
 	descriptor, worktreeProject, err := runtime.describe(ctx, args, task, isolationName, requestedSandbox, selection)
@@ -1493,6 +1496,10 @@ func (runtime delegateRuntime) restoreIdle(started delegateStartCommit) (*subage
 	if retained := s.subagents.get(descriptor.ChildSessionID); retained != nil && retained.sess != nil {
 		return retained, false, nil
 	}
+	policy, err := s.restoreDelegateSandboxFloor(&descriptor)
+	if err != nil {
+		return nil, false, err
+	}
 	if err := s.reclaimDelegateRuntimeCapacity(1); err != nil {
 		return nil, false, err
 	}
@@ -1517,7 +1524,6 @@ func (runtime delegateRuntime) restoreIdle(started delegateStartCommit) (*subage
 			profile = provider.WithCommunicateOutputSchema(profile, resultSchema)
 		}
 	}
-	policy := sandboxPolicyFromStableSnapshot(descriptor.Sandbox)
 	childEnv, ownsFresh, err := s.prepareSubagentEnvironment(descriptor.WorkingDir, policy)
 	if err != nil {
 		return nil, false, err
@@ -1558,6 +1564,7 @@ func (runtime delegateRuntime) restoreIdle(started delegateStartCommit) (*subage
 		ForceRealIO:             s.cfg.ForceRealIO,
 		artifactStore:           s.artifactStore,
 		deferRestoreSideEffects: true,
+		sandboxProvisioned:      true,
 		spawn: spawnConfig{
 			delegateController:            s.delegateController,
 			delegateRootSessionID:         s.delegateRootSessionID,

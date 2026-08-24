@@ -29,7 +29,15 @@ whose shell is intended for inspection; the kernel wrapper confines that shell
 and every descendant, while the delegate's own session scratch remains writable.
 A parent already running `restricted` keeps that narrower read scope and applies
 the same write block without widening reads. A role with an explicit mutation
-tool, or an explicit `sandbox` request, follows the normal delegate floor.
+tool follows the normal delegate floor. An explicit delegate `sandbox` argument
+does **not** bypass the structured read-only floor: `read-only` is accepted when
+it is also compatible with the parent's boundary, while `off`,
+`workspace-write`, and ordinary `restricted` are rejected because they permit
+persistent workspace writes. A net-only request is applied to the mandatory
+write-blocked policy and may only preserve or tighten the parent's network
+boundary. The same structured scope and sandbox policy are revalidated before
+a stable delegate is restored, and a write-blocked delegate cannot relax that
+inherited floor for its own descendants.
 
 ## Flags
 

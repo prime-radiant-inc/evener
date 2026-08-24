@@ -472,8 +472,8 @@ func TestDelegateResourceCreate_UsesFrozenDescriptorAfterCommit(t *testing.T) {
 	wantConfig.ReasoningEffort = "low"
 	wantConfig.MCPConfigFiles = nil
 	wantConfig.MCPInline = nil
-	wantConfig.Sandbox = ""
-	wantConfig.SandboxNet = nil
+	wantConfig.Sandbox = "read-only"
+	wantConfig.SandboxNet = new(true)
 
 	resultSchema := map[string]any{
 		"type": "object",
@@ -595,7 +595,8 @@ func TestDelegateResourceCreate_UsesFrozenDescriptorAfterCommit(t *testing.T) {
 	if !reflect.DeepEqual(child.cfg.spawn.communicateOutputSchema, frozenResultSchema) || child.delegationAllowance != descriptor.DelegationAllowance {
 		t.Fatalf("child result/allowance = %#v/%d, want %#v/%d", child.cfg.spawn.communicateOutputSchema, child.delegationAllowance, frozenResultSchema, descriptor.DelegationAllowance)
 	}
-	if child.currentEnv().WorkingDirectory() != descriptor.WorkingDir || descriptor.WorkingDir != originalWorkDir || localEnvPolicyName(child.currentEnv()) != descriptor.LocalEnvPolicy || child.cfg.spawn.isolation != descriptor.Isolation || sandboxSnapshotFromEnv(child.currentEnv()) != nil || descriptor.Sandbox != nil {
+	childSandbox := sandboxSnapshotFromEnv(child.currentEnv())
+	if child.currentEnv().WorkingDirectory() != descriptor.WorkingDir || descriptor.WorkingDir != originalWorkDir || localEnvPolicyName(child.currentEnv()) != descriptor.LocalEnvPolicy || child.cfg.spawn.isolation != descriptor.Isolation || childSandbox == nil || childSandbox.Mode != "read-only" || descriptor.Sandbox == nil || descriptor.Sandbox.Mode != "read-only" {
 		t.Fatalf("child environment diverged from descriptor: cwd=%q policy=%q isolation=%q sandbox=%#v descriptor=%#v", child.currentEnv().WorkingDirectory(), localEnvPolicyName(child.currentEnv()), child.cfg.spawn.isolation, sandboxSnapshotFromEnv(child.currentEnv()), descriptor)
 	}
 	if !reflect.DeepEqual(descriptor.Provenance, originalProvenance) || !reflect.DeepEqual(child.activeCausalProvenance(), originalProvenance) {
