@@ -34,6 +34,7 @@ type RelayLifecycleHooks struct {
 type WebConfig struct {
 	HubAddr             string
 	AuthToken           string // capability token gating every non-exempt route
+	MobileBaseURL       string // optional external origin used for mobile pairing QR codes
 	HubStateRoot        string // root of hub-level machine state (auth-token, index.db, deletions/); defaults to cmdutil.DefaultStateRoot()
 	LaunchConfigRoot    string // root of the layered launch config (launch.toml, projects/<id>/{launch.toml,meta.toml}); user-editable, so distinct from HubStateRoot — defaults to cmdutil.DefaultConfigRoot() when empty
 	RunDir              string // run directory where rendezvous files live

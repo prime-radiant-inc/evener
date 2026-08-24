@@ -13,6 +13,7 @@ import (
 	"hash/fnv"
 	"io"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -172,6 +173,10 @@ func AuthGuard(token string) func(http.Handler) http.Handler {
 					q.Del("token")
 					clean := *r.URL
 					clean.RawQuery = q.Encode()
+					// This redirect processes a capability URL. Never let a
+					// shared or browser cache retain either the redirect or its
+					// token-bearing request context.
+					w.Header().Set("Cache-Control", "no-store")
 					http.Redirect(w, r, clean.RequestURI(), http.StatusFound)
 					return
 				}
@@ -235,6 +240,10 @@ func HandleAuth(token string) http.HandlerFunc {
 		if next == "" || !strings.HasPrefix(next, "/") || strings.HasPrefix(next, "//") {
 			next = "/"
 		}
+		// This redirect processes a capability URL. Never let a shared or
+		// browser cache retain either the redirect or its token-bearing
+		// request context.
+		w.Header().Set("Cache-Control", "no-store")
 		http.Redirect(w, r, next, http.StatusFound)
 	}
 }
@@ -244,5 +253,5 @@ func HandleAuth(token string) http.HandlerFunc {
 // NOT include a trailing slash.
 func AuthURLFor(base, token string) string {
 	base = strings.TrimRight(base, "/")
-	return base + "/auth?token=" + token
+	return base + "/auth?token=" + url.QueryEscape(token)
 }
