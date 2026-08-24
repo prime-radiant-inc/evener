@@ -1,8 +1,8 @@
 package agent
 
 import (
-	"context"
 	"errors"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -17,7 +17,7 @@ import (
 func TestCovArmDelegateAttention_NilSession(t *testing.T) {
 	var s *Session
 	err := s.armDelegateAttention("")
-	if err == nil || !strings.Contains(err.Error(), "incomplete") {
+	if err == nil || err.Error() != "delegate attention wake identity is incomplete" {
 		t.Fatalf("nil session empty id: %v", err)
 	}
 }
@@ -27,7 +27,7 @@ func TestCovArmDelegateAttention_NilSession(t *testing.T) {
 func TestCovArmDelegateAttention_EmptyID(t *testing.T) {
 	s := &Session{}
 	err := s.armDelegateAttention("")
-	if err == nil || !strings.Contains(err.Error(), "incomplete") {
+	if err == nil || err.Error() != "delegate attention wake identity is incomplete" {
 		t.Fatalf("empty id: %v", err)
 	}
 }
@@ -96,7 +96,7 @@ func TestCovPopSteeringHead_Empty(t *testing.T) {
 func TestCovPopQueueHead_Empty(t *testing.T) {
 	s := &Session{}
 	entry := s.popQueueHead()
-	if entry.ID != "" {
+	if !reflect.DeepEqual(entry, queuedInput{}) {
 		t.Fatalf("empty queue should return zero entry, got %+v", entry)
 	}
 }
@@ -135,8 +135,8 @@ func TestCovQueueTexts_Empty(t *testing.T) {
 func TestCovRunDelegateQuietWatchdogTick_NilSession(t *testing.T) {
 	var s *Session
 	err := s.runDelegateQuietWatchdogTick(delegateLease{}, time.Now())
-	if err == nil {
-		t.Fatal("nil session should return error")
+	if !errors.Is(err, errDelegateDeliveryReceiverUnavailable) {
+		t.Fatalf("nil session error = %v, want %v", err, errDelegateDeliveryReceiverUnavailable)
 	}
 }
 
@@ -145,8 +145,8 @@ func TestCovRunDelegateQuietWatchdogTick_NilSession(t *testing.T) {
 func TestCovRunDelegateQuietWatchdogTick_NoController(t *testing.T) {
 	s := &Session{}
 	err := s.runDelegateQuietWatchdogTick(delegateLease{}, time.Now())
-	if err == nil {
-		t.Fatal("no controller should return error")
+	if !errors.Is(err, errDelegateDeliveryReceiverUnavailable) {
+		t.Fatalf("no controller error = %v, want %v", err, errDelegateDeliveryReceiverUnavailable)
 	}
 }
 
@@ -154,7 +154,7 @@ func TestCovRunDelegateQuietWatchdogTick_NoController(t *testing.T) {
 // with nil context (delegate_runtime.go lines 137-140).
 func TestCovStartDelegateQuietWatchdog_NilCtx(t *testing.T) {
 	s := &Session{}
-	cancel := s.startDelegateQuietWatchdog(context.TODO(), delegateLease{})
+	cancel := s.startDelegateQuietWatchdog(nil, delegateLease{})
 	if cancel == nil {
 		t.Fatal("cancel should not be nil")
 	}
@@ -176,8 +176,8 @@ func TestCovReportActivity_NilController(t *testing.T) {
 func TestCovBeginQuietAttention_NilController(t *testing.T) {
 	var c *delegateTreeController
 	_, err := c.BeginQuietAttention(nil, delegateLease{}, time.Now())
-	if err == nil {
-		t.Fatal("nil controller should return error")
+	if !errors.Is(err, errDelegateDeliveryReceiverUnavailable) {
+		t.Fatalf("nil controller error = %v, want %v", err, errDelegateDeliveryReceiverUnavailable)
 	}
 }
 
@@ -185,8 +185,8 @@ func TestCovBeginQuietAttention_NilController(t *testing.T) {
 func TestCovBeginQuietAttention_NilReceiver(t *testing.T) {
 	c := &delegateTreeController{}
 	_, err := c.BeginQuietAttention(nil, delegateLease{}, time.Now())
-	if err == nil {
-		t.Fatal("nil receiver should return error")
+	if !errors.Is(err, errDelegateDeliveryReceiverUnavailable) {
+		t.Fatalf("nil receiver error = %v, want %v", err, errDelegateDeliveryReceiverUnavailable)
 	}
 }
 

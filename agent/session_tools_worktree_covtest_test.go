@@ -5,16 +5,14 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
-	"strings"
+	"reflect"
 	"testing"
 	"time"
 
 	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/agent/internal/jobstore"
 	"primeradiant.com/evener/agent/internal/worktree"
-	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/identifier"
-	"primeradiant.com/evener/llm"
 )
 
 // ---- session_tools_worktree.go ----
@@ -25,17 +23,16 @@ import (
 func TestCovWriteWorktreeSidecar(t *testing.T) {
 	dir := t.TempDir()
 	s := &Session{}
-	sidecar := worktree.Sidecar{Branch: "test-branch"}
+	sidecar := worktree.Sidecar{Name: "test_sidecar", Branch: "test-branch", BaseSHA: "abc123", CreatorSession: "session_1"}
 	if err := s.writeWorktreeSidecar(dir, "test_sidecar", sidecar); err != nil {
 		t.Fatalf("writeWorktreeSidecar: %v", err)
 	}
-	// Verify a file was written (the name is encoded).
-	entries, err := os.ReadDir(dir)
+	got, err := worktree.ReadSidecar(dir, "test_sidecar")
 	if err != nil {
-		t.Fatal(err)
+		t.Fatalf("ReadSidecar: %v", err)
 	}
-	if len(entries) == 0 {
-		t.Fatal("sidecar file should exist")
+	if !reflect.DeepEqual(got, sidecar) {
+		t.Fatalf("written sidecar = %+v, want %+v", got, sidecar)
 	}
 }
 
@@ -52,6 +49,9 @@ func TestCovDeleteWorktreeSidecar(t *testing.T) {
 	if err := s.deleteWorktreeSidecar(dir, "to_delete"); err != nil {
 		t.Fatalf("deleteWorktreeSidecar: %v", err)
 	}
+	if _, err := worktree.ReadSidecar(dir, "to_delete"); !os.IsNotExist(err) {
+		t.Fatalf("deleted sidecar is still readable: %v", err)
+	}
 }
 
 // TestCovUpdateWorktreeSidecar covers updateWorktreeSidecar
@@ -61,7 +61,8 @@ func TestCovUpdateWorktreeSidecar(t *testing.T) {
 	dir := t.TempDir()
 	s := &Session{}
 	// Write initial.
-	if err := s.writeWorktreeSidecar(dir, "update_test", worktree.Sidecar{Branch: "initial"}); err != nil {
+	want := worktree.Sidecar{Name: "update_test", Branch: "initial", BaseSHA: "base123", CreatorSession: "session_1"}
+	if err := s.writeWorktreeSidecar(dir, "update_test", want); err != nil {
 		t.Fatal(err)
 	}
 	// Update.
@@ -69,6 +70,14 @@ func TestCovUpdateWorktreeSidecar(t *testing.T) {
 		sc.Branch = "updated"
 	}); err != nil {
 		t.Fatalf("updateWorktreeSidecar: %v", err)
+	}
+	want.Branch = "updated"
+	got, err := worktree.ReadSidecar(dir, "update_test")
+	if err != nil {
+		t.Fatalf("ReadSidecar after update: %v", err)
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("updated sidecar = %+v, want %+v", got, want)
 	}
 }
 
@@ -112,16 +121,21 @@ func TestCovWorktreeRootForProject(t *testing.T) {
 	if err != nil {
 		t.Fatalf("with stateDir: %v", err)
 	}
-	if !strings.HasSuffix(got, "/state/worktrees") && got != "/state/worktrees" {
-		t.Fatalf("got %q", got)
+	if want := filepath.Join("/state", "worktrees"); got != want {
+		t.Fatalf("got %q, want %q", got, want)
 	}
 
 	// Valid project without stateDir — uses RuntimeDirForProjectWithStateHome.
-	_, err = s.worktreeRootForProject("", identifier.Project{
+	stateHome := t.TempDir()
+	t.Setenv("XDG_STATE_HOME", stateHome)
+	got, err = s.worktreeRootForProject("", identifier.Project{
 		ID: "proj_1", CanonicalPath: "/path",
 	})
 	if err != nil {
 		t.Fatalf("without stateDir: %v", err)
+	}
+	if want := filepath.Join(stateHome, "evener", "projects", "proj_1", "worktrees"); got != want {
+		t.Fatalf("runtime-derived root = %q, want %q", got, want)
 	}
 }
 
@@ -147,6 +161,10 @@ func TestCovManagedWorktreeExists(t *testing.T) {
 func TestCovBranchExists(t *testing.T) {
 	// Scripted runner that simulates branch not found (error).
 	run := func(args ...string) (string, error) {
+		want := []string{"show-ref", "--verify", "--quiet", "refs/heads/nonexistent"}
+		if !reflect.DeepEqual(args, want) {
+			t.Fatalf("git args = %v, want %v", args, want)
+		}
 		return "", &os.PathError{Op: "git", Path: ".", Err: os.ErrNotExist}
 	}
 	if branchExists(run, "nonexistent") {
@@ -155,6 +173,10 @@ func TestCovBranchExists(t *testing.T) {
 
 	// Scripted runner that simulates branch found (no error).
 	runOK := func(args ...string) (string, error) {
+		want := []string{"show-ref", "--verify", "--quiet", "refs/heads/test-branch"}
+		if !reflect.DeepEqual(args, want) {
+			t.Fatalf("git args = %v, want %v", args, want)
+		}
 		return "refs/heads/test-branch", nil
 	}
 	if !branchExists(runOK, "test-branch") {
@@ -167,6 +189,10 @@ func TestCovBranchExists(t *testing.T) {
 func TestCovBranchAtRoot(t *testing.T) {
 	// Error case — returns empty string.
 	runErr := func(args ...string) (string, error) {
+		want := []string{"-C", "/repo", "symbolic-ref", "--quiet", "--short", "HEAD"}
+		if !reflect.DeepEqual(args, want) {
+			t.Fatalf("git args = %v, want %v", args, want)
+		}
 		return "", &os.PathError{Op: "git", Path: ".", Err: os.ErrNotExist}
 	}
 	if got := branchAtRoot(runErr, "/repo"); got != "" {
@@ -175,6 +201,10 @@ func TestCovBranchAtRoot(t *testing.T) {
 
 	// Success case.
 	runOK := func(args ...string) (string, error) {
+		want := []string{"-C", "/repo", "symbolic-ref", "--quiet", "--short", "HEAD"}
+		if !reflect.DeepEqual(args, want) {
+			t.Fatalf("git args = %v, want %v", args, want)
+		}
 		return "main\n", nil
 	}
 	if got := branchAtRoot(runOK, "/repo"); got != "main" {
@@ -183,6 +213,10 @@ func TestCovBranchAtRoot(t *testing.T) {
 
 	// Detached HEAD (empty output but no error).
 	runDetached := func(args ...string) (string, error) {
+		want := []string{"-C", "/repo", "symbolic-ref", "--quiet", "--short", "HEAD"}
+		if !reflect.DeepEqual(args, want) {
+			t.Fatalf("git args = %v, want %v", args, want)
+		}
 		return "", nil
 	}
 	if got := branchAtRoot(runDetached, "/repo"); got != "" {
@@ -295,15 +329,46 @@ func TestCovForwardEvent(t *testing.T) {
 
 	// Simple event append — should succeed.
 	e := jobstore.Event{
-		Kind:  jobstore.EventJobStarted,
-		TS:    jm.now(),
-		JobID: "job_test",
+		Kind:           jobstore.EventJobStarted,
+		TS:             jm.now(),
+		JobID:          "job_test",
+		Type:           jobstore.JobShell,
+		OwnerSessionID: "child_session",
+		Description:    "forwarded shell",
 	}
 	if err := jm.forwardEvent(e); err != nil {
 		t.Fatalf("forwardEvent: %v", err)
 	}
+	records, err := jm.store.Load()
+	if err != nil {
+		t.Fatalf("load forwarded start: %v", err)
+	}
+	forwarded := records["job_test"]
+	if forwarded == nil || forwarded.VisibleToSession != jm.sessionID || forwarded.OwnerSessionID != "child_session" || forwarded.Type != jobstore.JobShell || forwarded.Description != "forwarded shell" {
+		t.Fatalf("forwarded start record = %+v", forwarded)
+	}
 
 	// NotificationPending event with nil enqueue — should append and not enqueue.
+	jm.enqueue = nil
+	if err := jm.forwardEvent(jobstore.Event{
+		Kind:           jobstore.EventJobStarted,
+		TS:             jm.now(),
+		JobID:          "job_pending",
+		Type:           jobstore.JobShell,
+		OwnerSessionID: jm.sessionID,
+		Description:    "pending shell",
+	}); err != nil {
+		t.Fatalf("forward pending start: %v", err)
+	}
+	if err := jm.appendEvent(jobstore.Event{
+		Kind:        jobstore.EventJobFinished,
+		TS:          jm.now(),
+		JobID:       "job_pending",
+		Status:      jobstore.StatusCompleted,
+		TerminalGen: "gen_1",
+	}); err != nil {
+		t.Fatalf("finish pending job: %v", err)
+	}
 	e2 := jobstore.Event{
 		Kind:        jobstore.EventJobNotificationPending,
 		TS:          jm.now(),
@@ -312,6 +377,13 @@ func TestCovForwardEvent(t *testing.T) {
 	}
 	if err := jm.forwardEvent(e2); err != nil {
 		t.Fatalf("forwardEvent pending: %v", err)
+	}
+	records, err = jm.store.Load()
+	if err != nil {
+		t.Fatalf("load forwarded pending event: %v", err)
+	}
+	if rec := records["job_pending"]; rec == nil || rec.VisibleToSession != jm.sessionID || rec.TerminalGen != "gen_1" || rec.NotifyState != jobstore.NotifyPending {
+		t.Fatalf("forwarded pending record = %+v", rec)
 	}
 
 	// NotificationPending event with enqueue — should append and enqueue.
@@ -323,7 +395,17 @@ func TestCovForwardEvent(t *testing.T) {
 		JobID:       "job_enqueue",
 		TerminalGen: "gen_2",
 	}
-	// First, create a terminal record so the enqueue finds it.
+	// First, create an owned terminal record so the enqueue finds it.
+	if err := jm.forwardEvent(jobstore.Event{
+		Kind:           jobstore.EventJobStarted,
+		TS:             jm.now(),
+		JobID:          "job_enqueue",
+		Type:           jobstore.JobType(delegateResourceType),
+		OwnerSessionID: jm.sessionID,
+		Description:    "owned delegate",
+	}); err != nil {
+		t.Fatal(err)
+	}
 	if err := jm.appendEvent(jobstore.Event{
 		Kind:        jobstore.EventJobFinished,
 		TS:          jm.now(),
@@ -333,12 +415,18 @@ func TestCovForwardEvent(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	if err := jm.appendEvent(e3); err != nil {
-		t.Fatal(err)
-	}
-	// forwardEvent re-appends to the forwarded store — but with VisibleToSession set.
 	if err := jm.forwardEvent(e3); err != nil {
 		t.Fatalf("forwardEvent with enqueue: %v", err)
+	}
+	if len(queued) != 1 || queued[0].JobID != "job_enqueue" || queued[0].Status != string(jobstore.StatusCompleted) || queued[0].Description != "owned delegate" {
+		t.Fatalf("queued notifications = %+v, want one completed job_enqueue", queued)
+	}
+	records, err = jm.store.Load()
+	if err != nil {
+		t.Fatalf("load enqueued forwarding: %v", err)
+	}
+	if rec := records["job_enqueue"]; rec == nil || rec.VisibleToSession != jm.sessionID || rec.NotifyState != jobstore.NotifyPending || rec.TerminalGen != "gen_2" {
+		t.Fatalf("forwarded terminal record = %+v", rec)
 	}
 }
 
@@ -388,8 +476,8 @@ func TestCovTrySteerEnqueue_UserSource(t *testing.T) {
 	}
 	// User-sourced steering is not persisted by the snapshot; verify it's queued.
 	s.mu.Lock()
-	if len(s.steeringQueue) != 1 {
-		t.Fatalf("should have 1 entry, got %d", len(s.steeringQueue))
+	if len(s.steeringQueue) != 1 || s.steeringQueue[0].Text != "user msg" || s.steeringQueue[0].Source != events.SteeringSourceUser {
+		t.Fatalf("user steering queue = %+v", s.steeringQueue)
 	}
 	s.mu.Unlock()
 }
@@ -486,29 +574,6 @@ func TestCovPushQueueHead_NoClientMutation(t *testing.T) {
 	s.mu.Unlock()
 }
 
-// TestCovAppendSteeringTurnDurably covers appendSteeringTurnDurably
-// (session_queue.go lines 956-967): requires a full session for
-// writeTranscriptDurable. We verify the function signature is correct
-// and the type system is satisfied.
-func TestCovAppendSteeringTurnDurably_Signature(t *testing.T) {
-	// Verify the types used by appendSteeringTurnDurably are correct.
-	t1 := schema.NewTurn(schema.TurnSteering, llm.User("test"))
-	if t1.Kind != schema.TurnSteering {
-		t.Fatal("turn kind mismatch")
-	}
-}
-
-// TestCovAppendSteeringTurn covers appendSteeringTurn
-// (session_queue.go lines 942-947): requires recordTurn, which needs a
-// full session. Just verify types.
-func TestCovAppendSteeringTurn_Signature(t *testing.T) {
-	t1 := schema.NewTurn(schema.TurnSteering, llm.User("test"))
-	t1.SteeringKind = events.SteeringKindNotification
-	if t1.SteeringKind != events.SteeringKindNotification {
-		t.Fatal("steering kind mismatch")
-	}
-}
-
 // ---- session_attention.go ----
 
 // TestCovHasPendingDelegateAttentionArmRetry_WithArms covers
@@ -530,6 +595,7 @@ func TestCovResetDelegateAttentionArmRetryLocked(t *testing.T) {
 	s := &Session{}
 	s.attentionMu.Lock()
 	s.delegateAttentionArmRetry.active = true
+	s.delegateAttentionArmRetry.generation = 8
 	s.delegateAttentionArmRetry.delay = 5 * time.Second
 	s.attentionMu.Unlock()
 	s.attentionMu.Lock()
@@ -539,6 +605,9 @@ func TestCovResetDelegateAttentionArmRetryLocked(t *testing.T) {
 	}
 	if s.delegateAttentionArmRetry.delay != jobNotificationRetryInitialDelay {
 		t.Fatalf("delay = %v, want %v", s.delegateAttentionArmRetry.delay, jobNotificationRetryInitialDelay)
+	}
+	if s.delegateAttentionArmRetry.generation != 9 {
+		t.Fatalf("generation = %d, want 9", s.delegateAttentionArmRetry.generation)
 	}
 	s.attentionMu.Unlock()
 }
@@ -567,11 +636,19 @@ func TestCovResetStableDelegateAttentionRetry(t *testing.T) {
 	s := &Session{}
 	s.attentionMu.Lock()
 	s.stableAttentionRetry.active = true
+	s.stableAttentionRetry.generation = 4
+	s.stableAttentionRetry.delay = 5 * time.Second
 	s.attentionMu.Unlock()
 	s.resetStableDelegateAttentionRetry()
 	s.attentionMu.Lock()
 	if s.stableAttentionRetry.active {
 		t.Fatal("should be inactive after reset")
+	}
+	if s.stableAttentionRetry.generation != 5 {
+		t.Fatalf("generation = %d, want 5", s.stableAttentionRetry.generation)
+	}
+	if s.stableAttentionRetry.delay != jobNotificationRetryInitialDelay {
+		t.Fatalf("delay = %v, want %v", s.stableAttentionRetry.delay, jobNotificationRetryInitialDelay)
 	}
 	s.attentionMu.Unlock()
 }

@@ -38,16 +38,6 @@ func TestCovAbortOwedDelegateBootstrap(t *testing.T) {
 	}
 }
 
-// TestCovFailOwedDelegateAttentionStart covers failOwedDelegateAttentionStart
-// (delegate_runtime.go lines 665-674): nil/empty guards.
-func TestCovFailOwedDelegateAttentionStart_NilController(t *testing.T) {
-	// This function requires a live delegateController with mu, so we test
-	// the path where the controller is nil — it will panic on c.mu.Lock().
-	// Instead, test with a controller that has no matching lease.
-	// We skip this test since it requires a full controller setup.
-	// The function is covered indirectly by integration tests.
-}
-
 // TestCovFailAdoptedStart covers failAdoptedStart
 // (delegate_runtime.go lines 1775-1786): nil/empty guards.
 // This requires a full delegateController setup, so we test the pure helper
@@ -86,33 +76,9 @@ func TestCovFailAdoptedStart_DelegatePermanentStartFailure(t *testing.T) {
 	if err := json.Unmarshal(finish.packet.Message, &msg); err != nil {
 		t.Fatalf("unmarshal: %v", err)
 	}
-	if len(msg) > 512 {
-		t.Fatalf("message should be truncated to 512, got %d", len(msg))
+	if msg != strings.Repeat("x", 512) {
+		t.Fatalf("truncated message = %q, want exactly 512 x characters", msg)
 	}
-}
-
-// TestCovDiscardAdopted covers discardAdopted
-// (delegate_runtime.go lines 1793-1798): it removes the sub from the owner's
-// subagentManager, cancels the run, disposes the unadopted session, and marks
-// the sendersWG as done. This requires a full session setup with subagents
-// and sendersWG. We test the pure helper disposeUnadoptedSubagentSession
-// that discardAdopted calls.
-func TestCovDiscardAdopted_DisposeUnadopted(t *testing.T) {
-	// disposeUnadoptedSubagentSession with nil session — no panic.
-	disposeUnadoptedSubagentSession(nil, false)
-	disposeUnadoptedSubagentSession(nil, true)
-}
-
-// TestCovRetainAdoptedWithoutLaunch covers retainAdoptedWithoutLaunch
-// (delegate_runtime.go lines 1788-1791).
-// This function requires a full session with sendersWG, so we verify
-// the pattern: it calls prepared.runCancel() and owner.sendersWG.Done().
-// Covered indirectly by integration tests.
-func TestCovRetainAdoptedWithoutLaunch(t *testing.T) {
-	// Just verify the function exists and has the right signature.
-	// It's a method on delegateRuntime, which requires a session with
-	// sendersWG to avoid panicking. Testing it directly requires a full
-	// session setup.
 }
 
 // TestCovSandboxPolicyFromStableSnapshot covers sandboxPolicyFromStableSnapshot
@@ -130,20 +96,35 @@ func TestCovSandboxPolicyFromStableSnapshot(t *testing.T) {
 		t.Fatal("invalid mode should return nil")
 	}
 
-	// Valid mode, no network. ModeOff is 0, so don't check against zero.
-	policy = sandboxPolicyFromStableSnapshot(&delegatestore.SandboxSnapshot{Mode: "off"})
-	if policy == nil {
-		t.Fatal("off mode should return non-nil")
-	}
-	if policy.Network != nil {
-		t.Fatal("network should be nil when not set")
+	for _, tc := range []struct {
+		name string
+		want sandbox.Mode
+	}{
+		{name: "off", want: sandbox.ModeOff},
+		{name: "read-only", want: sandbox.ModeReadOnly},
+		{name: "workspace-write", want: sandbox.ModeWorkspaceWrite},
+		{name: "restricted", want: sandbox.ModeRestricted},
+	} {
+		policy = sandboxPolicyFromStableSnapshot(&delegatestore.SandboxSnapshot{Mode: tc.name})
+		if policy == nil {
+			t.Fatalf("mode %q returned nil", tc.name)
+		}
+		if policy.Mode != tc.want {
+			t.Fatalf("mode %q restored as %v, want %v", tc.name, policy.Mode, tc.want)
+		}
+		if policy.Network != nil {
+			t.Fatalf("mode %q supplied an unset network value: %v", tc.name, *policy.Network)
+		}
 	}
 
 	// Valid mode with network=true.
 	network := true
-	policy = sandboxPolicyFromStableSnapshot(&delegatestore.SandboxSnapshot{Mode: "off", Network: &network})
+	policy = sandboxPolicyFromStableSnapshot(&delegatestore.SandboxSnapshot{Mode: "read-only", Network: &network})
 	if policy == nil {
 		t.Fatal("valid with network should return non-nil")
+	}
+	if policy.Mode != sandbox.ModeReadOnly {
+		t.Fatalf("mode = %v, want %v", policy.Mode, sandbox.ModeReadOnly)
 	}
 	if policy.Network == nil || !*policy.Network {
 		t.Fatal("network should be true")
@@ -159,20 +140,43 @@ func TestCovSandboxPolicyFromStableSnapshot(t *testing.T) {
 		t.Fatal("network should be false")
 	}
 
-	// With denylist/writable roots.
-	policy = sandboxPolicyFromStableSnapshot(&delegatestore.SandboxSnapshot{
-		Mode:               "off",
+	// All collection fields and the network pointer are copied rather than
+	// sharing mutable snapshot storage.
+	network = true
+	snapshot := &delegatestore.SandboxSnapshot{
+		Mode:               "workspace-write",
+		Network:            &network,
 		DenylistAdd:        []string{"/bin"},
-		ExtraWritableRoots: []string{"/tmp"},
-	})
+		DenylistRemove:     []string{"/usr/bin/git"},
+		ExtraWritableRoots: []string{"/tmp/write"},
+		ExtraReadRoots:     []string{"/tmp/read"},
+	}
+	policy = sandboxPolicyFromStableSnapshot(snapshot)
 	if policy == nil {
 		t.Fatal("should return non-nil")
+	}
+	if policy.Mode != sandbox.ModeWorkspaceWrite {
+		t.Fatalf("mode = %v, want %v", policy.Mode, sandbox.ModeWorkspaceWrite)
 	}
 	if len(policy.DenylistAdd) != 1 || policy.DenylistAdd[0] != "/bin" {
 		t.Fatalf("denylist add: %+v", policy.DenylistAdd)
 	}
-	if len(policy.ExtraWritableRoots) != 1 || policy.ExtraWritableRoots[0] != "/tmp" {
+	if len(policy.DenylistRemove) != 1 || policy.DenylistRemove[0] != "/usr/bin/git" {
+		t.Fatalf("denylist remove: %+v", policy.DenylistRemove)
+	}
+	if len(policy.ExtraWritableRoots) != 1 || policy.ExtraWritableRoots[0] != "/tmp/write" {
 		t.Fatalf("writable roots: %+v", policy.ExtraWritableRoots)
+	}
+	if len(policy.ExtraReadRoots) != 1 || policy.ExtraReadRoots[0] != "/tmp/read" {
+		t.Fatalf("read roots: %+v", policy.ExtraReadRoots)
+	}
+	policy.DenylistAdd[0] = "/mutated"
+	policy.DenylistRemove[0] = "/mutated"
+	policy.ExtraWritableRoots[0] = "/mutated"
+	policy.ExtraReadRoots[0] = "/mutated"
+	*policy.Network = false
+	if snapshot.DenylistAdd[0] != "/bin" || snapshot.DenylistRemove[0] != "/usr/bin/git" || snapshot.ExtraWritableRoots[0] != "/tmp/write" || snapshot.ExtraReadRoots[0] != "/tmp/read" || !*snapshot.Network {
+		t.Fatalf("restored policy shares mutable storage with snapshot: snapshot=%+v", snapshot)
 	}
 }
 
@@ -188,16 +192,6 @@ func TestCovRestoreColdDelegateOwnerRuntime_EmptyParentID(t *testing.T) {
 	if got != s {
 		t.Fatal("empty parentID should return the same session")
 	}
-}
-
-// TestCovRestoreColdDelegateOwnerRuntime_NilController covers the case where
-// delegateController is nil.
-func TestCovRestoreColdDelegateOwnerRuntime_NilController(t *testing.T) {
-	s := &Session{}
-	// Non-empty parentID with nil controller — will panic on controller access.
-	// This is an invalid state in production; skip.
-	// Instead, verify the function signature is correct.
-	_ = s
 }
 
 // TestCovCleanup covers delegateIsolation.cleanup
@@ -289,6 +283,10 @@ func TestCovDescriptorProvenance(t *testing.T) {
 	if got == nil || !got.ChainTruncated {
 		t.Fatal("should return cloned provenance")
 	}
+	got.ChainTruncated = false
+	if !desc.Provenance.ChainTruncated {
+		t.Fatal("mutating cloned provenance changed the descriptor")
+	}
 }
 
 // TestCovStableDelegateResult covers stableDelegateResult
@@ -298,6 +296,7 @@ func TestCovStableDelegateResult(t *testing.T) {
 		ChildSessionID:    "child_1",
 		ResolvedProfileID: "openai",
 		ResolvedModel:     "gpt-5",
+		TranscriptRef:     "local:child_1",
 	}
 	result := stableDelegateResult(desc, "dlg_1", delegateUpdatePlan{}, delegateMutationPlans{}, nil)
 	if result.DelegateID != "dlg_1" {
@@ -315,21 +314,31 @@ func TestCovStableDelegateResult(t *testing.T) {
 	if result.Model != "openai/gpt-5" {
 		t.Fatalf("model = %q", result.Model)
 	}
+	if result.TranscriptRef != "local:child_1" {
+		t.Fatalf("transcript ref = %q, want local:child_1", result.TranscriptRef)
+	}
+	if result.Resumable == nil || *result.Resumable {
+		t.Fatalf("resumable = %v, want explicit false", result.Resumable)
+	}
 	if !result.RunningInBackground {
 		t.Fatal("should be running in background")
+	}
+	if result.Sandbox != nil {
+		t.Fatalf("sandbox = %+v, want nil", result.Sandbox)
 	}
 
 	// With sandbox snapshot.
 	network := true
 	desc.Sandbox = &delegatestore.SandboxSnapshot{Mode: "off", Network: &network}
 	result = stableDelegateResult(desc, "dlg_1", delegateUpdatePlan{}, delegateMutationPlans{}, nil)
-	if result.Sandbox == nil || !result.Sandbox.Network {
-		t.Fatal("sandbox should be set with network=true")
+	if result.Sandbox == nil || result.Sandbox.Mode != "off" || !result.Sandbox.Network {
+		t.Fatalf("sandbox = %+v, want mode=off network=true", result.Sandbox)
 	}
 
 	// With error.
-	result = stableDelegateResult(desc, "dlg_1", delegateUpdatePlan{}, delegateMutationPlans{}, errors.New("fail"))
-	if result.Err == nil || !strings.Contains(result.Err.Error(), "fail") {
+	wantErr := errors.New("fail")
+	result = stableDelegateResult(desc, "dlg_1", delegateUpdatePlan{}, delegateMutationPlans{}, wantErr)
+	if !errors.Is(result.Err, wantErr) {
 		t.Fatalf("err = %v", result.Err)
 	}
 }
@@ -396,11 +405,8 @@ func TestCovDelegateQuietAttentionID2(t *testing.T) {
 func TestCovDelegateQuietAttentionIDForStretch(t *testing.T) {
 	lease := delegateLease{delegateID: "dlg_1", generation: 3}
 	got := delegateQuietAttentionIDForStretch(lease, 7)
-	if !strings.Contains(got, "dlg_1") || !strings.Contains(got, "3") || !strings.Contains(got, "7") {
-		t.Fatalf("ID should contain delegate/generation/sequence: %q", got)
-	}
-	if !strings.HasPrefix(got, "quiet:") {
-		t.Fatalf("should start with 'quiet:': %q", got)
+	if got != "quiet:dlg_1:3:7" {
+		t.Fatalf("ID = %q, want quiet:dlg_1:3:7", got)
 	}
 }
 
@@ -715,47 +721,13 @@ func TestCovMissingDelegateRestoreInputReason(t *testing.T) {
 			AgentType:         "default",
 			ResolvedProfileID: "openai",
 			ResolvedModel:     "gpt-5",
-			TranscriptRef:     "session:child_1",
+			TranscriptRef:     encodeRef("", "child_1"),
 		}, os.Stat, os.ReadFile,
 	)
 	if err != nil {
 		t.Fatalf("valid desc empty stateDir: %v", err)
 	}
-	// The transcript ref format may not match, so reason could be
-	// notResumableParentLinkageUnavailable or notResumableMissingChildSessionMeta.
-	if reason == "" {
-		t.Fatal("reason should not be empty")
-	}
-}
-
-// TestCovEscalateUnreachableDelegateAttention_NilController covers
-// escalateUnreachableDelegateAttention (delegate_runtime.go lines 678-693)
-// nil controller guard.
-func TestCovEscalateUnreachableDelegateAttention_NilController(t *testing.T) {
-	// escalateUnreachableDelegateAttention requires a live delegateController
-	// with permanentlyFencedDelegateAttention(). A nil controller panics, so
-	// this function is covered by integration tests.
-}
-
-// TestCovStableDelegateOwnerRuntime covers stableDelegateOwnerRuntime
-// (delegate_runtime.go lines 750-765): nil controller path.
-func TestCovStableDelegateOwnerRuntime(t *testing.T) {
-	// This is a method on *delegateTreeController, tested in
-	// delegate_tree_controller tests.
-}
-
-// TestCovSandboxParseMode verifies the sandbox.ParseMode function works
-// for the values used in sandboxPolicyFromStableSnapshot tests.
-func TestCovSandboxParseMode(t *testing.T) {
-	// "off" should parse successfully.
-	_, err := sandbox.ParseMode("off")
-	if err != nil {
-		t.Fatalf("ParseMode(off): %v", err)
-	}
-
-	// Invalid mode should return error.
-	_, err = sandbox.ParseMode("invalid_mode")
-	if err == nil {
-		t.Fatal("invalid mode should return error")
+	if reason != notResumableMissingChildSessionMeta {
+		t.Fatalf("reason = %q, want %q", reason, notResumableMissingChildSessionMeta)
 	}
 }

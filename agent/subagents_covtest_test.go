@@ -6,6 +6,7 @@ import (
 	"strings"
 	"testing"
 
+	"primeradiant.com/evener/agent/execenv"
 	"primeradiant.com/evener/agent/internal/delegatestore"
 	"primeradiant.com/evener/agent/internal/tool"
 	"primeradiant.com/evener/agent/provenance"
@@ -49,9 +50,14 @@ func TestCovAppendUniqueStrings2(t *testing.T) {
 // TestCovRemoveStrings covers removeStrings (subagents.go lines 206-218).
 func TestCovRemoveStrings2(t *testing.T) {
 	// No removals — copy of input.
-	got := removeStrings([]string{"a", "b"}, nil)
+	original := []string{"a", "b"}
+	got := removeStrings(original, nil)
 	if len(got) != 2 || got[0] != "a" || got[1] != "b" {
 		t.Fatalf("no removals: %+v", got)
+	}
+	got[0] = "mutated"
+	if original[0] != "a" {
+		t.Fatalf("no-removal result shares storage with input: input=%v", original)
 	}
 	// Remove some.
 	got = removeStrings([]string{"a", "b", "c"}, []string{"b"})
@@ -139,9 +145,14 @@ func TestCovFrozenSubagentToolNames(t *testing.T) {
 		t.Fatalf("allTools: %+v", got)
 	}
 	// Has allowed list.
-	got = frozenSubagentToolNames(false, []string{"read_file", "exec_command"}, nil)
+	allowed := []string{"read_file", "exec_command"}
+	got = frozenSubagentToolNames(false, allowed, nil)
 	if len(got) != 2 || got[0] != "read_file" {
 		t.Fatalf("allowed: %+v", got)
+	}
+	got[0] = "mutated"
+	if allowed[0] != "read_file" {
+		t.Fatalf("frozen tool names share storage with allowed input: %v", allowed)
 	}
 	// Only denied (non-empty).
 	got = frozenSubagentToolNames(false, nil, []string{"delegate"})
@@ -242,6 +253,10 @@ func TestCovFollowUpProvenance(t *testing.T) {
 	if got == nil || !got.ChainTruncated {
 		t.Fatal("nil subagent should return clone of input")
 	}
+	got.ChainTruncated = false
+	if !input.ChainTruncated {
+		t.Fatal("nil-subagent result shares storage with input provenance")
+	}
 
 	// Non-nil subagent with nil sess — returns clone of input.
 	a = &subagent{}
@@ -328,8 +343,11 @@ func TestCovDelegateSettlementModeForRun(t *testing.T) {
 	if delegateSettlementModeForRun(nil, true) != delegateSettlementTerminal {
 		t.Fatal("cancelRequested should be terminal")
 	}
-	// Budget exhausted — terminal (need to construct an exhaustion error).
-	// This is tricky to construct; skip.
+	// Budget exhaustion is terminal even when its descriptor says resumable.
+	exhausted := &budgetExhaustionError{Budget: exhaustedBudgetToolRounds, Limit: 4, Resumable: true}
+	if delegateSettlementModeForRun(exhausted, false) != delegateSettlementTerminal {
+		t.Fatal("budget exhaustion should be terminal")
+	}
 	// nil error, not cancelled — ordinary.
 	if delegateSettlementModeForRun(nil, false) != delegateSettlementOrdinary {
 		t.Fatal("nil error should be ordinary")
@@ -462,32 +480,29 @@ func TestCovLocalEnvPolicyName2(t *testing.T) {
 // TestCovLocalEnvPolicyFromName covers localEnvPolicyFromName
 // (subagents.go lines 367-380).
 func TestCovLocalEnvPolicyFromName2(t *testing.T) {
-	// Valid names.
-	_, ok := localEnvPolicyFromName("all")
-	if !ok {
-		t.Fatal("all should be valid")
-	}
-	_, ok = localEnvPolicyFromName("none")
-	if !ok {
-		t.Fatal("none should be valid")
-	}
-	_, ok = localEnvPolicyFromName("core_only")
-	if !ok {
-		t.Fatal("core_only should be valid")
-	}
-	_, ok = localEnvPolicyFromName("default")
-	if !ok {
-		t.Fatal("default should be valid")
+	for _, tc := range []struct {
+		name string
+		want execenv.EnvVarPolicy
+	}{
+		{name: "all", want: execenv.EnvPolicyAll},
+		{name: "none", want: execenv.EnvPolicyNone},
+		{name: "core_only", want: execenv.EnvPolicyCoreOnly},
+		{name: "default", want: execenv.EnvPolicyDefault},
+	} {
+		got, ok := localEnvPolicyFromName(tc.name)
+		if !ok || got != tc.want {
+			t.Fatalf("localEnvPolicyFromName(%q) = (%v, %v), want (%v, true)", tc.name, got, ok, tc.want)
+		}
 	}
 	// Invalid.
-	_, ok = localEnvPolicyFromName("invalid")
-	if ok {
-		t.Fatal("invalid should not be valid")
+	got, ok := localEnvPolicyFromName("invalid")
+	if ok || got != execenv.EnvPolicyDefault {
+		t.Fatalf("invalid policy = (%v, %v), want (%v, false)", got, ok, execenv.EnvPolicyDefault)
 	}
 	// Whitespace trimmed.
-	_, ok = localEnvPolicyFromName("  all  ")
-	if !ok {
-		t.Fatal("whitespace should be trimmed")
+	got, ok = localEnvPolicyFromName("  all  ")
+	if !ok || got != execenv.EnvPolicyAll {
+		t.Fatalf("whitespace policy = (%v, %v), want (%v, true)", got, ok, execenv.EnvPolicyAll)
 	}
 }
 
@@ -502,15 +517,24 @@ func TestCovCloneMap2(t *testing.T) {
 	}
 
 	// Valid map.
-	original := map[string]any{"key": "value", "num": 42.0}
+	original := map[string]any{
+		"key": "value",
+		"num": 42.0,
+		"nested": map[string]any{
+			"items": []any{"first", "second"},
+		},
+	}
 	cloned := cloneMap(original)
 	if cloned["key"] != "value" || cloned["num"] != 42.0 {
 		t.Fatalf("clone mismatch: %+v", cloned)
 	}
-	// Mutating clone should not affect original.
+	// Mutating both the outer and nested clone must not affect the source.
 	cloned["key"] = "changed"
-	if original["key"] != "value" {
-		t.Fatal("mutating clone should not affect original")
+	clonedNested := cloned["nested"].(map[string]any)
+	clonedNested["items"].([]any)[0] = "changed"
+	originalNested := original["nested"].(map[string]any)
+	if original["key"] != "value" || originalNested["items"].([]any)[0] != "first" {
+		t.Fatalf("mutating deep clone changed source: %+v", original)
 	}
 }
 
@@ -530,17 +554,10 @@ func TestCovCloneShallowMap(t *testing.T) {
 	if cloned["key"] != "value" {
 		t.Fatalf("clone mismatch: %+v", cloned)
 	}
-}
-
-// TestCovLiveShellsUnderTree covers liveShellsUnderTree
-// (subagents.go lines 449-454): nil session.
-func TestCovLiveShellsUnderTree_NilSession(t *testing.T) {
-	var s *Session
-	// Should not panic on nil session (collectLiveShellsUnderTree checks
-	// s.jobManager which would panic on nil s). Actually it's a method
-	// on *Session, so nil s accessing s.jobManager would panic.
-	// Skip this test.
-	_ = s
+	cloned["key"] = "changed"
+	if original["key"] != "value" {
+		t.Fatalf("mutating shallow clone changed source map: %+v", original)
+	}
 }
 
 // TestCovSharedWorkspaceDelegateWarning covers

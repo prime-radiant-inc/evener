@@ -2,11 +2,15 @@ package agent
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"strings"
 	"testing"
 
 	"primeradiant.com/evener/agent/execenv"
+	"primeradiant.com/evener/agent/internal/delegatestore"
+	"primeradiant.com/evener/agent/plugin"
+	"primeradiant.com/evener/agent/task"
 )
 
 // TestCovWrapHookContext covers wrapHookContext (session_queue.go line 279).
@@ -21,10 +25,12 @@ func TestCovWrapHookContext(t *testing.T) {
 // deliverHookContext (session_queue.go lines 286-288).
 func TestCovDeliverHookContext_Empty(t *testing.T) {
 	s := &Session{}
-	// These should not panic.
 	s.deliverHookContext("")
 	s.deliverHookContext("  ")
 	s.deliverHookContext("\t\n")
+	if len(s.steeringQueue) != 0 {
+		t.Fatalf("empty hook context queued steering: %+v", s.steeringQueue)
+	}
 }
 
 // TestCovDeliverHookUserMessage_Empty covers the empty-text guard in
@@ -54,6 +60,16 @@ func TestCovFollowUp_Empty(t *testing.T) {
 	s.mu.Lock()
 	if len(s.followups) != 1 || s.followups[0] != "do something" {
 		t.Fatalf("expected 1 followup 'do something', got %v", s.followups)
+	}
+	s.mu.Unlock()
+
+	s.mu.Lock()
+	s.state = SessionClosed
+	s.mu.Unlock()
+	s.FollowUp("ignored after close")
+	s.mu.Lock()
+	if len(s.followups) != 1 || s.followups[0] != "do something" {
+		t.Fatalf("closed session changed followups: %v", s.followups)
 	}
 	s.mu.Unlock()
 }
@@ -86,6 +102,9 @@ func TestCovSteerFromUserWithImages_Empty(t *testing.T) {
 	// Both empty — should return without doing anything.
 	s.SteerFromUserWithImages("", nil)
 	s.SteerFromUserWithImages("  ", nil)
+	if len(s.steeringQueue) != 0 || len(s.inputQueue) != 0 {
+		t.Fatalf("empty user steering changed queues: steering=%+v input=%+v", s.steeringQueue, s.inputQueue)
+	}
 }
 
 // TestCovEnqueueWithImages_ClosedContext covers the context-cancelled path
@@ -95,8 +114,8 @@ func TestCovEnqueueWithImages_ClosedContext(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 	err := s.EnqueueWithImages(ctx, "hello", nil)
-	if err == nil {
-		t.Fatal("expected error for cancelled context")
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("cancelled context error = %v, want %v", err, context.Canceled)
 	}
 }
 
@@ -168,16 +187,43 @@ func TestCovBuiltinAgents(t *testing.T) {
 		t.Fatal("expected at least one builtin agent")
 	}
 
-	// Verify the cache returns a clone (different map instance).
-	agents2, _ := builtinAgents()
-	if &agents == &agents2 {
-		t.Fatal("builtinAgents should return a clone")
+	// Mutating the returned map must not change the cached map returned next.
+	var cachedName string
+	for name := range agents {
+		cachedName = name
+		break
+	}
+	delete(agents, cachedName)
+	agents2, err := builtinAgents()
+	if err != nil {
+		t.Fatalf("second builtinAgents() error: %v", err)
+	}
+	if _, ok := agents2[cachedName]; !ok {
+		t.Fatalf("deleting %q from one result mutated the builtin cache", cachedName)
 	}
 
-	// cloneBuiltinAgents directly.
-	cloned := cloneBuiltinAgents(agents)
-	if len(cloned) != len(agents) {
-		t.Fatalf("clone length = %d, want %d", len(cloned), len(agents))
+	// cloneBuiltinAgents must also copy every mutable slice in an Agent value.
+	source := map[string]plugin.Agent{
+		"worker": {
+			Name:   "worker",
+			Tools:  []string{"read_file", "exec_command"},
+			Skills: []string{"review", "testing"},
+			Tasks:  []task.TaskTemplate{{Title: "inspect", Prompt: "inspect code"}, {Title: "verify", Prompt: "run tests"}},
+		},
+	}
+	cloned := cloneBuiltinAgents(source)
+	worker := cloned["worker"]
+	worker.Tools[0] = "mutated-tool"
+	worker.Skills[0] = "mutated-skill"
+	worker.Tasks[0].Title = "mutated-task"
+	cloned["worker"] = worker
+	delete(cloned, "worker")
+	original := source["worker"]
+	if original.Tools[0] != "read_file" || original.Skills[0] != "review" || original.Tasks[0].Title != "inspect" {
+		t.Fatalf("clone shares mutable agent storage with source: source=%+v", original)
+	}
+	if _, ok := source["worker"]; !ok {
+		t.Fatal("deleting from clone changed source map")
 	}
 }
 
@@ -301,14 +347,42 @@ func TestCovSessionJobManager_NilSession(t *testing.T) {
 // (subagents.go lines 1737-1745).
 func TestCovStableDelegateFinish_NilSession(t *testing.T) {
 	finish := stableDelegateFinish(nil, "result", nil)
-	// Should not panic, should produce a valid finish.
-	_ = finish
+	if finish.outcome != delegatestore.OutcomeFailed || finish.disposition != delegatestore.DispositionTerminalError || finish.reason != "failed" {
+		t.Fatalf("unreported finish = outcome:%q disposition:%q reason:%q", finish.outcome, finish.disposition, finish.reason)
+	}
+	if finish.packet == nil || finish.packet.Kind != delegatestore.PacketTerminalError {
+		t.Fatalf("unreported packet = %+v, want terminal error", finish.packet)
+	}
+	var message string
+	if err := json.Unmarshal(finish.packet.Message, &message); err != nil || message != "result" {
+		t.Fatalf("unreported packet message = %q, err=%v, want result", message, err)
+	}
+
+	reported := stableDelegateFinish(&Session{comm: communicateResult{called: true}}, "reported result", nil)
+	if reported.outcome != delegatestore.OutcomeCompleted || reported.disposition != delegatestore.DispositionReported || reported.reason != "" {
+		t.Fatalf("reported finish = outcome:%q disposition:%q reason:%q", reported.outcome, reported.disposition, reported.reason)
+	}
+	if reported.packet == nil || reported.packet.Kind != delegatestore.PacketReported {
+		t.Fatalf("reported packet = %+v, want reported", reported.packet)
+	}
+	if err := json.Unmarshal(reported.packet.Message, &message); err != nil || message != "reported result" {
+		t.Fatalf("reported packet message = %q, err=%v, want reported result", message, err)
+	}
 }
 
 // TestCovStableDelegateFinish_WithError covers stableDelegateFinish with error
 func TestCovStableDelegateFinish_WithError(t *testing.T) {
-	finish := stableDelegateFinish(&Session{}, "result", context.DeadlineExceeded)
-	_ = finish
+	finish := stableDelegateFinish(&Session{comm: communicateResult{called: true}}, "", context.DeadlineExceeded)
+	if finish.outcome != delegatestore.OutcomeFailed || finish.disposition != delegatestore.DispositionTerminalError || finish.reason != "failed" {
+		t.Fatalf("error finish = outcome:%q disposition:%q reason:%q", finish.outcome, finish.disposition, finish.reason)
+	}
+	if finish.packet == nil || finish.packet.Kind != delegatestore.PacketTerminalError {
+		t.Fatalf("error packet = %+v, want terminal error", finish.packet)
+	}
+	var message string
+	if err := json.Unmarshal(finish.packet.Message, &message); err != nil || message != context.DeadlineExceeded.Error() {
+		t.Fatalf("error packet message = %q, err=%v, want %q", message, err, context.DeadlineExceeded)
+	}
 }
 
 // TestCovMarshalBoundedJSON covers marshalBoundedJSON
@@ -320,8 +394,8 @@ func TestCovMarshalBoundedJSON(t *testing.T) {
 	if err != nil {
 		t.Fatalf("marshalBoundedJSON error: %v", err)
 	}
-	if !strings.Contains(got, "key") {
-		t.Fatalf("output missing key: %q", got)
+	if got != `{"key":"value"}` {
+		t.Fatalf("output = %q, want exact JSON object", got)
 	}
 }
 
@@ -336,8 +410,8 @@ func TestCovMarshalBoundedJSONWithFit(t *testing.T) {
 	if !fit {
 		t.Fatal("should fit within 1024 bytes")
 	}
-	if !strings.Contains(got, "key") {
-		t.Fatalf("output missing key: %q", got)
+	if got != `{"key":"value"}` {
+		t.Fatalf("output = %q, want exact JSON object", got)
 	}
 }
 
