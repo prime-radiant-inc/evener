@@ -309,7 +309,6 @@ func TestLocateLocalJob_OpenError(t *testing.T) {
 // TestLocateLocalJob_ExceededBound covers the reader-exceeded-bound path
 // (lines 69-71) where ReadDir returns more entries than requested.
 func TestLocateLocalJob_ExceededBound(t *testing.T) {
-	t.Parallel()
 	stateHome := t.TempDir()
 	current := localJobProjectBucket(t, stateHome, localJobCurrentProject)
 	owner := identifier.MustNewSessionID()
@@ -341,7 +340,6 @@ func (r *overReturningReader) Close() error { return nil }
 // TestLocateLocalJob_NoProgress covers the no-progress path (lines 100-102)
 // where ReadDir returns 0 entries with no error.
 func TestLocateLocalJob_NoProgress(t *testing.T) {
-	t.Parallel()
 	stateHome := t.TempDir()
 	current := localJobProjectBucket(t, stateHome, localJobCurrentProject)
 	owner := identifier.MustNewSessionID()
@@ -368,7 +366,6 @@ func (r *noProgressReader) Close() error { return nil }
 // TestLocateLocalJob_SentinelReadError covers the sentinel read error
 // path (lines 112-113).
 func TestLocateLocalJob_SentinelReadError(t *testing.T) {
-	t.Parallel()
 	stateHome := t.TempDir()
 	current := localJobProjectBucket(t, stateHome, localJobCurrentProject)
 	owner := identifier.MustNewSessionID()
@@ -403,7 +400,6 @@ func (r *sentinelErrorReader) Close() error { return nil }
 // TestLocateLocalJob_SentinelNoProgress covers the sentinel-read no-progress
 // path (line 115).
 func TestLocateLocalJob_SentinelNoProgress(t *testing.T) {
-	t.Parallel()
 	stateHome := t.TempDir()
 	current := localJobProjectBucket(t, stateHome, localJobCurrentProject)
 	owner := identifier.MustNewSessionID()
