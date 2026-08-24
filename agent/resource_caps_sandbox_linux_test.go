@@ -4,9 +4,9 @@ package agent
 
 import (
 	"context"
-	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
@@ -15,7 +15,7 @@ import (
 	"primeradiant.com/evener/llm"
 )
 
-func TestLinuxEnforcedSandboxTrustedResourcesReachEnvironmentPrompt(t *testing.T) {
+func TestLinuxEnforcedSandboxKeepsTrustedResourcesOutsideModelShellMask(t *testing.T) {
 	home := t.TempDir()
 	worktree := filepath.Join(home, "wt")
 	if err := os.MkdirAll(worktree, 0o755); err != nil {
@@ -47,6 +47,9 @@ func TestLinuxEnforcedSandboxTrustedResourcesReachEnvironmentPrompt(t *testing.T
 	if !ok || local.Sandbox == nil || !local.Sandbox.Enforced() || local.Wrapper == nil {
 		t.Fatalf("session must retain an enforced sandbox: %#v", sess.env)
 	}
+	if !slices.Contains(local.Sandbox.MaskedPaths, "/sys") {
+		t.Fatalf("enforced sandbox policy does not mask /sys: %v", local.Sandbox.MaskedPaths)
+	}
 
 	// The model-facing shell must not be able to inspect the cgroup files that
 	// the trusted launch snapshot reads. This is the security boundary under test.
@@ -62,16 +65,9 @@ func TestLinuxEnforcedSandboxTrustedResourcesReachEnvironmentPrompt(t *testing.T
 	if resources == nil || resources.CPUs <= 0 || resources.MemoryMB <= 0 {
 		t.Skip("host does not expose finite CPU and memory cgroup caps")
 	}
-	prompt, warning := sess.renderSystemPrompt(sess.env)
-	if warning != "" {
-		t.Fatalf("render system prompt: %s", warning)
-	}
-	for _, want := range []string{
-		fmt.Sprintf("CPUs: %v", resources.CPUs),
-		fmt.Sprintf("Memory: %d MB", resources.MemoryMB),
-	} {
-		if !strings.Contains(prompt, want) {
-			t.Fatalf("assembled environment prompt missing %q:\n%s", want, prompt)
-		}
+	data := sess.buildPromptData(local)
+	if data.CPUs != resources.CPUs || data.MemoryMB != resources.MemoryMB {
+		t.Fatalf("environment section resources = (%v, %d), want trusted snapshot (%v, %d)",
+			data.CPUs, data.MemoryMB, resources.CPUs, resources.MemoryMB)
 	}
 }

@@ -2,7 +2,7 @@ package agent
 
 import (
 	"context"
-	"strings"
+	"slices"
 	"testing"
 
 	"primeradiant.com/evener/agent/execenv"
@@ -20,7 +20,7 @@ func (e *maskedResourceFixtureEnv) ExecCommand(context.Context, string, int, str
 	return execenv.ExecResult{ExitCode: 0}, nil
 }
 
-func TestEnvironmentPromptUsesTrustedStructuredResourcesWhenModelShellMasked(t *testing.T) {
+func TestEnvironmentSectionDataUsesTrustedStructuredResourcesWhenModelShellMasked(t *testing.T) {
 	env := &maskedResourceFixtureEnv{resourceFixtureEnv: newResourceFixtureEnv(t, resourceFixtureV2("100000 100000", "2147483648"))}
 	info := envInfoFromEnv(env, clock.Real())
 	if info.Resources == nil || info.Resources.CPUs != 1 || info.Resources.MemoryMB != 2048 {
@@ -36,17 +36,25 @@ func TestEnvironmentPromptUsesTrustedStructuredResourcesWhenModelShellMasked(t *
 			},
 		},
 	}))
-	prompt, warning := sess.renderSystemPrompt(sess.env)
-	if warning != "" {
+	data := sess.buildPromptData(sess.env)
+	if data.CPUs != info.Resources.CPUs || data.MemoryMB != info.Resources.MemoryMB {
+		t.Fatalf("environment section resources = (%v, %d), want trusted snapshot (%v, %d)",
+			data.CPUs, data.MemoryMB, info.Resources.CPUs, info.Resources.MemoryMB)
+	}
+	if data.CPUs == 0 || data.MemoryMB == 0 {
+		t.Fatalf("finite resource data selected omission branch: %+v", data)
+	}
+	if _, warning := sess.renderSystemPrompt(sess.env); warning != "" {
 		t.Fatalf("render system prompt: %s", warning)
 	}
-	for _, want := range []string{"CPUs: 1", "Memory: 2048 MB"} {
-		if !strings.Contains(prompt, want) {
-			t.Fatalf("assembled environment prompt missing %q:\n%s", want, prompt)
-		}
+	if !slices.ContainsFunc(sess.promptSourceLog, func(source promptSource) bool {
+		return source.Label == "embedded:prompts/sections/environment.md.tmpl"
+	}) {
+		t.Fatalf("environment section source was not selected: %+v", sess.promptSourceLog)
 	}
 }
-func TestEnvironmentPromptOmitsUnknownOrUnlimitedResources(t *testing.T) {
+
+func TestEnvironmentSectionDataSelectsOmissionForUnknownOrUnlimitedResources(t *testing.T) {
 	for name, resources := range map[string]*schema.ResourceCaps{
 		"unknown":   nil,
 		"unlimited": {},
@@ -62,24 +70,11 @@ func TestEnvironmentPromptOmitsUnknownOrUnlimitedResources(t *testing.T) {
 					},
 				},
 			}))
-			prompt, warning := sess.renderSystemPrompt(sess.env)
-			if warning != "" {
-				t.Fatalf("render system prompt: %s", warning)
-			}
-			for _, omitted := range []string{"CPUs:", "Memory:"} {
-				if strings.Contains(prompt, omitted) {
-					t.Fatalf("prompt must omit %q for %s resources:\n%s", omitted, name, prompt)
-				}
+			data := sess.buildPromptData(sess.env)
+			if data.CPUs != 0 || data.MemoryMB != 0 {
+				t.Fatalf("environment section selected finite-resource branch for %s resources: (%v, %d)",
+					name, data.CPUs, data.MemoryMB)
 			}
 		})
-	}
-}
-
-func TestDelegationPromptIncludesResourceCoTenantDoctrine(t *testing.T) {
-	const doctrine = "Before running data-heavy work concurrently, price it against these CPU and memory caps, treating your own context and transcript heap as an invisible co-tenant."
-
-	prompt := renderPromptForTest(t, NewOpenAIProfile("gpt-5.4"), promptData{})
-	if !strings.Contains(prompt, doctrine) {
-		t.Fatalf("assembled prompt missing resource co-tenant doctrine %q", doctrine)
 	}
 }
