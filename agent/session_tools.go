@@ -280,16 +280,76 @@ func (s *Session) visionSideChannelDuration() time.Duration {
 	return visionSideChannelTimeout
 }
 
+type visionSideChannelResult struct {
+	description string
+	elapsed     time.Duration
+	usage       llm.Usage
+}
+
 // describeImage makes a side-channel API call with no tools to describe an image
 // using the model's native vision. Returns the text description, or "" on error.
 // The call includes context from the current task so the description is relevant.
 func (s *Session) describeImage(ctx context.Context, r tool.ExecResult) string {
-	if len(r.ImageData) == 0 {
+	return s.describeImageCall(ctx, r).description
+}
+
+// describeImageSteering preserves describeImage's text contract while appending
+// side-channel accounting for the model-facing steering message. The accounting
+// is emitted only after a non-empty response succeeds, so failures cannot claim
+// successful usage or latency.
+func (s *Session) describeImageSteering(ctx context.Context, r tool.ExecResult) string {
+	result := s.describeImageCall(ctx, r)
+	if result.description == "" {
 		return ""
+	}
+	return result.description + "\n" + formatVisionSideChannelSignal(result)
+}
+
+func formatVisionSideChannelSignal(result visionSideChannelResult) string {
+	var b strings.Builder
+	fmt.Fprintf(&b, "[vision side-channel: elapsed=%s", result.elapsed)
+	if !visionUsageAvailable(result.usage) {
+		b.WriteString("; usage=unavailable]")
+		return b.String()
+	}
+	fmt.Fprintf(&b, "; usage input_tokens=%d output_tokens=%d", result.usage.InputTokens, result.usage.OutputTokens)
+	if result.usage.ReasoningTokens != nil {
+		fmt.Fprintf(&b, " reasoning_tokens=%d", *result.usage.ReasoningTokens)
+	}
+	if result.usage.ReasoningTokensEstimated != nil {
+		fmt.Fprintf(&b, " reasoning_tokens_estimated=%d", *result.usage.ReasoningTokensEstimated)
+	}
+	if result.usage.CacheReadTokens != nil {
+		fmt.Fprintf(&b, " cache_read_tokens=%d", *result.usage.CacheReadTokens)
+	}
+	if result.usage.CacheWriteTokens != nil {
+		fmt.Fprintf(&b, " cache_write_tokens=%d", *result.usage.CacheWriteTokens)
+	}
+	if result.usage.CacheWrite1hTokens != nil {
+		fmt.Fprintf(&b, " cache_write_1h_tokens=%d", *result.usage.CacheWrite1hTokens)
+	}
+	b.WriteByte(']')
+	return b.String()
+}
+
+func visionUsageAvailable(usage llm.Usage) bool {
+	return usage.InputTokens != 0 ||
+		usage.OutputTokens != 0 ||
+		usage.TotalTokens != 0 ||
+		usage.ReasoningTokens != nil ||
+		usage.ReasoningTokensEstimated != nil ||
+		usage.CacheReadTokens != nil ||
+		usage.CacheWriteTokens != nil ||
+		usage.CacheWrite1hTokens != nil
+}
+
+func (s *Session) describeImageCall(ctx context.Context, r tool.ExecResult) visionSideChannelResult {
+	if len(r.ImageData) == 0 {
+		return visionSideChannelResult{}
 	}
 	// Skip for explorer agents — they're just inventorying files, not analyzing images.
 	if s.cfg.AgentName == "explorer" {
-		return ""
+		return visionSideChannelResult{}
 	}
 
 	// Use the caller's stated purpose as the vision prompt. The calling LLM
@@ -365,13 +425,22 @@ func (s *Session) describeImage(ctx context.Context, r tool.ExecResult) string {
 	}
 	s.applyModelRequestMetadata(profile, &req)
 
+	start := s.sclock().Now()
 	resp, err := s.client.Complete(visionCtx, req)
+	elapsed := s.sclock().Now().Sub(start)
+	if elapsed < 0 {
+		elapsed = 0
+	}
 	if err != nil {
 		s.emit(events.EventWarning, events.WarningData{Message: fmt.Sprintf("vision side-channel failed: %v", err)})
-		return ""
+		return visionSideChannelResult{}
 	}
 
-	return strings.TrimSpace(resp.Message.Text())
+	return visionSideChannelResult{
+		description: strings.TrimSpace(resp.Message.Text()),
+		elapsed:     elapsed,
+		usage:       resp.Usage,
+	}
 }
 
 func (s *Session) canonicalToolName(name string) string {
