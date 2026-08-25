@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"slices"
 	"testing"
 	"time"
 
@@ -30,6 +31,84 @@ func taskEffortToolCall(id, args string) llm.Response {
 			ToolCall: &llm.ToolCallData{ID: id, Name: "task_list", Arguments: json.RawMessage(args)},
 		}},
 	}}
+}
+
+func requireTaskEffortSchemaLevel(t *testing.T, req llm.Request, operation, level string) {
+	t.Helper()
+	for _, def := range req.Tools {
+		if def.Name != "task_list" {
+			continue
+		}
+		properties, ok := def.Parameters["properties"].(map[string]any)
+		if !ok {
+			t.Fatalf("task_list properties = %#v", def.Parameters["properties"])
+		}
+		operationSchema, ok := properties[operation].(map[string]any)
+		if !ok {
+			t.Fatalf("task_list %s schema = %#v", operation, properties[operation])
+		}
+		items, ok := operationSchema["items"].(map[string]any)
+		if !ok {
+			t.Fatalf("task_list %s items = %#v", operation, operationSchema["items"])
+		}
+		itemProperties, ok := items["properties"].(map[string]any)
+		if !ok {
+			t.Fatalf("task_list %s item properties = %#v", operation, items["properties"])
+		}
+		effortSchema, ok := itemProperties["reasoning_effort"].(map[string]any)
+		if !ok {
+			t.Fatalf("task_list %s reasoning_effort schema = %#v", operation, itemProperties["reasoning_effort"])
+		}
+		levels, ok := effortSchema["enum"].([]string)
+		if !ok {
+			t.Fatalf("task_list %s reasoning_effort enum = %#v", operation, effortSchema["enum"])
+		}
+		if slices.Contains(levels, level) {
+			return
+		}
+		t.Fatalf("task_list %s reasoning_effort enum = %v, want stale level %q admitted by metadata", operation, levels, level)
+	}
+	t.Fatal("request has no task_list tool definition")
+}
+
+func requireTaskHandlerError(t *testing.T, req llm.Request, callID string) {
+	t.Helper()
+	for _, message := range req.Messages {
+		for _, part := range message.Content {
+			if part.ToolResult == nil || part.ToolResult.ToolCallID != callID {
+				continue
+			}
+			if !part.ToolResult.IsError {
+				t.Fatalf("task_list result %s is not an error: %#v", callID, part.ToolResult)
+			}
+			if part.ToolResult.PrevalOnly {
+				t.Fatalf("task_list result %s was rejected before the handler: %#v", callID, part.ToolResult)
+			}
+			return
+		}
+	}
+	t.Fatalf("request has no task_list result for %s", callID)
+}
+
+func TestValidateTaskEffortNormalizesCanonicalValues(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name, input, want string
+	}{
+		{name: "canonical", input: " HIGH ", want: "high"},
+		{name: "inherit", input: " InHerIt ", want: ""},
+		{name: "disable alias", input: " none ", want: ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := validateTaskEffort(tc.input)
+			if err != nil {
+				t.Fatalf("validateTaskEffort(%q): %v", tc.input, err)
+			}
+			if got != tc.want {
+				t.Fatalf("validateTaskEffort(%q) = %q, want %q", tc.input, got, tc.want)
+			}
+		})
+	}
 }
 
 func requestEfforts(t *testing.T, reqs []llm.Request) []string {
@@ -106,6 +185,102 @@ func TestSession_TaskEffortOverride_AppliesPerRoundOnly(t *testing.T) {
 	}
 	if effort := sess.ReasoningEffort(); effort != "max" {
 		t.Fatalf("session configured effort = %q after tasks, want %q (task effort must not persist into session config)", effort, "max")
+	}
+}
+
+// An invalid task effort must reject the entire task update before it can
+// activate the task. Otherwise the next model request carries the invalid
+// override and a provider that rejects it can leave autonomous wakeups retrying
+// the same permanently poisoned request.
+func TestSession_TaskListRejectsInvalidEffortBeforeActivatingTask(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	c := llm.NewClient()
+
+	f := &fakeAdapter{
+		name: "openai",
+		steps: []func(req llm.Request) llm.Response{
+			func(req llm.Request) llm.Response {
+				requireTaskEffortSchemaLevel(t, req, "updates", "ultra")
+				return taskEffortToolCall("c1", `{"action":"append","tasks":[{"type":"implement","description":"first guard","prompt":"keep the first request valid","reasoning_effort":"high"},{"type":"implement","description":"second guard","prompt":"keep the second request valid","reasoning_effort":"low"}]}`)
+			},
+			func(req llm.Request) llm.Response {
+				return taskEffortToolCall("c2", `{"action":"update","updates":[{"id":1,"status":"done","reasoning_effort":"max"},{"id":2,"status":"in_progress","reasoning_effort":"ultra"}]}`)
+			},
+			func(req llm.Request) llm.Response {
+				requireTaskHandlerError(t, req, "c2")
+				return finalResponse("done")
+			},
+		},
+	}
+	c.Register(f)
+
+	// Model metadata is an external boundary and may advertise a stale level.
+	// The task handler must still enforce Evener's canonical vocabulary rather
+	// than trusting the schema enum as its only validation.
+	profile := provider.NewOpenAIProfile("gpt-5.2").WithLiveModelInfo(llm.ModelInfo{
+		ReasoningEffortLevels: []string{"minimal", "low", "medium", "high", "xhigh", "max", "ultra"},
+	})
+	sess, err := NewSession(c, profile, execenv.NewLocalExecutionEnvironment(dir), SessionConfig{
+		ReasoningEffort: "max",
+	})
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+	defer sess.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second) // TRIPWIRE: scripted in-process adapter, no real I/O; only fires on a genuine hang.
+	defer cancel()
+	if _, err := sess.ProcessInput(ctx, "work the plan", nil); err != nil {
+		t.Fatal(err)
+	}
+
+	tasks := sess.getOrCreateTaskStore().View()
+	if len(tasks) != 2 {
+		t.Fatalf("tasks = %#v, want the two valid appended tasks", tasks)
+	}
+	if tasks[0].Status != taskpkg.TaskOpen || tasks[0].ReasoningEffort != "high" || tasks[1].Status != taskpkg.TaskOpen || tasks[1].ReasoningEffort != "low" {
+		t.Fatalf("tasks after rejected update = %#v, want both original open tasks unchanged", tasks)
+	}
+	if got, want := requestEfforts(t, f.Requests()), []string{"max", "max", "max"}; len(got) != len(want) || got[0] != want[0] || got[1] != want[1] || got[2] != want[2] {
+		t.Fatalf("request efforts = %v, want %v (invalid task effort must not cross the provider boundary)", got, want)
+	}
+}
+
+func TestSession_TaskListRejectsInvalidEffortBeforeAppendingTask(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	c := llm.NewClient()
+	f := &fakeAdapter{
+		name: "openai",
+		steps: []func(req llm.Request) llm.Response{
+			func(req llm.Request) llm.Response {
+				requireTaskEffortSchemaLevel(t, req, "tasks", "ultra")
+				return taskEffortToolCall("c1", `{"action":"append","tasks":[{"type":"implement","description":"valid step","prompt":"must roll back with the batch","reasoning_effort":"high"},{"type":"implement","description":"poisoned step","prompt":"must not persist","reasoning_effort":"ultra"}]}`)
+			},
+			func(req llm.Request) llm.Response {
+				requireTaskHandlerError(t, req, "c1")
+				return finalResponse("done")
+			},
+		},
+	}
+	c.Register(f)
+	profile := provider.NewOpenAIProfile("gpt-5.2").WithLiveModelInfo(llm.ModelInfo{
+		ReasoningEffortLevels: []string{"minimal", "low", "medium", "high", "xhigh", "max", "ultra"},
+	})
+	sess, err := NewSession(c, profile, execenv.NewLocalExecutionEnvironment(dir), SessionConfig{ReasoningEffort: "max"})
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+	defer sess.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second) // TRIPWIRE: scripted in-process adapter, no real I/O; only fires on a genuine hang.
+	defer cancel()
+	if _, err := sess.ProcessInput(ctx, "work the plan", nil); err != nil {
+		t.Fatal(err)
+	}
+	if tasks := sess.getOrCreateTaskStore().View(); len(tasks) != 0 {
+		t.Fatalf("tasks after rejected append = %#v, want none", tasks)
 	}
 }
 
