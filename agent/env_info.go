@@ -23,6 +23,7 @@ func envInfoFromEnv(env execenv.ExecutionEnvironment, clk clock.Clock) schema.En
 		OSVersion:  osv,
 		Today:      clk.Now().UTC().Format("2006-01-02"),
 		Workspace:  ScanWorkspace(wd),
+		Resources:  resourceCapsFromEnv(env),
 	}
 }
 
