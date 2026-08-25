@@ -1,3 +1,5 @@
+import { useId } from "react";
+
 export type ScreenStateValue =
   | { kind: "loading"; title: string; detail?: string }
   | { kind: "empty"; title: string; detail: string }
@@ -10,7 +12,7 @@ export interface ScreenStateProps {
 }
 
 export function ScreenState({ state, retryAction }: ScreenStateProps) {
-  const headingId = `screen-state-${state.kind}-title`;
+  const headingId = `${useId()}-screen-state-title`;
   const semantics =
     state.kind === "loading"
       ? { role: "status" as const, "aria-live": "polite" as const }

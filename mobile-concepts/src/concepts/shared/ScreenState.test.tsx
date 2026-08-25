@@ -41,6 +41,31 @@ describe("ScreenState", () => {
     fireEvent.click(screen.getByRole("button", { name: "Retry" }));
     expect(retry).toHaveBeenCalledOnce();
   });
+
+  it("uniquely labels multiple instances of the same state kind", () => {
+    render(
+      <>
+        <ScreenState
+          state={{ kind: "empty", title: "No sessions", detail: "First" }}
+        />
+        <ScreenState
+          state={{ kind: "empty", title: "No results", detail: "Second" }}
+        />
+      </>,
+    );
+    const regions = screen.getAllByRole("region");
+    const labelledBy = regions.map((region) =>
+      region.getAttribute("aria-labelledby"),
+    );
+    expect(new Set(labelledBy).size).toBe(regions.length);
+    for (const [index, region] of regions.entries()) {
+      const labelId = labelledBy[index];
+      expect(labelId).toBeTruthy();
+      expect(
+        region.querySelector(`#${CSS.escape(labelId ?? "")}`),
+      ).toBeVisible();
+    }
+  });
 });
 
 describe("StatusLabel", () => {
