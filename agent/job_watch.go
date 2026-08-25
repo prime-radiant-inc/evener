@@ -4292,7 +4292,7 @@ func (s *Session) driveChildrenWithUndeliveredAttention() {
 		// live work, so driving it here would have the drain kicking a child it
 		// has already told the operator it abandoned — and abandoning a queued
 		// notification the drive loop was mid-way through delivering.
-		if s.childStopGated(child.id) || s.childFatalRunGated(child.id) || s.childDrainAbandoned(child.id) {
+		if s.childStopGated(child.id) || s.childFatalRunGated(child.id) || s.childDrainAbandoned(child.id) || s.childDrainGracePending(child.id) {
 			continue
 		}
 		if child.peekNotifications() > 0 || child.jobManager.hasPendingWatchSends() {
@@ -4316,7 +4316,7 @@ func (s *Session) driveChildIfNotStopGated(sub *subagent) {
 	if sub == nil || sub.sess == nil {
 		return
 	}
-	if s.childStopGated(sub.sess.id) || s.childFatalRunGated(sub.sess.id) || s.childDrainAbandoned(sub.sess.id) {
+	if s.childStopGated(sub.sess.id) || s.childFatalRunGated(sub.sess.id) || s.childDrainAbandoned(sub.sess.id) || s.childDrainGracePending(sub.sess.id) {
 		return
 	}
 	if s.driveStableDelegateAttention(sub) {

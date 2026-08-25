@@ -360,7 +360,7 @@ func spawnDaemon(ctx context.Context, evenerBinary string, runDir string, req hu
 		exited <- cmd.Wait()
 	}()
 
-	waitCtx, cancel := context.WithTimeout(ctx, timeout)
+	waitCtx, cancel := withRendezvousTimeout(ctx, timeout)
 	defer cancel()
 	entry, err := waitForRendezvousOrExit(waitCtx, runDir, cmd.Process.Pid, exited, WithStartedAfter(startedAt))
 	if err != nil {
@@ -383,6 +383,17 @@ type WaitOption func(*waitConfig)
 
 type waitConfig struct {
 	startedAfter time.Time
+}
+
+// withRendezvousTimeout applies the production startup budget when it is
+// positive. A non-positive timeout leaves the caller's context as the only
+// bound, which lets deterministic host-process tests await the rendezvous edge
+// itself instead of turning an arbitrary duration into their behavior oracle.
+func withRendezvousTimeout(ctx context.Context, timeout time.Duration) (context.Context, context.CancelFunc) {
+	if timeout <= 0 {
+		return context.WithCancel(ctx)
+	}
+	return context.WithTimeout(ctx, timeout)
 }
 
 // WithStartedAfter rejects rendezvous entries whose StartedAt is on or
@@ -436,7 +447,7 @@ func resumeDaemon(ctx context.Context, evenerBinary, runDir string, req hubcore.
 	go func() {
 		exited <- cmd.Wait()
 	}()
-	waitCtx, cancel := context.WithTimeout(ctx, timeout)
+	waitCtx, cancel := withRendezvousTimeout(ctx, timeout)
 	defer cancel()
 	entry, err := waitForRendezvousOrExit(waitCtx, runDir, cmd.Process.Pid, exited, WithStartedAfter(startedAt))
 	if err != nil {

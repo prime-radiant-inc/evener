@@ -12,6 +12,18 @@ import (
 	"primeradiant.com/evener/agent/internal/jobstore"
 )
 
+type drainAbandonedChild struct {
+	delegateID string
+	generation uint64
+}
+
+type drainGraceChild struct {
+	delegateID            string
+	generation            uint64
+	latestActivityAt      time.Time
+	secondWindowStartedAt time.Time
+}
+
 // DrainStallTimeout bounds how long the one-shot drain will keep blocking on a
 // subtree that is outstanding but has NO live or deliverable component anywhere
 // (a genuine stall — see drainSubtreeIsStalled). It is a defense-in-depth
@@ -241,6 +253,12 @@ func (s *Session) treeHasOutstandingWorkBesidesOwnJobs() (bool, error) {
 			// the announce ladder never armed): each escape suppressed by the
 			// other family's work, both dead, forever.
 			continue
+		}
+		if child != nil && s.childDrainGracePending(child.id) {
+			// Window two is still owed, so this remains outstanding work. Unlike an
+			// abandoned child it must keep the undisposed-shell ladder from exiting
+			// early in a mixed shell/delegate tree.
+			return true, nil
 		}
 		if active {
 			return true, nil
@@ -485,7 +503,7 @@ func (s *Session) subtreeHasLiveComponent() (bool, error) {
 		active := sub.running || sub.finalizing || sub.driving
 		child := sub.sess
 		sub.mu.Unlock()
-		if child != nil && (s.childStopGated(child.id) || s.childFatalRunGated(child.id) || s.childDrainAbandoned(child.id)) {
+		if child != nil && (s.childStopGated(child.id) || s.childFatalRunGated(child.id) || s.childDrainAbandoned(child.id) || s.childDrainGracePending(child.id)) {
 			continue
 		}
 		if active {
@@ -504,17 +522,18 @@ func (s *Session) subtreeHasLiveComponent() (bool, error) {
 	return false, nil
 }
 
-// delegateAbandonedByDrain is the drain's verdict on ONE delegate row: the run
-// is still open and a stop has been pending against it, unanswered, for at
-// least DrainStallTimeout.
+// delegateAbandonedByDrain reports whether ONE delegate has completed the first
+// grace window. It does not itself license abandonment: production records a
+// generation-scoped second continuous-stall window and abandons only after that
+// whole second window also completes.
 //
-// TIME, NOT ACTIVITY. #378 measured silence instead, and could not: every
-// producer of a delegate's activity stamp runs through admitLeaseLocked, which
-// rejects on PendingStopSeq != 0, so a stop-requested delegate CANNOT report
-// activity at all. "Keeps stamping and keeps counting as live" was unreachable,
-// and the clock in fact ran from the last PRE-stop stamp — an unconditional
-// post-stop timer wearing a liveness signal's clothes. The honest question is
-// the one this asks: how long has the stop gone unanswered.
+// EXPLICIT STOP: TIME, NOT ACTIVITY. #378 measured silence instead, and could
+// not: every producer of a delegate's activity stamp runs through
+// admitLeaseLocked, which rejects on PendingStopSeq != 0, so a stop-requested
+// delegate CANNOT report activity at all. The honest first-window question for
+// that branch is how long the stop has gone unanswered. A never-stopped
+// delegate remains able to report genuine activity, so its branch deliberately
+// does read that stamp and restarts window one when it advances.
 //
 // NO RUN COMPLETION. currentRunOpen is the "with no run-completion" half: a
 // delegate whose run has finished is not wedged, it is done, and its terminal
@@ -531,11 +550,10 @@ func (s *Session) subtreeHasLiveComponent() (bool, error) {
 // existed, whose pending stop folds with a zero timestamp: unknown becomes "no
 // earlier than this drain", never "long ago".
 //
-// The bound is DrainStallTimeout rather than a new knob: this is the same
-// "outstanding but nothing is happening" judgement the stall watchdog makes,
-// asked about one delegate instead of a whole subtree. The watchdog then
-// measures its own continuous-stall window on top, so an abandonment needs two
-// consecutive stall windows — deliberately conservative.
+// For an explicit pending stop, window one starts at the durable request time.
+// For a never-stopped delegate it starts at the one-shot drain boundary and any
+// later admitted activity restarts it. Stop-requested rows cannot admit activity
+// (the controller fence above), so those two branches are intentionally distinct.
 func delegateAbandonedByDrain(row delegateSnapshot, now, drainStartedAt time.Time) bool {
 	if !row.currentRunOpen {
 		return false
@@ -543,6 +561,9 @@ func delegateAbandonedByDrain(row delegateSnapshot, now, drainStartedAt time.Tim
 	since := row.pendingStopAt
 	if since.IsZero() {
 		since = drainStartedAt
+		if row.latestActivityAt.After(since) {
+			since = row.latestActivityAt
+		}
 	}
 	if since.IsZero() {
 		return false
@@ -550,9 +571,10 @@ func delegateAbandonedByDrain(row delegateSnapshot, now, drainStartedAt time.Tim
 	return !now.Before(since.Add(DrainStallTimeout))
 }
 
-// markDrainAbandonedDelegates records, across this session and every live
-// descendant it has not already given up on, the direct delegate children this
-// drain pass will stop waiting on, and announces each one exactly once.
+// markDrainAbandonedDelegates advances the two-window policy across this session
+// and every live descendant. First-window completion records a generation-
+// scoped grace phase; only a later pass strictly beyond one full second window
+// records abandonment and announces it.
 //
 // It is what makes the verdict a RECORD rather than a repeated computation.
 // #378 asked the question per predicate call, which cost a deep-clone
@@ -567,11 +589,11 @@ func delegateAbandonedByDrain(row delegateSnapshot, now, drainStartedAt time.Tim
 // grandchildren with "so shutdown can proceed" wording, in a process that was
 // not shutting down.
 //
-// The mark is monotone: a delegate whose stop has gone unanswered for the bound
-// does not become answerable by waiting longer, and time only moves forward, so
-// re-deriving it every pass could only ever return the same answer. A terminal
-// packet that arrives from an abandoned delegate anyway is still delivered —
-// deliveries land in the PARENT's own pending set, which this skip never hides.
+// A final mark is monotone only for its captured generation. Activity clears an
+// armed never-stopped phase, terminal evidence clears every phase, and a resumed
+// generation does not inherit either phase or final mark. A terminal packet that
+// arrives from an abandoned generation anyway is still delivered — deliveries
+// land in the PARENT's own pending set, which this skip never hides.
 func (s *Session) markDrainAbandonedDelegates(now, drainStartedAt time.Time) {
 	if s == nil || !s.cfg.TurnEndsProcess {
 		return
@@ -596,13 +618,126 @@ func (s *Session) markDrainAbandonedDelegates(now, drainStartedAt time.Time) {
 		// The gate is read off the row this pass already holds, not by
 		// re-snapshotting the controller for each question.
 		if s.childDrainAbandoned(child.id) || s.childFatalRunGated(child.id) || tracked && delegateRowStopGated(row) {
+			s.clearDrainGraceChild(child.id)
 			continue
 		}
-		if tracked && delegateAbandonedByDrain(row, now, drainStartedAt) {
-			s.recordDrainAbandonedChild(child.id, row.id)
+		if !tracked || !delegateAbandonedByDrain(row, now, drainStartedAt) {
+			s.clearDrainGraceChild(child.id)
+			child.markDrainAbandonedDelegates(now, drainStartedAt)
 			continue
 		}
-		child.markDrainAbandonedDelegates(now, drainStartedAt)
+		phase, armed := s.drainGraceChildForRow(child.id, row)
+		if !armed {
+			s.recordDrainGraceChild(child.id, row, now)
+			continue
+		}
+		if row.latestActivityAt.After(phase.latestActivityAt) {
+			// A never-stopped delegate proved it is alive. Restart window one at
+			// that activity stamp rather than carrying a stale phase forward.
+			s.clearDrainGraceChild(child.id)
+			continue
+		}
+		if now.After(phase.secondWindowStartedAt.Add(DrainStallTimeout)) {
+			s.clearDrainGraceChild(child.id)
+			s.recordDrainAbandonedChild(child.id, row.id, row.generation)
+			continue
+		}
+	}
+}
+
+func (s *Session) recordDrainGraceChild(childSessionID string, row delegateSnapshot, now time.Time) {
+	s.drainAbandonedMu.Lock()
+	defer s.drainAbandonedMu.Unlock()
+	if s.drainGraceChildren == nil {
+		s.drainGraceChildren = make(map[string]drainGraceChild)
+	}
+	s.drainGraceChildren[childSessionID] = drainGraceChild{
+		delegateID: row.id, generation: row.generation,
+		latestActivityAt: row.latestActivityAt, secondWindowStartedAt: now,
+	}
+}
+
+func (s *Session) clearDrainGraceChild(childSessionID string) {
+	s.drainAbandonedMu.Lock()
+	delete(s.drainGraceChildren, childSessionID)
+	s.drainAbandonedMu.Unlock()
+}
+
+func (s *Session) drainGraceChildForRow(childSessionID string, row delegateSnapshot) (drainGraceChild, bool) {
+	s.drainAbandonedMu.Lock()
+	defer s.drainAbandonedMu.Unlock()
+	phase, ok := s.drainGraceChildren[childSessionID]
+	return phase, ok && phase.delegateID == row.id && phase.generation == row.generation
+}
+
+func (s *Session) childDrainGracePending(childSessionID string) bool {
+	if s == nil || childSessionID == "" {
+		return false
+	}
+	row, ok := s.directStableDelegateForChildSession(childSessionID)
+	if !ok || !row.currentRunOpen {
+		return false
+	}
+	_, pending := s.drainGraceChildForRow(childSessionID, row)
+	return pending
+}
+
+func (s *Session) treeHasDrainGracePending() bool {
+	if s == nil {
+		return false
+	}
+	for _, sub := range s.liveDirectSubagents() {
+		sub.mu.Lock()
+		child := sub.sess
+		sub.mu.Unlock()
+		if child == nil {
+			continue
+		}
+		if s.childDrainGracePending(child.id) || child.treeHasDrainGracePending() {
+			return true
+		}
+	}
+	return false
+}
+
+// restartDrainGraceSecondWindows preserves completed first windows but requires
+// a fresh full second window after genuine drain progress (a delivered
+// notification turn). Delegate activity is stronger evidence and clears the
+// phase entirely in markDrainAbandonedDelegates above.
+func (s *Session) restartDrainGraceSecondWindows(now time.Time) {
+	if s == nil {
+		return
+	}
+	s.drainAbandonedMu.Lock()
+	for id, phase := range s.drainGraceChildren {
+		phase.secondWindowStartedAt = now
+		s.drainGraceChildren[id] = phase
+	}
+	s.drainAbandonedMu.Unlock()
+	for _, sub := range s.liveDirectSubagents() {
+		sub.mu.Lock()
+		child := sub.sess
+		sub.mu.Unlock()
+		if child != nil {
+			child.restartDrainGraceSecondWindows(now)
+		}
+	}
+}
+
+func (s *Session) clearDrainGraceTree() {
+	if s == nil {
+		return
+	}
+	s.drainAbandonedMu.Lock()
+	clear(s.drainGraceChildren)
+	s.drainAbandonedMu.Unlock()
+	for _, sub := range s.liveDirectSubagents() {
+		sub.mu.Lock()
+		child := sub.sess
+		sub.mu.Unlock()
+		if child != nil {
+			child.clearDrainGraceTree()
+		}
 	}
 }
 
@@ -612,20 +747,23 @@ func (s *Session) markDrainAbandonedDelegates(now, drainStartedAt time.Time) {
 // longer outstanding at all, and the drain quiesces normally instead of
 // reaching the stall watchdog's give-up. Warning at the decision point is the
 // only placement that reports the abandonment on every path.
-func (s *Session) recordDrainAbandonedChild(childSessionID, delegateID string) {
+func (s *Session) recordDrainAbandonedChild(childSessionID, delegateID string, generation uint64) {
 	s.drainAbandonedMu.Lock()
 	if s.drainAbandonedChildren == nil {
-		s.drainAbandonedChildren = make(map[string]string)
+		s.drainAbandonedChildren = make(map[string]drainAbandonedChild)
 	}
-	_, already := s.drainAbandonedChildren[childSessionID]
-	s.drainAbandonedChildren[childSessionID] = delegateID
+	previous, already := s.drainAbandonedChildren[childSessionID]
+	s.drainAbandonedChildren[childSessionID] = drainAbandonedChild{delegateID: delegateID, generation: generation}
 	s.drainAbandonedMu.Unlock()
-	if already {
+	if already && previous.delegateID == delegateID && previous.generation == generation {
 		return
 	}
-	s.emit(events.EventWarning, events.WarningData{Message: fmt.Sprintf(
-		"no longer waiting on delegate %s: its stop has been pending %s with the run still open, so waiting cannot dispose of it",
-		delegateID, DrainStallTimeout)})
+	s.emit(events.EventWarning, events.WarningData{
+		Message:    fmt.Sprintf("no longer waiting on delegate %s after two drain grace windows with its run still open", delegateID),
+		Source:     "drain",
+		Code:       events.WarningCodeDelegateAbandonedByDrain,
+		DelegateID: delegateID,
+	})
 }
 
 // childDrainAbandoned reports whether the one-shot drain has given up waiting on
@@ -637,10 +775,14 @@ func (s *Session) childDrainAbandoned(childSessionID string) bool {
 	if s == nil || childSessionID == "" {
 		return false
 	}
+	row, ok := s.directStableDelegateForChildSession(childSessionID)
+	if !ok {
+		return false
+	}
 	s.drainAbandonedMu.Lock()
 	defer s.drainAbandonedMu.Unlock()
-	_, abandoned := s.drainAbandonedChildren[childSessionID]
-	return abandoned
+	abandoned, exists := s.drainAbandonedChildren[childSessionID]
+	return exists && abandoned.generation == row.generation
 }
 
 // subtreeUndisposableStoppedDelegates names the delegates this session and its
@@ -658,7 +800,7 @@ func (s *Session) subtreeUndisposableStoppedDelegates() []string {
 		}
 		if s.childDrainAbandoned(child.id) {
 			s.drainAbandonedMu.Lock()
-			ids = append(ids, s.drainAbandonedChildren[child.id])
+			ids = append(ids, s.drainAbandonedChildren[child.id].delegateID)
 			s.drainAbandonedMu.Unlock()
 			continue
 		}
@@ -682,7 +824,7 @@ func (s *Session) subtreeOutstandingDrainJobIDs() []string {
 		sub.mu.Lock()
 		child := sub.sess
 		sub.mu.Unlock()
-		if child == nil || s.childStopGated(child.id) || s.childFatalRunGated(child.id) || s.childDrainAbandoned(child.id) {
+		if child == nil || s.childStopGated(child.id) || s.childFatalRunGated(child.id) || s.childDrainAbandoned(child.id) || s.childDrainGracePending(child.id) {
 			continue
 		}
 		ids = append(ids, child.subtreeOutstandingDrainJobIDs()...)
@@ -737,6 +879,8 @@ func (s *Session) drainJobTree(ctx context.Context, recheck <-chan time.Time) (s
 }
 
 func (s *Session) drainJobTreeWith(ctx context.Context, recheck <-chan time.Time, kick func(context.Context) error, process func(context.Context, string, []ImageAttachment, EntryKind) (string, error)) (string, error) {
+	s.clearDrainGraceTree()
+	defer s.clearDrainGraceTree()
 	wake, notify := newDrainWake()
 	s.SetNotifyFunc(notify)
 	defer s.SetNotifyFunc(nil)
@@ -810,6 +954,7 @@ func (s *Session) drainJobTreeWith(ctx context.Context, recheck <-chan time.Time
 			if res != "" {
 				lastResult = res
 			}
+			s.restartDrainGraceSecondWindows(s.sclock().Now())
 			// A delivered notification is real drain progress: reset the stall
 			// clock so the watchdog measures only continuous stall, never a stall
 			// episode punctuated by deliveries.
@@ -942,7 +1087,10 @@ func (s *Session) drainJobTreeWith(ctx context.Context, recheck <-chan time.Time
 		if err != nil {
 			return lastResult, err
 		}
-		if !stalled {
+		if !stalled || s.treeHasDrainGracePending() {
+			// A delegate's explicit second window owns this interval. Do not let
+			// the generic stranded-work watchdog return at its inclusive boundary
+			// without recording the structured delegate abandonment.
 			stallStart = time.Time{}
 		} else {
 			now := s.sclock().Now()

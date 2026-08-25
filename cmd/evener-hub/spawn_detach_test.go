@@ -3,14 +3,12 @@
 package main
 
 import (
-	"context"
 	"fmt"
 	"os"
 	"path/filepath"
 	"strconv"
 	"syscall"
 	"testing"
-	"time"
 
 	"golang.org/x/sys/unix"
 
@@ -25,9 +23,12 @@ import (
 // so each one must launch detached into a session of its own — observable as
 // the daemon leading both its own session and its own process group.
 func TestSpawnDaemonDetachesFromHubSession(t *testing.T) {
-	t.Parallel()
+	// This assertion needs the host to schedule a newly started process before
+	// SpawnDaemon's production rendezvous budget expires. Running it inside the
+	// package's large t.Parallel wave starves that process under the full gate;
+	// serialize the host-process fixture instead of widening the timeout.
 	bin, runDir := writeDetachFakeDaemon(t)
-	entry, err := SpawnDaemon(context.Background(), bin, runDir, hubcore.SpawnRequest{}, 5*time.Second)
+	entry, err := SpawnDaemon(t.Context(), bin, runDir, hubcore.SpawnRequest{}, 0)
 	if err != nil {
 		t.Fatalf("SpawnDaemon: %v", err)
 	}
@@ -37,11 +38,12 @@ func TestSpawnDaemonDetachesFromHubSession(t *testing.T) {
 
 // The resume path launches the same long-lived daemon; it must detach too.
 func TestResumeDaemonDetachesFromHubSession(t *testing.T) {
-	t.Parallel()
+	// Keep the host-process fixture out of the package's t.Parallel wave for the
+	// same scheduling reason as the fresh-spawn case above.
 	bin, runDir := writeDetachFakeDaemon(t)
-	entry, err := ResumeDaemon(context.Background(), bin, runDir, hubcore.ResumeRequest{
+	entry, err := ResumeDaemon(t.Context(), bin, runDir, hubcore.ResumeRequest{
 		SessionID: hubtest.SessionID(t),
-	}, 5*time.Second)
+	}, 0)
 	if err != nil {
 		t.Fatalf("ResumeDaemon: %v", err)
 	}

@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"primeradiant.com/evener/agent"
+	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/agent/execenv"
 	"primeradiant.com/evener/agent/provider"
 	"primeradiant.com/evener/llm"
@@ -283,9 +284,8 @@ func TestRunExitsWithALiveDelegateItNeverStopped(t *testing.T) {
 	if !strings.Contains(stdout.String(), finalMsg) {
 		t.Fatalf("stdout = %q, want the root's answer %q", stdout.String(), finalMsg)
 	}
-	// The abandonment is announced, not silent: an operator must be able to see
-	// that a delegate was dropped rather than having finished.
-	if !strings.Contains(stderr.String(), "no longer waiting on delegate") {
-		t.Fatalf("stderr never announced the abandonment:\n%s", stderr.String())
+	// The machine-readable warning code is the oracle; the human message is not.
+	if !strings.Contains(stderr.String(), "[warning:"+events.WarningCodeDelegateAbandonedByDrain+"]") {
+		t.Fatalf("stderr never announced the structured abandonment event:\n%s", stderr.String())
 	}
 }

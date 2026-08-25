@@ -50,6 +50,10 @@ type stallDriver struct {
 }
 
 func newStallDriver(ctx context.Context, sess *Session) *stallDriver {
+	return newStallDriverWithProcess(ctx, sess, stallProcess)
+}
+
+func newStallDriverWithProcess(ctx context.Context, sess *Session, process func(context.Context, string, []ImageAttachment, EntryKind) (string, error)) *stallDriver {
 	d := &stallDriver{
 		top:     make(chan struct{}),
 		release: make(chan struct{}),
@@ -62,7 +66,7 @@ func newStallDriver(ctx context.Context, sess *Session) *stallDriver {
 		return nil
 	}
 	go func() {
-		d.res, d.err = sess.drainJobTreeWith(ctx, d.recheck, kick, stallProcess)
+		d.res, d.err = sess.drainJobTreeWith(ctx, d.recheck, kick, process)
 		close(d.done)
 	}()
 	return d

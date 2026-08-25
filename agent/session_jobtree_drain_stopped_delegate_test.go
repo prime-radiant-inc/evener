@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"strings"
 	"testing"
 	"time"
 
@@ -215,9 +214,9 @@ func TestStopRequestedDelegateCannotReportActivity(t *testing.T) {
 // the 109-minute field hang (#317, #369): the root asked to stop a delegate, the
 // delegate was wedged inside an uninterruptible tool call so the stop degraded
 // to stop_pending forever, and the drain kept counting the delegate as live work
-// until an external killer fired. Once the stop has gone unanswered for the
-// bound the delegate is undisposable, and the drain must announce and stop
-// waiting rather than waiting for the process to be killed.
+// until an external killer fired. The unanswered-stop window only arms the
+// second continuous-stall window; after both complete, the drain must announce
+// and stop waiting rather than waiting for the process to be killed.
 //
 // It drives the whole verdict through the drain loop — markDrainAbandonedDelegates
 // is what stamps the abandonment, off the real snapshot, from the real stop
@@ -243,8 +242,33 @@ func TestDrainAbandonsStopRequestedDelegateGoneUnresponsive(t *testing.T) {
 	d.releaseKick(t)
 	d.assertParked(t, "an unexpired stop request is not permission to abandon")
 
-	// The stop has now gone unanswered for the whole bound.
-	f.clk.Advance(DrainStallTimeout + time.Second)
+	// Completing the first window only arms the second continuous-stall
+	// window. It is not yet permission to abandon.
+	f.clk.Advance(DrainStallTimeout)
+	d.recheck <- time.Time{}
+	d.releaseKick(t)
+	d.assertParked(t, "first-window completion must arm, not abandon")
+	if f.root.childDrainAbandoned(f.child.ID()) {
+		t.Fatal("delegate was abandoned at first-window completion")
+	}
+
+	// Just before the second boundary the complete second window has still
+	// not elapsed.
+	f.clk.Advance(DrainStallTimeout - time.Nanosecond)
+	d.recheck <- time.Time{}
+	d.releaseKick(t)
+	d.assertParked(t, "the drain returned before the second full window elapsed")
+
+	// At the exact second boundary the full interval has completed but the
+	// policy abandons only after the boundary, never by an inclusive shortcut.
+	f.clk.Advance(time.Nanosecond)
+	d.recheck <- time.Time{}
+	d.releaseKick(t)
+	d.assertParked(t, "the exact second boundary is not after the grace period")
+
+	// Cross the second boundary on the fake clock. No elapsed wall time is a
+	// behavior oracle: the drain's own completion signal is the positive edge.
+	f.clk.Advance(time.Nanosecond)
 	d.recheck <- time.Time{}
 	d.releaseKick(t)
 
@@ -264,6 +288,9 @@ func TestDrainAbandonsStopRequestedDelegateGoneUnresponsive(t *testing.T) {
 	if !f.root.childDrainAbandoned(f.child.ID()) {
 		t.Fatal("the drain returned without recording the abandonment, so its drive paths and its warning cannot agree with its liveness check")
 	}
+	if f.pendingStopSeq(t) == 0 {
+		t.Fatal("abandonment erased the durable pending-stop state instead of recording a drain-only verdict")
+	}
 
 	warnings := collectStallWarnings(f.root)
 	if len(warnings) == 0 {
@@ -271,13 +298,211 @@ func TestDrainAbandonsStopRequestedDelegateGoneUnresponsive(t *testing.T) {
 	}
 	named := false
 	for _, w := range warnings {
-		if strings.Contains(w.Data.(events.WarningData).Message, f.delegateID) {
+		warning, ok := w.Data.(events.WarningData)
+		if ok && warning.Code == events.WarningCodeDelegateAbandonedByDrain && warning.DelegateID == f.delegateID {
 			named = true
 		}
 	}
 	if !named {
 		t.Fatalf("no warning named the abandoned delegate %s: %+v", f.delegateID, warnings)
 	}
+}
+
+// TestDrainNeverStoppedDelegateNeedsTwoContinuousWindows pins the maintainer-
+// facing policy for #317's primary shape: the root has ended a one-shot run but
+// never requested a delegate stop. The terminal communicate starts window one;
+// completing it only arms window two, and the still-open run may be abandoned
+// only after the second complete continuous window.
+func TestDrainNeverStoppedDelegateNeedsTwoContinuousWindows(t *testing.T) {
+	f := newWedgedDelegateFixture(t, "dlg_never_stopped")
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second) // TRIPWIRE: fake-clock single-step driver; only a broken drain can consume wall time.
+	defer cancel()
+	d := newStallDriver(ctx, f.root)
+	d.releaseKick(t)
+	d.assertParked(t, "a fresh one-shot drain must wait for its first grace window")
+
+	f.clk.Advance(DrainStallTimeout - time.Nanosecond)
+	d.recheck <- time.Time{}
+	d.releaseKick(t)
+	d.assertParked(t, "a never-stopped delegate was abandoned just before window one completed")
+
+	f.clk.Advance(time.Nanosecond)
+	d.recheck <- time.Time{}
+	d.releaseKick(t)
+	d.assertParked(t, "window-one completion must not abandon a never-stopped delegate")
+	if f.root.childDrainAbandoned(f.child.ID()) {
+		t.Fatal("never-stopped delegate was abandoned at the first boundary")
+	}
+
+	f.clk.Advance(DrainStallTimeout - time.Nanosecond)
+	d.recheck <- time.Time{}
+	d.releaseKick(t)
+	d.assertParked(t, "a never-stopped delegate was abandoned before window two completed")
+
+	f.clk.Advance(time.Nanosecond)
+	d.recheck <- time.Time{}
+	d.releaseKick(t)
+	d.assertParked(t, "the exact second boundary must not bypass structured abandonment")
+
+	f.clk.Advance(time.Nanosecond)
+	d.recheck <- time.Time{}
+	d.releaseKick(t)
+	<-d.done
+	if d.err != nil {
+		t.Fatalf("drain after two windows: %v", d.err)
+	}
+	if !f.root.childDrainAbandoned(f.child.ID()) {
+		t.Fatal("never-stopped delegate was not abandoned after two complete windows")
+	}
+}
+
+func TestDrainOldStopRequestStillGetsAFullSecondWindow(t *testing.T) {
+	f := newWedgedDelegateFixture(t, "dlg_old_stop")
+	f.requestStop(t)
+	// Window one may complete before the root reaches its terminal communicate;
+	// that historical time never consumes window two, which begins only when a
+	// drain pass observes the eligible still-open generation.
+	f.clk.Advance(DrainStallTimeout * 10)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second) // TRIPWIRE: fake-clock single-step driver; only a broken drain can consume wall time.
+	defer cancel()
+	d := newStallDriver(ctx, f.root)
+	d.releaseKick(t)
+	d.assertParked(t, "an old stop request collapsed the post-drain second window")
+	if !f.root.childDrainGracePending(f.child.ID()) || f.root.childDrainAbandoned(f.child.ID()) {
+		t.Fatal("the first drain pass must arm, not abandon, an old stop request")
+	}
+
+	f.clk.Advance(DrainStallTimeout)
+	d.recheck <- time.Time{}
+	d.releaseKick(t)
+	d.assertParked(t, "the exact end of the post-drain window abandoned early")
+	f.clk.Advance(time.Nanosecond)
+	d.recheck <- time.Time{}
+	d.releaseKick(t)
+	<-d.done
+	if !f.root.childDrainAbandoned(f.child.ID()) {
+		t.Fatal("old stop request was not abandoned after its full post-drain window")
+	}
+}
+
+func TestDrainNeverStoppedDelegateActivityRestartsFirstWindow(t *testing.T) {
+	f := newWedgedDelegateFixture(t, "dlg_activity_resets_grace")
+	drainStartedAt := f.clk.Now()
+
+	f.clk.Advance(DrainStallTimeout)
+	f.root.markDrainAbandonedDelegates(f.clk.Now(), drainStartedAt)
+	if !f.root.childDrainGracePending(f.child.ID()) {
+		t.Fatal("precondition: first window did not arm the second")
+	}
+
+	f.clk.Advance(DrainStallTimeout - time.Nanosecond)
+	if err := f.root.delegateController.ReportActivity(f.lease, f.clk.Now()); err != nil {
+		t.Fatalf("ReportActivity: %v", err)
+	}
+	f.root.markDrainAbandonedDelegates(f.clk.Now(), drainStartedAt)
+	if f.root.childDrainGracePending(f.child.ID()) || f.root.childDrainAbandoned(f.child.ID()) {
+		t.Fatal("genuine activity did not restart the first grace window")
+	}
+
+	f.clk.Advance(DrainStallTimeout)
+	f.root.markDrainAbandonedDelegates(f.clk.Now(), drainStartedAt)
+	if !f.root.childDrainGracePending(f.child.ID()) || f.root.childDrainAbandoned(f.child.ID()) {
+		t.Fatal("the restarted first window did not arm a fresh second window")
+	}
+	f.clk.Advance(DrainStallTimeout + time.Nanosecond)
+	f.root.markDrainAbandonedDelegates(f.clk.Now(), drainStartedAt)
+	if !f.root.childDrainAbandoned(f.child.ID()) {
+		t.Fatal("delegate was not abandoned after two fresh windows following activity")
+	}
+}
+
+func TestDrainProgressRestartsSecondContinuousWindow(t *testing.T) {
+	f := newWedgedDelegateFixture(t, "dlg_progress_resets_second")
+	progressed := make(chan struct{}, 1)
+	process := func(context.Context, string, []ImageAttachment, EntryKind) (string, error) {
+		f.root.drainJobNotifications()
+		progressed <- struct{}{}
+		return "", nil
+	}
+	d := newStallDriverWithProcess(t.Context(), f.root, process)
+	d.releaseKick(t)
+	d.assertParked(t, "fresh drain did not park")
+
+	f.clk.Advance(DrainStallTimeout)
+	d.recheck <- time.Time{}
+	d.releaseKick(t)
+	d.assertParked(t, "first window did not park in the second phase")
+	if !f.root.childDrainGracePending(f.child.ID()) {
+		t.Fatal("precondition: first window did not arm the second")
+	}
+
+	f.clk.Advance(DrainStallTimeout - time.Nanosecond)
+	f.root.enqueueJobNotificationAndNotify(jobNotification{JobID: "job_progress", Status: "completed"})
+	d.releaseKick(t)
+	<-progressed
+	// The successful notification turn continues directly into the next pass;
+	// release that pass and confirm it parks on the restarted second window.
+	d.releaseKick(t)
+	d.assertParked(t, "drain progress did not leave the second phase waiting")
+
+	f.clk.Advance(DrainStallTimeout)
+	d.recheck <- time.Time{}
+	d.releaseKick(t)
+	d.assertParked(t, "exact restarted boundary abandoned early")
+	if f.root.childDrainAbandoned(f.child.ID()) {
+		t.Fatal("drain progress did not restart the second continuous window")
+	}
+	f.clk.Advance(time.Nanosecond)
+	d.recheck <- time.Time{}
+	d.releaseKick(t)
+	<-d.done
+	if !f.root.childDrainAbandoned(f.child.ID()) {
+		t.Fatal("delegate was not abandoned after the restarted second window")
+	}
+}
+
+func TestDrainTerminalEvidenceCancelsSecondWindow(t *testing.T) {
+	f := newWedgedDelegateFixture(t, "dlg_terminal_cancels_grace")
+	drainStartedAt := f.clk.Now()
+	f.clk.Advance(DrainStallTimeout)
+	f.root.markDrainAbandonedDelegates(f.clk.Now(), drainStartedAt)
+	if !f.root.childDrainGracePending(f.child.ID()) {
+		t.Fatal("precondition: first window did not arm the second")
+	}
+
+	f.clk.Advance(DrainStallTimeout + time.Nanosecond)
+	packet := delegatestore.TerminalPacket{Kind: delegatestore.PacketReported, Message: json.RawMessage(`"child report"`)}
+	if _, err := f.root.delegateController.FinishGeneration(f.lease, delegateFinish{
+		outcome: delegatestore.OutcomeCompleted, disposition: delegatestore.DispositionReported,
+		packet: &packet, endedAt: f.clk.Now(),
+	}); err != nil {
+		t.Fatalf("FinishGeneration: %v", err)
+	}
+	f.root.markDrainAbandonedDelegates(f.clk.Now(), drainStartedAt)
+	if f.root.childDrainGracePending(f.child.ID()) || f.root.childDrainAbandoned(f.child.ID()) {
+		t.Fatal("terminal run evidence was treated as an abandonable open run")
+	}
+}
+
+func TestDrainGraceDoesNotLeakAcrossDrainInvocations(t *testing.T) {
+	f := newWedgedDelegateFixture(t, "dlg_new_drain_phase")
+	priorDrainStartedAt := f.clk.Now()
+	f.clk.Advance(DrainStallTimeout)
+	f.root.markDrainAbandonedDelegates(f.clk.Now(), priorDrainStartedAt)
+	if !f.root.childDrainGracePending(f.child.ID()) {
+		t.Fatal("precondition: prior drain did not arm a second window")
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	d := newStallDriver(ctx, f.root)
+	d.releaseKick(t)
+	d.assertParked(t, "a new drain inherited the prior drain's second window")
+	if f.root.childDrainGracePending(f.child.ID()) {
+		t.Fatal("a new drain invocation retained stale phase from its predecessor")
+	}
+	cancel()
+	<-d.done
 }
 
 // TestDrainKeepsWaitingOnADelegateWhoseStopCompletes is the regression guard the
@@ -315,8 +540,8 @@ func TestDrainKeepsWaitingOnADelegateWhoseStopCompletes(t *testing.T) {
 		t.Fatal("a delegate that honoured its stop inside the bound was abandoned anyway")
 	}
 	for _, w := range collectStallWarnings(f.root) {
-		if strings.Contains(w.Data.(events.WarningData).Message, "no longer waiting on delegate") {
-			t.Fatalf("a delegate that honoured its stop must emit no abandonment warning, got %q", w.Data.(events.WarningData).Message)
+		if warning, ok := w.Data.(events.WarningData); ok && warning.Code == events.WarningCodeDelegateAbandonedByDrain {
+			t.Fatalf("a delegate that honoured its stop must emit no abandonment event, got %#v", warning)
 		}
 	}
 
@@ -356,7 +581,12 @@ func TestDrainArmsBothEscapesWithAShellAndAWedgedDelegate(t *testing.T) {
 	// WATCHED RED before the sole computation learned about abandonment: the
 	// two families suppressed each other and this stayed false forever.
 	drainStartedAt := f.clk.Now()
-	f.clk.Advance(DrainStallTimeout + time.Second)
+	f.clk.Advance(DrainStallTimeout)
+	f.root.markDrainAbandonedDelegates(f.clk.Now(), drainStartedAt)
+	if f.root.childDrainAbandoned(f.child.ID()) {
+		t.Fatal("first window abandoned the delegate in the mixed tree")
+	}
+	f.clk.Advance(DrainStallTimeout + time.Nanosecond)
 	f.root.markDrainAbandonedDelegates(f.clk.Now(), drainStartedAt)
 	undisposed, sole, err := f.root.undisposedBackgroundDrainJobs()
 	if err != nil {
@@ -392,7 +622,7 @@ func TestDrainNeverAbandonsADelegateWhoseRunFinished(t *testing.T) {
 	}
 	f.clk.Advance(DrainStallTimeout * 10)
 	if !delegateAbandonedByDrain(open, f.clk.Now(), drainStartedAt) {
-		t.Fatal("precondition: an open run under a long-unanswered stop IS abandonable, or this test proves nothing")
+		t.Fatal("precondition: an open run under a long-unanswered stop completed window one, or this test proves nothing")
 	}
 
 	f.reportAndLeaveStopPending(t)
@@ -424,8 +654,11 @@ func TestDrainDoesNotDriveAChildItHasAbandoned(t *testing.T) {
 	seedForwardedChildPending(t, f.root.jobManager, "job_child_tail", f.child.ID())
 	f.child.enqueueJobNotification(jobNotification{JobID: "job_child_tail", Status: "completed"})
 
-	f.clk.Advance(DrainStallTimeout + time.Second)
-	f.root.markDrainAbandonedDelegates(f.clk.Now(), f.clk.Now().Add(-DrainStallTimeout-time.Second))
+	drainStartedAt := f.clk.Now()
+	f.clk.Advance(DrainStallTimeout)
+	f.root.markDrainAbandonedDelegates(f.clk.Now(), drainStartedAt)
+	f.clk.Advance(DrainStallTimeout + time.Nanosecond)
+	f.root.markDrainAbandonedDelegates(f.clk.Now(), drainStartedAt)
 	if !f.root.childDrainAbandoned(f.child.ID()) {
 		t.Fatal("precondition: the wedged delegate must be abandoned")
 	}
@@ -473,10 +706,122 @@ func TestServeSessionNeverAbandonsAStopRequestedDelegate(t *testing.T) {
 	oneShot := newWedgedDelegateFixture(t, "dlg_oneshot_wedged")
 	oneShot.requestStop(t)
 	oneShotStart := oneShot.clk.Now()
-	oneShot.clk.Advance(DrainStallTimeout * 30)
+	oneShot.clk.Advance(DrainStallTimeout)
+	oneShot.root.markDrainAbandonedDelegates(oneShot.clk.Now(), oneShotStart)
+	oneShot.clk.Advance(DrainStallTimeout + time.Nanosecond)
 	oneShot.root.markDrainAbandonedDelegates(oneShot.clk.Now(), oneShotStart)
 	if !oneShot.root.childDrainAbandoned(oneShot.child.ID()) {
 		t.Fatal("control: the same shape in a one-shot run must be abandoned")
+	}
+}
+
+func TestDrainGraceDoesNotFenceSuccessorGeneration(t *testing.T) {
+	f := newWedgedDelegateFixture(t, "dlg_grace_successor")
+	f.requestStop(t)
+	drainStartedAt := f.clk.Now()
+	f.clk.Advance(DrainStallTimeout)
+	f.root.markDrainAbandonedDelegates(f.clk.Now(), drainStartedAt)
+	if !f.root.childDrainGracePending(f.child.ID()) {
+		t.Fatal("precondition: generation one must be in its second window")
+	}
+
+	result, err := f.root.delegateController.FinishGeneration(f.lease, delegateFinish{
+		outcome: delegatestore.OutcomeStopped,
+		reason:  "stopped_by_parent",
+		endedAt: f.clk.Now(),
+	})
+	if err != nil {
+		t.Fatalf("FinishGeneration: %v", err)
+	}
+	if err := f.root.executeDelegateMutationPlans(result); err != nil {
+		t.Fatalf("execute finish plans: %v", err)
+	}
+	if _, err := f.root.delegateController.Reconcile(emptyDelegateReconcileEvidence(f.root.delegateController)); err != nil {
+		t.Fatalf("Reconcile stop completion: %v", err)
+	}
+
+	reservation, err := f.root.delegateController.ReserveStart(rootDelegateActor(f.root.ID()), f.delegateID)
+	if err != nil {
+		t.Fatalf("ReserveStart successor: %v", err)
+	}
+	started, err := f.root.delegateController.CommitStart(reservation)
+	if err != nil {
+		t.Fatalf("CommitStart successor: %v", err)
+	}
+	if err := f.root.delegateController.AttachRuntime(started.lease, f.child); err != nil {
+		t.Fatalf("AttachRuntime successor: %v", err)
+	}
+	if _, err := f.root.delegateController.BeginStartInput(started.lease); err != nil {
+		t.Fatalf("BeginStartInput successor: %v", err)
+	}
+
+	row := f.snapshot(t)
+	if row.generation != started.lease.generation || !row.currentRunOpen || row.pendingStopSeq != 0 {
+		t.Fatalf("successor row = %#v, want a new running generation", row)
+	}
+	if f.root.childDrainGracePending(f.child.ID()) || f.root.childDrainAbandoned(f.child.ID()) {
+		t.Fatal("generation-one phase fenced the resumed generation")
+	}
+	f.root.markDrainAbandonedDelegates(f.clk.Now(), drainStartedAt)
+	if f.root.childDrainGracePending(f.child.ID()) || f.root.childDrainAbandoned(f.child.ID()) {
+		t.Fatal("successor inherited stale phase when the drain re-evaluated it")
+	}
+	if outstanding, err := f.root.treeHasOutstandingWork(); err != nil || !outstanding {
+		t.Fatalf("successor generation was omitted from drain accounting: outstanding=%v err=%v", outstanding, err)
+	}
+}
+
+func TestDrainAbandonmentDoesNotFenceSuccessorGeneration(t *testing.T) {
+	f := newWedgedDelegateFixture(t, "dlg_abandonment_successor")
+	f.requestStop(t)
+	drainStartedAt := f.clk.Now()
+	f.clk.Advance(DrainStallTimeout)
+	f.root.markDrainAbandonedDelegates(f.clk.Now(), drainStartedAt)
+	f.clk.Advance(DrainStallTimeout + time.Nanosecond)
+	f.root.markDrainAbandonedDelegates(f.clk.Now(), drainStartedAt)
+	if !f.root.childDrainAbandoned(f.child.ID()) {
+		t.Fatal("precondition: generation one must be abandoned")
+	}
+
+	result, err := f.root.delegateController.FinishGeneration(f.lease, delegateFinish{
+		outcome: delegatestore.OutcomeStopped,
+		reason:  "stopped_by_parent",
+		endedAt: f.clk.Now(),
+	})
+	if err != nil {
+		t.Fatalf("FinishGeneration: %v", err)
+	}
+	if err := f.root.executeDelegateMutationPlans(result); err != nil {
+		t.Fatalf("execute finish plans: %v", err)
+	}
+	if _, err := f.root.delegateController.Reconcile(emptyDelegateReconcileEvidence(f.root.delegateController)); err != nil {
+		t.Fatalf("Reconcile stop completion: %v", err)
+	}
+
+	reservation, err := f.root.delegateController.ReserveStart(rootDelegateActor(f.root.ID()), f.delegateID)
+	if err != nil {
+		t.Fatalf("ReserveStart successor: %v", err)
+	}
+	started, err := f.root.delegateController.CommitStart(reservation)
+	if err != nil {
+		t.Fatalf("CommitStart successor: %v", err)
+	}
+	if err := f.root.delegateController.AttachRuntime(started.lease, f.child); err != nil {
+		t.Fatalf("AttachRuntime successor: %v", err)
+	}
+	if _, err := f.root.delegateController.BeginStartInput(started.lease); err != nil {
+		t.Fatalf("BeginStartInput successor: %v", err)
+	}
+
+	row := f.snapshot(t)
+	if row.generation != started.lease.generation || !row.currentRunOpen || row.pendingStopSeq != 0 {
+		t.Fatalf("successor row = %#v, want a new running generation", row)
+	}
+	if f.root.childDrainAbandoned(f.child.ID()) {
+		t.Fatal("generation-one abandonment fenced the resumed generation")
+	}
+	if outstanding, err := f.root.treeHasOutstandingWork(); err != nil || !outstanding {
+		t.Fatalf("successor generation was omitted from drain accounting: outstanding=%v err=%v", outstanding, err)
 	}
 }
 
