@@ -87,6 +87,7 @@ func TestRuntimeBuildFixtureEnvironmentDropsAmbientHarnessControls(t *testing.T)
 		"EVENER_TEST_NPM_TRACK_PID",
 		"EVENER_TEST_SHELL_KILLED_REAPED",
 		"EVENER_TEST_SHELL_WAITED_REAPED",
+		"EVENER_TEST_SHELL_WAIT_RELEASE",
 		"EVENER_TEST_NODE_HOLD_COMMAND",
 		"EVENER_TEST_NODE_FAIL_COMMAND",
 		"EVENER_TEST_NODE_PID",
@@ -750,13 +751,18 @@ func TestMakeTestWebInterruptDoesNotSignalReapedCheck(t *testing.T) {
 	heldPID := filepath.Join(fixture.root, "held-npm.pid")
 	reapedPID := filepath.Join(fixture.root, "reaped-npm.pid")
 	waitedReaped := filepath.Join(fixture.root, "waited-reaped.ready")
+	waitRelease := filepath.Join(fixture.root, "wait-release")
 	killedReaped := filepath.Join(fixture.root, "killed-reaped")
 	recordingShell := filepath.Join(filepath.Dir(fixture.root), "recording-shell")
 	writeTestFile(t, recordingShell, []byte(`wait() {
   command wait "$@"
   wait_status=$?
   tracked_pid=$(cat "$EVENER_TEST_NPM_TRACK_PID")
-  [ "${1:-}" != "$tracked_pid" ] || : > "$EVENER_TEST_SHELL_WAITED_REAPED"
+  if [ "${1:-}" = "$tracked_pid" ] && [ "${reaped_gate:-0}" -eq 0 ]; then
+    reaped_gate=1
+    : > "$EVENER_TEST_SHELL_WAITED_REAPED"
+    while [ ! -f "$EVENER_TEST_SHELL_WAIT_RELEASE" ]; do :; done
+  fi
   return "$wait_status"
 }
 kill() {
@@ -781,6 +787,7 @@ kill() {
 		"EVENER_TEST_NPM_TRACK_COMMAND=run typecheck",
 		"EVENER_TEST_NPM_TRACK_PID="+reapedPID,
 		"EVENER_TEST_SHELL_WAITED_REAPED="+waitedReaped,
+		"EVENER_TEST_SHELL_WAIT_RELEASE="+waitRelease,
 		"EVENER_TEST_SHELL_KILLED_REAPED="+killedReaped,
 	)
 	var output bytes.Buffer
@@ -807,6 +814,7 @@ kill() {
 	if err := exec.Command("kill", "-TERM", strconv.Itoa(command.Process.Pid)).Run(); err != nil {
 		t.Fatalf("signal make test-web: %v", err)
 	}
+	writeTestFile(t, waitRelease, nil, 0o644)
 	if err := run.wait(); err == nil {
 		t.Fatalf("interrupted make test-web exited zero; output = %s", output.String())
 	}
@@ -1223,6 +1231,7 @@ func (fixture runtimeBuildFixture) environment(failPackage string) []string {
 			"EVENER_TEST_GO_LOG", "EVENER_TEST_GO_FAIL_PACKAGE",
 			"EVENER_TEST_NPM_FAIL_COMMAND", "EVENER_TEST_NPM_HOLD_COMMAND", "EVENER_TEST_NPM_PID", "EVENER_TEST_NPM_READY",
 			"EVENER_TEST_NPM_TRACK_COMMAND", "EVENER_TEST_NPM_TRACK_PID", "EVENER_TEST_SHELL_KILLED_REAPED", "EVENER_TEST_SHELL_WAITED_REAPED",
+			"EVENER_TEST_SHELL_WAIT_RELEASE",
 			"EVENER_TEST_NODE_HOLD_COMMAND", "EVENER_TEST_NODE_FAIL_COMMAND", "EVENER_TEST_NODE_PID", "EVENER_TEST_NODE_READY", "EVENER_TEST_NODE_TERM", "EVENER_TEST_NODE_RELEASE", "EVENER_TEST_NODE_READY_FD":
 			continue
 		}
