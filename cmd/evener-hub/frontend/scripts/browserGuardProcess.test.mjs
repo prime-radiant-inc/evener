@@ -100,6 +100,18 @@ test("allocates distinct local ports", async () => {
   assert.ok(second > 0);
 });
 
+test("parses only valid loopback DevTools announcement lines", () => {
+  assert.equal(browserGuardProcess.parseChromeDevToolsAnnouncement("ordinary Chrome stderr"), null);
+  for (const line of [
+    "DevTools listening on ws://127.0.0.1:99999/not-a-devtools-path",
+    "DevTools listening on ws://192.168.1.10:43210/devtools/browser/id",
+    "DevTools listening on ws://127.0.0.1:43210/devtools/page/id",
+    'DevTools listening on "ws://127.0.0.1:43210/devtools/browser/id"',
+  ]) {
+    assert.throws(() => browserGuardProcess.parseChromeDevToolsAnnouncement(line));
+  }
+});
+
 test("disables Chrome crash reporting outside the private browser profile", async () => {
   const { guard, children } = await startFakeGuard();
   try {
@@ -787,10 +799,9 @@ test("a browser binary that could not be resolved says nothing was spawned", () 
 // reaps the Vite server and the private profile. These three cases pin the
 // listener, the attribution, and that cleanup still finishes.
 //
-// "The readiness wait" is waitForHttp, which polls for 30 seconds. A launch
-// that already failed has nothing to poll FOR, so the wait aborts with the
-// launch error itself rather than reporting a timeout against a subsystem that
-// was never running.
+// A launch that already failed has nothing to poll FOR, so the readiness handoff
+// aborts with the launch error itself rather than reporting a timeout against a
+// subsystem that was never running.
 const UNREACHABLE = "http://127.0.0.1:1/json/version";
 
 test("a Chrome that never launched aborts the readiness wait naming the launch error", async (context) => {
@@ -848,19 +859,19 @@ test("a Vite that never launched aborts its own wait and is not blamed on Chrome
   assert.equal(existsSync(guard.profileDir), false);
 });
 
-test("hands the caller Chrome's dynamically bound DevTools port after delayed readiness", async (context) => {
+test("hands the caller the complete IPv6 endpoint after CRLF chunked readiness", async (context) => {
   const { guard, children } = await startFakeGuard();
   reapOnTeardown(context, guard, children);
 
   const ready = guard.waitForChrome();
-  setTimeout(() => {
-    children[1].stderr.emit(
-      "data",
-      "startup noise\nDevTools listening on ws://127.0.0.1:45678/devtools/browser/test\n",
-    );
-  }, 10);
+  children[1].stderr.emit("data", "startup noise\rDevTools listening on ws://[::1]:43210/devtools/browser/");
+  children[1].stderr.emit("data", "chunked\r\n");
 
-  assert.equal(await ready, 45678);
+  assert.deepEqual(await ready, {
+    url: "ws://[::1]:43210/devtools/browser/chunked",
+    host: "[::1]",
+    port: 43210,
+  });
   assert.equal(
     guard.getChromeArgv().find((arg) => arg.startsWith("--remote-debugging-port=")),
     "--remote-debugging-port=0",
@@ -869,6 +880,115 @@ test("hands the caller Chrome's dynamically bound DevTools port after delayed re
   const cleanup = guard.cleanup();
   for (const child of children) child.exit();
   await cleanup;
+});
+
+test("rejects malformed and conflicting DevTools announcements", async (context) => {
+  const { guard, children } = await startFakeGuard();
+  reapOnTeardown(context, guard, children);
+  const ready = guard.waitForChrome();
+
+  children[1].stderr.emit("data", 'noise "DevTools listening on ws://127.0.0.1:99999/not-a-devtools-path"\n');
+  assert.equal(guard.getChromeLaunchError(), null);
+  children[1].stderr.emit("data", "DevTools listening on ws://127.0.0.1:43211/devtools/browser/first\n");
+  assert.deepEqual(await ready, {
+    url: "ws://127.0.0.1:43211/devtools/browser/first",
+    host: "127.0.0.1",
+    port: 43211,
+  });
+
+  children[1].stderr.emit("data", "DevTools listening on ws://localhost:43212/devtools/browser/second\n");
+  assert.match(guard.getChromeLaunchError()?.message ?? "", /conflicting DevTools announcements/);
+
+  const cleanup = guard.cleanup();
+  for (const child of children) child.exit();
+  await cleanup;
+});
+
+test("fails the production readiness handoff on a malformed announcement", async (context) => {
+  const { guard, children } = await startFakeGuard();
+  reapOnTeardown(context, guard, children);
+  const ready = guard.waitForChrome();
+  children[1].stderr.emit("data", "DevTools listening on ws://127.0.0.1:99999/not-a-devtools-path\n");
+  await assert.rejects(ready, /(?:malformed|invalid) DevTools announcement/);
+
+  const cleanup = guard.cleanup();
+  for (const child of children) child.exit();
+  await cleanup;
+});
+
+test("keeps Chrome exit as a failure after readiness announcement", async (context) => {
+  const { guard, children } = await startFakeGuard();
+  reapOnTeardown(context, guard, children);
+  const ready = guard.waitForChrome();
+  children[1].stderr.emit("data", "DevTools listening on ws://localhost:43213/devtools/browser/ready\n");
+  await ready;
+  children[1].emit("exit", 17, null);
+
+  assert.match(guard.getChromeLaunchError()?.message ?? "", /code 17/);
+  assert.match(guard.getChromeLaunchError()?.message ?? "", /signal none/);
+
+  const cleanup = guard.cleanup();
+  children[0].exit();
+  children[1].exit();
+  await cleanup;
+});
+
+test("cleans up through the announced endpoint host", async (context) => {
+  const endpoints = [];
+  const { guard, children } = await startFakeGuard({
+    closeBrowser(endpoint) {
+      endpoints.push(endpoint);
+      return Promise.resolve();
+    },
+  });
+  reapOnTeardown(context, guard, children);
+  const ready = guard.waitForChrome();
+  children[1].stderr.emit("data", "DevTools listening on ws://[::1]:43214/devtools/browser/cleanup\n");
+  assert.deepEqual(await ready, {
+    url: "ws://[::1]:43214/devtools/browser/cleanup",
+    host: "[::1]",
+    port: 43214,
+  });
+
+  const cleanup = guard.cleanup();
+  for (const child of children) child.exit();
+  await cleanup;
+  assert.deepEqual(endpoints, [
+    { url: "ws://[::1]:43214/devtools/browser/cleanup", host: "[::1]", port: 43214 },
+  ]);
+});
+
+test("requestBrowserClose uses the announced host and port", async () => {
+  const requests = [];
+  const sockets = [];
+  class FakeWebSocket extends EventEmitter {
+    constructor(url) {
+      super();
+      this.url = url;
+      sockets.push(this);
+      queueMicrotask(() => this.emit("open"));
+    }
+
+    addEventListener(type, listener) {
+      this.once(type, listener);
+    }
+
+    send(message) {
+      assert.deepEqual(JSON.parse(message), { id: 1, method: "Browser.close" });
+      queueMicrotask(() => this.emit("close"));
+    }
+  }
+
+  await browserGuardProcess.requestBrowserClose(
+    { url: "ws://[::1]:43215/devtools/browser/close" },
+    async (url) => {
+      requests.push(url);
+      return { ok: true, json: async () => ({ webSocketDebuggerUrl: "ws://[::1]:43215/devtools/browser/close" }) };
+    },
+    FakeWebSocket,
+  );
+  assert.deepEqual(requests, ["http://[::1]:43215/json/version"]);
+  assert.deepEqual(sockets.map((socket) => socket.url), ["ws://[::1]:43215/devtools/browser/close"]);
 });
 
 test("fails the readiness handoff immediately when Chrome start fails", async (context) => {
@@ -882,6 +1002,21 @@ test("fails the readiness handoff immediately when Chrome start fails", async (c
   const cleanup = guard.cleanup();
   children[0].exit();
   await cleanup;
+});
+
+test("aborts pending readiness without an unhandled rejection and still cleans up", async (context) => {
+  const { guard, children } = await startFakeGuard();
+  reapOnTeardown(context, guard, children);
+  const controller = new AbortController();
+  const pending = guard.waitForChrome({ signal: controller.signal });
+  const deadline = new Error("startup deadline");
+  controller.abort(deadline);
+
+  await assert.rejects(pending, deadline);
+  const cleanup = guard.cleanup();
+  for (const child of children) child.exit();
+  await cleanup;
+  assert.equal(existsSync(guard.profileDir), false);
 });
 
 // FakeChild.failLaunch above is a MODEL of Node's failed-spawn behaviour, and a
@@ -919,14 +1054,7 @@ test("a real non-executable Chrome is named by the diagnostic and still gets cle
   // The 'error' event is asynchronous, so the wait is what observes it - and it
   // must observe it in well under the 30 seconds the poll would otherwise take.
   const started = Date.now();
-  await assert.rejects(
-    waitForHttp(
-      `http://127.0.0.1:${guard.cdpPort}/json/version`,
-      "chrome devtools endpoint",
-      guard.getChromeLaunchError,
-    ),
-    /EACCES/,
-  );
+  await assert.rejects(guard.waitForChrome(), /EACCES/);
   assert.ok(Date.now() - started < 5_000, "the wait must abort on the launch error, not poll to its timeout");
 
   const message = browserGuardProcess.describeBrowserStartupFailure({

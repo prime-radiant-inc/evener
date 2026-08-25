@@ -75,6 +75,8 @@ import {
   forcePseudoStates,
   navigateTo,
   realizedViewport,
+  createStartupDeadline,
+  devtoolsHttpURL,
   waitForFonts,
   waitForHttp,
 } from "../browserGuardCdp.mjs";
@@ -219,7 +221,7 @@ async function main() {
     throw new Error(describeBrowserStartupFailure({ error, subsystem: "launch" }));
   }
   const { vitePort } = guard;
-  let cdpPort;
+  let cdpEndpoint;
 
   let failed = 0;
   const warnings = [];
@@ -231,12 +233,14 @@ async function main() {
         describeBrowserStartupFailure({ error: err, subsystem: "vite", viteStderr: guard.getViteError() }),
       );
     }
+    const startupDeadline = createStartupDeadline();
     try {
-      cdpPort = await guard.waitForChrome();
+      cdpEndpoint = await guard.waitForChrome({ signal: startupDeadline.signal });
       await waitForHttp(
-        `http://127.0.0.1:${cdpPort}/json/version`,
+        devtoolsHttpURL(cdpEndpoint, "/json/version"),
         "chrome devtools endpoint",
         guard.getChromeLaunchError,
+        { signal: startupDeadline.signal },
       );
     } catch (err) {
       throw new Error(
@@ -249,9 +253,11 @@ async function main() {
           viteStderr: guard.getViteError(),
         }),
       );
+    } finally {
+      startupDeadline.clear();
     }
 
-    const page = await connectPage(cdpPort);
+    const page = await connectPage(cdpEndpoint);
     const emulation = { viewportApplied: false };
     if (process.env.LAYOUTGUARD_DEBUG) {
       page.ws.addEventListener("message", (event) => {
