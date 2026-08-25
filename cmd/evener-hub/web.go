@@ -46,8 +46,9 @@ type WebServer struct {
 	treeCache  *hubcore.TreeCache
 	manifestFS fs.FS
 
-	frontendHash     string
-	deletionStoreErr error
+	frontendHash              string
+	deletionStoreErr          error
+	transcriptDisplayStoreErr error
 }
 
 var manifestMarshal = json.Marshal
@@ -57,6 +58,10 @@ func NewWebServer(cfg hubcore.WebConfig) *WebServer {
 	var deletionStoreErr error
 	if cfg.DeletionStore == nil {
 		cfg.DeletionStore, deletionStoreErr = hubcore.NewDeletionStore(cfg.HubStateRoot)
+	}
+	transcriptDisplayStoreErr := cfg.TranscriptDisplayStoreErr
+	if cfg.TranscriptDisplayStore == nil {
+		cfg.TranscriptDisplayStore, transcriptDisplayStoreErr = hubcore.NewTranscriptDisplayStore(cfg.HubStateRoot)
 	}
 	sources := newHubSourceRegistry(cfg)
 	if cfg.CodexLauncher == nil && len(cfg.CodexLaunches) > 0 {
@@ -70,15 +75,16 @@ func NewWebServer(cfg hubcore.WebConfig) *WebServer {
 	}
 	fHash, _ := frontendDistHash(distFS())
 	web := &WebServer{
-		cfg:              cfg,
-		sources:          sources,
-		startedAt:        time.Now().UTC(),
-		lastGoodThreads:  map[string][]appwire.Thread{},
-		liveModels:       &modelsCache{},
-		treeCache:        &hubcore.TreeCache{},
-		manifestFS:       assetsRoot(),
-		frontendHash:     fHash,
-		deletionStoreErr: deletionStoreErr,
+		cfg:                       cfg,
+		sources:                   sources,
+		startedAt:                 time.Now().UTC(),
+		lastGoodThreads:           map[string][]appwire.Thread{},
+		liveModels:                &modelsCache{},
+		treeCache:                 &hubcore.TreeCache{},
+		manifestFS:                assetsRoot(),
+		frontendHash:              fHash,
+		deletionStoreErr:          deletionStoreErr,
+		transcriptDisplayStoreErr: transcriptDisplayStoreErr,
 	}
 	if web.cfg.LiveModels == nil {
 		web.cfg.LiveModels = web.fetchLiveModels
