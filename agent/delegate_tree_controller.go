@@ -158,8 +158,14 @@ type delegateSnapshot struct {
 	// delegate and not yet completed; 0 when no stop is outstanding. It is what
 	// distinguishes a delegate that was ASKED to stop from one that has.
 	pendingStopSeq uint64
-	lastOutcome    *delegatestore.Outcome
-	latestPacket   *delegatestore.TerminalPacket
+	// pendingStopAt is WHEN that stop was requested, and zero whenever
+	// pendingStopSeq is (or when the journal predates the field). A delegate
+	// under a pending stop cannot report activity at all — admitLeaseLocked
+	// rejects on PendingStopSeq — so time-since-request is the only honest
+	// measure of how long a stop has gone unanswered.
+	pendingStopAt time.Time
+	lastOutcome   *delegatestore.Outcome
+	latestPacket  *delegatestore.TerminalPacket
 }
 
 // stableDelegateWorktreeSnapshot is the process-local read model used by
@@ -661,6 +667,7 @@ func captureDelegateSnapshot(aggregate *delegatestore.Aggregate) delegateSnapsho
 		notResumableReason: aggregate.NotResumableReason,
 		latestActivityAt:   aggregate.LatestActivityAt,
 		pendingStopSeq:     aggregate.PendingStopSeq,
+		pendingStopAt:      aggregate.PendingStopAt,
 		lastOutcome:        outcome,
 		latestPacket:       cloneStableTerminalPacket(aggregate.LatestPacket),
 	}

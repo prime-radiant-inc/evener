@@ -1004,7 +1004,10 @@ func TestSession_SubagentStopHookRunsWhenSubagentFinishes(t *testing.T) {
 	}
 	defer sess.Close()
 
-	result, err := sess.spawnAgent(context.Background(), "inspect", "", "", 1, "explorer", "", nil, nil)
+	// This fixture intentionally requires its SubagentStop hook to mutate the
+	// shared workspace, so declare a mutating child scope instead of asking the
+	// read-only explorer floor to permit the write.
+	result, err := sess.spawnAgent(context.Background(), "inspect", "", "", 1, "explorer", "", nil, []string{"write_file"})
 	if err != nil {
 		t.Fatalf("spawnAgent: %v", err)
 	}

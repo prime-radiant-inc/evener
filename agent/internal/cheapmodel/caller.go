@@ -26,6 +26,11 @@ type probeCall struct {
 	fallbacks int
 }
 
+// ErrAllModelsRefused marks a request for which both the resolved cheap model
+// and the session model returned a permanent model-refusal error. Consumers may
+// use this to choose a non-LLM fallback while retaining the underlying errors.
+var ErrAllModelsRefused = errors.New("all auxiliary models refused")
+
 // Caller executes cheap-model requests for one session.
 type Caller struct {
 	client *llm.Client
@@ -110,6 +115,7 @@ func (c *Caller) complete(ctx context.Context, profile *provider.Profile, cheap 
 	req.Provider, req.Model = active.provider, active.model
 	fallbackResp, fallbackErr := c.client.Complete(ctx, req)
 	if fallbackErr != nil {
+		allModelsRefused := refusesModel(fallbackErr)
 		// Both failures matter to whoever reads this, so join them. The join
 		// order does not settle classification: llm.Kind resolves a joined
 		// error by a fixed precedence over the whole chain, under which the
@@ -119,8 +125,13 @@ func (c *Caller) complete(ctx context.Context, profile *provider.Profile, cheap 
 		// KindInvalidRequest — so a session model that ran out of time is not
 		// reported as a bad request.
 		fallbackErr = llm.WrapContextError(active.provider, fallbackErr)
+		joinedErr := errors.Join(fallbackErr, err)
+		if allModelsRefused {
+			c.finishProbe(cheap, refusedProbe, false)
+			return llm.Response{}, true, errors.Join(ErrAllModelsRefused, joinedErr)
+		}
 		c.finishProbe(cheap, refusedProbe, false)
-		return llm.Response{}, true, errors.Join(fallbackErr, err)
+		return llm.Response{}, true, joinedErr
 	}
 	c.finishProbe(cheap, refusedProbe, true)
 	return fallbackResp, true, nil

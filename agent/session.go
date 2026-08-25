@@ -181,7 +181,8 @@ type Session struct {
 	//   flag and kickFunc callback, the naming name-state, envTracker,
 	//   envContextState, currentRoundRecorder, salvagedTurnRound, and the worktree
 	//   occupancy fields (worktreeRestoreEnv, worktreeCurrentPath,
-	//   worktreeCurrentManaged, worktreeGitVersionOK, worktreeLiveWorkStub). It
+	//   worktreeCurrentManaged, worktreeGitVersionOK, worktreeLiveWorkStub), and
+	//   detachedProcesses. It
 	//   does NOT guard reg — the tool.Registry self-synchronizes.
 	mu sync.Mutex
 
@@ -233,7 +234,21 @@ type Session struct {
 	// responseSideEffectsMu serializes a response's user-visible side-effect
 	// bundle (emit + appendTurn + counter bump) against teardown.
 	// LOCK ORDER: responseSideEffectsMu > mu (Close acquires it before mu).
-	responseSideEffectsMu         sync.Mutex
+	responseSideEffectsMu sync.Mutex
+	// drainAbandonedMu guards drainAbandonedChildren and drainGraceChildren. It is a lock of its own,
+	// not mu, because every drain walk and every drive path reads the set while
+	// holding a subagent row's lock, and mu sits above those.
+	// LOCK ORDER: drainAbandonedMu is a leaf — nothing is acquired under it.
+	drainAbandonedMu sync.Mutex
+	// drainAbandonedChildren maps a direct child SESSION id to the exact
+	// delegate generation the drain gave up waiting on. A resumed generation
+	// under the same child session must not inherit the old gate.
+	drainAbandonedChildren map[string]drainAbandonedChild
+	// drainGraceChildren holds delegates whose first grace window completed and
+	// whose second continuous-stall window is in progress. It is transient to one
+	// DrainJobTree invocation and generation-scoped for the same reason as the
+	// final abandonment record.
+	drainGraceChildren            map[string]drainGraceChild
 	toolEventsWG                  sync.WaitGroup  // in-flight ToolCallStart/End emit pairs; Close() joins before closing events
 	sendersWG                     sync.WaitGroup  // detached event emitters (subagent runs, session namer); Add happens under mu gated on closing so it happens-before Close()'s join
 	disposeWG                     sync.WaitGroup  // in-flight in-turn dispose ops (manage_worktree op=dispose); admitted via beginDispose() under mu gated on closing so the Add happens-before Close()'s join, then Close() joins before draining (spec §P1)
@@ -437,6 +452,12 @@ type Session struct {
 	jobNotifyRetry     notificationRetry
 
 	jobManager *jobManager
+
+	// detachedProcesses contains processes this session explicitly launched with
+	// mode:"detached". They are not managed jobs (and must not hold the one-shot
+	// drain open), but they remain session-owned for end_turn warnings until the
+	// launcher's completion receipt closes. Guarded by mu.
+	detachedProcesses []sessionDetachedProcess
 
 	// context management
 	contextMgr *contextmgr.Manager
@@ -643,6 +664,11 @@ type Session struct {
 	systemPromptOverride string
 	cachedSystemPrompt   string
 	promptSourceLog      []promptSource
+}
+
+type sessionDetachedProcess struct {
+	pid  int
+	done <-chan struct{}
 }
 
 type notificationRetry struct {

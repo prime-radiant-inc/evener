@@ -228,24 +228,27 @@ func (a *Adapter) streamResponses(ctx context.Context, req llm.Request) (llm.Str
 	parentCtx := ctx
 	sctx, cancel := context.WithCancel(ctx)
 	sctx, timeoutCancel := llm.ApplyAdapterTimeout(sctx, req.AdapterTimeout, true)
-	defer timeoutCancel()
+	cancelAll := func() {
+		cancel()
+		timeoutCancel()
+	}
 
 	body, err := a.buildRequestBody(req)
 	if err != nil {
-		cancel()
+		cancelAll()
 		return nil, err
 	}
 	body["stream"] = true
 
 	b, err := json.Marshal(body)
 	if err != nil {
-		cancel()
+		cancelAll()
 		return nil, err
 	}
 
 	httpReq, err := http.NewRequestWithContext(sctx, http.MethodPost, a.responsesURL(), bytes.NewReader(b))
 	if err != nil {
-		cancel()
+		cancelAll()
 		return nil, err
 	}
 	a.setRequestHeaders(httpReq, req)
@@ -265,7 +268,7 @@ func (a *Adapter) streamResponses(ctx context.Context, req llm.Request) (llm.Str
 		timeoutSource := llm.APITimeoutSourceForTransport(parentCtx, sctx, err)
 		returnedErr := llm.WrapContextError("openai", err)
 		attempt.Complete(llm.APIAttemptResult{Err: returnedErr}, timeoutSource, nil, err)
-		cancel()
+		cancelAll()
 		return nil, returnedErr
 	}
 
@@ -289,15 +292,15 @@ func (a *Adapter) streamResponses(ctx context.Context, req llm.Request) (llm.Str
 			ResponseBody: rawBytes,
 			Err:          returnedErr,
 		}, llm.APITimeoutNone, decodeErr, nil)
-		cancel()
+		cancelAll()
 		return nil, returnedErr
 	}
 
-	s := llm.NewChanStream(cancel)
+	s := llm.NewChanStream(cancelAll)
 	// STREAM_START
 	s.Send(llm.StreamEvent{Type: llm.StreamEventStreamStart})
 
-	go a.decodeResponsesStream(sctx, cancel, resp, s, req, b, attempt)
+	go a.decodeResponsesStream(sctx, cancelAll, resp, s, req, b, attempt)
 
 	return s, nil
 }
@@ -768,6 +771,9 @@ func (a *Adapter) decodeResponsesStream(sctx context.Context, cancel context.Can
 		decodeErr = nil
 	}
 	timeoutSource := llm.APITimeoutSourceForSSE(parseErr)
+	if timeoutSource == llm.APITimeoutNone {
+		timeoutSource = attempt.TimeoutSource()
+	}
 	outcome := apilog.AttemptOutcomeClass("")
 	if !finished && sctx.Err() == context.Canceled {
 		outcome = apilog.AttemptCallerCancel
