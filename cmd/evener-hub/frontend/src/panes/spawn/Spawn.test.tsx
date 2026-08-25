@@ -1186,58 +1186,105 @@ test("the classic ladder remains when the hub can't enumerate the model's own le
 
 // The pane-level modelCatalog (the Effort select's source of
 // reasoningEffortLevels) loads via a debounced /api/models enrichment, while
-// the picker loads its OWN catalog on open. If the pane-level enrichment
-// fails (transient 502, network blip) while the picker's succeeds, the picker
-// shows models WITH effort levels, but the pane-level catalog degrades to
-// label-only entries (no reasoningEffortLevels). Picking a model discards the
-// picker's entry metadata - only the qualified string reaches
-// handleModelChange - so the Effort select falls back to the generic ladder
-// instead of the model's own, even though the picker just displayed it.
-test("the Effort select uses the picked model's own ladder even when the pane-level catalog enrichment failed", async () => {
-  const user = userEvent.setup();
-  const models = [
-    {
-      provider: "openai",
-      model: "gpt-5",
-      supports_reasoning: true,
-      reasoning_effort_levels: ["minimal", "low", "medium", "high", "xhigh", "max"],
-    },
-  ];
-  // The picker opens before the 250ms debounce fires, so its /api/models call
-  // is the FIRST. Make it succeed (full enrichment). The pane-level debounced
-  // call is the SECOND — make it fail (502), so modelCatalog degrades to
-  // label-only entries with no reasoningEffortLevels.
-  let modelsApiCallCount = 0;
-  vi.stubGlobal(
-    "fetch",
-    vi.fn((url: string) => {
-      if (url.startsWith("/api/git/head")) {
-        return Promise.resolve({ ok: true, status: 200, json: () => Promise.resolve({ branch: "main" }) } as Response);
-      }
-      if (url.startsWith("/api/models")) {
-        modelsApiCallCount += 1;
-        if (modelsApiCallCount === 2) {
-          // Pane-level enrichment fails: the catalog degrades to label-only.
-          return Promise.resolve({ ok: false, status: 502, json: () => Promise.resolve({}) } as Response);
+// the picker loads its OWN catalog on open. The two responses can complete in
+// either order: a failed enrichment produces a label-only entry, while the
+// picker has the model's full capability metadata. Neither completion is
+// allowed to downgrade the other.
+test.each(["pane response first", "picker response first"] as const)(
+  "the Effort select keeps the picked model's own ladder when the pane-level catalog enrichment failed (%s)",
+  async (completionOrder) => {
+    vi.useFakeTimers();
+    const models = [
+      {
+        provider: "openai",
+        model: "gpt-5",
+        supports_reasoning: true,
+        reasoning_effort_levels: ["minimal", "low", "medium", "high", "xhigh", "max"],
+      },
+    ];
+    const requests: Array<{ promise: Promise<Response>; resolve: (response: Response) => void }> = [];
+    vi.stubGlobal(
+      "fetch",
+      vi.fn((url: string) => {
+        if (url.startsWith("/api/git/head")) {
+          return Promise.resolve({
+            ok: true,
+            status: 200,
+            json: () => Promise.resolve({ branch: "main" }),
+          } as Response);
         }
-        return Promise.resolve({
-          ok: true,
-          status: 200,
-          json: () => Promise.resolve({ models, recent: [], diagnostics: [] }),
-        } as Response);
-      }
-      return Promise.resolve({ ok: false, status: 404, json: () => Promise.resolve({}) } as Response);
-    }),
-  );
-  renderSpawn(readyClient());
-  await settled();
+        if (url.startsWith("/api/models")) {
+          let resolve!: (response: Response) => void;
+          const promise = new Promise<Response>((done) => {
+            resolve = done;
+          });
+          requests.push({ promise, resolve });
+          return promise;
+        }
+        return Promise.resolve({ ok: false, status: 404, json: () => Promise.resolve({}) } as Response);
+      }),
+    );
+    try {
+      renderSpawn(readyClient());
 
-  await pickModel(user, "gpt-5", "openai/gpt-5");
-  // The picker had the model's own ladder; the Effort select must show it too
-  // immediately, not the generic fallback - the picker already loaded the
-  // entry with reasoningEffortLevels and must not discard that metadata.
-  expect(effortOptionLabels()).toEqual(["(default)", "minimal", "low", "medium", "high", "xhigh", "max", "none"]);
-});
+      if (completionOrder === "pane response first") {
+        vi.runOnlyPendingTimers();
+        expect(requests).toHaveLength(1);
+        fireEvent.click(modelTrigger());
+        expect(screen.getByRole("combobox", { name: "Model" })).toBeTruthy();
+        expect(requests).toHaveLength(2);
+      } else {
+        fireEvent.click(modelTrigger());
+        expect(screen.getByRole("combobox", { name: "Model" })).toBeTruthy();
+        expect(requests).toHaveLength(1);
+        vi.runOnlyPendingTimers();
+        expect(requests).toHaveLength(2);
+      }
+
+      const paneRequest = completionOrder === "pane response first" ? requests[0] : requests[1];
+      const pickerRequest = completionOrder === "pane response first" ? requests[1] : requests[0];
+      if (paneRequest === undefined || pickerRequest === undefined)
+        throw new Error("catalog request barrier was not reached");
+      const paneFallback = { ok: false, status: 502, json: () => Promise.resolve({}) } as Response;
+      const pickerCatalog = {
+        ok: true,
+        status: 200,
+        json: () => Promise.resolve({ models, recent: [], diagnostics: [] }),
+      } as Response;
+
+      if (completionOrder === "pane response first") {
+        await act(async () => {
+          paneRequest.resolve(paneFallback);
+          await paneRequest.promise;
+        });
+        await act(async () => {
+          pickerRequest.resolve(pickerCatalog);
+          await pickerRequest.promise;
+        });
+      } else {
+        await act(async () => {
+          pickerRequest.resolve(pickerCatalog);
+          await pickerRequest.promise;
+        });
+      }
+
+      const combo = screen.getByRole("combobox", { name: "Model" });
+      fireEvent.change(combo, { target: { value: "gpt-5" } });
+      fireEvent.click(screen.getByText("openai/gpt-5"));
+
+      if (completionOrder === "picker response first") {
+        await act(async () => {
+          paneRequest.resolve(paneFallback);
+          await paneRequest.promise;
+        });
+      }
+
+      expect(effortOptionLabels()).toEqual(["(default)", "minimal", "low", "medium", "high", "xhigh", "max", "none"]);
+    } finally {
+      vi.useRealTimers();
+    }
+  },
+);
 
 // --- post-success reset (floor §1.14 L186, wave6-report.md gap) -----------
 //

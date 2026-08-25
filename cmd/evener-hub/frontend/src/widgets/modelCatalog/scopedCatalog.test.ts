@@ -3,7 +3,7 @@
 import { describe, expect, test } from "vitest";
 import type { ModelDescriptor } from "../../protocol/types.gen";
 import type { ModelCatalog } from "./index";
-import { mergeScopedCatalog } from "./scopedCatalog";
+import { mergeCatalogEntry, mergeCatalogSnapshot, mergeScopedCatalog } from "./scopedCatalog";
 
 const SCOPED: ModelDescriptor[] = [
   { provider: "anthropic", model: "claude-sonnet-4-5" },
@@ -83,5 +83,59 @@ describe("mergeScopedCatalog", () => {
       null,
     );
     expect(merged.models).toEqual([{ provider: "openai", model: "gpt-5", displayName: "" }]);
+  });
+
+  test("does not let a label-only response downgrade richer capabilities", () => {
+    const rich = {
+      provider: "openai",
+      model: "gpt-5",
+      displayName: "GPT-5",
+      supportsReasoning: true,
+      reasoningEffortLevels: ["minimal", "high", "max"],
+    };
+    const fallback = { provider: "openai", model: "gpt-5", displayName: "" };
+
+    expect(mergeCatalogEntry(rich, fallback)).toEqual(rich);
+    expect(mergeCatalogSnapshot({ models: [rich], recent: [] }, { models: [fallback], recent: [] }).models).toEqual([
+      rich,
+    ]);
+  });
+
+  test("applies a richer later response without changing its model identity", () => {
+    const existing = { provider: "openai", model: "gpt-5", displayName: "GPT-5" };
+    const richer = {
+      provider: "openai",
+      model: "gpt-5",
+      displayName: "GPT-5 reasoning",
+      supportsReasoning: true,
+      reasoningEffortLevels: ["low", "high"],
+    };
+
+    expect(mergeCatalogEntry(existing, richer)).toEqual(richer);
+  });
+
+  test("applies an explicit non-reasoning update instead of retaining stale levels", () => {
+    const existing = {
+      provider: "openai",
+      model: "gpt-5",
+      displayName: "GPT-5",
+      supportsReasoning: true,
+      reasoningEffortLevels: ["low", "high"],
+    };
+
+    expect(
+      mergeCatalogEntry(existing, {
+        provider: "openai",
+        model: "gpt-5",
+        displayName: "GPT-5",
+        supportsReasoning: false,
+      }),
+    ).toEqual({
+      provider: "openai",
+      model: "gpt-5",
+      displayName: "GPT-5",
+      supportsReasoning: false,
+      reasoningEffortLevels: [],
+    });
   });
 });
