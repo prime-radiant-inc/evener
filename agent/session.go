@@ -239,10 +239,10 @@ type Session struct {
 	// holding a subagent row's lock, and mu sits above those.
 	// LOCK ORDER: drainAbandonedMu is a leaf — nothing is acquired under it.
 	drainAbandonedMu sync.Mutex
-	// drainAbandonedChildren maps a direct child SESSION id to the delegate id
-	// the one-shot drain gave up waiting on, recorded by
-	// markDrainAbandonedDelegates. Empty in every serve/interactive session.
-	drainAbandonedChildren        map[string]string
+	// drainAbandonedChildren maps a direct child SESSION id to the exact
+	// delegate generation the drain gave up waiting on. A resumed generation
+	// under the same child session must not inherit the old gate.
+	drainAbandonedChildren        map[string]drainAbandonedChild
 	toolEventsWG                  sync.WaitGroup  // in-flight ToolCallStart/End emit pairs; Close() joins before closing events
 	sendersWG                     sync.WaitGroup  // detached event emitters (subagent runs, session namer); Add happens under mu gated on closing so it happens-before Close()'s join
 	disposeWG                     sync.WaitGroup  // in-flight in-turn dispose ops (manage_worktree op=dispose); admitted via beginDispose() under mu gated on closing so the Add happens-before Close()'s join, then Close() joins before draining (spec §P1)

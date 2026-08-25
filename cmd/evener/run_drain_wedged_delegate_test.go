@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"primeradiant.com/evener/agent"
+	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/agent/execenv"
 	"primeradiant.com/evener/agent/provider"
 	"primeradiant.com/evener/llm"
@@ -215,12 +216,7 @@ func TestRunExitsWhenADelegateIsWedgedInAnUncancellableToolCall(t *testing.T) {
 	if !strings.Contains(stdout.String(), finalMsg) {
 		t.Fatalf("stdout = %q, want the root's answer %q: giving up on the delegate is worthless if the answer is never printed", stdout.String(), finalMsg)
 	}
-	var drainAt time.Time
-	select {
-	case drainAt = <-drainReturned:
-	case <-time.After(30 * time.Second):
-		t.Fatal("run returned without recording the real drain completion")
-	}
+	drainAt := <-drainReturned
 	if elapsed := time.Since(drainAt); elapsed >= 2*time.Second {
 		t.Fatalf("Close spent %s after the drain returned; it should not consume the entire 3s close budget joining the hopeless stop before bounded joins", elapsed)
 	}
@@ -300,9 +296,8 @@ func TestRunExitsWithALiveDelegateItNeverStopped(t *testing.T) {
 	if !strings.Contains(stdout.String(), finalMsg) {
 		t.Fatalf("stdout = %q, want the root's answer %q", stdout.String(), finalMsg)
 	}
-	// The abandonment is announced, not silent: an operator must be able to see
-	// that a delegate was dropped rather than having finished.
-	if !strings.Contains(stderr.String(), "no longer waiting on delegate") {
-		t.Fatalf("stderr never announced the abandonment:\n%s", stderr.String())
+	// The machine-readable warning code is the oracle; the human message is not.
+	if !strings.Contains(stderr.String(), "[warning:"+events.WarningCodeDelegateAbandonedByDrain+"]") {
+		t.Fatalf("stderr never announced the structured abandonment event:\n%s", stderr.String())
 	}
 }
