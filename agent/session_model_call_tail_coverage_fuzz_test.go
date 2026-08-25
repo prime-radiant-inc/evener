@@ -119,14 +119,13 @@ func FuzzModelCallExactCoverage(f *testing.F) {
 			t.Fatal("zero context window warned")
 		}
 
-		store := task.NewTaskStore(t.TempDir(), "tail").SetClock(s.sclock().Now)
+		store := s.getOrCreateTaskStore().SetClock(s.sclock().Now)
 		if _, err := store.Append([]task.TaskInput{{Type: task.TaskTypeImplement, Description: "tail", Prompt: "tail", ReasoningEffort: "high"}}); err != nil {
 			t.Fatal(err)
 		}
 		if err := store.Update([]task.TaskUpdate{{ID: 1, Status: task.TaskInProgress}}); err != nil {
 			t.Fatal(err)
 		}
-		s.taskStore = store
 		s.strategy = modelCallTailStrategy{}
 		var timings events.RoundTimings
 		_, _, _, req, effort := s.prepareModelRequest(context.Background(), 1, &timings)
@@ -244,13 +243,16 @@ func modelCallTailSession(t *testing.T) *Session {
 	}
 	client := llm.NewClient()
 	client.Register(adapter)
-	return modelCallTailSessionWithClient(t, client, provider.NewOpenAIProfile("tail-model"))
+	return modelCallTailSessionWithClient(t, client, provider.NewOpenAIProfile("tail-model").WithLiveModelInfo(llm.ModelInfo{
+		ReasoningEffortLevels: []string{"low", "high"},
+		SupportsReasoning:     true,
+	}))
 }
 
 func modelCallTailSessionWithClient(t *testing.T, client *llm.Client, profile *provider.Profile) *Session {
 	t.Helper()
 	clock := agenttest.NewFakeClock()
-	cfg := SessionConfig{StateDir: t.TempDir(), NoProjectPrompts: true, clock: clock}
+	cfg := SessionConfig{StateDir: t.TempDir(), NoProjectPrompts: true, ReasoningEffort: "medium", clock: clock}
 	cfg.testOnly.skipGitSnapshot = true
 	cfg.testOnly.minimalSystemPrompt = true
 	cfg.testOnly.noSyncJobStore = true
