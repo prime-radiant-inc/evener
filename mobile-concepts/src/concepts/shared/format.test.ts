@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { canonicalFixture } from "../../core/fixtures";
 import {
   basename,
   formatDuration,
@@ -40,6 +41,10 @@ describe("formatUsage", () => {
 
   it.each([-1, 1.5, Number.NaN])("rejects invalid usage %s", (value) => {
     expect(() => formatUsage(value)).toThrow(RangeError);
+  });
+
+  it("formats the canonical fixture usage consumed by concept contracts", () => {
+    expect(formatUsage(canonicalFixture.usage.tokens)).toBe("18.4K tokens");
   });
 });
 
