@@ -354,30 +354,33 @@ func (a *Adapter) Stream(ctx context.Context, req llm.Request) (llm.Stream, erro
 	parentCtx := ctx
 	sctx, cancel := context.WithCancel(ctx)
 	sctx, timeoutCancel := llm.ApplyAdapterTimeout(sctx, req.AdapterTimeout, true)
-	defer timeoutCancel()
+	cancelAll := func() {
+		cancel()
+		timeoutCancel()
+	}
 
 	system, contents, err := toGeminiContents(req.Model, req.Messages)
 	if err != nil {
-		cancel()
+		cancelAll()
 		return nil, err
 	}
 
 	body, err := a.buildRequestBody(req, system, contents)
 	if err != nil {
-		cancel()
+		cancelAll()
 		return nil, err
 	}
 
 	b, err := json.Marshal(body)
 	if err != nil {
-		cancel()
+		cancelAll()
 		return nil, err
 	}
 
 	endpoint := fmt.Sprintf("%s/v1beta/models/%s:streamGenerateContent", a.BaseURL, url.PathEscape(req.Model))
 	u, err := url.Parse(endpoint)
 	if err != nil {
-		cancel()
+		cancelAll()
 		return nil, err
 	}
 	q := u.Query()
@@ -387,7 +390,7 @@ func (a *Adapter) Stream(ctx context.Context, req llm.Request) (llm.Stream, erro
 
 	httpReq, err := newGoogleStreamRequest(sctx, http.MethodPost, u.String(), bytes.NewReader(b))
 	if err != nil {
-		cancel()
+		cancelAll()
 		return nil, err
 	}
 	a.setJSONHeaders(httpReq)
@@ -407,7 +410,7 @@ func (a *Adapter) Stream(ctx context.Context, req llm.Request) (llm.Stream, erro
 		timeoutSource := llm.APITimeoutSourceForTransport(parentCtx, sctx, err)
 		returnedErr := llm.WrapContextError("google", err)
 		attempt.Complete(llm.APIAttemptResult{Err: returnedErr}, timeoutSource, nil, err)
-		cancel()
+		cancelAll()
 		return nil, returnedErr
 	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
@@ -428,14 +431,14 @@ func (a *Adapter) Stream(ctx context.Context, req llm.Request) (llm.Stream, erro
 			ResponseBody: rawBytes,
 			Err:          returnedErr,
 		}, llm.APITimeoutNone, decodeErr, nil)
-		cancel()
+		cancelAll()
 		return nil, returnedErr
 	}
 
-	s := llm.NewChanStream(cancel)
+	s := llm.NewChanStream(cancelAll)
 	s.Send(llm.StreamEvent{Type: llm.StreamEventStreamStart})
 
-	go a.decodeStream(sctx, cancel, resp, s, req, b, endpoint, attempt)
+	go a.decodeStream(sctx, cancelAll, resp, s, req, b, endpoint, attempt)
 
 	return s, nil
 }
