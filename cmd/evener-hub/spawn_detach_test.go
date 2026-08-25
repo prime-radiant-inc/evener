@@ -56,8 +56,10 @@ func writeDetachFakeDaemon(t *testing.T) (bin, runDir string) {
 	dir := t.TempDir()
 	bin = filepath.Join(dir, "fake-evener")
 	runDir = filepath.Join(dir, "run")
+	if err := os.Mkdir(runDir, 0o755); err != nil {
+		t.Fatalf("create run dir: %v", err)
+	}
 	script := fmt.Sprintf(`#!/bin/sh
-mkdir -p %[1]s
 printf '{"pid":%%s,"address":"127.0.0.1:1","started_at":"2999-01-01T00:00:00Z"}\n' $$ > %[1]s/$$.json
 exec sleep 30
 `, strconv.Quote(runDir))
