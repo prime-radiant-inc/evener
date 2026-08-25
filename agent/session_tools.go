@@ -302,10 +302,9 @@ func (s *Session) describeImage(ctx context.Context, r tool.ExecResult) string {
 	// the round, so a concurrent SetModel/SetReasoningEffort (which mutate these
 	// under s.mu) must not race these reads (PRI-1958 A2/A4).
 	effortOverride := ""
-	if s.taskStore != nil {
-		if current, ok := s.taskStore.CurrentInProgress(); ok && current.ReasoningEffort != "" {
-			effortOverride = current.ReasoningEffort
-		}
+	store := s.getOrCreateTaskStore()
+	if current, ok := store.CurrentInProgress(); ok {
+		effortOverride = normalizeTaskEffort(strings.TrimSpace(current.ReasoningEffort))
 	}
 	s.mu.Lock()
 	profile := s.profile

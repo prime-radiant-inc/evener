@@ -3565,6 +3565,9 @@ func TestWeb_APIHealth(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status=%d body=%q", rec.Code, rec.Body.String())
 	}
+	if !strings.Contains(rec.Body.String(), `"mobile_api_version":1`) {
+		t.Fatalf("health JSON missing mobile API version: %s", rec.Body.String())
+	}
 	var got hubapi.HealthResponse
 	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
 		t.Fatalf("decode: %v", err)
