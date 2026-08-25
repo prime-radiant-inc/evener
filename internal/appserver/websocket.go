@@ -52,6 +52,18 @@ type webSocketPingAttempt struct {
 	deferred bool
 }
 
+type webSocketKeepaliveTicker interface {
+	Chan() <-chan time.Time
+	Stop()
+}
+
+type realWebSocketKeepaliveTicker struct {
+	ticker *time.Ticker
+}
+
+func (t realWebSocketKeepaliveTicker) Chan() <-chan time.Time { return t.ticker.C }
+func (t realWebSocketKeepaliveTicker) Stop()                  { t.ticker.Stop() }
+
 type webSocketReadGate struct {
 	mu        sync.Mutex
 	available bool
@@ -124,7 +136,7 @@ func (s *Server) ServeWebSocket(w http.ResponseWriter, r *http.Request) {
 	}()
 
 	gate := newWebSocketReadGate()
-	go runWebSocketKeepalive(ctx, ws, cancel, gate, keepalivePingInterval, keepalivePongTimeout)
+	go runWebSocketKeepalive(ctx, ws, cancel, gate, s.keepalivePingInterval, s.keepalivePongTimeout)
 
 	runWebSocketReceiveLoop(ctx, ws, transport, conn, gate)
 }
@@ -155,14 +167,20 @@ func runWebSocketReceiveLoop(ctx context.Context, ws webSocketCloser, transport 
 // surfaces to the recv/send loops as context cancellation rather than an
 // indefinite block.
 func runWebSocketKeepalive(ctx context.Context, conn wsPinger, cancel context.CancelFunc, gate *webSocketReadGate, interval, timeout time.Duration) {
-	ticker := time.NewTicker(interval)
+	runWebSocketKeepaliveWithTicker(ctx, conn, cancel, gate, timeout, realWebSocketKeepaliveTicker{ticker: time.NewTicker(interval)}, nil)
+}
+
+func runWebSocketKeepaliveWithTicker(ctx context.Context, conn wsPinger, cancel context.CancelFunc, gate *webSocketReadGate, timeout time.Duration, ticker webSocketKeepaliveTicker, onDecision func(bool)) {
 	defer ticker.Stop()
 	for {
 		select {
 		case <-ctx.Done():
 			return
-		case <-ticker.C:
+		case <-ticker.Chan():
 			attemptCtx, attempt, ok := gate.beginPing(ctx)
+			if onDecision != nil {
+				onDecision(ok)
+			}
 			if !ok {
 				continue
 			}
