@@ -79,7 +79,6 @@ func TestCovDialHubRPCWithFrameHandler(t *testing.T) {
 // TestCovStartLocalHubWithStateDir observes the child-process environment at
 // the process-launch boundary.
 func TestCovStartLocalHubWithStateDir(t *testing.T) {
-	withLocalHubImmediateExitWindow(t, 30*time.Second)
 	t.Setenv(stateDirHubHelperEnv, "1")
 	dir := t.TempDir()
 	stateDir := filepath.Join(dir, "state", "evener")
@@ -111,7 +110,6 @@ func TestCovStartLocalHubWithStateDir(t *testing.T) {
 
 // TestCovStartLocalHubNoLogFile exercises the DevNull branch (no log file).
 func TestCovStartLocalHubNoLogFile(t *testing.T) {
-	withLocalHubImmediateExitWindow(t, 30*time.Second)
 	t.Setenv(immediateExitHubHelperEnv, "1")
 	bin, err := os.Executable()
 	if err != nil {
