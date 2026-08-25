@@ -81,7 +81,11 @@ func TestToolArgsSchemaFuzz(t *testing.T) {
 	adapter := &toolArgsAdapter{schemas: schemas, emitDir: emitDir}
 	validGenerators := make(map[string]*rapid.Generator[any], len(tools))
 	for _, td := range tools {
-		validGenerators[td.name] = projectedToolGenerator(td.params)
+		generator, err := projectedToolGenerator(td.params)
+		if err != nil {
+			t.Fatalf("tool %q schema projection: %v", td.name, err)
+		}
+		validGenerators[td.name] = generator
 	}
 	store, err := promoter.OpenBucketStore(bucketsPath)
 	if err != nil {

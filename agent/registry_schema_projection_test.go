@@ -70,6 +70,43 @@ func TestProjectToolSchemaUsesRealCapableToolShape(t *testing.T) {
 	}
 }
 
+func TestProjectedToolGeneratorRejectsUnsupportedShapeSynchronously(t *testing.T) {
+	schema := projectionFixture([]string{"a", "b"}, []string{"b"})
+	schema["oneOf"].([]any)[1].(map[string]any)["required"] = []string{"mode"}
+	original := compileProjectionSchema(t, schema)
+	if original == nil {
+		t.Fatal("compiled unsupported schema is nil")
+	}
+	if _, err := projectedToolGenerator(schema); err == nil {
+		t.Fatal("projectedToolGenerator accepted unsupported overlapping shape")
+	}
+}
+
+func TestProjectToolSchemaRemovesOptionalEmptyIntersection(t *testing.T) {
+	schema := projectionFixture([]string{"a"}, []string{"a"})
+	schema["properties"].(map[string]any)["optional"] = map[string]any{
+		"type": "string",
+		"enum": []string{"parent"},
+	}
+	schema["oneOf"].([]any)[1].(map[string]any)["properties"].(map[string]any)["optional"] = map[string]any{
+		"enum": []string{"branch"},
+	}
+
+	projection, err := projectToolSchema(schema)
+	if err != nil {
+		t.Fatalf("projectToolSchema: %v", err)
+	}
+	presentProps := projection.present["properties"].(map[string]any)
+	if _, ok := presentProps["optional"]; ok {
+		t.Fatal("present projection retained optional empty-intersection property")
+	}
+
+	original := compileProjectionSchema(t, schema)
+	present := compileProjectionSchema(t, projection.present)
+	runRapidProjectionValues(t, projection.present, original, present)
+	runByteProjectionValues(t, projection.present, original, present)
+}
+
 func TestProjectToolSchemaRejectsUnsupportedShapes(t *testing.T) {
 	tests := []struct {
 		name string
@@ -187,11 +224,22 @@ type schemaProjection struct {
 	present map[string]any
 }
 
+var errProjectionNotNeeded = errors.New("schema projection not needed")
+
 // projectToolSchema recognizes the narrow capability-derived disjunction. It
 // rejects composition outside this shape instead of expanding schemagen.
 func projectToolSchema(root map[string]any) (schemaProjection, error) {
 	var out schemaProjection
-	if root == nil || root["type"] != "object" || root["additionalProperties"] != false {
+	if root == nil {
+		return out, errors.New("projection requires a closed object root")
+	}
+	if !projectionContainsCombinator(root) {
+		return out, errProjectionNotNeeded
+	}
+	if _, ok := root["oneOf"]; !ok {
+		return out, errors.New("unsupported composed schema")
+	}
+	if root["type"] != "object" || root["additionalProperties"] != false {
 		return out, errors.New("projection requires a closed object root")
 	}
 	for key := range root {
@@ -297,10 +345,13 @@ func projectToolSchema(root map[string]any) (schemaProjection, error) {
 	return out, nil
 }
 
-func projectedToolGenerator(root map[string]any) *rapid.Generator[any] {
+func projectedToolGenerator(root map[string]any) (*rapid.Generator[any], error) {
 	projection, err := projectToolSchema(root)
 	if err != nil {
-		return schemagen.Generator(root, schemagen.Valid)
+		if errors.Is(err, errProjectionNotNeeded) {
+			return schemagen.Generator(root, schemagen.Valid), nil
+		}
+		return nil, err
 	}
 	var arms []*rapid.Generator[any]
 	if projection.absent != nil {
@@ -312,7 +363,44 @@ func projectedToolGenerator(root map[string]any) *rapid.Generator[any] {
 	return rapid.Custom(func(t *rapid.T) any {
 		i := rapid.IntRange(0, len(arms)-1).Draw(t, "schema_projection")
 		return arms[i].Draw(t, "projected_args")
-	})
+	}), nil
+}
+
+func projectionContainsCombinator(v any) bool {
+	m, ok := projectionSchemaMap(v)
+	if !ok {
+		if list, ok := v.([]any); ok {
+			return slices.ContainsFunc(list, projectionContainsCombinator)
+		}
+		return false
+	}
+	for _, key := range []string{"oneOf", "anyOf", "allOf", "not"} {
+		if _, ok := m[key]; ok {
+			return true
+		}
+	}
+	if props, ok := projectionSchemaMap(m["properties"]); ok {
+		for _, prop := range props {
+			if projectionContainsCombinator(prop) {
+				return true
+			}
+		}
+	}
+	for _, key := range []string{"additionalProperties", "items", "contains", "propertyNames", "if", "then", "else", "unevaluatedProperties", "unevaluatedItems"} {
+		if projectionContainsCombinator(m[key]) {
+			return true
+		}
+	}
+	for _, key := range []string{"$defs", "definitions", "dependentSchemas"} {
+		if defs, ok := projectionSchemaMap(m[key]); ok {
+			for _, definition := range defs {
+				if projectionContainsCombinator(definition) {
+					return true
+				}
+			}
+		}
+	}
+	return false
 }
 
 func projectionSingletonNot(branch map[string]any) bool {
@@ -358,6 +446,16 @@ func projectionEnumRefinements(raw any, parent map[string]any) (map[string][]any
 }
 
 func projectionPresentUnsatisfiable(props map[string]any, required []string) bool {
+	for name, prop := range props {
+		if schema, ok := projectionSchemaMap(prop); ok {
+			if enum, ok := projectionEnums(schema["enum"]); ok && len(enum) == 0 {
+				if containsProjectionString(required, name) {
+					return true
+				}
+				delete(props, name)
+			}
+		}
+	}
 	for _, name := range required {
 		if _, ok := props[name]; !ok {
 			return true
