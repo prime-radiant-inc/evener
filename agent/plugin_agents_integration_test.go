@@ -439,6 +439,7 @@ func TestSpawnAgent_PluginAgentType_RestrictsTools(t *testing.T) {
 
 	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{
 		MaxSubagentDepth: 2,
+		testOnly:         testConfig{sandboxProber: bwrapCapableProber(dir)},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -555,6 +556,7 @@ func TestSpawnAgent_PluginAgentType_AllowanceGated(t *testing.T) {
 
 		sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{
 			MaxSubagentDepth: 2,
+			testOnly:         testConfig{sandboxProber: bwrapCapableProber(dir)},
 		})
 		if err != nil {
 			t.Fatal(err)
@@ -600,6 +602,7 @@ func TestSpawnAgent_PluginAgentType_GrantTools_AddsProviderVisibleTool(t *testin
 
 	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{
 		MaxSubagentDepth: 2,
+		testOnly:         testConfig{sandboxProber: bwrapCapableProber(dir)},
 	})
 	if err != nil {
 		t.Fatal(err)
