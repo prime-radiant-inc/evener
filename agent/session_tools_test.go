@@ -160,6 +160,9 @@ func TestDelegateSurfaceUsesAgentRegistryCapabilities(t *testing.T) {
 
 	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{
 		MaxSubagentDepth: 2,
+		testOnly: testConfig{
+			sandboxProber: bwrapCapableProber(dir),
+		},
 	})
 	if err != nil {
 		t.Fatal(err)
