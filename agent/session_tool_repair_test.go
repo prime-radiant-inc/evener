@@ -135,6 +135,22 @@ func TestPrepareToolCall_LengthStopWithValidArgs(t *testing.T) {
 	}
 }
 
+func TestPrepareToolCall_TaskListInheritEffortIsValid(t *testing.T) {
+	reg := tool.NewRegistry()
+	if err := reg.Register(regTool(tool.DefTaskList([]string{"low", "medium", "high"}))); err != nil {
+		t.Fatalf("register task_list: %v", err)
+	}
+	call := llm.ToolCallData{ID: "inherit", Name: "task_list",
+		Arguments: json.RawMessage(`{"action":"append","tasks":[{"type":"implement","description":"step","prompt":"do it","reasoning_effort":"inherit"}]}`)}
+	res := prepareToolCall(call, reg.Get("task_list"), []string{"task_list"}, "task_list", "")
+	if res.PrevalErr != "" {
+		t.Fatalf("inherit effort rejected: %s", res.PrevalErr)
+	}
+	if len(res.Changes) != 0 {
+		t.Fatalf("inherit effort unexpectedly repaired: %+v", res.Changes)
+	}
+}
+
 // Regression guard: drives the REAL DefTaskList/DefAskUser definitions
 // end-to-end through prepareToolCall so a future schema edit that drifts the
 // repair package's hand-built fixtures out of sync fails loudly here, not

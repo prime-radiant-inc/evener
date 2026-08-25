@@ -160,6 +160,44 @@ func TestRunShellPipelineExitStatus(t *testing.T) {
 	}
 }
 
+func TestRunShellSignalKilledReportsSignalOutcome(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("signal outcome contract is for the POSIX shell path")
+	}
+	jm, se := newShellTestRig(t)
+	res := runShell(context.Background(), jm, se, shellArgs{Command: "kill -KILL $$", BlockTimeoutMS: 5000})
+	if res.settle != nil {
+		if jobID := res.settle(false); jobID != "" {
+			t.Fatalf("discarded foreground shell returned job_id %q", jobID)
+		}
+	}
+	if res.Status != string(jobstore.StatusFailed) || res.Reason != "killed_by_signal: SIGKILL" {
+		t.Fatalf("res = %+v, want failed/killed_by_signal: SIGKILL", res)
+	}
+	if res.ExitCode == nil || *res.ExitCode != -1 {
+		t.Fatalf("exit code = %v, want -1 for a signal-killed process", res.ExitCode)
+	}
+}
+
+func TestRunShellBackgroundSignalKilledPersistsSignalOutcome(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("signal outcome contract is for the POSIX shell path")
+	}
+	jm, se := newShellTestRig(t)
+	res := runShell(context.Background(), jm, se, shellArgs{Command: "kill -KILL $$", Background: true})
+	if res.JobID == "" || !res.RunningInBackground {
+		t.Fatalf("res = %+v, want a background job", res)
+	}
+	waitForShellDone(t, jm, res.JobID)
+	rec := loadShellRecord(t, jm, res.JobID)
+	if rec.Status != jobstore.StatusFailed || rec.Reason != "killed_by_signal: SIGKILL" {
+		t.Fatalf("record = %+v, want failed/killed_by_signal: SIGKILL", rec)
+	}
+	if rec.ExitCode == nil || *rec.ExitCode != -1 {
+		t.Fatalf("record exit code = %v, want -1 for a signal-killed process", rec.ExitCode)
+	}
+}
+
 type waitErrorStreamingExecutor struct{}
 
 type startErrorStreamingExecutor struct{}

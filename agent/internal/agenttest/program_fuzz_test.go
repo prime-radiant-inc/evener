@@ -227,7 +227,7 @@ func assertAgenttestFakeEnv(t *testing.T, root string) {
 	if got, err := env.Glob(t.Context(), "*", root); err != nil || got != nil {
 		t.Fatalf("FakeEnv.Glob = %#v, %v", got, err)
 	}
-	if got, err := env.Grep("x", root, "", false, 1, ""); err != nil || got != "" {
+	if got, err := env.Grep(context.Background(), "x", root, "", false, 1, ""); err != nil || got != "" {
 		t.Fatalf("FakeEnv.Grep = %q, %v", got, err)
 	}
 	if got, err := env.ListDirectory(root, 0); err != nil || got != nil {
@@ -292,17 +292,17 @@ func FuzzDenyEnvProgram(f *testing.F) {
 			t.Fatal("DenyEnv.FileExists is not deterministic")
 		}
 		for _, mode := range []string{"", "count", "files_with_matches"} {
-			got, err := env.Grep(content, path, "", false, 1, mode)
+			got, err := env.Grep(context.Background(), content, path, "", false, 1, mode)
 			if err != nil || len(got) > denyMaxBytes {
-				t.Fatalf("DenyEnv.Grep(%q) = %q, %v", mode, got, err)
+				t.Fatalf("DenyEnv.Grep(context.Background(), %q) = %q, %v", mode, got, err)
 			}
 		}
 		grepMatch := agenttestDenyForRemainder(t, seed, 2, 0, "grep", content, path, "files_with_matches")
 		grepMiss := agenttestDenyForRemainder(t, seed, 2, 1, "grep", content, path, "files_with_matches")
-		if got, err := grepMatch.Grep(content, path, "", false, 1, "files_with_matches"); err != nil || got != boundedDenyResult(path) {
+		if got, err := grepMatch.Grep(context.Background(), content, path, "", false, 1, "files_with_matches"); err != nil || got != boundedDenyResult(path) {
 			t.Fatalf("DenyEnv.Grep files match = %q, %v", got, err)
 		}
-		if got, err := grepMiss.Grep(content, path, "", false, 1, "files_with_matches"); err != nil || got != "" {
+		if got, err := grepMiss.Grep(context.Background(), content, path, "", false, 1, "files_with_matches"); err != nil || got != "" {
 			t.Fatalf("DenyEnv.Grep files miss = %q, %v", got, err)
 		}
 		if got := env.boundedText(0); got != "" {
