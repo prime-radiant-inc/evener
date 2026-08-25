@@ -178,6 +178,10 @@ func (c *delegateTreeController) stopSubtreeLocked(actor delegateActor, targetID
 	appended, err := c.appendLocked(delegatestore.Event{
 		Kind:       delegatestore.EventDelegateSubtreeStopRequested,
 		DelegateID: targetID,
+		// TS is what the fold turns into Aggregate.PendingStopAt: a caller asking
+		// whether the target can still honour this stop needs how LONG it has
+		// been pending, and the request sequence is an ordering, not a clock.
+		TS: c.now(),
 		SubtreeStopRequested: &delegatestore.SubtreeStopRequested{
 			TargetDelegateID: targetID,
 		},

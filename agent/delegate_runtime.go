@@ -1134,15 +1134,27 @@ func (runtime delegateRuntime) create(ctx context.Context, args delegateArgs) de
 	if selection.warning != nil {
 		s.emitDiagnosticWarning(*selection.warning)
 	}
+	toolNameCeiling := s.stableDelegateEffectiveToolNameCeiling(selection, args, isolationName)
+	readOnlyScope := subagentToolScopeIsReadOnly(false, toolNameCeiling)
 	var requestedSandbox *sandbox.SandboxPolicy
-	if strings.TrimSpace(args.Sandbox) != "" || args.SandboxNet != nil {
+	explicitSandbox := strings.TrimSpace(args.Sandbox) != "" || args.SandboxNet != nil
+	if readOnlyScope {
+		requestedSandbox, err = s.resolveReadOnlyDelegateSandboxRequest(args.Sandbox, args.SandboxNet)
+		if err != nil {
+			return delegateStartFailed(err)
+		}
+	} else if explicitSandbox {
 		parentMode, parentNetwork := s.parentSandboxModeNet()
 		requestedSandbox, err = resolveDelegateSandboxRequest(args.Sandbox, args.SandboxNet, parentMode, parentNetwork)
 		if err != nil {
 			return delegateStartFailed(err)
 		}
+		requestedSandbox, err = s.applyParentWriteBlockedFloor(args.Sandbox, requestedSandbox)
+		if err != nil {
+			return delegateStartFailed(err)
+		}
 	}
-	descriptor, worktreeProject, err := runtime.describe(ctx, args, task, isolationName, requestedSandbox, selection)
+	descriptor, worktreeProject, err := runtime.describe(ctx, args, task, isolationName, requestedSandbox, selection, toolNameCeiling)
 	if err != nil {
 		return delegateStartFailed(err)
 	}
@@ -1235,7 +1247,12 @@ func (s *Session) delegateActor(ctx context.Context) (delegateActor, error) {
 	return rootDelegateActor(s.delegateRootSessionID), nil
 }
 
-func (runtime delegateRuntime) describe(ctx context.Context, args delegateArgs, task, isolationName string, requestedSandbox *sandbox.SandboxPolicy, selection subagentModelSelection) (delegatestore.Descriptor, identifier.Project, error) {
+func (s *Session) stableDelegateEffectiveToolNameCeiling(selection subagentModelSelection, args delegateArgs, isolationName string) []string {
+	allTools, allowedTools, deniedTools := baseSubagentToolPolicy(selection.agent, args.DelegationAllowance > 0)
+	return stableDelegateToolNameCeiling(s.reg, s.resultToolName(), allTools, allowedTools, deniedTools, args.DelegationAllowance > 0, args.WatchParent, isolationName)
+}
+
+func (runtime delegateRuntime) describe(ctx context.Context, args delegateArgs, task, isolationName string, requestedSandbox *sandbox.SandboxPolicy, selection subagentModelSelection, toolNameCeiling []string) (delegatestore.Descriptor, identifier.Project, error) {
 	s := runtime.owner
 	s.mu.Lock()
 	childConfig := s.cfg.toSnapshot().Clone()
@@ -1250,11 +1267,6 @@ func (runtime delegateRuntime) describe(ctx context.Context, args delegateArgs, 
 	if reasoningEffort == "" {
 		reasoningEffort = strings.TrimSpace(childConfig.ReasoningEffort)
 	}
-	allTools, allowedTools, deniedTools := baseSubagentToolPolicy(selection.agent, args.DelegationAllowance > 0)
-	if !allTools {
-		allowedTools = ensureRecoveryReader(allowedTools, s.reg)
-	}
-	toolNameCeiling := stableDelegateToolNameCeiling(s.reg, s.resultToolName(), allTools, allowedTools, deniedTools, args.DelegationAllowance > 0, args.WatchParent, isolationName)
 	var frozenSkillNames, frozenSkillBodies []string
 	if selection.agent != nil {
 		for _, name := range selection.agent.Skills {
@@ -1309,7 +1321,7 @@ func (runtime delegateRuntime) describe(ctx context.Context, args delegateArgs, 
 		ResolvedProfileID:             selection.profile.ID(),
 		ResolvedModel:                 selection.profile.Model(),
 		FrozenRolePrompt:              rolePrompt,
-		ToolNameCeiling:               toolNameCeiling,
+		ToolNameCeiling:               append([]string(nil), toolNameCeiling...),
 		FrozenSkillNames:              frozenSkillNames,
 		FrozenSkillBodies:             frozenSkillBodies,
 		LocalEnvPolicy:                localEnvPolicyName(s.currentEnv()),
@@ -1371,6 +1383,7 @@ func stableDelegateSandboxSnapshot(policy *sandbox.SandboxPolicy) *delegatestore
 	}
 	result := &delegatestore.SandboxSnapshot{
 		Mode:               policy.Mode.String(),
+		WriteBlocked:       policy.WriteBlocked,
 		DenylistAdd:        append([]string(nil), policy.DenylistAdd...),
 		DenylistRemove:     append([]string(nil), policy.DenylistRemove...),
 		ExtraWritableRoots: append([]string(nil), policy.ExtraWritableRoots...),
@@ -1483,6 +1496,10 @@ func (runtime delegateRuntime) restoreIdle(started delegateStartCommit) (*subage
 	if retained := s.subagents.get(descriptor.ChildSessionID); retained != nil && retained.sess != nil {
 		return retained, false, nil
 	}
+	policy, err := s.restoreDelegateSandboxFloor(&descriptor)
+	if err != nil {
+		return nil, false, err
+	}
 	if err := s.reclaimDelegateRuntimeCapacity(1); err != nil {
 		return nil, false, err
 	}
@@ -1507,7 +1524,6 @@ func (runtime delegateRuntime) restoreIdle(started delegateStartCommit) (*subage
 			profile = provider.WithCommunicateOutputSchema(profile, resultSchema)
 		}
 	}
-	policy := sandboxPolicyFromStableSnapshot(descriptor.Sandbox)
 	childEnv, ownsFresh, err := s.prepareSubagentEnvironment(descriptor.WorkingDir, policy)
 	if err != nil {
 		return nil, false, err
@@ -1548,6 +1564,7 @@ func (runtime delegateRuntime) restoreIdle(started delegateStartCommit) (*subage
 		ForceRealIO:             s.cfg.ForceRealIO,
 		artifactStore:           s.artifactStore,
 		deferRestoreSideEffects: true,
+		sandboxProvisioned:      true,
 		spawn: spawnConfig{
 			delegateController:            s.delegateController,
 			delegateRootSessionID:         s.delegateRootSessionID,
@@ -1653,6 +1670,7 @@ func sandboxPolicyFromStableSnapshot(snapshot *delegatestore.SandboxSnapshot) *s
 	}
 	policy := &sandbox.SandboxPolicy{
 		Mode:               mode,
+		WriteBlocked:       snapshot.WriteBlocked,
 		DenylistAdd:        append([]string(nil), snapshot.DenylistAdd...),
 		DenylistRemove:     append([]string(nil), snapshot.DenylistRemove...),
 		ExtraWritableRoots: append([]string(nil), snapshot.ExtraWritableRoots...),
