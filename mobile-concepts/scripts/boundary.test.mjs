@@ -125,6 +125,36 @@ test("network rule table catches every named API", () => {
   );
 });
 
+test("network globals remain forbidden through executable aliases", () => {
+  const cases = [
+    ["const request = fetch; request('/x')", "fetch"],
+    ["const Request = XMLHttpRequest; new Request()", "XMLHttpRequest"],
+    ["const Socket = WebSocket; new Socket('/x')", "WebSocket"],
+    ["const Events = EventSource; new Events('/x')", "EventSource"],
+    ["const beacon = navigator.sendBeacon; beacon('/x')", "sendBeacon"],
+  ];
+  for (const [source, label] of cases) {
+    assert.ok(
+      codes(scanText("src/network-alias.ts", source)).includes("network-api"),
+      label,
+    );
+  }
+  assert.deepEqual(
+    scanText(
+      "src/local-network.ts",
+      `
+        // const request = fetch; const Socket = WebSocket;
+        const note = "fetch XMLHttpRequest WebSocket EventSource navigator.sendBeacon";
+        const fetch = () => "local";
+        class WebSocket {}
+        fetch();
+        new WebSocket();
+      `,
+    ),
+    [],
+  );
+});
+
 test("scanner rejects runtime URLs, dynamic remote imports, invokes, plugins, and credentials", () => {
   const cases = [
     ["const endpoint = 'http://example.invalid'", "remote-url"],
@@ -271,6 +301,24 @@ test("HTML XML and SVG parsing fails closed and scans processing instructions", 
   }
 });
 
+test("HTML namespace declarations are local while ordinary remote attributes fail", () => {
+  assert.deepEqual(
+    scanText(
+      "public/xhtml.html",
+      '<!doctype html><html xmlns="http://www.w3.org/1999/xhtml"><body></body></html>',
+    ),
+    [],
+  );
+  assert.ok(
+    codes(
+      scanText(
+        "public/remote.html",
+        '<!doctype html><html><body data-source="https://cdn.invalid/data"></body></html>',
+      ),
+    ).includes("remote-asset"),
+  );
+});
+
 test("walker scans public production assets", async (t) => {
   const root = await fixture({
     "src/app.ts": "export const ok = true",
@@ -393,6 +441,32 @@ test("Rust scanner tracks imported Tauri aliases and every handler occurrence", 
     (item) => item.code === "invoke-handler",
   );
   assert.equal(handlers.length, 5);
+});
+
+test("Rust scanner follows chained use and extern-crate Tauri provenance", async (t) => {
+  const root = await fixture({
+    "src-tauri/src/lib.rs": `
+      use tauri as runtime;
+      use runtime as chained_runtime;
+      use chained_runtime::command as mobile_command;
+      use chained_runtime::generate_handler as handlers;
+      extern crate tauri as external_runtime;
+      use external_runtime::command as external_command;
+      #[mobile_command]
+      fn first() {}
+      #[external_command]
+      fn second() {}
+      fn wire() {
+        let _ = handlers![first];
+        let _ = external_runtime::generate_handler![second];
+      }
+    `,
+  });
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const handlers = scanSource(root).filter(
+    (item) => item.code === "invoke-handler",
+  );
+  assert.equal(handlers.length, 4);
 });
 
 test("config validator requires the concept identity and offline CSP", () => {
