@@ -113,7 +113,7 @@ export function NewSessionScreen({
         await service.start(params);
       const title = result.thread.name ?? result.thread.preview ?? "";
       navigation.getState().pushConversation({
-        sessionId: result.thread.id,
+        sessionId: result.thread.evener.ref || result.thread.id,
         title,
       });
     } catch (err) {
