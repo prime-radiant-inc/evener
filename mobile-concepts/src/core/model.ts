@@ -161,7 +161,11 @@ export interface PrototypeFixture {
 }
 
 export interface FixtureDiagnostic {
-  code: "fixture-invalid" | "fixture-version";
+  code:
+    | "fixture-invalid"
+    | "fixture-version"
+    | "preference-invalid"
+    | "preference-version";
   path: string;
 }
 

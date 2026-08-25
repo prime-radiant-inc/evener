@@ -7,6 +7,7 @@ import {
   waitFor,
 } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { preferenceStorageKey } from "../core/persistence";
 import type { PlatformDetectionInput } from "../core/platform";
 import type { PreferenceStorage } from "../core/store";
 import { App, createRuntimeDiagnosticSink } from "./App";
@@ -145,10 +146,24 @@ describe("App", () => {
   it("uses a no-op diagnostic sink when packaged", () => {
     const logger = { warn: vi.fn() };
     createRuntimeDiagnosticSink(false, logger).report({
-      code: "fixture-invalid",
-      path: "fixture",
+      code: "preference-invalid",
+      path: "$",
     });
     expect(logger.warn).not.toHaveBeenCalled();
+  });
+
+  it("reports malformed preferences in development without exposing raw storage", () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const preferenceStorage = storage();
+    preferenceStorage.values.set(preferenceStorageKey, '{"raw-secret-marker"');
+    render(<App platformInput={platformInput} storage={preferenceStorage} />);
+
+    expect(warn).toHaveBeenCalledOnce();
+    expect(warn).toHaveBeenCalledWith("Evener concept diagnostic", {
+      code: "preference-invalid",
+      path: "$",
+    });
+    expect(JSON.stringify(warn.mock.calls)).not.toContain("raw-secret-marker");
   });
 
   it("resolves one platform shell and remains gallery-focused after selection", () => {

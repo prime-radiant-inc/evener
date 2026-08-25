@@ -46,6 +46,7 @@ export function createPrototypeStore(
 ): StoreApi<PrototypeStore> {
   const preferences = decodePreferences(
     options.storage.getItem(preferenceStorageKey),
+    options.diagnostics,
   );
   const fixture = decodeFixture(
     options.fixtureInput,

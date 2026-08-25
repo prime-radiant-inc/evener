@@ -270,6 +270,36 @@ describe("decodeFixture", () => {
     });
   });
 
+  it("rejects orphaned and multiply referenced questions", () => {
+    const orphaned = mutableFixture();
+    const orphanedTranscript = orphaned.transcript as Array<
+      Record<string, unknown>
+    >;
+    const orphanedIndex = orphanedTranscript.findIndex(
+      (item) => item.questionId === "question-release-checks",
+    );
+    orphanedTranscript.splice(orphanedIndex, 1);
+    expectRejected(orphaned, {
+      code: "fixture-invalid",
+      path: "$.questions[1].id",
+    });
+
+    const duplicated = mutableFixture();
+    const duplicatedTranscript = duplicated.transcript as Array<
+      Record<string, unknown>
+    >;
+    duplicatedTranscript.push({
+      ...(duplicatedTranscript.find(
+        (item) => item.questionId === "question-release-focus",
+      ) ?? {}),
+      id: "item-question-release-focus-duplicate",
+    });
+    expectRejected(duplicated, {
+      code: "fixture-invalid",
+      path: `$.transcript[${duplicatedTranscript.length - 1}].questionId`,
+    });
+  });
+
   it("rejects nested ordinary unknown fields and wrong scalar or array types", () => {
     const nested = mutableFixture();
     Object.assign(nested.usage as object, {

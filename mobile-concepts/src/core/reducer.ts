@@ -1,6 +1,10 @@
 import { canonicalFixture } from "./fixtures";
 import type { PrototypeFixture, QuestionFixture, Route } from "./model";
 import { projectScenario } from "./scenarios";
+import {
+  selectNewSessionValidity,
+  selectQuestionSubmitValidity,
+} from "./selectors";
 import type {
   InitialStateOptions,
   PrototypeAction,
@@ -162,18 +166,6 @@ function findQuestion(
   return state.projection.fixture.questions.find(({ id }) => id === questionId);
 }
 
-function validResolution(
-  question: QuestionFixture,
-  answer: QuestionAnswerState,
-  resolution: "answer" | "fallback" | "decide" | "skip",
-): boolean {
-  if (resolution === "fallback") return question.allowFallback;
-  if (resolution === "decide") return question.allowDecide;
-  if (resolution === "skip") return question.allowSkip;
-  if (question.mode === "single") return answer.selectedOptionIds.length === 1;
-  return answer.selectedOptionIds.length > 0;
-}
-
 function editNewSession(
   state: PrototypeState,
   change: Partial<PrototypeState["newSession"]>,
@@ -187,18 +179,6 @@ function editNewSession(
       errorCode: null,
     },
   };
-}
-
-function validNewSession(state: PrototypeState): boolean {
-  const { fixture } = state.projection;
-  return (
-    fixture.recentProjects.some(
-      ({ path }) => path === state.newSession.project,
-    ) &&
-    state.newSession.prompt.trim().length > 0 &&
-    fixture.models.some(({ id }) => id === state.newSession.modelId) &&
-    fixture.efforts.includes(state.newSession.effort)
-  );
 }
 
 function appendSyntheticSession(state: PrototypeState): PrototypeState {
@@ -446,8 +426,11 @@ export function reducePrototype(
       const answer = answerFor(state, action.questionId);
       if (
         !question ||
-        answer.submitted ||
-        !validResolution(question, answer, action.resolution)
+        !selectQuestionSubmitValidity(
+          state,
+          action.questionId,
+          action.resolution,
+        )
       ) {
         return state;
       }
@@ -482,7 +465,7 @@ export function reducePrototype(
         ? editNewSession(state, { effort: action.effort })
         : state;
     case "submitNewSession":
-      return validNewSession(state)
+      return selectNewSessionValidity(state)
         ? {
             ...state,
             newSession: {

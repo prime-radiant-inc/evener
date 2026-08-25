@@ -77,6 +77,24 @@ describe("prototype store", () => {
     });
   });
 
+  it("reports malformed preferences once through the supplied sink without raw storage", () => {
+    const sink = diagnostics();
+    createPrototypeStore({
+      platform: "ios",
+      storage: storage('{"raw-secret-marker"'),
+      fixtureInput: canonicalFixture,
+      diagnostics: sink,
+    });
+    expect(sink.report).toHaveBeenCalledOnce();
+    expect(sink.report).toHaveBeenCalledWith({
+      code: "preference-invalid",
+      path: "$",
+    });
+    expect(JSON.stringify(sink.report.mock.calls)).not.toContain(
+      "raw-secret-marker",
+    );
+  });
+
   it("persists only allowlisted preference actions", () => {
     const persistence = storage();
     const store = createPrototypeStore({

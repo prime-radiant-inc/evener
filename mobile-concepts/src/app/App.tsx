@@ -35,7 +35,7 @@ export function createRuntimeDiagnosticSink(
   if (!enabled) return { report: () => {} };
   return {
     report(diagnostic) {
-      logger.warn("Evener concept fixture diagnostic", {
+      logger.warn("Evener concept diagnostic", {
         code: diagnostic.code,
         path: diagnostic.path,
       });

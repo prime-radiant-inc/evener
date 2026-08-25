@@ -114,6 +114,35 @@ describe("createNavigationController", () => {
     controller.dispose();
   });
 
+  it("atomically reconciles a scenario change from a deep route and Lab overlay to Sessions at depth zero", async () => {
+    const store = createStore();
+    const controller = createNavigationController(store, window);
+    openDeepStack(controller);
+    expect(store.getState()).toMatchObject({
+      route: { kind: "voice", sessionId: "session-native-client" },
+      overlay: "lab-controls",
+    });
+    expect(store.getState().history).toHaveLength(3);
+    expect(window.history.state).toMatchObject({ depth: 4 });
+
+    const rootTraversal = nextPopState();
+    controller.dispatch({ type: "setScenario", scenario: "question" });
+    expect(store.getState()).toMatchObject({
+      concept: "stillwater",
+      scenario: "question",
+      route: { kind: "root", tab: "sessions" },
+      history: [],
+      overlay: null,
+      selectedSessionId: null,
+      focusedItemId: null,
+    });
+    await rootTraversal;
+    expect(window.history.state).toMatchObject({ depth: 0 });
+    await expectNoPopState(() => controller.dispatch({ type: "goBack" }));
+    expect(store.getState().route).toEqual({ kind: "root", tab: "sessions" });
+    controller.dispose();
+  });
+
   it("initializes one owned depth-zero entry", () => {
     const replace = vi.spyOn(window.history, "replaceState");
     const controller = createNavigationController(createStore(), window);

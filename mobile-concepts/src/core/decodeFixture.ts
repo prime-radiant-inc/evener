@@ -456,12 +456,20 @@ function validateReferences(value: RecordValue): ValidationResult {
   const transcriptIds = new Set(transcript.map(({ id }) => id));
   const questionIds = new Set(questions.map(({ id }) => id));
   const workIds = new Set(work.map(({ id }) => id));
+  const referencedQuestions = new Set<string>();
 
   for (const [index, item] of transcript.entries()) {
     if (!sessionIds.has(item.sessionId))
       return `$.transcript[${index}].sessionId`;
-    if (item.kind === "question" && !questionIds.has(item.questionId)) {
-      return `$.transcript[${index}].questionId`;
+    if (item.kind === "question") {
+      const questionId = item.questionId as string;
+      if (!questionIds.has(questionId)) {
+        return `$.transcript[${index}].questionId`;
+      }
+      if (referencedQuestions.has(questionId)) {
+        return `$.transcript[${index}].questionId`;
+      }
+      referencedQuestions.add(questionId);
     }
   }
   for (const [index, node] of work.entries()) {
@@ -485,6 +493,9 @@ function validateReferences(value: RecordValue): ValidationResult {
     }
   }
   for (const [index, question] of questions.entries()) {
+    if (!referencedQuestions.has(question.id as string)) {
+      return `$.questions[${index}].id`;
+    }
     const optionInvalid = duplicatePath(
       question.options as unknown[],
       `$.questions[${index}].options`,

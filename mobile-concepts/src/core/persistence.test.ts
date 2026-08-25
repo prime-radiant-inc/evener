@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { canonicalFixture } from "./fixtures";
 import {
   decodePreferences,
@@ -17,10 +17,38 @@ const valid = {
   scenario: "voice",
 } as const;
 
+const silentDiagnostics = { report: () => {} };
+
 describe("preference persistence", () => {
   it("decodes only the exact V1 allowlist", () => {
-    expect(decodePreferences(JSON.stringify(valid))).toEqual(valid);
+    const report = vi.fn();
+    expect(decodePreferences(JSON.stringify(valid), { report })).toEqual(valid);
+    expect(report).not.toHaveBeenCalled();
   });
+
+  it.each([
+    ["malformed JSON", '{"raw-secret-marker"', "preference-invalid", "$"],
+    ["malformed shape", '["raw-secret-marker"]', "preference-invalid", "$"],
+    [
+      "future version",
+      JSON.stringify({ ...valid, version: 2 }),
+      "preference-version",
+      "$.version",
+    ],
+  ])(
+    "reports one code/path-only diagnostic for %s",
+    (_name, raw, code, path) => {
+      const report = vi.fn();
+      expect(decodePreferences(raw, { report })).toEqual(defaultPreferences);
+      expect(report).toHaveBeenCalledOnce();
+      expect(report).toHaveBeenCalledWith({ code, path });
+      const diagnostic = report.mock.calls[0]?.[0];
+      expect(Object.keys(diagnostic ?? {})).toEqual(["code", "path"]);
+      expect(JSON.stringify(report.mock.calls)).not.toContain(
+        "raw-secret-marker",
+      );
+    },
+  );
 
   it.each([
     ["missing", null],
@@ -40,16 +68,20 @@ describe("preference persistence", () => {
     ],
     ["credential key", JSON.stringify({ ...valid, password: "secret" })],
   ])("returns defaults for %s", (_name, raw) => {
-    expect(decodePreferences(raw)).toEqual(defaultPreferences);
+    expect(decodePreferences(raw, silentDiagnostics)).toEqual(
+      defaultPreferences,
+    );
   });
 
   it("returns a fresh default value that callers cannot contaminate", () => {
-    const first = decodePreferences("bad") as unknown as Record<
-      string,
-      unknown
-    >;
+    const first = decodePreferences(
+      "bad",
+      silentDiagnostics,
+    ) as unknown as Record<string, unknown>;
     first.concept = "stillwater";
-    expect(decodePreferences("bad")).toEqual(defaultPreferences);
+    expect(decodePreferences("bad", silentDiagnostics)).toEqual(
+      defaultPreferences,
+    );
   });
 
   it("encodes only preferences and omits every interaction category", () => {

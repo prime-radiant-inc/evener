@@ -3,6 +3,11 @@ import { canonicalFixture } from "./fixtures";
 import type { PersistedPreferencesV1 } from "./persistence";
 import { createInitialState, reducePrototype } from "./reducer";
 import { projectScenario } from "./scenarios";
+import {
+  selectCurrentVoiceLevel,
+  selectCurrentVoiceStep,
+  selectSearchProjection,
+} from "./selectors";
 
 const preferences: PersistedPreferencesV1 = {
   version: 1,
@@ -86,6 +91,9 @@ describe("prototype reducer", () => {
   it("setScenario rebuilds interactions and preserves reviewer display preferences", () => {
     const dirty = dispatchAll(
       initial(),
+      { type: "openSession", sessionId: "session-native-client" },
+      { type: "openWork", sessionId: "session-native-client" },
+      { type: "openOverlay", overlay: "lab-controls" },
       { type: "setDraft", value: "discard" },
       { type: "toggleTool", itemId: "item-tool-inspect" },
       { type: "setSessionQuery", value: "discard" },
@@ -100,6 +108,11 @@ describe("prototype reducer", () => {
       appearance: "dark",
       textScale: "large",
       reducedMotion: true,
+      route: { kind: "root", tab: "sessions" },
+      history: [],
+      overlay: null,
+      selectedSessionId: null,
+      focusedItemId: null,
       draft: "",
       sessionQuery: "",
     });
@@ -300,14 +313,15 @@ describe("prototype reducer", () => {
       type: "setGlobalQuery",
       value: "transition",
     });
-    const matches = state.projection.fixture.search.filter((result) =>
-      `${result.title} ${result.body}`
-        .toLowerCase()
-        .includes(state.globalQuery.toLowerCase()),
-    );
-    expect(matches.map(({ kind, body }) => ({ kind, body }))).toContainEqual({
+    const search = selectSearchProjection(state);
+    expect(search.kind).toBe("results");
+    expect(search.results).toContainEqual({
+      id: "search-task",
       kind: "task",
-      body: "The incomplete draft needs correction.",
+      title: "Verify transition table",
+      context: "The incomplete draft needs correction.",
+      sessionId: "session-native-client",
+      focusItemId: "item-tool-verify",
     });
     const opened = reducePrototype(state, {
       type: "openSearchResult",
@@ -327,19 +341,20 @@ describe("prototype reducer", () => {
 
   it("represents empty-query prompt and unmatched query context without fixture mutation", () => {
     const empty = initial();
-    expect(empty.globalQuery).toBe("");
+    expect(selectSearchProjection(empty)).toEqual({
+      kind: "prompt",
+      query: "",
+      results: [],
+    });
     const unmatched = reducePrototype(empty, {
       type: "setGlobalQuery",
       value: "no such fixture result",
     });
-    expect(unmatched.globalQuery).toBe("no such fixture result");
-    expect(
-      unmatched.projection.fixture.search.filter((result) =>
-        `${result.title} ${result.body}`
-          .toLowerCase()
-          .includes(unmatched.globalQuery.toLowerCase()),
-      ),
-    ).toEqual([]);
+    expect(selectSearchProjection(unmatched)).toEqual({
+      kind: "no-results",
+      query: "no such fixture result",
+      results: [],
+    });
     expect(unmatched.projection.fixture.search).toBe(
       empty.projection.fixture.search,
     );
@@ -561,9 +576,7 @@ describe("prototype reducer", () => {
       index < state.projection.fixture.voiceSteps.length;
       index += 1
     ) {
-      observed.push(
-        state.projection.fixture.voiceSteps[state.voice.stepIndex]?.level ?? -1,
-      );
+      observed.push(selectCurrentVoiceLevel(state));
       state = reducePrototype(state, { type: "advanceVoice" });
     }
     expect(observed).toEqual(
@@ -573,9 +586,7 @@ describe("prototype reducer", () => {
       type: "setVoiceState",
       state: "denied",
     });
-    expect(
-      denied.projection.fixture.voiceSteps[denied.voice.stepIndex]?.state,
-    ).toBe("denied");
+    expect(selectCurrentVoiceStep(denied)?.state).toBe("denied");
     expect(
       reducePrototype(denied, {
         type: "setVoiceState",
