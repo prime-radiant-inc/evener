@@ -14,7 +14,8 @@ import (
 // TestCovAPIAttemptContextActiveNilContext covers the nil-ctx early return
 // in APIAttemptContextActive (line 104-105).
 func TestCovAPIAttemptContextActiveNilContext(t *testing.T) {
-	if APIAttemptContextActive(nil) {
+	var ctx context.Context
+	if APIAttemptContextActive(ctx) {
 		t.Fatal("APIAttemptContextActive(nil) = true, want false")
 	}
 }
@@ -87,7 +88,8 @@ func TestCovCompleteNilReceiver(t *testing.T) {
 // TestCovAPIAttemptGroupFromContextNilContext covers the nil-ctx path
 // (line 309-310).
 func TestCovAPIAttemptGroupFromContextNilContext(t *testing.T) {
-	if got := apiAttemptGroupFromContext(nil); got != nil {
+	var ctx context.Context
+	if got := apiAttemptGroupFromContext(ctx); got != nil {
 		t.Fatalf("apiAttemptGroupFromContext(nil) = %v, want nil", got)
 	}
 }
@@ -95,7 +97,8 @@ func TestCovAPIAttemptGroupFromContextNilContext(t *testing.T) {
 // TestCovAPILogCredentialMaterialFromContextNilContext covers the nil-ctx
 // path in apiLogCredentialMaterialFromContext (line 378-379).
 func TestCovAPILogCredentialMaterialFromContextNilContext(t *testing.T) {
-	_, ok := apiLogCredentialMaterialFromContext(nil)
+	var ctx context.Context
+	_, ok := apiLogCredentialMaterialFromContext(ctx)
 	if ok {
 		t.Fatal("apiLogCredentialMaterialFromContext(nil) should report false")
 	}

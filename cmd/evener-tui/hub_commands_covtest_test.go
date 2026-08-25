@@ -690,9 +690,9 @@ func TestCovSendHubGoalCmd(t *testing.T) {
 	}
 
 	// Empty objective: cleared=true.
-	clear, ok := sendHubGoal(client, ref, "")().(hubGoalMsg)
-	if !ok || clear.err != nil || !clear.cleared || clear.started {
-		t.Fatalf("clear result = %#v", clear)
+	clearedMsg, ok := sendHubGoal(client, ref, "")().(hubGoalMsg)
+	if !ok || clearedMsg.err != nil || !clearedMsg.cleared || clearedMsg.started {
+		t.Fatalf("clear result = %#v", clearedMsg)
 	}
 	if len(got) != 2 || got[0].Ref != ref.String() || got[0].Objective != "build it" || got[1].Objective != "" {
 		t.Fatalf("goal/set params = %#v", got)

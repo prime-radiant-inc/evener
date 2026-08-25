@@ -6,6 +6,7 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"reflect"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -38,13 +39,13 @@ func TestCovAPITimeoutSourceForTransportNetOpError(t *testing.T) {
 }
 
 func TestCovResponseHeaderTimeoutTransportNonTimeoutErrorAfterWrite(t *testing.T) {
-	sentinel := errors.New("scripted post-write read failure")
-	response, err, conn := roundTripWithScriptedReadError(t, sentinel)
+	sentinel := &scriptedPostWriteReadError{}
+	response, conn, err := roundTripWithScriptedReadError(t, sentinel)
 	if response != nil {
 		t.Fatalf("RoundTrip response = %#v, want nil", response)
 	}
-	if err != sentinel {
-		t.Fatalf("RoundTrip error = %T %v, want sentinel identity", err, err)
+	if reflect.TypeOf(err) != reflect.TypeOf(sentinel) || reflect.ValueOf(err).Pointer() != reflect.ValueOf(sentinel).Pointer() {
+		t.Fatalf("RoundTrip error = %T %v, want exact sentinel %p", err, err, sentinel)
 	}
 	if !conn.wrote.Load() {
 		t.Fatal("scripted connection observed no successful request write")
@@ -53,12 +54,11 @@ func TestCovResponseHeaderTimeoutTransportNonTimeoutErrorAfterWrite(t *testing.T
 
 func TestCovResponseHeaderTimeoutTransportTimeoutAfterWrite(t *testing.T) {
 	sentinel := &scriptedPostWriteTimeoutError{}
-	response, err, conn := roundTripWithScriptedReadError(t, sentinel)
+	response, conn, err := roundTripWithScriptedReadError(t, sentinel)
 	if response != nil {
 		t.Fatalf("RoundTrip response = %#v, want nil", response)
 	}
-	var timeoutErr *responseHeaderTimeoutError
-	if !errors.As(err, &timeoutErr) {
+	if _, ok := errors.AsType[*responseHeaderTimeoutError](err); !ok {
 		t.Fatalf("RoundTrip error = %T %v, want *responseHeaderTimeoutError", err, err)
 	}
 	if !errors.Is(err, sentinel) {
@@ -69,7 +69,7 @@ func TestCovResponseHeaderTimeoutTransportTimeoutAfterWrite(t *testing.T) {
 	}
 }
 
-func roundTripWithScriptedReadError(t *testing.T, readErr error) (*http.Response, error, *scriptedPostWriteConn) {
+func roundTripWithScriptedReadError(t *testing.T, readErr error) (*http.Response, *scriptedPostWriteConn, error) {
 	t.Helper()
 	conn := newScriptedPostWriteConn(readErr)
 	base := http.DefaultTransport.(*http.Transport).Clone()
@@ -84,7 +84,7 @@ func roundTripWithScriptedReadError(t *testing.T, readErr error) (*http.Response
 		t.Fatal(err)
 	}
 	response, err := transport.RoundTrip(request)
-	return response, err, conn
+	return response, conn, err
 }
 
 type scriptedPostWriteConn struct {
@@ -122,7 +122,10 @@ func (a scriptedPostWriteAddr) Network() string                 { return "script
 func (a scriptedPostWriteAddr) String() string                  { return string(a) }
 
 type scriptedPostWriteTimeoutError struct{}
+type scriptedPostWriteReadError struct{}
 type scriptedPostWriteAddr string
+
+func (*scriptedPostWriteReadError) Error() string { return "scripted post-write read failure" }
 
 // TestCovClassifyAPIAttemptOutcomeCallerCancel covers the caller-cancel
 // path, ensuring the outcome classification is correct.

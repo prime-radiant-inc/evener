@@ -16,7 +16,8 @@ func TestCovBeginProviderOperationNilContext(t *testing.T) {
 	recorder := &recordingAPIAttemptSink{}
 	sink := &sinkMiddleware{sink: recorder}
 	c.Use(sink)
-	ctx, op := c.beginProviderOperation(nil)
+	var input context.Context
+	ctx, op := c.beginProviderOperation(input)
 	if ctx == nil {
 		t.Fatal("beginProviderOperation(nil) should return a non-nil context")
 	}
@@ -75,7 +76,8 @@ func TestCovValidateModelCompatibilityWithValidator(t *testing.T) {
 // TestCovBeginAPIAttemptGroupScopeNilContext covers the nil-ctx path
 // (api_attempt_scope.go line 22-23).
 func TestCovBeginAPIAttemptGroupScopeNilContext(t *testing.T) {
-	ctx, scope := BeginAPIAttemptGroupScope(nil)
+	var input context.Context
+	ctx, scope := BeginAPIAttemptGroupScope(input)
 	if ctx == nil {
 		t.Fatal("ctx should not be nil")
 	}

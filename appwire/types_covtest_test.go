@@ -3,12 +3,19 @@ package appwire
 import (
 	"context"
 	"errors"
+	"reflect"
 	"testing"
 
 	"github.com/coder/websocket"
 
 	"primeradiant.com/evener/envvars"
 )
+
+type covWSTransportPingContextKey struct{}
+
+type covWSTransportPingError struct{}
+
+func (*covWSTransportPingError) Error() string { return "ping failed" }
 
 // TestClientMutationTurnID covers ClientMutationTurnID (types.go:696), a pure
 // format function with no existing test in the default build.
@@ -37,10 +44,10 @@ func TestCovWSTransportPing(t *testing.T) {
 	t.Cleanup(func() { pingWebSocket = oldPing })
 
 	conn := &websocket.Conn{}
-	successCtx := context.WithValue(t.Context(), struct{}{}, "success")
+	successCtx := context.WithValue(t.Context(), covWSTransportPingContextKey{}, "success")
 	errorCtx, cancel := context.WithCancel(t.Context())
 	t.Cleanup(cancel)
-	wantErr := errors.New("ping failed")
+	wantErr := &covWSTransportPingError{}
 	wantContexts := []context.Context{successCtx, errorCtx}
 	calls := 0
 	pingWebSocket = func(gotConn *websocket.Conn, gotCtx context.Context) error {
@@ -64,8 +71,9 @@ func TestCovWSTransportPing(t *testing.T) {
 	if err := tr.Ping(successCtx); err != nil {
 		t.Fatalf("Ping success: unexpected error: %v", err)
 	}
-	if err := tr.Ping(errorCtx); err != wantErr {
-		t.Fatalf("Ping error = %v, want %v", err, wantErr)
+	err := tr.Ping(errorCtx)
+	if reflect.TypeOf(err) != reflect.TypeOf(wantErr) || reflect.ValueOf(err).Pointer() != reflect.ValueOf(wantErr).Pointer() {
+		t.Fatalf("Ping error = %T %v, want exact input error %p", err, err, wantErr)
 	}
 	if calls != 2 {
 		t.Fatalf("ping calls = %d, want 2", calls)

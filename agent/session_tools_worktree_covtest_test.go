@@ -115,13 +115,16 @@ func TestCovWorktreeRootForProject(t *testing.T) {
 	}
 
 	// Valid project with stateDir.
-	got, err := s.worktreeRootForProject("/state", identifier.Project{
-		ID: "proj_1", CanonicalPath: "/path",
+	filesystemRoot := string(os.PathSeparator)
+	stateDir := filepath.Join(filesystemRoot, "state")
+	projectPath := filepath.Join(filesystemRoot, "path")
+	got, err := s.worktreeRootForProject(stateDir, identifier.Project{
+		ID: "proj_1", CanonicalPath: projectPath,
 	})
 	if err != nil {
 		t.Fatalf("with stateDir: %v", err)
 	}
-	if want := filepath.Join("/state", "worktrees"); got != want {
+	if want := filepath.Join(stateDir, "worktrees"); got != want {
 		t.Fatalf("got %q, want %q", got, want)
 	}
 
@@ -129,7 +132,7 @@ func TestCovWorktreeRootForProject(t *testing.T) {
 	stateHome := t.TempDir()
 	t.Setenv("XDG_STATE_HOME", stateHome)
 	got, err = s.worktreeRootForProject("", identifier.Project{
-		ID: "proj_1", CanonicalPath: "/path",
+		ID: "proj_1", CanonicalPath: projectPath,
 	})
 	if err != nil {
 		t.Fatalf("without stateDir: %v", err)

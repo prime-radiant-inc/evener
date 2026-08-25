@@ -80,12 +80,13 @@ func TestCovLaunchOverridesWithEmptySandbox(t *testing.T) {
 
 // TestCovSandboxForAccessMode covers all branches of sandboxForAccessMode.
 func TestCovSandboxForAccessMode(t *testing.T) {
+	invalidMode := " invalid "
 	cases := map[string]string{
 		"full":            "off",
 		"read-only":       "read-only",
 		"workspace-write": "workspace-write",
 		"restricted":      "restricted",
-		" invalid ":       "",
+		invalidMode:       "",
 	}
 	for mode, want := range cases {
 		if got := sandboxForAccessMode(mode); got != want {

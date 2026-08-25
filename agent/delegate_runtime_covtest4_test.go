@@ -18,6 +18,10 @@ import (
 	"primeradiant.com/evener/agent/sandbox"
 )
 
+type covStableDelegateResultError struct{}
+
+func (*covStableDelegateResultError) Error() string { return "fail" }
+
 // TestCovAbortOwedDelegateBootstrap covers abortOwedDelegateBootstrap
 // (delegate_runtime.go lines 617-626): the error-cleanup path that iterates
 // restored candidates in reverse, calling prepareDeferredOwedStart for each
@@ -49,14 +53,14 @@ func TestCovAbortOwedDelegateBootstrap(t *testing.T) {
 		controller.live[delegateID].runtime = child
 		descriptor := controller.durable[delegateID].Descriptor
 		controller.mu.Unlock()
-		return owedBootstrapRuntime{deferredOwedDelegateAttentionStart: deferredOwedDelegateAttentionStart{
+		return owedBootstrapRuntime{
 			owner: root,
 			sub:   sub,
 			started: delegateStartCommit{
 				lease:      lease,
 				descriptor: descriptor,
 			},
-		}}
+		}
 	}
 
 	first := newRestored("dlg_first")
@@ -65,7 +69,7 @@ func TestCovAbortOwedDelegateBootstrap(t *testing.T) {
 	doneSub := &subagent{id: doneChild.id, sess: doneChild}
 	root.subagents.track(doneSub)
 	gate := &owedBootstrapRestore{
-		restored: []owedBootstrapRuntime{first, {deferredOwedDelegateAttentionStart: deferredOwedDelegateAttentionStart{sub: doneSub}}, second},
+		restored: []owedBootstrapRuntime{first, {sub: doneSub}, second},
 		done:     map[*subagent]bool{doneSub: true},
 	}
 	if err := root.abortOwedDelegateBootstrap(gate, errors.New("test abort")); err != nil {
@@ -394,10 +398,10 @@ func TestCovStableDelegateResult(t *testing.T) {
 	}
 
 	// With error.
-	wantErr := errors.New("fail")
+	wantErr := &covStableDelegateResultError{}
 	result = stableDelegateResult(desc, "dlg_1", committed, plans, wantErr)
-	if result.Err != wantErr {
-		t.Fatalf("error object = %p (%v), want exact input object %p", result.Err, result.Err, wantErr)
+	if reflect.TypeOf(result.Err) != reflect.TypeOf(wantErr) || reflect.ValueOf(result.Err).Pointer() != reflect.ValueOf(wantErr).Pointer() {
+		t.Fatalf("error object = %T %v, want exact input object %p", result.Err, result.Err, wantErr)
 	}
 }
 
