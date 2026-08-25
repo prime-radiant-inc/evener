@@ -558,6 +558,62 @@ func (s *WebServer) navigationSnapshot(ctx context.Context) navigationSnapshot {
 	return hubNavigationInputs(s, ctx)
 }
 
+// navigationBuildInputsFromTreeSnapshot is the handoff from request-owned
+// snapshot assembly to the pure navigation projector. It accepts every row
+// decoration explicitly: the projector never reaches back into WebServer,
+// Roster, or a decision store while walking a node tree.
+func navigationBuildInputsFromTreeSnapshot(generationID string, revision uint64, tree hubcore.Tree, sources []hubapi.Source, attention hubapi.AttentionSummary, live []hubcore.LiveEntry, sessionFavorites, projectFavorites map[hubcore.ArchiveKey]bool, pinSections []hubcore.PinSection, pinAssignments map[string]hubcore.SessionPin) navigationBuildInputs {
+	liveBySession := make(map[string]bool, len(live))
+	for _, entry := range live {
+		if entry.SessionID != "" {
+			liveBySession[entry.SessionID] = true
+		}
+	}
+	sessionFavoriteByID := make(map[string]bool, len(sessionFavorites))
+	for key, favorite := range sessionFavorites {
+		if key.Kind == "session" && favorite {
+			sessionFavoriteByID[key.ID] = true
+		}
+	}
+	projectFavoriteByID := make(map[string]bool, len(projectFavorites))
+	for key, favorite := range projectFavorites {
+		if key.Kind == "project" && favorite {
+			projectFavoriteByID[key.ID] = true
+		}
+	}
+	renameable := make(map[string]bool)
+	var indexRenameable func([]hubcore.TreeNode)
+	indexRenameable = func(rows []hubcore.TreeNode) {
+		for _, row := range rows {
+			if isLocalRouteID(row.ID) {
+				renameable[row.ID] = true
+			}
+			indexRenameable(row.Children)
+		}
+	}
+	indexRenameable(tree.Live)
+	indexRenameable(tree.NeedsYou)
+	for _, project := range navigationProjectBuckets(tree).all() {
+		for _, tier := range []string{"current", "recent", "archived"} {
+			rows, _ := project.TierRows(tier)
+			indexRenameable(rows)
+		}
+	}
+	return navigationBuildInputs{
+		GenerationID:     generationID,
+		Revision:         revision,
+		Tree:             tree,
+		Sources:          sources,
+		AttentionSummary: attention,
+		Live:             liveBySession,
+		Renameable:       renameable,
+		SessionFavorite:  sessionFavoriteByID,
+		ProjectFavorite:  projectFavoriteByID,
+		PinSections:      pinSections,
+		PinAssignments:   pinAssignments,
+	}
+}
+
 func (s *WebServer) navigationSnapshotInputs(ctx context.Context) navigationSnapshot {
 	var live []hubcore.LiveEntry
 	if s.cfg.Roster != nil {

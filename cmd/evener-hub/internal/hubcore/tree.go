@@ -254,24 +254,8 @@ func (p TreeProject) Page(tier string, offset, limit int) ([]TreeNode, int, bool
 	if offset < 0 || limit <= 0 {
 		return nil, 0, false
 	}
-	var rows []TreeNode
-	switch tier {
-	case "current":
-		rows = p.allCurrent
-		if rows == nil {
-			rows = p.Current
-		}
-	case "recent":
-		rows = p.allRecent
-		if rows == nil {
-			rows = p.Recent
-		}
-	case "archived":
-		rows = p.allArchived
-		if rows == nil {
-			rows = p.Archived
-		}
-	default:
+	rows, ok := p.TierRows(tier)
+	if !ok {
 		return nil, 0, false
 	}
 	if offset >= len(rows) {
@@ -280,6 +264,31 @@ func (p TreeProject) Page(tier string, offset, limit int) ([]TreeNode, int, bool
 	end := offset + limit
 	end = min(end, len(rows))
 	return rows[offset:end], len(rows) - end, true
+}
+
+// TierRows returns a project's authoritative, ordered tier rows. It exposes
+// the retained uncapped slices to immutable snapshot consumers without making
+// them reconstruct a page by scanning or using an artificial offset.
+func (p TreeProject) TierRows(tier string) ([]TreeNode, bool) {
+	switch tier {
+	case "current":
+		if p.allCurrent != nil {
+			return p.allCurrent, true
+		}
+		return p.Current, true
+	case "recent":
+		if p.allRecent != nil {
+			return p.allRecent, true
+		}
+		return p.Recent, true
+	case "archived":
+		if p.allArchived != nil {
+			return p.allArchived, true
+		}
+		return p.Archived, true
+	default:
+		return nil, false
+	}
 }
 
 // classifySession returns a session's sidebar tier from its last activity and

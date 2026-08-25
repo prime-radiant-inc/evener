@@ -1799,6 +1799,13 @@ func TestTreeProjectPageReturnsCappedAwayTierRows(t *testing.T) {
 	if page[0].ID == project.Current[0].ID {
 		t.Fatalf("page repeated a retained row %q", page[0].ID)
 	}
+	rows, ok := project.TierRows("current")
+	if !ok || len(rows) != 60 {
+		t.Fatalf("authoritative rows = %d, ok=%v, want 60, true", len(rows), ok)
+	}
+	if rows[50].ID != page[0].ID {
+		t.Fatalf("tier rows lost page order: rows[50]=%q page[0]=%q", rows[50].ID, page[0].ID)
+	}
 }
 
 func fuzzScenarioAllTestSessionsClassifyAsTestRun(t *testing.T) {
