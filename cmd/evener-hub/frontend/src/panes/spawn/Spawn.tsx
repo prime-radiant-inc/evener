@@ -42,7 +42,7 @@ import { CloseIcon } from "../../widgets/dialog/CloseIcon";
 import { requireClass } from "../../widgets/internal/requireClass";
 import type { ModelCatalog, ModelCatalogEntry } from "../../widgets/modelCatalog";
 import { fetchModelCatalog } from "../../widgets/modelCatalog/catalogClient";
-import { mergeScopedCatalog } from "../../widgets/modelCatalog/scopedCatalog";
+import { mergeCatalogEntry, mergeCatalogSnapshot, mergeScopedCatalog } from "../../widgets/modelCatalog/scopedCatalog";
 import { ModelSwitchTrigger } from "../session/chrome/ModelSwitchTrigger";
 import { AttachmentTile } from "../session/composer/AttachmentTile";
 import { AttachIcon } from "../session/composer/attachments/AttachIcon";
@@ -380,7 +380,7 @@ export default function Spawn(_props: PaneProps<SpawnPaneParams>) {
     const settle = setTimeout(() => {
       loadCatalog().then(
         (catalog) => {
-          if (active) setModelCatalog(catalog);
+          if (active) setModelCatalog((previous) => mergeCatalogSnapshot(previous, catalog));
         },
         () => {},
       );
@@ -548,10 +548,8 @@ export default function Spawn(_props: PaneProps<SpawnPaneParams>) {
       const key = `${entry.provider}/${entry.model}`;
       const idx = models.findIndex((m) => `${m.provider}/${m.model}` === key);
       if (idx >= 0) {
-        // Replace the existing entry (which may be label-only from a failed
-        // enrichment) with the picker's fully-enriched one.
         const nextModels = [...models];
-        nextModels[idx] = entry;
+        nextModels[idx] = mergeCatalogEntry(nextModels[idx], entry);
         return { models: nextModels, recent, diagnostics };
       }
       return { models: [...models, entry], recent, diagnostics };

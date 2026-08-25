@@ -46,7 +46,7 @@ func TestGrepFallsBackToNativeWhenRipgrepAbsent(t *testing.T) {
 	}
 	env := NewLocalExecutionEnvironment(dir)
 
-	out, err := env.Grep("needle", "", "", false, 100, "")
+	out, err := env.Grep(context.Background(), "needle", "", "", false, 100, "")
 	if err != nil {
 		t.Fatalf("Grep native fallback: %v", err)
 	}
@@ -72,7 +72,7 @@ func TestGrepNativeFallbackRelativePath(t *testing.T) {
 	}
 	env := NewLocalExecutionEnvironment(dir)
 
-	out, err := env.Grep("find_me", "pkg", "", false, 100, "")
+	out, err := env.Grep(context.Background(), "find_me", "pkg", "", false, 100, "")
 	if err != nil {
 		t.Fatalf("Grep native fallback (relative path): %v", err)
 	}

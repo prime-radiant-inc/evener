@@ -270,6 +270,25 @@ func baseSubagentToolPolicy(agent *plugin.Agent, canDelegate bool) (allTools boo
 	}
 }
 
+// subagentToolScopeIsReadOnly reports whether an explicitly tool-scoped agent
+// has any direct workspace mutation capability. Shell is intentionally not in
+// this list: the bundled explorer/reviewer/verifier roles need shell for
+// inspection, but a shell is still a write-capable process unless the child's
+// execution environment supplies a kernel boundary. The boundary is therefore
+// derived from the structured tool scope, never from role prose.
+func subagentToolScopeIsReadOnly(allTools bool, allowed []string) bool {
+	if allTools || len(allowed) == 0 {
+		return false
+	}
+	for _, name := range allowed {
+		switch name {
+		case "write_file", "edit_file", "apply_patch", "manage_worktree":
+			return false
+		}
+	}
+	return true
+}
+
 func frozenSubagentToolNames(allTools bool, allowed, denied []string) []string {
 	switch {
 	case allTools:
@@ -338,7 +357,7 @@ func frozenStableDelegateSandboxMatches(env execenv.ExecutionEnvironment, want *
 	if got == nil || want == nil {
 		return got == nil && want == nil
 	}
-	if got.Mode != want.Mode || !slices.Equal(got.DenylistAdd, want.DenylistAdd) || !slices.Equal(got.DenylistRemove, want.DenylistRemove) || !slices.Equal(got.ExtraWritableRoots, want.ExtraWritableRoots) || !slices.Equal(got.ExtraReadRoots, want.ExtraReadRoots) {
+	if got.Mode != want.Mode || got.WriteBlocked != want.WriteBlocked || !slices.Equal(got.DenylistAdd, want.DenylistAdd) || !slices.Equal(got.DenylistRemove, want.DenylistRemove) || !slices.Equal(got.ExtraWritableRoots, want.ExtraWritableRoots) || !slices.Equal(got.ExtraReadRoots, want.ExtraReadRoots) {
 		return false
 	}
 	if got.Network == nil || want.Network == nil {
@@ -851,6 +870,13 @@ func (s *Session) prepareSubagentRunFromSelection(
 	var reqSandbox *sandbox.SandboxPolicy
 	if v, ok := ctx.Value(ctxDelegateSandboxPolicy).(*sandbox.SandboxPolicy); ok {
 		reqSandbox = v
+	}
+	if reqSandbox == nil && subagentToolScopeIsReadOnly(allTools, allowedTools) {
+		var sandboxErr error
+		reqSandbox, sandboxErr = s.readOnlyDelegateSandbox()
+		if sandboxErr != nil {
+			return nil, fmt.Errorf("read-only delegate sandbox: %w", sandboxErr)
+		}
 	}
 	preparedEnv, hasPreparedEnv := ctx.Value(delegatePreparedEnvironmentContextKey{}).(delegatePreparedEnvironment)
 	subEnv := preparedEnv.env
