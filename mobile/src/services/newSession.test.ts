@@ -12,6 +12,8 @@ import type {
   HarnessListResponse,
   MethodName,
   MethodTypes,
+  ModelDescriptor,
+  ModelListResponse,
   ProjectsRecentResponse,
   Thread,
   ThreadStartResponse,
@@ -234,6 +236,41 @@ describe("NewSessionService", () => {
     expect(result).toHaveLength(2);
     expect(result[0]?.id).toBe("evener");
     expect(result[1]?.label).toBe("Codex");
+  });
+
+  it("models() calls model/list with its scope and returns the response", async () => {
+    const client = new FakeAppwireClient();
+    const models: ModelDescriptor[] = [
+      { provider: "anthropic", model: "claude-sonnet-4-5" },
+      { provider: "openai", model: "gpt-5" },
+    ];
+    const response: ModelListResponse = {
+      data: models,
+      recent: [models[1] as ModelDescriptor],
+      diagnostics: [],
+    };
+    client.on("model/list", () => response);
+
+    const service = createNewSessionService(client);
+    const result = await service.models({
+      cwd: "/tmp/project",
+      harness: "evener",
+    });
+
+    expect(client.calls[0]).toEqual({
+      method: "model/list",
+      params: { cwd: "/tmp/project", harness: "evener" },
+    });
+    expect(result).toEqual(response);
+  });
+
+  it("models() defaults to an empty scope object", async () => {
+    const client = new FakeAppwireClient();
+    client.on("model/list", () => ({ data: [] }) as ModelListResponse);
+
+    await createNewSessionService(client).models();
+
+    expect(client.calls[0]).toEqual({ method: "model/list", params: {} });
   });
 
   it("recentProjects() propagates errors", async () => {
