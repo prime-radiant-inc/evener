@@ -14,6 +14,8 @@ func TestNormalizeOllamaHost(t *testing.T) {
 		{name: "http URL", host: "http://localhost:11434", want: "http://localhost:11434/v1"},
 		{name: "https URL", host: "https://ollama.example.com", want: "https://ollama.example.com/v1"},
 		{name: "URL path", host: "https://proxy.example/ollama", want: "https://proxy.example/ollama/v1"},
+		{name: "escaped URL path", host: "https://proxy.example/a%2Fb", want: "https://proxy.example/a%2Fb/v1"},
+		{name: "encoded fragment byte in path", host: "https://proxy.example/%23", want: "https://proxy.example/%23/v1"},
 		{name: "path already v1", host: "https://proxy.example/ollama/v1/", want: "https://proxy.example/ollama/v1"},
 		{name: "bare cloud host", host: "ollama.com", want: "https://ollama.com:443/v1"},
 		{name: "explicit cloud host", host: "https://ollama.com", want: "https://ollama.com:443/v1"},
@@ -39,7 +41,7 @@ func TestNormalizeOllamaHostRejectsInvalidEndpoints(t *testing.T) {
 	for _, host := range []string{
 		"http://", "http:/", "host:66000", "[::1]:66000", "host:a:b",
 		"ftp://ollama.example", "http://user@example", "http://example/?q=1",
-		"http://example/#fragment", "http:example",
+		"http://example/#fragment", "http://example#", "http://example/#", "http:example",
 	} {
 		t.Run(host, func(t *testing.T) {
 			if got, err := NormalizeOllamaHost(host); err == nil || got != "" {
@@ -77,5 +79,15 @@ func TestResolveOllamaBaseURL(t *testing.T) {
 func TestResolveOllamaBaseURLRejectsInvalidBase(t *testing.T) {
 	if got, err := ResolveOllamaBaseURL("http://host:66000/v1", "localhost"); err == nil || got != "" {
 		t.Fatalf("invalid base URL resolved to %q without error: %v", got, err)
+	}
+}
+
+func TestResolveOllamaBaseURLRejectsEmptyFragmentDelimiter(t *testing.T) {
+	for _, baseURL := range []string{"http://example#", "http://example/#"} {
+		t.Run(baseURL, func(t *testing.T) {
+			if got, err := ResolveOllamaBaseURL(baseURL, ""); err == nil || got != "" {
+				t.Fatalf("ResolveOllamaBaseURL(%q, \"\") = %q, err %v; want rejection", baseURL, got, err)
+			}
+		})
 	}
 }

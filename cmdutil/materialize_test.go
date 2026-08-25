@@ -58,6 +58,7 @@ func TestMaterializeOllamaHostRoundTrip(t *testing.T) {
 	}{
 		{name: "local default", host: "localhost", want: "http://localhost:11434/v1"},
 		{name: "HTTP path", host: "http://ollama.local/base/v1", want: "http://ollama.local/base/v1"},
+		{name: "escaped path", host: "https://proxy.example/a%2Fb", want: "https://proxy.example/a%2Fb/v1"},
 		{name: "cloud", host: "ollama.com", want: "https://ollama.com:443/v1"},
 		{name: "IPv6", host: "[::1]:11434", want: "http://[::1]:11434/v1"},
 	} {

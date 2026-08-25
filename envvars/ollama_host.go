@@ -104,7 +104,7 @@ func validateOllamaURL(raw string, normalizePath bool) (string, error) {
 	if u.Opaque != "" || u.Host == "" || u.User != nil {
 		return "", fmt.Errorf("invalid Ollama URL %q: URL must have an authority without userinfo", raw)
 	}
-	if u.RawQuery != "" || u.ForceQuery || u.Fragment != "" {
+	if u.RawQuery != "" || u.ForceQuery || u.Fragment != "" || strings.Contains(raw, "#") {
 		return "", fmt.Errorf("invalid Ollama URL %q: query and fragment are not supported", raw)
 	}
 	host := u.Hostname()
@@ -122,11 +122,31 @@ func validateOllamaURL(raw string, normalizePath bool) (string, error) {
 	}
 
 	if normalizePath {
-		path := strings.TrimRight(u.Path, "/")
-		if !strings.HasSuffix(path, "/v1") {
-			path += "/v1"
+		if err := appendOllamaV1Path(u); err != nil {
+			return "", fmt.Errorf("invalid Ollama URL %q: %w", raw, err)
 		}
-		u.Path, u.RawPath = path, ""
 	}
 	return u.String(), nil
+}
+
+// appendOllamaV1Path adds the API suffix in escaped-path space. url.Parse
+// keeps encoded separators such as %2F in RawPath while exposing decoded
+// separators through Path; changing only Path would silently change routing.
+func appendOllamaV1Path(u *url.URL) error {
+	escapedPath := strings.TrimRight(u.EscapedPath(), "/")
+	if !strings.HasSuffix(escapedPath, "/v1") {
+		escapedPath += "/v1"
+	}
+
+	path, err := url.PathUnescape(escapedPath)
+	if err != nil {
+		return fmt.Errorf("invalid escaped path: %w", err)
+	}
+	u.Path = path
+	if u.RawPath != "" || escapedPath != path {
+		u.RawPath = escapedPath
+	} else {
+		u.RawPath = ""
+	}
+	return nil
 }

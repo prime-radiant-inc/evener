@@ -32,6 +32,7 @@ func FuzzMiscOllamaNormalizeHost(f *testing.F) {
 		"http://localhost:11434/v1",
 		"https://proxy.example/ollama/v1",
 		"https://proxy.example/ollama",
+		"https://proxy.example/a%2Fb",
 		"127.0.0.1",
 		"127.0.0.1:1234",
 		"::1",
@@ -66,6 +67,20 @@ func FuzzMiscOllamaNormalizeHost(f *testing.F) {
 				t.Fatalf("normalizeHost(%q) returned %q with error %v", h, got, err)
 			}
 			return
+		}
+
+		// Preserve a valid escaped route when the normalizer appends /v1. This
+		// checks the first pass directly; idempotence alone would not catch a
+		// lossy first rewrite.
+		if input, parseErr := url.Parse(h); parseErr == nil && input.Scheme != "" && input.Host != "" && input.RawPath != "" && input.EscapedPath() == input.RawPath {
+			expectedPath := strings.TrimRight(input.EscapedPath(), "/")
+			if !strings.HasSuffix(expectedPath, "/v1") {
+				expectedPath += "/v1"
+			}
+			output, outputErr := url.Parse(got)
+			if outputErr != nil || output.EscapedPath() != expectedPath {
+				t.Fatalf("normalizeHost(%q) lost escaped path: got %q (escaped path %q), want %q; parse err %v", h, got, output.EscapedPath(), expectedPath, outputErr)
+			}
 		}
 
 		u, err := url.Parse(got)
