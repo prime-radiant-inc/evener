@@ -114,7 +114,7 @@ async function main() {
         devtoolsHttpURL(cdpEndpoint, "/json/version"),
         "chrome devtools endpoint",
         guard.getChromeLaunchError,
-        { signal: startupDeadline.signal },
+        { signal: startupDeadline.signal, failure: guard.getChromeFailure() },
       );
     } catch (error) {
       throw new Error(

@@ -102,8 +102,16 @@ test("allocates distinct local ports", async () => {
 
 test("parses only valid loopback DevTools announcement lines", () => {
   assert.equal(browserGuardProcess.parseChromeDevToolsAnnouncement("ordinary Chrome stderr"), null);
+  for (const port of [1, 80, 65535]) {
+    const endpoint = browserGuardProcess.parseChromeDevToolsAnnouncement(
+      `DevTools listening on ws://127.0.0.1:${port}/devtools/browser/id`,
+    );
+    assert.equal(endpoint.port, port);
+  }
   for (const line of [
+    "DevTools listening on ws://127.0.0.1:0/devtools/browser/id",
     "DevTools listening on ws://127.0.0.1:99999/not-a-devtools-path",
+    "DevTools listening on ws://127.0.0.1:65536/devtools/browser/id",
     "DevTools listening on ws://192.168.1.10:43210/devtools/browser/id",
     "DevTools listening on ws://127.0.0.1:43210/devtools/page/id",
     'DevTools listening on "ws://127.0.0.1:43210/devtools/browser/id"',
@@ -916,21 +924,72 @@ test("fails the production readiness handoff on a malformed announcement", async
   await cleanup;
 });
 
-test("keeps Chrome exit as a failure after readiness announcement", async (context) => {
+test("interrupts hanging HTTP readiness after Chrome exits", async (context) => {
   const { guard, children } = await startFakeGuard();
   reapOnTeardown(context, guard, children);
   const ready = guard.waitForChrome();
   children[1].stderr.emit("data", "DevTools listening on ws://localhost:43213/devtools/browser/ready\n");
-  await ready;
+  const endpoint = await ready;
+  const pending = waitForHttp(
+    "http://localhost:43213/json/version",
+    "chrome devtools endpoint",
+    guard.getChromeLaunchError,
+    { failure: guard.getChromeFailure(), fetchImpl: () => new Promise(() => {}) },
+  );
   children[1].emit("exit", 17, null);
 
-  assert.match(guard.getChromeLaunchError()?.message ?? "", /code 17/);
-  assert.match(guard.getChromeLaunchError()?.message ?? "", /signal none/);
+  await assert.rejects(pending, /Chrome exited after DevTools announcement \(code 17, signal none\)/);
+  assert.equal(endpoint.host, "localhost");
 
   const cleanup = guard.cleanup();
   children[0].exit();
   children[1].exit();
   await cleanup;
+});
+
+test("interrupts hanging HTTP readiness on a conflicting duplicate but not an identical one", async (context) => {
+  const { guard, children } = await startFakeGuard();
+  reapOnTeardown(context, guard, children);
+  const ready = guard.waitForChrome();
+  children[1].stderr.emit("data", "DevTools listening on ws://localhost:43216/devtools/browser/ready\n");
+  await ready;
+  children[1].stderr.emit("data", "DevTools listening on ws://localhost:43216/devtools/browser/ready\n");
+  const pending = waitForHttp(
+    "http://localhost:43216/json/version",
+    "chrome devtools endpoint",
+    guard.getChromeLaunchError,
+    { failure: guard.getChromeFailure(), fetchImpl: () => new Promise(() => {}) },
+  );
+  children[1].stderr.emit("data", "DevTools listening on ws://127.0.0.1:43217/devtools/browser/conflict\n");
+
+  await assert.rejects(pending, /conflicting DevTools announcements/);
+  const cleanup = guard.cleanup();
+  for (const child of children) child.exit();
+  await cleanup;
+  assert.equal(existsSync(guard.profileDir), false);
+});
+
+test("runner abort interrupts hanging HTTP readiness after an identical duplicate", async (context) => {
+  const { guard, children } = await startFakeGuard();
+  reapOnTeardown(context, guard, children);
+  const controller = new AbortController();
+  const ready = guard.waitForChrome({ signal: controller.signal });
+  children[1].stderr.emit("data", "DevTools listening on ws://localhost:43218/devtools/browser/ready\n");
+  await ready;
+  children[1].stderr.emit("data", "DevTools listening on ws://localhost:43218/devtools/browser/ready\n");
+  const pending = waitForHttp(
+    "http://localhost:43218/json/version",
+    "chrome devtools endpoint",
+    guard.getChromeLaunchError,
+    { signal: controller.signal, failure: guard.getChromeFailure(), fetchImpl: () => new Promise(() => {}) },
+  );
+  controller.abort(new Error("startup deadline"));
+
+  await assert.rejects(pending, /startup deadline/);
+  const cleanup = guard.cleanup();
+  for (const child of children) child.exit();
+  await cleanup;
+  assert.equal(existsSync(guard.profileDir), false);
 });
 
 test("cleans up through the announced endpoint host", async (context) => {
@@ -980,7 +1039,7 @@ test("requestBrowserClose uses the announced host and port", async () => {
   }
 
   await browserGuardProcess.requestBrowserClose(
-    { url: "ws://[::1]:43215/devtools/browser/close" },
+    { url: "ws://[::1]:43215/devtools/browser/close", host: "[::1]", port: 43215 },
     async (url) => {
       requests.push(url);
       return { ok: true, json: async () => ({ webSocketDebuggerUrl: "ws://[::1]:43215/devtools/browser/close" }) };

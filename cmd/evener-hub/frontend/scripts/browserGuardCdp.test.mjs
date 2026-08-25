@@ -36,6 +36,10 @@ test("preserves the announced endpoint host when building HTTP URLs", () => {
     devtoolsHttpURL({ url: "ws://localhost:43211/devtools/browser/test" }, "/json/list"),
     "http://localhost:43211/json/list",
   );
+  assert.equal(
+    devtoolsHttpURL({ url: "ws://127.0.0.1:80/devtools/browser/test", host: "127.0.0.1", port: 80 }, "/json/version"),
+    "http://127.0.0.1:80/json/version",
+  );
 });
 
 test("one startup deadline aborts the pending HTTP readiness phase", async (context) => {

@@ -46,11 +46,9 @@ function withTimeout(promise, ms, operation) {
 
 export function devtoolsHttpURL(endpoint, pathname) {
   const announced = new URL(endpoint.url);
-  announced.protocol = "http:";
-  announced.pathname = pathname;
-  announced.search = "";
-  announced.hash = "";
-  return announced.toString();
+  const host = endpoint.host ?? announced.hostname;
+  const port = endpoint.port ?? Number(announced.port || 80);
+  return `http://${host}:${port}${pathname}`;
 }
 
 function abortReason(signal) {
@@ -70,6 +68,29 @@ function delay(ms, signal) {
       reject(abortReason(signal));
     };
     signal.addEventListener("abort", abort, { once: true });
+  });
+}
+
+const startupFailures = new WeakSet();
+
+function raceWithFailure(promise, failure) {
+  if (!failure) return promise;
+  return Promise.race([
+    promise,
+    failure.then((error) => {
+      startupFailures.add(error);
+      throw error;
+    }),
+  ]);
+}
+
+function raceWithAbort(promise, signal) {
+  if (!signal) return promise;
+  if (signal.aborted) return Promise.reject(abortReason(signal));
+  return new Promise((resolve, reject) => {
+    const abort = () => reject(abortReason(signal));
+    signal.addEventListener("abort", abort, { once: true });
+    promise.then(resolve, reject).finally(() => signal.removeEventListener("abort", abort));
   });
 }
 
@@ -97,17 +118,18 @@ export function createStartupDeadline(ms = 30000) {
  * Chrome that could not launch must not abort - or be blamed for - the wait on
  * a Vite that is coming up fine.
  */
-export async function waitForHttp(url, label, launchFailed = () => null, { signal } = {}) {
+export async function waitForHttp(url, label, launchFailed = () => null, { signal, failure = null, fetchImpl = fetch } = {}) {
   for (let attempt = 0; attempt < 300; attempt++) {
     if (signal?.aborted) throw abortReason(signal);
     const launchError = launchFailed();
     if (launchError) throw launchError;
     try {
-      if ((await fetch(url, signal ? { signal } : undefined)).ok) return;
-    } catch {
+      if ((await raceWithFailure(raceWithAbort(fetchImpl(url, signal ? { signal } : undefined), signal), failure)).ok) return;
+    } catch (error) {
+      if (startupFailures.has(error) || signal?.aborted) throw startupFailures.has(error) ? error : abortReason(signal);
       // The child process is still starting.
     }
-    await delay(100, signal);
+    await raceWithFailure(delay(100, signal), failure);
   }
   throw new Error(`${label} never came up at ${url}`);
 }
