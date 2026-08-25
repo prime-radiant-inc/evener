@@ -4,6 +4,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -28,17 +29,14 @@ func TestCovLaunchSettingsInitialCmdNilClient(t *testing.T) {
 	if cmd == nil {
 		t.Fatal("InitialCmd should not be nil even with nil client")
 	}
-	msg := cmd()
-	// With nil client it returns a BatchMsg containing a stub global layer result
-	switch m := msg.(type) {
-	case LaunchLayerResultMsg:
-		if m.Layer != "global" {
-			t.Fatalf("layer = %q, want global", m.Layer)
-		}
-	case tea.BatchMsg:
-		// fine
-	default:
-		t.Fatalf("unexpected msg type: %T", m)
+	raw := cmd()
+	msg, ok := raw.(LaunchLayerResultMsg)
+	if !ok {
+		t.Fatalf("InitialCmd message type = %T, want LaunchLayerResultMsg", raw)
+	}
+	want := LaunchLayerResultMsg{Layer: "global"}
+	if !reflect.DeepEqual(msg, want) {
+		t.Fatalf("InitialCmd message = %+v, want %+v", msg, want)
 	}
 }
 
@@ -55,8 +53,8 @@ func TestCovLaunchDiagnosticsStatusWithField(t *testing.T) {
 		Diagnostics: []appwire.LaunchConfigDiagnostic{{Field: "sandbox", Message: "bad mode"}},
 	}
 	got := launchDiagnosticsStatus(r)
-	if !strings.Contains(got, "sandbox: bad mode") {
-		t.Fatalf("diagnostics with field = %q", got)
+	if got != "⚠ sandbox: bad mode" {
+		t.Fatalf("diagnostics with field = %q, want %q", got, "⚠ sandbox: bad mode")
 	}
 }
 
@@ -65,8 +63,8 @@ func TestCovLaunchDiagnosticsStatusWithoutField(t *testing.T) {
 		Diagnostics: []appwire.LaunchConfigDiagnostic{{Message: "just a message"}},
 	}
 	got := launchDiagnosticsStatus(r)
-	if !strings.Contains(got, "just a message") {
-		t.Fatalf("diagnostics without field = %q", got)
+	if got != "⚠ just a message" {
+		t.Fatalf("diagnostics without field = %q, want %q", got, "⚠ just a message")
 	}
 }
 
@@ -74,10 +72,15 @@ func TestCovLaunchDiagnosticsStatusWithoutField(t *testing.T) {
 
 func TestCovLaunchSettingsLoadError(t *testing.T) {
 	p := NewLaunchSettingsPanel(nil, "/cwd")
-	updated, _ := p.Update(LaunchLayerResultMsg{Err: errors.New("load fail")})
+	p.global.Model = "keep-global"
+	p.project.Model = "keep-project"
+	updated, _ := p.Update(LaunchLayerResultMsg{Layer: "global", Data: appwire.LaunchConfigLayer{Model: "discard"}, Err: errors.New("load fail")})
 	p2 := updated.(LaunchSettingsPanel)
-	if !strings.Contains(p2.statusMessage, "load error") {
-		t.Fatalf("statusMessage = %q", p2.statusMessage)
+	if p2.statusMessage != "load error: load fail" {
+		t.Fatalf("statusMessage = %q, want %q", p2.statusMessage, "load error: load fail")
+	}
+	if p2.global.Model != "keep-global" || p2.project.Model != "keep-project" || !p2.loadingGlobal || !p2.loadingProj {
+		t.Fatalf("load error changed panel state: global=%q project=%q loadingGlobal=%v loadingProj=%v", p2.global.Model, p2.project.Model, p2.loadingGlobal, p2.loadingProj)
 	}
 }
 
@@ -99,10 +102,12 @@ func TestCovLaunchSettingsLoadProject(t *testing.T) {
 
 func TestCovLaunchSettingsSchemaError(t *testing.T) {
 	p := NewLaunchSettingsPanel(nil, "/cwd")
-	updated, _ := p.Update(LaunchSchemaResultMsg{Err: errors.New("schema fail")})
+	want := []appwire.LaunchOption{{Field: "existing", Label: "Existing", Kind: "text"}}
+	p.schema = want
+	updated, _ := p.Update(LaunchSchemaResultMsg{Schema: appwire.LaunchOptionSchemaResponse{Options: []appwire.LaunchOption{{Field: "discard"}}}, Err: errors.New("schema fail")})
 	p2 := updated.(LaunchSettingsPanel)
-	if len(p2.schema) != 0 {
-		t.Fatal("schema should be empty on error")
+	if !reflect.DeepEqual(p2.schema, want) {
+		t.Fatalf("schema error replaced existing schema with %+v", p2.schema)
 	}
 }
 
@@ -110,10 +115,11 @@ func TestCovLaunchSettingsSchemaError(t *testing.T) {
 
 func TestCovLaunchSettingsResolveError(t *testing.T) {
 	p := NewLaunchSettingsPanel(nil, "/cwd")
-	updated, _ := p.Update(LaunchResolveResultMsg{Err: errors.New("resolve fail")})
+	wantResolved := appwire.LaunchConfigResolved{Effective: appwire.LaunchConfigLayer{Model: "failed-resolution"}}
+	updated, _ := p.Update(LaunchResolveResultMsg{Resolved: wantResolved, Err: errors.New("resolve fail")})
 	p2 := updated.(LaunchSettingsPanel)
-	if !strings.Contains(p2.statusMessage, "resolve error") {
-		t.Fatalf("statusMessage = %q", p2.statusMessage)
+	if p2.statusMessage != "resolve error: resolve fail" || p2.loadingResolve || !reflect.DeepEqual(p2.resolved, wantResolved) {
+		t.Fatalf("resolve error state = status %q loading=%v resolved=%+v", p2.statusMessage, p2.loadingResolve, p2.resolved)
 	}
 }
 
@@ -127,8 +133,8 @@ func TestCovLaunchSettingsResolveDiagnostics(t *testing.T) {
 		},
 	})
 	p2 := updated.(LaunchSettingsPanel)
-	if !strings.Contains(p2.statusMessage, "warn") {
-		t.Fatalf("statusMessage should contain diagnostics: %q", p2.statusMessage)
+	if p2.statusMessage != "⚠ x: warn" {
+		t.Fatalf("statusMessage = %q, want %q", p2.statusMessage, "⚠ x: warn")
 	}
 }
 
@@ -138,8 +144,8 @@ func TestCovLaunchSettingsSetLayerSuccess(t *testing.T) {
 	p := NewLaunchSettingsPanel(nil, "/cwd")
 	updated, _ := p.Update(LaunchSetLayerResultMsg{Layer: "global", Resolved: appwire.LaunchConfigResolved{}})
 	p2 := updated.(LaunchSettingsPanel)
-	if !strings.Contains(p2.statusMessage, "saved") {
-		t.Fatalf("statusMessage = %q", p2.statusMessage)
+	if p2.statusMessage != "saved global" {
+		t.Fatalf("statusMessage = %q, want %q", p2.statusMessage, "saved global")
 	}
 }
 
@@ -154,8 +160,8 @@ func TestCovLaunchSettingsSetLayerSuccessWithDiagnostics(t *testing.T) {
 		},
 	})
 	p2 := updated.(LaunchSettingsPanel)
-	if !strings.Contains(p2.statusMessage, "diag") {
-		t.Fatalf("statusMessage should contain diagnostics: %q", p2.statusMessage)
+	if p2.statusMessage != "saved global — ⚠ diag" {
+		t.Fatalf("statusMessage = %q, want %q", p2.statusMessage, "saved global — ⚠ diag")
 	}
 }
 
@@ -163,10 +169,11 @@ func TestCovLaunchSettingsSetLayerSuccessWithDiagnostics(t *testing.T) {
 
 func TestCovLaunchSettingsSetLayerError(t *testing.T) {
 	p := NewLaunchSettingsPanel(nil, "/cwd")
-	updated, _ := p.Update(LaunchSetLayerResultMsg{Err: errors.New("save fail")})
+	p.resolved = appwire.LaunchConfigResolved{Effective: appwire.LaunchConfigLayer{Model: "keep"}}
+	updated, _ := p.Update(LaunchSetLayerResultMsg{Layer: "global", Resolved: appwire.LaunchConfigResolved{Effective: appwire.LaunchConfigLayer{Model: "discard"}}, Err: errors.New("save fail")})
 	p2 := updated.(LaunchSettingsPanel)
-	if !strings.Contains(p2.statusMessage, "save error") {
-		t.Fatalf("statusMessage = %q", p2.statusMessage)
+	if p2.statusMessage != "save error: save fail" || p2.resolved.Effective.Model != "keep" {
+		t.Fatalf("save error state = status %q resolved=%+v", p2.statusMessage, p2.resolved)
 	}
 }
 
@@ -180,8 +187,8 @@ func TestCovLaunchSettingsTrustSuccessWithDiagnostics(t *testing.T) {
 		},
 	})
 	p2 := updated.(LaunchSettingsPanel)
-	if !strings.Contains(p2.statusMessage, "trust diag") {
-		t.Fatalf("statusMessage should contain trust diagnostics: %q", p2.statusMessage)
+	if p2.statusMessage != "trust recorded — ⚠ trust diag" {
+		t.Fatalf("statusMessage = %q, want %q", p2.statusMessage, "trust recorded — ⚠ trust diag")
 	}
 }
 
@@ -189,10 +196,11 @@ func TestCovLaunchSettingsTrustSuccessWithDiagnostics(t *testing.T) {
 
 func TestCovLaunchSettingsTrustError(t *testing.T) {
 	p := NewLaunchSettingsPanel(nil, "/cwd")
-	updated, _ := p.Update(LaunchTrustResultMsg{Err: errors.New("trust fail")})
+	p.resolved = appwire.LaunchConfigResolved{Effective: appwire.LaunchConfigLayer{Model: "keep"}}
+	updated, _ := p.Update(LaunchTrustResultMsg{Resolved: appwire.LaunchConfigResolved{Effective: appwire.LaunchConfigLayer{Model: "discard"}}, Err: errors.New("trust fail")})
 	p2 := updated.(LaunchSettingsPanel)
-	if !strings.Contains(p2.statusMessage, "trust error") {
-		t.Fatalf("statusMessage = %q", p2.statusMessage)
+	if p2.statusMessage != "trust error: trust fail" || p2.resolved.Effective.Model != "keep" {
+		t.Fatalf("trust error state = status %q resolved=%+v", p2.statusMessage, p2.resolved)
 	}
 }
 
@@ -475,13 +483,6 @@ func TestCovApplyEditSandboxInherit(t *testing.T) {
 	}
 }
 
-func TestCovApplyEditSandboxInheritExplicit(t *testing.T) {
-	layer, err := applyEdit(appwire.LaunchConfigLayer{}, "sandbox", "")
-	if err != nil || layer.Sandbox != "" {
-		t.Fatalf("empty sandbox = %q err=%v", layer.Sandbox, err)
-	}
-}
-
 func TestCovApplyEditUnknownField(t *testing.T) {
 	_, err := applyEdit(appwire.LaunchConfigLayer{}, "nonexistent", "x")
 	if err == nil {
@@ -575,8 +576,9 @@ func TestCovApplyEditSystemPromptAppendTextDefault(t *testing.T) {
 
 func TestCovApplyEditModelFallbacks(t *testing.T) {
 	layer, err := applyEdit(appwire.LaunchConfigLayer{}, "model_fallbacks", "a, b, c")
-	if err != nil || len(layer.ModelFallbacks) != 3 {
-		t.Fatalf("model_fallbacks = %v err=%v", layer.ModelFallbacks, err)
+	want := []string{"a", "b", "c"}
+	if err != nil || !reflect.DeepEqual(layer.ModelFallbacks, want) {
+		t.Fatalf("model_fallbacks = %v, want %v, err=%v", layer.ModelFallbacks, want, err)
 	}
 }
 
@@ -589,7 +591,7 @@ func TestCovApplyEditModelFallbacksDefault(t *testing.T) {
 
 func TestCovApplyEditModelFallbacksEmpty(t *testing.T) {
 	layer, err := applyEdit(appwire.LaunchConfigLayer{}, "model_fallbacks", "[]")
-	if err != nil || len(layer.ModelFallbacks) != 0 {
+	if err != nil || !reflect.DeepEqual(layer.ModelFallbacks, []string{}) {
 		t.Fatalf("model_fallbacks [] = %v err=%v", layer.ModelFallbacks, err)
 	}
 }
@@ -610,8 +612,9 @@ func TestCovApplyEditSandboxNet(t *testing.T) {
 
 func TestCovApplyEditSystemPromptAppend(t *testing.T) {
 	layer, err := applyEdit(appwire.LaunchConfigLayer{}, "system_prompt_append", "a, b")
-	if err != nil || len(layer.SystemPromptAppend) != 2 {
-		t.Fatalf("system_prompt_append = %v err=%v", layer.SystemPromptAppend, err)
+	want := []string{"a", "b"}
+	if err != nil || !reflect.DeepEqual(layer.SystemPromptAppend, want) {
+		t.Fatalf("system_prompt_append = %v, want %v, err=%v", layer.SystemPromptAppend, want, err)
 	}
 }
 
@@ -635,12 +638,13 @@ func TestCovMCPEditValueWithError(t *testing.T) {
 // --- parseMCPs: object form ---
 
 func TestCovParseMCPsObjectForm(t *testing.T) {
-	mcps, err := parseMCPs(`{"name":"x","command":"sh"}`)
+	mcps, err := parseMCPs(`{"name":"x","command":"sh","args":["-c","echo ok"]}`)
 	if err != nil {
 		t.Fatalf("parseMCPs object form error: %v", err)
 	}
-	if len(mcps) != 1 || mcps[0].Name != "x" {
-		t.Fatalf("mcps = %+v", mcps)
+	want := []appwire.MCPServerSpec{{Name: "x", Command: "sh", Args: []string{"-c", "echo ok"}}}
+	if !reflect.DeepEqual(mcps, want) {
+		t.Fatalf("mcps = %+v, want %+v", mcps, want)
 	}
 }
 
@@ -721,13 +725,18 @@ func TestCovValidateLocalLaunchPathOutputFileParentMissing(t *testing.T) {
 
 func TestCovLayerRowsWithNilPointers(t *testing.T) {
 	rows := layerRows(appwire.LaunchConfigLayer{})
-	if len(rows) == 0 {
-		t.Fatal("layerRows should return rows")
+	byField := make(map[string]layerRow, len(rows))
+	for _, row := range rows {
+		byField[row.field] = row
 	}
-	// Verify pointer fields show "(default)"
-	for _, r := range rows {
-		if strings.Contains(r.field, "max_") && r.value != "(default)" {
-			t.Errorf("nil pointer field %q should show (default), got %q", r.field, r.value)
+	for _, field := range []string{"max_rounds", "max_subagent_depth", "max_concurrent_delegate_turns", "max_retained_terminal", "no_project_prompts"} {
+		row, ok := byField[field]
+		if !ok {
+			t.Errorf("layerRows omitted %q", field)
+			continue
+		}
+		if row.value != "(default)" || row.editValue != "(default)" {
+			t.Errorf("nil pointer row %q = value %q editValue %q, want (default)/(default)", field, row.value, row.editValue)
 		}
 	}
 }
@@ -736,12 +745,18 @@ func TestCovLayerRowsWithSetPointers(t *testing.T) {
 	n := 5
 	b := true
 	rows := layerRows(appwire.LaunchConfigLayer{MaxRounds: &n, NoProjectPrompts: &b})
-	for _, r := range rows {
-		if r.field == "max_rounds" && r.value != "5" {
-			t.Errorf("max_rounds = %q, want 5", r.value)
+	byField := make(map[string]layerRow, len(rows))
+	for _, row := range rows {
+		byField[row.field] = row
+	}
+	for field, want := range map[string]string{"max_rounds": "5", "no_project_prompts": "true"} {
+		row, ok := byField[field]
+		if !ok {
+			t.Errorf("layerRows omitted %q", field)
+			continue
 		}
-		if r.field == "no_project_prompts" && r.value != "true" {
-			t.Errorf("no_project_prompts = %q, want true", r.value)
+		if row.value != want || row.editValue != want {
+			t.Errorf("row %q = value %q editValue %q, want %q/%q", field, row.value, row.editValue, want, want)
 		}
 	}
 }
@@ -794,15 +809,16 @@ func TestCovParseEnvMap(t *testing.T) {
 	if err != nil {
 		t.Fatalf("parseEnvMap error: %v", err)
 	}
-	if env["FOO"] != "bar" || env["BAZ"] != "qux" {
-		t.Fatalf("env = %+v", env)
+	want := map[string]string{"FOO": "bar", "BAZ": "qux"}
+	if !reflect.DeepEqual(env, want) {
+		t.Fatalf("env = %+v, want %+v", env, want)
 	}
 }
 
 func TestCovParseEnvMapEmpty(t *testing.T) {
 	env, err := parseEnvMap("")
-	if err != nil || len(env) != 0 {
-		t.Fatalf("empty env = %+v err=%v", env, err)
+	if err != nil || env != nil {
+		t.Fatalf("empty env = %#v, want nil; err=%v", env, err)
 	}
 }
 
@@ -815,8 +831,8 @@ func TestCovParseEnvMapInvalid(t *testing.T) {
 
 func TestCovParseEnvMapWhitespace(t *testing.T) {
 	env, err := parseEnvMap("  ")
-	if err != nil || len(env) != 0 {
-		t.Fatalf("whitespace env = %+v err=%v", env, err)
+	if err != nil || env != nil {
+		t.Fatalf("whitespace env = %#v, want nil; err=%v", env, err)
 	}
 }
 
@@ -842,11 +858,11 @@ func TestCovParseModelFallbacks(t *testing.T) {
 	if got := parseModelFallbacks("(default)"); got != nil {
 		t.Fatalf("(default) = %v, want nil", got)
 	}
-	if got := parseModelFallbacks("[]"); len(got) != 0 {
-		t.Fatalf("[] = %v, want empty", got)
+	if got := parseModelFallbacks("[]"); !reflect.DeepEqual(got, []string{}) {
+		t.Fatalf("[] = %#v, want non-nil empty slice", got)
 	}
-	if got := parseModelFallbacks("a, b"); len(got) != 2 {
-		t.Fatalf("a, b = %v, want 2", got)
+	if got, want := parseModelFallbacks("a, b"), []string{"a", "b"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("a, b = %v, want %v", got, want)
 	}
 }
 
@@ -921,8 +937,9 @@ func TestCovApplyEditSystemPromptFileInvalid(t *testing.T) {
 func TestCovApplyEditSkillsDirsValid(t *testing.T) {
 	dir := t.TempDir()
 	layer, err := applyEdit(appwire.LaunchConfigLayer{}, "skills_dirs", dir)
-	if err != nil || len(layer.SkillsDirs) != 1 || layer.SkillsDirs[0] != dir {
-		t.Fatalf("skills_dirs = %v err=%v", layer.SkillsDirs, err)
+	want := []string{dir}
+	if err != nil || !reflect.DeepEqual(layer.SkillsDirs, want) {
+		t.Fatalf("skills_dirs = %v, want %v, err=%v", layer.SkillsDirs, want, err)
 	}
 }
 
@@ -935,7 +952,8 @@ func TestCovApplyEditMCPConfigsValid(t *testing.T) {
 		t.Fatal(err)
 	}
 	layer, err := applyEdit(appwire.LaunchConfigLayer{}, "mcp_configs", configFile)
-	if err != nil || len(layer.MCPConfigs) != 1 {
-		t.Fatalf("mcp_configs = %v err=%v", layer.MCPConfigs, err)
+	want := []string{configFile}
+	if err != nil || !reflect.DeepEqual(layer.MCPConfigs, want) {
+		t.Fatalf("mcp_configs = %v, want %v, err=%v", layer.MCPConfigs, want, err)
 	}
 }

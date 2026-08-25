@@ -51,10 +51,10 @@ func TestCovSubagentRunBodyWithJobID(t *testing.T) {
 		JobType: "shell",
 		Command: "echo hi",
 		Status:  "done",
-		JobID:   "job-1234567890123456789012345678",
+		JobID:   "job_02wMz5TxvEMoJEDTDGOTil_000000000123",
 	}, 80)
-	if !strings.Contains(body, "job") {
-		t.Fatalf("should show job ID: %q", body)
+	if !strings.Contains(body, "job job_02wMz5Txv…000000000123") {
+		t.Fatalf("should show the compact job ID, got %q", body)
 	}
 }
 
@@ -133,8 +133,8 @@ func TestCovSubagentRunBodyQuietForMS(t *testing.T) {
 		Status:     "running",
 		QuietForMS: &quiet,
 	}, 80)
-	if !strings.Contains(body, "quiet") {
-		t.Fatalf("should show quiet duration: %q", body)
+	if !strings.Contains(body, "quiet 5.0s") {
+		t.Fatalf("should show exact quiet duration: %q", body)
 	}
 }
 

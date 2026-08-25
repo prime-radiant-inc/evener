@@ -2,6 +2,8 @@ package hubstart
 
 import (
 	"context"
+	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -9,17 +11,27 @@ import (
 	"time"
 
 	"primeradiant.com/evener/appwire"
+	"primeradiant.com/evener/envvars"
+	"primeradiant.com/evener/internal/e2ecap"
 )
 
 // TestCovDialHubRPCWithFrameHandler exercises the observeFrames != nil branch
 // in dialHubRPC. It connects to a fake hub and sets a frame handler; the
 // handler is wired on the client before Initialize.
 func TestCovDialHubRPCWithFrameHandler(t *testing.T) {
+	e2ecap.RequireLoopbackBind(t)
 	srv := fakeHubServer(t, appwire.ProtocolVersion)
 	defer srv.Close()
 	addr := HubAddress{BaseURL: srv.URL}
 
-	handler := func(msg appwire.Message, err error) {}
+	type observedFrame struct {
+		msg appwire.Message
+		err error
+	}
+	observed := make(chan observedFrame, 1)
+	handler := func(msg appwire.Message, err error) {
+		observed <- observedFrame{msg: msg, err: err}
+	}
 
 	client, err := dialHubRPC(context.Background(), addr, srv.Client(), handler)
 	if err != nil {
@@ -28,28 +40,62 @@ func TestCovDialHubRPCWithFrameHandler(t *testing.T) {
 	if client == nil {
 		t.Fatal("client is nil")
 	}
-	_ = client.Close()
+	t.Cleanup(func() { _ = client.Close() })
+
+	select {
+	case frame := <-observed:
+		if frame.err != nil {
+			t.Fatalf("observed frame error: %v", frame.err)
+		}
+		if frame.msg.Response == nil {
+			t.Fatalf("observed frame = %+v, want initialize response", frame.msg)
+		}
+		resultJSON, err := json.Marshal(frame.msg.Response.Result)
+		if err != nil {
+			t.Fatalf("encode observed initialize result: %v", err)
+		}
+		var response appwire.InitializeResponse
+		if err := json.Unmarshal(resultJSON, &response); err != nil {
+			t.Fatalf("decode initialize response: %v", err)
+		}
+		if response.ProtocolVersion != appwire.ProtocolVersion {
+			t.Fatalf("observed protocol = %q, want %q", response.ProtocolVersion, appwire.ProtocolVersion)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("ordered frame handler did not observe the initialize response")
+	}
 }
 
-// TestCovStartLocalHubWithStateDir exercises the StateDir branch of
-// StartLocalHub. The process exits immediately via the helper, but the
-// environment setup (StateDir assignment) is exercised.
+// TestCovStartLocalHubWithStateDir observes the child-process environment at
+// the process-launch boundary.
 func TestCovStartLocalHubWithStateDir(t *testing.T) {
 	withLocalHubImmediateExitWindow(t, 30*time.Second)
-	t.Setenv(immediateExitHubHelperEnv, "1")
-	bin, err := os.Executable()
-	if err != nil {
+	dir := t.TempDir()
+	stateDir := filepath.Join(dir, "state", "evener")
+	stateHome := filepath.Dir(stateDir)
+	logFile := filepath.Join(dir, "hub.log")
+	helper := filepath.Join(dir, "hub-helper")
+	script := fmt.Sprintf("#!/bin/sh\nprintf 'state=%%s\\nxdg=%%s\\n' \"$%s\" \"$%s\" >&2\nexit 7\n", envvars.EVENERStateDir.Name, envvars.XDGStateHome.Name)
+	if err := os.WriteFile(helper, []byte(script), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	stateDir := filepath.Join(t.TempDir(), "state", "evener")
-	err = StartLocalHub(HubStartRequest{
-		Binary:   bin,
+
+	err := StartLocalHub(HubStartRequest{
+		Binary:   helper,
 		BindAddr: "127.0.0.1:9180",
 		StateDir: stateDir,
-		LogFile:  filepath.Join(t.TempDir(), "hub.log"),
+		LogFile:  logFile,
 	})
-	if err == nil || !strings.Contains(err.Error(), "address already in use") {
-		t.Fatalf("StartLocalHub error=%v, want immediate exit output", err)
+	wantOutput := fmt.Sprintf("state=%s\nxdg=%s\n", stateDir, stateHome)
+	if err == nil || !strings.Contains(err.Error(), "exit status 7: "+strings.TrimSpace(wantOutput)) {
+		t.Fatalf("StartLocalHub error = %v, want child exit with exact state environment %q", err, wantOutput)
+	}
+	logged, readErr := os.ReadFile(logFile)
+	if readErr != nil {
+		t.Fatalf("read hub log: %v", readErr)
+	}
+	if string(logged) != wantOutput {
+		t.Fatalf("hub child environment output = %q, want %q", logged, wantOutput)
 	}
 }
 

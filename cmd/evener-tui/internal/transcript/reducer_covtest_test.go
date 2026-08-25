@@ -7,20 +7,11 @@ import (
 	"primeradiant.com/evener/appwire"
 )
 
-// --- ApplyReasoningSummaryDelta: empty delta is no-op ---
-
-func TestCovApplyReasoningSummaryDeltaEmpty(t *testing.T) {
-	r := NewTranscriptReducer(nil, nil, nil)
-	r.ApplyReasoningSummaryDelta("t1", "i1", "")
-	if len(r.Messages()) != 0 {
-		t.Fatalf("empty delta should not append, got %d", len(r.Messages()))
-	}
-}
-
 // --- ApplyReasoningSummaryDelta: active reasoning with empty itemID ---
 
 func TestCovActiveReasoningIndexEmptyItemID(t *testing.T) {
-	r := NewTranscriptReducer(nil, nil, nil)
+	seed := []ChatMessage{{Kind: MsgReasoning, ItemID: "", Text: "must not match"}}
+	r := NewTranscriptReducer(seed, nil, map[string]int{"": 0})
 	if _, ok := r.activeReasoningIndex(""); ok {
 		t.Fatal("empty itemID should return false")
 	}
@@ -29,10 +20,12 @@ func TestCovActiveReasoningIndexEmptyItemID(t *testing.T) {
 // --- ApplyThreadItem: systemMessage empty text ---
 
 func TestCovApplyThreadItemSystemMessageEmpty(t *testing.T) {
-	r := NewTranscriptReducer(nil, nil, nil)
+	seed := []ChatMessage{{Kind: MsgSystem, ItemID: "keep", Text: "existing"}}
+	r := NewTranscriptReducer(seed, nil, nil)
 	r.ApplyThreadItem(appwire.ThreadItem{Type: "systemMessage", ID: "s1"}, 1, true)
-	if len(r.Messages()) != 0 {
-		t.Fatal("empty system message should not append")
+	msgs := r.Messages()
+	if len(msgs) != 1 || msgs[0].ItemID != "keep" || msgs[0].Text != "existing" {
+		t.Fatalf("empty system message changed transcript: %+v", msgs)
 	}
 }
 
@@ -71,10 +64,12 @@ func TestCovApplyThreadItemSystemMessageHook(t *testing.T) {
 // --- ApplyThreadItem: userMessage empty text and no images ---
 
 func TestCovApplyThreadItemUserMessageEmpty(t *testing.T) {
-	r := NewTranscriptReducer(nil, nil, nil)
+	seed := []ChatMessage{{Kind: MsgUser, ItemID: "keep", Text: "existing"}}
+	r := NewTranscriptReducer(seed, nil, nil)
 	r.ApplyThreadItem(appwire.ThreadItem{Type: "userMessage", ID: "u1"}, 1, true)
-	if len(r.Messages()) != 0 {
-		t.Fatal("empty user message should not append")
+	msgs := r.Messages()
+	if len(msgs) != 1 || msgs[0].ItemID != "keep" || msgs[0].Text != "existing" {
+		t.Fatalf("empty user message changed transcript: %+v", msgs)
 	}
 }
 
@@ -241,15 +236,17 @@ func TestCovApplyThreadItemAgentMessageNewNotCompleted(t *testing.T) {
 // --- ApplyThreadItem: agentMessage empty text ---
 
 func TestCovApplyThreadItemAgentMessageEmptyText(t *testing.T) {
-	r := NewTranscriptReducer(nil, nil, nil)
+	seed := []ChatMessage{{Kind: MsgAssistant, ItemID: "keep", Text: "existing"}}
+	r := NewTranscriptReducer(seed, nil, nil)
 	r.ApplyThreadItem(appwire.ThreadItem{
 		Type:   "agentMessage",
 		ID:     "item-x",
 		TurnID: "turn_1",
 		Text:   "  ",
 	}, 1, true)
-	if len(r.Messages()) != 0 {
-		t.Fatal("empty agent message should not append")
+	msgs := r.Messages()
+	if len(msgs) != 1 || msgs[0].ItemID != "keep" || msgs[0].Text != "existing" {
+		t.Fatalf("empty agent message changed transcript: %+v", msgs)
 	}
 }
 
@@ -313,38 +310,44 @@ func TestCovApplyThreadItemCommandExecutionExistingNilToolInfo(t *testing.T) {
 // --- ApplyEvenerJob: non-background job is ignored ---
 
 func TestCovApplyEvenerJobNonBackground(t *testing.T) {
-	r := NewTranscriptReducer(nil, nil, nil)
+	seed := []ChatMessage{{Kind: MsgSystem, Text: "keep"}}
+	r := NewTranscriptReducer(seed, nil, nil)
 	r.ApplyEvenerJob(appwire.EvenerJobInfo{
 		JobID:      "job-1",
 		JobType:    "shell",
 		Background: false,
 	})
-	if len(r.Messages()) != 0 {
-		t.Fatal("non-background shell job should be ignored")
+	msgs := r.Messages()
+	if len(msgs) != 1 || msgs[0].Text != "keep" {
+		t.Fatalf("non-background shell job changed transcript: %+v", msgs)
 	}
 }
 
 // --- ApplyEvenerJob: background non-shell job is ignored ---
 
 func TestCovApplyEvenerJobBackgroundNonShell(t *testing.T) {
-	r := NewTranscriptReducer(nil, nil, nil)
+	seed := []ChatMessage{{Kind: MsgSystem, Text: "keep"}}
+	r := NewTranscriptReducer(seed, nil, nil)
 	r.ApplyEvenerJob(appwire.EvenerJobInfo{
 		JobID:      "job-1",
 		JobType:    "delegate",
 		Background: true,
 	})
-	if len(r.Messages()) != 0 {
-		t.Fatal("background non-shell job should be ignored")
+	msgs := r.Messages()
+	if len(msgs) != 1 || msgs[0].Text != "keep" {
+		t.Fatalf("background non-shell job changed transcript: %+v", msgs)
 	}
 }
 
 // --- ApplyEvenerJob: empty job is ignored ---
 
 func TestCovApplyEvenerJobEmpty(t *testing.T) {
-	r := NewTranscriptReducer(nil, nil, nil)
+	seed := []ChatMessage{{Kind: MsgSystem, Text: "keep"}}
+	r := NewTranscriptReducer(seed, nil, nil)
 	r.ApplyEvenerJob(appwire.EvenerJobInfo{})
-	if len(r.Messages()) != 0 {
-		t.Fatal("empty job should be ignored")
+	msgs := r.Messages()
+	if len(msgs) != 1 || msgs[0].Text != "keep" {
+		t.Fatalf("empty job changed transcript: %+v", msgs)
 	}
 }
 
@@ -389,10 +392,12 @@ func TestCovApplyEvenerJobBackgroundShellNoTask(t *testing.T) {
 // --- ApplyEvenerDelegate: empty delegateID ignored ---
 
 func TestCovApplyEvenerDelegateEmptyDelegateID(t *testing.T) {
-	r := NewTranscriptReducer(nil, nil, nil)
+	seed := []ChatMessage{{Kind: MsgSystem, Text: "keep"}}
+	r := NewTranscriptReducer(seed, nil, nil)
 	r.ApplyEvenerDelegate(appwire.EvenerDelegateInfo{})
-	if len(r.Messages()) != 0 {
-		t.Fatal("empty delegateID should be ignored")
+	msgs := r.Messages()
+	if len(msgs) != 1 || msgs[0].Text != "keep" {
+		t.Fatalf("empty delegate changed transcript: %+v", msgs)
 	}
 }
 
@@ -415,6 +420,10 @@ func TestCovApplyEvenerDelegateMatchLowerRevision(t *testing.T) {
 	msgs := r.Messages()
 	if len(msgs) != 1 {
 		t.Fatalf("should have 1 message, got %d", len(msgs))
+	}
+	run := msgs[0].Tool.Subagent
+	if run.Task != "first" || run.ProjectionRevision != 2 || run.LatestActivityAt != "2025-01-01T00:00:00Z" {
+		t.Fatalf("lower revision merge = %+v, want task/revision preserved and newer activity timestamp merged", run)
 	}
 }
 
@@ -445,27 +454,40 @@ func TestCovApplyEvenerDelegateMatchHigherRevision(t *testing.T) {
 // --- ApplyTieHeadline: empty jobID ---
 
 func TestCovApplyTieHeadlineEmptyJobID(t *testing.T) {
-	r := NewTranscriptReducer(nil, nil, nil)
+	seed := []ChatMessage{{Kind: MsgTool, Tool: &ToolCallInfo{Subagent: &SubagentRunInfo{JobID: "", Headline: "keep"}}}}
+	r := NewTranscriptReducer(seed, nil, nil)
 	if r.ApplyTieHeadline("", "headline", false) {
 		t.Fatal("empty jobID should return false")
+	}
+	if got := r.Messages()[0].Tool.Subagent.Headline; got != "keep" {
+		t.Fatalf("empty jobID changed headline to %q", got)
 	}
 }
 
 // --- ApplyTieHeadline: empty headline ---
 
 func TestCovApplyTieHeadlineEmptyHeadline(t *testing.T) {
-	r := NewTranscriptReducer(nil, nil, nil)
+	seed := []ChatMessage{{Kind: MsgTool, Tool: &ToolCallInfo{Subagent: &SubagentRunInfo{JobID: "job-1", Headline: "keep", HeadlineError: true}}}}
+	r := NewTranscriptReducer(seed, nil, nil)
 	if r.ApplyTieHeadline("job-1", "", false) {
 		t.Fatal("empty headline should return false")
+	}
+	run := r.Messages()[0].Tool.Subagent
+	if run.Headline != "keep" || !run.HeadlineError {
+		t.Fatalf("empty headline changed run to %+v", run)
 	}
 }
 
 // --- ApplyTieHeadline: no match ---
 
 func TestCovApplyTieHeadlineNoMatch(t *testing.T) {
-	r := NewTranscriptReducer(nil, nil, nil)
+	seed := []ChatMessage{{Kind: MsgTool, Tool: &ToolCallInfo{Subagent: &SubagentRunInfo{JobID: "other", Headline: "keep"}}}}
+	r := NewTranscriptReducer(seed, nil, nil)
 	if r.ApplyTieHeadline("job-1", "headline", false) {
 		t.Fatal("no match should return false")
+	}
+	if got := r.Messages()[0].Tool.Subagent.Headline; got != "keep" {
+		t.Fatalf("unmatched headline changed existing run to %q", got)
 	}
 }
 
@@ -491,27 +513,42 @@ func TestCovApplyTieHeadlineMatch(t *testing.T) {
 // --- ApplyChildActivity: empty ref ---
 
 func TestCovApplyChildActivityEmptyRef(t *testing.T) {
-	r := NewTranscriptReducer(nil, nil, nil)
+	seed := []ChatMessage{{Kind: MsgTool, Tool: &ToolCallInfo{Subagent: &SubagentRunInfo{TranscriptRef: "", Activity: "keep", Steps: 2}}}}
+	r := NewTranscriptReducer(seed, nil, nil)
 	if r.ApplyChildActivity("", "activity") {
 		t.Fatal("empty ref should return false")
+	}
+	run := r.Messages()[0].Tool.Subagent
+	if run.Activity != "keep" || run.Steps != 2 {
+		t.Fatalf("empty ref changed activity state to %+v", run)
 	}
 }
 
 // --- ApplyChildActivity: empty activity ---
 
 func TestCovApplyChildActivityEmptyActivity(t *testing.T) {
-	r := NewTranscriptReducer(nil, nil, nil)
+	seed := []ChatMessage{{Kind: MsgTool, Tool: &ToolCallInfo{Subagent: &SubagentRunInfo{TranscriptRef: "ref", Activity: "keep", Steps: 2}}}}
+	r := NewTranscriptReducer(seed, nil, nil)
 	if r.ApplyChildActivity("ref", "") {
 		t.Fatal("empty activity should return false")
+	}
+	run := r.Messages()[0].Tool.Subagent
+	if run.Activity != "keep" || run.Steps != 2 {
+		t.Fatalf("empty activity changed state to %+v", run)
 	}
 }
 
 // --- ApplyChildActivity: no match ---
 
 func TestCovApplyChildActivityNoMatch(t *testing.T) {
-	r := NewTranscriptReducer(nil, nil, nil)
+	seed := []ChatMessage{{Kind: MsgTool, Tool: &ToolCallInfo{Subagent: &SubagentRunInfo{TranscriptRef: "other", Activity: "keep", Steps: 2}}}}
+	r := NewTranscriptReducer(seed, nil, nil)
 	if r.ApplyChildActivity("ref", "activity") {
 		t.Fatal("no match should return false")
+	}
+	run := r.Messages()[0].Tool.Subagent
+	if run.Activity != "keep" || run.Steps != 2 {
+		t.Fatalf("unmatched activity changed state to %+v", run)
 	}
 }
 
@@ -748,7 +785,8 @@ func TestCovToolIndexScanByCallID(t *testing.T) {
 // --- toolIndex: no match ---
 
 func TestCovToolIndexNoMatch(t *testing.T) {
-	r := NewTranscriptReducer(nil, nil, nil)
+	seed := []ChatMessage{{Kind: MsgTool, ItemID: "other", ToolCallID: "other-call", Tool: &ToolCallInfo{Name: "read_file"}}}
+	r := NewTranscriptReducer(seed, nil, nil)
 	_, ok := r.toolIndex(appwire.ThreadItem{ID: "nope"}, 1)
 	if ok {
 		t.Fatal("should not match")
@@ -766,16 +804,8 @@ func TestCovMessagesFromThreadFailedTurnError(t *testing.T) {
 		}},
 	}
 	msgs := MessagesFromThread(thread)
-	// Should contain a system message with the error
-	found := false
-	for _, m := range msgs {
-		if m.Kind == MsgSystem {
-			found = true
-			break
-		}
-	}
-	if !found {
-		t.Fatal("failed turn should produce a system message")
+	if len(msgs) != 1 || msgs[0].Kind != MsgSystem || msgs[0].Text != "Session error: turn failed" {
+		t.Fatalf("failed turn messages = %+v, want one exact system error", msgs)
 	}
 }
 
@@ -792,23 +822,13 @@ func TestCovMessagesFromThreadWithDelegates(t *testing.T) {
 		},
 	}
 	msgs := MessagesFromThread(thread)
-	found := false
-	for _, m := range msgs {
-		if m.Kind == MsgTool && m.Tool != nil && m.Tool.Subagent != nil && m.Tool.Subagent.DelegateID == "dlg-1" {
-			found = true
-			break
-		}
+	if len(msgs) != 1 || msgs[0].Kind != MsgTool || msgs[0].Tool == nil || msgs[0].Tool.Subagent == nil {
+		t.Fatalf("delegate messages = %+v, want one tool-backed delegate", msgs)
 	}
-	if !found {
-		t.Fatal("should have a delegate message")
+	run := msgs[0].Tool.Subagent
+	if msgs[0].Tool.Name != "delegate" || msgs[0].Tool.Description != "work" || run.DelegateID != "dlg-1" || run.Task != "work" {
+		t.Fatalf("delegate message = %+v", msgs[0])
 	}
-}
-
-// --- mergeThreadItemIntoToolInfo: nil info ---
-
-func TestCovMergeThreadItemIntoToolInfoNil(t *testing.T) {
-	mergeThreadItemIntoToolInfo(nil, appwire.ThreadItem{}, true, "")
-	// Should not panic
 }
 
 // --- mergeThreadItemIntoToolInfo: with delegate raw ---
@@ -820,7 +840,7 @@ func TestCovMergeThreadItemIntoToolInfoDelegate(t *testing.T) {
 		Raw:      jsonRaw(`{"delegate_id":"dlg-1","task":"delegated work"}`),
 	}
 	mergeThreadItemIntoToolInfo(info, item, true, "")
-	if info.Subagent == nil || info.Subagent.DelegateID != "dlg-1" {
+	if info.Subagent == nil || info.Subagent.DelegateID != "dlg-1" || info.Subagent.Task != "delegated work" {
 		t.Fatalf("should parse delegate info: %+v", info.Subagent)
 	}
 }
@@ -855,39 +875,6 @@ func TestCovMergeThreadItemIntoToolInfoDoneWithDetail(t *testing.T) {
 	if !info.Expanded {
 		t.Fatal("should be expanded when detail is present")
 	}
-}
-
-// --- SubagentDisplayStatus ---
-
-func TestCovSubagentDisplayStatusEmpty(t *testing.T) {
-	if got := SubagentDisplayStatus(SubagentRunInfo{}); got != "" {
-		t.Fatalf("empty status = %q, want empty", got)
-	}
-}
-
-func TestCovSubagentDisplayStatusNonTerminal(t *testing.T) {
-	if got := SubagentDisplayStatus(SubagentRunInfo{Status: "running"}); got != "running" {
-		t.Fatalf("running = %q, want running", got)
-	}
-}
-
-func TestCovSubagentDisplayStatusTerminalWithOutcome(t *testing.T) {
-	if got := SubagentDisplayStatus(SubagentRunInfo{Status: "running", Terminal: true, Outcome: "completed"}); got != "completed" {
-		t.Fatalf("terminal with outcome = %q, want completed", got)
-	}
-}
-
-func TestCovSubagentDisplayStatusTerminalNoOutcome(t *testing.T) {
-	if got := SubagentDisplayStatus(SubagentRunInfo{Status: "running", Terminal: true}); got != "running" {
-		t.Fatalf("terminal no outcome = %q, want running", got)
-	}
-}
-
-// --- mergeLatestDelegateActivity ---
-
-func TestCovMergeLatestDelegateActivityNil(t *testing.T) {
-	mergeLatestDelegateActivity(nil, "2025-01-01T00:00:00Z")
-	// Should not panic
 }
 
 func TestCovMergeLatestDelegateActivityEmptyIncoming(t *testing.T) {
@@ -1036,41 +1023,34 @@ func TestCovImageItemsPlaceholderSingle(t *testing.T) {
 // --- ApplyUserMessageEcho / RemoveUserMessageEcho ---
 
 func TestCovRemoveUserMessageEchoEmpty(t *testing.T) {
-	r := NewTranscriptReducer(nil, nil, nil)
+	seed := []ChatMessage{{Kind: MsgUser, Text: ""}, {Kind: MsgSystem, Text: "keep"}}
+	r := NewTranscriptReducer(seed, nil, nil)
 	r.RemoveUserMessageEcho("")
-	// Should not panic
+	msgs := r.Messages()
+	if len(msgs) != 2 || msgs[0].Kind != MsgUser || msgs[1].Text != "keep" {
+		t.Fatalf("empty removal changed transcript: %+v", msgs)
+	}
 }
 
 func TestCovRemoveUserMessageEchoNotFound(t *testing.T) {
 	r := NewTranscriptReducer([]ChatMessage{{Kind: MsgUser, Text: "other"}}, nil, nil)
 	r.RemoveUserMessageEcho("hello")
-	if len(r.Messages()) != 1 {
-		t.Fatal("should not remove non-matching")
-	}
-}
-
-// --- ApplyToolOutputDelta empty ---
-
-func TestCovApplyToolOutputDeltaEmpty(t *testing.T) {
-	r := NewTranscriptReducer(nil, nil, nil)
-	r.ApplyToolOutputDelta("tool-1", "")
-	if len(r.Messages()) != 0 {
-		t.Fatal("empty delta should not append")
+	msgs := r.Messages()
+	if len(msgs) != 1 || msgs[0].Text != "other" {
+		t.Fatalf("non-matching removal changed transcript: %+v", msgs)
 	}
 }
 
 // --- ResetAgentMessage ---
 
-func TestCovResetAgentMessageEmptyItemID(t *testing.T) {
-	r := NewTranscriptReducer(nil, nil, nil)
-	r.ResetAgentMessage("turn_1", "")
-	// Should not panic
-}
-
 func TestCovResetAgentMessageNotFound(t *testing.T) {
-	r := NewTranscriptReducer(nil, nil, nil)
+	seed := []ChatMessage{{Kind: MsgAssistant, ItemID: "keep", TurnID: "turn_1", Text: "existing"}}
+	r := NewTranscriptReducer(seed, nil, map[string]int{"keep": 0})
 	r.ResetAgentMessage("turn_1", "nonexistent")
-	// Should not panic
+	msgs := r.Messages()
+	if len(msgs) != 1 || msgs[0].ItemID != "keep" || msgs[0].Text != "existing" {
+		t.Fatalf("unknown reset changed transcript: %+v", msgs)
+	}
 }
 
 func TestCovResetAgentMessageRemoves(t *testing.T) {

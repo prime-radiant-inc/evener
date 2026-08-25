@@ -2,6 +2,7 @@ package launchconfig
 
 import (
 	"errors"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -52,9 +53,7 @@ func TestCovSelectedInstanceOutOfRange(t *testing.T) {
 }
 
 func TestCovSelectedInstanceHeaderRow(t *testing.T) {
-	inst := &appwire.InstanceEntry{Name: "x"}
 	p := CredentialsPanel{cursor: 0, rows: []panelRow{{header: true, typeName: "type"}}}
-	_ = inst
 	if got := p.selectedInstance(); got != nil {
 		t.Fatal("selectedInstance on header row should return nil")
 	}
@@ -109,10 +108,16 @@ func TestCovCredentialsUpdateListError(t *testing.T) {
 
 func TestCovCredentialsAuthTestGenerationMismatch(t *testing.T) {
 	p := loadedCredentials(appwire.InstanceEntry{Name: "x", Type: "openai"})
+	wantResult := appwire.AuthTestResponse{Provider: "existing", Status: appwire.AuthTestStatusSuccess, Message: "keep me"}
+	p.testResults = map[string]appwire.AuthTestResponse{"existing": wantResult}
+	p.testPending = map[string]bool{"x": true}
 	updated, _ := p.Update(AuthTestResultMsg{Generation: 999})
 	p2 := updated.(CredentialsPanel)
-	if p2.testResults != nil {
-		t.Fatal("generation mismatch should not set test results")
+	if !reflect.DeepEqual(p2.testResults, map[string]appwire.AuthTestResponse{"existing": wantResult}) {
+		t.Fatalf("generation mismatch changed results to %+v", p2.testResults)
+	}
+	if !reflect.DeepEqual(p2.testPending, map[string]bool{"x": true}) {
+		t.Fatalf("generation mismatch changed pending state to %+v", p2.testPending)
 	}
 }
 
@@ -120,11 +125,17 @@ func TestCovCredentialsAuthTestGenerationMismatch(t *testing.T) {
 
 func TestCovCredentialsAuthTestEmptyProvider(t *testing.T) {
 	p := loadedCredentials(appwire.InstanceEntry{Name: "x", Type: "openai"})
+	wantResult := appwire.AuthTestResponse{Provider: "existing", Status: appwire.AuthTestStatusSuccess, Message: "keep me"}
+	p.testResults = map[string]appwire.AuthTestResponse{"existing": wantResult}
+	p.testPending = map[string]bool{"x": true}
 	// Both Provider and Response.Provider empty
 	updated, _ := p.Update(AuthTestResultMsg{Generation: 1, Response: appwire.AuthTestResponse{}})
 	p2 := updated.(CredentialsPanel)
-	if p2.testResults != nil {
-		t.Fatal("empty provider should not set test results")
+	if !reflect.DeepEqual(p2.testResults, map[string]appwire.AuthTestResponse{"existing": wantResult}) {
+		t.Fatalf("empty provider changed results to %+v", p2.testResults)
+	}
+	if !reflect.DeepEqual(p2.testPending, map[string]bool{"x": true}) {
+		t.Fatalf("empty provider changed pending state to %+v", p2.testPending)
 	}
 }
 
@@ -143,8 +154,13 @@ func TestCovCredentialsAuthTestWithError(t *testing.T) {
 		t.Fatal("test results should be set even on error")
 	}
 	result := p2.testResults["x"]
-	if result.Status != appwire.AuthTestStatusEndpointFailure {
-		t.Fatalf("error result status = %q, want endpoint_failure", result.Status)
+	want := appwire.AuthTestResponse{
+		Provider: "x",
+		Status:   appwire.AuthTestStatusEndpointFailure,
+		Message:  "The provider endpoint could not be reached. Check the endpoint and network connection.",
+	}
+	if result != want {
+		t.Fatalf("error result = %+v, want %+v", result, want)
 	}
 }
 
@@ -160,6 +176,10 @@ func TestCovCredentialsAuthTestSuccess(t *testing.T) {
 	p2 := updated.(CredentialsPanel)
 	if p2.testResults == nil {
 		t.Fatal("test results should be set on success")
+	}
+	want := appwire.AuthTestResponse{Provider: "x", Status: appwire.AuthTestStatusSuccess, Message: "Credentials verified."}
+	if got := p2.testResults["x"]; got != want {
+		t.Fatalf("success result = %+v, want %+v", got, want)
 	}
 	if p2.testPending["x"] {
 		t.Fatal("pending should be cleared on success")
@@ -359,8 +379,9 @@ func TestCovCredentialsFormSubmitCreate(t *testing.T) {
 		t.Fatal("Enter on last field should submit")
 	}
 	msg := cmd().(InstanceCreateSubmitMsg)
-	if msg.Params.Type != "openai" || msg.Params.Name != "x" {
-		t.Fatalf("params = %+v", msg.Params)
+	want := appwire.InstanceCreateParams{Type: "openai", Name: "x", APIStyle: "responses"}
+	if msg.Params != want {
+		t.Fatalf("params = %+v, want %+v", msg.Params, want)
 	}
 }
 
@@ -373,8 +394,9 @@ func TestCovCredentialsFormSubmitEdit(t *testing.T) {
 		t.Fatal("Enter on last edit field should submit")
 	}
 	msg := cmd().(InstanceEditSubmitMsg)
-	if msg.Params.Name != "x" || msg.Params.APIStyle != "responses" {
-		t.Fatalf("params = %+v", msg.Params)
+	want := appwire.InstanceEditParams{Name: "x", APIStyle: "responses", BaseURL: "http://x"}
+	if msg.Params != want {
+		t.Fatalf("params = %+v, want %+v", msg.Params, want)
 	}
 }
 
@@ -437,27 +459,33 @@ func TestCovCredentialsFormAPIStyleNonSpaceIgnored(t *testing.T) {
 
 func TestCovSafeCredentialTestResultUnknownStatus(t *testing.T) {
 	resp := safeCredentialTestResult("x", appwire.AuthTestResponse{Provider: "x", Status: "unknown-status"})
-	if resp.Status != appwire.AuthTestStatusEndpointFailure {
-		t.Fatalf("unknown status should map to endpoint_failure, got %q", resp.Status)
+	want := appwire.AuthTestResponse{
+		Provider: "x",
+		Status:   appwire.AuthTestStatusEndpointFailure,
+		Message:  "The provider endpoint could not be reached. Check the endpoint and network connection.",
+	}
+	if resp != want {
+		t.Fatalf("unknown status result = %+v, want %+v", resp, want)
 	}
 }
 
 func TestCovSafeCredentialTestResultAllKnownStatuses(t *testing.T) {
-	statuses := []string{
-		appwire.AuthTestStatusSuccess,
-		appwire.AuthTestStatusMissing,
-		appwire.AuthTestStatusAuthRejected,
-		appwire.AuthTestStatusEndpointFailure,
-		appwire.AuthTestStatusConfigurationFailure,
-		appwire.AuthTestStatusUnsupported,
+	cases := []struct {
+		status  string
+		message string
+	}{
+		{appwire.AuthTestStatusSuccess, "Credentials verified."},
+		{appwire.AuthTestStatusMissing, "No credentials are configured for this instance. Add a key or sign in first."},
+		{appwire.AuthTestStatusAuthRejected, "The provider rejected these credentials. Replace the key or sign in again."},
+		{appwire.AuthTestStatusEndpointFailure, "The provider endpoint could not be reached. Check the endpoint and network connection."},
+		{appwire.AuthTestStatusConfigurationFailure, "Provider configuration could not be loaded. Check the instance settings."},
+		{appwire.AuthTestStatusUnsupported, "This provider does not support harmless credential verification."},
 	}
-	for _, s := range statuses {
-		resp := safeCredentialTestResult("x", appwire.AuthTestResponse{Provider: "x", Status: s})
-		if resp.Status != s {
-			t.Errorf("status %q was rewritten to %q", s, resp.Status)
-		}
-		if resp.Message == "" {
-			t.Errorf("status %q has empty message", s)
+	for _, tc := range cases {
+		resp := safeCredentialTestResult("x", appwire.AuthTestResponse{Provider: "ignored", Status: tc.status, Message: "untrusted wire text"})
+		want := appwire.AuthTestResponse{Provider: "x", Status: tc.status, Message: tc.message}
+		if resp != want {
+			t.Errorf("status %q result = %+v, want %+v", tc.status, resp, want)
 		}
 	}
 }
@@ -587,11 +615,15 @@ func TestCovCredentialsViewHint(t *testing.T) {
 
 func TestCovCredentialsUpdateUnknownMsg(t *testing.T) {
 	p := NewCredentialsPanel()
+	p.formName = "keep"
+	p.testGeneration = 7
 	updated, cmd := p.Update("unknown msg")
 	if cmd != nil {
 		t.Fatal("unknown msg should return nil cmd")
 	}
-	_ = updated
+	if got := updated.(CredentialsPanel); !reflect.DeepEqual(got, p) {
+		t.Fatalf("unknown msg changed panel to %+v, want %+v", got, p)
+	}
 }
 
 // --- credentialBadge ---
@@ -602,15 +634,5 @@ func TestCovCredentialBadgeOptional(t *testing.T) {
 	badge := p.credentialBadge(appwire.InstanceEntry{ActiveSource: "absent", CredentialRequired: false})
 	if !strings.Contains(badge, "OPTIONAL") {
 		t.Fatalf("absent non-required credential should show optional: %q", badge)
-	}
-}
-
-// --- sourceBadgeColor ---
-
-func TestCovSourceBadgeColor(t *testing.T) {
-	withTestColorProfile(t)
-	p := CredentialsPanel{}
-	for _, src := range []string{"oauth", "file", "env", "absent", "none", "unknown"} {
-		_ = p.sourceBadgeColor(src) // just ensure it doesn't panic
 	}
 }

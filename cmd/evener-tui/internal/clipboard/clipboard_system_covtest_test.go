@@ -933,22 +933,32 @@ func TestCovPasteClipboardImageWSLFallbackSuccess(t *testing.T) {
 	if err := os.WriteFile(imgPath, []byte("png-data"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	// ConvertWindowsPathToWSL returns "" for non-Windows paths, so we need a
-	// Windows-style path that converts to a valid WSL path. But the stat
-	// will be on the converted path. The easiest way is to make the winPath
-	// convert to the actual file we created. On non-WSL systems,
-	// ConvertWindowsPathToWSL returns "" for non-Windows paths, which means
-	// TryWSLClipboardFallback returns an error. So we test the WSL path
-	// where the prior error propagates.
+	info, err := os.Stat(imgPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	origStat := clipboardStat
+	t.Cleanup(func() { clipboardStat = origStat })
+	var statPath string
+	clipboardStat = func(path string) (os.FileInfo, error) {
+		statPath = path
+		return info, nil
+	}
+
 	src := &fakeClipboard{
 		imageErr:    ErrNoClipboardImage,
 		procVersion: "microsoft WSL2",
-		winErr:      ErrNoClipboardImage,
+		winPath:     `C:\Users\clip.png`,
 	}
-	_, err := PasteClipboardImage(src)
-	// WSL fallback with ErrNoClipboardImage from PowerShell and prior error
-	// should return the prior error.
-	if !errors.Is(err, ErrNoClipboardImage) {
-		t.Fatalf("err = %v, want ErrNoClipboardImage", err)
+	got, err := PasteClipboardImage(src)
+	if err != nil {
+		t.Fatalf("PasteClipboardImage: %v", err)
+	}
+	const wantPath = "/mnt/c/Users/clip.png"
+	if statPath != wantPath {
+		t.Fatalf("stat path = %q, want %q", statPath, wantPath)
+	}
+	if got.Path != wantPath || got.MediaType != "image/png" || got.Size != len("png-data") || got.Origin != "wsl" {
+		t.Fatalf("pasted image = %+v, want path=%q media=image/png size=%d origin=wsl", got, wantPath, len("png-data"))
 	}
 }

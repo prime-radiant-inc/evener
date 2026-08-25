@@ -122,9 +122,9 @@ func TestCovLaunchOptionValueSystemPromptFile(t *testing.T) {
 
 func TestCovLaunchOptionValueSystemPromptText(t *testing.T) {
 	opt := appwire.LaunchOption{Field: "system_prompt_text", Kind: "text"}
-	val, _ := launchOptionValue(opt, appwire.LaunchConfigLayer{SystemPromptText: "hello\nworld"})
-	if !contains(val, "11 chars") {
-		t.Fatalf("system_prompt_text = %q, want chars/lines summary", val)
+	val, editVal := launchOptionValue(opt, appwire.LaunchConfigLayer{SystemPromptText: "hello\nworld"})
+	if val != "11 chars, 2 lines" || editVal != "hello\nworld" {
+		t.Fatalf("system_prompt_text = %q/%q, want exact summary and edit text", val, editVal)
 	}
 }
 
@@ -146,9 +146,9 @@ func TestCovLaunchOptionValueSystemPromptAppendFile(t *testing.T) {
 
 func TestCovLaunchOptionValueSystemPromptAppendText(t *testing.T) {
 	opt := appwire.LaunchOption{Field: "system_prompt_append_text", Kind: "text"}
-	val, _ := launchOptionValue(opt, appwire.LaunchConfigLayer{SystemPromptAppendText: "append"})
-	if !contains(val, "chars") {
-		t.Fatalf("system_prompt_append_text = %q", val)
+	val, editVal := launchOptionValue(opt, appwire.LaunchConfigLayer{SystemPromptAppendText: "append"})
+	if val != "6 chars, 1 lines" || editVal != "append" {
+		t.Fatalf("system_prompt_append_text = %q/%q, want exact summary and edit text", val, editVal)
 	}
 }
 
@@ -286,8 +286,8 @@ func TestCovMultilineSummaryWhitespace(t *testing.T) {
 
 func TestCovMultilineSummaryMultiLine(t *testing.T) {
 	got := multilineSummary("line1\nline2\nline3")
-	if !contains(got, "3 lines") {
-		t.Fatalf("multilineSummary multiline = %q", got)
+	if got != "17 chars, 3 lines" {
+		t.Fatalf("multilineSummary multiline = %q, want %q", got, "17 chars, 3 lines")
 	}
 }
 
@@ -301,21 +301,7 @@ func TestCovEnvEditValueEmpty(t *testing.T) {
 
 func TestCovEnvEditValueSorted(t *testing.T) {
 	got := envEditValue(map[string]string{"B": "2", "A": "1"})
-	// Keys should be sorted
-	if !contains(got, "A=1") || !contains(got, "B=2") {
-		t.Fatalf("envEditValue = %q", got)
+	if got != "A=1, B=2" {
+		t.Fatalf("envEditValue = %q, want %q", got, "A=1, B=2")
 	}
-}
-
-func contains(s, sub string) bool {
-	return stringContains(s, sub)
-}
-
-func stringContains(s, sub string) bool {
-	for i := 0; i <= len(s)-len(sub); i++ {
-		if s[i:i+len(sub)] == sub {
-			return true
-		}
-	}
-	return false
 }

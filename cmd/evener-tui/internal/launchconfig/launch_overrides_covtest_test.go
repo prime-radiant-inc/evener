@@ -1,6 +1,8 @@
 package launchconfig
 
 import (
+	"reflect"
+	"strings"
 	"testing"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -130,33 +132,38 @@ func TestCovLaunchOverridesEnterOutOfRange(t *testing.T) {
 
 func TestCovLaunchOverridesSchemaResult(t *testing.T) {
 	m := NewLaunchOverridesModal()
-	updated, _ := m.Update(LaunchSchemaResultMsg{Schema: appwire.LaunchOptionSchemaResponse{Options: testLaunchSchema()}})
+	want := testLaunchSchema()
+	updated, _ := m.Update(LaunchSchemaResultMsg{Schema: appwire.LaunchOptionSchemaResponse{Options: want}})
 	m2 := updated.(LaunchOverridesModal)
-	if len(m2.schema) == 0 {
-		t.Fatal("schema should be set")
+	if !reflect.DeepEqual(m2.schema, want) {
+		t.Fatalf("schema = %+v, want %+v", m2.schema, want)
 	}
 }
 
 // --- Update: LaunchSchemaResultMsg error ---
 
 func TestCovLaunchOverridesSchemaResultError(t *testing.T) {
-	m := NewLaunchOverridesModal()
+	want := []appwire.LaunchOption{{Field: "existing", Label: "Existing", Kind: "text"}}
+	m := NewLaunchOverridesModalWithSchema(appwire.LaunchConfigLayer{}, want)
 	updated, _ := m.Update(LaunchSchemaResultMsg{Err: errOOM})
 	m2 := updated.(LaunchOverridesModal)
-	if len(m2.schema) != 0 {
-		t.Fatal("schema should stay empty on error")
+	if !reflect.DeepEqual(m2.schema, want) {
+		t.Fatalf("schema error replaced existing schema with %+v", m2.schema)
 	}
 }
 
 // --- Update: unknown message ---
 
 func TestCovLaunchOverridesUnknownMsg(t *testing.T) {
-	m := NewLaunchOverridesModal()
+	m := NewLaunchOverridesModalWith(appwire.LaunchConfigLayer{Model: "keep"})
+	m.cursor = 3
 	updated, cmd := m.Update("unknown")
 	if cmd != nil {
 		t.Fatal("unknown msg should return nil cmd")
 	}
-	_ = updated
+	if got := updated.(LaunchOverridesModal); !reflect.DeepEqual(got, m) {
+		t.Fatalf("unknown msg changed modal to %+v, want %+v", got, m)
+	}
 }
 
 // --- ApplyEdit error ---
@@ -164,8 +171,8 @@ func TestCovLaunchOverridesUnknownMsg(t *testing.T) {
 func TestCovLaunchOverridesApplyEditError(t *testing.T) {
 	m := NewLaunchOverridesModalWith(appwire.LaunchConfigLayer{})
 	_, err := m.ApplyEdit("nonexistent", "x")
-	if err == nil {
-		t.Fatal("unknown field should return error")
+	if err == nil || err.Error() != `editing "nonexistent" in TUI not yet supported; use the web UI` {
+		t.Fatalf("ApplyEdit error = %v", err)
 	}
 }
 
@@ -185,8 +192,8 @@ func TestCovLaunchOverridesView(t *testing.T) {
 	withTestColorProfile(t)
 	m := NewLaunchOverridesModalWith(appwire.LaunchConfigLayer{Model: "x"})
 	v := m.View()
-	if v == "" {
-		t.Fatal("View should not be empty")
+	if !strings.Contains(v, "Launch overrides") || !strings.Contains(v, "x") {
+		t.Fatalf("View did not render title and model override: %q", v)
 	}
 }
 
