@@ -277,7 +277,7 @@ func (s *Session) persistToolResults(ctx context.Context, calls []llm.ToolCallDa
 					}
 				}
 				if abortErr := s.withResponseSideEffects(ctx, func() {
-					s.SteerKind(label+": "+desc+"\n"+tool.FormatVisionExactnessContract(visionRequestedModeForPurpose(r.ImagePurpose))+"\n<system-reminder>Vision output is model-generated and is not byte-exact OCR. It may omit, misread, or silently normalize rendered text even when asked to transcribe it. Do not treat it as authoritative for exact-match or byte-exact transcription; use a real OCR tool or inspect the source instead.</system-reminder>",
+					s.SteerKind(label+": "+desc+"\n<system-reminder>Vision output is model-generated and is not byte-exact OCR. It may omit, misread, or silently normalize rendered text even when asked to transcribe it. Do not treat it as authoritative for exact-match or byte-exact transcription; use a real OCR tool or inspect the source instead.</system-reminder>",
 						events.SteeringKindImageDescription)
 				}); abortErr != nil {
 					return abortErr
