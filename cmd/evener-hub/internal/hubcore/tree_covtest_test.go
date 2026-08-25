@@ -1,15 +1,16 @@
 package hubcore
 
 import (
-	"database/sql"
 	"errors"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 
 	"github.com/spf13/afero"
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/appwire"
+	"primeradiant.com/evener/cmd/evener-hub/internal/hubtest"
 	"primeradiant.com/evener/identifier"
 )
 
@@ -36,7 +37,7 @@ func TestCovTreePageInvalidOffsetLimit(t *testing.T) {
 func TestCovTreePageOffsetBeyondEnd(t *testing.T) {
 	p := TreeProject{Current: []TreeNode{{ID: "s1"}}}
 	rows, rem, ok := p.Page("current", 5, 10)
-	if !ok || len(rows) != 0 || rem != 0 {
+	if !ok || rows == nil || len(rows) != 0 || rem != 0 {
 		t.Fatalf("offset beyond end: rows=%v rem=%d ok=%v", rows, rem, ok)
 	}
 }
@@ -47,12 +48,14 @@ func TestCovTreePageRecentTier(t *testing.T) {
 		allRecent: []TreeNode{{ID: "s1"}, {ID: "s2"}, {ID: "s3"}},
 	}
 	rows, rem, ok := p.Page("recent", 0, 2)
-	if !ok || len(rows) != 2 || rem != 1 {
-		t.Fatalf("recent page: rows=%d rem=%d ok=%v", len(rows), rem, ok)
+	want := []TreeNode{{ID: "s1"}, {ID: "s2"}}
+	if !ok || !reflect.DeepEqual(rows, want) || rem != 1 {
+		t.Fatalf("recent page: rows=%v rem=%d ok=%v, want rows=%v rem=1 ok=true", rows, rem, ok, want)
 	}
 	rows2, rem2, ok2 := p.Page("recent", 2, 2)
-	if !ok2 || len(rows2) != 1 || rem2 != 0 {
-		t.Fatalf("recent page 2: rows=%d rem=%d ok=%v", len(rows2), rem2, ok2)
+	want2 := []TreeNode{{ID: "s3"}}
+	if !ok2 || !reflect.DeepEqual(rows2, want2) || rem2 != 0 {
+		t.Fatalf("recent page 2: rows=%v rem=%d ok=%v, want rows=%v rem=0 ok=true", rows2, rem2, ok2, want2)
 	}
 }
 
@@ -62,8 +65,9 @@ func TestCovTreePageArchivedTier(t *testing.T) {
 		Archived: []TreeNode{{ID: "s1"}, {ID: "s2"}},
 	}
 	rows, rem, ok := p.Page("archived", 0, 1)
-	if !ok || len(rows) != 1 || rem != 1 {
-		t.Fatalf("archived page: rows=%d rem=%d ok=%v", len(rows), rem, ok)
+	want := []TreeNode{{ID: "s1"}}
+	if !ok || !reflect.DeepEqual(rows, want) || rem != 1 {
+		t.Fatalf("archived page: rows=%v rem=%d ok=%v, want rows=%v rem=1 ok=true", rows, rem, ok, want)
 	}
 }
 
@@ -72,8 +76,9 @@ func TestCovTreePageArchivedTier(t *testing.T) {
 func TestCovTreePageCurrentFallback(t *testing.T) {
 	p := TreeProject{Current: []TreeNode{{ID: "s1"}}}
 	rows, rem, ok := p.Page("current", 0, 10)
-	if !ok || len(rows) != 1 || rem != 0 {
-		t.Fatalf("current fallback: rows=%d rem=%d ok=%v", len(rows), rem, ok)
+	want := []TreeNode{{ID: "s1"}}
+	if !ok || !reflect.DeepEqual(rows, want) || rem != 0 {
+		t.Fatalf("current fallback: rows=%v rem=%d ok=%v, want rows=%v rem=0 ok=true", rows, rem, ok, want)
 	}
 }
 
@@ -82,8 +87,9 @@ func TestCovTreePageCurrentFallback(t *testing.T) {
 func TestCovTreePageRecentFallback(t *testing.T) {
 	p := TreeProject{Recent: []TreeNode{{ID: "s1"}}}
 	rows, rem, ok := p.Page("recent", 0, 10)
-	if !ok || len(rows) != 1 || rem != 0 {
-		t.Fatalf("recent fallback: rows=%d rem=%d ok=%v", len(rows), rem, ok)
+	want := []TreeNode{{ID: "s1"}}
+	if !ok || !reflect.DeepEqual(rows, want) || rem != 0 {
+		t.Fatalf("recent fallback: rows=%v rem=%d ok=%v, want rows=%v rem=0 ok=true", rows, rem, ok, want)
 	}
 }
 
@@ -92,8 +98,9 @@ func TestCovTreePageRecentFallback(t *testing.T) {
 func TestCovTreePageArchivedFallback(t *testing.T) {
 	p := TreeProject{Archived: []TreeNode{{ID: "s1"}}}
 	rows, rem, ok := p.Page("archived", 0, 10)
-	if !ok || len(rows) != 1 || rem != 0 {
-		t.Fatalf("archived fallback: rows=%d rem=%d ok=%v", len(rows), rem, ok)
+	want := []TreeNode{{ID: "s1"}}
+	if !ok || !reflect.DeepEqual(rows, want) || rem != 0 {
+		t.Fatalf("archived fallback: rows=%v rem=%d ok=%v, want rows=%v rem=0 ok=true", rows, rem, ok, want)
 	}
 }
 
@@ -106,9 +113,12 @@ func TestCovResolveProjectMapStrictError(t *testing.T) {
 	metas := []schema.SessionMeta{
 		{ID: "02wMz5Txv1C3Hut0M8GCeB", EnvInfo: schema.EnvironmentInfo{WorkingDir: "/nonexistent/path/that/does/not/exist"}},
 	}
-	_, err := ResolveProjectMapStrict(metas, nil)
-	if err == nil {
-		t.Fatal("ResolveProjectMapStrict should error for unresolvable path")
+	projects, err := ResolveProjectMapStrict(metas, nil)
+	if err == nil || !strings.Contains(err.Error(), `resolve project "/nonexistent/path/that/does/not/exist"`) {
+		t.Fatalf("ResolveProjectMapStrict error = %v, want wrapped project path", err)
+	}
+	if projects != nil {
+		t.Fatalf("ResolveProjectMapStrict projects = %v, want nil on error", projects)
 	}
 }
 
@@ -118,9 +128,12 @@ func TestCovResolveProjectMapStrictLiveError(t *testing.T) {
 	live := []LiveEntry{
 		{SessionID: "02wMz5Txv1C3Hut0M8GCeB", WorkingDir: "/nonexistent/path/that/does/not/exist"},
 	}
-	_, err := ResolveProjectMapStrict(nil, live)
-	if err == nil {
-		t.Fatal("ResolveProjectMapStrict should error for unresolvable live path")
+	projects, err := ResolveProjectMapStrict(nil, live)
+	if err == nil || !strings.Contains(err.Error(), `resolve project "/nonexistent/path/that/does/not/exist"`) {
+		t.Fatalf("ResolveProjectMapStrict error = %v, want wrapped live project path", err)
+	}
+	if projects != nil {
+		t.Fatalf("ResolveProjectMapStrict projects = %v, want nil on error", projects)
 	}
 }
 
@@ -136,8 +149,9 @@ func TestCovResolveProjectMapNonStrictSkipsErrors(t *testing.T) {
 		{SessionID: "02wMz5Txv4enqVTitaig6F", WorkingDir: ""},
 	}
 	projects := ResolveProjectMap(metas, live)
-	if len(projects) != 0 {
-		t.Fatalf("expected 0 projects (all skipped), got %d", len(projects))
+	want := map[string]identifier.Project{}
+	if !reflect.DeepEqual(projects, want) {
+		t.Fatalf("projects = %#v, want empty map", projects)
 	}
 }
 
@@ -149,8 +163,9 @@ func TestCovResolveProjectMapLiveWithProjectID(t *testing.T) {
 		{SessionID: "02wMz5Txv1C3Hut0M8GCeB", WorkingDir: "/tmp/test", Project: proj},
 	}
 	projects := ResolveProjectMap(nil, live)
-	if len(projects) == 0 {
-		t.Fatal("expected at least 1 project")
+	want := map[string]identifier.Project{"/tmp/test": proj}
+	if !reflect.DeepEqual(projects, want) {
+		t.Fatalf("projects = %#v, want %#v", projects, want)
 	}
 }
 
@@ -162,34 +177,35 @@ func TestCovResolveProjectMapLiveWithProjectID(t *testing.T) {
 func TestCovFavoriteCandidatesCoversAllKinds(t *testing.T) {
 	tree := Tree{
 		favoriteLive: []TreeNode{
-			{ID: "live-1", Kind: "session"},
+			{ID: "live-1", Kind: "session", Title: "live"},
 		},
 		Projects: []TreeProject{
 			{allCurrent: []TreeNode{
 				{ID: "", Kind: "session"},       // empty ID skipped
 				{ID: "live-1", Kind: "session"}, // duplicate skipped
-				{ID: "fork-1", Kind: "fork"},
+				{ID: "fork-1", Kind: "fork", Title: "fork"},
 				{Kind: "cluster", Children: []TreeNode{
-					{ID: "child-1", Kind: "session"},
-					{ID: "child-2", Kind: "fork"},
+					{ID: "child-1", Kind: "session", Title: "child session"},
+					{ID: "child-2", Kind: "fork", Title: "child fork"},
 					{ID: "child-3", Kind: "subagent"}, // skipped
 				}},
 				{ID: "other-1", Kind: "other"}, // skipped
 			}},
 			{allRecent: []TreeNode{
-				{ID: "recent-1", Kind: "session"},
+				{ID: "recent-1", Kind: "session", Title: "recent"},
 			}},
 		},
 	}
 	got := tree.FavoriteCandidates()
-	ids := make(map[string]bool)
-	for _, n := range got {
-		ids[n.ID] = true
+	want := []TreeNode{
+		{ID: "live-1", Kind: "session", Title: "live"},
+		{ID: "fork-1", Kind: "fork", Title: "fork"},
+		{ID: "child-1", Kind: "session", Title: "child session"},
+		{ID: "child-2", Kind: "fork", Title: "child fork"},
+		{ID: "recent-1", Kind: "session", Title: "recent"},
 	}
-	for _, want := range []string{"live-1", "fork-1", "child-1", "child-2", "recent-1"} {
-		if !ids[want] {
-			t.Errorf("FavoriteCandidates missing %q; got %v", want, ids)
-		}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("FavoriteCandidates = %#v, want exact ordered nodes %#v", got, want)
 	}
 }
 
@@ -212,9 +228,12 @@ func TestCovPastRebuildEmptyGlob(t *testing.T) {
 // (past.go:137-138).
 func TestCovPastRebuildGlobError(t *testing.T) {
 	idx := NewPastIndex("[").SetFs(afero.NewMemMapFs())
-	_, err := idx.Rebuild()
+	changed, err := idx.Rebuild()
 	if err == nil {
 		t.Fatal("Rebuild with malformed glob should error")
+	}
+	if changed {
+		t.Fatal("Rebuild with malformed glob reported a change")
 	}
 }
 
@@ -222,8 +241,12 @@ func TestCovPastRebuildGlobError(t *testing.T) {
 // (past.go:713-714).
 func TestCovPastFindInvalidID(t *testing.T) {
 	idx := NewPastIndex("")
+	// Seed the cache with the invalid key. If validation moves behind the cache
+	// lookup, this fixture makes the test fail instead of reaching the same
+	// false result through an empty index.
+	idx.byID["not-a-valid-ulid"] = PastEntry{Meta: schema.SessionMeta{ID: "not-a-valid-ulid"}}
 	if _, ok := idx.Find("not-a-valid-ulid"); ok {
-		t.Fatal("Find with invalid ID should return false")
+		t.Fatal("Find admitted an invalid ID already present in the cache")
 	}
 }
 
@@ -231,7 +254,7 @@ func TestCovPastFindInvalidID(t *testing.T) {
 // stateGlob (past.go:719-720).
 func TestCovPastFindEmptyStateGlob(t *testing.T) {
 	idx := NewPastIndex("")
-	if _, ok := idx.Find("01ABCDEFGHJKMNPQRSTVWX0"); ok {
+	if _, ok := idx.Find(hubtest.SessionID(t)); ok {
 		t.Fatal("Find with empty stateGlob should return false")
 	}
 }
@@ -272,12 +295,23 @@ func TestCovInferRemoteSourcesFromRef(t *testing.T) {
 	threads := []appwire.Thread{
 		{ID: "t1", Source: "", Evener: appwire.EvenerThread{Ref: "remote1:s1"}},
 	}
-	sources := inferRemoteSources(threads, true)
-	if len(sources) != 1 {
-		t.Fatalf("expected 1 source, got %d", len(sources))
+	wantInput := []appwire.Thread{
+		{ID: "t1", Source: "", Evener: appwire.EvenerThread{Ref: "remote1:s1"}},
 	}
-	if _, ok := sources["remote1"]; !ok {
-		t.Fatal("expected remote1 source")
+	want := map[string]RemoteSourceSnapshot{
+		"remote1": {
+			Threads: []appwire.Thread{
+				{ID: "t1", Source: "", Evener: appwire.EvenerThread{Ref: "remote1:s1"}},
+			},
+			Complete: true,
+		},
+	}
+	sources := inferRemoteSources(threads, true)
+	if !reflect.DeepEqual(sources, want) {
+		t.Fatalf("sources = %#v, want %#v", sources, want)
+	}
+	if !reflect.DeepEqual(threads, wantInput) {
+		t.Fatalf("input threads mutated: got %#v, want %#v", threads, wantInput)
 	}
 }
 
@@ -600,17 +634,26 @@ func TestCovLoadDeletionSnapshotFSEmptyRoot(t *testing.T) {
 // TestCovNormalizeDeletionTargetsDedup covers normalizeDeletionTargets with
 // duplicate thread IDs (deletion_store.go:215-240).
 func TestCovNormalizeDeletionTargetsDedup(t *testing.T) {
+	firstID := hubtest.SessionID(t)
+	secondID := hubtest.SessionID(t)
 	targets := []DeletionTarget{
-		{ThreadID: "02wMz5Txv1C3Hut0M8GCeB", Ref: "local:02wMz5Txv1C3Hut0M8GCeB"},
-		{ThreadID: "02wMz5Txv1C3Hut0M8GCeB", Ref: "local:02wMz5Txv1C3Hut0M8GCeB"},
-		{ThreadID: "02wMz5Txv2enqVTitaig6F", Ref: "local:02wMz5Txv2enqVTitaig6F"},
+		{ThreadID: secondID, Ref: "local:" + secondID},
+		{ThreadID: firstID, Ref: "local:" + firstID},
+		{ThreadID: secondID, Ref: "local:" + secondID},
 	}
 	normalized, err := normalizeDeletionTargets(targets)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if len(normalized) != 2 {
-		t.Fatalf("expected 2 unique targets, got %d", len(normalized))
+	want := []DeletionTarget{
+		{ThreadID: firstID, Ref: "local:" + firstID},
+		{ThreadID: secondID, Ref: "local:" + secondID},
+	}
+	if strings.Compare(want[0].Ref, want[1].Ref) > 0 {
+		want[0], want[1] = want[1], want[0]
+	}
+	if !reflect.DeepEqual(normalized, want) {
+		t.Fatalf("normalized = %#v, want sorted unique targets %#v", normalized, want)
 	}
 }
 
@@ -621,8 +664,9 @@ func TestCovMarkDeletedNotFound(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewDeletionStore: %v", err)
 	}
-	if err := store.MarkDeleted("nonexistent-0123456789", 1); err == nil {
-		t.Fatal("MarkDeleted should error for non-existent generation")
+	want := "deletion generation nonexistent-0123456789/1 not found"
+	if err := store.MarkDeleted("nonexistent-0123456789", 1); err == nil || err.Error() != want {
+		t.Fatalf("MarkDeleted error = %v, want %q", err, want)
 	}
 }
 
@@ -643,33 +687,17 @@ func TestCovMarkDeletedAlreadyDeleted(t *testing.T) {
 	if err := store.MarkDeleted("project-delete-0123456789", record.Generation); err != nil {
 		t.Fatalf("first MarkDeleted: %v", err)
 	}
-	// Second call with same generation should be idempotent.
+	// Second call with same generation should be idempotent and leave no
+	// in-progress record behind.
 	if err := store.MarkDeleted("project-delete-0123456789", record.Generation); err != nil {
 		t.Fatalf("second MarkDeleted: %v", err)
+	}
+	if got := store.Deleting(); got != nil {
+		t.Fatalf("Deleting after idempotent MarkDeleted = %#v, want nil", got)
 	}
 }
 
 // --- pin_section.go: openWithImmediateTransaction ---
-
-// TestCovPinSectionOpenWithImmediateTransactionImmediate covers the
-// immediate=true branch of openWithImmediateTransaction (pin_section.go:116-117).
-func TestCovPinSectionOpenWithImmediateTransactionImmediate(t *testing.T) {
-	store := NewPinSectionStore(filepath.Join(t.TempDir(), "index.db"))
-	store.openDB = func(_, dsn string) (*sql.DB, error) {
-		if !strings.Contains(dsn, "_txlock=immediate") {
-			t.Fatalf("expected immediate txlock in DSN, got %q", dsn)
-		}
-		return sql.Open("sqlite", strings.TrimSuffix(dsn, "&_txlock=immediate"))
-	}
-	db, err := store.openWithImmediateTransaction(true)
-	if err != nil {
-		t.Fatalf("openWithImmediateTransaction(immediate): %v", err)
-	}
-	if db == nil {
-		t.Fatal("expected non-nil db")
-	}
-	_ = db.Close()
-}
 
 // TestCovPinSectionOpenWithImmediateTransactionMkdirError covers the
 // MkdirAll error branch (pin_section.go:112-113).

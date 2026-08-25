@@ -29,27 +29,46 @@ func TestCovClientMutationTurnID(t *testing.T) {
 	}
 }
 
-// TestCovWSTransportPing covers WSTransport.Ping (ws_transport.go:71). Ping
-// delegates to the package-level pingWebSocket var, which is normally
-// (*websocket.Conn).Ping. We substitute a fake to avoid a real WebSocket.
+// TestCovWSTransportPing pins the WebSocket boundary: Ping must pass its own
+// connection and the caller's context through unchanged, and return the
+// boundary error unchanged.
 func TestCovWSTransportPing(t *testing.T) {
-	// Success path.
 	oldPing := pingWebSocket
 	t.Cleanup(func() { pingWebSocket = oldPing })
-	pingWebSocket = func(_ *websocket.Conn, _ context.Context) error {
+
+	conn := &websocket.Conn{}
+	successCtx := context.WithValue(t.Context(), struct{}{}, "success")
+	errorCtx, cancel := context.WithCancel(t.Context())
+	t.Cleanup(cancel)
+	wantErr := errors.New("ping failed")
+	wantContexts := []context.Context{successCtx, errorCtx}
+	calls := 0
+	pingWebSocket = func(gotConn *websocket.Conn, gotCtx context.Context) error {
+		if gotConn != conn {
+			t.Fatalf("ping receiver = %p, want %p", gotConn, conn)
+		}
+		if calls >= len(wantContexts) {
+			t.Fatalf("unexpected ping call %d", calls+1)
+		}
+		if gotCtx != wantContexts[calls] {
+			t.Fatalf("ping context on call %d was replaced", calls+1)
+		}
+		calls++
+		if gotCtx == errorCtx {
+			return wantErr
+		}
 		return nil
 	}
-	tr := &WSTransport{}
-	if err := tr.Ping(context.Background()); err != nil {
+
+	tr := &WSTransport{conn: conn}
+	if err := tr.Ping(successCtx); err != nil {
 		t.Fatalf("Ping success: unexpected error: %v", err)
 	}
-
-	// Error path.
-	pingWebSocket = func(_ *websocket.Conn, _ context.Context) error {
-		return errors.New("ping failed")
+	if err := tr.Ping(errorCtx); err != wantErr {
+		t.Fatalf("Ping error = %v, want %v", err, wantErr)
 	}
-	if err := tr.Ping(context.Background()); err == nil {
-		t.Fatalf("Ping error: expected error, got nil")
+	if calls != 2 {
+		t.Fatalf("ping calls = %d, want 2", calls)
 	}
 }
 

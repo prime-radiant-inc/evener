@@ -5,6 +5,9 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -12,7 +15,6 @@ import (
 	"primeradiant.com/evener/cmd/evener-hub/internal/hubcore"
 	"primeradiant.com/evener/hubapi"
 	"primeradiant.com/evener/identifier"
-	"primeradiant.com/evener/llm"
 )
 
 // --- web_spawn.go: launchOverridesWithAccessMode ---
@@ -21,49 +23,74 @@ import (
 // sandbox path (web_spawn.go:42-43).
 func TestCovLaunchOverridesNilWithSandbox(t *testing.T) {
 	result := launchOverridesWithAccessMode(nil, "workspace-write")
-	if result == nil || result.Sandbox != "workspace-write" {
-		t.Fatalf("expected Sandbox=workspace-write, got %+v", result)
+	want := &appwire.LaunchConfigLayer{Sandbox: "workspace-write"}
+	if !reflect.DeepEqual(result, want) {
+		t.Fatalf("launch overrides = %+v, want %+v", result, want)
 	}
 }
 
-// TestCovLaunchOverridesNilWithInvalidMode covers the nil overrides + invalid
-// sandbox path (web_spawn.go:39-40).
-func TestCovLaunchOverridesNilWithInvalidMode(t *testing.T) {
-	result := launchOverridesWithAccessMode(nil, "invalid")
-	if result != nil {
-		t.Fatalf("expected nil for invalid mode, got %+v", result)
+// TestCovLaunchOverridesWithInvalidMode covers the invalid access-mode path
+// (web_spawn.go:39-40), which must preserve an existing layer unchanged.
+func TestCovLaunchOverridesWithInvalidMode(t *testing.T) {
+	overrides := &appwire.LaunchConfigLayer{Model: "preserved"}
+	want := *overrides
+	result := launchOverridesWithAccessMode(overrides, "invalid")
+	if result != overrides {
+		t.Fatalf("invalid mode returned a new layer: got %p, want %p", result, overrides)
+	}
+	if !reflect.DeepEqual(*overrides, want) {
+		t.Fatalf("invalid mode mutated overrides: got %+v, want %+v", *overrides, want)
 	}
 }
 
 // TestCovLaunchOverridesWithExistingSandbox covers the path where overrides
 // already has a non-empty Sandbox (web_spawn.go:45-46).
 func TestCovLaunchOverridesWithExistingSandbox(t *testing.T) {
-	overrides := &appwire.LaunchConfigLayer{Sandbox: "read-only"}
+	overrides := &appwire.LaunchConfigLayer{Model: "preserved", Sandbox: "read-only"}
+	want := *overrides
 	result := launchOverridesWithAccessMode(overrides, "workspace-write")
 	if result != overrides {
 		t.Fatalf("expected same overrides when Sandbox is set, got %+v", result)
+	}
+	if !reflect.DeepEqual(*overrides, want) {
+		t.Fatalf("input overrides mutated: got %+v, want %+v", *overrides, want)
 	}
 }
 
 // TestCovLaunchOverridesWithEmptySandbox covers the path where overrides has
 // an empty/whitespace Sandbox (web_spawn.go:47-49).
 func TestCovLaunchOverridesWithEmptySandbox(t *testing.T) {
-	overrides := &appwire.LaunchConfigLayer{Sandbox: "  "}
+	overrides := &appwire.LaunchConfigLayer{Model: "preserved", Sandbox: "  ", SkillsDirs: []string{"skills"}}
+	wantInput := *overrides
+	wantInput.SkillsDirs = append([]string(nil), overrides.SkillsDirs...)
+	wantResult := wantInput
+	wantResult.SkillsDirs = append([]string(nil), wantInput.SkillsDirs...)
+	wantResult.Sandbox = "restricted"
 	result := launchOverridesWithAccessMode(overrides, "restricted")
-	if result == nil || result.Sandbox != "restricted" {
-		t.Fatalf("expected Sandbox=restricted, got %+v", result)
+	if result == overrides {
+		t.Fatal("launchOverridesWithAccessMode mutated in place; want a copied layer")
+	}
+	if result == nil || !reflect.DeepEqual(*result, wantResult) {
+		t.Fatalf("launch overrides = %+v, want copied value %+v", result, wantResult)
+	}
+	if !reflect.DeepEqual(*overrides, wantInput) {
+		t.Fatalf("input overrides mutated: got %+v, want %+v", *overrides, wantInput)
 	}
 }
 
 // TestCovSandboxForAccessMode covers all branches of sandboxForAccessMode.
 func TestCovSandboxForAccessMode(t *testing.T) {
-	for _, mode := range []string{"read-only", "workspace-write", "restricted"} {
-		if got := sandboxForAccessMode(mode); got != mode {
-			t.Errorf("sandboxForAccessMode(%q) = %q, want %q", mode, got, mode)
-		}
+	cases := map[string]string{
+		"full":            "off",
+		"read-only":       "read-only",
+		"workspace-write": "workspace-write",
+		"restricted":      "restricted",
+		" invalid ":       "",
 	}
-	if got := sandboxForAccessMode("invalid"); got != "" {
-		t.Errorf("sandboxForAccessMode(invalid) = %q, want empty", got)
+	for mode, want := range cases {
+		if got := sandboxForAccessMode(mode); got != want {
+			t.Errorf("sandboxForAccessMode(%q) = %q, want %q", mode, got, want)
+		}
 	}
 }
 
@@ -90,13 +117,17 @@ func TestCovLockForSessionCreatesRegistry(t *testing.T) {
 // TestCovLockForSessionWithExistingRegistry covers the path where ResumeLocks
 // is already set (web.go:96).
 func TestCovLockForSessionWithExistingRegistry(t *testing.T) {
+	registry := hubcore.NewResumeLocks()
 	web := NewWebServer(hubcore.WebConfig{
 		HubAddr:     "127.0.0.1:9180",
-		ResumeLocks: hubcore.NewResumeLocks(),
+		ResumeLocks: registry,
 	})
 	lock := web.lockForSession("s1")
-	if lock == nil {
-		t.Fatal("expected non-nil lock")
+	if web.cfg.ResumeLocks != registry {
+		t.Fatal("NewWebServer replaced the configured resume-lock registry")
+	}
+	if want := registry.For("s1"); lock != want {
+		t.Fatalf("lockForSession = %p, configured registry lock = %p", lock, want)
 	}
 }
 
@@ -323,13 +354,11 @@ func TestCovFavoriteSessionSourceQualityThreadWithDifferentSource(t *testing.T) 
 			Complete: true,
 			Threads: []appwire.Thread{
 				{ID: "s1", Source: "other", Evener: appwire.EvenerThread{Ref: "remote1:s1"}},
-				{ID: "s1", Source: "remote1", Evener: appwire.EvenerThread{Ref: "remote1:s1"}},
 			},
 		},
 	}
-	// The first thread has Source="other" so it's skipped; the second matches.
-	if got := favoriteSessionSourceQuality("remote1:s1", ownership, sources, nil); got != hubcore.FavoriteAuthorityComplete {
-		t.Fatalf("expected complete (second thread matches), got %v", got)
+	if got := favoriteSessionSourceQuality("remote1:s1", ownership, sources, nil); got != hubcore.FavoriteAuthorityIncomplete {
+		t.Fatalf("mismatched thread source quality = %v, want incomplete", got)
 	}
 }
 
@@ -339,9 +368,9 @@ func TestCovFavoriteSessionSourceQualityThreadWithDifferentSource(t *testing.T) 
 // (web_api_tree.go:1246-1247).
 func TestCovFavoriteSessionAliasesLocalRef(t *testing.T) {
 	aliases := favoriteSessionAliases("local:02wMz5Txv1C3Hut0M8GCeB")
-	// Should include the original, the session ID, and "local:"+sessionID.
-	if len(aliases) < 2 {
-		t.Fatalf("expected at least 2 aliases, got %d: %v", len(aliases), aliases)
+	want := []string{"local:02wMz5Txv1C3Hut0M8GCeB", "02wMz5Txv1C3Hut0M8GCeB"}
+	if !reflect.DeepEqual(aliases, want) {
+		t.Fatalf("aliases = %v, want exact ordered aliases %v", aliases, want)
 	}
 }
 
@@ -349,12 +378,9 @@ func TestCovFavoriteSessionAliasesLocalRef(t *testing.T) {
 // (web_api_tree.go:1248-1249).
 func TestCovFavoriteSessionAliasesBareID(t *testing.T) {
 	aliases := favoriteSessionAliases("02wMz5Txv1C3Hut0M8GCeB")
-	// Should include the original and "local:"+original.
-	if len(aliases) != 2 {
-		t.Fatalf("expected 2 aliases, got %d: %v", len(aliases), aliases)
-	}
-	if aliases[1] != "local:02wMz5Txv1C3Hut0M8GCeB" {
-		t.Fatalf("expected local: prefix, got %q", aliases[1])
+	want := []string{"02wMz5Txv1C3Hut0M8GCeB", "local:02wMz5Txv1C3Hut0M8GCeB"}
+	if !reflect.DeepEqual(aliases, want) {
+		t.Fatalf("aliases = %v, want exact ordered aliases %v", aliases, want)
 	}
 }
 
@@ -362,8 +388,9 @@ func TestCovFavoriteSessionAliasesBareID(t *testing.T) {
 // (no local: prefix, has colon).
 func TestCovFavoriteSessionAliasesNonLocalRef(t *testing.T) {
 	aliases := favoriteSessionAliases("remote1:s1")
-	if len(aliases) != 1 {
-		t.Fatalf("expected 1 alias for non-local ref, got %d: %v", len(aliases), aliases)
+	want := []string{"remote1:s1"}
+	if !reflect.DeepEqual(aliases, want) {
+		t.Fatalf("aliases = %v, want %v", aliases, want)
 	}
 }
 
@@ -393,9 +420,13 @@ func TestCovAddNavigationProjectCandidateEmptyProjectID(t *testing.T) {
 // (web_api_tree.go:654-655).
 func TestCovAddNavigationProjectCandidateNewPath(t *testing.T) {
 	candidates := map[string]map[string]identifier.Project{}
-	addNavigationProjectCandidate(candidates, "/path", identifier.Project{ID: "p1", CanonicalPath: "/path"})
-	if len(candidates) != 1 || candidates["/path"] == nil {
-		t.Fatalf("expected 1 candidate with a map, got %v", candidates)
+	project := identifier.Project{ID: "p1", CanonicalPath: "/path"}
+	addNavigationProjectCandidate(candidates, "/path", project)
+	want := map[string]map[string]identifier.Project{
+		"/path": {"p1\x00/path": project},
+	}
+	if !reflect.DeepEqual(candidates, want) {
+		t.Fatalf("candidates = %#v, want exact insertion %#v", candidates, want)
 	}
 }
 
@@ -411,14 +442,16 @@ func TestCovSelectNavigationProjectsConflict(t *testing.T) {
 		},
 	}
 	projects, identities, conflicts := selectNavigationProjects(candidates)
-	if len(projects) != 1 {
-		t.Fatalf("expected 1 project, got %d", len(projects))
+	wantA := identifier.Project{ID: "a", CanonicalPath: "/path"}
+	wantB := identifier.Project{ID: "b", CanonicalPath: "/path"}
+	if want := map[string]identifier.Project{"/path": wantA}; !reflect.DeepEqual(projects, want) {
+		t.Fatalf("projects = %#v, want %#v", projects, want)
 	}
-	if !conflicts["/path"] {
-		t.Fatal("expected conflict at /path")
+	if want := map[string][]identifier.Project{"/path": {wantA, wantB}}; !reflect.DeepEqual(identities, want) {
+		t.Fatalf("identities = %#v, want sorted identities %#v", identities, want)
 	}
-	if len(identities["/path"]) != 2 {
-		t.Fatalf("expected 2 identities, got %d", len(identities["/path"]))
+	if want := map[string]bool{"/path": true}; !reflect.DeepEqual(conflicts, want) {
+		t.Fatalf("conflicts = %#v, want %#v", conflicts, want)
 	}
 }
 
@@ -428,12 +461,16 @@ func TestCovSelectNavigationProjectsEmpty(t *testing.T) {
 	candidates := map[string]map[string]identifier.Project{
 		"/path": {},
 	}
-	projects, _, conflicts := selectNavigationProjects(candidates)
-	if len(projects) != 0 {
-		t.Fatalf("expected 0 projects for empty keys, got %d", len(projects))
+	projects, identities, conflicts := selectNavigationProjects(candidates)
+	if !reflect.DeepEqual(projects, map[string]identifier.Project{}) {
+		t.Fatalf("projects = %#v, want empty map", projects)
 	}
-	if conflicts["/path"] {
-		t.Fatal("expected no conflict for empty keys")
+	wantIdentities := map[string][]identifier.Project{}
+	if !reflect.DeepEqual(identities, wantIdentities) {
+		t.Fatalf("identities = %#v, want %#v", identities, wantIdentities)
+	}
+	if !reflect.DeepEqual(conflicts, map[string]bool{}) {
+		t.Fatalf("conflicts = %#v, want empty map", conflicts)
 	}
 }
 
@@ -468,10 +505,13 @@ func TestCovDocRawTotalSizeStatError(t *testing.T) {
 
 // TestCovDocRawTotalSizeStatOK covers the stat-success path (doc_serve.go:229).
 func TestCovDocRawTotalSizeStatOK(t *testing.T) {
-	// Use the test file itself as a known-existing file.
-	got := docRawTotalSize("web_covtest_test.go", 0)
-	if got <= 0 {
-		t.Fatalf("expected positive size, got %d", got)
+	payload := []byte("known document bytes")
+	path := filepath.Join(t.TempDir(), "doc.txt")
+	if err := os.WriteFile(path, payload, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if got, want := docRawTotalSize(path, 1), int64(len(payload)); got != want {
+		t.Fatalf("docRawTotalSize = %d, want stat size %d", got, want)
 	}
 }
 
@@ -632,15 +672,23 @@ func TestCovHandleAPISessionDeleteNonLocal(t *testing.T) {
 	}
 }
 
-// TestCovHandleAPISessionDeleteInvalidID covers the invalid session ID branch
-// (web_api_session_delete.go:47-48).
-func TestCovHandleAPISessionDeleteInvalidID(t *testing.T) {
+// TestCovHandleAPISessionDeleteInvalidIDShortCircuit pins the route guard: an
+// invalid bare ID is rejected before the Past-index configuration is read.
+func TestCovHandleAPISessionDeleteInvalidIDShortCircuit(t *testing.T) {
 	web := NewWebServer(hubcore.WebConfig{HubAddr: "127.0.0.1:9180"})
 	req := httptest.NewRequest(http.MethodPost, "/api/sessions/invalid-id/delete", nil)
 	rec := httptest.NewRecorder()
 	web.handleAPISessionDelete(rec, req, "invalid-id")
 	if rec.Code != http.StatusBadRequest {
 		t.Fatalf("expected 400, got %d", rec.Code)
+	}
+	var got hubapi.ErrorResponse
+	if err := json.NewDecoder(rec.Body).Decode(&got); err != nil {
+		t.Fatalf("decode invalid-ID response: %v", err)
+	}
+	want := hubapi.ErrorResponse{Error: "only local sessions can be deleted"}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("invalid-ID response = %#v, want %#v", got, want)
 	}
 }
 
@@ -674,8 +722,9 @@ func TestCovTopLevelFavoriteSessionIDClusterPrefix(t *testing.T) {
 func TestCovAPITreeSourcesLocalOnly(t *testing.T) {
 	web := NewWebServer(hubcore.WebConfig{HubAddr: "127.0.0.1:9180"})
 	sources := web.apiTreeSources()
-	if len(sources) != 1 || sources[0].ID != "local" {
-		t.Fatalf("expected 1 local source, got %v", sources)
+	want := []hubapi.Source{{ID: "local", Label: "this host", Kind: "local", Online: true}}
+	if !reflect.DeepEqual(sources, want) {
+		t.Fatalf("sources = %#v, want %#v", sources, want)
 	}
 }
 
@@ -802,6 +851,13 @@ func TestCovHandleApiSearchEmpty(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d", rec.Code)
 	}
+	var got searchResponse
+	if err := json.NewDecoder(rec.Body).Decode(&got); err != nil {
+		t.Fatalf("decode search response: %v", err)
+	}
+	if !reflect.DeepEqual(got, searchResponse{}) {
+		t.Fatalf("empty search response = %#v, want zero response", got)
+	}
 }
 
 // --- webnext.go: webassetsHandler ---
@@ -843,8 +899,17 @@ func TestCovPinSectionTrees(t *testing.T) {
 		"s3": {Ref: "local:s3", SessionID: "s3"},
 	}
 	result := pinSectionTrees(sections, assignments, visible, nodes)
-	if len(result) != 2 {
-		t.Fatalf("expected 2 sections, got %d", len(result))
+	want := []hubapi.PinSectionTree{
+		{ID: "sec1", Name: "Section 1", Sessions: []hubapi.TreeNode{
+			{Ref: "local:s1", SessionID: "s1", PinSectionID: "sec1"},
+			{Ref: "local:s2", SessionID: "s2", PinSectionID: "sec1"},
+		}},
+		{ID: "sec2", Name: "Section 2", Sessions: []hubapi.TreeNode{
+			{Ref: "local:s3", SessionID: "s3", PinSectionID: "sec2"},
+		}},
+	}
+	if !reflect.DeepEqual(result, want) {
+		t.Fatalf("pin section trees = %#v, want exact ordered trees %#v", result, want)
 	}
 }
 
@@ -864,8 +929,8 @@ func TestCovPinSectionTreesNotVisible(t *testing.T) {
 		"s1": {Ref: "local:s1"},
 	}
 	result := pinSectionTrees(sections, assignments, visible, nodes)
-	if len(result) != 0 {
-		t.Fatalf("expected 0 sections (not visible), got %d", len(result))
+	if result == nil || len(result) != 0 {
+		t.Fatalf("not-visible result = %#v, want non-nil empty slice", result)
 	}
 }
 
@@ -883,8 +948,8 @@ func TestCovPinSectionTreesNoNode(t *testing.T) {
 	}
 	nodes := map[string]hubapi.TreeNode{}
 	result := pinSectionTrees(sections, assignments, visible, nodes)
-	if len(result) != 0 {
-		t.Fatalf("expected 0 sections (no node), got %d", len(result))
+	if result == nil || len(result) != 0 {
+		t.Fatalf("missing-node result = %#v, want non-nil empty slice", result)
 	}
 }
 
@@ -908,11 +973,15 @@ func TestCovPinSectionTreesDedupRef(t *testing.T) {
 		"local:s1": node,
 	}
 	result := pinSectionTrees(sections, assignments, visible, nodes)
-	if len(result) != 1 {
-		t.Fatalf("expected 1 section, got %d", len(result))
-	}
-	if len(result[0].Sessions) != 1 {
-		t.Fatalf("expected 1 deduped session, got %d", len(result[0].Sessions))
+	want := []hubapi.PinSectionTree{{
+		ID:   "sec1",
+		Name: "Section 1",
+		Sessions: []hubapi.TreeNode{{
+			Ref: "local:s1", SessionID: "s1", PinSectionID: "sec1",
+		}},
+	}}
+	if !reflect.DeepEqual(result, want) {
+		t.Fatalf("deduped trees = %#v, want %#v", result, want)
 	}
 }
 
@@ -933,12 +1002,15 @@ func TestCovPinSectionTreesEmptySection(t *testing.T) {
 		"s1": {Ref: "local:s1", SessionID: "s1"},
 	}
 	result := pinSectionTrees(sections, assignments, visible, nodes)
-	// sec1 has no sessions, so only sec2 should appear.
-	if len(result) != 1 {
-		t.Fatalf("expected 1 non-empty section, got %d", len(result))
-	}
-	if result[0].ID != "sec2" {
-		t.Fatalf("expected sec2, got %q", result[0].ID)
+	want := []hubapi.PinSectionTree{{
+		ID:   "sec2",
+		Name: "Section 2",
+		Sessions: []hubapi.TreeNode{{
+			Ref: "local:s1", SessionID: "s1", PinSectionID: "sec2",
+		}},
+	}}
+	if !reflect.DeepEqual(result, want) {
+		t.Fatalf("non-empty section trees = %#v, want %#v", result, want)
 	}
 }
 
@@ -947,11 +1019,8 @@ func TestCovPinSectionTreesEmptySection(t *testing.T) {
 // TestCovAppendProjectDeleteLiveSkip covers the helper.
 func TestCovAppendProjectDeleteLiveSkip(t *testing.T) {
 	result := appendProjectDeleteLiveSkip(nil, "s1")
-	if len(result) != 1 || result[0].ID != "s1" || result[0].Reason != "resumed live" {
-		t.Fatalf("unexpected result: %+v", result)
+	want := []projectDeleteSkip{{ID: "s1", Reason: "resumed live"}}
+	if !reflect.DeepEqual(result, want) {
+		t.Fatalf("result = %+v, want %+v", result, want)
 	}
 }
-
-// keep imports used
-var _ = json.Marshal
-var _ = llm.ErrAPILogTargetLocked

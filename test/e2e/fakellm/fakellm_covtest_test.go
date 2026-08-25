@@ -1,7 +1,15 @@
 package fakellm
 
 import (
+	"encoding/json"
+	"net"
+	"net/http"
+	"reflect"
+	"strconv"
+	"strings"
 	"testing"
+
+	"primeradiant.com/evener/internal/e2ecap"
 )
 
 // TestCovMintToolCallID covers mintToolCallID (fakellm.go:90), which mints
@@ -9,11 +17,20 @@ import (
 func TestCovMintToolCallID(t *testing.T) {
 	id1 := mintToolCallID()
 	id2 := mintToolCallID()
-	if id1 == id2 {
-		t.Fatalf("mintToolCallID should produce unique ids: %q == %q", id1, id2)
+	const prefix = "call_fakellm_"
+	if !strings.HasPrefix(id1, prefix) || !strings.HasPrefix(id2, prefix) {
+		t.Fatalf("tool call IDs = %q, %q, want %q prefix", id1, id2, prefix)
 	}
-	if id1 == "" {
-		t.Fatal("mintToolCallID should not return empty")
+	n1, err := strconv.ParseUint(strings.TrimPrefix(id1, prefix), 10, 64)
+	if err != nil {
+		t.Fatalf("parse first tool call ID %q: %v", id1, err)
+	}
+	n2, err := strconv.ParseUint(strings.TrimPrefix(id2, prefix), 10, 64)
+	if err != nil {
+		t.Fatalf("parse second tool call ID %q: %v", id2, err)
+	}
+	if n2 != n1+1 {
+		t.Fatalf("tool call sequences = %d then %d, want consecutive values", n1, n2)
 	}
 }
 
@@ -21,16 +38,47 @@ func TestCovMintToolCallID(t *testing.T) {
 // a kernel-assigned loopback port. NewOn is already 100% covered; New is
 // the convenience wrapper.
 func TestCovNew(t *testing.T) {
+	e2ecap.RequireLoopbackBind(t)
 	srv, err := New()
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
 	defer srv.Close()
-	if srv.Addr() == "" {
-		t.Fatal("server address should not be empty")
+	host, portText, err := net.SplitHostPort(srv.Addr())
+	if err != nil {
+		t.Fatalf("split Addr %q: %v", srv.Addr(), err)
 	}
-	if srv.BaseURL() == "" {
-		t.Fatal("base URL should not be empty")
+	if host != "127.0.0.1" {
+		t.Fatalf("New listen host = %q, want IPv4 loopback", host)
+	}
+	port, err := strconv.Atoi(portText)
+	if err != nil || port <= 0 {
+		t.Fatalf("New listen port = %q, want kernel-assigned positive port (error %v)", portText, err)
+	}
+	if got, want := srv.BaseURL(), "http://"+srv.Addr()+"/v1"; got != want {
+		t.Fatalf("BaseURL = %q, want %q", got, want)
+	}
+
+	resp, err := http.Get(srv.BaseURL() + "/models") //nolint:noctx // local test server request
+	if err != nil {
+		t.Fatalf("GET live fake provider: %v", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("GET /models status = %d, want 200", resp.StatusCode)
+	}
+	var body struct {
+		Object string `json:"object"`
+		Data   []struct {
+			ID     string `json:"id"`
+			Object string `json:"object"`
+		} `json:"data"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+		t.Fatalf("decode GET /models: %v", err)
+	}
+	if body.Object != "list" || len(body.Data) != 1 || body.Data[0].ID != ModelID || body.Data[0].Object != "model" {
+		t.Fatalf("GET /models body = %#v, want one %q model", body, ModelID)
 	}
 }
 
@@ -46,8 +94,8 @@ func TestCovCallAccessors(t *testing.T) {
 		reply:          make(chan reply, 1),
 	}
 
-	if got := c.Cancelled(); got == nil {
-		t.Fatal("Cancelled() returned nil")
+	if got := c.Cancelled(); got != cancelled {
+		t.Fatal("Cancelled() did not return the call's cancellation channel")
 	}
 	select {
 	case <-c.Cancelled():
@@ -115,7 +163,13 @@ func TestCovRespondToolCall(t *testing.T) {
 func TestCovRespondOnce(t *testing.T) {
 	c := &Call{reply: make(chan reply, 1)}
 	c.RespondText("first")
-	// Drain the channel so the second send would block if not guarded.
-	<-c.reply
-	c.RespondText("second") // must not block
+	first, ok := <-c.reply
+	wantFirst := reply{text: "first"}
+	if !ok || !reflect.DeepEqual(first, wantFirst) {
+		t.Fatalf("first reply = %#v, %v; want %#v, true", first, ok, wantFirst)
+	}
+	c.RespondText("second")
+	if second, ok := <-c.reply; ok {
+		t.Fatalf("second RespondText published another reply: %#v", second)
+	}
 }
