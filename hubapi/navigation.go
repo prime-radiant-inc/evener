@@ -1,19 +1,32 @@
 package hubapi
 
 import (
+	"encoding/json"
 	"time"
 
 	"primeradiant.com/evener/appwire"
 )
 
+// NavigationArray preserves the navigation wire rule that every array is
+// present and non-null, including a zero-value response struct.
+type NavigationArray[T any] []T
+
+// MarshalJSON encodes a nil navigation array as an explicit empty JSON array.
+func (array NavigationArray[T]) MarshalJSON() ([]byte, error) {
+	if array == nil {
+		return []byte("[]"), nil
+	}
+	return json.Marshal([]T(array))
+}
+
 // NavigationManifest is returned by GET /api/navigation.
 type NavigationManifest struct {
-	GenerationID     string             `json:"generation_id"`
-	Revision         uint64             `json:"revision"`
-	Sources          []Source           `json:"sources"`
-	AttentionSummary AttentionSummary   `json:"attentionSummary"` //nolint:tagliatelle // shares the attention notification shape
-	Sections         NavigationSections `json:"sections"`
-	Catalogs         NavigationCatalogs `json:"catalogs"`
+	GenerationID     string                  `json:"generation_id"`
+	Revision         uint64                  `json:"revision"`
+	Sources          NavigationArray[Source] `json:"sources"`
+	AttentionSummary AttentionSummary        `json:"attentionSummary"` //nolint:tagliatelle // shares the attention notification shape
+	Sections         NavigationSections      `json:"sections"`
+	Catalogs         NavigationCatalogs      `json:"catalogs"`
 }
 
 // NavigationResourceDescriptor describes the number of rows available from a
@@ -38,19 +51,19 @@ type NavigationCatalogs struct {
 
 // NavigationSectionResource is one bounded global or pin-section session page.
 type NavigationSectionResource struct {
-	GenerationID string                     `json:"generation_id"`
-	Revision     uint64                     `json:"revision"`
-	Sessions     []NavigationSessionSummary `json:"sessions"`
-	Remaining    int                        `json:"remaining"`
-	Truncated    bool                       `json:"truncated"`
+	GenerationID string                                    `json:"generation_id"`
+	Revision     uint64                                    `json:"revision"`
+	Sessions     NavigationArray[NavigationSessionSummary] `json:"sessions"`
+	Remaining    int                                       `json:"remaining"`
+	Truncated    bool                                      `json:"truncated"`
 }
 
 // NavigationPinSectionCatalog is one bounded page of pin-section descriptors.
 type NavigationPinSectionCatalog struct {
-	GenerationID string                           `json:"generation_id"`
-	Revision     uint64                           `json:"revision"`
-	PinSections  []NavigationPinSectionDescriptor `json:"pin_sections"`
-	Remaining    int                              `json:"remaining"`
+	GenerationID string                                          `json:"generation_id"`
+	Revision     uint64                                          `json:"revision"`
+	PinSections  NavigationArray[NavigationPinSectionDescriptor] `json:"pin_sections"`
+	Remaining    int                                             `json:"remaining"`
 }
 
 // NavigationPinSectionDescriptor describes one named section in the
@@ -63,10 +76,10 @@ type NavigationPinSectionDescriptor struct {
 
 // NavigationProjectCatalog is one bounded page of project summaries.
 type NavigationProjectCatalog struct {
-	GenerationID string                     `json:"generation_id"`
-	Revision     uint64                     `json:"revision"`
-	Projects     []NavigationProjectSummary `json:"projects"`
-	Remaining    int                        `json:"remaining"`
+	GenerationID string                                    `json:"generation_id"`
+	Revision     uint64                                    `json:"revision"`
+	Projects     NavigationArray[NavigationProjectSummary] `json:"projects"`
+	Remaining    int                                       `json:"remaining"`
 }
 
 // NavigationProjectSummary is the bounded project header exposed by a catalog.
@@ -100,20 +113,20 @@ type NavigationProjectResource struct {
 
 // NavigationTier is one bounded page of a project tier.
 type NavigationTier struct {
-	Sessions  []NavigationSessionSummary `json:"sessions"`
-	Remaining int                        `json:"remaining"`
+	Sessions  NavigationArray[NavigationSessionSummary] `json:"sessions"`
+	Remaining int                                       `json:"remaining"`
 }
 
 // NavigationProjectPage is a bounded page beyond a project's initial tier.
 type NavigationProjectPage struct {
-	GenerationID string                     `json:"generation_id"`
-	Revision     uint64                     `json:"revision"`
-	Key          string                     `json:"key"`
-	Tier         string                     `json:"tier"`
-	Offset       uint32                     `json:"offset"`
-	Sessions     []NavigationSessionSummary `json:"sessions"`
-	Remaining    int                        `json:"remaining"`
-	Truncated    bool                       `json:"truncated"`
+	GenerationID string                                    `json:"generation_id"`
+	Revision     uint64                                    `json:"revision"`
+	Key          string                                    `json:"key"`
+	Tier         string                                    `json:"tier"`
+	Offset       uint32                                    `json:"offset"`
+	Sessions     NavigationArray[NavigationSessionSummary] `json:"sessions"`
+	Remaining    int                                       `json:"remaining"`
+	Truncated    bool                                      `json:"truncated"`
 }
 
 // NavigationSessionLocation is the top-level owner and current summary for a
@@ -132,29 +145,29 @@ type NavigationSessionLocation struct {
 
 // NavigationSessionSummary is the bounded recursive navigation row shape.
 type NavigationSessionSummary struct {
-	Ref                string                     `json:"ref"`
-	HostID             string                     `json:"host_id"`
-	SessionID          string                     `json:"session_id"`
-	Title              string                     `json:"title"`
-	Project            string                     `json:"project"`
-	State              string                     `json:"state"`
-	Kind               string                     `json:"kind"`
-	Branch             string                     `json:"branch,omitempty"`
-	ClusterCount       int                        `json:"cluster_count,omitempty"`
-	Favorite           bool                       `json:"favorite,omitempty"`
-	Rename             bool                       `json:"rename,omitempty"`
-	Live               bool                       `json:"live"`
-	AskPending         bool                       `json:"ask_pending,omitempty"`
-	Dormant            bool                       `json:"dormant,omitempty"`
-	UpdatedAt          *time.Time                 `json:"updated_at,omitempty"`
-	MoreSubagents      int                        `json:"more_subagents,omitempty"`
-	OmittedDescendants int                        `json:"omitted_descendants,omitempty"`
-	Children           []NavigationSessionSummary `json:"children"`
+	Ref                string                                    `json:"ref"`
+	HostID             string                                    `json:"host_id"`
+	SessionID          string                                    `json:"session_id"`
+	Title              string                                    `json:"title"`
+	Project            string                                    `json:"project"`
+	State              string                                    `json:"state"`
+	Kind               string                                    `json:"kind"`
+	Branch             string                                    `json:"branch,omitempty"`
+	ClusterCount       int                                       `json:"cluster_count,omitempty"`
+	Favorite           bool                                      `json:"favorite,omitempty"`
+	Rename             bool                                      `json:"rename,omitempty"`
+	Live               bool                                      `json:"live"`
+	AskPending         bool                                      `json:"ask_pending,omitempty"`
+	Dormant            bool                                      `json:"dormant,omitempty"`
+	UpdatedAt          *time.Time                                `json:"updated_at,omitempty"`
+	MoreSubagents      int                                       `json:"more_subagents,omitempty"`
+	OmittedDescendants int                                       `json:"omitted_descendants,omitempty"`
+	Children           NavigationArray[NavigationSessionSummary] `json:"children"`
 }
 
 // NavigationMutation is returned by hub-owned mutations after navigation state
 // has committed, so clients can converge before the matching AppWire event.
 type NavigationMutation struct {
-	GenerationID string                                 `json:"generation_id"`
-	Targets      []appwire.NavigationInvalidationTarget `json:"targets"`
+	GenerationID string                                                `json:"generation_id"`
+	Targets      NavigationArray[appwire.NavigationInvalidationTarget] `json:"targets"`
 }

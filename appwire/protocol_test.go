@@ -115,6 +115,77 @@ func TestNavigationInvalidationTargetVariants(t *testing.T) {
 	}
 }
 
+func TestNavigationInvalidationTargetRejectsInvalidVariants(t *testing.T) {
+	valid := []NavigationInvalidationTarget{
+		{Kind: NavigationTargetManifest, Revision: 0},
+		{Kind: NavigationTargetSection, Section: "live", Revision: 1},
+		{Kind: NavigationTargetPinCatalog, Revision: 2},
+		{Kind: NavigationTargetPinSection, SectionID: "pin-a", Revision: 3},
+		{Kind: NavigationTargetCatalog, Catalog: "projects", Revision: 4},
+		{Kind: NavigationTargetProject, ProjectKey: "project-a", Revision: 5},
+		{Kind: NavigationTargetAllLoadedProjects},
+	}
+	for _, target := range valid {
+		if _, err := json.Marshal(target); err != nil {
+			t.Errorf("marshal valid %+v: %v", target, err)
+		}
+	}
+
+	invalid := []NavigationInvalidationTarget{
+		{Kind: "unknown", Revision: 1},
+		{Kind: NavigationTargetManifest, Section: "live", Revision: 1},
+		{Kind: NavigationTargetSection, Revision: 1},
+		{Kind: NavigationTargetPinCatalog, Catalog: "projects", Revision: 1},
+		{Kind: NavigationTargetPinSection, Revision: 1},
+		{Kind: NavigationTargetCatalog, Revision: 1},
+		{Kind: NavigationTargetProject, Revision: 1},
+		{Kind: NavigationTargetAllLoadedProjects, Revision: 1},
+		{Kind: NavigationTargetAllLoadedProjects, ProjectKey: "project-a"},
+	}
+	for _, target := range invalid {
+		if _, err := json.Marshal(target); err == nil {
+			t.Errorf("marshal invalid %+v succeeded", target)
+		}
+	}
+}
+
+func TestNavigationInvalidationTargetUnmarshalRejectsInvalidVariants(t *testing.T) {
+	valid := []string{
+		`{"kind":"manifest","revision":0}`,
+		`{"kind":"section","section":"live","revision":1}`,
+		`{"kind":"pin_catalog","revision":2}`,
+		`{"kind":"pin_section","sectionId":"pin-a","revision":3}`,
+		`{"kind":"catalog","catalog":"projects","revision":4}`,
+		`{"kind":"project","projectKey":"project-a","revision":5}`,
+		`{"kind":"all_loaded_projects"}`,
+	}
+	for _, raw := range valid {
+		var target NavigationInvalidationTarget
+		if err := json.Unmarshal([]byte(raw), &target); err != nil {
+			t.Errorf("unmarshal valid %s: %v", raw, err)
+		}
+	}
+
+	invalid := []string{
+		`{"kind":"unknown","revision":1}`,
+		`{"kind":"manifest"}`,
+		`{"kind":"manifest","revision":1,"section":"live"}`,
+		`{"kind":"section","revision":1}`,
+		`{"kind":"pin_catalog","revision":1,"catalog":"projects"}`,
+		`{"kind":"pin_section","revision":1}`,
+		`{"kind":"catalog","revision":1}`,
+		`{"kind":"project","revision":1}`,
+		`{"kind":"all_loaded_projects","revision":1}`,
+		`{"kind":"manifest","revision":1,"unexpected":true}`,
+	}
+	for _, raw := range invalid {
+		var target NavigationInvalidationTarget
+		if err := json.Unmarshal([]byte(raw), &target); err == nil {
+			t.Errorf("unmarshal invalid %s succeeded", raw)
+		}
+	}
+}
+
 func TestJobsListReplacementTreeWireShape(t *testing.T) {
 	payload := JobActivityTree{
 		Revision: 7,

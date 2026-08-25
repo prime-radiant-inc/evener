@@ -187,6 +187,7 @@ Pushed to subscribed connections; no `id`. The web client maps these in
 | `evener/auth/updated` | `EvenerAuthUpdatedParams` | Broadcast after a successful auth mutation. Clients refresh auth state. |
 | `evener/launch/updated` | `EvenerLaunchUpdatedParams` | Broadcast after a launch layer/trust mutation. Clients refresh launch config. |
 | `evener/attention/changed` | `AttentionChangedPayload` | Hub-derived attention transitions for live sessions plus authoritative badge summary. Hub-originated; never sent by daemons. |
+| `evener/navigation/invalidated` | `NavigationInvalidatedPayload` | Hub-derived scoped navigation-resource invalidation. Clients conditionally revalidate only the named loaded resources. |
 | `evener/marketplace/updated` | `EmptyParams` | Broadcast after a marketplace mutation (add/remove/refresh); no payload. Clients refresh the marketplace list. |
 | `evener/plugin/updated` | `EmptyParams` | Broadcast after a plugin mutation (install/upgrade/remove/enable/disable/setAutoUpgrade); no payload. Clients refresh the plugin list. |
 | `evener/thread/resync` | `ThreadResyncParams` | Hub-originated hint asking clients to re-read one thread after relay recovery. |
@@ -550,6 +551,7 @@ _(no fields)_
 | `protocolVersion` | `string` |  |  |
 | `sourceId` | `string` |  |  |
 | `features` | `appwire.FeatureSet` |  |  |
+| `navigation` | `*appwire.NavigationCapability` | yes |  |
 
 
 ### `InstanceCreateParams`
@@ -933,6 +935,15 @@ _(no fields)_
 | `data` | `[]appwire.ModelDescriptor` |  |  |
 | `diagnostics` | `[]appwire.ModelListDiagnostic` | yes |  |
 | `recent` | `[]appwire.ModelDescriptor` | yes |  |
+
+
+### `NavigationInvalidatedPayload`
+
+| Field | Go type | Omitempty | Embedded |
+|-------|---------|-----------|----------|
+| `generationId` | `string` |  |  |
+| `sequence` | `uint64` |  |  |
+| `targets` | `[]appwire.NavigationInvalidationTarget` |  |  |
 
 
 ### `PathValidateParams`

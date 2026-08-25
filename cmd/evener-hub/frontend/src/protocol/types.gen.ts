@@ -826,6 +826,12 @@ export interface NavigationCapability {
   sequence: number;
 }
 
+export interface NavigationCatalogs {
+  projects: NavigationResourceDescriptor;
+  archived_projects: NavigationResourceDescriptor;
+  test_runs: NavigationResourceDescriptor;
+}
+
 export interface NavigationInvalidatedPayload {
   generationId: string;
   sequence: number;
@@ -833,12 +839,140 @@ export interface NavigationInvalidatedPayload {
 }
 
 export interface NavigationInvalidationTarget {
-  kind: string;
+  kind: "manifest" | "section" | "pin_catalog" | "pin_section" | "catalog" | "project" | "all_loaded_projects";
   section?: string;
   sectionId?: string;
   catalog?: string;
   projectKey?: string;
   revision?: number;
+}
+
+export interface NavigationManifest {
+  generation_id: string;
+  revision: number;
+  sources: Source[];
+  attentionSummary: AttentionSummary;
+  sections: NavigationSections;
+  catalogs: NavigationCatalogs;
+}
+
+export interface NavigationMutation {
+  generation_id: string;
+  targets: NavigationInvalidationTarget[];
+}
+
+export interface NavigationPinSectionCatalog {
+  generation_id: string;
+  revision: number;
+  pin_sections: NavigationPinSectionDescriptor[];
+  remaining: number;
+}
+
+export interface NavigationPinSectionDescriptor {
+  id: string;
+  name: string;
+  count: number;
+}
+
+export interface NavigationProjectCatalog {
+  generation_id: string;
+  revision: number;
+  projects: NavigationProjectSummary[];
+  remaining: number;
+}
+
+export interface NavigationProjectPage {
+  generation_id: string;
+  revision: number;
+  key: string;
+  tier: string;
+  offset: number;
+  sessions: NavigationSessionSummary[];
+  remaining: number;
+  truncated: boolean;
+}
+
+export interface NavigationProjectResource {
+  generation_id: string;
+  revision: number;
+  key: string;
+  current: NavigationTier;
+  recent: NavigationTier;
+  archived: NavigationTier;
+  truncated: boolean;
+}
+
+export interface NavigationProjectSummary {
+  key: string;
+  name: string;
+  working_dir?: string;
+  rollup_state?: string;
+  rollup_live?: number;
+  rollup_attn?: number;
+  default_expanded?: boolean;
+  more_current?: number;
+  more_recent?: number;
+  more_archived?: number;
+  worktrees?: number;
+  is_archived?: boolean;
+  favorite?: boolean;
+  session_count: number;
+}
+
+export interface NavigationResourceDescriptor {
+  count: number;
+}
+
+export interface NavigationSectionResource {
+  generation_id: string;
+  revision: number;
+  sessions: NavigationSessionSummary[];
+  remaining: number;
+  truncated: boolean;
+}
+
+export interface NavigationSections {
+  live: NavigationResourceDescriptor;
+  needs_you: NavigationResourceDescriptor;
+  pin_sections: NavigationResourceDescriptor;
+}
+
+export interface NavigationSessionLocation {
+  generation_id: string;
+  revision: number;
+  ref: string;
+  top_level_ref: string;
+  project_key?: string;
+  top_level: boolean;
+  tier?: string;
+  pin_section_id?: string;
+  session?: NavigationSessionSummary;
+}
+
+export interface NavigationSessionSummary {
+  ref: string;
+  host_id: string;
+  session_id: string;
+  title: string;
+  project: string;
+  state: string;
+  kind: string;
+  branch?: string;
+  cluster_count?: number;
+  favorite?: boolean;
+  rename?: boolean;
+  live: boolean;
+  ask_pending?: boolean;
+  dormant?: boolean;
+  updated_at?: string;
+  more_subagents?: number;
+  omitted_descendants?: number;
+  children: NavigationSessionSummary[];
+}
+
+export interface NavigationTier {
+  sessions: NavigationSessionSummary[];
+  remaining: number;
 }
 
 export interface OutputImage {
@@ -1032,6 +1166,13 @@ export interface SettingsPastIndexOverview {
 
 export interface SettingsStorageOverview {
   stateDir?: string;
+}
+
+export interface Source {
+  id: string;
+  label: string;
+  kind: string;
+  online: boolean;
 }
 
 export interface TaskAggregate {

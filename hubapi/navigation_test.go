@@ -100,6 +100,34 @@ func TestNavigationCollectionsEncodeEmptySlices(t *testing.T) {
 	}
 }
 
+func TestNavigationArraysEncodeNilAsEmptyArrays(t *testing.T) {
+	tests := []struct {
+		name  string
+		value any
+		field string
+	}{
+		{"manifest sources", NavigationManifest{}, `"sources":[]`},
+		{"section sessions", NavigationSectionResource{}, `"sessions":[]`},
+		{"pin catalog", NavigationPinSectionCatalog{}, `"pin_sections":[]`},
+		{"project catalog", NavigationProjectCatalog{}, `"projects":[]`},
+		{"project tiers", NavigationProjectResource{}, `"sessions":[]`},
+		{"project page", NavigationProjectPage{}, `"sessions":[]`},
+		{"session children", NavigationSessionSummary{}, `"children":[]`},
+		{"mutation targets", NavigationMutation{}, `"targets":[]`},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := json.Marshal(tc.value)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !strings.Contains(string(got), tc.field) {
+				t.Fatalf("JSON = %s, want nil array encoded as %s", got, tc.field)
+			}
+		})
+	}
+}
+
 func TestNavigationMutationSharesAppWireTargetShape(t *testing.T) {
 	mutation := NavigationMutation{
 		GenerationID: "generation-a",
