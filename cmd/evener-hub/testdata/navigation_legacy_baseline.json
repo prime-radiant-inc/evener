@@ -1,6 +1,6 @@
 {
-  "response_bytes": 581494,
-  "allocs_bytes_per_op": 25471136,
+  "response_bytes": 581485,
+  "allocs_bytes_per_op": 25311669,
   "projects": 20,
   "sessions": 1000
 }

@@ -114,6 +114,13 @@ func newNavigationBenchmarkFixture(tb testing.TB) *WebServer {
 	}
 	past := hubcore.NewPastIndex("")
 	past.SeedForTest(metas)
+	previousBuild := hubBuildNavigationTree
+	hubBuildNavigationTree = func(metas []schema.SessionMeta, live []hubcore.LiveEntry, decisions map[hubcore.ArchiveKey]bool, projects map[string]identifier.Project) hubcore.Tree {
+		tree := hubcore.BuildTreeAtWithProjects(metas, live, decisions, now, projects)
+		normalizeLegacyNavigationAges(&tree, now)
+		return tree
+	}
+	tb.Cleanup(func() { hubBuildNavigationTree = previousBuild })
 	projectIndexes := make(map[string]int, legacyNavigationProjects)
 	for projectIndex := range legacyNavigationProjects {
 		projectIndexes[filepath.Join(projectsRoot, fmt.Sprintf("project-%02d-0000000000", projectIndex))] = projectIndex
@@ -173,6 +180,47 @@ func newNavigationBenchmarkFixture(tb testing.TB) *WebServer {
 		HubStateRoot: filepath.Join(stateRoot, "hub"),
 		Past:         past,
 	})
+}
+
+func normalizeLegacyNavigationAges(tree *hubcore.Tree, now time.Time) {
+	var normalizeNodes func([]hubcore.TreeNode)
+	normalizeNodes = func(nodes []hubcore.TreeNode) {
+		for i := range nodes {
+			nodes[i].Age = legacyNavigationAge(nodes[i].UpdatedAt, now)
+			normalizeNodes(nodes[i].Children)
+		}
+	}
+	normalizeNodes(tree.NeedsYou)
+	normalizeNodes(tree.Live)
+	for i := range tree.Projects {
+		tree.Projects[i].Age = legacyNavigationAge(tree.Projects[i].LastActivity, now)
+		normalizeNodes(tree.Projects[i].Current)
+		normalizeNodes(tree.Projects[i].Recent)
+		normalizeNodes(tree.Projects[i].Archived)
+	}
+	for i := range tree.ArchivedProjects {
+		tree.ArchivedProjects[i].Age = legacyNavigationAge(tree.ArchivedProjects[i].LastActivity, now)
+		normalizeNodes(tree.ArchivedProjects[i].Current)
+		normalizeNodes(tree.ArchivedProjects[i].Recent)
+		normalizeNodes(tree.ArchivedProjects[i].Archived)
+	}
+}
+
+func legacyNavigationAge(at, now time.Time) string {
+	if at.IsZero() {
+		return ""
+	}
+	d := now.Sub(at)
+	switch {
+	case d < time.Minute:
+		return "now"
+	case d < time.Hour:
+		return fmt.Sprintf("%dm", int(d.Minutes()))
+	case d < 24*time.Hour:
+		return fmt.Sprintf("%dh", int(d.Hours()))
+	default:
+		return fmt.Sprintf("%dd", int(d.Hours()/24))
+	}
 }
 
 func requestLegacyTree(tb testing.TB, web *WebServer) []byte {
