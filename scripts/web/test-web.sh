@@ -42,7 +42,9 @@ owned_job_is_running() {
 }
 
 stop_checks() {
-	local pid
+	local pid wait_status previous_stopping
+	previous_stopping=$stopping
+	stopping=1
 	for pid in "${active_pids[@]-}"; do
 		[ -n "$pid" ] || continue
 		owned_job_is_running "$pid" || continue
@@ -50,25 +52,25 @@ stop_checks() {
 	done
 	for pid in "${active_pids[@]-}"; do
 		[ -n "$pid" ] || continue
-		wait "$pid" 2>/dev/null || :
+		while :; do
+			if wait "$pid" 2>/dev/null; then wait_status=0; else wait_status=$?; fi
+			owned_job_is_running "$pid" || break
+		done
 	done
+	stopping=$previous_stopping
 	active_pids=()
 }
 
 finish() {
 	finish_status=$?
 	finishing=1
+	[ "$complete" -eq 1 ] || stop_checks
 	if [ "$interrupt_status" -ne 0 ]; then
 		finish_status="$interrupt_status"
 		interrupt_status=0
 	fi
-	[ "$complete" -eq 1 ] || stop_checks
 	if [ "$complete" -eq 1 ] && [ "$fail" -eq 0 ] && [ "$finish_status" -eq 0 ]; then
 		scratch_rm || finish_status=1
-		if [ -n "${EVENER_TEST_WEB_FINISH_SIGNAL:-}" ]; then
-			[ -z "${EVENER_TEST_WEB_FINISH_READY:-}" ] || : >"$EVENER_TEST_WEB_FINISH_READY"
-			kill -"$EVENER_TEST_WEB_FINISH_SIGNAL" "$$"
-		fi
 	else
 		[ -z "$dir" ] || printf 'full logs: %s\n' "$dir" >&2
 	fi
@@ -84,8 +86,8 @@ consume_interrupt() {
 
 interrupted() {
 	local status="$1"
+	interrupt_status="$status"
 	if [ "$defer_signals" -eq 1 ]; then
-		interrupt_status="$status"
 		return
 	fi
 	if [ "$stopping" -eq 1 ]; then
@@ -94,6 +96,8 @@ interrupted() {
 	stopping=1
 	stop_checks
 	stopping=0
+	status="$interrupt_status"
+	interrupt_status=0
 	if [ "$finishing" -eq 1 ]; then
 		[ -z "$dir" ] || printf 'full logs: %s\n' "$dir" >&2
 		trap - 0
@@ -119,26 +123,17 @@ for c in typecheck test lint; do
 	consume_interrupt
 done
 
-if [ -n "${EVENER_TEST_WEB_PRE_WAIT_SIGNAL:-}" ]; then
-	[ -z "${EVENER_TEST_WEB_PRE_WAIT_READY:-}" ] || : >"$EVENER_TEST_WEB_PRE_WAIT_READY"
-	kill -"$EVENER_TEST_WEB_PRE_WAIT_SIGNAL" "$$"
-fi
-
 for i in "${!started[@]}"; do
 	c="${started[$i]}"
 	pid="${active_pids[0]}"
-	defer_signals=1
 	if wait "$pid"; then check_status=0; else check_status=$?; fi
-	# A signal can interrupt wait before its child is reaped. When that
-	# happens, the trap only records the signal and the job remains owned until
-	# stop_checks can terminate and reap it. A completed wait removes the job
-	# from Bash's job table, which is the completion/ownership handoff and not a
-	# PID liveness guess vulnerable to reuse.
-	if [ "$interrupt_status" -eq 0 ] || ! owned_job_is_running "$pid"; then
+	# A completed wait removes the job from Bash's job table, which is the
+	# completion/ownership handoff and not a PID liveness guess vulnerable to
+	# reuse. Signals are not deferred here: Bash must wake this exact wait.
+	if ! owned_job_is_running "$pid"; then
 		forget_pid "$pid"
 	fi
 	printf '%s\n' "$check_status" >"$dir/$c.status"
-	defer_signals=0
 	consume_interrupt
 done
 
