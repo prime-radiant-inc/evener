@@ -13,6 +13,55 @@ const CHROME_CANDIDATES = [
 
 const CHILD_EXIT_GRACE_MS = 2_000;
 const SIGNAL_EXIT_CODES = { SIGINT: 130, SIGTERM: 143 };
+const DEVTOOLS_ANNOUNCEMENT_PREFIX = "DevTools listening on ";
+
+function isLoopbackHost(hostname) {
+  if (hostname === "localhost" || hostname === "[::1]") return true;
+  const octets = hostname.split(".");
+  return octets.length === 4 && octets[0] === "127" && octets.every((octet) => /^(0|[1-9]\d*)$/.test(octet) && Number(octet) <= 255);
+}
+
+/** Parse one complete Chrome stderr announcement, or ignore an unrelated line. */
+export function parseChromeDevToolsAnnouncement(line) {
+  if (!line.startsWith(DEVTOOLS_ANNOUNCEMENT_PREFIX)) return null;
+  const raw = line.slice(DEVTOOLS_ANNOUNCEMENT_PREFIX.length);
+  if (!raw || /\s/.test(raw)) throw new Error(`malformed DevTools announcement URL: ${raw || "(empty)"}`);
+  const authority = raw.match(/^ws:\/\/(\[[^\]]+\]|[^/?#:]+):(\d+)(?:\/|$)/i);
+  if (!authority) throw new Error(`malformed DevTools announcement authority: ${raw}`);
+  const announcedPort = Number(authority[2]);
+  if (!Number.isInteger(announcedPort) || announcedPort < 1 || announcedPort > 65535) {
+    throw new Error(`invalid DevTools announcement port: ${raw}`);
+  }
+
+  let endpoint;
+  try {
+    endpoint = new URL(raw);
+  } catch {
+    throw new Error(`malformed DevTools announcement URL: ${raw}`);
+  }
+  if (endpoint.protocol !== "ws:" || endpoint.username || endpoint.password || endpoint.search || endpoint.hash) {
+    throw new Error(`invalid DevTools announcement URL: ${raw}`);
+  }
+  if (!isLoopbackHost(endpoint.hostname)) throw new Error(`DevTools announcement is not loopback: ${raw}`);
+  if (!/^\/devtools\/browser\/[^/]+$/.test(endpoint.pathname)) {
+    throw new Error(`invalid DevTools announcement path: ${raw}`);
+  }
+  return { url: raw, host: endpoint.hostname, port: announcedPort };
+}
+
+function withAbort(promise, signal, failure = null) {
+  if (!signal && !failure) return promise;
+  if (signal?.aborted) return Promise.reject(signal.reason ?? new Error("operation aborted"));
+  const racers = [promise];
+  if (failure) racers.push(new Promise((_, reject) => failure.then(reject)));
+  const raced = Promise.race(racers);
+  if (!signal) return raced;
+  return new Promise((resolve, reject) => {
+    const abort = () => reject(signal.reason ?? new Error("operation aborted"));
+    signal.addEventListener("abort", abort, { once: true });
+    raced.then(resolve, reject).finally(() => signal.removeEventListener("abort", abort));
+  });
+}
 
 /**
  * Format the diagnostic a browser guard prints when the stack will not come up.
@@ -402,8 +451,13 @@ function waitForProfileProcessExit(
   });
 }
 
-export async function requestBrowserClose(port, fetchImpl = fetch, WebSocketImpl = WebSocket) {
-  const response = await fetchImpl(`http://127.0.0.1:${port}/json/version`);
+export async function requestBrowserClose(endpoint, fetchImpl = fetch, WebSocketImpl = WebSocket) {
+  if (!endpoint) throw new Error("Chrome DevTools endpoint was not announced");
+  const announced = new URL(endpoint.url);
+  const host = endpoint.host ?? announced.hostname;
+  const port = endpoint.port ?? Number(announced.port || 80);
+  const httpURL = `http://${host}:${port}/json/version`;
+  const response = await fetchImpl(httpURL);
   if (!response.ok) throw new Error(`Chrome CDP endpoint returned ${response.status}`);
   const version = await response.json();
   if (!version.webSocketDebuggerUrl) throw new Error("Chrome CDP endpoint omitted its browser WebSocket");
@@ -593,7 +647,6 @@ export async function startBrowserGuard({
 }) {
   const resolvedChrome = chromeBinary ?? findChrome();
   const vitePort = await findAvailablePort();
-  const cdpPort = await findAvailablePort([vitePort]);
   const profileDir = mkdtempSync(path.join(tmpdir(), profilePrefix));
   let vite = null;
   let chrome = null;
@@ -602,6 +655,41 @@ export async function startBrowserGuard({
   let viteLaunchError = null;
   let chromeLaunchError = null;
   let chromeArgv = [];
+  let chromeEndpoint = null;
+  let chromeLineBuffer = "";
+  let resolveChromeReady;
+  let rejectChromeReady;
+  let resolveChromeFailure;
+  let chromeFailureSettled = false;
+  let chromeReadySettled = false;
+  const chromeFailure = new Promise((resolve) => {
+    resolveChromeFailure = (error) => {
+      if (chromeFailureSettled) return;
+      chromeFailureSettled = true;
+      resolve(error);
+    };
+  });
+  const chromeReady = new Promise((resolve, reject) => {
+    resolveChromeReady = (endpoint) => {
+      if (chromeReadySettled) return;
+      chromeReadySettled = true;
+      resolve(endpoint);
+    };
+    rejectChromeReady = (error) => {
+      if (chromeReadySettled) return;
+      chromeReadySettled = true;
+      reject(error);
+    };
+  });
+  // A guard normally awaits this promise, but attach a rejection handler here
+  // too so a child that exits while startup is being abandoned cannot become an
+  // unhandled rejection during cleanup.
+  chromeReady.catch(() => {});
+  const failChrome = (error) => {
+    chromeLaunchError ??= error;
+    resolveChromeFailure(error);
+    if (!chromeReadySettled) rejectChromeReady(error);
+  };
   const lifecycle = createBrowserProcessCleanup({
     profileDir,
     processTarget,
@@ -649,7 +737,10 @@ export async function startBrowserGuard({
       "--headless=new",
       "--disable-gpu",
       ...chromeProfileIsolationArgs(platform),
-      `--remote-debugging-port=${cdpPort}`,
+      // Let Chrome bind the port itself and report the bound endpoint on stderr.
+      // Picking a free port, closing it, then asking Chrome to reuse it is a
+      // TOCTOU race when several guards start together.
+      "--remote-debugging-port=0",
       `--user-data-dir=${profileDir}`,
       "--no-first-run",
       "--disable-extensions",
@@ -670,14 +761,46 @@ export async function startBrowserGuard({
       },
     );
     chrome.on("error", (error) => {
-      chromeLaunchError ??= error;
+      failChrome(error);
     });
     chrome.stderr?.on("data", (chunk) => {
       chromeErr += chunk;
+      chromeLineBuffer += chunk.toString();
+      const lines = chromeLineBuffer.split(/\r\n|\r|\n/);
+      chromeLineBuffer = lines.pop() ?? "";
+      for (const line of lines) {
+        let endpoint;
+        try {
+          endpoint = parseChromeDevToolsAnnouncement(line);
+        } catch (error) {
+          failChrome(error);
+          continue;
+        }
+        if (!endpoint) continue;
+        // Identical duplicate announcements are harmless; a different valid
+        // endpoint invalidates startup rather than making listener order decide
+        // which browser to measure or close.
+        if (chromeEndpoint && chromeEndpoint.url !== endpoint.url) {
+          const error = new Error(
+            `conflicting DevTools announcements: ${chromeEndpoint.url} and ${endpoint.url}`,
+          );
+          failChrome(error);
+          continue;
+        }
+        chromeEndpoint ??= endpoint;
+        resolveChromeReady(endpoint);
+      }
+    });
+    chrome.once("exit", (code, signal) => {
+      const error = new Error(
+        `Chrome exited ${chromeEndpoint ? "after DevTools announcement " : "before DevTools readiness "}` +
+          `(code ${code ?? "unknown"}, signal ${signal ?? "none"})`,
+      );
+      failChrome(error);
     });
     lifecycle.addChild(chrome, {
       processGroupId: useProcessGroups && Number.isInteger(chrome.pid) ? chrome.pid : null,
-      gracefulClose: () => closeBrowser(cdpPort),
+      gracefulClose: () => closeBrowser(chromeEndpoint),
     });
   } catch (error) {
     await lifecycle.cleanup();
@@ -686,14 +809,19 @@ export async function startBrowserGuard({
 
   return {
     vitePort,
-    cdpPort,
+    getChromeEndpoint: () => chromeEndpoint,
     profileDir,
     getViteError: () => viteErr,
     getChromeError: () => chromeErr,
     getViteLaunchError: () => viteLaunchError,
     getChromeLaunchError: () => chromeLaunchError,
+    getChromeFailure: () => chromeFailure,
     chromeBinary: resolvedChrome,
     getChromeArgv: () => chromeArgv,
+    // This promise is the process/devtools readiness handoff. The runner owns
+    // its single startup deadline and passes its abort signal through both the
+    // announcement and /json/version phases.
+    waitForChrome: ({ signal } = {}) => withAbort(chromeReady, signal, chromeFailure),
     cleanup: lifecycle.cleanup,
   };
 }
