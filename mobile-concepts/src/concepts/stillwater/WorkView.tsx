@@ -1,15 +1,138 @@
+import type { WorkNode } from "../../core/model";
 import type { PlatformPrimitives } from "../../core/platform";
 import type { PrototypeAction, PrototypeState } from "../../core/state";
 import { Disclosure } from "../shared/Disclosure";
 import { formatUsage } from "../shared/format";
 import { ScreenState } from "../shared/ScreenState";
 import { StatusLabel } from "../shared/StatusLabel";
+import {
+  BlockingRouteState,
+  isBlockingRouteState,
+  OfflineNotice,
+} from "./RouteState";
 
 export interface WorkViewProps {
   state: PrototypeState;
   sessionId: string;
   primitives: PlatformPrimitives;
   dispatch(action: PrototypeAction): void;
+}
+
+interface WorkHierarchyItem {
+  node: WorkNode;
+  depth: number;
+  parentTitle: string | null;
+  children: readonly WorkHierarchyItem[];
+}
+
+export function buildWorkHierarchy(
+  nodes: readonly WorkNode[],
+): readonly WorkHierarchyItem[] {
+  const byId = new Map(nodes.map((node) => [node.id, node]));
+  const childrenByParent = new Map<string, WorkNode[]>();
+  const roots: WorkNode[] = [];
+  for (const node of nodes) {
+    if (
+      node.parentId === null ||
+      node.parentId === node.id ||
+      !byId.has(node.parentId)
+    ) {
+      roots.push(node);
+      continue;
+    }
+    const children = childrenByParent.get(node.parentId) ?? [];
+    children.push(node);
+    childrenByParent.set(node.parentId, children);
+  }
+
+  const visited = new Set<string>();
+  const buildItem = (
+    node: WorkNode,
+    depth: number,
+    ancestors: ReadonlySet<string>,
+  ): WorkHierarchyItem => {
+    visited.add(node.id);
+    const nextAncestors = new Set(ancestors);
+    nextAncestors.add(node.id);
+    const children = (childrenByParent.get(node.id) ?? [])
+      .filter((child) => !nextAncestors.has(child.id) && !visited.has(child.id))
+      .map((child) => buildItem(child, depth + 1, nextAncestors));
+    return {
+      node,
+      depth,
+      parentTitle: node.parentId
+        ? (byId.get(node.parentId)?.title ?? null)
+        : null,
+      children,
+    };
+  };
+
+  const hierarchy = roots.map((node) => buildItem(node, 0, new Set()));
+  for (const node of nodes) {
+    if (!visited.has(node.id)) {
+      hierarchy.push(buildItem(node, 0, new Set()));
+    }
+  }
+  return hierarchy;
+}
+
+function WorkTree({
+  items,
+  state,
+  dispatch,
+}: {
+  items: readonly WorkHierarchyItem[];
+  state: PrototypeState;
+  dispatch(action: PrototypeAction): void;
+}) {
+  if (items.length === 0) return null;
+  const level = items[0]?.depth ?? 0;
+  return (
+    <ul className="sw-work-tree" aria-label={`Work items level ${level + 1}`}>
+      {items.map((item) => (
+        <li key={item.node.id}>
+          <article
+            className="sw-work-node"
+            data-work-node-id={item.node.id}
+            data-work-kind={item.node.kind}
+            data-work-parent-id={item.node.parentId ?? "root"}
+            data-work-depth={item.depth}
+          >
+            <p className="sw-work-node__context">
+              Level {item.depth + 1} · Parent: {item.parentTitle ?? "Session"}
+            </p>
+            <Disclosure
+              summary={<span>{item.node.title}</span>}
+              expanded={state.expandedWorkIds.has(item.node.id)}
+              onToggle={() =>
+                dispatch({ type: "toggleWork", nodeId: item.node.id })
+              }
+            >
+              <div className="sw-work-node__detail">
+                <StatusLabel state={item.node.state} />
+                <dl>
+                  <div>
+                    <dt>Type</dt>
+                    <dd>{item.node.kind}</dd>
+                  </div>
+                  <div>
+                    <dt>Phase</dt>
+                    <dd>{item.node.phase}</dd>
+                  </div>
+                  <div>
+                    <dt>Elapsed</dt>
+                    <dd>{item.node.elapsedLabel}</dd>
+                  </div>
+                </dl>
+                <p>{item.node.output}</p>
+              </div>
+            </Disclosure>
+          </article>
+          <WorkTree items={item.children} state={state} dispatch={dispatch} />
+        </li>
+      ))}
+    </ul>
+  );
 }
 
 export function WorkView({
@@ -21,6 +144,11 @@ export function WorkView({
   const session = state.projection.fixture.sessions.find(
     ({ id }) => id === sessionId,
   );
+  if (isBlockingRouteState(state)) {
+    return (
+      <BlockingRouteState state={state} routeLabel="Work" dispatch={dispatch} />
+    );
+  }
   if (!session || state.selectedSessionId !== sessionId) {
     return (
       <ScreenState
@@ -36,6 +164,7 @@ export function WorkView({
   const nodes = state.projection.fixture.work.filter(
     (node) => node.sessionId === sessionId,
   );
+  const hierarchy = buildWorkHierarchy(nodes);
   const usage = state.projection.fixture.usage;
 
   return (
@@ -43,6 +172,12 @@ export function WorkView({
       className="sw-work-panel sw-route-enter"
       data-work-presentation={primitives.sheet}
     >
+      <OfflineNotice
+        state={state}
+        routeLabel="Work"
+        mutationDetail="Task evidence and disclosure remain locally readable."
+        dispatch={dispatch}
+      />
       <section className="sw-work-heading">
         <p className="sw-eyebrow">{session.project} · One layer down</p>
         <h2>{session.title}</h2>
@@ -63,42 +198,7 @@ export function WorkView({
             <h2 id="sw-work-list-title">Work hierarchy</h2>
             <span>{nodes.length} items</span>
           </header>
-          {nodes.map((node) => (
-            <article
-              className="sw-work-node"
-              data-work-node-id={node.id}
-              data-work-kind={node.kind}
-              data-work-parent-id={node.parentId ?? "root"}
-              key={node.id}
-            >
-              <Disclosure
-                summary={<span>{node.title}</span>}
-                expanded={state.expandedWorkIds.has(node.id)}
-                onToggle={() =>
-                  dispatch({ type: "toggleWork", nodeId: node.id })
-                }
-              >
-                <div className="sw-work-node__detail">
-                  <StatusLabel state={node.state} />
-                  <dl>
-                    <div>
-                      <dt>Type</dt>
-                      <dd>{node.kind}</dd>
-                    </div>
-                    <div>
-                      <dt>Phase</dt>
-                      <dd>{node.phase}</dd>
-                    </div>
-                    <div>
-                      <dt>Elapsed</dt>
-                      <dd>{node.elapsedLabel}</dd>
-                    </div>
-                  </dl>
-                  <p>{node.output}</p>
-                </div>
-              </Disclosure>
-            </article>
-          ))}
+          <WorkTree items={hierarchy} state={state} dispatch={dispatch} />
         </section>
       )}
 

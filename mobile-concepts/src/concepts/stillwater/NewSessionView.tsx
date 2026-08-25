@@ -1,5 +1,10 @@
 import { selectNewSessionValidity } from "../../core/selectors";
 import type { PrototypeAction, PrototypeState } from "../../core/state";
+import {
+  BlockingRouteState,
+  isBlockingRouteState,
+  OfflineNotice,
+} from "./RouteState";
 
 export interface NewSessionViewProps {
   state: PrototypeState;
@@ -10,10 +15,27 @@ export function NewSessionView({ state, dispatch }: NewSessionViewProps) {
   const fixture = state.projection.fixture;
   const valid = selectNewSessionValidity(state);
   const starting = state.newSession.outcome === "starting";
+  const offline = state.projection.screenState === "offline";
   const firstHub = fixture.hubs[0];
+
+  if (isBlockingRouteState(state)) {
+    return (
+      <BlockingRouteState
+        state={state}
+        routeLabel="New Session"
+        dispatch={dispatch}
+      />
+    );
+  }
 
   return (
     <div className="sw-new-session sw-route-enter">
+      <OfflineNotice
+        state={state}
+        routeLabel="New Session"
+        mutationDetail="You can edit this draft, but cannot start a session offline."
+        dispatch={dispatch}
+      />
       <section className="sw-launch-intro">
         <p className="sw-eyebrow">Deliberate start</p>
         <h2>Start with a known project</h2>
@@ -53,6 +75,7 @@ export function NewSessionView({ state, dispatch }: NewSessionViewProps) {
         className="sw-launch-form"
         onSubmit={(event) => {
           event.preventDefault();
+          if (offline) return;
           dispatch({ type: "submitNewSession" });
         }}
       >
@@ -156,7 +179,7 @@ export function NewSessionView({ state, dispatch }: NewSessionViewProps) {
         <button
           className="sw-primary-action"
           type="submit"
-          disabled={!valid || starting}
+          disabled={!valid || starting || offline}
         >
           {starting ? "Starting…" : "Start session"}
         </button>

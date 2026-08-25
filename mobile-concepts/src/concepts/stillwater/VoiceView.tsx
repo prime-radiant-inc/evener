@@ -5,6 +5,11 @@ import {
 import type { PrototypeAction, PrototypeState } from "../../core/state";
 import { Icon } from "../shared/Icon";
 import { ScreenState } from "../shared/ScreenState";
+import {
+  BlockingRouteState,
+  isBlockingRouteState,
+  OfflineNotice,
+} from "./RouteState";
 
 export interface VoiceViewProps {
   state: PrototypeState;
@@ -17,6 +22,15 @@ export function VoiceView({ state, sessionId, dispatch }: VoiceViewProps) {
     ({ id }) => id === sessionId,
   );
   const step = selectCurrentVoiceStep(state);
+  if (isBlockingRouteState(state)) {
+    return (
+      <BlockingRouteState
+        state={state}
+        routeLabel="Voice"
+        dispatch={dispatch}
+      />
+    );
+  }
   if (!session || state.selectedSessionId !== sessionId || !step) {
     return (
       <ScreenState
@@ -31,9 +45,16 @@ export function VoiceView({ state, sessionId, dispatch }: VoiceViewProps) {
   }
   const level = selectCurrentVoiceLevel(state);
   const displayedLevel = state.voice.muted || state.voice.stopped ? 0 : level;
+  const offline = state.projection.screenState === "offline";
 
   return (
     <div className="sw-voice sw-route-enter">
+      <OfflineNotice
+        state={state}
+        routeLabel="Voice"
+        mutationDetail="Voice lifecycle mutations are unavailable; close to return to saved transcript evidence."
+        dispatch={dispatch}
+      />
       <section
         className="sw-voice-stage"
         data-voice-state={step.state}
@@ -55,7 +76,7 @@ export function VoiceView({ state, sessionId, dispatch }: VoiceViewProps) {
           aria-label="Voice level"
           aria-valuemin={0}
           aria-valuemax={100}
-          aria-valuenow={level}
+          aria-valuenow={displayedLevel}
         >
           <span style={{ transform: `scale(${displayedLevel / 100})` }} />
           <Icon name="voice" decorative />
@@ -84,6 +105,7 @@ export function VoiceView({ state, sessionId, dispatch }: VoiceViewProps) {
               type="button"
               aria-label={`Set voice state: ${voiceStep.state}`}
               aria-pressed={voiceStep.id === step.id}
+              disabled={offline}
               key={voiceStep.id}
               onClick={() =>
                 dispatch({ type: "setVoiceState", state: voiceStep.state })
@@ -100,20 +122,21 @@ export function VoiceView({ state, sessionId, dispatch }: VoiceViewProps) {
         <legend className="sw-visually-hidden">Voice controls</legend>
         <button
           type="button"
-          disabled={state.voice.stopped}
+          disabled={state.voice.stopped || offline}
           onClick={() => dispatch({ type: "advanceVoice" })}
         >
           Advance voice state
         </button>
         <button
           type="button"
+          disabled={offline}
           onClick={() => dispatch({ type: "toggleVoiceMute" })}
         >
           {state.voice.muted ? "Unmute" : "Mute"}
         </button>
         <button
           type="button"
-          disabled={state.voice.stopped}
+          disabled={state.voice.stopped || offline}
           onClick={() => dispatch({ type: "stopVoice" })}
         >
           <Icon name="stop" decorative />
@@ -122,6 +145,7 @@ export function VoiceView({ state, sessionId, dispatch }: VoiceViewProps) {
         <button
           className="sw-danger-action"
           type="button"
+          disabled={offline}
           onClick={() => dispatch({ type: "endVoice" })}
         >
           End

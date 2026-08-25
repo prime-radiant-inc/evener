@@ -1,5 +1,10 @@
 import type { PrototypeAction, PrototypeState } from "../../core/state";
 import { StatusLabel } from "../shared/StatusLabel";
+import {
+  BlockingRouteState,
+  isBlockingRouteState,
+  OfflineNotice,
+} from "./RouteState";
 
 export interface SettingsViewProps {
   state: PrototypeState;
@@ -7,12 +12,23 @@ export interface SettingsViewProps {
 }
 
 export function SettingsView({ state, dispatch }: SettingsViewProps) {
+  if (isBlockingRouteState(state)) {
+    return (
+      <BlockingRouteState
+        state={state}
+        routeLabel="Settings"
+        dispatch={dispatch}
+      />
+    );
+  }
   return (
-    <div className="sw-settings sw-route-enter">
-      <p className="sw-banner" data-offline-prototype="true" role="status">
-        Concept Lab is offline-only. Hubs and connection states below are
-        fictional presentation fixtures.
-      </p>
+    <div className="sw-settings sw-route-enter" data-offline-prototype="true">
+      <OfflineNotice
+        state={state}
+        routeLabel="Settings"
+        mutationDetail="Local display and voice preferences remain usable; Hub states are saved evidence."
+        dispatch={dispatch}
+      />
 
       <section className="sw-settings-section" aria-labelledby="sw-hubs-title">
         <header>
