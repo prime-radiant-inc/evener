@@ -316,8 +316,13 @@ test("the language/copy header has no resting fill and gains the hover wash on h
   // the corner copy icon (matching usermessageitem.module.css's .actions).
   expect(rule).toContain("background: transparent");
   expect(rule).not.toContain("--hover-1");
-  // The hover wash moves to a .root:hover .header / .header:focus-within rule,
-  // so the block hover (not a resting fill) is what brings the surface forward.
-  expect(css).toMatch(/\.root:hover\s+\.header/);
+  // The hover wash moves to one shared rule for block hover and keyboard focus.
+  const interactiveRule =
+    /(?<selectors>\.root:hover\s+\.header\s*,\s*\.header:focus-within)\s*\{(?<declarations>[^{}]*)\}/.exec(css);
+  expect(interactiveRule?.groups?.selectors?.split(",").map((selector) => selector.trim())).toEqual([
+    ".root:hover .header",
+    ".header:focus-within",
+  ]);
+  expect(interactiveRule?.groups?.declarations).toMatch(/(?:^|;)\s*background\s*:\s*var\(--hover-1\)\s*;?/);
   expect(rule).not.toContain("border-bottom");
 });
