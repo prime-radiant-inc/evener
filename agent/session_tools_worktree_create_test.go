@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -74,13 +75,57 @@ func newWorktreeMaintenanceProbe() *worktreeMaintenanceProbe {
 	}
 }
 
+func worktreeMaintenanceAutoEnabled(args []string) bool {
+	enabled := true
+	for i := 0; i < len(args); i++ {
+		var config string
+		switch {
+		case args[i] == "-c" && i+1 < len(args):
+			config = args[i+1]
+			i++
+		case strings.HasPrefix(args[i], "-c"):
+			config = args[i][2:]
+		default:
+			continue
+		}
+		key, value, ok := strings.Cut(config, "=")
+		if !ok || !strings.EqualFold(strings.TrimSpace(key), "maintenance.auto") {
+			continue
+		}
+		switch strings.ToLower(strings.TrimSpace(value)) {
+		case "false", "0", "no", "off":
+			enabled = false
+		default:
+			enabled = true
+		}
+	}
+	return enabled
+}
+
+func worktreeQuiescentCommitArgs(args []string) []string {
+	commit := slices.Index(args, "commit")
+	if commit < 0 {
+		return args
+	}
+	quiescent := make([]string, 0, len(args)+2)
+	quiescent = append(quiescent, args[:commit]...)
+	quiescent = append(quiescent, "-c", "maintenance.auto=false")
+	return append(quiescent, args[commit:]...)
+}
+
 func (p *worktreeMaintenanceProbe) run(underlyingRunner worktreeGitRunner) worktreeGitRunner {
 	return func(dir string, args ...string) (string, error) {
-		out, err := underlyingRunner(dir, args...)
+		commit := slices.Contains(args, "commit")
+		maintenanceAutoEnabled := commit && worktreeMaintenanceAutoEnabled(args)
+		realArgs := args
+		if maintenanceAutoEnabled {
+			realArgs = worktreeQuiescentCommitArgs(args)
+		}
+		out, err := underlyingRunner(dir, realArgs...)
 		if err != nil {
 			return out, err
 		}
-		if slices.Contains(args, "commit") && !slices.Contains(args, "maintenance.auto=false") {
+		if maintenanceAutoEnabled {
 			go func() {
 				lock := filepath.Join(dir, ".git", "objects", "maintenance.lock")
 				p.mutatorErr = os.WriteFile(lock, []byte("maintenance\n"), 0o644)
@@ -309,10 +354,16 @@ func copyWorktreeBaseRepoFrom(t *testing.T, base, dst string) {
 func TestWorktreeFixturePublishesAfterSeedMaintenance(t *testing.T) {
 	probe := newWorktreeMaintenanceProbe()
 	base, _, err := buildWorktreeBaseRepo(probe.run(runWorktreeGit))
+	if base != "" {
+		t.Cleanup(func() {
+			if removeErr := os.RemoveAll(base); removeErr != nil {
+				t.Errorf("remove fixture: %v", removeErr)
+			}
+		})
+	}
 	if err != nil {
 		t.Fatalf("build worktree base repo: %v", err)
 	}
-	defer os.RemoveAll(base)
 
 	destination := filepath.Join(t.TempDir(), "repo")
 	copyWorktreeBaseRepoFrom(t, base, destination)
@@ -328,6 +379,96 @@ func TestWorktreeFixturePublishesAfterSeedMaintenance(t *testing.T) {
 	}
 	if probe.publishedWhileActive {
 		t.Fatal("fixture publication overlapped the post-commit maintenance mutator")
+	}
+}
+
+func TestWorktreeMaintenanceProbeUsesEffectiveBoolean(t *testing.T) {
+	tests := []struct {
+		name   string
+		args   []string
+		active bool
+	}{
+		{name: "false", args: []string{"-c", "maintenance.auto=false", "commit"}},
+		{name: "zero", args: []string{"-c", "maintenance.auto=0", "commit"}},
+		{name: "no", args: []string{"-c", "maintenance.auto=no", "commit"}},
+		{name: "off", args: []string{"-c", "maintenance.auto=off", "commit"}},
+		{name: "case insensitive false", args: []string{"-c", "maintenance.auto=FaLsE", "commit"}},
+		{name: "last false", args: []string{"-c", "maintenance.auto=true", "-c", "maintenance.auto=0", "commit"}},
+		{name: "true", args: []string{"-c", "maintenance.auto=true", "commit"}, active: true},
+		{name: "last true", args: []string{"-c", "maintenance.auto=0", "-c", "maintenance.auto=on", "commit"}, active: true},
+		{name: "absent", args: []string{"commit"}, active: true},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			probe := newWorktreeMaintenanceProbe()
+			dir := t.TempDir()
+			if err := os.MkdirAll(filepath.Join(dir, ".git", "objects"), 0o755); err != nil {
+				t.Fatalf("mkdir objects: %v", err)
+			}
+			var gotArgs []string
+			wrapped := probe.run(func(_ string, args ...string) (string, error) {
+				gotArgs = slices.Clone(args)
+				return "", nil
+			})
+			result := make(chan error, 1)
+			go func() {
+				_, err := wrapped(dir, test.args...)
+				result <- err
+			}()
+			if test.active {
+				<-probe.ready
+				probe.published()
+				if err := <-result; err != nil {
+					t.Fatalf("probe run: %v", err)
+				}
+				<-probe.exited
+				if probe.mutatorErr != nil {
+					t.Fatalf("maintenance mutator: %v", probe.mutatorErr)
+				}
+				if !probe.publishedWhileActive {
+					t.Fatal("expected publication overlap")
+				}
+				if !slices.Contains(gotArgs, "maintenance.auto=false") {
+					t.Fatalf("real runner args = %v, missing quiescent config", gotArgs)
+				}
+				return
+			}
+			if err := <-result; err != nil {
+				t.Fatalf("probe run: %v", err)
+			}
+			select {
+			case <-probe.ready:
+				t.Fatal("suppressed config launched synthetic maintenance")
+			default:
+			}
+			if !slices.Equal(gotArgs, test.args) {
+				t.Fatalf("real runner args = %v, want %v", gotArgs, test.args)
+			}
+		})
+	}
+}
+
+func TestWorktreeFixtureSetupErrorRetainsCleanupRoot(t *testing.T) {
+	base, _, err := buildWorktreeBaseRepo(func(string, ...string) (string, error) {
+		return "", errors.New("injected setup error")
+	})
+	if base != "" {
+		t.Cleanup(func() {
+			if removeErr := os.RemoveAll(base); removeErr != nil {
+				t.Errorf("remove fixture: %v", removeErr)
+			}
+			if _, statErr := os.Stat(base); !errors.Is(statErr, os.ErrNotExist) {
+				t.Errorf("fixture root remains after cleanup: %v", statErr)
+			}
+		})
+		if _, statErr := os.Stat(base); statErr != nil {
+			t.Fatalf("fixture root was not retained: %v", statErr)
+		}
+	} else {
+		t.Fatal("setup error did not retain fixture root")
+	}
+	if err == nil {
+		t.Fatal("injected setup error was not returned")
 	}
 }
 
