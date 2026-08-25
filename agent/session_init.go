@@ -352,11 +352,10 @@ func NewSession(client *llm.Client, profile *provider.Profile, env execenv.Execu
 		if agent, ok := s.pluginAgents[agentName]; ok && len(agent.Tasks) > 0 {
 			store := s.getOrCreateTaskStore()
 			if err := store.PopulateFromTemplates(agent.Tasks, nil); err == nil {
-				// Inject first task prompt and set reasoning effort.
+				// Inject the first task prompt. Its reasoning_effort applies
+				// per-round via prepareModelRequest while it is in progress; it
+				// must not overwrite the session's configured effort.
 				if current, ok := store.CurrentInProgress(); ok {
-					if current.ReasoningEffort != "" {
-						s.cfg.ReasoningEffort = current.ReasoningEffort
-					}
 					s.SteerKind(formatCurrentTaskSteering(current, s.canInstructTool("task_list")), events.SteeringKindCurrentTask)
 				}
 			}
@@ -472,6 +471,12 @@ type RestoreSessionConfig struct {
 	spawn                       spawnConfig
 	resumeHistory               []schema.Turn
 	deferRestoreSideEffects     bool
+	// sandboxProvisioned is set only by the stable-delegate restore path after it
+	// has re-resolved and enabled the descriptor's complete sandbox policy. That
+	// policy contains delegate-only axes (such as WriteBlocked) which the ordinary
+	// session config projection cannot represent; provisioning it again from the
+	// projection would silently weaken the boundary.
+	sandboxProvisioned bool
 	// clock is an intentionally package-private restore seam. NewSession already
 	// accepts this boundary through SessionConfig; restore must preserve it so
 	// deterministic job/watch replay never falls back to wall time mid-program.
@@ -619,8 +624,10 @@ func RestoreSessionFromMetaWithConfig(client *llm.Client, profile *provider.Prof
 	// longer enforce the mode fails closed here (a *sandbox.RefusalError) rather
 	// than resuming unconfined, and config drift can never widen an old session's
 	// box. An off/empty mode skips the probe and restores byte-identically.
-	if err := provisionRestoredSandbox(cfg, env); err != nil {
-		return nil, err
+	if !restoreCfg.sandboxProvisioned {
+		if err := provisionRestoredSandbox(cfg, env); err != nil {
+			return nil, err
+		}
 	}
 	if err := env.Initialize(); err != nil {
 		return nil, fmt.Errorf("env initialize: %w", err)
@@ -707,6 +714,7 @@ func RestoreSessionFromMetaWithConfig(client *llm.Client, profile *provider.Prof
 		stateDir:                 cfg.StateDir,
 		installID:                resolveInstallationID(cfg, cfg.StateDir),
 		state:                    SessionIdle,
+		loopEffortEscalated:      meta.ReasoningEffortEscalated,
 		events:                   make(chan events.SessionEvent, 256),
 		history:                  resumeHistory,
 		turns:                    meta.AcceptedInputTurns,
@@ -1918,8 +1926,9 @@ func commandUnenforcedFieldWarnings(p plugin.Instance) []events.WarningData {
 	return out
 }
 
-// initMCP discovers and connects to MCP servers if configured.
-// Uses a 30-second timeout since NewSession doesn't take a context.
+// initMCP discovers and connects to MCP servers if configured. Production uses
+// a 30-second timeout since NewSession doesn't take a context; hermetic stdio
+// tests can instead bind initialization to their lifecycle context.
 func (s *Session) initMCP() error {
 	configs, cfgWarnings, err := mcpconfig.Discover(s.currentEnv(), s.cfg.MCPConfigFiles, s.cfg.MCPInline)
 	if err != nil {
@@ -1938,13 +1947,21 @@ func (s *Session) initMCP() error {
 		return nil
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
+	ctx := s.cfg.testOnly.mcpConnectContext
+	managerOpts := []mcp.Option{mcp.WithSandboxWrapper(s.sandboxWrapper())}
+	if ctx == nil {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+	}
+	if timeout := s.cfg.testOnly.mcpConnectTimeout; timeout != nil {
+		managerOpts = append(managerOpts, mcp.WithConnectTimeoutForTesting(*timeout))
+	}
 
 	// A server that fails to connect or register is not fatal: fold its outcome
 	// into a pending warning and keep going. A session with zero healthy MCP
 	// servers still constructs successfully.
-	mgr, connectOutcomes := mcp.NewManager(ctx, configs, nil, mcp.WithSandboxWrapper(s.sandboxWrapper()))
+	mgr, connectOutcomes := mcp.NewManager(ctx, configs, nil, managerOpts...)
 	mgr.OnReconnect = func(name string) {
 		s.emitDiagnosticWarning(reconnectRecoveryWarning(name))
 	}

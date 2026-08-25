@@ -374,6 +374,7 @@ func TestSubagentDrainReturnHandoffNoPhantomTurnInFinalizationWindow(t *testing.
 			<-releaseWindow
 		})
 	}
+	fixture.child.sess.jobManager.mu.Lock()
 	fixture.child.sess.jobManager.testOnlyAfterRematerializeDurableLoad = func() {
 		select {
 		case <-windowHeld:
@@ -381,6 +382,7 @@ func TestSubagentDrainReturnHandoffNoPhantomTurnInFinalizationWindow(t *testing.
 		default:
 		}
 	}
+	fixture.child.sess.jobManager.mu.Unlock()
 	go func() {
 		select {
 		case <-recheckSawWindow:

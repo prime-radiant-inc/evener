@@ -9,7 +9,7 @@ import (
 	"primeradiant.com/evener/agent/internal/jobstore"
 )
 
-// FuzzFc2ShellTerminalDecision drives shellTerminalDecision — the pure
+// FuzzFc2ShellTerminalDecision drives shellTerminalDecisionWithSignal — the pure
 // terminal-classification core lifted out of jobManager.shellTerminal — over the
 // full cross-product of stop request, runtime timeout, wait error, and exit code.
 // It is the non-timing decision arm of runShell: the wrapper only adds the jm.mu
@@ -39,9 +39,9 @@ func FuzzFc2ShellTerminalDecision(f *testing.F) {
 			waitErr = errors.New("wait failed")
 		}
 
-		status, reason := shellTerminalDecision(stopStatus, stopReason, exitCode, timedOut, waitErr)
+		status, reason := shellTerminalDecisionWithSignal(stopStatus, stopReason, exitCode, "", timedOut, waitErr)
 
-		status2, reason2 := shellTerminalDecision(stopStatus, stopReason, exitCode, timedOut, waitErr)
+		status2, reason2 := shellTerminalDecisionWithSignal(stopStatus, stopReason, exitCode, "", timedOut, waitErr)
 		if status != status2 || reason != reason2 {
 			t.Fatalf("non-deterministic: (%q,%q) vs (%q,%q)", status, reason, status2, reason2)
 		}
@@ -63,6 +63,8 @@ func FuzzFc2ShellTerminalDecision(f *testing.F) {
 			wantStatus, wantReason = jobstore.StatusFailed, "wait_failed"
 		case exitCode == 0:
 			wantStatus, wantReason = jobstore.StatusCompleted, "exit_zero"
+		case exitCode < 0:
+			wantStatus, wantReason = jobstore.StatusFailed, "killed_by_signal"
 		default:
 			wantStatus, wantReason = jobstore.StatusFailed, "exit_nonzero"
 		}

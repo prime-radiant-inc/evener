@@ -261,7 +261,7 @@ func (s *Session) persistToolResults(ctx context.Context, calls []llm.ToolCallDa
 
 	for i, r := range results {
 		if len(r.ImageData) > 0 {
-			if desc := s.describeImage(ctx, r); desc != "" {
+			if desc := s.describeImageSteering(ctx, r); desc != "" {
 				// Include the file path so the agent can correlate descriptions to
 				// specific files when multiple images/documents are read in one round.
 				label := "Image description (from vision)"
