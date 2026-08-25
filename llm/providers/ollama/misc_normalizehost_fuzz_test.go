@@ -1,6 +1,7 @@
 package ollama
 
 import (
+	"net/url"
 	"strings"
 	"testing"
 
@@ -15,20 +16,13 @@ import (
 //
 // Oracles:
 //   - never panics (floor);
-//   - suffix invariant: the result always ends in "/v1" (every documented
-//     resolution path appends it, and the default constant carries it), so the
-//     openai-compatible client always receives a versioned endpoint;
+//   - successful results are structurally valid http(s) URLs with an authority
+//     and a /v1 path; invalid input is rejected rather than rewritten;
 //   - determinism: normalizeHost is pure — two calls agree;
 //   - idempotence (metamorphic): normalizeHost already emits a scheme-bearing
 //     value ending in /v1, and that form is preserved verbatim by the function,
 //     so normalizeHost(normalizeHost(h)) == normalizeHost(h). A second pass that
 //     re-mangles a value it just produced would be a real bug.
-//
-// The result is deliberately NOT asserted to be a parseable URL: a legitimate
-// OLLAMA_HOST is a host, host:port, or full URL, but arbitrary fuzzed garbage
-// with two-plus colons (e.g. "host:a:b") is treated as a bare IPv6 literal and
-// bracketed, yielding an unparseable authority. That is out-of-contract input,
-// not a guarantee the function makes.
 func FuzzMiscOllamaNormalizeHost(f *testing.F) {
 	seeds := []string{
 		"",
@@ -66,17 +60,25 @@ func FuzzMiscOllamaNormalizeHost(f *testing.F) {
 		t.Setenv(envvars.OllamaAPIKey.Name, "seed-key")
 		_, _ = llm.NewFromEnv()
 		_, _ = llm.NewFromProviders(providercfg.Config{Instances: []providercfg.InstanceConfig{{Name: "ollama-seed", Type: providerName}}})
-		got := normalizeHost(h)
+		got, err := normalizeHostResult(h)
+		if err != nil {
+			if got != "" {
+				t.Fatalf("normalizeHost(%q) returned %q with error %v", h, got, err)
+			}
+			return
+		}
 
-		if !strings.HasSuffix(got, "/v1") {
-			t.Fatalf("normalizeHost(%q) = %q, which does not end in /v1", h, got)
+		u, err := url.Parse(got)
+		if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" ||
+			u.User != nil || u.RawQuery != "" || u.Fragment != "" || !strings.HasSuffix(u.Path, "/v1") {
+			t.Fatalf("normalizeHost(%q) = %q, not a supported endpoint: %v", h, got, err)
 		}
 
 		if got2 := normalizeHost(h); got2 != got {
 			t.Fatalf("normalizeHost nondeterministic: %q then %q for input %q", got, got2, h)
 		}
 
-		if again := normalizeHost(got); again != got {
+		if again, err := normalizeHostResult(got); err != nil || again != got {
 			t.Fatalf("normalizeHost not idempotent on its own output:\n input=%q\n once=%q\n twice=%q", h, got, again)
 		}
 	})

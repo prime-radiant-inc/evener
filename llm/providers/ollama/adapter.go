@@ -26,6 +26,7 @@ package ollama
 
 import (
 	"context"
+	"fmt"
 	"net/http"
 	"strings"
 
@@ -98,11 +99,21 @@ func (a *adapter) ListModels(ctx context.Context) ([]llm.ModelInfo, error) {
 // materializer, which seeds providers.json from the same two env vars,
 // cannot drift apart the way they did before (see envvars/ollama_host.go).
 func resolveBaseURL(baseURLEnv, hostEnv string) string {
+	base, _ := resolveBaseURLError(baseURLEnv, hostEnv)
+	return base
+}
+
+func resolveBaseURLError(baseURLEnv, hostEnv string) (string, error) {
 	return envvars.ResolveOllamaBaseURL(baseURLEnv, hostEnv)
 }
 
 // normalizeHost defers to envvars.NormalizeOllamaHost — see resolveBaseURL.
 func normalizeHost(h string) string {
+	base, _ := normalizeHostResult(h)
+	return base
+}
+
+func normalizeHostResult(h string) (string, error) {
 	return envvars.NormalizeOllamaHost(h)
 }
 
@@ -149,12 +160,16 @@ func init() {
 		baseEnv := envvars.OllamaBaseURL.Trimmed()
 		hostEnv := envvars.OllamaHost.Trimmed()
 		keyEnv := envvars.OllamaAPIKey.Trimmed()
+		base, err := resolveBaseURLError(baseEnv, hostEnv)
+		if err != nil {
+			return nil, false, fmt.Errorf("resolve Ollama endpoint: %w", err)
+		}
 		// Always register: ollama implements NonDefaultEligible, so the
 		// "silent default provider" concern is handled at the client
 		// level. Explicit --provider ollama works zero-config.
 		return newAdapter("", &openaicompat.Adapter{
 			APIKey:                  keyEnv,
-			BaseURL:                 resolveBaseURL(baseEnv, hostEnv),
+			BaseURL:                 base,
 			Client:                  &http.Client{Timeout: 0},
 			SuppressCatalogDefaults: true,
 		}), true, nil

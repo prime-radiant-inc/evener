@@ -1,7 +1,10 @@
 package envvars
 
 import (
+	"fmt"
 	"net"
+	"net/url"
+	"strconv"
 	"strings"
 )
 
@@ -20,15 +23,15 @@ import (
 // downstream expected a schemeless, portless host there, so the ollama
 // provider posted to "localhost/chat/completions" and the transport failed
 // with "unsupported protocol scheme" on every attempt.
-func ResolveOllamaBaseURL(baseURLEnv, hostEnv string) string {
+func ResolveOllamaBaseURL(baseURLEnv, hostEnv string) (string, error) {
 	if b := strings.TrimSpace(baseURLEnv); b != "" {
-		return strings.TrimRight(b, "/")
+		return validateOllamaURL(strings.TrimRight(b, "/"), false)
 	}
 	if h := strings.TrimSpace(hostEnv); h != "" {
 		return NormalizeOllamaHost(h)
 	}
 	p, _ := Provider("ollama")
-	return p.DefaultBaseURL
+	return p.DefaultBaseURL, nil
 }
 
 // NormalizeOllamaHost converts an OLLAMA_HOST value (host, host:port, or
@@ -37,34 +40,93 @@ func ResolveOllamaBaseURL(baseURLEnv, hostEnv string) string {
 // strings.Contains(":") check would have left as "::1" with the wrong
 // scheme syntax. Values whose path already terminates in /v1 are preserved
 // so paths like https://proxy.example/ollama/v1 are not double-suffixed.
-func NormalizeOllamaHost(h string) string {
+func NormalizeOllamaHost(h string) (string, error) {
 	h = strings.TrimSpace(h)
-	h = strings.TrimRight(h, "/")
 	if h == "" {
 		p, _ := Provider("ollama")
-		return p.DefaultBaseURL
+		return p.DefaultBaseURL, nil
 	}
-	if strings.Contains(h, "://") {
-		// Has scheme — append /v1 if not already present.
-		if strings.HasSuffix(h, "/v1") {
-			return h
+
+	// Ollama's cloud endpoint is the one documented bare host with different
+	// scheme/port semantics from a local host.
+	if h == "ollama.com" {
+		return "https://ollama.com:443/v1", nil
+	}
+
+	hasScheme := strings.Contains(h, "://")
+	if !hasScheme {
+		// A bare IPv6 literal is not accepted by url.Parse after adding a
+		// scheme; bracket it before parsing. Anything else is an authority
+		// (possibly with a path) and is parsed by the same URL machinery.
+		if net.ParseIP(h) != nil {
+			h = "[" + h + "]"
 		}
-		return h + "/v1"
+		h = "http://" + h
 	}
-	// No scheme. Determine whether a port is present and whether the host
-	// is a bare IPv6 literal that needs brackets.
-	if _, _, err := net.SplitHostPort(h); err != nil {
-		switch {
-		case strings.HasPrefix(h, "[") && strings.HasSuffix(h, "]"):
-			// Bracketed IPv6 with no port.
-			h += ":11434"
-		case strings.Count(h, ":") >= 2:
-			// Bare IPv6 with no port: "::1" or "fe80::1".
-			h = "[" + h + "]:11434"
-		default:
-			// Hostname or IPv4 without a port.
-			h += ":11434"
+
+	result, err := validateOllamaURL(h, true)
+	if err != nil {
+		return result, err
+	}
+	if hasScheme {
+		u, err := url.Parse(result)
+		if err != nil {
+			return "", err
+		}
+		if u.Scheme == "https" && u.Hostname() == "ollama.com" && u.Port() == "" {
+			u.Host = net.JoinHostPort(u.Hostname(), "443")
+		}
+		return u.String(), nil
+	}
+	// Bare hosts use Ollama's local default port. An explicit port (including
+	// bracketed IPv6 with a port) was already preserved by validation.
+	u, err := url.Parse(result)
+	if err != nil {
+		return "", err
+	}
+	if u.Port() == "" {
+		u.Host = net.JoinHostPort(u.Hostname(), "11434")
+	}
+	return u.String(), nil
+}
+
+// validateOllamaURL parses and validates the endpoint instead of treating it
+// as a string. normalizeHost adds /v1; a base URL is deliberately left at its
+// caller-supplied path, matching OLLAMA_BASE_URL's existing semantics.
+func validateOllamaURL(raw string, normalizePath bool) (string, error) {
+	u, err := url.Parse(raw)
+	if err != nil {
+		return "", fmt.Errorf("invalid Ollama URL %q: %w", raw, err)
+	}
+	if u.Scheme != "http" && u.Scheme != "https" {
+		return "", fmt.Errorf("invalid Ollama URL %q: scheme must be http or https", raw)
+	}
+	if u.Opaque != "" || u.Host == "" || u.User != nil {
+		return "", fmt.Errorf("invalid Ollama URL %q: URL must have an authority without userinfo", raw)
+	}
+	if u.RawQuery != "" || u.ForceQuery || u.Fragment != "" {
+		return "", fmt.Errorf("invalid Ollama URL %q: query and fragment are not supported", raw)
+	}
+	host := u.Hostname()
+	if host == "" || strings.TrimSpace(host) != host {
+		return "", fmt.Errorf("invalid Ollama URL %q: host is empty or contains whitespace", raw)
+	}
+	if strings.HasSuffix(u.Host, ":") {
+		return "", fmt.Errorf("invalid Ollama URL %q: port is empty", raw)
+	}
+	if port := u.Port(); port != "" {
+		n, err := strconv.Atoi(port)
+		if err != nil || n < 1 || n > 65535 {
+			return "", fmt.Errorf("invalid Ollama URL %q: port must be between 1 and 65535", raw)
 		}
 	}
-	return "http://" + h + "/v1"
+
+	if normalizePath {
+		path := strings.TrimRight(u.Path, "/")
+		if !strings.HasSuffix(path, "/v1") {
+			path += "/v1"
+		}
+		u.Path, u.RawPath = path, ""
+	}
+	return u.String(), nil
 }

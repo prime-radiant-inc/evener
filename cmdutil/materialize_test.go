@@ -1,6 +1,7 @@
 package cmdutil
 
 import (
+	"bytes"
 	"os"
 	"path/filepath"
 	"strings"
@@ -11,6 +12,7 @@ import (
 	"primeradiant.com/evener/auth/openai/oaitest"
 	"primeradiant.com/evener/llm"
 	"primeradiant.com/evener/llm/providercfg"
+	_ "primeradiant.com/evener/llm/providers/ollama"
 )
 
 // TestOllamaBaseURLFromEnv pins the base_url the materializer persists for
@@ -22,8 +24,8 @@ import (
 func TestOllamaBaseURLFromEnv(t *testing.T) {
 	t.Setenv("OLLAMA_BASE_URL", "")
 	t.Setenv("OLLAMA_HOST", "localhost")
-	if got, want := ollamaBaseURLFromEnv(), "http://localhost:11434/v1"; got != want {
-		t.Fatalf("ollamaBaseURLFromEnv() = %q, want %q", got, want)
+	if got, err := ollamaBaseURLFromEnv(); err != nil || got != "http://localhost:11434/v1" {
+		t.Fatalf("ollamaBaseURLFromEnv() = %q, err %v, want %q", got, err, "http://localhost:11434/v1")
 	}
 }
 
@@ -34,8 +36,8 @@ func TestOllamaBaseURLFromEnv(t *testing.T) {
 func TestOllamaBaseURLFromEnvPrefersBaseURL(t *testing.T) {
 	t.Setenv("OLLAMA_BASE_URL", "https://proxy.example/ollama/v1/")
 	t.Setenv("OLLAMA_HOST", "some-other-host")
-	if got, want := ollamaBaseURLFromEnv(), "https://proxy.example/ollama/v1"; got != want {
-		t.Fatalf("ollamaBaseURLFromEnv() = %q, want %q", got, want)
+	if got, err := ollamaBaseURLFromEnv(); err != nil || got != "https://proxy.example/ollama/v1" {
+		t.Fatalf("ollamaBaseURLFromEnv() = %q, err %v, want %q", got, err, "https://proxy.example/ollama/v1")
 	}
 }
 
@@ -45,8 +47,70 @@ func TestOllamaBaseURLFromEnvPrefersBaseURL(t *testing.T) {
 func TestOllamaBaseURLFromEnvUnset(t *testing.T) {
 	t.Setenv("OLLAMA_BASE_URL", "")
 	t.Setenv("OLLAMA_HOST", "")
-	if got := ollamaBaseURLFromEnv(); got != "" {
-		t.Fatalf("ollamaBaseURLFromEnv() = %q, want \"\"", got)
+	if got, err := ollamaBaseURLFromEnv(); err != nil || got != "" {
+		t.Fatalf("ollamaBaseURLFromEnv() = %q, err %v, want \"\"", got, err)
+	}
+}
+
+func TestMaterializeOllamaHostRoundTrip(t *testing.T) {
+	for _, tc := range []struct {
+		name, host, want string
+	}{
+		{name: "local default", host: "localhost", want: "http://localhost:11434/v1"},
+		{name: "HTTP path", host: "http://ollama.local/base/v1", want: "http://ollama.local/base/v1"},
+		{name: "cloud", host: "ollama.com", want: "https://ollama.com:443/v1"},
+		{name: "IPv6", host: "[::1]:11434", want: "http://[::1]:11434/v1"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			path := filepath.Join(dir, "providers.toml")
+			t.Setenv("OLLAMA_BASE_URL", "")
+			t.Setenv("OLLAMA_HOST", tc.host)
+
+			cfg, err := MaterializeProvidersConfig(path)
+			if err != nil {
+				t.Fatalf("MaterializeProvidersConfig: %v", err)
+			}
+			got, exists, err := providercfg.LoadFile(path)
+			if err != nil || !exists {
+				t.Fatalf("reload: exists=%v err=%v", exists, err)
+			}
+			for _, c := range []providercfg.Config{cfg, got} {
+				var found bool
+				for _, inst := range c.Instances {
+					if inst.Name == "ollama" {
+						found = true
+						if inst.BaseURL != tc.want {
+							t.Fatalf("ollama base_url = %q, want %q", inst.BaseURL, tc.want)
+						}
+					}
+				}
+				if !found {
+					t.Fatalf("ollama instance missing: %+v", c.Instances)
+				}
+			}
+		})
+	}
+}
+
+func TestMaterializeRejectsInvalidOllamaHostAtomically(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "providers.toml")
+	original := []byte("original providers config\n")
+	if err := os.WriteFile(path, original, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("OLLAMA_BASE_URL", "")
+	t.Setenv("OLLAMA_HOST", "host:66000")
+	if _, err := MaterializeProvidersConfig(path); err == nil {
+		t.Fatal("MaterializeProvidersConfig accepted invalid Ollama port")
+	}
+	got, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(got, original) {
+		t.Fatalf("invalid materialization changed existing file: %q", got)
 	}
 }
 

@@ -2,7 +2,6 @@ package cmdutil
 
 import (
 	"fmt"
-	"strings"
 
 	"primeradiant.com/evener/envvars"
 	"primeradiant.com/evener/llm"
@@ -25,10 +24,14 @@ func seedConfigFromEnv(opts ...llm.EnvOption) (providercfg.Config, error) {
 
 	names := client.ProviderNames()
 	def := client.DefaultProvider()
+	ollamaBaseURL, err := ollamaBaseURLFromEnv()
+	if err != nil {
+		return providercfg.Config{}, fmt.Errorf("seed providers config: resolve Ollama endpoint: %w", err)
+	}
 
 	getBaseURL := func(typ string) string {
 		if typ == "ollama" {
-			return ollamaBaseURLFromEnv()
+			return ollamaBaseURL
 		}
 		v := BaseURLEnvVar(typ)
 		if v == "" {
@@ -55,14 +58,12 @@ func seedConfigFromEnv(opts ...llm.EnvOption) (providercfg.Config, error) {
 // then built its request against "localhost/chat/completions", which has
 // no scheme, and every attempt failed client-side with "unsupported
 // protocol scheme" before a socket was ever opened.
-func ollamaBaseURLFromEnv() string {
-	if v := envvars.OllamaBaseURL.Trimmed(); v != "" {
-		return strings.TrimRight(v, "/")
+func ollamaBaseURLFromEnv() (string, error) {
+	base, host := envvars.OllamaBaseURL.Trimmed(), envvars.OllamaHost.Trimmed()
+	if base == "" && host == "" {
+		return "", nil
 	}
-	if v := envvars.OllamaHost.Trimmed(); v != "" {
-		return envvars.NormalizeOllamaHost(v)
-	}
-	return ""
+	return envvars.ResolveOllamaBaseURL(base, host)
 }
 
 // MaterializeProvidersConfig seeds a descriptors-only config from the environment
