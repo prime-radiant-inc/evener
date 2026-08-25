@@ -2,6 +2,7 @@ import { canonicalFixture } from "./fixtures";
 import type { PrototypeFixture, QuestionFixture, Route } from "./model";
 import { projectScenario } from "./scenarios";
 import {
+  selectCanMutate,
   selectNewSessionValidity,
   selectQuestionSubmitValidity,
 } from "./selectors";
@@ -219,10 +220,28 @@ function assertNever(value: never): never {
   throw new Error(`unhandled prototype action: ${JSON.stringify(value)}`);
 }
 
+function isBlockedDomainMutation(action: PrototypeAction): boolean {
+  switch (action.type) {
+    case "submitComposer":
+    case "completeSyntheticTurn":
+    case "resolveQuestion":
+    case "submitNewSession":
+    case "completeNewSession":
+    case "advanceVoice":
+    case "setVoiceState":
+    case "toggleVoiceMute":
+    case "stopVoice":
+      return true;
+    default:
+      return false;
+  }
+}
+
 export function reducePrototype(
   state: PrototypeState,
   action: PrototypeAction,
 ): PrototypeState {
+  if (!selectCanMutate(state) && isBlockedDomainMutation(action)) return state;
   switch (action.type) {
     case "selectConcept":
       return state.concept === action.concept

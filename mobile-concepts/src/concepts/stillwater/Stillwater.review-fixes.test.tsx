@@ -217,7 +217,7 @@ function replaceWorkParent(work: readonly WorkNode[]): {
 describe("Stillwater review fixes", () => {
   it.each(blockingCases)(
     "applies the %s route %s policy with stable loading layout and error Retry",
-    (route, scenario) => {
+    async (route, scenario) => {
       const result = renderRoute(route, scenario);
       const main = requireMain(route);
       expect(
@@ -228,14 +228,23 @@ describe("Stillwater review fixes", () => {
       }
       if (scenario === "error") {
         fireEvent.click(within(main).getByRole("button", { name: "Retry" }));
-        expect(result.store.getState().refreshState).toBe("refreshing");
+        await waitFor(() => {
+          expect(result.store.getState()).toMatchObject({
+            scenario: "baseline",
+            route: { kind: "root", tab: "sessions" },
+            history: [],
+          });
+          expect(main).toHaveAttribute("data-route", "sessions");
+          expect(main.querySelector('[data-screen-state="error"]')).toBeNull();
+          expect(main.querySelector("[data-session-group-id]")).toBeVisible();
+        });
       }
     },
   );
 
   it.each(offlineRoutes)(
     "shows age, scope, and Retry for offline %s",
-    (route) => {
+    async (route) => {
       const result = renderRoute(route, "offline");
       const main = requireMain(route);
       const policy = main.querySelector('[data-offline-policy="read-only"]');
@@ -245,7 +254,18 @@ describe("Stillwater review fixes", () => {
       fireEvent.click(
         within(policy as HTMLElement).getByRole("button", { name: "Retry" }),
       );
-      expect(result.store.getState().refreshState).toBe("refreshing");
+      await waitFor(() => {
+        expect(result.store.getState()).toMatchObject({
+          scenario: "baseline",
+          route: { kind: "root", tab: "sessions" },
+          history: [],
+        });
+        expect(main).toHaveAttribute("data-route", "sessions");
+        expect(
+          main.querySelector('[data-offline-policy="read-only"]'),
+        ).toBeNull();
+        expect(main.querySelector("[data-session-group-id]")).toBeVisible();
+      });
     },
   );
 
@@ -381,6 +401,34 @@ describe("Stillwater review fixes", () => {
         expect.objectContaining({ behavior: "auto" }),
       ),
     );
+
+    cleanup();
+    const previousEffectiveMotion =
+      document.documentElement.dataset.reducedMotion;
+    document.documentElement.dataset.reducedMotion = "true";
+    try {
+      const systemReduced = renderRoute("search", "baseline");
+      expect(systemReduced.store.getState().reducedMotion).toBe(false);
+      main = requireMain("search");
+      const systemReducedScroll = vi.fn();
+      Object.defineProperty(main, "scrollTo", {
+        configurable: true,
+        value: systemReducedScroll,
+      });
+      setFocusedSearchQuery(systemReduced);
+      await waitFor(() =>
+        expect(systemReducedScroll).toHaveBeenCalledWith(
+          expect.objectContaining({ behavior: "auto" }),
+        ),
+      );
+    } finally {
+      if (previousEffectiveMotion === undefined) {
+        delete document.documentElement.dataset.reducedMotion;
+      } else {
+        document.documentElement.dataset.reducedMotion =
+          previousEffectiveMotion;
+      }
+    }
   });
 
   it("uses visual viewport height, independent narrow safe areas, and wrapping titles", () => {

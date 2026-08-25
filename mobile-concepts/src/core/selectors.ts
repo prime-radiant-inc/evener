@@ -1,6 +1,10 @@
 import type { SearchDocument, SessionRecord, VoiceStep } from "./model";
 import type { PrototypeState, QuestionAnswerState } from "./state";
 
+export function selectCanMutate(state: PrototypeState): boolean {
+  return state.projection.screenState === "ready";
+}
+
 export type SessionGroupId = "needs-you" | "running" | "recent";
 
 export interface SessionGroup {
