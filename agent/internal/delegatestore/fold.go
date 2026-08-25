@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"maps"
 	"reflect"
+	"time"
 
 	"primeradiant.com/evener/agent/provenance"
 	"primeradiant.com/evener/agent/task"
@@ -280,6 +281,7 @@ func applySubtreeStopRequested(state State, event Event) error {
 			continue
 		}
 		aggregate.PendingStopSeq = event.Seq
+		aggregate.PendingStopAt = event.TS
 		aggregate.NeedsAttention = false
 		if aggregate.Phase != PhaseClosed {
 			aggregate.Phase = PhaseStopping
@@ -327,6 +329,7 @@ func applySubtreeStopCompleted(state State, event Event) error {
 	for id := range covered {
 		aggregate := state[id]
 		aggregate.PendingStopSeq = 0
+		aggregate.PendingStopAt = time.Time{}
 		aggregate.PreparedTerminal = nil
 		aggregate.NeedsAttention = false
 		if aggregate.Resumable {

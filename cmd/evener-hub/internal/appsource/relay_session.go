@@ -20,6 +20,16 @@ type relaySession struct {
 	publishWake chan struct{}
 	publishMu   sync.Mutex
 	publishJobs []relayPublishJob
+	// publishBoundary makes epoch revocation and the handoff of a queued
+	// notification one linearizable operation. A publisher may block on the
+	// listener's private channel while holding the read side, but never while
+	// waiting for downstream acknowledgement. Revocation closes the epoch's
+	// fence before taking the write side so a blocked send can be interrupted
+	// without allowing a revoked epoch to enter a listener after replacement.
+	publishBoundary  sync.RWMutex
+	publishEntryHook func()
+	publicationEpoch uint64
+	publicationFence *relayPublicationFence
 
 	mu             sync.Mutex
 	epoch          uint64
@@ -63,8 +73,14 @@ type relayCapture struct {
 }
 
 type relayPublishJob struct {
+	epoch         uint64
+	fence         *relayPublicationFence
 	notifications []appwire.Notification
 	done          chan struct{}
+}
+
+type relayPublicationFence struct {
+	revoked chan struct{}
 }
 
 type relayListener struct {
@@ -95,14 +111,15 @@ type relayHandoff struct {
 func newRelaySession(connect relaySessionConnect, onIdle func(*relaySession)) *relaySession {
 	ctx, cancel := context.WithCancel(context.Background())
 	session := &relaySession{
-		ctx:         ctx,
-		cancel:      cancel,
-		connect:     connect,
-		onIdle:      onIdle,
-		commandGate: make(chan struct{}, 1),
-		publishWake: make(chan struct{}, 1),
-		leases:      map[uint64]*relaySessionLease{},
-		listeners:   map[uint64]*relayListener{},
+		ctx:              ctx,
+		cancel:           cancel,
+		connect:          connect,
+		onIdle:           onIdle,
+		commandGate:      make(chan struct{}, 1),
+		publishWake:      make(chan struct{}, 1),
+		leases:           map[uint64]*relaySessionLease{},
+		listeners:        map[uint64]*relayListener{},
+		publicationFence: &relayPublicationFence{revoked: make(chan struct{})},
 	}
 	session.commandGate <- struct{}{}
 	go session.publishLoop()
@@ -284,7 +301,7 @@ func (s *relaySession) ensureConnection(ctx context.Context) (*relayConnection, 
 		s.mu.Unlock()
 		return connection, nil
 	}
-	s.epoch++
+	s.advanceEpochLocked()
 	epoch := s.epoch
 	s.mu.Unlock()
 
@@ -331,7 +348,7 @@ func (s *relaySession) observe(epoch uint64, message appwire.Message, recvErr er
 	case message.Notification != nil:
 		notification := *message.Notification
 		if capture == nil {
-			s.queuePublishLocked([]appwire.Notification{notification}, nil)
+			s.queuePublishLocked(epoch, []appwire.Notification{notification}, nil)
 		} else if capture.epoch != epoch {
 			// A revoked epoch never contributes to the current feed.
 		} else if capture.cutSeen {
@@ -345,7 +362,7 @@ func (s *relaySession) observe(epoch uint64, message appwire.Message, recvErr er
 		// empty job is also a FIFO barrier for notifications accepted before
 		// this capture was installed.
 		capture.cutSeen = true
-		s.queuePublishLocked(capture.beforeCut, capture.flushed)
+		s.queuePublishLocked(capture.epoch, capture.beforeCut, capture.flushed)
 		capture.beforeCut = nil
 	}
 	s.mu.Unlock()
@@ -360,7 +377,7 @@ func (s *relaySession) disconnect(epoch uint64) {
 	if s.connection == nil {
 		// Revoke a connection attempt whose receive loop ended before the
 		// initialized client could be installed.
-		s.epoch++
+		s.advanceEpochLocked()
 		s.mu.Unlock()
 		return
 	}
@@ -381,7 +398,7 @@ func (s *relaySession) disconnect(epoch uint64) {
 		return
 	}
 	s.connection = nil
-	s.epoch++
+	s.advanceEpochLocked()
 	if capture != nil && capture.epoch == epoch {
 		s.capture = nil
 		capture.release.Do(func() {
@@ -430,7 +447,7 @@ func (s *relaySession) publishPendingResync(params appwire.ThreadReadParams) {
 		ThreadID: params.ThreadID,
 		Ref:      params.Ref,
 	}).Notification
-	s.queuePublishLocked([]appwire.Notification{resync}, nil)
+	s.queuePublishLocked(s.epoch, []appwire.Notification{resync}, nil)
 	s.mu.Unlock()
 }
 
@@ -495,7 +512,7 @@ func (s *relaySession) cancelCapture(capture *relayCapture) {
 		s.capture = nil
 		notifications := append(append([]appwire.Notification{}, capture.beforeCut...), capture.afterCut...)
 		if len(notifications) > 0 {
-			s.queuePublishLocked(notifications, nil)
+			s.queuePublishLocked(capture.epoch, notifications, nil)
 		}
 	}
 	capture.release.Do(func() {
@@ -572,7 +589,7 @@ func (s *relaySession) finishHandoff(epoch, generation uint64) bool {
 	}
 	s.capture = nil
 	if s.connection != nil && s.connection.epoch == epoch && len(capture.afterCut) > 0 {
-		s.queuePublishLocked(capture.afterCut, nil)
+		s.queuePublishLocked(capture.epoch, capture.afterCut, nil)
 	}
 	capture.release.Do(func() {
 		s.commandOwners--
@@ -581,7 +598,7 @@ func (s *relaySession) finishHandoff(epoch, generation uint64) bool {
 	startRecovery := false
 	if s.connection != nil && s.connection.epoch == epoch && s.connection.disconnected {
 		s.connection = nil
-		s.epoch++
+		s.advanceEpochLocked()
 		startRecovery = len(s.listeners) > 0 && !s.recovering
 		if startRecovery {
 			s.recovering = true
@@ -594,8 +611,10 @@ func (s *relaySession) finishHandoff(epoch, generation uint64) bool {
 	return true
 }
 
-func (s *relaySession) queuePublishLocked(notifications []appwire.Notification, done chan struct{}) {
+func (s *relaySession) queuePublishLocked(epoch uint64, notifications []appwire.Notification, done chan struct{}) {
 	job := relayPublishJob{
+		epoch:         epoch,
+		fence:         s.publicationFence,
 		notifications: append([]appwire.Notification(nil), notifications...),
 		done:          done,
 	}
@@ -625,7 +644,7 @@ func (s *relaySession) publishLoop() {
 				s.publishJobs = s.publishJobs[1:]
 				s.publishMu.Unlock()
 				for _, notification := range job.notifications {
-					s.publishNotification(notification)
+					s.publishNotification(job.epoch, job.fence, notification)
 				}
 				if job.done != nil {
 					close(job.done)
@@ -635,7 +654,7 @@ func (s *relaySession) publishLoop() {
 	}
 }
 
-func (s *relaySession) publishNotification(notification appwire.Notification) {
+func (s *relaySession) publishNotification(epoch uint64, fence *relayPublicationFence, notification appwire.Notification) {
 	s.mu.Lock()
 	listeners := make([]*relayListener, 0, len(s.listeners))
 	for _, listener := range s.listeners {
@@ -644,13 +663,17 @@ func (s *relaySession) publishNotification(notification appwire.Notification) {
 	s.mu.Unlock()
 
 	for _, listener := range listeners {
-		if !s.publishToListener(listener, notification) && s.ctx.Err() != nil {
+		if !s.publishToListenerAtEpoch(epoch, fence, listener, notification) && s.ctx.Err() != nil {
 			return
 		}
 	}
 }
 
 func (s *relaySession) publishToListener(listener *relayListener, notification appwire.Notification) bool {
+	return s.publishToListenerAtEpoch(0, nil, listener, notification)
+}
+
+func (s *relaySession) publishToListenerAtEpoch(epoch uint64, fence *relayPublicationFence, listener *relayListener, notification appwire.Notification) bool {
 	ack := make(chan struct{})
 	var once sync.Once
 	delivery := RelayDelivery{
@@ -659,16 +682,31 @@ func (s *relaySession) publishToListener(listener *relayListener, notification a
 			once.Do(func() { close(ack) })
 		},
 	}
+	s.publishBoundary.RLock()
+	if epoch != 0 && (s.publicationEpoch != epoch || s.publicationFence != fence) {
+		s.publishBoundary.RUnlock()
+		return false
+	}
+	if hook := s.publishEntryHook; hook != nil {
+		hook()
+	}
 	select {
 	case listener.in <- delivery:
 	case <-listener.ctx.Done():
+		s.publishBoundary.RUnlock()
 		s.removeListener(listener.id)
 		return false
 	case <-listener.done:
+		s.publishBoundary.RUnlock()
+		return false
+	case <-fenceRevoked(fence):
+		s.publishBoundary.RUnlock()
 		return false
 	case <-s.ctx.Done():
+		s.publishBoundary.RUnlock()
 		return false
 	}
+	s.publishBoundary.RUnlock()
 	select {
 	case <-ack:
 		return true
@@ -680,6 +718,27 @@ func (s *relaySession) publishToListener(listener *relayListener, notification a
 	case <-s.ctx.Done():
 		return false
 	}
+}
+
+// advanceEpochLocked revokes the old publication epoch at the same boundary
+// used by publishToListenerAtEpoch. The caller must hold s.mu.
+func (s *relaySession) advanceEpochLocked() {
+	if s.publicationFence == nil {
+		s.publicationFence = &relayPublicationFence{revoked: make(chan struct{})}
+	}
+	close(s.publicationFence.revoked)
+	s.publishBoundary.Lock()
+	s.epoch++
+	s.publicationEpoch = s.epoch
+	s.publicationFence = &relayPublicationFence{revoked: make(chan struct{})}
+	s.publishBoundary.Unlock()
+}
+
+func fenceRevoked(fence *relayPublicationFence) <-chan struct{} {
+	if fence == nil {
+		return nil
+	}
+	return fence.revoked
 }
 
 func (s *relaySession) removeListener(id uint64) {
