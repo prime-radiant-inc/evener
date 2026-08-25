@@ -1,5 +1,5 @@
 import type { StoreApi } from "zustand/vanilla";
-import type { PrototypeAction } from "./state";
+import type { PrototypeAction, PrototypeState } from "./state";
 import type { PrototypeStore } from "./store";
 
 export interface NavigationController {
@@ -27,6 +27,46 @@ function shouldPush(action: PrototypeAction): boolean {
     forwardActions.has(action.type) &&
     (action.type !== "completeNewSession" || action.result === "success")
   );
+}
+
+function isDuplicateDestination(
+  state: PrototypeState,
+  action: PrototypeAction,
+): boolean {
+  if (action.type === "openOverlay") return state.overlay === action.overlay;
+  if (state.overlay !== null) return false;
+
+  switch (action.type) {
+    case "openSession":
+      return (
+        state.route.kind === "conversation" &&
+        state.route.sessionId === action.sessionId &&
+        state.route.focusItemId === action.focusItemId
+      );
+    case "openSearchResult": {
+      const result = state.projection.fixture.search.find(
+        ({ id }) => id === action.resultId,
+      );
+      return (
+        result !== undefined &&
+        state.route.kind === "conversation" &&
+        state.route.sessionId === result.sessionId &&
+        state.route.focusItemId === (result.itemId ?? undefined)
+      );
+    }
+    case "openWork":
+      return (
+        state.route.kind === "work" &&
+        state.route.sessionId === action.sessionId
+      );
+    case "openVoice":
+      return (
+        state.route.kind === "voice" &&
+        state.route.sessionId === action.sessionId
+      );
+    default:
+      return false;
+  }
 }
 
 let nextHistoryKey = 0;
@@ -59,16 +99,30 @@ export function createNavigationController(
   let ownedDepth = 0;
   let pendingRoutePops = 0;
   let suppressHistory = false;
+  let reconcilingRoot = false;
   let disposed = false;
+  const deferredActions: PrototypeAction[] = [];
 
   const replaceRoot = () => {
     ownedDepth = 0;
     pendingRoutePops = 0;
+    reconcilingRoot = false;
     historyTarget.history.replaceState(historyState(0), "");
+  };
+
+  const reconcileRoot = () => {
+    pendingRoutePops = 0;
+    if (ownedDepth === 0) {
+      replaceRoot();
+      return;
+    }
+    reconcilingRoot = true;
+    historyTarget.history.go(-ownedDepth);
   };
 
   const reduce = (action: PrototypeAction) => {
     const before = store.getState();
+    if (isDuplicateDestination(before, action)) return;
     if (action.type === "reset") before.resetPrototype();
     else before.dispatch(action);
     const after = store.getState();
@@ -86,7 +140,7 @@ export function createNavigationController(
       return;
     }
     if (action.type === "navigateRoot" || action.type === "reset") {
-      replaceRoot();
+      reconcileRoot();
       return;
     }
     if (before !== after && shouldPush(action)) {
@@ -114,6 +168,16 @@ export function createNavigationController(
   };
 
   const onPopState = (event: PopStateEvent) => {
+    if (reconcilingRoot) {
+      if (isConceptHistoryState(event.state) && event.state.depth === 0) {
+        replaceRoot();
+        const actions = deferredActions.splice(0);
+        for (const action of actions) dispatchAction(action);
+      } else {
+        failClosed();
+      }
+      return;
+    }
     if (!isConceptHistoryState(event.state) || event.state.depth > ownedDepth) {
       failClosed();
       return;
@@ -132,18 +196,24 @@ export function createNavigationController(
     }
   };
 
+  const dispatchAction = (action: PrototypeAction) => {
+    if (disposed) return;
+    if (reconcilingRoot) {
+      deferredActions.push(action);
+      return;
+    }
+    if (action.type === "goBack") {
+      historyTarget.history.back();
+      return;
+    }
+    reduce(action);
+  };
+
   replaceRoot();
   historyTarget.addEventListener("popstate", onPopState);
 
   return {
-    dispatch(action) {
-      if (disposed) return;
-      if (action.type === "goBack") {
-        historyTarget.history.back();
-        return;
-      }
-      reduce(action);
-    },
+    dispatch: dispatchAction,
     dispose() {
       if (disposed) return;
       disposed = true;

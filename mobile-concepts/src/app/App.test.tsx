@@ -4,6 +4,7 @@ import {
   fireEvent,
   render,
   screen,
+  waitFor,
 } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { PlatformDetectionInput } from "../core/platform";
@@ -63,6 +64,21 @@ function storage(): PreferenceStorage & { values: Map<string, string> } {
 
 let queries: Map<string, TestMediaQueryList>;
 
+function nextPopState(): Promise<PopStateEvent> {
+  return new Promise((resolve, reject) => {
+    const timeout = window.setTimeout(() => {
+      window.removeEventListener("popstate", onPopState);
+      reject(new Error("timed out waiting for popstate"));
+    }, 1_000);
+    const onPopState = (event: PopStateEvent) => {
+      window.clearTimeout(timeout);
+      window.removeEventListener("popstate", onPopState);
+      resolve(event);
+    };
+    window.addEventListener("popstate", onPopState);
+  });
+}
+
 beforeEach(() => {
   queries = new Map();
   vi.stubGlobal("matchMedia", (query: string) => {
@@ -91,6 +107,41 @@ afterEach(() => {
 });
 
 describe("App", () => {
+  it("makes Lab Controls modal, restores its opener after real Back, and focuses the gallery after Reset", async () => {
+    render(<App platformInput={platformInput} storage={storage()} />);
+    const opener = screen.getByRole("button", { name: "Lab Controls" });
+    opener.focus();
+    fireEvent.click(opener);
+
+    const close = screen.getByRole("button", { name: "Close Lab Controls" });
+    await waitFor(() => expect(close).toHaveFocus());
+    expect(screen.getByTestId("foundation-background")).toHaveAttribute(
+      "inert",
+    );
+    expect(opener).toHaveAttribute("inert");
+
+    const closed = nextPopState();
+    fireEvent.click(close);
+    await closed;
+    await waitFor(() => expect(opener).toHaveFocus());
+
+    fireEvent.click(opener);
+    await waitFor(() =>
+      expect(
+        screen.getByRole("button", { name: "Close Lab Controls" }),
+      ).toHaveFocus(),
+    );
+    const reset = nextPopState();
+    fireEvent.click(screen.getByRole("button", { name: "Reset prototype" }));
+    expect(
+      screen.getByRole("button", { name: "Select Stillwater" }),
+    ).toHaveFocus();
+    await reset;
+    expect(
+      screen.getByRole("button", { name: "Select Stillwater" }),
+    ).toHaveFocus();
+  });
+
   it("uses a no-op diagnostic sink when packaged", () => {
     const logger = { warn: vi.fn() };
     createRuntimeDiagnosticSink(false, logger).report({

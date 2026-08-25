@@ -4,6 +4,7 @@ import {
   type ConceptHistoryState,
   createNavigationController,
 } from "./history";
+import type { PrototypeAction } from "./state";
 import { createPrototypeStore, type PreferenceStorage } from "./store";
 
 function memoryStorage(): PreferenceStorage {
@@ -31,12 +32,88 @@ function owned(depth: number, key = `test-${depth}`): ConceptHistoryState {
   return { owner: "evener-concepts", depth, key };
 }
 
+function nextPopState(target: Window = window): Promise<PopStateEvent> {
+  return new Promise((resolve, reject) => {
+    const timeout = window.setTimeout(() => {
+      target.removeEventListener("popstate", onPopState);
+      reject(new Error("timed out waiting for popstate"));
+    }, 1_000);
+    const onPopState = (event: PopStateEvent) => {
+      window.clearTimeout(timeout);
+      target.removeEventListener("popstate", onPopState);
+      resolve(event);
+    };
+    target.addEventListener("popstate", onPopState);
+  });
+}
+
+async function expectNoPopState(action: () => void): Promise<void> {
+  let observed = false;
+  const onPopState = () => {
+    observed = true;
+  };
+  window.addEventListener("popstate", onPopState);
+  action();
+  await new Promise((resolve) => window.setTimeout(resolve, 30));
+  window.removeEventListener("popstate", onPopState);
+  expect(observed).toBe(false);
+}
+
+function openDeepStack(
+  controller: ReturnType<typeof createNavigationController>,
+) {
+  controller.dispatch({
+    type: "openSession",
+    sessionId: "session-native-client",
+  });
+  controller.dispatch({ type: "openWork", sessionId: "session-native-client" });
+  controller.dispatch({
+    type: "openVoice",
+    sessionId: "session-native-client",
+  });
+  controller.dispatch({ type: "openOverlay", overlay: "lab-controls" });
+}
+
 beforeEach(() => {
   window.history.replaceState(null, "", "/");
   vi.restoreAllMocks();
 });
 
 describe("createNavigationController", () => {
+  it("uses real browser traversal for the full stack and reconciles root/reset to the original depth zero", async () => {
+    const store = createStore();
+    const controller = createNavigationController(store, window);
+    openDeepStack(controller);
+    expect(window.history.state).toMatchObject({ depth: 4 });
+
+    for (const expected of ["voice", "work", "conversation", "root"] as const) {
+      const popped = nextPopState();
+      controller.dispatch({ type: "goBack" });
+      await popped;
+      expect(store.getState().overlay).toBeNull();
+      expect(store.getState().route.kind).toBe(expected);
+    }
+    expect(window.history.state).toMatchObject({ depth: 0 });
+
+    openDeepStack(controller);
+    const rootTraversal = nextPopState();
+    controller.dispatch({ type: "navigateRoot", tab: "search" });
+    expect(store.getState().route).toEqual({ kind: "root", tab: "search" });
+    await rootTraversal;
+    expect(window.history.state).toMatchObject({ depth: 0 });
+    await expectNoPopState(() => controller.dispatch({ type: "goBack" }));
+
+    openDeepStack(controller);
+    const resetTraversal = nextPopState();
+    controller.dispatch({ type: "reset" });
+    expect(store.getState().route).toEqual({ kind: "gallery" });
+    expect(store.getState().concept).toBeNull();
+    await resetTraversal;
+    expect(window.history.state).toMatchObject({ depth: 0 });
+    await expectNoPopState(() => controller.dispatch({ type: "goBack" }));
+    controller.dispose();
+  });
+
   it("initializes one owned depth-zero entry", () => {
     const replace = vi.spyOn(window.history, "replaceState");
     const controller = createNavigationController(createStore(), window);
@@ -71,7 +148,6 @@ describe("createNavigationController", () => {
       sessionId: "session-native-client",
     });
     controller.dispatch({ type: "openOverlay", overlay: "concept-switcher" });
-    window.dispatchEvent(new PopStateEvent("popstate", { state: owned(4) }));
     controller.dispatch({ type: "openOverlay", overlay: "lab-controls" });
 
     expect(push).toHaveBeenCalledTimes(6);
@@ -80,16 +156,29 @@ describe("createNavigationController", () => {
     );
     expect(new Set(keys).size).toBe(6);
 
-    controller.dispatch({ type: "navigateRoot", tab: "new" });
-    controller.dispatch({
+    controller.dispose();
+
+    const newSessionStore = createStore();
+    const newSessionController = createNavigationController(
+      newSessionStore,
+      window,
+    );
+    newSessionController.dispatch({ type: "navigateRoot", tab: "new" });
+    newSessionController.dispatch({
       type: "setNewSessionProject",
       value: "/workspace/aurora",
     });
-    controller.dispatch({ type: "setNewSessionPrompt", value: "New session" });
-    controller.dispatch({ type: "submitNewSession" });
-    controller.dispatch({ type: "completeNewSession", result: "success" });
+    newSessionController.dispatch({
+      type: "setNewSessionPrompt",
+      value: "New session",
+    });
+    newSessionController.dispatch({ type: "submitNewSession" });
+    newSessionController.dispatch({
+      type: "completeNewSession",
+      result: "success",
+    });
     expect(push).toHaveBeenCalledTimes(7);
-    controller.dispose();
+    newSessionController.dispose();
   });
 
   it("does not push duplicate or failed forward state", () => {
@@ -104,6 +193,50 @@ describe("createNavigationController", () => {
     expect(push).toHaveBeenCalledTimes(1);
     controller.dispose();
   });
+
+  it.each([
+    {
+      name: "openSession",
+      action: {
+        type: "openSession",
+        sessionId: "session-native-client",
+        focusItemId: "item-assistant-plan",
+      },
+    },
+    {
+      name: "openSearchResult",
+      action: { type: "openSearchResult", resultId: "search-transcript" },
+    },
+    {
+      name: "openWork",
+      action: { type: "openWork", sessionId: "session-native-client" },
+    },
+    {
+      name: "openVoice",
+      action: { type: "openVoice", sessionId: "session-native-client" },
+    },
+    {
+      name: "openOverlay",
+      action: { type: "openOverlay", overlay: "concept-switcher" },
+    },
+  ] as const satisfies readonly { name: string; action: PrototypeAction }[])(
+    "treats duplicate $name destinations as identity no-ops",
+    ({ action }) => {
+      const store = createStore();
+      const push = vi.spyOn(window.history, "pushState");
+      const controller = createNavigationController(store, window);
+
+      controller.dispatch(action);
+      const afterFirst = store.getState();
+      const reducerDepth = afterFirst.history.length;
+      controller.dispatch(action);
+
+      expect(store.getState()).toBe(afterFirst);
+      expect(store.getState().history).toHaveLength(reducerDepth);
+      expect(push).toHaveBeenCalledTimes(1);
+      controller.dispose();
+    },
+  );
 
   it("does not push a completed new-session failure", () => {
     const store = createStore();

@@ -59,6 +59,9 @@ export function ConceptGallery({ primitives, dispatch }: ConceptGalleryProps) {
               <button
                 className="concept-card__select"
                 type="button"
+                data-gallery-focus-target={
+                  conceptId === "stillwater" ? "true" : undefined
+                }
                 aria-pressed={selected}
                 onClick={() =>
                   dispatch({ type: "selectConcept", concept: conceptId })

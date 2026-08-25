@@ -1,3 +1,4 @@
+import { type KeyboardEvent, useEffect, useRef } from "react";
 import type { Appearance, ScenarioId, TextScale } from "../core/model";
 import type { PlatformPrimitives } from "../core/platform";
 import { scenarioIds } from "../core/scenarios";
@@ -54,23 +55,96 @@ export function LabControls({ primitives, dispatch }: LabControlsProps) {
   const textScale = usePrototypeState((state) => state.textScale);
   const reducedMotion = usePrototypeState((state) => state.reducedMotion);
   const open = overlay === "lab-controls";
+  const modalActive = overlay !== null;
+  const openerRef = useRef<HTMLButtonElement>(null);
+  const dialogRef = useRef<HTMLElement>(null);
+  const closeRef = useRef<HTMLButtonElement>(null);
+  const previousFocusRef = useRef<HTMLElement | null>(null);
+  const wasOpenRef = useRef(false);
+  const resetRequestedRef = useRef(false);
+
+  useEffect(() => {
+    if (open) {
+      if (!wasOpenRef.current && previousFocusRef.current === null) {
+        previousFocusRef.current =
+          document.activeElement instanceof HTMLElement
+            ? document.activeElement
+            : null;
+      }
+      wasOpenRef.current = true;
+      closeRef.current?.focus();
+      return;
+    }
+
+    if (!wasOpenRef.current) return;
+    wasOpenRef.current = false;
+    const resetTarget = document.querySelector<HTMLElement>(
+      "[data-gallery-focus-target='true']",
+    );
+    const priorTarget = previousFocusRef.current?.isConnected
+      ? previousFocusRef.current
+      : openerRef.current;
+    const target = resetRequestedRef.current ? resetTarget : priorTarget;
+    resetRequestedRef.current = false;
+    target?.focus();
+    previousFocusRef.current = null;
+  }, [open]);
+
+  useEffect(() => {
+    if (!open) return;
+    const containFocus = (event: FocusEvent) => {
+      if (
+        event.target instanceof Node &&
+        !dialogRef.current?.contains(event.target)
+      ) {
+        closeRef.current?.focus();
+      }
+    };
+    document.addEventListener("focusin", containFocus);
+    return () => document.removeEventListener("focusin", containFocus);
+  }, [open]);
+
+  const trapFocus = (event: KeyboardEvent<HTMLElement>) => {
+    if (event.key !== "Tab") return;
+    const focusable = Array.from(
+      event.currentTarget.querySelectorAll<HTMLElement>(
+        "button:not([disabled]):not([tabindex='-1']), input:not([disabled]):not([tabindex='-1']), select:not([disabled]):not([tabindex='-1']), textarea:not([disabled]):not([tabindex='-1']), [href]:not([tabindex='-1']), [tabindex]:not([tabindex='-1'])",
+      ),
+    );
+    const first = focusable.at(0);
+    const last = focusable.at(-1);
+    if (!first || !last) return;
+    if (event.shiftKey && document.activeElement === first) {
+      event.preventDefault();
+      last.focus();
+    } else if (!event.shiftKey && document.activeElement === last) {
+      event.preventDefault();
+      first.focus();
+    }
+  };
 
   return (
     <>
       <button
+        ref={openerRef}
         className="lab-controls-trigger"
         type="button"
         aria-haspopup="dialog"
         aria-expanded={open}
-        onClick={() =>
-          dispatch({ type: "openOverlay", overlay: "lab-controls" })
-        }
+        aria-hidden={modalActive || undefined}
+        inert={modalActive || undefined}
+        tabIndex={modalActive ? -1 : undefined}
+        onClick={(event) => {
+          previousFocusRef.current = event.currentTarget;
+          dispatch({ type: "openOverlay", overlay: "lab-controls" });
+        }}
       >
         Lab Controls
       </button>
       {open ? (
         <div className="lab-controls-backdrop">
           <section
+            ref={dialogRef}
             className="lab-controls"
             role="dialog"
             aria-modal="true"
@@ -80,6 +154,7 @@ export function LabControls({ primitives, dispatch }: LabControlsProps) {
             data-elevation={primitives.elevation}
             data-safe-area={primitives.safeArea}
             data-minimum-target={primitives.minimumTarget}
+            onKeyDown={trapFocus}
           >
             <header className="lab-controls__header">
               <div>
@@ -87,6 +162,7 @@ export function LabControls({ primitives, dispatch }: LabControlsProps) {
                 <h2 id="lab-controls-title">Lab Controls</h2>
               </div>
               <button
+                ref={closeRef}
                 type="button"
                 aria-label="Close Lab Controls"
                 onClick={() => dispatch({ type: "goBack" })}
@@ -155,7 +231,10 @@ export function LabControls({ primitives, dispatch }: LabControlsProps) {
             <button
               className="lab-controls__reset"
               type="button"
-              onClick={() => dispatch({ type: "reset" })}
+              onClick={() => {
+                resetRequestedRef.current = true;
+                dispatch({ type: "reset" });
+              }}
             >
               Reset prototype
             </button>
