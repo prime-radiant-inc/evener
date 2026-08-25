@@ -2,6 +2,7 @@ package tui
 
 import (
 	"context"
+	"path/filepath"
 	"testing"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -50,11 +51,16 @@ func TestCovUpdateSpawnKeyTab(t *testing.T) {
 	m.mode = hubModeSpawn
 	m.openSpawnForm()
 	m.setSpawnFocus(hubSpawnFieldDir)
-	m.spawnDirInput.SetValue("/tmp/nonexistent")
+	missingPath := filepath.Join(t.TempDir(), "missing-project")
+	m.spawnDirInput.SetValue(missingPath)
+	m.spawnDir = missingPath
 	got, _ = m.updateSpawnKey(tea.KeyMsg{Type: tea.KeyTab})
 	after = got.(hubModel)
-	if after.spawnFocus == hubSpawnFieldDir {
-		t.Fatal("tab on a custom path should advance focus")
+	if after.spawnFocus != hubSpawnFieldPrompt {
+		t.Fatalf("tab on a custom path focus = %v, want hubSpawnFieldPrompt", after.spawnFocus)
+	}
+	if after.spawnDir != missingPath || after.spawnDirInput.Value() != missingPath {
+		t.Fatalf("tab changed custom path: spawnDir=%q input=%q, want %q", after.spawnDir, after.spawnDirInput.Value(), missingPath)
 	}
 
 	// Tab advances focus from non-dir fields.

@@ -2,7 +2,6 @@ package sandbox
 
 import (
 	"errors"
-	"reflect"
 	"testing"
 )
 
@@ -46,26 +45,6 @@ func TestCovCurable(t *testing.T) {
 		if got := tc.reason.Curable(); got != tc.want {
 			t.Errorf("%v.Curable() = %v, want %v", tc.reason, got, tc.want)
 		}
-	}
-}
-
-func TestCovPolicy(t *testing.T) {
-	want := ResolvedPolicy{
-		Mode:    ModeWorkspaceWrite,
-		Backend: BackendBwrap,
-		Network: true,
-		Git:     GitLayout{WorktreeRoot: "/workspace"},
-	}
-	w := &Wrapper{policy: want}
-	if got := w.Policy(); !reflect.DeepEqual(got, want) {
-		t.Fatalf("Policy() = %+v, want %+v", got, want)
-	}
-}
-
-func TestCovSessionTmp(t *testing.T) {
-	w := &Wrapper{sessionTmp: "/tmp/scratch"}
-	if got := w.SessionTmp(); got != "/tmp/scratch" {
-		t.Fatalf("SessionTmp() = %q, want %q", got, "/tmp/scratch")
 	}
 }
 

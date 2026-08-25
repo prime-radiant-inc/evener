@@ -255,29 +255,6 @@ func TestCovRestoreColdDelegateOwnerRuntime_EmptyParentID(t *testing.T) {
 	}
 }
 
-// TestCovCleanup covers delegateIsolation.cleanup
-// (delegate_runtime.go lines 1412-1421): no fresh env, no worktree.
-func TestCovCleanup_NoFreshEnv(t *testing.T) {
-	s := &Session{}
-	isolation := delegateIsolation{ownsFreshEnv: false}
-	// Should be a no-op — no panic.
-	isolation.cleanup(s, "dlg_1")
-}
-
-// TestCovCleanup_FreshEnvNotLocal covers cleanup with ownsFreshEnv=true but
-// env is not a LocalExecutionEnvironment — DisposeSandboxScratch not called.
-// We use a nil env (which is not *LocalExecutionEnvironment) to exercise
-// the type assertion failure path.
-func TestCovCleanup_FreshEnvNotLocal(t *testing.T) {
-	s := &Session{}
-	isolation := delegateIsolation{
-		ownsFreshEnv: true,
-		env:          nil, // nil env — type assertion to *LocalExecutionEnvironment fails
-	}
-	// Should not panic even though env is nil (type assertion fails silently).
-	isolation.cleanup(s, "dlg_1")
-}
-
 // TestCovDelegateInputWasPreseeded covers delegateInputWasPreseeded
 // (delegate_runtime.go lines 767-769).
 func TestCovDelegateInputWasPreseeded(t *testing.T) {
@@ -470,63 +447,6 @@ func TestCovLatestDelegateMutationSnapshot(t *testing.T) {
 	}
 }
 
-// TestCovDelegateQuietAttentionID covers delegateQuietAttentionID
-// (delegate_runtime.go lines 160-162).
-func TestCovDelegateQuietAttentionID2(t *testing.T) {
-	lease := delegateLease{delegateID: "dlg_1", generation: 5}
-	got := delegateQuietAttentionID(lease)
-	expected := delegateQuietAttentionIDForStretch(lease, 1)
-	if got != expected {
-		t.Fatalf("delegateQuietAttentionID = %q, want %q", got, expected)
-	}
-}
-
-// TestCovDelegateQuietAttentionIDForStretch covers
-// delegateQuietAttentionIDForStretch (delegate_runtime.go lines 164-166).
-func TestCovDelegateQuietAttentionIDForStretch(t *testing.T) {
-	lease := delegateLease{delegateID: "dlg_1", generation: 3}
-	got := delegateQuietAttentionIDForStretch(lease, 7)
-	if got != "quiet:dlg_1:3:7" {
-		t.Fatalf("ID = %q, want quiet:dlg_1:3:7", got)
-	}
-}
-
-// TestCovDelegateQuietAttentionContent covers delegateQuietAttentionContent
-// (delegate_runtime.go lines 168-174).
-func TestCovDelegateQuietAttentionContent2(t *testing.T) {
-	lease := delegateLease{delegateID: "dlg_1", generation: 1}
-	activityAt := frozenTestTime
-	got := delegateQuietAttentionContent(lease, activityAt)
-	if !strings.Contains(got, "dlg_1") {
-		t.Fatalf("should contain delegate ID: %q", got)
-	}
-	if !strings.Contains(got, "quiet for") {
-		t.Fatalf("should contain quiet for: %q", got)
-	}
-	if !strings.Contains(got, "<delegate-notification") {
-		t.Fatalf("should be wrapped in delegate-notification tag: %q", got)
-	}
-}
-
-// TestCovBindStableDelegateActivity covers bindStableDelegateActivity
-// (delegate_runtime.go lines 281-287): nil guards.
-func TestCovBindStableDelegateActivity_NilChild(t *testing.T) {
-	// nil child — no-op.
-	bindStableDelegateActivity(nil, &delegateTreeController{}, delegateLease{})
-	// nil controller — no-op.
-	bindStableDelegateActivity(&Session{}, nil, delegateLease{})
-}
-
-// TestCovBindStableDelegateActivityToOwner covers
-// bindStableDelegateActivityToOwner (delegate_runtime.go lines 289-308):
-// nil guards.
-func TestCovBindStableDelegateActivityToOwner_NilChild(t *testing.T) {
-	// nil child — no-op.
-	bindStableDelegateActivityToOwner(nil, &delegateTreeController{}, delegateLease{}, &Session{})
-	// nil controller — no-op.
-	bindStableDelegateActivityToOwner(&Session{}, nil, delegateLease{}, &Session{})
-}
-
 // TestCovResolveStableSharedTaskStore covers resolveStableSharedTaskStore
 // (delegate_runtime.go lines 1668-1691): nil/empty guards.
 func TestCovResolveStableSharedTaskStore(t *testing.T) {
@@ -686,40 +606,6 @@ func TestCovOwedBootstrapRestoreAdd_NilNotify(t *testing.T) {
 	if !strings.Contains(err.Error(), "notify callback is unavailable") {
 		t.Fatalf("error: %v", err)
 	}
-}
-
-// TestCovCloseOwnedDelegateStore covers closeOwnedDelegateStore
-// (delegate_runtime.go lines 2141-2143).
-func TestCovCloseOwnedDelegateStore_NilSession(t *testing.T) {
-	var s *Session
-	// Should not panic.
-	s.closeOwnedDelegateStore()
-}
-
-// TestCovCloseOwnedDelegateStoreWithContext covers
-// closeOwnedDelegateStoreWithContext (delegate_runtime.go lines 2145-2150).
-func TestCovCloseOwnedDelegateStoreWithContext_NilSession(t *testing.T) {
-	var s *Session
-	ctx := context.Background()
-	// Should not panic.
-	s.closeOwnedDelegateStoreWithContext(ctx)
-}
-
-// TestCovCloseOwnedDelegateRuntimeTree covers closeOwnedDelegateRuntimeTree
-// (delegate_runtime.go lines 2152+).
-func TestCovCloseOwnedDelegateRuntimeTree_NilSession(t *testing.T) {
-	var s *Session
-	ctx := context.Background()
-	// Should not panic.
-	s.closeOwnedDelegateRuntimeTree(ctx)
-}
-
-// TestCovEmitStableDelegateUpdate covers emitStableDelegateUpdate with
-// a nil controller session.
-func TestCovEmitStableDelegateUpdate2(t *testing.T) {
-	s := &Session{}
-	// No controller — should not panic.
-	s.emitStableDelegateUpdate(delegateUpdatePlan{})
 }
 
 // TestCovEmitStableDelegateUpdate_WithRows covers forwarding a stable update

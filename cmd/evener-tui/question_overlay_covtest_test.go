@@ -1,7 +1,6 @@
 package tui
 
 import (
-	"encoding/json"
 	"reflect"
 	"strings"
 	"testing"
@@ -708,38 +707,5 @@ func TestCovToggleOptionLabel_ToggleOffToNil(t *testing.T) {
 	result := toggleOptionLabel(r, "A")
 	if result != nil {
 		t.Fatalf("toggle off last label = %#v, want nil", result)
-	}
-}
-
-// ---- json round-trip of askQuestionArgs --------------------------------------
-
-func TestCovAskQuestionArgs_JSONRoundTrip(t *testing.T) {
-	original := askQuestionArgs{
-		Header:       "H",
-		Question:     "Q?",
-		Options:      []askOption{{Label: "L", Detail: "D", Recommended: true}},
-		MultiSelect:  true,
-		Why:          "W",
-		IfUnanswered: "IU",
-	}
-	// Wrap in the expected {"questions": [...]} envelope for decode.
-	envelope := struct {
-		Questions []askQuestionArgs `json:"questions"`
-	}{Questions: []askQuestionArgs{original}}
-	data, err := json.Marshal(envelope)
-	if err != nil {
-		t.Fatalf("marshal: %v", err)
-	}
-	decoded := decodeAskUserArgsJSON(string(data))
-	want := []askQuestion{{
-		Header:       original.Header,
-		Question:     original.Question,
-		Options:      original.Options,
-		MultiSelect:  original.MultiSelect,
-		Why:          original.Why,
-		IfUnanswered: original.IfUnanswered,
-	}}
-	if !reflect.DeepEqual(decoded, want) {
-		t.Fatalf("decoded questions = %#v, want %#v", decoded, want)
 	}
 }

@@ -2,6 +2,7 @@ package tui
 
 import (
 	"os"
+	"path/filepath"
 	"testing"
 
 	"primeradiant.com/evener/appwire"
@@ -32,7 +33,7 @@ func TestCovBuildAttachmentItems_NilAttachmentSkipped(t *testing.T) {
 }
 
 func TestCovBuildAttachmentItems_ReadError(t *testing.T) {
-	att := &clipboard.PastedImage{Path: "/nonexistent/path/file.png"}
+	att := &clipboard.PastedImage{Path: filepath.Join(t.TempDir(), "missing", "file.png")}
 	_, err := buildAttachmentItems([]*clipboard.PastedImage{att})
 	if err == nil {
 		t.Fatalf("nonexistent file should produce error")
@@ -77,7 +78,7 @@ func TestCovBuildAttachmentItems_ExplicitMediaType(t *testing.T) {
 // ---- sendHubQueue: attachment error path (avoids needing a real client) ------
 
 func TestCovSendHubQueue_WithAttachmentError(t *testing.T) {
-	att := &clipboard.PastedImage{Path: "/nonexistent/file.png"}
+	att := &clipboard.PastedImage{Path: filepath.Join(t.TempDir(), "missing.png")}
 	cmd := sendHubQueue(nil, appwire.Ref{SourceID: "local", ThreadID: "01"}, "text", "draft", []*clipboard.PastedImage{att})
 	msg := cmd()
 	if msg == nil {
@@ -98,7 +99,7 @@ func TestCovSendHubQueue_WithAttachmentError(t *testing.T) {
 // ---- sendHubDrainAsSteer: attachment error and depth paths --------------------
 
 func TestCovSendHubDrainAsSteer_WithAttachmentError(t *testing.T) {
-	att := &clipboard.PastedImage{Path: "/nonexistent/file.png"}
+	att := &clipboard.PastedImage{Path: filepath.Join(t.TempDir(), "missing.png")}
 	cmd := sendHubDrainAsSteer(nil, appwire.Ref{SourceID: "local", ThreadID: "01"}, "text", "draft", []*clipboard.PastedImage{att}, 0)
 	msg := cmd()
 	dm, ok := msg.(hubDrainAsSteerMsg)
@@ -111,7 +112,7 @@ func TestCovSendHubDrainAsSteer_WithAttachmentError(t *testing.T) {
 }
 
 func TestCovSendHubDrainAsSteer_WithPreQueueDepth(t *testing.T) {
-	att := &clipboard.PastedImage{Path: "/nonexistent/file.png"}
+	att := &clipboard.PastedImage{Path: filepath.Join(t.TempDir(), "missing.png")}
 	cmd := sendHubDrainAsSteer(nil, appwire.Ref{SourceID: "local", ThreadID: "01"}, "text", "draft", []*clipboard.PastedImage{att}, 0, 5)
 	msg := cmd()
 	dm, ok := msg.(hubDrainAsSteerMsg)

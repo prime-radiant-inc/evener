@@ -586,15 +586,11 @@ func TestCovResetDelegateAttentionArmRetryLocked(t *testing.T) {
 	s.attentionMu.Lock()
 	s.delegateAttentionArmRetry.active = true
 	s.delegateAttentionArmRetry.generation = 8
-	s.delegateAttentionArmRetry.delay = 5 * time.Second
 	s.attentionMu.Unlock()
 	s.attentionMu.Lock()
 	s.resetDelegateAttentionArmRetryLocked()
 	if s.delegateAttentionArmRetry.active {
 		t.Fatal("active should be false")
-	}
-	if s.delegateAttentionArmRetry.delay != jobNotificationRetryInitialDelay {
-		t.Fatalf("delay = %v, want %v", s.delegateAttentionArmRetry.delay, jobNotificationRetryInitialDelay)
 	}
 	if s.delegateAttentionArmRetry.generation != 9 {
 		t.Fatalf("generation = %d, want 9", s.delegateAttentionArmRetry.generation)
@@ -627,7 +623,6 @@ func TestCovResetStableDelegateAttentionRetry(t *testing.T) {
 	s.attentionMu.Lock()
 	s.stableAttentionRetry.active = true
 	s.stableAttentionRetry.generation = 4
-	s.stableAttentionRetry.delay = 5 * time.Second
 	s.attentionMu.Unlock()
 	s.resetStableDelegateAttentionRetry()
 	s.attentionMu.Lock()
@@ -636,9 +631,6 @@ func TestCovResetStableDelegateAttentionRetry(t *testing.T) {
 	}
 	if s.stableAttentionRetry.generation != 5 {
 		t.Fatalf("generation = %d, want 5", s.stableAttentionRetry.generation)
-	}
-	if s.stableAttentionRetry.delay != jobNotificationRetryInitialDelay {
-		t.Fatalf("delay = %v, want %v", s.stableAttentionRetry.delay, jobNotificationRetryInitialDelay)
 	}
 	s.attentionMu.Unlock()
 }

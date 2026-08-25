@@ -15,6 +15,16 @@ import (
 	"primeradiant.com/evener/internal/e2ecap"
 )
 
+const stateDirHubHelperEnv = "EVENER_TUI_HUBSTART_STATE_DIR_HELPER"
+
+func init() {
+	if os.Getenv(stateDirHubHelperEnv) != "1" {
+		return
+	}
+	_, _ = fmt.Fprintf(os.Stderr, "state=%s\nxdg=%s\n", envvars.EVENERStateDir.Getenv(), envvars.XDGStateHome.Getenv())
+	os.Exit(7)
+}
+
 // TestCovDialHubRPCWithFrameHandler exercises the observeFrames != nil branch
 // in dialHubRPC. It connects to a fake hub and sets a frame handler; the
 // handler is wired on the client before Initialize.
@@ -70,18 +80,18 @@ func TestCovDialHubRPCWithFrameHandler(t *testing.T) {
 // the process-launch boundary.
 func TestCovStartLocalHubWithStateDir(t *testing.T) {
 	withLocalHubImmediateExitWindow(t, 30*time.Second)
+	t.Setenv(stateDirHubHelperEnv, "1")
 	dir := t.TempDir()
 	stateDir := filepath.Join(dir, "state", "evener")
 	stateHome := filepath.Dir(stateDir)
 	logFile := filepath.Join(dir, "hub.log")
-	helper := filepath.Join(dir, "hub-helper")
-	script := fmt.Sprintf("#!/bin/sh\nprintf 'state=%%s\\nxdg=%%s\\n' \"$%s\" \"$%s\" >&2\nexit 7\n", envvars.EVENERStateDir.Name, envvars.XDGStateHome.Name)
-	if err := os.WriteFile(helper, []byte(script), 0o755); err != nil {
+	bin, err := os.Executable()
+	if err != nil {
 		t.Fatal(err)
 	}
 
-	err := StartLocalHub(HubStartRequest{
-		Binary:   helper,
+	err = StartLocalHub(HubStartRequest{
+		Binary:   bin,
 		BindAddr: "127.0.0.1:9180",
 		StateDir: stateDir,
 		LogFile:  logFile,

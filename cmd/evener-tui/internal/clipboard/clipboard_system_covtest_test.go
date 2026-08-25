@@ -879,8 +879,9 @@ func TestCovPasteClipboardImageFileListNonImageThenImageBytes(t *testing.T) {
 
 // TestCovPasteClipboardImageFileListImageStatFails
 func TestCovPasteClipboardImageFileListImageStatFails(t *testing.T) {
+	missingImage := filepath.Join(t.TempDir(), "missing.png")
 	src := &fakeClipboard{
-		files:          []string{"/nonexistent/file.png"}, // stat fails
+		files:          []string{missingImage}, // stat fails
 		imageBytes:     []byte("png-bytes"),
 		imageMediaType: "image/png",
 	}

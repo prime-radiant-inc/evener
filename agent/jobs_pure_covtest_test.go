@@ -151,19 +151,6 @@ func TestCovOutputPathForJob(t *testing.T) {
 	}
 }
 
-// TestCovCloseDoneWith_Nil covers closeDoneWith with nil receiver (jobs.go line 357).
-func TestCovCloseDoneWith_Nil(t *testing.T) {
-	var run *runningJob
-	run.closeDoneWith(runningJobCompletionDurable) // should not panic
-}
-
-// TestCovStampLastActivityLocked_NilRun covers stampLastActivityLocked nil paths
-// (jobs.go lines 370-377).
-func TestCovStampLastActivityLocked_NilRun(t *testing.T) {
-	jm := &jobManager{running: map[string]*runningJob{}}
-	jm.stampLastActivityLocked("nonexistent") // should not panic
-}
-
 // TestCovNoteJobActivity_NilAndEmpty covers noteJobActivity nil/empty guards
 // (jobs.go lines 380-395).
 func TestCovNoteJobActivity_NilAndEmpty(t *testing.T) {

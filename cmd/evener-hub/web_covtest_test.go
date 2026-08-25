@@ -497,7 +497,8 @@ func TestCovSplitProviderModelNoSlash(t *testing.T) {
 // TestCovDocRawTotalSizeStatError covers the fallback to read size when stat
 // fails (doc_serve.go:230-231).
 func TestCovDocRawTotalSizeStatError(t *testing.T) {
-	got := docRawTotalSize("/nonexistent/path/that/does/not/exist", 42)
+	missingPath := filepath.Join(t.TempDir(), "missing", "document.txt")
+	got := docRawTotalSize(missingPath, 42)
 	if got != 42 {
 		t.Fatalf("expected 42 (read fallback), got %d", got)
 	}

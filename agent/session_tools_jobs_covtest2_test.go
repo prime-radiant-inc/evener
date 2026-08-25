@@ -149,24 +149,6 @@ func TestCovMarshalBoundedJSONWithFit2(t *testing.T) {
 	}
 }
 
-// TestCovJobToolResultMaxChars covers jobToolResultMaxChars
-// (session_tools_jobs.go lines 2003-2015).
-func TestCovJobToolResultMaxChars2(t *testing.T) {
-	// nil registry — default.
-	if got := jobToolResultMaxChars(nil, "job_status"); got != jobToolResultDefaultMaxChar {
-		t.Fatalf("nil registry: got %d, want %d", got, jobToolResultDefaultMaxChar)
-	}
-
-	// The function with a real registry is tested elsewhere via integration.
-	// Just verify the nil path and the default constant.
-	if jobToolResultDefaultMaxChar <= 0 {
-		t.Fatal("default max chars should be positive")
-	}
-	if jobToolResultMinJSONChars <= 0 {
-		t.Fatal("min JSON chars should be positive")
-	}
-}
-
 // TestCovSessionJobManager covers sessionJobManager
 // (session_tools_jobs.go lines 1637-1642).
 func TestCovSessionJobManager(t *testing.T) {

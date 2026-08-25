@@ -14,14 +14,6 @@ import (
 	"primeradiant.com/evener/agent/task"
 )
 
-// TestCovWrapHookContext covers wrapHookContext (session_queue.go line 279).
-func TestCovWrapHookContext(t *testing.T) {
-	got := wrapHookContext("hello")
-	if got != "<SYSTEM-REMINDER>hello</SYSTEM-REMINDER>" {
-		t.Fatalf("got %q", got)
-	}
-}
-
 // TestCovDeliverHookContext_Empty covers the empty-text guard in
 // deliverHookContext (session_queue.go lines 286-288).
 func TestCovDeliverHookContext_Empty(t *testing.T) {
@@ -419,44 +411,5 @@ func TestCovStableDelegateFinish_WithError(t *testing.T) {
 	var message string
 	if err := json.Unmarshal(finish.packet.Message, &message); err != nil || message != context.DeadlineExceeded.Error() {
 		t.Fatalf("error packet message = %q, err=%v, want %q", message, err, context.DeadlineExceeded)
-	}
-}
-
-// TestCovMarshalBoundedJSON covers marshalBoundedJSON
-// (session_tools_jobs.go lines 1978+).
-func TestCovMarshalBoundedJSON(t *testing.T) {
-	// Valid JSON within bounds.
-	data := map[string]any{"key": "value"}
-	got, err := marshalBoundedJSON(data, 1024)
-	if err != nil {
-		t.Fatalf("marshalBoundedJSON error: %v", err)
-	}
-	if got != `{"key":"value"}` {
-		t.Fatalf("output = %q, want exact JSON object", got)
-	}
-}
-
-// TestCovMarshalBoundedJSONWithFit covers marshalBoundedJSONWithFit
-// (session_tools_jobs.go lines 1992+).
-func TestCovMarshalBoundedJSONWithFit(t *testing.T) {
-	data := map[string]any{"key": "value"}
-	got, fit, err := marshalBoundedJSONWithFit(data, 1024)
-	if err != nil {
-		t.Fatalf("error: %v", err)
-	}
-	if !fit {
-		t.Fatal("should fit within 1024 bytes")
-	}
-	if got != `{"key":"value"}` {
-		t.Fatalf("output = %q, want exact JSON object", got)
-	}
-}
-
-// TestCovJobToolResultMaxChars covers jobToolResultMaxChars
-// (session_tools_jobs.go lines 2003+).
-func TestCovJobToolResultMaxChars(t *testing.T) {
-	// With nil reg.
-	if got := jobToolResultMaxChars(nil, "job_status"); got != jobToolResultDefaultMaxChar {
-		t.Fatalf("nil reg = %d, want %d", got, jobToolResultDefaultMaxChar)
 	}
 }

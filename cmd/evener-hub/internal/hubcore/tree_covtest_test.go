@@ -110,11 +110,12 @@ func TestCovTreePageArchivedFallback(t *testing.T) {
 // (tree.go:582-583) — a meta with a path that fails project resolution
 // produces an error.
 func TestCovResolveProjectMapStrictError(t *testing.T) {
+	missingPath := filepath.Join(t.TempDir(), "missing", "project")
 	metas := []schema.SessionMeta{
-		{ID: "02wMz5Txv1C3Hut0M8GCeB", EnvInfo: schema.EnvironmentInfo{WorkingDir: "/nonexistent/path/that/does/not/exist"}},
+		{ID: "02wMz5Txv1C3Hut0M8GCeB", EnvInfo: schema.EnvironmentInfo{WorkingDir: missingPath}},
 	}
 	projects, err := ResolveProjectMapStrict(metas, nil)
-	if err == nil || !strings.Contains(err.Error(), `resolve project "/nonexistent/path/that/does/not/exist"`) {
+	if err == nil || !strings.Contains(err.Error(), `resolve project "`+missingPath+`"`) {
 		t.Fatalf("ResolveProjectMapStrict error = %v, want wrapped project path", err)
 	}
 	if projects != nil {
@@ -125,11 +126,12 @@ func TestCovResolveProjectMapStrictError(t *testing.T) {
 // TestCovResolveProjectMapStrictLiveError covers the strict error branch for
 // live entries (tree.go:602-603).
 func TestCovResolveProjectMapStrictLiveError(t *testing.T) {
+	missingPath := filepath.Join(t.TempDir(), "missing", "project")
 	live := []LiveEntry{
-		{SessionID: "02wMz5Txv1C3Hut0M8GCeB", WorkingDir: "/nonexistent/path/that/does/not/exist"},
+		{SessionID: "02wMz5Txv1C3Hut0M8GCeB", WorkingDir: missingPath},
 	}
 	projects, err := ResolveProjectMapStrict(nil, live)
-	if err == nil || !strings.Contains(err.Error(), `resolve project "/nonexistent/path/that/does/not/exist"`) {
+	if err == nil || !strings.Contains(err.Error(), `resolve project "`+missingPath+`"`) {
 		t.Fatalf("ResolveProjectMapStrict error = %v, want wrapped live project path", err)
 	}
 	if projects != nil {
@@ -140,12 +142,13 @@ func TestCovResolveProjectMapStrictLiveError(t *testing.T) {
 // TestCovResolveProjectMapNonStrictSkipsErrors covers the non-strict
 // continue path (tree.go:584-585) for metas and (tree.go:604-605) for live.
 func TestCovResolveProjectMapNonStrictSkipsErrors(t *testing.T) {
+	missingPath := filepath.Join(t.TempDir(), "missing", "project")
 	metas := []schema.SessionMeta{
-		{ID: "02wMz5Txv1C3Hut0M8GCeB", EnvInfo: schema.EnvironmentInfo{WorkingDir: "/nonexistent/path/that/does/not/exist"}},
+		{ID: "02wMz5Txv1C3Hut0M8GCeB", EnvInfo: schema.EnvironmentInfo{WorkingDir: missingPath}},
 		{ID: "02wMz5Txv2enqVTitaig6F", EnvInfo: schema.EnvironmentInfo{WorkingDir: ""}},
 	}
 	live := []LiveEntry{
-		{SessionID: "02wMz5Txv3enqVTitaig6F", WorkingDir: "/nonexistent/path/that/does/not/exist"},
+		{SessionID: "02wMz5Txv3enqVTitaig6F", WorkingDir: missingPath},
 		{SessionID: "02wMz5Txv4enqVTitaig6F", WorkingDir: ""},
 	}
 	projects := ResolveProjectMap(metas, live)
@@ -229,8 +232,8 @@ func TestCovPastRebuildEmptyGlob(t *testing.T) {
 func TestCovPastRebuildGlobError(t *testing.T) {
 	idx := NewPastIndex("[").SetFs(afero.NewMemMapFs())
 	changed, err := idx.Rebuild()
-	if err == nil {
-		t.Fatal("Rebuild with malformed glob should error")
+	if !errors.Is(err, filepath.ErrBadPattern) {
+		t.Fatalf("Rebuild malformed-glob error = %v, want filepath.ErrBadPattern", err)
 	}
 	if changed {
 		t.Fatal("Rebuild with malformed glob reported a change")

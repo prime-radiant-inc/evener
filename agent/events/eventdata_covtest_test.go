@@ -7,27 +7,28 @@ import (
 	"testing"
 )
 
-// TestCovEventKindMarkers covers event payload markers that are not exercised
-// by the main event constructor table.
-func TestCovEventKindMarkers(t *testing.T) {
+// TestCovNewEventPayloads covers public event payloads not exercised by the
+// main event constructor table.
+func TestCovNewEventPayloads(t *testing.T) {
 	tests := []struct {
 		name string
 		data EventData
 		want EventKind
 	}{
-		{"ReasoningSummaryDelta", ReasoningSummaryDeltaData{}, EventReasoningSummaryDelta},
-		{"SessionNameChanged", SessionNameChangedData{}, EventSessionNameChanged},
-		{"ModelChanged", ModelChangedData{}, EventModelChanged},
-		{"ReasoningEffortChanged", ReasoningEffortChangedData{}, EventReasoningEffortChanged},
-		{"TurnLimit", TurnLimitData{}, EventTurnLimit},
-		{"LoopDetection", LoopDetectionData{}, EventLoopDetection},
-		{"SandboxEscalationRequested", SandboxEscalationRequestedData{}, EventSandboxEscalationRequested},
-		{"SandboxEscalationResolved", SandboxEscalationResolvedData{}, EventSandboxEscalationResolved},
+		{"SessionNameChanged", SessionNameChangedData{Name: "new name", Source: "user"}, EventSessionNameChanged},
+		{"ModelChanged", ModelChangedData{OldProvider: "old-provider", OldModel: "old-model", NewProvider: "new-provider", NewModel: "new-model", ReasoningEffortLevels: []string{"low", "high"}, SupportsReasoning: true, MarkerText: "model changed"}, EventModelChanged},
+		{"ReasoningEffortChanged", ReasoningEffortChangedData{ReasoningEffort: "high"}, EventReasoningEffortChanged},
+		{"SandboxEscalationRequested", SandboxEscalationRequestedData{EscalationID: "esc_1", Mode: "workspace-write", Tool: "write_file", Kind: "write", DeniedPath: "/outside/file", Command: "write", OutputSoFar: "partial", PartiallyRan: true}, EventSandboxEscalationRequested},
+		{"SandboxEscalationResolved", SandboxEscalationResolvedData{EscalationID: "esc_1"}, EventSandboxEscalationResolved},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			if got := tc.data.eventKind(); got != tc.want {
-				t.Fatalf("eventKind() = %v, want %v", got, tc.want)
+			event := New(tc.data)
+			if event.Kind != tc.want {
+				t.Fatalf("New(%T).Kind = %v, want %v", tc.data, event.Kind, tc.want)
+			}
+			if !reflect.DeepEqual(event.Data, tc.data) {
+				t.Fatalf("New(%T).Data = %#v, want payload preserved as %#v", tc.data, event.Data, tc.data)
 			}
 		})
 	}

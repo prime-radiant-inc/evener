@@ -41,15 +41,6 @@ func TestCovIsRootDelegateAttentionReceiver_NilSession(t *testing.T) {
 	}
 }
 
-// TestCovIsRootDelegateAttentionReceiver_NoController covers
-// isRootDelegateAttentionReceiver with no controller (session_attention.go line 553).
-func TestCovIsRootDelegateAttentionReceiver_NoController(t *testing.T) {
-	s := &Session{}
-	if s.isRootDelegateAttentionReceiver() {
-		t.Fatal("no controller should return false")
-	}
-}
-
 // TestCovAcceptDelegateAttention_NilSession covers acceptDelegateAttention nil guard
 // (session_attention.go lines 527-529).
 func TestCovAcceptDelegateAttention_NilSession(t *testing.T) {
@@ -57,16 +48,6 @@ func TestCovAcceptDelegateAttention_NilSession(t *testing.T) {
 	err := s.acceptDelegateAttention(nil)
 	if err == nil || !errors.Is(err, errDelegateStaleLease) {
 		t.Fatalf("nil session: %v", err)
-	}
-}
-
-// TestCovAcceptDelegateAttention_NoController covers acceptDelegateAttention
-// with no controller (session_attention.go lines 528-529).
-func TestCovAcceptDelegateAttention_NoController(t *testing.T) {
-	s := &Session{}
-	err := s.acceptDelegateAttention(nil)
-	if err == nil || !errors.Is(err, errDelegateStaleLease) {
-		t.Fatalf("no controller: %v", err)
 	}
 }
 

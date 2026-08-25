@@ -13,7 +13,6 @@ import (
 
 	"primeradiant.com/evener/agent/internal/jobstore"
 	"primeradiant.com/evener/agent/provenance"
-	"primeradiant.com/evener/identifier"
 )
 
 // TestCovFinalizeWithRunNoNotification covers finalizeWithRunNoNotification
@@ -768,29 +767,6 @@ func TestCovBoundedStructuredResult(t *testing.T) {
 	}
 	if reason != structuredResultReasonSchemaResultTooLarge {
 		t.Fatalf("reason = %q, want %q", reason, structuredResultReasonSchemaResultTooLarge)
-	}
-}
-
-// TestCovIdentifierJobOwnerSessionID is a helper to verify the identifier package
-// is used correctly for job IDs in createJobOutputForID.
-func TestCovCreateJobOutputForID_ValidID(t *testing.T) {
-	jm := newTestJM(t)
-	// Construct a valid job ID for this session.
-	validJobID, err := identifier.NewJobID(jm.sessionID)
-	if err != nil {
-		t.Fatalf("identifier.NewJobID: %v", err)
-	}
-	path, output, err := jm.createJobOutputForID(validJobID)
-	if err != nil {
-		t.Fatalf("createJobOutputForID: %v", err)
-	}
-	t.Cleanup(func() { _ = output.Close() })
-	if path == "" {
-		t.Fatal("path should be non-empty")
-	}
-	// Verify the file exists.
-	if _, err := os.Stat(path); err != nil {
-		t.Fatalf("output file should exist: %v", err)
 	}
 }
 

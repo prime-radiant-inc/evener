@@ -9,7 +9,6 @@ import (
 	"testing"
 
 	"primeradiant.com/evener/agent/execenv"
-	"primeradiant.com/evener/agent/internal/delegatestore"
 	"primeradiant.com/evener/agent/internal/tool"
 	"primeradiant.com/evener/agent/provenance"
 )
@@ -161,19 +160,6 @@ func TestCovFrozenSubagentToolNames(t *testing.T) {
 	}
 }
 
-// TestCovFrozenStableDelegateSandboxMatches covers
-// frozenStableDelegateSandboxMatches (subagents.go lines 336-348).
-func TestCovFrozenStableDelegateSandboxMatches(t *testing.T) {
-	// Both nil — match.
-	if !frozenStableDelegateSandboxMatches(nil, nil) {
-		t.Fatal("both nil should match")
-	}
-	// env nil, want non-nil — no match.
-	if frozenStableDelegateSandboxMatches(nil, &delegatestore.SandboxSnapshot{Mode: "off"}) {
-		t.Fatal("nil env with non-nil want should not match")
-	}
-}
-
 // TestCovSubagentNeedsCommunicateNudge covers subagentNeedsCommunicateNudge
 // (subagents.go lines 406-411).
 func TestCovSubagentNeedsCommunicateNudge(t *testing.T) {
@@ -223,21 +209,6 @@ func TestCovRestoreFrozenSkillBodies(t *testing.T) {
 	}
 }
 
-// TestCovCommunicateNudge covers communicateNudge
-// (subagents.go lines 1475-1480).
-func TestCovCommunicateNudge2(t *testing.T) {
-	got := communicateNudge("communicate")
-	if !strings.Contains(got, "communicate") {
-		t.Fatalf("should contain tool name: %q", got)
-	}
-	if !strings.Contains(got, "end_turn=true") {
-		t.Fatalf("should mention end_turn=true: %q", got)
-	}
-	if !strings.Contains(got, "summarizing your complete findings") {
-		t.Fatalf("should mention findings: %q", got)
-	}
-}
-
 // TestCovFollowUpProvenance covers followUpProvenance
 // (subagents.go lines 2007-2012): nil subagent and nil session.
 func TestCovFollowUpProvenance(t *testing.T) {
@@ -282,70 +253,6 @@ func TestCovFollowUpProvenance(t *testing.T) {
 	if got != nil {
 		t.Fatal("nil input should return nil")
 	}
-}
-
-// TestCovFatalRunGatedSnapshot covers fatalRunGatedSnapshot
-// (subagents.go lines 1456-1463).
-func TestCovFatalRunGatedSnapshot2(t *testing.T) {
-	// nil subagent — false.
-	var a *subagent
-	if a.fatalRunGatedSnapshot() {
-		t.Fatal("nil subagent should return false")
-	}
-
-	// Non-nil with fatalRunGated=false.
-	a = &subagent{}
-	if a.fatalRunGatedSnapshot() {
-		t.Fatal("fatalRunGated=false should return false")
-	}
-
-	// Non-nil with fatalRunGated=true.
-	a.fatalRunGated = true
-	if !a.fatalRunGatedSnapshot() {
-		t.Fatal("fatalRunGated=true should return true")
-	}
-}
-
-// TestCovChildFatalRunGated covers childFatalRunGated
-// (subagents.go lines 1465-1471).
-func TestCovChildFatalRunGated2(t *testing.T) {
-	// nil session — false.
-	var s *Session
-	if s.childFatalRunGated("child_1") {
-		t.Fatal("nil session should return false")
-	}
-
-	// nil subagents — false.
-	s = &Session{}
-	if s.childFatalRunGated("child_1") {
-		t.Fatal("nil subagents should return false")
-	}
-
-	// Empty child session ID — false.
-	s.subagents = newSubagentManager(nil, 10)
-	if s.childFatalRunGated("") {
-		t.Fatal("empty child ID should return false")
-	}
-}
-
-// TestCovDisposeUnadoptedSubagentSession covers disposeUnadoptedSubagentSession
-// (subagents.go lines 165-176): nil session, non-ownsEnv.
-func TestCovDisposeUnadoptedSubagentSession2(t *testing.T) {
-	// nil session — no-op.
-	disposeUnadoptedSubagentSession(nil, false)
-	disposeUnadoptedSubagentSession(nil, true)
-}
-
-// TestCovPreparedSubagentRunDisposeUnadopted covers
-// preparedSubagentRun.disposeUnadopted (subagents.go lines 178-183).
-func TestCovPreparedSubagentRunDisposeUnadopted(t *testing.T) {
-	// nil prepared — no-op.
-	var p *preparedSubagentRun
-	p.disposeUnadopted()
-
-	// nil sub — no-op.
-	p = &preparedSubagentRun{}
-	p.disposeUnadopted()
 }
 
 // TestCovDelegateSettlementModeForRun covers delegateSettlementModeForRun
@@ -404,21 +311,6 @@ func TestCovStableDelegateFatalRun2(t *testing.T) {
 }
 
 // ---- session_attention.go ----
-
-// TestCovScheduleStableDelegateAttentionRetry_NilSession covers
-// scheduleStableDelegateAttentionRetry (session_attention.go lines 740-782)
-// nil guard.
-func TestCovScheduleStableDelegateAttentionRetry_NilSession(t *testing.T) {
-	var s *Session
-	s.scheduleStableDelegateAttentionRetry() // should not panic
-}
-
-// TestCovResetStableDelegateAttentionRetry_NilSession covers
-// resetStableDelegateAttentionRetry (session_attention.go lines 784+).
-func TestCovResetStableDelegateAttentionRetry_NilSession(t *testing.T) {
-	var s *Session
-	s.resetStableDelegateAttentionRetry() // should not panic
-}
 
 // TestCovHasPendingDelegateAttentionArmRetry covers
 // hasPendingDelegateAttentionArmRetry (session_attention.go lines 485-493).
